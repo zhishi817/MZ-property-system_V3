@@ -76,7 +76,7 @@ export function deferredProjectionDate(params: {
   const to = String(params.dateTo || '').slice(0, 10)
   if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return null
   if (due > to) return null
-  if (due < from && isInspectionFinishedStatus(params.status)) return null
+  if (isInspectionFinishedStatus(params.status)) return null
   return due < from ? from : due
 }
 

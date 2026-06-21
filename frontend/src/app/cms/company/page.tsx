@@ -161,6 +161,28 @@ function parseBlocks(content: string | null | undefined): { blocks: Block[]; raw
   return { blocks: [{ type: 'legacy_html', html: raw }], raw }
 }
 
+function stripLegacyHtml(content: string) {
+  return String(content || '')
+    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+    .replace(/<\/\s*(p|div|section|article|li|ul|ol|blockquote)\s*>/gi, '\n')
+    .replace(/<\s*h([1-4])[^>]*>(.*?)<\/\s*h\1\s*>/gis, (_m, level, text) => `\n${'#'.repeat(Math.max(1, Math.min(4, Number(level) || 2)))} ${String(text || '').trim()}\n`)
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+}
+
+function isNumberedSectionLine(line: string) {
+  const match = line.match(/^(\d{1,2})[.、]\s*(\S.{1,36})$/)
+  if (!match) return false
+  const text = String(match[2] || '').trim()
+  if (/关于|重点|要求|注意|说明|反馈|沟通|更新|上传|填写|交接|标准/.test(text)) return true
+  return !/[。；;:：，,]$/.test(text) && text.length <= 18
+}
+
 function flushMarkdownParagraph(lines: string[], blocks: Block[]) {
   const text = lines.join('\n').trim()
   lines.length = 0
@@ -214,6 +236,20 @@ function parseMarkdownToBlocks(markdown: string): Block[] {
       continue
     }
 
+    if (isNumberedSectionLine(trimmed)) {
+      flushMarkdownParagraph(paragraph, blocks)
+      blocks.push({ type: 'heading', level: 2, text: trimmed.replace(/^\d{1,2}[.、]\s*/, '').trim() })
+      i += 1
+      continue
+    }
+
+    if (/^((请.+注意|特别注意|重要提醒)[:：]?|最后[，,、]?|说明[:：]?)$/.test(trimmed)) {
+      flushMarkdownParagraph(paragraph, blocks)
+      blocks.push({ type: 'callout', text: trimmed })
+      i += 1
+      continue
+    }
+
     if (/^(-{3,}|\*{3,})$/.test(trimmed)) {
       flushMarkdownParagraph(paragraph, blocks)
       i += 1
@@ -241,15 +277,16 @@ function parseMarkdownToBlocks(markdown: string): Block[] {
       continue
     }
 
-    const listMatch = trimmed.match(/^((?:[-*+])|\d+[.)])\s+(.+)$/)
+    const listMatch = trimmed.match(/^((?:[-*+•])|\d+[.)])\s*(.+)$/)
     if (listMatch) {
       flushMarkdownParagraph(paragraph, blocks)
       const ordered = /^\d+[.)]$/.test(listMatch[1])
       const items: string[] = []
       while (i < lines.length) {
         const itemLine = String(lines[i] || '').trim()
-        const itemMatch = itemLine.match(/^((?:[-*+])|\d+[.)])\s+(.+)$/)
+        const itemMatch = itemLine.match(/^((?:[-*+•])|\d+[.)])\s*(.+)$/)
         if (!itemMatch) break
+        if (isNumberedSectionLine(itemLine)) break
         const nextOrdered = /^\d+[.)]$/.test(itemMatch[1])
         if (nextOrdered !== ordered) break
         items.push(itemMatch[2].trim())
@@ -265,6 +302,13 @@ function parseMarkdownToBlocks(markdown: string): Block[] {
 
   flushMarkdownParagraph(paragraph, blocks)
   return blocks
+}
+
+function parseBlocksForDisplay(content: string | null | undefined): Block[] {
+  const parsed = parseBlocks(content)
+  if (!(parsed.blocks.length === 1 && parsed.blocks[0].type === 'legacy_html')) return parsed.blocks
+  const blocks = parseMarkdownToBlocks(stripLegacyHtml(parsed.raw))
+  return blocks.length ? blocks : parsed.blocks
 }
 
 function blocksToPayload(blocks: Block[], rawFallback: string) {
@@ -826,8 +870,7 @@ function CompanyPagesTab({ type }: { type: PageType }) {
 
   function openView(r: CompanyPageRow) {
     setViewing(r)
-    const p = parseBlocks(r.content || '')
-    setViewBlocks(p.blocks)
+    setViewBlocks(parseBlocksForDisplay(r.content || ''))
     setViewOpen(true)
   }
 

@@ -11,7 +11,7 @@ import TableRowActions from '../../../components/TableRowActions'
 
 type DocumentType = 'agency_authority' | 'property_service_agreement'
 type VersionKind = 'draft' | 'signed'
-type ServiceAgreementVariant = 'management_standard' | 'management_sale' | 'leased_to_mz'
+type ServiceAgreementVariant = 'management_standard' | 'management_sale' | 'leased_to_mz' | 'leased_direct_to_mz'
 type AttachmentCategory = 'agency_contract' | 'condition_report'
 
 type DocumentVersion = {
@@ -91,17 +91,21 @@ const AGENCY_AUTHORITY_TEMPLATE_VERSION = 'authorisation-detail-v7-page-filled-2
 const SERVICE_AGREEMENT_TEMPLATE_VERSION = 'service-agreement-v5-2026-06-15'
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const ATTACHMENT_ACCEPT = '.pdf,.doc,.docx,.jpg,.jpeg,.png'
+const DIRECT_LEASE_UTILITIES_TEXT = 'MZ Property pays usage utilities during the lease term, including electricity, gas, internet and water usage where billed as consumption utilities. The Owner remains responsible for owners corporation / strata levies, council rates, water rates and other owner-side property charges unless expressly agreed otherwise in writing.'
+const DIRECT_LEASE_INSURANCE_TEXT = 'MZ Property will arrange short-stay insurance for its operation. The Owner is not required to participate in short-stay management and only needs to provide owner information, documents or signatures reasonably required for insurance setup, renewal or claims.'
 
 const serviceAgreementVariantText: Record<ServiceAgreementVariant, string> = {
   management_standard: '正常管理费短租',
   management_sale: '边卖边做短租',
   leased_to_mz: '中介包租给我们',
+  leased_direct_to_mz: '房东直租给我们',
 }
 
 const serviceAgreementVariantOptions = [
   { value: 'management_standard', label: serviceAgreementVariantText.management_standard },
   { value: 'management_sale', label: serviceAgreementVariantText.management_sale },
   { value: 'leased_to_mz', label: serviceAgreementVariantText.leased_to_mz },
+  { value: 'leased_direct_to_mz', label: serviceAgreementVariantText.leased_direct_to_mz },
 ]
 
 const statusText: Record<string, string> = {
@@ -172,13 +176,13 @@ function formatPropertyDisplay(code: any, address: any, fallback = '-') {
 
 function normalizeServiceAgreementVariant(value: any): ServiceAgreementVariant {
   const raw = String(value || '').trim()
-  if (raw === 'management_sale' || raw === 'leased_to_mz') return raw
+  if (raw === 'management_sale' || raw === 'leased_to_mz' || raw === 'leased_direct_to_mz') return raw
   return 'management_standard'
 }
 
 function defaultManagementFeePercent(variant: ServiceAgreementVariant) {
   if (variant === 'management_sale') return 50
-  if (variant === 'leased_to_mz') return null
+  if (variant === 'leased_to_mz' || variant === 'leased_direct_to_mz') return null
   return 18.5
 }
 
@@ -215,6 +219,16 @@ function parseManagementFeeTextToPercent(value: any) {
 
 function isLeasedVariant(value: any) {
   return normalizeServiceAgreementVariant(value) === 'leased_to_mz'
+}
+
+function isDirectLeaseVariant(value: any) {
+  return normalizeServiceAgreementVariant(value) === 'leased_direct_to_mz'
+}
+
+function normalizeDirectLeaseUtilitiesText(value: any) {
+  const raw = String(value || '').trim()
+  if (!raw || /may pay agreed|deduct or reconcile|owners corporation \/ strata fees|council rates|water rates and other agreed property charges/i.test(raw)) return DIRECT_LEASE_UTILITIES_TEXT
+  return raw
 }
 
 function fileSize(n?: number) {
@@ -431,6 +445,18 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
       utilities_paid_by: 'paid by Owner',
       investment_or_holiday: 'Investment',
       term: 'Ongoing with 60 days termination notice',
+      monthly_rent: '',
+      rent_payment_frequency: 'Monthly',
+      rent_due_day: '1',
+      first_rent_due_date: '',
+      bond_amount: 'One month rent',
+      bond_due_date: '',
+      electronic_notice_method: 'Email',
+      urgent_repair_contact: 'MZ Property operations team',
+      owners_corporation_rules: 'Owner to provide if applicable',
+      minimum_standards_confirmation: 'Owner confirms the Property meets applicable rental minimum standards before handover.',
+      owner_charges_handling: DIRECT_LEASE_UTILITIES_TEXT,
+      short_stay_insurance: DIRECT_LEASE_INSURANCE_TEXT,
       initial_property_visit: 'Included',
       setup_fee: '0.00',
       management_fee_rate: baseRate,
@@ -580,7 +606,7 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
 
   function normalizeFormFields(fields: Record<string, any>) {
     const out: Record<string, any> = { ...fields }
-    for (const k of ['sign_date', 'commencement_date']) {
+    for (const k of ['sign_date', 'commencement_date', 'first_rent_due_date', 'bond_due_date']) {
       if (out[k] && dayjs.isDayjs(out[k])) out[k] = out[k].format('YYYY-MM-DD')
     }
     if ('landlord_email' in out) out.landlord_email = normalizeEmailList(out.landlord_email)
@@ -588,9 +614,9 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
     if (type === 'property_service_agreement') {
       const variant = normalizeServiceAgreementVariant(out.contract_variant)
       out.contract_variant = variant
-      const rate = variant === 'leased_to_mz' ? null : percentToRate(out.management_fee_rate ?? defaultManagementFeePercent(variant))
+      const rate = (variant === 'leased_to_mz' || variant === 'leased_direct_to_mz') ? null : percentToRate(out.management_fee_rate ?? defaultManagementFeePercent(variant))
       out.management_fee_rate = rate
-      out.management_fee = variant === 'leased_to_mz' ? '' : formatManagementFeeText(rate)
+      out.management_fee = (variant === 'leased_to_mz' || variant === 'leased_direct_to_mz') ? '' : formatManagementFeeText(rate)
     }
     out.parking_details = buildParkingDetails(out)
     out.number_of_keys = normalizeKeySets(out.number_of_keys)
@@ -612,7 +638,7 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
 
   function hydrateDateFields(fields: Record<string, any>) {
     const out: Record<string, any> = { ...fields }
-    for (const k of ['sign_date', 'commencement_date']) {
+    for (const k of ['sign_date', 'commencement_date', 'first_rent_due_date', 'bond_due_date']) {
       if (out[k]) {
         const d = dayjs(out[k])
         if (d.isValid()) out[k] = d
@@ -1002,7 +1028,9 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
   async function downloadBlankTemplate(variant?: ServiceAgreementVariant) {
     const typeLabel = type === 'agency_authority'
       ? '授权协议'
-      : (variant === 'management_sale' ? '边卖边做短租合同' : '正常管理费短租合同')
+      : (variant === 'management_sale'
+        ? '边卖边做短租合同'
+        : (variant === 'leased_direct_to_mz' ? '房东直租给我们合同' : '正常管理费短租合同'))
     setTemplateDownloading(variant || type)
     try {
       const qs = new URLSearchParams({ type })
@@ -1018,7 +1046,7 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
       a.href = url
       a.download = type === 'agency_authority'
         ? 'agency-authority-blank-template.pdf'
-        : `service-agreement-blank-template-${variant === 'management_sale' ? 'sale' : 'standard'}.pdf`
+        : `service-agreement-blank-template-${variant === 'management_sale' ? 'sale' : (variant === 'leased_direct_to_mz' ? 'direct-lease' : 'standard')}.pdf`
       document.body.appendChild(a)
       a.click()
       a.remove()
@@ -1092,6 +1120,7 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
     items: [
       { key: 'management_standard', label: '正常管理费短租' },
       { key: 'management_sale', label: '边卖边做短租' },
+      { key: 'leased_direct_to_mz', label: '房东直租给我们' },
     ],
     onClick: ({ key }) => downloadBlankTemplate(key as ServiceAgreementVariant),
   }
@@ -1194,6 +1223,16 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
               />
             ) : (
               <>
+                {detail.type === 'property_service_agreement' && isDirectLeaseVariant(detail.fields?.contract_variant) ? (
+                  <LeaseAttachmentSection
+                    document={detail}
+                    canWrite={canWrite}
+                    saving={saving}
+                    onUpload={uploadLeasedAttachment}
+                    onDelete={deleteLeasedAttachment}
+                    categories={['condition_report']}
+                  />
+                ) : null}
                 <h3 style={{ marginTop: 20 }}>版本历史</h3>
                 <Table
                   rowKey="id"
@@ -1536,8 +1575,27 @@ function ServiceAgreementFields({
     const previous = variantRef.current
     const currentRate = form.getFieldValue(['fields', 'management_fee_rate'])
     const currentText = form.getFieldValue(['fields', 'management_fee'])
-    if (watchedVariant === 'leased_to_mz') {
-      form.setFieldsValue({ fields: { ...(form.getFieldValue('fields') || {}), contract_variant: watchedVariant, management_fee_rate: null, management_fee: '' } })
+    if (watchedVariant === 'leased_to_mz' || watchedVariant === 'leased_direct_to_mz') {
+      form.setFieldsValue({
+        fields: {
+          ...(form.getFieldValue('fields') || {}),
+          contract_variant: watchedVariant,
+          management_fee_rate: null,
+          management_fee: '',
+          ...(watchedVariant === 'leased_direct_to_mz'
+            ? {
+              utilities_paid_by: 'paid by MZ Property',
+              bond_amount: form.getFieldValue(['fields', 'bond_amount']) || 'One month rent',
+              electronic_notice_method: form.getFieldValue(['fields', 'electronic_notice_method']) || 'Email',
+              urgent_repair_contact: form.getFieldValue(['fields', 'urgent_repair_contact']) || 'MZ Property operations team',
+              owners_corporation_rules: form.getFieldValue(['fields', 'owners_corporation_rules']) || 'Owner to provide if applicable',
+              minimum_standards_confirmation: form.getFieldValue(['fields', 'minimum_standards_confirmation']) || 'Owner confirms the Property meets applicable rental minimum standards before handover.',
+              owner_charges_handling: normalizeDirectLeaseUtilitiesText(form.getFieldValue(['fields', 'owner_charges_handling'])),
+              short_stay_insurance: form.getFieldValue(['fields', 'short_stay_insurance']) || DIRECT_LEASE_INSURANCE_TEXT,
+            }
+            : {}),
+        },
+      })
     } else {
       const pct = defaultManagementFeePercent(watchedVariant)
       const shouldReset = previous != null && previous !== watchedVariant
@@ -1593,7 +1651,8 @@ function ServiceAgreementFields({
   const ownerPhone = String(selectedLandlord?.phone || form.getFieldValue(['fields', 'owner_phone']) || '').trim() || '-'
   const propertyDisplay = formatPropertyDisplay(selectedProperty?.code || currentPropertyCode, selectedProperty?.address || form.getFieldValue(['fields', 'property_address']))
   const hasPropertySummary = propertyDisplay !== '-'
-  const isLeased = watchedVariant === 'leased_to_mz'
+  const isThirdPartyLease = watchedVariant === 'leased_to_mz'
+  const isDirectLease = watchedVariant === 'leased_direct_to_mz'
   return (
     <>
       <Form.Item name="landlord_id" hidden><Input /></Form.Item>
@@ -1682,7 +1741,7 @@ function ServiceAgreementFields({
             </>
           ) : null}
         </Form.Item>
-        {!isLeased ? (
+        {!isThirdPartyLease ? (
           <>
             <Col span={8}><Form.Item name={['fields', 'number_of_keys']} label="Keys / Fobs"><Input addonAfter="Set(s)" placeholder="e.g. 2" /></Form.Item></Col>
             <Col span={8}><Form.Item name={['fields', 'maximum_guests']} label="Maximum Guests"><Input /></Form.Item></Col>
@@ -1691,7 +1750,7 @@ function ServiceAgreementFields({
           </>
         ) : null}
       </Row>
-      {isLeased ? (
+      {isThirdPartyLease ? (
         <LeaseAttachmentSection
           document={currentDocument}
           canWrite={canWrite}
@@ -1713,39 +1772,70 @@ function ServiceAgreementFields({
             <Col span={8}><Form.Item name={['fields', 'commencement_date']} label="服务开始日期"><DatePicker style={{ width: '100%' }} /></Form.Item></Col>
             <Col span={16}><Form.Item name={['fields', 'term']} label="合同期限"><Input /></Form.Item></Col>
           </Row>
-          <Divider orientation="left">费用设置</Divider>
-          <Row gutter={12}>
-            <Col span={8}><Form.Item name={['fields', 'setup_fee']} label="Setup Fee"><Input addonBefore="AUD $" /></Form.Item></Col>
-            <Col span={8}>
-              <Form.Item name={['fields', 'management_fee_rate']} label="Management Fee (%)">
-                <InputNumber
-                  min={0}
-                  max={100}
-                  precision={3}
-                  style={{ width: '100%' }}
-                  onChange={(value) => {
-                    const rate = percentToRate(value)
-                    form.setFieldValue(['fields', 'management_fee'], formatManagementFeeText(rate))
-                  }}
-                />
-              </Form.Item>
-            </Col>
-            <Col span={8}>
-              <Form.Item
-                name={['fields', 'management_fee']}
-                label="Management Fee 文本"
-                extra="根据 Management Fee (%) 自动更新"
-              >
-                <Input readOnly />
-              </Form.Item>
-            </Col>
-            <Col span={8}><Form.Item name={['fields', 'consumable_fee']} label="Consumable Fee"><Input addonBefore="AUD $" /></Form.Item></Col>
-            <Col span={8}><Form.Item name={['fields', 'linen_fee']} label="Linen / Amenities"><Input /></Form.Item></Col>
-            <Col span={8}><Form.Item name={['fields', 'initial_housekeeping_fee']} label="Initial Housekeeping"><Input addonBefore="AUD $" /></Form.Item></Col>
-            <Col span={8}><Form.Item name={['fields', 'installation_fee']} label="Installation Fee"><Input addonBefore="AUD $" /></Form.Item></Col>
-            <Col span={8}><Form.Item name={['fields', 'purchase_fee']} label="Purchase Fee"><Input addonBefore="AUD $" /></Form.Item></Col>
-            <Col span={8}><Form.Item name={['fields', 'photography_fee']} label="Photography"><Input addonBefore="AUD $" /></Form.Item></Col>
-          </Row>
+          {isDirectLease ? (
+            <>
+              <Divider orientation="left">租金与代缴费用</Divider>
+              <Row gutter={12}>
+                <Col span={8}><Form.Item name={['fields', 'monthly_rent']} label="Rent"><Input addonBefore="AUD $" placeholder="e.g. 3200 / month" /></Form.Item></Col>
+                <Col span={8}><Form.Item name={['fields', 'rent_payment_frequency']} label="Rent Frequency"><Input placeholder="Monthly" /></Form.Item></Col>
+                <Col span={8}><Form.Item name={['fields', 'rent_due_day']} label="Rent Due Day"><Input placeholder="1" /></Form.Item></Col>
+                <Col span={8}><Form.Item name={['fields', 'first_rent_due_date']} label="First Rent Due"><DatePicker style={{ width: '100%' }} /></Form.Item></Col>
+                <Col span={8}><Form.Item name={['fields', 'bond_amount']} label="Bond"><Input placeholder="One month rent" /></Form.Item></Col>
+                <Col span={8}><Form.Item name={['fields', 'bond_due_date']} label="Bond Due"><DatePicker style={{ width: '100%' }} /></Form.Item></Col>
+                <Col span={8}><Form.Item name={['fields', 'electronic_notice_method']} label="Electronic Notices"><Input placeholder="Email" /></Form.Item></Col>
+                <Col span={8}><Form.Item name={['fields', 'urgent_repair_contact']} label="Urgent Repair Contact"><Input /></Form.Item></Col>
+                <Col span={8}><Form.Item name={['fields', 'owners_corporation_rules']} label="OC / Strata Rules"><Input placeholder="Owner to provide if applicable" /></Form.Item></Col>
+                <Col span={24}><Form.Item name={['fields', 'minimum_standards_confirmation']} label="Minimum Standards"><Input.TextArea rows={2} /></Form.Item></Col>
+                <Col span={24}><Form.Item name={['fields', 'owner_charges_handling']} label="MZ 只付水电煤网；Strata/Council/Water Rates 房东支付"><Input.TextArea rows={3} /></Form.Item></Col>
+                <Col span={24}><Form.Item name={['fields', 'short_stay_insurance']} label="短租保险与房东配合"><Input.TextArea rows={3} /></Form.Item></Col>
+              </Row>
+              <LeaseAttachmentSection
+                document={currentDocument}
+                canWrite={canWrite}
+                saving={saving}
+                onUpload={onUploadAttachment}
+                onDelete={onDeleteAttachment}
+                categories={['condition_report']}
+                emptyHint="先保存该记录，然后上传 Condition Report。"
+              />
+            </>
+          ) : (
+            <>
+              <Divider orientation="left">费用设置</Divider>
+              <Row gutter={12}>
+                <Col span={8}><Form.Item name={['fields', 'setup_fee']} label="Setup Fee"><Input addonBefore="AUD $" /></Form.Item></Col>
+                <Col span={8}>
+                  <Form.Item name={['fields', 'management_fee_rate']} label="Management Fee (%)">
+                    <InputNumber
+                      min={0}
+                      max={100}
+                      precision={3}
+                      style={{ width: '100%' }}
+                      onChange={(value) => {
+                        const rate = percentToRate(value)
+                        form.setFieldValue(['fields', 'management_fee'], formatManagementFeeText(rate))
+                      }}
+                    />
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
+                  <Form.Item
+                    name={['fields', 'management_fee']}
+                    label="Management Fee 文本"
+                    extra="根据 Management Fee (%) 自动更新"
+                  >
+                    <Input readOnly />
+                  </Form.Item>
+                </Col>
+                <Col span={8}><Form.Item name={['fields', 'consumable_fee']} label="Consumable Fee"><Input addonBefore="AUD $" /></Form.Item></Col>
+                <Col span={8}><Form.Item name={['fields', 'linen_fee']} label="Linen / Amenities"><Input /></Form.Item></Col>
+                <Col span={8}><Form.Item name={['fields', 'initial_housekeeping_fee']} label="Initial Housekeeping"><Input addonBefore="AUD $" /></Form.Item></Col>
+                <Col span={8}><Form.Item name={['fields', 'installation_fee']} label="Installation Fee"><Input addonBefore="AUD $" /></Form.Item></Col>
+                <Col span={8}><Form.Item name={['fields', 'purchase_fee']} label="Purchase Fee"><Input addonBefore="AUD $" /></Form.Item></Col>
+                <Col span={8}><Form.Item name={['fields', 'photography_fee']} label="Photography"><Input addonBefore="AUD $" /></Form.Item></Col>
+              </Row>
+            </>
+          )}
           <Divider orientation="left">MZ 联系信息</Divider>
           <Row gutter={12}>
             <Col span={8}><Form.Item name={['fields', 'mz_company_name']} label="公司名称"><Input /></Form.Item></Col>
@@ -1768,6 +1858,7 @@ function LeaseAttachmentSection({
   onUpload,
   onDelete,
   emptyHint,
+  categories,
 }: {
   document: LandlordDocument | null
   canWrite: boolean
@@ -1775,15 +1866,17 @@ function LeaseAttachmentSection({
   onUpload: (row: LandlordDocument, category: AttachmentCategory, file: File) => Promise<void>
   onDelete: (row: LandlordDocument, attachment: DocumentAttachment) => Promise<void>
   emptyHint?: string
+  categories?: AttachmentCategory[]
 }) {
   const groups: Record<AttachmentCategory, DocumentAttachment[]> = {
     agency_contract: (document?.attachments || []).filter((x) => x.category === 'agency_contract'),
     condition_report: (document?.attachments || []).filter((x) => x.category === 'condition_report'),
   }
-  const items: Array<{ category: AttachmentCategory; title: string }> = [
+  const allItems: Array<{ category: AttachmentCategory; title: string }> = [
     { category: 'agency_contract', title: '中介给我们的合同' },
     { category: 'condition_report', title: 'Condition Report' },
   ]
+  const items = allItems.filter((item) => !categories || categories.includes(item.category))
   return (
     <>
       <Divider orientation="left">附件归档</Divider>

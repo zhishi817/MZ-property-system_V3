@@ -45,6 +45,7 @@ type BoardTask = {
   inspector_id: string | null
   order_id?: string | null
   order_code?: string | null
+  checkin_sync_status?: 'pending' | 'synced' | null
   scheduled_at?: string | null
   auto_sync_enabled?: boolean
   has_key_photo?: boolean
@@ -178,16 +179,39 @@ function workSummaryText(raw: string | null | undefined): string {
     const j: any = JSON.parse(s)
     if (Array.isArray(j)) {
       const parts = j
-        .map((x) => (x && typeof x === 'object' ? text((x as any).content) : ''))
-        .filter(Boolean)
+        .flatMap((x) => {
+          if (!x || typeof x !== 'object') return text(x)
+          return [
+            text((x as any).content),
+            text((x as any).detail),
+            text((x as any).summary),
+            text((x as any).description),
+          ]
+        })
+        .filter((part) => part && part !== '问题摘要')
       if (parts.length) return parts.join(' ')
+      return ''
     }
     if (j && typeof j === 'object') {
-      const c = text((j as any).content)
+      const c = [
+        text((j as any).content),
+        text((j as any).detail),
+        text((j as any).summary),
+        text((j as any).description),
+      ].find((part) => part && part !== '问题摘要')
       if (c) return c
+      return ''
     }
   } catch {}
   return s
+}
+
+function isInternalWorkRef(v: any): boolean {
+  return /^(property_maintenance|property_deep_cleaning|work_tasks|cleaning_offline_tasks):[0-9a-f-]{8,}/i.test(text(v))
+}
+
+function isGeneratedWorkNo(v: any): boolean {
+  return /^(R|DC)-\d{8}-[a-z0-9]+$/i.test(text(v))
 }
 
 function workTaskDisplayText(row: any): { title: string; detail: string } {
@@ -196,17 +220,19 @@ function workTaskDisplayText(row: any): { title: string; detail: string } {
   const rawTitle = text(row?.title)
   const rawDetail = workSummaryText(row?.summary)
   const workRef = text(row?.id)
+  const taskKind = lower(row?.task_kind)
+  const hideGeneratedTitle = (taskKind === 'maintenance' || taskKind === 'deep_cleaning') && isGeneratedWorkNo(rawTitle)
   const title = propertyCode
     ? (region ? `${region} ${propertyCode}` : propertyCode)
-    : (rawTitle || workRef || '线下任务')
+    : (!hideGeneratedTitle && rawTitle ? rawTitle : '线下任务')
   const detailParts = [
-    propertyCode && rawTitle && rawTitle !== title ? rawTitle : '',
+    propertyCode && rawTitle && !hideGeneratedTitle && rawTitle !== title ? rawTitle : '',
     rawDetail && rawDetail !== rawTitle ? rawDetail : '',
-    propertyCode && workRef && workRef !== title && workRef !== rawTitle ? workRef : '',
-  ].filter(Boolean)
+  ].filter((part) => part && !isInternalWorkRef(part))
+  const fallback = taskKind === 'maintenance' ? '维修任务' : (taskKind === 'deep_cleaning' ? '深度清洁' : '线下任务')
   return {
     title,
-    detail: detailParts.join('，') || rawDetail || rawTitle || workRef || '线下任务',
+    detail: detailParts.join('，') || rawDetail || (!hideGeneratedTitle ? rawTitle : '') || fallback,
   }
 }
 
@@ -347,7 +373,8 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
   const byProp = new Map<string, BoardTask[]>()
   for (const task of list) {
     const pid = text(task.property_id)
-    const groupKey = `${pid}|${task.deferred_inspection_view ? `deferred:${text(task.inspection_due_date) || task.task_date}` : 'normal'}`
+    const groupDate = task.deferred_inspection_view ? text(task.inspection_due_date) || task.task_date : task.task_date
+    const groupKey = `${pid}|${task.deferred_inspection_view ? 'deferred' : 'normal'}:${groupDate || 'unknown'}`
     const arr = byProp.get(groupKey) || []
     arr.push(task)
     byProp.set(groupKey, arr)
@@ -383,6 +410,7 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
         assignee_id: assigneeId,
         cleaner_id: cleanerId,
         inspector_id: inspectorId,
+        checkin_sync_status: null,
         auto_sync_enabled: deferreds.every((x) => x.auto_sync_enabled !== false),
         has_key_photo: deferreds.some((x) => !!x.has_key_photo),
         key_photo_uploaded_at: deferreds.find((x) => text(x.key_photo_uploaded_at))?.key_photo_uploaded_at || null,
@@ -438,6 +466,7 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
         assignee_id: turnoverPlan.assigneeId,
         cleaner_id: turnoverPlan.cleanerId,
         inspector_id: turnoverPlan.inspectorId,
+        checkin_sync_status: checkin.checkin_sync_status || null,
         auto_sync_enabled: autoSync,
         has_key_photo: all.some((x) => !!x.has_key_photo),
         key_photo_uploaded_at: all.find((x) => text(x.key_photo_uploaded_at))?.key_photo_uploaded_at || null,
@@ -503,6 +532,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
          t.checkout_time,
          t.checkin_time,
          t.nights_override,
+         t.source,
          t.auto_sync_enabled,
          t.old_code,
          t.new_code,
@@ -580,6 +610,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
           inspector_id: row.inspector_id ? String(row.inspector_id) : null,
           order_id: row.order_id ? String(row.order_id) : null,
           order_code: row.order_code ? String(row.order_code) : null,
+          checkin_sync_status: rawType === 'checkin_clean' ? (row.order_id ? 'synced' : 'pending') : null,
           scheduled_at: row.scheduled_at ? String(row.scheduled_at) : null,
           auto_sync_enabled: row.auto_sync_enabled !== false,
           has_key_photo: !!row.has_key_photo,
@@ -619,6 +650,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
           inspector_id: row.inspector_id ? String(row.inspector_id) : null,
           order_id: row.order_id ? String(row.order_id) : null,
           order_code: row.order_code ? String(row.order_code) : null,
+          checkin_sync_status: rawType === 'checkin_clean' ? (row.order_id ? 'synced' : 'pending') : null,
           scheduled_at: row.scheduled_at ? String(row.scheduled_at) : null,
           auto_sync_enabled: row.auto_sync_enabled !== false,
           has_key_photo: !!row.has_key_photo,
@@ -674,6 +706,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
         inspector_id: row.inspector_id ? String(row.inspector_id) : null,
         order_id: row.order_id ? String(row.order_id) : null,
         order_code: order?.confirmation_code ? String(order.confirmation_code) : null,
+        checkin_sync_status: lower(row.task_type) === 'checkin_clean' ? (row.order_id ? 'synced' : 'pending') : null,
         scheduled_at: row.scheduled_at ? String(row.scheduled_at) : null,
         auto_sync_enabled: row.auto_sync_enabled !== false,
         has_key_photo: false,
@@ -1060,11 +1093,13 @@ function buildEntryReadiness(tasks: BoardTask[]) {
   const cleaningTasks = tasks.filter((task) => task.task_source === 'cleaning')
   const unresolvedPrimary = cleaningTasks.filter((task) => {
     if (task.temporarily_skipped || task.deferred_inspection_view) return false
+    if (isCompletedBoardStatus(task.status)) return false
     if (!requiresCleanerAssignment(task)) return false
     return !text(task.cleaner_id || task.assignee_id)
   })
   const pendingInspection = cleaningTasks.filter((task) => {
     if (task.temporarily_skipped || task.deferred_inspection_view) return false
+    if (isCompletedBoardStatus(task.status)) return false
     const mode = inspectionModeOf(task)
     if (mode === 'pending_decision') return true
     if ((mode === 'same_day' || mode === 'deferred') && !text(task.inspector_id)) return true
@@ -1081,7 +1116,7 @@ function buildEntryReadiness(tasks: BoardTask[]) {
 
 async function buildTaskCenterDay(date: string, includeOverdue: boolean, includeUnscheduled: boolean, includeFuture: boolean) {
   const [cleaningTasks, workTasks, taskFlags, rowMetas, itemLayouts] = await Promise.all([
-    loadCleaningTasks(date, includeOverdue, includeFuture),
+    loadCleaningTasks(date, false, false),
     loadWorkTasks(date, includeOverdue, includeUnscheduled, includeFuture),
     loadTaskFlags(date),
     loadBoardRows(date, 'board'),
@@ -1237,7 +1272,7 @@ router.get('/day', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 
   if (!date) return res.status(400).json({ message: 'invalid date' })
   const includeOverdue = String((req.query as any)?.include_overdue || '').trim() === '1'
   const includeUnscheduled = String((req.query as any)?.include_unscheduled || '').trim() !== '0'
-  const includeFuture = String((req.query as any)?.include_future || '').trim() !== '0'
+  const includeFuture = String((req.query as any)?.include_future || '').trim() === '1'
   try {
     if (!hasPg && !Array.isArray((db as any).cleaningTasks)) {
       return res.json({ date, pool: [], groups: {}, tasks: [], rows: [], region_rows: [], final_group_rows: [], deferred_rows: [], entry_readiness: { ready_for_final_grouping: true, unresolved_primary_count: 0, pending_inspection_count: 0, skipped_count: 0 } })

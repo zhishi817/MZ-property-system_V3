@@ -122,7 +122,7 @@ function uniqText(items: any[]) {
 function changeLabel(k: string) {
   const key = String(k || '').trim().toLowerCase()
   if (key === 'time') return '时间'
-  if (key === 'note') return '备注'
+  if (key === 'note') return '客人需求'
   if (key === 'password') return '密码'
   if (key === 'keys') return '钥匙'
   if (key === 'status') return '状态'

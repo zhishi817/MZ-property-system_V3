@@ -3,6 +3,7 @@ import { db } from '../store'
 import { createHash } from 'crypto'
 import { v4 as uuid } from 'uuid'
 import { defaultInspectionModeForTaskType } from '../lib/cleaningInspection'
+import { buildCleaningTaskVisibilityHints, emitWorkTaskEvent } from './workTaskEvents'
 
 export type CleaningSyncAction =
   | 'created'
@@ -166,6 +167,7 @@ export async function bootstrapCleaningSyncSchemaV2(): Promise<void> {
     await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
     await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_mode text;`)
     await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_due_date date;`)
+    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS guest_special_request text;`)
     await pgPool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
     schemaEnsured = null
     await ensureCleaningSchemaV2()
@@ -331,6 +333,180 @@ async function updateTaskById(id: string, patch: any, client?: any): Promise<any
   return t
 }
 
+function hasValue(v: any): boolean {
+  return String(v ?? '').trim() !== ''
+}
+
+function nonBlank(v: any): string | null {
+  const s = String(v ?? '').trim()
+  return s ? s : null
+}
+
+function statusFromAssignees(cleanerId: any, inspectorId: any): string {
+  return hasValue(cleanerId) || hasValue(inspectorId) ? 'assigned' : 'pending'
+}
+
+function shouldCarryManualStatus(officialStatus: any, manualStatus: any): boolean {
+  const official = String(officialStatus || '').trim().toLowerCase()
+  const manual = String(manualStatus || '').trim().toLowerCase()
+  if (!manual || manual === 'pending' || manual === 'cancelled' || manual === 'canceled') return false
+  return !official || official === 'pending' || official === 'assigned'
+}
+
+async function replaceManualCheckinWithSyncedTask(params: {
+  jobId?: string | null
+  orderId: string
+  propertyId: string | null
+  taskDate: string | null
+  client?: any
+}) {
+  const { jobId, orderId, propertyId, taskDate, client } = params
+  if (!propertyId || !taskDate) return
+
+  if (hasPg && (client || pgPool)) {
+    await ensureCleaningSchemaV2()
+    const exec = client || pgPool!
+    const officialRes = await exec.query(
+      `SELECT *
+       FROM cleaning_tasks
+       WHERE (order_id::text) = $1
+         AND (task_type::text) = $2
+         AND lower(COALESCE(status, '')) NOT IN ('cancelled', 'canceled')
+       LIMIT 1`,
+      [String(orderId), CHECKIN_TASK_TYPE],
+    )
+    const official = officialRes?.rows?.[0] || null
+    if (!official) return
+
+    const manualRes = await exec.query(
+      `SELECT t.*
+       FROM cleaning_tasks t
+       LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
+       LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+       WHERE t.order_id IS NULL
+         AND (t.task_type::text) = $1
+         AND lower(COALESCE(t.source, '')) = 'manual'
+         AND (COALESCE(t.task_date, t.date)::date) = ($2::date)
+         AND COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = $3
+         AND lower(COALESCE(t.status, '')) NOT IN ('cancelled', 'canceled')
+       ORDER BY t.updated_at DESC NULLS LAST, t.id DESC`,
+      [CHECKIN_TASK_TYPE, taskDate, String(propertyId)],
+    )
+    const manualRows = manualRes?.rows || []
+    if (!manualRows.length) return
+    const primaryManual = manualRows[0]
+
+    const patch: any = {}
+    const manualCleanerId = nonBlank(primaryManual.cleaner_id) || nonBlank(primaryManual.assignee_id)
+    if (!hasValue(official.cleaner_id) && !hasValue(official.assignee_id) && manualCleanerId) {
+      patch.cleaner_id = manualCleanerId
+      patch.assignee_id = manualCleanerId
+    }
+    const manualInspectorId = nonBlank(primaryManual.inspector_id)
+    if (!hasValue(official.inspector_id) && manualInspectorId) patch.inspector_id = manualInspectorId
+    if (!hasValue(official.inspection_mode) && hasValue(primaryManual.inspection_mode)) patch.inspection_mode = primaryManual.inspection_mode
+    if (!hasValue(official.inspection_due_date) && hasValue(primaryManual.inspection_due_date)) patch.inspection_due_date = String(primaryManual.inspection_due_date).slice(0, 10)
+    if ((!hasValue(official.checkin_time) || String(official.checkin_time).trim() === DEFAULT_CHECKIN_TIME) && hasValue(primaryManual.checkin_time)) {
+      patch.checkin_time = String(primaryManual.checkin_time)
+    }
+    if (!hasValue(official.guest_special_request) && hasValue(primaryManual.guest_special_request)) patch.guest_special_request = primaryManual.guest_special_request
+    if (!hasValue(official.new_code) && hasValue(primaryManual.new_code)) patch.new_code = primaryManual.new_code
+    if (official.keys_required == null && primaryManual.keys_required != null) patch.keys_required = primaryManual.keys_required
+    if (shouldCarryManualStatus(official.status, primaryManual.status)) {
+      patch.status = String(primaryManual.status)
+    } else if ((patch.cleaner_id !== undefined || patch.inspector_id !== undefined) && (!hasValue(official.status) || String(official.status).trim() === 'pending')) {
+      patch.status = statusFromAssignees(patch.cleaner_id ?? official.cleaner_id ?? official.assignee_id, patch.inspector_id ?? official.inspector_id)
+    }
+
+    let officialAfter = official
+    const changedFields = Object.keys(patch).filter((key) => patch[key] !== undefined)
+    if (changedFields.length) {
+      officialAfter = await updateTaskById(String(official.id), patch, exec) || official
+      await logCleaningSync({
+        jobId,
+        orderId,
+        taskId: official.id,
+        action: 'updated',
+        before: official,
+        after: officialAfter,
+        meta: { reason: 'replaced_by_order_task', inherited_from_manual_task_id: String(primaryManual.id || '') },
+        client: exec,
+      })
+      try {
+        const assignmentChanged = ['assignee_id', 'cleaner_id', 'inspector_id'].some((key) => changedFields.includes(key))
+        await emitWorkTaskEvent({
+          taskId: `cleaning_task:${String(official.id)}`,
+          sourceType: 'cleaning_tasks',
+          sourceRefIds: [String(official.id)],
+          eventType: assignmentChanged ? 'TASK_ASSIGNMENT_CHANGED' : 'TASK_UPDATED',
+          changeScope: assignmentChanged ? 'membership' : 'list',
+          changedFields,
+          patch: Object.fromEntries(changedFields.map((field) => [field, (officialAfter as any)?.[field]])),
+          causedByUserId: null,
+          visibilityHints: buildCleaningTaskVisibilityHints(officialAfter || official),
+        }, exec)
+      } catch {}
+    }
+
+    for (const manual of manualRows) {
+      const after = await updateTaskById(String(manual.id), { status: 'cancelled', auto_sync_enabled: false }, exec)
+      await logCleaningSync({
+        jobId,
+        orderId,
+        taskId: manual.id,
+        action: 'cancelled',
+        before: manual,
+        after,
+        meta: { reason: 'replaced_by_order_task', replacement_task_id: String(official.id || '') },
+        client: exec,
+      })
+      try {
+        await emitWorkTaskEvent({
+          taskId: `cleaning_task:${String(manual.id)}`,
+          sourceType: 'cleaning_tasks',
+          sourceRefIds: [String(manual.id)],
+          eventType: 'TASK_REMOVED',
+          changeScope: 'membership',
+          changedFields: ['status', 'auto_sync_enabled'],
+          patch: { status: 'cancelled', auto_sync_enabled: false },
+          causedByUserId: null,
+          visibilityHints: buildCleaningTaskVisibilityHints(after || manual),
+        }, exec)
+      } catch {}
+    }
+    return
+  }
+
+  const tasks = db.cleaningTasks as any[]
+  const official = tasks.find((task: any) =>
+    String(task.order_id || '') === String(orderId) &&
+    String(task.task_type || task.type || '') === CHECKIN_TASK_TYPE &&
+    !['cancelled', 'canceled'].includes(String(task.status || '').trim().toLowerCase())
+  )
+  if (!official) return
+  const manualRows = tasks.filter((task: any) =>
+    !hasValue(task.order_id) &&
+    String(task.task_type || task.type || '') === CHECKIN_TASK_TYPE &&
+    String(task.property_id || '') === String(propertyId) &&
+    String(task.task_date || task.date || '').slice(0, 10) === taskDate &&
+    String(task.source || '').toLowerCase() === 'manual' &&
+    !['cancelled', 'canceled'].includes(String(task.status || '').trim().toLowerCase())
+  )
+  if (!manualRows.length) return
+  const primaryManual = manualRows[0]
+  if (!hasValue(official.cleaner_id) && !hasValue(official.assignee_id) && hasValue(primaryManual.cleaner_id || primaryManual.assignee_id)) {
+    official.cleaner_id = primaryManual.cleaner_id || primaryManual.assignee_id
+    official.assignee_id = official.cleaner_id
+  }
+  if (!hasValue(official.inspector_id) && hasValue(primaryManual.inspector_id)) official.inspector_id = primaryManual.inspector_id
+  if ((!hasValue(official.checkin_time) || String(official.checkin_time).trim() === DEFAULT_CHECKIN_TIME) && hasValue(primaryManual.checkin_time)) official.checkin_time = primaryManual.checkin_time
+  if (!hasValue(official.guest_special_request) && hasValue(primaryManual.guest_special_request)) official.guest_special_request = primaryManual.guest_special_request
+  for (const manual of manualRows) {
+    manual.status = 'cancelled'
+    manual.auto_sync_enabled = false
+  }
+}
+
 async function syncOneTask(params: {
   jobId?: string | null
   orderId: string
@@ -473,6 +649,7 @@ export async function syncOrderToCleaningTasks(orderId: string, opts?: SyncOrder
 
     const rCheckout = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: checkoutDay, statusLower, propertyId, derivedCode, keysRequired })
     const rCheckin = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: checkinDay, statusLower, propertyId, derivedCode, keysRequired })
+    await replaceManualCheckinWithSyncedTask({ jobId, orderId: id, propertyId, taskDate: checkinDay, client })
     const actions = [rCheckout.action, rCheckin.action]
     if (actions.includes('created')) return { action: 'created' as const }
     if (actions.includes('updated')) return { action: 'updated' as const }
