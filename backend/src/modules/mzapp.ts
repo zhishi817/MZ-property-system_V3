@@ -106,6 +106,12 @@ function canViewAll(user: any) {
   return hasRole(user, 'admin') || hasRole(user, 'offline_manager') || hasRole(user, 'customer_service')
 }
 
+const PROPERTY_FOLLOWUP_SOURCE_TYPES = ['property_maintenance', 'property_deep_cleaning', 'property_daily_necessities'] as const
+
+async function canViewAllWorkTasks(user: any) {
+  return canViewAll(user) || await userHasAnyPerm(user, ['cleaning_app.calendar.view.all'])
+}
+
 function normalizeStoredPhotoUrls(raw: any, fallback?: any) {
   if (Array.isArray(raw)) return Array.from(new Set(raw.map((item) => String(item || '').trim()).filter(Boolean)))
   const text = String(raw || '').trim()
@@ -1170,6 +1176,7 @@ function mapCleaningTaskStatus(v: any): string {
   const s = String(v ?? '').trim().toLowerCase()
   if (!s) return 'todo'
   if (s === 'cancelled' || s === 'canceled') return 'cancelled'
+  if (s === 'keys_hung') return 'keys_hung'
   if (s === 'done' || s === 'completed' || s === 'cleaned' || s === 'restocked' || s === 'inspected' || s === 'ready') return 'done'
   if (s === 'in_progress' || s === 'cleaning') return 'in_progress'
   if (s === 'assigned' || s === 'scheduled') return 'assigned'
@@ -3358,7 +3365,7 @@ const guestLuggageUpsertSchema = z
   .object({
     task_ids: z.array(z.string().trim().min(1)).min(1).max(50),
     note: z.string().trim().max(1500).optional().nullable(),
-    photo_urls: z.array(z.string().trim().min(1).max(1200)).min(1).max(3),
+    photo_urls: z.array(z.string().trim().min(1).max(1200)).max(3).default([]),
   })
   .strict()
 
@@ -3376,7 +3383,8 @@ router.post('/cleaning-tasks/guest-luggage', async (req, res) => {
     if (scope.taskDate !== melbourneToday()) return res.status(400).json({ message: '只能编辑当天任务的临时通知' })
     const nextNote = String(parsed.data.note || '').trim() || null
     const nextPhotos = Array.from(new Set(parsed.data.photo_urls.map((url) => String(url || '').trim()).filter(Boolean)))
-    if (!nextPhotos.length || nextPhotos.length > 3) return res.status(400).json({ message: '请上传 1-3 张临时通知照片' })
+    if (!nextNote && !nextPhotos.length) return res.status(400).json({ message: '请填写临时通知内容或上传照片' })
+    if (nextPhotos.length > 3) return res.status(400).json({ message: '临时通知照片最多 3 张' })
 
     const result = await pgRunInTransaction(async (client: any) => {
       const existingResult = await client.query(
@@ -3445,7 +3453,10 @@ router.post('/cleaning-tasks/guest-luggage', async (req, res) => {
           changes: ['guest_luggage'],
           priority: 'high',
           title: `当天任务临时通知${scope.propertyCode ? `：${scope.propertyCode}` : ''}`,
-          body: [notice.note || '请查看照片和说明，并按通知内容处理。', `照片：${notice.photo_urls.length} 张`].join('\n'),
+          body: [
+            notice.note || '请查看说明或照片，并按通知内容处理。',
+            notice.photo_urls.length ? `照片：${notice.photo_urls.length} 张` : '',
+          ].filter(Boolean).join('\n'),
           data: {
             entity: 'cleaning_task',
             entityId: scope.taskIds[0],
@@ -4382,6 +4393,38 @@ router.post('/upload', upload.single('file'), async (req, res) => {
   }
 })
 
+async function completePropertyFollowupSource(client: any, row: any, completedAt: string) {
+  const sourceType = String(row?.source_type || '').trim()
+  const sourceId = String(row?.source_id || '').trim()
+  if (!sourceId) return
+  if (sourceType === 'property_maintenance') {
+    await client.query(
+      `UPDATE property_maintenance
+          SET status = 'completed', completed_at = $2::timestamptz, updated_at = now()
+        WHERE id::text = $1`,
+      [sourceId, completedAt],
+    )
+    return
+  }
+  if (sourceType === 'property_deep_cleaning') {
+    await client.query(
+      `UPDATE property_deep_cleaning
+          SET status = 'completed', completed_at = $2::timestamptz, updated_at = now()
+        WHERE id::text = $1`,
+      [sourceId, completedAt],
+    )
+    return
+  }
+  if (sourceType === 'property_daily_necessities') {
+    await client.query(
+      `UPDATE property_daily_necessities
+          SET status = 'replaced'
+        WHERE id::text = $1`,
+      [sourceId],
+    )
+  }
+}
+
 router.post('/work-tasks/:id/mark', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
@@ -4408,16 +4451,27 @@ router.post('/work-tasks/:id/mark', async (req, res) => {
 
     if (action === 'done') {
       const completedAt = new Date().toISOString()
-      await pgPool.query(
-        `UPDATE work_tasks
-         SET status=$1,
-             completion_photo_urls=$2::jsonb,
-             completion_note=$3,
-             completion_reason=NULL,
-             updated_at=now()
-         WHERE id=$4`,
-        ['done', JSON.stringify(completionPhotoUrls), note, id],
-      )
+      const client = await pgPool.connect()
+      try {
+        await client.query('BEGIN')
+        await client.query(
+          `UPDATE work_tasks
+           SET status=$1,
+               completion_photo_urls=$2::jsonb,
+               completion_note=$3,
+               completion_reason=NULL,
+               updated_at=now()
+           WHERE id=$4`,
+          ['done', JSON.stringify(completionPhotoUrls), note, id],
+        )
+        await completePropertyFollowupSource(client, row, completedAt)
+        await client.query('COMMIT')
+      } catch (error) {
+        try { await client.query('ROLLBACK') } catch {}
+        throw error
+      } finally {
+        client.release()
+      }
       try {
         await emitWorkTaskEvent({
           taskId: `work_task:${id}`,
@@ -4591,7 +4645,7 @@ router.get('/work-tasks', async (req, res) => {
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const userId = String(user.sub || '')
 
-  const allowAll = view === 'all' && canViewAll(user)
+  const allowAll = view === 'all' && await canViewAllWorkTasks(user)
 
   try {
     if (!hasPg || !pgPool) return res.json([])
@@ -4611,6 +4665,7 @@ router.get('/work-tasks', async (req, res) => {
       const where: string[] = []
       const vals: any[] = [dateFrom, dateTo]
       where.push(`w.scheduled_date BETWEEN $1::date AND $2::date`)
+      where.push(`NULLIF(COALESCE(w.assignee_id::text, ''), '') IS NOT NULL`)
       if (!allowAll) {
         vals.push(userId)
         where.push(`w.assignee_id = $${vals.length}`)
@@ -4927,7 +4982,7 @@ router.get('/work-tasks', async (req, res) => {
             property: prop,
           }
 
-          if (wantCleaner && taskDate >= dateFrom && taskDate <= dateTo && (allowAll || effectiveCleanerId === userId)) {
+          if (wantCleaner && effectiveCleanerId && taskDate >= dateFrom && taskDate <= dateTo && (allowAll || effectiveCleanerId === userId)) {
             const k = `${taskDate}|${propId || ''}|${effectiveCleanerId || 'unassigned'}`
             const arr = cleanerGroups.get(k) || []
             arr.push(base)
@@ -5049,7 +5104,9 @@ router.get('/work-tasks', async (req, res) => {
           const statusOut =
             roleKind === 'inspector'
               ? (
-                  lockboxVideoUrl
+                  raw === 'keys_hung'
+                    ? 'keys_hung'
+                    : lockboxVideoUrl
                     ? 'keys_hung'
                     : isInspectionFinishedStatus(raw)
                       ? 'done'
@@ -5060,7 +5117,9 @@ router.get('/work-tasks', async (req, res) => {
                             : (String(inspectorAssigned || '').trim() ? 'assigned' : 'todo')
                 )
               : (
-                  requireLockboxBeforeDone && isDoneLike && !lockboxVideoUrl
+                  raw === 'keys_hung'
+                    ? 'keys_hung'
+                    : requireLockboxBeforeDone && isDoneLike && !lockboxVideoUrl
                     ? 'to_hang_keys'
                     : requireSelfComplete && isDoneLike && !completionPhotosOk
                       ? 'to_complete'
@@ -5255,6 +5314,22 @@ router.get('/work-tasks', async (req, res) => {
         const checkedOutAtMerged = firstNonEmpty(...arr.map((x) => x.checked_out_at))
         const cleanerName = firstNonEmpty(...arr.map((x) => x.cleaner_name))
         const inspectorName = firstNonEmpty(...arr.map((x) => x.inspector_name))
+        const cleanerAssigneeId = firstNonEmpty(
+          ...arr
+            .filter((x) => String(x?.task_kind || '') === 'cleaning')
+            .map((x) => x.assignee_id),
+          ...arr
+            .filter((x) => String(x?.task_kind || '') === 'cleaning')
+            .map((x) => x.__assignee_cleaner),
+        )
+        const inspectorAssigneeId = firstNonEmpty(
+          ...arr
+            .filter((x) => String(x?.task_kind || '') === 'inspection')
+            .map((x) => x.inspector_id || x.assignee_id),
+          ...arr
+            .filter((x) => String(x?.task_kind || '') === 'inspection')
+            .map((x) => x.__assignee_inspector),
+        )
         const inspectionPlan = mergeInspectionPlan(
           arr.map((x) => ({
             task_type: x.task_type,
@@ -5295,7 +5370,9 @@ router.get('/work-tasks', async (req, res) => {
           inspection_task_ids: inspectionTaskIds,
           cleaning_status: cleaningStatus,
           inspection_status: inspectionStatus,
-          assignee_id: null,
+          assignee_id: cleanerAssigneeId || inspectorAssigneeId || null,
+          cleaner_id: cleanerAssigneeId || null,
+          inspector_id: inspectorAssigneeId || null,
           status: statusOut,
           key_photo_url: keyPhotoUrl,
           lockbox_video_url: lockboxVideoUrl,
@@ -5323,7 +5400,17 @@ router.get('/work-tasks', async (req, res) => {
       out.push(...merged)
     }
 
-    out.sort((a, b) => {
+    const hasMobileAssignee = (task: any) => {
+      const source = String(task?.source_type || '').trim()
+      if (source !== 'cleaning_tasks') return !!String(task?.assignee_id || '').trim()
+      const kind = String(task?.task_kind || '').trim().toLowerCase()
+      if (kind === 'inspection') return !!String(task?.inspector_id || task?.assignee_id || '').trim()
+      if (kind === 'cleaning') return !!String(task?.cleaner_id || task?.assignee_id || '').trim()
+      return !!String(task?.cleaner_id || task?.inspector_id || task?.assignee_id || '').trim()
+    }
+    const assignedOut = out.filter(hasMobileAssignee)
+
+    assignedOut.sort((a, b) => {
       const ad = String(a.scheduled_date || '')
       const bd = String(b.scheduled_date || '')
       const d = ad.localeCompare(bd)
@@ -5347,7 +5434,7 @@ router.get('/work-tasks', async (req, res) => {
       return String(a.title || '').localeCompare(String(b.title || ''))
     })
 
-    return res.json(out)
+    return res.json(assignedOut)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'mzapp_work_tasks_failed' })
   }

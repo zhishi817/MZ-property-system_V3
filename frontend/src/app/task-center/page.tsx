@@ -101,6 +101,7 @@ type TaskCenterRow = {
 type TaskCenterDay = {
   date: string
   rows: TaskCenterRow[]
+  property_followups?: TaskCenterTask[]
   region_rows?: TaskCenterRow[]
   final_group_rows?: TaskCenterRow[]
   deferred_rows?: TaskCenterRow[]
@@ -143,6 +144,14 @@ function saveBoardErrorMessage(error: any) {
   const msg = String(error?.message || '').trim()
   if (/timeout|超时|abort|aborted/i.test(msg)) return '保存安排耗时较长，请稍后刷新确认结果；如果没有保存成功，再点一次保存'
   return msg || '保存安排失败'
+}
+
+function propertyFollowupMeta(task: Pick<TaskCenterTask, 'task_kind'>) {
+  const kind = String(task.task_kind || '').trim().toLowerCase()
+  if (kind === 'maintenance') return { label: '维修', color: 'orange' }
+  if (kind === 'deep_cleaning') return { label: '深度清洁', color: 'blue' }
+  if (kind === 'daily_necessities') return { label: '日用品更换', color: 'purple' }
+  return { label: '房源待办', color: 'default' }
 }
 
 function melbourneDateParts(now = new Date()) {
@@ -438,6 +447,7 @@ export default function TaskCenterPage() {
   }, [activeStaff])
 
   const allRows = useMemo(() => dayData?.rows || [], [dayData?.rows])
+  const propertyFollowups = useMemo(() => dayData?.property_followups || [], [dayData?.property_followups])
 
   const filterQuery = useMemo(() => filterText.trim().toLowerCase(), [filterText])
   const filteringActive = filterQuery.length > 0
@@ -459,6 +469,14 @@ export default function TaskCenterPage() {
       }))
       .filter((row) => row.subrows.some((subrow) => subrow.tasks.length > 0))
   }, [allRows, filterQuery])
+
+  const filteredPropertyFollowups = useMemo(() => {
+    if (!filterQuery) return propertyFollowups
+    return propertyFollowups.filter((task) => {
+      const searchable = `${task.title} ${task.detail} ${task.property_region || ''} ${task.property_code || ''} ${task.summary || ''} ${task.task_kind || ''}`.toLowerCase()
+      return searchable.includes(filterQuery)
+    })
+  }, [filterQuery, propertyFollowups])
 
   const allBoardTasks = useMemo(() => allRows.flatMap((row) => row.subrows.flatMap((subrow) => subrow.tasks)), [allRows])
 
@@ -925,6 +943,21 @@ export default function TaskCenterPage() {
     setBoardDraftDirty(true)
   }, [allRows, applyRowAssignmentLocally, rowTaskCollections, setBoardDraftDirty])
 
+  const updatePropertyFollowupAssignee = useCallback((taskId: string, assigneeId: string | null) => {
+    setDayData((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        property_followups: (prev.property_followups || []).map((task) => (
+          task.task_id === taskId
+            ? { ...task, assignee_id: assigneeId, status: autoWorkStatus(task.status, assigneeId) }
+            : task
+        )),
+      }
+    })
+    setBoardDraftDirty(true)
+  }, [autoWorkStatus, setBoardDraftDirty])
+
   const createRow = useCallback(() => {
     const previousRows = cloneRows(allRows)
     const nextRowOrder = previousRows.reduce((max, row) => Math.max(max, Number(row.row_order || 0)), 0) + 100
@@ -1105,6 +1138,17 @@ export default function TaskCenterPage() {
         }
       }
     }
+    for (const task of propertyFollowups) {
+      workAssignments.set(String(task.task_id), {
+        task_id: String(task.task_id),
+        assignee_id: task.assignee_id || null,
+        title: String(task.title || '').trim(),
+        summary: String(task.summary || task.detail || '').trim() || null,
+        scheduled_date: task.task_date || null,
+        status: task.status,
+        urgency: task.urgency || null,
+      })
+    }
     setBoardSaving(true)
     upsertAdminNotification({
       id: 'task-center-save-status',
@@ -1160,7 +1204,7 @@ export default function TaskCenterPage() {
     } finally {
       setBoardSaving(false)
     }
-  }, [allRows, boardSaving, cloneRows, dateStr, layoutPayloadFromRows, loadDay, normalizeRowsForBoard, setBoardDraftDirty])
+  }, [allRows, boardSaving, cloneRows, dateStr, layoutPayloadFromRows, loadDay, normalizeRowsForBoard, propertyFollowups, setBoardDraftDirty])
 
   const confirmDiscardBoardDraft = useCallback((action: () => void) => {
     if (!boardDirtyRef.current) {
@@ -1304,14 +1348,13 @@ export default function TaskCenterPage() {
 
   const displayRows = useMemo(() => {
     const output: TaskCenterDisplayRow[] = []
-    const bottomWorkTasks: TaskCenterTask[] = []
     let globalLineIndex = 0
     for (const row of filteredRows) {
       const fullRow = allRows.find((item) => item.row_key === row.row_key) || row
       const tasks = row.subrows.flatMap((subrow) => subrow.tasks)
       const collections = rowTaskCollections(fullRow)
       const rowLines: TaskCenterLine[] = []
-      const pushBucket = (bucketTasks: TaskCenterTask[], target: TaskCenterLine[], kind: 'cleaning' | 'work' | 'deferred') => {
+      const pushBucket = (bucketTasks: TaskCenterTask[], target: TaskCenterLine[], kind: 'mixed' | 'deferred') => {
         if (!bucketTasks.length) return
         const lineCount = Math.max(1, Math.ceil(bucketTasks.length / TASKS_PER_LINE))
         for (let index = 0; index < lineCount; index += 1) {
@@ -1325,22 +1368,15 @@ export default function TaskCenterPage() {
             tasks: lineTasks,
             start_index: Math.max(0, tasks.findIndex((task) => task.item_key === lineTasks[0]?.item_key)),
             line_index: globalLineIndex,
-            inspectionIds: kind === 'cleaning' ? collections.inspectionIds : [],
-            workIds: kind === 'work' ? collections.workIds : [],
+            inspectionIds: kind === 'mixed' ? collections.inspectionIds : [],
+            workIds: kind === 'mixed' ? collections.workIds : [],
           })
         }
       }
       if (row.row_type === 'deferred') {
         pushBucket(tasks, rowLines, 'deferred')
       } else {
-        const cleaningTasks = tasks.filter((task) => task.task_source === 'cleaning')
-        const workTasks = tasks.filter((task) => task.task_source !== 'cleaning')
-        pushBucket(cleaningTasks, rowLines, 'cleaning')
-        if (row.row_type === 'final_group') {
-          pushBucket(workTasks, rowLines, 'work')
-        } else if (workTasks.length) {
-          bottomWorkTasks.push(...workTasks)
-        }
+        pushBucket(tasks, rowLines, 'mixed')
       }
       if (!rowLines.length && isCustomBoardRow(row.row_key, row.row_type)) {
         globalLineIndex += 1
@@ -1364,40 +1400,10 @@ export default function TaskCenterPage() {
           row_type: row.row_type,
           assignments: row.assignments || {},
           inspectionIds: collections.inspectionIds,
-          workIds: row.row_type === 'final_group' ? collections.workIds : [],
+          workIds: collections.workIds,
           lines: rowLines,
         })
       }
-    }
-    if (bottomWorkTasks.length) {
-      const bottomLines: TaskCenterLine[] = []
-      const lineCount = Math.max(1, Math.ceil(bottomWorkTasks.length / TASKS_PER_LINE))
-      const sameAssignee = bottomWorkTasks.every((task) => String(task.assignee_id || '') === String(bottomWorkTasks[0]?.assignee_id || ''))
-      for (let index = 0; index < lineCount; index += 1) {
-        globalLineIndex += 1
-        const lineTasks = bottomWorkTasks.slice(index * TASKS_PER_LINE, (index + 1) * TASKS_PER_LINE)
-        bottomLines.push({
-          line_key: `work:bottom:${index + 1}`,
-          row_key: 'work:bottom',
-          row_type: 'final_group',
-          assignments: { executor_id: sameAssignee ? (bottomWorkTasks[0]?.assignee_id || null) : null },
-          tasks: lineTasks,
-          start_index: index * TASKS_PER_LINE,
-          line_index: globalLineIndex,
-          inspectionIds: [],
-          workIds: lineTasks.map((task) => task.task_id),
-        })
-      }
-      output.push({
-        row_key: 'work:bottom',
-        row_title: '',
-        row_order: Number.MAX_SAFE_INTEGER,
-        row_type: 'final_group',
-        assignments: { executor_id: sameAssignee ? (bottomWorkTasks[0]?.assignee_id || null) : null },
-        inspectionIds: [],
-        workIds: bottomWorkTasks.map((task) => task.task_id),
-        lines: bottomLines,
-      })
     }
     output.sort((a, b) => {
       return displayRowOrder(a.row_key) - displayRowOrder(b.row_key)
@@ -1629,6 +1635,48 @@ export default function TaskCenterPage() {
               </div>
             ) : (
               <div className={styles.taskChip}><Empty description="暂无任务" /></div>
+            )}
+          </div>
+
+          <div className={styles.propertyFollowupSection}>
+            <div className={styles.propertyFollowupHeader}>
+              <div>
+                <div className={styles.propertyFollowupTitle}>退房日房源待办</div>
+                <div className={styles.propertyFollowupSubtitle}>维修、深度清洁和日用品更换；当天不安排人员时，过日后自动顺延至下一次退房。</div>
+              </div>
+              <Tag color="geekblue">{filteredPropertyFollowups.length} 项</Tag>
+            </div>
+            {loading ? (
+              <Skeleton active paragraph={{ rows: 2 }} />
+            ) : filteredPropertyFollowups.length ? (
+              <div className={styles.propertyFollowupGrid}>
+                {filteredPropertyFollowups.map((task) => {
+                  const meta = propertyFollowupMeta(task)
+                  return (
+                    <div key={task.item_key} className={styles.propertyFollowupCard}>
+                      <div className={styles.propertyFollowupCardTop}>
+                        <Tag color={meta.color}>{meta.label}</Tag>
+                        <span className={`${styles.statusChip} ${statusChipCls(task.status)}`}>{statusText(task.status)}</span>
+                      </div>
+                      <div className={styles.propertyFollowupProperty}>{task.title}</div>
+                      <div className={styles.propertyFollowupDetail}>{task.detail || task.summary || '暂无详情'}</div>
+                      <Select
+                        allowClear
+                        showSearch
+                        optionFilterProp="label"
+                        value={task.assignee_id || undefined}
+                        disabled={boardSaving}
+                        onChange={(value) => updatePropertyFollowupAssignee(task.task_id, value ? String(value) : null)}
+                        placeholder="选择执行人（可不安排）"
+                        options={allStaffOptions}
+                        style={{ width: '100%' }}
+                      />
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={filteringActive ? '没有匹配的房源待办' : '当天无待处理房源待办'} />
             )}
           </div>
         </div>
