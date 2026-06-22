@@ -123,7 +123,8 @@ function normId(v: any): string | null {
 
 function normStatus(v: any): string {
   const s = String(v ?? '').trim().toLowerCase()
-  if (s === 'done' || s === 'completed' || s === 'keys_hung' || s === 'ready') return 'done'
+  if (s === 'keys_hung') return 'keys_hung'
+  if (s === 'done' || s === 'completed' || s === 'ready') return 'done'
   if (s === 'cancelled' || s === 'canceled') return 'cancelled'
   if (s === 'in_progress') return 'in_progress'
   if (s === 'assigned') return 'assigned'
@@ -462,9 +463,10 @@ async function hasCleaningOfflineTasksTable() {
 async function backfillOfflineTasksToWorkTasks(date: string, includeOverdue: boolean, includeFuture: boolean) {
   if (!hasPg || !pgPool) return false
   if (!(await hasCleaningOfflineTasksTable())) return false
+  // Legacy status is used only to bootstrap a missing canonical work task.
   const where: string[] = [`t.date::date = $1::date`]
-  if (includeOverdue) where.push(`(t.date::date < $1::date AND COALESCE(t.status, 'todo') <> 'done')`)
-  if (includeFuture) where.push(`(t.date::date > $1::date AND COALESCE(t.status, 'todo') <> 'done')`)
+  if (includeOverdue) where.push(`t.date::date < $1::date`)
+  if (includeFuture) where.push(`t.date::date > $1::date`)
   await pgPool.query(
     `INSERT INTO work_tasks(
        id, task_kind, source_type, source_id, property_id,
@@ -486,8 +488,7 @@ async function backfillOfflineTasksToWorkTasks(date: string, includeOverdue: boo
        COALESCE(t.created_at, t.updated_at, now()) AS created_at,
        COALESCE(t.updated_at, t.created_at, now()) AS updated_at
      FROM cleaning_offline_tasks t
-     WHERE COALESCE(t.status, 'todo') <> 'done'
-       AND (${where.join(' OR ')})
+     WHERE ${where.join(' OR ')}
      ON CONFLICT (source_type, source_id) DO NOTHING`,
     [date],
   )
@@ -595,6 +596,7 @@ function mergedStatus(statuses: string[]) {
   if (ss.includes('pending')) return 'pending'
   if (ss.includes('assigned')) return 'assigned'
   if (ss.includes('in_progress')) return 'in_progress'
+  if (ss.includes('keys_hung')) return 'keys_hung'
   if (ss.includes('completed')) return 'completed'
   if (ss.length) return ss[0]
   return 'pending'
@@ -960,7 +962,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
 async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnscheduled: boolean, includeFuture: boolean): Promise<BoardTask[]> {
   if (hasPg && pgPool) {
     await ensureWorkTasksTable()
-    const hasOfflineTasks = await backfillOfflineTasksToWorkTasks(date, includeOverdue, includeFuture)
+    await backfillOfflineTasksToWorkTasks(date, includeOverdue, includeFuture)
     const doneSet = ['done', 'completed', 'cancelled', 'canceled']
     const where: string[] = []
     const vals: any[] = [date, doneSet, WORK_TASK_VISIBILITY_START]
@@ -985,39 +987,7 @@ async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnsch
     vals.push(PROPERTY_FOLLOWUP_SOURCE_TYPES)
     const r = await pgPool.query(sql, vals)
     const workTasks = (r?.rows || []).map((row: any) => mapWorkTaskRowToBoardTask(row, date))
-    if (!hasOfflineTasks) return workTasks
-    const offlineWhere: string[] = [`t.date::date = $1::date`]
-    if (includeOverdue) offlineWhere.push(`(t.date::date < $1::date AND COALESCE(t.status, 'todo') <> 'done')`)
-    if (includeFuture) offlineWhere.push(`(t.date::date > $1::date AND COALESCE(t.status, 'todo') <> 'done')`)
-    const offlineSql = `
-      SELECT
-        ('cleaning_offline_tasks:' || t.id::text) AS id,
-        'offline' AS task_kind,
-        'cleaning_offline_tasks' AS source_type,
-        t.id::text AS source_id,
-        t.property_id,
-        t.title,
-        NULLIF(COALESCE(t.content, ''), '') AS summary,
-        t.date::date AS scheduled_date,
-        NULL::text AS start_time,
-        NULL::text AS end_time,
-        t.assignee_id,
-        CASE WHEN COALESCE(t.status, 'todo') = 'done' THEN 'done' ELSE 'todo' END AS status,
-        COALESCE(NULLIF(t.urgency, ''), 'medium') AS urgency,
-        COALESCE(t.created_at, t.updated_at, now()) AS created_at,
-        COALESCE(t.updated_at, t.created_at, now()) AS updated_at,
-        COALESCE(p_id.code::text, p_code.code::text) AS property_code,
-        COALESCE(p_id.region::text, p_code.region::text) AS property_region
-      FROM cleaning_offline_tasks t
-      LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
-      LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
-      WHERE COALESCE(t.status, 'todo') <> 'done'
-        AND (${offlineWhere.join(' OR ')})
-      ORDER BY t.date::date ASC, COALESCE(NULLIF(t.urgency, ''), 'medium') DESC, t.updated_at DESC, t.id DESC
-    `
-    const offlineResult = await pgPool.query(offlineSql, [date])
-    const offlineTasks = (offlineResult?.rows || []).map((row: any) => mapWorkTaskRowToBoardTask(row, date))
-    return dedupeBoardTasks([...workTasks, ...offlineTasks])
+    return workTasks
   }
   const rows = (((db as any).workTasks || []) as any[]).slice()
   const workTasks = rows
@@ -1196,6 +1166,13 @@ function boardTaskKey(taskSource: TaskSource, taskId: string) {
   return `${taskSource}:${taskId}`
 }
 
+function defaultRowOrderFromKey(rowKey: string, rowType: BoardRow['row_type']) {
+  if (rowKey === COMPLETED_ROW_KEY) return 2080
+  if (rowKey === DEFERRED_INSPECTION_ROW_KEY) return 9998
+  if (rowKey === DEFERRED_ROW_KEY) return 9999
+  return rowType === 'final_group' ? 2000 : 1000
+}
+
 function rowTitleFromKey(rowKey: string) {
   if (rowKey === DEFERRED_ROW_KEY) return DEFERRED_ROW_TITLE
   if (rowKey === DEFERRED_INSPECTION_ROW_KEY) return DEFERRED_INSPECTION_ROW_TITLE
@@ -1267,7 +1244,7 @@ function buildRows(params: {
     const rowMeta = params.rowMetas.get(rowKey)
     const rowType = (rowMeta?.row_type || (rowKey.startsWith('group:') ? 'final_group' : 'region')) as 'region' | 'final_group' | 'deferred'
     const rowTitle = text(rowMeta?.row_title) || rowTitleFromKey(rowKey)
-    const rowOrder = rowMeta?.row_order ?? (rowType === 'final_group' ? 2000 : 1000)
+    const rowOrder = rowMeta?.row_order ?? defaultRowOrderFromKey(rowKey, rowType)
     const row = rows.get(rowKey) || {
       row_key: rowKey,
       row_title: rowTitle,
@@ -1783,7 +1760,6 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                    title = w.title,
                    content = COALESCE(w.summary, ''),
                    assignee_id = w.assignee_id,
-                   status = CASE WHEN lower(COALESCE(w.status, 'todo')) = 'done' THEN 'done' ELSE 'todo' END,
                    urgency = w.urgency,
                    updated_at = now()
                FROM work_tasks w
@@ -1873,10 +1849,55 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
           )
         }
         for (const task of changedCleaningTasks) {
+          const actorId = String(user.sub || '').trim()
+          const taskId = String(task.id)
+          const taskType = lower(task.task_type)
+          const taskLabel = taskType === 'checkin_clean'
+            ? '入住任务'
+            : taskType === 'checkout_clean'
+              ? '退房任务'
+              : taskType === 'stayover_clean'
+                ? '入住中清洁任务'
+                : '清洁任务'
+          try {
+            await emitNotificationEvent(
+              {
+                type: 'CLEANING_TASK_UPDATED',
+                entity: 'cleaning_task',
+                entityId: taskId,
+                propertyId: task.property_id ? String(task.property_id) : undefined,
+                updatedAt: String(task.updated_at || '').trim() || new Date().toISOString(),
+                changes: ['assignee', 'inspection', 'status'],
+                title: `${taskLabel}安排已更新`,
+                body: '执行人、检查安排或任务状态已更新',
+                data: {
+                  entity: 'cleaning_task',
+                  entityId: taskId,
+                  action: 'open_task',
+                  kind: 'cleaning_task_updated',
+                  task_id: taskId,
+                  task_type: task.task_type || null,
+                  task_date: task.task_date ? String(task.task_date).slice(0, 10) : null,
+                  assignee_id: task.assignee_id || null,
+                  cleaner_id: task.cleaner_id || null,
+                  inspector_id: task.inspector_id || null,
+                  status: task.status,
+                },
+                actorUserId: actorId || null,
+                excludeActor: false,
+                recipientUserIds: [task.assignee_id, task.cleaner_id, task.inspector_id]
+                  .map((value) => String(value || '').trim())
+                  .filter(Boolean),
+              },
+              { operationId: uuid(), pgClient: client },
+            )
+          } catch (error: any) {
+            console.error(`[task-center] cleaning_assignment_notification_failed task_id=${taskId} message=${String(error?.message || error || '')}`)
+          }
           eventInputs.push({
-            taskId: `cleaning_task:${String(task.id)}`,
+            taskId: `cleaning_task:${taskId}`,
             sourceType: 'cleaning_tasks',
-            sourceRefIds: [String(task.id)],
+            sourceRefIds: [taskId],
             eventType: 'TASK_ASSIGNMENT_CHANGED',
             changeScope: 'membership',
             changedFields: ['cleaner_id', 'assignee_id', 'inspector_id', 'inspection_mode', 'inspection_due_date', 'status'],
