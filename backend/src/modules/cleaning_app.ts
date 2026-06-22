@@ -296,17 +296,10 @@ async function listSouthbankWarehouseKeyUsers(taskDate: string) {
   }
 }
 
-async function listWarehouseKeyNotificationUserIds(params: { taskDate: string; actorId: string; extraUserIds?: string[] }) {
-  const { listUserIdsByRoles } = require('./notifications')
+async function listWarehouseKeyRelatedUserIds(params: { taskDate: string; actorId: string }) {
   const related = await listSouthbankWarehouseKeyUsers(params.taskDate)
-  const managerIds = await listUserIdsByRoles(['admin', 'offline_manager'])
   const actorId = String(params.actorId || '').trim()
-  const ids = [
-    ...related.userIds,
-    ...managerIds,
-    ...((params.extraUserIds || []).map((x) => String(x || '').trim()).filter(Boolean)),
-  ]
-  return Array.from(new Set(ids.filter(Boolean))).filter((id) => id !== actorId)
+  return Array.from(new Set(related.userIds.filter(Boolean))).filter((id) => id !== actorId)
 }
 
 function warehouseKeyActionText(action: string) {
@@ -475,20 +468,20 @@ router.post('/warehouse-key/events', requireAnyPerm(['cleaning_app.tasks.finish'
     }
 
     try {
-      const recipients = await listWarehouseKeyNotificationUserIds({ taskDate, actorId, extraUserIds: [toUserId] })
+      const relatedUserIds = await listWarehouseKeyRelatedUserIds({ taskDate, actorId })
       const actionText = warehouseKeyActionText(action)
       const body = action === 'handover'
         ? `${actorName} 已将 MSQ 仓库钥匙转交给 ${toName || '同事'}。`
         : `${actorName} ${actionText} MSQ 仓库钥匙。`
       await emitNotificationEvent({
         type: 'WAREHOUSE_KEY_UPDATED',
+        policyKey: 'warehouse_key_updated',
         entity: 'warehouse_key',
         entityId: keyCode,
         eventId: `warehouse_key:${keyCode}:${String(eventRow?.id || Date.now())}`,
         updatedAt: eventRow?.created_at ? String(eventRow.created_at) : new Date().toISOString(),
         title: 'MSQ 仓库钥匙更新',
         body,
-        recipientUserIds: recipients,
         actorUserId: actorId,
         priority: 'high',
         data: {
@@ -503,6 +496,7 @@ router.post('/warehouse-key/events', requireAnyPerm(['cleaning_app.tasks.finish'
           from_name: fromName || null,
           to_user_id: toUserId || null,
           to_name: toName || null,
+          warehouse_related_user_ids: relatedUserIds,
           note: note || null,
         },
       })
@@ -755,6 +749,7 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), async (
           await emitNotificationEvent(
             {
               type: 'KEY_PHOTO_UPLOADED',
+              policyKey: 'key_photo_uploaded',
               entity: 'cleaning_task',
               entityId: String(id),
               propertyId,
@@ -819,6 +814,7 @@ async function handleDeleteKeyPhoto(req: any, res: any) {
         await emitNotificationEvent(
           {
             type: 'CLEANING_TASK_UPDATED',
+            policyKey: 'key_photo_deleted',
             entity: 'cleaning_task',
             entityId: String(id),
             propertyId,
@@ -872,7 +868,6 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
       try {
         const operationId = require('uuid').v4()
         let propertyId = ''
-        let managerRecipients: string[] = []
         try {
           const { pgPool } = require('../dbAdapter')
           if (pgPool) {
@@ -880,14 +875,11 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
             propertyId = String(r?.rows?.[0]?.property_id || '').trim()
           }
         } catch {}
-        try {
-          const { listManagerUserIds } = require('./notifications')
-          managerRecipients = Array.from(new Set(await listManagerUserIds({ roles: ['admin', 'offline_manager', 'customer_service'] })))
-        } catch {}
-        if (propertyId || managerRecipients.length) {
+        if (propertyId) {
           await emitNotificationEvent(
             {
               type: 'ISSUE_REPORTED',
+              policyKey: 'issue_reported',
               entity: 'cleaning_task',
               entityId: String(id),
               propertyId,
@@ -907,7 +899,6 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
                 photo_url: parsed.data.media_url || undefined,
               },
               actorUserId: String(user?.sub || ''),
-              recipientUserIds: managerRecipients,
             },
             { operationId },
           )
@@ -1136,11 +1127,11 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
           const restockLabels = restockItemsPayload.map((it) => (it.qty != null ? `${it.label} x${it.qty}` : it.label)).filter(Boolean)
           const restockSummary = restockLabels.length ? `待补货：${restockLabels.join('、')}` : ''
           const actorId = String(user?.sub || '')
-          const restockRecipients = needsRestock ? await listConsumablesRestockNotificationUserIds(String(id), actorId) : []
-          if (propertyId && (!needsRestock || restockRecipients.length)) {
+          if (propertyId) {
             await emitNotificationEvent(
               {
                 type: needsRestock ? 'WORK_TASK_UPDATED' : (hadExisting ? 'CLEANING_TASK_UPDATED' : 'CLEANING_COMPLETED'),
+                policyKey: needsRestock ? 'consumables_need_restock' : 'consumables_submitted',
                 entity: 'cleaning_task',
                 entityId: String(id),
                 propertyId,
@@ -1160,7 +1151,6 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
                   restock_items: restockItemsPayload,
                 },
                 actorUserId: actorId,
-                recipientUserIds: needsRestock ? restockRecipients : undefined,
               },
               { operationId },
             )
@@ -1204,6 +1194,7 @@ router.patch('/tasks/:id/restock', requireAnyPerm(['cleaning_app.restock.manage'
           await emitNotificationEvent(
             {
               type: 'CLEANING_TASK_UPDATED',
+              policyKey: 'restock_done',
               entity: 'cleaning_task',
               entityId: String(id),
               propertyId,
@@ -1257,11 +1248,11 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
         const propertyId = String((up as any)?.property_id || '').trim()
         const photoUrls = await listInspectionPhotoUrls(String(id))
         const propertyCode = await resolveCleaningTaskPropertyCode(String(id))
-        const recipients = await listKeysHungNotificationUserIds(String(user?.sub || ''))
-        if (propertyId && recipients.length) {
+        if (propertyId) {
           await emitNotificationEvent(
             {
               type: 'WORK_TASK_UPDATED',
+              policyKey: 'keys_hung',
               entity: 'cleaning_task',
               entityId: String(id),
               eventId: `keys_hung:${String(id)}`,
@@ -1280,7 +1271,6 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
                 photo_urls: photoUrls,
               },
               actorUserId: String(user?.sub || ''),
-              recipientUserIds: recipients,
             },
             { operationId },
           )
@@ -1559,6 +1549,7 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
           await emitNotificationEvent(
             {
               type: 'CLEANING_TASK_UPDATED',
+              policyKey: 'completion_photos_saved',
               entity: 'cleaning_task',
               entityId: String(id),
               propertyId,
@@ -1605,11 +1596,11 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
         const operationId = require('uuid').v4()
         const propertyId = String((up as any)?.property_id || '').trim()
         const propertyCode = await resolveCleaningTaskPropertyCode(String(id))
-        const recipients = await listKeysHungNotificationUserIds(String(user?.sub || ''))
-        if (propertyId && recipients.length) {
+        if (propertyId) {
           await emitNotificationEvent(
             {
               type: 'WORK_TASK_UPDATED',
+              policyKey: 'keys_hung',
               entity: 'cleaning_task',
               entityId: String(id),
               propertyId,
@@ -1618,7 +1609,6 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
               body: '挂钥匙视频已上传，房间钥匙已挂好',
               data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'keys_hung', task_id: id, property_code: propertyCode || undefined },
               actorUserId: String(user?.sub || ''),
-              recipientUserIds: recipients,
             },
             { operationId },
           )
@@ -1856,6 +1846,7 @@ router.post('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.fi
           await emitNotificationEvent(
             {
               type: 'CLEANING_TASK_UPDATED',
+              policyKey: 'restock_proof_saved',
               entity: 'cleaning_task',
               entityId: String(id),
               propertyId,
@@ -1893,6 +1884,7 @@ router.patch('/tasks/:id/ready', requirePerm('cleaning_app.ready.set'), async (r
           await emitNotificationEvent(
             {
               type: 'CLEANING_TASK_UPDATED',
+              policyKey: 'task_ready',
               entity: 'cleaning_task',
               entityId: String(id),
               propertyId,

@@ -84,6 +84,8 @@ export default function PropertyDetail({ params }: { params: { id: string } }) {
         <Form.Item name="capacity" label="可住人数" rules={[{ required: true }]}><InputNumber min={1} style={{ width: '100%' }} /></Form.Item>
         <Form.Item name="region" label="区域"><Select options={(dicts.regions || []).map((v: string) => ({ value: v, label: v }))} /></Form.Item>
         <Form.Item name="area_sqm" label="面积(㎡)"><InputNumber min={1} style={{ width: '100%' }} /></Form.Item>
+        <Form.Item name="wifi_ssid" label="Wi-Fi 用户名"><Input /></Form.Item>
+        <Form.Item name="wifi_password" label="Wi-Fi 密码"><Input /></Form.Item>
         <Form.Item name="landlord_id" label="房东"><Select allowClear options={landlords.map(l => ({ value: l.id, label: l.name }))} /></Form.Item>
         <Form.Item name="floor" label="楼层"><Select options={(dicts.floors || []).map((v: string) => ({ value: v, label: v }))} /></Form.Item>
         <Form.Item name="parking_type" label="停车"><Select options={(dicts.parking_types || []).map((v: string) => ({ value: v, label: v }))} /></Form.Item>

@@ -7,21 +7,42 @@
   --daily-task-radius: 12px;
   --daily-task-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
   --daily-task-accent: 4px;
-  --daily-status-pending-bg: rgba(245, 158, 11, 0.18);
-  --daily-status-pending-bd: rgba(245, 158, 11, 0.35);
-  --daily-status-pending-fg: #92400e;
-  --daily-status-assigned-bg: rgba(59, 130, 246, 0.14);
-  --daily-status-assigned-bd: rgba(59, 130, 246, 0.28);
-  --daily-status-assigned-fg: #1d4ed8;
-  --daily-status-progress-bg: rgba(99, 102, 241, 0.14);
-  --daily-status-progress-bd: rgba(99, 102, 241, 0.28);
-  --daily-status-progress-fg: #4338ca;
-  --daily-status-done-bg: rgba(34, 197, 94, 0.14);
-  --daily-status-done-bd: rgba(34, 197, 94, 0.28);
-  --daily-status-done-fg: #15803d;
-  --daily-status-cancelled-bg: rgba(148, 163, 184, 0.18);
-  --daily-status-cancelled-bd: rgba(148, 163, 184, 0.3);
-  --daily-status-cancelled-fg: #475569;
+  --semantic-normal-bg: #eff6ff;
+  --semantic-normal-bd: #bfdbfe;
+  --semantic-normal-fg: #1d4ed8;
+  --semantic-special-bg: #f5f3ff;
+  --semantic-special-bd: #ddd6fe;
+  --semantic-special-fg: #6d28d9;
+  --semantic-pending-bg: #fffbeb;
+  --semantic-pending-bd: #fde68a;
+  --semantic-pending-fg: #92400e;
+  --semantic-danger-bg: #fef2f2;
+  --semantic-danger-bd: #fecaca;
+  --semantic-danger-fg: #b91c1c;
+  --semantic-success-bg: #ecfdf5;
+  --semantic-success-bd: #a7f3d0;
+  --semantic-success-fg: #047857;
+  --semantic-info-bg: #ecfeff;
+  --semantic-info-bd: #a5f3fc;
+  --semantic-info-fg: #0e7490;
+  --semantic-neutral-bg: #f3f4f6;
+  --semantic-neutral-bd: #d1d5db;
+  --semantic-neutral-fg: #6b7280;
+  --daily-status-pending-bg: var(--semantic-pending-bg);
+  --daily-status-pending-bd: var(--semantic-pending-bd);
+  --daily-status-pending-fg: var(--semantic-pending-fg);
+  --daily-status-assigned-bg: var(--semantic-normal-bg);
+  --daily-status-assigned-bd: var(--semantic-normal-bd);
+  --daily-status-assigned-fg: var(--semantic-normal-fg);
+  --daily-status-progress-bg: var(--semantic-normal-bg);
+  --daily-status-progress-bd: var(--semantic-normal-bd);
+  --daily-status-progress-fg: var(--semantic-normal-fg);
+  --daily-status-done-bg: var(--semantic-success-bg);
+  --daily-status-done-bd: var(--semantic-success-bd);
+  --daily-status-done-fg: var(--semantic-success-fg);
+  --daily-status-cancelled-bg: var(--semantic-neutral-bg);
+  --daily-status-cancelled-bd: var(--semantic-neutral-bd);
+  --daily-status-cancelled-fg: var(--semantic-neutral-fg);
   --clean-schedule-gap: 16px;
   --clean-schedule-pad: clamp(12px, 1.6vw, 24px);
   --clean-schedule-max: 1680px;
@@ -486,6 +507,48 @@
   flex: 0 0 auto;
 }
 
+.semanticToneNormal {
+  background: var(--semantic-normal-bg);
+  border-color: var(--semantic-normal-bd);
+  color: var(--semantic-normal-fg);
+}
+
+.semanticToneSpecial {
+  background: var(--semantic-special-bg);
+  border-color: var(--semantic-special-bd);
+  color: var(--semantic-special-fg);
+}
+
+.semanticTonePending {
+  background: var(--semantic-pending-bg);
+  border-color: var(--semantic-pending-bd);
+  color: var(--semantic-pending-fg);
+}
+
+.semanticToneDanger {
+  background: var(--semantic-danger-bg);
+  border-color: var(--semantic-danger-bd);
+  color: var(--semantic-danger-fg);
+}
+
+.semanticToneSuccess {
+  background: var(--semantic-success-bg);
+  border-color: var(--semantic-success-bd);
+  color: var(--semantic-success-fg);
+}
+
+.semanticToneInfo {
+  background: var(--semantic-info-bg);
+  border-color: var(--semantic-info-bd);
+  color: var(--semantic-info-fg);
+}
+
+.semanticToneNeutral {
+  background: var(--semantic-neutral-bg);
+  border-color: var(--semantic-neutral-bd);
+  color: var(--semantic-neutral-fg);
+}
+
 .statusPending {
   background: var(--daily-status-pending-bg);
   border-color: var(--daily-status-pending-bd);
@@ -674,23 +737,9 @@
   align-items: center;
   padding: 0 10px;
   border-radius: 8px;
-  background: rgba(59, 130, 246, 0.14);
-  border: 1px solid rgba(59, 130, 246, 0.28);
-  color: #1d4ed8;
+  border: 1px solid transparent;
   font-weight: 900;
   flex: 0 0 auto;
-}
-
-.metaChipDanger {
-  background: rgba(239, 68, 68, 0.10);
-  border: 1px solid rgba(239, 68, 68, 0.28);
-  color: #b91c1c;
-}
-
-.metaChipWarn {
-  background: rgba(245, 158, 11, 0.12);
-  border: 1px solid rgba(245, 158, 11, 0.28);
-  color: #b45309;
 }
 
 .metaText {
@@ -1549,6 +1598,48 @@
   font-weight: 700;
 }
 
+.taskCenterSummaryList {
+  margin: 2px 14px 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(245, 158, 11, 0.26);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255, 251, 235, 0.92) 0%, rgba(255, 255, 255, 0.98) 100%);
+  display: grid;
+  gap: 10px;
+}
+
+.taskCenterSummaryListLabel {
+  font-size: 12px;
+  font-weight: 800;
+  color: #92400e;
+  letter-spacing: 0.02em;
+}
+
+.taskCenterSummaryListItems {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.taskCenterSummaryListItem {
+  appearance: none;
+  border: 1px solid rgba(251, 191, 36, 0.34);
+  background: #ffffff;
+  border-radius: 999px;
+  padding: 7px 12px;
+  color: #78350f;
+  font-size: 12px;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.taskCenterSummaryListItem:hover {
+  border-color: rgba(217, 119, 6, 0.42);
+  box-shadow: 0 8px 18px rgba(245, 158, 11, 0.14);
+  transform: translateY(-1px);
+}
+
 .taskCenterBoardWrapNew {
   min-height: 320px;
   padding: 4px 14px 16px;
@@ -1832,10 +1923,20 @@
 
 .taskCenterCompactMetaBar {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
+  row-gap: 4px;
   flex-wrap: wrap;
   min-width: 0;
+}
+
+.taskCenterCompactMetaGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .taskCenterCompactStatus {
@@ -1853,33 +1954,12 @@
   height: 16px;
   padding: 0 5px;
   border-radius: 7px;
-  background: rgba(37, 99, 235, 0.08);
-  color: #1d4ed8;
+  border: 1px solid transparent;
   font-size: 9px;
   font-weight: 900;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.taskCenterCompactTagDanger {
-  background: rgba(239, 68, 68, 0.1);
-  color: #b91c1c;
-}
-
-.taskCenterCompactTagAlert {
-  background: rgba(239, 68, 68, 0.12);
-  color: #b91c1c;
-}
-
-.taskCenterCompactTagSuccess {
-  background: rgba(34, 197, 94, 0.14);
-  color: #15803d;
-}
-
-.taskCenterCompactTagPurple {
-  background: rgba(124, 58, 237, 0.14);
-  color: #6d28d9;
 }
 
 .taskCenterCompactTitle {
@@ -2047,29 +2127,9 @@
   height: 28px;
   padding: 0 12px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.88);
-  border: 1px solid rgba(191, 219, 254, 0.9);
-  color: #1e3a8a;
+  border: 1px solid transparent;
   font-size: 12px;
   font-weight: 900;
-}
-
-.taskDetailChipDanger {
-  border-color: rgba(248, 113, 113, 0.38);
-  background: rgba(254, 242, 242, 0.9);
-  color: #b91c1c;
-}
-
-.taskDetailChipSuccess {
-  border-color: rgba(134, 239, 172, 0.45);
-  background: rgba(240, 253, 244, 0.92);
-  color: #15803d;
-}
-
-.taskDetailChipPurple {
-  border-color: rgba(196, 181, 253, 0.48);
-  background: rgba(245, 243, 255, 0.94);
-  color: #6d28d9;
 }
 
 .taskDetailGrid {
@@ -2082,9 +2142,7 @@
   margin-top: -4px;
   padding: 12px;
   border-radius: 12px;
-  border: 1px solid rgba(134, 239, 172, 0.45);
-  background: rgba(240, 253, 244, 0.92);
-  color: #166534;
+  border: 1px solid transparent;
   display: grid;
   gap: 6px;
 }
@@ -2129,12 +2187,23 @@
 }
 
 .taskCenterSkipCard {
-  border: 1px solid rgba(239, 68, 68, 0.2);
-  background: rgba(254, 242, 242, 0.76);
+  border: 1px solid transparent;
   border-radius: 14px;
   padding: 12px;
   display: grid;
   gap: 10px;
+}
+
+.inlineSemanticPill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
 }
 
 .taskCenterSkipHead {
@@ -2248,23 +2317,9 @@
   min-height: 28px;
   padding: 0 10px;
   border-radius: 999px;
-  background: rgba(59, 130, 246, 0.1);
-  color: #1d4ed8;
   font-size: 12px;
   font-weight: 800;
-  border: 1px solid rgba(59, 130, 246, 0.16);
-}
-
-.cleaningEditChipSoft {
-  background: rgba(148, 163, 184, 0.12);
-  color: #475569;
-  border-color: rgba(148, 163, 184, 0.18);
-}
-
-.cleaningEditChipWarn {
-  background: rgba(245, 158, 11, 0.12);
-  color: #b45309;
-  border-color: rgba(245, 158, 11, 0.18);
+  border: 1px solid transparent;
 }
 
 .cleaningEditSection {

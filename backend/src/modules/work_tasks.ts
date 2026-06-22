@@ -301,6 +301,7 @@ router.post('/', requirePerm('cleaning.schedule.manage'), async (req, res) => {
         emitNotificationEvent(
           {
             type: 'WORK_TASK_COMPLETED',
+            policyKey: 'work_task_completed',
             entity: 'work_task',
             entityId: String(row.id),
             propertyId: row.property_id ? String(row.property_id) : undefined,
@@ -389,6 +390,7 @@ router.patch('/:id', requirePerm('cleaning.schedule.manage'), async (req, res) =
           emitNotificationEvent(
             {
               type: 'WORK_TASK_UPDATED',
+              policyKey: 'work_task_updated',
               entity: 'work_task',
               entityId: String(row.id),
               propertyId,
@@ -413,7 +415,6 @@ router.patch('/:id', requirePerm('cleaning.schedule.manage'), async (req, res) =
                 urgency: row.urgency,
               },
               actorUserId: actorId,
-              recipientUserIds: to,
             },
             { operationId },
           ),
@@ -428,6 +429,7 @@ router.patch('/:id', requirePerm('cleaning.schedule.manage'), async (req, res) =
           emitNotificationEvent(
             {
               type: 'WORK_TASK_COMPLETED',
+              policyKey: 'work_task_completed',
               entity: 'work_task',
               entityId: String(row.id),
               propertyId: propertyId || undefined,
