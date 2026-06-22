@@ -15,6 +15,18 @@ import {
   resetNotificationRule,
   saveNotificationRule,
 } from '../services/notificationRules'
+import {
+  APP_NOTIFICATION_GROUP_KEYS,
+  APP_NOTIFICATION_GROUP_OPTIONS,
+  APP_NOTIFICATION_POLICY_KEYS,
+  APP_NOTIFICATION_TEMPLATE_KEYS,
+  APP_NOTIFICATION_TEMPLATE_OPTIONS,
+  getAppNotificationPolicy,
+  isAppNotificationPolicyKey,
+  listAppNotificationPolicies,
+  resetAppNotificationPolicy,
+  saveAppNotificationPolicy,
+} from '../services/appNotificationPolicies'
 
 export const router = Router()
 
@@ -136,6 +148,52 @@ async function ensureRolesTable() {
     );`)
     await pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS uniq_roles_name ON roles(name);')
   } catch {}
+}
+
+async function listRbacRoles() {
+  if (hasPg) {
+    await ensureRolesTable()
+    const rows = await pgSelect('roles', '*') as any[] || []
+    return rows.map((x: any) => ({
+      id: String(x.id || ''),
+      name: String(x.name || ''),
+      description: x.description == null ? null : String(x.description || ''),
+    }))
+  }
+  return (db.roles || []).map((x: any) => ({
+    id: String(x.id || ''),
+    name: String(x.name || ''),
+    description: x.description == null ? null : String(x.description || ''),
+  }))
+}
+
+async function listRbacUsers() {
+  if (hasPg) {
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return []
+    const ur = await pgPool.query(
+      `SELECT u.id::text AS id,
+              COALESCE(NULLIF(TRIM(u.username), ''), NULLIF(TRIM(u.legal_name), ''), NULLIF(TRIM(u.email), ''), u.id::text) AS username,
+              u.role::text AS role,
+              COALESCE(ARRAY_REMOVE(ARRAY_AGG(DISTINCT ur.role_name) FILTER (WHERE ur.role_name IS NOT NULL), NULL), ARRAY[]::text[]) AS roles
+       FROM users u
+       LEFT JOIN user_roles ur ON ur.user_id = u.id::text
+       GROUP BY u.id, u.username, u.legal_name, u.email, u.role
+       ORDER BY username ASC`,
+    )
+    return (ur?.rows || []).map((x: any) => ({
+      id: String(x.id || ''),
+      username: String(x.username || ''),
+      role: String(x.role || ''),
+      roles: Array.isArray(x.roles) ? x.roles.map((v: any) => String(v || '').trim()).filter(Boolean) : [],
+    }))
+  }
+  return (db.users || []).map((x: any) => ({
+    id: String(x.id || ''),
+    username: String(x.username || x.email || x.id || ''),
+    role: String(x.role || ''),
+    roles: [String(x.role || '')].filter(Boolean),
+  }))
 }
 
 router.get('/roles', async (_req, res) => {
@@ -400,37 +458,8 @@ router.get('/role-permissions', async (req, res) => {
 
 router.get('/notification-rules', requirePerm('rbac.manage'), async (_req, res) => {
   try {
-    const roles = await (async () => {
-      if (hasPg) {
-        await ensureRolesTable()
-        const rows = await pgSelect('roles', '*') as any[] || []
-        return rows.map((x: any) => ({ id: String(x.id || ''), name: String(x.name || ''), description: x.description == null ? null : String(x.description || '') }))
-      }
-      return (db.roles || []).map((x: any) => ({ id: String(x.id || ''), name: String(x.name || ''), description: x.description == null ? null : String(x.description || '') }))
-    })()
-    const users = await (async () => {
-      if (hasPg) {
-        const { pgPool } = require('../dbAdapter')
-        if (!pgPool) return []
-        const ur = await pgPool.query(
-          `SELECT u.id::text AS id,
-                  COALESCE(NULLIF(TRIM(u.username), ''), NULLIF(TRIM(u.legal_name), ''), NULLIF(TRIM(u.email), ''), u.id::text) AS username,
-                  u.role::text AS role,
-                  COALESCE(ARRAY_REMOVE(ARRAY_AGG(DISTINCT ur.role_name) FILTER (WHERE ur.role_name IS NOT NULL), NULL), ARRAY[]::text[]) AS roles
-           FROM users u
-           LEFT JOIN user_roles ur ON ur.user_id = u.id::text
-           GROUP BY u.id, u.username, u.legal_name, u.email, u.role
-           ORDER BY username ASC`,
-        )
-        return (ur?.rows || []).map((x: any) => ({
-          id: String(x.id || ''),
-          username: String(x.username || ''),
-          role: String(x.role || ''),
-          roles: Array.isArray(x.roles) ? x.roles.map((v: any) => String(v || '').trim()).filter(Boolean) : [],
-        }))
-      }
-      return (db.users || []).map((x: any) => ({ id: String(x.id || ''), username: String(x.username || x.email || x.id || ''), role: String(x.role || ''), roles: [String(x.role || '')].filter(Boolean) }))
-    })()
+    const roles = await listRbacRoles()
+    const users = await listRbacUsers()
     const rules = await listNotificationRules()
     return res.json({ rules, roles, users, event_types: ALL_NOTIFICATION_EVENT_TYPES, audience_options: NOTIFICATION_AUDIENCE_OPTIONS })
   } catch (e: any) {
@@ -477,6 +506,62 @@ router.post('/notification-rules/:eventType/reset', requirePerm('rbac.manage'), 
   if (!isManagedNotificationEventType(eventType)) return res.status(404).json({ message: 'event_type_not_found' })
   try {
     return res.json(await resetNotificationRule(eventType, String((req as any)?.user?.sub || '').trim() || null))
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'reset_failed') })
+  }
+})
+
+router.get('/app-notification-policies', requirePerm('rbac.manage'), async (_req, res) => {
+  try {
+    const users = await listRbacUsers()
+    const policies = await listAppNotificationPolicies()
+    return res.json({
+      policies,
+      users,
+      groups: APP_NOTIFICATION_GROUP_OPTIONS,
+      templates: APP_NOTIFICATION_TEMPLATE_OPTIONS,
+      policy_keys: APP_NOTIFICATION_POLICY_KEYS,
+    })
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'load_failed') })
+  }
+})
+
+router.get('/app-notification-policies/:policyKey', requirePerm('rbac.manage'), async (req, res) => {
+  const policyKey = String(req.params.policyKey || '').trim()
+  if (!isAppNotificationPolicyKey(policyKey)) return res.status(404).json({ message: 'policy_key_not_found' })
+  try {
+    return res.json(await getAppNotificationPolicy(policyKey))
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'load_failed') })
+  }
+})
+
+const appNotificationPolicySetSchema = z.object({
+  enabled: z.boolean(),
+  template_key: z.enum(APP_NOTIFICATION_TEMPLATE_KEYS),
+  extra_group_keys: z.array(z.enum(APP_NOTIFICATION_GROUP_KEYS)).optional(),
+  extra_user_ids: z.array(z.string().trim().min(1).max(120)).optional(),
+  note: z.string().max(500).nullable().optional(),
+})
+
+router.put('/app-notification-policies/:policyKey', requirePerm('rbac.manage'), async (req, res) => {
+  const policyKey = String(req.params.policyKey || '').trim()
+  if (!isAppNotificationPolicyKey(policyKey)) return res.status(404).json({ message: 'policy_key_not_found' })
+  const parsed = appNotificationPolicySetSchema.safeParse(req.body)
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    return res.json(await saveAppNotificationPolicy(policyKey, parsed.data, String((req as any)?.user?.sub || '').trim() || null))
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'save_failed') })
+  }
+})
+
+router.post('/app-notification-policies/:policyKey/reset', requirePerm('rbac.manage'), async (req, res) => {
+  const policyKey = String(req.params.policyKey || '').trim()
+  if (!isAppNotificationPolicyKey(policyKey)) return res.status(404).json({ message: 'policy_key_not_found' })
+  try {
+    return res.json(await resetAppNotificationPolicy(policyKey, String((req as any)?.user?.sub || '').trim() || null))
   } catch (e: any) {
     return res.status(500).json({ message: String(e?.message || 'reset_failed') })
   }

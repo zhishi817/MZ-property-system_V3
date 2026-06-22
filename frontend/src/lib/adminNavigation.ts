@@ -575,7 +575,8 @@ export const ADMIN_NAVIGATION: AdminNavNode[] = [
     actionPerms: ['rbac.manage', 'users.password.reset', 'users.view', 'users.write', 'users.delete', 'users.archive'],
     children: [
       { id: 'rbac-home', label: '角色权限', href: '/rbac' },
-      { id: 'rbac-notification-rules', label: '通知规则', href: '/rbac/notification-rules' },
+      { id: 'rbac-app-notification-policies', label: 'App通知规则', href: '/rbac/app-notification-policies' },
+      { id: 'rbac-notification-rules', label: '通知规则（旧）', href: '/rbac/notification-rules' },
     ],
   },
   {

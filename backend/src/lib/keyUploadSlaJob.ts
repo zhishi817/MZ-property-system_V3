@@ -143,6 +143,7 @@ export async function runKeyUploadSlaCheck(position: number, level: Level) {
         const body = `${property_code || '房源'}：请尽快上传钥匙照片（第 ${position} 个任务）`
         await emitNotificationEvent({
           type: 'KEY_UPLOAD_SLA_REMINDER',
+          policyKey: 'key_upload_sla_reminder',
           entity: 'work_task',
           entityId: id,
           eventId: id,
@@ -154,29 +155,34 @@ export async function runKeyUploadSlaCheck(position: number, level: Level) {
         })
       }
     } else {
+      let shouldNotifyManagers = false
       for (const mid of managerIds) {
         const managerId = String(mid || '').trim()
         if (!managerId) continue
         const id = `${kind}:${date}:${position}:${level}:${managerId}:${cleanerId}`
         const ins = await pgPool.query(
           `INSERT INTO mzapp_alerts (id, kind, target_user_id, level, date, position, payload)
-           VALUES ($1,$2,$3,$4,$5::date,$6::int,$7::jsonb)
+          VALUES ($1,$2,$3,$4,$5::date,$6::int,$7::jsonb)
            ON CONFLICT DO NOTHING`,
           [id, kind, managerId, level, date, position, JSON.stringify(payload)],
         )
         if (!ins?.rowCount) continue
+        shouldNotifyManagers = true
+      }
+      if (shouldNotifyManagers) {
         const title = '上传钥匙超时提醒'
         const body = `${property_code || '房源'}：清洁员未按时上传钥匙照片（第 ${position} 个任务）`
+        const eventId = `${kind}:${date}:${position}:${level}:${cleanerId}`
         await emitNotificationEvent({
           type: 'KEY_UPLOAD_SLA_ESCALATION',
+          policyKey: 'key_upload_sla_escalation',
           entity: 'work_task',
-          entityId: id,
-          eventId: id,
+          entityId: eventId,
+          eventId,
           title,
           body,
-          recipientUserIds: [managerId],
           priority: 'high',
-          data: { kind, level, position, event_id: id, cleaning_task_ids: task_ids, property_code, cleaner_id: cleanerId },
+          data: { kind, level, position, event_id: eventId, cleaning_task_ids: task_ids, property_code, cleaner_id: cleanerId },
         })
       }
     }

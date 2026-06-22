@@ -1669,6 +1669,7 @@ async function ensureCleaningInspectionColumns() {
   if (cleaningInspectionEnsuring) return cleaningInspectionEnsuring
   cleaningInspectionEnsuring = (async () => {
     await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_mode text;`)
+    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_scope text;`)
     await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_due_date date;`)
     cleaningInspectionEnsured = true
   })()
@@ -1681,6 +1682,12 @@ async function ensureCleaningInspectionColumns() {
       cleaningInspectionEnsuring = null
     })
   return cleaningInspectionEnsuring
+}
+
+function normalizeInspectionScope(value: any): 'inspect_and_hang' | 'password_only' | null {
+  const raw = String(value || '').trim().toLowerCase()
+  if (!raw) return null
+  return raw === 'password_only' ? 'password_only' : 'inspect_and_hang'
 }
 
 let checklistEnsured = false
@@ -1896,11 +1903,11 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
       const operationId = require('uuid').v4()
       const photoUrls = await listInspectionPhotoUrls(String(id))
       const propertyCode = await resolveCleaningTaskPropertyCode(String(id))
-      const recipients = await listKeysHungNotificationUserIds(userId)
-      if (propertyId && recipients.length) {
+      if (propertyId) {
         await emitNotificationEvent(
           {
             type: 'WORK_TASK_UPDATED',
+            policyKey: 'keys_hung',
             entity: 'cleaning_task',
             entityId: String(id),
             eventId: `keys_hung:${String(id)}`,
@@ -1920,7 +1927,6 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
               photo_urls: photoUrls,
             },
             actorUserId: userId,
-            recipientUserIds: recipients,
           },
           { operationId },
         )
@@ -2279,16 +2285,16 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
     try {
       const { emitNotificationEvent } = require('../services/notificationEvents')
       const operationId = require('uuid').v4()
-      const to = await listConsumablesManagerNotificationUserIds(userId)
       let propertyId = ''
       try {
         const r2 = await pgPool.query(`SELECT property_id::text AS property_id FROM cleaning_tasks WHERE id::text=$1::text LIMIT 1`, [String(id)])
         propertyId = String(r2?.rows?.[0]?.property_id || '').trim()
       } catch {}
-      if (propertyId && to.length) {
+      if (propertyId) {
         await emitNotificationEvent(
           {
             type: 'WORK_TASK_UPDATED',
+            policyKey: 'restock_proof_saved',
             entity: 'cleaning_task',
             entityId: String(id),
             propertyId,
@@ -2297,7 +2303,6 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
             body: restockActionBody,
             data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: restockActionKind, task_id: id, batch_id: batchId },
             actorUserId: userId,
-            recipientUserIds: to,
           },
           { operationId },
         )
@@ -2402,10 +2407,11 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
           cancelled: true,
           causedByUserId: userId,
         })
-        if (propertyId && to.length) {
+        if (propertyId) {
           const { emitNotificationEvent } = require('../services/notificationEvents')
           await emitNotificationEvent({
             type: 'CLEANING_TASK_UPDATED',
+            policyKey: 'guest_checked_out_cancelled',
             entity: 'cleaning_task',
             entityId: String(id),
             propertyId,
@@ -2416,7 +2422,6 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
             body: '房源还未退房，待退房',
             data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'guest_checked_out_cancelled', task_id: id, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: eventId },
             actorUserId: userId,
-            recipientUserIds: to,
           })
         }
       } catch {}
@@ -2466,10 +2471,11 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
         eventId,
         causedByUserId: userId,
       })
-      if (propertyId && to.length) {
+      if (propertyId) {
         const { emitNotificationEvent } = require('../services/notificationEvents')
         await emitNotificationEvent({
           type: 'CLEANING_TASK_UPDATED',
+          policyKey: 'guest_checked_out',
           entity: 'cleaning_task',
           entityId: String(id),
           propertyId,
@@ -2480,7 +2486,6 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
           body,
           data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'guest_checked_out', task_id: id, property_code: propertyCode, checked_out_at: checkedOutAt, keys_required: keysRequired, event_id: eventId },
           actorUserId: userId,
-          recipientUserIds: to,
         })
       }
     } catch {}
@@ -2572,10 +2577,11 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
           cancelled: true,
           causedByUserId: userId,
         })
-        if (propertyId && to.length) {
+        if (propertyId) {
           const { emitNotificationEvent } = require('../services/notificationEvents')
           await emitNotificationEvent({
             type: 'CLEANING_TASK_UPDATED',
+            policyKey: 'guest_checked_out_cancelled',
             entity: 'cleaning_task',
             entityId: String(ids2[0]),
             propertyId,
@@ -2586,7 +2592,6 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
             body: '房源还未退房，待退房',
             data: { entity: 'cleaning_task', entityId: String(ids2[0]), action: 'open_task', kind: 'guest_checked_out_cancelled', task_ids: ids2, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: eventId },
             actorUserId: userId,
-            recipientUserIds: to,
           })
         }
       } catch {}
@@ -2636,7 +2641,7 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
       const { listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications')
       const to = Array.from(new Set([...(await listCleaningTaskUserIdsBulk(ids2)), ...(await listManagerUserIds())]))
       const body = keysRequired && keysRequired >= 2 ? `已退房（${keysRequired}把钥匙）` : '已退房'
-      if (propertyCode && to.length) {
+      if (propertyCode) {
         const r0 = await pgPool.query(
           `SELECT property_id::text AS property_id
            FROM cleaning_tasks
@@ -2649,6 +2654,7 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
           const { emitNotificationEvent } = require('../services/notificationEvents')
           await emitNotificationEvent({
             type: 'CLEANING_TASK_UPDATED',
+            policyKey: 'guest_checked_out',
             entity: 'cleaning_task',
             entityId: String(ids2[0]),
             propertyId,
@@ -2659,7 +2665,6 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
             body,
             data: { entity: 'cleaning_task', entityId: String(ids2[0]), action: 'open_task', kind: 'guest_checked_out', task_ids: ids2, property_code: propertyCode, checked_out_at: checkedOutAt, keys_required: keysRequired, event_id: eventId },
             actorUserId: userId,
-            recipientUserIds: to,
           })
         }
       }
@@ -2751,10 +2756,11 @@ router.post('/cleaning-tasks/order-checked-out', async (req, res) => {
           cancelled: true,
           causedByUserId: userId,
         })
-        if (propertyId && to.length) {
+        if (propertyId) {
           const { emitNotificationEvent } = require('../services/notificationEvents')
           await emitNotificationEvent({
             type: 'CLEANING_TASK_UPDATED',
+            policyKey: 'guest_checked_out_cancelled',
             entity: 'cleaning_task',
             entityId: String(taskIds[0]),
             propertyId,
@@ -2765,7 +2771,6 @@ router.post('/cleaning-tasks/order-checked-out', async (req, res) => {
             body: '房源还未退房，待退房',
             data: { entity: 'cleaning_task', entityId: String(taskIds[0]), action: 'open_task', kind: 'guest_checked_out_cancelled', task_ids: taskIds, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: eventId },
             actorUserId: userId,
-            recipientUserIds: to,
           })
         }
       } catch {}
@@ -2822,10 +2827,11 @@ router.post('/cleaning-tasks/order-checked-out', async (req, res) => {
       const operationId = require('uuid').v4()
       const to = Array.from(new Set([...(await listCleaningTaskUserIdsBulk(taskIds)), ...(await listManagerUserIds())]))
       const body = keysRequired && keysRequired >= 2 ? `已退房（${keysRequired}把钥匙）` : '已退房'
-      if (propertyId && to.length) {
+      if (propertyId) {
         await emitNotificationEvent(
           {
             type: 'CLEANING_TASK_UPDATED',
+            policyKey: 'guest_checked_out',
             entity: 'cleaning_task',
             entityId: String(taskIds[0]),
             propertyId,
@@ -2836,7 +2842,6 @@ router.post('/cleaning-tasks/order-checked-out', async (req, res) => {
             body,
             data: { entity: 'cleaning_task', entityId: String(taskIds[0]), action: 'open_task', kind: 'guest_checked_out', task_ids: taskIds, property_code: propertyCode, checked_out_at: checkedOutAt, keys_required: keysRequired, event_id: eventId },
             actorUserId: userId,
-            recipientUserIds: to,
           },
           { operationId },
         )
@@ -3359,10 +3364,11 @@ async function handleManagerFields(req: any, res: any) {
             keys_required: nextKeysRequired,
             dedupe_key: dedupeKey,
           }
-          if (propertyId && to.length) {
+          if (propertyId) {
             const { emitNotificationEvent } = require('../services/notificationEvents')
             await emitNotificationEvent({
               type: 'CLEANING_TASK_UPDATED',
+              policyKey: 'task_requirements_changed',
               entity: 'cleaning_task',
               entityId: String(repId),
               propertyId,
@@ -3373,7 +3379,6 @@ async function handleManagerFields(req: any, res: any) {
               body,
               data,
               actorUserId: String(user?.sub || ''),
-              recipientUserIds: to,
             })
           }
         } catch {}
@@ -3470,9 +3475,9 @@ router.post('/cleaning-tasks/guest-luggage', async (req, res) => {
         })
       } catch {}
       try {
-        const recipients = await listGuestLuggageRecipients(scope.propertyId, scope.taskDate)
         await emitNotificationEvent({
           type: 'GUEST_LUGGAGE_UPDATED',
+          policyKey: 'guest_luggage_updated',
           entity: 'cleaning_task',
           entityId: scope.taskIds[0],
           eventId: `guest_luggage:${notice.id}:v${notice.version}`,
@@ -3497,7 +3502,6 @@ router.post('/cleaning-tasks/guest-luggage', async (req, res) => {
             photo_urls: notice.photo_urls,
           },
           actorUserId,
-          recipientUserIds: recipients,
         })
       } catch {}
     }
@@ -3543,7 +3547,6 @@ router.delete('/cleaning-tasks/guest-luggage/:id', async (req, res) => {
     const taskRows = taskResult?.rows || []
     const taskIds = taskRows.map((row: any) => String(row.id || '')).filter(Boolean)
     const propertyCode = String(taskRows?.[0]?.property_code || '').trim()
-    const recipients = await listGuestLuggageRecipients(String(notice.property_id || ''), String(notice.task_date || '').slice(0, 10))
     await pgPool.query(`DELETE FROM guest_luggage_notices WHERE id = $1`, [noticeId])
     try {
       await emitGuestLuggageTaskEvents({ taskRows, taskIds, patch: null, actorUserId })
@@ -3552,6 +3555,7 @@ router.delete('/cleaning-tasks/guest-luggage/:id', async (req, res) => {
       try {
         await emitNotificationEvent({
           type: 'GUEST_LUGGAGE_UPDATED',
+          policyKey: 'guest_luggage_updated',
           entity: 'cleaning_task',
           entityId: taskIds[0],
           eventId: `guest_luggage:${noticeId}:deleted:v${Number(notice.version || 1)}`,
@@ -3569,7 +3573,6 @@ router.delete('/cleaning-tasks/guest-luggage/:id', async (req, res) => {
             guest_luggage_id: noticeId,
           },
           actorUserId,
-          recipientUserIds: recipients,
         })
       } catch {}
     }
@@ -4545,6 +4548,7 @@ router.post('/work-tasks/:id/mark', async (req, res) => {
         await emitNotificationEvent(
           {
             type: 'WORK_TASK_COMPLETED',
+            policyKey: 'work_task_completed',
             entity: 'work_task',
             entityId: id,
             propertyId: row.property_id ? String(row.property_id) : undefined,
@@ -4845,6 +4849,7 @@ router.get('/work-tasks', async (req, res) => {
             t.cleaner_id,
             t.inspector_id,
             t.inspection_mode,
+            t.inspection_scope,
             t.inspection_due_date::text AS inspection_due_date,
             COALESCE(cu.username, cu.email, cu.id::text) AS cleaner_name,
             COALESCE(iu.username, iu.email, iu.id::text) AS inspector_name,
@@ -5007,6 +5012,7 @@ router.get('/work-tasks', async (req, res) => {
             __assignee_cleaner: effectiveCleanerId,
             __assignee_inspector: inspectorId,
             __inspection_mode: inspectionMode,
+            __inspection_scope: normalizeInspectionScope(row.inspection_scope),
             __inspection_due_date: inspectionDueDate,
             __deferred_projection_date: deferredDate,
             order_id: orderId,
@@ -5125,6 +5131,7 @@ router.get('/work-tasks', async (req, res) => {
           )
           const inspectionMode = inspectionPlan.inspectionMode
           const inspectionDueDate = inspectionPlan.inspectionDueDate
+          const inspectionScope = p.kind === 'checkin' ? normalizeInspectionScope(p.a.__inspection_scope) : null
           const requireSelfComplete = roleKind === 'cleaner' && inspectionMode === 'self_complete'
           const requireLockboxBeforeDone = requireSelfComplete && p.kind !== 'stayover'
           const completionAreas = new Set<string>()
@@ -5274,6 +5281,7 @@ router.get('/work-tasks', async (req, res) => {
             guest_luggage: p.a.guest_luggage || null,
             note: taskNote,
             inspection_mode: inspectionMode,
+            inspection_scope: inspectionScope,
             inspection_due_date: inspectionDueDate,
             keys_required: keysRequired,
             keys_required_checkout: checkoutKeysOut,
@@ -5412,6 +5420,9 @@ router.get('/work-tasks', async (req, res) => {
         )
         const inspectionMode = inspectionPlan.inspectionMode
         const inspectionDueDate = inspectionPlan.inspectionDueDate
+        const inspectionScope = normalizeInspectionScope(
+          arr.find((x) => String(x?.task_type || '').trim().toLowerCase() === 'checkin_clean')?.inspection_scope,
+        )
         const restockItems: any[] = []
         const seenRestock = new Set<string>()
         for (const it of arr.flatMap((x) => (Array.isArray(x?.restock_items) ? x.restock_items : []))) {
@@ -5451,6 +5462,7 @@ router.get('/work-tasks', async (req, res) => {
           order_id_checkin: orderIdCheckin || null,
           order_id_checkout: orderIdCheckout || null,
           inspection_mode: inspectionMode,
+          inspection_scope: inspectionScope,
           inspection_due_date: inspectionDueDate,
           keys_required: keysRequired,
           keys_required_checkout: checkoutKeysOut,
@@ -5682,6 +5694,7 @@ async function notifyPropertyFeedbackCreated(params: {
     const propertyCode = await loadMzappPropertyCode(params.propertyId)
     await emitNotificationEvent({
       type: 'ISSUE_REPORTED',
+      policyKey: 'issue_reported',
       entity: 'property_feedback',
       entityId: id,
       eventId: `ISSUE_REPORTED_property_feedback_${id}_created`,

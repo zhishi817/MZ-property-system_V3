@@ -50,6 +50,7 @@ export async function runKeyUploadReminder(params: { at: string }) {
     const eventId = `key_upload_reminder:${date}:${at}:cleaner:${userId}`
     const r = await emitNotificationEvent({
       type: 'KEY_UPLOAD_REMINDER',
+      policyKey: 'key_upload_reminder',
       entity: 'work_task',
       entityId: eventId,
       eventId,
@@ -66,6 +67,7 @@ export async function runKeyUploadReminder(params: { at: string }) {
     const eventId = `key_upload_reminder:${date}:${at}:manager:${userId}`
     const r = await emitNotificationEvent({
       type: 'KEY_UPLOAD_REMINDER',
+      policyKey: 'key_upload_reminder',
       entity: 'work_task',
       entityId: eventId,
       eventId,

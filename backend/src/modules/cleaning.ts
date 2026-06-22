@@ -559,6 +559,7 @@ router.post('/offline-tasks', requireCleaningManualCreateAccess, async (req, res
           emitNotificationEvent(
             {
               type: 'WORK_TASK_COMPLETED',
+              policyKey: 'work_task_completed',
               entity: 'work_task',
               entityId: workTaskId,
               propertyId: out.property_id ? String(out.property_id) : undefined,
@@ -651,6 +652,7 @@ router.patch('/offline-tasks/:id', requirePerm('cleaning.schedule.manage'), asyn
           emitNotificationEvent(
             {
               type: 'WORK_TASK_COMPLETED',
+              policyKey: 'work_task_completed',
               entity: 'work_task',
               entityId: workTaskId,
               propertyId: row.property_id ? String(row.property_id) : undefined,
@@ -954,6 +956,7 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
             emitNotificationEvent(
               {
                 type: 'CLEANING_TASK_UPDATED',
+                policyKey: 'task_requirements_changed',
                 entity: 'cleaning_task',
                 entityId: String(id),
                 propertyId,
@@ -963,7 +966,6 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
                 body,
                 data,
                 actorUserId: (req as any).user?.sub,
-                recipientUserIds: await resolveCleaningTaskUpdateRecipients([String(id)]),
               },
               { operationId },
             ),
@@ -1062,6 +1064,7 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
           emitNotificationEvent(
             {
               type: 'CLEANING_TASK_UPDATED',
+              policyKey: 'task_requirements_changed',
               entity: 'cleaning_task',
               entityId: String(id),
               propertyId,
@@ -1071,7 +1074,6 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
               body,
               data,
               actorUserId: (req as any).user?.sub,
-              recipientUserIds: await resolveCleaningTaskUpdateRecipients([String(id)]),
             },
             { operationId },
           ),
@@ -1231,6 +1233,7 @@ router.post('/tasks', requireCleaningManualCreateAccess, async (req, res) => {
             emitNotificationEvent(
               {
                 type: 'CLEANING_TASK_UPDATED',
+                policyKey: 'task_requirements_changed',
                 entity: 'cleaning_task',
                 entityId: String(created.id),
                 propertyId,
@@ -1240,7 +1243,6 @@ router.post('/tasks', requireCleaningManualCreateAccess, async (req, res) => {
                 body: lines.join('\n'),
                 data: { entity: 'cleaning_task', entityId: String(created.id), action: 'open_task', kind: 'cleaning_task_manager_fields_updated' },
                 actorUserId: (req as any).user?.sub,
-                recipientUserIds: await resolveCleaningTaskUpdateRecipients([String(created.id)]),
               },
               { operationId },
             ),

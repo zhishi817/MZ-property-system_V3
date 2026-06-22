@@ -8,7 +8,7 @@ import TableRowActions from '../../components/TableRowActions'
 import { PROPERTY_REGION_ORDER, cmpPropertyCode } from '../../lib/properties'
 import { hydratePropertyPayableTemplatesForForm, normalizePropertyPayableTemplates, propertyPayableCategoryLabel, propertyPayablePaymentTypeLabel } from '../../lib/propertyPayables'
 
-type Property = { id: string; code?: string; address: string; type: string; capacity: number; region?: string; area_sqm?: number; landlord_id?: string }
+type Property = { id: string; code?: string; address: string; type: string; capacity: number; region?: string; area_sqm?: number; landlord_id?: string; wifi_ssid?: string; wifi_password?: string }
 const REGION_FILTER_OPTIONS = [
   ...PROPERTY_REGION_ORDER.map((value) => ({ value, label: value })),
   { value: '未分区', label: '未分区' },
@@ -108,7 +108,7 @@ export default function PropertiesPage() {
     const booking_listing_name = v.listing_booking || ''
     const listing_names = { other: v.listing_other || '' }
     if (![airbnb_listing_name, booking_listing_name, listing_names.other].some(x => String(x || '').trim())) { message.error('请至少填写一个平台的 Listing 名称'); return }
-    const payload = { code: v.code, address: v.address, type: v.type, capacity: v.capacity, region: v.region === '其他' ? (v.region_other || '') : v.region, area_sqm: v.area_sqm, landlord_id: v.landlord_id, biz_category: v.biz_category, bed_config, aircon_model: v.aircon_model, bedroom_ac: v.bedroom_ac, access_guide_link: v.access_guide_link, garage_guide_link: v.garage_guide_link, building_name: v.building_name, building_facilities: v.building_facilities, building_facility_other: v.building_facility_other, building_contact_name: v.building_contact_name, building_contact_phone: v.building_contact_phone, building_contact_email: v.building_contact_email, tv_model: v.tv_model, notes: v.notes, listing_names, airbnb_listing_name, booking_listing_name, payable_templates: normalizePropertyPayableTemplates(v.payable_templates) }
+    const payload = { code: v.code, address: v.address, type: v.type, capacity: v.capacity, region: v.region === '其他' ? (v.region_other || '') : v.region, area_sqm: v.area_sqm, landlord_id: v.landlord_id, biz_category: v.biz_category, bed_config, aircon_model: v.aircon_model, bedroom_ac: v.bedroom_ac, access_guide_link: v.access_guide_link, garage_guide_link: v.garage_guide_link, building_name: v.building_name, building_facilities: v.building_facilities, building_facility_other: v.building_facility_other, building_contact_name: v.building_contact_name, building_contact_phone: v.building_contact_phone, building_contact_email: v.building_contact_email, tv_model: v.tv_model, wifi_ssid: v.wifi_ssid, wifi_password: v.wifi_password, notes: v.notes, listing_names, airbnb_listing_name, booking_listing_name, payable_templates: normalizePropertyPayableTemplates(v.payable_templates) }
     const res = await fetch(`${API_BASE}/properties`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(payload) })
     if (res.ok) { message.success('房源已创建'); setOpen(false); form.resetFields(); load() }
     else { let msg = '创建失败'; try { const j = await res.json(); if (j?.message) msg = j.message } catch { try { msg = await res.text() } catch {} } message.error(msg) }
@@ -183,6 +183,13 @@ export default function PropertiesPage() {
   }
 
   const canWrite = hasPerm('properties.write') || hasPerm('property.write')
+  const rowSelection = canWrite ? {
+    selectedRowKeys,
+    onChange: setSelectedRowKeys as any,
+    renderCell: (_checked: boolean, _record: Property, _index: number, originNode: React.ReactNode) => (
+      <div onClick={(e) => e.stopPropagation()}>{originNode}</div>
+    ),
+  } : undefined
   const columns = [
     { title: '房号', dataIndex: 'code' },
     { title: '地址', dataIndex: 'address' },
@@ -192,13 +199,15 @@ export default function PropertiesPage() {
     { title: '区域', dataIndex: 'region' },
     { title: '面积(㎡)', dataIndex: 'area_sqm' },
     { title: '操作', render: (_: any, r: Property) => (
-      <TableRowActions
-        actions={[
-          { key: 'detail', label: '详情', onClick: () => openDetail(r.id) },
-          { key: 'edit', label: '编辑', onClick: () => openEdit(r), hidden: !canWrite },
-          { key: 'archive', label: '归档', onClick: () => confirmDelete(r), danger: true, hidden: !canWrite },
-        ]}
-      />
+      <div onClick={(e) => e.stopPropagation()}>
+        <TableRowActions
+          actions={[
+            { key: 'detail', label: '详情', onClick: () => openDetail(r.id) },
+            { key: 'edit', label: '编辑', onClick: () => openEdit(r), hidden: !canWrite },
+            { key: 'archive', label: '归档', onClick: () => confirmDelete(r), danger: true, hidden: !canWrite },
+          ]}
+        />
+      </div>
     ) },
   ]
 
@@ -234,7 +243,7 @@ export default function PropertiesPage() {
         const rows = data.filter(p => matchQuery(p) && matchRegion(p)).slice().sort((a,b)=> cmpPropertyCode(a.code, b.code))
         if (regionFilter) {
           return (
-            <Table rowKey={(r:any)=>r.id} columns={columns as any} dataSource={rows} rowSelection={canWrite ? { selectedRowKeys, onChange: setSelectedRowKeys as any } : undefined} pagination={{ pageSize: 10 }} />
+            <Table rowKey={(r:any)=>r.id} columns={columns as any} dataSource={rows} rowSelection={rowSelection} pagination={{ pageSize: 10 }} onRow={(record: Property) => ({ onClick: () => openDetail(record.id), style: { cursor: 'pointer' } })} />
           )
         }
         const groups: { name: string, rows: any[] }[] = []
@@ -255,7 +264,7 @@ export default function PropertiesPage() {
         return groups.map(g => (
           <div key={g.name}>
             <Divider orientation="left">{g.name}</Divider>
-            <Table rowKey={(r:any)=>r.id} columns={columns as any} dataSource={g.rows} rowSelection={canWrite ? { selectedRowKeys, onChange: setSelectedRowKeys as any } : undefined} pagination={{ pageSize: 10 }} />
+            <Table rowKey={(r:any)=>r.id} columns={columns as any} dataSource={g.rows} rowSelection={rowSelection} pagination={{ pageSize: 10 }} onRow={(record: Property) => ({ onClick: () => openDetail(record.id), style: { cursor: 'pointer' } })} />
           </div>
         ))
       })()}
@@ -298,6 +307,8 @@ export default function PropertiesPage() {
             <Col span={8}><Form.Item name="type" label="房型分类" rules={[{ required: true }]}><Select onChange={(v) => setTypeSel(v)} options={[{value:'一房一卫',label:'一房一卫'},{value:'两房一卫',label:'两房一卫'},{value:'两房两卫',label:'两房两卫'},{value:'三房两卫',label:'三房两卫'},{value:'三房三卫',label:'三房三卫'}]} /></Form.Item></Col>
             <Col span={8}><Form.Item name="capacity" label="可住人数" rules={[{ required: true }]}><InputNumber min={1} style={{ width: '100%' }} /></Form.Item></Col>
             <Col span={8}><Form.Item name="area_sqm" label="房源面积(㎡)"><InputNumber min={1} style={{ width: '100%' }} /></Form.Item></Col>
+            <Col span={8}><Form.Item name="wifi_ssid" label="Wi-Fi 用户名"><Input /></Form.Item></Col>
+            <Col span={8}><Form.Item name="wifi_password" label="Wi-Fi 密码"><Input /></Form.Item></Col>
             <Col span={8}><Form.Item name="access_guide_link" label="入住指南链接"><Input /></Form.Item></Col>
             <Col span={8}><Form.Item name="garage_guide_link" label="车库指南链接"><Input /></Form.Item></Col>
             {Array.from({ length: getBedroomCount(typeSel) || 0 }).map((_, i) => (
@@ -371,6 +382,8 @@ export default function PropertiesPage() {
               <Descriptions.Item label="地址" span={2}>{detail.address}</Descriptions.Item>
               <Descriptions.Item label="房型">{detail.type}</Descriptions.Item>
               <Descriptions.Item label="可住人数">{detail.capacity} 人</Descriptions.Item>
+              <Descriptions.Item label="Wi-Fi 用户名">{detail.wifi_ssid || '-'}</Descriptions.Item>
+              <Descriptions.Item label="Wi-Fi 密码">{detail.wifi_password || '-'}</Descriptions.Item>
               <Descriptions.Item label="面积">{detail.area_sqm ? `${detail.area_sqm} ㎡` : '-'}</Descriptions.Item>
               <Descriptions.Item label="卧室空调">{detail.bedroom_ac === 'none' ? '无' : (detail.bedroom_ac === 'master_only' ? '主卧有' : (detail.bedroom_ac === 'both' ? '两个卧室都有' : '-'))}</Descriptions.Item>
               <Descriptions.Item label="Airbnb Listing" span={2}>{detail.airbnb_listing_name || '-'}</Descriptions.Item>
@@ -480,6 +493,8 @@ export default function PropertiesPage() {
             <Col span={8}><Form.Item name="type" label="房型" rules={[{ required: true }]}><Select onChange={(v) => setTypeEdit(v)} options={[{value:'一房一卫',label:'一房一卫'},{value:'两房一卫',label:'两房一卫'},{value:'两房两卫',label:'两房两卫'},{value:'三房两卫',label:'三房两卫'},{value:'三房三卫',label:'三房三卫'}]} /></Form.Item></Col>
             <Col span={8}><Form.Item name="capacity" label="可住人数" rules={[{ required: true }]}><InputNumber min={1} style={{ width: '100%' }} /></Form.Item></Col>
             <Col span={8}><Form.Item name="area_sqm" label="面积(㎡)"><InputNumber min={1} style={{ width: '100%' }} /></Form.Item></Col>
+            <Col span={8}><Form.Item name="wifi_ssid" label="Wi-Fi 用户名"><Input /></Form.Item></Col>
+            <Col span={8}><Form.Item name="wifi_password" label="Wi-Fi 密码"><Input /></Form.Item></Col>
             <Col span={8}><Form.Item name="access_guide_link" label="入住指南链接"><Input /></Form.Item></Col>
             <Col span={8}><Form.Item name="garage_guide_link" label="车库指南链接"><Input /></Form.Item></Col>
             {Array.from({ length: getBedroomCount(typeEdit) || 0 }).map((_, i) => (

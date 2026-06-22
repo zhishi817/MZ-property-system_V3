@@ -554,6 +554,7 @@ exports.router.post('/offline-tasks', requireCleaningManualCreateAccess, async (
                     var _a;
                     return (0, notificationEvents_1.emitNotificationEvent)({
                         type: 'WORK_TASK_COMPLETED',
+                        policyKey: 'work_task_completed',
                         entity: 'work_task',
                         entityId: workTaskId,
                         propertyId: out.property_id ? String(out.property_id) : undefined,
@@ -641,6 +642,7 @@ exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.sch
                     var _a;
                     return (0, notificationEvents_1.emitNotificationEvent)({
                         type: 'WORK_TASK_COMPLETED',
+                        policyKey: 'work_task_completed',
                         entity: 'work_task',
                         entityId: workTaskId,
                         propertyId: row.property_id ? String(row.property_id) : undefined,
@@ -950,6 +952,7 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                         var _a;
                         return (0, notificationEvents_1.emitNotificationEvent)({
                             type: 'CLEANING_TASK_UPDATED',
+                            policyKey: 'task_requirements_changed',
                             entity: 'cleaning_task',
                             entityId: String(id),
                             propertyId,
@@ -959,7 +962,6 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                             body,
                             data,
                             actorUserId: (_a = req.user) === null || _a === void 0 ? void 0 : _a.sub,
-                            recipientUserIds: await resolveCleaningTaskUpdateRecipients([String(id)]),
                         }, { operationId });
                     });
                 }
@@ -1080,6 +1082,7 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                     var _a;
                     return (0, notificationEvents_1.emitNotificationEvent)({
                         type: 'CLEANING_TASK_UPDATED',
+                        policyKey: 'task_requirements_changed',
                         entity: 'cleaning_task',
                         entityId: String(id),
                         propertyId,
@@ -1089,7 +1092,6 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                         body,
                         data,
                         actorUserId: (_a = req.user) === null || _a === void 0 ? void 0 : _a.sub,
-                        recipientUserIds: await resolveCleaningTaskUpdateRecipients([String(id)]),
                     }, { operationId });
                 });
             }
@@ -1262,6 +1264,7 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
                         var _a;
                         return (0, notificationEvents_1.emitNotificationEvent)({
                             type: 'CLEANING_TASK_UPDATED',
+                            policyKey: 'task_requirements_changed',
                             entity: 'cleaning_task',
                             entityId: String(created.id),
                             propertyId,
@@ -1271,7 +1274,6 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
                             body: lines.join('\n'),
                             data: { entity: 'cleaning_task', entityId: String(created.id), action: 'open_task', kind: 'cleaning_task_manager_fields_updated' },
                             actorUserId: (_a = req.user) === null || _a === void 0 ? void 0 : _a.sub,
-                            recipientUserIds: await resolveCleaningTaskUpdateRecipients([String(created.id)]),
                         }, { operationId });
                     });
                 }

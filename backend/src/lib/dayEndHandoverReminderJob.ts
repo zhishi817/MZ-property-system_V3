@@ -124,6 +124,7 @@ export async function runDayEndHandoverReminder(params?: { at?: string; date?: s
   const eventId = `day_end_handover_reminder:${date}:${at}`
   const result = await emitNotificationEvent({
     type: 'DAY_END_HANDOVER_REMINDER',
+    policyKey: 'day_end_handover_reminder',
     entity: 'work_task',
     entityId: eventId,
     eventId,
@@ -160,13 +161,13 @@ export async function runDayEndHandoverManagerReminder(params?: { at?: string; d
     const eventId = `day_end_handover_manager_reminder:${date}:${at}:${user.user_id}`
     const result = await emitNotificationEvent({
       type: 'DAY_END_HANDOVER_MANAGER_REMINDER',
+      policyKey: 'day_end_handover_manager_reminder',
       entity: 'work_task',
       entityId: eventId,
       eventId,
       updatedAt,
       title,
       body,
-      recipientUserIds: managerIds,
       priority: 'high',
       data: {
         kind: 'day_end_handover_manager_reminder',

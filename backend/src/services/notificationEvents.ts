@@ -9,6 +9,11 @@ import {
   NotificationRuleConfigState,
   resolveManagerUsersAudience,
 } from './notificationRules'
+import {
+  AppNotificationPolicyKey,
+  isAppNotificationPolicyKey,
+  resolveAppNotificationPolicyRecipients,
+} from './appNotificationPolicies'
 
 export type NotificationPriority = 'high' | 'medium' | 'low'
 
@@ -31,6 +36,7 @@ export type NotificationEventType =
 
 export type EmitNotificationEventParams = {
   type: NotificationEventType
+  policyKey?: AppNotificationPolicyKey | null
   entity: 'order' | 'cleaning_task' | 'work_task' | 'property_feedback' | 'warehouse_key'
   entityId: string
   eventId?: string | null
@@ -375,7 +381,28 @@ export async function emitNotificationEvent(params: EmitNotificationEventParams,
   let selectedUsers: string[] = []
   const audienceCounts: Record<string, number> = {}
   const resolved: string[] = []
-  if (isManagedNotificationEventType(type)) {
+  const appPolicyKey = String(params.policyKey || '').trim()
+  if (appPolicyKey && isAppNotificationPolicyKey(appPolicyKey)) {
+    const appResolution = await resolveAppNotificationPolicyRecipients(
+      appPolicyKey,
+      {
+        entity,
+        entityId,
+        data: params.data,
+      },
+      client,
+    )
+    configState = appResolution.policy.enabled === false ? 'disabled' : appResolution.policy.version > 0 ? 'configured' : 'no_config'
+    ruleVersion = Number(appResolution.policy.version || 0)
+    if (configState === 'disabled') {
+      logDisabledRule(params, eventId, ruleVersion)
+      return { ok: true, sent: 0, skipped: 'RULE_DISABLED', event_id: eventId, rule_version: ruleVersion, config_state: configState }
+    }
+    selectedAudiences = appResolution.selected_group_keys.slice()
+    selectedUsers = appResolution.policy.extra_user_ids.slice()
+    Object.assign(audienceCounts, appResolution.audience_counts)
+    resolved.push(...appResolution.recipients)
+  } else if (isManagedNotificationEventType(type)) {
     const rule = await getNotificationRule(type as NotificationManagedEventType)
     configState = rule.config_state
     ruleVersion = Number(rule.version || 0)
@@ -436,6 +463,7 @@ export async function emitNotificationEvent(params: EmitNotificationEventParams,
     event_id: eventId,
     entity,
     entityId,
+    ...(appPolicyKey && isAppNotificationPolicyKey(appPolicyKey) ? { policy_key: appPolicyKey } : {}),
   }
 
   let inserted = 0

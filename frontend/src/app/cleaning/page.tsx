@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { API_BASE, deleteJSON, getJSON, patchJSON, postJSON } from '../../lib/api'
 import { cleaningColorKind } from '../../lib/cleaningColor'
+import { type TaskSemanticTone, taskStatusMeta, taskTimingTone } from '../../lib/cleaningTaskUi'
 import styles from './cleaningSchedule.module.scss'
 
 type Staff = { id: string; name: string; capacity_per_day: number; kind?: 'cleaner' | 'inspector'; is_active?: boolean; color_hex?: string | null }
@@ -133,6 +134,16 @@ type OfflineTaskForm = {
   urgency: 'low' | 'medium' | 'high' | 'urgent'
   property_id: string | null
   assignee_id: string | null
+}
+
+function semanticToneClass(tone: TaskSemanticTone) {
+  if (tone === 'special') return styles.semanticToneSpecial
+  if (tone === 'pending') return styles.semanticTonePending
+  if (tone === 'danger') return styles.semanticToneDanger
+  if (tone === 'success') return styles.semanticToneSuccess
+  if (tone === 'info') return styles.semanticToneInfo
+  if (tone === 'neutral') return styles.semanticToneNeutral
+  return styles.semanticToneNormal
 }
 
 export default function CleaningPage() {
@@ -299,7 +310,7 @@ export default function CleaningPage() {
 
   const checkinSyncTag = useCallback((it: Pick<CalendarItem, 'source' | 'checkin_sync_status'>) => {
     if (it.source !== 'cleaning_tasks') return null
-    if (it.checkin_sync_status === 'pending') return { label: '待同步', tone: 'warning' as const }
+    if (it.checkin_sync_status === 'pending') return { label: '待同步', tone: 'pending' as const }
     if (it.checkin_sync_status === 'synced') return { label: '已同步', tone: 'success' as const }
     return null
   }, [])
@@ -1052,15 +1063,7 @@ export default function CleaningPage() {
   ]), [])
 
   const statusText = useCallback((s: string | null | undefined) => {
-    const v = String(s || '').trim()
-    if (v === 'pending') return '待处理'
-    if (v === 'assigned') return '已分配'
-    if (v === 'in_progress') return '进行中'
-    if (v === 'completed') return '已完成'
-    if (v === 'cancelled') return '已取消'
-    if (v === 'todo') return '待处理'
-    if (v === 'done') return '已完成'
-    return v || '-'
+    return taskStatusMeta(s).label
   }, [])
 
   const offlineTaskTypeText = useCallback((taskType: string | null | undefined) => {
@@ -1081,12 +1084,7 @@ export default function CleaningPage() {
   }, [])
 
   const statusChipCls = useCallback((s: string | null | undefined) => {
-    const v = String(s || '').trim()
-    if (v === 'completed' || v === 'done') return styles.statusDone
-    if (v === 'in_progress') return styles.statusInProgress
-    if (v === 'assigned') return styles.statusAssigned
-    if (v === 'cancelled') return styles.statusCancelled
-    return styles.statusPending
+    return semanticToneClass(taskStatusMeta(s).tone)
   }, [])
 
   const timeOptions = useMemo(() => {
@@ -1741,10 +1739,10 @@ export default function CleaningPage() {
                     ) : null}
                   </div>
                   <div className={styles.metaRow}>
-                    {it.nights != null ? <span className={styles.metaChip}>{`${it.nights}晚`}</span> : null}
-                    {syncTag ? <span className={`${styles.metaChip} ${syncTag.tone === 'warning' ? styles.metaChipWarn : ''}`}>{syncTag.label}</span> : null}
-                    {hasLateCheckout(it) ? <span className={styles.metaChip}>晚退房</span> : null}
-                    {showKeyMissing ? <span className={`${styles.metaChip} ${styles.metaChipDanger}`}>钥匙未上传</span> : null}
+                    {it.nights != null ? <span className={`${styles.metaChip} ${semanticToneClass('neutral')}`}>{`${it.nights}晚`}</span> : null}
+                    {syncTag ? <span className={`${styles.metaChip} ${semanticToneClass(syncTag.tone)}`}>{syncTag.label}</span> : null}
+                    {hasLateCheckout(it) ? <span className={`${styles.metaChip} ${semanticToneClass(taskTimingTone('晚退房'))}`}>晚退房</span> : null}
+                    {showKeyMissing ? <span className={`${styles.metaChip} ${semanticToneClass('danger')}`}>钥匙未上传</span> : null}
                     {checkoutCode !== '-' ? <span className={styles.metaText}><span className={styles.metaKey}>退房</span>{checkoutCode}</span> : null}
                     {isTurnover && checkinCode !== '-' ? <span className={styles.metaText}><span className={styles.metaKey}>入住</span>{checkinCode}</span> : null}
                     <span className={styles.metaText}><span className={styles.metaKey}>退房密码</span>{checkoutPwd || '-'}</span>
@@ -1836,11 +1834,11 @@ export default function CleaningPage() {
                 </div>
               </div>
               <div className={styles.cleaningEditHeroChips}>
-                <span className={styles.cleaningEditChip}>{statusText(editForm.status)}</span>
-                {editForm.checkin_sync_status === 'pending' ? <span className={`${styles.cleaningEditChip} ${styles.cleaningEditChipWarn}`}>待同步</span> : null}
-                {editForm.checkin_sync_status === 'synced' ? <span className={styles.cleaningEditChip}>已同步</span> : null}
-                {!editForm.auto_sync_enabled ? <span className={`${styles.cleaningEditChip} ${styles.cleaningEditChipWarn}`}>自动同步已锁定</span> : null}
-                {editForm.mode === 'stayover' ? <span className={`${styles.cleaningEditChip} ${styles.cleaningEditChipSoft}`}>仅清洁安排</span> : null}
+                <span className={`${styles.cleaningEditChip} ${semanticToneClass(taskStatusMeta(editForm.status).tone)}`}>{statusText(editForm.status)}</span>
+                {editForm.checkin_sync_status === 'pending' ? <span className={`${styles.cleaningEditChip} ${semanticToneClass('pending')}`}>待同步</span> : null}
+                {editForm.checkin_sync_status === 'synced' ? <span className={`${styles.cleaningEditChip} ${semanticToneClass('success')}`}>已同步</span> : null}
+                {!editForm.auto_sync_enabled ? <span className={`${styles.cleaningEditChip} ${semanticToneClass('pending')}`}>自动同步已锁定</span> : null}
+                {editForm.mode === 'stayover' ? <span className={`${styles.cleaningEditChip} ${semanticToneClass('neutral')}`}>仅清洁安排</span> : null}
               </div>
             </div>
 

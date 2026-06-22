@@ -13,6 +13,7 @@ const dbAdapter_1 = require("../dbAdapter");
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const permissionsCatalog_1 = require("../permissionsCatalog");
 const notificationRules_1 = require("../services/notificationRules");
+const appNotificationPolicies_1 = require("../services/appNotificationPolicies");
 exports.router = (0, express_1.Router)();
 function expandPermissionSynonyms(codes) {
     const acts = ['view', 'create', 'write', 'delete', 'archive'];
@@ -139,6 +140,49 @@ async function ensureRolesTable() {
         await pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS uniq_roles_name ON roles(name);');
     }
     catch (_a) { }
+}
+async function listRbacRoles() {
+    if (dbAdapter_1.hasPg) {
+        await ensureRolesTable();
+        const rows = await (0, dbAdapter_1.pgSelect)('roles', '*') || [];
+        return rows.map((x) => ({
+            id: String(x.id || ''),
+            name: String(x.name || ''),
+            description: x.description == null ? null : String(x.description || ''),
+        }));
+    }
+    return (store_1.db.roles || []).map((x) => ({
+        id: String(x.id || ''),
+        name: String(x.name || ''),
+        description: x.description == null ? null : String(x.description || ''),
+    }));
+}
+async function listRbacUsers() {
+    if (dbAdapter_1.hasPg) {
+        const { pgPool } = require('../dbAdapter');
+        if (!pgPool)
+            return [];
+        const ur = await pgPool.query(`SELECT u.id::text AS id,
+              COALESCE(NULLIF(TRIM(u.username), ''), NULLIF(TRIM(u.legal_name), ''), NULLIF(TRIM(u.email), ''), u.id::text) AS username,
+              u.role::text AS role,
+              COALESCE(ARRAY_REMOVE(ARRAY_AGG(DISTINCT ur.role_name) FILTER (WHERE ur.role_name IS NOT NULL), NULL), ARRAY[]::text[]) AS roles
+       FROM users u
+       LEFT JOIN user_roles ur ON ur.user_id = u.id::text
+       GROUP BY u.id, u.username, u.legal_name, u.email, u.role
+       ORDER BY username ASC`);
+        return ((ur === null || ur === void 0 ? void 0 : ur.rows) || []).map((x) => ({
+            id: String(x.id || ''),
+            username: String(x.username || ''),
+            role: String(x.role || ''),
+            roles: Array.isArray(x.roles) ? x.roles.map((v) => String(v || '').trim()).filter(Boolean) : [],
+        }));
+    }
+    return (store_1.db.users || []).map((x) => ({
+        id: String(x.id || ''),
+        username: String(x.username || x.email || x.id || ''),
+        role: String(x.role || ''),
+        roles: [String(x.role || '')].filter(Boolean),
+    }));
 }
 exports.router.get('/roles', async (_req, res) => {
     try {
@@ -447,36 +491,8 @@ exports.router.get('/role-permissions', async (req, res) => {
 });
 exports.router.get('/notification-rules', (0, auth_1.requirePerm)('rbac.manage'), async (_req, res) => {
     try {
-        const roles = await (async () => {
-            if (dbAdapter_1.hasPg) {
-                await ensureRolesTable();
-                const rows = await (0, dbAdapter_1.pgSelect)('roles', '*') || [];
-                return rows.map((x) => ({ id: String(x.id || ''), name: String(x.name || ''), description: x.description == null ? null : String(x.description || '') }));
-            }
-            return (store_1.db.roles || []).map((x) => ({ id: String(x.id || ''), name: String(x.name || ''), description: x.description == null ? null : String(x.description || '') }));
-        })();
-        const users = await (async () => {
-            if (dbAdapter_1.hasPg) {
-                const { pgPool } = require('../dbAdapter');
-                if (!pgPool)
-                    return [];
-                const ur = await pgPool.query(`SELECT u.id::text AS id,
-                  COALESCE(NULLIF(TRIM(u.username), ''), NULLIF(TRIM(u.legal_name), ''), NULLIF(TRIM(u.email), ''), u.id::text) AS username,
-                  u.role::text AS role,
-                  COALESCE(ARRAY_REMOVE(ARRAY_AGG(DISTINCT ur.role_name) FILTER (WHERE ur.role_name IS NOT NULL), NULL), ARRAY[]::text[]) AS roles
-           FROM users u
-           LEFT JOIN user_roles ur ON ur.user_id = u.id::text
-           GROUP BY u.id, u.username, u.legal_name, u.email, u.role
-           ORDER BY username ASC`);
-                return ((ur === null || ur === void 0 ? void 0 : ur.rows) || []).map((x) => ({
-                    id: String(x.id || ''),
-                    username: String(x.username || ''),
-                    role: String(x.role || ''),
-                    roles: Array.isArray(x.roles) ? x.roles.map((v) => String(v || '').trim()).filter(Boolean) : [],
-                }));
-            }
-            return (store_1.db.users || []).map((x) => ({ id: String(x.id || ''), username: String(x.username || x.email || x.id || ''), role: String(x.role || ''), roles: [String(x.role || '')].filter(Boolean) }));
-        })();
+        const roles = await listRbacRoles();
+        const users = await listRbacUsers();
         const rules = await (0, notificationRules_1.listNotificationRules)();
         return res.json({ rules, roles, users, event_types: notificationRules_1.ALL_NOTIFICATION_EVENT_TYPES, audience_options: notificationRules_1.NOTIFICATION_AUDIENCE_OPTIONS });
     }
@@ -526,6 +542,67 @@ exports.router.post('/notification-rules/:eventType/reset', (0, auth_1.requirePe
         return res.status(404).json({ message: 'event_type_not_found' });
     try {
         return res.json(await (0, notificationRules_1.resetNotificationRule)(eventType, String(((_a = req === null || req === void 0 ? void 0 : req.user) === null || _a === void 0 ? void 0 : _a.sub) || '').trim() || null));
+    }
+    catch (e) {
+        return res.status(500).json({ message: String((e === null || e === void 0 ? void 0 : e.message) || 'reset_failed') });
+    }
+});
+exports.router.get('/app-notification-policies', (0, auth_1.requirePerm)('rbac.manage'), async (_req, res) => {
+    try {
+        const users = await listRbacUsers();
+        const policies = await (0, appNotificationPolicies_1.listAppNotificationPolicies)();
+        return res.json({
+            policies,
+            users,
+            groups: appNotificationPolicies_1.APP_NOTIFICATION_GROUP_OPTIONS,
+            templates: appNotificationPolicies_1.APP_NOTIFICATION_TEMPLATE_OPTIONS,
+            policy_keys: appNotificationPolicies_1.APP_NOTIFICATION_POLICY_KEYS,
+        });
+    }
+    catch (e) {
+        return res.status(500).json({ message: String((e === null || e === void 0 ? void 0 : e.message) || 'load_failed') });
+    }
+});
+exports.router.get('/app-notification-policies/:policyKey', (0, auth_1.requirePerm)('rbac.manage'), async (req, res) => {
+    const policyKey = String(req.params.policyKey || '').trim();
+    if (!(0, appNotificationPolicies_1.isAppNotificationPolicyKey)(policyKey))
+        return res.status(404).json({ message: 'policy_key_not_found' });
+    try {
+        return res.json(await (0, appNotificationPolicies_1.getAppNotificationPolicy)(policyKey));
+    }
+    catch (e) {
+        return res.status(500).json({ message: String((e === null || e === void 0 ? void 0 : e.message) || 'load_failed') });
+    }
+});
+const appNotificationPolicySetSchema = zod_1.z.object({
+    enabled: zod_1.z.boolean(),
+    template_key: zod_1.z.enum(appNotificationPolicies_1.APP_NOTIFICATION_TEMPLATE_KEYS),
+    extra_group_keys: zod_1.z.array(zod_1.z.enum(appNotificationPolicies_1.APP_NOTIFICATION_GROUP_KEYS)).optional(),
+    extra_user_ids: zod_1.z.array(zod_1.z.string().trim().min(1).max(120)).optional(),
+    note: zod_1.z.string().max(500).nullable().optional(),
+});
+exports.router.put('/app-notification-policies/:policyKey', (0, auth_1.requirePerm)('rbac.manage'), async (req, res) => {
+    var _a;
+    const policyKey = String(req.params.policyKey || '').trim();
+    if (!(0, appNotificationPolicies_1.isAppNotificationPolicyKey)(policyKey))
+        return res.status(404).json({ message: 'policy_key_not_found' });
+    const parsed = appNotificationPolicySetSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json(parsed.error.format());
+    try {
+        return res.json(await (0, appNotificationPolicies_1.saveAppNotificationPolicy)(policyKey, parsed.data, String(((_a = req === null || req === void 0 ? void 0 : req.user) === null || _a === void 0 ? void 0 : _a.sub) || '').trim() || null));
+    }
+    catch (e) {
+        return res.status(500).json({ message: String((e === null || e === void 0 ? void 0 : e.message) || 'save_failed') });
+    }
+});
+exports.router.post('/app-notification-policies/:policyKey/reset', (0, auth_1.requirePerm)('rbac.manage'), async (req, res) => {
+    var _a;
+    const policyKey = String(req.params.policyKey || '').trim();
+    if (!(0, appNotificationPolicies_1.isAppNotificationPolicyKey)(policyKey))
+        return res.status(404).json({ message: 'policy_key_not_found' });
+    try {
+        return res.json(await (0, appNotificationPolicies_1.resetAppNotificationPolicy)(policyKey, String(((_a = req === null || req === void 0 ? void 0 : req.user) === null || _a === void 0 ? void 0 : _a.sub) || '').trim() || null));
     }
     catch (e) {
         return res.status(500).json({ message: String((e === null || e === void 0 ? void 0 : e.message) || 'reset_failed') });
