@@ -419,8 +419,8 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260622-011 — 已挂钥匙保持完成语义但显示独立文案
 
-- **Status:** staged
-- **Updated:** 2026-06-22 13:24 AEST
+- **Status:** pushed
+- **Updated:** 2026-06-22 14:30 AEST
 - **Request:** 修正网页标记“已挂钥匙”后检查安排自动变成“自完成”，并且界面和刷新后又显示“已完成”的问题；其中“已挂钥匙”仍属于完成语义。
 - **Outcome:** “已挂钥匙”现在仍属于完成态，但保留独立的 `keys_hung` 展示文案：不再修改同日/延后检查安排、检查日期或检查人员；重新打开时开关保持选中；网页详情和列表刷新后继续显示“已挂钥匙”，同时仍按完成任务处理。
 
@@ -460,12 +460,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Risk: 旧版本已经清空检查员的具体历史任务无法自动推断原人员；重新打开该任务后会恢复“同日检查”并显示检查员选择，必须重新选择一次再保存。
 - Rollback: restore the `keys_hung -> self_complete` mapping and the old `keys_hung -> done` normalization in task-center responses.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches added.
-- Git state: uncommitted.
+- Git state: pushed to `Dev` in root commit `c39c40c`.
 
 ## CRL-20260622-012 — 移动端任务与反馈通知链路修复
 
-- **Status:** staged
-- **Updated:** 2026-06-22 AEST
+- **Status:** pushed
+- **Updated:** 2026-06-22 14:30 AEST
 - **Request:** 同时修复入住任务安排时执行人和经理组收不到通知、新版问题反馈提交后无通知、线下任务完成通知重复横幅推送三个问题，并推送 Dev。
 - **Outcome:** 任务中心更新入住/清洁安排后会通知当前执行人及经理组；新版维修、深清和日用品反馈会生成信息中心记录并入 Push 队列；已完成的线下任务重复提交不再创建新完成通知。
 
@@ -509,12 +509,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Risk: 房源反馈通知失败不会回滚已保存的反馈，但现在会写入服务端错误日志。
 - Rollback: remove the three notification/idempotency changes and restore the previous version files; no data migration rollback is required.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches added.
-- Git state: uncommitted.
+- Git state: pushed to `Dev` in root commit `c39c40c`.
 
 ## CRL-20260622-013 — 线下任务状态统一到 work_tasks
 
-- **Status:** staged
-- **Updated:** 2026-06-22 14:20 AEST
+- **Status:** pushed
+- **Updated:** 2026-06-22 14:30 AEST
 - **Request:** 修复移动端“线下其他任务”完成后状态回退，并明确一个状态权威来源，另一张表不再独立维护状态。
 - **Outcome:** `work_tasks.status` 成为线下任务唯一运行时状态来源；移动端、任务中心和清洁管理页面均从该表读取或修改状态，旧版 `cleaning_offline_tasks.status` 不再参与日常状态同步或筛选。
 
@@ -556,4 +556,4 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Risk: 未连接真实数据库和移动端账号执行端到端完成操作；验证覆盖 TypeScript 构建、现有清洁规则测试和静态状态链路复查。
 - Rollback: restore legacy status propagation in the four backend modules; no schema rollback is required.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches added.
-- Git state: uncommitted; shared files contain other ready release units and require hunk-level staging.
+- Git state: pushed to `Dev` in root commit `c39c40c`; combined with related CRL-20260622-011 and CRL-20260622-012 shared-file changes as requested.
