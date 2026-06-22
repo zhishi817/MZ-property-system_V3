@@ -1554,6 +1554,105 @@
   padding: 4px 14px 16px;
 }
 
+.propertyFollowupSection {
+  margin: 10px 14px 16px;
+  padding: 16px;
+  border: 2px solid rgba(59, 130, 246, 0.2);
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(239, 246, 255, 0.78) 0%, rgba(248, 250, 252, 0.96) 100%);
+}
+
+.propertyFollowupHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(59, 130, 246, 0.16);
+}
+
+.propertyFollowupTitle {
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.propertyFollowupSubtitle {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.propertyFollowupGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.propertyFollowupCard {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #dbe4f0;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.04);
+}
+
+.propertyFollowupCardTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.propertyFollowupProperty {
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.propertyFollowupDetail {
+  display: -webkit-box;
+  min-height: 34px;
+  overflow: hidden;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 17px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+@media (max-width: 1180px) {
+  .propertyFollowupGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .propertyFollowupSection {
+    margin-inline: 8px;
+    padding: 12px;
+  }
+
+  .propertyFollowupHeader {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .propertyFollowupGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .taskCenterBoardSkeleton {
   padding: 20px 6px 12px;
 }

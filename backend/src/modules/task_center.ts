@@ -23,6 +23,7 @@ const DEFERRED_INSPECTION_ROW_TITLE = '延后检查'
 const COMPLETED_ROW_KEY = 'group:completed'
 const COMPLETED_ROW_TITLE = '已完成'
 const WORK_TASK_VISIBILITY_START = '2026-06-01'
+const PROPERTY_FOLLOWUP_SOURCE_TYPES = ['property_maintenance', 'property_deep_cleaning', 'property_daily_necessities'] as const
 
 type BoardTask = {
   item_key: string
@@ -215,6 +216,10 @@ function isGeneratedWorkNo(v: any): boolean {
   return /^(R|DC)-\d{8}-[a-z0-9]+$/i.test(text(v))
 }
 
+function isPropertyFollowupTask(task: Pick<BoardTask, 'source_type'>) {
+  return PROPERTY_FOLLOWUP_SOURCE_TYPES.includes(text(task.source_type) as typeof PROPERTY_FOLLOWUP_SOURCE_TYPES[number])
+}
+
 function workTaskDisplayText(row: any): { title: string; detail: string } {
   const region = text(row?.property_region)
   const propertyCode = text(row?.property_code) || text(row?.property_id)
@@ -302,6 +307,150 @@ async function ensureWorkTasksTable() {
   await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day_assignee ON work_tasks(scheduled_date, assignee_id, status);`)
   await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_kind_day ON work_tasks(task_kind, scheduled_date);`)
   await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day ON work_tasks(scheduled_date);`)
+}
+
+async function syncPropertyFollowupWorkTasks() {
+  if (!hasPg || !pgPool) return
+  await ensureWorkTasksTable()
+  const tableResult = await pgPool.query(
+    `SELECT
+       to_regclass('public.property_maintenance') IS NOT NULL AS has_maintenance,
+       to_regclass('public.property_deep_cleaning') IS NOT NULL AS has_deep_cleaning,
+       to_regclass('public.property_daily_necessities') IS NOT NULL AS has_daily_necessities`,
+  )
+  const available = tableResult.rows?.[0] || {}
+  const activeParts: string[] = []
+  if (available.has_maintenance) {
+    activeParts.push(`
+      SELECT 'property_maintenance'::text AS source_type,
+             m.id::text AS source_id,
+             'maintenance'::text AS task_kind,
+             COALESCE(p.id::text, m.property_id::text) AS property_id,
+             COALESCE(NULLIF(m.work_no::text, ''), '维修任务') AS title,
+             NULLIF(COALESCE(m.details::text, ''), '') AS summary,
+             'medium'::text AS urgency,
+             NULL::text AS source_assignee_id,
+             COALESCE(m.created_at, m.submitted_at, now()) AS created_at
+        FROM property_maintenance m
+        LEFT JOIN properties p ON p.id::text = m.property_id::text OR upper(p.code::text) = upper(m.property_id::text)
+       WHERE lower(COALESCE(m.status::text, 'pending')) NOT IN ('review_pending','completed','done','ready','canceled','cancelled')`)
+  }
+  if (available.has_deep_cleaning) {
+    activeParts.push(`
+      SELECT 'property_deep_cleaning'::text AS source_type,
+             d.id::text AS source_id,
+             'deep_cleaning'::text AS task_kind,
+             COALESCE(p.id::text, d.property_id::text) AS property_id,
+             COALESCE(NULLIF(d.work_no::text, ''), '深度清洁') AS title,
+             NULLIF(COALESCE(d.project_desc::text, d.details::text, ''), '') AS summary,
+             'medium'::text AS urgency,
+             NULL::text AS source_assignee_id,
+             COALESCE(d.created_at, d.submitted_at, now()) AS created_at
+        FROM property_deep_cleaning d
+        LEFT JOIN properties p ON p.id::text = d.property_id::text OR upper(p.code::text) = upper(d.property_id::text)
+       WHERE lower(COALESCE(d.status::text, 'pending')) NOT IN ('review_pending','completed','done','ready','canceled','cancelled')`)
+  }
+  if (available.has_daily_necessities) {
+    activeParts.push(`
+      SELECT 'property_daily_necessities'::text AS source_type,
+             n.id::text AS source_id,
+             'daily_necessities'::text AS task_kind,
+             COALESCE(p.id::text, n.property_id::text) AS property_id,
+             COALESCE(NULLIF(n.item_name::text, ''), '日用品更换') AS title,
+             NULLIF(CONCAT_WS('，', NULLIF(n.note::text, ''), CASE WHEN COALESCE(n.quantity, 0) > 0 THEN '数量 ' || n.quantity::text ELSE NULL END), '') AS summary,
+             'medium'::text AS urgency,
+             NULL::text AS source_assignee_id,
+             COALESCE(n.created_at, n.submitted_at, now()) AS created_at
+        FROM property_daily_necessities n
+        LEFT JOIN properties p ON p.id::text = n.property_id::text OR upper(p.code::text) = upper(n.property_id::text)
+       WHERE lower(COALESCE(n.status::text, 'need_replace')) = 'need_replace'`)
+  }
+  if (!activeParts.length) return
+  const activeSql = activeParts.join('\nUNION ALL\n')
+  await pgPool.query(
+    `WITH active AS (${activeSql})
+     DELETE FROM work_tasks w
+      WHERE w.source_type = ANY($1::text[])
+        AND NOT EXISTS (
+          SELECT 1 FROM active a
+           WHERE a.source_type = w.source_type
+             AND a.source_id = w.source_id
+        )`,
+    [PROPERTY_FOLLOWUP_SOURCE_TYPES],
+  )
+  await pgPool.query(
+    `WITH active AS (${activeSql}),
+     checkout_dates AS (
+       SELECT COALESCE(task_property.id::text, t.property_id::text) AS property_id,
+              MIN(COALESCE(t.task_date, t.date)::date) AS next_checkout_date
+         FROM cleaning_tasks t
+         LEFT JOIN properties task_property
+           ON task_property.id::text = t.property_id::text
+           OR upper(task_property.code::text) = upper(t.property_id::text)
+         LEFT JOIN orders o ON o.id::text = t.order_id::text
+        WHERE lower(COALESCE(t.task_type::text, '')) = 'checkout_clean'
+          AND COALESCE(t.task_date, t.date)::date >= timezone('Australia/Melbourne', now())::date
+          AND lower(COALESCE(t.status::text, '')) NOT IN ('cancelled','canceled')
+          AND (
+            t.order_id IS NULL
+            OR (
+              o.id IS NOT NULL
+              AND lower(COALESCE(o.status::text, '')) <> 'invalid'
+              AND lower(COALESCE(o.status::text, '')) NOT LIKE '%cancel%'
+            )
+          )
+        GROUP BY COALESCE(task_property.id::text, t.property_id::text)
+     ),
+     projected AS (
+       SELECT a.*, checkout.next_checkout_date
+         FROM active a
+         LEFT JOIN checkout_dates checkout ON checkout.property_id = a.property_id
+     )
+     INSERT INTO work_tasks(
+       id, task_kind, source_type, source_id, property_id, title, summary,
+       scheduled_date, assignee_id, status, urgency, created_at, updated_at
+     )
+     SELECT p.source_type || ':' || p.source_id,
+            p.task_kind,
+            p.source_type,
+            p.source_id,
+            p.property_id,
+            p.title,
+            p.summary,
+            p.next_checkout_date,
+            p.source_assignee_id,
+            CASE WHEN p.source_assignee_id IS NULL THEN 'todo' ELSE 'assigned' END,
+            CASE WHEN p.urgency IN ('low','medium','high','urgent') THEN p.urgency ELSE 'medium' END,
+            p.created_at,
+            now()
+       FROM projected p
+     ON CONFLICT (source_type, source_id) DO UPDATE SET
+       task_kind = EXCLUDED.task_kind,
+       property_id = EXCLUDED.property_id,
+       title = EXCLUDED.title,
+       summary = EXCLUDED.summary,
+       scheduled_date = CASE
+         WHEN work_tasks.assignee_id IS NULL OR work_tasks.scheduled_date IS NULL THEN EXCLUDED.scheduled_date
+         ELSE work_tasks.scheduled_date
+       END,
+       assignee_id = COALESCE(work_tasks.assignee_id, EXCLUDED.assignee_id),
+       status = CASE
+         WHEN lower(COALESCE(work_tasks.status, 'todo')) IN ('todo','assigned')
+           THEN CASE WHEN COALESCE(work_tasks.assignee_id, EXCLUDED.assignee_id) IS NULL THEN 'todo' ELSE 'assigned' END
+         ELSE work_tasks.status
+       END,
+       urgency = EXCLUDED.urgency,
+       updated_at = CASE
+         WHEN work_tasks.task_kind IS DISTINCT FROM EXCLUDED.task_kind
+           OR work_tasks.property_id IS DISTINCT FROM EXCLUDED.property_id
+           OR work_tasks.title IS DISTINCT FROM EXCLUDED.title
+           OR work_tasks.summary IS DISTINCT FROM EXCLUDED.summary
+           OR ((work_tasks.assignee_id IS NULL OR work_tasks.scheduled_date IS NULL) AND work_tasks.scheduled_date IS DISTINCT FROM EXCLUDED.scheduled_date)
+           OR (work_tasks.assignee_id IS NULL AND EXCLUDED.assignee_id IS NOT NULL)
+         THEN now()
+         ELSE work_tasks.updated_at
+       END`,
+  )
 }
 
 async function hasCleaningOfflineTasksTable() {
@@ -829,9 +978,11 @@ async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnsch
       LEFT JOIN properties p_code ON upper(p_code.code) = upper(w.property_id::text)
       WHERE w.status <> ALL($2::text[])
         AND COALESCE(w.created_at::date, w.scheduled_date, $1::date) >= $3::date
+        AND NOT (w.source_type = ANY($4::text[]) AND w.scheduled_date IS NULL)
         AND (${where.join(' OR ')})
       ORDER BY COALESCE(w.scheduled_date, $1::date) ASC, w.urgency DESC, w.updated_at DESC, w.id DESC
     `
+    vals.push(PROPERTY_FOLLOWUP_SOURCE_TYPES)
     const r = await pgPool.query(sql, vals)
     const workTasks = (r?.rows || []).map((row: any) => mapWorkTaskRowToBoardTask(row, date))
     if (!hasOfflineTasks) return workTasks
@@ -1242,7 +1393,9 @@ async function buildTaskCenterDay(date: string, includeOverdue: boolean, include
     loadBoardRows(date, 'board'),
     loadBoardItems(date, 'board'),
   ])
-  const allTasks = [...cleaningTasks, ...workTasks]
+  const propertyFollowups = workTasks.filter(isPropertyFollowupTask)
+  const regularWorkTasks = workTasks.filter((task) => !isPropertyFollowupTask(task))
+  const allTasks = [...cleaningTasks, ...regularWorkTasks]
   const board = buildRows({
     date,
     tasks: allTasks.map((task) => ({ ...task })),
@@ -1258,7 +1411,7 @@ async function buildTaskCenterDay(date: string, includeOverdue: boolean, include
     date,
     pool: [],
     groups: {},
-    tasks: workTasks.map((task) => ({
+    tasks: regularWorkTasks.map((task) => ({
       id: task.task_id,
       task_kind: task.task_kind,
       source_type: task.source_type || '',
@@ -1273,6 +1426,7 @@ async function buildTaskCenterDay(date: string, includeOverdue: boolean, include
       status: normStatus(task.status),
       urgency: normUrgency(task.urgency),
     })),
+    property_followups: propertyFollowups,
     rows,
     region_rows: regularRows,
     final_group_rows: regularRows.filter((row) => row.row_type === 'final_group'),
@@ -1400,8 +1554,9 @@ router.get('/day', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 
   const includeFuture = String((req.query as any)?.include_future || '').trim() === '1'
   try {
     if (!hasPg && !Array.isArray((db as any).cleaningTasks)) {
-      return res.json({ date, pool: [], groups: {}, tasks: [], rows: [], region_rows: [], final_group_rows: [], deferred_rows: [], entry_readiness: { ready_for_final_grouping: true, unresolved_primary_count: 0, pending_inspection_count: 0, skipped_count: 0 } })
+      return res.json({ date, pool: [], groups: {}, tasks: [], property_followups: [], rows: [], region_rows: [], final_group_rows: [], deferred_rows: [], entry_readiness: { ready_for_final_grouping: true, unresolved_primary_count: 0, pending_inspection_count: 0, skipped_count: 0 } })
     }
+    await syncPropertyFollowupWorkTasks()
     const payload = await buildTaskCenterDay(date, includeOverdue, includeUnscheduled, includeFuture)
     return res.json(payload)
   } catch (e: any) {
