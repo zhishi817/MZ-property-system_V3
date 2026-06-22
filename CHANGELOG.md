@@ -1,5 +1,16 @@
 # Changelog
 
+## Dev (2026-06-22)
+
+### build.1
+
+- Version: `0.2.13-notification-delivery.20260622+build.1`
+- Task notifications: Notify assigned cleaning/check-in staff and the manager group when task-center assignments change.
+- Property feedback: Send manager-group inbox and push notifications for maintenance, deep-cleaning, and daily-necessity submissions created through the current mobile feedback flow.
+- Offline task completion: Make completion idempotent so repeated or concurrent completion requests do not generate duplicate banner notifications.
+- Keys-hung task state: Keep `keys_hung` as a distinct displayed status while preserving completed-task behavior and the existing inspection assignment.
+- Offline task authority: Use `work_tasks.status` as the single runtime status source so completed offline tasks no longer revert from legacy-table synchronization.
+
 ## Dev (2026-06-21)
 
 ### build.1

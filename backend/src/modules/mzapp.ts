@@ -61,6 +61,11 @@ function workTaskCompletedBody(title: any) {
   return base ? `${base} 已标记完成` : '任务已标记完成'
 }
 
+function isWorkTaskDoneStatus(status: any) {
+  const value = String(status || '').trim().toLowerCase()
+  return value === 'done' || value === 'completed' || value === 'ready'
+}
+
 function workTaskSortNumber(raw: any) {
   if (raw == null) return null
   const n = Number(raw)
@@ -4422,6 +4427,7 @@ async function completePropertyFollowupSource(client: any, row: any, completedAt
         WHERE id::text = $1`,
       [sourceId],
     )
+    return
   }
 }
 
@@ -4450,20 +4456,33 @@ router.post('/work-tasks/:id/mark', async (req, res) => {
     const completionPhotoUrls = normalizeWorkTaskPhotoUrls(photoUrls.length ? photoUrls : (photoUrl ? [photoUrl] : []))
 
     if (action === 'done') {
+      if (isWorkTaskDoneStatus(row.status)) {
+        return res.json({
+          ok: true,
+          already_done: true,
+          completion_photo_urls: normalizeWorkTaskPhotoUrls(row.completion_photo_urls),
+          completion_note: row.completion_note == null ? null : String(row.completion_note || ''),
+          completion_reason: null,
+        })
+      }
       const completedAt = new Date().toISOString()
       const client = await pgPool.connect()
+      let alreadyDone = false
       try {
         await client.query('BEGIN')
-        await client.query(
+        const updateResult = await client.query(
           `UPDATE work_tasks
            SET status=$1,
                completion_photo_urls=$2::jsonb,
                completion_note=$3,
                completion_reason=NULL,
                updated_at=now()
-           WHERE id=$4`,
+           WHERE id=$4
+             AND lower(COALESCE(status, '')) NOT IN ('done', 'completed', 'ready')
+           RETURNING id`,
           ['done', JSON.stringify(completionPhotoUrls), note, id],
         )
+        alreadyDone = Number(updateResult?.rowCount || 0) === 0
         await completePropertyFollowupSource(client, row, completedAt)
         await client.query('COMMIT')
       } catch (error) {
@@ -4471,6 +4490,15 @@ router.post('/work-tasks/:id/mark', async (req, res) => {
         throw error
       } finally {
         client.release()
+      }
+      if (alreadyDone) {
+        return res.json({
+          ok: true,
+          already_done: true,
+          completion_photo_urls: normalizeWorkTaskPhotoUrls(row.completion_photo_urls),
+          completion_note: row.completion_note == null ? null : String(row.completion_note || ''),
+          completion_reason: null,
+        })
       }
       try {
         await emitWorkTaskEvent({
@@ -5582,6 +5610,55 @@ const feedbackProjectCompleteSchema = z
   })
   .strict()
 
+type PropertyFeedbackNotificationKind = 'maintenance' | 'deep_cleaning' | 'daily_necessities'
+
+function propertyFeedbackKindLabel(kind: PropertyFeedbackNotificationKind) {
+  if (kind === 'deep_cleaning') return '深度清洁'
+  if (kind === 'daily_necessities') return '日用品'
+  return '维修'
+}
+
+async function notifyPropertyFeedbackCreated(params: {
+  id: string
+  kind: PropertyFeedbackNotificationKind
+  propertyId: string
+  sourceTaskId?: string | null
+  summary?: string | null
+  actorUserId?: string | null
+}) {
+  const id = String(params.id || '').trim()
+  if (!id) return
+  const sourceTaskId = String(params.sourceTaskId || '').trim()
+  const label = propertyFeedbackKindLabel(params.kind)
+  const summary = String(params.summary || '').trim()
+  try {
+    await emitNotificationEvent({
+      type: 'ISSUE_REPORTED',
+      entity: 'property_feedback',
+      entityId: id,
+      eventId: `ISSUE_REPORTED_property_feedback_${id}_created`,
+      propertyId: params.propertyId,
+      title: `房源问题反馈：${label}`,
+      body: summary ? `收到新的${label}反馈：${summary}`.slice(0, 240) : `收到新的${label}反馈`,
+      data: {
+        entity: 'property_feedback',
+        entityId: id,
+        action: sourceTaskId ? 'open_task' : 'open_notice',
+        kind: 'issue_reported',
+        feedback_id: id,
+        feedback_kind: params.kind,
+        task_id: sourceTaskId || undefined,
+        issue_title: label,
+        issue_detail: summary || undefined,
+      },
+      actorUserId: String(params.actorUserId || '').trim() || null,
+      excludeActor: false,
+    })
+  } catch (error: any) {
+    console.error(`[mzapp] property_feedback_notification_failed feedback_id=${id} message=${String(error?.message || error || '')}`)
+  }
+}
+
 function mapWorkStatus(raw: any): 'open' | 'in_progress' | 'resolved' | 'cancelled' {
   const s = String(raw ?? '').trim().toLowerCase()
   if (s === 'in_progress') return 'in_progress'
@@ -6205,6 +6282,7 @@ router.post('/property-feedbacks', async (req, res) => {
         }
 
         const createdIds: string[] = []
+        const createdFeedbacks: Array<{ id: string; summary: string }> = []
         for (const it of prepared) {
           const rowId = require('uuid').v4()
           const workNo = makeWorkNo('R', occurredAt)
@@ -6240,6 +6318,17 @@ router.post('/property-feedbacks', async (req, res) => {
             ],
           )
           createdIds.push(rowId)
+          createdFeedbacks.push({ id: rowId, summary: it.detail })
+        }
+        for (const feedback of createdFeedbacks) {
+          await notifyPropertyFeedbackCreated({
+            id: feedback.id,
+            kind: 'maintenance',
+            propertyId: parsed.data.property_id,
+            sourceTaskId: parsed.data.source_task_id,
+            summary: feedback.summary,
+            actorUserId: createdBy,
+          })
         }
         return res.status(201).json({ ok: true, ids: createdIds })
       }
@@ -6294,6 +6383,14 @@ router.post('/property-feedbacks', async (req, res) => {
           fingerprint,
         ],
       )
+      await notifyPropertyFeedbackCreated({
+        id,
+        kind: 'maintenance',
+        propertyId: parsed.data.property_id,
+        sourceTaskId: parsed.data.source_task_id,
+        summary: detail,
+        actorUserId: createdBy,
+      })
       return res.status(201).json({ ok: true, id })
     }
 
@@ -6349,6 +6446,14 @@ router.post('/property-feedbacks', async (req, res) => {
           fingerprint,
         ],
       )
+      await notifyPropertyFeedbackCreated({
+        id,
+        kind: 'daily_necessities',
+        propertyId: parsed.data.property_id,
+        sourceTaskId: parsed.data.source_task_id,
+        summary: note || `${itemName} × ${Math.trunc(quantity)}`,
+        actorUserId: createdBy,
+      })
       return res.status(201).json({ ok: true, id })
     }
 
@@ -6419,6 +6524,14 @@ router.post('/property-feedbacks', async (req, res) => {
         [id, workNo],
       )
     } catch {}
+    await notifyPropertyFeedbackCreated({
+      id,
+      kind: 'deep_cleaning',
+      propertyId: parsed.data.property_id,
+      sourceTaskId: parsed.data.source_task_id,
+      summary: detail,
+      actorUserId: createdBy,
+    })
     return res.status(201).json({ ok: true, id })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'property_feedbacks_create_failed' })

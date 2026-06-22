@@ -165,10 +165,6 @@ async function propagateToSource(sourceType: string, sourceId: string, patch: an
     const vals: any[] = []
     if (assigneeId !== undefined) { vals.push(assigneeId); set.push(`assignee_id = $${vals.length}`) }
     if (scheduledDate !== undefined) { vals.push(scheduledDate); set.push(`date = $${vals.length}::date`) }
-    if (status !== undefined) {
-      const mapped = status === 'done' ? 'done' : 'todo'
-      vals.push(mapped); set.push(`status = $${vals.length}`)
-    }
     if (!set.length) return
     vals.push(sid)
     await pgPool.query(`UPDATE cleaning_offline_tasks SET ${set.join(', ')}, updated_at=now() WHERE id=$${vals.length}`, vals)

@@ -31,7 +31,7 @@ export type NotificationEventType =
 
 export type EmitNotificationEventParams = {
   type: NotificationEventType
-  entity: 'order' | 'cleaning_task' | 'work_task' | 'warehouse_key'
+  entity: 'order' | 'cleaning_task' | 'work_task' | 'property_feedback' | 'warehouse_key'
   entityId: string
   eventId?: string | null
   propertyId?: string | null

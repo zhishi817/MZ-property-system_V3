@@ -7,6 +7,7 @@ import dayjs, { type Dayjs } from 'dayjs'
 import { getJSON, postJSON } from '../../lib/api'
 import { upsertAdminNotification } from '../../lib/adminNotifications'
 import { getRole } from '../../lib/auth'
+import { isCompletedTaskStatus, isTaskCompletionToggleStatus, normalizeKeysHungInspectionMode, resolveTaskDetailCompletionStatus } from '../../lib/cleaningTaskUi'
 import styles from '../cleaning/cleaningSchedule.module.scss'
 
 type Staff = {
@@ -287,8 +288,7 @@ function isKeysHungStatus(status: string | null | undefined) {
 }
 
 function isCompletedBoardStatus(status: string | null | undefined) {
-  const value = String(status || '').trim().toLowerCase()
-  return value === 'keys_hung' || value === 'ready' || value === 'done' || value === 'completed'
+  return isKeysHungStatus(status) || isCompletedTaskStatus(status)
 }
 
 function cleaningSummaryParts(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view' | 'summary_checkout_time' | 'summary_checkin_time' | 'nights'>) {
@@ -733,8 +733,12 @@ export default function TaskCenterPage() {
 
   const nextCleaningDetailStatus = useCallback((task: TaskCenterTask, draft: TaskDetailDraft) => {
     if (task.task_source !== 'cleaning') return task.status
-    if (draft.task_completed) return 'completed'
-    if (isCheckinOnlyCleaningTask(task) && draft.keys_hung) return 'keys_hung'
+    const completionStatus = resolveTaskDetailCompletionStatus({
+      isCheckinOnly: isCheckinOnlyCleaningTask(task),
+      keysHung: draft.keys_hung,
+      taskCompleted: draft.task_completed,
+    })
+    if (completionStatus) return completionStatus
     if (isKeysHungStatus(task.status) && !draft.keys_hung) {
       return String(draft.cleaner_id || draft.inspector_id || '').trim() ? 'assigned' : 'pending'
     }
@@ -742,15 +746,20 @@ export default function TaskCenterPage() {
   }, [autoCleaningStatus])
 
   const openTaskDetail = useCallback((task: TaskCenterTask, row: TaskCenterRow, subrow: TaskCenterSubrow) => {
+    const inspectionMode = normalizeKeysHungInspectionMode({
+      inspectionMode: task.inspection_mode,
+      status: task.status,
+      isCheckinOnly: isCheckinOnlyCleaningTask(task),
+    })
     setDetailTask({ ...task, current_row_key: row.row_key, current_subrow_key: subrow.subrow_key })
     setDetailDraft({
       cleaner_id: requiresCleanerAssignment(task) ? (task.cleaner_id || null) : null,
       inspector_id: task.inspector_id || null,
       assignee_id: task.assignee_id || null,
-      inspection_mode: (task.inspection_mode || 'pending_decision') as TaskDetailDraft['inspection_mode'],
+      inspection_mode: inspectionMode,
       inspection_due_date: task.inspection_due_date ? dayjs(task.inspection_due_date) : null,
       keys_hung: isKeysHungStatus(task.status),
-      task_completed: isCompletedBoardStatus(task.status),
+      task_completed: isTaskCompletionToggleStatus(task.status),
       title: String(task.title || ''),
       summary: String(task.task_source === 'work' ? (task.detail || task.summary || '') : (task.summary || task.detail || '')),
       urgency: (['low', 'medium', 'high', 'urgent'].includes(String(task.urgency || '').trim().toLowerCase()) ? String(task.urgency).trim().toLowerCase() : 'medium') as TaskDetailDraft['urgency'],
@@ -767,7 +776,7 @@ export default function TaskCenterPage() {
 
   const rowsAfterTaskDetail = useCallback((rows: TaskCenterRow[], task: TaskCenterTask, draft: TaskDetailDraft) => {
     const nextStatus = nextCleaningDetailStatus(task, draft)
-    const nextInspectionMode = draft.keys_hung ? 'self_complete' : draft.inspection_mode
+    const nextInspectionMode = draft.inspection_mode
     const nextCleanerId = requiresCleanerAssignment(task) ? (draft.cleaner_id || null) : null
     const nextRows = rows.map((row) => ({
       ...row,
@@ -788,7 +797,7 @@ export default function TaskCenterPage() {
               : autoWorkStatus(item.status, draft.assignee_id || null),
             inspection_mode: task.task_source === 'cleaning' ? nextInspectionMode : item.inspection_mode,
             inspection_due_date: task.task_source === 'cleaning'
-              ? ((draft.keys_hung || draft.task_completed || draft.inspection_mode !== 'deferred') ? null : (draft.inspection_due_date ? draft.inspection_due_date.format('YYYY-MM-DD') : null))
+              ? ((draft.task_completed && !draft.keys_hung) || draft.inspection_mode !== 'deferred' ? null : (draft.inspection_due_date ? draft.inspection_due_date.format('YYYY-MM-DD') : null))
               : item.inspection_due_date,
             title: task.task_source === 'work' ? String(draft.title || '').trim() : item.title,
             summary: task.task_source === 'work' ? String(draft.summary || '').trim() : item.summary,
@@ -858,6 +867,10 @@ export default function TaskCenterPage() {
 
   const saveTaskDetail = useCallback(async () => {
     if (!detailTask || !detailDraft) return
+    if (isCheckinOnlyCleaningTask(detailTask) && detailDraft.keys_hung && !detailDraft.inspector_id) {
+      message.error('标记已挂钥匙前请保留或选择检查人员')
+      return
+    }
     applyTaskDetailLocally(detailTask, detailDraft)
     setBoardDraftDirty(true)
     setDetailTask(null)
@@ -1560,6 +1573,11 @@ export default function TaskCenterPage() {
     skipped_count: 0,
   }
   const detailSyncTag = canSeeCheckinSyncTag && detailTask ? checkinSyncTag(detailTask) : null
+  const detailDisplayStatus = detailTask && detailDraft
+    ? (detailTask.task_source === 'cleaning'
+      ? nextCleaningDetailStatus(detailTask, detailDraft)
+      : autoWorkStatus(detailTask.status, detailDraft.assignee_id || null))
+    : null
 
   return (
     <div className={styles.page}>
@@ -1698,14 +1716,14 @@ export default function TaskCenterPage() {
                 <div className={styles.taskDetailHeroTop}>
                   <div className={styles.taskDetailHeroTitle}>{detailTask.title}</div>
                   <div className={styles.taskDetailHeroChips}>
-                    <span className={styles.taskDetailChip}>{statusText(detailDraft.task_completed ? 'completed' : detailTask.status)}</span>
+                    <span className={styles.taskDetailChip}>{statusText(detailDisplayStatus)}</span>
                     {detailSyncTag ? (
                       <span className={`${styles.taskDetailChip} ${detailSyncTag.tone === 'success' ? styles.taskDetailChipSuccess : styles.taskDetailChipDanger}`}>
                         {detailSyncTag.label}
                       </span>
                     ) : null}
                     {detailTask.task_source === 'cleaning' ? (
-                      <span className={styles.taskDetailChip}>{inspectionModeText(detailDraft.keys_hung ? 'self_complete' : detailDraft.inspection_mode)}</span>
+                      <span className={styles.taskDetailChip}>{inspectionModeText(detailDraft.inspection_mode)}</span>
                     ) : (
                       <span className={styles.taskDetailChip}>{detailTask.task_kind || '线下任务'}</span>
                     )}
@@ -1809,8 +1827,7 @@ export default function TaskCenterPage() {
                             return {
                               ...prev,
                               keys_hung: true,
-                              inspection_mode: 'self_complete',
-                              inspection_due_date: null,
+                              task_completed: false,
                             }
                           }
                           return { ...prev, keys_hung: false }
@@ -1820,7 +1837,7 @@ export default function TaskCenterPage() {
                     <div className={styles.taskDetailHintCopy}>适用于纯入住任务已经提前检查、钥匙也已经挂好的情况。</div>
                   </div>
                 ) : null}
-                {(!detailDraft.keys_hung && !detailDraft.task_completed && (detailDraft.inspection_mode === 'same_day' || detailDraft.inspection_mode === 'deferred')) ? (
+                {((!detailDraft.task_completed || detailDraft.keys_hung) && (detailDraft.inspection_mode === 'same_day' || detailDraft.inspection_mode === 'deferred')) ? (
                   <div className={styles.taskDetailGrid}>
                     <div>
                       <div className={styles.fieldLabel}>检查人员</div>

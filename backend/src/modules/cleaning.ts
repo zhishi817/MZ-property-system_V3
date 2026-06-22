@@ -288,7 +288,11 @@ async function ensureWorkTasksTable() {
   try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day_assignee ON work_tasks(scheduled_date, assignee_id, status);`) } catch {}
 }
 
-async function upsertWorkTaskFromOfflineTask(row: any) {
+function offlineWorkStatus(value: any) {
+  return String(value || '').trim().toLowerCase() === 'done' ? 'done' : 'todo'
+}
+
+async function upsertWorkTaskFromOfflineTask(row: any, requestedStatus?: any) {
   if (!hasPg || !pgPool) return
   const id = String(row?.id || '').trim()
   if (!id) return
@@ -296,7 +300,8 @@ async function upsertWorkTaskFromOfflineTask(row: any) {
   const workId = `cleaning_offline_tasks:${id}`
   const scheduled = row?.date ? String(row.date).slice(0, 10) : null
   const assignee = String(row?.assignee_id || '').trim() || null
-  const status = String(row?.status || '').trim() === 'done' ? 'done' : 'todo'
+  const status = offlineWorkStatus(requestedStatus === undefined ? row?.status : requestedStatus)
+  const updateStatus = requestedStatus !== undefined
   const urgency = String(row?.urgency || '').trim() || 'medium'
   await pgPool.query(
     `INSERT INTO work_tasks(id, task_kind, source_type, source_id, property_id, title, summary, scheduled_date, assignee_id, status, urgency, created_at, updated_at)
@@ -307,10 +312,39 @@ async function upsertWorkTaskFromOfflineTask(row: any) {
        summary=EXCLUDED.summary,
        scheduled_date=EXCLUDED.scheduled_date,
        assignee_id=EXCLUDED.assignee_id,
-       status=EXCLUDED.status,
+       status=CASE WHEN $11::boolean THEN EXCLUDED.status ELSE work_tasks.status END,
        urgency=EXCLUDED.urgency,
-       updated_at=now()`,
-    [workId, id, row?.property_id || null, String(row?.title || ''), String(row?.content || '') || null, scheduled, assignee, status, urgency, row?.created_at || null]
+       updated_at=now()
+     RETURNING *`,
+    [workId, id, row?.property_id || null, String(row?.title || ''), String(row?.content || '') || null, scheduled, assignee, status, urgency, row?.created_at || null, updateStatus]
+  )
+}
+
+async function backfillOfflineWorkTasks() {
+  if (!hasPg || !pgPool) return
+  await ensureWorkTasksTable()
+  // Legacy status is consulted only when creating the canonical work task for the first time.
+  await pgPool.query(
+    `INSERT INTO work_tasks(
+       id, task_kind, source_type, source_id, property_id, title, summary,
+       scheduled_date, assignee_id, status, urgency, created_at, updated_at
+     )
+     SELECT
+       'cleaning_offline_tasks:' || t.id::text,
+       'offline',
+       'cleaning_offline_tasks',
+       t.id::text,
+       t.property_id,
+       COALESCE(t.title, ''),
+       NULLIF(COALESCE(t.content, ''), ''),
+       t.date::date,
+       t.assignee_id,
+       CASE WHEN lower(COALESCE(t.status, 'todo')) = 'done' THEN 'done' ELSE 'todo' END,
+       COALESCE(NULLIF(t.urgency, ''), 'medium'),
+       COALESCE(t.created_at, t.updated_at, now()),
+       COALESCE(t.updated_at, t.created_at, now())
+     FROM cleaning_offline_tasks t
+     ON CONFLICT (source_type, source_id) DO NOTHING`,
   )
 }
 
@@ -405,24 +439,34 @@ router.get('/offline-tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule
   try {
     if (hasPg && pgPool) {
       await ensureOfflineTasksTable()
+      await backfillOfflineWorkTasks()
       if (!date) {
-        const r = await pgPool.query('SELECT * FROM cleaning_offline_tasks ORDER BY date DESC, updated_at DESC, id DESC')
+        const r = await pgPool.query(
+          `SELECT t.*, COALESCE(w.status, 'todo') AS status
+             FROM cleaning_offline_tasks t
+             JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
+            ORDER BY t.date DESC, t.updated_at DESC, t.id DESC`,
+        )
         return res.json(r?.rows || [])
       }
       if (includeOverdue) {
         const r = await pgPool.query(
-          `SELECT * FROM cleaning_offline_tasks
-           WHERE ((date::date) = ($1::date))
-              OR ((date::date) < ($1::date) AND status <> 'done')
-           ORDER BY date ASC, urgency DESC, updated_at DESC, id DESC`,
+          `SELECT t.*, COALESCE(w.status, 'todo') AS status
+             FROM cleaning_offline_tasks t
+             JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
+            WHERE (t.date::date = $1::date)
+               OR (t.date::date < $1::date AND lower(COALESCE(w.status, 'todo')) <> 'done')
+            ORDER BY t.date ASC, t.urgency DESC, t.updated_at DESC, t.id DESC`,
           [date]
         )
         return res.json(r?.rows || [])
       }
       const r = await pgPool.query(
-        `SELECT * FROM cleaning_offline_tasks
-         WHERE (date::date) = ($1::date)
-         ORDER BY urgency DESC, updated_at DESC, id DESC`,
+        `SELECT t.*, COALESCE(w.status, 'todo') AS status
+           FROM cleaning_offline_tasks t
+           JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
+          WHERE t.date::date = $1::date
+          ORDER BY t.urgency DESC, t.updated_at DESC, t.id DESC`,
         [date]
       )
       return res.json(r?.rows || [])
@@ -455,7 +499,8 @@ router.post('/offline-tasks', requireCleaningManualCreateAccess, async (req, res
       title: payload.title,
       content: payload.content || '',
       kind: payload.kind,
-      status: payload.status,
+      // Kept only for the legacy table's NOT NULL constraint; work_tasks owns task state.
+      status: 'todo',
       urgency: payload.urgency,
       property_id: payload.property_id ?? null,
       assignee_id: payload.assignee_id ?? null,
@@ -469,7 +514,8 @@ router.post('/offline-tasks', requireCleaningManualCreateAccess, async (req, res
         [row.id, row.date, row.task_type, row.title, row.content, row.kind, row.status, row.urgency, row.property_id, row.assignee_id]
       )
       const out = r?.rows?.[0] || row
-      try { await upsertWorkTaskFromOfflineTask(out) } catch {}
+      await upsertWorkTaskFromOfflineTask(out, payload.status)
+      out.status = offlineWorkStatus(payload.status)
       const workTaskId = offlineWorkTaskId(String(out.id || row.id))
       if (String(out.status || '').trim().toLowerCase() !== 'done') {
         try {
@@ -555,18 +601,37 @@ router.patch('/offline-tasks/:id', requirePerm('cleaning.schedule.manage'), asyn
       const beforeRes = await pgPool.query('SELECT * FROM cleaning_offline_tasks WHERE id=$1 LIMIT 1', [String(id)])
       const before = beforeRes?.rows?.[0] || null
       if (!before) return res.status(404).json({ message: 'task not found' })
-      const keys = Object.keys(patch || {}).filter((k) => (patch as any)[k] !== undefined)
+      const keys = Object.keys(patch || {}).filter((k) => k !== 'status' && (patch as any)[k] !== undefined)
       if (!keys.length) {
-        return res.json(before)
+        if ((patch as any).status === undefined) {
+          const statusResult = await pgPool.query(
+            `SELECT status FROM work_tasks WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1 LIMIT 1`,
+            [String(id)],
+          )
+          return res.json({ ...before, status: offlineWorkStatus(statusResult?.rows?.[0]?.status) })
+        }
       }
-      const set = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ')
-      const values = keys.map((k) => ((patch as any)[k] === undefined ? null : (patch as any)[k]))
-      const sql = `UPDATE cleaning_offline_tasks SET ${set}, updated_at=now() WHERE id=$${keys.length + 1} RETURNING *`
-      const r1 = await pgPool.query(sql, [...values, String(id)])
-      const row = r1?.rows?.[0] || null
+      const beforeStatusResult = await pgPool.query(
+        `SELECT status FROM work_tasks WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1 LIMIT 1`,
+        [String(id)],
+      )
+      const beforeStatus = offlineWorkStatus(beforeStatusResult?.rows?.[0]?.status ?? before.status)
+      let row = before
+      if (keys.length) {
+        const set = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ')
+        const values = keys.map((k) => ((patch as any)[k] === undefined ? null : (patch as any)[k]))
+        const sql = `UPDATE cleaning_offline_tasks SET ${set}, updated_at=now() WHERE id=$${keys.length + 1} RETURNING *`
+        const r1 = await pgPool.query(sql, [...values, String(id)])
+        row = r1?.rows?.[0] || null
+      }
       if (!row) return res.status(404).json({ message: 'task not found' })
-      try { await upsertWorkTaskFromOfflineTask(row) } catch {}
-      const completedChanged = String(before.status || '').trim().toLowerCase() !== 'done' && String(row.status || '').trim().toLowerCase() === 'done'
+      await upsertWorkTaskFromOfflineTask(row, (patch as any).status)
+      const statusResult = await pgPool.query(
+        `SELECT status FROM work_tasks WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1 LIMIT 1`,
+        [String(id)],
+      )
+      row.status = offlineWorkStatus(statusResult?.rows?.[0]?.status)
+      const completedChanged = beforeStatus !== 'done' && row.status === 'done'
       if (completedChanged) {
         const workTaskId = offlineWorkTaskId(String(row.id || id))
         try {
@@ -1692,6 +1757,7 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
         }
       }
       await ensureOfflineTasksTable()
+      await backfillOfflineWorkTasks()
       const r2 = await pgPool.query(
         `SELECT
            t.id,
@@ -1699,13 +1765,14 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
            t.task_type,
            t.title,
            t.content,
-           t.status,
+           COALESCE(w.status, 'todo') AS status,
            t.urgency,
            t.property_id,
            t.assignee_id,
            COALESCE(p_id.code::text, p_code.code::text) AS property_code,
            COALESCE(p_id.region::text, p_code.region::text) AS property_region
          FROM cleaning_offline_tasks t
+         JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
          LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
          LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
          WHERE (t.date::date) >= ($1::date) AND (t.date::date) <= ($2::date)
