@@ -371,8 +371,8 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260622-010 — 网页已挂钥匙任务保留在移动端搜索
 
-- **Status:** ready
-- **Updated:** 2026-06-22 12:04 AEST
+- **Status:** pushed
+- **Updated:** 2026-06-22 12:09 AEST
 - **Request:** 修复网页把任务标记为“已挂钥匙”后，移动端无法搜索到该任务的问题。
 - **Outcome:** 已派检查员的纯入住任务标记“已挂钥匙”后，会保留执行人并作为已完成检查任务继续出现在原任务日期的移动端列表和搜索结果中。
 
@@ -415,4 +415,4 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Risk: 已在旧版本中被清空检查员的历史任务无法从当前字段自动恢复原检查员；需要重新指定一次检查员后才符合“仅显示已派任务”的规则。
 - Rollback: restore the webpage inspector clearing behavior, remove the backend preservation CASE, and restore the previous same-day/deferred-only projection expression.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches added.
-- Git state: uncommitted.
+- Git state: implementation pushed to `Dev` in root commit `b8a4200`.
