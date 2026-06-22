@@ -560,8 +560,8 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260622-014 — 移动端三类任务可见性重构
 
-- **Status:** ready
-- **Updated:** 2026-06-22 18:52 AEST
+- **Status:** pushed
+- **Updated:** 2026-06-22 19:12 AEST
 - **Request:** 清洁任务和线下其他任务要让 `customer_service`、`admin`、`offline_manager` 在移动端管理模式 `全部` 视图无论状态都可见；房源维修、深度清洁、日用品补货任务只有有执行人时才在移动端显示给执行人和上述管理角色。
 - **Outcome:** 移动端现在按三类任务分流可见性：管理角色的 `全部` 视图会看到所有清洁任务和线下其他任务，即使未分配、未开始也可见；房源维修 / 深清 / 日用品补货任务若无执行人则对所有移动端角色隐藏，指派后才对执行人和管理角色可见。
 
@@ -600,12 +600,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Risk: 本轮未用真实 `customer_service` / `admin` / `offline_manager` 账号在移动端手工登录验证，只验证了后端返回路径和移动端本地过滤逻辑。
 - Rollback: restore the previous uniform `hasMobileAssignee` filtering in `/mzapp/work-tasks` and `TasksScreen.selectedTasks`, and remove the property-followup source-type split.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches added.
-- Git state: uncommitted in root repo (`backend/src/modules/mzapp.ts`, `docs/change-release-ledger.md`) and nested repo `mz-cleaning-app-frontend` (`src/screens/tabs/TasksScreen.tsx`).
+- Git state: pushed to `Dev` in root commit `e6ea838` and nested repo `mz-cleaning-app-frontend` commit `eb535af`.
 
 ## CRL-20260622-015 — 房源问题反馈通知补齐房号和照片
 
-- **Status:** ready
-- **Updated:** 2026-06-22 19:07 AEST
+- **Status:** pushed
+- **Updated:** 2026-06-22 19:12 AEST
 - **Request:** 修复移动端“问题反馈”的信息中心通知，当前没有房号也没有照片，无法判断对应房源。
 - **Outcome:** 新创建的房源维修 / 深度清洁 / 日用品反馈通知现在会携带 `property_code` 和反馈照片，移动端信息中心列表与详情页会显示房号标题、房源字段和照片缩略图。
 
@@ -647,4 +647,4 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Risk: 本轮未用真实移动端账号提交一条问题反馈做端到端手工验证；验证覆盖后端构建、移动端类型检查、Jest 和 lint。
 - Rollback: remove the new `property_code` / `photo_urls` fields from `ISSUE_REPORTED` payloads and revert the `issue_reported` presentation tweak.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches added.
-- Git state: uncommitted in root repo (`backend/src/modules/mzapp.ts`, `docs/change-release-ledger.md`) and nested repo `mz-cleaning-app-frontend` (`src/lib/noticePresentation.ts`, `src/lib/noticePresentation.test.ts`, `src/screens/notices/NoticeDetailScreen.test.tsx`, plus pre-existing `src/screens/tabs/TasksScreen.tsx` from CRL-20260622-014).
+- Git state: pushed to `Dev` in root commit `e6ea838` and nested repo `mz-cleaning-app-frontend` commit `eb535af`.
