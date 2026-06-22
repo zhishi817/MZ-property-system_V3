@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { deferredProjectionDate, mergeInspectionPlan, mergeTurnoverTaskPlan } from '../../src/lib/cleaningInspection'
+import { deferredProjectionDate, mergeInspectionPlan, mergeTurnoverTaskPlan, mobileInspectionProjectionDate } from '../../src/lib/cleaningInspection'
 
 function testTurnoverCheckoutAssignmentWinsOverPendingFallback() {
   const out = mergeInspectionPlan([
@@ -132,6 +132,28 @@ function testCompletedDeferredInspectionDoesNotProject() {
   assert.equal(out, null)
 }
 
+function testKeysHungSelfCompleteProjectsToOriginalTaskDate() {
+  const out = mobileInspectionProjectionDate({
+    inspectionMode: 'self_complete',
+    taskDate: '2026-06-22',
+    dateFrom: '2026-06-22',
+    dateTo: '2026-06-22',
+    status: 'keys_hung',
+  })
+  assert.equal(out, '2026-06-22')
+}
+
+function testOrdinarySelfCompleteDoesNotCreateInspectorTask() {
+  const out = mobileInspectionProjectionDate({
+    inspectionMode: 'self_complete',
+    taskDate: '2026-06-22',
+    dateFrom: '2026-06-22',
+    dateTo: '2026-06-22',
+    status: 'completed',
+  })
+  assert.equal(out, null)
+}
+
 testTurnoverCheckoutAssignmentWinsOverPendingFallback()
 testTurnoverPendingCheckoutDoesNotGetPromotedByCheckinDefault()
 testDeferredCheckoutKeepsDeferredDate()
@@ -139,5 +161,7 @@ testStayoverRemainsSelfComplete()
 testTemporaryCheckinDoesNotUnassignScheduledCheckout()
 testTemporaryCheckinDoesNotClearCheckoutInspector()
 testCompletedDeferredInspectionDoesNotProject()
+testKeysHungSelfCompleteProjectsToOriginalTaskDate()
+testOrdinarySelfCompleteDoesNotCreateInspectorTask()
 
 console.log('test_cleaning_inspection_merge: ok')

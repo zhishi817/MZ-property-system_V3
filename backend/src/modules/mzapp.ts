@@ -15,7 +15,7 @@ import {
   planGuestLuggageMutation,
   resolveGuestLuggageRecipientIds,
 } from '../services/guestLuggage'
-import { deferredProjectionDate, effectiveInspectionMode, isInspectionFinishedStatus, mergeInspectionPlan } from '../lib/cleaningInspection'
+import { deferredProjectionDate, effectiveInspectionMode, isInspectionFinishedStatus, mergeInspectionPlan, mobileInspectionProjectionDate } from '../lib/cleaningInspection'
 import { deepCleaningSourceSummary, maintenanceSourceSummary } from '../lib/autoExpenseSourceSummary'
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
 
@@ -4989,10 +4989,14 @@ router.get('/work-tasks', async (req, res) => {
             cleanerGroups.set(k, arr)
           }
 
-          const inspectorDisplayDate =
-            inspectionMode === 'deferred'
-              ? deferredDate
-              : (inspectionMode === 'same_day' && taskDate >= dateFrom && taskDate <= dateTo ? taskDate : null)
+          const inspectorDisplayDate = mobileInspectionProjectionDate({
+            inspectionMode,
+            inspectionDueDate,
+            taskDate,
+            dateFrom,
+            dateTo,
+            status: raw_status,
+          })
           if (wantInspector && inspectorId && inspectorDisplayDate && cleaningType(row.task_type) !== 'stayover' && (allowAll || inspectorId === userId)) {
             const k = `${inspectorDisplayDate}|${propId || ''}|${inspectorId}`
             const arr = inspectorGroups.get(k) || []

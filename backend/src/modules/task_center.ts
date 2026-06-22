@@ -1694,7 +1694,11 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
             `UPDATE cleaning_tasks AS task
              SET cleaner_id = x.cleaner_id,
                  assignee_id = x.cleaner_id,
-                 inspector_id = x.inspector_id,
+                 inspector_id = CASE
+                   WHEN lower(COALESCE(x.status, '')) = 'keys_hung' AND x.inspector_id IS NULL
+                     THEN task.inspector_id
+                   ELSE x.inspector_id
+                 END,
                  inspection_mode = x.inspection_mode,
                  inspection_due_date = CASE WHEN x.inspection_due_date IS NULL THEN NULL ELSE x.inspection_due_date::date END,
                  status = x.status,
@@ -1711,7 +1715,11 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                AND (
                  task.cleaner_id IS DISTINCT FROM x.cleaner_id
                  OR task.assignee_id IS DISTINCT FROM x.cleaner_id
-                 OR task.inspector_id IS DISTINCT FROM x.inspector_id
+                 OR task.inspector_id IS DISTINCT FROM CASE
+                   WHEN lower(COALESCE(x.status, '')) = 'keys_hung' AND x.inspector_id IS NULL
+                     THEN task.inspector_id
+                   ELSE x.inspector_id
+                 END
                  OR task.inspection_mode IS DISTINCT FROM x.inspection_mode
                  OR task.inspection_due_date::text IS DISTINCT FROM x.inspection_due_date
                  OR task.status IS DISTINCT FROM x.status
