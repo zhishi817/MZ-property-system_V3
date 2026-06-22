@@ -80,6 +80,31 @@ export function deferredProjectionDate(params: {
   return due < from ? from : due
 }
 
+export function mobileInspectionProjectionDate(params: {
+  inspectionMode: InspectionMode
+  inspectionDueDate?: any
+  taskDate?: any
+  dateFrom: string
+  dateTo: string
+  status?: any
+}): string | null {
+  if (params.inspectionMode === 'deferred') {
+    return deferredProjectionDate(params)
+  }
+
+  const taskDate = String(params.taskDate || '').slice(0, 10)
+  const from = String(params.dateFrom || '').slice(0, 10)
+  const to = String(params.dateTo || '').slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(taskDate)) return null
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return null
+  if (taskDate < from || taskDate > to) return null
+  if (params.inspectionMode === 'same_day') return taskDate
+
+  const status = String(params.status || '').trim().toLowerCase()
+  if (params.inspectionMode === 'self_complete' && status === 'keys_hung') return taskDate
+  return null
+}
+
 export function mergeInspectionPlan(
   rows: Array<{
     task_type?: any

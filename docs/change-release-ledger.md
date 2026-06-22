@@ -368,3 +368,51 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Rollback: remove `warehouseKeyExpanded` and restore the always-expanded warehouse key card rendering/effects.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches added.
 - Git state: pushed to `Dev`; mobile changes pushed in `mz-cleaning-app-frontend` commit `edd6bfd`, ledger state recorded in root commit `30e6595`.
+
+## CRL-20260622-010 — 网页已挂钥匙任务保留在移动端搜索
+
+- **Status:** ready
+- **Updated:** 2026-06-22 12:04 AEST
+- **Request:** 修复网页把任务标记为“已挂钥匙”后，移动端无法搜索到该任务的问题。
+- **Outcome:** 已派检查员的纯入住任务标记“已挂钥匙”后，会保留执行人并作为已完成检查任务继续出现在原任务日期的移动端列表和搜索结果中。
+
+### Implementation
+
+- Previous behavior: 网页勾选“已挂钥匙”会同时设置 `self_complete` 并清空 `inspector_id`；移动端接口只投影 `same_day` / `deferred` 检查任务且只返回有执行人的任务，因此该任务在进入移动端搜索前已经消失。
+- New behavior: 网页不再清空原检查员；后端保存时对 `keys_hung` 空检查员提交保留数据库原值；移动端任务接口将 `keys_hung + self_complete` 作为已完成记录投影到原任务日期。
+- Key decisions: 保留“移动端只显示已派执行人的任务”规则；普通 `self_complete` 任务仍不生成检查任务，只有已派检查员且状态为 `keys_hung` 的完成记录进入移动端。
+
+### Files / Areas
+
+- `frontend/src/app/task-center/page.tsx` — modified: 勾选“已挂钥匙”时保留当前检查员。
+- `backend/src/modules/task_center.ts` — modified: 保存 `keys_hung` 时防止旧客户端的空值清除现有检查员。
+- `backend/src/lib/cleaningInspection.ts` — modified: 新增可复用、可测试的移动端检查任务投影日期规则。
+- `backend/src/modules/mzapp.ts` — modified: `/mzapp/work-tasks` 使用统一投影规则返回已挂钥匙完成任务。
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — modified: 覆盖已挂钥匙自完成投影和普通自完成不投影两种情况。
+
+### Impact / Dependencies
+
+- API: `/mzapp/work-tasks` 会返回有检查员的 `keys_hung + self_complete` 任务；响应结构不变。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: CRL-20260622-004, CRL-20260622-006.
+
+### Validation
+
+- `npm run test:cleaning-inspection-merge` in `backend` — passed: targeted projection regression tests completed.
+- `npm run build` in `backend` — passed; TypeScript compilation completed.
+- `npm test -- --run` in `frontend` — passed: 32 files, 133 tests.
+- `npm run build` in `frontend` — passed: Next.js production build generated 91 pages; existing lint/chart warnings remain without build errors.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed.
+- `npm test -- --runInBand` in `mz-cleaning-app-frontend` — passed: 16 suites, 46 tests.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with 0 errors and 130 existing warnings.
+- `git diff --check` — passed after the final backend hardening and ledger update.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 6 changed files, all 6 recorded.
+
+### Risks / Release Notes
+
+- Risk: 已在旧版本中被清空检查员的历史任务无法从当前字段自动恢复原检查员；需要重新指定一次检查员后才符合“仅显示已派任务”的规则。
+- Rollback: restore the webpage inspector clearing behavior, remove the backend preservation CASE, and restore the previous same-day/deferred-only projection expression.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches added.
+- Git state: uncommitted.

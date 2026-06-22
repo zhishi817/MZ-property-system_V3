@@ -1811,7 +1811,6 @@ export default function TaskCenterPage() {
                               keys_hung: true,
                               inspection_mode: 'self_complete',
                               inspection_due_date: null,
-                              inspector_id: null,
                             }
                           }
                           return { ...prev, keys_hung: false }
