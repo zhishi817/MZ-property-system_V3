@@ -117,6 +117,11 @@ async function canViewAllWorkTasks(user: any) {
   return canViewAll(user) || await userHasAnyPerm(user, ['cleaning_app.calendar.view.all'])
 }
 
+function isPropertyFollowupSourceType(sourceType: any) {
+  const value = String(sourceType || '').trim()
+  return PROPERTY_FOLLOWUP_SOURCE_TYPES.includes(value as typeof PROPERTY_FOLLOWUP_SOURCE_TYPES[number])
+}
+
 function normalizeStoredPhotoUrls(raw: any, fallback?: any) {
   if (Array.isArray(raw)) return Array.from(new Set(raw.map((item) => String(item || '').trim()).filter(Boolean)))
   const text = String(raw || '').trim()
@@ -518,6 +523,23 @@ async function mzappPropertyExists(propertyId: string) {
     [id],
   )
   return !!r.rowCount
+}
+
+async function loadMzappPropertyCode(propertyId: string) {
+  const id = String(propertyId || '').trim()
+  if (!id || !hasPg || !pgPool) return ''
+  try {
+    const r = await pgPool.query(
+      `SELECT code
+         FROM properties
+        WHERE id = $1
+        LIMIT 1`,
+      [id],
+    )
+    return String(r.rows?.[0]?.code || '').trim()
+  } catch {
+    return ''
+  }
 }
 
 async function mzappUserHasScopePerm(user: any, scope: MzappExpenseScope, action: 'submit' | 'view.self' | 'edit.self' | 'delete.self') {
@@ -4688,12 +4710,21 @@ router.get('/work-tasks', async (req, res) => {
     } catch {}
 
     const out: any[] = []
+    const managerCanSeeAllTaskPool = allowAll && canViewAll(user)
 
     {
       const where: string[] = []
       const vals: any[] = [dateFrom, dateTo]
       where.push(`w.scheduled_date BETWEEN $1::date AND $2::date`)
-      where.push(`NULLIF(COALESCE(w.assignee_id::text, ''), '') IS NOT NULL`)
+      if (managerCanSeeAllTaskPool) {
+        vals.push([...PROPERTY_FOLLOWUP_SOURCE_TYPES])
+        where.push(`(
+          NULLIF(COALESCE(w.assignee_id::text, ''), '') IS NOT NULL
+          OR NOT (w.source_type = ANY($${vals.length}::text[]))
+        )`)
+      } else {
+        where.push(`NULLIF(COALESCE(w.assignee_id::text, ''), '') IS NOT NULL`)
+      }
       if (!allowAll) {
         vals.push(userId)
         where.push(`w.assignee_id = $${vals.length}`)
@@ -5010,7 +5041,15 @@ router.get('/work-tasks', async (req, res) => {
             property: prop,
           }
 
-          if (wantCleaner && effectiveCleanerId && taskDate >= dateFrom && taskDate <= dateTo && (allowAll || effectiveCleanerId === userId)) {
+          if (
+            wantCleaner
+            && taskDate >= dateFrom
+            && taskDate <= dateTo
+            && (
+              (effectiveCleanerId && (allowAll || effectiveCleanerId === userId))
+              || (managerCanSeeAllTaskPool && !effectiveCleanerId)
+            )
+          ) {
             const k = `${taskDate}|${propId || ''}|${effectiveCleanerId || 'unassigned'}`
             const arr = cleanerGroups.get(k) || []
             arr.push(base)
@@ -5440,9 +5479,15 @@ router.get('/work-tasks', async (req, res) => {
       if (kind === 'cleaning') return !!String(task?.cleaner_id || task?.assignee_id || '').trim()
       return !!String(task?.cleaner_id || task?.inspector_id || task?.assignee_id || '').trim()
     }
-    const assignedOut = out.filter(hasMobileAssignee)
+    const visibleOut = out.filter((task) => {
+      if (!managerCanSeeAllTaskPool) return hasMobileAssignee(task)
+      const source = String(task?.source_type || '').trim()
+      if (source === 'cleaning_tasks') return true
+      if (isPropertyFollowupSourceType(source)) return hasMobileAssignee(task)
+      return true
+    })
 
-    assignedOut.sort((a, b) => {
+    visibleOut.sort((a, b) => {
       const ad = String(a.scheduled_date || '')
       const bd = String(b.scheduled_date || '')
       const d = ad.localeCompare(bd)
@@ -5466,7 +5511,7 @@ router.get('/work-tasks', async (req, res) => {
       return String(a.title || '').localeCompare(String(b.title || ''))
     })
 
-    return res.json(assignedOut)
+    return res.json(visibleOut)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'mzapp_work_tasks_failed' })
   }
@@ -5623,6 +5668,7 @@ async function notifyPropertyFeedbackCreated(params: {
   kind: PropertyFeedbackNotificationKind
   propertyId: string
   sourceTaskId?: string | null
+  photoUrls?: string[] | null
   summary?: string | null
   actorUserId?: string | null
 }) {
@@ -5631,7 +5677,9 @@ async function notifyPropertyFeedbackCreated(params: {
   const sourceTaskId = String(params.sourceTaskId || '').trim()
   const label = propertyFeedbackKindLabel(params.kind)
   const summary = String(params.summary || '').trim()
+  const photoUrls = Array.from(new Set((params.photoUrls || []).map((url) => String(url || '').trim()).filter(Boolean)))
   try {
+    const propertyCode = await loadMzappPropertyCode(params.propertyId)
     await emitNotificationEvent({
       type: 'ISSUE_REPORTED',
       entity: 'property_feedback',
@@ -5648,8 +5696,11 @@ async function notifyPropertyFeedbackCreated(params: {
         feedback_id: id,
         feedback_kind: params.kind,
         task_id: sourceTaskId || undefined,
+        property_code: propertyCode || undefined,
         issue_title: label,
         issue_detail: summary || undefined,
+        photo_url: photoUrls[0] || undefined,
+        photo_urls: photoUrls,
       },
       actorUserId: String(params.actorUserId || '').trim() || null,
       excludeActor: false,
@@ -6282,7 +6333,7 @@ router.post('/property-feedbacks', async (req, res) => {
         }
 
         const createdIds: string[] = []
-        const createdFeedbacks: Array<{ id: string; summary: string }> = []
+        const createdFeedbacks: Array<{ id: string; summary: string; photoUrls: string[] }> = []
         for (const it of prepared) {
           const rowId = require('uuid').v4()
           const workNo = makeWorkNo('R', occurredAt)
@@ -6318,7 +6369,7 @@ router.post('/property-feedbacks', async (req, res) => {
             ],
           )
           createdIds.push(rowId)
-          createdFeedbacks.push({ id: rowId, summary: it.detail })
+          createdFeedbacks.push({ id: rowId, summary: it.detail, photoUrls: it.media_urls })
         }
         for (const feedback of createdFeedbacks) {
           await notifyPropertyFeedbackCreated({
@@ -6326,6 +6377,7 @@ router.post('/property-feedbacks', async (req, res) => {
             kind: 'maintenance',
             propertyId: parsed.data.property_id,
             sourceTaskId: parsed.data.source_task_id,
+            photoUrls: feedback.photoUrls,
             summary: feedback.summary,
             actorUserId: createdBy,
           })
@@ -6388,6 +6440,7 @@ router.post('/property-feedbacks', async (req, res) => {
         kind: 'maintenance',
         propertyId: parsed.data.property_id,
         sourceTaskId: parsed.data.source_task_id,
+        photoUrls: mediaUrls,
         summary: detail,
         actorUserId: createdBy,
       })
@@ -6451,6 +6504,7 @@ router.post('/property-feedbacks', async (req, res) => {
         kind: 'daily_necessities',
         propertyId: parsed.data.property_id,
         sourceTaskId: parsed.data.source_task_id,
+        photoUrls: mediaUrls,
         summary: note || `${itemName} × ${Math.trunc(quantity)}`,
         actorUserId: createdBy,
       })
@@ -6529,6 +6583,7 @@ router.post('/property-feedbacks', async (req, res) => {
       kind: 'deep_cleaning',
       propertyId: parsed.data.property_id,
       sourceTaskId: parsed.data.source_task_id,
+      photoUrls: mediaUrls,
       summary: detail,
       actorUserId: createdBy,
     })
