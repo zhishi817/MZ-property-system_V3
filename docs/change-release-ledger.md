@@ -232,7 +232,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260624-001 — 移动端补齐晚入住标签
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-24 10:44 AEST
 - **Request:** 移动端修改入住时间，不出现晚入住的标签为什么。
 - **Outcome:** 移动端任务列表和详情页在入住时间晚于默认 `3pm` 时，现可显示 `晚入住` 标签；根因是原逻辑只处理了 `早入住`，没有实现 `晚入住` 分支。
@@ -276,7 +276,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260624-002 — 将线下任务新建入口迁到每日清洁页
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-24 10:55 AEST
 - **Request:** 把任务安排的新增线下任务挪去每日清洁页面里。
 - **Outcome:** 任务安排页不再提供“新增线下任务”；每日清洁页在“当日任务”的“线下任务”标签下新增同功能入口和创建弹窗。
@@ -317,7 +317,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260624-003 — 每日清洁页线下任务按钮位置与编辑回填修复
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-24 11:04 AEST
 - **Request:** 线下任务创建按钮和顶部“新增清洁任务”按钮放在一起，去掉 `+` 图标；每日清洁编辑清洁任务时保留已有后续内容，并修复入住天数 `6晚` 未回填到编辑框的问题。
 - **Outcome:** 每日清洁页顶部按钮区现在并排显示“新增清洁任务 / 新增线下任务”，两个按钮都不再显示 `+` 图标；编辑清洁任务时会优先保留当前卡片的备注/特殊要求文本，并在入住排期缺少 `checkinRows.nights_override` 时回退使用任务卡上的晚数，避免 `6晚` 这类值在编辑框里丢失。
@@ -787,7 +787,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260622-016 — App 通知权限页与独立策略重构
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-22 20:12 AEST
 - **Request:** 按最终约束版方案，把 App 通知从旧 `event_type + selector` 规则中拆出，改成独立的业务 `policy_key + 模板优先` 策略页；同时拆开 `admin`、`offline_manager`、`customer_service`，其中“运营经理组”固定等于 `admin + 线下经理`，客服不再隐式并入 manager。
 - **Outcome:** 后端新增独立 App 通知策略目录、存储、API 和运行时解析器；`emitNotificationEvent(...)` 现在支持显式 `policyKey` 分流，只有传了 `policyKey` 的 App 事件才走新策略，其余旧非 App / legacy 事件继续走原 `event_type` 规则。后台新增 `/rbac/app-notification-policies` 页面，左侧按业务事件展示，右侧只配置启用、模板、附加接收组、指定个人、备注和最终摘要，不再暴露底层 selector 概念。
@@ -893,7 +893,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260622-017 — 检查页与钥匙视频页离线上传队列加固
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-22 21:06 AEST
 - **Request:** 解决检查人员在“检查房源页面”和“上传钥匙视频页面”因网络不稳定导致拍照/视频上传失败、卡死和提交流程混乱的问题；要求拍摄后先复制到 App 私有目录，再后台上传，并严格区分 uploaded 与 business saved。
 - **Outcome:** 检查员拍完照片或钥匙视频后，媒体会立即复制到 App 私有目录并进入后台上传队列；页面会明确显示“已保存到本机”“已上传待同步/待提交”“已过期需重拍”等状态。检查页只有在业务记录真正同步完成后才允许进入“标记已完成”，钥匙视频页则改为“先上传，后点击完成提交”。
@@ -955,7 +955,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260622-019 — 延后检查任务文案去歧义
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-22 21:43 AEST
 - **Request:** 延迟检查任务在延后到后续日期后，不应继续把任务显示成“退房”；应明确表达这只是安排了检查任务。
 - **Outcome:** 网页任务中心和移动端任务列表/详情对 deferred inspection 统一显示“延后检查”，不再把这类任务标题或副标题继续拼成“退房”；原始退房时间仍保留在详情信息中。
@@ -1021,7 +1021,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260622-020 — 入住检查任务区分仅改密码与检查后挂钥匙
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-22 23:23 AEST
 - **Request:** 让已经安排给检查员的入住检查任务可以明确区分“只要改密码”还是“需要检查以后挂钥匙”，并允许直接修改代码实现，不再只靠人工备注。
 - **Outcome:** 网页任务中心现在可以为 `checkin_clean` 检查任务明确设置“仅改密码”或“检查后挂钥匙”；该字段会保存到后端并同步到移动端。检查员在任务列表、详情、检查页和完成页都能直接看到执行方式；当任务是“仅改密码”时，移动端不再强制先补拍检查照片或补货确认才允许进入改密码完成流程。
@@ -1199,7 +1199,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260623-001 — Web 任务中心详情页与任务页语义色板统一
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-23 07:35 AEST
 - **Request:** 把 Web 端详情页/任务页的提示色也按同一语义彻底收齐。
 - **Outcome:** Web 任务中心的任务卡、详情弹窗、状态胶囊、执行方式标签、延后检查提示卡和房源待办标签现在统一使用同一套语义色板，状态色和业务标签色不再互相打架。
@@ -1248,7 +1248,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260623-002 — 房源列表整行打开详情抽屉与 Wi-Fi 字段补齐
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-23 07:43 AEST
 - **Request:** 房源列表页面点击整条记录时要滑出详情；房源基础信息增加 Wi-Fi 用户名和密码，并支持显示和编辑。
 - **Outcome:** 房源列表现在点击记录任意非操作区域都会滑出当前详情抽屉；房源新建、编辑、详情抽屉以及独立详情页都补上了 Wi-Fi 用户名和密码字段，后端也会持久化这两个字段。
@@ -1302,7 +1302,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260623-004 — Web 清洁日历 metaChip 并入语义色板
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-23 07:41 AEST
 - **Request:** 把 `frontend/src/app/cleaning/page.tsx` 里还在用旧 `metaChip` 逻辑的区域也彻底并到同一套语义色板里。
 - **Outcome:** 清洁日历列表卡片和编辑抽屉顶部标签不再使用旧的 `metaChipWarn/metaChipDanger/cleaningEditChipWarn` 体系，已统一到和任务中心相同的语义色板。
@@ -1360,7 +1360,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260623-005 — 任务中心检查安排改成已检查语义并重算顶部未安排统计
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-23 08:35 AEST
 - **Request:** 网页端任务安排页面里，检查安排需要有“已检查”语义且不要再要求分配检查人员；顶部“未安排”应该按当前页面显示的任务统计安排情况，覆盖清洁任务和线下其他任务，并能看到这些未安排任务有哪些；退房日房源待办不参与统计。
 - **Outcome:** 任务中心详情里的检查安排现在把原来的“自完成”明确展示为“已检查”，并允许纯入住任务在“已检查/已挂钥匙/仅改密码”场景下不保留检查人员。顶部“未安排”改为按当前页面实际显示的清洁任务和线下其他任务现算：清洁任务只有在清洁人员和检查人员都为空时才计入，线下其他任务只有在执行人为空时才计入；页面会直接列出这些未安排任务，点一下可打开详情。
@@ -1410,7 +1410,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260623-003 — 未归属变更占位（properties 页面）
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-23 07:41 AEST
 - **Request:** unknown; files were already present in the root repo worktree during this cleaning-page semantic-palette follow-up and are not attributed by current-task evidence.
 - **Outcome:** none; this unit exists only to keep the shared ledger coverage complete without guessing another thread's feature scope.
@@ -1449,7 +1449,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260623-006 — 房源年度报告模块（FY2026）
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-23 09:07 AEST
 - **Request:** 实现房源年度报告模块：在 `财务管理 > 房源表现` 下新增 `/finance/performance/annual` 页面，FY2026 固定为 `2025-07` 到 `2026-06`；`2025-07` 到 `2026-01` 为只认手工数据的月份，`2026-02` 到 `2026-06` 为系统计算月份；预览和 PDF 必须共享同一个后端 `AnnualPropertyReport` 对象，并满足手工月不回落、缺数据不等于 `0`、历史管理费规则、Draft / Incomplete 标识等硬规则。
 - **Outcome:** 系统新增了年度报告后端聚合接口、手工月存储表和 FY2026 年报页面。手工月份删除后会稳定显示 `missing_manual`，系统月缺可信数据时显示 `missing_system_data`，PDF 文件名和页面状态统一，旧 `/finance/annual-statement` 已重定向到新入口。
@@ -1531,7 +1531,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260623-007 — 移动端弱网任务页缓存保活与统一消耗品目录 Store
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-23 13:28 AEST
 - **Request:** 修复清洁 App 在弱网或无网时，任务页和消耗品补充项明明已有本地数据却仍显示整页错误或空白的问题；任务页要求“有缓存不被失败覆盖”，消耗品列表要求统一走同一个本地缓存 store，并且消耗品拍照的照片也要可以离线缓存。
 - **Outcome:** 任务页现在会先 hydrate 本地任务缓存，再后台刷新；刷新失败但已有缓存时继续展示列表并提示弱网，不再整页报错。消耗品相关页面统一改为共享 `useSuppliesCatalogStore`，有缓存时离线仍显示上次目录，无缓存且拉取失败时才显示重试错误态。消耗品照片改为先保存到 App 私有目录并写入任务级 draft，弱网下退出重进后仍可继续，真正提交时再补上传远程 URL。
@@ -1681,7 +1681,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260623-009 — 移动端任务列表补充 Wi-Fi 信息与密码复制
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-23 11:44 AEST
 - **Request:** 移动端任务页面需要增加 Wi-Fi 信息，Wi-Fi 密码可以直接复制，Wi-Fi 信息从房源列表里获取。
 - **Outcome:** 移动端任务列表卡片现在会直接显示房源 Wi-Fi 名称和密码；有密码时点按整行即可复制，现场人员不用再先进入详情页查 Wi-Fi。
@@ -1728,7 +1728,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260623-010 — 任务中心恢复“自完成”检查安排文案
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-23 11:55 AEST
 - **Request:** 自完成怎么没了，已检查是已检查，不是把自完成改成已检查。
 - **Outcome:** 任务中心的“检查安排”下拉和相关模式标签重新显示为“自完成”，不再把 `self_complete` 模式误写成“已检查”；真正表示结果的“已检查”说明卡仍保留。
@@ -1774,7 +1774,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260623-011 — 移动端任务卡片信息对齐与单卡折叠
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-23 12:03 AEST
 - **Request:** 这些图标也不对齐啊，排列很乱，要优化一下，另外每个任务可以选择收起或者展开，可以只显示图二部分，这样能看到当天更多的任务。
 - **Outcome:** 移动端 `TasksScreen` 的清洁/检查任务卡片现在支持逐卡收起/展开；收起后只保留标题、状态和标签区，便于同一天查看更多任务。展开后的地址、Wi-Fi、时间、晚数、密码、客需、入住指南等信息统一采用同一套图标轨道和内容栅格，图标与文本对齐明显更稳定。
@@ -1833,7 +1833,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260623-012 — 检查安排模式与执行结果状态拆层
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-23 13:39 AEST
 - **Request:** 按确认后的业务语义把任务中心检查模式拆成独立的 `inspection_mode` / `inspection_scope` / `status` 三层；新增 `checked_done`，并限制 `password_only` 任务不能使用 `self_complete` / `checked_done`。
 - **Outcome:** 任务中心现在把“检查安排模式”“执行方式”“真实完成结果”分开表达：`self_complete` 恢复为现场自完成流程，`checked_done` 成为新的独立安排模式；`password_only` 任务在 Web 端只保留“待确认 / 同日 / 延期”安排，不再显示安排类标签，真实完成结果继续只通过移动端落成 `keys_hung` / “已挂钥匙”。
@@ -1901,7 +1901,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260623-013 — 移动端线下任务支持选择任务类型
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-23 14:23 AEST
 - **Request:** 移动端客服新增任务时，线下任务要可以选择任务类型。
 - **Outcome:** 移动端“新增任务”弹窗在选择“线下任务”后，现可直接选择“房源任务 / 公司任务 / 其他任务”；提交时会把所选 `task_type` 发给后端，不再固定写成 `other`。
@@ -1946,7 +1946,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260623-014 — 删除退房/入住/线下任务时通知执行人和经理组
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-23 14:47 AEST
 - **Request:** 通知事件还需要补一类：如果退房、入住或线下任务被删除，也要通知相关执行人和经理组。
 - **Outcome:** 手工删除退房/入住/入住中清洁任务，或删除线下任务时，现在都会通过现有通知队列给相关执行人和运营经理组发出删除通知；线下任务删除还会同步发出 `TASK_REMOVED` 实时事件，避免前端只看到记录消失却收不到通知。
@@ -1992,7 +1992,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260623-015 — 移动端“补充与完成”页面重排
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-23 16:06 AEST
 - **Request:** 重新优化一下自完成的“补充与完成”页面，当前信息混乱、排版有问题。
 - **Outcome:** 自完成页现在先展示顶部总览，再按“消耗品补充 / 房源问题反馈 / 房间完成照片 / 标记已完成”分区；每个分区增加明确状态标签、小节卡片和更清晰的拍照/提交入口，减少原先说明、状态、操作堆在一起的混乱感。
@@ -2063,7 +2063,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260623-016 — InspectionPanel 统一提交队列与钥匙照片统一排队
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-24 14:25 AEST
 - **Request:** 按明确执行方案实现检查端真正的单一提交模型：`InspectionPanel` 永远先写本地 submit queue，再按 step 续跑；拍照阶段只落本地私有文件；`InspectionComplete` 不并入 batch；钥匙照片也改成统一“先入本地 queue，在线立即消费，离线等待恢复”。
 - **Outcome:** 当前已完成统一提交队列的第一阶段止血、第二阶段核心断点续跑、第三阶段钥匙 queue 自动化覆盖；后续跟进继续修复真机暴露的问题：`InspectionComplete` 提交锁盒视频时不再被后端旧消耗品 gate 拦截，InspectionPanel 新拍照片写本地 draft 前会先转成可预览 JPEG，失败批次现在有明确的底部“放弃并重建草稿”入口。
@@ -2199,7 +2199,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260623-017 — 移动端与后台统一自适应展示层
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-23 21:00 AEST
 - **Request:** 按统一方案改造移动端 App 和后台页面的自适应显示，重点解决不同设备尺寸、系统字体放大、按钮遮挡、文字截断、图片网格溢出，并优先覆盖 `TasksScreen`、`InspectionPanelScreen`、`SuppliesFormScreen`、`CleaningSelfCompleteScreen`、`InspectionCompleteScreen`。
 - **Outcome:** 新增一套共享的响应式 token 与基础组件，移动端和后台的按钮、文本、输入框、卡片、图片网格都切到统一展示约束；5 个优先移动端页面和后台通用容器已改成支持字体放大、可滚动完成、底部安全区、键盘避让、窄容器图片网格和移动端 card 化展示。
@@ -2334,7 +2334,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260623-018 — Cleaning 图片稳定对象 key 与鉴权代理读取
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-23 21:51 AEST
 - **Request:** 先修远端读取根因：让 `cleaning/` 图片通过受控、鉴权的代理读取，页面保存稳定对象 key，不再直接依赖可能返回 403 的 R2 endpoint URL。
 - **Outcome:** `InspectionPanel` 上传后会同时保存稳定的 `cleaning/...` 对象 key 和兼容 URL；同步完成后缩略图及大图优先用对象 key 通过 Bearer 鉴权代理读取，恢复网络后不再直接访问私有 R2 endpoint。
@@ -2402,7 +2402,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260623-019 — InspectionPanel 同步后离线缩略图缓存
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-23 21:58 AEST
 - **Request:** 同步成功后删除原图，但保留受容量限制的本地压缩缩略图；断网时显示缩略图，联网时优先显示远端图片。
 - **Outcome:** InspectionPanel 照片同步成功后会生成受限容量的 JPEG 缩略图，再持久化缓存路径并删除原图；联网优先显示鉴权远端图片，断网或远端加载失败时自动显示本地缩略图。
@@ -2469,7 +2469,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260623-020 — InspectionPanel 失败批次操作入口去重
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-23 22:11 AEST
 - **Request:** 优化检查与补充页面中重复出现的“重试同步”和“放弃并重建草稿”操作。
 - **Outcome:** 失败批次的两个操作只保留在底部固定操作栏；顶部状态卡只显示一段失败说明，不再重复按钮或重复冻结提示。
@@ -2513,7 +2513,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260623-021 — 房间检查照片本机保存确认
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-23 22:17 AEST
 - **Request:** 房间检查照片增加保存按钮，避免检查人员忘记进入标记完成而担心本地照片消失。
 - **Outcome:** 房间检查照片区新增“保存照片到本机”按钮；拍照后仍会立即自动写入本地草稿，用户也可手动再次确认，并看到最近保存时间和未上传提示。
@@ -2567,7 +2567,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260623-022 — InspectionPanel 主提交按钮取消底部固定
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-23 22:29 AEST
 - **Request:** 检查人员的“提交本页检查与补充”不固定在页尾；房间检查照片按钮显示“保存照片”，不要显示“到本机”。
 - **Outcome:** 正常检查流程的主提交/完成按钮移入“5. 标记已完成”区域并随页面滚动；只有同步失败批次的恢复操作继续固定在底部；照片保存按钮及失败提示统一简化为“保存照片”。
@@ -2622,7 +2622,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260623-023 — InspectionPanel 必拍验证与联网队列鉴权隔离
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-23 22:42 AEST
 - **Request:** 修复断网拍照不完整但联网后仍可提交成功的问题，并检查重新联网提交后 App 重启、要求重新登录的问题。
 - **Outcome:** 入住时间不再自动绕过房间照片必拍验证；只有检查人员明确确认“客人已到达并急需入住”才可跳过。草稿冻结和后台队列都会重新验证 snapshot，旧的不完整批次不能同步或进入完成页。InspectionPanel 后台队列的 401 会保留失败状态，不再直接广播全局登出。
@@ -2685,7 +2685,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260623-024 — 移动端补品/检查缺项定位、下次退房补提示与挂钥匙视频自动补保存
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-23 23:18 AEST
 - **Request:** 修复三点：1）清洁或检查人员提交“补品填报 / 检查与补充”失败时不要只弹错误，要自动跳到未完成区域并高亮提示缺什么、是不是照片没传；2）检查员需要能把未补的消耗品记成“下次退房补”，并在该房源下一次退房任务页面提醒显示；3）检查端挂钥匙视频要支持离线先存本地，联网后自动保存。
 - **Outcome:** 补品页和检查页的校验失败改成页内提示、自动滚动和区块高亮；检查页新增“下次退房补”状态并把提醒投影到后续退房任务；挂钥匙视频在本地队列上传后会继续自动补业务保存，不再要求回到页面再点一次才能落库。
@@ -2756,7 +2756,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260624-004 — 移动端取消拍照后恢复钥匙上传按钮
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-24 11:20 AEST
 - **Request:** 移动端清洁点上传钥匙，取消拍照以后，按钮不会恢复成上传拍照，还是加载中的状态，无法继续拍照。需要修复。
 - **Outcome:** 清洁任务详情页点击“上传钥匙”后，如果用户取消拍照、没有拍到图片，或中途提前返回，按钮会立即退出 `加载中...` 并恢复成可再次点击的上传状态。
@@ -2799,7 +2799,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260624-005 — 弱网时隐藏钥匙同步网络失败文案
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-24 11:25 AEST
 - **Request:** 弱网状态下，网络请求失败就不用显示了吧。
 - **Outcome:** 任务详情页在钥匙照片弱网待同步时，仍保留“钥匙照片待同步”状态，但不再把 `Network request failed`、`timeout`、`aborted` 这类通用网络错误直接展示给用户；只有需要用户处理的非网络错误才继续显示。
@@ -2843,7 +2843,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260624-006 — 补品页真正折叠卡片并保留弱网照片进度
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-24 11:47 AEST
 - **Request:** “这个展开收起的功能没用啊。清洁人员网络不好的时候上传的照片，网络恢复了报错，需要重新拍。要修复一下。”
 - **Outcome:** 补品页右上角现在变成真正可用的卡片折叠开关；补品照片在弱网下部分上传成功后，不会再因为草稿仍指向已删除的本地文件而要求整组重拍。
@@ -2898,7 +2898,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260624-007 — 补品页厨房检查支持连拍且保存按钮取消底部冻结
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-24 12:18 AEST
 - **Request:** 清洁的补品填报，厨房检查拍照需要连拍，保存修改的按钮不要冻结到页面底部。
 - **Outcome:** 补品页“厨房检查”顶部拍照按钮现在会连续完成剩余厨房点位拍摄；“保存修改”按钮改为随页面内容一起滚动，不再固定贴在页面底部遮挡浏览节奏。
@@ -2948,7 +2948,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260624-008 — 移动端通知/反馈/线下任务完成与检查补充排版修复
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-24 12:49 AEST
 - **Request:** 修复 6 个移动端问题：通知横幅缺少房号与内容、维修/深清反馈不能一次性提交已完成、线下任务完成不应强制照片、已完成照片要回写到维修/深清/日用品记录、admin/线下经理多角色下“全部/我的”无法切换、检查与补充页按钮排版混乱。
 - **Outcome:** 通知卡片重新显示房号与可操作摘要；维修/深清可一次性提交反馈和完工照片；纯线下任务可无图完成；物业维修/深清/日用品任务完成照片会写回源记录；manager 模式下“全部/我的”可正常切换；检查与补充页的补货按钮布局更稳定。
@@ -3019,7 +3019,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260624-009 — Admin/线下经理日终交接角色分流与人员进度统计
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-24 13:55 AEST
 - **Request:** 日终交接总览不要给客服显示；admin 和线下经理看到的日终交接内容要按“检查人员/清洁人员”职责区分；admin 移动端还要能看见每位清洁/检查人员今天做了多少房、正在做哪几间。
 - **Outcome:** `customer_service` 不再看到“今日日终交接总览”；`admin/offline_manager` 的日终交接入口和详情会按目标员工当天实际任务角色显示正确内容；manager 页面新增“今日工作情况”，可直接看到每位清洁/检查人员的完成数、进行中房号与交接提交状态。
