@@ -28,6 +28,7 @@ function run() {
 
   assert.strictEqual(getAppNotificationPolicyCatalogMeta('guest_checked_out').default_template_key, 'participants_plus_ops_manager_and_customer_service')
   assert.strictEqual(getAppNotificationPolicyCatalogMeta('task_requirements_changed').default_template_key, 'participants_plus_ops_manager_and_customer_service')
+  assert.strictEqual(getAppNotificationPolicyCatalogMeta('task_deleted').default_template_key, 'participants_plus_ops_manager')
   assert.strictEqual(getAppNotificationPolicyCatalogMeta('issue_reported').default_template_key, 'participants_plus_ops_manager_and_customer_service')
   assert.strictEqual(getAppNotificationPolicyCatalogMeta('keys_hung').default_template_key, 'participants_plus_ops_manager')
   assert.strictEqual(getAppNotificationPolicyCatalogMeta('guest_luggage_updated').default_template_key, 'participants_plus_ops_manager_and_customer_service')

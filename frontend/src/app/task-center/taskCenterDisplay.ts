@@ -17,7 +17,7 @@ export function isDeferredInspectionDisplayTask(task: TaskCenterDisplayTask) {
 }
 
 export function cleaningTaskFlowLabelText(task: TaskCenterDisplayTask) {
-  if (isDeferredInspectionDisplayTask(task)) return '延后检查'
+  if (isDeferredInspectionDisplayTask(task)) return '延期检查'
   const kind = lower(task.task_kind)
   if (kind === 'turnover') return '退房入住'
   if (kind === 'checkout_clean') return '退房'

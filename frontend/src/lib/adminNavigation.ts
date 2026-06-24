@@ -497,6 +497,7 @@ export const ADMIN_NAVIGATION: AdminNavNode[] = [
           { id: 'finance-performance-overview', label: '经营分析', href: '/finance/performance/overview' },
           { id: 'finance-performance-revenue', label: '房源营收', href: '/finance/performance/revenue' },
           { id: 'finance-performance-property', label: '单房源分析', href: '/finance/performance/property' },
+          { id: 'finance-performance-annual', label: '年度报告', href: '/finance/performance/annual' },
         ],
       },
       {

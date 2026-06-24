@@ -3,6 +3,7 @@ import {
   formatTaskTime,
   inspectionScopeLabel,
   isCompletedTaskStatus,
+  isInspectionModeAllowedForTask,
   isResolvedTaskStatus,
   isTaskCompletionToggleStatus,
   isTaskLocked,
@@ -10,6 +11,8 @@ import {
   normalizeKeysHungInspectionMode,
   propertyFollowupKindMeta,
   resolveTaskDetailCompletionStatus,
+  shouldShowInspectionModeTag,
+  taskCenterInspectionModeOptions,
   taskInspectionModeMeta,
   taskInspectionScopeMeta,
   taskStatusMeta,
@@ -35,6 +38,12 @@ describe('cleaningTaskUi', () => {
     expect(normalizeKeysHungInspectionMode({ inspectionMode: 'self_complete', status: 'keys_hung', isCheckinOnly: true })).toBe('same_day')
     expect(normalizeKeysHungInspectionMode({ inspectionMode: 'deferred', status: 'keys_hung', isCheckinOnly: true })).toBe('deferred')
     expect(normalizeKeysHungInspectionMode({ inspectionMode: 'self_complete', status: 'completed', isCheckinOnly: true })).toBe('self_complete')
+    expect(normalizeKeysHungInspectionMode({
+      inspectionMode: 'checked_done',
+      status: 'assigned',
+      isCheckinOnly: true,
+      inspectionScope: 'password_only',
+    })).toBe('same_day')
   })
 
   it('normalizes inspection scope for password-only check-in tasks', () => {
@@ -44,6 +53,24 @@ describe('cleaningTaskUi', () => {
     expect(inspectionScopeLabel(null)).toBe('检查后挂钥匙')
     expect(taskInspectionScopeMeta('password_only')).toEqual({ label: '仅改密码', tone: 'pending' })
     expect(taskInspectionScopeMeta(null)).toEqual({ label: '检查后挂钥匙', tone: 'success' })
+  })
+
+  it('filters password-only check-in tasks away from self-complete and checked-done modes', () => {
+    expect(isInspectionModeAllowedForTask({
+      inspectionMode: 'self_complete',
+      inspectionScope: 'password_only',
+      isCheckinOnly: true,
+    })).toBe(false)
+    expect(isInspectionModeAllowedForTask({
+      inspectionMode: 'checked_done',
+      inspectionScope: 'password_only',
+      isCheckinOnly: true,
+    })).toBe(false)
+    expect(taskCenterInspectionModeOptions({
+      inspectionScope: 'password_only',
+      isCheckinOnly: true,
+    }).map((item) => item.value)).toEqual(['pending_decision', 'same_day', 'deferred'])
+    expect(shouldShowInspectionModeTag({ inspectionScope: 'password_only', isCheckinOnly: true })).toBe(false)
   })
 
   it('keeps keys-hung distinct from the ordinary completed toggle', () => {
@@ -62,8 +89,9 @@ describe('cleaningTaskUi', () => {
     expect(taskStatusMeta('keys_hung')).toEqual({ label: '已挂钥匙', tone: 'success' })
     expect(taskStatusMeta('cancelled')).toEqual({ label: '已取消', tone: 'neutral' })
     expect(taskInspectionModeMeta('same_day')).toEqual({ label: '同日检查', tone: 'normal' })
-    expect(taskInspectionModeMeta('self_complete')).toEqual({ label: '已检查', tone: 'special' })
-    expect(taskInspectionModeMeta('deferred')).toEqual({ label: '延后检查', tone: 'pending' })
+    expect(taskInspectionModeMeta('self_complete')).toEqual({ label: '自完成', tone: 'special' })
+    expect(taskInspectionModeMeta('checked_done')).toEqual({ label: '已检查', tone: 'success' })
+    expect(taskInspectionModeMeta('deferred')).toEqual({ label: '延期检查', tone: 'pending' })
     expect(taskInspectionModeMeta(null)).toEqual({ label: '待确认检查安排', tone: 'pending' })
   })
 

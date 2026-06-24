@@ -26,6 +26,7 @@ const pdfJobsWorker_1 = require("../services/pdfJobsWorker");
 const r2_2 = require("../r2");
 const orderMonthSegments_1 = require("../lib/orderMonthSegments");
 const monthlyStatementPhotoRecords_1 = require("../lib/monthlyStatementPhotoRecords");
+const annualPropertyReport_1 = require("../lib/annualPropertyReport");
 const managementFeeRules_1 = require("../lib/managementFeeRules");
 const monthlyStatementPhotoPack_1 = require("../lib/monthlyStatementPhotoPack");
 const monthlyStatementInvoiceAttachments_1 = require("../lib/monthlyStatementInvoiceAttachments");
@@ -2553,6 +2554,147 @@ exports.router.patch('/property-revenue-status', (0, auth_1.requirePerm)('financ
     }
     catch (e) {
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'update status failed' });
+    }
+});
+const annualReportFiscalYearSchema = zod_1.z.coerce.number().int();
+const annualReportMonthKeySchema = zod_1.z.string().trim().regex(/^\d{4}-\d{2}$/);
+const annualReportNullableAmountSchema = zod_1.z.number().finite().nullable();
+const annualReportManualPayloadSchema = zod_1.z.object({
+    currency: zod_1.z.string().trim().min(1).max(16).optional(),
+    note: zod_1.z.string().max(2000).nullable().optional(),
+    is_complete: zod_1.z.boolean(),
+    rent_income: annualReportNullableAmountSchema,
+    other_income: annualReportNullableAmountSchema,
+    management_fee: annualReportNullableAmountSchema,
+    consumables: annualReportNullableAmountSchema,
+    electricity: annualReportNullableAmountSchema,
+    gas: annualReportNullableAmountSchema,
+    water: annualReportNullableAmountSchema,
+    internet: annualReportNullableAmountSchema,
+    carpark: annualReportNullableAmountSchema,
+    council: annualReportNullableAmountSchema,
+    bodycorp: annualReportNullableAmountSchema,
+    other_expense: annualReportNullableAmountSchema,
+});
+exports.router.get('/annual-report', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
+    var _a, _b;
+    try {
+        const propertyId = String(((_a = req.query) === null || _a === void 0 ? void 0 : _a.property_id) || '').trim();
+        const fyParsed = annualReportFiscalYearSchema.safeParse((_b = req.query) === null || _b === void 0 ? void 0 : _b.fy);
+        if (!propertyId)
+            return res.status(400).json({ message: 'missing property_id' });
+        if (!fyParsed.success)
+            return res.status(400).json({ message: 'invalid fy' });
+        const fiscalYear = Number(fyParsed.data);
+        if (!(0, annualPropertyReport_1.isSupportedAnnualReportFiscalYear)(fiscalYear))
+            return res.status(400).json({ message: 'unsupported fiscal year' });
+        const report = await (0, annualPropertyReport_1.loadAnnualPropertyReport)(propertyId, fiscalYear);
+        return res.json(report);
+    }
+    catch (e) {
+        const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
+        if (msg === 'property_not_found')
+            return res.status(404).json({ message: 'property_not_found' });
+        return res.status(500).json({ message: msg || 'annual report failed' });
+    }
+});
+exports.router.get('/annual-report/manual-months', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
+    var _a, _b;
+    try {
+        const propertyId = String(((_a = req.query) === null || _a === void 0 ? void 0 : _a.property_id) || '').trim();
+        const fyParsed = annualReportFiscalYearSchema.safeParse((_b = req.query) === null || _b === void 0 ? void 0 : _b.fy);
+        if (!propertyId)
+            return res.status(400).json({ message: 'missing property_id' });
+        if (!fyParsed.success)
+            return res.status(400).json({ message: 'invalid fy' });
+        const fiscalYear = Number(fyParsed.data);
+        if (!(0, annualPropertyReport_1.isSupportedAnnualReportFiscalYear)(fiscalYear))
+            return res.status(400).json({ message: 'unsupported fiscal year' });
+        const rows = await (0, annualPropertyReport_1.listAnnualReportManualRows)(propertyId, fiscalYear);
+        return res.json(rows);
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'list manual months failed' });
+    }
+});
+exports.router.put('/annual-report/manual-months/:propertyId/:monthKey', (0, auth_1.requirePerm)('finance.payout'), async (req, res) => {
+    var _a, _b, _c;
+    try {
+        const propertyId = String(req.params.propertyId || '').trim();
+        const monthKeyParsed = annualReportMonthKeySchema.safeParse(req.params.monthKey);
+        if (!propertyId)
+            return res.status(400).json({ message: 'missing property_id' });
+        if (!monthKeyParsed.success)
+            return res.status(400).json({ message: 'invalid month_key' });
+        const monthKey = String(monthKeyParsed.data);
+        const fiscalYear = (0, annualPropertyReport_1.getAnnualReportFiscalYearForMonth)(monthKey);
+        if (!fiscalYear || !(0, annualPropertyReport_1.isSupportedAnnualReportFiscalYear)(fiscalYear))
+            return res.status(400).json({ message: 'unsupported fiscal year' });
+        if (!(0, annualPropertyReport_1.isAnnualReportManualMonth)(fiscalYear, monthKey))
+            return res.status(400).json({ message: 'manual_month_required' });
+        const parsed = annualReportManualPayloadSchema.safeParse(req.body || {});
+        if (!parsed.success)
+            return res.status(400).json({ message: parsed.error.errors.map((error) => error.message).join('; ') || 'invalid payload' });
+        const body = parsed.data;
+        const lines = Object.fromEntries(annualPropertyReport_1.ANNUAL_REPORT_LINE_KEYS.map((key) => [key, body[key]]));
+        if (body.is_complete) {
+            const missing = annualPropertyReport_1.ANNUAL_REPORT_LINE_KEYS.filter((key) => body[key] == null);
+            if (missing.length)
+                return res.status(400).json({ message: `complete manual month requires all fields: ${missing.join(',')}` });
+        }
+        const actor = String(((_a = req === null || req === void 0 ? void 0 : req.user) === null || _a === void 0 ? void 0 : _a.sub) || ((_b = req === null || req === void 0 ? void 0 : req.user) === null || _b === void 0 ? void 0 : _b.username) || '').trim() || null;
+        const row = await (0, annualPropertyReport_1.upsertAnnualReportManualMonth)({
+            property_id: propertyId,
+            month_key: monthKey,
+            fiscal_year: fiscalYear,
+            currency: body.currency || annualPropertyReport_1.ANNUAL_REPORT_CURRENCY,
+            note: (_c = body.note) !== null && _c !== void 0 ? _c : null,
+            is_complete: body.is_complete,
+            created_by: actor,
+            updated_by: actor,
+            lines,
+        });
+        try {
+            (0, store_1.addAudit)('PropertyAnnualReportManualMonth', String(row.id || ''), 'upsert', null, row, actor || undefined);
+        }
+        catch (_d) { }
+        return res.json(row);
+    }
+    catch (e) {
+        const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
+        if (msg === 'manual_month_required' || msg === 'unsupported fiscal year')
+            return res.status(400).json({ message: msg });
+        return res.status(500).json({ message: msg || 'save manual month failed' });
+    }
+});
+exports.router.delete('/annual-report/manual-months/:propertyId/:monthKey', (0, auth_1.requirePerm)('finance.payout'), async (req, res) => {
+    var _a, _b;
+    try {
+        const propertyId = String(req.params.propertyId || '').trim();
+        const monthKeyParsed = annualReportMonthKeySchema.safeParse(req.params.monthKey);
+        if (!propertyId)
+            return res.status(400).json({ message: 'missing property_id' });
+        if (!monthKeyParsed.success)
+            return res.status(400).json({ message: 'invalid month_key' });
+        const monthKey = String(monthKeyParsed.data);
+        const fiscalYear = (0, annualPropertyReport_1.getAnnualReportFiscalYearForMonth)(monthKey);
+        if (!fiscalYear || !(0, annualPropertyReport_1.isSupportedAnnualReportFiscalYear)(fiscalYear))
+            return res.status(400).json({ message: 'unsupported fiscal year' });
+        if (!(0, annualPropertyReport_1.isAnnualReportManualMonth)(fiscalYear, monthKey))
+            return res.status(400).json({ message: 'manual_month_required' });
+        const actor = String(((_a = req === null || req === void 0 ? void 0 : req.user) === null || _a === void 0 ? void 0 : _a.sub) || ((_b = req === null || req === void 0 ? void 0 : req.user) === null || _b === void 0 ? void 0 : _b.username) || '').trim() || null;
+        await (0, annualPropertyReport_1.deleteAnnualReportManualMonth)(propertyId, monthKey, fiscalYear);
+        try {
+            (0, store_1.addAudit)('PropertyAnnualReportManualMonth', `${propertyId}:${monthKey}`, 'delete', null, { property_id: propertyId, month_key: monthKey }, actor || undefined);
+        }
+        catch (_c) { }
+        return res.json({ ok: true });
+    }
+    catch (e) {
+        const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
+        if (msg === 'manual_month_required' || msg === 'unsupported fiscal year')
+            return res.status(400).json({ message: msg });
+        return res.status(500).json({ message: msg || 'delete manual month failed' });
     }
 });
 // Property revenue aggregated by fixed expenses report_category and order income

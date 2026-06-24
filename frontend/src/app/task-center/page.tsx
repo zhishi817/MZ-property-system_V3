@@ -11,11 +11,14 @@ import {
   type TaskSemanticTone,
   inspectionScopeLabel,
   isCompletedTaskStatus,
+  isInspectionModeAllowedForTask,
   isTaskCompletionToggleStatus,
   normalizeInspectionScope,
   normalizeKeysHungInspectionMode,
   propertyFollowupKindMeta,
   resolveTaskDetailCompletionStatus,
+  shouldShowInspectionModeTag,
+  taskCenterInspectionModeOptions,
   taskInspectionModeMeta,
   taskInspectionScopeMeta,
   taskStatusMeta,
@@ -59,7 +62,7 @@ type TaskCenterTask = {
   auto_sync_enabled?: boolean
   has_key_photo?: boolean
   key_photo_uploaded_at?: string | null
-  inspection_mode?: 'pending_decision' | 'same_day' | 'self_complete' | 'deferred' | null
+  inspection_mode?: 'pending_decision' | 'same_day' | 'deferred' | 'self_complete' | 'checked_done' | null
   inspection_scope?: 'inspect_and_hang' | 'password_only' | null
   inspection_due_date?: string | null
   deferred_inspection_view?: boolean
@@ -133,7 +136,7 @@ type TaskDetailDraft = {
   cleaner_id: string | null
   inspector_id: string | null
   assignee_id: string | null
-  inspection_mode: 'pending_decision' | 'same_day' | 'self_complete' | 'deferred'
+  inspection_mode: 'pending_decision' | 'same_day' | 'deferred' | 'self_complete' | 'checked_done'
   inspection_scope: 'inspect_and_hang' | 'password_only'
   inspection_due_date: Dayjs | null
   keys_hung: boolean
@@ -168,7 +171,7 @@ function semanticToneClass(tone: TaskSemanticTone) {
 }
 
 const UNASSIGNED_VISIBLE_SUMMARY_TITLE = '统计当前页面显示的清洁任务和线下其他任务里，尚未完成安排的任务；清洁任务需清洁人员和检查人员都为空，线下其他任务需执行人为空；不含退房日房源待办'
-const PENDING_INSPECTION_SUMMARY_TITLE = '统计检查安排待确认，或已设为同日/延后检查但还没有检查人员的清洁任务'
+const PENDING_INSPECTION_SUMMARY_TITLE = '统计检查安排待确认，或已设为同日/延期检查但还没有检查人员的清洁任务'
 
 function saveBoardErrorMessage(error: any) {
   const msg = String(error?.message || '').trim()
@@ -312,6 +315,22 @@ function inspectionScopeTagMeta(task: Pick<TaskCenterTask, 'task_source' | 'task
   return taskInspectionScopeMeta(task.inspection_scope)
 }
 
+function resolvedInspectionModeForTask(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view' | 'inspection_mode' | 'inspection_scope' | 'status'>) {
+  return normalizeKeysHungInspectionMode({
+    inspectionMode: task.inspection_mode,
+    inspectionScope: task.inspection_scope,
+    status: task.status,
+    isCheckinOnly: isCheckinOnlyCleaningTask(task),
+  })
+}
+
+function shouldRenderInspectionModeTag(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view' | 'inspection_scope'>) {
+  return shouldShowInspectionModeTag({
+    inspectionScope: task.inspection_scope,
+    isCheckinOnly: isCheckinOnlyCleaningTask(task),
+  })
+}
+
 function isKeysHungStatus(status: string | null | undefined) {
   return String(status || '').trim().toLowerCase() === 'keys_hung'
 }
@@ -372,21 +391,11 @@ export default function TaskCenterPage() {
   const [detailTask, setDetailTask] = useState<TaskCenterTask | null>(null)
   const [detailDraft, setDetailDraft] = useState<TaskDetailDraft | null>(null)
   const [viewerRole, setViewerRole] = useState<string | null>(null)
-  const [createOpen, setCreateOpen] = useState(false)
-  const [createLoading, setCreateLoading] = useState(false)
   const [boardDirty, setBoardDirty] = useState(false)
   const [boardSaving, setBoardSaving] = useState(false)
   const boardDirtyRef = useRef(false)
   const loadDayRequestRef = useRef(0)
-  const [offlineCreate, setOfflineCreate] = useState<{
-    date: Dayjs
-    task_type: 'property' | 'company' | 'other'
-    title: string
-    content: string
-    urgency: 'low' | 'medium' | 'high' | 'urgent'
-    property_id: string | null
-    assignee_id: string | null
-  } | null>(null)
+  const invalidInspectionModeNoticeRef = useRef<Record<string, boolean>>({})
 
   const dateStr = useMemo(() => date.format('YYYY-MM-DD'), [date])
   const canSeeCheckinSyncTag = viewerRole === 'admin' || viewerRole === 'customer_service'
@@ -536,17 +545,6 @@ export default function TaskCenterPage() {
 
   const allBoardTasks = useMemo(() => allRows.flatMap((row) => row.subrows.flatMap((subrow) => subrow.tasks)), [allRows])
 
-  const propertyOptions = useMemo(() => (
-    properties
-      .filter((item) => String(item.id || '').trim())
-      .map((item) => {
-        const code = String(item.code || '').trim()
-        const address = String(item.address || '').trim()
-        const label = code ? (address ? `${code} ${address}` : code) : (address || String(item.id))
-        return { value: String(item.id), label }
-      })
-  ), [properties])
-
   const cleanerOptions = useMemo(() => activeCleaners.map((item) => ({ value: item.id, label: item.name })), [activeCleaners])
   const inspectorOptions = useMemo(() => activeInspectors.map((item) => ({ value: item.id, label: item.name })), [activeInspectors])
   const allStaffOptions = useMemo(() => activeStaff.map((item) => ({ value: item.id, label: item.name })), [activeStaff])
@@ -626,7 +624,7 @@ export default function TaskCenterPage() {
     const pendingInspectionCount = cleaningTasks.filter((task) => {
       if (task.temporarily_skipped || task.deferred_inspection_view) return false
       if (isCompletedBoardStatus(task.status)) return false
-      const mode = String(task.inspection_mode || '').trim()
+      const mode = resolvedInspectionModeForTask(task)
       if (!mode || mode === 'pending_decision') return true
       if ((mode === 'same_day' || mode === 'deferred') && !String(task.inspector_id || '').trim()) return true
       return false
@@ -684,7 +682,7 @@ export default function TaskCenterPage() {
     if (task.temporarily_skipped) return DEFERRED_ROW_KEY
     if (task.task_source === 'cleaning' && isCompletedBoardStatus(task.status)) return COMPLETED_ROW_KEY
     if (task.deferred_inspection_view) return DEFERRED_INSPECTION_ROW_KEY
-    if (task.task_source === 'cleaning' && String(task.inspection_mode || '').trim() === 'deferred') return DEFERRED_INSPECTION_ROW_KEY
+    if (task.task_source === 'cleaning' && resolvedInspectionModeForTask(task) === 'deferred') return DEFERRED_INSPECTION_ROW_KEY
     const region = String(task.property_region || '').trim()
     return region ? `region:${region}` : DEFERRED_ROW_KEY
   }, [])
@@ -699,7 +697,7 @@ export default function TaskCenterPage() {
     const rowTitle = rowKey === DEFERRED_ROW_KEY
       ? '后续处理'
       : rowKey === DEFERRED_INSPECTION_ROW_KEY
-        ? '延后检查'
+        ? '延期检查'
       : rowKey === COMPLETED_ROW_KEY
         ? '已完成'
       : (rowKey.startsWith('region:') ? rowKey.slice('region:'.length) : '')
@@ -775,9 +773,20 @@ export default function TaskCenterPage() {
   const openTaskDetail = useCallback((task: TaskCenterTask, row: TaskCenterRow, subrow: TaskCenterSubrow) => {
     const inspectionMode = normalizeKeysHungInspectionMode({
       inspectionMode: task.inspection_mode,
+      inspectionScope: task.inspection_scope,
       status: task.status,
       isCheckinOnly: isCheckinOnlyCleaningTask(task),
     })
+    if (
+      isCheckinOnlyCleaningTask(task)
+      && normalizeInspectionScope(task.inspection_scope) === 'password_only'
+      && task.inspection_mode
+      && inspectionMode !== task.inspection_mode
+      && !invalidInspectionModeNoticeRef.current[task.item_key]
+    ) {
+      invalidInspectionModeNoticeRef.current[task.item_key] = true
+      message.warning('仅改密码任务不能使用“自完成/已检查”，已自动回退为同日检查')
+    }
     setDetailTask({ ...task, current_row_key: row.row_key, current_subrow_key: subrow.subrow_key })
     setDetailDraft({
       cleaner_id: requiresCleanerAssignment(task) ? (task.cleaner_id || null) : null,
@@ -876,7 +885,7 @@ export default function TaskCenterPage() {
       targetSubrow.tasks.sort((a, b) => a.item_key.localeCompare(b.item_key))
     }
     return nextRows
-  }, [defaultBoardRowKeyForTask, ensureBoardRow, nextCleaningDetailStatus])
+  }, [autoWorkStatus, defaultBoardRowKeyForTask, ensureBoardRow, nextCleaningDetailStatus])
 
   const applyTaskDetailLocally = useCallback((task: TaskCenterTask, draft: TaskDetailDraft) => {
     setDayData((prev) => {
@@ -896,9 +905,18 @@ export default function TaskCenterPage() {
 
   const saveTaskDetail = useCallback(async () => {
     if (!detailTask || !detailDraft) return
+    if (!isInspectionModeAllowedForTask({
+      inspectionMode: detailDraft.inspection_mode,
+      inspectionScope: detailDraft.inspection_scope,
+      isCheckinOnly: isCheckinOnlyCleaningTask(detailTask),
+    })) {
+      message.error('仅改密码任务不能设置为自完成或已检查')
+      return
+    }
     if (
       isCheckinOnlyCleaningTask(detailTask) &&
       detailDraft.inspection_mode !== 'self_complete' &&
+      detailDraft.inspection_mode !== 'checked_done' &&
       detailDraft.keys_hung &&
       !detailDraft.inspector_id
     ) {
@@ -908,6 +926,7 @@ export default function TaskCenterPage() {
     if (
       isCheckinOnlyCleaningTask(detailTask) &&
       detailDraft.inspection_mode !== 'self_complete' &&
+      detailDraft.inspection_mode !== 'checked_done' &&
       detailDraft.inspection_scope === 'password_only' &&
       !detailDraft.inspector_id
     ) {
@@ -1282,47 +1301,6 @@ export default function TaskCenterPage() {
     })
   }, [setBoardDraftDirty])
 
-  const openCreateModal = useCallback(() => {
-    setOfflineCreate({
-      date,
-      task_type: 'other',
-      title: '',
-      content: '',
-      urgency: 'medium',
-      property_id: null,
-      assignee_id: null,
-    })
-    setCreateOpen(true)
-  }, [date])
-
-  const submitCreate = useCallback(async () => {
-    if (!offlineCreate) return
-    const title = String(offlineCreate.title || '').trim()
-    if (!title) { message.warning('请输入任务标题'); return }
-    setCreateLoading(true)
-    try {
-      const payload: any = {
-        date: offlineCreate.date.format('YYYY-MM-DD'),
-        task_type: offlineCreate.task_type,
-        title,
-        content: String(offlineCreate.content || '').trim(),
-        kind: 'other',
-        status: 'todo',
-        urgency: offlineCreate.urgency,
-        property_id: offlineCreate.task_type === 'property' ? (offlineCreate.property_id || undefined) : undefined,
-        assignee_id: offlineCreate.assignee_id || undefined,
-      }
-      await postJSON('/cleaning/offline-tasks', payload, { timeoutMs: 20000 })
-      setCreateOpen(false)
-      await loadDay()
-      message.success('任务已创建')
-    } catch (e: any) {
-      message.error(String(e?.message || '创建失败'))
-    } finally {
-      setCreateLoading(false)
-    }
-  }, [loadDay, offlineCreate])
-
   const renderTaskCard = useCallback((
     task: TaskCenterTask,
     row: TaskCenterRow,
@@ -1337,8 +1315,10 @@ export default function TaskCenterPage() {
     const timingTags = specialTimingTags(task)
     const syncTag = canSeeCheckinSyncTag ? checkinSyncTag(task) : null
     const statusMeta = taskStatusMeta(task.status)
-    const inspectionModeTag = task.task_source === 'cleaning' && (task.can_configure_inspection || task.deferred_inspection_view)
-      ? taskInspectionModeMeta(task.inspection_mode)
+    const inspectionModeTag = task.task_source === 'cleaning'
+      && (task.can_configure_inspection || task.deferred_inspection_view)
+      && shouldRenderInspectionModeTag(task)
+      ? taskInspectionModeMeta(resolvedInspectionModeForTask(task))
       : null
     const inspectionScopeTag = inspectionScopeTagMeta(task)
     const workTaskKindTag = task.task_source === 'work'
@@ -1547,7 +1527,7 @@ export default function TaskCenterPage() {
             ) : null}
             {displayRow.row_type === 'deferred' ? (
               <span className={`${styles.inlineSemanticPill} ${semanticToneClass('pending')}`}>
-                {displayRow.row_key === DEFERRED_INSPECTION_ROW_KEY ? '延后检查' : '后续处理'}
+                {displayRow.row_key === DEFERRED_INSPECTION_ROW_KEY ? '延期检查' : '后续处理'}
               </span>
             ) : null}
             {canDeleteRow ? (
@@ -1646,9 +1626,6 @@ export default function TaskCenterPage() {
             <DatePicker value={date} onChange={(value) => value && confirmDiscardBoardDraft(() => setDate(value))} />
             <Button className={styles.secondaryBtn} icon={<ReloadOutlined />} onClick={() => confirmDiscardBoardDraft(() => loadDay({ discardDraft: true }).catch(() => {}))} loading={loading}>
               刷新
-            </Button>
-            <Button className={styles.primaryBtn} icon={<PlusOutlined />} onClick={openCreateModal} disabled={boardSaving}>
-              新增线下任务
             </Button>
             <Button
               type="primary"
@@ -1793,12 +1770,17 @@ export default function TaskCenterPage() {
                         {detailSyncTag.label}
                       </span>
                     ) : null}
-                    {detailTask.task_source === 'cleaning' ? (
-                      <span className={`${styles.taskDetailChip} ${semanticToneClass(taskInspectionModeMeta(detailDraft.inspection_mode).tone)}`}>{taskInspectionModeMeta(detailDraft.inspection_mode).label}</span>
-                    ) : (
-                      <span className={`${styles.taskDetailChip} ${semanticToneClass('special')}`}>{detailTask.task_kind || '线下任务'}</span>
-                    )}
-                    {detailTask.task_source === 'cleaning' && inspectionScopeTagMeta(detailTask) ? (
+                    {detailTask.task_source === 'cleaning'
+                      ? (shouldShowInspectionModeTag({
+                          inspectionScope: detailDraft.inspection_scope,
+                          isCheckinOnly: isCheckinOnlyCleaningTask(detailTask),
+                        })
+                        ? <span className={`${styles.taskDetailChip} ${semanticToneClass(taskInspectionModeMeta(detailDraft.inspection_mode).tone)}`}>{taskInspectionModeMeta(detailDraft.inspection_mode).label}</span>
+                        : null)
+                      : (
+                        <span className={`${styles.taskDetailChip} ${semanticToneClass('special')}`}>{detailTask.task_kind || '线下任务'}</span>
+                      )}
+                    {detailTask.task_source === 'cleaning' && isCheckinOnlyCleaningTask(detailTask) ? (
                       <span className={`${styles.taskDetailChip} ${semanticToneClass(taskInspectionScopeMeta(detailDraft.inspection_scope).tone)}`}>{inspectionScopeLabel(detailDraft.inspection_scope)}</span>
                     ) : null}
                     {specialTimingTags(detailTask).map((item) => (
@@ -1846,20 +1828,18 @@ export default function TaskCenterPage() {
                         return {
                           ...prev,
                           task_completed: false,
-                          keys_hung: nextMode === 'self_complete' ? prev.keys_hung : false,
+                          keys_hung: false,
                           inspection_mode: nextMode,
                           inspection_scope: nextMode === 'self_complete' ? 'inspect_and_hang' : prev.inspection_scope,
                           inspection_due_date: nextMode === 'deferred' ? prev.inspection_due_date : null,
-                          inspector_id: nextMode === 'pending_decision' || nextMode === 'self_complete' ? null : prev.inspector_id,
+                          inspector_id: nextMode === 'pending_decision' || nextMode === 'self_complete' || nextMode === 'checked_done' ? null : prev.inspector_id,
                         }
                       })}
                       style={{ width: '100%' }}
-                      options={[
-                        { label: '待确认', value: 'pending_decision' },
-                        { label: '同日检查', value: 'same_day' },
-                        { label: '已检查', value: 'self_complete' },
-                        { label: '延后检查', value: 'deferred' },
-                      ]}
+                      options={taskCenterInspectionModeOptions({
+                        inspectionScope: detailDraft.inspection_scope,
+                        isCheckinOnly: isCheckinOnlyCleaningTask(detailTask),
+                      })}
                     />
                   </div>
                   {isCheckinOnlyCleaningTask(detailTask) ? (
@@ -1867,7 +1847,23 @@ export default function TaskCenterPage() {
                       <div className={styles.fieldLabel}>检查执行方式</div>
                       <Select
                         value={detailDraft.inspection_scope}
-                        onChange={(value) => setDetailDraft((prev) => (prev ? { ...prev, inspection_scope: normalizeInspectionScope(String(value || '')) } : prev))}
+                        onChange={(value) => setDetailDraft((prev) => {
+                          if (!prev) return prev
+                          const nextScope = normalizeInspectionScope(String(value || ''))
+                          const nextMode = isInspectionModeAllowedForTask({
+                            inspectionMode: prev.inspection_mode,
+                            inspectionScope: nextScope,
+                            isCheckinOnly: true,
+                          })
+                            ? prev.inspection_mode
+                            : 'same_day'
+                          return {
+                            ...prev,
+                            inspection_scope: nextScope,
+                            inspection_mode: nextMode,
+                            inspection_due_date: nextMode === 'deferred' ? prev.inspection_due_date : null,
+                          }
+                        })}
                         style={{ width: '100%' }}
                         options={[
                           { label: '检查后挂钥匙', value: 'inspect_and_hang' },
@@ -1897,7 +1893,7 @@ export default function TaskCenterPage() {
                         })}
                       />
                     </div>
-                    <div className={styles.taskDetailHintCopy}>打开后保存安排，这个延后检查会标记为已完成并从待检查列表移出。</div>
+                    <div className={styles.taskDetailHintCopy}>打开后保存安排，这个延期检查会标记为已完成并从待检查列表移出。</div>
                   </div>
                 ) : null}
                 {isCheckinOnlyCleaningTask(detailTask) ? (
@@ -1925,9 +1921,17 @@ export default function TaskCenterPage() {
                 {detailDraft.inspection_mode === 'self_complete' ? (
                   <div className={`${styles.taskDetailHint} ${semanticToneClass('special')}`}>
                     <div className={styles.taskDetailHintRow}>
+                      <span>自完成</span>
+                    </div>
+                    <div className={styles.taskDetailHintCopy}>无需检查人员，现场自行完成补货、拍照和钥匙上传。</div>
+                  </div>
+                ) : null}
+                {detailDraft.inspection_mode === 'checked_done' ? (
+                  <div className={`${styles.taskDetailHint} ${semanticToneClass('success')}`}>
+                    <div className={styles.taskDetailHintRow}>
                       <span>已检查</span>
                     </div>
-                    <div className={styles.taskDetailHintCopy}>这个状态表示任务已经检查完成，不需要再分配检查人员。</div>
+                    <div className={styles.taskDetailHintCopy}>房源已检查完毕，不再安排检查人员。</div>
                   </div>
                 ) : null}
                 {((!detailDraft.task_completed || detailDraft.keys_hung) && (detailDraft.inspection_mode === 'same_day' || detailDraft.inspection_mode === 'deferred')) ? (
@@ -2042,83 +2046,6 @@ export default function TaskCenterPage() {
         ) : null}
       </Modal>
 
-      <Modal
-        open={createOpen}
-        title="新增线下任务"
-        okText="创建"
-        confirmLoading={createLoading}
-        onOk={() => submitCreate().catch(() => {})}
-        onCancel={() => setCreateOpen(false)}
-      >
-        {offlineCreate ? (
-          <Space direction="vertical" style={{ width: '100%' }}>
-            <div>
-              <div className={styles.fieldLabel}>日期</div>
-              <DatePicker value={offlineCreate.date} onChange={(value) => value && setOfflineCreate((prev) => (prev ? { ...prev, date: value } : prev))} style={{ width: '100%' }} />
-            </div>
-            <div>
-              <div className={styles.fieldLabel}>任务类型</div>
-              <Select
-                value={offlineCreate.task_type}
-                onChange={(value) => setOfflineCreate((prev) => (prev ? { ...prev, task_type: value } : prev))}
-                style={{ width: '100%' }}
-                options={[
-                  { label: '房源任务', value: 'property' },
-                  { label: '公司任务', value: 'company' },
-                  { label: '其他任务', value: 'other' },
-                ]}
-              />
-            </div>
-            {offlineCreate.task_type === 'property' ? (
-              <div>
-                <div className={styles.fieldLabel}>房号</div>
-                <Select
-                  showSearch
-                  optionFilterProp="label"
-                  value={offlineCreate.property_id || undefined}
-                  onChange={(value) => setOfflineCreate((prev) => (prev ? { ...prev, property_id: value ? String(value) : null } : prev))}
-                  style={{ width: '100%' }}
-                  options={propertyOptions}
-                />
-              </div>
-            ) : null}
-            <div>
-              <div className={styles.fieldLabel}>任务标题</div>
-              <Input value={offlineCreate.title} onChange={(e) => setOfflineCreate((prev) => (prev ? { ...prev, title: e.target.value } : prev))} />
-            </div>
-            <div>
-              <div className={styles.fieldLabel}>任务详情</div>
-              <Input.TextArea rows={4} value={offlineCreate.content} onChange={(e) => setOfflineCreate((prev) => (prev ? { ...prev, content: e.target.value } : prev))} />
-            </div>
-            <div>
-              <div className={styles.fieldLabel}>紧急程度</div>
-              <Select
-                value={offlineCreate.urgency}
-                onChange={(value) => setOfflineCreate((prev) => (prev ? { ...prev, urgency: value } : prev))}
-                style={{ width: '100%' }}
-                options={[
-                  { label: '低', value: 'low' },
-                  { label: '中', value: 'medium' },
-                  { label: '高', value: 'high' },
-                  { label: '紧急', value: 'urgent' },
-                ]}
-              />
-            </div>
-            <div>
-              <div className={styles.fieldLabel}>执行人</div>
-              <Select
-                allowClear
-                showSearch
-                optionFilterProp="label"
-                value={offlineCreate.assignee_id || undefined}
-                onChange={(value) => setOfflineCreate((prev) => (prev ? { ...prev, assignee_id: value ? String(value) : null } : prev))}
-                style={{ width: '100%' }}
-                options={allStaffOptions}
-              />
-            </div>
-          </Space>
-        ) : null}
-      </Modal>
     </div>
   )
 }

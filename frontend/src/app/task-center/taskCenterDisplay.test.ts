@@ -15,7 +15,7 @@ describe('taskCenterDisplay', () => {
       inspection_mode: 'deferred',
       title: 'Docklands 831402',
       detail: '10am退房',
-    })).toBe('延后检查')
+    })).toBe('延期检查')
   })
 
   it('keeps non-deferred cleaning labels unchanged', () => {

@@ -17,6 +17,12 @@ import {
 } from '../services/guestLuggage'
 import { deferredProjectionDate, effectiveInspectionMode, isInspectionFinishedStatus, mergeInspectionPlan, mobileInspectionProjectionDate } from '../lib/cleaningInspection'
 import { deepCleaningSourceSummary, maintenanceSourceSummary } from '../lib/autoExpenseSourceSummary'
+import {
+  buildIdempotencyPayloadHash,
+  ensureIdempotentStepReceiptsTable,
+  loadIdempotentStepReceipt,
+  saveIdempotentStepReceipt,
+} from '../lib/idempotentStepReceipts'
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
 
 export const router = Router()
@@ -1869,18 +1875,6 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
     const propertyId = row.property_id ? String(row.property_id) : ''
     if (!canViewAll(user) && inspectorId !== userId) return res.status(403).json({ message: 'forbidden' })
 
-    const restockCheck = await pgPool.query(
-      `SELECT 1
-       FROM cleaning_task_media
-       WHERE task_id=$1
-         AND (type LIKE 'restock_proof:%' OR type='inspection_consumables_confirmed')
-       LIMIT 1`,
-      [id],
-    )
-    if (!restockCheck?.rows?.length) {
-      return res.status(400).json({ message: '请先确认消耗品是否充足，或完成消耗品补充提交' })
-    }
-
     const uuid = require('uuid')
     const mediaId = uuid.v4()
     await pgPool.query(
@@ -2145,7 +2139,8 @@ const restockProofSchema = z
     items: z.array(
       z.object({
         item_id: z.string().trim().min(1).max(80),
-        status: z.enum(['restocked', 'unavailable']),
+        label: z.string().trim().min(1).max(160).optional().nullable(),
+        status: z.enum(['restocked', 'carry_forward', 'unavailable']),
         qty: z.number().int().min(1).optional().nullable(),
         note: z.string().trim().max(800).optional().nullable(),
         proof_url: z.string().trim().min(1).max(800).optional().nullable(),
@@ -2153,6 +2148,8 @@ const restockProofSchema = z
       }),
     ),
     confirmed_sufficient: z.boolean().optional(),
+    submit_id: z.string().trim().min(1).max(120).optional(),
+    step_key: z.string().trim().min(1).max(120).optional(),
   })
   .strict()
 
@@ -2200,6 +2197,7 @@ router.get('/cleaning-tasks/:id/restock-proof', async (req, res) => {
         item_id: itemId,
         proof_url: null,
         proof_urls: [] as string[],
+        label: String(meta?.label || itemId),
         status: String(meta?.status || ''),
         qty: meta?.qty == null ? null : Number(meta.qty),
         note: meta?.note == null ? null : String(meta.note || ''),
@@ -2231,6 +2229,9 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
+    const submitId = String(parsed.data.submit_id || '').trim()
+    const stepKey = String(parsed.data.step_key || '').trim()
+    const payloadHash = buildIdempotencyPayloadHash(parsed.data)
     await ensureCleaningTaskMediaTable()
     const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
     const row = r0?.rows?.[0] || null
@@ -2255,14 +2256,36 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
     if (!parsed.data.items.length && !confirmedSufficient) {
       return res.status(400).json({ message: '请确认消耗品是否充足，或提交补充记录' })
     }
+    if (submitId && stepKey) {
+      await ensureIdempotentStepReceiptsTable(pgPool)
+      const receipt = await loadIdempotentStepReceipt(pgPool, {
+        scopeType: 'cleaning_task_restock_proof',
+        scopeId: String(id),
+        submitId,
+        stepKey,
+      })
+      if (receipt) {
+        if (String(receipt.payload_hash || '') !== payloadHash) {
+          return res.status(409).json({ message: 'idempotency_conflict', submit_id: submitId, step_key: stepKey })
+        }
+        return res.status(200).json(receipt.response_json || { ok: true })
+      }
+    }
 
     await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND (type LIKE 'restock_proof:%' OR type='inspection_consumables_confirmed')`, [id])
     const uuid = require('uuid')
     const batchId = uuid.v4()
     for (const it of parsed.data.items) {
-      const meta = { status: it.status, qty: it.qty == null ? null : Number(it.qty), note: it.note == null ? null : String(it.note || '') }
+      const meta = {
+        label: it.label == null ? null : String(it.label || ''),
+        status: it.status,
+        qty: it.qty == null ? null : Number(it.qty),
+        note: it.note == null ? null : String(it.note || ''),
+      }
       const proofUrls = normalizeStoredPhotoUrls(it.proof_urls, it.proof_url)
-      const urlsToPersist = it.status === 'unavailable' ? ['no_photo'] : (proofUrls.length ? proofUrls : ['no_photo'])
+      const urlsToPersist = it.status === 'restocked'
+        ? (proofUrls.length ? proofUrls : ['no_photo'])
+        : ['no_photo']
       for (const url of urlsToPersist) {
         await pgPool.query(
           `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at, uploader_id)
@@ -2308,7 +2331,16 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
         )
       }
     } catch {}
-    return res.status(201).json({ ok: true })
+    const responseBody = { ok: true }
+    if (submitId && stepKey) {
+      await saveIdempotentStepReceipt(pgPool, {
+        scopeType: 'cleaning_task_restock_proof',
+        scopeId: String(id),
+        submitId,
+        stepKey,
+      }, payloadHash, responseBody)
+    }
+    return res.status(201).json(responseBody)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'restock_proof_failed' })
   }
@@ -4423,34 +4455,106 @@ router.post('/upload', upload.single('file'), async (req, res) => {
   }
 })
 
-async function completePropertyFollowupSource(client: any, row: any, completedAt: string) {
+function mergeStoredPhotoUrls(existing: any, appended: string[]) {
+  return Array.from(new Set([
+    ...normalizeStoredPhotoUrls(existing),
+    ...normalizeWorkTaskPhotoUrls(appended),
+  ]))
+}
+
+async function completePropertyFollowupSource(client: any, row: any, completedAt: string, completionPhotoUrls: string[], note: string | null) {
   const sourceType = String(row?.source_type || '').trim()
   const sourceId = String(row?.source_id || '').trim()
   if (!sourceId) return
   if (sourceType === 'property_maintenance') {
+    await ensurePropertyMaintenanceColumns()
+    const existingRes = await client.query(
+      `SELECT repair_photo_urls, repair_notes
+         FROM property_maintenance
+        WHERE id::text = $1
+        LIMIT 1`,
+      [sourceId],
+    )
+    const existingRow = existingRes?.rows?.[0] || null
+    const nextRepairPhotoUrls = mergeStoredPhotoUrls(existingRow?.repair_photo_urls, completionPhotoUrls)
+    const nextRepairNotes = note || (existingRow?.repair_notes == null ? null : String(existingRow.repair_notes || '').trim()) || null
+    const photoType = await getColumnType('property_maintenance', 'repair_photo_urls')
+    const photoExpr = photoType === 'text[]' ? '$3::text[]' : '$3::jsonb'
     await client.query(
       `UPDATE property_maintenance
-          SET status = 'completed', completed_at = $2::timestamptz, updated_at = now()
+          SET status = 'completed',
+              completed_at = $2::timestamptz,
+              repair_photo_urls = ${photoExpr},
+              repair_notes = $4,
+              review_status = 'pending',
+              updated_at = now()
         WHERE id::text = $1`,
-      [sourceId, completedAt],
+      [
+        sourceId,
+        completedAt,
+        photoType === 'text[]' ? nextRepairPhotoUrls : JSON.stringify(nextRepairPhotoUrls),
+        nextRepairNotes,
+      ],
     )
     return
   }
   if (sourceType === 'property_deep_cleaning') {
+    await ensurePropertyDeepCleaningColumns()
+    const existingRes = await client.query(
+      `SELECT repair_photo_urls, repair_notes
+         FROM property_deep_cleaning
+        WHERE id::text = $1
+        LIMIT 1`,
+      [sourceId],
+    )
+    const existingRow = existingRes?.rows?.[0] || null
+    const nextRepairPhotoUrls = mergeStoredPhotoUrls(existingRow?.repair_photo_urls, completionPhotoUrls)
+    const nextRepairNotes = note || (existingRow?.repair_notes == null ? null : String(existingRow.repair_notes || '').trim()) || null
+    const photoType = await getColumnType('property_deep_cleaning', 'repair_photo_urls')
+    const photoExpr = photoType === 'text[]' ? '$3::text[]' : '$3::jsonb'
     await client.query(
       `UPDATE property_deep_cleaning
-          SET status = 'completed', completed_at = $2::timestamptz, updated_at = now()
+          SET status = 'completed',
+              completed_at = $2::timestamptz,
+              repair_photo_urls = ${photoExpr},
+              repair_notes = $4,
+              review_status = 'pending',
+              updated_at = now()
         WHERE id::text = $1`,
-      [sourceId, completedAt],
+      [
+        sourceId,
+        completedAt,
+        photoType === 'text[]' ? nextRepairPhotoUrls : JSON.stringify(nextRepairPhotoUrls),
+        nextRepairNotes,
+      ],
     )
     return
   }
   if (sourceType === 'property_daily_necessities') {
+    await ensurePropertyDailyNecessitiesColumns()
+    const existingRes = await client.query(
+      `SELECT photo_urls, note
+         FROM property_daily_necessities
+        WHERE id::text = $1
+        LIMIT 1`,
+      [sourceId],
+    )
+    const existingRow = existingRes?.rows?.[0] || null
+    const nextPhotoUrls = mergeStoredPhotoUrls(existingRow?.photo_urls, completionPhotoUrls)
+    const nextNote = note || (existingRow?.note == null ? null : String(existingRow.note || '').trim()) || null
+    const photoType = await getColumnType('property_daily_necessities', 'photo_urls')
+    const photoExpr = photoType === 'text[]' ? '$2::text[]' : '$2::jsonb'
     await client.query(
       `UPDATE property_daily_necessities
-          SET status = 'replaced'
+          SET status = 'replaced',
+              photo_urls = ${photoExpr},
+              note = $3
         WHERE id::text = $1`,
-      [sourceId],
+      [
+        sourceId,
+        photoType === 'text[]' ? nextPhotoUrls : JSON.stringify(nextPhotoUrls),
+        nextNote,
+      ],
     )
     return
   }
@@ -4508,7 +4612,7 @@ router.post('/work-tasks/:id/mark', async (req, res) => {
           ['done', JSON.stringify(completionPhotoUrls), note, id],
         )
         alreadyDone = Number(updateResult?.rowCount || 0) === 0
-        await completePropertyFollowupSource(client, row, completedAt)
+        await completePropertyFollowupSource(client, row, completedAt, completionPhotoUrls, note)
         await client.query('COMMIT')
       } catch (error) {
         try { await client.query('ROLLBACK') } catch {}
@@ -4926,6 +5030,8 @@ router.get('/work-tasks', async (req, res) => {
           }
         }
         const restockByTaskId = new Map<string, any[]>()
+        const consumableItemIdsByTaskId = new Map<string, Set<string>>()
+        const carryForwardRestockByProperty = new Map<string, any[]>()
         if (taskIds.length) {
           const rr = await pgPool.query(
             `SELECT task_id::text AS task_id, item_id::text AS item_id, COALESCE(item_label,'') AS item_label, qty, note, photo_url, COALESCE(status,'') AS status
@@ -4947,6 +5053,68 @@ router.get('/work-tasks', async (req, res) => {
               status: String(x.status || ''),
             })
             restockByTaskId.set(k, arr)
+          }
+          const submittedConsumables = await pgPool.query(
+            `SELECT task_id::text AS task_id, item_id::text AS item_id
+             FROM cleaning_consumable_usages
+             WHERE task_id::text = ANY($1::text[])`,
+            [taskIds],
+          )
+          for (const row of submittedConsumables?.rows || []) {
+            const taskId = String(row.task_id || '').trim()
+            const itemId = String(row.item_id || '').trim()
+            if (!taskId || !itemId) continue
+            const itemIds = consumableItemIdsByTaskId.get(taskId) || new Set<string>()
+            itemIds.add(itemId)
+            consumableItemIdsByTaskId.set(taskId, itemIds)
+          }
+        }
+        if (guestLuggagePropertyIds.length) {
+          const followupRows = await pgPool.query(
+            `SELECT t.id::text AS source_task_id,
+                    t.property_id::text AS property_id,
+                    COALESCE(t.task_date, t.date)::text AS source_task_date,
+                    m.type,
+                    m.note,
+                    m.created_at
+             FROM cleaning_task_media m
+             JOIN cleaning_tasks t ON t.id::text = m.task_id::text
+             WHERE t.property_id::text = ANY($1::text[])
+               AND m.type LIKE 'restock_proof:%'
+               AND COALESCE(t.task_date, t.date)::date <= $2::date
+               AND COALESCE(t.status,'') <> 'cancelled'
+             ORDER BY COALESCE(t.task_date, t.date) DESC, m.created_at DESC`,
+            [guestLuggagePropertyIds, dateTo],
+          )
+          const seenCarryForward = new Set<string>()
+          for (const row of followupRows?.rows || []) {
+            const propertyId = String(row.property_id || '').trim()
+            const sourceTaskId = String(row.source_task_id || '').trim()
+            const sourceTaskDate = String(row.source_task_date || '').slice(0, 10)
+            const type = String(row.type || '').trim()
+            const itemId = type.includes(':') ? type.split(':').slice(1).join(':').trim() : ''
+            if (!propertyId || !sourceTaskId || !sourceTaskDate || !itemId) continue
+            let meta: any = null
+            try {
+              const raw = String(row.note || '').trim()
+              meta = raw && (raw.startsWith('{') || raw.startsWith('[')) ? JSON.parse(raw) : null
+            } catch {}
+            if (String(meta?.status || '').trim() !== 'carry_forward') continue
+            const carryKey = `${propertyId}:${itemId}`
+            if (seenCarryForward.has(carryKey)) continue
+            seenCarryForward.add(carryKey)
+            const list = carryForwardRestockByProperty.get(propertyId) || []
+            list.push({
+              item_id: itemId,
+              label: String(meta?.label || itemId).trim() || itemId,
+              qty: meta?.qty == null ? null : Number(meta.qty),
+              note: meta?.note == null ? null : String(meta.note || '').trim() || null,
+              photo_url: null,
+              status: 'carry_forward',
+              source_task_id: sourceTaskId,
+              source_task_date: sourceTaskDate,
+            })
+            carryForwardRestockByProperty.set(propertyId, list)
           }
         }
         const completionAreasByTaskId = new Map<string, Set<string>>()
@@ -5145,6 +5313,12 @@ router.get('/work-tasks', async (req, res) => {
           const completionPhotosOk = REQUIRED_COMPLETION_PHOTO_AREAS.every((a) => completionAreas.has(a))
           const restockItems: any[] = []
           const seen = new Set<string>()
+          const submittedConsumableIds = new Set<string>()
+          for (const sId of p.ids) {
+            for (const itemId of Array.from(consumableItemIdsByTaskId.get(String(sId)) || new Set<string>())) {
+              submittedConsumableIds.add(String(itemId || '').trim())
+            }
+          }
           for (const sId of p.ids) {
             const arr = rows.filter((x) => String(x.__raw_id) === String(sId)).flatMap((x) => (Array.isArray(x.restock_items) ? x.restock_items : []))
             for (const it of arr) {
@@ -5153,6 +5327,29 @@ router.get('/work-tasks', async (req, res) => {
               if (seen.has(iid)) continue
               seen.add(iid)
               restockItems.push(it)
+            }
+          }
+          if (roleKind === 'cleaner' && propId && (p.kind === 'checkout' || p.kind === 'turnover')) {
+            for (const it of carryForwardRestockByProperty.get(String(propId)) || []) {
+              const iid = String(it?.item_id || '').trim()
+              const sourceTaskId = String(it?.source_task_id || '').trim()
+              const sourceTaskDate = String(it?.source_task_date || '').slice(0, 10)
+              if (!iid || !sourceTaskId || !sourceTaskDate) continue
+              if (sourceTaskDate >= date) continue
+              if (p.ids.includes(sourceTaskId)) continue
+              if (seen.has(iid)) continue
+              if (submittedConsumableIds.has(iid)) continue
+              seen.add(iid)
+              restockItems.push({
+                item_id: iid,
+                label: String(it?.label || iid).trim() || iid,
+                qty: it?.qty == null ? null : Number(it.qty),
+                note: it?.note == null ? null : String(it.note || ''),
+                photo_url: null,
+                status: 'carry_forward',
+                source_task_id: sourceTaskId,
+                source_task_date: sourceTaskDate,
+              })
             }
           }
           const raw = String(p.a.raw_status ?? '').trim().toLowerCase()
@@ -5579,6 +5776,9 @@ const feedbackCreateSchema = z
     kind: z.enum(['maintenance', 'deep_cleaning', 'daily_necessities']),
     property_id: z.string().min(1),
     source_task_id: z.string().optional(),
+    submit_id: z.string().trim().min(1).max(120).optional(),
+    step_key: z.string().trim().min(1).max(120).optional(),
+    client_item_id: z.string().trim().min(1).max(120).optional(),
 
     area: z.string().optional(),
     areas: z.array(z.string().min(1)).optional(),
@@ -6294,6 +6494,36 @@ router.post('/property-feedbacks', async (req, res) => {
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+    const pool = pgPool
+    const submitId = String(parsed.data.submit_id || '').trim()
+    const stepKey = String(parsed.data.step_key || '').trim()
+    const clientItemId = String(parsed.data.client_item_id || '').trim()
+    const payloadHash = buildIdempotencyPayloadHash(parsed.data)
+    const receiptScopeId = clientItemId || `${String(parsed.data.property_id || '').trim()}:${String(parsed.data.kind || '').trim()}`
+    const receiptScope = submitId && stepKey
+      ? {
+          scopeType: 'property_feedback_create',
+          scopeId: receiptScopeId,
+          submitId,
+          stepKey,
+        }
+      : null
+    const respondReceipt = async (statusCode: number, body: any) => {
+      if (receiptScope) {
+        await saveIdempotentStepReceipt(pool, receiptScope, payloadHash, body)
+      }
+      return res.status(statusCode).json(body)
+    }
+    if (receiptScope) {
+      await ensureIdempotentStepReceiptsTable(pool)
+      const receipt = await loadIdempotentStepReceipt(pool, receiptScope)
+      if (receipt) {
+        if (String(receipt.payload_hash || '') !== payloadHash) {
+          return res.status(409).json({ message: 'idempotency_conflict', submit_id: submitId, step_key: stepKey, client_item_id: clientItemId || null })
+        }
+        return res.status(200).json(receipt.response_json || { ok: true })
+      }
+    }
     const now = new Date()
     const createdAt = now.toISOString()
     const occurredAt = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
@@ -6342,7 +6572,7 @@ router.post('/property-feedbacks', async (req, res) => {
               LIMIT 1`,
             [parsed.data.property_id, fingerprint, duplicateWindowHours],
           )
-          if (dup.rowCount) return res.status(409).json({ message: 'duplicate', existing_id: String(dup.rows[0].id) })
+          if (dup.rowCount) return await respondReceipt(200, { ok: true, existing_id: String(dup.rows[0].id) })
         }
 
         const createdIds: string[] = []
@@ -6395,7 +6625,7 @@ router.post('/property-feedbacks', async (req, res) => {
             actorUserId: createdBy,
           })
         }
-        return res.status(201).json({ ok: true, ids: createdIds })
+        return await respondReceipt(201, { ok: true, ids: createdIds })
       }
 
       const area = String(parsed.data.area || '').trim()
@@ -6424,7 +6654,7 @@ router.post('/property-feedbacks', async (req, res) => {
           LIMIT 1`,
         [parsed.data.property_id, fingerprint, duplicateWindowHours],
       )
-      if (dup.rowCount) return res.status(409).json({ message: 'duplicate', existing_id: String(dup.rows[0].id) })
+      if (dup.rowCount) return await respondReceipt(200, { ok: true, existing_id: String(dup.rows[0].id) })
       await pgPool.query(
         `INSERT INTO property_maintenance(
           id, property_id, occurred_at, details, created_by, created_at,
@@ -6457,7 +6687,7 @@ router.post('/property-feedbacks', async (req, res) => {
         summary: detail,
         actorUserId: createdBy,
       })
-      return res.status(201).json({ ok: true, id })
+      return await respondReceipt(201, { ok: true, id })
     }
 
     if (parsed.data.kind === 'daily_necessities') {
@@ -6487,7 +6717,7 @@ router.post('/property-feedbacks', async (req, res) => {
           LIMIT 1`,
         [parsed.data.property_id, fingerprint, duplicateWindowHours],
       )
-      if (dup.rowCount) return res.status(409).json({ message: 'duplicate', existing_id: String(dup.rows[0].id) })
+      if (dup.rowCount) return await respondReceipt(200, { ok: true, existing_id: String(dup.rows[0].id) })
 
       await pgPool.query(
         `INSERT INTO property_daily_necessities(
@@ -6521,7 +6751,7 @@ router.post('/property-feedbacks', async (req, res) => {
         summary: note || `${itemName} × ${Math.trunc(quantity)}`,
         actorUserId: createdBy,
       })
-      return res.status(201).json({ ok: true, id })
+      return await respondReceipt(201, { ok: true, id })
     }
 
     const areas = parsed.data.areas || []
@@ -6557,7 +6787,7 @@ router.post('/property-feedbacks', async (req, res) => {
         LIMIT 1`,
       [parsed.data.property_id, fingerprint, duplicateWindowHours],
     )
-    if (dup.rowCount) return res.status(409).json({ message: 'duplicate', existing_id: String(dup.rows[0].id) })
+    if (dup.rowCount) return await respondReceipt(200, { ok: true, existing_id: String(dup.rows[0].id) })
     await pgPool.query(
       `INSERT INTO property_deep_cleaning(
         id, property_id, occurred_at, project_desc, details, created_by, created_at,
@@ -6600,7 +6830,7 @@ router.post('/property-feedbacks', async (req, res) => {
       summary: detail,
       actorUserId: createdBy,
     })
-    return res.status(201).json({ ok: true, id })
+    return await respondReceipt(201, { ok: true, id })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'property_feedbacks_create_failed' })
   }

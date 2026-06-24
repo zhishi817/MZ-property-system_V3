@@ -1,88 +1,64 @@
 "use client"
-import dayjs from 'dayjs'
-import { monthSegments } from '../lib/orders'
-import { shouldIncludeIncomeTxInPropertyOtherIncome, txInMonth, txMatchesProperty } from '../lib/financeTx'
-import { isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../lib/statementBalances'
 import { forwardRef } from 'react'
-import { findLandlordForProperty, resolveManagementFeeRuleForMonth, type LandlordWithManagementFeeRules } from '../lib/managementFeeRules'
+import {
+  annualReportHasIssues,
+  formatAnnualReportMoney,
+  formatAnnualReportMonthStatus,
+  formatAnnualReportWarningMessage,
+  getAnnualReportLineLabel,
+  getVisibleAnnualReportExpenseLineKeys,
+  type AnnualReportLanguage,
+  type AnnualPropertyReport,
+  type AnnualReportLineKey,
+} from '../lib/annualReport'
 
-type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; status?: string; count_in_income?: boolean }
-type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; ref_type?: string; ref_id?: string }
-type Landlord = LandlordWithManagementFeeRules
+const DISPLAY_ROWS: AnnualReportLineKey[] = [
+  'rent_income',
+  'other_income',
+  'management_fee',
+  'consumables',
+  'electricity',
+  'gas',
+  'water',
+  'internet',
+  'carpark',
+  'council',
+  'bodycorp',
+  'other_expense',
+]
+
+function monthLabel(monthKey: string) {
+  const [, month] = String(monthKey || '').split('-')
+  return (
+    {
+      '07': 'Jul',
+      '08': 'Aug',
+      '09': 'Sep',
+      '10': 'Oct',
+      '11': 'Nov',
+      '12': 'Dec',
+      '01': 'Jan',
+      '02': 'Feb',
+      '03': 'Mar',
+      '04': 'Apr',
+      '05': 'May',
+      '06': 'Jun',
+    }[month || ''] || monthKey
+  )
+}
 
 export default forwardRef<HTMLDivElement, {
-  baseMonth: any
-  propertyId: string
-  orders: Order[]
-  txs: Tx[]
-  properties: { id: string; code?: string; address?: string }[]
-  landlords: Landlord[]
+  report: AnnualPropertyReport
   showChinese?: boolean
-}>(function FiscalYearStatement({ baseMonth, propertyId, orders, txs, properties, landlords, showChinese = true }, ref) {
-  const base = baseMonth || dayjs()
-  const fyStartYear = base.month() >= 6 ? base.year() : base.year() - 1
-  const start = dayjs(`${fyStartYear}-07-01`)
-  const months = [
-    'Jul','Aug','Sep','Oct','Nov','Dec','Jan','Feb','Mar','Apr','May','Jun'
-  ]
-  const monthRanges = months.map((_, idx) => {
-    const d = start.add(idx, 'month')
-    return { label: d.format('MMM'), start: d.startOf('month'), end: d.endOf('month') }
-  })
-  const landlord = findLandlordForProperty(landlords, propertyId)
-  const property = properties.find(pp => pp.id === propertyId)
-  const fmt = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  const orderById = new Map((orders || []).map(o => [String(o.id), o]))
-
-  const monthValues = monthRanges.map(r => {
-    const overlapping = monthSegments(orders.filter(o => o.property_id===propertyId), r.start)
-    const rentIncome = overlapping.reduce((s, x) => s + Number(((x as any).visible_net_income ?? (x as any).net_income) || 0), 0)
-    const otherIncome = txs.filter(t => {
-      if (t.kind !== 'income') return false
-      if (!txMatchesProperty(t, { id: propertyId, code: property?.code })) return false
-      if (!txInMonth(t as any, r.start)) return false
-      if (isFurnitureOwnerPayment(t as any)) return false
-      if (String((t as any).category || '').toLowerCase() === 'late_checkout') return false
-      return shouldIncludeIncomeTxInPropertyOtherIncome(t, orderById)
-    }).reduce((s, x) => s + Number(x.amount || 0), 0)
-    const mgmtRecorded = txs
-      .filter(t => t.kind === 'expense' && String((t as any).category || '') === 'management_fee' && txMatchesProperty(t as any, { id: propertyId, code: property?.code }) && txInMonth(t as any, r.start))
-      .reduce((s, x) => s + Number((x as any).amount || 0), 0)
-    const mgmtRate = Number(resolveManagementFeeRuleForMonth(landlord, r.start.format('YYYY-MM')).rate || 0)
-    const mgmt = mgmtRecorded > 0 ? mgmtRecorded : (mgmtRate ? Math.round(((rentIncome * mgmtRate) + Number.EPSILON) * 100) / 100 : 0)
-    const sumCat = (c: string) => txs.filter(t => t.kind === 'expense' && t.category === c && txMatchesProperty(t, { id: propertyId, code: property?.code }) && txInMonth(t as any, r.start) && !isFurnitureRecoverableCharge(t as any)).reduce((s, x) => s + Number(x.amount || 0), 0)
-    const consumable = sumCat('consumable')
-    const electricity = sumCat('electricity')
-    const gas = sumCat('gas')
-    const water = sumCat('water')
-    const internet = sumCat('internet')
-    const carpark = sumCat('carpark')
-    const council = sumCat('council')
-    const bodycorp = sumCat('property_fee')
-    const otherExp = sumCat('other')
-    const totalExp = mgmt + consumable + electricity + gas + water + internet + carpark + council + bodycorp + otherExp
-    const netIncome = rentIncome + otherIncome - totalExp
-    return { rentIncome, otherIncome, mgmt, consumable, electricity, gas, water, internet, carpark, council, bodycorp, otherExp, netIncome }
-  })
-
-  const yearTotals = monthValues.reduce((acc, v) => ({
-    rentIncome: acc.rentIncome + v.rentIncome,
-    otherIncome: acc.otherIncome + v.otherIncome,
-    mgmt: acc.mgmt + v.mgmt,
-    consumable: acc.consumable + v.consumable,
-    electricity: acc.electricity + v.electricity,
-    gas: acc.gas + v.gas,
-    water: acc.water + v.water,
-    internet: acc.internet + v.internet,
-    carpark: acc.carpark + v.carpark,
-    council: acc.council + v.council,
-    bodycorp: acc.bodycorp + v.bodycorp,
-    otherExp: acc.otherExp + v.otherExp,
-    netIncome: acc.netIncome + v.netIncome,
-  }), { rentIncome:0, otherIncome:0, mgmt:0, consumable:0, electricity:0, gas:0, water:0, internet:0, carpark:0, council:0, bodycorp:0, otherExp:0, netIncome:0 })
+}>(function FiscalYearStatement({ report, showChinese = true }, ref) {
+  const language: AnnualReportLanguage = showChinese ? 'bilingual' : 'en'
+  const isDraft = annualReportHasIssues(report)
+  const owner = report.report_owner_snapshot || report.owner_current
+  const propertyLabel = report.property.code || report.property.address || report.property.id
+  const visibleExpenseRows = getVisibleAnnualReportExpenseLineKeys(report)
 
   return (
-    <div ref={ref as any} data-fy-statement-root="1" style={{ padding: 16, fontFamily: "StatementFont, serif" }}>
+    <div ref={ref as any} data-fy-statement-root="1" style={{ padding: 16, fontFamily: 'StatementFont, serif' }}>
       <style>{`
         @font-face {
           font-family: 'StatementFont';
@@ -109,121 +85,120 @@ export default forwardRef<HTMLDivElement, {
           unicode-range: U+3000-303F, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FF00-FFEF;
         }
         [data-fy-statement-root="1"] table { width: 100%; border-collapse: collapse; }
-        [data-fy-statement-root="1"] table tr > * { border-bottom: 1px solid #ddd; }
+        [data-fy-statement-root="1"] table tr > * { border-bottom: 1px solid #ddd; vertical-align: top; }
         @media print {
           @page { size: A4 landscape; margin: 12mm; }
           html, body { margin: 0; padding: 0; font-family: StatementFont, serif; -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision; }
-          [data-fy-statement-root="1"] [data-keep-with-next="true"] { break-after: avoid; page-break-after: avoid; }
-          [data-fy-statement-root="1"] [data-pdf-break-before="true"] { break-before: page; page-break-before: always; }
-          [data-fy-statement-root="1"] [data-pdf-avoid-cut="true"] { break-inside: avoid; page-break-inside: avoid; }
-          [data-fy-statement-root="1"] tr { break-inside: avoid; page-break-inside: avoid; }
         }
       `}</style>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 2fr 1.4fr', alignItems:'center', columnGap: 16 }}>
-        <div style={{ display:'flex', alignItems:'center' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr 1.4fr', alignItems: 'center', columnGap: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center' }}>
           <img src="/mz-logo.png" alt="Company Logo" style={{ height: 70 }} />
         </div>
-        <div style={{ textAlign:'center' }}>
-          <div style={{ fontSize: 28, fontWeight: 700, letterSpacing: 1 }}>{showChinese ? 'MONTHLY INCOME AND EXPENDITURE SUMMARY 月度收支汇总' : 'MONTHLY INCOME AND EXPENDITURE SUMMARY'}</div>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ fontSize: 28, fontWeight: 700, letterSpacing: 1 }}>
+            {showChinese ? 'ANNUAL PROPERTY REPORT 房源年度报告' : 'ANNUAL PROPERTY REPORT'}
+          </div>
           <div style={{ fontSize: 14, marginTop: 6 }}>
             {showChinese
-              ? `FINANCIAL YEAR ${start.format('MMMM YYYY')} TO ${start.add(11,'month').endOf('month').format('MMMM YYYY')} 财年：${start.format('YYYY-MM')} 至 ${start.add(11,'month').endOf('month').format('YYYY-MM')}`
-              : `FINANCIAL YEAR ${start.format('MMMM YYYY')} TO ${start.add(11,'month').endOf('month').format('MMMM YYYY')}`}
+              ? `FY${report.fiscal_year} 财年：${report.period_start} 至 ${report.period_end}`
+              : `FY${report.fiscal_year}: ${report.period_start} to ${report.period_end}`}
           </div>
+          {isDraft ? (
+            <div style={{ marginTop: 8, display: 'inline-block', padding: '4px 10px', background: '#fff1f0', color: '#cf1322', border: '1px solid #ffa39e', borderRadius: 999 }}>
+              Draft / Incomplete
+            </div>
+          ) : null}
         </div>
         <div>
-          <div style={{ background:'#e6ecf6', padding:'6px 8px', fontWeight:700, textAlign:'right', border:'1px solid #dfe6f1' }}>{showChinese ? 'Customer Details 客户信息' : 'Customer Details'}</div>
-          <div style={{ border:'1px solid #dfe6f1', borderTop:0, padding:8, textAlign:'right' }}>
-            <div>{landlord?.name || ''}</div>
-            <div style={{ fontSize:12 }}>{property?.address || ''}</div>
+          <div style={{ background: '#e6ecf6', padding: '6px 8px', fontWeight: 700, textAlign: 'right', border: '1px solid #dfe6f1' }}>
+            {showChinese ? 'Customer Details 客户信息' : 'Customer Details'}
+          </div>
+          <div style={{ border: '1px solid #dfe6f1', borderTop: 0, padding: 8, textAlign: 'right' }}>
+            <div>{owner?.name || ''}</div>
+            <div style={{ fontSize: 12 }}>{propertyLabel}</div>
           </div>
         </div>
       </div>
 
-      <table style={{ width:'100%', borderCollapse:'collapse', marginTop: 12, fontSize: 12 }}>
+      {report.warnings.length ? (
+        <div style={{ marginTop: 12, marginBottom: 12, padding: 10, border: '1px solid #ffd591', background: '#fff7e6', color: '#8c5a00' }}>
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>{showChinese ? 'Warnings 警告' : 'Warnings'}</div>
+          {report.warnings.map((warning, index) => (
+            <div key={`${warning.code}-${warning.month_key || ''}-${index}`}>- {formatAnnualReportWarningMessage(warning, language)}</div>
+          ))}
+        </div>
+      ) : null}
+
+      <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 12, fontSize: 12 }}>
         <thead>
           <tr>
-            <th style={{ textAlign:'left', padding:6 }}></th>
-            {monthRanges.map(m => (<th key={m.label} style={{ padding:6, background:'#e6ecf6' }}>{m.label}</th>))}
-              <th style={{ padding:6, background:'#e6ecf6' }}>{showChinese ? 'Year Total 全年合计' : 'Year Total'}</th>
+            <th style={{ textAlign: 'left', padding: 6 }}></th>
+            {report.months.map((month) => (
+              <th key={month.month_key} style={{ padding: 6, background: '#e6ecf6' }}>
+                <div>{monthLabel(month.month_key)}</div>
+                {month.status !== 'complete' ? (
+                  <div style={{ fontSize: 10, color: '#cf1322', marginTop: 4 }}>{formatAnnualReportMonthStatus(month.status, language)}</div>
+                ) : null}
+              </th>
+            ))}
+            <th style={{ padding: 6, background: '#e6ecf6' }}>{showChinese ? 'Year Total 全年合计' : 'Year Total'}</th>
           </tr>
         </thead>
         <tbody>
-          <tr><td style={{ padding:6, fontWeight:700 }}>{showChinese ? 'Income 收入' : 'Income'}</td><td colSpan={13}></td></tr>
           <tr>
-            <td style={{ padding:6 }}>{showChinese ? 'Rent Income 租金收入' : 'Rent Income'}</td>
-            {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>${fmt(v.rentIncome)}</td>))}
-            <td style={{ padding:6, textAlign:'right' }}>${fmt(yearTotals.rentIncome)}</td>
+            <td style={{ padding: 6, fontWeight: 700 }}>{showChinese ? 'Income 收入' : 'Income'}</td>
+            <td colSpan={13}></td>
           </tr>
-          <tr>
-            <td style={{ padding:6 }}>{showChinese ? 'Other Income 其他收入' : 'Other Income'}</td>
-            {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>${fmt(v.otherIncome)}</td>))}
-            <td style={{ padding:6, textAlign:'right' }}>${fmt(yearTotals.otherIncome)}</td>
-          </tr>
+          {DISPLAY_ROWS.slice(0, 2).map((rowKey) => (
+            <tr key={rowKey}>
+              <td style={{ padding: 6 }}>{getAnnualReportLineLabel(rowKey, language)}</td>
+              {report.months.map((month) => (
+                <td key={`${month.month_key}-${rowKey}`} style={{ padding: 6, textAlign: 'right' }}>
+                  {formatAnnualReportMoney(month.lines[rowKey])}
+                </td>
+              ))}
+              <td style={{ padding: 6, textAlign: 'right' }}>{formatAnnualReportMoney(report.totals.lines[rowKey])}</td>
+            </tr>
+          ))}
 
-          <tr><td style={{ padding:6, fontWeight:700 }}>{showChinese ? 'Expenses 支出' : 'Expenses'}</td><td colSpan={13}></td></tr>
-          <tr>
-            <td style={{ padding:6 }}>{showChinese ? 'Agency Fees 管理费' : 'Agency Fees'}</td>
-            {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>-${fmt(v.mgmt)}</td>))}
-            <td style={{ padding:6, textAlign:'right' }}>-${fmt(yearTotals.mgmt)}</td>
-          </tr>
-          <tr>
-            <td style={{ padding:6 }}>{showChinese ? 'Consumables Cost 耗材费用' : 'Consumables Cost'}</td>
-            {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>-${fmt(v.consumable)}</td>))}
-            <td style={{ padding:6, textAlign:'right' }}>-${fmt(yearTotals.consumable)}</td>
-          </tr>
-          <tr>
-            <td style={{ padding:6 }}>{showChinese ? 'Electricity 电费' : 'Electricity'}</td>
-            {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>-${fmt(v.electricity)}</td>))}
-            <td style={{ padding:6, textAlign:'right' }}>-${fmt(yearTotals.electricity)}</td>
-          </tr>
-          <tr>
-            <td style={{ padding:6 }}>{showChinese ? 'Gas and Hot water 燃气/热水' : 'Gas and Hot water'}</td>
-            {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>-${fmt(v.gas)}</td>))}
-            <td style={{ padding:6, textAlign:'right' }}>-${fmt(yearTotals.gas)}</td>
-          </tr>
-          <tr>
-            <td style={{ padding:6 }}>{showChinese ? 'Water 水费' : 'Water'}</td>
-            {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>-${fmt(v.water)}</td>))}
-            <td style={{ padding:6, textAlign:'right' }}>-${fmt(yearTotals.water)}</td>
-          </tr>
-          <tr>
-            <td style={{ padding:6 }}>{showChinese ? 'Internet 网络费' : 'Internet'}</td>
-            {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>-${fmt(v.internet)}</td>))}
-            <td style={{ padding:6, textAlign:'right' }}>-${fmt(yearTotals.internet)}</td>
-          </tr>
-          <tr>
-            <td style={{ padding:6 }}>{showChinese ? 'Carpark Rent 车位租金' : 'Carpark Rent'}</td>
-            {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>-${fmt(v.carpark)}</td>))}
-            <td style={{ padding:6, textAlign:'right' }}>-${fmt(yearTotals.carpark)}</td>
-          </tr>
-          <tr>
-            <td style={{ padding:6 }}>{showChinese ? 'Council Rate 市政费' : 'Council Rate'}</td>
-            {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>-${fmt(v.council)}</td>))}
-            <td style={{ padding:6, textAlign:'right' }}>-${fmt(yearTotals.council)}</td>
-          </tr>
-          <tr>
-            <td style={{ padding:6 }}>{showChinese ? 'Body Corporation 物业费' : 'Body Corporation'}</td>
-            {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>-${fmt(v.bodycorp)}</td>))}
-            <td style={{ padding:6, textAlign:'right' }}>-${fmt(yearTotals.bodycorp)}</td>
-          </tr>
-          <tr>
-            <td style={{ padding:6 }}>{showChinese ? 'Other Expenses 其他支出' : 'Other Expenses'}</td>
-            {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>-${fmt(v.otherExp)}</td>))}
-            <td style={{ padding:6, textAlign:'right' }}>-${fmt(yearTotals.otherExp)}</td>
-          </tr>
+          {visibleExpenseRows.length ? (
+            <>
+              <tr>
+                <td style={{ padding: 6, fontWeight: 700 }}>{showChinese ? 'Expenses 支出' : 'Expenses'}</td>
+                <td colSpan={13}></td>
+              </tr>
+              {visibleExpenseRows.map((rowKey) => (
+                <tr key={rowKey}>
+                  <td style={{ padding: 6 }}>{getAnnualReportLineLabel(rowKey, language)}</td>
+                  {report.months.map((month) => (
+                    <td key={`${month.month_key}-${rowKey}`} style={{ padding: 6, textAlign: 'right' }}>
+                      {formatAnnualReportMoney(month.lines[rowKey])}
+                    </td>
+                  ))}
+                  <td style={{ padding: 6, textAlign: 'right' }}>{formatAnnualReportMoney(report.totals.lines[rowKey])}</td>
+                </tr>
+              ))}
+            </>
+          ) : null}
 
-          <tr><td style={{ padding:6, fontWeight:700 }}>{showChinese ? 'Net Income 净收入' : 'Net Income'}</td><td colSpan={13}></td></tr>
           <tr>
-            <td style={{ padding:6 }}>{showChinese ? 'Owner Received 业主实收' : 'Owner Received'}</td>
-            {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>${fmt(v.netIncome)}</td>))}
-            <td style={{ padding:6, textAlign:'right', fontWeight:700 }}>${fmt(yearTotals.netIncome)}</td>
+            <td style={{ padding: 6, fontWeight: 700 }}>{showChinese ? 'Net Income 净收入' : 'Net Income'}</td>
+            {report.months.map((month) => (
+              <td key={`${month.month_key}-net`} style={{ padding: 6, textAlign: 'right', fontWeight: 700 }}>
+                {formatAnnualReportMoney(month.net_income)}
+              </td>
+            ))}
+            <td style={{ padding: 6, textAlign: 'right', fontWeight: 700 }}>{formatAnnualReportMoney(report.totals.net_income)}</td>
           </tr>
         </tbody>
       </table>
 
-      <div style={{ textAlign:'center', marginTop: 18, fontSize: 12 }}>
-        <div style={{ fontWeight:700 }}>MZ Property Pty Ltd</div>
+      <div style={{ marginTop: 14, fontSize: 12, color: '#666' }}>
+        {showChinese ? '房东信息按报告生成时的当前房东资料展示。' : 'Owner information is shown using the current owner details at report generation time.'}
+      </div>
+      <div style={{ textAlign: 'center', marginTop: 18, fontSize: 12 }}>
+        <div style={{ fontWeight: 700 }}>MZ Property Pty Ltd</div>
         <div>ABN: 42 657 925 365</div>
         <div>Address: G3/87 Gladstone St, South Melbourne, VIC3205</div>
         <div>Email: info@mzproperty.com.au</div>

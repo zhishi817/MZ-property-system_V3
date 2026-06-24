@@ -1,11 +1,45 @@
-export type InspectionMode = 'pending_decision' | 'same_day' | 'self_complete' | 'deferred'
+export type InspectionMode = 'pending_decision' | 'same_day' | 'deferred' | 'self_complete' | 'checked_done'
+export type InspectionScope = 'inspect_and_hang' | 'password_only'
 
-const VALID_INSPECTION_MODES = new Set<InspectionMode>(['pending_decision', 'same_day', 'self_complete', 'deferred'])
+const VALID_INSPECTION_MODES = new Set<InspectionMode>(['pending_decision', 'same_day', 'deferred', 'self_complete', 'checked_done'])
+
+export function normalizeInspectionScope(value: any): InspectionScope {
+  const raw = String(value || '').trim().toLowerCase()
+  return raw === 'password_only' ? 'password_only' : 'inspect_and_hang'
+}
 
 export function normalizeInspectionMode(value: any): InspectionMode | null {
   const raw = String(value || '').trim().toLowerCase()
   if (!raw) return null
   return VALID_INSPECTION_MODES.has(raw as InspectionMode) ? (raw as InspectionMode) : null
+}
+
+export function isInspectionModeAllowedForTask(params: {
+  taskType?: any
+  inspectionScope?: any
+  inspectionMode?: any
+}): boolean {
+  const mode = normalizeInspectionMode(params?.inspectionMode)
+  if (!mode) return false
+  if (cleaningInspectionTaskKind(params?.taskType) !== 'checkin') return true
+  if (normalizeInspectionScope(params?.inspectionScope) !== 'password_only') return true
+  return mode !== 'self_complete' && mode !== 'checked_done'
+}
+
+export function sanitizeInspectionModeForTask(params: {
+  taskType?: any
+  inspectionScope?: any
+  inspectionMode?: InspectionMode | null | undefined
+}): InspectionMode {
+  const mode = params?.inspectionMode || 'pending_decision'
+  if (!isInspectionModeAllowedForTask({
+    taskType: params?.taskType,
+    inspectionScope: params?.inspectionScope,
+    inspectionMode: mode,
+  })) {
+    return 'same_day'
+  }
+  return mode
 }
 
 export function cleaningInspectionTaskKind(taskType: any): 'checkout' | 'checkin' | 'stayover' | 'other' {
@@ -45,11 +79,18 @@ export function defaultInspectionModeForTaskType(taskType: any): InspectionMode 
 export function effectiveInspectionMode(task: {
   task_type?: any
   inspection_mode?: any
+  inspection_scope?: any
   status?: any
   inspector_id?: any
 }): InspectionMode {
   const explicit = normalizeInspectionMode(task?.inspection_mode)
-  if (explicit) return explicit
+  if (explicit) {
+    return sanitizeInspectionModeForTask({
+      taskType: task?.task_type,
+      inspectionScope: task?.inspection_scope,
+      inspectionMode: explicit,
+    })
+  }
   const kind = cleaningInspectionTaskKind(task?.task_type)
   if (kind === 'stayover') return 'self_complete'
   if (kind === 'checkin') return 'same_day'
@@ -76,7 +117,6 @@ export function deferredProjectionDate(params: {
   const to = String(params.dateTo || '').slice(0, 10)
   if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return null
   if (due > to) return null
-  if (isInspectionFinishedStatus(params.status)) return null
   return due < from ? from : due
 }
 
@@ -140,6 +180,14 @@ export function mergeInspectionPlan(
 
   if (relevantRows.some((row) => effectiveInspectionMode(row) === 'same_day')) {
     return { inspectionMode: 'same_day', inspectionDueDate: null }
+  }
+
+  if (relevantRows.some((row) => effectiveInspectionMode(row) === 'pending_decision')) {
+    return { inspectionMode: 'pending_decision', inspectionDueDate: null }
+  }
+
+  if (relevantRows.some((row) => effectiveInspectionMode(row) === 'checked_done')) {
+    return { inspectionMode: 'checked_done', inspectionDueDate: null }
   }
 
   if (relevantRows.every((row) => effectiveInspectionMode(row) === 'self_complete')) {

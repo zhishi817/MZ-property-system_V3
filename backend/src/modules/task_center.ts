@@ -5,7 +5,13 @@ import { requireAnyPerm, requirePerm } from '../auth'
 import { db } from '../store'
 import { hasPg, pgPool } from '../dbAdapter'
 import { ensureCleaningSchemaV2 } from '../services/cleaningSync'
-import { defaultInspectionModeForTaskType, deferredProjectionDate, effectiveInspectionMode, mergeTurnoverTaskPlan } from '../lib/cleaningInspection'
+import {
+  defaultInspectionModeForTaskType,
+  deferredProjectionDate,
+  effectiveInspectionMode,
+  isInspectionModeAllowedForTask,
+  mergeTurnoverTaskPlan,
+} from '../lib/cleaningInspection'
 import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
 import { emitNotificationEvent } from '../services/notificationEvents'
 
@@ -19,7 +25,7 @@ const DEFAULT_SUMMARY_CHECKIN_TIME = '3pm'
 const DEFERRED_ROW_KEY = 'deferred:holding'
 const DEFERRED_ROW_TITLE = '未安排区域 / 后续处理'
 const DEFERRED_INSPECTION_ROW_KEY = 'deferred:inspection'
-const DEFERRED_INSPECTION_ROW_TITLE = '延后检查'
+const DEFERRED_INSPECTION_ROW_TITLE = '延期检查'
 const COMPLETED_ROW_KEY = 'group:completed'
 const COMPLETED_ROW_TITLE = '已完成'
 const WORK_TASK_VISIBILITY_START = '2026-06-01'
@@ -52,7 +58,7 @@ type BoardTask = {
   auto_sync_enabled?: boolean
   has_key_photo?: boolean
   key_photo_uploaded_at?: string | null
-  inspection_mode?: 'pending_decision' | 'same_day' | 'self_complete' | 'deferred' | null
+  inspection_mode?: 'pending_decision' | 'same_day' | 'deferred' | 'self_complete' | 'checked_done' | null
   inspection_scope?: 'inspect_and_hang' | 'password_only' | null
   inspection_due_date?: string | null
   deferred_inspection_view?: boolean
@@ -588,13 +594,7 @@ function requiresCleanerAssignment(task: { task_type?: string | null; title?: st
 }
 
 function inspectionModeOf(task: any) {
-  const raw = lower(task.inspection_mode)
-  if (raw === 'pending_decision' || raw === 'same_day' || raw === 'self_complete' || raw === 'deferred') return raw
-  const tt = lower(task.task_type)
-  if (tt === 'stayover_clean') return 'self_complete'
-  if (tt === 'checkin_clean') return 'same_day'
-  if (text(task.inspector_id)) return 'same_day'
-  return 'pending_decision'
+  return effectiveInspectionMode(task)
 }
 
 function summaryText(task: any): { title: string; detail: string } {
@@ -1528,7 +1528,7 @@ const saveBoardSchema = z.object({
     task_id: z.string().min(1),
     cleaner_id: z.string().min(1).nullable(),
     inspector_id: z.string().min(1).nullable(),
-    inspection_mode: z.enum(['pending_decision', 'same_day', 'self_complete', 'deferred']),
+    inspection_mode: z.enum(['pending_decision', 'same_day', 'deferred', 'self_complete', 'checked_done']),
     inspection_scope: z.enum(['inspect_and_hang', 'password_only']).nullable().optional(),
     inspection_due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
     status: z.string().min(1),
@@ -1636,6 +1636,33 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
         }
         const invalidId = inspectorIds.find((id) => !validIds.has(id))
         if (invalidId) return res.status(400).json({ message: '无效的检查人员' })
+      }
+      if (payload.cleaning_assignments.length) {
+        const taskTypeResult = await pgPool.query(
+          `SELECT id::text AS id, task_type, inspection_scope
+           FROM cleaning_tasks
+           WHERE id::text = ANY($1::text[])`,
+          [payload.cleaning_assignments.map((item) => item.task_id)],
+        )
+        const taskTypeById = new Map<string, { task_type: string | null; inspection_scope: string | null }>()
+        for (const row of taskTypeResult.rows || []) {
+          taskTypeById.set(String(row.id), {
+            task_type: row.task_type ? String(row.task_type) : null,
+            inspection_scope: row.inspection_scope ? String(row.inspection_scope) : null,
+          })
+        }
+        for (const assignment of payload.cleaning_assignments) {
+          const taskMeta = taskTypeById.get(String(assignment.task_id))
+          const nextScope = assignment.inspection_scope ?? taskMeta?.inspection_scope ?? null
+          if (isInspectionModeAllowedForTask({
+            taskType: taskMeta?.task_type,
+            inspectionScope: nextScope,
+            inspectionMode: assignment.inspection_mode,
+          })) {
+            continue
+          }
+          return res.status(400).json({ message: '仅改密码任务不能设置为自完成或已检查' })
+        }
       }
       const client = await pgPool.connect()
       const eventInputs: Parameters<typeof emitWorkTaskEvent>[0][] = []

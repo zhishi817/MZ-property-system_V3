@@ -23,6 +23,18 @@ import { r2GetObjectByKey } from '../r2'
 import { computeMonthSegmentsForOrders, sumSegmentsVisibleNetIncome } from '../lib/orderMonthSegments'
 import { countPhotoUrls, loadMonthlyStatementPhotoRows, recordHasPhotoUrls } from '../lib/monthlyStatementPhotoRecords'
 import {
+  ANNUAL_REPORT_CURRENCY,
+  ANNUAL_REPORT_LINE_KEYS,
+  deleteAnnualReportManualMonth,
+  getAnnualReportFiscalYearForMonth,
+  isAnnualReportManualMonth,
+  isSupportedAnnualReportFiscalYear,
+  listAnnualReportManualRows,
+  loadAnnualPropertyReport,
+  upsertAnnualReportManualMonth,
+  type AnnualReportLines,
+} from '../lib/annualPropertyReport'
+import {
   ensureManagementFeeRulesTable,
   listManagementFeeRulesByLandlordIds,
   resolveManagementFeeRateForMonth,
@@ -2416,6 +2428,119 @@ router.patch('/property-revenue-status', requirePerm('finance.payout'), async (r
     return res.status(201).json(created)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'update status failed' })
+  }
+})
+
+const annualReportFiscalYearSchema = z.coerce.number().int()
+const annualReportMonthKeySchema = z.string().trim().regex(/^\d{4}-\d{2}$/)
+const annualReportNullableAmountSchema = z.number().finite().nullable()
+const annualReportManualPayloadSchema = z.object({
+  currency: z.string().trim().min(1).max(16).optional(),
+  note: z.string().max(2000).nullable().optional(),
+  is_complete: z.boolean(),
+  rent_income: annualReportNullableAmountSchema,
+  other_income: annualReportNullableAmountSchema,
+  management_fee: annualReportNullableAmountSchema,
+  consumables: annualReportNullableAmountSchema,
+  electricity: annualReportNullableAmountSchema,
+  gas: annualReportNullableAmountSchema,
+  water: annualReportNullableAmountSchema,
+  internet: annualReportNullableAmountSchema,
+  carpark: annualReportNullableAmountSchema,
+  council: annualReportNullableAmountSchema,
+  bodycorp: annualReportNullableAmountSchema,
+  other_expense: annualReportNullableAmountSchema,
+})
+
+router.get('/annual-report', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
+  try {
+    const propertyId = String((req.query as any)?.property_id || '').trim()
+    const fyParsed = annualReportFiscalYearSchema.safeParse((req.query as any)?.fy)
+    if (!propertyId) return res.status(400).json({ message: 'missing property_id' })
+    if (!fyParsed.success) return res.status(400).json({ message: 'invalid fy' })
+    const fiscalYear = Number(fyParsed.data)
+    if (!isSupportedAnnualReportFiscalYear(fiscalYear)) return res.status(400).json({ message: 'unsupported fiscal year' })
+    const report = await loadAnnualPropertyReport(propertyId, fiscalYear)
+    return res.json(report)
+  } catch (e: any) {
+    const msg = String(e?.message || '')
+    if (msg === 'property_not_found') return res.status(404).json({ message: 'property_not_found' })
+    return res.status(500).json({ message: msg || 'annual report failed' })
+  }
+})
+
+router.get('/annual-report/manual-months', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
+  try {
+    const propertyId = String((req.query as any)?.property_id || '').trim()
+    const fyParsed = annualReportFiscalYearSchema.safeParse((req.query as any)?.fy)
+    if (!propertyId) return res.status(400).json({ message: 'missing property_id' })
+    if (!fyParsed.success) return res.status(400).json({ message: 'invalid fy' })
+    const fiscalYear = Number(fyParsed.data)
+    if (!isSupportedAnnualReportFiscalYear(fiscalYear)) return res.status(400).json({ message: 'unsupported fiscal year' })
+    const rows = await listAnnualReportManualRows(propertyId, fiscalYear)
+    return res.json(rows)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'list manual months failed' })
+  }
+})
+
+router.put('/annual-report/manual-months/:propertyId/:monthKey', requirePerm('finance.payout'), async (req, res) => {
+  try {
+    const propertyId = String(req.params.propertyId || '').trim()
+    const monthKeyParsed = annualReportMonthKeySchema.safeParse(req.params.monthKey)
+    if (!propertyId) return res.status(400).json({ message: 'missing property_id' })
+    if (!monthKeyParsed.success) return res.status(400).json({ message: 'invalid month_key' })
+    const monthKey = String(monthKeyParsed.data)
+    const fiscalYear = getAnnualReportFiscalYearForMonth(monthKey)
+    if (!fiscalYear || !isSupportedAnnualReportFiscalYear(fiscalYear)) return res.status(400).json({ message: 'unsupported fiscal year' })
+    if (!isAnnualReportManualMonth(fiscalYear, monthKey)) return res.status(400).json({ message: 'manual_month_required' })
+    const parsed = annualReportManualPayloadSchema.safeParse(req.body || {})
+    if (!parsed.success) return res.status(400).json({ message: parsed.error.errors.map((error) => error.message).join('; ') || 'invalid payload' })
+    const body = parsed.data
+    const lines = Object.fromEntries(ANNUAL_REPORT_LINE_KEYS.map((key) => [key, body[key]])) as AnnualReportLines
+    if (body.is_complete) {
+      const missing = ANNUAL_REPORT_LINE_KEYS.filter((key) => body[key] == null)
+      if (missing.length) return res.status(400).json({ message: `complete manual month requires all fields: ${missing.join(',')}` })
+    }
+    const actor = String((req as any)?.user?.sub || (req as any)?.user?.username || '').trim() || null
+    const row = await upsertAnnualReportManualMonth({
+      property_id: propertyId,
+      month_key: monthKey,
+      fiscal_year: fiscalYear,
+      currency: body.currency || ANNUAL_REPORT_CURRENCY,
+      note: body.note ?? null,
+      is_complete: body.is_complete,
+      created_by: actor,
+      updated_by: actor,
+      lines,
+    })
+    try { addAudit('PropertyAnnualReportManualMonth', String(row.id || ''), 'upsert', null, row, actor || undefined) } catch {}
+    return res.json(row)
+  } catch (e: any) {
+    const msg = String(e?.message || '')
+    if (msg === 'manual_month_required' || msg === 'unsupported fiscal year') return res.status(400).json({ message: msg })
+    return res.status(500).json({ message: msg || 'save manual month failed' })
+  }
+})
+
+router.delete('/annual-report/manual-months/:propertyId/:monthKey', requirePerm('finance.payout'), async (req, res) => {
+  try {
+    const propertyId = String(req.params.propertyId || '').trim()
+    const monthKeyParsed = annualReportMonthKeySchema.safeParse(req.params.monthKey)
+    if (!propertyId) return res.status(400).json({ message: 'missing property_id' })
+    if (!monthKeyParsed.success) return res.status(400).json({ message: 'invalid month_key' })
+    const monthKey = String(monthKeyParsed.data)
+    const fiscalYear = getAnnualReportFiscalYearForMonth(monthKey)
+    if (!fiscalYear || !isSupportedAnnualReportFiscalYear(fiscalYear)) return res.status(400).json({ message: 'unsupported fiscal year' })
+    if (!isAnnualReportManualMonth(fiscalYear, monthKey)) return res.status(400).json({ message: 'manual_month_required' })
+    const actor = String((req as any)?.user?.sub || (req as any)?.user?.username || '').trim() || null
+    await deleteAnnualReportManualMonth(propertyId, monthKey, fiscalYear)
+    try { addAudit('PropertyAnnualReportManualMonth', `${propertyId}:${monthKey}`, 'delete', null, { property_id: propertyId, month_key: monthKey }, actor || undefined) } catch {}
+    return res.json({ ok: true })
+  } catch (e: any) {
+    const msg = String(e?.message || '')
+    if (msg === 'manual_month_required' || msg === 'unsupported fiscal year') return res.status(400).json({ message: msg })
+    return res.status(500).json({ message: msg || 'delete manual month failed' })
   }
 })
 
