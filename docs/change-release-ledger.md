@@ -3124,3 +3124,43 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Rollback: revert the `targetRoles` navigation wiring, manager day-end overview gating, and the role-based rendering changes in `DayEndBackupKeysScreen`.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
 - Git state: root repo ledger updated; functional changes remain uncommitted in nested repo `mz-cleaning-app-frontend`.
+
+## CRL-20260624-010 — 移动端包版本同步到 1.0.22
+
+- **Status:** ready
+- **Updated:** 2026-06-24 16:20 AEST
+- **Request:** Android版本也改一下，改成 `1.0.22`；随后用 EAS 云构建重新封装 iOS 和 Android 包。
+- **Outcome:** 移动端 npm 包版本从 `1.0.21` 同步到 `1.0.22`，与 `app.json` 中 Expo 版本 `1.0.22`、iOS build `22`、Android versionCode `22` 保持一致，避免 Android 构建元数据仍显示旧版本。
+
+### Implementation
+
+- Previous behavior: `app.json` 已是 `1.0.22`，但 `package.json` 和 `package-lock.json` 顶层版本仍是 `1.0.21`。
+- New behavior: 移动端包元数据统一为 `1.0.22`；Android 打包继续使用 `app.json` 的 `versionCode: 22`。
+- Key decisions: 只同步版本字段，不改业务代码、不新增配置。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/package.json` — modified: 包版本同步到 `1.0.22`。
+- `mz-cleaning-app-frontend/package-lock.json` — modified: lockfile 顶层包版本同步到 `1.0.22`。
+- `docs/change-release-ledger.md` — modified: 记录本版本同步单元。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: mobile package metadata only; `app.json` build fields were already `1.0.22 / 22` and were not changed.
+- Dependencies: none.
+- Related units: follows the pushed mobile release batch and prepares EAS preview build.
+
+### Validation
+
+- `node -e "..."` in `mz-cleaning-app-frontend` — passed: `packageVersion`, `lockVersion`, `lockRootVersion`, and `expoVersion` are all `1.0.22`; iOS build is `22`; Android versionCode is `22`.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed.
+- `python3 scripts/audit_change_release_ledger.py` — passed.
+
+### Risks / Release Notes
+
+- Runtime risk: none expected; metadata-only change.
+- Rollback: revert the package version fields to `1.0.21` if a downstream build process unexpectedly depends on the old npm package version.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: uncommitted.
