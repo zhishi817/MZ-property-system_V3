@@ -3127,7 +3127,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260624-010 — 移动端包版本同步到 1.0.22
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-24 16:20 AEST
 - **Request:** Android版本也改一下，改成 `1.0.22`；随后用 EAS 云构建重新封装 iOS 和 Android 包。
 - **Outcome:** 移动端 npm 包版本从 `1.0.21` 同步到 `1.0.22`，与 `app.json` 中 Expo 版本 `1.0.22`、iOS build `22`、Android versionCode `22` 保持一致，避免 Android 构建元数据仍显示旧版本。
@@ -3163,4 +3163,4 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Runtime risk: none expected; metadata-only change.
 - Rollback: revert the package version fields to `1.0.21` if a downstream build process unexpectedly depends on the old npm package version.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: uncommitted.
+- Git state: pushed to root `Dev` and nested mobile `Dev`.
