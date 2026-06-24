@@ -1,11 +1,12 @@
 "use client"
 
 import { Alert, Button, Checkbox, Col, DatePicker, Divider, Drawer, Empty, Form, Input, InputNumber, Modal, Row, Segmented, Select, Skeleton, Space, message } from 'antd'
-import { DeleteOutlined, EditOutlined, LeftOutlined, PlusOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons'
+import { DeleteOutlined, EditOutlined, LeftOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { API_BASE, deleteJSON, getJSON, patchJSON, postJSON } from '../../lib/api'
 import { cleaningColorKind } from '../../lib/cleaningColor'
+import { type TaskSemanticTone, taskStatusMeta, taskTimingTone } from '../../lib/cleaningTaskUi'
 import styles from './cleaningSchedule.module.scss'
 
 type Staff = { id: string; name: string; capacity_per_day: number; kind?: 'cleaner' | 'inspector'; is_active?: boolean; color_hex?: string | null }
@@ -135,6 +136,26 @@ type OfflineTaskForm = {
   assignee_id: string | null
 }
 
+type OfflineCreateForm = {
+  date: Dayjs
+  task_type: 'property' | 'company' | 'other'
+  title: string
+  content: string
+  urgency: 'low' | 'medium' | 'high' | 'urgent'
+  property_id: string | null
+  assignee_id: string | null
+}
+
+function semanticToneClass(tone: TaskSemanticTone) {
+  if (tone === 'special') return styles.semanticToneSpecial
+  if (tone === 'pending') return styles.semanticTonePending
+  if (tone === 'danger') return styles.semanticToneDanger
+  if (tone === 'success') return styles.semanticToneSuccess
+  if (tone === 'info') return styles.semanticToneInfo
+  if (tone === 'neutral') return styles.semanticToneNeutral
+  return styles.semanticToneNormal
+}
+
 export default function CleaningPage() {
   const [view, setView] = useState<'day' | 'week' | 'month'>('month')
   const [month, setMonth] = useState<Dayjs>(() => dayjs())
@@ -160,6 +181,9 @@ export default function CleaningPage() {
   const [bulkEditForm, setBulkEditForm] = useState<BulkEditForm | null>(null)
   const [manualCreateOpen, setManualCreateOpen] = useState(false)
   const [manualCreateForm, setManualCreateForm] = useState<ManualCreateForm | null>(null)
+  const [offlineCreateOpen, setOfflineCreateOpen] = useState(false)
+  const [offlineCreateLoading, setOfflineCreateLoading] = useState(false)
+  const [offlineCreateForm, setOfflineCreateForm] = useState<OfflineCreateForm | null>(null)
   const [offlineEditOpen, setOfflineEditOpen] = useState(false)
   const [offlineEditForm, setOfflineEditForm] = useState<OfflineTaskForm | null>(null)
   const [backfillOpen, setBackfillOpen] = useState(false)
@@ -299,7 +323,7 @@ export default function CleaningPage() {
 
   const checkinSyncTag = useCallback((it: Pick<CalendarItem, 'source' | 'checkin_sync_status'>) => {
     if (it.source !== 'cleaning_tasks') return null
-    if (it.checkin_sync_status === 'pending') return { label: '待同步', tone: 'warning' as const }
+    if (it.checkin_sync_status === 'pending') return { label: '待同步', tone: 'pending' as const }
     if (it.checkin_sync_status === 'synced') return { label: '已同步', tone: 'success' as const }
     return null
   }, [])
@@ -717,9 +741,14 @@ export default function CleaningPage() {
     const baseRow = selectedRows.find((r) => r && String(r.id) === String(clickedIds[0])) || selectedRows[0]
     const checkoutAllExists = checkoutIdsAll.length > 0
     const checkinAllExists = checkinIdsAll.length > 0
-    const guestSpecialRequest = selectedRows
-      .map((r) => String(r?.guest_special_request || r?.note || '').trim())
-      .find(Boolean) || ''
+    const taskDetailText = (value: { guest_special_request?: string | null; note?: string | null } | null | undefined) => (
+      String(value?.guest_special_request || value?.note || '').trim()
+    )
+    const guestSpecialRequest = [
+      taskDetailText(clickedRow),
+      taskDetailText(it),
+      ...selectedRows.map((r) => taskDetailText(r)),
+    ].find(Boolean) || ''
     const status = ids.length === 1 ? String(baseRow?.status || it.status || 'pending') : mergedStatus(selectedRows.map((r) => String(r?.status || it.status || 'pending')))
     const getCleaner = (r: CleaningTaskRow | null) => String(r?.cleaner_id || r?.assignee_id || '').trim()
     const getInspector = (r: CleaningTaskRow | null) => String(r?.inspector_id || '').trim()
@@ -735,10 +764,13 @@ export default function CleaningPage() {
     const checkinRows = selectedRows.filter(isCheckinRow)
     const stayoverRows = selectedRows.filter(isStayoverRow)
     const nightsAllSame = checkinRows.length > 0 && checkinRows.every((r) => String(r?.nights_override ?? '') === String(checkinRows[0]?.nights_override ?? ''))
+    const itemNights = it.nights == null ? null : Number(it.nights)
+    const fallbackNightsOverride = Number.isFinite(itemNights) ? itemNights : null
     const nightsOverride =
       checkinRows.length === 1
         ? (checkinRows[0]?.nights_override != null ? Number(checkinRows[0]?.nights_override) : null)
         : (nightsAllSame ? (checkinRows[0]?.nights_override != null ? Number(checkinRows[0]?.nights_override) : null) : null)
+    const resolvedNightsOverride = nightsOverride ?? fallbackNightsOverride
     const checkoutKey = (r: CleaningTaskRow | null) => String(r?.old_code ?? '').trim()
     const checkinKey = (r: CleaningTaskRow | null) => String(r?.new_code ?? '').trim()
     const checkoutPwd = checkoutRows.length > 0 && checkoutRows.every((r) => checkoutKey(r) === checkoutKey(checkoutRows[0])) ? (checkoutKey(checkoutRows[0]) || '') : ''
@@ -789,7 +821,7 @@ export default function CleaningPage() {
       checkin_manual_ids: stayoverMode ? [] : checkinManualIds,
       checkout_manual_ids: stayoverMode ? [] : checkoutManualIds,
       guest_special_request: guestSpecialRequest,
-      nights_override: stayoverMode ? null : nightsOverride,
+      nights_override: stayoverMode ? null : resolvedNightsOverride,
       checkout_ids: stayoverMode ? [] : checkoutIdsAll,
       checkin_ids: stayoverMode ? [] : checkinIdsAll,
       checkout_password: stayoverMode ? '' : checkoutPwd,
@@ -1052,15 +1084,7 @@ export default function CleaningPage() {
   ]), [])
 
   const statusText = useCallback((s: string | null | undefined) => {
-    const v = String(s || '').trim()
-    if (v === 'pending') return '待处理'
-    if (v === 'assigned') return '已分配'
-    if (v === 'in_progress') return '进行中'
-    if (v === 'completed') return '已完成'
-    if (v === 'cancelled') return '已取消'
-    if (v === 'todo') return '待处理'
-    if (v === 'done') return '已完成'
-    return v || '-'
+    return taskStatusMeta(s).label
   }, [])
 
   const offlineTaskTypeText = useCallback((taskType: string | null | undefined) => {
@@ -1081,12 +1105,7 @@ export default function CleaningPage() {
   }, [])
 
   const statusChipCls = useCallback((s: string | null | undefined) => {
-    const v = String(s || '').trim()
-    if (v === 'completed' || v === 'done') return styles.statusDone
-    if (v === 'in_progress') return styles.statusInProgress
-    if (v === 'assigned') return styles.statusAssigned
-    if (v === 'cancelled') return styles.statusCancelled
-    return styles.statusPending
+    return semanticToneClass(taskStatusMeta(s).tone)
   }, [])
 
   const timeOptions = useMemo(() => {
@@ -1256,6 +1275,55 @@ export default function CleaningPage() {
     setOfflineEditOpen(true)
   }, [selectedDateStr])
 
+  const openOfflineCreate = useCallback(() => {
+    setOfflineCreateForm({
+      date: dayjs(selectedDateStr),
+      task_type: 'other',
+      title: '',
+      content: '',
+      urgency: 'medium',
+      property_id: null,
+      assignee_id: null,
+    })
+    setOfflineCreateOpen(true)
+  }, [selectedDateStr])
+
+  const submitOfflineCreate = useCallback(async () => {
+    if (!offlineCreateForm) return
+    const title = String(offlineCreateForm.title || '').trim()
+    if (!title) {
+      message.warning('请输入任务标题')
+      return
+    }
+    if (offlineCreateForm.task_type === 'property' && !String(offlineCreateForm.property_id || '').trim()) {
+      message.warning('房源任务请选择房号')
+      return
+    }
+    setOfflineCreateLoading(true)
+    try {
+      const payload: any = {
+        date: offlineCreateForm.date.format('YYYY-MM-DD'),
+        task_type: offlineCreateForm.task_type,
+        title,
+        content: String(offlineCreateForm.content || '').trim(),
+        kind: 'other',
+        status: 'todo',
+        urgency: offlineCreateForm.urgency,
+        property_id: offlineCreateForm.task_type === 'property' ? (offlineCreateForm.property_id || undefined) : undefined,
+        assignee_id: offlineCreateForm.assignee_id || undefined,
+      }
+      await postJSON('/cleaning/offline-tasks', payload, { timeoutMs: 20000 })
+      setOfflineCreateOpen(false)
+      setOfflineCreateForm(null)
+      message.success('已创建线下任务')
+      loadRangeItems().catch(() => {})
+    } catch (e: any) {
+      message.error(String(e?.message || '创建失败'))
+    } finally {
+      setOfflineCreateLoading(false)
+    }
+  }, [loadRangeItems, offlineCreateForm])
+
   const submitOfflineEdit = useCallback(async () => {
     if (!offlineEditForm) return
     if (!String(offlineEditForm.title || '').trim()) {
@@ -1377,8 +1445,11 @@ export default function CleaningPage() {
             <Button className={styles.secondaryBtn} icon={<ReloadOutlined />} onClick={() => loadRangeItems().catch(() => {})} loading={loading}>
               刷新
             </Button>
-            <Button className={styles.primaryBtn} icon={<PlusOutlined />} onClick={openManualCreate}>
+            <Button className={styles.primaryBtn} onClick={openManualCreate}>
               新增清洁任务
+            </Button>
+            <Button className={styles.primaryBtn} onClick={openOfflineCreate}>
+              新增线下任务
             </Button>
             <Button className={styles.primaryBtn} onClick={() => setBackfillOpen(true)}>
               Backfill
@@ -1741,10 +1812,10 @@ export default function CleaningPage() {
                     ) : null}
                   </div>
                   <div className={styles.metaRow}>
-                    {it.nights != null ? <span className={styles.metaChip}>{`${it.nights}晚`}</span> : null}
-                    {syncTag ? <span className={`${styles.metaChip} ${syncTag.tone === 'warning' ? styles.metaChipWarn : ''}`}>{syncTag.label}</span> : null}
-                    {hasLateCheckout(it) ? <span className={styles.metaChip}>晚退房</span> : null}
-                    {showKeyMissing ? <span className={`${styles.metaChip} ${styles.metaChipDanger}`}>钥匙未上传</span> : null}
+                    {it.nights != null ? <span className={`${styles.metaChip} ${semanticToneClass('neutral')}`}>{`${it.nights}晚`}</span> : null}
+                    {syncTag ? <span className={`${styles.metaChip} ${semanticToneClass(syncTag.tone)}`}>{syncTag.label}</span> : null}
+                    {hasLateCheckout(it) ? <span className={`${styles.metaChip} ${semanticToneClass(taskTimingTone('晚退房'))}`}>晚退房</span> : null}
+                    {showKeyMissing ? <span className={`${styles.metaChip} ${semanticToneClass('danger')}`}>钥匙未上传</span> : null}
                     {checkoutCode !== '-' ? <span className={styles.metaText}><span className={styles.metaKey}>退房</span>{checkoutCode}</span> : null}
                     {isTurnover && checkinCode !== '-' ? <span className={styles.metaText}><span className={styles.metaKey}>入住</span>{checkinCode}</span> : null}
                     <span className={styles.metaText}><span className={styles.metaKey}>退房密码</span>{checkoutPwd || '-'}</span>
@@ -1836,11 +1907,11 @@ export default function CleaningPage() {
                 </div>
               </div>
               <div className={styles.cleaningEditHeroChips}>
-                <span className={styles.cleaningEditChip}>{statusText(editForm.status)}</span>
-                {editForm.checkin_sync_status === 'pending' ? <span className={`${styles.cleaningEditChip} ${styles.cleaningEditChipWarn}`}>待同步</span> : null}
-                {editForm.checkin_sync_status === 'synced' ? <span className={styles.cleaningEditChip}>已同步</span> : null}
-                {!editForm.auto_sync_enabled ? <span className={`${styles.cleaningEditChip} ${styles.cleaningEditChipWarn}`}>自动同步已锁定</span> : null}
-                {editForm.mode === 'stayover' ? <span className={`${styles.cleaningEditChip} ${styles.cleaningEditChipSoft}`}>仅清洁安排</span> : null}
+                <span className={`${styles.cleaningEditChip} ${semanticToneClass(taskStatusMeta(editForm.status).tone)}`}>{statusText(editForm.status)}</span>
+                {editForm.checkin_sync_status === 'pending' ? <span className={`${styles.cleaningEditChip} ${semanticToneClass('pending')}`}>待同步</span> : null}
+                {editForm.checkin_sync_status === 'synced' ? <span className={`${styles.cleaningEditChip} ${semanticToneClass('success')}`}>已同步</span> : null}
+                {!editForm.auto_sync_enabled ? <span className={`${styles.cleaningEditChip} ${semanticToneClass('pending')}`}>自动同步已锁定</span> : null}
+                {editForm.mode === 'stayover' ? <span className={`${styles.cleaningEditChip} ${semanticToneClass('neutral')}`}>仅清洁安排</span> : null}
               </div>
             </div>
 
@@ -2115,6 +2186,88 @@ export default function CleaningPage() {
           </Form>
         ) : null}
       </Drawer>
+
+      <Modal
+        open={offlineCreateOpen}
+        title="新增线下任务"
+        okText="创建"
+        confirmLoading={offlineCreateLoading}
+        onOk={() => submitOfflineCreate().catch((e) => message.error(e?.message || '创建失败'))}
+        onCancel={() => { setOfflineCreateOpen(false); setOfflineCreateForm(null) }}
+      >
+        {offlineCreateForm ? (
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <div>
+              <div className={styles.fieldLabel}>日期</div>
+              <DatePicker
+                value={offlineCreateForm.date}
+                onChange={(v) => v && setOfflineCreateForm((p) => (p ? { ...p, date: v } : p))}
+                style={{ width: '100%' }}
+              />
+            </div>
+            <div>
+              <div className={styles.fieldLabel}>类型</div>
+              <Select
+                value={offlineCreateForm.task_type}
+                onChange={(v) => setOfflineCreateForm((p) => (p ? { ...p, task_type: v as 'property' | 'company' | 'other', property_id: v === 'property' ? p.property_id : null } : p))}
+                style={{ width: '100%' }}
+                options={offlineTaskTypeOptions}
+              />
+            </div>
+            {offlineCreateForm.task_type === 'property' ? (
+              <div>
+                <div className={styles.fieldLabel}>房号</div>
+                <Select
+                  showSearch
+                  optionFilterProp="label"
+                  value={offlineCreateForm.property_id || undefined}
+                  onChange={(v) => setOfflineCreateForm((p) => (p ? { ...p, property_id: v ? String(v) : null } : p))}
+                  style={{ width: '100%' }}
+                  options={propertyOptions}
+                />
+              </div>
+            ) : null}
+            <div>
+              <div className={styles.fieldLabel}>任务标题</div>
+              <Input
+                value={offlineCreateForm.title}
+                onChange={(e) => setOfflineCreateForm((p) => (p ? { ...p, title: e.target.value } : p))}
+                style={{ width: '100%' }}
+              />
+            </div>
+            <div>
+              <div className={styles.fieldLabel}>任务详情</div>
+              <Input.TextArea
+                value={offlineCreateForm.content}
+                onChange={(e) => setOfflineCreateForm((p) => (p ? { ...p, content: e.target.value } : p))}
+                style={{ width: '100%' }}
+                autoSize={{ minRows: 3, maxRows: 8 }}
+              />
+            </div>
+            <div>
+              <div className={styles.fieldLabel}>紧急度</div>
+              <Select
+                value={offlineCreateForm.urgency}
+                onChange={(v) => setOfflineCreateForm((p) => (p ? { ...p, urgency: v as 'low' | 'medium' | 'high' | 'urgent' } : p))}
+                style={{ width: '100%' }}
+                options={urgencyOptions}
+              />
+            </div>
+            <div>
+              <div className={styles.fieldLabel}>指派人</div>
+              <Select
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                value={offlineCreateForm.assignee_id || undefined}
+                onChange={(v) => setOfflineCreateForm((p) => (p ? { ...p, assignee_id: v ? String(v) : null } : p))}
+                style={{ width: '100%' }}
+                options={allStaffOptions}
+              />
+            </div>
+          </Space>
+        ) : null}
+      </Modal>
 
       <Modal
         open={offlineEditOpen}

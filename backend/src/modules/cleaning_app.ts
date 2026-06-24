@@ -4,7 +4,7 @@ import { requirePerm, requireAnyPerm } from '../auth'
 import { hasPg, pgUpdate, pgInsert } from '../dbAdapter'
 import multer from 'multer'
 import path from 'path'
-import { hasR2, r2Upload } from '../r2'
+import { hasR2, r2GetObjectByKey, r2KeyFromUrl, r2Upload } from '../r2'
 import { broadcastCleaningEvent } from './events'
 import { roleHasPermission } from '../store'
 import sharp from 'sharp'
@@ -12,6 +12,12 @@ import fs from 'fs'
 import { emitNotificationEvent } from '../services/notificationEvents'
 import { buildCleaningTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
 import { effectiveInspectionMode } from '../lib/cleaningInspection'
+import {
+  buildIdempotencyPayloadHash,
+  ensureIdempotentStepReceiptsTable,
+  loadIdempotentStepReceipt,
+  saveIdempotentStepReceipt,
+} from '../lib/idempotentStepReceipts'
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
 
 export const router = Router()
@@ -236,7 +242,7 @@ async function listSouthbankWarehouseKeyUsers(taskDate: string) {
          lower(COALESCE(t.task_type, '')) AS task_type_l,
          lower(COALESCE(t.status, '')) AS status_l,
          CASE
-           WHEN lower(COALESCE(t.inspection_mode, '')) IN ('pending_decision', 'same_day', 'self_complete', 'deferred')
+           WHEN lower(COALESCE(t.inspection_mode, '')) IN ('pending_decision', 'same_day', 'deferred', 'self_complete', 'checked_done')
              THEN lower(COALESCE(t.inspection_mode, ''))
            WHEN lower(COALESCE(t.task_type, '')) = 'stayover_clean'
              THEN 'self_complete'
@@ -296,17 +302,10 @@ async function listSouthbankWarehouseKeyUsers(taskDate: string) {
   }
 }
 
-async function listWarehouseKeyNotificationUserIds(params: { taskDate: string; actorId: string; extraUserIds?: string[] }) {
-  const { listUserIdsByRoles } = require('./notifications')
+async function listWarehouseKeyRelatedUserIds(params: { taskDate: string; actorId: string }) {
   const related = await listSouthbankWarehouseKeyUsers(params.taskDate)
-  const managerIds = await listUserIdsByRoles(['admin', 'offline_manager'])
   const actorId = String(params.actorId || '').trim()
-  const ids = [
-    ...related.userIds,
-    ...managerIds,
-    ...((params.extraUserIds || []).map((x) => String(x || '').trim()).filter(Boolean)),
-  ]
-  return Array.from(new Set(ids.filter(Boolean))).filter((id) => id !== actorId)
+  return Array.from(new Set(related.userIds.filter(Boolean))).filter((id) => id !== actorId)
 }
 
 function warehouseKeyActionText(action: string) {
@@ -475,20 +474,20 @@ router.post('/warehouse-key/events', requireAnyPerm(['cleaning_app.tasks.finish'
     }
 
     try {
-      const recipients = await listWarehouseKeyNotificationUserIds({ taskDate, actorId, extraUserIds: [toUserId] })
+      const relatedUserIds = await listWarehouseKeyRelatedUserIds({ taskDate, actorId })
       const actionText = warehouseKeyActionText(action)
       const body = action === 'handover'
         ? `${actorName} 已将 MSQ 仓库钥匙转交给 ${toName || '同事'}。`
         : `${actorName} ${actionText} MSQ 仓库钥匙。`
       await emitNotificationEvent({
         type: 'WAREHOUSE_KEY_UPDATED',
+        policyKey: 'warehouse_key_updated',
         entity: 'warehouse_key',
         entityId: keyCode,
         eventId: `warehouse_key:${keyCode}:${String(eventRow?.id || Date.now())}`,
         updatedAt: eventRow?.created_at ? String(eventRow.created_at) : new Date().toISOString(),
         title: 'MSQ 仓库钥匙更新',
         body,
-        recipientUserIds: recipients,
         actorUserId: actorId,
         priority: 'high',
         data: {
@@ -503,6 +502,7 @@ router.post('/warehouse-key/events', requireAnyPerm(['cleaning_app.tasks.finish'
           from_name: fromName || null,
           to_user_id: toUserId || null,
           to_name: toName || null,
+          warehouse_related_user_ids: relatedUserIds,
           note: note || null,
         },
       })
@@ -755,6 +755,7 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), async (
           await emitNotificationEvent(
             {
               type: 'KEY_PHOTO_UPLOADED',
+              policyKey: 'key_photo_uploaded',
               entity: 'cleaning_task',
               entityId: String(id),
               propertyId,
@@ -819,6 +820,7 @@ async function handleDeleteKeyPhoto(req: any, res: any) {
         await emitNotificationEvent(
           {
             type: 'CLEANING_TASK_UPDATED',
+            policyKey: 'key_photo_deleted',
             entity: 'cleaning_task',
             entityId: String(id),
             propertyId,
@@ -872,7 +874,6 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
       try {
         const operationId = require('uuid').v4()
         let propertyId = ''
-        let managerRecipients: string[] = []
         try {
           const { pgPool } = require('../dbAdapter')
           if (pgPool) {
@@ -880,14 +881,11 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
             propertyId = String(r?.rows?.[0]?.property_id || '').trim()
           }
         } catch {}
-        try {
-          const { listManagerUserIds } = require('./notifications')
-          managerRecipients = Array.from(new Set(await listManagerUserIds({ roles: ['admin', 'offline_manager', 'customer_service'] })))
-        } catch {}
-        if (propertyId || managerRecipients.length) {
+        if (propertyId) {
           await emitNotificationEvent(
             {
               type: 'ISSUE_REPORTED',
+              policyKey: 'issue_reported',
               entity: 'cleaning_task',
               entityId: String(id),
               propertyId,
@@ -907,7 +905,6 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
                 photo_url: parsed.data.media_url || undefined,
               },
               actorUserId: String(user?.sub || ''),
-              recipientUserIds: managerRecipients,
             },
             { operationId },
           )
@@ -923,7 +920,7 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
 
 // Submit consumables checklist (cannot skip; low requires photo)
 const consumableSchema = z.object({
-  living_room_photo_url: z.string().min(1),
+  living_room_photo_url: z.string().trim().min(1).optional(),
   items: z.array(
     z.object({
       item_id: z.string().min(1),
@@ -1043,7 +1040,6 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
       }
 
       const livingRoomPhotoUrl = String(parsed.data.living_room_photo_url || '').trim()
-      if (!livingRoomPhotoUrl) return res.status(400).json({ message: '请上传客厅照片' })
 
       await pgPool.query(`DELETE FROM cleaning_consumable_usages WHERE task_id=$1`, [String(id)])
       await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id::text=$1::text AND type='consumable_living_room_photo'`, [String(id)])
@@ -1081,13 +1077,15 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
             note: it.note == null ? null : String(it.note || '').trim(),
           }
         })
-      await pgInsert('cleaning_task_media', {
-        id: require('uuid').v4(),
-        task_id: String(id),
-        type: 'consumable_living_room_photo',
-        url: livingRoomPhotoUrl,
-        captured_at: new Date().toISOString(),
-      } as any)
+      if (livingRoomPhotoUrl) {
+        await pgInsert('cleaning_task_media', {
+          id: require('uuid').v4(),
+          task_id: String(id),
+          type: 'consumable_living_room_photo',
+          url: livingRoomPhotoUrl,
+          captured_at: new Date().toISOString(),
+        } as any)
+      }
       const needsRestock = parsed.data.items.some((i) => i.status === 'low')
       const now = new Date().toISOString()
       const taskStatus = String(task.status || '').trim().toLowerCase()
@@ -1136,11 +1134,11 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
           const restockLabels = restockItemsPayload.map((it) => (it.qty != null ? `${it.label} x${it.qty}` : it.label)).filter(Boolean)
           const restockSummary = restockLabels.length ? `待补货：${restockLabels.join('、')}` : ''
           const actorId = String(user?.sub || '')
-          const restockRecipients = needsRestock ? await listConsumablesRestockNotificationUserIds(String(id), actorId) : []
-          if (propertyId && (!needsRestock || restockRecipients.length)) {
+          if (propertyId) {
             await emitNotificationEvent(
               {
                 type: needsRestock ? 'WORK_TASK_UPDATED' : (hadExisting ? 'CLEANING_TASK_UPDATED' : 'CLEANING_COMPLETED'),
+                policyKey: needsRestock ? 'consumables_need_restock' : 'consumables_submitted',
                 entity: 'cleaning_task',
                 entityId: String(id),
                 propertyId,
@@ -1160,7 +1158,6 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
                   restock_items: restockItemsPayload,
                 },
                 actorUserId: actorId,
-                recipientUserIds: needsRestock ? restockRecipients : undefined,
               },
               { operationId },
             )
@@ -1204,6 +1201,7 @@ router.patch('/tasks/:id/restock', requireAnyPerm(['cleaning_app.restock.manage'
           await emitNotificationEvent(
             {
               type: 'CLEANING_TASK_UPDATED',
+              policyKey: 'restock_done',
               entity: 'cleaning_task',
               entityId: String(id),
               propertyId,
@@ -1257,11 +1255,11 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
         const propertyId = String((up as any)?.property_id || '').trim()
         const photoUrls = await listInspectionPhotoUrls(String(id))
         const propertyCode = await resolveCleaningTaskPropertyCode(String(id))
-        const recipients = await listKeysHungNotificationUserIds(String(user?.sub || ''))
-        if (propertyId && recipients.length) {
+        if (propertyId) {
           await emitNotificationEvent(
             {
               type: 'WORK_TASK_UPDATED',
+              policyKey: 'keys_hung',
               entity: 'cleaning_task',
               entityId: String(id),
               eventId: `keys_hung:${String(id)}`,
@@ -1280,7 +1278,6 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
                 photo_urls: photoUrls,
               },
               actorUserId: String(user?.sub || ''),
-              recipientUserIds: recipients,
             },
             { operationId },
           )
@@ -1395,6 +1392,8 @@ const inspectionPhotosSchema = z
         captured_at: z.string().trim().max(64).optional(),
       }),
     ),
+    submit_id: z.string().trim().min(1).max(120).optional(),
+    step_key: z.string().trim().min(1).max(120).optional(),
   })
   .strict()
 
@@ -1437,6 +1436,9 @@ router.post('/tasks/:id/inspection-photos', requirePerm('cleaning_app.inspect.fi
   const parsed = inspectionPhotosSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
+    const submitId = String(parsed.data.submit_id || '').trim()
+    const stepKey = String(parsed.data.step_key || '').trim()
+    const payloadHash = buildIdempotencyPayloadHash(parsed.data)
     const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, shower_drain: 1, unclean: 12 }
     const byArea = new Map<string, number>()
     for (const it of parsed.data.items) {
@@ -1449,6 +1451,21 @@ router.post('/tasks/:id/inspection-photos', requirePerm('cleaning_app.inspect.fi
       await ensureCleaningTaskMediaNote()
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
+      if (submitId && stepKey) {
+        await ensureIdempotentStepReceiptsTable(pgPool)
+        const receipt = await loadIdempotentStepReceipt(pgPool, {
+          scopeType: 'cleaning_task_inspection_photos',
+          scopeId: String(id),
+          submitId,
+          stepKey,
+        })
+        if (receipt) {
+          if (String(receipt.payload_hash || '') !== payloadHash) {
+            return res.status(409).json({ message: 'idempotency_conflict', submit_id: submitId, step_key: stepKey })
+          }
+          return res.status(200).json(receipt.response_json || { ok: true })
+        }
+      }
       const uuid = require('uuid')
       await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'inspection_%'`, [id])
       for (const it of parsed.data.items) {
@@ -1462,7 +1479,16 @@ router.post('/tasks/:id/inspection-photos', requirePerm('cleaning_app.inspect.fi
         )
       }
       try { broadcastCleaningEvent({ event: 'inspection_photos_saved', task_id: id }) } catch {}
-      return res.status(201).json({ ok: true })
+      const responseBody = { ok: true }
+      if (submitId && stepKey) {
+        await saveIdempotentStepReceipt(pgPool, {
+          scopeType: 'cleaning_task_inspection_photos',
+          scopeId: String(id),
+          submitId,
+          stepKey,
+        }, payloadHash, responseBody)
+      }
+      return res.status(201).json(responseBody)
     }
     return res.status(201).json({ ok: true })
   } catch (e: any) {
@@ -1559,6 +1585,7 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
           await emitNotificationEvent(
             {
               type: 'CLEANING_TASK_UPDATED',
+              policyKey: 'completion_photos_saved',
               entity: 'cleaning_task',
               entityId: String(id),
               propertyId,
@@ -1605,11 +1632,11 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
         const operationId = require('uuid').v4()
         const propertyId = String((up as any)?.property_id || '').trim()
         const propertyCode = await resolveCleaningTaskPropertyCode(String(id))
-        const recipients = await listKeysHungNotificationUserIds(String(user?.sub || ''))
-        if (propertyId && recipients.length) {
+        if (propertyId) {
           await emitNotificationEvent(
             {
               type: 'WORK_TASK_UPDATED',
+              policyKey: 'keys_hung',
               entity: 'cleaning_task',
               entityId: String(id),
               propertyId,
@@ -1618,7 +1645,6 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
               body: '挂钥匙视频已上传，房间钥匙已挂好',
               data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'keys_hung', task_id: id, property_code: propertyCode || undefined },
               actorUserId: String(user?.sub || ''),
-              recipientUserIds: recipients,
             },
             { operationId },
           )
@@ -1856,6 +1882,7 @@ router.post('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.fi
           await emitNotificationEvent(
             {
               type: 'CLEANING_TASK_UPDATED',
+              policyKey: 'restock_proof_saved',
               entity: 'cleaning_task',
               entityId: String(id),
               propertyId,
@@ -1893,6 +1920,7 @@ router.patch('/tasks/:id/ready', requirePerm('cleaning_app.ready.set'), async (r
           await emitNotificationEvent(
             {
               type: 'CLEANING_TASK_UPDATED',
+              policyKey: 'task_ready',
               entity: 'cleaning_task',
               entityId: String(id),
               propertyId,
@@ -2398,6 +2426,31 @@ router.post('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'c
 })
 
 export default router
+router.get(
+  '/media/image',
+  requireAnyPerm(['cleaning_app.media.upload', 'cleaning_app.tasks.finish', 'cleaning_app.inspect.finish', 'cleaning_app.issues.report']),
+  async (req, res) => {
+    try {
+      const requestedKey = String((req.query as any)?.key || '').trim()
+      const sourceUrl = String((req.query as any)?.url || '').trim()
+      if (!requestedKey && !sourceUrl) return res.status(400).json({ message: 'missing_key' })
+      if (!hasR2) return res.status(404).json({ message: 'r2_not_configured' })
+      const key = requestedKey || r2KeyFromUrl(sourceUrl)
+      if (!key || !key.startsWith('cleaning/') || key.includes('..') || key.includes('\\')) {
+        return res.status(403).json({ message: 'forbidden_key' })
+      }
+      const object = await r2GetObjectByKey(key)
+      if (!object || !object.body?.length) return res.status(404).json({ message: 'not_found' })
+      res.setHeader('Content-Type', object.contentType || 'application/octet-stream')
+      res.setHeader('Cache-Control', 'private, max-age=86400')
+      if (object.etag) res.setHeader('ETag', object.etag)
+      return res.status(200).send(object.body)
+    } catch (e: any) {
+      return res.status(500).json({ message: e?.message || 'media_read_failed' })
+    }
+  },
+)
+
 router.post(
   '/upload',
   requireAnyPerm(['cleaning_app.media.upload', 'cleaning_app.tasks.finish', 'cleaning_app.inspect.finish', 'cleaning_app.issues.report']),
@@ -2475,7 +2528,7 @@ router.post(
       const key = `cleaning/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
       const mime = (isImage && wantWatermark && lines.length) ? 'image/jpeg' : (req.file.mimetype || 'application/octet-stream')
       const url = await r2Upload(key, mime, buf)
-      return res.status(201).json({ url })
+      return res.status(201).json({ key, url })
     }
     const filePath = (req.file as any).path ? String((req.file as any).path) : ''
     if (filePath && isImage && wantWatermark && lines.length) {

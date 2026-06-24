@@ -17,6 +17,12 @@ import {
 } from '../services/guestLuggage'
 import { deferredProjectionDate, effectiveInspectionMode, isInspectionFinishedStatus, mergeInspectionPlan, mobileInspectionProjectionDate } from '../lib/cleaningInspection'
 import { deepCleaningSourceSummary, maintenanceSourceSummary } from '../lib/autoExpenseSourceSummary'
+import {
+  buildIdempotencyPayloadHash,
+  ensureIdempotentStepReceiptsTable,
+  loadIdempotentStepReceipt,
+  saveIdempotentStepReceipt,
+} from '../lib/idempotentStepReceipts'
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
 
 export const router = Router()
@@ -1669,6 +1675,7 @@ async function ensureCleaningInspectionColumns() {
   if (cleaningInspectionEnsuring) return cleaningInspectionEnsuring
   cleaningInspectionEnsuring = (async () => {
     await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_mode text;`)
+    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_scope text;`)
     await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_due_date date;`)
     cleaningInspectionEnsured = true
   })()
@@ -1681,6 +1688,12 @@ async function ensureCleaningInspectionColumns() {
       cleaningInspectionEnsuring = null
     })
   return cleaningInspectionEnsuring
+}
+
+function normalizeInspectionScope(value: any): 'inspect_and_hang' | 'password_only' | null {
+  const raw = String(value || '').trim().toLowerCase()
+  if (!raw) return null
+  return raw === 'password_only' ? 'password_only' : 'inspect_and_hang'
 }
 
 let checklistEnsured = false
@@ -1862,18 +1875,6 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
     const propertyId = row.property_id ? String(row.property_id) : ''
     if (!canViewAll(user) && inspectorId !== userId) return res.status(403).json({ message: 'forbidden' })
 
-    const restockCheck = await pgPool.query(
-      `SELECT 1
-       FROM cleaning_task_media
-       WHERE task_id=$1
-         AND (type LIKE 'restock_proof:%' OR type='inspection_consumables_confirmed')
-       LIMIT 1`,
-      [id],
-    )
-    if (!restockCheck?.rows?.length) {
-      return res.status(400).json({ message: '请先确认消耗品是否充足，或完成消耗品补充提交' })
-    }
-
     const uuid = require('uuid')
     const mediaId = uuid.v4()
     await pgPool.query(
@@ -1896,11 +1897,11 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
       const operationId = require('uuid').v4()
       const photoUrls = await listInspectionPhotoUrls(String(id))
       const propertyCode = await resolveCleaningTaskPropertyCode(String(id))
-      const recipients = await listKeysHungNotificationUserIds(userId)
-      if (propertyId && recipients.length) {
+      if (propertyId) {
         await emitNotificationEvent(
           {
             type: 'WORK_TASK_UPDATED',
+            policyKey: 'keys_hung',
             entity: 'cleaning_task',
             entityId: String(id),
             eventId: `keys_hung:${String(id)}`,
@@ -1920,7 +1921,6 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
               photo_urls: photoUrls,
             },
             actorUserId: userId,
-            recipientUserIds: recipients,
           },
           { operationId },
         )
@@ -2139,7 +2139,8 @@ const restockProofSchema = z
     items: z.array(
       z.object({
         item_id: z.string().trim().min(1).max(80),
-        status: z.enum(['restocked', 'unavailable']),
+        label: z.string().trim().min(1).max(160).optional().nullable(),
+        status: z.enum(['restocked', 'carry_forward', 'unavailable']),
         qty: z.number().int().min(1).optional().nullable(),
         note: z.string().trim().max(800).optional().nullable(),
         proof_url: z.string().trim().min(1).max(800).optional().nullable(),
@@ -2147,6 +2148,8 @@ const restockProofSchema = z
       }),
     ),
     confirmed_sufficient: z.boolean().optional(),
+    submit_id: z.string().trim().min(1).max(120).optional(),
+    step_key: z.string().trim().min(1).max(120).optional(),
   })
   .strict()
 
@@ -2194,6 +2197,7 @@ router.get('/cleaning-tasks/:id/restock-proof', async (req, res) => {
         item_id: itemId,
         proof_url: null,
         proof_urls: [] as string[],
+        label: String(meta?.label || itemId),
         status: String(meta?.status || ''),
         qty: meta?.qty == null ? null : Number(meta.qty),
         note: meta?.note == null ? null : String(meta.note || ''),
@@ -2225,6 +2229,9 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
+    const submitId = String(parsed.data.submit_id || '').trim()
+    const stepKey = String(parsed.data.step_key || '').trim()
+    const payloadHash = buildIdempotencyPayloadHash(parsed.data)
     await ensureCleaningTaskMediaTable()
     const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
     const row = r0?.rows?.[0] || null
@@ -2249,14 +2256,36 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
     if (!parsed.data.items.length && !confirmedSufficient) {
       return res.status(400).json({ message: '请确认消耗品是否充足，或提交补充记录' })
     }
+    if (submitId && stepKey) {
+      await ensureIdempotentStepReceiptsTable(pgPool)
+      const receipt = await loadIdempotentStepReceipt(pgPool, {
+        scopeType: 'cleaning_task_restock_proof',
+        scopeId: String(id),
+        submitId,
+        stepKey,
+      })
+      if (receipt) {
+        if (String(receipt.payload_hash || '') !== payloadHash) {
+          return res.status(409).json({ message: 'idempotency_conflict', submit_id: submitId, step_key: stepKey })
+        }
+        return res.status(200).json(receipt.response_json || { ok: true })
+      }
+    }
 
     await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND (type LIKE 'restock_proof:%' OR type='inspection_consumables_confirmed')`, [id])
     const uuid = require('uuid')
     const batchId = uuid.v4()
     for (const it of parsed.data.items) {
-      const meta = { status: it.status, qty: it.qty == null ? null : Number(it.qty), note: it.note == null ? null : String(it.note || '') }
+      const meta = {
+        label: it.label == null ? null : String(it.label || ''),
+        status: it.status,
+        qty: it.qty == null ? null : Number(it.qty),
+        note: it.note == null ? null : String(it.note || ''),
+      }
       const proofUrls = normalizeStoredPhotoUrls(it.proof_urls, it.proof_url)
-      const urlsToPersist = it.status === 'unavailable' ? ['no_photo'] : (proofUrls.length ? proofUrls : ['no_photo'])
+      const urlsToPersist = it.status === 'restocked'
+        ? (proofUrls.length ? proofUrls : ['no_photo'])
+        : ['no_photo']
       for (const url of urlsToPersist) {
         await pgPool.query(
           `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at, uploader_id)
@@ -2279,16 +2308,16 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
     try {
       const { emitNotificationEvent } = require('../services/notificationEvents')
       const operationId = require('uuid').v4()
-      const to = await listConsumablesManagerNotificationUserIds(userId)
       let propertyId = ''
       try {
         const r2 = await pgPool.query(`SELECT property_id::text AS property_id FROM cleaning_tasks WHERE id::text=$1::text LIMIT 1`, [String(id)])
         propertyId = String(r2?.rows?.[0]?.property_id || '').trim()
       } catch {}
-      if (propertyId && to.length) {
+      if (propertyId) {
         await emitNotificationEvent(
           {
             type: 'WORK_TASK_UPDATED',
+            policyKey: 'restock_proof_saved',
             entity: 'cleaning_task',
             entityId: String(id),
             propertyId,
@@ -2297,13 +2326,21 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
             body: restockActionBody,
             data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: restockActionKind, task_id: id, batch_id: batchId },
             actorUserId: userId,
-            recipientUserIds: to,
           },
           { operationId },
         )
       }
     } catch {}
-    return res.status(201).json({ ok: true })
+    const responseBody = { ok: true }
+    if (submitId && stepKey) {
+      await saveIdempotentStepReceipt(pgPool, {
+        scopeType: 'cleaning_task_restock_proof',
+        scopeId: String(id),
+        submitId,
+        stepKey,
+      }, payloadHash, responseBody)
+    }
+    return res.status(201).json(responseBody)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'restock_proof_failed' })
   }
@@ -2402,10 +2439,11 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
           cancelled: true,
           causedByUserId: userId,
         })
-        if (propertyId && to.length) {
+        if (propertyId) {
           const { emitNotificationEvent } = require('../services/notificationEvents')
           await emitNotificationEvent({
             type: 'CLEANING_TASK_UPDATED',
+            policyKey: 'guest_checked_out_cancelled',
             entity: 'cleaning_task',
             entityId: String(id),
             propertyId,
@@ -2416,7 +2454,6 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
             body: '房源还未退房，待退房',
             data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'guest_checked_out_cancelled', task_id: id, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: eventId },
             actorUserId: userId,
-            recipientUserIds: to,
           })
         }
       } catch {}
@@ -2466,10 +2503,11 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
         eventId,
         causedByUserId: userId,
       })
-      if (propertyId && to.length) {
+      if (propertyId) {
         const { emitNotificationEvent } = require('../services/notificationEvents')
         await emitNotificationEvent({
           type: 'CLEANING_TASK_UPDATED',
+          policyKey: 'guest_checked_out',
           entity: 'cleaning_task',
           entityId: String(id),
           propertyId,
@@ -2480,7 +2518,6 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
           body,
           data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'guest_checked_out', task_id: id, property_code: propertyCode, checked_out_at: checkedOutAt, keys_required: keysRequired, event_id: eventId },
           actorUserId: userId,
-          recipientUserIds: to,
         })
       }
     } catch {}
@@ -2572,10 +2609,11 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
           cancelled: true,
           causedByUserId: userId,
         })
-        if (propertyId && to.length) {
+        if (propertyId) {
           const { emitNotificationEvent } = require('../services/notificationEvents')
           await emitNotificationEvent({
             type: 'CLEANING_TASK_UPDATED',
+            policyKey: 'guest_checked_out_cancelled',
             entity: 'cleaning_task',
             entityId: String(ids2[0]),
             propertyId,
@@ -2586,7 +2624,6 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
             body: '房源还未退房，待退房',
             data: { entity: 'cleaning_task', entityId: String(ids2[0]), action: 'open_task', kind: 'guest_checked_out_cancelled', task_ids: ids2, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: eventId },
             actorUserId: userId,
-            recipientUserIds: to,
           })
         }
       } catch {}
@@ -2636,7 +2673,7 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
       const { listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications')
       const to = Array.from(new Set([...(await listCleaningTaskUserIdsBulk(ids2)), ...(await listManagerUserIds())]))
       const body = keysRequired && keysRequired >= 2 ? `已退房（${keysRequired}把钥匙）` : '已退房'
-      if (propertyCode && to.length) {
+      if (propertyCode) {
         const r0 = await pgPool.query(
           `SELECT property_id::text AS property_id
            FROM cleaning_tasks
@@ -2649,6 +2686,7 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
           const { emitNotificationEvent } = require('../services/notificationEvents')
           await emitNotificationEvent({
             type: 'CLEANING_TASK_UPDATED',
+            policyKey: 'guest_checked_out',
             entity: 'cleaning_task',
             entityId: String(ids2[0]),
             propertyId,
@@ -2659,7 +2697,6 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
             body,
             data: { entity: 'cleaning_task', entityId: String(ids2[0]), action: 'open_task', kind: 'guest_checked_out', task_ids: ids2, property_code: propertyCode, checked_out_at: checkedOutAt, keys_required: keysRequired, event_id: eventId },
             actorUserId: userId,
-            recipientUserIds: to,
           })
         }
       }
@@ -2751,10 +2788,11 @@ router.post('/cleaning-tasks/order-checked-out', async (req, res) => {
           cancelled: true,
           causedByUserId: userId,
         })
-        if (propertyId && to.length) {
+        if (propertyId) {
           const { emitNotificationEvent } = require('../services/notificationEvents')
           await emitNotificationEvent({
             type: 'CLEANING_TASK_UPDATED',
+            policyKey: 'guest_checked_out_cancelled',
             entity: 'cleaning_task',
             entityId: String(taskIds[0]),
             propertyId,
@@ -2765,7 +2803,6 @@ router.post('/cleaning-tasks/order-checked-out', async (req, res) => {
             body: '房源还未退房，待退房',
             data: { entity: 'cleaning_task', entityId: String(taskIds[0]), action: 'open_task', kind: 'guest_checked_out_cancelled', task_ids: taskIds, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: eventId },
             actorUserId: userId,
-            recipientUserIds: to,
           })
         }
       } catch {}
@@ -2822,10 +2859,11 @@ router.post('/cleaning-tasks/order-checked-out', async (req, res) => {
       const operationId = require('uuid').v4()
       const to = Array.from(new Set([...(await listCleaningTaskUserIdsBulk(taskIds)), ...(await listManagerUserIds())]))
       const body = keysRequired && keysRequired >= 2 ? `已退房（${keysRequired}把钥匙）` : '已退房'
-      if (propertyId && to.length) {
+      if (propertyId) {
         await emitNotificationEvent(
           {
             type: 'CLEANING_TASK_UPDATED',
+            policyKey: 'guest_checked_out',
             entity: 'cleaning_task',
             entityId: String(taskIds[0]),
             propertyId,
@@ -2836,7 +2874,6 @@ router.post('/cleaning-tasks/order-checked-out', async (req, res) => {
             body,
             data: { entity: 'cleaning_task', entityId: String(taskIds[0]), action: 'open_task', kind: 'guest_checked_out', task_ids: taskIds, property_code: propertyCode, checked_out_at: checkedOutAt, keys_required: keysRequired, event_id: eventId },
             actorUserId: userId,
-            recipientUserIds: to,
           },
           { operationId },
         )
@@ -3359,10 +3396,11 @@ async function handleManagerFields(req: any, res: any) {
             keys_required: nextKeysRequired,
             dedupe_key: dedupeKey,
           }
-          if (propertyId && to.length) {
+          if (propertyId) {
             const { emitNotificationEvent } = require('../services/notificationEvents')
             await emitNotificationEvent({
               type: 'CLEANING_TASK_UPDATED',
+              policyKey: 'task_requirements_changed',
               entity: 'cleaning_task',
               entityId: String(repId),
               propertyId,
@@ -3373,7 +3411,6 @@ async function handleManagerFields(req: any, res: any) {
               body,
               data,
               actorUserId: String(user?.sub || ''),
-              recipientUserIds: to,
             })
           }
         } catch {}
@@ -3470,9 +3507,9 @@ router.post('/cleaning-tasks/guest-luggage', async (req, res) => {
         })
       } catch {}
       try {
-        const recipients = await listGuestLuggageRecipients(scope.propertyId, scope.taskDate)
         await emitNotificationEvent({
           type: 'GUEST_LUGGAGE_UPDATED',
+          policyKey: 'guest_luggage_updated',
           entity: 'cleaning_task',
           entityId: scope.taskIds[0],
           eventId: `guest_luggage:${notice.id}:v${notice.version}`,
@@ -3497,7 +3534,6 @@ router.post('/cleaning-tasks/guest-luggage', async (req, res) => {
             photo_urls: notice.photo_urls,
           },
           actorUserId,
-          recipientUserIds: recipients,
         })
       } catch {}
     }
@@ -3543,7 +3579,6 @@ router.delete('/cleaning-tasks/guest-luggage/:id', async (req, res) => {
     const taskRows = taskResult?.rows || []
     const taskIds = taskRows.map((row: any) => String(row.id || '')).filter(Boolean)
     const propertyCode = String(taskRows?.[0]?.property_code || '').trim()
-    const recipients = await listGuestLuggageRecipients(String(notice.property_id || ''), String(notice.task_date || '').slice(0, 10))
     await pgPool.query(`DELETE FROM guest_luggage_notices WHERE id = $1`, [noticeId])
     try {
       await emitGuestLuggageTaskEvents({ taskRows, taskIds, patch: null, actorUserId })
@@ -3552,6 +3587,7 @@ router.delete('/cleaning-tasks/guest-luggage/:id', async (req, res) => {
       try {
         await emitNotificationEvent({
           type: 'GUEST_LUGGAGE_UPDATED',
+          policyKey: 'guest_luggage_updated',
           entity: 'cleaning_task',
           entityId: taskIds[0],
           eventId: `guest_luggage:${noticeId}:deleted:v${Number(notice.version || 1)}`,
@@ -3569,7 +3605,6 @@ router.delete('/cleaning-tasks/guest-luggage/:id', async (req, res) => {
             guest_luggage_id: noticeId,
           },
           actorUserId,
-          recipientUserIds: recipients,
         })
       } catch {}
     }
@@ -4420,34 +4455,106 @@ router.post('/upload', upload.single('file'), async (req, res) => {
   }
 })
 
-async function completePropertyFollowupSource(client: any, row: any, completedAt: string) {
+function mergeStoredPhotoUrls(existing: any, appended: string[]) {
+  return Array.from(new Set([
+    ...normalizeStoredPhotoUrls(existing),
+    ...normalizeWorkTaskPhotoUrls(appended),
+  ]))
+}
+
+async function completePropertyFollowupSource(client: any, row: any, completedAt: string, completionPhotoUrls: string[], note: string | null) {
   const sourceType = String(row?.source_type || '').trim()
   const sourceId = String(row?.source_id || '').trim()
   if (!sourceId) return
   if (sourceType === 'property_maintenance') {
+    await ensurePropertyMaintenanceColumns()
+    const existingRes = await client.query(
+      `SELECT repair_photo_urls, repair_notes
+         FROM property_maintenance
+        WHERE id::text = $1
+        LIMIT 1`,
+      [sourceId],
+    )
+    const existingRow = existingRes?.rows?.[0] || null
+    const nextRepairPhotoUrls = mergeStoredPhotoUrls(existingRow?.repair_photo_urls, completionPhotoUrls)
+    const nextRepairNotes = note || (existingRow?.repair_notes == null ? null : String(existingRow.repair_notes || '').trim()) || null
+    const photoType = await getColumnType('property_maintenance', 'repair_photo_urls')
+    const photoExpr = photoType === 'text[]' ? '$3::text[]' : '$3::jsonb'
     await client.query(
       `UPDATE property_maintenance
-          SET status = 'completed', completed_at = $2::timestamptz, updated_at = now()
+          SET status = 'completed',
+              completed_at = $2::timestamptz,
+              repair_photo_urls = ${photoExpr},
+              repair_notes = $4,
+              review_status = 'pending',
+              updated_at = now()
         WHERE id::text = $1`,
-      [sourceId, completedAt],
+      [
+        sourceId,
+        completedAt,
+        photoType === 'text[]' ? nextRepairPhotoUrls : JSON.stringify(nextRepairPhotoUrls),
+        nextRepairNotes,
+      ],
     )
     return
   }
   if (sourceType === 'property_deep_cleaning') {
+    await ensurePropertyDeepCleaningColumns()
+    const existingRes = await client.query(
+      `SELECT repair_photo_urls, repair_notes
+         FROM property_deep_cleaning
+        WHERE id::text = $1
+        LIMIT 1`,
+      [sourceId],
+    )
+    const existingRow = existingRes?.rows?.[0] || null
+    const nextRepairPhotoUrls = mergeStoredPhotoUrls(existingRow?.repair_photo_urls, completionPhotoUrls)
+    const nextRepairNotes = note || (existingRow?.repair_notes == null ? null : String(existingRow.repair_notes || '').trim()) || null
+    const photoType = await getColumnType('property_deep_cleaning', 'repair_photo_urls')
+    const photoExpr = photoType === 'text[]' ? '$3::text[]' : '$3::jsonb'
     await client.query(
       `UPDATE property_deep_cleaning
-          SET status = 'completed', completed_at = $2::timestamptz, updated_at = now()
+          SET status = 'completed',
+              completed_at = $2::timestamptz,
+              repair_photo_urls = ${photoExpr},
+              repair_notes = $4,
+              review_status = 'pending',
+              updated_at = now()
         WHERE id::text = $1`,
-      [sourceId, completedAt],
+      [
+        sourceId,
+        completedAt,
+        photoType === 'text[]' ? nextRepairPhotoUrls : JSON.stringify(nextRepairPhotoUrls),
+        nextRepairNotes,
+      ],
     )
     return
   }
   if (sourceType === 'property_daily_necessities') {
+    await ensurePropertyDailyNecessitiesColumns()
+    const existingRes = await client.query(
+      `SELECT photo_urls, note
+         FROM property_daily_necessities
+        WHERE id::text = $1
+        LIMIT 1`,
+      [sourceId],
+    )
+    const existingRow = existingRes?.rows?.[0] || null
+    const nextPhotoUrls = mergeStoredPhotoUrls(existingRow?.photo_urls, completionPhotoUrls)
+    const nextNote = note || (existingRow?.note == null ? null : String(existingRow.note || '').trim()) || null
+    const photoType = await getColumnType('property_daily_necessities', 'photo_urls')
+    const photoExpr = photoType === 'text[]' ? '$2::text[]' : '$2::jsonb'
     await client.query(
       `UPDATE property_daily_necessities
-          SET status = 'replaced'
+          SET status = 'replaced',
+              photo_urls = ${photoExpr},
+              note = $3
         WHERE id::text = $1`,
-      [sourceId],
+      [
+        sourceId,
+        photoType === 'text[]' ? nextPhotoUrls : JSON.stringify(nextPhotoUrls),
+        nextNote,
+      ],
     )
     return
   }
@@ -4505,7 +4612,7 @@ router.post('/work-tasks/:id/mark', async (req, res) => {
           ['done', JSON.stringify(completionPhotoUrls), note, id],
         )
         alreadyDone = Number(updateResult?.rowCount || 0) === 0
-        await completePropertyFollowupSource(client, row, completedAt)
+        await completePropertyFollowupSource(client, row, completedAt, completionPhotoUrls, note)
         await client.query('COMMIT')
       } catch (error) {
         try { await client.query('ROLLBACK') } catch {}
@@ -4545,6 +4652,7 @@ router.post('/work-tasks/:id/mark', async (req, res) => {
         await emitNotificationEvent(
           {
             type: 'WORK_TASK_COMPLETED',
+            policyKey: 'work_task_completed',
             entity: 'work_task',
             entityId: id,
             propertyId: row.property_id ? String(row.property_id) : undefined,
@@ -4845,6 +4953,7 @@ router.get('/work-tasks', async (req, res) => {
             t.cleaner_id,
             t.inspector_id,
             t.inspection_mode,
+            t.inspection_scope,
             t.inspection_due_date::text AS inspection_due_date,
             COALESCE(cu.username, cu.email, cu.id::text) AS cleaner_name,
             COALESCE(iu.username, iu.email, iu.id::text) AS inspector_name,
@@ -4921,6 +5030,8 @@ router.get('/work-tasks', async (req, res) => {
           }
         }
         const restockByTaskId = new Map<string, any[]>()
+        const consumableItemIdsByTaskId = new Map<string, Set<string>>()
+        const carryForwardRestockByProperty = new Map<string, any[]>()
         if (taskIds.length) {
           const rr = await pgPool.query(
             `SELECT task_id::text AS task_id, item_id::text AS item_id, COALESCE(item_label,'') AS item_label, qty, note, photo_url, COALESCE(status,'') AS status
@@ -4942,6 +5053,68 @@ router.get('/work-tasks', async (req, res) => {
               status: String(x.status || ''),
             })
             restockByTaskId.set(k, arr)
+          }
+          const submittedConsumables = await pgPool.query(
+            `SELECT task_id::text AS task_id, item_id::text AS item_id
+             FROM cleaning_consumable_usages
+             WHERE task_id::text = ANY($1::text[])`,
+            [taskIds],
+          )
+          for (const row of submittedConsumables?.rows || []) {
+            const taskId = String(row.task_id || '').trim()
+            const itemId = String(row.item_id || '').trim()
+            if (!taskId || !itemId) continue
+            const itemIds = consumableItemIdsByTaskId.get(taskId) || new Set<string>()
+            itemIds.add(itemId)
+            consumableItemIdsByTaskId.set(taskId, itemIds)
+          }
+        }
+        if (guestLuggagePropertyIds.length) {
+          const followupRows = await pgPool.query(
+            `SELECT t.id::text AS source_task_id,
+                    t.property_id::text AS property_id,
+                    COALESCE(t.task_date, t.date)::text AS source_task_date,
+                    m.type,
+                    m.note,
+                    m.created_at
+             FROM cleaning_task_media m
+             JOIN cleaning_tasks t ON t.id::text = m.task_id::text
+             WHERE t.property_id::text = ANY($1::text[])
+               AND m.type LIKE 'restock_proof:%'
+               AND COALESCE(t.task_date, t.date)::date <= $2::date
+               AND COALESCE(t.status,'') <> 'cancelled'
+             ORDER BY COALESCE(t.task_date, t.date) DESC, m.created_at DESC`,
+            [guestLuggagePropertyIds, dateTo],
+          )
+          const seenCarryForward = new Set<string>()
+          for (const row of followupRows?.rows || []) {
+            const propertyId = String(row.property_id || '').trim()
+            const sourceTaskId = String(row.source_task_id || '').trim()
+            const sourceTaskDate = String(row.source_task_date || '').slice(0, 10)
+            const type = String(row.type || '').trim()
+            const itemId = type.includes(':') ? type.split(':').slice(1).join(':').trim() : ''
+            if (!propertyId || !sourceTaskId || !sourceTaskDate || !itemId) continue
+            let meta: any = null
+            try {
+              const raw = String(row.note || '').trim()
+              meta = raw && (raw.startsWith('{') || raw.startsWith('[')) ? JSON.parse(raw) : null
+            } catch {}
+            if (String(meta?.status || '').trim() !== 'carry_forward') continue
+            const carryKey = `${propertyId}:${itemId}`
+            if (seenCarryForward.has(carryKey)) continue
+            seenCarryForward.add(carryKey)
+            const list = carryForwardRestockByProperty.get(propertyId) || []
+            list.push({
+              item_id: itemId,
+              label: String(meta?.label || itemId).trim() || itemId,
+              qty: meta?.qty == null ? null : Number(meta.qty),
+              note: meta?.note == null ? null : String(meta.note || '').trim() || null,
+              photo_url: null,
+              status: 'carry_forward',
+              source_task_id: sourceTaskId,
+              source_task_date: sourceTaskDate,
+            })
+            carryForwardRestockByProperty.set(propertyId, list)
           }
         }
         const completionAreasByTaskId = new Map<string, Set<string>>()
@@ -5007,6 +5180,7 @@ router.get('/work-tasks', async (req, res) => {
             __assignee_cleaner: effectiveCleanerId,
             __assignee_inspector: inspectorId,
             __inspection_mode: inspectionMode,
+            __inspection_scope: normalizeInspectionScope(row.inspection_scope),
             __inspection_due_date: inspectionDueDate,
             __deferred_projection_date: deferredDate,
             order_id: orderId,
@@ -5125,6 +5299,7 @@ router.get('/work-tasks', async (req, res) => {
           )
           const inspectionMode = inspectionPlan.inspectionMode
           const inspectionDueDate = inspectionPlan.inspectionDueDate
+          const inspectionScope = p.kind === 'checkin' ? normalizeInspectionScope(p.a.__inspection_scope) : null
           const requireSelfComplete = roleKind === 'cleaner' && inspectionMode === 'self_complete'
           const requireLockboxBeforeDone = requireSelfComplete && p.kind !== 'stayover'
           const completionAreas = new Set<string>()
@@ -5138,6 +5313,12 @@ router.get('/work-tasks', async (req, res) => {
           const completionPhotosOk = REQUIRED_COMPLETION_PHOTO_AREAS.every((a) => completionAreas.has(a))
           const restockItems: any[] = []
           const seen = new Set<string>()
+          const submittedConsumableIds = new Set<string>()
+          for (const sId of p.ids) {
+            for (const itemId of Array.from(consumableItemIdsByTaskId.get(String(sId)) || new Set<string>())) {
+              submittedConsumableIds.add(String(itemId || '').trim())
+            }
+          }
           for (const sId of p.ids) {
             const arr = rows.filter((x) => String(x.__raw_id) === String(sId)).flatMap((x) => (Array.isArray(x.restock_items) ? x.restock_items : []))
             for (const it of arr) {
@@ -5146,6 +5327,29 @@ router.get('/work-tasks', async (req, res) => {
               if (seen.has(iid)) continue
               seen.add(iid)
               restockItems.push(it)
+            }
+          }
+          if (roleKind === 'cleaner' && propId && (p.kind === 'checkout' || p.kind === 'turnover')) {
+            for (const it of carryForwardRestockByProperty.get(String(propId)) || []) {
+              const iid = String(it?.item_id || '').trim()
+              const sourceTaskId = String(it?.source_task_id || '').trim()
+              const sourceTaskDate = String(it?.source_task_date || '').slice(0, 10)
+              if (!iid || !sourceTaskId || !sourceTaskDate) continue
+              if (sourceTaskDate >= date) continue
+              if (p.ids.includes(sourceTaskId)) continue
+              if (seen.has(iid)) continue
+              if (submittedConsumableIds.has(iid)) continue
+              seen.add(iid)
+              restockItems.push({
+                item_id: iid,
+                label: String(it?.label || iid).trim() || iid,
+                qty: it?.qty == null ? null : Number(it.qty),
+                note: it?.note == null ? null : String(it.note || ''),
+                photo_url: null,
+                status: 'carry_forward',
+                source_task_id: sourceTaskId,
+                source_task_date: sourceTaskDate,
+              })
             }
           }
           const raw = String(p.a.raw_status ?? '').trim().toLowerCase()
@@ -5274,6 +5478,7 @@ router.get('/work-tasks', async (req, res) => {
             guest_luggage: p.a.guest_luggage || null,
             note: taskNote,
             inspection_mode: inspectionMode,
+            inspection_scope: inspectionScope,
             inspection_due_date: inspectionDueDate,
             keys_required: keysRequired,
             keys_required_checkout: checkoutKeysOut,
@@ -5412,6 +5617,9 @@ router.get('/work-tasks', async (req, res) => {
         )
         const inspectionMode = inspectionPlan.inspectionMode
         const inspectionDueDate = inspectionPlan.inspectionDueDate
+        const inspectionScope = normalizeInspectionScope(
+          arr.find((x) => String(x?.task_type || '').trim().toLowerCase() === 'checkin_clean')?.inspection_scope,
+        )
         const restockItems: any[] = []
         const seenRestock = new Set<string>()
         for (const it of arr.flatMap((x) => (Array.isArray(x?.restock_items) ? x.restock_items : []))) {
@@ -5451,6 +5659,7 @@ router.get('/work-tasks', async (req, res) => {
           order_id_checkin: orderIdCheckin || null,
           order_id_checkout: orderIdCheckout || null,
           inspection_mode: inspectionMode,
+          inspection_scope: inspectionScope,
           inspection_due_date: inspectionDueDate,
           keys_required: keysRequired,
           keys_required_checkout: checkoutKeysOut,
@@ -5567,6 +5776,9 @@ const feedbackCreateSchema = z
     kind: z.enum(['maintenance', 'deep_cleaning', 'daily_necessities']),
     property_id: z.string().min(1),
     source_task_id: z.string().optional(),
+    submit_id: z.string().trim().min(1).max(120).optional(),
+    step_key: z.string().trim().min(1).max(120).optional(),
+    client_item_id: z.string().trim().min(1).max(120).optional(),
 
     area: z.string().optional(),
     areas: z.array(z.string().min(1)).optional(),
@@ -5682,6 +5894,7 @@ async function notifyPropertyFeedbackCreated(params: {
     const propertyCode = await loadMzappPropertyCode(params.propertyId)
     await emitNotificationEvent({
       type: 'ISSUE_REPORTED',
+      policyKey: 'issue_reported',
       entity: 'property_feedback',
       entityId: id,
       eventId: `ISSUE_REPORTED_property_feedback_${id}_created`,
@@ -6281,6 +6494,36 @@ router.post('/property-feedbacks', async (req, res) => {
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+    const pool = pgPool
+    const submitId = String(parsed.data.submit_id || '').trim()
+    const stepKey = String(parsed.data.step_key || '').trim()
+    const clientItemId = String(parsed.data.client_item_id || '').trim()
+    const payloadHash = buildIdempotencyPayloadHash(parsed.data)
+    const receiptScopeId = clientItemId || `${String(parsed.data.property_id || '').trim()}:${String(parsed.data.kind || '').trim()}`
+    const receiptScope = submitId && stepKey
+      ? {
+          scopeType: 'property_feedback_create',
+          scopeId: receiptScopeId,
+          submitId,
+          stepKey,
+        }
+      : null
+    const respondReceipt = async (statusCode: number, body: any) => {
+      if (receiptScope) {
+        await saveIdempotentStepReceipt(pool, receiptScope, payloadHash, body)
+      }
+      return res.status(statusCode).json(body)
+    }
+    if (receiptScope) {
+      await ensureIdempotentStepReceiptsTable(pool)
+      const receipt = await loadIdempotentStepReceipt(pool, receiptScope)
+      if (receipt) {
+        if (String(receipt.payload_hash || '') !== payloadHash) {
+          return res.status(409).json({ message: 'idempotency_conflict', submit_id: submitId, step_key: stepKey, client_item_id: clientItemId || null })
+        }
+        return res.status(200).json(receipt.response_json || { ok: true })
+      }
+    }
     const now = new Date()
     const createdAt = now.toISOString()
     const occurredAt = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
@@ -6329,7 +6572,7 @@ router.post('/property-feedbacks', async (req, res) => {
               LIMIT 1`,
             [parsed.data.property_id, fingerprint, duplicateWindowHours],
           )
-          if (dup.rowCount) return res.status(409).json({ message: 'duplicate', existing_id: String(dup.rows[0].id) })
+          if (dup.rowCount) return await respondReceipt(200, { ok: true, existing_id: String(dup.rows[0].id) })
         }
 
         const createdIds: string[] = []
@@ -6382,7 +6625,7 @@ router.post('/property-feedbacks', async (req, res) => {
             actorUserId: createdBy,
           })
         }
-        return res.status(201).json({ ok: true, ids: createdIds })
+        return await respondReceipt(201, { ok: true, ids: createdIds })
       }
 
       const area = String(parsed.data.area || '').trim()
@@ -6411,7 +6654,7 @@ router.post('/property-feedbacks', async (req, res) => {
           LIMIT 1`,
         [parsed.data.property_id, fingerprint, duplicateWindowHours],
       )
-      if (dup.rowCount) return res.status(409).json({ message: 'duplicate', existing_id: String(dup.rows[0].id) })
+      if (dup.rowCount) return await respondReceipt(200, { ok: true, existing_id: String(dup.rows[0].id) })
       await pgPool.query(
         `INSERT INTO property_maintenance(
           id, property_id, occurred_at, details, created_by, created_at,
@@ -6444,7 +6687,7 @@ router.post('/property-feedbacks', async (req, res) => {
         summary: detail,
         actorUserId: createdBy,
       })
-      return res.status(201).json({ ok: true, id })
+      return await respondReceipt(201, { ok: true, id })
     }
 
     if (parsed.data.kind === 'daily_necessities') {
@@ -6474,7 +6717,7 @@ router.post('/property-feedbacks', async (req, res) => {
           LIMIT 1`,
         [parsed.data.property_id, fingerprint, duplicateWindowHours],
       )
-      if (dup.rowCount) return res.status(409).json({ message: 'duplicate', existing_id: String(dup.rows[0].id) })
+      if (dup.rowCount) return await respondReceipt(200, { ok: true, existing_id: String(dup.rows[0].id) })
 
       await pgPool.query(
         `INSERT INTO property_daily_necessities(
@@ -6508,7 +6751,7 @@ router.post('/property-feedbacks', async (req, res) => {
         summary: note || `${itemName} × ${Math.trunc(quantity)}`,
         actorUserId: createdBy,
       })
-      return res.status(201).json({ ok: true, id })
+      return await respondReceipt(201, { ok: true, id })
     }
 
     const areas = parsed.data.areas || []
@@ -6544,7 +6787,7 @@ router.post('/property-feedbacks', async (req, res) => {
         LIMIT 1`,
       [parsed.data.property_id, fingerprint, duplicateWindowHours],
     )
-    if (dup.rowCount) return res.status(409).json({ message: 'duplicate', existing_id: String(dup.rows[0].id) })
+    if (dup.rowCount) return await respondReceipt(200, { ok: true, existing_id: String(dup.rows[0].id) })
     await pgPool.query(
       `INSERT INTO property_deep_cleaning(
         id, property_id, occurred_at, project_desc, details, created_by, created_at,
@@ -6587,7 +6830,7 @@ router.post('/property-feedbacks', async (req, res) => {
       summary: detail,
       actorUserId: createdBy,
     })
-    return res.status(201).json({ ok: true, id })
+    return await respondReceipt(201, { ok: true, id })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'property_feedbacks_create_failed' })
   }

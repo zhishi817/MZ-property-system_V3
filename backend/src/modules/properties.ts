@@ -41,6 +41,8 @@ const createSchema = z.object({
   building_notes: z.string().optional(),
   bed_config: z.string().optional(),
   tv_model: z.string().optional(),
+  wifi_ssid: z.string().optional(),
+  wifi_password: z.string().optional(),
   aircon_model: z.string().optional(),
   bedroom_ac: z.enum(['none','master_only','both']).optional(),
   notes: z.string().optional(),
@@ -102,6 +104,8 @@ async function ensurePropertyColumns() {
   await pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS building_facility_other text')
   await pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS bedroom_ac text')
   await pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS room_type_code text')
+  await pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS wifi_ssid text')
+  await pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS wifi_password text')
   await pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS archived boolean DEFAULT false')
 }
 
@@ -291,7 +295,7 @@ router.post('/', requirePerm('property.write'), async (req, res) => {
   pFull.airbnb_listing_name = normListingName(pFull.airbnb_listing_name || lnObj.airbnb || null)
   pFull.booking_listing_name = normListingName(pFull.booking_listing_name || lnObj.booking || null)
   pFull.listing_names = { other: String(lnObj.other || '').trim() }
-  const baseKeys = ['id','code','address','type','capacity','room_type_code','region','area_sqm','biz_category','building_name','building_facilities','building_facility_floor','building_facility_other','building_contact_name','building_contact_phone','building_contact_email','building_notes','bed_config','tv_model','aircon_model','bedroom_ac','access_guide_link','keybox_location','keybox_code','garage_guide_link','floor','parking_type','parking_space','access_type','orientation','fireworks_view','notes','landlord_id','created_by','listing_names','airbnb_listing_name','booking_listing_name','airbnb_listing_id','booking_listing_id']
+  const baseKeys = ['id','code','address','type','capacity','room_type_code','region','area_sqm','biz_category','building_name','building_facilities','building_facility_floor','building_facility_other','building_contact_name','building_contact_phone','building_contact_email','building_notes','bed_config','tv_model','wifi_ssid','wifi_password','aircon_model','bedroom_ac','access_guide_link','keybox_location','keybox_code','garage_guide_link','floor','parking_type','parking_space','access_type','orientation','fireworks_view','notes','landlord_id','created_by','listing_names','airbnb_listing_name','booking_listing_name','airbnb_listing_id','booking_listing_id']
   const pBase: any = Object.fromEntries(Object.entries(pFull).filter(([k]) => baseKeys.includes(k)))
   const minimalKeys = ['id','code','address','type','capacity','room_type_code','region','area_sqm','notes','listing_names']
   const pMinimal: any = Object.fromEntries(Object.entries(pFull).filter(([k]) => minimalKeys.includes(k)))
@@ -353,7 +357,7 @@ router.patch('/:id', requirePerm('property.write'), async (req, res) => {
     cleanedBody.booking_listing_name = normListingName(cleanedBody.booking_listing_name || ln.booking || null)
     cleanedBody.listing_names = { other: String(ln.other || '').trim() }
   }
-  const baseKeys = ['code','address','type','capacity','room_type_code','region','area_sqm','biz_category','building_name','building_facilities','building_facility_floor','building_facility_other','building_contact_name','building_contact_phone','building_contact_email','building_notes','bed_config','tv_model','aircon_model','bedroom_ac','access_guide_link','keybox_location','keybox_code','garage_guide_link','floor','parking_type','parking_space','access_type','orientation','fireworks_view','notes','landlord_id','listing_names','airbnb_listing_name','booking_listing_name','airbnb_listing_id','booking_listing_id']
+  const baseKeys = ['code','address','type','capacity','room_type_code','region','area_sqm','biz_category','building_name','building_facilities','building_facility_floor','building_facility_other','building_contact_name','building_contact_phone','building_contact_email','building_notes','bed_config','tv_model','wifi_ssid','wifi_password','aircon_model','bedroom_ac','access_guide_link','keybox_location','keybox_code','garage_guide_link','floor','parking_type','parking_space','access_type','orientation','fireworks_view','notes','landlord_id','listing_names','airbnb_listing_name','booking_listing_name','airbnb_listing_id','booking_listing_id']
   const actor = (req as any).user
   const actorId = String(actor?.sub || actor?.username || '').trim() || null
   const bodyBaseRaw: any = Object.fromEntries(Object.entries(cleanedBody).filter(([k]) => baseKeys.includes(k)))

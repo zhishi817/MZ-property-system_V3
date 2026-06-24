@@ -15,6 +15,7 @@ import { formatStatementDesc } from '../../../lib/statementDesc'
 import FiscalYearStatement from '../../../components/FiscalYearStatement'
 import { MailOutlined, CreditCardOutlined, CheckOutlined } from '@ant-design/icons'
 import { nextToggleValue } from '../../../lib/toggleStatus'
+import { type AnnualPropertyReport } from '../../../lib/annualReport'
 import { exportElementToPdfBlob } from '../../../lib/pdfExport'
 import { buildStatementTxs, type StatementTx } from '../../../lib/statementTx'
 import { DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH } from '../../../lib/monthlyStatementPrint'
@@ -58,6 +59,7 @@ export default function PropertyRevenuePage() {
   const [previewPid, setPreviewPid] = useState<string | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [previewReady, setPreviewReady] = useState(false)
+  const [previewAnnualReport, setPreviewAnnualReport] = useState<AnnualPropertyReport | null>(null)
   const [carryDiagOpen, setCarryDiagOpen] = useState(false)
   const [, setStatementPdfMode] = useState(false)
   const [exportQuality, setExportQuality] = useState<'standard' | 'high' | 'ultra'>('ultra')
@@ -634,6 +636,30 @@ export default function PropertyRevenuePage() {
     })()
     return () => { cancelled = true }
   }, [previewOpen, previewPid, period, month?.format?.('YYYY-MM'), showChinese, previewOrderSegments])
+
+  useEffect(() => {
+    if (!previewOpen || !previewPid || period !== 'fiscal-year') {
+      setPreviewAnnualReport(null)
+      return
+    }
+    const fiscalYear = month?.month?.() >= 6 ? Number(month.year()) + 1 : Number(month.year())
+    if (!fiscalYear || !previewPid) return
+    let cancelled = false
+    setPreviewReady(false)
+    getJSON<AnnualPropertyReport>(`/finance/annual-report?${new URLSearchParams({ property_id: String(previewPid), fy: String(fiscalYear) }).toString()}`)
+      .then((data) => {
+        if (cancelled) return
+        setPreviewAnnualReport(data)
+        setPreviewReady(true)
+      })
+      .catch((e: any) => {
+        if (cancelled) return
+        setPreviewAnnualReport(null)
+        setPreviewReady(true)
+        message.error(e?.message || '加载财年报告失败')
+      })
+    return () => { cancelled = true }
+  }, [previewOpen, previewPid, period, month])
 
   const orderById = useMemo(() => new Map((orders || []).map(o => [String(o.id), o])), [orders])
   const txBucketIndex = useMemo(() => {
@@ -1590,7 +1616,11 @@ export default function PropertyRevenuePage() {
               </div>
             </>
           ) : period==='fiscal-year' ? (
-            <FiscalYearStatement ref={printRef} baseMonth={month} propertyId={previewPid!} orders={orders} txs={txs} properties={properties} landlords={landlords} showChinese={showChinese} />
+            !previewAnnualReport ? (
+              <div style={{ padding: 48, textAlign: 'center' }}><Spin /></div>
+            ) : (
+              <FiscalYearStatement ref={printRef} report={previewAnnualReport} showChinese={showChinese} />
+            )
           ) : (
             <div ref={printRef as any}>
               {(() => {

@@ -1,5 +1,12 @@
 import assert from 'node:assert/strict'
-import { deferredProjectionDate, mergeInspectionPlan, mergeTurnoverTaskPlan, mobileInspectionProjectionDate } from '../../src/lib/cleaningInspection'
+import {
+  deferredProjectionDate,
+  isInspectionModeAllowedForTask,
+  mergeInspectionPlan,
+  mergeTurnoverTaskPlan,
+  mobileInspectionProjectionDate,
+  sanitizeInspectionModeForTask,
+} from '../../src/lib/cleaningInspection'
 
 function testTurnoverCheckoutAssignmentWinsOverPendingFallback() {
   const out = mergeInspectionPlan([
@@ -72,6 +79,25 @@ function testStayoverRemainsSelfComplete() {
   assert.equal(out.inspectionDueDate, null)
 }
 
+function testCheckedDoneBeatsSelfCompleteWhenMerged() {
+  const out = mergeInspectionPlan([
+    {
+      task_type: 'checkout_clean',
+      inspection_mode: 'self_complete',
+      inspector_id: null,
+      status: 'assigned',
+    },
+    {
+      task_type: 'checkout_clean',
+      inspection_mode: 'checked_done',
+      inspector_id: null,
+      status: 'assigned',
+    },
+  ])
+  assert.equal(out.inspectionMode, 'checked_done')
+  assert.equal(out.inspectionDueDate, null)
+}
+
 function testTemporaryCheckinDoesNotUnassignScheduledCheckout() {
   const out = mergeTurnoverTaskPlan([
     {
@@ -121,7 +147,7 @@ function testTemporaryCheckinDoesNotClearCheckoutInspector() {
   assert.equal(out.inspectionMode, 'same_day')
 }
 
-function testCompletedDeferredInspectionDoesNotProject() {
+function testCompletedDeferredInspectionStillProjectsToDueDate() {
   const out = deferredProjectionDate({
     inspectionMode: 'deferred',
     inspectionDueDate: '2026-06-21',
@@ -129,7 +155,7 @@ function testCompletedDeferredInspectionDoesNotProject() {
     dateTo: '2026-06-21',
     status: 'completed',
   })
-  assert.equal(out, null)
+  assert.equal(out, '2026-06-21')
 }
 
 function testKeysHungSelfCompleteProjectsToOriginalTaskDate() {
@@ -154,14 +180,34 @@ function testOrdinarySelfCompleteDoesNotCreateInspectorTask() {
   assert.equal(out, null)
 }
 
+function testPasswordOnlyCannotUseSelfCompleteOrCheckedDone() {
+  assert.equal(isInspectionModeAllowedForTask({
+    taskType: 'checkin_clean',
+    inspectionScope: 'password_only',
+    inspectionMode: 'self_complete',
+  }), false)
+  assert.equal(isInspectionModeAllowedForTask({
+    taskType: 'checkin_clean',
+    inspectionScope: 'password_only',
+    inspectionMode: 'checked_done',
+  }), false)
+  assert.equal(sanitizeInspectionModeForTask({
+    taskType: 'checkin_clean',
+    inspectionScope: 'password_only',
+    inspectionMode: 'checked_done',
+  }), 'same_day')
+}
+
 testTurnoverCheckoutAssignmentWinsOverPendingFallback()
 testTurnoverPendingCheckoutDoesNotGetPromotedByCheckinDefault()
 testDeferredCheckoutKeepsDeferredDate()
 testStayoverRemainsSelfComplete()
+testCheckedDoneBeatsSelfCompleteWhenMerged()
 testTemporaryCheckinDoesNotUnassignScheduledCheckout()
 testTemporaryCheckinDoesNotClearCheckoutInspector()
-testCompletedDeferredInspectionDoesNotProject()
+testCompletedDeferredInspectionStillProjectsToDueDate()
 testKeysHungSelfCompleteProjectsToOriginalTaskDate()
 testOrdinarySelfCompleteDoesNotCreateInspectorTask()
+testPasswordOnlyCannotUseSelfCompleteOrCheckedDone()
 
 console.log('test_cleaning_inspection_merge: ok')

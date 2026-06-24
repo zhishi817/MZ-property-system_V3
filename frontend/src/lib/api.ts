@@ -267,7 +267,7 @@ export async function putJSON<T>(path: string, body: any, options?: RequestJSONO
 }
 
 export async function deleteJSON<T>(path: string, options?: RequestJSONOptions): Promise<T> {
-  const res = await fetchWithDevAuthRecovery(path, { method: 'DELETE', headers: { ...authHeaders() } }, options)
+  const res = await fetchWithDevAuthRecovery(path, { method: 'DELETE', headers: authHeaders() }, options)
   if (!res.ok) await parseErrorResponse(res)
   return res.json() as Promise<T>
 }

@@ -5,7 +5,13 @@ import { requireAnyPerm, requirePerm } from '../auth'
 import { db } from '../store'
 import { hasPg, pgPool } from '../dbAdapter'
 import { ensureCleaningSchemaV2 } from '../services/cleaningSync'
-import { defaultInspectionModeForTaskType, deferredProjectionDate, effectiveInspectionMode, mergeTurnoverTaskPlan } from '../lib/cleaningInspection'
+import {
+  defaultInspectionModeForTaskType,
+  deferredProjectionDate,
+  effectiveInspectionMode,
+  isInspectionModeAllowedForTask,
+  mergeTurnoverTaskPlan,
+} from '../lib/cleaningInspection'
 import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
 import { emitNotificationEvent } from '../services/notificationEvents'
 
@@ -19,7 +25,7 @@ const DEFAULT_SUMMARY_CHECKIN_TIME = '3pm'
 const DEFERRED_ROW_KEY = 'deferred:holding'
 const DEFERRED_ROW_TITLE = '未安排区域 / 后续处理'
 const DEFERRED_INSPECTION_ROW_KEY = 'deferred:inspection'
-const DEFERRED_INSPECTION_ROW_TITLE = '延后检查'
+const DEFERRED_INSPECTION_ROW_TITLE = '延期检查'
 const COMPLETED_ROW_KEY = 'group:completed'
 const COMPLETED_ROW_TITLE = '已完成'
 const WORK_TASK_VISIBILITY_START = '2026-06-01'
@@ -52,7 +58,8 @@ type BoardTask = {
   auto_sync_enabled?: boolean
   has_key_photo?: boolean
   key_photo_uploaded_at?: string | null
-  inspection_mode?: 'pending_decision' | 'same_day' | 'self_complete' | 'deferred' | null
+  inspection_mode?: 'pending_decision' | 'same_day' | 'deferred' | 'self_complete' | 'checked_done' | null
+  inspection_scope?: 'inspect_and_hang' | 'password_only' | null
   inspection_due_date?: string | null
   deferred_inspection_view?: boolean
   can_configure_inspection?: boolean
@@ -108,6 +115,33 @@ type BoardRowMeta = {
 }
 
 const memoryTaskFlags = new Map<string, TaskFlag>()
+let cleaningInspectionScopeEnsured = false
+let cleaningInspectionScopeEnsuring: Promise<void> | null = null
+
+async function ensureCleaningInspectionScopeColumn() {
+  if (!hasPg || !pgPool) return
+  if (cleaningInspectionScopeEnsured) return
+  if (cleaningInspectionScopeEnsuring) return cleaningInspectionScopeEnsuring
+  cleaningInspectionScopeEnsuring = pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_scope text;`)
+    .then(() => {
+      cleaningInspectionScopeEnsured = true
+    })
+    .catch((error) => {
+      cleaningInspectionScopeEnsured = false
+      cleaningInspectionScopeEnsuring = null
+      throw error
+    })
+    .finally(() => {
+      cleaningInspectionScopeEnsuring = null
+    })
+  return cleaningInspectionScopeEnsuring
+}
+
+function normalizeInspectionScope(value: any): 'inspect_and_hang' | 'password_only' | null {
+  const raw = text(value).toLowerCase()
+  if (!raw) return null
+  return raw === 'password_only' ? 'password_only' : 'inspect_and_hang'
+}
 const memoryBoardItems = new Map<string, BoardItemLayout>()
 const memoryBoardRows = new Map<string, BoardRowMeta>()
 
@@ -560,13 +594,7 @@ function requiresCleanerAssignment(task: { task_type?: string | null; title?: st
 }
 
 function inspectionModeOf(task: any) {
-  const raw = lower(task.inspection_mode)
-  if (raw === 'pending_decision' || raw === 'same_day' || raw === 'self_complete' || raw === 'deferred') return raw
-  const tt = lower(task.task_type)
-  if (tt === 'stayover_clean') return 'self_complete'
-  if (tt === 'checkin_clean') return 'same_day'
-  if (text(task.inspector_id)) return 'same_day'
-  return 'pending_decision'
+  return effectiveInspectionMode(task)
 }
 
 function summaryText(task: any): { title: string; detail: string } {
@@ -739,6 +767,7 @@ function taskDateInScope(taskDate: string | null, date: string, includeOverdue: 
 async function loadCleaningTasks(date: string, includeOverdue: boolean, includeFuture: boolean): Promise<BoardTask[]> {
   if (hasPg && pgPool) {
     await ensureCleaningSchemaV2()
+    await ensureCleaningInspectionScopeColumn()
     const dateScopes = [`((COALESCE(t.task_date, t.date)::date) = ($1::date))`]
     if (includeOverdue) dateScopes.push(`((COALESCE(t.task_date, t.date)::date) < ($1::date))`)
     if (includeFuture) dateScopes.push(`((COALESCE(t.task_date, t.date)::date) > ($1::date))`)
@@ -758,6 +787,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
          t.cleaner_id,
          t.inspector_id,
          t.inspection_mode,
+         t.inspection_scope,
          t.inspection_due_date::text AS inspection_due_date,
          t.scheduled_at,
          t.key_photo_uploaded_at,
@@ -850,6 +880,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
           key_photo_uploaded_at: row.key_photo_uploaded_at ? String(row.key_photo_uploaded_at) : null,
           old_code: row.old_code != null ? String(row.old_code || '') : null,
           new_code: row.new_code != null ? String(row.new_code || '') : null,
+          inspection_scope: rawType === 'checkin_clean' ? normalizeInspectionScope(row.inspection_scope) : null,
           nights: row.nights != null ? Number(row.nights) : null,
           summary_checkout_time: text(row.checkout_time) || DEFAULT_SUMMARY_CHECKOUT_TIME,
           summary_checkin_time: text(row.checkin_time) || DEFAULT_SUMMARY_CHECKIN_TIME,
@@ -890,6 +921,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
           key_photo_uploaded_at: row.key_photo_uploaded_at ? String(row.key_photo_uploaded_at) : null,
           old_code: row.old_code != null ? String(row.old_code || '') : null,
           new_code: row.new_code != null ? String(row.new_code || '') : null,
+          inspection_scope: rawType === 'checkin_clean' ? normalizeInspectionScope(row.inspection_scope) : null,
           nights: row.nights != null ? Number(row.nights) : null,
           summary_checkout_time: null,
           summary_checkin_time: null,
@@ -946,6 +978,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
         key_photo_uploaded_at: null,
         old_code: row.old_code != null ? String(row.old_code || '') : null,
         new_code: row.new_code != null ? String(row.new_code || '') : null,
+        inspection_scope: lower(row.task_type) === 'checkin_clean' ? normalizeInspectionScope(row.inspection_scope) : null,
         nights: row.nights_override != null ? Number(row.nights_override) : null,
         summary_checkout_time: text(row.checkout_time) || DEFAULT_SUMMARY_CHECKOUT_TIME,
         summary_checkin_time: text(row.checkin_time) || DEFAULT_SUMMARY_CHECKIN_TIME,
@@ -1495,7 +1528,8 @@ const saveBoardSchema = z.object({
     task_id: z.string().min(1),
     cleaner_id: z.string().min(1).nullable(),
     inspector_id: z.string().min(1).nullable(),
-    inspection_mode: z.enum(['pending_decision', 'same_day', 'self_complete', 'deferred']),
+    inspection_mode: z.enum(['pending_decision', 'same_day', 'deferred', 'self_complete', 'checked_done']),
+    inspection_scope: z.enum(['inspect_and_hang', 'password_only']).nullable().optional(),
     inspection_due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
     status: z.string().min(1),
   })).default([]),
@@ -1580,6 +1614,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
   try {
     if (hasPg && pgPool) {
       await ensureCleaningSchemaV2()
+      await ensureCleaningInspectionScopeColumn()
       await ensureWorkTasksTable()
       await ensureTaskCenterTables()
       if (inspectorIds.length) {
@@ -1601,6 +1636,33 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
         }
         const invalidId = inspectorIds.find((id) => !validIds.has(id))
         if (invalidId) return res.status(400).json({ message: '无效的检查人员' })
+      }
+      if (payload.cleaning_assignments.length) {
+        const taskTypeResult = await pgPool.query(
+          `SELECT id::text AS id, task_type, inspection_scope
+           FROM cleaning_tasks
+           WHERE id::text = ANY($1::text[])`,
+          [payload.cleaning_assignments.map((item) => item.task_id)],
+        )
+        const taskTypeById = new Map<string, { task_type: string | null; inspection_scope: string | null }>()
+        for (const row of taskTypeResult.rows || []) {
+          taskTypeById.set(String(row.id), {
+            task_type: row.task_type ? String(row.task_type) : null,
+            inspection_scope: row.inspection_scope ? String(row.inspection_scope) : null,
+          })
+        }
+        for (const assignment of payload.cleaning_assignments) {
+          const taskMeta = taskTypeById.get(String(assignment.task_id))
+          const nextScope = assignment.inspection_scope ?? taskMeta?.inspection_scope ?? null
+          if (isInspectionModeAllowedForTask({
+            taskType: taskMeta?.task_type,
+            inspectionScope: nextScope,
+            inspectionMode: assignment.inspection_mode,
+          })) {
+            continue
+          }
+          return res.status(400).json({ message: '仅改密码任务不能设置为自完成或已检查' })
+        }
       }
       const client = await pgPool.connect()
       const eventInputs: Parameters<typeof emitWorkTaskEvent>[0][] = []
@@ -1677,6 +1739,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                    ELSE x.inspector_id
                  END,
                  inspection_mode = x.inspection_mode,
+                 inspection_scope = x.inspection_scope,
                  inspection_due_date = CASE WHEN x.inspection_due_date IS NULL THEN NULL ELSE x.inspection_due_date::date END,
                  status = x.status,
                  updated_at = now()
@@ -1685,6 +1748,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                cleaner_id text,
                inspector_id text,
                inspection_mode text,
+               inspection_scope text,
                inspection_due_date text,
                status text
              )
@@ -1698,6 +1762,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                    ELSE x.inspector_id
                  END
                  OR task.inspection_mode IS DISTINCT FROM x.inspection_mode
+                 OR task.inspection_scope IS DISTINCT FROM x.inspection_scope
                  OR task.inspection_due_date::text IS DISTINCT FROM x.inspection_due_date
                  OR task.status IS DISTINCT FROM x.status
                )
@@ -1798,6 +1863,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
             await emitNotificationEvent(
               {
                 type: 'WORK_TASK_UPDATED',
+                policyKey: 'work_task_updated',
                 entity: 'work_task',
                 entityId: String(task.id),
                 propertyId: task.property_id ? String(task.property_id) : undefined,
@@ -1823,7 +1889,6 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                   urgency: task.urgency,
                 },
                 actorUserId: actorId || null,
-                recipientUserIds: [assigneeId],
               },
               { operationId: uuid(), pgClient: client },
             )
@@ -1900,12 +1965,13 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
             sourceRefIds: [taskId],
             eventType: 'TASK_ASSIGNMENT_CHANGED',
             changeScope: 'membership',
-            changedFields: ['cleaner_id', 'assignee_id', 'inspector_id', 'inspection_mode', 'inspection_due_date', 'status'],
+            changedFields: ['cleaner_id', 'assignee_id', 'inspector_id', 'inspection_mode', 'inspection_scope', 'inspection_due_date', 'status'],
             patch: {
               cleaner_id: task.cleaner_id ?? null,
               assignee_id: task.assignee_id ?? null,
               inspector_id: task.inspector_id ?? null,
               inspection_mode: task.inspection_mode ?? null,
+              inspection_scope: normalizeInspectionScope((task as any).inspection_scope),
               inspection_due_date: task.inspection_due_date ?? null,
               status: task.status,
             },

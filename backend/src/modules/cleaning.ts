@@ -163,6 +163,23 @@ function buildCleaningTaskCreateNoticeDetails(after: any) {
   }
 }
 
+function cleaningTaskNoticeLabel(task: any) {
+  const taskType = String(task?.task_type || task?.type || '').trim().toLowerCase()
+  if (taskType === 'checkout_clean') return '退房任务'
+  if (taskType === 'checkin_clean') return '入住任务'
+  if (taskType === 'stayover_clean') return '入住中清洁任务'
+  return '清洁任务'
+}
+
+function buildCleaningTaskDeletionNotice(task: any) {
+  const taskDate = cleanNotificationText(task?.task_date || task?.date)
+  const lines = taskDate ? [`任务日期：${taskDate}`, '该任务已删除，不再需要执行。'] : ['该任务已删除，不再需要执行。']
+  return {
+    title: `${cleaningTaskNoticeLabel(task)}已删除`,
+    body: lines.join('\n'),
+  }
+}
+
 async function resolveCleaningTaskUpdateRecipients(taskIds: string[]) {
   try {
     const ids = Array.from(new Set(taskIds.map((x) => String(x || '').trim()).filter(Boolean)))
@@ -209,7 +226,7 @@ function validateAndApplyInspectionPatch(params: {
   if (finalMode === 'deferred' && !nextDue) {
     const err: any = new Error('inspection_due_date_required')
     err.statusCode = 400
-    err.exposeMessage = '延后检查必须选择检查日期'
+    err.exposeMessage = '延期检查必须选择检查日期'
     throw err
   }
   if (patch.inspection_mode !== undefined && patch.inspection_mode !== finalMode) patch.inspection_mode = finalMode
@@ -242,6 +259,24 @@ function offlineTaskCompletedTitle(row: any) {
 function offlineTaskCompletedBody(row: any) {
   const title = String(row?.title || '').trim()
   return title ? `${title} 已标记完成` : '任务已标记完成'
+}
+
+function offlineTaskDeletedTitle(row: any) {
+  const typeLabel = offlineTaskTypeLabel(row?.task_type)
+  const title = String(row?.title || '').trim()
+  return title ? `${typeLabel}已删除：${title}` : `${typeLabel}已删除`
+}
+
+function offlineTaskDeletedBody(row: any) {
+  const lines: string[] = []
+  const taskDate = dayOnly(row?.date) || dayOnly(row?.scheduled_date)
+  const title = String(row?.title || '').trim()
+  const summary = String(row?.content || row?.summary || '').trim()
+  if (taskDate) lines.push(`任务日期：${taskDate}`)
+  if (title) lines.push(`任务：${title}`)
+  if (summary) lines.push(`内容：${summary}`)
+  lines.push('该任务已删除，不再需要执行。')
+  return lines.join('\n')
 }
 
 function enqueueNotification(task: () => Promise<any>) {
@@ -559,6 +594,7 @@ router.post('/offline-tasks', requireCleaningManualCreateAccess, async (req, res
           emitNotificationEvent(
             {
               type: 'WORK_TASK_COMPLETED',
+              policyKey: 'work_task_completed',
               entity: 'work_task',
               entityId: workTaskId,
               propertyId: out.property_id ? String(out.property_id) : undefined,
@@ -651,6 +687,7 @@ router.patch('/offline-tasks/:id', requirePerm('cleaning.schedule.manage'), asyn
           emitNotificationEvent(
             {
               type: 'WORK_TASK_COMPLETED',
+              policyKey: 'work_task_completed',
               entity: 'work_task',
               entityId: workTaskId,
               propertyId: row.property_id ? String(row.property_id) : undefined,
@@ -689,9 +726,77 @@ router.delete('/offline-tasks/:id', requirePerm('cleaning.schedule.manage'), asy
   try {
     if (hasPg && pgPool) {
       await ensureOfflineTasksTable()
-      await pgPool.query('DELETE FROM cleaning_offline_tasks WHERE id=$1', [String(id)])
       await ensureWorkTasksTable()
-      await pgPool.query('DELETE FROM work_tasks WHERE source_type=$1 AND source_id=$2', ['cleaning_offline_tasks', String(id)])
+      const actorUserId = String((req as any).user?.sub || '').trim() || null
+      const client = await pgPool.connect()
+      try {
+        await client.query('BEGIN')
+        const offlineResult = await client.query('SELECT * FROM cleaning_offline_tasks WHERE id=$1 LIMIT 1', [String(id)])
+        const offlineTask = offlineResult?.rows?.[0] || null
+        if (!offlineTask) {
+          await client.query('ROLLBACK')
+          return res.status(404).json({ message: 'task not found' })
+        }
+        const workTaskResult = await client.query(
+          `SELECT * FROM work_tasks WHERE source_type=$1 AND source_id=$2 LIMIT 1`,
+          ['cleaning_offline_tasks', String(id)],
+        )
+        const workTask = workTaskResult?.rows?.[0] || null
+        if (workTask) {
+          try {
+            await emitWorkTaskEvent({
+              taskId: `work_task:${String(workTask.id)}`,
+              sourceType: 'work_tasks',
+              sourceRefIds: [String(workTask.id)],
+              eventType: 'TASK_REMOVED',
+              changeScope: 'membership',
+              changedFields: ['status'],
+              patch: { status: 'cancelled' },
+              causedByUserId: actorUserId,
+              visibilityHints: buildWorkTaskVisibilityHints(workTask),
+            }, client)
+          } catch {}
+          try {
+            await emitNotificationEvent(
+              {
+                type: 'WORK_TASK_UPDATED',
+                policyKey: 'work_task_updated',
+                entity: 'work_task',
+                entityId: String(workTask.id),
+                propertyId: workTask.property_id ? String(workTask.property_id) : undefined,
+                updatedAt: String(offlineTask.updated_at || workTask.updated_at || '').trim() || new Date().toISOString(),
+                changes: ['deleted', 'status'],
+                title: offlineTaskDeletedTitle(offlineTask),
+                body: offlineTaskDeletedBody(offlineTask),
+                data: {
+                  entity: 'work_task',
+                  entityId: String(workTask.id),
+                  action: 'open_notice',
+                  task_id: String(workTask.id),
+                  task_title: String(workTask.title || offlineTask.title || ''),
+                  task_summary: workTask.summary == null ? (offlineTask.content == null ? null : String(offlineTask.content || '')) : String(workTask.summary || ''),
+                  task_date: workTask.scheduled_date ? String(workTask.scheduled_date).slice(0, 10) : (dayOnly(offlineTask.date) || null),
+                  assignee_id: workTask.assignee_id ? String(workTask.assignee_id) : null,
+                  status: 'cancelled',
+                  urgency: workTask.urgency || null,
+                  offline_task_id: String(offlineTask.id || id),
+                  task_type: String(offlineTask.task_type || ''),
+                },
+                actorUserId,
+              },
+              { operationId: uuid(), pgClient: client },
+            )
+          } catch {}
+        }
+        await client.query('DELETE FROM work_tasks WHERE source_type=$1 AND source_id=$2', ['cleaning_offline_tasks', String(id)])
+        await client.query('DELETE FROM cleaning_offline_tasks WHERE id=$1', [String(id)])
+        await client.query('COMMIT')
+      } catch (e) {
+        try { await client.query('ROLLBACK') } catch {}
+        throw e
+      } finally {
+        client.release()
+      }
       return res.json({ ok: true })
     }
     const rows = ((db as any).cleaningOfflineTasks || []) as any[]
@@ -807,7 +912,7 @@ const patchTaskSchema = z.object({
   assignee_id: z.union([z.string().min(1), z.null()]).optional(),
   cleaner_id: z.union([z.string().min(1), z.null()]).optional(),
   inspector_id: z.union([z.string().min(1), z.null()]).optional(),
-  inspection_mode: z.enum(['pending_decision', 'same_day', 'self_complete', 'deferred']).optional().nullable(),
+  inspection_mode: z.enum(['pending_decision', 'same_day', 'deferred', 'self_complete', 'checked_done']).optional().nullable(),
   inspection_due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
   keys_required: z
     .preprocess((v) => {
@@ -954,6 +1059,7 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
             emitNotificationEvent(
               {
                 type: 'CLEANING_TASK_UPDATED',
+                policyKey: 'task_requirements_changed',
                 entity: 'cleaning_task',
                 entityId: String(id),
                 propertyId,
@@ -963,7 +1069,6 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
                 body,
                 data,
                 actorUserId: (req as any).user?.sub,
-                recipientUserIds: await resolveCleaningTaskUpdateRecipients([String(id)]),
               },
               { operationId },
             ),
@@ -1062,6 +1167,7 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
           emitNotificationEvent(
             {
               type: 'CLEANING_TASK_UPDATED',
+              policyKey: 'task_requirements_changed',
               entity: 'cleaning_task',
               entityId: String(id),
               propertyId,
@@ -1071,7 +1177,6 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
               body,
               data,
               actorUserId: (req as any).user?.sub,
-              recipientUserIds: await resolveCleaningTaskUpdateRecipients([String(id)]),
             },
             { operationId },
           ),
@@ -1092,7 +1197,7 @@ const createTaskSchema = z.object({
   status: z.enum(['pending', 'assigned', 'in_progress', 'completed', 'cancelled', 'keys_hung']).optional(),
   cleaner_id: z.union([z.string().min(1), z.null()]).optional(),
   inspector_id: z.union([z.string().min(1), z.null()]).optional(),
-  inspection_mode: z.enum(['pending_decision', 'same_day', 'self_complete', 'deferred']).optional().nullable(),
+  inspection_mode: z.enum(['pending_decision', 'same_day', 'deferred', 'self_complete', 'checked_done']).optional().nullable(),
   inspection_due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
   scheduled_at: z.union([z.string().min(1), z.null()]).optional(),
   old_code: z.union([z.string(), z.null()]).optional(),
@@ -1231,6 +1336,7 @@ router.post('/tasks', requireCleaningManualCreateAccess, async (req, res) => {
             emitNotificationEvent(
               {
                 type: 'CLEANING_TASK_UPDATED',
+                policyKey: 'task_requirements_changed',
                 entity: 'cleaning_task',
                 entityId: String(created.id),
                 propertyId,
@@ -1240,7 +1346,6 @@ router.post('/tasks', requireCleaningManualCreateAccess, async (req, res) => {
                 body: lines.join('\n'),
                 data: { entity: 'cleaning_task', entityId: String(created.id), action: 'open_task', kind: 'cleaning_task_manager_fields_updated' },
                 actorUserId: (req as any).user?.sub,
-                recipientUserIds: await resolveCleaningTaskUpdateRecipients([String(created.id)]),
               },
               { operationId },
             ),
@@ -1292,6 +1397,36 @@ router.delete('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res
         causedByUserId: actorId || null,
         visibilityHints: buildCleaningTaskVisibilityHints(after || before),
       })
+      try {
+        const propertyId = String((after || before)?.property_id || '').trim()
+        if (propertyId) {
+          const { title, body } = buildCleaningTaskDeletionNotice(after || before)
+          await emitNotificationEvent(
+            {
+              type: 'CLEANING_TASK_UPDATED',
+              policyKey: 'task_deleted',
+              entity: 'cleaning_task',
+              entityId: String(id),
+              propertyId,
+              updatedAt: String(after?.updated_at || before?.updated_at || '').trim() || new Date().toISOString(),
+              changes: ['deleted', 'status'],
+              title,
+              body,
+              data: {
+                entity: 'cleaning_task',
+                entityId: String(id),
+                action: 'open_notice',
+                task_id: String(id),
+                task_type: String((after || before)?.task_type || (after || before)?.type || ''),
+                task_date: cleanNotificationText((after || before)?.task_date || (after || before)?.date) || null,
+                status: 'cancelled',
+              },
+              actorUserId: actorId || null,
+            },
+            { operationId: uuid() },
+          )
+        }
+      } catch {}
       addAudit('cleaning_task', String(id), 'delete', before, after, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') })
       return res.json({ ok: true })
     }
@@ -1336,6 +1471,36 @@ router.post('/tasks/bulk-delete', requirePerm('cleaning.task.assign'), async (re
             causedByUserId: actorId || null,
             visibilityHints: buildCleaningTaskVisibilityHints(after || before),
           }, client)
+          try {
+            const propertyId = String((after || before)?.property_id || '').trim()
+            if (propertyId) {
+              const { title, body } = buildCleaningTaskDeletionNotice(after || before)
+              await emitNotificationEvent(
+                {
+                  type: 'CLEANING_TASK_UPDATED',
+                  policyKey: 'task_deleted',
+                  entity: 'cleaning_task',
+                  entityId: String(id),
+                  propertyId,
+                  updatedAt: String(after?.updated_at || before?.updated_at || '').trim() || new Date().toISOString(),
+                  changes: ['deleted', 'status'],
+                  title,
+                  body,
+                  data: {
+                    entity: 'cleaning_task',
+                    entityId: String(id),
+                    action: 'open_notice',
+                    task_id: String(id),
+                    task_type: String((after || before)?.task_type || (after || before)?.type || ''),
+                    task_date: cleanNotificationText((after || before)?.task_date || (after || before)?.date) || null,
+                    status: 'cancelled',
+                  },
+                  actorUserId: actorId || null,
+                },
+                { operationId: uuid(), pgClient: client },
+              )
+            }
+          } catch {}
           addAudit('cleaning_task', String(id), 'delete', before, after, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') })
         }
         await client.query('COMMIT')
@@ -1740,9 +1905,9 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
           })
           if (projectionDate) {
             const deferredLabel =
-              rawType === 'checkout_clean' ? '退房延后检查' :
-              rawType === 'checkin_clean' ? '入住延后检查' :
-              `${label}延后检查`
+              rawType === 'checkout_clean' ? '退房延期检查' :
+              rawType === 'checkin_clean' ? '入住延期检查' :
+              `${label}延期检查`
             items.push({
               ...baseItem,
               entity_id: `${String(row.id)}::deferred_inspection:${projectionDate}`,
@@ -1871,9 +2036,9 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
         })
         if (projectionDate) {
           const deferredLabel =
-            rawType === 'checkout_clean' ? '退房延后检查' :
-            rawType === 'checkin_clean' ? '入住延后检查' :
-            `${label}延后检查`
+            rawType === 'checkout_clean' ? '退房延期检查' :
+            rawType === 'checkin_clean' ? '入住延期检查' :
+            `${label}延期检查`
           items.push({
             ...baseItem,
             entity_id: `${String(t.id)}::deferred_inspection:${projectionDate}`,

@@ -157,6 +157,24 @@ function buildCleaningTaskCreateNoticeDetails(after) {
         lines: changes.length ? lines : [],
     };
 }
+function cleaningTaskNoticeLabel(task) {
+    const taskType = String((task === null || task === void 0 ? void 0 : task.task_type) || (task === null || task === void 0 ? void 0 : task.type) || '').trim().toLowerCase();
+    if (taskType === 'checkout_clean')
+        return '退房任务';
+    if (taskType === 'checkin_clean')
+        return '入住任务';
+    if (taskType === 'stayover_clean')
+        return '入住中清洁任务';
+    return '清洁任务';
+}
+function buildCleaningTaskDeletionNotice(task) {
+    const taskDate = cleanNotificationText((task === null || task === void 0 ? void 0 : task.task_date) || (task === null || task === void 0 ? void 0 : task.date));
+    const lines = taskDate ? [`任务日期：${taskDate}`, '该任务已删除，不再需要执行。'] : ['该任务已删除，不再需要执行。'];
+    return {
+        title: `${cleaningTaskNoticeLabel(task)}已删除`,
+        body: lines.join('\n'),
+    };
+}
 async function resolveCleaningTaskUpdateRecipients(taskIds) {
     try {
         const ids = Array.from(new Set(taskIds.map((x) => String(x || '').trim()).filter(Boolean)));
@@ -198,7 +216,7 @@ function validateAndApplyInspectionPatch(params) {
     if (finalMode === 'deferred' && !nextDue) {
         const err = new Error('inspection_due_date_required');
         err.statusCode = 400;
-        err.exposeMessage = '延后检查必须选择检查日期';
+        err.exposeMessage = '延期检查必须选择检查日期';
         throw err;
     }
     if (patch.inspection_mode !== undefined && patch.inspection_mode !== finalMode)
@@ -230,6 +248,25 @@ function offlineTaskCompletedTitle(row) {
 function offlineTaskCompletedBody(row) {
     const title = String((row === null || row === void 0 ? void 0 : row.title) || '').trim();
     return title ? `${title} 已标记完成` : '任务已标记完成';
+}
+function offlineTaskDeletedTitle(row) {
+    const typeLabel = offlineTaskTypeLabel(row === null || row === void 0 ? void 0 : row.task_type);
+    const title = String((row === null || row === void 0 ? void 0 : row.title) || '').trim();
+    return title ? `${typeLabel}已删除：${title}` : `${typeLabel}已删除`;
+}
+function offlineTaskDeletedBody(row) {
+    const lines = [];
+    const taskDate = dayOnly(row === null || row === void 0 ? void 0 : row.date) || dayOnly(row === null || row === void 0 ? void 0 : row.scheduled_date);
+    const title = String((row === null || row === void 0 ? void 0 : row.title) || '').trim();
+    const summary = String((row === null || row === void 0 ? void 0 : row.content) || (row === null || row === void 0 ? void 0 : row.summary) || '').trim();
+    if (taskDate)
+        lines.push(`任务日期：${taskDate}`);
+    if (title)
+        lines.push(`任务：${title}`);
+    if (summary)
+        lines.push(`内容：${summary}`);
+    lines.push('该任务已删除，不再需要执行。');
+    return lines.join('\n');
 }
 function enqueueNotification(task) {
     setImmediate(() => {
@@ -554,6 +591,7 @@ exports.router.post('/offline-tasks', requireCleaningManualCreateAccess, async (
                     var _a;
                     return (0, notificationEvents_1.emitNotificationEvent)({
                         type: 'WORK_TASK_COMPLETED',
+                        policyKey: 'work_task_completed',
                         entity: 'work_task',
                         entityId: workTaskId,
                         propertyId: out.property_id ? String(out.property_id) : undefined,
@@ -641,6 +679,7 @@ exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.sch
                     var _a;
                     return (0, notificationEvents_1.emitNotificationEvent)({
                         type: 'WORK_TASK_COMPLETED',
+                        policyKey: 'work_task_completed',
                         entity: 'work_task',
                         entityId: workTaskId,
                         propertyId: row.property_id ? String(row.property_id) : undefined,
@@ -674,13 +713,83 @@ exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.sch
     }
 });
 exports.router.delete('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.schedule.manage'), async (req, res) => {
+    var _a, _b, _c;
     const { id } = req.params;
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
             await ensureOfflineTasksTable();
-            await dbAdapter_1.pgPool.query('DELETE FROM cleaning_offline_tasks WHERE id=$1', [String(id)]);
             await ensureWorkTasksTable();
-            await dbAdapter_1.pgPool.query('DELETE FROM work_tasks WHERE source_type=$1 AND source_id=$2', ['cleaning_offline_tasks', String(id)]);
+            const actorUserId = String(((_a = req.user) === null || _a === void 0 ? void 0 : _a.sub) || '').trim() || null;
+            const client = await dbAdapter_1.pgPool.connect();
+            try {
+                await client.query('BEGIN');
+                const offlineResult = await client.query('SELECT * FROM cleaning_offline_tasks WHERE id=$1 LIMIT 1', [String(id)]);
+                const offlineTask = ((_b = offlineResult === null || offlineResult === void 0 ? void 0 : offlineResult.rows) === null || _b === void 0 ? void 0 : _b[0]) || null;
+                if (!offlineTask) {
+                    await client.query('ROLLBACK');
+                    return res.status(404).json({ message: 'task not found' });
+                }
+                const workTaskResult = await client.query(`SELECT * FROM work_tasks WHERE source_type=$1 AND source_id=$2 LIMIT 1`, ['cleaning_offline_tasks', String(id)]);
+                const workTask = ((_c = workTaskResult === null || workTaskResult === void 0 ? void 0 : workTaskResult.rows) === null || _c === void 0 ? void 0 : _c[0]) || null;
+                if (workTask) {
+                    try {
+                        await (0, workTaskEvents_1.emitWorkTaskEvent)({
+                            taskId: `work_task:${String(workTask.id)}`,
+                            sourceType: 'work_tasks',
+                            sourceRefIds: [String(workTask.id)],
+                            eventType: 'TASK_REMOVED',
+                            changeScope: 'membership',
+                            changedFields: ['status'],
+                            patch: { status: 'cancelled' },
+                            causedByUserId: actorUserId,
+                            visibilityHints: (0, workTaskEvents_1.buildWorkTaskVisibilityHints)(workTask),
+                        }, client);
+                    }
+                    catch (_d) { }
+                    try {
+                        await (0, notificationEvents_1.emitNotificationEvent)({
+                            type: 'WORK_TASK_UPDATED',
+                            policyKey: 'work_task_updated',
+                            entity: 'work_task',
+                            entityId: String(workTask.id),
+                            propertyId: workTask.property_id ? String(workTask.property_id) : undefined,
+                            updatedAt: String(offlineTask.updated_at || workTask.updated_at || '').trim() || new Date().toISOString(),
+                            changes: ['deleted', 'status'],
+                            title: offlineTaskDeletedTitle(offlineTask),
+                            body: offlineTaskDeletedBody(offlineTask),
+                            data: {
+                                entity: 'work_task',
+                                entityId: String(workTask.id),
+                                action: 'open_notice',
+                                task_id: String(workTask.id),
+                                task_title: String(workTask.title || offlineTask.title || ''),
+                                task_summary: workTask.summary == null ? (offlineTask.content == null ? null : String(offlineTask.content || '')) : String(workTask.summary || ''),
+                                task_date: workTask.scheduled_date ? String(workTask.scheduled_date).slice(0, 10) : (dayOnly(offlineTask.date) || null),
+                                assignee_id: workTask.assignee_id ? String(workTask.assignee_id) : null,
+                                status: 'cancelled',
+                                urgency: workTask.urgency || null,
+                                offline_task_id: String(offlineTask.id || id),
+                                task_type: String(offlineTask.task_type || ''),
+                            },
+                            actorUserId,
+                        }, { operationId: (0, uuid_1.v4)(), pgClient: client });
+                    }
+                    catch (_e) { }
+                }
+                await client.query('DELETE FROM work_tasks WHERE source_type=$1 AND source_id=$2', ['cleaning_offline_tasks', String(id)]);
+                await client.query('DELETE FROM cleaning_offline_tasks WHERE id=$1', [String(id)]);
+                await client.query('COMMIT');
+            }
+            catch (e) {
+                try {
+                    await client.query('ROLLBACK');
+                }
+                catch (_f) { }
+                throw e;
+            }
+            finally {
+                client.release();
+            }
             return res.json({ ok: true });
         }
         const rows = (store_1.db.cleaningOfflineTasks || []);
@@ -799,7 +908,7 @@ const patchTaskSchema = zod_1.z.object({
     assignee_id: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
     cleaner_id: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
     inspector_id: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
-    inspection_mode: zod_1.z.enum(['pending_decision', 'same_day', 'self_complete', 'deferred']).optional().nullable(),
+    inspection_mode: zod_1.z.enum(['pending_decision', 'same_day', 'deferred', 'self_complete', 'checked_done']).optional().nullable(),
     inspection_due_date: zod_1.z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
     keys_required: zod_1.z
         .preprocess((v) => {
@@ -950,6 +1059,7 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                         var _a;
                         return (0, notificationEvents_1.emitNotificationEvent)({
                             type: 'CLEANING_TASK_UPDATED',
+                            policyKey: 'task_requirements_changed',
                             entity: 'cleaning_task',
                             entityId: String(id),
                             propertyId,
@@ -959,7 +1069,6 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                             body,
                             data,
                             actorUserId: (_a = req.user) === null || _a === void 0 ? void 0 : _a.sub,
-                            recipientUserIds: await resolveCleaningTaskUpdateRecipients([String(id)]),
                         }, { operationId });
                     });
                 }
@@ -1080,6 +1189,7 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                     var _a;
                     return (0, notificationEvents_1.emitNotificationEvent)({
                         type: 'CLEANING_TASK_UPDATED',
+                        policyKey: 'task_requirements_changed',
                         entity: 'cleaning_task',
                         entityId: String(id),
                         propertyId,
@@ -1089,7 +1199,6 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                         body,
                         data,
                         actorUserId: (_a = req.user) === null || _a === void 0 ? void 0 : _a.sub,
-                        recipientUserIds: await resolveCleaningTaskUpdateRecipients([String(id)]),
                     }, { operationId });
                 });
             }
@@ -1109,7 +1218,7 @@ const createTaskSchema = zod_1.z.object({
     status: zod_1.z.enum(['pending', 'assigned', 'in_progress', 'completed', 'cancelled', 'keys_hung']).optional(),
     cleaner_id: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
     inspector_id: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
-    inspection_mode: zod_1.z.enum(['pending_decision', 'same_day', 'self_complete', 'deferred']).optional().nullable(),
+    inspection_mode: zod_1.z.enum(['pending_decision', 'same_day', 'deferred', 'self_complete', 'checked_done']).optional().nullable(),
     inspection_due_date: zod_1.z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
     scheduled_at: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
     old_code: zod_1.z.union([zod_1.z.string(), zod_1.z.null()]).optional(),
@@ -1262,6 +1371,7 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
                         var _a;
                         return (0, notificationEvents_1.emitNotificationEvent)({
                             type: 'CLEANING_TASK_UPDATED',
+                            policyKey: 'task_requirements_changed',
                             entity: 'cleaning_task',
                             entityId: String(created.id),
                             propertyId,
@@ -1271,7 +1381,6 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
                             body: lines.join('\n'),
                             data: { entity: 'cleaning_task', entityId: String(created.id), action: 'open_task', kind: 'cleaning_task_manager_fields_updated' },
                             actorUserId: (_a = req.user) === null || _a === void 0 ? void 0 : _a.sub,
-                            recipientUserIds: await resolveCleaningTaskUpdateRecipients([String(created.id)]),
                         }, { operationId });
                     });
                 }
@@ -1303,7 +1412,7 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
     }
 });
 exports.router.delete('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign'), async (req, res) => {
-    var _a, _b;
+    var _a, _b, _c, _d, _e, _f, _g;
     const { id } = req.params;
     const actor = req.user;
     const actorId = (actor === null || actor === void 0 ? void 0 : actor.sub) ? String(actor.sub) : undefined;
@@ -1326,6 +1435,34 @@ exports.router.delete('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assig
                 causedByUserId: actorId || null,
                 visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(after || before),
             });
+            try {
+                const propertyId = String(((_c = (after || before)) === null || _c === void 0 ? void 0 : _c.property_id) || '').trim();
+                if (propertyId) {
+                    const { title, body } = buildCleaningTaskDeletionNotice(after || before);
+                    await (0, notificationEvents_1.emitNotificationEvent)({
+                        type: 'CLEANING_TASK_UPDATED',
+                        policyKey: 'task_deleted',
+                        entity: 'cleaning_task',
+                        entityId: String(id),
+                        propertyId,
+                        updatedAt: String((after === null || after === void 0 ? void 0 : after.updated_at) || (before === null || before === void 0 ? void 0 : before.updated_at) || '').trim() || new Date().toISOString(),
+                        changes: ['deleted', 'status'],
+                        title,
+                        body,
+                        data: {
+                            entity: 'cleaning_task',
+                            entityId: String(id),
+                            action: 'open_notice',
+                            task_id: String(id),
+                            task_type: String(((_d = (after || before)) === null || _d === void 0 ? void 0 : _d.task_type) || ((_e = (after || before)) === null || _e === void 0 ? void 0 : _e.type) || ''),
+                            task_date: cleanNotificationText(((_f = (after || before)) === null || _f === void 0 ? void 0 : _f.task_date) || ((_g = (after || before)) === null || _g === void 0 ? void 0 : _g.date)) || null,
+                            status: 'cancelled',
+                        },
+                        actorUserId: actorId || null,
+                    }, { operationId: (0, uuid_1.v4)() });
+                }
+            }
+            catch (_h) { }
             (0, store_1.addAudit)('cleaning_task', String(id), 'delete', before, after, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') });
             return res.json({ ok: true });
         }
@@ -1344,7 +1481,7 @@ exports.router.delete('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assig
 });
 const bulkDeleteSchema = zod_1.z.object({ ids: zod_1.z.array(zod_1.z.string().min(1)).min(1) }).strict();
 exports.router.post('/tasks/bulk-delete', (0, auth_1.requirePerm)('cleaning.task.assign'), async (req, res) => {
-    var _a, _b;
+    var _a, _b, _c, _d, _e, _f, _g;
     const parsed = bulkDeleteSchema.safeParse(req.body || {});
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -1374,6 +1511,34 @@ exports.router.post('/tasks/bulk-delete', (0, auth_1.requirePerm)('cleaning.task
                         causedByUserId: actorId || null,
                         visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(after || before),
                     }, client);
+                    try {
+                        const propertyId = String(((_c = (after || before)) === null || _c === void 0 ? void 0 : _c.property_id) || '').trim();
+                        if (propertyId) {
+                            const { title, body } = buildCleaningTaskDeletionNotice(after || before);
+                            await (0, notificationEvents_1.emitNotificationEvent)({
+                                type: 'CLEANING_TASK_UPDATED',
+                                policyKey: 'task_deleted',
+                                entity: 'cleaning_task',
+                                entityId: String(id),
+                                propertyId,
+                                updatedAt: String((after === null || after === void 0 ? void 0 : after.updated_at) || (before === null || before === void 0 ? void 0 : before.updated_at) || '').trim() || new Date().toISOString(),
+                                changes: ['deleted', 'status'],
+                                title,
+                                body,
+                                data: {
+                                    entity: 'cleaning_task',
+                                    entityId: String(id),
+                                    action: 'open_notice',
+                                    task_id: String(id),
+                                    task_type: String(((_d = (after || before)) === null || _d === void 0 ? void 0 : _d.task_type) || ((_e = (after || before)) === null || _e === void 0 ? void 0 : _e.type) || ''),
+                                    task_date: cleanNotificationText(((_f = (after || before)) === null || _f === void 0 ? void 0 : _f.task_date) || ((_g = (after || before)) === null || _g === void 0 ? void 0 : _g.date)) || null,
+                                    status: 'cancelled',
+                                },
+                                actorUserId: actorId || null,
+                            }, { operationId: (0, uuid_1.v4)(), pgClient: client });
+                        }
+                    }
+                    catch (_h) { }
                     (0, store_1.addAudit)('cleaning_task', String(id), 'delete', before, after, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') });
                 }
                 await client.query('COMMIT');
@@ -1382,7 +1547,7 @@ exports.router.post('/tasks/bulk-delete', (0, auth_1.requirePerm)('cleaning.task
                 try {
                     await client.query('ROLLBACK');
                 }
-                catch (_c) { }
+                catch (_j) { }
                 throw e;
             }
             finally {
@@ -1811,9 +1976,9 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
                         status: row.status,
                     });
                     if (projectionDate) {
-                        const deferredLabel = rawType === 'checkout_clean' ? '退房延后检查' :
-                            rawType === 'checkin_clean' ? '入住延后检查' :
-                                `${label}延后检查`;
+                        const deferredLabel = rawType === 'checkout_clean' ? '退房延期检查' :
+                            rawType === 'checkin_clean' ? '入住延期检查' :
+                                `${label}延期检查`;
                         items.push({
                             ...baseItem,
                             entity_id: `${String(row.id)}::deferred_inspection:${projectionDate}`,
@@ -1939,9 +2104,9 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
                     status: t.status,
                 });
                 if (projectionDate) {
-                    const deferredLabel = rawType === 'checkout_clean' ? '退房延后检查' :
-                        rawType === 'checkin_clean' ? '入住延后检查' :
-                            `${label}延后检查`;
+                    const deferredLabel = rawType === 'checkout_clean' ? '退房延期检查' :
+                        rawType === 'checkin_clean' ? '入住延期检查' :
+                            `${label}延期检查`;
                     items.push({
                         ...baseItem,
                         entity_id: `${String(t.id)}::deferred_inspection:${projectionDate}`,
