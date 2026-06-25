@@ -3242,7 +3242,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Scope boundary: 只恢复 admin/offline manager 的 MSQ 卡片可见性，没有扩大 `POST /cleaning-app/warehouse-key/events` 写入权限。
 - Rollback: revert the MSQ visibility condition, staff-summary sort/stat helpers, and `taskVisualTheme` assigned-state branches.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: pushed to nested mobile `Dev` in commit `4ab0aa3`; root ledger status update pending.
+- Git state: pushed to nested mobile `Dev` in commit `4ab0aa3`; root ledger status update pushed separately.
 
 ## CRL-20260625-002 — 移动端每日清洁检查照片离线缓存后可见性修复
 
@@ -3295,7 +3295,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Scope boundary: 只修检查照片在每日清洁详情页的读取/渲染；没有改变检查提交、R2 上传、补品照片、清洁完成照片或后端权限。
 - Rollback: revert `ManagerDailyTaskScreen` media source changes and remove `managerDailyTaskPhotos` helper/test.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: pushed to nested mobile `Dev` in commit `4ab0aa3`; root ledger status update pending.
+- Git state: pushed to nested mobile `Dev` in commit `4ab0aa3`; root ledger status update pushed separately.
 
 ## CRL-20260625-003 — 订单入住新密码自动回填退房旧密码
 
@@ -3348,4 +3348,4 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Scope boundary: 清空入住新密码时不会自动清空退房旧密码；当前规则只在入住新密码有非空值时回填。
 - Rollback: revert the helper and its calls from `cleaningSync`, `cleaning`, and `mzapp`, then rebuild backend dist if required.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: pushed to root `Dev` in commit `18b5410`; root ledger status update pending.
+- Git state: pushed to root `Dev` in commit `18b5410`; root ledger status update pushed separately.
