@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { requireAnyPerm, requirePerm } from '../auth'
 import { addAudit, db } from '../store'
 import { hasPg, pgPool } from '../dbAdapter'
-import { backfillCleaningTasks, ensureCleaningSchemaV2, syncOrderToCleaningTasks } from '../services/cleaningSync'
+import { backfillCleaningTasks, ensureCleaningSchemaV2, syncCheckoutOldCodeFromCheckinNewCode, syncOrderToCleaningTasks } from '../services/cleaningSync'
 import { v4 as uuid } from 'uuid'
 import { emitNotificationEvent } from '../services/notificationEvents'
 import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
@@ -1012,6 +1012,13 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
       const sql = `UPDATE cleaning_tasks SET ${set} WHERE id = $${keys.length + 1} RETURNING *`
       const r1 = await pgPool.query(sql, [...values, String(id)])
       const updated = r1?.rows?.[0] || before
+      if (
+        parsed.data.new_code !== undefined &&
+        String(updated?.order_id || '').trim() &&
+        String(updated?.task_type || updated?.type || '').trim().toLowerCase() === 'checkin_clean'
+      ) {
+        await syncCheckoutOldCodeFromCheckinNewCode({ orderId: String(updated.order_id) })
+      }
       if (parsed.data.keys_required !== undefined) {
         const orderId = String(updated?.order_id || '').trim()
         const nextK0 = updated?.keys_required == null ? null : Number(updated.keys_required)
@@ -1107,6 +1114,13 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
     if (localPatch.assignee_id !== undefined && localPatch.cleaner_id === undefined) task.cleaner_id = localPatch.assignee_id
     if (localPatch.scheduled_at !== undefined) task.scheduled_at = localPatch.scheduled_at
     if (localPatch.guest_special_request !== undefined) task.guest_special_request = localPatch.guest_special_request
+    if (
+      localPatch.new_code !== undefined &&
+      String((task as any).order_id || '').trim() &&
+      String((task as any).task_type || (task as any).type || '').trim().toLowerCase() === 'checkin_clean'
+    ) {
+      await syncCheckoutOldCodeFromCheckinNewCode({ orderId: String((task as any).order_id) })
+    }
     {
       const beforeStatus = String((before as any).status || 'pending')
       const statusAutoEligible = beforeStatus === 'pending' || beforeStatus === 'assigned'
@@ -1598,6 +1612,13 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), async (req
           const sql = `UPDATE cleaning_tasks SET ${set} WHERE id=$${keys.length + 1} RETURNING *`
           const r1 = await pgPool.query(sql, [...values, id])
           const after = r1?.rows?.[0] || before
+          if (
+            basePatch.new_code !== undefined &&
+            String(after?.order_id || '').trim() &&
+            String(after?.task_type || after?.type || '').trim().toLowerCase() === 'checkin_clean'
+          ) {
+            await syncCheckoutOldCodeFromCheckinNewCode({ orderId: String(after.order_id) })
+          }
           const changedFields = Object.keys(patch || {}).filter((key) => patch[key] !== undefined)
           const assignmentChanged = ['assignee_id', 'cleaner_id', 'inspector_id'].some((key) => changedFields.includes(key))
           await emitWorkTaskEvent({
@@ -1626,8 +1647,17 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), async (req
         if (patch.inspection_mode !== undefined) task.inspection_mode = patch.inspection_mode
         if (patch.inspection_due_date !== undefined) task.inspection_due_date = patch.inspection_due_date
         if (patch.keys_required !== undefined) task.keys_required = patch.keys_required
+        if (patch.old_code !== undefined) task.old_code = patch.old_code
+        if (patch.new_code !== undefined) task.new_code = patch.new_code
         if (patch.scheduled_at !== undefined) task.scheduled_at = patch.scheduled_at
         if (patch.guest_special_request !== undefined) task.guest_special_request = patch.guest_special_request
+        if (
+          patch.new_code !== undefined &&
+          String((task as any).order_id || '').trim() &&
+          String((task as any).task_type || (task as any).type || '').trim().toLowerCase() === 'checkin_clean'
+        ) {
+          await syncCheckoutOldCodeFromCheckinNewCode({ orderId: String((task as any).order_id) })
+        }
         {
           const beforeStatus = String((task as any).status || 'pending')
           const statusAutoEligible = beforeStatus === 'pending' || beforeStatus === 'assigned'

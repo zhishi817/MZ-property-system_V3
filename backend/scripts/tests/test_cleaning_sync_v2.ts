@@ -65,6 +65,19 @@ async function main() {
   assert.ok(t1i, 'should create checkin task for confirmed order')
   assert.equal(String(t1i.task_date).slice(0, 10), '2026-02-10')
 
+  if (pgPool) {
+    await pgPool.query(`UPDATE cleaning_tasks SET new_code='9753' WHERE order_id=$1 AND task_type='checkin_clean'`, [o1])
+    await pgPool.query(`UPDATE cleaning_tasks SET old_code=NULL WHERE order_id=$1 AND task_type='checkout_clean'`, [o1])
+  } else {
+    const checkinTask = (db.cleaningTasks as any[]).find((x: any) => String(x.order_id) === o1 && String(x.task_type) === 'checkin_clean')
+    const checkoutTask = (db.cleaningTasks as any[]).find((x: any) => String(x.order_id) === o1 && String(x.task_type) === 'checkout_clean')
+    if (checkinTask) checkinTask.new_code = '9753'
+    if (checkoutTask) checkoutTask.old_code = null
+  }
+  await syncOrderToCleaningTasks(o1)
+  const t1Password = await fetchTask(o1)
+  assert.equal(String(t1Password.old_code), '9753', 'checkout old_code should follow checkin new_code for existing orders')
+
   if (pgPool) await pgPool.query('UPDATE orders SET checkout=$2::date WHERE id=$1', [o1, '2026-02-15'])
   else {
     const o = (db.orders as any[]).find((x: any) => String(x.id) === o1)

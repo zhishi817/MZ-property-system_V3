@@ -24,6 +24,7 @@ import {
   saveIdempotentStepReceipt,
 } from '../lib/idempotentStepReceipts'
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
+import { syncCheckoutOldCodeFromCheckinNewCode } from '../services/cleaningSync'
 
 export const router = Router()
 
@@ -3166,6 +3167,23 @@ async function handleManagerFields(req: any, res: any) {
       vals.push(parsed.data.task_ids)
       const sql = `UPDATE cleaning_tasks SET ${fields.join(', ')}, updated_at = now() WHERE id::text = ANY($${vals.length}::text[])`
       await pool.query(sql, vals)
+    }
+
+    if (parsed.data.new_code !== undefined) {
+      try {
+        const rLinkedOrders = await pool.query(
+          `SELECT DISTINCT order_id::text AS order_id
+           FROM cleaning_tasks
+           WHERE id::text = ANY($1::text[])
+             AND lower(COALESCE(task_type, type, '')) = 'checkin_clean'
+             AND NULLIF(order_id::text, '') IS NOT NULL`,
+          [parsed.data.task_ids],
+        )
+        for (const row of rLinkedOrders?.rows || []) {
+          const orderId = String(row?.order_id || '').trim()
+          if (orderId) await syncCheckoutOldCodeFromCheckinNewCode({ orderId, client: pool })
+        }
+      } catch {}
     }
 
     const affectedTaskIds = new Set(parsed.data.task_ids.map((x) => String(x || '').trim()).filter(Boolean))

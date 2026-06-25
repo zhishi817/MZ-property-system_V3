@@ -1013,6 +1013,11 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
             const sql = `UPDATE cleaning_tasks SET ${set} WHERE id = $${keys.length + 1} RETURNING *`;
             const r1 = await dbAdapter_1.pgPool.query(sql, [...values, String(id)]);
             const updated = ((_j = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _j === void 0 ? void 0 : _j[0]) || before;
+            if (parsed.data.new_code !== undefined &&
+                String((updated === null || updated === void 0 ? void 0 : updated.order_id) || '').trim() &&
+                String((updated === null || updated === void 0 ? void 0 : updated.task_type) || (updated === null || updated === void 0 ? void 0 : updated.type) || '').trim().toLowerCase() === 'checkin_clean') {
+                await (0, cleaningSync_1.syncCheckoutOldCodeFromCheckinNewCode)({ orderId: String(updated.order_id) });
+            }
             if (parsed.data.keys_required !== undefined) {
                 const orderId = String((updated === null || updated === void 0 ? void 0 : updated.order_id) || '').trim();
                 const nextK0 = (updated === null || updated === void 0 ? void 0 : updated.keys_required) == null ? null : Number(updated.keys_required);
@@ -1128,6 +1133,11 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
             task.scheduled_at = localPatch.scheduled_at;
         if (localPatch.guest_special_request !== undefined)
             task.guest_special_request = localPatch.guest_special_request;
+        if (localPatch.new_code !== undefined &&
+            String(task.order_id || '').trim() &&
+            String(task.task_type || task.type || '').trim().toLowerCase() === 'checkin_clean') {
+            await (0, cleaningSync_1.syncCheckoutOldCodeFromCheckinNewCode)({ orderId: String(task.order_id) });
+        }
         {
             const beforeStatus = String(before.status || 'pending');
             const statusAutoEligible = beforeStatus === 'pending' || beforeStatus === 'assigned';
@@ -1652,6 +1662,11 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                     const sql = `UPDATE cleaning_tasks SET ${set} WHERE id=$${keys.length + 1} RETURNING *`;
                     const r1 = await dbAdapter_1.pgPool.query(sql, [...values, id]);
                     const after = ((_g = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _g === void 0 ? void 0 : _g[0]) || before;
+                    if (basePatch.new_code !== undefined &&
+                        String((after === null || after === void 0 ? void 0 : after.order_id) || '').trim() &&
+                        String((after === null || after === void 0 ? void 0 : after.task_type) || (after === null || after === void 0 ? void 0 : after.type) || '').trim().toLowerCase() === 'checkin_clean') {
+                        await (0, cleaningSync_1.syncCheckoutOldCodeFromCheckinNewCode)({ orderId: String(after.order_id) });
+                    }
                     const changedFields = Object.keys(patch || {}).filter((key) => patch[key] !== undefined);
                     const assignmentChanged = ['assignee_id', 'cleaner_id', 'inspector_id'].some((key) => changedFields.includes(key));
                     await (0, workTaskEvents_1.emitWorkTaskEvent)({
@@ -1692,10 +1707,19 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                     task.inspection_due_date = patch.inspection_due_date;
                 if (patch.keys_required !== undefined)
                     task.keys_required = patch.keys_required;
+                if (patch.old_code !== undefined)
+                    task.old_code = patch.old_code;
+                if (patch.new_code !== undefined)
+                    task.new_code = patch.new_code;
                 if (patch.scheduled_at !== undefined)
                     task.scheduled_at = patch.scheduled_at;
                 if (patch.guest_special_request !== undefined)
                     task.guest_special_request = patch.guest_special_request;
+                if (patch.new_code !== undefined &&
+                    String(task.order_id || '').trim() &&
+                    String(task.task_type || task.type || '').trim().toLowerCase() === 'checkin_clean') {
+                    await (0, cleaningSync_1.syncCheckoutOldCodeFromCheckinNewCode)({ orderId: String(task.order_id) });
+                }
                 {
                     const beforeStatus = String(task.status || 'pending');
                     const statusAutoEligible = beforeStatus === 'pending' || beforeStatus === 'assigned';
