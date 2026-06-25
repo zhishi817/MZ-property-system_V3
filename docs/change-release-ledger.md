@@ -3349,3 +3349,52 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Rollback: revert the helper and its calls from `cleaningSync`, `cleaning`, and `mzapp`, then rebuild backend dist if required.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
 - Git state: pushed to root `Dev` in commit `18b5410`; root ledger status update pushed separately.
+
+## CRL-20260625-004 — 移动端合并任务门锁密码显示修复
+
+- **Status:** ready
+- **Updated:** 2026-06-25 15:59 AEST
+- **Request:** 生产环境移动端改了新密码，退房当天 6 月 29 日任务旧密码还是不显示；截图显示数据库退房任务已有旧密码，但移动端任务详情仍显示 `-`。
+- **Outcome:** `/mzapp/work-tasks` 在 admin/customer_service/offline_manager 的全部视图合并同房同日清洁任务时，会从同组合并任务里重新合并 `old_code/new_code`，因此 6 月 29 日 Aura2707 这类入住任务和退房任务被合成一张卡片时，退房任务旧密码不会再被首选卡片覆盖成空。
+
+### Implementation
+
+- Previous behavior:
+  - 同订单入住新密码到退房旧密码的数据库同步已经成功，`cleaning_tasks.checkout_clean.old_code` 有值，`cleaning_sync_logs` 也记录了同步。
+  - 但移动端管理“全部”视图会在 `/mzapp/work-tasks` 里按日期和房号进行第二次合并；该合并只保留 `preferred` 卡片上的 `old_code/new_code`，没有从同组合并任务重新取密码。
+  - 当同房同日的首选卡片是当天入住或其它不带退房旧密码的任务时，移动端详情页显示旧密码和新密码为 `-`。
+- New behavior:
+  - 二次合并时 `old_code` 优先取同组 `checkout_clean` 任务，再回退到任意同组任务的 `old_code`。
+  - `new_code` 优先取同组 `checkin_clean` 任务，再回退到任意同组任务的 `new_code`。
+  - 合并结果显式写回 `old_code/new_code`，不再依赖 `preferred` 卡片是否刚好带密码。
+- Key decisions:
+  - 不新增接口字段、不改数据库、不改移动端展示逻辑；修复后端返回的合并任务数据源。
+  - 不改变上一单入住新密码同步退房旧密码的规则，本次只修读取和合并展示。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — modified: admin/customer_service/offline_manager 全部视图二次合并同房同日任务时，显式合并并返回门锁 `old_code/new_code`。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: response shape unchanged; existing `old_code/new_code` fields now survive merged-card response.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: follows `CRL-20260625-003`; that unit handles writing checkout old password, this unit handles merged mobile task display.
+
+### Validation
+
+- `npm run build` in `backend` — passed: `tsc -p .` completed.
+- `npm run test:cleaning-inspection-merge` in `backend` — passed: `test_cleaning_inspection_merge: ok`.
+- `git diff --check` — passed.
+- Full mobile test suite — not run: this change is in backend `/mzapp/work-tasks` merge response and does not modify mobile client code.
+
+### Risks / Release Notes
+
+- Runtime risk: 未直接调用生产 `/mzapp/work-tasks` 接口验证 6 月 29 日 Aura2707 返回体；数据库截图已确认源退房任务有旧密码，本次修复覆盖后端合并丢字段路径。
+- Scope boundary: 只影响 admin/customer_service/offline_manager 的全部视图同房同日合并卡片；单条任务密码写入规则不变。
+- Rollback: revert the `old_code/new_code` merge additions in `backend/src/modules/mzapp.ts`.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: uncommitted.

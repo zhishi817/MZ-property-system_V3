@@ -5586,6 +5586,18 @@ router.get('/work-tasks', async (req, res) => {
         const endTime = firstNonEmpty(...arr.map((x) => x.end_time))
         const keyPhotoUrl = firstNonEmpty(...arr.map((x) => x.key_photo_url))
         const lockboxVideoUrl = firstNonEmpty(...arr.map((x) => x.lockbox_video_url))
+        const oldCode = firstNonEmpty(
+          ...arr
+            .filter((x) => String(x?.task_type || '').trim().toLowerCase() === 'checkout_clean')
+            .map((x) => x.old_code),
+          ...arr.map((x) => x.old_code),
+        )
+        const newCode = firstNonEmpty(
+          ...arr
+            .filter((x) => String(x?.task_type || '').trim().toLowerCase() === 'checkin_clean')
+            .map((x) => x.new_code),
+          ...arr.map((x) => x.new_code),
+        )
         const keysRequired = Math.max(...arr.map((x) => (x?.keys_required == null ? 1 : Number(x.keys_required))).filter((x) => Number.isFinite(x) && x > 0), 1)
         const checkoutKeys = Math.max(
           ...arr.map((x) => (x?.keys_required_checkout == null ? 0 : Number(x.keys_required_checkout))).filter((x) => Number.isFinite(x) && x > 0),
@@ -5673,6 +5685,8 @@ router.get('/work-tasks', async (req, res) => {
           status: statusOut,
           key_photo_url: keyPhotoUrl,
           lockbox_video_url: lockboxVideoUrl,
+          old_code: oldCode || null,
+          new_code: newCode || null,
           order_id: null,
           order_id_checkin: orderIdCheckin || null,
           order_id_checkout: orderIdCheckout || null,
