@@ -3352,7 +3352,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260625-004 — 移动端合并任务门锁密码显示修复
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-25 15:59 AEST
 - **Request:** 生产环境移动端改了新密码，退房当天 6 月 29 日任务旧密码还是不显示；截图显示数据库退房任务已有旧密码，但移动端任务详情仍显示 `-`。
 - **Outcome:** `/mzapp/work-tasks` 在 admin/customer_service/offline_manager 的全部视图合并同房同日清洁任务时，会从同组合并任务里重新合并 `old_code/new_code`，因此 6 月 29 日 Aura2707 这类入住任务和退房任务被合成一张卡片时，退房任务旧密码不会再被首选卡片覆盖成空。
@@ -3397,4 +3397,4 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Scope boundary: 只影响 admin/customer_service/offline_manager 的全部视图同房同日合并卡片；单条任务密码写入规则不变。
 - Rollback: revert the `old_code/new_code` merge additions in `backend/src/modules/mzapp.ts`.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: uncommitted.
+- Git state: pushed to root `Dev` in commit `3354f2b`; root ledger status update pushed separately.
