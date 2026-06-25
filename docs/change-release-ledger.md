@@ -3164,3 +3164,188 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Rollback: revert the package version fields to `1.0.21` if a downstream build process unexpectedly depends on the old npm package version.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
 - Git state: pushed to root `Dev` and nested mobile `Dev`.
+
+## CRL-20260625-001 — 移动端 MSQ 钥匙卡片、分配状态与今日工作统计修复
+
+- **Status:** ready
+- **Updated:** 2026-06-25 14:36 AEST
+- **Request:** 修复 admin 看不到 MSQ 钥匙卡片；已分配检查/挂钥匙人员的任务仍显示“未分配”；“今日工作情况”改成清洁人员在前、检查人员在后，并优化状态统计准确性。
+- **Outcome:** admin/offline manager 在管理-全部今日任务里可看到 Southbank/MSQ 仓库钥匙卡片；检查或清洁任务只要已有对应执行人就显示“已分配”；今日工作情况按清洁优先、检查其次排序，并把 `to_hang_keys` 视为待处理而不是已完成。
+
+### Implementation
+
+- Previous behavior:
+  - MSQ 仓库钥匙卡片只在当前登录用户本人被分配到 Southbank 清洁/检查任务时显示，因此 admin 在管理全部任务时可能看不到。
+  - `getTaskStatusMeta` 的检查任务分支直接使用基础 `pending/todo -> 未分配` 映射，没有考虑 `inspector_id` / `inspector_name` / `assignee_id` 已存在的情况。
+  - 今日工作情况按人员名/交接状态排序，清洁和检查人员没有固定分组顺序；检查统计把 `to_hang_keys` 算作已提交，容易把“待挂钥匙”误算进已完成。
+- New behavior:
+  - `TasksScreen` 对 admin/offline manager 的管理-全部今日视图放开 MSQ 卡片可见性，只要当前日期可见任务里有 Southbank 清洁/检查任务即可显示；普通清洁/检查人员仍按本人相关任务显示。
+  - `taskVisualTheme` 在检查任务 pending/todo/unassigned 且已有检查执行人时显示“已分配”；清洁任务执行人判断补上 `cleaner_id`。
+  - 今日工作情况使用统一排序：清洁相关人员优先，其次检查人员；同一人员/角色/房间只统计一次；`to_hang_keys` 保持待处理，不再作为检查已完成。
+- Key decisions:
+  - 不扩大仓库钥匙写入权限；后端获取状态接口已允许 `cleaning_app.calendar.view.all`，本次只恢复 admin 可见性。
+  - 不新增统计接口或数据库字段，继续复用现有 `work_tasks` 字段与前端展示 helper。
+
+### 2026-06-25 Follow-up — 合并任务清洁人员漏统修复
+
+- Follow-up request:
+  - 截图中任务卡片已经安排清洁人员，但“今日工作情况”只显示检查人员。
+- Follow-up behavior change:
+  - “今日工作情况”统计清洁人员时，如果合并任务记录没有 `cleaner_id`，但存在 `cleaner_name` 且 `assignee_id` 不是当前检查员 ID，则用 `assignee_id` 作为清洁人员身份。
+  - 这样 WSP2603C 这类“卡片可显示清洁 cleaner-2，但统计输入缺少 cleaner_id”的记录会进入清洁人员进度。
+  - 仍保留防误判规则：没有 `cleaner_name`，或 `assignee_id` 等于 `inspector_id` 时，不把该记录兜底成清洁人员，避免 zhi-f 再被显示为“清洁 + 检查”。
+
+### 2026-06-25 Follow-up 2 — 今日工作情况清洁/检查分组展示
+
+- Follow-up request:
+  - “今日工作情况”列出来的顺序很乱；清洁人员要放一起，检查人员要放一起，不要清洁中间插着检查人员。
+- Follow-up behavior change:
+  - 今日工作情况渲染前先拆成展示分组：清洁人员组整体在前，检查人员组整体在后。
+  - 每组内部仍按交接状态和人员名排序。
+  - 如果某个人当天同时有清洁和检查职责，会按当前展示角色拆成两个条目，分别出现在清洁组和检查组里；点击条目进入日终交接时也只传当前组对应的目标角色。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.tsx` — modified: MSQ 卡片可见条件、今日工作情况排序/去重/状态统计修正，补清洁人员身份兜底，并按清洁/检查分组渲染人员列表。
+- `mz-cleaning-app-frontend/src/lib/taskVisualTheme.ts` — modified: 已分配检查/清洁执行人的 pending 任务不再显示“未分配”。
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.test.tsx` — modified: 覆盖 admin MSQ 卡片可见、清洁优先排序、`to_hang_keys` 待处理统计、`cleaner_id` 缺失但 `assignee_id + cleaner_name` 存在时清洁人员仍显示，以及清洁组整体排在检查组前。
+- `mz-cleaning-app-frontend/src/lib/taskVisualTheme.test.ts` — added: 覆盖执行人已存在时状态文案为“已分配”的 helper 回归。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: none; request/response shape unchanged.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: follows prior mobile task/day-end summary work in `CRL-20260624-009`.
+
+### Validation
+
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed.
+- `npm test -- --runInBand src/lib/taskVisualTheme.test.ts src/screens/tabs/TasksScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 2 suites, 8 tests. Jest still reports the existing open-handles notice after completion, and `TasksScreen.test.tsx` still logs the existing `SafeAreaView` deprecation warning.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with 0 errors and 120 existing warnings.
+- `npm test -- --runInBand` in `mz-cleaning-app-frontend` — passed: 28 suites, 91 tests. `TasksScreen.test.tsx` still logs the existing `SafeAreaView` deprecation warning.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed after the follow-up cleaner fallback.
+- `npm test -- --runInBand src/screens/tabs/TasksScreen.test.tsx src/lib/taskVisualTheme.test.ts` in `mz-cleaning-app-frontend` — passed after the follow-up cleaner fallback: 2 suites, 8 tests. Jest still reports the existing open-handles notice after completion, and `TasksScreen.test.tsx` still logs the existing `SafeAreaView` deprecation warning.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed after the follow-up cleaner fallback with 0 errors and 120 existing warnings.
+- `npm test -- --runInBand` in `mz-cleaning-app-frontend` — passed after the follow-up cleaner fallback: 28 suites, 91 tests. Jest still reports the existing open-handles notice after completion, and `TasksScreen.test.tsx` still logs the existing `SafeAreaView` deprecation warning.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed after the grouped display follow-up.
+- `npm test -- --runInBand src/screens/tabs/TasksScreen.test.tsx src/lib/taskVisualTheme.test.ts` in `mz-cleaning-app-frontend` — passed after the grouped display follow-up: 2 suites, 8 tests. Jest still reports the existing open-handles notice after completion, and `TasksScreen.test.tsx` still logs the existing `SafeAreaView` deprecation warning.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed after the grouped display follow-up with 0 errors and 120 existing warnings.
+- `npm test -- --runInBand` in `mz-cleaning-app-frontend` — passed after the grouped display follow-up: 28 suites, 91 tests. Jest still reports the existing open-handles notice after completion, and `TasksScreen.test.tsx` still logs the existing `SafeAreaView` deprecation warning.
+- `npm run build` in `mz-cleaning-app-frontend` — not run: this repo has no `build` script.
+
+### Risks / Release Notes
+
+- Runtime risk: 本轮未用真实 admin 账号在真机上截图回归 MSQ 卡片；验证覆盖到组件测试、类型检查、lint 和全量 Jest。
+- Scope boundary: 只恢复 admin/offline manager 的 MSQ 卡片可见性，没有扩大 `POST /cleaning-app/warehouse-key/events` 写入权限。
+- Rollback: revert the MSQ visibility condition, staff-summary sort/stat helpers, and `taskVisualTheme` assigned-state branches.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: root ledger updated; functional changes remain uncommitted in nested repo `mz-cleaning-app-frontend`.
+
+## CRL-20260625-002 — 移动端每日清洁检查照片离线缓存后可见性修复
+
+- **Status:** ready
+- **Updated:** 2026-06-25 14:57 AEST
+- **Request:** 增加离线本地缓存以后，检查人员拍的照片都不显示；需要确认原因并恢复显示。
+- **Outcome:** 每日清洁详情页读取检查照片时同时覆盖检查任务 ID、清洁任务 ID、聚合 `source_ids` 和主 `source_id`；页面内清洁相关图片统一走已有鉴权媒体代理，因此离线同步后保存为私有 R2 URL 或 `cleaning/...` object key 的检查照片可以正常加载。
+
+### Implementation
+
+- Previous behavior:
+  - 离线检查提交流程同步成功后会删除原始本地文件，只保留缩略图和远端引用。
+  - 每日清洁详情页展示检查照片时直接把返回值当普通 URL 给 React Native `Image`，没有复用 `buildCleaningMediaImageSource` 的清洁媒体代理。
+  - 检查照片拉取 ID 没有显式包含 `cleaning_task_ids`，在部分聚合任务或 source 字段不完整时可能查不到实际保存照片的 task id。
+- New behavior:
+  - 新增 `inspectionPhotoTaskIdsFromTask`，检查照片查询 ID 来源包括 `inspection_task_ids`、`cleaning_task_ids`、`source_ids` 和 `source_id`，并去重保序。
+  - `ManagerDailyTaskScreen` 的图片展示改用 `buildCleaningMediaImageSource(token, ...)`，对 `cleaning/...` key 和私有 R2 URL 自动走 `/cleaning-app/media/image` 鉴权代理。
+  - 保留挂钥匙视频继续使用普通绝对 URL 处理，避免把视频误走图片代理。
+- Key decisions:
+  - 不新增接口、不改数据库、不改检查提交队列；本次修复只修每日清洁详情页读取/展示端，复用已有清洁媒体代理。
+  - 纯 ID 选择规则拆到 lib 后单测，避免屏幕组件测试被原生 SSE 依赖影响。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/screens/tasks/ManagerDailyTaskScreen.tsx` — modified: 检查照片查询 ID 改用统一 helper；清洁相关图片渲染改走 `buildCleaningMediaImageSource`。
+- `mz-cleaning-app-frontend/src/lib/managerDailyTaskPhotos.ts` — added: 每日清洁详情页检查照片 task id 选择规则。
+- `mz-cleaning-app-frontend/src/screens/tasks/ManagerDailyTaskScreen.test.ts` — added: 覆盖检查照片查询同时包含清洁/检查/source IDs，以及非清洁任务不查询。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: none; existing `getInspectionPhotos` and `/cleaning-app/media/image` are reused.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: shares mobile task detail surface with `CRL-20260625-001`, but behavior is independent and can be selected separately.
+
+### Validation
+
+- Initial `npm test -- --runInBand src/screens/tasks/ManagerDailyTaskScreen.test.ts` in `mz-cleaning-app-frontend` — failed before refactor because importing the full screen pulled untransformed `react-native-sse`; the test was moved to a pure lib helper.
+- `npm test -- --runInBand src/screens/tasks/ManagerDailyTaskScreen.test.ts` in `mz-cleaning-app-frontend` — passed after refactor: 1 suite, 2 tests.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with 0 errors and 120 existing warnings.
+- `npm test -- --runInBand` in `mz-cleaning-app-frontend` — passed: 29 suites, 93 tests. `TasksScreen.test.tsx` still logs the existing `SafeAreaView` deprecation warning, and Jest still reports the existing open-handles notice after completion.
+- `npm run build` in `mz-cleaning-app-frontend` — not run: this repo has no `build` script.
+
+### Risks / Release Notes
+
+- Runtime risk: 本轮未用真实生产 task id 在真机上打开每日清洁详情页截图回归；验证覆盖到 helper 单测、类型检查、lint 和全量 Jest。
+- Scope boundary: 只修检查照片在每日清洁详情页的读取/渲染；没有改变检查提交、R2 上传、补品照片、清洁完成照片或后端权限。
+- Rollback: revert `ManagerDailyTaskScreen` media source changes and remove `managerDailyTaskPhotos` helper/test.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: root ledger updated; functional changes remain uncommitted in nested repo `mz-cleaning-app-frontend`.
+
+## CRL-20260625-003 — 订单入住新密码自动回填退房旧密码
+
+- **Status:** ready
+- **Updated:** 2026-06-25 14:51 AEST
+- **Request:** 已经有的订单入住的新密码，要自动写入退房时的旧密码字段。
+- **Outcome:** 同一订单的 `checkin_clean.new_code` 现在会自动同步到 `checkout_clean.old_code`；订单同步、重试、回填、网页任务编辑和移动端管理字段保存都会复用同一条规则。
+
+### Implementation
+
+- Previous behavior:
+  - 订单同步会分别生成入住任务 `new_code` 和退房任务 `old_code`，但如果已有入住任务的新密码后来被补录或修改，退房任务旧密码不会自动跟随。
+  - 移动端每日任务管理字段和网页任务编辑保存 `new_code` 时，只更新当前任务或选中任务。
+- New behavior:
+  - `syncCheckoutOldCodeFromCheckinNewCode` 以同订单入住任务 `new_code` 为来源，补写同订单退房任务 `old_code`。
+  - 订单同步完成后会执行该联动，因此已有订单在重试或回填时也会被补齐。
+  - 网页 `/cleaning/tasks` 单个/批量编辑和移动端 `/mzapp/cleaning-tasks/manager-fields` 保存入住新密码时，会立即触发同订单退房旧密码同步。
+  - 退房任务 `auto_sync_enabled=false` 时不覆盖，并记录 skipped_locked 同步日志。
+- Key decisions:
+  - 不新增数据库字段、不新增接口；复用现有 `cleaning_tasks.old_code/new_code`。
+  - 不把退房旧密码作为第二个手工来源；入住任务新密码是本次联动的来源，退房旧密码只是同步结果。
+
+### Files / Areas
+
+- `backend/src/services/cleaningSync.ts` — modified: 新增并导出同订单入住新密码到退房旧密码的同步 helper，并接入订单同步流程。
+- `backend/src/modules/cleaning.ts` — modified: 网页/后端任务单个与批量编辑入住新密码后触发同订单退房旧密码同步；补齐本地 store 批量编辑对 `old_code/new_code` 的写入。
+- `backend/src/modules/mzapp.ts` — modified: 移动端管理字段保存 `new_code` 时，对关联入住订单触发同订单退房旧密码同步。
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — modified: 覆盖已有入住任务 `new_code` 回填退房任务 `old_code`。
+- `backend/dist/modules/cleaning.js` — modified: `npm run build` 生成的已跟踪后端构建产物。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: request/response shape unchanged; existing task update endpoints now have an additional same-order side effect.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: none.
+
+### Validation
+
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_cleaning_sync_v2.ts` in `backend` — passed: printed `ok`.
+- `npm run build` in `backend` — passed: `tsc -p .` completed.
+- `git diff --check` — passed.
+- Full frontend/mobile test suites — not run: change is backend task/password synchronization only.
+
+### Risks / Release Notes
+
+- Runtime risk: 未用真实订单在生产数据库手工回归；验证覆盖到同步脚本和 TypeScript build。
+- Scope boundary: 清空入住新密码时不会自动清空退房旧密码；当前规则只在入住新密码有非空值时回填。
+- Rollback: revert the helper and its calls from `cleaningSync`, `cleaning`, and `mzapp`, then rebuild backend dist if required.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: root repo uncommitted; `docs/change-release-ledger.md` also contains pre-existing uncommitted CRL-20260625-001 and CRL-20260625-002 records from other work.

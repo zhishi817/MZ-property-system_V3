@@ -507,6 +507,58 @@ async function replaceManualCheckinWithSyncedTask(params: {
   }
 }
 
+export async function syncCheckoutOldCodeFromCheckinNewCode(params: {
+  jobId?: string | null
+  orderId: string
+  client?: any
+}): Promise<{ action: 'updated' | 'no_change' | 'skipped_locked' }> {
+  const { jobId, orderId, client } = params
+  const checkinTask = await loadTaskByOrder(orderId, CHECKIN_TASK_TYPE, client)
+  const checkoutTask = await loadTaskByOrder(orderId, CHECKOUT_TASK_TYPE, client)
+  const nextOldCode = nonBlank(checkinTask?.new_code)
+  if (!checkinTask || !checkoutTask || !nextOldCode) return { action: 'no_change' }
+  if (checkoutTask.auto_sync_enabled === false) {
+    await logCleaningSync({
+      jobId,
+      orderId,
+      taskId: checkoutTask.id,
+      action: 'skipped_locked',
+      before: checkoutTask,
+      after: checkoutTask,
+      meta: { reason: 'checkout_old_code_from_checkin_new_code', source_task_id: String(checkinTask.id || '') },
+      client,
+    })
+    return { action: 'skipped_locked' }
+  }
+  if (String(checkoutTask.old_code ?? '').trim() === nextOldCode) return { action: 'no_change' }
+
+  const after = await updateTaskById(String(checkoutTask.id), { old_code: nextOldCode }, client)
+  await logCleaningSync({
+    jobId,
+    orderId,
+    taskId: checkoutTask.id,
+    action: 'updated',
+    before: checkoutTask,
+    after,
+    meta: { reason: 'checkout_old_code_from_checkin_new_code', source_task_id: String(checkinTask.id || '') },
+    client,
+  })
+  try {
+    await emitWorkTaskEvent({
+      taskId: `cleaning_task:${String(checkoutTask.id)}`,
+      sourceType: 'cleaning_tasks',
+      sourceRefIds: [String(checkoutTask.id)],
+      eventType: 'TASK_UPDATED',
+      changeScope: 'detail',
+      changedFields: ['old_code'],
+      patch: { old_code: nextOldCode },
+      causedByUserId: null,
+      visibilityHints: buildCleaningTaskVisibilityHints(after || checkoutTask),
+    }, client)
+  } catch {}
+  return { action: 'updated' }
+}
+
 async function syncOneTask(params: {
   jobId?: string | null
   orderId: string
@@ -650,7 +702,8 @@ export async function syncOrderToCleaningTasks(orderId: string, opts?: SyncOrder
     const rCheckout = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: checkoutDay, statusLower, propertyId, derivedCode, keysRequired })
     const rCheckin = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: checkinDay, statusLower, propertyId, derivedCode, keysRequired })
     await replaceManualCheckinWithSyncedTask({ jobId, orderId: id, propertyId, taskDate: checkinDay, client })
-    const actions = [rCheckout.action, rCheckin.action]
+    const rPassword = await syncCheckoutOldCodeFromCheckinNewCode({ jobId, orderId: id, client })
+    const actions = [rCheckout.action, rCheckin.action, rPassword.action]
     if (actions.includes('created')) return { action: 'created' as const }
     if (actions.includes('updated')) return { action: 'updated' as const }
     if (actions.includes('cancelled')) return { action: 'cancelled' as const }
