@@ -3167,8 +3167,8 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260625-001 — 移动端 MSQ 钥匙卡片、分配状态与今日工作统计修复
 
-- **Status:** ready
-- **Updated:** 2026-06-25 14:36 AEST
+- **Status:** pushed
+- **Updated:** 2026-06-25 15:27 AEST
 - **Request:** 修复 admin 看不到 MSQ 钥匙卡片；已分配检查/挂钥匙人员的任务仍显示“未分配”；“今日工作情况”改成清洁人员在前、检查人员在后，并优化状态统计准确性。
 - **Outcome:** admin/offline manager 在管理-全部今日任务里可看到 Southbank/MSQ 仓库钥匙卡片；检查或清洁任务只要已有对应执行人就显示“已分配”；今日工作情况按清洁优先、检查其次排序，并把 `to_hang_keys` 视为待处理而不是已完成。
 
@@ -3242,12 +3242,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Scope boundary: 只恢复 admin/offline manager 的 MSQ 卡片可见性，没有扩大 `POST /cleaning-app/warehouse-key/events` 写入权限。
 - Rollback: revert the MSQ visibility condition, staff-summary sort/stat helpers, and `taskVisualTheme` assigned-state branches.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: root ledger updated; functional changes remain uncommitted in nested repo `mz-cleaning-app-frontend`.
+- Git state: pushed to nested mobile `Dev` in commit `4ab0aa3`; root ledger status update pending.
 
 ## CRL-20260625-002 — 移动端每日清洁检查照片离线缓存后可见性修复
 
-- **Status:** ready
-- **Updated:** 2026-06-25 14:57 AEST
+- **Status:** pushed
+- **Updated:** 2026-06-25 15:27 AEST
 - **Request:** 增加离线本地缓存以后，检查人员拍的照片都不显示；需要确认原因并恢复显示。
 - **Outcome:** 每日清洁详情页读取检查照片时同时覆盖检查任务 ID、清洁任务 ID、聚合 `source_ids` 和主 `source_id`；页面内清洁相关图片统一走已有鉴权媒体代理，因此离线同步后保存为私有 R2 URL 或 `cleaning/...` object key 的检查照片可以正常加载。
 
@@ -3295,12 +3295,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Scope boundary: 只修检查照片在每日清洁详情页的读取/渲染；没有改变检查提交、R2 上传、补品照片、清洁完成照片或后端权限。
 - Rollback: revert `ManagerDailyTaskScreen` media source changes and remove `managerDailyTaskPhotos` helper/test.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: root ledger updated; functional changes remain uncommitted in nested repo `mz-cleaning-app-frontend`.
+- Git state: pushed to nested mobile `Dev` in commit `4ab0aa3`; root ledger status update pending.
 
 ## CRL-20260625-003 — 订单入住新密码自动回填退房旧密码
 
-- **Status:** ready
-- **Updated:** 2026-06-25 14:51 AEST
+- **Status:** pushed
+- **Updated:** 2026-06-25 15:27 AEST
 - **Request:** 已经有的订单入住的新密码，要自动写入退房时的旧密码字段。
 - **Outcome:** 同一订单的 `checkin_clean.new_code` 现在会自动同步到 `checkout_clean.old_code`；订单同步、重试、回填、网页任务编辑和移动端管理字段保存都会复用同一条规则。
 
@@ -3348,4 +3348,4 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Scope boundary: 清空入住新密码时不会自动清空退房旧密码；当前规则只在入住新密码有非空值时回填。
 - Rollback: revert the helper and its calls from `cleaningSync`, `cleaning`, and `mzapp`, then rebuild backend dist if required.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: root repo uncommitted; `docs/change-release-ledger.md` also contains pre-existing uncommitted CRL-20260625-001 and CRL-20260625-002 records from other work.
+- Git state: pushed to root `Dev` in commit `18b5410`; root ledger status update pending.
