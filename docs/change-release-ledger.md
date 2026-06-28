@@ -2,9 +2,17 @@
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
+## 2026-06-29 A+B+C Release Batch
+
+- **Status:** pushed
+- **Updated:** 2026-06-29 10:35 Australia/Melbourne
+- **Scope:** User selected A+B+C for release, covering `CRL-20260629-001`, `CRL-20260629-002`, and `CRL-20260628-001` through `CRL-20260628-011`.
+- **Git state:** implementation pushed to root `Dev` in commit `9192124` and nested mobile `Dev` in commit `bd66320`; this ledger status update is recorded separately.
+- **Packaging:** mobile app version synchronized to `1.0.23`, iOS buildNumber `23`, Android versionCode `23`; iOS/Android EAS packaging should use the production profile unless explicitly overridden.
+
 ## CRL-20260629-002 — 移动端封装版本同步到 1.0.23
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-29 10:05 Australia/Melbourne
 - **Request:** 选择 A+B+C 推送，并重新封装 iOS 和 Android 版本。
 - **Outcome:** 移动端本地封装版本统一到 `1.0.23`；Expo app version 为 `1.0.23`，iOS buildNumber 为 `23`，Android versionCode 为 `23`，npm package 与 lockfile 版本也同步到 `1.0.23`，满足 `eas.json` 的 local version source。
@@ -53,11 +61,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Runtime risk: none; metadata-only version sync.
 - Rollback: revert the mobile version fields to the previous `1.0.22 / 22 / 22` values.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: uncommitted; selected for this release.
+- Git state: pushed to nested mobile `Dev` in commit `bd66320`; root ledger state recorded in the 2026-06-29 A+B+C release batch.
 
 ## CRL-20260629-001 — 日终交接弱网离线保存识别与自动同步
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-29 09:41 Australia/Melbourne
 - **Request:** 把日终交接页面和 `dayEndHandoverQueue` 的弱网判断改为复用 `ApiError.retryable` / `TIMEOUT`，不要靠英文 message；同时把 `processDayEndHandoverQueue()` 加入全局网络恢复队列维护。
 - **Outcome:** 日终交接保存和队列处理现在按 API 错误的 retryable/code 语义识别超时与网络失败；中文“网络超时，请检查网络后重试”会走离线保存分支。App 登录态下的全局队列维护在启动、回到前台和网络恢复时也会处理日终交接草稿。
@@ -106,11 +114,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Runtime risk: `AuthProvider` now attempts one more queue during network/app-state maintenance; the queue already has an in-process guard and stops on retryable network failure.
 - Rollback: remove `processDayEndHandoverQueue` from `AuthProvider`, restore the previous message-based weak-network checks, and remove the two new/updated tests.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: uncommitted; root repo and nested mobile repo already contain other pre-existing/unattributed changes not owned by this unit.
+- Git state: pushed to nested mobile `Dev` in commit `bd66320`; root ledger state recorded in the 2026-06-29 A+B+C release batch.
 
 ## CRL-20260628-011 — 移动端任务更新保留入住和待住晚数
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-28 14:50 Australia/Melbourne
 - **Request:** 修复客服更新任务后，admin 能收到任务更新，但清洁/检查人员任务页缺少入住信息，所有角色待住晚数显示 0 的问题。
 - **Outcome:** `/mzapp/work-tasks` 在生成移动端清洁/检查任务卡片时，checkout-only 卡片会补取同房源后续 checkin 的入住时间、新密码和待住晚数；admin/customer_service 的二次合并也会保留已住/待住晚数。任务时间变化的实时事件会标记晚数字段，促使旧移动端完整刷新，避免缓存继续显示 0。
@@ -157,11 +165,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Runtime risk: checkout-only cards now expose the linked same-property incoming checkin display fields to the checkout assignee. This matches existing key-count behavior and the current product expectation that checkout/turnover cards show both退房 and入住 context.
 - Rollback: revert the `buildMerged()` next-checkin merge additions, the admin secondary-night merge, and the extra realtime changed fields.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: uncommitted; root repo already contains many other ready units and shared-file changes in the same backend files.
+- Git state: pushed to root `Dev` in commit `9192124`; root ledger state recorded in the 2026-06-29 A+B+C release batch.
 
 ## CRL-20260628-010 — 任务中心保存按字段 diff 精准通知
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-28 23:10 Australia/Melbourne
 - **Request:** 网页端任务中心继续统一保存，但保存时在事务内做字段级 diff，只通知真正变动的任务和相关人员；只排序/分组不推送。
 - **Outcome:** `/task-center/save-board` 在事务内锁定本次保存涉及的清洁任务和线下任务旧值，按后端 normalize 后的新值生成字段级 diff；通知和实时事件都基于真实 diff，返回值改为 `changed_tasks`、`push_notifications`、`realtime_events`、`layout_changed`，网页提示区分业务变化和仅看板排序。
@@ -208,11 +216,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Concurrency: row-level locks reduce concurrent overwrite risk for touched task rows, but two users saving the same day can still race on board layout rows in the existing last-write-wins layout model.
 - Rollback: restore `/save-board` notification generation to `RETURNING task.*` and the previous `event_notifications` response, then revert the frontend save summary.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: uncommitted; root repo already contains multiple other 2026-06-28 ready units and unattributed/pre-existing changes in shared backend files.
+- Git state: pushed to root `Dev` in commit `9192124`; root ledger state recorded in the 2026-06-29 A+B+C release batch.
 
 ## CRL-20260628-001 — 移动端详情页停止 90 天全部任务回查
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-28 00:00 Australia/Melbourne
 - **Request:** 先止住移动端详情页和经理详情页 fallback 拉 `now -45` 到 `now +45` 的 `view=all` 大请求；本地找不到任务时只查小范围。
 - **Outcome:** 任务详情页和经理每日任务详情页在本地 store 找不到任务时，fallback 请求从 90 天缩小为 `today -7` 到 `today +7`，避免继续触发 3MB+ 的 `/mzapp/work-tasks?view=all` 大范围查询。
@@ -257,11 +265,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Follow-up: 可在导航参数中传目标日期，或新增按 task id 精准读取接口，进一步减少 fallback 范围和误差。
 - Rollback: revert the fallback range helper changes in the two mobile screens.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: uncommitted; nested mobile repo has two modified files, root repo has this ledger update.
+- Git state: pushed to nested mobile `Dev` in commit `bd66320`; root ledger state recorded in the 2026-06-29 A+B+C release batch.
 
 ## CRL-20260628-002 — 移动端任务刷新与经理详情照片请求去重
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-28 12:07 Australia/Melbourne
 - **Request:** 给 `refreshWorkTasksFromServer` 加同参数 in-flight 合并；给 `ManagerDailyTaskScreen` 的 `loadTaskPhotos` 加同批次 in-flight guard，focus 时 30 秒内复用现有状态，避免 mount 和 focus 连续双触发。
 - **Outcome:** 移动端同一个 `userId/date_from/date_to/view` 的任务刷新会复用同一个 Promise；经理详情页同一组清洁/检查任务照片和耗材批次正在加载或刚加载完成时，不会重复发起同批请求。
@@ -308,11 +316,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Runtime risk: `refreshWorkTasksFromServer` 同 bucket 请求会共享首个请求的结果；bucket key 包含 user/date range/view，适合当前调用语义。
 - Rollback: remove `refreshWorkTasksInFlight` and the `loadTaskPhotos` in-flight/reuse refs.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added. The in-flight photo key intentionally avoids raw token values.
-- Git state: uncommitted; nested mobile repo has three modified files, root repo has this ledger update.
+- Git state: pushed to nested mobile `Dev` in commit `bd66320`; root ledger state recorded in the 2026-06-29 A+B+C release batch.
 
 ## CRL-20260628-003 — 后端限制移动端全量任务范围并脱敏健康检查
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-28 12:14 Australia/Melbourne
 - **Request:** 后端给 `/mzapp/work-tasks` 增加轻量保护，`view=all` 日期范围最多 31 天，避免旧 App 继续发 90 天大请求；同时把 `/health/db` 的 host/database 输出脱敏。
 - **Outcome:** `/mzapp/work-tasks?view=all` 超过 31 天会在进入数据库查询前直接返回 400；health DB 诊断不再输出真实数据库 host 或 database 名称，相关 health 错误也会替换已知 DB URL/host/db 片段。
@@ -358,11 +366,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Compatibility note: valid `view=all` requests up to 31 inclusive days continue to work.
 - Rollback: remove the range guard in `backend/src/modules/mzapp.ts` and restore raw health fields if needed.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added. Health output now avoids raw DB host/database values.
-- Git state: uncommitted; root repo has backend source/build output plus ledger changes. Nested mobile repo still has the prior uncommitted mobile performance changes from CRL-20260628-001 and CRL-20260628-002.
+- Git state: pushed to root `Dev` in commit `9192124`; root ledger state recorded in the 2026-06-29 A+B+C release batch.
 
 ## CRL-20260628-004 — 检查面板兜底读取清洁消耗品不足项
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-28 12:21 Australia/Melbourne
 - **Request:** 检查清洁已上传消耗品清单但检查人员页面没有显示缺少消耗品的问题。
 - **Outcome:** 检查与补充页进入时会兜底读取清洁任务的消耗品提交记录，并把 `low` / `need_restock` 项合并到检查员的“消耗品补充”列表；检查员已填写的草稿状态、照片和备注不会被覆盖。
@@ -408,11 +416,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Offline behavior: 网络失败时保留原本列表缓存/本地草稿行为，不阻断检查页打开。
 - Rollback: remove the `getCleaningConsumables` fallback merge in `InspectionPanelScreen`.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: uncommitted; nested mobile repo has this screen plus the prior mobile performance files changed, root repo has ledger/backend changes.
+- Git state: pushed to nested mobile `Dev` in commit `bd66320`; root ledger state recorded in the 2026-06-29 A+B+C release batch.
 
 ## CRL-20260628-005 — 改密码/挂钥匙视频错传后可删除
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-28 12:56 AEST
 - **Request:** 错传照片/视频无法删除；402 拍摄时误传到 3401，3401 昨天仅需改密码，发现传错后删不掉。
 - **Outcome:** 检查员在“改密码并完成 / 挂钥匙视频”页面可以删除已上传的视频；后端会删除 `lockbox_video` 媒体记录、清空锁盒视频时间，并把已完成检查状态恢复为待检查来源状态，方便重新拍摄提交到正确任务。
@@ -465,11 +473,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Storage note: 原始对象文件不被物理删除；如需彻底清理对象存储，需要单独做带权限和审计的清理流程。
 - Rollback: remove the new delete routes/API helper and the delete UI, then rebuild backend dist.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: uncommitted; root repo has backend source/build output plus ledger changes, nested mobile repo has this screen/API/store plus prior mobile changes.
+- Git state: pushed to root `Dev` in commit `9192124` and nested mobile `Dev` in commit `bd66320`; root ledger state recorded in the 2026-06-29 A+B+C release batch.
 
 ## CRL-20260628-006 — 线下其他任务照片附件贯通网页和移动端
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-28 13:46 AEST
 - **Request:** 线下其他任务网页端和移动端都要可以添加照片，给线下执行人员查看。
 - **Outcome:** 线下其他任务现在有独立的 `photo_urls` 附件字段；网页每日清洁页创建/编辑线下任务可上传并预览任务照片，移动端线下任务详情可拍照或从相册追加照片，相关照片会随 `/mzapp/work-tasks` 返回给线下人员查看。
@@ -531,11 +539,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Access control: 移动端照片更新限制为当前执行人或有全部视图权限的角色；网页端沿用现有后台清洁页面权限。
 - Rollback: remove `photo_urls` API/schema handling, the web upload UI, and the mobile task-photo section/API helper, then rebuild backend dist if required.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: uncommitted; root repo and nested mobile repo both already contain other 2026-06-28 ready units, and this unit touches shared files that must be staged selectively if released independently.
+- Git state: pushed to root `Dev` in commit `9192124` and nested mobile `Dev` in commit `bd66320`; root ledger state recorded in the 2026-06-29 A+B+C release batch.
 
 ## CRL-20260628-007 — 移动端线下/维修类任务卡片信息优先级调整
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-28 14:05 AEST
 - **Request:** 截图中的任务卡片排版需要调整，内容应该最重要，然后执行人，然后房源地址等信息。
 - **Outcome:** 移动端任务列表里线下任务、维修、深清、日用品等非清洁流程任务的展开态改为先显示“任务内容”，再显示“执行人员”，最后显示“房源地址”；房源地址仍可复制。
@@ -580,11 +588,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Scope boundary: 只调整非清洁流程任务展开态；清洁/检查任务卡片未重排。
 - Rollback: revert the standalone task layout branch and the new TasksScreen test.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: uncommitted; nested mobile repo still has other ready units in shared files, and root repo has prior backend/web/mobile ledger changes.
+- Git state: pushed to nested mobile `Dev` in commit `bd66320`; root ledger state recorded in the 2026-06-29 A+B+C release batch.
 
 ## CRL-20260628-008 — 问题反馈取消默认维修类型并强制选择
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-28 14:20 AEST
 - **Request:** 所有问题反馈不要默认反馈类型就是维修；让反馈的人自己选择，没有选择的话提交时高亮提醒。
 - **Outcome:** 移动端问题反馈页初始标题为“问题反馈”，不再默认选中“房源维修”；提交或新增记录前如果未选择反馈类型，会滚回第 1 步，高亮“选择反馈类型”卡片并提示用户先选择。
@@ -629,11 +637,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Scope boundary: 只取消默认反馈类型，不改变各类型内部必填规则。
 - Rollback: restore `kind` initial value to `maintenance` and remove the missing-kind highlight branch.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: uncommitted; root repo and nested mobile repo contain multiple ready units, so selective release needs按 CRL 做 hunk-level staging。
+- Git state: pushed to nested mobile `Dev` in commit `bd66320`; root ledger state recorded in the 2026-06-29 A+B+C release batch.
 
 ## CRL-20260628-009 — Admin 移动端管理问题反馈记录
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-06-28 13:44 AEST
 - **Request:** admin 的移动端看到重复的问题反馈时，可以删除记录，或者把记录调整到对应的反馈类型。
 - **Outcome:** 移动端问题反馈历史记录对 admin 显示“调整类型”和“删除”管理入口；后端新增 admin-only 删除和移动反馈类型接口，移动类型时会把原记录迁到目标反馈表并同步关联 `work_tasks` 的来源类型。
@@ -682,7 +690,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Mapping risk: 三类反馈表字段不完全相同，移动类型时会保留核心字段、状态、提交人、房源、描述和照片，类型专属字段会按目标类型默认语义归一化。
 - Rollback: remove the two new `/property-feedbacks/:kind/:id` admin routes and mobile admin controls/API helpers.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: uncommitted; root repo and nested mobile repo contain multiple ready units, so selective release needs按 CRL 做 hunk-level staging。
+- Git state: pushed to root `Dev` in commit `9192124` and nested mobile `Dev` in commit `bd66320`; root ledger state recorded in the 2026-06-29 A+B+C release batch.
 
 ## CRL-20260622-001 — 仓库管理员查看全部清洁及线下任务
 
