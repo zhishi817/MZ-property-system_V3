@@ -118,6 +118,27 @@ function numberEnv(name: string, fallback: number, min: number) {
   const value = raw === undefined || raw === '' ? fallback : Number(raw)
   return Number.isFinite(value) ? Math.max(min, value) : fallback
 }
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+function redactDatabaseHealthText(value: any) {
+  let text = String(value || 'database_error')
+  const rawUrl = String(process.env.DATABASE_URL || '').trim()
+  const sensitiveParts: string[] = []
+  if (rawUrl) {
+    sensitiveParts.push(rawUrl)
+    try {
+      const u = new URL(rawUrl)
+      if (u.hostname) sensitiveParts.push(u.hostname)
+      const db = (u.pathname || '').replace(/^\//, '')
+      if (db) sensitiveParts.push(db)
+    } catch {}
+  }
+  for (const part of Array.from(new Set(sensitiveParts.filter((part) => part.length >= 2)))) {
+    text = text.replace(new RegExp(escapeRegExp(part), 'g'), '[redacted]')
+  }
+  return text
+}
 const STARTUP_WARMUP_RETRIES = Math.floor(numberEnv('STARTUP_WARMUP_RETRIES', 2, 1))
 const STARTUP_WARMUP_RETRY_DELAY_MS = numberEnv('STARTUP_WARMUP_RETRY_DELAY_MS', 1000, 0)
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
@@ -174,21 +195,21 @@ app.get('/health/db', async (_req, res) => {
     const url = process.env.DATABASE_URL || ''
     if (url) {
       const u = new URL(url)
-      result.pg_host = u.hostname
+      if (u.hostname) result.pg_host = '[redacted]'
       const db = (u.pathname || '').replace(/^\//,'')
-      result.pg_database = db
+      if (db) result.pg_database = '[redacted]'
     }
   } catch {}
   try {
     if (pgPool) {
       const r = await pgPool.query('SELECT current_database() as db, 1 as ok')
       result.pg = !!(r && r.rows && r.rows[0] && r.rows[0].ok)
-      result.pg_database = result.pg_database || (r.rows?.[0]?.db)
+      if (!result.pg_database && r.rows?.[0]?.db) result.pg_database = '[redacted]'
       result.pool = getPgPoolStats()
     }
   } catch (e: any) {
     result.pg = false
-    result.pg_error = e?.message
+    result.pg_error = redactDatabaseHealthText(e?.message)
     result.pool = getPgPoolStats()
   }
   res.json(result)
@@ -214,7 +235,7 @@ app.get('/health/ready', async (_req, res) => {
   } catch (e: any) {
     return res.status(503).json({
       status: 'error',
-      message: String(e?.message || ''),
+      message: redactDatabaseHealthText(e?.message),
       warmup: startupWarmupState,
       pool: getPgPoolStats(),
       latency_ms: Date.now() - started,
@@ -233,8 +254,9 @@ app.get('/health/config', (_req, res) => {
     const url = process.env.DATABASE_URL || ''
     if (url) {
       const u = new URL(url)
-      cfg.pg_host = u.hostname
-      cfg.pg_db = (u.pathname || '').replace(/^\//,'')
+      if (u.hostname) cfg.pg_host = '[redacted]'
+      const db = (u.pathname || '').replace(/^\//,'')
+      if (db) cfg.pg_db = '[redacted]'
     }
   } catch {}
   res.json(cfg)

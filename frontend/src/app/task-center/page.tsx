@@ -1238,7 +1238,10 @@ export default function TaskCenterPage() {
       const savedAt = dayjs().format('HH:mm:ss')
       const result = await postJSON<{
         ok?: boolean
-        event_notifications?: number
+        changed_tasks?: { cleaning?: number; work?: number; total?: number }
+        push_notifications?: { events?: number; recipients?: number }
+        realtime_events?: number
+        layout_changed?: boolean
       }>('/task-center/save-board', {
         date: dateStr,
         mode: 'board',
@@ -1252,11 +1255,16 @@ export default function TaskCenterPage() {
         task_flags: Array.from(taskFlags.values()),
       }, { timeoutMs: SAVE_BOARD_TIMEOUT_MS })
       setBoardDraftDirty(false)
+      const changedTaskCount = Number(result?.changed_tasks?.total || 0)
+      const notifiedRecipients = Number(result?.push_notifications?.recipients || 0)
+      const saveSummary = changedTaskCount > 0
+        ? `，${changedTaskCount} 个任务有实际变化${notifiedRecipients > 0 ? `，已通知 ${notifiedRecipients} 人` : '，没有发送人员通知'}`
+        : (result?.layout_changed ? '，已保存看板排序，没有发送人员通知' : '')
       upsertAdminNotification({
         id: 'task-center-save-status',
         type: 'success',
         title: '任务中心',
-        message: `已保存 ${savedAt}${typeof result?.event_notifications === 'number' ? `，通知 ${result.event_notifications} 条后台发送中` : ''}，正在刷新最新数据...`,
+        message: `已保存 ${savedAt}${saveSummary}，正在刷新最新数据...`,
         source: 'task-center',
       })
       message.success('任务安排已保存')

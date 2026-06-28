@@ -102,11 +102,15 @@ function buildCleaningTaskWorkPatch(after, rawChangedFields) {
     if (changedFields.has('checkout_time')) {
         changedFields.add('start_time');
         changedFields.add('summary');
+        changedFields.add('stayed_nights');
+        changedFields.add('remaining_nights');
         patch.start_time = (_a = after === null || after === void 0 ? void 0 : after.checkout_time) !== null && _a !== void 0 ? _a : null;
     }
     if (changedFields.has('checkin_time')) {
         changedFields.add('end_time');
         changedFields.add('summary');
+        changedFields.add('stayed_nights');
+        changedFields.add('remaining_nights');
         patch.end_time = (_b = after === null || after === void 0 ? void 0 : after.checkin_time) !== null && _b !== void 0 ? _b : null;
     }
     if (changedFields.has('summary'))
@@ -289,6 +293,7 @@ async function ensureOfflineTasksTable() {
         err.code = 'CLEANING_SCHEMA_MISSING';
         throw err;
     }
+    await dbAdapter_1.pgPool.query(`ALTER TABLE cleaning_offline_tasks ADD COLUMN IF NOT EXISTS photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb;`);
 }
 async function ensureWorkTasksTable() {
     if (!dbAdapter_1.hasPg || !dbAdapter_1.pgPool)
@@ -307,11 +312,13 @@ async function ensureWorkTasksTable() {
     assignee_id text,
     status text NOT NULL DEFAULT 'todo',
     urgency text NOT NULL DEFAULT 'medium',
+    photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb,
     created_by text,
     updated_by text,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
   );`);
+    await dbAdapter_1.pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb;`);
     try {
         await dbAdapter_1.pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_work_tasks_source ON work_tasks(source_type, source_id);`);
     }
@@ -323,6 +330,10 @@ async function ensureWorkTasksTable() {
 }
 function offlineWorkStatus(value) {
     return String(value || '').trim().toLowerCase() === 'done' ? 'done' : 'todo';
+}
+function normalizePhotoUrls(input) {
+    const arr = Array.isArray(input) ? input : [];
+    return Array.from(new Set(arr.map((item) => String(item || '').trim()).filter(Boolean))).slice(0, 20);
 }
 async function upsertWorkTaskFromOfflineTask(row, requestedStatus) {
     if (!dbAdapter_1.hasPg || !dbAdapter_1.pgPool)
@@ -337,18 +348,20 @@ async function upsertWorkTaskFromOfflineTask(row, requestedStatus) {
     const status = offlineWorkStatus(requestedStatus === undefined ? row === null || row === void 0 ? void 0 : row.status : requestedStatus);
     const updateStatus = requestedStatus !== undefined;
     const urgency = String((row === null || row === void 0 ? void 0 : row.urgency) || '').trim() || 'medium';
-    await dbAdapter_1.pgPool.query(`INSERT INTO work_tasks(id, task_kind, source_type, source_id, property_id, title, summary, scheduled_date, assignee_id, status, urgency, created_at, updated_at)
-     VALUES($1,'offline','cleaning_offline_tasks',$2,$3,$4,$5,$6::date,$7,$8,$9,COALESCE($10::timestamptz, now()), now())
+    const photoUrls = normalizePhotoUrls(row === null || row === void 0 ? void 0 : row.photo_urls);
+    await dbAdapter_1.pgPool.query(`INSERT INTO work_tasks(id, task_kind, source_type, source_id, property_id, title, summary, scheduled_date, assignee_id, status, urgency, photo_urls, created_at, updated_at)
+     VALUES($1,'offline','cleaning_offline_tasks',$2,$3,$4,$5,$6::date,$7,$8,$9,$10::jsonb,COALESCE($11::timestamptz, now()), now())
      ON CONFLICT (source_type, source_id) DO UPDATE SET
        property_id=EXCLUDED.property_id,
        title=EXCLUDED.title,
        summary=EXCLUDED.summary,
        scheduled_date=EXCLUDED.scheduled_date,
        assignee_id=EXCLUDED.assignee_id,
-       status=CASE WHEN $11::boolean THEN EXCLUDED.status ELSE work_tasks.status END,
+       status=CASE WHEN $12::boolean THEN EXCLUDED.status ELSE work_tasks.status END,
        urgency=EXCLUDED.urgency,
+       photo_urls=EXCLUDED.photo_urls,
        updated_at=now()
-     RETURNING *`, [workId, id, (row === null || row === void 0 ? void 0 : row.property_id) || null, String((row === null || row === void 0 ? void 0 : row.title) || ''), String((row === null || row === void 0 ? void 0 : row.content) || '') || null, scheduled, assignee, status, urgency, (row === null || row === void 0 ? void 0 : row.created_at) || null, updateStatus]);
+     RETURNING *`, [workId, id, (row === null || row === void 0 ? void 0 : row.property_id) || null, String((row === null || row === void 0 ? void 0 : row.title) || ''), String((row === null || row === void 0 ? void 0 : row.content) || '') || null, scheduled, assignee, status, urgency, JSON.stringify(photoUrls), (row === null || row === void 0 ? void 0 : row.created_at) || null, updateStatus]);
 }
 async function backfillOfflineWorkTasks() {
     if (!dbAdapter_1.hasPg || !dbAdapter_1.pgPool)
@@ -357,7 +370,7 @@ async function backfillOfflineWorkTasks() {
     // Legacy status is consulted only when creating the canonical work task for the first time.
     await dbAdapter_1.pgPool.query(`INSERT INTO work_tasks(
        id, task_kind, source_type, source_id, property_id, title, summary,
-       scheduled_date, assignee_id, status, urgency, created_at, updated_at
+       scheduled_date, assignee_id, status, urgency, photo_urls, created_at, updated_at
      )
      SELECT
        'cleaning_offline_tasks:' || t.id::text,
@@ -371,6 +384,7 @@ async function backfillOfflineWorkTasks() {
        t.assignee_id,
        CASE WHEN lower(COALESCE(t.status, 'todo')) = 'done' THEN 'done' ELSE 'todo' END,
        COALESCE(NULLIF(t.urgency, ''), 'medium'),
+       COALESCE(t.photo_urls, '[]'::jsonb),
        COALESCE(t.created_at, t.updated_at, now()),
        COALESCE(t.updated_at, t.created_at, now())
      FROM cleaning_offline_tasks t
@@ -467,6 +481,7 @@ const offlineTaskSchema = zod_1.z.object({
     urgency: zod_1.z.enum(['low', 'medium', 'high', 'urgent']),
     property_id: zod_1.z.string().nullable().optional(),
     assignee_id: zod_1.z.string().nullable().optional(),
+    photo_urls: zod_1.z.array(zod_1.z.string().trim().min(1).max(1200)).max(20).optional(),
 }).strict();
 exports.router.get('/offline-tasks', (0, auth_1.requireAnyPerm)(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), async (req, res) => {
     var _a, _b;
@@ -537,15 +552,17 @@ exports.router.post('/offline-tasks', requireCleaningManualCreateAccess, async (
             urgency: payload.urgency,
             property_id: (_a = payload.property_id) !== null && _a !== void 0 ? _a : null,
             assignee_id: (_b = payload.assignee_id) !== null && _b !== void 0 ? _b : null,
+            photo_urls: normalizePhotoUrls(payload.photo_urls),
         };
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
             await ensureOfflineTasksTable();
             const r = await dbAdapter_1.pgPool.query(`INSERT INTO cleaning_offline_tasks(
-          id, date, task_type, title, content, kind, status, urgency, property_id, assignee_id
-        ) VALUES($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`, [row.id, row.date, row.task_type, row.title, row.content, row.kind, row.status, row.urgency, row.property_id, row.assignee_id]);
+          id, date, task_type, title, content, kind, status, urgency, property_id, assignee_id, photo_urls
+        ) VALUES($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb) RETURNING *`, [row.id, row.date, row.task_type, row.title, row.content, row.kind, row.status, row.urgency, row.property_id, row.assignee_id, JSON.stringify(row.photo_urls)]);
             const out = ((_c = r === null || r === void 0 ? void 0 : r.rows) === null || _c === void 0 ? void 0 : _c[0]) || row;
             await upsertWorkTaskFromOfflineTask(out, payload.status);
             out.status = offlineWorkStatus(payload.status);
+            out.photo_urls = normalizePhotoUrls(out.photo_urls);
             const workTaskId = offlineWorkTaskId(String(out.id || row.id));
             if (String(out.status || '').trim().toLowerCase() !== 'done') {
                 try {
@@ -555,7 +572,7 @@ exports.router.post('/offline-tasks', requireCleaningManualCreateAccess, async (
                         sourceRefIds: [workTaskId],
                         eventType: 'TASK_CREATED',
                         changeScope: 'membership',
-                        changedFields: ['id', 'title', 'summary', 'scheduled_date', 'status', 'urgency', 'property_id', 'assignee_id'],
+                        changedFields: ['id', 'title', 'summary', 'scheduled_date', 'status', 'urgency', 'property_id', 'assignee_id', 'photo_urls'],
                         patch: {
                             id: workTaskId,
                             title: out.title,
@@ -565,6 +582,7 @@ exports.router.post('/offline-tasks', requireCleaningManualCreateAccess, async (
                             urgency: out.urgency,
                             property_id: out.property_id || null,
                             assignee_id: out.assignee_id || null,
+                            photo_urls: out.photo_urls,
                         },
                         causedByUserId: String(((_d = req.user) === null || _d === void 0 ? void 0 : _d.sub) || '').trim() || null,
                         visibilityHints: (0, workTaskEvents_1.buildWorkTaskVisibilityHints)({ assignee_id: out.assignee_id }),
@@ -623,7 +641,7 @@ exports.router.post('/offline-tasks', requireCleaningManualCreateAccess, async (
     }
 });
 exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.schedule.manage'), async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l;
     const { id } = req.params;
     const parsed = offlineTaskSchema.partial().safeParse(req.body || {});
     if (!parsed.success)
@@ -647,8 +665,12 @@ exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.sch
             const beforeStatus = offlineWorkStatus((_f = (_e = (_d = beforeStatusResult === null || beforeStatusResult === void 0 ? void 0 : beforeStatusResult.rows) === null || _d === void 0 ? void 0 : _d[0]) === null || _e === void 0 ? void 0 : _e.status) !== null && _f !== void 0 ? _f : before.status);
             let row = before;
             if (keys.length) {
-                const set = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ');
-                const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]));
+                const set = keys.map((k, i) => (k === 'photo_urls' ? `"${k}" = $${i + 1}::jsonb` : `"${k}" = $${i + 1}`)).join(', ');
+                const values = keys.map((k) => {
+                    if (k === 'photo_urls')
+                        return JSON.stringify(normalizePhotoUrls(patch[k]));
+                    return patch[k] === undefined ? null : patch[k];
+                });
                 const sql = `UPDATE cleaning_offline_tasks SET ${set}, updated_at=now() WHERE id=$${keys.length + 1} RETURNING *`;
                 const r1 = await dbAdapter_1.pgPool.query(sql, [...values, String(id)]);
                 row = ((_g = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _g === void 0 ? void 0 : _g[0]) || null;
@@ -658,7 +680,43 @@ exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.sch
             await upsertWorkTaskFromOfflineTask(row, patch.status);
             const statusResult = await dbAdapter_1.pgPool.query(`SELECT status FROM work_tasks WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1 LIMIT 1`, [String(id)]);
             row.status = offlineWorkStatus((_j = (_h = statusResult === null || statusResult === void 0 ? void 0 : statusResult.rows) === null || _h === void 0 ? void 0 : _h[0]) === null || _j === void 0 ? void 0 : _j.status);
+            row.photo_urls = normalizePhotoUrls(row.photo_urls);
             const completedChanged = beforeStatus !== 'done' && row.status === 'done';
+            if (keys.length && !completedChanged) {
+                const workTaskId = offlineWorkTaskId(String(row.id || id));
+                const changedFields = keys.map((k) => {
+                    if (k === 'date')
+                        return 'scheduled_date';
+                    if (k === 'content')
+                        return 'summary';
+                    return k;
+                });
+                const patchForEvent = {};
+                for (const field of changedFields) {
+                    if (field === 'scheduled_date')
+                        patchForEvent.scheduled_date = row.date ? String(row.date).slice(0, 10) : null;
+                    else if (field === 'summary')
+                        patchForEvent.summary = row.content || null;
+                    else if (field === 'photo_urls')
+                        patchForEvent.photo_urls = row.photo_urls;
+                    else
+                        patchForEvent[field] = row[field];
+                }
+                try {
+                    await (0, workTaskEvents_1.emitWorkTaskEvent)({
+                        taskId: `work_task:${workTaskId}`,
+                        sourceType: 'work_tasks',
+                        sourceRefIds: [workTaskId],
+                        eventType: 'TASK_UPDATED',
+                        changeScope: 'list',
+                        changedFields,
+                        patch: patchForEvent,
+                        causedByUserId: String(((_k = req.user) === null || _k === void 0 ? void 0 : _k.sub) || '').trim() || null,
+                        visibilityHints: (0, workTaskEvents_1.buildWorkTaskVisibilityHints)({ assignee_id: row.assignee_id }),
+                    });
+                }
+                catch (_m) { }
+            }
             if (completedChanged) {
                 const workTaskId = offlineWorkTaskId(String(row.id || id));
                 try {
@@ -670,11 +728,11 @@ exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.sch
                         changeScope: 'list',
                         changedFields: ['status'],
                         patch: { status: 'done' },
-                        causedByUserId: String(((_k = req.user) === null || _k === void 0 ? void 0 : _k.sub) || '').trim() || null,
+                        causedByUserId: String(((_l = req.user) === null || _l === void 0 ? void 0 : _l.sub) || '').trim() || null,
                         visibilityHints: (0, workTaskEvents_1.buildWorkTaskVisibilityHints)({ assignee_id: row.assignee_id }),
                     });
                 }
-                catch (_l) { }
+                catch (_o) { }
                 enqueueNotification(() => {
                     var _a;
                     return (0, notificationEvents_1.emitNotificationEvent)({
@@ -2028,6 +2086,7 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
            t.urgency,
            t.property_id,
            t.assignee_id,
+           COALESCE(t.photo_urls, '[]'::jsonb) AS photo_urls,
            COALESCE(p_id.code::text, p_code.code::text) AS property_code,
            COALESCE(p_id.region::text, p_code.region::text) AS property_region
          FROM cleaning_offline_tasks t
@@ -2053,6 +2112,7 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
                     assignee_id: row.assignee_id ? String(row.assignee_id) : null,
                     scheduled_at: null,
                     urgency: row.urgency ? String(row.urgency) : 'medium',
+                    photo_urls: normalizePhotoUrls(row.photo_urls),
                     old_code: null,
                     new_code: null,
                     nights: null,
@@ -2166,6 +2226,7 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
                 assignee_id: t.assignee_id ? String(t.assignee_id) : null,
                 scheduled_at: null,
                 urgency: t.urgency ? String(t.urgency) : 'medium',
+                photo_urls: normalizePhotoUrls(t.photo_urls),
                 old_code: null,
                 new_code: null,
                 nights: null,

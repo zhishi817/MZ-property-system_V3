@@ -1,10 +1,11 @@
 "use client"
 
-import { Alert, Button, Checkbox, Col, DatePicker, Divider, Drawer, Empty, Form, Input, InputNumber, Modal, Row, Segmented, Select, Skeleton, Space, message } from 'antd'
-import { DeleteOutlined, EditOutlined, LeftOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons'
+import { Alert, Button, Checkbox, Col, DatePicker, Divider, Drawer, Empty, Form, Image, Input, InputNumber, Modal, Row, Segmented, Select, Skeleton, Space, Upload, message } from 'antd'
+import type { UploadFile } from 'antd/es/upload/interface'
+import { DeleteOutlined, EditOutlined, LeftOutlined, PictureOutlined, ReloadOutlined, RightOutlined, UploadOutlined } from '@ant-design/icons'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
-import { API_BASE, deleteJSON, getJSON, patchJSON, postJSON } from '../../lib/api'
+import { API_BASE, authHeaders, deleteJSON, getJSON, patchJSON, postJSON } from '../../lib/api'
 import { cleaningColorKind } from '../../lib/cleaningColor'
 import { type TaskSemanticTone, taskStatusMeta, taskTimingTone } from '../../lib/cleaningTaskUi'
 import styles from './cleaningSchedule.module.scss'
@@ -49,6 +50,7 @@ type CalendarItem = {
   checkin_new_code?: string | null
   checkout_old_code?: string | null
   checkout_new_code?: string | null
+  photo_urls?: string[] | null
 }
 
 type CleaningTaskRow = {
@@ -134,6 +136,7 @@ type OfflineTaskForm = {
   urgency: 'low' | 'medium' | 'high' | 'urgent'
   property_id: string | null
   assignee_id: string | null
+  photo_urls: string[]
 }
 
 type OfflineCreateForm = {
@@ -144,6 +147,7 @@ type OfflineCreateForm = {
   urgency: 'low' | 'medium' | 'high' | 'urgent'
   property_id: string | null
   assignee_id: string | null
+  photo_urls: string[]
 }
 
 function semanticToneClass(tone: TaskSemanticTone) {
@@ -1104,6 +1108,44 @@ export default function CleaningPage() {
     return v || '-'
   }, [])
 
+  const normalizeTaskPhotoUrls = useCallback((input: any) => {
+    const arr = Array.isArray(input) ? input : []
+    return Array.from(new Set(arr.map((item) => String(item || '').trim()).filter(Boolean))).slice(0, 20)
+  }, [])
+
+  const displayPhotoUrl = useCallback((url: string) => {
+    const value = String(url || '').trim()
+    if (!value) return ''
+    if (/^https?:\/\//i.test(value)) return value
+    if (value.startsWith('/')) return `${API_BASE}${value}`
+    return value
+  }, [])
+
+  const photoUploadFiles = useCallback((urls: string[]): UploadFile[] => (
+    normalizeTaskPhotoUrls(urls).map((url, index) => ({
+      uid: `${url}:${index}`,
+      name: `照片 ${index + 1}`,
+      status: 'done',
+      url: displayPhotoUrl(url),
+      thumbUrl: displayPhotoUrl(url),
+    }))
+  ), [displayPhotoUrl, normalizeTaskPhotoUrls])
+
+  const uploadOfflineTaskPhoto = useCallback(async (file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    const res = await fetch(`${API_BASE}/cleaning-app/upload`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: form,
+    })
+    const body = await res.json().catch(() => null) as any
+    if (!res.ok) throw new Error(String(body?.message || body?.error || '上传失败'))
+    const url = String(body?.url || '').trim()
+    if (!url) throw new Error('上传成功但未返回照片地址')
+    return url
+  }, [])
+
   const statusChipCls = useCallback((s: string | null | undefined) => {
     return semanticToneClass(taskStatusMeta(s).tone)
   }, [])
@@ -1271,9 +1313,10 @@ export default function CleaningPage() {
       urgency: (['low', 'medium', 'high', 'urgent'].includes(String(it.urgency || '').trim().toLowerCase()) ? String(it.urgency).trim().toLowerCase() : 'medium') as 'low' | 'medium' | 'high' | 'urgent',
       property_id: it.property_id ? String(it.property_id) : null,
       assignee_id: it.assignee_id ? String(it.assignee_id) : null,
+      photo_urls: normalizeTaskPhotoUrls(it.photo_urls),
     })
     setOfflineEditOpen(true)
-  }, [selectedDateStr])
+  }, [normalizeTaskPhotoUrls, selectedDateStr])
 
   const openOfflineCreate = useCallback(() => {
     setOfflineCreateForm({
@@ -1284,6 +1327,7 @@ export default function CleaningPage() {
       urgency: 'medium',
       property_id: null,
       assignee_id: null,
+      photo_urls: [],
     })
     setOfflineCreateOpen(true)
   }, [selectedDateStr])
@@ -1311,6 +1355,7 @@ export default function CleaningPage() {
         urgency: offlineCreateForm.urgency,
         property_id: offlineCreateForm.task_type === 'property' ? (offlineCreateForm.property_id || undefined) : undefined,
         assignee_id: offlineCreateForm.assignee_id || undefined,
+        photo_urls: normalizeTaskPhotoUrls(offlineCreateForm.photo_urls),
       }
       await postJSON('/cleaning/offline-tasks', payload, { timeoutMs: 20000 })
       setOfflineCreateOpen(false)
@@ -1322,7 +1367,7 @@ export default function CleaningPage() {
     } finally {
       setOfflineCreateLoading(false)
     }
-  }, [loadRangeItems, offlineCreateForm])
+  }, [loadRangeItems, normalizeTaskPhotoUrls, offlineCreateForm])
 
   const submitOfflineEdit = useCallback(async () => {
     if (!offlineEditForm) return
@@ -1343,13 +1388,14 @@ export default function CleaningPage() {
       urgency: offlineEditForm.urgency,
       property_id: offlineEditForm.task_type === 'property' ? (offlineEditForm.property_id || null) : null,
       assignee_id: offlineEditForm.assignee_id || null,
+      photo_urls: normalizeTaskPhotoUrls(offlineEditForm.photo_urls),
     }
     await patchJSON(`/cleaning/offline-tasks/${encodeURIComponent(offlineEditForm.id)}`, payload)
     message.success('已更新线下任务')
     setOfflineEditOpen(false)
     setOfflineEditForm(null)
     loadRangeItems().catch(() => {})
-  }, [loadRangeItems, offlineEditForm])
+  }, [loadRangeItems, normalizeTaskPhotoUrls, offlineEditForm])
 
   const deleteOfflineTask = useCallback(async (id: string) => {
     const taskId = String(id || '').trim()
@@ -1654,6 +1700,7 @@ export default function CleaningPage() {
                 const detail = String(it.content || '').trim()
                 const typeLabel = offlineTaskTypeText(it.task_type)
                 const urgencyLabel = urgencyText(it.urgency)
+                const photoUrls = normalizeTaskPhotoUrls(it.photo_urls)
                 return (
                   <div key={`${it.source}:${it.entity_id}`} className={styles.missionCard}>
                     <div className={`${styles.accent} ${styles.accentUnassigned}`} style={{ backgroundColor: stripeColorForUrgency(String(it.urgency || 'medium')) }} />
@@ -1695,6 +1742,23 @@ export default function CleaningPage() {
                     <div className={styles.metaRow}>
                       <span className={styles.metaText}>{detail || '暂无任务详情'}</span>
                     </div>
+                    {photoUrls.length ? (
+                      <div className={styles.metaRow}>
+                        <span className={styles.metaText}><PictureOutlined /> 照片 {photoUrls.length} 张</span>
+                        <Space size={6} wrap>
+                          {photoUrls.slice(0, 4).map((url, index) => (
+                            <Image
+                              key={`${url}:${index}`}
+                              src={displayPhotoUrl(url)}
+                              alt={`线下任务照片 ${index + 1}`}
+                              width={44}
+                              height={44}
+                              style={{ objectFit: 'cover', borderRadius: 6, border: '1px solid #E5E7EB' }}
+                            />
+                          ))}
+                        </Space>
+                      </div>
+                    ) : null}
                     <div className={styles.controlsRow}>
                       <div className={styles.assigneeGroup}>
                         <div className={styles.assigneeLabel}>指派人</div>
@@ -2245,6 +2309,32 @@ export default function CleaningPage() {
               />
             </div>
             <div>
+              <div className={styles.fieldLabel}>任务照片</div>
+              <Upload
+                accept="image/*"
+                listType="picture-card"
+                multiple
+                fileList={photoUploadFiles(offlineCreateForm.photo_urls)}
+                customRequest={({ file, onError, onSuccess }) => {
+                  uploadOfflineTaskPhoto(file as File)
+                    .then((url) => {
+                      setOfflineCreateForm((p) => (p ? { ...p, photo_urls: normalizeTaskPhotoUrls([...(p.photo_urls || []), url]) } : p))
+                      onSuccess?.({ url })
+                    })
+                    .catch((e) => onError?.(e as Error))
+                }}
+                onRemove={(file) => {
+                  const url = String(file.url || file.thumbUrl || '').trim()
+                  setOfflineCreateForm((p) => (p ? { ...p, photo_urls: normalizeTaskPhotoUrls((p.photo_urls || []).filter((item) => item !== url && displayPhotoUrl(item) !== url)) } : p))
+                  return true
+                }}
+              >
+                {(offlineCreateForm.photo_urls || []).length >= 20 ? null : (
+                  <div><UploadOutlined /><div style={{ marginTop: 8 }}>上传</div></div>
+                )}
+              </Upload>
+            </div>
+            <div>
               <div className={styles.fieldLabel}>紧急度</div>
               <Select
                 value={offlineCreateForm.urgency}
@@ -2324,6 +2414,32 @@ export default function CleaningPage() {
                 style={{ width: '100%' }}
                 autoSize={{ minRows: 3, maxRows: 8 }}
               />
+            </div>
+            <div>
+              <div className={styles.fieldLabel}>任务照片</div>
+              <Upload
+                accept="image/*"
+                listType="picture-card"
+                multiple
+                fileList={photoUploadFiles(offlineEditForm.photo_urls)}
+                customRequest={({ file, onError, onSuccess }) => {
+                  uploadOfflineTaskPhoto(file as File)
+                    .then((url) => {
+                      setOfflineEditForm((p) => (p ? { ...p, photo_urls: normalizeTaskPhotoUrls([...(p.photo_urls || []), url]) } : p))
+                      onSuccess?.({ url })
+                    })
+                    .catch((e) => onError?.(e as Error))
+                }}
+                onRemove={(file) => {
+                  const url = String(file.url || file.thumbUrl || '').trim()
+                  setOfflineEditForm((p) => (p ? { ...p, photo_urls: normalizeTaskPhotoUrls((p.photo_urls || []).filter((item) => item !== url && displayPhotoUrl(item) !== url)) } : p))
+                  return true
+                }}
+              >
+                {(offlineEditForm.photo_urls || []).length >= 20 ? null : (
+                  <div><UploadOutlined /><div style={{ marginTop: 8 }}>上传</div></div>
+                )}
+              </Upload>
             </div>
             <div>
               <div className={styles.fieldLabel}>状态</div>

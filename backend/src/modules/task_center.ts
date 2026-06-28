@@ -114,6 +114,14 @@ type BoardRowMeta = {
   subrow_order: string[]
 }
 
+type TaskSaveDiff = {
+  taskId: string
+  changedFields: string[]
+  pushChanges: string[]
+  pushRecipientUserIds: string[]
+  priority?: 'high' | 'medium' | 'low'
+}
+
 const memoryTaskFlags = new Map<string, TaskFlag>()
 let cleaningInspectionScopeEnsured = false
 let cleaningInspectionScopeEnsuring: Promise<void> | null = null
@@ -177,6 +185,194 @@ function text(v: any): string {
 
 function lower(v: any): string {
   return text(v).toLowerCase()
+}
+
+function nullableText(v: any): string | null {
+  const s = text(v)
+  return s ? s : null
+}
+
+function dayText(v: any): string | null {
+  const d = dayOnly(v)
+  if (d) return d
+  const s = text(v)
+  return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : null
+}
+
+function uniqTextList(items: any[]): string[] {
+  return Array.from(new Set((items || []).map((item) => text(item)).filter(Boolean)))
+}
+
+function cleaningTaskLabel(taskTypeRaw: any) {
+  const taskType = lower(taskTypeRaw)
+  if (taskType === 'checkin_clean') return '入住任务'
+  if (taskType === 'checkout_clean') return '退房任务'
+  if (taskType === 'stayover_clean') return '入住中清洁任务'
+  return '清洁任务'
+}
+
+function taskChangeLabel(change: string) {
+  if (change === 'assignee') return '执行人'
+  if (change === 'inspection') return '检查安排'
+  if (change === 'date') return '日期'
+  if (change === 'content') return '内容'
+  if (change === 'status') return '状态'
+  if (change === 'urgency') return '紧急度'
+  return change
+}
+
+function taskChangeBody(changes: string[]) {
+  const labels = uniqTextList(changes).map(taskChangeLabel)
+  return labels.length ? `已更新：${labels.join('、')}` : '任务安排已更新'
+}
+
+function isImportantTaskStatus(statusRaw: any) {
+  const status = lower(statusRaw)
+  return status === 'done'
+    || status === 'completed'
+    || status === 'ready'
+    || status === 'cancelled'
+    || status === 'canceled'
+    || status === 'keys_hung'
+}
+
+function buildCleaningSaveDiff(before: any, assignment: any): TaskSaveDiff | null {
+  const taskId = text(assignment?.task_id)
+  if (!taskId || !before) return null
+  const oldCleaner = nullableText(before.cleaner_id || before.assignee_id)
+  const nextCleaner = nullableText(assignment.cleaner_id)
+  const oldAssignee = nullableText(before.assignee_id)
+  const nextAssignee = nextCleaner
+  const oldInspector = nullableText(before.inspector_id)
+  const nextInspector = lower(assignment.status) === 'keys_hung' && !nullableText(assignment.inspector_id)
+    ? oldInspector
+    : nullableText(assignment.inspector_id)
+  const oldInspectionMode = nullableText(before.inspection_mode)
+  const nextInspectionMode = nullableText(assignment.inspection_mode)
+  const oldInspectionScope = normalizeInspectionScope(before.inspection_scope)
+  const nextInspectionScope = normalizeInspectionScope(assignment.inspection_scope)
+  const oldInspectionDueDate = dayText(before.inspection_due_date)
+  const nextInspectionDueDate = dayText(assignment.inspection_due_date)
+  const oldStatus = nullableText(before.status)
+  const nextStatus = nullableText(assignment.status)
+  const changedFields: string[] = []
+  const pushChanges: string[] = []
+  const recipients: any[] = []
+
+  const cleanerChanged = oldCleaner !== nextCleaner
+  if (cleanerChanged) {
+    changedFields.push('cleaner_id')
+    pushChanges.push('assignee')
+    recipients.push(oldCleaner, nextCleaner)
+  } else if (oldAssignee !== nextAssignee) {
+    changedFields.push('assignee_id')
+  }
+
+  if (oldInspector !== nextInspector) {
+    changedFields.push('inspector_id')
+    pushChanges.push('inspection')
+    recipients.push(oldInspector, nextInspector)
+  }
+  if (oldInspectionMode !== nextInspectionMode) {
+    changedFields.push('inspection_mode')
+    pushChanges.push('inspection')
+  }
+  if (oldInspectionScope !== nextInspectionScope) {
+    changedFields.push('inspection_scope')
+    pushChanges.push('inspection')
+  }
+  if (oldInspectionDueDate !== nextInspectionDueDate) {
+    changedFields.push('inspection_due_date')
+    pushChanges.push('inspection')
+  }
+  if (oldStatus !== nextStatus) {
+    changedFields.push('status')
+    const assignmentOnlyStatus = cleanerChanged && lower(oldStatus) !== lower(nextStatus) && lower(nextStatus) === 'assigned'
+    if (!assignmentOnlyStatus && isImportantTaskStatus(nextStatus)) {
+      pushChanges.push('status')
+    }
+  }
+
+  if (pushChanges.some((change) => change === 'inspection' || change === 'status')) {
+    recipients.push(nextCleaner, nextInspector)
+  }
+
+  if (!changedFields.length) return null
+  return {
+    taskId,
+    changedFields: uniqTextList(changedFields),
+    pushChanges: uniqTextList(pushChanges),
+    pushRecipientUserIds: uniqTextList(recipients),
+    priority: pushChanges.includes('status') ? 'medium' : undefined,
+  }
+}
+
+function buildWorkSaveDiff(before: any, assignment: any): TaskSaveDiff | null {
+  const taskId = text(assignment?.task_id)
+  if (!taskId || !before) return null
+  const oldAssignee = nullableText(before.assignee_id)
+  const nextAssignee = nullableText(assignment.assignee_id)
+  const oldTitle = text(before.title)
+  const nextTitle = text(assignment.title) || oldTitle
+  const oldSummary = nullableText(before.summary)
+  const nextSummary = nullableText(assignment.summary)
+  const oldScheduledDate = dayText(before.scheduled_date)
+  const nextScheduledDate = assignment.scheduled_date == null ? oldScheduledDate : dayText(assignment.scheduled_date)
+  const oldStatus = nullableText(before.status)
+  const nextStatus = nullableText(assignment.status) || (
+    ['todo', 'assigned'].includes(lower(before.status))
+      ? (nextAssignee ? 'assigned' : 'todo')
+      : oldStatus
+  )
+  const oldUrgency = nullableText(before.urgency)
+  const nextUrgency = nullableText(assignment.urgency) || oldUrgency
+  const changedFields: string[] = []
+  const pushChanges: string[] = []
+  const recipients: any[] = []
+
+  const assigneeChanged = oldAssignee !== nextAssignee
+  if (oldTitle !== nextTitle) {
+    changedFields.push('title')
+    pushChanges.push('content')
+  }
+  if (oldSummary !== nextSummary) {
+    changedFields.push('summary')
+    pushChanges.push('content')
+  }
+  if (oldScheduledDate !== nextScheduledDate) {
+    changedFields.push('scheduled_date')
+    pushChanges.push('date')
+  }
+  if (assigneeChanged) {
+    changedFields.push('assignee_id')
+    pushChanges.push('assignee')
+    recipients.push(oldAssignee, nextAssignee)
+  }
+  if (oldStatus !== nextStatus) {
+    changedFields.push('status')
+    const assignmentOnlyStatus = assigneeChanged && ['todo', 'assigned'].includes(lower(oldStatus)) && ['todo', 'assigned'].includes(lower(nextStatus))
+    if (!assignmentOnlyStatus && isImportantTaskStatus(nextStatus)) {
+      pushChanges.push('status')
+    }
+  }
+  if (oldUrgency !== nextUrgency) {
+    changedFields.push('urgency')
+    pushChanges.push('urgency')
+  }
+
+  if (pushChanges.some((change) => change !== 'assignee')) {
+    recipients.push(nextAssignee)
+  }
+
+  if (!changedFields.length) return null
+  const onlyUrgency = pushChanges.length === 1 && pushChanges[0] === 'urgency'
+  return {
+    taskId,
+    changedFields: uniqTextList(changedFields),
+    pushChanges: uniqTextList(pushChanges),
+    pushRecipientUserIds: uniqTextList(recipients),
+    priority: onlyUrgency ? 'low' : 'medium',
+  }
 }
 
 function normalizeBoardMode(_mode?: string | null): BoardMode {
@@ -333,11 +529,13 @@ async function ensureWorkTasksTable() {
     assignee_id text,
     status text NOT NULL DEFAULT 'todo',
     urgency text NOT NULL DEFAULT 'medium',
+    photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb,
     created_by text,
     updated_by text,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
   );`)
+  await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb;`)
   await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_work_tasks_source ON work_tasks(source_type, source_id);`)
   await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day_assignee ON work_tasks(scheduled_date, assignee_id, status);`)
   await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_kind_day ON work_tasks(task_kind, scheduled_date);`)
@@ -1666,10 +1864,63 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
       }
       const client = await pgPool.connect()
       const eventInputs: Parameters<typeof emitWorkTaskEvent>[0][] = []
+      let layoutChanged = false
+      let pushNotificationEvents = 0
+      let pushNotificationRecipients = 0
+      let changedCleaningTasks: any[] = []
+      let changedWorkTasks: any[] = []
+      const cleaningDiffById = new Map<string, TaskSaveDiff>()
+      const workDiffById = new Map<string, TaskSaveDiff>()
       try {
         await client.query('BEGIN')
-        let changedCleaningTasks: any[] = []
-        let changedWorkTasks: any[] = []
+        if (payload.cleaning_assignments.length) {
+          const beforeResult = await client.query(
+            `SELECT id::text AS id,
+                    task_type,
+                    property_id,
+                    task_date,
+                    cleaner_id,
+                    assignee_id,
+                    inspector_id,
+                    inspection_mode,
+                    inspection_scope,
+                    inspection_due_date,
+                    status
+             FROM cleaning_tasks
+             WHERE id::text = ANY($1::text[])
+             FOR UPDATE`,
+            [payload.cleaning_assignments.map((item) => item.task_id)],
+          )
+          const beforeById = new Map<string, any>((beforeResult.rows || []).map((row: any) => [String(row.id), row]))
+          for (const assignment of payload.cleaning_assignments) {
+            const diff = buildCleaningSaveDiff(beforeById.get(String(assignment.task_id)), assignment)
+            if (diff) cleaningDiffById.set(diff.taskId, diff)
+          }
+        }
+        if (payload.work_assignments.length) {
+          const beforeResult = await client.query(
+            `SELECT id::text AS id,
+                    task_kind,
+                    source_type,
+                    source_id,
+                    property_id,
+                    title,
+                    summary,
+                    scheduled_date,
+                    assignee_id,
+                    status,
+                    urgency
+             FROM work_tasks
+             WHERE id::text = ANY($1::text[])
+             FOR UPDATE`,
+            [payload.work_assignments.map((item) => item.task_id)],
+          )
+          const beforeById = new Map<string, any>((beforeResult.rows || []).map((row: any) => [String(row.id), row]))
+          for (const assignment of payload.work_assignments) {
+            const diff = buildWorkSaveDiff(beforeById.get(String(assignment.task_id)), assignment)
+            if (diff) workDiffById.set(diff.taskId, diff)
+          }
+        }
         const rowValues = Array.from(rowMap.values()).map((row) => ({
           row_key: row.row_key,
           row_type: row.row_type,
@@ -1678,7 +1929,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
           assignments: row.assignments,
           lane_order: row.subrow_order,
         }))
-        await client.query(
+        const rowLayoutResult = await client.query(
           `INSERT INTO task_center_board_rows(task_date, board_mode, row_key, row_type, row_title, row_order, assignments, lane_order, updated_by, updated_at)
            SELECT $1::date, $2, x.row_key, x.row_type, x.row_title, x.row_order, x.assignments, x.lane_order, $4, now()
            FROM jsonb_to_recordset($3::jsonb) AS x(
@@ -1695,11 +1946,13 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
               OR task_center_board_rows.row_title IS DISTINCT FROM EXCLUDED.row_title
               OR task_center_board_rows.row_order IS DISTINCT FROM EXCLUDED.row_order
               OR task_center_board_rows.assignments IS DISTINCT FROM EXCLUDED.assignments
-              OR task_center_board_rows.lane_order IS DISTINCT FROM EXCLUDED.lane_order`,
+              OR task_center_board_rows.lane_order IS DISTINCT FROM EXCLUDED.lane_order
+           RETURNING row_key`,
           [payload.date, mode, JSON.stringify(rowValues), updatedBy],
         )
+        if (Number(rowLayoutResult.rowCount || 0) > 0) layoutChanged = true
         if (payload.items.length) {
-          await client.query(
+          const itemLayoutResult = await client.query(
             `INSERT INTO task_center_board_items(task_date, board_mode, task_source, task_id, row_key, lane_key, item_order, updated_by, updated_at)
              SELECT $1::date, $2, x.task_source, x.task_id, x.row_key, x.lane_key, x.item_order, $4, now()
              FROM jsonb_to_recordset($3::jsonb) AS x(
@@ -1713,7 +1966,8 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
              DO UPDATE SET row_key=EXCLUDED.row_key, lane_key=EXCLUDED.lane_key, item_order=EXCLUDED.item_order, updated_by=EXCLUDED.updated_by, updated_at=now()
              WHERE task_center_board_items.row_key IS DISTINCT FROM EXCLUDED.row_key
                 OR task_center_board_items.lane_key IS DISTINCT FROM EXCLUDED.lane_key
-                OR task_center_board_items.item_order IS DISTINCT FROM EXCLUDED.item_order`,
+                OR task_center_board_items.item_order IS DISTINCT FROM EXCLUDED.item_order
+             RETURNING task_source, task_id`,
             [
               payload.date,
               mode,
@@ -1727,6 +1981,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
               updatedBy,
             ],
           )
+          if (Number(itemLayoutResult.rowCount || 0) > 0) layoutChanged = true
         }
         if (payload.cleaning_assignments.length) {
           const result = await client.query(
@@ -1852,15 +2107,18 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
           } catch {}
         }
         for (const task of changedWorkTasks) {
+          const diff = workDiffById.get(String(task.id))
+          if (!diff) continue
+          const recipients = uniqTextList(diff.pushRecipientUserIds)
+          if (!diff.pushChanges.length || !recipients.length) continue
           const assigneeId = String(task.assignee_id || '').trim()
-          if (!assigneeId) continue
           const actorId = String(user.sub || '').trim()
           const taskDate = task.scheduled_date ? String(task.scheduled_date).slice(0, 10) : payload.date
           const taskTitle = String(task.title || '').trim() || '线下任务'
           const taskSummary = String(task.summary || '').trim()
           const assigneeName = workAssigneeNames.get(assigneeId) || assigneeId
           try {
-            await emitNotificationEvent(
+            const notificationResult = await emitNotificationEvent(
               {
                 type: 'WORK_TASK_UPDATED',
                 policyKey: 'work_task_updated',
@@ -1870,10 +2128,12 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                 updatedAt: String(task.updated_at || '').trim() || new Date().toISOString(),
                 title: '任务安排已更新',
                 body: [
+                  taskChangeBody(diff.pushChanges),
                   `任务：${taskTitle}`,
                   taskSummary ? `内容：${taskSummary}` : '',
                   `日期：${taskDate}`,
                 ].filter(Boolean).join('\n'),
+                changes: diff.pushChanges,
                 data: {
                   entity: 'work_task',
                   entityId: String(task.id),
@@ -1888,10 +2148,16 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                   status: task.status,
                   urgency: task.urgency,
                 },
+                priority: diff.priority,
                 actorUserId: actorId || null,
+                recipientUserIds: recipients,
               },
               { operationId: uuid(), pgClient: client },
             )
+            if (Number((notificationResult as any)?.sent || 0) > 0) {
+              pushNotificationEvents += 1
+              pushNotificationRecipients += Number((notificationResult as any).sent || 0)
+            }
           } catch {}
         }
         if (payload.task_flags.length) {
@@ -1914,58 +2180,57 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
           )
         }
         for (const task of changedCleaningTasks) {
+          const diff = cleaningDiffById.get(String(task.id))
+          if (!diff) continue
           const actorId = String(user.sub || '').trim()
           const taskId = String(task.id)
-          const taskType = lower(task.task_type)
-          const taskLabel = taskType === 'checkin_clean'
-            ? '入住任务'
-            : taskType === 'checkout_clean'
-              ? '退房任务'
-              : taskType === 'stayover_clean'
-                ? '入住中清洁任务'
-                : '清洁任务'
-          try {
-            await emitNotificationEvent(
-              {
-                type: 'CLEANING_TASK_UPDATED',
-                entity: 'cleaning_task',
-                entityId: taskId,
-                propertyId: task.property_id ? String(task.property_id) : undefined,
-                updatedAt: String(task.updated_at || '').trim() || new Date().toISOString(),
-                changes: ['assignee', 'inspection', 'status'],
-                title: `${taskLabel}安排已更新`,
-                body: '执行人、检查安排或任务状态已更新',
-                data: {
+          if (diff.pushChanges.length && diff.pushRecipientUserIds.length) {
+            try {
+              const notificationResult = await emitNotificationEvent(
+                {
+                  type: 'CLEANING_TASK_UPDATED',
                   entity: 'cleaning_task',
                   entityId: taskId,
-                  action: 'open_task',
-                  kind: 'cleaning_task_updated',
-                  task_id: taskId,
-                  task_type: task.task_type || null,
-                  task_date: task.task_date ? String(task.task_date).slice(0, 10) : null,
-                  assignee_id: task.assignee_id || null,
-                  cleaner_id: task.cleaner_id || null,
-                  inspector_id: task.inspector_id || null,
-                  status: task.status,
+                  propertyId: task.property_id ? String(task.property_id) : undefined,
+                  updatedAt: String(task.updated_at || '').trim() || new Date().toISOString(),
+                  changes: diff.pushChanges,
+                  title: `${cleaningTaskLabel(task.task_type)}安排已更新`,
+                  body: taskChangeBody(diff.pushChanges),
+                  data: {
+                    entity: 'cleaning_task',
+                    entityId: taskId,
+                    action: 'open_task',
+                    kind: 'cleaning_task_updated',
+                    task_id: taskId,
+                    task_type: task.task_type || null,
+                    task_date: task.task_date ? String(task.task_date).slice(0, 10) : null,
+                    assignee_id: task.assignee_id || null,
+                    cleaner_id: task.cleaner_id || null,
+                    inspector_id: task.inspector_id || null,
+                    status: task.status,
+                  },
+                  priority: diff.priority,
+                  actorUserId: actorId || null,
+                  excludeActor: false,
+                  recipientUserIds: diff.pushRecipientUserIds,
                 },
-                actorUserId: actorId || null,
-                excludeActor: false,
-                recipientUserIds: [task.assignee_id, task.cleaner_id, task.inspector_id]
-                  .map((value) => String(value || '').trim())
-                  .filter(Boolean),
-              },
-              { operationId: uuid(), pgClient: client },
-            )
-          } catch (error: any) {
-            console.error(`[task-center] cleaning_assignment_notification_failed task_id=${taskId} message=${String(error?.message || error || '')}`)
+                { operationId: uuid(), pgClient: client },
+              )
+              if (Number((notificationResult as any)?.sent || 0) > 0) {
+                pushNotificationEvents += 1
+                pushNotificationRecipients += Number((notificationResult as any).sent || 0)
+              }
+            } catch (error: any) {
+              console.error(`[task-center] cleaning_assignment_notification_failed task_id=${taskId} message=${String(error?.message || error || '')}`)
+            }
           }
           eventInputs.push({
             taskId: `cleaning_task:${taskId}`,
             sourceType: 'cleaning_tasks',
             sourceRefIds: [taskId],
-            eventType: 'TASK_ASSIGNMENT_CHANGED',
-            changeScope: 'membership',
-            changedFields: ['cleaner_id', 'assignee_id', 'inspector_id', 'inspection_mode', 'inspection_scope', 'inspection_due_date', 'status'],
+            eventType: diff.changedFields.some((field) => field === 'cleaner_id' || field === 'assignee_id' || field === 'inspector_id') ? 'TASK_ASSIGNMENT_CHANGED' : 'TASK_UPDATED',
+            changeScope: diff.changedFields.some((field) => field === 'cleaner_id' || field === 'assignee_id' || field === 'inspector_id') ? 'membership' : 'list',
+            changedFields: diff.changedFields,
             patch: {
               cleaner_id: task.cleaner_id ?? null,
               assignee_id: task.assignee_id ?? null,
@@ -1980,13 +2245,15 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
           })
         }
         for (const task of changedWorkTasks) {
+          const diff = workDiffById.get(String(task.id))
+          if (!diff) continue
           eventInputs.push({
             taskId: String(task.id),
             sourceType: String(task.source_type || 'work_tasks'),
             sourceRefIds: [String(task.source_id || task.id)],
-            eventType: 'TASK_ASSIGNMENT_CHANGED',
-            changeScope: 'membership',
-            changedFields: ['title', 'summary', 'scheduled_date', 'assignee_id', 'status', 'urgency'],
+            eventType: diff.changedFields.includes('assignee_id') ? 'TASK_ASSIGNMENT_CHANGED' : 'TASK_UPDATED',
+            changeScope: diff.changedFields.includes('assignee_id') ? 'membership' : 'list',
+            changedFields: diff.changedFields,
             patch: {
               title: task.title ?? '',
               summary: task.summary ?? null,
@@ -2027,7 +2294,17 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
         items: payload.items.length,
         cleaning_assignments: payload.cleaning_assignments.length,
         work_assignments: payload.work_assignments.length,
-        event_notifications: eventInputs.length,
+        changed_tasks: {
+          cleaning: changedCleaningTasks.length,
+          work: changedWorkTasks.length,
+          total: changedCleaningTasks.length + changedWorkTasks.length,
+        },
+        push_notifications: {
+          events: pushNotificationEvents,
+          recipients: pushNotificationRecipients,
+        },
+        realtime_events: eventInputs.length,
+        layout_changed: layoutChanged,
       })
     }
 

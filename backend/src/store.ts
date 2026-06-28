@@ -203,6 +203,7 @@ export type CleaningOfflineTask = {
   urgency: 'low' | 'medium' | 'high' | 'urgent'
   property_id?: string
   assignee_id?: string
+  photo_urls?: string[]
 }
 
 export type RepairOrder = {
