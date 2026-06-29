@@ -4,7 +4,7 @@ import { v4 as uuid } from 'uuid'
 import { requireAnyPerm, requirePerm } from '../auth'
 import { db } from '../store'
 import { hasPg, pgPool } from '../dbAdapter'
-import { ensureCleaningSchemaV2 } from '../services/cleaningSync'
+import { activeCleaningTaskWhereSql, ensureCleaningSchemaV2 } from '../services/cleaningSync'
 import {
   defaultInspectionModeForTaskType,
   deferredProjectionDate,
@@ -12,6 +12,7 @@ import {
   isInspectionModeAllowedForTask,
   mergeTurnoverTaskPlan,
 } from '../lib/cleaningInspection'
+import { buildCleaningTurnoverDisplay } from '../lib/cleaningTurnoverDisplay'
 import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
 import { emitNotificationEvent } from '../services/notificationEvents'
 
@@ -36,6 +37,9 @@ type BoardTask = {
   task_source: TaskSource
   task_id: string
   task_ids: string[]
+  active_source_ids?: string[]
+  superseded_source_ids?: string[]
+  all_related_source_ids?: string[]
   task_kind: string
   source_type?: string | null
   source_id?: string | null
@@ -68,6 +72,23 @@ type BoardTask = {
   nights?: number | null
   summary_checkout_time?: string | null
   summary_checkin_time?: string | null
+  checkout_task_date?: string | null
+  checkout_task_dates?: string[]
+  keys_required?: number | null
+  keys_required_checkout?: number | null
+  keys_required_checkin?: number | null
+  guest_special_request?: string | null
+  guest_request_checkout?: string | null
+  guest_request_checkin?: string | null
+  guest_request_summary?: string | null
+  order_id_checkout?: string | null
+  order_id_checkin?: string | null
+  is_late_checkout?: boolean
+  is_early_checkin?: boolean
+  is_late_checkin?: boolean
+  display_conflicts?: any[]
+  turnover_display?: any
+  __superseded_sources?: any[]
   temporarily_skipped?: boolean
   skip_reason?: string | null
   skip_bucket?: string | null
@@ -112,6 +133,14 @@ type BoardRowMeta = {
   row_order: number
   assignments: Record<string, any>
   subrow_order: string[]
+}
+
+type TaskSaveDiff = {
+  taskId: string
+  changedFields: string[]
+  pushChanges: string[]
+  pushRecipientUserIds: string[]
+  priority?: 'high' | 'medium' | 'low'
 }
 
 const memoryTaskFlags = new Map<string, TaskFlag>()
@@ -177,6 +206,204 @@ function text(v: any): string {
 
 function lower(v: any): string {
   return text(v).toLowerCase()
+}
+
+function nullableText(v: any): string | null {
+  const s = text(v)
+  return s ? s : null
+}
+
+function assignmentAction(v: any): 'assign' | 'unassign' | null {
+  const s = lower(v)
+  return s === 'assign' || s === 'unassign' ? s : null
+}
+
+function dayText(v: any): string | null {
+  const d = dayOnly(v)
+  if (d) return d
+  const s = text(v)
+  return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : null
+}
+
+function uniqTextList(items: any[]): string[] {
+  return Array.from(new Set((items || []).map((item) => text(item)).filter(Boolean)))
+}
+
+function cleaningTaskLabel(taskTypeRaw: any) {
+  const taskType = lower(taskTypeRaw)
+  if (taskType === 'checkin_clean') return '入住任务'
+  if (taskType === 'checkout_clean') return '退房任务'
+  if (taskType === 'stayover_clean') return '入住中清洁任务'
+  return '清洁任务'
+}
+
+function taskChangeLabel(change: string) {
+  if (change === 'assignee') return '执行人'
+  if (change === 'inspection') return '检查安排'
+  if (change === 'date') return '日期'
+  if (change === 'content') return '内容'
+  if (change === 'status') return '状态'
+  if (change === 'urgency') return '紧急度'
+  return change
+}
+
+function taskChangeBody(changes: string[]) {
+  const labels = uniqTextList(changes).map(taskChangeLabel)
+  return labels.length ? `已更新：${labels.join('、')}` : '任务安排已更新'
+}
+
+function isImportantTaskStatus(statusRaw: any) {
+  const status = lower(statusRaw)
+  return status === 'done'
+    || status === 'completed'
+    || status === 'ready'
+    || status === 'cancelled'
+    || status === 'canceled'
+    || status === 'keys_hung'
+}
+
+function buildCleaningSaveDiff(before: any, assignment: any): TaskSaveDiff | null {
+  const taskId = text(assignment?.task_id)
+  if (!taskId || !before) return null
+  const oldCleaner = nullableText(before.cleaner_id || before.assignee_id)
+  const cleanerAction = assignmentAction(assignment.cleaner_assignment_action)
+  const nextCleaner = cleanerAction ? nullableText(assignment.cleaner_id) : oldCleaner
+  const oldAssignee = nullableText(before.assignee_id)
+  const nextAssignee = nextCleaner
+  const oldInspector = nullableText(before.inspector_id)
+  const inspectorAction = assignmentAction(assignment.inspector_assignment_action)
+  const nextInspector = !inspectorAction
+    ? oldInspector
+    : lower(assignment.status) === 'keys_hung' && !nullableText(assignment.inspector_id)
+    ? oldInspector
+    : nullableText(assignment.inspector_id)
+  const oldInspectionMode = nullableText(before.inspection_mode)
+  const nextInspectionMode = nullableText(assignment.inspection_mode)
+  const oldInspectionScope = normalizeInspectionScope(before.inspection_scope)
+  const nextInspectionScope = normalizeInspectionScope(assignment.inspection_scope)
+  const oldInspectionDueDate = dayText(before.inspection_due_date)
+  const nextInspectionDueDate = dayText(assignment.inspection_due_date)
+  const oldStatus = nullableText(before.status)
+  const nextStatus = nullableText(assignment.status)
+  const changedFields: string[] = []
+  const pushChanges: string[] = []
+  const recipients: any[] = []
+
+  const cleanerChanged = oldCleaner !== nextCleaner
+  if (cleanerChanged) {
+    changedFields.push('cleaner_id')
+    pushChanges.push('assignee')
+    recipients.push(oldCleaner, nextCleaner)
+  } else if (oldAssignee !== nextAssignee) {
+    changedFields.push('assignee_id')
+  }
+
+  if (oldInspector !== nextInspector) {
+    changedFields.push('inspector_id')
+    pushChanges.push('inspection')
+    recipients.push(oldInspector, nextInspector)
+  }
+  if (oldInspectionMode !== nextInspectionMode) {
+    changedFields.push('inspection_mode')
+    pushChanges.push('inspection')
+  }
+  if (oldInspectionScope !== nextInspectionScope) {
+    changedFields.push('inspection_scope')
+    pushChanges.push('inspection')
+  }
+  if (oldInspectionDueDate !== nextInspectionDueDate) {
+    changedFields.push('inspection_due_date')
+    pushChanges.push('inspection')
+  }
+  if (oldStatus !== nextStatus) {
+    changedFields.push('status')
+    const assignmentOnlyStatus = cleanerChanged && lower(oldStatus) !== lower(nextStatus) && lower(nextStatus) === 'assigned'
+    if (!assignmentOnlyStatus && isImportantTaskStatus(nextStatus)) {
+      pushChanges.push('status')
+    }
+  }
+
+  if (pushChanges.some((change) => change === 'inspection' || change === 'status')) {
+    recipients.push(nextCleaner, nextInspector)
+  }
+
+  if (!changedFields.length) return null
+  return {
+    taskId,
+    changedFields: uniqTextList(changedFields),
+    pushChanges: uniqTextList(pushChanges),
+    pushRecipientUserIds: uniqTextList(recipients),
+    priority: pushChanges.includes('status') ? 'medium' : undefined,
+  }
+}
+
+function buildWorkSaveDiff(before: any, assignment: any): TaskSaveDiff | null {
+  const taskId = text(assignment?.task_id)
+  if (!taskId || !before) return null
+  const oldAssignee = nullableText(before.assignee_id)
+  const assigneeAction = assignmentAction(assignment.assignee_assignment_action)
+  const nextAssignee = assigneeAction ? nullableText(assignment.assignee_id) : oldAssignee
+  const oldTitle = text(before.title)
+  const nextTitle = text(assignment.title) || oldTitle
+  const oldSummary = nullableText(before.summary)
+  const nextSummary = nullableText(assignment.summary)
+  const oldScheduledDate = dayText(before.scheduled_date)
+  const nextScheduledDate = assignment.scheduled_date == null ? oldScheduledDate : dayText(assignment.scheduled_date)
+  const oldStatus = nullableText(before.status)
+  const nextStatus = nullableText(assignment.status) || (
+    ['todo', 'assigned'].includes(lower(before.status))
+      ? (nextAssignee ? 'assigned' : 'todo')
+      : oldStatus
+  )
+  const oldUrgency = nullableText(before.urgency)
+  const nextUrgency = nullableText(assignment.urgency) || oldUrgency
+  const changedFields: string[] = []
+  const pushChanges: string[] = []
+  const recipients: any[] = []
+
+  const assigneeChanged = oldAssignee !== nextAssignee
+  if (oldTitle !== nextTitle) {
+    changedFields.push('title')
+    pushChanges.push('content')
+  }
+  if (oldSummary !== nextSummary) {
+    changedFields.push('summary')
+    pushChanges.push('content')
+  }
+  if (oldScheduledDate !== nextScheduledDate) {
+    changedFields.push('scheduled_date')
+    pushChanges.push('date')
+  }
+  if (assigneeChanged) {
+    changedFields.push('assignee_id')
+    pushChanges.push('assignee')
+    recipients.push(oldAssignee, nextAssignee)
+  }
+  if (oldStatus !== nextStatus) {
+    changedFields.push('status')
+    const assignmentOnlyStatus = assigneeChanged && ['todo', 'assigned'].includes(lower(oldStatus)) && ['todo', 'assigned'].includes(lower(nextStatus))
+    if (!assignmentOnlyStatus && isImportantTaskStatus(nextStatus)) {
+      pushChanges.push('status')
+    }
+  }
+  if (oldUrgency !== nextUrgency) {
+    changedFields.push('urgency')
+    pushChanges.push('urgency')
+  }
+
+  if (pushChanges.some((change) => change !== 'assignee')) {
+    recipients.push(nextAssignee)
+  }
+
+  if (!changedFields.length) return null
+  const onlyUrgency = pushChanges.length === 1 && pushChanges[0] === 'urgency'
+  return {
+    taskId,
+    changedFields: uniqTextList(changedFields),
+    pushChanges: uniqTextList(pushChanges),
+    pushRecipientUserIds: uniqTextList(recipients),
+    priority: onlyUrgency ? 'low' : 'medium',
+  }
 }
 
 function normalizeBoardMode(_mode?: string | null): BoardMode {
@@ -333,11 +560,13 @@ async function ensureWorkTasksTable() {
     assignee_id text,
     status text NOT NULL DEFAULT 'todo',
     urgency text NOT NULL DEFAULT 'medium',
+    photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb,
     created_by text,
     updated_by text,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
   );`)
+  await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb;`)
   await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_work_tasks_source ON work_tasks(source_type, source_id);`)
   await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day_assignee ON work_tasks(scheduled_date, assignee_id, status);`)
   await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_kind_day ON work_tasks(task_kind, scheduled_date);`)
@@ -425,7 +654,7 @@ async function syncPropertyFollowupWorkTasks() {
          LEFT JOIN orders o ON o.id::text = t.order_id::text
         WHERE lower(COALESCE(t.task_type::text, '')) = 'checkout_clean'
           AND COALESCE(t.task_date, t.date)::date >= timezone('Australia/Melbourne', now())::date
-          AND lower(COALESCE(t.status::text, '')) NOT IN ('cancelled','canceled')
+          AND ${activeCleaningTaskWhereSql('t')}
           AND (
             t.order_id IS NULL
             OR (
@@ -650,6 +879,14 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
     if (deferreds.length) {
       const first = deferreds[0]
       const ids = Array.from(new Set(deferreds.flatMap((x) => x.task_ids).filter(Boolean)))
+      const activeSourceIds = Array.from(new Set(deferreds.flatMap((x) => x.active_source_ids?.length ? x.active_source_ids : x.task_ids).filter(Boolean)))
+      const supersededSourceIds = Array.from(new Set(deferreds.flatMap((x) => x.superseded_source_ids || []).filter(Boolean)))
+      const allRelatedSourceIds = Array.from(new Set([
+        ...activeSourceIds,
+        ...supersededSourceIds,
+        ...deferreds.flatMap((x) => x.all_related_source_ids || []),
+      ].filter(Boolean)))
+      const checkoutTaskDates = uniqTextList(deferreds.flatMap((x) => x.checkout_task_dates?.length ? x.checkout_task_dates : [x.checkout_task_date]).filter(Boolean))
       const cleanerId = deferreds.every((x) => text(x.cleaner_id || x.assignee_id) === text(first.cleaner_id || first.assignee_id))
         ? (text(first.cleaner_id || first.assignee_id) || null)
         : null
@@ -663,7 +900,10 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
         ...first,
         item_key: `cleaning:deferred:${ids.join(',')}`,
         task_id: `deferred:${ids.join(',')}`,
-        task_ids: ids,
+        task_ids: activeSourceIds.length ? activeSourceIds : ids,
+        active_source_ids: activeSourceIds.length ? activeSourceIds : ids,
+        superseded_source_ids: supersededSourceIds,
+        all_related_source_ids: allRelatedSourceIds.length ? allRelatedSourceIds : ids,
         task_kind: 'deferred_inspection',
         title: first.title,
         detail: '待检查',
@@ -677,6 +917,8 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
         key_photo_uploaded_at: deferreds.find((x) => text(x.key_photo_uploaded_at))?.key_photo_uploaded_at || null,
         summary_checkout_time: null,
         summary_checkin_time: null,
+        checkout_task_date: checkoutTaskDates[0] || null,
+        checkout_task_dates: checkoutTaskDates,
         deferred_inspection_view: true,
         can_configure_inspection: false,
       })
@@ -701,25 +943,40 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
       const autoSync = all.every((x) => x.auto_sync_enabled !== false)
       const checkout = checkouts[0]
       const checkin = checkins[0]
+      const activeSourceIds = Array.from(new Set(all.flatMap((task) => task.active_source_ids?.length ? task.active_source_ids : task.task_ids).filter(Boolean)))
+      const supersededSourceIds = Array.from(new Set(all.flatMap((task) => task.superseded_source_ids || []).filter(Boolean)))
+      const allRelatedSourceIds = Array.from(new Set([
+        ...activeSourceIds,
+        ...supersededSourceIds,
+        ...all.flatMap((task) => task.all_related_source_ids || []),
+      ].filter(Boolean)))
+      const turnoverDisplay = buildCleaningTurnoverDisplay({
+        propertyId: first.property_id,
+        taskDate: first.task_date,
+        checkoutTask: { ...checkout, taskId: checkout.task_ids[0], taskType: checkout.task_kind, orderId: checkout.order_id },
+        checkinTask: { ...checkin, taskId: checkin.task_ids[0], taskType: checkin.task_kind, orderId: checkin.order_id },
+        activeRows: all.map((task) => ({ ...task, taskId: task.task_ids[0], taskType: task.task_kind, orderId: task.order_id })),
+        supersededRows: all.flatMap((task) => task.__superseded_sources || []),
+      })
       const mergedSummary = summaryText({
         property_region: first.property_region,
         property_code: first.property_code,
         property_id: first.property_id,
         task_type: 'turnover',
         title: '退房 入住',
-        summary_checkout_time: checkout.summary_checkout_time || DEFAULT_SUMMARY_CHECKOUT_TIME,
-        summary_checkin_time: checkin.summary_checkin_time || DEFAULT_SUMMARY_CHECKIN_TIME,
+        summary_checkout_time: turnoverDisplay.checkout_time || checkout.summary_checkout_time || DEFAULT_SUMMARY_CHECKOUT_TIME,
+        summary_checkin_time: turnoverDisplay.checkin_time || checkin.summary_checkin_time || DEFAULT_SUMMARY_CHECKIN_TIME,
       })
-      const mergedNights = checkin.nights ?? checkout.nights ?? first.nights ?? null
+      const mergedNights = turnoverDisplay.remaining_nights ?? checkin.nights ?? checkout.nights ?? first.nights ?? null
       const nightsText = mergedNights != null && Number(mergedNights) > 0 ? `住${Number(mergedNights)}晚` : ''
       out.push({
         ...first,
         item_key: `cleaning:${ids.join(',')}`,
         task_id: ids.join(','),
-        task_ids: Array.from(new Set([
-          ...checkouts.flatMap((task) => task.task_ids),
-          ...checkins.flatMap((task) => task.task_ids),
-        ].filter(Boolean))),
+        task_ids: activeSourceIds,
+        active_source_ids: activeSourceIds,
+        superseded_source_ids: supersededSourceIds,
+        all_related_source_ids: allRelatedSourceIds,
         task_kind: 'turnover',
         title: mergedSummary.title,
         detail: [mergedSummary.detail, nightsText].filter(Boolean).join('，'),
@@ -728,15 +985,31 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
         cleaner_id: turnoverPlan.cleanerId,
         inspector_id: turnoverPlan.inspectorId,
         checkin_sync_status: checkin.checkin_sync_status || null,
+        order_id: null,
+        order_id_checkout: turnoverDisplay.checkout_order_id,
+        order_id_checkin: turnoverDisplay.checkin_order_id,
         auto_sync_enabled: autoSync,
         has_key_photo: all.some((x) => !!x.has_key_photo),
         key_photo_uploaded_at: all.find((x) => text(x.key_photo_uploaded_at))?.key_photo_uploaded_at || null,
         inspection_mode: turnoverPlan.inspectionMode,
         inspection_due_date: turnoverPlan.inspectionDueDate,
-        old_code: null,
-        new_code: null,
-        summary_checkout_time: checkout.summary_checkout_time || null,
-        summary_checkin_time: checkin.summary_checkin_time || null,
+        old_code: turnoverDisplay.old_code,
+        new_code: turnoverDisplay.new_code,
+        guest_special_request: turnoverDisplay.guest_request_summary,
+        guest_request_checkout: turnoverDisplay.guest_request_checkout,
+        guest_request_checkin: turnoverDisplay.guest_request_checkin,
+        guest_request_summary: turnoverDisplay.guest_request_summary,
+        keys_required: Math.max(turnoverDisplay.keys_required_checkout || 0, turnoverDisplay.keys_required_checkin || 0, 1),
+        keys_required_checkout: turnoverDisplay.keys_required_checkout,
+        keys_required_checkin: turnoverDisplay.keys_required_checkin,
+        nights: turnoverDisplay.remaining_nights,
+        summary_checkout_time: turnoverDisplay.checkout_time || checkout.summary_checkout_time || null,
+        summary_checkin_time: turnoverDisplay.checkin_time || checkin.summary_checkin_time || null,
+        is_late_checkout: turnoverDisplay.is_late_checkout,
+        is_early_checkin: turnoverDisplay.is_early_checkin,
+        is_late_checkin: turnoverDisplay.is_late_checkin,
+        display_conflicts: turnoverDisplay.conflicts,
+        turnover_display: turnoverDisplay,
         can_configure_inspection: true,
       })
       const rest = items.filter((x) => lower(x.task_kind) !== 'checkin_clean' && lower(x.task_kind) !== 'checkout_clean')
@@ -795,11 +1068,17 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
          t.checkout_time,
          t.checkin_time,
          t.nights_override,
+         t.keys_required,
+         t.guest_special_request,
          t.source,
          t.auto_sync_enabled,
          t.old_code,
          t.new_code,
          (o.confirmation_code::text) AS order_code,
+         o.checkin::text AS order_checkin,
+         o.checkout::text AS order_checkout,
+         o.note::text AS order_note,
+         COALESCE(o.keys_required, t.keys_required, 1) AS order_keys_required,
          COALESCE(t.nights_override, o.nights) AS nights
        FROM cleaning_tasks t
        LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
@@ -814,7 +1093,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
            ${dateScopes.join('\n           OR ')}
            OR ${inspectionDueScopes.join('\n           OR ')}
          )
-         AND COALESCE(t.status,'') <> 'cancelled'
+         AND ${activeCleaningTaskWhereSql('t')}
          AND (t.order_id IS NULL OR o.id IS NOT NULL)
          AND (
            t.order_id IS NULL
@@ -828,9 +1107,45 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
       [date],
     )
     const tasks: BoardTask[] = []
-    for (const row of (r?.rows || [])) {
+    const rawRows = r?.rows || []
+    const activeTaskIds = Array.from(new Set(rawRows.map((row: any) => String(row?.id || '').trim()).filter(Boolean)))
+    const supersededByReplacementId = new Map<string, any[]>()
+    if (activeTaskIds.length) {
+      const sr = await pgPool.query(
+        `SELECT
+           id::text AS id,
+           superseded_by::text AS superseded_by,
+           property_id::text AS property_id,
+           task_type,
+           COALESCE(task_date, date)::text AS task_date,
+           checkout_time,
+           checkin_time,
+           keys_required,
+           nights_override,
+           guest_special_request,
+           old_code,
+           new_code
+         FROM cleaning_tasks
+         WHERE execution_state = 'superseded'
+           AND superseded_by::text = ANY($1::text[])
+         ORDER BY superseded_at DESC NULLS LAST, updated_at DESC NULLS LAST, id`,
+        [activeTaskIds],
+      )
+      for (const row of sr?.rows || []) {
+        const replacementId = text(row.superseded_by)
+        if (!replacementId) continue
+        const list = supersededByReplacementId.get(replacementId) || []
+        list.push(row)
+        supersededByReplacementId.set(replacementId, list)
+      }
+    }
+    for (const row of rawRows) {
       const d = text(row.task_date).slice(0, 10)
       const rawType = text(row.task_type) || 'cleaning_task'
+      const sourceId = String(row.id)
+      const supersededSources = supersededByReplacementId.get(sourceId) || []
+      const supersededSourceIds = supersededSources.map((x: any) => text(x.id)).filter(Boolean)
+      const sourceIds = [sourceId]
       const inspectionMode = effectiveInspectionMode(row)
       const inspectionDueDate = dayOnly(row.inspection_due_date)
       const label =
@@ -859,7 +1174,11 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
           item_key: `cleaning:${String(row.id)}`,
           task_source: 'cleaning',
           task_id: String(row.id),
-          task_ids: [String(row.id)],
+          task_ids: sourceIds,
+          active_source_ids: sourceIds,
+          superseded_source_ids: supersededSourceIds,
+          all_related_source_ids: Array.from(new Set([...sourceIds, ...supersededSourceIds])),
+          __superseded_sources: supersededSources,
           task_kind: rawType,
           property_id: row.property_id ? String(row.property_id) : null,
           property_code: row.property_code ? String(row.property_code) : null,
@@ -880,14 +1199,48 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
           key_photo_uploaded_at: row.key_photo_uploaded_at ? String(row.key_photo_uploaded_at) : null,
           old_code: row.old_code != null ? String(row.old_code || '') : null,
           new_code: row.new_code != null ? String(row.new_code || '') : null,
+          guest_special_request: row.guest_special_request != null ? String(row.guest_special_request || '') : null,
+          keys_required: row.order_keys_required == null ? (row.keys_required == null ? 1 : Number(row.keys_required)) : Number(row.order_keys_required),
+          keys_required_checkout: rawType === 'checkout_clean' ? (row.order_keys_required == null ? (row.keys_required == null ? 1 : Number(row.keys_required)) : Number(row.order_keys_required)) : null,
+          keys_required_checkin: rawType === 'checkin_clean' ? (row.order_keys_required == null ? (row.keys_required == null ? 1 : Number(row.keys_required)) : Number(row.order_keys_required)) : null,
+          order_id_checkout: rawType === 'checkout_clean' && row.order_id ? String(row.order_id) : null,
+          order_id_checkin: rawType === 'checkin_clean' && row.order_id ? String(row.order_id) : null,
           inspection_scope: rawType === 'checkin_clean' ? normalizeInspectionScope(row.inspection_scope) : null,
           nights: row.nights != null ? Number(row.nights) : null,
           summary_checkout_time: text(row.checkout_time) || DEFAULT_SUMMARY_CHECKOUT_TIME,
           summary_checkin_time: text(row.checkin_time) || DEFAULT_SUMMARY_CHECKIN_TIME,
+          checkout_task_date: rawType === 'checkout_clean' ? d : null,
+          checkout_task_dates: rawType === 'checkout_clean' ? [d] : [],
           inspection_mode: inspectionMode as any,
           inspection_due_date: inspectionDueDate,
           deferred_inspection_view: false,
           can_configure_inspection: rawType === 'checkout_clean' || rawType === 'checkin_clean',
+          turnover_display: buildCleaningTurnoverDisplay({
+            propertyId: row.property_id,
+            taskDate: d,
+            checkoutTask: rawType === 'checkout_clean' ? {
+              ...row,
+              taskId: sourceId,
+              taskType: rawType,
+              orderId: row.order_id,
+              orderNote: row.order_note,
+              orderKeysRequired: row.order_keys_required,
+              orderCheckin: row.order_checkin,
+              orderCheckout: row.order_checkout,
+            } : null,
+            checkinTask: rawType === 'checkin_clean' ? {
+              ...row,
+              taskId: sourceId,
+              taskType: rawType,
+              orderId: row.order_id,
+              orderNote: row.order_note,
+              orderKeysRequired: row.order_keys_required,
+              orderCheckin: row.order_checkin,
+              orderCheckout: row.order_checkout,
+            } : null,
+            activeRows: [{ ...row, taskId: sourceId, taskType: rawType, orderId: row.order_id, orderNote: row.order_note, orderKeysRequired: row.order_keys_required, orderCheckin: row.order_checkin, orderCheckout: row.order_checkout }],
+            supersededRows: supersededSources,
+          }),
         })
       }
       if (projectionDate && !(inspectionMode === 'deferred' && d === date && projectionDate === date)) {
@@ -900,7 +1253,11 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
           item_key: `cleaning:${String(row.id)}::deferred_inspection:${projectionDate}`,
           task_source: 'cleaning',
           task_id: `${String(row.id)}::deferred_inspection:${projectionDate}`,
-          task_ids: [String(row.id)],
+          task_ids: sourceIds,
+          active_source_ids: sourceIds,
+          superseded_source_ids: supersededSourceIds,
+          all_related_source_ids: Array.from(new Set([...sourceIds, ...supersededSourceIds])),
+          __superseded_sources: supersededSources,
           task_kind: 'deferred_inspection',
           property_id: row.property_id ? String(row.property_id) : null,
           property_code: row.property_code ? String(row.property_code) : null,
@@ -923,6 +1280,8 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
           new_code: row.new_code != null ? String(row.new_code || '') : null,
           inspection_scope: rawType === 'checkin_clean' ? normalizeInspectionScope(row.inspection_scope) : null,
           nights: row.nights != null ? Number(row.nights) : null,
+          checkout_task_date: d,
+          checkout_task_dates: [d],
           summary_checkout_time: null,
           summary_checkin_time: null,
           inspection_mode: inspectionMode as any,
@@ -982,6 +1341,8 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
         nights: row.nights_override != null ? Number(row.nights_override) : null,
         summary_checkout_time: text(row.checkout_time) || DEFAULT_SUMMARY_CHECKOUT_TIME,
         summary_checkin_time: text(row.checkin_time) || DEFAULT_SUMMARY_CHECKIN_TIME,
+        checkout_task_date: lower(row.task_type) === 'checkout_clean' ? (taskDate || date) : null,
+        checkout_task_dates: lower(row.task_type) === 'checkout_clean' ? [taskDate || date] : [],
         inspection_mode: inspectionMode as any,
         inspection_due_date: inspectionDueDate,
         deferred_inspection_view: false,
@@ -1526,8 +1887,10 @@ const saveBoardSchema = z.object({
   })).default([]),
   cleaning_assignments: z.array(z.object({
     task_id: z.string().min(1),
-    cleaner_id: z.string().min(1).nullable(),
-    inspector_id: z.string().min(1).nullable(),
+    cleaner_id: z.string().min(1).nullable().optional(),
+    cleaner_assignment_action: z.enum(['assign', 'unassign']).optional(),
+    inspector_id: z.string().min(1).nullable().optional(),
+    inspector_assignment_action: z.enum(['assign', 'unassign']).optional(),
     inspection_mode: z.enum(['pending_decision', 'same_day', 'deferred', 'self_complete', 'checked_done']),
     inspection_scope: z.enum(['inspect_and_hang', 'password_only']).nullable().optional(),
     inspection_due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
@@ -1535,7 +1898,8 @@ const saveBoardSchema = z.object({
   })).default([]),
   work_assignments: z.array(z.object({
     task_id: z.string().min(1),
-    assignee_id: z.string().min(1).nullable(),
+    assignee_id: z.string().min(1).nullable().optional(),
+    assignee_assignment_action: z.enum(['assign', 'unassign']).optional(),
     title: z.string().optional(),
     summary: z.string().nullable().optional(),
     scheduled_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
@@ -1666,10 +2030,63 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
       }
       const client = await pgPool.connect()
       const eventInputs: Parameters<typeof emitWorkTaskEvent>[0][] = []
+      let layoutChanged = false
+      let pushNotificationEvents = 0
+      let pushNotificationRecipients = 0
+      let changedCleaningTasks: any[] = []
+      let changedWorkTasks: any[] = []
+      const cleaningDiffById = new Map<string, TaskSaveDiff>()
+      const workDiffById = new Map<string, TaskSaveDiff>()
       try {
         await client.query('BEGIN')
-        let changedCleaningTasks: any[] = []
-        let changedWorkTasks: any[] = []
+        if (payload.cleaning_assignments.length) {
+          const beforeResult = await client.query(
+            `SELECT id::text AS id,
+                    task_type,
+                    property_id,
+                    task_date,
+                    cleaner_id,
+                    assignee_id,
+                    inspector_id,
+                    inspection_mode,
+                    inspection_scope,
+                    inspection_due_date,
+                    status
+             FROM cleaning_tasks
+             WHERE id::text = ANY($1::text[])
+             FOR UPDATE`,
+            [payload.cleaning_assignments.map((item) => item.task_id)],
+          )
+          const beforeById = new Map<string, any>((beforeResult.rows || []).map((row: any) => [String(row.id), row]))
+          for (const assignment of payload.cleaning_assignments) {
+            const diff = buildCleaningSaveDiff(beforeById.get(String(assignment.task_id)), assignment)
+            if (diff) cleaningDiffById.set(diff.taskId, diff)
+          }
+        }
+        if (payload.work_assignments.length) {
+          const beforeResult = await client.query(
+            `SELECT id::text AS id,
+                    task_kind,
+                    source_type,
+                    source_id,
+                    property_id,
+                    title,
+                    summary,
+                    scheduled_date,
+                    assignee_id,
+                    status,
+                    urgency
+             FROM work_tasks
+             WHERE id::text = ANY($1::text[])
+             FOR UPDATE`,
+            [payload.work_assignments.map((item) => item.task_id)],
+          )
+          const beforeById = new Map<string, any>((beforeResult.rows || []).map((row: any) => [String(row.id), row]))
+          for (const assignment of payload.work_assignments) {
+            const diff = buildWorkSaveDiff(beforeById.get(String(assignment.task_id)), assignment)
+            if (diff) workDiffById.set(diff.taskId, diff)
+          }
+        }
         const rowValues = Array.from(rowMap.values()).map((row) => ({
           row_key: row.row_key,
           row_type: row.row_type,
@@ -1678,7 +2095,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
           assignments: row.assignments,
           lane_order: row.subrow_order,
         }))
-        await client.query(
+        const rowLayoutResult = await client.query(
           `INSERT INTO task_center_board_rows(task_date, board_mode, row_key, row_type, row_title, row_order, assignments, lane_order, updated_by, updated_at)
            SELECT $1::date, $2, x.row_key, x.row_type, x.row_title, x.row_order, x.assignments, x.lane_order, $4, now()
            FROM jsonb_to_recordset($3::jsonb) AS x(
@@ -1695,11 +2112,13 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
               OR task_center_board_rows.row_title IS DISTINCT FROM EXCLUDED.row_title
               OR task_center_board_rows.row_order IS DISTINCT FROM EXCLUDED.row_order
               OR task_center_board_rows.assignments IS DISTINCT FROM EXCLUDED.assignments
-              OR task_center_board_rows.lane_order IS DISTINCT FROM EXCLUDED.lane_order`,
+              OR task_center_board_rows.lane_order IS DISTINCT FROM EXCLUDED.lane_order
+           RETURNING row_key`,
           [payload.date, mode, JSON.stringify(rowValues), updatedBy],
         )
+        if (Number(rowLayoutResult.rowCount || 0) > 0) layoutChanged = true
         if (payload.items.length) {
-          await client.query(
+          const itemLayoutResult = await client.query(
             `INSERT INTO task_center_board_items(task_date, board_mode, task_source, task_id, row_key, lane_key, item_order, updated_by, updated_at)
              SELECT $1::date, $2, x.task_source, x.task_id, x.row_key, x.lane_key, x.item_order, $4, now()
              FROM jsonb_to_recordset($3::jsonb) AS x(
@@ -1713,7 +2132,8 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
              DO UPDATE SET row_key=EXCLUDED.row_key, lane_key=EXCLUDED.lane_key, item_order=EXCLUDED.item_order, updated_by=EXCLUDED.updated_by, updated_at=now()
              WHERE task_center_board_items.row_key IS DISTINCT FROM EXCLUDED.row_key
                 OR task_center_board_items.lane_key IS DISTINCT FROM EXCLUDED.lane_key
-                OR task_center_board_items.item_order IS DISTINCT FROM EXCLUDED.item_order`,
+                OR task_center_board_items.item_order IS DISTINCT FROM EXCLUDED.item_order
+             RETURNING task_source, task_id`,
             [
               payload.date,
               mode,
@@ -1727,40 +2147,56 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
               updatedBy,
             ],
           )
+          if (Number(itemLayoutResult.rowCount || 0) > 0) layoutChanged = true
         }
-        if (payload.cleaning_assignments.length) {
-          const result = await client.query(
-            `UPDATE cleaning_tasks AS task
-             SET cleaner_id = x.cleaner_id,
-                 assignee_id = x.cleaner_id,
-                 inspector_id = CASE
-                   WHEN lower(COALESCE(x.status, '')) = 'keys_hung' AND x.inspector_id IS NULL
-                     THEN task.inspector_id
-                   ELSE x.inspector_id
-                 END,
+          if (payload.cleaning_assignments.length) {
+            const result = await client.query(
+              `UPDATE cleaning_tasks AS task
+               SET cleaner_id = CASE
+                     WHEN x.cleaner_assignment_action IN ('assign', 'unassign') THEN x.cleaner_id
+                     ELSE task.cleaner_id
+                   END,
+                   assignee_id = CASE
+                     WHEN x.cleaner_assignment_action IN ('assign', 'unassign') THEN x.cleaner_id
+                     ELSE task.assignee_id
+                   END,
+                   inspector_id = CASE
+                     WHEN COALESCE(x.inspector_assignment_action, '') NOT IN ('assign', 'unassign') THEN task.inspector_id
+                     WHEN lower(COALESCE(x.status, '')) = 'keys_hung' AND x.inspector_id IS NULL
+                       THEN task.inspector_id
+                     ELSE x.inspector_id
+                   END,
                  inspection_mode = x.inspection_mode,
                  inspection_scope = x.inspection_scope,
                  inspection_due_date = CASE WHEN x.inspection_due_date IS NULL THEN NULL ELSE x.inspection_due_date::date END,
                  status = x.status,
                  updated_at = now()
              FROM jsonb_to_recordset($1::jsonb) AS x(
-               task_id text,
-               cleaner_id text,
-               inspector_id text,
-               inspection_mode text,
-               inspection_scope text,
-               inspection_due_date text,
+                 task_id text,
+                 cleaner_id text,
+                 cleaner_assignment_action text,
+                 inspector_id text,
+                 inspector_assignment_action text,
+                 inspection_mode text,
+                 inspection_scope text,
+                 inspection_due_date text,
                status text
              )
              WHERE task.id::text = x.task_id
                AND (
-                 task.cleaner_id IS DISTINCT FROM x.cleaner_id
-                 OR task.assignee_id IS DISTINCT FROM x.cleaner_id
-                 OR task.inspector_id IS DISTINCT FROM CASE
-                   WHEN lower(COALESCE(x.status, '')) = 'keys_hung' AND x.inspector_id IS NULL
-                     THEN task.inspector_id
-                   ELSE x.inspector_id
-                 END
+                   (
+                     x.cleaner_assignment_action IN ('assign', 'unassign')
+                     AND (
+                       task.cleaner_id IS DISTINCT FROM x.cleaner_id
+                       OR task.assignee_id IS DISTINCT FROM x.cleaner_id
+                     )
+                   )
+                   OR task.inspector_id IS DISTINCT FROM CASE
+                     WHEN COALESCE(x.inspector_assignment_action, '') NOT IN ('assign', 'unassign') THEN task.inspector_id
+                     WHEN lower(COALESCE(x.status, '')) = 'keys_hung' AND x.inspector_id IS NULL
+                       THEN task.inspector_id
+                     ELSE x.inspector_id
+                   END
                  OR task.inspection_mode IS DISTINCT FROM x.inspection_mode
                  OR task.inspection_scope IS DISTINCT FROM x.inspection_scope
                  OR task.inspection_due_date::text IS DISTINCT FROM x.inspection_due_date
@@ -1771,28 +2207,36 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
           )
           changedCleaningTasks = result.rows || []
         }
-        if (payload.work_assignments.length) {
-          const result = await client.query(
-            `UPDATE work_tasks AS task
-             SET title = COALESCE(NULLIF(x.title, ''), task.title),
-                 summary = x.summary,
-                 scheduled_date = CASE WHEN x.scheduled_date IS NULL THEN task.scheduled_date ELSE x.scheduled_date::date END,
-                 assignee_id = x.assignee_id,
-                 status = CASE
-                   WHEN NULLIF(COALESCE(x.status, ''), '') IS NOT NULL
-                     THEN x.status
-                   WHEN lower(COALESCE(task.status, 'todo')) IN ('todo', 'assigned')
-                     THEN CASE WHEN NULLIF(COALESCE(x.assignee_id, ''), '') IS NULL THEN 'todo' ELSE 'assigned' END
-                   ELSE task.status
-                 END,
+          if (payload.work_assignments.length) {
+            const result = await client.query(
+              `UPDATE work_tasks AS task
+               SET title = COALESCE(NULLIF(x.title, ''), task.title),
+                   summary = x.summary,
+                   scheduled_date = CASE WHEN x.scheduled_date IS NULL THEN task.scheduled_date ELSE x.scheduled_date::date END,
+                   assignee_id = CASE
+                     WHEN x.assignee_assignment_action IN ('assign', 'unassign') THEN x.assignee_id
+                     ELSE task.assignee_id
+                   END,
+                   status = CASE
+                     WHEN NULLIF(COALESCE(x.status, ''), '') IS NOT NULL
+                       THEN x.status
+                     WHEN lower(COALESCE(task.status, 'todo')) IN ('todo', 'assigned')
+                       THEN CASE
+                         WHEN x.assignee_assignment_action IN ('assign', 'unassign')
+                           THEN CASE WHEN NULLIF(COALESCE(x.assignee_id, ''), '') IS NULL THEN 'todo' ELSE 'assigned' END
+                         ELSE task.status
+                       END
+                     ELSE task.status
+                   END,
                  urgency = COALESCE(NULLIF(x.urgency, ''), task.urgency),
                  updated_by = $2,
                  updated_at = now()
-             FROM jsonb_to_recordset($1::jsonb) AS x(
-               task_id text,
-               assignee_id text,
-               title text,
-               summary text,
+               FROM jsonb_to_recordset($1::jsonb) AS x(
+                 task_id text,
+                 assignee_id text,
+                 assignee_assignment_action text,
+                 title text,
+                 summary text,
                scheduled_date text,
                status text,
                urgency text
@@ -1802,31 +2246,34 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                  task.title IS DISTINCT FROM COALESCE(NULLIF(x.title, ''), task.title)
                  OR task.summary IS DISTINCT FROM x.summary
                  OR task.scheduled_date::text IS DISTINCT FROM CASE WHEN x.scheduled_date IS NULL THEN task.scheduled_date::text ELSE x.scheduled_date END
-                 OR task.assignee_id IS DISTINCT FROM x.assignee_id
+                   OR (
+                     x.assignee_assignment_action IN ('assign', 'unassign')
+                     AND task.assignee_id IS DISTINCT FROM x.assignee_id
+                   )
                  OR task.urgency IS DISTINCT FROM COALESCE(NULLIF(x.urgency, ''), task.urgency)
                  OR (
                    NULLIF(COALESCE(x.status, ''), '') IS NOT NULL
                    AND task.status IS DISTINCT FROM x.status
                  )
                  OR (
-                   lower(COALESCE(task.status, 'todo')) IN ('todo', 'assigned')
-                   AND NULLIF(COALESCE(x.status, ''), '') IS NULL
-                   AND task.status IS DISTINCT FROM CASE WHEN NULLIF(COALESCE(x.assignee_id, ''), '') IS NULL THEN 'todo' ELSE 'assigned' END
+                     lower(COALESCE(task.status, 'todo')) IN ('todo', 'assigned')
+                     AND NULLIF(COALESCE(x.status, ''), '') IS NULL
+                     AND x.assignee_assignment_action IN ('assign', 'unassign')
+                     AND task.status IS DISTINCT FROM CASE WHEN NULLIF(COALESCE(x.assignee_id, ''), '') IS NULL THEN 'todo' ELSE 'assigned' END
+                   )
                  )
-               )
              RETURNING task.*`,
             [JSON.stringify(payload.work_assignments), updatedBy],
           )
           changedWorkTasks = result.rows || []
           if (changedWorkTasks.some((task: any) => String(task.source_type || '') === 'cleaning_offline_tasks') && await hasCleaningOfflineTasksTable()) {
             await client.query(
-              `UPDATE cleaning_offline_tasks AS t
-               SET date = w.scheduled_date,
-                   title = w.title,
-                   content = COALESCE(w.summary, ''),
-                   assignee_id = w.assignee_id,
-                   urgency = w.urgency,
-                   updated_at = now()
+                `UPDATE cleaning_offline_tasks AS t
+                 SET date = w.scheduled_date,
+                     title = w.title,
+                     content = COALESCE(w.summary, ''),
+                     urgency = w.urgency,
+                     updated_at = now()
                FROM work_tasks w
                WHERE w.source_type = 'cleaning_offline_tasks'
                  AND t.id::text = w.source_id::text
@@ -1852,15 +2299,18 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
           } catch {}
         }
         for (const task of changedWorkTasks) {
+          const diff = workDiffById.get(String(task.id))
+          if (!diff) continue
+          const recipients = uniqTextList(diff.pushRecipientUserIds)
+          if (!diff.pushChanges.length || !recipients.length) continue
           const assigneeId = String(task.assignee_id || '').trim()
-          if (!assigneeId) continue
           const actorId = String(user.sub || '').trim()
           const taskDate = task.scheduled_date ? String(task.scheduled_date).slice(0, 10) : payload.date
           const taskTitle = String(task.title || '').trim() || '线下任务'
           const taskSummary = String(task.summary || '').trim()
           const assigneeName = workAssigneeNames.get(assigneeId) || assigneeId
           try {
-            await emitNotificationEvent(
+            const notificationResult = await emitNotificationEvent(
               {
                 type: 'WORK_TASK_UPDATED',
                 policyKey: 'work_task_updated',
@@ -1870,10 +2320,12 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                 updatedAt: String(task.updated_at || '').trim() || new Date().toISOString(),
                 title: '任务安排已更新',
                 body: [
+                  taskChangeBody(diff.pushChanges),
                   `任务：${taskTitle}`,
                   taskSummary ? `内容：${taskSummary}` : '',
                   `日期：${taskDate}`,
                 ].filter(Boolean).join('\n'),
+                changes: diff.pushChanges,
                 data: {
                   entity: 'work_task',
                   entityId: String(task.id),
@@ -1888,10 +2340,16 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                   status: task.status,
                   urgency: task.urgency,
                 },
+                priority: diff.priority,
                 actorUserId: actorId || null,
+                recipientUserIds: recipients,
               },
               { operationId: uuid(), pgClient: client },
             )
+            if (Number((notificationResult as any)?.sent || 0) > 0) {
+              pushNotificationEvents += 1
+              pushNotificationRecipients += Number((notificationResult as any).sent || 0)
+            }
           } catch {}
         }
         if (payload.task_flags.length) {
@@ -1914,58 +2372,57 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
           )
         }
         for (const task of changedCleaningTasks) {
+          const diff = cleaningDiffById.get(String(task.id))
+          if (!diff) continue
           const actorId = String(user.sub || '').trim()
           const taskId = String(task.id)
-          const taskType = lower(task.task_type)
-          const taskLabel = taskType === 'checkin_clean'
-            ? '入住任务'
-            : taskType === 'checkout_clean'
-              ? '退房任务'
-              : taskType === 'stayover_clean'
-                ? '入住中清洁任务'
-                : '清洁任务'
-          try {
-            await emitNotificationEvent(
-              {
-                type: 'CLEANING_TASK_UPDATED',
-                entity: 'cleaning_task',
-                entityId: taskId,
-                propertyId: task.property_id ? String(task.property_id) : undefined,
-                updatedAt: String(task.updated_at || '').trim() || new Date().toISOString(),
-                changes: ['assignee', 'inspection', 'status'],
-                title: `${taskLabel}安排已更新`,
-                body: '执行人、检查安排或任务状态已更新',
-                data: {
+          if (diff.pushChanges.length && diff.pushRecipientUserIds.length) {
+            try {
+              const notificationResult = await emitNotificationEvent(
+                {
+                  type: 'CLEANING_TASK_UPDATED',
                   entity: 'cleaning_task',
                   entityId: taskId,
-                  action: 'open_task',
-                  kind: 'cleaning_task_updated',
-                  task_id: taskId,
-                  task_type: task.task_type || null,
-                  task_date: task.task_date ? String(task.task_date).slice(0, 10) : null,
-                  assignee_id: task.assignee_id || null,
-                  cleaner_id: task.cleaner_id || null,
-                  inspector_id: task.inspector_id || null,
-                  status: task.status,
+                  propertyId: task.property_id ? String(task.property_id) : undefined,
+                  updatedAt: String(task.updated_at || '').trim() || new Date().toISOString(),
+                  changes: diff.pushChanges,
+                  title: `${cleaningTaskLabel(task.task_type)}安排已更新`,
+                  body: taskChangeBody(diff.pushChanges),
+                  data: {
+                    entity: 'cleaning_task',
+                    entityId: taskId,
+                    action: 'open_task',
+                    kind: 'cleaning_task_updated',
+                    task_id: taskId,
+                    task_type: task.task_type || null,
+                    task_date: task.task_date ? String(task.task_date).slice(0, 10) : null,
+                    assignee_id: task.assignee_id || null,
+                    cleaner_id: task.cleaner_id || null,
+                    inspector_id: task.inspector_id || null,
+                    status: task.status,
+                  },
+                  priority: diff.priority,
+                  actorUserId: actorId || null,
+                  excludeActor: false,
+                  recipientUserIds: diff.pushRecipientUserIds,
                 },
-                actorUserId: actorId || null,
-                excludeActor: false,
-                recipientUserIds: [task.assignee_id, task.cleaner_id, task.inspector_id]
-                  .map((value) => String(value || '').trim())
-                  .filter(Boolean),
-              },
-              { operationId: uuid(), pgClient: client },
-            )
-          } catch (error: any) {
-            console.error(`[task-center] cleaning_assignment_notification_failed task_id=${taskId} message=${String(error?.message || error || '')}`)
+                { operationId: uuid(), pgClient: client },
+              )
+              if (Number((notificationResult as any)?.sent || 0) > 0) {
+                pushNotificationEvents += 1
+                pushNotificationRecipients += Number((notificationResult as any).sent || 0)
+              }
+            } catch (error: any) {
+              console.error(`[task-center] cleaning_assignment_notification_failed task_id=${taskId} message=${String(error?.message || error || '')}`)
+            }
           }
           eventInputs.push({
             taskId: `cleaning_task:${taskId}`,
             sourceType: 'cleaning_tasks',
             sourceRefIds: [taskId],
-            eventType: 'TASK_ASSIGNMENT_CHANGED',
-            changeScope: 'membership',
-            changedFields: ['cleaner_id', 'assignee_id', 'inspector_id', 'inspection_mode', 'inspection_scope', 'inspection_due_date', 'status'],
+            eventType: diff.changedFields.some((field) => field === 'cleaner_id' || field === 'assignee_id' || field === 'inspector_id') ? 'TASK_ASSIGNMENT_CHANGED' : 'TASK_UPDATED',
+            changeScope: diff.changedFields.some((field) => field === 'cleaner_id' || field === 'assignee_id' || field === 'inspector_id') ? 'membership' : 'list',
+            changedFields: diff.changedFields,
             patch: {
               cleaner_id: task.cleaner_id ?? null,
               assignee_id: task.assignee_id ?? null,
@@ -1980,13 +2437,15 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
           })
         }
         for (const task of changedWorkTasks) {
+          const diff = workDiffById.get(String(task.id))
+          if (!diff) continue
           eventInputs.push({
             taskId: String(task.id),
             sourceType: String(task.source_type || 'work_tasks'),
             sourceRefIds: [String(task.source_id || task.id)],
-            eventType: 'TASK_ASSIGNMENT_CHANGED',
-            changeScope: 'membership',
-            changedFields: ['title', 'summary', 'scheduled_date', 'assignee_id', 'status', 'urgency'],
+            eventType: diff.changedFields.includes('assignee_id') ? 'TASK_ASSIGNMENT_CHANGED' : 'TASK_UPDATED',
+            changeScope: diff.changedFields.includes('assignee_id') ? 'membership' : 'list',
+            changedFields: diff.changedFields,
             patch: {
               title: task.title ?? '',
               summary: task.summary ?? null,
@@ -2027,7 +2486,17 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
         items: payload.items.length,
         cleaning_assignments: payload.cleaning_assignments.length,
         work_assignments: payload.work_assignments.length,
-        event_notifications: eventInputs.length,
+        changed_tasks: {
+          cleaning: changedCleaningTasks.length,
+          work: changedWorkTasks.length,
+          total: changedCleaningTasks.length + changedWorkTasks.length,
+        },
+        push_notifications: {
+          events: pushNotificationEvents,
+          recipients: pushNotificationRecipients,
+        },
+        realtime_events: eventInputs.length,
+        layout_changed: layoutChanged,
       })
     }
 
@@ -2051,24 +2520,30 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
         item_order: Number(item.item_order || 0),
       })
     }
-    const cleaningById = new Map(payload.cleaning_assignments.map((item) => [item.task_id, item]))
-    for (const task of ((db as any).cleaningTasks || []) as any[]) {
-      const assignment = cleaningById.get(String(task.id))
-      if (!assignment) continue
-      task.cleaner_id = assignment.cleaner_id
-      task.assignee_id = assignment.cleaner_id
-      task.inspector_id = assignment.inspector_id
-      task.inspection_mode = assignment.inspection_mode
-      task.inspection_due_date = assignment.inspection_due_date
-      task.status = assignment.status
+      const cleaningById = new Map(payload.cleaning_assignments.map((item) => [item.task_id, item]))
+      for (const task of ((db as any).cleaningTasks || []) as any[]) {
+        const assignment = cleaningById.get(String(task.id))
+        if (!assignment) continue
+        if (assignmentAction((assignment as any).cleaner_assignment_action)) {
+          task.cleaner_id = (assignment as any).cleaner_id ?? null
+          task.assignee_id = (assignment as any).cleaner_id ?? null
+        }
+        if (assignmentAction((assignment as any).inspector_assignment_action)) {
+          task.inspector_id = (assignment as any).inspector_id ?? null
+        }
+        task.inspection_mode = assignment.inspection_mode
+        task.inspection_due_date = assignment.inspection_due_date
+        task.status = assignment.status
     }
     const workById = new Map(payload.work_assignments.map((item) => [item.task_id, item]))
-    for (const task of (((db as any).workTasks || []) as any[])) {
-      const assignment = workById.get(String(task.id))
-      if (!assignment) continue
-      task.assignee_id = assignment.assignee_id
-      if (['todo', 'assigned'].includes(String(task.status || 'todo').toLowerCase())) task.status = assignment.assignee_id ? 'assigned' : 'todo'
-    }
+      for (const task of (((db as any).workTasks || []) as any[])) {
+        const assignment = workById.get(String(task.id))
+        if (!assignment) continue
+        if (assignmentAction((assignment as any).assignee_assignment_action)) {
+          task.assignee_id = (assignment as any).assignee_id ?? null
+          if (['todo', 'assigned'].includes(String(task.status || 'todo').toLowerCase())) task.status = (assignment as any).assignee_id ? 'assigned' : 'todo'
+        }
+      }
     for (const task of payload.task_flags) {
       memoryTaskFlags.set(`${payload.date}|${task.task_source}|${task.task_id}`, {
         task_source: task.task_source,

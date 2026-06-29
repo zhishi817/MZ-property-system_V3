@@ -5,10 +5,23 @@ type TaskCenterDisplayTask = {
   detail?: string | null
   deferred_inspection_view?: boolean
   inspection_mode?: string | null
+  checkout_task_date?: string | null
+  checkout_task_dates?: string[]
 }
 
 function lower(value: string | null | undefined) {
   return String(value || '').trim().toLowerCase()
+}
+
+function uniqueText(values: Array<string | null | undefined>) {
+  return Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)))
+}
+
+function formatCheckoutDate(raw: string) {
+  const text = String(raw || '').trim()
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!match) return text
+  return `${Number(match[2])}月${Number(match[3])}日`
 }
 
 export function isDeferredInspectionDisplayTask(task: TaskCenterDisplayTask) {
@@ -16,8 +29,21 @@ export function isDeferredInspectionDisplayTask(task: TaskCenterDisplayTask) {
   return task.deferred_inspection_view === true || lower(task.inspection_mode) === 'deferred'
 }
 
+export function deferredInspectionCheckoutText(task: TaskCenterDisplayTask) {
+  if (!isDeferredInspectionDisplayTask(task)) return ''
+  const dates = uniqueText([
+    ...(Array.isArray(task.checkout_task_dates) ? task.checkout_task_dates : []),
+    task.checkout_task_date,
+  ])
+  if (!dates.length) return ''
+  return `${dates.map(formatCheckoutDate).join('、')}退房`
+}
+
 export function cleaningTaskFlowLabelText(task: TaskCenterDisplayTask) {
-  if (isDeferredInspectionDisplayTask(task)) return '延期检查'
+  if (isDeferredInspectionDisplayTask(task)) {
+    const checkoutText = deferredInspectionCheckoutText(task)
+    return checkoutText ? `延期检查，${checkoutText}` : '延期检查'
+  }
   const kind = lower(task.task_kind)
   if (kind === 'turnover') return '退房入住'
   if (kind === 'checkout_clean') return '退房'

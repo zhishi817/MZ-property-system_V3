@@ -510,11 +510,13 @@ async function ensureWorkTasksSchema() {
       assignee_id text,
       status text NOT NULL DEFAULT 'todo',
       urgency text NOT NULL DEFAULT 'medium',
+      photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb,
       created_by text,
       updated_by text,
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
     );`)
+    try { await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb;`) } catch {}
     try { await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_work_tasks_source ON work_tasks(source_type, source_id);`) } catch {}
     try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day_assignee ON work_tasks(scheduled_date, assignee_id, status);`) } catch {}
     try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_kind_day ON work_tasks(task_kind, scheduled_date);`) } catch {}

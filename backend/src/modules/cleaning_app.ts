@@ -11,7 +11,7 @@ import sharp from 'sharp'
 import fs from 'fs'
 import { emitNotificationEvent } from '../services/notificationEvents'
 import { buildCleaningTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
-import { effectiveInspectionMode } from '../lib/cleaningInspection'
+import { effectiveInspectionMode, isInspectionFinishedStatus } from '../lib/cleaningInspection'
 import {
   buildIdempotencyPayloadHash,
   ensureIdempotentStepReceiptsTable,
@@ -1657,6 +1657,86 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
     return res.status(500).json({ message: e?.message || 'error' })
   }
 })
+
+async function handleDeleteLockboxVideo(req: any, res: any) {
+  const user = (req as any).user
+  const { id } = req.params
+  const taskId = String(id || '').trim()
+  if (!taskId) return res.status(400).json({ message: 'missing id' })
+  try {
+    if (!hasPg) return res.json({ ok: true })
+    await ensureCleaningTaskMediaNote()
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return res.status(500).json({ message: 'pg not available' })
+    const userId = String(user?.sub || '').trim()
+    if (!userId) return res.status(401).json({ message: 'unauthorized' })
+
+    const r = await pgPool.query(
+      `SELECT id::text AS id,
+              status,
+              COALESCE(cleaner_id, assignee_id)::text AS cleaner_id,
+              inspector_id::text AS inspector_id,
+              assignee_id::text AS assignee_id,
+              property_id::text AS property_id
+       FROM cleaning_tasks
+       WHERE id::text = $1::text
+       LIMIT 1`,
+      [taskId],
+    )
+    const row = r?.rows?.[0] || null
+    if (!row) return res.status(404).json({ message: 'not found' })
+
+    const roleName = String(user?.role || user?.roles?.[0] || '').trim()
+    const canViewAll = await hasPerm(roleName, 'cleaning_app.calendar.view.all')
+    const allowedUserIds = [row.cleaner_id, row.inspector_id, row.assignee_id].map((v) => String(v || '').trim()).filter(Boolean)
+    if (!canViewAll && !allowedUserIds.includes(userId)) return res.status(403).json({ message: 'forbidden' })
+
+    const needsRestockResult = await pgPool.query(
+      `SELECT 1
+       FROM cleaning_consumable_usages
+       WHERE task_id::text = $1::text
+         AND (need_restock = true OR COALESCE(status, '') = 'low')
+       LIMIT 1`,
+      [taskId],
+    )
+    const nextStatus = isInspectionFinishedStatus(row.status)
+      ? (needsRestockResult?.rowCount ? 'restock_pending' : 'cleaned')
+      : (String(row.status || '').trim() || null)
+
+    await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id::text = $1::text AND type = 'lockbox_video'`, [taskId])
+    const up = await pgPool.query(
+      `UPDATE cleaning_tasks
+       SET status = COALESCE($2::text, status),
+           lockbox_video_uploaded_at = NULL,
+           updated_at = now()
+       WHERE id::text = $1::text
+       RETURNING id::text AS id, status, cleaner_id, inspector_id, assignee_id, property_id`,
+      [taskId, nextStatus],
+    )
+    const updated = up?.rows?.[0] || { ...row, status: nextStatus }
+    const patch: any = { lockbox_video_uploaded_at: null, lockbox_video_url: null }
+    if (nextStatus) patch.status = nextStatus
+    await emitWorkTaskEvent({
+      taskId: `cleaning_task:${taskId}`,
+      sourceType: 'cleaning_tasks',
+      sourceRefIds: [taskId],
+      eventType: 'TASK_UPDATED',
+      changeScope: 'list',
+      changedFields: Object.keys(patch),
+      patch,
+      causedByUserId: userId,
+      visibilityHints: buildCleaningTaskVisibilityHints(updated),
+    })
+
+    try { broadcastCleaningEvent({ event: 'lockbox_video_deleted', task_id: taskId }) } catch {}
+    return res.json({ ok: true, status: nextStatus, lockbox_video_uploaded_at: null, lockbox_video_url: null })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'error' })
+  }
+}
+
+router.delete('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish'), handleDeleteLockboxVideo)
+router.post('/tasks/:id/lockbox-video/delete', requirePerm('cleaning_app.tasks.finish'), handleDeleteLockboxVideo)
 
 router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish'), async (req, res) => {
   const user = (req as any).user

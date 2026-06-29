@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.router = void 0;
+exports.upsertWorkTaskFromOfflineTask = upsertWorkTaskFromOfflineTask;
 const express_1 = require("express");
 const zod_1 = require("zod");
 const auth_1 = require("../auth");
@@ -102,11 +103,15 @@ function buildCleaningTaskWorkPatch(after, rawChangedFields) {
     if (changedFields.has('checkout_time')) {
         changedFields.add('start_time');
         changedFields.add('summary');
+        changedFields.add('stayed_nights');
+        changedFields.add('remaining_nights');
         patch.start_time = (_a = after === null || after === void 0 ? void 0 : after.checkout_time) !== null && _a !== void 0 ? _a : null;
     }
     if (changedFields.has('checkin_time')) {
         changedFields.add('end_time');
         changedFields.add('summary');
+        changedFields.add('stayed_nights');
+        changedFields.add('remaining_nights');
         patch.end_time = (_b = after === null || after === void 0 ? void 0 : after.checkin_time) !== null && _b !== void 0 ? _b : null;
     }
     if (changedFields.has('summary'))
@@ -289,6 +294,7 @@ async function ensureOfflineTasksTable() {
         err.code = 'CLEANING_SCHEMA_MISSING';
         throw err;
     }
+    await dbAdapter_1.pgPool.query(`ALTER TABLE cleaning_offline_tasks ADD COLUMN IF NOT EXISTS photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb;`);
 }
 async function ensureWorkTasksTable() {
     if (!dbAdapter_1.hasPg || !dbAdapter_1.pgPool)
@@ -307,11 +313,13 @@ async function ensureWorkTasksTable() {
     assignee_id text,
     status text NOT NULL DEFAULT 'todo',
     urgency text NOT NULL DEFAULT 'medium',
+    photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb,
     created_by text,
     updated_by text,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
   );`);
+    await dbAdapter_1.pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb;`);
     try {
         await dbAdapter_1.pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_work_tasks_source ON work_tasks(source_type, source_id);`);
     }
@@ -323,6 +331,10 @@ async function ensureWorkTasksTable() {
 }
 function offlineWorkStatus(value) {
     return String(value || '').trim().toLowerCase() === 'done' ? 'done' : 'todo';
+}
+function normalizePhotoUrls(input) {
+    const arr = Array.isArray(input) ? input : [];
+    return Array.from(new Set(arr.map((item) => String(item || '').trim()).filter(Boolean))).slice(0, 20);
 }
 async function upsertWorkTaskFromOfflineTask(row, requestedStatus) {
     if (!dbAdapter_1.hasPg || !dbAdapter_1.pgPool)
@@ -337,18 +349,20 @@ async function upsertWorkTaskFromOfflineTask(row, requestedStatus) {
     const status = offlineWorkStatus(requestedStatus === undefined ? row === null || row === void 0 ? void 0 : row.status : requestedStatus);
     const updateStatus = requestedStatus !== undefined;
     const urgency = String((row === null || row === void 0 ? void 0 : row.urgency) || '').trim() || 'medium';
-    await dbAdapter_1.pgPool.query(`INSERT INTO work_tasks(id, task_kind, source_type, source_id, property_id, title, summary, scheduled_date, assignee_id, status, urgency, created_at, updated_at)
-     VALUES($1,'offline','cleaning_offline_tasks',$2,$3,$4,$5,$6::date,$7,$8,$9,COALESCE($10::timestamptz, now()), now())
+    const photoUrls = normalizePhotoUrls(row === null || row === void 0 ? void 0 : row.photo_urls);
+    await dbAdapter_1.pgPool.query(`INSERT INTO work_tasks(id, task_kind, source_type, source_id, property_id, title, summary, scheduled_date, assignee_id, status, urgency, photo_urls, created_at, updated_at)
+     VALUES($1,'offline','cleaning_offline_tasks',$2,$3,$4,$5,$6::date,$7,$8,$9,$10::jsonb,COALESCE($11::timestamptz, now()), now())
      ON CONFLICT (source_type, source_id) DO UPDATE SET
        property_id=EXCLUDED.property_id,
        title=EXCLUDED.title,
        summary=EXCLUDED.summary,
        scheduled_date=EXCLUDED.scheduled_date,
-       assignee_id=EXCLUDED.assignee_id,
-       status=CASE WHEN $11::boolean THEN EXCLUDED.status ELSE work_tasks.status END,
+       assignee_id=work_tasks.assignee_id,
+       status=CASE WHEN $12::boolean THEN EXCLUDED.status ELSE work_tasks.status END,
        urgency=EXCLUDED.urgency,
+       photo_urls=EXCLUDED.photo_urls,
        updated_at=now()
-     RETURNING *`, [workId, id, (row === null || row === void 0 ? void 0 : row.property_id) || null, String((row === null || row === void 0 ? void 0 : row.title) || ''), String((row === null || row === void 0 ? void 0 : row.content) || '') || null, scheduled, assignee, status, urgency, (row === null || row === void 0 ? void 0 : row.created_at) || null, updateStatus]);
+     RETURNING *`, [workId, id, (row === null || row === void 0 ? void 0 : row.property_id) || null, String((row === null || row === void 0 ? void 0 : row.title) || ''), String((row === null || row === void 0 ? void 0 : row.content) || '') || null, scheduled, assignee, status, urgency, JSON.stringify(photoUrls), (row === null || row === void 0 ? void 0 : row.created_at) || null, updateStatus]);
 }
 async function backfillOfflineWorkTasks() {
     if (!dbAdapter_1.hasPg || !dbAdapter_1.pgPool)
@@ -357,7 +371,7 @@ async function backfillOfflineWorkTasks() {
     // Legacy status is consulted only when creating the canonical work task for the first time.
     await dbAdapter_1.pgPool.query(`INSERT INTO work_tasks(
        id, task_kind, source_type, source_id, property_id, title, summary,
-       scheduled_date, assignee_id, status, urgency, created_at, updated_at
+       scheduled_date, assignee_id, status, urgency, photo_urls, created_at, updated_at
      )
      SELECT
        'cleaning_offline_tasks:' || t.id::text,
@@ -371,6 +385,7 @@ async function backfillOfflineWorkTasks() {
        t.assignee_id,
        CASE WHEN lower(COALESCE(t.status, 'todo')) = 'done' THEN 'done' ELSE 'todo' END,
        COALESCE(NULLIF(t.urgency, ''), 'medium'),
+       COALESCE(t.photo_urls, '[]'::jsonb),
        COALESCE(t.created_at, t.updated_at, now()),
        COALESCE(t.updated_at, t.created_at, now())
      FROM cleaning_offline_tasks t
@@ -467,6 +482,7 @@ const offlineTaskSchema = zod_1.z.object({
     urgency: zod_1.z.enum(['low', 'medium', 'high', 'urgent']),
     property_id: zod_1.z.string().nullable().optional(),
     assignee_id: zod_1.z.string().nullable().optional(),
+    photo_urls: zod_1.z.array(zod_1.z.string().trim().min(1).max(1200)).max(20).optional(),
 }).strict();
 exports.router.get('/offline-tasks', (0, auth_1.requireAnyPerm)(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), async (req, res) => {
     var _a, _b;
@@ -478,14 +494,14 @@ exports.router.get('/offline-tasks', (0, auth_1.requireAnyPerm)(['cleaning.view'
             await ensureOfflineTasksTable();
             await backfillOfflineWorkTasks();
             if (!date) {
-                const r = await dbAdapter_1.pgPool.query(`SELECT t.*, COALESCE(w.status, 'todo') AS status
+                const r = await dbAdapter_1.pgPool.query(`SELECT t.*, COALESCE(w.status, 'todo') AS status, w.assignee_id AS assignee_id
              FROM cleaning_offline_tasks t
              JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
             ORDER BY t.date DESC, t.updated_at DESC, t.id DESC`);
                 return res.json((r === null || r === void 0 ? void 0 : r.rows) || []);
             }
             if (includeOverdue) {
-                const r = await dbAdapter_1.pgPool.query(`SELECT t.*, COALESCE(w.status, 'todo') AS status
+                const r = await dbAdapter_1.pgPool.query(`SELECT t.*, COALESCE(w.status, 'todo') AS status, w.assignee_id AS assignee_id
              FROM cleaning_offline_tasks t
              JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
             WHERE (t.date::date = $1::date)
@@ -493,7 +509,7 @@ exports.router.get('/offline-tasks', (0, auth_1.requireAnyPerm)(['cleaning.view'
             ORDER BY t.date ASC, t.urgency DESC, t.updated_at DESC, t.id DESC`, [date]);
                 return res.json((r === null || r === void 0 ? void 0 : r.rows) || []);
             }
-            const r = await dbAdapter_1.pgPool.query(`SELECT t.*, COALESCE(w.status, 'todo') AS status
+            const r = await dbAdapter_1.pgPool.query(`SELECT t.*, COALESCE(w.status, 'todo') AS status, w.assignee_id AS assignee_id
            FROM cleaning_offline_tasks t
            JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
           WHERE t.date::date = $1::date
@@ -537,15 +553,17 @@ exports.router.post('/offline-tasks', requireCleaningManualCreateAccess, async (
             urgency: payload.urgency,
             property_id: (_a = payload.property_id) !== null && _a !== void 0 ? _a : null,
             assignee_id: (_b = payload.assignee_id) !== null && _b !== void 0 ? _b : null,
+            photo_urls: normalizePhotoUrls(payload.photo_urls),
         };
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
             await ensureOfflineTasksTable();
             const r = await dbAdapter_1.pgPool.query(`INSERT INTO cleaning_offline_tasks(
-          id, date, task_type, title, content, kind, status, urgency, property_id, assignee_id
-        ) VALUES($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`, [row.id, row.date, row.task_type, row.title, row.content, row.kind, row.status, row.urgency, row.property_id, row.assignee_id]);
+          id, date, task_type, title, content, kind, status, urgency, property_id, assignee_id, photo_urls
+        ) VALUES($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb) RETURNING *`, [row.id, row.date, row.task_type, row.title, row.content, row.kind, row.status, row.urgency, row.property_id, row.assignee_id, JSON.stringify(row.photo_urls)]);
             const out = ((_c = r === null || r === void 0 ? void 0 : r.rows) === null || _c === void 0 ? void 0 : _c[0]) || row;
             await upsertWorkTaskFromOfflineTask(out, payload.status);
             out.status = offlineWorkStatus(payload.status);
+            out.photo_urls = normalizePhotoUrls(out.photo_urls);
             const workTaskId = offlineWorkTaskId(String(out.id || row.id));
             if (String(out.status || '').trim().toLowerCase() !== 'done') {
                 try {
@@ -555,7 +573,7 @@ exports.router.post('/offline-tasks', requireCleaningManualCreateAccess, async (
                         sourceRefIds: [workTaskId],
                         eventType: 'TASK_CREATED',
                         changeScope: 'membership',
-                        changedFields: ['id', 'title', 'summary', 'scheduled_date', 'status', 'urgency', 'property_id', 'assignee_id'],
+                        changedFields: ['id', 'title', 'summary', 'scheduled_date', 'status', 'urgency', 'property_id', 'assignee_id', 'photo_urls'],
                         patch: {
                             id: workTaskId,
                             title: out.title,
@@ -565,6 +583,7 @@ exports.router.post('/offline-tasks', requireCleaningManualCreateAccess, async (
                             urgency: out.urgency,
                             property_id: out.property_id || null,
                             assignee_id: out.assignee_id || null,
+                            photo_urls: out.photo_urls,
                         },
                         causedByUserId: String(((_d = req.user) === null || _d === void 0 ? void 0 : _d.sub) || '').trim() || null,
                         visibilityHints: (0, workTaskEvents_1.buildWorkTaskVisibilityHints)({ assignee_id: out.assignee_id }),
@@ -623,12 +642,13 @@ exports.router.post('/offline-tasks', requireCleaningManualCreateAccess, async (
     }
 });
 exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.schedule.manage'), async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q;
     const { id } = req.params;
     const parsed = offlineTaskSchema.partial().safeParse(req.body || {});
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
     const patch = parsed.data;
+    const contentFieldAllowlist = new Set(['date', 'task_type', 'title', 'content', 'kind', 'urgency', 'property_id', 'photo_urls']);
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
             await ensureOfflineTasksTable();
@@ -636,7 +656,9 @@ exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.sch
             const before = ((_a = beforeRes === null || beforeRes === void 0 ? void 0 : beforeRes.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
             if (!before)
                 return res.status(404).json({ message: 'task not found' });
-            const keys = Object.keys(patch || {}).filter((k) => k !== 'status' && patch[k] !== undefined);
+            const keys = Object.keys(patch || {}).filter((k) => (k !== 'status'
+                && contentFieldAllowlist.has(k)
+                && patch[k] !== undefined));
             if (!keys.length) {
                 if (patch.status === undefined) {
                     const statusResult = await dbAdapter_1.pgPool.query(`SELECT status FROM work_tasks WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1 LIMIT 1`, [String(id)]);
@@ -647,8 +669,12 @@ exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.sch
             const beforeStatus = offlineWorkStatus((_f = (_e = (_d = beforeStatusResult === null || beforeStatusResult === void 0 ? void 0 : beforeStatusResult.rows) === null || _d === void 0 ? void 0 : _d[0]) === null || _e === void 0 ? void 0 : _e.status) !== null && _f !== void 0 ? _f : before.status);
             let row = before;
             if (keys.length) {
-                const set = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ');
-                const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]));
+                const set = keys.map((k, i) => (k === 'photo_urls' ? `"${k}" = $${i + 1}::jsonb` : `"${k}" = $${i + 1}`)).join(', ');
+                const values = keys.map((k) => {
+                    if (k === 'photo_urls')
+                        return JSON.stringify(normalizePhotoUrls(patch[k]));
+                    return patch[k] === undefined ? null : patch[k];
+                });
                 const sql = `UPDATE cleaning_offline_tasks SET ${set}, updated_at=now() WHERE id=$${keys.length + 1} RETURNING *`;
                 const r1 = await dbAdapter_1.pgPool.query(sql, [...values, String(id)]);
                 row = ((_g = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _g === void 0 ? void 0 : _g[0]) || null;
@@ -656,9 +682,47 @@ exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.sch
             if (!row)
                 return res.status(404).json({ message: 'task not found' });
             await upsertWorkTaskFromOfflineTask(row, patch.status);
-            const statusResult = await dbAdapter_1.pgPool.query(`SELECT status FROM work_tasks WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1 LIMIT 1`, [String(id)]);
+            const statusResult = await dbAdapter_1.pgPool.query(`SELECT status, assignee_id FROM work_tasks WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1 LIMIT 1`, [String(id)]);
             row.status = offlineWorkStatus((_j = (_h = statusResult === null || statusResult === void 0 ? void 0 : statusResult.rows) === null || _h === void 0 ? void 0 : _h[0]) === null || _j === void 0 ? void 0 : _j.status);
+            row.assignee_id = ((_l = (_k = statusResult === null || statusResult === void 0 ? void 0 : statusResult.rows) === null || _k === void 0 ? void 0 : _k[0]) === null || _l === void 0 ? void 0 : _l.assignee_id) ? String(statusResult.rows[0].assignee_id) : null;
+            row.photo_urls = normalizePhotoUrls(row.photo_urls);
+            const canonicalAssigneeId = ((_o = (_m = statusResult === null || statusResult === void 0 ? void 0 : statusResult.rows) === null || _m === void 0 ? void 0 : _m[0]) === null || _o === void 0 ? void 0 : _o.assignee_id) || null;
             const completedChanged = beforeStatus !== 'done' && row.status === 'done';
+            if (keys.length && !completedChanged) {
+                const workTaskId = offlineWorkTaskId(String(row.id || id));
+                const changedFields = keys.map((k) => {
+                    if (k === 'date')
+                        return 'scheduled_date';
+                    if (k === 'content')
+                        return 'summary';
+                    return k;
+                });
+                const patchForEvent = {};
+                for (const field of changedFields) {
+                    if (field === 'scheduled_date')
+                        patchForEvent.scheduled_date = row.date ? String(row.date).slice(0, 10) : null;
+                    else if (field === 'summary')
+                        patchForEvent.summary = row.content || null;
+                    else if (field === 'photo_urls')
+                        patchForEvent.photo_urls = row.photo_urls;
+                    else
+                        patchForEvent[field] = row[field];
+                }
+                try {
+                    await (0, workTaskEvents_1.emitWorkTaskEvent)({
+                        taskId: `work_task:${workTaskId}`,
+                        sourceType: 'work_tasks',
+                        sourceRefIds: [workTaskId],
+                        eventType: 'TASK_UPDATED',
+                        changeScope: 'list',
+                        changedFields,
+                        patch: patchForEvent,
+                        causedByUserId: String(((_p = req.user) === null || _p === void 0 ? void 0 : _p.sub) || '').trim() || null,
+                        visibilityHints: (0, workTaskEvents_1.buildWorkTaskVisibilityHints)({ assignee_id: canonicalAssigneeId }),
+                    });
+                }
+                catch (_r) { }
+            }
             if (completedChanged) {
                 const workTaskId = offlineWorkTaskId(String(row.id || id));
                 try {
@@ -670,11 +734,11 @@ exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.sch
                         changeScope: 'list',
                         changedFields: ['status'],
                         patch: { status: 'done' },
-                        causedByUserId: String(((_k = req.user) === null || _k === void 0 ? void 0 : _k.sub) || '').trim() || null,
-                        visibilityHints: (0, workTaskEvents_1.buildWorkTaskVisibilityHints)({ assignee_id: row.assignee_id }),
+                        causedByUserId: String(((_q = req.user) === null || _q === void 0 ? void 0 : _q.sub) || '').trim() || null,
+                        visibilityHints: (0, workTaskEvents_1.buildWorkTaskVisibilityHints)({ assignee_id: canonicalAssigneeId }),
                     });
                 }
-                catch (_l) { }
+                catch (_s) { }
                 enqueueNotification(() => {
                     var _a;
                     return (0, notificationEvents_1.emitNotificationEvent)({
@@ -705,7 +769,12 @@ exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.sch
         const t = rows.find((x) => String(x.id) === String(id));
         if (!t)
             return res.status(404).json({ message: 'task not found' });
-        Object.assign(t, patch);
+        for (const key of contentFieldAllowlist) {
+            if (patch[key] !== undefined)
+                t[key] = patch[key];
+        }
+        if (patch.status !== undefined)
+            t.status = patch.status;
         return res.json(t);
     }
     catch (e) {
@@ -807,11 +876,13 @@ exports.router.get('/tasks', (0, auth_1.requireAnyPerm)(['cleaning.view', 'clean
     const date = parsed.success ? parsed.data : undefined;
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
+            await (0, cleaningSync_1.ensureCleaningSchemaV2)();
             if (date) {
                 const r = await dbAdapter_1.pgPool.query(`SELECT t.*, o.keys_required AS order_keys_required
            FROM cleaning_tasks t
            LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
            WHERE (COALESCE(t.task_date, t.date)::date) = ($1::date)
+             AND ${(0, cleaningSync_1.activeCleaningTaskWhereSql)('t')}
            ORDER BY t.property_id NULLS LAST, t.id`, [date]);
                 return res.json(((r === null || r === void 0 ? void 0 : r.rows) || []).map((x) => {
                     if ((x === null || x === void 0 ? void 0 : x.order_id) && (x === null || x === void 0 ? void 0 : x.order_keys_required) != null)
@@ -823,6 +894,7 @@ exports.router.get('/tasks', (0, auth_1.requireAnyPerm)(['cleaning.view', 'clean
             const r = await dbAdapter_1.pgPool.query(`SELECT t.*, o.keys_required AS order_keys_required
          FROM cleaning_tasks t
          LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
+         WHERE ${(0, cleaningSync_1.activeCleaningTaskWhereSql)('t')}
          ORDER BY COALESCE(t.task_date, t.date) NULLS LAST, t.property_id NULLS LAST, t.id`);
             return res.json(((r === null || r === void 0 ? void 0 : r.rows) || []).map((x) => {
                 if ((x === null || x === void 0 ? void 0 : x.order_id) && (x === null || x === void 0 ? void 0 : x.order_keys_required) != null)
@@ -832,13 +904,22 @@ exports.router.get('/tasks', (0, auth_1.requireAnyPerm)(['cleaning.view', 'clean
             }));
         }
         const rows = store_1.db.cleaningTasks.slice();
+        const activeRows = rows.filter((t) => {
+            const executionState = String((t === null || t === void 0 ? void 0 : t.execution_state) || '').trim().toLowerCase();
+            const status = String((t === null || t === void 0 ? void 0 : t.status) || '').trim().toLowerCase();
+            if (executionState && executionState !== 'active')
+                return false;
+            if (!executionState && (status === 'cancelled' || status === 'canceled'))
+                return false;
+            return true;
+        });
         if (!date)
-            return res.json(rows);
+            return res.json(activeRows);
         const orders = (store_1.db.orders || []);
         const byId = new Map();
         for (const o of orders)
             byId.set(String(o.id), o);
-        return res.json(rows.filter((t) => String(t.task_date || t.date || '').slice(0, 10) === date).map((t) => {
+        return res.json(activeRows.filter((t) => String(t.task_date || t.date || '').slice(0, 10) === date).map((t) => {
             const out = { ...t };
             const oid = String(out.order_id || '').trim();
             const o = oid ? byId.get(oid) : null;
@@ -1027,7 +1108,7 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                         await dbAdapter_1.pgPool.query(`UPDATE cleaning_tasks
                SET keys_required = $1, updated_at = now()
                WHERE order_id::text = $2::text
-                 AND COALESCE(status,'') <> 'cancelled'
+                 AND ${(0, cleaningSync_1.activeCleaningTaskWhereSql)('')}
                  AND COALESCE(keys_required, 1) <> $1`, [nextK, orderId]);
                     }
                     catch (_m) { }
@@ -1312,6 +1393,8 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
             guest_special_request: (_r = (_q = parsed.data.guest_special_request) !== null && _q !== void 0 ? _q : parsed.data.note) !== null && _r !== void 0 ? _r : null,
             auto_sync_enabled: true,
             source: 'manual',
+            execution_state: 'active',
+            manual_task_purpose: null,
         };
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
             await (0, cleaningSync_1.ensureCleaningSchemaV2)();
@@ -1432,7 +1515,7 @@ exports.router.delete('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assig
             const before = ((_a = r0 === null || r0 === void 0 ? void 0 : r0.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
             if (!before)
                 return res.status(404).json({ message: 'task not found' });
-            const r1 = await dbAdapter_1.pgPool.query(`UPDATE cleaning_tasks SET status='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [String(id)]);
+            const r1 = await dbAdapter_1.pgPool.query(`UPDATE cleaning_tasks SET status='cancelled', execution_state='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [String(id)]);
             const after = ((_b = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _b === void 0 ? void 0 : _b[0]) || null;
             await (0, workTaskEvents_1.emitWorkTaskEvent)({
                 taskId: `cleaning_task:${String(id)}`,
@@ -1440,8 +1523,8 @@ exports.router.delete('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assig
                 sourceRefIds: [String(id)],
                 eventType: 'TASK_REMOVED',
                 changeScope: 'membership',
-                changedFields: ['status'],
-                patch: { status: 'cancelled' },
+                changedFields: ['status', 'execution_state'],
+                patch: { status: 'cancelled', execution_state: 'cancelled' },
                 causedByUserId: actorId || null,
                 visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(after || before),
             });
@@ -1481,6 +1564,7 @@ exports.router.delete('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assig
             return res.status(404).json({ message: 'task not found' });
         const before = { ...task };
         task.status = 'cancelled';
+        task.execution_state = 'cancelled';
         task.auto_sync_enabled = false;
         (0, store_1.addAudit)('cleaning_task', String(id), 'delete', before, { ...task }, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') });
         return res.json({ ok: true });
@@ -1508,7 +1592,7 @@ exports.router.post('/tasks/bulk-delete', (0, auth_1.requirePerm)('cleaning.task
                     const before = ((_a = r0 === null || r0 === void 0 ? void 0 : r0.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
                     if (!before)
                         continue;
-                    const r1 = await client.query(`UPDATE cleaning_tasks SET status='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [id]);
+                    const r1 = await client.query(`UPDATE cleaning_tasks SET status='cancelled', execution_state='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [id]);
                     const after = ((_b = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _b === void 0 ? void 0 : _b[0]) || null;
                     await (0, workTaskEvents_1.emitWorkTaskEvent)({
                         taskId: `cleaning_task:${String(id)}`,
@@ -1516,8 +1600,8 @@ exports.router.post('/tasks/bulk-delete', (0, auth_1.requirePerm)('cleaning.task
                         sourceRefIds: [String(id)],
                         eventType: 'TASK_REMOVED',
                         changeScope: 'membership',
-                        changedFields: ['status'],
-                        patch: { status: 'cancelled' },
+                        changedFields: ['status', 'execution_state'],
+                        patch: { status: 'cancelled', execution_state: 'cancelled' },
                         causedByUserId: actorId || null,
                         visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(after || before),
                     }, client);
@@ -1572,6 +1656,7 @@ exports.router.post('/tasks/bulk-delete', (0, auth_1.requirePerm)('cleaning.task
                 continue;
             const before = { ...task };
             task.status = 'cancelled';
+            task.execution_state = 'cancelled';
             task.auto_sync_enabled = false;
             (0, store_1.addAudit)('cleaning_task', String(id), 'delete', before, { ...task }, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') });
             cnt++;
@@ -1932,7 +2017,7 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
              ((COALESCE(task_date, date)::date) >= ($1::date) AND (COALESCE(task_date, date)::date) <= ($2::date))
              OR ($3::boolean = true AND t.inspection_due_date IS NOT NULL AND (t.inspection_due_date::date) <= ($2::date))
            )
-           AND COALESCE(t.status,'') <> 'cancelled'
+           AND ${(0, cleaningSync_1.activeCleaningTaskWhereSql)('t')}
            AND (t.order_id IS NULL OR o.id IS NOT NULL)
            AND (
              t.order_id IS NULL
@@ -2027,7 +2112,8 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
            COALESCE(w.status, 'todo') AS status,
            t.urgency,
            t.property_id,
-           t.assignee_id,
+           w.assignee_id AS assignee_id,
+           COALESCE(t.photo_urls, '[]'::jsonb) AS photo_urls,
            COALESCE(p_id.code::text, p_code.code::text) AS property_code,
            COALESCE(p_id.region::text, p_code.region::text) AS property_region
          FROM cleaning_offline_tasks t
@@ -2053,6 +2139,7 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
                     assignee_id: row.assignee_id ? String(row.assignee_id) : null,
                     scheduled_at: null,
                     urgency: row.urgency ? String(row.urgency) : 'medium',
+                    photo_urls: normalizePhotoUrls(row.photo_urls),
                     old_code: null,
                     new_code: null,
                     nights: null,
@@ -2166,6 +2253,7 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
                 assignee_id: t.assignee_id ? String(t.assignee_id) : null,
                 scheduled_at: null,
                 urgency: t.urgency ? String(t.urgency) : 'medium',
+                photo_urls: normalizePhotoUrls(t.photo_urls),
                 old_code: null,
                 new_code: null,
                 nights: null,
