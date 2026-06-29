@@ -4091,8 +4091,8 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260629-001 — 清洁手动补位任务 Superseded 执行状态第一阶段
 
-- **Status:** local
-- **Updated:** 2026-06-29 22:40 AEST
+- **Status:** pushed
+- **Updated:** 2026-06-30 00:15 AEST
 - **Request:** 先执行第一阶段；不要把所有手动 checkin/checkout 都自动 supersede，只有符合补位条件且没有执行记录的手动任务才自动 superseded，并且不要再用 `cancelled` 表示被替代。
 - **Outcome:** 清洁任务新增 `execution_state` 执行语义；订单同步创建 canonical 自动任务后，只会把满足条件的手动入住/退房补位任务标记为 `superseded`，保留原 `status`，并让网页端、移动端和任务中心主要读取路径统一过滤 active 任务。
 
@@ -4147,12 +4147,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Scope boundary: 本阶段不解决晚退、早入住、晚入住、客人需求、钥匙数量等 display 冲突聚合；这些属于第二阶段 canonical display 输出。
 - Rollback: revert migration/schema helper and supersede logic, restore status-only filters, then rerun build if tracked dist remains in release scope.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: local changes only; not staged, not committed, not pushed.
+- Git state: implementation pushed to root `Dev` in commit `cb66cb5`; this ledger status update is recorded separately.
 
 ## CRL-20260629-002 — 清洁同房同日 Canonical Turnover Display 第二阶段
 
-- **Status:** local
-- **Updated:** 2026-06-29 22:52 AEST
+- **Status:** pushed
+- **Updated:** 2026-06-30 00:15 AEST
 - **Request:** 执行阶段2；覆盖晚退、早入住、晚入住、客人需求等同房同日显示不一致问题。
 - **Outcome:** 移动端 `/mzapp/work-tasks` 和网页任务中心清洁合并任务现在复用同一套 canonical turnover display：退房信息按 outgoing checkout 订单/任务算，入住信息按 incoming checkin 订单/任务算；执行源只返回 active ids，superseded 手动补位任务只进入诊断/冲突信息。
 
@@ -4204,12 +4204,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Scope boundary: 第二阶段只输出 display/diagnostic 字段，不改前端 UI 是否展示“已合并 1 条手动补位任务”；那属于第三阶段。
 - Rollback: revert `cleaningTurnoverDisplay` helper/test and remove its usage from `mzapp` and `task_center`.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: local changes only; not staged, not committed, not pushed.
+- Git state: implementation pushed to root `Dev` in commit `cb66cb5`; this ledger status update is recorded separately.
 
 ## CRL-20260629-003 — 清洁同房同日 Canonical Display UI 第三阶段
 
-- **Status:** local
-- **Updated:** 2026-06-29 23:16 AEST
+- **Status:** pushed
+- **Updated:** 2026-06-30 00:15 AEST
 - **Request:** 执行阶段3；把阶段2输出接到移动端和网页端，确保同房同日清洁任务显示一致，执行只使用 active source ids。
 - **Outcome:** 移动端任务列表、任务详情、经理日任务、检查补品页和网页任务中心现在优先复用 `turnover_display`；晚退/早入住/晚入住、客人需求、旧/新密码展示走同一 display 层；执行、照片和看板保存只提交 active source ids，superseded 手动补位仅用于诊断显示。
 
@@ -4269,12 +4269,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Scope boundary: 第三阶段不新增后端字段生成逻辑，不执行数据库迁移，不封装 iOS/Android。
 - Rollback: revert mobile display/source-id helper usage and task-center page changes; backend phase 1/2 can remain additive but UI will stop consuming new fields.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: local changes only; not staged, not committed, not pushed.
+- Git state: implementation pushed to root `Dev` in commit `cb66cb5` and nested mobile `Dev` in commit `7c5d551`; this ledger status update is recorded separately.
 
 ## CRL-20260629-004 — 网页任务中心延期检查显示原退房日
 
-- **Status:** ready
-- **Updated:** 2026-06-29 23:24 AEST
+- **Status:** pushed
+- **Updated:** 2026-06-30 00:15 AEST
 - **Request:** 网页端延期检查不能只显示“延期检查”；标记延期检查的同时也需要注明是哪天的退房任务。
 - **Outcome:** 网页任务中心的延期检查卡片副标题现在保留检查语义，同时显示原始退房任务日期，例如“延期检查，6月22日退房”；同一房源同一延期检查组合若合并多个原退房日，会一并显示这些退房日期。
 
@@ -4322,12 +4322,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Release risk: worktree already contains unrelated local backend/frontend changes in the same hot files; do not broad-stage for this unit.
 - Rollback: remove `checkout_task_date(s)` from task-center response and restore deferred inspection helper output to plain “延期检查”.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: local changes only; not staged, not committed, not pushed.
+- Git state: implementation pushed to root `Dev` in commit `cb66cb5`; this ledger status update is recorded separately.
 
 ## CRL-20260630-001 — 任务分配字段以 work_tasks 为准
 
-- **Status:** ready
-- **Updated:** 2026-06-30 00:08 AEST
+- **Status:** pushed
+- **Updated:** 2026-06-30 00:15 AEST
 - **Request:** 修复任务中心已分配任务被移动端/管理端/其他角色更新任务信息后变回未分配；`work_tasks` 是分配字段 canonical source，普通内容更新不得覆盖分配。
 - **Outcome:** offline task 同步、任务中心 save-board 和展示合并路径现在都以 `work_tasks` 分配字段为准；普通任务信息更新即使带 `assignee_id: null` 也不会清空已有分配，只有任务中心显式 assign/unassign intent 才能改派或取消分配。
 
@@ -4382,4 +4382,4 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Release risk: worktree already contains unrelated local changes in the same hot files; do not broad-stage this unit without reviewing hunk ownership.
 - Behavior note: legacy `cleaning_offline_tasks.assignee_id` may remain stale by design after this change; display paths must use `work_tasks` when a row exists.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added to source or ledger.
-- Git state: local changes only; not staged, not committed, not pushed.
+- Git state: implementation pushed to root `Dev` in commit `cb66cb5`; this ledger status update is recorded separately.
