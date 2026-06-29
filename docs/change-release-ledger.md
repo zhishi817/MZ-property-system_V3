@@ -4088,3 +4088,298 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Rollback: revert the `old_code/new_code` merge additions in `backend/src/modules/mzapp.ts`.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
 - Git state: pushed to root `Dev` in commit `3354f2b`; root ledger status update pushed separately.
+
+## CRL-20260629-001 — 清洁手动补位任务 Superseded 执行状态第一阶段
+
+- **Status:** local
+- **Updated:** 2026-06-29 22:40 AEST
+- **Request:** 先执行第一阶段；不要把所有手动 checkin/checkout 都自动 supersede，只有符合补位条件且没有执行记录的手动任务才自动 superseded，并且不要再用 `cancelled` 表示被替代。
+- **Outcome:** 清洁任务新增 `execution_state` 执行语义；订单同步创建 canonical 自动任务后，只会把满足条件的手动入住/退房补位任务标记为 `superseded`，保留原 `status`，并让网页端、移动端和任务中心主要读取路径统一过滤 active 任务。
+
+### Implementation
+
+- Previous behavior:
+  - 同房同日订单入住任务生成后，旧逻辑会把匹配到的手动入住任务直接改成 `status='cancelled'`。
+  - 被订单任务替代和真实业务取消共用 `cancelled`，后续查询只能靠 `status <> cancelled` 模糊过滤。
+  - 只覆盖入住手动任务，退房手动补位没有同等语义。
+- New behavior:
+  - `cleaning_tasks` 增加 `execution_state`、`manual_task_purpose`、`superseded_by`、`superseded_reason`、`superseded_at`、`supersede_conflicts`。
+  - schema bootstrap 和迁移会回填：历史 cancelled/canceled 为 `execution_state='cancelled'`，其他缺省为 `active`。
+  - 订单同步只 supersede 同房同日、`order_id IS NULL`、`task_type` 为 `checkin_clean`/`checkout_clean`、`manual_task_purpose` 为空或 `temporary_order_placeholder`、状态未进入执行中/完成类、且没有照片/补品/问题反馈等执行记录的手动任务。
+  - 被替代的手动任务保留原 `status`，写入 `execution_state='superseded'`、`superseded_by` 和原因，同时通过 `TASK_REMOVED` membership 事件让列表移除。
+  - 真实删除/订单无效取消仍写 `status='cancelled'`，并同步写 `execution_state='cancelled'`。
+  - 网页清洁任务列表、清洁日历、任务中心清洁来源、移动端 `/mzapp/work-tasks` 和相关临时通知/钥匙数量同步路径统一使用 active execution state 过滤。
+- Key decisions:
+  - 第一阶段不做 canonical display 聚合，不把手动任务的入住/退房时间、钥匙数量、客人需求、密码等字段写回订单任务，避免提前引入字段冲突规则。
+  - 不新增第二套查询系统；通过 `activeCleaningTaskWhereSql()` 复用 active 过滤逻辑。
+
+### Files / Areas
+
+- `backend/scripts/migrations/20260629_cleaning_task_execution_state.sql` — added: 新增执行状态字段、回填规则和 active 查询索引。
+- `backend/src/services/cleaningSync.ts` — modified: 新增 execution state schema bootstrap、active SQL helper、手动补位 supersede 判定、订单同步接入和取消状态同步。
+- `backend/src/modules/cleaning.ts` — modified: 清洁后台列表/日历过滤 active；手动创建默认 active；删除和批量删除同步写 cancelled execution state。
+- `backend/src/modules/mzapp.ts` — modified: 移动端工作任务、临时通知、钥匙数量同步和相关任务查找改为 active-only。
+- `backend/src/modules/task_center.ts` — modified: 任务中心清洁任务来源和未来退房投影改为 active-only。
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — modified: 覆盖取消写 execution state、符合条件的手动补位任务 superseded、`in_progress` 手动任务不 supersede。
+- `backend/dist/modules/cleaning.js` — modified: `npm run build` 生成的已跟踪后端构建产物。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: existing response fields remain; 新增字段会随 `SELECT t.*` 出现在部分清洁任务响应中。
+- Database / migration: requires `backend/scripts/migrations/20260629_cleaning_task_execution_state.sql` or runtime bootstrap to add and backfill new columns.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: 第一阶段为后续 canonical display 聚合、active/superseded source ids 和 conflict display 打基础；不包含第二/第三阶段 UI 诊断展示。
+
+### Validation
+
+- `npm run build` in `backend` — passed: `tsc -p .` completed.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_cleaning_sync_v2.ts` in `backend` — passed: printed `ok`.
+- `npm run test:cleaning-inspection-merge` in `backend` — passed: `test_cleaning_inspection_merge: ok`.
+- `npm run test:guest-luggage-rules` in `backend` — passed: `guest luggage rules: ok`.
+- `git diff --check` — passed.
+- Frontend/mobile full suites — not run: 第一阶段改动集中在 backend schema/sync/query behavior。
+
+### Risks / Release Notes
+
+- Runtime risk: 未对生产真实同房同日任务执行接口回归；验证覆盖同步脚本和 TypeScript build。移动端若持有已缓存的 superseded 旧 task id，刷新列表后会移除，直接旧 id 提交流程仍需第二阶段/后续 guard 继续收紧。
+- Scope boundary: 本阶段不解决晚退、早入住、晚入住、客人需求、钥匙数量等 display 冲突聚合；这些属于第二阶段 canonical display 输出。
+- Rollback: revert migration/schema helper and supersede logic, restore status-only filters, then rerun build if tracked dist remains in release scope.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: local changes only; not staged, not committed, not pushed.
+
+## CRL-20260629-002 — 清洁同房同日 Canonical Turnover Display 第二阶段
+
+- **Status:** local
+- **Updated:** 2026-06-29 22:52 AEST
+- **Request:** 执行阶段2；覆盖晚退、早入住、晚入住、客人需求等同房同日显示不一致问题。
+- **Outcome:** 移动端 `/mzapp/work-tasks` 和网页任务中心清洁合并任务现在复用同一套 canonical turnover display：退房信息按 outgoing checkout 订单/任务算，入住信息按 incoming checkin 订单/任务算；执行源只返回 active ids，superseded 手动补位任务只进入诊断/冲突信息。
+
+### Implementation
+
+- Previous behavior:
+  - 移动端和网页端会在各自合并逻辑里从 preferred task 或任意合并项取 `checkout_time/checkin_time/guest_special_request/old_code/new_code/keys_required/nights`。
+  - 同房同日存在 checkout 与 checkin 两张订单时，晚退、早入住、晚入住、客人需求、钥匙数量和密码可能因为取到不同 task 而显示不一致。
+  - `source_ids` 只有一个含义，无法同时满足“移动端执行只用 active task”和“网页诊断显示 superseded 手动补位来源”。
+- New behavior:
+  - 新增 `buildCleaningTurnoverDisplay()`，统一输出 `checkout_order_id/checkin_order_id`、`checkout_time/checkin_time`、晚退/早入住/晚入住标记、checkout/checkin 客人需求、旧/新密码、checkout/checkin 钥匙套数、已住/剩余晚数、source id split 和 display conflicts。
+  - 移动端 `/mzapp/work-tasks` 在单角色合并和 admin/customer_service/offline_manager 二次合并后都保留 `turnover_display`，并把根字段同步到 canonical display。
+  - 任务中心清洁合并任务使用同一个 helper，turnover 不再把 `old_code/new_code` 清空，并返回同样的 display/source split/conflict 字段。
+  - `source_ids`、`cleaning_task_ids`、`inspection_task_ids` 保持 active 执行源；新增 `active_source_ids`、`superseded_source_ids`、`all_related_source_ids` 用于执行与诊断分离。
+  - superseded 手动补位任务不同于 canonical 的时间、钥匙、晚数、客人需求、密码会进入 `display_conflicts` / `turnover_display.conflicts`，resolution 固定为 `kept_canonical`。
+- Key decisions:
+  - 不把手动任务字段写回订单任务或自动任务；第二阶段只做 display 聚合和冲突记录。
+  - 晚退以退房时间晚于默认 `10am` 判定；早入住以入住时间早于默认 `3pm` 判定；晚入住以入住时间晚于 `6pm` 判定。
+
+### Files / Areas
+
+- `backend/src/lib/cleaningTurnoverDisplay.ts` — added: 共享 canonical turnover display、时间解析、source id split 和 conflict 生成逻辑。
+- `backend/scripts/tests/test_cleaning_turnover_display.ts` — added: 覆盖晚退/早入住、checkout/checkin 分离、source ids split、superseded conflict 和 display merge。
+- `backend/src/modules/mzapp.ts` — modified: `/mzapp/work-tasks` 清洁任务合并接入 canonical turnover display，并查询 superseded 关联源。
+- `backend/src/modules/task_center.ts` — modified: 任务中心清洁任务合并接入 canonical turnover display，并查询 superseded 关联源。
+- `docs/change-release-ledger.md` — modified: 记录本阶段发布单元。
+
+### Impact / Dependencies
+
+- API: `/mzapp/work-tasks` 和任务中心清洁任务响应新增 `turnover_display`、`active_source_ids`、`superseded_source_ids`、`all_related_source_ids`、`display_conflicts` 以及 checkout/checkin guest request/late/early tags 等字段；既有根字段继续保留。
+- Database / migration: none in this phase; depends on `CRL-20260629-001` adding `execution_state` and superseded metadata.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: depends on `CRL-20260629-001`; superseded source diagnostics require first-stage schema/data.
+
+### Validation
+
+- `npm run build` in `backend` — passed: `tsc -p .` completed.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_cleaning_turnover_display.ts` in `backend` — passed: `test_cleaning_turnover_display: ok`.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_cleaning_sync_v2.ts` in `backend` — passed: printed `ok`.
+- `npm run test:cleaning-inspection-merge` in `backend` — passed: `test_cleaning_inspection_merge: ok`.
+- `npm run test:guest-luggage-rules` in `backend` — passed: `guest luggage rules: ok`.
+- `git diff --check` — passed.
+- Frontend/mobile full suites — not run: response-shape additive backend change only; no client files changed.
+
+### Risks / Release Notes
+
+- Runtime risk: 未用真实生产房源/日期调用 `/mzapp/work-tasks` 和任务中心接口做 live payload 对比；验证覆盖 pure helper、后端 build 和现有聚焦测试。
+- Scope boundary: 第二阶段只输出 display/diagnostic 字段，不改前端 UI 是否展示“已合并 1 条手动补位任务”；那属于第三阶段。
+- Rollback: revert `cleaningTurnoverDisplay` helper/test and remove its usage from `mzapp` and `task_center`.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: local changes only; not staged, not committed, not pushed.
+
+## CRL-20260629-003 — 清洁同房同日 Canonical Display UI 第三阶段
+
+- **Status:** local
+- **Updated:** 2026-06-29 23:16 AEST
+- **Request:** 执行阶段3；把阶段2输出接到移动端和网页端，确保同房同日清洁任务显示一致，执行只使用 active source ids。
+- **Outcome:** 移动端任务列表、任务详情、经理日任务、检查补品页和网页任务中心现在优先复用 `turnover_display`；晚退/早入住/晚入住、客人需求、旧/新密码展示走同一 display 层；执行、照片和看板保存只提交 active source ids，superseded 手动补位仅用于诊断显示。
+
+### Implementation
+
+- Previous behavior:
+  - 移动端列表、详情和检查/经理页会各自读取 `start_time/end_time/guest_special_request/old_code/new_code/source_ids`，导致同房同日 checkout/checkin 组合下与网页端显示不一致。
+  - 网页任务中心 `save-board`、整行检查分配和任务 flag 会直接遍历 `task_ids`，无法明确排除 superseded 手动补位任务。
+  - 晚入住 fallback 在移动端按晚于 `3pm` 判断，和第二阶段 canonical display 的晚于 `6pm` 不一致。
+- New behavior:
+  - 移动端新增 `turnoverDisplay` helper，统一读取 `turnover_display`、`active_source_ids`、`superseded_source_ids`、`all_related_source_ids`，并保留旧缓存字段 fallback。
+  - 移动端任务列表/详情页的退房/入住时间、晚退/早入住/晚入住、客人需求、旧/新密码优先显示 canonical display。
+  - 移动端经理日任务照片、补品读取、检查补充页和完成/退房动作统一走 active execution ids；旧缓存没有 active ids 时才回退旧 source ids。
+  - 网页任务中心 `TaskCenterTask` 增加 display/source split 字段；卡片和详情显示“已合并 N 条手动补位”诊断标签，清洁摘要追加 canonical 客人需求。
+  - 网页任务中心保存看板、整行检查分配、task flags 使用 active source ids，避免 superseded 手动任务继续收到分配/状态更新。
+  - 移动端晚入住 fallback 调整为晚于 `6pm`，与 backend canonical display 一致。
+- Key decisions:
+  - 第三阶段只接入 display/执行入口，不回写订单字段，不把 superseded 显示成 cancelled。
+  - `all_related_source_ids` 只用于通知/旧 id 定位和诊断；移动端执行和网页保存只使用 active ids。
+
+### Files / Areas
+
+- `frontend/src/app/task-center/page.tsx` — modified: 接入 `turnover_display` 类型/helper；任务卡片、详情、看板保存和整行分配改用 canonical display 和 active source ids。
+- `mz-cleaning-app-frontend/src/lib/api.ts` — modified: `WorkTask` 类型增加 canonical display/source split/conflict 字段。
+- `mz-cleaning-app-frontend/src/lib/workTasksStore.ts` — modified: 安全 patch 字段和旧 id 匹配包含新 display/source split。
+- `mz-cleaning-app-frontend/src/lib/turnoverDisplay.ts` — added: 移动端 canonical display 与 active/all-related source id helper。
+- `mz-cleaning-app-frontend/src/lib/taskTime.ts` — modified: 晚入住 fallback 改为晚于 `6pm`。
+- `mz-cleaning-app-frontend/src/lib/managerDailyTaskPhotos.ts` — modified: 检查照片查询使用 active execution ids。
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.tsx` — modified: 任务列表展示与动作入口复用 canonical display/source ids。
+- `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.tsx` — modified: 详情页展示与动作入口复用 canonical display/source ids，并显示 canonical 客人需求。
+- `mz-cleaning-app-frontend/src/screens/tasks/ManagerDailyTaskScreen.tsx` — modified: 经理日任务保存、照片/补品读取和退房动作使用 active execution ids。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.tsx` — modified: 检查补充页补品来源和早入住判断复用 canonical display/active ids。
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.test.tsx` — modified: 晚入住测试阈值改为晚于 `6pm`。
+- `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` — modified: 晚入住测试阈值改为晚于 `6pm`。
+- `mz-cleaning-app-frontend/src/screens/tasks/ManagerDailyTaskScreen.test.ts` — modified: 覆盖 active source ids 优先和旧缓存 fallback。
+- `docs/change-release-ledger.md` — modified: 记录本阶段发布单元。
+
+### Impact / Dependencies
+
+- API: depends on `CRL-20260629-002` response fields; older cached mobile tasks continue falling back to legacy fields.
+- Database / migration: none in this phase; depends on `CRL-20260629-001` superseded metadata for meaningful diagnostics.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: depends on `CRL-20260629-001` and `CRL-20260629-002`; should be released after backend schema/display changes.
+
+### Validation
+
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed: `tsc -p tsconfig.json` completed.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with existing warnings: 119 warnings, 0 errors.
+- `npm test -- --runInBand src/screens/tabs/TasksScreen.test.tsx src/screens/tasks/TaskDetailScreen.test.tsx src/screens/tasks/ManagerDailyTaskScreen.test.ts` in `mz-cleaning-app-frontend` — passed: 3 suites, 18 tests. Jest printed an existing open-handle warning after completion.
+- `npm run build` in `frontend` — passed: Next.js build completed. Existing lint warnings and Recharts static generation width warnings remain.
+- `git diff --check && git -C mz-cleaning-app-frontend diff --check` — passed.
+
+### Risks / Release Notes
+
+- Runtime risk: 未用真实生产房源/同日订单做端到端 UI 截图验证；验证覆盖 typecheck、targeted tests 和网页 build。
+- Scope boundary: 第三阶段不新增后端字段生成逻辑，不执行数据库迁移，不封装 iOS/Android。
+- Rollback: revert mobile display/source-id helper usage and task-center page changes; backend phase 1/2 can remain additive but UI will stop consuming new fields.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: local changes only; not staged, not committed, not pushed.
+
+## CRL-20260629-004 — 网页任务中心延期检查显示原退房日
+
+- **Status:** ready
+- **Updated:** 2026-06-29 23:24 AEST
+- **Request:** 网页端延期检查不能只显示“延期检查”；标记延期检查的同时也需要注明是哪天的退房任务。
+- **Outcome:** 网页任务中心的延期检查卡片副标题现在保留检查语义，同时显示原始退房任务日期，例如“延期检查，6月22日退房”；同一房源同一延期检查组合若合并多个原退房日，会一并显示这些退房日期。
+
+### Implementation
+
+- Previous behavior:
+  - 延期检查投影到检查日后，任务中心只显示“延期检查”。
+  - 前端只能拿到延期检查当天的 `task_date` / `inspection_due_date`，没有独立字段表达原始退房任务日期。
+- New behavior:
+  - 任务中心后端为清洁任务响应增加展示用 `checkout_task_date` / `checkout_task_dates` 字段。
+  - 延期检查投影任务把原清洁退房任务日写入这些字段，合并延期检查时保留所有原退房日。
+  - 前端 `taskCenterDisplay` helper 对 deferred inspection 输出“延期检查，N月D日退房”，普通退房/入住任务文案不变。
+- Key decisions:
+  - 不恢复旧的“只显示退房”逻辑；延期检查仍是第一语义，退房日期只作为来源上下文。
+  - 不新增数据库字段；新增字段只来自已有清洁任务日期，属于任务中心响应展示数据。
+
+### Files / Areas
+
+- `backend/src/modules/task_center.ts` — modified: 任务中心清洁任务响应增加原始退房任务日期字段，并在延期检查合并时保留日期数组。
+- `frontend/src/app/task-center/page.tsx` — modified: 任务中心前端类型和摘要生成接收原始退房日期字段。
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — modified: 延期检查 display helper 追加“原退房日 + 退房”上下文。
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — modified: 覆盖单个和多个原退房日的延期检查文案。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: `/task-center/day` 清洁任务响应新增 additive display fields `checkout_task_date` and `checkout_task_dates`; existing fields unchanged.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: shares `backend/src/modules/task_center.ts`, `frontend/src/app/task-center/page.tsx`, and this ledger file with `CRL-20260629-001`, `CRL-20260629-002`, and `CRL-20260629-003`; selective release requires verified hunk-level staging or explicit combined scope.
+
+### Validation
+
+- `npm test -- --run frontend/src/app/task-center/taskCenterDisplay.test.ts --coverage=false` in `frontend` — failed: project script already enables coverage, so Vitest rejected conflicting `--coverage` values.
+- `./node_modules/.bin/vitest run src/app/task-center/taskCenterDisplay.test.ts` in `frontend` — passed: 1 file, 2 tests.
+- `npm run build` in `backend` — passed: `tsc -p .` completed.
+- `npm run lint` in `frontend` — passed with existing warnings; no errors.
+- `npm run build` in `frontend` — passed; existing lint warnings and Recharts static-generation width warnings remain.
+- `git diff --check` — passed.
+
+### Risks / Release Notes
+
+- Runtime risk: 未用真实任务中心数据截图复核卡片宽度；文案变长后紧凑卡片会显示更多副标题内容，现有 hover title 也会包含完整摘要。
+- Release risk: worktree already contains unrelated local backend/frontend changes in the same hot files; do not broad-stage for this unit.
+- Rollback: remove `checkout_task_date(s)` from task-center response and restore deferred inspection helper output to plain “延期检查”.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: local changes only; not staged, not committed, not pushed.
+
+## CRL-20260630-001 — 任务分配字段以 work_tasks 为准
+
+- **Status:** ready
+- **Updated:** 2026-06-30 00:08 AEST
+- **Request:** 修复任务中心已分配任务被移动端/管理端/其他角色更新任务信息后变回未分配；`work_tasks` 是分配字段 canonical source，普通内容更新不得覆盖分配。
+- **Outcome:** offline task 同步、任务中心 save-board 和展示合并路径现在都以 `work_tasks` 分配字段为准；普通任务信息更新即使带 `assignee_id: null` 也不会清空已有分配，只有任务中心显式 assign/unassign intent 才能改派或取消分配。
+
+### Implementation
+
+- Previous behavior:
+  - `upsertWorkTaskFromOfflineTask()` 在 `ON CONFLICT DO UPDATE` 时会把旧 offline row 的 `assignee_id` 写回 `work_tasks`，因此 offline row 为空或旧值时可能覆盖已分配任务。
+  - `/cleaning/offline-tasks/:id` PATCH 直接按请求字段更新 offline row，普通内容更新里夹带的 assignment 字段会进入后续同步链路。
+  - 任务中心 save-board 前端会提交整批 assignment payload，后端把 `assignee_id: null` 当成取消分配，缺少显式 unassign intent。
+  - 部分 offline 展示接口仍可能返回 legacy/offline assignment，而不是 canonical `work_tasks.assignee_id`。
+- New behavior:
+  - `upsertWorkTaskFromOfflineTask()` 在冲突更新时保留 `work_tasks.assignee_id`，只同步 title/summary/date/status/urgency/photos 等内容字段。
+  - offline task PATCH 使用内容字段白名单，排除 `assignee_id`、`cleaner_id`、`inspector_id` 等 assignment 字段；状态兼容仍写入 canonical work task。
+  - task-center save-board schema 支持 `*_assignment_action: assign | unassign`，后端只有收到 action 时才更新 assignment 字段；普通 null 被忽略。
+  - 任务中心前端保存前建立 assignment baseline，只提交实际变更过的 assignment/order/group 字段，并为真实改派/取消分配附带显式 action。
+  - `cleaning_offline_tasks` 不再从 `work_tasks` 回写 assignment；offline 展示和 `/mzapp/work-tasks` 回归测试确认返回值与 `work_tasks` 一致。
+- Key decisions:
+  - 不新增数据库字段；显式 intent 是 API payload 行为，兼容旧客户端的普通内容保存。
+  - 允许新建 `work_tasks` 时从 legacy/offline row 初始化 assignment；只要已有 `work_tasks` 行，后续 assignment 只以 `work_tasks` 为准。
+
+### Files / Areas
+
+- `backend/src/modules/cleaning.ts` — modified: offline-to-work upsert 保留 canonical assignment；offline PATCH 字段白名单；offline 列表/calendar 输出 `work_tasks.assignee_id`。
+- `backend/src/modules/task_center.ts` — modified: save-board assignment diff 和 SQL 更新改为显式 action-gated；同步回 offline 旧表时不再写 assignment。
+- `backend/src/modules/work_tasks.ts` — modified: 通用 work task source propagation 不再把 assignment 回写到 `cleaning_offline_tasks`。
+- `frontend/src/app/task-center/page.tsx` — modified: 保存看板前基于 baseline 只发送实际变更 assignment，并为 assign/unassign 附带明确 intent。
+- `backend/scripts/tests/test_task_assignment_canonical.ts` — added: 覆盖 offline null/旧值不覆盖、任务中心显式改派/取消分配、普通 null 忽略、经理字段更新保持分配、展示与 canonical 一致。
+- `backend/dist/modules/cleaning.js` — generated/shared: 后端 build 同步生成的 `cleaning.ts` 输出；该文件同时承载同日其他清洁模块单元的未提交生成改动。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: task-center save-board assignment payload 新增可选 `cleaner_assignment_action`、`inspector_assignment_action`、`assignee_assignment_action`；旧 payload 未带 action 时不再通过 null 自动取消分配。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: shares `backend/src/modules/cleaning.ts`, `backend/src/modules/task_center.ts`, `frontend/src/app/task-center/page.tsx`, `backend/dist/modules/cleaning.js`, and this ledger with `CRL-20260629-001` through `CRL-20260629-004`; selective release requires hunk-level staging or explicit combined scope.
+
+### Validation
+
+- `npm --prefix backend run build` — passed: backend TypeScript build completed.
+- `npm exec -- ts-node-dev --transpile-only scripts/tests/test_task_assignment_canonical.ts` in `backend` — passed: `test_task_assignment_canonical: ok`.
+- `npm --prefix frontend run lint` — passed with existing warnings; no errors.
+- `npm exec -- tsc --noEmit` in `frontend` — passed.
+- `npm --prefix frontend test -- taskCenterDisplay.test.ts` — failed because the project script forced global coverage thresholds even though the 2 targeted tests passed; followed by direct Vitest run without coverage.
+- `npm exec -- vitest run src/app/task-center/taskCenterDisplay.test.ts --coverage=false` in `frontend` — passed: 1 file, 2 tests.
+- `npm --prefix frontend run build` — passed; existing lint warnings and Recharts static generation width warnings remain.
+
+### Risks / Release Notes
+
+- Runtime risk: integration test used the configured remote PostgreSQL test rows and cleaned known test IDs; if interrupted in future, rerunning the same test cleans those IDs.
+- Release risk: worktree already contains unrelated local changes in the same hot files; do not broad-stage this unit without reviewing hunk ownership.
+- Behavior note: legacy `cleaning_offline_tasks.assignee_id` may remain stale by design after this change; display paths must use `work_tasks` when a row exists.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added to source or ledger.
+- Git state: local changes only; not staged, not committed, not pushed.

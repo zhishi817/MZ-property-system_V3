@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { requireAnyPerm, requirePerm } from '../auth'
 import { addAudit, db } from '../store'
 import { hasPg, pgPool } from '../dbAdapter'
-import { backfillCleaningTasks, ensureCleaningSchemaV2, syncCheckoutOldCodeFromCheckinNewCode, syncOrderToCleaningTasks } from '../services/cleaningSync'
+import { activeCleaningTaskWhereSql, backfillCleaningTasks, ensureCleaningSchemaV2, syncCheckoutOldCodeFromCheckinNewCode, syncOrderToCleaningTasks } from '../services/cleaningSync'
 import { v4 as uuid } from 'uuid'
 import { emitNotificationEvent } from '../services/notificationEvents'
 import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
@@ -339,7 +339,7 @@ function normalizePhotoUrls(input: any) {
   return Array.from(new Set(arr.map((item) => String(item || '').trim()).filter(Boolean))).slice(0, 20)
 }
 
-async function upsertWorkTaskFromOfflineTask(row: any, requestedStatus?: any) {
+export async function upsertWorkTaskFromOfflineTask(row: any, requestedStatus?: any) {
   if (!hasPg || !pgPool) return
   const id = String(row?.id || '').trim()
   if (!id) return
@@ -359,7 +359,7 @@ async function upsertWorkTaskFromOfflineTask(row: any, requestedStatus?: any) {
        title=EXCLUDED.title,
        summary=EXCLUDED.summary,
        scheduled_date=EXCLUDED.scheduled_date,
-       assignee_id=EXCLUDED.assignee_id,
+       assignee_id=work_tasks.assignee_id,
        status=CASE WHEN $12::boolean THEN EXCLUDED.status ELSE work_tasks.status END,
        urgency=EXCLUDED.urgency,
        photo_urls=EXCLUDED.photo_urls,
@@ -493,7 +493,7 @@ router.get('/offline-tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule
       await backfillOfflineWorkTasks()
       if (!date) {
         const r = await pgPool.query(
-          `SELECT t.*, COALESCE(w.status, 'todo') AS status
+          `SELECT t.*, COALESCE(w.status, 'todo') AS status, w.assignee_id AS assignee_id
              FROM cleaning_offline_tasks t
              JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
             ORDER BY t.date DESC, t.updated_at DESC, t.id DESC`,
@@ -502,7 +502,7 @@ router.get('/offline-tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule
       }
       if (includeOverdue) {
         const r = await pgPool.query(
-          `SELECT t.*, COALESCE(w.status, 'todo') AS status
+          `SELECT t.*, COALESCE(w.status, 'todo') AS status, w.assignee_id AS assignee_id
              FROM cleaning_offline_tasks t
              JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
             WHERE (t.date::date = $1::date)
@@ -513,7 +513,7 @@ router.get('/offline-tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule
         return res.json(r?.rows || [])
       }
       const r = await pgPool.query(
-        `SELECT t.*, COALESCE(w.status, 'todo') AS status
+        `SELECT t.*, COALESCE(w.status, 'todo') AS status, w.assignee_id AS assignee_id
            FROM cleaning_offline_tasks t
            JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
           WHERE t.date::date = $1::date
@@ -650,13 +650,18 @@ router.patch('/offline-tasks/:id', requirePerm('cleaning.schedule.manage'), asyn
   const parsed = offlineTaskSchema.partial().safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const patch = parsed.data
+  const contentFieldAllowlist = new Set(['date', 'task_type', 'title', 'content', 'kind', 'urgency', 'property_id', 'photo_urls'])
   try {
     if (hasPg && pgPool) {
       await ensureOfflineTasksTable()
       const beforeRes = await pgPool.query('SELECT * FROM cleaning_offline_tasks WHERE id=$1 LIMIT 1', [String(id)])
       const before = beforeRes?.rows?.[0] || null
       if (!before) return res.status(404).json({ message: 'task not found' })
-      const keys = Object.keys(patch || {}).filter((k) => k !== 'status' && (patch as any)[k] !== undefined)
+      const keys = Object.keys(patch || {}).filter((k) => (
+        k !== 'status'
+        && contentFieldAllowlist.has(k)
+        && (patch as any)[k] !== undefined
+      ))
       if (!keys.length) {
         if ((patch as any).status === undefined) {
           const statusResult = await pgPool.query(
@@ -685,11 +690,13 @@ router.patch('/offline-tasks/:id', requirePerm('cleaning.schedule.manage'), asyn
       if (!row) return res.status(404).json({ message: 'task not found' })
       await upsertWorkTaskFromOfflineTask(row, (patch as any).status)
       const statusResult = await pgPool.query(
-        `SELECT status FROM work_tasks WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1 LIMIT 1`,
+        `SELECT status, assignee_id FROM work_tasks WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1 LIMIT 1`,
         [String(id)],
       )
       row.status = offlineWorkStatus(statusResult?.rows?.[0]?.status)
+      row.assignee_id = statusResult?.rows?.[0]?.assignee_id ? String(statusResult.rows[0].assignee_id) : null
       row.photo_urls = normalizePhotoUrls(row.photo_urls)
+      const canonicalAssigneeId = statusResult?.rows?.[0]?.assignee_id || null
       const completedChanged = beforeStatus !== 'done' && row.status === 'done'
       if (keys.length && !completedChanged) {
         const workTaskId = offlineWorkTaskId(String(row.id || id))
@@ -715,7 +722,7 @@ router.patch('/offline-tasks/:id', requirePerm('cleaning.schedule.manage'), asyn
             changedFields,
             patch: patchForEvent,
             causedByUserId: String((req as any).user?.sub || '').trim() || null,
-            visibilityHints: buildWorkTaskVisibilityHints({ assignee_id: row.assignee_id }),
+            visibilityHints: buildWorkTaskVisibilityHints({ assignee_id: canonicalAssigneeId }),
           })
         } catch {}
       }
@@ -731,7 +738,7 @@ router.patch('/offline-tasks/:id', requirePerm('cleaning.schedule.manage'), asyn
             changedFields: ['status'],
             patch: { status: 'done' },
             causedByUserId: String((req as any).user?.sub || '').trim() || null,
-            visibilityHints: buildWorkTaskVisibilityHints({ assignee_id: row.assignee_id }),
+            visibilityHints: buildWorkTaskVisibilityHints({ assignee_id: canonicalAssigneeId }),
           })
         } catch {}
         enqueueNotification(() =>
@@ -765,7 +772,10 @@ router.patch('/offline-tasks/:id', requirePerm('cleaning.schedule.manage'), asyn
     const rows = ((db as any).cleaningOfflineTasks || []) as any[]
     const t = rows.find((x: any) => String(x.id) === String(id))
     if (!t) return res.status(404).json({ message: 'task not found' })
-    Object.assign(t, patch)
+    for (const key of contentFieldAllowlist) {
+      if ((patch as any)[key] !== undefined) (t as any)[key] = (patch as any)[key]
+    }
+    if ((patch as any).status !== undefined) t.status = (patch as any).status
     return res.json(t)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'update_failed' })
@@ -864,12 +874,14 @@ router.get('/tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
   const date = parsed.success ? parsed.data : undefined
   try {
     if (hasPg && pgPool) {
+      await ensureCleaningSchemaV2()
       if (date) {
         const r = await pgPool.query(
           `SELECT t.*, o.keys_required AS order_keys_required
            FROM cleaning_tasks t
            LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
            WHERE (COALESCE(t.task_date, t.date)::date) = ($1::date)
+             AND ${activeCleaningTaskWhereSql('t')}
            ORDER BY t.property_id NULLS LAST, t.id`,
           [date]
         )
@@ -883,6 +895,7 @@ router.get('/tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
         `SELECT t.*, o.keys_required AS order_keys_required
          FROM cleaning_tasks t
          LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
+         WHERE ${activeCleaningTaskWhereSql('t')}
          ORDER BY COALESCE(t.task_date, t.date) NULLS LAST, t.property_id NULLS LAST, t.id`,
       )
       return res.json((r?.rows || []).map((x: any) => {
@@ -892,11 +905,18 @@ router.get('/tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
       }))
     }
     const rows = (db.cleaningTasks as any[]).slice()
-    if (!date) return res.json(rows)
+    const activeRows = rows.filter((t: any) => {
+      const executionState = String(t?.execution_state || '').trim().toLowerCase()
+      const status = String(t?.status || '').trim().toLowerCase()
+      if (executionState && executionState !== 'active') return false
+      if (!executionState && (status === 'cancelled' || status === 'canceled')) return false
+      return true
+    })
+    if (!date) return res.json(activeRows)
     const orders = (db.orders || []) as any[]
     const byId = new Map<string, any>()
     for (const o of orders) byId.set(String(o.id), o)
-    return res.json(rows.filter((t: any) => String(t.task_date || t.date || '').slice(0, 10) === date).map((t: any) => {
+    return res.json(activeRows.filter((t: any) => String(t.task_date || t.date || '').slice(0, 10) === date).map((t: any) => {
       const out = { ...t }
       const oid = String(out.order_id || '').trim()
       const o = oid ? byId.get(oid) : null
@@ -1080,7 +1100,7 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
               `UPDATE cleaning_tasks
                SET keys_required = $1, updated_at = now()
                WHERE order_id::text = $2::text
-                 AND COALESCE(status,'') <> 'cancelled'
+                 AND ${activeCleaningTaskWhereSql('')}
                  AND COALESCE(keys_required, 1) <> $1`,
               [nextK, orderId],
             )
@@ -1338,6 +1358,8 @@ router.post('/tasks', requireCleaningManualCreateAccess, async (req, res) => {
       guest_special_request: (parsed.data as any).guest_special_request ?? (parsed.data as any).note ?? null,
       auto_sync_enabled: true,
       source: 'manual',
+      execution_state: 'active',
+      manual_task_purpose: null,
     }
     if (hasPg && pgPool) {
       await ensureCleaningSchemaV2()
@@ -1449,7 +1471,7 @@ router.delete('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res
       const r0 = await pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1', [String(id)])
       const before = r0?.rows?.[0] || null
       if (!before) return res.status(404).json({ message: 'task not found' })
-      const r1 = await pgPool.query(`UPDATE cleaning_tasks SET status='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [String(id)])
+      const r1 = await pgPool.query(`UPDATE cleaning_tasks SET status='cancelled', execution_state='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [String(id)])
       const after = r1?.rows?.[0] || null
       await emitWorkTaskEvent({
         taskId: `cleaning_task:${String(id)}`,
@@ -1457,8 +1479,8 @@ router.delete('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res
         sourceRefIds: [String(id)],
         eventType: 'TASK_REMOVED',
         changeScope: 'membership',
-        changedFields: ['status'],
-        patch: { status: 'cancelled' },
+        changedFields: ['status', 'execution_state'],
+        patch: { status: 'cancelled', execution_state: 'cancelled' },
         causedByUserId: actorId || null,
         visibilityHints: buildCleaningTaskVisibilityHints(after || before),
       })
@@ -1499,6 +1521,7 @@ router.delete('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res
     if (!task) return res.status(404).json({ message: 'task not found' })
     const before = { ...task }
     task.status = 'cancelled'
+    task.execution_state = 'cancelled'
     task.auto_sync_enabled = false
     addAudit('cleaning_task', String(id), 'delete', before, { ...task }, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') })
     return res.json({ ok: true })
@@ -1523,7 +1546,7 @@ router.post('/tasks/bulk-delete', requirePerm('cleaning.task.assign'), async (re
           const r0 = await client.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
           const before = r0?.rows?.[0] || null
           if (!before) continue
-          const r1 = await client.query(`UPDATE cleaning_tasks SET status='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [id])
+          const r1 = await client.query(`UPDATE cleaning_tasks SET status='cancelled', execution_state='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [id])
           const after = r1?.rows?.[0] || null
           await emitWorkTaskEvent({
             taskId: `cleaning_task:${String(id)}`,
@@ -1531,8 +1554,8 @@ router.post('/tasks/bulk-delete', requirePerm('cleaning.task.assign'), async (re
             sourceRefIds: [String(id)],
             eventType: 'TASK_REMOVED',
             changeScope: 'membership',
-            changedFields: ['status'],
-            patch: { status: 'cancelled' },
+            changedFields: ['status', 'execution_state'],
+            patch: { status: 'cancelled', execution_state: 'cancelled' },
             causedByUserId: actorId || null,
             visibilityHints: buildCleaningTaskVisibilityHints(after || before),
           }, client)
@@ -1583,6 +1606,7 @@ router.post('/tasks/bulk-delete', requirePerm('cleaning.task.assign'), async (re
       if (!task) continue
       const before = { ...task }
       task.status = 'cancelled'
+      task.execution_state = 'cancelled'
       task.auto_sync_enabled = false
       addAudit('cleaning_task', String(id), 'delete', before, { ...task }, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') })
       cnt++
@@ -1914,7 +1938,7 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
              ((COALESCE(task_date, date)::date) >= ($1::date) AND (COALESCE(task_date, date)::date) <= ($2::date))
              OR ($3::boolean = true AND t.inspection_due_date IS NOT NULL AND (t.inspection_due_date::date) <= ($2::date))
            )
-           AND COALESCE(t.status,'') <> 'cancelled'
+           AND ${activeCleaningTaskWhereSql('t')}
            AND (t.order_id IS NULL OR o.id IS NOT NULL)
            AND (
              t.order_id IS NULL
@@ -2014,7 +2038,7 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
            COALESCE(w.status, 'todo') AS status,
            t.urgency,
            t.property_id,
-           t.assignee_id,
+           w.assignee_id AS assignee_id,
            COALESCE(t.photo_urls, '[]'::jsonb) AS photo_urls,
            COALESCE(p_id.code::text, p_code.code::text) AS property_code,
            COALESCE(p_id.region::text, p_code.region::text) AS property_region

@@ -9,6 +9,7 @@ export type CleaningSyncAction =
   | 'created'
   | 'updated'
   | 'cancelled'
+  | 'superseded'
   | 'no_change'
   | 'skipped_locked'
   | 'failed'
@@ -17,12 +18,36 @@ export type SyncOrderToCleaningTasksOpts = { deleted?: boolean; client?: any; jo
 
 const CHECKOUT_TASK_TYPE = 'checkout_clean'
 const CHECKIN_TASK_TYPE = 'checkin_clean'
+const ACTIVE_EXECUTION_STATE = 'active'
+const SUPERSEDED_EXECUTION_STATE = 'superseded'
+const CANCELLED_EXECUTION_STATE = 'cancelled'
+const TEMPORARY_ORDER_PLACEHOLDER_PURPOSE = 'temporary_order_placeholder'
+
+const NON_SUPERSEDABLE_MANUAL_STATUSES = new Set([
+  'in_progress',
+  'completed',
+  'checked',
+  'cleaned',
+  'restocked',
+  'restock_pending',
+  'inspected',
+  'keys_hung',
+  'done',
+  'ready',
+  'to_inspect',
+  'to_hang_keys',
+])
 
 const DEFAULT_CHECKOUT_TIME = '10am'
 const DEFAULT_CHECKIN_TIME = '3pm'
 
 let schemaEnsured: Promise<void> | null = null
 let schemaBootstrapped: Promise<void> | null = null
+
+export function activeCleaningTaskWhereSql(alias = 't'): string {
+  const a = alias ? `${alias}.` : ''
+  return `COALESCE(${a}execution_state, CASE WHEN lower(COALESCE(${a}status, '')) IN ('cancelled','canceled') THEN 'cancelled' ELSE 'active' END) = 'active'`
+}
 
 function sha256(input: string): string {
   return createHash('sha256').update(input).digest('hex')
@@ -153,11 +178,36 @@ export async function ensureCleaningSchemaV2(): Promise<void> {
       err.code = 'CLEANING_SCHEMA_MISSING'
       throw err
     }
+    await ensureCleaningExecutionStateColumns()
   })().catch((e) => {
     schemaEnsured = null
     throw e
   })
   return schemaEnsured
+}
+
+async function ensureCleaningExecutionStateColumns(execArg?: any): Promise<void> {
+  if (!hasPg || !pgPool) return
+  const exec = execArg || pgPool
+  await exec.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS execution_state text;`)
+  await exec.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS manual_task_purpose text;`)
+  await exec.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS superseded_by text;`)
+  await exec.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS superseded_reason text;`)
+  await exec.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS superseded_at timestamptz;`)
+  await exec.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS supersede_conflicts jsonb NOT NULL DEFAULT '[]'::jsonb;`)
+  await exec.query(
+    `UPDATE cleaning_tasks
+        SET execution_state = CASE
+          WHEN lower(COALESCE(status, '')) IN ('cancelled','canceled') THEN 'cancelled'
+          ELSE 'active'
+        END
+      WHERE execution_state IS NULL
+         OR execution_state NOT IN ('active','superseded','cancelled')`,
+  )
+  await exec.query(`ALTER TABLE cleaning_tasks ALTER COLUMN execution_state SET DEFAULT 'active';`)
+  await exec.query(`ALTER TABLE cleaning_tasks ALTER COLUMN execution_state SET NOT NULL;`)
+  await exec.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_execution_state ON cleaning_tasks(execution_state);`)
+  await exec.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_active_lookup ON cleaning_tasks(property_id, task_date, task_type) WHERE execution_state = 'active';`)
 }
 
 export async function bootstrapCleaningSyncSchemaV2(): Promise<void> {
@@ -169,6 +219,7 @@ export async function bootstrapCleaningSyncSchemaV2(): Promise<void> {
     await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_due_date date;`)
     await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS guest_special_request text;`)
     await pgPool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
+    await ensureCleaningExecutionStateColumns()
     schemaEnsured = null
     await ensureCleaningSchemaV2()
   })().catch((e) => {
@@ -267,14 +318,16 @@ async function insertTask(row: any, client?: any): Promise<any> {
         cleaner_id, inspector_id,
         keys_required, inspection_mode, inspection_due_date,
         auto_sync_enabled, sync_fingerprint, source,
+        execution_state, manual_task_purpose,
         updated_at
       )
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,now())
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,now())
       ON CONFLICT ON CONSTRAINT uniq_cleaning_tasks_order_task_type_v3
       DO UPDATE SET
         property_id = EXCLUDED.property_id,
         task_date = EXCLUDED.task_date,
         date = EXCLUDED.date,
+        execution_state = EXCLUDED.execution_state,
         inspection_mode = COALESCE(cleaning_tasks.inspection_mode, EXCLUDED.inspection_mode),
         inspection_due_date = CASE
           WHEN cleaning_tasks.inspection_mode = 'deferred' AND cleaning_tasks.inspection_due_date IS NOT NULL THEN cleaning_tasks.inspection_due_date
@@ -306,6 +359,8 @@ async function insertTask(row: any, client?: any): Promise<any> {
       row.auto_sync_enabled !== false,
       row.sync_fingerprint ? String(row.sync_fingerprint) : null,
       row.source ? String(row.source) : 'auto',
+      row.execution_state ? String(row.execution_state) : ACTIVE_EXECUTION_STATE,
+      row.manual_task_purpose ? String(row.manual_task_purpose) : null,
     ]
     const r = await exec.query(sql, params)
     return r?.rows?.[0] || row
@@ -342,26 +397,70 @@ function nonBlank(v: any): string | null {
   return s ? s : null
 }
 
-function statusFromAssignees(cleanerId: any, inspectorId: any): string {
-  return hasValue(cleanerId) || hasValue(inspectorId) ? 'assigned' : 'pending'
+function normalizeExecutionState(row: any): string {
+  const explicit = String(row?.execution_state || '').trim().toLowerCase()
+  if (explicit === ACTIVE_EXECUTION_STATE || explicit === SUPERSEDED_EXECUTION_STATE || explicit === CANCELLED_EXECUTION_STATE) return explicit
+  const status = String(row?.status || '').trim().toLowerCase()
+  if (status === 'cancelled' || status === 'canceled') return CANCELLED_EXECUTION_STATE
+  return ACTIVE_EXECUTION_STATE
 }
 
-function shouldCarryManualStatus(officialStatus: any, manualStatus: any): boolean {
-  const official = String(officialStatus || '').trim().toLowerCase()
-  const manual = String(manualStatus || '').trim().toLowerCase()
-  if (!manual || manual === 'pending' || manual === 'cancelled' || manual === 'canceled') return false
-  return !official || official === 'pending' || official === 'assigned'
+function canSupersedeManualTaskByFields(row: any): boolean {
+  if (hasValue(row?.order_id)) return false
+  const taskType = String(row?.task_type || row?.type || '').trim().toLowerCase()
+  if (taskType !== CHECKIN_TASK_TYPE && taskType !== CHECKOUT_TASK_TYPE) return false
+  const purpose = String(row?.manual_task_purpose || '').trim().toLowerCase()
+  if (purpose && purpose !== TEMPORARY_ORDER_PLACEHOLDER_PURPOSE) return false
+  if (normalizeExecutionState(row) !== ACTIVE_EXECUTION_STATE) return false
+  const status = String(row?.status || '').trim().toLowerCase()
+  if (NON_SUPERSEDABLE_MANUAL_STATUSES.has(status)) return false
+  return true
 }
 
-async function replaceManualCheckinWithSyncedTask(params: {
+async function queryHasAnyRows(exec: any, sql: string, params: any[]): Promise<boolean> {
+  try {
+    const r = await exec.query(sql, params)
+    return !!r?.rows?.length
+  } catch (e: any) {
+    if (String(e?.code || '') === '42P01' || String(e?.code || '') === '42703') return false
+    throw e
+  }
+}
+
+async function hasManualTaskExecutionRecords(task: any, exec: any): Promise<boolean> {
+  if (!task) return false
+  const executedFields = [
+    'started_at',
+    'finished_at',
+    'key_photo_uploaded_at',
+    'lockbox_video_uploaded_at',
+  ]
+  if (executedFields.some((field) => hasValue(task?.[field]))) return true
+  if (task?.cleaned === true || task?.restocked === true || task?.inspected === true) return true
+  const taskId = String(task.id || '').trim()
+  if (!taskId) return false
+  if (await queryHasAnyRows(exec, `SELECT 1 FROM cleaning_task_media WHERE task_id::text = $1 LIMIT 1`, [taskId])) return true
+  if (await queryHasAnyRows(exec, `SELECT 1 FROM cleaning_consumable_usages WHERE task_id::text = $1 LIMIT 1`, [taskId])) return true
+  if (await queryHasAnyRows(exec, `SELECT 1 FROM cleaning_issues WHERE task_id::text = $1 LIMIT 1`, [taskId])) return true
+  return false
+}
+
+async function canSupersedeManualTask(task: any, exec: any): Promise<boolean> {
+  if (!canSupersedeManualTaskByFields(task)) return false
+  return !(await hasManualTaskExecutionRecords(task, exec))
+}
+
+async function supersedeTemporaryManualTasksForOrder(params: {
   jobId?: string | null
   orderId: string
   propertyId: string | null
   taskDate: string | null
+  taskType: string
   client?: any
-}) {
-  const { jobId, orderId, propertyId, taskDate, client } = params
-  if (!propertyId || !taskDate) return
+}): Promise<number> {
+  const { jobId, orderId, propertyId, taskDate, taskType, client } = params
+  const normalizedTaskType = String(taskType || '').trim()
+  if (!propertyId || !taskDate || ![CHECKIN_TASK_TYPE, CHECKOUT_TASK_TYPE].includes(normalizedTaskType)) return 0
 
   if (hasPg && (client || pgPool)) {
     await ensureCleaningSchemaV2()
@@ -371,12 +470,12 @@ async function replaceManualCheckinWithSyncedTask(params: {
        FROM cleaning_tasks
        WHERE (order_id::text) = $1
          AND (task_type::text) = $2
-         AND lower(COALESCE(status, '')) NOT IN ('cancelled', 'canceled')
+         AND ${activeCleaningTaskWhereSql('cleaning_tasks')}
        LIMIT 1`,
-      [String(orderId), CHECKIN_TASK_TYPE],
+      [String(orderId), normalizedTaskType],
     )
     const official = officialRes?.rows?.[0] || null
-    if (!official) return
+    if (!official) return 0
 
     const manualRes = await exec.query(
       `SELECT t.*
@@ -385,126 +484,81 @@ async function replaceManualCheckinWithSyncedTask(params: {
        LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
        WHERE t.order_id IS NULL
          AND (t.task_type::text) = $1
-         AND lower(COALESCE(t.source, '')) = 'manual'
+         AND lower(COALESCE(t.source, 'manual')) IN ('manual', '')
          AND (COALESCE(t.task_date, t.date)::date) = ($2::date)
          AND COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = $3
-         AND lower(COALESCE(t.status, '')) NOT IN ('cancelled', 'canceled')
+         AND ${activeCleaningTaskWhereSql('t')}
+         AND COALESCE(NULLIF(lower(trim(t.manual_task_purpose)), ''), $4) = $4
+         AND lower(COALESCE(t.status, '')) <> ALL($5::text[])
        ORDER BY t.updated_at DESC NULLS LAST, t.id DESC`,
-      [CHECKIN_TASK_TYPE, taskDate, String(propertyId)],
+      [normalizedTaskType, taskDate, String(propertyId), TEMPORARY_ORDER_PLACEHOLDER_PURPOSE, Array.from(NON_SUPERSEDABLE_MANUAL_STATUSES)],
     )
     const manualRows = manualRes?.rows || []
-    if (!manualRows.length) return
-    const primaryManual = manualRows[0]
+    if (!manualRows.length) return 0
 
-    const patch: any = {}
-    const manualCleanerId = nonBlank(primaryManual.cleaner_id) || nonBlank(primaryManual.assignee_id)
-    if (!hasValue(official.cleaner_id) && !hasValue(official.assignee_id) && manualCleanerId) {
-      patch.cleaner_id = manualCleanerId
-      patch.assignee_id = manualCleanerId
-    }
-    const manualInspectorId = nonBlank(primaryManual.inspector_id)
-    if (!hasValue(official.inspector_id) && manualInspectorId) patch.inspector_id = manualInspectorId
-    if (!hasValue(official.inspection_mode) && hasValue(primaryManual.inspection_mode)) patch.inspection_mode = primaryManual.inspection_mode
-    if (!hasValue(official.inspection_due_date) && hasValue(primaryManual.inspection_due_date)) patch.inspection_due_date = String(primaryManual.inspection_due_date).slice(0, 10)
-    if ((!hasValue(official.checkin_time) || String(official.checkin_time).trim() === DEFAULT_CHECKIN_TIME) && hasValue(primaryManual.checkin_time)) {
-      patch.checkin_time = String(primaryManual.checkin_time)
-    }
-    if (!hasValue(official.guest_special_request) && hasValue(primaryManual.guest_special_request)) patch.guest_special_request = primaryManual.guest_special_request
-    if (!hasValue(official.new_code) && hasValue(primaryManual.new_code)) patch.new_code = primaryManual.new_code
-    if (official.keys_required == null && primaryManual.keys_required != null) patch.keys_required = primaryManual.keys_required
-    if (shouldCarryManualStatus(official.status, primaryManual.status)) {
-      patch.status = String(primaryManual.status)
-    } else if ((patch.cleaner_id !== undefined || patch.inspector_id !== undefined) && (!hasValue(official.status) || String(official.status).trim() === 'pending')) {
-      patch.status = statusFromAssignees(patch.cleaner_id ?? official.cleaner_id ?? official.assignee_id, patch.inspector_id ?? official.inspector_id)
-    }
-
-    let officialAfter = official
-    const changedFields = Object.keys(patch).filter((key) => patch[key] !== undefined)
-    if (changedFields.length) {
-      officialAfter = await updateTaskById(String(official.id), patch, exec) || official
-      await logCleaningSync({
-        jobId,
-        orderId,
-        taskId: official.id,
-        action: 'updated',
-        before: official,
-        after: officialAfter,
-        meta: { reason: 'replaced_by_order_task', inherited_from_manual_task_id: String(primaryManual.id || '') },
-        client: exec,
-      })
-      try {
-        const assignmentChanged = ['assignee_id', 'cleaner_id', 'inspector_id'].some((key) => changedFields.includes(key))
-        await emitWorkTaskEvent({
-          taskId: `cleaning_task:${String(official.id)}`,
-          sourceType: 'cleaning_tasks',
-          sourceRefIds: [String(official.id)],
-          eventType: assignmentChanged ? 'TASK_ASSIGNMENT_CHANGED' : 'TASK_UPDATED',
-          changeScope: assignmentChanged ? 'membership' : 'list',
-          changedFields,
-          patch: Object.fromEntries(changedFields.map((field) => [field, (officialAfter as any)?.[field]])),
-          causedByUserId: null,
-          visibilityHints: buildCleaningTaskVisibilityHints(officialAfter || official),
-        }, exec)
-      } catch {}
-    }
-
+    let superseded = 0
     for (const manual of manualRows) {
-      const after = await updateTaskById(String(manual.id), { status: 'cancelled', auto_sync_enabled: false }, exec)
+      if (!(await canSupersedeManualTask(manual, exec))) continue
+      const patch = {
+        execution_state: SUPERSEDED_EXECUTION_STATE,
+        auto_sync_enabled: false,
+        superseded_by: String(official.id || ''),
+        superseded_reason: 'auto_order_task_created',
+        superseded_at: new Date().toISOString(),
+        supersede_conflicts: JSON.stringify([]),
+      }
+      const after = await updateTaskById(String(manual.id), patch, exec)
       await logCleaningSync({
         jobId,
         orderId,
         taskId: manual.id,
-        action: 'cancelled',
+        action: 'superseded',
         before: manual,
         after,
-        meta: { reason: 'replaced_by_order_task', replacement_task_id: String(official.id || '') },
+        meta: { reason: 'auto_order_task_created', replacement_task_id: String(official.id || ''), task_type: normalizedTaskType },
         client: exec,
       })
       try {
+        const changedFields = ['execution_state', 'auto_sync_enabled', 'superseded_by', 'superseded_reason', 'superseded_at', 'supersede_conflicts']
         await emitWorkTaskEvent({
           taskId: `cleaning_task:${String(manual.id)}`,
           sourceType: 'cleaning_tasks',
           sourceRefIds: [String(manual.id)],
           eventType: 'TASK_REMOVED',
           changeScope: 'membership',
-          changedFields: ['status', 'auto_sync_enabled'],
-          patch: { status: 'cancelled', auto_sync_enabled: false },
+          changedFields,
+          patch: Object.fromEntries(changedFields.map((field) => [field, (after as any)?.[field] ?? (patch as any)[field]])),
           causedByUserId: null,
           visibilityHints: buildCleaningTaskVisibilityHints(after || manual),
         }, exec)
       } catch {}
+      superseded++
     }
-    return
+    return superseded
   }
 
   const tasks = db.cleaningTasks as any[]
   const official = tasks.find((task: any) =>
     String(task.order_id || '') === String(orderId) &&
-    String(task.task_type || task.type || '') === CHECKIN_TASK_TYPE &&
-    !['cancelled', 'canceled'].includes(String(task.status || '').trim().toLowerCase())
+    String(task.task_type || task.type || '') === normalizedTaskType &&
+    normalizeExecutionState(task) === ACTIVE_EXECUTION_STATE
   )
-  if (!official) return
+  if (!official) return 0
   const manualRows = tasks.filter((task: any) =>
-    !hasValue(task.order_id) &&
-    String(task.task_type || task.type || '') === CHECKIN_TASK_TYPE &&
     String(task.property_id || '') === String(propertyId) &&
     String(task.task_date || task.date || '').slice(0, 10) === taskDate &&
-    String(task.source || '').toLowerCase() === 'manual' &&
-    !['cancelled', 'canceled'].includes(String(task.status || '').trim().toLowerCase())
+    canSupersedeManualTaskByFields(task)
   )
-  if (!manualRows.length) return
-  const primaryManual = manualRows[0]
-  if (!hasValue(official.cleaner_id) && !hasValue(official.assignee_id) && hasValue(primaryManual.cleaner_id || primaryManual.assignee_id)) {
-    official.cleaner_id = primaryManual.cleaner_id || primaryManual.assignee_id
-    official.assignee_id = official.cleaner_id
-  }
-  if (!hasValue(official.inspector_id) && hasValue(primaryManual.inspector_id)) official.inspector_id = primaryManual.inspector_id
-  if ((!hasValue(official.checkin_time) || String(official.checkin_time).trim() === DEFAULT_CHECKIN_TIME) && hasValue(primaryManual.checkin_time)) official.checkin_time = primaryManual.checkin_time
-  if (!hasValue(official.guest_special_request) && hasValue(primaryManual.guest_special_request)) official.guest_special_request = primaryManual.guest_special_request
+  if (!manualRows.length) return 0
   for (const manual of manualRows) {
-    manual.status = 'cancelled'
+    manual.execution_state = SUPERSEDED_EXECUTION_STATE
     manual.auto_sync_enabled = false
+    manual.superseded_by = String(official.id || '')
+    manual.superseded_reason = 'auto_order_task_created'
+    manual.superseded_at = new Date().toISOString()
+    manual.supersede_conflicts = []
   }
+  return manualRows.length
 }
 
 export async function syncCheckoutOldCodeFromCheckinNewCode(params: {
@@ -576,7 +630,7 @@ async function syncOneTask(params: {
 
   if (deleted || !date) {
     if (beforeTask) {
-      const after = await updateTaskById(String(beforeTask.id), { status: 'cancelled' }, client)
+      const after = await updateTaskById(String(beforeTask.id), { status: 'cancelled', execution_state: CANCELLED_EXECUTION_STATE }, client)
       await logCleaningSync({ jobId, orderId, taskId: beforeTask.id, action: 'cancelled', before: beforeTask, after, meta: { deleted, date, taskType }, client })
       return { action: 'cancelled' as const }
     }
@@ -608,6 +662,8 @@ async function syncOneTask(params: {
       auto_sync_enabled: true,
       sync_fingerprint: fingerprint,
       source: 'auto',
+      execution_state: ACTIVE_EXECUTION_STATE,
+      manual_task_purpose: null,
     }
     const after = await insertTask(row, client)
     await logCleaningSync({ jobId, orderId, taskId: after?.id, action: 'created', before: null, after, meta: { fingerprint, taskType }, client })
@@ -635,9 +691,13 @@ async function syncOneTask(params: {
     sync_fingerprint: fingerprint,
     source: 'auto',
     auto_sync_enabled: true,
+    execution_state: ACTIVE_EXECUTION_STATE,
     keys_required: keysRequired,
     inspection_mode: beforeTask.inspection_mode ?? defaultInspectionModeForTaskType(taskType),
     inspection_due_date: beforeTask.inspection_due_date ?? null,
+  }
+  if (['cancelled', 'canceled'].includes(String(beforeTask.status || '').trim().toLowerCase())) {
+    patch.status = 'pending'
   }
   if (derivedCode) {
     if (taskType === CHECKOUT_TASK_TYPE) patch.old_code = derivedCode
@@ -701,11 +761,12 @@ export async function syncOrderToCleaningTasks(orderId: string, opts?: SyncOrder
 
     const rCheckout = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: checkoutDay, statusLower, propertyId, derivedCode, keysRequired })
     const rCheckin = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: checkinDay, statusLower, propertyId, derivedCode, keysRequired })
-    await replaceManualCheckinWithSyncedTask({ jobId, orderId: id, propertyId, taskDate: checkinDay, client })
+    const supersededCheckout = await supersedeTemporaryManualTasksForOrder({ jobId, orderId: id, propertyId, taskDate: checkoutDay, taskType: CHECKOUT_TASK_TYPE, client })
+    const supersededCheckin = await supersedeTemporaryManualTasksForOrder({ jobId, orderId: id, propertyId, taskDate: checkinDay, taskType: CHECKIN_TASK_TYPE, client })
     const rPassword = await syncCheckoutOldCodeFromCheckinNewCode({ jobId, orderId: id, client })
     const actions = [rCheckout.action, rCheckin.action, rPassword.action]
     if (actions.includes('created')) return { action: 'created' as const }
-    if (actions.includes('updated')) return { action: 'updated' as const }
+    if (actions.includes('updated') || supersededCheckout > 0 || supersededCheckin > 0) return { action: 'updated' as const }
     if (actions.includes('cancelled')) return { action: 'cancelled' as const }
     if (actions.includes('skipped_locked')) return { action: 'skipped_locked' as const }
     return { action: 'no_change' as const }

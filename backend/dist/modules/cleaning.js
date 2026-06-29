@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.router = void 0;
+exports.upsertWorkTaskFromOfflineTask = upsertWorkTaskFromOfflineTask;
 const express_1 = require("express");
 const zod_1 = require("zod");
 const auth_1 = require("../auth");
@@ -356,7 +357,7 @@ async function upsertWorkTaskFromOfflineTask(row, requestedStatus) {
        title=EXCLUDED.title,
        summary=EXCLUDED.summary,
        scheduled_date=EXCLUDED.scheduled_date,
-       assignee_id=EXCLUDED.assignee_id,
+       assignee_id=work_tasks.assignee_id,
        status=CASE WHEN $12::boolean THEN EXCLUDED.status ELSE work_tasks.status END,
        urgency=EXCLUDED.urgency,
        photo_urls=EXCLUDED.photo_urls,
@@ -493,14 +494,14 @@ exports.router.get('/offline-tasks', (0, auth_1.requireAnyPerm)(['cleaning.view'
             await ensureOfflineTasksTable();
             await backfillOfflineWorkTasks();
             if (!date) {
-                const r = await dbAdapter_1.pgPool.query(`SELECT t.*, COALESCE(w.status, 'todo') AS status
+                const r = await dbAdapter_1.pgPool.query(`SELECT t.*, COALESCE(w.status, 'todo') AS status, w.assignee_id AS assignee_id
              FROM cleaning_offline_tasks t
              JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
             ORDER BY t.date DESC, t.updated_at DESC, t.id DESC`);
                 return res.json((r === null || r === void 0 ? void 0 : r.rows) || []);
             }
             if (includeOverdue) {
-                const r = await dbAdapter_1.pgPool.query(`SELECT t.*, COALESCE(w.status, 'todo') AS status
+                const r = await dbAdapter_1.pgPool.query(`SELECT t.*, COALESCE(w.status, 'todo') AS status, w.assignee_id AS assignee_id
              FROM cleaning_offline_tasks t
              JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
             WHERE (t.date::date = $1::date)
@@ -508,7 +509,7 @@ exports.router.get('/offline-tasks', (0, auth_1.requireAnyPerm)(['cleaning.view'
             ORDER BY t.date ASC, t.urgency DESC, t.updated_at DESC, t.id DESC`, [date]);
                 return res.json((r === null || r === void 0 ? void 0 : r.rows) || []);
             }
-            const r = await dbAdapter_1.pgPool.query(`SELECT t.*, COALESCE(w.status, 'todo') AS status
+            const r = await dbAdapter_1.pgPool.query(`SELECT t.*, COALESCE(w.status, 'todo') AS status, w.assignee_id AS assignee_id
            FROM cleaning_offline_tasks t
            JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
           WHERE t.date::date = $1::date
@@ -641,12 +642,13 @@ exports.router.post('/offline-tasks', requireCleaningManualCreateAccess, async (
     }
 });
 exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.schedule.manage'), async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q;
     const { id } = req.params;
     const parsed = offlineTaskSchema.partial().safeParse(req.body || {});
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
     const patch = parsed.data;
+    const contentFieldAllowlist = new Set(['date', 'task_type', 'title', 'content', 'kind', 'urgency', 'property_id', 'photo_urls']);
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
             await ensureOfflineTasksTable();
@@ -654,7 +656,9 @@ exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.sch
             const before = ((_a = beforeRes === null || beforeRes === void 0 ? void 0 : beforeRes.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
             if (!before)
                 return res.status(404).json({ message: 'task not found' });
-            const keys = Object.keys(patch || {}).filter((k) => k !== 'status' && patch[k] !== undefined);
+            const keys = Object.keys(patch || {}).filter((k) => (k !== 'status'
+                && contentFieldAllowlist.has(k)
+                && patch[k] !== undefined));
             if (!keys.length) {
                 if (patch.status === undefined) {
                     const statusResult = await dbAdapter_1.pgPool.query(`SELECT status FROM work_tasks WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1 LIMIT 1`, [String(id)]);
@@ -678,9 +682,11 @@ exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.sch
             if (!row)
                 return res.status(404).json({ message: 'task not found' });
             await upsertWorkTaskFromOfflineTask(row, patch.status);
-            const statusResult = await dbAdapter_1.pgPool.query(`SELECT status FROM work_tasks WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1 LIMIT 1`, [String(id)]);
+            const statusResult = await dbAdapter_1.pgPool.query(`SELECT status, assignee_id FROM work_tasks WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1 LIMIT 1`, [String(id)]);
             row.status = offlineWorkStatus((_j = (_h = statusResult === null || statusResult === void 0 ? void 0 : statusResult.rows) === null || _h === void 0 ? void 0 : _h[0]) === null || _j === void 0 ? void 0 : _j.status);
+            row.assignee_id = ((_l = (_k = statusResult === null || statusResult === void 0 ? void 0 : statusResult.rows) === null || _k === void 0 ? void 0 : _k[0]) === null || _l === void 0 ? void 0 : _l.assignee_id) ? String(statusResult.rows[0].assignee_id) : null;
             row.photo_urls = normalizePhotoUrls(row.photo_urls);
+            const canonicalAssigneeId = ((_o = (_m = statusResult === null || statusResult === void 0 ? void 0 : statusResult.rows) === null || _m === void 0 ? void 0 : _m[0]) === null || _o === void 0 ? void 0 : _o.assignee_id) || null;
             const completedChanged = beforeStatus !== 'done' && row.status === 'done';
             if (keys.length && !completedChanged) {
                 const workTaskId = offlineWorkTaskId(String(row.id || id));
@@ -711,11 +717,11 @@ exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.sch
                         changeScope: 'list',
                         changedFields,
                         patch: patchForEvent,
-                        causedByUserId: String(((_k = req.user) === null || _k === void 0 ? void 0 : _k.sub) || '').trim() || null,
-                        visibilityHints: (0, workTaskEvents_1.buildWorkTaskVisibilityHints)({ assignee_id: row.assignee_id }),
+                        causedByUserId: String(((_p = req.user) === null || _p === void 0 ? void 0 : _p.sub) || '').trim() || null,
+                        visibilityHints: (0, workTaskEvents_1.buildWorkTaskVisibilityHints)({ assignee_id: canonicalAssigneeId }),
                     });
                 }
-                catch (_m) { }
+                catch (_r) { }
             }
             if (completedChanged) {
                 const workTaskId = offlineWorkTaskId(String(row.id || id));
@@ -728,11 +734,11 @@ exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.sch
                         changeScope: 'list',
                         changedFields: ['status'],
                         patch: { status: 'done' },
-                        causedByUserId: String(((_l = req.user) === null || _l === void 0 ? void 0 : _l.sub) || '').trim() || null,
-                        visibilityHints: (0, workTaskEvents_1.buildWorkTaskVisibilityHints)({ assignee_id: row.assignee_id }),
+                        causedByUserId: String(((_q = req.user) === null || _q === void 0 ? void 0 : _q.sub) || '').trim() || null,
+                        visibilityHints: (0, workTaskEvents_1.buildWorkTaskVisibilityHints)({ assignee_id: canonicalAssigneeId }),
                     });
                 }
-                catch (_o) { }
+                catch (_s) { }
                 enqueueNotification(() => {
                     var _a;
                     return (0, notificationEvents_1.emitNotificationEvent)({
@@ -763,7 +769,12 @@ exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.sch
         const t = rows.find((x) => String(x.id) === String(id));
         if (!t)
             return res.status(404).json({ message: 'task not found' });
-        Object.assign(t, patch);
+        for (const key of contentFieldAllowlist) {
+            if (patch[key] !== undefined)
+                t[key] = patch[key];
+        }
+        if (patch.status !== undefined)
+            t.status = patch.status;
         return res.json(t);
     }
     catch (e) {
@@ -865,11 +876,13 @@ exports.router.get('/tasks', (0, auth_1.requireAnyPerm)(['cleaning.view', 'clean
     const date = parsed.success ? parsed.data : undefined;
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
+            await (0, cleaningSync_1.ensureCleaningSchemaV2)();
             if (date) {
                 const r = await dbAdapter_1.pgPool.query(`SELECT t.*, o.keys_required AS order_keys_required
            FROM cleaning_tasks t
            LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
            WHERE (COALESCE(t.task_date, t.date)::date) = ($1::date)
+             AND ${(0, cleaningSync_1.activeCleaningTaskWhereSql)('t')}
            ORDER BY t.property_id NULLS LAST, t.id`, [date]);
                 return res.json(((r === null || r === void 0 ? void 0 : r.rows) || []).map((x) => {
                     if ((x === null || x === void 0 ? void 0 : x.order_id) && (x === null || x === void 0 ? void 0 : x.order_keys_required) != null)
@@ -881,6 +894,7 @@ exports.router.get('/tasks', (0, auth_1.requireAnyPerm)(['cleaning.view', 'clean
             const r = await dbAdapter_1.pgPool.query(`SELECT t.*, o.keys_required AS order_keys_required
          FROM cleaning_tasks t
          LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
+         WHERE ${(0, cleaningSync_1.activeCleaningTaskWhereSql)('t')}
          ORDER BY COALESCE(t.task_date, t.date) NULLS LAST, t.property_id NULLS LAST, t.id`);
             return res.json(((r === null || r === void 0 ? void 0 : r.rows) || []).map((x) => {
                 if ((x === null || x === void 0 ? void 0 : x.order_id) && (x === null || x === void 0 ? void 0 : x.order_keys_required) != null)
@@ -890,13 +904,22 @@ exports.router.get('/tasks', (0, auth_1.requireAnyPerm)(['cleaning.view', 'clean
             }));
         }
         const rows = store_1.db.cleaningTasks.slice();
+        const activeRows = rows.filter((t) => {
+            const executionState = String((t === null || t === void 0 ? void 0 : t.execution_state) || '').trim().toLowerCase();
+            const status = String((t === null || t === void 0 ? void 0 : t.status) || '').trim().toLowerCase();
+            if (executionState && executionState !== 'active')
+                return false;
+            if (!executionState && (status === 'cancelled' || status === 'canceled'))
+                return false;
+            return true;
+        });
         if (!date)
-            return res.json(rows);
+            return res.json(activeRows);
         const orders = (store_1.db.orders || []);
         const byId = new Map();
         for (const o of orders)
             byId.set(String(o.id), o);
-        return res.json(rows.filter((t) => String(t.task_date || t.date || '').slice(0, 10) === date).map((t) => {
+        return res.json(activeRows.filter((t) => String(t.task_date || t.date || '').slice(0, 10) === date).map((t) => {
             const out = { ...t };
             const oid = String(out.order_id || '').trim();
             const o = oid ? byId.get(oid) : null;
@@ -1085,7 +1108,7 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                         await dbAdapter_1.pgPool.query(`UPDATE cleaning_tasks
                SET keys_required = $1, updated_at = now()
                WHERE order_id::text = $2::text
-                 AND COALESCE(status,'') <> 'cancelled'
+                 AND ${(0, cleaningSync_1.activeCleaningTaskWhereSql)('')}
                  AND COALESCE(keys_required, 1) <> $1`, [nextK, orderId]);
                     }
                     catch (_m) { }
@@ -1370,6 +1393,8 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
             guest_special_request: (_r = (_q = parsed.data.guest_special_request) !== null && _q !== void 0 ? _q : parsed.data.note) !== null && _r !== void 0 ? _r : null,
             auto_sync_enabled: true,
             source: 'manual',
+            execution_state: 'active',
+            manual_task_purpose: null,
         };
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
             await (0, cleaningSync_1.ensureCleaningSchemaV2)();
@@ -1490,7 +1515,7 @@ exports.router.delete('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assig
             const before = ((_a = r0 === null || r0 === void 0 ? void 0 : r0.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
             if (!before)
                 return res.status(404).json({ message: 'task not found' });
-            const r1 = await dbAdapter_1.pgPool.query(`UPDATE cleaning_tasks SET status='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [String(id)]);
+            const r1 = await dbAdapter_1.pgPool.query(`UPDATE cleaning_tasks SET status='cancelled', execution_state='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [String(id)]);
             const after = ((_b = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _b === void 0 ? void 0 : _b[0]) || null;
             await (0, workTaskEvents_1.emitWorkTaskEvent)({
                 taskId: `cleaning_task:${String(id)}`,
@@ -1498,8 +1523,8 @@ exports.router.delete('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assig
                 sourceRefIds: [String(id)],
                 eventType: 'TASK_REMOVED',
                 changeScope: 'membership',
-                changedFields: ['status'],
-                patch: { status: 'cancelled' },
+                changedFields: ['status', 'execution_state'],
+                patch: { status: 'cancelled', execution_state: 'cancelled' },
                 causedByUserId: actorId || null,
                 visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(after || before),
             });
@@ -1539,6 +1564,7 @@ exports.router.delete('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assig
             return res.status(404).json({ message: 'task not found' });
         const before = { ...task };
         task.status = 'cancelled';
+        task.execution_state = 'cancelled';
         task.auto_sync_enabled = false;
         (0, store_1.addAudit)('cleaning_task', String(id), 'delete', before, { ...task }, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') });
         return res.json({ ok: true });
@@ -1566,7 +1592,7 @@ exports.router.post('/tasks/bulk-delete', (0, auth_1.requirePerm)('cleaning.task
                     const before = ((_a = r0 === null || r0 === void 0 ? void 0 : r0.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
                     if (!before)
                         continue;
-                    const r1 = await client.query(`UPDATE cleaning_tasks SET status='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [id]);
+                    const r1 = await client.query(`UPDATE cleaning_tasks SET status='cancelled', execution_state='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [id]);
                     const after = ((_b = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _b === void 0 ? void 0 : _b[0]) || null;
                     await (0, workTaskEvents_1.emitWorkTaskEvent)({
                         taskId: `cleaning_task:${String(id)}`,
@@ -1574,8 +1600,8 @@ exports.router.post('/tasks/bulk-delete', (0, auth_1.requirePerm)('cleaning.task
                         sourceRefIds: [String(id)],
                         eventType: 'TASK_REMOVED',
                         changeScope: 'membership',
-                        changedFields: ['status'],
-                        patch: { status: 'cancelled' },
+                        changedFields: ['status', 'execution_state'],
+                        patch: { status: 'cancelled', execution_state: 'cancelled' },
                         causedByUserId: actorId || null,
                         visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(after || before),
                     }, client);
@@ -1630,6 +1656,7 @@ exports.router.post('/tasks/bulk-delete', (0, auth_1.requirePerm)('cleaning.task
                 continue;
             const before = { ...task };
             task.status = 'cancelled';
+            task.execution_state = 'cancelled';
             task.auto_sync_enabled = false;
             (0, store_1.addAudit)('cleaning_task', String(id), 'delete', before, { ...task }, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') });
             cnt++;
@@ -1990,7 +2017,7 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
              ((COALESCE(task_date, date)::date) >= ($1::date) AND (COALESCE(task_date, date)::date) <= ($2::date))
              OR ($3::boolean = true AND t.inspection_due_date IS NOT NULL AND (t.inspection_due_date::date) <= ($2::date))
            )
-           AND COALESCE(t.status,'') <> 'cancelled'
+           AND ${(0, cleaningSync_1.activeCleaningTaskWhereSql)('t')}
            AND (t.order_id IS NULL OR o.id IS NOT NULL)
            AND (
              t.order_id IS NULL
@@ -2085,7 +2112,7 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
            COALESCE(w.status, 'todo') AS status,
            t.urgency,
            t.property_id,
-           t.assignee_id,
+           w.assignee_id AS assignee_id,
            COALESCE(t.photo_urls, '[]'::jsonb) AS photo_urls,
            COALESCE(p_id.code::text, p_code.code::text) AS property_code,
            COALESCE(p_id.region::text, p_code.region::text) AS property_region

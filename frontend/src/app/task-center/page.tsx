@@ -40,6 +40,9 @@ type TaskCenterTask = {
   task_source: 'cleaning' | 'work'
   task_id: string
   task_ids: string[]
+  active_source_ids?: string[]
+  superseded_source_ids?: string[]
+  all_related_source_ids?: string[]
   task_kind: string
   source_type?: string | null
   source_id?: string | null
@@ -72,6 +75,43 @@ type TaskCenterTask = {
   nights?: number | null
   summary_checkout_time?: string | null
   summary_checkin_time?: string | null
+  checkout_task_date?: string | null
+  checkout_task_dates?: string[]
+  keys_required?: number | null
+  keys_required_checkout?: number | null
+  keys_required_checkin?: number | null
+  guest_special_request?: string | null
+  guest_request_checkout?: string | null
+  guest_request_checkin?: string | null
+  guest_request_summary?: string | null
+  order_id_checkout?: string | null
+  order_id_checkin?: string | null
+  is_late_checkout?: boolean
+  is_early_checkin?: boolean
+  is_late_checkin?: boolean
+  display_conflicts?: Record<string, any>[]
+  turnover_display?: {
+    checkout_order_id?: string | null
+    checkin_order_id?: string | null
+    checkout_time?: string | null
+    checkin_time?: string | null
+    is_late_checkout?: boolean
+    is_early_checkin?: boolean
+    is_late_checkin?: boolean
+    guest_request_checkout?: string | null
+    guest_request_checkin?: string | null
+    guest_request_summary?: string | null
+    old_code?: string | null
+    new_code?: string | null
+    keys_required_checkout?: number | null
+    keys_required_checkin?: number | null
+    stayed_nights?: number | null
+    remaining_nights?: number | null
+    active_source_ids?: string[]
+    superseded_source_ids?: string[]
+    all_related_source_ids?: string[]
+    conflicts?: Record<string, any>[]
+  } | null
   temporarily_skipped?: boolean
   skip_reason?: string | null
   skip_bucket?: string | null
@@ -130,6 +170,29 @@ type TaskCenterDay = {
     pending_inspection_count: number
     skipped_count: number
   }
+}
+
+type CleaningAssignmentSnapshot = {
+  cleaner_id: string | null
+  inspector_id: string | null
+  inspection_mode: TaskCenterTask['inspection_mode']
+  inspection_scope: TaskCenterTask['inspection_scope']
+  inspection_due_date: string | null
+  status: string
+}
+
+type WorkAssignmentSnapshot = {
+  assignee_id: string | null
+  title: string
+  summary: string | null
+  scheduled_date: string | null
+  status: string
+  urgency: string | null
+}
+
+type AssignmentBaseline = {
+  cleaning: Map<string, CleaningAssignmentSnapshot>
+  work: Map<string, WorkAssignmentSnapshot>
 }
 
 type TaskDetailDraft = {
@@ -258,6 +321,110 @@ function normalizedSummaryTime(raw: string | null | undefined) {
   return String(raw || '').trim()
 }
 
+function uniqueTextList(values: any[]) {
+  return Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)))
+}
+
+function turnoverDisplayOf(task: Pick<TaskCenterTask, 'turnover_display'>) {
+  return task.turnover_display && typeof task.turnover_display === 'object' ? task.turnover_display : null
+}
+
+function activeCleaningTaskIds(task: Pick<TaskCenterTask, 'task_source' | 'task_id' | 'task_ids' | 'active_source_ids' | 'turnover_display'>) {
+  if (task.task_source !== 'cleaning') return [String(task.task_id || '').trim()].filter(Boolean)
+  const display = turnoverDisplayOf(task)
+  const active = uniqueTextList([
+    ...(Array.isArray(display?.active_source_ids) ? display.active_source_ids : []),
+    ...(Array.isArray(task.active_source_ids) ? task.active_source_ids : []),
+  ])
+  return active.length ? active : uniqueTextList(Array.isArray(task.task_ids) ? task.task_ids : [task.task_id])
+}
+
+function cleaningAssignmentSnapshot(task: TaskCenterTask): CleaningAssignmentSnapshot {
+  return {
+    cleaner_id: task.cleaner_id || task.assignee_id || null,
+    inspector_id: task.inspector_id || null,
+    inspection_mode: task.inspection_mode || 'pending_decision',
+    inspection_scope: task.inspection_scope || null,
+    inspection_due_date: task.inspection_due_date || null,
+    status: task.status,
+  }
+}
+
+function workAssignmentSnapshot(task: Pick<TaskCenterTask, 'assignee_id' | 'title' | 'summary' | 'detail' | 'task_date' | 'status' | 'urgency'>): WorkAssignmentSnapshot {
+  return {
+    assignee_id: task.assignee_id || null,
+    title: String(task.title || '').trim(),
+    summary: String(task.summary || task.detail || '').trim() || null,
+    scheduled_date: task.task_date || null,
+    status: task.status,
+    urgency: task.urgency || null,
+  }
+}
+
+function buildAssignmentBaseline(payload: TaskCenterDay | null): AssignmentBaseline {
+  const baseline: AssignmentBaseline = { cleaning: new Map(), work: new Map() }
+  for (const task of (payload?.rows || []).flatMap((row) => row.subrows.flatMap((subrow) => subrow.tasks))) {
+    if (task.task_source === 'cleaning') {
+      const snapshot = cleaningAssignmentSnapshot(task)
+      for (const taskId of activeCleaningTaskIds(task)) baseline.cleaning.set(String(taskId), snapshot)
+    } else {
+      baseline.work.set(String(task.task_id), workAssignmentSnapshot(task))
+    }
+  }
+  for (const task of payload?.property_followups || []) {
+    baseline.work.set(String(task.task_id), workAssignmentSnapshot(task))
+  }
+  return baseline
+}
+
+function supersededCleaningTaskIds(task: Pick<TaskCenterTask, 'task_source' | 'superseded_source_ids' | 'turnover_display'>) {
+  if (task.task_source !== 'cleaning') return []
+  const display = turnoverDisplayOf(task)
+  return uniqueTextList([
+    ...(Array.isArray(display?.superseded_source_ids) ? display.superseded_source_ids : []),
+    ...(Array.isArray(task.superseded_source_ids) ? task.superseded_source_ids : []),
+  ])
+}
+
+function checkoutTimeForDisplay(task: Pick<TaskCenterTask, 'turnover_display' | 'summary_checkout_time'>) {
+  return normalizedSummaryTime(turnoverDisplayOf(task)?.checkout_time || task.summary_checkout_time)
+}
+
+function checkinTimeForDisplay(task: Pick<TaskCenterTask, 'turnover_display' | 'summary_checkin_time'>) {
+  return normalizedSummaryTime(turnoverDisplayOf(task)?.checkin_time || task.summary_checkin_time)
+}
+
+function guestRequestForDisplay(task: Pick<TaskCenterTask, 'turnover_display' | 'guest_request_summary' | 'guest_special_request'>) {
+  const display = turnoverDisplayOf(task)
+  return String(display?.guest_request_summary || task.guest_request_summary || task.guest_special_request || '').trim()
+}
+
+function isLateCheckoutDisplay(task: Pick<TaskCenterTask, 'turnover_display' | 'is_late_checkout' | 'summary_checkout_time'>) {
+  const display = turnoverDisplayOf(task)
+  if (typeof display?.is_late_checkout === 'boolean') return display.is_late_checkout
+  if (typeof task.is_late_checkout === 'boolean') return task.is_late_checkout
+  const checkoutMin = parseSummaryTime(task.summary_checkout_time)
+  const defaultMin = parseSummaryTime(DEFAULT_SUMMARY_CHECKOUT_TIME)
+  return checkoutMin != null && defaultMin != null && checkoutMin > defaultMin
+}
+
+function isEarlyCheckinDisplay(task: Pick<TaskCenterTask, 'turnover_display' | 'is_early_checkin' | 'summary_checkin_time'>) {
+  const display = turnoverDisplayOf(task)
+  if (typeof display?.is_early_checkin === 'boolean') return display.is_early_checkin
+  if (typeof task.is_early_checkin === 'boolean') return task.is_early_checkin
+  const checkinMin = parseSummaryTime(task.summary_checkin_time)
+  const defaultMin = parseSummaryTime(DEFAULT_SUMMARY_CHECKIN_TIME)
+  return checkinMin != null && defaultMin != null && checkinMin < defaultMin
+}
+
+function isLateCheckinDisplay(task: Pick<TaskCenterTask, 'turnover_display' | 'is_late_checkin' | 'summary_checkin_time'>) {
+  const display = turnoverDisplayOf(task)
+  if (typeof display?.is_late_checkin === 'boolean') return display.is_late_checkin
+  if (typeof task.is_late_checkin === 'boolean') return task.is_late_checkin
+  const checkinMin = parseSummaryTime(task.summary_checkin_time)
+  return checkinMin != null && checkinMin > 18 * 60
+}
+
 function isDefaultSummaryTime(raw: string | null | undefined, defaultValue: string) {
   const actual = parseSummaryTime(raw)
   const expected = parseSummaryTime(defaultValue)
@@ -265,24 +432,26 @@ function isDefaultSummaryTime(raw: string | null | undefined, defaultValue: stri
   return normalizedSummaryTime(raw).toLowerCase() === defaultValue.toLowerCase()
 }
 
-function specialTimingTags(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view' | 'summary_checkout_time' | 'summary_checkin_time'>) {
+function specialTimingTags(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view' | 'summary_checkout_time' | 'summary_checkin_time' | 'turnover_display' | 'is_late_checkout' | 'is_early_checkin' | 'is_late_checkin'>) {
   if (task.task_source !== 'cleaning') return [] as Array<{ key: string; label: string; time: string; tone: TaskSemanticTone }>
   const timing = cleaningTimingVisibility(task)
   const tags: Array<{ key: string; label: string; time: string; tone: TaskSemanticTone }> = []
-  const checkoutTime = normalizedSummaryTime(task.summary_checkout_time)
-  const checkinTime = normalizedSummaryTime(task.summary_checkin_time)
+  const checkoutTime = checkoutTimeForDisplay(task)
+  const checkinTime = checkinTimeForDisplay(task)
   if (timing.showCheckout && checkoutTime && !isDefaultSummaryTime(checkoutTime, DEFAULT_SUMMARY_CHECKOUT_TIME)) {
-    const checkoutMin = parseSummaryTime(checkoutTime)
-    const defaultMin = parseSummaryTime(DEFAULT_SUMMARY_CHECKOUT_TIME)
     let label = '退房'
-    if (checkoutMin != null && defaultMin != null) label = checkoutMin > defaultMin ? '晚退房' : (checkoutMin < defaultMin ? '早退房' : '退房')
+    if (isLateCheckoutDisplay(task)) label = '晚退房'
+    else {
+      const checkoutMin = parseSummaryTime(checkoutTime)
+      const defaultMin = parseSummaryTime(DEFAULT_SUMMARY_CHECKOUT_TIME)
+      if (checkoutMin != null && defaultMin != null && checkoutMin < defaultMin) label = '早退房'
+    }
     tags.push({ key: 'checkout', label, time: checkoutTime, tone: taskTimingTone(label) })
   }
   if (timing.showCheckin && checkinTime && !isDefaultSummaryTime(checkinTime, DEFAULT_SUMMARY_CHECKIN_TIME)) {
-    const checkinMin = parseSummaryTime(checkinTime)
-    const defaultMin = parseSummaryTime(DEFAULT_SUMMARY_CHECKIN_TIME)
     let label = '入住'
-    if (checkinMin != null && defaultMin != null) label = checkinMin < defaultMin ? '早入住' : (checkinMin > defaultMin ? '晚入住' : '入住')
+    if (isEarlyCheckinDisplay(task)) label = '早入住'
+    else if (isLateCheckinDisplay(task)) label = '晚入住'
     tags.push({ key: 'checkin', label, time: checkinTime, tone: taskTimingTone(label) })
   }
   return tags
@@ -339,12 +508,12 @@ function isCompletedBoardStatus(status: string | null | undefined) {
   return isKeysHungStatus(status) || isCompletedTaskStatus(status)
 }
 
-function cleaningSummaryParts(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view' | 'summary_checkout_time' | 'summary_checkin_time' | 'nights'>) {
+function cleaningSummaryParts(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view' | 'inspection_mode' | 'summary_checkout_time' | 'summary_checkin_time' | 'checkout_task_date' | 'checkout_task_dates' | 'nights' | 'turnover_display' | 'guest_request_summary' | 'guest_special_request'>) {
   if (task.task_source !== 'cleaning') return [String(task.detail || '').trim()].filter(Boolean)
   const parts: string[] = []
   const timing = cleaningTimingVisibility(task)
-  const checkoutTime = normalizedSummaryTime(task.summary_checkout_time)
-  const checkinTime = normalizedSummaryTime(task.summary_checkin_time)
+  const checkoutTime = checkoutTimeForDisplay(task)
+  const checkinTime = checkinTimeForDisplay(task)
   if (timing.showCheckout) {
     parts.push(isDefaultSummaryTime(checkoutTime, DEFAULT_SUMMARY_CHECKOUT_TIME) || !checkoutTime ? '退房' : `${checkoutTime}退房`)
   }
@@ -353,16 +522,18 @@ function cleaningSummaryParts(task: Pick<TaskCenterTask, 'task_source' | 'task_k
   }
   if (!parts.length) parts.push(cleaningTaskFlowLabel(task))
   if (shouldShowNights(task) && task.nights != null && Number(task.nights) > 0) parts.push(`住${Number(task.nights)}晚`)
+  const guestRequest = guestRequestForDisplay(task)
+  if (guestRequest) parts.push(`客人需求：${guestRequest}`)
   return parts
 }
 
-function cleaningSecondarySummary(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view' | 'summary_checkout_time' | 'summary_checkin_time' | 'nights'>) {
+function cleaningSecondarySummary(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view' | 'inspection_mode' | 'summary_checkout_time' | 'summary_checkin_time' | 'checkout_task_date' | 'checkout_task_dates' | 'nights' | 'turnover_display' | 'guest_request_summary' | 'guest_special_request'>) {
   if (task.task_source !== 'cleaning') return String(task.detail || '').trim()
   const parts = cleaningSummaryParts(task)
   return parts.join('，') || String(task.detail || '').trim()
 }
 
-function cleaningTaskFlowLabel(task: Pick<TaskCenterTask, 'task_kind' | 'title' | 'detail' | 'deferred_inspection_view'>) {
+function cleaningTaskFlowLabel(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'title' | 'detail' | 'deferred_inspection_view' | 'inspection_mode' | 'checkout_task_date' | 'checkout_task_dates'>) {
   return cleaningTaskFlowLabelText(task)
 }
 
@@ -396,6 +567,7 @@ export default function TaskCenterPage() {
   const boardDirtyRef = useRef(false)
   const loadDayRequestRef = useRef(0)
   const invalidInspectionModeNoticeRef = useRef<Record<string, boolean>>({})
+  const assignmentBaselineRef = useRef<AssignmentBaseline>({ cleaning: new Map(), work: new Map() })
 
   const dateStr = useMemo(() => date.format('YYYY-MM-DD'), [date])
   const canSeeCheckinSyncTag = viewerRole === 'admin' || viewerRole === 'customer_service'
@@ -437,6 +609,7 @@ export default function TaskCenterPage() {
       const payload = await getJSON<TaskCenterDay>(`/task-center/day?date=${encodeURIComponent(dateStr)}&include_unscheduled=1`, { timeoutMs: 20000 })
       if (requestId !== loadDayRequestRef.current) return false
       if (boardDirtyRef.current && !options?.discardDraft) return false
+      assignmentBaselineRef.current = buildAssignmentBaseline(payload || null)
       setDayData(payload || null)
       setBoardDraftDirty(false)
       return true
@@ -731,9 +904,7 @@ export default function TaskCenterPage() {
       subrow_order: 1,
     })),
     items: rows.flatMap((row) => row.subrows.flatMap((subrow) => subrow.tasks.flatMap((task, taskIndex) => {
-      const taskIds = task.task_source === 'cleaning'
-        ? Array.from(new Set(task.task_ids.map((taskId) => String(taskId)).filter(Boolean)))
-        : [String(task.task_id)]
+      const taskIds = task.task_source === 'cleaning' ? activeCleaningTaskIds(task) : [String(task.task_id)]
       return taskIds.map((taskId) => ({
         task_source: task.task_source,
         task_id: taskId,
@@ -945,7 +1116,7 @@ export default function TaskCenterPage() {
     const inspectionIds = Array.from(new Set(
       tasks
         .filter((task) => task.task_source === 'cleaning' && (task.can_configure_inspection || task.deferred_inspection_view || isCheckinOnlyCleaningTask(task)))
-        .flatMap((task) => task.task_ids),
+        .flatMap((task) => activeCleaningTaskIds(task)),
     ))
     const workIds = tasks.filter((task) => task.task_source === 'work').map((task) => task.task_id)
     return { inspectionIds, workIds }
@@ -973,7 +1144,7 @@ export default function TaskCenterPage() {
             ...subrow,
             tasks: subrow.tasks.map((task): TaskCenterTask => {
               if (params.field === 'inspector_id') {
-                const matched = task.task_source === 'cleaning' && task.task_ids.some((id) => inspectionSet.has(String(id)))
+                const matched = task.task_source === 'cleaning' && activeCleaningTaskIds(task).some((id) => inspectionSet.has(String(id)))
                 if (!matched) return task
                 const nextInspectionMode: TaskCenterTask['inspection_mode'] = params.value ? 'same_day' : 'pending_decision'
                 return {
@@ -1156,8 +1327,10 @@ export default function TaskCenterPage() {
     const layout = layoutPayloadFromRows(rows)
     const cleaningAssignments = new Map<string, {
       task_id: string
-      cleaner_id: string | null
-      inspector_id: string | null
+      cleaner_id?: string | null
+      cleaner_assignment_action?: 'assign' | 'unassign'
+      inspector_id?: string | null
+      inspector_assignment_action?: 'assign' | 'unassign'
       inspection_mode: TaskCenterTask['inspection_mode']
       inspection_scope: TaskCenterTask['inspection_scope']
       inspection_due_date: string | null
@@ -1165,7 +1338,8 @@ export default function TaskCenterPage() {
     }>()
     const workAssignments = new Map<string, {
       task_id: string
-      assignee_id: string | null
+      assignee_id?: string | null
+      assignee_assignment_action?: 'assign' | 'unassign'
       title: string
       summary: string | null
       scheduled_date: string | null
@@ -1181,7 +1355,7 @@ export default function TaskCenterPage() {
     }>()
     for (const row of rows) {
       for (const task of row.subrows.flatMap((subrow) => subrow.tasks)) {
-        const taskIds = task.task_source === 'cleaning' ? task.task_ids : [task.task_id]
+        const taskIds = task.task_source === 'cleaning' ? activeCleaningTaskIds(task) : [task.task_id]
         for (const taskId of taskIds) {
           const id = String(taskId)
           taskFlags.set(`${task.task_source}:${id}`, {
@@ -1192,39 +1366,119 @@ export default function TaskCenterPage() {
             bucket: task.temporarily_skipped ? 'deferred' : null,
           })
           if (task.task_source === 'cleaning') {
-            cleaningAssignments.set(id, {
-              task_id: id,
-              cleaner_id: task.cleaner_id || task.assignee_id || null,
-              inspector_id: task.inspector_id || null,
-              inspection_mode: task.inspection_mode || 'pending_decision',
-              inspection_scope: task.inspection_scope || null,
-              inspection_due_date: task.inspection_due_date || null,
-              status: task.status,
-            })
+            const current = cleaningAssignmentSnapshot(task)
+            const previous = assignmentBaselineRef.current.cleaning.get(id) || null
+            const cleanerChanged = previous ? previous.cleaner_id !== current.cleaner_id : !!current.cleaner_id
+            const inspectorChanged = previous ? previous.inspector_id !== current.inspector_id : !!current.inspector_id
+            const changed = !previous
+              || cleanerChanged
+              || inspectorChanged
+              || previous.inspection_mode !== current.inspection_mode
+              || previous.inspection_scope !== current.inspection_scope
+              || previous.inspection_due_date !== current.inspection_due_date
+              || previous.status !== current.status
+            if (changed) {
+              const item: {
+                task_id: string
+                cleaner_id?: string | null
+                cleaner_assignment_action?: 'assign' | 'unassign'
+                inspector_id?: string | null
+                inspector_assignment_action?: 'assign' | 'unassign'
+                inspection_mode: TaskCenterTask['inspection_mode']
+                inspection_scope: TaskCenterTask['inspection_scope']
+                inspection_due_date: string | null
+                status: string
+              } = {
+                task_id: id,
+                inspection_mode: current.inspection_mode,
+                inspection_scope: current.inspection_scope,
+                inspection_due_date: current.inspection_due_date,
+                status: current.status,
+              }
+              if (cleanerChanged) {
+                item.cleaner_id = current.cleaner_id
+                item.cleaner_assignment_action = current.cleaner_id ? 'assign' : 'unassign'
+              }
+              if (inspectorChanged) {
+                item.inspector_id = current.inspector_id
+                item.inspector_assignment_action = current.inspector_id ? 'assign' : 'unassign'
+              }
+              cleaningAssignments.set(id, item)
+            }
           } else {
-            workAssignments.set(id, {
-              task_id: id,
-              assignee_id: task.assignee_id || null,
-              title: String(task.title || '').trim(),
-              summary: String(task.summary || task.detail || '').trim() || null,
-              scheduled_date: task.task_date || null,
-              status: task.status,
-              urgency: task.urgency || null,
-            })
+            const current = workAssignmentSnapshot(task)
+            const previous = assignmentBaselineRef.current.work.get(id) || null
+            const assigneeChanged = previous ? previous.assignee_id !== current.assignee_id : !!current.assignee_id
+            const changed = !previous
+              || assigneeChanged
+              || previous.title !== current.title
+              || previous.summary !== current.summary
+              || previous.scheduled_date !== current.scheduled_date
+              || previous.status !== current.status
+              || previous.urgency !== current.urgency
+            if (changed) {
+              const item: {
+                task_id: string
+                assignee_id?: string | null
+                assignee_assignment_action?: 'assign' | 'unassign'
+                title: string
+                summary: string | null
+                scheduled_date: string | null
+                status: string
+                urgency: string | null
+              } = {
+                task_id: id,
+                title: current.title,
+                summary: current.summary,
+                scheduled_date: current.scheduled_date,
+                status: current.status,
+                urgency: current.urgency,
+              }
+              if (assigneeChanged) {
+                item.assignee_id = current.assignee_id
+                item.assignee_assignment_action = current.assignee_id ? 'assign' : 'unassign'
+              }
+              workAssignments.set(id, item)
+            }
           }
         }
       }
     }
     for (const task of propertyFollowups) {
-      workAssignments.set(String(task.task_id), {
-        task_id: String(task.task_id),
-        assignee_id: task.assignee_id || null,
-        title: String(task.title || '').trim(),
-        summary: String(task.summary || task.detail || '').trim() || null,
-        scheduled_date: task.task_date || null,
-        status: task.status,
-        urgency: task.urgency || null,
-      })
+      const id = String(task.task_id)
+      const current = workAssignmentSnapshot(task)
+      const previous = assignmentBaselineRef.current.work.get(id) || null
+      const assigneeChanged = previous ? previous.assignee_id !== current.assignee_id : !!current.assignee_id
+      const changed = !previous
+        || assigneeChanged
+        || previous.title !== current.title
+        || previous.summary !== current.summary
+        || previous.scheduled_date !== current.scheduled_date
+        || previous.status !== current.status
+        || previous.urgency !== current.urgency
+      if (!changed) continue
+      const item: {
+        task_id: string
+        assignee_id?: string | null
+        assignee_assignment_action?: 'assign' | 'unassign'
+        title: string
+        summary: string | null
+        scheduled_date: string | null
+        status: string
+        urgency: string | null
+      } = {
+        task_id: id,
+        title: current.title,
+        summary: current.summary,
+        scheduled_date: current.scheduled_date,
+        status: current.status,
+        urgency: current.urgency,
+      }
+      if (assigneeChanged) {
+        item.assignee_id = current.assignee_id
+        item.assignee_assignment_action = current.assignee_id ? 'assign' : 'unassign'
+      }
+      workAssignments.set(id, item)
     }
     setBoardSaving(true)
     upsertAdminNotification({
@@ -1335,6 +1589,7 @@ export default function TaskCenterPage() {
     const detailText = task.skip_reason || (task.task_source === 'cleaning' ? cleaningSecondarySummary(task) : (task.detail || task.summary || ''))
     const assignedStaffId = preferredStaffIdForTask(task)
     const assignedStaffName = assignedStaffId ? String(staffById.get(assignedStaffId)?.name || '').trim() : ''
+    const supersededCount = supersededCleaningTaskIds(task).length
     return (
       <div
         key={task.item_key}
@@ -1384,6 +1639,9 @@ export default function TaskCenterPage() {
             ))}
             {task.temporarily_skipped ? (
               <span className={`${styles.taskCenterCompactTag} ${semanticToneClass('pending')}`}>暂不安排</span>
+            ) : null}
+            {supersededCount > 0 ? (
+              <span className={`${styles.taskCenterCompactTag} ${semanticToneClass('info')}`}>已合并{supersededCount}条手动补位</span>
             ) : null}
           </div>
           <div className={styles.taskCenterCompactTitle} style={textColor ? { color: textColor } : undefined}>
@@ -1618,6 +1876,7 @@ export default function TaskCenterPage() {
       ? nextCleaningDetailStatus(detailTask, detailDraft)
       : autoWorkStatus(detailTask.status, detailDraft.assignee_id || null))
     : null
+  const detailSupersededCount = detailTask ? supersededCleaningTaskIds(detailTask).length : 0
 
   return (
     <div className={styles.page}>
@@ -1800,6 +2059,7 @@ export default function TaskCenterPage() {
                       </span>
                     ))}
                     {detailTask.temporarily_skipped ? <span className={`${styles.taskDetailChip} ${semanticToneClass('pending')}`}>暂不安排</span> : null}
+                    {detailSupersededCount > 0 ? <span className={`${styles.taskDetailChip} ${semanticToneClass('info')}`}>已合并{detailSupersededCount}条手动补位</span> : null}
                   </div>
                 </div>
               <div className={styles.taskDetailHeroSummary}>{detailHeroSummary(detailTask) || '暂无详情'}</div>

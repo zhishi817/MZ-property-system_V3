@@ -17,6 +17,7 @@ import {
 } from '../services/guestLuggage'
 import { deferredProjectionDate, effectiveInspectionMode, isInspectionFinishedStatus, mergeInspectionPlan, mobileInspectionProjectionDate } from '../lib/cleaningInspection'
 import { deepCleaningSourceSummary, maintenanceSourceSummary } from '../lib/autoExpenseSourceSummary'
+import { buildCleaningTurnoverDisplay, mergeCleaningTurnoverDisplays } from '../lib/cleaningTurnoverDisplay'
 import {
   buildIdempotencyPayloadHash,
   ensureIdempotentStepReceiptsTable,
@@ -24,7 +25,7 @@ import {
   saveIdempotentStepReceipt,
 } from '../lib/idempotentStepReceipts'
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
-import { syncCheckoutOldCodeFromCheckinNewCode } from '../services/cleaningSync'
+import { activeCleaningTaskWhereSql, syncCheckoutOldCodeFromCheckinNewCode } from '../services/cleaningSync'
 
 export const router = Router()
 
@@ -1411,7 +1412,7 @@ async function resolveGuestLuggageTaskScope(taskIds0: string[], client: any = pg
      LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
      LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
      WHERE t.id::text = ANY($1::text[])
-       AND COALESCE(t.status, '') <> 'cancelled'`,
+       AND ${activeCleaningTaskWhereSql('t')}`,
     [taskIds],
   )
   const rows = result?.rows || []
@@ -1450,7 +1451,7 @@ async function loadGuestLuggageNotice(noticeId: string, viewerUserId: string, cl
        LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
        WHERE COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = $1
          AND COALESCE(t.task_date, t.date)::date = $2::date
-         AND COALESCE(t.status, '') <> 'cancelled'
+         AND ${activeCleaningTaskWhereSql('t')}
        UNION ALL
        SELECT 'inspector'::text AS role_kind, t.inspector_id::text AS user_id
        FROM cleaning_tasks t
@@ -1458,7 +1459,7 @@ async function loadGuestLuggageNotice(noticeId: string, viewerUserId: string, cl
        LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
        WHERE COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = $1
          AND COALESCE(t.task_date, t.date)::date = $2::date
-         AND COALESCE(t.status, '') <> 'cancelled'
+         AND ${activeCleaningTaskWhereSql('t')}
      )
      SELECT DISTINCT a.role_kind, a.user_id,
             COALESCE(NULLIF(TRIM(u.username), ''), NULLIF(TRIM(u.legal_name), ''), NULLIF(TRIM(u.email), ''), a.user_id) AS user_name,
@@ -1513,7 +1514,7 @@ async function listGuestLuggageRecipients(propertyId: string, taskDate: string) 
      LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
      WHERE COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = $1
        AND COALESCE(t.task_date, t.date)::date = $2::date
-       AND COALESCE(t.status, '') <> 'cancelled'`,
+       AND ${activeCleaningTaskWhereSql('t')}`,
     [propertyId, taskDate],
   )
   const { listUserIdsByRoles } = require('./notifications')
@@ -2830,7 +2831,7 @@ router.post('/cleaning-tasks/order-checked-out', async (req, res) => {
        FROM cleaning_tasks
        WHERE order_id::text = $1::text
          AND lower(COALESCE(task_type,'')) = 'checkout_clean'
-         AND COALESCE(status,'') <> 'cancelled'
+         AND ${activeCleaningTaskWhereSql('')}
        ORDER BY COALESCE(task_date, date) DESC, id DESC`,
       [orderId],
     )
@@ -3018,7 +3019,7 @@ router.post('/cleaning-tasks/order-keys-required', async (req, res) => {
        SET keys_required = $1, updated_at = now()
        WHERE order_id::text = $2::text
          AND lower(COALESCE(task_type,'')) IN ('checkin_clean','checkout_clean')
-         AND COALESCE(status,'') <> 'cancelled'
+         AND ${activeCleaningTaskWhereSql('')}
        RETURNING id::text AS id`,
       [nextK, orderId],
     )
@@ -3030,7 +3031,7 @@ router.post('/cleaning-tasks/order-keys-required', async (req, res) => {
          FROM cleaning_tasks
          WHERE order_id::text = $1::text
            AND lower(COALESCE(task_type,'')) IN ('checkin_clean','checkout_clean')
-           AND COALESCE(status,'') <> 'cancelled'`,
+           AND ${activeCleaningTaskWhereSql('')}`,
         [orderId],
       )
       allTaskIds = Array.from(new Set((rAll?.rows || []).map((x: any) => String(x.id || '').trim()).filter(Boolean)))
@@ -3202,7 +3203,7 @@ async function handleManagerFields(req: any, res: any) {
                    WHERE COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = $1
                      AND COALESCE(t.task_date, t.date)::date >= $2::date
                      AND lower(COALESCE(t.task_type, '')) = 'checkin_clean'
-                     AND COALESCE(t.status, '') <> 'cancelled'
+                     AND ${activeCleaningTaskWhereSql('t')}
                      AND (
                        t.order_id IS NULL
                        OR (
@@ -3295,14 +3296,15 @@ async function handleManagerFields(req: any, res: any) {
             `UPDATE cleaning_tasks
              SET keys_required = $1, updated_at = now()
              WHERE order_id::text = ANY($2::text[])
-               AND COALESCE(status,'') <> 'cancelled'
+               AND ${activeCleaningTaskWhereSql('')}
                AND COALESCE(keys_required, 1) <> $1`,
             [nextKeysRequired, keysOrderIds],
           )
           const rIds = await pool.query(
             `SELECT id::text AS id
              FROM cleaning_tasks
-             WHERE order_id::text = ANY($1::text[])`,
+             WHERE order_id::text = ANY($1::text[])
+               AND ${activeCleaningTaskWhereSql('')}`,
             [keysOrderIds],
           )
           for (const x of rIds?.rows || []) {
@@ -3317,7 +3319,7 @@ async function handleManagerFields(req: any, res: any) {
              SET keys_required = $1, updated_at = now()
              WHERE order_id IS NULL
                AND id::text = ANY($2::text[])
-               AND COALESCE(status,'') <> 'cancelled'
+               AND ${activeCleaningTaskWhereSql('')}
                AND COALESCE(keys_required, 1) <> $1`,
             [nextKeysRequired, keysNullIds],
           )
@@ -3685,7 +3687,7 @@ router.delete('/cleaning-tasks/guest-luggage/:id', async (req, res) => {
        LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
        WHERE COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = $1
          AND COALESCE(t.task_date, t.date)::date = $2::date
-         AND COALESCE(t.status, '') <> 'cancelled'`,
+         AND ${activeCleaningTaskWhereSql('t')}`,
       [String(notice.property_id || ''), String(notice.task_date || '').slice(0, 10)],
     )
     const taskRows = taskResult?.rows || []
@@ -3750,7 +3752,7 @@ router.post('/cleaning-tasks/guest-luggage/:id/ack', async (req, res) => {
        LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
        WHERE COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = $1
          AND COALESCE(t.task_date, t.date)::date = $2::date
-         AND COALESCE(t.status, '') <> 'cancelled'
+         AND ${activeCleaningTaskWhereSql('t')}
          AND ($3 = COALESCE(t.cleaner_id::text, t.assignee_id::text) OR $3 = t.inspector_id::text)`,
       [String(noticeRow.property_id || ''), String(noticeRow.task_date || '').slice(0, 10), userId],
     )
@@ -3771,7 +3773,7 @@ router.post('/cleaning-tasks/guest-luggage/:id/ack', async (req, res) => {
        LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
        WHERE COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = $1
          AND COALESCE(t.task_date, t.date)::date = $2::date
-         AND COALESCE(t.status, '') <> 'cancelled'`,
+         AND ${activeCleaningTaskWhereSql('t')}`,
       [String(noticeRow.property_id || ''), String(noticeRow.task_date || '').slice(0, 10)],
     )
     const taskRows = allTasks?.rows || []
@@ -5167,6 +5169,7 @@ router.get('/work-tasks', async (req, res) => {
             t.checked_out_at,
             o.checkin::text AS order_checkin,
             o.checkout::text AS order_checkout,
+            o.note::text AS order_note,
             COALESCE(t.nights_override, o.nights, (o.checkout - o.checkin)) AS order_nights,
             lm.key_photo_url,
             lm.lockbox_video_url,
@@ -5185,7 +5188,7 @@ router.get('/work-tasks', async (req, res) => {
               ((COALESCE(t.task_date, t.date)::date) >= ($1::date) AND (COALESCE(t.task_date, t.date)::date) <= ($2::date))
               OR (t.inspection_due_date IS NOT NULL AND (t.inspection_due_date::date) <= ($2::date))
             )
-            AND COALESCE(t.status,'') <> 'cancelled'
+            AND ${activeCleaningTaskWhereSql('t')}
             AND (t.order_id IS NULL OR o.id IS NOT NULL)
             AND (
               t.order_id IS NULL
@@ -5205,6 +5208,36 @@ router.get('/work-tasks', async (req, res) => {
           })),
         )
         const taskIds = Array.from(new Set(cleaningRows.map((x: any) => String(x.id || '')).filter(Boolean)))
+        const supersededByReplacementId = new Map<string, any[]>()
+        if (taskIds.length) {
+          const sr = await pgPool.query(
+            `SELECT
+               id::text AS id,
+               superseded_by::text AS superseded_by,
+               property_id::text AS property_id,
+               task_type,
+               COALESCE(task_date, date)::text AS task_date,
+               checkout_time,
+               checkin_time,
+               keys_required,
+               nights_override,
+               guest_special_request,
+               old_code,
+               new_code
+             FROM cleaning_tasks
+             WHERE execution_state = 'superseded'
+               AND superseded_by::text = ANY($1::text[])
+             ORDER BY superseded_at DESC NULLS LAST, updated_at DESC NULLS LAST, id`,
+            [taskIds],
+          )
+          for (const row of sr?.rows || []) {
+            const replacementId = String(row.superseded_by || '').trim()
+            if (!replacementId) continue
+            const list = supersededByReplacementId.get(replacementId) || []
+            list.push(row)
+            supersededByReplacementId.set(replacementId, list)
+          }
+        }
         const guestLuggageByTaskKey = new Map<string, any>()
         const guestLuggagePropertyIds = Array.from(
           new Set(cleaningRows.map((x: any) => String(x.property_id || '').trim()).filter(Boolean)),
@@ -5279,7 +5312,7 @@ router.get('/work-tasks', async (req, res) => {
              WHERE t.property_id::text = ANY($1::text[])
                AND m.type LIKE 'restock_proof:%'
                AND COALESCE(t.task_date, t.date)::date <= $2::date
-               AND COALESCE(t.status,'') <> 'cancelled'
+               AND ${activeCleaningTaskWhereSql('t')}
              ORDER BY COALESCE(t.task_date, t.date) DESC, m.created_at DESC`,
             [guestLuggagePropertyIds, dateTo],
           )
@@ -5380,10 +5413,18 @@ router.get('/work-tasks', async (req, res) => {
             __inspection_scope: normalizeInspectionScope(row.inspection_scope),
             __inspection_due_date: inspectionDueDate,
             __deferred_projection_date: deferredDate,
+            active_source_ids: [String(row.id)],
+            superseded_source_ids: (supersededByReplacementId.get(String(row.id)) || []).map((x: any) => String(x.id || '')).filter(Boolean),
+            all_related_source_ids: [
+              String(row.id),
+              ...(supersededByReplacementId.get(String(row.id)) || []).map((x: any) => String(x.id || '')).filter(Boolean),
+            ],
+            __superseded_sources: supersededByReplacementId.get(String(row.id)) || [],
             order_id: orderId,
             order_keys_required: orderKeysRequired,
             raw_status,
             task_type: String(row.task_type || ''),
+            task_date: taskDate,
             checkout_time: row.checkout_time,
             checkin_time: row.checkin_time,
             old_code: row.old_code,
@@ -5402,6 +5443,7 @@ router.get('/work-tasks', async (req, res) => {
             nights_override: row.nights_override == null ? null : Number(row.nights_override),
             order_checkin: row.order_checkin,
             order_checkout: row.order_checkout,
+            order_note: row.order_note,
             order_nights: row.order_nights == null ? null : Number(row.order_nights),
             cleaner_name: row.cleaner_name,
             inspector_name: row.inspector_name,
@@ -5472,13 +5514,23 @@ router.get('/work-tasks', async (req, res) => {
                 return nextDate ? candidates.filter((x: any) => String(x?.task_date || x?.date || '').slice(0, 10) === nextDate) : []
               })()
             : []
+          const displayActiveRows = rows.filter((x) => p.ids.includes(String(x.__raw_id)))
+          const displaySupersededRows = displayActiveRows.flatMap((x) => Array.isArray(x.__superseded_sources) ? x.__superseded_sources : [])
+          const turnoverDisplay = buildCleaningTurnoverDisplay({
+            propertyId: propId,
+            taskDate: date,
+            checkoutTask: (p.kind === 'turnover' || p.kind === 'checkout') ? p.a : null,
+            checkinTask: p.kind === 'turnover' ? p.b : (p.kind === 'checkin' ? p.a : (nextCheckinsForCheckout[0] || null)),
+            activeRows: displayActiveRows,
+            supersededRows: displaySupersededRows,
+          })
           const checkoutLinkedCheckinTime = firstNonEmpty(p.a.checkin_time, ...nextCheckinsForCheckout.map((x: any) => x.checkin_time))
-          const checkoutTime = p.kind === 'turnover' || p.kind === 'checkout' ? normalizeTimeOrDefault(p.a.checkout_time, '10am') : ''
+          const checkoutTime = p.kind === 'turnover' || p.kind === 'checkout' ? normalizeTimeOrDefault(turnoverDisplay.checkout_time || p.a.checkout_time, '10am') : ''
           const checkinTime =
             p.kind === 'turnover' || p.kind === 'checkin'
-              ? normalizeTimeOrDefault((p.kind === 'turnover' ? p.b?.checkin_time : p.a.checkin_time), '3pm')
+              ? normalizeTimeOrDefault(turnoverDisplay.checkin_time || (p.kind === 'turnover' ? p.b?.checkin_time : p.a.checkin_time), '3pm')
               : p.kind === 'checkout' && (checkoutLinkedCheckinTime || nextCheckinsForCheckout.length)
-                ? normalizeTimeOrDefault(checkoutLinkedCheckinTime, '3pm')
+                ? normalizeTimeOrDefault(turnoverDisplay.checkin_time || checkoutLinkedCheckinTime, '3pm')
                 : ''
           const summary =
             p.kind === 'turnover'
@@ -5491,14 +5543,19 @@ router.get('/work-tasks', async (req, res) => {
                     ? '清洁'
                     : (summaryFromCleaningTimes(p.a.checkout_time, p.a.checkin_time) || null)
 
-          const oldCode = firstNonEmpty(p.a.old_code, p.b?.old_code, ...rows.map((x) => x.old_code))
-          const newCode = firstNonEmpty(p.b?.new_code, ...nextCheckinsForCheckout.map((x: any) => x.new_code), p.a.new_code, ...rows.map((x) => x.new_code))
-          const guestSpecialRequest = firstNonEmpty(p.a.guest_special_request, p.b?.guest_special_request, ...rows.map((x) => x.guest_special_request))
+          const oldCode = firstNonEmpty(turnoverDisplay.old_code, p.a.old_code, p.b?.old_code, ...rows.map((x) => x.old_code))
+          const newCode = firstNonEmpty(turnoverDisplay.new_code, p.b?.new_code, ...nextCheckinsForCheckout.map((x: any) => x.new_code), p.a.new_code, ...rows.map((x) => x.new_code))
+          const guestSpecialRequest = firstNonEmpty(turnoverDisplay.guest_request_summary, p.a.guest_special_request, p.b?.guest_special_request, ...rows.map((x) => x.guest_special_request))
           const taskNote = firstNonEmpty(p.a.note, p.b?.note, ...rows.map((x) => x.note))
           const checkedOutAt = firstNonEmpty(p.a.checked_out_at, p.b?.checked_out_at, ...rows.map((x) => x.checked_out_at))
           const keyPhotoUrl = firstNonEmpty(p.a.key_photo_url, p.b?.key_photo_url, ...rows.map((x) => x.key_photo_url))
           const lockboxVideoUrl = firstNonEmpty(p.a.lockbox_video_url, p.b?.lockbox_video_url, ...rows.map((x) => x.lockbox_video_url))
-          const keysRequired = Math.max(...rows.map((x) => (x.keys_required == null ? 1 : Number(x.keys_required))).filter((x) => Number.isFinite(x) && x > 0), 1)
+          const keysRequired = Math.max(
+            turnoverDisplay.keys_required_checkout || 0,
+            turnoverDisplay.keys_required_checkin || 0,
+            ...rows.map((x) => (x.keys_required == null ? 1 : Number(x.keys_required))).filter((x) => Number.isFinite(x) && x > 0),
+            1,
+          )
           const cleanerName = firstNonEmpty(p.a.cleaner_name, p.b?.cleaner_name, ...rows.map((x) => x.cleaner_name))
           const inspectorName = p.kind === 'stayover' ? null : firstNonEmpty(p.a.inspector_name, p.b?.inspector_name, ...rows.map((x) => x.inspector_name))
           const inspectorAssigned = p.kind === 'stayover' ? null : firstNonEmpty(p.a.__assignee_inspector, p.b?.__assignee_inspector, ...rows.map((x) => x.__assignee_inspector))
@@ -5580,14 +5637,14 @@ router.get('/work-tasks', async (req, res) => {
             return d0 == null ? null : Math.max(0, Math.trunc(d0))
           }
           const stayedAndRemaining = (() => {
-            if (p.kind === 'turnover') return { stayed: nightsFor(p.a), remaining: nightsFor(p.b) }
+            if (p.kind === 'turnover') return { stayed: turnoverDisplay.stayed_nights ?? nightsFor(p.a), remaining: turnoverDisplay.remaining_nights ?? nightsFor(p.b) }
             if (p.kind === 'checkout') {
               const incomingNights = nextCheckinsForCheckout
                 .map((x: any) => nightsFor(x))
                 .find((n: any) => n != null)
-              return { stayed: nightsFor(p.a), remaining: incomingNights == null ? 0 : incomingNights }
+              return { stayed: turnoverDisplay.stayed_nights ?? nightsFor(p.a), remaining: turnoverDisplay.remaining_nights ?? (incomingNights == null ? 0 : incomingNights) }
             }
-            if (p.kind === 'checkin') return { stayed: 0, remaining: nightsFor(p.a) }
+            if (p.kind === 'checkin') return { stayed: 0, remaining: turnoverDisplay.remaining_nights ?? nightsFor(p.a) }
             if (p.kind === 'stayover') {
               const total = nightsFor(p.a)
               const r0 = computeStayedRemaining({ checkin: p.a.order_checkin, checkout: p.a.order_checkout, taskDate: date, nightsTotal: total })
@@ -5635,11 +5692,15 @@ router.get('/work-tasks', async (req, res) => {
           const outId = p.kind === 'turnover' ? `cleaning_tasks_${roleKind}_turnover:${date}:${propId || 'unknown'}:${assigneeKey}` : `cleaning_tasks_${roleKind}:${p.ids.join(',')}`
           const primarySourceId = String(p.a.__raw_id)
           const checkoutKeys =
-            p.kind === 'turnover' || p.kind === 'checkout'
+            turnoverDisplay.keys_required_checkout != null
+              ? turnoverDisplay.keys_required_checkout
+              : p.kind === 'turnover' || p.kind === 'checkout'
               ? (p.a?.keys_required == null ? 1 : Number(p.a.keys_required))
               : null
           const checkinKeys =
-            p.kind === 'turnover'
+            turnoverDisplay.keys_required_checkin != null
+              ? turnoverDisplay.keys_required_checkin
+              : p.kind === 'turnover'
               ? (p.b?.keys_required == null ? 1 : Number(p.b.keys_required))
               : p.kind === 'checkin'
                 ? (p.a?.keys_required == null ? 1 : Number(p.a.keys_required))
@@ -5647,22 +5708,32 @@ router.get('/work-tasks', async (req, res) => {
                   ? Math.max(...nextCheckinsForCheckout.map((x: any) => (x?.keys_required == null ? 1 : Number(x.keys_required))))
                   : null
           const checkoutOrderId =
-            (p.kind === 'turnover' || p.kind === 'checkout') && p.a?.order_id ? String(p.a.order_id) : null
+            turnoverDisplay.checkout_order_id
+            || ((p.kind === 'turnover' || p.kind === 'checkout') && p.a?.order_id ? String(p.a.order_id) : null)
           const checkinOrderId =
-            p.kind === 'turnover'
+            turnoverDisplay.checkin_order_id
+            || (p.kind === 'turnover'
               ? (p.b?.order_id ? String(p.b.order_id) : null)
               : (p.kind === 'checkin' && p.a?.order_id ? String(p.a.order_id) : null)
-                || (p.kind === 'checkout' && nextCheckinsForCheckout[0]?.order_id ? String(nextCheckinsForCheckout[0].order_id) : null)
+                || (p.kind === 'checkout' && nextCheckinsForCheckout[0]?.order_id ? String(nextCheckinsForCheckout[0].order_id) : null))
           const singleOrderId = p.kind === 'turnover' ? null : (p.a?.order_id ? String(p.a.order_id) : null)
           const checkoutKeysOut = checkoutKeys != null && Number.isFinite(checkoutKeys) ? Math.max(1, Math.min(2, Math.trunc(checkoutKeys))) : null
           const checkinKeysOut = checkinKeys != null && Number.isFinite(checkinKeys) ? Math.max(1, Math.min(2, Math.trunc(checkinKeys))) : null
+          const activeSourceIds = turnoverDisplay.active_source_ids.length ? turnoverDisplay.active_source_ids : p.ids
+          const supersededSourceIds = turnoverDisplay.superseded_source_ids || []
+          const allRelatedSourceIds = turnoverDisplay.all_related_source_ids.length
+            ? turnoverDisplay.all_related_source_ids
+            : Array.from(new Set([...activeSourceIds, ...supersededSourceIds]))
 
           return {
             id: outId,
             task_kind: roleKind === 'cleaner' ? 'cleaning' : 'inspection',
             source_type: 'cleaning_tasks',
             source_id: primarySourceId,
-            source_ids: p.ids,
+            source_ids: activeSourceIds,
+            active_source_ids: activeSourceIds,
+            superseded_source_ids: supersededSourceIds,
+            all_related_source_ids: allRelatedSourceIds,
             order_id: singleOrderId,
             order_id_checkout: checkoutOrderId,
             order_id_checkin: checkinOrderId,
@@ -5683,6 +5754,9 @@ router.get('/work-tasks', async (req, res) => {
             old_code: oldCode,
             new_code: newCode,
             guest_special_request: guestSpecialRequest,
+            guest_request_checkout: turnoverDisplay.guest_request_checkout,
+            guest_request_checkin: turnoverDisplay.guest_request_checkin,
+            guest_request_summary: turnoverDisplay.guest_request_summary,
             guest_luggage: p.a.guest_luggage || null,
             note: taskNote,
             inspection_mode: inspectionMode,
@@ -5704,6 +5778,11 @@ router.get('/work-tasks', async (req, res) => {
             completion_photos_ok: completionPhotosOk,
             stayed_nights: stayedAndRemaining.stayed,
             remaining_nights: stayedAndRemaining.remaining,
+            is_late_checkout: turnoverDisplay.is_late_checkout,
+            is_early_checkin: turnoverDisplay.is_early_checkin,
+            is_late_checkin: turnoverDisplay.is_late_checkin,
+            display_conflicts: turnoverDisplay.conflicts,
+            turnover_display: turnoverDisplay,
             cleaner_name: cleanerName,
             inspector_name: inspectorName,
             property: prop,
@@ -5770,26 +5849,40 @@ router.get('/work-tasks', async (req, res) => {
           return nums.length ? Math.max(...nums) : null
         }
         const [d, propKey] = k.split('|')
-        const srcIds = Array.from(new Set(arr.flatMap((x) => (Array.isArray(x?.source_ids) ? x.source_ids : []))))
+        const mergedTurnoverDisplay = mergeCleaningTurnoverDisplays(arr.map((x) => x.turnover_display))
+        const activeSourceIds = Array.from(
+          new Set(arr.flatMap((x) => (Array.isArray(x?.active_source_ids) ? x.active_source_ids : (Array.isArray(x?.source_ids) ? x.source_ids : [])))),
+        )
+        const supersededSourceIds = Array.from(new Set(arr.flatMap((x) => (Array.isArray(x?.superseded_source_ids) ? x.superseded_source_ids : []))))
+        const allRelatedSourceIds = Array.from(
+          new Set([
+            ...activeSourceIds,
+            ...supersededSourceIds,
+            ...arr.flatMap((x) => (Array.isArray(x?.all_related_source_ids) ? x.all_related_source_ids : [])),
+          ]),
+        )
+        const srcIds = activeSourceIds
         const cleaningTaskIds = Array.from(
-          new Set(arr.filter((x) => String(x?.task_kind || '') === 'cleaning').flatMap((x) => (Array.isArray(x?.source_ids) ? x.source_ids : []))),
+          new Set(arr.filter((x) => String(x?.task_kind || '') === 'cleaning').flatMap((x) => (Array.isArray(x?.active_source_ids) ? x.active_source_ids : (Array.isArray(x?.source_ids) ? x.source_ids : [])))),
         )
         const inspectionTaskIds = Array.from(
-          new Set(arr.filter((x) => String(x?.task_kind || '') === 'inspection').flatMap((x) => (Array.isArray(x?.source_ids) ? x.source_ids : []))),
+          new Set(arr.filter((x) => String(x?.task_kind || '') === 'inspection').flatMap((x) => (Array.isArray(x?.active_source_ids) ? x.active_source_ids : (Array.isArray(x?.source_ids) ? x.source_ids : [])))),
         )
         const cleaningStatus = (arr.find((x) => String(x?.task_kind || '') === 'cleaning') || null)?.status || null
         const inspectionStatus = (arr.find((x) => String(x?.task_kind || '') === 'inspection') || null)?.status || null
-        const startTime = firstNonEmpty(...arr.map((x) => x.start_time))
-        const endTime = firstNonEmpty(...arr.map((x) => x.end_time))
+        const startTime = firstNonEmpty(mergedTurnoverDisplay?.checkout_time, ...arr.map((x) => x.start_time))
+        const endTime = firstNonEmpty(mergedTurnoverDisplay?.checkin_time, ...arr.map((x) => x.end_time))
         const keyPhotoUrl = firstNonEmpty(...arr.map((x) => x.key_photo_url))
         const lockboxVideoUrl = firstNonEmpty(...arr.map((x) => x.lockbox_video_url))
         const oldCode = firstNonEmpty(
+          mergedTurnoverDisplay?.old_code,
           ...arr
             .filter((x) => String(x?.task_type || '').trim().toLowerCase() === 'checkout_clean')
             .map((x) => x.old_code),
           ...arr.map((x) => x.old_code),
         )
         const newCode = firstNonEmpty(
+          mergedTurnoverDisplay?.new_code,
           ...arr
             .filter((x) => String(x?.task_type || '').trim().toLowerCase() === 'checkin_clean')
             .map((x) => x.new_code),
@@ -5805,17 +5898,19 @@ router.get('/work-tasks', async (req, res) => {
           0,
         )
         const orderIdCheckin = firstNonEmpty(
+          mergedTurnoverDisplay?.checkin_order_id,
           ...arr.map((x) => x.order_id_checkin),
           ...arr.map((x) => (String(x?.task_type || '').trim().toLowerCase() === 'checkin_clean' ? x.order_id : null)),
         )
         const orderIdCheckout = firstNonEmpty(
+          mergedTurnoverDisplay?.checkout_order_id,
           ...arr.map((x) => x.order_id_checkout),
           ...arr.map((x) => (String(x?.task_type || '').trim().toLowerCase() === 'checkout_clean' ? x.order_id : null)),
         )
-        const checkoutKeysOut = checkoutKeys ? clampInt(checkoutKeys, 1, 2) : null
-        const checkinKeysOut = checkinKeys ? clampInt(checkinKeys, 1, 2) : null
-        const stayedNights = maxNight(arr.map((x) => x.stayed_nights))
-        const remainingNights = maxNight(arr.map((x) => x.remaining_nights))
+        const checkoutKeysOut = mergedTurnoverDisplay?.keys_required_checkout ?? (checkoutKeys ? clampInt(checkoutKeys, 1, 2) : null)
+        const checkinKeysOut = mergedTurnoverDisplay?.keys_required_checkin ?? (checkinKeys ? clampInt(checkinKeys, 1, 2) : null)
+        const stayedNights = mergedTurnoverDisplay?.stayed_nights ?? maxNight(arr.map((x) => x.stayed_nights))
+        const remainingNights = mergedTurnoverDisplay?.remaining_nights ?? maxNight(arr.map((x) => x.remaining_nights))
         const checkedOutAtMerged = firstNonEmpty(...arr.map((x) => x.checked_out_at))
         const cleanerName = firstNonEmpty(...arr.map((x) => x.cleaner_name))
         const inspectorName = firstNonEmpty(...arr.map((x) => x.inspector_name))
@@ -5874,6 +5969,9 @@ router.get('/work-tasks', async (req, res) => {
           end_time: endTime || null,
           task_kind: arr.some((x) => String(x?.task_kind || '') === 'inspection') ? 'inspection' : 'cleaning',
           source_ids: srcIds.length ? srcIds : (Array.isArray(preferred?.source_ids) ? preferred.source_ids : undefined),
+          active_source_ids: activeSourceIds,
+          superseded_source_ids: supersededSourceIds,
+          all_related_source_ids: allRelatedSourceIds,
           cleaning_task_ids: cleaningTaskIds,
           inspection_task_ids: inspectionTaskIds,
           cleaning_status: cleaningStatus,
@@ -5886,6 +5984,10 @@ router.get('/work-tasks', async (req, res) => {
           lockbox_video_url: lockboxVideoUrl,
           old_code: oldCode || null,
           new_code: newCode || null,
+          guest_request_checkout: mergedTurnoverDisplay?.guest_request_checkout || null,
+          guest_request_checkin: mergedTurnoverDisplay?.guest_request_checkin || null,
+          guest_request_summary: mergedTurnoverDisplay?.guest_request_summary || null,
+          guest_special_request: mergedTurnoverDisplay?.guest_request_summary || preferred?.guest_special_request || null,
           order_id: null,
           order_id_checkin: orderIdCheckin || null,
           order_id_checkout: orderIdCheckout || null,
@@ -5906,6 +6008,11 @@ router.get('/work-tasks', async (req, res) => {
           restock_items: restockItems,
           stayed_nights: stayedNights,
           remaining_nights: remainingNights,
+          is_late_checkout: !!mergedTurnoverDisplay?.is_late_checkout,
+          is_early_checkin: !!mergedTurnoverDisplay?.is_early_checkin,
+          is_late_checkin: !!mergedTurnoverDisplay?.is_late_checkin,
+          display_conflicts: mergedTurnoverDisplay?.conflicts || [],
+          turnover_display: mergedTurnoverDisplay || preferred?.turnover_display || null,
         })
       }
 

@@ -165,7 +165,6 @@ async function propagateToSource(sourceType: string, sourceId: string, patch: an
   if (st === 'cleaning_offline_tasks') {
     const set: string[] = []
     const vals: any[] = []
-    if (assigneeId !== undefined) { vals.push(assigneeId); set.push(`assignee_id = $${vals.length}`) }
     if (scheduledDate !== undefined) { vals.push(scheduledDate); set.push(`date = $${vals.length}::date`) }
     if (!set.length) return
     vals.push(sid)
