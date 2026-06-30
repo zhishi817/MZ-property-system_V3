@@ -121,6 +121,11 @@ async function ensurePropertyPayableColumns(client?: any) {
     category_detail text,
     amount numeric,
     due_day_of_month integer,
+    bill_expected_day_of_month integer,
+    bill_period_start_day_of_month integer,
+    bill_period_start_month_offset integer DEFAULT 0,
+    bill_period_end_day_of_month integer,
+    bill_period_end_month_offset integer DEFAULT 0,
     frequency_months integer,
     remind_days_before integer,
     status text,
@@ -154,6 +159,11 @@ async function ensurePropertyPayableColumns(client?: any) {
   await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS note text;')
   await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS created_by text;')
   await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS updated_by text;')
+  await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS bill_expected_day_of_month integer;')
+  await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS bill_period_start_day_of_month integer;')
+  await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS bill_period_start_month_offset integer DEFAULT 0;')
+  await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS bill_period_end_day_of_month integer;')
+  await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS bill_period_end_month_offset integer DEFAULT 0;')
 }
 
 function normalizePayableTemplates(raw: any[] | undefined, actorId: string | null, propertyId: string) {
@@ -170,6 +180,11 @@ function normalizePayableTemplates(raw: any[] | undefined, actorId: string | nul
       category_detail: String(item?.category_detail || '').trim() || null,
       amount: item?.amount == null ? 0 : Number(item.amount || 0),
       due_day_of_month: Number(item?.due_day_of_month || 1),
+      bill_expected_day_of_month: item?.bill_expected_day_of_month == null || item?.bill_expected_day_of_month === '' ? null : Number(item.bill_expected_day_of_month || 0),
+      bill_period_start_day_of_month: item?.bill_period_start_day_of_month == null || item?.bill_period_start_day_of_month === '' ? null : Number(item.bill_period_start_day_of_month || 0),
+      bill_period_start_month_offset: Number(item?.bill_period_start_month_offset || 0),
+      bill_period_end_day_of_month: item?.bill_period_end_day_of_month == null || item?.bill_period_end_day_of_month === '' ? null : Number(item.bill_period_end_day_of_month || 0),
+      bill_period_end_month_offset: Number(item?.bill_period_end_month_offset || 0),
       frequency_months: Math.max(1, Number(item?.frequency_months || 1)),
       remind_days_before: Number(item?.remind_days_before ?? 3),
       payment_type: item?.payment_type ? String(item.payment_type) : 'bank_account',
@@ -188,6 +203,57 @@ function normalizePayableTemplates(raw: any[] | undefined, actorId: string | nul
       updated_by: actorId,
     }
   })
+}
+
+const PAYABLE_TEMPLATE_SYNC_FIELDS = [
+  'property_id',
+  'scope',
+  'template_kind',
+  'vendor',
+  'category',
+  'category_detail',
+  'amount',
+  'due_day_of_month',
+  'bill_expected_day_of_month',
+  'bill_period_start_day_of_month',
+  'bill_period_start_month_offset',
+  'bill_period_end_day_of_month',
+  'bill_period_end_month_offset',
+  'frequency_months',
+  'remind_days_before',
+  'payment_type',
+  'pay_account_name',
+  'pay_bsb',
+  'pay_account_number',
+  'pay_ref',
+  'bpay_code',
+  'pay_mobile_number',
+  'report_category',
+  'start_month_key',
+  'bill_account_no',
+  'note',
+] as const
+
+function comparablePayableTemplateValue(key: string, value: any) {
+  if (['amount'].includes(key)) {
+    const n = Number(value ?? 0)
+    return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0
+  }
+  if (['due_day_of_month', 'bill_expected_day_of_month', 'bill_period_start_day_of_month', 'bill_period_start_month_offset', 'bill_period_end_day_of_month', 'bill_period_end_month_offset', 'frequency_months', 'remind_days_before'].includes(key)) {
+    const n = Number(value ?? 0)
+    return Number.isFinite(n) ? n : 0
+  }
+  if (['scope', 'template_kind', 'property_id', 'vendor', 'category', 'payment_type', 'start_month_key'].includes(key)) {
+    return String(value ?? '').trim()
+  }
+  return String(value ?? '').trim() || null
+}
+
+export function propertyPayableTemplateHasBusinessChanges(existing: any, nextPatch: any): boolean {
+  for (const key of PAYABLE_TEMPLATE_SYNC_FIELDS) {
+    if (comparablePayableTemplateValue(key, existing?.[key]) !== comparablePayableTemplateValue(key, nextPatch?.[key])) return true
+  }
+  return false
 }
 
 async function syncPropertyPayableTemplatesTx(client: any, propertyId: string, rawTemplates: any[] | undefined, actorId: string | null) {
@@ -217,6 +283,11 @@ async function syncPropertyPayableTemplatesTx(client: any, propertyId: string, r
         category_detail: tpl.category_detail,
         amount: tpl.amount,
         due_day_of_month: tpl.due_day_of_month,
+        bill_expected_day_of_month: tpl.bill_expected_day_of_month,
+        bill_period_start_day_of_month: tpl.bill_period_start_day_of_month,
+        bill_period_start_month_offset: tpl.bill_period_start_month_offset,
+        bill_period_end_day_of_month: tpl.bill_period_end_day_of_month,
+        bill_period_end_month_offset: tpl.bill_period_end_month_offset,
         frequency_months: tpl.frequency_months,
         remind_days_before: tpl.remind_days_before,
         payment_type: tpl.payment_type,
@@ -233,6 +304,7 @@ async function syncPropertyPayableTemplatesTx(client: any, propertyId: string, r
         updated_by: actorId,
         updated_at: new Date(),
       }
+      if (!propertyPayableTemplateHasBusinessChanges(existing, patch)) continue
       const after = await pgUpdate('recurring_payments', String(tpl.id), patch, client)
       addAudit('RecurringPayment', String(tpl.id), 'update', existing, after, actorId || undefined)
     } else {

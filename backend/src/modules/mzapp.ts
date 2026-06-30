@@ -15,7 +15,16 @@ import {
   planGuestLuggageMutation,
   resolveGuestLuggageRecipientIds,
 } from '../services/guestLuggage'
-import { deferredProjectionDate, effectiveInspectionMode, isInspectionFinishedStatus, mergeInspectionPlan, mobileInspectionProjectionDate } from '../lib/cleaningInspection'
+import {
+  cleaningTaskExecutionSemantics,
+  deferredProjectionDate,
+  effectiveInspectionMode,
+  isCheckinKeyHandoverTask,
+  isCleaningExecutionTask,
+  isInspectionFinishedStatus,
+  mergeInspectionPlan,
+  mobileInspectionProjectionDate,
+} from '../lib/cleaningInspection'
 import { deepCleaningSourceSummary, maintenanceSourceSummary } from '../lib/autoExpenseSourceSummary'
 import { buildCleaningTurnoverDisplay, mergeCleaningTurnoverDisplays } from '../lib/cleaningTurnoverDisplay'
 import {
@@ -5082,6 +5091,8 @@ router.get('/work-tasks', async (req, res) => {
           assignee_name: x.assignee_name ? String(x.assignee_name) : null,
           cleaner_name: x.assignee_name ? String(x.assignee_name) : null,
           status: normStatus(x.status),
+          execution_role: 'work',
+          execution_semantics: 'work_task',
           urgency: normUrgency(x.urgency),
           sort_index: workTaskSortNumber(x.sort_index),
           photo_urls: normalizeWorkTaskPhotoUrls(x.photo_urls),
@@ -5110,8 +5121,9 @@ router.get('/work-tasks', async (req, res) => {
       const isInspectorView = isInspectorRole(user) || isCleanerInspectorRole(user)
       const wantCleaner = allowAll || isCleanerView
       const wantInspector = allowAll || isInspectorView
+      const wantExecutor = !!userId
 
-      if (wantCleaner || wantInspector) {
+      if (wantCleaner || wantInspector || wantExecutor) {
         const sql = `
           WITH latest_media_raw AS (
             SELECT DISTINCT ON (m.task_id::text, m.type)
@@ -5368,6 +5380,7 @@ router.get('/work-tasks', async (req, res) => {
           }
         }
         const cleanerGroups = new Map<string, any[]>()
+        const executorGroups = new Map<string, any[]>()
         const inspectorGroups = new Map<string, any[]>()
         for (const row of cleaningRows) {
           const taskDate = String(row.task_date || row.date || '').slice(0, 10)
@@ -5399,6 +5412,7 @@ router.get('/work-tasks', async (req, res) => {
           })
 
           const effectiveCleanerId = row.cleaner_id ? String(row.cleaner_id) : (row.assignee_id ? String(row.assignee_id) : null)
+          const executorId = row.assignee_id ? String(row.assignee_id) : (row.inspector_id ? String(row.inspector_id) : null)
           const inspectorId = row.inspector_id ? String(row.inspector_id) : null
           const orderId = row.order_id ? String(row.order_id) : null
           const orderKeysRequired = row.order_keys_required == null ? null : Number(row.order_keys_required)
@@ -5456,6 +5470,7 @@ router.get('/work-tasks', async (req, res) => {
 
           if (
             wantCleaner
+            && isCleaningExecutionTask(row)
             && taskDate >= dateFrom
             && taskDate <= dateTo
             && (
@@ -5469,6 +5484,20 @@ router.get('/work-tasks', async (req, res) => {
             cleanerGroups.set(k, arr)
           }
 
+          if (
+            wantExecutor
+            && isCheckinKeyHandoverTask(row)
+            && taskDate >= dateFrom
+            && taskDate <= dateTo
+            && executorId
+            && (allowAll || executorId === userId)
+          ) {
+            const k = `${taskDate}|${propId || ''}|${executorId}`
+            const arr = executorGroups.get(k) || []
+            arr.push({ ...base, __assignee_executor: executorId })
+            executorGroups.set(k, arr)
+          }
+
           const inspectorDisplayDate = mobileInspectionProjectionDate({
             inspectionMode,
             inspectionDueDate,
@@ -5477,7 +5506,14 @@ router.get('/work-tasks', async (req, res) => {
             dateTo,
             status: raw_status,
           })
-          if (wantInspector && inspectorId && inspectorDisplayDate && cleaningType(row.task_type) !== 'stayover' && (allowAll || inspectorId === userId)) {
+          if (
+            wantInspector
+            && inspectorId
+            && inspectorDisplayDate
+            && cleaningType(row.task_type) !== 'stayover'
+            && !isCheckinKeyHandoverTask(row)
+            && (allowAll || inspectorId === userId)
+          ) {
             const k = `${inspectorDisplayDate}|${propId || ''}|${inspectorId}`
             const arr = inspectorGroups.get(k) || []
             arr.push({ ...base, __date: inspectorDisplayDate, __is_deferred_projection: inspectionMode === 'deferred' })
@@ -5485,7 +5521,7 @@ router.get('/work-tasks', async (req, res) => {
           }
         }
 
-        const buildMerged = (roleKind: 'cleaner' | 'inspector', rows: any[], assigneeId: string) => {
+        const buildMerged = (roleKind: 'cleaner' | 'inspector' | 'executor', rows: any[], assigneeId: string) => {
           const date = String(rows?.[0]?.__date || '')
           const propId = rows?.[0]?.__prop_id ? String(rows[0].__prop_id) : null
           const prop = rows?.[0]?.property || null
@@ -5725,9 +5761,18 @@ router.get('/work-tasks', async (req, res) => {
             ? turnoverDisplay.all_related_source_ids
             : Array.from(new Set([...activeSourceIds, ...supersededSourceIds]))
 
+          const executionRole = roleKind === 'cleaner' ? 'cleaning' : (roleKind === 'executor' ? 'execution' : 'inspection')
+          const executionSemantics = cleaningTaskExecutionSemantics({
+            roleKind,
+            taskType: p.kind === 'turnover' ? null : p.a.task_type,
+            inspectionScope,
+          })
+
           return {
             id: outId,
-            task_kind: roleKind === 'cleaner' ? 'cleaning' : 'inspection',
+            task_kind: roleKind === 'cleaner' ? 'cleaning' : (roleKind === 'executor' ? 'execution' : 'inspection'),
+            execution_role: executionRole,
+            execution_semantics: executionSemantics,
             source_type: 'cleaning_tasks',
             source_id: primarySourceId,
             source_ids: activeSourceIds,
@@ -5793,6 +5838,13 @@ router.get('/work-tasks', async (req, res) => {
           const parts = k.split('|')
           const assigneeId = parts[2] === 'unassigned' ? '' : (parts[2] || '')
           out.push(buildMerged('cleaner', rows, assigneeId))
+        }
+
+        for (const [k, rows] of executorGroups) {
+          const parts = k.split('|')
+          const assigneeId = parts[2] || ''
+          if (!assigneeId) continue
+          out.push(buildMerged('executor', rows, assigneeId))
         }
 
         for (const [k, rows] of inspectorGroups) {
@@ -5868,8 +5920,30 @@ router.get('/work-tasks', async (req, res) => {
         const inspectionTaskIds = Array.from(
           new Set(arr.filter((x) => String(x?.task_kind || '') === 'inspection').flatMap((x) => (Array.isArray(x?.active_source_ids) ? x.active_source_ids : (Array.isArray(x?.source_ids) ? x.source_ids : [])))),
         )
+        const executionTaskIds = Array.from(
+          new Set(arr.filter((x) => String(x?.task_kind || '') === 'execution').flatMap((x) => (Array.isArray(x?.active_source_ids) ? x.active_source_ids : (Array.isArray(x?.source_ids) ? x.source_ids : [])))),
+        )
         const cleaningStatus = (arr.find((x) => String(x?.task_kind || '') === 'cleaning') || null)?.status || null
         const inspectionStatus = (arr.find((x) => String(x?.task_kind || '') === 'inspection') || null)?.status || null
+        const executionStatus = (arr.find((x) => String(x?.task_kind || '') === 'execution') || null)?.status || null
+        const hasCleaningExecution = cleaningTaskIds.length > 0
+        const hasInspectionExecution = inspectionTaskIds.length > 0
+        const hasKeyHandoverExecution = executionTaskIds.length > 0
+        const executionRole = hasKeyHandoverExecution
+          ? 'execution'
+          : hasCleaningExecution && hasInspectionExecution
+          ? 'mixed'
+          : hasCleaningExecution
+            ? 'cleaning'
+            : 'inspection'
+        const executionSemantics = cleaningTaskExecutionSemantics({
+          roleKind: executionRole,
+          taskType: preferred?.task_type,
+          inspectionScope: preferred?.inspection_scope,
+          hasCleaningExecution,
+          hasInspectionExecution,
+          hasKeyHandoverExecution,
+        })
         const startTime = firstNonEmpty(mergedTurnoverDisplay?.checkout_time, ...arr.map((x) => x.start_time))
         const endTime = firstNonEmpty(mergedTurnoverDisplay?.checkin_time, ...arr.map((x) => x.end_time))
         const keyPhotoUrl = firstNonEmpty(...arr.map((x) => x.key_photo_url))
@@ -5930,6 +6004,11 @@ router.get('/work-tasks', async (req, res) => {
             .filter((x) => String(x?.task_kind || '') === 'inspection')
             .map((x) => x.__assignee_inspector),
         )
+        const executionAssigneeId = firstNonEmpty(
+          ...arr
+            .filter((x) => String(x?.task_kind || '') === 'execution')
+            .map((x) => x.assignee_id || x.__assignee_executor),
+        )
         const inspectionPlan = mergeInspectionPlan(
           arr.map((x) => ({
             task_type: x.task_type,
@@ -5967,16 +6046,24 @@ router.get('/work-tasks', async (req, res) => {
           id: `cleaning_tasks_merged:${d}:${propKey}`,
           start_time: startTime || null,
           end_time: endTime || null,
-          task_kind: arr.some((x) => String(x?.task_kind || '') === 'inspection') ? 'inspection' : 'cleaning',
+          task_kind: hasKeyHandoverExecution
+            ? 'execution'
+            : arr.some((x) => String(x?.task_kind || '') === 'inspection')
+              ? 'inspection'
+              : 'cleaning',
+          execution_role: executionRole,
+          execution_semantics: executionSemantics,
           source_ids: srcIds.length ? srcIds : (Array.isArray(preferred?.source_ids) ? preferred.source_ids : undefined),
           active_source_ids: activeSourceIds,
           superseded_source_ids: supersededSourceIds,
           all_related_source_ids: allRelatedSourceIds,
           cleaning_task_ids: cleaningTaskIds,
           inspection_task_ids: inspectionTaskIds,
+          execution_task_ids: executionTaskIds,
           cleaning_status: cleaningStatus,
           inspection_status: inspectionStatus,
-          assignee_id: cleanerAssigneeId || inspectorAssigneeId || null,
+          execution_status: executionStatus,
+          assignee_id: cleanerAssigneeId || inspectorAssigneeId || executionAssigneeId || null,
           cleaner_id: cleanerAssigneeId || null,
           inspector_id: inspectorAssigneeId || null,
           status: statusOut,

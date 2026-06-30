@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.router = void 0;
+exports.propertyPayableTemplateHasBusinessChanges = propertyPayableTemplateHasBusinessChanges;
 const express_1 = require("express");
 const store_1 = require("../store");
 const dbAdapter_1 = require("../dbAdapter");
@@ -120,6 +121,11 @@ async function ensurePropertyPayableColumns(client) {
     category_detail text,
     amount numeric,
     due_day_of_month integer,
+    bill_expected_day_of_month integer,
+    bill_period_start_day_of_month integer,
+    bill_period_start_month_offset integer DEFAULT 0,
+    bill_period_end_day_of_month integer,
+    bill_period_end_month_offset integer DEFAULT 0,
     frequency_months integer,
     remind_days_before integer,
     status text,
@@ -153,6 +159,11 @@ async function ensurePropertyPayableColumns(client) {
     await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS note text;');
     await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS created_by text;');
     await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS updated_by text;');
+    await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS bill_expected_day_of_month integer;');
+    await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS bill_period_start_day_of_month integer;');
+    await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS bill_period_start_month_offset integer DEFAULT 0;');
+    await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS bill_period_end_day_of_month integer;');
+    await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS bill_period_end_month_offset integer DEFAULT 0;');
 }
 function normalizePayableTemplates(raw, actorId, propertyId) {
     const rows = Array.isArray(raw) ? raw : [];
@@ -169,6 +180,11 @@ function normalizePayableTemplates(raw, actorId, propertyId) {
             category_detail: String((item === null || item === void 0 ? void 0 : item.category_detail) || '').trim() || null,
             amount: (item === null || item === void 0 ? void 0 : item.amount) == null ? 0 : Number(item.amount || 0),
             due_day_of_month: Number((item === null || item === void 0 ? void 0 : item.due_day_of_month) || 1),
+            bill_expected_day_of_month: (item === null || item === void 0 ? void 0 : item.bill_expected_day_of_month) == null || (item === null || item === void 0 ? void 0 : item.bill_expected_day_of_month) === '' ? null : Number(item.bill_expected_day_of_month || 0),
+            bill_period_start_day_of_month: (item === null || item === void 0 ? void 0 : item.bill_period_start_day_of_month) == null || (item === null || item === void 0 ? void 0 : item.bill_period_start_day_of_month) === '' ? null : Number(item.bill_period_start_day_of_month || 0),
+            bill_period_start_month_offset: Number((item === null || item === void 0 ? void 0 : item.bill_period_start_month_offset) || 0),
+            bill_period_end_day_of_month: (item === null || item === void 0 ? void 0 : item.bill_period_end_day_of_month) == null || (item === null || item === void 0 ? void 0 : item.bill_period_end_day_of_month) === '' ? null : Number(item.bill_period_end_day_of_month || 0),
+            bill_period_end_month_offset: Number((item === null || item === void 0 ? void 0 : item.bill_period_end_month_offset) || 0),
             frequency_months: Math.max(1, Number((item === null || item === void 0 ? void 0 : item.frequency_months) || 1)),
             remind_days_before: Number((_a = item === null || item === void 0 ? void 0 : item.remind_days_before) !== null && _a !== void 0 ? _a : 3),
             payment_type: (item === null || item === void 0 ? void 0 : item.payment_type) ? String(item.payment_type) : 'bank_account',
@@ -187,6 +203,55 @@ function normalizePayableTemplates(raw, actorId, propertyId) {
             updated_by: actorId,
         };
     });
+}
+const PAYABLE_TEMPLATE_SYNC_FIELDS = [
+    'property_id',
+    'scope',
+    'template_kind',
+    'vendor',
+    'category',
+    'category_detail',
+    'amount',
+    'due_day_of_month',
+    'bill_expected_day_of_month',
+    'bill_period_start_day_of_month',
+    'bill_period_start_month_offset',
+    'bill_period_end_day_of_month',
+    'bill_period_end_month_offset',
+    'frequency_months',
+    'remind_days_before',
+    'payment_type',
+    'pay_account_name',
+    'pay_bsb',
+    'pay_account_number',
+    'pay_ref',
+    'bpay_code',
+    'pay_mobile_number',
+    'report_category',
+    'start_month_key',
+    'bill_account_no',
+    'note',
+];
+function comparablePayableTemplateValue(key, value) {
+    if (['amount'].includes(key)) {
+        const n = Number(value !== null && value !== void 0 ? value : 0);
+        return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
+    }
+    if (['due_day_of_month', 'bill_expected_day_of_month', 'bill_period_start_day_of_month', 'bill_period_start_month_offset', 'bill_period_end_day_of_month', 'bill_period_end_month_offset', 'frequency_months', 'remind_days_before'].includes(key)) {
+        const n = Number(value !== null && value !== void 0 ? value : 0);
+        return Number.isFinite(n) ? n : 0;
+    }
+    if (['scope', 'template_kind', 'property_id', 'vendor', 'category', 'payment_type', 'start_month_key'].includes(key)) {
+        return String(value !== null && value !== void 0 ? value : '').trim();
+    }
+    return String(value !== null && value !== void 0 ? value : '').trim() || null;
+}
+function propertyPayableTemplateHasBusinessChanges(existing, nextPatch) {
+    for (const key of PAYABLE_TEMPLATE_SYNC_FIELDS) {
+        if (comparablePayableTemplateValue(key, existing === null || existing === void 0 ? void 0 : existing[key]) !== comparablePayableTemplateValue(key, nextPatch === null || nextPatch === void 0 ? void 0 : nextPatch[key]))
+            return true;
+    }
+    return false;
 }
 async function syncPropertyPayableTemplatesTx(client, propertyId, rawTemplates, actorId) {
     await ensurePropertyPayableColumns(client);
@@ -211,6 +276,11 @@ async function syncPropertyPayableTemplatesTx(client, propertyId, rawTemplates, 
                 category_detail: tpl.category_detail,
                 amount: tpl.amount,
                 due_day_of_month: tpl.due_day_of_month,
+                bill_expected_day_of_month: tpl.bill_expected_day_of_month,
+                bill_period_start_day_of_month: tpl.bill_period_start_day_of_month,
+                bill_period_start_month_offset: tpl.bill_period_start_month_offset,
+                bill_period_end_day_of_month: tpl.bill_period_end_day_of_month,
+                bill_period_end_month_offset: tpl.bill_period_end_month_offset,
                 frequency_months: tpl.frequency_months,
                 remind_days_before: tpl.remind_days_before,
                 payment_type: tpl.payment_type,
@@ -227,6 +297,8 @@ async function syncPropertyPayableTemplatesTx(client, propertyId, rawTemplates, 
                 updated_by: actorId,
                 updated_at: new Date(),
             };
+            if (!propertyPayableTemplateHasBusinessChanges(existing, patch))
+                continue;
             const after = await (0, dbAdapter_1.pgUpdate)('recurring_payments', String(tpl.id), patch, client);
             (0, store_1.addAudit)('RecurringPayment', String(tpl.id), 'update', existing, after, actorId || undefined);
         }

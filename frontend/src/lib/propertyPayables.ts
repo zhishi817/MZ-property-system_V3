@@ -44,6 +44,11 @@ export function defaultPropertyPayableTemplate() {
     category: 'electricity',
     amount: undefined,
     due_day_of_month: 15,
+    bill_expected_day_of_month: undefined,
+    bill_period_start_day_of_month: undefined,
+    bill_period_start_month_offset: 0,
+    bill_period_end_day_of_month: undefined,
+    bill_period_end_month_offset: 0,
     frequency_months: 1,
     remind_days_before: 3,
     payment_type: 'bank_account',
@@ -82,6 +87,11 @@ export function normalizePropertyPayableTemplates(raw: any): any[] {
       category_detail: String(item?.category_detail || '').trim(),
       amount: item?.amount == null || item?.amount === '' ? undefined : Number(item.amount || 0),
       due_day_of_month: item?.due_day_of_month == null || item?.due_day_of_month === '' ? undefined : Number(item.due_day_of_month),
+      bill_expected_day_of_month: item?.bill_expected_day_of_month == null || item?.bill_expected_day_of_month === '' ? undefined : Number(item.bill_expected_day_of_month),
+      bill_period_start_day_of_month: item?.bill_period_start_day_of_month == null || item?.bill_period_start_day_of_month === '' ? undefined : Number(item.bill_period_start_day_of_month),
+      bill_period_start_month_offset: item?.bill_period_start_month_offset == null || item?.bill_period_start_month_offset === '' ? 0 : Number(item.bill_period_start_month_offset),
+      bill_period_end_day_of_month: item?.bill_period_end_day_of_month == null || item?.bill_period_end_day_of_month === '' ? undefined : Number(item.bill_period_end_day_of_month),
+      bill_period_end_month_offset: item?.bill_period_end_month_offset == null || item?.bill_period_end_month_offset === '' ? 0 : Number(item.bill_period_end_month_offset),
       frequency_months: item?.frequency_months == null || item?.frequency_months === '' ? undefined : Number(item.frequency_months),
       remind_days_before: item?.remind_days_before == null || item?.remind_days_before === '' ? 3 : Number(item.remind_days_before),
       payment_type: String(item?.payment_type || 'bank_account'),
@@ -103,11 +113,19 @@ export function normalizePropertyPayableTemplates(raw: any): any[] {
 
 export function propertyPayableSortBucket(row: { status?: string; is_overdue?: boolean; is_due_soon?: boolean; amount_confirmed?: boolean }) {
   if (row.status === 'paid') return 3
-  if (row.is_overdue) return 0
-  if (row.is_due_soon) return 1
+  if (isPropertyPayableOverdue(row)) return 0
+  if (isPropertyPayableDueSoon(row)) return 1
   return 2
 }
 
 export function canMarkPropertyPayablePaid(row: { status?: string; amount_confirmed?: boolean }) {
   return row.status !== 'paid' && row.amount_confirmed === true
+}
+
+export function isPropertyPayableOverdue(row: { status?: string; is_overdue?: boolean; amount_confirmed?: boolean }) {
+  return row.status !== 'paid' && row.is_overdue === true
+}
+
+export function isPropertyPayableDueSoon(row: { status?: string; is_due_soon?: boolean; amount_confirmed?: boolean }) {
+  return row.status !== 'paid' && row.is_due_soon === true
 }

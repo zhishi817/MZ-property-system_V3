@@ -269,7 +269,8 @@ function buildCleaningSaveDiff(before: any, assignment: any): TaskSaveDiff | nul
   const cleanerAction = assignmentAction(assignment.cleaner_assignment_action)
   const nextCleaner = cleanerAction ? nullableText(assignment.cleaner_id) : oldCleaner
   const oldAssignee = nullableText(before.assignee_id)
-  const nextAssignee = nextCleaner
+  const assigneeAction = assignmentAction(assignment.assignee_assignment_action)
+  const nextAssignee = assigneeAction ? nullableText(assignment.assignee_id) : nextCleaner
   const oldInspector = nullableText(before.inspector_id)
   const inspectorAction = assignmentAction(assignment.inspector_assignment_action)
   const nextInspector = !inspectorAction
@@ -294,8 +295,11 @@ function buildCleaningSaveDiff(before: any, assignment: any): TaskSaveDiff | nul
     changedFields.push('cleaner_id')
     pushChanges.push('assignee')
     recipients.push(oldCleaner, nextCleaner)
-  } else if (oldAssignee !== nextAssignee) {
+  }
+  if (oldAssignee !== nextAssignee) {
     changedFields.push('assignee_id')
+    pushChanges.push('assignee')
+    recipients.push(oldAssignee, nextAssignee)
   }
 
   if (oldInspector !== nextInspector) {
@@ -1560,6 +1564,11 @@ function boardTaskKey(taskSource: TaskSource, taskId: string) {
   return `${taskSource}:${taskId}`
 }
 
+function rowTypeFromKey(rowKey: string): BoardRow['row_type'] {
+  if (rowKey === DEFERRED_ROW_KEY || rowKey === DEFERRED_INSPECTION_ROW_KEY) return 'deferred'
+  return rowKey.startsWith('group:') ? 'final_group' : 'region'
+}
+
 function defaultRowOrderFromKey(rowKey: string, rowType: BoardRow['row_type']) {
   if (rowKey === COMPLETED_ROW_KEY) return 2080
   if (rowKey === DEFERRED_INSPECTION_ROW_KEY) return 9998
@@ -1636,7 +1645,7 @@ function buildRows(params: {
     let rowKey = layout?.row_key || defaultRegionRowKey(task)
     if (rowKey === DEFERRED_ROW_KEY) rowKey = defaultRegionRowKey(task)
     const rowMeta = params.rowMetas.get(rowKey)
-    const rowType = (rowMeta?.row_type || (rowKey.startsWith('group:') ? 'final_group' : 'region')) as 'region' | 'final_group' | 'deferred'
+    const rowType = (rowMeta?.row_type || rowTypeFromKey(rowKey)) as 'region' | 'final_group' | 'deferred'
     const rowTitle = text(rowMeta?.row_title) || rowTitleFromKey(rowKey)
     const rowOrder = rowMeta?.row_order ?? defaultRowOrderFromKey(rowKey, rowType)
     const row = rows.get(rowKey) || {
@@ -1662,32 +1671,46 @@ function buildRows(params: {
     subrow.tasks.push(task)
     rows.set(rowKey, row)
   }
-  const deferredMeta = params.rowMetas.get(DEFERRED_ROW_KEY)
-  const deferredRow: BoardRow = {
-    row_key: DEFERRED_ROW_KEY,
-    row_title: deferredMeta?.row_title || DEFERRED_ROW_TITLE,
-    row_type: 'deferred',
-    row_order: deferredMeta?.row_order ?? 9999,
-    assignments: deferredMeta?.assignments || {},
-    subrow_order: deferredMeta?.subrow_order || [defaultSubrowKey()],
-    subrows: [{
-      subrow_key: defaultSubrowKey(),
-      tasks: deferredTasks,
-    }],
+  const upsertDeferredRow = (rowKey: string, rowTitle: string, rowOrder: number, tasks: BoardTask[]) => {
+    const rowMeta = params.rowMetas.get(rowKey)
+    let row = rows.get(rowKey)
+    if (!row) {
+      row = {
+        row_key: rowKey,
+        row_title: rowMeta?.row_title || rowTitle,
+        row_type: 'deferred',
+        row_order: rowMeta?.row_order ?? rowOrder,
+        assignments: rowMeta?.assignments || {},
+        subrow_order: rowMeta?.subrow_order?.length ? rowMeta.subrow_order : [defaultSubrowKey()],
+        subrows: [],
+      }
+      rows.set(rowKey, row)
+    } else {
+      row.row_type = 'deferred'
+      row.row_title = text(row.row_title) || rowMeta?.row_title || rowTitle
+      row.row_order = rowMeta?.row_order ?? row.row_order ?? rowOrder
+      row.assignments = rowMeta?.assignments || row.assignments || {}
+      row.subrow_order = row.subrow_order.length ? row.subrow_order : (rowMeta?.subrow_order?.length ? rowMeta.subrow_order : [defaultSubrowKey()])
+    }
+    const subrowKey = row.subrow_order[0] || defaultSubrowKey()
+    let subrow = row.subrows.find((x) => x.subrow_key === subrowKey)
+    if (!subrow) {
+      subrow = {
+        subrow_key: subrowKey,
+        tasks: [],
+      }
+      row.subrows.push(subrow)
+    }
+    const existingKeys = new Set(row.subrows.flatMap((item) => item.tasks.map((task) => boardTaskKey(task.task_source, task.task_id))))
+    for (const task of tasks) {
+      const key = boardTaskKey(task.task_source, task.task_id)
+      if (existingKeys.has(key)) continue
+      existingKeys.add(key)
+      subrow.tasks.push(task)
+    }
   }
-  const deferredInspectionMeta = params.rowMetas.get(DEFERRED_INSPECTION_ROW_KEY)
-  const deferredInspectionRow: BoardRow = {
-    row_key: DEFERRED_INSPECTION_ROW_KEY,
-    row_title: deferredInspectionMeta?.row_title || DEFERRED_INSPECTION_ROW_TITLE,
-    row_type: 'deferred',
-    row_order: deferredInspectionMeta?.row_order ?? 9998,
-    assignments: deferredInspectionMeta?.assignments || {},
-    subrow_order: deferredInspectionMeta?.subrow_order || [defaultSubrowKey()],
-    subrows: [{
-      subrow_key: defaultSubrowKey(),
-      tasks: deferredInspectionTasks,
-    }],
-  }
+  upsertDeferredRow(DEFERRED_INSPECTION_ROW_KEY, DEFERRED_INSPECTION_ROW_TITLE, 9998, deferredInspectionTasks)
+  upsertDeferredRow(DEFERRED_ROW_KEY, DEFERRED_ROW_TITLE, 9999, deferredTasks)
   for (const rowMeta of params.rowMetas.values()) {
     if (rowMeta.row_key === DEFERRED_ROW_KEY || rowMeta.row_key === DEFERRED_INSPECTION_ROW_KEY) continue
     if (rows.has(rowMeta.row_key)) continue
@@ -1728,7 +1751,7 @@ function buildRows(params: {
     }
   }
   sortRows(boardRows)
-  return { rows: [...boardRows, deferredInspectionRow, deferredRow] }
+  return { rows: boardRows }
 }
 
 function buildEntryReadiness(tasks: BoardTask[]) {
@@ -1887,6 +1910,8 @@ const saveBoardSchema = z.object({
   })).default([]),
   cleaning_assignments: z.array(z.object({
     task_id: z.string().min(1),
+    assignee_id: z.string().min(1).nullable().optional(),
+    assignee_assignment_action: z.enum(['assign', 'unassign']).optional(),
     cleaner_id: z.string().min(1).nullable().optional(),
     cleaner_assignment_action: z.enum(['assign', 'unassign']).optional(),
     inspector_id: z.string().min(1).nullable().optional(),
@@ -2157,6 +2182,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                      ELSE task.cleaner_id
                    END,
                    assignee_id = CASE
+                     WHEN x.assignee_assignment_action IN ('assign', 'unassign') THEN x.assignee_id
                      WHEN x.cleaner_assignment_action IN ('assign', 'unassign') THEN x.cleaner_id
                      ELSE task.assignee_id
                    END,
@@ -2173,6 +2199,8 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                  updated_at = now()
              FROM jsonb_to_recordset($1::jsonb) AS x(
                  task_id text,
+                 assignee_id text,
+                 assignee_assignment_action text,
                  cleaner_id text,
                  cleaner_assignment_action text,
                  inspector_id text,
@@ -2190,6 +2218,10 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                        task.cleaner_id IS DISTINCT FROM x.cleaner_id
                        OR task.assignee_id IS DISTINCT FROM x.cleaner_id
                      )
+                   )
+                   OR (
+                     x.assignee_assignment_action IN ('assign', 'unassign')
+                     AND task.assignee_id IS DISTINCT FROM x.assignee_id
                    )
                    OR task.inspector_id IS DISTINCT FROM CASE
                      WHEN COALESCE(x.inspector_assignment_action, '') NOT IN ('assign', 'unassign') THEN task.inspector_id
@@ -2527,6 +2559,9 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
         if (assignmentAction((assignment as any).cleaner_assignment_action)) {
           task.cleaner_id = (assignment as any).cleaner_id ?? null
           task.assignee_id = (assignment as any).cleaner_id ?? null
+        }
+        if (assignmentAction((assignment as any).assignee_assignment_action)) {
+          task.assignee_id = (assignment as any).assignee_id ?? null
         }
         if (assignmentAction((assignment as any).inspector_assignment_action)) {
           task.inspector_id = (assignment as any).inspector_id ?? null

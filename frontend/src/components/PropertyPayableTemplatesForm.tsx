@@ -10,6 +10,12 @@ import {
 } from '../lib/propertyPayables'
 import PropertyPayableVendorInput from './PropertyPayableVendorInput'
 
+const BILL_MONTH_OFFSET_OPTIONS = [
+  { value: -1, label: '上月' },
+  { value: 0, label: '本月' },
+  { value: 1, label: '下月' },
+]
+
 function PaymentFields(props: { fieldName: string; index: number }) {
   return (
     <Form.Item
@@ -144,7 +150,32 @@ export default function PropertyPayableTemplatesForm(props: { form: any; name?: 
                     </Form.Item>
                   </Col>
                   <Col span={8}>
-                    <Form.Item name={[field.name, 'due_day_of_month']} label="每月到期日" rules={[{ required: true, message: '必填' }]}>
+                    <Form.Item name={[field.name, 'due_day_of_month']} label="付款截止日" rules={[{ required: true, message: '必填' }]}>
+                      <InputNumber min={1} max={31} style={{ width: '100%' }} />
+                    </Form.Item>
+                  </Col>
+                  <Col span={8}>
+                    <Form.Item name={[field.name, 'bill_expected_day_of_month']} label="预计收到账单日">
+                      <InputNumber min={1} max={31} style={{ width: '100%' }} />
+                    </Form.Item>
+                  </Col>
+                  <Col span={8}>
+                    <Form.Item name={[field.name, 'bill_period_start_month_offset']} label="账期开始相对月份" initialValue={0}>
+                      <Select options={BILL_MONTH_OFFSET_OPTIONS} />
+                    </Form.Item>
+                  </Col>
+                  <Col span={8}>
+                    <Form.Item name={[field.name, 'bill_period_start_day_of_month']} label="账期开始日">
+                      <InputNumber min={1} max={31} style={{ width: '100%' }} />
+                    </Form.Item>
+                  </Col>
+                  <Col span={8}>
+                    <Form.Item name={[field.name, 'bill_period_end_month_offset']} label="账期结束相对月份" initialValue={0}>
+                      <Select options={BILL_MONTH_OFFSET_OPTIONS} />
+                    </Form.Item>
+                  </Col>
+                  <Col span={8}>
+                    <Form.Item name={[field.name, 'bill_period_end_day_of_month']} label="账期结束日">
                       <InputNumber min={1} max={31} style={{ width: '100%' }} />
                     </Form.Item>
                   </Col>

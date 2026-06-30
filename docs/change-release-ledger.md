@@ -2,6 +2,515 @@
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
+## CRL-20260701-002 — 任务中心延期检查行去重
+
+- **Status:** pushed
+- **Updated:** 2026-07-01 01:35 AEST
+- **Request:** 任务中心页面出现多块重复的“延期检查”行，且每块里显示同一批延期检查任务。
+- **Outcome:** `/task-center/day` 组装看板行时不再无条件追加第二套 `deferred:inspection` / `deferred:holding` 系统行；如果历史布局或普通任务路径已经生成了同一个特殊行，会合并到同一行并按 `task_source + task_id` 去重，避免同一延期检查卡片重复渲染。
+
+### Implementation
+
+- Previous behavior:
+  - `buildRows()` 会先按任务/历史布局把任务放入 `rows` map。
+  - 随后又无条件 append “延期检查”和“后续处理”系统行。
+  - 当 `deferred:inspection` 已经因为历史布局或延期检查任务进入 `rows` map 时，返回 payload 里会出现重复 row，前端就按多个同名行渲染。
+- New behavior:
+  - 新增 `rowTypeFromKey()`，确保 `deferred:inspection` / `deferred:holding` 这类系统 key 永远按 `deferred` 行处理。
+  - 延期检查和后续处理行改为 upsert：已有行则复用并追加任务；没有行才创建。
+  - 合并时用 `task_source + task_id` 去重，避免同一任务被重复塞进系统行。
+- Key decisions:
+  - 只修正 `/task-center/day` 的后端行组装，不改任务生成、保存接口、数据库结构或移动端逻辑。
+
+### Files / Areas
+
+- `backend/src/modules/task_center.ts` — modified: 特殊 deferred 行从 append 改为 upsert/merge，并修正特殊 row key 的默认 row type。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: `/task-center/day` 返回的 `rows` 不再包含重复的 `deferred:inspection` / `deferred:holding` 行；字段结构不变。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: shares `backend/src/modules/task_center.ts` with `CRL-20260630-007`; selective release requires hunk-level staging or explicit combined scope.
+
+### Validation
+
+- `npm run build` in `backend` — passed: `tsc -p .` completed.
+- Direct authenticated browser check of `/task-center` — not run: no credentials were read or entered in this turn.
+
+### Risks / Release Notes
+
+- Risk: Existing saved row metadata for the special deferred rows is still reused; this fix only prevents duplicate row objects and duplicate task insertion.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Rollback: revert the `rowTypeFromKey()` helper and `upsertDeferredRow()` merge path in `buildRows()`.
+- Git state: pushed to root `Dev` in commit `fafd0f1`.
+
+## CRL-20260701-001 — 任务中心拖出检查人员大行时取消检查人员
+
+- **Status:** pushed
+- **Updated:** 2026-07-01 01:35 AEST
+- **Request:** 如果任务已经选择了检查人员，把任务拖出这个检查人员的大行以外时，默认该检查人员不再负责这个检查；按统一保存方案执行。
+- **Outcome:** 任务中心拖拽现在会同步更新本地检查人员 draft：拖到另一个检查人员大行会改派到目标检查人员；从原检查人员大行拖到没有检查人员的大行/暂不安排等区域，会清空 `inspector_id` 并回到待确认检查安排。用户仍通过现有“保存安排”统一提交。
+
+### Implementation
+
+- Previous behavior:
+  - 拖拽只稳定处理位置变化；拖到有检查人员的大行时会设置目标检查人员，但拖到无检查人员区域时会保留原 `inspector_id`。
+  - 页面上看起来任务已经离开某个检查人员大行，但保存后该检查人员仍可能继续负责任务。
+- New behavior:
+  - `handleTaskDrop` 记录任务来源大行和来源大行绑定的检查人员。
+  - 如果任务当前 `inspector_id` 等于来源大行检查人员，且目标大行没有检查人员，拖拽后自动清空 `inspector_id`、清空延期日期，并把检查安排回退为 `pending_decision`。
+  - 如果目标大行有检查人员，继续按原逻辑改派到目标检查人员。
+  - 仅改密码任务不参与检查人员清空逻辑；已完成或已挂钥匙任务不自动清空检查人员，避免破坏完成记录。
+- Key decisions:
+  - 不新增接口；继续使用任务中心现有 board dirty state 和 `/task-center/save-board` 统一保存。
+  - 只在“来源大行绑定的检查人员确实等于任务当前检查人员”时清空，避免误清手动设置但不属于该大行的检查人员。
+
+### Files / Areas
+
+- `frontend/src/app/task-center/page.tsx` — modified: 新增拖拽检查人员自动重派/清空判断，并复用现有本地 draft 和保存 payload。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: none; existing `POST /task-center/save-board` continues to save layout and `cleaning_assignments` together.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: shares `frontend/src/app/task-center/page.tsx` with `CRL-20260630-007`; selective release requires hunk-level staging or explicit combined scope.
+
+### Validation
+
+- `git diff --check` in root repo — passed.
+- `npm run lint` in `frontend` — passed with existing repo-wide warnings and 0 errors.
+- `npm run build` in `frontend` — passed; existing Browserslist/lint/Recharts warnings were printed.
+
+### Risks / Release Notes
+
+- Risk: This is a local draft behavior until the user clicks “保存安排”; leaving the page without saving still discards the drag assignment change, consistent with existing task-center behavior.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Rollback: remove `canAutoReassignInspectorOnDrop` and the source-row inspector clearing block from `handleTaskDrop`.
+- Git state: pushed to root `Dev` in commit `fafd0f1`.
+
+## CRL-20260630-007 — 入住挂钥匙任务改为执行人
+
+- **Status:** pushed
+- **Updated:** 2026-07-01 01:35 AEST
+- **Request:** 入住任务如果是仅挂钥匙，可以改为执行人；所有角色都可以选择为执行人，不仅仅是检查人员；任务要显示在执行人的任务列表里。后续确认当前界面里的“仅改密码”就是这个“仅挂钥匙”业务选项。
+- **Outcome:** 纯入住且 `inspection_scope=password_only`（界面显示“仅改密码”）的任务现在按“执行人”处理：后台清洁日历和任务中心详情都可选择任意 active staff，保存到 `assignee_id`，不再要求 inspector；`/mzapp/work-tasks` 投影为 `execution_role=execution`、`execution_semantics=key_handover_execution`，并按执行人显示到移动端任务列表。
+
+### Implementation
+
+- Previous behavior:
+  - 纯入住任务统一进入检查语义；挂钥匙也只能通过 `inspector_id` 分配给检查人员。
+  - `/mzapp/work-tasks` 没有“挂钥匙执行”语义，manager 合并层容易把入住任务归为检查。
+  - 后台清洁日历 quick edit 和抽屉只提供“清洁 / 检查”字段，无法为挂钥匙任务选择客服、线下经理等其他角色作为执行人。
+- New behavior:
+  - 后端 helper 新增 `isCheckinKeyHandoverTask()` 和 `key_handover_execution` 语义；该语义绑定当前 UI 的“仅改密码”选项，即 `inspection_scope=password_only`。
+  - `/mzapp/work-tasks` 新增 executorGroups：入住挂钥匙按 `assignee_id` 投影为 `task_kind=execution`；兼容旧数据 fallback 到 `inspector_id`。
+  - manager `view=all` 合并输出包含 `execution_task_ids`、`execution_status` 和执行人 `assignee_id`。
+  - `/cleaning/tasks/:id` 单任务 PATCH 支持挂钥匙任务写入任意有效用户作为 `assignee_id`，并避免把非清洁角色回写成 `cleaner_id`。
+  - 网页清洁日历把入住挂钥匙任务的人员字段显示为“执行”，选项使用所有 active staff；当前“仅改密码”入住任务使用执行人模型。
+  - 任务中心详情弹窗在“检查执行方式 = 仅改密码”时把人员字段从“检查人员”切换为“执行人”，选项使用所有 active staff，并把选择值写入 `assignee_id`。
+  - `/task-center/save-board` 的 cleaning assignment payload 支持显式 `assignee_assignment_action`，后端只改执行人时也会触发 UPDATE、diff 和通知收件人计算。
+  - 移动端识别 `key_handover_execution`，按 `assignee_id` 归属显示；不混入清洁/检查日终统计和拖拽排序。
+  - 移动端列表和详情把内部 `task_kind=execution` / `key_handover_execution` 映射为用户可读标签“执行”“仅改密码”，不再把 `execution` 字符串露给用户。
+  - 移动端“仅改密码”执行任务在列表和详情提供“上传视频并完成”入口，复用现有 lockbox video 上传页；该页对 password-only 任务不再要求先提交“检查与补充”批次。
+- Key decisions:
+  - 不新增数据库字段；复用现有 `assignee_id` 表示挂钥匙执行人。
+  - `inspect_and_hang` 仍为检查人员模型；只有用户确认的“仅改密码 / 仅挂钥匙”进入执行人模型。
+
+### Files / Areas
+
+- `backend/src/lib/cleaningInspection.ts` — modified: 增加入住挂钥匙识别和 `key_handover_execution` 语义。
+- `backend/src/modules/mzapp.ts` — modified: `/mzapp/work-tasks` 增加 executorGroups、manager 合并 execution 输出和执行人 assignee 合并。
+- `backend/src/modules/cleaning.ts` — modified: 清洁任务 PATCH 支持挂钥匙执行人 `assignee_id`，并在 calendar-range 返回 `inspection_scope`。
+- `backend/src/modules/task_center.ts` — modified: `/task-center/save-board` 接收清洁任务 `assignee_id` action，并在仅执行人变化时更新 `cleaning_tasks.assignee_id`。
+- `backend/dist/modules/cleaning.js` — generated/shared: `npm run build` 生成的 `cleaning.ts` 输出；该文件也承载同日其他清洁模块单元的未提交生成改动。
+- `backend/scripts/tests/test_task_assignment_canonical.ts` — modified: 覆盖 password-only / 仅改密码投影为 execution 且带执行人，inspect-and-hang 仍为检查。
+- `frontend/src/app/cleaning/page.tsx` — modified: 清洁日历识别入住挂钥匙；快速编辑和抽屉使用“执行人”与所有员工选项，保存 `assignee_id`。
+- `frontend/src/app/task-center/page.tsx` — modified: 任务中心详情在 `password_only` 纯入住任务下显示“执行人”、使用所有员工选项，并保存清洁任务 `assignee_id` action。
+- `mz-cleaning-app-frontend/src/lib/api.ts` — modified: WorkTask 类型补充 execution / key_handover_execution。
+- `mz-cleaning-app-frontend/src/lib/cleaningInspection.ts` — modified: 移动端解析 `key_handover_execution`。
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.tsx` — modified: 移动端按执行人显示挂钥匙任务，并排除出清洁/检查日终统计。
+- `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.tsx` — modified: 详情页把 key handover execution 显示为“执行 / 仅改密码”，并提供“上传视频并完成”入口。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionCompleteScreen.tsx` — modified: password-only 任务上传视频时跳过检查与补充批次前置校验。
+- `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` — modified: 覆盖 key_handover_execution 不显示内部 execution 标签，并展示“仅改密码”和视频入口。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: `/mzapp/work-tasks` may return `task_kind=execution`, `execution_role=execution`, `execution_semantics=key_handover_execution`, and `execution_task_ids` for pure入住挂钥匙任务.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: extends `CRL-20260630-006`; shares `backend/src/modules/mzapp.ts`, `frontend/src/app/cleaning/page.tsx`, and nested mobile task files with that unit.
+
+### Validation
+
+- `npm run build` in `backend` — passed: `tsc -p .` completed.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_task_assignment_canonical.ts` in `backend` — first failed in sandbox because DNS lookup for configured PostgreSQL was blocked; rerun with approved network access passed: `test_task_assignment_canonical: ok`.
+- `npm run test:cleaning-inspection-merge` in `backend` — passed: `test_cleaning_inspection_merge: ok`.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed: `tsc -p tsconfig.json`.
+- `npm run lint` in `frontend` — passed with existing warnings and 0 errors.
+- `npm run build` in `frontend` — passed; existing warnings and existing Recharts static-generation width warnings were printed.
+- `npm run build` in `backend` after task-center follow-up — passed: `tsc -p .` completed.
+- `npm run lint` in `frontend` after task-center follow-up — passed with existing repo-wide warnings and 0 errors.
+- `npm run build` in `frontend` after task-center follow-up — passed; existing Browserslist/lint/Recharts warnings were printed.
+- `npm run test:cleaning-inspection-merge` in `backend` after task-center follow-up — passed: `test_cleaning_inspection_merge: ok`.
+- `npx ts-node-dev --transpile-only scripts/tests/test_task_assignment_canonical.ts` in `backend` after task-center follow-up — first failed in sandbox because DNS lookup for configured PostgreSQL was blocked; rerun with approved network access passed: `test_task_assignment_canonical: ok`.
+- `npm run typecheck` in `mz-cleaning-app-frontend` after mobile label/video follow-up — passed: `tsc -p tsconfig.json`.
+- `npm test -- --runInBand src/screens/tasks/TaskDetailScreen.test.tsx` in `mz-cleaning-app-frontend` after mobile label/video follow-up — passed: 1 suite, 10 tests.
+- `git diff --check` for touched root files — passed.
+- `git -C mz-cleaning-app-frontend diff --check` for touched mobile files — passed.
+
+### Risks / Release Notes
+
+- Runtime risk: existing old mobile clients that do not understand `task_kind=execution` may treat these rows as ordinary tasks until the mobile update is released.
+- Behavior note: 批量编辑仍保留“清洁人员 / 检查人员”模型；混合批量任务不能安全推断哪些是挂钥匙执行人，单任务 quick edit 和抽屉已支持执行人。
+- Task-center note: 这个跟进修复的是 `/task-center` 任务详情弹窗；之前只覆盖了清洁日历和移动端显示。
+- Rollback: remove executorGroups and `key_handover_execution` semantics, restore入住挂钥匙任务 to inspector-only assignment.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: pushed to root `Dev` in commit `fafd0f1` and nested `mz-cleaning-app-frontend` `Dev` in commit `d837c1f`.
+
+## CRL-20260630-006 — 纯入住检查不再显示给清洁员
+
+- **Status:** pushed
+- **Updated:** 2026-07-01 01:35 AEST
+- **Request:** 修复纯入住任务已安排检查后仍出现在清洁人员任务里；不要只靠 `source_type === 'cleaning_tasks'`，要先在 `/mzapp/work-tasks` 后端分组排除，并返回明确执行语义，历史纯入住任务即使写过 `cleaner_id` 也不能继续显示给清洁员。
+- **Outcome:** `/mzapp/work-tasks` 现在为清洁任务返回 `execution_role` 和 `execution_semantics`，并在清洁员分组阶段排除纯 `checkin_clean` 入住检查；移动端和网页版清洁日历改按执行语义区分“清洁执行”和“检查安排”，历史带 `cleaner_id` 的纯入住检查不会再生成清洁执行卡。
+
+### Implementation
+
+- Previous behavior:
+  - 移动端和网页版多处把 `source_type === 'cleaning_tasks'` 当作清洁执行任务判断，纯入住检查也会被算进清洁任务列表。
+  - `/mzapp/work-tasks` 在构建 cleanerGroups 时只看清洁人员相关字段，历史数据里纯入住任务如果残留 `cleaner_id` / `assignee_id`，仍可能出现在清洁员任务中。
+  - API 没有明确告诉前端一条 `cleaning_tasks` 来源记录到底是清洁执行、入住检查，还是退房入住混合执行。
+- New behavior:
+  - 后端新增清洁执行判断和执行语义 helper；`checkin_clean` 被视为入住检查，不进入清洁员分组。
+  - `/mzapp/work-tasks` 对普通 `work_tasks`、清洁执行、检查执行和混合任务返回明确的 `execution_role` / `execution_semantics`。
+  - 移动端 `TasksScreen` 使用执行语义判断可见性、归属人、排序、通知、下班确认和拖拽排序，不再把所有 `cleaning_tasks` 都当清洁执行。
+  - 网页版 `/cleaning` 当日任务列表拆成“清洁执行 / 检查安排 / 线下任务”，纯入住检查按检查人员筛选。
+- Key decisions:
+  - 不新增数据库字段；执行语义由 `/mzapp/work-tasks` 投影层从现有 `task_type`、分组角色和合并结果派生。
+  - 保留部分 `source_type` 判断用于路由到 cleaning-task 详情或按源表找记录；不再用它单独决定清洁员可见性。
+
+### Files / Areas
+
+- `backend/src/lib/cleaningInspection.ts` — modified: 增加清洁执行判定和执行语义派生 helper。
+- `backend/src/modules/mzapp.ts` — modified: `/mzapp/work-tasks` cleanerGroups 排除纯入住检查，并在响应中返回 `execution_role` / `execution_semantics`。
+- `backend/scripts/tests/test_task_assignment_canonical.ts` — modified: 增加历史纯入住任务带 `cleaner_id` 时仍只作为检查任务返回的回归覆盖。
+- `frontend/src/app/cleaning/page.tsx` — modified: 当日任务列表拆分清洁执行和检查安排，并按对应人员字段筛选。
+- `mz-cleaning-app-frontend/src/lib/api.ts` — modified: WorkTask 类型补充执行角色和执行语义字段。
+- `mz-cleaning-app-frontend/src/lib/cleaningInspection.ts` — modified: 移动端新增执行语义解析和清洁/检查执行判断。
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.tsx` — modified: 移动端任务可见性、归属、排序、通知和拖拽逻辑改用执行语义。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: `/mzapp/work-tasks` response adds optional `execution_role` and `execution_semantics` fields; existing fields are retained.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: touches `/mzapp/work-tasks` and `test_task_assignment_canonical.ts`, which are shared with recent task-center/mobile assignment and same-day merge fixes; root worktree also contains unrelated房源代付 changes, so selective release requires hunk review.
+
+### Validation
+
+- `git diff --check -- backend/src/lib/cleaningInspection.ts backend/src/modules/mzapp.ts backend/scripts/tests/test_task_assignment_canonical.ts frontend/src/app/cleaning/page.tsx` — passed.
+- `git -C mz-cleaning-app-frontend diff --check -- src/lib/api.ts src/lib/cleaningInspection.ts src/screens/tabs/TasksScreen.tsx` — passed.
+- `npm run build` in `backend` — passed: `tsc -p .` completed.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_task_assignment_canonical.ts` in `backend` — first failed in sandbox because DNS lookup for the configured PostgreSQL host was blocked; rerun with approved network access passed: `test_task_assignment_canonical: ok`.
+- `npm run test:cleaning-inspection-merge` in `backend` — passed: `test_cleaning_inspection_merge: ok`.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed: `tsc -p tsconfig.json`.
+- `npm run lint` in `frontend` — passed with existing warnings and 0 errors.
+- `npm run build` in `frontend` — passed; existing warnings and existing Recharts static-generation width warnings were printed.
+
+### Risks / Release Notes
+
+- Runtime risk: old mobile clients that do not read `execution_role` still depend on older `task_kind` behavior until updated; backend exclusion still protects cleaner `/mzapp/work-tasks` grouping for pure入住检查.
+- Behavior note: pure入住检查 with no inspector will no longer fall back into cleaner task visibility; managers can still see it through manager/all task views and网页版清洁日历的“检查安排” tab.
+- Rollback: remove execution semantics fields and restore cleanerGroups/task filtering to the previous source/type checks.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: pushed to root `Dev` in commit `fafd0f1` and nested `mz-cleaning-app-frontend` `Dev` in commit `d837c1f`.
+
+## CRL-20260630-005 — 房源代付账单日期字段文案澄清
+
+- **Status:** pushed
+- **Updated:** 2026-07-01 01:35 AEST
+- **Request:** 澄清房源代付模板里“每月到期日”和“账期结束日”容易混淆的问题，并调整页面文案。
+- **Outcome:** 房源代付相关入口把付款 deadline 改称“付款截止日”，把 bill 覆盖期间改称“费用账期”，把预计/实际收到账单字段统一为“收到账单日”，并把账期月份字段标为“账期开始/结束相对月份”，降低与付款截止日的混淆。
+
+### Implementation
+
+- Previous behavior:
+  - 模板表单使用“每月到期日”，容易和“账期结束日”理解成同一件事。
+  - 账期月份字段只写“账期开始月份 / 账期结束月份”，没有体现它是相对当前账单月份的上月/本月/下月选择。
+  - 列表、详情、确认弹窗和房源详情里“到期日 / 账单周期 / 收账单日”的叫法不完全一致。
+- New behavior:
+  - `due_day_of_month` 前端显示为“付款截止日”。
+  - `bill_period` 前端显示为“费用账期”。
+  - `bill_expected_*` / `bill_received_*` 前端显示为“预计收到账单日 / 实际收到账单日”。
+  - 账期月份选择显示为“账期开始相对月份 / 账期结束相对月份”。
+- Key decisions:
+  - 只改前端展示文案，不改字段名、API、数据库或日期计算规则。
+
+### Files / Areas
+
+- `frontend/src/app/finance/property-payables/page.tsx` — modified: 房源代付列表、详情、确认弹窗和模板弹窗的日期字段文案统一。
+- `frontend/src/components/PropertyPayableTemplatesForm.tsx` — modified: 房源页代付模板表单的付款截止日、预计收到账单日和账期相对月份文案统一。
+- `frontend/src/app/properties/page.tsx` — modified: 房源详情代付模板展示文案统一。
+- `docs/change-release-ledger.md` — modified: 记录本次文案修正单元。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: wording-only refinement for `CRL-20260630-003`; shares frontend files with `CRL-20260630-004`.
+
+### Validation
+
+- `npm run lint` in `frontend` — passed with existing warnings and 0 errors.
+- `npm run build` in `frontend` — passed; existing lint warnings and existing Recharts static-generation width warnings were printed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 13 changed files covered.
+- `git diff --check` — passed.
+
+### Risks / Release Notes
+
+- Runtime risk: none expected; this is a display-label change only.
+- Rollback: restore the previous labels in the three frontend files.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: pushed to root `Dev` in commit `fafd0f1`.
+
+## CRL-20260630-004 — 房源代付模板删除替代暂停
+
+- **Status:** pushed
+- **Updated:** 2026-07-01 01:35 AEST
+- **Request:** 将房源代付里的“暂停模板”改成“删除模板”。
+- **Outcome:** 房源代付页面不再提供暂停/恢复模板入口，改为带确认提示的“删除模板”。删除会移除房源代付模板，停止后续自动生成，并清理本月未付和未来自动快照；历史已付支出记录保留。
+
+### Implementation
+
+- Previous behavior:
+  - 页面操作调用 `POST /recurring/payments/:id/pause` / `resume`，模板保留在 `recurring_payments`，状态变为 `paused`。
+  - 用户需要理解“暂停/恢复”，但业务实际诉求是不用这个模板。
+- New behavior:
+  - 新增 `DELETE /recurring/payments/:id`，仅允许删除房源代付模板。
+  - 删除时先清理 `property_expenses` 中本月未付和未来自动生成的快照，再删除 `recurring_payments` 模板。
+  - 当前月已付和历史已付记录不会删除，保留财务历史。
+  - 操作记录写入 `RecurringPayment delete` audit。
+  - 前端表格和详情抽屉的操作改为“删除模板”，并要求确认。
+- Key decisions:
+  - 不把删除实现为第三种软状态，避免 `active/paused/deleted` 多套状态判断。
+  - 不开放通用固定支付模板删除；本接口当前只处理 `template_kind='property_payable'` 的房源代付模板。
+
+### Files / Areas
+
+- `backend/src/modules/recurring.ts` — modified: 新增房源代付模板 DELETE 路由、快照清理和 delete 审计。
+- `frontend/src/app/finance/property-payables/page.tsx` — modified: 移除暂停/恢复调用，表格和详情改为确认删除模板。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: added `DELETE /recurring/payments/:id` for property payable templates only.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: shares files with `CRL-20260630-003`; deletion behavior depends on the same `property_expenses.fixed_expense_id + month_key` snapshot model.
+
+### Validation
+
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `npm run lint` in `frontend` — passed with existing warnings and 0 errors.
+- `npx vitest run src/lib/propertyPayables.test.ts` in `frontend` — passed: 1 file / 2 tests.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_property_payable_template_sync.ts` in `backend` — passed: `test_property_payable_template_sync: ok`.
+- `npm run build` in `frontend` — passed; existing lint warnings and existing Recharts static-generation width warnings were printed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 13 changed files covered.
+- `git diff --check` — passed.
+
+### Risks / Release Notes
+
+- Runtime risk: deleting a template is not one-click reversible; users must recreate the template if it was deleted by mistake.
+- Data behavior: historical paid expenses remain in `property_expenses`, but the deleted template no longer appears in the房源代付 workbench because the template row is gone.
+- Rollback: restore the frontend pause/resume button and remove the DELETE route.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: pushed to root `Dev` in commit `fafd0f1`.
+
+## CRL-20260630-003 — 房源代付账单日期规则与实时状态
+
+- **Status:** pushed
+- **Updated:** 2026-07-01 01:35 AEST
+- **Request:** 执行房源代付账单日期计划，并满足关键约束：日期支持月末 fallback；状态由后端实时计算不硬存；快照生成幂等避免重复账单；`property_expenses` 允许金额未确认 pending 记录；确认接口覆盖账单信息 + 金额。
+- **Outcome:** 房源代付模板现在可固定预计收账单日和默认账单周期；月度快照会幂等生成 pending 记录并保存预计收账单日期、实际收到账单日期、账单周期和 due date；workbench 由后端实时返回 `workflow_status`，前端展示“待收账单 / 账单未收到 / 待确认金额 / 待付款 / 付款快到期 / 付款逾期 / 已付”。新增 `confirm-bill` 接口保存账单信息和金额，旧 `confirm-amount` 保持兼容。
+
+### Implementation
+
+- Previous behavior:
+  - 房源代付模板只有默认 due day，没有固定预计收账单日或账单周期规则。
+  - 月度快照只记录金额、due date、付款/确认状态；未收到账单前缺少可提醒的 pending 快照信息。
+  - workbench 只有 `is_overdue` / `is_due_soon` 简单布尔状态，不能区分“账单没收到”和“付款逾期”。
+  - 确认接口命名为 `confirm-amount`，语义只覆盖金额和 due date。
+- New behavior:
+  - `recurring_payments` 增加模板规则字段：预计收账单日、账期开始/结束日及月份偏移。
+  - `property_expenses` 增加月度事实字段：预计收账单日期、实际收到账单日期、账单周期开始/结束。
+  - 后端日期计算使用月末 fallback；例如 31 号在 2 月会落到 2 月最后一天。
+  - 房源代付快照生成继续依赖 `fixed_expense_id + month_key` 唯一约束，已存在快照只补缺失默认字段，不覆盖用户实际填写值。
+  - 快照初始状态为 `pending` 且 `amount_confirmed=false`，允许未确认金额的提醒记录存在。
+  - 新增 `POST /recurring/payments/:id/confirm-bill`，保存金额、实际收到账单日期、账单周期、due date 和备注；旧 `confirm-amount` 复用同一逻辑。
+  - workbench 实时派生 `workflow_status` / `bill_status` / `payment_status`，前端只展示后端派生结果。
+  - `CRL-20260630-001` 的状态语义被细化：确认金额后不再显示“账单未收到/待确认”，但超过实际 due date 未付款会显示“付款逾期”。
+- Key decisions:
+  - 状态不新增硬存字段，`property_expenses.status` 只保留支付/流程基础状态，页面状态由后端按日期和确认/付款事实实时计算。
+  - 账期规则使用 day-of-month + month offset，避免每月重复手填，同时支持跨月账期。
+
+### Files / Areas
+
+- `backend/src/modules/recurring.ts` — modified: 增加账单日期计算、schema ensure、幂等 pending 快照、`confirm-bill`、workbench 实时状态和新字段返回。
+- `backend/src/modules/properties.ts` — modified: 房源页代付模板同步支持新增模板日期规则，并纳入业务字段比较。
+- `backend/dist/modules/properties.js` — modified: `npm run build` 生成的后端输出。
+- `backend/scripts/schema.sql` — modified: 初始化脚本补充 recurring/payment date columns。
+- `backend/scripts/schema_neon.sql` — modified: Neon 初始化脚本补充 recurring/payment date columns。
+- `backend/scripts/tests/test_property_payable_bill_dates.ts` — added: 覆盖月末 fallback 和模板日期计算。
+- `backend/scripts/tests/test_property_payable_template_sync.ts` — modified: 继续覆盖模板同步业务字段比较。
+- `frontend/src/app/finance/property-payables/page.tsx` — modified: 房源代付列表、统计、日历、详情、模板编辑和确认账单弹窗接入账单日期与派生状态。
+- `frontend/src/app/properties/page.tsx` — modified: 房源详情代付模板预设展示预计收账单日和默认账期。
+- `frontend/src/components/PropertyPayableTemplatesForm.tsx` — modified: 房源页模板表单支持预计收账单日和默认账期规则。
+- `frontend/src/lib/propertyPayables.ts` — modified: 模板默认值/规范化支持新字段，逾期 helper 改为信任后端实时状态。
+- `frontend/src/lib/propertyPayables.test.ts` — modified: 更新状态 helper 测试以匹配付款逾期语义。
+- `docs/change-release-ledger.md` — modified: 记录本功能单元。
+
+### Impact / Dependencies
+
+- API: `/recurring/property-payables/workbench` 返回新增账单日期字段和派生状态字段；新增 `POST /recurring/payments/:id/confirm-bill`，旧 `confirm-amount` 保留兼容。
+- Database / migration: runtime `ALTER TABLE IF NOT EXISTS` adds nullable date/rule columns on `recurring_payments` and `property_expenses`; schema scripts also updated.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: extends and partially supersedes status semantics from `CRL-20260630-001`; shares `backend/src/modules/properties.ts` with `CRL-20260630-002`.
+
+### Validation
+
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_property_payable_bill_dates.ts` in `backend` — passed: `test_property_payable_bill_dates: ok`.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_property_payable_template_sync.ts` in `backend` — passed: `test_property_payable_template_sync: ok`.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `npx vitest run src/lib/propertyPayables.test.ts` in `frontend` — passed: 1 file / 2 tests.
+- `npm run lint` in `frontend` — passed with existing warnings and 0 errors.
+- `npm run build` in `frontend` — passed; existing lint warnings and existing Recharts static-generation width warnings were printed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 13 changed files covered.
+- `git diff --check` — passed.
+
+### Risks / Release Notes
+
+- Runtime risk: workbench status labels change from generic “逾期/快到期” to more precise bill/payment states; users may see existing confirmed unpaid records become “付款逾期” if due date is already past.
+- Data risk: existing templates have empty expected bill/period rules until edited; existing snapshots have null bill date fields unless ensured or confirmed after this release.
+- Rollback: remove the new date columns from payloads/status derivation, restore previous `confirm-amount` frontend call and status helper behavior, and remove the new bill-date test.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: pushed to root `Dev` in commit `fafd0f1`.
+
+## CRL-20260630-002 — 房源保存不再写无业务变化的代付模板审计
+
+- **Status:** pushed
+- **Updated:** 2026-07-01 01:35 AEST
+- **Request:** 按诊断修复：客服保存房源时，如果代付模板没有实际变化，不应在房源代付/固定支付审计里显示他编辑过。
+- **Outcome:** 房源编辑同步 `payable_templates` 时会先比较代付模板业务字段；如果只有 `updated_at` / `updated_by` 等同步元数据会变化，后端直接跳过模板更新，不再写 `RecurringPayment update` 审计。真实修改金额、到期日、付款方式等业务字段时仍会更新模板并写审计。
+
+### Implementation
+
+- Previous behavior:
+  - `PATCH /properties/:id` 只要 payload 带 `payable_templates`，`syncPropertyPayableTemplatesTx()` 就会对已有 `recurring_payments` 模板执行 update。
+  - 即使模板业务字段完全没变，也会刷新 `updated_at` / `updated_by` 并写 `RecurringPayment update` audit，导致客服保存房源后出现在代付模板操作记录里。
+- New behavior:
+  - 新增 `propertyPayableTemplateHasBusinessChanges()`，统一比较房源代付模板业务字段。
+  - 同步已有模板前先比较业务字段；没有业务变化则跳过数据库 update 和 audit。
+  - 新增后端脚本测试覆盖“只变更新时间/更新人不算业务变化，金额/到期日变化算业务变化”。
+- Key decisions:
+  - 不改客服 `property.write` 权限，也不移除房源页的代付模板预设展示；只修正无意义模板同步审计。
+  - 不改变新建模板、真实修改模板、删除/暂停模板的审计行为。
+
+### Files / Areas
+
+- `backend/src/modules/properties.ts` — modified: 增加代付模板业务字段比较，并在无业务变化时跳过 `recurring_payments` 更新和 `RecurringPayment` audit。
+- `backend/dist/modules/properties.js` — modified: `npm run build` 生成的对应后端输出。
+- `backend/scripts/tests/test_property_payable_template_sync.ts` — added: 覆盖代付模板同步业务字段比较规则。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: no request/response shape changes.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: can ship independently from `CRL-20260630-001`, though both touch房源代付/RecurringPayment behavior.
+
+### Validation
+
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_property_payable_template_sync.ts` in `backend` — passed: `test_property_payable_template_sync: ok`.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 8 changed files covered.
+- `git diff --check` — passed.
+
+### Risks / Release Notes
+
+- Runtime risk: if the frontend submits a template identical after normalization, it will no longer refresh template `updated_at` / `updated_by`; this is intended to keep audit meaningful.
+- Rollback: remove `propertyPayableTemplateHasBusinessChanges()`, restore unconditional template update/audit, and remove the new backend script test.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: pushed to root `Dev` in commit `fafd0f1`.
+
+## CRL-20260630-001 — 房源代付确认金额后不再显示逾期
+
+- **Status:** pushed
+- **Updated:** 2026-07-01 01:35 AEST
+- **Request:** 房源代付页面已经确认金额的记录默认处理完，不应该继续显示逾期。
+- **Outcome:** 房源代付本月账单确认金额后，不再进入逾期/快到期状态、逾期统计、红色行样式或日历逾期样式；仍保持未付款状态，可继续登记支付。
+
+### Implementation
+
+- Previous behavior:
+  - `/recurring/property-payables/workbench` 只按 `status != paid` 和到期日判断逾期，即使本月金额已经确认，也会继续返回 `is_overdue=true`。
+  - 前端列表、详情、日历、筛选后统计直接信任 `is_overdue`，因此已确认金额的账单仍显示“逾期”。
+- New behavior:
+  - 后端 workbench 状态派生改为只有“未支付且未确认金额”的本月账单才会进入逾期/快到期。
+  - 前端新增房源代付状态 helper，对可能来自旧响应或缓存的 `is_overdue/is_due_soon` 做同样兜底，统一用于标签、排序、统计、表格行样式和日历样式。
+  - 新增前端单测覆盖“已确认金额但 API 标记逾期/快到期时，UI 不再按逾期处理”。
+- Key decisions:
+  - 不改变付款登记流程：确认金额后仍是待付款，`登记支付` 仍需单独操作。
+  - 不新增数据库字段或迁移，只修正现有状态派生规则。
+
+### Files / Areas
+
+- `backend/src/modules/recurring.ts` — modified: 房源代付 workbench 的 `is_overdue` / `is_due_soon` 计算排除已确认金额记录。
+- `frontend/src/lib/propertyPayables.ts` — modified: 增加统一的房源代付逾期/快到期 helper，排序桶复用 helper。
+- `frontend/src/app/finance/property-payables/page.tsx` — modified: 状态标签、逾期统计、日历样式、列表行样式和当天抽屉卡片样式统一复用 helper。
+- `frontend/src/lib/propertyPayables.test.ts` — added: 覆盖已确认金额记录不再进入逾期/快到期状态的规则。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: `/recurring/property-payables/workbench` 响应结构不变，但已确认金额且未付款的记录现在返回 `is_overdue=false`、`is_due_soon=false`。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: none.
+
+### Validation
+
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `npm test -- src/lib/propertyPayables.test.ts` in `frontend` — failed after tests passed: 1 file / 2 tests passed, then global coverage threshold failed because the wrapper enables repository-wide coverage on a focused test run.
+- `npx vitest run src/lib/propertyPayables.test.ts` in `frontend` — passed: 1 file / 2 tests.
+- `npm run lint` in `frontend` — passed with existing warnings and 0 errors.
+- `npm run build` in `frontend` — passed; existing lint warnings and existing Recharts static-generation width warnings were printed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 5 changed files covered.
+- `git diff --check` — passed.
+
+### Risks / Release Notes
+
+- Runtime risk: confirmed-but-unpaid items will no longer appear in overdue counts; this matches the requested “金额已确认即处理完” semantics, but users must still click `登记支付` when actual payment has been made.
+- Rollback: restore the previous `is_overdue` / `is_due_soon` calculation and direct frontend `row.is_overdue` checks, then remove `frontend/src/lib/propertyPayables.test.ts`.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: pushed to root `Dev` in commit `fafd0f1`.
+
 ## 2026-06-29 A+B+C Release Batch
 
 - **Status:** pushed

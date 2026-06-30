@@ -830,9 +830,18 @@ CREATE TABLE IF NOT EXISTS expense_dedup_logs (
 ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS report_category text;
 ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS start_month_key text;
 ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS frequency_months integer DEFAULT 1;
+ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS bill_expected_day_of_month integer;
+ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS bill_period_start_day_of_month integer;
+ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS bill_period_start_month_offset integer DEFAULT 0;
+ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS bill_period_end_day_of_month integer;
+ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS bill_period_end_month_offset integer DEFAULT 0;
 ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS amount_mode text DEFAULT 'fixed';
 ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS income_base text DEFAULT 'total_income';
 ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS rate_percent numeric;
+ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS bill_expected_date date;
+ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS bill_received_date date;
+ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS bill_period_start date;
+ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS bill_period_end date;
 -- Relax status check to include transitional states
 DO $$ BEGIN
   BEGIN
