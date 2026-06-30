@@ -2,6 +2,64 @@
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
+## CRL-20260701-003 — 仅改密码移动端标签与执行人显示修正
+
+- **Status:** pushed
+- **Updated:** 2026-07-01 02:08 AEST
+- **Request:** “仅改密码”任务移动端仍显示 `execution`，执行人员里把 Angela 标成清洁；仅改密码标签也需要显示在任务上。
+- **Outcome:** 移动端现在把 `task_kind=execution` 兼容识别为挂钥匙执行任务，即使接口缺少 `execution_role/execution_semantics` 也会显示用户可读的“执行”和“仅改密码”；列表展开态对该任务显示单列“执行 Angela”，不再显示“清洁 Angela”。后端 `/mzapp/work-tasks` 为清洁任务补充 `assignee_name` / `executor_name`，并在纯执行合并卡中避免把执行人姓名继续写入 `cleaner_name`。
+
+### Implementation
+
+- Previous behavior:
+  - 移动端执行语义主要依赖 `execution_role=execution` 或 `execution_semantics=key_handover_execution`；如果只拿到 `task_kind=execution`，fallback 会把它当成混合清洁/检查，标签可能直接露出英文 `execution`。
+  - 任务列表展开态所有 `cleaning_tasks` 都按“清洁 / 检查”两列展示人员，导致仅改密码执行人被放到清洁格子里。
+  - 后端 cleaning task 查询只返回 `cleaner_name` / `inspector_name`，执行人姓名通过 `COALESCE(cleaner_id, assignee_id)` 进入 `cleaner_name`，语义不清。
+- New behavior:
+  - 移动端 `taskExecutionRole()` 将 `cleaning_tasks + task_kind=execution` 直接识别为执行任务。
+  - `taskKindLabel()` 在任务列表和详情页都把 `execution` 映射为“执行”。
+  - `isPasswordOnlyInspectionTask()` 对 execution 兼容返回 true，因此任务卡片显示“仅改密码”标签。
+  - 任务列表中仅改密码执行任务使用单列执行人卡片，角色显示“执行”，姓名优先取 `executor_name` / `assignee_name`。
+  - 后端 `/mzapp/work-tasks` 返回 `assignee_name` 和 `executor_name`；管理模式合并纯执行卡时清空 `cleaner_name`，避免移动端误显示清洁身份。
+- Key decisions:
+  - 不新增数据库字段；继续复用 `cleaning_tasks.assignee_id` 作为仅改密码执行人的单一来源。
+  - 兼容旧/不完整接口 payload，不要求移动端必须同时拿到 `execution_role` 和 `execution_semantics` 才能正确显示。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — modified: `/mzapp/work-tasks` 清洁任务查询补充 `assignee_name`，执行任务输出 `executor_name`，纯执行合并卡不再把执行人写成 `cleaner_name`。
+- `mz-cleaning-app-frontend/src/lib/api.ts` — modified: `WorkTask` 类型补充 `executor_name`。
+- `mz-cleaning-app-frontend/src/lib/cleaningInspection.ts` — modified: 兼容 `task_kind=execution` 的执行语义和仅改密码标签判断。
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.tsx` — modified: 列表标签映射 `execution -> 执行`，仅改密码执行任务显示单列执行人，并支持按 `executor_name` 搜索/排序。
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.test.tsx` — modified: 覆盖列表中 `task_kind=execution` 不显示英文、显示“仅改密码”、显示“执行 Angela”而不是“清洁 Angela”。
+- `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.tsx` — modified: 详情页标签映射 `execution -> 执行`。
+- `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` — modified: 覆盖只有 `task_kind=execution`、缺少新语义字段时仍显示“执行 / 仅改密码 / 上传视频并完成”。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: `/mzapp/work-tasks` cleaning task payload may include optional `assignee_name` and `executor_name`; existing fields retained.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: follows `CRL-20260630-007`; release should include both root backend change and nested `mz-cleaning-app-frontend` mobile change.
+
+### Validation
+
+- `npm run build` in `backend` — passed: `tsc -p .` completed.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed: `tsc -p tsconfig.json`.
+- `npm test -- --runInBand src/screens/tasks/TaskDetailScreen.test.tsx src/screens/tabs/TasksScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 2 suites, 17 tests. Existing SafeAreaView deprecation warning and Jest open-handle notice were printed.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with existing warnings and 0 errors.
+- `git diff --check` in root repo — passed.
+- `git -C mz-cleaning-app-frontend diff --check` — passed.
+
+### Risks / Release Notes
+
+- Runtime risk: users must install a mobile build containing this change; an older installed app can still show the previous label behavior even if the backend is fixed.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Rollback: revert the execution fallback in mobile `cleaningInspection.ts`, the execution-person UI branch in `TasksScreen.tsx`, and the `executor_name` payload additions in `backend/src/modules/mzapp.ts`.
+- Git state: pushed to root `Dev` in commit `6789325` and nested `mz-cleaning-app-frontend` `Dev` in commit `cd84102`.
+
 ## CRL-20260701-002 — 任务中心延期检查行去重
 
 - **Status:** pushed
