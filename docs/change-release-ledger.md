@@ -4386,8 +4386,8 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260630-002 — 移动端退房卡不提前合并次日入住
 
-- **Status:** ready
-- **Updated:** 2026-06-30 20:20 Australia/Melbourne
+- **Status:** pushed
+- **Updated:** 2026-06-30 20:55 Australia/Melbourne
 - **Request:** 修复手动任务和自动同步任务合并后，当天没有入住却在数据回填/移动端显示中把第二天入住提前合并到当天的问题。
 - **Outcome:** `/mzapp/work-tasks` 现在只有同房源同一天的入住任务才会补入当天退房卡；多日查询时，第二天入住不会再让当天退房显示“入住”、入住时间、新门码、入住钥匙套数或待住晚数。
 
@@ -4428,12 +4428,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Runtime risk: checkout-only cards no longer show next-day incoming stay context; this is intentional for date correctness, but if operations wants a separate “next stay” hint later it should be a distinct field/tag, not merged as same-day入住.
 - Rollback: restore the `task_date >= date` filter in `nextCheckinsForCheckout` and remove the new cross-day/same-day assertions.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: uncommitted.
+- Git state: implementation pushed to root `Dev` in commit `14be9f8`; this ledger status update is recorded separately.
 
 ## CRL-20260630-003 — 移动端空客人需求不显示确认区
 
-- **Status:** ready
-- **Updated:** 2026-06-30 20:35 Australia/Melbourne
+- **Status:** pushed
+- **Updated:** 2026-06-30 20:55 Australia/Melbourne
 - **Request:** 如果客人需求没有，就不显示，不要显示 `null`，也不要显示/要求确认“我已完成客人需求”。
 - **Outcome:** 移动端检查面板现在复用统一客人需求展示逻辑；当客人需求为空或是 `null`/`undefined`/`none`/`n/a`/`无`/`没有` 这类占位值时，不显示“客人需求（需要确认已完成）”卡片，也不会要求勾选“我已完成客人需求”才能继续。
 
@@ -4476,12 +4476,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Runtime risk: literal guest requests exactly equal to `null`, `undefined`, `none`, `n/a`, `无`, or `没有` will be hidden. This matches the requested empty-value behavior.
 - Rollback: restore `InspectionPanelScreen` to direct `guest_special_request` display and remove `cleanGuestRequestText()` plus its test.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: uncommitted in nested mobile repo and root ledger.
+- Git state: implementation pushed to nested mobile `Dev` in commit `0ef9c51`; this root ledger status update is recorded separately.
 
 ## CRL-20260630-004 — 移动端中断上传状态自动重试
 
-- **Status:** ready
-- **Updated:** 2026-06-30 20:50 Australia/Melbourne
+- **Status:** pushed
+- **Updated:** 2026-06-30 20:55 Australia/Melbourne
 - **Request:** 修复本地缓存的视频或照片在网络恢复后，同步一直卡在上传步骤的问题。
 - **Outcome:** 移动端独立检查媒体队列现在会把上次中断遗留的 `uploading` 状态视为可重试状态；网络恢复、App 回到前台或重新启动后会继续上传/保存，不再因为状态停在 `uploading` 而被队列跳过。
 
@@ -4523,4 +4523,4 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Runtime risk: if a remote upload succeeded but the app died before persisting `uploaded_url`, retrying `uploading` may upload the same local file again. This is preferable to a permanently stuck local task and is bounded to interrupted uploads.
 - Rollback: remove `uploading` from `isRetryableStatus()` and remove the new interrupted-upload recovery test.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: uncommitted in nested mobile repo and root ledger.
+- Git state: implementation pushed to nested mobile `Dev` in commit `0ef9c51`; this root ledger status update is recorded separately.
