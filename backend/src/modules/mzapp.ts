@@ -5166,6 +5166,7 @@ router.get('/work-tasks', async (req, res) => {
             t.inspection_mode,
             t.inspection_scope,
             t.inspection_due_date::text AS inspection_due_date,
+            COALESCE(au.username, au.email, au.id::text) AS assignee_name,
             COALESCE(cu.username, cu.email, cu.id::text) AS cleaner_name,
             COALESCE(iu.username, iu.email, iu.id::text) AS inspector_name,
             t.checkout_time,
@@ -5193,6 +5194,7 @@ router.get('/work-tasks', async (req, res) => {
           LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
           LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
           LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+          LEFT JOIN users au ON (au.id::text) = (t.assignee_id::text)
           LEFT JOIN users cu ON (cu.id::text) = (COALESCE(t.cleaner_id, t.assignee_id)::text)
           LEFT JOIN users iu ON (iu.id::text) = (t.inspector_id::text)
           LEFT JOIN latest_media lm ON lm.task_id = t.id::text
@@ -5459,6 +5461,7 @@ router.get('/work-tasks', async (req, res) => {
             order_checkout: row.order_checkout,
             order_note: row.order_note,
             order_nights: row.order_nights == null ? null : Number(row.order_nights),
+            assignee_name: row.assignee_name,
             cleaner_name: row.cleaner_name,
             inspector_name: row.inspector_name,
             sort_index_cleaner: row.sort_index_cleaner,
@@ -5592,7 +5595,8 @@ router.get('/work-tasks', async (req, res) => {
             ...rows.map((x) => (x.keys_required == null ? 1 : Number(x.keys_required))).filter((x) => Number.isFinite(x) && x > 0),
             1,
           )
-          const cleanerName = firstNonEmpty(p.a.cleaner_name, p.b?.cleaner_name, ...rows.map((x) => x.cleaner_name))
+          const executorName = firstNonEmpty(p.a.assignee_name, p.b?.assignee_name, ...rows.map((x) => x.assignee_name), p.a.cleaner_name, p.b?.cleaner_name, ...rows.map((x) => x.cleaner_name))
+          const cleanerName = roleKind === 'executor' ? null : firstNonEmpty(p.a.cleaner_name, p.b?.cleaner_name, ...rows.map((x) => x.cleaner_name))
           const inspectorName = p.kind === 'stayover' ? null : firstNonEmpty(p.a.inspector_name, p.b?.inspector_name, ...rows.map((x) => x.inspector_name))
           const inspectorAssigned = p.kind === 'stayover' ? null : firstNonEmpty(p.a.__assignee_inspector, p.b?.__assignee_inspector, ...rows.map((x) => x.__assignee_inspector))
           const inspectionPlan = mergeInspectionPlan(
@@ -5791,6 +5795,8 @@ router.get('/work-tasks', async (req, res) => {
             task_type: p.kind === 'turnover' ? 'turnover' : String(p.a.task_type || ''),
             assignee_id: String(assigneeId || '').trim() || null,
             inspector_id: inspectorAssigned ? String(inspectorAssigned) : null,
+            assignee_name: executorName || cleanerName || inspectorName || null,
+            executor_name: roleKind === 'executor' ? (executorName || null) : null,
             status: statusOut,
             urgency: 'medium',
             sort_index,
@@ -5988,6 +5994,11 @@ router.get('/work-tasks', async (req, res) => {
         const checkedOutAtMerged = firstNonEmpty(...arr.map((x) => x.checked_out_at))
         const cleanerName = firstNonEmpty(...arr.map((x) => x.cleaner_name))
         const inspectorName = firstNonEmpty(...arr.map((x) => x.inspector_name))
+        const executorName = firstNonEmpty(
+          ...arr
+            .filter((x) => String(x?.task_kind || '') === 'execution')
+            .map((x) => x.executor_name || x.assignee_name || x.cleaner_name || x.inspector_name),
+        )
         const cleanerAssigneeId = firstNonEmpty(
           ...arr
             .filter((x) => String(x?.task_kind || '') === 'cleaning')
@@ -6064,6 +6075,8 @@ router.get('/work-tasks', async (req, res) => {
           inspection_status: inspectionStatus,
           execution_status: executionStatus,
           assignee_id: cleanerAssigneeId || inspectorAssigneeId || executionAssigneeId || null,
+          assignee_name: cleanerName || inspectorName || executorName || null,
+          executor_name: executorName || null,
           cleaner_id: cleanerAssigneeId || null,
           inspector_id: inspectorAssigneeId || null,
           status: statusOut,
@@ -6090,7 +6103,7 @@ router.get('/work-tasks', async (req, res) => {
             show_checkout: (checkoutKeysOut ?? 0) >= 2,
             show_checkin: (checkinKeysOut ?? 0) >= 2,
           },
-          cleaner_name: cleanerName,
+          cleaner_name: hasKeyHandoverExecution && !hasCleaningExecution ? null : cleanerName,
           inspector_name: inspectorName,
           restock_items: restockItems,
           stayed_nights: stayedNights,
