@@ -4,8 +4,8 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260701-003 — 仅改密码移动端标签与执行人显示修正
 
-- **Status:** ready
-- **Updated:** 2026-07-01 02:04 AEST
+- **Status:** pushed
+- **Updated:** 2026-07-01 02:08 AEST
 - **Request:** “仅改密码”任务移动端仍显示 `execution`，执行人员里把 Angela 标成清洁；仅改密码标签也需要显示在任务上。
 - **Outcome:** 移动端现在把 `task_kind=execution` 兼容识别为挂钥匙执行任务，即使接口缺少 `execution_role/execution_semantics` 也会显示用户可读的“执行”和“仅改密码”；列表展开态对该任务显示单列“执行 Angela”，不再显示“清洁 Angela”。后端 `/mzapp/work-tasks` 为清洁任务补充 `assignee_name` / `executor_name`，并在纯执行合并卡中避免把执行人姓名继续写入 `cleaner_name`。
 
@@ -58,7 +58,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Runtime risk: users must install a mobile build containing this change; an older installed app can still show the previous label behavior even if the backend is fixed.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
 - Rollback: revert the execution fallback in mobile `cleaningInspection.ts`, the execution-person UI branch in `TasksScreen.tsx`, and the `executor_name` payload additions in `backend/src/modules/mzapp.ts`.
-- Git state: uncommitted in root repo and nested `mz-cleaning-app-frontend` repo.
+- Git state: pushed to root `Dev` in commit `6789325` and nested `mz-cleaning-app-frontend` `Dev` in commit `cd84102`.
 
 ## CRL-20260701-002 — 任务中心延期检查行去重
 
