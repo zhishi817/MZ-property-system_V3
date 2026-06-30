@@ -4,8 +4,8 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260701-002 — 任务中心延期检查行去重
 
-- **Status:** ready
-- **Updated:** 2026-07-01 01:22 AEST
+- **Status:** pushed
+- **Updated:** 2026-07-01 01:35 AEST
 - **Request:** 任务中心页面出现多块重复的“延期检查”行，且每块里显示同一批延期检查任务。
 - **Outcome:** `/task-center/day` 组装看板行时不再无条件追加第二套 `deferred:inspection` / `deferred:holding` 系统行；如果历史布局或普通任务路径已经生成了同一个特殊行，会合并到同一行并按 `task_source + task_id` 去重，避免同一延期检查卡片重复渲染。
 
@@ -45,12 +45,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Risk: Existing saved row metadata for the special deferred rows is still reused; this fix only prevents duplicate row objects and duplicate task insertion.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
 - Rollback: revert the `rowTypeFromKey()` helper and `upsertDeferredRow()` merge path in `buildRows()`.
-- Git state: uncommitted; root repo still contains other unrelated in-flight changes from existing release units.
+- Git state: pushed to root `Dev` in commit `fafd0f1`.
 
 ## CRL-20260701-001 — 任务中心拖出检查人员大行时取消检查人员
 
-- **Status:** ready
-- **Updated:** 2026-07-01 00:52 AEST
+- **Status:** pushed
+- **Updated:** 2026-07-01 01:35 AEST
 - **Request:** 如果任务已经选择了检查人员，把任务拖出这个检查人员的大行以外时，默认该检查人员不再负责这个检查；按统一保存方案执行。
 - **Outcome:** 任务中心拖拽现在会同步更新本地检查人员 draft：拖到另一个检查人员大行会改派到目标检查人员；从原检查人员大行拖到没有检查人员的大行/暂不安排等区域，会清空 `inspector_id` 并回到待确认检查安排。用户仍通过现有“保存安排”统一提交。
 
@@ -92,12 +92,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Risk: This is a local draft behavior until the user clicks “保存安排”; leaving the page without saving still discards the drag assignment change, consistent with existing task-center behavior.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
 - Rollback: remove `canAutoReassignInspectorOnDrop` and the source-row inspector clearing block from `handleTaskDrop`.
-- Git state: uncommitted; root and nested repos still contain other unrelated in-flight changes.
+- Git state: pushed to root `Dev` in commit `fafd0f1`.
 
 ## CRL-20260630-007 — 入住挂钥匙任务改为执行人
 
-- **Status:** ready
-- **Updated:** 2026-07-01 00:24 AEST
+- **Status:** pushed
+- **Updated:** 2026-07-01 01:35 AEST
 - **Request:** 入住任务如果是仅挂钥匙，可以改为执行人；所有角色都可以选择为执行人，不仅仅是检查人员；任务要显示在执行人的任务列表里。后续确认当前界面里的“仅改密码”就是这个“仅挂钥匙”业务选项。
 - **Outcome:** 纯入住且 `inspection_scope=password_only`（界面显示“仅改密码”）的任务现在按“执行人”处理：后台清洁日历和任务中心详情都可选择任意 active staff，保存到 `assignee_id`，不再要求 inspector；`/mzapp/work-tasks` 投影为 `execution_role=execution`、`execution_semantics=key_handover_execution`，并按执行人显示到移动端任务列表。
 
@@ -173,12 +173,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Task-center note: 这个跟进修复的是 `/task-center` 任务详情弹窗；之前只覆盖了清洁日历和移动端显示。
 - Rollback: remove executorGroups and `key_handover_execution` semantics, restore入住挂钥匙任务 to inspector-only assignment.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: uncommitted in both root repo and nested `mz-cleaning-app-frontend`; unrelated房源代付 changes remain untouched.
+- Git state: pushed to root `Dev` in commit `fafd0f1` and nested `mz-cleaning-app-frontend` `Dev` in commit `d837c1f`.
 
 ## CRL-20260630-006 — 纯入住检查不再显示给清洁员
 
-- **Status:** ready
-- **Updated:** 2026-06-30 23:16 Australia/Melbourne
+- **Status:** pushed
+- **Updated:** 2026-07-01 01:35 AEST
 - **Request:** 修复纯入住任务已安排检查后仍出现在清洁人员任务里；不要只靠 `source_type === 'cleaning_tasks'`，要先在 `/mzapp/work-tasks` 后端分组排除，并返回明确执行语义，历史纯入住任务即使写过 `cleaner_id` 也不能继续显示给清洁员。
 - **Outcome:** `/mzapp/work-tasks` 现在为清洁任务返回 `execution_role` 和 `execution_semantics`，并在清洁员分组阶段排除纯 `checkin_clean` 入住检查；移动端和网页版清洁日历改按执行语义区分“清洁执行”和“检查安排”，历史带 `cleaner_id` 的纯入住检查不会再生成清洁执行卡。
 
@@ -233,12 +233,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Behavior note: pure入住检查 with no inspector will no longer fall back into cleaner task visibility; managers can still see it through manager/all task views and网页版清洁日历的“检查安排” tab.
 - Rollback: remove execution semantics fields and restore cleanerGroups/task filtering to the previous source/type checks.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: uncommitted in both root repo and nested `mz-cleaning-app-frontend`; unrelated房源代付 changes remain untouched.
+- Git state: pushed to root `Dev` in commit `fafd0f1` and nested `mz-cleaning-app-frontend` `Dev` in commit `d837c1f`.
 
 ## CRL-20260630-005 — 房源代付账单日期字段文案澄清
 
-- **Status:** ready
-- **Updated:** 2026-06-30 22:43 Australia/Melbourne
+- **Status:** pushed
+- **Updated:** 2026-07-01 01:35 AEST
 - **Request:** 澄清房源代付模板里“每月到期日”和“账期结束日”容易混淆的问题，并调整页面文案。
 - **Outcome:** 房源代付相关入口把付款 deadline 改称“付款截止日”，把 bill 覆盖期间改称“费用账期”，把预计/实际收到账单字段统一为“收到账单日”，并把账期月份字段标为“账期开始/结束相对月份”，降低与付款截止日的混淆。
 
@@ -283,12 +283,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Runtime risk: none expected; this is a display-label change only.
 - Rollback: restore the previous labels in the three frontend files.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: uncommitted.
+- Git state: pushed to root `Dev` in commit `fafd0f1`.
 
 ## CRL-20260630-004 — 房源代付模板删除替代暂停
 
-- **Status:** ready
-- **Updated:** 2026-06-30 22:31 Australia/Melbourne
+- **Status:** pushed
+- **Updated:** 2026-07-01 01:35 AEST
 - **Request:** 将房源代付里的“暂停模板”改成“删除模板”。
 - **Outcome:** 房源代付页面不再提供暂停/恢复模板入口，改为带确认提示的“删除模板”。删除会移除房源代付模板，停止后续自动生成，并清理本月未付和未来自动快照；历史已付支出记录保留。
 
@@ -337,12 +337,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Data behavior: historical paid expenses remain in `property_expenses`, but the deleted template no longer appears in the房源代付 workbench because the template row is gone.
 - Rollback: restore the frontend pause/resume button and remove the DELETE route.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: uncommitted.
+- Git state: pushed to root `Dev` in commit `fafd0f1`.
 
 ## CRL-20260630-003 — 房源代付账单日期规则与实时状态
 
-- **Status:** ready
-- **Updated:** 2026-06-30 22:16 Australia/Melbourne
+- **Status:** pushed
+- **Updated:** 2026-07-01 01:35 AEST
 - **Request:** 执行房源代付账单日期计划，并满足关键约束：日期支持月末 fallback；状态由后端实时计算不硬存；快照生成幂等避免重复账单；`property_expenses` 允许金额未确认 pending 记录；确认接口覆盖账单信息 + 金额。
 - **Outcome:** 房源代付模板现在可固定预计收账单日和默认账单周期；月度快照会幂等生成 pending 记录并保存预计收账单日期、实际收到账单日期、账单周期和 due date；workbench 由后端实时返回 `workflow_status`，前端展示“待收账单 / 账单未收到 / 待确认金额 / 待付款 / 付款快到期 / 付款逾期 / 已付”。新增 `confirm-bill` 接口保存账单信息和金额，旧 `confirm-amount` 保持兼容。
 
@@ -407,12 +407,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Data risk: existing templates have empty expected bill/period rules until edited; existing snapshots have null bill date fields unless ensured or confirmed after this release.
 - Rollback: remove the new date columns from payloads/status derivation, restore previous `confirm-amount` frontend call and status helper behavior, and remove the new bill-date test.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: uncommitted.
+- Git state: pushed to root `Dev` in commit `fafd0f1`.
 
 ## CRL-20260630-002 — 房源保存不再写无业务变化的代付模板审计
 
-- **Status:** ready
-- **Updated:** 2026-06-30 21:28 Australia/Melbourne
+- **Status:** pushed
+- **Updated:** 2026-07-01 01:35 AEST
 - **Request:** 按诊断修复：客服保存房源时，如果代付模板没有实际变化，不应在房源代付/固定支付审计里显示他编辑过。
 - **Outcome:** 房源编辑同步 `payable_templates` 时会先比较代付模板业务字段；如果只有 `updated_at` / `updated_by` 等同步元数据会变化，后端直接跳过模板更新，不再写 `RecurringPayment update` 审计。真实修改金额、到期日、付款方式等业务字段时仍会更新模板并写审计。
 
@@ -456,12 +456,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Runtime risk: if the frontend submits a template identical after normalization, it will no longer refresh template `updated_at` / `updated_by`; this is intended to keep audit meaningful.
 - Rollback: remove `propertyPayableTemplateHasBusinessChanges()`, restore unconditional template update/audit, and remove the new backend script test.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: uncommitted.
+- Git state: pushed to root `Dev` in commit `fafd0f1`.
 
 ## CRL-20260630-001 — 房源代付确认金额后不再显示逾期
 
-- **Status:** ready
-- **Updated:** 2026-06-30 21:12 Australia/Melbourne
+- **Status:** pushed
+- **Updated:** 2026-07-01 01:35 AEST
 - **Request:** 房源代付页面已经确认金额的记录默认处理完，不应该继续显示逾期。
 - **Outcome:** 房源代付本月账单确认金额后，不再进入逾期/快到期状态、逾期统计、红色行样式或日历逾期样式；仍保持未付款状态，可继续登记支付。
 
@@ -509,7 +509,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Runtime risk: confirmed-but-unpaid items will no longer appear in overdue counts; this matches the requested “金额已确认即处理完” semantics, but users must still click `登记支付` when actual payment has been made.
 - Rollback: restore the previous `is_overdue` / `is_due_soon` calculation and direct frontend `row.is_overdue` checks, then remove `frontend/src/lib/propertyPayables.test.ts`.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: uncommitted.
+- Git state: pushed to root `Dev` in commit `fafd0f1`.
 
 ## 2026-06-29 A+B+C Release Batch
 
