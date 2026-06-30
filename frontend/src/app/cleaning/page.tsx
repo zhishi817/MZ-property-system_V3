@@ -31,6 +31,7 @@ type CalendarItem = {
   urgency?: 'low' | 'medium' | 'high' | 'urgent' | string | null
   cleaner_id?: string | null
   inspector_id?: string | null
+  inspection_scope?: 'inspect_and_hang' | 'password_only' | string | null
   scheduled_at: string | null
   key_photo_uploaded_at?: string | null
   has_key_photo?: boolean
@@ -64,6 +65,7 @@ type CleaningTaskRow = {
   assignee_id?: string | null
   cleaner_id?: string | null
   inspector_id?: string | null
+  inspection_scope?: 'inspect_and_hang' | 'password_only' | string | null
   keys_required?: number | null
   scheduled_at?: string | null
   guest_special_request?: string | null
@@ -85,6 +87,7 @@ type EditTaskForm = {
   checkin_sync_status?: 'pending' | 'synced' | null
   cleaner_id: string | null
   inspector_id: string | null
+  checkin_inspection_scope: 'inspect_and_hang' | 'password_only'
   keys_required_checkin: 1 | 2
   keys_required_checkout: 1 | 2
   checkin_order_id: string | null
@@ -160,6 +163,26 @@ function semanticToneClass(tone: TaskSemanticTone) {
   return styles.semanticToneNormal
 }
 
+function isPureCheckinInspectionItem(it: Pick<CalendarItem, 'source' | 'task_type' | 'label'>) {
+  if (it.source !== 'cleaning_tasks') return false
+  const type = String(it.task_type || '').trim().toLowerCase()
+  const label = String(it.label || '').trim()
+  if (type === 'checkin_clean') return true
+  return label.includes('入住') && !label.includes('退房') && !label.includes('入住中清洁')
+}
+
+function normalizeInspectionScope(value: any): 'inspect_and_hang' | 'password_only' {
+  return String(value || '').trim().toLowerCase() === 'password_only' ? 'password_only' : 'inspect_and_hang'
+}
+
+function isCheckinKeyHandoverItem(it: Pick<CalendarItem, 'source' | 'task_type' | 'label' | 'inspection_scope'>) {
+  return isPureCheckinInspectionItem(it) && normalizeInspectionScope(it.inspection_scope) === 'password_only'
+}
+
+function isCleaningExecutionItem(it: Pick<CalendarItem, 'source' | 'task_type' | 'label'>) {
+  return it.source === 'cleaning_tasks' && !isPureCheckinInspectionItem(it)
+}
+
 export default function CleaningPage() {
   const [view, setView] = useState<'day' | 'week' | 'month'>('month')
   const [month, setMonth] = useState<Dayjs>(() => dayjs())
@@ -172,7 +195,7 @@ export default function CleaningPage() {
   const [filterStatus, setFilterStatus] = useState<string | undefined>(undefined)
   const [filterCleaner, setFilterCleaner] = useState<string | undefined>(undefined)
   const [filterInspector, setFilterInspector] = useState<string | undefined>(undefined)
-  const [taskListTab, setTaskListTab] = useState<'cleaning' | 'offline'>('cleaning')
+  const [taskListTab, setTaskListTab] = useState<'cleaning' | 'inspection' | 'offline'>('cleaning')
   const [bulkMode, setBulkMode] = useState(false)
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([])
   const [properties, setProperties] = useState<{ id: string; code?: string; address?: string; region?: string | null }[]>([])
@@ -629,11 +652,16 @@ export default function CleaningPage() {
     const base = itemsByDate.get(selectedDateStr) || []
     const q = filterRoom.trim().toLowerCase()
     return base.filter((it) => {
-      if (taskListTab === 'cleaning' && it.source !== 'cleaning_tasks') return false
+      if (taskListTab === 'cleaning' && !isCleaningExecutionItem(it)) return false
+      if (taskListTab === 'inspection' && !isPureCheckinInspectionItem(it)) return false
       if (taskListTab === 'offline' && it.source !== 'offline_tasks') return false
       if (filterStatus && String(it.status || '') !== filterStatus) return false
       if (filterCleaner) {
-        const v = it.source === 'offline_tasks'
+        const v = taskListTab === 'inspection'
+          ? isCheckinKeyHandoverItem(it)
+            ? String(it.assignee_id || it.inspector_id || '').trim()
+            : String(it.inspector_id || '').trim()
+          : it.source === 'offline_tasks'
           ? String(it.assignee_id || '').trim()
           : String(it.cleaner_id || it.assignee_id || '').trim()
         if (!v || v !== String(filterCleaner)) return false
@@ -651,10 +679,12 @@ export default function CleaningPage() {
 
   const taskTabOptions = useMemo(() => {
     const dayItems = itemsByDate.get(selectedDateStr) || []
-    const cleaningCount = dayItems.filter((it) => it.source === 'cleaning_tasks').length
+    const cleaningCount = dayItems.filter(isCleaningExecutionItem).length
+    const inspectionCount = dayItems.filter(isPureCheckinInspectionItem).length
     const offlineCount = dayItems.filter((it) => it.source === 'offline_tasks').length
     return [
-      { label: `清洁任务 ${cleaningCount}`, value: 'cleaning' },
+      { label: `清洁执行 ${cleaningCount}`, value: 'cleaning' },
+      { label: `检查/执行 ${inspectionCount}`, value: 'inspection' },
       { label: `线下任务 ${offlineCount}`, value: 'offline' },
     ]
   }, [itemsByDate, selectedDateStr])
@@ -756,6 +786,7 @@ export default function CleaningPage() {
     const status = ids.length === 1 ? String(baseRow?.status || it.status || 'pending') : mergedStatus(selectedRows.map((r) => String(r?.status || it.status || 'pending')))
     const getCleaner = (r: CleaningTaskRow | null) => String(r?.cleaner_id || r?.assignee_id || '').trim()
     const getInspector = (r: CleaningTaskRow | null) => String(r?.inspector_id || '').trim()
+    const getExecutor = (r: CleaningTaskRow | null) => String(r?.assignee_id || r?.inspector_id || r?.cleaner_id || '').trim()
     const cleanerId =
       ids.length === 1
         ? (getCleaner(baseRow) ? getCleaner(baseRow) : (String(it.cleaner_id || it.assignee_id || '').trim() || null))
@@ -767,6 +798,19 @@ export default function CleaningPage() {
     const checkoutRows = selectedRows.filter(isCheckoutRow)
     const checkinRows = selectedRows.filter(isCheckinRow)
     const stayoverRows = selectedRows.filter(isStayoverRow)
+    const checkinScopeKey = (r: CleaningTaskRow | null) => normalizeInspectionScope(r?.inspection_scope)
+    const checkinInspectionScope =
+      checkinRows.length > 0 && checkinRows.every((r) => checkinScopeKey(r) === checkinScopeKey(checkinRows[0]))
+        ? checkinScopeKey(checkinRows[0])
+        : 'inspect_and_hang'
+    const pureCheckinKeyHandover = checkinRows.length > 0 && checkoutRows.length === 0 && checkinInspectionScope === 'password_only'
+    const resolvedCleanerId = pureCheckinKeyHandover
+      ? (
+          ids.length === 1
+            ? (getExecutor(baseRow) || String(it.assignee_id || it.inspector_id || '').trim() || null)
+            : (selectedRows.every((r) => getExecutor(r) === getExecutor(selectedRows[0])) ? (getExecutor(selectedRows[0]) || null) : null)
+        )
+      : cleanerId
     const nightsAllSame = checkinRows.length > 0 && checkinRows.every((r) => String(r?.nights_override ?? '') === String(checkinRows[0]?.nights_override ?? ''))
     const itemNights = it.nights == null ? null : Number(it.nights)
     const fallbackNightsOverride = Number.isFinite(itemNights) ? itemNights : null
@@ -816,8 +860,9 @@ export default function CleaningPage() {
       property_id: propertyId,
       status,
       checkin_sync_status: checkinSyncStatus,
-      cleaner_id: cleanerId,
-      inspector_id: inspectorId,
+      cleaner_id: resolvedCleanerId,
+      inspector_id: pureCheckinKeyHandover ? null : inspectorId,
+      checkin_inspection_scope: checkinInspectionScope,
       keys_required_checkin: keysRequiredCheckin,
       keys_required_checkout: keysRequiredCheckout,
       checkin_order_id: stayoverMode ? null : checkinOrderId,
@@ -849,8 +894,20 @@ export default function CleaningPage() {
       task_date: editForm.task_date.format('YYYY-MM-DD'),
       status: editForm.status,
     }
-    if (editForm.ids.length === 1 || editForm.cleaner_id !== null) base.cleaner_id = editForm.cleaner_id
-    if (editForm.ids.length === 1 || editForm.inspector_id !== null) base.inspector_id = editForm.inspector_id
+    const pureCheckinKeyHandover =
+      editForm.mode === 'default'
+      && editForm.checkin_ids.length > 0
+      && editForm.checkout_ids.length === 0
+      && editForm.checkin_inspection_scope === 'password_only'
+    if (pureCheckinKeyHandover) {
+      base.assignee_id = editForm.cleaner_id
+      base.cleaner_id = null
+      base.inspector_id = null
+      base.inspection_scope = 'password_only'
+    } else {
+      if (editForm.ids.length === 1 || editForm.cleaner_id !== null) base.cleaner_id = editForm.cleaner_id
+      if (editForm.ids.length === 1 || editForm.inspector_id !== null) base.inspector_id = editForm.inspector_id
+    }
     base.guest_special_request = editForm.guest_special_request || null
 
     if (editForm.mode === 'stayover') {
@@ -1246,6 +1303,7 @@ export default function CleaningPage() {
         if (patch.cleaner_id === undefined) next.cleaner_id = patch.assignee_id
       }
       if (patch.inspector_id !== undefined) next.inspector_id = patch.inspector_id
+      if (patch.inspection_scope !== undefined) next.inspection_scope = patch.inspection_scope
       if (patch.status === undefined && (String(it.status || 'pending') === 'pending' || String(it.status || 'pending') === 'assigned')) {
         const cleaner = String(next.cleaner_id || next.assignee_id || '').trim()
         const inspector = String(next.inspector_id || '').trim()
@@ -1273,6 +1331,7 @@ export default function CleaningPage() {
 
   useEffect(() => {
     setFilterStatus(undefined)
+    setFilterCleaner(undefined)
     setFilterInspector(undefined)
     setSelectedTaskIds([])
     setBulkMode(false)
@@ -1608,7 +1667,7 @@ export default function CleaningPage() {
               <Segmented
                 className={styles.taskListTabs}
                 value={taskListTab}
-                onChange={(v) => setTaskListTab(v as 'cleaning' | 'offline')}
+                onChange={(v) => setTaskListTab(v as 'cleaning' | 'inspection' | 'offline')}
                 options={taskTabOptions}
               />
             </div>
@@ -1623,12 +1682,12 @@ export default function CleaningPage() {
               <Select
                 value={filterCleaner}
                 onChange={(v) => setFilterCleaner(v)}
-                placeholder={taskListTab === 'offline' ? '筛选指派人' : '筛选清洁'}
+                placeholder={taskListTab === 'offline' ? '筛选指派人' : taskListTab === 'inspection' ? '筛选检查/执行' : '筛选清洁'}
                 allowClear
                 showSearch
                 optionFilterProp="label"
                 style={{ width: 180 }}
-                options={taskListTab === 'offline' ? allStaffOptions : cleanerOptions}
+                options={taskListTab === 'offline' ? allStaffOptions : taskListTab === 'inspection' ? allStaffOptions : cleanerOptions}
               />
               {taskListTab === 'cleaning' ? (
                 <Select
@@ -1829,7 +1888,8 @@ export default function CleaningPage() {
               const checkinCode = orderDisplay(it.checkin_order_id, it.checkin_order_code)
               const checkoutPwd = String(isTurnover ? (it.checkout_old_code ?? it.old_code ?? '') : (it.old_code ?? '')).trim()
               const checkinPwd = String(isTurnover ? (it.checkin_new_code ?? it.new_code ?? '') : (it.new_code ?? '')).trim()
-              const hasAssignee = !!String(it.cleaner_id || it.assignee_id || '').trim()
+              const isKeyHandover = isCheckinKeyHandoverItem(it)
+              const hasAssignee = !!String(isKeyHandover ? (it.assignee_id || it.inspector_id) : (it.cleaner_id || it.assignee_id)).trim()
               const isKeyUploaded = !!(it.has_key_photo || it.key_photo_uploaded_at)
               const showKeyMissing = it.source === 'cleaning_tasks' && hasAssignee && !isKeyUploaded && String(it.status || '').toLowerCase() !== 'cancelled'
               const syncTag = checkinSyncTag(it)
@@ -1888,34 +1948,58 @@ export default function CleaningPage() {
                   <div className={styles.controlsRow}>
                     {it.source === 'cleaning_tasks' ? (
                       <>
-                        <div className={styles.assigneeGroup}>
-                          <div className={styles.assigneeLabel}>清洁</div>
-                          <Select
-                            className={styles.assigneeSelect}
-                            allowClear
-                            showSearch
-                            optionFilterProp="label"
-                            disabled={bulkMode || it.auto_sync_enabled === false}
-                            value={(it.cleaner_id || it.assignee_id) || undefined}
-                            options={cleanerOptions}
-                            onChange={(v) => updateTaskQuick(ids, { cleaner_id: v ? String(v) : null }).catch((e) => message.error(e?.message || '更新失败'))}
-                            placeholder={staffNameById((it.cleaner_id || it.assignee_id) || null)}
-                          />
-                        </div>
-                        <div className={styles.assigneeGroup}>
-                          <div className={styles.assigneeLabel}>检查</div>
-                          <Select
-                            className={styles.assigneeSelect}
-                            allowClear
-                            showSearch
-                            optionFilterProp="label"
-                            disabled={bulkMode || it.auto_sync_enabled === false}
-                            value={it.inspector_id || undefined}
-                            options={inspectorOptions}
-                            onChange={(v) => updateTaskQuick(ids, { inspector_id: v ? String(v) : null }).catch((e) => message.error(e?.message || '更新失败'))}
-                            placeholder={staffNameById(it.inspector_id || null)}
-                          />
-                        </div>
+                        {isKeyHandover ? (
+                          <div className={styles.assigneeGroup}>
+                            <div className={styles.assigneeLabel}>执行</div>
+                            <Select
+                              className={styles.assigneeSelect}
+                              allowClear
+                              showSearch
+                              optionFilterProp="label"
+                              disabled={bulkMode || it.auto_sync_enabled === false}
+                              value={(it.assignee_id || it.inspector_id) || undefined}
+                              options={allStaffOptions}
+                              onChange={(v) => updateTaskQuick(ids, {
+                                assignee_id: v ? String(v) : null,
+                                cleaner_id: null,
+                                inspector_id: null,
+                                inspection_scope: 'password_only',
+                              }).catch((e) => message.error(e?.message || '更新失败'))}
+                              placeholder={staffNameById((it.assignee_id || it.inspector_id) || null)}
+                            />
+                          </div>
+                        ) : (
+                          <>
+                            <div className={styles.assigneeGroup}>
+                              <div className={styles.assigneeLabel}>清洁</div>
+                              <Select
+                                className={styles.assigneeSelect}
+                                allowClear
+                                showSearch
+                                optionFilterProp="label"
+                                disabled={bulkMode || it.auto_sync_enabled === false}
+                                value={(it.cleaner_id || it.assignee_id) || undefined}
+                                options={cleanerOptions}
+                                onChange={(v) => updateTaskQuick(ids, { cleaner_id: v ? String(v) : null }).catch((e) => message.error(e?.message || '更新失败'))}
+                                placeholder={staffNameById((it.cleaner_id || it.assignee_id) || null)}
+                              />
+                            </div>
+                            <div className={styles.assigneeGroup}>
+                              <div className={styles.assigneeLabel}>检查</div>
+                              <Select
+                                className={styles.assigneeSelect}
+                                allowClear
+                                showSearch
+                                optionFilterProp="label"
+                                disabled={bulkMode || it.auto_sync_enabled === false}
+                                value={it.inspector_id || undefined}
+                                options={inspectorOptions}
+                                onChange={(v) => updateTaskQuick(ids, { inspector_id: v ? String(v) : null }).catch((e) => message.error(e?.message || '更新失败'))}
+                                placeholder={staffNameById(it.inspector_id || null)}
+                              />
+                            </div>
+                          </>
+                        )}
                         <div className={styles.assigneeGroup}>
                           <div className={styles.assigneeLabel}>状态</div>
                           <Select
@@ -1998,7 +2082,7 @@ export default function CleaningPage() {
                   </Form.Item>
                 </Col>
                 <Col xs={24} md={12}>
-                  <Form.Item label="清洁人员">
+                  <Form.Item label={editForm.mode === 'default' && editForm.checkin_ids.length > 0 && editForm.checkout_ids.length === 0 && editForm.checkin_inspection_scope === 'password_only' ? '执行人' : '清洁人员'}>
                     <Select
                       allowClear
                       showSearch
@@ -2006,23 +2090,25 @@ export default function CleaningPage() {
                       value={editForm.cleaner_id || undefined}
                       onChange={(v) => setEditForm((p) => (p ? { ...p, cleaner_id: v ? String(v) : null } : p))}
                       style={{ width: '100%' }}
-                      options={cleanerOptions}
+                      options={editForm.mode === 'default' && editForm.checkin_ids.length > 0 && editForm.checkout_ids.length === 0 && editForm.checkin_inspection_scope === 'password_only' ? allStaffOptions : cleanerOptions}
                     />
                   </Form.Item>
                 </Col>
-                <Col xs={24} md={12}>
-                  <Form.Item label="检查人员">
-                    <Select
-                      allowClear
-                      showSearch
-                      optionFilterProp="label"
-                      value={editForm.inspector_id || undefined}
-                      onChange={(v) => setEditForm((p) => (p ? { ...p, inspector_id: v ? String(v) : null } : p))}
-                      style={{ width: '100%' }}
-                      options={inspectorOptions}
-                    />
-                  </Form.Item>
-                </Col>
+                {editForm.mode === 'default' && editForm.checkin_ids.length > 0 && editForm.checkout_ids.length === 0 && editForm.checkin_inspection_scope === 'password_only' ? null : (
+                  <Col xs={24} md={12}>
+                    <Form.Item label="检查人员">
+                      <Select
+                        allowClear
+                        showSearch
+                        optionFilterProp="label"
+                        value={editForm.inspector_id || undefined}
+                        onChange={(v) => setEditForm((p) => (p ? { ...p, inspector_id: v ? String(v) : null } : p))}
+                        style={{ width: '100%' }}
+                        options={inspectorOptions}
+                      />
+                    </Form.Item>
+                  </Col>
+                )}
                 {editForm.mode === 'stayover' ? (
                   <Col xs={24} md={12}>
                     <Form.Item label="清洁时间">

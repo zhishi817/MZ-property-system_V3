@@ -50,6 +50,32 @@ export function cleaningInspectionTaskKind(taskType: any): 'checkout' | 'checkin
   return 'other'
 }
 
+export function isCheckinKeyHandoverTask(task: { task_type?: any; inspection_scope?: any }): boolean {
+  return cleaningInspectionTaskKind(task?.task_type) === 'checkin' && normalizeInspectionScope(task?.inspection_scope) === 'password_only'
+}
+
+export function isCleaningExecutionTask(task: { task_type?: any; inspection_scope?: any }): boolean {
+  return cleaningInspectionTaskKind(task?.task_type) !== 'checkin'
+}
+
+export function cleaningTaskExecutionSemantics(params: {
+  roleKind?: any
+  taskType?: any
+  inspectionScope?: any
+  hasCleaningExecution?: boolean
+  hasInspectionExecution?: boolean
+  hasKeyHandoverExecution?: boolean
+}): 'cleaning_execution' | 'checkin_inspection' | 'inspection_execution' | 'key_handover_execution' | 'mixed_cleaning_inspection' {
+  if (params?.hasKeyHandoverExecution) return 'key_handover_execution'
+  if (params?.hasCleaningExecution && params?.hasInspectionExecution) return 'mixed_cleaning_inspection'
+  const role = String(params?.roleKind || '').trim().toLowerCase()
+  if (role === 'executor' || role === 'execution') return 'key_handover_execution'
+  if (role === 'cleaner' || role === 'cleaning') return 'cleaning_execution'
+  if (isCheckinKeyHandoverTask({ task_type: params?.taskType, inspection_scope: params?.inspectionScope })) return 'key_handover_execution'
+  if (cleaningInspectionTaskKind(params?.taskType) === 'checkin') return 'checkin_inspection'
+  return 'inspection_execution'
+}
+
 export function isInspectionFinishedStatus(status: any): boolean {
   const raw = String(status || '').trim().toLowerCase()
   return raw === 'inspected' || raw === 'done' || raw === 'completed' || raw === 'ready' || raw === 'keys_hung'

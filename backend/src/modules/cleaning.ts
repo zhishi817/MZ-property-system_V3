@@ -7,7 +7,7 @@ import { activeCleaningTaskWhereSql, backfillCleaningTasks, ensureCleaningSchema
 import { v4 as uuid } from 'uuid'
 import { emitNotificationEvent } from '../services/notificationEvents'
 import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
-import { defaultInspectionModeForTaskType, deferredProjectionDate, effectiveInspectionMode, normalizeInspectionMode } from '../lib/cleaningInspection'
+import { defaultInspectionModeForTaskType, deferredProjectionDate, effectiveInspectionMode, isCheckinKeyHandoverTask, normalizeInspectionMode, normalizeInspectionScope } from '../lib/cleaningInspection'
 
 export const router = Router()
 
@@ -983,6 +983,7 @@ const patchTaskSchema = z.object({
   assignee_id: z.union([z.string().min(1), z.null()]).optional(),
   cleaner_id: z.union([z.string().min(1), z.null()]).optional(),
   inspector_id: z.union([z.string().min(1), z.null()]).optional(),
+  inspection_scope: z.enum(['inspect_and_hang', 'password_only']).optional().nullable(),
   inspection_mode: z.enum(['pending_decision', 'same_day', 'deferred', 'self_complete', 'checked_done']).optional().nullable(),
   inspection_due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
   keys_required: z
@@ -1030,6 +1031,23 @@ async function isValidStaffId(id: any, kind: 'cleaner' | 'inspector'): Promise<b
   return !!found
 }
 
+async function isValidAnyStaffId(id: any): Promise<boolean> {
+  if (!id) return true
+  const sid = String(id)
+  if (hasPg && pgPool) {
+    try {
+      const r = await pgPool.query('SELECT id FROM users WHERE id=$1 LIMIT 1', [sid])
+      return !!r?.rows?.[0]
+    } catch {
+      return false
+    }
+  }
+  const u = (db.users || []).find((x: any) => String(x.id) === sid)
+  if (u) return true
+  const all = (db.cleaners || []).map((x: any) => ({ ...x, is_active: x?.is_active !== false }))
+  return all.some((x: any) => String(x.id) === sid && x.is_active !== false)
+}
+
 router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res) => {
   const { id } = req.params
   const operationId = uuid()
@@ -1053,8 +1071,17 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
       if (patch.guest_special_request === undefined && patch.note !== undefined) patch.guest_special_request = patch.note
       delete patch.note
       if (patch.keys_required === null) patch.keys_required = 1
-      if (patch.cleaner_id !== undefined && patch.assignee_id === undefined) patch.assignee_id = patch.cleaner_id
-      if (patch.assignee_id !== undefined && patch.cleaner_id === undefined) patch.cleaner_id = patch.assignee_id
+      const isKeyHandoverExecution = isCheckinKeyHandoverTask({
+        task_type: patch.task_type ?? before.task_type,
+        inspection_scope: patch.inspection_scope ?? before.inspection_scope,
+      })
+      if (isKeyHandoverExecution) {
+        if (!(await isValidAnyStaffId(patch.assignee_id ?? null))) return res.status(400).json({ message: '无效的执行人' })
+        if (patch.assignee_id !== undefined && patch.cleaner_id === undefined) patch.cleaner_id = null
+      } else {
+        if (patch.cleaner_id !== undefined && patch.assignee_id === undefined) patch.assignee_id = patch.cleaner_id
+        if (patch.assignee_id !== undefined && patch.cleaner_id === undefined) patch.cleaner_id = patch.assignee_id
+      }
       if (patch.task_date != null) patch.date = patch.task_date
       validateAndApplyInspectionPatch({ patch, current: before })
       {
@@ -1070,7 +1097,9 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
           parsed.data.inspection_mode !== undefined ||
           parsed.data.inspection_due_date !== undefined
         if (touchingAssignees && statusAutoEligible && incomingStatusEligible) {
-          const nextCleanerId = patch.cleaner_id !== undefined ? (patch.cleaner_id ?? null) : (before.cleaner_id ?? before.assignee_id ?? null)
+          const nextCleanerId = isKeyHandoverExecution
+            ? (patch.assignee_id !== undefined ? (patch.assignee_id ?? null) : (before.assignee_id ?? before.inspector_id ?? null))
+            : (patch.cleaner_id !== undefined ? (patch.cleaner_id ?? null) : (before.cleaner_id ?? before.assignee_id ?? null))
           const nextInspectorId = (parsed.data as any).inspector_id !== undefined ? ((parsed.data as any).inspector_id ?? null) : (before.inspector_id ?? null)
           patch.status = assignedStatusFromAssignees(nextCleanerId, nextInspectorId)
         }
@@ -1166,12 +1195,18 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
     const localPatch: any = { ...parsed.data }
     if (localPatch.guest_special_request === undefined && localPatch.note !== undefined) localPatch.guest_special_request = localPatch.note
     delete localPatch.note
+    const isKeyHandoverExecution = isCheckinKeyHandoverTask({
+      task_type: localPatch.task_type ?? task.task_type,
+      inspection_scope: localPatch.inspection_scope ?? task.inspection_scope,
+    })
+    if (isKeyHandoverExecution && !(await isValidAnyStaffId(localPatch.assignee_id ?? null))) return res.status(400).json({ message: '无效的执行人' })
     validateAndApplyInspectionPatch({ patch: localPatch as any, current: task })
     if (localPatch.property_id !== undefined) task.property_id = localPatch.property_id
     if (localPatch.task_date !== undefined) { task.task_date = localPatch.task_date; task.date = localPatch.task_date }
     if (localPatch.status !== undefined) task.status = localPatch.status
     if (localPatch.cleaner_id !== undefined) task.cleaner_id = localPatch.cleaner_id
     if (localPatch.inspector_id !== undefined) task.inspector_id = localPatch.inspector_id
+    if (localPatch.inspection_scope !== undefined) task.inspection_scope = normalizeInspectionScope(localPatch.inspection_scope)
     if (localPatch.inspection_mode !== undefined) task.inspection_mode = localPatch.inspection_mode
     if (localPatch.inspection_due_date !== undefined) task.inspection_due_date = localPatch.inspection_due_date
     if (localPatch.keys_required !== undefined) task.keys_required = localPatch.keys_required
@@ -1181,8 +1216,12 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
     if (localPatch.checkout_time !== undefined) task.checkout_time = localPatch.checkout_time
     if (localPatch.checkin_time !== undefined) task.checkin_time = localPatch.checkin_time
     if (localPatch.assignee_id !== undefined) task.assignee_id = localPatch.assignee_id
-    if (localPatch.cleaner_id !== undefined && localPatch.assignee_id === undefined) task.assignee_id = localPatch.cleaner_id
-    if (localPatch.assignee_id !== undefined && localPatch.cleaner_id === undefined) task.cleaner_id = localPatch.assignee_id
+    if (isKeyHandoverExecution) {
+      if (localPatch.assignee_id !== undefined && localPatch.cleaner_id === undefined) task.cleaner_id = null
+    } else {
+      if (localPatch.cleaner_id !== undefined && localPatch.assignee_id === undefined) task.assignee_id = localPatch.cleaner_id
+      if (localPatch.assignee_id !== undefined && localPatch.cleaner_id === undefined) task.cleaner_id = localPatch.assignee_id
+    }
     if (localPatch.scheduled_at !== undefined) task.scheduled_at = localPatch.scheduled_at
     if (localPatch.guest_special_request !== undefined) task.guest_special_request = localPatch.guest_special_request
     if (
@@ -1623,6 +1662,7 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), async (req
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (!(await isValidStaffId((parsed.data.patch as any).cleaner_id ?? null, 'cleaner'))) return res.status(400).json({ message: '无效的清洁人员' })
   if (!(await isValidStaffId((parsed.data.patch as any).inspector_id ?? null, 'inspector'))) return res.status(400).json({ message: '无效的检查人员' })
+  if (!(await isValidAnyStaffId((parsed.data.patch as any).assignee_id ?? null))) return res.status(400).json({ message: '无效的执行人' })
   const ids = Array.from(new Set(parsed.data.ids.map((x) => String(x).trim()).filter(Boolean)))
   const basePatch: any = { ...parsed.data.patch }
   if (basePatch.guest_special_request === undefined && basePatch.note !== undefined) basePatch.guest_special_request = basePatch.note
@@ -1910,6 +1950,7 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
            t.cleaner_id,
            t.inspector_id,
            t.inspection_mode,
+           t.inspection_scope,
            t.inspection_due_date::text AS inspection_due_date,
            t.scheduled_at,
            t.key_photo_uploaded_at,
@@ -1986,6 +2027,7 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
           summary_checkout_time: String(row.checkout_time || '').trim() || DEFAULT_SUMMARY_CHECKOUT_TIME,
           summary_checkin_time: String(row.checkin_time || '').trim() || DEFAULT_SUMMARY_CHECKIN_TIME,
           inspection_mode: inspectionMode,
+          inspection_scope: normalizeInspectionScope(row.inspection_scope),
           inspection_due_date: inspectionDueDate,
         }
         if (d >= from && d <= to) {

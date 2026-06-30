@@ -432,7 +432,10 @@ export default function PropertiesPage() {
                       <Descriptions.Item label="默认金额">{tpl.amount != null ? `$${Number(tpl.amount || 0).toFixed(2)}` : '-'}</Descriptions.Item>
                       <Descriptions.Item label="起始月份">{tpl.start_month_key || '-'}</Descriptions.Item>
                       <Descriptions.Item label="Account Number">{tpl.bill_account_no || '-'}</Descriptions.Item>
-                      <Descriptions.Item label="到期日">{tpl.due_day_of_month ? `每月 ${tpl.due_day_of_month} 号` : '-'}</Descriptions.Item>
+                      <Descriptions.Item label="付款截止日">{tpl.due_day_of_month ? `每月 ${tpl.due_day_of_month} 号` : '-'}</Descriptions.Item>
+                      <Descriptions.Item label="预计收到账单日">{tpl.bill_expected_day_of_month ? `每月 ${tpl.bill_expected_day_of_month} 号` : '-'}</Descriptions.Item>
+                      <Descriptions.Item label="账期开始">{tpl.bill_period_start_day_of_month ? `${tpl.bill_period_start_month_offset === -1 ? '上月' : tpl.bill_period_start_month_offset === 1 ? '下月' : '本月'} ${tpl.bill_period_start_day_of_month} 号` : '-'}</Descriptions.Item>
+                      <Descriptions.Item label="账期结束">{tpl.bill_period_end_day_of_month ? `${tpl.bill_period_end_month_offset === -1 ? '上月' : tpl.bill_period_end_month_offset === 1 ? '下月' : '本月'} ${tpl.bill_period_end_day_of_month} 号` : '-'}</Descriptions.Item>
                       <Descriptions.Item label="付款周期">{tpl.frequency_months ? `每 ${tpl.frequency_months} 月` : '-'}</Descriptions.Item>
                       <Descriptions.Item label="付款方式">{propertyPayablePaymentTypeLabel(tpl.payment_type)}</Descriptions.Item>
                       <Descriptions.Item label="收款方">{tpl.pay_account_name || '-'}</Descriptions.Item>
