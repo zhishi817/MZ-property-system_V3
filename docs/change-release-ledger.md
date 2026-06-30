@@ -4383,3 +4383,144 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Behavior note: legacy `cleaning_offline_tasks.assignee_id` may remain stale by design after this change; display paths must use `work_tasks` when a row exists.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added to source or ledger.
 - Git state: implementation pushed to root `Dev` in commit `cb66cb5`; this ledger status update is recorded separately.
+
+## CRL-20260630-002 — 移动端退房卡不提前合并次日入住
+
+- **Status:** ready
+- **Updated:** 2026-06-30 20:20 Australia/Melbourne
+- **Request:** 修复手动任务和自动同步任务合并后，当天没有入住却在数据回填/移动端显示中把第二天入住提前合并到当天的问题。
+- **Outcome:** `/mzapp/work-tasks` 现在只有同房源同一天的入住任务才会补入当天退房卡；多日查询时，第二天入住不会再让当天退房显示“入住”、入住时间、新门码、入住钥匙套数或待住晚数。
+
+### Implementation
+
+- Previous behavior:
+  - 移动端构建 checkout-only 清洁卡片时，会在本次 `/mzapp/work-tasks` 查询结果里查找同房源 `task_date >= 当前退房日` 的最近入住任务。
+  - 当移动端或管理视图一次查询多天时，次日入住会被当作当前退房卡的 `checkinTask`，从而提前显示“退房 入住”、`end_time`、`new_code`、`keys_required_checkin` 和 `remaining_nights`。
+- New behavior:
+  - checkout-only 卡片只允许同房源且 `task_date === 当前退房日` 的入住任务作为补充展示数据。
+  - 同一天退房 + 入住仍正常合并；跨日入住保留在自己的日期，不再污染前一天退房卡。
+- Key decisions:
+  - 不改自动同步回填和 supersede 规则；这些路径已经按同房源、同类型、同日期匹配。
+  - 修复放在移动端 `/mzapp/work-tasks` 展示合并层，保持任务中心同日分组和回填数据不变。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — modified: `nextCheckinsForCheckout` 从查找同房源最近后续入住改为只查同日入住。
+- `backend/scripts/tests/test_task_assignment_canonical.ts` — modified: 增加真实 `/mzapp/work-tasks` 多日查询回归测试，覆盖跨日入住不提前合并和同日入住仍合并。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: `/mzapp/work-tasks` 响应结构不变；checkout-only 卡片在跨日多天查询下将不再返回来自次日入住的展示字段。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: shares `backend/src/modules/mzapp.ts` and `backend/scripts/tests/test_task_assignment_canonical.ts` with recent cleaning/task assignment work; selective release requires hunk review if combined with other local units.
+
+### Validation
+
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_task_assignment_canonical.ts` in `backend` — failed in sandbox: DNS lookup for the configured PostgreSQL host was blocked.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_task_assignment_canonical.ts` in `backend` with approved network access — passed: `test_task_assignment_canonical: ok`.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+
+### Risks / Release Notes
+
+- Runtime risk: checkout-only cards no longer show next-day incoming stay context; this is intentional for date correctness, but if operations wants a separate “next stay” hint later it should be a distinct field/tag, not merged as same-day入住.
+- Rollback: restore the `task_date >= date` filter in `nextCheckinsForCheckout` and remove the new cross-day/same-day assertions.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: uncommitted.
+
+## CRL-20260630-003 — 移动端空客人需求不显示确认区
+
+- **Status:** ready
+- **Updated:** 2026-06-30 20:35 Australia/Melbourne
+- **Request:** 如果客人需求没有，就不显示，不要显示 `null`，也不要显示/要求确认“我已完成客人需求”。
+- **Outcome:** 移动端检查面板现在复用统一客人需求展示逻辑；当客人需求为空或是 `null`/`undefined`/`none`/`n/a`/`无`/`没有` 这类占位值时，不显示“客人需求（需要确认已完成）”卡片，也不会要求勾选“我已完成客人需求”才能继续。
+
+### Implementation
+
+- Previous behavior:
+  - `InspectionPanelScreen` 直接对 `task.guest_special_request` 做字符串 trim；如果后端或缓存传来字符串 `"null"`，会被当成真实需求显示。
+  - 只要该字符串非空，完成按钮就会被 `guestNeedDone` 勾选状态限制，导致没有真实需求也必须确认。
+- New behavior:
+  - `turnoverDisplay.ts` 新增 `cleanGuestRequestText()`，把常见空值占位文本当作空内容。
+  - `guestRequestForDisplay()` 使用该清洗规则，并继续优先显示 `turnover_display.guest_request_summary`。
+  - `InspectionPanelScreen` 改为调用 `guestRequestForDisplay(task)`；没有真实需求时整块确认 UI 不渲染，完成按钮也不再受客人需求确认限制。
+- Key decisions:
+  - 不改全局 `cleanText()`，避免影响任务 ID、文件引用等普通文本字段。
+  - 规则放在共享客人需求展示函数，列表/详情/检查面板对空需求的判断保持一致。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/lib/turnoverDisplay.ts` — modified: 增加客人需求专用清洗函数，并用于 `guestRequestForDisplay()`。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.tsx` — modified: 检查面板客人需求显示和确认要求改用共享展示值。
+- `mz-cleaning-app-frontend/src/lib/turnoverDisplay.test.ts` — added: 覆盖占位值不显示、真实需求显示、turnover display 汇总优先。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: independent mobile UI fix; shares the nested mobile repo with other mobile release work. Root ledger also currently contains uncommitted `CRL-20260630-002` backend fix.
+
+### Validation
+
+- `npm test -- --runInBand src/lib/turnoverDisplay.test.ts` in `mz-cleaning-app-frontend` — passed: 1 suite, 2 tests.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed: `tsc -p tsconfig.json`.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with 0 errors and 119 existing warnings.
+
+### Risks / Release Notes
+
+- Runtime risk: literal guest requests exactly equal to `null`, `undefined`, `none`, `n/a`, `无`, or `没有` will be hidden. This matches the requested empty-value behavior.
+- Rollback: restore `InspectionPanelScreen` to direct `guest_special_request` display and remove `cleanGuestRequestText()` plus its test.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: uncommitted in nested mobile repo and root ledger.
+
+## CRL-20260630-004 — 移动端中断上传状态自动重试
+
+- **Status:** ready
+- **Updated:** 2026-06-30 20:50 Australia/Melbourne
+- **Request:** 修复本地缓存的视频或照片在网络恢复后，同步一直卡在上传步骤的问题。
+- **Outcome:** 移动端独立检查媒体队列现在会把上次中断遗留的 `uploading` 状态视为可重试状态；网络恢复、App 回到前台或重新启动后会继续上传/保存，不再因为状态停在 `uploading` 而被队列跳过。
+
+### Implementation
+
+- Previous behavior:
+  - `inspectionMediaQueue` 只处理 `pending`、`failed_retryable`，以及已上传但未业务保存的挂钥匙视频。
+  - 上传开始时会持久化 `upload_status: uploading`；如果此时断网、App 被系统杀掉或上传请求中断，下一次队列维护会跳过该条记录，界面长期显示正在自动上传。
+- New behavior:
+  - `uploading` 也纳入可重试状态。
+  - 同一进程内仍通过 `inFlightLocalUris` 防止同一个本地文件并发重复上传；重启或网络恢复后遗留的 `uploading` 可以重新进入上传流程。
+  - 已有 `uploaded_url` 但 `business_saved=false` 的挂钥匙视频仍沿用原逻辑：不重复上传，只补做业务保存。
+- Key decisions:
+  - 不新增复杂超时字段；当前问题是持久化状态被永久跳过，直接允许 `uploading` 重试更小且与现有 `inFlightLocalUris` 防并发机制兼容。
+  - 不改变检查面板正式提交队列；该队列的 `syncing` 状态已经会继续处理。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/lib/inspectionMediaQueue.ts` — modified: `isRetryableStatus()` 将 `uploading` 视为可重试。
+- `mz-cleaning-app-frontend/src/lib/inspectionMediaQueue.test.ts` — modified: 增加上传中断后恢复重试的挂钥匙视频回归测试。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: independent mobile queue hardening; shares nested mobile repo with `CRL-20260630-003` UI fix and root ledger with `CRL-20260630-002` backend fix.
+
+### Validation
+
+- `npm test -- --runInBand src/lib/inspectionMediaQueue.test.ts` in `mz-cleaning-app-frontend` — passed: 1 suite, 2 tests.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed: `tsc -p tsconfig.json`.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with 0 errors and 119 existing warnings.
+
+### Risks / Release Notes
+
+- Runtime risk: if a remote upload succeeded but the app died before persisting `uploaded_url`, retrying `uploading` may upload the same local file again. This is preferable to a permanently stuck local task and is bounded to interrupted uploads.
+- Rollback: remove `uploading` from `isRetryableStatus()` and remove the new interrupted-upload recovery test.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: uncommitted in nested mobile repo and root ledger.

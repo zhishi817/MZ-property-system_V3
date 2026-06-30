@@ -5508,7 +5508,7 @@ router.get('/work-tasks', async (req, res) => {
                 const candidates = cleaningRows
                   .filter((x: any) => String(x?.property_id || '') === String(propId || ''))
                   .filter((x: any) => cleaningType(x?.task_type) === 'checkin')
-                  .filter((x: any) => String(x?.task_date || x?.date || '').slice(0, 10) >= date)
+                  .filter((x: any) => String(x?.task_date || x?.date || '').slice(0, 10) === date)
                   .sort((a: any, b: any) => String(a?.task_date || a?.date || '').localeCompare(String(b?.task_date || b?.date || '')))
                 const nextDate = String(candidates[0]?.task_date || candidates[0]?.date || '').slice(0, 10)
                 return nextDate ? candidates.filter((x: any) => String(x?.task_date || x?.date || '').slice(0, 10) === nextDate) : []

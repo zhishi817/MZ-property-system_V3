@@ -9,6 +9,7 @@ process.env.PG_QUERY_TIMEOUT_MS = process.env.PG_QUERY_TIMEOUT_MS || '15000'
 process.env.PG_STATEMENT_TIMEOUT_MS = process.env.PG_STATEMENT_TIMEOUT_MS || '15000'
 
 const TEST_DATE = '2026-06-29'
+const NEXT_DATE = '2026-06-30'
 
 async function requestJson(app: express.Express, method: string, path: string, body?: any) {
   const server = await new Promise<any>((resolve) => {
@@ -68,6 +69,12 @@ async function main() {
   const workId = 'test-assignment-work'
   const cleaningId = 'test-assignment-cleaning'
   const propertyId = 'P_TEST_ASSIGN'
+  const crossDayPropertyId = 'P_TEST_ASSIGN_CROSS_DAY'
+  const sameDayPropertyId = 'P_TEST_ASSIGN_SAME_DAY'
+  const crossDayCheckoutId = 'test-assignment-cross-day-checkout'
+  const crossDayCheckinId = 'test-assignment-cross-day-checkin'
+  const sameDayCheckoutId = 'test-assignment-same-day-checkout'
+  const sameDayCheckinId = 'test-assignment-same-day-checkin'
 
   process.stdout.write('test_task_assignment_canonical: preparing schema\n')
   await ensureCleaningSchemaV2()
@@ -91,8 +98,16 @@ async function main() {
     [offlineNullId, offlineOldId, offlineDisplayId],
   ])
   await pgPool.query(`DELETE FROM cleaning_offline_tasks WHERE id = ANY($1::text[])`, [[offlineNullId, offlineOldId, offlineDisplayId]])
-  await pgPool.query(`DELETE FROM cleaning_tasks WHERE id=$1`, [cleaningId])
+  await pgPool.query(`DELETE FROM cleaning_tasks WHERE id = ANY($1::text[])`, [[cleaningId, crossDayCheckoutId, crossDayCheckinId, sameDayCheckoutId, sameDayCheckinId]])
   await pgPool.query(`INSERT INTO properties(id, address) VALUES($1, 'Test assignment property') ON CONFLICT (id) DO NOTHING`, [propertyId])
+  await pgPool.query(
+    `INSERT INTO properties(id, code, address)
+     VALUES
+       ($1, 'TEST-CROSS-DAY', 'Test cross day property'),
+       ($2, 'TEST-SAME-DAY', 'Test same day property')
+     ON CONFLICT (id) DO UPDATE SET code = EXCLUDED.code, address = EXCLUDED.address`,
+    [crossDayPropertyId, sameDayPropertyId],
+  )
 
   try {
     process.stdout.write('test_task_assignment_canonical: testing offline upsert preserve null\n')
@@ -258,14 +273,54 @@ async function main() {
     const displayTask = (visibleTasks || []).find((item: any) => String(item.id) === `cleaning_offline_tasks:${offlineDisplayId}`)
     assert.ok(displayTask, 'offline work task should be visible in mzapp work-tasks')
     assert.equal(displayTask.assignee_id, 'canonical-display')
+
+    process.stdout.write('test_task_assignment_canonical: testing mzapp same-day checkin merge boundary\n')
+    await pgPool.query(
+      `INSERT INTO cleaning_tasks(
+         id, property_id, task_type, type, task_date, date, status, assignee_id, cleaner_id, source, execution_state, checkout_time, checkin_time, new_code, keys_required, nights_override
+       ) VALUES
+         ($1, $5, 'checkout_clean', 'checkout_clean', $3::date, $3::date, 'assigned', 'cleaner-boundary', 'cleaner-boundary', 'manual', 'active', '10am', NULL, NULL, 1, 4),
+         ($2, $5, 'checkin_clean', 'checkin_clean', $4::date, $4::date, 'assigned', 'cleaner-boundary', 'cleaner-boundary', 'manual', 'active', NULL, '3pm', 'NEXTDAY', 2, 2)`,
+      [crossDayCheckoutId, crossDayCheckinId, TEST_DATE, NEXT_DATE, crossDayPropertyId],
+    )
+    await pgPool.query(
+      `INSERT INTO cleaning_tasks(
+         id, property_id, task_type, type, task_date, date, status, assignee_id, cleaner_id, source, execution_state, checkout_time, checkin_time, new_code, keys_required, nights_override
+       ) VALUES
+         ($1, $4, 'checkout_clean', 'checkout_clean', $3::date, $3::date, 'assigned', 'cleaner-same-day', 'cleaner-same-day', 'manual', 'active', '11am', NULL, NULL, 1, 5),
+         ($2, $4, 'checkin_clean', 'checkin_clean', $3::date, $3::date, 'assigned', 'cleaner-same-day', 'cleaner-same-day', 'manual', 'active', NULL, '2pm', 'SAMEDAY', 2, 3)`,
+      [sameDayCheckoutId, sameDayCheckinId, TEST_DATE, sameDayPropertyId],
+    )
+    const boundaryTasks = await requestJson(app, 'GET', `/mzapp/work-tasks?date_from=${TEST_DATE}&date_to=${NEXT_DATE}&view=all`)
+    const crossDayTask = (boundaryTasks || []).find((item: any) =>
+      String(item.property_id) === crossDayPropertyId
+      && String(item.scheduled_date || '').slice(0, 10) === TEST_DATE
+    )
+    assert.ok(crossDayTask, 'cross-day checkout task should be visible')
+    assert.ok(!String(crossDayTask.summary || '').includes('入住'), 'next-day checkin must not be shown in checkout-day summary')
+    assert.equal(crossDayTask.end_time, null)
+    assert.equal(crossDayTask.new_code, null)
+    assert.equal(crossDayTask.keys_required_checkin, null)
+    assert.equal(crossDayTask.remaining_nights, 0)
+
+    const sameDayTask = (boundaryTasks || []).find((item: any) =>
+      String(item.property_id) === sameDayPropertyId
+      && String(item.scheduled_date || '').slice(0, 10) === TEST_DATE
+    )
+    assert.ok(sameDayTask, 'same-day turnover task should be visible')
+    assert.ok(String(sameDayTask.summary || '').includes('入住'), 'same-day checkin should still merge into summary')
+    assert.equal(sameDayTask.end_time, '2pm')
+    assert.equal(sameDayTask.new_code, 'SAMEDAY')
+    assert.ok(sameDayTask.keys_required_checkin != null, 'same-day checkin key requirement should still be present')
+    assert.equal(sameDayTask.remaining_nights, 3)
   } finally {
     await pgPool.query(`DELETE FROM work_tasks WHERE id = ANY($1::text[]) OR source_id = ANY($2::text[])`, [
       [`cleaning_offline_tasks:${offlineNullId}`, `cleaning_offline_tasks:${offlineOldId}`, `cleaning_offline_tasks:${offlineDisplayId}`, workId],
       [offlineNullId, offlineOldId, offlineDisplayId],
     ])
     await pgPool.query(`DELETE FROM cleaning_offline_tasks WHERE id = ANY($1::text[])`, [[offlineNullId, offlineOldId, offlineDisplayId]])
-    await pgPool.query(`DELETE FROM cleaning_tasks WHERE id=$1`, [cleaningId])
-    await pgPool.query(`DELETE FROM properties WHERE id=$1`, [propertyId])
+    await pgPool.query(`DELETE FROM cleaning_tasks WHERE id = ANY($1::text[])`, [[cleaningId, crossDayCheckoutId, crossDayCheckinId, sameDayCheckoutId, sameDayCheckinId]])
+    await pgPool.query(`DELETE FROM properties WHERE id = ANY($1::text[])`, [[propertyId, crossDayPropertyId, sameDayPropertyId]])
   }
 
   process.stdout.write('test_task_assignment_canonical: ok\n')
