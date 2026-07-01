@@ -2,6 +2,103 @@
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
+## CRL-20260701-005 — 移动端管理视图显示未分配入住检查任务
+
+- **Status:** ready
+- **Updated:** 2026-07-01 20:30 AEST
+- **Request:** “查一下，生产环境里 明天明明有2508入住的任务，为什么app上面不显示”；确认每日任务页面也有该任务后，按建议修复。
+- **Outcome:** `/mzapp/work-tasks?view=all` 现在会在管理视图中投影未分配检查人员的普通入住检查任务，让 `TF2508` 这类 `checkin_clean + pending + same_day + inspector_id为空` 的任务能在 App 管理“全部”里显示和搜索；个人“我的任务”仍不接收未分配任务。
+
+### Implementation
+
+- Previous behavior:
+  - Web 每日任务/任务中心直接展示 `cleaning_tasks` 源任务，因此能看到未分配的入住任务。
+  - 移动端 App 走 `/mzapp/work-tasks` 投影；普通入住任务不进清洁分支，只能进入检查分支。
+  - 检查分支要求 `inspector_id` 存在，导致 `TF2508` 这种未分配检查人员的入住任务没有生成移动端卡片。
+- New behavior:
+  - 管理 `view=all` 且具备管理任务池可见性时，普通入住检查任务即使 `inspector_id` 为空也会进入检查分组。
+  - 未分配检查分组使用内部 `unassigned` key 保留卡片生成，但输出 payload 仍保持 `assignee_id` 为空。
+  - 非管理视图和个人“我的任务”仍要求存在移动端执行人，不扩大普通员工可见范围。
+- Key decisions:
+  - 不新增字段、不改移动端 UI、不改变任务分配状态；只修正移动端列表的后端投影。
+  - 仅针对 `cleaning_tasks` 检查投影；property follow-up 任务仍保持原本的执行人要求。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — modified: `/mzapp/work-tasks` 检查分组允许管理 `view=all` 投影未分配检查人员的入住检查任务。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: `/mzapp/work-tasks?view=all` 的管理视图可能多返回未分配的 `cleaning_tasks` 检查卡片；字段结构不变。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: independent of `CRL-20260701-004`; shares `backend/src/modules/mzapp.ts`, so selective release requires hunk-level staging if only one unit is shipped.
+
+### Validation
+
+- Production read-only data check — passed: `TF2508` on `2026-07-02` exists as active confirmed `checkin_clean`, with `assignee_id`, `cleaner_id`, and `inspector_id` empty.
+- `npm run build` in `backend` — passed: `tsc -p .` completed.
+- `npm run test:cleaning-inspection-merge` in `backend` — passed: `test_cleaning_inspection_merge: ok`.
+- `git diff --check` in root repo — passed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 2 changed files recorded, coverage PASS.
+- Direct authenticated App/API request — not run: no user token was used in this turn.
+
+### Risks / Release Notes
+
+- Runtime risk: management App lists may show additional unassigned same-day check-in inspection tasks that were previously hidden; this aligns with Web daily task visibility.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Rollback: restore the previous `inspectorId` requirement in the `/mzapp/work-tasks` inspector grouping and skip empty inspector groups again.
+- Git state: uncommitted.
+
+## CRL-20260701-004 — 仅改密码执行人允许保存密码盒视频
+
+- **Status:** ready
+- **Updated:** 2026-07-01 11:38 AEST
+- **Request:** “上传视频怎么还权限不足了”；仅改密码执行任务拍摄视频后点击“改密码完成”弹出权限不足。
+- **Outcome:** `/mzapp/cleaning-tasks/:id/lockbox-video` 现在允许仅改密码任务的 `assignee_id` 执行人保存和删除密码盒/给钥匙视频，不再要求该执行人同时是检查员；普通检查任务仍要求检查员本人或管理角色。
+
+### Implementation
+
+- Previous behavior:
+  - 视频文件上传到媒体存储后，移动端会调用 `/mzapp/cleaning-tasks/:id/lockbox-video` 保存业务记录。
+  - 该接口顶层只允许 `cleaning_inspector` / `cleaner_inspector` / 管理角色，并且要求 `inspector_id` 等于当前用户。
+  - “仅改密码”任务的执行人保存于 `assignee_id`，可以是任意 staff，因此执行人即使已分配任务也会在保存视频记录时收到 403。
+- New behavior:
+  - 新增 `isAssignedKeyHandoverExecutor()` / `canManageMzappLockboxVideo()` 权限判断。
+  - 上传和删除 lockbox video 时先读取 `task_type`、`inspection_scope`、`assignee_id`、`inspector_id`。
+  - `checkin_clean + inspection_scope=password_only` 且当前用户等于 `assignee_id` 时允许保存/删除视频。
+  - 普通检查/挂钥匙任务仍只允许检查员本人、清洁检查员本人或 `admin/offline_manager/customer_service` 管理角色。
+- Key decisions:
+  - 不新增权限码、不新增字段；沿用 `assignee_id` 作为仅改密码执行人的唯一来源。
+  - 只放开 password-only 执行任务，不扩大普通检查任务或普通清洁任务的视频权限。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — modified: 调整 mzapp lockbox/password video 上传和删除接口的权限判断。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: `/mzapp/cleaning-tasks/:id/lockbox-video` and delete variant now accept assigned password-only executors.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: follows `CRL-20260701-003` and `CRL-20260630-007`.
+
+### Validation
+
+- `npm run build` in `backend` — passed: `tsc -p .` completed.
+- Direct mobile/manual API verification — not run in this turn.
+
+### Risks / Release Notes
+
+- Runtime risk: backend must be deployed before the existing mobile app can stop receiving 403 on the final business-save step.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Rollback: restore the previous inspector-only role and inspector-id checks in the mzapp lockbox video upload/delete handlers.
+- Git state: uncommitted.
+
 ## CRL-20260701-003 — 仅改密码移动端标签与执行人显示修正
 
 - **Status:** pushed
