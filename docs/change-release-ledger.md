@@ -4,8 +4,8 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260701-005 — 移动端管理视图显示未分配入住检查任务
 
-- **Status:** ready
-- **Updated:** 2026-07-01 20:30 AEST
+- **Status:** pushed
+- **Updated:** 2026-07-01 20:34 AEST
 - **Request:** “查一下，生产环境里 明天明明有2508入住的任务，为什么app上面不显示”；确认每日任务页面也有该任务后，按建议修复。
 - **Outcome:** `/mzapp/work-tasks?view=all` 现在会在管理视图中投影未分配检查人员的普通入住检查任务，让 `TF2508` 这类 `checkin_clean + pending + same_day + inspector_id为空` 的任务能在 App 管理“全部”里显示和搜索；个人“我的任务”仍不接收未分配任务。
 
@@ -50,12 +50,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Runtime risk: management App lists may show additional unassigned same-day check-in inspection tasks that were previously hidden; this aligns with Web daily task visibility.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
 - Rollback: restore the previous `inspectorId` requirement in the `/mzapp/work-tasks` inspector grouping and skip empty inspector groups again.
-- Git state: uncommitted.
+- Git state: pushed to root `Dev` in commit `31d3c6f`.
 
 ## CRL-20260701-004 — 仅改密码执行人允许保存密码盒视频
 
-- **Status:** ready
-- **Updated:** 2026-07-01 11:38 AEST
+- **Status:** pushed
+- **Updated:** 2026-07-01 20:34 AEST
 - **Request:** “上传视频怎么还权限不足了”；仅改密码执行任务拍摄视频后点击“改密码完成”弹出权限不足。
 - **Outcome:** `/mzapp/cleaning-tasks/:id/lockbox-video` 现在允许仅改密码任务的 `assignee_id` 执行人保存和删除密码盒/给钥匙视频，不再要求该执行人同时是检查员；普通检查任务仍要求检查员本人或管理角色。
 
@@ -97,7 +97,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Runtime risk: backend must be deployed before the existing mobile app can stop receiving 403 on the final business-save step.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
 - Rollback: restore the previous inspector-only role and inspector-id checks in the mzapp lockbox video upload/delete handlers.
-- Git state: uncommitted.
+- Git state: pushed to root `Dev` in commit `31d3c6f`.
 
 ## CRL-20260701-003 — 仅改密码移动端标签与执行人显示修正
 
