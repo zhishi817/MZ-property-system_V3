@@ -1152,6 +1152,18 @@ function isCleanerInspectorRole(user: any) {
   return hasRole(user, 'cleaner_inspector')
 }
 
+function isAssignedKeyHandoverExecutor(row: any, userId: string) {
+  const assigneeId = String(row?.assignee_id || '').trim()
+  return !!userId && !!assigneeId && assigneeId === userId && isCheckinKeyHandoverTask(row)
+}
+
+function canManageMzappLockboxVideo(user: any, row: any, userId: string) {
+  if (canViewAll(user)) return true
+  if (isAssignedKeyHandoverExecutor(row, userId)) return true
+  const inspectorId = String(row?.inspector_id || '').trim()
+  return !!userId && !!inspectorId && inspectorId === userId && (isInspectorRole(user) || isCleanerInspectorRole(user))
+}
+
 async function refreshAutoExpenseSourceSummary(refType: 'maintenance' | 'deep_cleaning', row: any) {
   if (!hasPg || !pgPool) return
   const refId = String(row?.id || '').trim()
@@ -1892,16 +1904,25 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
   const mediaUrl = String(req.body?.media_url || '').trim()
   if (!id) return res.status(400).json({ message: 'missing id' })
   if (!mediaUrl) return res.status(400).json({ message: 'missing media_url' })
-  if (!(isInspectorRole(user) || isCleanerInspectorRole(user) || canViewAll(user))) return res.status(403).json({ message: 'forbidden' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
     await ensureCleaningTaskMediaTable()
-    const r0 = await pgPool.query('SELECT id, inspector_id, property_id::text AS property_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
+    const r0 = await pgPool.query(
+      `SELECT id,
+              inspector_id,
+              assignee_id,
+              task_type,
+              inspection_scope,
+              property_id::text AS property_id
+       FROM cleaning_tasks
+       WHERE id=$1
+       LIMIT 1`,
+      [id],
+    )
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
-    const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
     const propertyId = row.property_id ? String(row.property_id) : ''
-    if (!canViewAll(user) && inspectorId !== userId) return res.status(403).json({ message: 'forbidden' })
+    if (!canManageMzappLockboxVideo(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
 
     const uuid = require('uuid')
     const mediaId = uuid.v4()
@@ -1966,7 +1987,6 @@ async function handleDeleteMzappLockboxVideo(req: any, res: any) {
   const userId = String(user.sub || '')
   const id = String(req.params.id || '').trim()
   if (!id) return res.status(400).json({ message: 'missing id' })
-  if (!(isInspectorRole(user) || isCleanerInspectorRole(user) || canViewAll(user))) return res.status(403).json({ message: 'forbidden' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
     await ensureCleaningTaskMediaTable()
@@ -1976,6 +1996,8 @@ async function handleDeleteMzappLockboxVideo(req: any, res: any) {
               inspector_id::text AS inspector_id,
               cleaner_id::text AS cleaner_id,
               assignee_id::text AS assignee_id,
+              task_type,
+              inspection_scope,
               property_id::text AS property_id
        FROM cleaning_tasks
        WHERE id=$1
@@ -1984,8 +2006,7 @@ async function handleDeleteMzappLockboxVideo(req: any, res: any) {
     )
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
-    const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
-    if (!canViewAll(user) && inspectorId !== userId) return res.status(403).json({ message: 'forbidden' })
+    if (!canManageMzappLockboxVideo(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
 
     const needsRestockResult = await pgPool.query(
       `SELECT 1
@@ -5511,13 +5532,13 @@ router.get('/work-tasks', async (req, res) => {
           })
           if (
             wantInspector
-            && inspectorId
+            && (inspectorId || managerCanSeeAllTaskPool)
             && inspectorDisplayDate
             && cleaningType(row.task_type) !== 'stayover'
             && !isCheckinKeyHandoverTask(row)
             && (allowAll || inspectorId === userId)
           ) {
-            const k = `${inspectorDisplayDate}|${propId || ''}|${inspectorId}`
+            const k = `${inspectorDisplayDate}|${propId || ''}|${inspectorId || 'unassigned'}`
             const arr = inspectorGroups.get(k) || []
             arr.push({ ...base, __date: inspectorDisplayDate, __is_deferred_projection: inspectionMode === 'deferred' })
             inspectorGroups.set(k, arr)
@@ -5855,8 +5876,8 @@ router.get('/work-tasks', async (req, res) => {
 
         for (const [k, rows] of inspectorGroups) {
           const parts = k.split('|')
-          const assigneeId = parts[2] || ''
-          if (!assigneeId) continue
+          const assigneeId = parts[2] === 'unassigned' ? '' : (parts[2] || '')
+          if (!assigneeId && !managerCanSeeAllTaskPool) continue
           out.push(buildMerged('inspector', rows, assigneeId))
         }
       }
