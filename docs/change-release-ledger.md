@@ -4,8 +4,8 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260702-002 — 挂钥匙状态不被排班保存覆盖
 
-- **Status:** ready
-- **Updated:** 2026-07-02 22:13 AEST
+- **Status:** committed
+- **Updated:** 2026-07-02 23:24 AEST
 - **Request:** 修复生产版本挂完钥匙后任务标签又变回“已分配”；`mergeTurnoverTaskPlan()` 不能只用 checkout 状态，任务中心保存排班不能把合并卡片派生 `status` 写回每个 `cleaning_tasks`，并补回归测试和生产数据修复。
 - **Outcome:** turnover 合并卡片现在按统一状态优先级展示底层最高状态，任一底层任务为 `keys_hung` 时不会回落为 `assigned`；任务中心 save-board 普通排班保存不再写 cleaning/work task 的派生 status，只有明确的 `status_action` 才允许改 cleaning status；新增生产修复 SQL 可预览并恢复已被覆盖的 `keys_hung` 脏数据。
 
@@ -60,12 +60,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Release risk: shared worktree contains unrelated ready/in-progress units in the same task-center files; do not broad-stage this unit without hunk review.
 - Rollback: restore old `mergedTaskStatus()` ordering, remove `status_action` handling and front-end payload filtering, and do not run or revert the production apply SQL if already executed.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
-- Git state: uncommitted in root repo; shared files also contain unrelated local changes from other CRL units.
+- Git state: committed locally to root `Dev` in commit `73a9ece`; push to remote failed because GitHub HTTPS credentials are unavailable in this environment and SSH key auth was denied. Shared files still contain unrelated local changes from other CRL units.
 
 ## CRL-20260701-011 — 房源代付模板日期规则简化
 
-- **Status:** ready
-- **Updated:** 2026-07-01 23:35 AEST
+- **Status:** committed
+- **Updated:** 2026-07-02 23:24 AEST
 - **Request:** “这里模板账期那些太复杂了。不要分那么细，我们只需要记录 每月预计收到账单日期。账单due date 应该就是每个月固定30的号。然后记录状态的判断，如果超过预计收到账单日 5天以后还没有记录支付就是逾期”
 - **Outcome:** 房源代付模板不再让用户配置账期开始/结束、付款周期、提前提示天数或自定义付款截止日；模板只要求维护每月预计收到账单日。房源代付 due date 统一按每月 30 号生成，遇到小月按月末 fallback。逾期状态改为预计收到账单日后第 5 天仍未登记支付即逾期。
 
@@ -125,12 +125,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Generated-output note: `npm run build` also refreshed `backend/dist/modules/cleaning.js` from unrelated existing cleaning/task changes; that shared generated file is not part of this release unit and is already tracked by other ledger entries.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
 - Rollback: restore configurable due/period/frequency fields in the front end and revert the property-payable normalization/status logic in `recurring.ts` / `properties.ts`.
-- Git state: uncommitted in root repo; worktree also contains unrelated task-center/cleaning/mobile-action units from other local work.
+- Git state: committed locally to root `Dev` in commit `73a9ece`; push to remote failed because GitHub HTTPS credentials are unavailable in this environment and SSH key auth was denied. Worktree also contains unrelated task-center/cleaning/mobile-action units from other local work.
 
 ## CRL-20260701-009 — 房源代付页面按预览重排
 
-- **Status:** ready
-- **Updated:** 2026-07-01 23:15 AEST
+- **Status:** committed
+- **Updated:** 2026-07-02 23:24 AEST
 - **Request:** “按预览页面优化当前的房源代付页面”
 - **Outcome:** 房源代付页面改成更接近预览的工作台布局：上方保留筛选和关键指标，中间按“待处理 / 日历 / 已付记录 / 模板管理”分区；日历改为单月网格，不再使用连续多月横向滚动，避免和主页面滚动冲突；当天账单详情常驻右侧或在窄屏向下排列。
 
@@ -182,7 +182,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - UX risk: paid/template tabs still share the global room/status filters; an active status filter can intentionally narrow those tabs.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
 - Rollback: restore the previous FullCalendar-based房源代付 layout and old `.property-payable-calendar-*` CSS block from the prior version.
-- Git state: uncommitted in root repo; unrelated task-center/mobile backend files were already modified before this release unit and are not part of this change.
+- Git state: committed locally to root `Dev` in commit `73a9ece`; push to remote failed because GitHub HTTPS credentials are unavailable in this environment and SSH key auth was denied. Unrelated task-center/mobile backend files remain local and are not part of this change.
 
 ## CRL-20260701-005 — 移动端管理视图显示未分配入住检查任务
 
