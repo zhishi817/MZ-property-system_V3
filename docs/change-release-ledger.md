@@ -2,6 +2,188 @@
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
+## CRL-20260702-002 — 挂钥匙状态不被排班保存覆盖
+
+- **Status:** ready
+- **Updated:** 2026-07-02 22:13 AEST
+- **Request:** 修复生产版本挂完钥匙后任务标签又变回“已分配”；`mergeTurnoverTaskPlan()` 不能只用 checkout 状态，任务中心保存排班不能把合并卡片派生 `status` 写回每个 `cleaning_tasks`，并补回归测试和生产数据修复。
+- **Outcome:** turnover 合并卡片现在按统一状态优先级展示底层最高状态，任一底层任务为 `keys_hung` 时不会回落为 `assigned`；任务中心 save-board 普通排班保存不再写 cleaning/work task 的派生 status，只有明确的 `status_action` 才允许改 cleaning status；新增生产修复 SQL 可预览并恢复已被覆盖的 `keys_hung` 脏数据。
+
+### Implementation
+
+- Previous behavior:
+  - `mergeTurnoverTaskPlan()` 用 checkout rows 作为 primary rows 计算合并状态；同日退房仍是 `assigned` 时，入住任务即使已 `keys_hung`，合并卡片仍显示“已分配”。
+  - 任务中心前端保存 payload 会把合并卡片的 `status` 塞进每个 active cleaning task；后端 `/task-center/save-board` 直接 `status = x.status`，导致生产中已挂钥匙的入住任务可被后续“保存安排”覆盖回 `assigned`。
+  - work task 保存也会接受旧 payload 里的 `status`，普通内容/排班保存存在类似状态覆盖风险。
+- New behavior:
+  - `mergedTaskStatus()` 使用状态 rank：`keys_hung` 高于 completed/done、检查完成态、in_progress、assigned、pending；turnover status 基于所有底层 rows，而不是只看 checkout rows。
+  - 任务中心前端不再把普通 cleaning/work assignment snapshot 的 `status` 当作变更；只有详情弹窗明确切换“已挂钥匙/任务已结束”时才附带 `status_action` 与目标 status。
+  - 后端 save-board schema 兼容旧 `status` 字段，但 cleaning status 只有 `status_action` 存在时才写入；work task status 不再从 payload 直接写入，只在显式 assign/unassign 且当前仍是 todo/assigned 时自动维护派单状态。
+  - 新增生产数据修复脚本：先 preview，再 apply；只恢复有 `upload_access_video -> keys_hung` 审计、仍有 lockbox 视频证据、但当前状态被覆盖为普通派单状态的任务。
+- Key decisions:
+  - 不新增数据库字段；`status_action` 是 save-board payload 的显式意图字段。
+  - 生产修复 SQL 使用审计 + 当前视频证据双条件，避免恢复已经删除挂钥匙视频的任务。
+
+### Files / Areas
+
+- `backend/src/lib/cleaningInspection.ts` — modified: turnover 合并状态改为 rank 规则并纳入所有底层任务状态。
+- `backend/src/modules/task_center.ts` — modified: save-board 只通过 `status_action` 写 cleaning status；普通 work assignment 不再写 payload status；保留当前 capability 相关未提交改动。
+- `frontend/src/app/task-center/page.tsx` — modified: cleaning/work 保存 payload 不再提交派生 status；详情显式状态切换才生成 `status_action`。
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — modified: 覆盖 checkout assigned + checkin keys_hung 时合并状态仍为 `keys_hung`。
+- `backend/scripts/tests/test_task_assignment_canonical.ts` — modified: 覆盖旧 save-board payload 带 `status: assigned` 也不能覆盖 DB 中 `keys_hung`。
+- `backend/scripts/backfills/restore_keys_hung_status_2026_07_02_README.md` — added: 生产数据修复步骤与候选条件说明。
+- `backend/scripts/backfills/restore_keys_hung_status_2026_07_02_preview.sql` — added: 查询可能被覆盖的 `keys_hung` 候选任务，不写数据。
+- `backend/scripts/backfills/restore_keys_hung_status_2026_07_02_apply.sql` — added: 事务内把确认候选恢复为 `keys_hung` 并返回更新记录。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: `/task-center/save-board` 的 `cleaning_assignments[]` 新增可选 `status_action`；旧 `status` 字段仍兼容接收，但没有 `status_action` 时会被忽略，不再作为普通排班保存的状态来源。
+- Database / migration: no schema migration. Production data repair is optional SQL backfill under `backend/scripts/backfills`; must run preview before apply.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: shares `backend/src/modules/task_center.ts` and `frontend/src/app/task-center/page.tsx` with `CRL-20260701-012`; selective release requires hunk-level staging or explicit combined scope.
+
+### Validation
+
+- `git diff --check -- backend/src/lib/cleaningInspection.ts backend/src/modules/task_center.ts frontend/src/app/task-center/page.tsx backend/scripts/tests/test_cleaning_inspection_merge.ts backend/scripts/tests/test_task_assignment_canonical.ts backend/scripts/backfills/restore_keys_hung_status_2026_07_02_README.md backend/scripts/backfills/restore_keys_hung_status_2026_07_02_preview.sql backend/scripts/backfills/restore_keys_hung_status_2026_07_02_apply.sql` — passed.
+- `npm --prefix backend run test:cleaning-inspection-merge` — passed: `test_cleaning_inspection_merge: ok`.
+- `npm --prefix backend run build` — passed: `tsc -p .`.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_task_assignment_canonical.ts` in `backend` — failed in sandbox first due to DNS `ENOTFOUND` for configured Neon host; rerun with approved network access passed: `test_task_assignment_canonical: ok`.
+- `npm --prefix frontend run lint` — passed with existing repository warnings; no errors.
+- `npm --prefix frontend run build` — passed; existing Browserslist, ESLint, and Recharts static-generation warnings remain.
+
+### Risks / Release Notes
+
+- Production repair risk: apply SQL changes real task statuses; run preview first and review candidate task IDs before apply. The script intentionally skips rows without current lockbox video evidence.
+- Behavior risk: generic save-board no longer changes task status from old `status` payloads; status changes must come from explicit action semantics.
+- Release risk: shared worktree contains unrelated ready/in-progress units in the same task-center files; do not broad-stage this unit without hunk review.
+- Rollback: restore old `mergedTaskStatus()` ordering, remove `status_action` handling and front-end payload filtering, and do not run or revert the production apply SQL if already executed.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted in root repo; shared files also contain unrelated local changes from other CRL units.
+
+## CRL-20260701-011 — 房源代付模板日期规则简化
+
+- **Status:** ready
+- **Updated:** 2026-07-01 23:35 AEST
+- **Request:** “这里模板账期那些太复杂了。不要分那么细，我们只需要记录 每月预计收到账单日期。账单due date 应该就是每个月固定30的号。然后记录状态的判断，如果超过预计收到账单日 5天以后还没有记录支付就是逾期”
+- **Outcome:** 房源代付模板不再让用户配置账期开始/结束、付款周期、提前提示天数或自定义付款截止日；模板只要求维护每月预计收到账单日。房源代付 due date 统一按每月 30 号生成，遇到小月按月末 fallback。逾期状态改为预计收到账单日后第 5 天仍未登记支付即逾期。
+
+### Implementation
+
+- Previous behavior:
+  - 模板表单暴露付款截止日、预计收到账单日、账期开始/结束、付款周期和提前提示天数，配置过细。
+  - 后端房源代付逾期主要按付款 due date 判断；账单未收到另按预计收账单日当天之后标记。
+  - 房源页模板预设也展示同一套复杂账期/周期字段。
+- New behavior:
+  - 房源代付页面和房源页模板预设只保留“预计收到账单日”输入；付款截止日只展示固定“每月 30 号”。
+  - 后端创建/更新房源代付模板时强制归一化为 `due_day_of_month=30`、`frequency_months=1`、账期字段为空、提前提示默认 3。
+  - 月度快照和 workbench 展示使用固定 30 号 due date；确认本月账单时不再保存账期或自定义 due date。
+  - workflow 逾期判断改为 `bill_expected_date + 5 days < today` 且未 paid；只要未登记支付，无论是否已确认金额，都进入逾期。
+  - 模板预计收到账单日变更会同步更新未来未付快照的 `bill_expected_date`。
+- Key decisions:
+  - 不删除数据库列，保持历史数据和接口兼容；只是对房源代付业务不再使用这些复杂字段。
+  - 保留付款方式、收款方、BSB、Account、BPAY、PayID、Reference 等支付信息字段，因为登记支付仍需要。
+
+### Files / Areas
+
+- `backend/src/modules/recurring.ts` — modified: 固定房源代付 due day、模板 payload 归一化、workbench 逾期状态改为预计收账单日 + 5 天未支付、确认账单不再写账期/自定义 due date、未来未付快照同步预计收账单日。
+- `backend/src/modules/properties.ts` — modified: 房源页同步代付模板时固定 due day/每月/空账期，并允许只提交预计收到账单日。
+- `backend/dist/modules/properties.js` — modified: `npm run build` 生成的对应后端输出。
+- `backend/scripts/tests/test_property_payable_bill_dates.ts` — modified: 覆盖固定 due day 和空账期输出。
+- `backend/scripts/tests/test_property_payable_template_sync.ts` — modified: 把业务字段变化覆盖点改为预计收到账单日。
+- `frontend/src/lib/propertyPayables.ts` — modified: 前端默认/归一化模板固定 due day、每月、空账期。
+- `frontend/src/app/finance/property-payables/page.tsx` — modified: 模板抽屉和确认账单抽屉移除账期/周期/提前提示/自定义 due date；模板管理列表显示预计收到账单日和固定 due day。
+- `frontend/src/components/PropertyPayableTemplatesForm.tsx` — modified: 房源页复用模板表单只保留预计收到账单日和固定 due day 展示。
+- `frontend/src/app/properties/page.tsx` — modified: 房源详情代付模板展示移除账期/周期，显示预计收到账单日和固定 due day。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: existing fields remain accepted, but property-payable create/update normalizes due day to 30, frequency to monthly, and ignores bill-period fields for active behavior.
+- Database / migration: none; existing columns remain.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: builds on `CRL-20260701-009` UI workbench layout and `CRL-20260630-003` bill-date backend fields.
+
+### Validation
+
+- `rg -n "账期开始|账期结束|费用账期|付款周期|提前提示|PROPERTY_PAYABLE_FREQUENCY_OPTIONS|BILL_MONTH_OFFSET_OPTIONS|formatBillPeriod" frontend/src/app/finance/property-payables/page.tsx frontend/src/components/PropertyPayableTemplatesForm.tsx frontend/src/app/properties/page.tsx` — passed: no user-visible stale complex-field labels remain.
+- `git diff --check -- backend/src/modules/recurring.ts backend/src/modules/properties.ts backend/scripts/tests/test_property_payable_bill_dates.ts backend/scripts/tests/test_property_payable_template_sync.ts frontend/src/app/finance/property-payables/page.tsx frontend/src/components/PropertyPayableTemplatesForm.tsx frontend/src/app/properties/page.tsx frontend/src/lib/propertyPayables.ts` — passed.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_property_payable_bill_dates.ts` in `backend` — passed: `test_property_payable_bill_dates: ok`.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_property_payable_template_sync.ts` in `backend` — passed: `test_property_payable_template_sync: ok`.
+- `npm run build` in `backend` — failed once: new generic helper typing in `recurring.ts` produced TS2339 property errors; fixed by making the helper accept `Record<string, any>`.
+- `npm run build` in `backend` — passed after the helper typing fix.
+- `npm run lint` in `frontend` — passed with existing repository warnings, 0 errors.
+- `npm run test` in `frontend` — passed: 36 test files / 156 tests.
+- `npm run build` in `frontend` — passed; existing Browserslist, ESLint, and Recharts static-generation warnings remain.
+
+### Risks / Release Notes
+
+- Data compatibility: existing snapshots may still store old bill-period values in DB, but workbench/confirmation no longer displays or updates them for this workflow.
+- Status semantics: unpaid rows become overdue based on expected bill date + 5 days, even if amount was already confirmed; this matches the requested “未记录支付即逾期” rule.
+- Generated-output note: `npm run build` also refreshed `backend/dist/modules/cleaning.js` from unrelated existing cleaning/task changes; that shared generated file is not part of this release unit and is already tracked by other ledger entries.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Rollback: restore configurable due/period/frequency fields in the front end and revert the property-payable normalization/status logic in `recurring.ts` / `properties.ts`.
+- Git state: uncommitted in root repo; worktree also contains unrelated task-center/cleaning/mobile-action units from other local work.
+
+## CRL-20260701-009 — 房源代付页面按预览重排
+
+- **Status:** ready
+- **Updated:** 2026-07-01 23:15 AEST
+- **Request:** “按预览页面优化当前的房源代付页面”
+- **Outcome:** 房源代付页面改成更接近预览的工作台布局：上方保留筛选和关键指标，中间按“待处理 / 日历 / 已付记录 / 模板管理”分区；日历改为单月网格，不再使用连续多月横向滚动，避免和主页面滚动冲突；当天账单详情常驻右侧或在窄屏向下排列。
+
+### Implementation
+
+- Previous behavior:
+  - 页面同时显示统计、连续日历、表格和抽屉，信息密度高但主次不清。
+  - 日历依赖 FullCalendar 和连续月份横向滚动，嵌套滚动区域容易与页面滚动冲突。
+  - 当天账单需要打开抽屉查看，待处理优先级不明显。
+- New behavior:
+  - 新增工作台视图切换：待处理队列、单月日历、已付记录、模板管理分别承载不同任务。
+  - 待处理队列按实时状态优先级分组：付款逾期、账单未收到、待确认账单、付款快到期、待付款。
+  - 单月日历改为原生 CSS grid，点击日期直接更新右侧当天账单列表；窄屏下改成单列，减少嵌套滑动冲突。
+  - 房源筛选和状态筛选会同步影响统计、队列、日历和记录列表。
+  - 2026-07-01 23:14 AEST update: 顶部右侧操作区改为“上一月月份 / 当前月 / 下一月月份 / 房源筛选 / 状态筛选 / 新增代付模板”同排布局，匹配预览图三；统计卡片改为 5 等分 grid，避免桌面端右侧留空。
+- Key decisions:
+  - 本次只调整前端页面结构和样式，不改后端状态规则、接口或数据库。
+  - 保留既有详情、确认账单、上传发票、登记支付、删除模板等动作，避免改变业务流程。
+  - 不再引入 FullCalendar 到房源代付页面，降低滚动和依赖复杂度。
+
+### Files / Areas
+
+- `frontend/src/app/finance/property-payables/page.tsx` — modified: 重排房源代付主页面，移除 FullCalendar 使用，新增工作台视图、状态分组、单月日历和当天详情面板。
+- `frontend/src/app/globals.css` — modified: 替换旧房源代付连续日历样式，新增工作台、队列卡片、单月日历、顶部操作区、统计卡 5 等分和响应式布局样式。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none; removes this page's runtime use of `@fullcalendar/react` imports, but does not uninstall packages.
+- Related units: follows `CRL-20260630-003` / `CRL-20260630-005` because it displays the bill workflow fields they added; can ship independently from the task-action units on 2026-07-01.
+
+### Validation
+
+- `rg -n "FullCalendar|calendarScale|calendarStrip|calendarEvents|calendarTitle|calendarPeriod|dayOpen|currentCalendar|dayGridPlugin|interactionPlugin|property-payable-calendar-strip|property-payable-calendar-period" frontend/src/app/finance/property-payables/page.tsx frontend/src/app/globals.css` — passed: no stale房源代付 page references remained; only an unrelated global FullCalendar comment outside this page matched.
+- `npm run lint` in `frontend` — passed with existing warnings, 0 errors.
+- `git diff --check -- frontend/src/app/finance/property-payables/page.tsx frontend/src/app/globals.css` — passed.
+- `npm run build` in `frontend` — passed; existing repository warnings remain, including ESLint image/hook warnings and Recharts static-generation width warnings.
+- `git diff --check -- frontend/src/app/finance/property-payables/page.tsx frontend/src/app/globals.css` — passed after the 23:14 layout follow-up.
+- `npm run lint` in `frontend` — passed after the 23:14 layout follow-up; existing repository warnings remain, 0 errors.
+- `npm run test` in `frontend` — passed after the 23:14 layout follow-up; 36 test files / 156 tests passed.
+- `npm run build` in `frontend` — passed after the 23:14 layout follow-up; existing Browserslist, ESLint, and Recharts static-generation warnings remain.
+
+### Risks / Release Notes
+
+- Runtime risk: template management is still based on the workbench rows returned for the selected month, not a separate all-template API; templates without a current-month row may still require the existing create/edit entry path.
+- UX risk: paid/template tabs still share the global room/status filters; an active status filter can intentionally narrow those tabs.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Rollback: restore the previous FullCalendar-based房源代付 layout and old `.property-payable-calendar-*` CSS block from the prior version.
+- Git state: uncommitted in root repo; unrelated task-center/mobile backend files were already modified before this release unit and are not part of this change.
+
 ## CRL-20260701-005 — 移动端管理视图显示未分配入住检查任务
 
 - **Status:** pushed

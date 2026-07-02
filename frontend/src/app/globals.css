@@ -515,185 +515,439 @@ body :where(.ant-modal-body, .ant-drawer-body) :where(.ant-row, .ant-col, .ant-f
   background: #fff7e6;
 }
 
-.property-payable-calendar-strip {
-  display: flex;
-  gap: 16px;
-  overflow-x: auto;
-  overflow-y: auto;
+.property-payables-page > .ant-card-head {
+  gap: 12px;
+}
+
+.property-payables-page > .ant-card-head .ant-card-head-wrapper {
   align-items: flex-start;
-  max-height: min(76vh, 780px);
-  padding-bottom: 8px;
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior: contain;
-  scroll-snap-type: x mandatory;
+  gap: 12px;
 }
 
-.property-payable-calendar-strip::-webkit-scrollbar {
-  height: 10px;
+.property-payables-page > .ant-card-head .ant-card-head-title {
+  padding: 18px 0 12px;
 }
 
-.property-payable-calendar-strip::-webkit-scrollbar-thumb {
-  background: #d9d9d9;
-  border-radius: 999px;
+.property-payables-page > .ant-card-head .ant-card-extra {
+  padding: 12px 0;
 }
 
-.property-payable-calendar-period-card {
-  flex: 0 0 auto;
-  width: min(1040px, calc(100vw - 112px));
-  min-width: 320px;
-  max-height: min(76vh, 760px);
-  border: 1px solid #f0f0f0;
-  border-radius: 16px;
-  background: #fff;
-  padding: 10px;
+.property-payables-header-actions {
   display: flex;
-  flex-direction: column;
-  scroll-snap-align: center;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
-.property-payable-calendar-period-card.is-current {
-  border-color: #91caff;
-  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.08);
+.property-payables-header-select {
+  width: 118px;
 }
 
-.property-payable-calendar-period-heading {
-  flex: 0 0 auto;
-  margin-bottom: 8px;
-  padding: 0 4px;
-  color: #262626;
-  font-size: 14px;
-  font-weight: 700;
+.property-payables-header-select--property {
+  width: 120px;
 }
 
-.property-payable-calendar {
-  flex: 1 1 auto;
-  min-height: 0;
-  max-height: min(70vh, 700px);
-  overflow: auto;
-  border: 1px solid #f0f0f0;
-  border-radius: 8px;
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior: contain;
+.property-payables-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
 }
 
-.property-payable-calendar::-webkit-scrollbar,
-.property-payable-calendar .fc-daygrid-day-events::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+.property-payables-metrics > .ant-card {
+  min-width: 0;
 }
 
-.property-payable-calendar::-webkit-scrollbar-thumb,
-.property-payable-calendar .fc-daygrid-day-events::-webkit-scrollbar-thumb {
-  background: #d9d9d9;
-  border-radius: 999px;
+.property-payables-metrics > .ant-card > .ant-card-body {
+  min-height: 88px;
 }
 
-.property-payable-calendar .fc {
-  box-shadow: none;
-  min-width: 720px;
+.property-payables-workbench-card {
+  overflow: hidden;
 }
 
-.property-payable-calendar .fc-toolbar {
+.property-payables-workbench-tabs {
+  min-height: 52px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #f0f0f0;
+  background: #fbfcfd;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.property-payables-workbench-hint {
+  color: #8c8c8c;
+  font-size: 12px;
+}
+
+.property-payables-workbench {
+  height: min(78vh, 780px);
+  min-height: 620px;
+  display: grid;
+  grid-template-columns: minmax(340px, 420px) minmax(520px, 1fr) minmax(320px, 380px);
+  overflow: hidden;
+}
+
+.property-payables-workbench--calendar {
+  grid-template-columns: minmax(620px, 1fr) minmax(340px, 400px);
+}
+
+.property-payables-workbench--calendar .property-payables-queue-panel {
   display: none;
 }
 
-.property-payable-calendar .fc-daygrid-day-frame {
-  min-height: 110px;
-  height: 132px;
-  overflow: hidden;
+.property-payables-panel {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #f0f0f0;
+  background: #fff;
 }
 
-.property-payable-calendar .fc-daygrid-day-events {
-  max-height: 88px;
+.property-payables-panel:last-child {
+  border-right: 0;
+}
+
+.property-payables-panel-header {
+  min-height: 58px;
+  padding: 12px 14px;
+  border-bottom: 1px solid #f0f0f0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.property-payables-panel-header strong {
+  display: block;
+  color: #262626;
+  font-size: 15px;
+}
+
+.property-payables-panel-header span {
+  display: block;
+  color: #8c8c8c;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.property-payables-panel-scroll {
+  min-height: 0;
   overflow-y: auto;
-  padding-right: 4px;
   overscroll-behavior: contain;
+  padding: 12px;
+  background: #fcfcfd;
 }
 
-.property-payable-calendar--week .fc-daygrid-day-frame {
-  height: 420px;
+.property-payables-queue-group {
+  margin-bottom: 14px;
 }
 
-.property-payable-calendar--week .fc-daygrid-day-events {
-  max-height: 370px;
+.property-payables-queue-title {
+  margin: 0 0 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #262626;
+  font-weight: 700;
 }
 
-.property-payable-calendar--day .fc-daygrid-day-frame {
-  height: 520px;
+.property-payable-work-card {
+  margin-bottom: 8px;
 }
 
-.property-payable-calendar--day .fc-daygrid-day-events {
-  max-height: 470px;
+.property-payable-work-card--red {
+  border-color: #ffccc7;
+  background: #fffafa;
 }
 
-.property-payable-calendar .fc-event {
-  cursor: pointer;
-  border-radius: 10px;
-  border-width: 1.5px;
-  padding: 0;
-  opacity: 1 !important;
+.property-payable-work-card--amber {
+  border-color: #ffe7ba;
+  background: #fffdf7;
 }
 
-.property-payable-calendar .fc-event-main {
-  padding: 0;
-  color: inherit !important;
+.property-payable-work-card--blue {
+  border-color: #bae0ff;
+  background: #f7fbff;
 }
 
-.property-payable-calendar .fc-daygrid-event {
-  margin-top: 4px !important;
+.property-payable-work-card--green {
+  border-color: #b7eb8f;
+  background: #f6ffed;
 }
 
-.property-payable-calendar .fc-event-title,
-.property-payable-calendar .fc-event-time,
-.property-payable-calendar .fc-event-main-frame,
-.property-payable-calendar .fc-event-main-frame * {
-  color: inherit !important;
+.property-payable-work-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
 }
 
-.property-payable-event-card {
-  padding: 6px 8px;
+.property-payable-work-room {
+  color: #262626;
+  font-weight: 800;
   line-height: 1.25;
-  color: inherit !important;
 }
 
-.property-payable-event-title {
-  font-size: 13px;
+.property-payable-work-vendor {
+  margin-top: 3px;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.property-payable-work-amount {
+  color: #262626;
   font-weight: 800;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: inherit !important;
 }
 
-.property-payable-event-subtitle {
+.property-payable-work-meta {
+  margin-bottom: 10px;
+}
+
+.property-payable-work-meta .ant-descriptions-item-label,
+.property-payable-work-meta .ant-descriptions-item-content {
+  padding-bottom: 4px !important;
   font-size: 12px;
+}
+
+.property-payables-calendar-shell {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 12px;
+  background: #fcfcfd;
+}
+
+.property-payables-weekdays,
+.property-payables-month-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.property-payables-weekdays {
+  border: 1px solid #f0f0f0;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  overflow: hidden;
+  background: #fafafa;
+}
+
+.property-payables-weekdays div {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-right: 1px solid #f0f0f0;
+  color: #4b5563;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.property-payables-weekdays div:last-child {
+  border-right: 0;
+}
+
+.property-payables-month-grid {
+  border-top: 1px solid #f0f0f0;
+  border-left: 1px solid #f0f0f0;
+  background: #fff;
+}
+
+.property-payable-month-day {
+  min-width: 0;
+  min-height: 112px;
+  padding: 8px;
+  border: 0;
+  border-right: 1px solid #f0f0f0;
+  border-bottom: 1px solid #f0f0f0;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.property-payable-month-day:hover {
+  background: #f7fbff;
+}
+
+.property-payable-month-day.is-muted {
+  background: #fafafa;
+  color: #bfbfbf;
+}
+
+.property-payable-month-day.is-selected {
+  outline: 2px solid #1677ff;
+  outline-offset: -2px;
+  background: #f0f7ff;
+}
+
+.property-payable-month-date {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #4b5563;
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.property-payable-month-count {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #fff1f0;
+  color: #cf1322;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+}
+
+.property-payable-month-events {
+  display: block;
+}
+
+.property-payable-month-pill {
+  display: block;
+  width: 100%;
+  margin-bottom: 5px;
+  padding: 4px 6px;
+  border-radius: 6px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  opacity: 1;
-  color: inherit !important;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
 }
 
-.property-payable-calendar .property-payable-event--overdue {
-  background: #ffe0dc;
-  border-color: #ff7875;
-  color: #7f1d1d;
+.property-payable-month-pill--red {
+  border: 1px solid #ffccc7;
+  background: #fff1f0;
+  color: #a8071a;
 }
 
-.property-payable-calendar .property-payable-event--due-soon {
-  background: #ffefcc;
-  border-color: #ffb84d;
-  color: #7c4300;
+.property-payable-month-pill--amber {
+  border: 1px solid #ffe58f;
+  background: #fffbe6;
+  color: #ad6800;
 }
 
-.property-payable-calendar .property-payable-event--normal {
-  background: #ffffff;
-  border-color: #d9d9d9;
-  color: #262626;
+.property-payable-month-pill--blue {
+  border: 1px solid #91caff;
+  background: #e6f4ff;
+  color: #0958d9;
 }
 
-.property-payable-calendar .property-payable-event--paid {
-  background: #e8f8d9;
-  border-color: #95de64;
-  color: #1f5f1f;
+.property-payable-month-pill--green {
+  border: 1px solid #b7eb8f;
+  background: #f6ffed;
+  color: #237804;
+}
+
+.property-payable-month-pill--gray {
+  border: 1px solid #d9d9d9;
+  background: #fafafa;
+  color: #595959;
+}
+
+.property-payable-month-more {
+  color: #8c8c8c;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.property-payables-table-panel {
+  padding: 12px;
+}
+
+@media (max-width: 1280px) {
+  .property-payables-page > .ant-card-head .ant-card-head-wrapper {
+    flex-direction: column;
+  }
+
+  .property-payables-page > .ant-card-head .ant-card-head-wrapper,
+  .property-payables-page > .ant-card-head .ant-card-extra {
+    width: 100%;
+  }
+
+  .property-payables-header-actions {
+    justify-content: flex-start;
+  }
+
+  .property-payables-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .property-payables-workbench {
+    height: auto;
+    min-height: 0;
+    grid-template-columns: 1fr;
+    overflow: visible;
+  }
+
+  .property-payables-panel {
+    border-right: 0;
+    border-bottom: 1px solid #f0f0f0;
+  }
+
+  .property-payables-panel-scroll,
+  .property-payables-calendar-shell {
+    max-height: 560px;
+  }
+}
+
+@media (max-width: 720px) {
+  .property-payables-header-actions {
+    align-items: stretch;
+  }
+
+  .property-payables-header-actions > .ant-btn,
+  .property-payables-header-select {
+    flex: 1 1 calc(50% - 8px);
+    min-width: 0;
+  }
+
+  .property-payables-header-select--property {
+    width: auto;
+  }
+
+  .property-payables-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .property-payables-workbench-tabs {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .property-payables-workbench-tabs .ant-segmented {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  .property-payables-weekdays div {
+    min-height: 30px;
+    font-size: 11px;
+  }
+
+  .property-payable-month-day {
+    min-height: 72px;
+    padding: 6px;
+  }
+
+  .property-payable-month-pill {
+    display: none;
+  }
+
+  .property-payables-workbench--queue .property-payables-calendar-panel,
+  .property-payables-workbench--queue .property-payables-day-panel {
+    display: none;
+  }
 }

@@ -262,6 +262,31 @@ function isImportantTaskStatus(statusRaw: any) {
     || status === 'keys_hung'
 }
 
+function assignmentStatusAction(value: any): 'set_keys_hung' | 'clear_keys_hung' | 'set_completed' | 'clear_completed' | null {
+  const action = lower(value)
+  if (action === 'set_keys_hung' || action === 'clear_keys_hung' || action === 'set_completed' || action === 'clear_completed') return action
+  return null
+}
+
+function fallbackCleaningStatusForAssignment(assignment: any, before: any) {
+  const cleanerAction = assignmentAction(assignment?.cleaner_assignment_action)
+  const assigneeAction = assignmentAction(assignment?.assignee_assignment_action)
+  const inspectorAction = assignmentAction(assignment?.inspector_assignment_action)
+  const nextCleaner = cleanerAction ? nullableText(assignment?.cleaner_id) : nullableText(before?.cleaner_id || before?.assignee_id)
+  const nextAssignee = assigneeAction ? nullableText(assignment?.assignee_id) : nextCleaner
+  const nextInspector = inspectorAction ? nullableText(assignment?.inspector_id) : nullableText(before?.inspector_id)
+  return nextCleaner || nextAssignee || nextInspector ? 'assigned' : 'pending'
+}
+
+function cleaningStatusFromAction(before: any, assignment: any): string | null {
+  const action = assignmentStatusAction(assignment?.status_action)
+  if (!action) return null
+  if (action === 'set_keys_hung') return 'keys_hung'
+  if (action === 'set_completed') return 'completed'
+  if (action === 'clear_keys_hung' || action === 'clear_completed') return fallbackCleaningStatusForAssignment(assignment, before)
+  return null
+}
+
 function buildCleaningSaveDiff(before: any, assignment: any): TaskSaveDiff | null {
   const taskId = text(assignment?.task_id)
   if (!taskId || !before) return null
@@ -273,9 +298,10 @@ function buildCleaningSaveDiff(before: any, assignment: any): TaskSaveDiff | nul
   const nextAssignee = assigneeAction ? nullableText(assignment.assignee_id) : nextCleaner
   const oldInspector = nullableText(before.inspector_id)
   const inspectorAction = assignmentAction(assignment.inspector_assignment_action)
+  const effectiveStatusForInspector = lower(cleaningStatusFromAction(before, assignment) || before.status || assignment.status)
   const nextInspector = !inspectorAction
     ? oldInspector
-    : lower(assignment.status) === 'keys_hung' && !nullableText(assignment.inspector_id)
+    : effectiveStatusForInspector === 'keys_hung' && !nullableText(assignment.inspector_id)
     ? oldInspector
     : nullableText(assignment.inspector_id)
   const oldInspectionMode = nullableText(before.inspection_mode)
@@ -285,7 +311,7 @@ function buildCleaningSaveDiff(before: any, assignment: any): TaskSaveDiff | nul
   const oldInspectionDueDate = dayText(before.inspection_due_date)
   const nextInspectionDueDate = dayText(assignment.inspection_due_date)
   const oldStatus = nullableText(before.status)
-  const nextStatus = nullableText(assignment.status)
+  const nextStatus = cleaningStatusFromAction(before, assignment)
   const changedFields: string[] = []
   const pushChanges: string[] = []
   const recipients: any[] = []
@@ -319,10 +345,9 @@ function buildCleaningSaveDiff(before: any, assignment: any): TaskSaveDiff | nul
     changedFields.push('inspection_due_date')
     pushChanges.push('inspection')
   }
-  if (oldStatus !== nextStatus) {
+  if (nextStatus && oldStatus !== nextStatus) {
     changedFields.push('status')
-    const assignmentOnlyStatus = cleanerChanged && lower(oldStatus) !== lower(nextStatus) && lower(nextStatus) === 'assigned'
-    if (!assignmentOnlyStatus && isImportantTaskStatus(nextStatus)) {
+    if (isImportantTaskStatus(nextStatus)) {
       pushChanges.push('status')
     }
   }
@@ -354,11 +379,9 @@ function buildWorkSaveDiff(before: any, assignment: any): TaskSaveDiff | null {
   const oldScheduledDate = dayText(before.scheduled_date)
   const nextScheduledDate = assignment.scheduled_date == null ? oldScheduledDate : dayText(assignment.scheduled_date)
   const oldStatus = nullableText(before.status)
-  const nextStatus = nullableText(assignment.status) || (
-    ['todo', 'assigned'].includes(lower(before.status))
-      ? (nextAssignee ? 'assigned' : 'todo')
-      : oldStatus
-  )
+  const nextStatus = assigneeAction && ['todo', 'assigned'].includes(lower(before.status))
+    ? (nextAssignee ? 'assigned' : 'todo')
+    : oldStatus
   const oldUrgency = nullableText(before.urgency)
   const nextUrgency = nullableText(assignment.urgency) || oldUrgency
   const changedFields: string[] = []
@@ -385,8 +408,7 @@ function buildWorkSaveDiff(before: any, assignment: any): TaskSaveDiff | null {
   }
   if (oldStatus !== nextStatus) {
     changedFields.push('status')
-    const assignmentOnlyStatus = assigneeChanged && ['todo', 'assigned'].includes(lower(oldStatus)) && ['todo', 'assigned'].includes(lower(nextStatus))
-    if (!assignmentOnlyStatus && isImportantTaskStatus(nextStatus)) {
+    if (isImportantTaskStatus(nextStatus)) {
       pushChanges.push('status')
     }
   }
@@ -1919,7 +1941,8 @@ const saveBoardSchema = z.object({
     inspection_mode: z.enum(['pending_decision', 'same_day', 'deferred', 'self_complete', 'checked_done']),
     inspection_scope: z.enum(['inspect_and_hang', 'password_only']).nullable().optional(),
     inspection_due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
-    status: z.string().min(1),
+    status_action: z.enum(['set_keys_hung', 'clear_keys_hung', 'set_completed', 'clear_completed']).optional(),
+    status: z.string().min(1).optional(),
   })).default([]),
   work_assignments: z.array(z.object({
     task_id: z.string().min(1),
@@ -2084,7 +2107,14 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
           )
           const beforeById = new Map<string, any>((beforeResult.rows || []).map((row: any) => [String(row.id), row]))
           for (const assignment of payload.cleaning_assignments) {
-            const diff = buildCleaningSaveDiff(beforeById.get(String(assignment.task_id)), assignment)
+            const before = beforeById.get(String(assignment.task_id))
+            const actionStatus = cleaningStatusFromAction(before, assignment)
+            if (actionStatus) {
+              ;(assignment as any).status = actionStatus
+            } else {
+              delete (assignment as any).status
+            }
+            const diff = buildCleaningSaveDiff(before, assignment)
             if (diff) cleaningDiffById.set(diff.taskId, diff)
           }
         }
@@ -2108,6 +2138,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
           )
           const beforeById = new Map<string, any>((beforeResult.rows || []).map((row: any) => [String(row.id), row]))
           for (const assignment of payload.work_assignments) {
+            delete (assignment as any).status
             const diff = buildWorkSaveDiff(beforeById.get(String(assignment.task_id)), assignment)
             if (diff) workDiffById.set(diff.taskId, diff)
           }
@@ -2188,14 +2219,19 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                    END,
                    inspector_id = CASE
                      WHEN COALESCE(x.inspector_assignment_action, '') NOT IN ('assign', 'unassign') THEN task.inspector_id
-                     WHEN lower(COALESCE(x.status, '')) = 'keys_hung' AND x.inspector_id IS NULL
+                     WHEN (x.status_action = 'set_keys_hung' OR lower(COALESCE(task.status, '')) = 'keys_hung') AND x.inspector_id IS NULL
                        THEN task.inspector_id
                      ELSE x.inspector_id
                    END,
                  inspection_mode = x.inspection_mode,
                  inspection_scope = x.inspection_scope,
                  inspection_due_date = CASE WHEN x.inspection_due_date IS NULL THEN NULL ELSE x.inspection_due_date::date END,
-                 status = x.status,
+                 status = CASE
+                   WHEN x.status_action IN ('set_keys_hung', 'clear_keys_hung', 'set_completed', 'clear_completed')
+                    AND NULLIF(COALESCE(x.status, ''), '') IS NOT NULL
+                     THEN x.status
+                   ELSE task.status
+                 END,
                  updated_at = now()
              FROM jsonb_to_recordset($1::jsonb) AS x(
                  task_id text,
@@ -2208,6 +2244,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                  inspection_mode text,
                  inspection_scope text,
                  inspection_due_date text,
+                 status_action text,
                status text
              )
              WHERE task.id::text = x.task_id
@@ -2225,14 +2262,18 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                    )
                    OR task.inspector_id IS DISTINCT FROM CASE
                      WHEN COALESCE(x.inspector_assignment_action, '') NOT IN ('assign', 'unassign') THEN task.inspector_id
-                     WHEN lower(COALESCE(x.status, '')) = 'keys_hung' AND x.inspector_id IS NULL
+                     WHEN (x.status_action = 'set_keys_hung' OR lower(COALESCE(task.status, '')) = 'keys_hung') AND x.inspector_id IS NULL
                        THEN task.inspector_id
                      ELSE x.inspector_id
                    END
                  OR task.inspection_mode IS DISTINCT FROM x.inspection_mode
                  OR task.inspection_scope IS DISTINCT FROM x.inspection_scope
                  OR task.inspection_due_date::text IS DISTINCT FROM x.inspection_due_date
-                 OR task.status IS DISTINCT FROM x.status
+                 OR (
+                   x.status_action IN ('set_keys_hung', 'clear_keys_hung', 'set_completed', 'clear_completed')
+                   AND NULLIF(COALESCE(x.status, ''), '') IS NOT NULL
+                   AND task.status IS DISTINCT FROM x.status
+                 )
                )
              RETURNING task.*`,
             [JSON.stringify(payload.cleaning_assignments)],
@@ -2250,8 +2291,6 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                      ELSE task.assignee_id
                    END,
                    status = CASE
-                     WHEN NULLIF(COALESCE(x.status, ''), '') IS NOT NULL
-                       THEN x.status
                      WHEN lower(COALESCE(task.status, 'todo')) IN ('todo', 'assigned')
                        THEN CASE
                          WHEN x.assignee_assignment_action IN ('assign', 'unassign')
@@ -2284,12 +2323,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                    )
                  OR task.urgency IS DISTINCT FROM COALESCE(NULLIF(x.urgency, ''), task.urgency)
                  OR (
-                   NULLIF(COALESCE(x.status, ''), '') IS NOT NULL
-                   AND task.status IS DISTINCT FROM x.status
-                 )
-                 OR (
                      lower(COALESCE(task.status, 'todo')) IN ('todo', 'assigned')
-                     AND NULLIF(COALESCE(x.status, ''), '') IS NULL
                      AND x.assignee_assignment_action IN ('assign', 'unassign')
                      AND task.status IS DISTINCT FROM CASE WHEN NULLIF(COALESCE(x.assignee_id, ''), '') IS NULL THEN 'todo' ELSE 'assigned' END
                    )
@@ -2568,7 +2602,9 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
         }
         task.inspection_mode = assignment.inspection_mode
         task.inspection_due_date = assignment.inspection_due_date
-        task.status = assignment.status
+        if (assignmentStatusAction((assignment as any).status_action) && (assignment as any).status) {
+          task.status = (assignment as any).status
+        }
     }
     const workById = new Map(payload.work_assignments.map((item) => [item.task_id, item]))
       for (const task of (((db as any).workTasks || []) as any[])) {

@@ -117,6 +117,7 @@ type TaskCenterTask = {
   skip_bucket?: string | null
   current_row_key?: string
   current_subrow_key?: string
+  status_action?: CleaningStatusAction | null
 }
 
 type TaskCenterSubrow = {
@@ -172,6 +173,8 @@ type TaskCenterDay = {
   }
 }
 
+type CleaningStatusAction = 'set_keys_hung' | 'clear_keys_hung' | 'set_completed' | 'clear_completed'
+
 type CleaningAssignmentSnapshot = {
   assignee_id: string | null
   cleaner_id: string | null
@@ -179,7 +182,8 @@ type CleaningAssignmentSnapshot = {
   inspection_mode: TaskCenterTask['inspection_mode']
   inspection_scope: TaskCenterTask['inspection_scope']
   inspection_due_date: string | null
-  status: string
+  status_action: CleaningStatusAction | null
+  status: string | null
 }
 
 type WorkAssignmentSnapshot = {
@@ -187,7 +191,6 @@ type WorkAssignmentSnapshot = {
   title: string
   summary: string | null
   scheduled_date: string | null
-  status: string
   urgency: string | null
 }
 
@@ -354,17 +357,17 @@ function cleaningAssignmentSnapshot(task: TaskCenterTask): CleaningAssignmentSna
     inspection_mode: task.inspection_mode || 'pending_decision',
     inspection_scope: task.inspection_scope || null,
     inspection_due_date: task.inspection_due_date || null,
-    status: task.status,
+    status_action: task.status_action || null,
+    status: task.status_action ? task.status : null,
   }
 }
 
-function workAssignmentSnapshot(task: Pick<TaskCenterTask, 'assignee_id' | 'title' | 'summary' | 'detail' | 'task_date' | 'status' | 'urgency'>): WorkAssignmentSnapshot {
+function workAssignmentSnapshot(task: Pick<TaskCenterTask, 'assignee_id' | 'title' | 'summary' | 'detail' | 'task_date' | 'urgency'>): WorkAssignmentSnapshot {
   return {
     assignee_id: task.assignee_id || null,
     title: String(task.title || '').trim(),
     summary: String(task.summary || task.detail || '').trim() || null,
     scheduled_date: task.task_date || null,
-    status: task.status,
     urgency: task.urgency || null,
   }
 }
@@ -522,6 +525,17 @@ function shouldRenderInspectionModeTag(task: Pick<TaskCenterTask, 'task_source' 
 
 function isKeysHungStatus(status: string | null | undefined) {
   return String(status || '').trim().toLowerCase() === 'keys_hung'
+}
+
+function cleaningStatusActionForDetail(task: TaskCenterTask, draft: TaskDetailDraft): CleaningStatusAction | null {
+  if (task.task_source !== 'cleaning') return null
+  const wasKeysHung = isKeysHungStatus(task.status)
+  if (draft.keys_hung && !wasKeysHung) return 'set_keys_hung'
+  if (!draft.keys_hung && wasKeysHung) return 'clear_keys_hung'
+  const wasCompleted = isTaskCompletionToggleStatus(task.status)
+  if (draft.task_completed && !wasCompleted) return 'set_completed'
+  if (!draft.task_completed && wasCompleted) return 'clear_completed'
+  return null
 }
 
 function isCompletedBoardStatus(status: string | null | undefined) {
@@ -1008,6 +1022,7 @@ export default function TaskCenterPage() {
 
   const rowsAfterTaskDetail = useCallback((rows: TaskCenterRow[], task: TaskCenterTask, draft: TaskDetailDraft) => {
     const nextStatus = nextCleaningDetailStatus(task, draft)
+    const nextStatusAction = cleaningStatusActionForDetail(task, draft)
     const nextInspectionMode = draft.inspection_mode
     const nextCleanerId = requiresCleanerAssignment(task) ? (draft.cleaner_id || null) : null
     const passwordOnlyCheckin = isPasswordOnlyCheckinTask({ ...task, inspection_scope: draft.inspection_scope })
@@ -1030,6 +1045,7 @@ export default function TaskCenterPage() {
             status: task.task_source === 'cleaning'
               ? nextStatus
               : autoWorkStatus(item.status, draft.assignee_id || null),
+            status_action: task.task_source === 'cleaning' ? nextStatusAction : item.status_action,
             inspection_mode: task.task_source === 'cleaning' ? nextInspectionMode : item.inspection_mode,
             inspection_scope: task.task_source === 'cleaning' ? draft.inspection_scope : item.inspection_scope,
             inspection_due_date: task.task_source === 'cleaning'
@@ -1370,7 +1386,8 @@ export default function TaskCenterPage() {
       inspection_mode: TaskCenterTask['inspection_mode']
       inspection_scope: TaskCenterTask['inspection_scope']
       inspection_due_date: string | null
-      status: string
+      status_action?: CleaningStatusAction
+      status?: string
     }>()
     const workAssignments = new Map<string, {
       task_id: string
@@ -1379,7 +1396,6 @@ export default function TaskCenterPage() {
       title: string
       summary: string | null
       scheduled_date: string | null
-      status: string
       urgency: string | null
     }>()
     const taskFlags = new Map<string, {
@@ -1414,7 +1430,7 @@ export default function TaskCenterPage() {
               || previous.inspection_mode !== current.inspection_mode
               || previous.inspection_scope !== current.inspection_scope
               || previous.inspection_due_date !== current.inspection_due_date
-              || previous.status !== current.status
+              || !!current.status_action
             if (changed) {
               const item: {
                 task_id: string
@@ -1427,13 +1443,17 @@ export default function TaskCenterPage() {
                 inspection_mode: TaskCenterTask['inspection_mode']
                 inspection_scope: TaskCenterTask['inspection_scope']
                 inspection_due_date: string | null
-                status: string
+                status_action?: CleaningStatusAction
+                status?: string
               } = {
                 task_id: id,
                 inspection_mode: current.inspection_mode,
                 inspection_scope: current.inspection_scope,
                 inspection_due_date: current.inspection_due_date,
-                status: current.status,
+              }
+              if (current.status_action && current.status) {
+                item.status_action = current.status_action
+                item.status = current.status
               }
               if (assigneeChanged && normalizeInspectionScope(current.inspection_scope) === 'password_only') {
                 item.assignee_id = current.assignee_id
@@ -1458,7 +1478,6 @@ export default function TaskCenterPage() {
               || previous.title !== current.title
               || previous.summary !== current.summary
               || previous.scheduled_date !== current.scheduled_date
-              || previous.status !== current.status
               || previous.urgency !== current.urgency
             if (changed) {
               const item: {
@@ -1468,14 +1487,12 @@ export default function TaskCenterPage() {
                 title: string
                 summary: string | null
                 scheduled_date: string | null
-                status: string
                 urgency: string | null
               } = {
                 task_id: id,
                 title: current.title,
                 summary: current.summary,
                 scheduled_date: current.scheduled_date,
-                status: current.status,
                 urgency: current.urgency,
               }
               if (assigneeChanged) {
@@ -1498,7 +1515,6 @@ export default function TaskCenterPage() {
         || previous.title !== current.title
         || previous.summary !== current.summary
         || previous.scheduled_date !== current.scheduled_date
-        || previous.status !== current.status
         || previous.urgency !== current.urgency
       if (!changed) continue
       const item: {
@@ -1508,14 +1524,12 @@ export default function TaskCenterPage() {
         title: string
         summary: string | null
         scheduled_date: string | null
-        status: string
         urgency: string | null
       } = {
         task_id: id,
         title: current.title,
         summary: current.summary,
         scheduled_date: current.scheduled_date,
-        status: current.status,
         urgency: current.urgency,
       }
       if (assigneeChanged) {
