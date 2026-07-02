@@ -1,15 +1,14 @@
 "use client"
 
 import { App, Button, Card, Col, DatePicker, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, Popconfirm, Row, Segmented, Select, Space, Statistic, Table, Tag, Upload } from 'antd'
-import { UploadOutlined } from '@ant-design/icons'
+import { LeftOutlined, PlusOutlined, RightOutlined, UploadOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
-import dynamic from 'next/dynamic'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { API_BASE, authHeaders, getJSON, postJSON } from '../../../lib/api'
 import { sortActivePropertiesByRegionThenCode } from '../../../lib/properties'
 import {
   PROPERTY_PAYABLE_CATEGORY_OPTIONS,
-  PROPERTY_PAYABLE_FREQUENCY_OPTIONS,
+  PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH,
   PROPERTY_PAYABLE_PAYMENT_TYPE_OPTIONS,
   PROPERTY_PAYABLE_TEMPLATE_KIND,
   canMarkPropertyPayablePaid,
@@ -22,16 +21,6 @@ import {
 } from '../../../lib/propertyPayables'
 import AuditTrail from '../../../components/AuditTrail'
 import PropertyPayableVendorInput from '../../../components/PropertyPayableVendorInput'
-import dayGridPlugin from '@fullcalendar/daygrid'
-import interactionPlugin from '@fullcalendar/interaction'
-
-const FullCalendar = dynamic(() => import('@fullcalendar/react'), { ssr: false })
-
-const BILL_MONTH_OFFSET_OPTIONS = [
-  { value: -1, label: '上月' },
-  { value: 0, label: '本月' },
-  { value: 1, label: '下月' },
-]
 
 type Property = { id: string; code?: string; address?: string; region?: string; archived?: boolean | null }
 type WorkbenchRow = {
@@ -86,6 +75,8 @@ type WorkbenchRow = {
 type ExpenseInvoice = { id: string; expense_id: string; url: string; file_name?: string; mime_type?: string; file_size?: number }
 type WorkbenchMonthData = { rows: WorkbenchRow[]; summary: any; month_key?: string }
 type WorkbenchBatchData = WorkbenchMonthData & { months?: Record<string, WorkbenchMonthData>; month_keys?: string[] }
+type PropertyPayablesView = 'queue' | 'calendar' | 'paid' | 'templates'
+type PropertyPayableStatusFilter = 'bill_not_received' | 'awaiting_confirmation' | 'payment_overdue' | 'payment_due_soon' | 'awaiting_payment' | 'paid'
 
 function monthKey(d: dayjs.Dayjs) {
   return d.format('YYYY-MM')
@@ -105,6 +96,41 @@ function statusTag(row: WorkbenchRow) {
   if (isPropertyPayableDueSoon(row)) return <Tag color="gold">快到期</Tag>
   if (!row.amount_confirmed) return <Tag>待确认金额</Tag>
   return <Tag>待付款</Tag>
+}
+
+function statusKey(row: WorkbenchRow): PropertyPayableStatusFilter | 'awaiting_bill' {
+  if (row.status === 'paid') return 'paid'
+  if (row.workflow_status === 'bill_not_received') return 'bill_not_received'
+  if (row.workflow_status === 'awaiting_bill') return 'awaiting_bill'
+  if (row.workflow_status === 'payment_overdue' || isPropertyPayableOverdue(row)) return 'payment_overdue'
+  if (row.workflow_status === 'payment_due_soon' || isPropertyPayableDueSoon(row)) return 'payment_due_soon'
+  if (!row.amount_confirmed) return 'awaiting_confirmation'
+  return 'awaiting_payment'
+}
+
+function statusTone(row: WorkbenchRow): 'red' | 'amber' | 'blue' | 'green' | 'gray' {
+  const key = statusKey(row)
+  if (key === 'payment_overdue' || key === 'bill_not_received') return 'red'
+  if (key === 'awaiting_confirmation' || key === 'payment_due_soon') return 'amber'
+  if (key === 'awaiting_payment' || key === 'awaiting_bill') return 'blue'
+  if (key === 'paid') return 'green'
+  return 'gray'
+}
+
+function rowSortPriority(row: WorkbenchRow) {
+  const key = statusKey(row)
+  if (key === 'payment_overdue') return 0
+  if (key === 'bill_not_received') return 1
+  if (key === 'payment_due_soon') return 2
+  if (key === 'awaiting_confirmation') return 3
+  if (key === 'awaiting_bill') return 4
+  if (key === 'awaiting_payment') return 5
+  return 6
+}
+
+function formatMoney(value: any) {
+  const n = Number(value || 0)
+  return `$${Number.isFinite(n) ? n.toFixed(2) : '0.00'}`
 }
 
 function sameWorkbenchRow(a?: WorkbenchRow | null, b?: WorkbenchRow | null) {
@@ -132,14 +158,14 @@ function workbenchMonthKey(row?: WorkbenchRow | null, fallback?: string) {
 export default function PropertyPayablesPage() {
   const { message } = App.useApp()
   const [month, setMonth] = useState(dayjs())
-  const [calendarScale, setCalendarScale] = useState<'month' | 'week' | 'day'>('month')
+  const [activeView, setActiveView] = useState<PropertyPayablesView>('queue')
+  const [statusFilter, setStatusFilter] = useState<PropertyPayableStatusFilter | undefined>()
   const [rows, setRows] = useState<WorkbenchRow[]>([])
   const [calendarRows, setCalendarRows] = useState<WorkbenchRow[]>([])
   const [summary, setSummary] = useState({ unpaid_amount: 0, bill_not_received_count: 0, awaiting_confirmation_count: 0, overdue_count: 0, paid_amount: 0 })
   const [properties, setProperties] = useState<Property[]>([])
   const [selectedPropertyId, setSelectedPropertyId] = useState<string | undefined>()
   const [loading, setLoading] = useState(true)
-  const [dayOpen, setDayOpen] = useState(false)
   const [selectedDay, setSelectedDay] = useState<string | null>(null)
   const [detailRow, setDetailRow] = useState<WorkbenchRow | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
@@ -154,7 +180,6 @@ export default function PropertyPayablesPage() {
   const watchedTemplatePaymentType = Form.useWatch('payment_type', templateForm) || 'bank_account'
   const [invoiceOpen, setInvoiceOpen] = useState<{ expenseId: string } | null>(null)
   const [invoices, setInvoices] = useState<ExpenseInvoice[]>([])
-  const currentCalendarCardRef = useRef<HTMLDivElement | null>(null)
 
   const selectedMonthKey = monthKey(month)
 
@@ -220,17 +245,21 @@ export default function PropertyPayablesPage() {
   }), [properties])
 
   const filteredRows = useMemo(
-    () => selectedPropertyId ? rows.filter((row) => String(row.property_id || '') === selectedPropertyId) : rows,
-    [rows, selectedPropertyId]
+    () => rows
+      .filter((row) => !selectedPropertyId || String(row.property_id || '') === selectedPropertyId)
+      .filter((row) => !statusFilter || statusKey(row) === statusFilter),
+    [rows, selectedPropertyId, statusFilter]
   )
 
   const filteredCalendarRows = useMemo(
-    () => selectedPropertyId ? calendarRows.filter((row) => String(row.property_id || '') === selectedPropertyId) : calendarRows,
-    [calendarRows, selectedPropertyId]
+    () => calendarRows
+      .filter((row) => !selectedPropertyId || String(row.property_id || '') === selectedPropertyId)
+      .filter((row) => !statusFilter || statusKey(row) === statusFilter),
+    [calendarRows, selectedPropertyId, statusFilter]
   )
 
   const visibleSummary = useMemo(() => {
-    if (!selectedPropertyId) return summary
+    if (!selectedPropertyId && !statusFilter) return summary
     return {
       unpaid_amount: filteredRows.filter((row) => row.status !== 'paid').reduce((sum, row) => sum + Number(row.amount || 0), 0),
       bill_not_received_count: filteredRows.filter((row) => row.workflow_status === 'bill_not_received').length,
@@ -238,7 +267,44 @@ export default function PropertyPayablesPage() {
       overdue_count: filteredRows.filter((row) => isPropertyPayableOverdue(row)).length,
       paid_amount: filteredRows.filter((row) => row.status === 'paid').reduce((sum, row) => sum + Number(row.amount || 0), 0),
     }
-  }, [filteredRows, selectedPropertyId, summary])
+  }, [filteredRows, selectedPropertyId, statusFilter, summary])
+
+  const sortedRows = useMemo(() => filteredRows.slice().sort((a, b) => {
+    const ap = rowSortPriority(a)
+    const bp = rowSortPriority(b)
+    if (ap !== bp) return ap - bp
+    const ad = String(a.due_date || '9999-12-31')
+    const bd = String(b.due_date || '9999-12-31')
+    if (ad !== bd) return ad.localeCompare(bd)
+    const ar = String(a.property_code || a.property_address || '')
+    const br = String(b.property_code || b.property_address || '')
+    if (ar !== br) return ar.localeCompare(br)
+    return String(a.vendor || '').localeCompare(String(b.vendor || ''))
+  }), [filteredRows])
+
+  const queueGroups = useMemo(() => [
+    { key: 'payment_overdue', title: '付款逾期', rows: sortedRows.filter((row) => statusKey(row) === 'payment_overdue'), tone: 'red' },
+    { key: 'bill_not_received', title: '账单未收到', rows: sortedRows.filter((row) => statusKey(row) === 'bill_not_received'), tone: 'red' },
+    { key: 'awaiting_confirmation', title: '待确认账单', rows: sortedRows.filter((row) => statusKey(row) === 'awaiting_confirmation' || statusKey(row) === 'awaiting_bill'), tone: 'amber' },
+    { key: 'payment_due_soon', title: '付款快到期', rows: sortedRows.filter((row) => statusKey(row) === 'payment_due_soon'), tone: 'amber' },
+    { key: 'awaiting_payment', title: '待付款', rows: sortedRows.filter((row) => statusKey(row) === 'awaiting_payment'), tone: 'blue' },
+  ], [sortedRows])
+
+  const paidRows = useMemo(() => sortedRows.filter((row) => row.status === 'paid'), [sortedRows])
+
+  const templateRows = useMemo(() => {
+    const seen = new Map<string, WorkbenchRow>()
+    for (const row of rows) {
+      if (selectedPropertyId && String(row.property_id || '') !== selectedPropertyId) continue
+      if (!seen.has(row.template_id)) seen.set(row.template_id, row)
+    }
+    return Array.from(seen.values()).sort((a, b) => {
+      const ap = String(a.property_code || a.property_address || '')
+      const bp = String(b.property_code || b.property_address || '')
+      if (ap !== bp) return ap.localeCompare(bp)
+      return String(a.vendor || '').localeCompare(String(b.vendor || ''))
+    })
+  }, [rows, selectedPropertyId])
 
   const rowsByDueDate = useMemo(() => {
     const map = new Map<string, WorkbenchRow[]>()
@@ -253,10 +319,9 @@ export default function PropertyPayablesPage() {
       map.set(
         key,
         list.slice().sort((a, b) => {
-          const aOverdue = isPropertyPayableOverdue(a) || a.workflow_status === 'bill_not_received'
-          const bOverdue = isPropertyPayableOverdue(b) || b.workflow_status === 'bill_not_received'
-          if (aOverdue !== bOverdue) return aOverdue ? -1 : 1
-          if (isDueSoon(a) !== isDueSoon(b)) return isDueSoon(a) ? -1 : 1
+          const apx = rowSortPriority(a)
+          const bpx = rowSortPriority(b)
+          if (apx !== bpx) return apx - bpx
           const ap = String(a.property_code || a.property_address || '')
           const bp = String(b.property_code || b.property_address || '')
           if (ap !== bp) return ap.localeCompare(bp)
@@ -272,76 +337,26 @@ export default function PropertyPayablesPage() {
     return rowsByDueDate.get(selectedDay) || []
   }, [rowsByDueDate, selectedDay])
 
-  const calendarStripPeriods = useMemo(() => {
-    if (calendarScale === 'week') return [month.subtract(1, 'week'), month, month.add(1, 'week')]
-    if (calendarScale === 'day') return [month.subtract(1, 'day'), month, month.add(1, 'day')]
-    return [month.subtract(1, 'month'), month, month.add(1, 'month')]
-  }, [calendarScale, month])
-
-  const calendarEvents = useMemo(() => {
-    return filteredCalendarRows
-      .filter((row) => !!row.due_date)
-      .map((row) => {
-        const stateClass = row.status === 'paid'
-          ? 'paid'
-          : (isPropertyPayableOverdue(row) || row.workflow_status === 'bill_not_received')
-            ? 'overdue'
-            : isDueSoon(row)
-              ? 'due-soon'
-              : 'normal'
-        return {
-          id: `${row.template_id}:${row.due_date || ''}`,
-          start: String(row.due_date),
-          allDay: true,
-          classNames: ['property-payable-event', `property-payable-event--${stateClass}`],
-          extendedProps: {
-            row,
-            propertyLabel: row.property_code || row.property_address || '-',
-            categoryLabel: propertyPayableCategoryLabel(row.category || ''),
-            amountLabel: `$${Number(row.amount || 0).toFixed(2)}`,
-          },
-        }
-      })
-  }, [filteredCalendarRows])
-
-  const calendarTitle = useMemo(() => {
-    if (calendarScale === 'month') return month.format('YYYY 年 MM 月')
-    if (calendarScale === 'week') {
-      const start = month.startOf('week')
-      const end = month.endOf('week')
-      return `${start.format('MM/DD')} - ${end.format('MM/DD')}`
-    }
-    return month.format('YYYY-MM-DD')
-  }, [calendarScale, month])
+  const calendarDays = useMemo(() => {
+    const first = month.startOf('month')
+    const offset = (first.day() + 6) % 7
+    const start = first.subtract(offset, 'day')
+    return Array.from({ length: 42 }, (_, index) => start.add(index, 'day'))
+  }, [month])
 
   useEffect(() => {
-    const node = currentCalendarCardRef.current
-    if (!node) return
-    const timer = window.setTimeout(() => {
-      node.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' })
-    }, 30)
-    return () => window.clearTimeout(timer)
-  }, [calendarScale, month])
-
-  function calendarPeriodTitle(value: dayjs.Dayjs) {
-    if (calendarScale === 'month') return value.format('YYYY 年 MM 月')
-    if (calendarScale === 'week') {
-      const start = value.startOf('week')
-      const end = value.endOf('week')
-      return `${start.format('MM/DD')} - ${end.format('MM/DD')}`
-    }
-    return value.format('YYYY-MM-DD')
-  }
+    const preferred = month.isSame(dayjs(), 'month') ? dayjs().format('YYYY-MM-DD') : month.startOf('month').format('YYYY-MM-DD')
+    setSelectedDay((prev) => {
+      if (prev && prev.slice(0, 7) === selectedMonthKey) return prev
+      return preferred
+    })
+  }, [month, selectedMonthKey])
 
   function openConfirm(row: WorkbenchRow) {
     setConfirmingRow(row)
     confirmForm.setFieldsValue({
       amount: Number(row.amount || 0),
       bill_received_date: row.bill_received_date ? dayjs(row.bill_received_date) : dayjs(),
-      bill_period: row.bill_period_start || row.bill_period_end
-        ? [row.bill_period_start ? dayjs(row.bill_period_start) : null, row.bill_period_end ? dayjs(row.bill_period_end) : null]
-        : null,
-      due_date: row.due_date ? dayjs(row.due_date) : null,
       note: row.note || '',
     })
     setConfirmOpen(true)
@@ -352,14 +367,10 @@ export default function PropertyPayablesPage() {
     const values = await confirmForm.validateFields()
     setConfirmSaving(true)
     try {
-      const billPeriod = Array.isArray(values.bill_period) ? values.bill_period : []
       await postJSON(`/recurring/payments/${confirmingRow.template_id}/confirm-bill`, {
         month_key: workbenchMonthKey(confirmingRow, selectedMonthKey),
         amount: Number(values.amount || 0),
         bill_received_date: values.bill_received_date ? dayjs(values.bill_received_date).format('YYYY-MM-DD') : undefined,
-        bill_period_start: billPeriod[0] ? dayjs(billPeriod[0]).format('YYYY-MM-DD') : undefined,
-        bill_period_end: billPeriod[1] ? dayjs(billPeriod[1]).format('YYYY-MM-DD') : undefined,
-        due_date: values.due_date ? dayjs(values.due_date).format('YYYY-MM-DD') : undefined,
         note: values.note || undefined,
       })
       message.success('本月账单信息已确认')
@@ -384,14 +395,14 @@ export default function PropertyPayablesPage() {
       amount: row?.amount == null ? undefined : Number(row.amount || 0),
       bill_account_no: row?.bill_account_no || '',
       start_month_key: toPropertyPayableMonthValue(row?.start_month_key || selectedMonthKey),
-      due_day_of_month: Number(row?.due_day_of_month || (row?.due_date ? Number(String(row.due_date).slice(8, 10)) : 15)),
+      due_day_of_month: PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH,
       bill_expected_day_of_month: row?.bill_expected_day_of_month == null ? undefined : Number(row.bill_expected_day_of_month || 0),
-      bill_period_start_month_offset: Number(row?.bill_period_start_month_offset || 0),
-      bill_period_start_day_of_month: row?.bill_period_start_day_of_month == null ? undefined : Number(row.bill_period_start_day_of_month || 0),
-      bill_period_end_month_offset: Number(row?.bill_period_end_month_offset || 0),
-      bill_period_end_day_of_month: row?.bill_period_end_day_of_month == null ? undefined : Number(row.bill_period_end_day_of_month || 0),
-      frequency_months: Number(row?.frequency_months || 1),
-      remind_days_before: Number(row?.remind_days_before || 3),
+      bill_period_start_month_offset: 0,
+      bill_period_start_day_of_month: undefined,
+      bill_period_end_month_offset: 0,
+      bill_period_end_day_of_month: undefined,
+      frequency_months: 1,
+      remind_days_before: 3,
       payment_type: row?.payment_type || 'bank_account',
       pay_account_name: row?.pay_account_name || '',
       pay_bsb: row?.pay_bsb || '',
@@ -413,14 +424,14 @@ export default function PropertyPayablesPage() {
       category: values.category,
       category_detail: values.category_detail || undefined,
       amount: values.amount == null ? 0 : Number(values.amount || 0),
-      due_day_of_month: Number(values.due_day_of_month || 1),
+      due_day_of_month: PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH,
       bill_expected_day_of_month: values.bill_expected_day_of_month == null ? undefined : Number(values.bill_expected_day_of_month || 0),
-      bill_period_start_month_offset: Number(values.bill_period_start_month_offset || 0),
-      bill_period_start_day_of_month: values.bill_period_start_day_of_month == null ? undefined : Number(values.bill_period_start_day_of_month || 0),
-      bill_period_end_month_offset: Number(values.bill_period_end_month_offset || 0),
-      bill_period_end_day_of_month: values.bill_period_end_day_of_month == null ? undefined : Number(values.bill_period_end_day_of_month || 0),
-      frequency_months: Number(values.frequency_months || 1),
-      remind_days_before: Number(values.remind_days_before || 3),
+      bill_period_start_month_offset: 0,
+      bill_period_start_day_of_month: undefined,
+      bill_period_end_month_offset: 0,
+      bill_period_end_day_of_month: undefined,
+      frequency_months: 1,
+      remind_days_before: 3,
       payment_type: values.payment_type || 'bank_account',
       pay_account_name: values.pay_account_name || undefined,
       pay_bsb: values.pay_bsb || undefined,
@@ -561,20 +572,20 @@ export default function PropertyPayablesPage() {
 
   function openDay(dateISO: string) {
     setSelectedDay(dateISO)
-    setDayOpen(true)
   }
 
   function shiftCalendar(step: number) {
-    if (calendarScale === 'month') {
-      setMonth((prev) => prev.add(step, 'month'))
-      return
-    }
-    if (calendarScale === 'week') {
-      setMonth((prev) => prev.add(step, 'week'))
-      return
-    }
-    setMonth((prev) => prev.add(step, 'day'))
+    setMonth((prev) => prev.add(step, 'month'))
   }
+
+  const statusFilterOptions = [
+    { value: 'payment_overdue', label: '付款逾期' },
+    { value: 'bill_not_received', label: '账单未收到' },
+    { value: 'awaiting_confirmation', label: '待确认账单' },
+    { value: 'payment_due_soon', label: '付款快到期' },
+    { value: 'awaiting_payment', label: '待付款' },
+    { value: 'paid', label: '已付' },
+  ]
 
   const columns = [
     { title: '房源', key: 'property', render: (_: any, row: WorkbenchRow) => row.property_code || row.property_address || '-' },
@@ -614,169 +625,248 @@ export default function PropertyPayablesPage() {
     },
   ]
 
+  const renderRowActions = (row: WorkbenchRow, compact = false) => (
+    <Space wrap size={compact ? 6 : 8}>
+      <Button size={compact ? 'small' : 'middle'} onClick={() => { setDetailRow(row); setDetailOpen(true) }}>详情</Button>
+      {!compact ? <Button onClick={() => openTemplate(row)}>编辑模板</Button> : null}
+      <Button size={compact ? 'small' : 'middle'} onClick={() => openConfirm(row)} disabled={row.status === 'paid'}>{compact ? '确认账单' : '调整本月账单'}</Button>
+      <Button size={compact ? 'small' : 'middle'} onClick={() => openInvoices(row)} disabled={!row.snapshot_id}>上传发票</Button>
+      {row.status === 'paid'
+        ? <Button size={compact ? 'small' : 'middle'} onClick={() => unmarkPaid(row)}>取消已付</Button>
+        : <Button size={compact ? 'small' : 'middle'} type="primary" onClick={() => markPaid(row)} disabled={!canMarkPropertyPayablePaid(row)}>登记支付</Button>}
+    </Space>
+  )
+
+  const renderBillCard = (row: WorkbenchRow, mode: 'queue' | 'detail' = 'queue') => {
+    const tone = statusTone(row)
+    return (
+      <Card
+        key={`${row.template_id}:${row.due_date || selectedMonthKey}:${mode}`}
+        size="small"
+        className={`property-payable-work-card property-payable-work-card--${tone}`}
+      >
+        <div className="property-payable-work-card-head">
+          <div>
+            <div className="property-payable-work-room">{row.property_code || row.property_address || '-'}</div>
+            <div className="property-payable-work-vendor">{row.vendor || '-'} · {propertyPayableCategoryLabel(row.category || '')}</div>
+          </div>
+          <div className="property-payable-work-amount">{row.amount_confirmed || row.status === 'paid' ? formatMoney(row.amount) : '待确认'}</div>
+        </div>
+        <Descriptions size="small" column={2} className="property-payable-work-meta">
+          <Descriptions.Item label="付款截止日">{row.due_date || '-'}</Descriptions.Item>
+          <Descriptions.Item label="状态">{statusTag(row)}</Descriptions.Item>
+          <Descriptions.Item label="预计收到账单">{row.bill_expected_date || '-'}</Descriptions.Item>
+          <Descriptions.Item label="实际收到账单">{row.bill_received_date || '-'}</Descriptions.Item>
+          {mode === 'detail' ? <Descriptions.Item label="付款方式" span={2}>{propertyPayablePaymentTypeLabel(row.payment_type || '')}</Descriptions.Item> : null}
+        </Descriptions>
+        {renderRowActions(row, true)}
+      </Card>
+    )
+  }
+
+  const renderCalendarDay = (day: dayjs.Dayjs) => {
+    const dateISO = day.format('YYYY-MM-DD')
+    const dayRows = rowsByDueDate.get(dateISO) || []
+    const inMonth = day.isSame(month, 'month')
+    const selected = selectedDay === dateISO
+    const visible = dayRows.slice(0, 3)
+    return (
+      <button
+        key={dateISO}
+        type="button"
+        className={`property-payable-month-day${inMonth ? '' : ' is-muted'}${selected ? ' is-selected' : ''}`}
+        onClick={() => openDay(dateISO)}
+      >
+        <span className="property-payable-month-date">
+          <span>{day.date()}</span>
+          {dayRows.length ? <span className="property-payable-month-count">{dayRows.length}</span> : null}
+        </span>
+        <span className="property-payable-month-events">
+          {visible.map((row) => (
+            <span key={`${row.template_id}:${row.due_date}`} className={`property-payable-month-pill property-payable-month-pill--${statusTone(row)}`}>
+              {row.property_code || row.property_address || '-'}
+            </span>
+          ))}
+          {dayRows.length > visible.length ? <span className="property-payable-month-more">+{dayRows.length - visible.length} more</span> : null}
+        </span>
+      </button>
+    )
+  }
+
   return (
     <Card
+      className="property-payables-page"
       title="房源代付"
       extra={
-        <Space>
-          <Segmented
-            value={calendarScale}
-            onChange={(value) => setCalendarScale(value as 'month' | 'week' | 'day')}
-            options={[
-              { label: '月视图', value: 'month' },
-              { label: '周视图', value: 'week' },
-              { label: '天视图', value: 'day' },
-            ]}
+        <div className="property-payables-header-actions">
+          <Button icon={<LeftOutlined />} onClick={() => shiftCalendar(-1)}>
+            {month.subtract(1, 'month').format('YYYY-MM')}
+          </Button>
+          <Button onClick={() => setMonth(dayjs())}>{selectedMonthKey}</Button>
+          <Button onClick={() => shiftCalendar(1)}>
+            {month.add(1, 'month').format('YYYY-MM')} <RightOutlined />
+          </Button>
+          <Select
+            allowClear
+            showSearch
+            value={selectedPropertyId}
+            placeholder="全部房源"
+            options={propertyOptions}
+            onChange={(value) => setSelectedPropertyId(value || undefined)}
+            filterOption={(input, option) => String((option as any)?.searchText || (option as any)?.label || '').includes(input.trim().toLowerCase())}
+            notFoundContent="没有匹配的房源"
+            className="property-payables-header-select property-payables-header-select--property"
           />
-          <Button onClick={() => shiftCalendar(-1)}>上一{calendarScale === 'month' ? '月' : calendarScale === 'week' ? '周' : '天'}</Button>
-          <Button onClick={() => setMonth(dayjs())}>今天</Button>
-          <Button onClick={() => shiftCalendar(1)}>下一{calendarScale === 'month' ? '月' : calendarScale === 'week' ? '周' : '天'}</Button>
-          <DatePicker
-            picker={calendarScale === 'month' ? 'month' : 'date'}
-            value={month}
-            onChange={(value) => setMonth(value || dayjs())}
+          <Select
+            allowClear
+            value={statusFilter}
+            placeholder="全部状态"
+            onChange={(value) => setStatusFilter(value || undefined)}
+            options={statusFilterOptions}
+            className="property-payables-header-select"
           />
-          <Button type="primary" onClick={() => openTemplate(null)}>新增代付模板</Button>
-        </Space>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => openTemplate(null)}>新增代付模板</Button>
+        </div>
       }
     >
-      <div style={{ marginBottom: 12 }}>
-        <Select
-          allowClear
-          showSearch
-          value={selectedPropertyId}
-          placeholder="按房号搜索"
-          options={propertyOptions}
-          onChange={(value) => setSelectedPropertyId(value || undefined)}
-          filterOption={(input, option) => String((option as any)?.searchText || (option as any)?.label || '').includes(input.trim().toLowerCase())}
-          notFoundContent="没有匹配的房源"
-          style={{ width: 320, maxWidth: '100%' }}
-        />
-      </div>
+      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <div className="property-payables-metrics">
+          <Card><Statistic title="本月待付金额" prefix="$" precision={2} value={visibleSummary.unpaid_amount} /></Card>
+          <Card><Statistic title="账单未收到" value={visibleSummary.bill_not_received_count} valueStyle={{ color: visibleSummary.bill_not_received_count ? '#cf1322' : undefined }} /></Card>
+          <Card><Statistic title="待确认账单" value={visibleSummary.awaiting_confirmation_count} valueStyle={{ color: visibleSummary.awaiting_confirmation_count ? '#fa8c16' : undefined }} /></Card>
+          <Card><Statistic title="付款逾期" value={visibleSummary.overdue_count} valueStyle={{ color: visibleSummary.overdue_count ? '#cf1322' : undefined }} /></Card>
+          <Card><Statistic title="本月已付金额" prefix="$" precision={2} value={visibleSummary.paid_amount} /></Card>
+        </div>
 
-      <Row gutter={[12, 12]}>
-        <Col xs={24} md={6}><Card><Statistic title="本月待付金额" prefix="$" precision={2} value={visibleSummary.unpaid_amount} /></Card></Col>
-        <Col xs={24} md={6}><Card><Statistic title="账单未收到" value={visibleSummary.bill_not_received_count} valueStyle={{ color: visibleSummary.bill_not_received_count ? '#cf1322' : undefined }} /></Card></Col>
-        <Col xs={24} md={6}><Card><Statistic title="本月待确认数量" value={visibleSummary.awaiting_confirmation_count} valueStyle={{ color: visibleSummary.awaiting_confirmation_count ? '#fa8c16' : undefined }} /></Card></Col>
-        <Col xs={24} md={6}><Card><Statistic title="付款逾期数量" value={visibleSummary.overdue_count} valueStyle={{ color: visibleSummary.overdue_count ? '#cf1322' : undefined }} /></Card></Col>
-        <Col xs={24} md={6}><Card><Statistic title="本月已付金额" prefix="$" precision={2} value={visibleSummary.paid_amount} /></Card></Col>
-      </Row>
+        <Card bodyStyle={{ padding: 0 }} className="property-payables-workbench-card">
+          <div className="property-payables-workbench-tabs">
+            <Segmented
+              value={activeView}
+              onChange={(value) => setActiveView(value as PropertyPayablesView)}
+              options={[
+                { label: '待处理', value: 'queue' },
+                { label: '日历', value: 'calendar' },
+                { label: '已付记录', value: 'paid' },
+                { label: '模板管理', value: 'templates' },
+              ]}
+            />
+            <span className="property-payables-workbench-hint">单月日历，无横向拖动；点击日期后在右侧处理当天账单。</span>
+          </div>
 
-      <Card
-        style={{ marginTop: 12 }}
-        bodyStyle={{ padding: 12 }}
-      >
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
-          <Card size="small">
-            上方日历用于看付款节奏和房号分布，下方列表用于集中处理账单、确认金额和标记已付。
-          </Card>
-          <Card
-            size="small"
-            title={`连续${calendarScale === 'month' ? '月历' : calendarScale === 'week' ? '周历' : '日历'} · 当前定位 ${calendarTitle}`}
-            extra={<span style={{ color: '#8c8c8c', fontSize: 12 }}>左右滑动可连续查看前后{calendarScale === 'month' ? '月份' : calendarScale === 'week' ? '周' : '天'}</span>}
-          >
-            <div className="property-payable-calendar-strip">
-              {calendarStripPeriods.map((calendarPeriod, index) => {
-                const initialView = calendarScale === 'month' ? 'dayGridMonth' : calendarScale === 'week' ? 'dayGridWeek' : 'dayGridDay'
-                return (
-                  <div
-                    key={`${calendarScale}-strip:${calendarPeriod.format('YYYY-MM-DD')}`}
-                    ref={index === 1 ? currentCalendarCardRef : null}
-                    className={`property-payable-calendar-period-card${index === 1 ? ' is-current' : ''}`}
-                  >
-                    <div className="property-payable-calendar-period-heading">{calendarPeriodTitle(calendarPeriod)}</div>
-                    <div className={`property-payable-calendar property-payable-calendar--${calendarScale}`}>
-                      <FullCalendar
-                        key={`${calendarScale}:${calendarPeriod.format('YYYY-MM-DD')}`}
-                        plugins={[dayGridPlugin, interactionPlugin]}
-                        initialView={initialView}
-                        initialDate={calendarPeriod.format('YYYY-MM-DD')}
-                        headerToolbar={{ start: '', center: '', end: '' }}
-                        height="auto"
-                        firstDay={1}
-                        fixedWeekCount={false}
-                        dayMaxEvents={false}
-                        moreLinkClick="popover"
-                        selectable
-                        selectMirror={false}
-                        dateClick={(info) => openDay(info.dateStr)}
-                        eventClick={(info) => {
-                          const row = (info.event.extendedProps as any)?.row as WorkbenchRow | undefined
-                          if (row) {
-                            setDetailRow(row)
-                            setDetailOpen(true)
-                          }
-                        }}
-                        events={calendarEvents as any}
-                        eventContent={(arg) => {
-                          const props = (arg.event.extendedProps as any) || {}
-                          return (
-                            <div className="property-payable-event-card">
-                              <div className="property-payable-event-title">{props.propertyLabel}</div>
-                              <div className="property-payable-event-subtitle">{props.categoryLabel}</div>
-                            </div>
-                          )
-                        }}
-                      />
+          {activeView === 'queue' || activeView === 'calendar' ? (
+            <div className={`property-payables-workbench property-payables-workbench--${activeView}`}>
+              {activeView === 'queue' ? (
+                <section className="property-payables-panel property-payables-queue-panel">
+                  <div className="property-payables-panel-header">
+                    <div>
+                      <strong>处理队列</strong>
+                      <span>按业务优先级排序</span>
                     </div>
+                    <Tag color="red">{sortedRows.filter((row) => row.status !== 'paid').length} 待处理</Tag>
                   </div>
-                )
-              })}
+                  <div className="property-payables-panel-scroll">
+                    {queueGroups.some((group) => group.rows.length) ? queueGroups.map((group) => group.rows.length ? (
+                      <div className="property-payables-queue-group" key={group.key}>
+                        <div className="property-payables-queue-title">
+                          <span>{group.title}</span>
+                          <Tag color={group.tone === 'red' ? 'red' : group.tone === 'amber' ? 'gold' : 'blue'}>{group.rows.length}</Tag>
+                        </div>
+                        {group.rows.map((row) => renderBillCard(row))}
+                      </div>
+                    ) : null) : <Empty description="当前筛选下没有待处理账单" />}
+                  </div>
+                </section>
+              ) : null}
+
+              <section className="property-payables-panel property-payables-calendar-panel">
+                <div className="property-payables-panel-header">
+                  <div>
+                    <strong>{month.format('YYYY 年 MM 月')}</strong>
+                    <span>只显示当前月，避免滑动和页面滚动冲突</span>
+                  </div>
+                  <Space>
+                    <Button onClick={() => shiftCalendar(-1)}>‹</Button>
+                    <Button onClick={() => setMonth(dayjs())}>本月</Button>
+                    <Button onClick={() => shiftCalendar(1)}>›</Button>
+                  </Space>
+                </div>
+                <div className="property-payables-calendar-shell">
+                  <div className="property-payables-weekdays">
+                    {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((item) => <div key={item}>{item}</div>)}
+                  </div>
+                  <div className="property-payables-month-grid">
+                    {calendarDays.map(renderCalendarDay)}
+                  </div>
+                </div>
+              </section>
+
+              <aside className="property-payables-panel property-payables-day-panel">
+                <div className="property-payables-panel-header">
+                  <div>
+                    <strong>{selectedDay || '选择日期'}</strong>
+                    <span>当天付款截止账单</span>
+                  </div>
+                  <Tag color={selectedDayRows.length ? 'red' : undefined}>{selectedDayRows.length}</Tag>
+                </div>
+                <div className="property-payables-panel-scroll">
+                  {selectedDayRows.length ? selectedDayRows.map((row) => renderBillCard(row, 'detail')) : <Empty description="当天没有付款截止账单" />}
+                </div>
+              </aside>
             </div>
-          </Card>
-        </Space>
-      </Card>
+          ) : null}
 
-      <Card style={{ marginTop: 12 }} bodyStyle={{ padding: 0 }}>
-        <div style={{ padding: '16px 16px 8px', fontWeight: 700 }}>记录列表</div>
-        <Table
-          rowKey={(row) => `${row.template_id}:${selectedMonthKey}`}
-          columns={columns as any}
-          dataSource={filteredRows}
-          loading={loading}
-          pagination={{ pageSize: 20 }}
-          rowClassName={(row) => (isPropertyPayableOverdue(row) || row.workflow_status === 'bill_not_received') ? 'property-payable-row-overdue' : (isDueSoon(row) ? 'property-payable-row-due-soon' : '')}
-        />
-      </Card>
+          {activeView === 'paid' ? (
+            <div className="property-payables-table-panel">
+              <Table
+                rowKey={(row) => `${row.template_id}:${row.due_date || selectedMonthKey}:paid`}
+                columns={columns as any}
+                dataSource={paidRows}
+                loading={loading}
+                pagination={{ pageSize: 20 }}
+              />
+            </div>
+          ) : null}
 
-      <Drawer open={dayOpen} onClose={() => setDayOpen(false)} width={720} title={selectedDay ? `${selectedDay} 待付款账单` : '当天账单'}>
-        {selectedDayRows.length ? (
-          <Space direction="vertical" size={12} style={{ width: '100%' }}>
-            {selectedDayRows.map((row) => (
-              <Card
-                key={`${row.template_id}:${selectedDay}`}
-                size="small"
-                className={(isPropertyPayableOverdue(row) || row.workflow_status === 'bill_not_received') ? 'property-payable-card-overdue' : (isDueSoon(row) ? 'property-payable-card-due-soon' : '')}
-                title={`${row.property_code || row.property_address || '-'} · ${row.vendor || '-'}`}
-                extra={statusTag(row)}
-              >
-                <Descriptions size="small" column={2}>
-                  <Descriptions.Item label="类别">{propertyPayableCategoryLabel(row.category || '')}</Descriptions.Item>
-                  <Descriptions.Item label="金额">{`$${Number(row.amount || 0).toFixed(2)}`}</Descriptions.Item>
-                  <Descriptions.Item label="预计收到账单日">{row.bill_expected_date || '-'}</Descriptions.Item>
-                  <Descriptions.Item label="实际收到账单日">{row.bill_received_date || '-'}</Descriptions.Item>
-                  <Descriptions.Item label="费用账期">
-                    {row.bill_period_start || row.bill_period_end ? `${row.bill_period_start || '-'} 至 ${row.bill_period_end || '-'}` : '-'}
-                  </Descriptions.Item>
-                  <Descriptions.Item label="付款方式">{propertyPayablePaymentTypeLabel(row.payment_type || '')}</Descriptions.Item>
-                  <Descriptions.Item label="付款人">{row.paid_by || '-'}</Descriptions.Item>
-                  <Descriptions.Item label="确认人">{row.amount_confirmed_by || '-'}</Descriptions.Item>
-                  <Descriptions.Item label="Account Number">{row.bill_account_no || '-'}</Descriptions.Item>
-                </Descriptions>
-                <Space wrap style={{ marginTop: 12 }}>
-                  <Button onClick={() => { setDetailRow(row); setDetailOpen(true) }}>详情</Button>
-                  <Button onClick={() => openConfirm(row)} disabled={row.status === 'paid'}>调整本月账单</Button>
-                  {row.status === 'paid'
-                    ? <Button onClick={() => unmarkPaid(row)}>取消已付</Button>
-                    : <Button type="primary" onClick={() => markPaid(row)} disabled={!canMarkPropertyPayablePaid(row)}>已付</Button>}
-                </Space>
-              </Card>
-            ))}
-          </Space>
-        ) : (
-          <Empty description="当天没有付款截止账单" />
-        )}
-      </Drawer>
+          {activeView === 'templates' ? (
+            <div className="property-payables-table-panel">
+              <Table
+                rowKey={(row) => row.template_id}
+                dataSource={templateRows}
+                loading={loading}
+                pagination={{ pageSize: 20 }}
+                columns={[
+                  { title: '房源', key: 'property', render: (_: any, row: WorkbenchRow) => row.property_code || row.property_address || '-' },
+                  { title: '收费公司/事项', dataIndex: 'vendor' },
+                  { title: '类别', dataIndex: 'category', render: (v: string) => propertyPayableCategoryLabel(v) },
+                  { title: '默认金额', dataIndex: 'amount', render: (v: number) => formatMoney(v) },
+                  { title: '预计收到账单日', dataIndex: 'bill_expected_day_of_month', render: (v: number) => v ? `每月 ${v} 号` : '-' },
+                  { title: '付款截止日', dataIndex: 'due_day_of_month', render: () => `每月 ${PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH} 号` },
+                  {
+                    title: '操作',
+                    key: 'ops',
+                    render: (_: any, row: WorkbenchRow) => (
+                      <Space wrap>
+                        <Button onClick={() => { setDetailRow(row); setDetailOpen(true) }}>详情</Button>
+                        <Button onClick={() => openTemplate(row)}>编辑模板</Button>
+                        <Popconfirm
+                          title="删除代付模板？"
+                          description="会停止后续自动生成，并清理本月未付和未来账单；历史已付记录会保留。"
+                          okText="删除"
+                          cancelText="取消"
+                          okButtonProps={{ danger: true }}
+                          onConfirm={() => deleteTemplate(row)}
+                        >
+                          <Button danger>删除模板</Button>
+                        </Popconfirm>
+                      </Space>
+                    ),
+                  },
+                ] as any}
+              />
+            </div>
+          ) : null}
+        </Card>
+      </Space>
 
       <Drawer
         open={detailOpen}
@@ -815,15 +905,9 @@ export default function PropertyPayablesPage() {
               <Descriptions.Item label="付款截止日">{detailRow.due_date || '-'}</Descriptions.Item>
               <Descriptions.Item label="预计收到账单日">{detailRow.bill_expected_date || '-'}</Descriptions.Item>
               <Descriptions.Item label="实际收到账单日">{detailRow.bill_received_date || '-'}</Descriptions.Item>
-              <Descriptions.Item label="费用账期" span={2}>
-                {detailRow.bill_period_start || detailRow.bill_period_end ? `${detailRow.bill_period_start || '-'} 至 ${detailRow.bill_period_end || '-'}` : '-'}
-              </Descriptions.Item>
               <Descriptions.Item label="状态">{statusTag(detailRow)}</Descriptions.Item>
               <Descriptions.Item label="模板状态">{detailRow.template_status === 'paused' ? '已暂停' : '启用中'}</Descriptions.Item>
               <Descriptions.Item label="模板起始月份">{detailRow.start_month_key || '-'}</Descriptions.Item>
-              <Descriptions.Item label="付款周期">
-                {PROPERTY_PAYABLE_FREQUENCY_OPTIONS.find((item) => item.value === Number(detailRow.frequency_months || 1))?.label || `${Number(detailRow.frequency_months || 1)} 个月`}
-              </Descriptions.Item>
               <Descriptions.Item label="付款方式">{propertyPayablePaymentTypeLabel(detailRow.payment_type || '')}</Descriptions.Item>
               <Descriptions.Item label="收款方">{detailRow.pay_account_name || '-'}</Descriptions.Item>
               <Descriptions.Item label="模板备注" span={2}>{detailRow.template_note || '-'}</Descriptions.Item>
@@ -866,19 +950,13 @@ export default function PropertyPayablesPage() {
       >
         <Form form={confirmForm} layout="vertical">
           <Card size="small" style={{ marginBottom: 16 }}>
-            这里只会更新当前月份账单快照的收账单日期、费用账期、金额、付款截止日和备注，不会改动代付模板。
+            这里只会更新当前月份账单快照的实际收到账单日期、金额和备注，不会改动代付模板；付款截止日固定为每月 {PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH} 号。
           </Card>
           <Form.Item name="bill_received_date" label="实际收到账单日期" rules={[{ required: true, message: '请选择收到账单日期' }]}>
             <DatePicker style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="bill_period" label="费用账期">
-            <DatePicker.RangePicker style={{ width: '100%' }} />
-          </Form.Item>
           <Form.Item name="amount" label="本月实际金额" rules={[{ required: true, message: '请输入金额' }]}>
             <InputNumber min={0} step={0.01} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item name="due_date" label="本月付款截止日" rules={[{ required: true, message: '请选择付款截止日' }]}>
-            <DatePicker style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item name="note" label="本月备注">
             <Input.TextArea rows={3} />
@@ -926,43 +1004,13 @@ export default function PropertyPayablesPage() {
               </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item name="due_day_of_month" label="付款截止日" rules={[{ required: true, message: '请输入付款截止日' }]}>
+              <Form.Item name="bill_expected_day_of_month" label="预计收到账单日" rules={[{ required: true, message: '请输入预计收到账单日' }]}>
                 <InputNumber min={1} max={31} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item name="bill_expected_day_of_month" label="预计收到账单日">
-                <InputNumber min={1} max={31} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="bill_period_start_month_offset" label="账期开始相对月份">
-                <Select options={BILL_MONTH_OFFSET_OPTIONS} />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="bill_period_start_day_of_month" label="账期开始日">
-                <InputNumber min={1} max={31} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="bill_period_end_month_offset" label="账期结束相对月份">
-                <Select options={BILL_MONTH_OFFSET_OPTIONS} />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="bill_period_end_day_of_month" label="账期结束日">
-                <InputNumber min={1} max={31} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="frequency_months" label="付款周期">
-                <Select options={PROPERTY_PAYABLE_FREQUENCY_OPTIONS.map((item) => ({ value: item.value, label: item.label }))} />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="remind_days_before" label="提前提示天数">
-                <InputNumber min={0} max={30} style={{ width: '100%' }} />
+              <Form.Item label="付款截止日">
+                <Input value={`每月 ${PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH} 号`} disabled />
               </Form.Item>
             </Col>
             <Col span={12}>

@@ -10,7 +10,8 @@ const base = {
   category: 'internet',
   category_detail: null,
   amount: '89.80',
-  due_day_of_month: 9,
+  due_day_of_month: 30,
+  bill_expected_day_of_month: 5,
   frequency_months: 1,
   remind_days_before: 3,
   payment_type: 'bpay',
@@ -53,10 +54,10 @@ assert.equal(
 assert.equal(
   propertyPayableTemplateHasBusinessChanges(base, {
     ...base,
-    due_day_of_month: 10,
+    bill_expected_day_of_month: 6,
   }),
   true,
-  'due day changes should count as payable template business changes',
+  'expected bill received day changes should count as payable template business changes',
 )
 
 console.log('test_property_payable_template_sync: ok')

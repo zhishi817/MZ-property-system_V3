@@ -4,17 +4,11 @@ import { Button, Card, Col, DatePicker, Divider, Form, Input, InputNumber, Row, 
 import dayjs from 'dayjs'
 import {
   PROPERTY_PAYABLE_CATEGORY_OPTIONS,
-  PROPERTY_PAYABLE_FREQUENCY_OPTIONS,
+  PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH,
   PROPERTY_PAYABLE_PAYMENT_TYPE_OPTIONS,
   defaultPropertyPayableTemplate,
 } from '../lib/propertyPayables'
 import PropertyPayableVendorInput from './PropertyPayableVendorInput'
-
-const BILL_MONTH_OFFSET_OPTIONS = [
-  { value: -1, label: '上月' },
-  { value: 0, label: '本月' },
-  { value: 1, label: '下月' },
-]
 
 function PaymentFields(props: { fieldName: string; index: number }) {
   return (
@@ -150,43 +144,13 @@ export default function PropertyPayableTemplatesForm(props: { form: any; name?: 
                     </Form.Item>
                   </Col>
                   <Col span={8}>
-                    <Form.Item name={[field.name, 'due_day_of_month']} label="付款截止日" rules={[{ required: true, message: '必填' }]}>
+                    <Form.Item name={[field.name, 'bill_expected_day_of_month']} label="预计收到账单日" rules={[{ required: true, message: '必填' }]}>
                       <InputNumber min={1} max={31} style={{ width: '100%' }} />
                     </Form.Item>
                   </Col>
                   <Col span={8}>
-                    <Form.Item name={[field.name, 'bill_expected_day_of_month']} label="预计收到账单日">
-                      <InputNumber min={1} max={31} style={{ width: '100%' }} />
-                    </Form.Item>
-                  </Col>
-                  <Col span={8}>
-                    <Form.Item name={[field.name, 'bill_period_start_month_offset']} label="账期开始相对月份" initialValue={0}>
-                      <Select options={BILL_MONTH_OFFSET_OPTIONS} />
-                    </Form.Item>
-                  </Col>
-                  <Col span={8}>
-                    <Form.Item name={[field.name, 'bill_period_start_day_of_month']} label="账期开始日">
-                      <InputNumber min={1} max={31} style={{ width: '100%' }} />
-                    </Form.Item>
-                  </Col>
-                  <Col span={8}>
-                    <Form.Item name={[field.name, 'bill_period_end_month_offset']} label="账期结束相对月份" initialValue={0}>
-                      <Select options={BILL_MONTH_OFFSET_OPTIONS} />
-                    </Form.Item>
-                  </Col>
-                  <Col span={8}>
-                    <Form.Item name={[field.name, 'bill_period_end_day_of_month']} label="账期结束日">
-                      <InputNumber min={1} max={31} style={{ width: '100%' }} />
-                    </Form.Item>
-                  </Col>
-                  <Col span={8}>
-                    <Form.Item name={[field.name, 'frequency_months']} label="付款周期" initialValue={1}>
-                      <Select options={PROPERTY_PAYABLE_FREQUENCY_OPTIONS.map((item) => ({ value: item.value, label: item.label }))} />
-                    </Form.Item>
-                  </Col>
-                  <Col span={8}>
-                    <Form.Item name={[field.name, 'remind_days_before']} label="提前提示天数" initialValue={3}>
-                      <InputNumber min={0} max={30} style={{ width: '100%' }} />
+                    <Form.Item label="付款截止日">
+                      <Input value={`每月 ${PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH} 号`} disabled />
                     </Form.Item>
                   </Col>
                   <Col span={8}>

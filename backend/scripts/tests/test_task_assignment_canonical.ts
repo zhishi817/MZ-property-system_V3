@@ -68,6 +68,7 @@ async function main() {
   const offlineDisplayId = 'test-assignment-offline-display'
   const workId = 'test-assignment-work'
   const cleaningId = 'test-assignment-cleaning'
+  const cleaningKeysHungId = 'test-assignment-keys-hung'
   const propertyId = 'P_TEST_ASSIGN'
   const crossDayPropertyId = 'P_TEST_ASSIGN_CROSS_DAY'
   const sameDayPropertyId = 'P_TEST_ASSIGN_SAME_DAY'
@@ -102,7 +103,7 @@ async function main() {
     [offlineNullId, offlineOldId, offlineDisplayId],
   ])
   await pgPool.query(`DELETE FROM cleaning_offline_tasks WHERE id = ANY($1::text[])`, [[offlineNullId, offlineOldId, offlineDisplayId]])
-  await pgPool.query(`DELETE FROM cleaning_tasks WHERE id = ANY($1::text[])`, [[cleaningId, crossDayCheckoutId, crossDayCheckinId, sameDayCheckoutId, sameDayCheckinId, pureCheckinId, keyHandoverId]])
+  await pgPool.query(`DELETE FROM cleaning_tasks WHERE id = ANY($1::text[])`, [[cleaningId, cleaningKeysHungId, crossDayCheckoutId, crossDayCheckinId, sameDayCheckoutId, sameDayCheckinId, pureCheckinId, keyHandoverId]])
   await pgPool.query(`INSERT INTO properties(id, address) VALUES($1, 'Test assignment property') ON CONFLICT (id) DO NOTHING`, [propertyId])
   await pgPool.query(
     `INSERT INTO properties(id, code, address)
@@ -236,6 +237,33 @@ async function main() {
       task_flags: [],
     })
     assert.equal((await fetchWorkTask(pgPool, workId)).assignee_id, null)
+
+    process.stdout.write('test_task_assignment_canonical: testing save-board ignores derived cleaning status\n')
+    await pgPool.query(
+      `INSERT INTO cleaning_tasks(
+         id, property_id, task_type, type, task_date, date, status, assignee_id, cleaner_id, inspector_id, inspection_mode, inspection_scope, source, execution_state, lockbox_video_uploaded_at
+       ) VALUES($1, $3, 'checkin_clean', 'checkin_clean', $2::date, $2::date, 'keys_hung', 'inspector-a', NULL, 'inspector-a', 'same_day', 'inspect_and_hang', 'manual', 'active', now())`,
+      [cleaningKeysHungId, TEST_DATE, propertyId],
+    )
+    await requestJson(app, 'POST', '/task-center/save-board', {
+      date: TEST_DATE,
+      mode: 'board',
+      rows: [{ row_key: 'region:test-assignment', row_type: 'region', row_title: 'Test', row_order: 1 }],
+      items: [],
+      row_assignments: [],
+      cleaning_assignments: [{
+        task_id: cleaningKeysHungId,
+        inspection_mode: 'same_day',
+        inspection_scope: 'inspect_and_hang',
+        inspection_due_date: null,
+        status: 'assigned',
+      }],
+      work_assignments: [],
+      task_flags: [],
+    })
+    const preservedKeysHung = (await pgPool.query(`SELECT status, inspector_id FROM cleaning_tasks WHERE id=$1`, [cleaningKeysHungId])).rows[0]
+    assert.equal(preservedKeysHung.status, 'keys_hung')
+    assert.equal(preservedKeysHung.inspector_id, 'inspector-a')
 
     process.stdout.write('test_task_assignment_canonical: testing manager fields preserve assignment\n')
     await pgPool.query(
@@ -373,7 +401,7 @@ async function main() {
       [offlineNullId, offlineOldId, offlineDisplayId],
     ])
     await pgPool.query(`DELETE FROM cleaning_offline_tasks WHERE id = ANY($1::text[])`, [[offlineNullId, offlineOldId, offlineDisplayId]])
-    await pgPool.query(`DELETE FROM cleaning_tasks WHERE id = ANY($1::text[])`, [[cleaningId, crossDayCheckoutId, crossDayCheckinId, sameDayCheckoutId, sameDayCheckinId, pureCheckinId, keyHandoverId]])
+    await pgPool.query(`DELETE FROM cleaning_tasks WHERE id = ANY($1::text[])`, [[cleaningId, cleaningKeysHungId, crossDayCheckoutId, crossDayCheckinId, sameDayCheckoutId, sameDayCheckinId, pureCheckinId, keyHandoverId]])
     await pgPool.query(`DELETE FROM properties WHERE id = ANY($1::text[])`, [[propertyId, crossDayPropertyId, sameDayPropertyId, pureCheckinPropertyId, keyHandoverPropertyId]])
   }
 

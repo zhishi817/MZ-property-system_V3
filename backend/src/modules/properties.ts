@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from 'uuid'
 
 export const router = Router()
 const PROPERTY_PAYABLE_TEMPLATE_KIND = 'property_payable'
+const PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH = 30
 
 router.get('/', (req, res) => {
   const q: any = req.query || {}
@@ -68,7 +69,8 @@ const createSchema = z.object({
     category: z.string().min(1),
     category_detail: z.string().optional(),
     amount: z.coerce.number().optional(),
-    due_day_of_month: z.coerce.number().min(1).max(31),
+    due_day_of_month: z.coerce.number().min(1).max(31).optional(),
+    bill_expected_day_of_month: z.coerce.number().min(1).max(31).optional(),
     frequency_months: z.coerce.number().min(1).max(24).optional(),
     remind_days_before: z.coerce.number().min(0).max(30).optional(),
     payment_type: z.enum(['bank_account', 'bpay', 'payid', 'rent_deduction', 'cash']).optional(),
@@ -179,14 +181,14 @@ function normalizePayableTemplates(raw: any[] | undefined, actorId: string | nul
       category: String(item?.category || '').trim(),
       category_detail: String(item?.category_detail || '').trim() || null,
       amount: item?.amount == null ? 0 : Number(item.amount || 0),
-      due_day_of_month: Number(item?.due_day_of_month || 1),
+      due_day_of_month: PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH,
       bill_expected_day_of_month: item?.bill_expected_day_of_month == null || item?.bill_expected_day_of_month === '' ? null : Number(item.bill_expected_day_of_month || 0),
-      bill_period_start_day_of_month: item?.bill_period_start_day_of_month == null || item?.bill_period_start_day_of_month === '' ? null : Number(item.bill_period_start_day_of_month || 0),
-      bill_period_start_month_offset: Number(item?.bill_period_start_month_offset || 0),
-      bill_period_end_day_of_month: item?.bill_period_end_day_of_month == null || item?.bill_period_end_day_of_month === '' ? null : Number(item.bill_period_end_day_of_month || 0),
-      bill_period_end_month_offset: Number(item?.bill_period_end_month_offset || 0),
-      frequency_months: Math.max(1, Number(item?.frequency_months || 1)),
-      remind_days_before: Number(item?.remind_days_before ?? 3),
+      bill_period_start_day_of_month: null,
+      bill_period_start_month_offset: 0,
+      bill_period_end_day_of_month: null,
+      bill_period_end_month_offset: 0,
+      frequency_months: 1,
+      remind_days_before: 3,
       payment_type: item?.payment_type ? String(item.payment_type) : 'bank_account',
       pay_account_name: String(item?.pay_account_name || '').trim() || null,
       pay_bsb: String(item?.pay_bsb || '').trim() || null,

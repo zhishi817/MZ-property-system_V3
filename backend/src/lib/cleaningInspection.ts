@@ -226,11 +226,26 @@ export function mergeInspectionPlan(
 function mergedTaskStatus(statuses: any[]): string {
   const values = statuses.map((status) => String(status || '').trim().toLowerCase() || 'pending')
   if (values.length && values.every((status) => status === 'cancelled' || status === 'canceled')) return 'cancelled'
-  if (values.includes('pending')) return 'pending'
-  if (values.includes('assigned')) return 'assigned'
-  if (values.includes('in_progress')) return 'in_progress'
-  if (values.includes('completed')) return 'completed'
-  if (values.length) return values[0]
+  const rank = (status: string) => {
+    if (status === 'keys_hung') return 90
+    if (status === 'done' || status === 'completed' || status === 'ready') return 80
+    if (status === 'inspected') return 75
+    if (status === 'cleaned' || status === 'restock_pending' || status === 'restocked' || status === 'to_inspect' || status === 'to_hang_keys') return 70
+    if (status === 'in_progress') return 50
+    if (status === 'assigned' || status === 'scheduled') return 40
+    if (status === 'pending' || status === 'todo' || status === 'unassigned') return 10
+    return 0
+  }
+  let best = ''
+  let bestRank = -1
+  for (const status of values) {
+    const nextRank = rank(status)
+    if (nextRank > bestRank) {
+      best = status
+      bestRank = nextRank
+    }
+  }
+  if (best) return best
   return 'pending'
 }
 
@@ -277,7 +292,7 @@ export function mergeTurnoverTaskPlan(
     cleanerId,
     assigneeId: assignee.matches ? (assignee.value || cleanerId) : cleanerId,
     inspectorId: inspector.matches ? inspector.value : null,
-    status: mergedTaskStatus(primaryRows.map((row) => row?.status)),
+    status: mergedTaskStatus(list.map((row) => row?.status)),
     inspectionMode: inspectionPlan.inspectionMode,
     inspectionDueDate: inspectionPlan.inspectionDueDate,
   }

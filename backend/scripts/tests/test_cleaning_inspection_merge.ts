@@ -147,6 +147,30 @@ function testTemporaryCheckinDoesNotClearCheckoutInspector() {
   assert.equal(out.inspectionMode, 'same_day')
 }
 
+function testTurnoverKeepsKeysHungFromAnyUnderlyingTask() {
+  const out = mergeTurnoverTaskPlan([
+    {
+      task_type: 'checkout_clean',
+      cleaner_id: 'cleaner-1',
+      assignee_id: 'cleaner-1',
+      inspector_id: 'inspector-1',
+      inspection_mode: 'same_day',
+      status: 'assigned',
+    },
+    {
+      task_type: 'checkin_clean',
+      cleaner_id: null,
+      assignee_id: null,
+      inspector_id: 'inspector-1',
+      inspection_mode: 'same_day',
+      status: 'keys_hung',
+    },
+  ])
+  assert.equal(out.status, 'keys_hung')
+  assert.equal(out.cleanerId, 'cleaner-1')
+  assert.equal(out.inspectorId, 'inspector-1')
+}
+
 function testCompletedDeferredInspectionStillProjectsToDueDate() {
   const out = deferredProjectionDate({
     inspectionMode: 'deferred',
@@ -205,6 +229,7 @@ testStayoverRemainsSelfComplete()
 testCheckedDoneBeatsSelfCompleteWhenMerged()
 testTemporaryCheckinDoesNotUnassignScheduledCheckout()
 testTemporaryCheckinDoesNotClearCheckoutInspector()
+testTurnoverKeepsKeysHungFromAnyUnderlyingTask()
 testCompletedDeferredInspectionStillProjectsToDueDate()
 testKeysHungSelfCompleteProjectsToOriginalTaskDate()
 testOrdinarySelfCompleteDoesNotCreateInspectorTask()

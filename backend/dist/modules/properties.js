@@ -10,6 +10,7 @@ const auth_1 = require("../auth");
 const uuid_1 = require("uuid");
 exports.router = (0, express_1.Router)();
 const PROPERTY_PAYABLE_TEMPLATE_KIND = 'property_payable';
+const PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH = 30;
 exports.router.get('/', (req, res) => {
     const q = req.query || {};
     const includeArchived = String(q.include_archived || '').toLowerCase() === 'true';
@@ -69,7 +70,8 @@ const createSchema = zod_1.z.object({
         category: zod_1.z.string().min(1),
         category_detail: zod_1.z.string().optional(),
         amount: zod_1.z.coerce.number().optional(),
-        due_day_of_month: zod_1.z.coerce.number().min(1).max(31),
+        due_day_of_month: zod_1.z.coerce.number().min(1).max(31).optional(),
+        bill_expected_day_of_month: zod_1.z.coerce.number().min(1).max(31).optional(),
         frequency_months: zod_1.z.coerce.number().min(1).max(24).optional(),
         remind_days_before: zod_1.z.coerce.number().min(0).max(30).optional(),
         payment_type: zod_1.z.enum(['bank_account', 'bpay', 'payid', 'rent_deduction', 'cash']).optional(),
@@ -168,7 +170,6 @@ async function ensurePropertyPayableColumns(client) {
 function normalizePayableTemplates(raw, actorId, propertyId) {
     const rows = Array.isArray(raw) ? raw : [];
     return rows.map((item) => {
-        var _a;
         const id = String((item === null || item === void 0 ? void 0 : item.id) || '').trim() || (0, uuid_1.v4)();
         return {
             id,
@@ -179,14 +180,14 @@ function normalizePayableTemplates(raw, actorId, propertyId) {
             category: String((item === null || item === void 0 ? void 0 : item.category) || '').trim(),
             category_detail: String((item === null || item === void 0 ? void 0 : item.category_detail) || '').trim() || null,
             amount: (item === null || item === void 0 ? void 0 : item.amount) == null ? 0 : Number(item.amount || 0),
-            due_day_of_month: Number((item === null || item === void 0 ? void 0 : item.due_day_of_month) || 1),
+            due_day_of_month: PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH,
             bill_expected_day_of_month: (item === null || item === void 0 ? void 0 : item.bill_expected_day_of_month) == null || (item === null || item === void 0 ? void 0 : item.bill_expected_day_of_month) === '' ? null : Number(item.bill_expected_day_of_month || 0),
-            bill_period_start_day_of_month: (item === null || item === void 0 ? void 0 : item.bill_period_start_day_of_month) == null || (item === null || item === void 0 ? void 0 : item.bill_period_start_day_of_month) === '' ? null : Number(item.bill_period_start_day_of_month || 0),
-            bill_period_start_month_offset: Number((item === null || item === void 0 ? void 0 : item.bill_period_start_month_offset) || 0),
-            bill_period_end_day_of_month: (item === null || item === void 0 ? void 0 : item.bill_period_end_day_of_month) == null || (item === null || item === void 0 ? void 0 : item.bill_period_end_day_of_month) === '' ? null : Number(item.bill_period_end_day_of_month || 0),
-            bill_period_end_month_offset: Number((item === null || item === void 0 ? void 0 : item.bill_period_end_month_offset) || 0),
-            frequency_months: Math.max(1, Number((item === null || item === void 0 ? void 0 : item.frequency_months) || 1)),
-            remind_days_before: Number((_a = item === null || item === void 0 ? void 0 : item.remind_days_before) !== null && _a !== void 0 ? _a : 3),
+            bill_period_start_day_of_month: null,
+            bill_period_start_month_offset: 0,
+            bill_period_end_day_of_month: null,
+            bill_period_end_month_offset: 0,
+            frequency_months: 1,
+            remind_days_before: 3,
             payment_type: (item === null || item === void 0 ? void 0 : item.payment_type) ? String(item.payment_type) : 'bank_account',
             pay_account_name: String((item === null || item === void 0 ? void 0 : item.pay_account_name) || '').trim() || null,
             pay_bsb: String((item === null || item === void 0 ? void 0 : item.pay_bsb) || '').trim() || null,

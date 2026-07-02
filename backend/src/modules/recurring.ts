@@ -107,6 +107,8 @@ const RECURRING_SNAPSHOT_CONFLICT_WHERE = `fixed_expense_id IS NOT NULL AND fixe
 const TEMPLATE_KIND_FIXED_EXPENSE = 'fixed_expense'
 const TEMPLATE_KIND_PROPERTY_PAYABLE = 'property_payable'
 const PROPERTY_PAYABLE_MENU_PERM = 'menu.finance.property_payables.visible'
+export const PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH = 30
+export const PROPERTY_PAYABLE_PAYMENT_GRACE_DAYS = 5
 
 type RecurringSnapshotPayload = {
   fixedExpenseId: string
@@ -157,16 +159,25 @@ export function computeMonthDayISO(monthKey: string, dayOfMonth: any, monthOffse
 }
 
 export function computePropertyPayableTemplateDates(payment: any, monthKey: string) {
-  const dueDay = Number(payment?.due_day_of_month || 1)
   const expectedRaw = payment?.bill_expected_day_of_month
-  const startRaw = payment?.bill_period_start_day_of_month
-  const endRaw = payment?.bill_period_end_day_of_month
   return {
-    due_date: computeDueISO(monthKey, dueDay),
+    due_date: computeDueISO(monthKey, PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH),
     bill_expected_date: expectedRaw == null || expectedRaw === '' ? null : computeMonthDayISO(monthKey, expectedRaw, 0),
-    bill_period_start: startRaw == null || startRaw === '' ? null : computeMonthDayISO(monthKey, startRaw, Number(payment?.bill_period_start_month_offset || 0)),
-    bill_period_end: endRaw == null || endRaw === '' ? null : computeMonthDayISO(monthKey, endRaw, Number(payment?.bill_period_end_month_offset || 0)),
+    bill_period_start: null,
+    bill_period_end: null,
   }
+}
+
+function normalizePropertyPayableTemplatePayload(payload: Record<string, any>) {
+  if (String(payload?.template_kind || '') !== TEMPLATE_KIND_PROPERTY_PAYABLE) return payload
+  payload.scope = 'property'
+  payload.due_day_of_month = PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH
+  payload.frequency_months = 1
+  payload.bill_period_start_day_of_month = null
+  payload.bill_period_start_month_offset = 0
+  payload.bill_period_end_day_of_month = null
+  payload.bill_period_end_month_offset = 0
+  return payload
 }
 
 function buildRecurringSnapshotPayload(input: RecurringSnapshotPayload) {
@@ -318,10 +329,10 @@ async function confirmPropertyPayableSnapshotTx(
   const base = await ensurePropertyPayableSnapshotTx(client, payment, monthKey, actor)
   if (!base?.id) throw new Error('snapshot_confirm_failed')
   const before = await getPropertyPayableSnapshotTx(client, String(payment.id), monthKey)
-  const nextDue = toISODate(input.dueDate) || before?.due_date || computeDueISO(monthKey, Number(payment?.due_day_of_month || 1))
+  const nextDue = computeDueISO(monthKey, PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH)
   const nextBillReceived = input.billReceivedDate === undefined ? (before?.bill_received_date || null) : toISODate(input.billReceivedDate)
-  const nextBillPeriodStart = input.billPeriodStart === undefined ? (before?.bill_period_start || null) : toISODate(input.billPeriodStart)
-  const nextBillPeriodEnd = input.billPeriodEnd === undefined ? (before?.bill_period_end || null) : toISODate(input.billPeriodEnd)
+  const nextBillPeriodStart = null
+  const nextBillPeriodEnd = null
   const nextNote = input.note == null ? (before?.note || null) : String(input.note || '').trim() || null
   const nextAmount = round2(Number(input.amount || 0))
   const upd = await client.query(
@@ -770,21 +781,22 @@ function buildPropertyPayableWorkbenchMonth(
   const rows = templates
     .map((tpl) => {
       const startMonth = String(tpl?.start_month_key || '').trim()
-      const freq = Number(tpl?.frequency_months || 1)
+      const freq = 1
       const isDue = !!startMonth && isDueMonthKey(startMonth, monthKey, freq)
       const snapshot = snapByTemplate.get(String(tpl.id)) || null
       if (!isDue && !snapshot) return null
       const templateDates = computePropertyPayableTemplateDates(tpl, monthKey)
-      const dueDate = String(snapshot?.due_date || templateDates.due_date || '').slice(0, 10)
+      const dueDate = String(templateDates.due_date || snapshot?.due_date || '').slice(0, 10)
       const billExpectedDate = String(snapshot?.bill_expected_date || templateDates.bill_expected_date || '').slice(0, 10) || null
       const billReceivedDate = snapshot?.bill_received_date ? String(snapshot.bill_received_date).slice(0, 10) : null
-      const billPeriodStart = snapshot?.bill_period_start ? String(snapshot.bill_period_start).slice(0, 10) : (templateDates.bill_period_start || null)
-      const billPeriodEnd = snapshot?.bill_period_end ? String(snapshot.bill_period_end).slice(0, 10) : (templateDates.bill_period_end || null)
+      const billPeriodStart = null
+      const billPeriodEnd = null
       const paid = String(snapshot?.status || '') === 'paid'
       const amountConfirmed = normalizeBool(snapshot?.amount_confirmed)
       const billNotReceived = !paid && !amountConfirmed && !billReceivedDate
-      const billOverdue = billNotReceived && !!billExpectedDate && billExpectedDate < today
-      const paymentOverdue = !paid && amountConfirmed && !!dueDate && dueDate < today
+      const overdueAfterDate = billExpectedDate ? addDaysISO(billExpectedDate, PROPERTY_PAYABLE_PAYMENT_GRACE_DAYS) : null
+      const paymentOverdue = !paid && !!overdueAfterDate && overdueAfterDate < today
+      const billOverdue = billNotReceived && !paymentOverdue && !!billExpectedDate && billExpectedDate < today
       const paymentDueSoon = !paid && amountConfirmed && !paymentOverdue && !!dueDate && dueDate <= dueSoonCutoff
       let workflowStatus = 'pending'
       let sortBucket = 5
@@ -805,13 +817,13 @@ function buildPropertyPayableWorkbenchMonth(
         category: tpl.category || 'other',
         category_detail: tpl.category_detail || null,
         start_month_key: startMonth || null,
-        due_day_of_month: Number(tpl.due_day_of_month || 1),
+        due_day_of_month: PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH,
         bill_expected_day_of_month: tpl.bill_expected_day_of_month == null ? null : Number(tpl.bill_expected_day_of_month || 0),
-        bill_period_start_day_of_month: tpl.bill_period_start_day_of_month == null ? null : Number(tpl.bill_period_start_day_of_month || 0),
-        bill_period_start_month_offset: Number(tpl.bill_period_start_month_offset || 0),
-        bill_period_end_day_of_month: tpl.bill_period_end_day_of_month == null ? null : Number(tpl.bill_period_end_day_of_month || 0),
-        bill_period_end_month_offset: Number(tpl.bill_period_end_month_offset || 0),
-        frequency_months: Number(tpl.frequency_months || 1),
+        bill_period_start_day_of_month: null,
+        bill_period_start_month_offset: 0,
+        bill_period_end_day_of_month: null,
+        bill_period_end_month_offset: 0,
+        frequency_months: 1,
         report_category: tpl.report_category || null,
         template_note: tpl.note || null,
         bill_account_no: tpl.bill_account_no || null,
@@ -1034,6 +1046,7 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
   ;(payment as any).template_kind = String((payment as any).template_kind || TEMPLATE_KIND_FIXED_EXPENSE)
   ;(payment as any).created_by = actorId
   ;(payment as any).updated_by = actorId
+  normalizePropertyPayableTemplatePayload(payment as any)
   if (String((payment as any).template_kind || '') === TEMPLATE_KIND_PROPERTY_PAYABLE && !(await canAccessPropertyPayables(req))) {
     return res.status(403).json({ message: 'forbidden' })
   }
@@ -1049,6 +1062,9 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
   if (String((payment as any).template_kind || '') === TEMPLATE_KIND_PROPERTY_PAYABLE) {
     ;(payment as any).scope = 'property'
     if (!String(payment.property_id || '').trim()) return res.status(400).json({ message: 'property_id required' })
+    if (!Number.isFinite(Number((payment as any).bill_expected_day_of_month)) || Number((payment as any).bill_expected_day_of_month) < 1 || Number((payment as any).bill_expected_day_of_month) > 31) {
+      return res.status(400).json({ message: 'bill_expected_day_of_month required' })
+    }
   }
   if (mode === 'percent_of_property_total_income') {
     if (payment.scope === 'property') return res.status(400).json({ message: 'referral fee must be company scoped' })
@@ -1277,7 +1293,7 @@ router.post('/payments/:id/resume', requireAnyPerm(['recurring_payments.write', 
       const table = scope === 'property' ? 'property_expenses' : 'company_expenses'
       const dueDay = Number(after.due_day_of_month || 1)
       const startMonth = String((after as any).start_month_key || (before as any).start_month_key || '')
-      const freq = Number((after as any).frequency_months || (before as any).frequency_months || 1)
+      const freq = isPropertyPayableTemplate(after) ? 1 : Number((after as any).frequency_months || (before as any).frequency_months || 1)
       const isDue = startMonth ? isDueMonthKey(startMonth, monthKey, freq) : true
       if (!isDue) return { before, after, month_key: monthKey, ensured: false }
       if (isPropertyPayableTemplate(after)) {
@@ -1374,7 +1390,7 @@ router.post('/payments/:id/ensure-snapshot', requireAnyPerm(['recurring_payments
       const table = scope === 'property' ? 'property_expenses' : 'company_expenses'
       const dueDay = Number(payment.due_day_of_month || 1)
       const startMonth = String((payment as any).start_month_key || '')
-      const freq = Number((payment as any).frequency_months || 1)
+      const freq = isPropertyPayableTemplate(payment) ? 1 : Number((payment as any).frequency_months || 1)
       const isDue = startMonth ? isDueMonthKey(startMonth, monthKey, freq) : true
       if (!isDue) return { ensured: false, month_key: monthKey }
       if (isPropertyPayableTemplate(payment)) {
@@ -1665,8 +1681,12 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
       const nextRate = Number(nextRateRaw)
       if (nextTemplateKind === TEMPLATE_KIND_PROPERTY_PAYABLE) {
         payload.scope = 'property'
+        payload.template_kind = TEMPLATE_KIND_PROPERTY_PAYABLE
+        normalizePropertyPayableTemplatePayload(payload)
         const nextPropertyId = String((Object.prototype.hasOwnProperty.call(payload, 'property_id') ? payload.property_id : (before as any).property_id) || '').trim()
         if (!nextPropertyId) return { invalid: 'property_id required' }
+        const nextExpectedDay = Number(Object.prototype.hasOwnProperty.call(payload, 'bill_expected_day_of_month') ? payload.bill_expected_day_of_month : (before as any).bill_expected_day_of_month)
+        if (!Number.isFinite(nextExpectedDay) || nextExpectedDay < 1 || nextExpectedDay > 31) return { invalid: 'bill_expected_day_of_month required' }
       }
       if (nextMode === 'percent_of_property_total_income') {
         if (String((before as any).scope || 'company') === 'property') return { invalid: 'referral fee must be company scoped' }
@@ -1693,6 +1713,7 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
       const amountChanged = Object.prototype.hasOwnProperty.call(payload, 'amount')
       const modeChanged = Object.prototype.hasOwnProperty.call(payload, 'amount_mode') || Object.prototype.hasOwnProperty.call(payload, 'rate_percent') || Object.prototype.hasOwnProperty.call(payload, 'income_base') || Object.prototype.hasOwnProperty.call(payload, 'property_id') || Object.prototype.hasOwnProperty.call(payload, 'property_ids')
       const dueChanged = Object.prototype.hasOwnProperty.call(payload, 'due_day_of_month')
+      const billExpectedChanged = propertyPayable && Object.prototype.hasOwnProperty.call(payload, 'bill_expected_day_of_month')
       const newAmount = Number(payload.amount || 0)
       const newDueDay = Number(payload.due_day_of_month || updated.due_day_of_month || before.due_day_of_month || 1)
       let cnt = 0
@@ -1700,15 +1721,23 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
       for (const r of rows) {
         const sets2: string[] = []
         const vals2: any[] = []
+        const pushSet = (column: string, value: any) => {
+          vals2.push(value)
+          sets2.push(`${column} = $${vals2.length}`)
+        }
         if ((amountChanged && !modeChanged) && String((updated as any).amount_mode || '') !== 'percent_of_property_total_income') {
-          sets2.push('amount = $1'); vals2.push(newAmount)
+          pushSet('amount', newAmount)
         } else if ((amountChanged || modeChanged)) {
           const amt = await computeSnapshotAmountTx(client, updated, r.month_key, incomeCache)
-          sets2.push('amount = $1'); vals2.push(amt)
+          pushSet('amount', amt)
         }
         if (dueChanged) {
           const dueISO = computeDueISO(r.month_key, newDueDay)
-          if (sets2.length) { sets2.push('due_date = $2'); vals2.push(dueISO) } else { sets2.push('due_date = $1'); vals2.push(dueISO) }
+          pushSet('due_date', dueISO)
+        }
+        if (billExpectedChanged) {
+          const expectedISO = computeMonthDayISO(r.month_key, payload.bill_expected_day_of_month, 0)
+          pushSet('bill_expected_date', expectedISO)
         }
         if (!sets2.length) continue
         const sql2 = `UPDATE ${table} SET ${sets2.join(', ')} WHERE id = $${vals2.length + 1}`

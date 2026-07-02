@@ -1,6 +1,7 @@
 import dayjs from 'dayjs'
 
 export const PROPERTY_PAYABLE_TEMPLATE_KIND = 'property_payable'
+export const PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH = 30
 
 export const PROPERTY_PAYABLE_CATEGORY_OPTIONS = [
   { value: 'electricity', label: '电费' },
@@ -43,7 +44,7 @@ export function defaultPropertyPayableTemplate() {
     vendor: '',
     category: 'electricity',
     amount: undefined,
-    due_day_of_month: 15,
+    due_day_of_month: PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH,
     bill_expected_day_of_month: undefined,
     bill_period_start_day_of_month: undefined,
     bill_period_start_month_offset: 0,
@@ -86,14 +87,14 @@ export function normalizePropertyPayableTemplates(raw: any): any[] {
       category: String(item?.category || '').trim(),
       category_detail: String(item?.category_detail || '').trim(),
       amount: item?.amount == null || item?.amount === '' ? undefined : Number(item.amount || 0),
-      due_day_of_month: item?.due_day_of_month == null || item?.due_day_of_month === '' ? undefined : Number(item.due_day_of_month),
+      due_day_of_month: PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH,
       bill_expected_day_of_month: item?.bill_expected_day_of_month == null || item?.bill_expected_day_of_month === '' ? undefined : Number(item.bill_expected_day_of_month),
-      bill_period_start_day_of_month: item?.bill_period_start_day_of_month == null || item?.bill_period_start_day_of_month === '' ? undefined : Number(item.bill_period_start_day_of_month),
-      bill_period_start_month_offset: item?.bill_period_start_month_offset == null || item?.bill_period_start_month_offset === '' ? 0 : Number(item.bill_period_start_month_offset),
-      bill_period_end_day_of_month: item?.bill_period_end_day_of_month == null || item?.bill_period_end_day_of_month === '' ? undefined : Number(item.bill_period_end_day_of_month),
-      bill_period_end_month_offset: item?.bill_period_end_month_offset == null || item?.bill_period_end_month_offset === '' ? 0 : Number(item.bill_period_end_month_offset),
-      frequency_months: item?.frequency_months == null || item?.frequency_months === '' ? undefined : Number(item.frequency_months),
-      remind_days_before: item?.remind_days_before == null || item?.remind_days_before === '' ? 3 : Number(item.remind_days_before),
+      bill_period_start_day_of_month: undefined,
+      bill_period_start_month_offset: 0,
+      bill_period_end_day_of_month: undefined,
+      bill_period_end_month_offset: 0,
+      frequency_months: 1,
+      remind_days_before: 3,
       payment_type: String(item?.payment_type || 'bank_account'),
       pay_account_name: String(item?.pay_account_name || '').trim(),
       pay_bsb: String(item?.pay_bsb || '').trim(),
