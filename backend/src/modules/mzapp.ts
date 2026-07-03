@@ -22,23 +22,46 @@ import {
   isCheckinKeyHandoverTask,
   isCleaningExecutionTask,
   isInspectionFinishedStatus,
+  isKeyOrPasswordActionSemantics,
   mergeInspectionPlan,
   mobileInspectionProjectionDate,
 } from '../lib/cleaningInspection'
 import { deepCleaningSourceSummary, maintenanceSourceSummary } from '../lib/autoExpenseSourceSummary'
 import { buildCleaningTurnoverDisplay, mergeCleaningTurnoverDisplays } from '../lib/cleaningTurnoverDisplay'
+import { buildWorkTaskActionPayload, type WorkTaskActionId, type WorkTaskParticipant } from '../lib/workTaskActions'
 import {
   buildIdempotencyPayloadHash,
   ensureIdempotentStepReceiptsTable,
   loadIdempotentStepReceipt,
   saveIdempotentStepReceipt,
 } from '../lib/idempotentStepReceipts'
+import {
+  actorAndPerformerFromRequest,
+  applyCleaningTaskActionTransition,
+  recordWorkTaskActionAudit,
+} from '../lib/workTaskActionAudit'
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
 import { activeCleaningTaskWhereSql, syncCheckoutOldCodeFromCheckinNewCode } from '../services/cleaningSync'
 
 export const router = Router()
 
 const REQUIRED_COMPLETION_PHOTO_AREAS = ['toilet', 'living', 'sofa', 'bedroom', 'kitchen'] as const
+const actionAuditBodySchema = {
+  performed_by_user_id: z.string().trim().min(1).max(120).optional(),
+  performed_by_name: z.string().trim().min(1).max(160).optional(),
+}
+const WORK_TASK_PARTICIPANT_ACTION_IDS = new Set<WorkTaskActionId | '*'>((
+  [
+    '*',
+    'upload_key_photo',
+    'fill_supplies',
+    'submit_inspection',
+    'upload_access_video',
+    'complete_cleaning',
+    'report_issue',
+    'mark_guest_checkout',
+  ] as Array<WorkTaskActionId | '*'>
+))
 
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
 const PHOTO_ID_WATERMARK_TEXT = '仅用于MZ Property（ABN：42 657 925 365）记录,不做任何其他用途。\nFor the records of MZ Property (ABN: 42 657 925 365) only, not for other purpose.'
@@ -1152,16 +1175,89 @@ function isCleanerInspectorRole(user: any) {
   return hasRole(user, 'cleaner_inspector')
 }
 
-function isAssignedKeyHandoverExecutor(row: any, userId: string) {
+function isAssignedCheckinSiteExecutor(row: any, userId: string) {
   const assigneeId = String(row?.assignee_id || '').trim()
-  return !!userId && !!assigneeId && assigneeId === userId && isCheckinKeyHandoverTask(row)
+  const taskType = String(row?.task_type || row?.type || '').trim().toLowerCase()
+  const inspectionScope = normalizeInspectionScope(row?.inspection_scope)
+  return !!userId && !!assigneeId && assigneeId === userId && taskType === 'checkin_clean' && (inspectionScope === 'inspect_and_hang' || isCheckinKeyHandoverTask(row))
 }
 
-function canManageMzappLockboxVideo(user: any, row: any, userId: string) {
-  if (canViewAll(user)) return true
-  if (isAssignedKeyHandoverExecutor(row, userId)) return true
+function canManageMzappLockboxVideoLegacy(user: any, row: any, userId: string) {
+  if (isAssignedCheckinSiteExecutor(row, userId)) return true
   const inspectorId = String(row?.inspector_id || '').trim()
-  return !!userId && !!inspectorId && inspectorId === userId && (isInspectorRole(user) || isCleanerInspectorRole(user))
+  return !!userId && !!inspectorId && inspectorId === userId
+}
+
+function normalizeParticipantActionIds(value: any) {
+  const raw = Array.isArray(value)
+    ? value
+    : (typeof value === 'string' && value.trim().startsWith('['))
+      ? (() => {
+          try { return JSON.parse(value) } catch { return [] }
+        })()
+      : []
+  return Array.from(new Set((Array.isArray(raw) ? raw : []).map((item) => String(item || '').trim()).filter(Boolean)))
+    .filter((item) => WORK_TASK_PARTICIPANT_ACTION_IDS.has(item as any))
+}
+
+function canBasePerformWorkTaskAction(actionId: WorkTaskActionId, permissions: string[]) {
+  const set = new Set((permissions || []).map((item) => String(item || '').trim()).filter(Boolean))
+  const canStart = set.has('cleaning_app.tasks.start')
+  const canFinish = set.has('cleaning_app.tasks.finish')
+  const canInspect = set.has('cleaning_app.inspect.finish') || canFinish
+  const canMedia = set.has('cleaning_app.media.upload') || canStart || canFinish || canInspect
+  if (actionId === 'upload_access_video') return canFinish && canMedia
+  if (actionId === 'submit_inspection') return canInspect && canMedia
+  if (actionId === 'upload_key_photo') return canStart && canMedia
+  if (actionId === 'fill_supplies' || actionId === 'complete_cleaning') return canFinish
+  if (actionId === 'report_issue') return set.has('cleaning_app.issues.report')
+  if (actionId === 'mark_guest_checkout') return true
+  return false
+}
+
+async function userHasManualWorkTaskAction(user: any, userId: string, sourceType: string, sourceId: string, actionId: WorkTaskActionId) {
+  if (!hasPg || !pgPool) return false
+  const uid = String(userId || '').trim()
+  const st = String(sourceType || '').trim()
+  const sid = String(sourceId || '').trim()
+  if (!uid || !st || !sid) return false
+  const permissions = await listPermissionCodesForUser(user)
+  if (!canBasePerformWorkTaskAction(actionId, permissions)) return false
+  await ensureWorkTaskParticipantsTable()
+  const r = await pgPool.query(
+    `SELECT action_ids
+       FROM work_task_participants
+      WHERE source_type = $1
+        AND source_id = $2
+        AND user_id = $3
+        AND source_relation = 'manual'`,
+    [st, sid, uid],
+  )
+  return (r?.rows || []).some((row: any) => {
+    const ids = normalizeParticipantActionIds(row?.action_ids)
+    return ids.includes('*') || ids.includes(actionId)
+  })
+}
+
+async function canManageMzappLockboxVideo(user: any, row: any, userId: string) {
+  if (canManageMzappLockboxVideoLegacy(user, row, userId)) return true
+  return userHasManualWorkTaskAction(user, userId, 'cleaning_tasks', String(row?.id || '').trim(), 'upload_access_video')
+}
+
+async function canSubmitMzappInspection(user: any, row: any, userId: string) {
+  const inspectorId = String(row?.inspector_id || '').trim()
+  const assigneeId = String(row?.assignee_id || '').trim()
+  if (userId && (inspectorId === userId || assigneeId === userId)) return true
+  return userHasManualWorkTaskAction(user, userId, 'cleaning_tasks', String(row?.id || '').trim(), 'submit_inspection')
+}
+
+async function canViewMzappTaskConsumables(user: any, row: any, userId: string) {
+  if (canViewAll(user)) return true
+  const inspectorId = String(row?.inspector_id || '').trim()
+  const cleanerId = String(row?.cleaner_id || '').trim()
+  const assigneeId = String(row?.assignee_id || '').trim()
+  if (userId && (inspectorId === userId || cleanerId === userId || assigneeId === userId)) return true
+  return userHasManualWorkTaskAction(user, userId, 'cleaning_tasks', String(row?.id || '').trim(), 'fill_supplies')
 }
 
 async function refreshAutoExpenseSourceSummary(refType: 'maintenance' | 'deep_cleaning', row: any) {
@@ -1356,6 +1452,126 @@ async function ensureWorkTasksTable() {
   await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day_assignee ON work_tasks(scheduled_date, assignee_id, status);`)
   await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_kind_day ON work_tasks(task_kind, scheduled_date);`)
   await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day ON work_tasks(scheduled_date);`)
+}
+
+async function ensureWorkTaskParticipantsTable() {
+  if (!hasPg || !pgPool) return
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS work_task_participants (
+    id text PRIMARY KEY,
+    source_type text NOT NULL,
+    source_id text NOT NULL,
+    user_id text NOT NULL,
+    participant_role text NOT NULL DEFAULT 'collaborator',
+    action_ids jsonb NOT NULL DEFAULT '["*"]'::jsonb,
+    source_relation text NOT NULL DEFAULT 'manual',
+    created_by text,
+    updated_by text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  );`)
+  await pgPool.query(`ALTER TABLE IF EXISTS work_task_participants ADD COLUMN IF NOT EXISTS participant_role text NOT NULL DEFAULT 'collaborator';`)
+  await pgPool.query(`ALTER TABLE IF EXISTS work_task_participants ADD COLUMN IF NOT EXISTS action_ids jsonb NOT NULL DEFAULT '["*"]'::jsonb;`)
+  await pgPool.query(`ALTER TABLE IF EXISTS work_task_participants ADD COLUMN IF NOT EXISTS source_relation text NOT NULL DEFAULT 'manual';`)
+  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_task_participants_source ON work_task_participants(source_type, source_id);`)
+  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_task_participants_user ON work_task_participants(user_id);`)
+  await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_work_task_participants_manual ON work_task_participants(source_type, source_id, user_id, source_relation);`)
+}
+
+function workTaskSourceRefs(task: any) {
+  const sourceType = String(task?.source_type || '').trim()
+  const ids = Array.from(new Set([
+    task?.source_id,
+    ...(Array.isArray(task?.source_ids) ? task.source_ids : []),
+    ...(Array.isArray(task?.active_source_ids) ? task.active_source_ids : []),
+  ].map((item) => String(item || '').trim()).filter(Boolean)))
+  if (!sourceType || !ids.length) return []
+  return ids.map((sourceId) => ({ source_type: sourceType, source_id: sourceId }))
+}
+
+function legacyWorkTaskParticipants(task: any): WorkTaskParticipant[] {
+  const sourceType = String(task?.source_type || '').trim()
+  const sourceId = String(task?.source_id || '').trim()
+  const taskKind = String(task?.task_kind || '').trim().toLowerCase()
+  const executionRole = String(task?.execution_role || '').trim().toLowerCase()
+  const isExecution = taskKind === 'execution' || executionRole === 'execution' || isKeyOrPasswordActionSemantics(task?.execution_semantics)
+  const rows: WorkTaskParticipant[] = []
+  const add = (userId: any, participantRole: WorkTaskParticipant['participant_role'], actionIds: WorkTaskActionId[]) => {
+    const id = String(userId || '').trim()
+    if (!id) return
+    rows.push({
+      user_id: id,
+      participant_role: participantRole,
+      action_ids: actionIds,
+      source_relation: 'legacy',
+      source_type: sourceType || null,
+      source_id: sourceId || null,
+    })
+  }
+  if (sourceType !== 'cleaning_tasks') {
+    add(task?.assignee_id, 'assignee', ['fill_supplies', 'complete_cleaning', 'report_issue'])
+    return rows
+  }
+  if (taskKind === 'cleaning') add(task?.cleaner_id || task?.assignee_id, 'cleaner', ['upload_key_photo', 'fill_supplies', 'complete_cleaning', 'report_issue'])
+  if (taskKind === 'inspection') add(task?.inspector_id || task?.assignee_id, 'inspector', ['submit_inspection', 'upload_access_video', 'report_issue'])
+  if (isExecution) add(task?.assignee_id || task?.inspector_id, 'assignee', ['upload_access_video', 'report_issue'])
+  return rows
+}
+
+async function loadManualWorkTaskParticipantsByRef(tasks: any[]) {
+  const map = new Map<string, WorkTaskParticipant[]>()
+  if (!hasPg || !pgPool || !tasks.length) return map
+  const refs = tasks.flatMap(workTaskSourceRefs)
+  const sourceTypes = Array.from(new Set(refs.map((ref) => ref.source_type).filter(Boolean)))
+  if (!sourceTypes.length) return map
+  await ensureWorkTaskParticipantsTable()
+  for (const sourceType of sourceTypes) {
+    const sourceIds = Array.from(new Set(refs.filter((ref) => ref.source_type === sourceType).map((ref) => ref.source_id).filter(Boolean)))
+    if (!sourceIds.length) continue
+    const r = await pgPool.query(
+      `SELECT id,
+              source_type,
+              source_id,
+              user_id,
+              participant_role,
+              action_ids,
+              source_relation,
+              created_by,
+              updated_by,
+              created_at,
+              updated_at
+         FROM work_task_participants
+        WHERE source_type = $1
+          AND source_id = ANY($2::text[])
+          AND source_relation = 'manual'
+        ORDER BY created_at ASC, id ASC`,
+      [sourceType, sourceIds],
+    )
+    for (const row of r?.rows || []) {
+      const key = `${String(row.source_type || '')}:${String(row.source_id || '')}`
+      const list = map.get(key) || []
+      list.push({
+        user_id: String(row.user_id || ''),
+        participant_role: String(row.participant_role || 'collaborator'),
+        action_ids: normalizeParticipantActionIds(row.action_ids),
+        source_relation: 'manual',
+        source_type: String(row.source_type || ''),
+        source_id: String(row.source_id || ''),
+      })
+      map.set(key, list)
+    }
+  }
+  return map
+}
+
+function attachWorkTaskParticipants(task: any, manualByRef: Map<string, WorkTaskParticipant[]>) {
+  const manual = workTaskSourceRefs(task).flatMap((ref) => manualByRef.get(`${ref.source_type}:${ref.source_id}`) || [])
+  return {
+    ...task,
+    participants: [
+      ...legacyWorkTaskParticipants(task),
+      ...manual,
+    ],
+  }
 }
 
 async function ensureMzappAlertsTable() {
@@ -1922,7 +2138,7 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
     const propertyId = row.property_id ? String(row.property_id) : ''
-    if (!canManageMzappLockboxVideo(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
+    if (!await canManageMzappLockboxVideo(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
 
     const uuid = require('uuid')
     const mediaId = uuid.v4()
@@ -1931,9 +2147,18 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
        VALUES ($1,$2,'lockbox_video',$3,now(),$4)`,
       [mediaId, id, mediaUrl, userId],
     )
+    const actionActor = actorAndPerformerFromRequest(user, req.body || {})
+    const actionResult = await applyCleaningTaskActionTransition({
+      taskId: String(id),
+      actionId: 'upload_access_video',
+      actorUserId: actionActor.actorUserId,
+      performedByUserId: actionActor.performedByUserId,
+      performedByName: actionActor.performedByName,
+      metadata: { route: 'mzapp.cleaning_tasks.lockbox_video' },
+    }, pgPool)
     await pgPool.query(
       `UPDATE cleaning_tasks
-       SET status = 'inspected', lockbox_video_uploaded_at = now(), updated_at = now()
+       SET lockbox_video_uploaded_at = now(), updated_at = now()
        WHERE id = $1`,
       [id],
     )
@@ -1975,7 +2200,7 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
         )
       }
     } catch {}
-    return res.status(201).json({ ok: true })
+    return res.status(201).json({ ok: true, action_result: actionResult })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'lockbox_video_failed' })
   }
@@ -2006,7 +2231,7 @@ async function handleDeleteMzappLockboxVideo(req: any, res: any) {
     )
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
-    if (!canManageMzappLockboxVideo(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
+    if (!await canManageMzappLockboxVideo(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
 
     const needsRestockResult = await pgPool.query(
       `SELECT 1
@@ -2067,6 +2292,7 @@ const inspectionPhotosSchema = z
         captured_at: z.string().trim().max(64).optional(),
       }),
     ),
+    ...actionAuditBodySchema,
   })
   .strict()
 
@@ -2076,7 +2302,6 @@ router.get('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
   const userId = String(user.sub || '')
   const id = String(req.params.id || '').trim()
   if (!id) return res.status(400).json({ message: 'missing id' })
-  if (!(isInspectorRole(user) || isCleanerInspectorRole(user) || canViewAll(user))) return res.status(403).json({ message: 'forbidden' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
     await ensureCleaningChecklistTables()
@@ -2084,10 +2309,7 @@ router.get('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
     const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
-    const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
-    const cleanerId = row.cleaner_id ? String(row.cleaner_id) : ''
-    const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
-    if (!canViewAll(user) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
+    if (!await canSubmitMzappInspection(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
 
     const r = await pgPool.query(
       `SELECT type, url, note, captured_at, created_at
@@ -2126,10 +2348,7 @@ router.get('/cleaning-tasks/:id/consumables', async (req, res) => {
     const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
-    const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
-    const cleanerId = row.cleaner_id ? String(row.cleaner_id) : ''
-    const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
-    if (!canViewAll(user) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
+    if (!await canViewMzappTaskConsumables(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
 
     const rows = await pgPool.query(
       `SELECT id, item_id, qty, need_restock, note, status, photo_url, photo_urls, item_label, created_at
@@ -2173,7 +2392,6 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
   const userId = String(user.sub || '')
   const id = String(req.params.id || '').trim()
   if (!id) return res.status(400).json({ message: 'missing id' })
-  if (!(isInspectorRole(user) || isCleanerInspectorRole(user) || canViewAll(user))) return res.status(403).json({ message: 'forbidden' })
   const parsed = inspectionPhotosSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
@@ -2182,10 +2400,7 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
     const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
-    const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
-    const cleanerId = row.cleaner_id ? String(row.cleaner_id) : ''
-    const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
-    if (!canViewAll(user) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
+    if (!await canSubmitMzappInspection(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
 
     const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, shower_drain: 1, unclean: 12 }
     const byArea = new Map<string, number>()
@@ -2208,11 +2423,23 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
         [uuid.v4(), id, type, String(it.url), it.note == null ? null : String(it.note || ''), capturedAt.toISOString(), userId],
       )
     }
+    const actionActor = actorAndPerformerFromRequest(user, parsed.data)
+    const actionResult = await applyCleaningTaskActionTransition({
+      taskId: String(id),
+      actionId: 'submit_inspection',
+      actorUserId: actionActor.actorUserId,
+      performedByUserId: actionActor.performedByUserId,
+      performedByName: actionActor.performedByName,
+      metadata: {
+        route: 'mzapp.cleaning_tasks.inspection_photos',
+        item_count: parsed.data.items.length,
+      },
+    }, pgPool)
     try {
       const { broadcastCleaningEvent } = require('./events')
       broadcastCleaningEvent({ event: 'inspection_photos_saved', task_id: id })
     } catch {}
-    return res.status(201).json({ ok: true })
+    return res.status(201).json({ ok: true, action_result: actionResult })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'inspection_photos_failed' })
   }
@@ -2275,6 +2502,7 @@ const restockProofSchema = z
     confirmed_sufficient: z.boolean().optional(),
     submit_id: z.string().trim().min(1).max(120).optional(),
     step_key: z.string().trim().min(1).max(120).optional(),
+    ...actionAuditBodySchema,
   })
   .strict()
 
@@ -2284,17 +2512,13 @@ router.get('/cleaning-tasks/:id/restock-proof', async (req, res) => {
   const userId = String(user.sub || '')
   const id = String(req.params.id || '').trim()
   if (!id) return res.status(400).json({ message: 'missing id' })
-  if (!(isInspectorRole(user) || isCleanerInspectorRole(user) || canViewAll(user))) return res.status(403).json({ message: 'forbidden' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
     await ensureCleaningTaskMediaTable()
     const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
-    const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
-    const cleanerId = row.cleaner_id ? String(row.cleaner_id) : ''
-    const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
-    if (!canViewAll(user) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
+    if (!await canSubmitMzappInspection(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
 
     const r = await pgPool.query(
       `SELECT type, url, note, created_at
@@ -2349,7 +2573,6 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
   const userId = String(user.sub || '')
   const id = String(req.params.id || '').trim()
   if (!id) return res.status(400).json({ message: 'missing id' })
-  if (!(isInspectorRole(user) || isCleanerInspectorRole(user) || canViewAll(user))) return res.status(403).json({ message: 'forbidden' })
   const parsed = restockProofSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
@@ -2361,10 +2584,7 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
     const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
-    const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
-    const cleanerId = row.cleaner_id ? String(row.cleaner_id) : ''
-    const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
-    if (!canViewAll(user) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
+    if (!await canSubmitMzappInspection(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
 
     const uniq = new Set<string>()
     for (const it of parsed.data.items) {
@@ -2426,6 +2646,24 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
         [uuid.v4(), id, 'confirmed', JSON.stringify({ confirmed_sufficient: true }), userId],
       )
     }
+    const actionActor = actorAndPerformerFromRequest(user, parsed.data)
+    const statusRes = await pgPool.query(`SELECT COALESCE(status, '') AS status FROM cleaning_tasks WHERE id::text=$1::text LIMIT 1`, [String(id)])
+    const statusBefore = String(statusRes?.rows?.[0]?.status || '').trim()
+    const actionAudit = await recordWorkTaskActionAudit({
+      sourceType: 'cleaning_tasks',
+      sourceId: String(id),
+      performedAsAction: 'submit_inspection',
+      actorUserId: actionActor.actorUserId,
+      performedByUserId: actionActor.performedByUserId,
+      performedByName: actionActor.performedByName,
+      statusBefore,
+      statusAfter: statusBefore,
+      metadata: {
+        route: 'mzapp.cleaning_tasks.restock_proof',
+        item_count: parsed.data.items.length,
+        confirmed_sufficient: confirmedSufficient,
+      },
+    }, pgPool)
     try {
       const { broadcastCleaningEvent } = require('./events')
       broadcastCleaningEvent({ event: restockActionKind, task_id: id })
@@ -2456,7 +2694,7 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
         )
       }
     } catch {}
-    const responseBody = { ok: true }
+    const responseBody = { ok: true, action_result: { status_before: statusBefore || null, status_after: statusBefore || null, audit: actionAudit } }
     if (submitId && stepKey) {
       await saveIdempotentStepReceipt(pgPool, {
         scopeType: 'cleaning_task_restock_proof',
@@ -5012,6 +5250,171 @@ router.patch('/work-tasks/:id/photos', async (req, res) => {
   }
 })
 
+const workTaskParticipantsSourceSchema = z.enum(['cleaning_tasks', 'work_tasks'])
+const workTaskParticipantGrantSchema = z.object({
+  user_id: z.string().min(1),
+  participant_role: z.enum(['collaborator', 'assignee', 'cleaner', 'inspector']).optional().default('collaborator'),
+  action_ids: z.array(z.string().min(1)).min(1),
+}).strict()
+const workTaskParticipantsSetSchema = z.object({
+  source_type: workTaskParticipantsSourceSchema,
+  source_ids: z.array(z.string().min(1)).min(1).max(50),
+  grants: z.array(workTaskParticipantGrantSchema).max(200),
+}).strict()
+
+async function canManageWorkTaskParticipants(user: any) {
+  return canViewAll(user)
+}
+
+router.get('/work-task-participants', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  if (!await canManageWorkTaskParticipants(user)) return res.status(403).json({ message: 'forbidden' })
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  const sourceTypeParsed = workTaskParticipantsSourceSchema.safeParse(String((req.query as any)?.source_type || '').trim())
+  if (!sourceTypeParsed.success) return res.status(400).json({ message: 'invalid source_type' })
+  const sourceIds = Array.from(new Set(String((req.query as any)?.source_ids || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)))
+    .slice(0, 50)
+  if (!sourceIds.length) return res.json({ items: [] })
+  try {
+    await ensureWorkTaskParticipantsTable()
+    const r = await pgPool.query(
+      `SELECT p.id,
+              p.source_type,
+              p.source_id,
+              p.user_id,
+              p.participant_role,
+              p.action_ids,
+              p.source_relation,
+              p.created_at,
+              p.updated_at,
+              COALESCE(NULLIF(TRIM(u.display_name), ''), NULLIF(TRIM(u.username), ''), NULLIF(TRIM(u.email), ''), p.user_id) AS user_name
+         FROM work_task_participants p
+         LEFT JOIN users u ON u.id::text = p.user_id::text
+        WHERE p.source_type = $1
+          AND p.source_id = ANY($2::text[])
+          AND p.source_relation = 'manual'
+        ORDER BY p.source_id ASC, p.created_at ASC, p.id ASC`,
+      [sourceTypeParsed.data, sourceIds],
+    )
+    return res.json({
+      items: (r?.rows || []).map((row: any) => ({
+        id: String(row.id || ''),
+        source_type: String(row.source_type || ''),
+        source_id: String(row.source_id || ''),
+        user_id: String(row.user_id || ''),
+        user_name: row.user_name == null ? null : String(row.user_name || ''),
+        participant_role: String(row.participant_role || 'collaborator'),
+        action_ids: normalizeParticipantActionIds(row.action_ids),
+        source_relation: String(row.source_relation || 'manual'),
+        created_at: row.created_at ? String(row.created_at) : null,
+        updated_at: row.updated_at ? String(row.updated_at) : null,
+      })),
+    })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'work_task_participants_failed' })
+  }
+})
+
+router.post('/work-task-participants/set', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const userId = String(user.sub || '').trim()
+  if (!await canManageWorkTaskParticipants(user)) return res.status(403).json({ message: 'forbidden' })
+  const parsed = workTaskParticipantsSetSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  const sourceIds = Array.from(new Set(parsed.data.source_ids.map((item) => String(item || '').trim()).filter(Boolean)))
+  const rawGrants = parsed.data.grants
+    .map((grant) => ({
+      user_id: String(grant.user_id || '').trim(),
+      participant_role: String(grant.participant_role || 'collaborator').trim() || 'collaborator',
+      action_ids: normalizeParticipantActionIds(grant.action_ids),
+    }))
+    .filter((grant) => grant.user_id && grant.action_ids.length)
+  const grantMap = new Map<string, { user_id: string; participant_role: string; action_ids: string[] }>()
+  for (const grant of rawGrants) {
+    const existing = grantMap.get(grant.user_id)
+    if (!existing) {
+      grantMap.set(grant.user_id, { ...grant })
+      continue
+    }
+    existing.participant_role = existing.participant_role === 'collaborator' ? existing.participant_role : grant.participant_role
+    existing.action_ids = Array.from(new Set([...existing.action_ids, ...grant.action_ids]))
+  }
+  const grants = Array.from(grantMap.values())
+  try {
+    await ensureWorkTaskParticipantsTable()
+    const client = await pgPool.connect()
+    try {
+      await client.query('BEGIN')
+      await client.query(
+        `DELETE FROM work_task_participants
+          WHERE source_type = $1
+            AND source_id = ANY($2::text[])
+            AND source_relation = 'manual'`,
+        [parsed.data.source_type, sourceIds],
+      )
+      for (const sourceId of sourceIds) {
+        for (const grant of grants) {
+          await client.query(
+            `INSERT INTO work_task_participants (
+               id,
+               source_type,
+               source_id,
+               user_id,
+               participant_role,
+               action_ids,
+               source_relation,
+               created_by,
+               updated_by,
+               created_at,
+               updated_at
+             )
+             VALUES ($1,$2,$3,$4,$5,$6::jsonb,'manual',$7,$7,now(),now())`,
+            [
+              crypto.randomUUID(),
+              parsed.data.source_type,
+              sourceId,
+              grant.user_id,
+              grant.participant_role,
+              JSON.stringify(grant.action_ids),
+              userId || null,
+            ],
+          )
+        }
+      }
+      await client.query('COMMIT')
+    } catch (error) {
+      try { await client.query('ROLLBACK') } catch {}
+      throw error
+    } finally {
+      client.release()
+    }
+    for (const sourceId of sourceIds) {
+      try {
+        await emitWorkTaskEvent({
+          taskId: parsed.data.source_type === 'work_tasks' ? `work_task:${sourceId}` : `cleaning_task:${sourceId}`,
+          sourceType: parsed.data.source_type,
+          sourceRefIds: [sourceId],
+          eventType: 'TASK_ASSIGNMENT_CHANGED',
+          changeScope: 'membership',
+          changedFields: ['participants', 'available_actions', 'capabilities'],
+          patch: {},
+          causedByUserId: userId || null,
+          visibilityHints: null,
+        })
+      } catch {}
+    }
+    return res.json({ ok: true, source_type: parsed.data.source_type, source_ids: sourceIds, grants_saved: sourceIds.length * grants.length })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'work_task_participants_save_failed' })
+  }
+})
+
 router.get('/work-tasks', async (req, res) => {
   const dateFrom = dayOnly((req.query as any)?.date_from)
   const dateTo = dayOnly((req.query as any)?.date_to)
@@ -5032,10 +5435,17 @@ router.get('/work-tasks', async (req, res) => {
   const userId = String(user.sub || '')
 
   const allowAll = view === 'all' && await canViewAllWorkTasks(user)
+  const actionContext = {
+    userId,
+    roleNames: roleNamesOf(user),
+    permissions: await listPermissionCodesForUser(user),
+    canViewAll: allowAll,
+  }
 
   try {
     if (!hasPg || !pgPool) return res.json([])
     await ensureWorkTasksTable()
+    await ensureWorkTaskParticipantsTable()
     await ensureCleaningTaskSortColumns()
     await ensureCleaningTaskMediaTable()
     await ensureCleaningCheckoutColumns()
@@ -5063,7 +5473,17 @@ router.get('/work-tasks', async (req, res) => {
       }
       if (!allowAll) {
         vals.push(userId)
-        where.push(`w.assignee_id = $${vals.length}`)
+        where.push(`(
+          w.assignee_id = $${vals.length}
+          OR EXISTS (
+            SELECT 1
+            FROM work_task_participants wtp
+            WHERE wtp.source_type = 'work_tasks'
+              AND wtp.source_id = w.id::text
+              AND wtp.user_id = $${vals.length}
+              AND wtp.source_relation = 'manual'
+          )
+        )`)
       }
       const sql = `
         SELECT
@@ -5243,6 +5663,21 @@ router.get('/work-tasks', async (req, res) => {
           })),
         )
         const taskIds = Array.from(new Set(cleaningRows.map((x: any) => String(x.id || '')).filter(Boolean)))
+        const manualParticipantsByCleaningRef = await loadManualWorkTaskParticipantsByRef(
+          taskIds.map((sourceId) => ({ source_type: 'cleaning_tasks', source_id: sourceId })),
+        )
+        const manualActionsForTask = (taskId: any) => {
+          const rows = manualParticipantsByCleaningRef.get(`cleaning_tasks:${String(taskId || '').trim()}`) || []
+          const actions = new Set<string>()
+          for (const row of rows) {
+            if (String(row.user_id || '').trim() !== userId) continue
+            const actionIds = normalizeParticipantActionIds(row.action_ids)
+            for (const actionId of actionIds) actions.add(actionId)
+          }
+          return {
+            has: (actionId: WorkTaskActionId) => actions.has('*') || actions.has(actionId),
+          }
+        }
         const supersededByReplacementId = new Map<string, any[]>()
         if (taskIds.length) {
           const sr = await pgPool.query(
@@ -5437,8 +5872,14 @@ router.get('/work-tasks', async (req, res) => {
           const effectiveCleanerId = row.cleaner_id ? String(row.cleaner_id) : (row.assignee_id ? String(row.assignee_id) : null)
           const executorId = row.assignee_id ? String(row.assignee_id) : (row.inspector_id ? String(row.inspector_id) : null)
           const inspectorId = row.inspector_id ? String(row.inspector_id) : null
+          const isCheckinSiteExecution = String(row.task_type || '').trim().toLowerCase() === 'checkin_clean'
+          const checkinSiteExecutorId = isCheckinSiteExecution ? executorId : null
           const orderId = row.order_id ? String(row.order_id) : null
           const orderKeysRequired = row.order_keys_required == null ? null : Number(row.order_keys_required)
+          const manualActions = manualActionsForTask(row.id)
+          const manualCleaningAssigneeId = !allowAll && (manualActions.has('fill_supplies') || manualActions.has('complete_cleaning') || manualActions.has('upload_key_photo')) ? userId : ''
+          const manualInspectionAssigneeId = !allowAll && manualActions.has('submit_inspection') ? userId : ''
+          const manualExecutionAssigneeId = !allowAll && manualActions.has('upload_access_video') ? userId : ''
 
           const base = {
             __raw_id: String(row.id),
@@ -5499,26 +5940,28 @@ router.get('/work-tasks', async (req, res) => {
             && taskDate <= dateTo
             && (
               (effectiveCleanerId && (allowAll || effectiveCleanerId === userId))
+              || manualCleaningAssigneeId
               || (managerCanSeeAllTaskPool && !effectiveCleanerId)
             )
           ) {
-            const k = `${taskDate}|${propId || ''}|${effectiveCleanerId || 'unassigned'}`
+            const k = `${taskDate}|${propId || ''}|${effectiveCleanerId || manualCleaningAssigneeId || 'unassigned'}`
             const arr = cleanerGroups.get(k) || []
             arr.push(base)
             cleanerGroups.set(k, arr)
           }
 
+          const effectiveExecutorId = executorId || manualExecutionAssigneeId
           if (
             wantExecutor
-            && isCheckinKeyHandoverTask(row)
+            && isCheckinSiteExecution
             && taskDate >= dateFrom
             && taskDate <= dateTo
-            && executorId
-            && (allowAll || executorId === userId)
+            && effectiveExecutorId
+            && (allowAll || effectiveExecutorId === userId)
           ) {
-            const k = `${taskDate}|${propId || ''}|${executorId}`
+            const k = `${taskDate}|${propId || ''}|${effectiveExecutorId}`
             const arr = executorGroups.get(k) || []
-            arr.push({ ...base, __assignee_executor: executorId })
+            arr.push({ ...base, __assignee_executor: effectiveExecutorId })
             executorGroups.set(k, arr)
           }
 
@@ -5530,17 +5973,18 @@ router.get('/work-tasks', async (req, res) => {
             dateTo,
             status: raw_status,
           })
+          const effectiveInspectionAssigneeId = checkinSiteExecutorId || inspectorId || manualInspectionAssigneeId || ''
           if (
             wantInspector
-            && (inspectorId || managerCanSeeAllTaskPool)
+            && (effectiveInspectionAssigneeId || managerCanSeeAllTaskPool)
             && inspectorDisplayDate
             && cleaningType(row.task_type) !== 'stayover'
             && !isCheckinKeyHandoverTask(row)
-            && (allowAll || inspectorId === userId)
+            && (allowAll || effectiveInspectionAssigneeId === userId || manualInspectionAssigneeId)
           ) {
-            const k = `${inspectorDisplayDate}|${propId || ''}|${inspectorId || 'unassigned'}`
+            const k = `${inspectorDisplayDate}|${propId || ''}|${effectiveInspectionAssigneeId || 'unassigned'}`
             const arr = inspectorGroups.get(k) || []
-            arr.push({ ...base, __date: inspectorDisplayDate, __is_deferred_projection: inspectionMode === 'deferred' })
+            arr.push({ ...base, __date: inspectorDisplayDate, __assignee_inspector: inspectorId || manualInspectionAssigneeId || null, __assignee_executor: checkinSiteExecutorId || null, __is_deferred_projection: inspectionMode === 'deferred' })
             inspectorGroups.set(k, arr)
           }
         }
@@ -5632,6 +6076,7 @@ router.get('/work-tasks', async (req, res) => {
           const inspectionMode = inspectionPlan.inspectionMode
           const inspectionDueDate = inspectionPlan.inspectionDueDate
           const inspectionScope = p.kind === 'checkin' ? normalizeInspectionScope(p.a.__inspection_scope) : null
+          const executorInspection = roleKind === 'executor' && p.kind === 'checkin' && inspectionScope !== 'password_only'
           const requireSelfComplete = roleKind === 'cleaner' && inspectionMode === 'self_complete'
           const requireLockboxBeforeDone = requireSelfComplete && p.kind !== 'stayover'
           const completionAreas = new Set<string>()
@@ -5726,7 +6171,7 @@ router.get('/work-tasks', async (req, res) => {
                           ? 'to_inspect'
                           : (raw === 'in_progress' || keyPhotoUrl)
                             ? 'in_progress'
-                            : (String(inspectorAssigned || '').trim() ? 'assigned' : 'todo')
+                    : (String(inspectorAssigned || assigneeId || '').trim() ? 'assigned' : 'todo')
                 )
               : (
                   raw === 'keys_hung'
@@ -5788,15 +6233,15 @@ router.get('/work-tasks', async (req, res) => {
 
           const executionRole = roleKind === 'cleaner' ? 'cleaning' : (roleKind === 'executor' ? 'execution' : 'inspection')
           const executionSemantics = cleaningTaskExecutionSemantics({
-            roleKind,
+            roleKind: executorInspection ? 'inspector' : roleKind,
             taskType: p.kind === 'turnover' ? null : p.a.task_type,
             inspectionScope,
           })
 
           return {
             id: outId,
-            task_kind: roleKind === 'cleaner' ? 'cleaning' : (roleKind === 'executor' ? 'execution' : 'inspection'),
-            execution_role: executionRole,
+            task_kind: roleKind === 'cleaner' ? 'cleaning' : (roleKind === 'executor' && !executorInspection ? 'execution' : 'inspection'),
+            execution_role: executorInspection ? 'inspection' : executionRole,
             execution_semantics: executionSemantics,
             source_type: 'cleaning_tasks',
             source_id: primarySourceId,
@@ -5817,7 +6262,7 @@ router.get('/work-tasks', async (req, res) => {
             assignee_id: String(assigneeId || '').trim() || null,
             inspector_id: inspectorAssigned ? String(inspectorAssigned) : null,
             assignee_name: executorName || cleanerName || inspectorName || null,
-            executor_name: roleKind === 'executor' ? (executorName || null) : null,
+            executor_name: roleKind === 'executor' || (roleKind === 'inspector' && p.kind === 'checkin') ? (executorName || null) : null,
             status: statusOut,
             urgency: 'medium',
             sort_index,
@@ -6075,6 +6520,7 @@ router.get('/work-tasks', async (req, res) => {
 
         merged.push({
           ...preferred,
+          __merged_children: arr,
           id: `cleaning_tasks_merged:${d}:${propKey}`,
           start_time: startTime || null,
           end_time: endTime || null,
@@ -6181,7 +6627,52 @@ router.get('/work-tasks', async (req, res) => {
       return String(a.title || '').localeCompare(String(b.title || ''))
     })
 
-    return res.json(visibleOut)
+    const manualParticipantsByRef = await loadManualWorkTaskParticipantsByRef(visibleOut)
+    const responseOut = visibleOut.map((task) => {
+      const taskWithParticipants = attachWorkTaskParticipants(task, manualParticipantsByRef)
+      const mergedChildren = Array.isArray((task as any).__merged_children) ? (task as any).__merged_children : []
+      const payload = buildWorkTaskActionPayload(taskWithParticipants, actionContext)
+      if (mergedChildren.length) {
+        const actionsById = new Map<string, any>()
+        for (const action of payload.available_actions || []) actionsById.set(String(action.id), action)
+        const participantActions = new Set(payload.capabilities.participant_actions || [])
+        const participantSources = new Set(payload.capabilities.participant_sources || [])
+        for (const child of mergedChildren) {
+          const childWithParticipants = attachWorkTaskParticipants(child, manualParticipantsByRef)
+          const childPayload = buildWorkTaskActionPayload(childWithParticipants, actionContext)
+          for (const id of childPayload.capabilities.participant_actions || []) participantActions.add(id)
+          for (const source of childPayload.capabilities.participant_sources || []) participantSources.add(source)
+          for (const action of childPayload.available_actions || []) {
+            const key = String(action.id || '')
+            if (!key) continue
+            const existing = actionsById.get(key)
+            const actionSourceId = String(action.source_id || '').trim()
+            const existingSourceId = String(existing?.source_id || '').trim()
+            if (
+              !existing
+              || (existing.enabled === false && action.enabled !== false)
+              || (action.enabled !== false && actionSourceId && actionSourceId !== existingSourceId)
+            ) {
+              actionsById.set(key, action)
+            }
+          }
+        }
+        payload.available_actions = Array.from(actionsById.values())
+        payload.capabilities = {
+          ...payload.capabilities,
+          is_task_participant: payload.capabilities.is_task_participant || participantActions.size > 0,
+          participant_actions: Array.from(participantActions).sort(),
+          participant_sources: Array.from(participantSources).sort(),
+        }
+      }
+      const { __merged_children, ...cleanTask } = taskWithParticipants as any
+      return {
+        ...cleanTask,
+        ...payload,
+      }
+    })
+
+    return res.json(responseOut)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'mzapp_work_tasks_failed' })
   }

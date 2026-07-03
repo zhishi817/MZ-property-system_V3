@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { v4 as uuid } from 'uuid'
-import { requireAnyPerm, requirePerm } from '../auth'
+import { requireAnyPerm, requirePerm, userHasAnyPerm } from '../auth'
 import { db } from '../store'
 import { hasPg, pgPool } from '../dbAdapter'
 import { activeCleaningTaskWhereSql, ensureCleaningSchemaV2 } from '../services/cleaningSync'
@@ -15,6 +15,7 @@ import {
 import { buildCleaningTurnoverDisplay } from '../lib/cleaningTurnoverDisplay'
 import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
 import { emitNotificationEvent } from '../services/notificationEvents'
+import { buildWebTaskCapabilityPayload, type WebTaskDisplayState, type WebTaskManagementAction } from '../lib/webTaskCapabilities'
 
 export const router = Router()
 
@@ -92,6 +93,8 @@ type BoardTask = {
   temporarily_skipped?: boolean
   skip_reason?: string | null
   skip_bucket?: string | null
+  display_state?: WebTaskDisplayState
+  management_actions?: WebTaskManagementAction[]
 }
 
 type BoardSubrow = {
@@ -1801,7 +1804,24 @@ function buildEntryReadiness(tasks: BoardTask[]) {
   }
 }
 
-async function buildTaskCenterDay(date: string, includeOverdue: boolean, includeUnscheduled: boolean, includeFuture: boolean) {
+function appendWebCapabilitiesToBoardTask(task: BoardTask, canManageSchedule: boolean): BoardTask {
+  return {
+    ...task,
+    ...buildWebTaskCapabilityPayload(task, { canManageSchedule }),
+  }
+}
+
+function appendWebCapabilitiesToRows(rows: BoardRow[], canManageSchedule: boolean): BoardRow[] {
+  return rows.map((row) => ({
+    ...row,
+    subrows: row.subrows.map((subrow) => ({
+      ...subrow,
+      tasks: subrow.tasks.map((task) => appendWebCapabilitiesToBoardTask(task, canManageSchedule)),
+    })),
+  }))
+}
+
+async function buildTaskCenterDay(date: string, includeOverdue: boolean, includeUnscheduled: boolean, includeFuture: boolean, canManageSchedule = false) {
   const [cleaningTasks, workTasks, taskFlags, rowMetas, itemLayouts] = await Promise.all([
     loadCleaningTasks(date, false, false),
     loadWorkTasks(date, includeOverdue, includeUnscheduled, includeFuture),
@@ -1819,15 +1839,17 @@ async function buildTaskCenterDay(date: string, includeOverdue: boolean, include
     rowMetas,
     itemLayouts,
   })
-  const rows = board.rows
+  const rows = appendWebCapabilitiesToRows(board.rows, canManageSchedule)
   const regularRows = rows.filter((row) => row.row_type !== 'deferred')
   const deferredRows = rows.filter((row) => row.row_type === 'deferred')
   const allBoardTasks = rows.flatMap((row) => row.subrows.flatMap((subrow) => subrow.tasks))
+  const regularWorkTasksWithCapabilities = regularWorkTasks.map((task) => appendWebCapabilitiesToBoardTask(task, canManageSchedule))
+  const propertyFollowupsWithCapabilities = propertyFollowups.map((task) => appendWebCapabilitiesToBoardTask(task, canManageSchedule))
   return {
     date,
     pool: [],
     groups: {},
-    tasks: regularWorkTasks.map((task) => ({
+    tasks: regularWorkTasksWithCapabilities.map((task) => ({
       id: task.task_id,
       task_kind: task.task_kind,
       source_type: task.source_type || '',
@@ -1841,8 +1863,10 @@ async function buildTaskCenterDay(date: string, includeOverdue: boolean, include
       assignee_id: task.assignee_id,
       status: normStatus(task.status),
       urgency: normUrgency(task.urgency),
+      display_state: task.display_state,
+      management_actions: task.management_actions,
     })),
-    property_followups: propertyFollowups,
+    property_followups: propertyFollowupsWithCapabilities,
     rows,
     region_rows: regularRows,
     final_group_rows: regularRows.filter((row) => row.row_type === 'final_group'),
@@ -1980,7 +2004,8 @@ router.get('/day', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 
       return res.json({ date, pool: [], groups: {}, tasks: [], property_followups: [], rows: [], region_rows: [], final_group_rows: [], deferred_rows: [], entry_readiness: { ready_for_final_grouping: true, unresolved_primary_count: 0, pending_inspection_count: 0, skipped_count: 0 } })
     }
     await syncPropertyFollowupWorkTasks()
-    const payload = await buildTaskCenterDay(date, includeOverdue, includeUnscheduled, includeFuture)
+    const canManageSchedule = await userHasAnyPerm((req as any).user || {}, ['cleaning.task.assign', 'cleaning.schedule.manage'])
+    const payload = await buildTaskCenterDay(date, includeOverdue, includeUnscheduled, includeFuture, canManageSchedule)
     return res.json(payload)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'task_center_day_failed' })

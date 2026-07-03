@@ -364,7 +364,7 @@ async function main() {
     assert.ok(pureCheckinTask, 'password-only checkin should stay visible to manager view')
     assert.equal(pureCheckinTask.task_kind, 'execution')
     assert.equal(pureCheckinTask.execution_role, 'execution')
-    assert.equal(pureCheckinTask.execution_semantics, 'key_handover_execution')
+    assert.equal(pureCheckinTask.execution_semantics, 'key_or_password_action')
     assert.equal(pureCheckinTask.assignee_id, 'legacy-cleaner')
     assert.equal(pureCheckinTask.cleaner_id, null)
     assert.equal(pureCheckinTask.inspector_id, null)

@@ -7,10 +7,87 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { API_BASE, authHeaders, deleteJSON, getJSON, patchJSON, postJSON } from '../../lib/api'
 import { cleaningColorKind } from '../../lib/cleaningColor'
+import { checkinTimingLabel, checkoutTimingLabel, dailyTaskStatusMeta, mergeDailyCapabilityGate, mergedDailyDisplayBadges, mergedDailyDisplayStatus, mergedDailyTaskStatus, visibleDailyDisplayBadges } from '../../lib/cleaningDailyTaskStatus'
 import { type TaskSemanticTone, taskStatusMeta, taskTimingTone } from '../../lib/cleaningTaskUi'
 import styles from './cleaningSchedule.module.scss'
 
 type Staff = { id: string; name: string; capacity_per_day: number; kind?: 'cleaner' | 'inspector'; is_active?: boolean; color_hex?: string | null }
+
+type TaskDisplayBadge = {
+  id: string
+  label: string
+  tone: TaskSemanticTone
+}
+
+type TaskDisplayState = {
+  status_key?: string
+  status_label?: string
+  status_tone?: TaskSemanticTone
+  badges?: TaskDisplayBadge[]
+  task_semantics?: Record<string, any>
+}
+
+type TaskExecutionSemantics =
+  | 'cleaning_execution'
+  | 'checkin_inspection'
+  | 'inspection_execution'
+  | 'key_or_password_action'
+  | 'mixed_cleaning_inspection'
+  | 'work_task'
+
+type TaskDisplayScope = {
+  key?: TaskExecutionSemantics | string
+  label?: string
+  tone?: TaskSemanticTone
+}
+
+type TaskParticipantSummary = {
+  primary_role?: 'cleaner' | 'inspector' | 'executor' | 'assignee' | 'none' | string
+  primary_user_id?: string | null
+  cleaner_id?: string | null
+  inspector_id?: string | null
+  executor_id?: string | null
+  show_cleaner?: boolean
+  show_inspector?: boolean
+  show_executor?: boolean
+}
+
+type TaskEditableField = {
+  enabled: boolean
+  disabled_reason?: string
+}
+
+type TaskManagementActionId =
+  | 'edit_task'
+  | 'assign_cleaner'
+  | 'assign_inspector'
+  | 'assign_executor'
+  | 'set_inspection_mode'
+  | 'set_inspection_scope'
+  | 'set_keys_hung'
+  | 'set_task_completed'
+  | 'update_status'
+  | 'cancel_task'
+  | 'add_checkout'
+  | 'add_checkin'
+
+type TaskManagementAction = {
+  id: TaskManagementActionId
+  label?: string
+  placement?: 'card' | 'drawer' | 'bulk' | 'more'
+  enabled: boolean
+  disabled_reason?: string
+  intent?: 'assignment' | 'inspection' | 'status' | 'schedule' | 'participants'
+}
+
+type TaskCapabilityFields = {
+  display_state?: TaskDisplayState | null
+  execution_semantics?: TaskExecutionSemantics | string | null
+  display_scope?: TaskDisplayScope | null
+  participant_summary?: TaskParticipantSummary | null
+  editable_fields?: Record<string, TaskEditableField> | null
+  management_actions?: TaskManagementAction[] | null
+}
 
 type CalendarItem = {
   source: 'cleaning_tasks' | 'offline_tasks' | 'calendar_events'
@@ -52,7 +129,7 @@ type CalendarItem = {
   checkout_old_code?: string | null
   checkout_new_code?: string | null
   photo_urls?: string[] | null
-}
+} & TaskCapabilityFields
 
 type CleaningTaskRow = {
   id: string
@@ -108,7 +185,7 @@ type EditTaskForm = {
   pending_add_checkout: boolean
   pending_add_checkin: boolean
   auto_sync_enabled: boolean
-}
+} & TaskCapabilityFields
 
 type BulkEditForm = {
   ids: string[]
@@ -163,7 +240,11 @@ function semanticToneClass(tone: TaskSemanticTone) {
   return styles.semanticToneNormal
 }
 
-function isPureCheckinInspectionItem(it: Pick<CalendarItem, 'source' | 'task_type' | 'label'>) {
+function hasTaskCapability(it: Partial<TaskCapabilityFields>) {
+  return !!it.display_state || !!it.execution_semantics || !!it.display_scope || !!it.participant_summary || !!it.editable_fields || Array.isArray(it.management_actions)
+}
+
+function legacyPureCheckinInspectionItem(it: Pick<CalendarItem, 'source' | 'task_type' | 'label'>) {
   if (it.source !== 'cleaning_tasks') return false
   const type = String(it.task_type || '').trim().toLowerCase()
   const label = String(it.label || '').trim()
@@ -175,12 +256,170 @@ function normalizeInspectionScope(value: any): 'inspect_and_hang' | 'password_on
   return String(value || '').trim().toLowerCase() === 'password_only' ? 'password_only' : 'inspect_and_hang'
 }
 
-function isCheckinKeyHandoverItem(it: Pick<CalendarItem, 'source' | 'task_type' | 'label' | 'inspection_scope'>) {
-  return isPureCheckinInspectionItem(it) && normalizeInspectionScope(it.inspection_scope) === 'password_only'
+function legacyExecutionSemantics(it: Pick<CalendarItem, 'source' | 'task_type' | 'label' | 'inspection_scope'>): TaskExecutionSemantics {
+  if (it.source !== 'cleaning_tasks') return 'work_task'
+  const pureCheckin = legacyPureCheckinInspectionItem(it)
+  if (pureCheckin && normalizeInspectionScope(it.inspection_scope) === 'password_only') return 'key_or_password_action'
+  if (pureCheckin) return 'checkin_inspection'
+  return 'cleaning_execution'
 }
 
-function isCleaningExecutionItem(it: Pick<CalendarItem, 'source' | 'task_type' | 'label'>) {
-  return it.source === 'cleaning_tasks' && !isPureCheckinInspectionItem(it)
+function normalizeTaskExecutionSemantics(value: any): TaskExecutionSemantics | null {
+  const raw = String(value || '').trim()
+  if (raw === 'key_handover_execution') return 'key_or_password_action'
+  if (
+    raw === 'cleaning_execution' ||
+    raw === 'checkin_inspection' ||
+    raw === 'inspection_execution' ||
+    raw === 'key_or_password_action' ||
+    raw === 'mixed_cleaning_inspection' ||
+    raw === 'work_task'
+  ) return raw
+  return null
+}
+
+function executionSemanticsOf(it: Partial<CalendarItem>): TaskExecutionSemantics {
+  const value = normalizeTaskExecutionSemantics(it.execution_semantics)
+  if (value) return value
+  return legacyExecutionSemantics(it as CalendarItem)
+}
+
+function isPureCheckinInspectionItem(it: Pick<CalendarItem, 'source' | 'task_type' | 'label' | 'inspection_scope' | 'execution_semantics'>) {
+  if (hasTaskCapability(it)) {
+    const semantics = executionSemanticsOf(it)
+    return semantics === 'checkin_inspection' || semantics === 'inspection_execution' || semantics === 'key_or_password_action'
+  }
+  return legacyPureCheckinInspectionItem(it)
+}
+
+function isCheckinKeyHandoverItem(it: Pick<CalendarItem, 'source' | 'task_type' | 'label' | 'inspection_scope' | 'execution_semantics'>) {
+  if (hasTaskCapability(it)) return executionSemanticsOf(it) === 'key_or_password_action'
+  return legacyPureCheckinInspectionItem(it) && normalizeInspectionScope(it.inspection_scope) === 'password_only'
+}
+
+function isCleaningExecutionItem(it: Pick<CalendarItem, 'source' | 'task_type' | 'label' | 'inspection_scope' | 'execution_semantics'>) {
+  if (hasTaskCapability(it)) {
+    const semantics = executionSemanticsOf(it)
+    return semantics === 'cleaning_execution' || semantics === 'mixed_cleaning_inspection'
+  }
+  return it.source === 'cleaning_tasks' && !legacyPureCheckinInspectionItem(it)
+}
+
+function displayScopeForSemantics(semantics: TaskExecutionSemantics): TaskDisplayScope {
+  if (semantics === 'key_or_password_action') return { key: semantics, label: '仅改密码/挂钥匙', tone: 'special' }
+  if (semantics === 'checkin_inspection') return { key: semantics, label: '入住现场执行', tone: 'info' }
+  if (semantics === 'inspection_execution') return { key: semantics, label: '检查执行', tone: 'info' }
+  if (semantics === 'mixed_cleaning_inspection') return { key: semantics, label: '清洁 + 检查', tone: 'normal' }
+  if (semantics === 'work_task') return { key: semantics, label: '线下任务', tone: 'special' }
+  return { key: semantics, label: '清洁执行', tone: 'normal' }
+}
+
+function displayStatusMetaForItem(it: Pick<CalendarItem, 'status' | 'display_state'>) {
+  return dailyTaskStatusMeta(it.status, it.display_state)
+}
+
+function displayBadgesForItem(it: Pick<CalendarItem, 'display_state'>): TaskDisplayBadge[] {
+  return Array.isArray(it.display_state?.badges)
+    ? it.display_state.badges.filter((badge) => String(badge?.label || '').trim())
+    : []
+}
+
+function displayScopeForItem(it: Pick<CalendarItem, 'display_scope' | 'execution_semantics' | 'source' | 'task_type' | 'label' | 'inspection_scope'>): TaskDisplayScope | null {
+  const label = String(it.display_scope?.label || '').trim()
+  const tone = it.display_scope?.tone
+  if (label && tone) return { ...it.display_scope, label, tone }
+  if (hasTaskCapability(it)) return displayScopeForSemantics(executionSemanticsOf(it))
+  return null
+}
+
+function managementActionForItem(it: Pick<CalendarItem, 'management_actions'> | Pick<EditTaskForm, 'management_actions'>, id: TaskManagementActionId): TaskManagementAction | null {
+  const actions = it.management_actions
+  if (!Array.isArray(actions)) return null
+  return actions.find((action) => action.id === id) || null
+}
+
+function managementGateForItem(it: Pick<CalendarItem, 'management_actions'> | Pick<EditTaskForm, 'management_actions'>, id: TaskManagementActionId) {
+  const actions = it.management_actions
+  if (!Array.isArray(actions)) return { enabled: true, disabledReason: '' }
+  const action = managementActionForItem(it, id)
+  if (!action) return { enabled: false, disabledReason: 'not_applicable' }
+  return { enabled: action.enabled !== false, disabledReason: action.enabled === false ? String(action.disabled_reason || '') : '' }
+}
+
+function editableFieldGateForItem(
+  it: Pick<CalendarItem, 'editable_fields' | 'management_actions'> | Pick<EditTaskForm, 'editable_fields' | 'management_actions'>,
+  field: string,
+  fallbackAction: TaskManagementActionId,
+) {
+  const fieldGate = it.editable_fields?.[field]
+  if (fieldGate) return { enabled: fieldGate.enabled !== false, disabledReason: fieldGate.enabled === false ? String(fieldGate.disabled_reason || '') : '' }
+  return managementGateForItem(it, fallbackAction)
+}
+
+function disabledReasonText(reason: string | null | undefined) {
+  const value = String(reason || '').trim()
+  if (!value) return ''
+  if (value === 'missing_management_permission') return '你没有修改这个字段的管理权限'
+  if (value === 'auto_sync_locked') return '自动同步已锁定，不能在这里修改'
+  if (value === 'not_applicable') return '这个动作不适用于当前任务'
+  return value
+}
+
+function combineCapabilityForItems(items: CalendarItem[], status: string, semantics: TaskExecutionSemantics): TaskCapabilityFields {
+  const displayStatus = mergedDailyDisplayStatus(items)
+  const displayBadges = mergedDailyDisplayBadges(items, semantics)
+  const actionIds = new Set<TaskManagementActionId>()
+  for (const item of items) {
+    if (!Array.isArray(item.management_actions)) continue
+    for (const action of item.management_actions) actionIds.add(action.id)
+  }
+  const managementActions = Array.from(actionIds).map((id) => {
+    const matches = items.flatMap((item) => Array.isArray(item.management_actions) ? item.management_actions.filter((action) => action.id === id) : [])
+    const first = matches[0]
+    const gate = mergeDailyCapabilityGate(matches)
+    return {
+      id,
+      label: first?.label,
+      placement: first?.placement,
+      intent: first?.intent,
+      enabled: gate.enabled,
+      ...(gate.disabled_reason ? { disabled_reason: gate.disabled_reason } : {}),
+    } as TaskManagementAction
+  })
+  const editableFields: Record<string, TaskEditableField> = {}
+  const fieldNames = new Set<string>()
+  for (const item of items) {
+    Object.keys(item.editable_fields || {}).forEach((field) => fieldNames.add(field))
+  }
+  for (const field of fieldNames) {
+    const fields = items.map((item) => item.editable_fields?.[field]).filter(Boolean) as TaskEditableField[]
+    const gate = mergeDailyCapabilityGate(fields)
+    editableFields[field] = gate.enabled
+      ? { enabled: true }
+      : { enabled: false, disabled_reason: gate.disabled_reason || 'not_applicable' }
+  }
+  return {
+    display_state: {
+      status_key: displayStatus.status_key || String(status || 'pending'),
+      status_label: displayStatus.status_label,
+      status_tone: displayStatus.status_tone,
+      badges: displayBadges,
+    },
+    execution_semantics: semantics,
+    display_scope: displayScopeForSemantics(semantics),
+    participant_summary: {
+      primary_role: semantics === 'key_or_password_action' || semantics === 'checkin_inspection' ? 'executor' : semantics === 'inspection_execution' ? 'inspector' : 'cleaner',
+      primary_user_id: null,
+      cleaner_id: null,
+      inspector_id: null,
+      executor_id: null,
+      show_cleaner: semantics === 'cleaning_execution' || semantics === 'mixed_cleaning_inspection',
+      show_inspector: semantics !== 'key_or_password_action' && semantics !== 'checkin_inspection',
+      show_executor: semantics === 'key_or_password_action' || semantics === 'checkin_inspection',
+    },
+    ...(managementActions.length ? { management_actions: managementActions } : {}),
+    ...(Object.keys(editableFields).length ? { editable_fields: editableFields } : {}),
+  }
 }
 
 export default function CleaningPage() {
@@ -390,15 +629,28 @@ export default function CleaningPage() {
     return Array.from(new Set(ids.map((x) => String(x)).filter(Boolean)))
   }, [])
 
+  const rawCleaningItemById = useMemo(() => {
+    const map = new Map<string, CalendarItem>()
+    for (const item of items) {
+      if (item.source !== 'cleaning_tasks') continue
+      const ids = Array.isArray(item.entity_ids) && item.entity_ids.length ? item.entity_ids : [item.entity_id]
+      if (ids.length !== 1) continue
+      const id = String(ids[0] || '').trim()
+      if (id) map.set(id, item)
+    }
+    return map
+  }, [items])
+
+  const editableEntityIds = useCallback((ids: string[], field: string, fallbackAction: TaskManagementActionId) => {
+    return ids.filter((id) => {
+      const raw = rawCleaningItemById.get(String(id))
+      if (!raw) return true
+      return editableFieldGateForItem(raw, field, fallbackAction).enabled
+    })
+  }, [rawCleaningItemById])
+
   const mergedStatus = useCallback((statuses: string[]) => {
-    const ss = statuses.map((s) => String(s || 'pending'))
-    if (ss.length && ss.every((x) => x === 'cancelled')) return 'cancelled'
-    if (ss.includes('pending')) return 'pending'
-    if (ss.includes('assigned')) return 'assigned'
-    if (ss.includes('in_progress')) return 'in_progress'
-    if (ss.includes('completed')) return 'completed'
-    if (ss.length) return ss[0]
-    return 'pending'
+    return mergedDailyTaskStatus(statuses.map((status) => ({ status })))
   }, [])
 
   const itemsByDate = useMemo(() => {
@@ -452,10 +704,10 @@ export default function CleaningPage() {
           const autoSync = all.every((x) => x.auto_sync_enabled !== false)
           const checkout = checkouts0[0]
           const checkin = checkins0[0]
-          mergedCleaning.push({
-            source: 'cleaning_tasks',
-            entity_id: ids.join(','),
-            entity_ids: ids,
+	          mergedCleaning.push({
+	            source: 'cleaning_tasks',
+	            entity_id: ids.join(','),
+	            entity_ids: ids,
             order_id: null,
             order_code: null,
             property_id: all[0].property_id,
@@ -481,10 +733,11 @@ export default function CleaningPage() {
             checkout_order_code: checkout?.order_code ? String(checkout.order_code) : null,
             checkin_order_code: checkin?.order_code ? String(checkin.order_code) : null,
             checkout_old_code: checkout?.old_code != null ? String(checkout.old_code || '') : null,
-            checkout_new_code: checkout?.new_code != null ? String(checkout.new_code || '') : null,
-            checkin_old_code: checkin?.old_code != null ? String(checkin.old_code || '') : null,
-            checkin_new_code: checkin?.new_code != null ? String(checkin.new_code || '') : null,
-          })
+	            checkout_new_code: checkout?.new_code != null ? String(checkout.new_code || '') : null,
+	            checkin_old_code: checkin?.old_code != null ? String(checkin.old_code || '') : null,
+	            checkin_new_code: checkin?.new_code != null ? String(checkin.new_code || '') : null,
+	            ...combineCapabilityForItems(all, status, 'mixed_cleaning_inspection'),
+	          })
           const rest = list.filter((x) => !isCheckin(x) && !isCheckout(x))
           mergedCleaning.push(...rest)
         } else if (stayovers0.length > 1) {
@@ -495,10 +748,10 @@ export default function CleaningPage() {
           const cleanerId = stayovers0.every((x) => String(x.cleaner_id || x.assignee_id || '') === String(stayovers0[0].cleaner_id || stayovers0[0].assignee_id || '')) ? (String(stayovers0[0].cleaner_id || stayovers0[0].assignee_id || '').trim() || null) : null
           const inspectorId = stayovers0.every((x) => String(x.inspector_id || '') === String(stayovers0[0].inspector_id || '')) ? (String(stayovers0[0].inspector_id || '').trim() || null) : null
           const sched = stayovers0.every((x) => String(x.scheduled_at || '') === String(stayovers0[0].scheduled_at || '')) ? stayovers0[0].scheduled_at : null
-          mergedCleaning.push({
-            source: 'cleaning_tasks',
-            entity_id: ids.join(','),
-            entity_ids: ids,
+	          mergedCleaning.push({
+	            source: 'cleaning_tasks',
+	            entity_id: ids.join(','),
+	            entity_ids: ids,
             order_id: null,
             order_code: null,
             property_id: stayovers0[0].property_id,
@@ -519,17 +772,19 @@ export default function CleaningPage() {
             checkout_order_id: null,
             checkin_order_code: null,
             checkout_order_code: null,
-            checkin_old_code: stayovers0.map((x) => String(x.old_code || '')).filter(Boolean).join(','),
-            checkin_new_code: stayovers0.map((x) => String(x.new_code || '')).filter(Boolean).join(','),
-            checkout_old_code: null,
-            checkout_new_code: null,
-          })
+	            checkin_old_code: stayovers0.map((x) => String(x.old_code || '')).filter(Boolean).join(','),
+	            checkin_new_code: stayovers0.map((x) => String(x.new_code || '')).filter(Boolean).join(','),
+	            checkout_old_code: null,
+	            checkout_new_code: null,
+	            ...combineCapabilityForItems(stayovers0, status, 'cleaning_execution'),
+	          })
           const rest = list.filter((x) => !isStayover(x) && !isCheckin(x) && !isCheckout(x))
           mergedCleaning.push(...rest)
-        } else if (checkins0.length > 1) {
-          const ids = checkins0.map((x) => String(x.entity_id))
-          const status = mergedStatus(checkins0.map((x) => String(x.status || 'pending')))
-          const autoSync = checkins0.every((x) => x.auto_sync_enabled !== false)
+	        } else if (checkins0.length > 1) {
+	          const ids = checkins0.map((x) => String(x.entity_id))
+	          const status = mergedStatus(checkins0.map((x) => String(x.status || 'pending')))
+	          const semantics = checkins0.every((x) => executionSemanticsOf(x) === 'key_or_password_action') ? 'key_or_password_action' : 'checkin_inspection'
+	          const autoSync = checkins0.every((x) => x.auto_sync_enabled !== false)
           const assignee = checkins0.every((x) => String(x.assignee_id || '') === String(checkins0[0].assignee_id || '')) ? checkins0[0].assignee_id : null
           const cleanerId = checkins0.every((x) => String(x.cleaner_id || x.assignee_id || '') === String(checkins0[0].cleaner_id || checkins0[0].assignee_id || '')) ? (String(checkins0[0].cleaner_id || checkins0[0].assignee_id || '').trim() || null) : null
           const inspectorId = checkins0.every((x) => String(x.inspector_id || '') === String(checkins0[0].inspector_id || '')) ? (String(checkins0[0].inspector_id || '').trim() || null) : null
@@ -559,11 +814,12 @@ export default function CleaningPage() {
             checkout_order_id: null,
             checkin_order_code: checkins0.map((x) => String(x.order_code || x.order_id || '')).filter(Boolean).join(','),
             checkout_order_code: null,
-            checkin_old_code: checkins0.map((x) => String(x.old_code || '')).filter(Boolean).join(','),
-            checkin_new_code: checkins0.map((x) => String(x.new_code || '')).filter(Boolean).join(','),
-            checkout_old_code: null,
-            checkout_new_code: null,
-          })
+	            checkin_old_code: checkins0.map((x) => String(x.old_code || '')).filter(Boolean).join(','),
+	            checkin_new_code: checkins0.map((x) => String(x.new_code || '')).filter(Boolean).join(','),
+	            checkout_old_code: null,
+	            checkout_new_code: null,
+	            ...combineCapabilityForItems(checkins0, status, semantics),
+	          })
           const rest = list.filter((x) => !isCheckin(x) && !isCheckout(x))
           mergedCleaning.push(...rest)
         } else if (checkouts0.length > 1) {
@@ -574,10 +830,10 @@ export default function CleaningPage() {
           const cleanerId = checkouts0.every((x) => String(x.cleaner_id || x.assignee_id || '') === String(checkouts0[0].cleaner_id || checkouts0[0].assignee_id || '')) ? (String(checkouts0[0].cleaner_id || checkouts0[0].assignee_id || '').trim() || null) : null
           const inspectorId = checkouts0.every((x) => String(x.inspector_id || '') === String(checkouts0[0].inspector_id || '')) ? (String(checkouts0[0].inspector_id || '').trim() || null) : null
           const sched = checkouts0.every((x) => String(x.scheduled_at || '') === String(checkouts0[0].scheduled_at || '')) ? checkouts0[0].scheduled_at : null
-          mergedCleaning.push({
-            source: 'cleaning_tasks',
-            entity_id: ids.join(','),
-            entity_ids: ids,
+	          mergedCleaning.push({
+	            source: 'cleaning_tasks',
+	            entity_id: ids.join(','),
+	            entity_ids: ids,
             order_id: null,
             order_code: null,
             property_id: checkouts0[0].property_id,
@@ -599,10 +855,11 @@ export default function CleaningPage() {
             checkout_order_code: checkouts0.map((x) => String(x.order_code || x.order_id || '')).filter(Boolean).join(','),
             checkin_order_code: null,
             checkout_old_code: checkouts0.map((x) => String(x.old_code || '')).filter(Boolean).join(','),
-            checkout_new_code: checkouts0.map((x) => String(x.new_code || '')).filter(Boolean).join(','),
-            checkin_old_code: null,
-            checkin_new_code: null,
-          })
+	            checkout_new_code: checkouts0.map((x) => String(x.new_code || '')).filter(Boolean).join(','),
+	            checkin_old_code: null,
+	            checkin_new_code: null,
+	            ...combineCapabilityForItems(checkouts0, status, 'mixed_cleaning_inspection'),
+	          })
           const rest = list.filter((x) => !isCheckin(x) && !isCheckout(x))
           mergedCleaning.push(...rest)
         } else {
@@ -655,22 +912,25 @@ export default function CleaningPage() {
       if (taskListTab === 'cleaning' && !isCleaningExecutionItem(it)) return false
       if (taskListTab === 'inspection' && !isPureCheckinInspectionItem(it)) return false
       if (taskListTab === 'offline' && it.source !== 'offline_tasks') return false
-      if (filterStatus && String(it.status || '') !== filterStatus) return false
-      if (filterCleaner) {
-        const v = taskListTab === 'inspection'
-          ? isCheckinKeyHandoverItem(it)
-            ? String(it.assignee_id || it.inspector_id || '').trim()
-            : String(it.inspector_id || '').trim()
+	      if (filterStatus && String(it.display_state?.status_key || it.status || '') !== filterStatus) return false
+	      if (filterCleaner) {
+	        const participant = it.participant_summary || null
+	        const v = participant?.primary_user_id
+	          ? String(participant.primary_user_id).trim()
+	          : taskListTab === 'inspection'
+	          ? isCheckinKeyHandoverItem(it)
+	            ? String(it.assignee_id || it.inspector_id || '').trim()
+	            : String(it.inspector_id || '').trim()
           : it.source === 'offline_tasks'
           ? String(it.assignee_id || '').trim()
           : String(it.cleaner_id || it.assignee_id || '').trim()
         if (!v || v !== String(filterCleaner)) return false
       }
-      if (filterInspector) {
-        if (it.source === 'offline_tasks') return false
-        const v = String(it.inspector_id || '').trim()
-        if (!v || v !== String(filterInspector)) return false
-      }
+	      if (filterInspector) {
+	        if (it.source === 'offline_tasks') return false
+	        const v = String(it.participant_summary?.inspector_id || it.inspector_id || '').trim()
+	        if (!v || v !== String(filterInspector)) return false
+	      }
       if (!q) return true
       const label = propertyLabelForItem(it).toLowerCase()
       return label.includes(q)
@@ -803,8 +1063,8 @@ export default function CleaningPage() {
       checkinRows.length > 0 && checkinRows.every((r) => checkinScopeKey(r) === checkinScopeKey(checkinRows[0]))
         ? checkinScopeKey(checkinRows[0])
         : 'inspect_and_hang'
-    const pureCheckinKeyHandover = checkinRows.length > 0 && checkoutRows.length === 0 && checkinInspectionScope === 'password_only'
-    const resolvedCleanerId = pureCheckinKeyHandover
+    const pureCheckinSiteExecution = checkinRows.length > 0 && checkoutRows.length === 0
+    const resolvedCleanerId = pureCheckinSiteExecution
       ? (
           ids.length === 1
             ? (getExecutor(baseRow) || String(it.assignee_id || it.inspector_id || '').trim() || null)
@@ -861,7 +1121,7 @@ export default function CleaningPage() {
       status,
       checkin_sync_status: checkinSyncStatus,
       cleaner_id: resolvedCleanerId,
-      inspector_id: pureCheckinKeyHandover ? null : inspectorId,
+      inspector_id: pureCheckinSiteExecution ? null : inspectorId,
       checkin_inspection_scope: checkinInspectionScope,
       keys_required_checkin: keysRequiredCheckin,
       keys_required_checkout: keysRequiredCheckout,
@@ -880,10 +1140,16 @@ export default function CleaningPage() {
       checkin_task_date: checkinTaskDate,
       can_add_checkout: stayoverMode ? false : (!!propertyId && !checkoutAllExists),
       can_add_checkin: stayoverMode ? false : (!!propertyId && !checkinAllExists),
-      pending_add_checkout: false,
-      pending_add_checkin: false,
-      auto_sync_enabled: autoSync,
-    })
+	      pending_add_checkout: false,
+	      pending_add_checkin: false,
+	      auto_sync_enabled: autoSync,
+	      display_state: it.display_state || null,
+	      execution_semantics: it.execution_semantics || null,
+	      display_scope: it.display_scope || null,
+	      participant_summary: it.participant_summary || null,
+	      editable_fields: it.editable_fields || null,
+	      management_actions: it.management_actions || null,
+	    })
     setEditOpen(true)
   }, [entityIds, mergedStatus])
 
@@ -894,16 +1160,15 @@ export default function CleaningPage() {
       task_date: editForm.task_date.format('YYYY-MM-DD'),
       status: editForm.status,
     }
-    const pureCheckinKeyHandover =
+    const pureCheckinSiteExecution =
       editForm.mode === 'default'
       && editForm.checkin_ids.length > 0
       && editForm.checkout_ids.length === 0
-      && editForm.checkin_inspection_scope === 'password_only'
-    if (pureCheckinKeyHandover) {
+    if (pureCheckinSiteExecution) {
       base.assignee_id = editForm.cleaner_id
       base.cleaner_id = null
       base.inspector_id = null
-      base.inspection_scope = 'password_only'
+      base.inspection_scope = editForm.checkin_inspection_scope
     } else {
       if (editForm.ids.length === 1 || editForm.cleaner_id !== null) base.cleaner_id = editForm.cleaner_id
       if (editForm.ids.length === 1 || editForm.inspector_id !== null) base.inspector_id = editForm.inspector_id
@@ -1511,13 +1776,41 @@ export default function CleaningPage() {
     } else setSelectedDate((d) => d.add(1, 'day'))
   }, [view])
 
-  useEffect(() => {
-    if (view !== 'week' || !weekSlideDir) return
-    const timer = window.setTimeout(() => setWeekSlideDir(null), 220)
-    return () => window.clearTimeout(timer)
-  }, [view, weekSlideDir])
+	  useEffect(() => {
+	    if (view !== 'week' || !weekSlideDir) return
+	    const timer = window.setTimeout(() => setWeekSlideDir(null), 220)
+	    return () => window.clearTimeout(timer)
+	  }, [view, weekSlideDir])
 
-  return (
+	  const editStatusMeta = editForm
+	    ? (editForm.display_state?.status_label && editForm.display_state?.status_tone
+	      ? { label: editForm.display_state.status_label, tone: editForm.display_state.status_tone }
+	      : taskStatusMeta(editForm.status))
+	    : taskStatusMeta(null)
+	  const editScopeBadge = editForm ? displayScopeForItem(editForm as any) : null
+	  const editDisplayBadges = editForm ? displayBadgesForItem(editForm as any) : []
+	  const editSaveGate = editForm ? managementGateForItem(editForm, 'edit_task') : { enabled: true, disabledReason: '' }
+	  const editTaskDateGate = editForm ? editableFieldGateForItem(editForm, 'task_date', 'edit_task') : { enabled: true, disabledReason: '' }
+	  const editStatusGate = editForm ? editableFieldGateForItem(editForm, 'status', 'update_status') : { enabled: true, disabledReason: '' }
+	  const editCleanerGate = editForm ? editableFieldGateForItem(editForm, 'cleaner_id', 'assign_cleaner') : { enabled: true, disabledReason: '' }
+	  const editInspectorGate = editForm ? editableFieldGateForItem(editForm, 'inspector_id', 'assign_inspector') : { enabled: true, disabledReason: '' }
+	  const editExecutorGate = editForm ? editableFieldGateForItem(editForm, 'assignee_id', 'assign_executor') : { enabled: true, disabledReason: '' }
+	  const editDetailsGate = editForm ? editableFieldGateForItem(editForm, 'details', 'edit_task') : { enabled: true, disabledReason: '' }
+	  const editDeleteGate = editForm ? editableFieldGateForItem(editForm, 'delete', 'cancel_task') : { enabled: true, disabledReason: '' }
+	  const editAddCheckoutGate = editForm ? editableFieldGateForItem(editForm, 'add_checkout', 'add_checkout') : { enabled: true, disabledReason: '' }
+	  const editAddCheckinGate = editForm ? editableFieldGateForItem(editForm, 'add_checkin', 'add_checkin') : { enabled: true, disabledReason: '' }
+	  const editSaveDisabledReason = disabledReasonText(editSaveGate.disabledReason)
+	  const editTaskDateDisabledReason = disabledReasonText(editTaskDateGate.disabledReason)
+	  const editStatusDisabledReason = disabledReasonText(editStatusGate.disabledReason)
+	  const editCleanerDisabledReason = disabledReasonText(editCleanerGate.disabledReason)
+	  const editInspectorDisabledReason = disabledReasonText(editInspectorGate.disabledReason)
+	  const editExecutorDisabledReason = disabledReasonText(editExecutorGate.disabledReason)
+	  const editDetailsDisabledReason = disabledReasonText(editDetailsGate.disabledReason)
+	  const editDeleteDisabledReason = disabledReasonText(editDeleteGate.disabledReason)
+	  const editAddCheckoutDisabledReason = disabledReasonText(editAddCheckoutGate.disabledReason)
+	  const editAddCheckinDisabledReason = disabledReasonText(editAddCheckinGate.disabledReason)
+
+	  return (
     <div className={styles.page}>
       <div className={styles.container}>
         {error ? <Alert type="error" showIcon message="清洁日历数据加载失败" description={error} /> : null}
@@ -1756,16 +2049,22 @@ export default function CleaningPage() {
               if (it.source === 'offline_tasks') {
                 const room = propertyLabelForItem(it) || '-'
                 const region = String(it.property_region || '').trim()
-                const detail = String(it.content || '').trim()
-                const typeLabel = offlineTaskTypeText(it.task_type)
-                const urgencyLabel = urgencyText(it.urgency)
-                const photoUrls = normalizeTaskPhotoUrls(it.photo_urls)
-                return (
-                  <div key={`${it.source}:${it.entity_id}`} className={styles.missionCard}>
+	                const detail = String(it.content || '').trim()
+	                const typeLabel = offlineTaskTypeText(it.task_type)
+	                const urgencyLabel = urgencyText(it.urgency)
+	                const photoUrls = normalizeTaskPhotoUrls(it.photo_urls)
+	                const statusMeta = displayStatusMetaForItem(it)
+	                const scopeBadge = displayScopeForItem(it)
+	                const executorGate = editableFieldGateForItem(it, 'assignee_id', 'assign_executor')
+	                const statusGate = editableFieldGateForItem(it, 'status', 'update_status')
+	                const executorDisabledReason = disabledReasonText(executorGate.disabledReason)
+	                const statusDisabledReason = disabledReasonText(statusGate.disabledReason)
+	                return (
+	                  <div key={`${it.source}:${it.entity_id}`} className={styles.missionCard}>
                     <div className={`${styles.accent} ${styles.accentUnassigned}`} style={{ backgroundColor: stripeColorForUrgency(String(it.urgency || 'medium')) }} />
                     <div className={styles.missionTop}>
                       <div className={styles.headerLeft}>
-                        <span className={`${styles.statusChip} ${statusChipCls(it.status)}`}>{statusText(it.status)}</span>
+	                        <span className={`${styles.statusChip} ${semanticToneClass(statusMeta.tone)}`}>{statusMeta.label}</span>
                         <div className={styles.headerTitle}>
                           {region ? <span className={styles.headerRegion}>{region}</span> : null}
                           {it.property_id ? <span className={styles.headerCode}>{room}</span> : null}
@@ -1793,8 +2092,9 @@ export default function CleaningPage() {
                         />
                       </div>
                     </div>
-                    <div className={styles.metaRow}>
-                      <span className={styles.metaText}><span className={styles.metaKey}>类型</span>{typeLabel}</span>
+	                    <div className={styles.metaRow}>
+	                      {scopeBadge ? <span className={`${styles.metaChip} ${semanticToneClass(scopeBadge.tone || 'normal')}`}>{scopeBadge.label}</span> : null}
+	                      <span className={styles.metaText}><span className={styles.metaKey}>类型</span>{typeLabel}</span>
                       <span className={styles.metaText}><span className={styles.metaKey}>紧急度</span>{urgencyLabel}</span>
                       <span className={styles.metaText}><span className={styles.metaKey}>指派</span>{staffNameById(it.assignee_id || null)}</span>
                     </div>
@@ -1826,9 +2126,11 @@ export default function CleaningPage() {
                           allowClear
                           showSearch
                           optionFilterProp="label"
-                          value={it.assignee_id || undefined}
-                          options={allStaffOptions}
-                          onChange={(v) => patchJSON(`/cleaning/offline-tasks/${encodeURIComponent(String(it.entity_id || ''))}`, { assignee_id: v ? String(v) : null })
+	                          value={it.assignee_id || undefined}
+	                          options={allStaffOptions}
+	                          disabled={!executorGate.enabled}
+	                          title={executorDisabledReason || undefined}
+	                          onChange={(v) => patchJSON(`/cleaning/offline-tasks/${encodeURIComponent(String(it.entity_id || ''))}`, { assignee_id: v ? String(v) : null })
                             .then(() => {
                               message.success('已更新指派人')
                               loadRangeItems().catch(() => {})
@@ -1840,10 +2142,12 @@ export default function CleaningPage() {
                       <div className={styles.assigneeGroup}>
                         <div className={styles.assigneeLabel}>状态</div>
                         <Select
-                          className={styles.assigneeSelect}
-                          value={String(it.status || 'todo')}
-                          options={offlineStatusOptions}
-                          onChange={(v) => patchJSON(`/cleaning/offline-tasks/${encodeURIComponent(String(it.entity_id || ''))}`, { status: v })
+	                          className={styles.assigneeSelect}
+	                          value={String(it.status || 'todo')}
+	                          options={offlineStatusOptions}
+	                          disabled={!statusGate.enabled}
+	                          title={statusDisabledReason || undefined}
+	                          onChange={(v) => patchJSON(`/cleaning/offline-tasks/${encodeURIComponent(String(it.entity_id || ''))}`, { status: v })
                             .then(() => {
                               message.success('已更新状态')
                               loadRangeItems().catch(() => {})
@@ -1884,16 +2188,48 @@ export default function CleaningPage() {
                 return v ? v : '-'
               }
               const isTurnover = String(it.task_type || '').toLowerCase() === 'turnover' || (String(it.label || '').includes('退房') && String(it.label || '').includes('入住'))
+              const hasCheckinSide = isTurnover || isPureCheckinInspectionItem(it)
+              const hasCheckoutSide = isTurnover || String(it.task_type || '').toLowerCase() === 'checkout_clean' || String(it.label || '').includes('退房')
               const checkoutCode = isTurnover ? orderDisplay(it.checkout_order_id, it.checkout_order_code) : orderDisplay(it.order_id, it.order_code)
               const checkinCode = orderDisplay(it.checkin_order_id, it.checkin_order_code)
               const checkoutPwd = String(isTurnover ? (it.checkout_old_code ?? it.old_code ?? '') : (it.old_code ?? '')).trim()
               const checkinPwd = String(isTurnover ? (it.checkin_new_code ?? it.new_code ?? '') : (it.new_code ?? '')).trim()
+              const isCheckinOnly = !isTurnover && isPureCheckinInspectionItem(it)
+              const checkoutTiming = hasCheckoutSide ? checkoutTimingLabel(it.summary_checkout_time) : null
+              const checkinTiming = hasCheckinSide ? checkinTimingLabel(it.summary_checkin_time) : null
+              const primaryOrderLabel = isCheckinOnly ? '入住' : '退房'
+              const primaryPasswordLabel = isCheckinOnly ? '入住密码' : '退房密码'
+              const primaryPassword = isCheckinOnly ? checkinPwd : checkoutPwd
               const isKeyHandover = isCheckinKeyHandoverItem(it)
-              const hasAssignee = !!String(isKeyHandover ? (it.assignee_id || it.inspector_id) : (it.cleaner_id || it.assignee_id)).trim()
-              const isKeyUploaded = !!(it.has_key_photo || it.key_photo_uploaded_at)
-              const showKeyMissing = it.source === 'cleaning_tasks' && hasAssignee && !isKeyUploaded && String(it.status || '').toLowerCase() !== 'cancelled'
-              const syncTag = checkinSyncTag(it)
-              return (
+              const isCheckinSiteExecution = isCheckinOnly
+	              const hasKeyUploadAssignee = !!String(isKeyHandover
+	                ? (it.assignee_id || it.inspector_id)
+	                : isCheckinOnly
+	                ? (it.assignee_id || it.inspector_id)
+	                : (it.inspector_id || it.cleaner_id || it.assignee_id)).trim()
+	              const isKeyUploaded = !!(it.has_key_photo || it.key_photo_uploaded_at)
+	              const showKeyMissing = it.source === 'cleaning_tasks' && hasKeyUploadAssignee && !isKeyUploaded && String(it.status || '').toLowerCase() !== 'cancelled'
+	              const syncTag = checkinSyncTag(it)
+	              const statusMeta = displayStatusMetaForItem(it)
+	              const scopeBadge = displayScopeForItem(it)
+	              const displayBadges = visibleDailyDisplayBadges(displayBadgesForItem(it), [statusMeta.label, scopeBadge?.label])
+	              const editGate = managementGateForItem(it, 'edit_task')
+	              const deleteGate = editableFieldGateForItem(it, 'delete', 'cancel_task')
+	              const cleanerGate = editableFieldGateForItem(it, 'cleaner_id', 'assign_cleaner')
+	              const inspectorGate = editableFieldGateForItem(it, 'inspector_id', 'assign_inspector')
+	              const executorGate = editableFieldGateForItem(it, 'assignee_id', 'assign_executor')
+	              const statusGate = editableFieldGateForItem(it, 'status', 'update_status')
+	              const cleanerTargetIds = editableEntityIds(ids, 'cleaner_id', 'assign_cleaner')
+	              const inspectorTargetIds = editableEntityIds(ids, 'inspector_id', 'assign_inspector')
+	              const executorTargetIds = editableEntityIds(ids, 'assignee_id', 'assign_executor')
+	              const editDisabledReason = disabledReasonText(editGate.disabledReason)
+	              const deleteDisabledReason = disabledReasonText(deleteGate.disabledReason)
+	              const cleanerDisabledReason = disabledReasonText(cleanerGate.disabledReason)
+	              const inspectorDisabledReason = disabledReasonText(inspectorGate.disabledReason)
+	              const executorDisabledReason = disabledReasonText(executorGate.disabledReason)
+	              const statusDisabledReason = disabledReasonText(statusGate.disabledReason)
+	              const legacyLocked = !hasTaskCapability(it) && it.auto_sync_enabled === false
+	              return (
                 <div key={`${it.source}:${it.entity_id}`} className={styles.missionCard}>
                   <div className={`${styles.accent} ${accentCls}`} style={{ backgroundColor: accentColor }} />
                   <div className={styles.missionTop}>
@@ -1905,7 +2241,7 @@ export default function CleaningPage() {
                           onChange={(e) => toggleSelectItem(it, e.target.checked)}
                         />
                       ) : null}
-                      <span className={`${styles.statusChip} ${statusChipCls(it.status)}`}>{statusText(it.status)}</span>
+	                      <span className={`${styles.statusChip} ${semanticToneClass(statusMeta.tone)}`}>{statusMeta.label}</span>
                       <div className={styles.headerTitle}>
                         {sum.region ? <span className={styles.headerRegion}>{sum.region}</span> : null}
                         <span className={styles.headerCode}>{sum.code || room}</span>
@@ -1914,15 +2250,24 @@ export default function CleaningPage() {
                     </div>
                     {it.source === 'cleaning_tasks' ? (
                       <div className={styles.taskActions}>
-                        <Button className={`${styles.taskBtn} ${styles.taskBtnGhost}`} size="small" icon={<EditOutlined />} title="编辑" aria-label="编辑" onClick={() => openEdit(it).catch((e) => message.error(e?.message || '打开失败'))} />
-                        <Button
+	                        <Button
+	                          className={`${styles.taskBtn} ${styles.taskBtnGhost}`}
+	                          size="small"
+	                          icon={<EditOutlined />}
+	                          title={editDisabledReason || '编辑'}
+	                          aria-label="编辑"
+	                          disabled={!editGate.enabled}
+	                          onClick={() => openEdit(it).catch((e) => message.error(e?.message || '打开失败'))}
+	                        />
+	                        <Button
                           className={`${styles.taskBtn} ${styles.taskBtnDanger}`}
                           size="small"
                           danger
                           icon={<DeleteOutlined />}
-                          title="删除"
-                          aria-label="删除"
-                          onClick={() => {
+	                          title={deleteDisabledReason || '删除'}
+	                          aria-label="删除"
+	                          disabled={!deleteGate.enabled}
+	                          onClick={() => {
                             Modal.confirm({
                               title: '确认删除任务？',
                               content: isMerged ? `将删除 ${ids.length} 个任务（会标记为 cancelled 并从列表移除）` : '将删除该任务（会标记为 cancelled 并从列表移除）',
@@ -1936,34 +2281,40 @@ export default function CleaningPage() {
                     ) : null}
                   </div>
                   <div className={styles.metaRow}>
-                    {it.nights != null ? <span className={`${styles.metaChip} ${semanticToneClass('neutral')}`}>{`${it.nights}晚`}</span> : null}
-                    {syncTag ? <span className={`${styles.metaChip} ${semanticToneClass(syncTag.tone)}`}>{syncTag.label}</span> : null}
-                    {hasLateCheckout(it) ? <span className={`${styles.metaChip} ${semanticToneClass(taskTimingTone('晚退房'))}`}>晚退房</span> : null}
+	                    {it.nights != null ? <span className={`${styles.metaChip} ${semanticToneClass('neutral')}`}>{`${it.nights}晚`}</span> : null}
+	                    {syncTag ? <span className={`${styles.metaChip} ${semanticToneClass(syncTag.tone)}`}>{syncTag.label}</span> : null}
+	                    {scopeBadge ? <span className={`${styles.metaChip} ${semanticToneClass(scopeBadge.tone || 'normal')}`}>{scopeBadge.label}</span> : null}
+	                    {displayBadges.map((badge) => (
+	                      <span key={`${it.entity_id}:display:${badge.id}`} className={`${styles.metaChip} ${semanticToneClass(badge.tone)}`}>{badge.label}</span>
+	                    ))}
+	                    {checkoutTiming ? <span className={`${styles.metaChip} ${semanticToneClass(taskTimingTone(checkoutTiming))}`}>{checkoutTiming}</span> : null}
+	                    {checkinTiming ? <span className={`${styles.metaChip} ${semanticToneClass(taskTimingTone(checkinTiming))}`}>{checkinTiming}</span> : null}
                     {showKeyMissing ? <span className={`${styles.metaChip} ${semanticToneClass('danger')}`}>钥匙未上传</span> : null}
-                    {checkoutCode !== '-' ? <span className={styles.metaText}><span className={styles.metaKey}>退房</span>{checkoutCode}</span> : null}
+                    {checkoutCode !== '-' ? <span className={styles.metaText}><span className={styles.metaKey}>{primaryOrderLabel}</span>{checkoutCode}</span> : null}
                     {isTurnover && checkinCode !== '-' ? <span className={styles.metaText}><span className={styles.metaKey}>入住</span>{checkinCode}</span> : null}
-                    <span className={styles.metaText}><span className={styles.metaKey}>退房密码</span>{checkoutPwd || '-'}</span>
-                    <span className={styles.metaText}><span className={styles.metaKey}>入住密码</span>{checkinPwd || '-'}</span>
+                    <span className={styles.metaText}><span className={styles.metaKey}>{primaryPasswordLabel}</span>{primaryPassword || '-'}</span>
+                    {isTurnover ? <span className={styles.metaText}><span className={styles.metaKey}>入住密码</span>{checkinPwd || '-'}</span> : null}
                   </div>
                   <div className={styles.controlsRow}>
                     {it.source === 'cleaning_tasks' ? (
                       <>
-                        {isKeyHandover ? (
+                        {isKeyHandover || isCheckinSiteExecution ? (
                           <div className={styles.assigneeGroup}>
                             <div className={styles.assigneeLabel}>执行</div>
                             <Select
-                              className={styles.assigneeSelect}
-                              allowClear
-                              showSearch
-                              optionFilterProp="label"
-                              disabled={bulkMode || it.auto_sync_enabled === false}
+	                              className={styles.assigneeSelect}
+	                              allowClear
+	                              showSearch
+	                              optionFilterProp="label"
+	                              disabled={bulkMode || legacyLocked || !executorGate.enabled || !executorTargetIds.length}
+	                              title={executorDisabledReason || undefined}
                               value={(it.assignee_id || it.inspector_id) || undefined}
                               options={allStaffOptions}
-                              onChange={(v) => updateTaskQuick(ids, {
+                              onChange={(v) => updateTaskQuick(executorTargetIds, {
                                 assignee_id: v ? String(v) : null,
                                 cleaner_id: null,
                                 inspector_id: null,
-                                inspection_scope: 'password_only',
+                                inspection_scope: isKeyHandover ? 'password_only' : 'inspect_and_hang',
                               }).catch((e) => message.error(e?.message || '更新失败'))}
                               placeholder={staffNameById((it.assignee_id || it.inspector_id) || null)}
                             />
@@ -1977,10 +2328,11 @@ export default function CleaningPage() {
                                 allowClear
                                 showSearch
                                 optionFilterProp="label"
-                                disabled={bulkMode || it.auto_sync_enabled === false}
+	                                disabled={bulkMode || legacyLocked || !cleanerGate.enabled || !cleanerTargetIds.length}
+	                                title={cleanerDisabledReason || undefined}
                                 value={(it.cleaner_id || it.assignee_id) || undefined}
                                 options={cleanerOptions}
-                                onChange={(v) => updateTaskQuick(ids, { cleaner_id: v ? String(v) : null }).catch((e) => message.error(e?.message || '更新失败'))}
+                                onChange={(v) => updateTaskQuick(cleanerTargetIds, { cleaner_id: v ? String(v) : null }).catch((e) => message.error(e?.message || '更新失败'))}
                                 placeholder={staffNameById((it.cleaner_id || it.assignee_id) || null)}
                               />
                             </div>
@@ -1991,10 +2343,11 @@ export default function CleaningPage() {
                                 allowClear
                                 showSearch
                                 optionFilterProp="label"
-                                disabled={bulkMode || it.auto_sync_enabled === false}
+	                                disabled={bulkMode || legacyLocked || !inspectorGate.enabled || !inspectorTargetIds.length}
+	                                title={inspectorDisabledReason || undefined}
                                 value={it.inspector_id || undefined}
                                 options={inspectorOptions}
-                                onChange={(v) => updateTaskQuick(ids, { inspector_id: v ? String(v) : null }).catch((e) => message.error(e?.message || '更新失败'))}
+                                onChange={(v) => updateTaskQuick(inspectorTargetIds, { inspector_id: v ? String(v) : null }).catch((e) => message.error(e?.message || '更新失败'))}
                                 placeholder={staffNameById(it.inspector_id || null)}
                               />
                             </div>
@@ -2004,7 +2357,8 @@ export default function CleaningPage() {
                           <div className={styles.assigneeLabel}>状态</div>
                           <Select
                             className={styles.assigneeSelect}
-                            disabled={bulkMode || it.auto_sync_enabled === false}
+	                            disabled={bulkMode || legacyLocked || !statusGate.enabled}
+	                            title={statusDisabledReason || undefined}
                             value={String(it.status || 'pending')}
                             options={statusOptions}
                             onChange={(v) => updateTaskQuick(ids, { status: v }).catch((e) => message.error(e?.message || '更新失败'))}
@@ -2035,7 +2389,14 @@ export default function CleaningPage() {
           <div style={{ textAlign: 'right' }}>
             <Space>
               <Button onClick={() => { setEditOpen(false); setEditForm(null) }}>取消</Button>
-              <Button type="primary" onClick={() => submitEdit().catch((e) => message.error(e?.message || '保存失败'))}>保存</Button>
+	              <Button
+	                type="primary"
+	                disabled={!editSaveGate.enabled}
+	                title={editSaveDisabledReason || undefined}
+	                onClick={() => submitEdit().catch((e) => message.error(e?.message || '保存失败'))}
+	              >
+	                保存
+	              </Button>
             </Space>
           </div>
         }
@@ -2055,7 +2416,11 @@ export default function CleaningPage() {
                 </div>
               </div>
               <div className={styles.cleaningEditHeroChips}>
-                <span className={`${styles.cleaningEditChip} ${semanticToneClass(taskStatusMeta(editForm.status).tone)}`}>{statusText(editForm.status)}</span>
+	                <span className={`${styles.cleaningEditChip} ${semanticToneClass(editStatusMeta.tone)}`}>{editStatusMeta.label}</span>
+	                {editScopeBadge ? <span className={`${styles.cleaningEditChip} ${semanticToneClass(editScopeBadge.tone || 'normal')}`}>{editScopeBadge.label}</span> : null}
+	                {editDisplayBadges.map((badge) => (
+	                  <span key={`edit:display:${badge.id}`} className={`${styles.cleaningEditChip} ${semanticToneClass(badge.tone)}`}>{badge.label}</span>
+	                ))}
                 {editForm.checkin_sync_status === 'pending' ? <span className={`${styles.cleaningEditChip} ${semanticToneClass('pending')}`}>待同步</span> : null}
                 {editForm.checkin_sync_status === 'synced' ? <span className={`${styles.cleaningEditChip} ${semanticToneClass('success')}`}>已同步</span> : null}
                 {!editForm.auto_sync_enabled ? <span className={`${styles.cleaningEditChip} ${semanticToneClass('pending')}`}>自动同步已锁定</span> : null}
@@ -2073,36 +2438,53 @@ export default function CleaningPage() {
               <Row gutter={[16, 16]}>
                 <Col xs={24} md={12} lg={8}>
                   <Form.Item label="清洁日期">
-                    <DatePicker value={editForm.task_date} onChange={(v) => v && setEditForm((p) => (p ? { ...p, task_date: v } : p))} style={{ width: '100%' }} />
+	                    <DatePicker
+	                      value={editForm.task_date}
+	                      disabled={!editTaskDateGate.enabled}
+	                      title={editTaskDateDisabledReason || undefined}
+	                      onChange={(v) => v && setEditForm((p) => (p ? { ...p, task_date: v } : p))}
+	                      style={{ width: '100%' }}
+	                    />
                   </Form.Item>
                 </Col>
                 <Col xs={24} md={12} lg={8}>
                   <Form.Item label="状态">
-                    <Select value={editForm.status} onChange={(v) => setEditForm((p) => (p ? { ...p, status: v } : p))} style={{ width: '100%' }} options={statusOptions} />
+	                    <Select
+	                      value={editForm.status}
+	                      disabled={!editStatusGate.enabled}
+	                      title={editStatusDisabledReason || undefined}
+	                      onChange={(v) => setEditForm((p) => (p ? { ...p, status: v } : p))}
+	                      style={{ width: '100%' }}
+	                      options={statusOptions}
+	                    />
                   </Form.Item>
                 </Col>
                 <Col xs={24} md={12}>
-                  <Form.Item label={editForm.mode === 'default' && editForm.checkin_ids.length > 0 && editForm.checkout_ids.length === 0 && editForm.checkin_inspection_scope === 'password_only' ? '执行人' : '清洁人员'}>
+                  <Form.Item label={editForm.mode === 'default' && editForm.checkin_ids.length > 0 && editForm.checkout_ids.length === 0 ? '执行人' : '清洁人员'}>
                     <Select
                       allowClear
                       showSearch
                       optionFilterProp="label"
-                      value={editForm.cleaner_id || undefined}
-                      onChange={(v) => setEditForm((p) => (p ? { ...p, cleaner_id: v ? String(v) : null } : p))}
+	                      value={editForm.cleaner_id || undefined}
+	                      disabled={editForm.mode === 'default' && editForm.checkin_ids.length > 0 && editForm.checkout_ids.length === 0 ? !editExecutorGate.enabled : !editCleanerGate.enabled}
+	                      title={(editForm.mode === 'default' && editForm.checkin_ids.length > 0 && editForm.checkout_ids.length === 0 ? editExecutorDisabledReason : editCleanerDisabledReason) || undefined}
+	                      onChange={(v) => setEditForm((p) => (p ? { ...p, cleaner_id: v ? String(v) : null } : p))}
                       style={{ width: '100%' }}
-                      options={editForm.mode === 'default' && editForm.checkin_ids.length > 0 && editForm.checkout_ids.length === 0 && editForm.checkin_inspection_scope === 'password_only' ? allStaffOptions : cleanerOptions}
+                      options={editForm.mode === 'default' && editForm.checkin_ids.length > 0 && editForm.checkout_ids.length === 0 ? allStaffOptions : cleanerOptions}
                     />
                   </Form.Item>
                 </Col>
-                {editForm.mode === 'default' && editForm.checkin_ids.length > 0 && editForm.checkout_ids.length === 0 && editForm.checkin_inspection_scope === 'password_only' ? null : (
+                {editForm.mode === 'default' && editForm.checkin_ids.length > 0 && editForm.checkout_ids.length === 0 ? null : (
                   <Col xs={24} md={12}>
                     <Form.Item label="检查人员">
                       <Select
                         allowClear
                         showSearch
-                        optionFilterProp="label"
-                        value={editForm.inspector_id || undefined}
-                        onChange={(v) => setEditForm((p) => (p ? { ...p, inspector_id: v ? String(v) : null } : p))}
+	                        optionFilterProp="label"
+	                        value={editForm.inspector_id || undefined}
+	                        disabled={!editInspectorGate.enabled}
+	                        title={editInspectorDisabledReason || undefined}
+	                        onChange={(v) => setEditForm((p) => (p ? { ...p, inspector_id: v ? String(v) : null } : p))}
                         style={{ width: '100%' }}
                         options={inspectorOptions}
                       />
@@ -2115,9 +2497,11 @@ export default function CleaningPage() {
                       <Select
                         allowClear
                         showSearch
-                        optionFilterProp="label"
-                        value={editForm.checkin_time || undefined}
-                        onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_time: String(v || '') } : p))}
+	                        optionFilterProp="label"
+	                        value={editForm.checkin_time || undefined}
+	                        disabled={!editDetailsGate.enabled}
+	                        title={editDetailsDisabledReason || undefined}
+	                        onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_time: String(v || '') } : p))}
                         style={{ width: '100%' }}
                         options={timeOptions}
                       />
@@ -2140,9 +2524,11 @@ export default function CleaningPage() {
                     </div>
                     <div className={styles.cleaningEditSectionActions}>
                       {editForm.checkout_ids.length ? (
-                        <Button
-                          danger
-                          onClick={() => {
+	                        <Button
+	                          danger
+	                          disabled={!editDeleteGate.enabled}
+	                          title={editDeleteDisabledReason || undefined}
+	                          onClick={() => {
                             Modal.confirm({
                               title: '确认取消退房任务？',
                               content: `将取消 ${editForm.checkout_ids.length} 个退房任务`,
@@ -2156,7 +2542,8 @@ export default function CleaningPage() {
                         </Button>
                       ) : (
                         <Button
-                          disabled={!editForm.can_add_checkout && !editForm.pending_add_checkout}
+	                          disabled={(!editForm.can_add_checkout && !editForm.pending_add_checkout) || !editAddCheckoutGate.enabled}
+	                          title={editAddCheckoutDisabledReason || undefined}
                           onClick={() =>
                             setEditForm((p) => {
                               if (!p) return p
@@ -2180,7 +2567,13 @@ export default function CleaningPage() {
                   <Row gutter={[16, 16]}>
                     <Col xs={24} md={12}>
                       <Form.Item label="退房密码（旧密码）">
-                        <Input value={editForm.checkout_password} onChange={(e) => setEditForm((p) => (p ? { ...p, checkout_password: e.target.value } : p))} placeholder="退房密码" />
+	                        <Input
+	                          value={editForm.checkout_password}
+	                          disabled={!editDetailsGate.enabled}
+	                          title={editDetailsDisabledReason || undefined}
+	                          onChange={(e) => setEditForm((p) => (p ? { ...p, checkout_password: e.target.value } : p))}
+	                          placeholder="退房密码"
+	                        />
                       </Form.Item>
                     </Col>
                     {editForm.checkout_ids.length || editForm.pending_add_checkout ? (
@@ -2189,9 +2582,11 @@ export default function CleaningPage() {
                           <Select
                             allowClear
                             showSearch
-                            optionFilterProp="label"
-                            value={editForm.checkout_time || undefined}
-                            onChange={(v) => setEditForm((p) => (p ? { ...p, checkout_time: String(v || '') } : p))}
+	                            optionFilterProp="label"
+	                            value={editForm.checkout_time || undefined}
+	                            disabled={!editDetailsGate.enabled}
+	                            title={editDetailsDisabledReason || undefined}
+	                            onChange={(v) => setEditForm((p) => (p ? { ...p, checkout_time: String(v || '') } : p))}
                             style={{ width: '100%' }}
                             options={timeOptions}
                           />
@@ -2201,8 +2596,10 @@ export default function CleaningPage() {
                     <Col xs={24} md={12}>
                       <Form.Item label="需确认已退钥匙套数">
                         <Select
-                          value={editForm.keys_required_checkout}
-                          onChange={(v) => setEditForm((p) => (p ? { ...p, keys_required_checkout: (Number(v) >= 2 ? 2 : 1) } : p))}
+	                          value={editForm.keys_required_checkout}
+	                          disabled={!editDetailsGate.enabled}
+	                          title={editDetailsDisabledReason || undefined}
+	                          onChange={(v) => setEditForm((p) => (p ? { ...p, keys_required_checkout: (Number(v) >= 2 ? 2 : 1) } : p))}
                           style={{ width: '100%' }}
                           options={[
                             { label: '1 套', value: 1 },
@@ -2225,9 +2622,11 @@ export default function CleaningPage() {
                     </div>
                     <div className={styles.cleaningEditSectionActions}>
                       {editForm.checkin_ids.length ? (
-                        <Button
-                          danger
-                          onClick={() => {
+	                        <Button
+	                          danger
+	                          disabled={!editDeleteGate.enabled}
+	                          title={editDeleteDisabledReason || undefined}
+	                          onClick={() => {
                             Modal.confirm({
                               title: '确认取消入住任务？',
                               content: `将取消 ${editForm.checkin_ids.length} 个入住任务`,
@@ -2241,7 +2640,8 @@ export default function CleaningPage() {
                         </Button>
                       ) : (
                         <Button
-                          disabled={!editForm.can_add_checkin && !editForm.pending_add_checkin}
+	                          disabled={(!editForm.can_add_checkin && !editForm.pending_add_checkin) || !editAddCheckinGate.enabled}
+	                          title={editAddCheckinDisabledReason || undefined}
                           onClick={() =>
                             setEditForm((p) => {
                               if (!p) return p
@@ -2266,8 +2666,10 @@ export default function CleaningPage() {
                     <Col xs={24} md={12}>
                       <Form.Item label="需挂钥匙套数">
                         <Select
-                          value={editForm.keys_required_checkin}
-                          onChange={(v) => setEditForm((p) => (p ? { ...p, keys_required_checkin: (Number(v) >= 2 ? 2 : 1) } : p))}
+	                          value={editForm.keys_required_checkin}
+	                          disabled={!editDetailsGate.enabled}
+	                          title={editDetailsDisabledReason || undefined}
+	                          onChange={(v) => setEditForm((p) => (p ? { ...p, keys_required_checkin: (Number(v) >= 2 ? 2 : 1) } : p))}
                           style={{ width: '100%' }}
                           options={[
                             { label: '1 套', value: 1 },
@@ -2280,7 +2682,13 @@ export default function CleaningPage() {
                       <>
                         <Col xs={24} md={12}>
                           <Form.Item label="入住日期">
-                            <DatePicker value={editForm.checkin_task_date} onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_task_date: v || p.task_date } : p))} style={{ width: '100%' }} />
+	                            <DatePicker
+	                              value={editForm.checkin_task_date}
+	                              disabled={!editTaskDateGate.enabled}
+	                              title={editTaskDateDisabledReason || undefined}
+	                              onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_task_date: v || p.task_date } : p))}
+	                              style={{ width: '100%' }}
+	                            />
                           </Form.Item>
                         </Col>
                         <Col xs={24} md={12}>
@@ -2288,9 +2696,11 @@ export default function CleaningPage() {
                             <Select
                               allowClear
                               showSearch
-                              optionFilterProp="label"
-                              value={editForm.checkin_time || undefined}
-                              onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_time: String(v || '') } : p))}
+	                              optionFilterProp="label"
+	                              value={editForm.checkin_time || undefined}
+	                              disabled={!editDetailsGate.enabled}
+	                              title={editDetailsDisabledReason || undefined}
+	                              onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_time: String(v || '') } : p))}
                               style={{ width: '100%' }}
                               options={timeOptions}
                             />
@@ -2301,15 +2711,23 @@ export default function CleaningPage() {
                             <InputNumber
                               style={{ width: '100%' }}
                               min={0}
-                              placeholder="例如 2"
-                              value={editForm.nights_override ?? undefined}
-                              onChange={(v) => setEditForm((p) => (p ? { ...p, nights_override: v == null ? null : Number(v) } : p))}
+	                              placeholder="例如 2"
+	                              value={editForm.nights_override ?? undefined}
+	                              disabled={!editDetailsGate.enabled}
+	                              title={editDetailsDisabledReason || undefined}
+	                              onChange={(v) => setEditForm((p) => (p ? { ...p, nights_override: v == null ? null : Number(v) } : p))}
                             />
                           </Form.Item>
                         </Col>
                         <Col xs={24} md={12}>
                           <Form.Item label="入住密码（新密码）">
-                            <Input value={editForm.checkin_password} onChange={(e) => setEditForm((p) => (p ? { ...p, checkin_password: e.target.value } : p))} placeholder="入住密码" />
+	                            <Input
+	                              value={editForm.checkin_password}
+	                              disabled={!editDetailsGate.enabled}
+	                              title={editDetailsDisabledReason || undefined}
+	                              onChange={(e) => setEditForm((p) => (p ? { ...p, checkin_password: e.target.value } : p))}
+	                              placeholder="入住密码"
+	                            />
                           </Form.Item>
                         </Col>
                       </>
@@ -2330,7 +2748,13 @@ export default function CleaningPage() {
                 </div>
               </div>
               <Form.Item label="客人需求" style={{ marginBottom: 0 }}>
-                <Input.TextArea rows={4} value={editForm.guest_special_request} onChange={(e) => setEditForm((p) => (p ? { ...p, guest_special_request: e.target.value } : p))} />
+	                <Input.TextArea
+	                  rows={4}
+	                  value={editForm.guest_special_request}
+	                  disabled={!editDetailsGate.enabled}
+	                  title={editDetailsDisabledReason || undefined}
+	                  onChange={(e) => setEditForm((p) => (p ? { ...p, guest_special_request: e.target.value } : p))}
+	                />
               </Form.Item>
             </div>
           </Form>
