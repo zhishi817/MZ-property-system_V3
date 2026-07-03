@@ -9,13 +9,16 @@ import { sortActivePropertiesByRegionThenCode } from '../../../lib/properties'
 import {
   PROPERTY_PAYABLE_CATEGORY_OPTIONS,
   PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH,
+  PROPERTY_PAYABLE_FREQUENCY_OPTIONS,
   PROPERTY_PAYABLE_PAYMENT_TYPE_OPTIONS,
   PROPERTY_PAYABLE_TEMPLATE_KIND,
   canMarkPropertyPayablePaid,
   formatPropertyPayableMonthKey,
   isPropertyPayableDueSoon,
   isPropertyPayableOverdue,
+  normalizePropertyPayableFrequency,
   propertyPayableCategoryLabel,
+  propertyPayableFrequencyLabel,
   propertyPayablePaymentTypeLabel,
   toPropertyPayableMonthValue,
 } from '../../../lib/propertyPayables'
@@ -401,7 +404,7 @@ export default function PropertyPayablesPage() {
       bill_period_start_day_of_month: undefined,
       bill_period_end_month_offset: 0,
       bill_period_end_day_of_month: undefined,
-      frequency_months: 1,
+      frequency_months: normalizePropertyPayableFrequency(row?.frequency_months),
       remind_days_before: 3,
       payment_type: row?.payment_type || 'bank_account',
       pay_account_name: row?.pay_account_name || '',
@@ -430,7 +433,7 @@ export default function PropertyPayablesPage() {
       bill_period_start_day_of_month: undefined,
       bill_period_end_month_offset: 0,
       bill_period_end_day_of_month: undefined,
-      frequency_months: 1,
+      frequency_months: normalizePropertyPayableFrequency(values.frequency_months),
       remind_days_before: 3,
       payment_type: values.payment_type || 'bank_account',
       pay_account_name: values.pay_account_name || undefined,
@@ -839,8 +842,9 @@ export default function PropertyPayablesPage() {
                   { title: '收费公司/事项', dataIndex: 'vendor' },
                   { title: '类别', dataIndex: 'category', render: (v: string) => propertyPayableCategoryLabel(v) },
                   { title: '默认金额', dataIndex: 'amount', render: (v: number) => formatMoney(v) },
-                  { title: '预计收到账单日', dataIndex: 'bill_expected_day_of_month', render: (v: number) => v ? `每月 ${v} 号` : '-' },
-                  { title: '付款截止日', dataIndex: 'due_day_of_month', render: () => `每月 ${PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH} 号` },
+                  { title: '账单周期', dataIndex: 'frequency_months', render: (v: number) => propertyPayableFrequencyLabel(v) },
+                  { title: '预计收到账单日', dataIndex: 'bill_expected_day_of_month', render: (v: number) => v ? `账单月 ${v} 号` : '-' },
+                  { title: '付款截止日', dataIndex: 'due_day_of_month', render: () => `账单月 ${PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH} 号` },
                   {
                     title: '操作',
                     key: 'ops',
@@ -908,6 +912,7 @@ export default function PropertyPayablesPage() {
               <Descriptions.Item label="状态">{statusTag(detailRow)}</Descriptions.Item>
               <Descriptions.Item label="模板状态">{detailRow.template_status === 'paused' ? '已暂停' : '启用中'}</Descriptions.Item>
               <Descriptions.Item label="模板起始月份">{detailRow.start_month_key || '-'}</Descriptions.Item>
+              <Descriptions.Item label="账单周期">{propertyPayableFrequencyLabel(detailRow.frequency_months)}</Descriptions.Item>
               <Descriptions.Item label="付款方式">{propertyPayablePaymentTypeLabel(detailRow.payment_type || '')}</Descriptions.Item>
               <Descriptions.Item label="收款方">{detailRow.pay_account_name || '-'}</Descriptions.Item>
               <Descriptions.Item label="模板备注" span={2}>{detailRow.template_note || '-'}</Descriptions.Item>
@@ -950,7 +955,7 @@ export default function PropertyPayablesPage() {
       >
         <Form form={confirmForm} layout="vertical">
           <Card size="small" style={{ marginBottom: 16 }}>
-            这里只会更新当前月份账单快照的实际收到账单日期、金额和备注，不会改动代付模板；付款截止日固定为每月 {PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH} 号。
+            这里只会更新当前账单月份快照的实际收到账单日期、金额和备注，不会改动代付模板；付款截止日固定为账单月 {PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH} 号。
           </Card>
           <Form.Item name="bill_received_date" label="实际收到账单日期" rules={[{ required: true, message: '请选择收到账单日期' }]}>
             <DatePicker style={{ width: '100%' }} />
@@ -1004,13 +1009,18 @@ export default function PropertyPayablesPage() {
               </Form.Item>
             </Col>
             <Col span={12}>
+              <Form.Item name="frequency_months" label="账单周期" initialValue={1}>
+                <Select options={PROPERTY_PAYABLE_FREQUENCY_OPTIONS.map((item) => ({ value: item.value, label: item.label }))} />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
               <Form.Item name="bill_expected_day_of_month" label="预计收到账单日" rules={[{ required: true, message: '请输入预计收到账单日' }]}>
                 <InputNumber min={1} max={31} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
             <Col span={12}>
               <Form.Item label="付款截止日">
-                <Input value={`每月 ${PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH} 号`} disabled />
+                <Input value={`账单月 ${PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH} 号`} disabled />
               </Form.Item>
             </Col>
             <Col span={12}>

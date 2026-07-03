@@ -83,7 +83,7 @@ function monthKeysBetween(start: string, end: string): string[] {
   return out
 }
 
-function isDueMonthKey(start: string, monthKey: string, freqMonths: number): boolean {
+export function isDueMonthKey(start: string, monthKey: string, freqMonths: number): boolean {
   const freq = Math.max(1, Math.min(24, Number(freqMonths || 1)))
   const s = monthKeyToIndex(start)
   const m = monthKeyToIndex(monthKey)
@@ -109,6 +109,14 @@ const TEMPLATE_KIND_PROPERTY_PAYABLE = 'property_payable'
 const PROPERTY_PAYABLE_MENU_PERM = 'menu.finance.property_payables.visible'
 export const PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH = 30
 export const PROPERTY_PAYABLE_PAYMENT_GRACE_DAYS = 5
+const PROPERTY_PAYABLE_ALLOWED_FREQUENCY_MONTHS = [1, 2, 3, 6, 12] as const
+
+export function normalizePropertyPayableFrequencyMonths(value: any): number {
+  const n = Number(value || 1)
+  if (!Number.isFinite(n)) return 1
+  const whole = Math.trunc(n)
+  return (PROPERTY_PAYABLE_ALLOWED_FREQUENCY_MONTHS as readonly number[]).includes(whole) ? whole : 1
+}
 
 type RecurringSnapshotPayload = {
   fixedExpenseId: string
@@ -168,11 +176,14 @@ export function computePropertyPayableTemplateDates(payment: any, monthKey: stri
   }
 }
 
-function normalizePropertyPayableTemplatePayload(payload: Record<string, any>) {
+function normalizePropertyPayableTemplatePayload(payload: Record<string, any>, fallback?: Record<string, any> | null) {
   if (String(payload?.template_kind || '') !== TEMPLATE_KIND_PROPERTY_PAYABLE) return payload
   payload.scope = 'property'
   payload.due_day_of_month = PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH
-  payload.frequency_months = 1
+  const frequencySource = Object.prototype.hasOwnProperty.call(payload, 'frequency_months')
+    ? payload.frequency_months
+    : fallback?.frequency_months
+  payload.frequency_months = normalizePropertyPayableFrequencyMonths(frequencySource)
   payload.bill_period_start_day_of_month = null
   payload.bill_period_start_month_offset = 0
   payload.bill_period_end_day_of_month = null
@@ -781,7 +792,7 @@ function buildPropertyPayableWorkbenchMonth(
   const rows = templates
     .map((tpl) => {
       const startMonth = String(tpl?.start_month_key || '').trim()
-      const freq = 1
+      const freq = normalizePropertyPayableFrequencyMonths(tpl?.frequency_months)
       const isDue = !!startMonth && isDueMonthKey(startMonth, monthKey, freq)
       const snapshot = snapByTemplate.get(String(tpl.id)) || null
       if (!isDue && !snapshot) return null
@@ -823,7 +834,7 @@ function buildPropertyPayableWorkbenchMonth(
         bill_period_start_month_offset: 0,
         bill_period_end_day_of_month: null,
         bill_period_end_month_offset: 0,
-        frequency_months: 1,
+        frequency_months: freq,
         report_category: tpl.report_category || null,
         template_note: tpl.note || null,
         bill_account_no: tpl.bill_account_no || null,
@@ -1293,7 +1304,9 @@ router.post('/payments/:id/resume', requireAnyPerm(['recurring_payments.write', 
       const table = scope === 'property' ? 'property_expenses' : 'company_expenses'
       const dueDay = Number(after.due_day_of_month || 1)
       const startMonth = String((after as any).start_month_key || (before as any).start_month_key || '')
-      const freq = isPropertyPayableTemplate(after) ? 1 : Number((after as any).frequency_months || (before as any).frequency_months || 1)
+      const freq = isPropertyPayableTemplate(after)
+        ? normalizePropertyPayableFrequencyMonths((after as any).frequency_months || (before as any).frequency_months)
+        : Number((after as any).frequency_months || (before as any).frequency_months || 1)
       const isDue = startMonth ? isDueMonthKey(startMonth, monthKey, freq) : true
       if (!isDue) return { before, after, month_key: monthKey, ensured: false }
       if (isPropertyPayableTemplate(after)) {
@@ -1390,7 +1403,9 @@ router.post('/payments/:id/ensure-snapshot', requireAnyPerm(['recurring_payments
       const table = scope === 'property' ? 'property_expenses' : 'company_expenses'
       const dueDay = Number(payment.due_day_of_month || 1)
       const startMonth = String((payment as any).start_month_key || '')
-      const freq = isPropertyPayableTemplate(payment) ? 1 : Number((payment as any).frequency_months || 1)
+      const freq = isPropertyPayableTemplate(payment)
+        ? normalizePropertyPayableFrequencyMonths((payment as any).frequency_months)
+        : Number((payment as any).frequency_months || 1)
       const isDue = startMonth ? isDueMonthKey(startMonth, monthKey, freq) : true
       if (!isDue) return { ensured: false, month_key: monthKey }
       if (isPropertyPayableTemplate(payment)) {
@@ -1682,7 +1697,7 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
       if (nextTemplateKind === TEMPLATE_KIND_PROPERTY_PAYABLE) {
         payload.scope = 'property'
         payload.template_kind = TEMPLATE_KIND_PROPERTY_PAYABLE
-        normalizePropertyPayableTemplatePayload(payload)
+        normalizePropertyPayableTemplatePayload(payload, before)
         const nextPropertyId = String((Object.prototype.hasOwnProperty.call(payload, 'property_id') ? payload.property_id : (before as any).property_id) || '').trim()
         if (!nextPropertyId) return { invalid: 'property_id required' }
         const nextExpectedDay = Number(Object.prototype.hasOwnProperty.call(payload, 'bill_expected_day_of_month') ? payload.bill_expected_day_of_month : (before as any).bill_expected_day_of_month)
@@ -1747,7 +1762,8 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
 
       let autoMarked = 0
       const startMonthForRule = String((Object.prototype.hasOwnProperty.call(payload, 'start_month_key') ? payload.start_month_key : (updated as any).start_month_key) || (before as any).start_month_key || '')
-      const freqForRule = Number((Object.prototype.hasOwnProperty.call(payload, 'frequency_months') ? payload.frequency_months : (updated as any).frequency_months) || (before as any).frequency_months || 1)
+      const rawFreqForRule = (Object.prototype.hasOwnProperty.call(payload, 'frequency_months') ? payload.frequency_months : (updated as any).frequency_months) || (before as any).frequency_months || 1
+      const freqForRule = propertyPayable ? normalizePropertyPayableFrequencyMonths(rawFreqForRule) : Number(rawFreqForRule)
 
       if (!propertyPayable && Object.prototype.hasOwnProperty.call(payload, 'start_month_key')) {
         const startMonth = String(payload.start_month_key || '')

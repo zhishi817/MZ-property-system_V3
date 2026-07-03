@@ -2,6 +2,111 @@
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
+## CRL-20260703-009 — 房源代付账单周期支持
+
+- **Status:** ready
+- **Updated:** 2026-07-03 15:25 AEST
+- **Request:** 房源代付页面支持两个月一次、年度 council rate 等非每月账单；按计划使用账单周期决定哪些月份生成待处理账单，金额不自动分摊。
+- **Outcome:** 房源代付模板现在可选择 `每月 / 每 2 个月 / 每 3 个月 / 每 6 个月 / 每年`。后端按模板 `start_month_key` 和 `frequency_months` 判断账单月份：非账单月份不生成待处理行，也不会显示“账单未收到”；账单金额只在实际账单月份整笔进入该月 statement。
+
+### Implementation
+
+- Previous behavior:
+  - 后端对 `property_payable` 模板强制 `frequency_months = 1`，workbench、resume、ensure-snapshot 也按每月判断。
+  - 前端模板保存和房源预设表单都会把周期写死为每月，列表文案显示“每月 X 号”。
+  - 编辑模板时即使只改备注或收款信息，也会通过后端规范化保留每月周期。
+- New behavior:
+  - 后端新增 property-payable 周期规范化，只接受 `1/2/3/6/12`；编辑模板时用现有模板作为 fallback，避免未提交周期字段时重置已有周期。
+  - workbench、resume、ensure-snapshot 和未来未付快照清理都使用同一 due-month 判断；非周期月份不会新增房源代付快照。
+  - 前端共享工具保留合法周期、非法周期回落每月，并提供统一周期标签。
+  - 房源代付模板 drawer、模板列表、详情 drawer、房源详情预设模板表单都展示/保存账单周期；日期文案改为“账单月 X 号”。
+- Key decisions:
+  - 不做自动分摊；账单在哪个账单月收到并确认，就整笔进入该月 statement。
+  - 不支持任意周期数字，先限制为业务确认的 1、2、3、6、12 个月，避免生成节奏不可控。
+
+### Files / Areas
+
+- `backend/src/modules/recurring.ts` — modified: property-payable 周期规范化、due-month 判断导出、workbench/快照生成/模板同步使用真实周期。
+- `backend/scripts/tests/test_property_payable_bill_dates.ts` — modified: 覆盖双月、年度 due-month 判断和 property-payable 周期规范化。
+- `frontend/src/lib/propertyPayables.ts` — modified: 共享周期选项、规范化和标签 helper；模板 normalize 不再强制每月。
+- `frontend/src/lib/propertyPayables.test.ts` — modified: 覆盖合法周期保留、非法周期回落每月。
+- `frontend/src/app/finance/property-payables/page.tsx` — modified: 代付模板新增账单周期字段，列表/详情显示周期并修正账单月文案。
+- `frontend/src/components/PropertyPayableTemplatesForm.tsx` — modified: 房源详情代付模板预设新增账单周期字段。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: existing endpoints unchanged; `recurring_payments.frequency_months` for `template_kind='property_payable'` now accepts and returns `1/2/3/6/12` instead of always normalizing to `1`.
+- Database / migration: none; reuses existing `frequency_months` column.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: no file overlap with `CRL-20260703-008`; shares dirty worktree with other ready units.
+
+### Validation
+
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_property_payable_bill_dates.ts` in `backend` — passed: `test_property_payable_bill_dates: ok`.
+- `./node_modules/.bin/vitest run src/lib/propertyPayables.test.ts --coverage=false` in `frontend` — passed: 1 file / 4 tests.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `npm run lint` in `frontend` — passed with existing project warnings.
+- `npm run build` in `frontend` — passed; existing Browserslist, lint, and Recharts zero-size warnings remained.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 37 changed files recorded, coverage PASS.
+- `git diff --check -- backend/src/modules/recurring.ts backend/scripts/tests/test_property_payable_bill_dates.ts frontend/src/lib/propertyPayables.ts frontend/src/lib/propertyPayables.test.ts frontend/src/app/finance/property-payables/page.tsx frontend/src/components/PropertyPayableTemplatesForm.tsx docs/change-release-ledger.md` — passed.
+
+### Risks / Release Notes
+
+- Existing unpaid future snapshots in months that are no longer due are deleted only when the template `start_month_key` or `frequency_months` is edited. Already paid historical rows are preserved.
+- A direct API caller could still try to confirm a non-due month if it bypasses the UI; normal UI paths only expose due months through the workbench.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted in root repo; coexists with unrelated cleaning/task-center/inventory/finance changes.
+
+## CRL-20260703-008 — 财务助理房源营收支出可见性修复
+
+- **Status:** ready
+- **Updated:** 2026-07-03 15:12 Australia/Melbourne
+- **Request:** 修复 `QianwenLin` 主角色为 `Finance_staff_assistant`、同时带 `customer_service` 多角色时，看不到房源营收支出数据的问题。
+- **Outcome:** `/crud/property_expenses` 的客服同组 `created_by` 范围过滤现在会先检查用户任一角色是否拥有显式 `property_expenses.view`。普通客服仍只能看客服范围内的房源支出；带有房源支出查看权限的财务助理不会再因为多角色包含 `customer_service` 而被过滤掉，房源营收表可正常汇总支出列。
+
+### Implementation
+
+- Previous behavior:
+  - 房源营收页通过 `/crud/property_expenses` 拉取房源支出后在前端汇总。
+  - `shouldScopePropertyExpenseByPeerRole()` 只豁免 `admin` 和精确角色名 `finance_staff`；只要角色列表包含 `customer_service`，就追加 `created_by_any` 范围过滤。
+  - `Finance_staff_assistant + customer_service` 这类多角色用户即使有 `property_expenses.view`，也会被当成客服范围读取，导致与本人/客服同组无关的房源支出在房源营收中变成 0。
+- New behavior:
+  - 客服范围过滤拆为可测试判断：非 `property_expenses`、`admin`、`finance_staff`、或拥有显式 `property_expenses.view` 时不套客服范围。
+  - 列表和单条读取路径改为等待该权限判断后再决定是否套用 `created_by_any`。
+  - 新增脚本测试覆盖普通客服仍被限制、`Finance_staff_assistant + customer_service` 有 `property_expenses.view` 时不被限制、`finance_staff` 不被限制、其他资源不受影响。
+- Key decisions:
+  - 不硬编码只处理 `Finance_staff_assistant`；以 `property_expenses.view` 作为是否拥有全量房源支出读取能力的依据。
+  - 不使用 `finance.tx.write` 做豁免，因为普通客服历史上也可能有交易写入权限，不能因此放开全部房源支出读取。
+
+### Files / Areas
+
+- `backend/src/modules/crud.ts` — modified: 房源支出客服范围过滤改为权限感知，并导出纯判断函数供回归测试使用；同文件还包含 `CRL-20260703-005` 的日用品自动费用只读保护未提交 hunk。
+- `backend/scripts/tests/test_property_expense_peer_scope.ts` — added: 覆盖房源支出 peer-scope 判断的角色/权限组合。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: response shape unchanged; `/crud/property_expenses` 对同时拥有 `customer_service` 和 `property_expenses.view` 的用户不再追加客服 `created_by` 范围过滤。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: shares `backend/src/modules/crud.ts` with `CRL-20260703-005`; selective release requires hunk-level staging if only releasing this fix.
+
+### Validation
+
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_property_expense_peer_scope.ts` in `backend` — passed: `test_property_expense_peer_scope: ok`.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 31 changed files recorded, coverage PASS.
+
+### Risks / Release Notes
+
+- Runtime risk: roles with explicit `property_expenses.view` will see all non-deleted property expense rows through `/crud/property_expenses` even if they also carry `customer_service`; this matches the permission meaning but should be reviewed when granting that permission.
+- Rollback: restore `shouldScopePropertyExpenseByPeerRole()` to the previous synchronous role-name-only check and remove `test_property_expense_peer_scope.ts`.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted in root repo; coexists with unrelated cleaning/task-center/inventory/finance changes and existing `crud.ts` hunk from `CRL-20260703-005`.
+
 ## CRL-20260702-002 — 挂钥匙状态不被排班保存覆盖
 
 - **Status:** committed

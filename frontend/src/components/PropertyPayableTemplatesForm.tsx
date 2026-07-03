@@ -5,6 +5,7 @@ import dayjs from 'dayjs'
 import {
   PROPERTY_PAYABLE_CATEGORY_OPTIONS,
   PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH,
+  PROPERTY_PAYABLE_FREQUENCY_OPTIONS,
   PROPERTY_PAYABLE_PAYMENT_TYPE_OPTIONS,
   defaultPropertyPayableTemplate,
 } from '../lib/propertyPayables'
@@ -144,13 +145,18 @@ export default function PropertyPayableTemplatesForm(props: { form: any; name?: 
                     </Form.Item>
                   </Col>
                   <Col span={8}>
+                    <Form.Item name={[field.name, 'frequency_months']} label="账单周期" initialValue={1}>
+                      <Select options={PROPERTY_PAYABLE_FREQUENCY_OPTIONS.map((item) => ({ value: item.value, label: item.label }))} />
+                    </Form.Item>
+                  </Col>
+                  <Col span={8}>
                     <Form.Item name={[field.name, 'bill_expected_day_of_month']} label="预计收到账单日" rules={[{ required: true, message: '必填' }]}>
                       <InputNumber min={1} max={31} style={{ width: '100%' }} />
                     </Form.Item>
                   </Col>
                   <Col span={8}>
                     <Form.Item label="付款截止日">
-                      <Input value={`每月 ${PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH} 号`} disabled />
+                      <Input value={`账单月 ${PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH} 号`} disabled />
                     </Form.Item>
                   </Col>
                   <Col span={8}>
