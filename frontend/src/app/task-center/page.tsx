@@ -35,6 +35,59 @@ type Staff = {
   color_hex?: string | null
 }
 
+type TaskDisplayBadge = {
+  id: string
+  label: string
+  tone: TaskSemanticTone
+}
+
+type TaskDisplayState = {
+  status_key?: string
+  status_label?: string
+  status_tone?: TaskSemanticTone
+  badges?: TaskDisplayBadge[]
+  task_semantics?: {
+    is_pure_checkin?: boolean
+    is_cleaning_execution?: boolean
+    is_key_handover?: boolean
+    is_password_only?: boolean
+    requires_cleaner?: boolean
+    can_configure_inspection?: boolean
+    is_deferred_inspection?: boolean
+    is_keys_hung?: boolean
+    is_self_complete?: boolean
+    is_checked_done?: boolean
+    is_task_ended?: boolean
+    inspection_mode?: string | null
+    inspection_mode_label?: string | null
+    inspection_scope?: string | null
+    inspection_scope_label?: string | null
+  }
+}
+
+type TaskManagementActionId =
+  | 'edit_task'
+  | 'assign_cleaner'
+  | 'assign_inspector'
+  | 'assign_executor'
+  | 'set_inspection_mode'
+  | 'set_inspection_scope'
+  | 'set_keys_hung'
+  | 'set_task_completed'
+  | 'update_status'
+  | 'cancel_task'
+  | 'add_checkout'
+  | 'add_checkin'
+
+type TaskManagementAction = {
+  id: TaskManagementActionId
+  label?: string
+  placement?: 'card' | 'drawer' | 'bulk' | 'more'
+  enabled: boolean
+  disabled_reason?: string
+  intent?: 'assignment' | 'inspection' | 'status' | 'schedule' | 'participants'
+}
+
 type TaskCenterTask = {
   item_key: string
   task_source: 'cleaning' | 'work'
@@ -118,6 +171,8 @@ type TaskCenterTask = {
   current_row_key?: string
   current_subrow_key?: string
   status_action?: CleaningStatusAction | null
+  display_state?: TaskDisplayState | null
+  management_actions?: TaskManagementAction[] | null
 }
 
 type TaskCenterSubrow = {
@@ -235,6 +290,60 @@ function semanticToneClass(tone: TaskSemanticTone) {
   if (tone === 'info') return styles.semanticToneInfo
   if (tone === 'neutral') return styles.semanticToneNeutral
   return styles.semanticToneNormal
+}
+
+function displayStatusMetaForTask(task: Pick<TaskCenterTask, 'status' | 'display_state'>, fallbackStatus?: string | null) {
+  const label = String(task.display_state?.status_label || '').trim()
+  const tone = task.display_state?.status_tone
+  if (label && tone) return { label, tone }
+  return taskStatusMeta(fallbackStatus ?? task.status)
+}
+
+function displayBadgesForTask(task: Pick<TaskCenterTask, 'display_state'>): TaskDisplayBadge[] {
+  return Array.isArray(task.display_state?.badges)
+    ? task.display_state.badges.filter((badge) => String(badge?.label || '').trim())
+    : []
+}
+
+function managementActionForTask(task: Pick<TaskCenterTask, 'management_actions'>, id: TaskManagementActionId): TaskManagementAction | null {
+  const actions = task.management_actions
+  if (!Array.isArray(actions)) return null
+  return actions.find((action) => action.id === id) || null
+}
+
+function managementGateForTask(task: Pick<TaskCenterTask, 'management_actions'>, id: TaskManagementActionId) {
+  const actions = task.management_actions
+  if (!Array.isArray(actions)) return { enabled: true, disabledReason: '' }
+  const action = managementActionForTask(task, id)
+  if (!action) return { enabled: false, disabledReason: 'not_applicable' }
+  return { enabled: action.enabled !== false, disabledReason: action.enabled === false ? String(action.disabled_reason || '') : '' }
+}
+
+function disabledReasonText(reason: string | null | undefined) {
+  const value = String(reason || '').trim()
+  if (!value) return ''
+  if (value === 'missing_management_permission') return '你没有修改这个字段的管理权限'
+  if (value === 'auto_sync_locked') return '自动同步已锁定，不能在这里修改'
+  if (value === 'not_applicable') return '这个动作不适用于当前任务'
+  return value
+}
+
+function taskSemanticBool(
+  task: TaskCenterTask,
+  key: keyof NonNullable<TaskDisplayState['task_semantics']>,
+  fallback: boolean,
+) {
+  const value = task.display_state?.task_semantics?.[key]
+  return typeof value === 'boolean' ? value : fallback
+}
+
+function combinedManagementGate(tasks: TaskCenterTask[], id: TaskManagementActionId) {
+  const relevant = tasks.filter((task) => Array.isArray(task.management_actions))
+  if (!relevant.length) return { enabled: true, disabledReason: '' }
+  const blocked = relevant
+    .map((task) => managementGateForTask(task, id))
+    .find((gate) => !gate.enabled)
+  return blocked || { enabled: true, disabledReason: '' }
 }
 
 const UNASSIGNED_VISIBLE_SUMMARY_TITLE = '统计当前页面显示的清洁任务和线下其他任务里，尚未完成安排的任务；清洁任务需清洁人员和检查人员都为空，线下其他任务需执行人为空；不含退房日房源待办'
@@ -1420,41 +1529,42 @@ export default function TaskCenterPage() {
           if (task.task_source === 'cleaning') {
             const current = cleaningAssignmentSnapshot(task)
             const previous = assignmentBaselineRef.current.cleaning.get(id) || null
-            const assigneeChanged = previous ? previous.assignee_id !== current.assignee_id : !!current.assignee_id
-            const cleanerChanged = previous ? previous.cleaner_id !== current.cleaner_id : !!current.cleaner_id
-            const inspectorChanged = previous ? previous.inspector_id !== current.inspector_id : !!current.inspector_id
-            const changed = !previous
-              || assigneeChanged
-              || cleanerChanged
-              || inspectorChanged
-              || previous.inspection_mode !== current.inspection_mode
-              || previous.inspection_scope !== current.inspection_scope
-              || previous.inspection_due_date !== current.inspection_due_date
-              || !!current.status_action
-            if (changed) {
-              const item: {
-                task_id: string
-                assignee_id?: string | null
+              const assigneeChanged = previous ? previous.assignee_id !== current.assignee_id : !!current.assignee_id
+              const cleanerChanged = previous ? previous.cleaner_id !== current.cleaner_id : !!current.cleaner_id
+              const inspectorChanged = previous ? previous.inspector_id !== current.inspector_id : !!current.inspector_id
+              const statusAction = current.status_action || null
+              const changed = !previous
+                || assigneeChanged
+                || cleanerChanged
+                || inspectorChanged
+                || previous.inspection_mode !== current.inspection_mode
+                || previous.inspection_scope !== current.inspection_scope
+                || previous.inspection_due_date !== current.inspection_due_date
+                || !!statusAction
+              if (changed) {
+                const item: {
+                  task_id: string
+                  assignee_id?: string | null
                 assignee_assignment_action?: 'assign' | 'unassign'
                 cleaner_id?: string | null
                 cleaner_assignment_action?: 'assign' | 'unassign'
                 inspector_id?: string | null
-                inspector_assignment_action?: 'assign' | 'unassign'
-                inspection_mode: TaskCenterTask['inspection_mode']
-                inspection_scope: TaskCenterTask['inspection_scope']
-                inspection_due_date: string | null
-                status_action?: CleaningStatusAction
-                status?: string
-              } = {
-                task_id: id,
-                inspection_mode: current.inspection_mode,
-                inspection_scope: current.inspection_scope,
-                inspection_due_date: current.inspection_due_date,
-              }
-              if (current.status_action && current.status) {
-                item.status_action = current.status_action
-                item.status = current.status
-              }
+                  inspector_assignment_action?: 'assign' | 'unassign'
+                  inspection_mode: TaskCenterTask['inspection_mode']
+                  inspection_scope: TaskCenterTask['inspection_scope']
+                  inspection_due_date: string | null
+                  status_action?: CleaningStatusAction
+                  status?: string
+                } = {
+                  task_id: id,
+                  inspection_mode: current.inspection_mode,
+                  inspection_scope: current.inspection_scope,
+                  inspection_due_date: current.inspection_due_date,
+                }
+                if (statusAction && current.status) {
+                  item.status_action = statusAction
+                  item.status = current.status
+                }
               if (assigneeChanged && normalizeInspectionScope(current.inspection_scope) === 'password_only') {
                 item.assignee_id = current.assignee_id
                 item.assignee_assignment_action = current.assignee_id ? 'assign' : 'unassign'
@@ -1634,7 +1744,8 @@ export default function TaskCenterPage() {
     const dragDisabled = filteringActive || boardSaving
     const timingTags = specialTimingTags(task)
     const syncTag = canSeeCheckinSyncTag ? checkinSyncTag(task) : null
-    const statusMeta = taskStatusMeta(task.status)
+    const statusMeta = displayStatusMetaForTask(task)
+    const displayBadges = displayBadgesForTask(task)
     const inspectionModeTag = task.task_source === 'cleaning'
       && (task.can_configure_inspection || task.deferred_inspection_view)
       && shouldRenderInspectionModeTag(task)
@@ -1673,7 +1784,13 @@ export default function TaskCenterPage() {
         <div className={styles.taskMain}>
           <div className={styles.taskCenterCompactMetaBar}>
             <span className={`${styles.statusChip} ${semanticToneClass(statusMeta.tone)} ${styles.taskCenterCompactStatus}`}>{statusMeta.label}</span>
-            {inspectionModeTag || inspectionScopeTag ? (
+            {displayBadges.length ? (
+              <span className={styles.taskCenterCompactMetaGroup}>
+                {displayBadges.map((badge) => (
+                  <span key={`${task.item_key}:display:${badge.id}`} className={`${styles.taskCenterCompactTag} ${semanticToneClass(badge.tone)}`}>{badge.label}</span>
+                ))}
+              </span>
+            ) : (inspectionModeTag || inspectionScopeTag) ? (
               <span className={styles.taskCenterCompactMetaGroup}>
                 {inspectionModeTag ? <span className={`${styles.taskCenterCompactTag} ${semanticToneClass(inspectionModeTag.tone)}`}>{inspectionModeTag.label}</span> : null}
                 {inspectionScopeTag ? <span className={`${styles.taskCenterCompactTag} ${semanticToneClass(inspectionScopeTag.tone)}`}>{inspectionScopeTag.label}</span> : null}
@@ -1840,6 +1957,11 @@ export default function TaskCenterPage() {
     const rowTaskCount = realRow?.subrows.reduce((sum, subrow) => sum + subrow.tasks.length, 0) || 0
     const canDeleteRow = isCustomBoardRow(displayRow.row_key, displayRow.row_type) && rowTaskCount === 0
     const isPendingRow = displayRow.row_key.startsWith('group:pending:')
+    const displayRowTasks = displayRow.lines.flatMap((line) => line.tasks)
+    const rowInspectionGate = combinedManagementGate(displayRowTasks.filter((task) => task.task_source === 'cleaning'), 'assign_inspector')
+    const rowExecutorGate = combinedManagementGate(displayRowTasks.filter((task) => task.task_source === 'work'), 'assign_executor')
+    const rowInspectionDisabledReason = disabledReasonText(rowInspectionGate.disabledReason)
+    const rowExecutorDisabledReason = disabledReasonText(rowExecutorGate.disabledReason)
     return (
       <div key={displayRow.row_key} className={styles.taskCenterBoardRow}>
         <div className={styles.taskCenterBoardRowHead}>
@@ -1870,10 +1992,11 @@ export default function TaskCenterPage() {
               <Select
                 allowClear
                 showSearch
-                optionFilterProp="label"
-                value={displayRow.assignments?.inspector_id || undefined}
-                disabled={boardSaving}
-                onChange={(value) => updateRowAssignment(realRow || {
+	                optionFilterProp="label"
+	                value={displayRow.assignments?.inspector_id || undefined}
+	                disabled={boardSaving || !rowInspectionGate.enabled}
+	                title={rowInspectionDisabledReason || undefined}
+	                onChange={(value) => updateRowAssignment(realRow || {
                   row_key: displayRow.row_key,
                   row_title: '',
                   row_type: displayRow.row_type,
@@ -1891,10 +2014,11 @@ export default function TaskCenterPage() {
               <Select
                 allowClear
                 showSearch
-                optionFilterProp="label"
-                value={displayRow.assignments?.executor_id || undefined}
-                disabled={boardSaving}
-                onChange={(value) => {
+	                optionFilterProp="label"
+	                value={displayRow.assignments?.executor_id || undefined}
+	                disabled={boardSaving || !rowExecutorGate.enabled}
+	                title={rowExecutorDisabledReason || undefined}
+	                onChange={(value) => {
                   if (realRow) {
                     updateRowAssignment(realRow, 'executor_id', value ? String(value) : null)
                     return
@@ -1934,6 +2058,27 @@ export default function TaskCenterPage() {
       ? nextCleaningDetailStatus(detailTask, detailDraft)
       : autoWorkStatus(detailTask.status, detailDraft.assignee_id || null))
     : null
+  const detailStatusMeta = detailTask ? displayStatusMetaForTask(detailTask, detailDisplayStatus) : taskStatusMeta(detailDisplayStatus)
+  const detailDisplayBadges = detailTask ? displayBadgesForTask(detailTask) : []
+  const detailEditGate = detailTask ? managementGateForTask(detailTask, 'edit_task') : { enabled: true, disabledReason: '' }
+  const detailAssignCleanerGate = detailTask ? managementGateForTask(detailTask, 'assign_cleaner') : { enabled: true, disabledReason: '' }
+  const detailAssignInspectorGate = detailTask ? managementGateForTask(detailTask, 'assign_inspector') : { enabled: true, disabledReason: '' }
+  const detailAssignExecutorGate = detailTask ? managementGateForTask(detailTask, 'assign_executor') : { enabled: true, disabledReason: '' }
+  const detailInspectionModeGate = detailTask ? managementGateForTask(detailTask, 'set_inspection_mode') : { enabled: true, disabledReason: '' }
+  const detailInspectionScopeGate = detailTask ? managementGateForTask(detailTask, 'set_inspection_scope') : { enabled: true, disabledReason: '' }
+  const detailKeysHungGate = detailTask ? managementGateForTask(detailTask, 'set_keys_hung') : { enabled: true, disabledReason: '' }
+  const detailTaskCompletedGate = detailTask ? managementGateForTask(detailTask, 'set_task_completed') : { enabled: true, disabledReason: '' }
+  const detailEditDisabledReason = disabledReasonText(detailEditGate.disabledReason)
+  const detailAssignCleanerDisabledReason = disabledReasonText(detailAssignCleanerGate.disabledReason)
+  const detailAssignInspectorDisabledReason = disabledReasonText(detailAssignInspectorGate.disabledReason)
+  const detailAssignExecutorDisabledReason = disabledReasonText(detailAssignExecutorGate.disabledReason)
+  const detailInspectionModeDisabledReason = disabledReasonText(detailInspectionModeGate.disabledReason)
+  const detailInspectionScopeDisabledReason = disabledReasonText(detailInspectionScopeGate.disabledReason)
+  const detailKeysHungDisabledReason = disabledReasonText(detailKeysHungGate.disabledReason)
+  const detailTaskCompletedDisabledReason = disabledReasonText(detailTaskCompletedGate.disabledReason)
+  const detailRequiresCleaner = detailTask ? taskSemanticBool(detailTask, 'requires_cleaner', requiresCleanerAssignment(detailTask)) : false
+  const detailIsPureCheckin = detailTask ? taskSemanticBool(detailTask, 'is_pure_checkin', isCheckinOnlyCleaningTask(detailTask)) : false
+  const detailIsPasswordOnly = detailTask ? taskSemanticBool(detailTask, 'is_password_only', isPasswordOnlyCheckinTask({ ...detailTask, inspection_scope: detailDraft?.inspection_scope || detailTask.inspection_scope })) : false
   const detailSupersededCount = detailTask ? supersededCleaningTaskIds(detailTask).length : 0
 
   return (
@@ -2042,7 +2187,9 @@ export default function TaskCenterPage() {
               <div className={styles.propertyFollowupGrid}>
                 {filteredPropertyFollowups.map((task) => {
                   const meta = propertyFollowupMeta(task)
-                  const statusMeta = taskStatusMeta(task.status)
+                  const statusMeta = displayStatusMetaForTask(task)
+                  const executorGate = managementGateForTask(task, 'assign_executor')
+                  const executorDisabledReason = disabledReasonText(executorGate.disabledReason)
                   return (
                     <div key={task.item_key} className={styles.propertyFollowupCard}>
                       <div className={styles.propertyFollowupCardTop}>
@@ -2051,13 +2198,14 @@ export default function TaskCenterPage() {
                       </div>
                       <div className={styles.propertyFollowupProperty}>{task.title}</div>
                       <div className={styles.propertyFollowupDetail}>{task.detail || task.summary || '暂无详情'}</div>
-                      <Select
-                        allowClear
-                        showSearch
-                        optionFilterProp="label"
-                        value={task.assignee_id || undefined}
-                        disabled={boardSaving}
-                        onChange={(value) => updatePropertyFollowupAssignee(task.task_id, value ? String(value) : null)}
+	                      <Select
+	                        allowClear
+	                        showSearch
+	                        optionFilterProp="label"
+	                        value={task.assignee_id || undefined}
+	                        disabled={boardSaving || !executorGate.enabled}
+	                        title={executorDisabledReason || undefined}
+	                        onChange={(value) => updatePropertyFollowupAssignee(task.task_id, value ? String(value) : null)}
                         placeholder="选择执行人（可不安排）"
                         options={allStaffOptions}
                         style={{ width: '100%' }}
@@ -2081,6 +2229,10 @@ export default function TaskCenterPage() {
         okText="应用修改"
         cancelText="取消"
         onOk={() => saveTaskDetail().catch(() => {})}
+        okButtonProps={{
+          disabled: !detailEditGate.enabled,
+          title: detailEditDisabledReason || undefined,
+        }}
         destroyOnClose
       >
         {detailTask && detailDraft ? (
@@ -2089,16 +2241,18 @@ export default function TaskCenterPage() {
                 <div className={styles.taskDetailHeroTop}>
                   <div className={styles.taskDetailHeroTitle}>{detailTask.title}</div>
                   <div className={styles.taskDetailHeroChips}>
-                    <span className={`${styles.taskDetailChip} ${semanticToneClass(taskStatusMeta(detailDisplayStatus).tone)}`}>{taskStatusMeta(detailDisplayStatus).label}</span>
-                    {detailSyncTag ? (
-                      <span className={`${styles.taskDetailChip} ${semanticToneClass(detailSyncTag.tone)}`}>
-                        {detailSyncTag.label}
-                      </span>
-                    ) : null}
-                    {detailTask.task_source === 'cleaning'
-                      ? (shouldShowInspectionModeTag({
-                          inspectionScope: detailDraft.inspection_scope,
-                          isCheckinOnly: isCheckinOnlyCleaningTask(detailTask),
+	                    <span className={`${styles.taskDetailChip} ${semanticToneClass(detailStatusMeta.tone)}`}>{detailStatusMeta.label}</span>
+	                    {detailSyncTag ? (
+	                      <span className={`${styles.taskDetailChip} ${semanticToneClass(detailSyncTag.tone)}`}>
+	                        {detailSyncTag.label}
+	                      </span>
+	                    ) : null}
+	                    {detailDisplayBadges.length ? detailDisplayBadges.map((badge) => (
+	                      <span key={`detail:${detailTask.item_key}:display:${badge.id}`} className={`${styles.taskDetailChip} ${semanticToneClass(badge.tone)}`}>{badge.label}</span>
+	                    )) : detailTask.task_source === 'cleaning'
+	                      ? (shouldShowInspectionModeTag({
+	                          inspectionScope: detailDraft.inspection_scope,
+	                          isCheckinOnly: isCheckinOnlyCleaningTask(detailTask),
                         })
                         ? <span className={`${styles.taskDetailChip} ${semanticToneClass(taskInspectionModeMeta(detailDraft.inspection_mode).tone)}`}>{taskInspectionModeMeta(detailDraft.inspection_mode).label}</span>
                         : null)
@@ -2125,15 +2279,17 @@ export default function TaskCenterPage() {
             {detailTask.task_source === 'cleaning' ? (
               <>
                 <div className={styles.taskDetailGrid}>
-                  {requiresCleanerAssignment(detailTask) ? (
-                    <div>
-                      <div className={styles.fieldLabel}>清洁人员</div>
-                      <Select
+	                  {detailRequiresCleaner ? (
+	                    <div>
+	                      <div className={styles.fieldLabel}>清洁人员</div>
+	                      <Select
                         allowClear
                         showSearch
-                        optionFilterProp="label"
-                        value={detailDraft.cleaner_id || undefined}
-                        onChange={(value) => setDetailDraft((prev) => (prev ? { ...prev, cleaner_id: value ? String(value) : null } : prev))}
+	                        optionFilterProp="label"
+	                        value={detailDraft.cleaner_id || undefined}
+	                        disabled={!detailAssignCleanerGate.enabled}
+	                        title={detailAssignCleanerDisabledReason || undefined}
+	                        onChange={(value) => setDetailDraft((prev) => (prev ? { ...prev, cleaner_id: value ? String(value) : null } : prev))}
                         style={{ width: '100%' }}
                         options={cleanerOptions}
                       />
@@ -2146,9 +2302,11 @@ export default function TaskCenterPage() {
                   )}
                   <div>
                     <div className={styles.fieldLabel}>检查安排</div>
-                    <Select
-                      value={detailDraft.inspection_mode}
-                      onChange={(value) => setDetailDraft((prev) => {
+	                    <Select
+	                      value={detailDraft.inspection_mode}
+	                      disabled={!detailInspectionModeGate.enabled}
+	                      title={detailInspectionModeDisabledReason || undefined}
+	                      onChange={(value) => setDetailDraft((prev) => {
                         if (!prev) return prev
                         const nextMode = value as TaskDetailDraft['inspection_mode']
                         return {
@@ -2168,12 +2326,14 @@ export default function TaskCenterPage() {
                       })}
                     />
                   </div>
-                  {isCheckinOnlyCleaningTask(detailTask) ? (
-                    <div>
-                      <div className={styles.fieldLabel}>检查执行方式</div>
-                      <Select
-                        value={detailDraft.inspection_scope}
-                        onChange={(value) => setDetailDraft((prev) => {
+	                  {detailIsPureCheckin ? (
+	                    <div>
+	                      <div className={styles.fieldLabel}>检查执行方式</div>
+	                      <Select
+	                        value={detailDraft.inspection_scope}
+	                        disabled={!detailInspectionScopeGate.enabled}
+	                        title={detailInspectionScopeDisabledReason || undefined}
+	                        onChange={(value) => setDetailDraft((prev) => {
                           if (!prev) return prev
                           const nextScope = normalizeInspectionScope(String(value || ''))
                           const nextMode = isInspectionModeAllowedForTask({
@@ -2206,9 +2366,11 @@ export default function TaskCenterPage() {
                   <div className={`${styles.taskDetailHint} ${semanticToneClass('pending')}`}>
                     <div className={styles.taskDetailHintRow}>
                       <span>任务已结束</span>
-                      <Switch
-                        checked={detailDraft.task_completed}
-                        onChange={(checked) => setDetailDraft((prev) => {
+	                      <Switch
+	                        checked={detailDraft.task_completed}
+	                        disabled={!detailTaskCompletedGate.enabled}
+	                        title={detailTaskCompletedDisabledReason || undefined}
+	                        onChange={(checked) => setDetailDraft((prev) => {
                           if (!prev) return prev
                           if (checked) {
                             return {
@@ -2225,13 +2387,15 @@ export default function TaskCenterPage() {
                     <div className={styles.taskDetailHintCopy}>打开后保存安排，这个延期检查会标记为已完成并从待检查列表移出。</div>
                   </div>
                 ) : null}
-                {isCheckinOnlyCleaningTask(detailTask) ? (
-                  <div className={`${styles.taskDetailHint} ${semanticToneClass('success')}`}>
+	                {detailIsPureCheckin ? (
+	                  <div className={`${styles.taskDetailHint} ${semanticToneClass('success')}`}>
                     <div className={styles.taskDetailHintRow}>
                       <span>已挂钥匙</span>
-                      <Switch
-                        checked={detailDraft.keys_hung}
-                        onChange={(checked) => setDetailDraft((prev) => {
+	                      <Switch
+	                        checked={detailDraft.keys_hung}
+	                        disabled={!detailKeysHungGate.enabled}
+	                        title={detailKeysHungDisabledReason || undefined}
+	                        onChange={(checked) => setDetailDraft((prev) => {
                           if (!prev) return prev
                           if (checked) {
                             return {
@@ -2266,28 +2430,36 @@ export default function TaskCenterPage() {
                 {((!detailDraft.task_completed || detailDraft.keys_hung) && (detailDraft.inspection_mode === 'same_day' || detailDraft.inspection_mode === 'deferred')) ? (
                   <div className={styles.taskDetailGrid}>
                     <div>
-                      <div className={styles.fieldLabel}>{isPasswordOnlyCheckinTask({ ...detailTask, inspection_scope: detailDraft.inspection_scope }) ? '执行人' : '检查人员'}</div>
-                      <Select
+	                      <div className={styles.fieldLabel}>{detailIsPasswordOnly ? '执行人' : '检查人员'}</div>
+	                      <Select
                         allowClear
                         showSearch
                         optionFilterProp="label"
-                        value={isPasswordOnlyCheckinTask({ ...detailTask, inspection_scope: detailDraft.inspection_scope }) ? (detailDraft.assignee_id || undefined) : (detailDraft.inspector_id || undefined)}
-                        onChange={(value) => setDetailDraft((prev) => {
-                          if (!prev) return prev
-                          const nextValue = value ? String(value) : null
-                          if (isPasswordOnlyCheckinTask({ ...detailTask, inspection_scope: prev.inspection_scope })) {
-                            return { ...prev, assignee_id: nextValue, inspector_id: null, cleaner_id: null }
-                          }
-                          return { ...prev, inspector_id: nextValue }
-                        })}
-                        style={{ width: '100%' }}
-                        options={isPasswordOnlyCheckinTask({ ...detailTask, inspection_scope: detailDraft.inspection_scope }) ? allStaffOptions : inspectorOptions}
-                      />
+	                        value={detailIsPasswordOnly ? (detailDraft.assignee_id || undefined) : (detailDraft.inspector_id || undefined)}
+	                        disabled={detailIsPasswordOnly ? !detailAssignExecutorGate.enabled : !detailAssignInspectorGate.enabled}
+	                        title={(detailIsPasswordOnly ? detailAssignExecutorDisabledReason : detailAssignInspectorDisabledReason) || undefined}
+	                        onChange={(value) => setDetailDraft((prev) => {
+	                          if (!prev) return prev
+	                          const nextValue = value ? String(value) : null
+	                          if (detailIsPasswordOnly) {
+	                            return { ...prev, assignee_id: nextValue, inspector_id: null, cleaner_id: null }
+	                          }
+	                          return { ...prev, inspector_id: nextValue }
+	                        })}
+	                        style={{ width: '100%' }}
+	                        options={detailIsPasswordOnly ? allStaffOptions : inspectorOptions}
+	                      />
                     </div>
                     {detailDraft.inspection_mode === 'deferred' ? (
                       <div>
                         <div className={styles.fieldLabel}>检查日期</div>
-                        <DatePicker value={detailDraft.inspection_due_date} onChange={(value) => setDetailDraft((prev) => (prev ? { ...prev, inspection_due_date: value } : prev))} style={{ width: '100%' }} />
+	                        <DatePicker
+	                          value={detailDraft.inspection_due_date}
+	                          disabled={!detailInspectionModeGate.enabled}
+	                          title={detailInspectionModeDisabledReason || undefined}
+	                          onChange={(value) => setDetailDraft((prev) => (prev ? { ...prev, inspection_due_date: value } : prev))}
+	                          style={{ width: '100%' }}
+	                        />
                       </div>
                     ) : <div />}
                   </div>
@@ -2308,33 +2480,48 @@ export default function TaskCenterPage() {
             ) : (
               <>
                 <div className={styles.taskDetailGrid}>
-                  <div>
-                    <div className={styles.fieldLabel}>任务标题</div>
-                    <Input value={detailDraft.title} onChange={(e) => setDetailDraft((prev) => (prev ? { ...prev, title: e.target.value } : prev))} />
-                  </div>
+	                  <div>
+	                    <div className={styles.fieldLabel}>任务标题</div>
+	                    <Input
+	                      value={detailDraft.title}
+	                      disabled={!detailEditGate.enabled}
+	                      title={detailEditDisabledReason || undefined}
+	                      onChange={(e) => setDetailDraft((prev) => (prev ? { ...prev, title: e.target.value } : prev))}
+	                    />
+	                  </div>
                   <div>
                     <div className={styles.fieldLabel}>执行人</div>
                     <Select
                       allowClear
                       showSearch
-                      optionFilterProp="label"
-                      value={detailDraft.assignee_id || undefined}
-                      onChange={(value) => setDetailDraft((prev) => (prev ? { ...prev, assignee_id: value ? String(value) : null } : prev))}
+	                      optionFilterProp="label"
+	                      value={detailDraft.assignee_id || undefined}
+	                      disabled={!detailAssignExecutorGate.enabled}
+	                      title={detailAssignExecutorDisabledReason || undefined}
+	                      onChange={(value) => setDetailDraft((prev) => (prev ? { ...prev, assignee_id: value ? String(value) : null } : prev))}
                       style={{ width: '100%' }}
                       options={allStaffOptions}
                     />
                   </div>
                 </div>
-                <div>
-                  <div className={styles.fieldLabel}>任务详情</div>
-                  <Input.TextArea rows={4} value={detailDraft.summary} onChange={(e) => setDetailDraft((prev) => (prev ? { ...prev, summary: e.target.value } : prev))} />
-                </div>
+	                <div>
+	                  <div className={styles.fieldLabel}>任务详情</div>
+	                  <Input.TextArea
+	                    rows={4}
+	                    value={detailDraft.summary}
+	                    disabled={!detailEditGate.enabled}
+	                    title={detailEditDisabledReason || undefined}
+	                    onChange={(e) => setDetailDraft((prev) => (prev ? { ...prev, summary: e.target.value } : prev))}
+	                  />
+	                </div>
                 <div className={styles.taskDetailGrid}>
                   <div>
                     <div className={styles.fieldLabel}>紧急程度</div>
-                    <Select
-                      value={detailDraft.urgency}
-                      onChange={(value) => setDetailDraft((prev) => (prev ? { ...prev, urgency: value as TaskDetailDraft['urgency'] } : prev))}
+	                    <Select
+	                      value={detailDraft.urgency}
+	                      disabled={!detailEditGate.enabled}
+	                      title={detailEditDisabledReason || undefined}
+	                      onChange={(value) => setDetailDraft((prev) => (prev ? { ...prev, urgency: value as TaskDetailDraft['urgency'] } : prev))}
                       style={{ width: '100%' }}
                       options={[
                         { label: '低', value: 'low' },
@@ -2358,23 +2545,32 @@ export default function TaskCenterPage() {
                       : '打开后可把任务移出当日安排'}
                   </span>
                 </div>
-                <Switch checked={detailDraft.temporarily_skipped} onChange={(checked) => setDetailDraft((prev) => (prev ? { ...prev, temporarily_skipped: checked } : prev))} />
+	                <Switch
+	                  checked={detailDraft.temporarily_skipped}
+	                  disabled={!detailEditGate.enabled}
+	                  title={detailEditDisabledReason || undefined}
+	                  onChange={(checked) => setDetailDraft((prev) => (prev ? { ...prev, temporarily_skipped: checked } : prev))}
+	                />
               </div>
               {detailTask.task_source === 'work' && detailDraft.temporarily_skipped ? (
                 <div>
                   <div className={styles.fieldLabel}>挪到日期</div>
-                  <DatePicker
-                    value={detailDraft.deferred_to_date}
-                    onChange={(value) => setDetailDraft((prev) => (prev ? { ...prev, deferred_to_date: value } : prev))}
+	                  <DatePicker
+	                    value={detailDraft.deferred_to_date}
+	                    disabled={!detailEditGate.enabled}
+	                    title={detailEditDisabledReason || undefined}
+	                    onChange={(value) => setDetailDraft((prev) => (prev ? { ...prev, deferred_to_date: value } : prev))}
                     style={{ width: '100%' }}
                     placeholder="不选则留在当天后续处理"
                   />
                 </div>
               ) : null}
-              <Input.TextArea
-                rows={3}
-                value={detailDraft.skip_reason}
-                onChange={(e) => setDetailDraft((prev) => (prev ? { ...prev, skip_reason: e.target.value } : prev))}
+	              <Input.TextArea
+	                rows={3}
+	                value={detailDraft.skip_reason}
+	                disabled={!detailEditGate.enabled}
+	                title={detailEditDisabledReason || undefined}
+	                onChange={(e) => setDetailDraft((prev) => (prev ? { ...prev, skip_reason: e.target.value } : prev))}
                 placeholder="例如：今天不检查 / 下次退房再修 / 暂不跟清洁走"
               />
             </div>

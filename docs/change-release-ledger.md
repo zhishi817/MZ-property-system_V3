@@ -2,6 +2,390 @@
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
+## CRL-20260703-016 — 移动端 1.0.24 production store 构建与 iOS TestFlight 提交
+
+- **Status:** in-progress
+- **Updated:** 2026-07-03 22:38 AEST
+- **Request:** 使用 `production` 重新打包 iOS 和 Android，并将 iOS 走 TestFlight/App Store Connect 测试通道。
+- **Outcome:** 已触发 `production` profile 的 iOS/Android EAS 云构建。iOS production store build 已完成并已调度 EAS Submit 到 App Store Connect/TestFlight；Android production store build 已创建但仍在 EAS `IN_QUEUE` 队列中，尚未产出 AAB。
+
+### Implementation
+
+- Previous behavior:
+  - 1.0.24 已有 `preview`/internal 构建；该包不能直接上传 TestFlight。
+- New behavior:
+  - 已运行 `npx eas-cli@latest build --platform all --profile production --non-interactive --no-wait`。
+  - iOS 使用 App Store provisioning profile，EAS build metadata 为 `distribution=STORE`、`buildProfile=production`、`channel=production`、`appVersion=1.0.24`、`appBuildVersion=24`、`runtimeVersion=1.0.24`。
+  - Android production build metadata 同样为 `distribution=STORE`、`buildProfile=production`、`channel=production`、`appVersion=1.0.24`、`appBuildVersion=24`、`runtimeVersion=1.0.24`。
+  - 已运行 `npx eas-cli@latest submit -p ios --id e0602706-0201-41ea-aab0-6b4ade9b8d2f --profile production --non-interactive`，EAS 已调度 iOS submission。
+- Key decisions:
+  - 按用户要求使用现有 `production` profile；该 profile 使用生产后端环境变量和 `production` update channel。
+  - Android production 已有 build ID 后不重复创建新构建，避免多个 AAB 版本混淆。
+
+### Files / Areas
+
+- `docs/change-release-ledger.md` — modified: 记录 production build/TestFlight submission 状态。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: production profile uses `EXPO_PUBLIC_APP_ENV=prod` and the production backend URL configured in `eas.json`.
+- Dependencies: none.
+- Related units: uses the same mobile 1.0.24 source state recorded in `CRL-20260703-015`; packages current mobile changes from `CRL-20260703-011`, `CRL-20260703-012`, `CRL-20260703-013`, and `CRL-20260703-014`.
+
+### Validation
+
+- `node -e "..."` production config check in `mz-cleaning-app-frontend` — passed: local version `1.0.24`, iOS build `24`, Android versionCode `24`, production profile uses prod env and `channel=production`.
+- `npx eas-cli@latest build:list --platform ios --limit 5 --json --non-interactive` — passed: recent 1.0.24 builds before this production run were preview/internal; last listed production iOS store build was older `1.0.21 (21)`.
+- `npx eas-cli@latest build --platform all --profile production --non-interactive --no-wait` — passed: created Android production build `0e799e8f-f736-47f8-aa46-bcc36ec98f4e` and iOS production build `e0602706-0201-41ea-aab0-6b4ade9b8d2f`.
+- `npx eas-cli@latest build:view e0602706-0201-41ea-aab0-6b4ade9b8d2f --json` — passed: iOS `FINISHED`, store distribution, IPA `https://expo.dev/artifacts/eas/OKVKGkct5OG6NGgHM-PJTNm0SR9rT8dss7j6l6s4OeI.ipa`.
+- `npx eas-cli@latest submit -p ios --id e0602706-0201-41ea-aab0-6b4ade9b8d2f --profile production --non-interactive` — scheduled: submission `5b68a033-07b3-4672-8ad3-fff7c020f311` created for ASC app `6761032891`; local wait was stopped after EAS confirmed scheduling because this CLI version lacks `submit:list`/`submit:view`.
+- `npx eas-cli@latest build:view 0e799e8f-f736-47f8-aa46-bcc36ec98f4e --json` — pending: Android remains `IN_QUEUE`, no AAB artifact yet.
+
+### Risks / Release Notes
+
+- iOS submission has been scheduled, but App Store Connect processing/TestFlight availability still needs confirmation in App Store Connect or Expo submission page.
+- Android AAB is not ready yet because EAS has not started the Android production job; continue polling build `0e799e8f-f736-47f8-aa46-bcc36ec98f4e`.
+- EAS build metadata reports the current Git commit hash/message, but the uploaded archive included local uncommitted mobile changes.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted ledger update; nested mobile repo still contains uncommitted 1.0.24 and mobile feature changes.
+
+## CRL-20260703-015 — 移动端 1.0.24 preview 重新打包
+
+- **Status:** in-progress
+- **Updated:** 2026-07-03 22:10 AEST
+- **Request:** 重新打包 IOS 和安卓版本。
+- **Outcome:** 移动端版本面已同步到 `1.0.24`；已触发 `preview` 内部分发的 iOS/Android EAS 云构建。iOS 构建完成并产出 IPA；Android 构建已创建但仍在 EAS `IN_QUEUE` 队列中，尚未产出 APK。
+
+### Implementation
+
+- Previous behavior:
+  - `app.json` 已提升到 `1.0.24`、iOS build `24`、Android versionCode `24`，但 `package.json` / `package-lock.json` 仍显示 `1.0.23`。
+- New behavior:
+  - `package.json`、`package-lock.json` 顶层和 lockfile root package version 已同步为 `1.0.24`，与 EAS local version source 使用的 `app.json` 保持一致。
+  - 已用当前本地移动端工作区触发 `npx eas-cli@latest build --platform all --profile preview --non-interactive --no-wait`。
+- Key decisions:
+  - 使用现有 `preview` profile 生成内部分发包；未 submit 到 App Store 或 Play Store。
+  - Android 已有 build ID 后不重复创建新构建，避免多个 APK 版本混淆。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/package.json` — modified: package version 同步到 `1.0.24`。
+- `mz-cleaning-app-frontend/package-lock.json` — modified: lockfile version 同步到 `1.0.24`。
+- `docs/change-release-ledger.md` — modified: 记录本次重新打包状态。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: uses existing EAS `preview` profile and channel.
+- Dependencies: none added by this unit.
+- Related units: packages current mobile updates from `CRL-20260703-011`, `CRL-20260703-012`, `CRL-20260703-013`, and `CRL-20260703-014`.
+
+### Validation
+
+- `node -e "..."` version check in `mz-cleaning-app-frontend` — passed: `appVersion/packageVersion/lockVersion/lockRootVersion` all `1.0.24`, iOS build `24`, Android versionCode `24`, `appVersionSource=local`.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed: `tsc -p tsconfig.json`.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with 0 errors and 116 existing warnings.
+- `npm test -- --runInBand` in `mz-cleaning-app-frontend` — passed: 32 suites / 116 tests; Jest printed the existing open-handle notice after completion.
+- `npx eas-cli@latest build --platform all --profile preview --non-interactive --no-wait` in `mz-cleaning-app-frontend` — passed: created Android build `4a9ac375-b96e-40ff-806e-067d83e614cb` and iOS build `a1918fcc-da61-4066-be7d-d1aa9d46b8ca`.
+- `npx eas-cli@latest build:view a1918fcc-da61-4066-be7d-d1aa9d46b8ca --json` — passed: iOS `FINISHED`, appVersion `1.0.24`, runtimeVersion `1.0.24`, IPA `https://expo.dev/artifacts/eas/8I8NNDAJGlz4J_9frBtWAQiHmPPWeMny0xiNX9Ah7yI.ipa`.
+- `npx eas-cli@latest build:view 4a9ac375-b96e-40ff-806e-067d83e614cb --json` — pending: Android remains `IN_QUEUE`, appVersion `1.0.24`, runtimeVersion `1.0.24`, no artifact yet.
+
+### Risks / Release Notes
+
+- Android APK is not ready yet because EAS has not started the Android job; continue polling build `4a9ac375-b96e-40ff-806e-067d83e614cb`.
+- EAS build metadata reports the current Git commit hash/message, but the uploaded archive included local uncommitted mobile changes.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted in nested `mz-cleaning-app-frontend` repo and root ledger file; root repo also contains unrelated pre-existing uncommitted changes from other units.
+
+## CRL-20260703-014 — 移动端启用 EAS Update 并触发 preview 构建
+
+- **Status:** ready
+- **Updated:** 2026-07-03 21:54 AEST
+- **Request:** 按“先配置 `expo-updates + runtimeVersion + eas channel`，再重新 build preview/production 包”的方案执行，让本次和后续纯 JS 修复可以通过新包支持 OTA。
+- **Outcome:** 移动端已安装 `expo-updates`，Expo 配置已写入 EAS Update URL 和 `runtimeVersion`，EAS build profiles 已绑定 `development/preview/production` channels。已触发 `preview` 内部分发构建；iOS preview 构建完成，Android preview 构建已创建并仍在 EAS 队列中。EAS 自动创建了 `preview` update channel/branch。
+
+### Implementation
+
+- Previous behavior:
+  - `mz-cleaning-app-frontend` 没有 `expo-updates` 依赖。
+  - `app.json` 没有 `updates.url` 和 `runtimeVersion`，`eas.json` build profiles 没有 `channel`。
+  - 已安装的现场 App 不能接收 EAS OTA 更新；JS 修复必须重新封装。
+- New behavior:
+  - `expo-updates@~29.0.16` 已加入移动端依赖和 lockfile。
+  - `app.json` 使用 `runtimeVersion.policy = appVersion`，当前 runtime 解析为 `1.0.23`；`updates.url` 指向当前 EAS project `1f7721fb-d570-4b01-8335-310ead68238a`。
+  - `eas.json` 中 `development`、`preview`、`production` 分别绑定同名 EAS Update channel。
+  - 已运行 `npx eas-cli@latest build --profile preview --platform all --non-interactive`：iOS preview 完成，Android preview 已创建并排队。
+- Key decisions:
+  - 先做 `preview` 内部分发包，方便现场手机尽快安装验证；未自动 submit 到 App Store / Play Store。
+  - 没有运行 `npm audit fix`，因为 `npm install` 报出的 audit vulnerabilities 属于既有依赖树风险，自动修复会引入大量无关升级。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/package.json` — modified: 增加 `expo-updates` 依赖。
+- `mz-cleaning-app-frontend/package-lock.json` — modified: 锁定 `expo-updates` 及其依赖。
+- `mz-cleaning-app-frontend/app.json` — modified: 增加 `runtimeVersion` 和 EAS Update URL。
+- `mz-cleaning-app-frontend/eas.json` — modified: 为 development/preview/production build profiles 增加 channel。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: mobile native config changes; installed clients must install a newly built package before they can receive future EAS Updates.
+- Dependencies: adds `expo-updates@~29.0.16`.
+- Related units: packages current mobile fixes including `CRL-20260703-011`, `CRL-20260703-012`, and `CRL-20260703-013`; future OTA updates must target matching runtime `1.0.23`.
+
+### Validation
+
+- `node -e "..."` config check in `mz-cleaning-app-frontend` — passed: `expo-updates: ~29.0.16`, `runtimeVersion.policy: appVersion`, `updates.url` set, channels `development/preview/production` set.
+- `./node_modules/.bin/expo config --type public --json` in `mz-cleaning-app-frontend` — passed: public Expo config includes `updates.url`, `runtimeVersion`, version `1.0.23`, iOS build `23`, Android versionCode `23`, sdk `54.0.0`.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed: `tsc -p tsconfig.json`.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with 0 errors and existing warnings.
+- `npx eas-cli@latest build --profile preview --platform all --non-interactive` in `mz-cleaning-app-frontend` — partially completed: created preview channel/branch and build IDs. iOS build `d4299352-ed10-4c74-906c-78c1be96b8d4` finished with IPA artifact `https://expo.dev/artifacts/eas/trp01B41r7BMS1NSzcC9o2zW241CBjN_fGT2rSMpVZ8.ipa`; Android build `1c384f11-3c35-40db-b8d8-de72ab7de4a9` was still `IN_QUEUE` when last checked.
+- `npx eas-cli@latest build:list --limit 2 --json --non-interactive` in `mz-cleaning-app-frontend` — passed: confirmed iOS `FINISHED`, Android `IN_QUEUE`, both on channel `preview`, runtimeVersion `1.0.23`.
+
+### Risks / Release Notes
+
+- Existing installed apps still do not support OTA; users must install this new build first.
+- Because `runtimeVersion` follows app version, native dependency/config changes should bump app version before release to avoid sending incompatible JS to older native runtimes.
+- Android preview build may need follow-up polling until it leaves `IN_QUEUE` and produces an APK artifact.
+- `npm install` reported 32 audit vulnerabilities in the existing dependency tree; not fixed in this unit to avoid unrelated dependency churn.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted in nested `mz-cleaning-app-frontend` repo and root ledger file; EAS build metadata reports the current Git commit hash/message but the build archive included current local uncommitted changes uploaded by EAS CLI.
+
+## CRL-20260703-013 — 移动端挂钥匙视频上传卡住恢复
+
+- **Status:** ready
+- **Updated:** 2026-07-03 21:29 AEST
+- **Request:** 排查并修复上传钥匙视频在有网状态下仍一直处于“上传中”的问题。
+- **Outcome:** 挂钥匙/改密码视频队列现在有上传与业务保存的兜底超时；如果底层移动端 `fetch` 或旧 in-flight 标记卡住，队列会把任务恢复为可重试状态而不是永久停在 `uploading`。完成页会识别超过 2 分钟的陈旧上传状态，提示“可能已卡住”，并提供“重试上传”按钮，视频仍保留在本机。
+
+### Implementation
+
+- Previous behavior:
+  - 视频拍摄后先进入 `inspectionMediaQueue`，UI 在 `pending/uploading` 时显示“视频已保存到本机，正在自动上传”。
+  - 如果 Android/弱网下上传 promise 长时间不返回，或内存中的 in-flight 标记没有释放，队列项会一直保持 `uploading`，自动维护和 NetInfo 恢复也会跳过该本地文件。
+  - 页面没有区分正常上传中和已经卡住的上传，也没有针对本地已保存视频的重试入口。
+- New behavior:
+  - 队列为单次媒体上传增加 75 秒兜底超时，为 lockbox 业务保存增加 30 秒兜底超时；超时统一转为 retryable error，保留本地视频。
+  - 队列记录 `last_attempt_at`，并在处理时释放超过 2 分钟的陈旧 in-flight `uploading` 状态，允许后续重试。
+  - `InspectionCompleteScreen` 识别陈旧 `uploading`，显示可重试提示，并提供“重试上传”按钮；重试会把本地队列项恢复为 `pending/uploaded` 后重新触发队列处理。
+- Key decisions:
+  - 不删除本地视频，不要求用户重拍；上传失败或卡住时继续沿用本地队列恢复。
+  - 不改后端接口；问题发生在移动端队列状态机和原生 fetch 可能挂起的恢复路径。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/lib/inspectionMediaQueue.ts` — modified: 增加 `last_attempt_at`、上传/保存兜底超时、陈旧 `uploading` in-flight 恢复。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionCompleteScreen.tsx` — modified: 陈旧上传提示和“重试上传”按钮。
+- `mz-cleaning-app-frontend/src/lib/inspectionMediaQueue.test.ts` — modified: 覆盖挂起视频上传在队列超时后转为 `failed_retryable`。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: complements `CRL-20260703-011`; shares `InspectionCompleteScreen.tsx` with earlier mobile access-video work, so selective release requires hunk-level review.
+
+### Validation
+
+- `npm test -- --runInBand src/lib/inspectionMediaQueue.test.ts src/screens/tasks/InspectionCompleteScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 2 suites / 6 tests.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed: `tsc -p tsconfig.json`.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with 0 errors and existing warnings.
+
+### Risks / Release Notes
+
+- Runtime risk: if a native upload actually continues after the fallback timeout, a manual retry could upload the same local video twice to storage; only the successful business save URL is attached to the task.
+- Rollback: remove queue operation timeouts, stale in-flight recovery, `last_attempt_at`, and the retry UI, returning to previous queue behavior.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted in nested `mz-cleaning-app-frontend` repo and root ledger file.
+
+## CRL-20260703-012 — 移动端纯入住/仅改密码标签与执行人显示修复
+
+- **Status:** ready
+- **Updated:** 2026-07-03 21:22 AEST
+- **Request:** 修复纯入住检查移动端标签显示不出来、仅改密码标签显示不出来、执行人也显示不出来的问题。
+- **Outcome:** 移动端现在把 `cleaning_tasks + checkin_clean` 下的 `execution/inspection` 现场执行任务统一识别为入住现场执行。列表页和详情页不再显示原始英文 `execution`，会显示“执行”以及“检查后挂钥匙”或“仅改密码”；执行人优先显示 `executor_name`，缺失时回退到 `assignee_name`，再回退旧清洁/检查姓名或 ID。
+
+### Implementation
+
+- Previous behavior:
+  - 移动端只在 `task_kind === inspection && task_type === checkin_clean` 时显示纯入住检查标签；当后端把纯入住现场执行投成 `task_kind=execution` 且 `execution_role=inspection` 时，列表页会落回原始 `execution` 标签。
+  - 仅改密码判断过宽，把所有 `task_kind=execution` 都当作 password-only，但又没有覆盖显式 `execution_role=inspection` 的入住现场执行显示链路。
+  - 执行人员卡片只在旧 `isKeyHandoverTask` 或 `task_kind=inspection` 分支显示单执行人；纯入住现场执行会落到“清洁/检查”双人卡，且没有使用 `assignee_name`。
+- New behavior:
+  - 新增移动端共享 helper `isCheckinSiteExecutionTask()`，只识别 `cleaning_tasks + checkin_clean` 且非清洁执行的 `inspection/execution` 现场任务。
+  - `isPasswordOnlyInspectionTask()` 改为在入住现场执行且 `inspection_scope=password_only` 时才显示“仅改密码”；其他入住现场执行按 `inspectionScopeLabel()` 显示“检查后挂钥匙”。
+  - `TasksScreen` 和 `TaskDetailScreen` 复用同一个 helper 控制标签、详情检查执行方式、单执行人布局和详情 Wi-Fi 可见性。
+  - 执行人展示回退链调整为 `executor_name -> assignee_name -> cleaner_name/inspector_name -> assignee_id`，覆盖后端只下发现场执行 `assignee_name` 的情况。
+- Key decisions:
+  - 不改后端 payload 和数据库；这次只修移动端对现有 `execution_role/execution_semantics/inspection_scope` 的解释。
+  - 不继续把所有 `execution` 任务硬判成“仅改密码”，避免误伤非入住或检查后挂钥匙场景。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/lib/cleaningInspection.ts` — modified: 新增 `isCheckinSiteExecutionTask()`，收窄 password-only 判断。
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.tsx` — modified: 列表页标签和执行人员卡片改用入住现场执行 helper，执行人回退到 `assignee_name`。
+- `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.tsx` — modified: 详情页标签、检查执行方式、执行人员和 Wi-Fi 可见性改用入住现场执行 helper。
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.test.tsx` — modified: 覆盖 `task_kind=execution + execution_role=inspection` 时列表显示“执行 / 检查后挂钥匙 / assignee_name”，且不显示英文 `execution`。
+- `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` — modified: 覆盖同类任务详情显示“检查执行方式：检查后挂钥匙”和“执行人员：assignee_name”。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none; consumes existing mobile task fields.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: follows `CRL-20260703-010` and `CRL-20260703-011`; shares mobile files with those units, so selective release requires hunk-level review.
+
+### Validation
+
+- `npm test -- --runInBand src/screens/tabs/TasksScreen.test.tsx src/screens/tasks/TaskDetailScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 2 suites / 26 tests; existing SafeAreaView deprecation warning and Jest open-handle notice remained.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed: `tsc -p tsconfig.json`.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with 0 errors and existing warnings.
+
+### Risks / Release Notes
+
+- Runtime risk: relies on backend continuing to mark pure check-in execution tasks as `cleaning_tasks + checkin_clean` with either `task_kind=inspection` or `task_kind=execution`; unexpected missing `inspection_scope` will default to “检查后挂钥匙”.
+- Rollback: revert the helper usage in the two mobile screens and restore previous `task_kind === inspection` checks.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted in nested `mz-cleaning-app-frontend` repo and root ledger file; mobile files are shared with earlier uncommitted cleaning task action units.
+
+## CRL-20260703-011 — 移动端检查/改密码 action 目标任务 ID 修复
+
+- **Status:** ready
+- **Updated:** 2026-07-03 21:09 AEST
+- **Request:** 修复所有纯入住检查和仅改密码任务上传照片/视频后无法完成、弹出 `not found` 的问题。
+- **Outcome:** 后端 `available_actions` 现在携带对应 action 的目标 `cleaning_tasks.id`，合并卡聚合 action 时会保留可操作子任务的 `source_id`。移动端从任务详情进入入住检查或改密码/挂钥匙完成页时会透传这个目标 ID，并在保存检查照片、保存挂钥匙/改密码视频时优先使用它，避免把合并卡或错误卡片级 `source_id` 发给业务接口导致 `not found`。
+
+### Implementation
+
+- Previous behavior:
+  - `/mzapp/work-tasks` 合并卡只聚合了 `available_actions` 的按钮和权限，没有给 action 绑定它真正所属的子任务 ID。
+  - 移动端 `InspectionPanel` 和 `InspectionComplete` 保存业务结果时只使用卡片级 `task.source_id`；纯入住、仅改密码或合并卡场景下该 ID 可能不是当前 action 对应的 `cleaning_tasks.id`。
+  - 后端 `/cleaning-app/tasks/:id/inspection-photos` 和 `/mzapp/cleaning-tasks/:id/lockbox-video` 按 `cleaning_tasks.id` 查询，收到错误 ID 时返回 `not found`。
+- New behavior:
+  - `buildWorkTaskActionPayload()` 为每个 action 填充 `source_type/source_id`，默认指向当前 action 所在的 source task。
+  - `/mzapp/work-tasks` 合并子任务 action 时，如果子任务提供了可用 action 和不同 `source_id`，优先保留该子任务 action，确保 `submit_inspection`、`upload_access_video` 指向正确检查/改密码子任务。
+  - 移动端 action route 新增可选 `sourceId`，详情页导航时传递 action 的 `source_id`；检查页和完成页提交接口优先使用 route `sourceId`，旧后端 payload 没有该字段时继续 fallback 到 `task.source_id`。
+- Key decisions:
+  - 不改本地草稿/队列 key，仍按 work-task `taskId` 保存，避免破坏已有离线草稿和 UI 查找逻辑。
+  - 不新增平行接口；继续复用现有 `/cleaning-app/tasks/:id/inspection-photos` 和 `/mzapp/cleaning-tasks/:id/lockbox-video`。
+
+### Files / Areas
+
+- `backend/src/lib/workTaskActions.ts` — modified: `WorkTaskAvailableAction` 增加 `source_type/source_id`，action payload 默认携带当前 source task ID。
+- `backend/src/modules/mzapp.ts` — modified: 合并卡聚合子任务 action 时保留可用子任务 action 的目标 `source_id`。
+- `backend/scripts/tests/test_work_task_actions.ts` — modified: 覆盖纯入住检查和仅改密码 action 的 `source_id`。
+- `backend/scripts/tests/phase5_e2e_acceptance.ts` — modified: 增加移动端列表 action `source_id` 断言。
+- `mz-cleaning-app-frontend/src/lib/api.ts` — modified: 移动端 action 类型增加 `source_type/source_id`。
+- `mz-cleaning-app-frontend/src/lib/workTaskActions.ts` — modified: action 导航透传 `sourceId` 到检查页/完成页。
+- `mz-cleaning-app-frontend/src/navigation/RootNavigator.tsx` — modified: route param 类型允许 `InspectionPanel` / `InspectionComplete` 接收 `sourceId`。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.tsx` — modified: 检查照片/补品保存目标优先使用 route `sourceId`，并进入完成页时继续透传。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionCompleteScreen.tsx` — modified: 改密码/挂钥匙视频保存目标优先使用 route `sourceId`。
+- `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` — modified: 覆盖 server action `source_id` 导航参数。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionCompleteScreen.test.tsx` — modified: 覆盖卡片 `source_id` 不可靠时完成页使用 route `sourceId` 保存视频。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: `/mzapp/work-tasks` 的 `available_actions[]` 增加可选 `source_type/source_id` 字段；旧客户端可忽略，新客户端优先使用。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: builds on `CRL-20260703-010`; shares files with the Phase 5 mobile authorization/action work, so selective release requires hunk-level review.
+
+### Validation
+
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_work_task_actions.ts` in `backend` — passed: `test_work_task_actions: ok`.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `npm test -- --runInBand src/screens/tasks/TaskDetailScreen.test.tsx src/screens/tasks/InspectionCompleteScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 2 suites / 18 tests.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed: `tsc -p tsconfig.json`.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with 0 errors and existing warnings.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/phase5_e2e_acceptance.ts` in `backend` — not completed: manually interrupted after it remained running at mobile list/action validation for several minutes; no assertion failure was printed before interruption.
+
+### Risks / Release Notes
+
+- Runtime risk: action `source_id` is additive, but release must include both backend payload changes and mobile route consumption to fix the user-visible `not found` path.
+- Compatibility: mobile falls back to card-level `task.source_id` when older backend payloads omit action `source_id`.
+- Rollback: remove action `source_id` fields, revert mobile route `sourceId` usage, and return to card-level `task.source_id` behavior.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted in root repo and nested mobile repo; several files are shared with earlier ready units.
+
+## CRL-20260703-010 — 纯入住现场执行人与合并卡动作聚合
+
+- **Status:** ready
+- **Updated:** 2026-07-03 16:05 AEST
+- **Request:** 继续优化 Phase 5 后发现的边界：纯入住检查不是检查员专属，检查后应由同一个现场执行人挂钥匙；执行人可以是任意线下用户。管理端同房源同日合并卡也不能丢失子任务授权 action。
+- **Outcome:** `checkin_clean + inspect_and_hang` 现在按“入住现场执行”处理：`assignee_id` 是现场执行人，可为任意有效系统用户；Web 和移动端显示“执行人/执行”，按钮继续由后端 `available_actions` 决定。纯入住执行人可提交检查照片并继续上传挂钥匙视频完成；无参与关系的 inspector 仍不能误操作。`view=all` 同房源同日合并卡会聚合子任务 actions，手工授权到某个子任务的按钮不会被合并卡隐藏。
+
+### Implementation
+
+- Previous behavior:
+  - 只有 `password_only` 被视为执行人任务；`inspect_and_hang` 仍按检查人员字段和检查员角色展示/校验。
+  - 移动端 `/mzapp/work-tasks` 普通 cleaner 默认不开 inspector 分组，即使被放到纯入住任务 `assignee_id`，也看不到任务。
+  - `/cleaning-app/tasks/:id/inspection-photos` 旧接口外层只允许 `cleaning_app.inspect.finish`，会在参与关系校验前拦住被授权执行的 cleaner。
+  - 管理角色 `view=all` 同房源同日任务先合并再算 action；合并后的 `task_kind` 可能只代表一个子任务，导致另一个子任务的 manual action 隐藏。
+- New behavior:
+  - 后端 `/cleaning/tasks` 单条/批量更新对 check-in 现场执行使用 `assignee_id`，不再把执行人自动写成 `cleaner_id`；旧 `inspector_id` 如被传入也至少要求是有效系统用户。
+  - Web capability payload 将 `checkin_inspection` 展示为“入住现场执行”，主参与角色为 `executor`，`assign_executor` 可用，`assign_inspector` 不适用。
+  - `/mzapp/work-tasks` 将纯入住现场执行投到 executor 可见分组，同时保留 inspection action 能力；合并卡聚合所有子任务的 legacy/manual participants 和 `available_actions`。
+  - 移动端列表和详情页对纯入住现场执行显示“执行 / 执行人员”，不再误显示为检查人员。
+  - `cleaning_app` 检查照片旧路由外层权限放宽到 `inspect.finish` 或 `tasks.finish`，实际提交仍由 `canPerformCleaningTaskAction(... submit_inspection)` 按参与/action 校验。
+  - Phase 5 E2E 改为用 cleaner 作为纯入住现场执行人，实际跑“检查提交 -> 挂钥匙视频上传”；新增同房源同日合并样例验证子任务 action 聚合。
+
+### Files / Areas
+
+- `backend/src/modules/cleaning.ts` — modified: check-in 现场执行人写入/校验改用 `assignee_id`，创建/更新 schema 支持 `assignee_id` 和 `inspection_scope`。
+- `backend/src/modules/mzapp.ts` — modified: 纯入住现场执行默认可见性、挂钥匙视频 legacy guard、`view=all` 合并卡 action 聚合。
+- `backend/src/modules/cleaning_app.ts` — modified: 检查照片旧接口外层权限放宽，保留 action guard；同文件还包含 `CRL-20260703-007` 的 lockbox refresh event 改动。
+- `backend/src/lib/webTaskCapabilities.ts` — modified: 纯入住现场执行展示和 participant summary 改为 executor。
+- `backend/src/lib/workTaskActions.ts` — modified: Web 管理动作对纯入住开放 `assign_executor`；纯入住检查/挂钥匙按钮文案改为“入住检查”“挂钥匙并完成”。
+- `backend/scripts/tests/phase5_e2e_acceptance.ts` — modified: Phase 5 覆盖任意执行人纯入住检查后挂钥匙，以及合并卡子任务 action 聚合。
+- `backend/scripts/tests/test_web_task_capabilities.ts` — modified: 覆盖纯入住现场执行的 Web capability。
+- `backend/scripts/tests/test_work_task_actions.ts` — modified: 覆盖 cleaner 作为纯入住现场执行人获得检查和挂钥匙 action。
+- `frontend/src/app/cleaning/page.tsx` — modified: 纯入住 `inspect_and_hang` 和 `password_only` 均显示/保存执行人，不再显示检查人员字段。
+- `frontend/src/lib/cleaningDailyTaskStatus.ts` — modified: 识别新旧纯入住 badge 文案。
+- `frontend/src/lib/cleaningDailyTaskStatus.test.ts` — modified: 更新“入住现场执行”文案断言。
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.tsx` — modified: 纯入住现场执行列表卡显示为执行任务和单执行人员。
+- `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.tsx` — modified: 纯入住现场执行详情显示执行人员。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: existing response shapes unchanged; `/cleaning/tasks` accepts additive `assignee_id` and `inspection_scope` on manual create, and existing `/mzapp/work-tasks` `available_actions` 更完整。
+- Database / migration: none; reuses existing `assignee_id`, `cleaner_id`, `inspector_id`, `inspection_scope`.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: builds on Phase 1-5 capability/action work (`CRL-20260703-001` through `CRL-20260703-007`) and shares dirty files with those units; selective release requires hunk-level review.
+
+### Validation
+
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_web_task_capabilities.ts` in `backend` — passed: `test_web_task_capabilities: ok`.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_work_task_actions.ts` in `backend` — passed: `test_work_task_actions: ok`.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/phase5_e2e_acceptance.ts` in `backend` — passed: Web/mobile visibility and labels, `available_actions`, cleaner 执行纯入住检查后挂钥匙、password-only 上传视频、合并卡 action 聚合、refresh events and notifications.
+- `npx vitest run src/lib/cleaningDailyTaskStatus.test.ts` in `frontend` — passed: 1 file / 7 tests.
+- `npm run lint` in `frontend` — passed with existing project warnings.
+- `npm run build` in `frontend` — passed; existing Browserslist, lint, and Recharts zero-size warnings remained.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed: `tsc -p tsconfig.json`.
+- `npm test -- --runInBand src/screens/tabs/TasksScreen.test.tsx src/screens/tasks/TaskDetailScreen.test.tsx src/screens/tasks/InspectionCompleteScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 3 suites / 26 tests; existing SafeAreaView warning and Jest open-handle notice remained.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with 0 errors and existing warnings.
+
+### Risks / Release Notes
+
+- Runtime risk: check-in tasks are now treated as site execution for assignment, so operations should use the execution field for pure入住; checkout/turnover cleaning assignment remains on cleaner fields.
+- Compatibility: older payloads without `available_actions` still use mobile fallback; server-provided `available_actions` remains highest priority.
+- Rollback: restore pure check-in to inspector assignment/display, remove merged-child action aggregation, and revert the Phase 5 E2E assertions for arbitrary executor and merged card actions.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted in root repo and nested mobile repo; coexists with unrelated finance/inventory/task-center changes.
+
 ## CRL-20260703-009 — 房源代付账单周期支持
 
 - **Status:** ready
@@ -107,6 +491,532 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
 - Git state: uncommitted in root repo; coexists with unrelated cleaning/task-center/inventory/finance changes and existing `crud.ts` hunk from `CRL-20260703-005`.
 
+## CRL-20260703-007 — Phase 5 端到端验收与改密码视频刷新事件
+
+- **Status:** ready
+- **Updated:** 2026-07-03 15:00 Australia/Melbourne
+- **Request:** “执行Phase 5”：用真实业务样例验证 Web 和移动端一致，覆盖普通退房清洁、纯入住检查、仅改密码/挂钥匙，并确认按钮由 `available_actions` / 任务能力决定，不被角色锁死。
+- **Outcome:** 新增可重复的 Phase 5 E2E 验收脚本，使用受控 `phase5-e2e-*` 样例数据跑真实 backend router 和真实 PostgreSQL：Web `/cleaning`、移动端 `/mzapp/work-tasks`、清洁提交、admin 授权检查提交、改密码视频上传、无参与 inspector 403、通知记录和列表刷新事件均被验证。验收过程中发现并修复了 `/cleaning-app/tasks/:id/lockbox-video` 成功后缺少 `work_task_events` 的刷新事件问题。
+
+### Implementation
+
+- Previous behavior:
+  - Phase 5 只能靠人工说明或零散单测，没有可重复的业务样例端到端脚本。
+  - 改密码/挂钥匙视频上传会更新状态并触发通知解析，但没有写 `work_task_events`，移动端列表刷新缺少一致事件。
+- New behavior:
+  - `phase5_e2e_acceptance.ts` 会创建三个独立测试房源和三类样例任务，执行多角色 Web/mobile 查询和三条实际提交流，再清理样例数据。
+  - 脚本断言 `admin/customer_service/offline_manager` 能看列表，普通人员默认只看参与任务；`admin` 被手工授权后可检查；未参与 inspector 不可见且写接口 403；cleaner 可完成清洁和被指定的仅改密码视频上传。
+  - `lockbox-video` 路径在 `upload_access_video` 状态转换后写入 `TASK_COMPLETED` / list-scope `work_task_events`，携带 `status`、`lockbox_video_uploaded_at` 和媒体变更字段，移动端可按事件刷新。
+- Key decisions:
+  - 样例数据使用 `phase5-e2e-*` 前缀并在 `finally` 清理；不修改真实订单或真实员工任务。
+  - 三个样例使用不同测试房源，避免管理端同日同房源合并卡影响单任务动作验收；同日同房源合并卡的子任务 action 聚合仍是后续可优化风险。
+
+### Files / Areas
+
+- `backend/scripts/tests/phase5_e2e_acceptance.ts` — added: Phase 5 端到端验收脚本，覆盖 Web/mobile 语义、`available_actions`、三类提交流、通知和刷新事件。
+- `backend/src/modules/cleaning_app.ts` — modified: `lockbox-video` 成功上传后新增 `emitWorkTaskEvent`，补齐移动端列表刷新事件；同文件还包含 `CRL-20260703-004` 的 action guard 未提交改动。
+- `docs/change-release-ledger.md` — modified: 记录本 Phase 5 验收和修复单元。
+
+### Impact / Dependencies
+
+- API: response shape unchanged except `lockbox-video` route already返回的 `action_result` 继续保留；新增的是事件侧效果。
+- Database / migration: no migration; E2E 脚本使用现有表创建临时测试数据并清理。
+- Config / environment: script reads existing backend `.env.local` through dotenv but does not print secrets.
+- Dependencies: none.
+- Related units: builds on `CRL-20260703-001` through `CRL-20260703-004`; shares `backend/src/modules/cleaning_app.ts` with Phase 4, so selective release requires hunk review.
+
+### Validation
+
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/phase5_e2e_acceptance.ts` in `backend` — failed in sandbox first: DNS could not resolve configured Neon host; rerun with approved network access.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/phase5_e2e_acceptance.ts` in `backend` with network access — passed: Web `/cleaning`, mobile `/mzapp/work-tasks`, cleaning submit, admin inspection submit, password video upload, `work_task_events`, and 9 `user_notifications` rows verified; sample data cleaned.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_work_task_actions.ts` in `backend` — passed.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with 0 errors and 116 existing warnings.
+- `npm test -- --runTestsByPath src/screens/tabs/TasksScreen.test.tsx src/screens/tasks/TaskDetailScreen.test.tsx src/screens/tasks/InspectionCompleteScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 3 suites / 26 tests; existing SafeAreaView deprecation and Jest open-handle warning remained.
+- `git diff --check` in root repo — passed.
+- `npm run lint` in `frontend` — passed with existing project warnings.
+- `npm run build` in `frontend` — failed after successful compile/type-check/lint phase: Next 14 page-data collection could not find `/_document` / `.next/server/pages-manifest.json`; rerunning non-sandbox produced the same manifest failure, so Web build remains unpassed.
+
+### Risks / Release Notes
+
+- Remaining risk: management `view=all` merges same-property/same-day cleaning, inspection, and execution rows before action generation; a manually authorized subtask action can be hidden on the merged card. The Phase 5 script isolates the three sample types by test property; fixing merged-card child action aggregation should be a separate scoped change.
+- Build risk: frontend build currently fails in Next page-data collection despite compile/type-check passing; this predates the Phase 5 backend fix and needs separate investigation before release gates that require Web build.
+- Runtime risk: E2E script touches the configured database; it uses fixed `phase5-e2e-*` IDs and cleans them before and after runs, so rerunning should clear interrupted sample rows.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted in root repo; coexists with unrelated inventory/finance and prior Phase 1-4 cleaning changes.
+
+## CRL-20260703-006 — 日用品更换记录页面操作与编辑回填修复
+
+- **Status:** ready
+- **Updated:** 2026-07-03 14:40 AEST
+- **Request:** “日用品更换记录页面需要优化一下，一个人没有删除记录的按钮，按钮ui也有问题。第二 明明写了更换物品的信息，谁提交的。点开编辑按钮又没有显示。从详情页也不能转到编辑页面。”
+- **Outcome:** 日用品更换记录表格操作列改为系统标准按钮；具备删除权限时显示删除按钮并需要确认；编辑 drawer 能按 `item_id` 或 `item_name` 回填更换物品和提交人；详情 drawer 可以直接进入编辑。
+
+### Implementation
+
+- Previous behavior:
+  - 操作列使用普通 `Button + Space`，按钮在窄行中容易竖排，且不符合统一表格操作 UI。
+  - 页面没有删除按钮；后端也没有 `DELETE /inventory/daily-replacements/:id`。
+  - 编辑表单只用 `item_id` 回填更换物品，旧记录或从任务迁移来的记录如果只有 `item_name`，编辑时会显示为空。
+  - 详情 drawer 只能查看，不能直接转编辑。
+- New behavior:
+  - 表格操作列使用 `TableRowActions`，顺序为 `详情`、`编辑/去更换`、`删除`。
+  - 删除按钮受 `inventory_daily_replacements.delete` 控制，并弹确认框；删除成功后刷新列表。
+  - 后端新增 `DELETE /inventory/daily-replacements/:id`，删除记录后把关联 `daily_necessities` 自动支出快照置为 `void`。
+  - 编辑回填优先匹配 `item_id`，再用 `item_name` 匹配价格表；如果当前记录物品不在价格表里，仍显示“当前记录”选项并保留原物品名称。
+  - 提交人字段改为真正的 form field，编辑时显示原提交人；新增时显示当前用户。
+  - 详情 drawer 右上角增加“编辑”按钮，点击后关闭详情并打开编辑 drawer。
+- Key decisions:
+  - 删除权限使用明确的 `inventory_daily_replacements.delete`，没有权限时隐藏按钮，不显示 disabled。
+  - 删除采用硬删除当前记录，同时 void 自动费用，避免 statement 留下被删除来源的有效快照。
+
+### Files / Areas
+
+- `frontend/src/app/inventory/category/daily/replacements/page.tsx` — modified: 标准化操作列、增加删除确认、修复编辑回填、详情转编辑。
+- `frontend/src/lib/adminNavigation.ts` — modified: 日用品更换记录 action permissions 增加 `inventory_daily_replacements.delete`。
+- `backend/src/modules/inventory.ts` — modified: 新增日用品更换删除路由，并在删除时作废关联自动费用；同文件还包含 `CRL-20260703-005` 的自动费用同步改动。
+- `backend/dist/modules/inventory.js` — generated/shared: 后端 build 生成的 inventory 输出，承载 `CRL-20260703-005` / `CRL-20260703-006` 的库存模块改动。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: added `DELETE /inventory/daily-replacements/:id`, requires `inventory_daily_replacements.delete`.
+- Database / migration: no migration; deletes from existing `property_daily_necessities` and best-effort voids existing `property_expenses` / `company_expenses` auto rows.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: shares `backend/src/modules/inventory.ts` with `CRL-20260703-005`.
+
+### Validation
+
+- `cd backend && ./node_modules/.bin/tsc -p . --noEmit` — passed.
+- `git diff --check -- frontend/src/app/inventory/category/daily/replacements/page.tsx frontend/src/lib/adminNavigation.ts backend/src/modules/inventory.ts` — passed.
+- `npm --prefix frontend run lint` — passed with existing project warnings; current page still reports the pre-existing `useEffect` dependency warning.
+- `npm --prefix frontend run build` — passed; build reported existing Browserslist staleness, existing lint warnings, and existing Recharts zero-size warnings during static generation.
+- `python3 scripts/audit_change_release_ledger.py` — failed: current worktree still has pre-existing uncovered `backend/scripts/tests/phase5_e2e_acceptance.ts`; this unit's files are recorded in `CRL-20260703-006`.
+
+### Risks / Release Notes
+
+- RBAC roles must include `inventory_daily_replacements.delete` before non-admin users see the delete button.
+- Delete is permanent for `property_daily_necessities`; rollback requires restoring the row from backup/audit source if needed.
+- The current-record fallback keeps legacy item names visible, but records with item names not in the active price list still need a valid item selection if the user changes the item.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted in root repo; coexists with pre-existing cleaning/task-center changes and `CRL-20260703-005` finance/daily auto-expense changes.
+
+## CRL-20260703-005 — 深度清洁与日用品更换自动入房源 statement
+
+- **Status:** ready
+- **Updated:** 2026-07-03 14:28 AEST
+- **Request:** “深度清洁和 日用品更换记录也需要跟房源维修一样的执行逻辑，如果是房东支付的话，需要在statement体现出来”；follow-up: “卖出价”
+- **Outcome:** 日用品更换记录在创建/更新后会按价格表卖出价 `daily_items_price_list.unit_price * quantity` 计算金额；完成且房东支付时生成/更新 `property_expenses` 自动快照并归类 `consumables`，从而进入房源 statement。公司支付时生成公司支出，其他支付或未完成/无价格会 void 自动快照。深度清洁与维修的财务回填/statement 对账逻辑保持一致，并支持日用品一起检查/回填。
+
+### Implementation
+
+- Previous behavior:
+  - 日用品更换只保存在 `property_daily_necessities`，没有连接 `property_expenses` / `company_expenses`，房东支付不会自动进入 monthly statement。
+  - `/finance/auto-expenses/backfill`、`/finance/auto-expenses/inspect` 和 monthly statement PDF 前的 reconcile 只覆盖维修与深度清洁。
+  - 自动生成的房源支出只对 `maintenance` / `deep_cleaning` 只读，未覆盖日用品来源。
+- New behavior:
+  - 新增日用品自动费用 helper：按状态、支付方式、日期、卖出价金额、标题和 statement 摘要生成统一决策。
+  - `/inventory/daily-replacements` 创建/更新后尝试同步自动费用；失败不会阻断原记录保存，并通过响应 header 标记同步结果。
+  - 财务 backfill/inspect 支持 `type=daily_necessities`，`type=all` 会一起扫描日用品记录；缺价格表时金额按 0 处理并 void，避免生成错误金额。
+  - monthly statement 自动费用对账会扫描当月日用品记录，房东支付写入 `property_expenses`，公司支付写入 `company_expenses`。
+  - 自动生成的日用品房源支出在 CRUD 修改/删除时与维修、深度清洁一样返回 `auto_generated_expense_readonly`。
+- Key decisions:
+  - “卖出价”明确使用 `daily_items_price_list.unit_price`，不使用 `cost_unit_price`。
+  - 价格匹配优先 `item_id`，并始终用 `item_name` 兜底匹配，避免旧记录 ID 失效但名称仍可匹配时漏算。
+  - 日用品房东支付进入 statement 的类别为 `consumables`，明细为 `日用品更换`。
+  - 没有价格或未完成的记录不生成 0 金额支出，而是把既有自动快照 void。
+
+### Files / Areas
+
+- `backend/src/lib/dailyNecessitiesAutoExpense.ts` — added: 日用品更换自动费用决策、金额计算、价格表补价、自动 property/company expense 同步。
+- `backend/src/lib/autoExpenseSourceSummary.ts` — modified: 增加日用品 statement 摘要生成。
+- `backend/src/modules/inventory.ts` — modified: 日用品更换创建/更新后同步自动费用。
+- `backend/src/modules/finance.ts` — modified: auto-expenses backfill/inspect 支持 `daily_necessities`，并允许自动费用 category 传入 `consumables`。
+- `backend/src/lib/monthlyStatementExpenseReconcile.ts` — modified: statement 月结前自动对账纳入日用品更换。
+- `backend/src/modules/crud.ts` — modified: `daily_necessities` 自动房源支出只读保护。
+- `backend/scripts/tests/test_auto_expense_source_summary.ts` — modified: 覆盖日用品摘要。
+- `backend/scripts/tests/test_daily_necessities_auto_expense.ts` — added: 覆盖日用品卖出价金额和自动费用决策。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: existing endpoints unchanged; `/finance/auto-expenses/backfill` and `/finance/auto-expenses/inspect` accept new `type=daily_necessities`; `/inventory/daily-replacements` responses may include `x-auto-expense-sync` and `x-auto-expense-reason` headers.
+- Database / migration: no separate migration; uses existing lazy schema creation for `property_daily_necessities`, `daily_items_price_list`, `property_expenses`, and `company_expenses`.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: finance auto expense behavior follows the existing maintenance/deep-cleaning snapshot model.
+
+### Validation
+
+- `npm --prefix backend run test:auto-expense-source-summary` — passed: `test_auto_expense_source_summary: ok`.
+- `cd backend && ./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_daily_necessities_auto_expense.ts` — passed: `test_daily_necessities_auto_expense: ok`.
+- `cd backend && ./node_modules/.bin/tsc -p . --noEmit` — passed.
+- `git diff --check -- backend/src/lib/autoExpenseSourceSummary.ts backend/src/lib/dailyNecessitiesAutoExpense.ts backend/src/modules/inventory.ts backend/src/modules/finance.ts backend/src/lib/monthlyStatementExpenseReconcile.ts backend/src/modules/crud.ts backend/scripts/tests/test_auto_expense_source_summary.ts backend/scripts/tests/test_daily_necessities_auto_expense.ts` — passed.
+- `python3 scripts/audit_change_release_ledger.py` — failed: current worktree has pre-existing uncovered `backend/scripts/tests/phase5_e2e_acceptance.ts`; this unit's files are recorded in `CRL-20260703-005`.
+- `npm --prefix backend run build` — not run: backend build writes `dist`; `backend/dist/modules/cleaning.js` already had unrelated pre-existing uncommitted changes, so noEmit typecheck was used to avoid overwriting shared generated output.
+
+### Risks / Release Notes
+
+- Existing records without a matching price list row will not create a statement expense until the price row is present or the record can be matched by item name.
+- Mobile/app paths that create daily necessities without `pay_method` still void rather than creating a statement expense; landlord payment must be explicit.
+- Backfill/inspect use table-existence checks so older environments skip日用品扫描 rather than failing.
+- Rollback: remove the daily necessity helper/imports, revert inventory sync calls, remove `daily_necessities` from finance backfill/inspect/monthly reconcile, and remove the CRUD read-only extension.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted in root repo; coexists with pre-existing uncommitted cleaning/task-center changes not owned by this unit.
+
+## CRL-20260703-004 — Phase 4 角色只保留默认可见范围
+
+- **Status:** ready
+- **Updated:** 2026-07-03 13:36 AEST
+- **Request:** “Phase 4：保留角色作为默认可见范围，不作为流程锁……先执行这个计划吧”
+- **Outcome:** 移动端任务执行权限进一步收敛为“基础 permission + 任务参与/action grant”。`admin` / `customer_service` / `offline_manager` 仍用于看全部和管理参与人，但不再因为能看全部就自动获得检查、上传访问视频、补品/完成等现场执行动作。参与人变更会发 membership 事件，移动端会重新同步 `available_actions`。
+
+### Implementation
+
+- Previous behavior:
+  - `/mzapp` 的检查和访问视频 guard 仍把 `canViewAll(user)` 当成执行许可，管理角色即使没有参与关系也可能绕过 `available_actions`。
+  - `/work-task-participants/set` 保存参与人后没有发 membership 事件，移动端缓存可能继续使用旧 `available_actions`。
+  - `/cleaning-app/tasks/*` 旧兼容提交接口主要依赖 permission code，缺少与 `available_actions` 一致的参与人/action grant 校验。
+- New behavior:
+  - `/mzapp` 检查提交和访问视频删除/上传不再把管理角色视为执行人；legacy 任务参与字段或手动 `work_task_participants.action_ids` 才能放行。
+  - 只有 `admin` / `customer_service` / `offline_manager` 这类管理角色可维护 work task participants；单纯 `view=all` permission 不再等于可改参与人。
+  - `/work-task-participants/set` 成功后为每个 source 发 `TASK_ASSIGNMENT_CHANGED` + `membership` 事件，移动端触发全量刷新以重算 user-specific `available_actions`。
+  - `/cleaning-app` 的上传钥匙、删除钥匙、补品提交、检查照片、访问视频、完成照片、补货凭证、自完成等写接口补上 action guard，旧 App/旧路径也不能只靠角色或 permission 绕过任务参与关系。
+- Key decisions:
+  - 角色仍保留为默认可见范围：列表 `view=all` 规则不扩大，普通人员仍默认只看参与任务。
+  - 查看型详情接口不收紧为执行权限，避免破坏 manager 的只读查看；收紧范围集中在会写状态/媒体/审计的执行接口。
+  - 不删除移动端 fallback；无 `available_actions` 的旧 payload 仍走旧逻辑，但服务器返回 `available_actions` 时继续最高优先级。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — modified: 收紧 `canSubmitMzappInspection` / `canManageMzappLockboxVideoLegacy`；参与人管理只允许管理角色；保存参与人后发 membership work-task event。
+- `backend/src/modules/cleaning_app.ts` — modified: 增加 cleaning-app 旧兼容 action guard，并接入关键写接口，按 legacy 参与字段或手动 participant action 放行。
+- `backend/scripts/tests/test_work_task_actions.ts` — modified: 增加 admin 仅可查看但未参与检查时 `submit_inspection` disabled 的 resolver 断言。
+- `docs/change-release-ledger.md` — modified: 记录本 Phase 4 release unit。
+
+### Impact / Dependencies
+
+- API: existing endpoints unchanged; some write actions now return `403 forbidden` when the user has role/permission but is not a task participant and lacks matching manual `action_ids`.
+- Database / migration: no separate migration; uses existing lazy-created `work_task_participants` table from Phase 2/3.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: builds on `CRL-20260703-001`, `CRL-20260703-002`, and `CRL-20260703-003`.
+
+### Validation
+
+- `npm run build` in `backend` — passed.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_work_task_actions.ts` in `backend` — passed: `test_work_task_actions: ok`.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed.
+- `npm test -- --runTestsByPath src/screens/tasks/TaskDetailScreen.test.tsx src/screens/tabs/TasksScreen.test.tsx src/screens/tasks/InspectionCompleteScreen.test.tsx src/screens/notices/NoticeDetailScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 4 suites / 29 tests; existing SafeAreaView deprecation warning and Jest open-handle warning remained.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with existing warnings, 0 errors.
+- `git diff --check` in root repo — passed.
+
+### Risks / Release Notes
+
+- Behavior risk: managers who previously relied on role-only execution now need to be added as a participant with the required action, which is intentional for this phase.
+- Compatibility: old payload fallback remains in the mobile UI; old submit routes are stricter only for writes.
+- Cache behavior: membership event triggers mobile full sync instead of patching user-specific `available_actions` directly.
+- Rollback: restore `canViewAll` execution allowances in `/mzapp`, remove `canPerformCleaningTaskAction` checks from `/cleaning-app`, and remove the membership event emission after participant saves.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted in root repo; shares backend action files with the earlier Phase 1-3 uncommitted units.
+
+## CRL-20260703-003 — 移动端任务详情按 available_actions 执行动作入口
+
+- **Status:** ready
+- **Updated:** 2026-07-03 13:10 AEST
+- **Request:** “Phase 3：移动端详情页作为重点……先直接执行这个计划吧”；follow-up constraints: `available_actions` 存在时 legacy 必须完全禁用，完成页和通知入口也不能绕过后端 action。
+- **Outcome:** 移动端任务详情、列表卡片、完成页和通知详情入口都以 `available_actions` 为后端授权源；admin 只有在后端授权 `submit_inspection` 时才能从详情进入检查提交页，cleaner 只有在后端授权 `upload_access_video` 时才能进入改密码/挂钥匙视频完成页，disabled 或空 action 不再被 role/task_type/status fallback 补入口。
+
+### Implementation
+
+- Previous behavior:
+  - `workTaskActions.ts` 已经优先使用后端 `available_actions`，但 `upload_access_video` 对仅改密码检查任务没有显式传递跳过检查照片标记。
+  - `TasksScreen` 的任务卡片点击仍会在 manager/inspector 角色下直接跳 `ManagerDailyTask` 或 `InspectionPanel`，可能绕过后端 action 的 enabled/disabled 结果。
+  - `InspectionCompleteScreen` 进入后只校验检查批次和本地视频状态，没有在提交前再次检查后端 `upload_access_video` action 是否仍 enabled。
+  - legacy fallback 中 password-only inspection 仍可能补一个 `submit_inspection` / `InspectionPanel` 入口。
+  - 测试只覆盖了部分 server action 渲染，缺少 admin 参与检查、cleaner 仅改密码视频、非参与人禁用和卡片点击不绕过后端授权的组合。
+- New behavior:
+  - `navigationForWorkTaskAction()` 对 `upload_access_video` 会在 password-only / execution / key-or-password 任务上进入 `InspectionComplete` 并携带 `skipInspectionPhotos: true`。
+  - `available_actions: []` 明确表示后端不给任何操作，不 fallback 到上传钥匙、补品、问题反馈等 legacy actions。
+  - legacy password-only inspection 不再生成 `submit_inspection` / `InspectionPanel` 入口，只保留访问凭证视频完成入口。
+  - `TasksScreen` 中带 `available_actions` 的任务卡片点击统一进入 `TaskDetail`，由详情页和后端 action 决定下一步入口；旧角色直跳只作为没有后端 actions 的 legacy fallback。
+  - `InspectionCompleteScreen` 在拍视频和提交前都会检查 server `upload_access_video`，disabled 或缺失时显示后端原因并阻止提交；password-only 完成页不显示“进入检查与补充”链接。
+  - `NoticeDetailScreen` 回归测试覆盖通知入口：server action disabled 时即使用户有 admin/inspector 角色，也只提示不可操作并进入详情页，不跳 `InspectionPanel` / `InspectionComplete`。
+  - `TaskDetailScreen` 测试覆盖 admin 被授权 `submit_inspection` 后进入 `InspectionPanel`、cleaner 被授权 `upload_access_video` 后进入 `InspectionComplete`、以及非参与人 disabled action 不会因 admin 角色导航。
+  - `TasksScreen` 测试覆盖 password-only 视频 action 的跳转参数，以及 manager 卡片点击不会绕过 server disabled action。
+- Key decisions:
+  - 只在没有 `available_actions` 字段时保留 legacy fallback，保持旧 App / 旧接口兼容；字段存在但为空数组时不 fallback。
+  - 本阶段只改移动端入口和测试，不改后端 action resolver、不改数据库。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/lib/workTaskActions.ts` — modified: `upload_access_video` 对 password-only / execution 类任务显式传递跳过检查照片参数；legacy password-only inspection 不再生成 `submit_inspection` 入口。
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.tsx` — modified: 带 `available_actions` 的任务卡片点击进入详情页，不再先按 manager/inspector 角色直跳；为卡片补充稳定 accessibility label 供测试验证。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionCompleteScreen.tsx` — modified: 完成页提交/拍视频前校验 server `upload_access_video`，disabled 或缺失时阻止操作；password-only 完成页隐藏检查批次入口。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionCompleteScreen.test.tsx` — added: 覆盖 password-only 完成页不需要 inspection batch、disabled `upload_access_video` 阻止提交。
+- `mz-cleaning-app-frontend/src/screens/notices/NoticeDetailScreen.test.tsx` — modified: 覆盖通知详情入口不绕过 disabled server action。
+- `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` — modified: 增加 admin 检查入口、cleaner 改密码视频入口、非参与人禁用 action、空 server actions 禁用 legacy actions 的详情页测试。
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.test.tsx` — modified: 增加 password-only 视频 action 参数和 manager 卡片点击不绕过后端 action 的列表页测试。
+- `docs/change-release-ledger.md` — modified: 记录本 Phase 3 release unit。
+
+### Impact / Dependencies
+
+- API: none; 继续消费现有 `available_actions`。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: builds on `CRL-20260703-001` task execution semantics naming and `CRL-20260703-002` unified backend action resolver work; overlaps existing uncommitted mobile action files.
+
+### Validation
+
+- `npm test -- --runTestsByPath src/screens/tasks/TaskDetailScreen.test.tsx src/screens/tabs/TasksScreen.test.tsx src/screens/tasks/InspectionCompleteScreen.test.tsx src/screens/notices/NoticeDetailScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 4 test suites / 29 tests; existing SafeAreaView deprecation warning and Jest open-handle warning remained.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with existing warnings, 0 errors.
+- `npm test` in `mz-cleaning-app-frontend` — passed: 32 test suites / 112 tests; existing SafeAreaView deprecation warning and Jest open-handle warning remained.
+- `git -C mz-cleaning-app-frontend diff --check` — passed.
+
+### Risks / Release Notes
+
+- Release risk: `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.tsx`, `TaskDetailScreen.test.tsx`, `TasksScreen.test.tsx`, and `workTaskActions.ts` already contain earlier uncommitted action-capability changes; selective release should combine related mobile action units or use hunk-level staging.
+- Compatibility: tasks without an `available_actions` field still use legacy role-based fallback; tasks with `available_actions: []` show no actions.
+- Rollback: revert the `available_actions` card-click branch, completion-page server action guard, notification regression tests, and password-only `skipInspectionPhotos` route flag; existing legacy action buttons remain for tasks without server actions.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted in nested `mz-cleaning-app-frontend`; root ledger modified. Root worktree also contains other pre-existing uncommitted units.
+
+## CRL-20260703-002 — 任务动作能力来源统一 Phase 2
+
+- **Status:** ready
+- **Updated:** 2026-07-03 12:16 AEST
+- **Request:** “再执行Phase 2”
+- **Outcome:** Web 管理端的 `management_actions` / `editable_fields` 现在由后端统一动作 resolver 模块 `workTaskActions.ts` 计算；`webTaskCapabilities.ts` 只负责展示语义、状态、参与人摘要，然后调用同一个 resolver 取得动作能力。移动端继续使用同一模块的 `available_actions` / `capabilities`，前端 fallback 不删除。
+
+### Implementation
+
+- Previous behavior:
+  - 移动端 `/mzapp/work-tasks` 的执行动作能力由 `backend/src/lib/workTaskActions.ts` 计算。
+  - Web `/cleaning` 和任务中心消费的 `management_actions` / `editable_fields` 仍由 `backend/src/lib/webTaskCapabilities.ts` 内部单独维护 gate 逻辑。
+  - 两套逻辑虽然规则接近，但来源不统一，后续扩展跨角色动作时容易出现移动端和 Web 端规则漂移。
+- New behavior:
+  - `backend/src/lib/workTaskActions.ts` 新增 Web 管理动作 resolver：`buildWebTaskManagementPayload()`。
+  - `buildWebTaskManagementPayload()` 统一产出 Web `management_actions` 和字段级 `editable_fields`，包含 `missing_management_permission`、`not_applicable`、`auto_sync_locked` 等禁用原因。
+  - `backend/src/lib/webTaskCapabilities.ts` 改为调用 `buildWebTaskManagementPayload()`，并 re-export Web action 类型，保持任务中心既有 import 不变。
+  - 移动端执行动作 resolver `buildWorkTaskActionPayload()` 保留在同一个模块中，现阶段不删除移动端旧 fallback。
+- Key decisions:
+  - 本阶段只统一后端动作能力来源，不改变 Web/mobile payload 的字段名称。
+  - Web 管理动作仍是管理/排班动作，移动端 `available_actions` 仍是现场执行动作；两者来自同一个 resolver 模块，但展示字段和 action id 不强行合并。
+  - 不删除前端 fallback，避免旧 App、灰度接口或缺失能力字段时失效。
+
+### Files / Areas
+
+- `backend/src/lib/workTaskActions.ts` — modified: 新增 Web 管理动作类型、字段能力类型、`buildWebTaskManagementPayload()`，与移动端 `buildWorkTaskActionPayload()` 放在同一动作 resolver 模块。
+- `backend/src/lib/webTaskCapabilities.ts` — modified: 删除本地 Web management action gate 生成逻辑，调用统一 resolver，并 re-export 既有 Web action 类型。
+- `backend/scripts/tests/test_work_task_actions.ts` — modified: 增加 Web management resolver 断言，覆盖 password-only 任务执行人启用、检查人禁用，以及 auto-sync lock 禁用原因。
+- `docs/change-release-ledger.md` — modified: 记录本 Phase 2 release unit。
+
+### Impact / Dependencies
+
+- API: Web `/cleaning/calendar-range` 和任务中心返回的 `management_actions` / `editable_fields` 字段名称不变；计算来源改为统一 resolver。移动端 `/mzapp/work-tasks` payload 字段不变。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: builds on `CRL-20260703-001` Phase 1 semantic naming, `CRL-20260701-006` mobile action resolver, `CRL-20260701-010` Web capability helper, `CRL-20260702-001` `/cleaning` capability consumption, and `CRL-20260701-012` task-center capability consumption.
+
+### Validation
+
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_work_task_actions.ts` in `backend` — passed: `test_work_task_actions: ok`.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_web_task_capabilities.ts` in `backend` — passed: `test_web_task_capabilities: ok`.
+- `npm run build` in `backend` — passed.
+- `git diff --check` in root repo — passed.
+
+### Risks / Release Notes
+
+- Release risk: `backend/src/lib/workTaskActions.ts` and `backend/src/lib/webTaskCapabilities.ts` are shared with earlier uncommitted action/capability units, so selective release should combine related Phase 1/2 action-capability units or use hunk-level staging.
+- Behavior risk: Web management action behavior should remain equivalent, but its source moved; targeted tests cover the key password-only and locked-task gates.
+- Compatibility: front-end fallback remains; payload fields are additive/unchanged.
+- Rollback: restore Web management action generation inside `webTaskCapabilities.ts` and remove `buildWebTaskManagementPayload()` from `workTaskActions.ts`.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted in root repo; nested `mz-cleaning-app-frontend` still contains earlier unrelated/mobile action changes but was not modified by this Phase 2 task.
+
+## CRL-20260703-001 — 任务执行语义命名统一 Phase 1
+
+- **Status:** ready
+- **Updated:** 2026-07-03 11:53 AEST
+- **Request:** “先执行Phase 1”
+- **Outcome:** 清洁/检查/挂钥匙相关任务的 `execution_semantics` 规范值统一为 `key_or_password_action`，后端 `/mzapp/work-tasks` 新产出的仅改密码/挂钥匙任务不再继续返回旧的 `key_handover_execution`；后端、Web `/cleaning` 和移动端 helper 仍兼容旧值输入，避免旧 payload 或旧 App 数据断流。
+
+### Implementation
+
+- Previous behavior:
+  - Web capability 已使用 `key_or_password_action` 表示“仅改密码/挂钥匙”。
+  - `/mzapp/work-tasks`、后端移动端 action resolver、移动端任务 helper 仍把同类任务称为 `key_handover_execution`。
+  - Web `/cleaning` 和每日清洁状态 helper 对旧语义值没有统一 normalize，跨端 payload 混用时可能出现分类、badge 或执行人判断不一致。
+- New behavior:
+  - 后端 `cleaningTaskExecutionSemantics()` 现在产出规范值 `key_or_password_action`。
+  - 新增/补齐 `normalizeTaskExecutionSemantics()` 和 `isKeyOrPasswordActionSemantics()`，把旧 `key_handover_execution` 映射到规范值。
+  - 后端 action/参与人判断、`mzapp` legacy participant 判断、Web `/cleaning`、每日清洁状态 helper、移动端 `cleaningInspection` helper 都走规范语义或兼容映射。
+  - 移动端 API 类型显式包含 `key_or_password_action`，仍通过 `string` 兼容历史值。
+- Key decisions:
+  - 本阶段只统一语义命名，不改变 Phase 2 的动作能力来源，不删除旧 fallback。
+  - `execution_role=execution`、`task_kind=execution` 仍保留，用于旧数据和旧 App 兼容。
+
+### Files / Areas
+
+- `backend/src/lib/cleaningInspection.ts` — modified: 新增任务执行语义类型、规范化 helper，并把仅改密码/挂钥匙输出改为 `key_or_password_action`。
+- `backend/src/lib/workTaskActions.ts` — modified: 后端动作能力判断通过语义 helper 兼容旧值和新值。
+- `backend/src/modules/mzapp.ts` — modified: 移动端任务 legacy participant 判断通过语义 helper 识别仅改密码/挂钥匙任务。
+- `backend/scripts/tests/test_work_task_actions.ts` — modified: 覆盖旧语义值映射到新规范值，以及执行任务产出新规范值。
+- `backend/scripts/tests/test_task_assignment_canonical.ts` — modified: `/mzapp/work-tasks` password-only checkin 断言改为规范语义值。
+- `frontend/src/app/cleaning/page.tsx` — modified: `/cleaning` 本地 execution semantics helper 兼容旧值输入。
+- `frontend/src/lib/cleaningDailyTaskStatus.ts` — modified: 每日清洁合并 badge 判断兼容旧值输入。
+- `mz-cleaning-app-frontend/src/lib/cleaningInspection.ts` — modified: 移动端任务语义 helper 新增规范化并兼容旧值。
+- `mz-cleaning-app-frontend/src/lib/api.ts` — modified: 移动端 WorkTask 类型显式接受 `key_or_password_action`。
+- `docs/change-release-ledger.md` — modified: 记录本 Phase 1 release unit。
+
+### Impact / Dependencies
+
+- API: `/mzapp/work-tasks` 新返回的仅改密码/挂钥匙任务 `execution_semantics` 规范值为 `key_or_password_action`；旧值 `key_handover_execution` 仍被后端/Web/移动端兼容读取。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: depends on `CRL-20260701-006` through `CRL-20260701-008` mobile task action capability work, `CRL-20260701-010` Web capability helper, `CRL-20260702-001` `/cleaning` capability consumption, and `CRL-20260702-003` daily cleaning display helpers.
+
+### Validation
+
+- `rg -n "key_handover_execution" backend/src backend/scripts frontend/src mz-cleaning-app-frontend/src` — passed: old value remains only in normalize compatibility mappings and one explicit compatibility test.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_work_task_actions.ts` in `backend` — passed: `test_work_task_actions: ok`.
+- `npm run build` in `backend` — passed.
+- `npm run lint` in `frontend` — passed with existing repository warnings, 0 errors.
+- `npm run build` in `frontend` — passed; existing Browserslist, ESLint, and Recharts static-generation warnings remain.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed.
+- `npm test -- --runTestsByPath src/screens/tasks/TaskDetailScreen.test.tsx src/screens/tabs/TasksScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 2 test suites / 19 tests; Jest still reported the existing open-handle warning after completion.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_task_assignment_canonical.ts` in `backend` — first run failed in sandbox with DNS `ENOTFOUND`; rerun with approved network access passed: `test_task_assignment_canonical: ok`.
+- `git diff --check` in root repo and `git -C mz-cleaning-app-frontend diff --check` — passed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: `Changed files: 17`, `Recorded changed files: 17`, `Coverage: PASS`.
+
+### Risks / Release Notes
+
+- Release risk: API consumers that hard-code only `key_handover_execution` need the same compatibility mapping before consuming newly produced payloads. The current Web and mobile code paths were updated.
+- Compatibility: old payloads with `key_handover_execution` remain accepted by normalize helpers.
+- Rollback: revert `cleaningTaskExecutionSemantics()` to emit the old value and remove the normalize-helper call sites; old role/task_kind fallback remains available.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted in root repo and nested `mz-cleaning-app-frontend`; worktree also contains other pre-existing release units unrelated to this Phase 1 task.
+
+## CRL-20260702-003 — 每日清洁状态按移动端口径合并展示
+
+- **Status:** ready
+- **Updated:** 2026-07-02 22:55 AEST
+- **Request:** “每日清洁的页面的任务状态 也需要跟移动端一样显示。”
+- **Outcome:** `/cleaning` 每日清洁页的任务主状态和 meta 标签改为移动端式展示口径；普通未分配状态显示为“未分配”，合并卡片按底层任务最高优先级状态展示，任一底层任务已 `keys_hung` 时主状态显示“已挂钥匙”而不是回落到“已分配”；退房+入住合并卡不再错误显示“纯入住检查”，入住-only 卡片不再显示“退房/退房密码”标签，非默认退房/入住时间会显示“早退房/晚退房/早入住/晚入住”标签；合并卡片里只要有底层清洁任务可分配，清洁下拉不再因为纯入住检查子任务 `not_applicable` 而被整卡禁用。
+
+### Implementation
+
+- Previous behavior:
+  - `/cleaning` 卡片虽然会读取 `display_state`，但前端合并同房源同日任务时仍用旧 `mergedStatus()` 顺序生成合并 `status`。
+  - 旧顺序会让 `assigned` 压过 `keys_hung` / completed 等真实进度，合并卡片左上角容易继续显示“已分配”。
+  - `pending` / `todo` / `unassigned` 在每日清洁页沿用 Web 通用“待处理”文案，与移动端“未分配”口径不一致。
+- New behavior:
+  - 新增每日清洁状态 helper，集中定义移动端式状态文案和合并优先级：`keys_hung` 高于完成态、待挂钥匙/待检查、进行中、已分配、未分配。
+  - `/cleaning` 卡片主状态使用每日清洁 helper 展示；合并卡片的 `display_state` 从所有底层任务重新合成，不再只依赖旧合并 `status` 文案。
+  - 卡片辅助 badge 过滤掉与主状态或 scope 同文案的项，避免“已挂钥匙”“纯入住检查”“仅改密码/挂钥匙”重复出现。
+  - `pure_checkin_inspection / 纯入住检查` 只允许在单独入住检查或仅改密码/挂钥匙语义下显示；退房+入住 `mixed_cleaning_inspection` 合并卡不继承该子任务 badge。
+  - 入住-only 卡片的订单和密码 meta label 改为“入住 / 入住密码”；非合并卡不再同时显示退房密码和入住密码。
+  - `钥匙未上传` 根据当前卡片实际展示角色判断是否有对应执行/检查人，避免未分配的纯入住检查因为隐藏 assignee 字段而显示钥匙未上传。
+  - 新增非默认时间标签：退房早于/晚于 10am 显示 `早退房/晚退房`，入住早于/晚于 3pm 显示 `早入住/晚入住`，例如 `2:30pm入住` 会显示 `早入住`。
+  - 合并 capability 时把子任务级 `not_applicable` 视为“不参与该字段”，只要同卡里存在可编辑的清洁任务就启用对应下拉；`auto_sync_locked` 等硬禁用原因仍会禁用。
+  - 清洁/检查/执行人员下拉保存时只提交对该字段可编辑的底层 `cleaning_tasks` id，避免把清洁人员写进纯入住检查子任务。
+- Key decisions:
+  - 本次是前端展示口径修复，不改数据库、不改保存接口。
+  - 保留旧 `status` 字段作为合并卡片内部状态值，但用户可见主状态以合成后的 `display_state` 为准。
+
+### Files / Areas
+
+- `frontend/src/lib/cleaningDailyTaskStatus.ts` — added: 每日清洁页移动端式状态文案、状态 rank、合并 display status/badge helper、可见 badge 过滤 helper、早/晚退房与早/晚入住时间标签 helper、合并卡片 capability gate helper。
+- `frontend/src/lib/cleaningDailyTaskStatus.test.ts` — added: 覆盖未分配文案、`assigned + keys_hung` 合并、`pending + assigned` 合并、退房+入住合并不显示“纯入住检查”、重复 badge 过滤、非默认退房/入住时间标签、`not_applicable` 子任务不禁用整张合并卡。
+- `frontend/src/app/cleaning/page.tsx` — modified: 每日清洁卡片主状态和合并卡片 capability 接入新 helper；修正重复 badge、入住-only 订单/密码 label、钥匙未上传显示条件；人员下拉按底层可编辑任务启用和保存。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: builds on `CRL-20260702-001` `/cleaning` capability consumption. Complements `CRL-20260702-002` backend/task-center status overwrite fix, but this unit only changes daily cleaning page display.
+
+### Validation
+
+- `npm --prefix frontend exec vitest run src/lib/cleaningDailyTaskStatus.test.ts` — passed: 1 test file / 7 tests.
+- `git diff --check -- frontend/src/lib/cleaningDailyTaskStatus.ts frontend/src/lib/cleaningDailyTaskStatus.test.ts frontend/src/app/cleaning/page.tsx` — passed.
+- `npm --prefix frontend run lint` — passed with existing repository warnings; no errors.
+- `npm --prefix frontend run build` — passed; existing Browserslist, ESLint, and Recharts static-generation warnings remain.
+
+### Risks / Release Notes
+
+- UX change: daily cleaning cards with raw `pending` / `todo` / `unassigned` now show “未分配” instead of “待处理” to match mobile wording.
+- Release risk: `frontend/src/app/cleaning/page.tsx` already contains earlier uncommitted capability work; selective release requires hunk-level review or combining with related `/cleaning` display units.
+- Rollback: remove `cleaningDailyTaskStatus.ts` usage from `/cleaning/page.tsx` and restore the previous local `mergedStatus()` ordering.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted in root repo; shared worktree also contains other unrelated ready/in-progress units.
+
+## CRL-20260702-001 — 每日清洁接入 Web capability 展示
+
+- **Status:** ready
+- **Updated:** 2026-07-02 11:58 AEST
+- **Request:** “Phase 3：每日清洁 /cleaning 再接入……有 capability 就按 capability；没有就走旧逻辑。”
+- **Outcome:** `/cleaning` 每日清洁页开始消费后端 Web capability：状态、scope badge、任务分类、人员显示和主要可编辑字段优先按后端字段展示/禁用；旧 `task_type` / `label` / `status` 推断和原保存 payload 继续作为 fallback。
+
+### Implementation
+
+- Previous behavior:
+  - `/cleaning` 页面按 `task_type`、`label`、`inspection_scope` 自行判断清洁执行、纯入住检查、仅改密码/挂钥匙。
+  - 任务卡片和 Drawer 的状态、scope、人员字段可编辑性主要由前端本地条件决定。
+  - 页面仍在前端合并同房源退房、入住、入住中清洁后再打开 Drawer 组装编辑 payload。
+- New behavior:
+  - 后端 Web capability payload additive 增加 `execution_semantics`、`display_scope`、`participant_summary`、`editable_fields`，继续保留 `display_state` / `management_actions`。
+  - `/cleaning/calendar-range` 已通过既有 `buildWebTaskCapabilityPayload()` 路径自然返回新增字段；旧字段不删除。
+  - `/cleaning` 页面新增 capability helper：有 `execution_semantics` 时用它决定清洁/检查/线下 tab 分类和仅改密码/挂钥匙展示；没有时 fallback 到旧 `task_type` / `label` 判断。
+  - 任务卡片和线下任务卡片状态优先读 `display_state.status_*`，scope/badge 优先读 `display_scope` / `display_state.badges`。
+  - 卡片上的清洁人员、检查人员、执行人、状态 Select，以及编辑/删除按钮，优先按 `editable_fields` / `management_actions` 禁用并显示原因。
+  - Drawer 打开时保留点击卡片携带的 capability；保存按钮、日期、状态、人员、退房/入住新增、密码/时间/钥匙套数/客人需求字段按 capability 禁用。原 `submitEdit` payload 和现有合并打开逻辑不拆。
+- Key decisions:
+  - 本阶段不重构每日清洁页的合并模型，不改数据库，不收紧接口权限。
+  - 前端本地合并卡片会组合子任务 capability，避免合并后完全丢失后端语义；字段缺失仍保持旧行为。
+
+### Files / Areas
+
+- `backend/src/lib/webTaskCapabilities.ts` — modified: Web task capability shape additive 增加 execution semantics、display scope、participant summary、editable fields。
+- `backend/scripts/tests/test_web_task_capabilities.ts` — modified: 覆盖新增语义字段和 editable field gate。
+- `frontend/src/app/cleaning/page.tsx` — modified: 每日清洁页任务分类、卡片展示、行内 Select、Drawer 主要字段优先消费 capability，旧逻辑 fallback。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: `/cleaning/calendar-range` 返回项通过既有 capability helper additive 增加 `execution_semantics`、`display_scope`、`participant_summary`、`editable_fields`；旧字段保留。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: depends on `CRL-20260701-010` Web capability helper and `CRL-20260701-012` task-center front-end consumption pattern.
+
+### Validation
+
+- `git diff --check -- backend/src/lib/webTaskCapabilities.ts backend/scripts/tests/test_web_task_capabilities.ts frontend/src/app/cleaning/page.tsx` — passed.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_web_task_capabilities.ts` in `backend` — passed: `test_web_task_capabilities: ok`.
+- `npm run build` in `backend` — passed.
+- `npm run lint` in `frontend` — passed with existing repository warnings, 0 errors.
+- `npm run build` in `frontend` — passed; existing Browserslist, ESLint, and Recharts static-generation warnings remain.
+- `npm test` in `frontend` — passed: 36 test files / 156 tests.
+
+### Risks / Release Notes
+
+- Rollout risk: `/cleaning` still keeps its old front-end merge/open-edit/save model, so this is display/control migration only, not final source-of-truth cleanup.
+- Compatibility: if backend capability fields are missing, classification, status labels, controls and Drawer fields fall back to existing behavior.
+- UX risk: locally merged cards combine child-task gates; if any child task blocks a field, the merged card field is disabled.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Rollback: remove the new fields from `webTaskCapabilities.ts` and revert the `/cleaning` page helper/control wiring; old page logic remains available as fallback.
+- Git state: uncommitted in root repo; shared worktree also contains unrelated property-payable, task-center, backend task-action, and mobile task-action units.
+
 ## CRL-20260702-002 — 挂钥匙状态不被排班保存覆盖
 
 - **Status:** committed
@@ -166,6 +1076,59 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Rollback: restore old `mergedTaskStatus()` ordering, remove `status_action` handling and front-end payload filtering, and do not run or revert the production apply SQL if already executed.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
 - Git state: committed locally to root `Dev` in commit `73a9ece`; push to remote failed because GitHub HTTPS credentials are unavailable in this environment and SSH key auth was denied. Shared files still contain unrelated local changes from other CRL units.
+
+## CRL-20260701-012 — 任务中心展示读取 Web capability
+
+- **Status:** ready
+- **Updated:** 2026-07-02 00:01 AEST
+- **Request:** “Phase 2：任务中心先改展示，不改保存逻辑……详情弹窗按钮、行级人员选择框、状态标签优先读 display_state；拖拽后的本地状态推断先保留，保存 payload 暂时保持旧结构，保存成功后重新拉 /task-center/day。”
+- **Outcome:** 任务中心页面开始优先使用后端返回的 `display_state` 展示状态和语义标签，并使用 `management_actions` 控制详情弹窗字段、按钮和行级人员选择框的可用性与禁用原因；保存 payload 和拖拽/本地推断逻辑保留，保存成功后继续刷新 day payload。
+
+### Implementation
+
+- Previous behavior:
+  - 任务卡片、详情弹窗和房源待办状态标签主要由前端根据 `status`、`inspection_mode`、`inspection_scope` 等旧字段自行推断。
+  - 详情弹窗里的清洁人员、检查安排、检查执行方式、已挂钥匙、任务已结束、线下任务字段，以及行级检查人员/执行人选择框主要由前端本地条件决定是否可操作。
+  - 看板拖拽和行级分配后仍会在本地推断状态并组装旧保存 payload。
+- New behavior:
+  - 新增前端 `display_state` / `management_actions` 类型和轻量 helper；当后端字段存在时，状态 chip 和语义 badge 优先使用后端返回值。
+  - 任务卡片、详情弹窗、退房日房源待办卡片的状态展示优先读 `display_state`，缺失时 fallback 到旧 `taskStatusMeta` / inspection badge 逻辑。
+  - 详情弹窗现有编辑字段和开关按 `management_actions` 禁用，并把后端 `disabled_reason` 转成可读 title；旧 payload 和 `saveTaskDetail` 数据结构不变。
+  - 行级“检查人员”“执行人”选择框按当前行任务的后端 management gate 禁用；旧 App/旧字段缺失时保持可编辑 fallback。
+  - `saveBoardDraft` 保持旧 `cleaning_assignments` / `work_assignments` / `task_flags` 结构；保存成功后已继续调用 `loadDay({ discardDraft: true })`，以后端返回覆盖本地推断。
+- Key decisions:
+  - 本阶段只改展示消费，不新增协作者配置入口，不新增独立保存接口，不删除拖拽后的本地状态推断。
+  - capability 缺失时默认兼容旧行为，避免后端字段灰度期间让任务中心不可操作。
+
+### Files / Areas
+
+- `frontend/src/app/task-center/page.tsx` — modified: 任务中心状态标签、详情弹窗控件和行级人员选择框优先消费 `display_state` / `management_actions`；保存逻辑保持旧结构。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: consumes additive fields `display_state` / `management_actions` from `/task-center/day`; no new endpoint required.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: depends on `CRL-20260701-010` backend Web capability fields.
+
+### Validation
+
+- `git diff --check -- frontend/src/app/task-center/page.tsx` — passed.
+- `npm run lint` in `frontend` — passed with existing repository warnings, 0 errors.
+- `npm run build` in `frontend` — passed; existing Browserslist, ESLint, and Recharts static-generation warnings remain.
+- `npm test` in `frontend` — passed: 36 test files / 156 tests.
+- `npm run typecheck` in `frontend` — not run: frontend package has no `typecheck` script; `npm run build` performed Next type validity checks.
+
+### Risks / Release Notes
+
+- Rollout risk: if backend omits `management_actions`, the page intentionally falls back to old editable behavior for compatibility.
+- UX risk: a row containing mixed tasks will disable the row-level selector when any task with backend management actions says that action is disabled; detail-level controls remain task-specific.
+- Compatibility: no old response fields, board save payload, drag/drop behavior, or old permission checks were removed.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Rollback: revert the `display_state` / `management_actions` consumption helpers and control wiring in `frontend/src/app/task-center/page.tsx`; backend additive fields can remain.
+- Git state: uncommitted in root repo; shared worktree also contains unrelated property-payable, backend task capability/action, and mobile task-action units.
 
 ## CRL-20260701-011 — 房源代付模板日期规则简化
 
@@ -232,6 +1195,59 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Rollback: restore configurable due/period/frequency fields in the front end and revert the property-payable normalization/status logic in `recurring.ts` / `properties.ts`.
 - Git state: committed locally to root `Dev` in commit `73a9ece`; push to remote failed because GitHub HTTPS credentials are unavailable in this environment and SSH key auth was denied. Worktree also contains unrelated task-center/cleaning/mobile-action units from other local work.
 
+## CRL-20260701-010 — 网页端任务能力展示字段
+
+- **Status:** ready
+- **Updated:** 2026-07-01 23:34 AEST
+- **Request:** “Phase 1：后端先补 Web capability 字段，只 additive……最好一起给 display_state。”
+- **Outcome:** 网页端任务数据源现在 additive 返回 `display_state` 和 `management_actions`，用于逐步把任务中心/每日清洁的状态文案、badge、管理按钮可用性迁到后端；旧字段保留，旧网页端逻辑仍可继续运行。
+
+### Implementation
+
+- Previous behavior:
+  - `/task-center/day` 和 `/cleaning/calendar-range` 只返回旧任务字段，网页端继续根据 `task_type`、`status`、`inspection_mode`、`inspection_scope`、`cleaner_id`、`inspector_id` 自己判断 “已挂钥匙 / 自完成 / 已检查 / 任务已结束 / 纯入住检查 / 仅改密码/挂钥匙” 等展示语义。
+  - 管理动作按钮是否适用主要散落在任务中心和每日清洁页面。
+- New behavior:
+  - 新增后端纯 helper `buildWebTaskCapabilityPayload()`，统一计算 `display_state.status_*`、`display_state.task_semantics`、`display_state.badges` 和 `management_actions`。
+  - `/task-center/day` 的 rows、work tasks、property followups 都追加 `display_state` / `management_actions`；合并后的 turnover/deferred 任务也在最终返回前统一增强。
+  - `/cleaning/calendar-range` 的 cleaning tasks、deferred inspection projection、offline tasks 返回前统一追加 `display_state` / `management_actions`。
+  - 当前仅按现有网页管理权限计算 action enabled：有 `cleaning.task.assign` 或 `cleaning.schedule.manage` 才启用管理动作；只有查看权限时仍返回动作和 `missing_management_permission` disabled reason。
+- Key decisions:
+  - 本阶段只做 additive response fields，不删除旧字段、不改数据库、不收紧现有提交接口权限。
+  - `display_state.badges` 明确覆盖网页端现有重点文案：`已挂钥匙`、`自完成`、`已检查`、`任务已结束`、`纯入住检查`、`仅改密码/挂钥匙`。
+  - `management_actions` 表达 Web 管理动作，不复用移动端现场执行 `available_actions`，避免混淆“排班/代操作”与“现场执行”。
+
+### Files / Areas
+
+- `backend/src/lib/webTaskCapabilities.ts` — added: 网页端任务展示状态和管理动作 capability 纯计算 helper。
+- `backend/src/modules/task_center.ts` — modified: `/task-center/day` 为任务中心 rows、work tasks、property followups 追加 `display_state` / `management_actions`。
+- `backend/src/modules/cleaning.ts` — modified: `/cleaning/calendar-range` 为每日清洁和线下任务返回项追加 `display_state` / `management_actions`。
+- `backend/scripts/tests/test_web_task_capabilities.ts` — added: 覆盖仅改密码/挂钥匙、已挂钥匙、自完成/已检查、只读权限禁用管理动作、线下任务显示状态。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: `/task-center/day` 与 `/cleaning/calendar-range` 响应 additive 增加 `display_state` / `management_actions`；旧字段保留，旧前端忽略新增字段不受影响。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: follows mobile/task action units `CRL-20260701-006` through `CRL-20260701-008`, but this unit is Web display/management capability only and can be reviewed separately.
+
+### Validation
+
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_web_task_capabilities.ts` in `backend` — passed: `test_web_task_capabilities: ok`.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_work_task_actions.ts` in `backend` — passed: `test_work_task_actions: ok`.
+- `git diff --check -- backend/src/lib/webTaskCapabilities.ts backend/src/modules/task_center.ts backend/src/modules/cleaning.ts backend/scripts/tests/test_web_task_capabilities.ts` — passed.
+- `npm run build` in `backend` — failed in unrelated modified file `backend/src/modules/recurring.ts`: TypeScript errors `Property 'scope' / 'due_day_of_month' / 'frequency_months' / bill-period fields does not exist on type 'T'`. This file is part of a separate property-payable/recurring local change and was not modified by this release unit.
+
+### Risks / Release Notes
+
+- Runtime risk: this is an additive projection layer; if front end switches to it later, task-center and cleaning-calendar UI should still compare old vs new display during rollout.
+- Compatibility: no old fields or old interface permissions changed.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Rollback: remove `webTaskCapabilities` helper and the response mapping calls from `task_center.ts` / `cleaning.ts`.
+- Git state: uncommitted in root repo; unrelated property-payable/recurring/frontend layout changes and prior task-action units are also present in the shared worktree.
+
 ## CRL-20260701-009 — 房源代付页面按预览重排
 
 - **Status:** committed
@@ -288,6 +1304,193 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
 - Rollback: restore the previous FullCalendar-based房源代付 layout and old `.property-payable-calendar-*` CSS block from the prior version.
 - Git state: committed locally to root `Dev` in commit `73a9ece`; push to remote failed because GitHub HTTPS credentials are unavailable in this environment and SSH key auth was denied. Unrelated task-center/mobile backend files remain local and are not part of this change.
+
+## CRL-20260701-008 — 任务动作状态流转与执行审计
+
+- **Status:** ready
+- **Updated:** 2026-07-01 22:58 AEST
+- **Request:** “Phase 3: 状态流转、执行审计与旧逻辑退场……继续执行阶段三”
+- **Outcome:** 后端新增统一动作状态流转和审计 helper，并把旧 `cleaning_app` 路径与新 `mzapp` 路径的关键执行提交接入同一套状态/审计规则；提交结果会记录实际执行人、点击人、动作、时间和状态前后值，旧 App 继续兼容。
+
+### Implementation
+
+- Previous behavior:
+  - 钥匙照片、补品、检查照片、挂钥匙/改密码视频、自完成等接口在各自页面/路由里直接决定状态。
+  - Phase 1/2 的 `available_actions` 能控制按钮，但提交后的状态结果仍分散，旧通知刷新后也可能因为完成态识别不全继续看到可执行按钮。
+  - 提交记录主要依赖 media uploader 或任务字段，不能统一区分 `actor_user_id` 和实际 `performed_by_user_id`。
+- New behavior:
+  - 新增 `work_task_action_audits` 表，记录 `performed_by_user_id`、`performed_by_name`、`performed_as_action`、`performed_at`、`actor_user_id`、`status_before`、`status_after` 和 `metadata`。
+  - 新增共享状态规则：`upload_key_photo -> in_progress`，`fill_supplies -> cleaned/restock_pending`，`complete_cleaning -> cleaned/restock_pending`，`upload_access_video -> keys_hung`，`submit_inspection -> inspected`。
+  - 旧 `cleaning_app` 的 start/key photo、consumables、inspection photos、completion photos、lockbox video、self-complete 接口写统一审计；最终状态流转通过共享 helper 执行或保持状态不变但审计对应步骤。
+  - 新 `mzapp` 的 lockbox video、inspection photos、restock proof 接口写统一审计；lockbox video 不再各自硬编码 `inspected`，统一进入 `keys_hung`。
+  - action resolver 将 `cleaned/restock_pending/restocked/to_inspect/to_hang_keys/keys_hung/inspected` 纳入完成态，任务完成后旧通知刷新会得到 `task_completed` disabled reason。
+- Key decisions:
+  - 状态值沿用当前系统已识别状态，不引入全新 `inspection_completed` 字符串，避免列表/统计/通知大面积兼容风险；审计表通过 `performed_as_action='submit_inspection'` 表达检查完成动作。
+  - 完成照片保存只是 `complete_cleaning` 的步骤审计，不单独把任务置为完成；最终完成仍由 `self-complete` 统一决定。
+  - 旧 App 兼容继续保留；本阶段没有强制删除旧 role/task/status 推断，只让旧路径后端结果统一。
+
+### Files / Areas
+
+- `backend/src/lib/workTaskActionAudit.ts` — added: action audit table ensure、performer name resolution、request actor/performer parsing、纯状态流转规则、cleaning task transition helper。
+- `backend/src/modules/cleaning_app.ts` — modified: 旧 App key photo、consumables、inspection photos、completion photos、lockbox video、self-complete 接口接入统一审计/状态流转，并接受可选 `performed_by_user_id` / `performed_by_name`。
+- `backend/src/modules/mzapp.ts` — modified: 新 App lockbox video、inspection photos、restock proof 接口接入统一审计/状态流转，并接受可选 `performed_by_user_id` / `performed_by_name`。
+- `backend/src/lib/workTaskActions.ts` — modified: 完成态判断补齐现有任务状态，避免完成后 action 仍 enabled。
+- `backend/scripts/tests/test_work_task_actions.ts` — modified: 增加 action 状态流转、keys_hung 完成态、完成后 disabled reason 覆盖。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: 现有提交接口响应 additive 增加可选 `action_result`；请求体可选接受 `performed_by_user_id` / `performed_by_name`。旧客户端忽略新增响应字段不受影响。
+- Database / migration: 后端 runtime ensure 新增 `work_task_action_audits` 表和索引；如生产 DB 用户无 DDL 权限，需要提前执行等价 DDL。
+- Config / environment: none.
+- Dependencies: none.
+- Related units: builds on `CRL-20260701-006` and `CRL-20260701-007`; selective release should keep Phase 1/2/3 together because files and behavior are shared.
+
+### Validation
+
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_work_task_actions.ts` in `backend` — passed: `test_work_task_actions: ok`.
+- `npm run build` in `backend` — passed: `tsc -p .` completed.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed: `tsc -p tsconfig.json` completed.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with existing warnings: 0 errors, 116 warnings.
+- `npm test -- --runInBand` in `mz-cleaning-app-frontend` — passed: 31 suites / 104 tests; Jest still reports an existing open-handle warning after completion.
+- `npm run build` in `frontend` — failed in an unrelated/unowned modified file: `frontend/src/app/finance/property-payables/page.tsx` has `Error: 'FullCalendar' is not defined`. This file is not part of the Phase 3 implementation and was not modified by this release unit.
+
+### Risks / Release Notes
+
+- Runtime risk: transitioning lockbox/video uploads to DB status `keys_hung` is more semantically direct than the prior `inspected`; current code already treats `keys_hung` as inspection-finished, but staging should verify manager filters and reports.
+- Runtime risk: action audit name resolution is best-effort; if `users` display/name columns differ, audit still records IDs and falls back to the user ID as name.
+- Compatibility:旧 App 路径仍可提交；真正删除旧前端推断和完全收紧接口仍需确认现场版本覆盖率后再做。
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Rollback: remove `workTaskActionAudit` helper usage from `cleaning_app.ts` / `mzapp.ts`, restore previous lockbox status update, and remove the audit table helper.
+- Git state: uncommitted in root repo; nested mobile repo still contains Phase 1/2 uncommitted changes but no additional Phase 3 mobile file edits.
+
+## CRL-20260701-007 — 任务参与人与现场动作授权
+
+- **Status:** ready
+- **Updated:** 2026-07-01 22:45 AEST
+- **Request:** “Phase 2: 参与人/协作者与现场动作抽象……先执行这个第二阶段吧”
+- **Outcome:** 后端新增统一 `work_task_participants` 参与关系，`/mzapp/work-tasks` 返回 legacy 映射 + manual 授权后的 `participants` 并以此计算 `available_actions`；管理端任务中心详情弹窗新增最小协作者/动作授权入口；关键现场视频、检查、补品接口开始接入统一 action guard，同时保留旧 App 兼容条件。
+
+### Implementation
+
+- Previous behavior:
+  - Phase 1 的 action resolver 仍从 `assignee_id` / `cleaner_id` / `inspector_id` 直接推断参与关系。
+  - 清洁员临时帮别的房源改密码视频、admin 临时执行检查等跨角色动作，需要改旧分配字段或会被新版按钮能力挡住。
+  - 后台任务中心没有给单个任务添加协作者或动作授权的入口。
+- New behavior:
+  - 新增 `work_task_participants` 表，由后端自动 ensure，记录 `source_type`、`source_id`、`user_id`、`participant_role`、`action_ids`、`source_relation`。
+  - `/mzapp/work-tasks` 将旧字段映射成 `source_relation='legacy'` participants，并叠加 `source_relation='manual'` 的授权；新版 action resolver 只看 participants 的 action_ids 判断执行动作。
+  - `upload_access_video` 作为 `site_action` 授权，不再必须绑定检查员身份；被 manual 授权的清洁员可以在 mine 视图看到对应现场动作任务。
+  - 检查提交、补品读取、补货证明、挂钥匙/改密码视频接口增加 “旧条件 OR manual action grant” 的 guard；旧角色/分配路径继续可用。
+  - 任务中心详情弹窗新增独立“临时协作者与动作授权”区，可保存全部动作、现场视频、检查提交、清洁/补品完成四类授权。
+- Key decisions:
+  - Phase 2 只新增 manual 参与关系和 site_action 表达，不做历史数据大批量 backfill；legacy 字段在读层映射为参与人。
+  - 权限收紧仍采用兼容窗口：本次只增加 manual grant 的允许路径，不删除旧 App 可用的 role/assignee/inspector/cleaner 判断。
+  - 管理端授权保存独立于看板“保存安排”，避免把权限配置混进布局草稿保存。
+
+### Files / Areas
+
+- `backend/src/lib/workTaskActions.ts` — modified: 增加 `WorkTaskParticipant`，resolver 改为从 `participants.action_ids` 判断 `submit_inspection`、`upload_access_video`、清洁/补品/问题反馈等动作。
+- `backend/src/modules/mzapp.ts` — modified: 新增 `work_task_participants` 表 ensure、manual grant 读取/返回、`/mzapp/work-task-participants` 查询接口、`/mzapp/work-task-participants/set` 保存接口、manual 授权任务可见性、现场视频/检查/补品接口 action guard。
+- `backend/scripts/tests/test_work_task_actions.ts` — modified: 增加 manual `upload_access_video`、admin manual `submit_inspection`、非参与人 disabled reason 回归覆盖。
+- `frontend/src/app/task-center/page.tsx` — modified: 任务详情弹窗增加协作者/动作授权加载、编辑和保存。
+- `mz-cleaning-app-frontend/src/lib/api.ts` — modified: 增加 `WorkTaskParticipant` 类型和 `WorkTask.participants` 可选字段。
+- `mz-cleaning-app-frontend/src/lib/workTasksStore.ts` — modified: SSE/patch 安全字段允许同步 `participants`。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: 新增 `/mzapp/work-task-participants` 和 `/mzapp/work-task-participants/set`；`/mzapp/work-tasks` additive 增加可选 `participants`，并继续返回 Phase 1 的 `available_actions` / `capabilities`。
+- Database / migration: 后端 runtime ensure 新增 `work_task_participants` 表和索引；不需要手工 backfill，legacy 关系在读层映射。
+- Config / environment: none.
+- Dependencies: none.
+- Related units: depends on Phase 1 `CRL-20260701-006` action resolver/mobile capability consumption; shares the same root and nested mobile files, selective release should keep Phase 1 + Phase 2 together.
+
+### Validation
+
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_work_task_actions.ts` in `backend` — passed: `test_work_task_actions: ok`.
+- `npm run build` in `backend` — passed: `tsc -p .` completed.
+- `npm run build` in `frontend` — passed: Next build completed; existing lint/build warnings remain, including historical hook/img/chart warnings.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed: `tsc -p tsconfig.json` completed.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with existing warnings: 0 errors, 116 warnings.
+- `npm test -- --runInBand` in `mz-cleaning-app-frontend` — passed: 31 suites / 104 tests; Jest still reports an existing open-handle warning after completion.
+- Manual acceptance not run against live DB: actual end-to-end collaborator save and mobile task visibility should be checked in staging with a real cleaner/admin user after deploy.
+
+### Risks / Release Notes
+
+- Runtime risk: `work_task_participants` is auto-created on first relevant route call; if production DB user lacks DDL permission, deploy must run the equivalent DDL separately.
+- Runtime risk: manual grants are saved per active source task id. For merged turnover cards, adding/removing authorization applies to all active source ids shown in that card.
+- Compatibility: old App paths stay open through legacy guards; Phase 3 can tighten endpoint permissions with client version/header gating after adoption.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Rollback: remove manual participant projection/API/guard additions from `mzapp.ts`, revert resolver to Phase 1 legacy participant calculation, and remove task-center authorization UI.
+- Git state: uncommitted in root repo and nested `mz-cleaning-app-frontend` repo.
+
+## CRL-20260701-006 — 移动端任务动作改为后端能力下发
+
+- **Status:** ready
+- **Updated:** 2026-07-01 22:00 AEST
+- **Request:** “PLEASE IMPLEMENT THIS PLAN: Phase 1 执行计划：后端下发动作能力并兼容旧 App”
+- **Outcome:** `/mzapp/work-tasks` 现在对每个任务追加 `available_actions` 和 `capabilities`；新版移动端列表、详情和通知任务跳转优先使用后端下发动作，旧字段和旧移动端路径保持兼容。
+
+### Implementation
+
+- Previous behavior:
+  - 移动端 `TasksScreen` 和 `TaskDetailScreen` 按 role、task_kind、task_type、status 等本地条件拼按钮，admin、清洁员、检查员临时执行其他现场动作时容易被角色逻辑挡住。
+  - 通知和历史任务入口仍可能按管理/检查角色直接跳旧流程，没有先看当前任务是否仍可执行。
+  - `/mzapp/work-tasks` 只返回任务数据字段，没有统一动作能力结果。
+- New behavior:
+  - 后端新增纯 resolver，根据当前用户基础权限、管理可见性、任务参与关系、任务类型、执行语义和状态计算 `available_actions` 与 `capabilities`。
+  - `/mzapp/work-tasks` 响应以 additive 方式追加字段，不删除、不重命名、不改变旧字段含义。
+  - 移动端新增 `workTaskActions` helper；有后端 `available_actions` 时直接使用后端按钮，没有该字段时回退旧本地逻辑兼容旧后端/旧缓存。
+  - `TasksScreen` 卡片只渲染 `placement=primary` 的前 1-2 个动作；`TaskDetailScreen` 渲染完整动作并显示后端 disabled reason。
+  - 通知详情的“查看任务”和系统推送点击会先刷新 `/mzapp/work-tasks`，再按最新 action route 跳转；不可执行时停到任务详情并提示原因。
+- Key decisions:
+  - Phase 1 不新增参与人表、不迁移现场动作落库模型、不突然收紧旧接口权限。
+  - `upload_access_video` 暂以 `intent='site_action'` 表达改密码/挂钥匙视频动作，后续 Phase 2/3 再统一现场动作模型。
+  - 管理角色仍可看任务和执行管理动作，但普通执行动作需要任务参与关系；这只影响新版 App 的按钮可用性，不封旧接口。
+
+### Files / Areas
+
+- `backend/src/lib/workTaskActions.ts` — added: 后端 action resolver、action/capability 类型和任务动作计算规则。
+- `backend/src/modules/mzapp.ts` — modified: `/mzapp/work-tasks` 为每个任务追加 `available_actions` / `capabilities`。
+- `backend/scripts/tests/test_work_task_actions.ts` — added: 覆盖 cleaner、admin、inspector、customer_service、offline_manager、completed task 的 action resolver 行为。
+- `mz-cleaning-app-frontend/src/lib/api.ts` — modified: 新增 `WorkTaskAvailableAction` 类型和 `WorkTask.available_actions` / `capabilities` 可选字段。
+- `mz-cleaning-app-frontend/src/lib/workTasksStore.ts` — modified: SSE/patch 安全字段允许同步 `available_actions` / `capabilities`。
+- `mz-cleaning-app-frontend/src/lib/workTaskActions.ts` — added: 移动端 action fallback、disabled reason 文案、action 到页面路由映射、通知 preferred action 选择。
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.tsx` — modified: 卡片主按钮改为 `primaryActionsForTask()`，保留本地钥匙待同步/已记录和退房提交中的状态保护。
+- `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.tsx` — modified: 详情页完整展示后端 actions 和 disabled reason；上传钥匙、标记退房继续走原本本地执行逻辑。
+- `mz-cleaning-app-frontend/src/screens/notices/NoticeDetailScreen.tsx` — modified: 通知详情新增“查看任务”，点击时刷新任务并按最新 action 跳转或提示不可执行原因。
+- `mz-cleaning-app-frontend/src/navigation/RootNavigator.tsx` — modified: 系统推送点击任务通知时刷新任务后按 capability 解析路由，旧数据回退原 role-based 路由。
+- `mz-cleaning-app-frontend/src/screens/tabs/NoticesScreen.tsx` — modified: 历史任务搜索结果在存在 `available_actions` 时按 action 跳转。
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.test.tsx` — modified: 增加列表只渲染后端 primary action 的测试。
+- `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` — modified: 增加详情页使用后端 action 和 disabled reason 的测试。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: `/mzapp/work-tasks` 响应新增可选 `available_actions` 和 `capabilities`；旧字段保留，旧 App 可忽略新增字段。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: shares `backend/src/modules/mzapp.ts` with recent `/mzapp/work-tasks` release units, but this unit is additive and independently releasable with hunk review if selective staging is needed.
+
+### Validation
+
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_work_task_actions.ts` in `backend` — passed: `test_work_task_actions: ok`.
+- `npm run build` in `backend` — passed: `tsc -p .` completed.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed: `tsc -p tsconfig.json` completed.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with existing warnings: 0 errors, 116 warnings.
+- `npm test -- --runInBand src/screens/tasks/TaskDetailScreen.test.tsx src/screens/tabs/TasksScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 2 suites / 19 tests.
+- `npm test -- --runInBand` in `mz-cleaning-app-frontend` — passed: 31 suites / 104 tests; Jest still reports an existing open-handle warning after completion.
+- Manual old App field compatibility — code-reviewed only: old `/mzapp/work-tasks` fields are retained and old submit/upload endpoints were not tightened in this phase.
+
+### Risks / Release Notes
+
+- Runtime risk: 后端 action resolver 是新增权威按钮来源，新 App 会暴露后端计算错误；保留 mobile fallback 降低旧缓存/旧后端风险。
+- Runtime risk: 通知点击刷新任务时使用通知日期或当前任务日期前后窗口，极旧通知如果任务不在窗口内会回退任务详情。
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Rollback: remove `buildWorkTaskActionPayload` projection from `/mzapp/work-tasks`, restore old mobile button blocks, and remove the `workTaskActions` helper usage.
+- Git state: uncommitted in root repo and nested `mz-cleaning-app-frontend` repo.
 
 ## CRL-20260701-005 — 移动端管理视图显示未分配入住检查任务
 

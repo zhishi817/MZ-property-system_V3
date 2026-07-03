@@ -12,6 +12,7 @@ const uuid_1 = require("uuid");
 const notificationEvents_1 = require("../services/notificationEvents");
 const workTaskEvents_1 = require("../services/workTaskEvents");
 const cleaningInspection_1 = require("../lib/cleaningInspection");
+const webTaskCapabilities_1 = require("../lib/webTaskCapabilities");
 exports.router = (0, express_1.Router)();
 const DEFAULT_SUMMARY_CHECKOUT_TIME = '10am';
 const DEFAULT_SUMMARY_CHECKIN_TIME = '3pm';
@@ -38,6 +39,10 @@ function dayOnly(s) {
 }
 function assignedStatusFromAssignees(cleanerId, inspectorId) {
     return String(cleanerId || '').trim() || String(inspectorId || '').trim() ? 'assigned' : 'pending';
+}
+function isCheckinSiteExecutionTask(task) {
+    const type = String((task === null || task === void 0 ? void 0 : task.task_type) || (task === null || task === void 0 ? void 0 : task.type) || '').trim().toLowerCase();
+    return type === 'checkin_clean' && ['inspect_and_hang', 'password_only'].includes((0, cleaningInspection_1.normalizeInspectionScope)(task === null || task === void 0 ? void 0 : task.inspection_scope));
 }
 function cleanNotificationText(value) {
     return String(value !== null && value !== void 0 ? value : '').replace(/\s+/g, ' ').trim();
@@ -1058,7 +1063,7 @@ async function isValidAnyStaffId(id) {
     return all.some((x) => String(x.id) === sid && x.is_active !== false);
 }
 exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign'), async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y;
     const { id } = req.params;
     const operationId = (0, uuid_1.v4)();
     const opNow = new Date().toISOString();
@@ -1067,13 +1072,11 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
         return res.status(400).json(parsed.error.format());
     if (!(await isValidStaffId((_a = parsed.data.cleaner_id) !== null && _a !== void 0 ? _a : null, 'cleaner')))
         return res.status(400).json({ message: '无效的清洁人员' });
-    if (!(await isValidStaffId((_b = parsed.data.inspector_id) !== null && _b !== void 0 ? _b : null, 'inspector')))
-        return res.status(400).json({ message: '无效的检查人员' });
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
             await (0, cleaningSync_1.ensureCleaningSchemaV2)();
             const r0 = await dbAdapter_1.pgPool.query('SELECT * FROM cleaning_tasks WHERE id = $1 LIMIT 1', [String(id)]);
-            const before = ((_c = r0 === null || r0 === void 0 ? void 0 : r0.rows) === null || _c === void 0 ? void 0 : _c[0]) || null;
+            const before = ((_b = r0 === null || r0 === void 0 ? void 0 : r0.rows) === null || _b === void 0 ? void 0 : _b[0]) || null;
             if (!before)
                 return res.status(404).json({ message: 'task not found' });
             if (parsed.data.keys_required !== undefined && before.order_id) {
@@ -1085,12 +1088,16 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
             delete patch.note;
             if (patch.keys_required === null)
                 patch.keys_required = 1;
-            const isKeyHandoverExecution = (0, cleaningInspection_1.isCheckinKeyHandoverTask)({
-                task_type: (_d = patch.task_type) !== null && _d !== void 0 ? _d : before.task_type,
-                inspection_scope: (_e = patch.inspection_scope) !== null && _e !== void 0 ? _e : before.inspection_scope,
+            const isCheckinSiteExecution = isCheckinSiteExecutionTask({
+                task_type: (_c = patch.task_type) !== null && _c !== void 0 ? _c : before.task_type,
+                inspection_scope: (_d = patch.inspection_scope) !== null && _d !== void 0 ? _d : before.inspection_scope,
             });
-            if (isKeyHandoverExecution) {
+            if (!isCheckinSiteExecution && !(await isValidStaffId((_e = parsed.data.inspector_id) !== null && _e !== void 0 ? _e : null, 'inspector')))
+                return res.status(400).json({ message: '无效的检查人员' });
+            if (isCheckinSiteExecution) {
                 if (!(await isValidAnyStaffId((_f = patch.assignee_id) !== null && _f !== void 0 ? _f : null)))
+                    return res.status(400).json({ message: '无效的执行人' });
+                if (!(await isValidAnyStaffId((_g = patch.inspector_id) !== null && _g !== void 0 ? _g : null)))
                     return res.status(400).json({ message: '无效的执行人' });
                 if (patch.assignee_id !== undefined && patch.cleaner_id === undefined)
                     patch.cleaner_id = null;
@@ -1115,10 +1122,10 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                     parsed.data.inspection_mode !== undefined ||
                     parsed.data.inspection_due_date !== undefined;
                 if (touchingAssignees && statusAutoEligible && incomingStatusEligible) {
-                    const nextCleanerId = isKeyHandoverExecution
-                        ? (patch.assignee_id !== undefined ? ((_g = patch.assignee_id) !== null && _g !== void 0 ? _g : null) : ((_j = (_h = before.assignee_id) !== null && _h !== void 0 ? _h : before.inspector_id) !== null && _j !== void 0 ? _j : null))
-                        : (patch.cleaner_id !== undefined ? ((_k = patch.cleaner_id) !== null && _k !== void 0 ? _k : null) : ((_m = (_l = before.cleaner_id) !== null && _l !== void 0 ? _l : before.assignee_id) !== null && _m !== void 0 ? _m : null));
-                    const nextInspectorId = parsed.data.inspector_id !== undefined ? ((_o = parsed.data.inspector_id) !== null && _o !== void 0 ? _o : null) : ((_p = before.inspector_id) !== null && _p !== void 0 ? _p : null);
+                    const nextCleanerId = isCheckinSiteExecution
+                        ? (patch.assignee_id !== undefined ? ((_h = patch.assignee_id) !== null && _h !== void 0 ? _h : null) : ((_k = (_j = before.assignee_id) !== null && _j !== void 0 ? _j : before.inspector_id) !== null && _k !== void 0 ? _k : null))
+                        : (patch.cleaner_id !== undefined ? ((_l = patch.cleaner_id) !== null && _l !== void 0 ? _l : null) : ((_o = (_m = before.cleaner_id) !== null && _m !== void 0 ? _m : before.assignee_id) !== null && _o !== void 0 ? _o : null));
+                    const nextInspectorId = parsed.data.inspector_id !== undefined ? ((_p = parsed.data.inspector_id) !== null && _p !== void 0 ? _p : null) : ((_q = before.inspector_id) !== null && _q !== void 0 ? _q : null);
                     patch.status = assignedStatusFromAssignees(nextCleanerId, nextInspectorId);
                 }
             }
@@ -1128,7 +1135,7 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
             const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]));
             const sql = `UPDATE cleaning_tasks SET ${set} WHERE id = $${keys.length + 1} RETURNING *`;
             const r1 = await dbAdapter_1.pgPool.query(sql, [...values, String(id)]);
-            const updated = ((_q = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _q === void 0 ? void 0 : _q[0]) || before;
+            const updated = ((_r = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _r === void 0 ? void 0 : _r[0]) || before;
             if (parsed.data.new_code !== undefined &&
                 String((updated === null || updated === void 0 ? void 0 : updated.order_id) || '').trim() &&
                 String((updated === null || updated === void 0 ? void 0 : updated.task_type) || (updated === null || updated === void 0 ? void 0 : updated.type) || '').trim().toLowerCase() === 'checkin_clean') {
@@ -1146,7 +1153,7 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                  AND ${(0, cleaningSync_1.activeCleaningTaskWhereSql)('')}
                  AND COALESCE(keys_required, 1) <> $1`, [nextK, orderId]);
                     }
-                    catch (_w) { }
+                    catch (_z) { }
                 }
             }
             try {
@@ -1161,12 +1168,12 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                         changeScope: workPatch.changedFields.some((field) => field === 'checkout_time' || field === 'checkin_time' || field === 'start_time' || field === 'end_time' || field === 'summary') ? 'list' : 'detail',
                         changedFields: workPatch.changedFields,
                         patch: workPatch.patch,
-                        causedByUserId: String(((_r = req === null || req === void 0 ? void 0 : req.user) === null || _r === void 0 ? void 0 : _r.sub) || '').trim() || null,
+                        causedByUserId: String(((_s = req === null || req === void 0 ? void 0 : req.user) === null || _s === void 0 ? void 0 : _s.sub) || '').trim() || null,
                         visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(updated),
                     });
                 }
             }
-            catch (_x) { }
+            catch (_0) { }
             try {
                 const { changes, lines } = buildCleaningTaskUpdateNoticeDetails(before, updated);
                 const propertyId = String(updated.property_id || '').trim();
@@ -1194,7 +1201,7 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                     });
                 }
             }
-            catch (_y) { }
+            catch (_1) { }
             return res.json(updated);
         }
         const task = store_1.db.cleaningTasks.find((t) => String(t.id) === String(id));
@@ -1210,11 +1217,15 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
         if (localPatch.guest_special_request === undefined && localPatch.note !== undefined)
             localPatch.guest_special_request = localPatch.note;
         delete localPatch.note;
-        const isKeyHandoverExecution = (0, cleaningInspection_1.isCheckinKeyHandoverTask)({
-            task_type: (_s = localPatch.task_type) !== null && _s !== void 0 ? _s : task.task_type,
-            inspection_scope: (_t = localPatch.inspection_scope) !== null && _t !== void 0 ? _t : task.inspection_scope,
+        const isCheckinSiteExecution = isCheckinSiteExecutionTask({
+            task_type: (_t = localPatch.task_type) !== null && _t !== void 0 ? _t : task.task_type,
+            inspection_scope: (_u = localPatch.inspection_scope) !== null && _u !== void 0 ? _u : task.inspection_scope,
         });
-        if (isKeyHandoverExecution && !(await isValidAnyStaffId((_u = localPatch.assignee_id) !== null && _u !== void 0 ? _u : null)))
+        if (!isCheckinSiteExecution && !(await isValidStaffId((_v = parsed.data.inspector_id) !== null && _v !== void 0 ? _v : null, 'inspector')))
+            return res.status(400).json({ message: '无效的检查人员' });
+        if (isCheckinSiteExecution && !(await isValidAnyStaffId((_w = localPatch.assignee_id) !== null && _w !== void 0 ? _w : null)))
+            return res.status(400).json({ message: '无效的执行人' });
+        if (isCheckinSiteExecution && !(await isValidAnyStaffId((_x = localPatch.inspector_id) !== null && _x !== void 0 ? _x : null)))
             return res.status(400).json({ message: '无效的执行人' });
         validateAndApplyInspectionPatch({ patch: localPatch, current: task });
         if (localPatch.property_id !== undefined)
@@ -1249,7 +1260,7 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
             task.checkin_time = localPatch.checkin_time;
         if (localPatch.assignee_id !== undefined)
             task.assignee_id = localPatch.assignee_id;
-        if (isKeyHandoverExecution) {
+        if (isCheckinSiteExecution) {
             if (localPatch.assignee_id !== undefined && localPatch.cleaner_id === undefined)
                 task.cleaner_id = null;
         }
@@ -1279,7 +1290,7 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                 parsed.data.inspection_mode !== undefined ||
                 parsed.data.inspection_due_date !== undefined;
             if (touchingAssignees && statusAutoEligible && incomingStatusEligible) {
-                const cleaner = String(task.cleaner_id || task.assignee_id || '').trim();
+                const cleaner = String(isCheckinSiteExecution ? (task.assignee_id || task.inspector_id || '') : (task.cleaner_id || task.assignee_id || '')).trim();
                 const inspector = String(task.inspector_id || '').trim();
                 task.status = assignedStatusFromAssignees(cleaner, inspector);
             }
@@ -1310,12 +1321,12 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                     changeScope: workPatch.changedFields.some((field) => field === 'checkout_time' || field === 'checkin_time' || field === 'start_time' || field === 'end_time' || field === 'summary') ? 'list' : 'detail',
                     changedFields: workPatch.changedFields,
                     patch: workPatch.patch,
-                    causedByUserId: String(((_v = req === null || req === void 0 ? void 0 : req.user) === null || _v === void 0 ? void 0 : _v.sub) || '').trim() || null,
+                    causedByUserId: String(((_y = req === null || req === void 0 ? void 0 : req.user) === null || _y === void 0 ? void 0 : _y.sub) || '').trim() || null,
                     visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(task),
                 });
             }
         }
-        catch (_z) { }
+        catch (_2) { }
         try {
             const { changes, lines } = buildCleaningTaskUpdateNoticeDetails(before, task);
             const propertyId = String(task.property_id || '').trim();
@@ -1343,7 +1354,7 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                 });
             }
         }
-        catch (_0) { }
+        catch (_3) { }
         return res.json(task);
     }
     catch (e) {
@@ -1356,8 +1367,10 @@ const createTaskSchema = zod_1.z.object({
     task_date: zod_1.z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     property_id: zod_1.z.string().min(1),
     status: zod_1.z.enum(['pending', 'assigned', 'in_progress', 'completed', 'cancelled', 'keys_hung']).optional(),
+    assignee_id: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
     cleaner_id: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
     inspector_id: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
+    inspection_scope: zod_1.z.enum(['inspect_and_hang', 'password_only']).optional().nullable(),
     inspection_mode: zod_1.z.enum(['pending_decision', 'same_day', 'deferred', 'self_complete', 'checked_done']).optional().nullable(),
     inspection_due_date: zod_1.z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
     scheduled_at: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
@@ -1381,14 +1394,18 @@ const createTaskSchema = zod_1.z.object({
     note: zod_1.z.union([zod_1.z.string(), zod_1.z.null()]).optional(),
 }).strict();
 exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y;
     const parsed = createTaskSchema.safeParse(req.body || {});
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
     if (!(await isValidStaffId((_a = parsed.data.cleaner_id) !== null && _a !== void 0 ? _a : null, 'cleaner')))
         return res.status(400).json({ message: '无效的清洁人员' });
-    if (!(await isValidStaffId((_b = parsed.data.inspector_id) !== null && _b !== void 0 ? _b : null, 'inspector')))
+    const createType = parsed.data.task_type || (parsed.data.create_mode === 'checkin' ? 'checkin_clean' : null);
+    const createIsCheckinSiteExecution = createType === 'checkin_clean' && parsed.data.assignee_id !== undefined;
+    if (!createIsCheckinSiteExecution && !(await isValidStaffId((_b = parsed.data.inspector_id) !== null && _b !== void 0 ? _b : null, 'inspector')))
         return res.status(400).json({ message: '无效的检查人员' });
+    if (createIsCheckinSiteExecution && !(await isValidAnyStaffId((_c = parsed.data.assignee_id) !== null && _c !== void 0 ? _c : null)))
+        return res.status(400).json({ message: '无效的执行人' });
     const operationId = (0, uuid_1.v4)();
     try {
         const mode = parsed.data.create_mode;
@@ -1406,13 +1423,13 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
             try {
                 const r = await dbAdapter_1.pgPool.query('SELECT id::text AS id FROM properties WHERE id::text=$1 OR upper(code)=upper($1) LIMIT 1', [rawPropertyId]);
-                const row = (_c = r === null || r === void 0 ? void 0 : r.rows) === null || _c === void 0 ? void 0 : _c[0];
+                const row = (_d = r === null || r === void 0 ? void 0 : r.rows) === null || _d === void 0 ? void 0 : _d[0];
                 const id = (row === null || row === void 0 ? void 0 : row.id) ? String(row.id) : '';
                 if (!id)
                     return res.status(400).json({ message: '无效的房源' });
                 normalizedPropertyId = id;
             }
-            catch (_w) { }
+            catch (_z) { }
         }
         else {
             const anyDb = store_1.db;
@@ -1423,23 +1440,25 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
                 return res.status(400).json({ message: '无效的房源' });
             normalizedPropertyId = id;
         }
+        const baseAssigneeId = parsed.data.assignee_id !== undefined ? ((_e = parsed.data.assignee_id) !== null && _e !== void 0 ? _e : null) : ((_f = parsed.data.cleaner_id) !== null && _f !== void 0 ? _f : null);
         const base = {
             order_id: null,
             property_id: normalizedPropertyId,
             task_date: parsed.data.task_date,
             date: parsed.data.task_date,
-            status: parsed.data.status || assignedStatusFromAssignees((_d = parsed.data.cleaner_id) !== null && _d !== void 0 ? _d : null, (_e = parsed.data.inspector_id) !== null && _e !== void 0 ? _e : null),
-            assignee_id: ((_f = parsed.data.cleaner_id) !== null && _f !== void 0 ? _f : null),
-            cleaner_id: ((_g = parsed.data.cleaner_id) !== null && _g !== void 0 ? _g : null),
-            inspector_id: ((_h = parsed.data.inspector_id) !== null && _h !== void 0 ? _h : null),
-            scheduled_at: (_j = parsed.data.scheduled_at) !== null && _j !== void 0 ? _j : null,
-            old_code: (_k = parsed.data.old_code) !== null && _k !== void 0 ? _k : null,
-            new_code: (_l = parsed.data.new_code) !== null && _l !== void 0 ? _l : null,
-            checkout_time: (_m = parsed.data.checkout_time) !== null && _m !== void 0 ? _m : null,
-            checkin_time: (_o = parsed.data.checkin_time) !== null && _o !== void 0 ? _o : null,
+            status: parsed.data.status || assignedStatusFromAssignees((_g = baseAssigneeId !== null && baseAssigneeId !== void 0 ? baseAssigneeId : parsed.data.cleaner_id) !== null && _g !== void 0 ? _g : null, (_h = parsed.data.inspector_id) !== null && _h !== void 0 ? _h : null),
+            assignee_id: baseAssigneeId,
+            cleaner_id: createIsCheckinSiteExecution ? null : ((_j = parsed.data.cleaner_id) !== null && _j !== void 0 ? _j : null),
+            inspector_id: ((_k = parsed.data.inspector_id) !== null && _k !== void 0 ? _k : null),
+            inspection_scope: (_l = parsed.data.inspection_scope) !== null && _l !== void 0 ? _l : null,
+            scheduled_at: (_m = parsed.data.scheduled_at) !== null && _m !== void 0 ? _m : null,
+            old_code: (_o = parsed.data.old_code) !== null && _o !== void 0 ? _o : null,
+            new_code: (_p = parsed.data.new_code) !== null && _p !== void 0 ? _p : null,
+            checkout_time: (_q = parsed.data.checkout_time) !== null && _q !== void 0 ? _q : null,
+            checkin_time: (_r = parsed.data.checkin_time) !== null && _r !== void 0 ? _r : null,
             keys_required: parsed.data.keys_required == null ? 1 : parsed.data.keys_required,
-            nights_override: (_p = parsed.data.nights_override) !== null && _p !== void 0 ? _p : null,
-            guest_special_request: (_r = (_q = parsed.data.guest_special_request) !== null && _q !== void 0 ? _q : parsed.data.note) !== null && _r !== void 0 ? _r : null,
+            nights_override: (_s = parsed.data.nights_override) !== null && _s !== void 0 ? _s : null,
+            guest_special_request: (_u = (_t = parsed.data.guest_special_request) !== null && _t !== void 0 ? _t : parsed.data.note) !== null && _u !== void 0 ? _u : null,
             auto_sync_enabled: true,
             source: 'manual',
             execution_state: 'active',
@@ -1457,7 +1476,7 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
                         task_type: tt,
                         type: tt,
                         inspection_mode: (0, cleaningInspection_1.normalizeInspectionMode)(parsed.data.inspection_mode) || (0, cleaningInspection_1.defaultInspectionModeForTaskType)(tt),
-                        inspection_due_date: (_s = parsed.data.inspection_due_date) !== null && _s !== void 0 ? _s : null,
+                        inspection_due_date: (_v = parsed.data.inspection_due_date) !== null && _v !== void 0 ? _v : null,
                     };
                     validateAndApplyInspectionPatch({ patch: row, taskType: tt });
                     const keys = Object.keys(row).filter((k) => row[k] !== undefined);
@@ -1466,7 +1485,7 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
                     const values = keys.map((k) => row[k]);
                     const sql = `INSERT INTO cleaning_tasks(${cols}) VALUES(${args}) RETURNING *`;
                     const r = await client.query(sql, values);
-                    const created = ((_t = r === null || r === void 0 ? void 0 : r.rows) === null || _t === void 0 ? void 0 : _t[0]) || row;
+                    const created = ((_w = r === null || r === void 0 ? void 0 : r.rows) === null || _w === void 0 ? void 0 : _w[0]) || row;
                     createdRows.push(created);
                     await (0, workTaskEvents_1.emitWorkTaskEvent)({
                         taskId: `cleaning_task:${String(created.id)}`,
@@ -1487,7 +1506,7 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
                             scheduled_at: created.scheduled_at,
                             property_id: created.property_id,
                         },
-                        causedByUserId: String(((_u = req === null || req === void 0 ? void 0 : req.user) === null || _u === void 0 ? void 0 : _u.sub) || '').trim() || null,
+                        causedByUserId: String(((_x = req === null || req === void 0 ? void 0 : req.user) === null || _x === void 0 ? void 0 : _x.sub) || '').trim() || null,
                         visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(created),
                     }, client);
                 }
@@ -1497,7 +1516,7 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
                 try {
                     await client.query('ROLLBACK');
                 }
-                catch (_x) { }
+                catch (_0) { }
                 throw e;
             }
             finally {
@@ -1526,7 +1545,7 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
                         }, { operationId });
                     });
                 }
-                catch (_y) { }
+                catch (_1) { }
             }
             if (createdRows.length === 1)
                 return res.json(createdRows[0]);
@@ -1539,7 +1558,7 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
                 task_type: tt,
                 type: tt,
                 inspection_mode: (0, cleaningInspection_1.normalizeInspectionMode)(parsed.data.inspection_mode) || (0, cleaningInspection_1.defaultInspectionModeForTaskType)(tt),
-                inspection_due_date: (_v = parsed.data.inspection_due_date) !== null && _v !== void 0 ? _v : null,
+                inspection_due_date: (_y = parsed.data.inspection_due_date) !== null && _y !== void 0 ? _y : null,
             };
             validateAndApplyInspectionPatch({ patch: row, taskType: tt });
             store_1.db.cleaningTasks.push(row);
@@ -1737,8 +1756,6 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
         basePatch.keys_required = 1;
     if (basePatch.cleaner_id !== undefined && basePatch.assignee_id === undefined)
         basePatch.assignee_id = basePatch.cleaner_id;
-    if (basePatch.assignee_id !== undefined && basePatch.cleaner_id === undefined)
-        basePatch.cleaner_id = basePatch.assignee_id;
     try {
         const updated = [];
         if (basePatch.keys_required !== undefined) {
@@ -1762,7 +1779,7 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
         }
         for (const id of ids) {
             const r = await (async () => {
-                var _a, _b, _c, _d, _e, _f, _g, _h;
+                var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q;
                 if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
                     await (0, cleaningSync_1.ensureCleaningSchemaV2)();
                     const r0 = await dbAdapter_1.pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id]);
@@ -1770,6 +1787,13 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                     if (!before)
                         return null;
                     const patch = { ...basePatch };
+                    const isCheckinSiteExecution = isCheckinSiteExecutionTask({
+                        task_type: (_b = patch.task_type) !== null && _b !== void 0 ? _b : before.task_type,
+                        inspection_scope: (_c = patch.inspection_scope) !== null && _c !== void 0 ? _c : before.inspection_scope,
+                    });
+                    if (patch.assignee_id !== undefined && patch.cleaner_id === undefined) {
+                        patch.cleaner_id = isCheckinSiteExecution ? null : patch.assignee_id;
+                    }
                     if (patch.task_date != null)
                         patch.date = patch.task_date;
                     validateAndApplyInspectionPatch({ patch, current: before });
@@ -1784,8 +1808,10 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                             basePatch.inspection_mode !== undefined ||
                             basePatch.inspection_due_date !== undefined;
                         if (touchingAssignees && statusAutoEligible && incomingStatusEligible) {
-                            const nextCleanerId = patch.cleaner_id !== undefined ? ((_b = patch.cleaner_id) !== null && _b !== void 0 ? _b : null) : ((_d = (_c = before.cleaner_id) !== null && _c !== void 0 ? _c : before.assignee_id) !== null && _d !== void 0 ? _d : null);
-                            const nextInspectorId = patch.inspector_id !== undefined ? ((_e = patch.inspector_id) !== null && _e !== void 0 ? _e : null) : ((_f = before.inspector_id) !== null && _f !== void 0 ? _f : null);
+                            const nextCleanerId = isCheckinSiteExecution
+                                ? (patch.assignee_id !== undefined ? ((_d = patch.assignee_id) !== null && _d !== void 0 ? _d : null) : ((_f = (_e = before.assignee_id) !== null && _e !== void 0 ? _e : before.inspector_id) !== null && _f !== void 0 ? _f : null))
+                                : (patch.cleaner_id !== undefined ? ((_g = patch.cleaner_id) !== null && _g !== void 0 ? _g : null) : ((_j = (_h = before.cleaner_id) !== null && _h !== void 0 ? _h : before.assignee_id) !== null && _j !== void 0 ? _j : null));
+                            const nextInspectorId = patch.inspector_id !== undefined ? ((_k = patch.inspector_id) !== null && _k !== void 0 ? _k : null) : ((_l = before.inspector_id) !== null && _l !== void 0 ? _l : null);
                             patch.status = assignedStatusFromAssignees(nextCleanerId, nextInspectorId);
                         }
                     }
@@ -1797,7 +1823,7 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                     const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]));
                     const sql = `UPDATE cleaning_tasks SET ${set} WHERE id=$${keys.length + 1} RETURNING *`;
                     const r1 = await dbAdapter_1.pgPool.query(sql, [...values, id]);
-                    const after = ((_g = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _g === void 0 ? void 0 : _g[0]) || before;
+                    const after = ((_m = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _m === void 0 ? void 0 : _m[0]) || before;
                     if (basePatch.new_code !== undefined &&
                         String((after === null || after === void 0 ? void 0 : after.order_id) || '').trim() &&
                         String((after === null || after === void 0 ? void 0 : after.task_type) || (after === null || after === void 0 ? void 0 : after.type) || '').trim().toLowerCase() === 'checkin_clean') {
@@ -1813,7 +1839,7 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                         changeScope: assignmentChanged ? 'membership' : (String((after === null || after === void 0 ? void 0 : after.status) || '').trim().toLowerCase() === 'cancelled' ? 'membership' : 'list'),
                         changedFields,
                         patch: Object.fromEntries(changedFields.map((field) => [field, after === null || after === void 0 ? void 0 : after[field]])),
-                        causedByUserId: String(((_h = req === null || req === void 0 ? void 0 : req.user) === null || _h === void 0 ? void 0 : _h.sub) || '').trim() || null,
+                        causedByUserId: String(((_o = req === null || req === void 0 ? void 0 : req.user) === null || _o === void 0 ? void 0 : _o.sub) || '').trim() || null,
                         visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(after || before),
                     });
                     return after;
@@ -1822,6 +1848,13 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                 if (!task)
                     return null;
                 const patch = { ...basePatch };
+                const isCheckinSiteExecution = isCheckinSiteExecutionTask({
+                    task_type: (_p = patch.task_type) !== null && _p !== void 0 ? _p : task.task_type,
+                    inspection_scope: (_q = patch.inspection_scope) !== null && _q !== void 0 ? _q : task.inspection_scope,
+                });
+                if (patch.assignee_id !== undefined && patch.cleaner_id === undefined) {
+                    patch.cleaner_id = isCheckinSiteExecution ? null : patch.assignee_id;
+                }
                 validateAndApplyInspectionPatch({ patch, current: task });
                 if (patch.property_id !== undefined)
                     task.property_id = patch.property_id;
@@ -1867,7 +1900,7 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                         patch.inspection_mode !== undefined ||
                         patch.inspection_due_date !== undefined;
                     if (touchingAssignees && statusAutoEligible && incomingStatusEligible) {
-                        const cleaner = String(task.cleaner_id || task.assignee_id || '').trim();
+                        const cleaner = String(isCheckinSiteExecution ? (task.assignee_id || task.inspector_id || '') : (task.cleaner_id || task.assignee_id || '')).trim();
                         const inspector = String(task.inspector_id || '').trim();
                         task.status = assignedStatusFromAssignees(cleaner, inspector);
                     }
@@ -2025,6 +2058,11 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
     const includeDeferredInspection = String(((_a = req.query) === null || _a === void 0 ? void 0 : _a.include_deferred_inspection) || '').trim() === '1';
     try {
         const items = [];
+        const canManageSchedule = await (0, auth_1.userHasAnyPerm)(req.user || {}, ['cleaning.task.assign', 'cleaning.schedule.manage']);
+        const withWebCapabilities = (item) => ({
+            ...item,
+            ...(0, webTaskCapabilities_1.buildWebTaskCapabilityPayload)(item, { canManageSchedule }),
+        });
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
             await (0, cleaningSync_1.ensureCleaningSchemaV2)();
             const r = await dbAdapter_1.pgPool.query(`SELECT
@@ -2200,7 +2238,7 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
                     summary_checkin_time: null,
                 });
             }
-            return res.json(items);
+            return res.json(items.map(withWebCapabilities));
         }
         const tasks = store_1.db.cleaningTasks.filter((t) => {
             const d = String(t.task_date || t.date || '').slice(0, 10);
@@ -2315,7 +2353,7 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
             });
         }
         items.sort((a, b) => String(a.task_date).localeCompare(String(b.task_date)) || String(a.property_id || '').localeCompare(String(b.property_id || '')));
-        return res.json(items);
+        return res.json(items.map(withWebCapabilities));
     }
     catch (e) {
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'calendar_failed' });

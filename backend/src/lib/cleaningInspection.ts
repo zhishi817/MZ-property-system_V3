@@ -1,7 +1,34 @@
 export type InspectionMode = 'pending_decision' | 'same_day' | 'deferred' | 'self_complete' | 'checked_done'
 export type InspectionScope = 'inspect_and_hang' | 'password_only'
+export type TaskExecutionSemantics =
+  | 'cleaning_execution'
+  | 'checkin_inspection'
+  | 'inspection_execution'
+  | 'key_or_password_action'
+  | 'mixed_cleaning_inspection'
+  | 'work_task'
+export type CleaningTaskExecutionSemantics = Exclude<TaskExecutionSemantics, 'work_task'>
 
 const VALID_INSPECTION_MODES = new Set<InspectionMode>(['pending_decision', 'same_day', 'deferred', 'self_complete', 'checked_done'])
+const VALID_TASK_EXECUTION_SEMANTICS = new Set<TaskExecutionSemantics>([
+  'cleaning_execution',
+  'checkin_inspection',
+  'inspection_execution',
+  'key_or_password_action',
+  'mixed_cleaning_inspection',
+  'work_task',
+])
+
+export function normalizeTaskExecutionSemantics(value: any): TaskExecutionSemantics | null {
+  const raw = String(value || '').trim().toLowerCase()
+  if (!raw) return null
+  if (raw === 'key_handover_execution') return 'key_or_password_action'
+  return VALID_TASK_EXECUTION_SEMANTICS.has(raw as TaskExecutionSemantics) ? (raw as TaskExecutionSemantics) : null
+}
+
+export function isKeyOrPasswordActionSemantics(value: any): boolean {
+  return normalizeTaskExecutionSemantics(value) === 'key_or_password_action'
+}
 
 export function normalizeInspectionScope(value: any): InspectionScope {
   const raw = String(value || '').trim().toLowerCase()
@@ -65,13 +92,13 @@ export function cleaningTaskExecutionSemantics(params: {
   hasCleaningExecution?: boolean
   hasInspectionExecution?: boolean
   hasKeyHandoverExecution?: boolean
-}): 'cleaning_execution' | 'checkin_inspection' | 'inspection_execution' | 'key_handover_execution' | 'mixed_cleaning_inspection' {
-  if (params?.hasKeyHandoverExecution) return 'key_handover_execution'
+}): CleaningTaskExecutionSemantics {
+  if (params?.hasKeyHandoverExecution) return 'key_or_password_action'
   if (params?.hasCleaningExecution && params?.hasInspectionExecution) return 'mixed_cleaning_inspection'
   const role = String(params?.roleKind || '').trim().toLowerCase()
-  if (role === 'executor' || role === 'execution') return 'key_handover_execution'
+  if (role === 'executor' || role === 'execution') return 'key_or_password_action'
   if (role === 'cleaner' || role === 'cleaning') return 'cleaning_execution'
-  if (isCheckinKeyHandoverTask({ task_type: params?.taskType, inspection_scope: params?.inspectionScope })) return 'key_handover_execution'
+  if (isCheckinKeyHandoverTask({ task_type: params?.taskType, inspection_scope: params?.inspectionScope })) return 'key_or_password_action'
   if (cleaningInspectionTaskKind(params?.taskType) === 'checkin') return 'checkin_inspection'
   return 'inspection_execution'
 }
