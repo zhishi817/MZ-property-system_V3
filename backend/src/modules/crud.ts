@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { requireAnyPerm, requireResourcePerm } from '../auth'
+import { requireAnyPerm, requireResourcePerm, userHasAnyPerm } from '../auth'
 import { hasPg, pgPool, pgSelect, pgInsert, pgUpdate, pgDelete, pgRunInTransaction, pgRunWithAdvisoryLock } from '../dbAdapter'
 import { buildExpenseFingerprint, hasFingerprint, setFingerprint, addDedupLog } from '../fingerprint'
 import { db, addAudit } from '../store'
@@ -552,11 +552,19 @@ function roleNamesOfUser(user: any): string[] {
   ].filter(Boolean)))
 }
 
-function shouldScopePropertyExpenseByPeerRole(resource: string, user: any): boolean {
+export function shouldScopePropertyExpenseByPeerRoleForRoles(resource: string, roleNamesRaw: string[], hasPropertyExpenseView: boolean): boolean {
   if (resource !== 'property_expenses') return false
-  const roleNames = roleNamesOfUser(user)
+  const roleNames = Array.from(new Set((roleNamesRaw || []).map((x) => String(x || '').trim()).filter(Boolean)))
   if (!roleNames.length || roleNames.includes('admin') || roleNames.includes('finance_staff')) return false
+  if (hasPropertyExpenseView) return false
   return roleNames.includes('customer_service')
+}
+
+async function shouldScopePropertyExpenseByPeerRole(resource: string, user: any): Promise<boolean> {
+  const roleNames = roleNamesOfUser(user)
+  if (!shouldScopePropertyExpenseByPeerRoleForRoles(resource, roleNames, false)) return false
+  const hasPropertyExpenseView = await userHasAnyPerm(user, ['property_expenses.view']).catch(() => false)
+  return shouldScopePropertyExpenseByPeerRoleForRoles(resource, roleNames, hasPropertyExpenseView)
 }
 
 async function listPeerRoleActorKeys(user: any): Promise<string[]> {
@@ -834,7 +842,7 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
     return Number.isFinite(n) && n >= 0 ? Math.floor(n) : undefined
   })()
   const user = (req as any).user || {}
-  if (shouldScopePropertyExpenseByPeerRole(resource, user)) {
+  if (await shouldScopePropertyExpenseByPeerRole(resource, user)) {
     filter.created_by_any = await listPeerRoleActorKeys(user)
   }
   delete filter.limit; delete filter.offset; delete filter.order; delete filter.q; delete filter.withTotal; delete filter.aggregate; delete filter.fields; delete filter.include_deleted
@@ -1419,14 +1427,15 @@ router.get('/:resource/:id', requireResourcePerm('view'), async (req, res) => {
   const includeDeleted = canIncludeDeleted && String((req.query as any)?.include_deleted || '') === '1'
   const softDeleteResource = resource === 'property_expenses' || resource === 'company_expenses'
   const user = (req as any).user || {}
-  const peerRoleActorKeys = shouldScopePropertyExpenseByPeerRole(resource, user) ? await listPeerRoleActorKeys(user) : []
+  const shouldScopePeerRole = await shouldScopePropertyExpenseByPeerRole(resource, user)
+  const peerRoleActorKeys = shouldScopePeerRole ? await listPeerRoleActorKeys(user) : []
   try {
     if (hasPg) {
       const rowsRaw = await pgSelect(resource, '*', { id })
       const rows: any[] = Array.isArray(rowsRaw) ? rowsRaw : []
       const row = rows[0] || null
       if (row && softDeleteResource && row.deleted_at && !includeDeleted) return res.status(404).json({ message: 'not found' })
-      if (row && resource === 'property_expenses' && shouldScopePropertyExpenseByPeerRole(resource, user) && !canReadPropertyExpenseRowByPeerRole(row, peerRoleActorKeys)) {
+      if (row && resource === 'property_expenses' && shouldScopePeerRole && !canReadPropertyExpenseRowByPeerRole(row, peerRoleActorKeys)) {
         return res.status(403).json({ message: 'forbidden' })
       }
       return row ? res.json(row) : res.status(404).json({ message: 'not found' })
@@ -1435,7 +1444,7 @@ router.get('/:resource/:id', requireResourcePerm('view'), async (req, res) => {
     const arr = (db as any)[camelToArrayKey(resource)] || []
     const found = arr.find((x: any) => x.id === id)
     if (found && softDeleteResource && found.deleted_at && !includeDeleted) return res.status(404).json({ message: 'not found' })
-    if (found && resource === 'property_expenses' && shouldScopePropertyExpenseByPeerRole(resource, user) && !canReadPropertyExpenseRowByPeerRole(found, peerRoleActorKeys)) {
+    if (found && resource === 'property_expenses' && shouldScopePeerRole && !canReadPropertyExpenseRowByPeerRole(found, peerRoleActorKeys)) {
       return res.status(403).json({ message: 'forbidden' })
     }
     return found ? res.json(found) : res.status(404).json({ message: 'not found' })

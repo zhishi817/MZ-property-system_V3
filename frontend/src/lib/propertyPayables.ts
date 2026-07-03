@@ -23,15 +23,30 @@ export const PROPERTY_PAYABLE_PAYMENT_TYPE_OPTIONS = [
 
 export const PROPERTY_PAYABLE_FREQUENCY_OPTIONS = [
   { value: 1, label: '每月' },
-  { value: 2, label: '每两月' },
-  { value: 3, label: '每季度' },
-  { value: 6, label: '每半年' },
+  { value: 2, label: '每 2 个月' },
+  { value: 3, label: '每 3 个月' },
+  { value: 6, label: '每 6 个月' },
   { value: 12, label: '每年' },
 ] as const
+
+const PROPERTY_PAYABLE_ALLOWED_FREQUENCY_MONTHS = PROPERTY_PAYABLE_FREQUENCY_OPTIONS.map((item) => item.value)
 
 export function propertyPayableCategoryLabel(value?: string) {
   const hit = PROPERTY_PAYABLE_CATEGORY_OPTIONS.find((item) => item.value === value)
   return hit?.label || value || '-'
+}
+
+export function normalizePropertyPayableFrequency(value: any): number {
+  const n = Number(value || 1)
+  if (!Number.isFinite(n)) return 1
+  const whole = Math.trunc(n)
+  return (PROPERTY_PAYABLE_ALLOWED_FREQUENCY_MONTHS as readonly number[]).includes(whole) ? whole : 1
+}
+
+export function propertyPayableFrequencyLabel(value?: number | string | null) {
+  const normalized = normalizePropertyPayableFrequency(value)
+  const hit = PROPERTY_PAYABLE_FREQUENCY_OPTIONS.find((item) => item.value === normalized)
+  return hit?.label || '每月'
 }
 
 export function propertyPayablePaymentTypeLabel(value?: string) {
@@ -93,7 +108,7 @@ export function normalizePropertyPayableTemplates(raw: any): any[] {
       bill_period_start_month_offset: 0,
       bill_period_end_day_of_month: undefined,
       bill_period_end_month_offset: 0,
-      frequency_months: 1,
+      frequency_months: normalizePropertyPayableFrequency(item?.frequency_months),
       remind_days_before: 3,
       payment_type: String(item?.payment_type || 'bank_account'),
       pay_account_name: String(item?.pay_account_name || '').trim(),
