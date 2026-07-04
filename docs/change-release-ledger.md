@@ -4,8 +4,8 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260704-002 — 移动端清洁/检查上传权限兜底
 
-- **Status:** ready
-- **Updated:** 2026-07-04 10:44 AEST
+- **Status:** committed
+- **Updated:** 2026-07-04 10:59 AEST
 - **Request:** 排查“清洁、检查人员上传照片都显示权限不足”，确认 Barbara 等清洁人员需要能上传客人钥匙照片和补品填报，并检查其他角色是否有类似权限缺失。
 - **Outcome:** 后端权限解析现在会对 `cleaner`、`cleaning_inspector`、`cleaner_inspector` 叠加移动端现场作业必需权限；同时对 `customer_service`、`finance_staff` 叠加移动端支出自助权限。即使生产 `role_permissions` 表缺失或只配置了部分权限，移动端钥匙照片、补品填报、检查照片、挂钥匙完成和相关支出入口也不会在基础权限层被错误拦截。
 
@@ -53,12 +53,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Behavior risk: `customer_service` and `finance_staff` now receive the code-default mobile self expense permissions even if production DB omits them.
 - Rollback: remove the added role entries / mobile expense overlay entries from `DEFAULT_ROLE_PERMISSION_OVERLAYS` and the new test assertions.
 - Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
-- Git state: uncommitted; worktree also contains unrelated pre-existing finance/inventory changes and `CRL-20260704-001`.
+- Git state: committed locally to root `Dev` in commit `c8651f5`; push to `origin/Dev` failed because GitHub HTTPS credentials are unavailable in this environment. Worktree still contains unrelated pre-existing finance/inventory changes.
 
 ## CRL-20260704-001 — 移动端同日 turnover 挂钥匙完成态合并
 
-- **Status:** ready
-- **Updated:** 2026-07-04 10:27 AEST
+- **Status:** committed
+- **Updated:** 2026-07-04 10:59 AEST
 - **Request:** “把同房同日挂钥匙视频视为整张 turnover 卡完成”，同时确认纯入住的“检查后挂钥匙/仅改密码”和早入住、晚退房、晚入住等标签不要被覆盖。
 - **Outcome:** `/mzapp/work-tasks` 现在会把同房同日同时存在退房和入住、且已有挂钥匙视频或 `keys_hung` 状态的任务视为整张 turnover 已完成；不会再额外生成单独的入住执行/检查卡。纯入住任务仍保留执行人可见的“仅改密码/检查后挂钥匙”标签语义。
 
@@ -103,7 +103,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Behavior risk: if operations intentionally wanted a separate same-day入住执行卡 after挂钥匙视频, it will now be hidden because the whole turnover is considered complete.
 - Rollback: remove the same-day turnover completion map, the standalone checkin suppression, and the lockbox-media inheritance/status override in `backend/src/modules/mzapp.ts`.
 - Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
-- Git state: uncommitted; worktree also contains unrelated pre-existing finance/inventory changes not owned by this unit.
+- Git state: committed locally to root `Dev` in commit `c8651f5`; push to `origin/Dev` failed because GitHub HTTPS credentials are unavailable in this environment. Worktree still contains unrelated pre-existing finance/inventory changes not owned by this unit.
 
 ## CRL-20260703-016 — 移动端 1.0.24 production store 构建与 iOS TestFlight 提交
 
