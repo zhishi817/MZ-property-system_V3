@@ -4,8 +4,8 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260705-004 — 移动端管理视图清洁/检查排序显示修复
 
-- **Status:** ready
-- **Updated:** 2026-07-05 01:45 AEST
+- **Status:** pushed
+- **Updated:** 2026-07-05 02:13 AEST
 - **Request:** “清洁和检查的排序，admin和线下经理以及客服也都看不见了。清洁明明填了顺序。查什么原因”后续要求“修复一下”。
 - **Outcome:** `/mzapp/work-tasks?view=all` 给 admin、线下经理、客服返回的同房同日清洁合并卡会保留子卡里的 `sort_index_cleaner` / `sort_index_inspector`，移动端详情里的“清洁顺序 / 检查顺序”不再因为管理视图二次合并而显示 `-`。
 
@@ -46,18 +46,19 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Backend lint — not run: `backend/package.json` has no lint script.
 - Frontend checks — not run: no frontend files changed.
 - `python3 scripts/audit_change_release_ledger.py` — passed: Changed files 19, recorded changed files 19, coverage PASS.
+- `2026-07-05 release validation in clean origin/Dev worktree` — passed: `git diff --check`, `python3 scripts/audit_change_release_ledger.py` (Changed files 7, recorded changed files 7, coverage PASS), `npm --prefix backend run build`, and `./node_modules/.bin/ts-node --transpile-only scripts/tests/test_task_assignment_canonical.ts` with approved network access.
 
 ### Risks / Release Notes
 
 - Runtime risk: if different child cards intentionally carry conflicting sort numbers, management view now shows the earliest valid value for list ordering while still exposing both role-specific fields separately.
 - Rollback: remove the `minPositiveNumber` aggregation and the three sorting fields from the management-view merged payload, then remove the added sort-merge assertions from `test_task_assignment_canonical.ts`.
 - Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
-- Git state: uncommitted in root repo; coexists with unrelated pre-existing finance, inventory, mzapp, and task-center changes from other release units.
+- Git state: pushed to root `origin/Dev` in functional commit `fc05296`; this ledger follow-up records the pushed state separately.
 
 ## CRL-20260705-003 — 任务中心保存通知按实际改动和合并卡片去重
 
-- **Status:** ready
-- **Updated:** 2026-07-05 01:38 AEST
+- **Status:** pushed
+- **Updated:** 2026-07-05 02:13 AEST
 - **Request:** 生产环境里只把 `1403` 和 `614` 两个任务改成自完成并保存，却出现 5 条通知；先用生产库排查原因，再按计划修复，并确认不要影响其他流程。后续明确要求测试不要用生产环境数据库。
 - **Outcome:** 任务中心保存现在只提交用户本次实际改过的清洁/线下任务 assignment；未改动但出现在整板 payload 里的任务不会再触发后端 diff 和通知。同一张可见清洁合并卡片包含退房+入住两条底层任务时，后端仍更新两条任务、仍发两条实时刷新事件，但只合并发送 1 个 `CLEANING_TASK_UPDATED` 通知事件。
 
@@ -98,6 +99,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - `npm run lint -- --file src/app/task-center/page.tsx` in `frontend` — passed: no warnings or errors.
 - `./node_modules/.bin/tsc --noEmit --pretty false` in `frontend` — passed.
 - `npm run build` in `frontend` — failed after successful compile and type/lint phase during Next page-data collection: first `Cannot find module './1682.js'`, then after full clean `Cannot find module for page: /_document`; this appears to be the current Next build artifact/page-data issue, not a task-center type or lint error.
+- `2026-07-05 release validation in clean origin/Dev worktree` — passed: `git diff --check`, `python3 scripts/audit_change_release_ledger.py` (Changed files 7, recorded changed files 7, coverage PASS), `npm --prefix backend run build`, `./node_modules/.bin/ts-node --transpile-only scripts/tests/test_task_assignment_canonical.ts` with approved network access, `npm --prefix frontend run lint -- --file src/app/task-center/page.tsx`, `./node_modules/.bin/tsc --noEmit --pretty false`, and `npm --prefix frontend run build` with existing project warnings.
 
 ### Risks / Release Notes
 
@@ -105,12 +107,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Runtime risk: group notification uses the first changed bottom-level cleaning task as `entityId` while carrying all group task ids in `data.task_ids`; existing mobile notice open behavior should still open a cleaning task, but deep-linking lands on the first task in the group.
 - Rollback: remove frontend dirty filtering and group payload fields, restore backend per-task cleaning notification loop, and remove the grouped notification regression test.
 - Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded. Production data was used only for earlier read-only diagnosis; write regression testing was not run on production.
-- Git state: uncommitted in root repo; coexists with unrelated pre-existing finance, inventory, mzapp, and task-center changes from other release units.
+- Git state: pushed to root `origin/Dev` in functional commit `fc05296`; this ledger follow-up records the pushed state separately.
 
 ## CRL-20260705-002 — 任务中心合并卡晚退房/晚入住标签修复
 
-- **Status:** ready
-- **Updated:** 2026-07-05 01:28 AEST
+- **Status:** pushed
+- **Updated:** 2026-07-05 02:13 AEST
 - **Request:** 生产任务中心里同样有晚退房，`3805009` 显示“晚退房”，`AU2117` / `AU8508` 不显示；同时确认“晚入住”的标签也没有显示出来。用户要求按计划修复，生产数据诊断使用 `NEON_DATABASE_URL_PROD`，但不记录任何数据库连接内容。
 - **Outcome:** 任务中心合并入住/退房卡片会保留清洁任务摘要里的 `11:30am退房`、`2pm入住`、`5pm入住` 等时间，不再在合并时回退成默认 `10am/3pm`；晚入住判断与默认 `3pm` 入住时间对齐，`5pm入住` 会被识别为“晚入住”。
 
@@ -152,6 +154,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - `npm run build` in `frontend` — passed with existing warnings: stale Browserslist data and Recharts zero-size chart warnings during static generation.
 - `git diff --check -- backend/src/lib/cleaningTurnoverDisplay.ts backend/scripts/tests/test_cleaning_turnover_display.ts frontend/src/app/task-center/page.tsx docs/change-release-ledger.md` — passed.
 - `python3 scripts/audit_change_release_ledger.py` — passed: Changed files 19, recorded changed files 19, coverage PASS.
+- `2026-07-05 release validation in clean origin/Dev worktree` — passed: `git diff --check`, `python3 scripts/audit_change_release_ledger.py` (Changed files 7, recorded changed files 7, coverage PASS), `npm --prefix backend run build`, `./node_modules/.bin/ts-node --transpile-only scripts/tests/test_cleaning_turnover_display.ts`, `npm --prefix frontend run lint -- --file src/app/task-center/page.tsx`, `./node_modules/.bin/tsc --noEmit --pretty false`, and `npm --prefix frontend run build` with existing project warnings.
 
 ### Risks / Release Notes
 
@@ -159,7 +162,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Risk: live browser verification against production UI was not run in this turn; validation used production-data diagnosis before coding plus unit/type/build checks.
 - Rollback: revert summary field support and `is_late_checkin` threshold in `backend/src/lib/cleaningTurnoverDisplay.ts`, revert the new test case, and revert the `isLateCheckinDisplay()` threshold hunk in `frontend/src/app/task-center/page.tsx`.
 - Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
-- Git state: uncommitted in root repo; coexists with unrelated pre-existing finance, inventory, mzapp, and task-center changes from other release units.
+- Git state: pushed to root `origin/Dev` in functional commit `fc05296`; this ledger follow-up records the pushed state separately.
 
 ## CRL-20260704-012 — 移动端本地媒体空间自动治理
 
