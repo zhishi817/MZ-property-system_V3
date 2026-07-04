@@ -8,6 +8,26 @@ process.env.PG_CONN_TIMEOUT_MS = process.env.PG_CONN_TIMEOUT_MS || '8000'
 process.env.PG_QUERY_TIMEOUT_MS = process.env.PG_QUERY_TIMEOUT_MS || '15000'
 process.env.PG_STATEMENT_TIMEOUT_MS = process.env.PG_STATEMENT_TIMEOUT_MS || '15000'
 
+function dbIdentity(value: any) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  try {
+    const url = new URL(raw)
+    return `${url.protocol}//${url.username}@${url.hostname}:${url.port || '5432'}${url.pathname}`
+  } catch {
+    return raw
+  }
+}
+
+const activeDbIdentity = dbIdentity(process.env.DATABASE_URL)
+const prodDbIdentity = dbIdentity(process.env.NEON_DATABASE_URL_PROD || process.env.DATABASE_URL_PROD)
+if (String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production') {
+  throw new Error('Refusing to run write tests when NODE_ENV=production')
+}
+if (activeDbIdentity && prodDbIdentity && activeDbIdentity === prodDbIdentity) {
+  throw new Error('Refusing to run write tests because DATABASE_URL matches production database URL')
+}
+
 const TEST_DATE = '2026-06-29'
 const NEXT_DATE = '2026-06-30'
 
@@ -72,12 +92,17 @@ async function main() {
   const propertyId = 'P_TEST_ASSIGN'
   const crossDayPropertyId = 'P_TEST_ASSIGN_CROSS_DAY'
   const sameDayPropertyId = 'P_TEST_ASSIGN_SAME_DAY'
+  const sameDayLatePropertyId = 'P_TEST_ASSIGN_SAME_DAY_LATE'
   const pureCheckinPropertyId = 'P_TEST_ASSIGN_PURE_CHECKIN'
   const keyHandoverPropertyId = 'P_TEST_ASSIGN_KEY_HANDOVER'
   const crossDayCheckoutId = 'test-assignment-cross-day-checkout'
   const crossDayCheckinId = 'test-assignment-cross-day-checkin'
   const sameDayCheckoutId = 'test-assignment-same-day-checkout'
   const sameDayCheckinId = 'test-assignment-same-day-checkin'
+  const sameDayLockboxVideoId = 'test-assignment-same-day-lockbox-video'
+  const sameDayLateCheckoutId = 'test-assignment-same-day-late-checkout'
+  const sameDayLateCheckinId = 'test-assignment-same-day-late-checkin'
+  const sameDayLateLockboxVideoId = 'test-assignment-same-day-late-lockbox-video'
   const pureCheckinId = 'test-assignment-pure-checkin'
   const keyHandoverId = 'test-assignment-key-handover'
 
@@ -103,17 +128,18 @@ async function main() {
     [offlineNullId, offlineOldId, offlineDisplayId],
   ])
   await pgPool.query(`DELETE FROM cleaning_offline_tasks WHERE id = ANY($1::text[])`, [[offlineNullId, offlineOldId, offlineDisplayId]])
-  await pgPool.query(`DELETE FROM cleaning_tasks WHERE id = ANY($1::text[])`, [[cleaningId, cleaningKeysHungId, crossDayCheckoutId, crossDayCheckinId, sameDayCheckoutId, sameDayCheckinId, pureCheckinId, keyHandoverId]])
+  await pgPool.query(`DELETE FROM cleaning_tasks WHERE id = ANY($1::text[])`, [[cleaningId, cleaningKeysHungId, crossDayCheckoutId, crossDayCheckinId, sameDayCheckoutId, sameDayCheckinId, sameDayLateCheckoutId, sameDayLateCheckinId, pureCheckinId, keyHandoverId]])
   await pgPool.query(`INSERT INTO properties(id, address) VALUES($1, 'Test assignment property') ON CONFLICT (id) DO NOTHING`, [propertyId])
   await pgPool.query(
     `INSERT INTO properties(id, code, address)
      VALUES
        ($1, 'TEST-CROSS-DAY', 'Test cross day property'),
        ($2, 'TEST-SAME-DAY', 'Test same day property'),
-       ($3, 'TEST-PURE-CHECKIN', 'Test pure checkin property'),
-       ($4, 'TEST-KEY-HANDOVER', 'Test key handover property')
+       ($3, 'TEST-SAME-DAY-LATE', 'Test same day late property'),
+       ($4, 'TEST-PURE-CHECKIN', 'Test pure checkin property'),
+       ($5, 'TEST-KEY-HANDOVER', 'Test key handover property')
      ON CONFLICT (id) DO UPDATE SET code = EXCLUDED.code, address = EXCLUDED.address`,
-    [crossDayPropertyId, sameDayPropertyId, pureCheckinPropertyId, keyHandoverPropertyId],
+    [crossDayPropertyId, sameDayPropertyId, sameDayLatePropertyId, pureCheckinPropertyId, keyHandoverPropertyId],
   )
 
   try {
@@ -325,6 +351,26 @@ async function main() {
          ($2, $4, 'checkin_clean', 'checkin_clean', $3::date, $3::date, 'assigned', 'cleaner-same-day', 'cleaner-same-day', 'manual', 'active', NULL, '2pm', 'SAMEDAY', 2, 3)`,
       [sameDayCheckoutId, sameDayCheckinId, TEST_DATE, sameDayPropertyId],
     )
+    await pgPool.query(
+      `INSERT INTO cleaning_task_media(id, task_id, type, url, captured_at, uploader_id)
+       VALUES($1, $2, 'lockbox_video', 'https://example.test/same-day-lockbox.mp4', now(), 'cleaner-same-day')
+       ON CONFLICT (id) DO UPDATE SET task_id=EXCLUDED.task_id, type=EXCLUDED.type, url=EXCLUDED.url, captured_at=EXCLUDED.captured_at, uploader_id=EXCLUDED.uploader_id`,
+      [sameDayLockboxVideoId, sameDayCheckoutId],
+    )
+    await pgPool.query(
+      `INSERT INTO cleaning_tasks(
+         id, property_id, task_type, type, task_date, date, status, assignee_id, cleaner_id, source, execution_state, checkout_time, checkin_time, new_code, keys_required, nights_override
+       ) VALUES
+         ($1, $4, 'checkout_clean', 'checkout_clean', $3::date, $3::date, 'assigned', 'cleaner-same-day-late', 'cleaner-same-day-late', 'manual', 'active', '10am', NULL, NULL, 1, 2),
+         ($2, $4, 'checkin_clean', 'checkin_clean', $3::date, $3::date, 'assigned', 'cleaner-same-day-late', 'cleaner-same-day-late', 'manual', 'active', NULL, '7pm', 'LATEIN', 1, 2)`,
+      [sameDayLateCheckoutId, sameDayLateCheckinId, TEST_DATE, sameDayLatePropertyId],
+    )
+    await pgPool.query(
+      `INSERT INTO cleaning_task_media(id, task_id, type, url, captured_at, uploader_id)
+       VALUES($1, $2, 'lockbox_video', 'https://example.test/same-day-late-lockbox.mp4', now(), 'cleaner-same-day-late')
+       ON CONFLICT (id) DO UPDATE SET task_id=EXCLUDED.task_id, type=EXCLUDED.type, url=EXCLUDED.url, captured_at=EXCLUDED.captured_at, uploader_id=EXCLUDED.uploader_id`,
+      [sameDayLateLockboxVideoId, sameDayLateCheckoutId],
+    )
     const boundaryTasks = await requestJson(app, 'GET', `/mzapp/work-tasks?date_from=${TEST_DATE}&date_to=${NEXT_DATE}&view=all`)
     const crossDayTask = (boundaryTasks || []).find((item: any) =>
       String(item.property_id) === crossDayPropertyId
@@ -337,16 +383,30 @@ async function main() {
     assert.equal(crossDayTask.keys_required_checkin, null)
     assert.equal(crossDayTask.remaining_nights, 0)
 
-    const sameDayTask = (boundaryTasks || []).find((item: any) =>
+    const sameDayTasks = (boundaryTasks || []).filter((item: any) =>
       String(item.property_id) === sameDayPropertyId
       && String(item.scheduled_date || '').slice(0, 10) === TEST_DATE
     )
+    assert.equal(sameDayTasks.length, 1, 'same-day turnover with lockbox video should produce one completed card')
+    const sameDayTask = sameDayTasks[0]
     assert.ok(sameDayTask, 'same-day turnover task should be visible')
+    assert.equal(sameDayTask.status, 'keys_hung')
     assert.ok(String(sameDayTask.summary || '').includes('入住'), 'same-day checkin should still merge into summary')
     assert.equal(sameDayTask.end_time, '2pm')
+    assert.equal(sameDayTask.is_late_checkout, true, 'same-day completed turnover must preserve late checkout tag')
+    assert.equal(sameDayTask.is_early_checkin, true, 'same-day completed turnover must preserve early checkin tag')
     assert.equal(sameDayTask.new_code, 'SAMEDAY')
     assert.ok(sameDayTask.keys_required_checkin != null, 'same-day checkin key requirement should still be present')
     assert.equal(sameDayTask.remaining_nights, 3)
+    const sameDayLateTasks = (boundaryTasks || []).filter((item: any) =>
+      String(item.property_id) === sameDayLatePropertyId
+      && String(item.scheduled_date || '').slice(0, 10) === TEST_DATE
+    )
+    assert.equal(sameDayLateTasks.length, 1, 'same-day late-checkin turnover with lockbox video should produce one completed card')
+    const sameDayLateTask = sameDayLateTasks[0]
+    assert.equal(sameDayLateTask.status, 'keys_hung')
+    assert.equal(sameDayLateTask.end_time, '7pm')
+    assert.equal(sameDayLateTask.is_late_checkin, true, 'same-day completed turnover must preserve late checkin tag')
 
     process.stdout.write('test_task_assignment_canonical: testing password-only checkin uses executor assignee\n')
     await pgPool.query(
@@ -396,13 +456,17 @@ async function main() {
     assert.equal(keyHandoverTask.cleaner_id, null)
     assert.equal(keyHandoverTask.inspector_id, 'legacy-inspector')
   } finally {
+    await pgPool.query(`DELETE FROM cleaning_task_media WHERE id = ANY($1::text[]) OR task_id = ANY($2::text[])`, [
+      [sameDayLockboxVideoId, sameDayLateLockboxVideoId],
+      [cleaningId, cleaningKeysHungId, crossDayCheckoutId, crossDayCheckinId, sameDayCheckoutId, sameDayCheckinId, sameDayLateCheckoutId, sameDayLateCheckinId, pureCheckinId, keyHandoverId],
+    ])
     await pgPool.query(`DELETE FROM work_tasks WHERE id = ANY($1::text[]) OR source_id = ANY($2::text[])`, [
       [`cleaning_offline_tasks:${offlineNullId}`, `cleaning_offline_tasks:${offlineOldId}`, `cleaning_offline_tasks:${offlineDisplayId}`, workId],
       [offlineNullId, offlineOldId, offlineDisplayId],
     ])
     await pgPool.query(`DELETE FROM cleaning_offline_tasks WHERE id = ANY($1::text[])`, [[offlineNullId, offlineOldId, offlineDisplayId]])
-    await pgPool.query(`DELETE FROM cleaning_tasks WHERE id = ANY($1::text[])`, [[cleaningId, cleaningKeysHungId, crossDayCheckoutId, crossDayCheckinId, sameDayCheckoutId, sameDayCheckinId, pureCheckinId, keyHandoverId]])
-    await pgPool.query(`DELETE FROM properties WHERE id = ANY($1::text[])`, [[propertyId, crossDayPropertyId, sameDayPropertyId, pureCheckinPropertyId, keyHandoverPropertyId]])
+    await pgPool.query(`DELETE FROM cleaning_tasks WHERE id = ANY($1::text[])`, [[cleaningId, cleaningKeysHungId, crossDayCheckoutId, crossDayCheckinId, sameDayCheckoutId, sameDayCheckinId, sameDayLateCheckoutId, sameDayLateCheckinId, pureCheckinId, keyHandoverId]])
+    await pgPool.query(`DELETE FROM properties WHERE id = ANY($1::text[])`, [[propertyId, crossDayPropertyId, sameDayPropertyId, sameDayLatePropertyId, pureCheckinPropertyId, keyHandoverPropertyId]])
   }
 
   process.stdout.write('test_task_assignment_canonical: ok\n')

@@ -5840,6 +5840,43 @@ router.get('/work-tasks', async (req, res) => {
         const cleanerGroups = new Map<string, any[]>()
         const executorGroups = new Map<string, any[]>()
         const inspectorGroups = new Map<string, any[]>()
+        const sameDayTurnoverState = new Map<string, {
+          hasCheckout: boolean
+          hasCheckin: boolean
+          keysHung: boolean
+          keyPhotoUrl: string | null
+          lockboxVideoUrl: string | null
+        }>()
+        for (const row of cleaningRows) {
+          const taskDate = String(row.task_date || row.date || '').slice(0, 10)
+          const propId = row.property_id ? String(row.property_id) : ''
+          if (!taskDate || !propId) continue
+          const taskKind = cleaningType(row.task_type)
+          if (taskKind !== 'checkout' && taskKind !== 'checkin') continue
+          const k = `${taskDate}|${propId}`
+          const prev = sameDayTurnoverState.get(k) || {
+            hasCheckout: false,
+            hasCheckin: false,
+            keysHung: false,
+            keyPhotoUrl: null,
+            lockboxVideoUrl: null,
+          }
+          if (taskKind === 'checkout') prev.hasCheckout = true
+          if (taskKind === 'checkin') prev.hasCheckin = true
+          const raw = String(row.status ?? '').trim().toLowerCase()
+          const keyPhotoUrl = String(row.key_photo_url || '').trim()
+          const lockboxVideoUrl = String(row.lockbox_video_url || '').trim()
+          if (raw === 'keys_hung' || lockboxVideoUrl) prev.keysHung = true
+          if (!prev.keyPhotoUrl && keyPhotoUrl) prev.keyPhotoUrl = keyPhotoUrl
+          if (!prev.lockboxVideoUrl && lockboxVideoUrl) prev.lockboxVideoUrl = lockboxVideoUrl
+          sameDayTurnoverState.set(k, prev)
+        }
+        const completedSameDayTurnoverFor = (taskDate: string, propId: string | null) => {
+          if (!taskDate || !propId) return null
+          const state = sameDayTurnoverState.get(`${taskDate}|${propId}`)
+          if (!state?.hasCheckout || !state?.hasCheckin || !state.keysHung) return null
+          return state
+        }
         for (const row of cleaningRows) {
           const taskDate = String(row.task_date || row.date || '').slice(0, 10)
           const propId = row.property_id ? String(row.property_id) : null
@@ -5873,6 +5910,8 @@ router.get('/work-tasks', async (req, res) => {
           const executorId = row.assignee_id ? String(row.assignee_id) : (row.inspector_id ? String(row.inspector_id) : null)
           const inspectorId = row.inspector_id ? String(row.inspector_id) : null
           const isCheckinSiteExecution = String(row.task_type || '').trim().toLowerCase() === 'checkin_clean'
+          const completedSameDayTurnover = isCheckinSiteExecution ? completedSameDayTurnoverFor(taskDate, propId) : null
+          const suppressStandaloneCheckin = !!completedSameDayTurnover
           const checkinSiteExecutorId = isCheckinSiteExecution ? executorId : null
           const orderId = row.order_id ? String(row.order_id) : null
           const orderKeysRequired = row.order_keys_required == null ? null : Number(row.order_keys_required)
@@ -5913,8 +5952,8 @@ router.get('/work-tasks', async (req, res) => {
             keys_required_checkout: cleaningType(row.task_type) === 'checkout' ? clampInt(row.keys_required == null ? 1 : Number(row.keys_required), 1, 2) : null,
             keys_required_checkin: cleaningType(row.task_type) === 'checkin' ? clampInt(row.keys_required == null ? 1 : Number(row.keys_required), 1, 2) : null,
             checked_out_at: row.checked_out_at,
-            key_photo_url: row.key_photo_url,
-            lockbox_video_url: row.lockbox_video_url,
+            key_photo_url: row.key_photo_url || completedSameDayTurnover?.keyPhotoUrl || null,
+            lockbox_video_url: row.lockbox_video_url || completedSameDayTurnover?.lockboxVideoUrl || null,
             living_room_photo_url: row.living_room_photo_url,
             restock_items: restockByTaskId.get(String(row.id)) || [],
             completion_areas: Array.from(completionAreasByTaskId.get(String(row.id)) || []),
@@ -5954,6 +5993,7 @@ router.get('/work-tasks', async (req, res) => {
           if (
             wantExecutor
             && isCheckinSiteExecution
+            && !suppressStandaloneCheckin
             && taskDate >= dateFrom
             && taskDate <= dateTo
             && effectiveExecutorId
@@ -5976,6 +6016,7 @@ router.get('/work-tasks', async (req, res) => {
           const effectiveInspectionAssigneeId = checkinSiteExecutorId || inspectorId || manualInspectionAssigneeId || ''
           if (
             wantInspector
+            && !suppressStandaloneCheckin
             && (effectiveInspectionAssigneeId || managerCanSeeAllTaskPool)
             && inspectorDisplayDate
             && cleaningType(row.task_type) !== 'stayover'
@@ -6018,6 +6059,9 @@ router.get('/work-tasks', async (req, res) => {
                 return nextDate ? candidates.filter((x: any) => String(x?.task_date || x?.date || '').slice(0, 10) === nextDate) : []
               })()
             : []
+          const relatedRowsForDisplay = p.kind === 'checkout'
+            ? [...rows, ...nextCheckinsForCheckout]
+            : rows
           const displayActiveRows = rows.filter((x) => p.ids.includes(String(x.__raw_id)))
           const displaySupersededRows = displayActiveRows.flatMap((x) => Array.isArray(x.__superseded_sources) ? x.__superseded_sources : [])
           const turnoverDisplay = buildCleaningTurnoverDisplay({
@@ -6052,8 +6096,8 @@ router.get('/work-tasks', async (req, res) => {
           const guestSpecialRequest = firstNonEmpty(turnoverDisplay.guest_request_summary, p.a.guest_special_request, p.b?.guest_special_request, ...rows.map((x) => x.guest_special_request))
           const taskNote = firstNonEmpty(p.a.note, p.b?.note, ...rows.map((x) => x.note))
           const checkedOutAt = firstNonEmpty(p.a.checked_out_at, p.b?.checked_out_at, ...rows.map((x) => x.checked_out_at))
-          const keyPhotoUrl = firstNonEmpty(p.a.key_photo_url, p.b?.key_photo_url, ...rows.map((x) => x.key_photo_url))
-          const lockboxVideoUrl = firstNonEmpty(p.a.lockbox_video_url, p.b?.lockbox_video_url, ...rows.map((x) => x.lockbox_video_url))
+          const keyPhotoUrl = firstNonEmpty(p.a.key_photo_url, p.b?.key_photo_url, ...relatedRowsForDisplay.map((x) => x.key_photo_url))
+          const lockboxVideoUrl = firstNonEmpty(p.a.lockbox_video_url, p.b?.lockbox_video_url, ...relatedRowsForDisplay.map((x) => x.lockbox_video_url))
           const keysRequired = Math.max(
             turnoverDisplay.keys_required_checkout || 0,
             turnoverDisplay.keys_required_checkin || 0,
@@ -6175,6 +6219,8 @@ router.get('/work-tasks', async (req, res) => {
                 )
               : (
                   raw === 'keys_hung'
+                    ? 'keys_hung'
+                    : lockboxVideoUrl
                     ? 'keys_hung'
                     : requireLockboxBeforeDone && isDoneLike && !lockboxVideoUrl
                     ? 'to_hang_keys'
@@ -6510,7 +6556,9 @@ router.get('/work-tasks', async (req, res) => {
           restockItems.push(it)
         }
         const statusOut =
-          cleaningStatus && rankStatus(cleaningStatus) < 80
+          lockboxVideoUrl
+            ? 'keys_hung'
+            : cleaningStatus && rankStatus(cleaningStatus) < 80
             ? cleaningStatus
             : inspectionStatus
               ? inspectionStatus

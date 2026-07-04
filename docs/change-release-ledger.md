@@ -2,6 +2,109 @@
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
+## CRL-20260704-002 — 移动端清洁/检查上传权限兜底
+
+- **Status:** committed
+- **Updated:** 2026-07-04 10:59 AEST
+- **Request:** 排查“清洁、检查人员上传照片都显示权限不足”，确认 Barbara 等清洁人员需要能上传客人钥匙照片和补品填报，并检查其他角色是否有类似权限缺失。
+- **Outcome:** 后端权限解析现在会对 `cleaner`、`cleaning_inspector`、`cleaner_inspector` 叠加移动端现场作业必需权限；同时对 `customer_service`、`finance_staff` 叠加移动端支出自助权限。即使生产 `role_permissions` 表缺失或只配置了部分权限，移动端钥匙照片、补品填报、检查照片、挂钥匙完成和相关支出入口也不会在基础权限层被错误拦截。
+
+### Implementation
+
+- Previous behavior:
+  - 生产库中 `role.cleaner` 没有解析出任何 `cleaning_app.*` 权限，Barbara 这类清洁账号在后端 `canPerformCleaningTaskAction()` 中无法通过 `upload_key_photo` / `fill_supplies` 基础权限判断。
+  - 生产 `role.cleaning_inspector` 有 `inspect.finish` 和 `media.upload`，但缺少 `tasks.finish/start`；`upload_access_video` 仍会被后端要求 `tasks.finish` 而返回 403。
+  - 进一步审计发现 `customer_service` 和 `finance_staff` 也存在同类风险：生产 DB 的部分权限会阻止代码默认移动端支出权限回退。
+- New behavior:
+  - `backend/src/auth.ts` 的默认权限 overlay 增加 `cleaner`、`cleaning_inspector`、`cleaner_inspector` 和 `finance_staff`，并扩展 `customer_service`。
+  - 清洁员叠加 `tasks.view.self`、`tasks.start`、`tasks.finish`、`issues.report`、`media.upload`。
+  - 检查员/兼任角色额外叠加 `inspect.finish`，满足检查照片和挂钥匙完成流程。
+  - `customer_service` 和 `finance_staff` 叠加 `cleaning_app.expense.company/property.*.self` 自助权限。
+- Key decisions:
+  - 不直接修改生产数据库权限表，避免在诊断过程中写生产数据；通过后端权限解析兜底保证部署后稳定生效。
+  - 不扩大生产自定义 `Finance_staff_assistant` 或 `maintenance_staff`，因为代码默认角色里没有赋予它们移动端作业/支出权限；如业务需要应单独确认。
+
+### Files / Areas
+
+- `backend/src/auth.ts` — modified: 增加现场角色移动端权限 overlay，并补齐客服/财务移动端支出自助权限 overlay。
+- `backend/dist/auth.js` — generated/modified by `npm run build`: compiled output for the auth overlay change.
+- `backend/scripts/tests/test_cleaning_app_role_permission_overlays.ts` — added: 覆盖 cleaner/cleaning_inspector/cleaner_inspector 的移动端上传与填报权限兜底，以及 customer_service/finance_staff 的移动端支出权限兜底。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: cleaning mobile endpoints that rely on `listPermissionCodesForUser()` / `canPerformCleaningTaskAction()` now allow assigned cleaners and inspectors through the intended base-permission gate; mobile expense endpoints that rely on resolved `cleaning_app.expense.*` permissions also receive the intended customer service / finance staff permissions.
+- Database / migration: none; production database was queried read-only for diagnosis.
+- Config / environment: uses existing auth role names; no new env vars.
+- Dependencies: none.
+- Related units: complements `CRL-20260704-001`; this fixes upload/action permission, not task-card visibility.
+
+### Validation
+
+- Production read-only query using `NEON_DATABASE_URL_PROD` — passed: AU4408 on 2026-07-04 is assigned to Barbara (`cleaner`) and Oscar (`cleaning_inspector`); `role.cleaner` had no effective `cleaning_app.*` production permissions before this code overlay.
+- Production permission simulation after code change — passed: Barbara resolves `tasks.start`, `tasks.finish`, `media.upload`; Oscar resolves `inspect.finish`, `tasks.finish`, `tasks.start`, `media.upload`.
+- Production all-role permission audit using `NEON_DATABASE_URL_PROD` — passed: after overlay, `customer_service` resolves mobile expense permissions and `finance_staff` resolves mobile expense permissions; `maintenance_staff` and production custom `Finance_staff_assistant` still resolve no `cleaning_app.*` permissions by design.
+- `./node_modules/.bin/ts-node --transpile-only scripts/tests/test_cleaning_app_role_permission_overlays.ts` in `backend` — passed.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+
+### Risks / Release Notes
+
+- Behavior risk: `cleaning_inspector` now also receives `tasks.start/tasks.finish` at permission-resolution level to satisfy existing mobile completion routes; task participation checks still restrict actions to assigned/participating tasks.
+- Behavior risk: `customer_service` and `finance_staff` now receive the code-default mobile self expense permissions even if production DB omits them.
+- Rollback: remove the added role entries / mobile expense overlay entries from `DEFAULT_ROLE_PERMISSION_OVERLAYS` and the new test assertions.
+- Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: committed locally to root `Dev` in commit `c8651f5`; push to `origin/Dev` failed because GitHub HTTPS credentials are unavailable in this environment. Worktree still contains unrelated pre-existing finance/inventory changes.
+
+## CRL-20260704-001 — 移动端同日 turnover 挂钥匙完成态合并
+
+- **Status:** committed
+- **Updated:** 2026-07-04 10:59 AEST
+- **Request:** “把同房同日挂钥匙视频视为整张 turnover 卡完成”，同时确认纯入住的“检查后挂钥匙/仅改密码”和早入住、晚退房、晚入住等标签不要被覆盖。
+- **Outcome:** `/mzapp/work-tasks` 现在会把同房同日同时存在退房和入住、且已有挂钥匙视频或 `keys_hung` 状态的任务视为整张 turnover 已完成；不会再额外生成单独的入住执行/检查卡。纯入住任务仍保留执行人可见的“仅改密码/检查后挂钥匙”标签语义。
+
+### Implementation
+
+- Previous behavior:
+  - 同房同日退房+入住中，退房侧已挂钥匙后，入住侧仍可能以独立 `checkin_clean` 执行/检查卡出现在移动端，导致用户看到重复入住任务和“检查后挂钥匙”标签。
+  - 退房卡只从自身行拿挂钥匙视频；如果视频在同日入住行上，checkout 聚合卡不能稳定继承完成态。
+- New behavior:
+  - `backend/src/modules/mzapp.ts` 在移动端任务投影前按 `task_date + property_id` 识别同日 checkout/checkin turnover 完成态。
+  - 当同日同房既有退房又有入住，且任一侧有挂钥匙视频或 `keys_hung` 时，入住侧不再生成独立 executor/inspector 卡。
+  - checkout/turnover 聚合卡会从同日入住行继承挂钥匙视频/钥匙照片，并输出 `keys_hung`；管理视图二次合并也保留 `keys_hung`。
+  - 时间与业务标签仍来自现有 `turnover_display` 和 `key_tags`：钥匙数、晚退房、早入住、晚入住不被改写；纯入住的 `inspection_scope` 标签没有改前端逻辑。
+- Key decisions:
+  - 不改移动端前端标签显示条件，避免影响纯入住场景；只修后端错误产生的独立入住卡。
+  - 写数据库的回归测试增加生产库保护：`NODE_ENV=production` 或 `DATABASE_URL` 与生产 URL 指向同一库时直接拒绝运行。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — modified: mobile work-task 同日 turnover 完成态识别、压掉独立入住执行/检查卡、继承同日挂钥匙媒体并输出 `keys_hung`。
+- `backend/scripts/tests/test_task_assignment_canonical.ts` — modified: 增加生产库保护；覆盖同日挂钥匙只生成一张完成卡，并断言入住摘要、新密码、钥匙数、晚退房、早入住、晚入住和纯入住标签场景不丢。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: `/mzapp/work-tasks` response behavior changes for same-property same-day checkout+checkin tasks with lockbox video or `keys_hung`; pure checkin-only task behavior unchanged.
+- Database / migration: none.
+- Config / environment: tests read `NEON_DATABASE_URL_PROD` or `DATABASE_URL_PROD` only to compare sanitized database identity and refuse unsafe writes; no values are logged.
+- Dependencies: none.
+- Related units: relates to mobile pure checkin tag behavior in `CRL-20260703-012`, but does not change mobile frontend files.
+
+### Validation
+
+- `DOTENV_CONFIG_PATH=backend/.env.local node -r ./backend/node_modules/dotenv/config -e "..."` — passed: verified current test `DATABASE_URL` is present, production URL is present, `NODE_ENV` is not production, and sanitized database identities do not match; no secret values printed.
+- `./node_modules/.bin/ts-node --transpile-only scripts/tests/test_task_assignment_canonical.ts` in `backend` sandbox — failed: DNS/network blocked before writes completed (`ENOTFOUND`), so rerun with approved network access.
+- `./node_modules/.bin/ts-node --transpile-only scripts/tests/test_task_assignment_canonical.ts` in `backend` with network access — passed: includes同日完成 turnover 压卡、纯入住 password-only 和 inspect-and-hang 场景。
+- `./node_modules/.bin/ts-node --transpile-only scripts/tests/test_cleaning_turnover_display.ts` in `backend` — passed: turnover helper time-tag logic remains valid.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+
+### Risks / Release Notes
+
+- Behavior risk: if operations intentionally wanted a separate same-day入住执行卡 after挂钥匙视频, it will now be hidden because the whole turnover is considered complete.
+- Rollback: remove the same-day turnover completion map, the standalone checkin suppression, and the lockbox-media inheritance/status override in `backend/src/modules/mzapp.ts`.
+- Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: committed locally to root `Dev` in commit `c8651f5`; push to `origin/Dev` failed because GitHub HTTPS credentials are unavailable in this environment. Worktree still contains unrelated pre-existing finance/inventory changes not owned by this unit.
+
 ## CRL-20260703-016 — 移动端 1.0.24 production store 构建与 iOS TestFlight 提交
 
 - **Status:** in-progress
