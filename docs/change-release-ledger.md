@@ -2,6 +2,146 @@
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
+## CRL-20260704-012 — 移动端本地媒体空间自动治理
+
+- **Status:** pushed
+- **Updated:** 2026-07-04 18:00 AEST
+- **Request:** 执行已确认的本地照片/视频空间优化方案；不要在 App 内显示“未同步照片占用空间”提示；清理必须基于引用关系、带远端确认条件、避免和上传抢文件，并区分照片和视频压缩策略。
+- **Outcome:** 移动端照片类本机草稿统一先压缩再入队；视频不做本机压缩。各上传队列在“远端上传成功且远端引用已经写回本机队列/draft/snapshot”后才删除本地原图；孤儿清理只从队列/draft 引用集合出发，跳过仍被引用或正在上传的文件，并通过 App 前台/网络恢复时短跑维护，不依赖长期后台运行。
+
+### Implementation
+
+- Previous behavior:
+  - 多个移动端流程直接把相机原图复制到 `Documents` 下的本机队列目录，照片可能长期占用大量空间。
+  - 部分流程在 upload API 返回后立即删本地文件，删除动作发生在远端 URL 写回本机业务队列之前；一旦后续业务保存失败，重试链路更脆弱。
+  - 本地清理缺少统一锁和引用集合保护，容易在弱网上传重试和文件删除之间产生竞态。
+  - `inspection_media_queue` 仍使用 7 天本机保留窗口，与“弱网尽量顺利推进、最后才兜底清理 abandoned 未上传证据”的策略不一致。
+- New behavior:
+  - `imageCompression` 增加本机存储压缩入口，照片按 1800px / 0.72 质量保存为 JPEG；上传用压缩入口保留 1920px / 0.76；视频路径明确不走图片压缩。
+  - 钥匙照片、检查照片、检查反馈照片、补货耗材照片、下班交接照片等本机草稿写入前先压缩图片，并持久化新的 `name/mimeType/localUri`。
+  - `localMediaLocks` 为本地文件 URI 加上传/清理互斥；上传时加锁，删除逻辑遇到锁会跳过。
+  - 钥匙上传、检查媒体队列、检查面板提交队列、补货提交队列、下班交接队列都改为先把远端 URL/key 写回本机队列或 draft，再删除本地原图；业务保存失败时保留远端引用继续重试。
+  - 新增 `localMediaHousekeeping`，从 AsyncStorage 中的媒体队列、检查面板 draft、反馈 draft、钥匙队列、下班交接队列、耗材 draft 等引用集合保护 `file://`，只删除不再被引用且超过 24 小时宽限期的孤儿媒体文件。
+  - 缩略图缓存上限从 96 个 / 24 MB 调整为 64 个 / 16 MB，仍保护队列/draft 中引用的缩略图。
+  - `inspection_media_queue` 的未上传 abandoned 兜底保留窗口从 7 天延长到 30 天，避免弱网楼盘现场证据过早丢失。
+- Key decisions:
+  - 不新增任何用户可见存储占用提示或手动清理按钮。
+  - 清理动作不按目录年龄孤立运行；目录扫描只用于找候选文件，最终删除必须先排除所有本机引用。
+  - “上传到 R2 但业务记录未保存成功”的清理条件以 upload API 成功返回远端引用并且本机队列/draft 已持久化该引用为准；当前客户端没有额外 R2 HEAD 校验接口。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/lib/imageCompression.ts` — modified: 抽出本机照片压缩入口和可压缩 MIME 判断，上传压缩继续复用较高尺寸/质量参数。
+- `mz-cleaning-app-frontend/src/lib/localMediaLocks.ts` — added: 本地媒体 URI 上传/清理互斥锁。
+- `mz-cleaning-app-frontend/src/lib/localMediaDrafts.ts` — modified: 增加压缩后草稿持久化；删除时跳过锁定文件。
+- `mz-cleaning-app-frontend/src/lib/cleaningConsumablesDraft.ts` — modified: 耗材照片草稿压缩后保存；删除时跳过锁定文件。
+- `mz-cleaning-app-frontend/src/lib/keyUploadQueue.ts` — modified: 钥匙照片入队压缩；上传加锁；远端引用持久化后清理本地原图。
+- `mz-cleaning-app-frontend/src/lib/inspectionMediaQueue.ts` — modified: 检查/补货照片入队压缩、视频不压缩；上传加锁；远端引用持久化后清理本地文件；abandoned 保留期改为 30 天。
+- `mz-cleaning-app-frontend/src/lib/inspectionPanelSubmitQueue.ts` — modified/shared: 检查面板批量提交在 upload step 写回远端引用后清理本地原图，并保留缩略图供本机回看。
+- `mz-cleaning-app-frontend/src/lib/cleaningConsumablesSubmitQueue.ts` — modified: 耗材提交队列上传加锁，远端 URL 写回 draft 后再删除对应本地照片。
+- `mz-cleaning-app-frontend/src/lib/dayEndHandoverQueue.ts` — modified: 下班交接照片入队压缩、上传加锁、远端 URL 持久化后清理本地原图。
+- `mz-cleaning-app-frontend/src/lib/localMediaHousekeeping.ts` — added: 引用集合保护、孤儿文件选择、短跑清理任务。
+- `mz-cleaning-app-frontend/src/lib/inspectionThumbnailCache.ts` — modified: 缩略图缓存上限降低。
+- `mz-cleaning-app-frontend/src/lib/auth.tsx` — modified: 登录态队列维护后触发本地媒体 housekeeping。
+- `mz-cleaning-app-frontend/src/screens/tasks/FeedbackFormScreen.tsx` — modified: 检查反馈照片本机草稿改用压缩保存。
+- `mz-cleaning-app-frontend/src/screens/tasks/SuppliesFormScreen.tsx` — modified: 补货照片本机草稿改用压缩保存。
+- `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.tsx` — modified: 自清洁补货照片本机草稿改用压缩保存。
+- `mz-cleaning-app-frontend/src/lib/localMediaHousekeeping.test.ts` — added: 覆盖引用递归收集和孤儿清理选择规则。
+- `mz-cleaning-app-frontend/src/lib/keyUploadQueue.test.ts` — modified: 更新压缩草稿 mock 以覆盖钥匙照片队列。
+- `mz-cleaning-app-frontend/jest.setup.ts` — modified: AsyncStorage mock 增加 `getAllKeys` / `multiGet`，支持引用集合测试。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none; 继续使用现有上传和业务保存接口。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: builds on `CRL-20260704-011` 的检查照片待同步队列修复；`inspectionPanelSubmitQueue.ts` 与该单元共享，选择性发布需要 hunk 级审查。移动端仓库中 `app.json`、`eas.json`、`package.json`、`package-lock.json` 的版本/更新配置改动不属于本单元。
+
+### Validation
+
+- `npm test -- --runInBand src/lib/localMediaHousekeeping.test.ts src/lib/keyUploadQueue.test.ts src/lib/inspectionMediaQueue.test.ts src/lib/inspectionPanelSubmitQueue.test.ts src/lib/cleaningConsumablesSubmitQueue.test.ts src/lib/dayEndHandoverQueue.test.ts src/lib/inspectionThumbnailCache.test.ts` in `mz-cleaning-app-frontend` — passed: 7 suites / 20 tests.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with existing warnings: 0 errors, 113 warnings.
+- `npm test -- --runInBand` in `mz-cleaning-app-frontend` — passed: 33 suites / 123 tests. Jest printed an existing SafeAreaView deprecation warning.
+- `git -C mz-cleaning-app-frontend diff --check` — passed.
+- Build — not run: `mz-cleaning-app-frontend/package.json` has no `build` script.
+
+### Risks / Release Notes
+
+- Risk: upload API 成功返回远端 URL/key 被视为远端对象确认；当前没有单独 R2 HEAD/引用查询接口可做二次远端校验。
+- Risk: 被清理为“孤儿”的文件必须先不在任何已知队列/draft 引用集合中；如果未来新增新的本地媒体 AsyncStorage key，需要把该 key/prefix 加入 `localMediaHousekeeping` 的引用集合。
+- Risk: 已上传但业务保存失败的本地原图会被删除，后续依赖远端 URL/key 重试；这是本次明确选择，用空间换取弱网流程继续推进。
+- Rollback: revert local media compression helpers, queue post-upload cleanup changes, `localMediaHousekeeping`, lock helper, auth maintenance hook, and thumbnail cap changes.
+- Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: mobile implementation pushed to nested `mz-cleaning-app-frontend` `Dev` in commit `40dc433`; root ledger follow-up records the pushed status. Root worktree and nested mobile repo contain unrelated pre-existing changes outside this release unit.
+
+## CRL-20260704-011 — 移动端检查照片弱网待同步修复
+
+- **Status:** pushed
+- **Updated:** 2026-07-04 18:00 AEST
+- **Request:** “给我一个修复方案”“不要做强制校验，因为有些楼网络不好 传不上去 很常见的事情。要保证流程尽可能的顺里进行”“对 按这个执行吧”。
+- **Outcome:** 检查人员在弱网或任务 action target 尚未刷新时提交检查照片，不再把本机批次丢弃或误显示为已写入后端；系统会保留本机待同步批次，后续拿到正确 `source_id` 后自动补绑定并继续同步。挂钥匙/密码视频流程不再被检查照片待同步强制拦截，管理端照片回看会同时查询相关清洁任务 id。
+
+### Implementation
+
+- Previous behavior:
+  - 检查页保存/提交批次时依赖 `cleaning_task_id`；如果移动端入口没有传到后端业务 `source_id`，本机提交批次会被 normalize 丢弃或无法进入业务同步。
+  - 完成页把检查照片批次缺失/草稿作为阻塞条件，检查员在上传视频后再回到检查页时可能看到房间照片重新变成“未拍”。
+  - 旧任务卡片、消息 fallback、通知 fallback 等入口只传 `taskId`，没有把已有 `source_id` 带到检查页。
+  - 管理端每日详情只按单一活动 id 查检查照片，合并/历史 id 下的已同步照片可能查不到。
+- New behavior:
+  - 检查照片提交队列允许先保存缺少 `cleaning_task_id` 的待同步批次；同步处理遇到缺少业务 id 时只标记“等待任务信息刷新”，不调用后端也不丢本机照片。
+  - 新增 `bindInspectionPanelCleaningTaskId()`，检查页、完成页和入口路由拿到 `source_id` 后会把待同步批次补绑定到正确业务记录，并重试失败的业务步骤。
+  - 完成页将检查照片状态改为弱网友好提示；只要照片已保存为本机批次，就允许继续挂钥匙/密码视频，不做强制后端同步校验。
+  - 任务列表、消息中心、通知 fallback 和完成页返回检查页时都会尽量传递 `sourceId`。
+  - 管理端检查照片回看使用 active/source/related cleaning task id 并集查询，降低合并任务或旧缓存 id 查不到照片的风险。
+- Key decisions:
+  - 不新增强制在线校验，不阻断现场人员继续完成流程。
+  - 不新增后端接口或数据库字段；修复集中在移动端本机队列、路由参数和查询 id 范围。
+  - 已经丢失且设备本机也没有待同步批次的历史照片无法凭代码恢复。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/lib/inspectionPanelSubmitQueue.ts` — modified: 支持缺少业务 id 的本机待同步批次、补绑定 `cleaning_task_id`、等待任务信息后自动继续同步。
+- `mz-cleaning-app-frontend/src/lib/inspectionPanelSubmitQueue.test.ts` — modified: 覆盖缺少 `cleaning_task_id` 时先等待、补绑定后同步到后端业务记录。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.tsx` — modified: 检查页不再因暂缺 `sourceId` 放弃本机草稿/批次；提交文案改为本机保存和待同步。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionCompleteScreen.tsx` — modified: 完成页绑定检查批次业务 id，检查照片待同步不再阻塞挂钥匙/密码视频。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionCompleteScreen.test.tsx` — modified: 覆盖非仅改密码检查在照片待同步时仍可完成视频，并按 `submit_inspection` action target 回到检查页。
+- `mz-cleaning-app-frontend/src/navigation/RootNavigator.tsx` — modified: 通知 fallback 进入检查页时传递已有 `source_id`。
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.tsx` — modified: 旧任务卡片 fallback 进入检查页时传递已有 `source_id`。
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.test.tsx` — modified: 覆盖检查员 fallback 卡片跳转会带 `sourceId`。
+- `mz-cleaning-app-frontend/src/screens/tabs/NoticesScreen.tsx` — modified: 消息中心历史任务 fallback 进入检查页时传递已有 `source_id`。
+- `mz-cleaning-app-frontend/src/lib/managerDailyTaskPhotos.ts` — modified: 管理端检查照片查询 id 扩展为 active/source/related id 并集。
+- `mz-cleaning-app-frontend/src/screens/tasks/ManagerDailyTaskScreen.test.ts` — modified: 更新管理端照片 id 查询断言。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none; 继续使用现有检查照片、补货凭证、视频接口。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: follows `CRL-20260704-008` 的“管理可见性”修复；本单元修复检查员照片写入/同步链路。移动端仓库中 `app.json`、`eas.json`、`package.json`、`package-lock.json` 已有版本/更新配置改动不属于本单元。
+
+### Validation
+
+- `npm test -- --runInBand src/lib/inspectionPanelSubmitQueue.test.ts src/screens/tasks/InspectionCompleteScreen.test.tsx src/screens/tasks/ManagerDailyTaskScreen.test.ts src/screens/tabs/TasksScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 4 suites / 28 tests. Jest printed an existing SafeAreaView deprecation warning and open-handle notice after successful completion.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with existing project warnings: 0 errors, 114 warnings.
+- `git diff --check -- src/lib/inspectionPanelSubmitQueue.ts src/lib/inspectionPanelSubmitQueue.test.ts src/lib/managerDailyTaskPhotos.ts src/navigation/RootNavigator.tsx src/screens/tasks/InspectionCompleteScreen.tsx src/screens/tasks/InspectionCompleteScreen.test.tsx src/screens/tasks/InspectionPanelScreen.tsx src/screens/tasks/ManagerDailyTaskScreen.test.ts src/screens/tabs/TasksScreen.tsx src/screens/tabs/TasksScreen.test.tsx src/screens/tabs/NoticesScreen.tsx` in `mz-cleaning-app-frontend` — passed.
+- `python3 scripts/audit_change_release_ledger.py` in root — passed: Changed files 14, recorded changed files 14, coverage PASS.
+- Build — not run: `mz-cleaning-app-frontend/package.json` has no `build` script.
+
+### Risks / Release Notes
+
+- Risk: 如果检查员设备本机批次已经被用户放弃、清缓存或被旧逻辑丢掉，代码无法恢复那些历史照片；只能修复之后的保存/同步。
+- Risk: 管理端仍只能查看已经成功同步到后端业务记录的检查照片；本机待同步期间管理端会继续显示暂无或旧数据。
+- Rollback: revert the mobile queue binding changes, weak-network completion-page wording/flow changes, route `sourceId` fallback additions, and manager photo id union change.
+- Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: mobile implementation pushed to nested `mz-cleaning-app-frontend` `Dev` in commit `40dc433`; root ledger follow-up records the pushed status. Root worktree and nested mobile repo contain unrelated pre-existing changes outside this release unit.
+
 ## CRL-20260704-010 — 网页端清洁任务信息更新 HTTP 400 修复
 
 - **Status:** committed
