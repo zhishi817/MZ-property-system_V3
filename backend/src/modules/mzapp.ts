@@ -1251,6 +1251,11 @@ async function canSubmitMzappInspection(user: any, row: any, userId: string) {
   return userHasManualWorkTaskAction(user, userId, 'cleaning_tasks', String(row?.id || '').trim(), 'submit_inspection')
 }
 
+export async function canViewMzappInspectionMedia(user: any, row: any, userId: string) {
+  if (canViewAll(user)) return true
+  return canSubmitMzappInspection(user, row, userId)
+}
+
 async function canViewMzappTaskConsumables(user: any, row: any, userId: string) {
   if (canViewAll(user)) return true
   const inspectorId = String(row?.inspector_id || '').trim()
@@ -2309,7 +2314,7 @@ router.get('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
     const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
-    if (!await canSubmitMzappInspection(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
+    if (!await canViewMzappInspectionMedia(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
 
     const r = await pgPool.query(
       `SELECT type, url, note, captured_at, created_at
@@ -2518,7 +2523,7 @@ router.get('/cleaning-tasks/:id/restock-proof', async (req, res) => {
     const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
-    if (!await canSubmitMzappInspection(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
+    if (!await canViewMzappInspectionMedia(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
 
     const r = await pgPool.query(
       `SELECT type, url, note, created_at
@@ -5094,6 +5099,15 @@ const workTaskReorderSchema = z.object({
   task_ids: z.array(z.string().min(1)).min(1),
 }).strict()
 
+const mixedTaskReorderSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  items: z.array(z.object({
+    kind: z.enum(['work', 'cleaner', 'inspector']),
+    ids: z.array(z.string().min(1)).min(1),
+    sort_index: z.number().int().min(1),
+  }).strict()).min(1),
+}).strict()
+
 router.post('/work-tasks/reorder', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
@@ -5172,6 +5186,145 @@ router.post('/work-tasks/reorder', async (req, res) => {
     return res.json({ ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'work_task_reorder_failed' })
+  }
+})
+
+router.post('/work-tasks/mixed-reorder', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const userId = String(user.sub || '').trim()
+  if (!userId && !canViewAll(user)) return res.status(401).json({ message: 'unauthorized' })
+  const parsed = mixedTaskReorderSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+
+  const date = parsed.data.date
+  const workEntries = parsed.data.items
+    .filter((item) => item.kind === 'work')
+    .flatMap((item) => item.ids.map((id) => ({ id: String(id || '').trim(), sort_index: item.sort_index })))
+    .filter((item) => item.id)
+  const cleanerEntries = parsed.data.items
+    .filter((item) => item.kind === 'cleaner')
+    .flatMap((item) => item.ids.map((id) => ({ id: String(id || '').trim(), sort_index: item.sort_index })))
+    .filter((item) => item.id)
+  const inspectorEntries = parsed.data.items
+    .filter((item) => item.kind === 'inspector')
+    .flatMap((item) => item.ids.map((id) => ({ id: String(id || '').trim(), sort_index: item.sort_index })))
+    .filter((item) => item.id)
+
+  try {
+    await ensureWorkTasksTable()
+    await ensureCleaningTaskSortColumns()
+
+    const workIds = Array.from(new Set(workEntries.map((item) => item.id)))
+    let scopeAssignee = canViewAll(user) ? '' : userId
+    if (workIds.length) {
+      const r0 = await pgPool.query(
+        `SELECT id, assignee_id, scheduled_date, source_type
+         FROM work_tasks
+         WHERE id = ANY($1::text[])`,
+        [workIds],
+      )
+      const rows = Array.isArray(r0?.rows) ? r0.rows : []
+      if (rows.length !== workIds.length) return res.status(404).json({ message: 'task not found' })
+      if (rows.some((row: any) => String(row.source_type || '').trim() === 'cleaning_tasks')) {
+        return res.status(400).json({ message: 'cleaning tasks use cleaning reorder entries' })
+      }
+      if (rows.some((row: any) => String(row.scheduled_date || '').slice(0, 10) !== date)) {
+        return res.status(400).json({ message: 'task date mismatch' })
+      }
+      const assignees = Array.from(new Set(rows.map((row: any) => String(row.assignee_id || '').trim())))
+      if (!canViewAll(user)) {
+        if (rows.some((row: any) => String(row.assignee_id || '').trim() !== userId)) {
+          return res.status(403).json({ message: 'forbidden' })
+        }
+      } else {
+        const nonEmptyAssignees = assignees.filter(Boolean)
+        if (nonEmptyAssignees.length > 1) return res.status(400).json({ message: 'only one assignee can be reordered at a time' })
+      }
+      scopeAssignee = canViewAll(user) ? (assignees.find(Boolean) || '') : userId
+    }
+
+    if (cleanerEntries.length && !(isCleanerRole(user) || isCleanerInspectorRole(user))) {
+      return res.status(403).json({ message: 'forbidden' })
+    }
+    if (inspectorEntries.length && !(isInspectorRole(user) || isCleanerInspectorRole(user))) {
+      return res.status(403).json({ message: 'forbidden' })
+    }
+
+    await pgPool.query('BEGIN')
+    try {
+      if (workEntries.length) {
+        if (scopeAssignee) {
+          await pgPool.query(
+            `UPDATE work_tasks
+             SET sort_index = NULL, updated_at = now()
+             WHERE scheduled_date = $1::date
+               AND source_type <> 'cleaning_tasks'
+               AND COALESCE(assignee_id, '') = $2`,
+            [date, scopeAssignee],
+          )
+        } else {
+          await pgPool.query(
+            `UPDATE work_tasks
+             SET sort_index = NULL, updated_at = now()
+             WHERE scheduled_date = $1::date
+               AND source_type <> 'cleaning_tasks'
+               AND COALESCE(assignee_id, '') = ''`,
+            [date],
+          )
+        }
+        await pgPool.query(
+          `UPDATE work_tasks AS w
+           SET sort_index = v.sort_index, updated_at = now()
+           FROM jsonb_to_recordset($1::jsonb) AS v(id text, sort_index integer)
+           WHERE w.id::text = v.id`,
+          [JSON.stringify(workEntries)],
+        )
+      }
+
+      if (cleanerEntries.length) {
+        const r = await pgPool.query(
+          `UPDATE cleaning_tasks AS t
+           SET sort_index_cleaner = v.sort_index, updated_at = now()
+           FROM jsonb_to_recordset($1::jsonb) AS v(id text, sort_index integer)
+           WHERE t.id::text = v.id
+             AND COALESCE(t.task_date, t.date)::date = $2::date
+             AND COALESCE(t.cleaner_id::text, t.assignee_id::text) = $3::text`,
+          [JSON.stringify(cleanerEntries), date, userId],
+        )
+        const expected = new Set(cleanerEntries.map((item) => item.id)).size
+        if ((r?.rowCount || 0) !== expected) {
+          throw Object.assign(new Error('forbidden'), { statusCode: 403 })
+        }
+      }
+
+      if (inspectorEntries.length) {
+        const r = await pgPool.query(
+          `UPDATE cleaning_tasks AS t
+           SET sort_index_inspector = v.sort_index, updated_at = now()
+           FROM jsonb_to_recordset($1::jsonb) AS v(id text, sort_index integer)
+           WHERE t.id::text = v.id
+             AND COALESCE(t.task_date, t.date)::date = $2::date
+             AND t.inspector_id::text = $3::text`,
+          [JSON.stringify(inspectorEntries), date, userId],
+        )
+        const expected = new Set(inspectorEntries.map((item) => item.id)).size
+        if ((r?.rowCount || 0) !== expected) {
+          throw Object.assign(new Error('forbidden'), { statusCode: 403 })
+        }
+      }
+
+      await pgPool.query('COMMIT')
+    } catch (e) {
+      await pgPool.query('ROLLBACK')
+      throw e
+    }
+    return res.json({ ok: true })
+  } catch (e: any) {
+    const status = Number(e?.statusCode || 0)
+    if (status >= 400 && status < 600) return res.status(status).json({ message: e?.message || 'mixed_reorder_failed' })
+    return res.status(500).json({ message: e?.message || 'mixed_reorder_failed' })
   }
 })
 

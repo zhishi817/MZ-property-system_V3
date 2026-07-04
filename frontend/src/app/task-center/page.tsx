@@ -454,15 +454,14 @@ function activeCleaningTaskIds(task: Pick<TaskCenterTask, 'task_source' | 'task_
 
 function cleaningAssignmentSnapshot(task: TaskCenterTask): CleaningAssignmentSnapshot {
   const timing = cleaningTimingVisibility(task)
-  const passwordOnlyCheckin =
+  const pureCheckin =
     task.task_source === 'cleaning'
     && timing.showCheckin
     && !timing.showCheckout
-    && normalizeInspectionScope(task.inspection_scope) === 'password_only'
   return {
-    assignee_id: task.assignee_id || null,
-    cleaner_id: passwordOnlyCheckin ? null : (task.cleaner_id || task.assignee_id || null),
-    inspector_id: passwordOnlyCheckin ? null : (task.inspector_id || null),
+    assignee_id: pureCheckin ? (task.assignee_id || task.inspector_id || task.cleaner_id || null) : (task.assignee_id || null),
+    cleaner_id: pureCheckin ? null : (task.cleaner_id || task.assignee_id || null),
+    inspector_id: pureCheckin ? null : (task.inspector_id || null),
     inspection_mode: task.inspection_mode || 'pending_decision',
     inspection_scope: task.inspection_scope || null,
     inspection_due_date: task.inspection_due_date || null,
@@ -606,8 +605,7 @@ function canAutoReassignInspectorOnDrop(task: Pick<TaskCenterTask, 'task_source'
 }
 
 function preferredStaffIdForTask(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view' | 'inspection_scope' | 'cleaner_id' | 'assignee_id' | 'inspector_id'>) {
-  if (isPasswordOnlyCheckinTask(task)) return String(task.assignee_id || task.inspector_id || '').trim()
-  if (isCheckinOnlyCleaningTask(task)) return String(task.inspector_id || '').trim()
+  if (isCheckinOnlyCleaningTask(task)) return String(task.assignee_id || task.inspector_id || task.cleaner_id || '').trim()
   return String(task.cleaner_id || task.assignee_id || '').trim()
 }
 
@@ -942,6 +940,9 @@ export default function TaskCenterPage() {
       if (isCompletedBoardStatus(task.status)) return false
       const mode = resolvedInspectionModeForTask(task)
       if (!mode || mode === 'pending_decision') return true
+      if ((mode === 'same_day' || mode === 'deferred') && isCheckinOnlyCleaningTask(task)) {
+        return !String(task.assignee_id || task.inspector_id || task.cleaner_id || '').trim()
+      }
       if ((mode === 'same_day' || mode === 'deferred') && !String(task.inspector_id || '').trim()) return true
       return false
     }).length
@@ -1072,7 +1073,7 @@ export default function TaskCenterPage() {
 
   const nextCleaningDetailStatus = useCallback((task: TaskCenterTask, draft: TaskDetailDraft) => {
     if (task.task_source !== 'cleaning') return task.status
-    if (isPasswordOnlyCheckinTask({ ...task, inspection_scope: draft.inspection_scope })) {
+    if (isCheckinOnlyCleaningTask(task)) {
       return autoCleaningStatus(task.status, draft.assignee_id || null, null)
     }
     const completionStatus = resolveTaskDetailCompletionStatus({
@@ -1105,11 +1106,11 @@ export default function TaskCenterPage() {
       message.warning('仅改密码任务不能使用“自完成/已检查”，已自动回退为同日检查')
     }
     setDetailTask({ ...task, current_row_key: row.row_key, current_subrow_key: subrow.subrow_key })
-    const passwordOnlyCheckin = isPasswordOnlyCheckinTask(task)
+    const pureCheckin = isCheckinOnlyCleaningTask(task)
     setDetailDraft({
-      cleaner_id: requiresCleanerAssignment(task) ? (task.cleaner_id || null) : null,
-      inspector_id: passwordOnlyCheckin ? null : (task.inspector_id || null),
-      assignee_id: passwordOnlyCheckin ? (task.assignee_id || task.inspector_id || null) : (task.assignee_id || null),
+      cleaner_id: pureCheckin ? null : (requiresCleanerAssignment(task) ? (task.cleaner_id || null) : null),
+      inspector_id: pureCheckin ? null : (task.inspector_id || null),
+      assignee_id: pureCheckin ? (task.assignee_id || task.inspector_id || task.cleaner_id || null) : (task.assignee_id || null),
       inspection_mode: inspectionMode,
       inspection_scope: normalizeInspectionScope(task.inspection_scope),
       inspection_due_date: task.inspection_due_date ? dayjs(task.inspection_due_date) : null,
@@ -1134,7 +1135,7 @@ export default function TaskCenterPage() {
     const nextStatusAction = cleaningStatusActionForDetail(task, draft)
     const nextInspectionMode = draft.inspection_mode
     const nextCleanerId = requiresCleanerAssignment(task) ? (draft.cleaner_id || null) : null
-    const passwordOnlyCheckin = isPasswordOnlyCheckinTask({ ...task, inspection_scope: draft.inspection_scope })
+    const pureCheckin = isCheckinOnlyCleaningTask(task)
     const nextRows = rows.map((row) => ({
       ...row,
       subrows: row.subrows.map((subrow) => ({
@@ -1146,10 +1147,10 @@ export default function TaskCenterPage() {
           if (!sameTask) return item
           return {
             ...item,
-            cleaner_id: task.task_source === 'cleaning' ? (passwordOnlyCheckin ? null : nextCleanerId) : item.cleaner_id,
-            inspector_id: task.task_source === 'cleaning' ? (passwordOnlyCheckin ? null : (draft.inspector_id || null)) : item.inspector_id,
+            cleaner_id: task.task_source === 'cleaning' ? (pureCheckin ? null : nextCleanerId) : item.cleaner_id,
+            inspector_id: task.task_source === 'cleaning' ? (pureCheckin ? null : (draft.inspector_id || null)) : item.inspector_id,
             assignee_id: task.task_source === 'cleaning'
-              ? (passwordOnlyCheckin ? (draft.assignee_id || null) : item.assignee_id)
+              ? (pureCheckin ? (draft.assignee_id || null) : item.assignee_id)
               : (draft.assignee_id || null),
             status: task.task_source === 'cleaning'
               ? nextStatus
@@ -1238,13 +1239,12 @@ export default function TaskCenterPage() {
     }
     if (
       isCheckinOnlyCleaningTask(detailTask) &&
-      !isPasswordOnlyCheckinTask({ ...detailTask, inspection_scope: detailDraft.inspection_scope }) &&
       detailDraft.inspection_mode !== 'self_complete' &&
       detailDraft.inspection_mode !== 'checked_done' &&
       detailDraft.keys_hung &&
-      !detailDraft.inspector_id
+      !detailDraft.assignee_id
     ) {
-      message.error('标记已挂钥匙前请保留或选择检查人员')
+      message.error('标记已挂钥匙前请保留或选择执行人')
       return
     }
     applyTaskDetailLocally(detailTask, detailDraft)
@@ -1527,6 +1527,7 @@ export default function TaskCenterPage() {
             bucket: task.temporarily_skipped ? 'deferred' : null,
           })
           if (task.task_source === 'cleaning') {
+            const pureCheckin = isCheckinOnlyCleaningTask(task)
             const current = cleaningAssignmentSnapshot(task)
             const previous = assignmentBaselineRef.current.cleaning.get(id) || null
               const assigneeChanged = previous ? previous.assignee_id !== current.assignee_id : !!current.assignee_id
@@ -1565,15 +1566,19 @@ export default function TaskCenterPage() {
                   item.status_action = statusAction
                   item.status = current.status
                 }
-              if (assigneeChanged && normalizeInspectionScope(current.inspection_scope) === 'password_only') {
+              if (assigneeChanged && pureCheckin) {
                 item.assignee_id = current.assignee_id
                 item.assignee_assignment_action = current.assignee_id ? 'assign' : 'unassign'
+                item.cleaner_id = null
+                item.cleaner_assignment_action = 'unassign'
+                item.inspector_id = null
+                item.inspector_assignment_action = 'unassign'
               }
-              if (cleanerChanged) {
+              if (cleanerChanged && !pureCheckin) {
                 item.cleaner_id = current.cleaner_id
                 item.cleaner_assignment_action = current.cleaner_id ? 'assign' : 'unassign'
               }
-              if (inspectorChanged) {
+              if (inspectorChanged && !pureCheckin) {
                 item.inspector_id = current.inspector_id
                 item.inspector_assignment_action = current.inspector_id ? 'assign' : 'unassign'
               }
@@ -2079,6 +2084,7 @@ export default function TaskCenterPage() {
   const detailRequiresCleaner = detailTask ? taskSemanticBool(detailTask, 'requires_cleaner', requiresCleanerAssignment(detailTask)) : false
   const detailIsPureCheckin = detailTask ? taskSemanticBool(detailTask, 'is_pure_checkin', isCheckinOnlyCleaningTask(detailTask)) : false
   const detailIsPasswordOnly = detailTask ? taskSemanticBool(detailTask, 'is_password_only', isPasswordOnlyCheckinTask({ ...detailTask, inspection_scope: detailDraft?.inspection_scope || detailTask.inspection_scope })) : false
+  const detailUsesExecutorAssignment = detailIsPureCheckin || detailIsPasswordOnly
   const detailSupersededCount = detailTask ? supersededCleaningTaskIds(detailTask).length : 0
 
   return (
@@ -2347,9 +2353,9 @@ export default function TaskCenterPage() {
                             ...prev,
                             inspection_scope: nextScope,
                             inspection_mode: nextMode,
-                            assignee_id: nextScope === 'password_only' ? (prev.assignee_id || prev.inspector_id || null) : prev.assignee_id,
-                            inspector_id: nextScope === 'password_only' ? null : prev.inspector_id,
-                            cleaner_id: nextScope === 'password_only' ? null : prev.cleaner_id,
+                            assignee_id: prev.assignee_id || prev.inspector_id || prev.cleaner_id || null,
+                            inspector_id: null,
+                            cleaner_id: null,
                             inspection_due_date: nextMode === 'deferred' ? prev.inspection_due_date : null,
                           }
                         })}
@@ -2430,24 +2436,24 @@ export default function TaskCenterPage() {
                 {((!detailDraft.task_completed || detailDraft.keys_hung) && (detailDraft.inspection_mode === 'same_day' || detailDraft.inspection_mode === 'deferred')) ? (
                   <div className={styles.taskDetailGrid}>
                     <div>
-	                      <div className={styles.fieldLabel}>{detailIsPasswordOnly ? '执行人' : '检查人员'}</div>
+	                      <div className={styles.fieldLabel}>{detailUsesExecutorAssignment ? '执行人' : '检查人员'}</div>
 	                      <Select
                         allowClear
                         showSearch
                         optionFilterProp="label"
-	                        value={detailIsPasswordOnly ? (detailDraft.assignee_id || undefined) : (detailDraft.inspector_id || undefined)}
-	                        disabled={detailIsPasswordOnly ? !detailAssignExecutorGate.enabled : !detailAssignInspectorGate.enabled}
-	                        title={(detailIsPasswordOnly ? detailAssignExecutorDisabledReason : detailAssignInspectorDisabledReason) || undefined}
+	                        value={detailUsesExecutorAssignment ? (detailDraft.assignee_id || undefined) : (detailDraft.inspector_id || undefined)}
+	                        disabled={detailUsesExecutorAssignment ? !detailAssignExecutorGate.enabled : !detailAssignInspectorGate.enabled}
+	                        title={(detailUsesExecutorAssignment ? detailAssignExecutorDisabledReason : detailAssignInspectorDisabledReason) || undefined}
 	                        onChange={(value) => setDetailDraft((prev) => {
 	                          if (!prev) return prev
 	                          const nextValue = value ? String(value) : null
-	                          if (detailIsPasswordOnly) {
+	                          if (detailUsesExecutorAssignment) {
 	                            return { ...prev, assignee_id: nextValue, inspector_id: null, cleaner_id: null }
 	                          }
 	                          return { ...prev, inspector_id: nextValue }
 	                        })}
 	                        style={{ width: '100%' }}
-	                        options={detailIsPasswordOnly ? allStaffOptions : inspectorOptions}
+	                        options={detailUsesExecutorAssignment ? allStaffOptions : inspectorOptions}
 	                      />
                     </div>
                     {detailDraft.inspection_mode === 'deferred' ? (

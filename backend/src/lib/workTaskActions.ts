@@ -137,9 +137,9 @@ function normalizeActionIds(value: any): string[] {
   return Array.from(new Set((Array.isArray(raw) ? raw : []).map((item) => lower(item)).filter(Boolean)))
 }
 
-function isDoneStatus(value: any) {
+function isTerminalStatus(value: any) {
   const status = lower(value)
-  return ['done', 'completed', 'ready', 'cancelled', 'canceled', 'cleaned', 'restock_pending', 'restocked', 'to_inspect', 'to_hang_keys', 'keys_hung', 'inspected'].includes(status)
+  return ['done', 'completed', 'ready', 'cancelled', 'canceled', 'keys_hung', 'inspected'].includes(status)
 }
 
 function isCleaningWorkSubmitted(value: any) {
@@ -386,7 +386,7 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
   const isSelfCompleteEligible = isCleaningTask && isSelfCompleteMode(task) && (isCheckoutTask || isStayoverTask)
   const isDirectCompleteEligible = isCleaningTask && (isSelfCompleteEligible || isStayoverTask)
   const isCleaningSubmitted = isCleaningTask && isCleaningWorkSubmitted(status)
-  const isCompleted = isDoneStatus(status)
+  const isCompleted = isTerminalStatus(status)
   const participants = normalizeTaskParticipants(task)
   const participantSummary = participantSummaryForUser(participants, userId)
   const isParticipant = participantSummary.hasAny

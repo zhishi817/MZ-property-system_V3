@@ -155,6 +155,13 @@ type CleaningTaskRow = {
   nights_override?: number | null
 }
 
+const CLEANING_MANAGEMENT_STATUSES = new Set(['pending', 'assigned', 'in_progress', 'completed', 'cancelled', 'keys_hung'])
+
+function statusForCleaningMutation(status: string | null | undefined) {
+  const value = String(status || '').trim().toLowerCase()
+  return CLEANING_MANAGEMENT_STATUSES.has(value) ? value : null
+}
+
 type EditTaskForm = {
   mode: 'default' | 'stayover'
   ids: string[]
@@ -1156,10 +1163,11 @@ export default function CleaningPage() {
   const submitEdit = useCallback(async () => {
     if (!editForm) return
     const toNull = (s: string) => (String(s || '').trim() ? String(s).trim() : null)
+    const mutationStatus = statusForCleaningMutation(editForm.status)
     const base: any = {
       task_date: editForm.task_date.format('YYYY-MM-DD'),
-      status: editForm.status,
     }
+    if (mutationStatus) base.status = mutationStatus
     const pureCheckinSiteExecution =
       editForm.mode === 'default'
       && editForm.checkin_ids.length > 0
@@ -1205,25 +1213,25 @@ export default function CleaningPage() {
     }
 
     if (editForm.pending_add_checkout && editForm.property_id) {
-      await postJSON('/cleaning/tasks', {
+      const body: any = {
         task_type: 'checkout_clean',
         task_date: editForm.task_date.format('YYYY-MM-DD'),
         property_id: editForm.property_id,
-        status: editForm.status,
         cleaner_id: editForm.cleaner_id,
         inspector_id: editForm.inspector_id,
         keys_required: editForm.keys_required_checkout,
         old_code: toNull(editForm.checkout_password),
         checkout_time: toNull(editForm.checkout_time),
         guest_special_request: editForm.guest_special_request || null,
-      })
+      }
+      if (mutationStatus) body.status = mutationStatus
+      await postJSON('/cleaning/tasks', body)
     }
     if (editForm.pending_add_checkin && editForm.property_id) {
-      await postJSON('/cleaning/tasks', {
+      const body: any = {
         task_type: 'checkin_clean',
         task_date: editForm.checkin_task_date.format('YYYY-MM-DD'),
         property_id: editForm.property_id,
-        status: editForm.status,
         cleaner_id: editForm.cleaner_id,
         inspector_id: editForm.inspector_id,
         keys_required: editForm.keys_required_checkin,
@@ -1231,7 +1239,9 @@ export default function CleaningPage() {
         nights_override: editForm.nights_override ?? null,
         checkin_time: toNull(editForm.checkin_time),
         guest_special_request: editForm.guest_special_request || null,
-      })
+      }
+      if (mutationStatus) body.status = mutationStatus
+      await postJSON('/cleaning/tasks', body)
     }
 
     const patches = editForm.ids.map((id) => {
