@@ -2,6 +2,311 @@
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
+## CRL-20260704-010 — 网页端清洁任务信息更新 HTTP 400 修复
+
+- **Status:** committed
+- **Updated:** 2026-07-04 14:11 AEST
+- **Request:** “网页端为什么修改密码也报错 HTTP 400”，随后补充“所有信息更新都报错400”。
+- **Outcome:** `/cleaning` 编辑抽屉更新退房/入住密码、时间、入住天数、客人需求等信息时，不再因为当前清洁任务处于 `ready`、`cleaned`、`restock_pending`、`to_inspect` 等运行态而被 `/cleaning/tasks/:id` schema 拦截为 HTTP 400。
+
+### Implementation
+
+- Previous behavior:
+  - `frontend/src/app/cleaning/page.tsx` 的 `submitEdit()` 无论用户改哪个信息字段，都会把当前 `editForm.status` 一起发给每个 `/cleaning/tasks/:id` PATCH。
+  - `backend/src/modules/cleaning.ts` 的 patch/create schema 只接受 `pending`、`assigned`、`in_progress`、`completed`、`cancelled`、`keys_hung`。
+  - 移动端和每日清洁页已经会产生/识别 `ready`、`cleaned`、`restock_pending`、`restocked`、`inspected`、`done`、`to_inspect` 等状态；这些任务在网页端只改密码或客人需求也会因为 status 不在 schema 白名单内整体 400。
+- New behavior:
+  - 前端新增 `statusForCleaningMutation()`，只在状态属于管理端可主动设置的状态时才随信息更新提交；运行态不会被无意义回传。
+  - 后端新增统一 `cleaningTaskStatusSchema`，覆盖每日清洁页面和移动端已使用的清洁任务状态键，并复用于 patch/create schema。
+  - 新增入住/退房任务时，如果当前抽屉状态是运行态，前端不把该运行态写入新任务，交由后端按人员分配推导默认状态。
+- Key decisions:
+  - 不改数据库数据，不操作生产任务。
+  - 不改全局 API 错误渲染；本次修复根因是清洁任务 status 白名单和无意义回传。
+
+### Files / Areas
+
+- `frontend/src/app/cleaning/page.tsx` — modified: 信息更新和新增退房/入住任务时过滤不可管理的运行态 status。
+- `backend/src/modules/cleaning.ts` — modified: 抽出并扩展清洁任务 status schema，避免合法运行态被 patch/create 校验拒绝。
+- `backend/dist/modules/cleaning.js` — generated: 后端 build 产物同步清洁任务 status schema 变更。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: `/cleaning/tasks/:id` 和 `/cleaning/tasks` 接受更多已有清洁任务运行态；前端普通信息更新不会再回传不可管理运行态。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: touches daily cleaning web page and cleaning backend module; independent from existing task-center/mobile/finance/inventory units currently in the shared dirty worktree.
+
+### Validation
+
+- `git diff --check -- frontend/src/app/cleaning/page.tsx backend/src/modules/cleaning.ts backend/dist/modules/cleaning.js` — passed.
+- `./node_modules/.bin/tsc --noEmit` in `frontend` — passed.
+- `npm run lint` in `frontend` — passed with existing project warnings; no errors.
+- `npm run build` in `frontend` — passed; existing Browserslist/Recharts warnings only.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- Unit tests — not run: there is no focused existing unit covering `CleaningPage.submitEdit()` request payload construction; validation used type/build/lint and targeted diff inspection.
+
+### Risks / Release Notes
+
+- Runtime risk: backend will now accept legacy/display-like清洁状态 strings if a caller explicitly sends them. The web UI still filters these out for normal information edits, so this mainly preserves compatibility with existing task states.
+- Rollback: remove `statusForCleaningMutation()` usage and restore the narrower backend status enum.
+- Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: committed locally in root `Dev` commit `956df41`; push to `origin/Dev` failed because GitHub HTTPS credentials are unavailable in this environment. Worktree still contains unrelated finance/inventory/mzapp/mobile changes not owned by this unit.
+
+## CRL-20260704-009 — 房源代付模板重复创建拦截与删除清理修复
+
+- **Status:** committed
+- **Updated:** 2026-07-04 14:11 AEST
+- **Request:** “不可以直接操错生产环境的数据。你先修复，数据清理我人工处理”：只修复系统逻辑，不操作生产数据。
+- **Outcome:** 房源代付模板创建/更新时会拦截同房源、同类别、同供应商和同付款身份的 active 重复模板；删除房源代付模板时会清掉该模板全部未付款固定支出快照，不再因为已经跨月而留下过去月份未付款孤儿快照。已付款历史快照继续保留。
+
+### Implementation
+
+- Previous behavior:
+  - `recurring_payments` 只通过 `property_expenses.fixed_expense_id + month_key` 防止同一模板同一账期重复快照。
+  - 用户仍可为同一房源重复创建业务上相同的 active 代付模板，例如 BO614 的 `Occom/OCCOM` 网费，从而生成两个不同 `fixed_expense_id` 的六月网费快照。
+  - 删除房源代付模板只清理“当前月及未来”的未付款快照；跨月后删除旧模板会留下过去月份未付款孤儿快照。
+- New behavior:
+  - 新增房源代付模板业务身份 key：房源、类别、类别细分、供应商、付款方式、账单账号/银行/PayID/BPAY/手机号等付款身份字段，文本统一 trim、压缩空格、小写比较。
+  - 创建和更新 active `property_payable` 模板前，在事务内对业务身份加 advisory lock，并查找同业务身份的 active 模板；命中时返回 `409 property payable template already exists`，带 `conflict_id`。
+  - 删除房源代付模板时先读取该模板所有房源支出快照，只删除 `generated_from='recurring_payments'` 或旧 `Fixed payment` note 且状态不是 `paid` 的快照，不再按当前月份过滤。
+- Key decisions:
+  - 不操作生产数据；BO614 现有重复模板/快照由人工清理。
+  - 不把金额、到期日、开始月份纳入重复身份，因为这些应通过编辑原模板变更，不能作为创建第二套同供应商账单的理由。
+  - 保留已付款历史快照，避免删除模板时抹掉已支付记录。
+
+### Files / Areas
+
+- `backend/src/modules/recurring.ts` — modified: 增加房源代付模板重复身份判断、创建/更新 409 拦截、删除模板时清理全部未付款快照。
+- `backend/scripts/tests/test_property_payable_duplicate_guard.ts` — added: 覆盖供应商大小写/空格归一、不同类别不冲突、paused 模板不阻塞、删除模板时未付款快照清理规则。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: `POST /recurring/payments` 和 `PATCH /recurring/payments/:id` 可能新增 `409` 响应，提示已存在同业务身份的房源代付模板。
+- Database / migration: none; 没有新增表、字段或生产数据变更。
+- Config / environment: none.
+- Dependencies: none.
+- Related units: finance property-payables flow; independent from existing task-center/mobile/inventory changes in the current dirty worktree.
+
+### Validation
+
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_property_payable_duplicate_guard.ts` in `backend` — passed: `test_property_payable_duplicate_guard: ok`.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_property_payable_bill_dates.ts` in `backend` — passed: `test_property_payable_bill_dates: ok`.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_property_payable_template_sync.ts` in `backend` — passed: `test_property_payable_template_sync: ok`.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `git diff --check -- backend/src/modules/recurring.ts backend/scripts/tests/test_property_payable_duplicate_guard.ts` — passed.
+
+### Risks / Release Notes
+
+- Behavior risk: 如果业务确实需要同一房源、同类别、同供应商、同付款身份并行存在两条 active 代付模板，新逻辑会阻止创建；这种场景应先补充可区分的账单账号/付款参考或编辑原模板。
+- Rollback: revert `backend/src/modules/recurring.ts` duplicate guard and deletion-snapshot filtering changes, and remove `backend/scripts/tests/test_property_payable_duplicate_guard.ts`.
+- Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded. Production data was not modified.
+- Git state: committed locally in root `Dev` commit `956df41`; push to `origin/Dev` failed because GitHub HTTPS credentials are unavailable in this environment. Worktree still contains unrelated backend/frontend changes not owned by this unit.
+
+## CRL-20260704-008 — 移动端管理视图检查照片可见性修复
+
+- **Status:** committed
+- **Updated:** 2026-07-04 14:11 AEST
+- **Request:** “现在所有任务 admin和线下经理都没办法看到检查人员拍的照片。查一下什么问题”
+- **Outcome:** 修复移动端管理详情里 admin / offline_manager 读取检查员照片和检查补拍凭证时被误判为无权限的问题；管理角色现在可以只读查看检查媒体，检查员/参与人提交权限没有放宽。
+
+### Implementation
+
+- Previous behavior:
+  - `ManagerDailyTaskScreen` 通过 `/mzapp/cleaning-tasks/:id/inspection-photos` 读取“检查照片”，通过 `/mzapp/cleaning-tasks/:id/restock-proof` 读取“检查补拍”。
+  - 两个 GET 接口复用了 `canSubmitMzappInspection()`，该判断只允许当前检查参与人、assignee 或手动 `submit_inspection` 参与人。
+  - admin / offline_manager 通过 `/mzapp/work-tasks?view=all` 能进入管理详情，但不是具体任务的检查参与人时 GET 返回 403；移动端把单个照片请求错误吞掉为 `null`，最终界面显示“暂无”。
+- New behavior:
+  - 新增 `canViewMzappInspectionMedia()`，先允许 `canViewAll(user)` 管理角色只读查看，再回落到原 `canSubmitMzappInspection()`。
+  - `GET /mzapp/cleaning-tasks/:id/inspection-photos` 和 `GET /mzapp/cleaning-tasks/:id/restock-proof` 改用只读判断。
+  - `POST /mzapp/cleaning-tasks/:id/inspection-photos` 和 `POST /mzapp/cleaning-tasks/:id/restock-proof` 保持原提交权限，不允许管理角色仅凭 view-all 代替检查员提交。
+- Key decisions:
+  - 不改移动端 UI；根因是后端读接口权限太窄，移动端只是把 403 表现成空照片。
+  - 不放宽清洁完成照片、消耗品照片等已有可见性规则；本次只覆盖检查员媒体。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — modified: 拆分检查媒体“查看”和“提交”权限，两个 GET 读接口允许管理只读查看。
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — added: 覆盖 admin / offline_manager / customer_service 可读、检查参与人可读、非参与人非管理不可读。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: `/mzapp/cleaning-tasks/:id/inspection-photos` 和 `/mzapp/cleaning-tasks/:id/restock-proof` 的 GET 权限放宽到管理只读；POST 权限不变。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: shares `backend/src/modules/mzapp.ts` with other pending task/mobile units; selective release requires hunk-level review.
+
+### Validation
+
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_mzapp_media_visibility.ts` in `backend` — passed: `test_mzapp_media_visibility: ok`.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `git diff --check -- backend/src/modules/mzapp.ts backend/scripts/tests/test_mzapp_media_visibility.ts` — passed.
+
+### Risks / Release Notes
+
+- Behavior risk: customer_service also has `canViewAll(user)` in this module, so it will get the same read-only inspection-media visibility as other manager roles; this matches existing manager view-all behavior but should be called out if business wants only admin/offline_manager.
+- Rollback: revert the `canViewMzappInspectionMedia()` helper, switch the two GET routes back to `canSubmitMzappInspection()`, and remove `test_mzapp_media_visibility.ts`.
+- Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: committed locally in root `Dev` commit `956df41`; push to `origin/Dev` failed because GitHub HTTPS credentials are unavailable in this environment. Worktree still contains unrelated finance/inventory/task-center/mobile changes not owned by this unit.
+
+## CRL-20260704-007 — 移动端待检查任务按钮恢复
+
+- **Status:** committed
+- **Updated:** 2026-07-04 14:11 AEST
+- **Request:** “3915/4408 清洁做完了，检查人员还没去呢，但是安卓检查人员的移动端就显示任务已完成，检查和补充就无法点击了。怎么回事；给我个修复方案；修改吧。”
+- **Outcome:** 后端 `available_actions` 不再把 `to_inspect` / `restock_pending` / `cleaned` 这类“清洁已提交、待检查”状态当作终态完成；检查人员在待检查任务中会拿到可点击的“检查与补充”和“标记已完成”动作。真正终态如 `done` / `completed` / `ready` / `keys_hung` / `inspected` 仍返回 `task_completed` 禁用原因。
+
+### Implementation
+
+- Previous behavior:
+  - `buildWorkTaskActionPayload()` 使用同一个 `isDoneStatus()` 判断动作是否已完成。
+  - 该列表同时包含 `cleaned`、`restock_pending`、`restocked`、`to_inspect`、`to_hang_keys` 等流程中间态，导致检查端待处理任务也被标记 `disabled_reason=task_completed`。
+  - 生产只读排查显示 2026-07-04 的 `MQ3915` / `AU4408` 退房任务是 `restock_pending`，有钥匙照片但没有检查媒体或挂钥匙视频；数据库并没有表示检查已完成。
+- New behavior:
+  - 将动作完成判断重命名并收窄为 `isTerminalStatus()`，只包含真正终态。
+  - 保留 `isCleaningWorkSubmitted()` 原语义，继续用于钥匙照片和清洁提交后的展示/流程判断。
+  - 新增 `to_inspect` 检查任务回归断言，确保检查员参与人仍能执行 `submit_inspection` 和 `upload_access_video`。
+- Key decisions:
+  - 不改安卓端 UI；移动端继续以服务端 `available_actions` 为准。
+  - 不改生产库数据；根因是服务端动作权限投影，不是任务数据已检查完成。
+
+### Files / Areas
+
+- `backend/src/lib/workTaskActions.ts` — modified: 拆分终态完成判断，避免待检查/清洁已提交状态误触发 `task_completed`。
+- `backend/scripts/tests/test_work_task_actions.ts` — modified: 增加 `to_inspect` 下检查动作可用的回归测试，并保留完成态禁用断言。
+- `backend/dist/lib/workTaskActions.js` — generated locally by `npm run build` but ignored by Git; current workspace copy contains the compiled new logic and is not a tracked release file.
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: `/mzapp/work-tasks` 的 `available_actions` 变化；待检查任务的 `submit_inspection` / `upload_access_video` 不再被 `task_completed` 禁用。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: follows existing capability-driven mobile task action model; no dependency on unrelated finance/inventory/task-center work currently dirty in this worktree.
+
+### Validation
+
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_work_task_actions.ts` in `backend` — passed: `test_work_task_actions: ok`.
+- `npm run test:cleaning-inspection-merge` in `backend` — passed: `test_cleaning_inspection_merge: ok`.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `git diff --check -- backend/src/lib/workTaskActions.ts backend/scripts/tests/test_work_task_actions.ts backend/dist/lib/workTaskActions.js` — passed.
+
+### Risks / Release Notes
+
+- Behavior risk: 清洁已提交但未到终态的任务会继续显示相关记录/检查动作可用；这些动作仍受参与人和基础权限控制。
+- Rollback: revert the `isTerminalStatus()` narrowing and remove the `to_inspect` test block.
+- Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: committed locally in root `Dev` commit `956df41`; push to `origin/Dev` failed because GitHub HTTPS credentials are unavailable in this environment. Worktree still contains unrelated finance/inventory/task-center/mzapp changes not owned by this unit.
+
+## CRL-20260704-006 — 任务中心纯入住执行人选择修复
+
+- **Status:** committed
+- **Updated:** 2026-07-04 14:11 AEST
+- **Request:** “修复一下”：修复任务中心详情弹窗里纯入住任务无法安排执行人的问题。
+- **Outcome:** 任务中心详情里所有纯入住任务，包括“检查后挂钥匙”和“仅改密码”，都按“入住现场执行”分配执行人；下拉显示“执行人”、可选择所有 active staff，并保存到 `cleaning_tasks.assignee_id`。纯入住不再误走检查人员字段和 `assign_inspector` 权限门。
+
+### Implementation
+
+- Previous behavior:
+  - 详情弹窗只在 `inspection_scope=password_only` 时把纯入住任务当作“执行人”处理。
+  - `inspect_and_hang` 纯入住仍显示“检查人员”，读取/写入 `inspector_id`，并使用 `assign_inspector` gate；后端能力模型已将纯入住的 `assign_inspector` 设为不适用，所以截图里的下拉被禁用。
+  - 保存 payload 也只在 `password_only` 时提交 `assignee_id`，即使前端显示修好也会导致“检查后挂钥匙”执行人无法写回。
+- New behavior:
+  - 纯入住任务统一使用 `assignee_id` 作为执行人，打开详情时从 `assignee_id / inspector_id / cleaner_id` 兼容回填历史值。
+  - 详情下拉对所有纯入住显示“执行人”，使用 `assign_executor` gate 和 `allStaffOptions`。
+  - 本地状态、未安排统计、已挂钥匙前校验、保存 snapshot 和 save-board payload 都按纯入住执行人语义处理；执行人变更时清空不适用的 `cleaner_id` / `inspector_id`。
+- Key decisions:
+  - 不新增配置项或第二套规则；复用后端已有 `assign_executor` / `assignee_id` 语义。
+  - 不改普通退房/turnover 的清洁人员、检查人员分配逻辑。
+
+### Files / Areas
+
+- `frontend/src/app/task-center/page.tsx` — modified: 纯入住详情分配、状态计算、保存 snapshot 和 save-board payload 统一使用执行人字段。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none; 继续使用现有 `/task-center/save-board` payload 的 `assignee_id` / `assignee_assignment_action`。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: follows pure-checkin execution semantics from earlier task-center/mobile capability units; no dependency on unrelated finance/inventory changes currently present in the worktree.
+
+### Validation
+
+- `./node_modules/.bin/tsc --noEmit` in `frontend` — passed.
+- `npm run lint` in `frontend` — passed with existing project warnings; no errors.
+- `npm run test` in `frontend` — passed: 37 test files, 165 tests.
+- `npm run build` in `frontend` — passed; existing lint/chart/Browserslist warnings only.
+- `git diff --check -- frontend/src/app/task-center/page.tsx` — passed.
+
+### Risks / Release Notes
+
+- Behavior risk: historical pure入住 rows that still have `inspector_id` or `cleaner_id` are displayed as execution assignment fallback, and selecting a new执行人 clears those old non-applicable fields for that row.
+- Rollback: revert the `frontend/src/app/task-center/page.tsx` changes in this unit; backend pure入住 capability remains unchanged.
+- Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: committed locally in root `Dev` commit `956df41`; push to `origin/Dev` failed because GitHub HTTPS credentials are unavailable in this environment. Worktree still contains unrelated finance/inventory/backend changes not owned by this unit.
+
+## CRL-20260704-005 — 移动端线下任务参与清洁/检查执行排序
+
+- **Status:** committed
+- **Updated:** 2026-07-04 14:11 AEST
+- **Request:** “用户被分配到的线下任务也可以参与清洁或者检查任务的排序”，并按确认后的方案执行：同一用户当天的清洁/检查/线下任务使用一套执行顺序，线下任务不新增第二套排序系统。
+- **Outcome:** 移动端保存排序时会把清洁任务、检查任务和已分配给用户的线下 `work_tasks` 按用户点选的完整顺序一次提交；后端在同一事务内写入 `cleaning_tasks.sort_index_cleaner`、`cleaning_tasks.sort_index_inspector` 和 `work_tasks.sort_index`，避免线下任务和清洁/检查任务各自从 1 开始导致刷新后相对顺序漂移。日终交接卡现在也会把可排序线下任务视为当天执行任务，避免“执行顺序 4”的线下任务被插到日终交接下面。
+
+### Implementation
+
+- Previous behavior:
+  - 移动端排序保存会分别调用 `/mzapp/work-tasks/reorder`、`/mzapp/cleaning-tasks/reorder?kind=cleaner` 和 `/mzapp/cleaning-tasks/reorder?kind=inspector`。
+  - 线下任务和清洁/检查任务各自压缩排序序号；例如 `清洁A -> 线下B -> 清洁C` 保存后，线下任务可能写入 `sort_index=1`，清洁任务写入 `sort_index_cleaner=1/2`，刷新后跨类型相对位置不稳定。
+- New behavior:
+  - 新增 `/mzapp/work-tasks/mixed-reorder`，接收 `{ date, items: [{ kind, ids, sort_index }] }`，允许 `kind=work|cleaner|inspector` 混合提交。
+  - 后端校验线下任务属于同一日期、同一 assignee 范围；普通用户只能排序分配给自己的线下任务，清洁/检查排序仍分别要求清洁/检查角色和对应任务归属。
+  - 移动端 `TasksScreen` 改为调用 `reorderMixedWorkTasks()`，点选第几位就把清洁/检查/线下任务都写入同一个全局序号。
+  - 移动端日终交接卡插入位置纳入当前用户可排序的线下任务；未完成的线下任务会和清洁/检查任务一样排在日终交接之前。
+  - 保留旧 `/work-tasks/reorder` 和 `/cleaning-tasks/reorder`，兼容已安装旧客户端。
+- Key decisions:
+  - 不给线下任务新增 `offline_sort_index_cleaner` / `offline_sort_index_inspector`；线下任务只有一个 `work_tasks.sort_index`，表示该用户当天执行顺序。
+  - 不改变 `cleaning_offline_tasks` 的运行态语义；线下任务状态和排序仍以 canonical `work_tasks` 行为准。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — modified: 新增混合排序 schema 和 `/work-tasks/mixed-reorder` 接口，在事务内更新清洁、检查和线下排序字段。
+- `mz-cleaning-app-frontend/src/lib/api.ts` — modified: 新增 `reorderMixedWorkTasks()` API helper。
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.tsx` — modified: 保存排序时生成混合 entries，保持用户点选的全局顺序；日终交接插入点纳入可排序线下任务。
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.test.tsx` — modified: 增加 `清洁A -> 线下B -> 清洁C` 排序保存回归测试，以及 `1/2/3 清洁 + 4 线下` 时日终交接不得插在线下任务上方的回归测试。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: 新增 `POST /mzapp/work-tasks/mixed-reorder`；旧排序接口保留。
+- Database / migration: none; 复用现有 `work_tasks.sort_index`、`cleaning_tasks.sort_index_cleaner`、`cleaning_tasks.sort_index_inspector`。
+- Config / environment: none.
+- Dependencies: none.
+- Related units: shares `backend/src/modules/mzapp.ts` with `CRL-20260704-003` and `CRL-20260704-004`; selective release requires hunk review. Mobile app worktree also contains unrelated pre-existing app/version config changes not owned by this unit.
+
+### Validation
+
+- `npm test -- --runTestsByPath src/screens/tabs/TasksScreen.test.tsx --runInBand` in `mz-cleaning-app-frontend` — passed: 12 tests passed, including mixed offline/cleaning ordering and day-end handover placement after ordered offline tasks. Jest still reports a pre-existing open-handle warning after completion.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with 0 errors and 114 warnings; warnings are pre-existing project-wide lint warnings.
+- `npm run build` in `mz-cleaning-app-frontend` — not run: package has no `build` script.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `npm run lint` in `backend` — not run: backend package has no `lint` script.
+
+### Risks / Release Notes
+
+- Behavior risk: 一个线下任务在同一用户当天只有一套排序；如果未来业务要求“清洁视角”和“检查视角”分别给同一线下任务不同位置，需要新增明确业务规则和字段。
+- Compatibility: 新客户端依赖新接口；旧客户端仍可使用旧排序接口，但旧客户端仍有跨类型序号压缩限制。
+- Rollback: revert `/work-tasks/mixed-reorder`, `reorderMixedWorkTasks()`, and `TasksScreen` mixed-save changes;旧客户端排序路径仍可工作。
+- Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: committed locally in root `Dev` commit `956df41`; root push to `origin/Dev` and `mz-property-system-v3/Dev` failed because GitHub HTTPS credentials for the root repository are unavailable in this environment. Nested mobile `Dev` commit `3f3fb09` was pushed to `origin/Dev`. Root worktree still contains unrelated finance/inventory/mzapp changes, and nested mobile app still contains unrelated `app.json` / `eas.json` / package version changes.
+
 ## CRL-20260704-004 — 清洁端普通同日 turnover 入住重复卡修复
 
 - **Status:** ready

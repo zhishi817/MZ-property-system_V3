@@ -191,6 +191,81 @@ function normalizePropertyPayableTemplatePayload(payload: Record<string, any>, f
   return payload
 }
 
+function normalizePayableIdentityPart(value: any): string {
+  return String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase()
+}
+
+function isActivePropertyPayableTemplate(row: any): boolean {
+  if (!isPropertyPayableTemplate(row)) return false
+  return normalizePayableIdentityPart(row?.status || 'active') === 'active'
+}
+
+export function buildPropertyPayableDuplicateKey(row: any): string | null {
+  if (!isActivePropertyPayableTemplate(row)) return null
+  const propertyId = String(row?.property_id || '').trim()
+  const category = normalizePayableIdentityPart(row?.category)
+  if (!propertyId || !category) return null
+  return [
+    propertyId,
+    category,
+    normalizePayableIdentityPart(row?.category_detail),
+    normalizePayableIdentityPart(row?.vendor),
+    normalizePayableIdentityPart(row?.payment_type),
+    normalizePayableIdentityPart(row?.bill_account_no),
+    normalizePayableIdentityPart(row?.pay_account_name),
+    normalizePayableIdentityPart(row?.pay_bsb),
+    normalizePayableIdentityPart(row?.pay_account_number),
+    normalizePayableIdentityPart(row?.pay_ref),
+    normalizePayableIdentityPart(row?.bpay_code),
+    normalizePayableIdentityPart(row?.pay_mobile_number),
+  ].join('|')
+}
+
+export function propertyPayableTemplatesConflict(a: any, b: any): boolean {
+  const ak = buildPropertyPayableDuplicateKey(a)
+  const bk = buildPropertyPayableDuplicateKey(b)
+  return !!ak && !!bk && ak === bk
+}
+
+async function findDuplicatePropertyPayableTemplateTx(client: any, candidate: any, excludeId?: string | null) {
+  const key = buildPropertyPayableDuplicateKey(candidate)
+  if (!key) return null
+  const propertyId = String(candidate?.property_id || '').trim()
+  const category = String(candidate?.category || '').trim()
+  const vals: any[] = [TEMPLATE_KIND_PROPERTY_PAYABLE, propertyId, category]
+  let excludeSql = ''
+  const excluded = String(excludeId || '').trim()
+  if (excluded) {
+    vals.push(excluded)
+    excludeSql = `AND id <> $${vals.length}`
+  }
+  const res = await client.query(
+    `SELECT *
+       FROM recurring_payments
+      WHERE COALESCE(template_kind, '') = $1
+        AND COALESCE(scope, 'property') = 'property'
+        AND property_id = $2
+        AND lower(coalesce(category, '')) = lower($3)
+        AND lower(coalesce(status, 'active')) = 'active'
+        ${excludeSql}
+      ORDER BY created_at ASC NULLS LAST
+      LIMIT 50`,
+    vals
+  )
+  const rows = Array.isArray(res?.rows) ? res.rows : []
+  return rows.find((row: any) => propertyPayableTemplatesConflict(candidate, row)) || null
+}
+
+export function shouldDeletePropertyPayableSnapshotOnTemplateDelete(row: any): boolean {
+  const monthKey = String(row?.month_key || '').trim()
+  if (!monthKey) return false
+  const generatedFrom = String(row?.generated_from || '').trim()
+  const note = String(row?.note || '').trim()
+  const isSnapshot = generatedFrom === 'recurring_payments' || /^fixed payment/i.test(note)
+  if (!isSnapshot) return false
+  return normalizePayableIdentityPart(row?.status || 'unpaid') !== 'paid'
+}
+
 function buildRecurringSnapshotPayload(input: RecurringSnapshotPayload) {
   const { v4: uuid } = require('uuid')
   return {
@@ -1096,6 +1171,12 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
       await applyTxTimeouts(client)
       await ensureSchemasOnce()
       await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [202603, String(payment.id)])
+      const duplicateKey = buildPropertyPayableDuplicateKey(payment)
+      if (duplicateKey) {
+        await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [202604, duplicateKey])
+        const duplicate = await findDuplicatePropertyPayableTemplateTx(client, payment, String(payment.id))
+        if (duplicate?.id) return { duplicate: true, conflict_id: String(duplicate.id) }
+      }
 
       const keys = Object.keys(payment)
       const cols = keys.map((k) => `"${k}"`).join(', ')
@@ -1185,6 +1266,7 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
       addAudit('RecurringPayment', String(payment.id), 'create', null, created, (req as any).user?.sub)
       return { created, inserted, updated, currentMonth }
     })
+    if ((result as any)?.duplicate) return res.status(409).json({ message: 'property payable template already exists', conflict_id: (result as any).conflict_id || null })
     return res.status(201).json({ ok: true, ...result })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'create failed' })
@@ -1354,21 +1436,23 @@ router.delete('/payments/:id', requireAnyPerm(['recurring_payments.write', 'fina
       if (!isPropertyPayableTemplate(before)) return { invalid: 'only_property_payable_template_can_delete' }
       if (!(await canAccessPropertyPayables(req))) return { forbidden: true }
 
-      const guard = `(generated_from = 'recurring_payments' OR (coalesce(generated_from,'') = '' AND coalesce(note,'') ILIKE 'Fixed payment%'))`
-      const deletedSnapshots = await client.query(
-        `DELETE FROM property_expenses
-         WHERE fixed_expense_id = $1
-           AND ${guard}
-           AND coalesce(month_key,'') <> ''
-           AND (
-             month_key > $2
-             OR (month_key = $2 AND coalesce(status,'unpaid') <> 'paid')
-           )
-         RETURNING id`,
-        [id, currentMonthKey]
+      const snapshotRes = await client.query(
+        `SELECT id, month_key, status, generated_from, note
+           FROM property_expenses
+          WHERE fixed_expense_id = $1`,
+        [id]
       )
+      const snapshotIdsToDelete = (Array.isArray(snapshotRes.rows) ? snapshotRes.rows : [])
+        .filter((row: any) => shouldDeletePropertyPayableSnapshotOnTemplateDelete(row))
+        .map((row: any) => String(row.id || '').trim())
+        .filter(Boolean)
+      let deletedSnapshotCount = 0
+      if (snapshotIdsToDelete.length) {
+        const deletedSnapshots = await client.query('DELETE FROM property_expenses WHERE id = ANY($1::text[]) RETURNING id', [snapshotIdsToDelete])
+        deletedSnapshotCount = Number(deletedSnapshots.rowCount || 0)
+      }
       const deletedTemplate = await client.query(`DELETE FROM recurring_payments WHERE id = $1 RETURNING *`, [id])
-      return { before, deleted: deletedTemplate.rows?.[0] || before, cleared_property_expenses: Number(deletedSnapshots.rowCount || 0), from_month_key: currentMonthKey }
+      return { before, deleted: deletedTemplate.rows?.[0] || before, cleared_property_expenses: deletedSnapshotCount, from_month_key: currentMonthKey }
     })
     if ((result as any)?.notFound) return res.status(404).json({ message: 'not found' })
     if ((result as any)?.forbidden) return res.status(403).json({ message: 'forbidden' })
@@ -1711,6 +1795,13 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
         payload.property_ids = nextPids
         payload.property_id = nextPids.length === 1 ? nextPids[0] : null
       }
+      const duplicateCandidate = { ...(before || {}), ...payload }
+      const duplicateKey = buildPropertyPayableDuplicateKey(duplicateCandidate)
+      if (duplicateKey) {
+        await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [202604, duplicateKey])
+        const duplicate = await findDuplicatePropertyPayableTemplateTx(client, duplicateCandidate, id)
+        if (duplicate?.id) return { duplicate: true, conflict_id: String(duplicate.id) }
+      }
       const keys = Object.keys(payload)
       const sets = keys.map((k, i) => `${k} = $${i + 1}`)
       const values = keys.map(k => payload[k])
@@ -1850,6 +1941,7 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
     if ((result as any)?.notFound) return res.status(404).json({ message: 'not found' })
     if ((result as any)?.forbidden) return res.status(403).json({ message: 'forbidden' })
     if ((result as any)?.invalid) return res.status(400).json({ message: String((result as any).invalid) })
+    if ((result as any)?.duplicate) return res.status(409).json({ message: 'property payable template already exists', conflict_id: (result as any).conflict_id || null })
     const { updated, rowCount, autoMarked } = result as any
     return res.json({ ok: true, updated, syncedCount: rowCount, autoMarked: Number(autoMarked || 0), currentMonth })
   } catch (e: any) {

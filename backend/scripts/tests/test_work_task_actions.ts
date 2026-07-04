@@ -264,6 +264,25 @@ function main() {
   assert.equal(actionById(completedPayload, 'upload_key_photo')?.enabled, false)
   assert.equal(actionById(completedPayload, 'upload_key_photo')?.disabled_reason, 'task_completed')
 
+  const toInspectPayload = buildWorkTaskActionPayload({
+    id: 'w-to-inspect',
+    source_type: 'cleaning_tasks',
+    source_id: 'cleaning-task-to-inspect',
+    task_kind: 'inspection',
+    task_type: 'checkout_clean',
+    status: 'to_inspect',
+    inspector_id: 'inspector-to-inspect',
+  }, {
+    userId: 'inspector-to-inspect',
+    roleNames: ['cleaning_inspector'],
+    permissions: allExecPerms,
+    canViewAll: false,
+  })
+  assert.equal(actionById(toInspectPayload, 'submit_inspection')?.enabled, true)
+  assert.equal(actionById(toInspectPayload, 'submit_inspection')?.disabled_reason, undefined)
+  assert.equal(actionById(toInspectPayload, 'upload_access_video')?.enabled, true)
+  assert.equal(actionById(toInspectPayload, 'upload_access_video')?.disabled_reason, undefined)
+
   const keysHungPayload = buildWorkTaskActionPayload({
     id: 'w-keys-hung',
     source_type: 'cleaning_tasks',

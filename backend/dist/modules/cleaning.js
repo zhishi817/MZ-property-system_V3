@@ -987,10 +987,31 @@ exports.router.get('/history', (0, auth_1.requireAnyPerm)(['cleaning.view', 'cle
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'history_failed' });
     }
 });
+const cleaningTaskStatusSchema = zod_1.z.enum([
+    'todo',
+    'pending',
+    'unassigned',
+    'assigned',
+    'in_progress',
+    'cleaning',
+    'to_complete',
+    'to_inspect',
+    'cleaned',
+    'restock_pending',
+    'to_hang_keys',
+    'restocked',
+    'inspected',
+    'ready',
+    'completed',
+    'done',
+    'canceled',
+    'cancelled',
+    'keys_hung',
+]);
 const patchTaskSchema = zod_1.z.object({
     property_id: zod_1.z.string().nullable().optional(),
     task_date: zod_1.z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-    status: zod_1.z.enum(['pending', 'assigned', 'in_progress', 'completed', 'cancelled', 'keys_hung']).optional(),
+    status: cleaningTaskStatusSchema.optional(),
     assignee_id: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
     cleaner_id: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
     inspector_id: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
@@ -1366,7 +1387,7 @@ const createTaskSchema = zod_1.z.object({
     create_mode: zod_1.z.enum(['checkout', 'checkin', 'turnover', 'stayover']).optional(),
     task_date: zod_1.z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     property_id: zod_1.z.string().min(1),
-    status: zod_1.z.enum(['pending', 'assigned', 'in_progress', 'completed', 'cancelled', 'keys_hung']).optional(),
+    status: cleaningTaskStatusSchema.optional(),
     assignee_id: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
     cleaner_id: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
     inspector_id: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),

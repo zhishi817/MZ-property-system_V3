@@ -982,10 +982,32 @@ router.get('/history', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manag
   }
 })
 
+const cleaningTaskStatusSchema = z.enum([
+  'todo',
+  'pending',
+  'unassigned',
+  'assigned',
+  'in_progress',
+  'cleaning',
+  'to_complete',
+  'to_inspect',
+  'cleaned',
+  'restock_pending',
+  'to_hang_keys',
+  'restocked',
+  'inspected',
+  'ready',
+  'completed',
+  'done',
+  'canceled',
+  'cancelled',
+  'keys_hung',
+])
+
 const patchTaskSchema = z.object({
   property_id: z.string().nullable().optional(),
   task_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  status: z.enum(['pending', 'assigned', 'in_progress', 'completed', 'cancelled', 'keys_hung']).optional(),
+  status: cleaningTaskStatusSchema.optional(),
   assignee_id: z.union([z.string().min(1), z.null()]).optional(),
   cleaner_id: z.union([z.string().min(1), z.null()]).optional(),
   inspector_id: z.union([z.string().min(1), z.null()]).optional(),
@@ -1327,7 +1349,7 @@ const createTaskSchema = z.object({
   create_mode: z.enum(['checkout', 'checkin', 'turnover', 'stayover']).optional(),
   task_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   property_id: z.string().min(1),
-  status: z.enum(['pending', 'assigned', 'in_progress', 'completed', 'cancelled', 'keys_hung']).optional(),
+  status: cleaningTaskStatusSchema.optional(),
   assignee_id: z.union([z.string().min(1), z.null()]).optional(),
   cleaner_id: z.union([z.string().min(1), z.null()]).optional(),
   inspector_id: z.union([z.string().min(1), z.null()]).optional(),
