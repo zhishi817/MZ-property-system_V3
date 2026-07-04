@@ -305,7 +305,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Compatibility: 新客户端依赖新接口；旧客户端仍可使用旧排序接口，但旧客户端仍有跨类型序号压缩限制。
 - Rollback: revert `/work-tasks/mixed-reorder`, `reorderMixedWorkTasks()`, and `TasksScreen` mixed-save changes;旧客户端排序路径仍可工作。
 - Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
-- Git state: committed locally in root `Dev` commit `956df41` and nested mobile `Dev` commit `3f3fb09`; push to both `origin/Dev` remotes failed because GitHub HTTPS credentials are unavailable in this environment. Root worktree still contains unrelated finance/inventory/mzapp changes, and nested mobile app still contains unrelated `app.json` / `eas.json` / package version changes.
+- Git state: committed locally in root `Dev` commit `956df41`; root push to `origin/Dev` and `mz-property-system-v3/Dev` failed because GitHub HTTPS credentials for the root repository are unavailable in this environment. Nested mobile `Dev` commit `3f3fb09` was pushed to `origin/Dev`. Root worktree still contains unrelated finance/inventory/mzapp changes, and nested mobile app still contains unrelated `app.json` / `eas.json` / package version changes.
 
 ## CRL-20260704-004 — 清洁端普通同日 turnover 入住重复卡修复
 
