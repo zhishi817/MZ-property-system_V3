@@ -31,13 +31,50 @@ const permsCache = new Map();
 const SESSION_CACHE_TTL_MS = Number(process.env.SESSION_CACHE_TTL_MS || 15000);
 const SESSION_TOUCH_INTERVAL_MS = Number(process.env.SESSION_TOUCH_INTERVAL_MS || 60000);
 const PERM_CACHE_TTL_MS = Number(process.env.PERM_CACHE_TTL_MS || 5 * 60 * 1000);
+const MOBILE_EXPENSE_SELF_PERMISSIONS = [
+    'cleaning_app.expense.company.submit',
+    'cleaning_app.expense.company.view.self',
+    'cleaning_app.expense.company.edit.self',
+    'cleaning_app.expense.company.delete.self',
+    'cleaning_app.expense.property.submit',
+    'cleaning_app.expense.property.view.self',
+    'cleaning_app.expense.property.edit.self',
+    'cleaning_app.expense.property.delete.self',
+];
 const DEFAULT_ROLE_PERMISSION_OVERLAYS = {
+    cleaner: [
+        'cleaning_app.tasks.view.self',
+        'cleaning_app.tasks.start',
+        'cleaning_app.tasks.finish',
+        'cleaning_app.issues.report',
+        'cleaning_app.media.upload',
+    ],
+    cleaning_inspector: [
+        'cleaning_app.tasks.view.self',
+        'cleaning_app.tasks.start',
+        'cleaning_app.tasks.finish',
+        'cleaning_app.inspect.finish',
+        'cleaning_app.issues.report',
+        'cleaning_app.media.upload',
+    ],
+    cleaner_inspector: [
+        'cleaning_app.tasks.view.self',
+        'cleaning_app.tasks.start',
+        'cleaning_app.tasks.finish',
+        'cleaning_app.inspect.finish',
+        'cleaning_app.issues.report',
+        'cleaning_app.media.upload',
+    ],
+    finance_staff: [
+        ...MOBILE_EXPENSE_SELF_PERMISSIONS,
+    ],
     customer_service: [
         'menu.cms',
         'menu.cms.customer_service_manual.visible',
         'cms_pages.view',
         'cms_pages.write',
         'cleaning_app.calendar.view.all',
+        ...MOBILE_EXPENSE_SELF_PERMISSIONS,
     ],
 };
 function requestTraceId(req) {
