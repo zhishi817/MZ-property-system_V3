@@ -254,6 +254,11 @@ type AssignmentBaseline = {
   work: Map<string, WorkAssignmentSnapshot>
 }
 
+type CleaningNotificationGroup = {
+  key: string
+  title?: string | null
+}
+
 type TaskDetailDraft = {
   cleaner_id: string | null
   inspector_id: string | null
@@ -496,6 +501,13 @@ function buildAssignmentBaseline(payload: TaskCenterDay | null): AssignmentBasel
   return baseline
 }
 
+function cleaningNotificationGroupForTask(task: TaskCenterTask): CleaningNotificationGroup {
+  const ids = activeCleaningTaskIds(task)
+  const key = String(task.item_key || '').trim() || `cleaning:${ids.join(',') || task.task_id}`
+  const title = String(task.title || task.property_code || '').trim() || null
+  return { key, title }
+}
+
 function supersededCleaningTaskIds(task: Pick<TaskCenterTask, 'task_source' | 'superseded_source_ids' | 'turnover_display'>) {
   if (task.task_source !== 'cleaning') return []
   const display = turnoverDisplayOf(task)
@@ -541,7 +553,8 @@ function isLateCheckinDisplay(task: Pick<TaskCenterTask, 'turnover_display' | 'i
   if (typeof display?.is_late_checkin === 'boolean') return display.is_late_checkin
   if (typeof task.is_late_checkin === 'boolean') return task.is_late_checkin
   const checkinMin = parseSummaryTime(task.summary_checkin_time)
-  return checkinMin != null && checkinMin > 18 * 60
+  const defaultMin = parseSummaryTime(DEFAULT_SUMMARY_CHECKIN_TIME)
+  return checkinMin != null && defaultMin != null && checkinMin > defaultMin
 }
 
 function isDefaultSummaryTime(raw: string | null | undefined, defaultValue: string) {
@@ -709,6 +722,9 @@ export default function TaskCenterPage() {
   const loadDayRequestRef = useRef(0)
   const invalidInspectionModeNoticeRef = useRef<Record<string, boolean>>({})
   const assignmentBaselineRef = useRef<AssignmentBaseline>({ cleaning: new Map(), work: new Map() })
+  const dirtyCleaningTaskIdsRef = useRef<Set<string>>(new Set())
+  const dirtyWorkTaskIdsRef = useRef<Set<string>>(new Set())
+  const cleaningNotificationGroupsRef = useRef<Map<string, CleaningNotificationGroup>>(new Map())
 
   const dateStr = useMemo(() => date.format('YYYY-MM-DD'), [date])
   const canSeeCheckinSyncTag = viewerRole === 'admin' || viewerRole === 'customer_service'
@@ -727,7 +743,32 @@ export default function TaskCenterPage() {
     setProperties(Array.isArray(rows) ? rows : [])
   }, [])
 
+  const clearDirtyTaskChanges = useCallback(() => {
+    dirtyCleaningTaskIdsRef.current.clear()
+    dirtyWorkTaskIdsRef.current.clear()
+    cleaningNotificationGroupsRef.current.clear()
+  }, [])
+
+  const markCleaningTaskDirty = useCallback((task: TaskCenterTask) => {
+    if (task.task_source !== 'cleaning') return
+    const group = cleaningNotificationGroupForTask(task)
+    for (const taskId of activeCleaningTaskIds(task)) {
+      const id = String(taskId || '').trim()
+      if (!id) continue
+      dirtyCleaningTaskIdsRef.current.add(id)
+      cleaningNotificationGroupsRef.current.set(id, group)
+    }
+  }, [])
+
+  const markWorkTasksDirty = useCallback((taskIds: any[]) => {
+    for (const taskId of taskIds || []) {
+      const id = String(taskId || '').trim()
+      if (id) dirtyWorkTaskIdsRef.current.add(id)
+    }
+  }, [])
+
   const setBoardDraftDirty = useCallback((dirty: boolean) => {
+    if (!dirty) clearDirtyTaskChanges()
     boardDirtyRef.current = dirty
     setBoardDirty(dirty)
     if (dirty) {
@@ -739,7 +780,7 @@ export default function TaskCenterPage() {
         source: 'task-center',
       })
     }
-  }, [])
+  }, [clearDirtyTaskChanges])
 
   const loadDay = useCallback(async (options?: { discardDraft?: boolean }) => {
     const requestId = loadDayRequestRef.current + 1
@@ -1248,11 +1289,16 @@ export default function TaskCenterPage() {
       return
     }
     applyTaskDetailLocally(detailTask, detailDraft)
+    if (detailTask.task_source === 'cleaning') {
+      markCleaningTaskDirty(detailTask)
+    } else {
+      markWorkTasksDirty([detailTask.task_id])
+    }
     setBoardDraftDirty(true)
     setDetailTask(null)
     setDetailDraft(null)
     message.success('修改已应用，请点击右上角“保存安排”统一保存')
-  }, [applyTaskDetailLocally, detailDraft, detailTask, setBoardDraftDirty])
+  }, [applyTaskDetailLocally, detailDraft, detailTask, markCleaningTaskDirty, markWorkTasksDirty, setBoardDraftDirty])
 
   const rowTaskCollections = useCallback((row: TaskCenterRow) => {
     const tasks = row.subrows.flatMap((subrow) => subrow.tasks)
@@ -1329,8 +1375,17 @@ export default function TaskCenterPage() {
       inspectionIds: collections.inspectionIds,
       workIds: collections.workIds,
     })
+    if (field === 'inspector_id') {
+      const affectedIds = new Set(collections.inspectionIds.map((item) => String(item)))
+      for (const task of fullRow.subrows.flatMap((subrow) => subrow.tasks)) {
+        if (task.task_source !== 'cleaning') continue
+        if (activeCleaningTaskIds(task).some((id) => affectedIds.has(String(id)))) markCleaningTaskDirty(task)
+      }
+    } else {
+      markWorkTasksDirty(collections.workIds)
+    }
     setBoardDraftDirty(true)
-  }, [allRows, applyRowAssignmentLocally, rowTaskCollections, setBoardDraftDirty])
+  }, [allRows, applyRowAssignmentLocally, markCleaningTaskDirty, markWorkTasksDirty, rowTaskCollections, setBoardDraftDirty])
 
   const updatePropertyFollowupAssignee = useCallback((taskId: string, assigneeId: string | null) => {
     setDayData((prev) => {
@@ -1344,8 +1399,9 @@ export default function TaskCenterPage() {
         )),
       }
     })
+    markWorkTasksDirty([taskId])
     setBoardDraftDirty(true)
-  }, [autoWorkStatus, setBoardDraftDirty])
+  }, [autoWorkStatus, markWorkTasksDirty, setBoardDraftDirty])
 
   const createRow = useCallback(() => {
     const previousRows = cloneRows(allRows)
@@ -1405,6 +1461,7 @@ export default function TaskCenterPage() {
       if (movedTask) break
     }
     if (!movedTask) return
+    const beforeCleaningSnapshot = movedTask.task_source === 'cleaning' ? cleaningAssignmentSnapshot(movedTask) : null
     const resolvedTargetRowKey = targetLine.row_key === 'work:bottom'
       ? (task.task_source === 'work' ? defaultBoardRowKeyForTask(task) : '')
       : targetLine.row_key
@@ -1464,10 +1521,19 @@ export default function TaskCenterPage() {
             : Math.min(currentStart + currentLength, subrow.tasks.length)
         })()
     subrow.tasks.splice(insertIndex, 0, movedTask)
+    if (movedTask.task_source === 'cleaning' && beforeCleaningSnapshot) {
+      const afterCleaningSnapshot = cleaningAssignmentSnapshot(movedTask)
+      const inspectionChanged =
+        beforeCleaningSnapshot.inspector_id !== afterCleaningSnapshot.inspector_id
+        || beforeCleaningSnapshot.inspection_mode !== afterCleaningSnapshot.inspection_mode
+        || beforeCleaningSnapshot.inspection_scope !== afterCleaningSnapshot.inspection_scope
+        || beforeCleaningSnapshot.inspection_due_date !== afterCleaningSnapshot.inspection_due_date
+      if (inspectionChanged) markCleaningTaskDirty(movedTask)
+    }
     replaceRowsLocally(nextRows)
     setBoardDraftDirty(true)
     setDragOverKey(null)
-  }, [allBoardTasks, allRows, autoCleaningStatus, cloneRows, defaultBoardRowKeyForTask, ensureBoardRow, normalizeRowsForBoard, replaceRowsLocally, setBoardDraftDirty])
+  }, [allBoardTasks, allRows, autoCleaningStatus, cloneRows, defaultBoardRowKeyForTask, ensureBoardRow, markCleaningTaskDirty, normalizeRowsForBoard, replaceRowsLocally, setBoardDraftDirty])
 
   const saveBoardDraft = useCallback(async () => {
     if (boardSaving) return
@@ -1484,6 +1550,8 @@ export default function TaskCenterPage() {
     }
     const rows = normalizeRowsForBoard(cloneRows(allRows))
     const layout = layoutPayloadFromRows(rows)
+    const dirtyCleaningIds = dirtyCleaningTaskIdsRef.current
+    const dirtyWorkIds = dirtyWorkTaskIdsRef.current
     const cleaningAssignments = new Map<string, {
       task_id: string
       assignee_id?: string | null
@@ -1497,6 +1565,8 @@ export default function TaskCenterPage() {
       inspection_due_date: string | null
       status_action?: CleaningStatusAction
       status?: string
+      notification_group_key?: string
+      notification_group_title?: string | null
     }>()
     const workAssignments = new Map<string, {
       task_id: string
@@ -1527,45 +1597,54 @@ export default function TaskCenterPage() {
             bucket: task.temporarily_skipped ? 'deferred' : null,
           })
           if (task.task_source === 'cleaning') {
+            const dirty = dirtyCleaningIds.has(id)
+            if (!dirty) continue
             const pureCheckin = isCheckinOnlyCleaningTask(task)
             const current = cleaningAssignmentSnapshot(task)
             const previous = assignmentBaselineRef.current.cleaning.get(id) || null
-              const assigneeChanged = previous ? previous.assignee_id !== current.assignee_id : !!current.assignee_id
-              const cleanerChanged = previous ? previous.cleaner_id !== current.cleaner_id : !!current.cleaner_id
-              const inspectorChanged = previous ? previous.inspector_id !== current.inspector_id : !!current.inspector_id
-              const statusAction = current.status_action || null
-              const changed = !previous
-                || assigneeChanged
-                || cleanerChanged
-                || inspectorChanged
-                || previous.inspection_mode !== current.inspection_mode
-                || previous.inspection_scope !== current.inspection_scope
-                || previous.inspection_due_date !== current.inspection_due_date
-                || !!statusAction
-              if (changed) {
-                const item: {
-                  task_id: string
-                  assignee_id?: string | null
+            const assigneeChanged = previous ? previous.assignee_id !== current.assignee_id : !!current.assignee_id
+            const cleanerChanged = previous ? previous.cleaner_id !== current.cleaner_id : !!current.cleaner_id
+            const inspectorChanged = previous ? previous.inspector_id !== current.inspector_id : !!current.inspector_id
+            const statusAction = current.status_action || null
+            const changed = !previous
+              || assigneeChanged
+              || cleanerChanged
+              || inspectorChanged
+              || previous.inspection_mode !== current.inspection_mode
+              || previous.inspection_scope !== current.inspection_scope
+              || previous.inspection_due_date !== current.inspection_due_date
+              || !!statusAction
+            if (changed) {
+              const item: {
+                task_id: string
+                assignee_id?: string | null
                 assignee_assignment_action?: 'assign' | 'unassign'
                 cleaner_id?: string | null
                 cleaner_assignment_action?: 'assign' | 'unassign'
                 inspector_id?: string | null
-                  inspector_assignment_action?: 'assign' | 'unassign'
-                  inspection_mode: TaskCenterTask['inspection_mode']
-                  inspection_scope: TaskCenterTask['inspection_scope']
-                  inspection_due_date: string | null
-                  status_action?: CleaningStatusAction
-                  status?: string
-                } = {
-                  task_id: id,
-                  inspection_mode: current.inspection_mode,
-                  inspection_scope: current.inspection_scope,
-                  inspection_due_date: current.inspection_due_date,
-                }
-                if (statusAction && current.status) {
-                  item.status_action = statusAction
-                  item.status = current.status
-                }
+                inspector_assignment_action?: 'assign' | 'unassign'
+                inspection_mode: TaskCenterTask['inspection_mode']
+                inspection_scope: TaskCenterTask['inspection_scope']
+                inspection_due_date: string | null
+                status_action?: CleaningStatusAction
+                status?: string
+                notification_group_key?: string
+                notification_group_title?: string | null
+              } = {
+                task_id: id,
+                inspection_mode: current.inspection_mode,
+                inspection_scope: current.inspection_scope,
+                inspection_due_date: current.inspection_due_date,
+              }
+              const group = cleaningNotificationGroupsRef.current.get(id)
+              if (group) {
+                item.notification_group_key = group.key
+                item.notification_group_title = group.title || null
+              }
+              if (statusAction && current.status) {
+                item.status_action = statusAction
+                item.status = current.status
+              }
               if (assigneeChanged && pureCheckin) {
                 item.assignee_id = current.assignee_id
                 item.assignee_assignment_action = current.assignee_id ? 'assign' : 'unassign'
@@ -1585,6 +1664,8 @@ export default function TaskCenterPage() {
               cleaningAssignments.set(id, item)
             }
           } else {
+            const dirty = dirtyWorkIds.has(id)
+            if (!dirty) continue
             const current = workAssignmentSnapshot(task)
             const previous = assignmentBaselineRef.current.work.get(id) || null
             const assigneeChanged = previous ? previous.assignee_id !== current.assignee_id : !!current.assignee_id
@@ -1622,6 +1703,7 @@ export default function TaskCenterPage() {
     }
     for (const task of propertyFollowups) {
       const id = String(task.task_id)
+      if (!dirtyWorkIds.has(id)) continue
       const current = workAssignmentSnapshot(task)
       const previous = assignmentBaselineRef.current.work.get(id) || null
       const assigneeChanged = previous ? previous.assignee_id !== current.assignee_id : !!current.assignee_id
@@ -2035,6 +2117,7 @@ export default function TaskCenterPage() {
                     inspectionIds: [],
                     workIds: displayRow.workIds,
                   })
+                  markWorkTasksDirty(displayRow.workIds)
                   setBoardDraftDirty(true)
                 }}
                 className={styles.taskCenterRowSelect}

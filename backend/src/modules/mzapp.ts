@@ -6592,6 +6592,13 @@ router.get('/work-tasks', async (req, res) => {
             .map((value) => Math.max(0, Math.trunc(value)))
           return nums.length ? Math.max(...nums) : null
         }
+        const minPositiveNumber = (values: any[]) => {
+          const nums = values
+            .map((value) => (value == null ? null : Number(value)))
+            .filter((value): value is number => value != null && Number.isFinite(value as any) && value > 0)
+            .map((value) => Math.trunc(value))
+          return nums.length ? Math.min(...nums) : null
+        }
         const [d, propKey] = k.split('|')
         const mergedTurnoverDisplay = mergeCleaningTurnoverDisplays(arr.map((x) => x.turnover_display))
         const activeSourceIds = Array.from(
@@ -6757,6 +6764,9 @@ router.get('/work-tasks', async (req, res) => {
               : arr
                   .map((x) => x.status)
                   .sort((a: any, b: any) => rankStatus(a) - rankStatus(b))[0]
+        const sortIndexCleaner = minPositiveNumber(arr.map((x) => x.sort_index_cleaner))
+        const sortIndexInspector = minPositiveNumber(arr.map((x) => x.sort_index_inspector))
+        const sortIndex = minPositiveNumber([sortIndexCleaner, sortIndexInspector, ...arr.map((x) => x.sort_index)])
 
         merged.push({
           ...preferred,
@@ -6788,6 +6798,9 @@ router.get('/work-tasks', async (req, res) => {
           cleaner_id: cleanerAssigneeId || null,
           inspector_id: inspectorAssigneeId || null,
           status: statusOut,
+          sort_index: sortIndex,
+          sort_index_cleaner: sortIndexCleaner,
+          sort_index_inspector: sortIndexInspector,
           key_photo_url: keyPhotoUrl,
           lockbox_video_url: lockboxVideoUrl,
           old_code: oldCode || null,

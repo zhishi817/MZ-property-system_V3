@@ -70,6 +70,8 @@ async function main() {
   }
   process.stdout.write('test_task_assignment_canonical: loading modules\n')
   const { ensureCleaningSchemaV2 } = await import('../../src/services/cleaningSync')
+  const { ensureNotificationStorage } = await import('../../src/services/notificationEvents')
+  const { ensureNotificationRuleTables } = await import('../../src/services/notificationRules')
   const { upsertWorkTaskFromOfflineTask } = await import('../../src/modules/cleaning')
   const { router: taskCenterRouter } = await import('../../src/modules/task_center')
   const { router: mzappRouter } = await import('../../src/modules/mzapp')
@@ -102,6 +104,7 @@ async function main() {
   const sameDayLatePropertyId = 'P_TEST_ASSIGN_SAME_DAY_LATE'
   const pureCheckinPropertyId = 'P_TEST_ASSIGN_PURE_CHECKIN'
   const keyHandoverPropertyId = 'P_TEST_ASSIGN_KEY_HANDOVER'
+  const sortMergePropertyId = 'P_TEST_ASSIGN_SORT_MERGE'
   const crossDayCheckoutId = 'test-assignment-cross-day-checkout'
   const crossDayCheckinId = 'test-assignment-cross-day-checkin'
   const sameDayCheckoutId = 'test-assignment-same-day-checkout'
@@ -114,9 +117,36 @@ async function main() {
   const sameDayLateLockboxVideoId = 'test-assignment-same-day-late-lockbox-video'
   const pureCheckinId = 'test-assignment-pure-checkin'
   const keyHandoverId = 'test-assignment-key-handover'
+  const sortMergeCleanerId = 'test-assignment-sort-merge-cleaner'
+  const sortMergeInspectorId = 'test-assignment-sort-merge-inspector'
+  const groupedNotifyCheckoutId = 'test-assignment-notify-checkout'
+  const groupedNotifyCheckinId = 'test-assignment-notify-checkin'
+  const groupedNotifyKey = 'test-assignment-notify-card'
+  const groupedNotifyUserIds = ['test-assignment-notify-cleaner', 'test-assignment-notify-inspector']
+  let previousCleaningRule: any = null
+  let previousCleaningRuleSelectors: any[] = []
+  let cleaningRuleBackupReady = false
 
   process.stdout.write('test_task_assignment_canonical: preparing schema\n')
   await ensureCleaningSchemaV2()
+  await pgPool.query(`ALTER TABLE IF EXISTS cleaning_tasks ADD COLUMN IF NOT EXISTS sort_index_cleaner integer;`)
+  await pgPool.query(`ALTER TABLE IF EXISTS cleaning_tasks ADD COLUMN IF NOT EXISTS sort_index_inspector integer;`)
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS users (
+    id text PRIMARY KEY,
+    username text UNIQUE,
+    email text UNIQUE,
+    password_hash text NOT NULL,
+    role text NOT NULL,
+    color_hex text NOT NULL DEFAULT '#3B82F6',
+    created_at timestamptz DEFAULT now()
+  )`)
+  await ensureNotificationStorage()
+  await ensureNotificationRuleTables()
+  const ruleSnapshot = await pgPool.query(`SELECT * FROM notification_event_rules WHERE event_type = 'CLEANING_TASK_UPDATED' LIMIT 1`)
+  previousCleaningRule = ruleSnapshot?.rows?.[0] || null
+  const selectorSnapshot = await pgPool.query(`SELECT id, event_type, recipient_type, recipient_value, created_at FROM notification_event_rule_selectors WHERE event_type = 'CLEANING_TASK_UPDATED'`)
+  previousCleaningRuleSelectors = selectorSnapshot?.rows || []
+  cleaningRuleBackupReady = true
   await pgPool.query(`CREATE TABLE IF NOT EXISTS cleaning_offline_tasks (
     id text PRIMARY KEY,
     date date NOT NULL,
@@ -136,8 +166,11 @@ async function main() {
     [`cleaning_offline_tasks:${offlineNullId}`, `cleaning_offline_tasks:${offlineOldId}`, `cleaning_offline_tasks:${offlineDisplayId}`, workId],
     [offlineNullId, offlineOldId, offlineDisplayId],
   ])
+  await pgPool.query(`DELETE FROM event_queue WHERE user_notification_id IN (SELECT id FROM user_notifications WHERE data->>'group_key' = $1)`, [groupedNotifyKey])
+  await pgPool.query(`DELETE FROM user_notifications WHERE data->>'group_key' = $1`, [groupedNotifyKey])
   await pgPool.query(`DELETE FROM cleaning_offline_tasks WHERE id = ANY($1::text[])`, [[offlineNullId, offlineOldId, offlineDisplayId]])
-  await pgPool.query(`DELETE FROM cleaning_tasks WHERE id = ANY($1::text[])`, [[cleaningId, cleaningKeysHungId, crossDayCheckoutId, crossDayCheckinId, sameDayCheckoutId, sameDayCheckinId, sameDayOpenCheckoutId, sameDayOpenCheckinId, sameDayLateCheckoutId, sameDayLateCheckinId, pureCheckinId, keyHandoverId]])
+  await pgPool.query(`DELETE FROM cleaning_tasks WHERE id = ANY($1::text[])`, [[cleaningId, cleaningKeysHungId, crossDayCheckoutId, crossDayCheckinId, sameDayCheckoutId, sameDayCheckinId, sameDayOpenCheckoutId, sameDayOpenCheckinId, sameDayLateCheckoutId, sameDayLateCheckinId, pureCheckinId, keyHandoverId, sortMergeCleanerId, sortMergeInspectorId, groupedNotifyCheckoutId, groupedNotifyCheckinId]])
+  await pgPool.query(`DELETE FROM users WHERE id = ANY($1::text[])`, [groupedNotifyUserIds])
   await pgPool.query(`INSERT INTO properties(id, address) VALUES($1, 'Test assignment property') ON CONFLICT (id) DO NOTHING`, [propertyId])
   await pgPool.query(
     `INSERT INTO properties(id, code, address)
@@ -147,9 +180,10 @@ async function main() {
        ($3, 'TEST-SAME-DAY-OPEN', 'Test same day open property'),
        ($4, 'TEST-SAME-DAY-LATE', 'Test same day late property'),
        ($5, 'TEST-PURE-CHECKIN', 'Test pure checkin property'),
-       ($6, 'TEST-KEY-HANDOVER', 'Test key handover property')
+       ($6, 'TEST-KEY-HANDOVER', 'Test key handover property'),
+       ($7, 'TEST-SORT-MERGE', 'Test sort merge property')
      ON CONFLICT (id) DO UPDATE SET code = EXCLUDED.code, address = EXCLUDED.address`,
-    [crossDayPropertyId, sameDayPropertyId, sameDayOpenPropertyId, sameDayLatePropertyId, pureCheckinPropertyId, keyHandoverPropertyId],
+    [crossDayPropertyId, sameDayPropertyId, sameDayOpenPropertyId, sameDayLatePropertyId, pureCheckinPropertyId, keyHandoverPropertyId, sortMergePropertyId],
   )
 
   try {
@@ -301,6 +335,82 @@ async function main() {
     assert.equal(preservedKeysHung.status, 'keys_hung')
     assert.equal(preservedKeysHung.inspector_id, 'inspector-a')
 
+    process.stdout.write('test_task_assignment_canonical: testing save-board groups cleaning notifications\n')
+    await pgPool.query(
+      `INSERT INTO notification_event_rules(event_type, enabled, version, note, updated_at, updated_by)
+       VALUES('CLEANING_TASK_UPDATED', true, COALESCE((SELECT version FROM notification_event_rules WHERE event_type = 'CLEANING_TASK_UPDATED'), 0) + 1, 'test override', now(), 'test')
+       ON CONFLICT(event_type) DO UPDATE SET enabled = true, version = notification_event_rules.version + 1, note = EXCLUDED.note, updated_at = now(), updated_by = EXCLUDED.updated_by`,
+    )
+    await pgPool.query(`DELETE FROM notification_event_rule_selectors WHERE event_type = 'CLEANING_TASK_UPDATED'`)
+    await pgPool.query(
+      `INSERT INTO users(id, username, email, password_hash, role, color_hex)
+       VALUES
+         ($1, $1, NULL, 'test-hash', 'cleaner', '#3B82F6'),
+         ($2, $2, NULL, 'test-hash', 'cleaning_inspector', '#3B82F6')
+       ON CONFLICT(id) DO UPDATE SET username = EXCLUDED.username, role = EXCLUDED.role, color_hex = EXCLUDED.color_hex`,
+      groupedNotifyUserIds,
+    )
+    await pgPool.query(
+      `INSERT INTO cleaning_tasks(
+         id, property_id, task_type, type, task_date, date, status, assignee_id, cleaner_id, inspector_id, inspection_mode, inspection_scope, source, execution_state
+       ) VALUES
+         ($1, $4, 'checkout_clean', 'checkout_clean', $3::date, $3::date, 'assigned', $5, $5, $6, 'same_day', 'inspect_and_hang', 'manual', 'active'),
+         ($2, $4, 'checkin_clean', 'checkin_clean', $3::date, $3::date, 'assigned', $5, $5, $6, 'same_day', 'inspect_and_hang', 'manual', 'active')`,
+      [groupedNotifyCheckoutId, groupedNotifyCheckinId, TEST_DATE, propertyId, groupedNotifyUserIds[0], groupedNotifyUserIds[1]],
+    )
+    const groupedNotifyResponse = await requestJson(app, 'POST', '/task-center/save-board', {
+      date: TEST_DATE,
+      mode: 'board',
+      rows: [{ row_key: 'region:test-assignment', row_type: 'region', row_title: 'Test', row_order: 1 }],
+      items: [],
+      row_assignments: [],
+      cleaning_assignments: [
+        {
+          task_id: groupedNotifyCheckoutId,
+          inspector_id: null,
+          inspector_assignment_action: 'unassign',
+          inspection_mode: 'self_complete',
+          inspection_scope: null,
+          inspection_due_date: null,
+          notification_group_key: groupedNotifyKey,
+          notification_group_title: 'TEST-NOTIFY',
+        },
+        {
+          task_id: groupedNotifyCheckinId,
+          inspector_id: null,
+          inspector_assignment_action: 'unassign',
+          inspection_mode: 'self_complete',
+          inspection_scope: null,
+          inspection_due_date: null,
+          notification_group_key: groupedNotifyKey,
+          notification_group_title: 'TEST-NOTIFY',
+        },
+      ],
+      work_assignments: [],
+      task_flags: [],
+    }, { 'x-test-user-id': 'test-assignment-notify-admin' })
+    assert.equal(groupedNotifyResponse?.changed_tasks?.cleaning, 2)
+    assert.equal(groupedNotifyResponse?.push_notifications?.events, 1)
+    const groupedNotifyRows = await pgPool.query(
+      `SELECT COUNT(DISTINCT event_id)::int AS events,
+              COUNT(1)::int AS rows,
+              MAX(title)::text AS title,
+              MAX(body)::text AS body,
+              MAX(data->>'group_title') AS group_title,
+              MAX(jsonb_array_length(data->'task_ids'))::int AS task_count
+       FROM user_notifications
+       WHERE type = 'CLEANING_TASK_UPDATED'
+         AND data->>'group_key' = $1`,
+      [groupedNotifyKey],
+    )
+    const groupedNotifySummary = groupedNotifyRows?.rows?.[0] || {}
+    assert.equal(Number(groupedNotifySummary.events || 0), 1)
+    assert.ok(Number(groupedNotifySummary.rows || 0) >= groupedNotifyUserIds.length)
+    assert.equal(String(groupedNotifySummary.group_title || ''), 'TEST-NOTIFY')
+    assert.equal(Number(groupedNotifySummary.task_count || 0), 2)
+    assert.ok(String(groupedNotifySummary.title || '').includes('TEST-NOTIFY'))
+    assert.ok(String(groupedNotifySummary.body || '').includes('检查安排'))
+
     process.stdout.write('test_task_assignment_canonical: testing manager fields preserve assignment\n')
     await pgPool.query(
       `INSERT INTO cleaning_tasks(
@@ -389,6 +499,14 @@ async function main() {
        ON CONFLICT (id) DO UPDATE SET task_id=EXCLUDED.task_id, type=EXCLUDED.type, url=EXCLUDED.url, captured_at=EXCLUDED.captured_at, uploader_id=EXCLUDED.uploader_id`,
       [sameDayLateLockboxVideoId, sameDayLateCheckoutId],
     )
+    await pgPool.query(
+      `INSERT INTO cleaning_tasks(
+         id, property_id, task_type, type, task_date, date, status, assignee_id, cleaner_id, inspector_id, source, execution_state, checkout_time, sort_index_cleaner, sort_index_inspector
+       ) VALUES
+         ($1, $4, 'checkout_clean', 'checkout_clean', $3::date, $3::date, 'assigned', 'sort-cleaner', 'sort-cleaner', NULL, 'manual', 'active', '10am', 4, NULL),
+         ($2, $4, 'checkout_clean', 'checkout_clean', $3::date, $3::date, 'assigned', NULL, NULL, 'sort-inspector', 'manual', 'active', '10am', NULL, 9)`,
+      [sortMergeCleanerId, sortMergeInspectorId, TEST_DATE, sortMergePropertyId],
+    )
     const boundaryTasks = await requestJson(app, 'GET', `/mzapp/work-tasks?date_from=${TEST_DATE}&date_to=${NEXT_DATE}&view=all`)
     const crossDayTask = (boundaryTasks || []).find((item: any) =>
       String(item.property_id) === crossDayPropertyId
@@ -463,6 +581,14 @@ async function main() {
     assert.equal(sameDayLateTask.status, 'keys_hung')
     assert.equal(sameDayLateTask.end_time, '7pm')
     assert.equal(sameDayLateTask.is_late_checkin, true, 'same-day completed turnover must preserve late checkin tag')
+    const sortMergeTask = (boundaryTasks || []).find((item: any) =>
+      String(item.property_id) === sortMergePropertyId
+      && String(item.scheduled_date || '').slice(0, 10) === TEST_DATE
+    )
+    assert.ok(sortMergeTask, 'manager merged cleaning card should be visible for sort test')
+    assert.equal(sortMergeTask.sort_index, 4, 'manager merged card should sort by earliest child execution order')
+    assert.equal(sortMergeTask.sort_index_cleaner, 4, 'manager merged card should preserve cleaner order from child card')
+    assert.equal(sortMergeTask.sort_index_inspector, 9, 'manager merged card should preserve inspector order from child card')
 
     process.stdout.write('test_task_assignment_canonical: testing password-only checkin uses executor assignee\n')
     await pgPool.query(
@@ -528,15 +654,46 @@ async function main() {
   } finally {
     await pgPool.query(`DELETE FROM cleaning_task_media WHERE id = ANY($1::text[]) OR task_id = ANY($2::text[])`, [
       [sameDayLockboxVideoId, sameDayLateLockboxVideoId],
-      [cleaningId, cleaningKeysHungId, crossDayCheckoutId, crossDayCheckinId, sameDayCheckoutId, sameDayCheckinId, sameDayOpenCheckoutId, sameDayOpenCheckinId, sameDayLateCheckoutId, sameDayLateCheckinId, pureCheckinId, keyHandoverId],
+      [cleaningId, cleaningKeysHungId, crossDayCheckoutId, crossDayCheckinId, sameDayCheckoutId, sameDayCheckinId, sameDayOpenCheckoutId, sameDayOpenCheckinId, sameDayLateCheckoutId, sameDayLateCheckinId, pureCheckinId, keyHandoverId, sortMergeCleanerId, sortMergeInspectorId],
     ])
     await pgPool.query(`DELETE FROM work_tasks WHERE id = ANY($1::text[]) OR source_id = ANY($2::text[])`, [
       [`cleaning_offline_tasks:${offlineNullId}`, `cleaning_offline_tasks:${offlineOldId}`, `cleaning_offline_tasks:${offlineDisplayId}`, workId],
       [offlineNullId, offlineOldId, offlineDisplayId],
     ])
+    await pgPool.query(`DELETE FROM event_queue WHERE user_notification_id IN (SELECT id FROM user_notifications WHERE data->>'group_key' = $1)`, [groupedNotifyKey])
+    await pgPool.query(`DELETE FROM user_notifications WHERE data->>'group_key' = $1`, [groupedNotifyKey])
     await pgPool.query(`DELETE FROM cleaning_offline_tasks WHERE id = ANY($1::text[])`, [[offlineNullId, offlineOldId, offlineDisplayId]])
-    await pgPool.query(`DELETE FROM cleaning_tasks WHERE id = ANY($1::text[])`, [[cleaningId, cleaningKeysHungId, crossDayCheckoutId, crossDayCheckinId, sameDayCheckoutId, sameDayCheckinId, sameDayOpenCheckoutId, sameDayOpenCheckinId, sameDayLateCheckoutId, sameDayLateCheckinId, pureCheckinId, keyHandoverId]])
-    await pgPool.query(`DELETE FROM properties WHERE id = ANY($1::text[])`, [[propertyId, crossDayPropertyId, sameDayPropertyId, sameDayOpenPropertyId, sameDayLatePropertyId, pureCheckinPropertyId, keyHandoverPropertyId]])
+    await pgPool.query(`DELETE FROM cleaning_tasks WHERE id = ANY($1::text[])`, [[cleaningId, cleaningKeysHungId, crossDayCheckoutId, crossDayCheckinId, sameDayCheckoutId, sameDayCheckinId, sameDayOpenCheckoutId, sameDayOpenCheckinId, sameDayLateCheckoutId, sameDayLateCheckinId, pureCheckinId, keyHandoverId, sortMergeCleanerId, sortMergeInspectorId, groupedNotifyCheckoutId, groupedNotifyCheckinId]])
+    await pgPool.query(`DELETE FROM users WHERE id = ANY($1::text[])`, [groupedNotifyUserIds])
+    if (cleaningRuleBackupReady) {
+      await pgPool.query(`DELETE FROM notification_event_rule_selectors WHERE event_type = 'CLEANING_TASK_UPDATED'`)
+      if (previousCleaningRule) {
+        await pgPool.query(
+          `INSERT INTO notification_event_rules(event_type, enabled, version, note, updated_at, updated_by)
+           VALUES($1,$2,$3,$4,$5,$6)
+           ON CONFLICT(event_type) DO UPDATE SET enabled = EXCLUDED.enabled, version = EXCLUDED.version, note = EXCLUDED.note, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by`,
+          [
+            previousCleaningRule.event_type,
+            previousCleaningRule.enabled,
+            previousCleaningRule.version,
+            previousCleaningRule.note,
+            previousCleaningRule.updated_at,
+            previousCleaningRule.updated_by,
+          ],
+        )
+        for (const selector of previousCleaningRuleSelectors) {
+          await pgPool.query(
+            `INSERT INTO notification_event_rule_selectors(id, event_type, recipient_type, recipient_value, created_at)
+             VALUES($1,$2,$3,$4,$5)
+             ON CONFLICT(event_type, recipient_type, recipient_value) DO NOTHING`,
+            [selector.id, selector.event_type, selector.recipient_type, selector.recipient_value, selector.created_at],
+          )
+        }
+      } else {
+        await pgPool.query(`DELETE FROM notification_event_rules WHERE event_type = 'CLEANING_TASK_UPDATED'`)
+      }
+    }
+    await pgPool.query(`DELETE FROM properties WHERE id = ANY($1::text[])`, [[propertyId, crossDayPropertyId, sameDayPropertyId, sameDayOpenPropertyId, sameDayLatePropertyId, pureCheckinPropertyId, keyHandoverPropertyId, sortMergePropertyId]])
   }
 
   process.stdout.write('test_task_assignment_canonical: ok\n')
