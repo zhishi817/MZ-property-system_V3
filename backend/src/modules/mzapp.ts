@@ -5843,6 +5843,7 @@ router.get('/work-tasks', async (req, res) => {
         const sameDayTurnoverState = new Map<string, {
           hasCheckout: boolean
           hasCheckin: boolean
+          checkoutCleanerIds: Set<string>
           keysHung: boolean
           keyPhotoUrl: string | null
           lockboxVideoUrl: string | null
@@ -5857,11 +5858,16 @@ router.get('/work-tasks', async (req, res) => {
           const prev = sameDayTurnoverState.get(k) || {
             hasCheckout: false,
             hasCheckin: false,
+            checkoutCleanerIds: new Set<string>(),
             keysHung: false,
             keyPhotoUrl: null,
             lockboxVideoUrl: null,
           }
-          if (taskKind === 'checkout') prev.hasCheckout = true
+          if (taskKind === 'checkout') {
+            prev.hasCheckout = true
+            const checkoutCleanerId = String(row.cleaner_id || row.assignee_id || '').trim()
+            if (checkoutCleanerId) prev.checkoutCleanerIds.add(checkoutCleanerId)
+          }
           if (taskKind === 'checkin') prev.hasCheckin = true
           const raw = String(row.status ?? '').trim().toLowerCase()
           const keyPhotoUrl = String(row.key_photo_url || '').trim()
@@ -5875,6 +5881,12 @@ router.get('/work-tasks', async (req, res) => {
           if (!taskDate || !propId) return null
           const state = sameDayTurnoverState.get(`${taskDate}|${propId}`)
           if (!state?.hasCheckout || !state?.hasCheckin || !state.keysHung) return null
+          return state
+        }
+        const sameDayTurnoverFor = (taskDate: string, propId: string | null) => {
+          if (!taskDate || !propId) return null
+          const state = sameDayTurnoverState.get(`${taskDate}|${propId}`)
+          if (!state?.hasCheckout || !state?.hasCheckin) return null
           return state
         }
         for (const row of cleaningRows) {
@@ -5911,7 +5923,7 @@ router.get('/work-tasks', async (req, res) => {
           const inspectorId = row.inspector_id ? String(row.inspector_id) : null
           const isCheckinSiteExecution = String(row.task_type || '').trim().toLowerCase() === 'checkin_clean'
           const completedSameDayTurnover = isCheckinSiteExecution ? completedSameDayTurnoverFor(taskDate, propId) : null
-          const suppressStandaloneCheckin = !!completedSameDayTurnover
+          const sameDayTurnover = isCheckinSiteExecution ? sameDayTurnoverFor(taskDate, propId) : null
           const checkinSiteExecutorId = isCheckinSiteExecution ? executorId : null
           const orderId = row.order_id ? String(row.order_id) : null
           const orderKeysRequired = row.order_keys_required == null ? null : Number(row.order_keys_required)
@@ -5919,6 +5931,15 @@ router.get('/work-tasks', async (req, res) => {
           const manualCleaningAssigneeId = !allowAll && (manualActions.has('fill_supplies') || manualActions.has('complete_cleaning') || manualActions.has('upload_key_photo')) ? userId : ''
           const manualInspectionAssigneeId = !allowAll && manualActions.has('submit_inspection') ? userId : ''
           const manualExecutionAssigneeId = !allowAll && manualActions.has('upload_access_video') ? userId : ''
+          const suppressStandaloneCheckinForCleanerTurnover = !!(
+            !allowAll
+            && isCheckinSiteExecution
+            && sameDayTurnover
+            && userId
+            && (executorId === userId || manualExecutionAssigneeId === userId)
+            && sameDayTurnover.checkoutCleanerIds.has(userId)
+          )
+          const suppressStandaloneCheckin = !!completedSameDayTurnover || suppressStandaloneCheckinForCleanerTurnover
 
           const base = {
             __raw_id: String(row.id),
@@ -6013,7 +6034,7 @@ router.get('/work-tasks', async (req, res) => {
             dateTo,
             status: raw_status,
           })
-          const effectiveInspectionAssigneeId = checkinSiteExecutorId || inspectorId || manualInspectionAssigneeId || ''
+          const effectiveInspectionAssigneeId = inspectorId || manualInspectionAssigneeId || ''
           if (
             wantInspector
             && !suppressStandaloneCheckin
@@ -6454,14 +6475,22 @@ router.get('/work-tasks', async (req, res) => {
           : hasCleaningExecution
             ? 'cleaning'
             : 'inspection'
-        const executionSemantics = cleaningTaskExecutionSemantics({
-          roleKind: executionRole,
-          taskType: preferred?.task_type,
-          inspectionScope: preferred?.inspection_scope,
-          hasCleaningExecution,
-          hasInspectionExecution,
-          hasKeyHandoverExecution,
-        })
+        const hasCheckoutSide = !!firstNonEmpty(
+          mergedTurnoverDisplay?.checkout_time,
+          mergedTurnoverDisplay?.checkout_order_id,
+          mergedTurnoverDisplay?.old_code,
+          ...arr.map((x) => String(x?.task_type || '').trim().toLowerCase() === 'checkout_clean' ? 'checkout_clean' : null),
+          ...arr.map((x) => x.keys_required_checkout),
+        )
+        const hasCheckinSide = !!firstNonEmpty(
+          mergedTurnoverDisplay?.checkin_time,
+          mergedTurnoverDisplay?.checkin_order_id,
+          mergedTurnoverDisplay?.new_code,
+          ...arr.map((x) => String(x?.task_type || '').trim().toLowerCase() === 'checkin_clean' ? 'checkin_clean' : null),
+          ...arr.map((x) => x.keys_required_checkin),
+        )
+        const isTurnoverCard = hasCheckoutSide && hasCheckinSide
+        const taskTypeOut = isTurnoverCard ? 'turnover' : String(preferred?.task_type || '')
         const startTime = firstNonEmpty(mergedTurnoverDisplay?.checkout_time, ...arr.map((x) => x.start_time))
         const endTime = firstNonEmpty(mergedTurnoverDisplay?.checkin_time, ...arr.map((x) => x.end_time))
         const keyPhotoUrl = firstNonEmpty(...arr.map((x) => x.key_photo_url))
@@ -6543,9 +6572,19 @@ router.get('/work-tasks', async (req, res) => {
         )
         const inspectionMode = inspectionPlan.inspectionMode
         const inspectionDueDate = inspectionPlan.inspectionDueDate
-        const inspectionScope = normalizeInspectionScope(
-          arr.find((x) => String(x?.task_type || '').trim().toLowerCase() === 'checkin_clean')?.inspection_scope,
-        )
+        const inspectionScope = isTurnoverCard
+          ? null
+          : normalizeInspectionScope(
+              arr.find((x) => String(x?.task_type || '').trim().toLowerCase() === 'checkin_clean')?.inspection_scope,
+            )
+        const executionSemantics = cleaningTaskExecutionSemantics({
+          roleKind: executionRole,
+          taskType: taskTypeOut || preferred?.task_type,
+          inspectionScope,
+          hasCleaningExecution,
+          hasInspectionExecution,
+          hasKeyHandoverExecution,
+        })
         const restockItems: any[] = []
         const seenRestock = new Set<string>()
         for (const it of arr.flatMap((x) => (Array.isArray(x?.restock_items) ? x.restock_items : []))) {
@@ -6572,6 +6611,7 @@ router.get('/work-tasks', async (req, res) => {
           id: `cleaning_tasks_merged:${d}:${propKey}`,
           start_time: startTime || null,
           end_time: endTime || null,
+          task_type: taskTypeOut || preferred?.task_type || null,
           task_kind: hasKeyHandoverExecution
             ? 'execution'
             : arr.some((x) => String(x?.task_kind || '') === 'inspection')

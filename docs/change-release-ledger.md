@@ -2,6 +2,54 @@
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
+## CRL-20260704-004 — 清洁端普通同日 turnover 入住重复卡修复
+
+- **Status:** ready
+- **Updated:** 2026-07-04 12:37 AEST
+- **Request:** 执行修复计划：解决清洁人员移动端同日退房入住里入住卡重复，以及普通任务仍显示“检查后挂钥匙”的问题；测试不能修改生产环境数据库数据。
+- **Outcome:** `/mzapp/work-tasks` 在清洁人员本人视图中不再把已归该清洁人员的同房同日 `checkin_clean` 额外投影成独立入住执行/检查卡；普通 `退房 入住` turnover 只保留一张清洁卡，纯入住任务仍显示给执行人并保留“仅改密码/检查后挂钥匙”语义。
+
+### Implementation
+
+- Previous behavior:
+  - 普通同日 checkout+checkin 任务未完成时，checkout 进入清洁 turnover 卡，但 checkin 又因为 `assignee_id` 等于清洁人员进入 executor 分组，导致清洁端看到同一房间一张 `退房 入住` 和一张单独 `入住`。
+  - 单独 `checkin_clean` 卡带 `inspection_scope=inspect_and_hang`，旧移动端会按规则显示“检查后挂钥匙”，让普通 turnover 看起来也有这个标签。
+  - 检查分组优先使用 checkin 执行人，可能把真实检查员的同日检查投影归到执行人名下。
+- New behavior:
+  - 同日 turnover 状态增加 checkout 清洁人员集合；当当前用户已拥有该房同日 checkout 清洁卡时，关联 checkin 不再进入 executor/inspection standalone 投影。
+  - 检查分组按真实 `inspector_id` / 手动检查参与人分配，不再优先被 checkin 执行人覆盖。
+  - 纯入住没有同日 checkout 时仍进入执行人投影，并继续返回 `inspection_scope` 供移动端显示“仅改密码/检查后挂钥匙”。
+- Key decisions:
+  - 不改移动端前端显示逻辑；根因是后端返回了不该给清洁人员的 standalone checkin 卡。
+  - 不对生产库运行写入测试；回归脚本保留生产库身份保护，只在非生产 `DATABASE_URL` 上写入 `test-assignment-*` 样例并清理。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — modified: 普通同日 turnover 下按 checkout 清洁归属压掉清洁人员的 standalone checkin 投影，并修正检查分组 assignee 来源。
+- `backend/scripts/tests/test_task_assignment_canonical.ts` — modified: 增加清洁人员 self view 不重复、真实检查员不丢任务、纯入住执行人仍可见的回归断言。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: `/mzapp/work-tasks` 清洁人员本人视图中普通同日 turnover 不再额外返回单独 `checkin_clean` 卡；纯入住任务和 manager 合并视图保留现有结构。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: follow-up to `CRL-20260704-001`; shares `backend/src/modules/mzapp.ts` with `CRL-20260704-003`, so selective release requires hunk review.
+
+### Validation
+
+- `./node_modules/.bin/ts-node --transpile-only scripts/tests/test_task_assignment_canonical.ts` in `backend` sandbox — failed: DNS blocked access to the non-production Neon database before assertions.
+- `./node_modules/.bin/ts-node --transpile-only scripts/tests/test_task_assignment_canonical.ts` in `backend` with network access — passed: includes cleaner self view 同日 turnover 不重复、真实检查员仍可见、纯入住执行人仍可见。
+- `npm run build` in `backend` — passed: `tsc -p .`.
+
+### Risks / Release Notes
+
+- Behavior risk: 如果未来业务明确要求清洁人员在普通同日 turnover 中也单独看到入住执行卡，需要改为单独配置；当前规则按用户反馈隐藏该重复卡。
+- Rollback: remove `checkoutCleanerIds` / `sameDayTurnoverFor` suppression and restore inspection assignment fallback to checkin executor in `backend/src/modules/mzapp.ts`.
+- Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted local changes in `backend/src/modules/mzapp.ts`, `backend/scripts/tests/test_task_assignment_canonical.ts`, and `docs/change-release-ledger.md`; worktree also contains unrelated pre-existing finance/inventory changes not owned by this unit.
+
 ## CRL-20260704-002 — 移动端清洁/检查上传权限兜底
 
 - **Status:** committed
