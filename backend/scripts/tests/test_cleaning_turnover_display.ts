@@ -90,4 +90,44 @@ assert.equal(merged?.checkin_time, '2pm')
 assert.deepEqual(merged?.active_source_ids, ['checkout-active', 'checkin-active'])
 assert.deepEqual(merged?.superseded_source_ids, ['manual-superseded'])
 
+const taskCenterMergedDisplay = buildCleaningTurnoverDisplay({
+  propertyId: 'P2',
+  taskDate: '2026-07-05',
+  checkoutTask: {
+    taskId: 'task-center-checkout',
+    taskType: 'checkout_clean',
+    orderId: 'checkout-order-2',
+    summary_checkout_time: '11:30am',
+  },
+  checkinTask: {
+    taskId: 'task-center-checkin',
+    taskType: 'checkin_clean',
+    orderId: 'checkin-order-2',
+    summary_checkin_time: '5pm',
+    nights: 3,
+  },
+  activeRows: [
+    {
+      taskId: 'task-center-checkin',
+      taskType: 'checkin_clean',
+      orderId: 'checkin-order-2',
+      summary_checkin_time: '5pm',
+      nights: 3,
+    },
+    {
+      taskId: 'task-center-checkout',
+      taskType: 'checkout_clean',
+      orderId: 'checkout-order-2',
+      summary_checkout_time: '11:30am',
+    },
+  ],
+})
+
+assert.equal(taskCenterMergedDisplay.checkout_time, '11:30am')
+assert.equal(taskCenterMergedDisplay.checkin_time, '5pm')
+assert.equal(taskCenterMergedDisplay.is_late_checkout, true)
+assert.equal(taskCenterMergedDisplay.is_early_checkin, false)
+assert.equal(taskCenterMergedDisplay.is_late_checkin, true)
+assert.equal(taskCenterMergedDisplay.remaining_nights, 3)
+
 process.stdout.write('test_cleaning_turnover_display: ok\n')

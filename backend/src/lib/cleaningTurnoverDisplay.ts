@@ -11,8 +11,12 @@ export type CleaningTurnoverTaskLike = {
   taskDate?: any
   checkout_time?: any
   checkoutTime?: any
+  summary_checkout_time?: any
+  summaryCheckoutTime?: any
   checkin_time?: any
   checkinTime?: any
+  summary_checkin_time?: any
+  summaryCheckinTime?: any
   guest_special_request?: any
   guestSpecialRequest?: any
   order_note?: any
@@ -71,7 +75,6 @@ export type CleaningTurnoverDisplay = {
 
 const DEFAULT_CHECKOUT_TIME = '10am'
 const DEFAULT_CHECKIN_TIME = '3pm'
-const LATE_CHECKIN_AFTER_MINUTES = 18 * 60
 
 function text(value: any): string {
   return String(value ?? '').trim()
@@ -181,11 +184,11 @@ function orderId(row: CleaningTurnoverTaskLike | null | undefined): string | nul
 }
 
 function checkoutTime(row: CleaningTurnoverTaskLike | null | undefined): string | null {
-  return firstText(row?.checkoutTime, row?.checkout_time)
+  return firstText(row?.checkoutTime, row?.checkout_time, row?.summaryCheckoutTime, row?.summary_checkout_time)
 }
 
 function checkinTime(row: CleaningTurnoverTaskLike | null | undefined): string | null {
-  return firstText(row?.checkinTime, row?.checkin_time)
+  return firstText(row?.checkinTime, row?.checkin_time, row?.summaryCheckinTime, row?.summary_checkin_time)
 }
 
 function keysRequired(row: CleaningTurnoverTaskLike | null | undefined): number | null {
@@ -275,7 +278,7 @@ export function buildCleaningTurnoverDisplay(params: {
     checkin_time: checkinT,
     is_late_checkout: checkoutMinutes != null ? checkoutMinutes > defaultCheckoutMinutes : false,
     is_early_checkin: checkinMinutes != null ? checkinMinutes < defaultCheckinMinutes : false,
-    is_late_checkin: checkinMinutes != null ? checkinMinutes > LATE_CHECKIN_AFTER_MINUTES : false,
+    is_late_checkin: checkinMinutes != null ? checkinMinutes > defaultCheckinMinutes : false,
     guest_request_checkout: checkoutRequest,
     guest_request_checkin: checkinRequest,
     guest_request_summary: unique([checkoutRequest, checkinRequest]).join('；') || null,

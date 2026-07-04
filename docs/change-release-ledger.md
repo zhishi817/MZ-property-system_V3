@@ -2,6 +2,165 @@
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
+## CRL-20260705-004 — 移动端管理视图清洁/检查排序显示修复
+
+- **Status:** ready
+- **Updated:** 2026-07-05 01:45 AEST
+- **Request:** “清洁和检查的排序，admin和线下经理以及客服也都看不见了。清洁明明填了顺序。查什么原因”后续要求“修复一下”。
+- **Outcome:** `/mzapp/work-tasks?view=all` 给 admin、线下经理、客服返回的同房同日清洁合并卡会保留子卡里的 `sort_index_cleaner` / `sort_index_inspector`，移动端详情里的“清洁顺序 / 检查顺序”不再因为管理视图二次合并而显示 `-`。
+
+### Implementation
+
+- Previous behavior:
+  - 清洁员/检查员保存顺序时会分别写入 `cleaning_tasks.sort_index_cleaner` 和 `cleaning_tasks.sort_index_inspector`。
+  - `/mzapp/work-tasks` 第一层按执行角色生成子卡时已经计算了 `sort_index`、`sort_index_cleaner`、`sort_index_inspector`。
+  - admin / offline_manager / customer_service 的 `view=all` 会再按日期+房源合并一次卡片；这一步只继承 `preferred` 子卡，没有重新聚合所有子卡的排序字段，因此另一侧执行顺序可能丢失。
+- New behavior:
+  - 管理视图二次合并时从所有子卡中取最小有效 `sort_index_cleaner` 和 `sort_index_inspector`。
+  - 最终合并卡的 `sort_index` 取清洁/检查/子卡通用顺序中的最小有效值，用于保持列表排序稳定。
+  - 回归测试构造同一房同日的清洁子卡和检查子卡，清洁顺序只在清洁子卡、检查顺序只在检查子卡，确认合并后两个字段都保留。
+- Key decisions:
+  - 不改移动端前端展示逻辑；前端本来就读取 `sort_index_cleaner` / `sort_index_inspector`。
+  - 不改排序保存接口和数据库结构；本次只修后端管理视图 payload 合并。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — modified/shared: `view=all` 清洁任务二次合并时聚合并输出 `sort_index`、`sort_index_cleaner`、`sort_index_inspector`。
+- `backend/scripts/tests/test_task_assignment_canonical.ts` — modified/shared: 在现有 `/mzapp/work-tasks?view=all` 集成测试中增加管理合并卡排序字段回归断言；同文件包含 `CRL-20260705-003` 的通知分组测试改动。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: `/mzapp/work-tasks?view=all` 的清洁合并卡会更完整返回已有排序字段；字段名不变，旧客户端兼容。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: shares `backend/src/modules/mzapp.ts` with pending mzapp mobile-task units and shares `backend/scripts/tests/test_task_assignment_canonical.ts` with `CRL-20260705-003`; selective release requires hunk-level review.
+
+### Validation
+
+- `git diff --check -- backend/src/modules/mzapp.ts backend/scripts/tests/test_task_assignment_canonical.ts` — passed.
+- `./node_modules/.bin/ts-node --transpile-only scripts/tests/test_task_assignment_canonical.ts` in `backend` — failed in sandbox before business assertions: DNS `ENOTFOUND` for the configured test database host.
+- `./node_modules/.bin/ts-node --transpile-only scripts/tests/test_task_assignment_canonical.ts` in `backend` with approved network access — passed twice: `test_task_assignment_canonical: ok`; final run includes the new sort merge assertions.
+- `npm --prefix backend run build` — failed first with `TS18047` in the new local numeric guard, then passed after tightening the null check.
+- Backend lint — not run: `backend/package.json` has no lint script.
+- Frontend checks — not run: no frontend files changed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: Changed files 19, recorded changed files 19, coverage PASS.
+
+### Risks / Release Notes
+
+- Runtime risk: if different child cards intentionally carry conflicting sort numbers, management view now shows the earliest valid value for list ordering while still exposing both role-specific fields separately.
+- Rollback: remove the `minPositiveNumber` aggregation and the three sorting fields from the management-view merged payload, then remove the added sort-merge assertions from `test_task_assignment_canonical.ts`.
+- Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted in root repo; coexists with unrelated pre-existing finance, inventory, mzapp, and task-center changes from other release units.
+
+## CRL-20260705-003 — 任务中心保存通知按实际改动和合并卡片去重
+
+- **Status:** ready
+- **Updated:** 2026-07-05 01:38 AEST
+- **Request:** 生产环境里只把 `1403` 和 `614` 两个任务改成自完成并保存，却出现 5 条通知；先用生产库排查原因，再按计划修复，并确认不要影响其他流程。后续明确要求测试不要用生产环境数据库。
+- **Outcome:** 任务中心保存现在只提交用户本次实际改过的清洁/线下任务 assignment；未改动但出现在整板 payload 里的任务不会再触发后端 diff 和通知。同一张可见清洁合并卡片包含退房+入住两条底层任务时，后端仍更新两条任务、仍发两条实时刷新事件，但只合并发送 1 个 `CLEANING_TASK_UPDATED` 通知事件。
+
+### Implementation
+
+- Previous behavior:
+  - 前端保存整板时会遍历当前看板所有任务，只要本地状态与 baseline 有差异或 baseline 缺失，就把该任务放进 `cleaning_assignments` / `work_assignments`。
+  - 用户只改两张卡片时，未触碰的任务也可能因为 baseline/展示合并状态进入保存 payload；后端收到后会按真实 diff 发通知。
+  - 同一张 turnover 合并卡片的退房和入住分别对应底层 `cleaning_tasks`，后端逐任务调用通知入口，因此一张可见卡可能产生两条同文案通知。
+- New behavior:
+  - 前端新增 dirty tracking refs，只在详情保存、整行分配、房源跟进分配、拖拽导致检查安排变化等入口标记实际改过的清洁/线下任务。
+  - 保存时仍提交整板布局、排序和 flag，但 `cleaning_assignments` / `work_assignments` 只包含 dirty 任务，避免未触碰任务进入后端业务更新路径。
+  - 前端为清洁任务随 payload 附带可见卡片 `notification_group_key/title`；后端按该 group 汇总变更字段、接收人和优先级，每组只发一次 `CLEANING_TASK_UPDATED`，同时保留每个底层任务的 realtime event。
+- Key decisions:
+  - 不拆掉整板布局保存，避免影响拖拽排序、分区和临时跳过等看板流程；只收窄会触发业务 assignment 更新和通知的 payload。
+  - 不改变通知规则、收件人配置页、移动端 notice 展示结构或数据库表结构；本次只修保存入口的过量提交和清洁合并卡片的通知聚合。
+
+### Files / Areas
+
+- `frontend/src/app/task-center/page.tsx` — modified/shared: 增加 dirty tracking、清洁通知 group helper，并在保存 payload 中只输出 dirty assignment；同文件已有 `CRL-20260705-002` 的晚入住兜底阈值 hunk，不属于本单元。
+- `backend/src/modules/task_center.ts` — modified: `/task-center/save-board` 接受可选通知 group 字段，并把清洁任务通知从逐任务发送改成按可见卡片 group 发送；实时事件仍逐底层任务发送。
+- `backend/scripts/tests/test_task_assignment_canonical.ts` — modified: 增加非生产数据库回归测试，覆盖两条底层清洁任务共用一个通知 group 时只产生 1 个通知 event，并校验包含 2 个 task id。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: `/task-center/save-board` 请求 schema 新增可选 `notification_group_key` / `notification_group_title`；旧客户端不传也可继续工作。响应结构不变，但 `push_notifications.events` 对清洁合并卡片会按通知 group 计数。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: shares `frontend/src/app/task-center/page.tsx` with `CRL-20260705-002`; selective release requires hunk-level review. The test script uses `DATABASE_URL` from local/test env and includes a guard that refuses to run when it matches the configured production URL.
+
+### Validation
+
+- `git diff --check -- frontend/src/app/task-center/page.tsx backend/src/modules/task_center.ts backend/scripts/tests/test_task_assignment_canonical.ts` — passed.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_task_assignment_canonical.ts` in `backend` — passed with approved network access against non-production `DATABASE_URL`: `test_task_assignment_canonical: ok`; added grouped notification assertion returned 2 changed cleaning tasks and 1 push notification event.
+- `npm run lint -- --file src/app/task-center/page.tsx` in `frontend` — passed: no warnings or errors.
+- `./node_modules/.bin/tsc --noEmit --pretty false` in `frontend` — passed.
+- `npm run build` in `frontend` — failed after successful compile and type/lint phase during Next page-data collection: first `Cannot find module './1682.js'`, then after full clean `Cannot find module for page: /_document`; this appears to be the current Next build artifact/page-data issue, not a task-center type or lint error.
+
+### Risks / Release Notes
+
+- Runtime risk: if there is an untracked task-center edit path that mutates assignment state without calling a dirty marker, that assignment change would not be submitted. Covered current visible save paths are detail save, row assignment, property follow-up assignment, and drag/drop inspection assignment changes.
+- Runtime risk: group notification uses the first changed bottom-level cleaning task as `entityId` while carrying all group task ids in `data.task_ids`; existing mobile notice open behavior should still open a cleaning task, but deep-linking lands on the first task in the group.
+- Rollback: remove frontend dirty filtering and group payload fields, restore backend per-task cleaning notification loop, and remove the grouped notification regression test.
+- Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded. Production data was used only for earlier read-only diagnosis; write regression testing was not run on production.
+- Git state: uncommitted in root repo; coexists with unrelated pre-existing finance, inventory, mzapp, and task-center changes from other release units.
+
+## CRL-20260705-002 — 任务中心合并卡晚退房/晚入住标签修复
+
+- **Status:** ready
+- **Updated:** 2026-07-05 01:28 AEST
+- **Request:** 生产任务中心里同样有晚退房，`3805009` 显示“晚退房”，`AU2117` / `AU8508` 不显示；同时确认“晚入住”的标签也没有显示出来。用户要求按计划修复，生产数据诊断使用 `NEON_DATABASE_URL_PROD`，但不记录任何数据库连接内容。
+- **Outcome:** 任务中心合并入住/退房卡片会保留清洁任务摘要里的 `11:30am退房`、`2pm入住`、`5pm入住` 等时间，不再在合并时回退成默认 `10am/3pm`；晚入住判断与默认 `3pm` 入住时间对齐，`5pm入住` 会被识别为“晚入住”。
+
+### Implementation
+
+- Previous behavior:
+  - `/task-center/day` 载入的 `BoardTask` 带有 `summary_checkout_time` / `summary_checkin_time`，但没有原始 `checkout_time` / `checkin_time`。
+  - 后端合并同日 turnover 卡片时调用 `buildCleaningTurnoverDisplay()` 重新计算展示信息；该 helper 只读取原始时间字段，读不到 summary 字段时会使用默认 `10am/3pm`。
+  - 任务中心前端的晚入住兜底逻辑仍按 `> 6pm` 判断，和清洁日历页“超过默认 3pm 就是晚入住”的展示规则不一致。
+- New behavior:
+  - `buildCleaningTurnoverDisplay()` 支持读取 `summary_checkout_time` / `summary_checkin_time` 及 camelCase 变体，合并卡片可以继承任务中心已有摘要时间。
+  - 后端 `is_late_checkin` 改为和默认入住时间比较，超过默认 `3pm` 就标记晚入住；晚退房继续按超过默认 `10am` 判断。
+  - 任务中心前端 `isLateCheckinDisplay()` 的兜底判断改为比较 `DEFAULT_SUMMARY_CHECKIN_TIME`，避免后端布尔值缺失时仍丢掉 `5pm` 晚入住标签。
+- Key decisions:
+  - 不改生产数据、不新增数据库字段、不改任务合并结构；只修共享展示 helper 对现有字段的读取和标签判断阈值。
+  - 不把这次修复扩展到移动端本地 `taskTime` 兜底逻辑；移动端如仍有独立 `> 6pm` 判断，需要单独对齐。
+
+### Files / Areas
+
+- `backend/src/lib/cleaningTurnoverDisplay.ts` — modified: turnover 展示 helper 支持 summary 时间字段，晚入住阈值改为超过默认入住时间。
+- `backend/scripts/tests/test_cleaning_turnover_display.ts` — modified: 增加任务中心合并卡片只带 summary 时间字段时的晚退房/晚入住回归测试。
+- `frontend/src/app/task-center/page.tsx` — modified/shared: 本单元只包含 `isLateCheckinDisplay()` 晚入住兜底阈值改动；同文件已有其他未提交任务通知/dirty tracking 改动不属于本单元。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: `/task-center/day` 返回的合并清洁卡片 `turnover_display` 会更准确保留 summary 时间字段和 `is_late_checkin` 布尔值；响应结构不变。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: shares `frontend/src/app/task-center/page.tsx` with unrelated uncommitted task-center changes; selective release requires hunk-level review. `backend/src/lib/cleaningTurnoverDisplay.ts` is shared by task-center and mobile backend payload projection, so server-derived mobile labels may also follow the `> 3pm` late-checkin rule.
+
+### Validation
+
+- `./node_modules/.bin/ts-node --transpile-only scripts/tests/test_cleaning_turnover_display.ts` in `backend` — passed: `test_cleaning_turnover_display: ok`.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `./node_modules/.bin/tsc --noEmit` in `frontend` — passed.
+- `npm run lint` in `frontend` — passed with existing project warnings.
+- `npm run build` in `frontend` — passed with existing warnings: stale Browserslist data and Recharts zero-size chart warnings during static generation.
+- `git diff --check -- backend/src/lib/cleaningTurnoverDisplay.ts backend/scripts/tests/test_cleaning_turnover_display.ts frontend/src/app/task-center/page.tsx docs/change-release-ledger.md` — passed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: Changed files 19, recorded changed files 19, coverage PASS.
+
+### Risks / Release Notes
+
+- Risk: if product expectation is “晚入住 only after 6pm” for any surface, this change intentionally aligns task-center/backend display with the daily cleaning rule instead and will mark `5pm` as late check-in.
+- Risk: live browser verification against production UI was not run in this turn; validation used production-data diagnosis before coding plus unit/type/build checks.
+- Rollback: revert summary field support and `is_late_checkin` threshold in `backend/src/lib/cleaningTurnoverDisplay.ts`, revert the new test case, and revert the `isLateCheckinDisplay()` threshold hunk in `frontend/src/app/task-center/page.tsx`.
+- Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted in root repo; coexists with unrelated pre-existing finance, inventory, mzapp, and task-center changes from other release units.
+
 ## CRL-20260704-012 — 移动端本地媒体空间自动治理
 
 - **Status:** pushed

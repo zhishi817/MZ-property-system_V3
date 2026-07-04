@@ -146,6 +146,15 @@ type TaskSaveDiff = {
   priority?: 'high' | 'medium' | 'low'
 }
 
+type CleaningNotificationGroup = {
+  key: string
+  title: string | null
+  tasks: any[]
+  changes: string[]
+  recipientUserIds: string[]
+  priority?: 'high' | 'medium' | 'low'
+}
+
 const memoryTaskFlags = new Map<string, TaskFlag>()
 let cleaningInspectionScopeEnsured = false
 let cleaningInspectionScopeEnsuring: Promise<void> | null = null
@@ -1967,6 +1976,8 @@ const saveBoardSchema = z.object({
     inspection_due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
     status_action: z.enum(['set_keys_hung', 'clear_keys_hung', 'set_completed', 'clear_completed']).optional(),
     status: z.string().min(1).optional(),
+    notification_group_key: z.string().min(1).optional(),
+    notification_group_title: z.string().nullable().optional(),
   })).default([]),
   work_assignments: z.array(z.object({
     task_id: z.string().min(1),
@@ -2110,6 +2121,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
       let changedWorkTasks: any[] = []
       const cleaningDiffById = new Map<string, TaskSaveDiff>()
       const workDiffById = new Map<string, TaskSaveDiff>()
+      const cleaningAssignmentById = new Map<string, any>(payload.cleaning_assignments.map((item: any) => [String(item.task_id), item]))
       try {
         await client.query('BEGIN')
         if (payload.cleaning_assignments.length) {
@@ -2462,49 +2474,38 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
             [payload.date, JSON.stringify(payload.task_flags), updatedBy],
           )
         }
+        const actorId = String(user.sub || '').trim()
+        const cleaningNotificationGroups = new Map<string, CleaningNotificationGroup>()
+        const cleaningNotificationPriorityRank: Record<NonNullable<CleaningNotificationGroup['priority']>, number> = { low: 1, medium: 2, high: 3 }
         for (const task of changedCleaningTasks) {
           const diff = cleaningDiffById.get(String(task.id))
           if (!diff) continue
-          const actorId = String(user.sub || '').trim()
           const taskId = String(task.id)
           if (diff.pushChanges.length && diff.pushRecipientUserIds.length) {
-            try {
-              const notificationResult = await emitNotificationEvent(
-                {
-                  type: 'CLEANING_TASK_UPDATED',
-                  entity: 'cleaning_task',
-                  entityId: taskId,
-                  propertyId: task.property_id ? String(task.property_id) : undefined,
-                  updatedAt: String(task.updated_at || '').trim() || new Date().toISOString(),
-                  changes: diff.pushChanges,
-                  title: `${cleaningTaskLabel(task.task_type)}安排已更新`,
-                  body: taskChangeBody(diff.pushChanges),
-                  data: {
-                    entity: 'cleaning_task',
-                    entityId: taskId,
-                    action: 'open_task',
-                    kind: 'cleaning_task_updated',
-                    task_id: taskId,
-                    task_type: task.task_type || null,
-                    task_date: task.task_date ? String(task.task_date).slice(0, 10) : null,
-                    assignee_id: task.assignee_id || null,
-                    cleaner_id: task.cleaner_id || null,
-                    inspector_id: task.inspector_id || null,
-                    status: task.status,
-                  },
-                  priority: diff.priority,
-                  actorUserId: actorId || null,
-                  excludeActor: false,
-                  recipientUserIds: diff.pushRecipientUserIds,
-                },
-                { operationId: uuid(), pgClient: client },
-              )
-              if (Number((notificationResult as any)?.sent || 0) > 0) {
-                pushNotificationEvents += 1
-                pushNotificationRecipients += Number((notificationResult as any).sent || 0)
+            const assignment = cleaningAssignmentById.get(taskId) || {}
+            const groupKey = text(assignment.notification_group_key) || taskId
+            const groupTitle = nullableText(assignment.notification_group_title)
+            let group = cleaningNotificationGroups.get(groupKey)
+            if (!group) {
+              group = {
+                key: groupKey,
+                title: groupTitle,
+                tasks: [],
+                changes: [],
+                recipientUserIds: [],
+                priority: undefined,
               }
-            } catch (error: any) {
-              console.error(`[task-center] cleaning_assignment_notification_failed task_id=${taskId} message=${String(error?.message || error || '')}`)
+              cleaningNotificationGroups.set(groupKey, group)
+            }
+            if (!group.title && groupTitle) group.title = groupTitle
+            group.tasks.push(task)
+            group.changes.push(...diff.pushChanges)
+            group.recipientUserIds.push(...diff.pushRecipientUserIds)
+            if (
+              diff.priority
+              && (!group.priority || cleaningNotificationPriorityRank[diff.priority] > cleaningNotificationPriorityRank[group.priority])
+            ) {
+              group.priority = diff.priority
             }
           }
           eventInputs.push({
@@ -2526,6 +2527,60 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
             causedByUserId: String(user.sub || '').trim() || null,
             visibilityHints: buildCleaningTaskVisibilityHints(task),
           })
+        }
+        for (const group of cleaningNotificationGroups.values()) {
+          const firstTask = group.tasks[0]
+          if (!firstTask) continue
+          const changes = uniqTextList(group.changes)
+          const recipients = uniqTextList(group.recipientUserIds)
+          if (!changes.length || !recipients.length) continue
+          const taskIds = uniqTextList(group.tasks.map((task: any) => task.id))
+          const taskTypes = uniqTextList(group.tasks.map((task: any) => task.task_type))
+          const title = group.tasks.length > 1
+            ? `${group.title || '清洁任务'}安排已更新`
+            : `${cleaningTaskLabel(firstTask.task_type)}安排已更新`
+          try {
+            const notificationResult = await emitNotificationEvent(
+              {
+                type: 'CLEANING_TASK_UPDATED',
+                entity: 'cleaning_task',
+                entityId: String(firstTask.id),
+                propertyId: firstTask.property_id ? String(firstTask.property_id) : undefined,
+                updatedAt: String(firstTask.updated_at || '').trim() || new Date().toISOString(),
+                changes,
+                title,
+                body: taskChangeBody(changes),
+                data: {
+                  entity: 'cleaning_task',
+                  entityId: String(firstTask.id),
+                  action: 'open_task',
+                  kind: 'cleaning_task_updated',
+                  group_key: group.key,
+                  group_title: group.title || null,
+                  task_id: String(firstTask.id),
+                  task_ids: taskIds,
+                  task_type: firstTask.task_type || null,
+                  task_types: taskTypes,
+                  task_date: firstTask.task_date ? String(firstTask.task_date).slice(0, 10) : null,
+                  assignee_id: firstTask.assignee_id || null,
+                  cleaner_id: firstTask.cleaner_id || null,
+                  inspector_id: firstTask.inspector_id || null,
+                  status: firstTask.status,
+                },
+                priority: group.priority,
+                actorUserId: actorId || null,
+                excludeActor: false,
+                recipientUserIds: recipients,
+              },
+              { operationId: uuid(), pgClient: client },
+            )
+            if (Number((notificationResult as any)?.sent || 0) > 0) {
+              pushNotificationEvents += 1
+              pushNotificationRecipients += Number((notificationResult as any).sent || 0)
+            }
+          } catch (error: any) {
+            console.error(`[task-center] cleaning_assignment_notification_failed group_key=${group.key} task_ids=${taskIds.join(',')} message=${String(error?.message || error || '')}`)
+          }
         }
         for (const task of changedWorkTasks) {
           const diff = workDiffById.get(String(task.id))
