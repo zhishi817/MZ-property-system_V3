@@ -4,8 +4,8 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260704-010 — 网页端清洁任务信息更新 HTTP 400 修复
 
-- **Status:** ready
-- **Updated:** 2026-07-04 13:53 AEST
+- **Status:** committed
+- **Updated:** 2026-07-04 14:11 AEST
 - **Request:** “网页端为什么修改密码也报错 HTTP 400”，随后补充“所有信息更新都报错400”。
 - **Outcome:** `/cleaning` 编辑抽屉更新退房/入住密码、时间、入住天数、客人需求等信息时，不再因为当前清洁任务处于 `ready`、`cleaned`、`restock_pending`、`to_inspect` 等运行态而被 `/cleaning/tasks/:id` schema 拦截为 HTTP 400。
 
@@ -52,12 +52,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Runtime risk: backend will now accept legacy/display-like清洁状态 strings if a caller explicitly sends them. The web UI still filters these out for normal information edits, so this mainly preserves compatibility with existing task states.
 - Rollback: remove `statusForCleaningMutation()` usage and restore the narrower backend status enum.
 - Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
-- Git state: uncommitted local changes in `frontend/src/app/cleaning/page.tsx`, `backend/src/modules/cleaning.ts`, `backend/dist/modules/cleaning.js`, and `docs/change-release-ledger.md`; worktree also contains unrelated pre-existing finance/inventory/task-center/mobile changes not owned by this unit.
+- Git state: committed locally in root `Dev` commit `956df41`; push to `origin/Dev` failed because GitHub HTTPS credentials are unavailable in this environment. Worktree still contains unrelated finance/inventory/mzapp/mobile changes not owned by this unit.
 
 ## CRL-20260704-009 — 房源代付模板重复创建拦截与删除清理修复
 
-- **Status:** ready
-- **Updated:** 2026-07-04 13:51 AEST
+- **Status:** committed
+- **Updated:** 2026-07-04 14:11 AEST
 - **Request:** “不可以直接操错生产环境的数据。你先修复，数据清理我人工处理”：只修复系统逻辑，不操作生产数据。
 - **Outcome:** 房源代付模板创建/更新时会拦截同房源、同类别、同供应商和同付款身份的 active 重复模板；删除房源代付模板时会清掉该模板全部未付款固定支出快照，不再因为已经跨月而留下过去月份未付款孤儿快照。已付款历史快照继续保留。
 
@@ -103,12 +103,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Behavior risk: 如果业务确实需要同一房源、同类别、同供应商、同付款身份并行存在两条 active 代付模板，新逻辑会阻止创建；这种场景应先补充可区分的账单账号/付款参考或编辑原模板。
 - Rollback: revert `backend/src/modules/recurring.ts` duplicate guard and deletion-snapshot filtering changes, and remove `backend/scripts/tests/test_property_payable_duplicate_guard.ts`.
 - Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded. Production data was not modified.
-- Git state: uncommitted local changes in `backend/src/modules/recurring.ts`, `backend/scripts/tests/test_property_payable_duplicate_guard.ts`, and `docs/change-release-ledger.md`; worktree also contains unrelated pre-existing backend/frontend changes not owned by this unit.
+- Git state: committed locally in root `Dev` commit `956df41`; push to `origin/Dev` failed because GitHub HTTPS credentials are unavailable in this environment. Worktree still contains unrelated backend/frontend changes not owned by this unit.
 
 ## CRL-20260704-008 — 移动端管理视图检查照片可见性修复
 
-- **Status:** ready
-- **Updated:** 2026-07-04 13:50 AEST
+- **Status:** committed
+- **Updated:** 2026-07-04 14:11 AEST
 - **Request:** “现在所有任务 admin和线下经理都没办法看到检查人员拍的照片。查一下什么问题”
 - **Outcome:** 修复移动端管理详情里 admin / offline_manager 读取检查员照片和检查补拍凭证时被误判为无权限的问题；管理角色现在可以只读查看检查媒体，检查员/参与人提交权限没有放宽。
 
@@ -151,12 +151,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Behavior risk: customer_service also has `canViewAll(user)` in this module, so it will get the same read-only inspection-media visibility as other manager roles; this matches existing manager view-all behavior but should be called out if business wants only admin/offline_manager.
 - Rollback: revert the `canViewMzappInspectionMedia()` helper, switch the two GET routes back to `canSubmitMzappInspection()`, and remove `test_mzapp_media_visibility.ts`.
 - Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
-- Git state: uncommitted local changes in `backend/src/modules/mzapp.ts`, `backend/scripts/tests/test_mzapp_media_visibility.ts`, and `docs/change-release-ledger.md`; worktree also contains unrelated pre-existing finance/inventory/task-center/mobile changes not owned by this unit.
+- Git state: committed locally in root `Dev` commit `956df41`; push to `origin/Dev` failed because GitHub HTTPS credentials are unavailable in this environment. Worktree still contains unrelated finance/inventory/task-center/mobile changes not owned by this unit.
 
 ## CRL-20260704-007 — 移动端待检查任务按钮恢复
 
-- **Status:** ready
-- **Updated:** 2026-07-04 13:42 AEST
+- **Status:** committed
+- **Updated:** 2026-07-04 14:11 AEST
 - **Request:** “3915/4408 清洁做完了，检查人员还没去呢，但是安卓检查人员的移动端就显示任务已完成，检查和补充就无法点击了。怎么回事；给我个修复方案；修改吧。”
 - **Outcome:** 后端 `available_actions` 不再把 `to_inspect` / `restock_pending` / `cleaned` 这类“清洁已提交、待检查”状态当作终态完成；检查人员在待检查任务中会拿到可点击的“检查与补充”和“标记已完成”动作。真正终态如 `done` / `completed` / `ready` / `keys_hung` / `inspected` 仍返回 `task_completed` 禁用原因。
 
@@ -201,12 +201,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Behavior risk: 清洁已提交但未到终态的任务会继续显示相关记录/检查动作可用；这些动作仍受参与人和基础权限控制。
 - Rollback: revert the `isTerminalStatus()` narrowing and remove the `to_inspect` test block.
 - Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
-- Git state: uncommitted local changes in `backend/src/lib/workTaskActions.ts`, `backend/scripts/tests/test_work_task_actions.ts`, and `docs/change-release-ledger.md`; worktree also contains unrelated pre-existing finance/inventory/task-center/mzapp changes not owned by this unit.
+- Git state: committed locally in root `Dev` commit `956df41`; push to `origin/Dev` failed because GitHub HTTPS credentials are unavailable in this environment. Worktree still contains unrelated finance/inventory/task-center/mzapp changes not owned by this unit.
 
 ## CRL-20260704-006 — 任务中心纯入住执行人选择修复
 
-- **Status:** ready
-- **Updated:** 2026-07-04 13:16 AEST
+- **Status:** committed
+- **Updated:** 2026-07-04 14:11 AEST
 - **Request:** “修复一下”：修复任务中心详情弹窗里纯入住任务无法安排执行人的问题。
 - **Outcome:** 任务中心详情里所有纯入住任务，包括“检查后挂钥匙”和“仅改密码”，都按“入住现场执行”分配执行人；下拉显示“执行人”、可选择所有 active staff，并保存到 `cleaning_tasks.assignee_id`。纯入住不再误走检查人员字段和 `assign_inspector` 权限门。
 
@@ -250,12 +250,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Behavior risk: historical pure入住 rows that still have `inspector_id` or `cleaner_id` are displayed as execution assignment fallback, and selecting a new执行人 clears those old non-applicable fields for that row.
 - Rollback: revert the `frontend/src/app/task-center/page.tsx` changes in this unit; backend pure入住 capability remains unchanged.
 - Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
-- Git state: uncommitted local changes in `frontend/src/app/task-center/page.tsx` and `docs/change-release-ledger.md`; worktree also contains unrelated pre-existing finance/inventory/backend changes not owned by this unit.
+- Git state: committed locally in root `Dev` commit `956df41`; push to `origin/Dev` failed because GitHub HTTPS credentials are unavailable in this environment. Worktree still contains unrelated finance/inventory/backend changes not owned by this unit.
 
 ## CRL-20260704-005 — 移动端线下任务参与清洁/检查执行排序
 
-- **Status:** ready
-- **Updated:** 2026-07-04 12:49 AEST
+- **Status:** committed
+- **Updated:** 2026-07-04 14:11 AEST
 - **Request:** “用户被分配到的线下任务也可以参与清洁或者检查任务的排序”，并按确认后的方案执行：同一用户当天的清洁/检查/线下任务使用一套执行顺序，线下任务不新增第二套排序系统。
 - **Outcome:** 移动端保存排序时会把清洁任务、检查任务和已分配给用户的线下 `work_tasks` 按用户点选的完整顺序一次提交；后端在同一事务内写入 `cleaning_tasks.sort_index_cleaner`、`cleaning_tasks.sort_index_inspector` 和 `work_tasks.sort_index`，避免线下任务和清洁/检查任务各自从 1 开始导致刷新后相对顺序漂移。日终交接卡现在也会把可排序线下任务视为当天执行任务，避免“执行顺序 4”的线下任务被插到日终交接下面。
 
@@ -305,7 +305,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Compatibility: 新客户端依赖新接口；旧客户端仍可使用旧排序接口，但旧客户端仍有跨类型序号压缩限制。
 - Rollback: revert `/work-tasks/mixed-reorder`, `reorderMixedWorkTasks()`, and `TasksScreen` mixed-save changes;旧客户端排序路径仍可工作。
 - Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
-- Git state: uncommitted local changes in `backend/src/modules/mzapp.ts`, `mz-cleaning-app-frontend/src/lib/api.ts`, `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.tsx`, `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.test.tsx`, and `docs/change-release-ledger.md`; root worktree also contains unrelated finance/inventory changes, and nested mobile app contains unrelated `app.json` / `eas.json` / package version changes.
+- Git state: committed locally in root `Dev` commit `956df41` and nested mobile `Dev` commit `3f3fb09`; push to both `origin/Dev` remotes failed because GitHub HTTPS credentials are unavailable in this environment. Root worktree still contains unrelated finance/inventory/mzapp changes, and nested mobile app still contains unrelated `app.json` / `eas.json` / package version changes.
 
 ## CRL-20260704-004 — 清洁端普通同日 turnover 入住重复卡修复
 
