@@ -2,6 +2,58 @@
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
+## CRL-20260708-003 — 任务中心移动端任务卡响应式优化
+
+- **Status:** committed
+- **Updated:** 2026-07-08 23:39 AEST
+- **Request:** “任务中心页面需要自适应各个设备，这样显示不太行，需要优化”
+- **Outcome:** 任务中心卡片网格在窄屏不再强制两列挤压；手机宽度下任务卡改为单列展示，并允许时间、状态、业务标签和顺序标签换行，避免截图中标签只露出一半、房号和人员名被过度压缩的问题。
+
+### Implementation
+
+- Previous behavior:
+  - 720px 以下仍使用两列任务卡网格，单张卡片可用宽度过窄。
+  - 卡片内时间行、标签行和顺序行固定高度并横向滚动/隐藏，手机截图中多个标签被截断。
+- New behavior:
+  - 1100px 以下任务卡网格按 `230px` 最小卡片宽度自动排布，720px 以下强制单列。
+  - 任务卡设置 `min-width: 0`、`width: 100%` 和 `box-sizing: border-box`，避免网格内容撑出容器。
+  - 手机宽度下压缩卡片内边距、拖拽柄和色条宽度，并让时间/标签/顺序行自动换行。
+- Key decisions:
+  - 只改响应式样式，不改任务中心数据、排序、保存、状态或标签生成逻辑。
+  - 桌面端保留原有紧凑多列布局；移动端优先保证完整可读。
+
+### Files / Areas
+
+- `frontend/src/app/cleaning/cleaningSchedule.module.scss` — modified: 调整任务中心卡片网格断点、手机端单列布局和卡片内部标签换行。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: shares the cleaning/task-center shared SCSS file with earlier task-center UI work, but this unit only changes responsive styling.
+
+### Validation
+
+- `git diff --check -- frontend/src/app/cleaning/cleaningSchedule.module.scss` — passed.
+- `npm run lint -- --file src/app/task-center/page.tsx` in `frontend` — passed: no ESLint warnings or errors.
+- `./node_modules/.bin/tsc --noEmit --pretty false` in `frontend` — passed.
+- `./node_modules/.bin/vitest run src/app/task-center/taskCenterDisplay.test.ts --coverage=false` in `frontend` — passed: 1 file, 2 tests.
+- `npm run build` in `frontend` — passed; build emitted existing project ESLint warnings, Browserslist staleness notice, and existing Recharts static-generation width/height warnings.
+- Local browser check at `http://127.0.0.1:3000/task-center` with 390px viewport — partially verified: page loads with no horizontal document overflow, but the local session is unauthenticated and shows the login form, so real task-card visual verification was not completed.
+- `git commit -m "Optimize task center mobile layout"` — passed locally; commit amended after ledger status update.
+- `git push origin Dev` — failed: local GitHub HTTPS authentication is unavailable in this environment (`could not read Username`); no remote push completed.
+
+### Risks / Release Notes
+
+- Runtime risk: phone users will see one task card per row, increasing vertical scroll length but preserving readability.
+- Visual risk: very long individual labels may wrap to additional lines on phone width; this is intentional to avoid clipped content.
+- Rollback: restore the previous fixed 3-column/2-column responsive grid and fixed-height compact tag/order rows in `frontend/src/app/cleaning/cleaningSchedule.module.scss`.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: committed locally; push to `origin/Dev` blocked by GitHub authentication.
+
 ## CRL-20260708-001 — 移动端 API 禁用 304 缓存
 
 - **Status:** ready

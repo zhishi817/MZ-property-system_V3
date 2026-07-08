@@ -1910,6 +1910,9 @@
 
 .taskCenterCompactTask {
   min-height: 126px;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
   padding: 8px 10px;
   gap: 8px;
   border-radius: 12px;
@@ -2541,7 +2544,7 @@
   }
 
   .taskCenterSubrowGrid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
   }
 
   .taskCenterSubrow {
@@ -2551,7 +2554,8 @@
 
 @media (max-width: 720px) {
   .taskCenterSubrowGrid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
   }
 
   .taskDetailHeroTop {
@@ -2578,8 +2582,73 @@
   .taskCenterToolbar,
   .taskCenterCompactHint,
   .taskCenterBoardWrapNew {
-    padding-left: 10px;
-    padding-right: 10px;
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  .taskCenterBoardRowBodyCompact {
+    padding: 8px;
+  }
+
+  .taskCenterLineOnly {
+    padding: 6px;
+  }
+
+  .taskCenterCompactTask {
+    min-height: 0;
+    padding: 8px;
+    gap: 7px;
+  }
+
+  .taskCenterCompactGrip {
+    width: 10px;
+    font-size: 11px;
+  }
+
+  .taskCenterCompactTask .taskStripe {
+    width: 7px;
+  }
+
+  .taskCenterCompactTitle {
+    height: auto;
+    min-height: 32px;
+    padding: 6px 9px;
+    line-height: 1.15;
+  }
+
+  .taskCenterCompactTimeLine,
+  .taskCenterCompactTagLine {
+    height: auto;
+    min-height: 28px;
+    overflow: visible;
+    flex-wrap: wrap;
+    white-space: normal;
+    gap: 6px;
+  }
+
+  .taskCenterCompactMetaGroup {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .taskCenterCompactTimeTag,
+  .taskCenterCompactTag {
+    flex: 0 1 auto;
+    max-width: 100%;
+  }
+
+  .taskCenterCompactOrderLine {
+    height: auto;
+    min-height: 34px;
+    flex-wrap: wrap;
+    overflow: visible;
+    padding: 3px;
+    gap: 6px;
+  }
+
+  .taskCenterCompactOrderTag {
+    flex: 0 1 auto;
+    max-width: 100%;
   }
 
   .taskCenterStaffRowBody {
