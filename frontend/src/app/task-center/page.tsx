@@ -111,6 +111,9 @@ type TaskCenterTask = {
   assignee_id: string | null
   cleaner_id: string | null
   inspector_id: string | null
+  sort_index?: number | null
+  sort_index_cleaner?: number | null
+  sort_index_inspector?: number | null
   order_id?: string | null
   order_code?: string | null
   checkin_sync_status?: 'pending' | 'synced' | null
@@ -517,12 +520,34 @@ function supersededCleaningTaskIds(task: Pick<TaskCenterTask, 'task_source' | 's
   ])
 }
 
-function checkoutTimeForDisplay(task: Pick<TaskCenterTask, 'turnover_display' | 'summary_checkout_time'>) {
-  return normalizedSummaryTime(turnoverDisplayOf(task)?.checkout_time || task.summary_checkout_time)
+function extractSummaryTimeBeforeLabel(detail: string | null | undefined, label: '退房' | '入住') {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = String(detail || '').match(new RegExp(`(\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?)\\s*${escaped}`, 'i'))
+  return match ? normalizedSummaryTime(match[1]) : ''
 }
 
-function checkinTimeForDisplay(task: Pick<TaskCenterTask, 'turnover_display' | 'summary_checkin_time'>) {
-  return normalizedSummaryTime(turnoverDisplayOf(task)?.checkin_time || task.summary_checkin_time)
+function displayTimeWithDetailFallback(primary: string | null | undefined, detailTime: string, defaultValue: string) {
+  const value = normalizedSummaryTime(primary)
+  if (detailTime && (!value || (isDefaultSummaryTime(value, defaultValue) && !isDefaultSummaryTime(detailTime, defaultValue)))) return detailTime
+  return value
+}
+
+function checkoutTimeForDisplay(task: Pick<TaskCenterTask, 'turnover_display' | 'summary_checkout_time' | 'detail'>) {
+  const display = turnoverDisplayOf(task)
+  return displayTimeWithDetailFallback(
+    display?.checkout_time || task.summary_checkout_time,
+    extractSummaryTimeBeforeLabel(task.detail, '退房'),
+    DEFAULT_SUMMARY_CHECKOUT_TIME,
+  )
+}
+
+function checkinTimeForDisplay(task: Pick<TaskCenterTask, 'turnover_display' | 'summary_checkin_time' | 'detail'>) {
+  const display = turnoverDisplayOf(task)
+  return displayTimeWithDetailFallback(
+    display?.checkin_time || task.summary_checkin_time,
+    extractSummaryTimeBeforeLabel(task.detail, '入住'),
+    DEFAULT_SUMMARY_CHECKIN_TIME,
+  )
 }
 
 function guestRequestForDisplay(task: Pick<TaskCenterTask, 'turnover_display' | 'guest_request_summary' | 'guest_special_request'>) {
@@ -530,29 +555,29 @@ function guestRequestForDisplay(task: Pick<TaskCenterTask, 'turnover_display' | 
   return String(display?.guest_request_summary || task.guest_request_summary || task.guest_special_request || '').trim()
 }
 
-function isLateCheckoutDisplay(task: Pick<TaskCenterTask, 'turnover_display' | 'is_late_checkout' | 'summary_checkout_time'>) {
+function isLateCheckoutDisplay(task: Pick<TaskCenterTask, 'turnover_display' | 'is_late_checkout' | 'summary_checkout_time' | 'detail'>) {
   const display = turnoverDisplayOf(task)
   if (typeof display?.is_late_checkout === 'boolean') return display.is_late_checkout
   if (typeof task.is_late_checkout === 'boolean') return task.is_late_checkout
-  const checkoutMin = parseSummaryTime(task.summary_checkout_time)
+  const checkoutMin = parseSummaryTime(checkoutTimeForDisplay(task))
   const defaultMin = parseSummaryTime(DEFAULT_SUMMARY_CHECKOUT_TIME)
   return checkoutMin != null && defaultMin != null && checkoutMin > defaultMin
 }
 
-function isEarlyCheckinDisplay(task: Pick<TaskCenterTask, 'turnover_display' | 'is_early_checkin' | 'summary_checkin_time'>) {
+function isEarlyCheckinDisplay(task: Pick<TaskCenterTask, 'turnover_display' | 'is_early_checkin' | 'summary_checkin_time' | 'detail'>) {
   const display = turnoverDisplayOf(task)
   if (typeof display?.is_early_checkin === 'boolean') return display.is_early_checkin
   if (typeof task.is_early_checkin === 'boolean') return task.is_early_checkin
-  const checkinMin = parseSummaryTime(task.summary_checkin_time)
+  const checkinMin = parseSummaryTime(checkinTimeForDisplay(task))
   const defaultMin = parseSummaryTime(DEFAULT_SUMMARY_CHECKIN_TIME)
   return checkinMin != null && defaultMin != null && checkinMin < defaultMin
 }
 
-function isLateCheckinDisplay(task: Pick<TaskCenterTask, 'turnover_display' | 'is_late_checkin' | 'summary_checkin_time'>) {
+function isLateCheckinDisplay(task: Pick<TaskCenterTask, 'turnover_display' | 'is_late_checkin' | 'summary_checkin_time' | 'detail'>) {
   const display = turnoverDisplayOf(task)
   if (typeof display?.is_late_checkin === 'boolean') return display.is_late_checkin
   if (typeof task.is_late_checkin === 'boolean') return task.is_late_checkin
-  const checkinMin = parseSummaryTime(task.summary_checkin_time)
+  const checkinMin = parseSummaryTime(checkinTimeForDisplay(task))
   const defaultMin = parseSummaryTime(DEFAULT_SUMMARY_CHECKIN_TIME)
   return checkinMin != null && defaultMin != null && checkinMin > defaultMin
 }
@@ -564,29 +589,75 @@ function isDefaultSummaryTime(raw: string | null | undefined, defaultValue: stri
   return normalizedSummaryTime(raw).toLowerCase() === defaultValue.toLowerCase()
 }
 
+function timingLabelWithTime(label: string, time: string) {
+  return [label, time].filter(Boolean).join(' ')
+}
+
 function specialTimingTags(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view' | 'summary_checkout_time' | 'summary_checkin_time' | 'turnover_display' | 'is_late_checkout' | 'is_early_checkin' | 'is_late_checkin'>) {
   if (task.task_source !== 'cleaning') return [] as Array<{ key: string; label: string; time: string; tone: TaskSemanticTone }>
   const timing = cleaningTimingVisibility(task)
   const tags: Array<{ key: string; label: string; time: string; tone: TaskSemanticTone }> = []
   const checkoutTime = checkoutTimeForDisplay(task)
   const checkinTime = checkinTimeForDisplay(task)
-  if (timing.showCheckout && checkoutTime && !isDefaultSummaryTime(checkoutTime, DEFAULT_SUMMARY_CHECKOUT_TIME)) {
+  const checkoutIsSpecial = !!(timing.showCheckout && checkoutTime && !isDefaultSummaryTime(checkoutTime, DEFAULT_SUMMARY_CHECKOUT_TIME))
+  const checkinIsSpecial = !!(timing.showCheckin && checkinTime && !isDefaultSummaryTime(checkinTime, DEFAULT_SUMMARY_CHECKIN_TIME))
+  if (timing.showCheckout) {
     let label = '退房'
-    if (isLateCheckoutDisplay(task)) label = '晚退房'
-    else {
+    if (checkoutIsSpecial && isLateCheckoutDisplay(task)) label = '晚退房'
+    else if (checkoutIsSpecial) {
       const checkoutMin = parseSummaryTime(checkoutTime)
       const defaultMin = parseSummaryTime(DEFAULT_SUMMARY_CHECKOUT_TIME)
       if (checkoutMin != null && defaultMin != null && checkoutMin < defaultMin) label = '早退房'
     }
-    tags.push({ key: 'checkout', label, time: checkoutTime, tone: taskTimingTone(label) })
+    tags.push({
+      key: 'checkout',
+      label: checkoutIsSpecial ? timingLabelWithTime(label, checkoutTime) : '退房',
+      time: checkoutTime,
+      tone: taskTimingTone(label),
+    })
   }
-  if (timing.showCheckin && checkinTime && !isDefaultSummaryTime(checkinTime, DEFAULT_SUMMARY_CHECKIN_TIME)) {
+  if (timing.showCheckin) {
     let label = '入住'
-    if (isEarlyCheckinDisplay(task)) label = '早入住'
-    else if (isLateCheckinDisplay(task)) label = '晚入住'
-    tags.push({ key: 'checkin', label, time: checkinTime, tone: taskTimingTone(label) })
+    if (checkinIsSpecial && isEarlyCheckinDisplay(task)) label = '早入住'
+    else if (checkinIsSpecial && isLateCheckinDisplay(task)) label = '晚入住'
+    tags.push({
+      key: 'checkin',
+      label: checkinIsSpecial ? timingLabelWithTime(label, checkinTime) : '入住',
+      time: checkinTime,
+      tone: taskTimingTone(label),
+    })
   }
   return tags
+}
+
+function positiveSortIndex(value: unknown) {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null
+}
+
+function taskOrderTags(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view' | 'sort_index' | 'sort_index_cleaner' | 'sort_index_inspector'>) {
+  const executionOrder = positiveSortIndex(task.sort_index)
+  if (task.task_source === 'work') {
+    return executionOrder == null ? [] : [{ key: 'execution', label: `执行顺序 ${executionOrder}`, tone: 'info' as const }]
+  }
+  if (task.task_source !== 'cleaning') return [] as Array<{ key: string; label: string; tone: TaskSemanticTone }>
+  const cleanerOrder = positiveSortIndex(task.sort_index_cleaner)
+  const inspectorOrder = positiveSortIndex(task.sort_index_inspector)
+  if (isCheckinOnlyCleaningTask(task)) {
+    const checkinOrder = executionOrder ?? inspectorOrder ?? cleanerOrder
+    return checkinOrder == null ? [] : [{ key: 'execution', label: `执行顺序 ${checkinOrder}`, tone: 'info' as const }]
+  }
+  const tags: Array<{ key: string; label: string; tone: TaskSemanticTone }> = []
+  if (cleanerOrder != null) tags.push({ key: 'cleaner', label: `清洁顺序 ${cleanerOrder}`, tone: 'normal' })
+  if (inspectorOrder != null) tags.push({ key: 'inspector', label: `检查顺序 ${inspectorOrder}`, tone: 'info' })
+  return tags
+}
+
+function taskNightsTag(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view' | 'nights'>) {
+  if (!shouldShowNights(task)) return null
+  const nights = Number(task.nights)
+  if (!Number.isFinite(nights) || nights <= 0) return null
+  return { label: `住${Math.trunc(nights)}晚`, tone: 'neutral' as const }
 }
 
 function shouldShowNights(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view'>) {
@@ -1830,6 +1901,7 @@ export default function TaskCenterPage() {
     const textColor = textColorForTask(task)
     const dragDisabled = filteringActive || boardSaving
     const timingTags = specialTimingTags(task)
+    const orderTags = taskOrderTags(task)
     const syncTag = canSeeCheckinSyncTag ? checkinSyncTag(task) : null
     const statusMeta = displayStatusMetaForTask(task)
     const displayBadges = displayBadgesForTask(task)
@@ -1843,9 +1915,15 @@ export default function TaskCenterPage() {
       ? { label: task.task_kind || '线下任务', tone: 'special' as const }
       : null
     const detailText = task.skip_reason || (task.task_source === 'cleaning' ? cleaningSecondarySummary(task) : (task.detail || task.summary || ''))
+    const guestRequestText = task.task_source === 'cleaning' ? guestRequestForDisplay(task) : ''
+    const compactDetailText = task.task_source === 'cleaning'
+      ? (task.skip_reason || (guestRequestText ? `客人需求：${guestRequestText}` : ''))
+      : detailText
     const assignedStaffId = preferredStaffIdForTask(task)
     const assignedStaffName = assignedStaffId ? String(staffById.get(assignedStaffId)?.name || '').trim() : ''
     const supersededCount = supersededCleaningTaskIds(task).length
+    const hasOrderTags = orderTags.length > 0
+    const nightsTag = taskNightsTag(task)
     return (
       <div
         key={task.item_key}
@@ -1869,7 +1947,28 @@ export default function TaskCenterPage() {
         <span className={`${styles.taskGrip} ${styles.taskCenterCompactGrip}`}><HolderOutlined /></span>
         <div className={styles.taskStripe} style={{ backgroundColor: stripeColorForTask(task) }} />
         <div className={styles.taskMain}>
-          <div className={styles.taskCenterCompactMetaBar}>
+          <div className={styles.taskCenterCompactHero}>
+            <div className={styles.taskCenterCompactTitle} style={textColor ? { color: textColor } : undefined}>
+              <span className={styles.taskCenterCompactTitleText}>{task.title}</span>
+              {assignedStaffName ? <span className={styles.taskCenterCompactTitleMeta}>{assignedStaffName}</span> : null}
+            </div>
+            {timingTags.length || nightsTag ? (
+              <div className={styles.taskCenterCompactTimeLine}>
+                {timingTags.map((item) => (
+                  <span
+                    key={`${task.item_key}:time:${item.key}`}
+                    className={`${styles.taskCenterCompactTimeTag} ${semanticToneClass(item.tone)}`}
+                  >
+                    {item.label}
+                  </span>
+                ))}
+                {nightsTag ? (
+                  <span className={`${styles.taskCenterCompactTimeTag} ${semanticToneClass(nightsTag.tone)}`}>{nightsTag.label}</span>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+          <div className={styles.taskCenterCompactTagLine}>
             <span className={`${styles.statusChip} ${semanticToneClass(statusMeta.tone)} ${styles.taskCenterCompactStatus}`}>{statusMeta.label}</span>
             {displayBadges.length ? (
               <span className={styles.taskCenterCompactMetaGroup}>
@@ -1891,14 +1990,6 @@ export default function TaskCenterPage() {
                 {syncTag.label}
               </span>
             ) : null}
-            {timingTags.map((item) => (
-              <span
-                key={`${task.item_key}:${item.key}`}
-                className={`${styles.taskCenterCompactTag} ${semanticToneClass(item.tone)}`}
-              >
-                {item.label}
-              </span>
-            ))}
             {task.temporarily_skipped ? (
               <span className={`${styles.taskCenterCompactTag} ${semanticToneClass('pending')}`}>暂不安排</span>
             ) : null}
@@ -1906,13 +1997,23 @@ export default function TaskCenterPage() {
               <span className={`${styles.taskCenterCompactTag} ${semanticToneClass('info')}`}>已合并{supersededCount}条手动补位</span>
             ) : null}
           </div>
-          <div className={styles.taskCenterCompactTitle} style={textColor ? { color: textColor } : undefined}>
-            <span className={styles.taskCenterCompactTitleText}>{task.title}</span>
-            {assignedStaffName ? <span className={styles.taskCenterCompactTitleMeta}>{assignedStaffName}</span> : null}
-          </div>
-          <div className={styles.taskCenterCompactDetail} style={textColor ? { color: textColor } : undefined}>
-            {detailText || '\u00A0'}
-          </div>
+          {hasOrderTags ? (
+            <div className={styles.taskCenterCompactOrderLine}>
+              {orderTags.map((item) => (
+                <span
+                  key={`${task.item_key}:order:${item.key}`}
+                  className={`${styles.taskCenterCompactOrderTag} ${semanticToneClass(item.tone)}`}
+                >
+                  {item.label}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {compactDetailText ? (
+            <div className={styles.taskCenterCompactDetail} style={textColor ? { color: textColor } : undefined}>
+              {compactDetailText}
+            </div>
+          ) : null}
         </div>
         {dragOverKey === dragKey ? <div className={styles.taskCenterDropMarker} /> : null}
       </div>
@@ -2148,6 +2249,7 @@ export default function TaskCenterPage() {
     : null
   const detailStatusMeta = detailTask ? displayStatusMetaForTask(detailTask, detailDisplayStatus) : taskStatusMeta(detailDisplayStatus)
   const detailDisplayBadges = detailTask ? displayBadgesForTask(detailTask) : []
+  const detailOrderTags = detailTask ? taskOrderTags(detailTask) : []
   const detailEditGate = detailTask ? managementGateForTask(detailTask, 'edit_task') : { enabled: true, disabledReason: '' }
   const detailAssignCleanerGate = detailTask ? managementGateForTask(detailTask, 'assign_cleaner') : { enabled: true, disabledReason: '' }
   const detailAssignInspectorGate = detailTask ? managementGateForTask(detailTask, 'assign_inspector') : { enabled: true, disabledReason: '' }
@@ -2354,6 +2456,14 @@ export default function TaskCenterPage() {
                     {specialTimingTags(detailTask).map((item) => (
                       <span
                         key={`detail:${detailTask.item_key}:${item.key}`}
+                        className={`${styles.taskDetailChip} ${semanticToneClass(item.tone)}`}
+                      >
+                        {item.label}
+                      </span>
+                    ))}
+                    {detailOrderTags.map((item) => (
+                      <span
+                        key={`detail:${detailTask.item_key}:order:${item.key}`}
                         className={`${styles.taskDetailChip} ${semanticToneClass(item.tone)}`}
                       >
                         {item.label}

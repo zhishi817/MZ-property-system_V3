@@ -56,6 +56,9 @@ type BoardTask = {
   assignee_id: string | null
   cleaner_id: string | null
   inspector_id: string | null
+  sort_index?: number | null
+  sort_index_cleaner?: number | null
+  sort_index_inspector?: number | null
   order_id?: string | null
   order_code?: string | null
   checkin_sync_status?: 'pending' | 'synced' | null
@@ -158,6 +161,8 @@ type CleaningNotificationGroup = {
 const memoryTaskFlags = new Map<string, TaskFlag>()
 let cleaningInspectionScopeEnsured = false
 let cleaningInspectionScopeEnsuring: Promise<void> | null = null
+let cleaningSortColumnsEnsured = false
+let cleaningSortColumnsEnsuring: Promise<void> | null = null
 
 async function ensureCleaningInspectionScopeColumn() {
   if (!hasPg || !pgPool) return
@@ -176,6 +181,28 @@ async function ensureCleaningInspectionScopeColumn() {
       cleaningInspectionScopeEnsuring = null
     })
   return cleaningInspectionScopeEnsuring
+}
+
+async function ensureCleaningSortColumns() {
+  if (!hasPg || !pgPool) return
+  if (cleaningSortColumnsEnsured) return
+  if (cleaningSortColumnsEnsuring) return cleaningSortColumnsEnsuring
+  cleaningSortColumnsEnsuring = pgPool.query(`
+    ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS sort_index_cleaner integer;
+    ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS sort_index_inspector integer;
+  `)
+    .then(() => {
+      cleaningSortColumnsEnsured = true
+    })
+    .catch((error) => {
+      cleaningSortColumnsEnsured = false
+      cleaningSortColumnsEnsuring = null
+      throw error
+    })
+    .finally(() => {
+      cleaningSortColumnsEnsuring = null
+    })
+  return cleaningSortColumnsEnsuring
 }
 
 function normalizeInspectionScope(value: any): 'inspect_and_hang' | 'password_only' | null {
@@ -564,6 +591,7 @@ function mapWorkTaskRowToBoardTask(row: any, date: string): BoardTask {
     assignee_id: row.assignee_id ? String(row.assignee_id) : null,
     cleaner_id: null,
     inspector_id: null,
+    sort_index: row.sort_index == null ? null : Number(row.sort_index),
   }
 }
 
@@ -602,9 +630,11 @@ async function ensureWorkTasksTable() {
     created_by text,
     updated_by text,
     created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    sort_index integer
   );`)
   await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb;`)
+  await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS sort_index integer;`)
   await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_work_tasks_source ON work_tasks(source_type, source_id);`)
   await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day_assignee ON work_tasks(scheduled_date, assignee_id, status);`)
   await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_kind_day ON work_tasks(task_kind, scheduled_date);`)
@@ -912,6 +942,13 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
     const withOrder = xs.filter((x) => text(x.order_id))
     return withOrder.length ? withOrder : xs
   }
+  const minPositiveSortIndex = (xs: Array<number | null | undefined>) => {
+    const values = xs
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value > 0)
+    return values.length ? Math.min(...values) : null
+  }
+  const checkinExecutionSortIndex = (task: BoardTask) => minPositiveSortIndex([task.sort_index_inspector, task.sort_index_cleaner])
   for (const items of byProp.values()) {
     const deferreds = items.filter((x) => x.deferred_inspection_view === true)
     if (deferreds.length) {
@@ -949,6 +986,9 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
         assignee_id: assigneeId,
         cleaner_id: cleanerId,
         inspector_id: inspectorId,
+        sort_index: minPositiveSortIndex([...deferreds.map((x) => x.sort_index_inspector), ...deferreds.map((x) => x.sort_index_cleaner)]),
+        sort_index_cleaner: minPositiveSortIndex(deferreds.map((x) => x.sort_index_cleaner)),
+        sort_index_inspector: minPositiveSortIndex(deferreds.map((x) => x.sort_index_inspector)),
         checkin_sync_status: null,
         auto_sync_enabled: deferreds.every((x) => x.auto_sync_enabled !== false),
         has_key_photo: deferreds.some((x) => !!x.has_key_photo),
@@ -1022,6 +1062,9 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
         assignee_id: turnoverPlan.assigneeId,
         cleaner_id: turnoverPlan.cleanerId,
         inspector_id: turnoverPlan.inspectorId,
+        sort_index: null,
+        sort_index_cleaner: minPositiveSortIndex(all.map((x) => x.sort_index_cleaner)),
+        sort_index_inspector: minPositiveSortIndex(all.map((x) => x.sort_index_inspector)),
         checkin_sync_status: checkin.checkin_sync_status || null,
         order_id: null,
         order_id_checkout: turnoverDisplay.checkout_order_id,
@@ -1051,11 +1094,11 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
         can_configure_inspection: true,
       })
       const rest = items.filter((x) => lower(x.task_kind) !== 'checkin_clean' && lower(x.task_kind) !== 'checkout_clean')
-      out.push(...rest)
+      out.push(...rest.map((task) => lower(task.task_kind) === 'checkin_clean' ? { ...task, sort_index: checkinExecutionSortIndex(task) } : task))
     } else {
       if (stayovers.length) out.push(...stayovers)
       const rest = items.filter((x) => !stayovers.includes(x))
-      out.push(...rest)
+      out.push(...rest.map((task) => lower(task.task_kind) === 'checkin_clean' ? { ...task, sort_index: checkinExecutionSortIndex(task) } : task))
     }
   }
   out.sort((a, b) =>
@@ -1079,6 +1122,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
   if (hasPg && pgPool) {
     await ensureCleaningSchemaV2()
     await ensureCleaningInspectionScopeColumn()
+    await ensureCleaningSortColumns()
     const dateScopes = [`((COALESCE(t.task_date, t.date)::date) = ($1::date))`]
     if (includeOverdue) dateScopes.push(`((COALESCE(t.task_date, t.date)::date) < ($1::date))`)
     if (includeFuture) dateScopes.push(`((COALESCE(t.task_date, t.date)::date) > ($1::date))`)
@@ -1097,6 +1141,8 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
          t.assignee_id,
          t.cleaner_id,
          t.inspector_id,
+         t.sort_index_cleaner,
+         t.sort_index_inspector,
          t.inspection_mode,
          t.inspection_scope,
          t.inspection_due_date::text AS inspection_due_date,
@@ -1228,6 +1274,8 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
           assignee_id: row.assignee_id ? String(row.assignee_id) : null,
           cleaner_id: row.cleaner_id ? String(row.cleaner_id) : (row.assignee_id ? String(row.assignee_id) : null),
           inspector_id: row.inspector_id ? String(row.inspector_id) : null,
+          sort_index_cleaner: row.sort_index_cleaner == null ? null : Number(row.sort_index_cleaner),
+          sort_index_inspector: row.sort_index_inspector == null ? null : Number(row.sort_index_inspector),
           order_id: row.order_id ? String(row.order_id) : null,
           order_code: row.order_code ? String(row.order_code) : null,
           checkin_sync_status: rawType === 'checkin_clean' ? (row.order_id ? 'synced' : 'pending') : null,
@@ -1307,6 +1355,8 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
           assignee_id: row.assignee_id ? String(row.assignee_id) : null,
           cleaner_id: row.cleaner_id ? String(row.cleaner_id) : (row.assignee_id ? String(row.assignee_id) : null),
           inspector_id: row.inspector_id ? String(row.inspector_id) : null,
+          sort_index_cleaner: row.sort_index_cleaner == null ? null : Number(row.sort_index_cleaner),
+          sort_index_inspector: row.sort_index_inspector == null ? null : Number(row.sort_index_inspector),
           order_id: row.order_id ? String(row.order_id) : null,
           order_code: row.order_code ? String(row.order_code) : null,
           checkin_sync_status: rawType === 'checkin_clean' ? (row.order_id ? 'synced' : 'pending') : null,
@@ -1366,6 +1416,8 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
         assignee_id: row.assignee_id ? String(row.assignee_id) : null,
         cleaner_id: row.cleaner_id ? String(row.cleaner_id) : (row.assignee_id ? String(row.assignee_id) : null),
         inspector_id: row.inspector_id ? String(row.inspector_id) : null,
+        sort_index_cleaner: row.sort_index_cleaner == null ? null : Number(row.sort_index_cleaner),
+        sort_index_inspector: row.sort_index_inspector == null ? null : Number(row.sort_index_inspector),
         order_id: row.order_id ? String(row.order_id) : null,
         order_code: order?.confirmation_code ? String(order.confirmation_code) : null,
         checkin_sync_status: lower(row.task_type) === 'checkin_clean' ? (row.order_id ? 'synced' : 'pending') : null,
@@ -1438,26 +1490,28 @@ async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnsch
     .map((row: any) => {
       const display = workTaskDisplayText(row)
       return {
-      item_key: `work:${String(row.id)}`,
-      task_source: 'work' as const,
-      task_id: String(row.id),
-      task_ids: [String(row.id)],
-      task_kind: String(row.task_kind || ''),
-      source_type: row.source_type ? String(row.source_type) : null,
-      source_id: row.source_id ? String(row.source_id) : null,
-      property_id: row.property_id ? String(row.property_id) : null,
-      property_code: null,
-      property_region: null,
-      status: normStatus(row.status),
-      urgency: normUrgency(row.urgency),
-      title: display.title,
-      detail: display.detail,
-      summary: row.summary != null ? String(row.summary || '') : null,
-      task_date: dayOnly(row.scheduled_date) || date,
-      assignee_id: row.assignee_id ? String(row.assignee_id) : null,
-      cleaner_id: null,
-      inspector_id: null,
-    }})
+        item_key: `work:${String(row.id)}`,
+        task_source: 'work' as const,
+        task_id: String(row.id),
+        task_ids: [String(row.id)],
+        task_kind: String(row.task_kind || ''),
+        source_type: row.source_type ? String(row.source_type) : null,
+        source_id: row.source_id ? String(row.source_id) : null,
+        property_id: row.property_id ? String(row.property_id) : null,
+        property_code: null,
+        property_region: null,
+        status: normStatus(row.status),
+        urgency: normUrgency(row.urgency),
+        title: display.title,
+        detail: display.detail,
+        summary: row.summary != null ? String(row.summary || '') : null,
+        task_date: dayOnly(row.scheduled_date) || date,
+        assignee_id: row.assignee_id ? String(row.assignee_id) : null,
+        cleaner_id: null,
+        inspector_id: null,
+        sort_index: row.sort_index == null ? null : Number(row.sort_index),
+      }
+    })
   const offlineTasks = (((db as any).cleaningOfflineTasks || []) as any[])
     .filter((row: any) => {
       const status = normStatus(row.status)
@@ -1869,10 +1923,11 @@ async function buildTaskCenterDay(date: string, includeOverdue: boolean, include
       scheduled_date: task.task_date,
       start_time: null,
       end_time: null,
-      assignee_id: task.assignee_id,
-      status: normStatus(task.status),
-      urgency: normUrgency(task.urgency),
-      display_state: task.display_state,
+	      assignee_id: task.assignee_id,
+	      status: normStatus(task.status),
+	      urgency: normUrgency(task.urgency),
+	      sort_index: task.sort_index ?? null,
+	      display_state: task.display_state,
       management_actions: task.management_actions,
     })),
     property_followups: propertyFollowupsWithCapabilities,

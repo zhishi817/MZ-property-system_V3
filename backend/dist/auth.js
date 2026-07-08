@@ -7,6 +7,7 @@ exports.users = void 0;
 exports.clearPermissionCacheForRoles = clearPermissionCacheForRoles;
 exports.login = login;
 exports.auth = auth;
+exports.warmupAuthModule = warmupAuthModule;
 exports.listPermissionCodesForUser = listPermissionCodesForUser;
 exports.userHasAnyPerm = userHasAnyPerm;
 exports.requirePerm = requirePerm;
@@ -270,18 +271,41 @@ async function auth(req, res, next) {
     }
     next();
 }
+let userRolesEnsured = false;
+let userRolesEnsuring = null;
 async function ensureUserRolesTable() {
     if (!dbAdapter_1.hasPg)
         return;
+    if (userRolesEnsured)
+        return;
+    if (userRolesEnsuring)
+        return userRolesEnsuring;
     const { pgPool } = require('./dbAdapter');
     if (!pgPool)
         return;
-    await pgPool.query(`CREATE TABLE IF NOT EXISTS user_roles (
-      user_id text NOT NULL,
-      role_name text NOT NULL,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      PRIMARY KEY (user_id, role_name)
-    );`);
+    userRolesEnsuring = (async () => {
+        await pgPool.query(`CREATE TABLE IF NOT EXISTS user_roles (
+        user_id text NOT NULL,
+        role_name text NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (user_id, role_name)
+      );`);
+        userRolesEnsured = true;
+    })()
+        .catch((e) => {
+        userRolesEnsured = false;
+        userRolesEnsuring = null;
+        throw e;
+    })
+        .finally(() => {
+        userRolesEnsuring = null;
+    });
+    return userRolesEnsuring;
+}
+async function warmupAuthModule() {
+    await ensureUserRolesTable();
+    await Promise.all(['cleaner', 'cleaning_inspector', 'cleaner_inspector', 'customer_service', 'admin']
+        .map((roleName) => listPermissionCodesViaPg(roleName).catch(() => new Set())));
 }
 async function fetchUserRolesForUserId(userId, fallbackRole) {
     let roles = [];

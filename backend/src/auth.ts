@@ -241,18 +241,41 @@ export async function auth(req: Request, res: Response, next: NextFunction) {
   next()
 }
 
+let userRolesEnsured = false
+let userRolesEnsuring: Promise<void> | null = null
+
 async function ensureUserRolesTable() {
   if (!hasPg) return
+  if (userRolesEnsured) return
+  if (userRolesEnsuring) return userRolesEnsuring
   const { pgPool } = require('./dbAdapter')
   if (!pgPool) return
-  await pgPool.query(
-    `CREATE TABLE IF NOT EXISTS user_roles (
-      user_id text NOT NULL,
-      role_name text NOT NULL,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      PRIMARY KEY (user_id, role_name)
-    );`,
-  )
+  userRolesEnsuring = (async () => {
+    await pgPool.query(
+      `CREATE TABLE IF NOT EXISTS user_roles (
+        user_id text NOT NULL,
+        role_name text NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (user_id, role_name)
+      );`,
+    )
+    userRolesEnsured = true
+  })()
+    .catch((e) => {
+      userRolesEnsured = false
+      userRolesEnsuring = null
+      throw e
+    })
+    .finally(() => {
+      userRolesEnsuring = null
+    })
+  return userRolesEnsuring
+}
+
+export async function warmupAuthModule() {
+  await ensureUserRolesTable()
+  await Promise.all(['cleaner', 'cleaning_inspector', 'cleaner_inspector', 'customer_service', 'admin']
+    .map((roleName) => listPermissionCodesViaPg(roleName).catch(() => new Set<string>())))
 }
 
 async function fetchUserRolesForUserId(userId: string, fallbackRole: string) {

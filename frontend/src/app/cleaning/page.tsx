@@ -237,6 +237,8 @@ type OfflineCreateForm = {
   photo_urls: string[]
 }
 
+type CleaningSaveAction = 'edit' | 'manualCreate' | 'offlineCreate' | 'offlineEdit' | 'bulkEdit'
+
 function semanticToneClass(tone: TaskSemanticTone) {
   if (tone === 'special') return styles.semanticToneSpecial
   if (tone === 'pending') return styles.semanticTonePending
@@ -455,10 +457,10 @@ export default function CleaningPage() {
   const [manualCreateOpen, setManualCreateOpen] = useState(false)
   const [manualCreateForm, setManualCreateForm] = useState<ManualCreateForm | null>(null)
   const [offlineCreateOpen, setOfflineCreateOpen] = useState(false)
-  const [offlineCreateLoading, setOfflineCreateLoading] = useState(false)
   const [offlineCreateForm, setOfflineCreateForm] = useState<OfflineCreateForm | null>(null)
   const [offlineEditOpen, setOfflineEditOpen] = useState(false)
   const [offlineEditForm, setOfflineEditForm] = useState<OfflineTaskForm | null>(null)
+  const [savingAction, setSavingAction] = useState<CleaningSaveAction | null>(null)
   const [backfillOpen, setBackfillOpen] = useState(false)
   const [backfillFrom, setBackfillFrom] = useState<Dayjs>(() => dayjs().subtract(90, 'day'))
   const [backfillTo, setBackfillTo] = useState<Dayjs>(() => dayjs().add(365, 'day'))
@@ -479,6 +481,11 @@ export default function CleaningPage() {
 
   const monthLabel = useMemo(() => `${month.year()}年${String(month.month() + 1).padStart(2, '0')}月`, [month])
   const selectedDateStr = useMemo(() => selectedDate.format('YYYY-MM-DD'), [selectedDate])
+  const editSaving = savingAction === 'edit'
+  const manualCreateSaving = savingAction === 'manualCreate'
+  const offlineCreateSaving = savingAction === 'offlineCreate'
+  const offlineEditSaving = savingAction === 'offlineEdit'
+  const bulkEditSaving = savingAction === 'bulkEdit'
 
   const areaOptions = useMemo(() => {
     const uniq = Array.from(new Set((properties || []).map((p) => String(p.region || '').trim()).filter(Boolean)))
@@ -1162,108 +1169,114 @@ export default function CleaningPage() {
 
   const submitEdit = useCallback(async () => {
     if (!editForm) return
+    if (savingAction) return
+    setSavingAction('edit')
     const toNull = (s: string) => (String(s || '').trim() ? String(s).trim() : null)
-    const mutationStatus = statusForCleaningMutation(editForm.status)
-    const base: any = {
-      task_date: editForm.task_date.format('YYYY-MM-DD'),
-    }
-    if (mutationStatus) base.status = mutationStatus
-    const pureCheckinSiteExecution =
-      editForm.mode === 'default'
-      && editForm.checkin_ids.length > 0
-      && editForm.checkout_ids.length === 0
-    if (pureCheckinSiteExecution) {
-      base.assignee_id = editForm.cleaner_id
-      base.cleaner_id = null
-      base.inspector_id = null
-      base.inspection_scope = editForm.checkin_inspection_scope
-    } else {
-      if (editForm.ids.length === 1 || editForm.cleaner_id !== null) base.cleaner_id = editForm.cleaner_id
-      if (editForm.ids.length === 1 || editForm.inspector_id !== null) base.inspector_id = editForm.inspector_id
-    }
-    base.guest_special_request = editForm.guest_special_request || null
+    try {
+      const mutationStatus = statusForCleaningMutation(editForm.status)
+      const base: any = {
+        task_date: editForm.task_date.format('YYYY-MM-DD'),
+      }
+      if (mutationStatus) base.status = mutationStatus
+      const pureCheckinSiteExecution =
+        editForm.mode === 'default'
+        && editForm.checkin_ids.length > 0
+        && editForm.checkout_ids.length === 0
+      if (pureCheckinSiteExecution) {
+        base.assignee_id = editForm.cleaner_id
+        base.cleaner_id = null
+        base.inspector_id = null
+        base.inspection_scope = editForm.checkin_inspection_scope
+      } else {
+        if (editForm.ids.length === 1 || editForm.cleaner_id !== null) base.cleaner_id = editForm.cleaner_id
+        if (editForm.ids.length === 1 || editForm.inspector_id !== null) base.inspector_id = editForm.inspector_id
+      }
+      base.guest_special_request = editForm.guest_special_request || null
 
-    if (editForm.mode === 'stayover') {
+      if (editForm.mode === 'stayover') {
+        const patches = editForm.ids.map((id) => {
+          const p: any = { ...base, checkin_time: toNull(editForm.checkin_time) }
+          return patchJSON(`/cleaning/tasks/${encodeURIComponent(id)}`, p)
+        })
+        await Promise.all(patches)
+        setEditOpen(false)
+        setEditForm(null)
+        message.success('已更新')
+        loadRangeItems().catch(() => {})
+        return
+      }
+
+      const keyUpdates: Promise<any>[] = []
+      if (editForm.checkin_order_id) {
+        keyUpdates.push(postJSON('/mzapp/cleaning-tasks/order-keys-required', { order_id: editForm.checkin_order_id, keys_required: editForm.keys_required_checkin }))
+      } else if (editForm.checkin_manual_ids.length) {
+        for (const id of editForm.checkin_manual_ids) {
+          keyUpdates.push(patchJSON(`/cleaning/tasks/${encodeURIComponent(id)}`, { keys_required: editForm.keys_required_checkin }))
+        }
+      }
+      if (editForm.checkout_order_id) {
+        keyUpdates.push(postJSON('/mzapp/cleaning-tasks/order-keys-required', { order_id: editForm.checkout_order_id, keys_required: editForm.keys_required_checkout }))
+      } else if (editForm.checkout_manual_ids.length) {
+        for (const id of editForm.checkout_manual_ids) {
+          keyUpdates.push(patchJSON(`/cleaning/tasks/${encodeURIComponent(id)}`, { keys_required: editForm.keys_required_checkout }))
+        }
+      }
+
+      if (editForm.pending_add_checkout && editForm.property_id) {
+        const body: any = {
+          task_type: 'checkout_clean',
+          task_date: editForm.task_date.format('YYYY-MM-DD'),
+          property_id: editForm.property_id,
+          cleaner_id: editForm.cleaner_id,
+          inspector_id: editForm.inspector_id,
+          keys_required: editForm.keys_required_checkout,
+          old_code: toNull(editForm.checkout_password),
+          checkout_time: toNull(editForm.checkout_time),
+          guest_special_request: editForm.guest_special_request || null,
+        }
+        if (mutationStatus) body.status = mutationStatus
+        await postJSON('/cleaning/tasks', body)
+      }
+      if (editForm.pending_add_checkin && editForm.property_id) {
+        const body: any = {
+          task_type: 'checkin_clean',
+          task_date: editForm.checkin_task_date.format('YYYY-MM-DD'),
+          property_id: editForm.property_id,
+          cleaner_id: editForm.cleaner_id,
+          inspector_id: editForm.inspector_id,
+          keys_required: editForm.keys_required_checkin,
+          new_code: toNull(editForm.checkin_password),
+          nights_override: editForm.nights_override ?? null,
+          checkin_time: toNull(editForm.checkin_time),
+          guest_special_request: editForm.guest_special_request || null,
+        }
+        if (mutationStatus) body.status = mutationStatus
+        await postJSON('/cleaning/tasks', body)
+      }
+
       const patches = editForm.ids.map((id) => {
-        const p: any = { ...base, checkin_time: toNull(editForm.checkin_time) }
+        const p: any = { ...base }
+        if (editForm.checkout_ids.some((x) => String(x) === String(id))) {
+          p.old_code = toNull(editForm.checkout_password)
+          p.checkout_time = toNull(editForm.checkout_time)
+        }
+        if (editForm.checkin_ids.some((x) => String(x) === String(id))) {
+          p.task_date = editForm.checkin_task_date.format('YYYY-MM-DD')
+          p.new_code = toNull(editForm.checkin_password)
+          p.nights_override = editForm.nights_override ?? null
+          p.checkin_time = toNull(editForm.checkin_time)
+        }
         return patchJSON(`/cleaning/tasks/${encodeURIComponent(id)}`, p)
       })
-      await Promise.all(patches)
+      await Promise.all([...patches, ...keyUpdates])
       setEditOpen(false)
       setEditForm(null)
       message.success('已更新')
       loadRangeItems().catch(() => {})
-      return
+    } finally {
+      setSavingAction((current) => current === 'edit' ? null : current)
     }
-
-    const keyUpdates: Promise<any>[] = []
-    if (editForm.checkin_order_id) {
-      keyUpdates.push(postJSON('/mzapp/cleaning-tasks/order-keys-required', { order_id: editForm.checkin_order_id, keys_required: editForm.keys_required_checkin }))
-    } else if (editForm.checkin_manual_ids.length) {
-      for (const id of editForm.checkin_manual_ids) {
-        keyUpdates.push(patchJSON(`/cleaning/tasks/${encodeURIComponent(id)}`, { keys_required: editForm.keys_required_checkin }))
-      }
-    }
-    if (editForm.checkout_order_id) {
-      keyUpdates.push(postJSON('/mzapp/cleaning-tasks/order-keys-required', { order_id: editForm.checkout_order_id, keys_required: editForm.keys_required_checkout }))
-    } else if (editForm.checkout_manual_ids.length) {
-      for (const id of editForm.checkout_manual_ids) {
-        keyUpdates.push(patchJSON(`/cleaning/tasks/${encodeURIComponent(id)}`, { keys_required: editForm.keys_required_checkout }))
-      }
-    }
-
-    if (editForm.pending_add_checkout && editForm.property_id) {
-      const body: any = {
-        task_type: 'checkout_clean',
-        task_date: editForm.task_date.format('YYYY-MM-DD'),
-        property_id: editForm.property_id,
-        cleaner_id: editForm.cleaner_id,
-        inspector_id: editForm.inspector_id,
-        keys_required: editForm.keys_required_checkout,
-        old_code: toNull(editForm.checkout_password),
-        checkout_time: toNull(editForm.checkout_time),
-        guest_special_request: editForm.guest_special_request || null,
-      }
-      if (mutationStatus) body.status = mutationStatus
-      await postJSON('/cleaning/tasks', body)
-    }
-    if (editForm.pending_add_checkin && editForm.property_id) {
-      const body: any = {
-        task_type: 'checkin_clean',
-        task_date: editForm.checkin_task_date.format('YYYY-MM-DD'),
-        property_id: editForm.property_id,
-        cleaner_id: editForm.cleaner_id,
-        inspector_id: editForm.inspector_id,
-        keys_required: editForm.keys_required_checkin,
-        new_code: toNull(editForm.checkin_password),
-        nights_override: editForm.nights_override ?? null,
-        checkin_time: toNull(editForm.checkin_time),
-        guest_special_request: editForm.guest_special_request || null,
-      }
-      if (mutationStatus) body.status = mutationStatus
-      await postJSON('/cleaning/tasks', body)
-    }
-
-    const patches = editForm.ids.map((id) => {
-      const p: any = { ...base }
-      if (editForm.checkout_ids.some((x) => String(x) === String(id))) {
-        p.old_code = toNull(editForm.checkout_password)
-        p.checkout_time = toNull(editForm.checkout_time)
-      }
-      if (editForm.checkin_ids.some((x) => String(x) === String(id))) {
-        p.task_date = editForm.checkin_task_date.format('YYYY-MM-DD')
-        p.new_code = toNull(editForm.checkin_password)
-        p.nights_override = editForm.nights_override ?? null
-        p.checkin_time = toNull(editForm.checkin_time)
-      }
-      return patchJSON(`/cleaning/tasks/${encodeURIComponent(id)}`, p)
-    })
-    await Promise.all([...patches, ...keyUpdates])
-    setEditOpen(false)
-    setEditForm(null)
-    message.success('已更新')
-    loadRangeItems().catch(() => {})
-  }, [editForm, loadRangeItems])
+  }, [editForm, loadRangeItems, savingAction])
 
   const cancelTasksInEdit = useCallback(async (ids: string[], label: string) => {
     const uniq = Array.from(new Set(ids.map((x) => String(x)).filter(Boolean)))
@@ -1533,28 +1546,34 @@ export default function CleaningPage() {
 
   const submitManualCreate = useCallback(async () => {
     if (!manualCreateForm) return
+    if (savingAction) return
     if (!manualCreateForm.property_id) {
       message.warning('请选择房号')
       return
     }
-    const isStayover = manualCreateForm.create_mode === 'stayover'
-    const body: any = {
-      create_mode: manualCreateForm.create_mode,
-      task_date: selectedDateStr,
-      property_id: String(manualCreateForm.property_id),
-      old_code: isStayover ? null : (manualCreateForm.checkout_password.trim() ? manualCreateForm.checkout_password.trim() : null),
-      new_code: isStayover ? null : (manualCreateForm.checkin_password.trim() ? manualCreateForm.checkin_password.trim() : null),
-      nights_override: manualCreateForm.nights_override != null ? Number(manualCreateForm.nights_override) : null,
-      checkout_time: manualCreateForm.checkout_time ? String(manualCreateForm.checkout_time) : null,
-      checkin_time: isStayover ? null : (manualCreateForm.checkin_time ? String(manualCreateForm.checkin_time) : null),
-      guest_special_request: manualCreateForm.guest_special_request.trim() ? manualCreateForm.guest_special_request.trim() : null,
+    setSavingAction('manualCreate')
+    try {
+      const isStayover = manualCreateForm.create_mode === 'stayover'
+      const body: any = {
+        create_mode: manualCreateForm.create_mode,
+        task_date: selectedDateStr,
+        property_id: String(manualCreateForm.property_id),
+        old_code: isStayover ? null : (manualCreateForm.checkout_password.trim() ? manualCreateForm.checkout_password.trim() : null),
+        new_code: isStayover ? null : (manualCreateForm.checkin_password.trim() ? manualCreateForm.checkin_password.trim() : null),
+        nights_override: manualCreateForm.nights_override != null ? Number(manualCreateForm.nights_override) : null,
+        checkout_time: manualCreateForm.checkout_time ? String(manualCreateForm.checkout_time) : null,
+        checkin_time: isStayover ? null : (manualCreateForm.checkin_time ? String(manualCreateForm.checkin_time) : null),
+        guest_special_request: manualCreateForm.guest_special_request.trim() ? manualCreateForm.guest_special_request.trim() : null,
+      }
+      await postJSON('/cleaning/tasks', body)
+      message.success('已新增清洁任务')
+      setManualCreateOpen(false)
+      setManualCreateForm(null)
+      loadRangeItems().catch(() => {})
+    } finally {
+      setSavingAction((current) => current === 'manualCreate' ? null : current)
     }
-    await postJSON('/cleaning/tasks', body)
-    message.success('已新增清洁任务')
-    setManualCreateOpen(false)
-    setManualCreateForm(null)
-    loadRangeItems().catch(() => {})
-  }, [loadRangeItems, manualCreateForm, selectedDateStr])
+  }, [loadRangeItems, manualCreateForm, savingAction, selectedDateStr])
 
   const updateTaskQuick = useCallback(async (ids: string[], patch: any) => {
     const normIds = Array.from(new Set(ids.map((x) => String(x)).filter(Boolean)))
@@ -1668,6 +1687,7 @@ export default function CleaningPage() {
 
   const submitOfflineCreate = useCallback(async () => {
     if (!offlineCreateForm) return
+    if (savingAction) return
     const title = String(offlineCreateForm.title || '').trim()
     if (!title) {
       message.warning('请输入任务标题')
@@ -1677,7 +1697,7 @@ export default function CleaningPage() {
       message.warning('房源任务请选择房号')
       return
     }
-    setOfflineCreateLoading(true)
+    setSavingAction('offlineCreate')
     try {
       const payload: any = {
         date: offlineCreateForm.date.format('YYYY-MM-DD'),
@@ -1699,12 +1719,13 @@ export default function CleaningPage() {
     } catch (e: any) {
       message.error(String(e?.message || '创建失败'))
     } finally {
-      setOfflineCreateLoading(false)
+      setSavingAction((current) => current === 'offlineCreate' ? null : current)
     }
-  }, [loadRangeItems, normalizeTaskPhotoUrls, offlineCreateForm])
+  }, [loadRangeItems, normalizeTaskPhotoUrls, offlineCreateForm, savingAction])
 
   const submitOfflineEdit = useCallback(async () => {
     if (!offlineEditForm) return
+    if (savingAction) return
     if (!String(offlineEditForm.title || '').trim()) {
       message.warning('请输入任务标题')
       return
@@ -1713,23 +1734,28 @@ export default function CleaningPage() {
       message.warning('房源任务需要选择房号')
       return
     }
-    const payload = {
-      date: offlineEditForm.date.format('YYYY-MM-DD'),
-      task_type: offlineEditForm.task_type,
-      title: String(offlineEditForm.title || '').trim(),
-      content: String(offlineEditForm.content || '').trim(),
-      status: offlineEditForm.status,
-      urgency: offlineEditForm.urgency,
-      property_id: offlineEditForm.task_type === 'property' ? (offlineEditForm.property_id || null) : null,
-      assignee_id: offlineEditForm.assignee_id || null,
-      photo_urls: normalizeTaskPhotoUrls(offlineEditForm.photo_urls),
+    setSavingAction('offlineEdit')
+    try {
+      const payload = {
+        date: offlineEditForm.date.format('YYYY-MM-DD'),
+        task_type: offlineEditForm.task_type,
+        title: String(offlineEditForm.title || '').trim(),
+        content: String(offlineEditForm.content || '').trim(),
+        status: offlineEditForm.status,
+        urgency: offlineEditForm.urgency,
+        property_id: offlineEditForm.task_type === 'property' ? (offlineEditForm.property_id || null) : null,
+        assignee_id: offlineEditForm.assignee_id || null,
+        photo_urls: normalizeTaskPhotoUrls(offlineEditForm.photo_urls),
+      }
+      await patchJSON(`/cleaning/offline-tasks/${encodeURIComponent(offlineEditForm.id)}`, payload)
+      message.success('已更新线下任务')
+      setOfflineEditOpen(false)
+      setOfflineEditForm(null)
+      loadRangeItems().catch(() => {})
+    } finally {
+      setSavingAction((current) => current === 'offlineEdit' ? null : current)
     }
-    await patchJSON(`/cleaning/offline-tasks/${encodeURIComponent(offlineEditForm.id)}`, payload)
-    message.success('已更新线下任务')
-    setOfflineEditOpen(false)
-    setOfflineEditForm(null)
-    loadRangeItems().catch(() => {})
-  }, [loadRangeItems, normalizeTaskPhotoUrls, offlineEditForm])
+  }, [loadRangeItems, normalizeTaskPhotoUrls, offlineEditForm, savingAction])
 
   const deleteOfflineTask = useCallback(async (id: string) => {
     const taskId = String(id || '').trim()
@@ -1753,6 +1779,7 @@ export default function CleaningPage() {
 
   const submitBulkEdit = useCallback(async () => {
     if (!bulkEditForm) return
+    if (savingAction) return
     const patch: any = {}
     if (bulkEditForm.status !== '__keep__') patch.status = bulkEditForm.status
     if (bulkEditForm.cleaner === '__clear__') patch.cleaner_id = null
@@ -1763,12 +1790,17 @@ export default function CleaningPage() {
       message.warning('未选择任何要批量修改的字段')
       return
     }
-    await postJSON('/cleaning/tasks/bulk-patch', { ids: bulkEditForm.ids, patch })
-    setBulkEditOpen(false)
-    setBulkEditForm(null)
-    message.success('已批量更新')
-    loadRangeItems().catch(() => {})
-  }, [bulkEditForm, loadRangeItems])
+    setSavingAction('bulkEdit')
+    try {
+      await postJSON('/cleaning/tasks/bulk-patch', { ids: bulkEditForm.ids, patch })
+      setBulkEditOpen(false)
+      setBulkEditForm(null)
+      message.success('已批量更新')
+      loadRangeItems().catch(() => {})
+    } finally {
+      setSavingAction((current) => current === 'bulkEdit' ? null : current)
+    }
+  }, [bulkEditForm, loadRangeItems, savingAction])
 
   const goPrev = useCallback(() => {
     if (view === 'month') setMonth((m) => m.subtract(1, 'month'))
@@ -2394,19 +2426,26 @@ export default function CleaningPage() {
         width={860}
         placement="right"
         className={styles.cleaningEditDrawer}
-        onClose={() => { setEditOpen(false); setEditForm(null) }}
+        maskClosable={!editSaving}
+        keyboard={!editSaving}
+        onClose={() => {
+          if (editSaving) return
+          setEditOpen(false)
+          setEditForm(null)
+        }}
         footer={
           <div style={{ textAlign: 'right' }}>
             <Space>
-              <Button onClick={() => { setEditOpen(false); setEditForm(null) }}>取消</Button>
-	              <Button
-	                type="primary"
-	                disabled={!editSaveGate.enabled}
-	                title={editSaveDisabledReason || undefined}
-	                onClick={() => submitEdit().catch((e) => message.error(e?.message || '保存失败'))}
-	              >
-	                保存
-	              </Button>
+              <Button disabled={editSaving} onClick={() => { setEditOpen(false); setEditForm(null) }}>取消</Button>
+              <Button
+                type="primary"
+                loading={editSaving}
+                disabled={editSaving || !editSaveGate.enabled}
+                title={editSaveDisabledReason || undefined}
+                onClick={() => submitEdit().catch((e) => message.error(e?.message || '保存失败'))}
+              >
+                {editSaving ? '保存中...' : '保存'}
+              </Button>
             </Space>
           </div>
         }
@@ -2774,10 +2813,16 @@ export default function CleaningPage() {
       <Modal
         open={offlineCreateOpen}
         title="新增线下任务"
-        okText="创建"
-        confirmLoading={offlineCreateLoading}
+        okText={offlineCreateSaving ? '创建中...' : '创建'}
+        confirmLoading={offlineCreateSaving}
         onOk={() => submitOfflineCreate().catch((e) => message.error(e?.message || '创建失败'))}
-        onCancel={() => { setOfflineCreateOpen(false); setOfflineCreateForm(null) }}
+        onCancel={() => {
+          if (offlineCreateSaving) return
+          setOfflineCreateOpen(false)
+          setOfflineCreateForm(null)
+        }}
+        cancelButtonProps={{ disabled: offlineCreateSaving }}
+        maskClosable={!offlineCreateSaving}
       >
         {offlineCreateForm ? (
           <Space direction="vertical" style={{ width: '100%' }}>
@@ -2882,9 +2927,16 @@ export default function CleaningPage() {
       <Modal
         open={offlineEditOpen}
         title="编辑线下任务"
-        okText="保存"
+        okText={offlineEditSaving ? '保存中...' : '保存'}
+        confirmLoading={offlineEditSaving}
         onOk={() => submitOfflineEdit().catch((e) => message.error(e?.message || '保存失败'))}
-        onCancel={() => { setOfflineEditOpen(false); setOfflineEditForm(null) }}
+        onCancel={() => {
+          if (offlineEditSaving) return
+          setOfflineEditOpen(false)
+          setOfflineEditForm(null)
+        }}
+        cancelButtonProps={{ disabled: offlineEditSaving }}
+        maskClosable={!offlineEditSaving}
       >
         {offlineEditForm ? (
           <Space direction="vertical" style={{ width: '100%' }}>
@@ -2998,9 +3050,16 @@ export default function CleaningPage() {
       <Modal
         open={manualCreateOpen}
         title="新增清洁任务"
-        okText="创建"
+        okText={manualCreateSaving ? '创建中...' : '创建'}
+        confirmLoading={manualCreateSaving}
         onOk={() => submitManualCreate().catch((e) => message.error(e?.message || '创建失败'))}
-        onCancel={() => { setManualCreateOpen(false); setManualCreateForm(null) }}
+        onCancel={() => {
+          if (manualCreateSaving) return
+          setManualCreateOpen(false)
+          setManualCreateForm(null)
+        }}
+        cancelButtonProps={{ disabled: manualCreateSaving }}
+        maskClosable={!manualCreateSaving}
       >
         {manualCreateForm ? (
           <Space direction="vertical" style={{ width: '100%' }}>
@@ -3105,9 +3164,16 @@ export default function CleaningPage() {
       <Modal
         open={bulkEditOpen}
         title="批量编辑清洁任务"
-        okText="保存"
+        okText={bulkEditSaving ? '保存中...' : '保存'}
+        confirmLoading={bulkEditSaving}
         onOk={() => submitBulkEdit().catch((e) => message.error(e?.message || '保存失败'))}
-        onCancel={() => { setBulkEditOpen(false); setBulkEditForm(null) }}
+        onCancel={() => {
+          if (bulkEditSaving) return
+          setBulkEditOpen(false)
+          setBulkEditForm(null)
+        }}
+        cancelButtonProps={{ disabled: bulkEditSaving }}
+        maskClosable={!bulkEditSaving}
       >
         {bulkEditForm ? (
           <Space direction="vertical" style={{ width: '100%' }}>

@@ -1909,16 +1909,85 @@
 }
 
 .taskCenterCompactTask {
-  min-height: 50px;
-  padding: 4px 6px;
-  gap: 6px;
-  border-radius: 10px;
+  min-height: 126px;
+  padding: 8px 10px;
+  gap: 8px;
+  border-radius: 12px;
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
 }
 
 .taskCenterCompactGrip {
-  font-size: 11px;
+  width: 14px;
+  font-size: 12px;
   margin-top: 0;
+}
+
+.taskCenterCompactTask .taskStripe {
+  width: 10px;
+}
+
+.taskCenterCompactTask .taskMain {
+  gap: 8px;
+  align-content: start;
+}
+
+.taskCenterCompactHero {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.taskCenterCompactTimeLine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  white-space: nowrap;
+  -webkit-overflow-scrolling: touch;
+}
+
+.taskCenterCompactTimeLine::-webkit-scrollbar {
+  display: none;
+}
+
+.taskCenterCompactTimeTag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  height: 28px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0 9px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 28px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.taskCenterCompactTagLine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  height: 28px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.taskCenterCompactTagLine::-webkit-scrollbar {
+  display: none;
 }
 
 .taskCenterCompactMetaBar {
@@ -1933,30 +2002,33 @@
 .taskCenterCompactMetaGroup {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex: 0 1 auto;
   min-width: 0;
   max-width: 100%;
 }
 
 .taskCenterCompactStatus {
-  height: 16px;
-  line-height: 16px;
-  padding: 0 5px;
-  font-size: 9px;
-  border-radius: 7px;
+  height: 28px;
+  line-height: 28px;
+  padding: 0 9px;
+  font-size: 11px;
+  border-radius: 9px;
 }
 
 .taskCenterCompactTag {
   display: inline-flex;
   align-items: center;
-  max-width: 100%;
-  height: 16px;
-  padding: 0 5px;
-  border-radius: 7px;
+  justify-content: center;
+  max-width: 180px;
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 9px;
+  border-radius: 9px;
   border: 1px solid transparent;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 900;
+  line-height: 28px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1964,13 +2036,18 @@
 
 .taskCenterCompactTitle {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
   color: #0f172a;
-  font-size: 11px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 10px;
+  background: rgba(248, 250, 252, 0.92);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  font-size: 13px;
   font-weight: 1000;
-  line-height: 13px;
+  line-height: 32px;
   min-width: 0;
 }
 
@@ -1983,7 +2060,7 @@
 
 .taskCenterCompactTitleMeta {
   color: #64748b;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 900;
   flex: 0 0 auto;
   max-width: 40%;
@@ -1991,6 +2068,37 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   text-align: right;
+}
+
+.taskCenterCompactOrderLine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  min-width: 0;
+  padding: 3px 0;
+  border-radius: 10px;
+  background: rgba(241, 245, 249, 0.84);
+  border: 1px solid rgba(226, 232, 240, 0.82);
+  overflow: hidden;
+}
+
+.taskCenterCompactOrderTag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  max-width: 50%;
+  height: 28px;
+  padding: 0 9px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 28px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .taskCenterCompactDetail {
