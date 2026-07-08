@@ -206,7 +206,7 @@ export function buildWebTaskCapabilityPayload(task: Record<string, any>, context
   const isKeysHung = status === 'keys_hung'
   const isSelfComplete = inspectionMode === 'self_complete'
   const isCheckedDone = inspectionMode === 'checked_done' || status === 'inspected'
-  const taskEnded = isCompletedStatus(status) || isKeysHung || isSelfComplete || isCheckedDone
+  const taskEnded = isCompletedStatus(status) || isKeysHung || isCheckedDone
   const isCleaningExecution = source === 'cleaning' && !pureCheckin
   const requiresCleaner = source === 'cleaning' && isCleaningExecution && !stayover ? true : source === 'cleaning' && stayover
   const canConfigureInspection = source === 'cleaning' && (task.can_configure_inspection === true || taskType === 'checkout_clean' || taskType === 'checkin_clean' || taskType === 'turnover')
