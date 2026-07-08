@@ -88,7 +88,7 @@ type SavedMzSignature = {
 
 const MZ_SIGNATURE_STORAGE_KEY = 'landlord_documents_mz_signature_v1'
 const AGENCY_AUTHORITY_TEMPLATE_VERSION = 'authorisation-detail-v7-page-filled-2026-05-18'
-const SERVICE_AGREEMENT_TEMPLATE_VERSION = 'service-agreement-v5-2026-06-15'
+const SERVICE_AGREEMENT_TEMPLATE_VERSION = 'service-agreement-v6-2026-07-07'
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const ATTACHMENT_ACCEPT = '.pdf,.doc,.docx,.jpg,.jpeg,.png'
 const DIRECT_LEASE_UTILITIES_TEXT = 'MZ Property pays usage utilities during the lease term, including electricity, gas, internet and water usage where billed as consumption utilities. The Owner remains responsible for owners corporation / strata levies, council rates, water rates and other owner-side property charges unless expressly agreed otherwise in writing.'

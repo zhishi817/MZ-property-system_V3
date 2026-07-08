@@ -153,6 +153,7 @@ function canViewAll(user: any) {
 
 const PROPERTY_FOLLOWUP_SOURCE_TYPES = ['property_maintenance', 'property_deep_cleaning', 'property_daily_necessities'] as const
 const WORK_TASKS_VIEW_ALL_MAX_DAYS = 31
+const WORK_TASKS_CARRY_FORWARD_RESTOCK_LOOKBACK_DAYS = 180
 const DAY_MS = 24 * 60 * 60 * 1000
 
 async function canViewAllWorkTasks(user: any) {
@@ -1422,64 +1423,98 @@ function normalizeTimeOrDefault(v: any, fallback: string) {
   return s || fallback
 }
 
+let workTasksEnsured = false
+let workTasksEnsuring: Promise<void> | null = null
+
 async function ensureWorkTasksTable() {
   if (!hasPg || !pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS work_tasks (
-    id text PRIMARY KEY,
-    task_kind text NOT NULL,
-    source_type text NOT NULL,
-    source_id text NOT NULL,
-    property_id text,
-    title text NOT NULL DEFAULT '',
-    summary text,
-    scheduled_date date,
-    start_time text,
-    end_time text,
-    assignee_id text,
-    status text NOT NULL DEFAULT 'todo',
-    urgency text NOT NULL DEFAULT 'medium',
-    sort_index integer,
-    photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb,
-    completion_photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb,
-    completion_note text,
-    completion_reason text,
-    created_by text,
-    updated_by text,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
-  );`)
-  await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS sort_index integer;`)
-  await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb;`)
-  await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS completion_photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb;`)
-  await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS completion_note text;`)
-  await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS completion_reason text;`)
-  await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_work_tasks_source ON work_tasks(source_type, source_id);`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day_assignee ON work_tasks(scheduled_date, assignee_id, status);`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_kind_day ON work_tasks(task_kind, scheduled_date);`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day ON work_tasks(scheduled_date);`)
+  if (workTasksEnsured) return
+  if (workTasksEnsuring) return workTasksEnsuring
+  workTasksEnsuring = (async () => {
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS work_tasks (
+      id text PRIMARY KEY,
+      task_kind text NOT NULL,
+      source_type text NOT NULL,
+      source_id text NOT NULL,
+      property_id text,
+      title text NOT NULL DEFAULT '',
+      summary text,
+      scheduled_date date,
+      start_time text,
+      end_time text,
+      assignee_id text,
+      status text NOT NULL DEFAULT 'todo',
+      urgency text NOT NULL DEFAULT 'medium',
+      sort_index integer,
+      photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb,
+      completion_photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb,
+      completion_note text,
+      completion_reason text,
+      created_by text,
+      updated_by text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );`)
+    await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS sort_index integer;`)
+    await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb;`)
+    await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS completion_photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb;`)
+    await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS completion_note text;`)
+    await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS completion_reason text;`)
+    await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_work_tasks_source ON work_tasks(source_type, source_id);`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day_assignee ON work_tasks(scheduled_date, assignee_id, status);`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_kind_day ON work_tasks(task_kind, scheduled_date);`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day ON work_tasks(scheduled_date);`)
+    workTasksEnsured = true
+  })()
+    .catch((e) => {
+      workTasksEnsured = false
+      workTasksEnsuring = null
+      throw e
+    })
+    .finally(() => {
+      workTasksEnsuring = null
+    })
+  return workTasksEnsuring
 }
+
+let workTaskParticipantsEnsured = false
+let workTaskParticipantsEnsuring: Promise<void> | null = null
 
 async function ensureWorkTaskParticipantsTable() {
   if (!hasPg || !pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS work_task_participants (
-    id text PRIMARY KEY,
-    source_type text NOT NULL,
-    source_id text NOT NULL,
-    user_id text NOT NULL,
-    participant_role text NOT NULL DEFAULT 'collaborator',
-    action_ids jsonb NOT NULL DEFAULT '["*"]'::jsonb,
-    source_relation text NOT NULL DEFAULT 'manual',
-    created_by text,
-    updated_by text,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
-  );`)
-  await pgPool.query(`ALTER TABLE IF EXISTS work_task_participants ADD COLUMN IF NOT EXISTS participant_role text NOT NULL DEFAULT 'collaborator';`)
-  await pgPool.query(`ALTER TABLE IF EXISTS work_task_participants ADD COLUMN IF NOT EXISTS action_ids jsonb NOT NULL DEFAULT '["*"]'::jsonb;`)
-  await pgPool.query(`ALTER TABLE IF EXISTS work_task_participants ADD COLUMN IF NOT EXISTS source_relation text NOT NULL DEFAULT 'manual';`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_task_participants_source ON work_task_participants(source_type, source_id);`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_task_participants_user ON work_task_participants(user_id);`)
-  await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_work_task_participants_manual ON work_task_participants(source_type, source_id, user_id, source_relation);`)
+  if (workTaskParticipantsEnsured) return
+  if (workTaskParticipantsEnsuring) return workTaskParticipantsEnsuring
+  workTaskParticipantsEnsuring = (async () => {
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS work_task_participants (
+      id text PRIMARY KEY,
+      source_type text NOT NULL,
+      source_id text NOT NULL,
+      user_id text NOT NULL,
+      participant_role text NOT NULL DEFAULT 'collaborator',
+      action_ids jsonb NOT NULL DEFAULT '["*"]'::jsonb,
+      source_relation text NOT NULL DEFAULT 'manual',
+      created_by text,
+      updated_by text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );`)
+    await pgPool.query(`ALTER TABLE IF EXISTS work_task_participants ADD COLUMN IF NOT EXISTS participant_role text NOT NULL DEFAULT 'collaborator';`)
+    await pgPool.query(`ALTER TABLE IF EXISTS work_task_participants ADD COLUMN IF NOT EXISTS action_ids jsonb NOT NULL DEFAULT '["*"]'::jsonb;`)
+    await pgPool.query(`ALTER TABLE IF EXISTS work_task_participants ADD COLUMN IF NOT EXISTS source_relation text NOT NULL DEFAULT 'manual';`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_task_participants_source ON work_task_participants(source_type, source_id);`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_task_participants_user ON work_task_participants(user_id);`)
+    await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_work_task_participants_manual ON work_task_participants(source_type, source_id, user_id, source_relation);`)
+    workTaskParticipantsEnsured = true
+  })()
+    .catch((e) => {
+      workTaskParticipantsEnsured = false
+      workTaskParticipantsEnsuring = null
+      throw e
+    })
+    .finally(() => {
+      workTaskParticipantsEnsuring = null
+    })
+  return workTaskParticipantsEnsuring
 }
 
 function workTaskSourceRefs(task: any) {
@@ -1597,30 +1632,47 @@ async function ensureMzappAlertsTable() {
   await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_mzapp_alerts_dedupe ON mzapp_alerts(kind, target_user_id, date, position, level);`)
 }
 
+let guestLuggageEnsured = false
+let guestLuggageEnsuring: Promise<void> | null = null
+
 async function ensureGuestLuggageTables() {
   if (!hasPg || !pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS guest_luggage_notices (
-    id text PRIMARY KEY,
-    property_id text NOT NULL,
-    task_date date NOT NULL,
-    note text,
-    photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb,
-    version integer NOT NULL DEFAULT 1,
-    created_by text,
-    updated_by text,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE(property_id, task_date)
-  );`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_guest_luggage_notices_task ON guest_luggage_notices(task_date, property_id);`)
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS guest_luggage_acknowledgements (
-    notice_id text NOT NULL REFERENCES guest_luggage_notices(id) ON DELETE CASCADE,
-    user_id text NOT NULL,
-    notice_version integer NOT NULL,
-    acknowledged_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY(notice_id, user_id)
-  );`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_guest_luggage_ack_user ON guest_luggage_acknowledgements(user_id, acknowledged_at DESC);`)
+  if (guestLuggageEnsured) return
+  if (guestLuggageEnsuring) return guestLuggageEnsuring
+  guestLuggageEnsuring = (async () => {
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS guest_luggage_notices (
+      id text PRIMARY KEY,
+      property_id text NOT NULL,
+      task_date date NOT NULL,
+      note text,
+      photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb,
+      version integer NOT NULL DEFAULT 1,
+      created_by text,
+      updated_by text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE(property_id, task_date)
+    );`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_guest_luggage_notices_task ON guest_luggage_notices(task_date, property_id);`)
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS guest_luggage_acknowledgements (
+      notice_id text NOT NULL REFERENCES guest_luggage_notices(id) ON DELETE CASCADE,
+      user_id text NOT NULL,
+      notice_version integer NOT NULL,
+      acknowledged_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY(notice_id, user_id)
+    );`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_guest_luggage_ack_user ON guest_luggage_acknowledgements(user_id, acknowledged_at DESC);`)
+    guestLuggageEnsured = true
+  })()
+    .catch((e) => {
+      guestLuggageEnsured = false
+      guestLuggageEnsuring = null
+      throw e
+    })
+    .finally(() => {
+      guestLuggageEnsuring = null
+    })
+  return guestLuggageEnsuring
 }
 
 function canEditGuestLuggage(user: any) {
@@ -1874,7 +1926,14 @@ async function ensureCleaningTaskMediaTable() {
 
 export async function warmupMzappModule() {
   if (!(hasPg && pgPool)) return
+  await ensureWorkTasksTable()
+  await ensureWorkTaskParticipantsTable()
+  await ensureGuestLuggageTables()
+  await ensureCleaningTaskSortColumns()
   await ensureCleaningTaskMediaTable()
+  await ensureCleaningCheckoutColumns()
+  await ensureCleaningCustomerColumns()
+  await ensureCleaningInspectionColumns()
   try {
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_task_type_captured_created ON cleaning_task_media(task_id, type, captured_at DESC, created_at DESC)`)
   } catch {}
@@ -2106,8 +2165,22 @@ router.post('/cleaning-tasks/reorder', async (req, res) => {
         SET sort_index_inspector = v.sort_index, updated_at = now()
         FROM jsonb_to_recordset($1::jsonb) AS v(id text, sort_index integer)
         WHERE t.id::text = v.id
-          AND COALESCE(t.task_date, t.date)::date = $2::date
-          AND t.inspector_id::text = $3::text
+          AND (
+            COALESCE(t.task_date, t.date)::date = $2::date
+            OR (
+              lower(COALESCE(t.inspection_mode, '')) = 'deferred'
+              AND t.inspection_due_date IS NOT NULL
+              AND t.inspection_due_date::date <= $2::date
+            )
+          )
+          AND (
+            t.inspector_id::text = $3::text
+            OR (
+              lower(COALESCE(t.task_type, '')) = 'checkin_clean'
+              AND t.assignee_id::text = $3::text
+              AND lower(COALESCE(t.inspection_scope, 'inspect_and_hang')) <> 'password_only'
+            )
+          )
       `
     const r = await pgPool.query(sql, [data, date, userId])
     const updated = r?.rowCount || 0
@@ -5305,8 +5378,22 @@ router.post('/work-tasks/mixed-reorder', async (req, res) => {
            SET sort_index_inspector = v.sort_index, updated_at = now()
            FROM jsonb_to_recordset($1::jsonb) AS v(id text, sort_index integer)
            WHERE t.id::text = v.id
-             AND COALESCE(t.task_date, t.date)::date = $2::date
-             AND t.inspector_id::text = $3::text`,
+             AND (
+               COALESCE(t.task_date, t.date)::date = $2::date
+               OR (
+                 lower(COALESCE(t.inspection_mode, '')) = 'deferred'
+                 AND t.inspection_due_date IS NOT NULL
+                 AND t.inspection_due_date::date <= $2::date
+               )
+             )
+             AND (
+               t.inspector_id::text = $3::text
+               OR (
+                 lower(COALESCE(t.task_type, '')) = 'checkin_clean'
+                 AND t.assignee_id::text = $3::text
+                 AND lower(COALESCE(t.inspection_scope, 'inspect_and_hang')) <> 'password_only'
+               )
+             )`,
           [JSON.stringify(inspectorEntries), date, userId],
         )
         const expected = new Set(inspectorEntries.map((item) => item.id)).size
@@ -5569,12 +5656,32 @@ router.post('/work-task-participants/set', async (req, res) => {
 })
 
 router.get('/work-tasks', async (req, res) => {
+  const workTasksStartedAt = Date.now()
+  let workTasksLastStepAt = workTasksStartedAt
+  const workTasksTimings: string[] = []
+  const markWorkTasksStep = (name: string) => {
+    const now = Date.now()
+    workTasksTimings.push(`${name}:${now - workTasksLastStepAt}`)
+    workTasksLastStepAt = now
+  }
   const dateFrom = dayOnly((req.query as any)?.date_from)
   const dateTo = dayOnly((req.query as any)?.date_to)
   const view = String((req.query as any)?.view || 'mine').trim().toLowerCase() === 'all' ? 'all' : 'mine'
   if (!dateFrom || !dateTo) return res.status(400).json({ message: 'invalid date range' })
   const rangeDays = inclusiveDateRangeDays(dateFrom, dateTo)
   if (!rangeDays) return res.status(400).json({ message: 'invalid date range' })
+  const logSlowWorkTasks = (status: string, extra = '') => {
+    const totalMs = Date.now() - workTasksStartedAt
+    if (totalMs < 5000) return
+    const suffix = extra ? ` ${extra}` : ''
+    console.warn(`[mzapp/work-tasks] slow status=${status} total_ms=${totalMs} range_days=${rangeDays} view=${view} steps=${workTasksTimings.join(',')}${suffix}`)
+  }
+  const setWorkTasksTimingHeaders = () => {
+    try {
+      res.setHeader('x-mzapp-work-tasks-total-ms', String(Date.now() - workTasksStartedAt))
+      res.setHeader('x-mzapp-work-tasks-steps', workTasksTimings.join(','))
+    } catch {}
+  }
   if (view === 'all' && rangeDays > WORK_TASKS_VIEW_ALL_MAX_DAYS) {
     return res.status(400).json({
       message: 'date_range_too_large',
@@ -5594,6 +5701,7 @@ router.get('/work-tasks', async (req, res) => {
     permissions: await listPermissionCodesForUser(user),
     canViewAll: allowAll,
   }
+  markWorkTasksStep('permissions')
 
   try {
     if (!hasPg || !pgPool) return res.json([])
@@ -5604,9 +5712,7 @@ router.get('/work-tasks', async (req, res) => {
     await ensureCleaningCheckoutColumns()
     await ensureCleaningCustomerColumns()
     await ensureCleaningInspectionColumns()
-    try {
-      await pgPool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
-    } catch {}
+    markWorkTasksStep('schema')
 
     const out: any[] = []
     const managerCanSeeAllTaskPool = allowAll && canViewAll(user)
@@ -5709,6 +5815,7 @@ router.get('/work-tasks', async (req, res) => {
         })
       }
     }
+    markWorkTasksStep('work_pool')
 
     {
       const isCleanerView = isCleanerRole(user) || isCleanerInspectorRole(user)
@@ -5719,12 +5826,88 @@ router.get('/work-tasks', async (req, res) => {
 
       if (wantCleaner || wantInspector || wantExecutor) {
         const sql = `
-          WITH latest_media_raw AS (
+          WITH candidate_tasks AS (
+            SELECT
+              t.id,
+              t.order_id,
+              COALESCE(o.keys_required, 1) AS order_keys_required,
+              t.nights_override,
+              COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS property_id,
+              COALESCE(p_id.code::text, p_code.code::text) AS property_code,
+              COALESCE(p_id.region::text, p_code.region::text) AS property_region,
+              COALESCE(p_id.address::text, p_code.address::text) AS property_address,
+              COALESCE(p_id.type::text, p_code.type::text) AS property_unit_type,
+              COALESCE(p_id.access_guide_link::text, p_code.access_guide_link::text) AS property_access_guide_link,
+              COALESCE(p_id.wifi_ssid::text, p_code.wifi_ssid::text) AS property_wifi_ssid,
+              COALESCE(p_id.wifi_password::text, p_code.wifi_password::text) AS property_wifi_password,
+              COALESCE(p_id.router_location::text, p_code.router_location::text) AS property_router_location,
+              t.task_type,
+              COALESCE(t.task_date, t.date)::text AS task_date,
+              t.status,
+              t.assignee_id,
+              t.cleaner_id,
+              t.inspector_id,
+              t.inspection_mode,
+              t.inspection_scope,
+              t.inspection_due_date::text AS inspection_due_date,
+              COALESCE(au.username, au.email, au.id::text) AS assignee_name,
+              COALESCE(cu.username, cu.email, cu.id::text) AS cleaner_name,
+              COALESCE(iu.username, iu.email, iu.id::text) AS inspector_name,
+              t.checkout_time,
+              t.checkin_time,
+              t.old_code,
+              t.new_code,
+              t.guest_special_request,
+              t.note,
+              CASE
+                WHEN t.order_id IS NULL THEN COALESCE(t.keys_required, 1)
+                ELSE COALESCE(o.keys_required, 1)
+              END AS keys_required,
+              t.checked_out_at,
+              o.checkin::text AS order_checkin,
+              o.checkout::text AS order_checkout,
+              o.note::text AS order_note,
+              COALESCE(t.nights_override, o.nights, (o.checkout - o.checkin)) AS order_nights,
+              t.sort_index_cleaner,
+              t.sort_index_inspector,
+              t.updated_at
+            FROM cleaning_tasks t
+            LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
+            LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
+            LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+            LEFT JOIN users au ON (au.id::text) = (t.assignee_id::text)
+            LEFT JOIN users cu ON (cu.id::text) = (COALESCE(t.cleaner_id, t.assignee_id)::text)
+            LEFT JOIN users iu ON (iu.id::text) = (t.inspector_id::text)
+            WHERE (
+                ((COALESCE(t.task_date, t.date)::date) >= ($1::date) AND (COALESCE(t.task_date, t.date)::date) <= ($2::date))
+                OR (
+                  lower(COALESCE(t.inspection_mode, '')) = 'deferred'
+                  AND t.inspection_due_date IS NOT NULL
+                  AND (t.inspection_due_date::date) <= ($2::date)
+                  AND (
+                    (t.inspection_due_date::date) >= ($1::date)
+                    OR lower(COALESCE(t.status, '')) NOT IN ('inspected', 'done', 'completed', 'ready', 'keys_hung', 'cancelled', 'canceled')
+                  )
+                )
+              )
+              AND ${activeCleaningTaskWhereSql('t')}
+              AND (t.order_id IS NULL OR o.id IS NOT NULL)
+              AND (
+                t.order_id IS NULL
+                OR (
+                  COALESCE(o.status, '') <> ''
+                  AND lower(COALESCE(o.status, '')) <> 'invalid'
+                  AND lower(COALESCE(o.status, '')) NOT LIKE '%cancel%'
+                )
+              )
+          ),
+          latest_media_raw AS (
             SELECT DISTINCT ON (m.task_id::text, m.type)
               m.task_id::text AS task_id,
               m.type,
               m.url
             FROM cleaning_task_media m
+            JOIN candidate_tasks ct ON ct.id::text = m.task_id::text
             WHERE m.type IN ('key_photo', 'lockbox_video', 'consumable_living_room_photo')
             ORDER BY m.task_id::text, m.type, m.captured_at DESC NULLS LAST, m.created_at DESC
           ),
@@ -5740,73 +5923,50 @@ router.get('/work-tasks', async (req, res) => {
           SELECT
             t.id,
             t.order_id,
-            COALESCE(o.keys_required, 1) AS order_keys_required,
+            t.order_keys_required,
             t.nights_override,
-            COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS property_id,
-            COALESCE(p_id.code::text, p_code.code::text) AS property_code,
-            COALESCE(p_id.region::text, p_code.region::text) AS property_region,
-            COALESCE(p_id.address::text, p_code.address::text) AS property_address,
-            COALESCE(p_id.type::text, p_code.type::text) AS property_unit_type,
-            COALESCE(p_id.access_guide_link::text, p_code.access_guide_link::text) AS property_access_guide_link,
-            COALESCE(p_id.wifi_ssid::text, p_code.wifi_ssid::text) AS property_wifi_ssid,
-            COALESCE(p_id.wifi_password::text, p_code.wifi_password::text) AS property_wifi_password,
-            COALESCE(p_id.router_location::text, p_code.router_location::text) AS property_router_location,
+            t.property_id,
+            t.property_code,
+            t.property_region,
+            t.property_address,
+            t.property_unit_type,
+            t.property_access_guide_link,
+            t.property_wifi_ssid,
+            t.property_wifi_password,
+            t.property_router_location,
             t.task_type,
-            COALESCE(t.task_date, t.date)::text AS task_date,
+            t.task_date,
             t.status,
             t.assignee_id,
             t.cleaner_id,
             t.inspector_id,
             t.inspection_mode,
             t.inspection_scope,
-            t.inspection_due_date::text AS inspection_due_date,
-            COALESCE(au.username, au.email, au.id::text) AS assignee_name,
-            COALESCE(cu.username, cu.email, cu.id::text) AS cleaner_name,
-            COALESCE(iu.username, iu.email, iu.id::text) AS inspector_name,
+            t.inspection_due_date,
+            t.assignee_name,
+            t.cleaner_name,
+            t.inspector_name,
             t.checkout_time,
             t.checkin_time,
             t.old_code,
             t.new_code,
             t.guest_special_request,
             t.note,
-            CASE
-              WHEN t.order_id IS NULL THEN COALESCE(t.keys_required, 1)
-              ELSE COALESCE(o.keys_required, 1)
-            END AS keys_required,
+            t.keys_required,
             t.checked_out_at,
-            o.checkin::text AS order_checkin,
-            o.checkout::text AS order_checkout,
-            o.note::text AS order_note,
-            COALESCE(t.nights_override, o.nights, (o.checkout - o.checkin)) AS order_nights,
+            t.order_checkin,
+            t.order_checkout,
+            t.order_note,
+            t.order_nights,
             lm.key_photo_url,
             lm.lockbox_video_url,
             lm.living_room_photo_url,
             t.sort_index_cleaner,
             t.sort_index_inspector,
             t.updated_at
-          FROM cleaning_tasks t
-          LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
-          LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
-          LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
-          LEFT JOIN users au ON (au.id::text) = (t.assignee_id::text)
-          LEFT JOIN users cu ON (cu.id::text) = (COALESCE(t.cleaner_id, t.assignee_id)::text)
-          LEFT JOIN users iu ON (iu.id::text) = (t.inspector_id::text)
+          FROM candidate_tasks t
           LEFT JOIN latest_media lm ON lm.task_id = t.id::text
-          WHERE (
-              ((COALESCE(t.task_date, t.date)::date) >= ($1::date) AND (COALESCE(t.task_date, t.date)::date) <= ($2::date))
-              OR (t.inspection_due_date IS NOT NULL AND (t.inspection_due_date::date) <= ($2::date))
-            )
-            AND ${activeCleaningTaskWhereSql('t')}
-            AND (t.order_id IS NULL OR o.id IS NOT NULL)
-            AND (
-              t.order_id IS NULL
-              OR (
-                COALESCE(o.status, '') <> ''
-                AND lower(COALESCE(o.status, '')) <> 'invalid'
-                AND lower(COALESCE(o.status, '')) NOT LIKE '%cancel%'
-              )
-            )
-          ORDER BY COALESCE(t.task_date, t.date) ASC, COALESCE(p_id.code, p_code.code) NULLS LAST, t.id`
+          ORDER BY t.task_date ASC, t.property_code NULLS LAST, t.id`
         const r = await pgPool.query(sql, [dateFrom, dateTo])
         const cleaningRows = r?.rows || []
         const cleaningGuideLinks = await resolvePropertyPublicGuideLinks(
@@ -5885,6 +6045,19 @@ router.get('/work-tasks', async (req, res) => {
         const restockByTaskId = new Map<string, any[]>()
         const consumableItemIdsByTaskId = new Map<string, Set<string>>()
         const carryForwardRestockByProperty = new Map<string, any[]>()
+        const carryForwardRestockPropertyIds = Array.from(new Set(cleaningRows
+          .filter((row: any) => {
+            if (cleaningType(row.task_type) !== 'checkout') return false
+            const propId = String(row.property_id || '').trim()
+            if (!propId) return false
+            if (allowAll) return true
+            const effectiveCleanerId = String(row.cleaner_id || row.assignee_id || '').trim()
+            if (effectiveCleanerId && effectiveCleanerId === userId) return true
+            const manualActions = manualActionsForTask(row.id)
+            return manualActions.has('fill_supplies') || manualActions.has('complete_cleaning') || manualActions.has('upload_key_photo')
+          })
+          .map((row: any) => String(row.property_id || '').trim())
+          .filter(Boolean)))
         if (taskIds.length) {
           const rr = await pgPool.query(
             `SELECT task_id::text AS task_id, item_id::text AS item_id, COALESCE(item_label,'') AS item_label, qty, note, photo_url, COALESCE(status,'') AS status
@@ -5922,22 +6095,29 @@ router.get('/work-tasks', async (req, res) => {
             consumableItemIdsByTaskId.set(taskId, itemIds)
           }
         }
-        if (guestLuggagePropertyIds.length) {
+        if (carryForwardRestockPropertyIds.length) {
           const followupRows = await pgPool.query(
-            `SELECT t.id::text AS source_task_id,
-                    t.property_id::text AS property_id,
-                    COALESCE(t.task_date, t.date)::text AS source_task_date,
+            `WITH source_tasks AS MATERIALIZED (
+               SELECT
+                 t.id::text AS source_task_id,
+                 t.property_id::text AS property_id,
+                 COALESCE(t.task_date, t.date)::date AS source_task_date
+               FROM cleaning_tasks t
+               WHERE t.property_id::text = ANY($1::text[])
+                 AND COALESCE(t.task_date, t.date)::date BETWEEN ($2::date - ($3::int * INTERVAL '1 day')) AND $2::date
+                 AND ${activeCleaningTaskWhereSql('t')}
+             )
+             SELECT st.source_task_id,
+                    st.property_id,
+                    st.source_task_date::text AS source_task_date,
                     m.type,
                     m.note,
                     m.created_at
-             FROM cleaning_task_media m
-             JOIN cleaning_tasks t ON t.id::text = m.task_id::text
-             WHERE t.property_id::text = ANY($1::text[])
-               AND m.type LIKE 'restock_proof:%'
-               AND COALESCE(t.task_date, t.date)::date <= $2::date
-               AND ${activeCleaningTaskWhereSql('t')}
-             ORDER BY COALESCE(t.task_date, t.date) DESC, m.created_at DESC`,
-            [guestLuggagePropertyIds, dateTo],
+             FROM source_tasks st
+             JOIN cleaning_task_media m ON m.task_id::text = st.source_task_id
+             WHERE m.type LIKE 'restock_proof:%'
+             ORDER BY st.source_task_date DESC, m.created_at DESC`,
+            [carryForwardRestockPropertyIds, dateTo, WORK_TASKS_CARRY_FORWARD_RESTOCK_LOOKBACK_DAYS],
           )
           const seenCarryForward = new Set<string>()
           for (const row of followupRows?.rows || []) {
@@ -6840,6 +7020,7 @@ router.get('/work-tasks', async (req, res) => {
       out.length = 0
       out.push(...merged)
     }
+    markWorkTasksStep('cleaning_pool')
 
     const hasMobileAssignee = (task: any) => {
       const source = String(task?.source_type || '').trim()
@@ -6880,8 +7061,10 @@ router.get('/work-tasks', async (req, res) => {
       }
       return String(a.title || '').localeCompare(String(b.title || ''))
     })
+    markWorkTasksStep('filter_sort')
 
     const manualParticipantsByRef = await loadManualWorkTaskParticipantsByRef(visibleOut)
+    markWorkTasksStep('manual_participants')
     const responseOut = visibleOut.map((task) => {
       const taskWithParticipants = attachWorkTaskParticipants(task, manualParticipantsByRef)
       const mergedChildren = Array.isArray((task as any).__merged_children) ? (task as any).__merged_children : []
@@ -6926,8 +7109,14 @@ router.get('/work-tasks', async (req, res) => {
       }
     })
 
+    markWorkTasksStep('response_map')
+    setWorkTasksTimingHeaders()
+    logSlowWorkTasks('success', `tasks=${responseOut.length}`)
     return res.json(responseOut)
   } catch (e: any) {
+    markWorkTasksStep('error')
+    setWorkTasksTimingHeaders()
+    logSlowWorkTasks('error')
     return res.status(500).json({ message: e?.message || 'mzapp_work_tasks_failed' })
   }
 })

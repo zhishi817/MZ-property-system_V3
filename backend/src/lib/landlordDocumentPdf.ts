@@ -136,6 +136,15 @@ function feeRow(label: string, value: any) {
 
 const DIRECT_LEASE_UTILITIES_TEXT = 'MZ Property pays usage utilities during the lease term, including electricity, gas, internet and water usage where billed as consumption utilities. The Owner remains responsible for owners corporation / strata levies, council rates, water rates and other owner-side property charges unless expressly agreed otherwise in writing.'
 const DIRECT_LEASE_INSURANCE_TEXT = 'MZ Property will arrange short-stay insurance for its operation. The Owner is not required to participate in short-stay management and only needs to provide owner information, documents or signatures reasonably required for insurance setup, renewal or claims.'
+const SHORT_STAY_INSURANCE_CLAUSE_HTML = `
+          <h2>5. Short-Stay Insurance</h2>
+          <p>The Owner must ensure that the Property is covered by insurance suitable for short-stay accommodation use before the Property is listed or operated for guest stays.</p>
+          <p>The Owner acknowledges that some booking platforms, including Airbnb, may offer host protection, host damage protection or similar platform-based cover. However, such platform cover is not a substitute for the Owner's own short-stay insurance. The Property may be listed, promoted or booked through Airbnb, Booking.com, direct booking channels, corporate accommodation channels or other short-stay platforms, and platform cover may vary by platform, booking type, claim type, eligibility rules, exclusions and claim outcome.</p>
+          <p>Short-stay insurance is required for the same practical reason that a long-term rental property should have landlord insurance: ordinary home, contents or landlord insurance may not properly cover paying guest use, short-stay accommodation, guest injury, guest-caused damage, theft, accidental damage, public liability, loss of rent, building access issues, strata-related claims, policy excesses or coverage gaps arising from short-stay operation.</p>
+          <p>The Owner may obtain short-stay insurance independently, or may ask MZ Property to assist with arranging short-stay insurance through MZ Property's nominated insurer, broker or insurance channel where available. Any insurance premium, excess, renewal fee, policy fee or related charge is an Owner Expense unless the Parties agree otherwise in writing.</p>
+          <p>The Owner must disclose to the insurer that the Property is used or intended to be used for short-stay accommodation, serviced accommodation, corporate stays or similar guest accommodation. The Owner must maintain suitable cover during the operating period and provide evidence of cover to MZ Property on request.</p>
+          <p>MZ Property may assist with insurance coordination, policy setup, renewal information or claim communication, but MZ Property is not the insurer and does not guarantee policy approval, policy terms, claim acceptance or claim payment. Any uninsured loss, declined claim, policy excess or coverage gap will be reviewed by the Parties in good faith based on the cause of the issue, the policy terms, applicable law and the Party responsible for the relevant act or omission.</p>
+`
 
 function englishPropertyType(value: any) {
   const raw = String(value || '').trim()
@@ -409,7 +418,7 @@ function renderServiceAgreement(input: LandlordDocumentPdfInput) {
         'Actively promotes and manages the Property for short-term rental while the Property is concurrently offered for sale.',
         'Sets rates, availability and guest conditions, manages guest messaging, reservations, check-in and check-out.',
         'Provides furniture, consumables, linen, amenities and daily-use guest items required for short-stay operation unless otherwise agreed in writing.',
-        'Coordinates housekeeping, guest servicing, restocking and presentation standards during the operating period.',
+        'Coordinates housekeeping, guest servicing, restocking, routine operational maintenance and presentation standards during the operating period.',
         'Provides remittance reporting and general owner updates regarding bookings, guest issues and operating performance.',
       ]
     : [
@@ -428,7 +437,7 @@ function renderServiceAgreement(input: LandlordDocumentPdfInput) {
     : isSaleVariant
     ? [
         'The Owner provides the Property in a clean, safe and rentable condition and keeps it available for lawful short-stay use during the engagement.',
-        'The Owner remains responsible for utilities, strata and building charges, insurance, safety compliance, ordinary property maintenance, structural issues, building defects and other owner-side property costs.',
+        'The Owner remains responsible for utilities, strata and building charges, insurance, safety compliance, structural issues, building defects, owner-side fixtures or appliances and other ownership-side property costs.',
         'Owner Expenses are deducted from the Owner share after MZ Property and the Owner have each received their agreed share of Net Rental Income.',
       ]
     : [
@@ -465,8 +474,9 @@ function renderServiceAgreement(input: LandlordDocumentPdfInput) {
           <p>The Owner and MZ Property will work together in good faith to agree suitable access windows having regard to booking status, guest privacy, cleaning requirements and sale campaign needs.</p>
           <h3>3. Settlement and Exit Planning</h3>
           <p>If the Property is sold, the Parties must cooperate in good faith to wind down listings, honour existing guest commitments where possible, and coordinate furnishing removal, handover and exit timing before settlement or possession transfer.</p>
-          <h3>4. Repairs and Base Property Costs</h3>
-          <p>The Owner remains responsible for water, electricity, utilities, strata or building charges, insurance, safety compliance, ordinary property maintenance and keeping the Property in a rentable state during the sale campaign.</p>
+          <h3>4. Repairs, Maintenance and Base Property Costs</h3>
+          <p>MZ Property coordinates day-to-day operational maintenance required for short-stay use during the sale campaign, including routine guest-use follow-up, minor operational coordination, restocking and presentation upkeep.</p>
+          <p>The Owner remains responsible for water, electricity, utilities, strata or building charges, insurance, safety compliance, structural repairs, building defects, owner-side fixtures or appliances and keeping the base Property lawful, safe and rentable.</p>
           <h3>5. Compliance and Insurance</h3>
           <p>The Owner remains responsible for ensuring the Property complies with applicable laws, building rules and insurance obligations associated with short-stay use and sale campaign access.</p>
           <h3>6. Termination</h3>
@@ -637,7 +647,9 @@ function renderServiceAgreement(input: LandlordDocumentPdfInput) {
             <li>MZ Property is entitled to retain ${escapeHtml(managementFee)} from each completed booking.</li>
             <li>Net Rental Income means accommodation revenue actually received from guests or booking platforms after deduction of booking platform fees, cleaning fees, guest refunds, chargebacks, GST or applicable taxes, and any non-accommodation pass-through amounts.</li>
             <li>Owner Expenses are not deducted before calculating MZ Property's share. Owner Expenses are deducted from the Owner's share after Net Rental Income has been distributed between the parties.</li>
-            <li>Owner Expenses include utilities, repairs, maintenance, strata or building charges, insurance, safety and compliance costs, emergency repairs, replacement of Owner-owned items and other costs that are the Owner's responsibility under this Agreement.</li>
+            <li>${isSaleVariant
+              ? "Owner Expenses include utilities, strata or building charges, insurance, safety and compliance costs, structural repairs, building defects, emergency ownership-side repairs, replacement of Owner-owned items and other costs that are the Owner's responsibility under this Agreement. Guest-caused damage handled by MZ Property and day-to-day operational maintenance handled by MZ Property are not Owner Expenses unless expressly agreed otherwise in writing."
+              : "Owner Expenses include utilities, repairs, maintenance, strata or building charges, insurance, safety and compliance costs, emergency repairs, replacement of Owner-owned items and other costs that are the Owner's responsibility under this Agreement."}</li>
             <li>All rental income received less any fees or Owner Expenses due to MZ Property will be transferred to the Owner's bank account once a month within the first 6 business days of the following month.</li>
           </ul>
           `}
@@ -669,8 +681,13 @@ function renderServiceAgreement(input: LandlordDocumentPdfInput) {
           <p>The Owner remains responsible for ownership-side matters that cannot legally or practically be transferred to MZ Property, including title, structural issues, building defects, owners corporation / strata compliance, building compliance, safety compliance and Owner-owned fixtures or appliances.</p>
           <p>The Owner remains responsible for owners corporation / strata levies, council rates, water rates and other owner-side property charges. The Owner must provide owner approvals, account access or documents only where required for ownership-side compliance, RTBA bond lodgement, building rules or insurance setup and claims.</p>
           ` : `
+          ${isSaleVariant ? `
+          <p>MZ Property is responsible for day-to-day operational maintenance connected with short-stay use, including routine guest-use follow-up, minor operational coordination, restocking and presentation upkeep during the operating period.</p>
+          <p>The Owner remains responsible for ownership-side matters including structural issues, building defects, strata and building compliance, insurance, safety compliance, utilities, owner-side fixtures or appliances and keeping the base Property lawful, safe and suitable for short-stay accommodation.</p>
+          ` : `
           <p>The Owner remains solely responsible for structural issues, building defects, strata and building compliance, insurance, safety compliance, utilities, owner-side appliances and ordinary maintenance of the Property.</p>
           <p>The Owner must keep the Property lawful, safe, compliant and suitable for short-stay accommodation and must respond promptly to maintenance or compliance issues affecting guest safety, guest use or rentable condition.</p>
+          `}
           `}
 
           ${isDirectLeaseVariant ? `
@@ -679,24 +696,37 @@ function renderServiceAgreement(input: LandlordDocumentPdfInput) {
           <p>MZ Property will return the Property in reasonably clean condition, allowing for fair wear and tear from ordinary residential use and the agreed short-stay operation. Any end-of-lease rent, bond or insurance handling will be dealt with under this Agreement and applicable residential tenancy law.</p>
           ` : `
           <h2>3. Guest Damage and Wear and Tear</h2>
+          ${isSaleVariant ? `
+          <p>Where damage, theft or accidental damage is caused by a guest during confirmed short-stay operation, MZ Property will manage the claim or recovery process with the guest, booking platform or relevant insurer where commercially practical. Such guest-caused losses will not be treated as Owner Expenses unless they arise from the Owner's act, omission, pre-existing Property condition, building defect, non-compliance or owner-side item.</p>
+          <p>Ordinary fair wear and tear from normal short-stay use is expected and accepted by the Owner, and is not treated as guest damage or a recoverable guest claim.</p>
+          ` : `
           <p>MZ Property is not liable for guest-caused damage, theft, accidental damage, excessive wear and tear or loss of income arising from guest behaviour, except to the extent caused by MZ Property's fraud, wilful misconduct or gross negligence.</p>
           <p>MZ Property will use reasonable efforts to recover losses from guests or booking platforms where commercially practical. The Owner acknowledges that ordinary wear and tear is expected in short-stay accommodation operations.</p>
           `}
+          `}
 
+          ${isSaleVariant || isDirectLeaseVariant ? `
           <h2>4. MZ Property Operational Items</h2>
           <p>All furniture, linen, consumables, appliances, keys, access devices, guest supplies and operational items supplied by MZ Property remain the property of MZ Property unless the parties agree otherwise in writing.</p>
           <p>Those items do not form part of any sale of the Property unless MZ Property separately agrees in writing to sell or transfer them. MZ Property may remove its items on termination or sale handover at a reasonably coordinated time.</p>
+          ` : `
+          <h2>4. Owner-Provided Furniture and Operating Supplies</h2>
+          <p>Unless otherwise agreed in writing, all furniture, appliances, linen, consumables, guest supplies, daily-use items, keys, access devices and other items used at the Property are provided or purchased by the Owner and remain the Owner's property.</p>
+          <p>MZ Property does not acquire ownership of those items and is not treated as the supplier of those items merely because it assists with short-stay operation, coordination, restocking, replacement or guest-use management. Any replacement, replenishment or purchase requested or approved for the Property will be treated as an Owner Expense unless the Parties agree otherwise in writing.</p>
+          `}
+
+          ${isDirectLeaseVariant ? '' : SHORT_STAY_INSURANCE_CLAUSE_HTML}
 
           ${isSaleVariant ? `
-          <h2>5. Sale Campaign Access</h2>
+          <h2>6. Sale Campaign Access</h2>
           <p>The Owner and any sales agent must coordinate sale-related access with MZ Property in advance. MZ Property may adjust availability, block dates, coordinate guest arrangements or recommend alternative access windows where reasonably required for guest experience, cleaning schedules, booking commitments or orderly operation.</p>
-          <p>Where sale-related access or arrangements require booking adjustments, additional cleaning, additional attendance, guest communication or other operational work, the related reasonable costs may be treated as Owner Expenses.</p>
+          <p>Where sale-related access or arrangements require booking adjustments, additional cleaning, additional attendance, guest communication or other operational work, the Parties will discuss the reasonable handling of any related direct costs in good faith and, where practical, agree the arrangement before the work is undertaken.</p>
           ` : isDirectLeaseVariant ? `
           <h2>5. Direct Lease Access and Insurance Cooperation</h2>
           <p>The Owner must provide access, keys, fobs, building move-in information, owners corporation / strata contacts and other handover details reasonably required for lease commencement and lawful use of the Property.</p>
           <p>The Owner does not participate in short-stay management. The Owner only needs to cooperate with MZ Property in relation to short-stay insurance, including policy setup, renewals, claim handling, incident information, access for assessors and any owner documents or signatures reasonably required.</p>
           ` : `
-          <h2>5. Access and Availability</h2>
+          <h2>6. Access and Availability</h2>
           <p>The Owner must coordinate owner stays, contractor access, blocked dates and other availability changes with MZ Property in advance. MZ Property may adjust availability, block dates or coordinate guest arrangements where reasonably required for cleaning schedules, booking commitments or orderly operation.</p>
           <p>Where owner-side access or arrangements require booking adjustments, additional cleaning, additional attendance, guest communication or other operational work, the related reasonable costs may be treated as Owner Expenses.</p>
           `}
@@ -709,16 +739,21 @@ function renderServiceAgreement(input: LandlordDocumentPdfInput) {
           <h2>7. Refund of Rent and Bond</h2>
           <p>If any amount is refundable on termination or under applicable law, the refund is limited to rent and bond amounts required to be refunded or reconciled.</p>
           ` : `
-          <h2>6. No Revenue Guarantee</h2>
+          <h2>7. No Revenue Guarantee</h2>
           <p>MZ Property does not guarantee occupancy, revenue, profitability, nightly rates, booking performance, sale outcome or timing of sale. Booking performance may be affected by seasonality, market conditions, building rules, sale activity, guest demand, platform policies and property condition.</p>
 
-          <h2>7. Suspension and Termination</h2>
+          <h2>8. Suspension and Termination</h2>
+          ${isSaleVariant ? `
           <p>Either party may terminate this Agreement by giving the notice stated in the Commercial Terms. MZ Property may suspend or terminate operations immediately where the Property becomes unsafe, the Owner interferes with operations, payments remain overdue, required maintenance is not carried out, strata or building restrictions arise, or continued operation is commercially impractical.</p>
           <p>If the Owner terminates other than because of sale completion or MZ Property's material breach, the Owner must reimburse MZ Property for unrecovered setup, furniture, linen, equipment, photography, listing and configuration costs supplied or arranged by MZ Property, to the extent not already recovered through the operating arrangement.</p>
+          ` : `
+          <p>Either party may terminate this Agreement by giving at least 60 days' written notice, or any other notice period stated in the Commercial Terms. MZ Property may suspend or terminate operations immediately where the Property becomes unsafe, payments remain overdue, required owner-side maintenance is not carried out, strata or building restrictions arise, or continued operation is not lawful or commercially practical.</p>
+          <p>If the Owner terminates this Agreement by giving the required notice, the Owner is not required to pay any termination penalty or compensate MZ Property for setup, furniture, linen, consumables, guest supplies, listing, photography or configuration costs, except for undisputed amounts that had already become payable before termination or costs expressly approved by the Owner in writing.</p>
+          <p>On termination, the Parties will cooperate in good faith to complete an orderly handover, reconcile completed bookings, Owner Expenses, unpaid fees and guest-related obligations up to the termination date.</p>
+          `}
 
-          <h2>8. Liability</h2>
-          <p>To the maximum extent permitted by law, MZ Property's aggregate liability under or in connection with this Agreement is limited to the MZ Property fees retained under this Agreement during the preceding 3 months.</p>
-          <p>The Owner indemnifies MZ Property against claims, losses, penalties, third-party demands and costs arising from the Property's condition, Owner breach, strata or building restrictions, insurance gaps, utility failures, owner-side maintenance, or sale campaign requirements, except to the extent caused by MZ Property's fraud, wilful misconduct or gross negligence.</p>
+          <h2>9. Liability</h2>
+          <p>Each Party's responsibility under or in connection with this Agreement will be assessed based on the actual circumstances, applicable law, the insurance position and the Party responsible for causing the relevant issue.</p>
           `}
         </section>
       </body>

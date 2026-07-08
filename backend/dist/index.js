@@ -134,6 +134,7 @@ const STARTUP_WARMUP_RETRIES = Math.floor(numberEnv('STARTUP_WARMUP_RETRIES', 2,
 const STARTUP_WARMUP_RETRY_DELAY_MS = numberEnv('STARTUP_WARMUP_RETRY_DELAY_MS', 1000, 0);
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const app = (0, express_1.default)();
+app.set('etag', false);
 app.use((req, res, next) => {
     const headerTraceId = String(req.headers['x-trace-id'] || req.headers['x-request-id'] || '').trim();
     const traceId = headerTraceId || (0, crypto_1.randomUUID)();
@@ -410,6 +411,12 @@ app.use('/public', guest_site_1.publicRouter);
 app.use('/public', landlord_documents_1.publicRouter);
 app.use('/public', public_1.default);
 app.use(auth_2.auth);
+app.use((_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    next();
+});
 const uploadDir = path_1.default.join(process.cwd(), 'uploads');
 if (!fs_1.default.existsSync(uploadDir))
     fs_1.default.mkdirSync(uploadDir);
@@ -1090,6 +1097,7 @@ async function runStartupWarmups() {
     startupWarmupState.errors = undefined;
     startupWarmupState.steps = [];
     const steps = [
+        { name: 'auth', run: auth_2.warmupAuthModule },
         { name: 'cleaning_sync_schema', run: cleaningSync_1.bootstrapCleaningSyncSchemaV2 },
         { name: 'mzapp', run: mzapp_1.warmupMzappModule },
         { name: 'inventory', run: inventory_1.warmupInventoryModule },

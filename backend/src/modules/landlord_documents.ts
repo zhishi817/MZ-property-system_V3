@@ -23,7 +23,7 @@ const WRITE_PERMS = ['landlord.manage']
 const TYPES = ['agency_authority', 'property_service_agreement'] as const
 const STATUSES = ['draft', 'sent_for_signature', 'signed', 'archived'] as const
 const AGENCY_AUTHORITY_TEMPLATE_VERSION = 'authorisation-detail-v7-page-filled-2026-05-18'
-const SERVICE_AGREEMENT_TEMPLATE_VERSION = 'service-agreement-v5-2026-06-15'
+const SERVICE_AGREEMENT_TEMPLATE_VERSION = 'service-agreement-v6-2026-07-07'
 const SERVICE_VARIANTS = ['management_standard', 'management_sale', 'leased_to_mz', 'leased_direct_to_mz'] as const
 const ATTACHMENT_CATEGORIES = ['agency_contract', 'condition_report'] as const
 

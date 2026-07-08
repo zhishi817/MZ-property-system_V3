@@ -2,6 +2,530 @@
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
+## CRL-20260708-001 — 移动端 API 禁用 304 缓存
+
+- **Status:** ready
+- **Updated:** 2026-07-08 02:17 AEST
+- **Request:** “移动端可执行任务一个都显示不出来了是什么原因。后端报错304。检查一下”
+- **Outcome:** 已确认截图中的 `304` 是 HTTP Not Modified，不是业务异常；但移动端 `fetch` 会把 304 当失败处理，可能中断 `/auth/me`、`/users/me` 和 `/mzapp/work-tasks` 刷新。现在后端鉴权 API 和移动端统一请求层都禁用条件缓存。后续复查发现 304 消失后 `/mzapp/work-tasks` 仍会超时，原因转为后端任务列表查询扫描过多历史清洁媒体/延期检查数据；已收窄查询范围。
+
+### Implementation
+
+- Previous behavior:
+  - Express 动态 JSON 响应可生成 ETag，客户端带 `If-None-Match` 时可能返回 304。
+  - 移动端统一请求函数没有显式禁用缓存；`Response.ok` 不包含 304，所以 304 会进入错误处理。
+  - 截图中 `/auth/me`、`/users/me` 多次返回 304；这会影响登录用户状态刷新，进而影响任务列表加载。
+- New behavior:
+  - 后端关闭动态响应 ETag，并在鉴权后的 API 路由统一设置 `Cache-Control: no-store, no-cache, must-revalidate, proxy-revalidate`、`Pragma: no-cache`、`Expires: 0`。
+  - 保留的移动端目录 `mz-cleaning-app-frontend` 的统一 `fetchWithTimeout` 把请求改为 `cache: 'no-store'`，并默认发送 `Cache-Control: no-cache` 和 `Pragma: no-cache`。
+  - 现有 401 登录失效判断改为从标准化后的 `Headers` 读取授权头，保持原行为。
+  - 2026-07-08 01:27 AEST update: `/mzapp/work-tasks` 的清洁任务查询先构造 `candidate_tasks`，再只查询候选任务的最新钥匙/视频/补品媒体，避免每次扫描全量历史 `cleaning_task_media`。
+  - 2026-07-08 01:27 AEST update: 延期检查的 SQL 候选范围限定为 `inspection_mode = deferred`，并排除已完成/已挂钥匙/取消的历史逾期检查，减少无关历史任务进入本周移动端列表构建。
+  - 2026-07-08 01:36 AEST update: 修复 `candidate_tasks` 重构后外层 SELECT 残留 `o` / `p_id` / `p_code` / `au` / `cu` / `iu` 旧别名的问题，外层只读取 CTE 已投出的 `t.*` 字段。
+  - 2026-07-08 01:44 AEST update: 补货 carry-forward 查询不再按所有任务房源扫描完整历史；只有当前用户会看到的 checkout/turnover 清洁任务房源才会查询，并把历史回看限制为最近 180 天。该查询先用 CTE 锁定候选清洁任务，再通过现有 `cleaning_task_media(task_id, type)` 索引读取媒体。
+  - 2026-07-08 02:17 AEST update: 将移动端任务接口热路径里的 `user_roles`、`work_tasks`、`work_task_participants`、`guest_luggage` 和清洁任务列 schema ensure 改为进程级一次性缓存，并把 auth/mzapp 相关 ensure 放入启动 warmup，避免每次 `/mzapp/work-tasks` 重复执行 DDL/索引检查。
+  - 2026-07-08 02:17 AEST update: `/mzapp/work-tasks` 现在在慢请求时输出分段耗时日志，并返回 `x-mzapp-work-tasks-total-ms` / `x-mzapp-work-tasks-steps` 诊断响应头；这些值只包含步骤名和毫秒数，不包含 token、数据库连接或用户敏感信息。
+- Key decisions:
+  - 不改任务筛选、权限或 `/mzapp/work-tasks` 业务逻辑；本次只修缓存层导致的 304 中断。
+  - 最初同步修改了 `mz-cleaning-app-frontend` 和 `mz-cleaning-app-frontend-Dev`；随后按用户要求在 `CRL-20260708-002` 中移除重复目录，只保留 `mz-cleaning-app-frontend`。
+
+### Files / Areas
+
+- `backend/src/index.ts` — modified: 关闭动态 ETag，并为鉴权 API 添加 no-store/no-cache headers。
+- `backend/src/auth.ts` — modified: 缓存 `user_roles` schema ensure，新增 auth warmup 并预热常用移动端角色权限缓存。
+- `backend/dist/auth.js` — generated: `npm run build` 产出的同步构建文件。
+- `backend/dist/index.js` — generated: `npm run build` 产出的同步构建文件。
+- `backend/src/modules/mzapp.ts` — modified: 优化 `/mzapp/work-tasks` 清洁任务候选查询、最新媒体查询范围、补货 carry-forward 历史扫描范围、schema ensure 缓存、mzapp warmup 和慢请求分段诊断，避免移动端任务接口超时。
+- `mz-cleaning-app-frontend/src/lib/api.ts` — modified: 统一 API fetch 禁用缓存并保留授权失效判断。
+- `mz-cleaning-app-frontend/src/lib/api.test.ts` — modified: 覆盖 no-store/no-cache headers 和跳过全局登出行为。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: authenticated JSON endpoints no longer return conditional 304 responses from Express dynamic ETag handling.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: independent of existing task-center/order and mobile task-card units; shares only `docs/change-release-ledger.md` with other units.
+
+### Validation
+
+- `git diff --check` in `MZ-property-system_V3` — passed.
+- `npm run build` in `backend` — passed: `tsc -p .`; rerun after `/mzapp/work-tasks` query optimization, alias fix, carry-forward scan narrowing, schema ensure caching, auth/mzapp warmup, and timing headers also passed.
+- Live read-only verification for `zhi-f` `/mzapp/work-tasks?date_from=2026-07-06&date_to=2026-07-12&view=mine` — passed: before hot-path ensure caching the endpoint returned `200` in about 33.5s; after caching and warmup the final two requests returned `200` in 5.671s and 5.702s, with response timing headers showing `schema:0` and `cleaning_pool` about 4.8s.
+- `git diff --check` in `mz-cleaning-app-frontend` — passed.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed: `tsc -p tsconfig.json`.
+- `npm test -- --runInBand src/lib/api.test.ts` in `mz-cleaning-app-frontend` — passed: 1 suite, 1 test.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with 0 errors and 113 existing warnings.
+- Mobile `npm run build` — not run: mobile package file has no `build` script.
+
+### Risks / Release Notes
+
+- Runtime risk: authenticated API responses are no longer conditionally cached. This is intentional for user/session/task data and may slightly increase repeated GET response transfer size.
+- Runtime risk: old completed deferred inspections with due dates before the selected range are no longer pulled into the selected range; unfinished overdue deferred inspections remain eligible and project to the range start as before.
+- Runtime risk: carry-forward restock prompts older than 180 days are no longer projected into the mobile task list. This bounds the query to prevent request timeout; recent unresolved carry-forward items remain eligible.
+- Runtime risk: schema ensure is now process-cached. If a migration fails during startup or first access, the cache resets and a later request can retry; a successfully running process will not repeatedly re-check those schemas until restart.
+- Runtime note: `/mzapp/work-tasks` exposes coarse diagnostic timing headers. They do not contain credentials, tokens, database URLs, or user PII, but can be removed after the timeout incident is fully closed if preferred.
+- Regression note: the first query optimization briefly produced `missing FROM-clause entry for table "o"` because the outer SELECT still referenced aliases moved inside `candidate_tasks`; fixed in the same unit before release.
+- Remaining diagnostic risk: startup `inventory` warmup still takes about 55s and consumes one database connection in the background after auth/mzapp warmups. It no longer blocks `/mzapp/work-tasks`, but it remains a separate database-compute reduction candidate.
+- Rollback: remove `app.set('etag', false)` and the authenticated no-cache middleware from `backend/src/index.ts`, then restore the previous `fetchWithTimeout` implementation in both mobile directories.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: uncommitted; other unrelated worktree changes remain present in backend, frontend, task-center, landlord documents, and task card files.
+
+## CRL-20260708-002 — 合并移动端目录并移除 Dev 重复克隆
+
+- **Status:** ready
+- **Updated:** 2026-07-08 01:15 AEST
+- **Request:** “不行啊合并成一个 只保留mz-cleaning-app-frontend”
+- **Outcome:** 已删除重复的 `mz-cleaning-app-frontend-Dev` 嵌套仓库，只保留 `mz-cleaning-app-frontend`。删除前确认两个目录都在 `Dev` 分支、同一个 commit，且本次涉及的移动端改动文件内容一致。
+
+### Implementation
+
+- Previous behavior:
+  - 工作区同时存在 `mz-cleaning-app-frontend` 和 `mz-cleaning-app-frontend-Dev` 两个移动端目录。
+  - `mz-cleaning-app-frontend-Dev` 是此前按 Dev 分支新克隆的独立嵌套仓库，在父仓库里表现为 untracked directory，容易造成“到底运行哪个目录”的混淆。
+- New behavior:
+  - 删除 `mz-cleaning-app-frontend-Dev`。
+  - 保留 `mz-cleaning-app-frontend`，其中已包含本次 API 304 缓存修复和之前任务卡默认收起改动。
+- Key decisions:
+  - 删除前对比 `src/lib/api.ts`、`src/lib/api.test.ts`、`src/screens/tabs/TasksScreen.tsx`、`src/screens/tabs/TasksScreen.test.tsx`，确认两个目录内容一致。
+  - 不改 `mz-cleaning-app-frontend` 当前未提交功能改动，只移除重复目录。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend-Dev/` — deleted: duplicate local clone; not tracked by parent Git.
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: follows `CRL-20260708-001`; the retained mobile API fix remains in `mz-cleaning-app-frontend`.
+
+### Validation
+
+- `git rev-parse --abbrev-ref HEAD` in both mobile directories before deletion — passed: both were `Dev`.
+- `git rev-parse HEAD` in both mobile directories before deletion — passed: both were `40dc43312cb7e9e023fa902dfb6c3861b1508171`.
+- `diff -u` for the four currently modified mobile files before deletion — passed: no differences.
+- `test -d mz-cleaning-app-frontend-Dev` after deletion — passed: exit code 1, directory no longer exists.
+- `python3 scripts/audit_change_release_ledger.py` — passed before ledger update after deletion: 11 changed files, 11 recorded.
+
+### Risks / Release Notes
+
+- Runtime risk: none expected; the removed directory was a duplicate local clone and not the retained mobile app directory.
+- Rollback: re-clone the mobile repo if a separate comparison clone is needed later.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added to tracked files.
+- Git state: `mz-cleaning-app-frontend-Dev/` no longer appears in root `git status`; retained `mz-cleaning-app-frontend` still has uncommitted tracked changes.
+
+## CRL-20260707-001 — 任务中心纯入住和维修执行顺序链路修复
+
+- **Status:** ready
+- **Updated:** 2026-07-07 12:02 AEST
+- **Request:** “先执行方案1和2”，即先修复纯入住任务保存执行顺序的落库条件，并让网页任务中心显示维修/其他任务的执行顺序。
+- **Outcome:** 移动端保存检查/执行混合顺序时，非 password-only 的纯入住 `checkin_clean` 任务可通过 `assignee_id` 写入 `sort_index_inspector`；网页任务中心会透传并显示 work/维修/其他任务的 `sort_index` 为“执行顺序 N”。
+
+### Implementation
+
+- Previous behavior:
+  - `/mzapp/cleaning-tasks/reorder` 和 `/mzapp/work-tasks/mixed-reorder` 的检查排序写入只允许 `cleaning_tasks.inspector_id = 当前用户`。
+  - 纯入住现场执行任务实际存的是 `assignee_id = 执行人`、`inspector_id = null`，导致 APP 保存顺序后 `sort_index_inspector` 没有落库，网页端也无顺序可显示。
+  - `work_tasks.sort_index` 已被移动端用于维修/线下/其他任务排序，但 `/task-center/day` 的 work task 映射没有透传该字段，网页也不会显示。
+- New behavior:
+  - 检查排序写入保留原 `inspector_id` 匹配，同时允许 `task_type = checkin_clean`、`assignee_id = 当前用户` 且 `inspection_scope <> password_only` 的纯入住任务写入 `sort_index_inspector`。
+  - 检查排序写入的日期匹配同时允许 `inspection_mode = deferred` 且 `inspection_due_date <= 保存日期` 的延期/逾期检查任务，避免 APP 当天列表包含旧 `task_date` 检查任务时整批保存返回 403。
+  - 任务中心后端确保 `work_tasks.sort_index` 列存在，并在 work task 的 board payload 和 legacy `tasks` payload 中透传 `sort_index`。
+  - 任务中心前端对 `task_source = work` 且 `sort_index` 为正数的任务显示“执行顺序 N”。
+- Key decisions:
+  - 不使用网页拖拽 `task_center_board_items.item_order` 作为执行顺序，避免把网页布局顺序误当成执行人 APP 顺序。
+  - 不回填 2026-07-06 历史数据；历史纯入住任务需要执行人重新保存顺序，或由用户确认具体顺序后再做定向数据修复。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — modified: 放宽检查排序写入条件，支持非 password-only 纯入住任务通过 `assignee_id` 保存 `sort_index_inspector`。
+- `backend/src/modules/task_center.ts` — modified: 给 `work_tasks` 增加 `sort_index` schema guard，并在任务中心 payload 中透传 work task 执行顺序。
+- `frontend/src/app/task-center/page.tsx` — modified: work task 正数 `sort_index` 显示为“执行顺序 N”。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: `/task-center/day` 的 work task payload 新增可选 `sort_index`；清洁排序写入接口的成功匹配范围扩大到符合条件的纯入住现场执行任务。
+- Database / migration: no standalone migration; runtime schema guard adds `work_tasks.sort_index` if missing.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: builds on `CRL-20260706-002` and `CRL-20260706-003`; shares `backend/src/modules/task_center.ts` and `frontend/src/app/task-center/page.tsx` with those existing uncommitted task-center units.
+
+### Validation
+
+- `git diff --check` — passed.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- Read-only 2026-07-07 zhi-f reorder SQL match check — passed: all 11 APP source ids match the repaired inspector reorder predicate; old predicate missed pure check-in and deferred inspection rows.
+- Local Expo restart for testing — passed: Metro started at `exp://192.168.31.35:8081` with `EXPO_PUBLIC_API_BASE_URL=http://192.168.31.35:4002`.
+- `npm run lint` in `frontend` — passed with existing warnings.
+- `./node_modules/.bin/vitest run src/app/task-center/taskCenterDisplay.test.ts --coverage=false` in `frontend` — passed: 1 file, 2 tests.
+- `npm run build` in `frontend` — passed; build emitted existing lint warnings, Browserslist staleness notice, and existing Recharts static-generation width/height warnings.
+
+### Risks / Release Notes
+
+- Runtime risk: non-password-only pure check-in tasks assigned through `assignee_id` now persist inspector/execution sort order. This matches current mobile display semantics, but password-only tasks remain excluded from this inspector sort path.
+- Runtime risk: deferred inspection tasks shown in a later day's APP list can now update `sort_index_inspector` when saving that later day. This matches the mobile list behavior but means the stored order belongs to the underlying cleaning task row, not a separate per-display-day row.
+- Historical data: existing 2026-07-06 pure入住 rows with null sort fields remain unchanged until the execution order is saved again or explicitly backfilled after user confirmation.
+- Rollback: restore the stricter `t.inspector_id::text = $3::text` condition in `backend/src/modules/mzapp.ts`, remove `work_tasks.sort_index` from the task-center payload, and remove work-task order tags in `frontend/src/app/task-center/page.tsx`.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: uncommitted; unrelated `frontend/src/app/cleaning/page.tsx`, `frontend/src/app/cleaning/cleaningSchedule.module.scss`, and untracked `mz-cleaning-app-frontend-Dev/` remain present in the worktree.
+
+## CRL-20260707-002 — 移动端任务卡默认收起并显示客人需求
+
+- **Status:** ready
+- **Updated:** 2026-07-07 11:01 AEST
+- **Request:** “将移动端任务设为默认收起状态，需要的话可以手动点击展开。收起时要把客人需求也显示一下。”
+- **Outcome:** 移动端今日任务列表中的任务卡默认只显示头部、标签和必要摘要；用户可点击“展开”查看地址、Wi-Fi、时间、密码、执行人员、操作按钮等详情。收起态如果有真实客人需求，会显示“客人需求”摘要。
+
+### Implementation
+
+- Previous behavior:
+  - `TasksScreen` 用空 `collapsedTaskIds` 表示所有任务默认展开。
+  - 客人需求只在展开详情区显示，任务收起后不可见。
+- New behavior:
+  - `collapsedTaskIds[taskId]` 未设置时按 `true` 处理，任务默认收起；点击展开/收起按钮会在该任务上切换显式状态。
+  - 收起态新增紧凑的客人需求摘要行，复用现有 `guestRequestForDisplay(task)` 清洗后的展示文本。
+  - 任务详情、主操作按钮、Wi-Fi、地址、执行人员等仍只在手动展开后显示。
+- Key decisions:
+  - 不新增全局设置或持久化偏好，保持改动局限在列表卡片交互。
+  - 不改 API 字段；客人需求继续走现有 `turnover_display.guest_request_summary` / `guest_special_request` / `note` 展示链路。
+  - 2026-07-07 11:01 AEST update: 最初只改到了 `mz-cleaning-app-frontend-Dev`；用户实际看到的默认展开来自另一个移动端目录 `mz-cleaning-app-frontend`，已同步同一修复。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.tsx` — modified: 同步默认收起逻辑、收起态客人需求摘要、对应样式到实际运行目录。
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.test.tsx` — modified: 同步默认收起和手动展开的回归测试到实际运行目录。
+- `mz-cleaning-app-frontend-Dev/src/screens/tabs/TasksScreen.tsx` — modified: 默认收起逻辑、收起态客人需求摘要、对应样式。
+- `mz-cleaning-app-frontend-Dev/src/screens/tabs/TasksScreen.test.tsx` — modified: 覆盖默认收起、客人需求摘要、手动展开详情，并调整依赖展开详情的既有断言。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: independent mobile UI behavior change; now covers both local mobile directories. `mz-cleaning-app-frontend` is the tracked nested repo likely used by the running app; `mz-cleaning-app-frontend-Dev/` remains visible to root Git as an untracked clone.
+
+### Validation
+
+- `git diff --check` in `mz-cleaning-app-frontend` — passed.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed: `tsc -p tsconfig.json`.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with 0 errors and 113 existing warnings.
+- `npm test -- --runInBand src/screens/tabs/TasksScreen.test.tsx` in `mz-cleaning-app-frontend` — passed on rerun: 1 suite, 13 tests; first run hit the default 5s timeout on the new multi-step test, then the same test passed alone with `--testTimeout=15000` and the full file passed immediately after. Jest emitted existing `SafeAreaView` deprecation and open-handle notices.
+- `npm test -- --runInBand` in `mz-cleaning-app-frontend` — passed: 33 suites, 123 tests; Jest emitted the existing `SafeAreaView` deprecation warning.
+- `git diff --check` in `mz-cleaning-app-frontend-Dev` — passed.
+- `npm run typecheck` in `mz-cleaning-app-frontend-Dev` — passed: `tsc -p tsconfig.json`.
+- `npm run lint` in `mz-cleaning-app-frontend-Dev` — passed with 0 errors and 113 existing warnings.
+- `npm test -- --runInBand src/screens/tabs/TasksScreen.test.tsx` in `mz-cleaning-app-frontend-Dev` — passed: 1 suite, 13 tests; Jest emitted existing `SafeAreaView` deprecation warning and an open-handle notice after completion.
+- `npm test -- --runInBand` in `mz-cleaning-app-frontend-Dev` — passed: 33 suites, 123 tests; Jest emitted the existing `SafeAreaView` deprecation warning.
+- `npm run build` in both mobile directories — not run: package has no `build` script.
+
+### Risks / Release Notes
+
+- Runtime risk: users now need one extra tap to access Wi-Fi, address, execution details, and primary action buttons from the task list.
+- Rollback: restore `taskCollapsed` default to `false`, restore the previous toggle expression, remove the collapsed guest request summary styles and assertions.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: `mz-cleaning-app-frontend` and `mz-cleaning-app-frontend-Dev` both have uncommitted changes in `src/screens/tabs/TasksScreen.tsx` and `src/screens/tabs/TasksScreen.test.tsx`; root worktree also has unrelated uncommitted changes listed under other release units.
+
+## CRL-20260707-003 — 边卖边短租合同责任条款调整
+
+- **Status:** ready
+- **Updated:** 2026-07-07 23:32 AEST
+- **Request:** 网页端房源合同中修改边租边卖合同条款：客人损坏由 MZ 向客人或平台索赔，不需要业主承担；自然磨损业主要接受；销售访问费用和 indemnity 条款改成中立表达；检查短租合同里物业日常维护责任，如没有则补充管理方负责。
+- **Outcome:** 边卖边短租合同模板现在明确 MZ 负责处理客损索赔，客损不作为 Owner Expenses；自然磨损由业主接受且不作为客损索赔；销售访问产生的额外运营成本改为双方善意讨论；责任条款改为双方各自对自身原因负责；日常短租运营维护明确由 MZ 负责，业主保留产权侧、结构、合规和业主自有设备责任。
+
+### Implementation
+
+- Previous behavior:
+  - 销售版合同的客损条款强调 MZ 不承担客人导致的损坏，只写“reasonable efforts”索赔，未明确客损不由业主承担。
+  - 销售访问造成的额外清洁、沟通、出勤等成本可直接作为 Owner Expenses。
+  - Liability 条款是单向 Owner indemnifies MZ Property。
+  - 销售版多处把 ordinary property maintenance 放在业主责任里，没有明确日常短租运营维护由管理方负责。
+- New behavior:
+  - 销售版 `Guest Damage and Wear and Tear` 改为：客人造成的损坏、盗损或意外损坏由 MZ Property 向客人、平台或相关保险方处理索赔；除业主原因、既有房屋状况、建筑缺陷、合规问题或业主侧物品外，不作为 Owner Expenses。
+  - 销售版明确 ordinary fair wear and tear 由业主接受，不作为客损或可向客人追回的 claim。
+  - 销售访问额外运营工作产生的直接成本，改为双方善意讨论并尽量事前确认处理方式。
+  - 销售版 Liability 改为双方各自对自身 breach、fraud、wilful misconduct、gross negligence 或可合理控制事项负责，并共同处理第三方 claim。
+  - 销售版服务、Special Conditions、Owner Property Responsibilities 和 Payment Terms 均补充或对齐 MZ 负责 day-to-day operational maintenance，业主负责产权侧/结构/合规/业主自有设备等事项。
+  - 房源服务协议模板版本从 `service-agreement-v5-2026-06-15` 提升到 `service-agreement-v6-2026-07-07`，网页端可识别旧草稿模板已过期。
+
+### Files / Areas
+
+- `backend/src/lib/landlordDocumentPdf.ts` — modified: 调整边卖边短租 PDF/HTML 模板中的服务范围、业主责任、客损/自然磨损、销售访问成本、日常维护和责任条款。
+- `backend/src/modules/landlord_documents.ts` — modified: 更新服务协议模板版本号。
+- `frontend/src/app/landlords/_components/LandlordDocumentsPage.tsx` — modified: 同步网页端服务协议模板版本号。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: independent contract wording update; shares only `docs/change-release-ledger.md` with other current units.
+
+### Validation
+
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `npm run lint` in `frontend` — passed with existing warnings; no errors.
+- `npm exec -- tsc --noEmit` in `frontend` — passed.
+- `npm run build` in `frontend` — passed; build emitted existing lint warnings, Browserslist staleness notice, and existing Recharts static-generation width/height warnings.
+- `git diff --check` — passed.
+- `node -r ts-node/register/transpile-only -e "..."` in `backend` — passed: rendered the `management_sale` service agreement HTML and confirmed the new guest damage, fair wear and tear, sale access cost, neutral liability, and day-to-day maintenance clauses are present.
+- Contract-specific automated unit test — not run: no existing targeted contract wording test file for landlord document PDF templates.
+
+### Risks / Release Notes
+
+- Legal wording risk: wording reflects the requested commercial position but should still be reviewed by a legal/professional adviser before use as a binding contract.
+- Scope risk: changes are intentionally limited to the `management_sale` service agreement variant; standard management and direct lease variants keep their existing responsibility language except for shared template version detection.
+- Rollback: restore the previous sales-variant clauses in `backend/src/lib/landlordDocumentPdf.ts` and reset the service agreement template version constants to `service-agreement-v5-2026-06-15`.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: uncommitted; unrelated task-center, cleaning page, and untracked mobile directory changes remain present in the worktree.
+
+## CRL-20260706-003 — 网页端任务中心卡片排版优化
+
+- **Status:** ready
+- **Updated:** 2026-07-06 18:29 AEST
+- **Request:** “我要改的是网页版的任务中心的任务显示”，并沿用确认过的结构：“房号，退房入住 要显示在一起，其他标签显示一行，顺序再一行”。后续要求：“把‘住6晚’挪到第二行显示，最后一行退房入住删掉。每行都要上下对齐”。最终确认按 v3 效果图落地。补充修正：“标准时间 就显示 退房入住就行了”，“清洁顺序 要往左移动”。再补充：“只有入住的任务，没显示第几个执行啊，执行人也拍了顺序，查一下什么原因”；再次反馈：“还是没有顺序显示”。
+- **Outcome:** 网页端任务中心卡片现在按固定 4 行节奏展示：标题/人员一行，退房/入住/住N晚一行，状态/业务标签一行，清洁/检查/执行顺序一行；普通清洁卡不再在底部重复显示退房/入住/住几晚摘要。标准退房/入住显示为“退房”“入住”，非标准时间才显示具体时间；顺序行 chip 起点已左移对齐上方标签。纯入住现场执行任务现在把已保存的执行人顺序显示为“执行顺序 N”。
+
+### Implementation
+
+- Previous behavior:
+  - 网页端任务卡把状态、同步、时间、检查模式和清洁/检查顺序都塞进同一个标签区。
+  - 房号/任务标题和退房入住时间分散显示，顺序标签与其他标签混在一起，密集任务卡较乱。
+  - 纯入住现场执行任务在移动端使用通用 `sort_index` 表达“第几个执行”，但网页端 `/task-center/day` 只透传清洁/检查角色顺序，没有给纯入住任务补出通用执行顺序，导致前端没有稳定字段可显示。
+- New behavior:
+  - 任务卡主信息区新增标题框：房号/任务标题左对齐，分配人员右对齐。
+  - 退房/入住/住晚数合并为同一时间行，住晚数不再与状态标签混排；标准时间只显示“退房”“入住”，非标准时间显示“晚退房 11:30am”等具体时间。
+  - 其他标签行改为单行横向滚动，避免挤压主信息。
+  - 清洁顺序/检查顺序从标签行移到独立顺序行，并去掉顺序行左侧内边距以贴齐上方标签起点。
+  - 纯入住 `checkin_clean` 在网页任务中心接口中会从已有 `sort_index_inspector` / `sort_index_cleaner` 补出通用 `sort_index`；前端优先显示该字段，缺失时再回退角色顺序，文案为“执行顺序 N”。
+  - 普通清洁任务底部不再重复退房/入住/住几晚摘要；仅保留跳过原因或客人需求等真正补充信息。
+  - 紧凑卡片标题、时间标签、状态标签、业务标签和顺序标签统一使用固定高度、固定 line-height 和垂直居中，减少多行上下错位。
+- Key decisions:
+  - 只调整网页端渲染层和 CSS module 样式，不再修改移动端任务卡。
+  - 复用现有 `specialTimingTags()`、`taskOrderTags()` 和 `shouldShowNights()` 数据；顺序仍复用现有清洁任务排序字段，不新增第二套保存系统。
+
+### Files / Areas
+
+- `backend/src/modules/task_center.ts` — modified: 为纯入住 `checkin_clean` 合并任务补出通用 `sort_index`，让网页端也能显示现场执行顺序。
+- `frontend/src/app/task-center/page.tsx` — modified: 将时间标签、住晚数标签、状态/业务标签、顺序标签分组渲染；纯入住任务显示“执行顺序”；并移除普通清洁卡底部重复摘要。
+- `frontend/src/app/cleaning/cleaningSchedule.module.scss` — modified: 增加网页任务中心紧凑卡片标题框、时间行、单行标签区、顺序行样式，并统一标签高度/line-height。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: `/task-center/day` 清洁任务响应新增可选 `sort_index`，用于纯入住任务的通用执行顺序显示。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: depends on `CRL-20260706-002` for清洁/检查顺序字段透传与基础显示逻辑。
+
+### Validation
+
+- `git diff --check` — passed.
+- `npm run lint` in `frontend` — passed with existing warnings.
+- `./node_modules/.bin/vitest run src/app/task-center/taskCenterDisplay.test.ts --coverage=false` in `frontend` — passed: 1 file, 2 tests.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `npm run build` in `frontend` — passed; build emitted existing lint warnings, Browserslist staleness notice, and existing Recharts static-generation size warnings.
+
+### Risks / Release Notes
+
+- Runtime risk: 标签行保持单行，标签较多时需要横向滚动查看全部标签；这是按用户要求避免卡片多行堆叠。
+- Rollback: revert the `renderTaskCard()` grouping changes in `frontend/src/app/task-center/page.tsx` and the `taskCenterCompactHero/TagLine/OrderLine` styles in `frontend/src/app/cleaning/cleaningSchedule.module.scss`.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: uncommitted; unrelated `mz-cleaning-app-frontend-Dev/` remains an untracked directory in this worktree but has no current diff for the reverted mobile card layout markers.
+
+## CRL-20260706-002 — 任务中心显示清洁/检查自标顺序
+
+- **Status:** ready
+- **Updated:** 2026-07-06 13:25 AEST
+- **Request:** “任务中心，每个任务，如果清洁人员和检查人员都标记的了顺序。任务中心页面的任务上需要显示他们的顺序。” 后续确认：顺序是清洁和检查人员自己在端上标记的。
+- **Outcome:** 任务中心任务卡和任务详情现在会显示清洁人员/检查人员自己保存的顺序，例如“清洁顺序 2”“检查顺序 1”；没有顺序的任务不显示占位标签。
+
+### Implementation
+
+- Previous behavior:
+  - 移动端清洁/检查人员可以保存 `sort_index_cleaner` 和 `sort_index_inspector`。
+  - 任务中心后端没有把这两个字段透传到 `/task-center/day`，网页任务卡也不会显示这些顺序。
+- New behavior:
+  - `task_center` 后端查询清洁任务时读取 `sort_index_cleaner` / `sort_index_inspector`，并在 turnover / deferred 合并任务上保留各角色最小正数顺序。
+  - 任务中心前端在任务卡标签区和详情弹窗顶部显示正数顺序标签。
+  - 后端启动时确保 `cleaning_tasks.sort_index_cleaner` 和 `sort_index_inspector` 列存在，复用现有字段，不新建第二套顺序系统。
+- Key decisions:
+  - 只显示清洁/检查端自己保存的顺序，不用任务中心拖拽顺序替代。
+  - 非正数、空值、无效值不显示，避免错误占位。
+
+### Files / Areas
+
+- `backend/src/modules/task_center.ts` — modified: 为任务中心清洁任务透传并合并 `sort_index_cleaner` / `sort_index_inspector`。
+- `frontend/src/app/task-center/page.tsx` — modified: 在任务卡和详情弹窗显示清洁/检查顺序标签。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: `/task-center/day` 清洁任务响应新增可选字段 `sort_index_cleaner`、`sort_index_inspector`。
+- Database / migration: no new migration; runtime schema guard adds existing sort columns if a local database has not applied `20260320_add_cleaning_tasks_sort_indexes.sql`.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: shares `frontend/src/app/task-center/page.tsx` with existing uncommitted `CRL-20260704-013` task-center timing tag work; selective release requires hunk-level review.
+
+### Validation
+
+- `git diff --check` — passed.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `npm run lint` in `frontend` — passed with existing warnings.
+- `./node_modules/.bin/vitest run src/app/task-center/taskCenterDisplay.test.ts --coverage=false` in `frontend` — passed: 1 file, 2 tests.
+- `npm run build` in `frontend` — passed; build emitted existing lint warnings, Browserslist staleness notice, and Recharts static-generation size warnings.
+
+### Risks / Release Notes
+
+- Runtime risk: merged turnover/deferred cards show the minimum positive cleaner/inspector order across child cleaning tasks; this matches existing mobile manager behavior, but if operations expects every child order shown separately, that would need a richer multi-value display.
+- Rollback: remove the sort-index fields from `task_center.ts` payloads and remove `taskOrderTags()` rendering from `frontend/src/app/task-center/page.tsx`.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: uncommitted.
+
+## CRL-20260706-001 — 网页端每日清洁保存中反馈
+
+- **Status:** ready
+- **Updated:** 2026-07-06 13:05 AEST
+- **Request:** “网页端 每日清洁页面 记录保存需要增加交互效果，让用户知道正在保存”
+- **Outcome:** 每日清洁页面的清洁任务编辑、手动新增清洁任务、线下任务新增/编辑、批量编辑保存动作现在会在请求期间显示 loading 文案，并阻止重复提交或误关闭。
+
+### Implementation
+
+- Previous behavior:
+  - 编辑清洁任务、手动新增清洁任务、编辑线下任务、批量编辑保存时没有明确的保存中反馈，用户可能重复点击或关闭弹窗。
+  - 新增线下任务已有 loading，但状态只覆盖单个弹窗，其他保存入口没有统一处理。
+- New behavior:
+  - `savingAction` 统一记录当前保存动作，相关按钮显示“保存中...”或“创建中...”并启用 Ant Design loading 状态。
+  - 保存期间禁用取消按钮、遮罩关闭和 ESC 关闭，避免请求过程中关闭表单或重复提交。
+  - 保存函数使用 `try/finally` 恢复状态，失败时仍会解除 loading。
+- Key decisions:
+  - 不改后端接口、表结构或保存 payload，仅增强前端交互反馈。
+  - 复用 Ant Design 现有 `loading` / `confirmLoading` / `cancelButtonProps`，不新增独立提示系统。
+
+### Files / Areas
+
+- `frontend/src/app/cleaning/page.tsx` — modified: 增加每日清洁保存动作状态，并为编辑抽屉和保存弹窗接入 loading、防重复提交和防误关闭。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: independent from existing uncommitted `frontend/src/app/task-center/page.tsx` task-center timing tag work; shares only this ledger file.
+
+### Validation
+
+- `git diff --check` — passed.
+- `npm run lint` in `frontend` — passed with existing warnings.
+- `npm run build` in `frontend` — passed; build emitted existing lint warnings, Browserslist staleness notice, and Recharts static-generation size warnings.
+- `npm test -- src/lib/cleaningDailyTaskStatus.test.ts` in `frontend` — failed because the package script enables global coverage thresholds for a single-file run; the selected 7 tests themselves passed before coverage enforcement failed.
+- `./node_modules/.bin/vitest run src/lib/cleaningDailyTaskStatus.test.ts --coverage=false` in `frontend` — passed: 1 file, 7 tests.
+- `npm run dev -- -p 3000` in `frontend` — failed in sandbox with `listen EPERM`; retried with approved local port binding and failed because port 3000 was already in use.
+- `npm run dev -- -p 3001` in `frontend` — not run: escalation request for alternate local port binding was rejected.
+
+### Risks / Release Notes
+
+- Runtime risk: while a save request is in progress, users cannot close the active drawer/modal until the request finishes; this is intentional to prevent accidental duplicate or abandoned saves.
+- Rollback: remove `savingAction` handling and restore the previous button/modal props in `frontend/src/app/cleaning/page.tsx`.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: uncommitted.
+
+## CRL-20260705-001 — Backend 本地环境文件初始化
+
+- **Status:** ready
+- **Updated:** 2026-07-05 00:29 AEST
+- **Request:** “新建一个” backend `.env` 文件。
+- **Outcome:** 已在 backend 目录创建本地 `.env`，用于固定本地后端端口和开发登录配置；数据库连接串保留为注释占位，未写入真实连接信息。
+
+### Implementation
+
+- Previous behavior: `backend/.env` 不存在，后端启动时未读取本地环境文件；默认端口会落到代码默认值，且没有数据库连接配置时显示 `pg=false`。
+- New behavior: `backend/.env` 存在，提供本地开发端口和默认开发账号相关环境变量；需要真实 Postgres 时可手动填写注释中的 `DATABASE_URL`。
+- Key decisions: 不写入真实数据库 URL、token、生产密码或任何私密值；`.env` 已被 gitignore 忽略。
+
+### Files / Areas
+
+- `backend/.env` — added/ignored: 本地开发环境变量文件；具体值不在 ledger 记录。
+- `docs/change-release-ledger.md` — modified: 记录本地环境文件初始化。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none; `DATABASE_URL` 仍未启用，除非后续手动填写。
+- Config / environment: local-only backend environment file added.
+- Dependencies: none.
+- Related units: none.
+
+### Validation
+
+- `git check-ignore -v backend/.env` — passed: `backend/.env` is ignored by `backend/.gitignore`.
+- `git status --short --ignored backend/.env docs/change-release-ledger.md` — passed: shows tracked ledger change and ignored backend `.env`.
+
+### Risks / Release Notes
+
+- Risk: 当前 `.env` 仍未连接真实数据库；后端会继续以内存模式运行，直到填写 `DATABASE_URL` 并重启后端。
+- Rollback: delete local ignored `backend/.env`.
+- Sensitive-information review: no real secrets, database URLs, tokens, cookies, private keys, or production credentials were recorded in the ledger.
+- Git state: `backend/.env` ignored/untracked; ledger uncommitted.
+
+## CRL-20260704-013 — 网页端任务中心特殊入住退房时间标记
+
+- **Status:** ready
+- **Updated:** 2026-07-04 23:17 AEST
+- **Request:** “网页端 任务中心页面，每个如果有除了正常10am退房和3pm入住的任务，都要标记退房和入住时间。”
+- **Outcome:** 任务中心清洁任务卡片在出现非默认入住/退房时间时，醒目标记会直接显示实际时间；同日退房入住组合任务任一侧时间异常时，会同时显示退房和入住时间上下文。
+
+### Implementation
+
+- Previous behavior:
+  - 任务中心已有特殊时间判断，但卡片标签只显示“晚退房 / 早入住”等文字，实际时间主要藏在摘要/详情里。
+  - 同日 turnover 任务如果只有一侧时间异常，标签只显示异常侧，工作人员不一定能一眼看到完整退房/入住窗口。
+- New behavior:
+  - 特殊时间标签文案改为包含实际时间，例如“晚退房 12pm”“早入住 1pm”。
+  - 同日退房入住组合任务只要任一侧不是默认 `10am` / `3pm`，就同时显示可见的退房和入住时间，例如“退房 10am”“早入住 1pm”。
+  - 单独退房或单独入住任务仍只在自身时间非默认时显示对应时间标签。
+- Key decisions:
+  - 不改后端接口和任务生成逻辑；后端已经提供 `summary_checkout_time`、`summary_checkin_time` 和 `turnover_display`。
+  - 保留默认任务不显示额外时间标签的规则，避免普通 10am/3pm 任务卡片噪音变多。
+
+### Files / Areas
+
+- `frontend/src/app/task-center/page.tsx` — modified: 特殊时间标签生成逻辑改为带实际时间，并为同日 turnover 异常任务补齐退房/入住时间上下文。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: shares `frontend/src/app/task-center/page.tsx` and this ledger with earlier task-center units; selective release requires hunk-level review if other local changes appear in the same files.
+
+### Validation
+
+- `git diff --check` — passed.
+- `npm run lint` in `frontend` — failed: `next` command not found because `frontend/node_modules` is not installed in this fresh local clone.
+- Full build/typecheck — not run: frontend dependencies are not installed locally.
+
+### Risks / Release Notes
+
+- Runtime risk: tags are slightly longer, so very dense task cards may wrap more often; existing flex wrapping should keep the card readable.
+- Rollback: revert the `specialTimingTags()` and `timingLabelWithTime()` changes in `frontend/src/app/task-center/page.tsx`.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: uncommitted.
+
 ## CRL-20260705-004 — 移动端管理视图清洁/检查排序显示修复
 
 - **Status:** pushed

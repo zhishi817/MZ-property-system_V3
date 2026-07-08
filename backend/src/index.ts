@@ -48,7 +48,7 @@ import { publicRouter as guestSitePublicRouter, adminRouter as guestSiteAdminRou
 import { runKeyUploadReminder } from './lib/keyUploadReminderJob'
 import { runKeyUploadSlaCheck } from './lib/keyUploadSlaJob'
 import { runDayEndHandoverReminder } from './lib/dayEndHandoverReminderJob'
-import { auth } from './auth'
+import { auth, warmupAuthModule } from './auth'
 import publicRouter from './modules/public'
 import publicAdminRouter from './modules/public_admin'
 import { r2Status } from './r2'
@@ -144,6 +144,7 @@ const STARTUP_WARMUP_RETRY_DELAY_MS = numberEnv('STARTUP_WARMUP_RETRY_DELAY_MS',
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 const app = express()
+app.set('etag', false)
 app.use((req: any, res, next) => {
   const headerTraceId = String(req.headers['x-trace-id'] || req.headers['x-request-id'] || '').trim()
   const traceId = headerTraceId || randomUUID()
@@ -372,6 +373,12 @@ app.use('/public', guestSitePublicRouter)
 app.use('/public', landlordDocumentsPublicRouter)
 app.use('/public', publicRouter)
 app.use(auth)
+app.use((_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+  res.setHeader('Pragma', 'no-cache')
+  res.setHeader('Expires', '0')
+  next()
+})
 const uploadDir = path.join(process.cwd(), 'uploads')
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir)
 app.use('/uploads', (_req, res, next) => {
@@ -991,6 +998,7 @@ async function runStartupWarmups() {
   startupWarmupState.steps = []
 
   const steps: Array<{ name: string; run: () => Promise<void> }> = [
+    { name: 'auth', run: warmupAuthModule },
     { name: 'cleaning_sync_schema', run: bootstrapCleaningSyncSchemaV2 },
     { name: 'mzapp', run: warmupMzappModule },
     { name: 'inventory', run: warmupInventoryModule },
