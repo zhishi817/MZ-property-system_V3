@@ -2554,8 +2554,8 @@
 
 @media (max-width: 720px) {
   .taskCenterSubrowGrid {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 10px;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 228px), 1fr));
+    gap: 6px;
   }
 
   .taskDetailHeroTop {
@@ -2582,22 +2582,23 @@
   .taskCenterToolbar,
   .taskCenterCompactHint,
   .taskCenterBoardWrapNew {
-    padding-left: 8px;
-    padding-right: 8px;
+    padding-left: 6px;
+    padding-right: 6px;
   }
 
   .taskCenterBoardRowBodyCompact {
-    padding: 8px;
+    gap: 6px;
+    padding: 6px;
   }
 
   .taskCenterLineOnly {
-    padding: 6px;
+    padding: 5px;
   }
 
   .taskCenterCompactTask {
     min-height: 0;
-    padding: 8px;
-    gap: 7px;
+    padding: 6px 7px;
+    gap: 5px;
   }
 
   .taskCenterCompactGrip {
@@ -2606,49 +2607,87 @@
   }
 
   .taskCenterCompactTask .taskStripe {
-    width: 7px;
+    width: 6px;
+  }
+
+  .taskCenterCompactTask .taskMain {
+    gap: 4px;
+  }
+
+  .taskCenterCompactHero {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
   }
 
   .taskCenterCompactTitle {
-    height: auto;
-    min-height: 32px;
-    padding: 6px 9px;
-    line-height: 1.15;
+    height: 28px;
+    min-height: 0;
+    padding: 0 8px;
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 28px;
   }
 
   .taskCenterCompactTimeLine,
   .taskCenterCompactTagLine {
-    height: auto;
-    min-height: 28px;
-    overflow: visible;
-    flex-wrap: wrap;
-    white-space: normal;
-    gap: 6px;
+    height: 24px;
+    min-height: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex-wrap: nowrap;
+    white-space: nowrap;
+    gap: 5px;
   }
 
   .taskCenterCompactMetaGroup {
-    flex-wrap: wrap;
-    gap: 6px;
+    flex-wrap: nowrap;
+    gap: 5px;
   }
 
   .taskCenterCompactTimeTag,
   .taskCenterCompactTag {
-    flex: 0 1 auto;
-    max-width: 100%;
+    flex: 0 0 auto;
+    max-width: 150px;
+    height: 24px;
+    padding: 0 7px;
+    border-radius: 8px;
+    font-size: 10px;
+    line-height: 24px;
+  }
+
+  .taskCenterCompactStatus {
+    height: 24px;
+    padding: 0 7px;
+    border-radius: 8px;
+    font-size: 10px;
+    line-height: 24px;
   }
 
   .taskCenterCompactOrderLine {
-    height: auto;
-    min-height: 34px;
-    flex-wrap: wrap;
-    overflow: visible;
-    padding: 3px;
-    gap: 6px;
+    height: 26px;
+    min-height: 0;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 2px;
+    gap: 5px;
+    border-radius: 8px;
   }
 
   .taskCenterCompactOrderTag {
-    flex: 0 1 auto;
-    max-width: 100%;
+    flex: 0 0 auto;
+    max-width: 150px;
+    height: 22px;
+    padding: 0 7px;
+    border-radius: 7px;
+    font-size: 10px;
+    line-height: 22px;
+  }
+
+  .taskCenterCompactDetail {
+    font-size: 10px;
+    line-height: 12px;
+    -webkit-line-clamp: 1;
   }
 
   .taskCenterStaffRowBody {

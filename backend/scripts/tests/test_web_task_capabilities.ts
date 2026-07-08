@@ -72,8 +72,10 @@ function main() {
     inspection_mode: 'checked_done',
   }, viewOnlyContext)
   assert.equal(checkedDoneViewOnly.display_state.task_semantics.is_checked_done, true)
+  assert.equal(checkedDoneViewOnly.display_state.task_semantics.is_task_ended, true)
   assert.equal(checkedDoneViewOnly.execution_semantics, 'mixed_cleaning_inspection')
   assert.ok(badgeIds(checkedDoneViewOnly).includes('checked_done'))
+  assert.ok(badgeIds(checkedDoneViewOnly).includes('task_ended'))
   assert.equal(actionById(checkedDoneViewOnly, 'edit_task')?.enabled, false)
   assert.equal(actionById(checkedDoneViewOnly, 'edit_task')?.disabled_reason, 'missing_management_permission')
   assert.equal(checkedDoneViewOnly.editable_fields.status.enabled, false)
@@ -87,7 +89,9 @@ function main() {
     auto_sync_enabled: false,
   }, managerContext)
   assert.equal(selfCompleteLocked.display_state.task_semantics.is_self_complete, true)
+  assert.equal(selfCompleteLocked.display_state.task_semantics.is_task_ended, false)
   assert.ok(badgeIds(selfCompleteLocked).includes('self_complete'))
+  assert.equal(badgeIds(selfCompleteLocked).includes('task_ended'), false)
   assert.equal(actionById(selfCompleteLocked, 'update_status')?.enabled, false)
   assert.equal(actionById(selfCompleteLocked, 'update_status')?.disabled_reason, 'auto_sync_locked')
   assert.equal(selfCompleteLocked.editable_fields.cleaner_id.disabled_reason, 'auto_sync_locked')

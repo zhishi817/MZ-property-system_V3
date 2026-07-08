@@ -2,6 +2,108 @@
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
+## CRL-20260709-001 — 自完成任务不再显示任务已结束
+
+- **Status:** ready
+- **Updated:** 2026-07-09 00:16 AEST
+- **Request:** “自完成是指无需检查人员，现场自行完成补货、拍照和钥匙上传。不是任务已经完成啊。给我一个修复计划” 后确认执行。
+- **Outcome:** Web 任务中心和清洁日历消费的后端 `display_state.badges` 不再把 `inspection_mode=self_complete` 当成任务结束；自完成任务仍显示“自完成”，但只有真实完成类状态或 `checked_done` 才显示“任务已结束”。
+
+### Implementation
+
+- Previous behavior:
+  - `buildWebTaskCapabilityPayload()` 将 `inspection_mode=self_complete` 纳入 `taskEnded`，导致 `status=pending` 的现场自完成任务同时返回“自完成”和“任务已结束”两个 badge。
+  - 截图中的 HA205 / BO717 / LA812 这类明日/今日待执行任务，只要安排模式是自完成，就会被视觉上误读为已经完成。
+- New behavior:
+  - `taskEnded` 只由完成类 `status`、`keys_hung` 或 `checked_done` 推导，不再由 `self_complete` 推导。
+  - `self_complete` 继续保留独立“自完成” badge，用来表达无需检查人员、由现场执行人完成补货/拍照/钥匙上传流程。
+- Key decisions:
+  - 不改数据库枚举和生产数据；`inspection_mode=self_complete` 的业务含义是正确的，问题只在展示语义映射。
+  - 保留 `checked_done` 触发“任务已结束”，因为它是独立的已检查完成结果/安排语义。
+
+### Files / Areas
+
+- `backend/src/lib/webTaskCapabilities.ts` — modified: 从 `taskEnded` 条件中移除 `isSelfComplete`。
+- `backend/scripts/tests/test_web_task_capabilities.ts` — modified: 增加 `self_complete` 不产生 `task_ended`、`checked_done` 仍产生 `task_ended` 的回归断言。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: `/task-center/day`、`/cleaning/calendar-range` 等返回的 `display_state.badges` 会少返回 `self_complete + pending` 场景下的 `task_ended` badge；响应结构不变。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: follows earlier inspection-mode semantic split units that separated `self_complete` from `checked_done`.
+
+### Validation
+
+- `npx ts-node-dev --transpile-only scripts/tests/test_web_task_capabilities.ts` in `backend` — passed: `test_web_task_capabilities: ok`.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `npx vitest run src/lib/cleaningDailyTaskStatus.test.ts` in `frontend` — passed: 1 file, 7 tests.
+- `npm run lint` in `frontend` — passed with existing warnings in unrelated files.
+- `npm run build` in `frontend` — passed; emitted existing Browserslist/Recharts warnings during build output.
+- `git diff --check -- backend/src/lib/webTaskCapabilities.ts backend/scripts/tests/test_web_task_capabilities.ts docs/change-release-ledger.md` — passed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 3 changed files, 3 recorded, coverage PASS.
+
+### Risks / Release Notes
+
+- Runtime risk: operations users will no longer see “任务已结束” for pending self-complete tasks; this is intended, but any process that previously treated that badge as a proxy for self-complete should use the explicit `self_complete` badge instead.
+- Rollback: restore `isSelfComplete` in the `taskEnded` condition and remove the new regression assertions.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: uncommitted.
+
+## CRL-20260709-002 — 任务中心折叠屏多任务布局优化
+
+- **Status:** ready
+- **Updated:** 2026-07-09 00:31 AEST
+- **Request:** “任务中心页面自适应 还是不行。这个手机折叠的。一个任务只显示一行就不太行啊，至少要显示多个任务。还需要优化。”
+- **Outcome:** 任务中心在折叠屏/较宽手机宽度下不再强制一列任务卡；普通窄手机仍按一列展示，折叠屏会按最小卡片宽度自动排成多列，并压缩卡片高度，让首屏能看到多条任务。
+
+### Implementation
+
+- Previous behavior:
+  - 720px 以下任务网格被强制为单列，折叠屏横向空间也只能一行一张任务卡。
+  - 手机端时间、状态、业务标签和顺序标签全部换行，任务卡被撑高，首屏可见任务数量偏少。
+- New behavior:
+  - 720px 以下改为 `auto-fit` + `228px` 最小卡片宽度：普通窄手机自然回落为一列，折叠屏/较宽手机自动显示两列或更多。
+  - 手机端压缩任务卡 padding、行间距、色条、标题、状态/业务标签和顺序标签高度。
+  - 手机端标签行和顺序行保持横向可扫的短行，详情行限制为一行，避免单张任务卡过高。
+- Key decisions:
+  - 只改任务中心响应式 SCSS，不改任务数据、排序、保存、状态或标签生成逻辑。
+  - 保留普通窄屏的一列回退，避免 390px 左右设备出现过窄双列卡片。
+
+### Files / Areas
+
+- `frontend/src/app/cleaning/cleaningSchedule.module.scss` — modified: 调整任务中心 720px 以下网格、任务卡和标签行的响应式密度。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: follows `CRL-20260708-003`; both touch the same task-center responsive SCSS area.
+
+### Validation
+
+- `git diff --check -- frontend/src/app/cleaning/cleaningSchedule.module.scss` — passed.
+- `npm run lint -- --file src/app/task-center/page.tsx` in `frontend` — passed: no ESLint warnings or errors.
+- `./node_modules/.bin/tsc --noEmit --pretty false` in `frontend` — passed.
+- `./node_modules/.bin/vitest run src/app/task-center/taskCenterDisplay.test.ts --coverage=false` in `frontend` — passed: 1 file, 2 tests.
+- `npm run build` in `frontend` — passed; build emitted existing project ESLint warnings, Browserslist staleness notice, and existing Recharts static-generation width/height warnings.
+- Temporary SCSS/Playwright layout sample — passed with approved local Chromium execution: 390px viewport showed 1 column, 5 visible task cards, no document overflow; 560px viewport showed 2 columns, 8 visible task cards, no document overflow. Screenshots written to `/private/tmp/task-center-mobile-390.png` and `/private/tmp/task-center-mobile-560.png`.
+- `git diff --check -- docs/change-release-ledger.md frontend/src/app/cleaning/cleaningSchedule.module.scss` — passed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 4 changed files, 4 recorded, coverage PASS.
+
+### Risks / Release Notes
+
+- Runtime risk: very long tags now scroll horizontally within their line on phone widths instead of expanding the card vertically; this is intentional to preserve more visible tasks.
+- Visual risk: the temporary visual check used a local sample rendered from the real SCSS, not an authenticated live task-center payload.
+- Rollback: restore the previous 720px single-column grid and wrapping tag/order rows in `frontend/src/app/cleaning/cleaningSchedule.module.scss`.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: uncommitted.
+
 ## CRL-20260708-003 — 任务中心移动端任务卡响应式优化
 
 - **Status:** committed
