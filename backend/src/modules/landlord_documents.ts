@@ -72,56 +72,72 @@ type LandlordDocumentAttachment = {
   created_at?: string
 }
 
+let landlordDocumentsTablesEnsured = false
+let landlordDocumentsTablesEnsuring: Promise<void> | null = null
+
 async function ensureLandlordDocumentsTables() {
   if (!pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS landlord_documents (
-    id text PRIMARY KEY,
-    type text NOT NULL,
-    document_no text,
-    landlord_id text REFERENCES landlords(id) ON DELETE SET NULL,
-    property_id text REFERENCES properties(id) ON DELETE SET NULL,
-    status text NOT NULL DEFAULT 'draft',
-    fields jsonb NOT NULL DEFAULT '{}'::jsonb,
-    notes text,
-    current_draft_version_id text,
-    current_signed_version_id text,
-    created_by text,
-    updated_by text,
-    created_at timestamptz DEFAULT now(),
-    updated_at timestamptz DEFAULT now()
-  );`)
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS landlord_document_versions (
-    id text PRIMARY KEY,
-    document_id text NOT NULL REFERENCES landlord_documents(id) ON DELETE CASCADE,
-    kind text NOT NULL,
-    version_no integer NOT NULL,
-    file_url text NOT NULL,
-    file_key text,
-    file_name text,
-    file_size integer,
-    content_type text,
-    is_current boolean DEFAULT false,
-    notes text,
-    created_by text,
-    created_at timestamptz DEFAULT now()
-  );`)
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS landlord_document_attachments (
-    id text PRIMARY KEY,
-    document_id text NOT NULL REFERENCES landlord_documents(id) ON DELETE CASCADE,
-    category text NOT NULL,
-    file_url text NOT NULL,
-    file_key text,
-    file_name text,
-    file_size integer,
-    content_type text,
-    created_by text,
-    created_at timestamptz DEFAULT now()
-  );`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_landlord_documents_type_status ON landlord_documents(type, status);`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_landlord_documents_landlord ON landlord_documents(landlord_id);`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_landlord_documents_property ON landlord_documents(property_id);`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_landlord_document_versions_doc ON landlord_document_versions(document_id, kind, version_no DESC);`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_landlord_document_attachments_doc ON landlord_document_attachments(document_id, category, created_at DESC);`)
+  if (landlordDocumentsTablesEnsured) return
+  if (landlordDocumentsTablesEnsuring) return landlordDocumentsTablesEnsuring
+  landlordDocumentsTablesEnsuring = (async () => {
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS landlord_documents (
+      id text PRIMARY KEY,
+      type text NOT NULL,
+      document_no text,
+      landlord_id text REFERENCES landlords(id) ON DELETE SET NULL,
+      property_id text REFERENCES properties(id) ON DELETE SET NULL,
+      status text NOT NULL DEFAULT 'draft',
+      fields jsonb NOT NULL DEFAULT '{}'::jsonb,
+      notes text,
+      current_draft_version_id text,
+      current_signed_version_id text,
+      created_by text,
+      updated_by text,
+      created_at timestamptz DEFAULT now(),
+      updated_at timestamptz DEFAULT now()
+    );`)
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS landlord_document_versions (
+      id text PRIMARY KEY,
+      document_id text NOT NULL REFERENCES landlord_documents(id) ON DELETE CASCADE,
+      kind text NOT NULL,
+      version_no integer NOT NULL,
+      file_url text NOT NULL,
+      file_key text,
+      file_name text,
+      file_size integer,
+      content_type text,
+      is_current boolean DEFAULT false,
+      notes text,
+      created_by text,
+      created_at timestamptz DEFAULT now()
+    );`)
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS landlord_document_attachments (
+      id text PRIMARY KEY,
+      document_id text NOT NULL REFERENCES landlord_documents(id) ON DELETE CASCADE,
+      category text NOT NULL,
+      file_url text NOT NULL,
+      file_key text,
+      file_name text,
+      file_size integer,
+      content_type text,
+      created_by text,
+      created_at timestamptz DEFAULT now()
+    );`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_landlord_documents_type_status ON landlord_documents(type, status);`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_landlord_documents_landlord ON landlord_documents(landlord_id);`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_landlord_documents_property ON landlord_documents(property_id);`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_landlord_document_versions_doc ON landlord_document_versions(document_id, kind, version_no DESC);`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_landlord_document_attachments_doc ON landlord_document_attachments(document_id, category, created_at DESC);`)
+    landlordDocumentsTablesEnsured = true
+  })()
+    .catch((error) => {
+      landlordDocumentsTablesEnsured = false
+      throw error
+    })
+    .finally(() => {
+      landlordDocumentsTablesEnsuring = null
+    })
+  return landlordDocumentsTablesEnsuring
 }
 
 function actorOf(req: any) {
@@ -132,6 +148,13 @@ function actorOf(req: any) {
 function cleanId(v: any) {
   const s = String(v || '').trim()
   return s || null
+}
+
+async function existingLandlordIdOrNull(value: any) {
+  const id = cleanId(value)
+  if (!id || !pgPool) return null
+  const r = await pgPool.query('SELECT id FROM landlords WHERE id=$1 LIMIT 1', [id])
+  return r.rows?.[0]?.id ? id : null
 }
 
 function documentPrefix(type: string) {
@@ -267,6 +290,7 @@ async function loadDefaults(landlordId?: string | null, propertyId?: string | nu
     installation_fee: '$0.00',
     purchase_fee: '$0.00',
     photography_fee: '$0.00',
+    special_terms: '',
     monthly_rent: '',
     rent_payment_frequency: 'Monthly',
     rent_due_day: '1',
@@ -384,18 +408,19 @@ function buildBlankTemplateFields(type: LandlordDocumentType, variant?: ServiceA
     installation_fee: '$0.00',
     purchase_fee: '$0.00',
     photography_fee: '$0.00',
-      monthly_rent: '',
-      rent_payment_frequency: 'Monthly',
-      rent_due_day: '1',
-      first_rent_due_date: '',
-      bond_amount: 'One month rent',
-      bond_due_date: '',
-      electronic_notice_method: 'Email',
-      urgent_repair_contact: 'MZ Property operations team',
-      owners_corporation_rules: 'Owner to provide if applicable',
-      minimum_standards_confirmation: 'Owner confirms the Property meets applicable rental minimum standards before handover.',
-      owner_charges_handling: DIRECT_LEASE_UTILITIES_TEXT,
-      short_stay_insurance: DIRECT_LEASE_INSURANCE_TEXT,
+    special_terms: '',
+    monthly_rent: '',
+    rent_payment_frequency: 'Monthly',
+    rent_due_day: '1',
+    first_rent_due_date: '',
+    bond_amount: 'One month rent',
+    bond_due_date: '',
+    electronic_notice_method: 'Email',
+    urgent_repair_contact: 'MZ Property operations team',
+    owners_corporation_rules: 'Owner to provide if applicable',
+    minimum_standards_confirmation: 'Owner confirms the Property meets applicable rental minimum standards before handover.',
+    owner_charges_handling: DIRECT_LEASE_UTILITIES_TEXT,
+    short_stay_insurance: DIRECT_LEASE_INSURANCE_TEXT,
     mz_signed_name: '',
     mz_signed_at: '',
     mz_signature_data_url: '',
@@ -558,6 +583,7 @@ async function loadDocument(id: string) {
             dv.file_url AS current_draft_url,
             dv.file_key AS current_draft_file_key,
             dv.file_name AS current_draft_file_name,
+            dv.created_at AS current_draft_created_at,
             sv.file_url AS current_signed_url,
             sv.file_key AS current_signed_file_key,
             sv.file_name AS current_signed_file_name
@@ -712,6 +738,7 @@ router.get('/', requireAnyPerm(VIEW_PERMS), async (req, res) => {
                         p.code AS property_code,
                         p.address AS property_address,
                         dv.file_url AS current_draft_url,
+                        dv.created_at AS current_draft_created_at,
                         sv.file_url AS current_signed_url
                  FROM landlord_documents d
                  LEFT JOIN landlords l ON l.id = d.landlord_id
@@ -773,7 +800,7 @@ router.post('/', requireAnyPerm(WRITE_PERMS), async (req, res) => {
     const parsed = createSchema.safeParse(req.body || {})
     if (!parsed.success) return res.status(400).json(parsed.error.format())
     const v = parsed.data
-    const landlordId = cleanId(v.landlord_id)
+    const landlordId = await existingLandlordIdOrNull(v.landlord_id)
     const propertyId = cleanId(v.property_id)
     const fields = await buildFields(v.type, landlordId, propertyId, parseFields(v.fields))
     if (!String(fields.property_address || '').trim()) return res.status(400).json({ message: 'missing property_address' })
@@ -801,8 +828,16 @@ router.post('/', requireAnyPerm(WRITE_PERMS), async (req, res) => {
     const createdId = String(out?.id || '')
     let responseDoc: any = out
     if (createdId && hasR2 && !isLeasedToMzVariant(fields)) {
-      const generated = await createDraftVersion(createdId, actor, 'Auto draft on create', 'draft')
-      responseDoc = generated.document
+      try {
+        const generated = await createDraftVersion(createdId, actor, 'Auto draft on create', 'draft')
+        responseDoc = generated.document
+      } catch (draftError: any) {
+        try {
+          console.error(`[landlord-documents] draft_generation_failed action=create document_id=${createdId} message=${String(draftError?.message || '')}`)
+        } catch {}
+        responseDoc = await loadDocument(createdId) || responseDoc
+        if (responseDoc) responseDoc.draft_generation_error = 'draft_generation_failed'
+      }
     }
     if (createdId && v.type === 'property_service_agreement' && landlordId) {
       if (!isMzLeaseVariant(fields)) await syncLandlordCachedManagementFeeRate(landlordId)
@@ -825,7 +860,7 @@ router.patch('/:id', requireAnyPerm(WRITE_PERMS), async (req, res) => {
     const before = await loadDocument(id)
     if (!before) return res.status(404).json({ message: 'not found' })
     const patch = parsed.data
-    const landlordId = patch.landlord_id !== undefined ? cleanId(patch.landlord_id) : before.landlord_id
+    const landlordId = patch.landlord_id !== undefined ? await existingLandlordIdOrNull(patch.landlord_id) : before.landlord_id
     const propertyId = patch.property_id !== undefined ? cleanId(patch.property_id) : before.property_id
     const existingFields = parseFields(before.fields)
     const fields = patch.fields !== undefined ? await buildFields(before.type as any, landlordId, propertyId, { ...existingFields, ...parseFields(patch.fields) }) : existingFields
@@ -866,8 +901,16 @@ router.patch('/:id', requireAnyPerm(WRITE_PERMS), async (req, res) => {
     const contentChanged = patch.landlord_id !== undefined || patch.property_id !== undefined || patch.fields !== undefined
     let responseDoc: any = out
     if (contentChanged && hasR2 && !leasedVariant) {
-      const generated = await createDraftVersion(id, actor, 'Auto draft on update', patch.status || 'draft')
-      responseDoc = generated.document
+      try {
+        const generated = await createDraftVersion(id, actor, 'Auto draft on update', patch.status || 'draft')
+        responseDoc = generated.document
+      } catch (draftError: any) {
+        try {
+          console.error(`[landlord-documents] draft_generation_failed action=update document_id=${id} message=${String(draftError?.message || '')}`)
+        } catch {}
+        responseDoc = await loadDocument(id) || responseDoc
+        if (responseDoc) responseDoc.draft_generation_error = 'draft_generation_failed'
+      }
     } else {
       responseDoc = await loadDocument(id)
     }

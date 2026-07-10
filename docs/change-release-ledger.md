@@ -2,6 +2,313 @@
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
+## CRL-20260710-004 — 移动端推送通知高优先级投递
+
+- **Status:** ready
+- **Updated:** 2026-07-10 23:48 AEST
+- **Request:** 给 notification 两个未提交文件补一个独立 CRL。
+- **Outcome:** Expo 推送发送现在会带 `priority: high` 和默认通知通道，队列 worker 也会从 `user_notifications.priority` 读取并按优先级分组转发，避免不同优先级通知被合并到同一批发送时丢失优先级语义。
+
+### Implementation
+
+- Previous behavior:
+  - `sendExpoPush()` 只发送 title/body/sound/data，没有显式传递 Expo push priority 或 channelId。
+  - `notifyExpoAll()` / `notifyExpoUsers()` 不接收 priority 参数。
+  - `notificationQueueWorker` 从队列取通知时没有读取 `user_notifications.priority`，批量合并 key 也不包含 priority。
+- New behavior:
+  - 新增推送优先级类型和 `resolveExpoPushPriority()`，当前把 MZStay 操作类移动端通知统一解析为 Expo `high`。
+  - Expo payload 增加 `priority` 和 `channelId: 'default'`。
+  - `notifyExpoAll()` / `notifyExpoUsers()` 接收可选 app notification priority，并传入 Expo 发送层。
+  - 队列 worker 读取 `user_notifications.priority`，默认缺失时按 `low` 处理。
+  - 批量合并 key 增加 priority，确保不同优先级的通知不会被错误合并。
+- Key decisions:
+  - 不新增数据库字段或队列系统，复用现有 `user_notifications.priority`。
+  - 当前所有移动端 Expo 投递统一使用 high，优先解决 Android 及时到达；保留 app priority 参数用于后续细分。
+  - 不改变通知创建、权限、事件队列状态流转或失败重试逻辑。
+
+### Files / Areas
+
+- `backend/src/modules/notifications.ts` — modified: Expo push payload 增加 high priority 和 default channel，并让 notify helpers 透传 priority。
+- `backend/src/services/notificationQueueWorker.ts` — modified: 队列读取、分组和发送时保留 notification priority。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: internal `notifyExpoAll()` / `notifyExpoUsers()` helper signatures accept optional `priority`; HTTP response structure unchanged.
+- Database / migration: none; reads existing `user_notifications.priority`.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: notification delivery behavior only; independent from房源代付、合同和任务中心 release units.
+
+### Validation
+
+- `git diff --check -- backend/src/modules/notifications.ts backend/src/services/notificationQueueWorker.ts docs/change-release-ledger.md` — passed.
+- `python3 scripts/audit_change_release_ledger.py` — passed after this CRL was added.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- Live Expo push delivery — not run; no test push was sent.
+
+### Risks / Release Notes
+
+- Runtime risk: all Expo notifications now request high priority, which may increase urgency/noise and battery/network impact on Android devices; this is intentional for operational notifications.
+- Runtime risk: `channelId: 'default'` assumes the mobile app has or can use the default notification channel.
+- Rollback: remove priority/channelId from Expo payload, remove priority forwarding from notify helpers, and remove priority from queue worker grouping.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: uncommitted.
+
+## CRL-20260710-003 — 房源代付预计收账日可空与保存后建议项
+
+- **Status:** ready
+- **Updated:** 2026-07-10 22:41 AEST
+- **Request:** “预计收到账单日”不要必填；“收费公司/事项”不要在输入时立刻进入建议项，只有实际保存成功后才进入备选建议。
+- **Outcome:** 房源代付模板现在允许不填写预计收到账单日，后端会把空值规范为 `null`，后续快照的 `bill_expected_date` 也保持为空；收费公司/事项的本地建议项不再跟随临时输入即时增加，只在房源或财务模板保存成功后加入当前页面的备选项。
+
+### Implementation
+
+- Previous behavior:
+  - 房源代付模板表单要求填写 `bill_expected_day_of_month`，后端创建/编辑也把该字段当作必填数值校验。
+  - 编辑已有模板时，空值不会进入 patch payload，无法明确清空预计收到账单日。
+  - `PropertyPayableVendorInput` 会把当前输入值和当前字段值合并进下拉建议，导致用户只是试输一个收费公司/事项，也会临时出现在建议列表里。
+- New behavior:
+  - 新增可空日期 helper：空值合法并归一为 `null`，非空值仍要求 1 到 31。
+  - 创建和编辑房源代付模板时允许 `bill_expected_day_of_month` 为空；编辑时如果 payload 明确带空值，会写入 `null` 并同步未来未付快照的 `bill_expected_date = null`。
+  - 财务代付模板抽屉和房源代付模板表单移除“预计收到账单日”必填校验。
+  - `PropertyPayableVendorInput` 只展示后端已有建议和保存成功后记住的值，不再把正在输入的临时文本直接加入建议。
+  - 财务模板保存、房源新建、房源编辑和房源详情保存成功后，才调用 `rememberPropertyPayableVendors()` 把收费公司/事项加入本地建议缓存。
+- Key decisions:
+  - 不新增表字段、接口或建议项管理系统，继续复用现有代付模板和 `/recurring-payments/property-payable-vendors` 建议来源。
+  - 空预计收账日表达“目前未知/不需要提醒该日期”，不是自动 fallback 到 1 号或 30 号。
+  - 只在保存成功后更新前端建议，避免失败提交污染本地候选项。
+
+### Files / Areas
+
+- `backend/src/modules/recurring.ts` — modified: 房源代付预计收到账单日允许空值，创建/编辑归一为 `null`，同步未来快照时支持清空 `bill_expected_date`。
+- `backend/scripts/tests/test_property_payable_bill_dates.ts` — modified: 覆盖可空预计收账日和月末 fallback。
+- `frontend/src/app/finance/property-payables/page.tsx` — modified: 财务代付模板表单取消预计收账日必填，并在保存成功后记住收费公司/事项建议。
+- `frontend/src/app/properties/page.tsx` — modified: 房源新建/编辑保存成功后才记住代付模板收费公司/事项建议。
+- `frontend/src/app/properties/[id]/page.tsx` — modified: 房源详情保存成功后才记住代付模板收费公司/事项建议。
+- `frontend/src/components/PropertyPayableTemplatesForm.tsx` — modified: 房源代付模板表单取消预计收账日必填。
+- `frontend/src/components/PropertyPayableVendorInput.tsx` — modified: 建议项缓存增加发布/订阅和保存后记忆入口，移除输入时即时加入建议的行为。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: existing recurring payment create/patch payload can include `bill_expected_day_of_month: null` for property-payable templates.
+- Behavior: future unpaid property-payable snapshots can have `bill_expected_date = null` when the template预计收账日为空。
+- Database / migration: none; uses existing nullable fields.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: follows earlier property-payable template simplification around fixed due day and expected bill date.
+
+### Validation
+
+- `git diff --check -- backend/src/modules/recurring.ts backend/scripts/tests/test_property_payable_bill_dates.ts frontend/src/app/finance/property-payables/page.tsx frontend/src/app/properties/page.tsx frontend/src/app/properties/[id]/page.tsx frontend/src/components/PropertyPayableTemplatesForm.tsx frontend/src/components/PropertyPayableVendorInput.tsx docs/change-release-ledger.md` — passed.
+- `npx ts-node-dev --transpile-only scripts/tests/test_property_payable_bill_dates.ts` in `backend` — passed: `test_property_payable_bill_dates: ok`.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `npm run lint` in `frontend` — passed with existing warnings; no errors.
+- `npm run build` in `frontend` — passed; build emitted existing Browserslist staleness notice and existing Recharts static-generation width/height warnings.
+
+### Risks / Release Notes
+
+- Runtime risk: templates without预计收到账单日 will not have a bill expected date for reminder/overdue logic that depends on that field; this is intended when the date is unknown.
+- UX risk: users may expect a just-typed收费公司/事项 to appear immediately in all dropdowns, but it now appears only after successful save to avoid failed or abandoned input polluting suggestions.
+- Rollback: restore required validation on `bill_expected_day_of_month`, restore required backend numeric validation, and restore input/current-value merging in `PropertyPayableVendorInput`.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: uncommitted.
+
+## CRL-20260710-002 — 移动端个人资料空字段保存兼容修复
+
+- **Status:** ready
+- **Updated:** 2026-07-10 22:42 AEST
+- **Request:** “移动端为什么无法保存个人信息的更改”，截图显示编辑资料页保存后只弹出“出错了 / 保存失败”。
+- **Outcome:** 保存失败的触发点是移动端把未填写的手机号、银行信息、ABN、Photo ID 等字段作为 `null` 提交到 `PATCH /users/me`。当前 Dev 后端已允许 `nullable`，但生产后端与 Dev 后端运行 commit 不一致；截图里这些字段为空，生产旧 schema 很可能按 string/optional 校验并拒绝 `null`，旧 App 又把真实参数错误吞成“保存失败”。移动端现在对个人资料空字段统一提交空字符串而不是 `null`，兼容新旧后端；头像、Photo ID、普通保存失败时也会展示后端/网络层解析出的真实错误，不再只显示泛化文案。
+
+### Implementation
+
+- Previous behavior:
+  - `updateMyProfile()` 已经会把 `401/403/400/500/timeout` 等响应解析成可读错误消息。
+  - `ProfileEditScreen` 的三个 `catch {}` 没有接收错误对象，导致所有远程保存/上传失败都被覆盖成固定文案：`保存失败`、`上传失败` 或 `无法选择图片`。
+  - 保存普通资料时，空的 `phone_au`、`avatar_url`、银行字段、`personal_abn`、`photo_id_url` 会作为 `null` 进入请求体。
+  - 本地 Dev 后端 schema 接受 `null`，但生产后端当前运行 commit 与 Dev 不一致；旧 schema 若只接受 string/optional，会对截图里的空银行/Photo ID 字段返回 400。
+  - 从截图无法判断是 token 过期、生产后端异常、参数校验失败还是网络问题。
+- New behavior:
+  - 新增 `profileApiText()` / `profileApiUrl()`，保存前把可空文本/URL 字段规范成 trimmed string。
+  - 未填写的个人资料字段提交为空字符串，不再提交 `null`；现有后端读取时仍会把空字符串显示为空值，因此清空字段语义保持不变。
+  - 个人资料保存失败时优先显示 `error.message`，没有消息时才回落到原 `profile_save_failed`。
+  - 头像与 Photo ID 上传后的资料更新失败也同样展示具体错误消息，并保留原兜底文案。
+  - 不改接口路径、后端字段结构、校验规则或本地 profile 缓存逻辑。
+- Key decisions:
+  - 只做最小移动端兼容修复，不新增日志系统或复杂错误状态。
+  - 未输出或记录任何 token、账号、Photo ID、银行账号等敏感信息。
+  - 当前未用真实用户 token 直接复现保存，因为不能读取或暴露用户凭证；线上公开路由和健康检查用于确认部署差异与路由存在。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/screens/me/ProfileEditScreen.tsx` — modified: 保存请求中的空 profile 字段改为提交空字符串；保存、头像上传保存、Photo ID 上传保存的 `catch` 改为展示 `error.message`，保留原有兜底文案。
+- `docs/change-release-ledger.md` — modified: 记录本诊断与修复单元。
+
+### Impact / Dependencies
+
+- API: none; continues using existing `GET/PATCH /users/me` and media upload APIs.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: related diagnostic context with `CRL-20260708-001` because `/users/me` 曾受移动端缓存/304 问题影响；本次不修改缓存层。
+
+### Validation
+
+- `curl -sS https://mz-property-system-v3-docker.onrender.com/__routes` — passed: production route list includes `GET /users/me` and `PATCH /users/me`.
+- `curl -sS https://mz-property-system-v3-2.onrender.com/__routes` — passed: dev route list includes `GET /users/me` and `PATCH /users/me`.
+- `curl -sS -i https://mz-property-system-v3-docker.onrender.com/version` — passed: production backend healthy, returned build timestamp `2026-07-08T14:47:47.139Z` and commit `0bae98059dd65aec4c494705845148c4e45f257e`.
+- `curl -sS -i -X PATCH https://mz-property-system-v3-docker.onrender.com/users/me ...` without credentials — passed: route exists behind auth and returned `401 unauthorized`, not `404`.
+- `curl -sS -i https://mz-property-system-v3-2.onrender.com/version` — passed: dev backend healthy, returned build timestamp `2026-07-10T12:07:35.540Z` and commit `c5fd9c6429a262051c7bd0f2dab8a8ceab138cc6`.
+- `curl -sS -i -X PATCH https://mz-property-system-v3-2.onrender.com/users/me ...` without credentials — passed: route exists behind auth and returned `401 unauthorized`, not `404`.
+- `node --env-file=.env -e "..."` in `backend` — passed after network approval: checked the configured database has all profile columns (`display_name`, `phone_au`, `avatar_url`, `legal_name`, bank fields, `personal_abn`, `photo_id_url`) without printing database URL or user data.
+- Local zod payload check in `backend` — passed: current Dev schema accepts the mobile profile payload, including nullable fields; this is why the failure is tied to deployed production/schema compatibility rather than current local schema.
+- `git diff --check -- src/screens/me/ProfileEditScreen.tsx` in `mz-cleaning-app-frontend` — passed.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed: `tsc -p tsconfig.json`.
+- `npm test -- --runInBand src/lib/api.test.ts src/lib/profileStore.test.ts` in `mz-cleaning-app-frontend` — passed: 2 suites, 2 tests.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with 0 errors and 113 existing warnings.
+- Mobile production save with the affected signed-in user — not run: no user token or credentials were used. Historical local token files were checked but already unauthorized and were not printed.
+- Mobile package build — not run: `mz-cleaning-app-frontend/package.json` has no `build` script.
+
+### Risks / Release Notes
+
+- Runtime risk: the app will now show backend error text to the signed-in user. The existing parser already normalizes common auth and server errors and truncates messages; it should not include secrets.
+- Compatibility note: blank profile fields are now sent as empty strings. Current backend responses already normalize empty strings back to `null` for display, so user-visible blank-field behavior should remain unchanged.
+- Environment note: production backend and dev backend currently report different commits; this fix avoids relying on newer production schema support for `null`.
+- Rollback: restore the `null` conversions in `onSave()` and restore the three `catch {}` blocks in `ProfileEditScreen.tsx` to fixed translated fallback messages.
+- Sensitive-information review: no `.env` contents, tokens, credentials, cookies, database URLs, bank details, Photo ID contents, or sensitive logs were added.
+- Git state: uncommitted in nested mobile repo; root worktree also contains unrelated pre-existing backend/frontend/ledger changes.
+
+## CRL-20260710-001 — 房源合同特殊条款填写与 PDF 输出
+
+- **Status:** ready
+- **Updated:** 2026-07-10 21:03 AEST
+- **Request:** 网页端房源合同先增加“特殊条款”，编辑页也需要有地方填写；用户随后反馈新建房源合同抽屉里没有看到“特殊条款”、保存时报 `Internal Server Error`、生成的 PDF 没有刚填写的特殊条款；再次反馈合同本身已有 `SPECIAL CONDITIONS`，自定义内容直接插到该区块前面格式不对，编辑填写位置也应放到合同最后面。
+- **Outcome:** 房源合同新建/编辑抽屉现在在表单底部显示“特殊条款”文本框；保存后该内容只属于当前合同，并会在详情页和生成的合同 PDF 整份合同最后独立显示为 `Additional Special Terms`，不再插入到模板自带 `Special Conditions` 开头，也不再出现在 `Terms and Conditions` 前面。保存 500 的根因路径也已修复：房源行里存在已失效的 `landlord_id` 时，不再把它直接提交给合同外键；保存后自动草稿生成失败时也不再让保存整体返回 500，后续预览/下载会识别旧草稿并强制重新生成。
+
+### Implementation
+
+- Previous behavior:
+  - 房源合同表单只有模板固定字段和普通 `Special Instructions`，没有给单份合同填写可进入正式 PDF 的补充/特殊条款入口。
+  - PDF 的 `Special Conditions` 区域只渲染模板内置条款，不能追加当前合同专属条款。
+  - 选中房源时，如果房源保存了不存在的 `landlord_id`，前端会把该值作为合同 `landlord_id` 提交，后端插入 `landlord_documents` 时可能触发外键错误并返回 500；合同没有保存成功时也不会生成新的 PDF 版本。
+  - 如果合同字段已经保存成功、但后续自动生成草稿 PDF 失败，接口仍会整体返回 500；同时前端只按模板版本判断草稿是否过期，可能继续下载当前草稿版本，导致刚保存的特殊条款没有进入 PDF。
+- New behavior:
+  - `fields.special_terms` 作为当前合同专属自由文本保存到已有 `landlord_documents.fields` JSONB 中。
+  - 新建/编辑房源合同时在表单底部显示“当前合同特殊条款”文本框，并提示该内容会作为合同最后的 `Additional Special Terms` 输出。
+  - 文档详情显示已保存的特殊条款。
+  - 房源合同 PDF 在主体、签署、模板自带 `Special Conditions` 和全部 `Terms and Conditions` 结束后，最后追加独立的 `Additional Special Terms`、优先级说明和逐段转义后的特殊条款正文。
+  - 前端只在能解析到真实房东记录时提交 `landlord_id`；后端 create/patch 也会把不存在的房东 id 归一为空，避免失效房源关联导致合同保存失败。
+  - 后端列表/详情返回 `current_draft_created_at`；前端在预览/下载草稿时，如果合同 `updated_at` 晚于当前草稿生成时间，会强制调用重新生成 PDF。
+  - 后端 create/patch 中的自动草稿生成改为 best-effort：合同保存成功后，即使草稿生成失败也返回保存后的合同，并在服务端记录 `draft_generation_failed`。
+  - `ensureLandlordDocumentsTables()` 增加进程内缓存，避免每次读取合同、附件或生成 PDF 时重复执行 `CREATE TABLE/INDEX IF NOT EXISTS`。
+  - 已为用户反馈的 MV1708 / `SA-20260519-RRDY` 重新生成当前草稿；下载后的 PDF 最后一页已确认 `Additional Special Terms` 位于 `9. Liability` 后面。
+- Key decisions:
+  - 不新增数据库表或迁移，复用现有 `fields` 扩展点，避免为第一阶段功能创建第二套合同系统。
+  - 不修改标准模板默认条款；未填写特殊条款的其他合同仍按原模板输出。
+  - 不在本次任务里批量清洗历史房源的失效房东关联；先保证当前合同保存链路稳定。
+
+### Files / Areas
+
+- `frontend/src/app/landlords/_components/LandlordDocumentsPage.tsx` — modified: 新增特殊条款表单项并放在房源合同表单底部、保存前 trim、详情页展示；选房源时不再回填失效的原始 `property.landlord_id`；预览/下载时识别合同更新时间晚于当前草稿生成时间并重新生成草稿。
+- `backend/src/modules/landlord_documents.ts` — modified: 房源合同默认字段和空白模板字段增加 `special_terms`；保存/编辑时验证 `landlord_id` 是否仍存在；返回当前草稿生成时间；自动草稿生成失败不再阻断保存；缓存合同表结构 ensure。
+- `backend/src/lib/landlordDocumentPdf.ts` — modified: 渲染 `fields.special_terms` 到房源合同 PDF 整份合同最后的独立 `Additional Special Terms` 区域。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: existing `/landlord-documents` create/patch payload may include `fields.special_terms`; response structure unchanged.
+- Behavior: if a submitted `landlord_id` no longer exists in `landlords`, the contract is saved with `landlord_id = null` instead of failing the insert.
+- Behavior: if automatic draft PDF generation fails after saving, the save endpoint still returns the saved document; preview/download will retry generation when the draft is stale.
+- Database / migration: none; uses existing `landlord_documents.fields` JSONB.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: independent from current task-center/cleaning release units; contract wording history includes `CRL-20260707-003`.
+
+### Validation
+
+- `git diff --check -- backend/src/lib/landlordDocumentPdf.ts frontend/src/app/landlords/_components/LandlordDocumentsPage.tsx docs/change-release-ledger.md` — passed.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `npm run lint` in `frontend` — passed with existing warnings; no errors.
+- `npm run build` in `frontend` — passed; build emitted existing Browserslist staleness notice and existing Recharts static-generation width/height warnings.
+- `node -r ts-node/register/transpile-only -e "..."` in `backend` — passed: rendered a `management_sale` service agreement HTML and confirmed `Special Conditions` appears before the template sale conditions, `Terms and Conditions` appears after the template sale conditions, `Additional Special Terms` appears after the final liability clause, custom text appears inside that final section, and the old `Additional Special Conditions` heading is absent.
+- Production-style diagnostics — passed: confirmed service health and schema presence, confirmed non-empty orphan property landlord links as one possible 500 trigger path, and confirmed the reported MV1708 agreement had `special_terms` saved while its current draft PDF version was older than the document update.
+- Exact MV1708 PDF render check — passed: rendering the saved agreement fields locally produced a PDF buffer successfully, so the missing special terms in the downloaded file was due to stale current draft selection rather than the PDF template rejecting the special terms.
+- MV1708 current draft regeneration — passed: direct regeneration created current draft v5 for `SA-20260519-RRDY`; after the schema ensure cache change, the normal `/landlord-documents/:id/generate-pdf` endpoint also succeeded and updated the current draft again; `/landlord-documents/:id/download-current-draft` returned `200` with `application/pdf`.
+- Post-layout regeneration — passed: local backend health check returned `200`; regenerated MV1708 / `SA-20260519-RRDY` current draft version `c5d98cfb-4ec8-424e-9179-903669f38587`.
+- Current PDF text/visual check — passed: downloaded the regenerated draft PDF, extracted page text with `pdfplumber`, and rendered page 6 with Poppler; `ADDITIONAL SPECIAL TERMS` appears after `9. LIABILITY`, with no `Additional Special Conditions` block before `1. Sale Campaign Coordination`.
+- Dedicated landlord contract automated test — not run: no existing targeted landlord document test file was found.
+
+### Risks / Release Notes
+
+- Legal wording risk: the system now allows user-entered special terms to enter the formal contract PDF; wording should be reviewed before signing.
+- Runtime risk: this first phase is a free-text field, not an approval workflow or structured clause library.
+- Data hygiene risk: historical property rows can still contain stale landlord ids; this fix prevents contract creation from failing on them, but does not automatically repair those property rows.
+- Runtime risk: if storage upload fails repeatedly, saving will still succeed but preview/download regeneration can still fail until storage/network recovers.
+- Rollback: remove `special_terms` form/detail rendering, remove backend default field entries, and remove the additional special conditions render block from `landlordDocumentPdf.ts`.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: uncommitted; unrelated task-center/cleaning files remain modified or untracked in the worktree.
+
+## CRL-20260709-003 — 任务中心清洁分配状态持久化修复
+
+- **Status:** ready
+- **Updated:** 2026-07-09 01:35 AEST
+- **Request:** “按照这个计划执行”，修复任务中心清洁/检查人员或纯入住执行人已分配但卡片仍显示“待处理”的问题。
+- **Outcome:** 任务中心保存清洁任务分配时，现在会和清洁日程入口共用同一套 `assigned/pending` 判定：普通清洁按清洁/执行/检查人员派生，纯入住/仅改密按执行人或检查人员派生，同时保护进行中、挂钥匙、完成、取消等业务状态不被普通分配覆盖。
+
+### Implementation
+
+- Previous behavior:
+  - `backend/src/modules/cleaning.ts` 已经会在分配人员时自动把 `pending/assigned` 状态与人员字段同步。
+  - `backend/src/modules/task_center.ts` 的 `cleaning_assignments` 保存只更新 `cleaner_id`、`assignee_id`、`inspector_id` 和检查字段；普通分配没有持久化 `status=assigned`。
+  - 任务中心卡片状态标签读取 `status/display_state`，所以数据库仍为 `pending` 时，即使人员已保存也显示“待处理”。
+- New behavior:
+  - 新增后端共享 helper，统一判断自动分配状态、普通清洁参与人状态、纯入住/仅改密现场执行状态。
+  - `cleaning.ts` 改为复用共享 helper，避免后续继续分叉。
+  - `task_center.ts` 的保存 SQL 先计算保存后的参与人字段，再在 `pending/assigned/todo/unassigned` 范围内自动派生 `assigned/pending`；`status_action` 的挂钥匙/完成仍保持最高优先级。
+  - 内存 fallback 路径同步应用相同规则。
+  - 增加历史数据 preview/apply SQL：只修 active 且当前状态为 `pending/todo/unassigned`、但已有参与人的 `cleaning_tasks`，不自动执行 apply。
+- Key decisions:
+  - 不改前端标签映射；真实问题是后端持久化状态不一致，修后 API、统计和其他端也能一致。
+  - 不覆盖 `in_progress`、`cleaned`、`restock_pending`、`restocked`、`inspected`、`keys_hung`、`ready`、`completed`、`done`、`cancelled`、`canceled`。
+
+### Files / Areas
+
+- `backend/src/lib/cleaningAssignmentStatus.ts` — added: 共享清洁任务分配状态判定。
+- `backend/dist/modules/cleaning.js` — generated: backend build output for the shared assignment status usage in `cleaning.ts`.
+- `backend/src/modules/cleaning.ts` — modified: 改为复用共享分配状态 helper。
+- `backend/src/modules/task_center.ts` — modified: 任务中心清洁分配保存时持久化自动派生的 `assigned/pending`，并同步 diff/内存 fallback。
+- `backend/scripts/tests/test_cleaning_assignment_status.ts` — added: 覆盖普通清洁、纯入住/仅改密和自动状态边界。
+- `backend/scripts/backfills/cleaning_assignment_status_2026_07_09_README.md` — added: 历史状态修复说明。
+- `backend/scripts/backfills/cleaning_assignment_status_2026_07_09_preview.sql` — added: 只读预览候选历史数据。
+- `backend/scripts/backfills/cleaning_assignment_status_2026_07_09_apply.sql` — added: 受限历史数据修复 SQL，需人工确认后执行。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: `/task-center/save-board` 对 `cleaning_assignments` 的保存结果会在自动分配状态内同步更新 `cleaning_tasks.status`；`/task-center/day` 后续返回的状态标签会随之显示“已分配”。
+- Database / migration: no schema migration. 提供可选 backfill SQL 修复历史数据；本次未执行生产 UPDATE。
+- Config / environment: none.
+- Dependencies: none.
+- Related units: follows earlier task-center status/tag diagnosis; independent from `CRL-20260709-001` and `CRL-20260709-002`.
+
+### Validation
+
+- `npx ts-node-dev --transpile-only scripts/tests/test_cleaning_assignment_status.ts` in `backend` — passed: `ok`.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- Task-center cleaning assignment UPDATE SQL shape against production with a nonexistent task id — passed: query executed and returned `rowCount=0`; no production row was updated.
+- Historical backfill read-only candidate preview against production — passed: `candidate_count=480`, `checkin_clean_count=224`, `other_cleaning_count=256`; apply SQL not run.
+- `git diff --check` — passed.
+
+### Risks / Release Notes
+
+- Runtime risk: only `pending/assigned/todo/unassigned` statuses are auto-managed. If legacy data has a nonstandard status with assigned people, it will not be changed automatically.
+- Data risk: the historical apply SQL updates up to the previewed candidate set if run later; review preview rows before executing.
+- Rollback: revert `backend/src/lib/cleaningAssignmentStatus.ts`, restore local helper functions in `cleaning.ts`, restore the previous `task_center.ts` cleaning assignment UPDATE, and do not run the backfill apply SQL.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added. Production checks used environment variables without printing connection details.
+- Git state: uncommitted.
+
 ## CRL-20260709-001 — 自完成任务不再显示任务已结束
 
 - **Status:** ready

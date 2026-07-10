@@ -7,6 +7,31 @@ import { getJSON } from '../lib/api'
 type VendorOption = { value: string; label?: string; usage_count?: number }
 
 let vendorOptionsCache: VendorOption[] | null = null
+const vendorOptionListeners = new Set<(options: VendorOption[]) => void>()
+
+function publishVendorOptions(options: VendorOption[]) {
+  vendorOptionsCache = options
+  for (const listener of vendorOptionListeners) listener(options)
+}
+
+export function rememberPropertyPayableVendors(raw: any) {
+  const values = (Array.isArray(raw) ? raw : [raw])
+    .map((item) => String(typeof item === 'string' ? item : item?.vendor || '').trim())
+    .filter(Boolean)
+  if (!values.length) return
+
+  const map = new Map<string, VendorOption>()
+  for (const item of vendorOptionsCache || []) {
+    const value = String(item?.value || '').trim()
+    if (!value) continue
+    map.set(value.toLowerCase(), { value, label: String(item?.label || value) })
+  }
+  for (const value of values) {
+    const key = value.toLowerCase()
+    if (!map.has(key)) map.set(key, { value, label: value })
+  }
+  publishVendorOptions(Array.from(map.values()))
+}
 
 export default function PropertyPayableVendorInput(props: {
   value?: string
@@ -32,10 +57,15 @@ export default function PropertyPayableVendorInput(props: {
               .filter(Boolean) as VendorOption[]
           : []
         vendorOptionsCache = next
-        setOptions(next)
+        publishVendorOptions(next)
       })
       .catch(() => {})
     return () => { active = false }
+  }, [])
+
+  useEffect(() => {
+    vendorOptionListeners.add(setOptions)
+    return () => { vendorOptionListeners.delete(setOptions) }
   }, [])
 
   const mergedOptions = useMemo(() => {
@@ -45,27 +75,14 @@ export default function PropertyPayableVendorInput(props: {
       if (!value) continue
       map.set(value.toLowerCase(), { value, label: String(item?.label || value) })
     }
-    const extras = [props.value, search]
-      .map((item) => String(item || '').trim())
-      .filter(Boolean)
-    for (const value of extras) {
-      const key = value.toLowerCase()
-      if (!map.has(key)) map.set(key, { value, label: value })
-    }
     return Array.from(map.values())
-  }, [options, props.value, search])
+  }, [options])
 
   function commitCustomValue(raw?: string) {
     const value = String(raw || '').trim()
     if (!value) return
     props.onChange?.(value)
     setSearch('')
-    setOptions((current) => {
-      if (current.some((item) => String(item.value).trim().toLowerCase() === value.toLowerCase())) return current
-      const next = [...current, { value, label: value }]
-      vendorOptionsCache = next
-      return next
-    })
   }
 
   return (
@@ -86,7 +103,7 @@ export default function PropertyPayableVendorInput(props: {
         event.preventDefault()
         commitCustomValue(search)
       }}
-      notFoundContent={search.trim() ? `没有找到，按 Enter 新增“${search.trim()}”` : '暂无收费公司/事项'}
+      notFoundContent={search.trim() ? '保存后会加入备选项' : '暂无收费公司/事项'}
     />
   )
 }

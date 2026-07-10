@@ -1,6 +1,7 @@
 import assert from 'assert'
 import {
   computeMonthDayISO,
+  computeOptionalMonthDayISO,
   computePropertyPayableTemplateDates,
   isDueMonthKey,
   normalizePropertyPayableFrequencyMonths,
@@ -9,6 +10,9 @@ import {
 assert.equal(computeMonthDayISO('2026-02', 31, 0), '2026-02-28', 'non-leap February should fall back to last day')
 assert.equal(computeMonthDayISO('2028-02', 31, 0), '2028-02-29', 'leap February should fall back to leap day')
 assert.equal(computeMonthDayISO('2026-03', 31, -1), '2026-02-28', 'offset month should apply before month-end fallback')
+assert.equal(computeOptionalMonthDayISO('2026-02', null, 0), null, 'blank optional day should stay blank')
+assert.equal(computeOptionalMonthDayISO('2026-02', '', 0), null, 'empty optional day should stay blank')
+assert.equal(computeOptionalMonthDayISO('2026-02', 31, 0), '2026-02-28', 'optional day should still use month-end fallback')
 
 const dates = computePropertyPayableTemplateDates({
   due_day_of_month: 5,
@@ -22,6 +26,15 @@ const dates = computePropertyPayableTemplateDates({
 assert.deepEqual(dates, {
   due_date: '2026-02-28',
   bill_expected_date: '2026-02-28',
+  bill_period_start: null,
+  bill_period_end: null,
+})
+
+assert.deepEqual(computePropertyPayableTemplateDates({
+  bill_expected_day_of_month: null,
+}, '2026-02'), {
+  due_date: '2026-02-28',
+  bill_expected_date: null,
   bill_period_start: null,
   bill_period_end: null,
 })

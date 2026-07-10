@@ -13,6 +13,7 @@ const notificationEvents_1 = require("../services/notificationEvents");
 const workTaskEvents_1 = require("../services/workTaskEvents");
 const cleaningInspection_1 = require("../lib/cleaningInspection");
 const webTaskCapabilities_1 = require("../lib/webTaskCapabilities");
+const cleaningAssignmentStatus_1 = require("../lib/cleaningAssignmentStatus");
 exports.router = (0, express_1.Router)();
 const DEFAULT_SUMMARY_CHECKOUT_TIME = '10am';
 const DEFAULT_SUMMARY_CHECKIN_TIME = '3pm';
@@ -36,13 +37,6 @@ function auDayStr(d) {
 function dayOnly(s) {
     const v = String(s || '').slice(0, 10);
     return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null;
-}
-function assignedStatusFromAssignees(cleanerId, inspectorId) {
-    return String(cleanerId || '').trim() || String(inspectorId || '').trim() ? 'assigned' : 'pending';
-}
-function isCheckinSiteExecutionTask(task) {
-    const type = String((task === null || task === void 0 ? void 0 : task.task_type) || (task === null || task === void 0 ? void 0 : task.type) || '').trim().toLowerCase();
-    return type === 'checkin_clean' && ['inspect_and_hang', 'password_only'].includes((0, cleaningInspection_1.normalizeInspectionScope)(task === null || task === void 0 ? void 0 : task.inspection_scope));
 }
 function cleanNotificationText(value) {
     return String(value !== null && value !== void 0 ? value : '').replace(/\s+/g, ' ').trim();
@@ -1109,7 +1103,7 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
             delete patch.note;
             if (patch.keys_required === null)
                 patch.keys_required = 1;
-            const isCheckinSiteExecution = isCheckinSiteExecutionTask({
+            const isCheckinSiteExecution = (0, cleaningAssignmentStatus_1.isCheckinSiteExecutionTask)({
                 task_type: (_c = patch.task_type) !== null && _c !== void 0 ? _c : before.task_type,
                 inspection_scope: (_d = patch.inspection_scope) !== null && _d !== void 0 ? _d : before.inspection_scope,
             });
@@ -1147,7 +1141,7 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                         ? (patch.assignee_id !== undefined ? ((_h = patch.assignee_id) !== null && _h !== void 0 ? _h : null) : ((_k = (_j = before.assignee_id) !== null && _j !== void 0 ? _j : before.inspector_id) !== null && _k !== void 0 ? _k : null))
                         : (patch.cleaner_id !== undefined ? ((_l = patch.cleaner_id) !== null && _l !== void 0 ? _l : null) : ((_o = (_m = before.cleaner_id) !== null && _m !== void 0 ? _m : before.assignee_id) !== null && _o !== void 0 ? _o : null));
                     const nextInspectorId = parsed.data.inspector_id !== undefined ? ((_p = parsed.data.inspector_id) !== null && _p !== void 0 ? _p : null) : ((_q = before.inspector_id) !== null && _q !== void 0 ? _q : null);
-                    patch.status = assignedStatusFromAssignees(nextCleanerId, nextInspectorId);
+                    patch.status = (0, cleaningAssignmentStatus_1.assignedStatusFromAssignees)(nextCleanerId, nextInspectorId);
                 }
             }
             patch.updated_at = new Date().toISOString();
@@ -1238,7 +1232,7 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
         if (localPatch.guest_special_request === undefined && localPatch.note !== undefined)
             localPatch.guest_special_request = localPatch.note;
         delete localPatch.note;
-        const isCheckinSiteExecution = isCheckinSiteExecutionTask({
+        const isCheckinSiteExecution = (0, cleaningAssignmentStatus_1.isCheckinSiteExecutionTask)({
             task_type: (_t = localPatch.task_type) !== null && _t !== void 0 ? _t : task.task_type,
             inspection_scope: (_u = localPatch.inspection_scope) !== null && _u !== void 0 ? _u : task.inspection_scope,
         });
@@ -1313,7 +1307,7 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
             if (touchingAssignees && statusAutoEligible && incomingStatusEligible) {
                 const cleaner = String(isCheckinSiteExecution ? (task.assignee_id || task.inspector_id || '') : (task.cleaner_id || task.assignee_id || '')).trim();
                 const inspector = String(task.inspector_id || '').trim();
-                task.status = assignedStatusFromAssignees(cleaner, inspector);
+                task.status = (0, cleaningAssignmentStatus_1.assignedStatusFromAssignees)(cleaner, inspector);
             }
         }
         if (parsed.data.keys_required !== undefined) {
@@ -1467,7 +1461,7 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
             property_id: normalizedPropertyId,
             task_date: parsed.data.task_date,
             date: parsed.data.task_date,
-            status: parsed.data.status || assignedStatusFromAssignees((_g = baseAssigneeId !== null && baseAssigneeId !== void 0 ? baseAssigneeId : parsed.data.cleaner_id) !== null && _g !== void 0 ? _g : null, (_h = parsed.data.inspector_id) !== null && _h !== void 0 ? _h : null),
+            status: parsed.data.status || (0, cleaningAssignmentStatus_1.assignedStatusFromAssignees)((_g = baseAssigneeId !== null && baseAssigneeId !== void 0 ? baseAssigneeId : parsed.data.cleaner_id) !== null && _g !== void 0 ? _g : null, (_h = parsed.data.inspector_id) !== null && _h !== void 0 ? _h : null),
             assignee_id: baseAssigneeId,
             cleaner_id: createIsCheckinSiteExecution ? null : ((_j = parsed.data.cleaner_id) !== null && _j !== void 0 ? _j : null),
             inspector_id: ((_k = parsed.data.inspector_id) !== null && _k !== void 0 ? _k : null),
@@ -1808,7 +1802,7 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                     if (!before)
                         return null;
                     const patch = { ...basePatch };
-                    const isCheckinSiteExecution = isCheckinSiteExecutionTask({
+                    const isCheckinSiteExecution = (0, cleaningAssignmentStatus_1.isCheckinSiteExecutionTask)({
                         task_type: (_b = patch.task_type) !== null && _b !== void 0 ? _b : before.task_type,
                         inspection_scope: (_c = patch.inspection_scope) !== null && _c !== void 0 ? _c : before.inspection_scope,
                     });
@@ -1833,7 +1827,7 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                                 ? (patch.assignee_id !== undefined ? ((_d = patch.assignee_id) !== null && _d !== void 0 ? _d : null) : ((_f = (_e = before.assignee_id) !== null && _e !== void 0 ? _e : before.inspector_id) !== null && _f !== void 0 ? _f : null))
                                 : (patch.cleaner_id !== undefined ? ((_g = patch.cleaner_id) !== null && _g !== void 0 ? _g : null) : ((_j = (_h = before.cleaner_id) !== null && _h !== void 0 ? _h : before.assignee_id) !== null && _j !== void 0 ? _j : null));
                             const nextInspectorId = patch.inspector_id !== undefined ? ((_k = patch.inspector_id) !== null && _k !== void 0 ? _k : null) : ((_l = before.inspector_id) !== null && _l !== void 0 ? _l : null);
-                            patch.status = assignedStatusFromAssignees(nextCleanerId, nextInspectorId);
+                            patch.status = (0, cleaningAssignmentStatus_1.assignedStatusFromAssignees)(nextCleanerId, nextInspectorId);
                         }
                     }
                     patch.updated_at = new Date().toISOString();
@@ -1869,7 +1863,7 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                 if (!task)
                     return null;
                 const patch = { ...basePatch };
-                const isCheckinSiteExecution = isCheckinSiteExecutionTask({
+                const isCheckinSiteExecution = (0, cleaningAssignmentStatus_1.isCheckinSiteExecutionTask)({
                     task_type: (_p = patch.task_type) !== null && _p !== void 0 ? _p : task.task_type,
                     inspection_scope: (_q = patch.inspection_scope) !== null && _q !== void 0 ? _q : task.inspection_scope,
                 });
@@ -1923,7 +1917,7 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                     if (touchingAssignees && statusAutoEligible && incomingStatusEligible) {
                         const cleaner = String(isCheckinSiteExecution ? (task.assignee_id || task.inspector_id || '') : (task.cleaner_id || task.assignee_id || '')).trim();
                         const inspector = String(task.inspector_id || '').trim();
-                        task.status = assignedStatusFromAssignees(cleaner, inspector);
+                        task.status = (0, cleaningAssignmentStatus_1.assignedStatusFromAssignees)(cleaner, inspector);
                     }
                 }
                 return task;

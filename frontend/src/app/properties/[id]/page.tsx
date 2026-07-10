@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { API_BASE } from '../../../lib/api'
 import { hasPerm } from '../../../lib/auth'
 import PropertyPayableTemplatesForm from '../../../components/PropertyPayableTemplatesForm'
+import { rememberPropertyPayableVendors } from '../../../components/PropertyPayableVendorInput'
 import { hydratePropertyPayableTemplatesForForm, normalizePropertyPayableTemplates } from '../../../lib/propertyPayables'
 
 type Property = {
@@ -68,9 +69,10 @@ export default function PropertyDetail({ params }: { params: { id: string } }) {
     const bedroomCount = getBedroomCount(v.type)
     const beds = (v.bedrooms || []).slice(0, bedroomCount)
     const bed_config = beds.map((b: string, i: number) => `Bedroom ${i + 1}: ${b || ''}`).join('; ')
-    const payload = { ...v, bed_config, payable_templates: normalizePropertyPayableTemplates(v.payable_templates) }
+    const payable_templates = normalizePropertyPayableTemplates(v.payable_templates)
+    const payload = { ...v, bed_config, payable_templates }
     const res = await fetch(`${API_BASE}/properties/${params.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(payload) })
-    if (res.ok) { message.success('已保存') } else { message.error('保存失败') }
+    if (res.ok) { rememberPropertyPayableVendors(payable_templates); message.success('已保存') } else { message.error('保存失败') }
   }
 
   return (

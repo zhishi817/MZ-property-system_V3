@@ -126,6 +126,15 @@ function optionalRow(label: string, value: any) {
   return row(label, text)
 }
 
+function paragraphsHtml(value: any) {
+  return String(value || '')
+    .split(/\n+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => `<p>${escapeHtml(item)}</p>`)
+    .join('')
+}
+
 function pairRow(labelA: string, valueA: any, labelB: string, valueB: any) {
   return `<tr><th>${escapeHtml(labelA)}</th><td>${escapeHtml(valueA || '')}</td><th>${escapeHtml(labelB)}</th><td>${escapeHtml(valueB || '')}</td></tr>`
 }
@@ -390,6 +399,7 @@ function renderServiceAgreement(input: LandlordDocumentPdfInput) {
   const ownerChargesRaw = text(f, 'owner_charges_handling', DIRECT_LEASE_UTILITIES_TEXT)
   const ownerChargesHandling = /may pay agreed|deduct or reconcile|owners corporation \/ strata fees|council rates|water rates and other agreed property charges/i.test(ownerChargesRaw) ? DIRECT_LEASE_UTILITIES_TEXT : ownerChargesRaw
   const shortStayInsurance = text(f, 'short_stay_insurance', DIRECT_LEASE_INSURANCE_TEXT)
+  const specialTerms = text(f, 'special_terms')
   const propertyType = englishPropertyType(text(f, 'property_type_description'))
   const parking = englishParking(f)
   const keys = englishKeySets(text(f, 'number_of_keys'))
@@ -498,6 +508,14 @@ function renderServiceAgreement(input: LandlordDocumentPdfInput) {
           <h3>7. Termination</h3>
           <p>This Agreement remains in force ongoing from the Commencement Date unless terminated earlier by either Party on the agreed notice period.</p>
         `
+
+  const additionalSpecialTermsHtml = specialTerms
+    ? `
+          <h2>Additional Special Terms</h2>
+          <p>These additional terms apply to this Agreement only. If these additional terms conflict with the standard template terms, these additional terms prevail to the extent of the inconsistency.</p>
+          ${paragraphsHtml(specialTerms)}
+        `
+    : ''
 
   return `
     <!doctype html>
@@ -756,6 +774,11 @@ function renderServiceAgreement(input: LandlordDocumentPdfInput) {
           <p>Each Party's responsibility under or in connection with this Agreement will be assessed based on the actual circumstances, applicable law, the insurance position and the Party responsible for causing the relevant issue.</p>
           `}
         </section>
+        ${additionalSpecialTermsHtml ? `
+        <section class="page content-page">
+          ${additionalSpecialTermsHtml}
+        </section>
+        ` : ''}
       </body>
     </html>
   `

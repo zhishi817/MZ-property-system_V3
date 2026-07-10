@@ -9,6 +9,7 @@ import { emitNotificationEvent } from '../services/notificationEvents'
 import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
 import { defaultInspectionModeForTaskType, deferredProjectionDate, effectiveInspectionMode, normalizeInspectionMode, normalizeInspectionScope } from '../lib/cleaningInspection'
 import { buildWebTaskCapabilityPayload } from '../lib/webTaskCapabilities'
+import { assignedStatusFromAssignees, isCheckinSiteExecutionTask } from '../lib/cleaningAssignmentStatus'
 
 export const router = Router()
 
@@ -37,15 +38,6 @@ function auDayStr(d: Date): string {
 function dayOnly(s?: any): string | null {
   const v = String(s || '').slice(0, 10)
   return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null
-}
-
-function assignedStatusFromAssignees(cleanerId: any, inspectorId: any) {
-  return String(cleanerId || '').trim() || String(inspectorId || '').trim() ? 'assigned' : 'pending'
-}
-
-function isCheckinSiteExecutionTask(task: { task_type?: any; type?: any; inspection_scope?: any }) {
-  const type = String(task?.task_type || task?.type || '').trim().toLowerCase()
-  return type === 'checkin_clean' && ['inspect_and_hang', 'password_only'].includes(normalizeInspectionScope(task?.inspection_scope))
 }
 
 function cleanNotificationText(value: any) {
