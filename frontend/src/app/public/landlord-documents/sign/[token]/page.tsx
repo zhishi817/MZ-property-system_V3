@@ -44,7 +44,7 @@ type SignPageCopy = {
   signedDate: string
   signedLinkUnavailableTitle: string
   signedLinkUnavailableBody: string
-  openSignedPdf: string
+  downloadSignedPdf: string
   signedName: string
   signedNamePlaceholder: string
   signedNameRequired: string
@@ -82,12 +82,12 @@ const COPY: Record<Locale, SignPageCopy> = {
     previewTitle: '文档预览',
     signerTitle: '房东签署',
     signedTitle: '签署已完成',
-    signedBody: '系统已生成最终签署版 PDF。',
+    signedBody: '系统已生成最终签署版 PDF，您可以在下方下载签字完成的合同。',
     signedThanks: '感谢您的配合。',
     signedDate: '签署日期',
     signedLinkUnavailableTitle: '签署已完成',
     signedLinkUnavailableBody: '该签署链接已关闭。如需签署版 PDF，请联系 MZ Property。',
-    openSignedPdf: '打开签署版 PDF',
+    downloadSignedPdf: '下载签署完成合同',
     signedName: '签署姓名',
     signedNamePlaceholder: '请输入房东姓名',
     signedNameRequired: '请填写签署姓名',
@@ -112,6 +112,8 @@ const COPY: Record<Locale, SignPageCopy> = {
       'missing token': '签署链接缺少令牌',
       'not found': '签署链接无效或已过期',
       'draft not found': '草稿 PDF 尚未生成或已失效',
+      'signed version not found': '签署版 PDF 尚未生成或已失效',
+      not_signed: '该文档尚未完成签署',
       'file not found': 'PDF 文件不存在或已失效',
       'invalid signature image': '签名图片无效，请重新签名',
       missing_mz_signature: 'MZ 签名尚未完成，暂时不能提交',
@@ -133,12 +135,12 @@ const COPY: Record<Locale, SignPageCopy> = {
     previewTitle: 'Document Preview',
     signerTitle: 'Landlord Signature',
     signedTitle: 'Signing Complete',
-    signedBody: 'The final signed PDF has been generated.',
+    signedBody: 'The final signed PDF has been generated. You can download the completed contract below.',
     signedThanks: 'Thank you for your cooperation.',
     signedDate: 'Signed Date',
     signedLinkUnavailableTitle: 'Signing Complete',
     signedLinkUnavailableBody: 'This signing link is now closed. Please contact MZ Property if you need the signed PDF.',
-    openSignedPdf: 'Open Signed PDF',
+    downloadSignedPdf: 'Download Signed Contract',
     signedName: 'Signing Name',
     signedNamePlaceholder: 'Enter landlord name',
     signedNameRequired: 'Please enter the signing name',
@@ -163,6 +165,8 @@ const COPY: Record<Locale, SignPageCopy> = {
       'missing token': 'The signing link is missing a token',
       'not found': 'This signing link is invalid or has expired',
       'draft not found': 'The draft PDF is not ready or has expired',
+      'signed version not found': 'The signed PDF is not ready or has expired',
+      not_signed: 'This document has not been signed yet',
       'file not found': 'The PDF file does not exist or has expired',
       'invalid signature image': 'The signature image is invalid. Please sign again',
       missing_mz_signature: 'The MZ signature is not complete yet',
@@ -249,12 +253,12 @@ export default function PublicLandlordDocumentSignPage({ params }: { params: { t
   const [loadError, setLoadError] = useState('')
   const [submitted, setSubmitted] = useState(false)
   const [linkClosed, setLinkClosed] = useState(false)
-  const [signedUrl, setSignedUrl] = useState('')
   const [browserLocale, setBrowserLocale] = useState<Locale>('zh')
   const [languagePreference, setLanguagePreference] = useState<LanguagePreference>('auto')
   const [languageReady, setLanguageReady] = useState(false)
 
   const draftUrl = useMemo(() => publicApiUrl(publicSignPath(token, '/draft.pdf')), [token])
+  const signedPdfDownloadUrl = useMemo(() => publicApiUrl(publicSignPath(token, '/signed.pdf')), [token])
   const locale = languagePreference === 'auto' ? browserLocale : languagePreference
   const copy = COPY[locale]
   const copyRef = useRef(copy)
@@ -264,7 +268,6 @@ export default function PublicLandlordDocumentSignPage({ params }: { params: { t
     { label: 'English', value: 'en' },
   ], [copy])
   const completed = submitted || Boolean(doc?.signed || doc?.landlord_signed_at)
-  const signedPdfUrl = signedUrl || doc?.current_signed_url || ''
 
   const load = useCallback(async () => {
     if (!token) return
@@ -277,14 +280,12 @@ export default function PublicLandlordDocumentSignPage({ params }: { params: { t
         setDoc(null)
         setSubmitted(true)
         setLinkClosed(true)
-        setSignedUrl('')
         return
       }
       if (!res.ok) throw new Error(apiMessage(j?.message, activeCopy.loadFailed, activeCopy))
       setDoc(j)
       setLinkClosed(false)
       setSubmitted(Boolean(j?.signed || j?.landlord_signed_at))
-      setSignedUrl(String(j?.current_signed_url || ''))
       form.setFieldsValue({ signed_name: j?.landlord_name || '' })
     } catch (e: any) {
       const msg = normalizeLoadError(e, activeCopy.loadFailed)
@@ -315,7 +316,6 @@ export default function PublicLandlordDocumentSignPage({ params }: { params: { t
       if (!res.ok) throw new Error(apiMessage(j?.message, copy.signFailed, copy))
       setSubmitted(true)
       setLinkClosed(false)
-      setSignedUrl(String(j?.signed_url || ''))
       message.success(copy.signSuccess)
     } catch (e: any) {
       message.error(e?.message || copy.signFailed)
@@ -395,7 +395,7 @@ export default function PublicLandlordDocumentSignPage({ params }: { params: { t
               <Typography.Paragraph style={{ marginBottom: 0 }}>{linkClosed ? copy.signedLinkUnavailableBody : copy.signedBody}</Typography.Paragraph>
               {doc?.landlord_signed_at ? <Typography.Paragraph style={{ marginBottom: 0 }}>{copy.signedDate}: {String(doc.landlord_signed_at).slice(0, 10)}</Typography.Paragraph> : null}
               <Typography.Paragraph style={{ marginBottom: 0 }}>{copy.signedThanks}</Typography.Paragraph>
-              {signedPdfUrl ? <Button type="primary" href={signedPdfUrl} target="_blank">{copy.openSignedPdf}</Button> : null}
+              {!linkClosed ? <Button type="primary" href={signedPdfDownloadUrl}>{copy.downloadSignedPdf}</Button> : null}
             </Space>
           </Card>
         ) : doc ? (

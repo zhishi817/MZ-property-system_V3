@@ -708,13 +708,25 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
     return updatedAt - draftCreatedAt > 1000
   }
 
+  async function ensureDefaultMzSignature(row: LandlordDocument) {
+    if (!canWrite) return row
+    if (row.status === 'signed' || row.status === 'archived') return row
+    if (String(row.fields?.mz_signature_data_url || '').trim()) return row
+    if (!defaultMzSignature?.signed_name || !defaultMzSignature?.signature_data_url) return row
+    const updated = await saveMzSignatureForDocument(row, defaultMzSignature)
+    await load()
+    if (detail?.id === row.id) await openDetail(row)
+    return updated || await getJSON<LandlordDocument>(`/landlord-documents/${row.id}`).catch(() => row)
+  }
+
   async function openPreview(row: LandlordDocument) {
     try {
       if (row.type === 'property_service_agreement' && isLeasedVariant(row.fields?.contract_variant)) {
         message.warning('该类型合同仅支持上传附件，不生成 PDF')
         return
       }
-      const target = await ensureDraft(row, needsAuthorityDraftRefresh(row) || needsServiceAgreementDraftRefresh(row))
+      const signedRow = await ensureDefaultMzSignature(row)
+      const target = await ensureDraft(signedRow, needsAuthorityDraftRefresh(signedRow) || needsServiceAgreementDraftRefresh(signedRow))
       if (!target.current_draft_url) {
         message.warning('当前还没有可预览的草稿 PDF')
         return
@@ -752,7 +764,8 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
         message.warning('该类型合同没有草稿 PDF')
         return
       }
-      const target = await ensureDraft(row, needsAuthorityDraftRefresh(row) || needsServiceAgreementDraftRefresh(row))
+      const signedRow = await ensureDefaultMzSignature(row)
+      const target = await ensureDraft(signedRow, needsAuthorityDraftRefresh(signedRow) || needsServiceAgreementDraftRefresh(signedRow))
       if (!target.current_draft_url) {
         message.warning('当前还没有可下载的草稿 PDF')
         return
@@ -809,8 +822,8 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
 
   async function saveMzSignatureForDocument(row: LandlordDocument, payload: SavedMzSignature) {
     try {
-      await postJSON(`/landlord-documents/${row.id}/mz-sign`, payload)
-      return
+      const out = await postJSON<{ document?: LandlordDocument }>(`/landlord-documents/${row.id}/mz-sign`, payload)
+      return out?.document || null
     } catch (e: any) {
       const msg = String(e?.message || '')
       const status = Number(e?.status || 0)
@@ -825,7 +838,7 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
       landlord_sign_token_hash: '',
       landlord_sign_expires_at: '',
     }
-    await patchJSON(`/landlord-documents/${row.id}`, { fields: nextFields, status: 'draft' })
+    return await patchJSON<LandlordDocument>(`/landlord-documents/${row.id}`, { fields: nextFields, status: 'draft' })
   }
 
   function openMzSign(row?: LandlordDocument | null) {
@@ -875,10 +888,13 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
   async function requestLandlordSign(row: LandlordDocument) {
     setSaving(true)
     try {
-      if (!String(row.fields?.mz_signature_data_url || '').trim() && defaultMzSignature?.signed_name && defaultMzSignature?.signature_data_url) {
-        await saveMzSignatureForDocument(row, defaultMzSignature)
+      const signedRow = await ensureDefaultMzSignature(row)
+      if (!String(signedRow.fields?.mz_signature_data_url || '').trim()) {
+        message.warning('请先确认我方默认签名，再生成房东签署链接')
+        openMzSign(signedRow)
+        return
       }
-      const result = await postJSON<{ token: string; expires_at: string }>(`/landlord-documents/${row.id}/request-landlord-sign`, {})
+      const result = await postJSON<{ token: string; expires_at: string }>(`/landlord-documents/${signedRow.id}/request-landlord-sign`, {})
       const origin = typeof window !== 'undefined' ? window.location.origin : ''
       const url = `${origin}/public/landlord-documents/sign/${String(result?.token || '')}`
       setSignLink(url)
@@ -886,10 +902,11 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
       setLinkOpen(true)
       try { await navigator.clipboard?.writeText(url); message.success('签署链接已生成并复制') } catch { message.success('签署链接已生成') }
       await load()
-      if (detail?.id === row.id) await openDetail(row)
-      if (previewDoc?.id === row.id) await reloadPreview(row)
+      if (detail?.id === signedRow.id) await openDetail(signedRow)
+      if (previewDoc?.id === signedRow.id) await reloadPreview(signedRow)
     } catch (e: any) {
-      message.error(String(e?.message || '生成签署链接失败'))
+      const msg = String(e?.message || '')
+      message.error(msg === 'missing_mz_signature' ? '请先确认我方默认签名，再生成房东签署链接' : (msg || '生成签署链接失败'))
     } finally {
       setSaving(false)
     }

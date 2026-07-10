@@ -962,6 +962,7 @@ router.post('/:id/request-landlord-sign', requireAnyPerm(WRITE_PERMS), async (re
     if (String(before.status || '') === 'signed') return res.status(409).json({ message: 'already_signed' })
     const fields = ensureMzSignedFields(parseFields(before.fields))
     if (before.type === 'property_service_agreement' && isLeasedToMzVariant(fields)) return res.status(409).json({ message: 'leased_variant_no_esign' })
+    if (!isImageDataUrl(String(fields.mz_signature_data_url || '').trim())) return res.status(409).json({ message: 'missing_mz_signature' })
     const actor = actorOf(req)
     const token = randomToken()
     const expiresAt = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString()
@@ -1277,6 +1278,29 @@ publicRouter.get('/landlord-documents/sign/:token/draft.pdf', async (req, res) =
   }
 })
 
+publicRouter.get('/landlord-documents/sign/:token/signed.pdf', async (req, res) => {
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    if (!hasR2) return res.status(500).json({ message: 'R2 not configured' })
+    const token = String(req.params.token || '').trim()
+    if (!token) return res.status(400).json({ message: 'missing token' })
+    const row = await loadPublicSigningDocumentByToken(token)
+    if (!row) return res.status(404).json({ message: 'not found' })
+    const fields = parseFields(row.fields)
+    const completed = Boolean(String(fields.landlord_signed_at || '').trim())
+    if (!completed) return res.status(409).json({ message: 'not_signed' })
+    const fileKey = row.current_signed_file_key
+    const fileName = row.current_signed_file_name
+    if (!fileKey) return res.status(404).json({ message: 'signed version not found' })
+    const obj = await r2GetObjectByKey(String(fileKey))
+    if (!obj?.body?.length) return res.status(404).json({ message: 'file not found' })
+    const filename = String(fileName || documentDownloadFilename(row, '-signed')).replace(/[^a-zA-Z0-9._-]/g, '_')
+    return sendPdfBuffer(req, res, { body: obj.body, contentType: obj.contentType }, filename, 'attachment')
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'public signed download failed' })
+  }
+})
+
 publicRouter.post('/landlord-documents/sign/:token/submit', async (req, res) => {
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
@@ -1290,6 +1314,7 @@ publicRouter.post('/landlord-documents/sign/:token/submit', async (req, res) => 
     const row = await loadPublicSigningDocumentByToken(token)
     if (!row) return res.status(404).json({ message: 'not found' })
     const fields = ensureMzSignedFields(parseFields(row.fields))
+    if (!isImageDataUrl(String(fields.mz_signature_data_url || '').trim())) return res.status(409).json({ message: 'missing_mz_signature' })
     if (String(fields.landlord_signed_at || '').trim()) return res.json({ ok: true, already_signed: true, document: await loadDocument(String(row.id)), signed_url: row.current_signed_url || '' })
     const merged = {
       ...fields,
