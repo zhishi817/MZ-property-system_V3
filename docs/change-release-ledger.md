@@ -2,6 +2,110 @@
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
+## CRL-20260711-003 — 房东签署完成页下载签署版合同
+
+- **Status:** ready
+- **Updated:** 2026-07-11 00:59 AEST
+- **Request:** “房东签字完成以后，需要可以下载签字完成的合同”。
+- **Outcome:** 房东公开签署页在签署完成后会显示“下载签署完成合同”按钮，按钮通过签署 token 访问后端公开下载端点，下载最终签署版 PDF，不再依赖存储层 `current_signed_url` 作为公开入口。
+
+### Implementation
+
+- Previous behavior:
+  - 公开签署页完成态有“打开签署版 PDF”按钮，但使用的是接口返回的 `current_signed_url/signed_url`。
+  - 该 URL 是存储层文件地址，不是稳定的公开下载接口；如果存储 URL 不适合直接公开访问，房东完成签字后仍无法可靠下载合同。
+  - 已有 `/draft.pdf` 公开端点在签署完成后可 inline 返回签署版，但没有明确的附件下载端点和下载按钮文案。
+- New behavior:
+  - 新增 `GET /public/landlord-documents/sign/:token/signed.pdf`，仅在房东已签署且当前签署版 PDF 存在时，以 `attachment` 返回最终签署版 PDF。
+  - 完成页按钮改为“下载签署完成合同”/`Download Signed Contract`，指向 token 下载端点。
+  - 完成页说明文案明确提示可下载签字完成合同。
+  - 前端不再保存或依赖 `signed_url/current_signed_url` 来显示下载按钮。
+- Key decisions:
+  - 保留原有签署 token 权限边界；下载端点继续使用 `loadPublicSigningDocumentByToken()`，签署完成的 token 在后端现有规则下可继续读取。
+  - 不改变管理端下载签署版接口，不改变 PDF 生成逻辑。
+
+### Files / Areas
+
+- `backend/src/modules/landlord_documents.ts` — modified: 新增公开签署版 PDF 附件下载端点。
+- `frontend/src/app/public/landlord-documents/sign/[token]/page.tsx` — modified: 签署完成态显示下载签署完成合同按钮，并使用公开 token 下载端点。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: added public `GET /public/landlord-documents/sign/:token/signed.pdf`.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: builds on `CRL-20260711-002` because both touch landlord document public signing and MZ signature safeguards.
+
+### Validation
+
+- `git diff --check -- backend/src/modules/landlord_documents.ts frontend/src/app/public/landlord-documents/sign/[token]/page.tsx` — passed.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `npm run lint` in `frontend` — passed with existing warnings; no errors.
+- `npm run build` in `frontend` — passed; build emitted existing Browserslist staleness notice, existing ESLint warnings, and existing Recharts static-generation width/height warnings.
+
+### Risks / Release Notes
+
+- Runtime risk: if final signed PDF generation or R2 retrieval fails, the download endpoint returns `signed version not found` or `file not found` instead of a broken storage URL.
+- Existing completed links should show the new download button after deployment as long as the signing token still resolves under the existing completed-link rule.
+- Rollback: remove the `/signed.pdf` public route and restore the completion button to use `signed_url/current_signed_url`.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: uncommitted.
+
+## CRL-20260711-002 — 合同默认 MZ 签名补入与签署链接防空签
+
+- **Status:** ready
+- **Updated:** 2026-07-11 00:52 AEST
+- **Request:** “合同我们的默认签名呢，怎么又没了”；随后补充“生成房东签署的链接里面也没有签字啊”。
+- **Outcome:** 合同预览、草稿下载和生成房东签署链接前，系统会在当前合同缺少 MZ 签名图片时自动使用本机已保存的默认签名写入合同并刷新草稿；如果仍然没有 MZ 签名图片，管理端会拦截生成链接，后端也会拒绝缺 MZ 签名的房东签署链接和公开提交。
+
+### Implementation
+
+- Previous behavior:
+  - 默认 MZ 签名保存在浏览器本地，创建/保存合同或手动 MZ 签署时才会写入合同字段。
+  - 直接预览或下载已有合同草稿时，如果该合同字段中没有 `mz_signature_data_url`，PDF 会渲染为空的 `Signature:`。
+  - 管理端生成房东签署链接前只尝试补默认签名，但没有确认补签后的文档确实包含签名图片；后端 `ensureMzSignedFields()` 只补签署人和日期，不校验签名图片。
+- New behavior:
+  - 新增管理端 `ensureDefaultMzSignature()`，预览、下载草稿和生成房东签署链接共用该补签流程。
+  - `saveMzSignatureForDocument()` 返回后端刷新后的文档，调用方使用最新字段继续生成 PDF 或签署链接。
+  - 生成房东签署链接前会确认 `mz_signature_data_url` 已存在；缺失时打开 MZ 签署弹窗并提示先确认默认签名。
+  - 后端 `POST /landlord-documents/:id/request-landlord-sign` 在 MZ 签名图片缺失时返回 `missing_mz_signature`，不再生成缺我方签名的链接。
+  - 公开房东签署提交接口同样拒绝缺 MZ 签名图片的文档，避免旧链接继续生成空我方签名的签署版。
+- Key decisions:
+  - 不新增签名存储系统，继续复用现有本地默认签名和 `/mz-sign` 后端接口。
+  - 后端只校验合同字段里是否已有合法签名图片，不尝试读取浏览器本地默认签名。
+
+### Files / Areas
+
+- `frontend/src/app/landlords/_components/LandlordDocumentsPage.tsx` — modified: 预览、下载草稿、生成房东签署链接前自动补默认 MZ 签名，并在缺签名时阻止生成链接。
+- `backend/src/modules/landlord_documents.ts` — modified: 房东签署链接生成和公开提交前校验 MZ 签名图片存在。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: `POST /landlord-documents/:id/request-landlord-sign` may now return `409 { message: "missing_mz_signature" }` when the document lacks a valid MZ signature image.
+- Public signing: landlord submit endpoint may now return `missing_mz_signature` instead of producing a signed PDF with an empty MZ signature.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: landlord document PDF / e-sign flow only; independent from task-center and property-payable units.
+
+### Validation
+
+- `git diff --check -- frontend/src/app/landlords/_components/LandlordDocumentsPage.tsx backend/src/modules/landlord_documents.ts` — passed.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `npm run lint` in `frontend` — passed with existing warnings; no errors.
+- `npm run build` in `frontend` — passed; build emitted existing Browserslist staleness notice, existing ESLint warnings, and existing Recharts static-generation width/height warnings.
+
+### Risks / Release Notes
+
+- Runtime risk: users without a saved default MZ signature, or documents whose saved signature data is invalid, must confirm MZ signing before generating a landlord signing link.
+- Existing landlord signing links for documents missing MZ signature data will be blocked at submit time until MZ signature is added and a refreshed link/draft is generated.
+- Rollback: remove the management-side `ensureDefaultMzSignature()` usage and remove the backend `missing_mz_signature` guards from link generation/public submit.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: uncommitted.
+
 ## CRL-20260711-001 — 任务中心 iPad 自适应布局修复
 
 - **Status:** ready
