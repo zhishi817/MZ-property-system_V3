@@ -2,6 +2,60 @@
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
+## CRL-20260711-001 — 任务中心 iPad 自适应布局修复
+
+- **Status:** ready
+- **Updated:** 2026-07-11 00:11 AEST
+- **Request:** “任务中心 ipad显示也是很不好，到底有没有设备自适应，检查一下，先不改代码”；确认问题后执行“彻底修复一下”。
+- **Outcome:** 任务中心看板现在按实际任务板容器宽度决定每行任务卡数量，iPad 横屏带左侧菜单时会降为 3 列，窄屏继续降为 2/1 列；JS 分行、拖拽插入位置和 CSS 网格共用同一列数，避免视觉列数和拖拽逻辑不一致。
+
+### Implementation
+
+- Previous behavior:
+  - 任务中心每行固定 4 个任务卡，CSS 默认也固定 4 列。
+  - 2 列/自适应样式只在浏览器视口 `max-width: 1100px` 时触发；iPad 横屏加后台侧栏后，内容区已经偏窄但浏览器视口仍大于断点，导致卡片被压窄。
+  - 卡片内时间、状态、顺序等标签在中等宽度下仍强制单行横向隐藏滚动，截图中表现为标题和标签大量截断。
+- New behavior:
+  - 新增 `resolveTaskCenterColumns()`，按任务板可用宽度把列数解析为 4/3/2/1。
+  - 任务中心页面用 `ResizeObserver` 测量看板容器宽度，并把列数同步用于分行、拖拽插入位置和 CSS 变量。
+  - `.taskCenterSubrowGrid` 由 `--task-center-columns` 控制列数，不再只依赖固定 4 列或视口断点。
+  - 在 1 到 3 列状态下，任务卡内时间、状态、检查/执行顺序等标签允许换行，减少 iPad 上的拥挤和横向隐藏。
+- Key decisions:
+  - 不重写任务中心架构，不新增平行看板系统；保留原有行/卡/拖拽模型。
+  - 响应式依据“内容区宽度”而不是浏览器宽度，适配后台侧栏展开、折叠和 iPad 横竖屏。
+  - 列数 helper 放在现有 `taskCenterDisplay.ts` 并加单元测试，避免列数边界变成页面内魔法值。
+
+### Files / Areas
+
+- `frontend/src/app/task-center/page.tsx` — modified: 用容器宽度驱动任务板列数，并同步更新分行和拖拽插入逻辑。
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — modified: 新增任务中心列数解析 helper。
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — modified: 覆盖任务中心 1/2/3/4 列宽度边界。
+- `frontend/src/app/cleaning/cleaningSchedule.module.scss` — modified: 任务中心网格改为 CSS 变量列数，并优化中窄宽度下卡片标签换行。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: follows earlier task-center card responsive/layout work; independent from notification and property-payable units.
+
+### Validation
+
+- `npx vitest run src/app/task-center/taskCenterDisplay.test.ts` in `frontend` — passed: 3 tests passed.
+- `npm run lint` in `frontend` — passed with existing warnings; no errors.
+- `npm run build` in `frontend` — passed; build emitted existing Browserslist staleness notice, existing ESLint warnings, and existing Recharts static-generation width/height warnings.
+- Live authenticated iPad browser screenshot — not run in this turn; validation used code-level container-width behavior and production build.
+
+### Risks / Release Notes
+
+- Runtime risk: changing task grouping from fixed 4 columns to responsive 3/2/1 columns changes the visual row breaks and drag insertion positions on tablet/narrow widths; this is intentional to keep drag behavior aligned with the visible grid.
+- Runtime risk: very dense cards can become taller in 1 to 3 column layouts because tags now wrap instead of being hidden horizontally.
+- Rollback: restore fixed `TASKS_PER_LINE = 4`, restore `.taskCenterSubrowGrid` to fixed 4 columns, remove the `ResizeObserver` column state, and remove the helper/test additions.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
+- Git state: uncommitted.
+
 ## CRL-20260710-004 — 移动端推送通知高优先级投递
 
 - **Status:** ready

@@ -1641,6 +1641,7 @@
 }
 
 .taskCenterBoardWrapNew {
+  --task-center-columns: 4;
   min-height: 320px;
   padding: 4px 14px 16px;
 }
@@ -1896,7 +1897,7 @@
 
 .taskCenterSubrowGrid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--task-center-columns, 4), minmax(0, 1fr));
   gap: 8px;
   align-items: stretch;
 }
@@ -2035,6 +2036,41 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.taskCenterBoardWrapNew[data-task-center-columns='1'] .taskCenterCompactTimeLine,
+.taskCenterBoardWrapNew[data-task-center-columns='2'] .taskCenterCompactTimeLine,
+.taskCenterBoardWrapNew[data-task-center-columns='3'] .taskCenterCompactTimeLine,
+.taskCenterBoardWrapNew[data-task-center-columns='1'] .taskCenterCompactTagLine,
+.taskCenterBoardWrapNew[data-task-center-columns='2'] .taskCenterCompactTagLine,
+.taskCenterBoardWrapNew[data-task-center-columns='3'] .taskCenterCompactTagLine {
+  height: auto;
+  min-height: 28px;
+  flex-wrap: wrap;
+  overflow: visible;
+  white-space: normal;
+}
+
+.taskCenterBoardWrapNew[data-task-center-columns='1'] .taskCenterCompactMetaGroup,
+.taskCenterBoardWrapNew[data-task-center-columns='2'] .taskCenterCompactMetaGroup,
+.taskCenterBoardWrapNew[data-task-center-columns='3'] .taskCenterCompactMetaGroup {
+  flex-wrap: wrap;
+}
+
+.taskCenterBoardWrapNew[data-task-center-columns='1'] .taskCenterCompactOrderLine,
+.taskCenterBoardWrapNew[data-task-center-columns='2'] .taskCenterCompactOrderLine,
+.taskCenterBoardWrapNew[data-task-center-columns='3'] .taskCenterCompactOrderLine {
+  height: auto;
+  min-height: 34px;
+  flex-wrap: wrap;
+  overflow: visible;
+  padding: 3px;
+}
+
+.taskCenterBoardWrapNew[data-task-center-columns='1'] .taskCenterCompactOrderTag,
+.taskCenterBoardWrapNew[data-task-center-columns='2'] .taskCenterCompactOrderTag,
+.taskCenterBoardWrapNew[data-task-center-columns='3'] .taskCenterCompactOrderTag {
+  max-width: 100%;
 }
 
 .taskCenterCompactTitle {
@@ -2544,7 +2580,7 @@
   }
 
   .taskCenterSubrowGrid {
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
+    grid-template-columns: repeat(var(--task-center-columns, 2), minmax(0, 1fr));
   }
 
   .taskCenterSubrow {
@@ -2554,7 +2590,7 @@
 
 @media (max-width: 720px) {
   .taskCenterSubrowGrid {
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 228px), 1fr));
+    grid-template-columns: repeat(var(--task-center-columns, 1), minmax(0, 1fr));
     gap: 6px;
   }
 

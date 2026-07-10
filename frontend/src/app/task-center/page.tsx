@@ -2,7 +2,7 @@
 
 import { Alert, Button, DatePicker, Empty, Input, Modal, Select, Skeleton, Space, Switch, message } from 'antd'
 import { DeleteOutlined, HolderOutlined, LeftOutlined, PlusOutlined, ReloadOutlined, RightOutlined, SaveOutlined } from '@ant-design/icons'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { getJSON, postJSON } from '../../lib/api'
 import { upsertAdminNotification } from '../../lib/adminNotifications'
@@ -24,7 +24,12 @@ import {
   taskStatusMeta,
   taskTimingTone,
 } from '../../lib/cleaningTaskUi'
-import { cleaningTaskFlowLabelText, isDeferredInspectionDisplayTask } from './taskCenterDisplay'
+import {
+  TASK_CENTER_MAX_COLUMNS,
+  cleaningTaskFlowLabelText,
+  isDeferredInspectionDisplayTask,
+  resolveTaskCenterColumns,
+} from './taskCenterDisplay'
 import styles from '../cleaning/cleaningSchedule.module.scss'
 
 type Staff = {
@@ -283,7 +288,6 @@ const DEFERRED_ROW_KEY = 'deferred:holding'
 const DEFERRED_INSPECTION_ROW_KEY = 'deferred:inspection'
 const COMPLETED_ROW_KEY = 'group:completed'
 const DEFAULT_SUBROW_KEY = 'subrow:default'
-const TASKS_PER_LINE = 4
 const DEFAULT_SUMMARY_CHECKOUT_TIME = '10am'
 const DEFAULT_SUMMARY_CHECKIN_TIME = '3pm'
 const TASK_CENTER_TIMEZONE = 'Australia/Melbourne'
@@ -790,6 +794,7 @@ export default function TaskCenterPage() {
   const [boardDirty, setBoardDirty] = useState(false)
   const [boardSaving, setBoardSaving] = useState(false)
   const boardDirtyRef = useRef(false)
+  const boardWrapRef = useRef<HTMLDivElement | null>(null)
   const loadDayRequestRef = useRef(0)
   const invalidInspectionModeNoticeRef = useRef<Record<string, boolean>>({})
   const assignmentBaselineRef = useRef<AssignmentBaseline>({ cleaning: new Map(), work: new Map() })
@@ -799,6 +804,11 @@ export default function TaskCenterPage() {
 
   const dateStr = useMemo(() => date.format('YYYY-MM-DD'), [date])
   const canSeeCheckinSyncTag = viewerRole === 'admin' || viewerRole === 'customer_service'
+  const [taskBoardColumns, setTaskBoardColumns] = useState(TASK_CENTER_MAX_COLUMNS)
+
+  const taskBoardStyle = useMemo(() => ({
+    '--task-center-columns': String(taskBoardColumns),
+  }) as CSSProperties, [taskBoardColumns])
 
   useEffect(() => {
     setViewerRole(getRole())
@@ -879,6 +889,30 @@ export default function TaskCenterPage() {
     loadStaff().catch(() => {})
     loadProps().catch(() => {})
   }, [loadProps, loadStaff])
+
+  useEffect(() => {
+    const element = boardWrapRef.current
+    if (!element || typeof window === 'undefined') return
+    let frameId = 0
+    const updateColumns = () => {
+      if (frameId) window.cancelAnimationFrame(frameId)
+      frameId = window.requestAnimationFrame(() => {
+        const nextColumns = resolveTaskCenterColumns(element.getBoundingClientRect().width)
+        setTaskBoardColumns((current) => (current === nextColumns ? current : nextColumns))
+      })
+    }
+    updateColumns()
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateColumns)
+    observer?.observe(element)
+    window.addEventListener('resize', updateColumns)
+    window.addEventListener('orientationchange', updateColumns)
+    return () => {
+      if (frameId) window.cancelAnimationFrame(frameId)
+      observer?.disconnect()
+      window.removeEventListener('resize', updateColumns)
+      window.removeEventListener('orientationchange', updateColumns)
+    }
+  }, [])
 
   useEffect(() => {
     loadDay().catch(() => {})
@@ -1587,8 +1621,8 @@ export default function TaskCenterPage() {
       : (() => {
           const currentLength = targetLine.tasks.length
           const currentStart = targetLine.start_index
-          return currentLength >= TASKS_PER_LINE
-            ? Math.max(currentStart, Math.min(currentStart + TASKS_PER_LINE - 1, subrow.tasks.length))
+          return currentLength >= taskBoardColumns
+            ? Math.max(currentStart, Math.min(currentStart + taskBoardColumns - 1, subrow.tasks.length))
             : Math.min(currentStart + currentLength, subrow.tasks.length)
         })()
     subrow.tasks.splice(insertIndex, 0, movedTask)
@@ -1604,7 +1638,7 @@ export default function TaskCenterPage() {
     replaceRowsLocally(nextRows)
     setBoardDraftDirty(true)
     setDragOverKey(null)
-  }, [allBoardTasks, allRows, autoCleaningStatus, cloneRows, defaultBoardRowKeyForTask, ensureBoardRow, markCleaningTaskDirty, normalizeRowsForBoard, replaceRowsLocally, setBoardDraftDirty])
+  }, [allBoardTasks, allRows, autoCleaningStatus, cloneRows, defaultBoardRowKeyForTask, ensureBoardRow, markCleaningTaskDirty, normalizeRowsForBoard, replaceRowsLocally, setBoardDraftDirty, taskBoardColumns])
 
   const saveBoardDraft = useCallback(async () => {
     if (boardSaving) return
@@ -2030,10 +2064,10 @@ export default function TaskCenterPage() {
       const rowLines: TaskCenterLine[] = []
       const pushBucket = (bucketTasks: TaskCenterTask[], target: TaskCenterLine[], kind: 'mixed' | 'deferred') => {
         if (!bucketTasks.length) return
-        const lineCount = Math.max(1, Math.ceil(bucketTasks.length / TASKS_PER_LINE))
+        const lineCount = Math.max(1, Math.ceil(bucketTasks.length / taskBoardColumns))
         for (let index = 0; index < lineCount; index += 1) {
           globalLineIndex += 1
-          const lineTasks = bucketTasks.slice(index * TASKS_PER_LINE, (index + 1) * TASKS_PER_LINE)
+          const lineTasks = bucketTasks.slice(index * taskBoardColumns, (index + 1) * taskBoardColumns)
           target.push({
             line_key: `${row.row_key}:line:${kind}:${index + 1}`,
             row_key: row.row_key,
@@ -2085,7 +2119,7 @@ export default function TaskCenterPage() {
         || a.row_key.localeCompare(b.row_key)
     })
     return output
-  }, [allRows, filteredRows, rowTaskCollections])
+  }, [allRows, filteredRows, rowTaskCollections, taskBoardColumns])
 
   const renderLine = useCallback((line: TaskCenterLine) => {
     const dragKey = line.line_key
@@ -2350,7 +2384,12 @@ export default function TaskCenterPage() {
             </div>
           ) : null}
 
-          <div className={styles.taskCenterBoardWrapNew}>
+          <div
+            ref={boardWrapRef}
+            className={styles.taskCenterBoardWrapNew}
+            data-task-center-columns={taskBoardColumns}
+            style={taskBoardStyle}
+          >
             {loading ? (
               <div className={styles.taskCenterBoardSkeleton}>
                 <Skeleton active paragraph={{ rows: 6 }} />
