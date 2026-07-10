@@ -120,7 +120,7 @@ export default function PropertyPayableTemplatesForm(props: { form: any; name?: 
                 <Row gutter={[16, 12]}>
                   <Form.Item name={[field.name, 'id']} hidden><Input /></Form.Item>
                   <Col span={8}>
-                  <Form.Item name={[field.name, 'vendor']} label="收费公司/事项" rules={[{ required: true, message: '必填' }]}>
+                    <Form.Item name={[field.name, 'vendor']} label="收费公司/事项" rules={[{ required: true, message: '必填' }]}>
                       <PropertyPayableVendorInput />
                     </Form.Item>
                   </Col>
@@ -150,7 +150,7 @@ export default function PropertyPayableTemplatesForm(props: { form: any; name?: 
                     </Form.Item>
                   </Col>
                   <Col span={8}>
-                    <Form.Item name={[field.name, 'bill_expected_day_of_month']} label="预计收到账单日" rules={[{ required: true, message: '必填' }]}>
+                    <Form.Item name={[field.name, 'bill_expected_day_of_month']} label="预计收到账单日">
                       <InputNumber min={1} max={31} style={{ width: '100%' }} />
                     </Form.Item>
                   </Col>

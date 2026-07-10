@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react'
 import { API_BASE } from '../../lib/api'
 import { hasPerm } from '../../lib/auth'
 import PropertyPayableTemplatesForm from '../../components/PropertyPayableTemplatesForm'
+import { rememberPropertyPayableVendors } from '../../components/PropertyPayableVendorInput'
 import TableRowActions from '../../components/TableRowActions'
 import { PROPERTY_REGION_ORDER, cmpPropertyCode } from '../../lib/properties'
 import { PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH, hydratePropertyPayableTemplatesForForm, normalizePropertyPayableTemplates, propertyPayableCategoryLabel, propertyPayablePaymentTypeLabel } from '../../lib/propertyPayables'
@@ -108,9 +109,10 @@ export default function PropertiesPage() {
     const booking_listing_name = v.listing_booking || ''
     const listing_names = { other: v.listing_other || '' }
     if (![airbnb_listing_name, booking_listing_name, listing_names.other].some(x => String(x || '').trim())) { message.error('请至少填写一个平台的 Listing 名称'); return }
-    const payload = { code: v.code, address: v.address, type: v.type, capacity: v.capacity, region: v.region === '其他' ? (v.region_other || '') : v.region, area_sqm: v.area_sqm, landlord_id: v.landlord_id, biz_category: v.biz_category, bed_config, aircon_model: v.aircon_model, bedroom_ac: v.bedroom_ac, access_guide_link: v.access_guide_link, garage_guide_link: v.garage_guide_link, building_name: v.building_name, building_facilities: v.building_facilities, building_facility_other: v.building_facility_other, building_contact_name: v.building_contact_name, building_contact_phone: v.building_contact_phone, building_contact_email: v.building_contact_email, tv_model: v.tv_model, wifi_ssid: v.wifi_ssid, wifi_password: v.wifi_password, notes: v.notes, listing_names, airbnb_listing_name, booking_listing_name, payable_templates: normalizePropertyPayableTemplates(v.payable_templates) }
+    const payable_templates = normalizePropertyPayableTemplates(v.payable_templates)
+    const payload = { code: v.code, address: v.address, type: v.type, capacity: v.capacity, region: v.region === '其他' ? (v.region_other || '') : v.region, area_sqm: v.area_sqm, landlord_id: v.landlord_id, biz_category: v.biz_category, bed_config, aircon_model: v.aircon_model, bedroom_ac: v.bedroom_ac, access_guide_link: v.access_guide_link, garage_guide_link: v.garage_guide_link, building_name: v.building_name, building_facilities: v.building_facilities, building_facility_other: v.building_facility_other, building_contact_name: v.building_contact_name, building_contact_phone: v.building_contact_phone, building_contact_email: v.building_contact_email, tv_model: v.tv_model, wifi_ssid: v.wifi_ssid, wifi_password: v.wifi_password, notes: v.notes, listing_names, airbnb_listing_name, booking_listing_name, payable_templates }
     const res = await fetch(`${API_BASE}/properties`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(payload) })
-    if (res.ok) { message.success('房源已创建'); setOpen(false); form.resetFields(); load() }
+    if (res.ok) { rememberPropertyPayableVendors(payable_templates); message.success('房源已创建'); setOpen(false); form.resetFields(); load() }
     else { let msg = '创建失败'; try { const j = await res.json(); if (j?.message) msg = j.message } catch { try { msg = await res.text() } catch {} } message.error(msg) }
   }
 
@@ -159,9 +161,10 @@ export default function PropertiesPage() {
     const booking_listing_name = v.listing_booking || ''
     const listing_names = { other: v.listing_other || '' }
     if (![airbnb_listing_name, booking_listing_name, listing_names.other].some(x => String(x || '').trim())) { message.error('请至少填写一个平台的 Listing 名称'); return }
-    const payload = { ...v, region: v.region === '其他' ? (v.region_other || '') : v.region, bed_config, listing_names, airbnb_listing_name, booking_listing_name, payable_templates: normalizePropertyPayableTemplates(v.payable_templates) }
+    const payable_templates = normalizePropertyPayableTemplates(v.payable_templates)
+    const payload = { ...v, region: v.region === '其他' ? (v.region_other || '') : v.region, bed_config, listing_names, airbnb_listing_name, booking_listing_name, payable_templates }
     const res = await fetch(`${API_BASE}/properties/${current?.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(payload) })
-    if (res.ok) { message.success('房源已更新'); setEditOpen(false); load() }
+    if (res.ok) { rememberPropertyPayableVendors(payable_templates); message.success('房源已更新'); setEditOpen(false); load() }
     else { let msg = '更新失败'; try { const j = await res.json(); if (j?.message) msg = j.message } catch { try { msg = await res.text() } catch {} } message.error(msg) }
   }
 

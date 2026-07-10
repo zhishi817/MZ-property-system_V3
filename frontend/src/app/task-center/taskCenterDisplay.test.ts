@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cleaningTaskFlowLabelText, isDeferredInspectionDisplayTask } from './taskCenterDisplay'
+import { cleaningTaskFlowLabelText, isDeferredInspectionDisplayTask, resolveTaskCenterColumns } from './taskCenterDisplay'
 
 describe('taskCenterDisplay', () => {
   it('treats deferred inspection tasks as inspection-oriented display', () => {
@@ -36,5 +36,15 @@ describe('taskCenterDisplay', () => {
       task_kind: 'checkin_clean',
       inspection_mode: 'same_day',
     })).toBe('入住')
+  })
+
+  it('resolves task-center columns from the usable board width', () => {
+    expect(resolveTaskCenterColumns(0)).toBe(4)
+    expect(resolveTaskCenterColumns(580)).toBe(1)
+    expect(resolveTaskCenterColumns(760)).toBe(2)
+    expect(resolveTaskCenterColumns(1100)).toBe(3)
+    expect(resolveTaskCenterColumns(1220)).toBe(3)
+    expect(resolveTaskCenterColumns(1320)).toBe(4)
+    expect(resolveTaskCenterColumns(1800)).toBe(4)
   })
 })

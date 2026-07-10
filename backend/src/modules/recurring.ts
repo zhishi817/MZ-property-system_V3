@@ -166,11 +166,31 @@ export function computeMonthDayISO(monthKey: string, dayOfMonth: any, monthOffse
   return `${String(y)}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
 }
 
+function isBlankOptionalDayOfMonth(value: any): boolean {
+  return value == null || String(value).trim() === ''
+}
+
+function isValidOptionalDayOfMonth(value: any): boolean {
+  if (isBlankOptionalDayOfMonth(value)) return true
+  const n = Number(value)
+  return Number.isFinite(n) && n >= 1 && n <= 31
+}
+
+function normalizeOptionalDayOfMonth(value: any): number | null {
+  if (isBlankOptionalDayOfMonth(value)) return null
+  return Number(value)
+}
+
+export function computeOptionalMonthDayISO(monthKey: string, dayOfMonth: any, monthOffset = 0): string | null {
+  if (isBlankOptionalDayOfMonth(dayOfMonth)) return null
+  return computeMonthDayISO(monthKey, dayOfMonth, monthOffset)
+}
+
 export function computePropertyPayableTemplateDates(payment: any, monthKey: string) {
   const expectedRaw = payment?.bill_expected_day_of_month
   return {
     due_date: computeDueISO(monthKey, PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH),
-    bill_expected_date: expectedRaw == null || expectedRaw === '' ? null : computeMonthDayISO(monthKey, expectedRaw, 0),
+    bill_expected_date: computeOptionalMonthDayISO(monthKey, expectedRaw, 0),
     bill_period_start: null,
     bill_period_end: null,
   }
@@ -519,6 +539,7 @@ const paymentTypeEnum = z.enum(['bank_account', 'bpay', 'payid', 'rent_deduction
 const monthKeySchema = z.string().regex(/^\d{4}-\d{2}$/, 'invalid month_key')
 const amountModeEnum = z.enum(['fixed', 'percent_of_property_total_income'])
 const incomeBaseEnum = z.enum(['total_income'])
+const optionalDayOfMonthSchema = z.preprocess((value) => isBlankOptionalDayOfMonth(value) ? undefined : value, z.coerce.number().optional())
 const createPaymentSchema = z.object({
   id: z.string().min(8),
   scope: z.enum(['company', 'property']).optional().default('company'),
@@ -529,7 +550,7 @@ const createPaymentSchema = z.object({
   category_detail: z.string().optional(),
   amount: z.coerce.number().optional(),
   due_day_of_month: z.coerce.number().optional(),
-  bill_expected_day_of_month: z.coerce.number().optional(),
+  bill_expected_day_of_month: optionalDayOfMonthSchema,
   bill_period_start_day_of_month: z.coerce.number().optional(),
   bill_period_start_month_offset: z.coerce.number().optional(),
   bill_period_end_day_of_month: z.coerce.number().optional(),
@@ -1148,9 +1169,10 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
   if (String((payment as any).template_kind || '') === TEMPLATE_KIND_PROPERTY_PAYABLE) {
     ;(payment as any).scope = 'property'
     if (!String(payment.property_id || '').trim()) return res.status(400).json({ message: 'property_id required' })
-    if (!Number.isFinite(Number((payment as any).bill_expected_day_of_month)) || Number((payment as any).bill_expected_day_of_month) < 1 || Number((payment as any).bill_expected_day_of_month) > 31) {
-      return res.status(400).json({ message: 'bill_expected_day_of_month required' })
+    if (!isValidOptionalDayOfMonth((payment as any).bill_expected_day_of_month)) {
+      return res.status(400).json({ message: 'bill_expected_day_of_month invalid' })
     }
+    ;(payment as any).bill_expected_day_of_month = normalizeOptionalDayOfMonth((payment as any).bill_expected_day_of_month)
   }
   if (mode === 'percent_of_property_total_income') {
     if (payment.scope === 'property') return res.status(400).json({ message: 'referral fee must be company scoped' })
@@ -1752,7 +1774,9 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
   const body = req.body || {}
   const allowed = ['amount','vendor','category','category_detail','due_day_of_month','bill_expected_day_of_month','bill_period_start_day_of_month','bill_period_start_month_offset','bill_period_end_day_of_month','bill_period_end_month_offset','frequency_months','status','pay_account_name','pay_bsb','pay_account_number','pay_ref','payment_type','bpay_code','pay_mobile_number','report_category','start_month_key','amount_mode','rate_percent','income_base','property_id','property_ids','template_kind','bill_account_no','note']
   const payload: Record<string, any> = {}
-  allowed.forEach(k => { if (body[k] != null) payload[k] = body[k] })
+  allowed.forEach(k => {
+    if (body[k] != null || (k === 'bill_expected_day_of_month' && Object.prototype.hasOwnProperty.call(body, k))) payload[k] = body[k]
+  })
   payload.updated_by = recurringActorId(req)
   const currentMonth = currentMonthKeyAU()
   try {
@@ -1784,8 +1808,11 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
         normalizePropertyPayableTemplatePayload(payload, before)
         const nextPropertyId = String((Object.prototype.hasOwnProperty.call(payload, 'property_id') ? payload.property_id : (before as any).property_id) || '').trim()
         if (!nextPropertyId) return { invalid: 'property_id required' }
-        const nextExpectedDay = Number(Object.prototype.hasOwnProperty.call(payload, 'bill_expected_day_of_month') ? payload.bill_expected_day_of_month : (before as any).bill_expected_day_of_month)
-        if (!Number.isFinite(nextExpectedDay) || nextExpectedDay < 1 || nextExpectedDay > 31) return { invalid: 'bill_expected_day_of_month required' }
+        const nextExpectedDay = Object.prototype.hasOwnProperty.call(payload, 'bill_expected_day_of_month') ? payload.bill_expected_day_of_month : (before as any).bill_expected_day_of_month
+        if (!isValidOptionalDayOfMonth(nextExpectedDay)) return { invalid: 'bill_expected_day_of_month invalid' }
+        if (Object.prototype.hasOwnProperty.call(payload, 'bill_expected_day_of_month')) {
+          payload.bill_expected_day_of_month = normalizeOptionalDayOfMonth(payload.bill_expected_day_of_month)
+        }
       }
       if (nextMode === 'percent_of_property_total_income') {
         if (String((before as any).scope || 'company') === 'property') return { invalid: 'referral fee must be company scoped' }
@@ -1842,7 +1869,7 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
           pushSet('due_date', dueISO)
         }
         if (billExpectedChanged) {
-          const expectedISO = computeMonthDayISO(r.month_key, payload.bill_expected_day_of_month, 0)
+          const expectedISO = computeOptionalMonthDayISO(r.month_key, payload.bill_expected_day_of_month, 0)
           pushSet('bill_expected_date', expectedISO)
         }
         if (!sets2.length) continue

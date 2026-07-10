@@ -23,7 +23,7 @@ import {
   toPropertyPayableMonthValue,
 } from '../../../lib/propertyPayables'
 import AuditTrail from '../../../components/AuditTrail'
-import PropertyPayableVendorInput from '../../../components/PropertyPayableVendorInput'
+import PropertyPayableVendorInput, { rememberPropertyPayableVendors } from '../../../components/PropertyPayableVendorInput'
 
 type Property = { id: string; code?: string; address?: string; region?: string; archived?: boolean | null }
 type WorkbenchRow = {
@@ -428,7 +428,7 @@ export default function PropertyPayablesPage() {
       category_detail: values.category_detail || undefined,
       amount: values.amount == null ? 0 : Number(values.amount || 0),
       due_day_of_month: PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH,
-      bill_expected_day_of_month: values.bill_expected_day_of_month == null ? undefined : Number(values.bill_expected_day_of_month || 0),
+      bill_expected_day_of_month: values.bill_expected_day_of_month == null ? null : Number(values.bill_expected_day_of_month || 0),
       bill_period_start_month_offset: 0,
       bill_period_start_day_of_month: undefined,
       bill_period_end_month_offset: 0,
@@ -467,6 +467,7 @@ export default function PropertyPayablesPage() {
         const json = await resp.json().catch(() => ({}))
         if (!resp.ok) throw new Error(json?.message || `HTTP ${resp.status}`)
       }
+      rememberPropertyPayableVendors(body.vendor)
       message.success(editingTemplate ? '模板已更新' : '模板已创建')
       setTemplateOpen(false)
       setEditingTemplate(null)
@@ -1014,7 +1015,7 @@ export default function PropertyPayablesPage() {
               </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item name="bill_expected_day_of_month" label="预计收到账单日" rules={[{ required: true, message: '请输入预计收到账单日' }]}>
+              <Form.Item name="bill_expected_day_of_month" label="预计收到账单日">
                 <InputNumber min={1} max={31} style={{ width: '100%' }} />
               </Form.Item>
             </Col>

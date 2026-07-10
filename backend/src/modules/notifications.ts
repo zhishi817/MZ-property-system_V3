@@ -6,6 +6,9 @@ import { ensureNotificationStorage } from '../services/notificationEvents'
 
 export const router = Router()
 
+type ExpoPushPriority = 'default' | 'normal' | 'high'
+type AppNotificationPriority = 'high' | 'medium' | 'low' | string
+
 let expoTokensEnsured = false
 let expoTokensEnsuring: Promise<void> | null = null
 
@@ -84,10 +87,16 @@ async function postJson(urlStr: string, body: any) {
   })
 }
 
-async function sendExpoPush(tokens: string[], payload: { title: string; body: string; data?: any }) {
+function resolveExpoPushPriority(_priority?: AppNotificationPriority): ExpoPushPriority {
+  // MZStay mobile notifications are operational and should arrive immediately on Android.
+  return 'high'
+}
+
+async function sendExpoPush(tokens: string[], payload: { title: string; body: string; data?: any; priority?: AppNotificationPriority }) {
   const list = (tokens || []).map((x) => String(x || '').trim()).filter(Boolean)
   if (!list.length) return { sent: 0, failed: 0 }
   const url = 'https://exp.host/--/api/v2/push/send'
+  const priority = resolveExpoPushPriority(payload.priority)
   let sent = 0
   let failed = 0
   for (let i = 0; i < list.length; i += 90) {
@@ -97,6 +106,8 @@ async function sendExpoPush(tokens: string[], payload: { title: string; body: st
       title: payload.title,
       body: payload.body,
       sound: 'default',
+      priority,
+      channelId: 'default',
       data: payload.data || {},
     }))
     try {
@@ -300,7 +311,7 @@ router.post('/push/send', requirePerm('guest.notify'), async (req, res) => {
   }
 })
 
-export async function notifyExpoAll(params: { exclude_user_id?: string; title: string; body: string; data?: any }) {
+export async function notifyExpoAll(params: { exclude_user_id?: string; title: string; body: string; data?: any; priority?: AppNotificationPriority }) {
   if (!hasPg || !pgPool) return { sent: 0, failed: 0 }
   await ensureExpoPushTokensTable()
   const exclude = String(params.exclude_user_id || '').trim()
@@ -308,10 +319,10 @@ export async function notifyExpoAll(params: { exclude_user_id?: string; title: s
     ? await pgPool.query(`SELECT token FROM expo_push_tokens WHERE user_id <> $1`, [exclude])
     : await pgPool.query(`SELECT token FROM expo_push_tokens`)
   const tokens = (rows?.rows || []).map((x: any) => String(x.token || '').trim()).filter(Boolean)
-  return await sendExpoPush(tokens, { title: params.title, body: params.body, data: params.data || {} })
+  return await sendExpoPush(tokens, { title: params.title, body: params.body, data: params.data || {}, priority: params.priority })
 }
 
-export async function notifyExpoUsers(params: { user_ids: string[]; title: string; body: string; data?: any }) {
+export async function notifyExpoUsers(params: { user_ids: string[]; title: string; body: string; data?: any; priority?: AppNotificationPriority }) {
   // Keep push delivery behind the notification queue worker. Business code should use emitNotificationEvent instead.
   if (!hasPg || !pgPool) return { sent: 0, failed: 0 }
   await ensureExpoPushTokensTable()
@@ -319,7 +330,7 @@ export async function notifyExpoUsers(params: { user_ids: string[]; title: strin
   if (!ids.length) return { sent: 0, failed: 0 }
   const rows = await pgPool.query(`SELECT token FROM expo_push_tokens WHERE user_id = ANY($1::text[])`, [ids])
   const tokens = (rows?.rows || []).map((x: any) => String(x.token || '').trim()).filter(Boolean)
-  return await sendExpoPush(tokens, { title: params.title, body: params.body, data: params.data || {} })
+  return await sendExpoPush(tokens, { title: params.title, body: params.body, data: params.data || {}, priority: params.priority })
 }
 
 export async function listUserIdsByRoles(roles0: string[], opts?: { excludeRoles?: string[] }) {

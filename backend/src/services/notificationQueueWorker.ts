@@ -10,6 +10,7 @@ type QueueRow = {
   title: string
   body: string
   data: any
+  priority: string
 }
 
 function clamp(n: number, min: number, max: number) {
@@ -33,7 +34,8 @@ async function takePendingBatch(limit: number): Promise<QueueRow[]> {
          q.event_id,
          n.title,
          n.body,
-         n.data
+         n.data,
+         n.priority
        FROM event_queue q
        JOIN user_notifications n ON n.id = q.user_notification_id
        WHERE q.status = 'pending'
@@ -51,6 +53,7 @@ async function takePendingBatch(limit: number): Promise<QueueRow[]> {
       title: String(x.title || ''),
       body: String(x.body || ''),
       data: x.data,
+      priority: String(x.priority || 'low'),
     }))
     const ids = list.map((x) => x.id).filter(Boolean)
     if (ids.length) {
@@ -97,10 +100,10 @@ async function processOnce(batchSize: number) {
   const batch = await takePendingBatch(batchSize)
   if (!batch.length) return { taken: 0, sent: 0, failed: 0 }
 
-  const byPayload = new Map<string, { title: string; body: string; data: any; userIds: string[]; queueIds: string[] }>()
+  const byPayload = new Map<string, { title: string; body: string; data: any; priority: string; userIds: string[]; queueIds: string[] }>()
   for (const row of batch) {
-    const key = `${row.title}\n${row.body}\n${JSON.stringify(row.data || {})}`
-    const cur = byPayload.get(key) || { title: row.title, body: row.body, data: row.data || {}, userIds: [], queueIds: [] }
+    const key = `${row.title}\n${row.body}\n${row.priority}\n${JSON.stringify(row.data || {})}`
+    const cur = byPayload.get(key) || { title: row.title, body: row.body, data: row.data || {}, priority: row.priority, userIds: [], queueIds: [] }
     cur.userIds.push(row.user_id)
     cur.queueIds.push(row.id)
     byPayload.set(key, cur)
@@ -111,7 +114,7 @@ async function processOnce(batchSize: number) {
 
   for (const [, group] of byPayload) {
     try {
-      await notifyExpoUsers({ user_ids: group.userIds, title: group.title, body: group.body, data: group.data || {} })
+      await notifyExpoUsers({ user_ids: group.userIds, title: group.title, body: group.body, data: group.data || {}, priority: group.priority })
       sentIds.push(...group.queueIds)
     } catch (e: any) {
       const msg = String(e?.message || 'send_failed')

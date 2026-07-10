@@ -16,6 +16,7 @@ import { buildCleaningTurnoverDisplay } from '../lib/cleaningTurnoverDisplay'
 import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
 import { emitNotificationEvent } from '../services/notificationEvents'
 import { buildWebTaskCapabilityPayload, type WebTaskDisplayState, type WebTaskManagementAction } from '../lib/webTaskCapabilities'
+import { autoCleaningAssignmentStatus, isAutoAssignableCleaningStatus, isCheckinSiteExecutionTask } from '../lib/cleaningAssignmentStatus'
 
 export const router = Router()
 
@@ -311,10 +312,25 @@ function fallbackCleaningStatusForAssignment(assignment: any, before: any) {
   const cleanerAction = assignmentAction(assignment?.cleaner_assignment_action)
   const assigneeAction = assignmentAction(assignment?.assignee_assignment_action)
   const inspectorAction = assignmentAction(assignment?.inspector_assignment_action)
-  const nextCleaner = cleanerAction ? nullableText(assignment?.cleaner_id) : nullableText(before?.cleaner_id || before?.assignee_id)
+  const nextScope = normalizeInspectionScope(assignment?.inspection_scope ?? before?.inspection_scope)
+  const pureCheckin = isCheckinSiteExecutionTask({
+    task_type: before?.task_type ?? before?.type,
+    inspection_scope: nextScope,
+  })
+  const nextCleaner = pureCheckin
+    ? null
+    : cleanerAction ? nullableText(assignment?.cleaner_id) : nullableText(before?.cleaner_id || before?.assignee_id)
   const nextAssignee = assigneeAction ? nullableText(assignment?.assignee_id) : nextCleaner
   const nextInspector = inspectorAction ? nullableText(assignment?.inspector_id) : nullableText(before?.inspector_id)
-  return nextCleaner || nextAssignee || nextInspector ? 'assigned' : 'pending'
+  return autoCleaningAssignmentStatus({
+    task_type: before?.task_type ?? before?.type,
+    inspection_scope: nextScope,
+    assignee_id: pureCheckin
+      ? (assigneeAction ? nullableText(assignment?.assignee_id) : nullableText(before?.assignee_id || before?.inspector_id))
+      : nextAssignee,
+    cleaner_id: nextCleaner,
+    inspector_id: nextInspector,
+  })
 }
 
 function cleaningStatusFromAction(before: any, assignment: any): string | null {
@@ -329,12 +345,20 @@ function cleaningStatusFromAction(before: any, assignment: any): string | null {
 function buildCleaningSaveDiff(before: any, assignment: any): TaskSaveDiff | null {
   const taskId = text(assignment?.task_id)
   if (!taskId || !before) return null
-  const oldCleaner = nullableText(before.cleaner_id || before.assignee_id)
+  const oldInspectionMode = nullableText(before.inspection_mode)
+  const nextInspectionMode = nullableText(assignment.inspection_mode)
+  const oldInspectionScope = normalizeInspectionScope(before.inspection_scope)
+  const nextInspectionScope = normalizeInspectionScope(assignment.inspection_scope)
+  const pureCheckin = isCheckinSiteExecutionTask({
+    task_type: before?.task_type ?? before?.type,
+    inspection_scope: nextInspectionScope,
+  })
+  const oldCleaner = pureCheckin ? null : nullableText(before.cleaner_id || before.assignee_id)
   const cleanerAction = assignmentAction(assignment.cleaner_assignment_action)
-  const nextCleaner = cleanerAction ? nullableText(assignment.cleaner_id) : oldCleaner
+  const nextCleaner = pureCheckin ? null : (cleanerAction ? nullableText(assignment.cleaner_id) : oldCleaner)
   const oldAssignee = nullableText(before.assignee_id)
   const assigneeAction = assignmentAction(assignment.assignee_assignment_action)
-  const nextAssignee = assigneeAction ? nullableText(assignment.assignee_id) : nextCleaner
+  const nextAssignee = assigneeAction ? nullableText(assignment.assignee_id) : (pureCheckin ? oldAssignee : nextCleaner)
   const oldInspector = nullableText(before.inspector_id)
   const inspectorAction = assignmentAction(assignment.inspector_assignment_action)
   const effectiveStatusForInspector = lower(cleaningStatusFromAction(before, assignment) || before.status || assignment.status)
@@ -343,14 +367,21 @@ function buildCleaningSaveDiff(before: any, assignment: any): TaskSaveDiff | nul
     : effectiveStatusForInspector === 'keys_hung' && !nullableText(assignment.inspector_id)
     ? oldInspector
     : nullableText(assignment.inspector_id)
-  const oldInspectionMode = nullableText(before.inspection_mode)
-  const nextInspectionMode = nullableText(assignment.inspection_mode)
-  const oldInspectionScope = normalizeInspectionScope(before.inspection_scope)
-  const nextInspectionScope = normalizeInspectionScope(assignment.inspection_scope)
   const oldInspectionDueDate = dayText(before.inspection_due_date)
   const nextInspectionDueDate = dayText(assignment.inspection_due_date)
   const oldStatus = nullableText(before.status)
-  const nextStatus = cleaningStatusFromAction(before, assignment)
+  const actionStatus = cleaningStatusFromAction(before, assignment)
+  const touchingAssignees = !!(cleanerAction || assigneeAction || inspectorAction || oldInspectionMode !== nextInspectionMode || oldInspectionScope !== nextInspectionScope || oldInspectionDueDate !== nextInspectionDueDate)
+  const autoStatus = !actionStatus && touchingAssignees && isAutoAssignableCleaningStatus(before.status)
+    ? autoCleaningAssignmentStatus({
+      task_type: before?.task_type ?? before?.type,
+      inspection_scope: nextInspectionScope,
+      assignee_id: nextAssignee,
+      cleaner_id: pureCheckin ? null : nextCleaner,
+      inspector_id: nextInspector,
+    })
+    : null
+  const nextStatus = actionStatus || autoStatus
   const changedFields: string[] = []
   const pushChanges: string[] = []
   const recipients: any[] = []
@@ -2299,75 +2330,119 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
         }
           if (payload.cleaning_assignments.length) {
             const result = await client.query(
-              `UPDATE cleaning_tasks AS task
-               SET cleaner_id = CASE
-                     WHEN x.cleaner_assignment_action IN ('assign', 'unassign') THEN x.cleaner_id
-                     ELSE task.cleaner_id
-                   END,
-                   assignee_id = CASE
-                     WHEN x.assignee_assignment_action IN ('assign', 'unassign') THEN x.assignee_id
-                     WHEN x.cleaner_assignment_action IN ('assign', 'unassign') THEN x.cleaner_id
-                     ELSE task.assignee_id
-                   END,
-                   inspector_id = CASE
-                     WHEN COALESCE(x.inspector_assignment_action, '') NOT IN ('assign', 'unassign') THEN task.inspector_id
-                     WHEN (x.status_action = 'set_keys_hung' OR lower(COALESCE(task.status, '')) = 'keys_hung') AND x.inspector_id IS NULL
-                       THEN task.inspector_id
-                     ELSE x.inspector_id
-                   END,
-                 inspection_mode = x.inspection_mode,
-                 inspection_scope = x.inspection_scope,
-                 inspection_due_date = CASE WHEN x.inspection_due_date IS NULL THEN NULL ELSE x.inspection_due_date::date END,
-                 status = CASE
-                   WHEN x.status_action IN ('set_keys_hung', 'clear_keys_hung', 'set_completed', 'clear_completed')
-                    AND NULLIF(COALESCE(x.status, ''), '') IS NOT NULL
-                     THEN x.status
-                   ELSE task.status
-                 END,
-                 updated_at = now()
-             FROM jsonb_to_recordset($1::jsonb) AS x(
-                 task_id text,
-                 assignee_id text,
-                 assignee_assignment_action text,
-                 cleaner_id text,
-                 cleaner_assignment_action text,
-                 inspector_id text,
-                 inspector_assignment_action text,
-                 inspection_mode text,
-                 inspection_scope text,
-                 inspection_due_date text,
-                 status_action text,
-               status text
-             )
-             WHERE task.id::text = x.task_id
-               AND (
-                   (
-                     x.cleaner_assignment_action IN ('assign', 'unassign')
-                     AND (
-                       task.cleaner_id IS DISTINCT FROM x.cleaner_id
-                       OR task.assignee_id IS DISTINCT FROM x.cleaner_id
-                     )
-                   )
-                   OR (
-                     x.assignee_assignment_action IN ('assign', 'unassign')
-                     AND task.assignee_id IS DISTINCT FROM x.assignee_id
-                   )
-                   OR task.inspector_id IS DISTINCT FROM CASE
-                     WHEN COALESCE(x.inspector_assignment_action, '') NOT IN ('assign', 'unassign') THEN task.inspector_id
-                     WHEN (x.status_action = 'set_keys_hung' OR lower(COALESCE(task.status, '')) = 'keys_hung') AND x.inspector_id IS NULL
-                       THEN task.inspector_id
-                     ELSE x.inspector_id
-                   END
-                 OR task.inspection_mode IS DISTINCT FROM x.inspection_mode
-                 OR task.inspection_scope IS DISTINCT FROM x.inspection_scope
-                 OR task.inspection_due_date::text IS DISTINCT FROM x.inspection_due_date
-                 OR (
-                   x.status_action IN ('set_keys_hung', 'clear_keys_hung', 'set_completed', 'clear_completed')
-                   AND NULLIF(COALESCE(x.status, ''), '') IS NOT NULL
-                   AND task.status IS DISTINCT FROM x.status
+              `WITH input AS (
+                 SELECT *
+                 FROM jsonb_to_recordset($1::jsonb) AS x(
+                   task_id text,
+                   assignee_id text,
+                   assignee_assignment_action text,
+                   cleaner_id text,
+                   cleaner_assignment_action text,
+                   inspector_id text,
+                   inspector_assignment_action text,
+                   inspection_mode text,
+                   inspection_scope text,
+                   inspection_due_date text,
+                   status_action text,
+                   status text
                  )
+               ), resolved AS (
+                 SELECT
+                   task.id AS existing_task_id,
+                   task.status AS old_status,
+                   task.cleaner_id AS old_cleaner_id,
+                   task.assignee_id AS old_assignee_id,
+                   task.inspector_id AS old_inspector_id,
+                   task.inspection_mode AS old_inspection_mode,
+                   task.inspection_scope AS old_inspection_scope,
+                   task.inspection_due_date AS old_inspection_due_date,
+                   input.status_action,
+                   input.status,
+                   CASE
+                     WHEN input.cleaner_assignment_action IN ('assign', 'unassign') THEN input.cleaner_id
+                     ELSE task.cleaner_id
+                   END AS next_cleaner_id,
+                   CASE
+                     WHEN input.assignee_assignment_action IN ('assign', 'unassign') THEN input.assignee_id
+                     WHEN input.cleaner_assignment_action IN ('assign', 'unassign') THEN input.cleaner_id
+                     ELSE task.assignee_id
+                   END AS next_assignee_id,
+                   CASE
+                     WHEN COALESCE(input.inspector_assignment_action, '') NOT IN ('assign', 'unassign') THEN task.inspector_id
+                     WHEN (input.status_action = 'set_keys_hung' OR lower(COALESCE(task.status, '')) = 'keys_hung') AND input.inspector_id IS NULL
+                       THEN task.inspector_id
+                     ELSE input.inspector_id
+                   END AS next_inspector_id,
+                   input.inspection_mode AS next_inspection_mode,
+                   input.inspection_scope AS next_inspection_scope,
+                   CASE WHEN input.inspection_due_date IS NULL THEN NULL ELSE input.inspection_due_date::date END AS next_inspection_due_date,
+                   (
+                     lower(COALESCE(task.status, 'pending')) IN ('pending', 'assigned', 'todo', 'unassigned')
+                     AND (
+                       input.cleaner_assignment_action IN ('assign', 'unassign')
+                       OR input.assignee_assignment_action IN ('assign', 'unassign')
+                       OR input.inspector_assignment_action IN ('assign', 'unassign')
+                       OR task.inspection_mode IS DISTINCT FROM input.inspection_mode
+                       OR task.inspection_scope IS DISTINCT FROM input.inspection_scope
+                       OR task.inspection_due_date::text IS DISTINCT FROM input.inspection_due_date
+                     )
+                   ) AS should_auto_status,
+                   (
+                     lower(COALESCE(task.task_type, task.type, '')) = 'checkin_clean'
+                     AND COALESCE(NULLIF(input.inspection_scope, ''), task.inspection_scope, 'inspect_and_hang') IN ('inspect_and_hang', 'password_only')
+                   ) AS is_checkin_site_execution
+                 FROM cleaning_tasks AS task
+                 JOIN input ON task.id::text = input.task_id
+               ), computed AS (
+                 SELECT
+                   resolved.*,
+                   CASE
+                     WHEN resolved.status_action IN ('set_keys_hung', 'clear_keys_hung', 'set_completed', 'clear_completed')
+                      AND NULLIF(COALESCE(resolved.status, ''), '') IS NOT NULL
+                       THEN resolved.status
+                     WHEN resolved.should_auto_status THEN
+                       CASE
+                         WHEN resolved.is_checkin_site_execution THEN
+                           CASE
+                             WHEN NULLIF(COALESCE(resolved.next_assignee_id, ''), '') IS NOT NULL
+                               OR NULLIF(COALESCE(resolved.next_inspector_id, ''), '') IS NOT NULL
+                               THEN 'assigned'
+                             ELSE 'pending'
+                           END
+                         ELSE
+                           CASE
+                             WHEN NULLIF(COALESCE(resolved.next_cleaner_id, ''), '') IS NOT NULL
+                               OR NULLIF(COALESCE(resolved.next_assignee_id, ''), '') IS NOT NULL
+                               OR NULLIF(COALESCE(resolved.next_inspector_id, ''), '') IS NOT NULL
+                               THEN 'assigned'
+                             ELSE 'pending'
+                           END
+                       END
+                     ELSE resolved.old_status
+                   END AS next_status
+                 FROM resolved
                )
-             RETURNING task.*`,
+               UPDATE cleaning_tasks AS task
+               SET cleaner_id = computed.next_cleaner_id,
+                   assignee_id = computed.next_assignee_id,
+                   inspector_id = computed.next_inspector_id,
+                   inspection_mode = computed.next_inspection_mode,
+                   inspection_scope = computed.next_inspection_scope,
+                   inspection_due_date = computed.next_inspection_due_date,
+                   status = computed.next_status,
+                   updated_at = now()
+               FROM computed
+               WHERE task.id = computed.existing_task_id
+                 AND (
+                   task.cleaner_id IS DISTINCT FROM computed.next_cleaner_id
+                   OR task.assignee_id IS DISTINCT FROM computed.next_assignee_id
+                   OR task.inspector_id IS DISTINCT FROM computed.next_inspector_id
+                   OR task.inspection_mode IS DISTINCT FROM computed.next_inspection_mode
+                   OR task.inspection_scope IS DISTINCT FROM computed.next_inspection_scope
+                   OR task.inspection_due_date IS DISTINCT FROM computed.next_inspection_due_date
+                   OR task.status IS DISTINCT FROM computed.next_status
+                 )
+               RETURNING task.*`,
             [JSON.stringify(payload.cleaning_assignments)],
           )
           changedCleaningTasks = result.rows || []
@@ -2725,6 +2800,15 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
       for (const task of ((db as any).cleaningTasks || []) as any[]) {
         const assignment = cleaningById.get(String(task.id))
         if (!assignment) continue
+        const beforeStatus = task.status
+        const touchingAssignees = !!(
+          assignmentAction((assignment as any).cleaner_assignment_action)
+          || assignmentAction((assignment as any).assignee_assignment_action)
+          || assignmentAction((assignment as any).inspector_assignment_action)
+          || task.inspection_mode !== assignment.inspection_mode
+          || task.inspection_scope !== assignment.inspection_scope
+          || dayText(task.inspection_due_date) !== dayText(assignment.inspection_due_date)
+        )
         if (assignmentAction((assignment as any).cleaner_assignment_action)) {
           task.cleaner_id = (assignment as any).cleaner_id ?? null
           task.assignee_id = (assignment as any).cleaner_id ?? null
@@ -2736,11 +2820,20 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
           task.inspector_id = (assignment as any).inspector_id ?? null
         }
         task.inspection_mode = assignment.inspection_mode
+        task.inspection_scope = assignment.inspection_scope
         task.inspection_due_date = assignment.inspection_due_date
         if (assignmentStatusAction((assignment as any).status_action) && (assignment as any).status) {
           task.status = (assignment as any).status
+        } else if (touchingAssignees && isAutoAssignableCleaningStatus(beforeStatus)) {
+          task.status = autoCleaningAssignmentStatus({
+            task_type: task.task_type ?? task.type,
+            inspection_scope: task.inspection_scope,
+            assignee_id: task.assignee_id,
+            cleaner_id: task.cleaner_id,
+            inspector_id: task.inspector_id,
+          })
         }
-    }
+      }
     const workById = new Map(payload.work_assignments.map((item) => [item.task_id, item]))
       for (const task of (((db as any).workTasks || []) as any[])) {
         const assignment = workById.get(String(task.id))

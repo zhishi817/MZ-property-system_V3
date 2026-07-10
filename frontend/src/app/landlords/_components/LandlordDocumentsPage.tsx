@@ -53,6 +53,7 @@ type LandlordDocument = {
   current_signed_url?: string
   current_draft_version_id?: string
   current_signed_version_id?: string
+  current_draft_created_at?: string
   versions?: DocumentVersion[]
   attachments?: DocumentAttachment[]
   created_at?: string
@@ -614,6 +615,7 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
     if (type === 'property_service_agreement') {
       const variant = normalizeServiceAgreementVariant(out.contract_variant)
       out.contract_variant = variant
+      if ('special_terms' in out) out.special_terms = String(out.special_terms || '').trim()
       const rate = (variant === 'leased_to_mz' || variant === 'leased_direct_to_mz') ? null : percentToRate(out.management_fee_rate ?? defaultManagementFeePercent(variant))
       out.management_fee_rate = rate
       out.management_fee = (variant === 'leased_to_mz' || variant === 'leased_direct_to_mz') ? '' : formatManagementFeeText(rate)
@@ -688,7 +690,7 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
     if (row.type !== 'agency_authority') return false
     if (row.status === 'signed' || row.status === 'archived') return false
     if (!row.current_draft_url) return false
-    return String(row.fields?.agency_authority_template_version || '') !== AGENCY_AUTHORITY_TEMPLATE_VERSION
+    return isDraftOlderThanDocument(row) || String(row.fields?.agency_authority_template_version || '') !== AGENCY_AUTHORITY_TEMPLATE_VERSION
   }
 
   function needsServiceAgreementDraftRefresh(row: LandlordDocument) {
@@ -696,7 +698,14 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
     if (row.status === 'signed' || row.status === 'archived') return false
     if (isLeasedVariant(row.fields?.contract_variant)) return false
     if (!row.current_draft_url) return false
-    return String(row.fields?.property_service_agreement_template_version || '') !== SERVICE_AGREEMENT_TEMPLATE_VERSION
+    return isDraftOlderThanDocument(row) || String(row.fields?.property_service_agreement_template_version || '') !== SERVICE_AGREEMENT_TEMPLATE_VERSION
+  }
+
+  function isDraftOlderThanDocument(row: LandlordDocument) {
+    const updatedAt = Date.parse(String(row.updated_at || ''))
+    const draftCreatedAt = Date.parse(String(row.current_draft_created_at || ''))
+    if (!Number.isFinite(updatedAt) || !Number.isFinite(draftCreatedAt)) return false
+    return updatedAt - draftCreatedAt > 1000
   }
 
   async function openPreview(row: LandlordDocument) {
@@ -1196,6 +1205,11 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
               <Descriptions.Item label="编号">{detail.document_no || '-'}</Descriptions.Item>
               <Descriptions.Item label="状态"><Tag color={statusColor[detail.status]}>{statusText[detail.status] || detail.status}</Tag></Descriptions.Item>
               {detail.type === 'property_service_agreement' ? <Descriptions.Item label="合同类型">{serviceAgreementVariantText[normalizeServiceAgreementVariant(detail.fields?.contract_variant)]}</Descriptions.Item> : null}
+              {detail.type === 'property_service_agreement' ? (
+                <Descriptions.Item label="特殊条款" span={2}>
+                  {String(detail.fields?.special_terms || '').trim() ? <span style={{ whiteSpace: 'pre-wrap' }}>{String(detail.fields?.special_terms || '').trim()}</span> : '-'}
+                </Descriptions.Item>
+              ) : null}
               <Descriptions.Item label="房东">{detail.landlord_name || detail.fields?.landlord_name || detail.fields?.owner_name || '-'}</Descriptions.Item>
               <Descriptions.Item label="房源">{formatPropertyDisplay(detail.property_code || detail.fields?.property_code, detail.property_address || detail.fields?.property_address)}</Descriptions.Item>
               <Descriptions.Item label="MZ 签署">{detail.fields?.mz_signed_at ? `${detail.fields?.mz_signed_name || '-'} / ${String(detail.fields?.mz_signed_at || '').slice(0, 10)}` : '-'}</Descriptions.Item>
@@ -1385,7 +1399,7 @@ function AuthorityFields({
     const landlordEmail = normalizeEmailList(Array.isArray(landlord?.emails) && landlord.emails.length ? landlord.emails : landlord?.email)
     form.setFieldsValue({
       property_id: property.id,
-      landlord_id: landlord?.id || property.landlord_id || null,
+      landlord_id: landlord?.id || null,
       fields: {
         ...(form.getFieldValue('fields') || {}),
         landlord_name: landlord?.name || '',
@@ -1619,7 +1633,7 @@ function ServiceAgreementFields({
     const ownerEmail = normalizeEmailList(Array.isArray(landlord?.emails) && landlord.emails.length ? landlord.emails : landlord?.email)
     form.setFieldsValue({
       property_id: property.id,
-      landlord_id: landlord?.id || property.landlord_id || null,
+      landlord_id: landlord?.id || null,
       fields: {
         ...(form.getFieldValue('fields') || {}),
         owner_name: landlord?.name || '',
@@ -1844,6 +1858,21 @@ function ServiceAgreementFields({
             <Col span={8}><Form.Item name={['fields', 'mz_contact_phone']} label="联系电话"><Input /></Form.Item></Col>
             <Col span={8}><Form.Item name={['fields', 'mz_contact_email']} label="邮箱"><Input /></Form.Item></Col>
             <Col span={24}><Form.Item name={['fields', 'mz_company_address']} label="公司地址"><Input /></Form.Item></Col>
+          </Row>
+          <Divider orientation="left">特殊条款</Divider>
+          <Row gutter={12}>
+            <Col span={24}>
+              <Form.Item
+                name={['fields', 'special_terms']}
+                label="当前合同特殊条款"
+                extra="只适用于当前房源合同；保存后会作为合同最后的 Additional Special Terms 输出，如与标准模板条款冲突，以这里填写的内容为准。"
+              >
+                <Input.TextArea
+                  rows={4}
+                  placeholder="例如：The parties agree that the short-stay insurance premium for this Property will be shared equally, with 50% paid by the Owner and 50% paid by MZ Property."
+                />
+              </Form.Item>
+            </Col>
           </Row>
         </>
       )}

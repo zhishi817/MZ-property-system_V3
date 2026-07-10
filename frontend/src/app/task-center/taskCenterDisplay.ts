@@ -9,6 +9,11 @@ type TaskCenterDisplayTask = {
   checkout_task_dates?: string[]
 }
 
+export const TASK_CENTER_MAX_COLUMNS = 4
+const TASK_CENTER_MIN_CARD_WIDTH = 320
+const TASK_CENTER_SINGLE_COLUMN_WIDTH = 620
+const TASK_CENTER_GRID_GAP = 8
+
 function lower(value: string | null | undefined) {
   return String(value || '').trim().toLowerCase()
 }
@@ -50,4 +55,12 @@ export function cleaningTaskFlowLabelText(task: TaskCenterDisplayTask) {
   if (kind === 'checkin_clean') return '入住'
   if (kind === 'stayover_clean') return '入住中清洁'
   return String(task.detail || task.title || '任务安排').trim()
+}
+
+export function resolveTaskCenterColumns(containerWidth: number) {
+  const width = Number(containerWidth)
+  if (!Number.isFinite(width) || width <= 0) return TASK_CENTER_MAX_COLUMNS
+  if (width < TASK_CENTER_SINGLE_COLUMN_WIDTH) return 1
+  const columns = Math.floor((width + TASK_CENTER_GRID_GAP) / TASK_CENTER_MIN_CARD_WIDTH)
+  return Math.max(1, Math.min(TASK_CENTER_MAX_COLUMNS, columns))
 }
