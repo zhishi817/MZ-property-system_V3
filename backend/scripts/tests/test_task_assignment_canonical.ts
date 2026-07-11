@@ -102,7 +102,9 @@ async function main() {
   const sameDayPropertyId = 'P_TEST_ASSIGN_SAME_DAY'
   const sameDayOpenPropertyId = 'P_TEST_ASSIGN_SAME_DAY_OPEN'
   const sameDayLatePropertyId = 'P_TEST_ASSIGN_SAME_DAY_LATE'
+  const inspectorOnlyCheckinPropertyId = 'P_TEST_ASSIGN_INSPECTOR_ONLY_CHECKIN'
   const pureCheckinPropertyId = 'P_TEST_ASSIGN_PURE_CHECKIN'
+  const passwordOnlyFallbackPropertyId = 'P_TEST_ASSIGN_PASSWORD_FALLBACK'
   const keyHandoverPropertyId = 'P_TEST_ASSIGN_KEY_HANDOVER'
   const sortMergePropertyId = 'P_TEST_ASSIGN_SORT_MERGE'
   const crossDayCheckoutId = 'test-assignment-cross-day-checkout'
@@ -115,7 +117,10 @@ async function main() {
   const sameDayLateCheckoutId = 'test-assignment-same-day-late-checkout'
   const sameDayLateCheckinId = 'test-assignment-same-day-late-checkin'
   const sameDayLateLockboxVideoId = 'test-assignment-same-day-late-lockbox-video'
+  const inspectorOnlyCheckoutId = 'test-assignment-inspector-only-checkout'
+  const inspectorOnlyCheckinId = 'test-assignment-inspector-only-checkin'
   const pureCheckinId = 'test-assignment-pure-checkin'
+  const passwordOnlyFallbackId = 'test-assignment-password-fallback'
   const keyHandoverId = 'test-assignment-key-handover'
   const sortMergeCleanerId = 'test-assignment-sort-merge-cleaner'
   const sortMergeInspectorId = 'test-assignment-sort-merge-inspector'
@@ -169,7 +174,27 @@ async function main() {
   await pgPool.query(`DELETE FROM event_queue WHERE user_notification_id IN (SELECT id FROM user_notifications WHERE data->>'group_key' = $1)`, [groupedNotifyKey])
   await pgPool.query(`DELETE FROM user_notifications WHERE data->>'group_key' = $1`, [groupedNotifyKey])
   await pgPool.query(`DELETE FROM cleaning_offline_tasks WHERE id = ANY($1::text[])`, [[offlineNullId, offlineOldId, offlineDisplayId]])
-  await pgPool.query(`DELETE FROM cleaning_tasks WHERE id = ANY($1::text[])`, [[cleaningId, cleaningKeysHungId, crossDayCheckoutId, crossDayCheckinId, sameDayCheckoutId, sameDayCheckinId, sameDayOpenCheckoutId, sameDayOpenCheckinId, sameDayLateCheckoutId, sameDayLateCheckinId, pureCheckinId, keyHandoverId, sortMergeCleanerId, sortMergeInspectorId, groupedNotifyCheckoutId, groupedNotifyCheckinId]])
+  await pgPool.query(`DELETE FROM cleaning_tasks WHERE id = ANY($1::text[])`, [[
+    cleaningId,
+    cleaningKeysHungId,
+    crossDayCheckoutId,
+    crossDayCheckinId,
+    sameDayCheckoutId,
+    sameDayCheckinId,
+    sameDayOpenCheckoutId,
+    sameDayOpenCheckinId,
+    sameDayLateCheckoutId,
+    sameDayLateCheckinId,
+    inspectorOnlyCheckoutId,
+    inspectorOnlyCheckinId,
+    pureCheckinId,
+    passwordOnlyFallbackId,
+    keyHandoverId,
+    sortMergeCleanerId,
+    sortMergeInspectorId,
+    groupedNotifyCheckoutId,
+    groupedNotifyCheckinId,
+  ]])
   await pgPool.query(`DELETE FROM users WHERE id = ANY($1::text[])`, [groupedNotifyUserIds])
   await pgPool.query(`INSERT INTO properties(id, address) VALUES($1, 'Test assignment property') ON CONFLICT (id) DO NOTHING`, [propertyId])
   await pgPool.query(
@@ -179,11 +204,23 @@ async function main() {
        ($2, 'TEST-SAME-DAY', 'Test same day property'),
        ($3, 'TEST-SAME-DAY-OPEN', 'Test same day open property'),
        ($4, 'TEST-SAME-DAY-LATE', 'Test same day late property'),
-       ($5, 'TEST-PURE-CHECKIN', 'Test pure checkin property'),
-       ($6, 'TEST-KEY-HANDOVER', 'Test key handover property'),
-       ($7, 'TEST-SORT-MERGE', 'Test sort merge property')
+       ($5, 'TEST-INSPECTOR-ONLY-CHECKIN', 'Test inspector only checkin property'),
+       ($6, 'TEST-PURE-CHECKIN', 'Test pure checkin property'),
+       ($7, 'TEST-PASSWORD-FALLBACK', 'Test password fallback property'),
+       ($8, 'TEST-KEY-HANDOVER', 'Test key handover property'),
+       ($9, 'TEST-SORT-MERGE', 'Test sort merge property')
      ON CONFLICT (id) DO UPDATE SET code = EXCLUDED.code, address = EXCLUDED.address`,
-    [crossDayPropertyId, sameDayPropertyId, sameDayOpenPropertyId, sameDayLatePropertyId, pureCheckinPropertyId, keyHandoverPropertyId, sortMergePropertyId],
+    [
+      crossDayPropertyId,
+      sameDayPropertyId,
+      sameDayOpenPropertyId,
+      sameDayLatePropertyId,
+      inspectorOnlyCheckinPropertyId,
+      pureCheckinPropertyId,
+      passwordOnlyFallbackPropertyId,
+      keyHandoverPropertyId,
+      sortMergePropertyId,
+    ],
   )
 
   try {
@@ -507,6 +544,14 @@ async function main() {
          ($2, $4, 'checkout_clean', 'checkout_clean', $3::date, $3::date, 'assigned', NULL, NULL, 'sort-inspector', 'manual', 'active', '10am', NULL, 9)`,
       [sortMergeCleanerId, sortMergeInspectorId, TEST_DATE, sortMergePropertyId],
     )
+    await pgPool.query(
+      `INSERT INTO cleaning_tasks(
+         id, property_id, task_type, type, task_date, date, status, assignee_id, cleaner_id, inspector_id, source, execution_state, checkout_time, checkin_time, new_code, keys_required, nights_override, inspection_mode, inspection_scope
+       ) VALUES
+         ($1, $4, 'checkout_clean', 'checkout_clean', $3::date, $3::date, 'assigned', 'inspector-only-cleaner', 'inspector-only-cleaner', 'inspector-only', 'manual', 'active', '10am', NULL, NULL, 1, 2, 'same_day', 'inspect_and_hang'),
+         ($2, $4, 'checkin_clean', 'checkin_clean', $3::date, $3::date, 'assigned', NULL, NULL, 'inspector-only', 'manual', 'active', NULL, '3pm', 'INSPECTORONLY', 1, 3, 'same_day', 'inspect_and_hang')`,
+      [inspectorOnlyCheckoutId, inspectorOnlyCheckinId, TEST_DATE, inspectorOnlyCheckinPropertyId],
+    )
     const boundaryTasks = await requestJson(app, 'GET', `/mzapp/work-tasks?date_from=${TEST_DATE}&date_to=${NEXT_DATE}&view=all`)
     const crossDayTask = (boundaryTasks || []).find((item: any) =>
       String(item.property_id) === crossDayPropertyId
@@ -572,6 +617,22 @@ async function main() {
     assert.equal(sameDayOpenInspectorPropertyTasks.length, 1, 'real inspector should still see same-day checkin inspection task')
     assert.equal(sameDayOpenInspectorPropertyTasks[0]?.assignee_id, 'inspector-same-day-open')
     assert.notEqual(sameDayOpenInspectorPropertyTasks[0]?.assignee_id, 'cleaner-same-day-open', 'inspection assignment must not be stolen by checkin executor')
+    const inspectorOnlyTasks = await requestJson(
+      app,
+      'GET',
+      `/mzapp/work-tasks?date_from=${TEST_DATE}&date_to=${TEST_DATE}`,
+      undefined,
+      { 'x-test-user-id': 'inspector-only', 'x-test-role': 'cleaning_inspector' },
+    )
+    const inspectorOnlyPropertyTasks = (inspectorOnlyTasks || []).filter((item: any) =>
+      String(item.property_id) === inspectorOnlyCheckinPropertyId
+      && String(item.scheduled_date || '').slice(0, 10) === TEST_DATE
+    )
+    assert.equal(inspectorOnlyPropertyTasks.length, 1, 'checkin inspector without site executor should not receive a duplicate execution card')
+    assert.equal(inspectorOnlyPropertyTasks[0]?.task_kind, 'inspection')
+    assert.equal(inspectorOnlyPropertyTasks[0]?.execution_role, 'inspection')
+    assert.equal(inspectorOnlyPropertyTasks[0]?.task_type, 'turnover')
+    assert.ok(String(inspectorOnlyPropertyTasks[0]?.summary || '').includes('入住'), 'inspector turnover card should keep checkin details')
     const sameDayLateTasks = (boundaryTasks || []).filter((item: any) =>
       String(item.property_id) === sameDayLatePropertyId
       && String(item.scheduled_date || '').slice(0, 10) === TEST_DATE
@@ -630,6 +691,29 @@ async function main() {
     assert.ok(pureCheckinExecutorTask, 'pure checkin should remain visible to assigned executor')
     assert.equal(pureCheckinExecutorTask.task_type, 'checkin_clean')
     assert.equal(pureCheckinExecutorTask.inspection_scope, 'password_only')
+    await pgPool.query(
+      `INSERT INTO cleaning_tasks(
+         id, property_id, task_type, type, task_date, date, status, assignee_id, cleaner_id, inspector_id, source, execution_state, checkout_time, checkin_time, new_code, keys_required, nights_override, inspection_mode, inspection_scope
+       ) VALUES
+         ($1, $3, 'checkin_clean', 'checkin_clean', $2::date, $2::date, 'assigned', NULL, NULL, 'password-fallback-inspector', 'manual', 'active', NULL, '3pm', 'PASSFALLBACK', 1, 2, 'same_day', 'password_only')`,
+      [passwordOnlyFallbackId, TEST_DATE, passwordOnlyFallbackPropertyId],
+    )
+    const passwordOnlyFallbackTasks = await requestJson(
+      app,
+      'GET',
+      `/mzapp/work-tasks?date_from=${TEST_DATE}&date_to=${TEST_DATE}`,
+      undefined,
+      { 'x-test-user-id': 'password-fallback-inspector', 'x-test-role': 'cleaning_inspector' },
+    )
+    const passwordOnlyFallbackTask = (passwordOnlyFallbackTasks || []).find((item: any) =>
+      String(item.property_id) === passwordOnlyFallbackPropertyId
+      && String(item.scheduled_date || '').slice(0, 10) === TEST_DATE
+    )
+    assert.ok(passwordOnlyFallbackTask, 'password-only checkin should still fall back to inspector as executor when no assignee is set')
+    assert.equal(passwordOnlyFallbackTask.task_kind, 'execution')
+    assert.equal(passwordOnlyFallbackTask.execution_role, 'execution')
+    assert.equal(passwordOnlyFallbackTask.execution_semantics, 'key_or_password_action')
+    assert.equal(passwordOnlyFallbackTask.assignee_id, 'password-fallback-inspector')
 
     process.stdout.write('test_task_assignment_canonical: testing inspect-and-hang checkin stays inspector assignment\n')
     await pgPool.query(
@@ -654,7 +738,25 @@ async function main() {
   } finally {
     await pgPool.query(`DELETE FROM cleaning_task_media WHERE id = ANY($1::text[]) OR task_id = ANY($2::text[])`, [
       [sameDayLockboxVideoId, sameDayLateLockboxVideoId],
-      [cleaningId, cleaningKeysHungId, crossDayCheckoutId, crossDayCheckinId, sameDayCheckoutId, sameDayCheckinId, sameDayOpenCheckoutId, sameDayOpenCheckinId, sameDayLateCheckoutId, sameDayLateCheckinId, pureCheckinId, keyHandoverId, sortMergeCleanerId, sortMergeInspectorId],
+      [
+        cleaningId,
+        cleaningKeysHungId,
+        crossDayCheckoutId,
+        crossDayCheckinId,
+        sameDayCheckoutId,
+        sameDayCheckinId,
+        sameDayOpenCheckoutId,
+        sameDayOpenCheckinId,
+        sameDayLateCheckoutId,
+        sameDayLateCheckinId,
+        inspectorOnlyCheckoutId,
+        inspectorOnlyCheckinId,
+        pureCheckinId,
+        passwordOnlyFallbackId,
+        keyHandoverId,
+        sortMergeCleanerId,
+        sortMergeInspectorId,
+      ],
     ])
     await pgPool.query(`DELETE FROM work_tasks WHERE id = ANY($1::text[]) OR source_id = ANY($2::text[])`, [
       [`cleaning_offline_tasks:${offlineNullId}`, `cleaning_offline_tasks:${offlineOldId}`, `cleaning_offline_tasks:${offlineDisplayId}`, workId],
@@ -663,7 +765,27 @@ async function main() {
     await pgPool.query(`DELETE FROM event_queue WHERE user_notification_id IN (SELECT id FROM user_notifications WHERE data->>'group_key' = $1)`, [groupedNotifyKey])
     await pgPool.query(`DELETE FROM user_notifications WHERE data->>'group_key' = $1`, [groupedNotifyKey])
     await pgPool.query(`DELETE FROM cleaning_offline_tasks WHERE id = ANY($1::text[])`, [[offlineNullId, offlineOldId, offlineDisplayId]])
-    await pgPool.query(`DELETE FROM cleaning_tasks WHERE id = ANY($1::text[])`, [[cleaningId, cleaningKeysHungId, crossDayCheckoutId, crossDayCheckinId, sameDayCheckoutId, sameDayCheckinId, sameDayOpenCheckoutId, sameDayOpenCheckinId, sameDayLateCheckoutId, sameDayLateCheckinId, pureCheckinId, keyHandoverId, sortMergeCleanerId, sortMergeInspectorId, groupedNotifyCheckoutId, groupedNotifyCheckinId]])
+    await pgPool.query(`DELETE FROM cleaning_tasks WHERE id = ANY($1::text[])`, [[
+      cleaningId,
+      cleaningKeysHungId,
+      crossDayCheckoutId,
+      crossDayCheckinId,
+      sameDayCheckoutId,
+      sameDayCheckinId,
+      sameDayOpenCheckoutId,
+      sameDayOpenCheckinId,
+      sameDayLateCheckoutId,
+      sameDayLateCheckinId,
+      inspectorOnlyCheckoutId,
+      inspectorOnlyCheckinId,
+      pureCheckinId,
+      passwordOnlyFallbackId,
+      keyHandoverId,
+      sortMergeCleanerId,
+      sortMergeInspectorId,
+      groupedNotifyCheckoutId,
+      groupedNotifyCheckinId,
+    ]])
     await pgPool.query(`DELETE FROM users WHERE id = ANY($1::text[])`, [groupedNotifyUserIds])
     if (cleaningRuleBackupReady) {
       await pgPool.query(`DELETE FROM notification_event_rule_selectors WHERE event_type = 'CLEANING_TASK_UPDATED'`)

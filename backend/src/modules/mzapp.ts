@@ -41,7 +41,7 @@ import {
   recordWorkTaskActionAudit,
 } from '../lib/workTaskActionAudit'
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
-import { activeCleaningTaskWhereSql, syncCheckoutOldCodeFromCheckinNewCode } from '../services/cleaningSync'
+import { activeCleaningTaskWhereSql, syncCheckoutOldCodeFromCheckinNewCode, validCleaningTaskOrderWhereSql } from '../services/cleaningSync'
 
 export const router = Router()
 
@@ -3550,14 +3550,7 @@ async function handleManagerFields(req: any, res: any) {
                      AND COALESCE(t.task_date, t.date)::date >= $2::date
                      AND lower(COALESCE(t.task_type, '')) = 'checkin_clean'
                      AND ${activeCleaningTaskWhereSql('t')}
-                     AND (
-                       t.order_id IS NULL
-                       OR (
-                         o.id IS NOT NULL
-                         AND lower(COALESCE(o.status, '')) <> 'invalid'
-                         AND lower(COALESCE(o.status, '')) NOT LIKE '%cancel%'
-                       )
-                     )
+                     AND ${validCleaningTaskOrderWhereSql('t', 'o')}
                  )
                  SELECT id, order_id, task_date::text AS task_date
                  FROM candidates
@@ -5891,15 +5884,7 @@ router.get('/work-tasks', async (req, res) => {
                 )
               )
               AND ${activeCleaningTaskWhereSql('t')}
-              AND (t.order_id IS NULL OR o.id IS NOT NULL)
-              AND (
-                t.order_id IS NULL
-                OR (
-                  COALESCE(o.status, '') <> ''
-                  AND lower(COALESCE(o.status, '')) <> 'invalid'
-                  AND lower(COALESCE(o.status, '')) NOT LIKE '%cancel%'
-                )
-              )
+              AND ${validCleaningTaskOrderWhereSql('t', 'o')}
           ),
           latest_media_raw AS (
             SELECT DISTINCT ON (m.task_id::text, m.type)
@@ -6252,9 +6237,13 @@ router.get('/work-tasks', async (req, res) => {
           })
 
           const effectiveCleanerId = row.cleaner_id ? String(row.cleaner_id) : (row.assignee_id ? String(row.assignee_id) : null)
-          const executorId = row.assignee_id ? String(row.assignee_id) : (row.inspector_id ? String(row.inspector_id) : null)
           const inspectorId = row.inspector_id ? String(row.inspector_id) : null
           const isCheckinSiteExecution = String(row.task_type || '').trim().toLowerCase() === 'checkin_clean'
+          const inspectionScope = normalizeInspectionScope(row.inspection_scope)
+          const canFallbackInspectorAsExecutor = isCheckinSiteExecution && inspectionScope === 'password_only'
+          const executorId = row.assignee_id
+            ? String(row.assignee_id)
+            : (canFallbackInspectorAsExecutor && row.inspector_id ? String(row.inspector_id) : null)
           const completedSameDayTurnover = isCheckinSiteExecution ? completedSameDayTurnoverFor(taskDate, propId) : null
           const sameDayTurnover = isCheckinSiteExecution ? sameDayTurnoverFor(taskDate, propId) : null
           const checkinSiteExecutorId = isCheckinSiteExecution ? executorId : null
@@ -6281,7 +6270,7 @@ router.get('/work-tasks', async (req, res) => {
             __assignee_cleaner: effectiveCleanerId,
             __assignee_inspector: inspectorId,
             __inspection_mode: inspectionMode,
-            __inspection_scope: normalizeInspectionScope(row.inspection_scope),
+            __inspection_scope: inspectionScope,
             __inspection_due_date: inspectionDueDate,
             __deferred_projection_date: deferredDate,
             active_source_ids: [String(row.id)],

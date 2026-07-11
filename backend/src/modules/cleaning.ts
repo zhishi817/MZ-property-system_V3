@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { requireAnyPerm, requirePerm, userHasAnyPerm } from '../auth'
 import { addAudit, db } from '../store'
 import { hasPg, pgPool } from '../dbAdapter'
-import { activeCleaningTaskWhereSql, backfillCleaningTasks, ensureCleaningSchemaV2, syncCheckoutOldCodeFromCheckinNewCode, syncOrderToCleaningTasks } from '../services/cleaningSync'
+import { activeCleaningTaskWhereSql, backfillCleaningTasks, ensureCleaningSchemaV2, isCancelledCleaningTaskStatus, syncCheckoutOldCodeFromCheckinNewCode, syncOrderToCleaningTasks, validCleaningTaskOrderWhereSql } from '../services/cleaningSync'
 import { v4 as uuid } from 'uuid'
 import { emitNotificationEvent } from '../services/notificationEvents'
 import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
@@ -880,6 +880,7 @@ router.get('/tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
            LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
            WHERE (COALESCE(t.task_date, t.date)::date) = ($1::date)
              AND ${activeCleaningTaskWhereSql('t')}
+             AND ${validCleaningTaskOrderWhereSql('t', 'o')}
            ORDER BY t.property_id NULLS LAST, t.id`,
           [date]
         )
@@ -894,6 +895,7 @@ router.get('/tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
          FROM cleaning_tasks t
          LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
          WHERE ${activeCleaningTaskWhereSql('t')}
+           AND ${validCleaningTaskOrderWhereSql('t', 'o')}
          ORDER BY COALESCE(t.task_date, t.date) NULLS LAST, t.property_id NULLS LAST, t.id`,
       )
       return res.json((r?.rows || []).map((x: any) => {
@@ -905,9 +907,8 @@ router.get('/tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
     const rows = (db.cleaningTasks as any[]).slice()
     const activeRows = rows.filter((t: any) => {
       const executionState = String(t?.execution_state || '').trim().toLowerCase()
-      const status = String(t?.status || '').trim().toLowerCase()
+      if (isCancelledCleaningTaskStatus(t?.status)) return false
       if (executionState && executionState !== 'active') return false
-      if (!executionState && (status === 'cancelled' || status === 'canceled')) return false
       return true
     })
     if (!date) return res.json(activeRows)
@@ -2030,15 +2031,7 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
              OR ($3::boolean = true AND t.inspection_due_date IS NOT NULL AND (t.inspection_due_date::date) <= ($2::date))
            )
            AND ${activeCleaningTaskWhereSql('t')}
-           AND (t.order_id IS NULL OR o.id IS NOT NULL)
-           AND (
-             t.order_id IS NULL
-             OR (
-               COALESCE(o.status, '') <> ''
-               AND lower(COALESCE(o.status, '')) <> 'invalid'
-               AND lower(COALESCE(o.status, '')) NOT LIKE '%cancel%'
-             )
-           )
+           AND ${validCleaningTaskOrderWhereSql('t', 'o')}
          ORDER BY COALESCE(task_date, date) ASC, COALESCE(p_id.code, p_code.code) NULLS LAST, t.id`,
         [from, to, includeDeferredInspection]
       )

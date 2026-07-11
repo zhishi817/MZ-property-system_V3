@@ -882,6 +882,7 @@ exports.router.get('/tasks', (0, auth_1.requireAnyPerm)(['cleaning.view', 'clean
            LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
            WHERE (COALESCE(t.task_date, t.date)::date) = ($1::date)
              AND ${(0, cleaningSync_1.activeCleaningTaskWhereSql)('t')}
+             AND ${(0, cleaningSync_1.validCleaningTaskOrderWhereSql)('t', 'o')}
            ORDER BY t.property_id NULLS LAST, t.id`, [date]);
                 return res.json(((r === null || r === void 0 ? void 0 : r.rows) || []).map((x) => {
                     if ((x === null || x === void 0 ? void 0 : x.order_id) && (x === null || x === void 0 ? void 0 : x.order_keys_required) != null)
@@ -894,6 +895,7 @@ exports.router.get('/tasks', (0, auth_1.requireAnyPerm)(['cleaning.view', 'clean
          FROM cleaning_tasks t
          LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
          WHERE ${(0, cleaningSync_1.activeCleaningTaskWhereSql)('t')}
+           AND ${(0, cleaningSync_1.validCleaningTaskOrderWhereSql)('t', 'o')}
          ORDER BY COALESCE(t.task_date, t.date) NULLS LAST, t.property_id NULLS LAST, t.id`);
             return res.json(((r === null || r === void 0 ? void 0 : r.rows) || []).map((x) => {
                 if ((x === null || x === void 0 ? void 0 : x.order_id) && (x === null || x === void 0 ? void 0 : x.order_keys_required) != null)
@@ -905,10 +907,9 @@ exports.router.get('/tasks', (0, auth_1.requireAnyPerm)(['cleaning.view', 'clean
         const rows = store_1.db.cleaningTasks.slice();
         const activeRows = rows.filter((t) => {
             const executionState = String((t === null || t === void 0 ? void 0 : t.execution_state) || '').trim().toLowerCase();
-            const status = String((t === null || t === void 0 ? void 0 : t.status) || '').trim().toLowerCase();
-            if (executionState && executionState !== 'active')
+            if ((0, cleaningSync_1.isCancelledCleaningTaskStatus)(t === null || t === void 0 ? void 0 : t.status))
                 return false;
-            if (!executionState && (status === 'cancelled' || status === 'canceled'))
+            if (executionState && executionState !== 'active')
                 return false;
             return true;
         });
@@ -2123,15 +2124,7 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
              OR ($3::boolean = true AND t.inspection_due_date IS NOT NULL AND (t.inspection_due_date::date) <= ($2::date))
            )
            AND ${(0, cleaningSync_1.activeCleaningTaskWhereSql)('t')}
-           AND (t.order_id IS NULL OR o.id IS NOT NULL)
-           AND (
-             t.order_id IS NULL
-             OR (
-               COALESCE(o.status, '') <> ''
-               AND lower(COALESCE(o.status, '')) <> 'invalid'
-               AND lower(COALESCE(o.status, '')) NOT LIKE '%cancel%'
-             )
-           )
+           AND ${(0, cleaningSync_1.validCleaningTaskOrderWhereSql)('t', 'o')}
          ORDER BY COALESCE(task_date, date) ASC, COALESCE(p_id.code, p_code.code) NULLS LAST, t.id`, [from, to, includeDeferredInspection]);
             for (const row of ((r === null || r === void 0 ? void 0 : r.rows) || [])) {
                 const d = String(row.task_date || '').slice(0, 10);

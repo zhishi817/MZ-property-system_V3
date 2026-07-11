@@ -3,6 +3,7 @@ import { hasPg, pgPool } from '../dbAdapter'
 import { db } from '../store'
 import { requireAnyPerm } from '../auth'
 import { z } from 'zod'
+import { activeCleaningTaskWhereSql, validCleaningTaskOrderWhereSql } from '../services/cleaningSync'
 
 export const router = Router()
 
@@ -175,9 +176,11 @@ router.get('/cleaning-overview', requireAnyPerm(['cleaning.view','cleaning.sched
               COALESCE(t.type,'') ILIKE 'checkin%'
             )::int AS task_in
           FROM cleaning_tasks t
+          LEFT JOIN orders o ON o.id::text = t.order_id::text
           WHERE t.task_date::date >= (SELECT day_au FROM base)
             AND t.task_date::date <= (SELECT day_au FROM base) + interval '6 day'
-            AND lower(COALESCE(t.status,'')) NOT IN ('cancelled','canceled')
+            AND ${activeCleaningTaskWhereSql('t')}
+            AND ${validCleaningTaskOrderWhereSql('t', 'o')}
           GROUP BY t.task_date::date
         ),
         order_agg AS (
