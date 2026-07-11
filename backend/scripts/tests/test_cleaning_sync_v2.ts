@@ -32,6 +32,7 @@ async function main() {
   const o3 = uuid()
   const o4 = uuid()
   const manualCheckin = uuid()
+  const manualExtraCheckin = uuid()
   const manualCheckoutInProgress = uuid()
 
   const orders = [
@@ -44,7 +45,7 @@ async function main() {
   if (pgPool) {
     await ensureCleaningSchemaV2()
     await pgPool.query('DELETE FROM cleaning_sync_logs WHERE order_id = ANY($1)', [[o1, o2, o3, o4]])
-    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o3, o4], [manualCheckin, manualCheckoutInProgress]])
+    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o3, o4], [manualCheckin, manualExtraCheckin, manualCheckoutInProgress]])
     await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [[o1, o2, o3, o4]])
     for (const o of orders) {
       await pgPool.query(
@@ -146,12 +147,14 @@ async function main() {
       `INSERT INTO cleaning_tasks(id, order_id, property_id, task_type, task_date, type, date, status, source, execution_state, manual_task_purpose, auto_sync_enabled)
        VALUES
          ($1, NULL, 'P_TEST_D', 'checkin_clean', '2026-02-18'::date, 'checkin_clean', '2026-02-18'::date, 'pending', 'manual', 'active', 'temporary_order_placeholder', true),
-         ($2, NULL, 'P_TEST_D', 'checkout_clean', '2026-02-21'::date, 'checkout_clean', '2026-02-21'::date, 'in_progress', 'manual', 'active', 'temporary_order_placeholder', true)`,
-      [manualCheckin, manualCheckoutInProgress],
+         ($2, NULL, 'P_TEST_D', 'checkin_clean', '2026-02-18'::date, 'checkin_clean', '2026-02-18'::date, 'pending', 'manual', 'active', 'manual_extra', true),
+         ($3, NULL, 'P_TEST_D', 'checkout_clean', '2026-02-21'::date, 'checkout_clean', '2026-02-21'::date, 'in_progress', 'manual', 'active', 'temporary_order_placeholder', true)`,
+      [manualCheckin, manualExtraCheckin, manualCheckoutInProgress],
     )
   } else {
     ;(db.cleaningTasks as any[]).push(
       { id: manualCheckin, order_id: null, property_id: 'P_TEST_D', task_type: 'checkin_clean', task_date: '2026-02-18', type: 'checkin_clean', date: '2026-02-18', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: 'temporary_order_placeholder', auto_sync_enabled: true },
+      { id: manualExtraCheckin, order_id: null, property_id: 'P_TEST_D', task_type: 'checkin_clean', task_date: '2026-02-18', type: 'checkin_clean', date: '2026-02-18', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: 'manual_extra', auto_sync_enabled: true },
       { id: manualCheckoutInProgress, order_id: null, property_id: 'P_TEST_D', task_type: 'checkout_clean', task_date: '2026-02-21', type: 'checkout_clean', date: '2026-02-21', status: 'in_progress', source: 'manual', execution_state: 'active', manual_task_purpose: 'temporary_order_placeholder', auto_sync_enabled: true },
     )
   }
@@ -159,18 +162,23 @@ async function main() {
   const o4Checkin = await fetchTaskByType(o4, 'checkin_clean')
   assert.ok(o4Checkin, 'should create canonical checkin task before superseding placeholder')
   let eligibleManual: any
+  let extraManual: any
   let protectedManual: any
   if (pgPool) {
-    const r = await pgPool.query('SELECT * FROM cleaning_tasks WHERE id = ANY($1) ORDER BY id', [[manualCheckin, manualCheckoutInProgress]])
+    const r = await pgPool.query('SELECT * FROM cleaning_tasks WHERE id = ANY($1) ORDER BY id', [[manualCheckin, manualExtraCheckin, manualCheckoutInProgress]])
     eligibleManual = (r?.rows || []).find((row: any) => String(row.id) === manualCheckin)
+    extraManual = (r?.rows || []).find((row: any) => String(row.id) === manualExtraCheckin)
     protectedManual = (r?.rows || []).find((row: any) => String(row.id) === manualCheckoutInProgress)
   } else {
     eligibleManual = (db.cleaningTasks as any[]).find((row: any) => String(row.id) === manualCheckin)
+    extraManual = (db.cleaningTasks as any[]).find((row: any) => String(row.id) === manualExtraCheckin)
     protectedManual = (db.cleaningTasks as any[]).find((row: any) => String(row.id) === manualCheckoutInProgress)
   }
   assert.equal(String(eligibleManual.execution_state), 'superseded', 'temporary manual checkin placeholder should be superseded')
   assert.equal(String(eligibleManual.status), 'pending', 'superseded placeholder should keep original status instead of cancelled')
   assert.equal(String(eligibleManual.superseded_by), String(o4Checkin.id))
+  assert.equal(String(extraManual.execution_state), 'active', 'explicit extra manual checkin task must not be superseded')
+  assert.equal(String(extraManual.status), 'pending')
   assert.equal(String(protectedManual.execution_state), 'active', 'in-progress manual checkout task must not be superseded')
   assert.equal(String(protectedManual.status), 'in_progress')
 
@@ -188,7 +196,7 @@ async function main() {
     const countTasks = await pgPool.query(`SELECT COUNT(*)::int AS c FROM cleaning_tasks WHERE order_id = ANY($1)`, [[o1, o2]])
     assert.equal(Number(countTasks?.rows?.[0]?.c || 0), 4, 'backfill twice should not duplicate tasks')
     await pgPool.query('DELETE FROM cleaning_sync_logs WHERE order_id = ANY($1)', [[o1, o2, o4]])
-    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o4], [manualCheckin, manualCheckoutInProgress]])
+    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o4], [manualCheckin, manualExtraCheckin, manualCheckoutInProgress]])
     await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [[o1, o2, o4]])
   } else {
     const tasks = (db.cleaningTasks as any[]).filter((t: any) => [o1, o2].includes(String(t.order_id)))

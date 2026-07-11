@@ -46,7 +46,29 @@ let schemaBootstrapped: Promise<void> | null = null
 
 export function activeCleaningTaskWhereSql(alias = 't'): string {
   const a = alias ? `${alias}.` : ''
-  return `COALESCE(${a}execution_state, CASE WHEN lower(COALESCE(${a}status, '')) IN ('cancelled','canceled') THEN 'cancelled' ELSE 'active' END) = 'active'`
+  return `(COALESCE(${a}execution_state, CASE WHEN lower(COALESCE(${a}status, '')) IN ('cancelled','canceled') THEN 'cancelled' ELSE 'active' END) = 'active'
+    AND lower(COALESCE(${a}status, '')) NOT IN ('cancelled','canceled'))`
+}
+
+export function isCancelledCleaningTaskStatus(status: any): boolean {
+  const s = String(status || '').trim().toLowerCase()
+  return s === 'cancelled' || s === 'canceled'
+}
+
+export function isInactiveCleaningOrderStatus(status: any): boolean {
+  const s = String(status || '').trim().toLowerCase()
+  return !s || s === 'invalid' || s.includes('cancel')
+}
+
+export function validCleaningTaskOrderWhereSql(taskAlias = 't', orderAlias = 'o'): string {
+  const t = taskAlias ? `${taskAlias}.` : ''
+  const o = orderAlias ? `${orderAlias}.` : ''
+  return `(${t}order_id IS NULL OR (
+    ${o}id IS NOT NULL
+    AND COALESCE(${o}status, '') <> ''
+    AND lower(COALESCE(${o}status, '')) <> 'invalid'
+    AND lower(COALESCE(${o}status, '')) NOT LIKE '%cancel%'
+  ))`
 }
 
 function sha256(input: string): string {

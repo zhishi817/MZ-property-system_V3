@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { API_BASE, authHeaders, deleteJSON, getJSON, patchJSON, postJSON } from '../../lib/api'
 import { cleaningColorKind } from '../../lib/cleaningColor'
+import { splitTurnoverMerge } from '../../lib/cleaningDailyMerge'
 import { checkinTimingLabel, checkoutTimingLabel, dailyTaskStatusMeta, mergeDailyCapabilityGate, mergedDailyDisplayBadges, mergedDailyDisplayStatus, mergedDailyTaskStatus, visibleDailyDisplayBadges } from '../../lib/cleaningDailyTaskStatus'
 import { type TaskSemanticTone, taskStatusMeta, taskTimingTone } from '../../lib/cleaningTaskUi'
 import styles from './cleaningSchedule.module.scss'
@@ -696,17 +697,19 @@ export default function CleaningPage() {
         const hit = xs.find((x) => !!x?.key_photo_uploaded_at)
         return hit?.key_photo_uploaded_at || null
       }
-      const preferOrderLinked = (xs: CalendarItem[]) => {
-        const withOrder = xs.filter((x) => !!(x.order_id || x.order_code))
-        return withOrder.length ? withOrder : xs
-      }
       for (const list of byProp.values()) {
-        const stayovers0 = list.filter(isStayover)
-        const checkins0 = preferOrderLinked(list.filter(isCheckin))
-        const checkouts0 = preferOrderLinked(list.filter(isCheckout))
+        const checkins0 = list.filter(isCheckin)
+        const checkouts0 = list.filter(isCheckout)
 
         if (checkins0.length && checkouts0.length) {
-          const all = [...checkins0, ...checkouts0]
+          const turnoverMerge = splitTurnoverMerge(list, checkouts0, checkins0)
+          if (!turnoverMerge) {
+            mergedCleaning.push(...list)
+            continue
+          }
+          const all = turnoverMerge.turnoverItems
+          const checkout = all[0]
+          const checkin = all[1]
           const ids = all.map((x) => String(x.entity_id))
           const assignee = all.every((x) => String(x.assignee_id || '') === String(all[0].assignee_id || '')) ? all[0].assignee_id : null
           const cleanerKey = (x: CalendarItem) => String(x.cleaner_id || x.assignee_id || '').trim()
@@ -716,12 +719,10 @@ export default function CleaningPage() {
           const sched = all.every((x) => String(x.scheduled_at || '') === String(all[0].scheduled_at || '')) ? all[0].scheduled_at : null
           const status = mergedStatus(all.map((x) => String(x.status || 'pending')))
           const autoSync = all.every((x) => x.auto_sync_enabled !== false)
-          const checkout = checkouts0[0]
-          const checkin = checkins0[0]
-	          mergedCleaning.push({
-	            source: 'cleaning_tasks',
-	            entity_id: ids.join(','),
-	            entity_ids: ids,
+          mergedCleaning.push({
+            source: 'cleaning_tasks',
+            entity_id: ids.join(','),
+            entity_ids: ids,
             order_id: null,
             order_code: null,
             property_id: all[0].property_id,
@@ -747,135 +748,12 @@ export default function CleaningPage() {
             checkout_order_code: checkout?.order_code ? String(checkout.order_code) : null,
             checkin_order_code: checkin?.order_code ? String(checkin.order_code) : null,
             checkout_old_code: checkout?.old_code != null ? String(checkout.old_code || '') : null,
-	            checkout_new_code: checkout?.new_code != null ? String(checkout.new_code || '') : null,
-	            checkin_old_code: checkin?.old_code != null ? String(checkin.old_code || '') : null,
-	            checkin_new_code: checkin?.new_code != null ? String(checkin.new_code || '') : null,
-	            ...combineCapabilityForItems(all, status, 'mixed_cleaning_inspection'),
-	          })
-          const rest = list.filter((x) => !isCheckin(x) && !isCheckout(x))
-          mergedCleaning.push(...rest)
-        } else if (stayovers0.length > 1) {
-          const ids = stayovers0.map((x) => String(x.entity_id))
-          const status = mergedStatus(stayovers0.map((x) => String(x.status || 'pending')))
-          const autoSync = stayovers0.every((x) => x.auto_sync_enabled !== false)
-          const assignee = stayovers0.every((x) => String(x.assignee_id || '') === String(stayovers0[0].assignee_id || '')) ? stayovers0[0].assignee_id : null
-          const cleanerId = stayovers0.every((x) => String(x.cleaner_id || x.assignee_id || '') === String(stayovers0[0].cleaner_id || stayovers0[0].assignee_id || '')) ? (String(stayovers0[0].cleaner_id || stayovers0[0].assignee_id || '').trim() || null) : null
-          const inspectorId = stayovers0.every((x) => String(x.inspector_id || '') === String(stayovers0[0].inspector_id || '')) ? (String(stayovers0[0].inspector_id || '').trim() || null) : null
-          const sched = stayovers0.every((x) => String(x.scheduled_at || '') === String(stayovers0[0].scheduled_at || '')) ? stayovers0[0].scheduled_at : null
-	          mergedCleaning.push({
-	            source: 'cleaning_tasks',
-	            entity_id: ids.join(','),
-	            entity_ids: ids,
-            order_id: null,
-            order_code: null,
-            property_id: stayovers0[0].property_id,
-            property_code: stayovers0[0].property_code || null,
-            task_type: 'stayover_clean',
-            label: `入住中清洁 x${stayovers0.length}`,
-            task_date: String(stayovers0[0].task_date || '').slice(0, 10),
-            status,
-            assignee_id: assignee,
-            cleaner_id: cleanerId,
-            inspector_id: inspectorId,
-            scheduled_at: sched,
-            key_photo_uploaded_at: firstKeyUploadedAt(stayovers0),
-            has_key_photo: anyKeyUploaded(stayovers0),
-            auto_sync_enabled: autoSync,
-            summary_checkin_time: stayovers0[0].summary_checkin_time || null,
-            checkin_order_id: null,
-            checkout_order_id: null,
-            checkin_order_code: null,
-            checkout_order_code: null,
-	            checkin_old_code: stayovers0.map((x) => String(x.old_code || '')).filter(Boolean).join(','),
-	            checkin_new_code: stayovers0.map((x) => String(x.new_code || '')).filter(Boolean).join(','),
-	            checkout_old_code: null,
-	            checkout_new_code: null,
-	            ...combineCapabilityForItems(stayovers0, status, 'cleaning_execution'),
-	          })
-          const rest = list.filter((x) => !isStayover(x) && !isCheckin(x) && !isCheckout(x))
-          mergedCleaning.push(...rest)
-	        } else if (checkins0.length > 1) {
-	          const ids = checkins0.map((x) => String(x.entity_id))
-	          const status = mergedStatus(checkins0.map((x) => String(x.status || 'pending')))
-	          const semantics = checkins0.every((x) => executionSemanticsOf(x) === 'key_or_password_action') ? 'key_or_password_action' : 'checkin_inspection'
-	          const autoSync = checkins0.every((x) => x.auto_sync_enabled !== false)
-          const assignee = checkins0.every((x) => String(x.assignee_id || '') === String(checkins0[0].assignee_id || '')) ? checkins0[0].assignee_id : null
-          const cleanerId = checkins0.every((x) => String(x.cleaner_id || x.assignee_id || '') === String(checkins0[0].cleaner_id || checkins0[0].assignee_id || '')) ? (String(checkins0[0].cleaner_id || checkins0[0].assignee_id || '').trim() || null) : null
-          const inspectorId = checkins0.every((x) => String(x.inspector_id || '') === String(checkins0[0].inspector_id || '')) ? (String(checkins0[0].inspector_id || '').trim() || null) : null
-          const sched = checkins0.every((x) => String(x.scheduled_at || '') === String(checkins0[0].scheduled_at || '')) ? checkins0[0].scheduled_at : null
-          mergedCleaning.push({
-            source: 'cleaning_tasks',
-            entity_id: ids.join(','),
-            entity_ids: ids,
-            order_id: null,
-            order_code: null,
-            property_id: checkins0[0].property_id,
-            property_code: checkins0[0].property_code || null,
-            task_type: 'checkin_clean',
-            label: `入住 x${checkins0.length}`,
-            task_date: String(checkins0[0].task_date || '').slice(0, 10),
-            status,
-            assignee_id: assignee,
-            cleaner_id: cleanerId,
-            inspector_id: inspectorId,
-            scheduled_at: sched,
-            key_photo_uploaded_at: firstKeyUploadedAt(checkins0),
-            has_key_photo: anyKeyUploaded(checkins0),
-            auto_sync_enabled: autoSync,
-            summary_checkin_time: checkins0[0].summary_checkin_time || null,
-            checkin_sync_status: checkins0.some((x) => x.checkin_sync_status === 'pending') ? 'pending' : (checkins0.some((x) => x.checkin_sync_status === 'synced') ? 'synced' : null),
-            checkin_order_id: null,
-            checkout_order_id: null,
-            checkin_order_code: checkins0.map((x) => String(x.order_code || x.order_id || '')).filter(Boolean).join(','),
-            checkout_order_code: null,
-	            checkin_old_code: checkins0.map((x) => String(x.old_code || '')).filter(Boolean).join(','),
-	            checkin_new_code: checkins0.map((x) => String(x.new_code || '')).filter(Boolean).join(','),
-	            checkout_old_code: null,
-	            checkout_new_code: null,
-	            ...combineCapabilityForItems(checkins0, status, semantics),
-	          })
-          const rest = list.filter((x) => !isCheckin(x) && !isCheckout(x))
-          mergedCleaning.push(...rest)
-        } else if (checkouts0.length > 1) {
-          const ids = checkouts0.map((x) => String(x.entity_id))
-          const status = mergedStatus(checkouts0.map((x) => String(x.status || 'pending')))
-          const autoSync = checkouts0.every((x) => x.auto_sync_enabled !== false)
-          const assignee = checkouts0.every((x) => String(x.assignee_id || '') === String(checkouts0[0].assignee_id || '')) ? checkouts0[0].assignee_id : null
-          const cleanerId = checkouts0.every((x) => String(x.cleaner_id || x.assignee_id || '') === String(checkouts0[0].cleaner_id || checkouts0[0].assignee_id || '')) ? (String(checkouts0[0].cleaner_id || checkouts0[0].assignee_id || '').trim() || null) : null
-          const inspectorId = checkouts0.every((x) => String(x.inspector_id || '') === String(checkouts0[0].inspector_id || '')) ? (String(checkouts0[0].inspector_id || '').trim() || null) : null
-          const sched = checkouts0.every((x) => String(x.scheduled_at || '') === String(checkouts0[0].scheduled_at || '')) ? checkouts0[0].scheduled_at : null
-	          mergedCleaning.push({
-	            source: 'cleaning_tasks',
-	            entity_id: ids.join(','),
-	            entity_ids: ids,
-            order_id: null,
-            order_code: null,
-            property_id: checkouts0[0].property_id,
-            property_code: checkouts0[0].property_code || null,
-            task_type: 'checkout_clean',
-            label: `退房 x${checkouts0.length}`,
-            task_date: String(checkouts0[0].task_date || '').slice(0, 10),
-            status,
-            assignee_id: assignee,
-            cleaner_id: cleanerId,
-            inspector_id: inspectorId,
-            scheduled_at: sched,
-            key_photo_uploaded_at: firstKeyUploadedAt(checkouts0),
-            has_key_photo: anyKeyUploaded(checkouts0),
-            auto_sync_enabled: autoSync,
-            summary_checkout_time: checkouts0[0].summary_checkout_time || null,
-            checkout_order_id: null,
-            checkin_order_id: null,
-            checkout_order_code: checkouts0.map((x) => String(x.order_code || x.order_id || '')).filter(Boolean).join(','),
-            checkin_order_code: null,
-            checkout_old_code: checkouts0.map((x) => String(x.old_code || '')).filter(Boolean).join(','),
-	            checkout_new_code: checkouts0.map((x) => String(x.new_code || '')).filter(Boolean).join(','),
-	            checkin_old_code: null,
-	            checkin_new_code: null,
-	            ...combineCapabilityForItems(checkouts0, status, 'mixed_cleaning_inspection'),
-	          })
-          const rest = list.filter((x) => !isCheckin(x) && !isCheckout(x))
-          mergedCleaning.push(...rest)
+            checkout_new_code: checkout?.new_code != null ? String(checkout.new_code || '') : null,
+            checkin_old_code: checkin?.old_code != null ? String(checkin.old_code || '') : null,
+            checkin_new_code: checkin?.new_code != null ? String(checkin.new_code || '') : null,
+            ...combineCapabilityForItems(all, status, 'mixed_cleaning_inspection'),
+          })
+          mergedCleaning.push(...turnoverMerge.restItems)
         } else {
           mergedCleaning.push(...list)
         }

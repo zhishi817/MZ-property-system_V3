@@ -2,6 +2,216 @@
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
+## CRL-20260712-003 — 清洁安排表周转合并保留 active 手工任务
+
+- **Status:** ready
+- **Updated:** 2026-07-12 01:50 AEST
+- **Request:** “那就先只改前端合并逻辑”；随后确认“自动退房 + 自动入住 + 手工入住”不应把同一任务重复显示，并要求整理最终计划后执行。
+- **Outcome:** 清洁安排表不再用“有订单任务就优先订单任务”的前端过滤吞掉同房同日 active 手工任务。页面现在只选一条退房和一条入住组成 `退房 入住` 周转卡，其余仍 active 的手工/重复任务原样单独显示，避免静默隐藏需要人工核对的任务。
+
+### Implementation
+
+- Previous behavior:
+  - `/cleaning` 页面在按房源/日期合并任务时通过 `preferOrderLinked()` 优先保留带 `order_id/order_code` 的自动同步任务。
+  - 当同房同日存在自动退房、自动入住和额外 active 手工入住/退房时，手工任务会被排除在周转合并输入之外，又被 `rest` 过滤掉，最终安排表看不到该 active 手工任务。
+  - `CRL-20260711-004` 已删除同类型 `xN` 折叠，但这个自动优先过滤残留仍会遮住“自动 + 手工”的重复/待核对场景。
+- New behavior:
+  - 新增 `splitTurnoverMerge()`：从退房侧和入住侧各选一条任务组成周转卡，优先选择带订单号的一侧，但不删除未被选中的任务。
+  - `/cleaning` 页面复用该 helper；周转卡只包含被选中的一退一入，剩余 active 手工任务或重复任务继续作为独立卡片显示。
+  - 后端同步测试补充“明确额外手工任务 `manual_task_purpose='manual_extra'` 不应被正式订单任务 supersede”的约束；临时占位和进行中保护逻辑保持不变。
+- Key decisions:
+  - 不把“有自动任务就隐藏手工任务”的规则迁移到后端，避免从所有端/API 层面误隐藏真实额外手工任务。
+  - 不改变当前后端 supersede 行为；前端只信后端返回的 active 任务，并负责正确展示。
+
+### Files / Areas
+
+- `frontend/src/app/cleaning/page.tsx` — modified/shared: 清洁安排表周转合并只消耗一退一入，保留其余 active 任务。
+- `frontend/src/lib/cleaningDailyMerge.ts` — added: 提供可测试的周转合并拆分 helper。
+- `frontend/src/lib/cleaningDailyMerge.test.ts` — added: 覆盖自动退房+自动入住合并、额外 active 手工入住保留，以及缺少一侧时不生成周转卡。
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — modified: 增加明确额外手工任务不被 supersede 的回归断言。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: builds on `CRL-20260711-004`; coexists with `CRL-20260712-001` and `CRL-20260712-002` in the same dirty worktree.
+
+### Validation
+
+- `npx vitest run src/lib/cleaningDailyMerge.test.ts` in `frontend` — passed: 2 tests.
+- `env -u DATABASE_URL ./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_cleaning_sync_v2.ts` in `backend` — passed; deliberately ran without `DATABASE_URL` so it used in-memory store and did not write any configured database.
+- `npx tsc --noEmit` in `frontend` — passed.
+- `git diff --check -- frontend/src/app/cleaning/page.tsx frontend/src/lib/cleaningDailyMerge.ts frontend/src/lib/cleaningDailyMerge.test.ts backend/scripts/tests/test_cleaning_sync_v2.ts` — passed.
+- `npm run lint --prefix frontend` — passed with existing warnings only.
+- `npm run build --prefix frontend` — passed; emitted existing Browserslist staleness notice, existing ESLint warnings, and existing Recharts static-generation width/height warnings.
+- `npm run build --prefix backend` — passed: `tsc -p .`.
+
+### Risks / Release Notes
+
+- UI risk: users may now see an extra active hand-created task beside a normal `退房 入住`周转卡. This is intentional when the backend still considers that hand-created task active; operations can then decide whether to keep, edit, or remove it.
+- Backend data risk: current manual create flow still writes `manual_task_purpose: null`; this unit does not redefine which manual tasks are temporary placeholders. Any future change to that semantic should be a separate backend behavior change with production data review.
+- Rollback: restore `/cleaning` to the previous `preferOrderLinked()` selection and remove `cleaningDailyMerge` helper/test plus the added backend test assertions.
+- Sensitive-information review: no secrets, `.env` values, database URLs, credentials, raw guest data, tokens, cookies, private keys, sensitive logs, or local caches were added. Tests use synthetic IDs and local in-memory execution for the backend sync regression.
+- Git state: uncommitted.
+
+## CRL-20260712-002 — 清洁任务 active 与取消订单口径修正
+
+- **Status:** ready
+- **Updated:** 2026-07-12 01:11 AEST
+- **Request:** “后续排查 duplicate 时，不只看 execution_state = active，还要排除 status in ('cancelled','canceled')、订单 status 为 canceled/invalid；先按照这个修复吧”。
+- **Outcome:** 清洁任务统计、列表、任务中心和移动端候选任务查询统一使用更严格的“有效 active”口径：任务自身 `status` 为 `cancelled/canceled` 时，即使 `execution_state` 仍是 `active` 也会被排除；关联订单为空/取消/invalid 的订单任务也会被排除，手工任务 `order_id IS NULL` 继续保留。
+
+### Implementation
+
+- Previous behavior:
+  - `activeCleaningTaskWhereSql()` 只在 `execution_state` 为空时才通过 `status=cancelled/canceled` 推断取消。
+  - 历史数据里如果出现 `execution_state='active'` 但任务 `status='cancelled'`，仍会被统计和列表当作当前 active 任务。
+  - 部分统计/列表查询只看任务 active，没有统一排除取消或 invalid 订单，导致 duplicate preview 把已取消历史任务误判成当前重复。
+- New behavior:
+  - `activeCleaningTaskWhereSql()` 显式要求任务 `status` 不在 `cancelled/canceled`。
+  - 新增 `validCleaningTaskOrderWhereSql()` 统一表达订单有效性：手工任务保留；订单任务必须能 join 到订单，且订单状态非空、非 `invalid`、不包含 cancel。
+  - 清洁后台任务列表、清洁日历、任务中心、移动端 `/mzapp/work-tasks` 候选任务和清洁 overview 统计接入同一有效订单过滤。
+  - 内存 fallback 的 `/cleaning/tasks` 也复用同一取消任务判断，避免 PG 和非 PG 口径不同。
+- Key decisions:
+  - 本单元只改查询/统计口径，不清理生产数据。
+  - 不把 confirmed 订单之间的真实冲突自动压制；这些仍应继续出现在 duplicate 清单里供业务核对。
+
+### Files / Areas
+
+- `backend/src/services/cleaningSync.ts` — modified: 收紧 active SQL helper，新增取消任务/无效订单判断 helper。
+- `backend/src/modules/cleaning.ts` — modified: `/cleaning/tasks` 和 `/calendar-range` 使用有效 active + 有效订单过滤。
+- `backend/src/modules/task_center.ts` — modified: 任务中心清洁来源和未来退房投影使用统一有效订单过滤。
+- `backend/src/modules/mzapp.ts` — modified/shared: `/mzapp/work-tasks` 候选任务查询使用统一有效订单过滤。
+- `backend/src/modules/stats.ts` — modified: 清洁 overview 任务聚合使用有效 active + 有效订单过滤。
+- `backend/scripts/tests/test_cleaning_task_effective_filters.ts` — added: 覆盖取消任务、无效订单和 SQL helper 关键边界。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: existing list/stat endpoints may return fewer cleaning tasks where rows are linked to cancelled/invalid orders or have cancelled task status.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: complements `CRL-20260629-001` execution-state active filtering; independent from CH3007 mobile duplicate display fix in `CRL-20260712-001`.
+
+### Validation
+
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_cleaning_task_effective_filters.ts` in `backend` — passed.
+- `npm run build --prefix backend` — passed: `tsc -p .`.
+- `git diff --check` — passed.
+- Production read-only preview — not completed in this run because the local shell and `backend/.env` did not expose `NEON_DATABASE_URL_PROD`; no production data was modified.
+
+### Risks / Release Notes
+
+- Reporting risk: endpoints using this shared filter will no longer show cancelled-task residue as current workload. This is intended, but any workflow that relied on seeing cancelled order tasks in active lists must use a history/audit view instead.
+- Data quality remains: rows with stale `execution_state='active'` and cancelled status still exist until a separate data cleanup is approved.
+- Rollback: revert the helper changes in `cleaningSync` and remove `validCleaningTaskOrderWhereSql()` usage from `cleaning`, `task_center`, `mzapp`, and `stats`.
+- Sensitive-information review: no secrets, `.env` values, database URLs, credentials, raw guest data, tokens, cookies, private keys, sensitive logs, or local caches were added.
+- Git state: uncommitted.
+
+## CRL-20260712-001 — 移动端 CH3007 入住任务重复显示修复
+
+- **Status:** ready
+- **Updated:** 2026-07-12 01:11 AEST
+- **Request:** “查一下为什么移动端重复两个同房源入住任务，NEON_DATABASE_URL_PROD已提供，只读”；确认后执行修复。
+- **Outcome:** 移动端 `/mzapp/work-tasks` 不再把普通入住检查人错误兜底成执行人，避免同一房源同一天的入住任务同时出现一张 inspection 周转卡和一张多余 execution/inspection 卡。`password_only` 入住任务仍保留 inspector 兜底执行人的特殊逻辑。
+
+### Implementation
+
+- Previous behavior:
+  - `/mzapp/work-tasks` 构建清洁任务卡时使用 `executorId = assignee_id || inspector_id`。
+  - 对普通 `checkin_clean`，如果没有 `assignee_id` 但有 `inspector_id`，检查人会被当成执行人生成独立执行卡。
+  - 同一条入住任务随后又会作为检查人参与同房同日 turnover 合并，移动端表现为同房源重复两个入住任务。
+- New behavior:
+  - 普通 `checkin_clean` 只有真实 `assignee_id` 才作为现场执行人。
+  - 仅当 `inspection_scope = password_only` 时，允许 inspector 继续兜底为执行人，保留“检查后挂钥匙/密码类”任务的既有移动端行为。
+  - `inspection_scope` 归一化结果复用到卡片基础字段，避免同一行重复解析。
+- Key decisions:
+  - 不修改数据库，不删除任务；问题根因是移动端接口的角色兜底逻辑，不是 CH3007 数据库里有两条当前入住任务。
+  - 保留 `password_only` 特例，避免破坏检查后挂钥匙这类由检查人实际执行的任务。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — modified/shared: `/mzapp/work-tasks` 的 `executorId` 只在普通任务有 `assignee_id` 时设置；`password_only` 入住任务保留 inspector fallback。
+- `backend/scripts/tests/test_task_assignment_canonical.ts` — modified/shared: 增加 inspector-only 普通入住任务不生成重复 execution 卡，以及 `password_only` 仍 fallback 的回归覆盖。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: `/mzapp/work-tasks` 对普通入住任务的任务卡数量会减少，避免检查人同时看到重复的入住执行卡。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: separate from `CRL-20260712-002`; both touch `backend/src/modules/mzapp.ts` and selective release requires hunk-level review.
+
+### Validation
+
+- Production read-only diagnosis — passed earlier in this investigation: confirmed CH3007 duplicate display came from `/mzapp/work-tasks` role fallback, not from two current active CH3007 checkin rows.
+- `npm run build --prefix backend` — passed: `tsc -p .`.
+- `git diff --check` — passed.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_task_assignment_canonical.ts` — skipped because `backend/.env.local` was absent; not rerun against production credentials.
+
+### Risks / Release Notes
+
+- Runtime risk: if any non-`password_only` checkin task intentionally relied on inspector fallback as execution assignment, it will now require an explicit `assignee_id`.
+- Deployment scope: backend-only; no mobile client rebuild/repackage required.
+- Rollback: restore the previous `executorId = assignee_id || inspector_id` behavior in `/mzapp/work-tasks` and remove the added canonical assignment tests.
+- Sensitive-information review: no secrets, `.env` values, database URLs, credentials, raw guest data, tokens, cookies, private keys, sensitive logs, or local caches were added.
+- Git state: uncommitted.
+
+## CRL-20260711-004 — 当日任务拆分同类重复清洁任务
+
+- **Status:** ready
+- **Updated:** 2026-07-11 17:05 AEST
+- **Request:** “任务安排表也拆成两条显示，重复的清洁任务需要确定哪一条是正确的”。
+- **Outcome:** 清洁当日任务/任务安排表不再把同一房源同一天的同类重复清洁任务合并成一个 `退房 xN` / `入住 xN` / `入住中清洁 xN` 卡片；同类重复任务会按原始任务逐条显示，方便按订单确认哪条应保留。真正的退房+入住周转任务仍合并为一个 `退房 入住` 卡片。
+
+### Implementation
+
+- Previous behavior:
+  - `/cleaning/tasks?date=...` 返回当天所有 active 清洁任务后，前端会按房源和日期把多条同类 `checkout_clean`、`checkin_clean`、`stayover_clean` 合并成单张卡片。
+  - `2026-07-12 / WSP3209A` 在生产库实际有两条 active `checkout_clean`，但安排表搜索 `3209` 时只看到一张退房卡片，遮住了重复来源。
+- New behavior:
+  - 只保留退房+入住组合的 turnover 合并逻辑。
+  - 同房源同日期只有多个同类清洁任务时，直接保留原始多条任务，安排表和任务中心的可见条数更一致。
+  - 生产库只读核对显示 WSP3209A 两条任务分别来自两个不同 confirmed Airbnb email 订单，确认号为 `HMZZ59MPJJ` 和 `HMRAEWMSDS`，入住/退房日期均为 `2026-07-02` 至 `2026-07-12`；数据库证据不足以自动判定哪条一定错误，需要业务侧核对订单来源后处理。
+- Key decisions:
+  - 不在前端或后端自动删除/压制其中一条 confirmed 订单生成的任务。
+  - 不改变 `/cleaning/tasks` API 和数据库；这次只调整安排表展示合并口径。
+
+### Files / Areas
+
+- `frontend/src/app/cleaning/page.tsx` — modified: 删除同类清洁任务的前端合并分支，保留退房+入住 turnover 合并。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: none.
+
+### Validation
+
+- Production read-only query with `BEGIN READ ONLY` — passed: confirmed two active `checkout_clean` rows for `2026-07-12 / WSP3209A`; both source orders are confirmed Airbnb email imports with distinct confirmation codes and identical stay dates.
+- `git diff --check -- frontend/src/app/cleaning/page.tsx` — passed.
+- `npm run lint --prefix frontend` — passed with existing warnings; no errors.
+- `npm exec --prefix frontend tsc -- --noEmit` — failed: command syntax printed TypeScript help instead of using the frontend tsconfig; reran with the correct command.
+- `npx tsc --noEmit` in `frontend` — passed.
+- `npm run build --prefix frontend` — passed; build emitted existing Browserslist staleness notice, existing ESLint warnings, and existing Recharts static-generation width/height warnings.
+
+### Risks / Release Notes
+
+- UI risk: if the old same-type merge was intentionally used to reduce clutter for legitimate multiple same-type jobs, those jobs now display separately. This is intentional for duplicate/conflict review.
+- Business risk: WSP3209A has two overlapping confirmed orders for the same property and stay dates; this change exposes the conflict but does not decide which order/task is correct.
+- Rollback: restore the removed same-type merge branches in `frontend/src/app/cleaning/page.tsx`.
+- Sensitive-information review: no secrets, `.env` values, database URLs, credentials, raw emails, guest names, tokens, cookies, private keys, sensitive logs, or local caches were added. Production query output was summarized without raw connection details.
+- Git state: uncommitted.
+
 ## CRL-20260711-003 — 房东签署完成页下载签署版合同
 
 - **Status:** ready

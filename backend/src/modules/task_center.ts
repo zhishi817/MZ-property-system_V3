@@ -4,7 +4,7 @@ import { v4 as uuid } from 'uuid'
 import { requireAnyPerm, requirePerm, userHasAnyPerm } from '../auth'
 import { db } from '../store'
 import { hasPg, pgPool } from '../dbAdapter'
-import { activeCleaningTaskWhereSql, ensureCleaningSchemaV2 } from '../services/cleaningSync'
+import { activeCleaningTaskWhereSql, ensureCleaningSchemaV2, validCleaningTaskOrderWhereSql } from '../services/cleaningSync'
 import {
   defaultInspectionModeForTaskType,
   deferredProjectionDate,
@@ -754,14 +754,7 @@ async function syncPropertyFollowupWorkTasks() {
         WHERE lower(COALESCE(t.task_type::text, '')) = 'checkout_clean'
           AND COALESCE(t.task_date, t.date)::date >= timezone('Australia/Melbourne', now())::date
           AND ${activeCleaningTaskWhereSql('t')}
-          AND (
-            t.order_id IS NULL
-            OR (
-              o.id IS NOT NULL
-              AND lower(COALESCE(o.status::text, '')) <> 'invalid'
-              AND lower(COALESCE(o.status::text, '')) NOT LIKE '%cancel%'
-            )
-          )
+          AND ${validCleaningTaskOrderWhereSql('t', 'o')}
         GROUP BY COALESCE(task_property.id::text, t.property_id::text)
      ),
      projected AS (
@@ -1209,15 +1202,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
            OR ${inspectionDueScopes.join('\n           OR ')}
          )
          AND ${activeCleaningTaskWhereSql('t')}
-         AND (t.order_id IS NULL OR o.id IS NOT NULL)
-         AND (
-           t.order_id IS NULL
-           OR (
-             COALESCE(o.status, '') <> ''
-             AND lower(COALESCE(o.status, '')) <> 'invalid'
-             AND lower(COALESCE(o.status, '')) NOT LIKE '%cancel%'
-           )
-         )
+         AND ${validCleaningTaskOrderWhereSql('t', 'o')}
        ORDER BY COALESCE(t.task_date, t.date) ASC, COALESCE(p_id.code, p_code.code) NULLS LAST, t.id`,
       [date],
     )
