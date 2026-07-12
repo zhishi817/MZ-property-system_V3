@@ -2,6 +2,162 @@
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
+## CRL-20260712-006 — 任务中心前端卡片紧凑展示调整
+
+- **Status:** ready
+- **Updated:** 2026-07-12 19:58 AEST
+- **Request:** 用户要求为“任务中心前端卡片紧凑展示调整”补一个台账编号，便于和后端客人需求/手动补位修复分开提交。
+- **Outcome:** 任务中心紧凑卡片改成更低、更密的三段式信息结构：标题区保留房号/人员，事实行显示退房/入住/住晚数，状态行最多展示关键业务标签，底部统一放备注或订单顺序标签，减少标签重复和卡片高度。
+
+### Implementation
+
+- Previous behavior:
+  - 紧凑卡片使用较高的 padding、圆角和多行 chip，`退房/入住/住晚数`、状态、检查安排、同步状态、订单顺序等信息容易挤占空间。
+  - `任务已结束` 等宽泛 display badge 可能和更具体的 `已挂钥匙` / `已检查` 状态重复出现。
+  - 订单顺序标签和备注分别占行，窄屏或 2/3 列布局下卡片高度偏高。
+- New behavior:
+  - 新增卡片 meta 去重与压缩 helper，只保留最关键的 2 个辅助标签，并优先显示冲突、暂不安排、待同步、具体完成态、检查安排、合并数量等信息。
+  - 将时间 chip 改为事实文本行，标准/非标准时间和住晚数以短文本并列展示；没有时间事实时回退显示清洁流向或线下任务类型。
+  - 订单顺序标签并入底部 footer，和备注/冲突提示共用一行；样式改为 grid 卡片骨架、窄色条和更小的标签尺寸。
+  - 1/2/3 列和移动端样式同步压缩卡片高度、间距、色条和标签最大宽度，减少任务中心首屏被单张卡片撑高。
+- Key decisions:
+  - 本单元只调整任务中心卡片前端展示，不改任务排序、保存 payload、接口结构、数据库或业务状态计算。
+  - 保留已有语义 tone 样式和现有 helper，不新增第二套任务状态系统。
+
+### Files / Areas
+
+- `frontend/src/app/task-center/page.tsx` — modified: 增加紧凑卡片 meta 去重/优先级 helper，重排卡片事实行、状态行和底部 footer。
+- `frontend/src/app/cleaning/cleaningSchedule.module.scss` — modified: 压缩任务中心紧凑卡片布局、标签尺寸、footer 和移动端/窄列样式。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: follows `CRL-20260711-001` 的任务中心 iPad 自适应布局修复；本单元只做卡片内部密度和信息层级调整。
+
+### Validation
+
+- `npx tsc --noEmit` in `frontend` — passed.
+- `npm run lint --prefix frontend` — passed with existing warnings only.
+- `npm run build --prefix frontend` — passed; emitted existing Browserslist staleness notice, existing ESLint warnings, and existing Recharts static-generation width/height warnings.
+- `python3 scripts/audit_change_release_ledger.py` — passed: `Changed files: 7`, `Recorded changed files: 7`, `Coverage: PASS`.
+- `git diff --check` — passed.
+
+### Risks / Release Notes
+
+- UI risk: 卡片现在最多展示 2 个主要辅助标签，低优先级标签不会全部堆在卡片首屏，需要从详情或其他上下文查看完整信息。
+- UI risk: 备注和订单顺序标签共用 footer；极长备注仍会被单行截断以保持卡片高度稳定。
+- Rollback: revert the compact-card helper/render changes in `frontend/src/app/task-center/page.tsx` and restore the previous `.taskCenterCompact*` styles in `frontend/src/app/cleaning/cleaningSchedule.module.scss`.
+- Sensitive-information review: no secrets, `.env` values, database URLs, credentials, raw production guest/request content, tokens, cookies, private keys, sensitive logs, or local caches were added.
+- Git state: uncommitted.
+
+## CRL-20260712-005 — 手动补位合并继承安全字段并记录冲突
+
+- **Status:** ready
+- **Updated:** 2026-07-12 14:58 AEST
+- **Request:** 用户确认“直接复制到正式任务，可能被下一次订单同步重新覆盖”的风险后，要求按更新后的修复计划执行。
+- **Outcome:** 自动订单任务合并临时手动补位时，不再只是把手动任务标记为 `superseded`。系统会把安全字段继承到正式任务：客人需求、默认入住时间、默认退房时间；密码、钥匙套数、入住天数等可能被订单同步覆盖或订单更权威的字段不会静默覆盖，而是写入 `supersede_conflicts` 供后续人工核对。
+
+### Implementation
+
+- Previous behavior:
+  - `supersedeTemporaryManualTasksForOrder()` 只把符合条件的手动补位任务更新为 `execution_state='superseded'`。
+  - 正式订单任务不继承手动补位里的入住时间、退房时间、客人需求等字段。
+  - `supersede_conflicts` 基本写入空数组，密码、钥匙套数、入住天数等差异没有结构化记录。
+- New behavior:
+  - 新增手动补位合并决策逻辑：过滤字面 `null` / `undefined` 占位文本后比较正式任务与手动任务字段。
+  - `guest_special_request`：正式为空时复制手动值；两边都有且不同则合并去重。
+  - `checkin_time` / `checkout_time`：正式为空或默认 `3pm` / `10am` 时继承手动时间；正式已有非默认不同值时只记录冲突。
+  - `old_code` / `new_code`、`keys_required`、`nights_override`：不覆盖正式任务，只以 `manual_requires_review` 写入 `supersede_conflicts`。
+  - 若正式任务因继承字段被更新，会发 `TASK_UPDATED` 工作任务事件；被合并的手动任务仍发 `TASK_REMOVED`。
+- Key decisions:
+  - 不对密码字段做自动继承，避免后续 `derivedCode` 或 `syncCheckoutOldCodeFromCheckinNewCode()` 再次覆盖造成循环。
+  - 不覆盖关联订单任务的钥匙套数和入住天数，避免和订单权威数据冲突。
+  - 本单元只处理未来自动合并行为，不写生产数据回填。
+
+### Files / Areas
+
+- `backend/src/services/cleaningSync.ts` — modified: 手动补位 supersede 前计算安全字段继承、冲突记录，并对正式任务发送更新事件。
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — modified: 覆盖入住/退房时间与客人需求继承，密码/钥匙套数冲突记录，以及原有 protected/manual_extra 保护语义。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: no shape change; existing task records may now carry inherited `guest_special_request` / `checkin_time` / `checkout_time` after future sync.
+- Database / migration: none; reuses existing `supersede_conflicts` jsonb column.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: complements `CRL-20260712-004`, which filters `null` / `undefined` placeholders at task-center display time.
+
+### Validation
+
+- `env -u DATABASE_URL ./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_cleaning_sync_v2.ts` in `backend` — passed: `ok`; deliberately ran without `DATABASE_URL` so it used in-memory store and did not write any configured database.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_cleaning_turnover_display.ts` in `backend` — passed: `test_cleaning_turnover_display: ok`.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `git diff --check -- backend/src/services/cleaningSync.ts backend/scripts/tests/test_cleaning_sync_v2.ts backend/src/lib/cleaningTurnoverDisplay.ts backend/scripts/tests/test_cleaning_turnover_display.ts docs/change-release-ledger.md` — passed.
+- Frontend lint/build — not run; no frontend source changed in this release unit.
+
+### Risks / Release Notes
+
+- Behavior risk: future temporary manual placeholders with meaningful guest request or non-default times will now update the canonical order task, which is intended but changes what downstream task-center/mobile clients see.
+- Review risk: password, key-count, and nights differences are recorded in `supersede_conflicts` but there is not yet a dedicated UI surfacing those conflicts.
+- Rollback: remove `buildManualSupersedeMerge()` and related helper functions/usages from `cleaningSync.ts`, restore `supersede_conflicts: []`, and remove the added sync test assertions.
+- Sensitive-information review: no secrets, `.env` values, database URLs, credentials, raw production guest request contents, tokens, cookies, private keys, sensitive logs, or local caches were added. Tests use synthetic task IDs and synthetic values.
+- Git state: uncommitted.
+
+## CRL-20260712-004 — 任务中心客人需求过滤 null 占位值
+
+- **Status:** ready
+- **Updated:** 2026-07-12 14:18 AEST
+- **Request:** 用户确认移动端新建/修改入住任务客人需求仍在数据库后，要求执行修复并提供台账编号。
+- **Outcome:** 任务中心周转展示不再把订单备注里的字面 `null` / `undefined` 当作真实客人需求。若订单备注是占位脏值，会继续回退到任务自身的 `guest_special_request`，避免显示“客人需求：null”并遮住移动端填写的真实客人需求。
+
+### Implementation
+
+- Previous behavior:
+  - `buildCleaningTurnoverDisplay()` 通过 `firstText(orderNote, guestSpecialRequest)` 取客人需求。
+  - `nullableText()` 只过滤空字符串，没有过滤字面 `null` / `undefined`。
+  - 当订单备注存成字面 `null` 时，展示层会优先返回该字符串，不再读取真实的 `guest_special_request`。
+- New behavior:
+  - `nullableText()` 将大小写/空格归一后的 `null`、`undefined` 视为空值。
+  - 客人需求、任务 ID、密码等共用 `firstText()` 的展示字段都会自动跳过这些占位字符串，保留后续真实字段兜底。
+  - 回归测试覆盖订单备注为 `NULL` / `undefined` 时，入住任务仍显示真实 `guest_special_request`。
+- Key decisions:
+  - 不修改生产数据；本单元只修展示归一化，避免同类脏值再次遮住真实字段。
+  - 不改变 `order_note` 优先级本身，只让无效占位值无法抢占真实内容。
+
+### Files / Areas
+
+- `backend/src/lib/cleaningTurnoverDisplay.ts` — modified: 文本归一化过滤字面 `null` / `undefined`。
+- `backend/scripts/tests/test_cleaning_turnover_display.ts` — modified: 增加订单备注占位值回退到真实客人需求的回归测试。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: existing task-center payload may now return the real fallback text instead of literal `null` / `undefined` for display fields that use `firstText()`.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: follows the production read-only diagnosis for the MSQ3007E task-center guest-request display issue.
+
+### Validation
+
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_cleaning_turnover_display.ts` in `backend` — passed: `test_cleaning_turnover_display: ok`.
+- `npx vitest run src/app/task-center/taskCenterDisplay.test.ts` in `frontend` — passed: 1 file, 3 tests.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `git diff --check -- backend/src/lib/cleaningTurnoverDisplay.ts backend/scripts/tests/test_cleaning_turnover_display.ts` — passed.
+- Frontend lint/build — not run; no frontend source changed in this release unit.
+
+### Risks / Release Notes
+
+- Behavior risk: if any business user intentionally typed the exact text `null` or `undefined` as meaningful display content, it will now be treated as empty in this shared turnover display helper. This is acceptable for the observed data-quality issue and common placeholder semantics.
+- Rollback: remove the placeholder filtering in `nullableText()` and delete the added test block.
+- Sensitive-information review: no secrets, `.env` values, database URLs, credentials, raw guest request contents from production, tokens, cookies, private keys, sensitive logs, or local caches were added. The regression test uses synthetic guest-request text.
+- Git state: uncommitted.
+
 ## CRL-20260712-003 — 清洁安排表周转合并保留 active 手工任务
 
 - **Status:** ready

@@ -77,6 +77,34 @@ assert.deepEqual(display.all_related_source_ids, ['checkout-active', 'checkin-ac
 assert.ok(display.conflicts.some((item) => item.field === 'checkin_time' && item.manual_value === '5pm' && item.canonical_value === '2pm'))
 assert.ok(display.conflicts.some((item) => item.field === 'keys_required' && item.manual_value === 2 && item.canonical_value === 1))
 
+const displayWithPlaceholderOrderNote = buildCleaningTurnoverDisplay({
+  propertyId: 'P1',
+  taskDate: '2026-08-03',
+  checkinTask: {
+    id: 'checkin-placeholder-note',
+    task_type: 'checkin_clean',
+    order_id: 'checkin-order-placeholder-note',
+    property_id: 'P1',
+    task_date: '2026-08-03',
+    order_note: ' NULL ',
+    guest_special_request: 'first cleaning inspection',
+  },
+  activeRows: [
+    {
+      id: 'checkin-placeholder-note',
+      task_type: 'checkin_clean',
+      order_id: 'checkin-order-placeholder-note',
+      property_id: 'P1',
+      task_date: '2026-08-03',
+      order_note: 'undefined',
+      guest_special_request: 'first cleaning inspection',
+    },
+  ],
+})
+
+assert.equal(displayWithPlaceholderOrderNote.guest_request_checkin, 'first cleaning inspection')
+assert.equal(displayWithPlaceholderOrderNote.guest_request_summary, 'first cleaning inspection')
+
 const merged = mergeCleaningTurnoverDisplays([
   buildCleaningTurnoverDisplay({ propertyId: 'P1', taskDate: '2026-06-29', checkoutTask, activeRows: [checkoutTask] }),
   buildCleaningTurnoverDisplay({ propertyId: 'P1', taskDate: '2026-06-29', checkinTask, activeRows: [checkinTask], supersededRows: [supersededManual] }),

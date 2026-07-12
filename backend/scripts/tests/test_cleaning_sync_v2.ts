@@ -32,6 +32,7 @@ async function main() {
   const o3 = uuid()
   const o4 = uuid()
   const manualCheckin = uuid()
+  const manualCheckout = uuid()
   const manualExtraCheckin = uuid()
   const manualCheckoutInProgress = uuid()
 
@@ -45,7 +46,7 @@ async function main() {
   if (pgPool) {
     await ensureCleaningSchemaV2()
     await pgPool.query('DELETE FROM cleaning_sync_logs WHERE order_id = ANY($1)', [[o1, o2, o3, o4]])
-    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o3, o4], [manualCheckin, manualExtraCheckin, manualCheckoutInProgress]])
+    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o3, o4], [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress]])
     await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [[o1, o2, o3, o4]])
     for (const o of orders) {
       await pgPool.query(
@@ -144,39 +145,66 @@ async function main() {
 
   if (pgPool) {
     await pgPool.query(
-      `INSERT INTO cleaning_tasks(id, order_id, property_id, task_type, task_date, type, date, status, source, execution_state, manual_task_purpose, auto_sync_enabled)
+      `INSERT INTO cleaning_tasks(id, order_id, property_id, task_type, task_date, type, date, status, source, execution_state, manual_task_purpose, auto_sync_enabled, checkin_time, checkout_time, new_code, old_code, guest_special_request, keys_required, nights_override)
        VALUES
-         ($1, NULL, 'P_TEST_D', 'checkin_clean', '2026-02-18'::date, 'checkin_clean', '2026-02-18'::date, 'pending', 'manual', 'active', 'temporary_order_placeholder', true),
-         ($2, NULL, 'P_TEST_D', 'checkin_clean', '2026-02-18'::date, 'checkin_clean', '2026-02-18'::date, 'pending', 'manual', 'active', 'manual_extra', true),
-         ($3, NULL, 'P_TEST_D', 'checkout_clean', '2026-02-21'::date, 'checkout_clean', '2026-02-21'::date, 'in_progress', 'manual', 'active', 'temporary_order_placeholder', true)`,
-      [manualCheckin, manualExtraCheckin, manualCheckoutInProgress],
+         ($1, NULL, 'P_TEST_D', 'checkin_clean', '2026-02-18'::date, 'checkin_clean', '2026-02-18'::date, 'pending', 'manual', 'active', 'temporary_order_placeholder', true, '2pm', NULL, 'manual-new-code', NULL, 'first cleaning inspection', 2, 5),
+         ($2, NULL, 'P_TEST_D', 'checkout_clean', '2026-02-21'::date, 'checkout_clean', '2026-02-21'::date, 'pending', 'manual', 'active', 'temporary_order_placeholder', true, NULL, '11am', NULL, 'manual-old-code', NULL, 2, 5),
+         ($3, NULL, 'P_TEST_D', 'checkin_clean', '2026-02-18'::date, 'checkin_clean', '2026-02-18'::date, 'pending', 'manual', 'active', 'manual_extra', true, NULL, NULL, NULL, NULL, NULL, 1, NULL),
+         ($4, NULL, 'P_TEST_D', 'checkout_clean', '2026-02-21'::date, 'checkout_clean', '2026-02-21'::date, 'in_progress', 'manual', 'active', 'temporary_order_placeholder', true, NULL, NULL, NULL, NULL, NULL, 1, NULL)`,
+      [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress],
     )
   } else {
     ;(db.cleaningTasks as any[]).push(
-      { id: manualCheckin, order_id: null, property_id: 'P_TEST_D', task_type: 'checkin_clean', task_date: '2026-02-18', type: 'checkin_clean', date: '2026-02-18', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: 'temporary_order_placeholder', auto_sync_enabled: true },
+      { id: manualCheckin, order_id: null, property_id: 'P_TEST_D', task_type: 'checkin_clean', task_date: '2026-02-18', type: 'checkin_clean', date: '2026-02-18', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: 'temporary_order_placeholder', auto_sync_enabled: true, checkin_time: '2pm', new_code: 'manual-new-code', guest_special_request: 'first cleaning inspection', keys_required: 2, nights_override: 5 },
+      { id: manualCheckout, order_id: null, property_id: 'P_TEST_D', task_type: 'checkout_clean', task_date: '2026-02-21', type: 'checkout_clean', date: '2026-02-21', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: 'temporary_order_placeholder', auto_sync_enabled: true, checkout_time: '11am', old_code: 'manual-old-code', keys_required: 2, nights_override: 5 },
       { id: manualExtraCheckin, order_id: null, property_id: 'P_TEST_D', task_type: 'checkin_clean', task_date: '2026-02-18', type: 'checkin_clean', date: '2026-02-18', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: 'manual_extra', auto_sync_enabled: true },
       { id: manualCheckoutInProgress, order_id: null, property_id: 'P_TEST_D', task_type: 'checkout_clean', task_date: '2026-02-21', type: 'checkout_clean', date: '2026-02-21', status: 'in_progress', source: 'manual', execution_state: 'active', manual_task_purpose: 'temporary_order_placeholder', auto_sync_enabled: true },
     )
   }
   await syncOrderToCleaningTasks(o4)
   const o4Checkin = await fetchTaskByType(o4, 'checkin_clean')
+  const o4Checkout = await fetchTaskByType(o4, 'checkout_clean')
   assert.ok(o4Checkin, 'should create canonical checkin task before superseding placeholder')
+  assert.ok(o4Checkout, 'should create canonical checkout task before superseding placeholder')
+  assert.equal(String(o4Checkin.checkin_time), '2pm', 'canonical checkin should inherit manual placeholder checkin_time over default')
+  assert.equal(String(o4Checkin.guest_special_request), 'first cleaning inspection', 'canonical checkin should inherit manual placeholder guest request')
+  assert.equal(o4Checkin.new_code == null ? null : String(o4Checkin.new_code), null, 'manual new_code should not be copied onto canonical checkin')
+  assert.equal(Number(o4Checkin.keys_required), 1, 'manual keys_required should not override order-backed canonical checkin')
+  assert.equal(String(o4Checkout.checkout_time), '11am', 'canonical checkout should inherit manual placeholder checkout_time over default')
+  assert.equal(o4Checkout.old_code == null ? null : String(o4Checkout.old_code), null, 'manual old_code should not be copied onto canonical checkout')
   let eligibleManual: any
+  let eligibleManualCheckout: any
   let extraManual: any
   let protectedManual: any
   if (pgPool) {
-    const r = await pgPool.query('SELECT * FROM cleaning_tasks WHERE id = ANY($1) ORDER BY id', [[manualCheckin, manualExtraCheckin, manualCheckoutInProgress]])
+    const r = await pgPool.query('SELECT * FROM cleaning_tasks WHERE id = ANY($1) ORDER BY id', [[manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress]])
     eligibleManual = (r?.rows || []).find((row: any) => String(row.id) === manualCheckin)
+    eligibleManualCheckout = (r?.rows || []).find((row: any) => String(row.id) === manualCheckout)
     extraManual = (r?.rows || []).find((row: any) => String(row.id) === manualExtraCheckin)
     protectedManual = (r?.rows || []).find((row: any) => String(row.id) === manualCheckoutInProgress)
   } else {
     eligibleManual = (db.cleaningTasks as any[]).find((row: any) => String(row.id) === manualCheckin)
+    eligibleManualCheckout = (db.cleaningTasks as any[]).find((row: any) => String(row.id) === manualCheckout)
     extraManual = (db.cleaningTasks as any[]).find((row: any) => String(row.id) === manualExtraCheckin)
     protectedManual = (db.cleaningTasks as any[]).find((row: any) => String(row.id) === manualCheckoutInProgress)
+  }
+  const supersedeConflicts = (row: any) => {
+    const raw = row?.supersede_conflicts
+    if (Array.isArray(raw)) return raw
+    if (typeof raw === 'string') return raw ? JSON.parse(raw) : []
+    return []
   }
   assert.equal(String(eligibleManual.execution_state), 'superseded', 'temporary manual checkin placeholder should be superseded')
   assert.equal(String(eligibleManual.status), 'pending', 'superseded placeholder should keep original status instead of cancelled')
   assert.equal(String(eligibleManual.superseded_by), String(o4Checkin.id))
+  assert.ok(supersedeConflicts(eligibleManual).some((item: any) => item.field === 'checkin_time' && item.resolution === 'copied_manual'))
+  assert.ok(supersedeConflicts(eligibleManual).some((item: any) => item.field === 'guest_special_request' && item.resolution === 'copied_manual'))
+  assert.ok(supersedeConflicts(eligibleManual).some((item: any) => item.field === 'new_code' && item.resolution === 'manual_requires_review'))
+  assert.ok(supersedeConflicts(eligibleManual).some((item: any) => item.field === 'keys_required' && item.resolution === 'manual_requires_review'))
+  assert.equal(String(eligibleManualCheckout.execution_state), 'superseded', 'temporary manual checkout placeholder should be superseded')
+  assert.equal(String(eligibleManualCheckout.superseded_by), String(o4Checkout.id))
+  assert.ok(supersedeConflicts(eligibleManualCheckout).some((item: any) => item.field === 'checkout_time' && item.resolution === 'copied_manual'))
+  assert.ok(supersedeConflicts(eligibleManualCheckout).some((item: any) => item.field === 'old_code' && item.resolution === 'manual_requires_review'))
   assert.equal(String(extraManual.execution_state), 'active', 'explicit extra manual checkin task must not be superseded')
   assert.equal(String(extraManual.status), 'pending')
   assert.equal(String(protectedManual.execution_state), 'active', 'in-progress manual checkout task must not be superseded')
@@ -196,7 +224,7 @@ async function main() {
     const countTasks = await pgPool.query(`SELECT COUNT(*)::int AS c FROM cleaning_tasks WHERE order_id = ANY($1)`, [[o1, o2]])
     assert.equal(Number(countTasks?.rows?.[0]?.c || 0), 4, 'backfill twice should not duplicate tasks')
     await pgPool.query('DELETE FROM cleaning_sync_logs WHERE order_id = ANY($1)', [[o1, o2, o4]])
-    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o4], [manualCheckin, manualExtraCheckin, manualCheckoutInProgress]])
+    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o4], [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress]])
     await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [[o1, o2, o4]])
   } else {
     const tasks = (db.cleaningTasks as any[]).filter((t: any) => [o1, o2].includes(String(t.order_id)))
