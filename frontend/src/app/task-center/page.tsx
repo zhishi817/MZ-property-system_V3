@@ -2,7 +2,7 @@
 
 import { Alert, Button, DatePicker, Empty, Input, Modal, Select, Skeleton, Space, Switch, message } from 'antd'
 import { DeleteOutlined, HolderOutlined, LeftOutlined, PlusOutlined, ReloadOutlined, RightOutlined, SaveOutlined } from '@ant-design/icons'
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { getJSON, postJSON } from '../../lib/api'
 import { upsertAdminNotification } from '../../lib/adminNotifications'
@@ -315,6 +315,72 @@ function displayBadgesForTask(task: Pick<TaskCenterTask, 'display_state'>): Task
   return Array.isArray(task.display_state?.badges)
     ? task.display_state.badges.filter((badge) => String(badge?.label || '').trim())
     : []
+}
+
+type TaskCardMetaItem = {
+  key: string
+  label: string
+  tone: TaskSemanticTone
+}
+
+function normalizedLabel(value: string | null | undefined) {
+  return String(value || '').trim()
+}
+
+function dedupeTaskCardMetaItems(items: TaskCardMetaItem[]) {
+  const seen = new Set<string>()
+  const output: TaskCardMetaItem[] = []
+  for (const item of items) {
+    const label = normalizedLabel(item.label)
+    if (!label) continue
+    const key = label.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    output.push({ ...item, label })
+  }
+  return output
+}
+
+function compactDisplayBadgesForCard(statusLabel: string, badges: TaskDisplayBadge[]) {
+  const normalizedStatus = normalizedLabel(statusLabel)
+  const hasSpecificEndBadge = badges.some((badge) => ['keys_hung', 'checked_done'].includes(String(badge.id || '')))
+  return dedupeTaskCardMetaItems(badges
+    .filter((badge) => normalizedLabel(badge.label) !== normalizedStatus)
+    .filter((badge) => !(String(badge.id || '') === 'task_ended' && (hasSpecificEndBadge || ['已挂钥匙', '已检查', '已清洁', '任务已结束'].includes(normalizedStatus))))
+    .map((badge) => ({
+      key: `display:${badge.id}`,
+      label: badge.label,
+      tone: badge.tone,
+    })))
+}
+
+function taskDisplayConflictCount(task: Pick<TaskCenterTask, 'display_conflicts' | 'turnover_display'>) {
+  const displayConflicts = Array.isArray(task.display_conflicts) ? task.display_conflicts.length : 0
+  const turnoverConflicts = Array.isArray(task.turnover_display?.conflicts) ? task.turnover_display.conflicts.length : 0
+  return Math.max(displayConflicts, turnoverConflicts)
+}
+
+function taskCardPrimaryMetaItems(params: {
+  statusLabel: string
+  displayBadges: TaskDisplayBadge[]
+  inspectionModeTag: TaskCardMetaItem | null
+  inspectionScopeTag: TaskCardMetaItem | null
+  workTaskKindTag: TaskCardMetaItem | null
+  syncTag: TaskCardMetaItem | null
+  temporarilySkipped?: boolean
+  supersededCount: number
+  conflictCount: number
+}) {
+  const items: TaskCardMetaItem[] = []
+  if (params.conflictCount > 0) items.push({ key: 'conflict', label: '冲突', tone: 'danger' })
+  if (params.temporarilySkipped) items.push({ key: 'skip', label: '暂不安排', tone: 'pending' })
+  if (params.syncTag?.label === '待同步') items.push(params.syncTag)
+  items.push(...compactDisplayBadgesForCard(params.statusLabel, params.displayBadges))
+  if (params.inspectionModeTag) items.push(params.inspectionModeTag)
+  if (params.inspectionScopeTag) items.push(params.inspectionScopeTag)
+  if (params.workTaskKindTag) items.push(params.workTaskKindTag)
+  if (params.supersededCount > 0) items.push({ key: 'superseded', label: `合并 ${params.supersededCount}`, tone: 'info' })
+  return dedupeTaskCardMetaItems(items).slice(0, 2)
 }
 
 function managementActionForTask(task: Pick<TaskCenterTask, 'management_actions'>, id: TaskManagementActionId): TaskManagementAction | null {
@@ -1936,17 +2002,26 @@ export default function TaskCenterPage() {
     const dragDisabled = filteringActive || boardSaving
     const timingTags = specialTimingTags(task)
     const orderTags = taskOrderTags(task)
-    const syncTag = canSeeCheckinSyncTag ? checkinSyncTag(task) : null
     const statusMeta = displayStatusMetaForTask(task)
     const displayBadges = displayBadgesForTask(task)
-    const inspectionModeTag = task.task_source === 'cleaning'
+    const rawInspectionModeTag = task.task_source === 'cleaning'
       && (task.can_configure_inspection || task.deferred_inspection_view)
       && shouldRenderInspectionModeTag(task)
       ? taskInspectionModeMeta(resolvedInspectionModeForTask(task))
       : null
-    const inspectionScopeTag = inspectionScopeTagMeta(task)
+    const rawInspectionScopeTag = inspectionScopeTagMeta(task)
+    const inspectionModeTag = rawInspectionModeTag
+      ? { key: 'inspection-mode', label: rawInspectionModeTag.label, tone: rawInspectionModeTag.tone }
+      : null
+    const inspectionScopeTag = rawInspectionScopeTag
+      ? { key: 'inspection-scope', label: rawInspectionScopeTag.label, tone: rawInspectionScopeTag.tone }
+      : null
     const workTaskKindTag = task.task_source === 'work'
-      ? { label: task.task_kind || '线下任务', tone: 'special' as const }
+      ? { key: 'work-kind', label: task.task_kind || '线下任务', tone: 'special' as const }
+      : null
+    const rawSyncTag = canSeeCheckinSyncTag ? checkinSyncTag(task) : null
+    const syncTag = rawSyncTag
+      ? { key: 'sync', label: rawSyncTag.label, tone: rawSyncTag.tone }
       : null
     const detailText = task.skip_reason || (task.task_source === 'cleaning' ? cleaningSecondarySummary(task) : (task.detail || task.summary || ''))
     const guestRequestText = task.task_source === 'cleaning' ? guestRequestForDisplay(task) : ''
@@ -1958,6 +2033,29 @@ export default function TaskCenterPage() {
     const supersededCount = supersededCleaningTaskIds(task).length
     const hasOrderTags = orderTags.length > 0
     const nightsTag = taskNightsTag(task)
+    const timingFacts = [
+      ...timingTags.map((item) => item.label),
+      ...(nightsTag ? [nightsTag.label] : []),
+    ].filter(Boolean)
+    const fallbackFact = task.task_source === 'cleaning'
+      ? cleaningTaskFlowLabel(task)
+      : (task.task_kind || '线下任务')
+    const factLabels = timingFacts.length ? timingFacts : [fallbackFact]
+    const conflictCount = taskDisplayConflictCount(task)
+    const primaryMetaItems = taskCardPrimaryMetaItems({
+      statusLabel: statusMeta.label,
+      displayBadges,
+      inspectionModeTag,
+      inspectionScopeTag,
+      workTaskKindTag,
+      syncTag,
+      temporarilySkipped: task.temporarily_skipped,
+      supersededCount,
+      conflictCount,
+    })
+    const footerNote = compactDetailText
+      || (conflictCount > 0 ? '请先核对订单' : '')
+      || (syncTag?.label === '已同步' ? '已同步' : '')
     return (
       <div
         key={task.item_key}
@@ -1986,66 +2084,46 @@ export default function TaskCenterPage() {
               <span className={styles.taskCenterCompactTitleText}>{task.title}</span>
               {assignedStaffName ? <span className={styles.taskCenterCompactTitleMeta}>{assignedStaffName}</span> : null}
             </div>
-            {timingTags.length || nightsTag ? (
-              <div className={styles.taskCenterCompactTimeLine}>
-                {timingTags.map((item) => (
-                  <span
-                    key={`${task.item_key}:time:${item.key}`}
-                    className={`${styles.taskCenterCompactTimeTag} ${semanticToneClass(item.tone)}`}
-                  >
-                    {item.label}
-                  </span>
+            {factLabels.length ? (
+              <div className={styles.taskCenterCompactFacts} style={textColor ? { color: textColor } : undefined}>
+                {factLabels.map((label, index) => (
+                  <Fragment key={`${task.item_key}:fact:${index}`}>
+                    {index > 0 ? <span className={styles.taskCenterCompactFactDivider}>/</span> : null}
+                    <span className={styles.taskCenterCompactFact}>{label}</span>
+                  </Fragment>
                 ))}
-                {nightsTag ? (
-                  <span className={`${styles.taskCenterCompactTimeTag} ${semanticToneClass(nightsTag.tone)}`}>{nightsTag.label}</span>
-                ) : null}
               </div>
             ) : null}
           </div>
           <div className={styles.taskCenterCompactTagLine}>
             <span className={`${styles.statusChip} ${semanticToneClass(statusMeta.tone)} ${styles.taskCenterCompactStatus}`}>{statusMeta.label}</span>
-            {displayBadges.length ? (
+            {primaryMetaItems.length ? (
               <span className={styles.taskCenterCompactMetaGroup}>
-                {displayBadges.map((badge) => (
-                  <span key={`${task.item_key}:display:${badge.id}`} className={`${styles.taskCenterCompactTag} ${semanticToneClass(badge.tone)}`}>{badge.label}</span>
+                {primaryMetaItems.map((item) => (
+                  <span key={`${task.item_key}:meta:${item.key}`} className={`${styles.taskCenterCompactTag} ${semanticToneClass(item.tone)}`}>{item.label}</span>
                 ))}
               </span>
-            ) : (inspectionModeTag || inspectionScopeTag) ? (
-              <span className={styles.taskCenterCompactMetaGroup}>
-                {inspectionModeTag ? <span className={`${styles.taskCenterCompactTag} ${semanticToneClass(inspectionModeTag.tone)}`}>{inspectionModeTag.label}</span> : null}
-                {inspectionScopeTag ? <span className={`${styles.taskCenterCompactTag} ${semanticToneClass(inspectionScopeTag.tone)}`}>{inspectionScopeTag.label}</span> : null}
-              </span>
-            ) : null}
-            {workTaskKindTag ? (
-              <span className={`${styles.taskCenterCompactTag} ${semanticToneClass(workTaskKindTag.tone)}`}>{workTaskKindTag.label}</span>
-            ) : null}
-            {syncTag ? (
-              <span className={`${styles.taskCenterCompactTag} ${semanticToneClass(syncTag.tone)}`}>
-                {syncTag.label}
-              </span>
-            ) : null}
-            {task.temporarily_skipped ? (
-              <span className={`${styles.taskCenterCompactTag} ${semanticToneClass('pending')}`}>暂不安排</span>
-            ) : null}
-            {supersededCount > 0 ? (
-              <span className={`${styles.taskCenterCompactTag} ${semanticToneClass('info')}`}>已合并{supersededCount}条手动补位</span>
             ) : null}
           </div>
-          {hasOrderTags ? (
-            <div className={styles.taskCenterCompactOrderLine}>
-              {orderTags.map((item) => (
-                <span
-                  key={`${task.item_key}:order:${item.key}`}
-                  className={`${styles.taskCenterCompactOrderTag} ${semanticToneClass(item.tone)}`}
-                >
-                  {item.label}
+          {(footerNote || hasOrderTags) ? (
+            <div className={styles.taskCenterCompactFooter}>
+              {footerNote ? (
+                <span className={styles.taskCenterCompactDetail} style={textColor ? { color: textColor } : undefined}>
+                  {footerNote}
                 </span>
-              ))}
-            </div>
-          ) : null}
-          {compactDetailText ? (
-            <div className={styles.taskCenterCompactDetail} style={textColor ? { color: textColor } : undefined}>
-              {compactDetailText}
+              ) : <span />}
+              {hasOrderTags ? (
+                <span className={styles.taskCenterCompactOrderGroup}>
+                  {orderTags.map((item) => (
+                    <span
+                      key={`${task.item_key}:order:${item.key}`}
+                      className={`${styles.taskCenterCompactOrderTag} ${semanticToneClass(item.tone)}`}
+                    >
+                      {item.label}
+                    </span>
+                  ))}
+                </span>
+              ) : null}
             </div>
           ) : null}
         </div>

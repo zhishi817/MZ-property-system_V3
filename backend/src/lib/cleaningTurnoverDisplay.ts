@@ -82,6 +82,8 @@ function text(value: any): string {
 
 function nullableText(value: any): string | null {
   const s = text(value)
+  const normalized = s.toLowerCase()
+  if (normalized === 'null' || normalized === 'undefined') return null
   return s ? s : null
 }
 

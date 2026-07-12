@@ -419,6 +419,144 @@ function nonBlank(v: any): string | null {
   return s ? s : null
 }
 
+function displayText(v: any): string | null {
+  const s = nonBlank(v)
+  if (!s) return null
+  const normalized = s.toLowerCase()
+  if (normalized === 'null' || normalized === 'undefined') return null
+  return s
+}
+
+function sameDisplayText(a: any, b: any): boolean {
+  return String(displayText(a) || '') === String(displayText(b) || '')
+}
+
+function joinUniqueDisplayText(values: any[]): string | null {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const value of values) {
+    const s = displayText(value)
+    if (!s || seen.has(s)) continue
+    seen.add(s)
+    out.push(s)
+  }
+  return out.length ? out.join('；') : null
+}
+
+function numberValue(v: any): number | null {
+  if (v == null || v === '') return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+function addSupersedeDecision(
+  decisions: any[],
+  manual: any,
+  field: string,
+  canonicalValue: any,
+  manualValue: any,
+  resolution: 'copied_manual' | 'merged_manual' | 'kept_canonical' | 'manual_requires_review',
+) {
+  const comparableManual = typeof manualValue === 'number' ? manualValue : displayText(manualValue)
+  if (comparableManual == null || comparableManual === '') return
+  const comparableCanonical = typeof canonicalValue === 'number' ? canonicalValue : displayText(canonicalValue)
+  if (comparableCanonical != null && comparableCanonical !== '' && String(comparableCanonical) === String(comparableManual)) return
+  decisions.push({
+    field,
+    canonical_value: canonicalValue ?? null,
+    manual_value: manualValue ?? null,
+    manual_task_id: String(manual?.id || ''),
+    resolution,
+  })
+}
+
+function buildManualSupersedeMerge(params: {
+  manual: any
+  official: any
+  taskType: string
+}): { patch: any; changedFields: string[]; decisions: any[] } {
+  const { manual, official, taskType } = params
+  const patch: any = {}
+  const changedFields: string[] = []
+  const decisions: any[] = []
+
+  const manualGuestRequest = displayText(manual?.guest_special_request)
+  const officialGuestRequest = displayText(official?.guest_special_request)
+  if (manualGuestRequest) {
+    if (!officialGuestRequest) {
+      patch.guest_special_request = manualGuestRequest
+      changedFields.push('guest_special_request')
+      addSupersedeDecision(decisions, manual, 'guest_special_request', official?.guest_special_request, manualGuestRequest, 'copied_manual')
+    } else if (!sameDisplayText(officialGuestRequest, manualGuestRequest)) {
+      const merged = joinUniqueDisplayText([officialGuestRequest, manualGuestRequest])
+      if (merged && merged !== officialGuestRequest) {
+        patch.guest_special_request = merged
+        changedFields.push('guest_special_request')
+        addSupersedeDecision(decisions, manual, 'guest_special_request', officialGuestRequest, manualGuestRequest, 'merged_manual')
+      }
+    }
+  }
+
+  if (taskType === CHECKIN_TASK_TYPE) {
+    const manualCheckinTime = displayText(manual?.checkin_time)
+    const officialCheckinTime = displayText(official?.checkin_time)
+    if (manualCheckinTime) {
+      if (!officialCheckinTime || officialCheckinTime === DEFAULT_CHECKIN_TIME) {
+        if (manualCheckinTime !== officialCheckinTime) {
+          patch.checkin_time = manualCheckinTime
+          changedFields.push('checkin_time')
+          addSupersedeDecision(decisions, manual, 'checkin_time', official?.checkin_time, manualCheckinTime, 'copied_manual')
+        }
+      } else if (manualCheckinTime !== officialCheckinTime) {
+        addSupersedeDecision(decisions, manual, 'checkin_time', officialCheckinTime, manualCheckinTime, 'kept_canonical')
+      }
+    }
+  }
+
+  if (taskType === CHECKOUT_TASK_TYPE) {
+    const manualCheckoutTime = displayText(manual?.checkout_time)
+    const officialCheckoutTime = displayText(official?.checkout_time)
+    if (manualCheckoutTime) {
+      if (!officialCheckoutTime || officialCheckoutTime === DEFAULT_CHECKOUT_TIME) {
+        if (manualCheckoutTime !== officialCheckoutTime) {
+          patch.checkout_time = manualCheckoutTime
+          changedFields.push('checkout_time')
+          addSupersedeDecision(decisions, manual, 'checkout_time', official?.checkout_time, manualCheckoutTime, 'copied_manual')
+        }
+      } else if (manualCheckoutTime !== officialCheckoutTime) {
+        addSupersedeDecision(decisions, manual, 'checkout_time', officialCheckoutTime, manualCheckoutTime, 'kept_canonical')
+      }
+    }
+  }
+
+  for (const field of ['old_code', 'new_code']) {
+    const manualValue = displayText(manual?.[field])
+    if (!manualValue) continue
+    const officialValue = displayText(official?.[field])
+    if (officialValue !== manualValue) {
+      addSupersedeDecision(decisions, manual, field, official?.[field], manualValue, 'manual_requires_review')
+    }
+  }
+
+  const manualKeys = numberValue(manual?.keys_required)
+  if (manualKeys != null) {
+    const officialKeys = numberValue(official?.keys_required)
+    if (officialKeys !== manualKeys) {
+      addSupersedeDecision(decisions, manual, 'keys_required', official?.keys_required, manualKeys, 'manual_requires_review')
+    }
+  }
+
+  const manualNights = numberValue(manual?.nights_override)
+  if (manualNights != null) {
+    const officialNights = numberValue(official?.nights_override)
+    if (officialNights !== manualNights) {
+      addSupersedeDecision(decisions, manual, 'nights_override', official?.nights_override, manualNights, 'manual_requires_review')
+    }
+  }
+
+  return { patch, changedFields: Array.from(new Set(changedFields)), decisions }
+}
+
 function normalizeExecutionState(row: any): string {
   const explicit = String(row?.execution_state || '').trim().toLowerCase()
   if (explicit === ACTIVE_EXECUTION_STATE || explicit === SUPERSEDED_EXECUTION_STATE || explicit === CANCELLED_EXECUTION_STATE) return explicit
@@ -496,7 +634,7 @@ async function supersedeTemporaryManualTasksForOrder(params: {
        LIMIT 1`,
       [String(orderId), normalizedTaskType],
     )
-    const official = officialRes?.rows?.[0] || null
+    let official = officialRes?.rows?.[0] || null
     if (!official) return 0
 
     const manualRes = await exec.query(
@@ -521,13 +659,42 @@ async function supersedeTemporaryManualTasksForOrder(params: {
     let superseded = 0
     for (const manual of manualRows) {
       if (!(await canSupersedeManualTask(manual, exec))) continue
+      const merge = buildManualSupersedeMerge({ manual, official, taskType: normalizedTaskType })
+      if (merge.changedFields.length) {
+        const beforeOfficial = official
+        const afterOfficial = await updateTaskById(String(official.id), merge.patch, exec)
+        if (afterOfficial) official = afterOfficial
+        await logCleaningSync({
+          jobId,
+          orderId,
+          taskId: official.id,
+          action: 'updated',
+          before: beforeOfficial,
+          after: afterOfficial || official,
+          meta: { reason: 'manual_placeholder_supersede_inherit', source_task_id: String(manual.id || ''), changed_fields: merge.changedFields },
+          client: exec,
+        })
+        try {
+          await emitWorkTaskEvent({
+            taskId: `cleaning_task:${String(official.id)}`,
+            sourceType: 'cleaning_tasks',
+            sourceRefIds: [String(official.id)],
+            eventType: 'TASK_UPDATED',
+            changeScope: merge.changedFields.some((field) => field === 'checkin_time' || field === 'checkout_time') ? 'list' : 'detail',
+            changedFields: merge.changedFields,
+            patch: Object.fromEntries(merge.changedFields.map((field) => [field, (afterOfficial as any)?.[field] ?? (merge.patch as any)[field]])),
+            causedByUserId: null,
+            visibilityHints: buildCleaningTaskVisibilityHints(afterOfficial || official),
+          }, exec)
+        } catch {}
+      }
       const patch = {
         execution_state: SUPERSEDED_EXECUTION_STATE,
         auto_sync_enabled: false,
         superseded_by: String(official.id || ''),
         superseded_reason: 'auto_order_task_created',
         superseded_at: new Date().toISOString(),
-        supersede_conflicts: JSON.stringify([]),
+        supersede_conflicts: JSON.stringify(merge.decisions),
       }
       const after = await updateTaskById(String(manual.id), patch, exec)
       await logCleaningSync({
@@ -573,12 +740,14 @@ async function supersedeTemporaryManualTasksForOrder(params: {
   )
   if (!manualRows.length) return 0
   for (const manual of manualRows) {
+    const merge = buildManualSupersedeMerge({ manual, official, taskType: normalizedTaskType })
+    if (merge.changedFields.length) Object.assign(official, merge.patch)
     manual.execution_state = SUPERSEDED_EXECUTION_STATE
     manual.auto_sync_enabled = false
     manual.superseded_by = String(official.id || '')
     manual.superseded_reason = 'auto_order_task_created'
     manual.superseded_at = new Date().toISOString()
-    manual.supersede_conflicts = []
+    manual.supersede_conflicts = merge.decisions
   }
   return manualRows.length
 }
