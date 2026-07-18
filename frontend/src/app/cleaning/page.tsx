@@ -42,6 +42,18 @@ type TaskDisplayScope = {
   tone?: TaskSemanticTone
 }
 
+type CleaningTurnoverConflict = {
+  field?: string | null
+  canonical_value?: any
+  manual_value?: any
+  manual_task_id?: string | null
+  resolution?: string | null
+}
+
+type CleaningTurnoverDisplay = {
+  conflicts?: CleaningTurnoverConflict[] | null
+}
+
 type TaskParticipantSummary = {
   primary_role?: 'cleaner' | 'inspector' | 'executor' | 'assignee' | 'none' | string
   primary_user_id?: string | null
@@ -130,6 +142,8 @@ type CalendarItem = {
   checkout_old_code?: string | null
   checkout_new_code?: string | null
   photo_urls?: string[] | null
+  display_conflicts?: CleaningTurnoverConflict[] | null
+  turnover_display?: CleaningTurnoverDisplay | null
 } & TaskCapabilityFields
 
 type CleaningTaskRow = {
@@ -193,6 +207,8 @@ type EditTaskForm = {
   pending_add_checkout: boolean
   pending_add_checkin: boolean
   auto_sync_enabled: boolean
+  display_conflicts?: CleaningTurnoverConflict[] | null
+  turnover_display?: CleaningTurnoverDisplay | null
 } & TaskCapabilityFields
 
 type BulkEditForm = {
@@ -332,6 +348,81 @@ function displayBadgesForItem(it: Pick<CalendarItem, 'display_state'>): TaskDisp
   return Array.isArray(it.display_state?.badges)
     ? it.display_state.badges.filter((badge) => String(badge?.label || '').trim())
     : []
+}
+
+function conflictFieldLabel(field: string | null | undefined) {
+  const value = String(field || '').trim()
+  if (value === 'checkin_time') return '入住时间'
+  if (value === 'checkout_time') return '退房时间'
+  if (value === 'nights' || value === 'nights_override') return '入住晚数'
+  if (value === 'keys_required') return '钥匙套数'
+  if (value === 'guest_special_request') return '客人需求'
+  if (value === 'old_code') return '退房密码'
+  if (value === 'new_code') return '入住密码'
+  return value || '字段'
+}
+
+function conflictValueLabel(field: string | null | undefined, value: any) {
+  const f = String(field || '').trim()
+  if (f === 'old_code' || f === 'new_code') return String(value ?? '').trim() ? '已填写' : '-'
+  if (value == null || value === '') return '-'
+  if (f === 'nights' || f === 'nights_override') {
+    const n = Number(value)
+    return Number.isFinite(n) ? `${n}晚` : String(value)
+  }
+  if (f === 'keys_required') {
+    const n = Number(value)
+    return Number.isFinite(n) ? `${n}套` : String(value)
+  }
+  return String(value)
+}
+
+function conflictSuggestion(conflict: CleaningTurnoverConflict) {
+  const field = String(conflict.field || '').trim()
+  if (conflict.resolution === 'ignored_placeholder') return '手工补位占位值，已忽略'
+  if (field === 'checkin_time' || field === 'checkout_time') return '建议确认后采用手工补位'
+  if (field === 'nights' || field === 'nights_override' || field === 'keys_required') return '建议保留订单'
+  if (field === 'old_code' || field === 'new_code') return '需人工确认'
+  if (conflict.resolution === 'copied_manual') return '已采用手工补位'
+  if (conflict.resolution === 'merged_manual') return '已合并手工补位'
+  return '需人工确认'
+}
+
+function conflictKey(conflict: CleaningTurnoverConflict) {
+  return [
+    String(conflict.field || ''),
+    String(conflict.manual_task_id || ''),
+    String(conflict.manual_value ?? ''),
+    String(conflict.canonical_value ?? ''),
+  ].join('|')
+}
+
+function conflictsForItem(it: Pick<CalendarItem, 'display_conflicts' | 'turnover_display'> | Pick<EditTaskForm, 'display_conflicts' | 'turnover_display'>) {
+  const list = [
+    ...(Array.isArray(it.display_conflicts) ? it.display_conflicts : []),
+    ...(Array.isArray(it.turnover_display?.conflicts) ? it.turnover_display.conflicts : []),
+  ].filter((conflict) => String(conflict?.field || '').trim())
+  const seen = new Set<string>()
+  return list.filter((conflict) => {
+    const key = conflictKey(conflict)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function renderConflictRows(conflicts: CleaningTurnoverConflict[]) {
+  return conflicts.map((conflict) => {
+    const field = String(conflict.field || '').trim()
+    return (
+      <div key={conflictKey(conflict)} className={styles.conflictRow}>
+        <span className={styles.conflictField}>{conflictFieldLabel(field)}</span>
+        <span className={styles.conflictValue}>手工补位 {conflictValueLabel(field, conflict.manual_value)}</span>
+        <span className={styles.conflictValue}>订单任务 {conflictValueLabel(field, conflict.canonical_value)}</span>
+        <span className={styles.conflictSuggestion}>{conflictSuggestion(conflict)}</span>
+      </div>
+    )
+  })
 }
 
 function displayScopeForItem(it: Pick<CalendarItem, 'display_scope' | 'execution_semantics' | 'source' | 'task_type' | 'label' | 'inspection_scope'>): TaskDisplayScope | null {
@@ -719,6 +810,7 @@ export default function CleaningPage() {
           const sched = all.every((x) => String(x.scheduled_at || '') === String(all[0].scheduled_at || '')) ? all[0].scheduled_at : null
           const status = mergedStatus(all.map((x) => String(x.status || 'pending')))
           const autoSync = all.every((x) => x.auto_sync_enabled !== false)
+          const displayConflicts = all.flatMap((x) => conflictsForItem(x))
           mergedCleaning.push({
             source: 'cleaning_tasks',
             entity_id: ids.join(','),
@@ -751,6 +843,8 @@ export default function CleaningPage() {
             checkout_new_code: checkout?.new_code != null ? String(checkout.new_code || '') : null,
             checkin_old_code: checkin?.old_code != null ? String(checkin.old_code || '') : null,
             checkin_new_code: checkin?.new_code != null ? String(checkin.new_code || '') : null,
+            display_conflicts: displayConflicts,
+            turnover_display: { conflicts: displayConflicts },
             ...combineCapabilityForItems(all, status, 'mixed_cleaning_inspection'),
           })
           mergedCleaning.push(...turnoverMerge.restItems)
@@ -1035,13 +1129,15 @@ export default function CleaningPage() {
 	      pending_add_checkout: false,
 	      pending_add_checkin: false,
 	      auto_sync_enabled: autoSync,
-	      display_state: it.display_state || null,
-	      execution_semantics: it.execution_semantics || null,
-	      display_scope: it.display_scope || null,
-	      participant_summary: it.participant_summary || null,
-	      editable_fields: it.editable_fields || null,
-	      management_actions: it.management_actions || null,
-	    })
+		      display_state: it.display_state || null,
+		      execution_semantics: it.execution_semantics || null,
+		      display_scope: it.display_scope || null,
+		      participant_summary: it.participant_summary || null,
+		      editable_fields: it.editable_fields || null,
+		      management_actions: it.management_actions || null,
+		      display_conflicts: it.display_conflicts || null,
+		      turnover_display: it.turnover_display || null,
+		    })
     setEditOpen(true)
   }, [entityIds, mergedStatus])
 
@@ -1707,9 +1803,10 @@ export default function CleaningPage() {
 	      ? { label: editForm.display_state.status_label, tone: editForm.display_state.status_tone }
 	      : taskStatusMeta(editForm.status))
 	    : taskStatusMeta(null)
-	  const editScopeBadge = editForm ? displayScopeForItem(editForm as any) : null
-	  const editDisplayBadges = editForm ? displayBadgesForItem(editForm as any) : []
-	  const editSaveGate = editForm ? managementGateForItem(editForm, 'edit_task') : { enabled: true, disabledReason: '' }
+		  const editScopeBadge = editForm ? displayScopeForItem(editForm as any) : null
+		  const editDisplayBadges = editForm ? displayBadgesForItem(editForm as any) : []
+		  const editConflicts = editForm ? conflictsForItem(editForm) : []
+		  const editSaveGate = editForm ? managementGateForItem(editForm, 'edit_task') : { enabled: true, disabledReason: '' }
 	  const editTaskDateGate = editForm ? editableFieldGateForItem(editForm, 'task_date', 'edit_task') : { enabled: true, disabledReason: '' }
 	  const editStatusGate = editForm ? editableFieldGateForItem(editForm, 'status', 'update_status') : { enabled: true, disabledReason: '' }
 	  const editCleanerGate = editForm ? editableFieldGateForItem(editForm, 'cleaner_id', 'assign_cleaner') : { enabled: true, disabledReason: '' }
@@ -2138,12 +2235,13 @@ export default function CleaningPage() {
 	              const cleanerGate = editableFieldGateForItem(it, 'cleaner_id', 'assign_cleaner')
 	              const inspectorGate = editableFieldGateForItem(it, 'inspector_id', 'assign_inspector')
 	              const executorGate = editableFieldGateForItem(it, 'assignee_id', 'assign_executor')
-	              const statusGate = editableFieldGateForItem(it, 'status', 'update_status')
-	              const cleanerTargetIds = editableEntityIds(ids, 'cleaner_id', 'assign_cleaner')
-	              const inspectorTargetIds = editableEntityIds(ids, 'inspector_id', 'assign_inspector')
-	              const executorTargetIds = editableEntityIds(ids, 'assignee_id', 'assign_executor')
-	              const editDisabledReason = disabledReasonText(editGate.disabledReason)
-	              const deleteDisabledReason = disabledReasonText(deleteGate.disabledReason)
+		              const statusGate = editableFieldGateForItem(it, 'status', 'update_status')
+		              const cleanerTargetIds = editableEntityIds(ids, 'cleaner_id', 'assign_cleaner')
+		              const inspectorTargetIds = editableEntityIds(ids, 'inspector_id', 'assign_inspector')
+		              const executorTargetIds = editableEntityIds(ids, 'assignee_id', 'assign_executor')
+		              const conflicts = conflictsForItem(it)
+		              const editDisabledReason = disabledReasonText(editGate.disabledReason)
+		              const deleteDisabledReason = disabledReasonText(deleteGate.disabledReason)
 	              const cleanerDisabledReason = disabledReasonText(cleanerGate.disabledReason)
 	              const inspectorDisabledReason = disabledReasonText(inspectorGate.disabledReason)
 	              const executorDisabledReason = disabledReasonText(executorGate.disabledReason)
@@ -2200,9 +2298,10 @@ export default function CleaningPage() {
                       </div>
                     ) : null}
                   </div>
-                  <div className={styles.metaRow}>
-	                    {it.nights != null ? <span className={`${styles.metaChip} ${semanticToneClass('neutral')}`}>{`${it.nights}晚`}</span> : null}
-	                    {syncTag ? <span className={`${styles.metaChip} ${semanticToneClass(syncTag.tone)}`}>{syncTag.label}</span> : null}
+	                  <div className={styles.metaRow}>
+		                    {it.nights != null ? <span className={`${styles.metaChip} ${semanticToneClass('neutral')}`}>{`${it.nights}晚`}</span> : null}
+		                    {conflicts.length ? <span className={`${styles.metaChip} ${semanticToneClass('danger')}`}>冲突</span> : null}
+		                    {syncTag ? <span className={`${styles.metaChip} ${semanticToneClass(syncTag.tone)}`}>{syncTag.label}</span> : null}
 	                    {scopeBadge ? <span className={`${styles.metaChip} ${semanticToneClass(scopeBadge.tone || 'normal')}`}>{scopeBadge.label}</span> : null}
 	                    {displayBadges.map((badge) => (
 	                      <span key={`${it.entity_id}:display:${badge.id}`} className={`${styles.metaChip} ${semanticToneClass(badge.tone)}`}>{badge.label}</span>
@@ -2213,9 +2312,14 @@ export default function CleaningPage() {
                     {checkoutCode !== '-' ? <span className={styles.metaText}><span className={styles.metaKey}>{primaryOrderLabel}</span>{checkoutCode}</span> : null}
                     {isTurnover && checkinCode !== '-' ? <span className={styles.metaText}><span className={styles.metaKey}>入住</span>{checkinCode}</span> : null}
                     <span className={styles.metaText}><span className={styles.metaKey}>{primaryPasswordLabel}</span>{primaryPassword || '-'}</span>
-                    {isTurnover ? <span className={styles.metaText}><span className={styles.metaKey}>入住密码</span>{checkinPwd || '-'}</span> : null}
-                  </div>
-                  <div className={styles.controlsRow}>
+	                    {isTurnover ? <span className={styles.metaText}><span className={styles.metaKey}>入住密码</span>{checkinPwd || '-'}</span> : null}
+	                  </div>
+	                  {conflicts.length ? (
+	                    <div className={styles.conflictPanel}>
+	                      {renderConflictRows(conflicts)}
+	                    </div>
+	                  ) : null}
+	                  <div className={styles.controlsRow}>
                     {it.source === 'cleaning_tasks' ? (
                       <>
                         {isKeyHandover || isCheckinSiteExecution ? (
@@ -2345,17 +2449,32 @@ export default function CleaningPage() {
               <div className={styles.cleaningEditHeroChips}>
 	                <span className={`${styles.cleaningEditChip} ${semanticToneClass(editStatusMeta.tone)}`}>{editStatusMeta.label}</span>
 	                {editScopeBadge ? <span className={`${styles.cleaningEditChip} ${semanticToneClass(editScopeBadge.tone || 'normal')}`}>{editScopeBadge.label}</span> : null}
-	                {editDisplayBadges.map((badge) => (
-	                  <span key={`edit:display:${badge.id}`} className={`${styles.cleaningEditChip} ${semanticToneClass(badge.tone)}`}>{badge.label}</span>
-	                ))}
-                {editForm.checkin_sync_status === 'pending' ? <span className={`${styles.cleaningEditChip} ${semanticToneClass('pending')}`}>待同步</span> : null}
+		                {editDisplayBadges.map((badge) => (
+		                  <span key={`edit:display:${badge.id}`} className={`${styles.cleaningEditChip} ${semanticToneClass(badge.tone)}`}>{badge.label}</span>
+		                ))}
+		                {editConflicts.length ? <span className={`${styles.cleaningEditChip} ${semanticToneClass('danger')}`}>冲突</span> : null}
+	                {editForm.checkin_sync_status === 'pending' ? <span className={`${styles.cleaningEditChip} ${semanticToneClass('pending')}`}>待同步</span> : null}
                 {editForm.checkin_sync_status === 'synced' ? <span className={`${styles.cleaningEditChip} ${semanticToneClass('success')}`}>已同步</span> : null}
                 {!editForm.auto_sync_enabled ? <span className={`${styles.cleaningEditChip} ${semanticToneClass('pending')}`}>自动同步已锁定</span> : null}
                 {editForm.mode === 'stayover' ? <span className={`${styles.cleaningEditChip} ${semanticToneClass('neutral')}`}>仅清洁安排</span> : null}
-              </div>
-            </div>
+	              </div>
+	            </div>
 
-            <div className={styles.cleaningEditSection}>
+	            {editConflicts.length ? (
+	              <div className={`${styles.cleaningEditSection} ${styles.conflictEditSection}`}>
+	                <div className={styles.cleaningEditSectionHead}>
+	                  <div>
+	                    <div className={styles.cleaningEditSectionTitle}>冲突核对</div>
+	                    <div className={styles.cleaningEditSectionHint}>对照手工补位和订单任务，确认后可直接在下方字段修改。</div>
+	                  </div>
+	                </div>
+	                <div className={styles.conflictPanel}>
+	                  {renderConflictRows(editConflicts)}
+	                </div>
+	              </div>
+	            ) : null}
+
+	            <div className={styles.cleaningEditSection}>
               <div className={styles.cleaningEditSectionHead}>
                 <div>
                   <div className={styles.cleaningEditSectionTitle}>基础信息</div>

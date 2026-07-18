@@ -10,6 +10,7 @@ import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWor
 import { defaultInspectionModeForTaskType, deferredProjectionDate, effectiveInspectionMode, normalizeInspectionMode, normalizeInspectionScope } from '../lib/cleaningInspection'
 import { buildWebTaskCapabilityPayload } from '../lib/webTaskCapabilities'
 import { assignedStatusFromAssignees, isCheckinSiteExecutionTask } from '../lib/cleaningAssignmentStatus'
+import { buildCleaningTurnoverDisplay } from '../lib/cleaningTurnoverDisplay'
 
 export const router = Router()
 
@@ -2011,12 +2012,16 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
            t.nights_override,
            t.source,
            t.auto_sync_enabled,
-           t.old_code,
-           t.new_code,
-           t.guest_special_request,
-           t.note,
-           (o.confirmation_code::text) AS order_code,
-           COALESCE(t.nights_override, o.nights) AS nights
+	           t.old_code,
+	           t.new_code,
+	           t.guest_special_request,
+	         t.note,
+	         (o.confirmation_code::text) AS order_code,
+	         o.checkin::text AS order_checkin,
+	         o.checkout::text AS order_checkout,
+	         o.note::text AS order_note,
+	         o.keys_required AS order_keys_required,
+	         COALESCE(t.nights_override, o.nights) AS nights
          FROM cleaning_tasks t
          LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
          LEFT JOIN (
@@ -2035,9 +2040,43 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
          ORDER BY COALESCE(task_date, date) ASC, COALESCE(p_id.code, p_code.code) NULLS LAST, t.id`,
         [from, to, includeDeferredInspection]
       )
-      for (const row of (r?.rows || [])) {
+      const rawRows = r?.rows || []
+      const activeTaskIds = Array.from(new Set(rawRows.map((row: any) => String(row?.id || '').trim()).filter(Boolean)))
+      const supersededByReplacementId = new Map<string, any[]>()
+      if (activeTaskIds.length) {
+        const sr = await pgPool.query(
+          `SELECT
+             id::text AS id,
+             superseded_by::text AS superseded_by,
+             property_id::text AS property_id,
+             task_type,
+             COALESCE(task_date, date)::text AS task_date,
+             checkout_time,
+             checkin_time,
+             keys_required,
+             nights_override,
+             guest_special_request,
+             old_code,
+             new_code
+           FROM cleaning_tasks
+           WHERE execution_state = 'superseded'
+             AND superseded_by::text = ANY($1::text[])
+           ORDER BY superseded_at DESC NULLS LAST, updated_at DESC NULLS LAST, id`,
+          [activeTaskIds],
+        )
+        for (const row of sr?.rows || []) {
+          const replacementId = String(row?.superseded_by || '').trim()
+          if (!replacementId) continue
+          const list = supersededByReplacementId.get(replacementId) || []
+          list.push(row)
+          supersededByReplacementId.set(replacementId, list)
+        }
+      }
+      for (const row of rawRows) {
         const d = String(row.task_date || '').slice(0, 10)
         const rawType = row.task_type ? String(row.task_type) : 'cleaning_task'
+        const sourceId = String(row.id)
+        const supersededSources = supersededByReplacementId.get(sourceId) || []
         const inspectionMode = effectiveInspectionMode(row)
         const inspectionDueDate = dayOnly(row.inspection_due_date)
         const label =
@@ -2045,6 +2084,41 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
           rawType === 'checkin_clean' ? '入住' :
           rawType === 'stayover_clean' ? '入住中清洁' :
           rawType
+        const turnoverDisplay = buildCleaningTurnoverDisplay({
+          propertyId: row.property_id,
+          taskDate: d,
+          checkoutTask: rawType === 'checkout_clean' ? {
+            ...row,
+            taskId: sourceId,
+            taskType: rawType,
+            orderId: row.order_id,
+            orderNote: row.order_note,
+            orderKeysRequired: row.order_keys_required,
+            orderCheckin: row.order_checkin,
+            orderCheckout: row.order_checkout,
+          } : null,
+          checkinTask: rawType === 'checkin_clean' ? {
+            ...row,
+            taskId: sourceId,
+            taskType: rawType,
+            orderId: row.order_id,
+            orderNote: row.order_note,
+            orderKeysRequired: row.order_keys_required,
+            orderCheckin: row.order_checkin,
+            orderCheckout: row.order_checkout,
+          } : null,
+          activeRows: [{
+            ...row,
+            taskId: sourceId,
+            taskType: rawType,
+            orderId: row.order_id,
+            orderNote: row.order_note,
+            orderKeysRequired: row.order_keys_required,
+            orderCheckin: row.order_checkin,
+            orderCheckout: row.order_checkout,
+          }],
+          supersededRows: supersededSources,
+        })
         const baseItem = {
           source: 'cleaning_tasks' as const,
           order_id: row.order_id ? String(row.order_id) : null,
@@ -2069,6 +2143,8 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
           nights: row.nights != null ? Number(row.nights) : null,
           summary_checkout_time: String(row.checkout_time || '').trim() || DEFAULT_SUMMARY_CHECKOUT_TIME,
           summary_checkin_time: String(row.checkin_time || '').trim() || DEFAULT_SUMMARY_CHECKIN_TIME,
+          display_conflicts: turnoverDisplay.conflicts,
+          turnover_display: turnoverDisplay,
           inspection_mode: inspectionMode,
           inspection_scope: normalizeInspectionScope(row.inspection_scope),
           inspection_due_date: inspectionDueDate,

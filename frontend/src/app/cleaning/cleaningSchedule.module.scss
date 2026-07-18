@@ -725,6 +725,7 @@
   padding: 8px 12px;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 14px;
   color: #334155;
   font-size: 13px;
@@ -752,6 +753,47 @@
 .metaKey {
   color: #64748b;
   font-weight: 900;
+}
+
+.conflictPanel {
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--semantic-danger-bd);
+  border-radius: 10px;
+  background: var(--semantic-danger-bg);
+}
+
+.conflictRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: #7f1d1d;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.conflictField {
+  color: var(--semantic-danger-fg);
+  font-weight: 1000;
+}
+
+.conflictValue {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: #ffffff;
+  border: 1px solid rgba(248, 113, 113, 0.28);
+  color: #334155;
+}
+
+.conflictSuggestion {
+  color: var(--semantic-danger-fg);
+  font-weight: 1000;
 }
 
 .controlsRow {
@@ -2476,6 +2518,11 @@
   padding: 18px;
   display: grid;
   gap: 14px;
+}
+
+.conflictEditSection {
+  border-color: var(--semantic-danger-bd);
+  background: #fffafa;
 }
 
 .cleaningEditSectionHead {
