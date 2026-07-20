@@ -1,9 +1,141 @@
-Warning: truncated output (original token count: 205546)
-Total output lines: 9247
-
 # Change Release Ledger
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
+
+## CRL-20260718-002 — 根仓库统一检查命令
+
+- **Status:** ready
+- **Updated:** 2026-07-18 22:16 AEST
+- **Request:** 用户要求先补统一检查命令。
+- **Outcome:** 根仓库 `package.json` 新增统一检查入口，后续本地自检、CI 和独立 Codex 审查线程可以复用同一组命令。
+
+### Implementation
+
+- Previous behavior:
+  - 根仓库只提供 `dev` 相关脚本；backend、frontend、mobile 的 build/lint/test/typecheck 分散在各自 package 里。
+  - 发布前或审查时需要手动记住每个模块该跑哪些命令，容易漏跑 ledger audit 或移动端 typecheck/lint/test。
+- New behavior:
+  - 新增 `check:ledger`，统一跑 release ledger audit。
+  - 新增 `check:backend`，统一跑 backend TypeScript build 和现有关键 targeted tests。
+  - 新增 `check:frontend`，统一跑 frontend lint、Vitest coverage test 和 Next build。
+  - 新增 `check:mobile`，在存在 `mz-cleaning-app-frontend/package.json` 时跑 Expo mobile typecheck、lint 和 Jest；纯 root clone 缺少 nested mobile repo 时明确 skip。
+  - 新增 `check`，按 ledger、backend、frontend、mobile 顺序串联完整自检。
+- Key decisions:
+  - 只复用现有 npm scripts 和 POSIX shell 条件判断，不新增依赖、不新增脚本文件、不改变各模块现有测试语义。
+  - 暂不把 GitHub Actions 接进来；本单元只建立本地统一入口。
+
+### Files / Areas
+
+- `package.json` — modified: 新增 root-level `check:*` 和 `check` scripts。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: root npm scripts only.
+- Dependencies: none.
+- Related units: builds on `CRL-20260718-001` 的自测/优化 guardrail；当前 worktree 仍包含多个既有未提交 release units。
+
+### Validation
+
+- `npm run check:ledger` — passed in fresh clone: `Changed files: 16`, `Recorded changed files: 16`, `Coverage: PASS`.
+- `npm run check:backend` — passed in fresh clone: backend `tsc -p .` build plus `test:cleaning-rules`, `test:cleaning-inspection-merge`, `test:app-notification-policies`, `test:guest-luggage-rules`, `test:orders-overlap`, `test:auto-expense-source-summary`, and `test:company-revenue-report`.
+- `npm run check:frontend` — passed in fresh clone: `next lint`, 39 Vitest files / 170 tests with coverage, and `next build` for 95 routes. Existing ESLint, Browserslist, and Recharts warnings remain.
+- `npm run check:mobile` — passed/skipped in fresh clone: `mz-cleaning-app-frontend/package.json` was absent, so the script printed the skip message and exited 0.
+- `npm run check` — passed in fresh clone: full root sequence completed ledger, backend, frontend, and conditional mobile checks.
+
+### Risks / Release Notes
+
+- Risk: `check:frontend` uses the existing `frontend` coverage test and build scripts, so any pre-existing coverage/build baseline issue will surface through the unified command.
+- Risk: `check:backend` intentionally uses the package's existing targeted tests only; it is not a full exhaustive backend integration suite.
+- Rollback: remove the added `check:*` and `check` entries from root `package.json`, then remove this ledger unit.
+- Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted in root repo; coexists with unrelated pre-existing backend, frontend, mobile, AGENTS, skill, and ledger changes from other release units.
+
+## CRL-20260718-001 — 自测优化防跑偏规范与项目 Skill
+
+- **Status:** ready
+- **Updated:** 2026-07-18 21:39 AEST
+- **Request:** 用户要求把“自测/优化防跑偏”完整版添加到相应位置，包括根目录 agent 规则和项目 skill。
+- **Outcome:** 根目录 `AGENTS.md` 增加自测/优化硬边界；新增 `.codex/skills/mz-app-self-test-guardrails/SKILL.md`，用于在测试、巡检、优化、自动找问题和修复时强制执行范围、只读审计、证据报告、修复闸门和 MZ 技术栈验证流程。
+
+### Implementation
+
+- Previous behavior:
+  - `AGENTS.md` 只包含 release ledger 通用要求，没有把自测/优化类任务的范围锁定、复杂业务级联审计、停止条件和证据格式固化到仓库指令。
+  - 项目 skills 里没有专门用于“自己测试 app / 网页端 / 找问题 / 修复优化”的防跑偏流程。
+- New behavior:
+  - `AGENTS.md` 明确自测/优化类任务默认先计划和只读发现，要求报告范围、证据、P0/P1/P2 等级，并在生产写入、外部同步、权限核心、数据库结构、依赖、跨范围修改等情况停下来询问。
+  - 新增 `mz-app-self-test-guardrails` skill，按 Phase 1-6 规范自测任务：Scope And Plan、Read-Only Testing、Issue Report、Repair Gate、MZ Validation、Release Ledger，并包含 Node/Postgres、Next.js admin、Expo cleaning app、跨层任务流的项目验证清单。
+- Key decisions:
+  - 只创建用户要求的核心 skill 文件，不额外生成 `agents/openai.yaml`，避免超出“两份文件”范围。
+  - 验证命令采用当前仓库实际 `npm --prefix` / package-lock 结构，不写死 `pnpm --filter`；Supabase/Postgres 相关命令保持条件式，避免发明仓库不存在的 Supabase workflow。
+
+### Files / Areas
+
+- `AGENTS.md` — modified: 新增 Self-Test And Optimization Guardrails 硬边界。
+- `.codex/skills/mz-app-self-test-guardrails/SKILL.md` — added: 新增自测/优化防跑偏项目 skill。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: none. The worktree has many pre-existing unrelated modified files from other units; this unit only owns the files listed above.
+
+### Validation
+
+- `git diff --check -- AGENTS.md .codex/skills/mz-app-self-test-guardrails/SKILL.md` — passed.
+- `python3 /Users/zhishi/.codex/skills/.system/skill-creator/scripts/quick_validate.py .codex/skills/mz-app-self-test-guardrails` — passed: `Skill is valid!`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/audit_change_release_ledger.py` — passed: Changed files 21, recorded changed files 21, Coverage PASS.
+- App build/typecheck/lint/test — not run: docs/agent-instruction/skill-only change, no runtime app code changed.
+
+### Risks / Release Notes
+
+- Risk: future agents must load this skill only when triggered by self-test/audit/optimization/fix-discovered-issues requests; ordinary narrow development tasks should continue using the existing project skills and ledger rules.
+- Rollback: remove the Self-Test And Optimization Guardrails section from `AGENTS.md`, delete `.codex/skills/mz-app-self-test-guardrails/SKILL.md`, and remove this ledger entry.
+- Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted in root repo; coexists with unrelated pre-existing backend, frontend, inventory, finance, mzapp, and task-center changes from other release units.
+
+## CRL-20260718-003 — 新 clone 台账 UTF-8 修复
+
+- **Status:** ready
+- **Updated:** 2026-07-18 23:22 AEST
+- **Request:** 用户要求按推荐流程 clone 当前 Dev 后保留指定 CRL。
+- **Outcome:** 新 clone 的 `docs/change-release-ledger.md` 从远端带有非 UTF-8 二进制尾部，导致 `scripts/audit_change_release_ledger.py` 无法读取；已截除损坏尾部并保留可读 CRL 条目，使台账审计可以继续运行。
+
+### Implementation
+
+- Previous behavior: `docs/change-release-ledger.md` 含 NUL/非法 UTF-8 字节，ledger audit 在读取文件时直接 `UnicodeDecodeError`。
+- New behavior: 台账文件恢复为合法 UTF-8 markdown；当前迁移涉及的改动可以被审计脚本读取和匹配。
+- Key decisions: 只截除第一个 UTF-8 错误前上一条 CRL 标题之后的损坏尾部；不改业务代码、不记录任何敏感值。
+
+### Files / Areas
+
+- `docs/change-release-ledger.md` — modified: 新 clone 台账编码修复，并补入 `CRL-20260718-001` / `CRL-20260718-002`。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: supports preserving `CRL-20260718-001`, `CRL-20260718-002`, `CRL-20260703-005`, and `CRL-20260703-006` in the fresh Dev clone.
+
+### Validation
+
+- `python3 -c "from pathlib import Path; Path(\"docs/change-release-ledger.md\").read_text(encoding=\"utf-8\"); print(\"utf8 ok\")"` — passed: ledger reads as UTF-8.
+- `python3 scripts/audit_change_release_ledger.py` — passed: `Changed files: 16`, `Recorded changed files: 16`, `Coverage: PASS`.
+
+### Risks / Release Notes
+
+- Risk: the corrupt tail already existed in the cloned `origin/Dev` ledger; entries after the damaged point were unreadable and could not be safely reconstructed from that file. Current migrated files are still covered by existing or newly inserted CRL entries.
+- Rollback: restore `docs/change-release-ledger.md` from `origin/Dev`, but ledger audit will fail again until the encoding issue is fixed another way.
+- Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: uncommitted in fresh Dev clone.
 
 ## CRL-20260713-001 — CMS 菜单收拢与线下密码管理
 
@@ -3165,6 +3297,13 @@ Shared cross-thread record of repository changes and selectable release units. D
 - `npm --prefix frontend run build` — passed; build reported existing Browserslist staleness, existing lint warnings, and existing Recharts zero-size warnings during static generation.
 - `python3 scripts/audit_change_release_ledger.py` — failed: current worktree still has pre-existing uncovered `backend/scripts/tests/phase5_e2e_acceptance.ts`; this unit's files are recorded in `CRL-20260703-006`.
 
+### Update — 2026-07-18 23:43 AEST
+
+- 已按用户要求移植到最新 `origin/Dev` fresh clone；日用品更换页面和权限导航改动 clean apply。
+- `npm run check:frontend` — passed: lint/test/build completed; existing repository warnings remain.
+- `npm run check` — passed: full root sequence completed; mobile was skipped because the nested mobile repo is absent in this fresh root clone.
+- `python3 scripts/audit_change_release_ledger.py` — passed: `Changed files: 16`, `Recorded changed files: 16`, `Coverage: PASS`.
+
 ### Risks / Release Notes
 
 - RBAC roles must include `inventory_daily_replacements.delete` before non-admin users see the delete button.
@@ -3204,6 +3343,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - `backend/src/lib/autoExpenseSourceSummary.ts` — modified: 增加日用品 statement 摘要生成。
 - `backend/src/modules/inventory.ts` — modified: 日用品更换创建/更新后同步自动费用。
 - `backend/src/modules/finance.ts` — modified: auto-expenses backfill/inspect 支持 `daily_necessities`，并允许自动费用 category 传入 `consumables`。
+- `backend/dist/modules/finance.js` — generated: 后端 build 生成的 finance 输出，承载日用品自动费用 backfill/inspect 支持。
 - `backend/src/lib/monthlyStatementExpenseReconcile.ts` — modified: statement 月结前自动对账纳入日用品更换。
 - `backend/src/modules/crud.ts` — modified: `daily_necessities` 自动房源支出只读保护。
 - `backend/scripts/tests/test_auto_expense_source_summary.ts` — modified: 覆盖日用品摘要。
@@ -3226,6 +3366,15 @@ Shared cross-thread record of repository changes and selectable release units. D
 - `git diff --check -- backend/src/lib/autoExpenseSourceSummary.ts backend/src/lib/dailyNecessitiesAutoExpense.ts backend/src/modules/inventory.ts backend/src/modules/finance.ts backend/src/lib/monthlyStatementExpenseReconcile.ts backend/src/modules/crud.ts backend/scripts/tests/test_auto_expense_source_summary.ts backend/scripts/tests/test_daily_necessities_auto_expense.ts` — passed.
 - `python3 scripts/audit_change_release_ledger.py` — failed: current worktree has pre-existing uncovered `backend/scripts/tests/phase5_e2e_acceptance.ts`; this unit's files are recorded in `CRL-20260703-005`.
 - `npm --prefix backend run build` — not run: backend build writes `dist`; `backend/dist/modules/cleaning.js` already had unrelated pre-existing uncommitted changes, so noEmit typecheck was used to avoid overwriting shared generated output.
+
+### Update — 2026-07-18 23:43 AEST
+
+- 已按用户要求移植到最新 `origin/Dev` fresh clone；源代码与新 Dev 三方 patch clean apply。
+- `backend/dist/modules/finance.js` 由 fresh clone 后端 build 重新生成，并补入本单元 Files / Areas 覆盖。
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_daily_necessities_auto_expense.ts` in `backend` — passed: `test_daily_necessities_auto_expense: ok`.
+- `npm run check:backend` — passed: backend build and root selected backend tests completed.
+- `npm run check` — passed: full root sequence completed; frontend warnings and mobile skip noted in `CRL-20260718-002`.
+- `python3 scripts/audit_change_release_ledger.py` — passed: `Changed files: 16`, `Recorded changed files: 16`, `Coverage: PASS`.
 
 ### Risks / Release Notes
 
@@ -4308,7 +4457,6 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
 - Rollback: remove `canAutoReassignInspectorOnDrop` and the source-row inspector clearing block from `handleTaskDrop`.
 - Git state: pushed to root `Dev` in commit `fafd0f1`.
-
 ## CRL-20260630-007 — 入住挂钥匙任务改为执行人
 
 - **Status:** pushed

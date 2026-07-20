@@ -43,6 +43,7 @@ import { generateStatementPhotoPackPdf, type StatementPhotoPackSection } from '.
 import { collectMonthlyInvoiceAttachments } from '../lib/monthlyStatementInvoiceAttachments'
 import { deepCleaningSourceSummary, maintenanceSourceSummary } from '../lib/autoExpenseSourceSummary'
 import { buildCompanyRevenueReport } from '../lib/companyRevenueReport'
+import { buildDailyNecessityAutoExpenseDecision } from '../lib/dailyNecessitiesAutoExpense'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
@@ -639,18 +640,19 @@ async function ensureAutoExpenseSchema(client: any) {
   await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses_fixed_month ON company_expenses(fixed_expense_id, month_key) WHERE fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> '';")
 }
 
-async function autoUpsertPropertyExpenseByRef(client: any, input: { propertyId: string, occurredAt: string, amount: number, categoryDetail: string, generatedFrom: string, refType: string, refId: string, sourceTitle?: string, sourceSummary?: string }) {
+async function autoUpsertPropertyExpenseByRef(client: any, input: { propertyId: string, occurredAt: string, amount: number, categoryDetail: string, generatedFrom: string, refType: string, refId: string, sourceTitle?: string, sourceSummary?: string, category?: string }) {
   const { v4: uuid } = require('uuid')
   const mk = autoMonthKey(input.occurredAt)
+  const category = input.category || 'other'
   try {
     await client.query(
       `INSERT INTO property_expenses (id, property_id, occurred_at, amount, currency, category, category_detail, note, pay_method, generated_from, ref_type, ref_id, month_key, due_date, is_auto, source_title, source_summary)
-       VALUES ($1,$2,$3,$4,'AUD','other',$5,$6,'landlord_pay',$7,$8,$9,$10,$3,true,$11,$12)
+       VALUES ($1,$2,$3,$4,'AUD',$5,$6,$7,'landlord_pay',$8,$9,$10,$11,$3,true,$12,$13)
        ON CONFLICT (ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL DO UPDATE
        SET property_id=EXCLUDED.property_id, occurred_at=EXCLUDED.occurred_at, amount=EXCLUDED.amount, currency=EXCLUDED.currency, category=EXCLUDED.category, category_detail=EXCLUDED.category_detail,
            note=EXCLUDED.note, pay_method=EXCLUDED.pay_method, generated_from=EXCLUDED.generated_from, month_key=EXCLUDED.month_key, due_date=EXCLUDED.due_date, is_auto=EXCLUDED.is_auto,
-           source_title=EXCLUDED.source_title, source_summary=EXCLUDED.source_summary`,
-      [uuid(), input.propertyId, input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]
+           status=NULL, source_title=EXCLUDED.source_title, source_summary=EXCLUDED.source_summary`,
+      [uuid(), input.propertyId, input.occurredAt, input.amount, category, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]
     )
   } catch (e: any) {
     const msg = String(e?.message || '')
@@ -660,17 +662,17 @@ async function autoUpsertPropertyExpenseByRef(client: any, input: { propertyId: 
       if (existingId) {
         await client.query(
           `UPDATE property_expenses
-           SET property_id=$1, occurred_at=$2, amount=$3, currency='AUD', category='other', category_detail=$4, note=$5,
-               pay_method='landlord_pay', generated_from=$6, month_key=$7, due_date=$2, is_auto=true, source_title=$9, source_summary=$10
-           WHERE id=$8`,
-          [input.propertyId, input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, mk, existingId, input.sourceTitle || null, input.sourceSummary || null]
+           SET property_id=$1, occurred_at=$2, amount=$3, currency='AUD', category=$4, category_detail=$5, note=$6,
+               pay_method='landlord_pay', generated_from=$7, month_key=$8, due_date=$2, is_auto=true, status=NULL, source_title=$10, source_summary=$11
+           WHERE id=$9`,
+          [input.propertyId, input.occurredAt, input.amount, category, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, mk, existingId, input.sourceTitle || null, input.sourceSummary || null]
         )
         return
       }
       await client.query(
         `INSERT INTO property_expenses (id, property_id, occurred_at, amount, currency, category, category_detail, note, pay_method, generated_from, ref_type, ref_id, month_key, due_date, is_auto, source_title, source_summary)
-         VALUES ($1,$2,$3,$4,'AUD','other',$5,$6,'landlord_pay',$7,$8,$9,$10,$3,true,$11,$12)`,
-        [uuid(), input.propertyId, input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]
+         VALUES ($1,$2,$3,$4,'AUD',$5,$6,$7,'landlord_pay',$8,$9,$10,$11,$3,true,$12,$13)`,
+        [uuid(), input.propertyId, input.occurredAt, input.amount, category, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]
       )
       return
     }
@@ -678,18 +680,19 @@ async function autoUpsertPropertyExpenseByRef(client: any, input: { propertyId: 
   }
 }
 
-async function autoUpsertCompanyExpenseByRef(client: any, input: { occurredAt: string, amount: number, categoryDetail: string, generatedFrom: string, refType: string, refId: string, sourceTitle?: string, sourceSummary?: string }) {
+async function autoUpsertCompanyExpenseByRef(client: any, input: { occurredAt: string, amount: number, categoryDetail: string, generatedFrom: string, refType: string, refId: string, sourceTitle?: string, sourceSummary?: string, category?: string }) {
   const { v4: uuid } = require('uuid')
   const mk = autoMonthKey(input.occurredAt)
+  const category = input.category || 'other'
   try {
     await client.query(
       `INSERT INTO company_expenses (id, occurred_at, amount, currency, category, category_detail, note, generated_from, ref_type, ref_id, month_key, due_date, is_auto, source_title, source_summary)
-       VALUES ($1,$2,$3,'AUD','other',$4,$5,$6,$7,$8,$9,$2,true,$10,$11)
+       VALUES ($1,$2,$3,'AUD',$4,$5,$6,$7,$8,$9,$10,$2,true,$11,$12)
        ON CONFLICT (ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL DO UPDATE
        SET occurred_at=EXCLUDED.occurred_at, amount=EXCLUDED.amount, currency=EXCLUDED.currency, category=EXCLUDED.category, category_detail=EXCLUDED.category_detail,
-           note=EXCLUDED.note, generated_from=EXCLUDED.generated_from, month_key=EXCLUDED.month_key, due_date=EXCLUDED.due_date, is_auto=EXCLUDED.is_auto,
+           note=EXCLUDED.note, generated_from=EXCLUDED.generated_from, month_key=EXCLUDED.month_key, due_date=EXCLUDED.due_date, is_auto=EXCLUDED.is_auto, status=NULL,
            source_title=EXCLUDED.source_title, source_summary=EXCLUDED.source_summary`,
-      [uuid(), input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]
+      [uuid(), input.occurredAt, input.amount, category, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]
     )
   } catch (e: any) {
     const msg = String(e?.message || '')
@@ -699,16 +702,16 @@ async function autoUpsertCompanyExpenseByRef(client: any, input: { occurredAt: s
       if (existingId) {
         await client.query(
           `UPDATE company_expenses
-           SET occurred_at=$1, amount=$2, currency='AUD', category='other', category_detail=$3, note=$4, generated_from=$5, month_key=$6, due_date=$1, is_auto=true, source_title=$8, source_summary=$9
-           WHERE id=$7`,
-          [input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, mk, existingId, input.sourceTitle || null, input.sourceSummary || null]
+           SET occurred_at=$1, amount=$2, currency='AUD', category=$3, category_detail=$4, note=$5, generated_from=$6, month_key=$7, due_date=$1, is_auto=true, status=NULL, source_title=$9, source_summary=$10
+           WHERE id=$8`,
+          [input.occurredAt, input.amount, category, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, mk, existingId, input.sourceTitle || null, input.sourceSummary || null]
         )
         return
       }
       await client.query(
         `INSERT INTO company_expenses (id, occurred_at, amount, currency, category, category_detail, note, generated_from, ref_type, ref_id, month_key, due_date, is_auto, source_title, source_summary)
-         VALUES ($1,$2,$3,'AUD','other',$4,$5,$6,$7,$8,$9,$2,true,$10,$11)`,
-        [uuid(), input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]
+         VALUES ($1,$2,$3,'AUD',$4,$5,$6,$7,$8,$9,$10,$2,true,$11,$12)`,
+        [uuid(), input.occurredAt, input.amount, category, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]
       )
       return
     }
@@ -721,7 +724,7 @@ const autoExpensesBackfillSchema = z.object({
   to: z.string().optional(),
   dry_run: z.boolean().optional().default(true),
   limit: z.coerce.number().optional().default(5000),
-  type: z.enum(['maintenance','deep_cleaning','all']).optional().default('all'),
+  type: z.enum(['maintenance','deep_cleaning','daily_necessities','all']).optional().default('all'),
   property_id: z.string().optional(),
 })
 
@@ -729,9 +732,56 @@ const autoExpensesInspectSchema = z.object({
   from: z.string().optional(),
   to: z.string().optional(),
   limit: z.coerce.number().optional().default(500),
-  type: z.enum(['maintenance','deep_cleaning','all']).optional().default('all'),
+  type: z.enum(['maintenance','deep_cleaning','daily_necessities','all']).optional().default('all'),
   property_id: z.string().optional(),
 })
+
+function deriveAutoExpenseFields(kind: 'maintenance' | 'deep_cleaning' | 'daily_necessities', row: any) {
+  if (kind === 'daily_necessities') {
+    const decision = buildDailyNecessityAutoExpenseDecision(row)
+    return {
+      refType: decision.refType,
+      refId: decision.refId,
+      status: decision.status,
+      payMethod: decision.payMethod,
+      occurredAt: decision.occurredAt,
+      amount: decision.amount,
+      propertyId: decision.propertyId,
+      category: decision.category,
+      categoryDetail: decision.categoryDetail,
+      generatedFrom: decision.generatedFrom,
+      sourceTitle: decision.sourceTitle,
+      sourceSummary: decision.sourceSummary,
+    }
+  }
+  const refId = String(row?.id || '')
+  const categoryDetail = kind === 'maintenance' ? '维修' : '深度清洁'
+  const amount = kind === 'maintenance'
+    ? autoCalcMaintenanceTotal(row)
+    : (() => {
+        const raw = row?.total_cost !== undefined && row?.total_cost !== null ? row.total_cost : autoComputeDeepCleaningTotalCost(row?.labor_cost, row?.consumables)
+        return autoToNum(raw)
+      })()
+  const sourceTitle = (() => {
+    if (kind !== 'deep_cleaning') return categoryDetail
+    const workNo = String(row?.work_no || refId)
+    return workNo ? `深度清洁 ${workNo}` : categoryDetail
+  })()
+  return {
+    refType: kind,
+    refId,
+    status: autoNormStatus(row?.status),
+    payMethod: autoNormPayMethod(row?.pay_method),
+    occurredAt: autoToISODateOnly(row?.completed_at) || autoToISODateOnly(row?.occurred_at),
+    amount,
+    propertyId: String(row?.property_id || ''),
+    category: 'other',
+    categoryDetail,
+    generatedFrom: refId,
+    sourceTitle,
+    sourceSummary: kind === 'maintenance' ? maintenanceSourceSummary(row) : deepCleaningSourceSummary(row),
+  }
+}
 
 async function collectAutoExpenseSourceItems(executor: any, input: { from: string, to: string, limit: number, type: string, propertyIdFilter?: string }) {
   const items: any[] = []
@@ -760,6 +810,45 @@ async function collectAutoExpenseSourceItems(executor: any, input: { from: strin
     )
     for (const r of (dc.rows || [])) items.push({ kind: 'deep_cleaning', row: r })
   }
+  if (input.type === 'all' || input.type === 'daily_necessities') {
+    const available = await executor.query(
+      `SELECT to_regclass('public.property_daily_necessities') IS NOT NULL AS has_daily,
+              to_regclass('public.daily_items_price_list') IS NOT NULL AS has_daily_prices`,
+    )
+    const hasDaily = !!available?.rows?.[0]?.has_daily
+    const hasDailyPrices = !!available?.rows?.[0]?.has_daily_prices
+    if (hasDaily) {
+      const daily = await executor.query(
+        hasDailyPrices
+          ? `SELECT n.id, n.property_id, n.status, n.pay_method, n.item_id, n.item_name, n.quantity, n.note,
+                    n.invoice_description_en, n.replacement_at, n.submitted_at, n.created_at,
+                    COALESCE(p_id.unit_price, p_name.unit_price, 0) AS unit_price
+               FROM property_daily_necessities n
+               LEFT JOIN daily_items_price_list p_id ON p_id.id = n.item_id
+               LEFT JOIN LATERAL (
+                 SELECT unit_price
+                   FROM daily_items_price_list p
+                  WHERE lower(p.item_name) = lower(n.item_name)
+                  ORDER BY is_active DESC NULLS LAST, updated_at DESC NULLS LAST
+                  LIMIT 1
+               ) p_name ON true
+              WHERE coalesce(n.replacement_at::date, n.submitted_at::date, n.created_at::date) BETWEEN $1::date AND $2::date
+                AND ($4::text IS NULL OR $4::text = '' OR n.property_id = $4::text)
+              ORDER BY coalesce(n.replacement_at, n.submitted_at, n.created_at) ASC
+              LIMIT $3`
+          : `SELECT n.id, n.property_id, n.status, n.pay_method, n.item_id, n.item_name, n.quantity, n.note,
+                    n.invoice_description_en, n.replacement_at, n.submitted_at, n.created_at,
+                    0 AS unit_price
+               FROM property_daily_necessities n
+              WHERE coalesce(n.replacement_at::date, n.submitted_at::date, n.created_at::date) BETWEEN $1::date AND $2::date
+                AND ($4::text IS NULL OR $4::text = '' OR n.property_id = $4::text)
+              ORDER BY coalesce(n.replacement_at, n.submitted_at, n.created_at) ASC
+              LIMIT $3`,
+        [input.from, input.to, input.limit, propertyIdFilter],
+      )
+      for (const r of (daily.rows || [])) items.push({ kind: 'daily_necessities', row: r })
+    }
+  }
   return items
 }
 
@@ -780,20 +869,16 @@ router.post('/auto-expenses/backfill', requireAnyPerm(['finance.tx.write','prope
     if (dryRun) {
       let would_property = 0, would_company = 0, would_void = 0, skipped_manual_override = 0, would_cleaned_opposite = 0
       for (const it of items) {
-        const refType = it.kind === 'maintenance' ? 'maintenance' : 'deep_cleaning'
         const r = it.row || {}
-        const refId = String(r?.id || '')
+        const fields = deriveAutoExpenseFields(it.kind, r)
+        const refType = fields.refType
+        const refId = fields.refId
         if (!refId) continue
         if (await autoHasManualOverrideForRef(pgPool, refType, refId)) { skipped_manual_override++; continue }
-        const st = autoNormStatus(r?.status)
-        const pm = autoNormPayMethod(r?.pay_method)
-        const occurredAt = autoToISODateOnly(r?.completed_at) || autoToISODateOnly(r?.occurred_at)
-        const amount = it.kind === 'maintenance'
-          ? autoCalcMaintenanceTotal(r)
-          : (() => {
-              const raw = r?.total_cost !== undefined && r?.total_cost !== null ? r.total_cost : autoComputeDeepCleaningTotalCost(r?.labor_cost, r?.consumables)
-              return autoToNum(raw)
-            })()
+        const st = fields.status
+        const pm = fields.payMethod
+        const occurredAt = fields.occurredAt
+        const amount = fields.amount
         if (st !== 'completed' || !(amount > 0) || !occurredAt) { would_void++; continue }
         if (pm === 'landlord_pay') { would_property++; would_cleaned_opposite++; continue }
         if (pm === 'company_pay') { would_company++; would_cleaned_opposite++; continue }
@@ -807,30 +892,23 @@ router.post('/auto-expenses/backfill', requireAnyPerm(['finance.tx.write','prope
       let upserted_property = 0, upserted_company = 0, voided = 0, cleaned_opposite = 0, skipped_manual_override = 0
 
       for (const it of items) {
-        const refType = it.kind === 'maintenance' ? 'maintenance' : 'deep_cleaning'
         const r = it.row || {}
-        const refId = String(r?.id || '')
+        const fields = deriveAutoExpenseFields(it.kind, r)
+        const refType = fields.refType
+        const refId = fields.refId
         if (!refId) continue
         if (await autoHasManualOverrideForRef(client, refType, refId)) { skipped_manual_override++; continue }
 
-        const st = autoNormStatus(r?.status)
-        const pm = autoNormPayMethod(r?.pay_method)
-        const occurredAt = autoToISODateOnly(r?.completed_at) || autoToISODateOnly(r?.occurred_at)
-        const amount = it.kind === 'maintenance'
-          ? autoCalcMaintenanceTotal(r)
-          : (() => {
-              const raw = r?.total_cost !== undefined && r?.total_cost !== null ? r.total_cost : autoComputeDeepCleaningTotalCost(r?.labor_cost, r?.consumables)
-              return autoToNum(raw)
-            })()
-        const propertyId = String(r?.property_id || '')
-        const categoryDetail = it.kind === 'maintenance' ? '维修' : '深度清洁'
-        const generatedFrom = refId
-        const sourceTitle = (() => {
-          if (it.kind !== 'deep_cleaning') return categoryDetail
-          const workNo = String(r?.work_no || refId)
-          return workNo ? `深度清洁 ${workNo}` : categoryDetail
-        })()
-        const sourceSummary = it.kind === 'maintenance' ? maintenanceSourceSummary(r) : deepCleaningSourceSummary(r)
+        const st = fields.status
+        const pm = fields.payMethod
+        const occurredAt = fields.occurredAt
+        const amount = fields.amount
+        const propertyId = fields.propertyId
+        const category = fields.category
+        const categoryDetail = fields.categoryDetail
+        const generatedFrom = fields.generatedFrom
+        const sourceTitle = fields.sourceTitle
+        const sourceSummary = fields.sourceSummary
 
         const voidBothAuto = async () => {
           const v1 = await client.query(
@@ -859,7 +937,7 @@ router.post('/auto-expenses/backfill', requireAnyPerm(['finance.tx.write','prope
             [refType, refId]
           )
           cleaned_opposite += Number(v2.rowCount || 0)
-          await autoUpsertPropertyExpenseByRef(client, { propertyId, occurredAt, amount, categoryDetail, generatedFrom, refType, refId, sourceTitle, sourceSummary })
+          await autoUpsertPropertyExpenseByRef(client, { propertyId, occurredAt, amount, category, categoryDetail, generatedFrom, refType, refId, sourceTitle, sourceSummary })
           upserted_property++
           continue
         }
@@ -871,7 +949,7 @@ router.post('/auto-expenses/backfill', requireAnyPerm(['finance.tx.write','prope
             [refType, refId]
           )
           cleaned_opposite += Number(v1.rowCount || 0)
-          await autoUpsertCompanyExpenseByRef(client, { occurredAt, amount, categoryDetail, generatedFrom, refType, refId, sourceTitle, sourceSummary })
+          await autoUpsertCompanyExpenseByRef(client, { occurredAt, amount, category, categoryDetail, generatedFrom, refType, refId, sourceTitle, sourceSummary })
           upserted_company++
           continue
         }
@@ -909,19 +987,15 @@ router.post('/auto-expenses/inspect', requireAnyPerm(['finance.tx.write','proper
       skipped_manual_override: 0,
     }
     for (const it of items) {
-      const refType = it.kind === 'maintenance' ? 'maintenance' : 'deep_cleaning'
       const r = it.row || {}
-      const refId = String(r?.id || '')
+      const fields = deriveAutoExpenseFields(it.kind, r)
+      const refType = fields.refType
+      const refId = fields.refId
       if (!refId) continue
-      const status = autoNormStatus(r?.status)
-      const payMethod = autoNormPayMethod(r?.pay_method)
-      const occurredAt = autoToISODateOnly(r?.completed_at) || autoToISODateOnly(r?.occurred_at) || autoToISODateOnly(r?.created_at)
-      const amount = it.kind === 'maintenance'
-        ? autoCalcMaintenanceTotal(r)
-        : (() => {
-            const raw = r?.total_cost !== undefined && r?.total_cost !== null ? r.total_cost : autoComputeDeepCleaningTotalCost(r?.labor_cost, r?.consumables)
-            return autoToNum(raw)
-          })()
+      const status = fields.status
+      const payMethod = fields.payMethod
+      const occurredAt = fields.occurredAt
+      const amount = fields.amount
       const expectedSide = (status === 'completed' && amount > 0 && occurredAt)
         ? (payMethod === 'landlord_pay' ? 'property' : (payMethod === 'company_pay' ? 'company' : 'void'))
         : 'void'
@@ -970,28 +1044,41 @@ router.post('/auto-expenses/inspect', requireAnyPerm(['finance.tx.write','proper
       }
     }
 
+    const orphanTableState = await pgPool.query(`SELECT to_regclass('public.property_daily_necessities') IS NOT NULL AS has_daily`)
+    const includeDailyOrphans = !!orphanTableState?.rows?.[0]?.has_daily
+    const orphanRefTypes = includeDailyOrphans ? "'maintenance','deep_cleaning','daily_necessities'" : "'maintenance','deep_cleaning'"
+    const propertyDailyOrphanClause = includeDailyOrphans
+      ? `OR
+           (ref_type='daily_necessities' AND NOT EXISTS (SELECT 1 FROM property_daily_necessities n WHERE n.id = property_expenses.ref_id))`
+      : ''
+    const companyDailyOrphanClause = includeDailyOrphans
+      ? `OR
+           (ref_type='daily_necessities' AND NOT EXISTS (SELECT 1 FROM property_daily_necessities n WHERE n.id = company_expenses.ref_id))`
+      : ''
     const orphans = await pgPool.query(
       `
       SELECT 'property' AS side, id, ref_type, ref_id
         FROM property_expenses
        WHERE is_auto=true
-         AND ref_type IN ('maintenance','deep_cleaning')
+         AND ref_type IN (${orphanRefTypes})
          AND coalesce(status,'') <> 'void'
          AND (
            (ref_type='maintenance' AND NOT EXISTS (SELECT 1 FROM property_maintenance m WHERE m.id = property_expenses.ref_id))
            OR
            (ref_type='deep_cleaning' AND NOT EXISTS (SELECT 1 FROM property_deep_cleaning d WHERE d.id = property_expenses.ref_id))
+           ${propertyDailyOrphanClause}
          )
       UNION ALL
       SELECT 'company' AS side, id, ref_type, ref_id
         FROM company_expenses
        WHERE is_auto=true
-         AND ref_type IN ('maintenance','deep_cleaning')
+         AND ref_type IN (${orphanRefTypes})
          AND coalesce(status,'') <> 'void'
          AND (
            (ref_type='maintenance' AND NOT EXISTS (SELECT 1 FROM property_maintenance m WHERE m.id = company_expenses.ref_id))
            OR
            (ref_type='deep_cleaning' AND NOT EXISTS (SELECT 1 FROM property_deep_cleaning d WHERE d.id = company_expenses.ref_id))
+           ${companyDailyOrphanClause}
          )
       LIMIT $1
       `,

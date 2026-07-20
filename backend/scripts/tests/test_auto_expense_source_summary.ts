@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { deepCleaningSourceSummary, maintenanceSourceSummary } from '../../src/lib/autoExpenseSourceSummary'
+import { dailyNecessitiesSourceSummary, deepCleaningSourceSummary, maintenanceSourceSummary } from '../../src/lib/autoExpenseSourceSummary'
 
 function testMaintenancePrefersInvoiceDescriptionEn() {
   const out = maintenanceSourceSummary({
@@ -33,14 +33,36 @@ function testFallsBackWhenEnglishDescriptionMissing() {
   assert.equal(deepCleaningOut, 'Mattress steam clean and stain removal')
 }
 
+function testDailyNecessitiesPrefersInvoiceDescriptionEn() {
+  const out = dailyNecessitiesSourceSummary({
+    invoice_description_en: 'Daily supplies replacement - towel set',
+    item_name: '毛巾',
+    quantity: 2,
+    note: '中文备注',
+  })
+  assert.equal(out, 'Daily supplies replacement - towel set')
+}
+
+function testDailyNecessitiesFallbackIncludesItemQuantityAndNote() {
+  const out = dailyNecessitiesSourceSummary({
+    item_name: 'Toilet paper',
+    quantity: 3,
+    note: '客厅柜补货',
+  })
+  assert.equal(out, '日用品更换：Toilet paper；数量 3；客厅柜补货')
+}
+
 function testEmptyRowsStaySafe() {
   assert.equal(maintenanceSourceSummary({}), '')
   assert.equal(deepCleaningSourceSummary({}), '')
+  assert.equal(dailyNecessitiesSourceSummary({}), '日用品更换')
 }
 
 testMaintenancePrefersInvoiceDescriptionEn()
 testDeepCleaningPrefersInvoiceDescriptionEn()
 testFallsBackWhenEnglishDescriptionMissing()
+testDailyNecessitiesPrefersInvoiceDescriptionEn()
+testDailyNecessitiesFallbackIncludesItemQuantityAndNote()
 testEmptyRowsStaySafe()
 
 console.log('test_auto_expense_source_summary: ok')

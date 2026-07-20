@@ -2756,7 +2756,7 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
         }
       }
       if (resource === 'property_expenses') {
-        const autoLocked = before && before.is_auto === true && ['maintenance', 'deep_cleaning'].includes(String(before.ref_type || ''))
+        const autoLocked = before && before.is_auto === true && ['maintenance', 'deep_cleaning', 'daily_necessities'].includes(String(before.ref_type || ''))
         if (autoLocked) return res.status(403).json({ message: 'auto_generated_expense_readonly' })
         const allow = ['occurred_at','amount','currency','category','category_detail','expense_name','note','property_id','fixed_expense_id','month_key','due_date','paid_date','status']
         const cleaned: any = {}
@@ -3060,7 +3060,7 @@ router.delete('/:resource/:id', requireResourcePerm('delete'), async (req, res) 
         const rows: any[] = Array.isArray(rowsRaw) ? rowsRaw : []
         before = rows[0] || null
       } catch {}
-      if (resource === 'property_expenses' && before && before.is_auto === true && ['maintenance', 'deep_cleaning'].includes(String(before.ref_type || ''))) {
+      if (resource === 'property_expenses' && before && before.is_auto === true && ['maintenance', 'deep_cleaning', 'daily_necessities'].includes(String(before.ref_type || ''))) {
         return res.status(403).json({ message: 'auto_generated_expense_readonly' })
       }
       if (resource === 'recurring_payments') {

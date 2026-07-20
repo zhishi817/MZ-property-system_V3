@@ -6,6 +6,11 @@
     "dev:backend": "npm run dev --prefix backend",
     "dev:frontend": "npm run dev --prefix frontend",
     "dev:booking-frontend": "node scripts/dev-booking-frontend.mjs",
-    "dev:booking-frontend-only": "npm run dev --prefix booking-frontend"
+    "dev:booking-frontend-only": "npm run dev --prefix booking-frontend",
+    "check:ledger": "python3 scripts/audit_change_release_ledger.py",
+    "check:backend": "npm run build --prefix backend && npm run test:cleaning-rules --prefix backend && npm run test:cleaning-inspection-merge --prefix backend && npm run test:app-notification-policies --prefix backend && npm run test:guest-luggage-rules --prefix backend && npm run test:orders-overlap --prefix backend && npm run test:auto-expense-source-summary --prefix backend && npm run test:company-revenue-report --prefix backend",
+    "check:frontend": "npm run lint --prefix frontend && npm run test --prefix frontend && npm run build --prefix frontend",
+    "check:mobile": "if [ -f mz-cleaning-app-frontend/package.json ]; then npm run typecheck --prefix mz-cleaning-app-frontend && npm run lint --prefix mz-cleaning-app-frontend && npm run test --prefix mz-cleaning-app-frontend; else echo check:mobile skipped: mz-cleaning-app-frontend/package.json not found; fi",
+    "check": "npm run check:ledger && npm run check:backend && npm run check:frontend && npm run check:mobile"
   }
 }

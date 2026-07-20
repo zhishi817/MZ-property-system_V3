@@ -268,7 +268,7 @@ export const ADMIN_NAVIGATION: AdminNavNode[] = [
             href: '/inventory/category/daily/replacements',
             visibleWhenAny: ['menu.inventory.daily.replacements.visible'],
             rbacKey: 'menu.inventory.daily.replacements.visible',
-            actionPerms: ['inventory_daily_replacements.view', 'inventory_daily_replacements.create', 'inventory_daily_replacements.write'],
+            actionPerms: ['inventory_daily_replacements.view', 'inventory_daily_replacements.create', 'inventory_daily_replacements.write', 'inventory_daily_replacements.delete'],
           },
         ],
       },

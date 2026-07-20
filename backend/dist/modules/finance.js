@@ -32,6 +32,7 @@ const monthlyStatementPhotoPack_1 = require("../lib/monthlyStatementPhotoPack");
 const monthlyStatementInvoiceAttachments_1 = require("../lib/monthlyStatementInvoiceAttachments");
 const autoExpenseSourceSummary_1 = require("../lib/autoExpenseSourceSummary");
 const companyRevenueReport_1 = require("../lib/companyRevenueReport");
+const dailyNecessitiesAutoExpense_1 = require("../lib/dailyNecessitiesAutoExpense");
 exports.router = (0, express_1.Router)();
 const upload = r2_1.hasR2 ? (0, multer_1.default)({ storage: multer_1.default.memoryStorage() }) : (0, multer_1.default)({ dest: path_1.default.join(process.cwd(), 'uploads') });
 const memUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage() });
@@ -661,13 +662,14 @@ async function autoUpsertPropertyExpenseByRef(client, input) {
     var _a, _b;
     const { v4: uuid } = require('uuid');
     const mk = autoMonthKey(input.occurredAt);
+    const category = input.category || 'other';
     try {
         await client.query(`INSERT INTO property_expenses (id, property_id, occurred_at, amount, currency, category, category_detail, note, pay_method, generated_from, ref_type, ref_id, month_key, due_date, is_auto, source_title, source_summary)
-       VALUES ($1,$2,$3,$4,'AUD','other',$5,$6,'landlord_pay',$7,$8,$9,$10,$3,true,$11,$12)
+       VALUES ($1,$2,$3,$4,'AUD',$5,$6,$7,'landlord_pay',$8,$9,$10,$11,$3,true,$12,$13)
        ON CONFLICT (ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL DO UPDATE
        SET property_id=EXCLUDED.property_id, occurred_at=EXCLUDED.occurred_at, amount=EXCLUDED.amount, currency=EXCLUDED.currency, category=EXCLUDED.category, category_detail=EXCLUDED.category_detail,
            note=EXCLUDED.note, pay_method=EXCLUDED.pay_method, generated_from=EXCLUDED.generated_from, month_key=EXCLUDED.month_key, due_date=EXCLUDED.due_date, is_auto=EXCLUDED.is_auto,
-           source_title=EXCLUDED.source_title, source_summary=EXCLUDED.source_summary`, [uuid(), input.propertyId, input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]);
+           status=NULL, source_title=EXCLUDED.source_title, source_summary=EXCLUDED.source_summary`, [uuid(), input.propertyId, input.occurredAt, input.amount, category, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]);
     }
     catch (e) {
         const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
@@ -676,13 +678,13 @@ async function autoUpsertPropertyExpenseByRef(client, input) {
             const existingId = String(((_b = (_a = existing === null || existing === void 0 ? void 0 : existing.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.id) || '');
             if (existingId) {
                 await client.query(`UPDATE property_expenses
-           SET property_id=$1, occurred_at=$2, amount=$3, currency='AUD', category='other', category_detail=$4, note=$5,
-               pay_method='landlord_pay', generated_from=$6, month_key=$7, due_date=$2, is_auto=true, source_title=$9, source_summary=$10
-           WHERE id=$8`, [input.propertyId, input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, mk, existingId, input.sourceTitle || null, input.sourceSummary || null]);
+           SET property_id=$1, occurred_at=$2, amount=$3, currency='AUD', category=$4, category_detail=$5, note=$6,
+               pay_method='landlord_pay', generated_from=$7, month_key=$8, due_date=$2, is_auto=true, status=NULL, source_title=$10, source_summary=$11
+           WHERE id=$9`, [input.propertyId, input.occurredAt, input.amount, category, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, mk, existingId, input.sourceTitle || null, input.sourceSummary || null]);
                 return;
             }
             await client.query(`INSERT INTO property_expenses (id, property_id, occurred_at, amount, currency, category, category_detail, note, pay_method, generated_from, ref_type, ref_id, month_key, due_date, is_auto, source_title, source_summary)
-         VALUES ($1,$2,$3,$4,'AUD','other',$5,$6,'landlord_pay',$7,$8,$9,$10,$3,true,$11,$12)`, [uuid(), input.propertyId, input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]);
+         VALUES ($1,$2,$3,$4,'AUD',$5,$6,$7,'landlord_pay',$8,$9,$10,$11,$3,true,$12,$13)`, [uuid(), input.propertyId, input.occurredAt, input.amount, category, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]);
             return;
         }
         throw e;
@@ -692,13 +694,14 @@ async function autoUpsertCompanyExpenseByRef(client, input) {
     var _a, _b;
     const { v4: uuid } = require('uuid');
     const mk = autoMonthKey(input.occurredAt);
+    const category = input.category || 'other';
     try {
         await client.query(`INSERT INTO company_expenses (id, occurred_at, amount, currency, category, category_detail, note, generated_from, ref_type, ref_id, month_key, due_date, is_auto, source_title, source_summary)
-       VALUES ($1,$2,$3,'AUD','other',$4,$5,$6,$7,$8,$9,$2,true,$10,$11)
+       VALUES ($1,$2,$3,'AUD',$4,$5,$6,$7,$8,$9,$10,$2,true,$11,$12)
        ON CONFLICT (ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL DO UPDATE
        SET occurred_at=EXCLUDED.occurred_at, amount=EXCLUDED.amount, currency=EXCLUDED.currency, category=EXCLUDED.category, category_detail=EXCLUDED.category_detail,
-           note=EXCLUDED.note, generated_from=EXCLUDED.generated_from, month_key=EXCLUDED.month_key, due_date=EXCLUDED.due_date, is_auto=EXCLUDED.is_auto,
-           source_title=EXCLUDED.source_title, source_summary=EXCLUDED.source_summary`, [uuid(), input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]);
+           note=EXCLUDED.note, generated_from=EXCLUDED.generated_from, month_key=EXCLUDED.month_key, due_date=EXCLUDED.due_date, is_auto=EXCLUDED.is_auto, status=NULL,
+           source_title=EXCLUDED.source_title, source_summary=EXCLUDED.source_summary`, [uuid(), input.occurredAt, input.amount, category, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]);
     }
     catch (e) {
         const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
@@ -707,12 +710,12 @@ async function autoUpsertCompanyExpenseByRef(client, input) {
             const existingId = String(((_b = (_a = existing === null || existing === void 0 ? void 0 : existing.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.id) || '');
             if (existingId) {
                 await client.query(`UPDATE company_expenses
-           SET occurred_at=$1, amount=$2, currency='AUD', category='other', category_detail=$3, note=$4, generated_from=$5, month_key=$6, due_date=$1, is_auto=true, source_title=$8, source_summary=$9
-           WHERE id=$7`, [input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, mk, existingId, input.sourceTitle || null, input.sourceSummary || null]);
+           SET occurred_at=$1, amount=$2, currency='AUD', category=$3, category_detail=$4, note=$5, generated_from=$6, month_key=$7, due_date=$1, is_auto=true, status=NULL, source_title=$9, source_summary=$10
+           WHERE id=$8`, [input.occurredAt, input.amount, category, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, mk, existingId, input.sourceTitle || null, input.sourceSummary || null]);
                 return;
             }
             await client.query(`INSERT INTO company_expenses (id, occurred_at, amount, currency, category, category_detail, note, generated_from, ref_type, ref_id, month_key, due_date, is_auto, source_title, source_summary)
-         VALUES ($1,$2,$3,'AUD','other',$4,$5,$6,$7,$8,$9,$2,true,$10,$11)`, [uuid(), input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]);
+         VALUES ($1,$2,$3,'AUD',$4,$5,$6,$7,$8,$9,$10,$2,true,$11,$12)`, [uuid(), input.occurredAt, input.amount, category, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]);
             return;
         }
         throw e;
@@ -723,17 +726,65 @@ const autoExpensesBackfillSchema = zod_1.z.object({
     to: zod_1.z.string().optional(),
     dry_run: zod_1.z.boolean().optional().default(true),
     limit: zod_1.z.coerce.number().optional().default(5000),
-    type: zod_1.z.enum(['maintenance', 'deep_cleaning', 'all']).optional().default('all'),
+    type: zod_1.z.enum(['maintenance', 'deep_cleaning', 'daily_necessities', 'all']).optional().default('all'),
     property_id: zod_1.z.string().optional(),
 });
 const autoExpensesInspectSchema = zod_1.z.object({
     from: zod_1.z.string().optional(),
     to: zod_1.z.string().optional(),
     limit: zod_1.z.coerce.number().optional().default(500),
-    type: zod_1.z.enum(['maintenance', 'deep_cleaning', 'all']).optional().default('all'),
+    type: zod_1.z.enum(['maintenance', 'deep_cleaning', 'daily_necessities', 'all']).optional().default('all'),
     property_id: zod_1.z.string().optional(),
 });
+function deriveAutoExpenseFields(kind, row) {
+    if (kind === 'daily_necessities') {
+        const decision = (0, dailyNecessitiesAutoExpense_1.buildDailyNecessityAutoExpenseDecision)(row);
+        return {
+            refType: decision.refType,
+            refId: decision.refId,
+            status: decision.status,
+            payMethod: decision.payMethod,
+            occurredAt: decision.occurredAt,
+            amount: decision.amount,
+            propertyId: decision.propertyId,
+            category: decision.category,
+            categoryDetail: decision.categoryDetail,
+            generatedFrom: decision.generatedFrom,
+            sourceTitle: decision.sourceTitle,
+            sourceSummary: decision.sourceSummary,
+        };
+    }
+    const refId = String((row === null || row === void 0 ? void 0 : row.id) || '');
+    const categoryDetail = kind === 'maintenance' ? '维修' : '深度清洁';
+    const amount = kind === 'maintenance'
+        ? autoCalcMaintenanceTotal(row)
+        : (() => {
+            const raw = (row === null || row === void 0 ? void 0 : row.total_cost) !== undefined && (row === null || row === void 0 ? void 0 : row.total_cost) !== null ? row.total_cost : autoComputeDeepCleaningTotalCost(row === null || row === void 0 ? void 0 : row.labor_cost, row === null || row === void 0 ? void 0 : row.consumables);
+            return autoToNum(raw);
+        })();
+    const sourceTitle = (() => {
+        if (kind !== 'deep_cleaning')
+            return categoryDetail;
+        const workNo = String((row === null || row === void 0 ? void 0 : row.work_no) || refId);
+        return workNo ? `深度清洁 ${workNo}` : categoryDetail;
+    })();
+    return {
+        refType: kind,
+        refId,
+        status: autoNormStatus(row === null || row === void 0 ? void 0 : row.status),
+        payMethod: autoNormPayMethod(row === null || row === void 0 ? void 0 : row.pay_method),
+        occurredAt: autoToISODateOnly(row === null || row === void 0 ? void 0 : row.completed_at) || autoToISODateOnly(row === null || row === void 0 ? void 0 : row.occurred_at),
+        amount,
+        propertyId: String((row === null || row === void 0 ? void 0 : row.property_id) || ''),
+        category: 'other',
+        categoryDetail,
+        generatedFrom: refId,
+        sourceTitle,
+        sourceSummary: kind === 'maintenance' ? (0, autoExpenseSourceSummary_1.maintenanceSourceSummary)(row) : (0, autoExpenseSourceSummary_1.deepCleaningSourceSummary)(row),
+    };
+}
 async function collectAutoExpenseSourceItems(executor, input) {
+    var _a, _b, _c, _d;
     const items = [];
     const propertyIdFilter = String(input.propertyIdFilter || '').trim();
     if (input.type === 'all' || input.type === 'maintenance') {
@@ -756,6 +807,41 @@ async function collectAutoExpenseSourceItems(executor, input) {
         for (const r of (dc.rows || []))
             items.push({ kind: 'deep_cleaning', row: r });
     }
+    if (input.type === 'all' || input.type === 'daily_necessities') {
+        const available = await executor.query(`SELECT to_regclass('public.property_daily_necessities') IS NOT NULL AS has_daily,
+              to_regclass('public.daily_items_price_list') IS NOT NULL AS has_daily_prices`);
+        const hasDaily = !!((_b = (_a = available === null || available === void 0 ? void 0 : available.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.has_daily);
+        const hasDailyPrices = !!((_d = (_c = available === null || available === void 0 ? void 0 : available.rows) === null || _c === void 0 ? void 0 : _c[0]) === null || _d === void 0 ? void 0 : _d.has_daily_prices);
+        if (hasDaily) {
+            const daily = await executor.query(hasDailyPrices
+                ? `SELECT n.id, n.property_id, n.status, n.pay_method, n.item_id, n.item_name, n.quantity, n.note,
+                    n.invoice_description_en, n.replacement_at, n.submitted_at, n.created_at,
+                    COALESCE(p_id.unit_price, p_name.unit_price, 0) AS unit_price
+               FROM property_daily_necessities n
+               LEFT JOIN daily_items_price_list p_id ON p_id.id = n.item_id
+               LEFT JOIN LATERAL (
+                 SELECT unit_price
+                   FROM daily_items_price_list p
+                  WHERE lower(p.item_name) = lower(n.item_name)
+                  ORDER BY is_active DESC NULLS LAST, updated_at DESC NULLS LAST
+                  LIMIT 1
+               ) p_name ON true
+              WHERE coalesce(n.replacement_at::date, n.submitted_at::date, n.created_at::date) BETWEEN $1::date AND $2::date
+                AND ($4::text IS NULL OR $4::text = '' OR n.property_id = $4::text)
+              ORDER BY coalesce(n.replacement_at, n.submitted_at, n.created_at) ASC
+              LIMIT $3`
+                : `SELECT n.id, n.property_id, n.status, n.pay_method, n.item_id, n.item_name, n.quantity, n.note,
+                    n.invoice_description_en, n.replacement_at, n.submitted_at, n.created_at,
+                    0 AS unit_price
+               FROM property_daily_necessities n
+              WHERE coalesce(n.replacement_at::date, n.submitted_at::date, n.created_at::date) BETWEEN $1::date AND $2::date
+                AND ($4::text IS NULL OR $4::text = '' OR n.property_id = $4::text)
+              ORDER BY coalesce(n.replacement_at, n.submitted_at, n.created_at) ASC
+              LIMIT $3`, [input.from, input.to, input.limit, propertyIdFilter]);
+            for (const r of (daily.rows || []))
+                items.push({ kind: 'daily_necessities', row: r });
+        }
+    }
     return items;
 }
 exports.router.post('/auto-expenses/backfill', (0, auth_1.requireAnyPerm)(['finance.tx.write', 'property_expenses.write', 'company_expenses.write']), async (req, res) => {
@@ -776,24 +862,20 @@ exports.router.post('/auto-expenses/backfill', (0, auth_1.requireAnyPerm)(['fina
         if (dryRun) {
             let would_property = 0, would_company = 0, would_void = 0, skipped_manual_override = 0, would_cleaned_opposite = 0;
             for (const it of items) {
-                const refType = it.kind === 'maintenance' ? 'maintenance' : 'deep_cleaning';
                 const r = it.row || {};
-                const refId = String((r === null || r === void 0 ? void 0 : r.id) || '');
+                const fields = deriveAutoExpenseFields(it.kind, r);
+                const refType = fields.refType;
+                const refId = fields.refId;
                 if (!refId)
                     continue;
                 if (await autoHasManualOverrideForRef(dbAdapter_2.pgPool, refType, refId)) {
                     skipped_manual_override++;
                     continue;
                 }
-                const st = autoNormStatus(r === null || r === void 0 ? void 0 : r.status);
-                const pm = autoNormPayMethod(r === null || r === void 0 ? void 0 : r.pay_method);
-                const occurredAt = autoToISODateOnly(r === null || r === void 0 ? void 0 : r.completed_at) || autoToISODateOnly(r === null || r === void 0 ? void 0 : r.occurred_at);
-                const amount = it.kind === 'maintenance'
-                    ? autoCalcMaintenanceTotal(r)
-                    : (() => {
-                        const raw = (r === null || r === void 0 ? void 0 : r.total_cost) !== undefined && (r === null || r === void 0 ? void 0 : r.total_cost) !== null ? r.total_cost : autoComputeDeepCleaningTotalCost(r === null || r === void 0 ? void 0 : r.labor_cost, r === null || r === void 0 ? void 0 : r.consumables);
-                        return autoToNum(raw);
-                    })();
+                const st = fields.status;
+                const pm = fields.payMethod;
+                const occurredAt = fields.occurredAt;
+                const amount = fields.amount;
                 if (st !== 'completed' || !(amount > 0) || !occurredAt) {
                     would_void++;
                     continue;
@@ -816,34 +898,26 @@ exports.router.post('/auto-expenses/backfill', (0, auth_1.requireAnyPerm)(['fina
             await ensureAutoExpenseSchema(client);
             let upserted_property = 0, upserted_company = 0, voided = 0, cleaned_opposite = 0, skipped_manual_override = 0;
             for (const it of items) {
-                const refType = it.kind === 'maintenance' ? 'maintenance' : 'deep_cleaning';
                 const r = it.row || {};
-                const refId = String((r === null || r === void 0 ? void 0 : r.id) || '');
+                const fields = deriveAutoExpenseFields(it.kind, r);
+                const refType = fields.refType;
+                const refId = fields.refId;
                 if (!refId)
                     continue;
                 if (await autoHasManualOverrideForRef(client, refType, refId)) {
                     skipped_manual_override++;
                     continue;
                 }
-                const st = autoNormStatus(r === null || r === void 0 ? void 0 : r.status);
-                const pm = autoNormPayMethod(r === null || r === void 0 ? void 0 : r.pay_method);
-                const occurredAt = autoToISODateOnly(r === null || r === void 0 ? void 0 : r.completed_at) || autoToISODateOnly(r === null || r === void 0 ? void 0 : r.occurred_at);
-                const amount = it.kind === 'maintenance'
-                    ? autoCalcMaintenanceTotal(r)
-                    : (() => {
-                        const raw = (r === null || r === void 0 ? void 0 : r.total_cost) !== undefined && (r === null || r === void 0 ? void 0 : r.total_cost) !== null ? r.total_cost : autoComputeDeepCleaningTotalCost(r === null || r === void 0 ? void 0 : r.labor_cost, r === null || r === void 0 ? void 0 : r.consumables);
-                        return autoToNum(raw);
-                    })();
-                const propertyId = String((r === null || r === void 0 ? void 0 : r.property_id) || '');
-                const categoryDetail = it.kind === 'maintenance' ? '维修' : '深度清洁';
-                const generatedFrom = refId;
-                const sourceTitle = (() => {
-                    if (it.kind !== 'deep_cleaning')
-                        return categoryDetail;
-                    const workNo = String((r === null || r === void 0 ? void 0 : r.work_no) || refId);
-                    return workNo ? `深度清洁 ${workNo}` : categoryDetail;
-                })();
-                const sourceSummary = it.kind === 'maintenance' ? (0, autoExpenseSourceSummary_1.maintenanceSourceSummary)(r) : (0, autoExpenseSourceSummary_1.deepCleaningSourceSummary)(r);
+                const st = fields.status;
+                const pm = fields.payMethod;
+                const occurredAt = fields.occurredAt;
+                const amount = fields.amount;
+                const propertyId = fields.propertyId;
+                const category = fields.category;
+                const categoryDetail = fields.categoryDetail;
+                const generatedFrom = fields.generatedFrom;
+                const sourceTitle = fields.sourceTitle;
+                const sourceSummary = fields.sourceSummary;
                 const voidBothAuto = async () => {
                     const v1 = await client.query(`UPDATE property_expenses SET status='void'
              WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`, [refType, refId]);
@@ -863,7 +937,7 @@ exports.router.post('/auto-expenses/backfill', (0, auth_1.requireAnyPerm)(['fina
                     const v2 = await client.query(`UPDATE company_expenses SET status='void'
              WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`, [refType, refId]);
                     cleaned_opposite += Number(v2.rowCount || 0);
-                    await autoUpsertPropertyExpenseByRef(client, { propertyId, occurredAt, amount, categoryDetail, generatedFrom, refType, refId, sourceTitle, sourceSummary });
+                    await autoUpsertPropertyExpenseByRef(client, { propertyId, occurredAt, amount, category, categoryDetail, generatedFrom, refType, refId, sourceTitle, sourceSummary });
                     upserted_property++;
                     continue;
                 }
@@ -871,7 +945,7 @@ exports.router.post('/auto-expenses/backfill', (0, auth_1.requireAnyPerm)(['fina
                     const v1 = await client.query(`UPDATE property_expenses SET status='void'
              WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`, [refType, refId]);
                     cleaned_opposite += Number(v1.rowCount || 0);
-                    await autoUpsertCompanyExpenseByRef(client, { occurredAt, amount, categoryDetail, generatedFrom, refType, refId, sourceTitle, sourceSummary });
+                    await autoUpsertCompanyExpenseByRef(client, { occurredAt, amount, category, categoryDetail, generatedFrom, refType, refId, sourceTitle, sourceSummary });
                     upserted_company++;
                     continue;
                 }
@@ -886,7 +960,7 @@ exports.router.post('/auto-expenses/backfill', (0, auth_1.requireAnyPerm)(['fina
     }
 });
 exports.router.post('/auto-expenses/inspect', (0, auth_1.requireAnyPerm)(['finance.tx.write', 'property_expenses.write', 'company_expenses.write']), async (req, res) => {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e, _f;
     if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
         return res.status(400).json({ message: 'pg required' });
     const parsed = autoExpensesInspectSchema.safeParse(req.body || {});
@@ -910,20 +984,16 @@ exports.router.post('/auto-expenses/inspect', (0, auth_1.requireAnyPerm)(['finan
             skipped_manual_override: 0,
         };
         for (const it of items) {
-            const refType = it.kind === 'maintenance' ? 'maintenance' : 'deep_cleaning';
             const r = it.row || {};
-            const refId = String((r === null || r === void 0 ? void 0 : r.id) || '');
+            const fields = deriveAutoExpenseFields(it.kind, r);
+            const refType = fields.refType;
+            const refId = fields.refId;
             if (!refId)
                 continue;
-            const status = autoNormStatus(r === null || r === void 0 ? void 0 : r.status);
-            const payMethod = autoNormPayMethod(r === null || r === void 0 ? void 0 : r.pay_method);
-            const occurredAt = autoToISODateOnly(r === null || r === void 0 ? void 0 : r.completed_at) || autoToISODateOnly(r === null || r === void 0 ? void 0 : r.occurred_at) || autoToISODateOnly(r === null || r === void 0 ? void 0 : r.created_at);
-            const amount = it.kind === 'maintenance'
-                ? autoCalcMaintenanceTotal(r)
-                : (() => {
-                    const raw = (r === null || r === void 0 ? void 0 : r.total_cost) !== undefined && (r === null || r === void 0 ? void 0 : r.total_cost) !== null ? r.total_cost : autoComputeDeepCleaningTotalCost(r === null || r === void 0 ? void 0 : r.labor_cost, r === null || r === void 0 ? void 0 : r.consumables);
-                    return autoToNum(raw);
-                })();
+            const status = fields.status;
+            const payMethod = fields.payMethod;
+            const occurredAt = fields.occurredAt;
+            const amount = fields.amount;
             const expectedSide = (status === 'completed' && amount > 0 && occurredAt)
                 ? (payMethod === 'landlord_pay' ? 'property' : (payMethod === 'company_pay' ? 'company' : 'void'))
                 : 'void';
@@ -969,27 +1039,40 @@ exports.router.post('/auto-expenses/inspect', (0, auth_1.requireAnyPerm)(['finan
                 issues.push({ kind: it.kind, ref_type: refType, ref_id: refId, issue: 'auto_expense_should_be_void', active_property_expense_ids: activeProp.map((x) => x.id), active_company_expense_ids: activeComp.map((x) => x.id) });
             }
         }
+        const orphanTableState = await dbAdapter_2.pgPool.query(`SELECT to_regclass('public.property_daily_necessities') IS NOT NULL AS has_daily`);
+        const includeDailyOrphans = !!((_f = (_e = orphanTableState === null || orphanTableState === void 0 ? void 0 : orphanTableState.rows) === null || _e === void 0 ? void 0 : _e[0]) === null || _f === void 0 ? void 0 : _f.has_daily);
+        const orphanRefTypes = includeDailyOrphans ? "'maintenance','deep_cleaning','daily_necessities'" : "'maintenance','deep_cleaning'";
+        const propertyDailyOrphanClause = includeDailyOrphans
+            ? `OR
+           (ref_type='daily_necessities' AND NOT EXISTS (SELECT 1 FROM property_daily_necessities n WHERE n.id = property_expenses.ref_id))`
+            : '';
+        const companyDailyOrphanClause = includeDailyOrphans
+            ? `OR
+           (ref_type='daily_necessities' AND NOT EXISTS (SELECT 1 FROM property_daily_necessities n WHERE n.id = company_expenses.ref_id))`
+            : '';
         const orphans = await dbAdapter_2.pgPool.query(`
       SELECT 'property' AS side, id, ref_type, ref_id
         FROM property_expenses
        WHERE is_auto=true
-         AND ref_type IN ('maintenance','deep_cleaning')
+         AND ref_type IN (${orphanRefTypes})
          AND coalesce(status,'') <> 'void'
          AND (
            (ref_type='maintenance' AND NOT EXISTS (SELECT 1 FROM property_maintenance m WHERE m.id = property_expenses.ref_id))
            OR
            (ref_type='deep_cleaning' AND NOT EXISTS (SELECT 1 FROM property_deep_cleaning d WHERE d.id = property_expenses.ref_id))
+           ${propertyDailyOrphanClause}
          )
       UNION ALL
       SELECT 'company' AS side, id, ref_type, ref_id
         FROM company_expenses
        WHERE is_auto=true
-         AND ref_type IN ('maintenance','deep_cleaning')
+         AND ref_type IN (${orphanRefTypes})
          AND coalesce(status,'') <> 'void'
          AND (
            (ref_type='maintenance' AND NOT EXISTS (SELECT 1 FROM property_maintenance m WHERE m.id = company_expenses.ref_id))
            OR
            (ref_type='deep_cleaning' AND NOT EXISTS (SELECT 1 FROM property_deep_cleaning d WHERE d.id = company_expenses.ref_id))
+           ${companyDailyOrphanClause}
          )
       LIMIT $1
       `, [limit]);
