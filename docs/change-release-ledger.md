@@ -4,8 +4,8 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260718-002 — 根仓库统一检查命令
 
-- **Status:** ready
-- **Updated:** 2026-07-18 22:16 AEST
+- **Status:** pushed
+- **Updated:** 2026-07-20 11:24 AEST
 - **Request:** 用户要求先补统一检查命令。
 - **Outcome:** 根仓库 `package.json` 新增统一检查入口，后续本地自检、CI 和独立 Codex 审查线程可以复用同一组命令。
 
@@ -51,12 +51,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Risk: `check:backend` intentionally uses the package's existing targeted tests only; it is not a full exhaustive backend integration suite.
 - Rollback: remove the added `check:*` and `check` entries from root `package.json`, then remove this ledger unit.
 - Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
-- Git state: uncommitted in root repo; coexists with unrelated pre-existing backend, frontend, mobile, AGENTS, skill, and ledger changes from other release units.
+- Git state: implementation pushed to root `Dev` in commit `c2710d8` (`c2710d81e9dddab42e12215371f639e66990473d`); ledger status update recorded in the follow-up commit.
 
 ## CRL-20260718-001 — 自测优化防跑偏规范与项目 Skill
 
-- **Status:** ready
-- **Updated:** 2026-07-18 21:39 AEST
+- **Status:** pushed
+- **Updated:** 2026-07-20 11:24 AEST
 - **Request:** 用户要求把“自测/优化防跑偏”完整版添加到相应位置，包括根目录 agent 规则和项目 skill。
 - **Outcome:** 根目录 `AGENTS.md` 增加自测/优化硬边界；新增 `.codex/skills/mz-app-self-test-guardrails/SKILL.md`，用于在测试、巡检、优化、自动找问题和修复时强制执行范围、只读审计、证据报告、修复闸门和 MZ 技术栈验证流程。
 
@@ -98,12 +98,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Risk: future agents must load this skill only when triggered by self-test/audit/optimization/fix-discovered-issues requests; ordinary narrow development tasks should continue using the existing project skills and ledger rules.
 - Rollback: remove the Self-Test And Optimization Guardrails section from `AGENTS.md`, delete `.codex/skills/mz-app-self-test-guardrails/SKILL.md`, and remove this ledger entry.
 - Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
-- Git state: uncommitted in root repo; coexists with unrelated pre-existing backend, frontend, inventory, finance, mzapp, and task-center changes from other release units.
+- Git state: implementation pushed to root `Dev` in commit `c2710d8` (`c2710d81e9dddab42e12215371f639e66990473d`); ledger status update recorded in the follow-up commit.
 
 ## CRL-20260718-003 — 新 clone 台账 UTF-8 修复
 
-- **Status:** ready
-- **Updated:** 2026-07-18 23:22 AEST
+- **Status:** pushed
+- **Updated:** 2026-07-20 11:24 AEST
 - **Request:** 用户要求按推荐流程 clone 当前 Dev 后保留指定 CRL。
 - **Outcome:** 新 clone 的 `docs/change-release-ledger.md` 从远端带有非 UTF-8 二进制尾部，导致 `scripts/audit_change_release_ledger.py` 无法读取；已截除损坏尾部并保留可读 CRL 条目，使台账审计可以继续运行。
 
@@ -130,12 +130,19 @@ Shared cross-thread record of repository changes and selectable release units. D
 - `python3 -c "from pathlib import Path; Path(\"docs/change-release-ledger.md\").read_text(encoding=\"utf-8\"); print(\"utf8 ok\")"` — passed: ledger reads as UTF-8.
 - `python3 scripts/audit_change_release_ledger.py` — passed: `Changed files: 16`, `Recorded changed files: 16`, `Coverage: PASS`.
 
+### Update — 2026-07-20 11:24 AEST
+
+- Fresh clone was fast-forwarded to remote `Dev` commit `cd0f584` before release; the ledger conflict was resolved by preserving the fresh migrated CRL entries and reconnecting the remote ledger tail.
+- Removed accidentally captured tool truncation text from the ledger while resolving the conflict; `docs/change-release-ledger.md` reads as UTF-8 and has no conflict markers.
+- `npm run check` — passed after the fast-forward and conflict resolution: ledger audit passed, backend build/targeted tests passed, frontend lint/test/build passed, and mobile check skipped because `mz-cleaning-app-frontend/package.json` is absent in the fresh root clone.
+- `git push origin Dev` — passed for implementation commit `c2710d8` (`c2710d81e9dddab42e12215371f639e66990473d`); `git ls-remote origin refs/heads/Dev` confirmed the remote branch at that commit before this ledger status update.
+
 ### Risks / Release Notes
 
 - Risk: the corrupt tail already existed in the cloned `origin/Dev` ledger; entries after the damaged point were unreadable and could not be safely reconstructed from that file. Current migrated files are still covered by existing or newly inserted CRL entries.
 - Rollback: restore `docs/change-release-ledger.md` from `origin/Dev`, but ledger audit will fail again until the encoding issue is fixed another way.
 - Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
-- Git state: uncommitted in fresh Dev clone.
+- Git state: implementation pushed to root `Dev` in commit `c2710d8` (`c2710d81e9dddab42e12215371f639e66990473d`); ledger status update recorded in the follow-up commit.
 
 ## CRL-20260713-001 — CMS 菜单收拢与线下密码管理
 
@@ -3250,8 +3257,8 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260703-006 — 日用品更换记录页面操作与编辑回填修复
 
-- **Status:** ready
-- **Updated:** 2026-07-03 14:40 AEST
+- **Status:** pushed
+- **Updated:** 2026-07-20 11:24 AEST
 - **Request:** “日用品更换记录页面需要优化一下，一个人没有删除记录的按钮，按钮ui也有问题。第二 明明写了更换物品的信息，谁提交的。点开编辑按钮又没有显示。从详情页也不能转到编辑页面。”
 - **Outcome:** 日用品更换记录表格操作列改为系统标准按钮；具备删除权限时显示删除按钮并需要确认；编辑 drawer 能按 `item_id` 或 `item_name` 回填更换物品和提交人；详情 drawer 可以直接进入编辑。
 
@@ -3310,12 +3317,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Delete is permanent for `property_daily_necessities`; rollback requires restoring the row from backup/audit source if needed.
 - The current-record fallback keeps legacy item names visible, but records with item names not in the active price list still need a valid item selection if the user changes the item.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
-- Git state: uncommitted in root repo; coexists with pre-existing cleaning/task-center changes and `CRL-20260703-005` finance/daily auto-expense changes.
+- Git state: implementation pushed to root `Dev` in commit `c2710d8` (`c2710d81e9dddab42e12215371f639e66990473d`); ledger status update recorded in the follow-up commit.
 
 ## CRL-20260703-005 — 深度清洁与日用品更换自动入房源 statement
 
-- **Status:** ready
-- **Updated:** 2026-07-03 14:28 AEST
+- **Status:** pushed
+- **Updated:** 2026-07-20 11:24 AEST
 - **Request:** “深度清洁和 日用品更换记录也需要跟房源维修一样的执行逻辑，如果是房东支付的话，需要在statement体现出来”；follow-up: “卖出价”
 - **Outcome:** 日用品更换记录在创建/更新后会按价格表卖出价 `daily_items_price_list.unit_price * quantity` 计算金额；完成且房东支付时生成/更新 `property_expenses` 自动快照并归类 `consumables`，从而进入房源 statement。公司支付时生成公司支出，其他支付或未完成/无价格会 void 自动快照。深度清洁与维修的财务回填/statement 对账逻辑保持一致，并支持日用品一起检查/回填。
 
@@ -3383,7 +3390,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Backfill/inspect use table-existence checks so older environments skip日用品扫描 rather than failing.
 - Rollback: remove the daily necessity helper/imports, revert inventory sync calls, remove `daily_necessities` from finance backfill/inspect/monthly reconcile, and remove the CRUD read-only extension.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
-- Git state: uncommitted in root repo; coexists with pre-existing uncommitted cleaning/task-center changes not owned by this unit.
+- Git state: implementation pushed to root `Dev` in commit `c2710d8` (`c2710d81e9dddab42e12215371f639e66990473d`); ledger status update recorded in the follow-up commit.
 
 ## CRL-20260703-004 — Phase 4 角色只保留默认可见范围
 
