@@ -4,7 +4,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260722-011 — 年度报告读取移除运行时建表副作用
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-22 16:22 AEST
 - **Request:** 用户要求优化年度报告查询时可能自动建表的问题。
 - **Outcome:** 年度报告 GET 只执行手工月份 SELECT；迁移表不存在时按无手工月份数据返回，不再由查询触发 DDL。保存和删除接口仍保留写操作前的表结构保护。
@@ -46,11 +46,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Owner confirmation: the user confirmed that the production annual-report manual-months migration and management-fee rules migration are complete.
 - Rollback: restore the GET-side ensure call if runtime initialization is explicitly required; no database rollback is required.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or production data were added.
-- Git state: uncommitted; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+- Git state: pushed to `origin/Dev` in commit `639d509`; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
 
 ## CRL-20260722-010 — 年度报告英文日期澳洲格式
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-22 15:47 AEST
 - **Request:** 用户要求年度报告英文版日期遵循澳洲显示格式。
 - **Outcome:** 英文版财年日期由 ISO `YYYY-MM-DD` 改为澳洲常用的 `DD/MM/YYYY`；中文版本保持原有日期显示。
@@ -87,11 +87,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Risk: if an unexpected non-ISO date string is received, the formatter leaves it unchanged rather than guessing a potentially incorrect date.
 - Rollback: remove `formatAustralianDate` from the English title interpolation; no database rollback is required.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or business data were added.
-- Git state: uncommitted; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+- Git state: pushed to `origin/Dev` in commit `639d509`; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
 
 ## CRL-20260722-009 — 年度报告客户信息字体统一
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-22 15:44 AEST
 - **Request:** 用户反馈客户信息中的房东姓名、房号和地址字体大小不一致，要求统一。
 - **Outcome:** 客户信息三行统一使用 12px 字体，继续保持右对齐和现有行间距。
@@ -128,11 +128,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Risk: none beyond normal font rendering differences between available system fonts.
 - Rollback: remove the explicit 12px style from the owner name; no database rollback is required.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or business data were added.
-- Git state: uncommitted; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+- Git state: pushed to `origin/Dev` in commit `639d509`; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
 
 ## CRL-20260722-008 — 年度报告中文标题单行显示
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-22 15:28 AEST
 - **Request:** 用户反馈双语年度报告标题中的中文部分自动换成了两行。
 - **Outcome:** 中文标题使用 26px 字号并禁止自动换行；英文标题保持 28px，双语标题在 PDF 和预览中保持单行。
@@ -170,11 +170,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Risk: if the report title text becomes materially longer, the single-line title may approach the Logo or right-side spacer; the current bilingual title fits the tested export width.
 - Rollback: remove `whiteSpace: nowrap` and restore the previous title font sizing; no database rollback is required.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or business data were added.
-- Git state: uncommitted; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+- Git state: pushed to `origin/Dev` in commit `639d509`; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
 
 ## CRL-20260722-007 — 年度报告页脚底部留白修复
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-22 15:22 AEST
 - **Request:** 用户反馈 PDF 页脚上方结束后，页面底部仍有过多空白，要求继续优化。
 - **Outcome:** 修正 PDF 外层容器包裹报告根节点时的 CSS 选择器，使报告主体真正撑满 A4 横向内容区，页脚贴近底部，仅保留正常内边距。
@@ -212,11 +212,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Risk: if PDF export width or margins change, the 188.7mm minimum height should be recalculated.
 - Rollback: restore the previous selector and remove the wrapper-specific selector; no database rollback is required.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or business data were added.
-- Git state: uncommitted; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+- Git state: pushed to `origin/Dev` in commit `639d509`; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
 
 ## CRL-20260722-006 — 年度报告客户信息框宽度微调
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-22 15:13 AEST
 - **Request:** 用户确认客户信息内容继续右对齐，并要求缩短框内左侧空白。
 - **Outcome:** 保留客户信息标题下方独立行、右对齐和表格前间距，将客户信息卡片宽度由 42% 缩至 34%。
@@ -254,11 +254,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Risk: the narrower 34% card may wrap unusually long addresses to more lines; the card remains allowed to grow vertically.
 - Rollback: restore the card width to 42%; no database rollback is required.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or business data were added.
-- Git state: uncommitted; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+- Git state: pushed to `origin/Dev` in commit `639d509`; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
 
 ## CRL-20260722-005 — 年度报告客户信息位置优化
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-22 15:05 AEST
 - **Request:** 用户要求客户信息不要与标题同一行，并进一步减少客户信息区域左侧空白、与数据表之间保留间距。
 - **Outcome:** 顶部仅保留 Logo 和报告标题；客户信息改为标题下方独立卡片，靠左排列，并与警告/数据表保留垂直间距。
@@ -296,11 +296,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Risk: the 42% card width was a presentation choice; it was subsequently narrowed by CRL-20260722-006.
 - Rollback: restore the original three-column header and remove the standalone customer card wrapper; no database rollback is required.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or business data were added.
-- Git state: uncommitted; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+- Git state: pushed to `origin/Dev` in commit `639d509`; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
 
 ## CRL-20260722-004 — 年度报告 PDF 页面布局优化
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-22 15:03 AEST
 - **Request:** 用户反馈年度报告 PDF 内容集中在页面上方、底部留白过大，要求优化页面布局。
 - **Outcome:** PDF 导出副本按 A4 横向可用高度撑开，页脚自动贴近页面底部；网页预览保持原有紧凑布局。
@@ -339,11 +339,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Risk: if warnings or address content make the report exceed one page, the existing vertical paginator remains responsible for pagination and should be regression-tested with long content.
 - Rollback: remove the PDF-only capture styles and footer marker; no database rollback is required.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or business data were added.
-- Git state: uncommitted; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+- Git state: pushed to `origin/Dev` in commit `639d509`; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
 
 ## CRL-20260722-003 — 年度报告手工月份统一应用
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-22 14:18 AEST
 - **Request:** 用户要求年度报告手工月份不要逐行保存，改为统一应用修改；勾选完整月份时，未填写数字自动按 0 保存。
 - **Outcome:** 手工月份录入移除每行保存按钮，新增“应用修改”按钮；只提交实际编辑过的月份；勾选“完整”会立即补齐当前月份的空白金额为 0，保存前再次兜底补齐。
