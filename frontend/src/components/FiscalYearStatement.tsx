@@ -47,6 +47,11 @@ function monthLabel(monthKey: string) {
   )
 }
 
+function formatAustralianDate(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ''))
+  return match ? `${match[3]}/${match[2]}/${match[1]}` : value
+}
+
 export default forwardRef<HTMLDivElement, {
   report: AnnualPropertyReport
   showChinese?: boolean
@@ -54,7 +59,9 @@ export default forwardRef<HTMLDivElement, {
   const language: AnnualReportLanguage = showChinese ? 'bilingual' : 'en'
   const isDraft = annualReportHasIssues(report)
   const owner = report.report_owner_snapshot || report.owner_current
-  const propertyLabel = report.property.code || report.property.address || report.property.id
+  const ownerName = owner?.name || owner?.company_name || '-'
+  const propertyCode = report.property.code || '-'
+  const propertyAddress = report.property.address || '-'
   const visibleExpenseRows = getVisibleAnnualReportExpenseLineKeys(report)
 
   return (
@@ -86,23 +93,35 @@ export default forwardRef<HTMLDivElement, {
         }
         [data-fy-statement-root="1"] table { width: 100%; border-collapse: collapse; }
         [data-fy-statement-root="1"] table tr > * { border-bottom: 1px solid #ddd; vertical-align: top; }
+        [data-fy-statement-root="1"].__pdf_capture_root__,
+        .__pdf_capture_root__ [data-fy-statement-root="1"] {
+          min-height: 188.7mm;
+          box-sizing: border-box;
+          display: flex !important;
+          flex-direction: column !important;
+        }
+        [data-fy-statement-root="1"].__pdf_capture_root__ [data-fy-report-footer="1"],
+        .__pdf_capture_root__ [data-fy-statement-root="1"] [data-fy-report-footer="1"] {
+          margin-top: auto !important;
+          padding-top: 24px;
+        }
         @media print {
           @page { size: A4 landscape; margin: 12mm; }
           html, body { margin: 0; padding: 0; font-family: StatementFont, serif; -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision; }
         }
       `}</style>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr 1.4fr', alignItems: 'center', columnGap: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr 1fr', alignItems: 'center', columnGap: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center' }}>
           <img src="/mz-logo.png" alt="Company Logo" style={{ height: 70 }} />
         </div>
         <div style={{ textAlign: 'center' }}>
-          <div style={{ fontSize: 28, fontWeight: 700, letterSpacing: 1 }}>
+          <div style={{ fontSize: showChinese ? 26 : 28, fontWeight: 700, letterSpacing: showChinese ? 0 : 1, whiteSpace: 'nowrap' }}>
             {showChinese ? 'ANNUAL PROPERTY REPORT 房源年度报告' : 'ANNUAL PROPERTY REPORT'}
           </div>
           <div style={{ fontSize: 14, marginTop: 6 }}>
             {showChinese
               ? `FY${report.fiscal_year} 财年：${report.period_start} 至 ${report.period_end}`
-              : `FY${report.fiscal_year}: ${report.period_start} to ${report.period_end}`}
+              : `FY${report.fiscal_year}: ${formatAustralianDate(report.period_start)} to ${formatAustralianDate(report.period_end)}`}
           </div>
           {isDraft ? (
             <div style={{ marginTop: 8, display: 'inline-block', padding: '4px 10px', background: '#fff1f0', color: '#cf1322', border: '1px solid #ffa39e', borderRadius: 999 }}>
@@ -110,13 +129,18 @@ export default forwardRef<HTMLDivElement, {
             </div>
           ) : null}
         </div>
-        <div>
+        <div />
+      </div>
+
+      <div style={{ marginTop: 12, marginBottom: 18, display: 'flex', justifyContent: 'flex-end' }}>
+        <div style={{ width: '34%' }}>
           <div style={{ background: '#e6ecf6', padding: '6px 8px', fontWeight: 700, textAlign: 'right', border: '1px solid #dfe6f1' }}>
             {showChinese ? 'Customer Details 客户信息' : 'Customer Details'}
           </div>
           <div style={{ border: '1px solid #dfe6f1', borderTop: 0, padding: 8, textAlign: 'right' }}>
-            <div>{owner?.name || ''}</div>
-            <div style={{ fontSize: 12 }}>{propertyLabel}</div>
+            <div style={{ fontSize: 12 }}>{ownerName}</div>
+            <div style={{ fontSize: 12 }}>{propertyCode}</div>
+            <div style={{ fontSize: 12, marginTop: 2 }}>{propertyAddress}</div>
           </div>
         </div>
       </div>
@@ -194,10 +218,7 @@ export default forwardRef<HTMLDivElement, {
         </tbody>
       </table>
 
-      <div style={{ marginTop: 14, fontSize: 12, color: '#666' }}>
-        {showChinese ? '房东信息按报告生成时的当前房东资料展示。' : 'Owner information is shown using the current owner details at report generation time.'}
-      </div>
-      <div style={{ textAlign: 'center', marginTop: 18, fontSize: 12 }}>
+      <div data-fy-report-footer="1" style={{ textAlign: 'center', marginTop: 18, fontSize: 12 }}>
         <div style={{ fontWeight: 700 }}>MZ Property Pty Ltd</div>
         <div>ABN: 42 657 925 365</div>
         <div>Address: G3/87 Gladstone St, South Melbourne, VIC3205</div>

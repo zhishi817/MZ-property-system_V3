@@ -30,7 +30,7 @@ const resourceNames: Record<string, string> = {
   property_maintenance: '维修记录',
   property_deep_cleaning: '深度清洁',
   property_guides: '入住指南',
-  company_secret_items: '内部机密项',
+  company_secret_items: '线下密码',
   guest_site_settings: '客人网站设置',
   guest_site_properties: '客人网站房源展示',
   guest_site_inquiries: '客人网站询单',

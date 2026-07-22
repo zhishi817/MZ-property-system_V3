@@ -455,7 +455,7 @@ function addSupersedeDecision(
   field: string,
   canonicalValue: any,
   manualValue: any,
-  resolution: 'copied_manual' | 'merged_manual' | 'kept_canonical' | 'manual_requires_review',
+  resolution: 'copied_manual' | 'merged_manual' | 'kept_canonical' | 'manual_requires_review' | 'ignored_placeholder',
 ) {
   const comparableManual = typeof manualValue === 'number' ? manualValue : displayText(manualValue)
   if (comparableManual == null || comparableManual === '') return
@@ -538,21 +538,31 @@ function buildManualSupersedeMerge(params: {
     }
   }
 
-  const manualKeys = numberValue(manual?.keys_required)
-  if (manualKeys != null) {
-    const officialKeys = numberValue(official?.keys_required)
-    if (officialKeys !== manualKeys) {
-      addSupersedeDecision(decisions, manual, 'keys_required', official?.keys_required, manualKeys, 'manual_requires_review')
-    }
-  }
+	  const manualKeys = numberValue(manual?.keys_required)
+	  if (manualKeys != null) {
+	    const officialOrderKeys = numberValue(official?.order_keys_required)
+	    const officialTaskKeys = numberValue(official?.keys_required)
+	    const canonicalKeys = officialOrderKeys ?? officialTaskKeys
+	    if (canonicalKeys == null && (manualKeys === 1 || manualKeys === 2)) {
+	      patch.keys_required = manualKeys
+	      changedFields.push('keys_required')
+	      addSupersedeDecision(decisions, manual, 'keys_required', null, manualKeys, 'copied_manual')
+	    } else if (canonicalKeys !== manualKeys) {
+	      addSupersedeDecision(decisions, manual, 'keys_required', canonicalKeys, manualKeys, 'manual_requires_review')
+	    }
+	  }
 
-  const manualNights = numberValue(manual?.nights_override)
-  if (manualNights != null) {
-    const officialNights = numberValue(official?.nights_override)
-    if (officialNights !== manualNights) {
-      addSupersedeDecision(decisions, manual, 'nights_override', official?.nights_override, manualNights, 'manual_requires_review')
-    }
-  }
+	  const manualNights = numberValue(manual?.nights_override)
+	  if (manualNights != null) {
+	    const officialOrderNights = numberValue(official?.order_nights ?? official?.nights)
+	    const officialTaskNights = numberValue(official?.nights_override)
+	    const canonicalNights = officialOrderNights ?? officialTaskNights
+	    if (manualNights === 0 && canonicalNights != null && canonicalNights > 0) {
+	      addSupersedeDecision(decisions, manual, 'nights_override', canonicalNights, manualNights, 'ignored_placeholder')
+	    } else if (canonicalNights !== manualNights) {
+	      addSupersedeDecision(decisions, manual, 'nights_override', canonicalNights, manualNights, 'manual_requires_review')
+	    }
+	  }
 
   return { patch, changedFields: Array.from(new Set(changedFields)), decisions }
 }
@@ -624,16 +634,17 @@ async function supersedeTemporaryManualTasksForOrder(params: {
 
   if (hasPg && (client || pgPool)) {
     await ensureCleaningSchemaV2()
-    const exec = client || pgPool!
-    const officialRes = await exec.query(
-      `SELECT *
-       FROM cleaning_tasks
-       WHERE (order_id::text) = $1
-         AND (task_type::text) = $2
-         AND ${activeCleaningTaskWhereSql('cleaning_tasks')}
-       LIMIT 1`,
-      [String(orderId), normalizedTaskType],
-    )
+	    const exec = client || pgPool!
+	    const officialRes = await exec.query(
+	      `SELECT cleaning_tasks.*, o.keys_required AS order_keys_required, o.nights AS order_nights
+	       FROM cleaning_tasks
+	       LEFT JOIN orders o ON (o.id::text) = (cleaning_tasks.order_id::text)
+	       WHERE (cleaning_tasks.order_id::text) = $1
+	         AND (cleaning_tasks.task_type::text) = $2
+	         AND ${activeCleaningTaskWhereSql('cleaning_tasks')}
+	       LIMIT 1`,
+	      [String(orderId), normalizedTaskType],
+	    )
     let official = officialRes?.rows?.[0] || null
     if (!official) return 0
 
@@ -663,7 +674,13 @@ async function supersedeTemporaryManualTasksForOrder(params: {
       if (merge.changedFields.length) {
         const beforeOfficial = official
         const afterOfficial = await updateTaskById(String(official.id), merge.patch, exec)
-        if (afterOfficial) official = afterOfficial
+	        if (afterOfficial) {
+	          official = {
+	            ...afterOfficial,
+	            order_keys_required: official.order_keys_required,
+	            order_nights: official.order_nights,
+	          }
+	        }
         await logCleaningSync({
           jobId,
           orderId,
@@ -727,12 +744,17 @@ async function supersedeTemporaryManualTasksForOrder(params: {
   }
 
   const tasks = db.cleaningTasks as any[]
-  const official = tasks.find((task: any) =>
-    String(task.order_id || '') === String(orderId) &&
-    String(task.task_type || task.type || '') === normalizedTaskType &&
-    normalizeExecutionState(task) === ACTIVE_EXECUTION_STATE
-  )
-  if (!official) return 0
+	  const official = tasks.find((task: any) =>
+	    String(task.order_id || '') === String(orderId) &&
+	    String(task.task_type || task.type || '') === normalizedTaskType &&
+	    normalizeExecutionState(task) === ACTIVE_EXECUTION_STATE
+	  )
+	  if (!official) return 0
+	  const order = (db.orders as any[]).find((item: any) => String(item.id || '') === String(orderId)) || null
+	  if (order) {
+	    official.order_keys_required = order.keys_required
+	    official.order_nights = order.nights
+	  }
   const manualRows = tasks.filter((task: any) =>
     String(task.property_id || '') === String(propertyId) &&
     String(task.task_date || task.date || '').slice(0, 10) === taskDate &&

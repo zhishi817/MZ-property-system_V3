@@ -587,6 +587,9 @@ router.post('/role-permissions', requirePerm('rbac.manage'), async (req, res) =>
     'menu.finance.company_overview.visible': ['finance_transactions','order','properties','property_expenses'],
     'menu.finance.company_revenue.visible': ['company_incomes','company_expenses'],
     'menu.cms.visible': ['cms_pages'],
+    'menu.cms.company.visible': ['cms_pages'],
+    'menu.cms.public_resources.visible': ['cms_pages'],
+    'menu.cms.offline_passwords.visible': ['company_secret_items'],
     'menu.cms.customer_service_manual.visible': ['cms_pages'],
     'menu.rbac.visible': ['users'],
   }

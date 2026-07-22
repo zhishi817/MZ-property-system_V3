@@ -8,6 +8,7 @@ import multer from 'multer'
 import path from 'path'
 import { resizeUploadImage } from '../lib/uploadImageResize'
 import { hasR2, r2Upload } from '../r2'
+import { syncDailyNecessityAutoExpenseWithClient } from '../lib/dailyNecessitiesAutoExpense'
 
 export const router = Router()
 
@@ -71,6 +72,14 @@ function sendInventoryError(req: any, res: any, error: any) {
   const message = String(remapped?.message || 'failed')
   inventoryLog(req, code >= 500 ? 'error' : 'warn', 'request_failed', { status: code, message })
   return res.status(code).json(withTracePayload(req, { message }))
+}
+
+async function syncDailyReplacementAutoExpense(row: any) {
+  if (!(hasPg && pgPool) || !row?.id) return { ok: true, skipped: true, error: 'pg_unavailable' }
+  return pgRunInTransaction(async (client) => {
+    await ensureDailyPriceListSchema(client)
+    return syncDailyNecessityAutoExpenseWithClient(client, row)
+  })
 }
 
 function randomSuffix(len: number) {
@@ -5490,34 +5499,98 @@ async function getActorDisplayName(client: any, userId: string) {
   }
 }
 
+const dailyReplacementPayMethods = ['rent_deduction', 'tenant_pay', 'company_pay', 'landlord_pay', 'other_pay'] as const
+
+const dailyReplacementRequiredText = z.preprocess((v) => {
+  if (v === undefined || v === null) return ''
+  return String(v).trim()
+}, z.string().min(1))
+
+const dailyReplacementOptionalRequiredText = z.preprocess((v) => {
+  if (v === undefined) return undefined
+  if (v === null) return ''
+  return String(v).trim()
+}, z.string().min(1).optional())
+
+const dailyReplacementNullableText = z.preprocess((v) => {
+  if (v === undefined) return undefined
+  if (v === null) return null
+  const s = String(v).trim()
+  return s ? s : null
+}, z.string().min(1).optional().nullable())
+
+const dailyReplacementOptionalText = z.preprocess((v) => {
+  if (v === undefined) return undefined
+  if (v === null) return null
+  return String(v).trim()
+}, z.string().optional().nullable())
+
+const dailyReplacementOptionalUrlArray = z.preprocess((v) => {
+  if (v === undefined || v === null) return undefined
+  return v
+}, z.array(z.string()).optional())
+
+const dailyReplacementPayMethodSchema = z.preprocess((v) => {
+  if (v === undefined) return undefined
+  if (v === null) return null
+  const s = String(v).trim()
+  return s ? s : null
+}, z.enum(dailyReplacementPayMethods).optional().nullable())
+
+function dailyReplacementValidationError(error: z.ZodError<any>) {
+  const labels: Record<string, string> = {
+    property_id: '房号',
+    occurred_at: '日期',
+    item_id: '更换物品',
+    item_name: '更换物品',
+    quantity: '数量',
+    note: '备注',
+    invoice_description_en: '开票英文描述',
+    before_photo_urls: '更换前照片',
+    after_photo_urls: '更换后照片',
+    replacement_at: '更换日期',
+    replacer_name: '更换人',
+    pay_method: '扣款方式',
+    status: '状态',
+  }
+  const first = error.issues?.[0]
+  const path = first?.path?.join('.') || ''
+  const label = labels[path] || path || '字段'
+  const detail = first?.message || '格式不正确'
+  return {
+    message: `日用品更换记录保存失败：${label}${detail ? ` ${detail}` : ''}`,
+    fields: error.format(),
+  }
+}
+
 const dailyReplacementCreateSchema = z.object({
-  property_id: z.string().min(1),
-  occurred_at: z.string().min(1),
-  item_id: z.string().optional().nullable(),
-  item_name: z.string().min(1),
-  quantity: z.number().int().min(1).default(1),
-  note: z.string().optional(),
-  invoice_description_en: z.string().optional(),
-  before_photo_urls: z.array(z.string()).optional(),
-  after_photo_urls: z.array(z.string()).optional(),
-  replacement_at: z.string().optional().nullable(),
-  replacer_name: z.string().optional(),
-  pay_method: z.enum(['rent_deduction', 'tenant_pay', 'company_pay', 'landlord_pay', 'other_pay']).optional().nullable(),
+  property_id: dailyReplacementRequiredText,
+  occurred_at: dailyReplacementRequiredText,
+  item_id: dailyReplacementNullableText,
+  item_name: dailyReplacementRequiredText,
+  quantity: z.coerce.number().int().min(1).default(1),
+  note: dailyReplacementOptionalText,
+  invoice_description_en: dailyReplacementOptionalText,
+  before_photo_urls: dailyReplacementOptionalUrlArray,
+  after_photo_urls: dailyReplacementOptionalUrlArray,
+  replacement_at: dailyReplacementNullableText,
+  replacer_name: dailyReplacementOptionalText,
+  pay_method: dailyReplacementPayMethodSchema,
   status: z.enum(['need_replace', 'replaced', 'no_action']).optional(),
 })
 
 const dailyReplacementPatchSchema = z.object({
-  occurred_at: z.string().optional(),
-  item_id: z.string().optional().nullable(),
-  item_name: z.string().min(1).optional(),
-  quantity: z.number().int().min(1).optional(),
-  note: z.string().optional(),
-  invoice_description_en: z.string().optional(),
-  before_photo_urls: z.array(z.string()).optional(),
-  after_photo_urls: z.array(z.string()).optional(),
-  replacement_at: z.string().optional().nullable(),
-  replacer_name: z.string().optional(),
-  pay_method: z.enum(['rent_deduction', 'tenant_pay', 'company_pay', 'landlord_pay', 'other_pay']).optional().nullable(),
+  occurred_at: dailyReplacementOptionalRequiredText,
+  item_id: dailyReplacementNullableText,
+  item_name: dailyReplacementOptionalRequiredText,
+  quantity: z.coerce.number().int().min(1).optional(),
+  note: dailyReplacementOptionalText,
+  invoice_description_en: dailyReplacementOptionalText,
+  before_photo_urls: dailyReplacementOptionalUrlArray,
+  after_photo_urls: dailyReplacementOptionalUrlArray,
+  replacement_at: dailyReplacementNullableText,
+  replacer_name: dailyReplacementOptionalText,
+  pay_method: dailyReplacementPayMethodSchema,
   status: z.enum(['need_replace', 'replaced', 'no_action']).optional(),
 })
 
@@ -5590,7 +5663,7 @@ router.get('/daily-replacements', requireAnyPerm(['inventory_daily_replacements.
 
 router.post('/daily-replacements', requireAnyPerm(['inventory_daily_replacements.create', 'inventory.move']), async (req, res) => {
   const parsed = dailyReplacementCreateSchema.safeParse(req.body || {})
-  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  if (!parsed.success) return res.status(400).json(dailyReplacementValidationError(parsed.error))
   try {
     if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
     await ensureInventorySchema()
@@ -5637,8 +5710,18 @@ router.post('/daily-replacements', requireAnyPerm(['inventory_daily_replacements
     })
     if (!result) return res.status(500).json({ message: 'db not ready' })
     if (!(result as any).ok) return res.status((result as any).code).json({ message: (result as any).message })
-    addAudit('DailyReplacement', id, 'create', null, (result as any).row || null, actor)
-    return res.status(201).json((result as any).row || null)
+    const createdRow = (result as any).row || null
+    try {
+      const sync = await syncDailyReplacementAutoExpense(createdRow)
+      res.setHeader('x-auto-expense-sync', sync?.skipped ? 'skipped' : (sync?.ok ? 'ok' : 'failed'))
+      if (sync?.error) res.setHeader('x-auto-expense-reason', String(sync.error).slice(0, 80))
+    } catch (e: any) {
+      res.setHeader('x-auto-expense-sync', 'failed')
+      res.setHeader('x-auto-expense-reason', 'sync_error')
+      try { console.error('[daily-replacement-auto-expense:create]', id, String(e?.message || e)) } catch {}
+    }
+    addAudit('DailyReplacement', id, 'create', null, createdRow, actor)
+    return res.status(201).json(createdRow)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'failed' })
   }
@@ -5647,7 +5730,7 @@ router.post('/daily-replacements', requireAnyPerm(['inventory_daily_replacements
 router.patch('/daily-replacements/:id', requireAnyPerm(['inventory_daily_replacements.write', 'inventory.move']), async (req, res) => {
   const id = String(req.params.id || '').trim()
   const parsed = dailyReplacementPatchSchema.safeParse(req.body || {})
-  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  if (!parsed.success) return res.status(400).json(dailyReplacementValidationError(parsed.error))
   try {
     if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
     await ensureInventorySchema()
@@ -5685,8 +5768,55 @@ router.patch('/daily-replacements/:id', requireAnyPerm(['inventory_daily_replace
        RETURNING *`,
       [...values, id],
     )
-    addAudit('DailyReplacement', id, 'update', prev, updated.rows?.[0] || null, actorId(req))
-    return res.json(updated.rows?.[0] || null)
+    const updatedRow = updated.rows?.[0] || null
+    try {
+      const sync = await syncDailyReplacementAutoExpense(updatedRow)
+      res.setHeader('x-auto-expense-sync', sync?.skipped ? 'skipped' : (sync?.ok ? 'ok' : 'failed'))
+      if (sync?.error) res.setHeader('x-auto-expense-reason', String(sync.error).slice(0, 80))
+    } catch (e: any) {
+      res.setHeader('x-auto-expense-sync', 'failed')
+      res.setHeader('x-auto-expense-reason', 'sync_error')
+      try { console.error('[daily-replacement-auto-expense:update]', id, String(e?.message || e)) } catch {}
+    }
+    addAudit('DailyReplacement', id, 'update', prev, updatedRow, actorId(req))
+    return res.json(updatedRow)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+router.delete('/daily-replacements/:id', requireAnyPerm(['inventory_daily_replacements.delete']), async (req, res) => {
+  const id = String(req.params.id || '').trim()
+  if (!id) return res.status(400).json({ message: 'missing id' })
+  try {
+    if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
+    await ensureInventorySchema()
+    await ensureDailyNecessitiesSchema()
+    const result = await pgRunInTransaction(async (client) => {
+      const before = await client.query(`SELECT * FROM property_daily_necessities WHERE id = $1 LIMIT 1`, [id])
+      const prev = before.rows?.[0] || null
+      if (!prev) return { ok: false as const, code: 404 as const, message: 'not found' }
+      await client.query(`DELETE FROM property_daily_necessities WHERE id = $1`, [id])
+      try {
+        await client.query(
+          `UPDATE property_expenses
+              SET status='void'
+            WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND coalesce(manual_override,false)=false`,
+          ['daily_necessities', id],
+        )
+        await client.query(
+          `UPDATE company_expenses
+              SET status='void'
+            WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND coalesce(manual_override,false)=false`,
+          ['daily_necessities', id],
+        )
+      } catch {}
+      return { ok: true as const, row: prev }
+    })
+    if (!result) return res.status(500).json({ message: 'db not ready' })
+    if (!(result as any).ok) return res.status((result as any).code).json({ message: (result as any).message })
+    addAudit('DailyReplacement', id, 'delete', (result as any).row || null, null, actorId(req))
+    return res.json({ ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'failed' })
   }

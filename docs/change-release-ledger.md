@@ -2,6 +2,882 @@
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
+## CRL-20260722-011 — 年度报告读取移除运行时建表副作用
+
+- **Status:** pushed
+- **Updated:** 2026-07-22 16:22 AEST
+- **Request:** 用户要求优化年度报告查询时可能自动建表的问题。
+- **Outcome:** 年度报告 GET 只执行手工月份 SELECT；迁移表不存在时按无手工月份数据返回，不再由查询触发 DDL。保存和删除接口仍保留写操作前的表结构保护。
+
+### Implementation
+
+- Previous behavior: `loadManualRows()` 在读取年度报告前调用 `ensureAnnualReportManualMonthsTable()`，可能执行 `CREATE TABLE/CREATE INDEX IF NOT EXISTS`。
+- New behavior: GET 路径移除建表调用；对 PostgreSQL `42P01`（表不存在）返回空手工月份列表，其他数据库错误继续抛出。
+- Key decisions: 复用已有 `backend/scripts/migrations/20260623_property_annual_report_manual_months.sql`，不新增表结构或自动迁移入口；DDL 仅保留在保存/删除写路径。
+
+### Files / Areas
+
+- `backend/src/lib/annualPropertyReport.ts` — modified: 读取路径改为只读 SELECT，并兼容迁移尚未执行的状态。
+- `backend/src/lib/managementFeeRules.ts` — modified: 管理费规则列表读取移除运行时建表调用，并兼容表未迁移时的 `42P01`。
+- `backend/scripts/tests/test_management_fee_rule_reads.ts` — added: 验证规则读取不执行 DDL，且表不存在时返回空规则。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: 年度报告 GET 及复用的管理费规则列表读取不再触发数据库结构写入；接口路径和响应结构保持不变。
+- Database / migration: no schema change; existing migration must still be applied before relying on manual-month persistence.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: `CRL-20260722-003`, `CRL-20260722-010`.
+
+### Validation
+
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_annual_property_report.ts` in `backend` — passed.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_management_fee_rule_reads.ts` in `backend` — passed: missing-table reads return empty rules without issuing CREATE statements; existing rows remain normalized.
+- `npm run build` in `backend` — passed: TypeScript build completed.
+- `git diff --check` — passed.
+- Static path check — passed: annual-report GET and management-fee rule list reads contain no table-ensure call; manual-month and management-fee write paths retain their existing guards.
+- `python3 scripts/audit_change_release_ledger.py` — passed after repair update: `Changed files: 11`, `Recorded changed files: 11`, `Coverage: PASS`.
+
+### Risks / Release Notes
+
+- Risk: if the migration is not applied, saved manual-month records remain unavailable until the migration runs; the report will show the existing missing-manual-month status instead of creating the table during GET.
+- Risk: if the management-fee migration is not applied, historical rules remain unavailable and the report continues to show the existing missing-rule warning; no runtime DDL is attempted.
+- Owner confirmation: the user confirmed that the production annual-report manual-months migration and management-fee rules migration are complete.
+- Rollback: restore the GET-side ensure call if runtime initialization is explicitly required; no database rollback is required.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or production data were added.
+- Git state: pushed to `origin/Dev` in commit `639d509`; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+
+## CRL-20260722-010 — 年度报告英文日期澳洲格式
+
+- **Status:** pushed
+- **Updated:** 2026-07-22 15:47 AEST
+- **Request:** 用户要求年度报告英文版日期遵循澳洲显示格式。
+- **Outcome:** 英文版财年日期由 ISO `YYYY-MM-DD` 改为澳洲常用的 `DD/MM/YYYY`；中文版本保持原有日期显示。
+
+### Implementation
+
+- Previous behavior: 英文版显示 `FY2026: 2025-07-01 to 2026-06-30`。
+- New behavior: 英文版显示 `FY2026: 01/07/2025 to 30/06/2026`。
+- Key decisions: 使用本地 ISO 日期字符串的安全拆分，不通过 `Date` 对象转换，避免时区导致日期偏移。
+
+### Files / Areas
+
+- `frontend/src/components/FiscalYearStatement.tsx` — modified: 增加澳洲日期格式化函数并仅应用于英文版标题日期。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none; no production data change performed.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: `CRL-20260722-009`, `CRL-20260722-008`.
+
+### Validation
+
+- `npm run lint --prefix frontend -- --file src/components/FiscalYearStatement.tsx` — passed: existing `<img>` LCP warning only.
+- `./node_modules/.bin/vitest run src/lib/annualReport.test.ts` in `frontend` — passed: 1 file, 8 tests.
+- `npm run build` in `frontend` — passed: optimized production build completed; existing Browserslist, repository ESLint, and Recharts warnings remain.
+- `git diff --check` — passed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: `Changed files: 8`, `Recorded changed files: 8`, `Coverage: PASS`.
+
+### Risks / Release Notes
+
+- Risk: if an unexpected non-ISO date string is received, the formatter leaves it unchanged rather than guessing a potentially incorrect date.
+- Rollback: remove `formatAustralianDate` from the English title interpolation; no database rollback is required.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or business data were added.
+- Git state: pushed to `origin/Dev` in commit `639d509`; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+
+## CRL-20260722-009 — 年度报告客户信息字体统一
+
+- **Status:** pushed
+- **Updated:** 2026-07-22 15:44 AEST
+- **Request:** 用户反馈客户信息中的房东姓名、房号和地址字体大小不一致，要求统一。
+- **Outcome:** 客户信息三行统一使用 12px 字体，继续保持右对齐和现有行间距。
+
+### Implementation
+
+- Previous behavior: 房东姓名继承 14px，房号和地址使用 12px，视觉上大小不一致。
+- New behavior: 房东姓名、房号、地址全部显式设置为 12px。
+- Key decisions: 只调整客户信息的字体展示，不改变客户数据、位置、对齐方式或报表逻辑。
+
+### Files / Areas
+
+- `frontend/src/components/FiscalYearStatement.tsx` — modified: 为房东姓名补充 12px 字体样式。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none; no production data change performed.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: `CRL-20260722-008`, `CRL-20260722-007`.
+
+### Validation
+
+- `npm run lint --prefix frontend -- --file src/components/FiscalYearStatement.tsx` — passed: existing `<img>` LCP warning only.
+- `./node_modules/.bin/vitest run src/lib/annualReport.test.ts` in `frontend` — passed: 1 file, 8 tests.
+- `npm run build` in `frontend` — passed: optimized production build completed; existing Browserslist, repository ESLint, and Recharts warnings remain.
+- `git diff --check` — passed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: `Changed files: 8`, `Recorded changed files: 8`, `Coverage: PASS`.
+
+### Risks / Release Notes
+
+- Risk: none beyond normal font rendering differences between available system fonts.
+- Rollback: remove the explicit 12px style from the owner name; no database rollback is required.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or business data were added.
+- Git state: pushed to `origin/Dev` in commit `639d509`; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+
+## CRL-20260722-008 — 年度报告中文标题单行显示
+
+- **Status:** pushed
+- **Updated:** 2026-07-22 15:28 AEST
+- **Request:** 用户反馈双语年度报告标题中的中文部分自动换成了两行。
+- **Outcome:** 中文标题使用 26px 字号并禁止自动换行；英文标题保持 28px，双语标题在 PDF 和预览中保持单行。
+
+### Implementation
+
+- Previous behavior: 标题位于顶部中间网格列，双语标题宽度超过列宽后自动换行。
+- New behavior: 双语标题设置 `whiteSpace: nowrap`，中文模式字号调整为 26px，英文模式保持 28px。
+- Key decisions: 只调整标题展示样式，不改变标题文本、客户信息、报表数据或导出分页逻辑。
+
+### Files / Areas
+
+- `frontend/src/components/FiscalYearStatement.tsx` — modified: 调整年度报告标题的字号和换行行为。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none; no production data change performed.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: `CRL-20260722-007`, `CRL-20260722-006`.
+
+### Validation
+
+- `npm run lint --prefix frontend -- --file src/components/FiscalYearStatement.tsx` — passed: existing `<img>` LCP warning only.
+- `./node_modules/.bin/vitest run src/lib/annualReport.test.ts` in `frontend` — passed: 1 file, 8 tests.
+- `npm run build` in `frontend` — passed: optimized production build completed; existing Browserslist, repository ESLint, and Recharts warnings remain.
+- `git diff --check` — passed.
+- 脱敏版标题布局渲染与图片检查 — passed: title height 37px and `wraps: false` for the bilingual title.
+- `python3 scripts/audit_change_release_ledger.py` — passed: `Changed files: 8`, `Recorded changed files: 8`, `Coverage: PASS`.
+
+### Risks / Release Notes
+
+- Risk: if the report title text becomes materially longer, the single-line title may approach the Logo or right-side spacer; the current bilingual title fits the tested export width.
+- Rollback: remove `whiteSpace: nowrap` and restore the previous title font sizing; no database rollback is required.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or business data were added.
+- Git state: pushed to `origin/Dev` in commit `639d509`; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+
+## CRL-20260722-007 — 年度报告页脚底部留白修复
+
+- **Status:** pushed
+- **Updated:** 2026-07-22 15:22 AEST
+- **Request:** 用户反馈 PDF 页脚上方结束后，页面底部仍有过多空白，要求继续优化。
+- **Outcome:** 修正 PDF 外层容器包裹报告根节点时的 CSS 选择器，使报告主体真正撑满 A4 横向内容区，页脚贴近底部，仅保留正常内边距。
+
+### Implementation
+
+- Previous behavior: PDF 导出器把 `__pdf_capture_root__` class 加在外层复制容器，但页面高度和页脚规则只匹配报告根节点自身带 class 的情况，导致页脚未被推到页面底部。
+- New behavior: 同时匹配“报告根节点自身带 class”和“外层导出容器包裹报告根节点”两种结构；页脚使用自动上边距定位到底部。
+- Key decisions: 只修正年度报告 PDF 布局选择器，不改变数据、金额计算、分页接口或业务逻辑。
+
+### Files / Areas
+
+- `frontend/src/components/FiscalYearStatement.tsx` — modified: 补充外层 PDF 导出容器下的报告根节点和页脚选择器。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none; no production data change performed.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: `CRL-20260722-004`, `CRL-20260722-006`.
+
+### Validation
+
+- `npm run lint --prefix frontend -- --file src/components/FiscalYearStatement.tsx` — passed: existing `<img>` LCP warning only.
+- `./node_modules/.bin/vitest run src/lib/annualReport.test.ts` in `frontend` — passed: 1 file, 8 tests.
+- `npm run build` in `frontend` — passed: optimized production build completed; existing Browserslist, repository ESLint, and Recharts warnings remain.
+- `git diff --check` — passed.
+- 脱敏版真实外层容器布局渲染与图片检查 — passed: root height 713px, footer bottom gap 16px; footer is visually near the root bottom.
+- `python3 scripts/audit_change_release_ledger.py` — passed: `Changed files: 8`, `Recorded changed files: 8`, `Coverage: PASS`.
+
+### Risks / Release Notes
+
+- Risk: if PDF export width or margins change, the 188.7mm minimum height should be recalculated.
+- Rollback: restore the previous selector and remove the wrapper-specific selector; no database rollback is required.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or business data were added.
+- Git state: pushed to `origin/Dev` in commit `639d509`; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+
+## CRL-20260722-006 — 年度报告客户信息框宽度微调
+
+- **Status:** pushed
+- **Updated:** 2026-07-22 15:13 AEST
+- **Request:** 用户确认客户信息内容继续右对齐，并要求缩短框内左侧空白。
+- **Outcome:** 保留客户信息标题下方独立行、右对齐和表格前间距，将客户信息卡片宽度由 42% 缩至 34%。
+
+### Implementation
+
+- Previous behavior: 客户信息卡片宽度较大，右对齐内容左侧保留过多空白。
+- New behavior: 客户信息卡片使用 34% 宽度；客户信息标题、房东、房号和地址继续右对齐，卡片仍位于标题下方独立行。
+- Key decisions: 仅进行局部 PDF/预览排版微调，不改变客户数据、接口、金额计算或分页逻辑。
+
+### Files / Areas
+
+- `frontend/src/components/FiscalYearStatement.tsx` — modified: 缩小客户信息卡片宽度并恢复右对齐。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none; no production data change performed.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: `CRL-20260722-005`, `CRL-20260722-004`.
+
+### Validation
+
+- `npm run lint --prefix frontend -- --file src/components/FiscalYearStatement.tsx` — passed: existing `<img>` LCP warning only.
+- `./node_modules/.bin/vitest run src/lib/annualReport.test.ts` in `frontend` — passed: 1 file, 8 tests.
+- `npm run build` in `frontend` — passed: optimized production build completed; existing Browserslist, repository ESLint, and Recharts warnings remain.
+- `git diff --check` — passed.
+- 脱敏版布局渲染与图片检查 — passed: customer card remains 16px from the report root's right edge, stays right-aligned, and has an 18px gap before the data table.
+- `python3 scripts/audit_change_release_ledger.py` — pending: run after this ledger update.
+
+### Risks / Release Notes
+
+- Risk: the narrower 34% card may wrap unusually long addresses to more lines; the card remains allowed to grow vertically.
+- Rollback: restore the card width to 42%; no database rollback is required.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or business data were added.
+- Git state: pushed to `origin/Dev` in commit `639d509`; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+
+## CRL-20260722-005 — 年度报告客户信息位置优化
+
+- **Status:** pushed
+- **Updated:** 2026-07-22 15:05 AEST
+- **Request:** 用户要求客户信息不要与标题同一行，并进一步减少客户信息区域左侧空白、与数据表之间保留间距。
+- **Outcome:** 顶部仅保留 Logo 和报告标题；客户信息改为标题下方独立卡片，靠左排列，并与警告/数据表保留垂直间距。
+
+### Implementation
+
+- Previous behavior: 客户信息卡片与 Logo、标题共用顶部三列布局，客户信息被放在标题右侧。
+- New behavior: 客户信息卡片移至标题下方独立行，使用 42% 宽度靠左显示；卡片底部增加 18px 间距，避免紧贴后续警告或数据表。
+- Key decisions: 只调整 `FiscalYearStatement` 的展示结构和间距，不修改客户数据、接口、金额计算或 PDF 分页逻辑。
+
+### Files / Areas
+
+- `frontend/src/components/FiscalYearStatement.tsx` — modified: 调整标题/客户信息布局、客户卡片对齐方式和与数据表的间距。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none; no production data change performed.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: `CRL-20260722-002`, `CRL-20260722-004`.
+
+### Validation
+
+- `npm run lint --prefix frontend -- --file src/components/FiscalYearStatement.tsx` — passed: existing `<img>` LCP warning only.
+- `./node_modules/.bin/vitest run src/lib/annualReport.test.ts` in `frontend` — passed: 1 file, 8 tests.
+- `npm run build` in `frontend` — passed: optimized production build completed; existing Browserslist, repository ESLint, and Recharts warnings remain.
+- `git diff --check` — passed.
+- 脱敏版布局渲染与图片检查 — passed: customer card starts 16px from the report root's left edge and has an 18px gap before the data table.
+- `python3 scripts/audit_change_release_ledger.py` — passed at the time of the validation run.
+
+### Risks / Release Notes
+
+- Risk: the 42% card width was a presentation choice; it was subsequently narrowed by CRL-20260722-006.
+- Rollback: restore the original three-column header and remove the standalone customer card wrapper; no database rollback is required.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or business data were added.
+- Git state: pushed to `origin/Dev` in commit `639d509`; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+
+## CRL-20260722-004 — 年度报告 PDF 页面布局优化
+
+- **Status:** pushed
+- **Updated:** 2026-07-22 15:03 AEST
+- **Request:** 用户反馈年度报告 PDF 内容集中在页面上方、底部留白过大，要求优化页面布局。
+- **Outcome:** PDF 导出副本按 A4 横向可用高度撑开，页脚自动贴近页面底部；网页预览保持原有紧凑布局。
+
+### Implementation
+
+- Previous behavior: PDF 导出节点按内容自然高度测量，报告表格和页脚结束较早，单页底部出现大面积空白。
+- New behavior: 仅对带有 `__pdf_capture_root__` 标记的 PDF 导出副本设置最小页面高度和纵向 flex 布局，并让报告页脚使用自动上边距贴近底部。
+- Key decisions: 只修改报告组件的 PDF 展示样式，不改共享 PDF 导出器、报表数据、金额计算、接口或数据库。
+
+### Files / Areas
+
+- `frontend/src/components/FiscalYearStatement.tsx` — modified: 增加 PDF 导出副本的页面高度约束和底部页脚定位标记。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none; no production data change performed.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: `CRL-20260722-002`, `CRL-20260722-003`.
+
+### Validation
+
+- `npm run lint --prefix frontend -- --file src/components/FiscalYearStatement.tsx` — passed: existing `<img>` LCP warning only.
+- `./node_modules/.bin/vitest run src/lib/annualReport.test.ts` in `frontend` — passed: 1 file, 8 tests.
+- `npm run build` in `frontend` — passed: optimized production build completed for 95 routes; existing Browserslist, ESLint, and Recharts warnings remain.
+- `git diff --check` — passed.
+- 脱敏版布局渲染与图片检查 — passed: temporary Playwright fixture measured `bottomGap: 16px`; footer is visually anchored near the root bottom. This is a layout fixture, not a live authenticated business report export.
+- `python3 scripts/audit_change_release_ledger.py` — passed: `Changed files: 8`, `Recorded changed files: 8`, `Coverage: PASS`.
+
+### Risks / Release Notes
+
+- Risk: `188.7mm` is derived from the current 277mm export width, A4 landscape format, and 12mm PDF margins; if those export dimensions change, the value should be recalculated.
+- Risk: if warnings or address content make the report exceed one page, the existing vertical paginator remains responsible for pagination and should be regression-tested with long content.
+- Rollback: remove the PDF-only capture styles and footer marker; no database rollback is required.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or business data were added.
+- Git state: pushed to `origin/Dev` in commit `639d509`; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+
+## CRL-20260722-003 — 年度报告手工月份统一应用
+
+- **Status:** pushed
+- **Updated:** 2026-07-22 14:18 AEST
+- **Request:** 用户要求年度报告手工月份不要逐行保存，改为统一应用修改；勾选完整月份时，未填写数字自动按 0 保存。
+- **Outcome:** 手工月份录入移除每行保存按钮，新增“应用修改”按钮；只提交实际编辑过的月份；勾选“完整”会立即补齐当前月份的空白金额为 0，保存前再次兜底补齐。
+
+### Implementation
+
+- Previous behavior: 每个手工月份都有单独的保存按钮；完整月份缺少任一数字时会被接口拒绝，并提示必须填写全部字段。
+- New behavior: 用户可以编辑多个月份后一次点击“应用修改”；完整月份的空白数字自动变为 0；未编辑月份不会被重复提交；删除仍保留为单个月份操作。
+- Key decisions: 复用现有逐月 `PUT /finance/annual-report/manual-months/:propertyId/:monthKey` 接口，由页面统一编排提交，不新增数据库表、迁移或第二套批量保存接口。
+
+### Files / Areas
+
+- `frontend/src/app/finance/performance/annual/page.tsx` — modified: 增加脏月份跟踪、统一应用、完整月份 0 值补齐，并移除每行保存按钮。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: unchanged; reuses the existing manual-month upsert endpoint.
+- Database / migration: none; no schema or production data change performed.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: builds on `CRL-20260722-002` annual report display and owner-link compatibility.
+
+### Validation
+
+- `git diff --check` — passed.
+- `npm run lint --prefix frontend -- --file src/app/finance/performance/annual/page.tsx` — passed: no ESLint warnings or errors.
+- `./node_modules/.bin/vitest run src/lib/annualReport.test.ts` in `frontend` — passed: 1 file, 8 tests.
+- `npm run build` in `frontend` — passed: production build completed for 95 routes; existing Browserslist, ESLint, and Recharts warnings remain.
+- `python3 scripts/audit_change_release_ledger.py` — not run yet: run after this ledger update.
+
+### Risks / Release Notes
+
+- Risk: the UI sends modified months sequentially through the existing per-month API; if a later request fails, earlier months may already be saved and the user should retry the remaining changes.
+- Owner confirmation: the user accepts the sequential partial-success behavior when a later month fails.
+- Rollback: restore the previous per-row save controls and remove the dirty-month/zero-fill logic; no database rollback is required.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or financial account values were added.
+- Git state: uncommitted; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+
+## CRL-20260722-002 — 年度报告展示与房东关联兼容
+
+- **Status:** pushed
+- **Updated:** 2026-07-22 13:20 AEST
+- **Request:** 用户确认执行年度报告优化：移除正式报告中的内部小字，客户信息显示房东姓名、房号和地址，并修复已关联房东/历史费率规则却显示缺少的问题。
+- **Outcome:** 年度报告 PDF 和预览不再显示内部说明；客户信息显示房东、房号和地址；年度报告读取房东时兼容房源正向关联和房东反向房源关联，反向关联命中后可继续加载历史管理费规则。
+
+### Implementation
+
+- Previous behavior:
+  - 正式报告中包含“房东信息按报告生成时的当前房东资料展示”说明，预览页还显示内部对象/语言说明。
+  - 客户信息区域只显示房东姓名和 `code || address`，有房号时地址被隐藏。
+  - 年度报告只读取 `properties.landlord_id`；房东管理页维护的 `landlords.property_ids` 未被年度报告识别，导致房东和历史管理费规则同时显示缺少。
+- New behavior:
+  - 移除 PDF 容器内和预览卡片下方的内部说明。
+  - 客户信息区域单独显示房东姓名、房源房号和房源地址。
+  - 后端优先使用 `properties.landlord_id`，找不到房东时按 `landlords.property_ids` 反向查找；不修改数据库关系，不改变历史费率计算口径。
+- Key decisions:
+  - 保持 `AnnualPropertyReport` 为页面和 PDF 的共同数据源。
+  - 不用当前管理费率替代缺失的历史规则；只有房东关联被正确解析后，现有历史规则匹配逻辑才继续工作。
+
+### Files / Areas
+
+- `backend/src/lib/annualPropertyReport.ts` — modified: 增加反向房源关联解析，并在 PostgreSQL 和本地 store 路径复用。
+- `backend/scripts/tests/test_annual_property_report.ts` — modified: 增加反向 `property_ids` 解析测试。
+- `frontend/src/components/FiscalYearStatement.tsx` — modified: 清理报告说明文字，补全客户信息展示。
+- `frontend/src/app/finance/performance/annual/page.tsx` — modified: 移除预览页内部说明，并清理对应无用变量。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: 年度报告读取逻辑兼容两种既有关联字段；接口路径和权限不变。
+- Database / migration: none; no production write or schema change.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: existing annual-report units in the ledger provide the shared report object and historical rule semantics.
+
+### Validation
+
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_annual_property_report.ts` in `backend` — passed: exit code `0`.
+- `./node_modules/.bin/vitest run src/lib/annualReport.test.ts` in `frontend` — passed: 1 file, 8 tests.
+- `npm run build` in `backend` — passed: TypeScript build completed.
+- `npm run lint` in `frontend` — passed: existing repository warnings only; no new errors.
+- `npm run build` in `frontend` — passed: optimized production build completed for 95 routes; existing lint/browser/chart warnings remain.
+- `git diff --check` — passed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: `Changed files: 10`, `Recorded changed files: 10`, `Coverage: PASS`.
+
+### Risks / Release Notes
+
+- Risk: if a property is not present in either `properties.landlord_id` or `landlords.property_ids`, the report will correctly continue to show missing owner/rule warnings; this change does not repair production associations.
+- Rollback: revert the four implementation/test file changes and remove this ledger unit; no database rollback is required.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or personal financial account values were added to code or ledger.
+- Git state: pushed to `origin/Dev` in commit `d0324bf`; unrelated pre-existing worktree changes are preserved and not included in this unit.
+## CRL-20260718-002 — 根仓库统一检查命令
+
+- **Status:** pushed
+- **Updated:** 2026-07-20 11:24 AEST
+- **Request:** 用户要求先补统一检查命令。
+- **Outcome:** 根仓库 `package.json` 新增统一检查入口，后续本地自检、CI 和独立 Codex 审查线程可以复用同一组命令。
+
+### Implementation
+
+- Previous behavior:
+  - 根仓库只提供 `dev` 相关脚本；backend、frontend、mobile 的 build/lint/test/typecheck 分散在各自 package 里。
+  - 发布前或审查时需要手动记住每个模块该跑哪些命令，容易漏跑 ledger audit 或移动端 typecheck/lint/test。
+- New behavior:
+  - 新增 `check:ledger`，统一跑 release ledger audit。
+  - 新增 `check:backend`，统一跑 backend TypeScript build 和现有关键 targeted tests。
+  - 新增 `check:frontend`，统一跑 frontend lint、Vitest coverage test 和 Next build。
+  - 新增 `check:mobile`，在存在 `mz-cleaning-app-frontend/package.json` 时跑 Expo mobile typecheck、lint 和 Jest；纯 root clone 缺少 nested mobile repo 时明确 skip。
+  - 新增 `check`，按 ledger、backend、frontend、mobile 顺序串联完整自检。
+- Key decisions:
+  - 只复用现有 npm scripts 和 POSIX shell 条件判断，不新增依赖、不新增脚本文件、不改变各模块现有测试语义。
+  - 暂不把 GitHub Actions 接进来；本单元只建立本地统一入口。
+
+### Files / Areas
+
+- `package.json` — modified: 新增 root-level `check:*` 和 `check` scripts。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: root npm scripts only.
+- Dependencies: none.
+- Related units: builds on `CRL-20260718-001` 的自测/优化 guardrail；当前 worktree 仍包含多个既有未提交 release units。
+
+### Validation
+
+- `npm run check:ledger` — passed in fresh clone: `Changed files: 16`, `Recorded changed files: 16`, `Coverage: PASS`.
+- `npm run check:backend` — passed in fresh clone: backend `tsc -p .` build plus `test:cleaning-rules`, `test:cleaning-inspection-merge`, `test:app-notification-policies`, `test:guest-luggage-rules`, `test:orders-overlap`, `test:auto-expense-source-summary`, and `test:company-revenue-report`.
+- `npm run check:frontend` — passed in fresh clone: `next lint`, 39 Vitest files / 170 tests with coverage, and `next build` for 95 routes. Existing ESLint, Browserslist, and Recharts warnings remain.
+- `npm run check:mobile` — passed/skipped in fresh clone: `mz-cleaning-app-frontend/package.json` was absent, so the script printed the skip message and exited 0.
+- `npm run check` — passed in fresh clone: full root sequence completed ledger, backend, frontend, and conditional mobile checks.
+
+### Risks / Release Notes
+
+- Risk: `check:frontend` uses the existing `frontend` coverage test and build scripts, so any pre-existing coverage/build baseline issue will surface through the unified command.
+- Risk: `check:backend` intentionally uses the package's existing targeted tests only; it is not a full exhaustive backend integration suite.
+- Rollback: remove the added `check:*` and `check` entries from root `package.json`, then remove this ledger unit.
+- Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: implementation pushed to root `Dev` in commit `c2710d8` (`c2710d81e9dddab42e12215371f639e66990473d`); ledger status update recorded in the follow-up commit.
+
+## CRL-20260718-001 — 自测优化防跑偏规范与项目 Skill
+
+- **Status:** pushed
+- **Updated:** 2026-07-20 11:24 AEST
+- **Request:** 用户要求把“自测/优化防跑偏”完整版添加到相应位置，包括根目录 agent 规则和项目 skill。
+- **Outcome:** 根目录 `AGENTS.md` 增加自测/优化硬边界；新增 `.codex/skills/mz-app-self-test-guardrails/SKILL.md`，用于在测试、巡检、优化、自动找问题和修复时强制执行范围、只读审计、证据报告、修复闸门和 MZ 技术栈验证流程。
+
+### Implementation
+
+- Previous behavior:
+  - `AGENTS.md` 只包含 release ledger 通用要求，没有把自测/优化类任务的范围锁定、复杂业务级联审计、停止条件和证据格式固化到仓库指令。
+  - 项目 skills 里没有专门用于“自己测试 app / 网页端 / 找问题 / 修复优化”的防跑偏流程。
+- New behavior:
+  - `AGENTS.md` 明确自测/优化类任务默认先计划和只读发现，要求报告范围、证据、P0/P1/P2 等级，并在生产写入、外部同步、权限核心、数据库结构、依赖、跨范围修改等情况停下来询问。
+  - 新增 `mz-app-self-test-guardrails` skill，按 Phase 1-6 规范自测任务：Scope And Plan、Read-Only Testing、Issue Report、Repair Gate、MZ Validation、Release Ledger，并包含 Node/Postgres、Next.js admin、Expo cleaning app、跨层任务流的项目验证清单。
+- Key decisions:
+  - 只创建用户要求的核心 skill 文件，不额外生成 `agents/openai.yaml`，避免超出“两份文件”范围。
+  - 验证命令采用当前仓库实际 `npm --prefix` / package-lock 结构，不写死 `pnpm --filter`；Supabase/Postgres 相关命令保持条件式，避免发明仓库不存在的 Supabase workflow。
+
+### Files / Areas
+
+- `AGENTS.md` — modified: 新增 Self-Test And Optimization Guardrails 硬边界。
+- `.codex/skills/mz-app-self-test-guardrails/SKILL.md` — added: 新增自测/优化防跑偏项目 skill。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: none. The worktree has many pre-existing unrelated modified files from other units; this unit only owns the files listed above.
+
+### Validation
+
+- `git diff --check -- AGENTS.md .codex/skills/mz-app-self-test-guardrails/SKILL.md` — passed.
+- `python3 /Users/zhishi/.codex/skills/.system/skill-creator/scripts/quick_validate.py .codex/skills/mz-app-self-test-guardrails` — passed: `Skill is valid!`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/audit_change_release_ledger.py` — passed: Changed files 21, recorded changed files 21, Coverage PASS.
+- App build/typecheck/lint/test — not run: docs/agent-instruction/skill-only change, no runtime app code changed.
+
+### Risks / Release Notes
+
+- Risk: future agents must load this skill only when triggered by self-test/audit/optimization/fix-discovered-issues requests; ordinary narrow development tasks should continue using the existing project skills and ledger rules.
+- Rollback: remove the Self-Test And Optimization Guardrails section from `AGENTS.md`, delete `.codex/skills/mz-app-self-test-guardrails/SKILL.md`, and remove this ledger entry.
+- Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: implementation pushed to root `Dev` in commit `c2710d8` (`c2710d81e9dddab42e12215371f639e66990473d`); ledger status update recorded in the follow-up commit.
+
+## CRL-20260718-003 — 新 clone 台账 UTF-8 修复
+
+- **Status:** pushed
+- **Updated:** 2026-07-20 11:24 AEST
+- **Request:** 用户要求按推荐流程 clone 当前 Dev 后保留指定 CRL。
+- **Outcome:** 新 clone 的 `docs/change-release-ledger.md` 从远端带有非 UTF-8 二进制尾部，导致 `scripts/audit_change_release_ledger.py` 无法读取；已截除损坏尾部并保留可读 CRL 条目，使台账审计可以继续运行。
+
+### Implementation
+
+- Previous behavior: `docs/change-release-ledger.md` 含 NUL/非法 UTF-8 字节，ledger audit 在读取文件时直接 `UnicodeDecodeError`。
+- New behavior: 台账文件恢复为合法 UTF-8 markdown；当前迁移涉及的改动可以被审计脚本读取和匹配。
+- Key decisions: 只截除第一个 UTF-8 错误前上一条 CRL 标题之后的损坏尾部；不改业务代码、不记录任何敏感值。
+
+### Files / Areas
+
+- `docs/change-release-ledger.md` — modified: 新 clone 台账编码修复，并补入 `CRL-20260718-001` / `CRL-20260718-002`。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: supports preserving `CRL-20260718-001`, `CRL-20260718-002`, `CRL-20260703-005`, and `CRL-20260703-006` in the fresh Dev clone.
+
+### Validation
+
+- `python3 -c "from pathlib import Path; Path(\"docs/change-release-ledger.md\").read_text(encoding=\"utf-8\"); print(\"utf8 ok\")"` — passed: ledger reads as UTF-8.
+- `python3 scripts/audit_change_release_ledger.py` — passed: `Changed files: 16`, `Recorded changed files: 16`, `Coverage: PASS`.
+
+### Update — 2026-07-20 11:24 AEST
+
+- Fresh clone was fast-forwarded to remote `Dev` commit `cd0f584` before release; the ledger conflict was resolved by preserving the fresh migrated CRL entries and reconnecting the remote ledger tail.
+- Removed accidentally captured tool truncation text from the ledger while resolving the conflict; `docs/change-release-ledger.md` reads as UTF-8 and has no conflict markers.
+- `npm run check` — passed after the fast-forward and conflict resolution: ledger audit passed, backend build/targeted tests passed, frontend lint/test/build passed, and mobile check skipped because `mz-cleaning-app-frontend/package.json` is absent in the fresh root clone.
+- `git push origin Dev` — passed for implementation commit `c2710d8` (`c2710d81e9dddab42e12215371f639e66990473d`); `git ls-remote origin refs/heads/Dev` confirmed the remote branch at that commit before this ledger status update.
+
+### Risks / Release Notes
+
+- Risk: the corrupt tail already existed in the cloned `origin/Dev` ledger; entries after the damaged point were unreadable and could not be safely reconstructed from that file. Current migrated files are still covered by existing or newly inserted CRL entries.
+- Rollback: restore `docs/change-release-ledger.md` from `origin/Dev`, but ledger audit will fail again until the encoding issue is fixed another way.
+- Sensitive-information review: no secrets, `.env` contents, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: implementation pushed to root `Dev` in commit `c2710d8` (`c2710d81e9dddab42e12215371f639e66990473d`); ledger status update recorded in the follow-up commit.
+
+## CRL-20260713-001 — CMS 菜单收拢与线下密码管理
+
+- **Status:** pushed
+- **Updated:** 2026-07-13 19:21 Australia/Melbourne
+- **Request:** 执行 CMS 整理第一、第二阶段：菜单收拢为公司内容、公开指南/外链、线下密码三块；删除公司账户密码/内部机密项方向；线下密码支持新增、修改、删除、维护、搜索和授权用户明文查看。
+- **Outcome:** CMS 主菜单现在只保留“公司内容中心”“公开指南与外链”“线下密码管理”三个入口；“公开指南与外链”是独立页面，公司内容中心不再出现同名重复标签；新增线下密码管理页面，房源类密码从现有房源档案选择并保存真实房源 ID，支持办公室、信箱、电子门锁、不同用途密码盒、Locker、备用钥匙和固定周期公司密码等实际类型。历史通用机密记录不会显示，也没有被自动删除。
+
+### Implementation
+
+- Previous behavior:
+  - CMS 菜单分散为页面管理、清洁公开指南、公开访问密码、客服手册、公司内容中心五个入口。
+  - 公司内容中心的密码配置同时包含外链密码和通用“内部机密项”，没有房源编号、线下密码类型、位置和状态字段。
+  - 密码列表接口没有区分历史通用机密与线下实体密码；移动端列表接口只检查登录状态。
+- New behavior:
+  - CMS 菜单收拢为三个业务入口；旧路由保留兼容但不再显示在主菜单，客服手册继续由公司文档类别维护。
+  - “公开指南与外链”使用独立 `/cms/public-resources` 页面，合并原清洁公开指南 CRUD 和现有各公开入口密码配置；公司内容中心仅保留公告、公司文档和仓库指南。
+  - 复用 `company_secret_items` 的加密、权限与访问审计能力，增加 `item_type`、`property_code`、`property_codes`、`property_ids`、`secret_kind`、`box_number`、`location`、`rotation_interval_days`、`next_rotation_at`、`status` 字段；新记录固定为 `offline_password`。
+  - 房源类密码不再手工录入房号，前端从 `/properties` 加载房号选项，后端校验所选房源存在并保存真实 `property_ids`；`property_codes` 仅保留为兼容显示快照。
+  - 密码类型调整为办公室密码、信箱密码、房门电子锁、信箱内密码盒、车库密码盒、存放信箱钥匙的密码盒、Locker、备用钥匙密码盒、固定周期公司密码和其他；需要物理盒编号的类型前后端均强制填写编号。
+  - 固定周期公司密码记录修改周期天数和可选的下次修改日期；房源类密码可关联一个或多个真实房源档案。
+  - 线下密码 API 只读写 `offline_password` 记录，支持按名称、密码盒编号、关联房源的房号/地址、类型、位置和备注搜索；明文响应增加 `Cache-Control: no-store`。
+  - 历史记录默认标记为 `legacy` 并隐藏，避免把可能存在的旧公司账户机密混入新页面；未执行历史数据删除。
+  - App 列表与复制审计接口增加 `company_secret_items.view` 权限校验，第三阶段移动端接入前不会对普通登录用户开放。
+- Key decisions:
+  - 不创建第二套密码表和加密系统，继续使用现有加密存储及 `CMS_SECRET_KEY`。
+  - 页面允许授权用户明文查看和复制，但数据库不保存明文，代码、测试和台账不包含任何真实密码。
+  - 备用钥匙记录以“物理密码盒”为主体，而不是以单个房源为主体，符合一个盒子存放多套房源备用钥匙的实际操作方式。
+  - 多房源关系沿用仓库现有数组字段风格，以真实房源 ID 数组保存并在写入时校验；不创建平行房源表或第二套密码系统。
+  - 第一、第二阶段只完成 CMS/后台能力；移动端搜索页面和角色授权属于第三阶段。
+
+### Files / Areas
+
+- `backend/src/modules/cms_company_secrets.ts` — modified: 通用机密 CRUD 改为结构化线下密码 CRUD；增加真实房源 ID 校验、完整类型规则、密码盒编号、周期字段、房号/地址搜索、分类隔离、no-store 和移动端权限收口。
+- `backend/src/modules/rbac.ts` — modified: 三个 CMS 子菜单映射到对应资源权限。
+- `backend/src/permissionsCatalog.ts` — modified: `company_secret_items` 用户可见名称改为“线下密码”。
+- `backend/src/store.ts` — modified: 注册三个新的 CMS 子菜单可见权限。
+- `backend/dist/modules/rbac.js` — generated: 后端构建同步 RBAC 菜单资源映射。
+- `backend/dist/store.js` — generated: 后端构建同步 CMS 菜单权限注册。
+- `backend/scripts/init_db.ts` — modified: 初始化流程补充线下密码、真实房源 ID 数组、密码盒编号和周期字段及索引。
+- `backend/scripts/schema.sql` — modified: 基础 schema 补充线下密码、真实房源 ID 数组、密码盒编号和周期字段及索引。
+- `backend/scripts/migrations/20260713_offline_password_items.sql` — added: 已有数据库的增量迁移；增加真实房源 ID、密码盒编号和周期字段，历史行保持 `legacy`。
+- `frontend/src/lib/adminNavigation.ts` — modified: CMS 主菜单收拢为三个入口。
+- `frontend/src/lib/adminNavigation.test.ts` — added: 覆盖 CMS 菜单数量、名称、链接和资源权限可见性。
+- `frontend/src/app/cms/company/page.tsx` — modified: 移除内部机密项 UI，并移除重复的“公开指南与外链”标签，只保留三个公司内容标签。
+- `frontend/src/app/cms/public-resources/page.tsx` — added: 独立承载清洁公开指南和各类外链访问密码维护。
+- `frontend/src/app/cms/offline-passwords/page.tsx` — added: 线下密码搜索、明文查看/复制、新增、编辑、停用和删除；从房源档案多选真实房源，按实际场景选择类型，并维护密码盒编号及周期公司密码字段。
+- `frontend/src/app/rbac/page.tsx` — modified: 权限动作名称改为查看/编辑/删除线下密码。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: 现有 `/cms/company/secrets` 系列接口继续保留路径，但请求/响应语义收窄为线下密码；房源类请求要求非空 `property_ids` 且后端校验对应房源存在，需要编号的密码盒类型要求 `box_number`，固定周期公司密码要求 `rotation_interval_days`；列表新增 `q` / `status` 查询并可按关联房源的房号或地址搜索，App 端列表与复制接口新增 `company_secret_items.view` 权限要求。
+- Database / migration: 需执行 `backend/scripts/migrations/20260713_offline_password_items.sql`，或由模块首次访问时的幂等建表逻辑补齐字段和索引；新增 `property_ids text[]`、`box_number text`、`property_codes text[]`、`rotation_interval_days integer` 与 `next_rotation_at date`，不自动回填、不删除历史行。
+- Config / environment: 继续依赖现有 `CMS_SECRET_KEY`；缺少该配置时不能新增或修改密码。
+- Dependencies: none.
+- Related units: none; worktree 同时包含 `CRL-20260712-008` 等清洁模块的未提交改动，发布时必须按 release unit 精确选择文件/分块。
+
+### Validation
+
+- `git diff --check` — passed.
+- `npm run build` in `backend` — passed: `tsc -p .` completed.
+- `npm run lint` in `frontend` — passed with existing repository warnings and no errors.
+- `./node_modules/.bin/vitest run src/lib/adminNavigation.test.ts --coverage=false` in `frontend` — passed: 1 file, 2 tests.
+- `npm run build` in `frontend` — passed: production build and static generation completed; existing lint and Recharts size warnings remain.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 24 changed files, all 24 recorded.
+
+### Risks / Release Notes
+
+- Deployment risk: production migration has not been executed in this task; deploy backend/schema before using the new page.
+- Compatibility risk: clients that previously created generic company secret items through `/cms/company/secrets` must switch to the structured offline-password payload; the removed company-account-password direction is intentionally unsupported.
+- Data association risk: 此次修改前创建、仅保存文字房号的线下密码会显示“待关联”；再次编辑时必须从房源档案选择真实房源。未进行猜测式自动匹配或生产数据回填。
+- Data handling: historical generic secret rows remain encrypted and classified as `legacy`; they are hidden but not deleted. Any permanent purge should be a separate preview/confirm/apply data task.
+- Access risk: authorized users can see and copy plaintext by product requirement; permission assignment and screen privacy remain operational controls.
+- Sensitive-information review: no screenshot password, account password, token, `.env` value, database URL, cookie, private key, sensitive log, or local cache was added to code, tests, migration, or ledger.
+- Git state: implementation pushed to root `Dev` in commit `d8e8f87`; this ledger status update is recorded separately.
+
+### Update — 2026-07-13 15:30 Australia/Melbourne
+
+- 根据用户截图纠正重复导航：`/cms/company` 删除同名标签，左侧入口改到独立 `/cms/public-resources` 页面。
+- 根据线下操作方式纠正备用钥匙模型：记录密码盒编号、盒内多个房源编号和密码；不再要求用户手工填写冗余名称。
+- 重新执行 backend build、frontend lint、CMS navigation targeted test、frontend production build 和 diff check，均通过；lint/build 仍只有仓库已有 warnings。
+
+### Update — 2026-07-13 15:55 Australia/Melbourne
+
+- 根据用户反馈将自由输入房号改为真实房源关联：选择器读取现有房源档案并展示房号与地址，API 保存并校验 `property_ids`；旧文字房号只作兼容显示并标记“待关联”。
+- 将密码类型改为办公室密码、信箱密码、房门电子锁、信箱内密码盒、车库密码盒、存放信箱钥匙的密码盒、Locker、备用钥匙密码盒、固定周期公司密码和其他；对应类型动态要求关联房源、密码盒编号或修改周期。
+- 固定周期公司密码新增修改周期天数及可选下次修改日期；列表与移动端 API 同步返回关联房源和周期字段，搜索可匹配真实房源房号及地址。
+- 重新执行 backend build、frontend lint、CMS navigation targeted test、frontend production build 和 diff check，均通过；lint/build 仍只有仓库已有 warnings。
+
+### Update — 2026-07-13 16:17 Australia/Melbourne
+
+- 修复编辑弹窗回填时机：弹窗内容挂载后再设置表单值，回填类型、名称、关联房源、密码盒编号、位置、周期、原密码、状态和备注；旧记录仅有房号快照时，按现有房源档案精确匹配对应房源 ID，不做模糊猜测。
+- 关联房源选择器与已选项仅显示房号，不再显示地址；主列表仍可按地址搜索关联记录。
+- 修复新增非周期密码返回 `HTTP 400`：前端新增请求不再发送无关的空周期字段，后端新增校验同时兼容空周期字段；编辑切换为非周期类型时仍会清空旧周期值。
+- 重新执行 backend build、frontend lint、frontend production build 和 diff check，均通过；lint/build 仍只有仓库已有 warnings。本机没有运行中的本地前后端服务，未执行浏览器端真实新增写入测试。
+
+### Update — 2026-07-13 16:51 Australia/Melbourne
+
+- 根据用户再次反馈加固编辑回填：移除弹窗关闭时销毁表单的时序依赖，改为 `forceRender` 预挂载表单并继续在每次打开时重置/回填，避免行数据已存在但字段尚未注册导致编辑弹窗全部空白。
+- 保存操作增加同步提交锁、按钮 loading、保存期间关闭/取消保护和中文“保存/取消”文案；同一次打开期间的快速重复点击只允许一个保存请求，成功后仍保留现有 toast 和列表刷新反馈。
+- 搜索框明确使用 `type="search"`、独立 `name` 和 `autocomplete="off"`，避免浏览器把它识别成账号/密码输入；操作列改为复用房源列表同一个 `TableRowActions` 组件，移除独立的小号图标按钮样式。
+- `./node_modules/.bin/tsc --noEmit` in `frontend` — passed.
+- `npm run lint` in `frontend` — passed with existing repository warnings and no errors.
+- `npm test` in `frontend` — passed: 39 files, 170 tests; coverage thresholds passed.
+- `npm run build` in `frontend` — passed: compiled, type/lint checks, 95 static pages and production route output completed; existing Browserslist, ESLint and Recharts warnings remain.
+- 浏览器只读检查确认搜索输入实际渲染为 `type=search`、`name=offline-password-record-search`、`autocomplete=off`；浏览器会话未登录且后端状态为 unknown，列表没有可编辑记录，因此没有执行真实记录编辑或保存写入。
+- 隔离生产预览尝试未作为验证通过项：工作区已有 3000 开发服务持续使用同一 `.next`，3010 预览读取到不完整 vendor chunk 后返回错误并已停止；不影响上述独立完成且退出码为 0 的 production build 结果。
+- Sensitive-information review: no password value, credential, token, `.env` value, database URL, cookie, private key, sensitive log, or local cache was added or recorded.
+
+### Update — 2026-07-13 17:07 Australia/Melbourne
+
+- 修复线下密码管理页 hydration 报错：页面首屏改为与房源列表一致的客户端挂载后渲染模式，避免 AntD `Table`、`Modal forceRender`、`Form.useWatch` 动态字段在 Next SSR 与浏览器首屏之间产生 DOM 结构差异。
+- 保留上一版编辑回填、重复保存锁、保存 loading、搜索框关闭自动填充和操作列复用 `TableRowActions` 的行为；此次只调整目标页渲染时机。
+- `npm run typecheck` in `frontend` — failed: package has no `typecheck` script.
+- `./node_modules/.bin/tsc --noEmit` in `frontend` — passed.
+- `npm run lint` in `frontend` — passed with existing repository warnings and no errors.
+- `npm test` in `frontend` — passed: 39 files, 170 tests; coverage thresholds passed.
+- `npm run build` in `frontend` — passed: compiled, type/lint checks, 95 static pages and production route output completed; existing Browserslist, ESLint and Recharts warnings remain.
+- Browser validation: in-app browser loaded `http://localhost:3000/cms/offline-passwords` successfully after the fix; no `Hydration failed`, `Unhandled Runtime Error`, or `Expected server HTML` overlay text was detected, and no matching console error was reported. The browser session remained unauthenticated, so real edit/save write testing was not performed.
+- Sensitive-information review: no password value, credential, token, `.env` value, database URL, cookie, private key, sensitive log, or local cache was added or recorded.
+
+### Update — 2026-07-13 19:21 Australia/Melbourne
+
+- 根据用户反馈将线下密码搜索改为输入即搜索：移除“搜索”按钮，页面初次加载一次全量线下密码，输入框变化后直接在本地过滤，清空输入时立即恢复全量列表。
+- 搜索不再触发 `/cms/company/secrets?q=...` 请求，也不会让表格进入整表 loading；loading 仅保留给初次加载、保存后刷新和删除后刷新。
+- 本地过滤保持原搜索语义，匹配名称、类型、房源 ID / 房号 / 地址、密码盒编号、位置和备注；不把明文密码值加入搜索索引。
+- `./node_modules/.bin/tsc --noEmit` in `frontend` — passed.
+- `npm run lint` in `frontend` — passed with existing repository warnings and no errors.
+- `npm test` in `frontend` — passed: 39 files, 170 tests; coverage thresholds passed.
+- `npm run build` in `frontend` — passed: compiled, type/lint checks, 95 static pages and production route output completed; existing Browserslist, ESLint and Recharts warnings remain.
+- Browser validation not rerun for authenticated search because the available browser session was not signed in; production build verified the page compiles after the interaction change.
+- Sensitive-information review: no password value, credential, token, `.env` value, database URL, cookie, private key, sensitive log, or local cache was added or recorded.
+
+## CRL-20260713-002 — 移动端信息中心线下密码搜索
+
+- **Status:** pushed
+- **Updated:** 2026-07-13 20:35 Australia/Melbourne
+- **Request:** 移动端信息中心直接搜索到相关线下密码；用户确认不需要复制密码，线下直接输入。
+- **Outcome:** 移动端信息中心输入关键词后会新增“线下密码”搜索分组，匹配线下密码名称、类型、关联房源、密码盒编号、位置、备注和状态，并在结果卡片/详情中直接显示密码文本；不提供复制按钮。线下密码只保存在当前页面内存状态，不再写入公司内容本地缓存。
+
+### Implementation
+
+- Previous behavior:
+  - 信息中心搜索只覆盖房源信息、历史任务、公司公告、公司文档和仓库指南。
+  - 移动端 `listCompanySecretsForApp()` 仍使用旧通用 secret 类型，未表达线下密码的房源、类型、盒号、位置等字段。
+  - 公司内容缓存类型包含 `secrets`，存在把线下密码写入本地缓存的风险。
+- New behavior:
+  - 复用现有 `/cms/company/secrets/app-list` App 接口，移动端类型改为结构化 `CompanyOfflinePassword`。
+  - 信息中心有搜索词时本地过滤内存中的线下密码；不按输入重复请求接口，不出现额外全屏 loading。
+  - 新增“线下密码”分组，结果展示密码类型、关联房源、密码盒编号、位置和密码；点击详情仅展示文本，不设置 `copyText`，因此不出现复制操作。
+  - 搜索索引不包含明文密码值，仅匹配名称、类型、房源 ID/房号、盒号、位置、备注和状态。
+  - 本地持久化公司内容缓存继续保存公告/文档/仓库指南，但不再读取或写入 `secrets`。
+- Key decisions:
+  - 不新增后端接口；后端既有 App 列表接口已经有权限校验、`no-store` 和结构化字段。
+  - 不增加复制功能，也不调用复制审计接口，符合线下直接输入的使用方式。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/lib/api.ts` — modified: 为 App 线下密码列表补充结构化返回类型。
+- `mz-cleaning-app-frontend/src/screens/tabs/NoticesScreen.tsx` — modified: 信息中心搜索新增线下密码分组、展示密码文本、去除本地缓存 secrets 写入/读取。
+- `mz-cleaning-app-frontend/src/screens/tabs/NoticesScreen.test.tsx` — added: 覆盖搜索线下密码、展示密码、打开详情时不传复制文本。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: 复用现有 `/cms/company/secrets/app-list`；无新增 API。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: depends on `CRL-20260713-001` 的线下密码后端/App 列表接口和权限。
+
+### Validation
+
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed: `tsc -p tsconfig.json`.
+- `npm test -- --runInBand src/screens/tabs/NoticesScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 1 test; existing React Native `SafeAreaView` deprecation warning remains.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with existing repository warnings and no errors.
+- `npm test -- --runInBand` in `mz-cleaning-app-frontend` — failed: existing `TasksScreen.test.tsx` exceeded Jest default 5000 ms timeout.
+- `npm test -- --runInBand --testTimeout=20000` in `mz-cleaning-app-frontend` — passed: 34 suites, 124 tests; existing React Native `SafeAreaView` deprecation warnings remain.
+- `npm run build` in `mz-cleaning-app-frontend` — not run: package has no `build` script.
+- `git diff --check` in `mz-cleaning-app-frontend` — passed.
+
+### Risks / Release Notes
+
+- Deployment: this is a mobile app code change; release requires the mobile app's normal OTA/update or rebuild path.
+- Permission dependency: users still need `company_secret_items.view`; without that permission the App list request will not populate line-password results.
+- Data handling: passwords are shown in-app by product requirement, but no copy action is exposed and code avoids persisting secrets into the company content cache.
+- Sensitive-information review: no real password value, credential, token, `.env` value, database URL, cookie, private key, sensitive log, or local cache was added or recorded; tests use synthetic values only.
+- Git state: implementation pushed to nested mobile `Dev` in commit `0e2d0b7`; this root ledger status update is recorded separately.
+
+## CRL-20260712-008 — 手工补位自动合并字段可信度规则优化
+
+- **Status:** pushed
+- **Updated:** 2026-07-12 21:35 AEST
+- **Request:** 用户确认不处理 `3202 / 3209` 历史数据，要求执行“优化自动合并规则”，让后续手工补位合并更准确地区分可信字段和占位字段。
+- **Outcome:** 自动订单任务合并临时手工补位时，字段可信度规则更细：非默认入住/退房时间仍可继承；订单晚数/钥匙数保持权威；手工 `0晚` 被识别为临时补位占位值，不再作为普通人工冲突；密码仍只记录人工确认且不自动复制。
+
+### Implementation
+
+- Previous behavior:
+  - `buildManualSupersedeMerge()` 只比较正式任务自身字段，缺少订单晚数 / 订单钥匙数上下文。
+  - 手工 `nights_override=0` 会和订单真实晚数形成普通 `manual_requires_review` 冲突，容易把占位值当成业务差异。
+  - 每日清洁 / 任务中心的动态 conflict helper 会把 superseded 手工 `0晚` 和订单真实晚数继续展示为普通冲突。
+- New behavior:
+  - Supersede 合并查询 official 任务时带上 `orders.keys_required` 和 `orders.nights`，内存路径也补同样上下文。
+  - `keys_required`：订单钥匙数存在时保留订单；只有没有订单/正式值且手工是有效 `1/2` 时才继承。
+  - `nights_override`：手工 `0` 且订单/正式晚数为正数时写入 `ignored_placeholder` 决策，不覆盖、不作为普通冲突；手工正数与订单晚数不一致时仍记录 `manual_requires_review`。
+  - `buildCleaningTurnoverDisplay()` 忽略 `0晚` 占位差异，避免未来已继承正确时间后仍因占位晚数显示冲突。
+  - 每日清洁冲突建议文案支持 `ignored_placeholder`，显示“手工补位占位值，已忽略”。
+- Key decisions:
+  - 不处理历史生产数据；`3202 / 3209` 由用户在每日清洁页面手动确认修正。
+  - 不自动继承密码、订单晚数或订单钥匙数，避免手工补位覆盖订单权威数据。
+
+### Files / Areas
+
+- `backend/src/services/cleaningSync.ts` — modified: 手工补位合并增加订单上下文、占位晚数忽略、钥匙数可信度规则。
+- `backend/src/lib/cleaningTurnoverDisplay.ts` — modified: 动态冲突计算忽略手工 `0晚` 占位差异。
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — modified: 覆盖非默认入住时间继承、手工 `0晚` ignored placeholder、订单晚数保留、手工正数晚数仍需人工确认。
+- `backend/scripts/tests/test_cleaning_turnover_display.ts` — modified: 覆盖 `0晚` 占位不生成可见 nights 冲突。
+- `frontend/src/app/cleaning/page.tsx` — modified: 每日清洁冲突建议文案支持 `ignored_placeholder`。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: no shape change; `supersede_conflicts[].resolution` may now include `ignored_placeholder`.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: builds on `CRL-20260712-005` and `CRL-20260712-007`.
+
+### Validation
+
+- `env -u DATABASE_URL ./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_cleaning_sync_v2.ts` in `backend` — passed: `ok`.
+- `env -u DATABASE_URL ./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_cleaning_turnover_display.ts` in `backend` — passed: `test_cleaning_turnover_display: ok`.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `npx tsc --noEmit` in `frontend` — passed.
+- `npm run lint` in `frontend` — passed with existing warnings.
+- `npm run build` in `frontend` — passed.
+- `python3 scripts/audit_change_release_ledger.py` — passed.
+- `git diff --check` — passed.
+
+### Risks / Release Notes
+
+- Behavior risk: future manual `0晚` placeholders will no longer show as visible nights conflicts when an order has a positive night count. This is intentional for temporary補位占位数据.
+- Data risk: historical tasks are not backfilled by this release unit.
+- Sensitive-information review: no secrets, `.env` values, database URLs, tokens, cookies, private keys, sensitive logs, or local caches were added. Password fields remain non-inherited.
+- Git state: implementation pushed to root `Dev` in commit `d8e8f87`; this ledger status update is recorded separately.
+
+## CRL-20260712-007 — 每日清洁显示手工补位冲突明细
+
+- **Status:** pushed
+- **Updated:** 2026-07-12 21:20 AEST
+- **Request:** 用户要求把手工补位和正式订单任务的冲突显示在每日清洁页面，并让“冲突”标签也出现在每日清洁卡片上，便于直接进入编辑修正。
+- **Outcome:** 每日清洁 `/cleaning/calendar-range` 现在会把已 superseded 的手工补位任务和 active 正式任务做字段级比较，返回 `turnover_display.conflicts` / `display_conflicts`。每日清洁卡片显示“冲突”标签并展开字段差异；编辑抽屉顶部同步显示冲突核对区，用户可直接在现有入住/退房字段里修正。
+
+### Implementation
+
+- Previous behavior:
+  - 每日清洁接口只返回 active 清洁任务；已被正式订单任务 supersede 的手工补位不会进入 payload。
+  - 每日清洁卡片没有“冲突”标签，也不会展示手工补位与订单任务之间的字段差异。
+  - 任务中心能通过 `turnover_display.conflicts` 标记冲突，但每日清洁页面无法复用该信息。
+- New behavior:
+  - `/cleaning/calendar-range` 查询 active 任务后，额外读取 `execution_state='superseded'` 且 `superseded_by` 指向这些 active 任务的手工补位行。
+  - 后端复用 `buildCleaningTurnoverDisplay()` 生成 `turnover_display`，并把 `conflicts` 同步放入 `display_conflicts`。
+  - 每日清洁同房同日合并卡会聚合子任务冲突，并在卡片 meta 行显示“冲突”标签。
+  - 卡片和编辑抽屉显示字段级对照：手工补位值、订单任务值、建议处理方向。密码类冲突只显示“已填写/未填写”，不额外展开密码原文。
+- Key decisions:
+  - 本单元只做显示和 payload 补充，不自动修改历史数据，不改变保存接口。
+  - 手工补位时间差异提示“建议确认后采用手工补位”；晚数/钥匙数提示“建议保留订单”，符合订单数据更权威的处理原则。
+
+### Files / Areas
+
+- `backend/src/modules/cleaning.ts` — modified: `/cleaning/calendar-range` 补 superseded 手工补位读取和 `turnover_display/display_conflicts` 输出。
+- `frontend/src/app/cleaning/page.tsx` — modified: 每日清洁卡片与编辑抽屉展示冲突标签和字段级差异。
+- `frontend/src/app/cleaning/cleaningSchedule.module.scss` — modified: 增加冲突明细面板和抽屉冲突区样式。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: `/cleaning/calendar-range` 对清洁任务 payload additive 增加 `display_conflicts` 和 `turnover_display`。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: extends `CRL-20260712-005` 的手工补位冲突记录语义到每日清洁页面。
+
+### Validation
+
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `npx tsc --noEmit` in `frontend` — passed.
+- `npm run lint` in `frontend` — passed with existing warnings only.
+- `npm run build` in `frontend` — passed; emitted existing Browserslist staleness notice, existing ESLint warnings, and existing Recharts static-generation width/height warnings.
+- `python3 scripts/audit_change_release_ledger.py` — passed: `Changed files: 5`, `Recorded changed files: 5`, `Coverage: PASS`.
+- `git diff --check` — passed.
+
+### Risks / Release Notes
+
+- UI risk: 冲突明细会增加卡片高度；仅在存在真实字段差异时显示，并允许换行以避免覆盖控件。
+- Data risk: 历史手工补位里的占位晚数 `0` 仍会展示为冲突，目的是让业务人员看见并按订单晚数保留；本单元不做自动数据修正。
+- Sensitive-information review: no secrets, `.env` values, database URLs, tokens, cookies, private keys, sensitive logs, or local caches were added. Password conflict values are masked as filled / not filled in the new conflict display.
+- Git state: implementation pushed to root `Dev` in commit `d8e8f87`; this ledger status update is recorded separately.
+
 ## CRL-20260712-006 — 任务中心前端卡片紧凑展示调整
 
 - **Status:** ready
@@ -2815,8 +3691,8 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260703-006 — 日用品更换记录页面操作与编辑回填修复
 
-- **Status:** ready
-- **Updated:** 2026-07-03 14:40 AEST
+- **Status:** pushed
+- **Updated:** 2026-07-20 11:24 AEST
 - **Request:** “日用品更换记录页面需要优化一下，一个人没有删除记录的按钮，按钮ui也有问题。第二 明明写了更换物品的信息，谁提交的。点开编辑按钮又没有显示。从详情页也不能转到编辑页面。”
 - **Outcome:** 日用品更换记录表格操作列改为系统标准按钮；具备删除权限时显示删除按钮并需要确认；编辑 drawer 能按 `item_id` 或 `item_name` 回填更换物品和提交人；详情 drawer 可以直接进入编辑。
 
@@ -2862,18 +3738,25 @@ Shared cross-thread record of repository changes and selectable release units. D
 - `npm --prefix frontend run build` — passed; build reported existing Browserslist staleness, existing lint warnings, and existing Recharts zero-size warnings during static generation.
 - `python3 scripts/audit_change_release_ledger.py` — failed: current worktree still has pre-existing uncovered `backend/scripts/tests/phase5_e2e_acceptance.ts`; this unit's files are recorded in `CRL-20260703-006`.
 
+### Update — 2026-07-18 23:43 AEST
+
+- 已按用户要求移植到最新 `origin/Dev` fresh clone；日用品更换页面和权限导航改动 clean apply。
+- `npm run check:frontend` — passed: lint/test/build completed; existing repository warnings remain.
+- `npm run check` — passed: full root sequence completed; mobile was skipped because the nested mobile repo is absent in this fresh root clone.
+- `python3 scripts/audit_change_release_ledger.py` — passed: `Changed files: 16`, `Recorded changed files: 16`, `Coverage: PASS`.
+
 ### Risks / Release Notes
 
 - RBAC roles must include `inventory_daily_replacements.delete` before non-admin users see the delete button.
 - Delete is permanent for `property_daily_necessities`; rollback requires restoring the row from backup/audit source if needed.
 - The current-record fallback keeps legacy item names visible, but records with item names not in the active price list still need a valid item selection if the user changes the item.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
-- Git state: uncommitted in root repo; coexists with pre-existing cleaning/task-center changes and `CRL-20260703-005` finance/daily auto-expense changes.
+- Git state: implementation pushed to root `Dev` in commit `c2710d8` (`c2710d81e9dddab42e12215371f639e66990473d`); ledger status update recorded in the follow-up commit.
 
 ## CRL-20260703-005 — 深度清洁与日用品更换自动入房源 statement
 
-- **Status:** ready
-- **Updated:** 2026-07-03 14:28 AEST
+- **Status:** pushed
+- **Updated:** 2026-07-20 11:24 AEST
 - **Request:** “深度清洁和 日用品更换记录也需要跟房源维修一样的执行逻辑，如果是房东支付的话，需要在statement体现出来”；follow-up: “卖出价”
 - **Outcome:** 日用品更换记录在创建/更新后会按价格表卖出价 `daily_items_price_list.unit_price * quantity` 计算金额；完成且房东支付时生成/更新 `property_expenses` 自动快照并归类 `consumables`，从而进入房源 statement。公司支付时生成公司支出，其他支付或未完成/无价格会 void 自动快照。深度清洁与维修的财务回填/statement 对账逻辑保持一致，并支持日用品一起检查/回填。
 
@@ -2901,6 +3784,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - `backend/src/lib/autoExpenseSourceSummary.ts` — modified: 增加日用品 statement 摘要生成。
 - `backend/src/modules/inventory.ts` — modified: 日用品更换创建/更新后同步自动费用。
 - `backend/src/modules/finance.ts` — modified: auto-expenses backfill/inspect 支持 `daily_necessities`，并允许自动费用 category 传入 `consumables`。
+- `backend/dist/modules/finance.js` — generated: 后端 build 生成的 finance 输出，承载日用品自动费用 backfill/inspect 支持。
 - `backend/src/lib/monthlyStatementExpenseReconcile.ts` — modified: statement 月结前自动对账纳入日用品更换。
 - `backend/src/modules/crud.ts` — modified: `daily_necessities` 自动房源支出只读保护。
 - `backend/scripts/tests/test_auto_expense_source_summary.ts` — modified: 覆盖日用品摘要。
@@ -2924,6 +3808,15 @@ Shared cross-thread record of repository changes and selectable release units. D
 - `python3 scripts/audit_change_release_ledger.py` — failed: current worktree has pre-existing uncovered `backend/scripts/tests/phase5_e2e_acceptance.ts`; this unit's files are recorded in `CRL-20260703-005`.
 - `npm --prefix backend run build` — not run: backend build writes `dist`; `backend/dist/modules/cleaning.js` already had unrelated pre-existing uncommitted changes, so noEmit typecheck was used to avoid overwriting shared generated output.
 
+### Update — 2026-07-18 23:43 AEST
+
+- 已按用户要求移植到最新 `origin/Dev` fresh clone；源代码与新 Dev 三方 patch clean apply。
+- `backend/dist/modules/finance.js` 由 fresh clone 后端 build 重新生成，并补入本单元 Files / Areas 覆盖。
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_daily_necessities_auto_expense.ts` in `backend` — passed: `test_daily_necessities_auto_expense: ok`.
+- `npm run check:backend` — passed: backend build and root selected backend tests completed.
+- `npm run check` — passed: full root sequence completed; frontend warnings and mobile skip noted in `CRL-20260718-002`.
+- `python3 scripts/audit_change_release_ledger.py` — passed: `Changed files: 16`, `Recorded changed files: 16`, `Coverage: PASS`.
+
 ### Risks / Release Notes
 
 - Existing records without a matching price list row will not create a statement expense until the price row is present or the record can be matched by item name.
@@ -2931,7 +3824,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Backfill/inspect use table-existence checks so older environments skip日用品扫描 rather than failing.
 - Rollback: remove the daily necessity helper/imports, revert inventory sync calls, remove `daily_necessities` from finance backfill/inspect/monthly reconcile, and remove the CRUD read-only extension.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added or recorded.
-- Git state: uncommitted in root repo; coexists with pre-existing uncommitted cleaning/task-center changes not owned by this unit.
+- Git state: implementation pushed to root `Dev` in commit `c2710d8` (`c2710d81e9dddab42e12215371f639e66990473d`); ledger status update recorded in the follow-up commit.
 
 ## CRL-20260703-004 — Phase 4 角色只保留默认可见范围
 
@@ -4005,7 +4898,6 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
 - Rollback: remove `canAutoReassignInspectorOnDrop` and the source-row inspector clearing block from `handleTaskDrop`.
 - Git state: pushed to root `Dev` in commit `fafd0f1`.
-
 ## CRL-20260630-007 — 入住挂钥匙任务改为执行人
 
 - **Status:** pushed
@@ -4092,296 +4984,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - **Status:** pushed
 - **Updated:** 2026-07-01 01:35 AEST
 - **Request:** 修复纯入住任务已安排检查后仍出现在清洁人员任务里；不要只靠 `source_type === 'cleaning_tasks'`，要先在 `/mzapp/work-tasks` 后端分组排除，并返回明确执行语义，历史纯入住任务即使写过 `cleaner_id` 也不能继续显示给清洁员。
-- **Outcome:** `/mzapp/work-tasks` 现在为清洁任务返回 `execution_role` 和 `execution_semantics`，并在清洁员分组阶段排除纯 `checkin_clean` 入住检查；移动端和网页版清洁日历改按执行语义区分“清洁执行”和“检查安排”，历史带 `cleaner_id` 的纯入住检查不会再生成清洁执行卡。
-
-### Implementation
-
-- Previous behavior:
-  - 移动端和网页版多处把 `source_type === 'cleaning_tasks'` 当作清洁执行任务判断，纯入住检查也会被算进清洁任务列表。
-  - `/mzapp/work-tasks` 在构建 cleanerGroups 时只看清洁人员相关字段，历史数据里纯入住任务如果残留 `cleaner_id` / `assignee_id`，仍可能出现在清洁员任务中。
-  - API 没有明确告诉前端一条 `cleaning_tasks` 来源记录到底是清洁执行、入住检查，还是退房入住混合执行。
-- New behavior:
-  - 后端新增清洁执行判断和执行语义 helper；`checkin_clean` 被视为入住检查，不进入清洁员分组。
-  - `/mzapp/work-tasks` 对普通 `work_tasks`、清洁执行、检查执行和混合任务返回明确的 `execution_role` / `execution_semantics`。
-  - 移动端 `TasksScreen` 使用执行语义判断可见性、归属人、排序、通知、下班确认和拖拽排序，不再把所有 `cleaning_tasks` 都当清洁执行。
-  - 网页版 `/cleaning` 当日任务列表拆成“清洁执行 / 检查安排 / 线下任务”，纯入住检查按检查人员筛选。
-- Key decisions:
-  - 不新增数据库字段；执行语义由 `/mzapp/work-tasks` 投影层从现有 `task_type`、分组角色和合并结果派生。
-  - 保留部分 `source_type` 判断用于路由到 cleaning-task 详情或按源表找记录；不再用它单独决定清洁员可见性。
-
-### Files / Areas
-
-- `backend/src/lib/cleaningInspection.ts` — modified: 增加清洁执行判定和执行语义派生 helper。
-- `backend/src/modules/mzapp.ts` — modified: `/mzapp/work-tasks` cleanerGroups 排除纯入住检查，并在响应中返回 `execution_role` / `execution_semantics`。
-- `backend/scripts/tests/test_task_assignment_canonical.ts` — modified: 增加历史纯入住任务带 `cleaner_id` 时仍只作为检查任务返回的回归覆盖。
-- `frontend/src/app/cleaning/page.tsx` — modified: 当日任务列表拆分清洁执行和检查安排，并按对应人员字段筛选。
-- `mz-cleaning-app-frontend/src/lib/api.ts` — modified: WorkTask 类型补充执行角色和执行语义字段。
-- `mz-cleaning-app-frontend/src/lib/cleaningInspection.ts` — modified: 移动端新增执行语义解析和清洁/检查执行判断。
-- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.tsx` — modified: 移动端任务可见性、归属、排序、通知和拖拽逻辑改用执行语义。
-- `docs/change-release-ledger.md` — modified: 记录本修复单元。
-
-### Impact / Dependencies
-
-- API: `/mzapp/work-tasks` response adds optional `execution_role` and `execution_semantics` fields; existing fields are retained.
-- Database / migration: none.
-- Config / environment: none.
-- Dependencies: none.
-- Related units: touches `/mzapp/work-tasks` and `test_task_assignment_canonical.ts`, which are shared with recent task-center/mobile assignment and same-day merge fixes; root worktree also contains unrelated房源代付 changes, so selective release requires hunk review.
-
-### Validation
-
-- `git diff --check -- backend/src/lib/cleaningInspection.ts backend/src/modules/mzapp.ts backend/scripts/tests/test_task_assignment_canonical.ts frontend/src/app/cleaning/page.tsx` — passed.
-- `git -C mz-cleaning-app-frontend diff --check -- src/lib/api.ts src/lib/cleaningInspection.ts src/screens/tabs/TasksScreen.tsx` — passed.
-- `npm run build` in `backend` — passed: `tsc -p .` completed.
-- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_task_assignment_canonical.ts` in `backend` — first failed in sandbox because DNS lookup for the configured PostgreSQL host was blocked; rerun with approved network access passed: `test_task_assignment_canonical: ok`.
-- `npm run test:cleaning-inspection-merge` in `backend` — passed: `test_cleaning_inspection_merge: ok`.
-- `npm run typecheck` in `mz-cleaning-app-frontend` — passed: `tsc -p tsconfig.json`.
-- `npm run lint` in `frontend` — passed with existing warnings and 0 errors.
-- `npm run build` in `frontend` — passed; existing warnings and existing Recharts static-generation width warnings were printed.
-
-### Risks / Release Notes
-
-- Runtime risk: old mobile clients that do not read `execution_role` still depend on older `task_kind` behavior until updated; backend exclusion still protects cleaner `/mzapp/work-tasks` grouping for pure入住检查.
-- Behavior note: pure入住检查 with no inspector will no longer fall back into cleaner task visibility; managers can still see it through manager/all task views and网页版清洁日历的“检查安排” tab.
-- Rollback: remove execution semantics fields and restore cleanerGroups/task filtering to the previous source/type checks.
-- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: pushed to root `Dev` in commit `fafd0f1` and nested `mz-cleaning-app-frontend` `Dev` in commit `d837c1f`.
-
-## CRL-20260630-005 — 房源代付账单日期字段文案澄清
-
-- **Status:** pushed
-- **Updated:** 2026-07-01 01:35 AEST
-- **Request:** 澄清房源代付模板里“每月到期日”和“账期结束日”容易混淆的问题，并调整页面文案。
-- **Outcome:** 房源代付相关入口把付款 deadline 改称“付款截止日”，把 bill 覆盖期间改称“费用账期”，把预计/实际收到账单字段统一为“收到账单日”，并把账期月份字段标为“账期开始/结束相对月份”，降低与付款截止日的混淆。
-
-### Implementation
-
-- Previous behavior:
-  - 模板表单使用“每月到期日”，容易和“账期结束日”理解成同一件事。
-  - 账期月份字段只写“账期开始月份 / 账期结束月份”，没有体现它是相对当前账单月份的上月/本月/下月选择。
-  - 列表、详情、确认弹窗和房源详情里“到期日 / 账单周期 / 收账单日”的叫法不完全一致。
-- New behavior:
-  - `due_day_of_month` 前端显示为“付款截止日”。
-  - `bill_period` 前端显示为“费用账期”。
-  - `bill_expected_*` / `bill_received_*` 前端显示为“预计收到账单日 / 实际收到账单日”。
-  - 账期月份选择显示为“账期开始相对月份 / 账期结束相对月份”。
-- Key decisions:
-  - 只改前端展示文案，不改字段名、API、数据库或日期计算规则。
-
-### Files / Areas
-
-- `frontend/src/app/finance/property-payables/page.tsx` — modified: 房源代付列表、详情、确认弹窗和模板弹窗的日期字段文案统一。
-- `frontend/src/components/PropertyPayableTemplatesForm.tsx` — modified: 房源页代付模板表单的付款截止日、预计收到账单日和账期相对月份文案统一。
-- `frontend/src/app/properties/page.tsx` — modified: 房源详情代付模板展示文案统一。
-- `docs/change-release-ledger.md` — modified: 记录本次文案修正单元。
-
-### Impact / Dependencies
-
-- API: none.
-- Database / migration: none.
-- Config / environment: none.
-- Dependencies: none.
-- Related units: wording-only refinement for `CRL-20260630-003`; shares frontend files with `CRL-20260630-004`.
-
-### Validation
-
-- `npm run lint` in `frontend` — passed with existing warnings and 0 errors.
-- `npm run build` in `frontend` — passed; existing lint warnings and existing Recharts static-generation width warnings were printed.
-- `python3 scripts/audit_change_release_ledger.py` — passed: 13 changed files covered.
-- `git diff --check` — passed.
-
-### Risks / Release Notes
-
-- Runtime risk: none expected; this is a display-label change only.
-- Rollback: restore the previous labels in the three frontend files.
-- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: pushed to root `Dev` in commit `fafd0f1`.
-
-## CRL-20260630-004 — 房源代付模板删除替代暂停
-
-- **Status:** pushed
-- **Updated:** 2026-07-01 01:35 AEST
-- **Request:** 将房源代付里的“暂停模板”改成“删除模板”。
-- **Outcome:** 房源代付页面不再提供暂停/恢复模板入口，改为带确认提示的“删除模板”。删除会移除房源代付模板，停止后续自动生成，并清理本月未付和未来自动快照；历史已付支出记录保留。
-
-### Implementation
-
-- Previous behavior:
-  - 页面操作调用 `POST /recurring/payments/:id/pause` / `resume`，模板保留在 `recurring_payments`，状态变为 `paused`。
-  - 用户需要理解“暂停/恢复”，但业务实际诉求是不用这个模板。
-- New behavior:
-  - 新增 `DELETE /recurring/payments/:id`，仅允许删除房源代付模板。
-  - 删除时先清理 `property_expenses` 中本月未付和未来自动生成的快照，再删除 `recurring_payments` 模板。
-  - 当前月已付和历史已付记录不会删除，保留财务历史。
-  - 操作记录写入 `RecurringPayment delete` audit。
-  - 前端表格和详情抽屉的操作改为“删除模板”，并要求确认。
-- Key decisions:
-  - 不把删除实现为第三种软状态，避免 `active/paused/deleted` 多套状态判断。
-  - 不开放通用固定支付模板删除；本接口当前只处理 `template_kind='property_payable'` 的房源代付模板。
-
-### Files / Areas
-
-- `backend/src/modules/recurring.ts` — modified: 新增房源代付模板 DELETE 路由、快照清理和 delete 审计。
-- `frontend/src/app/finance/property-payables/page.tsx` — modified: 移除暂停/恢复调用，表格和详情改为确认删除模板。
-- `docs/change-release-ledger.md` — modified: 记录本修复单元。
-
-### Impact / Dependencies
-
-- API: added `DELETE /recurring/payments/:id` for property payable templates only.
-- Database / migration: none.
-- Config / environment: none.
-- Dependencies: none.
-- Related units: shares files with `CRL-20260630-003`; deletion behavior depends on the same `property_expenses.fixed_expense_id + month_key` snapshot model.
-
-### Validation
-
-- `npm run build` in `backend` — passed: `tsc -p .`.
-- `npm run lint` in `frontend` — passed with existing warnings and 0 errors.
-- `npx vitest run src/lib/propertyPayables.test.ts` in `frontend` — passed: 1 file / 2 tests.
-- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_property_payable_template_sync.ts` in `backend` — passed: `test_property_payable_template_sync: ok`.
-- `npm run build` in `frontend` — passed; existing lint warnings and existing Recharts static-generation width warnings were printed.
-- `python3 scripts/audit_change_release_ledger.py` — passed: 13 changed files covered.
-- `git diff --check` — passed.
-
-### Risks / Release Notes
-
-- Runtime risk: deleting a template is not one-click reversible; users must recreate the template if it was deleted by mistake.
-- Data behavior: historical paid expenses remain in `property_expenses`, but the deleted template no longer appears in the房源代付 workbench because the template row is gone.
-- Rollback: restore the frontend pause/resume button and remove the DELETE route.
-- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: pushed to root `Dev` in commit `fafd0f1`.
-
-## CRL-20260630-003 — 房源代付账单日期规则与实时状态
-
-- **Status:** pushed
-- **Updated:** 2026-07-01 01:35 AEST
-- **Request:** 执行房源代付账单日期计划，并满足关键约束：日期支持月末 fallback；状态由后端实时计算不硬存；快照生成幂等避免重复账单；`property_expenses` 允许金额未确认 pending 记录；确认接口覆盖账单信息 + 金额。
-- **Outcome:** 房源代付模板现在可固定预计收账单日和默认账单周期；月度快照会幂等生成 pending 记录并保存预计收账单日期、实际收到账单日期、账单周期和 due date；workbench 由后端实时返回 `workflow_status`，前端展示“待收账单 / 账单未收到 / 待确认金额 / 待付款 / 付款快到期 / 付款逾期 / 已付”。新增 `confirm-bill` 接口保存账单信息和金额，旧 `confirm-amount` 保持兼容。
-
-### Implementation
-
-- Previous behavior:
-  - 房源代付模板只有默认 due day，没有固定预计收账单日或账单周期规则。
-  - 月度快照只记录金额、due date、付款/确认状态；未收到账单前缺少可提醒的 pending 快照信息。
-  - workbench 只有 `is_overdue` / `is_due_soon` 简单布尔状态，不能区分“账单没收到”和“付款逾期”。
-  - 确认接口命名为 `confirm-amount`，语义只覆盖金额和 due date。
-- New behavior:
-  - `recurring_payments` 增加模板规则字段：预计收账单日、账期开始/结束日及月份偏移。
-  - `property_expenses` 增加月度事实字段：预计收账单日期、实际收到账单日期、账单周期开始/结束。
-  - 后端日期计算使用月末 fallback；例如 31 号在 2 月会落到 2 月最后一天。
-  - 房源代付快照生成继续依赖 `fixed_expense_id + month_key` 唯一约束，已存在快照只补缺失默认字段，不覆盖用户实际填写值。
-  - 快照初始状态为 `pending` 且 `amount_confirmed=false`，允许未确认金额的提醒记录存在。
-  - 新增 `POST /recurring/payments/:id/confirm-bill`，保存金额、实际收到账单日期、账单周期、due date 和备注；旧 `confirm-amount` 复用同一逻辑。
-  - workbench 实时派生 `workflow_status` / `bill_status` / `payment_status`，前端只展示后端派生结果。
-  - `CRL-20260630-001` 的状态语义被细化：确认金额后不再显示“账单未收到/待确认”，但超过实际 due date 未付款会显示“付款逾期”。
-- Key decisions:
-  - 状态不新增硬存字段，`property_expenses.status` 只保留支付/流程基础状态，页面状态由后端按日期和确认/付款事实实时计算。
-  - 账期规则使用 day-of-month + month offset，避免每月重复手填，同时支持跨月账期。
-
-### Files / Areas
-
-- `backend/src/modules/recurring.ts` — modified: 增加账单日期计算、schema ensure、幂等 pending 快照、`confirm-bill`、workbench 实时状态和新字段返回。
-- `backend/src/modules/properties.ts` — modified: 房源页代付模板同步支持新增模板日期规则，并纳入业务字段比较。
-- `backend/dist/modules/properties.js` — modified: `npm run build` 生成的后端输出。
-- `backend/scripts/schema.sql` — modified: 初始化脚本补充 recurring/payment date columns。
-- `backend/scripts/schema_neon.sql` — modified: Neon 初始化脚本补充 recurring/payment date columns。
-- `backend/scripts/tests/test_property_payable_bill_dates.ts` — added: 覆盖月末 fallback 和模板日期计算。
-- `backend/scripts/tests/test_property_payable_template_sync.ts` — modified: 继续覆盖模板同步业务字段比较。
-- `frontend/src/app/finance/property-payables/page.tsx` — modified: 房源代付列表、统计、日历、详情、模板编辑和确认账单弹窗接入账单日期与派生状态。
-- `frontend/src/app/properties/page.tsx` — modified: 房源详情代付模板预设展示预计收账单日和默认账期。
-- `frontend/src/components/PropertyPayableTemplatesForm.tsx` — modified: 房源页模板表单支持预计收账单日和默认账期规则。
-- `frontend/src/lib/propertyPayables.ts` — modified: 模板默认值/规范化支持新字段，逾期 helper 改为信任后端实时状态。
-- `frontend/src/lib/propertyPayables.test.ts` — modified: 更新状态 helper 测试以匹配付款逾期语义。
-- `docs/change-release-ledger.md` — modified: 记录本功能单元。
-
-### Impact / Dependencies
-
-- API: `/recurring/property-payables/workbench` 返回新增账单日期字段和派生状态字段；新增 `POST /recurring/payments/:id/confirm-bill`，旧 `confirm-amount` 保留兼容。
-- Database / migration: runtime `ALTER TABLE IF NOT EXISTS` adds nullable date/rule columns on `recurring_payments` and `property_expenses`; schema scripts also updated.
-- Config / environment: none.
-- Dependencies: none.
-- Related units: extends and partially supersedes status semantics from `CRL-20260630-001`; shares `backend/src/modules/properties.ts` with `CRL-20260630-002`.
-
-### Validation
-
-- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_property_payable_bill_dates.ts` in `backend` — passed: `test_property_payable_bill_dates: ok`.
-- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_property_payable_template_sync.ts` in `backend` — passed: `test_property_payable_template_sync: ok`.
-- `npm run build` in `backend` — passed: `tsc -p .`.
-- `npx vitest run src/lib/propertyPayables.test.ts` in `frontend` — passed: 1 file / 2 tests.
-- `npm run lint` in `frontend` — passed with existing warnings and 0 errors.
-- `npm run build` in `frontend` — passed; existing lint warnings and existing Recharts static-generation width warnings were printed.
-- `python3 scripts/audit_change_release_ledger.py` — passed: 13 changed files covered.
-- `git diff --check` — passed.
-
-### Risks / Release Notes
-
-- Runtime risk: workbench status labels change from generic “逾期/快到期” to more precise bill/payment states; users may see existing confirmed unpaid records become “付款逾期” if due date is already past.
-- Data risk: existing templates have empty expected bill/period rules until edited; existing snapshots have null bill date fields unless ensured or confirmed after this release.
-- Rollback: remove the new date columns from payloads/status derivation, restore previous `confirm-amount` frontend call and status helper behavior, and remove the new bill-date test.
-- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: pushed to root `Dev` in commit `fafd0f1`.
-
-## CRL-20260630-002 — 房源保存不再写无业务变化的代付模板审计
-
-- **Status:** pushed
-- **Updated:** 2026-07-01 01:35 AEST
-- **Request:** 按诊断修复：客服保存房源时，如果代付模板没有实际变化，不应在房源代付/固定支付审计里显示他编辑过。
-- **Outcome:** 房源编辑同步 `payable_templates` 时会先比较代付模板业务字段；如果只有 `updated_at` / `updated_by` 等同步元数据会变化，后端直接跳过模板更新，不再写 `RecurringPayment update` 审计。真实修改金额、到期日、付款方式等业务字段时仍会更新模板并写审计。
-
-### Implementation
-
-- Previous behavior:
-  - `PATCH /properties/:id` 只要 payload 带 `payable_templates`，`syncPropertyPayableTemplatesTx()` 就会对已有 `recurring_payments` 模板执行 update。
-  - 即使模板业务字段完全没变，也会刷新 `updated_at` / `updated_by` 并写 `RecurringPayment update` audit，导致客服保存房源后出现在代付模板操作记录里。
-- New behavior:
-  - 新增 `propertyPayableTemplateHasBusinessChanges()`，统一比较房源代付模板业务字段。
-  - 同步已有模板前先比较业务字段；没有业务变化则跳过数据库 update 和 audit。
-  - 新增后端脚本测试覆盖“只变更新时间/更新人不算业务变化，金额/到期日变化算业务变化”。
-- Key decisions:
-  - 不改客服 `property.write` 权限，也不移除房源页的代付模板预设展示；只修正无意义模板同步审计。
-  - 不改变新建模板、真实修改模板、删除/暂停模板的审计行为。
-
-### Files / Areas
-
-- `backend/src/modules/properties.ts` — modified: 增加代付模板业务字段比较，并在无业务变化时跳过 `recurring_payments` 更新和 `RecurringPayment` audit。
-- `backend/dist/modules/properties.js` — modified: `npm run build` 生成的对应后端输出。
-- `backend/scripts/tests/test_property_payable_template_sync.ts` — added: 覆盖代付模板同步业务字段比较规则。
-- `docs/change-release-ledger.md` — modified: 记录本修复单元。
-
-### Impact / Dependencies
-
-- API: no request/response shape changes.
-- Database / migration: none.
-- Config / environment: none.
-- Dependencies: none.
-- Related units: can ship independently from `CRL-20260630-001`, though both touch房源代付/RecurringPayment behavior.
-
-### Validation
-
-- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_property_payable_template_sync.ts` in `backend` — passed: `test_property_payable_template_sync: ok`.
-- `npm run build` in `backend` — passed: `tsc -p .`.
-- `python3 scripts/audit_change_release_ledger.py` — passed: 8 changed files covered.
-- `git diff --check` — passed.
-
-### Risks / Release Notes
-
-- Runtime risk: if the frontend submits a template identical after normalization, it will no longer refresh template `updated_at` / `updated_by`; this is intended to keep audit meaningful.
-- Rollback: remove `propertyPayableTemplateHasBusinessChanges()`, restore unconditional template update/audit, and remove the new backend script test.
-- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
-- Git state: pushed to root `Dev` in commit `fafd0f1`.
-
-## CRL-20260630-001 — 房源代付确认金额后不再显示逾期
-
-- **Status:** pushed
-- **Updated:** 2026-07-01 01:35 AEST
-- **Request:** 房源代付页面已经确认金额的记录默认处理完，不应该继续显示逾期。
-- **Outcome:** 房源代付本月账单确认金额后，不再进入逾期/快到期状态、逾期统计、红色行样式或日历逾期样式；仍保持未付款状态，可继续登记支付。
-
-### Implementation
-
-- Previous behavior:
-  - `/recurring/property-payables/workbench` 只按 `status != paid` 和到期日判断逾期，即使本月金额已经确认，也会继续返回 `is_overdue=true`。
-  - 前端列表、详情、日历、筛选后统计直接信任 `is_overdue`，因此已确认金额的账单仍显示“逾期”。
+- **Outcome:** `/mzapp/work-tasks` 现在为清洁任务返回 `execution_role` 和 `execution_semantics`，并在清洁员分组阶段排除纯 `checkin_clean` 入住检查；移动端和网页版清洁日历改按执行语义区分“清洁执行”和“检查安排”，历史带 `cleaner…5546 tokens truncated…情、日历、筛选后统计直接信任 `is_overdue`，因此已确认金额的账单仍显示“逾期”。
 - New behavior:
   - 后端 workbench 状态派生改为只有“未支付且未确认金额”的本月账单才会进入逾期/快到期。
   - 前端新增房源代付状态 helper，对可能来自旧响应或缓存的 `is_overdue/is_due_soon` 做同样兜底，统一用于标签、排序、统计、表格行样式和日历样式。

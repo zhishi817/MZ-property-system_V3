@@ -59,3 +59,17 @@ export function deepCleaningSourceSummary(row: any): string {
   if (detailsSummary) return detailsSummary
   return toSummaryText(row?.notes)
 }
+
+export function dailyNecessitiesSourceSummary(row: any): string {
+  const invoiceDesc = toSummaryText(row?.invoice_description_en)
+  if (invoiceDesc) return invoiceDesc
+  const itemName = toSummaryText(row?.item_name, 120)
+  const quantity = Number(row?.quantity || 0)
+  const note = toSummaryText(row?.note, 180)
+  const parts = [
+    itemName ? `日用品更换：${itemName}` : '日用品更换',
+    Number.isFinite(quantity) && quantity > 0 ? `数量 ${Math.trunc(quantity)}` : '',
+    note,
+  ].filter(Boolean)
+  return parts.join('；').slice(0, 260)
+}

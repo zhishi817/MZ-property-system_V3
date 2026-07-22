@@ -381,18 +381,40 @@ CREATE INDEX IF NOT EXISTS idx_cms_pages_guide_role ON cms_pages(guide_role);
 CREATE INDEX IF NOT EXISTS idx_cms_pages_pinned ON cms_pages(pinned, published_at);
 CREATE INDEX IF NOT EXISTS idx_cms_pages_expires ON cms_pages(expires_at);
 
--- Company secret items (internal secrets)
+-- Offline password items (encrypted at rest; legacy rows remain separated by item_type)
 CREATE TABLE IF NOT EXISTS company_secret_items (
   id text PRIMARY KEY,
   title text NOT NULL,
   username text,
   secret_enc text NOT NULL,
   note text,
+  item_type text NOT NULL DEFAULT 'legacy',
+  property_code text,
+  property_codes text[],
+  property_ids text[],
+  secret_kind text,
+  box_number text,
+  location text,
+  rotation_interval_days integer,
+  next_rotation_at date,
+  status text NOT NULL DEFAULT 'active',
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
   updated_by text
 );
+ALTER TABLE company_secret_items ADD COLUMN IF NOT EXISTS item_type text NOT NULL DEFAULT 'legacy';
+ALTER TABLE company_secret_items ADD COLUMN IF NOT EXISTS property_code text;
+ALTER TABLE company_secret_items ADD COLUMN IF NOT EXISTS property_codes text[];
+ALTER TABLE company_secret_items ADD COLUMN IF NOT EXISTS property_ids text[];
+ALTER TABLE company_secret_items ADD COLUMN IF NOT EXISTS secret_kind text;
+ALTER TABLE company_secret_items ADD COLUMN IF NOT EXISTS box_number text;
+ALTER TABLE company_secret_items ADD COLUMN IF NOT EXISTS location text;
+ALTER TABLE company_secret_items ADD COLUMN IF NOT EXISTS rotation_interval_days integer;
+ALTER TABLE company_secret_items ADD COLUMN IF NOT EXISTS next_rotation_at date;
+ALTER TABLE company_secret_items ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active';
 CREATE INDEX IF NOT EXISTS idx_company_secret_items_updated ON company_secret_items(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_company_secret_items_type_updated ON company_secret_items(item_type, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_company_secret_items_property ON company_secret_items(property_code);
 
 CREATE TABLE IF NOT EXISTS company_secret_access_logs (
   id text PRIMARY KEY,

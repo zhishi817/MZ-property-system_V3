@@ -1,15 +1,18 @@
 "use client"
 
-import { App, Button, Card, DatePicker, Descriptions, Drawer, Form, Image, Input, InputNumber, Select, Space, Table, Tag, Typography, Upload } from 'antd'
+import { App, Button, Card, DatePicker, Descriptions, Drawer, Form, Image, Input, InputNumber, Modal, Select, Space, Table, Tag, Typography, Upload } from 'antd'
 import type { UploadFile } from 'antd/es/upload/interface'
 import { PlusOutlined } from '@ant-design/icons'
 import { useEffect, useMemo, useState } from 'react'
 import dayjs from 'dayjs'
-import { API_BASE, authHeaders, getJSON, patchJSON, postJSON } from '../../../../../lib/api'
+import { API_BASE, authHeaders, deleteJSON, getJSON, patchJSON, postJSON } from '../../../../../lib/api'
 import { sortProperties } from '../../../../../lib/properties'
+import { hasPerm } from '../../../../../lib/auth'
+import TableRowActions from '../../../../../components/TableRowActions'
 
 type PropertyRow = { id: string; code?: string | null; address?: string | null; region?: string | null }
 type DailyItem = { id: string; item_name: string; sku: string; is_active?: boolean }
+type DailyItemOption = { value: string; label: string; itemName: string }
 type Me = { id: string; username?: string | null; display_name?: string | null }
 
 type ReplacementRow = {
@@ -44,6 +47,36 @@ function urlsToFiles(urls: string[]) {
   }))
 }
 
+function cleanText(value: any) {
+  return String(value || '').trim()
+}
+
+function optionalText(value: any) {
+  const text = cleanText(value)
+  return text || undefined
+}
+
+function replacementSubmitErrorMessage(error: any) {
+  const msg = String(error?.message || '').trim()
+  if (msg && msg !== 'HTTP 400') return msg
+  const fieldLabels: Record<string, string> = {
+    property_id: '房号',
+    occurred_at: '日期',
+    item_id: '更换物品',
+    item_name: '更换物品',
+    quantity: '数量',
+    replacement_at: '更换日期',
+    replacer_name: '更换人',
+    pay_method: '扣款方式',
+    status: '状态',
+  }
+  for (const [field, label] of Object.entries(fieldLabels)) {
+    const errors = Array.isArray(error?.[field]?._errors) ? error[field]._errors : []
+    if (errors.length) return `${label}：${errors[0]}`
+  }
+  return '保存失败：请检查房号、日期、更换物品、数量和状态'
+}
+
 export default function DailyReplacementsPage() {
   const { message } = App.useApp()
   const [properties, setProperties] = useState<PropertyRow[]>([])
@@ -65,6 +98,8 @@ export default function DailyReplacementsPage() {
   const [afterUrls, setAfterUrls] = useState<string[]>([])
   const [submitting, setSubmitting] = useState(false)
   const [form] = Form.useForm()
+  const canWrite = hasPerm('inventory_daily_replacements.write') || hasPerm('inventory.move')
+  const canDelete = hasPerm('inventory_daily_replacements.delete')
 
   async function loadBase() {
     const [ps, dailyItems, meRow] = await Promise.all([
@@ -109,6 +144,18 @@ export default function DailyReplacementsPage() {
     () => (items || []).map((item) => ({ value: item.id, label: `${item.item_name} (${item.sku})`, itemName: item.item_name })),
     [items],
   )
+  const editorItemOptions = useMemo(() => {
+    const base = itemOptions as DailyItemOption[]
+    if (!editing?.item_name) return base
+    const itemId = String(editing.item_id || '').trim()
+    const itemName = String(editing.item_name || '').trim()
+    const matched = base.some((item) => String(item.value) === itemId || item.itemName.trim().toLowerCase() === itemName.toLowerCase())
+    if (matched) return base
+    return [
+      { value: `legacy:${editing.id}`, label: `${itemName}（当前记录）`, itemName },
+      ...base,
+    ]
+  }, [editing, itemOptions])
 
   const statusOptions = [
     { value: 'need_replace,replaced,no_action', label: '全部状态' },
@@ -141,6 +188,16 @@ export default function DailyReplacementsPage() {
     if (s === 'landlord_pay') return '房东支付'
     if (s === 'other_pay') return '其他人支付'
     return s
+  }
+  function itemValueForRow(row: ReplacementRow) {
+    const itemId = String(row.item_id || '').trim()
+    const itemName = String(row.item_name || '').trim()
+    const matched = (itemOptions as DailyItemOption[]).find((item) => (
+      (itemId && String(item.value) === itemId) ||
+      (!!itemName && item.itemName.trim().toLowerCase() === itemName.toLowerCase())
+    ))
+    if (matched) return matched.value
+    return itemName ? `legacy:${row.id}` : undefined
   }
 
   function resetEditor() {
@@ -181,7 +238,7 @@ export default function DailyReplacementsPage() {
     form.setFieldsValue({
       property_id: row.property_id || undefined,
       occurred_at: row.submitted_at ? dayjs(row.submitted_at) : (row.created_at ? dayjs(row.created_at) : dayjs()),
-      item_id: row.item_id || undefined,
+      item_id: itemValueForRow(row),
       quantity: Number(row.quantity || 1),
       note: row.note || '',
       invoice_description_en: row.invoice_description_en || '',
@@ -197,6 +254,11 @@ export default function DailyReplacementsPage() {
   function openDetail(row: ReplacementRow) {
     setViewing(row)
     setDetailOpen(true)
+  }
+
+  function openEditFromDetail(row: ReplacementRow) {
+    setDetailOpen(false)
+    openEdit(row)
   }
 
   async function upload(file: File) {
@@ -239,29 +301,41 @@ export default function DailyReplacementsPage() {
     setSubmitting(true)
     try {
       const values = await form.validateFields()
-      const selectedItem = itemOptions.find((item) => String(item.value) === String(values.item_id || ''))
+      const selectedItem = editorItemOptions.find((item) => String(item.value) === String(values.item_id || ''))
+      const itemValue = cleanText(values.item_id)
+      const legacyItem = itemValue.startsWith('legacy:')
+      const nextStatus = cleanText(values.status)
       const payload: any = {
-        property_id: values.property_id,
+        property_id: cleanText(values.property_id),
         occurred_at: dayjs(values.occurred_at).toISOString(),
-        item_id: values.item_id || undefined,
-        item_name: selectedItem?.itemName || selectedItem?.label || '',
+        item_name: cleanText(selectedItem?.itemName || editing?.item_name),
         quantity: Number(values.quantity || 1),
-        note: values.note || undefined,
-        invoice_description_en: values.invoice_description_en || undefined,
-        before_photo_urls: beforeUrls,
-        status: values.status,
+        note: optionalText(values.note),
+        invoice_description_en: optionalText(values.invoice_description_en),
+        before_photo_urls: beforeUrls.filter(Boolean),
+        status: nextStatus,
       }
+      const nextItemId = legacyItem ? '' : itemValue
+      if (nextItemId) payload.item_id = nextItemId
 
-      if (values.status === 'replaced') {
+      if (nextStatus === 'replaced') {
         payload.replacement_at = values.replacement_at ? dayjs(values.replacement_at).toISOString() : null
-        payload.replacer_name = values.replacer_name || undefined
-        payload.pay_method = values.pay_method ? String(values.pay_method) : undefined
-        payload.after_photo_urls = afterUrls
+        payload.replacer_name = optionalText(values.replacer_name)
+        payload.pay_method = optionalText(values.pay_method)
+        payload.after_photo_urls = afterUrls.filter(Boolean)
       } else {
-        payload.replacement_at = null
-        payload.replacer_name = null
-        payload.pay_method = null
-        payload.after_photo_urls = []
+        const hadReplacementData = !!(
+          editing?.replacement_at ||
+          editing?.replacer_name ||
+          editing?.pay_method ||
+          (Array.isArray(editing?.after_photo_urls) && editing.after_photo_urls.length)
+        )
+        if (hadReplacementData || cleanText(editing?.status) === 'replaced') {
+          payload.replacement_at = null
+          payload.replacer_name = null
+          payload.pay_method = null
+          payload.after_photo_urls = []
+        }
       }
 
       if (!editing) {
@@ -275,10 +349,29 @@ export default function DailyReplacementsPage() {
       resetEditor()
       await load()
     } catch (e: any) {
-      message.error(e?.message || '提交失败')
+      message.error(replacementSubmitErrorMessage(e))
     } finally {
       setSubmitting(false)
     }
+  }
+
+  function confirmDelete(row: ReplacementRow) {
+    Modal.confirm({
+      title: '确认删除这条日用品更换记录？',
+      content: '删除后，该记录关联的自动支出快照会被作废。',
+      okText: '删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        await deleteJSON(`/inventory/daily-replacements/${encodeURIComponent(String(row.id))}`)
+        message.success('已删除')
+        if (viewing?.id === row.id) {
+          setDetailOpen(false)
+          setViewing(null)
+        }
+        await load()
+      },
+    })
   }
 
   const columns: any[] = [
@@ -302,12 +395,16 @@ export default function DailyReplacementsPage() {
     { title: '备注', dataIndex: 'note', render: (value: string) => value || '-' },
     {
       title: '操作',
-      width: 160,
+      width: 260,
+      fixed: 'right',
       render: (_: any, r: ReplacementRow) => (
-        <Space>
-          <Button onClick={() => openDetail(r)}>详情</Button>
-          <Button onClick={() => openEdit(r)}>{String(r.status || '') === 'need_replace' ? '去更换' : '编辑'}</Button>
-        </Space>
+        <TableRowActions
+          actions={[
+            { key: 'detail', label: '详情', onClick: () => openDetail(r) },
+            { key: 'edit', label: String(r.status || '') === 'need_replace' ? '去更换' : '编辑', onClick: () => openEdit(r), hidden: !canWrite },
+            { key: 'delete', label: '删除', onClick: () => confirmDelete(r), danger: true, hidden: !canDelete },
+          ]}
+        />
       ),
     },
   ]
@@ -366,13 +463,13 @@ export default function DailyReplacementsPage() {
               <DatePicker style={{ width: '100%' }} />
             </Form.Item>
             <Form.Item name="item_id" label="更换物品" rules={[{ required: true, message: '请选择更换物品' }]}>
-              <Select options={itemOptions} showSearch optionFilterProp="label" placeholder="请选择日用品" />
+              <Select options={editorItemOptions} showSearch optionFilterProp="label" placeholder="请选择日用品" />
             </Form.Item>
             <Form.Item name="quantity" label="数量" rules={[{ required: true, message: '请输入数量' }]}>
               <InputNumber min={1} precision={0} style={{ width: '100%' }} />
             </Form.Item>
-            <Form.Item label="提交人">
-              <Input value={editing?.submitter_name || me?.display_name || me?.username || '-'} disabled />
+            <Form.Item name="submitter_name" label="提交人">
+              <Input disabled />
             </Form.Item>
             <Form.Item name="status" label="状态" rules={[{ required: true, message: '请选择状态' }]}>
               <Select
@@ -427,6 +524,7 @@ export default function DailyReplacementsPage() {
         width={760}
         open={detailOpen}
         onClose={() => setDetailOpen(false)}
+        extra={viewing && canWrite ? <Button type="primary" onClick={() => openEditFromDetail(viewing)}>编辑</Button> : null}
       >
         {viewing ? (
           <div style={{ display: 'grid', gap: 16 }}>

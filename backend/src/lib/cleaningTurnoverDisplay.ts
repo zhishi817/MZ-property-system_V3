@@ -45,7 +45,7 @@ export type CleaningTurnoverConflict = {
   canonical_value: any
   manual_value: any
   manual_task_id: string
-  resolution: 'kept_canonical'
+  resolution: 'kept_canonical' | 'ignored_placeholder'
 }
 
 export type CleaningTurnoverDisplay = {
@@ -247,12 +247,16 @@ export function buildCleaningTurnoverDisplay(params: {
   const checkoutRequest = guestRequest(checkout)
   const checkinRequest = guestRequest(checkin)
   const conflicts: CleaningTurnoverConflict[] = []
-  const pushConflict = (manual: CleaningTurnoverTaskLike, field: string, canonical: any, manualValue: any) => {
-    const id = taskId(manual)
-    if (!id) return
-    if (manualValue == null || manualValue === '') return
-    if (sameDisplayValue(canonical, manualValue)) return
-    conflicts.push({
+	  const pushConflict = (manual: CleaningTurnoverTaskLike, field: string, canonical: any, manualValue: any) => {
+	    const id = taskId(manual)
+	    if (!id) return
+	    if (manualValue == null || manualValue === '') return
+	    if (sameDisplayValue(canonical, manualValue)) return
+	    if (field === 'nights' && numberOrNull(manualValue) === 0) {
+	      const canonicalNights = numberOrNull(canonical)
+	      if (canonicalNights != null && canonicalNights > 0) return
+	    }
+	    conflicts.push({
       field,
       canonical_value: canonical,
       manual_value: manualValue,

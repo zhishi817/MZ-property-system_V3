@@ -31,28 +31,31 @@ async function main() {
   const o2 = uuid()
   const o3 = uuid()
   const o4 = uuid()
+  const o5 = uuid()
   const manualCheckin = uuid()
   const manualCheckout = uuid()
   const manualExtraCheckin = uuid()
   const manualCheckoutInProgress = uuid()
+  const manualCheckinZeroNights = uuid()
 
   const orders = [
-    { id: o1, property_id: 'P_TEST_A', checkin: '2026-02-10', checkout: '2026-02-12', status: 'confirmed', confirmation_code: `TEST_SYNC_${o1.slice(0, 8)}` },
-    { id: o2, property_id: 'P_TEST_B', checkin: '2026-02-11', checkout: '2026-02-13', status: 'confirmed', confirmation_code: `TEST_SYNC_${o2.slice(0, 8)}` },
-    { id: o3, property_id: 'P_TEST_C', checkin: '2026-02-12', checkout: '2026-02-14', status: 'confirmed', confirmation_code: `TEST_SYNC_${o3.slice(0, 8)}` },
-    { id: o4, property_id: 'P_TEST_D', checkin: '2026-02-18', checkout: '2026-02-21', status: 'confirmed', confirmation_code: `TEST_SYNC_${o4.slice(0, 8)}` },
+    { id: o1, property_id: 'P_TEST_A', checkin: '2026-02-10', checkout: '2026-02-12', nights: 2, status: 'confirmed', confirmation_code: `TEST_SYNC_${o1.slice(0, 8)}` },
+    { id: o2, property_id: 'P_TEST_B', checkin: '2026-02-11', checkout: '2026-02-13', nights: 2, status: 'confirmed', confirmation_code: `TEST_SYNC_${o2.slice(0, 8)}` },
+    { id: o3, property_id: 'P_TEST_C', checkin: '2026-02-12', checkout: '2026-02-14', nights: 2, status: 'confirmed', confirmation_code: `TEST_SYNC_${o3.slice(0, 8)}` },
+    { id: o4, property_id: 'P_TEST_D', checkin: '2026-02-18', checkout: '2026-02-21', nights: 3, status: 'confirmed', confirmation_code: `TEST_SYNC_${o4.slice(0, 8)}` },
+    { id: o5, property_id: 'P_TEST_E', checkin: '2026-02-24', checkout: '2026-02-28', nights: 4, status: 'confirmed', confirmation_code: `TEST_SYNC_${o5.slice(0, 8)}` },
   ]
 
   if (pgPool) {
     await ensureCleaningSchemaV2()
-    await pgPool.query('DELETE FROM cleaning_sync_logs WHERE order_id = ANY($1)', [[o1, o2, o3, o4]])
-    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o3, o4], [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress]])
-    await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [[o1, o2, o3, o4]])
+    await pgPool.query('DELETE FROM cleaning_sync_logs WHERE order_id = ANY($1)', [[o1, o2, o3, o4, o5]])
+    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o3, o4, o5], [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress, manualCheckinZeroNights]])
+    await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [[o1, o2, o3, o4, o5]])
     for (const o of orders) {
       await pgPool.query(
-        `INSERT INTO orders(id, property_id, checkin, checkout, status, confirmation_code)
-         VALUES($1,$2,$3::date,$4::date,$5,$6)`,
-        [o.id, o.property_id, o.checkin, o.checkout, o.status, o.confirmation_code]
+        `INSERT INTO orders(id, property_id, checkin, checkout, nights, status, confirmation_code)
+         VALUES($1,$2,$3::date,$4::date,$5,$6,$7)`,
+        [o.id, o.property_id, o.checkin, o.checkout, o.nights, o.status, o.confirmation_code]
       )
     }
   } else {
@@ -198,17 +201,43 @@ async function main() {
   assert.equal(String(eligibleManual.status), 'pending', 'superseded placeholder should keep original status instead of cancelled')
   assert.equal(String(eligibleManual.superseded_by), String(o4Checkin.id))
   assert.ok(supersedeConflicts(eligibleManual).some((item: any) => item.field === 'checkin_time' && item.resolution === 'copied_manual'))
-  assert.ok(supersedeConflicts(eligibleManual).some((item: any) => item.field === 'guest_special_request' && item.resolution === 'copied_manual'))
-  assert.ok(supersedeConflicts(eligibleManual).some((item: any) => item.field === 'new_code' && item.resolution === 'manual_requires_review'))
-  assert.ok(supersedeConflicts(eligibleManual).some((item: any) => item.field === 'keys_required' && item.resolution === 'manual_requires_review'))
-  assert.equal(String(eligibleManualCheckout.execution_state), 'superseded', 'temporary manual checkout placeholder should be superseded')
+	  assert.ok(supersedeConflicts(eligibleManual).some((item: any) => item.field === 'guest_special_request' && item.resolution === 'copied_manual'))
+	  assert.ok(supersedeConflicts(eligibleManual).some((item: any) => item.field === 'new_code' && item.resolution === 'manual_requires_review'))
+	  assert.ok(supersedeConflicts(eligibleManual).some((item: any) => item.field === 'keys_required' && item.resolution === 'manual_requires_review'))
+	  assert.ok(supersedeConflicts(eligibleManual).some((item: any) => item.field === 'nights_override' && item.resolution === 'manual_requires_review' && Number(item.canonical_value) === 3 && Number(item.manual_value) === 5))
+	  assert.equal(String(eligibleManualCheckout.execution_state), 'superseded', 'temporary manual checkout placeholder should be superseded')
   assert.equal(String(eligibleManualCheckout.superseded_by), String(o4Checkout.id))
   assert.ok(supersedeConflicts(eligibleManualCheckout).some((item: any) => item.field === 'checkout_time' && item.resolution === 'copied_manual'))
   assert.ok(supersedeConflicts(eligibleManualCheckout).some((item: any) => item.field === 'old_code' && item.resolution === 'manual_requires_review'))
-  assert.equal(String(extraManual.execution_state), 'active', 'explicit extra manual checkin task must not be superseded')
-  assert.equal(String(extraManual.status), 'pending')
-  assert.equal(String(protectedManual.execution_state), 'active', 'in-progress manual checkout task must not be superseded')
-  assert.equal(String(protectedManual.status), 'in_progress')
+	  assert.equal(String(extraManual.execution_state), 'active', 'explicit extra manual checkin task must not be superseded')
+	  assert.equal(String(extraManual.status), 'pending')
+	  assert.equal(String(protectedManual.execution_state), 'active', 'in-progress manual checkout task must not be superseded')
+	  assert.equal(String(protectedManual.status), 'in_progress')
+
+	  if (pgPool) {
+	    await pgPool.query(
+	      `INSERT INTO cleaning_tasks(id, order_id, property_id, task_type, task_date, type, date, status, source, execution_state, manual_task_purpose, auto_sync_enabled, checkin_time, nights_override)
+	       VALUES($1, NULL, 'P_TEST_E', 'checkin_clean', '2026-02-24'::date, 'checkin_clean', '2026-02-24'::date, 'pending', 'manual', 'active', 'temporary_order_placeholder', true, '2pm', 0)`,
+	      [manualCheckinZeroNights],
+	    )
+	  } else {
+	    ;(db.cleaningTasks as any[]).push({ id: manualCheckinZeroNights, order_id: null, property_id: 'P_TEST_E', task_type: 'checkin_clean', task_date: '2026-02-24', type: 'checkin_clean', date: '2026-02-24', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: 'temporary_order_placeholder', auto_sync_enabled: true, checkin_time: '2pm', nights_override: 0 })
+	  }
+	  await syncOrderToCleaningTasks(o5)
+	  const o5Checkin = await fetchTaskByType(o5, 'checkin_clean')
+	  assert.ok(o5Checkin)
+	  assert.equal(String(o5Checkin.checkin_time), '2pm', 'canonical checkin should inherit non-default manual placeholder time')
+	  assert.equal(o5Checkin.nights_override == null ? null : Number(o5Checkin.nights_override), null, 'manual zero-night placeholder should not override order nights')
+	  let zeroNightManual: any
+	  if (pgPool) {
+	    const r = await pgPool.query('SELECT * FROM cleaning_tasks WHERE id = $1', [manualCheckinZeroNights])
+	    zeroNightManual = r?.rows?.[0]
+	  } else {
+	    zeroNightManual = (db.cleaningTasks as any[]).find((row: any) => String(row.id) === manualCheckinZeroNights)
+	  }
+	  assert.equal(String(zeroNightManual.execution_state), 'superseded', 'zero-night placeholder should still be superseded')
+	  assert.ok(supersedeConflicts(zeroNightManual).some((item: any) => item.field === 'nights_override' && item.resolution === 'ignored_placeholder' && Number(item.canonical_value) === 4 && Number(item.manual_value) === 0))
+	  assert.equal(supersedeConflicts(zeroNightManual).some((item: any) => item.field === 'nights_override' && item.resolution === 'manual_requires_review'), false, 'zero-night placeholder should not create a manual review conflict')
 
   if (pgPool) await pgPool.query('DELETE FROM orders WHERE id=$1', [o3])
   else {
@@ -223,9 +252,9 @@ async function main() {
   if (pgPool) {
     const countTasks = await pgPool.query(`SELECT COUNT(*)::int AS c FROM cleaning_tasks WHERE order_id = ANY($1)`, [[o1, o2]])
     assert.equal(Number(countTasks?.rows?.[0]?.c || 0), 4, 'backfill twice should not duplicate tasks')
-    await pgPool.query('DELETE FROM cleaning_sync_logs WHERE order_id = ANY($1)', [[o1, o2, o4]])
-    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o4], [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress]])
-    await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [[o1, o2, o4]])
+	    await pgPool.query('DELETE FROM cleaning_sync_logs WHERE order_id = ANY($1)', [[o1, o2, o4, o5]])
+	    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o4, o5], [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress, manualCheckinZeroNights]])
+	    await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [[o1, o2, o4, o5]])
   } else {
     const tasks = (db.cleaningTasks as any[]).filter((t: any) => [o1, o2].includes(String(t.order_id)))
     assert.equal(tasks.length, 4, 'backfill twice should not duplicate tasks')

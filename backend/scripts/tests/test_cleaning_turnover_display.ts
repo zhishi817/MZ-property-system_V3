@@ -76,6 +76,23 @@ assert.deepEqual(display.superseded_source_ids, ['manual-superseded'])
 assert.deepEqual(display.all_related_source_ids, ['checkout-active', 'checkin-active', 'manual-superseded'])
 assert.ok(display.conflicts.some((item) => item.field === 'checkin_time' && item.manual_value === '5pm' && item.canonical_value === '2pm'))
 assert.ok(display.conflicts.some((item) => item.field === 'keys_required' && item.manual_value === 2 && item.canonical_value === 1))
+assert.ok(display.conflicts.some((item) => item.field === 'nights' && item.manual_value === 2 && item.canonical_value === 3))
+
+const displayWithZeroNightPlaceholder = buildCleaningTurnoverDisplay({
+  propertyId: 'P1',
+  taskDate: '2026-06-29',
+  checkinTask,
+  activeRows: [checkinTask],
+  supersededRows: [{
+    id: 'manual-zero-night-placeholder',
+    task_type: 'checkin_clean',
+    property_id: 'P1',
+    task_date: '2026-06-29',
+    checkin_time: '2pm',
+    nights_override: 0,
+  }],
+})
+assert.equal(displayWithZeroNightPlaceholder.conflicts.some((item) => item.field === 'nights'), false)
 
 const displayWithPlaceholderOrderNote = buildCleaningTurnoverDisplay({
   propertyId: 'P1',
