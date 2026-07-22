@@ -54,7 +54,9 @@ export default forwardRef<HTMLDivElement, {
   const language: AnnualReportLanguage = showChinese ? 'bilingual' : 'en'
   const isDraft = annualReportHasIssues(report)
   const owner = report.report_owner_snapshot || report.owner_current
-  const propertyLabel = report.property.code || report.property.address || report.property.id
+  const ownerName = owner?.name || owner?.company_name || '-'
+  const propertyCode = report.property.code || '-'
+  const propertyAddress = report.property.address || '-'
   const visibleExpenseRows = getVisibleAnnualReportExpenseLineKeys(report)
 
   return (
@@ -115,8 +117,9 @@ export default forwardRef<HTMLDivElement, {
             {showChinese ? 'Customer Details 客户信息' : 'Customer Details'}
           </div>
           <div style={{ border: '1px solid #dfe6f1', borderTop: 0, padding: 8, textAlign: 'right' }}>
-            <div>{owner?.name || ''}</div>
-            <div style={{ fontSize: 12 }}>{propertyLabel}</div>
+            <div>{ownerName}</div>
+            <div style={{ fontSize: 12 }}>{propertyCode}</div>
+            <div style={{ fontSize: 12, marginTop: 2 }}>{propertyAddress}</div>
           </div>
         </div>
       </div>
@@ -194,9 +197,6 @@ export default forwardRef<HTMLDivElement, {
         </tbody>
       </table>
 
-      <div style={{ marginTop: 14, fontSize: 12, color: '#666' }}>
-        {showChinese ? '房东信息按报告生成时的当前房东资料展示。' : 'Owner information is shown using the current owner details at report generation time.'}
-      </div>
       <div style={{ textAlign: 'center', marginTop: 18, fontSize: 12 }}>
         <div style={{ fontWeight: 700 }}>MZ Property Pty Ltd</div>
         <div>ABN: 42 657 925 365</div>

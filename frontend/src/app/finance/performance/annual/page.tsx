@@ -101,7 +101,6 @@ export default function AnnualReportPage() {
   }, [loadReport, propertyId])
 
   const manualMonths = useMemo(() => (report?.months || []).filter((month) => month.editable), [report])
-  const currentProperty = useMemo(() => properties.find((row) => row.id === propertyId), [properties, propertyId])
   const downloadLabel = report && annualReportHasIssues(report) ? '下载 Draft / Incomplete PDF' : '下载 PDF'
 
   const updateDraftValue = (monthKey: string, key: AnnualReportLineKey, value: number | null) => {
@@ -334,10 +333,6 @@ export default function AnnualReportPage() {
           >
             <div ref={printRef}>
               <FiscalYearStatement report={report} showChinese={reportLanguage === 'bilingual'} />
-            </div>
-            <div style={{ marginTop: 12, color: '#666' }}>
-              {currentProperty?.region ? `区域：${currentProperty.region}。` : ''}
-              报告预览与下载 PDF 共用同一个 `AnnualPropertyReport` 对象；当前语言版本为 {reportLanguage === 'en' ? 'English' : 'English + 中文'}。
             </div>
           </Card>
         </>

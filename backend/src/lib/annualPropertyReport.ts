@@ -595,6 +595,15 @@ function toOwnerSummary(landlord: any): OwnerSummary | null {
   }
 }
 
+export function findLandlordByPropertyId(landlords: any[], propertyId: string) {
+  const pid = String(propertyId || '').trim()
+  if (!pid || !Array.isArray(landlords)) return null
+  return landlords.find((landlord: any) => (
+    Array.isArray(landlord?.property_ids)
+      && landlord.property_ids.some((linkedPropertyId: any) => String(linkedPropertyId || '').trim() === pid)
+  )) || null
+}
+
 async function loadPropertyAndOwner(propertyId: string) {
   const pid = String(propertyId || '').trim()
   if (!pid) return { property: null as any, landlord: null as any }
@@ -602,13 +611,25 @@ async function loadPropertyAndOwner(propertyId: string) {
     const propertyRs = await pgPool.query('SELECT id, code, address, landlord_id FROM properties WHERE id = $1 LIMIT 1', [pid])
     const property = propertyRs.rows?.[0] || null
     const landlordId = String(property?.landlord_id || '').trim()
-    if (!landlordId) return { property, landlord: null as any }
-    const landlordRs = await pgPool.query('SELECT * FROM landlords WHERE id = $1 LIMIT 1', [landlordId])
-    return { property, landlord: landlordRs.rows?.[0] || null }
+    let landlord = landlordId
+      ? ((await pgPool.query('SELECT * FROM landlords WHERE id = $1 LIMIT 1', [landlordId])).rows?.[0] || null)
+      : null
+    if (!landlord) {
+      const reverseRs = await pgPool.query(
+        `SELECT *
+           FROM landlords
+          WHERE $1 = ANY(COALESCE(property_ids, ARRAY[]::text[]))
+          LIMIT 1`,
+        [pid]
+      )
+      landlord = reverseRs.rows?.[0] || null
+    }
+    return { property, landlord }
   }
   const property = (db.properties || []).find((row) => String((row as any)?.id || '') === pid) || null
   const landlordId = String((property as any)?.landlord_id || '').trim()
-  const landlord = landlordId ? (db.landlords || []).find((row) => String((row as any)?.id || '') === landlordId) || null : null
+  const landlord = (landlordId ? (db.landlords || []).find((row) => String((row as any)?.id || '') === landlordId) || null : null)
+    || findLandlordByPropertyId(db.landlords || [], pid)
   return { property, landlord }
 }
 

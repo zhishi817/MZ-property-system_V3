@@ -2,6 +2,59 @@
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
+## CRL-20260722-002 — 年度报告展示与房东关联兼容
+
+- **Status:** ready
+- **Updated:** 2026-07-22 13:20 AEST
+- **Request:** 用户确认执行年度报告优化：移除正式报告中的内部小字，客户信息显示房东姓名、房号和地址，并修复已关联房东/历史费率规则却显示缺少的问题。
+- **Outcome:** 年度报告 PDF 和预览不再显示内部说明；客户信息显示房东、房号和地址；年度报告读取房东时兼容房源正向关联和房东反向房源关联，反向关联命中后可继续加载历史管理费规则。
+
+### Implementation
+
+- Previous behavior:
+  - 正式报告中包含“房东信息按报告生成时的当前房东资料展示”说明，预览页还显示内部对象/语言说明。
+  - 客户信息区域只显示房东姓名和 `code || address`，有房号时地址被隐藏。
+  - 年度报告只读取 `properties.landlord_id`；房东管理页维护的 `landlords.property_ids` 未被年度报告识别，导致房东和历史管理费规则同时显示缺少。
+- New behavior:
+  - 移除 PDF 容器内和预览卡片下方的内部说明。
+  - 客户信息区域单独显示房东姓名、房源房号和房源地址。
+  - 后端优先使用 `properties.landlord_id`，找不到房东时按 `landlords.property_ids` 反向查找；不修改数据库关系，不改变历史费率计算口径。
+- Key decisions:
+  - 保持 `AnnualPropertyReport` 为页面和 PDF 的共同数据源。
+  - 不用当前管理费率替代缺失的历史规则；只有房东关联被正确解析后，现有历史规则匹配逻辑才继续工作。
+
+### Files / Areas
+
+- `backend/src/lib/annualPropertyReport.ts` — modified: 增加反向房源关联解析，并在 PostgreSQL 和本地 store 路径复用。
+- `backend/scripts/tests/test_annual_property_report.ts` — modified: 增加反向 `property_ids` 解析测试。
+- `frontend/src/components/FiscalYearStatement.tsx` — modified: 清理报告说明文字，补全客户信息展示。
+- `frontend/src/app/finance/performance/annual/page.tsx` — modified: 移除预览页内部说明，并清理对应无用变量。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: 年度报告读取逻辑兼容两种既有关联字段；接口路径和权限不变。
+- Database / migration: none; no production write or schema change.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: existing annual-report units in the ledger provide the shared report object and historical rule semantics.
+
+### Validation
+
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_annual_property_report.ts` in `backend` — passed: exit code `0`.
+- `./node_modules/.bin/vitest run src/lib/annualReport.test.ts` in `frontend` — passed: 1 file, 8 tests.
+- `npm run build` in `backend` — passed: TypeScript build completed.
+- `npm run lint` in `frontend` — passed: existing repository warnings only; no new errors.
+- `npm run build` in `frontend` — passed: optimized production build completed for 95 routes; existing lint/browser/chart warnings remain.
+- `git diff --check` — passed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: `Changed files: 10`, `Recorded changed files: 10`, `Coverage: PASS`.
+
+### Risks / Release Notes
+
+- Risk: if a property is not present in either `properties.landlord_id` or `landlords.property_ids`, the report will correctly continue to show missing owner/rule warnings; this change does not repair production associations.
+- Rollback: revert the four implementation/test file changes and remove this ledger unit; no database rollback is required.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or personal financial account values were added to code or ledger.
+- Git state: uncommitted; unrelated pre-existing worktree changes are preserved and not included in this unit.
 ## CRL-20260718-002 — 根仓库统一检查命令
 
 - **Status:** pushed

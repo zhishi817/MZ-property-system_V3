@@ -1,6 +1,7 @@
 import assert from 'assert'
 import {
   buildAnnualPropertyReport,
+  findLandlordByPropertyId,
   listAnnualReportMonthKeys,
   type AnnualReportManualMonthRow,
 } from '../../src/lib/annualPropertyReport'
@@ -132,6 +133,15 @@ function main() {
     assert.equal(mar.lines.management_fee, 200)
     assert.equal(feb.status, 'complete')
     assert.equal(mar.status, 'complete')
+  }
+
+  {
+    const linked = findLandlordByPropertyId([
+      { id: 'l1', property_ids: ['p1'] },
+      { id: 'l2', property_ids: ['p2'] },
+    ], 'p1')
+    assert.equal(linked?.id, 'l1')
+    assert.equal(findLandlordByPropertyId([{ id: 'l1', property_ids: ['p1'] }], 'p2'), null)
   }
 }
 
