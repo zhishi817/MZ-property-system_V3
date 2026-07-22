@@ -2,6 +2,387 @@
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
+## CRL-20260722-011 — 年度报告读取移除运行时建表副作用
+
+- **Status:** ready
+- **Updated:** 2026-07-22 16:22 AEST
+- **Request:** 用户要求优化年度报告查询时可能自动建表的问题。
+- **Outcome:** 年度报告 GET 只执行手工月份 SELECT；迁移表不存在时按无手工月份数据返回，不再由查询触发 DDL。保存和删除接口仍保留写操作前的表结构保护。
+
+### Implementation
+
+- Previous behavior: `loadManualRows()` 在读取年度报告前调用 `ensureAnnualReportManualMonthsTable()`，可能执行 `CREATE TABLE/CREATE INDEX IF NOT EXISTS`。
+- New behavior: GET 路径移除建表调用；对 PostgreSQL `42P01`（表不存在）返回空手工月份列表，其他数据库错误继续抛出。
+- Key decisions: 复用已有 `backend/scripts/migrations/20260623_property_annual_report_manual_months.sql`，不新增表结构或自动迁移入口；DDL 仅保留在保存/删除写路径。
+
+### Files / Areas
+
+- `backend/src/lib/annualPropertyReport.ts` — modified: 读取路径改为只读 SELECT，并兼容迁移尚未执行的状态。
+- `backend/src/lib/managementFeeRules.ts` — modified: 管理费规则列表读取移除运行时建表调用，并兼容表未迁移时的 `42P01`。
+- `backend/scripts/tests/test_management_fee_rule_reads.ts` — added: 验证规则读取不执行 DDL，且表不存在时返回空规则。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: 年度报告 GET 及复用的管理费规则列表读取不再触发数据库结构写入；接口路径和响应结构保持不变。
+- Database / migration: no schema change; existing migration must still be applied before relying on manual-month persistence.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: `CRL-20260722-003`, `CRL-20260722-010`.
+
+### Validation
+
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_annual_property_report.ts` in `backend` — passed.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_management_fee_rule_reads.ts` in `backend` — passed: missing-table reads return empty rules without issuing CREATE statements; existing rows remain normalized.
+- `npm run build` in `backend` — passed: TypeScript build completed.
+- `git diff --check` — passed.
+- Static path check — passed: annual-report GET and management-fee rule list reads contain no table-ensure call; manual-month and management-fee write paths retain their existing guards.
+- `python3 scripts/audit_change_release_ledger.py` — passed after repair update: `Changed files: 11`, `Recorded changed files: 11`, `Coverage: PASS`.
+
+### Risks / Release Notes
+
+- Risk: if the migration is not applied, saved manual-month records remain unavailable until the migration runs; the report will show the existing missing-manual-month status instead of creating the table during GET.
+- Risk: if the management-fee migration is not applied, historical rules remain unavailable and the report continues to show the existing missing-rule warning; no runtime DDL is attempted.
+- Owner confirmation: the user confirmed that the production annual-report manual-months migration and management-fee rules migration are complete.
+- Rollback: restore the GET-side ensure call if runtime initialization is explicitly required; no database rollback is required.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or production data were added.
+- Git state: uncommitted; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+
+## CRL-20260722-010 — 年度报告英文日期澳洲格式
+
+- **Status:** ready
+- **Updated:** 2026-07-22 15:47 AEST
+- **Request:** 用户要求年度报告英文版日期遵循澳洲显示格式。
+- **Outcome:** 英文版财年日期由 ISO `YYYY-MM-DD` 改为澳洲常用的 `DD/MM/YYYY`；中文版本保持原有日期显示。
+
+### Implementation
+
+- Previous behavior: 英文版显示 `FY2026: 2025-07-01 to 2026-06-30`。
+- New behavior: 英文版显示 `FY2026: 01/07/2025 to 30/06/2026`。
+- Key decisions: 使用本地 ISO 日期字符串的安全拆分，不通过 `Date` 对象转换，避免时区导致日期偏移。
+
+### Files / Areas
+
+- `frontend/src/components/FiscalYearStatement.tsx` — modified: 增加澳洲日期格式化函数并仅应用于英文版标题日期。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none; no production data change performed.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: `CRL-20260722-009`, `CRL-20260722-008`.
+
+### Validation
+
+- `npm run lint --prefix frontend -- --file src/components/FiscalYearStatement.tsx` — passed: existing `<img>` LCP warning only.
+- `./node_modules/.bin/vitest run src/lib/annualReport.test.ts` in `frontend` — passed: 1 file, 8 tests.
+- `npm run build` in `frontend` — passed: optimized production build completed; existing Browserslist, repository ESLint, and Recharts warnings remain.
+- `git diff --check` — passed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: `Changed files: 8`, `Recorded changed files: 8`, `Coverage: PASS`.
+
+### Risks / Release Notes
+
+- Risk: if an unexpected non-ISO date string is received, the formatter leaves it unchanged rather than guessing a potentially incorrect date.
+- Rollback: remove `formatAustralianDate` from the English title interpolation; no database rollback is required.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or business data were added.
+- Git state: uncommitted; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+
+## CRL-20260722-009 — 年度报告客户信息字体统一
+
+- **Status:** ready
+- **Updated:** 2026-07-22 15:44 AEST
+- **Request:** 用户反馈客户信息中的房东姓名、房号和地址字体大小不一致，要求统一。
+- **Outcome:** 客户信息三行统一使用 12px 字体，继续保持右对齐和现有行间距。
+
+### Implementation
+
+- Previous behavior: 房东姓名继承 14px，房号和地址使用 12px，视觉上大小不一致。
+- New behavior: 房东姓名、房号、地址全部显式设置为 12px。
+- Key decisions: 只调整客户信息的字体展示，不改变客户数据、位置、对齐方式或报表逻辑。
+
+### Files / Areas
+
+- `frontend/src/components/FiscalYearStatement.tsx` — modified: 为房东姓名补充 12px 字体样式。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none; no production data change performed.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: `CRL-20260722-008`, `CRL-20260722-007`.
+
+### Validation
+
+- `npm run lint --prefix frontend -- --file src/components/FiscalYearStatement.tsx` — passed: existing `<img>` LCP warning only.
+- `./node_modules/.bin/vitest run src/lib/annualReport.test.ts` in `frontend` — passed: 1 file, 8 tests.
+- `npm run build` in `frontend` — passed: optimized production build completed; existing Browserslist, repository ESLint, and Recharts warnings remain.
+- `git diff --check` — passed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: `Changed files: 8`, `Recorded changed files: 8`, `Coverage: PASS`.
+
+### Risks / Release Notes
+
+- Risk: none beyond normal font rendering differences between available system fonts.
+- Rollback: remove the explicit 12px style from the owner name; no database rollback is required.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or business data were added.
+- Git state: uncommitted; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+
+## CRL-20260722-008 — 年度报告中文标题单行显示
+
+- **Status:** ready
+- **Updated:** 2026-07-22 15:28 AEST
+- **Request:** 用户反馈双语年度报告标题中的中文部分自动换成了两行。
+- **Outcome:** 中文标题使用 26px 字号并禁止自动换行；英文标题保持 28px，双语标题在 PDF 和预览中保持单行。
+
+### Implementation
+
+- Previous behavior: 标题位于顶部中间网格列，双语标题宽度超过列宽后自动换行。
+- New behavior: 双语标题设置 `whiteSpace: nowrap`，中文模式字号调整为 26px，英文模式保持 28px。
+- Key decisions: 只调整标题展示样式，不改变标题文本、客户信息、报表数据或导出分页逻辑。
+
+### Files / Areas
+
+- `frontend/src/components/FiscalYearStatement.tsx` — modified: 调整年度报告标题的字号和换行行为。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none; no production data change performed.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: `CRL-20260722-007`, `CRL-20260722-006`.
+
+### Validation
+
+- `npm run lint --prefix frontend -- --file src/components/FiscalYearStatement.tsx` — passed: existing `<img>` LCP warning only.
+- `./node_modules/.bin/vitest run src/lib/annualReport.test.ts` in `frontend` — passed: 1 file, 8 tests.
+- `npm run build` in `frontend` — passed: optimized production build completed; existing Browserslist, repository ESLint, and Recharts warnings remain.
+- `git diff --check` — passed.
+- 脱敏版标题布局渲染与图片检查 — passed: title height 37px and `wraps: false` for the bilingual title.
+- `python3 scripts/audit_change_release_ledger.py` — passed: `Changed files: 8`, `Recorded changed files: 8`, `Coverage: PASS`.
+
+### Risks / Release Notes
+
+- Risk: if the report title text becomes materially longer, the single-line title may approach the Logo or right-side spacer; the current bilingual title fits the tested export width.
+- Rollback: remove `whiteSpace: nowrap` and restore the previous title font sizing; no database rollback is required.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or business data were added.
+- Git state: uncommitted; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+
+## CRL-20260722-007 — 年度报告页脚底部留白修复
+
+- **Status:** ready
+- **Updated:** 2026-07-22 15:22 AEST
+- **Request:** 用户反馈 PDF 页脚上方结束后，页面底部仍有过多空白，要求继续优化。
+- **Outcome:** 修正 PDF 外层容器包裹报告根节点时的 CSS 选择器，使报告主体真正撑满 A4 横向内容区，页脚贴近底部，仅保留正常内边距。
+
+### Implementation
+
+- Previous behavior: PDF 导出器把 `__pdf_capture_root__` class 加在外层复制容器，但页面高度和页脚规则只匹配报告根节点自身带 class 的情况，导致页脚未被推到页面底部。
+- New behavior: 同时匹配“报告根节点自身带 class”和“外层导出容器包裹报告根节点”两种结构；页脚使用自动上边距定位到底部。
+- Key decisions: 只修正年度报告 PDF 布局选择器，不改变数据、金额计算、分页接口或业务逻辑。
+
+### Files / Areas
+
+- `frontend/src/components/FiscalYearStatement.tsx` — modified: 补充外层 PDF 导出容器下的报告根节点和页脚选择器。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none; no production data change performed.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: `CRL-20260722-004`, `CRL-20260722-006`.
+
+### Validation
+
+- `npm run lint --prefix frontend -- --file src/components/FiscalYearStatement.tsx` — passed: existing `<img>` LCP warning only.
+- `./node_modules/.bin/vitest run src/lib/annualReport.test.ts` in `frontend` — passed: 1 file, 8 tests.
+- `npm run build` in `frontend` — passed: optimized production build completed; existing Browserslist, repository ESLint, and Recharts warnings remain.
+- `git diff --check` — passed.
+- 脱敏版真实外层容器布局渲染与图片检查 — passed: root height 713px, footer bottom gap 16px; footer is visually near the root bottom.
+- `python3 scripts/audit_change_release_ledger.py` — passed: `Changed files: 8`, `Recorded changed files: 8`, `Coverage: PASS`.
+
+### Risks / Release Notes
+
+- Risk: if PDF export width or margins change, the 188.7mm minimum height should be recalculated.
+- Rollback: restore the previous selector and remove the wrapper-specific selector; no database rollback is required.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or business data were added.
+- Git state: uncommitted; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+
+## CRL-20260722-006 — 年度报告客户信息框宽度微调
+
+- **Status:** ready
+- **Updated:** 2026-07-22 15:13 AEST
+- **Request:** 用户确认客户信息内容继续右对齐，并要求缩短框内左侧空白。
+- **Outcome:** 保留客户信息标题下方独立行、右对齐和表格前间距，将客户信息卡片宽度由 42% 缩至 34%。
+
+### Implementation
+
+- Previous behavior: 客户信息卡片宽度较大，右对齐内容左侧保留过多空白。
+- New behavior: 客户信息卡片使用 34% 宽度；客户信息标题、房东、房号和地址继续右对齐，卡片仍位于标题下方独立行。
+- Key decisions: 仅进行局部 PDF/预览排版微调，不改变客户数据、接口、金额计算或分页逻辑。
+
+### Files / Areas
+
+- `frontend/src/components/FiscalYearStatement.tsx` — modified: 缩小客户信息卡片宽度并恢复右对齐。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none; no production data change performed.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: `CRL-20260722-005`, `CRL-20260722-004`.
+
+### Validation
+
+- `npm run lint --prefix frontend -- --file src/components/FiscalYearStatement.tsx` — passed: existing `<img>` LCP warning only.
+- `./node_modules/.bin/vitest run src/lib/annualReport.test.ts` in `frontend` — passed: 1 file, 8 tests.
+- `npm run build` in `frontend` — passed: optimized production build completed; existing Browserslist, repository ESLint, and Recharts warnings remain.
+- `git diff --check` — passed.
+- 脱敏版布局渲染与图片检查 — passed: customer card remains 16px from the report root's right edge, stays right-aligned, and has an 18px gap before the data table.
+- `python3 scripts/audit_change_release_ledger.py` — pending: run after this ledger update.
+
+### Risks / Release Notes
+
+- Risk: the narrower 34% card may wrap unusually long addresses to more lines; the card remains allowed to grow vertically.
+- Rollback: restore the card width to 42%; no database rollback is required.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or business data were added.
+- Git state: uncommitted; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+
+## CRL-20260722-005 — 年度报告客户信息位置优化
+
+- **Status:** ready
+- **Updated:** 2026-07-22 15:05 AEST
+- **Request:** 用户要求客户信息不要与标题同一行，并进一步减少客户信息区域左侧空白、与数据表之间保留间距。
+- **Outcome:** 顶部仅保留 Logo 和报告标题；客户信息改为标题下方独立卡片，靠左排列，并与警告/数据表保留垂直间距。
+
+### Implementation
+
+- Previous behavior: 客户信息卡片与 Logo、标题共用顶部三列布局，客户信息被放在标题右侧。
+- New behavior: 客户信息卡片移至标题下方独立行，使用 42% 宽度靠左显示；卡片底部增加 18px 间距，避免紧贴后续警告或数据表。
+- Key decisions: 只调整 `FiscalYearStatement` 的展示结构和间距，不修改客户数据、接口、金额计算或 PDF 分页逻辑。
+
+### Files / Areas
+
+- `frontend/src/components/FiscalYearStatement.tsx` — modified: 调整标题/客户信息布局、客户卡片对齐方式和与数据表的间距。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none; no production data change performed.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: `CRL-20260722-002`, `CRL-20260722-004`.
+
+### Validation
+
+- `npm run lint --prefix frontend -- --file src/components/FiscalYearStatement.tsx` — passed: existing `<img>` LCP warning only.
+- `./node_modules/.bin/vitest run src/lib/annualReport.test.ts` in `frontend` — passed: 1 file, 8 tests.
+- `npm run build` in `frontend` — passed: optimized production build completed; existing Browserslist, repository ESLint, and Recharts warnings remain.
+- `git diff --check` — passed.
+- 脱敏版布局渲染与图片检查 — passed: customer card starts 16px from the report root's left edge and has an 18px gap before the data table.
+- `python3 scripts/audit_change_release_ledger.py` — passed at the time of the validation run.
+
+### Risks / Release Notes
+
+- Risk: the 42% card width was a presentation choice; it was subsequently narrowed by CRL-20260722-006.
+- Rollback: restore the original three-column header and remove the standalone customer card wrapper; no database rollback is required.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or business data were added.
+- Git state: uncommitted; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+
+## CRL-20260722-004 — 年度报告 PDF 页面布局优化
+
+- **Status:** ready
+- **Updated:** 2026-07-22 15:03 AEST
+- **Request:** 用户反馈年度报告 PDF 内容集中在页面上方、底部留白过大，要求优化页面布局。
+- **Outcome:** PDF 导出副本按 A4 横向可用高度撑开，页脚自动贴近页面底部；网页预览保持原有紧凑布局。
+
+### Implementation
+
+- Previous behavior: PDF 导出节点按内容自然高度测量，报告表格和页脚结束较早，单页底部出现大面积空白。
+- New behavior: 仅对带有 `__pdf_capture_root__` 标记的 PDF 导出副本设置最小页面高度和纵向 flex 布局，并让报告页脚使用自动上边距贴近底部。
+- Key decisions: 只修改报告组件的 PDF 展示样式，不改共享 PDF 导出器、报表数据、金额计算、接口或数据库。
+
+### Files / Areas
+
+- `frontend/src/components/FiscalYearStatement.tsx` — modified: 增加 PDF 导出副本的页面高度约束和底部页脚定位标记。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none; no production data change performed.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: `CRL-20260722-002`, `CRL-20260722-003`.
+
+### Validation
+
+- `npm run lint --prefix frontend -- --file src/components/FiscalYearStatement.tsx` — passed: existing `<img>` LCP warning only.
+- `./node_modules/.bin/vitest run src/lib/annualReport.test.ts` in `frontend` — passed: 1 file, 8 tests.
+- `npm run build` in `frontend` — passed: optimized production build completed for 95 routes; existing Browserslist, ESLint, and Recharts warnings remain.
+- `git diff --check` — passed.
+- 脱敏版布局渲染与图片检查 — passed: temporary Playwright fixture measured `bottomGap: 16px`; footer is visually anchored near the root bottom. This is a layout fixture, not a live authenticated business report export.
+- `python3 scripts/audit_change_release_ledger.py` — passed: `Changed files: 8`, `Recorded changed files: 8`, `Coverage: PASS`.
+
+### Risks / Release Notes
+
+- Risk: `188.7mm` is derived from the current 277mm export width, A4 landscape format, and 12mm PDF margins; if those export dimensions change, the value should be recalculated.
+- Risk: if warnings or address content make the report exceed one page, the existing vertical paginator remains responsible for pagination and should be regression-tested with long content.
+- Rollback: remove the PDF-only capture styles and footer marker; no database rollback is required.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or business data were added.
+- Git state: uncommitted; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+
+## CRL-20260722-003 — 年度报告手工月份统一应用
+
+- **Status:** ready
+- **Updated:** 2026-07-22 14:18 AEST
+- **Request:** 用户要求年度报告手工月份不要逐行保存，改为统一应用修改；勾选完整月份时，未填写数字自动按 0 保存。
+- **Outcome:** 手工月份录入移除每行保存按钮，新增“应用修改”按钮；只提交实际编辑过的月份；勾选“完整”会立即补齐当前月份的空白金额为 0，保存前再次兜底补齐。
+
+### Implementation
+
+- Previous behavior: 每个手工月份都有单独的保存按钮；完整月份缺少任一数字时会被接口拒绝，并提示必须填写全部字段。
+- New behavior: 用户可以编辑多个月份后一次点击“应用修改”；完整月份的空白数字自动变为 0；未编辑月份不会被重复提交；删除仍保留为单个月份操作。
+- Key decisions: 复用现有逐月 `PUT /finance/annual-report/manual-months/:propertyId/:monthKey` 接口，由页面统一编排提交，不新增数据库表、迁移或第二套批量保存接口。
+
+### Files / Areas
+
+- `frontend/src/app/finance/performance/annual/page.tsx` — modified: 增加脏月份跟踪、统一应用、完整月份 0 值补齐，并移除每行保存按钮。
+- `docs/change-release-ledger.md` — modified: 记录本 release unit。
+
+### Impact / Dependencies
+
+- API: unchanged; reuses the existing manual-month upsert endpoint.
+- Database / migration: none; no schema or production data change performed.
+- Config / environment: none.
+- Dependencies: none.
+- Related units: builds on `CRL-20260722-002` annual report display and owner-link compatibility.
+
+### Validation
+
+- `git diff --check` — passed.
+- `npm run lint --prefix frontend -- --file src/app/finance/performance/annual/page.tsx` — passed: no ESLint warnings or errors.
+- `./node_modules/.bin/vitest run src/lib/annualReport.test.ts` in `frontend` — passed: 1 file, 8 tests.
+- `npm run build` in `frontend` — passed: production build completed for 95 routes; existing Browserslist, ESLint, and Recharts warnings remain.
+- `python3 scripts/audit_change_release_ledger.py` — not run yet: run after this ledger update.
+
+### Risks / Release Notes
+
+- Risk: the UI sends modified months sequentially through the existing per-month API; if a later request fails, earlier months may already be saved and the user should retry the remaining changes.
+- Owner confirmation: the user accepts the sequential partial-success behavior when a later month fails.
+- Rollback: restore the previous per-row save controls and remove the dirty-month/zero-fill logic; no database rollback is required.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or financial account values were added.
+- Git state: uncommitted; unrelated pre-existing worktree changes remain preserved and are not part of this unit.
+
 ## CRL-20260722-002 — 年度报告展示与房东关联兼容
 
 - **Status:** pushed

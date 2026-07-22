@@ -53,15 +53,34 @@ function buildDraftFromReport(report: AnnualPropertyReport | null) {
   return out
 }
 
+function emptyManualLines() {
+  return MANUAL_ROW_KEYS.reduce((out, key) => {
+    out[key] = null
+    return out
+  }, {} as Record<AnnualReportLineKey, number | null>)
+}
+
+function normalizeManualDraftForSave(draft: ManualDraft): ManualDraft {
+  const lines = { ...draft.lines }
+  if (draft.is_complete) {
+    for (const key of MANUAL_ROW_KEYS) {
+      if (lines[key] == null) lines[key] = 0
+    }
+  }
+  return { ...draft, lines }
+}
+
 export default function AnnualReportPage() {
   const [fiscalYear, setFiscalYear] = useState<number>(SUPPORTED_ANNUAL_REPORT_FISCAL_YEARS[0])
   const [reportLanguage, setReportLanguage] = useState<AnnualReportLanguage>('bilingual')
   const [propertyId, setPropertyId] = useState<string | undefined>(undefined)
   const [properties, setProperties] = useState<PropertyOption[]>([])
   const [loading, setLoading] = useState(false)
-  const [savingMonthKey, setSavingMonthKey] = useState<string | null>(null)
+  const [savingManualMonths, setSavingManualMonths] = useState(false)
+  const [deletingMonthKey, setDeletingMonthKey] = useState<string | null>(null)
   const [report, setReport] = useState<AnnualPropertyReport | null>(null)
   const [draftByMonth, setDraftByMonth] = useState<Record<string, ManualDraft>>({})
+  const [dirtyMonthKeys, setDirtyMonthKeys] = useState<Set<string>>(new Set())
   const printRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -75,6 +94,7 @@ export default function AnnualReportPage() {
     if (!targetPropertyId) {
       setReport(null)
       setDraftByMonth({})
+      setDirtyMonthKeys(new Set())
       return
     }
     setLoading(true)
@@ -82,9 +102,11 @@ export default function AnnualReportPage() {
       const nextReport = await getJSON<AnnualPropertyReport>(`/finance/annual-report?${new URLSearchParams({ property_id: targetPropertyId, fy: String(fiscalYear) }).toString()}`)
       setReport(nextReport)
       setDraftByMonth(buildDraftFromReport(nextReport))
+      setDirtyMonthKeys(new Set())
     } catch (e: any) {
       setReport(null)
       setDraftByMonth({})
+      setDirtyMonthKeys(new Set())
       message.error(e?.message || '加载年度报告失败')
     } finally {
       setLoading(false)
@@ -104,10 +126,11 @@ export default function AnnualReportPage() {
   const downloadLabel = report && annualReportHasIssues(report) ? '下载 Draft / Incomplete PDF' : '下载 PDF'
 
   const updateDraftValue = (monthKey: string, key: AnnualReportLineKey, value: number | null) => {
+    setDirtyMonthKeys((prev) => new Set(prev).add(monthKey))
     setDraftByMonth((prev) => ({
       ...prev,
       [monthKey]: {
-        ...(prev[monthKey] || { is_complete: true, note: '', lines: {} as Record<AnnualReportLineKey, number | null> }),
+        ...(prev[monthKey] || { is_complete: true, note: '', lines: emptyManualLines() }),
         lines: {
           ...(prev[monthKey]?.lines || {}),
           [key]: value,
@@ -117,44 +140,47 @@ export default function AnnualReportPage() {
   }
 
   const updateDraftMeta = (monthKey: string, patch: Partial<ManualDraft>) => {
-    setDraftByMonth((prev) => ({
-      ...prev,
-      [monthKey]: {
-        ...(prev[monthKey] || { is_complete: true, note: '', lines: {} as Record<AnnualReportLineKey, number | null> }),
-        ...patch,
-      },
-    }))
+    setDirtyMonthKeys((prev) => new Set(prev).add(monthKey))
+    setDraftByMonth((prev) => {
+      const current = prev[monthKey] || { is_complete: true, note: '', lines: emptyManualLines() }
+      const next = { ...current, ...patch, lines: { ...current.lines, ...(patch.lines || {}) } }
+      return { ...prev, [monthKey]: patch.is_complete ? normalizeManualDraftForSave(next) : next }
+    })
   }
 
-  const saveManualMonth = async (monthKey: string) => {
-    const draft = draftByMonth[monthKey]
-    if (!draft) return
-    if (draft.is_complete) {
-      const missing = MANUAL_ROW_KEYS.filter((key) => draft.lines[key] == null)
-      if (missing.length) {
-        message.error(`完整月份必须填写全部字段：${missing.join(', ')}`)
-        return
-      }
+  const saveManualMonths = async () => {
+    if (!propertyId || !report) return
+    const pendingMonths = manualMonths.filter((month) => dirtyMonthKeys.has(month.month_key))
+    if (!pendingMonths.length) {
+      message.info('没有待应用的修改')
+      return
     }
-    setSavingMonthKey(monthKey)
+    setSavingManualMonths(true)
     try {
-      await putJSON(`/finance/annual-report/manual-months/${encodeURIComponent(String(propertyId || ''))}/${encodeURIComponent(monthKey)}`, {
-        currency: report?.totals.currency || 'AUD',
-        note: draft.note || null,
-        is_complete: draft.is_complete,
-        ...draft.lines,
-      })
+      for (const month of pendingMonths) {
+        const draft = normalizeManualDraftForSave(draftByMonth[month.month_key] || {
+          is_complete: false,
+          note: '',
+          lines: emptyManualLines(),
+        })
+        await putJSON(`/finance/annual-report/manual-months/${encodeURIComponent(propertyId)}/${encodeURIComponent(month.month_key)}`, {
+          currency: report.totals.currency || 'AUD',
+          note: draft.note || null,
+          is_complete: draft.is_complete,
+          ...draft.lines,
+        })
+      }
       await loadReport(propertyId)
-      message.success(`${monthKey} 已保存`)
+      message.success(`已应用 ${pendingMonths.length} 个月的修改`)
     } catch (e: any) {
-      message.error(e?.message || '保存失败')
+      message.error(e?.message || '应用修改失败')
     } finally {
-      setSavingMonthKey(null)
+      setSavingManualMonths(false)
     }
   }
 
   const deleteManualMonth = async (monthKey: string) => {
-    setSavingMonthKey(monthKey)
+    setDeletingMonthKey(monthKey)
     try {
       await deleteJSON(`/finance/annual-report/manual-months/${encodeURIComponent(String(propertyId || ''))}/${encodeURIComponent(monthKey)}`)
       await loadReport(propertyId)
@@ -162,7 +188,7 @@ export default function AnnualReportPage() {
     } catch (e: any) {
       message.error(e?.message || '删除失败')
     } finally {
-      setSavingMonthKey(null)
+      setDeletingMonthKey(null)
     }
   }
 
@@ -254,6 +280,12 @@ export default function AnnualReportPage() {
       {!loading && report ? (
         <>
           <Card size="small" title="手工月份录入" style={{ marginBottom: 16 }}>
+            <Space style={{ marginBottom: 12 }}>
+              <Button type="primary" loading={savingManualMonths} disabled={!dirtyMonthKeys.size} onClick={() => saveManualMonths().catch(() => {})}>
+                应用修改
+              </Button>
+              <span style={{ color: '#666' }}>勾选“完整”后，当前月份空白数字会自动填入 0；修改多个月份后统一应用。</span>
+            </Space>
             <div style={{ marginBottom: 12, color: '#666' }}>仅 `2025-07` 到 `2026-01` 可编辑。删除后月份会回到缺失状态，不会自动回落成系统月。</div>
             <Table
               rowKey="month_key"
@@ -303,23 +335,18 @@ export default function AnnualReportPage() {
                 },
                 {
                   title: '操作',
-                  width: 160,
+                  width: 90,
                   fixed: 'right',
                   render: (_: any, row: any) => (
-                    <Space>
-                      <Button size="small" type="primary" loading={savingMonthKey === row.month_key} onClick={() => saveManualMonth(row.month_key).catch(() => {})}>
-                        保存
-                      </Button>
-                      <Button
-                        size="small"
-                        danger
-                        disabled={!row.has_saved_manual_record}
-                        loading={savingMonthKey === row.month_key}
-                        onClick={() => deleteManualMonth(row.month_key).catch(() => {})}
-                      >
-                        删除
-                      </Button>
-                    </Space>
+                    <Button
+                      size="small"
+                      danger
+                      disabled={!row.has_saved_manual_record || savingManualMonths}
+                      loading={deletingMonthKey === row.month_key}
+                      onClick={() => deleteManualMonth(row.month_key).catch(() => {})}
+                    >
+                      删除
+                    </Button>
                   ),
                 },
               ]}

@@ -635,16 +635,22 @@ async function loadPropertyAndOwner(propertyId: string) {
 
 async function loadManualRows(propertyId: string, fiscalYear: number) {
   if (hasPg && pgPool) {
-    await ensureAnnualReportManualMonthsTable()
-    const rows = await pgPool.query(
-      `SELECT *
-         FROM property_annual_report_manual_months
-        WHERE property_id = $1
-          AND fiscal_year = $2
-        ORDER BY month_key ASC`,
-      [propertyId, fiscalYear]
-    )
-    return (rows.rows || []).map(normalizeManualRow)
+    try {
+      const rows = await pgPool.query(
+        `SELECT *
+           FROM property_annual_report_manual_months
+          WHERE property_id = $1
+            AND fiscal_year = $2
+          ORDER BY month_key ASC`,
+        [propertyId, fiscalYear]
+      )
+      return (rows.rows || []).map(normalizeManualRow)
+    } catch (error: any) {
+      // The annual-report migration is applied separately; a GET must remain read-only
+      // and should treat an unapplied manual-months table as no saved manual rows.
+      if (String(error?.code || '') === '42P01') return [] as AnnualReportManualMonthRow[]
+      throw error
+    }
   }
   return [] as AnnualReportManualMonthRow[]
 }

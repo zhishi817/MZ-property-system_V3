@@ -45,14 +45,20 @@ export async function listManagementFeeRulesByLandlordIds(landlordIds: string[])
   const out: Record<string, LandlordManagementFeeRule[]> = {}
   ids.forEach((id) => { out[id] = [] })
   if (!ids.length || !hasPg || !pgPool) return out
-  await ensureManagementFeeRulesTable()
-  const rs = await pgPool.query(
-    `SELECT *
-       FROM landlord_management_fee_rules
-      WHERE landlord_id = ANY($1::text[])
-      ORDER BY landlord_id ASC, effective_from_month DESC, created_at DESC`,
-    [ids]
-  )
+  let rs
+  try {
+    rs = await pgPool.query(
+      `SELECT *
+         FROM landlord_management_fee_rules
+        WHERE landlord_id = ANY($1::text[])
+        ORDER BY landlord_id ASC, effective_from_month DESC, created_at DESC`,
+      [ids]
+    )
+  } catch (error: any) {
+    // A report/list read must stay read-only when the separately managed migration is not applied.
+    if (String(error?.code || '') === '42P01') return out
+    throw error
+  }
   for (const row of (rs.rows || [])) {
     const landlordId = String((row as any).landlord_id || '').trim()
     if (!landlordId) continue
