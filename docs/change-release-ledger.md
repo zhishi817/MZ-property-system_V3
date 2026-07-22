@@ -4,7 +4,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ## CRL-20260722-002 — 年度报告展示与房东关联兼容
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-22 13:20 AEST
 - **Request:** 用户确认执行年度报告优化：移除正式报告中的内部小字，客户信息显示房东姓名、房号和地址，并修复已关联房东/历史费率规则却显示缺少的问题。
 - **Outcome:** 年度报告 PDF 和预览不再显示内部说明；客户信息显示房东、房号和地址；年度报告读取房东时兼容房源正向关联和房东反向房源关联，反向关联命中后可继续加载历史管理费规则。
@@ -54,7 +54,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Risk: if a property is not present in either `properties.landlord_id` or `landlords.property_ids`, the report will correctly continue to show missing owner/rule warnings; this change does not repair production associations.
 - Rollback: revert the four implementation/test file changes and remove this ledger unit; no database rollback is required.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or personal financial account values were added to code or ledger.
-- Git state: uncommitted; unrelated pre-existing worktree changes are preserved and not included in this unit.
+- Git state: pushed to `origin/Dev` in commit `d0324bf`; unrelated pre-existing worktree changes are preserved and not included in this unit.
 ## CRL-20260718-002 — 根仓库统一检查命令
 
 - **Status:** pushed
