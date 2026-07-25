@@ -18,6 +18,7 @@
     "backfill:auto-expenses": "ts-node-dev --transpile-only scripts/run_auto_expenses_backfill.ts",
     "test:cleaning-rules": "ts-node-dev --transpile-only scripts/tests/test_cleaning_rules.ts",
     "test:app-notification-policies": "ts-node-dev --transpile-only scripts/tests/test_app_notification_policies.ts",
+    "test:mzapp-media-visibility": "ts-node-dev --transpile-only scripts/tests/test_mzapp_media_visibility.ts",
     "test:cleaning-inspection-merge": "ts-node-dev --transpile-only scripts/tests/test_cleaning_inspection_merge.ts",
     "test:guest-luggage-rules": "ts-node-dev --transpile-only scripts/tests/test_guest_luggage_rules.ts",
     "test:orders-overlap": "ts-node-dev --transpile-only scripts/tests/test_orders_overlap.ts",

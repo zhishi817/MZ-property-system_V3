@@ -1257,6 +1257,11 @@ export async function canViewMzappInspectionMedia(user: any, row: any, userId: s
   return canSubmitMzappInspection(user, row, userId)
 }
 
+export function canViewMzappLockboxVideo(user: any) {
+  if (canViewAll(user)) return true
+  return isInspectorRole(user) || isCleanerInspectorRole(user)
+}
+
 async function canViewMzappTaskConsumables(user: any, row: any, userId: string) {
   if (canViewAll(user)) return true
   const inspectorId = String(row?.inspector_id || '').trim()
@@ -5688,6 +5693,7 @@ router.get('/work-tasks', async (req, res) => {
   const userId = String(user.sub || '')
 
   const allowAll = view === 'all' && await canViewAllWorkTasks(user)
+  const canViewLockboxVideo = canViewMzappLockboxVideo(user)
   const actionContext = {
     userId,
     roleNames: roleNamesOf(user),
@@ -6679,7 +6685,7 @@ router.get('/work-tasks', async (req, res) => {
             },
             checked_out_at: checkedOutAt,
             key_photo_url: keyPhotoUrl,
-            lockbox_video_url: lockboxVideoUrl,
+            lockbox_video_url: canViewLockboxVideo ? lockboxVideoUrl : null,
             restock_items: restockItems,
             completion_photos_ok: completionPhotosOk,
             stayed_nights: stayedAndRemaining.stayed,
@@ -6971,7 +6977,7 @@ router.get('/work-tasks', async (req, res) => {
           sort_index_cleaner: sortIndexCleaner,
           sort_index_inspector: sortIndexInspector,
           key_photo_url: keyPhotoUrl,
-          lockbox_video_url: lockboxVideoUrl,
+          lockbox_video_url: canViewLockboxVideo ? lockboxVideoUrl : null,
           old_code: oldCode || null,
           new_code: newCode || null,
           guest_request_checkout: mergedTurnoverDisplay?.guest_request_checkout || null,
