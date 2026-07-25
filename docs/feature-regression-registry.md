@@ -340,7 +340,7 @@
 | 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
 |---|---|---|---|---|
 | 后端挂钥匙视频角色能力 | `backend/scripts/tests/test_mzapp_media_visibility.ts` | 普通 cleaner/staff 为 false；检查员、兼任检查员和管理角色为 true | sufficient | `npm run test:mzapp-media-visibility --prefix backend` |
-| 通知默认模板与普通 cleaner 过滤 | `backend/scripts/tests/test_app_notification_policies.ts` | 挂钥匙/补品默认走检查参与人；普通 cleaner 被过滤；兼任检查员和未知账号保留 | sufficient | `npm run test:app-notification-policies --prefix backend` |
+| 通知默认模板与普通 cleaner 过滤 | `backend/scripts/tests/test_app_notification_policies.ts` | 挂钥匙/补品默认走检查参与人；普通 cleaner 和未知账号被过滤；兼任检查员保留 | sufficient | `npm run test:app-notification-policies --prefix backend` |
 | 移动端详情视频渲染 | `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` | 普通 cleaner 不显示视频；允许角色列表由后端角色能力测试覆盖 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tasks/TaskDetailScreen.test.tsx` |
 
 ### 验证策略
