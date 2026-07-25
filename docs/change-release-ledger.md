@@ -3,7 +3,7 @@
 ## CRL-20260725-023 — 隔离普通清洁员的挂钥匙视频与检查补品通知
 
 - **Status:** ready
-- **Updated:** 2026-07-25 22:30 Australia/Melbourne
+- **Updated:** 2026-07-25 22:56 Australia/Melbourne
 - **Request:** 清洁人员不应看到挂钥匙视频，也不应收到挂钥匙或检查人员补充消耗品/补货相关通知；保留检查人员和管理角色的查看与接收能力。
 - **Outcome:** 后端 work-tasks payload 和移动端详情共同隐藏普通 cleaner 的挂钥匙视频；挂钥匙/检查补品通知默认面向检查参与人，并在最终收件人解析阶段排除普通 cleaner，防止额外组、额外用户和显式收件人绕过规则。
 
@@ -53,7 +53,7 @@
 - Risk: 角色查询失败时受保护通知可能暂时不发送，但不会绕过普通清洁员隐私边界；默认模板仍优先选择检查参与人。
 - **Rollback:** 回退本 release unit 的 payload 过滤、客户端保护、通知模板/收件人过滤和对应测试；无需数据库回滚。
 - **Sensitive-information review:** 未添加或记录 secrets、`.env` 内容、token、密码、数据库 URL、credentials、cookie、私钥或生产数据。
-- **Git state:** root/mobile `Dev` worktrees 存在其他线程的预先未提交改动；当前未执行 stage、commit、push 或部署；需独立 review 后选择性 stage。
+- **Git state:** root commit `83a9073`、mobile commit `ab3cf11` 已在各自 `Dev` worktree 本地创建；未执行 push 或部署；其他线程的预先未提交改动保持不动。
 
 ## CRL-20260725-022 — 每日清洁周转卡显示后续订单待住晚数
 

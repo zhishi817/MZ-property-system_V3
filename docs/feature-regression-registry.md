@@ -353,7 +353,7 @@
 ### 最后验证
 
 - **CRL：** CRL-20260725-023
-- **Commit：** pending release commit
+- **Commit：** root `83a9073`；mobile `ab3cf11`
 - **日期：** 2026-07-25
 
 ### 相关 CRL
