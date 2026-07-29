@@ -34,7 +34,7 @@
 - Range mode requires callers to provide both exact refs; a missing or shallow-fetched ref intentionally fails rather than weakening review coverage.
 - Rename paths are audited as both deletion and addition; ledger authors must name both paths when a PR renames a file.
 - Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
-- Git state: isolated branch `codex/governance-ledger-root-20260729`; not staged, committed, pushed, merged, or deployed.
+- Git state: governance-only commit `dc1368b644158e940ed1666d98355edcfcfb9f1a` is pushed to `origin/codex/governance-ledger-root-20260729`; it is not merged into `Dev`/`main` and nothing is deployed.
 
 ## CRL-20260729-011 — 根质量命令层级
 
