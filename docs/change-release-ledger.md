@@ -1,5 +1,41 @@
 # Change Release Ledger
 
+## CRL-20260729-012 — 根仓库 PR 合并质量门禁
+
+- **Status:** ready
+- **Updated:** 2026-07-29 Australia/Melbourne
+- **Request:** Phase 3：让 CI 从提示变成合并门禁；普通 PR 必跑 Fast，高风险 PR 必跑 Full，并为 `Dev`/`main` 的 GitHub 分支保护提供稳定检查名称。
+- **Outcome:** 根仓库现提供独立 Ledger、FR、风险分类、Fast 与 Full 检查；Full 对低风险 PR 显式成功而不是省略状态，高风险或非 PR 事件运行完整检查。远端保护规则尚未设置，必须等这些 check 名称先通过 reviewed PR 进入 GitHub 后再配置。
+
+### Files / Areas
+
+- `.github/workflows/quality.yml` — modified: 拆分稳定门禁检查并按风险选择 Full。
+- `scripts/ci/classify_pr_risk.sh` — added: 可本地复验的高风险路径分类。
+- `docs/ci-merge-gates.md` — added: 记录检查名称、路径策略和远端保护目标。
+- `docs/change-release-ledger.md` — modified: 记录本治理单元。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- GitHub configuration: 远端 `Dev`/`main` 保护规则必须在这些检查已实际出现后，通过 reviewed PR 配置；本地 workflow 文件本身不会改变 GitHub 保护状态。
+- Related units: CRL-20260729-011、移动端 CRL-20260729-004；Phase 4 将另行验证精确根/移动端 ref 组合。
+
+### Validation
+
+- Passed: Ruby YAML parse and `bash -n scripts/ci/classify_pr_risk.sh`.
+- Passed: classifier stdin examples — `docs/ci-merge-gates.md` and isolated Web component return `full_required=false`; `backend/src/modules/mzapp.ts` and `.github/workflows/quality.yml` return `full_required=true`.
+- Failed during independent review: the initial classifier incorrectly returned `full_required=false` for notification, migration, Web API/finance/RBAC paths. This P1 blocks release until the classifier and its regression examples cover `backend/src/services/notificationRules.ts`, `backend/scripts/migrations/20260114_cleaning_app.sql`, `frontend/src/lib/api.ts`, `frontend/src/lib/financeTx.ts`, `frontend/src/app/finance/transactions/page.tsx`, and `frontend/src/app/rbac/notification-rules/page.tsx`.
+- Passed after P1 repair: each of those six real high-risk paths was individually piped to `scripts/ci/classify_pr_risk.sh --stdin` and returned `full_required=true`; the low-risk documentation/component examples remain `false`.
+- Passed: `git diff --check`, `npm run check:ledger` (4/4) and `npm run check:feature-registry` (8 FRs / 90 mappings; 55 independent-mobile mappings deferred in the standalone root worktree).
+- Not run: `npm run check:fast` / `npm run check:full`; this fresh isolated worktree has no backend, frontend or mobile dependency directories, and this governance task did not authorize dependency installation. The commands themselves are unchanged; GitHub Actions will use locked installs before running them.
+
+### Risks / Release Notes
+
+- Risk: GitHub CLI 当前不可用；GitHub connector confirms administrator permission but does not expose branch-protection read/write. Remote protection state is therefore unknown, and must be inspected/configured through a GitHub administrator interface or a controlled repository-management API only after the workflow has entered GitHub.
+- Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
+- Rollback: revert this CRL's workflow, classifier and policy document; no application code or data is affected.
+- Git state: ready, uncommitted in isolated `codex/phase3-ci-merge-gates` worktree.
+
 ## CRL-20260729-011 — 根质量命令层级
 
 - **Status:** pushed
