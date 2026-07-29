@@ -1,5 +1,41 @@
 # Change Release Ledger
 
+## CRL-20260729-012 — PR 精确范围 Ledger 审计
+
+- **Status:** in-progress
+- **Updated:** 2026-07-29 Australia/Melbourne
+- **Request:** 修复根仓库与独立移动端的 PR 范围 Ledger 审计：必须使用精确 base/head，拒绝缺失 ref 或 Git 失败，并校验 diff whitespace。
+- **Outcome:** 根仓库 Ledger 审计新增显式 `--base/--head` 范围模式；PR workflow 在完整 fetch 后传入 GitHub payload 的精确 SHA。范围模式使用三点 diff、保留 rename 的旧/新路径、执行 `git diff --check`，并在 ref 缺失、范围不完整或任一 Git 命令失败时非零退出，不会把错误解释成零变更。
+
+### Files / Areas
+
+- `scripts/audit_change_release_ledger.py` — modified: 支持严格 base/head 范围解析、三点 diff、rename/delete 覆盖与 whitespace 检查。
+- `scripts/tests/test_audit_change_release_ledger.py` — added: 覆盖未登记已提交文件、错误 SHA、rename/delete、detached HEAD 与 whitespace 失败。
+- `package.json` — modified: 将 Ledger 范围回归测试接入 Fast。
+- `.github/workflows/quality.yml` — modified: PR Fast job 使用 payload 的精确 base/head 执行 Ledger 范围审计。
+- `docs/change-release-ledger.md` — modified: 记录本治理单元。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- CI dependency: checkout 保持 `fetch-depth: 0`，以确保 workflow 传入的 base/head 可被 Git 解析。
+- Related units: 独立移动端对应的 `CRL-20260729-004`；root `main` 的跨仓 workflow hardening 另行记录，避免把 default-branch 发布门禁与 Dev PR 审计混在同一提交。
+
+### Validation
+
+- Passed: `npm run test:ledger-range-audit` — 5 tests cover an unregistered committed file, invalid SHA without a zero-change fallback, rename/delete coverage, detached HEAD, and `git diff --check` whitespace failure.
+- Passed: `python3 scripts/audit_change_release_ledger.py` (5 changed / 5 recorded), Ruby YAML parse for `.github/workflows/quality.yml`, static confirmation that the PR workflow passes `github.event.pull_request.base.sha` and `.head.sha` after `fetch-depth: 0`, and `git diff --check`.
+- Passed: a second independent read-only review found no P0/P1, reran the 5 range regressions, Ledger coverage, YAML parse and diff checks, and confirmed no business logic, secret, production-write or deployment surface.
+- Pending: a GitHub PR run proving the exact payload SHA behavior. `npm run check:fast` is not run in this fresh worktree because dependencies have not been installed; installing them requires the repository's explicit permission gate.
+- Not run: production API、数据库写入、外部同步、EAS/native 或业务功能测试；均不属于本治理修正。
+
+### Risks / Release Notes
+
+- Range mode requires callers to provide both exact refs; a missing or shallow-fetched ref intentionally fails rather than weakening review coverage.
+- Rename paths are audited as both deletion and addition; ledger authors must name both paths when a PR renames a file.
+- Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
+- Git state: isolated branch `codex/governance-ledger-root-20260729`; not staged, committed, pushed, merged, or deployed.
+
 ## CRL-20260729-011 — 根质量命令层级
 
 - **Status:** pushed
