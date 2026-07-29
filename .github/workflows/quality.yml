@@ -58,7 +58,7 @@ jobs:
         run: npm ci --prefix mz-cleaning-app-frontend
 
       - name: Run fast regression
-        run: npm run check:fast
+        run: npm run check:ci
 
   full:
     name: Full Regression

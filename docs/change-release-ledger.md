@@ -1,5 +1,42 @@
 # Change Release Ledger
 
+## CRL-20260729-011 — 根质量命令层级
+
+- **Status:** ready
+- **Updated:** 2026-07-29 Australia/Melbourne
+- **Request:** Phase 2：统一根仓库和独立移动端的 `check:fast`、`check:full`、`check:ci`、`check:release` 语义，并让 Full 严格继承 Fast。
+- **Outcome:** 根命令按 Fast/Full/CI/Release 分层；Fast 覆盖 Ledger/FR、build、权限/状态、幂等、媒体、Web lint/test 和可用的移动端 Fast，Full 通过调用 Fast 后只增加较慢回归与 build。CI 使用非交互 `check:ci`，Release 复用 Full 而不擅自执行 migration 或生产 smoke。
+
+### Files / Areas
+
+- `package.json` — modified: 拆分 backend/frontend/mobile Fast/Full 子命令并建立顶层继承关系。
+- `.github/workflows/quality.yml` — modified: Fast job 调用稳定的 `check:ci` 入口。
+- `docs/regression-test-levels.md` — modified: 记录五个入口的实际覆盖和发布边界。
+- `docs/change-release-ledger.md` — modified: 记录本治理单元。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Cross-repository dependency: 移动端 CRL-20260729-003 必须与本条一同发布，才能让根 CI checkout 的移动端使用 `check:fast` / `check:full`。
+- Related units: CRL-20260729-009、CRL-20260729-010、移动端 CRL-20260729-003。
+
+### Validation
+
+- Passed: package command graph confirms `check:full` directly calls `check:fast`, `check:ci` calls Fast, and `check:release` calls Full; Ruby YAML parse for `.github/workflows/quality.yml` and `git diff --check` passed.
+- Passed: `npm run check:release` — transitively ran Fast, remaining backend contracts, frontend production build, FR audit (8 FRs / 90 mappings) and Ledger audit (4/4); root has no nested independent mobile checkout, so both mobile stages explicitly skipped.
+- Passed: `npm run check:ci` — Fast path passed with Ledger audit (4/4), FR audit, backend permission/state/idempotency/R2 contracts, and frontend lint/test.
+- Existing warnings: frontend lint/build still report pre-existing lint, Browserslist-age and Recharts zero-size warnings; no error or new warning was introduced by this governance-only unit.
+- Passed: independent read-only release review returned GO with no P0/P1, no business/lockfile/generated-file/secret mixing, and no production-write path.
+- Pending: clean-worktree verification after the local code commit.
+
+### Risks / Release Notes
+
+- Risk: 根 CI 运行时 checkout 移动端 `Dev`；若根先于移动端 CRL-20260729-003 发布，新的移动端 Fast 命令不存在并会失败。因此两个 CRL 是一次选择性发布的跨仓库依赖。
+- Release order: 先推送移动端 CRL-20260729-003，再推送根 CRL-20260729-011；两者不可拆分。精确 root/mobile ref 组合验证仍由 Phase 4 workflow 承担。
+- Cleanup: `npm run check:release` regenerated the already-tracked `backend/dist/modules/cleaning.js` from unrelated source changes; it was restored exactly to the candidate HEAD and is not part of this unit.
+- Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
+- Git state: uncommitted, isolated Phase 2 candidate branch.
+
 ## CRL-20260729-010 — 根 Fast 检查隔离跨仓库 Phase 5 契约
 
 - **Status:** pushed
