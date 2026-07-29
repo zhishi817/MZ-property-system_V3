@@ -1,32 +1,5 @@
 # Change Release Ledger
 
-## CRL-20260729-014 — 临时 root Phase 3 负向验收
-
-- **Status:** in-progress
-- **Updated:** 2026-07-29 Australia/Melbourne
-- **Request:** 以不合并的临时 PR 验证 root `Dev` 的失败质量检查会阻断合并，修复后转绿。
-- **Outcome:** 仅在 `codex/acceptance-root-phase3-20260729` 注入一个确定性 Ledger-range 测试失败；随后将恢复原测试并关闭 PR。不得进入 `Dev`/`main`，不涉及业务逻辑、部署、Secrets 或生产数据。
-
-### Files / Areas
-
-- `scripts/tests/test_audit_change_release_ledger.py` — temporary modified: 注入可识别的负向验收失败。
-- `docs/change-release-ledger.md` — temporary modified: 记录临时验收范围。
-
-### Impact / Dependencies
-
-- API / database / migration / dependencies: none.
-- Required evidence: GitHub PR 的 `Fast Regression` 失败、分支保护 merge blocked；恢复后同一 PR 转绿。
-
-### Validation
-
-- Pending: remote negative and positive PR runs; no production or external business API validation is permitted.
-
-### Risks / Release Notes
-
-- This unit is test-only and must be closed without merge after evidence capture.
-- Sensitive-information review: no secrets or production data.
-- Git state: temporary acceptance branch; not staged, committed, pushed, merged, or deployed.
-
 ## CRL-20260729-012 — PR 精确范围 Ledger 审计
 
 - **Status:** in-progress

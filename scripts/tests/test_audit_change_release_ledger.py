@@ -134,9 +134,6 @@ class LedgerRangeAuditTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("trailing whitespace", result.stderr)
 
-    def test_acceptance_negative_control(self) -> None:
-        self.fail("ACCEPTANCE_NEGATIVE: deliberate Phase 3 root Fast failure")
-
 
 if __name__ == "__main__":
     unittest.main()
