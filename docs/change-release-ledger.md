@@ -1,5 +1,1689 @@
 # Change Release Ledger
 
+## CRL-20260729-009 — Quality guardrails shared baseline
+
+- **Status:** in-progress
+- **Updated:** 2026-07-29 Australia/Melbourne
+- **Request:** 固化根仓库与独立移动端仓库的 Agent、测试、审计和审查治理基线，随后才允许多 Agent worktree 并行开发。
+- **Outcome:** 根仓库已形成可提交的 Agent 约束、FR 结构审计、发布独立审查模板、回归分层说明和可移植移动端按钮规则；移动端对应基线由独立仓库 CRL-20260729-001 记录。根仓库的完整 Fast 基线仍被 5 条指向未提交业务测试的 FR 映射阻塞，当前任务不会伪造通过或带入业务改动。
+
+### Implementation
+
+- Previous behavior: 部分保护规则、发布审查模板、回归分层说明、FR 审计工具和按钮审计只存在于当前脏工作区；新 worktree 或干净 checkout 不能完整复用。
+- New behavior: 根仓库的治理规则可随 commit 分发；按钮审计以移动端仓库内脚本为唯一运行时来源，根 Skill 只说明如何在移动端执行，避免依赖父工作区的未提交 `.codex` 文件。FR 审计在独立根 checkout 缺少移动端仓库时只延后移动端路径校验；移动端 checkout 存在时仍逐项校验。
+- Key decisions: 不带入当前 `package.json` 中引用未提交业务契约测试的质量命令 hunk；该命令层级与关键契约接线属于 Phase 2 或相应业务 CRL。`docs/feature-regression-registry.md` 中的业务 FR 内容继续留在原业务单元；不把 3 条标为 `sufficient` 的缺失测试降级为通过。
+
+### Files / Areas
+
+- `AGENTS.md` — modified: 纳入发布前独立只读审查要求。
+- `.codex/skills/mz-app-self-test-guardrails/SKILL.md` — modified: 纳入 FR、跨层矩阵和验证证据要求。
+- `.codex/skills/mz-mobile-button-rules/SKILL.md` — added: 指向移动端仓库自己的按钮审计脚本。
+- `.codex/skills/mz-mobile-button-rules/agents/openai.yaml` — added: 注册移动端按钮规则 Skill。
+- `docs/codex-release-review.md` — added: 固定独立审查范围和 GO/NO-GO 格式。
+- `docs/regression-test-levels.md` — added: 固定 Fast/Targeted/Full 语义，并诚实标记待 Phase 2 修正的 Full 继承缺口。
+- `scripts/audit_feature_regression_registry.py` — added: 审计 FR 结构、测试映射路径和声明状态。
+- `docs/change-release-ledger.md` — modified: 记录本治理单元。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Config / environment: 根 CI workflow 已在基线中；本单元不更改 CI 触发策略或远端 GitHub 分支保护，分别留给 Phase 2/3。
+- Related units: 独立移动端 `CRL-20260729-001`；Phase 2 将处理 `check:fast`/`check:full` 继承、base/head 审计和高价值契约测试接线。
+
+### Validation
+
+- Clean root worktree (`/private/tmp/mz-phase1-root-20260729`): `npm ci --prefix backend` — passed; `npm run check:ledger` — passed (8/8); `npm run check:feature-registry` and therefore `npm run check:fast` — blocked by five missing mappings: `test_cleaning_task_transition_guard.ts` (3), `test_mzapp_form_photo_read.ts` (1), and `test_idempotency_submit_id_contract.ts` (1). These tests are untracked in the main worktree and couple to modified backend source.
+- Clean root worktree: `npm run check:backend:build` — passed; `npm run check:frontend:test` — passed (39 files / 170 tests); `npm run check:mobile:typecheck` — intentionally skipped because the independent mobile checkout is absent.
+- Main root worktree: `npm run check:feature-registry` — passed only because the separate mobile checkout and the three untracked backend tests are present; this confirms the clean-checkout dependency rather than validating the baseline.
+- Independent Codex review (`HEAD 06bd32a + index` / mobile `HEAD c71d3df + index`) — NO-GO: no P0, secret, production-write, dependency, database, or unrelated staged business-file finding; P1 is the same five unavailable root FR mappings. Reviewer confirmed that the mobile governance unit is independently suitable, but the combined Phase 1 must wait for the tests and their modified backend source to land in their owning business CRLs (or for an owner-approved FR status correction).
+- Review follow-up (P2, Phase 2/4): align the Fast document with actual commands, make Full inherit Fast, audit base/head ownership rather than any historical CRL mention, and replace root CI's moving mobile `Dev` checkout with a precise-ref integration workflow.
+- Not run: 生产 API、数据库写入、外部同步、EAS/native build、真实设备验证；均不属于本治理单元。
+
+### Risks / Release Notes
+
+- Risk: 当前根和移动端工作区包含其他未提交业务改动；本单元必须按文件和 hunk 选择性 stage，不能使用 broad staging。根 FR 文档已在 HEAD 声称 5 条未提交测试可用，故现在不能满足从干净 clone 执行 Fast 的 Phase 1 完成标准。
+- Sensitive-information review: 本单元不读取、不记录或提交 `.env`、token、cookie、密码、数据库 URL、私钥、设备日志或本地缓存。
+- Rollback: 回退本单元列出的治理文件和台账条目；不影响业务代码、数据库或发布产物。
+- **Git state:** blocked before independent review/commit; 治理文件已选择性 stage，未推送。
+
+## CRL-20260729-007 — Photo ID 与签证图片只读大图预览
+
+- **Status:** ready
+- **Updated:** 2026-07-29 Australia/Melbourne
+- **Request:** Photo ID 和签证照片需要支持放大查看。
+- **Outcome:** 待最终校验。编辑资料页的两种证件图片缩略图可点击打开全屏等比大图，支持 1x–4x 双指捏合缩放并拖动查看局部；维持只读和现有水印显示。
+
+### Implementation
+
+- Previous behavior: Photo ID 与签证资料只在表单中以固定高度缩略图显示，无法查看完整图片。
+- New behavior: 两个缩略图使用同一个全屏 Modal；原图以 `contain` 等比完整显示，沿用 App 既有 `ScrollView` 预览方式提供 1x–4x 双指捏合缩放、放大后拖动查看和缩放提示。本地尚未经过服务器处理的图片在大图中继续叠加整版水印；远程图片直接显示已由服务端写入水印的存档文件。
+- Key decisions: 缩放内容不会因为单击而意外关闭；提供明确的关闭按钮、背景点击关闭和系统返回关闭。未添加下载、分享、删除、替换或任何上传/保存动作，不改认证、接口、存储、权限或水印生成。
+
+### Correction record — 2026-07-29
+
+- 用户截图确认首版缩放容器把 Photo ID 与签证图片一并偏到右下，未处于全屏中央。原因是 `ScrollView` 缩放内容外又套了一层布局 View。
+- 已改为沿用既有图片查看器的结构：缩放容器直接承载有尺寸的 `ImageBackground`，图片与本地水印仍为同一内容层，消除额外布局偏移。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/screens/me/ProfileEditScreen.tsx` — modified: 为 Photo ID/签证缩略图增加只读全屏预览、关闭交互和本地水印覆盖复用。
+- `mz-cleaning-app-frontend/src/screens/me/ProfileEditScreen.test.tsx` — modified: 覆盖 Photo ID 与签证均能打开/关闭全屏大图，以及 1x–4x 缩放配置。
+- `docs/feature-regression-registry.md` — modified: FR-008 增加证件大图的只读和关闭行为不变量。
+- `docs/change-release-ledger.md` — modified: 记录本发布单元。
+
+### Impact / Dependencies
+
+- **API / database / migration / dependencies:** none.
+- **Feature-regression registry:** FR-008；复用既有资料图片和水印边界。
+- **Related units:** CRL-20260729-006；本单元只补充其证件图片的查看交互。
+
+### Validation
+
+- `npm run test -- --runInBand --no-cache src/screens/me/ProfileEditScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 1 suite / 2 tests.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed: 0 errors; 111 existing warnings outside this unit.
+- `npm run check:buttons` in `mz-cleaning-app-frontend` — passed.
+- `npm run check:feature-registry` in root — passed: 8 FRs / 89 test mappings.
+- `python3 scripts/audit_change_release_ledger.py` in root — passed: 56 changed files, 56 recorded files.
+- `git diff --check` in root and nested mobile repository — passed: no whitespace errors.
+- Not run: iOS/Android 真机、真实证件图片或生产接口；不触发上传和数据写入。
+
+### Risks / Release Notes
+
+- Runtime risk: React Native 自动化测试验证开关和缩放配置；仍需在真机确认 iOS/Android 双指手势、不同屏幕比例、系统返回键和含长证件图时的缩放/拖动体验。
+- Privacy review: 大图只复用当前资料页已可见的图片地址，不新增传输、日志、下载或共享；本次未使用真实证件或签证号。
+- Rollback: 回退资料页全屏 Modal 与缩略图点击 hunk；不涉及数据、对象存储或接口回滚。
+- **Git state:** root and nested mobile worktrees contain pre-existing/concurrent changes; this unit is uncommitted, unstaged, unpushed, and undeployed.
+
+## CRL-20260729-005 — 移动端“我”页账户操作文字居中
+
+- **Status:** ready
+- **Updated:** 2026-07-29 Australia/Melbourne
+- **Request:** 修复移动端“我”页中“退出登录”按钮文字未在操作行正中显示的问题。
+- **Outcome:** 用户澄清后，账号管理子页已恢复原先的 48pt 行高和 14pt 内边距；“我”主页底部红色“退出登录”按钮保留水平与垂直居中显示。
+
+### Implementation
+
+- Previous behavior: `MeScreen` 的红色退出按钮已有 `alignItems: 'center'`，保证文字水平居中，但缺少 `justifyContent: 'center'`；按钮统一为 44pt 高度后，文字仍从容器上方开始布局，未处于垂直中心。
+- New behavior: `MeScreen.logoutBtn` 同时使用 `alignItems: 'center'` 与 `justifyContent: 'center'`，使“退出登录”位于红色按钮的实际中心。测试标识仅用于界面回归定位，不改变可见文案、交互或权限。
+- Key decisions: 不替换按钮组件，不改变 `Alert` 确认、`signOut`、导航、认证、后端接口或角色规则。
+
+### Correction record — 2026-07-29
+
+- Earlier pass incorrectly changed the `AccountScreen` subpage, while the supplied screenshot is the tab-level `MeScreen`; that incorrect page-local alignment and its test were removed before this update.
+- The current fix targets the rendered red logout control shown in the screenshot and adds the missing vertical centering rule.
+
+### User-directed rollback — 2026-07-29
+
+- 用户明确要求“改回原来的样子”；已移除 `MeScreen` 的 `justifyContent: 'center'` 和测试标识，并删除新增的 `MeScreen.test.tsx`。
+- 同文件中已存在的 `layoutTokens` 尺寸规范化改动不属于本单元，保持不动；本单元当前没有待发布的产品代码。
+
+### User clarification — 2026-07-29
+
+- 用户随后明确“改回原来的样子”仅指最初误改的“账号管理”子页；`AccountScreen` 已恢复 `minHeight: 48`、`paddingVertical: 14`、`paddingHorizontal: 14` 的原始样式并移除该页的 `layoutTokens` 引用。
+- 用户明确要求“红色按钮还是要保持修改后的”；已恢复 `MeScreen.logoutBtn` 的 `justifyContent: 'center'`、测试标识与专项测试。上一段针对红色按钮的撤回不再是最终状态。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/screens/me/AccountScreen.tsx` — modified: 恢复账号管理子页原先的按钮尺寸和内边距。
+- `mz-cleaning-app-frontend/src/screens/tabs/MeScreen.tsx` — modified: 红色退出按钮保留纵向居中和测试标识；同文件其它尺寸规范化改动保持原状。
+- `mz-cleaning-app-frontend/src/screens/tabs/MeScreen.test.tsx` — added: 覆盖截图对应退出按钮的 44pt 高度与水平/纵向居中。
+- `docs/change-release-ledger.md` — modified: 保留入口识别错误、撤回和用户澄清记录。
+
+### Impact / Dependencies
+
+- **API / database / migration:** none.
+- **Config / environment / dependencies:** none.
+- **Feature-regression registry:** 未修改；这是视觉对齐修复，不新增业务状态、权限、接口或可回归业务不变量。
+- **Related units:** 无；与当前共享 `MeScreen.tsx` 中既有按钮尺寸标准化 hunk 共存，选择性发布时按 hunk 确认。
+
+### Validation
+
+- `npm run test -- --runInBand --no-cache src/screens/tabs/MeScreen.test.tsx` in `mz-cleaning-app-frontend` — passed after clarification: 1 suite / 1 test.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed after clarification.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed after clarification: 0 errors and 111 pre-existing warnings.
+- `npm run check:buttons` in `mz-cleaning-app-frontend` — passed after clarification: strict button contract found no suspicious hard-coded button dimensions.
+- `npm run check:feature-registry` in root — passed after clarification: 7 FRs / 86 test mappings; registry remains unchanged for visual-only scope.
+- Android/iOS 真机和 EAS 构建未运行；移动端没有独立 build 脚本。
+
+### Risks / Release Notes
+
+- Runtime risk: 账号管理页已恢复原样，红色按钮保持居中；尚未做 iOS/Android 真机、系统字体缩放或 EAS 验证。
+- Rollback: 回退 `AccountScreen.tsx` 的原样恢复 hunk 和 `MeScreen.tsx` 的纵向居中 hunk，并删除对应测试；无需数据、接口、权限或对象存储回滚。
+- Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs were added.
+- **Git state:** root and nested mobile worktrees contain pre-existing/concurrent changes; this unit is uncommitted, unstaged, unpushed, and undeployed.
+
+## CRL-20260729-006 — 移动端 Photo ID 与签证图片整版水印和 Visa Grant Number
+
+- **Status:** ready
+- **Updated:** 2026-07-29 Australia/Melbourne
+- **Request:** Photo ID 预览必须显示覆盖整张图的 MZ Property 水印；新增仅支持图片的签证文件上传、同样的整版水印，并显示/保存 Visa Grant Number。
+- **Outcome:** 待验证完成。实现复用现有资料图片上传和服务端 Sharp 水印链路；Photo ID 与签证资料均以同一段中英文本的重复倾斜水印存档，本地原图预览同步展示整版覆盖层；签证图片地址和 Visa Grant Number 仅随当前登录用户的自助资料读写。
+
+### Implementation
+
+- Previous behavior: Photo ID 已请求服务端水印，但移动端即时预览直接显示未处理的本地原图；没有签证文件地址或 Visa Grant Number 字段。
+- New behavior: `photo_id_full` 与新 `profile_document_full` 都进入既有服务端整版水印渲染；个人资料页对尚未经服务器处理的本地 Photo ID/签证图片叠加重复倾斜水印，服务器返回的远程图片不重复覆盖。签证区域提供图片选择、上传、存档和 Visa Grant Number 输入，且旧缓存缺字段会安全归一化。
+- Data boundary: 新增 `users.visa_document_url`、`users.visa_grant_number`；字段只存在认证用户自己的 `/users/me` 资料返回与更新，不加入 `/users/contacts` 或任务 payload。上传成功后仍必须 `PATCH /users/me` 才视为已保存。
+- Key decisions: 用户已授权新增数据库字段；保持图片-only，未引入 PDF、OCR、管理端证件浏览、角色/认证模型重构或真实证件测试数据。
+
+### Files / Areas
+
+- `backend/src/modules/users.ts` — modified: 为当前用户资料 schema、初始化列、读写投影增加签证文件地址和 Visa Grant Number。
+- `backend/src/modules/mzapp.ts` — modified: 新增签证资料使用的整版水印模式，复用现有图片 Sharp 处理与中英水印文本。
+- `backend/scripts/schema.sql` — modified: 常规 schema 入口增加签证字段。
+- `backend/scripts/schema_neon.sql` — modified: Neon schema 入口增加签证字段。
+- `backend/scripts/init_db.ts` — modified: 初始化/升级路径增加签证字段。
+- `backend/scripts/tests/test_profile_compliance_document_contract.ts` — added: 校验资料字段、水印模式、服务端整版水印实现和三条 schema 路径。
+- `mz-cleaning-app-frontend/src/screens/me/ProfileEditScreen.tsx` — modified: Photo ID 本地整版水印预览、签证图片上传/预览和 Visa Grant Number 输入。
+- `mz-cleaning-app-frontend/src/screens/me/ProfileEditScreen.test.tsx` — added: 覆盖两个资料图片的水印预览与上传模式。
+- `mz-cleaning-app-frontend/src/lib/profileStore.ts` — modified: 个人资料缓存增加签证字段与旧缓存归一化。
+- `mz-cleaning-app-frontend/src/lib/profileStore.test.ts` — modified: 覆盖签证字段缓存持久化。
+- `mz-cleaning-app-frontend/src/lib/api.ts` — modified: `/users/me` 资料接口类型增加签证字段。
+- `mz-cleaning-app-frontend/src/lib/i18n.tsx` — modified: 增加中英文水印说明、签证上传和 Visa Grant Number 文案。
+- `mz-cleaning-app-frontend/src/screens/tabs/MeScreen.tsx` — modified: 合并远程个人资料时保留签证字段；不展示敏感字段。
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.tsx` — modified: 任务页后台资料刷新保留签证字段，避免写回缓存时丢失该用户自助资料。
+- `docs/feature-regression-registry.md` — modified: 新增 FR-008。
+- `docs/change-release-ledger.md` — modified: 记录本发布单元。
+
+### Impact / Dependencies
+
+- **API:** 复用 `POST /mzapp/upload`，新增 `watermark_mode: profile_document_full`；扩展自助 `GET/PATCH /users/me` 的签证字段。`/users/contacts` 不变。
+- **Database / migration:** `users` 增加两个可空 text 列；三个既有 schema/初始化入口同步。
+- **Config / dependencies:** 无新增依赖；继续使用 `expo-image-picker`，因此签证文件只选取图片。
+- **Feature-regression registry:** FR-008；敏感资料、图片水印、缓存迁移与自助接口边界作为高风险业务不变量维护。
+- **Related units:** 与同一资料页中既有按钮规范化 hunk 共存；本发布单元不包含该无关按钮尺寸调整。
+
+### Validation
+
+- `npm run test -- --runInBand --no-cache src/screens/me/ProfileEditScreen.test.tsx src/lib/profileStore.test.ts` in `mz-cleaning-app-frontend` — passed: 2 suites / 3 tests.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed: 0 errors; 111 existing warnings outside this unit.
+- `npm run check:buttons` in `mz-cleaning-app-frontend` — passed: strict button audit found no suspicious dimensions.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_profile_compliance_document_contract.ts` in `backend` — passed.
+- `./node_modules/.bin/tsc -p tsconfig.json --noEmit` in `backend` — passed.
+- `npm run check:feature-registry` in root — passed: 8 FRs / 89 test mappings.
+- `python3 scripts/audit_change_release_ledger.py` in root — passed: 56 changed files, 56 recorded files.
+- `git diff --check` in root and nested mobile repository — passed: no whitespace errors.
+- Not run: iOS/Android 真机、真实对象存储上传、数据库迁移、生产 API 或生产资料写入。
+
+### Risks / Release Notes
+
+- Runtime risk: 本地叠加层只负责即时预览；服务端正式水印文件需要在非生产账号通过真实图片上传后进行像素级/真机核验。网络失败时本地预览不等于已保存资料。
+- Privacy risk: Photo ID、签证图片地址和 Visa Grant Number 属于敏感个人资料；本单元不在通讯录、任务 payload、日志或测试夹具写入真实值，发布前仍须复核认证媒体访问策略。
+- Rollback: 移除签证 UI 与 `/users/me` 字段投影后保留已存在的 `users` 列（避免数据破坏）；无需删除任何已存档资料对象。
+- **Git state:** root and nested mobile worktrees contain pre-existing/concurrent changes; this unit is uncommitted, unstaged, unpushed, and undeployed.
+
+## CRL-20260729-004 — 管理详情恢复自完成完成照片展示
+
+- **Status:** ready
+- **Updated:** 2026-07-29 Australia/Melbourne
+- **Request:** admin、客服和线下经理在任务详情看不到自完成拍摄的房间完成照片；要求以只读方式展示，且不影响清洁人员与检查人员的既有照片规则。
+- **Outcome:** 管理详情读取完成照片时会合并当前 active 任务、显式 `cleaning_task_ids`、旧缓存 `source_ids` 与主 `source_id`；合并卡不再遗漏自完成照片所属的清洁任务。多个关联任务中即使一条照片请求失败，其他成功返回的完成照片仍会按原有分组显示，失败仍显示诊断和重试。
+
+### Implementation
+
+- Previous behavior: 管理页优先只使用 active source ID，导致合并卡中的 `cleaning_task_ids` 被忽略；并且任一关联任务读取失败时，已成功读取的完成照片也会被整体清空，最终看起来像“暂无”。
+- New behavior: 完成照片使用专用 ID 聚合器，补齐 active、明确清洁任务和旧缓存来源；完成照片结果独立去重并保留成功项，原有 `photoLoadIssues`/重试继续呈现失败任务。既有“清洁完成照片”卡片、区域分组、历史遥控器兼容、认证媒体预览和只读交互保持不变。
+- Key decisions: 不改 `cleaning_task_media`、`completion_*` 媒体语义、上传队列、完成门槛、角色权限或后端 API；管理角色仅读取现有完成照片，普通清洁员不新增管理可见性。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/lib/managerDailyTaskPhotos.ts` — modified: 增加管理详情完成照片的关联清洁任务 ID 聚合和成功响应合并函数。
+- `mz-cleaning-app-frontend/src/screens/tasks/ManagerDailyTaskScreen.tsx` — modified: 使用完整 ID 集合读取完成照片；关联请求部分失败时仍展示成功项与失败诊断。
+- `mz-cleaning-app-frontend/src/screens/tasks/ManagerDailyTaskScreen.test.ts` — modified: 覆盖合并管理卡的完成照片 ID 集合与部分成功照片保留。
+- `docs/feature-regression-registry.md` — modified: FR-004 增加管理详情完成照片读取保护与测试映射。
+- `docs/change-release-ledger.md` — modified: 记录本发布单元。
+
+### Impact / Dependencies
+
+- **API:** 复用现有 `GET /mzapp/cleaning-tasks/:id/completion-photos`；无新增或修改 API。
+- **Database / migration:** none；继续只读 `cleaning_task_media.type LIKE 'completion_%'`。
+- **Config / environment / dependencies:** none.
+- **Feature-regression registry:** FR-004.
+- **Related units:** CRL-20260726-008、CRL-20260728-005、CRL-20260729-001；共享自完成完成照片和管理详情展示，选择性发布时须按 hunk 确认。
+
+### Validation
+
+- `npm run test -- --runInBand --no-cache src/screens/tasks/ManagerDailyTaskScreen.test.ts src/lib/managerDailyTaskPhotos.test.ts src/screens/tasks/CleaningSelfCompleteScreen.test.tsx src/screens/tasks/InspectionPanelScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 4 suites / 27 tests.
+- `npm run typecheck`, `npm run lint`, and `npm run check:buttons` in `mz-cleaning-app-frontend` — passed; lint has 0 errors and 111 pre-existing warnings.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 51 changed files / 51 recorded files.
+- `npm run check:feature-registry` — passed: 7 FRs / 86 test mappings.
+- `git diff --check` in root and nested mobile repositories — passed.
+- Android/iOS 真机、真实管理账号、真实合并卡/通知深链和真实媒体代理验证未运行。
+
+### Risks / Release Notes
+
+- Runtime risk: 当前验证覆盖任务 ID 聚合、部分成功和失败诊断；尚未用真实 admin、客服、线下经理账号验证历史合并任务和通知入口。
+- Rollback: 回退本单元的管理详情 ID 聚合/成功响应合并 hunk；不涉及媒体、任务状态、权限或数据库回滚。
+- Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs were added.
+- **Git state:** root and nested mobile worktrees contain pre-existing/concurrent changes; this unit is uncommitted, unstaged, unpushed, and undeployed.
+
+## CRL-20260729-003 — 自完成挂钥匙视频弱网同步与检查前置隔离
+
+- **Status:** ready
+- **Updated:** 2026-07-29 Australia/Melbourne
+- **Request:** 自完成上传挂钥匙视频需要显示上传状态、弱网可恢复；修复错误要求“等待清洁提交补品记录和房源照片，再提交检查”。
+- **Outcome:** 自完成视频先保存为应用私有队列项，再复用检查页同一个单 worker 上传、断点和业务保存机制；页面明确显示未上传、待同步、上传中、已上传未保存、保存失败与已同步。自完成视频保存不会再套用普通检查的“清洁补品 + 房源照片”前置；普通检查和 password-only 原门槛保持不变。最终点击“标记已完成”仍由既有自完成接口校验本任务的视频、完成照片和补品。
+
+### Implementation
+
+- Previous behavior: 自完成页直接上传视频后立即请求业务保存，不持久化本地视频或显示业务保存状态；重进页面无法恢复中断的视频。后端一处路由错误使用 `submit_inspection` 权限，且共享状态流转把所有 `upload_access_video` 当作普通检查，导致自完成返回 `CLEANING_SUBMISSION_REQUIRED`。
+- New behavior: `inspectionMediaQueue` 增加受控的 `self_complete` 保存模式，媒体文件仍逐张上传，远端 URL 确认后才调用 `cleaning-app/tasks/:id/lockbox-video` 保存任务记录；失败保留本地文件和远端 URL，重进或重试不会重复上传已确认媒体。两条挂钥匙视频路由均在一个事务中写入动作审计、视频媒体和上传时间；共享流转仅在内部 `self_complete_lockbox` 标记下跳过普通检查前置。
+- Key decisions: 不新建队列、表、迁移或 API；只允许服务端根据任务模式生成该内部标记，客户端不能凭请求体绕过普通检查。普通检查仍需其既有补品/房源照片及检查照片规则。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/lib/inspectionMediaQueue.ts` — modified: 同一媒体队列按受控 meta 调用自完成视频业务保存接口。
+- `mz-cleaning-app-frontend/src/lib/inspectionMediaQueue.test.ts` — modified: 覆盖本机优先上传、仅重试业务保存及自完成路由选择。
+- `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.tsx` — modified: 视频队列重进恢复、状态/错误提示、重试与重新拍摄入口。
+- `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.test.tsx` — modified: 覆盖远端视频已上传但任务记录保存失败时的真实状态与重试入口。
+- `backend/src/lib/workTaskActionAudit.ts` — modified: 仅自完成内部视频动作跳过普通检查的提交/检查照片前置。
+- `backend/src/modules/cleaning_app.ts` — modified: 自完成视频使用 `upload_access_video` 授权，并以事务原子保存动作、媒体和上传时间。
+- `backend/src/modules/mzapp.ts` — modified: MZapp 视频路由保持普通检查门槛，同时支持受控自完成执行人的隔离分支与事务写入。
+- `backend/scripts/tests/test_cleaning_task_transition_guard.ts` — modified: 覆盖普通检查仍受阻、自完成视频不查询普通检查补品前置。
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — modified: 覆盖两条视频路由的授权、模式标记、前置隔离与事务契约。
+- `docs/feature-regression-registry.md` — modified: 增加回归保护。
+- `docs/execution-records.md` — modified: 记录确认计划与执行结果。
+- `docs/change-release-ledger.md` — modified: 记录本发布单元。
+
+### Impact / Dependencies
+
+- **API:** 复用既有 `POST /cleaning-app/tasks/:id/lockbox-video` 和 `POST /mzapp/cleaning-tasks/:id/lockbox-video`；无新增公开接口。
+- **Database / migration:** none；复用 `cleaning_task_media`、`cleaning_tasks.lockbox_video_uploaded_at` 与动作审计。
+- **Config / environment / dependencies:** none.
+- **Feature-regression registry:** FR-004.
+- **Related units:** CRL-20260723-006、CRL-20260726-009、CRL-20260728-004、CRL-20260729-001；共享视频队列和自完成页面，选择性发布时须按 hunk 确认。
+
+### Validation
+
+- `npm run test -- --runInBand --no-cache src/lib/inspectionMediaQueue.test.ts src/screens/tasks/CleaningSelfCompleteScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 2 suites / 14 tests.
+- `npm run test:cleaning-task-transition-guard` and `npm run test:idempotency-submit-id-contract` in `backend` — passed.
+- `npm run typecheck`, `npm run lint`, and `npm run check:buttons` in `mz-cleaning-app-frontend` — passed; lint has 0 errors and 111 pre-existing warnings.
+- `./node_modules/.bin/tsc -p . --noEmit` in `backend` — passed; used instead of `npm run build` because `backend/dist` already contains concurrent uncommitted build output.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 51 changed files / 51 recorded files.
+- `python3 scripts/audit_feature_regression_registry.py` — passed: 7 FRs / 85 test mappings.
+- `git diff --check` in root and nested mobile repositories — passed.
+- Android/iOS 真机、EAS 构建、真实弱网、真实对象存储和真实接口验证未运行。
+
+### Risks / Release Notes
+
+- Runtime risk: 本地队列的磁盘清理、网络中断与重进恢复已由单测覆盖代码路径，但尚未在真机和真实弱网下实测；业务保存成功前本地媒体会保留，避免误删。
+- Rollback: 回退本单元的队列 meta 分支、页面状态回显及两个后端视频路由/共享动作 hunk；无需数据库回滚或删除对象。
+- Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs were added.
+- **Git state:** root and nested mobile worktrees contain pre-existing/concurrent changes; this unit is uncommitted, unstaged, unpushed, and undeployed.
+
+## CRL-20260729-002 — 修复自完成补品提交的空客厅照片参数
+
+- **Status:** ready
+- **Updated:** 2026-07-29 Australia/Melbourne
+- **Request:** 自完成任务提交消耗品补充时报“参数错误 string must contain at least 1 characters”。
+- **Outcome:** 未拍可选“客厅补品照片”时，移动端不再发送 `living_room_photo_url: ""`；有远端照片引用时继续发送该字段。补品、补货凭证和完成照片保留既有弱网队列、稳定 `submit_id` 与分步业务保存方式。
+
+### Implementation
+
+- Previous behavior: 队列构造补品请求时始终序列化 `living_room_photo_url`。草稿没有该可选照片时会产生空字符串，触发后端 `z.string().trim().min(1).optional()` 的 400 校验。
+- New behavior: 队列先规范化该 URL；仅非空时才包含字段，未拍照片时省略字段，符合“可选但传入必须非空”的接口契约。
+- Key decisions: 只修正请求序列化，不修改后端 schema、不新增接口或迁移；已确认远端的照片、队列重试和同一 `submit_id` 不变。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/lib/cleaningConsumablesSubmitQueue.ts` — modified: 构造补品请求时省略空的可选客厅照片字段。
+- `mz-cleaning-app-frontend/src/lib/cleaningConsumablesSubmitQueue.test.ts` — modified: 覆盖未拍客厅照片的自完成补品提交不会携带空字段。
+- `docs/feature-regression-registry.md` — modified: FR-004 增加可选补品图片不得序列化为空字符串的不变量和队列测试映射。
+- `docs/change-release-ledger.md` — modified: 记录本发布单元。
+
+### Impact / Dependencies
+
+- **API:** 既有 `cleaning-app/tasks/:id/consumables`；请求字段从空字符串调整为省略，满足后端现有校验。
+- **Database / migration:** none.
+- **Config / environment / dependencies:** none.
+- **Feature-regression registry:** FR-004.
+- **Related units:** CRL-20260728-004、CRL-20260728-005、CRL-20260729-001；共享自完成补品草稿与弱网提交队列，选择性发布时须按 hunk 确认。
+
+### Validation
+
+- `npm run test -- --runInBand --no-cache src/lib/cleaningConsumablesSubmitQueue.test.ts` in `mz-cleaning-app-frontend` — passed: 1 suite / 19 tests, including the new omitted-field regression.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed: 0 errors, 111 pre-existing warnings.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 50 changed files / 50 recorded files.
+- `python3 scripts/audit_feature_regression_registry.py` — passed: 7 FRs / 84 test mappings.
+- `git diff --check` in root and nested mobile repositories — passed.
+- No standalone mobile build script is configured; Android/iOS 真机、EAS 构建、真实弱网和真实接口验证未运行。
+
+### Risks / Release Notes
+
+- Runtime risk: 未在真机、真实弱网或真实接口上复测；该修复仅改变无照片时的 JSON 字段存在性，不改变已拍照片或已上传媒体的值。
+- Rollback: 回退队列中省略空字段的单个 hunk；无需数据库回滚、对象删除或队列迁移。
+- Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs were added.
+- **Git state:** root and nested mobile worktrees contain pre-existing/concurrent changes; this unit is uncommitted, unstaged, unpushed, and undeployed.
+
+## CRL-20260729-001 — 自完成照片全屏预览、水印与遥控器合并
+
+- **Status:** ready
+- **Updated:** 2026-07-29 Australia/Melbourne
+- **Request:** 修复自完成房间完成照片的大图不能完整显示且看不到水印；客厅、沙发、卧室、厨房明确拍摄对象并以小字提示；电视遥控器与空调遥控器合并为一张照片。
+- **Outcome:** 自完成房间完成照片打开后使用整屏预览并按设备宽度显示，避免固定小容器裁切；本地草稿大图立即显示房号、执行人和拍摄时间水印，上传后的图片继续由既有后端写入同样水印。客厅、沙发、卧室和厨房显示指定拍摄对象的小字提示。电视和空调遥控器合为一个必拍位，只保留一张并支持重拍替换；旧电视/空调/笼统遥控器完成照片均会合并显示。
+
+### Implementation
+
+- Previous behavior: 自完成页大图使用固定 `320×420` 容器，窄屏或高图不能完整使用屏幕空间；本地草稿在上传前没有可见水印；电视和空调遥控器为两个拍摄入口，其中空调为可选。
+- New behavior: 大图预览改为全屏、按设备宽度分页并保持完整 `contain` 显示。刚拍完的本地草稿在大图右下角显示房号、执行人和拍摄时间；联网同步时仍复用既有上传参数和后端图片写入水印。客厅/沙发/卧室/厨房分别提示整体、坐垫表面、地毯、整体拍摄。遥控器改为单一必拍位“电视和空调遥控器”，同框只保留一张，重拍会替换当前草稿照片。
+- Compatibility: 新照片继续写入既有 `remote_tv` 必拍区域，不新增 API 或表；旧 `remote_ac`、`remote_controls` 完成照片在自完成和管理端统一合并到该拍照位展示，避免历史照片丢失。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.tsx` — modified: 全屏大图、草稿水印叠层、拍摄小字提示、单一遥控器拍照/重拍及旧区域回显兼容。
+- `mz-cleaning-app-frontend/src/screens/tasks/ManagerDailyTaskScreen.tsx` — modified: 管理端把旧电视/空调遥控器完成照片合并为同一分组。
+- `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.test.tsx` — modified: 覆盖小字提示、单一遥控器入口、旧空调照片兼容和本地大图水印。
+- `docs/feature-regression-registry.md` — modified: 更新 FR-004 的自完成照片不变量与测试映射。
+- `docs/change-release-ledger.md` — modified: 记录本发布单元。
+
+### Impact / Dependencies
+
+- **API:** none；沿用 `remote_tv` 和既有上传水印字段。
+- **Database / migration:** none.
+- **Config / environment / dependencies:** none.
+- **Feature-regression registry:** FR-004.
+- **Related units:** CRL-20260728-005、CRL-20260728-004；共享自完成照片草稿和完成照片保存链路，选择性发布时须 hunk 级确认。
+
+### Validation
+
+- `npm run test -- --runInBand --no-cache src/screens/tasks/CleaningSelfCompleteScreen.test.tsx src/screens/tasks/ManagerDailyTaskScreen.test.ts` in `mz-cleaning-app-frontend` — passed: 2 suites / 12 tests.
+- `npm run typecheck && npm run lint && npm run check:buttons` in `mz-cleaning-app-frontend` — passed: typecheck and strict button contract; lint has 0 errors and 111 existing warnings.
+- `npm run check:ci` in `mz-cleaning-app-frontend` — passed: typecheck, lint, strict button contract, 50 Jest suites / 241 tests; lint has 0 errors and 111 existing warnings.
+- `npm run check:feature-registry`, `python3 scripts/audit_change_release_ledger.py`, and `python3 scripts/audit_feature_regression_registry.py` — passed: 7 FRs / 84 test mappings; 50 changed files / 50 recorded files.
+
+### Risks / Release Notes
+
+- Runtime risk: 真机尚未确认横竖屏、大字号和实际相机拍摄后水印位置；本地预览叠层不会修改私有草稿文件字节，真实图片水印仍在联网上传时由既有后端写入。
+- Rollback: 回退本单元的自完成预览、提示/遥控器合并和管理端分组 hunk；无需数据库回滚或媒体删除。
+- Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs were added.
+- **Git state:** root and nested mobile worktrees contain pre-existing/concurrent changes; this unit is uncommitted, unstaged, unpushed, and undeployed.
+
+## CRL-20260728-005 — 自完成补品确认、房号确认与完成照片补齐
+
+- **Status:** ready
+- **Updated:** 2026-07-28 Australia/Melbourne
+- **Request:** 自完成页面把房间完成照片的拍照按钮从黑色改为蓝色，并增加浴室下水口、遥控器照片；明确电视遥控器必拍，空调遥控器在墙上时可不拍。随后修复进入自完成页时所有未选消耗品被误显示为“现场够用”，并要求未结束任务进入时确认当前房号；已结束任务重进不再确认。
+- **Outcome:** 自完成页显示 8 个必拍区域（原有 5 个基础区域、浴室下水口、电视遥控器、吸尘器使用后）和 1 个可选的空调遥控器拍照位；“拍照”保持既有 44pt 按钮契约并为蓝色。未明确选择的消耗品在草稿中保持空状态并回显为“待确认”，只有用户明确选择“现场够用/已补充/下次退房补”才保存对应状态。已有错误草稿中 `status: ok` 且 `restock_status: null` 的项目也会恢复为“待确认”，而没有 `restock_status` 的旧版明确“足够”记录仍兼容为“现场够用”。未结束任务先显示房号确认，`cleaned`、`restock_pending` 等已结束任务重进直接查看。弱网草稿、逐张上传、单次完成照片业务保存与重进恢复继续复用既有队列。
+
+### Implementation
+
+- Previous behavior: 自完成页只有 6 个照片入口，前端额外要求吸尘器使用后照片，但后端和工作任务状态投影只要求 5 个基础区域；后端保存接口不接受 `remote_controls`，管理端移动详情也不会分组显示该照片。
+- New behavior: 客户端、完成照片 API 类型、保存接口 schema、最终自完成门槛和工作任务状态投影统一要求 `toilet`、`living`、`sofa`、`bedroom`、`kitchen`、`shower_drain`、`remote_tv`、`vacuum_used`；`remote_ac` 为可选拍照位。管理端移动详情按“浴室下水口”“电视遥控器”“空调遥控器”分组显示照片。草稿只把明确“现场够用”保存为 `ok`，把“已补充/下次退房补”保存为 `low`；空白保持 `null`，恢复时不再伪装为“现场够用”。
+- Key decisions: 不新增接口、表、队列或上传方式；电视、空调遥控器各最多 1 张。即使空调遥控器不参与完成门槛，仍进入本地草稿和最终批次保存。保留旧 `remote_controls` 的保存/读取兼容，并在展示和完成校验中将其视为电视遥控器。房号确认复用检查页的遮罩交互；普通进行中任务必须确认，`cleaned`、`restock_pending`、`restocked` 及完成态跳过。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.tsx` — modified: 新增浴室下水口、电视遥控器必拍卡片和空调遥控器可选卡片；草稿/重进恢复键和蓝色拍照按钮；未确认消耗品保持空状态，并在未结束任务进入时要求房号确认。
+- `mz-cleaning-app-frontend/src/lib/api.ts` — modified: 完成照片区域类型接受 `shower_drain`、`remote_tv`、`remote_ac`，保留旧 `remote_controls` 兼容值。
+- `mz-cleaning-app-frontend/src/screens/tasks/ManagerDailyTaskScreen.tsx` — modified: 管理端移动详情分组显示两项新增完成照片。
+- `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.test.tsx` — modified: 覆盖新增区域、8 个拍照入口、蓝色按钮、未选补品草稿保持 `null`，以及进行中/已结束任务的房号确认分支。
+- `backend/src/modules/cleaning_app.ts` — modified: 保存 schema 和数量上限接受电视/空调遥控器；最终完成只要求电视遥控器，同时让既有吸尘器要求与客户端一致。
+- `backend/src/modules/mzapp.ts` — modified: 工作任务状态投影使用相同的 8 个必拍区域，并兼容旧遥控器记录。
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — modified: 覆盖后端自完成门槛和电视/空调遥控器 schema 契约。
+- `docs/feature-regression-registry.md` — modified: 更新 FR-004 的区域一致性测试映射与验证指针。
+- `docs/change-release-ledger.md` — modified: 记录本发布单元。
+
+### Impact / Dependencies
+
+- **API:** 既有完成照片保存请求的 `area` 新增 `shower_drain`、`remote_tv`、`remote_ac` 合法值；保留 `remote_controls` 兼容旧客户端；无新 endpoint。
+- **Database / migration:** none；继续使用 `cleaning_task_media.type = completion_<area>`。
+- **Config / environment / dependencies:** none.
+- **Feature-regression registry:** FR-004。
+- **Related units:** CRL-20260728-004、CRL-20260726-008；共享自完成照片草稿与完成照片保存链路，选择性发布时须 hunk 级确认。
+
+### Validation
+
+- `npm test -- --runInBand --no-cache src/screens/tasks/CleaningSelfCompleteScreen.test.tsx src/lib/cleaningConsumablesSubmitQueue.test.ts` in `mz-cleaning-app-frontend` — passed: 2 suites / 22 tests.
+- `npm run test -- --runInBand --no-cache src/screens/tasks/CleaningSelfCompleteScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 1 suite / 7 tests, including current-task room confirmation, unselected consumable draft persistence, and correction of the prior erroneous `ok` + empty restock-state draft.
+- `npm run check:ci` in `mz-cleaning-app-frontend` — passed: typecheck, lint, button contract, 50 Jest suites / 239 tests; lint has 0 errors and 111 existing warnings.
+- `npm run test:idempotency-submit-id-contract` in `backend` — passed.
+- `npm run test:cleaning-task-transition-guard` in `backend` — passed.
+- `./node_modules/.bin/tsc -p . --noEmit` in `backend` — passed; used instead of writing `backend/dist` because that directory already contains concurrent uncommitted build output.
+- `python3 scripts/audit_feature_regression_registry.py` — passed: 7 FRs / 84 test mappings.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 50 changed files / 50 recorded files (rerun after this ledger update below).
+- `git diff --check` in root and nested mobile repositories — passed.
+- Not run: Android/iOS 真机、EAS 构建和弱网恢复验证。
+
+### Risks / Release Notes
+
+- Runtime risk: 新增浴室下水口、电视遥控器和吸尘器门槛会使已完成旧任务在任务卡上显示“待完成”，直至补齐照片；空调遥控器不阻断完成。旧的笼统遥控器记录按电视遥控器兼容。
+- Rollback: 回退本单元在客户端区域列表、API union、管理端展示和两个后端门槛/schema 的 hunk；不需要数据库回滚或对象删除。
+- Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs were added.
+- **Git state:** root and nested mobile worktrees contain pre-existing/concurrent changes; this unit is uncommitted, unstaged, unpushed, and undeployed.
+
+## CRL-20260728-004 — 自完成补货结果与完成照片最终批次提交
+
+- **Status:** ready
+- **Updated:** 2026-07-28 Australia/Melbourne
+- **Request:** 优化移动端自完成任务的补充与完成页面：补货要区分“已补充”和“下次补”；房间完成照片复用检查/清洁人员的弱网、本机草稿、逐张上传和重进恢复规则；照片对象逐张上传，但最终完成记录一次写入数据库。
+- **Outcome:** 自完成消耗品逐项改为“现场够用 / 已补充 / 下次退房补”。“已补充”必须通过相机留下补货凭证；“下次退房补”不要求照片，并使用既有 `carry_forward` 记录供后续退房任务投影。完成照片拍下时只持久化到应用私有草稿；用户点击“标记已完成”时，队列才逐张上传，所有远端引用齐备后以一个稳定 `submit_id` + `completion_photos` 业务请求批量保存，成功后才调用自完成状态转换。后端明确允许自完成任务的清洁执行人保存此批补货凭证，仍要求消耗品先入库，但不错误套用检查专用的房源照片前置。
+
+### Implementation
+
+- Previous behavior: 自完成页以“足够 / 不足”表达补品状态，完成照片每次拍摄后即进入队列并可能立即写入完成照片业务记录。
+- New behavior: 补货结果沿用检查人员既有 `restocked`、`carry_forward`、`unavailable` 语义和既有 restock-proof API；本次“已补充”的凭证先获得远端 key 后，再一次写入补货记录。完成照片与补品照片共用同一任务单 worker、私有本地文件、上传断点与错误分类；未启用最终提交的完成照片不会被补品同步提前上传或写入数据库。
+- Re-entry: 页面合并本地草稿、已保存补货记录和已保存消耗品记录；旧草稿中明确的 `ok` 映射为“现场够用”，未选择或旧 `low` 不会伪装成已经补货。
+- Key decision: 不新建表、队列或接口。逐张对象上传与最终业务写入分离：上传可独立断点续传；补货 proof 和完成照片各自只在对应最终批次写入时提交数据库，业务保存重试复用同一 `submit_id`，不会重复上传已确认远端引用。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.tsx` — modified: 三种补货结果、已补充相机凭证、下次退房补提示、草稿/服务端回显，以及完成照片最终批量同步后才自完成。
+- `mz-cleaning-app-frontend/src/lib/cleaningConsumablesDraft.ts` — modified: 草稿项保存 label/restock status，并区分 restock/完成照片的最终业务保存开关和确认状态。
+- `mz-cleaning-app-frontend/src/lib/cleaningConsumablesSubmitQueue.ts` — modified: 复用既有 restock-proof 保存接口；仅在完成照片最终开关开启后上传和保存完成照片；已保存补品同步不会清除未最终提交的本地完成照片。
+- `mz-cleaning-app-frontend/src/lib/cleaningConsumablesSubmitQueue.test.ts` — modified: 覆盖补货凭证远端引用后批量保存，以及补品提交不提前上传/保存已暂存完成照片。
+- `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.test.tsx` — modified: 覆盖补品草稿回显的“现场够用 / 待确认”语义。
+- `backend/src/modules/mzapp.ts` — modified: 为 `self_complete_restock` 添加自完成执行人授权、消耗品前置和正确的 `fill_supplies` 审计；检查人员流程仍保留原有权限与房源照片前置。
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — modified: 断言自完成补货使用受控 step key、消耗品前置与正确审计动作。
+- `docs/feature-regression-registry.md` — modified: 更新 FR-004/FR-005 的自完成补货、最终照片批次和弱网队列映射。
+- `docs/change-release-ledger.md` — modified: 记录本发布单元。
+
+### Impact / Dependencies
+
+- **API:** 复用 `POST /mzapp/cleaning-tasks/:id/restock-proof` 和 `POST /cleaning-app/tasks/:id/completion-photos`；前者新增受限的自完成执行人授权分支，后者继续使用既有幂等 receipt。无新 API。
+- **Database / migration:** none；复用既有 `cleaning_task_media`、消耗品与完成照片持久化。
+- **Config / environment / dependencies:** none.
+- **Feature-regression registry:** FR-004、FR-005。
+- **Related units:** CRL-20260725-009、CRL-20260725-018、CRL-20260726-008；共享自完成屏和队列文件，选择性发布时须 hunk 级确认。
+
+### Validation
+
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed.
+- `npm test -- --runInBand src/lib/cleaningConsumablesSubmitQueue.test.ts src/screens/tasks/CleaningSelfCompleteScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 2 suites / 22 tests.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed: 0 errors / 111 existing warnings.
+- `npm run check:buttons` in `mz-cleaning-app-frontend` — passed: strict button-contract audit found no suspicious hard-coded button dimensions.
+- `npm run check:ci` in `mz-cleaning-app-frontend` — passed: typecheck, lint, button contract, 50 Jest suites / 236 tests. One preceding full run had an unrelated transient `InspectionPanelScreen` assertion; its isolated rerun and the subsequent full run both passed.
+- `npm run test:idempotency-submit-id-contract` in `backend` — passed.
+- `./node_modules/.bin/tsc -p . --noEmit` in `backend` — passed; used instead of writing `backend/dist` because that directory already contains concurrent uncommitted build output.
+- `python3 scripts/audit_feature_regression_registry.py` — passed: 7 FRs / 82 test mappings.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 50 changed files / 50 recorded files.
+- Not run: Android/iOS 真机弱网切换与 EAS 构建。
+
+### Risks / Release Notes
+
+- Runtime risk: 未执行 Android/iOS 真机、弱网切换或 EAS 构建；需人工确认三按钮在窄屏/大字号下换行，以及断网后返回页面和恢复网络的实际同步提示。
+- Data note: 自完成只复用既有补货凭证保存契约；同一任务的补货 proof 本来就是该任务的当前批次快照，最终批次会遵循既有接口的替换语义。
+- Rollback: 回退本单元在自完成屏、草稿字段和队列条件的 hunk；不需要数据库回滚或对象删除。
+- Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs were added.
+- **Git state:** root and nested mobile worktrees contain pre-existing/concurrent changes; this unit is uncommitted, unstaged, unpushed, and undeployed.
+
+## CRL-20260728-003 — 移动端消耗品补充标准
+
+- **Status:** ready
+- **Updated:** 2026-07-28 Australia/Melbourne
+- **Request:** 所有角色的消耗品补充页面，在补充物品旁显示卷纸、抽纸、洗护、垃圾袋、厨房用品等对应补充标准。
+- **Outcome:** 清洁人员的“补品填报”与“补充与完成”，以及检查人员的“检查与补充”，都会在受支持的消耗品名称下显示统一的“补充标准”。未知或自定义项目不显示猜测标准。
+
+### Implementation
+
+- Previous behavior: 三个补充界面只显示物品名称、当前状态/建议数量和拍照操作，未展示最低补充标准。
+- New behavior: 新增只读共享标准表，优先按现有清单稳定 ID 匹配；旧记录或手工添加项目缺少稳定 ID 时，按明确的中文名称兼容匹配。标准包括：卷纸按卫生间和入住天数、抽纸每房 1–2 盒、洗护/洗洁精/食用油等最低余量、垃圾袋最低数量、盐糖补充装与台面余量，以及备用枕套按需确认。
+- Key decisions: 只改变移动端呈现；不修改清单种子、API、权限、任务状态、照片要求或提交载荷。标准文本置于物品名称下方，避免窄屏挤压状态操作。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/lib/consumableRestockStandards.ts` — added: 集中维护清单 ID/中文名称到补充标准的只读映射。
+- `mz-cleaning-app-frontend/src/lib/consumableRestockStandards.test.ts` — added: 覆盖全部当前种子消耗品及中文名称兼容回退。
+- `mz-cleaning-app-frontend/src/screens/tasks/SuppliesFormScreen.tsx` — modified: 在补品填报项名称下显示标准。
+- `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.tsx` — modified: 在补充与完成的消耗品项名称下显示标准。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.tsx` — modified: 在检查员待补项名称下显示标准。
+- `mz-cleaning-app-frontend/src/screens/tasks/SuppliesFormScreen.test.tsx` — modified: 断言清洁补品填报显示标准。
+- `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.test.tsx` — modified: 断言补充与完成显示标准。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.test.tsx` — modified: 断言检查员待补项显示标准。
+- `docs/change-release-ledger.md` — modified: 记录本发布单元。
+
+### Impact / Dependencies
+
+- **API:** none.
+- **Database / migration:** none.
+- **Config / environment:** none.
+- **Dependencies:** none.
+- **Feature-regression registry:** none; this is display-only wording and does not alter a business workflow or protected state invariant.
+- **Related units:** CRL-20260728-001; shares the same mobile screen files and must be hunk-selected for a selective release.
+
+### Validation
+
+- `npm test -- --runInBand --no-cache src/lib/consumableRestockStandards.test.ts src/screens/tasks/SuppliesFormScreen.test.tsx src/screens/tasks/CleaningSelfCompleteScreen.test.tsx src/screens/tasks/InspectionPanelScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 4 suites / 24 tests.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed: 0 errors / 111 existing warnings.
+- `npm run check:buttons` in `mz-cleaning-app-frontend` — passed: strict button-contract audit found no suspicious hard-coded dimensions.
+- `npm run check:fast` at repository root — passed: ledger/feature registry, backend build and contract checks, Web 39 suites / 172 tests, and mobile typecheck all passed.
+- `python3 scripts/audit_change_release_ledger.py` and `python3 scripts/audit_feature_regression_registry.py` — passed: 50 changed files / 50 recorded files; 7 FRs / 81 test mappings.
+
+### Risks / Release Notes
+
+- Runtime risk: 未执行 Android/iOS 真机或 EAS 构建；需人工确认窄屏和大字号下的标准文本换行。
+- Rollback: 移除共享标准表导入和各界面标准文字即可；不需要回滚数据或接口。
+- Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs were added.
+- **Git state:** root and nested mobile worktrees contain pre-existing/concurrent changes; this unit is uncommitted, unstaged, unpushed, and undeployed.
+
+## CRL-20260728-002 — 管理端历史工作情况与 MSQ 钥匙时间语义
+
+- **Status:** ready
+- **Updated:** 2026-07-28 Australia/Melbourne
+- **Request:** admin 移动端“今日工作情况”默认收起；按历史日期查看时复用既有历史任务与交接记录；MSQ 仓库钥匙当天显示“谁借出 HH:mm”，前一天显示“昨天 谁借出 HH:mm”，更早记录显示日期和时间。
+- **Outcome:** 管理模式下的工作情况卡片默认收起，展开时才读取当前所选日期的数据。切换到周/月并选择历史日期后，同一张卡片读取既有的任务和交接记录，标题显示该日期；当前页面对已读取日期缓存，下拉刷新才清空缓存并重新读取。MSQ 最近钥匙事件不再笼统显示“最近”，而按当天、昨天或明确日期展示借出/归还人和时间。
+
+### Implementation
+
+- Previous behavior: 管理工作情况默认展开，只在“今天”可见，并在进入管理页时立即请求任务与每位员工的交接记录；历史日期不能通过该模块查看。MSQ 钥匙事件跨天仍显示“最近”，容易误判借出日期。
+- New behavior: 仅 admin/线下经理在管理模式看到该模块；初始收起，展开后才调用既有 `listWorkTasks(date)` 和 `listDayEndHandover(date,user)`。周/月选择的日期直接传入这两个既有读取接口，并继续传给已存在的交接详情入口。
+- Load boundary: 仅缓存当前页面会话内已成功读取的日期；不预取历史日期、不新增轮询或后台请求。用户手动下拉刷新时清空该缓存并重新读取当前展开日期，避免长期显示旧进度。
+- Key decisions: 不增加数据库表、快照或写入；历史记录保留和权限继续由现有任务/交接记录服务端数据决定；不改 MSQ 钥匙操作、持有人或权限逻辑。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.tsx` — modified: 工作情况默认收起、按所选日期懒加载/会话缓存、历史日期入口与 MSQ 事件日期化文案。
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.test.tsx` — modified: 覆盖默认不请求、展开后读取、历史月日期请求、返回已读日期不重复读取及当天/昨天/旧日期钥匙文案。
+- `docs/feature-regression-registry.md` — modified: 新增 FR-007，登记管理工作情况的日期与读取边界。
+- `docs/change-release-ledger.md` — modified: 记录本发布单元。
+
+### Impact / Dependencies
+
+- **API:** no new API；复用 `listWorkTasks`、`listDayEndHandover` 和既有 MSQ 仓库钥匙状态读取。
+- **Database / migration:** none；不新增写入、快照、表或索引。
+- **Load:** 模块收起时不发工作情况请求；展开后按所选日期一次读取任务和该日期员工交接记录；已成功日期仅页面内缓存，下拉刷新才失效。
+- **Config / environment:** none。
+- **Dependencies:** none。
+- **Related units:** FR-007；与并发移动端改动共享 `TasksScreen.tsx` 和 `TasksScreen.test.tsx`，选择性发布时必须按 hunk 核对。
+
+### Validation
+
+- `npm test -- --runInBand --no-cache src/screens/tabs/TasksScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 1 suite / 24 tests. Jest reports an existing open-handle warning after completion.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed: `tsc -p tsconfig.json`.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed: 0 errors / 111 existing warnings.
+- `npm run check:buttons` in `mz-cleaning-app-frontend` — passed: strict button-contract audit found no suspicious hard-coded dimensions.
+- `python3 scripts/audit_feature_regression_registry.py` — passed: 7 FRs / 81 test mappings.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 50 changed files / 50 recorded files.
+
+### Risks / Release Notes
+
+- Runtime risk: 未执行真机/EAS 验证；需要人工确认历史日期切换、收起/展开和钥匙文案在 Android/iOS 上的显示。
+- Data note: 历史记录不是新的不可变快照；它复用当前保留的历史任务与交接记录，若这些原始记录未来被管理端更正，查看结果会随之反映。
+- Rollback: 回退 `TasksScreen.tsx` 中本单元的展开边界、会话缓存、所选日期和钥匙事件文案 hunk；保留同文件的并发 hunk。
+- Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs were added.
+- **Git state:** root and nested mobile worktrees contain pre-existing/concurrent changes; this unit is uncommitted, unstaged, unpushed, and undeployed.
+
+## CRL-20260728-001 — 移动端房号确认、遥控器合拍与检查后清洁问题追加
+
+- **Status:** ready
+- **Updated:** 2026-07-28 Australia/Melbourne
+- **Request:** 清洁人员补品消耗将电视和空调遥控器合为一张照片，电视遥控器仍必拍、墙嵌空调遥控器可不拍；检查与补充成功保存到服务器后仅允许从相册追加清洁问题；清洁/检查人员进入对应页面先确认当前任务房号。
+- **Outcome:** 补品页现在只拍一张“电视与空调遥控器”照片，仍以电视遥控器照片作为提交门槛。补品页和检查页在开始填写前均要求确认房号。检查批次状态为 `synced` 后，已提交的检查和补货照片保持只读；检查员仍可从相册选取新的清洁问题照片，上传与服务端追加保存分开处理，服务端保存失败时可重试且不会重复上传已取得远端引用的照片。
+
+### Implementation
+
+- Previous behavior: 补品页连续要求拍摄电视和空调遥控器两张照片；进入补品或检查页没有房号确认。检查批次一旦提交，清洁问题反馈也被冻结。复用检查照片保存接口会删除全部 `inspection_%` 媒体，因此不能安全支持提交后的问题追加。
+- New behavior: 补品页改为单一遥控器照片操作，提示电视必须拍到、墙嵌空调可不拍，并保持既有 `remote_tv` 持久化字段兼容。两个页面在非只读入口打开时先显示当前房号，确认后才允许填写和拍照。
+- New behavior: 新增 `cleaning-app/tasks/:id/inspection-issue-photos`。接口只接受已完成正式检查的任务，按 `inspection_unclean` 追加媒体、限制总数、使用任务行锁和专属幂等 receipt；不删除历史检查照片，也不再次调用任务状态流转。移动端仅在检查批次 `synced` 后显示相册追加入口；本地草稿同时保存本地媒体和远端引用，后端业务保存失败时重试不重复上传。
+- Key decisions: 不修改数据库结构或既有正式检查照片保存接口；不在每次拍照前重复弹房号确认；不新增并行上传 Worker。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/screens/tasks/SuppliesFormScreen.tsx` — modified: 进入页房号确认；电视/空调遥控器合为一张拍摄操作，电视照片仍为必填。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.tsx` — modified: 进入页房号确认；已同步检查后锁定既有照片，仅保留相册追加清洁问题、断点持久化和重试。
+- `mz-cleaning-app-frontend/src/lib/api.ts` — modified: 增加检查完成后问题照片的追加请求。
+- `backend/src/modules/cleaning_app.ts` — modified: 增加不替换历史检查媒体的追加问题照片路由、任务状态门槛和幂等保护。
+- `mz-cleaning-app-frontend/src/screens/tasks/SuppliesFormScreen.test.tsx` — modified: 覆盖房号确认与遥控器单次拍摄。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.test.tsx` — modified: 覆盖房号确认、已同步后的相册追加、失败后重试不重复上传。
+- `backend/scripts/tests/test_inspection_issue_append_contract.ts` — added: 覆盖追加路由不删除正式检查媒体、不再次流转状态及 receipt 契约。
+- `docs/feature-regression-registry.md` — modified: 更新 FR-004、FR-005 的跨层保护规则和测试映射。
+- `docs/change-release-ledger.md` — modified: 记录本发布单元。
+
+### Impact / Dependencies
+
+- **API:** 新增受现有检查/问题权限保护的 `POST /cleaning-app/tasks/:id/inspection-issue-photos`；不改变既有检查照片或补品接口。
+- **Database / migration:** none；复用 `cleaning_task_media`、既有媒体类型和 `app_submit_receipts`，无 schema 变更。
+- **Config / environment:** none。
+- **Dependencies:** none。
+- **Related units:** FR-004、FR-005、CRL-20260726-008；与并发移动端工作共享 `SuppliesFormScreen.tsx`、`InspectionPanelScreen.tsx`、`api.ts`，选择性发布时必须按 hunk 核对。
+
+### Validation
+
+- `npm test -- --runInBand --no-cache src/screens/tasks/SuppliesFormScreen.test.tsx src/screens/tasks/InspectionPanelScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 2 suites / 18 tests.
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed: `tsc -p tsconfig.json`.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed: 0 errors / 111 existing warnings.
+- `npm run check:buttons` in `mz-cleaning-app-frontend` — passed: strict button-contract audit found no suspicious hard-coded dimensions.
+- `npm run build` in `backend` — passed: `tsc -p .`.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_inspection_issue_append_contract.ts` in `backend` — passed: `test_inspection_issue_append_contract: ok`.
+- `npm run test:cleaning-task-transition-guard` in `backend` — passed: `test_cleaning_task_transition_guard: ok`.
+- `python3 scripts/audit_feature_regression_registry.py` — passed: 6 FRs / 79 test mappings.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 50 changed files / 50 recorded files.
+
+### Risks / Release Notes
+
+- Runtime risk: 后端追加路由已由源码契约和编译覆盖，尚未在明确的非生产数据库上执行真实权限、重复请求、数量上限和回滚测试。
+- Runtime risk: 未执行真机/EAS 验证；需要人工确认 Android/iOS 上 Modal 阻挡和相册多选体验。
+- Rollback: 回退本单元的房号确认、遥控器单拍、追加 API/路由和对应测试；保留同文件的并发 hunk。
+- Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs were added.
+- **Git state:** root and nested mobile worktrees contain pre-existing/concurrent changes; this unit is uncommitted, unstaged, unpushed, and undeployed.
+
+### 2026-07-28 Follow-up
+
+- 已完成检查任务从未携带 `readOnly` 的直接/历史入口查看 `InspectionPanel` 时，不再显示房号确认。确认逻辑额外识别服务端任务状态 `done`、`completed`、`ready`、`keys_hung`；这只影响弹窗展示，不改变页面权限或可编辑性。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.tsx` — modified: 将完成态纳入房号确认跳过条件。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.test.tsx` — modified: 覆盖缺少 `readOnly` 参数的完成任务直接入口。
+- `npm test -- --runInBand --no-cache src/screens/tasks/InspectionPanelScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 1 suite / 10 tests.
+- `npm run typecheck` and `npm run check:buttons` in `mz-cleaning-app-frontend` — passed.
+- `npm run lint` in `mz-cleaning-app-frontend` — passed: 0 errors / 111 existing warnings.
+- `python3 scripts/audit_feature_regression_registry.py` and `python3 scripts/audit_change_release_ledger.py` — passed: 6 FRs / 79 test mappings; 50 changed files / 50 recorded files.
+
+## CRL-20260727-008 — Android 上传成功后保留页面媒体引用
+
+- **Status:** ready
+- **Updated:** 2026-07-28 Australia/Melbourne
+- **Request:** 安卓移动端拍照上传后仍看不见照片，继续修复缩略图/原图在上传成功回调后的消失问题。
+- **Outcome:** 补品/完成照片、检查照片和钥匙照片队列不再在页面仍使用 `file://` 地址时立即删除本地副本；钥匙详情页在同步完成后主动刷新开发环境任务数据，把页面切换到远端 `cleaning/...` 引用；修复本地 URI 同时作为缩略图与原图 `Image` key 时产生的重复 key。已同步但暂时没有页面引用的本地文件由既有 24 小时孤儿媒体清理机制回收。
+
+### Implementation
+
+- **Confirmed cause:** Android 页面拍照后继续渲染本地 `file://` 地址；队列完成远端上传和业务保存后立即删除该文件，而页面刷新/远端引用替换尚未完成，导致图片变成失效 URI，表现为黑底、缩略图消失或原图加载失败。
+- **Follow-up confirmed cause:** 本地钥匙照片同时渲染缩略图和原图时，两棵 `Image` 使用相同的 `file://...` key；React Native 报 duplicate key 并错误复用节点，导致黑图和原图加载失败。
+- **Follow-up protection:** Android 原生 `Image` 对带认证请求头的远端清洁媒体存在加载失败风险；现在统一先使用同一认证来源下载到应用私有缓存文件，再交给 `Image` 渲染，并保留远端失败时的重试/错误反馈。
+- **Follow-up confirmed cause:** 原图远端 `Image` 可能在私有缓存下载完成前先触发 `onError`；预览组件立即卸载原图节点后，即使缓存下载成功也无法替换显示，用户会持续看到“原图加载失败”。
+- **Follow-up confirmed cause:** 开发环境房号 `3803102` 的任务在补品提交时曾记录 `in_progress → restock_pending`，但后续钥匙删除/重传链路再次看到 `in_progress`；旧钥匙上传实现可直接把首次重传写成 `in_progress`，而现有保护只约束当次 action 返回状态，未能恢复已被旧逻辑污染的状态。
+- **New behavior:** 清洁补品/完成照片和钥匙队列成功后保留本地副本；不改变远端 key-first 保存、业务提交幂等或任务状态。钥匙详情上传流程等待队列完成后刷新当前开发环境任务列表。
+- **New behavior:** 清洁媒体缩略图、原图和清洁相关任务卡片统一经过私有文件缓存；本地 `file://` 引用仍直接显示，远端 key/URL 先下载后显示，避免安卓端把认证失败或原生解码失败表现为黑图。
+- **New behavior:** 原图缓存未完成时暂不把原生 `Image` 错误升级为最终失败；缓存成功后切换到本地文件，缓存确认失败后才显示重试提示。
+- **New behavior:** 钥匙上传状态 patch/event 增加防降级边界；已推进状态不会被 action 返回的 `in_progress` 覆盖，当前状态已被旧逻辑写成 `in_progress` 时按最近的完成类 action audit 恢复为 `restock_pending`、`cleaned` 或其他已推进状态。
+- **Key decisions:** 复用已有 `localMediaHousekeeping` 的 24 小时延迟清理，不新增清理 Worker、不改数据库、不删除或重传任何生产/开发媒体数据。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/lib/cleaningConsumablesSubmitQueue.ts` — 移除成功回调中的立即本地媒体删除，保留远端提交和既有延迟清理边界。
+- `mz-cleaning-app-frontend/src/lib/keyUploadQueue.ts` — 钥匙上传/任务启动成功后不再立即删除仍可能被页面渲染的本地副本。
+- `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.tsx` — 钥匙队列完成后刷新当前开发环境任务数据，使详情使用远端媒体 key。
+- `mz-cleaning-app-frontend/src/lib/cleaningConsumablesSubmitQueue.test.ts` — 回归断言补品成功同步不提前删除本地照片。
+- `mz-cleaning-app-frontend/src/lib/keyUploadQueue.test.ts` — 回归断言钥匙队列成功不提前删除本地照片。
+- `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` — 回归断言钥匙上传完成后触发任务刷新。
+- `mz-cleaning-app-frontend/src/lib/inspectionMediaQueue.ts` — 检查媒体在上传成功、业务保存完成前保留本地文件；锁盒视频业务保存成功后才删除。
+- `mz-cleaning-app-frontend/src/lib/inspectionMediaQueue.test.ts` — 回归断言媒体上传成功但业务保存未完成时仍保留本地文件。
+- `mz-cleaning-app-frontend/src/lib/inspectionPanelSubmitQueue.test.ts` — 回归断言检查照片同步后不立即删除本地原图。
+- `mz-cleaning-app-frontend/src/components/CleaningMediaPreview.tsx` — 为缩略图和原图节点增加不同 key 前缀，避免本地 URI 相同时重复 key。
+- `mz-cleaning-app-frontend/src/components/CleaningMediaPreview.tsx` — 缩略图和原图统一使用认证远端媒体的本地私有缓存文件。
+- `mz-cleaning-app-frontend/src/components/CleaningMediaPreview.tsx` — 缓存未完成时保留预览节点，避免远端原生 `onError` 抢先卸载可用的缓存回退。
+- `mz-cleaning-app-frontend/src/components/CleaningMediaPreview.test.tsx` — mock 私有媒体缓存，覆盖预览失败/重试/重复 key 以及缓存完成前不提前显示失败。
+- `mz-cleaning-app-frontend/src/components/CleaningMediaImage.tsx` — 为任务卡片和表单缩略图增加远端媒体私有文件缓存回退。
+- `mz-cleaning-app-frontend/src/components/GuestLuggageCard.tsx` — 行李清洁照片缩略图复用统一清洁媒体组件。
+- `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.tsx` — 钥匙和离线清洁照片缩略图复用统一清洁媒体组件。
+- `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.tsx` — 补品、完成照片复用统一清洁媒体组件。
+- `mz-cleaning-app-frontend/src/screens/tasks/SuppliesFormScreen.tsx` — 补品照片缩略图复用统一清洁媒体组件。
+- `mz-cleaning-app-frontend/src/screens/tasks/ManagerDailyTaskScreen.tsx` — 管理端清洁照片缩略图复用统一清洁媒体组件。
+- `mz-cleaning-app-frontend/src/screens/tasks/DayEndBackupKeysScreen.tsx` — 交接钥匙照片缩略图复用统一清洁媒体组件。
+- `mz-cleaning-app-frontend/src/screens/tasks/FeedbackFormScreen.tsx` — 清洁反馈照片缩略图复用统一清洁媒体组件。
+- `mz-cleaning-app-frontend/src/lib/cleaningMediaCache.ts` — 将带认证的清洁媒体下载到应用私有缓存目录，并复用已有缓存文件。
+- `mz-cleaning-app-frontend/src/lib/cleaningMediaCache.test.ts` — 覆盖认证远端媒体缓存为本地私有文件 URI。
+- `backend/src/lib/workTaskActionAudit.ts` — 钥匙重传 patch/event 防止已推进状态降级，并在发现历史完成类 action 记录时恢复被旧逻辑覆盖的状态。
+- `backend/scripts/tests/test_work_task_actions.ts` — 覆盖 `restock_pending` 重传、异常 `in_progress` action 结果拦截和历史状态恢复纯函数契约。
+- `docs/feature-regression-registry.md` — 登记页面媒体引用切换和延迟清理保护规则。
+
+### Impact / Dependencies
+
+- **API:** none；继续使用现有上传响应和认证媒体代理。
+- **Database / migration:** none；不写数据库、不修改任务状态、不删除媒体对象。
+- **Config / environment:** none；复用已有 24 小时本地孤儿清理机制。
+- **Dependencies:** none。
+- **Related units:** FR-004、FR-005、CRL-20260727-004、CRL-20260727-006、CRL-20260727-007；共享移动端队列和任务详情文件需按 hunk 审核。
+
+### Validation
+
+- `npm test -- --runInBand --no-cache src/lib/cleaningConsumablesSubmitQueue.test.ts src/lib/keyUploadQueue.test.ts src/screens/tasks/TaskDetailScreen.test.tsx src/components/CleaningMediaPreview.test.tsx src/lib/cleaningMedia.test.ts` in `mz-cleaning-app-frontend` — passed: 5 suites / 52 tests。
+- `npm test -- --runInBand --no-cache` in `mz-cleaning-app-frontend` — passed: 48 suites / 224 tests。
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed。
+- `npm run lint` in `mz-cleaning-app-frontend` — passed: 0 errors / 111 warnings；warnings are existing repository warnings。
+- Follow-up focused mobile tests — passed: 4 suites / 22 tests (`CleaningMediaPreview`, `inspectionPanelSubmitQueue`, `inspectionMediaQueue`, `keyUploadQueue`); includes the duplicate local-URI preview-key fix and delayed local-media deletion assertions。
+- Follow-up `npm run typecheck` in `mz-cleaning-app-frontend` — passed。
+- Follow-up `npm run lint` in `mz-cleaning-app-frontend` — passed: 0 errors / 111 warnings。
+- Current development Metro — Android port 8082 bundle probe returned HTTP 200 (12,545,462 bytes)；该 bundle 包含本次媒体缓存竞态修复。
+- `npm test -- --runInBand --no-cache` in `mz-cleaning-app-frontend` — passed: 49 suites / 226 tests。
+- Focused preview/cache tests — passed: 3 suites / 11 tests；包含缓存完成前原图原生请求失败的回归场景，且无测试 act 警告。
+- `npm run lint` in `mz-cleaning-app-frontend` — passed: 0 errors / 111 warnings after the media-component changes。
+- `npm run test:work-task-actions --prefix backend` — passed: `test_work_task_actions: ok` after key re-upload status recovery changes。
+- `npm run build --prefix backend` — passed after key re-upload status recovery changes。
+- `npm test -- --runInBand --no-cache src/lib/workTasksStore.test.ts` in `mz-cleaning-app-frontend` — passed: 1 suite / 4 tests。
+- Development DB read-only audit for property `3803102` — confirmed task UUID `f77f0818-ccd5-41a6-a99a-48a6e310ae8c` initially had `status=in_progress`; action history includes `fill_supplies: in_progress → restock_pending` followed by key-upload audits。
+- Development DB corrective write — guarded update changed only that exact task from `in_progress` to `restock_pending` because the historical `fill_supplies → restock_pending` evidence matched；no media, consumable rows or production data were changed。
+- `git diff --check` in root and mobile repositories — passed after the media-component changes。
+- `npm run build` in `backend` — passed。
+- `npm run test:cleaning-media-image` in `backend` — passed: `test_cleaning_media_image: ok`。
+- `npm run test:work-task-actions` in `backend` — passed: `test_work_task_actions: ok`。
+- `git diff --check` in root and mobile repositories — passed。
+- Follow-up `python3 scripts/audit_change_release_ledger.py` — passed: 49 changed files / 49 recorded files；`python3 scripts/audit_feature_regression_registry.py` — passed: 6 FRs / 75 test mappings。
+- Android ADB/real-device/EAS verification — not run: ADB daemon could not start in this environment (`Operation not permitted`); no APK was installed or deployed。
+
+### Risks / Release Notes
+
+- Runtime risk: successfully synced local copies may remain up to 24 hours before existing housekeeping removes them; this is intentional to avoid deleting a URI still rendered by Android.
+- Runtime risk: development service restart, EAS/native build and real Android weak-network verification remain unexecuted; the backend source fix is not deployed to the Render development service yet.
+- Rollback: restore immediate cleanup only after the consuming screen receives and renders the remote key; otherwise rollback can reintroduce the reported disappearance.
+- Sensitive-information review: no secrets, `.env` values, tokens, passwords, database URLs, credentials, cookies, private keys, production data or sensitive logs were added or output。
+- **Git state:** root and nested mobile repositories contain concurrent uncommitted changes; this unit is not staged, committed, pushed or deployed。
+
+## CRL-20260727-007 — 钥匙重传保持任务状态并保留补品照片
+
+- **Status:** ready
+- **Updated:** 2026-07-27 Australia/Melbourne
+- **Request:** 补品填报完成后重新上传钥匙照片，任务不得从已完成退回进行中；重新上传钥匙不能使此前拍摄的补品消耗照片消失。
+- **Outcome:** 钥匙重传使用统一动作结果写入任务，已完成/检查推进状态保持不变；钥匙上传事件改为只发移动端安全增量字段，避免触发整卡刷新覆盖补品消耗照片。后续核对发现完成页把读取失败误判为空，已补上读取失败保留现有照片、稳定任务 ID恢复和重传时只替换钥匙媒体。
+
+### Implementation
+
+- **Confirmed cause:** `cleaning_app` 的钥匙上传路由在动作状态解析后仍硬编码写入 `in_progress`；上传事件还携带 `started_at`、`key_photo_uploaded_at` 等移动端安全补丁字段之外的字段，触发任务整卡刷新，可能用不完整的远端任务字段覆盖移动端已持有的补品照片数据。
+- **Planned behavior:** 钥匙重传只更新钥匙媒体和必要时间/定位字段；状态由统一动作解析结果决定，已完成或已进入检查/补货流程的状态保持不变；事件只发送移动端可增量合并的状态和钥匙照片字段。
+- **Key decisions:** 不删除、不重建 `cleaning_consumable_usages` 或补品媒体；不改数据库结构、不写生产数据；通过后端纯函数回归测试和移动端事件安全合并测试锁定该不变量。
+- **Follow-up evidence:** 开发环境只读核对房号 `3804609` 的 7 月 27 日任务：当前任务媒体记录只有 `key_photo`，没有补品/完成照片；历史照片对象仍存在并归属于历史任务。未发现钥匙接口删除补品媒体的 SQL，清洁照片缺少当前任务服务端记录与旧版不完整事件刷新共同造成“看起来消失”的现象。
+
+### Files / Areas
+
+- `backend/src/lib/workTaskActionAudit.ts` — 新增钥匙上传任务字段补丁策略，区分数据库完整补丁与移动端安全事件补丁。
+- `backend/src/modules/cleaning_app.ts` — 钥匙上传分支使用动作结果保持状态，并发送增量安全事件。
+- `backend/scripts/tests/test_work_task_actions.ts` — 增加完成态重传、进行中首次上传和移动端事件字段策略回归断言。
+- `mz-cleaning-app-frontend/src/lib/workTasksStore.ts` — 暴露事件安全字段判定供回归测试验证增量合并契约。
+- `mz-cleaning-app-frontend/src/lib/workTasksStore.test.ts` — 验证钥匙上传事件不会触发整卡刷新路径。
+- `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.tsx` — 完成照片读取失败时保留现有显示，按稳定清洁任务 ID恢复，并监听任务刷新。
+- `mz-cleaning-app-frontend/src/screens/tasks/SuppliesFormScreen.tsx` — 按稳定清洁任务 ID恢复补品草稿，并监听任务刷新。
+- `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.test.tsx`、`src/screens/tasks/SuppliesFormScreen.test.tsx` — 覆盖稳定任务查找及完成照片读取失败保护。
+- `docs/feature-regression-registry.md` — 更新 FR-004 的状态保持、补品照片保留和刷新覆盖保护点。
+
+### Impact / Dependencies
+
+- **API:** 钥匙上传响应和权限不变；任务事件的钥匙上传 patch 字段收窄为移动端安全字段。
+- **Database / migration:** none；只更新已有任务字段，不删除或迁移补品记录和媒体。
+- **Config / environment:** none。
+- **Dependencies:** none。
+- **Related units:** FR-004、CRL-20260727-005、CRL-20260727-006；共享源文件存在并发改动，选择性发布需按 hunk 审核。
+
+### Validation
+
+- `npm run test:work-task-actions --prefix backend` — passed: `test_work_task_actions: ok`。
+- `npm run build --prefix backend` — passed。
+- `npm test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/workTasksStore.test.ts` — passed: 1 suite / 4 tests。
+- `npm test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache` — passed: 48 suites / 223 tests。
+- `npm run typecheck --prefix mz-cleaning-app-frontend` — passed。
+- `npm run lint --prefix mz-cleaning-app-frontend` — passed: 0 errors，111 warnings；为仓库已有 warning 集合。
+- `npm test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache` — passed: 48 suites / 224 tests。
+- `npm run typecheck --prefix mz-cleaning-app-frontend` — passed after follow-up changes。
+- `npm run build --prefix backend` — passed after follow-up changes。
+- `npm run test:work-task-actions --prefix backend` — passed after follow-up changes。
+- `python3 scripts/audit_change_release_ledger.py` — passed: 49 changed files / 49 recorded files。
+- `python3 scripts/audit_feature_regression_registry.py` — passed: 6 FRs / 73 test mappings。
+- 根仓库和移动端 `git diff --check` — passed。
+
+### Risks / Release Notes
+
+- 真实 Android 设备/EAS 验证仍需后续在可用设备环境完成；本次不写生产数据、不上传或删除生产媒体。
+- 未记录或输出 secrets、`.env` 内容、token、密码、数据库 URL、credentials、cookie、私钥或生产数据。
+- **Git state:** 根仓库和移动端均存在并发未提交改动；本单元不 staging、commit、push 或部署。
+- **Follow-up Git state:** follow-up files remain uncommitted; no production or development database data was changed by this diagnosis.
+
+## CRL-20260727-006 — 清洁照片上传后统一保存稳定媒体 key
+
+- **Status:** ready
+- **Updated:** 2026-07-27 Australia/Melbourne
+- **Request:** 安卓移动端照片上传成功后，缩略图和原图仍不可见；继续检查并修复上传后媒体引用丢失问题。
+- **Outcome:** 清洁移动端上传成功后的业务引用已统一 key-first；新上传照片在本地清理、业务提交和任务刷新后仍保留 `cleaning/...` 稳定 key，并可通过认证媒体代理读取缩略图、预览和原图。
+
+### Implementation
+
+- **Confirmed cause:** cleaning media upload returns both `url` and stable R2 `key`, but several mobile upload queues and direct capture flows persist only `url`; after local-file cleanup and task refresh, the app cannot reliably route private or rewritten R2 URLs through the authenticated cleaning media proxy.
+- **Planned behavior:** cleaning mobile flows prefer and persist the returned `cleaning/...` key while retaining legacy URL fallback; backend read/normalization paths accept the key format so refresh, thumbnails, previews, and original image reads use the same stable object reference.
+- **Key decisions:** no production data writes, no schema migration, no broad R2 cleanup, and no change to non-cleaning upload namespaces; preserve legacy absolute URLs for compatibility when no key is returned.
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/lib/keyUploadQueue.ts`, `src/lib/cleaningConsumablesSubmitQueue.ts`, `src/lib/inspectionPanelSubmitQueue.ts`, `src/lib/dayEndHandoverQueue.ts` — retain the stable upload key across queue persistence and business payloads.
+- `mz-cleaning-app-frontend/src/lib/cleaningConsumablesSubmitQueue.ts` — retain the stable upload key for consumables and completion-photo submissions.
+- `mz-cleaning-app-frontend/src/lib/inspectionPanelSubmitQueue.ts` — retain the stable upload key for inspection and restock-proof submissions.
+- `mz-cleaning-app-frontend/src/lib/dayEndHandoverQueue.ts` — retain the stable upload key for day-end handover submissions.
+- `mz-cleaning-app-frontend/src/screens/tasks/DayEndBackupKeysScreen.tsx`, `src/screens/tasks/FeedbackFormScreen.tsx` — use the same key-first reference for direct cleaning-media uploads.
+- `backend/src/modules/cleaning_app.ts`, `backend/src/modules/mzapp.ts` — accept and return cleaning object keys in stored photo/proof reads.
+- `mz-cleaning-app-frontend/src/lib/keyUploadQueue.test.ts`, `src/lib/cleaningConsumablesSubmitQueue.test.ts`, `src/lib/inspectionPanelSubmitQueue.test.ts` — add key-first upload and refresh regressions.
+- `backend/src/lib/cleaningMediaReference.ts`, `backend/scripts/tests/test_cleaning_media_reference.ts` — centralize safe key validation and cover accepted/rejected key forms.
+- `backend/src/lib/cleaningMediaReference.ts` — centralize safe cleaning key validation for backend readers and proxy routes.
+- `backend/scripts/tests/test_cleaning_media_reference.ts` — cover accepted/rejected stable cleaning key forms.
+- `docs/feature-regression-registry.md` — register the stable cleaning media reference invariant.
+
+### Impact / Dependencies
+
+- **API:** upload response remains `{ key, url }`; existing absolute URL fallback remains supported.
+- **Database / migration:** none; existing text URL fields can hold the stable cleaning object key, and no production records are migrated in this task.
+- **Storage:** no object deletion or rewrite; reads continue through the authenticated `/cleaning-app/media/image?key=...` proxy.
+- **Permissions:** unchanged.
+- **Dependencies:** none.
+- **Related units:** FR-004, CRL-20260727-004, CRL-20260727-005; shared files contain concurrent changes and require hunk-level release review.
+
+### Validation
+
+- `npm test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/keyUploadQueue.test.ts src/lib/cleaningConsumablesSubmitQueue.test.ts src/lib/inspectionPanelSubmitQueue.test.ts src/lib/inspectionMediaQueue.test.ts src/lib/cleaningMedia.test.ts` — passed: 5 suites / 41 tests。
+- `npm test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache` — passed: 48 suites / 222 tests。
+- `npm run typecheck --prefix mz-cleaning-app-frontend` — passed。
+- `npm run lint --prefix mz-cleaning-app-frontend` — passed: 0 errors，111 warnings；为仓库已有 warning 集合。
+- `npm run test:cleaning-media-reference --prefix backend` — passed。
+- `npm run test:cleaning-media-image --prefix backend`、`npm run test:work-task-actions --prefix backend` — passed。
+- `npm run build --prefix backend` — passed。
+- `python3 scripts/audit_change_release_ledger.py` — passed: 49 changed files / 49 recorded files。
+- `python3 scripts/audit_feature_regression_registry.py` — passed: 6 FRs / 71 test mappings。
+- 根仓库和移动端 `git diff --check` — passed。
+
+### Risks / Release Notes
+
+- Real Android device/EAS validation is still required; the local environment has no usable Android ADB session.
+- Historical rows that contain only an unparseable URL are not migrated automatically; they need a read-only production evidence check and, if necessary, user-authorized re-upload.
+- **Sensitive-information review:** no secrets, `.env` contents, tokens, passwords, database URLs, credentials, cookies, private keys, or production data will be recorded or output.
+- **Git state:** root and mobile repositories contain concurrent uncommitted changes; this unit will not stage, commit, push, or deploy.
+
+## CRL-20260727-005 — 钥匙照片删除后允许不受补品状态影响重新上传
+
+- **Status:** ready
+- **Updated:** 2026-07-27 Australia/Melbourne
+- **Request:** 钥匙照片被删除后，仍然可以重新上传，不受补品是否填写完成影响。
+- **Outcome:** 服务端任务动作 payload、移动端旧任务动作和任务详情按钮均按“当前是否仍有钥匙照片”判断；照片已删除时，即使清洁状态已经进入 `cleaned`/`done` 等完成态，上传入口仍可用；照片仍存在时继续保持已记录/不可重复上传。
+
+### Implementation
+
+- **Previous behavior:** 服务端把清洁提交完成态统一作为 `upload_key_photo` 的 `task_completed` 条件；移动端任务详情还额外用 `isCleaningSubmitted` 本地禁用了钥匙上传。因此删除照片后，补品提交完成的任务无法恢复上传。
+- **New behavior:** 钥匙上传动作的完成判断改为“任务已到终态且钥匙照片仍存在”；钥匙照片为空时保留上传权限和参与人校验，不再检查补品完成状态。后端实际上传路由原本已没有补品前置校验，本次与动作展示层对齐。
+- **Key decisions:** 只放开 `upload_key_photo` 的恢复入口；不放开检查照片、补品提交、挂钥匙视频或其他完成门槛；不改变删除接口、数据库结构、媒体 key 和权限模型。
+
+### Files / Areas
+
+- `backend/src/lib/workTaskActions.ts` — 允许无钥匙照片的完成态任务重新出现上传动作，保留已有照片的已记录状态。
+- `backend/scripts/tests/test_work_task_actions.ts` — 增加清洁完成后钥匙照片已删除时动作可用回归断言。
+- `mz-cleaning-app-frontend/src/lib/workTaskActions.ts` — 旧 payload 兼容路径按钥匙照片是否存在决定上传按钮，不再按补品提交状态禁用。
+- `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.tsx` — 删除本地 `isCleaningSubmitted` 对钥匙上传的额外阻断，修正缺失照片时按钮文案。
+- `mz-cleaning-app-frontend/src/lib/workTaskActions.test.ts` — 增加移动端动作恢复回归测试。
+- `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` — 增加任务详情按钮可点击回归测试。
+- `docs/feature-regression-registry.md` — FR-004 登记钥匙照片删除后重传不受补品状态影响的不变量。
+
+### Impact / Dependencies
+
+- **API:** none；复用现有 `cleaning-app/tasks/:id/start` 上传接口。
+- **Database / migration:** none；不写生产数据库，不恢复或删除任何媒体记录。
+- **Permissions:** unchanged；仍需原有任务参与人和上传权限。
+- **Dependencies:** none。
+- **Related units:** FR-004、CRL-20260727-004；上述源文件存在其他并发改动，选择性发布需按 hunk 审核。
+
+### Validation
+
+- `npm run test:work-task-actions --prefix backend` — passed: `test_work_task_actions: ok`。
+- `npm run build --prefix backend` — passed。
+- `npm test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/workTaskActions.test.ts src/screens/tasks/TaskDetailScreen.test.tsx` — passed: 2 suites / 29 tests。
+- `npm run typecheck --prefix mz-cleaning-app-frontend` — passed。
+- `npx eslint src/lib/workTaskActions.ts src/screens/tasks/TaskDetailScreen.tsx` — passed: 0 errors，3 个既有 TaskDetailScreen warnings。
+- `python3 scripts/audit_change_release_ledger.py`、`python3 scripts/audit_feature_regression_registry.py` — passed: 47 changed files / 47 recorded files；6 FRs / 67 test mappings。
+- 根仓库和移动端 `git diff --check` — passed。
+
+### Risks / Release Notes
+
+- 任务已完成但钥匙照片为空时会重新显示上传动作，这是本次明确要求；已取消任务仍保持不可上传。
+- 未运行真实 Android 设备/EAS 验收；未写生产数据，未 staging、commit、push 或部署。
+- **Sensitive-information review:** 未添加、记录或输出 secrets、`.env` 内容、token、密码、数据库 URL、credentials、cookie、私钥或生产数据。
+- **Rollback:** 回滚上述动作判断、任务详情本地按钮判断、两组测试和 FR/ledger 对应 hunk；不要回滚同文件其他线程改动。
+- **Git state:** 根仓库和 `mz-cleaning-app-frontend` 均存在并发未提交改动。
+
+## CRL-20260727-004 — Android 照片统一转 JPEG并修复黑色缩略图/原图失败
+
+- **Status:** ready
+- **Updated:** 2026-07-27 Australia/Melbourne
+- **Request:** 安卓系统拍摄的清洁照片在缩略图和原图中显示全黑，原图提示加载失败；需要给出并执行修复。
+- **Outcome:** 移动端本地草稿、检查照片队列和上传前不再把转换失败的原始字节伪装成 JPEG；后端清洁/mzapp 上传与清洁媒体读取统一解码、旋转并输出 JPEG；解码失败返回 `IMAGE_FORMAT_UNSUPPORTED`；预览组件显示明确失败和重试入口。
+
+### Implementation
+
+- **Previous behavior:** Android HEIC 或缺失 MIME 的照片可能被当作 JPEG 持久化/上传；图像转换异常会回退到原始 URI/字节，导致对象 MIME、扩展名和实际内容不一致。媒体代理在缩略图转换失败时静默返回原始内容，客户端深色背景因此表现为“全黑”。
+- **New behavior:** 本地 MIME 从文件名/URI 补全；照片转换必须产生新的 JPEG URI，失败即阻断并提示重新拍摄；后端上传和媒体代理以 sharp 解码并统一输出 JPEG，历史图片无法解码时返回明确 415 错误；缩略图和原图失败均有可点击重试反馈。
+- **Key decisions:** 保持数据库、R2 key 结构和业务提交接口不变；修复集中在媒体字节格式、MIME/扩展名一致性和读取错误语义，不做生产数据迁移或批量重传。
+
+### Release-blocking correction — 2026-07-29
+
+- 独立发布审查发现 `/cleaning-app/media/image` 曾只校验上传/完成权限和 `cleaning/` key 格式，未确认对象是否已登记到当前用户可见的任务媒体；已停止发布并补齐 fail-closed 访问检查。
+- 代理现在先以 `cleaning_task_media.url` 反查对象和所属任务，未登记、无法解析到同一 key 或当前用户没有该媒体类型的任务级可见性时统一返回 `forbidden_media`，不会读取 R2 对象。
+- 检查媒体、挂钥匙视频、补货凭证和其余任务媒体分别复用现有检查人/管理角色、参与任务和手工 action 的可见性规则；普通清洁员不能借助已知 key 读取其他任务或受保护媒体。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/lib/imageCompression.ts` — 转换失败不再回退原图，要求实际生成新的 JPEG URI。
+- `mz-cleaning-app-frontend/src/lib/imageCompression.test.ts` — 新增转换成功、转换失败和伪成功回退回归测试。
+- `mz-cleaning-app-frontend/src/lib/api.ts` — 上传表单使用转换后的 URI、文件名和 MIME；映射后端图片格式错误。
+- `mz-cleaning-app-frontend/src/lib/localMediaDrafts.ts` — 复用既有 MIME 推断作为本地媒体格式来源。
+- `mz-cleaning-app-frontend/src/lib/cleaningConsumablesDraft.ts`、`src/lib/inspectionMediaQueue.ts` — Android 缺失 MIME 时按扩展名识别并进入 JPEG 转换。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.tsx` — 转换失败显示可理解的拍摄失败提示。
+- `mz-cleaning-app-frontend/src/components/CleaningMediaPreview.tsx`、`src/components/CleaningMediaPreview.test.tsx` — 缩略图/原图失败不再伪装为黑色加载态，增加重试反馈和回归覆盖。
+- `backend/src/lib/cleaningMediaImage.ts` — 新增上传/读取共用的图片候选识别、sharp 解码和 JPEG 规范化。
+- `backend/src/modules/cleaning_app.ts` — cleaning-app 上传及 `/media/image` 原图/preview/thumbnail 统一 JPEG 输出，失败返回 415；读取前绑定已登记的任务媒体并 fail closed。
+- `backend/src/modules/mzapp.ts` — legacy mzapp 上传统一 JPEG 输出，失败返回 415；导出按媒体类型和任务参与关系判断的读取授权。
+- `backend/scripts/tests/test_cleaning_media_image.ts` — 图片规范化、已登记任务媒体绑定和 fail-closed 代理读取契约测试。
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — 按媒体类型和任务参与关系判断读取授权的契约测试。
+- `backend/package.json` — 增加后端图片规范化测试脚本。
+- `docs/feature-regression-registry.md` — FR-004 增加 Android 图片格式与媒体读取不变量及测试映射。
+
+### Impact / Dependencies
+
+- **API:** 上传成功响应结构不变；新增图片解码失败错误码 `IMAGE_FORMAT_UNSUPPORTED`，HTTP 状态 415。
+- **Database / migration:** none；不写生产数据库，不迁移历史 R2 对象。
+- **Storage:** 新上传的照片统一为 `image/jpeg` 和 `.jpg`（使用已有 media key 时 key 结构不变）；历史不可解码对象不会被静默原样返回。
+- **Dependencies:** 复用现有 mobile `expo-image-manipulator` 和 backend `sharp`，没有安装新依赖。
+- **Related units:** FR-004、FR-005；与现有检查照片队列和媒体代理改动存在共享文件，选择性发布需按 hunk 审核。
+
+### Validation
+
+- `npm test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/imageCompression.test.ts src/components/CleaningMediaPreview.test.tsx src/lib/cleaningMedia.test.ts src/lib/inspectionMediaQueue.test.ts src/lib/cleaningConsumablesSubmitQueue.test.ts src/lib/inspectionPanelSubmitQueue.test.ts` — passed: 6 suites / 46 tests。
+- `npm test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache` — passed: 48 suites / 220 tests。
+- `npm run typecheck --prefix mz-cleaning-app-frontend` — passed。
+- `npm run lint --prefix mz-cleaning-app-frontend` — passed: 0 errors, 111 warnings；为仓库既有 lint 警告集合，未新增阻断错误。
+- `npm run test:cleaning-media-image --prefix backend` — passed。
+- `npm run test:mzapp-media-visibility --prefix backend` — passed: 覆盖未分配检查人员/挂钥匙角色不能通过对象 key 越权读取。
+- `npm run build --prefix backend` — passed。
+- `npm run test:cleaning-rules --prefix backend` — passed。
+- `npm run test:cleaning-task-transition-guard --prefix backend` — passed。
+- 根仓库和移动端 `git diff --check` — passed。
+- `python3 scripts/audit_change_release_ledger.py` — passed: 47 changed files / 47 recorded files。
+- `python3 scripts/audit_feature_regression_registry.py` — passed: 6 FRs / 66 test mappings。
+
+### Risks / Release Notes
+
+- 未运行真实 Android 设备/EAS 构建验收；因此尚未证明具体机型的系统相册 URI 一定能被 `expo-image-manipulator` 解码，仍需用一台实际受影响的 Android 设备拍摄 HEIC/系统照片验证。
+- 后端首次读取历史 HEIC/损坏对象会进行 JPEG 转换；转换失败会从“黑图”变成明确错误，不会自动修复损坏对象，需后续按对象证据决定是否补传。
+- 未登记到 `cleaning_task_media` 的历史 R2 对象会被安全拒绝；如需恢复显示，必须通过已有业务保存链路登记媒体，不能通过放宽代理绕过。
+- **Sensitive-information review:** 未添加、记录或输出 secrets、`.env` 内容、token、密码、数据库 URL、credentials、cookie、私钥或生产数据。
+- **Rollback:** 回滚本 unit 对应的媒体 helper、上传/代理 hunk、移动端转换和预览 hunk、测试、FR/ledger 记录；不要回滚同文件其他线程改动。
+- **Git state:** 根仓库和 `mz-cleaning-app-frontend` 均存在并发未提交改动；本 unit 未 staging、commit、push 或部署。
+
+## CRL-20260727-003 — 网页任务中心周转卡显示已住与待住晚数
+
+- **Status:** ready
+- **Updated:** 2026-07-27 Australia/Melbourne
+- **Request:** 网页端任务中心卡里增加显示已住晚数和待住晚数。
+- **Outcome:** 退房入住合并卡按后端已有 `stayed_nights` / `remaining_nights` 字段显示“已住 X晚”和“待住 X晚”；单独入住卡继续显示原有“住 X晚”。任务详情元信息与卡片复用同一展示规则。
+
+### Implementation
+
+- **Previous behavior:** 任务中心卡片和详情只显示笼统的“住 X晚”，无法区分退房订单已住晚数与入住订单待住晚数。
+- **New behavior:** 周转合并卡分别显示“已住 X晚”和“待住 X晚”；缺少某一侧数据时只显示可用标签；单独入住卡保持“住 X晚”。
+- **Key decisions:** 复用后端已经返回的 `turnover_display.stayed_nights` 与 `turnover_display.remaining_nights`，只调整 Web 展示层，不修改接口、数据库、任务状态、移动端或晚数计算规则。
+
+### Files / Areas
+
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — 新增任务中心晚数标签展示 helper，区分周转卡与单独入住卡。
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — 增加已住/待住晚数、缺失字段和单独入住卡回归断言。
+- `frontend/src/app/task-center/page.tsx` — 卡片事实行和任务详情元信息使用统一晚数标签；文件中其他线程已有改动未归入本 unit。
+- `docs/feature-regression-registry.md` — 更新 FR-002 的 Web 任务中心展示映射和最近验证指针。
+
+### Impact / Dependencies
+
+- **API:** none；继续读取现有 `turnover_display` 字段。
+- **Database / migration:** none。
+- **Config / environment:** none。
+- **Dependencies:** none。
+- **Related units:** FR-002、CRL-20260725-022。
+
+### Validation
+
+- `./node_modules/.bin/vitest run --coverage=false src/app/task-center/taskCenterDisplay.test.ts` in `frontend` — passed: 1 file, 4 tests。
+- `./node_modules/.bin/vitest run --coverage=false` in `frontend` — passed: 39 files, 172 tests。
+- `npm run lint -- --file src/app/task-center/page.tsx` in `frontend` — passed: no warnings or errors。
+- `npm run lint` in `frontend` — passed: existing repository warnings only。
+- `npm run build` in `frontend` — passed: Next production build completed。
+- `./node_modules/.bin/tsc --noEmit` in `frontend` after build — passed。
+- `git diff --check` on current task files — passed。
+- `python3 scripts/audit_change_release_ledger.py` — passed: 45 changed files / 45 recorded files。
+- `python3 scripts/audit_feature_regression_registry.py` — passed: 6 FRs / 63 test mappings。
+
+### Risks / Release Notes
+
+- 未运行登录态浏览器/真实任务 payload 的视觉检查；build 和单测未替代真实浏览器宽度下的卡片视觉确认。
+- 后端若历史 payload 缺少 `stayed_nights`，卡片会安全地省略“已住”标签，不影响现有待住晚数显示。
+- **Sensitive-information review:** 未添加或记录 secrets、`.env` 内容、token、密码、数据库 URL、credentials、cookie、私钥或生产数据。
+- **Rollback:** 回滚本 unit 在展示 helper、任务中心调用、测试和 FR/ledger 文档中的对应 hunk；不回滚同文件其他线程改动。
+- **Git state:** 根仓库存在并发未提交改动；本 unit 未 staging、commit、push 或部署。
+
+## CRL-20260727-002 — MZ 移动端按钮规范 skill 与统一触控尺寸
+
+- **Status:** ready
+- **Updated:** 2026-07-27 Australia/Melbourne
+- **Request:** 为 MZ 移动端建立可复用的仓库级按钮规范 skill，并按统一厚度、文字、loading、disabled、图标触控区域和并排布局规则优化现有页面。
+- **Outcome:** 新增 `mz-mobile-button-rules` 仓库级 skill；普通按钮以 `minHeight: 44` 为基准，compact/chip 与图标按钮保留语义例外但实际触控区域不小于 44；AppButton loading 保留原文案布局并禁用重复点击；新增按钮静态审计和组件回归测试。
+
+### Implementation
+
+- **Previous behavior:** 移动端存在 30、32、34、36、38、40、42、46、48 等页面级按钮和图标按钮尺寸；AppButton loading 会直接替换成较短文案，可能造成 inline 按钮宽度跳动；部分密码、联系人、照片浮动操作的实际触控区域小于 44。
+- **New behavior:** 普通 labeled action 使用共享 44pt 最小高度和统一 padding；图标操作使用 44×44 外层触控框、40pt 视觉框；主要页面按钮迁移到共享契约；`check:buttons` 以严格模式阻止新增可疑普通按钮硬编码尺寸。
+- **Key decisions:** 保留现有字体缩放能力，不通过全局 `numberOfLines` 截断文案；输入框、卡片、头像、媒体尺寸不套用 button token；不改变 `available_actions`、权限、接口、导航和提交处理。
+
+### Files / Areas
+
+- `.codex/skills/mz-mobile-button-rules/SKILL.md` — 新增 MZ 移动端按钮规范、分类、迁移和验证流程。
+- `.codex/skills/mz-mobile-button-rules/agents/openai.yaml` — 新增 skill UI 元数据。
+- `.codex/skills/mz-mobile-button-rules/scripts/audit_button_contract.py` — 新增按钮语义尺寸静态审计脚本。
+- `mz-cleaning-app-frontend/package.json` — 增加 `check:buttons` 并接入 `check:ci`。
+- `mz-cleaning-app-frontend/src/lib/theme.ts` — 增加 button token。
+- `mz-cleaning-app-frontend/src/components/ui/AppButton.tsx` — 增加 standard/compact 尺寸、稳定 loading、disabled/accessibility 状态和 tone 别名。
+- `mz-cleaning-app-frontend/src/components/ui/AppIconButton.tsx` — 新增统一 44×44 icon touch frame / 40pt visual frame。
+- `mz-cleaning-app-frontend/src/components/ui/AppButton.test.tsx` — 覆盖 standard、compact、loading 契约。
+- `mz-cleaning-app-frontend/src/components/ui/AppIconButton.test.tsx` — 覆盖图标触控和视觉尺寸契约。
+- `mz-cleaning-app-frontend/src/components/GuestLuggageCard.tsx` — 统一通知确认按钮高度。
+- `mz-cleaning-app-frontend/src/screens/LoginScreen.tsx`、`src/screens/ForgotPasswordScreen.tsx` — 登录和找回密码迁移共享按钮。
+- `mz-cleaning-app-frontend/src/screens/contacts/ContactDetailScreen.tsx`、`src/screens/tabs/ContactsScreen.tsx` — 联系人拨打按钮和图标触控区域统一。
+- `mz-cleaning-app-frontend/src/screens/me/AccountScreen.tsx`、`src/screens/me/ChangePasswordScreen.tsx`、`src/screens/me/ExpenseCenterScreen.tsx`、`src/screens/me/ProfileEditScreen.tsx`、`src/screens/tabs/MeScreen.tsx` — 账户、密码、支出、资料和个人中心按钮统一。
+- `mz-cleaning-app-frontend/src/screens/notices/InfoCenterDetailScreen.tsx`、`src/screens/notices/NoticeDetailScreen.tsx`、`src/screens/tabs/NoticesScreen.tsx` — 通知详情、打开/关闭/搜索操作统一。
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.tsx`、`src/screens/tasks/TaskDetailScreen.tsx`、`src/screens/tasks/TaskDetailScreen.test.tsx` — 任务中心、任务详情、照片删除和任务操作统一。
+- `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.tsx`、`src/screens/tasks/DayEndBackupKeysScreen.tsx`、`src/screens/tasks/FeedbackFormScreen.tsx`、`src/screens/tasks/InspectionCompleteScreen.tsx`、`src/screens/tasks/InspectionPanelScreen.tsx`、`src/screens/tasks/ManagerDailyTaskScreen.tsx`、`src/screens/tasks/SuppliesFormScreen.tsx` — 清洁、检查、补品、反馈、日终和管理任务操作按钮统一。
+
+### Impact / Dependencies
+
+- **API:** none；仅调整移动端按钮表现和共享 UI 契约。
+- **Database / migration:** none。
+- **Config / environment:** none；新增本地 `check:buttons` npm script。
+- **Dependencies:** none。
+- **Related units:** none；页面文件中已有其他线程改动仍需按原 release unit 识别，不在本条中代领。
+
+### Validation
+
+- `python3 /Users/zhishi/.codex/skills/.system/skill-creator/scripts/quick_validate.py .codex/skills/mz-mobile-button-rules` — passed: skill metadata and structure valid。
+- `npm run check:ci` in `mz-cleaning-app-frontend` — passed: typecheck passed；lint 0 errors / 111 warnings；button audit passed；47 suites / 216 tests passed。
+- `npm test -- --runInBand --no-cache src/components/ui/AppButton.test.tsx src/components/ui/AppIconButton.test.tsx src/screens/tasks/SuppliesFormScreen.test.tsx` — passed: 3 suites / 11 tests。
+- `git diff --check` in mobile repo — passed。
+- `python3 scripts/audit_change_release_ledger.py` — passed: 43 changed files / 43 recorded files。
+- iOS/Android real-device, EAS/native build and visual font-scale matrix — not run。
+
+### Risks / Release Notes
+
+- 页面中存在其他线程的并发修改；本次没有 reset、clean、staging、commit、push 或部署，发布前必须做逐 hunk review。
+- 静态审计是语义启发式检查，报告仍需人工确认；它不会替代 iOS/Android 真机检查。
+- 尚未验证 360/375/430 宽度、中文/长英文文案、系统字号放大和真实 loading 视觉效果。
+- **Sensitive-information review:** 未添加或记录 secrets、`.env` 内容、token、密码、数据库 URL、credentials、cookie、私钥或生产数据。
+- **Rollback:** 仅回滚本 release unit 的 skill、token、UI primitive、页面按钮样式和 `check:buttons` hunk；保留其他线程已有业务改动。
+- **Git state:** 根仓库和移动端仓库均存在未提交并发改动；本 release unit 未暂存。
+
+## CRL-20260727-001 — 管理角色统一客服任务详情入口
+
+- **Status:** ready
+- **Updated:** 2026-07-27 Australia/Melbourne
+- **Request:** admin 的清洁/检查任务详情必须与客服显示一致，能够修改任务时间和密码、维护当天临时通知，并查看清洁及检查照片等管理信息。
+- **Outcome:** 管理角色从任务卡、通知搜索、通知详情和推送任务入口进入清洁类任务时统一打开 `ManagerDailyTask`，复用客服已有的管理编辑、临时通知和照片查看页面；不改变服务端 `available_actions` 的执行授权。
+
+### Implementation
+
+- **Previous behavior:** 客服清洁类任务优先进入 `ManagerDailyTask`，admin 在存在 `available_actions` 时进入 `TaskDetail`，导致页面显示管理信息和照片能力不一致。
+- **New behavior:** `admin`、`offline_manager`、`customer_service` 对清洁/检查/挂钥匙执行任务统一进入 `ManagerDailyTask`；非清洁任务和明确的执行 action 仍按现有 action 路由处理。
+- **Key decisions:** 只统一管理详情入口，不在客户端重算或扩大服务端执行权限；`ManagerDailyTaskScreen` 继续作为时间、密码、当天临时通知、清洁照片、检查照片、补品/补货照片和钥匙媒体的唯一管理展示入口。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.tsx` — admin/线下经理任务卡进入清洁类任务时复用客服管理详情。
+- `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.test.tsx` — 更新 admin 有 `available_actions` 时仍进入管理详情的回归测试。
+- `mz-cleaning-app-frontend/src/screens/tabs/NoticesScreen.tsx` — 通知搜索结果对管理角色统一进入管理详情。
+- `mz-cleaning-app-frontend/src/screens/notices/NoticeDetailScreen.tsx` — 通知详情打开清洁任务时对管理角色统一进入管理详情。
+- `mz-cleaning-app-frontend/src/navigation/RootNavigator.tsx` — 推送/通知深链接解析对管理角色统一进入管理详情。
+- `docs/feature-regression-registry.md` — 登记管理详情入口与照片展示的回归保护映射。
+
+### Impact / Dependencies
+
+- **API:** none；继续使用现有 `/mzapp/work-tasks`、管理字段保存和照片读取接口。
+- **Database / migration:** none。
+- **Config / environment:** none。
+- **Dependencies:** none。
+- **Related units:** FR-001、FR-004、FR-006、CRL-20260726-010。
+
+### Validation
+
+- `npm test -- --runInBand --no-cache src/screens/tabs/TasksScreen.test.tsx` in mobile repo — passed: 1 suite, 23 tests。
+- `npm test -- --runInBand --no-cache src/lib/workTaskActions.test.ts src/screens/tasks/TaskDetailScreen.test.tsx src/screens/tasks/ManagerDailyTaskScreen.test.ts` in mobile repo — passed: 3 suites, 30 tests。
+- `npm test -- --runInBand --no-cache src/screens/notices/NoticeDetailScreen.test.tsx src/screens/tabs/NoticesScreen.test.tsx` in mobile repo — NoticeDetail isolated run exposed an existing persisted-notice test hanging at `ActivityIndicator`; the updated admin manager-route assertion passed. The final full Jest run below passed。
+- `npm run typecheck` in mobile repo — passed。
+- `npm run lint` in mobile repo — passed with 0 errors and 111 warnings。
+- `npm test -- --runInBand --no-cache` in mobile repo — passed: 45 suites, 212 tests。
+- `npm run test:work-task-actions --prefix backend` — passed: `test_work_task_actions: ok`。
+- `python3 scripts/audit_change_release_ledger.py` — passed: 40 changed files / 40 recorded files。
+- `python3 scripts/audit_feature_regression_registry.py` — passed。
+- `git diff --check` in root and mobile repositories — passed。
+- Real device/EAS rendering、live API payload and production data verification — not run。
+
+### Risks / Release Notes
+
+- 管理角色仍可通过服务端明确授权的执行 action 进入执行页面；本次没有扩大 admin 权限，也没有隐藏服务端明确授权。
+- 通知详情对清洁任务统一打开管理详情，具体执行动作仍由任务卡/action 入口和服务端权限控制。
+- 未修改生产数据；未 staging、commit、push 或部署。
+- **Sensitive-information review:** 未添加或记录 secrets、`.env` 内容、token、密码、数据库 URL、credentials、cookie、私钥或生产数据。
+
+## CRL-20260726-010 — 管理角色任务详情动作与钥匙媒体版式统一
+
+- **Status:** ready
+- **Updated:** 2026-07-26 Australia/Melbourne
+- **Request:** 客服、admin、线下经理的钥匙照片应与挂钥匙视频保持同样的大媒体框；admin 任务详情不应在非参与任务上显示一整组灰色执行/检查按钮，而应与客服使用同样的管理动作布局。
+- **Outcome:** 每日清洁页的钥匙照片使用与视频一致的全宽 220 高媒体框；后端对非参与的 admin/线下经理隐藏 `not_participant` 执行动作，只保留客服式管理动作；有明确参与授权时仍显示对应动作；移动端旧 payload 兼容分支保持客服、admin、线下经理一致。
+
+### Implementation
+
+- **Previous behavior:** `ManagerDailyTaskScreen` 把钥匙照片限制为 96×96，而挂钥匙视频使用全宽媒体框；后端对非参与的 admin/线下经理仍返回灰色的上传钥匙、补品、检查和完成动作，客服则只看到管理动作。
+- **New behavior:** 钥匙照片和视频都使用全宽、220 高、黑底 contain 媒体框；非参与管理角色不再收到无效的灰色执行动作，仍可进行标记退房和问题反馈；手动参与授权不被隐藏。
+- **Key decisions:** `available_actions` 仍是 admin/线下经理有服务端 payload 时的权威来源；只在 action resolver 中移除非参与管理角色的无效执行动作，不在客户端绕过服务端禁用状态；客服对历史 payload 的管理入口兼容逻辑保留。
+
+### Files / Areas
+
+- `backend/src/lib/workTaskActions.ts` — 管理角色 action resolver 隐藏未授权的执行动作并保留显式参与授权。
+- `backend/scripts/tests/test_work_task_actions.ts` — 增加 admin、线下经理与客服动作矩阵及显式授权回归。
+- `mz-cleaning-app-frontend/src/lib/workTaskActions.ts` — 对旧 payload 的 admin/线下经理管理动作 fallback 与客服一致；服务端 action 优先。
+- `mz-cleaning-app-frontend/src/lib/workTaskActions.test.ts` — 增加三类管理角色旧入口一致性回归。
+- `mz-cleaning-app-frontend/src/screens/tasks/ManagerDailyTaskScreen.tsx` — 钥匙照片改用与视频相同的全宽 220 高媒体框。
+- `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` — 修正 password-only 客服 fixture，使其反映服务端不返回退房 action 的权威 payload。
+- `docs/feature-regression-registry.md` — 补充管理角色详情 action 矩阵保护映射。
+
+### Impact / Dependencies
+
+- **API:** 无接口形状变化；`available_actions` 的角色投影行为收敛。
+- **Database / migration:** none。
+- **Config / environment:** none。
+- **Dependencies:** none。
+- **Related units:** FR-001、FR-006、CRL-20260726-007、CRL-20260726-009。
+
+### Validation
+
+- `npm run test:work-task-actions --prefix backend` — passed: `test_work_task_actions: ok`。
+- `npm run build --prefix backend` — passed。
+- `npm test -- --runInBand --no-cache src/screens/tabs/TasksScreen.test.tsx src/lib/workTaskActions.test.ts src/screens/tasks/TaskDetailScreen.test.tsx` — passed: 3 suites, 50 tests。
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed。
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with 0 errors and 111 warnings。
+- `npm test -- --runInBand --no-cache` in `mz-cleaning-app-frontend` — passed: 45 suites, 212 tests。
+- `git diff --check` in root and mobile repositories — passed。
+- Real device/EAS rendering、production API payload and non-production database write verification — not run。
+
+### Risks / Release Notes
+
+- 后端 action resolver 变更需要随 backend 一起发布；仅更新 mobile 而不发布 backend 时，已有服务端灰色 action payload 仍可能被详情页显示，这是 `available_actions` 权威策略的预期表现。
+- 明确授予 admin/线下经理参与动作的任务仍可进入相应检查/执行流程；本次不扩大其权限。
+- 未修改生产数据；未 staging、commit、push 或部署。
+- **Sensitive-information review:** 未添加或记录 secrets、`.env` 内容、token、密码、数据库 URL、credentials、cookie、私钥或生产数据。
+
+## CRL-20260726-009 — 挂钥匙视频业务保存状态不再误判为离线
+
+- **Status:** ready
+- **Updated:** 2026-07-26 Australia/Melbourne
+- **Request:** 修复手机已有网络、视频文件已经上传但任务记录保存失败时，完成页仍显示“联网恢复后自动保存”的错误描述。
+- **Outcome:** 完成页区分“媒体上传成功”和“业务记录保存成功”；优先显示真实保存错误，进入页面时主动尝试一次媒体队列处理并刷新状态。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionCompleteScreen.tsx` — 主动处理待保存的视频队列；错误优先显示；移除把业务保存中间态误称为离线的文案。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionCompleteScreen.test.tsx` — 增加视频已上传但业务保存失败的真实错误回归，并更新旧文案断言。
+- `docs/feature-regression-registry.md` — FR-004 增加完成页媒体保存中间态保护映射。
+
+### Implementation
+
+- `uploaded_url` 只代表视频文件上传成功，不代表 `business_saved` 已确认；两者分开呈现。
+- `last_error` 在已上传媒体状态下优先展示，用户能看到业务保存失败原因并可点击完成重试。
+- 完成页首次进入会调用现有 `processInspectionMediaQueue`，队列处理完成后重新读取媒体状态；没有新增第二套上传/保存队列。
+
+### Impact / Dependencies
+
+- **API:** none；继续复用现有视频上传和业务保存接口。
+- **Database / migration:** none。
+- **Config / environment:** none。
+- **Dependencies:** none。
+- **Related units:** FR-004、FR-005、CRL-20260723-006。
+
+### Validation
+
+- `npm test -- --runInBand src/screens/tasks/InspectionCompleteScreen.test.tsx src/lib/inspectionMediaQueue.test.ts` in mobile repo — passed: 2 suites, 11 tests。
+- `npm run typecheck` in mobile repo — passed。
+- `npm run lint` in mobile repo — passed with 0 errors and 111 existing warnings。
+- `npm test -- --runInBand` in mobile repo — passed: 45 suites, 211 tests。
+- Real device/network transition, live API and non-production database verification — not run。
+
+### Risks / Release Notes
+
+- 手机系统显示有蜂窝/Wi-Fi 网络，不等于业务保存接口成功；页面现在明确区分网络可用、媒体上传成功和业务记录保存成功。
+- 未修改生产数据；未 staging、commit、push 或部署。
+
+## CRL-20260726-007 — 检查提交必须等待清洁补品与房源照片
+
+- **Status:** ready
+- **Updated:** 2026-07-26 Australia/Melbourne
+- **Request:** 修复检查先提交后把共享清洁任务推进到检查态、导致清洁无法继续记录的问题；检查必须等待清洁补品记录和房源照片提交成功。
+- **Outcome:** `/mzapp/work-tasks` 返回清洁提交前置状态；普通检查 action 在前置未满足时禁用；检查照片、补货凭证和挂钥匙视频后端入口统一拒绝绕过；检查照片主入口在任务行锁内先校验再写入，清洁仍可恢复提交。
+
+### Files / Areas
+
+- `backend/src/lib/workTaskActionAudit.ts` — 新增清洁提交状态读取、稳定错误码和前置断言；检查动作在共享状态转换层再次 fail-closed。
+- `backend/src/lib/workTaskActions.ts` — 增加 `cleaning_submission_ready` 任务能力字段和 `cleaning_submission_required` 禁用原因；清洁未提交时仍保留清洁补品 action。
+- `backend/src/modules/cleaning_app.ts` — 检查照片、补货凭证、挂钥匙视频入口增加清洁前置校验；检查照片写入改为任务行锁事务，校验失败不写检查媒体。
+- `backend/src/modules/mzapp.ts` — legacy 检查照片、补货凭证、挂钥匙入口同步加闸；work-task 聚合返回清洁提交状态。
+- `backend/dist/lib/workTaskActionAudit.js`, `backend/dist/lib/workTaskActions.js`, `backend/dist/modules/cleaning_app.js`, `backend/dist/modules/mzapp.js` — 由 backend build 生成的编译产物。
+- `backend/scripts/tests/test_cleaning_task_transition_guard.ts` — 增加清洁未提交时的后端前置断言回归。
+- `backend/scripts/tests/test_work_task_actions.ts` — 增加检查禁用和清洁恢复可编辑回归。
+- `mz-cleaning-app-frontend/src/lib/api.ts` — 识别稳定错误码并显示清洁前置未满足的真实原因；增加任务状态类型字段；补齐完成照片幂等参数类型。
+- `mz-cleaning-app-frontend/src/lib/workTaskActions.ts` — 检查入口显示前置原因；共享状态为 `inspected` 但清洁未提交时保留补品编辑入口。
+- `mz-cleaning-app-frontend/src/lib/workTaskActions.test.ts` — 增加清洁恢复入口和错误文案回归。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.tsx` — 提交前读取服务端前置状态，未满足时只提示并保留本地内容。
+- `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.tsx` — 补齐已有完成照片上传 API 的类型导入，保持现有完成页行为可编译。
+- `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.test.tsx` — 修正多个补品同时处于“待确认”时的脆弱单元素断言。
+
+### Implementation
+
+- 清洁提交完成的权威条件是同一 `cleaning_tasks` 下存在补品使用记录，并存在非空 `consumable_living_room_photo`；普通检查/挂钥匙流程不得仅凭共享 `status` 放行。
+- 检查照片接口先锁定任务行，再检查清洁前置；清洁提交先拿锁时可以正常完成，检查随后刷新后才可提交。
+- 对旧 payload 缺少 `cleaning_submission_ready` 的客户端保留兼容；服务端新 payload 明确返回 `false` 时才显示新禁用原因，避免旧缓存误锁。
+- 移动端照片连续添加使用 ref 维护最新草稿状态，新增、删除、加载和失败批次重建共用同一状态提交路径，避免快速连续拍照覆盖前一张。
+
+### Impact / Dependencies
+
+- **API:** 检查相关 409 返回稳定 `CLEANING_SUBMISSION_REQUIRED`，并列出缺少的 `cleaning_consumables` / `cleaning_property_photo`。
+- **Database / migration:** none；复用已有 `cleaning_consumable_usages`、`cleaning_task_media` 和 `cleaning_tasks`，未新增表或字段。
+- **Config / environment:** none。
+- **Dependencies:** none。
+- **Related units:** CRL-20260726-002、CRL-20260726-003、CRL-20260726-004、CRL-20260726-006、FR-004。
+
+### Validation
+
+- `npm run build --prefix backend` — passed。
+- `npm run test:work-task-actions --prefix backend` — passed。
+- `npm run test:cleaning-task-transition-guard --prefix backend` — passed。
+- `npm run typecheck --prefix mz-cleaning-app-frontend` — passed。
+- `npm test --prefix mz-cleaning-app-frontend -- --runInBand` — passed: 45 suites, 208 tests。
+- `git diff --check` and mobile `git diff --check` — passed after the final source fix。
+- `npm run check:full` — passed：ledger/FR audit、backend build/tests、frontend lint/test/build、mobile typecheck/lint/test；mobile 45 suites / 209 tests passed，lint 0 errors with 111 warnings。
+- Real non-production database concurrency/route test, live API verification, native/EAS and real-device verification — not run。
+
+### Risks / Release Notes
+
+- Existing already-invalid tasks whose status was advanced by an earlier premature inspection may need a task refresh; the new cleaner action remains recoverable because the server now exposes `cleaning_submission_ready=false` and the mobile supplies route is not forced read-only.
+- The prerequisite query treats a persisted consumables row plus a non-empty living-room property photo as the cleaning submission marker; real production data should be sampled read-only before release to confirm legacy records use these markers consistently.
+- No production data was written; no staging, commit, push or deployment was performed. Existing root/mobile dirty changes from other work were preserved.
+
+## CRL-20260726-006 — 第五阶段跨层回归与发布前写入闸门
+
+- **Status:** ready
+- **Updated:** 2026-07-26 Australia/Melbourne
+- **Request:** 执行第五阶段：把补品队列/草稿/后端事务的不变量接入跨层发布前检查，并为真实数据库 E2E 增加非生产写入闸门。
+- **Outcome:** 增加跨层源码契约检查；补品队列测试覆盖 5xx 退避和稳定 ID 的持久化读取；Phase 5 E2E 默认跳过数据库写入，只有显式非生产标签和开关同时满足时才运行。
+
+### Files / Areas
+
+- `backend/scripts/tests/test_phase5_release_contract.ts` — 新增 Phase 5 跨层源码契约测试。
+- `backend/scripts/tests/phase5_e2e_acceptance.ts` — 增加非生产数据库写入闸门。
+- `mz-cleaning-app-frontend/src/lib/cleaningConsumablesSubmitQueue.test.ts` — 增加 5xx 退避和稳定 ID 持久化测试。
+- `backend/package.json` — 增加 Phase 5 contract/E2E 命令。
+- `package.json` — 将新 contract 接入 fast/full backend quality gate。
+- `docs/phase5-release-readiness.md` — 新增第五阶段发布前检查文档。
+- `docs/feature-regression-registry.md` — 更新 FR-005 映射。
+
+### Implementation
+
+- `backend/scripts/tests/test_phase5_release_contract.ts` — 检查页面只入队、队列单 worker/稳定 ID/5xx 退避、后端事务锁和提交后副作用，以及 E2E 写入保护。
+- `backend/scripts/tests/phase5_e2e_acceptance.ts` — 增加 `PHASE5_ALLOW_DB_WRITES`、`PHASE5_DATABASE_LABEL` 和 production 环境拒绝逻辑。
+- `mz-cleaning-app-frontend/src/lib/cleaningConsumablesSubmitQueue.test.ts` — 增加 5xx 退避和稳定队列/草稿 ID 持久化测试。
+- `backend/package.json`、`package.json` — 增加 Phase 5 contract/E2E 命令，并将静态 contract 纳入 fast/full backend quality gate。
+- `docs/phase5-release-readiness.md` — 记录不变量、自动检查、非生产 E2E 和验收矩阵。
+- `docs/feature-regression-registry.md` — 将 Phase 5 contract、5xx 退避和持久化读取登记到 FR-005。
+
+### Impact / Dependencies
+
+- **API:** none；只增加测试/验收闸门，不改变业务接口。
+- **Database / migration:** none；E2E 写库默认跳过，显式运行仍要求确认非生产数据库。
+- **Config / environment:** 新增测试运行时的显式 `PHASE5_ALLOW_DB_WRITES=1` 和非生产 `PHASE5_DATABASE_LABEL`。
+- **Dependencies:** none。
+- **Related units:** CRL-20260726-002、CRL-20260726-003、CRL-20260726-004、CRL-20260726-005、FR-005。
+
+### Validation
+
+- `npm run build --prefix backend` — passed。
+- `npm run test:phase5-release-contract --prefix backend` — passed。
+- `npm run test:idempotency-submit-id-contract --prefix backend` — passed。
+- `npm test -- --runInBand --no-cache src/lib/cleaningConsumablesSubmitQueue.test.ts` in mobile repo — passed: 1 suite, 14 tests。
+- `npm run test:phase5-e2e --prefix backend` — skipped as designed: no explicit non-production write flag was supplied。
+- `npm run check:full` — passed: ledger/FR audit、backend build and targeted tests、frontend lint/test/build、mobile typecheck/lint/test；mobile 44 suites/207 tests passed，lint 0 errors with 111 existing warnings。
+
+### Risks / Release Notes
+
+- 真实非生产数据库 E2E、真实 R2 覆盖、真机/EAS/TestFlight 尚未执行。
+- E2E 仍会创建/清理样例数据；运行前必须确认数据库标签和账号权限。
+- 本阶段未 staging、commit、push 或部署；敏感信息检查未发现新增真实凭据。
+- **Rollback:** 回退 Phase 5 contract、测试、E2E guard、package scripts 和发布文档；不影响前四阶段运行时代码。
+
+## CRL-20260726-005 — R2 媒体引用盘点与孤儿回收闸门
+
+- **Status:** ready
+- **Updated:** 2026-07-26 Australia/Melbourne
+- **Request:** 执行第四阶段：为 R2 媒体增加前缀感知的引用盘点、dry-run 孤儿识别和显式回收保护。
+- **Outcome:** 新增 R2 对象分页清单和批量删除基础能力、数据库引用抽取与候选摘要；默认只 dry-run，当前没有默认可删除临时前缀，任何删除都需要精确前缀授权和确认词。
+
+### Files / Areas
+
+- `backend/src/r2.ts` — 增加 R2 对象分页清单和批量删除 wrapper。
+- `backend/src/lib/r2MediaGovernance.ts` — 新增前缀、引用抽取和孤儿候选规则。
+- `backend/scripts/r2_orphan_audit.ts` — 新增 dry-run 引用盘点命令和删除闸门。
+- `backend/scripts/tests/test_r2_media_governance.ts` — 新增治理规则测试。
+- `backend/package.json` — 增加 R2 盘点和 contract 命令。
+- `package.json` — 将 R2 contract 接入 fast/full backend quality gate。
+- `docs/r2-media-governance.md` — 新增 R2 治理文档。
+- `docs/feature-regression-registry.md` — 更新 FR-005 映射。
+
+### Implementation
+
+- `backend/src/r2.ts` — 增加 `r2ListObjects` 和批量 `r2DeleteObjects`，分页上限 100000、删除按 1000 个对象分批。
+- `backend/src/lib/r2MediaGovernance.ts` — 定义已知业务前缀、引用字段识别、URL/key 抽取、孤儿年龄判断和候选摘要。
+- `backend/scripts/r2_orphan_audit.ts` — 新增只读 dry-run 盘点命令；扫描数据库引用并输出计数/字节数/少量候选 key；删除需要 exact allowlist 与确认词。
+- `backend/scripts/tests/test_r2_media_governance.ts` — 覆盖 URL/key 规范化、引用抽取、前缀授权和年龄候选规则。
+- `backend/package.json`、`package.json` — 增加 R2 盘点和治理 contract 命令，并接入 quality gate。
+- `docs/r2-media-governance.md` — 记录前缀策略、盘点命令、回收条件和默认保护。
+- `docs/feature-regression-registry.md` — 登记 R2 引用与孤儿治理保护点。
+
+### Impact / Dependencies
+
+- **API:** none；不改变现有上传/读取路由。
+- **Database / migration:** none；盘点只读，不新增表或字段。
+- **Config / environment:** 可选 `R2_AUDIT_*` 盘点参数；删除还必须配置 `R2_ORPHAN_DELETE_ALLOWED_PREFIXES`。
+- **Dependencies:** 复用已有 `@aws-sdk/client-s3`，未新增依赖。
+- **Related units:** CRL-20260726-004、CRL-20260726-006、FR-005。
+
+### Validation
+
+- `npm run build --prefix backend` — passed。
+- `npm run test:r2-media-governance --prefix backend` — passed。
+- `npm run test:phase5-release-contract --prefix backend` — passed。
+- `npm run r2:orphan-audit --prefix backend` — not run against live R2/DB to avoid未经确认的生产或高负载读取；仅 dry-run 工具和纯契约测试已验证。
+- `npm run check:full` — passed: ledger/FR audit、backend build and targeted tests、frontend lint/test/build、mobile typecheck/lint/test；mobile 44 suites/207 tests passed，lint 0 errors with 111 existing warnings。
+
+### Risks / Release Notes
+
+- 通用引用扫描是有限行数、候选列扫描；应按前缀运行并复核报告，不能把“未发现引用”当成业务确认。
+- 默认无可删除前缀；本阶段不删除 R2 对象、不删除数据库记录。
+- 删除接口可被误用的风险由 exact prefix allowlist、确认词和文档流程共同限制。
+- **Rollback:** 回退盘点脚本、治理模块和 R2 list/delete wrapper；现有上传/读取路径不依赖盘点命令。
+- **Sensitive review:** 报告不输出数据库原始值、凭据或环境变量，只输出来源计数、对象 key 样本和错误码。
+- **Git state:** uncommitted；保留其他线程已有改动，未 staging、commit、push。
+
+## CRL-20260726-004 — 补品后端事务、启动预热与稳定媒体对象
+
+- **Status:** ready
+- **Updated:** 2026-07-26 Australia/Melbourne
+- **Request:** 执行第三阶段：为补品提交补齐事务边界、事务成功后的副作用、启动期结构检查和稳定 `media_id` 上传 key。
+- **Outcome:** 补品提交按任务行加锁，在单一事务内完成回执检查、旧记录替换、媒体写入、任务状态/审计和回执保存；事务提交后才返回并触发任务事件、SSE 和通知。补品相关结构初始化进入启动 warmup，带 `media_id` 的照片使用稳定 R2 key，重试覆盖同一对象而不是随机新对象。
+
+### Implementation
+
+- `backend/src/modules/cleaning_app.ts` — 补品提交改用 `pgRunInTransaction`；锁定任务行；回执、补品记录、客厅媒体、任务更新和审计共用事务；移除补品 GET/POST 请求期 `CREATE TABLE/ALTER TABLE`；新增启动 warmup；上传按 `task_id + media_id` 生成稳定 R2 key。
+- `backend/src/index.ts` — 将 cleaning-app schema warmup 纳入启动 warmup 阶段。
+- `backend/src/lib/idempotentStepReceipts.ts` — 复用启动初始化结果，避免每次请求重复执行回执表结构检查；支持 Pool/transaction client 查询器。
+- `backend/src/lib/workTaskActionAudit.ts` — 缓存启动初始化结果，避免事务内重复执行审计表结构检查。
+- `mz-cleaning-app-frontend/src/lib/cleaningConsumablesSubmitQueue.ts` — 上传元数据补充稳定 `task_id` 和 `media_id`。
+- `backend/dist/index.js` — 由 backend build 生成并同步启动 warmup 入口的编译产物。
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — 增加事务、任务锁、请求期无结构检查、启动 warmup 和稳定媒体 key 契约检查。
+- `docs/feature-regression-registry.md` — 补充 FR-005 的第三阶段事务和稳定媒体 key 映射。
+
+### Impact / Dependencies
+
+- **API:** 补品照片上传继续兼容旧请求；带 `media_id` 的上传返回稳定 R2 key，补品提交 payload 语义不变。
+- **Database / migration:** none；未新增表、字段或迁移，启动 warmup 复用现有结构检查。
+- **Config / environment:** none。
+- **Dependencies:** none。
+- **Related units:** CRL-20260726-003；FR-005。
+
+### Validation
+
+- `npm run build --prefix backend` — passed。
+- `npm run test:idempotency-submit-id-contract --prefix backend` — passed。
+- `npm test -- --runInBand src/lib/cleaningConsumablesSubmitQueue.test.ts src/lib/api.test.ts` in `mz-cleaning-app-frontend` — passed: 2 suites, 17 tests。
+- `git diff --check` in root and mobile — passed。
+- `npm run check:fast` in root — passed: ledger audit, feature registry audit, backend build, frontend tests (39 suites, 171 tests), mobile typecheck。
+- `npm run check:mobile` in root — passed: mobile typecheck, lint (0 errors, 111 existing warnings), Jest (44 suites, 205 tests)。
+- `git diff --check` in root and mobile — passed。
+- Real non-production database transaction rollback/concurrency test — not run。
+- Live R2 same-key retry/overwrite verification — not run。
+- Native/EAS build and real-device verification — not run。
+
+### Risks / Release Notes
+
+- Runtime risk: 启动 warmup 失败时，补品接口不会再以请求期 DDL 兜底；部署必须确认 warmup 成功。
+- Runtime risk: 事务锁和回滚逻辑尚未在非生产数据库执行真实双请求、异常回滚和通知去重验证；R2 稳定 key 尚未进行线上对象覆盖验证。
+- **Rollback:** 回退补品事务/启动 warmup/稳定媒体 key 改动；保留 CRL-20260726-003 的 submit_id 客户端和后端幂等行为。
+- **Sensitive-information review:** 未添加或记录 secrets、`.env` 内容、token、密码、数据库 URL、credentials、cookie、私钥、生产数据或日志。
+- **Git state:** root 与独立 mobile worktree 均存在其他线程的既有未提交改动；本阶段未执行 staging、commit、push 或部署。
+
+## CRL-20260726-003 — 补品业务提交 submit_id 幂等保护
+
+- **Status:** ready
+- **Updated:** 2026-07-26 Australia/Melbourne
+- **Request:** 执行第 0 阶段和第二阶段：在第一阶段客户端队列/草稿基础上，补齐补品业务提交的服务端幂等保护。
+- **Outcome:** 第 0 阶段确认移动端已有稳定 `submit_id` 但补品请求未发送、后端补品接口无 receipt 检查、项目已有共享 `app_submit_receipts`。第二阶段已让移动端发送 `submit_id`，后端对同任务同提交同步骤的相同 payload 返回历史结果，payload 变化返回 `409 idempotency_conflict`，避免重复写入、任务事件和通知。
+
+### Implementation
+
+- `mz-cleaning-app-frontend/src/lib/api.ts` — `submitCleaningConsumables` 接受并发送 `submit_id`；409 映射为稳定、不可自动重试的 `IDEMPOTENCY_CONFLICT`。
+- `mz-cleaning-app-frontend/src/lib/cleaningConsumablesSubmitQueue.ts` — 将草稿稳定 `submit_id` 传给唯一的业务提交调用，并把幂等冲突视为阻断。
+- `mz-cleaning-app-frontend/src/lib/cleaningConsumablesSubmitQueue.test.ts` — 验证稳定 submit ID 仍用于重试，并覆盖 409 不自动重试。
+- `mz-cleaning-app-frontend/src/lib/api.test.ts` — 覆盖 submit ID 转发和 409 错误分类。
+- `backend/src/modules/cleaning_app.ts` — 补品 schema 接受共享长度限制；提交前读取 receipt，成功写入后保存 receipt，冲突返回 409。
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — 扩展后端静态契约检查，确认补品幂等 scope、step key、读前检查和写后保存。
+- `docs/feature-regression-registry.md` — 将后端补品幂等保护加入 FR-005 映射。
+
+### Impact / Dependencies
+
+- **API:** 补品提交请求新增可选 `submit_id`；同 key 同 payload 重复请求返回既有结果，payload 冲突返回 409。
+- **Database / migration:** none；复用已有 `app_submit_receipts` 及其初始化逻辑，未新增表/字段/迁移。
+- **Config / environment:** none。
+- **Dependencies:** none。
+- **Related units:** CRL-20260726-002；FR-005。
+
+### Validation
+
+- `npm run build` in `backend` — passed。
+- `npm run test:idempotency-submit-id-contract` in `backend` — passed。
+- `npm test -- --runInBand src/lib/cleaningConsumablesSubmitQueue.test.ts src/lib/api.test.ts` in `mz-cleaning-app-frontend` — passed: 2 suites, 17 tests。
+- `npm run check:fast` in root — passed: ledger audit, feature registry audit, backend build, frontend tests (39 suites, 171 tests), mobile typecheck。
+- `npm run check:mobile` in root — passed: mobile typecheck, lint (0 errors, 111 existing warnings), Jest (44 suites, 205 tests)。
+- `git diff --check` in root and mobile — passed。
+- Real non-production database duplicate/concurrency test — not run。
+- Native/EAS build and real-device verification — not run。
+
+### Risks / Release Notes
+
+- Runtime risk: 本阶段没有在非生产数据库执行真实重复请求/并发请求；receipt 的真实部署状态和数据库权限仍需部署前验证。
+- Runtime risk: 后端 receipt 复用现有 lazy-create 逻辑，首次启用该接口可能触发已有表初始化。
+- **Rollback:** 回退补品 API 的 `submit_id` 字段、客户端转发和后端 receipt 读写逻辑，保留第一阶段本地队列行为。
+- **Sensitive-information review:** 未添加或记录 secrets、`.env` 内容、token、密码、数据库 URL、credentials、cookie、私钥、生产数据或日志。
+- **Git state:** root 与独立 mobile worktree 均存在其他线程的既有未提交改动；本阶段未执行 staging、commit、push 或部署。
+
+## CRL-20260726-002 — 补品提交队列唯一执行者与草稿媒体断点状态
+
+- **Status:** ready
+- **Updated:** 2026-07-26 Australia/Melbourne
+- **Request:** 第一阶段执行补品弱网提交优化：队列必须是唯一提交执行者，草稿必须是唯一进度事实来源，并覆盖重复入队、逐张上传、恢复、错误分类和本地清理。
+- **Outcome:** 两个补品提交入口只负责校验、持久化草稿和调用队列入口；队列统一执行照片上传与业务提交。草稿升级为带稳定 `draft_id`、`queue_item_id`、`submit_id`、`media_id` 的可恢复状态快照，逐张保存上传检查点；写盘读回成功后才删本地文件，删除失败进入清理任务。
+
+### Implementation
+
+- `mz-cleaning-app-frontend/src/lib/cleaningConsumablesDraft.ts` — 新增媒体级上传状态、稳定 ID、v1 迁移、草稿写入读回校验和本地清理任务。
+- `mz-cleaning-app-frontend/src/lib/cleaningConsumablesSubmitQueue.ts` — 队列改为稳定队列项；统一执行上传/提交，单 worker 去重，失败分类，退避上限和阻断状态。
+- `mz-cleaning-app-frontend/src/screens/tasks/SuppliesFormScreen.tsx` — 移除页面直传/直提交路径，改为草稿入队并从草稿/队列事件刷新状态。
+- `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.tsx` — 同步移除补品区域的第二套直传/直提交路径；不改该页面独立的完成照片/视频流程。
+- `mz-cleaning-app-frontend/src/lib/api.ts` — 为已预压缩补品照片提供跳过二次压缩选项；补品业务提交保留稳定 `ApiError` 分类。
+- `mz-cleaning-app-frontend/src/lib/auth.tsx` — 后台队列维护时处理补品本地媒体清理任务。
+- `mz-cleaning-app-frontend/src/lib/localMediaHousekeeping.ts` — 将 v2 草稿、v2 队列和清理任务加入本地媒体保护范围。
+- `mz-cleaning-app-frontend/src/lib/cleaningConsumablesSubmitQueue.test.ts` — 覆盖逐张断点、失败照片单独重试、业务超时不重复上传、重复入队/并发 worker、400/401/403 阻断和本地文件丢失。
+- `mz-cleaning-app-frontend/src/lib/api.test.ts` — 覆盖补品提交 5xx 可重试错误分类。
+- `mz-cleaning-app-frontend/src/screens/tasks/SuppliesFormScreen.test.tsx`; `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.test.tsx` — 更新队列唯一入口的页面测试 mock 和回归覆盖。
+- `docs/feature-regression-registry.md` — 更新 FR-005 保护规则、测试映射和本次审查记录。
+
+### Impact / Dependencies
+
+- **API:** 仅移动端错误分类和上传压缩选项；未改后端接口、payload 语义或业务状态。
+- **Database / migration:** none。
+- **Config / environment:** none。
+- **Dependencies:** none。
+- **Excluded:** inspection panel、钥匙、反馈、后端/数据库、生产数据和真实设备/EAS 发布。
+
+### Validation
+
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed。
+- `npm run check:ci` in `mz-cleaning-app-frontend` — passed: typecheck, lint (0 errors, 111 warnings), 44 suites, 202 tests。
+- `npm run lint` in `mz-cleaning-app-frontend` — passed with existing warnings; no errors（111 warnings）。
+- `git diff --check` in root and `mz-cleaning-app-frontend` — passed。
+- `python3 scripts/audit_change_release_ledger.py` — passed: 29 changed files, 29 recorded files, coverage PASS。
+- `python3 scripts/audit_feature_regression_registry.py` — passed: 6 FRs, 49 test mappings。
+- Native/EAS build and real-device verification — not run；mobile package has no build script。
+
+### Risks / Release Notes
+
+- Runtime risk: 本阶段解决客户端队列和草稿恢复；后端尚未加入 submit_id 幂等契约，因此“业务请求已到达但客户端超时”的最终重复提交防护仍属于第二阶段。
+- Runtime risk: 未执行 iOS/Android 真机、后台杀进程、真实弱网和 EAS 验证。
+- **Rollback:** 恢复本阶段涉及的补品草稿/队列和两个补品入口文件，并移除对应测试与 FR-005 映射。
+- **Sensitive-information review:** 未添加或记录 secrets、`.env` 内容、token、密码、数据库 URL、credentials、cookie、私钥、生产数据或日志。
+- **Git state:** root 与独立 mobile worktree 均存在其他线程的既有未提交改动；本阶段未执行 staging、commit、push 或部署。
+
+## CRL-20260726-001 — 修复清洁人员补品状态回显把未选择项标成足够
+
+- **Status:** ready
+- **Updated:** 2026-07-26 12:40 Australia/Melbourne
+- **Request:** 清洁人员点一个补品充足后返回，再进入页面时全部补品都显示为充足；需要优化状态回显。
+- **Outcome:** 恢复补品草稿时只识别明确的 `ok`/`low` 状态；未点击项目的空状态继续显示“待确认”，不会被误标为“足够”。
+
+### Implementation
+
+- **Previous behavior:** 草稿会保存完整补品清单，未点击项目的 `status` 为空；两个清洁人员入口恢复时把所有非 `low` 状态统一映射为 `ok`。
+- **New behavior:** `SuppliesFormScreen` 和 `CleaningSelfCompleteScreen` 仅把明确的 `ok` 映射为足够、明确的 `low` 映射为不足，其余状态保留待确认。
+- **Key decisions:** 只修复客户端草稿回显；不改变补品提交 payload、API、数据库、权限或任务状态流转；两个清洁入口同时修复，避免共享草稿在不同入口产生不一致。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/screens/tasks/SuppliesFormScreen.tsx` — modified: 修正补品填报入口的草稿状态恢复。
+- `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.tsx` — modified: 修正补充与完成入口的草稿状态恢复。
+- `mz-cleaning-app-frontend/src/screens/tasks/SuppliesFormScreen.test.tsx` — modified: 增加只点一项后重新进入仍保持其余项目待确认的回归测试。
+- `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.test.tsx` — modified: 覆盖补充与完成入口的同一回归场景。
+- `docs/feature-regression-registry.md` — modified: 将补品草稿回显不变量和两个移动端入口测试登记为 FR-004 保护项。
+- `docs/change-release-ledger.md` — recorded this release unit。
+
+### Impact / Dependencies
+
+- **API:** none。
+- **Database / migration:** none。
+- **Config / environment:** none。
+- **Dependencies:** none。
+- **Related units:** CRL-20260725-001；CRL-20260725-004；FR-004。
+
+### Validation
+
+- `npm test -- --runInBand --no-cache src/screens/tasks/SuppliesFormScreen.test.tsx src/screens/tasks/CleaningSelfCompleteScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 2 suites, 9 tests。
+- `npm test -- --runInBand --no-cache` in `mz-cleaning-app-frontend` — passed: 44 suites, 193 tests。
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed。
+- `npm run lint` in `mz-cleaning-app-frontend` — passed: 0 errors, 111 warnings（既有 warnings）。
+- `git diff --check` in `mz-cleaning-app-frontend` — passed。
+- `npm run check:fast` in root — passed: ledger audit, feature registry audit, backend build, frontend 39 files/171 tests, and mobile typecheck。
+- Native/EAS build and real-device verification — not run；移动端 package 没有 build script。
+
+### Risks / Release Notes
+
+- Runtime risk: 当前通过 Jest、TypeScript、lint 和根仓库质量门禁验证，尚未在 iOS/Android 真机确认返回再进入的原生导航行为。
+- **Rollback:** 恢复两个入口中草稿状态恢复逻辑的前一版映射，并移除对应回归测试。
+- **Sensitive-information review:** 未添加或记录 secrets、`.env` 内容、token、密码、数据库 URL、credentials、cookie、私钥、生产数据或日志。
+- **Git state:** root 与独立 mobile worktree 均存在其他线程的既有未提交改动；本单元未执行 staging、commit、push 或部署。
+
+## CRL-20260725-024 — 移动端照片全屏预览点击任意位置关闭
+
+- **Status:** ready
+- **Updated:** 2026-07-25 23:34 Australia/Melbourne
+- **Request:** 移动端照片预览打开后，点击图片或其它位置都不能关闭。
+- **Outcome:** 全屏照片预览不再被空的全屏 `Pressable` 截获；点击图片内容区域或遮罩任意位置均可关闭，Android 返回键关闭行为保持不变。
+
+### Implementation
+
+- **Previous behavior:** 检查面板、经理日任务、补品页和客人行李照片预览都在关闭遮罩与图片之间放置了一个覆盖整屏、但不执行任何操作的 `Pressable`，导致点击图片区域无法到达外层关闭回调。
+- **New behavior:** 图片预览直接作为关闭遮罩的子节点渲染，移除空的事件拦截层；检查面板新增图片内容区域关闭回归测试。
+- **Key decisions:** 只修复同一事件拦截缺陷涉及的四个移动端预览入口；通知详情页已有 `pointerEvents="none"`，未重复修改；不改变照片上传、保存、权限、接口或数据。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.tsx` — modified: 移除全屏空 `Pressable`，增加预览和缩略图测试标识。
+- `mz-cleaning-app-frontend/src/screens/tasks/ManagerDailyTaskScreen.tsx` — modified: 移除全屏空 `Pressable`。
+- `mz-cleaning-app-frontend/src/screens/tasks/SuppliesFormScreen.tsx` — modified: 移除全屏空 `Pressable`。
+- `mz-cleaning-app-frontend/src/components/GuestLuggageCard.tsx` — modified: 移除全屏空 `Pressable`。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.test.tsx` — modified: 覆盖点击全屏照片内容区域后关闭预览。
+- `docs/change-release-ledger.md` — recorded this release unit。
+
+### Impact / Dependencies
+
+- **API:** none。
+- **Database / migration:** none。
+- **Config / environment:** none。
+- **Dependencies:** none。
+- **Related units:** CRL-20260725-006；移动端既有照片预览媒体加载改动。
+
+### Validation
+
+- `npm test -- --runInBand src/screens/tasks/InspectionPanelScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 1 suite, 8 tests。
+- `npm test -- --runInBand src/screens/tasks/SuppliesFormScreen.test.tsx` in `mz-cleaning-app-frontend` — passed: 1 suite, 6 tests。
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed。
+- `npm run lint` in `mz-cleaning-app-frontend` — passed: 0 errors, 111 warnings（既有 warnings）。
+- `npm test -- --runInBand` in `mz-cleaning-app-frontend` — passed: 44 suites, 191 tests。
+- `git diff --check` on affected mobile files — passed。
+- `npm run check:fast` in root — passed: ledger audit, feature registry audit, backend build, frontend 39 files/171 tests, and mobile typecheck。
+- `python3 scripts/audit_change_release_ledger.py` — passed: 28 changed files, 28 recorded files, coverage PASS。
+- Native/EAS build and real-device verification — not run。
+
+### Risks / Release Notes
+
+- Runtime risk: 本次只验证 Jest 事件传播和静态检查，尚未在 iOS/Android 真机确认不同系统 Modal 触摸行为。
+- **Rollback:** 恢复四个预览入口中的直接图片渲染与原空 `Pressable` 结构，并移除新增回归测试标识/断言。
+- **Sensitive-information review:** 未添加或记录 secrets、`.env` 内容、token、密码、数据库 URL、credentials、cookie、私钥、生产数据或日志。
+- **Git state:** root 和独立 mobile worktree 均有其它线程既有未提交改动；本单元未执行 staging、commit、push 或部署。
+
+## CRL-20260726-008 — 清洁人员房间完成照片接入唯一草稿队列与幂等提交
+
+- **Status:** ready
+- **Updated:** 2026-07-26 Australia/Melbourne
+- **Request:** 补齐清洁人员房间完成照片的持久化草稿、唯一队列、逐张上传、业务提交幂等和业务成功后清理链路。
+- **Outcome:** 清洁人员完成照片不再由页面直接上传/直接保存；照片先复制到 App 私有目录并写入任务级清洁草稿，复用现有清洁提交队列和单 Worker。上传或业务保存失败时保留本地媒体和远程断点，完成照片业务保存成功后才清理本地媒体；后端完成照片接口增加任务行锁和 `submit_id`/`step_key` 回执。
+
+### Implementation
+
+- Previous behavior: `CleaningSelfCompleteScreen` 直接调用媒体上传，再直接调用完成照片保存接口；业务保存失败时没有可恢复的本地完成照片队列，后端接口也没有完成照片幂等回执。
+- New behavior: 完成照片使用现有 `cleaningConsumablesDraft` 与 `cleaningConsumablesSubmitQueue` 的任务级唯一队列；每张照片保留 `media_id`、本地/远程引用、上传状态和错误；`completion_photos` 业务步骤使用稳定 `submit_id`/`step_key`；业务步骤全部成功后清理本地媒体和草稿。
+- Key decisions: 不新增平行 Worker；完成照片和清洁补品在同一任务可共用草稿，但未提交的补品草稿不会因完成照片先同步而被清理。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.tsx` — modified: 拍照后先持久化并入现有清洁队列，刷新时恢复待同步照片，移除/新增照片均通过队列提交。
+- `mz-cleaning-app-frontend/src/lib/cleaningConsumablesDraft.ts` — modified: 增加完成照片媒体类型、区域、提交步骤状态和草稿字段，保持旧补品草稿兼容。
+- `mz-cleaning-app-frontend/src/lib/cleaningConsumablesSubmitQueue.ts` — modified: 支持完成照片逐张上传、断点重试、幂等业务保存及业务成功后清理；保留未提交的补品草稿。
+- `mz-cleaning-app-frontend/src/lib/cleaningConsumablesSubmitQueue.test.ts` — modified: 增加业务保存失败后保留本地完成照片、重试不重复上传和成功清理回归。
+- `mz-cleaning-app-frontend/src/lib/api.ts` — modified: 完成照片保存请求转发 `submit_id`/`step_key` 并使用稳定 API 错误分类。
+- `backend/src/modules/cleaning_app.ts` — modified: 完成照片提交使用任务行锁事务、receipt 幂等检查/保存和提交后事件。
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — modified: 增加完成照片接口的幂等、事务、任务锁和 receipt 源码契约检查。
+- `docs/feature-regression-registry.md` — modified: 登记清洁人员完成照片队列和后端幂等保护。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API: 完成照片保存请求新增可选 `submit_id`、`step_key`；旧客户端不传时保持兼容。
+- Database / migration: none；复用已有 `app_submit_receipts`，未新增表或字段。
+- Config / environment: none。
+- Dependencies: none。
+- Related units: FR-005；与现有补品队列改动共享 `cleaningConsumablesDraft`、`cleaningConsumablesSubmitQueue` 和 `CleaningSelfCompleteScreen`，选择性发布时需要按 hunk 核对归属。
+
+### Validation
+
+- `npm run typecheck` in `mz-cleaning-app-frontend` — passed。
+- `npm run lint` in `mz-cleaning-app-frontend` — passed: 0 errors, 111 warnings。
+- `npm test -- --runInBand --no-cache src/lib/cleaningConsumablesSubmitQueue.test.ts src/screens/tasks/CleaningSelfCompleteScreen.test.tsx` — passed: 2 suites, 18 tests。
+- `npm test -- --runInBand --no-cache src/lib/cleaningConsumablesSubmitQueue.test.ts src/lib/localMediaHousekeeping.test.ts src/lib/cleaningMedia.test.ts src/screens/tasks/CleaningSelfCompleteScreen.test.tsx src/screens/tasks/SuppliesFormScreen.test.tsx` — passed: 5 suites, 32 tests (before the additional queue regression case; full suite below includes all current tests)。
+- `npm test -- --runInBand --no-cache` — passed: 45 suites, 210 tests。
+- `npm run build --prefix backend` — passed。
+- `npm run test:idempotency-submit-id-contract --prefix backend` — passed。
+- `npm run test:phase5-release-contract --prefix backend` — passed。
+- `npm run test:cleaning-task-transition-guard --prefix backend` — passed。
+- `npm run test:work-task-actions --prefix backend` — passed。
+- Real non-production database duplicate/concurrency/rollback test, live API verification, native/EAS build and real-device weak-network verification — not run。
+
+### Risks / Release Notes
+
+- Runtime risk: real device behavior for camera cancellation, App termination during upload, R2 reachability and network timeout remains unverified.
+- Runtime risk: backend database transaction and duplicate-request behavior is covered by static contract tests and build, not by a real non-production write test.
+- Rollback: revert the completion-photo additions in the shared mobile draft/queue/screen/API files and the completion route idempotency changes; preserve unrelated shared-file hunks.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, cookies, private keys, production data or sensitive logs were added.
+- Git state: root and nested mobile worktrees contain pre-existing/unrelated uncommitted changes; this unit is not staged, committed, pushed or deployed.
+
 ## CRL-20260725-023 — 隔离普通清洁员的挂钥匙视频与检查补品通知
 
 - **Status:** ready

@@ -17,6 +17,57 @@ Use this skill when the user asks Codex to:
 - run a functional audit
 - fix issues found during testing
 
+## Feature Regression Protection
+
+For every task that tests, audits, optimizes, or fixes behavior:
+
+1. Read `docs/feature-regression-registry.md` before editing.
+2. Identify affected FR entries by business invariant, not only by page or file.
+3. Confirm each referenced test actually asserts the listed protection rule; a test-file path alone is not evidence.
+4. Create or update an FR when any of these conditions apply:
+   - fixing a production bug;
+   - changing permission, status transition, merge, sync, notification, or data-overwrite logic;
+   - changing a workflow across the backend and at least one client;
+   - the user explicitly requires that a regression must not recur;
+   - the same behavior regresses for a second time;
+   - adding a high-risk business workflow.
+5. Do not create an FR for ordinary visual polish or a refactor that cannot change business outcomes.
+
+An active FR must include its maintenance scope (`backend`, `web`, and/or `mobile`), last review date, status, business outcomes, applicable cross-layer checks, test-to-invariant mapping, validation strategy, last verification pointer, related CRLs, and non-protection scope. Keep only the latest CRL/commit/date in `最后验证`; keep historical references in `相关 CRL` and the Change Release Ledger.
+
+Use these test mapping states honestly:
+
+- `sufficient`: the existing test asserts the protection rule;
+- `partial`: the test exists but leaves a stated gap;
+- `not-wired`: the test exists but is not executed by the relevant quality command;
+- `missing`: no test exists yet.
+
+### Cross-Layer Matrix
+
+Apply only the rows relevant to the affected FR, and record the applicable scope in the Registry:
+
+- **Backend:** payload fields; action/permission; status transition; null/empty values and historical data compatibility.
+- **Client:** rendering; operation availability; disabled reason; post-submit refresh.
+- **Entry:** normal list entry; notification entry; deep link or direct detail entry; re-entry with cached state.
+- **Consistency:** Web and mobile must not independently re-derive backend permissions; the same task must produce the same result from each entry.
+
+### Evidence Rule
+
+Do not state any of the following without running the corresponding test or completing a clearly documented manual verification:
+
+- the feature was not affected;
+- the previous behavior is preserved;
+- the change cannot regress;
+- all clients are consistent;
+- the change only affects the current page.
+
+If validation cannot run because of dependencies, environment, permissions, database safety, or another blocker, explicitly report:
+
+- checks not run;
+- the reason they could not run;
+- risks not ruled out;
+- the exact follow-up commands required.
+
 ## Phase 1: Scope And Plan
 
 Before executing, restate:
@@ -151,6 +202,16 @@ When a task-center, cleaning, notification, or mobile visibility issue is touche
 - web or mobile rendering
 - cache/event refresh behavior
 - role/permission/capability semantics
+
+Select validation by change scope; do not mechanically run every command for a small change:
+
+- small UI-only change: `check:fast` plus the affected frontend/mobile test;
+- backend business-rule change: `check:fast` plus the affected backend targeted test;
+- mobile workflow change: `check:fast` plus the affected mobile test, typecheck, and lint;
+- cross-layer change: backend targeted tests plus client rendering, entry, cache, and permission checks;
+- release candidate: `npm run check:full`.
+
+The repository quality commands must execute all critical protected tests that are declared wired. Run `npm run check:feature-registry` in addition to the ledger audit. Do not mark a test `sufficient` if its file exists but its command is not part of the relevant quality gate.
 
 ## Phase 6: Release Ledger
 

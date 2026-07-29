@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { listPermissionCodesForUser, requirePerm, requireAnyPerm } from '../auth'
-import { hasPg, pgUpdate, pgInsert } from '../dbAdapter'
+import { hasPg, pgRunInTransaction, pgUpdate, pgInsert } from '../dbAdapter'
 import multer from 'multer'
 import path from 'path'
 import { hasR2, r2GetObjectByKey, r2KeyFromUrl, r2Upload } from '../r2'
@@ -12,24 +12,81 @@ import fs from 'fs'
 import { emitNotificationEvent } from '../services/notificationEvents'
 import { buildCleaningTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
 import { effectiveInspectionMode, isInspectionFinishedStatus } from '../lib/cleaningInspection'
+import { CLEANING_IMAGE_FORMAT_ERROR, encodeCleaningImageToJpeg, isImageUploadCandidate, normalizeCleaningImageUpload } from '../lib/cleaningMediaImage'
+import { isCleaningMediaKey } from '../lib/cleaningMediaReference'
 import {
   buildIdempotencyPayloadHash,
   ensureIdempotentStepReceiptsTable,
+  IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH,
   loadIdempotentStepReceipt,
   saveIdempotentStepReceipt,
 } from '../lib/idempotentStepReceipts'
 import {
   actorAndPerformerFromRequest,
+  assertCleaningSubmissionReady,
+  cleaningSubmissionRequiredPayload,
   applyCleaningTaskActionTransition,
+  buildKeyPhotoUploadEventPatch,
+  buildKeyPhotoUploadTaskPatch,
+  ensureWorkTaskActionAuditsTable,
   recordWorkTaskActionAudit,
 } from '../lib/workTaskActionAudit'
 import type { WorkTaskActionId } from '../lib/workTaskActions'
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
+import { canViewMzappRecordedCleaningMedia } from './mzapp'
 
 export const router = Router()
 
-const REQUIRED_COMPLETION_PHOTO_AREAS = ['toilet', 'living', 'sofa', 'bedroom', 'kitchen'] as const
+const REQUIRED_COMPLETION_PHOTO_AREAS = ['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'shower_drain', 'remote_tv', 'vacuum_used'] as const
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
+
+function stableUploadKeySegment(value: any, fallback: string) {
+  const normalized = String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128)
+  return normalized || fallback
+}
+
+let cleaningConsumablesSchemaReady = false
+let cleaningConsumablesSchemaPromise: Promise<void> | null = null
+
+async function ensureCleaningConsumablesSchema() {
+  if (!hasPg) return
+  const { pgPool } = require('../dbAdapter')
+  if (!pgPool || cleaningConsumablesSchemaReady) return
+  if (cleaningConsumablesSchemaPromise) return cleaningConsumablesSchemaPromise
+  cleaningConsumablesSchemaPromise = (async () => {
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS cleaning_checklist_items (
+      id text PRIMARY KEY,
+      label text NOT NULL,
+      kind text NOT NULL DEFAULT 'consumable',
+      required boolean NOT NULL DEFAULT true,
+      requires_photo_when_low boolean NOT NULL DEFAULT true,
+      active boolean NOT NULL DEFAULT true,
+      sort_order integer,
+      created_by text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );`)
+    await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS status text;`)
+    await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS photo_url text;`)
+    await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS photo_urls text;`)
+    await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS item_label text;`)
+    await ensureIdempotentStepReceiptsTable(pgPool)
+    await ensureWorkTaskActionAuditsTable(pgPool)
+    cleaningConsumablesSchemaReady = true
+  })()
+    .catch((error) => {
+      cleaningConsumablesSchemaPromise = null
+      throw error
+    })
+    .finally(() => {
+      if (cleaningConsumablesSchemaReady) cleaningConsumablesSchemaPromise = null
+    })
+  return cleaningConsumablesSchemaPromise
+}
+
+export async function warmupCleaningAppModule() {
+  await ensureCleaningConsumablesSchema()
+}
 
 function parseYmd(value: string): { y: number; m: number; d: number } | null {
   const s = String(value || '').trim()
@@ -136,7 +193,7 @@ function normalizeStoredPhotoUrls(raw: any, fallback?: any) {
       const parsed = JSON.parse(text)
       if (Array.isArray(parsed)) return Array.from(new Set(parsed.map((item) => String(item || '').trim()).filter(Boolean)))
     } catch {}
-    if (/^https?:\/\//i.test(text)) return [text]
+    if (/^https?:\/\//i.test(text) || isCleaningMediaKey(text)) return [text]
   }
   const fallbackText = String(fallback || '').trim()
   return fallbackText ? [fallbackText] : []
@@ -811,7 +868,7 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), async (
       const actionActor = actorAndPerformerFromRequest(user, parsed.data)
       const alreadyHasKeyPhoto = !!String(before.current_key_photo_url || '').trim() || !!before.key_photo_uploaded_at
       if (alreadyHasKeyPhoto) {
-        await applyCleaningTaskActionTransition({
+        const actionResult = await applyCleaningTaskActionTransition({
           taskId: String(id),
           actionId: 'upload_key_photo',
           actorUserId: actionActor.actorUserId,
@@ -819,22 +876,42 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), async (
           performedByName: actionActor.performedByName,
           metadata: { route: 'cleaning_app.tasks.start', already_recorded: true },
         }, pgPool)
-        const patchExisting: any = {}
-        if (String(before.status || '').trim().toLowerCase() !== 'in_progress') patchExisting.status = 'in_progress'
-        if (!before.started_at) patchExisting.started_at = now
-        if (!before.key_photo_uploaded_at) patchExisting.key_photo_uploaded_at = now
-        if (parsed.data.lat !== undefined) patchExisting.geo_lat = parsed.data.lat
-        if (parsed.data.lng !== undefined) patchExisting.geo_lng = parsed.data.lng
+        // Re-upload replaces only the key media row.  The previous branch
+        // returned early without saving the new key, while the task event
+        // could still advertise it to mobile clients.  Keep all other
+        // cleaning/consumable media untouched.
+        await pgRunInTransaction(async (client) => {
+          await client.query(`DELETE FROM cleaning_task_media WHERE task_id::text = $1::text AND type = 'key_photo'`, [String(id)])
+          await client.query(
+            `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, lat, lng)
+             VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+            [require('uuid').v4(), id, 'key_photo', parsed.data.media_url, parsed.data.captured_at || now, parsed.data.lat ?? null, parsed.data.lng ?? null],
+          )
+        })
+        const patchExisting = buildKeyPhotoUploadTaskPatch({
+          statusBefore: before.status,
+          statusAfter: actionResult?.status_after,
+          startedAt: before.started_at,
+          keyPhotoUploadedAt: before.key_photo_uploaded_at,
+          now,
+          lat: parsed.data.lat,
+          lng: parsed.data.lng,
+        })
         const upExisting = Object.keys(patchExisting).length ? await pgUpdate('cleaning_tasks', id, patchExisting) : before
-        if (Object.keys(patchExisting).length) {
+        const eventPatch = buildKeyPhotoUploadEventPatch({
+          statusBefore: before.status,
+          statusAfter: actionResult?.status_after,
+          keyPhotoUrl: parsed.data.media_url,
+        })
+        if (Object.keys(eventPatch).length) {
           await emitWorkTaskEvent({
             taskId: `cleaning_task:${String(id)}`,
             sourceType: 'cleaning_tasks',
             sourceRefIds: [String(id)],
             eventType: 'TASK_UPDATED',
             changeScope: 'list',
-            changedFields: Object.keys(patchExisting),
-            patch: patchExisting,
+            changedFields: Object.keys(eventPatch),
+            patch: eventPatch,
             causedByUserId: String(user?.sub || '').trim() || null,
             visibilityHints: buildCleaningTaskVisibilityHints(upExisting || patchExisting),
           })
@@ -842,7 +919,7 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), async (
         }
         return res.json(upExisting || before)
       }
-      await applyCleaningTaskActionTransition({
+      const actionResult = await applyCleaningTaskActionTransition({
         taskId: String(id),
         actionId: 'upload_key_photo',
         actorUserId: actionActor.actorUserId,
@@ -850,9 +927,15 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), async (
         performedByName: actionActor.performedByName,
         metadata: { route: 'cleaning_app.tasks.start' },
       }, pgPool)
-      const patch: any = { status: 'in_progress', started_at: now, key_photo_uploaded_at: now }
-      if (parsed.data.lat !== undefined) patch.geo_lat = parsed.data.lat
-      if (parsed.data.lng !== undefined) patch.geo_lng = parsed.data.lng
+      const patch = buildKeyPhotoUploadTaskPatch({
+        statusBefore: before.status,
+        statusAfter: actionResult?.status_after,
+        startedAt: before.started_at,
+        keyPhotoUploadedAt: before.key_photo_uploaded_at,
+        now,
+        lat: parsed.data.lat,
+        lng: parsed.data.lng,
+      })
       const up = await pgUpdate('cleaning_tasks', id, patch)
       const media = {
         id: require('uuid').v4(),
@@ -864,18 +947,19 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), async (
         lng: parsed.data.lng,
       }
       try { await pgInsert('cleaning_task_media', media as any) } catch {}
+      const eventPatch = buildKeyPhotoUploadEventPatch({
+        statusBefore: before.status,
+        statusAfter: actionResult?.status_after,
+        keyPhotoUrl: parsed.data.media_url,
+      })
       await emitWorkTaskEvent({
         taskId: `cleaning_task:${String(id)}`,
         sourceType: 'cleaning_tasks',
         sourceRefIds: [String(id)],
         eventType: 'TASK_UPDATED',
         changeScope: 'list',
-        changedFields: ['status', 'started_at', 'key_photo_uploaded_at'],
-        patch: {
-          status: patch.status,
-          started_at: patch.started_at,
-          key_photo_uploaded_at: patch.key_photo_uploaded_at,
-        },
+        changedFields: Object.keys(eventPatch),
+        patch: eventPatch,
         causedByUserId: String(user?.sub || '').trim() || null,
         visibilityHints: buildCleaningTaskVisibilityHints(up || patch),
       })
@@ -1083,6 +1167,7 @@ const consumableSchema = z.object({
       photo_urls: z.array(z.string().trim().min(1).max(800)).max(12).optional(),
     }),
   ),
+  submit_id: z.string().trim().min(1).max(IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH).optional(),
   ...actionAuditBodySchema,
 })
 router.get('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), async (req, res) => {
@@ -1091,9 +1176,6 @@ router.get('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), a
     if (!hasPg) return res.json({ items: [] })
     const { pgPool } = require('../dbAdapter')
     if (!pgPool) return res.json({ items: [] })
-    try {
-      await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS photo_urls text;`)
-    } catch {}
     const rows = await pgPool.query(
       `SELECT id, item_id, qty, need_restock, note, status, photo_url, photo_urls, item_label, created_at
        FROM cleaning_consumable_usages
@@ -1138,27 +1220,6 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
   try {
     if (hasPg) {
       const { pgPool } = require('../dbAdapter')
-      if (pgPool) {
-        try {
-          await pgPool.query(`CREATE TABLE IF NOT EXISTS cleaning_checklist_items (
-            id text PRIMARY KEY,
-            label text NOT NULL,
-            kind text NOT NULL DEFAULT 'consumable',
-            required boolean NOT NULL DEFAULT true,
-            requires_photo_when_low boolean NOT NULL DEFAULT true,
-            active boolean NOT NULL DEFAULT true,
-            sort_order integer,
-            created_by text,
-            created_at timestamptz NOT NULL DEFAULT now(),
-            updated_at timestamptz NOT NULL DEFAULT now()
-          );`)
-          await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS status text;`)
-          await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS photo_url text;`)
-          await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS photo_urls text;`)
-          await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS item_label text;`)
-        } catch {}
-      }
-
       const activeItems = pgPool
         ? (
             await pgPool.query(
@@ -1175,11 +1236,11 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
       if (missing.length) return res.status(400).json({ message: '缺少必填项', missing })
 
       const taskRow = await pgPool.query(`SELECT id, status, property_id::text AS property_id, finished_at FROM cleaning_tasks WHERE id=$1 LIMIT 1`, [String(id)])
-      const task = taskRow?.rows?.[0]
-      if (!task) return res.status(404).json({ message: 'task not found' })
+      if (!taskRow?.rows?.[0]) return res.status(404).json({ message: 'task not found' })
       if (!await canPerformCleaningTaskAction(user, String(id), ['fill_supplies'])) return res.status(403).json({ message: 'forbidden' })
-      const existingRows = await pgPool.query(`SELECT id FROM cleaning_consumable_usages WHERE task_id=$1 LIMIT 1`, [String(id)])
-      const hadExisting = !!existingRows?.rowCount
+      const submitId = String(parsed.data.submit_id || '').trim()
+      const stepKey = 'consumables_submit'
+      const payloadHash = buildIdempotencyPayloadHash(parsed.data)
 
       for (const row of parsed.data.items) {
         const meta: any = byId.get(String(row.item_id)) || null
@@ -1193,76 +1254,130 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
         }
       }
 
-      const livingRoomPhotoUrl = String(parsed.data.living_room_photo_url || '').trim()
+      const transactionResult = await pgRunInTransaction(async (client) => {
+        const lockedTaskRow = await client.query(
+          `SELECT id, status, property_id::text AS property_id, finished_at
+             FROM cleaning_tasks
+            WHERE id=$1
+            FOR UPDATE`,
+          [String(id)],
+        )
+        const task = lockedTaskRow?.rows?.[0]
+        if (!task) return { kind: 'missing' as const }
 
-      await pgPool.query(`DELETE FROM cleaning_consumable_usages WHERE task_id=$1`, [String(id)])
-      await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id::text=$1::text AND type='consumable_living_room_photo'`, [String(id)])
-
-      for (const it of parsed.data.items) {
-        const meta: any = byId.get(String(it.item_id)) || null
-        const photoUrls = normalizeStoredPhotoUrls(it.photo_urls, it.photo_url)
-        const row = {
-          id: require('uuid').v4(),
-          task_id: id,
-          item_id: String(it.item_id),
-          qty: it.status === 'low' ? Number(it.qty || 1) : 1,
-          need_restock: it.status === 'low',
-          note: it.note || null,
-          status: it.status,
-          photo_url: photoUrls[0] || null,
-          photo_urls: photoUrls.length ? JSON.stringify(photoUrls) : null,
-          item_label: meta ? String(meta.label || '') : null,
-        }
-        await pgInsert('cleaning_consumable_usages', row as any)
-      }
-      const restockItemsPayload = parsed.data.items
-        .filter((it) => String(it.status || '').trim().toLowerCase() === 'low')
-        .map((it) => {
-          const meta: any = byId.get(String(it.item_id)) || null
-          const qty0 = Number(it.qty || 1)
-          const qty = Number.isFinite(qty0) && qty0 > 0 ? qty0 : 1
-          return {
-            item_id: String(it.item_id || '').trim(),
-            label: meta ? String(meta.label || it.item_id || '').trim() : String(it.item_id || '').trim(),
-            qty,
-            status: 'low',
-            photo_url: normalizeStoredPhotoUrls(it.photo_urls, it.photo_url)[0] || null,
-            photo_urls: normalizeStoredPhotoUrls(it.photo_urls, it.photo_url),
-            note: it.note == null ? null : String(it.note || '').trim(),
+        if (submitId) {
+          const receipt = await loadIdempotentStepReceipt(client, {
+            scopeType: 'cleaning_task_consumables',
+            scopeId: String(id),
+            submitId,
+            stepKey,
+          })
+          if (receipt) {
+            if (String(receipt.payload_hash || '') !== payloadHash) {
+              return { kind: 'conflict' as const }
+            }
+            return { kind: 'replay' as const, responsePayload: receipt.response_json || { ok: true } }
           }
-        })
-      if (livingRoomPhotoUrl) {
-        await pgInsert('cleaning_task_media', {
-          id: require('uuid').v4(),
-          task_id: String(id),
-          type: 'consumable_living_room_photo',
-          url: livingRoomPhotoUrl,
-          captured_at: new Date().toISOString(),
-        } as any)
+        }
+
+        const existingRows = await client.query(`SELECT id FROM cleaning_consumable_usages WHERE task_id=$1 LIMIT 1`, [String(id)])
+        const hadExisting = !!existingRows?.rowCount
+        const livingRoomPhotoUrl = String(parsed.data.living_room_photo_url || '').trim()
+
+        await client.query(`DELETE FROM cleaning_consumable_usages WHERE task_id=$1`, [String(id)])
+        await client.query(`DELETE FROM cleaning_task_media WHERE task_id::text=$1::text AND type='consumable_living_room_photo'`, [String(id)])
+
+        for (const it of parsed.data.items) {
+          const meta: any = byId.get(String(it.item_id)) || null
+          const photoUrls = normalizeStoredPhotoUrls(it.photo_urls, it.photo_url)
+          const row = {
+            id: require('uuid').v4(),
+            task_id: id,
+            item_id: String(it.item_id),
+            qty: it.status === 'low' ? Number(it.qty || 1) : 1,
+            need_restock: it.status === 'low',
+            note: it.note || null,
+            status: it.status,
+            photo_url: photoUrls[0] || null,
+            photo_urls: photoUrls.length ? JSON.stringify(photoUrls) : null,
+            item_label: meta ? String(meta.label || '') : null,
+          }
+          await pgInsert('cleaning_consumable_usages', row as any, client)
+        }
+        const restockItemsPayload = parsed.data.items
+          .filter((it) => String(it.status || '').trim().toLowerCase() === 'low')
+          .map((it) => {
+            const meta: any = byId.get(String(it.item_id)) || null
+            const qty0 = Number(it.qty || 1)
+            const qty = Number.isFinite(qty0) && qty0 > 0 ? qty0 : 1
+            return {
+              item_id: String(it.item_id || '').trim(),
+              label: meta ? String(meta.label || it.item_id || '').trim() : String(it.item_id || '').trim(),
+              qty,
+              status: 'low',
+              photo_url: normalizeStoredPhotoUrls(it.photo_urls, it.photo_url)[0] || null,
+              photo_urls: normalizeStoredPhotoUrls(it.photo_urls, it.photo_url),
+              note: it.note == null ? null : String(it.note || '').trim(),
+            }
+          })
+        if (livingRoomPhotoUrl) {
+          await pgInsert('cleaning_task_media', {
+            id: require('uuid').v4(),
+            task_id: String(id),
+            type: 'consumable_living_room_photo',
+            url: livingRoomPhotoUrl,
+            captured_at: new Date().toISOString(),
+          } as any, client)
+        }
+        const needsRestock = parsed.data.items.some((i) => i.status === 'low')
+        const now = new Date().toISOString()
+        const actionActor = actorAndPerformerFromRequest(user, parsed.data)
+        const actionResult = await applyCleaningTaskActionTransition({
+          taskId: String(id),
+          actionId: 'fill_supplies',
+          actorUserId: actionActor.actorUserId,
+          performedByUserId: actionActor.performedByUserId,
+          performedByName: actionActor.performedByName,
+          needsRestock,
+          metadata: {
+            route: 'cleaning_app.tasks.consumables',
+            item_count: parsed.data.items.length,
+            needs_restock: needsRestock,
+          },
+        }, client)
+        const taskStatus = String(task.status || '').trim().toLowerCase()
+        const isFinishedTask = ['cleaned', 'restock_pending', 'restocked', 'to_inspect', 'to_hang_keys', 'keys_hung', 'done', 'completed', 'ready'].includes(taskStatus)
+        const patch: any = {}
+        if (!isFinishedTask) patch.status = needsRestock ? 'restock_pending' : 'cleaned'
+        if (!task.finished_at) patch.finished_at = now
+        const up = await pgUpdate('cleaning_tasks', id, patch, client)
+        const responsePayload = { ...(up || patch), action_result: actionResult }
+        if (submitId) {
+          await saveIdempotentStepReceipt(client, {
+            scopeType: 'cleaning_task_consumables',
+            scopeId: String(id),
+            submitId,
+            stepKey,
+          }, payloadHash, responsePayload)
+        }
+        return {
+          kind: 'committed' as const,
+          responsePayload,
+          needsRestock,
+          restockItemsPayload,
+          patch,
+          up,
+          task,
+          hadExisting,
+          now,
+        }
+      })
+      if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'task not found' })
+      if (transactionResult.kind === 'conflict') {
+        return res.status(409).json({ message: 'idempotency_conflict', submit_id: submitId, step_key: stepKey })
       }
-      const needsRestock = parsed.data.items.some((i) => i.status === 'low')
-      const now = new Date().toISOString()
-      const actionActor = actorAndPerformerFromRequest(user, parsed.data)
-      const actionResult = await applyCleaningTaskActionTransition({
-        taskId: String(id),
-        actionId: 'fill_supplies',
-        actorUserId: actionActor.actorUserId,
-        performedByUserId: actionActor.performedByUserId,
-        performedByName: actionActor.performedByName,
-        needsRestock,
-        metadata: {
-          route: 'cleaning_app.tasks.consumables',
-          item_count: parsed.data.items.length,
-          needs_restock: needsRestock,
-        },
-      }, pgPool)
-      const taskStatus = String(task.status || '').trim().toLowerCase()
-      const isFinishedTask = ['cleaned', 'restock_pending', 'restocked', 'to_inspect', 'to_hang_keys', 'keys_hung', 'done', 'completed', 'ready'].includes(taskStatus)
-      const patch: any = {}
-      if (!isFinishedTask) patch.status = needsRestock ? 'restock_pending' : 'cleaned'
-      if (!task.finished_at) patch.finished_at = now
-      const up = Object.keys(patch).length ? await pgUpdate('cleaning_tasks', id, patch) : task
-      const responsePayload = { ...(up || patch), action_result: actionResult }
+      if (transactionResult.kind === 'replay') return res.status(200).json(transactionResult.responsePayload)
+      const { responsePayload, needsRestock, restockItemsPayload, patch, up, task, hadExisting, now } = transactionResult
       res.json(responsePayload)
       void (async () => {
         try {
@@ -1402,23 +1517,32 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
   try {
     if (hasPg) {
       if (!await canPerformCleaningTaskAction(user, String(id), ['upload_access_video'])) return res.status(403).json({ message: 'forbidden' })
+      await assertCleaningSubmissionReady(String(id), require('../dbAdapter').pgPool)
       const now = new Date().toISOString()
-      const patch: any = { status: 'inspected', lockbox_video_uploaded_at: now }
-      const up = await pgUpdate('cleaning_tasks', id, patch)
       const media = { id: require('uuid').v4(), task_id: id, type: 'lockbox_video', url: parsed.data.media_url, captured_at: parsed.data.captured_at || now, lat: parsed.data.lat, lng: parsed.data.lng }
-      try { await pgInsert('cleaning_task_media', media as any) } catch {}
+      await pgInsert('cleaning_task_media', media as any)
+      const actionActor = actorAndPerformerFromRequest(user, parsed.data)
+      const actionResult = await applyCleaningTaskActionTransition({
+        taskId: String(id),
+        actionId: 'upload_access_video',
+        actorUserId: actionActor.actorUserId,
+        performedByUserId: actionActor.performedByUserId,
+        performedByName: actionActor.performedByName,
+        metadata: { route: 'cleaning_app.tasks.inspection_complete' },
+      }, require('../dbAdapter').pgPool)
+      const up = await pgUpdate('cleaning_tasks', id, { lockbox_video_uploaded_at: now } as any)
       await emitWorkTaskEvent({
         taskId: `cleaning_task:${String(id)}`,
         sourceType: 'cleaning_tasks',
         sourceRefIds: [String(id)],
-        eventType: 'TASK_COMPLETED',
+        eventType: 'TASK_UPDATED',
         changeScope: 'list',
         changedFields: ['status', 'lockbox_video_uploaded_at', 'lockbox_video_url'],
-        patch: { status: patch.status, lockbox_video_uploaded_at: patch.lockbox_video_uploaded_at },
+        patch: { status: actionResult?.status_after || (up as any)?.status || null, lockbox_video_uploaded_at: now },
         causedByUserId: String(user?.sub || '').trim() || null,
-        visibilityHints: buildCleaningTaskVisibilityHints(up || patch),
+        visibilityHints: buildCleaningTaskVisibilityHints(up || { id, status: actionResult?.status_after || null, lockbox_video_uploaded_at: now }),
       })
-      try { broadcastCleaningEvent({ event: 'inspected', task_id: id }) } catch {}
+      try { broadcastCleaningEvent({ event: 'lockbox_video_uploaded', task_id: id }) } catch {}
       try {
         const operationId = require('uuid').v4()
         const propertyId = String((up as any)?.property_id || '').trim()
@@ -1452,10 +1576,13 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
           )
         }
       } catch {}
-      return res.json(up || patch)
+      return res.json({ ...(up || { id, lockbox_video_uploaded_at: now }), action_result: actionResult })
     }
-    return res.json({ id, status: 'inspected' })
+    return res.json({ id, status: 'keys_hung', finalization_pending: true, missing_requirements: ['inspection_photos'] })
   } catch (e: any) {
+    if (e?.code === 'CLEANING_SUBMISSION_REQUIRED') {
+      return res.status(409).json(e?.details || cleaningSubmissionRequiredPayload({ consumables_submitted: false, property_photo_submitted: false, ready: false }))
+    }
     return res.status(500).json({ message: e?.message || 'error' })
   }
 })
@@ -1555,15 +1682,30 @@ const inspectionPhotosSchema = z
   .object({
     items: z.array(
       z.object({
-        area: z.enum(['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'shower_drain', 'unclean']),
+        area: z.enum(['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'bathroom', 'shower_drain', 'unclean']),
         url: z.string().trim().min(1),
         note: z.string().trim().max(800).optional().nullable(),
         captured_at: z.string().trim().max(64).optional(),
       }),
     ),
-    submit_id: z.string().trim().min(1).max(120).optional(),
+    guest_arrival_confirmed: z.boolean().optional(),
+    submit_id: z.string().trim().min(1).max(IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH).optional(),
     step_key: z.string().trim().min(1).max(120).optional(),
     ...actionAuditBodySchema,
+  })
+  .strict()
+
+const inspectionIssuePhotosSchema = z
+  .object({
+    items: z.array(
+      z.object({
+        url: z.string().trim().min(1),
+        note: z.string().trim().max(800).optional().nullable(),
+        captured_at: z.string().trim().max(64).optional(),
+      }),
+    ).min(1).max(12),
+    submit_id: z.string().trim().min(1).max(IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH),
+    step_key: z.string().trim().min(1).max(120),
   })
   .strict()
 
@@ -1605,11 +1747,13 @@ router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspec
   const { id } = req.params
   const parsed = inspectionPhotosSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
+  const guestArrivalConfirmed = parsed.data.guest_arrival_confirmed === true
+  if (!parsed.data.items.length && !guestArrivalConfirmed) return res.status(400).json({ message: 'inspection_photos_required' })
   try {
     const submitId = String(parsed.data.submit_id || '').trim()
     const stepKey = String(parsed.data.step_key || '').trim()
     const payloadHash = buildIdempotencyPayloadHash(parsed.data)
-    const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, shower_drain: 1, unclean: 12 }
+    const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, bathroom: 3, shower_drain: 1, unclean: 12 }
     const byArea = new Map<string, number>()
     for (const it of parsed.data.items) {
       const a = String(it.area)
@@ -1622,60 +1766,171 @@ router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspec
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
       if (!await canPerformCleaningTaskAction(user, String(id), ['submit_inspection'])) return res.status(403).json({ message: 'forbidden' })
-      if (submitId && stepKey) {
-        await ensureIdempotentStepReceiptsTable(pgPool)
-        const receipt = await loadIdempotentStepReceipt(pgPool, {
-          scopeType: 'cleaning_task_inspection_photos',
-          scopeId: String(id),
-          submitId,
-          stepKey,
-        })
-        if (receipt) {
-          if (String(receipt.payload_hash || '') !== payloadHash) {
-            return res.status(409).json({ message: 'idempotency_conflict', submit_id: submitId, step_key: stepKey })
-          }
-          return res.status(200).json(receipt.response_json || { ok: true })
-        }
-      }
-      const uuid = require('uuid')
-      await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'inspection_%'`, [id])
-      for (const it of parsed.data.items) {
-        const type = `inspection_${it.area}`
-        const cap = String(it.captured_at || '').trim()
-        const capturedAt = cap ? new Date(cap) : new Date()
-        await pgPool.query(
-          `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at)
-           VALUES ($1,$2,$3,$4,$5,$6)`,
-          [uuid.v4(), id, type, String(it.url), it.note == null ? null : String(it.note || ''), capturedAt.toISOString()],
+      if (submitId && stepKey) await ensureIdempotentStepReceiptsTable(pgPool)
+      const transactionResult = await pgRunInTransaction(async (client) => {
+        const lockedTask = await client.query(
+          `SELECT id::text AS id
+             FROM cleaning_tasks
+            WHERE id::text = $1::text
+            FOR UPDATE`,
+          [String(id)],
         )
+        if (!lockedTask?.rows?.[0]) return { kind: 'missing' as const }
+
+        // This is deliberately checked while the task row is locked. A cleaner
+        // submission and an inspection submission cannot pass each other and
+        // leave the shared cleaning_tasks status in the wrong order.
+        await assertCleaningSubmissionReady(String(id), client)
+
+        if (submitId && stepKey) {
+          const receipt = await loadIdempotentStepReceipt(client, {
+            scopeType: 'cleaning_task_inspection_photos',
+            scopeId: String(id),
+            submitId,
+            stepKey,
+          })
+          if (receipt) {
+            if (String(receipt.payload_hash || '') !== payloadHash) {
+              return { kind: 'conflict' as const }
+            }
+            return { kind: 'replay' as const, responseBody: receipt.response_json || { ok: true } }
+          }
+        }
+
+        const uuid = require('uuid')
+        if (parsed.data.items.length) {
+          await client.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'inspection_%'`, [id])
+          for (const it of parsed.data.items) {
+            const type = `inspection_${it.area}`
+            const cap = String(it.captured_at || '').trim()
+            const capturedAt = cap ? new Date(cap) : new Date()
+            await client.query(
+              `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at)
+               VALUES ($1,$2,$3,$4,$5,$6)`,
+              [uuid.v4(), id, type, String(it.url), it.note == null ? null : String(it.note || ''), capturedAt.toISOString()],
+            )
+          }
+        }
+        const actionActor = actorAndPerformerFromRequest(user, parsed.data)
+        const actionResult = await applyCleaningTaskActionTransition({
+          taskId: String(id),
+          actionId: 'submit_inspection',
+          actorUserId: actionActor.actorUserId,
+          performedByUserId: actionActor.performedByUserId,
+          performedByName: actionActor.performedByName,
+          metadata: {
+            route: 'cleaning_app.tasks.inspection_photos',
+            item_count: parsed.data.items.length,
+            ...(guestArrivalConfirmed ? { guest_arrival_skip: true } : {}),
+          },
+        }, client)
+        const responseBody = { ok: true, action_result: actionResult }
+        if (submitId && stepKey) {
+          await saveIdempotentStepReceipt(client, {
+            scopeType: 'cleaning_task_inspection_photos',
+            scopeId: String(id),
+            submitId,
+            stepKey,
+          }, payloadHash, responseBody)
+        }
+        return { kind: 'committed' as const, responseBody }
+      })
+      if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'task not found' })
+      if (transactionResult.kind === 'conflict') {
+        return res.status(409).json({ message: 'idempotency_conflict', submit_id: submitId, step_key: stepKey })
       }
-      const actionActor = actorAndPerformerFromRequest(user, parsed.data)
-      const actionResult = await applyCleaningTaskActionTransition({
-        taskId: String(id),
-        actionId: 'submit_inspection',
-        actorUserId: actionActor.actorUserId,
-        performedByUserId: actionActor.performedByUserId,
-        performedByName: actionActor.performedByName,
-        metadata: {
-          route: 'cleaning_app.tasks.inspection_photos',
-          item_count: parsed.data.items.length,
-        },
-      }, pgPool)
+      if (transactionResult.kind === 'replay') return res.status(200).json(transactionResult.responseBody)
       try { broadcastCleaningEvent({ event: 'inspection_photos_saved', task_id: id }) } catch {}
-      const responseBody = { ok: true, action_result: actionResult }
-      if (submitId && stepKey) {
-        await saveIdempotentStepReceipt(pgPool, {
-          scopeType: 'cleaning_task_inspection_photos',
-          scopeId: String(id),
-          submitId,
-          stepKey,
-        }, payloadHash, responseBody)
-      }
-      return res.status(201).json(responseBody)
+      return res.status(201).json(transactionResult.responseBody)
     }
     return res.status(201).json({ ok: true })
   } catch (e: any) {
+    if (e?.code === 'CLEANING_SUBMISSION_REQUIRED') {
+      return res.status(409).json(e?.details || cleaningSubmissionRequiredPayload({ consumables_submitted: false, property_photo_submitted: false, ready: false }))
+    }
     return res.status(500).json({ message: e?.message || 'error' })
+  }
+})
+
+// After the formal inspection is saved, inspectors can still append cleaning
+// issue evidence from their album. This route never replaces the submitted
+// inspection batch and deliberately does not advance the task state again.
+router.post('/tasks/:id/inspection-issue-photos', requireAnyPerm(['cleaning_app.inspect.finish', 'cleaning_app.issues.report']), async (req, res) => {
+  const user = (req as any).user
+  const { id } = req.params
+  const parsed = inspectionIssuePhotosSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    if (!hasPg) return res.status(201).json({ ok: true })
+    await ensureCleaningTaskMediaNote()
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return res.status(500).json({ message: 'pg not available' })
+    if (!await canPerformCleaningTaskAction(user, String(id), ['submit_inspection', 'report_issue'])) return res.status(403).json({ message: 'forbidden' })
+    await ensureIdempotentStepReceiptsTable(pgPool)
+
+    const submitId = String(parsed.data.submit_id || '').trim()
+    const stepKey = String(parsed.data.step_key || '').trim()
+    const payloadHash = buildIdempotencyPayloadHash(parsed.data)
+    const transactionResult = await pgRunInTransaction(async (client) => {
+      const lockedTask = await client.query(
+        `SELECT id::text AS id, COALESCE(status, '') AS status
+           FROM cleaning_tasks
+          WHERE id::text = $1::text
+          FOR UPDATE`,
+        [String(id)],
+      )
+      const taskRow = lockedTask?.rows?.[0] || null
+      if (!taskRow) return { kind: 'missing' as const }
+      if (!isInspectionFinishedStatus(String(taskRow.status || ''))) return { kind: 'inspection_not_submitted' as const }
+
+      const receipt = await loadIdempotentStepReceipt(client, {
+        scopeType: 'cleaning_task_inspection_issue_photos',
+        scopeId: String(id),
+        submitId,
+        stepKey,
+      })
+      if (receipt) {
+        if (String(receipt.payload_hash || '') !== payloadHash) return { kind: 'conflict' as const }
+        return { kind: 'replay' as const, responseBody: receipt.response_json || { ok: true } }
+      }
+
+      const existing = await client.query(
+        `SELECT count(*)::int AS count
+           FROM cleaning_task_media
+          WHERE task_id::text = $1::text
+            AND type = 'inspection_unclean'`,
+        [String(id)],
+      )
+      const existingCount = Number(existing?.rows?.[0]?.count || 0)
+      if (existingCount + parsed.data.items.length > 12) return { kind: 'limit' as const, limit: 12 - existingCount }
+
+      const uuid = require('uuid')
+      for (const item of parsed.data.items) {
+        const capturedAt = String(item.captured_at || '').trim() ? new Date(String(item.captured_at)).toISOString() : new Date().toISOString()
+        await client.query(
+          `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at)
+           VALUES ($1,$2,'inspection_unclean',$3,$4,$5)`,
+          [uuid.v4(), String(id), String(item.url), item.note == null ? null : String(item.note || ''), capturedAt],
+        )
+      }
+      const responseBody = { ok: true, appended: parsed.data.items.length }
+      await saveIdempotentStepReceipt(client, {
+        scopeType: 'cleaning_task_inspection_issue_photos',
+        scopeId: String(id),
+        submitId,
+        stepKey,
+      }, payloadHash, responseBody)
+      return { kind: 'committed' as const, responseBody }
+    })
+    if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'task not found' })
+    if (transactionResult.kind === 'inspection_not_submitted') return res.status(409).json({ message: 'inspection_not_submitted' })
+    if (transactionResult.kind === 'limit') return res.status(400).json({ message: '超出数量限制', area: 'unclean', limit: Math.max(0, transactionResult.limit) })
+    if (transactionResult.kind === 'conflict') return res.status(409).json({ message: 'idempotency_conflict', submit_id: submitId, step_key: stepKey })
+    if (transactionResult.kind === 'replay') return res.status(200).json(transactionResult.responseBody)
+    try { broadcastCleaningEvent({ event: 'inspection_issue_photos_saved', task_id: id }) } catch {}
+    return res.status(201).json(transactionResult.responseBody)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'inspection_issue_photos_failed' })
   }
 })
 
@@ -1683,12 +1938,14 @@ const completionPhotosSchema = z
   .object({
     items: z.array(
       z.object({
-        area: z.enum(['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'vacuum_used', 'shower_drain']),
+        area: z.enum(['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'vacuum_used', 'shower_drain', 'remote_tv', 'remote_ac', 'remote_controls']),
         url: z.string().trim().min(1),
         note: z.string().trim().max(800).optional().nullable(),
         captured_at: z.string().trim().max(64).optional(),
       }),
     ),
+    submit_id: z.string().trim().min(1).max(IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH).optional(),
+    step_key: z.string().trim().min(1).max(120).optional(),
     ...actionAuditBodySchema,
   })
   .strict()
@@ -1732,7 +1989,10 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
   const parsed = completionPhotosSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
-    const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, vacuum_used: 1, shower_drain: 1 }
+    const submitId = String(parsed.data.submit_id || '').trim()
+    const stepKey = String(parsed.data.step_key || '').trim()
+    const payloadHash = buildIdempotencyPayloadHash(parsed.data)
+    const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, vacuum_used: 1, shower_drain: 1, remote_tv: 1, remote_ac: 1, remote_controls: 3 }
     const byArea = new Map<string, number>()
     for (const it of parsed.data.items) {
       const a = String(it.area)
@@ -1745,37 +2005,75 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
       if (!await canPerformCleaningTaskAction(user, String(id), ['upload_access_video', 'complete_cleaning'])) return res.status(403).json({ message: 'forbidden' })
+      if (submitId && stepKey) await ensureIdempotentStepReceiptsTable(pgPool)
       const uuid = require('uuid')
       const batchId = uuid.v4()
-      const statusBeforeRes = await pgPool.query(`SELECT COALESCE(status, '') AS status FROM cleaning_tasks WHERE id::text=$1::text LIMIT 1`, [String(id)])
-      const statusBefore = String(statusBeforeRes?.rows?.[0]?.status || '').trim()
-      await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'completion_%'`, [id])
-      for (const it of parsed.data.items) {
-        const type = `completion_${it.area}`
-        const cap = String(it.captured_at || '').trim()
-        const capturedAt = cap ? new Date(cap) : new Date()
-        await pgPool.query(
-          `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at)
-           VALUES ($1,$2,$3,$4,$5,$6)`,
-          [uuid.v4(), id, type, String(it.url), it.note == null ? null : String(it.note || ''), capturedAt.toISOString()],
+      const transactionResult = await pgRunInTransaction(async (client) => {
+        const lockedTask = await client.query(
+          `SELECT id::text AS id, COALESCE(status, '') AS status
+             FROM cleaning_tasks
+            WHERE id::text=$1::text
+            FOR UPDATE`,
+          [String(id)],
         )
-      }
-      const actionActor = actorAndPerformerFromRequest(user, parsed.data)
-      const actionAudit = await recordWorkTaskActionAudit({
-        sourceType: 'cleaning_tasks',
-        sourceId: String(id),
-        performedAsAction: 'complete_cleaning',
-        actorUserId: actionActor.actorUserId,
-        performedByUserId: actionActor.performedByUserId,
-        performedByName: actionActor.performedByName,
-        statusBefore,
-        statusAfter: statusBefore,
-        metadata: {
-          route: 'cleaning_app.tasks.completion_photos',
-          step: 'completion_photos_saved',
-          item_count: parsed.data.items.length,
-        },
-      }, pgPool)
+        const task = lockedTask?.rows?.[0]
+        if (!task) return { kind: 'missing' as const }
+        const statusBefore = String(task.status || '').trim()
+
+        if (submitId && stepKey) {
+          const receipt = await loadIdempotentStepReceipt(client, {
+            scopeType: 'cleaning_task_completion_photos',
+            scopeId: String(id),
+            submitId,
+            stepKey,
+          })
+          if (receipt) {
+            if (String(receipt.payload_hash || '') !== payloadHash) return { kind: 'conflict' as const }
+            return { kind: 'replay' as const, responseBody: receipt.response_json || { ok: true } }
+          }
+        }
+
+        await client.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'completion_%'`, [id])
+        for (const it of parsed.data.items) {
+          const type = `completion_${it.area}`
+          const cap = String(it.captured_at || '').trim()
+          const capturedAt = cap ? new Date(cap) : new Date()
+          await client.query(
+            `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at)
+             VALUES ($1,$2,$3,$4,$5,$6)`,
+            [uuid.v4(), id, type, String(it.url), it.note == null ? null : String(it.note || ''), capturedAt.toISOString()],
+          )
+        }
+        const actionActor = actorAndPerformerFromRequest(user, parsed.data)
+        const actionAudit = await recordWorkTaskActionAudit({
+          sourceType: 'cleaning_tasks',
+          sourceId: String(id),
+          performedAsAction: 'complete_cleaning',
+          actorUserId: actionActor.actorUserId,
+          performedByUserId: actionActor.performedByUserId,
+          performedByName: actionActor.performedByName,
+          statusBefore,
+          statusAfter: statusBefore,
+          metadata: {
+            route: 'cleaning_app.tasks.completion_photos',
+            step: 'completion_photos_saved',
+            item_count: parsed.data.items.length,
+          },
+        }, client)
+        const responseBody = { ok: true, action_result: { status_before: statusBefore || null, status_after: statusBefore || null, audit: actionAudit } }
+        if (submitId && stepKey) {
+          await saveIdempotentStepReceipt(client, {
+            scopeType: 'cleaning_task_completion_photos',
+            scopeId: String(id),
+            submitId,
+            stepKey,
+          }, payloadHash, responseBody)
+        }
+        return { kind: 'committed' as const, responseBody }
+      })
+      if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'task not found' })
+      if (transactionResult.kind === 'conflict') return res.status(409).json({ message: 'idempotency_conflict', submit_id: submitId, step_key: stepKey })
+      if (transactionResult.kind === 'replay') return res.status(200).json(transactionResult.responseBody)
       try { broadcastCleaningEvent({ event: 'completion_photos_saved', task_id: id }) } catch {}
       try {
         const operationId = require('uuid').v4()
@@ -1802,7 +2100,7 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
           )
         }
       } catch {}
-      return res.status(201).json({ ok: true, action_result: { status_before: statusBefore || null, status_after: statusBefore || null, audit: actionAudit } })
+      return res.status(201).json(transactionResult.responseBody)
     }
     return res.status(201).json({ ok: true })
   } catch (e: any) {
@@ -1821,25 +2119,46 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
       await ensureCleaningTaskMediaNote()
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
-      if (!await canPerformCleaningTaskAction(user, String(id), ['submit_inspection'])) return res.status(403).json({ message: 'forbidden' })
+      if (!await canPerformCleaningTaskAction(user, String(id), ['upload_access_video'])) return res.status(403).json({ message: 'forbidden' })
+      const taskResult = await pgPool.query(
+        `SELECT id::text AS id, task_type, inspection_mode
+           FROM cleaning_tasks
+          WHERE id::text = $1::text
+          LIMIT 1`,
+        [String(id)],
+      )
+      const taskRow = taskResult?.rows?.[0] || null
+      if (!taskRow) return res.status(404).json({ message: 'task not found' })
+      const selfCompleteLockbox = effectiveInspectionMode(taskRow) === 'self_complete'
       const uuid = require('uuid')
       const now = new Date().toISOString()
-      await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type='lockbox_video'`, [id])
-      await pgPool.query(
-        `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, lat, lng)
-         VALUES ($1,$2,'lockbox_video',$3,$4,$5,$6)`,
-        [uuid.v4(), id, String(parsed.data.media_url), String(parsed.data.captured_at || now), parsed.data.lat ?? null, parsed.data.lng ?? null],
-      )
       const actionActor = actorAndPerformerFromRequest(user, parsed.data)
-      const actionResult = await applyCleaningTaskActionTransition({
-        taskId: String(id),
-        actionId: 'upload_access_video',
-        actorUserId: actionActor.actorUserId,
-        performedByUserId: actionActor.performedByUserId,
-        performedByName: actionActor.performedByName,
-        metadata: { route: 'cleaning_app.tasks.lockbox_video' },
-      }, pgPool)
-      const up = await pgUpdate('cleaning_tasks', id, { lockbox_video_uploaded_at: now } as any)
+      const transactionResult = await pgRunInTransaction(async (client) => {
+        const actionResult = await applyCleaningTaskActionTransition({
+          taskId: String(id),
+          actionId: 'upload_access_video',
+          actorUserId: actionActor.actorUserId,
+          performedByUserId: actionActor.performedByUserId,
+          performedByName: actionActor.performedByName,
+          metadata: { route: 'cleaning_app.tasks.lockbox_video', self_complete_lockbox: selfCompleteLockbox },
+        }, client)
+        await client.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type='lockbox_video'`, [id])
+        await client.query(
+          `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, lat, lng)
+           VALUES ($1,$2,'lockbox_video',$3,$4,$5,$6)`,
+          [uuid.v4(), id, String(parsed.data.media_url), String(parsed.data.captured_at || now), parsed.data.lat ?? null, parsed.data.lng ?? null],
+        )
+        const upResult = await client.query(
+          `UPDATE cleaning_tasks
+             SET lockbox_video_uploaded_at = $2::timestamptz, updated_at = now()
+           WHERE id::text = $1::text
+           RETURNING *`,
+          [String(id), now],
+        )
+        return { actionResult, up: upResult?.rows?.[0] || null }
+      })
+      const actionResult = transactionResult?.actionResult || null
+      const up = transactionResult?.up || null
       await emitWorkTaskEvent({
         taskId: `cleaning_task:${String(id)}`,
         sourceType: 'cleaning_tasks',
@@ -1881,6 +2200,9 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
     }
     return res.status(201).json({ ok: true })
   } catch (e: any) {
+    if (e?.code === 'CLEANING_SUBMISSION_REQUIRED') {
+      return res.status(409).json(e?.details || cleaningSubmissionRequiredPayload({ consumables_submitted: false, property_photo_submitted: false, ready: false }))
+    }
     return res.status(500).json({ message: e?.message || 'error' })
   }
 })
@@ -2013,7 +2335,7 @@ router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish')
         const a = type.startsWith('completion_') ? type.slice('completion_'.length) : type
         if (a) got.add(a)
       }
-      const missingAreas = REQUIRED_COMPLETION_PHOTO_AREAS.filter((a) => !got.has(a))
+      const missingAreas = REQUIRED_COMPLETION_PHOTO_AREAS.filter((a) => !got.has(a) && !(a === 'remote_tv' && got.has('remote_controls')))
       if (missingAreas.length) return res.status(400).json({ message: '房间完成照片未齐', missing_areas: missingAreas })
 
       let needsRestock = false
@@ -2138,7 +2460,7 @@ router.get('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.fin
         } catch {}
         const proofUrl = (() => {
           const u = String(x.url || '').trim()
-          return u && /^https?:\/\//i.test(u) ? u : null
+          return u && (/^https?:\/\//i.test(u) || isCleaningMediaKey(u)) ? u : null
         })()
         const prev = grouped.get(itemId) || {
           item_id: itemId,
@@ -2178,6 +2500,7 @@ router.post('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.fi
       await ensureCleaningTaskMediaNote()
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
+      await assertCleaningSubmissionReady(String(id), pgPool)
       const uuid = require('uuid')
       const batchId = uuid.v4()
       await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'restock_proof:%'`, [id])
@@ -2223,6 +2546,9 @@ router.post('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.fi
     }
     return res.status(201).json({ ok: true })
   } catch (e: any) {
+    if (e?.code === 'CLEANING_SUBMISSION_REQUIRED') {
+      return res.status(409).json(e?.details || cleaningSubmissionRequiredPayload({ consumables_submitted: false, property_photo_submitted: false, ready: false }))
+    }
     return res.status(500).json({ message: e?.message || 'error' })
   }
 })
@@ -2756,19 +3082,63 @@ router.get(
     try {
       const requestedKey = String((req.query as any)?.key || '').trim()
       const sourceUrl = String((req.query as any)?.url || '').trim()
+      const variant = String((req.query as any)?.variant || 'original').trim().toLowerCase()
       if (!requestedKey && !sourceUrl) return res.status(400).json({ message: 'missing_key' })
+      if (!['original', 'thumbnail', 'preview'].includes(variant)) return res.status(400).json({ message: 'invalid_variant' })
       if (!hasR2) return res.status(404).json({ message: 'r2_not_configured' })
       const key = requestedKey || r2KeyFromUrl(sourceUrl)
-      if (!key || !key.startsWith('cleaning/') || key.includes('..') || key.includes('\\')) {
+      if (!isCleaningMediaKey(key)) {
         return res.status(403).json({ message: 'forbidden_key' })
+      }
+      if (!hasPg) return res.status(403).json({ message: 'forbidden_media' })
+      const { pgPool } = require('../dbAdapter')
+      if (!pgPool) return res.status(403).json({ message: 'forbidden_media' })
+      const mediaReferences = Array.from(new Set([key, sourceUrl].map((value) => String(value || '').trim()).filter(Boolean)))
+      const mediaRows = await pgPool.query(
+        `SELECT ctm.type,
+                ctm.url,
+                ct.id,
+                ct.cleaner_id,
+                ct.inspector_id,
+                ct.assignee_id
+          FROM cleaning_task_media ctm
+           JOIN cleaning_tasks ct ON ct.id::text = ctm.task_id::text
+          WHERE ctm.url = ANY($1::text[])`,
+        [mediaReferences],
+      )
+      const user = (req as any).user || {}
+      const userId = String(user.sub || '').trim()
+      const matchingMediaRows = (mediaRows?.rows || []).filter((row: any) => {
+        const storedKey = r2KeyFromUrl(String(row?.url || '').trim()) || String(row?.url || '').trim()
+        return storedKey === key
+      })
+      const mediaRow = matchingMediaRows.length === 1 ? matchingMediaRows[0] : null
+      if (!mediaRow || !await canViewMzappRecordedCleaningMedia(user, mediaRow, userId, mediaRow.type)) {
+        return res.status(403).json({ message: 'forbidden_media' })
       }
       const object = await r2GetObjectByKey(key)
       if (!object || !object.body?.length) return res.status(404).json({ message: 'not_found' })
-      res.setHeader('Content-Type', object.contentType || 'application/octet-stream')
+      let responseBody = object.body
+      let responseContentType = object.contentType || 'application/octet-stream'
+      if (variant !== 'original') {
+        const maxEdge = variant === 'thumbnail' ? 480 : 1600
+        const quality = variant === 'thumbnail' ? 68 : 82
+        responseBody = await encodeCleaningImageToJpeg(object.body, { maxEdge, quality })
+        responseContentType = 'image/jpeg'
+      } else {
+        responseBody = await encodeCleaningImageToJpeg(object.body)
+        responseContentType = 'image/jpeg'
+      }
+      res.setHeader('Content-Type', responseContentType)
       res.setHeader('Cache-Control', 'private, max-age=86400')
-      if (object.etag) res.setHeader('ETag', object.etag)
-      return res.status(200).send(object.body)
+      if (object.etag) {
+        const baseEtag = String(object.etag).replace(/^W\//, '').replace(/^"|"$/g, '')
+        const jpegSuffix = responseContentType === 'image/jpeg' ? '-jpeg' : ''
+        res.setHeader('ETag', variant === 'original' ? (jpegSuffix ? `W/"${baseEtag}${jpegSuffix}"` : object.etag) : `W/"${baseEtag}-${variant}${jpegSuffix}"`)
+      }
+      return res.status(200).send(responseBody)
     } catch (e: any) {
+      if (e?.code === CLEANING_IMAGE_FORMAT_ERROR) return res.status(415).json({ code: CLEANING_IMAGE_FORMAT_ERROR, message: 'image_format_unsupported' })
       return res.status(500).json({ message: e?.message || 'media_read_failed' })
     }
   },
@@ -2783,7 +3153,7 @@ router.post(
   try {
     const user = (req as any).user || {}
     const body: any = (req as any).body || {}
-    const isImage = String(req.file.mimetype || '').startsWith('image/')
+    const isImage = isImageUploadCandidate(req.file.mimetype, req.file.originalname)
     const wantWatermark = String(body.watermark || '').trim() === '1' || String(body.purpose || '').trim() === 'key_photo'
     const watermarkText = String(body.watermark_text || '').trim()
     const propertyCode = String(body.property_code || '').trim()
@@ -2807,8 +3177,13 @@ router.post(
     const lines = lines0.length > 2 ? lines0.slice(0, 2) : lines0
 
     if (hasR2 && (req.file as any).buffer) {
-      let buf: Buffer = (req.file as any).buffer
-      if (isImage && wantWatermark && lines.length) {
+      const normalized = await normalizeCleaningImageUpload({
+        buffer: (req.file as any).buffer,
+        contentType: req.file.mimetype,
+        originalName: req.file.originalname,
+      })
+      let buf: Buffer = normalized.buffer
+      if (normalized.isImage && wantWatermark && lines.length) {
         try {
           const img = sharp(buf)
           const meta = await img.metadata()
@@ -2847,9 +3222,13 @@ router.post(
           }
         } catch {}
       }
-      const ext = (isImage && wantWatermark && lines.length) ? '.jpg' : (path.extname(req.file.originalname) || '')
-      const key = `cleaning/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
-      const mime = (isImage && wantWatermark && lines.length) ? 'image/jpeg' : (req.file.mimetype || 'application/octet-stream')
+      const mediaId = String(body.media_id || '').trim()
+      const taskId = String(body.task_id || '').trim()
+      const ext = normalized.normalized ? '.jpg' : ((isImage && wantWatermark && lines.length) ? '.jpg' : (path.extname(req.file.originalname) || ''))
+      const key = mediaId
+        ? `cleaning/media/${stableUploadKeySegment(taskId, 'unscoped')}/${stableUploadKeySegment(mediaId, 'media')}`
+        : `cleaning/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
+      const mime = normalized.normalized || (isImage && wantWatermark && lines.length) ? 'image/jpeg' : (req.file.mimetype || 'application/octet-stream')
       const url = await r2Upload(key, mime, buf)
       return res.status(201).json({ key, url })
     }
@@ -2895,6 +3274,7 @@ router.post(
     const url = `/uploads/${req.file.filename}`
     return res.status(201).json({ url })
   } catch (e: any) {
+    if (e?.code === CLEANING_IMAGE_FORMAT_ERROR) return res.status(415).json({ code: CLEANING_IMAGE_FORMAT_ERROR, message: 'image_format_unsupported' })
     return res.status(500).json({ message: e?.message || 'upload_failed' })
   }
 })

@@ -345,6 +345,8 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_au text;
 CREATE INDEX IF NOT EXISTS idx_users_phone_au ON users(phone_au);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name text;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS visa_document_url text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS visa_grant_number text;
 
 -- CMS pages
 CREATE TABLE IF NOT EXISTS cms_pages (

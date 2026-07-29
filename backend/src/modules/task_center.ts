@@ -452,8 +452,9 @@ function buildWorkSaveDiff(before: any, assignment: any): TaskSaveDiff | null {
   const nextStatus = assigneeAction && ['todo', 'assigned'].includes(lower(before.status))
     ? (nextAssignee ? 'assigned' : 'todo')
     : oldStatus
-  const oldUrgency = nullableText(before.urgency)
-  const nextUrgency = nullableText(assignment.urgency) || oldUrgency
+  const isOfflineTask = lower(before.task_kind) === 'offline' || lower(before.source_type) === 'cleaning_offline_tasks'
+  const oldUrgency = isOfflineTask ? null : nullableText(before.urgency)
+  const nextUrgency = isOfflineTask ? null : (nullableText(assignment.urgency) || oldUrgency)
   const changedFields: string[] = []
   const pushChanges: string[] = []
   const recipients: any[] = []
@@ -482,7 +483,7 @@ function buildWorkSaveDiff(before: any, assignment: any): TaskSaveDiff | null {
       pushChanges.push('status')
     }
   }
-  if (oldUrgency !== nextUrgency) {
+  if (!isOfflineTask && oldUrgency !== nextUrgency) {
     changedFields.push('urgency')
     pushChanges.push('urgency')
   }
@@ -614,7 +615,7 @@ function mapWorkTaskRowToBoardTask(row: any, date: string): BoardTask {
     property_code: row.property_code ? String(row.property_code) : null,
     property_region: row.property_region ? String(row.property_region) : null,
     status: normStatus(row.status),
-    urgency: normUrgency(row.urgency),
+    urgency: lower(row.task_kind) === 'offline' ? null : normUrgency(row.urgency),
     title: display.title,
     detail: display.detail,
     summary: row.summary != null ? String(row.summary || '') : null,
@@ -825,7 +826,7 @@ async function backfillOfflineTasksToWorkTasks(date: string, includeOverdue: boo
   await pgPool.query(
     `INSERT INTO work_tasks(
        id, task_kind, source_type, source_id, property_id,
-       title, summary, scheduled_date, assignee_id, status, urgency,
+       title, summary, scheduled_date, assignee_id, status,
        created_at, updated_at
      )
      SELECT
@@ -839,7 +840,6 @@ async function backfillOfflineTasksToWorkTasks(date: string, includeOverdue: boo
        t.date::date AS scheduled_date,
        t.assignee_id,
        CASE WHEN COALESCE(t.status, 'todo') = 'done' THEN 'done' ELSE 'todo' END AS status,
-       COALESCE(NULLIF(t.urgency, ''), 'medium') AS urgency,
        COALESCE(t.created_at, t.updated_at, now()) AS created_at,
        COALESCE(t.updated_at, t.created_at, now()) AS updated_at
      FROM cleaning_offline_tasks t
@@ -1482,7 +1482,9 @@ async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnsch
         AND COALESCE(w.created_at::date, w.scheduled_date, $1::date) >= $3::date
         AND NOT (w.source_type = ANY($4::text[]) AND w.scheduled_date IS NULL)
         AND (${where.join(' OR ')})
-      ORDER BY COALESCE(w.scheduled_date, $1::date) ASC, w.urgency DESC, w.updated_at DESC, w.id DESC
+      ORDER BY COALESCE(w.scheduled_date, $1::date) ASC,
+               CASE WHEN lower(COALESCE(w.task_kind, '')) = 'offline' THEN NULL ELSE w.urgency END DESC NULLS LAST,
+               w.updated_at DESC, w.id DESC
     `
     vals.push(PROPERTY_FOLLOWUP_SOURCE_TYPES)
     const r = await pgPool.query(sql, vals)
@@ -1517,7 +1519,7 @@ async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnsch
         property_code: null,
         property_region: null,
         status: normStatus(row.status),
-        urgency: normUrgency(row.urgency),
+        urgency: lower(row.task_kind) === 'offline' ? null : normUrgency(row.urgency),
         title: display.title,
         detail: display.detail,
         summary: row.summary != null ? String(row.summary || '') : null,
@@ -1551,7 +1553,6 @@ async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnsch
       scheduled_date: row.date,
       assignee_id: row.assignee_id || null,
       status: row.status,
-      urgency: row.urgency,
     }, date))
   return dedupeBoardTasks([...workTasks, ...offlineTasks])
 }
@@ -1941,7 +1942,7 @@ async function buildTaskCenterDay(date: string, includeOverdue: boolean, include
       end_time: null,
 	      assignee_id: task.assignee_id,
 	      status: normStatus(task.status),
-	      urgency: normUrgency(task.urgency),
+	      urgency: lower(task.task_kind) === 'offline' ? null : normUrgency(task.urgency),
 	      sort_index: task.sort_index ?? null,
 	      display_state: task.display_state,
       management_actions: task.management_actions,
@@ -2451,7 +2452,10 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                        END
                      ELSE task.status
                    END,
-                 urgency = COALESCE(NULLIF(x.urgency, ''), task.urgency),
+                 urgency = CASE
+                   WHEN lower(COALESCE(task.task_kind, '')) = 'offline' THEN task.urgency
+                   ELSE COALESCE(NULLIF(x.urgency, ''), task.urgency)
+                 END,
                  updated_by = $2,
                  updated_at = now()
                FROM jsonb_to_recordset($1::jsonb) AS x(
@@ -2473,7 +2477,10 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                      x.assignee_assignment_action IN ('assign', 'unassign')
                      AND task.assignee_id IS DISTINCT FROM x.assignee_id
                    )
-                 OR task.urgency IS DISTINCT FROM COALESCE(NULLIF(x.urgency, ''), task.urgency)
+                 OR (
+                   lower(COALESCE(task.task_kind, '')) <> 'offline'
+                   AND task.urgency IS DISTINCT FROM COALESCE(NULLIF(x.urgency, ''), task.urgency)
+                 )
                  OR (
                      lower(COALESCE(task.status, 'todo')) IN ('todo', 'assigned')
                      AND x.assignee_assignment_action IN ('assign', 'unassign')
@@ -2490,7 +2497,6 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                  SET date = w.scheduled_date,
                      title = w.title,
                      content = COALESCE(w.summary, ''),
-                     urgency = w.urgency,
                      updated_at = now()
                FROM work_tasks w
                WHERE w.source_type = 'cleaning_offline_tasks'
@@ -2556,7 +2562,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                   assignee_id: assigneeId,
                   assignee_name: assigneeName,
                   status: task.status,
-                  urgency: task.urgency,
+                  ...(lower(task.task_kind) === 'offline' ? {} : { urgency: task.urgency }),
                 },
                 priority: diff.priority,
                 actorUserId: actorId || null,
@@ -2713,7 +2719,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
               scheduled_date: task.scheduled_date ? String(task.scheduled_date).slice(0, 10) : null,
               assignee_id: task.assignee_id ?? null,
               status: task.status,
-              urgency: task.urgency ?? null,
+              ...(lower(task.task_kind) === 'offline' ? {} : { urgency: task.urgency ?? null }),
             },
             payload: {
               task_title: task.title ?? '',

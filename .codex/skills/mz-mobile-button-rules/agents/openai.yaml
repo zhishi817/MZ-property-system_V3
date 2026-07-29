@@ -1,0 +1,4 @@
+interface:
+  display_name: "MZ Mobile Button Rules"
+  short_description: "Apply consistent MZ mobile button sizing and touch targets"
+  default_prompt: "Use $mz-mobile-button-rules when adding or updating MZ mobile buttons."

@@ -1,4 +1,11 @@
-import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3'
+import {
+  S3Client,
+  PutObjectCommand,
+  DeleteObjectCommand,
+  DeleteObjectsCommand,
+  GetObjectCommand,
+  ListObjectsV2Command,
+} from '@aws-sdk/client-s3'
 
 const endpoint = process.env.R2_ENDPOINT || ''
 const accessKeyId = process.env.R2_ACCESS_KEY_ID || ''
@@ -161,4 +168,70 @@ export async function r2DeleteByUrl(url: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+export type R2ObjectSummary = {
+  key: string
+  size: number
+  lastModified: string | null
+  etag: string | null
+}
+
+export async function r2ListObjects(options: { prefix?: string; maxObjects?: number } = {}): Promise<R2ObjectSummary[]> {
+  if (!hasR2 || !r2) throw new Error('R2 not configured')
+  const maxObjects = Math.max(1, Math.min(100000, Math.floor(Number(options.maxObjects || 10000))))
+  const objects: R2ObjectSummary[] = []
+  let continuationToken: string | undefined
+
+  do {
+    const response: any = await r2.send(new ListObjectsV2Command({
+      Bucket: bucket,
+      Prefix: String(options.prefix || '').trim() || undefined,
+      ContinuationToken: continuationToken,
+      MaxKeys: Math.min(1000, maxObjects - objects.length),
+    }))
+    for (const item of Array.isArray(response?.Contents) ? response.Contents : []) {
+      const key = String(item?.Key || '').trim()
+      if (!key) continue
+      objects.push({
+        key,
+        size: Number(item?.Size || 0) || 0,
+        lastModified: item?.LastModified ? new Date(item.LastModified).toISOString() : null,
+        etag: item?.ETag ? String(item.ETag).replace(/"/g, '') : null,
+      })
+      if (objects.length >= maxObjects) break
+    }
+    if (objects.length >= maxObjects || !response?.IsTruncated) break
+    continuationToken = String(response?.NextContinuationToken || '').trim() || undefined
+  } while (continuationToken)
+
+  return objects
+}
+
+export async function r2DeleteObjects(keys: string[]): Promise<{ deleted: string[]; errors: Array<{ key: string; code: string; message: string }> }> {
+  if (!hasR2 || !r2) throw new Error('R2 not configured')
+  const uniqueKeys = Array.from(new Set(keys.map((key) => String(key || '').trim()).filter(Boolean)))
+  const deleted: string[] = []
+  const errors: Array<{ key: string; code: string; message: string }> = []
+  for (let offset = 0; offset < uniqueKeys.length; offset += 1000) {
+    const batch = uniqueKeys.slice(offset, offset + 1000)
+    const response: any = await r2.send(new DeleteObjectsCommand({
+      Bucket: bucket,
+      Delete: { Objects: batch.map((Key) => ({ Key })), Quiet: false },
+    }))
+    for (const item of Array.isArray(response?.Deleted) ? response.Deleted : []) {
+      const key = String(item?.Key || '').trim()
+      if (key) deleted.push(key)
+    }
+    for (const item of Array.isArray(response?.Errors) ? response.Errors : []) {
+      const key = String(item?.Key || '').trim()
+      if (!key) continue
+      errors.push({
+        key,
+        code: String(item?.Code || 'R2_DELETE_FAILED'),
+        message: String(item?.Message || 'R2 object delete failed'),
+      })
+    }
+  }
+  return { deleted, errors }
 }

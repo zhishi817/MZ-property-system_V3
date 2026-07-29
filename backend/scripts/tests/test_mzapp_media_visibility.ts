@@ -3,7 +3,7 @@ import assert from 'assert'
 process.env.DATABASE_URL = ''
 
 async function main() {
-  const { canViewMzappInspectionMedia, canViewMzappLockboxVideo } = await import('../../src/modules/mzapp')
+  const { canViewMzappInspectionMedia, canViewMzappLockboxVideo, canViewMzappRecordedCleaningMedia } = await import('../../src/modules/mzapp')
 
   const row = {
     id: 'media-visibility-task',
@@ -36,6 +36,27 @@ async function main() {
     await canViewMzappInspectionMedia({ sub: 'outsider-1', role: 'cleaner', roles: ['cleaner'] }, row, 'outsider-1'),
     false,
     'unassigned non-manager cannot read inspector media',
+  )
+
+  assert.equal(
+    await canViewMzappRecordedCleaningMedia({ sub: 'inspector-1', role: 'cleaning_inspector', roles: ['cleaning_inspector'] }, row, 'inspector-1', 'inspection_living'),
+    true,
+    'assigned inspector can read a recorded inspection image',
+  )
+  assert.equal(
+    await canViewMzappRecordedCleaningMedia({ sub: 'outsider-1', role: 'cleaning_inspector', roles: ['cleaning_inspector'] }, row, 'outsider-1', 'inspection_living'),
+    false,
+    'unassigned inspector cannot read another task inspection image by object key',
+  )
+  assert.equal(
+    await canViewMzappRecordedCleaningMedia({ sub: 'cleaner-1', role: 'cleaner', roles: ['cleaner'] }, row, 'cleaner-1', 'completion_living'),
+    true,
+    'assigned cleaner can read the task completion image',
+  )
+  assert.equal(
+    await canViewMzappRecordedCleaningMedia({ sub: 'outsider-1', role: 'cleaning_inspector', roles: ['cleaning_inspector'] }, row, 'outsider-1', 'lockbox_video'),
+    false,
+    'unassigned inspector cannot read another task lockbox video media by object key',
   )
 
   for (const role of ['admin', 'offline_manager', 'customer_service', 'cleaning_inspector', 'cleaner_inspector']) {

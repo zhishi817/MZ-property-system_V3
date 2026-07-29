@@ -189,7 +189,7 @@ router.get('/day', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 
     if (includeOverdue) where.push(`(scheduled_date IS NOT NULL AND scheduled_date < $1::date)`)
     if (includeUnscheduled) where.push(`(scheduled_date IS NULL)`)
     if (includeFuture) where.push(`(scheduled_date IS NOT NULL AND scheduled_date > $1::date)`)
-    const sql = `SELECT * FROM work_tasks WHERE status <> ALL($2::text[]) AND (${where.join(' OR ')}) ORDER BY COALESCE(scheduled_date, $1::date) ASC, urgency DESC, updated_at DESC, id DESC`
+    const sql = `SELECT * FROM work_tasks WHERE status <> ALL($2::text[]) AND (${where.join(' OR ')}) ORDER BY COALESCE(scheduled_date, $1::date) ASC, CASE WHEN lower(COALESCE(task_kind, '')) = 'offline' THEN NULL ELSE urgency END DESC NULLS LAST, updated_at DESC, id DESC`
     const r = await pgPool.query(sql, vals)
     const tasks = (r?.rows || []).map((x: any) => ({
       ...x,
@@ -205,7 +205,7 @@ router.get('/day', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 
       end_time: x.end_time !== undefined && x.end_time !== null ? String(x.end_time || '') : null,
       assignee_id: x.assignee_id ? String(x.assignee_id) : null,
       status: normStatus(x.status),
-      urgency: normUrgency(x.urgency),
+      urgency: String(x.task_kind || '').toLowerCase() === 'offline' ? null : normUrgency(x.urgency),
       photo_urls: Array.isArray(x.photo_urls) ? x.photo_urls : [],
     }))
     const pool: any[] = []
@@ -472,7 +472,7 @@ router.patch('/:id', requirePerm('cleaning.schedule.manage'), async (req, res) =
       end_time: row.end_time !== undefined && row.end_time !== null ? String(row.end_time || '') : null,
       assignee_id: row.assignee_id ? String(row.assignee_id) : null,
       status: normStatus(row.status),
-      urgency: normUrgency(row.urgency),
+      urgency: String(row.task_kind || '').toLowerCase() === 'offline' ? null : normUrgency(row.urgency),
     })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'update_failed' })

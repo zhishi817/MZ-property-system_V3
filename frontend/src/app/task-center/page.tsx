@@ -26,6 +26,7 @@ import {
 } from '../../lib/cleaningTaskUi'
 import {
   TASK_CENTER_MAX_COLUMNS,
+  cleaningNightsDisplayLabels,
   cleaningTaskFlowLabelText,
   isDeferredInspectionDisplayTask,
   resolveTaskCenterColumns,
@@ -723,17 +724,12 @@ function taskOrderTags(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 
   return tags
 }
 
-function taskNightsTag(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view' | 'nights'>) {
-  if (!shouldShowNights(task)) return null
-  const nights = Number(task.nights)
-  if (!Number.isFinite(nights) || nights <= 0) return null
-  return { label: `住${Math.trunc(nights)}晚`, tone: 'neutral' as const }
-}
-
-function shouldShowNights(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view'>) {
-  if (task.task_source !== 'cleaning' || task.deferred_inspection_view) return false
-  const timing = cleaningTimingVisibility(task)
-  return timing.showCheckin
+function taskNightsTags(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view' | 'nights' | 'turnover_display'>) {
+  return cleaningNightsDisplayLabels(task).map((label, index) => ({
+    key: `nights-${index}`,
+    label,
+    tone: 'neutral' as const,
+  }))
 }
 
 function isCheckinOnlyCleaningTask(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view'>) {
@@ -816,7 +812,7 @@ function cleaningSummaryParts(task: Pick<TaskCenterTask, 'task_source' | 'task_k
     parts.push(isDefaultSummaryTime(checkinTime, DEFAULT_SUMMARY_CHECKIN_TIME) || !checkinTime ? '入住' : `${checkinTime}入住`)
   }
   if (!parts.length) parts.push(cleaningTaskFlowLabel(task))
-  if (shouldShowNights(task) && task.nights != null && Number(task.nights) > 0) parts.push(`住${Number(task.nights)}晚`)
+  parts.push(...cleaningNightsDisplayLabels(task))
   const guestRequest = guestRequestForDisplay(task)
   if (guestRequest) parts.push(`客人需求：${guestRequest}`)
   return parts
@@ -1119,7 +1115,7 @@ export default function TaskCenterPage() {
     if (task.temporarily_skipped) return '#ef4444'
     const assignedColor = assignedColorForTask(task)
     if (assignedColor) return assignedColor
-    if (task.task_source === 'cleaning') return '#cbd5e1'
+    if (task.task_source === 'cleaning' || String(task.task_kind || '').toLowerCase() === 'offline') return '#cbd5e1'
     if (task.urgency === 'urgent') return '#ef4444'
     if (task.urgency === 'high') return '#f97316'
     return '#94a3b8'
@@ -2032,10 +2028,10 @@ export default function TaskCenterPage() {
     const assignedStaffName = assignedStaffId ? String(staffById.get(assignedStaffId)?.name || '').trim() : ''
     const supersededCount = supersededCleaningTaskIds(task).length
     const hasOrderTags = orderTags.length > 0
-    const nightsTag = taskNightsTag(task)
+    const nightsTags = taskNightsTags(task)
     const timingFacts = [
       ...timingTags.map((item) => item.label),
-      ...(nightsTag ? [nightsTag.label] : []),
+      ...nightsTags.map((item) => item.label),
     ].filter(Boolean)
     const fallbackFact = task.task_source === 'cleaning'
       ? cleaningTaskFlowLabel(task)
@@ -2820,35 +2816,37 @@ export default function TaskCenterPage() {
                     />
                   </div>
                 </div>
-	                <div>
-	                  <div className={styles.fieldLabel}>任务详情</div>
-	                  <Input.TextArea
-	                    rows={4}
-	                    value={detailDraft.summary}
-	                    disabled={!detailEditGate.enabled}
-	                    title={detailEditDisabledReason || undefined}
-	                    onChange={(e) => setDetailDraft((prev) => (prev ? { ...prev, summary: e.target.value } : prev))}
-	                  />
-	                </div>
-                <div className={styles.taskDetailGrid}>
-                  <div>
-                    <div className={styles.fieldLabel}>紧急程度</div>
-	                    <Select
-	                      value={detailDraft.urgency}
-	                      disabled={!detailEditGate.enabled}
-	                      title={detailEditDisabledReason || undefined}
-	                      onChange={(value) => setDetailDraft((prev) => (prev ? { ...prev, urgency: value as TaskDetailDraft['urgency'] } : prev))}
-                      style={{ width: '100%' }}
-                      options={[
-                        { label: '低', value: 'low' },
-                        { label: '中', value: 'medium' },
-                        { label: '高', value: 'high' },
-                        { label: '紧急', value: 'urgent' },
-                      ]}
-                    />
-                  </div>
-                  <div />
+                <div>
+                  <div className={styles.fieldLabel}>任务详情</div>
+                  <Input.TextArea
+                    rows={4}
+                    value={detailDraft.summary}
+                    disabled={!detailEditGate.enabled}
+                    title={detailEditDisabledReason || undefined}
+                    onChange={(e) => setDetailDraft((prev) => (prev ? { ...prev, summary: e.target.value } : prev))}
+                  />
                 </div>
+                {String(detailTask.task_kind || '').toLowerCase() !== 'offline' ? (
+                  <div className={styles.taskDetailGrid}>
+                    <div>
+                      <div className={styles.fieldLabel}>紧急程度</div>
+                      <Select
+                        value={detailDraft.urgency}
+                        disabled={!detailEditGate.enabled}
+                        title={detailEditDisabledReason || undefined}
+                        onChange={(value) => setDetailDraft((prev) => (prev ? { ...prev, urgency: value as TaskDetailDraft['urgency'] } : prev))}
+                        style={{ width: '100%' }}
+                        options={[
+                          { label: '低', value: 'low' },
+                          { label: '中', value: 'medium' },
+                          { label: '高', value: 'high' },
+                          { label: '紧急', value: 'urgent' },
+                        ]}
+                      />
+                    </div>
+                    <div />
+                  </div>
+                ) : null}
               </>
             )}
             <div className={`${styles.taskCenterSkipCard} ${semanticToneClass('pending')}`}>

@@ -14,6 +14,16 @@ For every repository mutation, use `.codex/skills/change-release-ledger/SKILL.md
 
 These requirements apply to every Codex thread and agent working in this repository.
 
+## Pre-Release Independent Codex Review
+
+Before staging, committing, pushing, or deploying a release, open an independent Codex review task using `docs/codex-release-review.md`.
+
+- The review task is review-only: it must not modify files, commit, push, deploy, call production APIs, or write production data.
+- Provide the exact base/head, selected CRL IDs, changed surfaces, and completed regression commands.
+- The reviewer must inspect `AGENTS.md`, the ledger, the complete diff, test coverage, unrelated files, production-write risk, and secret/token risk.
+- A P0/P1 finding, uncovered current-task file, or unverified production/secret risk blocks release until the implementation thread resolves it and updates the ledger.
+- Keep the review report with the release discussion; the review thread does not replace targeted fixes or final validation.
+
 ## Self-Test And Optimization Guardrails
 
 When the user asks Codex to test, audit, optimize, inspect, or find and fix issues in this repository:
