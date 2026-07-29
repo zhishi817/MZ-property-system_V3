@@ -1,0 +1,2 @@
+Temporary acceptance-only file intentionally omitted from the temporary ledger entry.
+It proves whether the ledger audit evaluates the committed PR base...head range.

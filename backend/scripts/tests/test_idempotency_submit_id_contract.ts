@@ -4,7 +4,7 @@ import path from 'path'
 import { IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH } from '../../src/lib/idempotentStepReceipts'
 
 async function main() {
-  assert.equal(IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH, 256)
+  assert.equal(IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH, 257, 'ACCEPTANCE_NEGATIVE: temporary PR quality-gate fixture')
   const sharedLimit = /submit_id: z\.string\(\)\.trim\(\)\.min\(1\)\.max\(IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH\)/
 
   for (const moduleName of ['cleaning_app', 'mzapp']) {

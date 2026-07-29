@@ -1,5 +1,31 @@
 # Change Release Ledger
 
+## CRL-20260729-012 — 临时根 PR 范围验收夹具
+
+- **Status:** in-progress
+- **Updated:** 2026-07-29 Australia/Melbourne
+- **Request:** 对根仓库临时 PR 复验质量门和 Ledger 的 PR 范围覆盖。
+- **Outcome:** 临时改变 submit-id 契约断言以令 PR 质量检查失败；验收完成后关闭 PR 并删除分支。
+
+### Files / Areas
+
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — temporary: 仅为负向质量门证据而故意失败。
+- `docs/change-release-ledger.md` — temporary: 记录可归属的契约测试变更。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- This is a disposable acceptance branch and must never merge into `Dev`.
+
+### Validation
+
+- Pending GitHub pull-request quality run; expected to fail on `ACCEPTANCE_NEGATIVE`.
+
+### Risks / Release Notes
+
+- Rollback: close the temporary PR and delete its temporary branch.
+- Sensitive-information review: no secrets or production data.
+
 ## CRL-20260729-011 — 根质量命令层级
 
 - **Status:** pushed
