@@ -2,7 +2,7 @@
 
 ## CRL-20260729-010 — 根 Fast 检查隔离跨仓库 Phase 5 契约
 
-- **Status:** locally-committed
+- **Status:** committed
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** 让最新根仓库的干净 clone/worktree 能执行 `check:fast`，同时保留根/移动端 Phase 5 共享契约的精确组合验证。
 - **Outcome:** 根 `check:fast` 与 `check:backend` 不再隐式读取独立移动端目录；新增手动 Phase 5 集成 workflow，只有 root/mobile 精确 ref 都已 checkout 时才运行该契约并保存 resolved SHA。
@@ -46,10 +46,10 @@
 
 ## CRL-20260729-009 — Quality guardrails shared baseline
 
-- **Status:** pushed
+- **Status:** blocked
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** 固化根仓库与独立移动端仓库的 Agent、测试、审计和审查治理基线，随后才允许多 Agent worktree 并行开发。
-- **Outcome:** 根仓库已形成可提交的 Agent 约束、FR 结构审计、发布独立审查模板、回归分层说明和可移植移动端按钮规则；移动端对应基线由独立仓库 CRL-20260729-001 记录。当前选择性发布候选已补齐其归属业务测试后通过完整审计、独立审查并推送至根仓库 `Dev`；未带入未选中的并发业务改动。
+- **Outcome:** 根仓库已形成并推送 Agent 约束、FR 结构审计、发布独立审查模板、回归分层说明和可移植移动端按钮规则；但移动端 `b45d845` 尚未包含其对应 CRL-20260729-001 治理文件，故共同基线仍 blocked，直至移动端候选提交并推送。当前根选择性发布未带入未选中的并发业务改动。
 
 ### Implementation
 
@@ -88,14 +88,22 @@
 - Risk: 当前根和移动端工作区包含其他未提交业务改动；本单元必须按文件和 hunk 选择性 stage，不能使用 broad staging。根 FR 文档已在 HEAD 声称 5 条未提交测试可用，故现在不能满足从干净 clone 执行 Fast 的 Phase 1 完成标准。
 - Sensitive-information review: 本单元不读取、不记录或提交 `.env`、token、cookie、密码、数据库 URL、私钥、设备日志或本地缓存。
 - Rollback: 回退本单元列出的治理文件和台账条目；不影响业务代码、数据库或发布产物。
-- **Git state:** 根仓库选择性发布提交 `2a0ecbc230c6ed6de251ac76712a04ffba98019c` 与本地台账回执 `ccadf40a33c3f2b5ca849e99e79924afd2eb0499` 已推送至远端 `Dev`。移动端依赖发布已推送至 `Dev` 的 `b45d84529ba734b17fabf9bd0c786517394abafd`。此前 GitHub 因 HTTPS PAT 缺少 `workflow` 权限拒绝推送；用户更新凭证后，`git push origin Dev:Dev` 成功（`a8d5f36..ccadf40`）。
+- **Git state:** 根仓库选择性发布提交 `2a0ecbc230c6ed6de251ac76712a04ffba98019c` 与本地台账回执 `ccadf40a33c3f2b5ca849e99e79924afd2eb0499` 已推送至远端 `Dev`。移动端 `b45d84529ba734b17fabf9bd0c786517394abafd` 已推送的是选定业务映射，实际不包含移动端质量基线；CRL-20260729-001 仍在隔离候选中。此前 GitHub 因 HTTPS PAT 缺少 `workflow` 权限拒绝推送；用户更新凭证后，`git push origin Dev:Dev` 成功（`a8d5f36..ccadf40`）。
 
 ### Release update — 2026-07-29
 
 - Selection: 本条与用户确认的一组根仓库/移动端依赖 CRL 仅按文件与 hunk 进入候选，未带入 CRL-20260729-008、移动端版本/EAS 构建配置或其他并发工作。
 - Candidate validation: 隔离候选执行 `npm run check:ledger`（0 个未覆盖文件）、`npm run check:feature-registry`（8 个 FR / 90 条映射）、`npm run check:backend`、`npm run check:frontend`；独立移动端执行 `npm run check:mobile`。后端、前端构建及契约测试均通过；移动端 typecheck、Jest（50 suites / 242 tests）通过，lint 为 0 error / 111 个既有 warning。
 - Independent review: 按 `docs/codex-release-review.md` 完成只读审查，结论 GO；无 P0/P1、未覆盖当前任务文件、生产写入风险或敏感信息泄漏。P2 保留项为移动端 Jest worker 退出提示与真机/EAS/生产环境未运行。
-- Remote state: 移动端与根仓库的选择性发布均已推送至各自 `Dev`；凭证更新只用于 GitHub Git 认证，不涉及生产系统、外部同步或生产数据写入。
+- Remote state: 根仓库选择性发布及移动端选定业务映射已分别推送；移动端质量基线不在 `b45d845`，不能声称共同 Phase 1 已推送。凭证更新只用于 GitHub Git 认证，不涉及生产系统、外部同步或生产数据写入。
+
+### Phase 1 correction and closure candidate — 2026-07-29
+
+- Correction: 根 `a571600` 已包含本条根治理文件，但移动端 `b45d845` 实际不包含 `AGENTS.md`、移动端 workflow、`.nvmrc`、本地按钮审计、台账审计或更新后的 `check:ci`；此前“移动端基线已推送”的描述不成立。这些移动端治理内容仍只在并发工作区暂存，现已由隔离候选 `codex/phase1-mobile-quality-baseline` 作为 `CRL-20260729-001` 精确提取。
+- Root closure: 隔离根候选 `codex/phase1-quality-baseline` 从 `Dev` 只接入已独立审查的 `CRL-20260729-010`，使单独根 worktree 的 `check:fast` 不再隐式读取移动端目录，并通过精确双 ref 的 `Cross-Repository Phase 5 Contract` workflow 保留跨仓库门禁。
+- Candidate validation: 根候选 `npm run check:fast` 通过（FR 8 个 / 90 映射、backend build、幂等/R2 契约、frontend 39 files / 171 tests；独立移动端 checkout 缺席时明确 skip）；移动端候选 `npm run check:ci` 通过（ledger 7/7、typecheck、lint 0 errors / 111 existing warnings、strict button audit、Jest 50 suites / 242 tests）。
+- Passed: 根候选与移动端候选均经独立只读复审为 GO，无 P0/P1、业务混入、密钥、生产写入或外部同步风险。
+- Pending: 精确 hunk 暂存与本地提交；`actionlint`、GitHub Actions dispatch、真实设备/EAS、生产 API/数据写入和外部同步均未运行。
 
 ## CRL-20260729-007 — Photo ID 与签证图片只读大图预览
 
