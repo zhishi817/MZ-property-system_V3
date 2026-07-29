@@ -2,10 +2,10 @@
 
 ## CRL-20260729-009 — Quality guardrails shared baseline
 
-- **Status:** in-progress
+- **Status:** committed
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** 固化根仓库与独立移动端仓库的 Agent、测试、审计和审查治理基线，随后才允许多 Agent worktree 并行开发。
-- **Outcome:** 根仓库已形成可提交的 Agent 约束、FR 结构审计、发布独立审查模板、回归分层说明和可移植移动端按钮规则；移动端对应基线由独立仓库 CRL-20260729-001 记录。根仓库的完整 Fast 基线仍被 5 条指向未提交业务测试的 FR 映射阻塞，当前任务不会伪造通过或带入业务改动。
+- **Outcome:** 根仓库已形成可提交的 Agent 约束、FR 结构审计、发布独立审查模板、回归分层说明和可移植移动端按钮规则；移动端对应基线由独立仓库 CRL-20260729-001 记录。当前选择性发布候选已补齐其归属业务测试后通过完整审计、独立审查并提交到根仓库 `Dev` 本地分支；根仓库远端推送仍受 GitHub 凭证的 `workflow` 权限阻塞，未伪造远端成功。
 
 ### Implementation
 
@@ -44,7 +44,14 @@
 - Risk: 当前根和移动端工作区包含其他未提交业务改动；本单元必须按文件和 hunk 选择性 stage，不能使用 broad staging。根 FR 文档已在 HEAD 声称 5 条未提交测试可用，故现在不能满足从干净 clone 执行 Fast 的 Phase 1 完成标准。
 - Sensitive-information review: 本单元不读取、不记录或提交 `.env`、token、cookie、密码、数据库 URL、私钥、设备日志或本地缓存。
 - Rollback: 回退本单元列出的治理文件和台账条目；不影响业务代码、数据库或发布产物。
-- **Git state:** blocked before independent review/commit; 治理文件已选择性 stage，未推送。
+- **Git state:** 根仓库选择性发布提交 `2a0ecbc230c6ed6de251ac76712a04ffba98019c` 已创建在本地 `Dev`；移动端依赖发布已推送至 `Dev` 的 `b45d84529ba734b17fabf9bd0c786517394abafd`。根仓库 `git push origin Dev:Dev` 被 GitHub 拒绝：推送范围内的既有提交 `83a9073` 更新 `.github/workflows/quality.yml`，当前 HTTPS PAT 缺少 `workflow` 权限；尚未远端推送。
+
+### Release update — 2026-07-29
+
+- Selection: 本条与用户确认的一组根仓库/移动端依赖 CRL 仅按文件与 hunk 进入候选，未带入 CRL-20260729-008、移动端版本/EAS 构建配置或其他并发工作。
+- Candidate validation: 隔离候选执行 `npm run check:ledger`（0 个未覆盖文件）、`npm run check:feature-registry`（8 个 FR / 90 条映射）、`npm run check:backend`、`npm run check:frontend`；独立移动端执行 `npm run check:mobile`。后端、前端构建及契约测试均通过；移动端 typecheck、Jest（50 suites / 242 tests）通过，lint 为 0 error / 111 个既有 warning。
+- Independent review: 按 `docs/codex-release-review.md` 完成只读审查，结论 GO；无 P0/P1、未覆盖当前任务文件、生产写入风险或敏感信息泄漏。P2 保留项为移动端 Jest worker 退出提示与真机/EAS/生产环境未运行。
+- Remote state: 移动端已先推送；根仓库本地提交等待具备 `workflow` 权限的 GitHub 凭证或已授权 SSH key 后重试，不改变任何生产系统。
 
 ## CRL-20260729-007 — Photo ID 与签证图片只读大图预览
 
