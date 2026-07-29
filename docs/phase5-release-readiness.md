@@ -13,9 +13,9 @@
 
 ```bash
 npm run test:phase5-release-contract --prefix backend
-npm run check:fast
-npm run check:full
 ```
+
+该契约依赖根与移动端两个仓库，不能在根仓库的独立 `check:fast` 或 `check:full` 中运行。通过 GitHub Actions 的 `Cross-Repository Phase 5 Contract` 手动 workflow 提交 `root_ref` 和 `mobile_ref`（分支、tag 或 commit SHA）；workflow 会 checkout 两个指定 ref、执行上述命令，并上传实际解析后的两个 commit SHA 作为 artifact。发布组合必须记录这两个 resolved SHA，不能以浮动 `Dev` 名称代替。
 
 `check:fast` 和 `check:full` 不执行数据库写入型 E2E。涉及真实数据库的验收脚本必须先确认目标是非生产数据库，并同时提供非生产标签和显式写入开关：
 

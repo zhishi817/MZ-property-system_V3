@@ -15,7 +15,9 @@ npm run check:fast
 每次修改、提交前和交给审查线程前运行。它覆盖：
 
 - release ledger 覆盖审计；
+- FR Registry 结构与测试路径审计；
 - backend TypeScript build；
+- 后端幂等提交与 R2 媒体治理契约；
 - frontend Vitest；
 - 移动端 typecheck（存在独立移动端 checkout 时）。
 
@@ -58,6 +60,10 @@ npm run check:full
 - `workflow_dispatch`：运行 fast regression 和 full regression；
 - 根 Actions 会先 checkout 独立移动端仓库，再安装三套 lockfile 依赖；
 - 本地根仓库没有移动端 checkout 时，移动端脚本明确 skip；CI 中移动端 checkout 失败则应直接失败，不得静默跳过。
+
+## 跨仓库集成（Phase 4）
+
+`npm run test:phase5-release-contract --prefix backend` 会静态核对根后端与独立移动端的共享队列/事务契约，因此不属于可独立执行的根 `check:fast` 或 `check:full`。只能由 `Cross-Repository Phase 5 Contract` workflow 在指定 `root_ref` 与 `mobile_ref` 均已 checkout 后显式运行；workflow 会上传实际解析得到的两个 commit SHA。
 
 ## 失败处理
 

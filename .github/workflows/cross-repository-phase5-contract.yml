@@ -1,0 +1,72 @@
+name: Cross-Repository Phase 5 Contract
+
+on:
+  workflow_dispatch:
+    inputs:
+      root_ref:
+        description: Root repository branch, tag, or commit SHA to verify
+        required: true
+        type: string
+      mobile_ref:
+        description: Mobile repository branch, tag, or commit SHA to verify
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CI: "true"
+
+jobs:
+  phase5-contract:
+    name: Phase 5 Contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout root repository at requested ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.root_ref }}
+          fetch-depth: 1
+
+      - name: Checkout mobile repository at requested ref
+        uses: actions/checkout@v4
+        with:
+          repository: zhishi817/mz-cleaning-app-frontend
+          ref: ${{ inputs.mobile_ref }}
+          path: mz-cleaning-app-frontend
+          fetch-depth: 1
+
+      - name: Record resolved commit SHAs
+        id: refs
+        shell: bash
+        run: |
+          root_sha="$(git rev-parse HEAD)"
+          mobile_sha="$(git -C mz-cleaning-app-frontend rev-parse HEAD)"
+          printf 'root_sha=%s\nmobile_sha=%s\n' "$root_sha" "$mobile_sha" | tee phase5-contract-refs.txt
+          {
+            echo "root_sha=$root_sha"
+            echo "mobile_sha=$mobile_sha"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        run: npm ci --prefix backend
+
+      - name: Run Phase 5 cross-repository contract
+        run: npm run test:phase5-release-contract --prefix backend
+
+      - name: Upload resolved refs
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase5-contract-${{ steps.refs.outputs.root_sha }}-${{ steps.refs.outputs.mobile_sha }}
+          path: phase5-contract-refs.txt
+          if-no-files-found: error

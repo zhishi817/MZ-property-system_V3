@@ -9,7 +9,7 @@
     "dev:booking-frontend-only": "npm run dev --prefix booking-frontend",
     "check:ledger": "python3 scripts/audit_change_release_ledger.py",
     "check:backend:build": "npm run build --prefix backend",
-    "check:backend": "npm run build --prefix backend && npm run test:cleaning-rules --prefix backend && npm run test:work-task-actions --prefix backend && npm run test:cleaning-task-transition-guard --prefix backend && npm run test:offline-task-urgency-contract --prefix backend && npm run test:cleaning-inspection-merge --prefix backend && npm run test:app-notification-policies --prefix backend && npm run test:mzapp-media-visibility --prefix backend && npm run test:guest-luggage-rules --prefix backend && npm run test:orders-overlap --prefix backend && npm run test:auto-expense-source-summary --prefix backend && npm run test:company-revenue-report --prefix backend && npm run test:r2-media-governance --prefix backend && npm run test:phase5-release-contract --prefix backend",
+    "check:backend": "npm run build --prefix backend && npm run test:cleaning-rules --prefix backend && npm run test:work-task-actions --prefix backend && npm run test:cleaning-task-transition-guard --prefix backend && npm run test:offline-task-urgency-contract --prefix backend && npm run test:cleaning-inspection-merge --prefix backend && npm run test:app-notification-policies --prefix backend && npm run test:mzapp-media-visibility --prefix backend && npm run test:guest-luggage-rules --prefix backend && npm run test:orders-overlap --prefix backend && npm run test:auto-expense-source-summary --prefix backend && npm run test:company-revenue-report --prefix backend && npm run test:r2-media-governance --prefix backend",
     "check:feature-registry": "python3 scripts/audit_feature_regression_registry.py",
     "check:targeted:backend": "npm run check:backend",
     "check:targeted:frontend": "npm run lint --prefix frontend && npm run test --prefix frontend",
@@ -18,7 +18,7 @@
     "check:frontend": "npm run lint --prefix frontend && npm run test --prefix frontend && npm run build --prefix frontend",
     "check:mobile:typecheck": "if [ -f mz-cleaning-app-frontend/package.json ]; then npm run typecheck --prefix mz-cleaning-app-frontend; else echo check:mobile:typecheck skipped: mz-cleaning-app-frontend/package.json not found; fi",
     "check:mobile": "if [ -f mz-cleaning-app-frontend/package.json ]; then npm run typecheck --prefix mz-cleaning-app-frontend && npm run lint --prefix mz-cleaning-app-frontend && npm run test --prefix mz-cleaning-app-frontend; else echo check:mobile skipped: mz-cleaning-app-frontend/package.json not found; fi",
-    "check:fast": "npm run check:ledger && npm run check:feature-registry && npm run check:backend:build && npm run test:idempotency-submit-id-contract --prefix backend && npm run test:r2-media-governance --prefix backend && npm run test:phase5-release-contract --prefix backend && npm run check:frontend:test && npm run check:mobile:typecheck",
+    "check:fast": "npm run check:ledger && npm run check:feature-registry && npm run check:backend:build && npm run test:idempotency-submit-id-contract --prefix backend && npm run test:r2-media-governance --prefix backend && npm run check:frontend:test && npm run check:mobile:typecheck",
     "check:full": "npm run check:ledger && npm run check:feature-registry && npm run check:backend && npm run check:frontend && npm run check:mobile",
     "check": "npm run check:full"
   }

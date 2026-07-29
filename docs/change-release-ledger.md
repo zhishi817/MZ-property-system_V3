@@ -1,5 +1,48 @@
 # Change Release Ledger
 
+## CRL-20260729-010 — 根 Fast 检查隔离跨仓库 Phase 5 契约
+
+- **Status:** ready-for-local-commit
+- **Updated:** 2026-07-29 Australia/Melbourne
+- **Request:** 让最新根仓库的干净 clone/worktree 能执行 `check:fast`，同时保留根/移动端 Phase 5 共享契约的精确组合验证。
+- **Outcome:** 根 `check:fast` 与 `check:backend` 不再隐式读取独立移动端目录；新增手动 Phase 5 集成 workflow，只有 root/mobile 精确 ref 都已 checkout 时才运行该契约并保存 resolved SHA。
+
+### Implementation
+
+- Previous behavior: 根 Fast/Full 经由 `check:backend` 隐式执行 `test:phase5-release-contract`；该测试直接读取 `mz-cleaning-app-frontend`，所以最新根仓库单独创建的干净 worktree 因缺文件失败。
+- New behavior: 根单仓库质量命令只检查可由根自身提供的代码与契约；`.github/workflows/cross-repository-phase5-contract.yml` 通过必填 `root_ref` / `mobile_ref` checkout 指定组合，运行跨仓库 Phase 5 测试并上传实际 SHA。
+- Key decisions: 不降低 FR 覆盖状态、不删除测试、不改现有 CI 的浮动 Dev checkout、后端业务代码或移动端代码；仅修正质量命令的仓库边界，并补上不依赖浮动分支的跨仓库契约入口。
+
+### Files / Areas
+
+- `package.json` — modified: 从 `check:fast` 与 `check:backend` 移除仅跨仓库可执行的 Phase 5 测试调用。
+- `.github/workflows/cross-repository-phase5-contract.yml` — added: 手动输入双 ref、解析并保存 SHA 后运行 Phase 5 静态契约。
+- `docs/regression-test-levels.md` — modified: 补全 Fast 实际覆盖项，并声明 Phase 5 为 Phase 4 精确 ref 集成测试。
+- `docs/phase5-release-readiness.md` — modified: 对齐 Phase 5 的唯一执行入口与精确 SHA 记录要求。
+- `docs/change-release-ledger.md` — modified: 记录本治理修正。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Config / environment: 现有 CI 仍 checkout 移动端 `Dev`；本单元不改变它的触发或分支保护。新增 workflow 只读取两个指定 Git ref，不读取生产环境变量、也不调用业务 API。
+- Related units: CRL-20260729-009；Phase 4 cross-repository integration workflow.
+
+### Validation
+
+- Passed in the isolated latest-root worktree after the workflow addition: `npm run check:fast` (ledger audit, FR audit, backend build, idempotency and R2 contracts, frontend Vitest: 39 files / 171 tests; standalone mobile checkout is explicitly skipped).
+- Passed in the isolated worktree: `npm run check:backend` (backend build plus 11 targeted regression contracts), `python3 scripts/audit_change_release_ledger.py`, `npm run check:feature-registry`, and `git diff --check`.
+- Passed: Ruby YAML parse for `.github/workflows/cross-repository-phase5-contract.yml`; the workflow's command and ref references were checked by static search.
+- Passed: independent read-only release review returned GO with no P0/P1; it confirmed the required double-ref workflow closes the Phase 5 gate.
+- Pending: `actionlint` is unavailable locally; after local commit, create a new clean worktree from that commit and repeat `npm run check:fast`. GitHub Actions dispatch needs remote authorization and is not run locally.
+- Not run: production API、数据库写入、外部同步、EAS/native 或真实设备；均不属于本治理修正。
+
+### Risks / Release Notes
+
+- Risk: Phase 5 不再由每次根 Fast/Full 自动执行；跨仓库发布必须手动 dispatch 新 workflow 并记录 artifact 中的 resolved SHA。现有 `quality.yml` 仍以浮动移动端 `Dev` 执行其他质量检查，不代表精确组合验证。
+- Sensitive-information review: 本单元不读取、记录或提交 `.env`、token、cookie、密码、数据库 URL、私钥、设备日志或本地缓存。
+- Rollback: 恢复两个 package script 中的 Phase 5 调用与本文件说明；不影响业务代码或数据。
+- **Git state:** isolated local branch, reviewed and ready for local commit, unpushed.
+
 ## CRL-20260729-009 — Quality guardrails shared baseline
 
 - **Status:** pushed
