@@ -34,7 +34,7 @@
 - Risk: GitHub CLI 当前不可用；GitHub connector confirms administrator permission but does not expose branch-protection read/write. Remote protection state is therefore unknown, and must be inspected/configured through a GitHub administrator interface or a controlled repository-management API only after the workflow has entered GitHub.
 - Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
 - Rollback: revert this CRL's workflow, classifier and policy document; no application code or data is affected.
-- Git state: code commit `de56a528f3b2b7e0fc43dfb709793f99aa6ec874` is local on isolated `codex/phase3-ci-merge-gates`; this documentation receipt is uncommitted. Nothing from this Phase 3 unit has been pushed and remote branch protection remains unconfigured.
+- Git state: code commit `de56a528f3b2b7e0fc43dfb709793f99aa6ec874` is local on isolated `codex/phase3-ci-merge-gates`; this documentation receipt is uncommitted. Nothing from this Phase 3 unit has been pushed and no Phase 3 remote-protection change has been made; any pre-existing remote protection state remains unknown.
 
 ## CRL-20260729-011 — 根质量命令层级
 
