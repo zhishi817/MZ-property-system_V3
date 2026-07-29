@@ -2,10 +2,10 @@
 
 ## CRL-20260729-012 — 根仓库 PR 合并质量门禁
 
-- **Status:** committed
+- **Status:** pushed
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** Phase 3：让 CI 从提示变成合并门禁；普通 PR 必跑 Fast，高风险 PR 必跑 Full，并为 `Dev`/`main` 的 GitHub 分支保护提供稳定检查名称。
-- **Outcome:** 根仓库现提供独立 Ledger、FR、风险分类、Fast 与 Full 检查；Full 对低风险 PR 显式成功而不是省略状态，高风险或非 PR 事件运行完整检查。远端保护规则尚未设置，必须等这些 check 名称先通过 reviewed PR 进入 GitHub 后再配置。
+- **Outcome:** 根仓库现提供独立 Ledger、FR、风险分类、Fast 与 Full 检查；Full 对低风险 PR 显式成功而不是省略状态，高风险或非 PR 事件运行完整检查。本阶段未修改远端保护；既有状态须在这些 check 名称通过 reviewed PR 进入 GitHub 后再读取和配置。
 
 ### Files / Areas
 
@@ -34,7 +34,8 @@
 - Risk: GitHub CLI 当前不可用；GitHub connector confirms administrator permission but does not expose branch-protection read/write. Remote protection state is therefore unknown, and must be inspected/configured through a GitHub administrator interface or a controlled repository-management API only after the workflow has entered GitHub.
 - Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
 - Rollback: revert this CRL's workflow, classifier and policy document; no application code or data is affected.
-- Git state: code commit `de56a528f3b2b7e0fc43dfb709793f99aa6ec874` is local on isolated `codex/phase3-ci-merge-gates`; this documentation receipt is uncommitted. Nothing from this Phase 3 unit has been pushed and no Phase 3 remote-protection change has been made; any pre-existing remote protection state remains unknown.
+- Remote push: non-force created `origin/codex/phase3-ci-merge-gates` at `0621acda637bf7a870afef7114ae3ab35b8bcc6d`; verification confirmed local and remote match, while `origin/Dev` remains `d1761217d1b84c904dee990151c62ce2988781f0`.
+- Git state: code commit `de56a528f3b2b7e0fc43dfb709793f99aa6ec874` and initial documentation receipts through `0621acda637bf7a870afef7114ae3ab35b8bcc6d` are pushed on the isolated feature branch; this final remote-status receipt is uncommitted. No Phase 3 remote-protection change has been made; any pre-existing remote protection state remains unknown.
 
 ## CRL-20260729-011 — 根质量命令层级
 
