@@ -2,7 +2,7 @@
 
 ## CRL-20260729-011 — 根质量命令层级
 
-- **Status:** committed
+- **Status:** pushed
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** Phase 2：统一根仓库和独立移动端的 `check:fast`、`check:full`、`check:ci`、`check:release` 语义，并让 Full 严格继承 Fast。
 - **Outcome:** 根命令按 Fast/Full/CI/Release 分层；Fast 覆盖 Ledger/FR、build、权限/状态、幂等、媒体、Web lint/test 和可用的移动端 Fast，Full 通过调用 Fast 后只增加较慢回归与 build。CI 使用非交互 `check:ci`，Release 复用 Full 而不擅自执行 migration 或生产 smoke。
@@ -33,10 +33,11 @@
 
 - Risk: 根 CI 运行时 checkout 移动端 `Dev`；若根先于移动端 CRL-20260729-003 发布，新的移动端 Fast 命令不存在并会失败。因此两个 CRL 是一次选择性发布的跨仓库依赖。
 - Release order: 先推送移动端 CRL-20260729-003，再推送根 CRL-20260729-011；两者不可拆分。精确 root/mobile ref 组合验证仍由 Phase 4 workflow 承担。
+- Remote rollout: 移动端 CRL-20260729-003 已先以非 force 快进从 `a946150c8760a86eef2cd362109eac653680d4c7` 推送至 `33915d050aab68f10d684cfe657c7a7474806d2c`，确认本地与 `origin/Dev` 为 ahead 0 / behind 0；随后本条根仓库候选以非 force 快进从 `90c6e553da816f43e7843f0e4fb6592a84911fd3` 推送至 `edd8056f0abc0fa5ce70ca575e6f73d40ae1be4c`，同样已确认 ahead 0 / behind 0。
 - Cleanup: `npm run check:release` regenerated the already-tracked `backend/dist/modules/cleaning.js` from unrelated source changes; it was restored exactly to the candidate HEAD and is not part of this unit.
 - Dependency audit note: fresh `npm ci` reported existing audit advisories (backend 41, frontend 25, mobile 30); no dependency, lockfile or audit-fix change was made.
 - Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
-- Git state: code commit `c004e642cf586b09615ae3b44dfe89ec8d518057` on isolated `codex/phase2-quality-command-layers`; this documentation receipt is uncommitted and unpushed.
+- Git state: code commit `c004e642cf586b09615ae3b44dfe89ec8d518057` and its initial documentation receipt `edd8056f0abc0fa5ce70ca575e6f73d40ae1be4c` are pushed to `origin/Dev` from isolated `codex/phase2-quality-command-layers`; this final remote-status receipt is documentation-only and awaits its own reviewed push.
 
 ## CRL-20260729-010 — 根 Fast 检查隔离跨仓库 Phase 5 契约
 
