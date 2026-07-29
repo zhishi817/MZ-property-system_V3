@@ -1,4 +1,4 @@
-name: Cross-Repository Phase 5 Contract
+name: Cross-Repository Integration
 
 on:
   workflow_dispatch:
@@ -19,17 +19,17 @@ env:
   CI: "true"
 
 jobs:
-  phase5-contract:
-    name: Phase 5 Contract
+  exact-ref-integration:
+    name: Exact Ref Integration
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 60
 
     steps:
       - name: Checkout root repository at requested ref
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.root_ref }}
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Checkout mobile repository at requested ref
         uses: actions/checkout@v4
@@ -37,7 +37,7 @@ jobs:
           repository: zhishi817/mz-cleaning-app-frontend
           ref: ${{ inputs.mobile_ref }}
           path: mz-cleaning-app-frontend
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Record resolved commit SHAs
         id: refs
@@ -56,17 +56,32 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: backend/package-lock.json
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+            mz-cleaning-app-frontend/package-lock.json
 
       - name: Install backend dependencies
         run: npm ci --prefix backend
 
-      - name: Run Phase 5 cross-repository contract
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+
+      - name: Install mobile dependencies
+        run: npm ci --prefix mz-cleaning-app-frontend
+
+      - name: Run root Full check at exact refs
+        run: npm run check:full
+
+      - name: Run mobile Full check at exact ref
+        run: npm run check:full --prefix mz-cleaning-app-frontend
+
+      - name: Run shared API, queue and transaction contract
         run: npm run test:phase5-release-contract --prefix backend
 
       - name: Upload resolved refs
         uses: actions/upload-artifact@v4
         with:
-          name: phase5-contract-${{ steps.refs.outputs.root_sha }}-${{ steps.refs.outputs.mobile_sha }}
+          name: exact-ref-integration-${{ steps.refs.outputs.root_sha }}-${{ steps.refs.outputs.mobile_sha }}
           path: phase5-contract-refs.txt
           if-no-files-found: error

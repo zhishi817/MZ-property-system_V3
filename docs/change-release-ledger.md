@@ -1,5 +1,40 @@
 # Change Release Ledger
 
+## CRL-20260729-013 — 精确双 Ref 跨仓库集成验证
+
+- **Status:** ready
+- **Updated:** 2026-07-29 Australia/Melbourne
+- **Request:** Phase 4：增加手动跨仓库集成 workflow，输入 `root_ref` 与 `mobile_ref`，验证两个指定版本组合而不是各自 `Dev` 的漂移组合。
+- **Outcome:** 复用既有共享契约 workflow，并扩展为锁定依赖、根 Full、移动端 Full、共享 `available_actions` API/队列/事务契约和精确 SHA artifact 的单一手动入口。
+
+### Files / Areas
+
+- `.github/workflows/cross-repository-phase5-contract.yml` — modified: 以精确双 ref checkout、三套 locked install、双方 Full 和共享契约组成一次组合验证。
+- `backend/scripts/tests/test_phase5_release_contract.ts` — modified: 共享契约额外断言服务端 `available_actions`、移动端 API 类型和服务端动作消费链路。
+- `docs/regression-test-levels.md` — modified: 记录手动输入、验证边界与 artifact 证据。
+- `docs/change-release-ledger.md` — modified: 记录本治理单元。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- GitHub Actions: 手动 `workflow_dispatch`；执行者必须提供可解析的 root/mobile branch、tag 或 commit SHA。
+- Related units: CRL-20260729-011、移动端 CRL-20260729-003；Phase 3 的分支保护在其远端落库后可将本 workflow 作为发布前人工组合验证，而非每个 PR 的必需检查。
+
+### Validation
+
+- Passed: Ruby YAML parse confirms `Cross-Repository Integration`, `exact-ref-integration` and the 60-minute timeout; static workflow assertions confirm two required inputs, two exact-ref checkouts at `fetch-depth: 0`, all three `npm ci` steps, root Full, mobile Full, the shared contract command and SHA-named artifact.
+- Passed: a dependency-free static preflight against root candidate `d1761217d1b84c904dee990151c62ce2988781f0` plus mobile `Dev` candidate `bde7d1531b54b9854b9eeb9069e30de2d0b9b67b` confirms the existing queue/transaction assertions and the new server `available_actions` → mobile API type → server-action consumption assertions.
+- Passed: `git diff --check`, `npm run check:ledger` (4/4) and `npm run check:feature-registry` (8 FRs / 90 mappings; 55 independent-mobile mappings deferred in the standalone root worktree).
+- Not run: `npm run test:phase5-release-contract --prefix backend`, `npm run check:full`, `npm run check:full --prefix mz-cleaning-app-frontend`, or GitHub Actions dispatch. This fresh worktree has no dependency directories; Phase 4 does not authorize local `npm ci`, a push, or a remote workflow dispatch. The workflow itself performs locked installs once reviewed and dispatched with explicit refs.
+- Validation note: an initial ad-hoc static-preflight command used a nonexistent placeholder path and failed before reading source; it made no change and was immediately replaced by the passing preflight above.
+
+### Risks / Release Notes
+
+- Risk: 根 `check:full` 在存在移动端 checkout 时已包含一次移动端 Full；本 workflow 再显式执行一次独立移动端 Full，是为将两个命令作为可读的独立证据，代价是手动 workflow 运行时间增加。
+- Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
+- Rollback: revert this workflow/documentation unit; no application source, database or remote data is affected.
+- Git state: ready, uncommitted in isolated `codex/phase4-exact-ref-integration` worktree.
+
 ## CRL-20260729-011 — 根质量命令层级
 
 - **Status:** pushed
