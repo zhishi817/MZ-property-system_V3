@@ -1,5 +1,37 @@
 # Change Release Ledger
 
+## CRL-20260729-013 — 默认分支跨仓精确 ref 集成门禁
+
+- **Status:** in-progress
+- **Updated:** 2026-07-29 Australia/Melbourne
+- **Request:** 将跨仓库验收 workflow 放入 root 默认分支 `main`，按精确 root/mobile ref checkout、输出解析 SHA、运行双方 Full/Phase 5/Ledger/FR，并在失败时保存 manifest 与日志。
+- **Outcome:** `main` 新增自包含的手动跨仓集成门禁。workflow definition 在默认分支注册，但验证内容只来自输入的 `root_ref` 与 `mobile_ref`，不读取浮动分支；先确认这两个精确 ref 实际提供 Full、Ledger、FR 和 Phase 5 接口，再记录两个实际 SHA 并运行双方 `check:full`、Phase 5 契约、root Ledger/FR 和 mobile Ledger 审计。任一 checkout、接口、安装、审计或测试失败均由最终 gate 明确失败，但 `if: always()` 仍上传 manifest、SHA 和日志。
+
+### Files / Areas
+
+- `.github/workflows/cross-repository-phase5-contract.yml` — added: 默认分支注册的精确双 ref 集成 workflow、失败 manifest/日志与最终 fail gate。
+- `docs/change-release-ledger.md` — modified: 记录本 default-branch 治理单元。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Runtime dependency: workflow 的实现和 manifest/日志上传均在默认分支；被验证的命令接口必须由输入的两个精确 ref 提供，workflow 会先验证文件和 package scripts，并把任何缺失记录为失败，而不回退到 `main` 或 `Dev`。
+- Related units: root Dev `CRL-20260729-012` 与 mobile Dev `CRL-20260729-004` 提供严格 PR Ledger 审计；本条只负责默认分支 Actions 注册和精确组合运行。
+
+### Validation
+
+- Passed locally: Ruby YAML parse、Ledger audit (2 changed / 2 recorded)、`git diff --check`；workflow 静态检查确认输入为必填、两个 checkout 使用输入 ref、接口验证在安装前执行、失败 gate 和 artifact 上传使用 `if: always()`。
+- Passed: 修复后的独立只读审查为 GO、无 P0/P1。审查使用 root Dev/mob Dev 候选 ref 验证接口预检通过，并以旧 root main SHA 验证预检明确失败（缺 FR/Phase5/check:full），确认没有 main/Dev 回退。
+- Pending: GitHub Actions 注册与正/负 dispatch。
+- Not run: production deployment、production API、数据库写入、外部同步、EAS/native 或业务功能测试；均不属于本治理修正。
+
+### Risks / Release Notes
+
+- Workflow 失败会保留 artifact，而不会因前置步骤失败跳过证据收集。
+- 用户输入的无效 ref 会明确成为失败 gate；不会 checkout 默认分支作为回退。
+- Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
+- Git state: isolated branch `codex/governance-cross-main-20260729`; not staged, committed, pushed, merged, or deployed.
+
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
 ## CRL-20260722-011 — 年度报告读取移除运行时建表副作用
