@@ -34,8 +34,8 @@
 - Risk: GitHub CLI 当前不可用；GitHub connector confirms administrator permission but does not expose branch-protection read/write. Remote protection state is therefore unknown, and must be inspected/configured through a GitHub administrator interface or a controlled repository-management API only after the workflow has entered GitHub.
 - Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
 - Rollback: revert this CRL's workflow, classifier and policy document; no application code or data is affected.
-- Remote push: non-force created `origin/codex/phase3-ci-merge-gates` at `0621acda637bf7a870afef7114ae3ab35b8bcc6d`; verification confirmed local and remote match, while `origin/Dev` remains `d1761217d1b84c904dee990151c62ce2988781f0`.
-- Git state: code commit `de56a528f3b2b7e0fc43dfb709793f99aa6ec874` and initial documentation receipts through `0621acda637bf7a870afef7114ae3ab35b8bcc6d` are pushed on the isolated feature branch; this final remote-status receipt is uncommitted. No Phase 3 remote-protection change has been made; any pre-existing remote protection state remains unknown.
+- Initial remote push: non-force created `origin/codex/phase3-ci-merge-gates` at `0621acda637bf7a870afef7114ae3ab35b8bcc6d`; verification at that point confirmed local and remote match, while `origin/Dev` was `d1761217d1b84c904dee990151c62ce2988781f0`.
+- Git state: this isolated feature branch is pushed without force; the remote-push confirmation is documentation-only. No Phase 3 remote-protection change has been made; any pre-existing remote protection state remains unknown.
 
 ## CRL-20260729-011 — 根质量命令层级
 
