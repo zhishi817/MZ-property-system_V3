@@ -2,7 +2,7 @@
 
 ## CRL-20260729-013 — 精确双 Ref 跨仓库集成验证
 
-- **Status:** committed
+- **Status:** pushed
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** Phase 4：增加手动跨仓库集成 workflow，输入 `root_ref` 与 `mobile_ref`，验证两个指定版本组合而不是各自 `Dev` 的漂移组合。
 - **Outcome:** 复用既有共享契约 workflow，并扩展为锁定依赖、根 Full、移动端 Full、共享 `available_actions` API/队列/事务契约和精确 SHA artifact 的单一手动入口。
@@ -33,7 +33,8 @@
 - Risk: 根 `check:full` 在存在移动端 checkout 时已包含一次移动端 Full；本 workflow 再显式执行一次独立移动端 Full，是为将两个命令作为可读的独立证据，代价是手动 workflow 运行时间增加。
 - Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
 - Rollback: revert this workflow/documentation unit; no application source, database or remote data is affected.
-- Git state: code commit `c97a7ad433fe60e21473290647dc0a528cceefd8` is local on isolated `codex/phase4-exact-ref-integration`; this documentation receipt is uncommitted. Nothing from this Phase 4 unit has been pushed or dispatched.
+- Remote push: non-force created `origin/codex/phase4-exact-ref-integration` at `0b2b0a65fda62dd6f449f51280f9990c74d664f2`; verification confirmed local and remote match, while `origin/Dev` remains `d1761217d1b84c904dee990151c62ce2988781f0`.
+- Git state: code commit `c97a7ad433fe60e21473290647dc0a528cceefd8` and initial documentation receipt `0b2b0a65fda62dd6f449f51280f9990c74d664f2` are pushed on the isolated feature branch; this final remote-status receipt is uncommitted. No Phase 4 workflow dispatch has been made.
 
 ## CRL-20260729-011 — 根质量命令层级
 
