@@ -2,7 +2,7 @@
 
 ## CRL-20260729-010 — 根 Fast 检查隔离跨仓库 Phase 5 契约
 
-- **Status:** ready-for-local-commit
+- **Status:** locally-committed
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** 让最新根仓库的干净 clone/worktree 能执行 `check:fast`，同时保留根/移动端 Phase 5 共享契约的精确组合验证。
 - **Outcome:** 根 `check:fast` 与 `check:backend` 不再隐式读取独立移动端目录；新增手动 Phase 5 集成 workflow，只有 root/mobile 精确 ref 都已 checkout 时才运行该契约并保存 resolved SHA。
@@ -33,7 +33,8 @@
 - Passed in the isolated worktree: `npm run check:backend` (backend build plus 11 targeted regression contracts), `python3 scripts/audit_change_release_ledger.py`, `npm run check:feature-registry`, and `git diff --check`.
 - Passed: Ruby YAML parse for `.github/workflows/cross-repository-phase5-contract.yml`; the workflow's command and ref references were checked by static search.
 - Passed: independent read-only release review returned GO with no P0/P1; it confirmed the required double-ref workflow closes the Phase 5 gate.
-- Pending: `actionlint` is unavailable locally; after local commit, create a new clean worktree from that commit and repeat `npm run check:fast`. GitHub Actions dispatch needs remote authorization and is not run locally.
+- Passed after the local code commit: a newly created clean worktree at the CRL commit ran `npm run check:fast` successfully with 0 changed files / 0 ledger files; FR audit passed (8 FRs / 90 mappings), backend build and both Fast contracts passed, and frontend Vitest passed (39 files / 171 tests). Standalone mobile typecheck was explicitly skipped because no mobile checkout exists.
+- Pending: `actionlint` is unavailable locally; GitHub Actions dispatch needs remote authorization and is not run locally.
 - Not run: production API、数据库写入、外部同步、EAS/native 或真实设备；均不属于本治理修正。
 
 ### Risks / Release Notes
@@ -41,7 +42,7 @@
 - Risk: Phase 5 不再由每次根 Fast/Full 自动执行；跨仓库发布必须手动 dispatch 新 workflow 并记录 artifact 中的 resolved SHA。现有 `quality.yml` 仍以浮动移动端 `Dev` 执行其他质量检查，不代表精确组合验证。
 - Sensitive-information review: 本单元不读取、记录或提交 `.env`、token、cookie、密码、数据库 URL、私钥、设备日志或本地缓存。
 - Rollback: 恢复两个 package script 中的 Phase 5 调用与本文件说明；不影响业务代码或数据。
-- **Git state:** isolated local branch, reviewed and ready for local commit, unpushed.
+- **Git state:** isolated local branch, locally committed and unpushed; this documentation-only receipt records the required post-commit clean-worktree verification.
 
 ## CRL-20260729-009 — Quality guardrails shared baseline
 
