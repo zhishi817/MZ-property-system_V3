@@ -30,7 +30,7 @@
 - Workflow 失败会保留 artifact，而不会因前置步骤失败跳过证据收集。
 - 用户输入的无效 ref 会明确成为失败 gate；不会 checkout 默认分支作为回退。
 - Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
-- Git state: isolated branch `codex/governance-cross-main-20260729`; not staged, committed, pushed, merged, or deployed.
+- Git state: governance-only commit `53475c8fc303e8d8a6f65a25bc73bbab9eb64cd2` is pushed to `origin/codex/governance-cross-main-20260729`; it is not merged into `Dev`/`main` and nothing is deployed.
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
