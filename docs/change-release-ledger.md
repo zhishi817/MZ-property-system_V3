@@ -2,7 +2,7 @@
 
 ## CRL-20260729-012 — 根仓库 PR 合并质量门禁
 
-- **Status:** ready
+- **Status:** committed
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** Phase 3：让 CI 从提示变成合并门禁；普通 PR 必跑 Fast，高风险 PR 必跑 Full，并为 `Dev`/`main` 的 GitHub 分支保护提供稳定检查名称。
 - **Outcome:** 根仓库现提供独立 Ledger、FR、风险分类、Fast 与 Full 检查；Full 对低风险 PR 显式成功而不是省略状态，高风险或非 PR 事件运行完整检查。远端保护规则尚未设置，必须等这些 check 名称先通过 reviewed PR 进入 GitHub 后再配置。
@@ -34,7 +34,7 @@
 - Risk: GitHub CLI 当前不可用；GitHub connector confirms administrator permission but does not expose branch-protection read/write. Remote protection state is therefore unknown, and must be inspected/configured through a GitHub administrator interface or a controlled repository-management API only after the workflow has entered GitHub.
 - Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
 - Rollback: revert this CRL's workflow, classifier and policy document; no application code or data is affected.
-- Git state: ready, uncommitted in isolated `codex/phase3-ci-merge-gates` worktree.
+- Git state: code commit `de56a528f3b2b7e0fc43dfb709793f99aa6ec874` is local on isolated `codex/phase3-ci-merge-gates`; this documentation receipt is uncommitted. Nothing from this Phase 3 unit has been pushed and remote branch protection remains unconfigured.
 
 ## CRL-20260729-011 — 根质量命令层级
 
