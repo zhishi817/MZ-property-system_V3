@@ -2,7 +2,7 @@
 
 ## CRL-20260729-010 — 根 Fast 检查隔离跨仓库 Phase 5 契约
 
-- **Status:** committed
+- **Status:** pushed
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** 让最新根仓库的干净 clone/worktree 能执行 `check:fast`，同时保留根/移动端 Phase 5 共享契约的精确组合验证。
 - **Outcome:** 根 `check:fast` 与 `check:backend` 不再隐式读取独立移动端目录；新增手动 Phase 5 集成 workflow，只有 root/mobile 精确 ref 都已 checkout 时才运行该契约并保存 resolved SHA。
@@ -25,7 +25,7 @@
 
 - API / database / migration / dependencies: none.
 - Config / environment: 现有 CI 仍 checkout 移动端 `Dev`；本单元不改变它的触发或分支保护。新增 workflow 只读取两个指定 Git ref，不读取生产环境变量、也不调用业务 API。
-- Related units: CRL-20260729-009；Phase 4 cross-repository integration workflow.
+- Related units: CRL-20260729-009、独立移动端 CRL-20260729-001；Phase 4 cross-repository integration workflow.
 
 ### Validation
 
@@ -42,14 +42,14 @@
 - Risk: Phase 5 不再由每次根 Fast/Full 自动执行；跨仓库发布必须手动 dispatch 新 workflow 并记录 artifact 中的 resolved SHA。现有 `quality.yml` 仍以浮动移动端 `Dev` 执行其他质量检查，不代表精确组合验证。
 - Sensitive-information review: 本单元不读取、记录或提交 `.env`、token、cookie、密码、数据库 URL、私钥、设备日志或本地缓存。
 - Rollback: 恢复两个 package script 中的 Phase 5 调用与本文件说明；不影响业务代码或数据。
-- **Git state:** isolated local branch, locally committed and unpushed; this documentation-only receipt records the required post-commit clean-worktree verification.
+- **Git state:** 已以非 force 快进从 `a571600a9a37c051b96637b26ba972bbd026487e` 推送候选至根 `origin/Dev` 的 `8074849a7a85a3c13767ad03346b1ed3578f82e4`；同步移动端治理基线为 `origin/Dev` 的 `25d1f8963fae93e02130035071cb67d7be98444e`。推送后 `git fetch origin Dev` 确认本候选与 `origin/Dev` 为 ahead 0 / behind 0。
 
 ## CRL-20260729-009 — Quality guardrails shared baseline
 
-- **Status:** blocked
+- **Status:** pushed
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** 固化根仓库与独立移动端仓库的 Agent、测试、审计和审查治理基线，随后才允许多 Agent worktree 并行开发。
-- **Outcome:** 根仓库已形成并推送 Agent 约束、FR 结构审计、发布独立审查模板、回归分层说明和可移植移动端按钮规则；但移动端 `b45d845` 尚未包含其对应 CRL-20260729-001 治理文件，故共同基线仍 blocked，直至移动端候选提交并推送。当前根选择性发布未带入未选中的并发业务改动。
+- **Outcome:** 根仓库与独立移动端仓库的 Agent、测试、审计、审查和质量入口治理基线，已分别以非 force 快进推送到各自 `Dev`；共同基线不再依赖主工作区未提交文件。当前根选择性发布未带入未选中的并发业务改动。
 
 ### Implementation
 
@@ -72,7 +72,7 @@
 
 - API / database / migration / dependencies: none.
 - Config / environment: 根 CI workflow 已在基线中；本单元不更改 CI 触发策略或远端 GitHub 分支保护，分别留给 Phase 2/3。
-- Related units: 独立移动端 `CRL-20260729-001`；Phase 2 将处理 `check:fast`/`check:full` 继承、base/head 审计和高价值契约测试接线。
+- Related units: 根 `CRL-20260729-010`、独立移动端 `CRL-20260729-001`；Phase 2 将处理 `check:fast`/`check:full` 继承、base/head 审计和高价值契约测试接线。
 
 ### Validation
 
@@ -104,7 +104,7 @@
 - Candidate validation: 根候选 `npm run check:fast` 通过（FR 8 个 / 90 映射、backend build、幂等/R2 契约、frontend 39 files / 171 tests；独立移动端 checkout 缺席时明确 skip）；移动端候选 `npm run check:ci` 通过（ledger 7/7、typecheck、lint 0 errors / 111 existing warnings、strict button audit、Jest 50 suites / 242 tests）。
 - Passed: 根候选与移动端候选均经独立只读复审为 GO，无 P0/P1、业务混入、密钥、生产写入或外部同步风险。
 - Local commit evidence: 根候选 `564afb8b9c1c7e8e5094d640458ab86e0bd36b04`（在已接入 CRL-010 后）与移动端候选 `db2f12ac1dbed98750b5f748e5ff298a3af9bffd`（CRL-001）均已本地提交；两个提交各自在新建干净 worktree 中通过相应质量命令。
-- Pending: 用户授权后才可将两个候选推送到各自 `Dev`，届时才能解除共同基线的 blocked 状态；`actionlint`、GitHub Actions dispatch、真实设备/EAS、生产 API/数据写入和外部同步均未运行。
+- Remote completion: 用户授权后，根候选已非 force 快进 `a571600a9a37c051b96637b26ba972bbd026487e..8074849a7a85a3c13767ad03346b1ed3578f82e4` 至 `origin/Dev`；移动端候选已非 force 快进 `b45d84529ba734b17fabf9bd0c786517394abafd..25d1f8963fae93e02130035071cb67d7be98444e` 至移动端 `origin/Dev`。随后的 fetch 均确认候选 HEAD 与各自 `origin/Dev` 的 ahead 0 / behind 0；`actionlint`、GitHub Actions dispatch、真实设备/EAS、生产 API/数据写入和外部同步均未运行。
 
 ## CRL-20260729-007 — Photo ID 与签证图片只读大图预览
 
