@@ -2,8 +2,8 @@
 
 ## CRL-20260729-013 — 默认分支跨仓精确 ref 集成门禁
 
-- **Status:** in-progress
-- **Updated:** 2026-07-29 Australia/Melbourne
+- **Status:** pushed
+- **Updated:** 2026-07-30 Australia/Melbourne
 - **Request:** 将跨仓库验收 workflow 放入 root 默认分支 `main`，按精确 root/mobile ref checkout、输出解析 SHA、运行双方 Full/Phase 5/Ledger/FR，并在失败时保存 manifest 与日志。
 - **Outcome:** `main` 新增自包含的手动跨仓集成门禁。workflow definition 在默认分支注册，但验证内容只来自输入的 `root_ref` 与 `mobile_ref`，不读取浮动分支；先确认这两个精确 ref 实际提供 Full、Ledger、FR 和 Phase 5 接口，再记录两个实际 SHA 并运行双方 `check:full`、Phase 5 契约、root Ledger/FR 和 mobile Ledger 审计。任一 checkout、接口、安装、审计或测试失败均由最终 gate 明确失败，但 `if: always()` 仍上传 manifest、SHA 和日志。
 
@@ -22,7 +22,9 @@
 
 - Passed locally: Ruby YAML parse、Ledger audit (2 changed / 2 recorded)、`git diff --check`；workflow 静态检查确认输入为必填、两个 checkout 使用输入 ref、接口验证在安装前执行、失败 gate 和 artifact 上传使用 `if: always()`。
 - Passed: 修复后的独立只读审查为 GO、无 P0/P1。审查使用 root Dev/mob Dev 候选 ref 验证接口预检通过，并以旧 root main SHA 验证预检明确失败（缺 FR/Phase5/check:full），确认没有 main/Dev 回退。
-- Pending: GitHub Actions 注册与正/负 dispatch。
+- Passed: root PR #264 merged this workflow into `main` as `d9fbd5adefc7320644ee75dd7b46b310fa3dc5ef`; GitHub Actions registered workflow ID `323095179` as active. The root `main` protection check was corrected from the nonexistent `Fast Regression` context to its actual `Root Quality Check` job; PR #264's Quality Check run #13 then passed before merge.
+- Passed: positive exact-SHA dispatch run #1 (`30468812377`) requested and resolved root `d1761217d1b84c904dee990151c62ce2988781f0` and mobile `164b162cf63e5324d659dce00980e46e40e1c3f0`. Both checkouts, interface verification, installs, root Ledger/FR audit, mobile Ledger audit, root/mobile `check:full`, and the Phase 5 contract succeeded. Artifact `cross-repository-integration-30468812377` contains `integration-manifest.json`, `resolved-shas.txt`, and all audit/test logs.
+- Passed: negative dispatch run #2 (`30481533717`) used invalid root ref `refs/does-not-exist-phase4-20260730` with the same exact mobile SHA and failed as required. Its manifest records `checkout_root: failure`, empty root SHA, no fallback to a branch, final failure gate, and successful artifact upload (`cross-repository-integration-30481533717`).
 - Not run: production deployment、production API、数据库写入、外部同步、EAS/native 或业务功能测试；均不属于本治理修正。
 
 ### Risks / Release Notes
@@ -30,7 +32,7 @@
 - Workflow 失败会保留 artifact，而不会因前置步骤失败跳过证据收集。
 - 用户输入的无效 ref 会明确成为失败 gate；不会 checkout 默认分支作为回退。
 - Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
-- Git state: governance-only commit `53475c8fc303e8d8a6f65a25bc73bbab9eb64cd2` is pushed to `origin/codex/governance-cross-main-20260729`; it is not merged into `Dev`/`main` and nothing is deployed.
+- Git state: governance-only candidate was merged to `origin/main` by PR #264 as `d9fbd5adefc7320644ee75dd7b46b310fa3dc5ef`; this documentation-only evidence receipt awaits its own protected PR. Nothing is deployed.
 
 Shared cross-thread record of repository changes and selectable release units. Do not store secrets or raw sensitive values here.
 
