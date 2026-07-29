@@ -103,7 +103,8 @@
 - Root closure: 隔离根候选 `codex/phase1-quality-baseline` 从 `Dev` 只接入已独立审查的 `CRL-20260729-010`，使单独根 worktree 的 `check:fast` 不再隐式读取移动端目录，并通过精确双 ref 的 `Cross-Repository Phase 5 Contract` workflow 保留跨仓库门禁。
 - Candidate validation: 根候选 `npm run check:fast` 通过（FR 8 个 / 90 映射、backend build、幂等/R2 契约、frontend 39 files / 171 tests；独立移动端 checkout 缺席时明确 skip）；移动端候选 `npm run check:ci` 通过（ledger 7/7、typecheck、lint 0 errors / 111 existing warnings、strict button audit、Jest 50 suites / 242 tests）。
 - Passed: 根候选与移动端候选均经独立只读复审为 GO，无 P0/P1、业务混入、密钥、生产写入或外部同步风险。
-- Pending: 精确 hunk 暂存与本地提交；`actionlint`、GitHub Actions dispatch、真实设备/EAS、生产 API/数据写入和外部同步均未运行。
+- Local commit evidence: 根候选 `564afb8b9c1c7e8e5094d640458ab86e0bd36b04`（在已接入 CRL-010 后）与移动端候选 `db2f12ac1dbed98750b5f748e5ff298a3af9bffd`（CRL-001）均已本地提交；两个提交各自在新建干净 worktree 中通过相应质量命令。
+- Pending: 用户授权后才可将两个候选推送到各自 `Dev`，届时才能解除共同基线的 blocked 状态；`actionlint`、GitHub Actions dispatch、真实设备/EAS、生产 API/数据写入和外部同步均未运行。
 
 ## CRL-20260729-007 — Photo ID 与签证图片只读大图预览
 
