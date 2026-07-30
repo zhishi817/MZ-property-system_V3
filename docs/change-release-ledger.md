@@ -145,9 +145,49 @@
 - Local commit evidence: 根候选 `564afb8b9c1c7e8e5094d640458ab86e0bd36b04`（在已接入 CRL-010 后）与移动端候选 `db2f12ac1dbed98750b5f748e5ff298a3af9bffd`（CRL-001）均已本地提交；两个提交各自在新建干净 worktree 中通过相应质量命令。
 - Remote completion: 用户授权后，根候选已非 force 快进 `a571600a9a37c051b96637b26ba972bbd026487e..8074849a7a85a3c13767ad03346b1ed3578f82e4` 至 `origin/Dev`；移动端候选已非 force 快进 `b45d84529ba734b17fabf9bd0c786517394abafd..25d1f8963fae93e02130035071cb67d7be98444e` 至移动端 `origin/Dev`。随后的 fetch 均确认候选 HEAD 与各自 `origin/Dev` 的 ahead 0 / behind 0；`actionlint`、GitHub Actions dispatch、真实设备/EAS、生产 API/数据写入和外部同步均未运行。
 
-## CRL-20260729-007 — Photo ID 与签证图片只读大图预览
+## CRL-20260729-008 — MZStay 1.0.25 iOS/Android production 构建
 
 - **Status:** ready
+- **Updated:** 2026-07-30 Australia/Melbourne
+- **Request:** 发布 MZStay 1.0.25 版本元数据与 Android 内部分发 APK 配置。
+- **Outcome:** 候选将移动端版本、iOS build number、Android version code 统一为 `1.0.25 (25)`，并加入仅供内部 USB 安装的 `production-apk` EAS profile；不会重新创建或提交现有 IPA/AAB/APK 构建产物。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/app.json` — modified: 版本、iOS build number 与 Android version code 升至 25。
+- `mz-cleaning-app-frontend/eas.json` — modified: 增加正式环境的内部 APK 构建 profile。
+- `mz-cleaning-app-frontend/package.json` — modified: 版本元数据升至 1.0.25。
+- `mz-cleaning-app-frontend/package-lock.json` — modified: 根包版本元数据同步。
+- `docs/change-release-ledger.md` — modified: 记录跨仓库发布状态。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Config / environment: `production-apk` 仅用于内部安装，不能提交到 Google Play；不改变既有 store AAB 配置。
+- Related units: 先前根 `2a0ecbc` 与移动端 `8c658e7` 已包含本次所选业务 CRL 的功能源码；本单元仅补充尚未推送的版本与 EAS 配置。
+
+### Validation
+
+- Passed: root ledger audit (1 changed / 1 recorded)、feature-registry audit (8 FRs / 90 mappings) and `git diff --check`.
+- Passed: isolated mobile candidate ledger audit (5 changed / 5 recorded)、typecheck、lint (0 errors / 111 existing warnings)、button audit、Fast Jest (3 suites / 13 tests) and full Jest (50 suites / 242 tests).
+- Passed: independent read-only release review returned GO with no P0/P1/P2 finding.
+- Existing artifact evidence: 1.0.25 的 iOS IPA、Android AAB 与内部 APK 已在此前构建完成；本次不以该历史构建替代当前 Git 候选验证。
+
+### Risks / Release Notes
+
+- Risk: 发布配置不自动提交 App Store Connect 或 Google Play，也不触发新的 EAS 构建；当前不包含 `expo-updates`，故 `channel: production` 不启用运行时 OTA 更新。
+- Sensitive-information review: 不记录或提交 `.env` 内容、token、凭证、数据库 URL、私钥、敏感日志或本地缓存。
+- Git state: selected candidate, uncommitted and unpushed.
+
+## Release reconciliation — 2026-07-30
+
+- Evidence: root commit `2a0ecbc` and mobile commit `8c658e7` were pushed on 2026-07-29 and contain the selected backend/web/mobile business source files. This reconciliation corrects the affected root CRL statuses from `ready` to `pushed`; it does not re-release those source files.
+- Scope: CRL-20260726-002 through -007, -009, -010; CRL-20260727-001 through -008; CRL-20260728-001 through -005; and CRL-20260729-001 through -007.
+- Remaining selected work: CRL-20260729-008 remains `ready` until its version/EAS configuration commit reaches the independent mobile `Dev` branch.
+
+## CRL-20260729-007 — Photo ID 与签证图片只读大图预览
+
+- **Status:** pushed
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** Photo ID 和签证照片需要支持放大查看。
 - **Outcome:** 待最终校验。编辑资料页的两种证件图片缩略图可点击打开全屏等比大图，支持 1x–4x 双指捏合缩放并拖动查看局部；维持只读和现有水印显示。
@@ -196,7 +236,7 @@
 
 ## CRL-20260729-005 — 移动端“我”页账户操作文字居中
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** 修复移动端“我”页中“退出登录”按钮文字未在操作行正中显示的问题。
 - **Outcome:** 用户澄清后，账号管理子页已恢复原先的 48pt 行高和 14pt 内边距；“我”主页底部红色“退出登录”按钮保留水平与垂直居中显示。
@@ -254,7 +294,7 @@
 
 ## CRL-20260729-006 — 移动端 Photo ID 与签证图片整版水印和 Visa Grant Number
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** Photo ID 预览必须显示覆盖整张图的 MZ Property 水印；新增仅支持图片的签证文件上传、同样的整版水印，并显示/保存 Visa Grant Number。
 - **Outcome:** 待验证完成。实现复用现有资料图片上传和服务端 Sharp 水印链路；Photo ID 与签证资料均以同一段中英文本的重复倾斜水印存档，本地原图预览同步展示整版覆盖层；签证图片地址和 Visa Grant Number 仅随当前登录用户的自助资料读写。
@@ -315,7 +355,7 @@
 
 ## CRL-20260729-004 — 管理详情恢复自完成完成照片展示
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** admin、客服和线下经理在任务详情看不到自完成拍摄的房间完成照片；要求以只读方式展示，且不影响清洁人员与检查人员的既有照片规则。
 - **Outcome:** 管理详情读取完成照片时会合并当前 active 任务、显式 `cleaning_task_ids`、旧缓存 `source_ids` 与主 `source_id`；合并卡不再遗漏自完成照片所属的清洁任务。多个关联任务中即使一条照片请求失败，其他成功返回的完成照片仍会按原有分组显示，失败仍显示诊断和重试。
@@ -360,7 +400,7 @@
 
 ## CRL-20260729-003 — 自完成挂钥匙视频弱网同步与检查前置隔离
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** 自完成上传挂钥匙视频需要显示上传状态、弱网可恢复；修复错误要求“等待清洁提交补品记录和房源照片，再提交检查”。
 - **Outcome:** 自完成视频先保存为应用私有队列项，再复用检查页同一个单 worker 上传、断点和业务保存机制；页面明确显示未上传、待同步、上传中、已上传未保存、保存失败与已同步。自完成视频保存不会再套用普通检查的“清洁补品 + 房源照片”前置；普通检查和 password-only 原门槛保持不变。最终点击“标记已完成”仍由既有自完成接口校验本任务的视频、完成照片和补品。
@@ -414,7 +454,7 @@
 
 ## CRL-20260729-002 — 修复自完成补品提交的空客厅照片参数
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** 自完成任务提交消耗品补充时报“参数错误 string must contain at least 1 characters”。
 - **Outcome:** 未拍可选“客厅补品照片”时，移动端不再发送 `living_room_photo_url: ""`；有远端照片引用时继续发送该字段。补品、补货凭证和完成照片保留既有弱网队列、稳定 `submit_id` 与分步业务保存方式。
@@ -459,7 +499,7 @@
 
 ## CRL-20260729-001 — 自完成照片全屏预览、水印与遥控器合并
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** 修复自完成房间完成照片的大图不能完整显示且看不到水印；客厅、沙发、卧室、厨房明确拍摄对象并以小字提示；电视遥控器与空调遥控器合并为一张照片。
 - **Outcome:** 自完成房间完成照片打开后使用整屏预览并按设备宽度显示，避免固定小容器裁切；本地草稿大图立即显示房号、执行人和拍摄时间水印，上传后的图片继续由既有后端写入同样水印。客厅、沙发、卧室和厨房显示指定拍摄对象的小字提示。电视和空调遥控器合为一个必拍位，只保留一张并支持重拍替换；旧电视/空调/笼统遥控器完成照片均会合并显示。
@@ -502,7 +542,7 @@
 
 ## CRL-20260728-005 — 自完成补品确认、房号确认与完成照片补齐
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-28 Australia/Melbourne
 - **Request:** 自完成页面把房间完成照片的拍照按钮从黑色改为蓝色，并增加浴室下水口、遥控器照片；明确电视遥控器必拍，空调遥控器在墙上时可不拍。随后修复进入自完成页时所有未选消耗品被误显示为“现场够用”，并要求未结束任务进入时确认当前房号；已结束任务重进不再确认。
 - **Outcome:** 自完成页显示 8 个必拍区域（原有 5 个基础区域、浴室下水口、电视遥控器、吸尘器使用后）和 1 个可选的空调遥控器拍照位；“拍照”保持既有 44pt 按钮契约并为蓝色。未明确选择的消耗品在草稿中保持空状态并回显为“待确认”，只有用户明确选择“现场够用/已补充/下次退房补”才保存对应状态。已有错误草稿中 `status: ok` 且 `restock_status: null` 的项目也会恢复为“待确认”，而没有 `restock_status` 的旧版明确“足够”记录仍兼容为“现场够用”。未结束任务先显示房号确认，`cleaned`、`restock_pending` 等已结束任务重进直接查看。弱网草稿、逐张上传、单次完成照片业务保存与重进恢复继续复用既有队列。
@@ -555,7 +595,7 @@
 
 ## CRL-20260728-004 — 自完成补货结果与完成照片最终批次提交
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-28 Australia/Melbourne
 - **Request:** 优化移动端自完成任务的补充与完成页面：补货要区分“已补充”和“下次补”；房间完成照片复用检查/清洁人员的弱网、本机草稿、逐张上传和重进恢复规则；照片对象逐张上传，但最终完成记录一次写入数据库。
 - **Outcome:** 自完成消耗品逐项改为“现场够用 / 已补充 / 下次退房补”。“已补充”必须通过相机留下补货凭证；“下次退房补”不要求照片，并使用既有 `carry_forward` 记录供后续退房任务投影。完成照片拍下时只持久化到应用私有草稿；用户点击“标记已完成”时，队列才逐张上传，所有远端引用齐备后以一个稳定 `submit_id` + `completion_photos` 业务请求批量保存，成功后才调用自完成状态转换。后端明确允许自完成任务的清洁执行人保存此批补货凭证，仍要求消耗品先入库，但不错误套用检查专用的房源照片前置。
@@ -610,7 +650,7 @@
 
 ## CRL-20260728-003 — 移动端消耗品补充标准
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-28 Australia/Melbourne
 - **Request:** 所有角色的消耗品补充页面，在补充物品旁显示卷纸、抽纸、洗护、垃圾袋、厨房用品等对应补充标准。
 - **Outcome:** 清洁人员的“补品填报”与“补充与完成”，以及检查人员的“检查与补充”，都会在受支持的消耗品名称下显示统一的“补充标准”。未知或自定义项目不显示猜测标准。
@@ -660,7 +700,7 @@
 
 ## CRL-20260728-002 — 管理端历史工作情况与 MSQ 钥匙时间语义
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-28 Australia/Melbourne
 - **Request:** admin 移动端“今日工作情况”默认收起；按历史日期查看时复用既有历史任务与交接记录；MSQ 仓库钥匙当天显示“谁借出 HH:mm”，前一天显示“昨天 谁借出 HH:mm”，更早记录显示日期和时间。
 - **Outcome:** 管理模式下的工作情况卡片默认收起，展开时才读取当前所选日期的数据。切换到周/月并选择历史日期后，同一张卡片读取既有的任务和交接记录，标题显示该日期；当前页面对已读取日期缓存，下拉刷新才清空缓存并重新读取。MSQ 最近钥匙事件不再笼统显示“最近”，而按当天、昨天或明确日期展示借出/归还人和时间。
@@ -707,7 +747,7 @@
 
 ## CRL-20260728-001 — 移动端房号确认、遥控器合拍与检查后清洁问题追加
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-28 Australia/Melbourne
 - **Request:** 清洁人员补品消耗将电视和空调遥控器合为一张照片，电视遥控器仍必拍、墙嵌空调遥控器可不拍；检查与补充成功保存到服务器后仅允许从相册追加清洁问题；清洁/检查人员进入对应页面先确认当前任务房号。
 - **Outcome:** 补品页现在只拍一张“电视与空调遥控器”照片，仍以电视遥控器照片作为提交门槛。补品页和检查页在开始填写前均要求确认房号。检查批次状态为 `synced` 后，已提交的检查和补货照片保持只读；检查员仍可从相册选取新的清洁问题照片，上传与服务端追加保存分开处理，服务端保存失败时可重试且不会重复上传已取得远端引用的照片。
@@ -771,7 +811,7 @@
 
 ## CRL-20260727-008 — Android 上传成功后保留页面媒体引用
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-28 Australia/Melbourne
 - **Request:** 安卓移动端拍照上传后仍看不见照片，继续修复缩略图/原图在上传成功回调后的消失问题。
 - **Outcome:** 补品/完成照片、检查照片和钥匙照片队列不再在页面仍使用 `file://` 地址时立即删除本地副本；钥匙详情页在同步完成后主动刷新开发环境任务数据，把页面切换到远端 `cleaning/...` 引用；修复本地 URI 同时作为缩略图与原图 `Image` key 时产生的重复 key。已同步但暂时没有页面引用的本地文件由既有 24 小时孤儿媒体清理机制回收。
@@ -862,7 +902,7 @@
 
 ## CRL-20260727-007 — 钥匙重传保持任务状态并保留补品照片
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-27 Australia/Melbourne
 - **Request:** 补品填报完成后重新上传钥匙照片，任务不得从已完成退回进行中；重新上传钥匙不能使此前拍摄的补品消耗照片消失。
 - **Outcome:** 钥匙重传使用统一动作结果写入任务，已完成/检查推进状态保持不变；钥匙上传事件改为只发移动端安全增量字段，避免触发整卡刷新覆盖补品消耗照片。后续核对发现完成页把读取失败误判为空，已补上读取失败保留现有照片、稳定任务 ID恢复和重传时只替换钥匙媒体。
@@ -919,7 +959,7 @@
 
 ## CRL-20260727-006 — 清洁照片上传后统一保存稳定媒体 key
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-27 Australia/Melbourne
 - **Request:** 安卓移动端照片上传成功后，缩略图和原图仍不可见；继续检查并修复上传后媒体引用丢失问题。
 - **Outcome:** 清洁移动端上传成功后的业务引用已统一 key-first；新上传照片在本地清理、业务提交和任务刷新后仍保留 `cleaning/...` 稳定 key，并可通过认证媒体代理读取缩略图、预览和原图。
@@ -975,7 +1015,7 @@
 
 ## CRL-20260727-005 — 钥匙照片删除后允许不受补品状态影响重新上传
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-27 Australia/Melbourne
 - **Request:** 钥匙照片被删除后，仍然可以重新上传，不受补品是否填写完成影响。
 - **Outcome:** 服务端任务动作 payload、移动端旧任务动作和任务详情按钮均按“当前是否仍有钥匙照片”判断；照片已删除时，即使清洁状态已经进入 `cleaned`/`done` 等完成态，上传入口仍可用；照片仍存在时继续保持已记录/不可重复上传。
@@ -1024,7 +1064,7 @@
 
 ## CRL-20260727-004 — Android 照片统一转 JPEG并修复黑色缩略图/原图失败
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-27 Australia/Melbourne
 - **Request:** 安卓系统拍摄的清洁照片在缩略图和原图中显示全黑，原图提示加载失败；需要给出并执行修复。
 - **Outcome:** 移动端本地草稿、检查照片队列和上传前不再把转换失败的原始字节伪装成 JPEG；后端清洁/mzapp 上传与清洁媒体读取统一解码、旋转并输出 JPEG；解码失败返回 `IMAGE_FORMAT_UNSUPPORTED`；预览组件显示明确失败和重试入口。
@@ -1092,7 +1132,7 @@
 
 ## CRL-20260727-003 — 网页任务中心周转卡显示已住与待住晚数
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-27 Australia/Melbourne
 - **Request:** 网页端任务中心卡里增加显示已住晚数和待住晚数。
 - **Outcome:** 退房入住合并卡按后端已有 `stayed_nights` / `remaining_nights` 字段显示“已住 X晚”和“待住 X晚”；单独入住卡继续显示原有“住 X晚”。任务详情元信息与卡片复用同一展示规则。
@@ -1140,7 +1180,7 @@
 
 ## CRL-20260727-002 — MZ 移动端按钮规范 skill 与统一触控尺寸
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-27 Australia/Melbourne
 - **Request:** 为 MZ 移动端建立可复用的仓库级按钮规范 skill，并按统一厚度、文字、loading、disabled、图标触控区域和并排布局规则优化现有页面。
 - **Outcome:** 新增 `mz-mobile-button-rules` 仓库级 skill；普通按钮以 `minHeight: 44` 为基准，compact/chip 与图标按钮保留语义例外但实际触控区域不小于 44；AppButton loading 保留原文案布局并禁用重复点击；新增按钮静态审计和组件回归测试。
@@ -1198,7 +1238,7 @@
 
 ## CRL-20260727-001 — 管理角色统一客服任务详情入口
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-27 Australia/Melbourne
 - **Request:** admin 的清洁/检查任务详情必须与客服显示一致，能够修改任务时间和密码、维护当天临时通知，并查看清洁及检查照片等管理信息。
 - **Outcome:** 管理角色从任务卡、通知搜索、通知详情和推送任务入口进入清洁类任务时统一打开 `ManagerDailyTask`，复用客服已有的管理编辑、临时通知和照片查看页面；不改变服务端 `available_actions` 的执行授权。
@@ -1249,7 +1289,7 @@
 
 ## CRL-20260726-010 — 管理角色任务详情动作与钥匙媒体版式统一
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-26 Australia/Melbourne
 - **Request:** 客服、admin、线下经理的钥匙照片应与挂钥匙视频保持同样的大媒体框；admin 任务详情不应在非参与任务上显示一整组灰色执行/检查按钮，而应与客服使用同样的管理动作布局。
 - **Outcome:** 每日清洁页的钥匙照片使用与视频一致的全宽 220 高媒体框；后端对非参与的 admin/线下经理隐藏 `not_participant` 执行动作，只保留客服式管理动作；有明确参与授权时仍显示对应动作；移动端旧 payload 兼容分支保持客服、admin、线下经理一致。
@@ -1298,7 +1338,7 @@
 
 ## CRL-20260726-009 — 挂钥匙视频业务保存状态不再误判为离线
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-26 Australia/Melbourne
 - **Request:** 修复手机已有网络、视频文件已经上传但任务记录保存失败时，完成页仍显示“联网恢复后自动保存”的错误描述。
 - **Outcome:** 完成页区分“媒体上传成功”和“业务记录保存成功”；优先显示真实保存错误，进入页面时主动尝试一次媒体队列处理并刷新状态。
@@ -1338,7 +1378,7 @@
 
 ## CRL-20260726-007 — 检查提交必须等待清洁补品与房源照片
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-26 Australia/Melbourne
 - **Request:** 修复检查先提交后把共享清洁任务推进到检查态、导致清洁无法继续记录的问题；检查必须等待清洁补品记录和房源照片提交成功。
 - **Outcome:** `/mzapp/work-tasks` 返回清洁提交前置状态；普通检查 action 在前置未满足时禁用；检查照片、补货凭证和挂钥匙视频后端入口统一拒绝绕过；检查照片主入口在任务行锁内先校验再写入，清洁仍可恢复提交。
@@ -1393,7 +1433,7 @@
 
 ## CRL-20260726-006 — 第五阶段跨层回归与发布前写入闸门
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-26 Australia/Melbourne
 - **Request:** 执行第五阶段：把补品队列/草稿/后端事务的不变量接入跨层发布前检查，并为真实数据库 E2E 增加非生产写入闸门。
 - **Outcome:** 增加跨层源码契约检查；补品队列测试覆盖 5xx 退避和稳定 ID 的持久化读取；Phase 5 E2E 默认跳过数据库写入，只有显式非生产标签和开关同时满足时才运行。
@@ -1443,7 +1483,7 @@
 
 ## CRL-20260726-005 — R2 媒体引用盘点与孤儿回收闸门
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-26 Australia/Melbourne
 - **Request:** 执行第四阶段：为 R2 媒体增加前缀感知的引用盘点、dry-run 孤儿识别和显式回收保护。
 - **Outcome:** 新增 R2 对象分页清单和批量删除基础能力、数据库引用抽取与候选摘要；默认只 dry-run，当前没有默认可删除临时前缀，任何删除都需要精确前缀授权和确认词。
@@ -1496,7 +1536,7 @@
 
 ## CRL-20260726-004 — 补品后端事务、启动预热与稳定媒体对象
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-26 Australia/Melbourne
 - **Request:** 执行第三阶段：为补品提交补齐事务边界、事务成功后的副作用、启动期结构检查和稳定 `media_id` 上传 key。
 - **Outcome:** 补品提交按任务行加锁，在单一事务内完成回执检查、旧记录替换、媒体写入、任务状态/审计和回执保存；事务提交后才返回并触发任务事件、SSE 和通知。补品相关结构初始化进入启动 warmup，带 `media_id` 的照片使用稳定 R2 key，重试覆盖同一对象而不是随机新对象。
@@ -1543,7 +1583,7 @@
 
 ## CRL-20260726-003 — 补品业务提交 submit_id 幂等保护
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-26 Australia/Melbourne
 - **Request:** 执行第 0 阶段和第二阶段：在第一阶段客户端队列/草稿基础上，补齐补品业务提交的服务端幂等保护。
 - **Outcome:** 第 0 阶段确认移动端已有稳定 `submit_id` 但补品请求未发送、后端补品接口无 receipt 检查、项目已有共享 `app_submit_receipts`。第二阶段已让移动端发送 `submit_id`，后端对同任务同提交同步骤的相同 payload 返回历史结果，payload 变化返回 `409 idempotency_conflict`，避免重复写入、任务事件和通知。
@@ -1587,7 +1627,7 @@
 
 ## CRL-20260726-002 — 补品提交队列唯一执行者与草稿媒体断点状态
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-26 Australia/Melbourne
 - **Request:** 第一阶段执行补品弱网提交优化：队列必须是唯一提交执行者，草稿必须是唯一进度事实来源，并覆盖重复入队、逐张上传、恢复、错误分类和本地清理。
 - **Outcome:** 两个补品提交入口只负责校验、持久化草稿和调用队列入口；队列统一执行照片上传与业务提交。草稿升级为带稳定 `draft_id`、`queue_item_id`、`submit_id`、`media_id` 的可恢复状态快照，逐张保存上传检查点；写盘读回成功后才删本地文件，删除失败进入清理任务。
