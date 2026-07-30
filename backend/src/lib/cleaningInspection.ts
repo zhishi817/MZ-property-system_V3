@@ -108,6 +108,12 @@ export function isInspectionFinishedStatus(status: any): boolean {
   return raw === 'inspected' || raw === 'done' || raw === 'completed' || raw === 'ready' || raw === 'keys_hung'
 }
 
+export function projectInspectorTaskStatus(status: any, inspectionScope: any): string {
+  const raw = String(status || '').trim().toLowerCase()
+  if (raw !== 'inspected') return raw
+  return normalizeInspectionScope(inspectionScope) === 'password_only' ? 'done' : 'to_hang_keys'
+}
+
 export function isCleaningDoneLikeStatus(status: any): boolean {
   const raw = String(status || '').trim().toLowerCase()
   return (

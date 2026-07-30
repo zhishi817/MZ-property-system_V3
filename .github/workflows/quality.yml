@@ -53,3 +53,86 @@ jobs:
 
       - name: Run frontend checks
         run: npm run check:frontend
+
+  fast:
+    name: Fast Regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout mobile repository
+        uses: actions/checkout@v4
+        with:
+          repository: zhishi817/mz-cleaning-app-frontend
+          ref: Dev
+          path: mz-cleaning-app-frontend
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+            mz-cleaning-app-frontend/package-lock.json
+
+      - name: Install backend dependencies
+        run: npm ci --prefix backend
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+
+      - name: Install mobile dependencies
+        run: npm ci --prefix mz-cleaning-app-frontend
+
+      - name: Run fast regression
+        run: npm run check:ci
+
+  full:
+    name: Full Regression
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout mobile repository
+        uses: actions/checkout@v4
+        with:
+          repository: zhishi817/mz-cleaning-app-frontend
+          ref: Dev
+          path: mz-cleaning-app-frontend
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+            mz-cleaning-app-frontend/package-lock.json
+
+      - name: Install backend dependencies
+        run: npm ci --prefix backend
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+
+      - name: Install mobile dependencies
+        run: npm ci --prefix mz-cleaning-app-frontend
+
+      - name: Run full regression
+        run: npm run check:full

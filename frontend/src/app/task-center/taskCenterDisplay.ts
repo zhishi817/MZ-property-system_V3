@@ -9,6 +9,15 @@ type TaskCenterDisplayTask = {
   checkout_task_dates?: string[]
 }
 
+type TaskCenterNightsDisplayTask = TaskCenterDisplayTask & {
+  task_ids?: string[]
+  nights?: number | null
+  turnover_display?: {
+    stayed_nights?: number | null
+    remaining_nights?: number | null
+  } | null
+}
+
 export const TASK_CENTER_MAX_COLUMNS = 4
 const TASK_CENTER_MIN_CARD_WIDTH = 320
 const TASK_CENTER_SINGLE_COLUMN_WIDTH = 620
@@ -55,6 +64,35 @@ export function cleaningTaskFlowLabelText(task: TaskCenterDisplayTask) {
   if (kind === 'checkin_clean') return '入住'
   if (kind === 'stayover_clean') return '入住中清洁'
   return String(task.detail || task.title || '任务安排').trim()
+}
+
+function positiveNights(value: number | null | undefined) {
+  const nights = Number(value)
+  if (!Number.isFinite(nights) || nights <= 0) return null
+  return Math.trunc(nights)
+}
+
+function showsCheckin(task: TaskCenterNightsDisplayTask) {
+  const kind = lower(task.task_kind)
+  if (kind === 'turnover' || kind === 'checkin_clean') return true
+  if (kind === 'checkout_clean' || kind === 'stayover_clean') return false
+  const text = `${String(task.title || '')} ${String(task.detail || '')}`
+  if ((task.task_ids || []).length > 1) return true
+  return text.includes('入住')
+}
+
+export function cleaningNightsDisplayLabels(task: TaskCenterNightsDisplayTask) {
+  if (lower(task.task_source) !== 'cleaning' || task.deferred_inspection_view || !showsCheckin(task)) return []
+  const kind = lower(task.task_kind)
+  const display = task.turnover_display
+  const remainingNights = positiveNights(display?.remaining_nights ?? task.nights)
+  if (kind !== 'turnover') return remainingNights == null ? [] : [`住${remainingNights}晚`]
+
+  const labels: string[] = []
+  const stayedNights = positiveNights(display?.stayed_nights)
+  if (stayedNights != null) labels.push(`已住 ${stayedNights}晚`)
+  if (remainingNights != null) labels.push(`待住 ${remainingNights}晚`)
+  return labels
 }
 
 export function resolveTaskCenterColumns(containerWidth: number) {

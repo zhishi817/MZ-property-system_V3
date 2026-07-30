@@ -224,6 +224,10 @@ async function run() {
     ,
     `ALTER TABLE users ADD COLUMN IF NOT EXISTS color_hex text NOT NULL DEFAULT '#3B82F6';`
     ,
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS visa_document_url text;`
+    ,
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS visa_grant_number text;`
+    ,
     `CREATE TABLE IF NOT EXISTS key_sets (
       id text PRIMARY KEY,
       set_type text,

@@ -1,6 +1,8 @@
 import crypto from 'crypto'
 import type { Pool } from 'pg'
 
+export const IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH = 256
+
 type ReceiptScope = {
   scopeType: string
   scopeId: string

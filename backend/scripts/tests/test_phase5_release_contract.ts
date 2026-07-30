@@ -1,0 +1,28 @@
+import assert from 'assert'
+import fs from 'fs'
+import path from 'path'
+
+const root = path.resolve(__dirname, '../../..')
+const queue = fs.readFileSync(path.join(root, 'mz-cleaning-app-frontend/src/lib/cleaningConsumablesSubmitQueue.ts'), 'utf8')
+const suppliesScreen = fs.readFileSync(path.join(root, 'mz-cleaning-app-frontend/src/screens/tasks/SuppliesFormScreen.tsx'), 'utf8')
+const backendRoute = fs.readFileSync(path.join(root, 'backend/src/modules/cleaning_app.ts'), 'utf8')
+const phase5E2E = fs.readFileSync(path.join(root, 'backend/scripts/tests/phase5_e2e_acceptance.ts'), 'utf8')
+
+assert.match(queue, /let processing = false/)
+assert.match(queue, /if \(processing\) return/)
+assert.match(queue, /queue_item_id: string/)
+assert.match(queue, /draft_id: string/)
+assert.match(queue, /submit_id: string/)
+assert.match(queue, /status >= 500/)
+assert.match(queue, /retryDelayMs/)
+assert.match(queue, /next_retry_at/)
+assert.match(queue, /updateCleaningConsumablesDraft/)
+assert.match(suppliesScreen, /enqueueAndProcessCleaningConsumablesSubmit/)
+assert.doesNotMatch(suppliesScreen, /submitCleaningConsumables/)
+assert.match(backendRoute, /pgRunInTransaction\(async \(client\)/)
+assert.match(backendRoute, /FOR UPDATE/)
+assert.match(backendRoute, /res\.json\(responsePayload\)\s+void \(async \(\) =>/)
+assert.match(phase5E2E, /PHASE5_ALLOW_DB_WRITES/)
+assert.match(phase5E2E, /PHASE5_DATABASE_LABEL/)
+
+process.stdout.write('test_phase5_release_contract: ok\n')

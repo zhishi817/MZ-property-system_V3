@@ -19,6 +19,8 @@ const mePatchSchema = z
     bank_account_number: z.string().trim().max(64).optional().nullable(),
     personal_abn: z.string().trim().max(32).optional().nullable(),
     photo_id_url: z.string().trim().max(500).optional().nullable(),
+    visa_document_url: z.string().trim().max(500).optional().nullable(),
+    visa_grant_number: z.string().trim().max(120).optional().nullable(),
   })
   .strict()
 
@@ -43,6 +45,8 @@ async function ensureProfileColumns() {
     await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS bank_account_number text')
     await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS personal_abn text')
     await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS photo_id_url text')
+    await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS visa_document_url text')
+    await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS visa_grant_number text')
   } catch {}
 }
 
@@ -126,7 +130,7 @@ router.get('/me', async (req, res) => {
         buildUserSelect(
           columns,
           ['id', 'username', 'role'],
-          ['phone_au', 'display_name', 'avatar_url', 'legal_name', 'bank_account_name', 'bank_bsb', 'bank_account_number', 'personal_abn', 'photo_id_url'],
+          ['phone_au', 'display_name', 'avatar_url', 'legal_name', 'bank_account_name', 'bank_bsb', 'bank_account_number', 'personal_abn', 'photo_id_url', 'visa_document_url', 'visa_grant_number'],
         ),
         { id },
       ) as any[]) || []
@@ -149,6 +153,8 @@ router.get('/me', async (req, res) => {
       bank_account_number: (row as any).bank_account_number || null,
       personal_abn: (row as any).personal_abn || null,
       photo_id_url: (row as any).photo_id_url || null,
+      visa_document_url: (row as any).visa_document_url || null,
+      visa_grant_number: (row as any).visa_grant_number || null,
     })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'user_failed' })
@@ -178,6 +184,8 @@ router.patch('/me', async (req, res) => {
       if (parsed.data.bank_account_number !== undefined) patch.bank_account_number = parsed.data.bank_account_number
       if (parsed.data.personal_abn !== undefined) patch.personal_abn = parsed.data.personal_abn
       if (parsed.data.photo_id_url !== undefined) patch.photo_id_url = parsed.data.photo_id_url
+      if (parsed.data.visa_document_url !== undefined) patch.visa_document_url = parsed.data.visa_document_url
+      if (parsed.data.visa_grant_number !== undefined) patch.visa_grant_number = parsed.data.visa_grant_number
       const safePatch = filterPatchByExistingColumns(patch, columns)
       const keys = Object.keys(safePatch)
       if (!keys.length) return res.json({ ok: true })
@@ -186,7 +194,7 @@ router.patch('/me', async (req, res) => {
       const returning = buildUserSelect(
         columns,
         ['id', 'username', 'role'],
-        ['phone_au', 'display_name', 'avatar_url', 'legal_name', 'bank_account_name', 'bank_bsb', 'bank_account_number', 'personal_abn', 'photo_id_url'],
+        ['phone_au', 'display_name', 'avatar_url', 'legal_name', 'bank_account_name', 'bank_bsb', 'bank_account_number', 'personal_abn', 'photo_id_url', 'visa_document_url', 'visa_grant_number'],
       )
       const sql = `UPDATE users SET ${set} WHERE id=$${keys.length + 1} RETURNING ${returning}`
       const r = await pgPool.query(sql, [...values, id])
@@ -204,6 +212,8 @@ router.patch('/me', async (req, res) => {
     if (parsed.data.bank_account_number !== undefined) (row as any).bank_account_number = parsed.data.bank_account_number
     if (parsed.data.personal_abn !== undefined) (row as any).personal_abn = parsed.data.personal_abn
     if (parsed.data.photo_id_url !== undefined) (row as any).photo_id_url = parsed.data.photo_id_url
+    if (parsed.data.visa_document_url !== undefined) (row as any).visa_document_url = parsed.data.visa_document_url
+    if (parsed.data.visa_grant_number !== undefined) (row as any).visa_grant_number = parsed.data.visa_grant_number
     return res.json({
       id: row.id,
       username: row.username,
@@ -217,6 +227,8 @@ router.patch('/me', async (req, res) => {
       bank_account_number: (row as any).bank_account_number || null,
       personal_abn: (row as any).personal_abn || null,
       photo_id_url: (row as any).photo_id_url || null,
+      visa_document_url: (row as any).visa_document_url || null,
+      visa_grant_number: (row as any).visa_grant_number || null,
     })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'update_failed' })

@@ -78,6 +78,7 @@ export type WorkTaskAvailableAction = {
   placement: 'primary' | 'more'
   enabled: boolean
   disabled_reason?: string
+  read_only?: boolean
   target?: WorkTaskActionTarget
   intent: WorkTaskActionIntent
   source_type?: string | null
@@ -108,6 +109,7 @@ export type WorkTaskCapabilities = {
     source_type: string
     task_kind: string
     status: string
+    cleaning_submission_ready?: boolean | null
     execution_role: string | null
     inspection_mode: string | null
     inspection_scope: string | null
@@ -139,7 +141,7 @@ function normalizeActionIds(value: any): string[] {
 
 function isTerminalStatus(value: any) {
   const status = lower(value)
-  return ['done', 'completed', 'ready', 'cancelled', 'canceled', 'keys_hung', 'inspected'].includes(status)
+  return ['done', 'completed', 'ready', 'cancelled', 'canceled', 'keys_hung'].includes(status)
 }
 
 function isCleaningWorkSubmitted(value: any) {
@@ -183,12 +185,14 @@ function disabledReason(params: {
   isParticipant: boolean
   completed?: boolean
   blocked?: boolean
+  cleaningSubmissionRequired?: boolean
   alreadyDone?: boolean
 }) {
   if (!params.hasPermission) return 'missing_base_permission'
   if (!params.isParticipant) return 'not_participant'
   if (params.completed) return 'task_completed'
   if (params.blocked) return 'pending_inspection_decision'
+  if (params.cleaningSubmissionRequired) return 'cleaning_submission_required'
   if (params.alreadyDone) return 'already_recorded'
   return undefined
 }
@@ -373,6 +377,7 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
   const taskKind = lower(task?.task_kind)
   const status = lower(task?.status)
   const isManager = roleNames.has('admin') || roleNames.has('offline_manager') || roleNames.has('customer_service')
+  const isCustomerService = roleNames.has('customer_service') && !roleNames.has('admin') && !roleNames.has('offline_manager')
   const isCleaningSource = sourceType === 'cleaning_tasks'
   const isCleaningTask = isCleaningSource && taskKind === 'cleaning'
   const isInspectionTask = isCleaningSource && taskKind === 'inspection'
@@ -386,7 +391,12 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
   const isSelfCompleteEligible = isCleaningTask && isSelfCompleteMode(task) && (isCheckoutTask || isStayoverTask)
   const isDirectCompleteEligible = isCleaningTask && (isSelfCompleteEligible || isStayoverTask)
   const isCleaningSubmitted = isCleaningTask && isCleaningWorkSubmitted(status)
-  const isCompleted = isTerminalStatus(status)
+  const hasCleaningSubmissionSignal = typeof task?.cleaning_submission_ready === 'boolean'
+  const cleaningSubmissionReady = hasCleaningSubmissionSignal
+    ? task.cleaning_submission_ready === true
+    : isCleaningWorkSubmitted(task?.cleaning_status || task?.status)
+  const cleaningSubmissionRequired = isInspectionTask && !isPasswordOnly && hasCleaningSubmissionSignal && !cleaningSubmissionReady
+  const isCompleted = isTerminalStatus(status) || (isPasswordOnly && status === 'inspected')
   const participants = normalizeTaskParticipants(task)
   const participantSummary = participantSummaryForUser(participants, userId)
   const isParticipant = participantSummary.hasAny
@@ -406,14 +416,27 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
     })
   }
 
-  if (isCleaningTask) {
+  const isCustomerServiceCleaningSource = isCleaningSource && isCustomerService
+  const isManagerCleaningSource = isCleaningSource && isManager
+  const addWorkerAction = (action: WorkTaskAvailableAction, participantAuthorized: boolean) => {
+    // Managers can still receive an explicitly granted participant action, but
+    // an unassigned manager should see the same manager-only matrix as support.
+    if (isManager && !isCustomerService && !participantAuthorized && !action.enabled) return
+    addAction(action)
+  }
+
+  if (!isCustomerServiceCleaningSource && isCleaningTask) {
+    const hasKeyPhoto = !!cleanText(task?.key_photo_url)
     const keyReason = disabledReason({
       hasPermission: canStart && canMediaUpload,
       isParticipant: participantSummary.can('upload_key_photo'),
-      completed: isCleaningSubmitted,
-      alreadyDone: !!cleanText(task?.key_photo_url),
+      // A deleted key photo must be recoverable even after the cleaning
+      // submission moved the task into a completed-like status. If a photo
+      // still exists, preserve the existing completed/recorded behavior.
+      completed: ['cancelled', 'canceled'].includes(status) || (isTerminalStatus(status) && hasKeyPhoto),
+      alreadyDone: hasKeyPhoto,
     })
-    addAction({
+    addWorkerAction({
       id: 'upload_key_photo',
       label: keyReason === 'already_recorded' ? '钥匙已记录' : '上传钥匙',
       placement: keyReason === 'not_participant' ? 'more' : 'primary',
@@ -421,7 +444,7 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
       ...(keyReason ? { disabled_reason: keyReason } : {}),
       target: 'TaskDetail',
       intent: 'cleaning',
-    })
+    }, participantSummary.can('upload_key_photo'))
 
     const completionReason = disabledReason({
       hasPermission: canFinish,
@@ -429,7 +452,7 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
       completed: isCompleted,
       blocked: isPendingInspectionDecision,
     })
-    addAction({
+    addWorkerAction({
       id: isDirectCompleteEligible ? 'complete_cleaning' : 'fill_supplies',
       label: isPendingInspectionDecision
         ? '待确认检查安排'
@@ -441,30 +464,35 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
       ...(completionReason ? { disabled_reason: completionReason } : {}),
       target: isDirectCompleteEligible ? 'CleaningSelfComplete' : 'SuppliesForm',
       intent: 'cleaning',
-    })
+    }, participantSummary.can(isDirectCompleteEligible ? 'complete_cleaning' : 'fill_supplies'))
   }
 
-  if (isInspectionTask) {
-    const inspectionReason = disabledReason({
-      hasPermission: canInspect && canMediaUpload,
-      isParticipant: participantSummary.can('submit_inspection'),
-      completed: isCompleted,
-    })
+  if (!isCustomerServiceCleaningSource && isInspectionTask) {
+    if (!isPasswordOnly) {
+      const inspectionReason = disabledReason({
+        hasPermission: canInspect && canMediaUpload,
+        isParticipant: participantSummary.can('submit_inspection'),
+        completed: isCompleted,
+        cleaningSubmissionRequired,
+      })
+      addWorkerAction({
+        id: 'submit_inspection',
+        label: isCheckinInspection ? '入住检查' : '检查与补充',
+        placement: inspectionReason === 'not_participant' ? 'more' : 'primary',
+        enabled: actionEnabled(inspectionReason),
+        ...(inspectionReason ? { disabled_reason: inspectionReason } : {}),
+        ...(inspectionReason === 'task_completed' ? { read_only: true } : {}),
+        target: 'InspectionPanel',
+        intent: 'inspection',
+      }, participantSummary.can('submit_inspection'))
+    }
     const siteReason = disabledReason({
       hasPermission: canFinish && canMediaUpload,
       isParticipant: participantSummary.can('upload_access_video'),
       completed: isCompleted,
+      cleaningSubmissionRequired,
     })
-    addAction({
-      id: 'submit_inspection',
-      label: isPasswordOnly ? '查看说明' : (isCheckinInspection ? '入住检查' : '检查与补充'),
-      placement: inspectionReason === 'not_participant' ? 'more' : 'primary',
-      enabled: actionEnabled(inspectionReason),
-      ...(inspectionReason ? { disabled_reason: inspectionReason } : {}),
-      target: 'InspectionPanel',
-      intent: 'inspection',
-    })
-    addAction({
+    addWorkerAction({
       id: 'upload_access_video',
       label: isPasswordOnly ? '改密码并完成' : (isCheckinInspection ? '挂钥匙并完成' : '标记已完成'),
       placement: siteReason === 'not_participant' ? 'more' : 'primary',
@@ -472,16 +500,16 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
       ...(siteReason ? { disabled_reason: siteReason } : {}),
       target: 'InspectionComplete',
       intent: isPasswordOnly || isCheckinInspection ? 'site_action' : 'inspection',
-    })
+    }, participantSummary.can('upload_access_video'))
   }
 
-  if (isExecutionTask) {
+  if (!isCustomerServiceCleaningSource && isExecutionTask) {
     const siteReason = disabledReason({
       hasPermission: canFinish && canMediaUpload,
       isParticipant: participantSummary.can('upload_access_video'),
       completed: isCompleted,
     })
-    addAction({
+    addWorkerAction({
       id: 'upload_access_video',
       label: '上传视频并完成',
       placement: siteReason === 'not_participant' ? 'more' : 'primary',
@@ -489,10 +517,32 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
       ...(siteReason ? { disabled_reason: siteReason } : {}),
       target: 'InspectionComplete',
       intent: 'site_action',
-    })
+    }, participantSummary.can('upload_access_video'))
   }
 
-  if (isCleaningSource) {
+  if (isManagerCleaningSource) {
+    if (!isPasswordOnly && (isCheckoutTask || !!cleanText(task?.order_id_checkout) || !!cleanText(task?.order_id))) {
+      const checkedOut = !!cleanText(task?.checked_out_at)
+      addAction({
+        id: 'mark_guest_checkout',
+        label: checkedOut ? '取消已退房' : '标记已退房',
+        placement: 'primary',
+        enabled: true,
+        target: 'TaskDetail',
+        intent: 'manager',
+      })
+    }
+    const issueAllowed = canReportIssue && (participantSummary.can('report_issue') || context.canViewAll)
+    addAction({
+      id: 'report_issue',
+      label: '问题反馈',
+      placement: 'primary',
+      enabled: issueAllowed,
+      ...(!issueAllowed ? { disabled_reason: canReportIssue ? 'not_participant' : 'missing_base_permission' } : {}),
+      target: 'FeedbackForm',
+      intent: 'issue',
+    })
+  } else if (isCleaningSource) {
     const issueAllowed = canReportIssue && (participantSummary.can('report_issue') || context.canViewAll)
     addAction({
       id: 'report_issue',
@@ -502,18 +552,6 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
       ...(!issueAllowed ? { disabled_reason: canReportIssue ? 'not_participant' : 'missing_base_permission' } : {}),
       target: 'FeedbackForm',
       intent: 'issue',
-    })
-  }
-
-  if (isCleaningSource && isManager && (isCheckoutTask || !!cleanText(task?.order_id_checkout) || !!cleanText(task?.order_id))) {
-    const checkedOut = !!cleanText(task?.checked_out_at)
-    addAction({
-      id: 'mark_guest_checkout',
-      label: checkedOut ? '取消已退房' : '标记已退房',
-      placement: 'primary',
-      enabled: true,
-      target: 'TaskDetail',
-      intent: 'manager',
     })
   }
 
@@ -535,6 +573,7 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
         source_type: sourceType,
         task_kind: taskKind,
         status,
+        cleaning_submission_ready: hasCleaningSubmissionSignal ? cleaningSubmissionReady : null,
         execution_role: task?.execution_role == null ? null : cleanText(task.execution_role),
         inspection_mode: inspectionMode || null,
         inspection_scope: task?.inspection_scope == null ? null : cleanText(task.inspection_scope),

@@ -417,3 +417,43 @@
 ### Open Issues / Follow-ups
 - 必须先在正式 Neon SQL Editor 执行预览 SQL，并人工核对 `ready`、`missing_order`、`ambiguous_order` 和已有收入分类。
 - 正式执行结果中的 `inserted_finance_count` 与 `inserted_company_count`、两侧金额必须一致。
+
+## 自完成挂钥匙视频弱网同步与检查前置隔离
+
+- Date: 2026-07-29
+- Task: 自完成上传挂钥匙视频显示上传状态，支持弱网/重进恢复，并修复被普通检查前置错误阻断的问题。
+- Status: implemented
+
+### Confirmed Plan
+
+- 复用检查人员现有 `inspectionMediaQueue`，不新建并行的视频同步系统。
+- 将视频文件上传与任务业务保存拆分；保存成功前保留本地文件和远端 URL，重进/重试不重复上传已确认媒体。
+- 将自完成视频与普通检查的权限和前置条件分开；保持普通检查和 password-only 既有规则。
+- 覆盖移动端队列/页面状态和后端状态流转/路由契约，再执行类型与静态检查。
+
+### Implementation Result
+
+- 自完成页的视频拍摄改为入本机队列，进入页面和点击重试时复用同一个单 worker 恢复上传及任务记录保存。
+- 页面显示未上传、待同步、上传中、等待保存、保存失败、需重拍和已同步；视频 URL 已上传但业务保存失败不会误显示完成。
+- `self_complete_lockbox` 仅由后端按任务模式生成，用于跳过普通检查提交/检查照片前置；最终自完成接口的自身视频、完成照片和补品门槛未放宽。
+- 两条视频保存路由将动作审计、媒体记录和上传时间放到同一事务，避免只写入部分状态。
+
+### Validation
+
+- `npm run test -- --runInBand --no-cache src/lib/inspectionMediaQueue.test.ts src/screens/tasks/CleaningSelfCompleteScreen.test.tsx`（mobile）通过：2 suites / 14 tests。
+- `npm run test:cleaning-task-transition-guard`、`npm run test:idempotency-submit-id-contract`（backend）通过。
+- mobile 的 `npm run typecheck`、`npm run lint`、`npm run check:buttons` 通过；lint 为 0 error / 111 条既有 warning。
+- backend 的 `./node_modules/.bin/tsc -p . --noEmit` 通过；未运行会覆盖并发 `backend/dist` 的构建命令。
+- `python3 scripts/audit_change_release_ledger.py`、`python3 scripts/audit_feature_regression_registry.py` 与 root/mobile 的 `git diff --check` 通过。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.tsx`
+- `mz-cleaning-app-frontend/src/lib/inspectionMediaQueue.ts`
+- `backend/src/modules/cleaning_app.ts`
+- `backend/src/modules/mzapp.ts`
+- `backend/src/lib/workTaskActionAudit.ts`
+
+### Open Issues / Follow-ups
+
+- 未做 Android/iOS 真机、EAS 构建、真实弱网与真实对象存储/接口验证；上线前建议用自完成周转任务实测“断网拍摄 → 重进 → 联网 → 仅业务保存重试”。

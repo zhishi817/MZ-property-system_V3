@@ -338,6 +338,13 @@ function normalizePhotoUrls(input: any) {
   return Array.from(new Set(arr.map((item) => String(item || '').trim()).filter(Boolean))).slice(0, 20)
 }
 
+function stripOfflineTaskUrgency(row: any) {
+  if (!row || typeof row !== 'object') return row
+  const out = { ...row }
+  delete out.urgency
+  return out
+}
+
 export async function upsertWorkTaskFromOfflineTask(row: any, requestedStatus?: any) {
   if (!hasPg || !pgPool) return
   const id = String(row?.id || '').trim()
@@ -348,23 +355,21 @@ export async function upsertWorkTaskFromOfflineTask(row: any, requestedStatus?: 
   const assignee = String(row?.assignee_id || '').trim() || null
   const status = offlineWorkStatus(requestedStatus === undefined ? row?.status : requestedStatus)
   const updateStatus = requestedStatus !== undefined
-  const urgency = String(row?.urgency || '').trim() || 'medium'
   const photoUrls = normalizePhotoUrls(row?.photo_urls)
   await pgPool.query(
-    `INSERT INTO work_tasks(id, task_kind, source_type, source_id, property_id, title, summary, scheduled_date, assignee_id, status, urgency, photo_urls, created_at, updated_at)
-     VALUES($1,'offline','cleaning_offline_tasks',$2,$3,$4,$5,$6::date,$7,$8,$9,$10::jsonb,COALESCE($11::timestamptz, now()), now())
+    `INSERT INTO work_tasks(id, task_kind, source_type, source_id, property_id, title, summary, scheduled_date, assignee_id, status, photo_urls, created_at, updated_at)
+     VALUES($1,'offline','cleaning_offline_tasks',$2,$3,$4,$5,$6::date,$7,$8,$9::jsonb,COALESCE($10::timestamptz, now()), now())
      ON CONFLICT (source_type, source_id) DO UPDATE SET
        property_id=EXCLUDED.property_id,
        title=EXCLUDED.title,
        summary=EXCLUDED.summary,
        scheduled_date=EXCLUDED.scheduled_date,
        assignee_id=work_tasks.assignee_id,
-       status=CASE WHEN $12::boolean THEN EXCLUDED.status ELSE work_tasks.status END,
-       urgency=EXCLUDED.urgency,
+       status=CASE WHEN $11::boolean THEN EXCLUDED.status ELSE work_tasks.status END,
        photo_urls=EXCLUDED.photo_urls,
        updated_at=now()
      RETURNING *`,
-    [workId, id, row?.property_id || null, String(row?.title || ''), String(row?.content || '') || null, scheduled, assignee, status, urgency, JSON.stringify(photoUrls), row?.created_at || null, updateStatus]
+    [workId, id, row?.property_id || null, String(row?.title || ''), String(row?.content || '') || null, scheduled, assignee, status, JSON.stringify(photoUrls), row?.created_at || null, updateStatus]
   )
 }
 
@@ -375,7 +380,7 @@ async function backfillOfflineWorkTasks() {
   await pgPool.query(
     `INSERT INTO work_tasks(
        id, task_kind, source_type, source_id, property_id, title, summary,
-       scheduled_date, assignee_id, status, urgency, photo_urls, created_at, updated_at
+       scheduled_date, assignee_id, status, photo_urls, created_at, updated_at
      )
      SELECT
        'cleaning_offline_tasks:' || t.id::text,
@@ -388,7 +393,6 @@ async function backfillOfflineWorkTasks() {
        t.date::date,
        t.assignee_id,
        CASE WHEN lower(COALESCE(t.status, 'todo')) = 'done' THEN 'done' ELSE 'todo' END,
-       COALESCE(NULLIF(t.urgency, ''), 'medium'),
        COALESCE(t.photo_urls, '[]'::jsonb),
        COALESCE(t.created_at, t.updated_at, now()),
        COALESCE(t.updated_at, t.created_at, now())
@@ -469,18 +473,22 @@ router.get('/staff', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
   return res.json(out)
 })
 
-const offlineTaskSchema = z.object({
+export const offlineTaskSchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   task_type: z.enum(['property', 'company', 'other']),
   title: z.string().min(1),
   content: z.string().optional(),
   kind: z.string().min(1),
   status: z.enum(['todo', 'done']),
-  urgency: z.enum(['low', 'medium', 'high', 'urgent']),
+  // Kept as an optional legacy input for older clients; offline tasks no longer use it.
+  urgency: z.unknown().optional(),
   property_id: z.string().nullable().optional(),
   assignee_id: z.string().nullable().optional(),
   photo_urls: z.array(z.string().trim().min(1).max(1200)).max(20).optional(),
 }).strict()
+
+// Legacy database compatibility only: offline urgency is not exposed or used by business logic.
+export const OFFLINE_TASK_STORAGE_URGENCY = 'medium'
 
 router.get('/offline-tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), async (req, res) => {
   const dateParsed = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().safeParse((req.query as any)?.date)
@@ -497,7 +505,7 @@ router.get('/offline-tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule
              JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
             ORDER BY t.date DESC, t.updated_at DESC, t.id DESC`,
         )
-        return res.json(r?.rows || [])
+        return res.json((r?.rows || []).map(stripOfflineTaskUrgency))
       }
       if (includeOverdue) {
         const r = await pgPool.query(
@@ -506,20 +514,20 @@ router.get('/offline-tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule
              JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
             WHERE (t.date::date = $1::date)
                OR (t.date::date < $1::date AND lower(COALESCE(w.status, 'todo')) <> 'done')
-            ORDER BY t.date ASC, t.urgency DESC, t.updated_at DESC, t.id DESC`,
+            ORDER BY t.date ASC, t.updated_at DESC, t.id DESC`,
           [date]
         )
-        return res.json(r?.rows || [])
+        return res.json((r?.rows || []).map(stripOfflineTaskUrgency))
       }
       const r = await pgPool.query(
         `SELECT t.*, COALESCE(w.status, 'todo') AS status, w.assignee_id AS assignee_id
            FROM cleaning_offline_tasks t
            JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
           WHERE t.date::date = $1::date
-          ORDER BY t.urgency DESC, t.updated_at DESC, t.id DESC`,
+          ORDER BY t.updated_at DESC, t.id DESC`,
         [date]
       )
-      return res.json(r?.rows || [])
+      return res.json((r?.rows || []).map(stripOfflineTaskUrgency))
     }
     const rows = ((db as any).cleaningOfflineTasks || []) as any[]
     const filtered = date
@@ -531,7 +539,7 @@ router.get('/offline-tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule
         })
       : rows
     filtered.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')) || String(b.id || '').localeCompare(String(a.id || '')))
-    return res.json(filtered)
+    return res.json(filtered.map(stripOfflineTaskUrgency))
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'offline_tasks_failed' })
   }
@@ -549,9 +557,8 @@ router.post('/offline-tasks', requireCleaningManualCreateAccess, async (req, res
       title: payload.title,
       content: payload.content || '',
       kind: payload.kind,
-      // Kept only for the legacy table's NOT NULL constraint; work_tasks owns task state.
       status: 'todo',
-      urgency: payload.urgency,
+      urgency: OFFLINE_TASK_STORAGE_URGENCY,
       property_id: payload.property_id ?? null,
       assignee_id: payload.assignee_id ?? null,
       photo_urls: normalizePhotoUrls(payload.photo_urls),
@@ -568,6 +575,7 @@ router.post('/offline-tasks', requireCleaningManualCreateAccess, async (req, res
       await upsertWorkTaskFromOfflineTask(out, payload.status)
       out.status = offlineWorkStatus(payload.status)
       out.photo_urls = normalizePhotoUrls(out.photo_urls)
+      delete out.urgency
       const workTaskId = offlineWorkTaskId(String(out.id || row.id))
       if (String(out.status || '').trim().toLowerCase() !== 'done') {
         try {
@@ -577,14 +585,13 @@ router.post('/offline-tasks', requireCleaningManualCreateAccess, async (req, res
             sourceRefIds: [workTaskId],
             eventType: 'TASK_CREATED',
             changeScope: 'membership',
-            changedFields: ['id', 'title', 'summary', 'scheduled_date', 'status', 'urgency', 'property_id', 'assignee_id', 'photo_urls'],
+            changedFields: ['id', 'title', 'summary', 'scheduled_date', 'status', 'property_id', 'assignee_id', 'photo_urls'],
             patch: {
               id: workTaskId,
               title: out.title,
               summary: out.content || null,
               scheduled_date: out.date,
               status: out.status,
-              urgency: out.urgency,
               property_id: out.property_id || null,
               assignee_id: out.assignee_id || null,
               photo_urls: out.photo_urls,
@@ -649,7 +656,7 @@ router.patch('/offline-tasks/:id', requirePerm('cleaning.schedule.manage'), asyn
   const parsed = offlineTaskSchema.partial().safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const patch = parsed.data
-  const contentFieldAllowlist = new Set(['date', 'task_type', 'title', 'content', 'kind', 'urgency', 'property_id', 'photo_urls'])
+  const contentFieldAllowlist = new Set(['date', 'task_type', 'title', 'content', 'kind', 'property_id', 'photo_urls'])
   try {
     if (hasPg && pgPool) {
       await ensureOfflineTasksTable()
@@ -667,7 +674,7 @@ router.patch('/offline-tasks/:id', requirePerm('cleaning.schedule.manage'), asyn
             `SELECT status FROM work_tasks WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1 LIMIT 1`,
             [String(id)],
           )
-          return res.json({ ...before, status: offlineWorkStatus(statusResult?.rows?.[0]?.status) })
+          return res.json(stripOfflineTaskUrgency({ ...before, status: offlineWorkStatus(statusResult?.rows?.[0]?.status) }))
         }
       }
       const beforeStatusResult = await pgPool.query(
@@ -766,7 +773,7 @@ router.patch('/offline-tasks/:id', requirePerm('cleaning.schedule.manage'), asyn
           ),
         )
       }
-      return res.json(row)
+      return res.json(stripOfflineTaskUrgency(row))
     }
     const rows = ((db as any).cleaningOfflineTasks || []) as any[]
     const t = rows.find((x: any) => String(x.id) === String(id))
@@ -775,7 +782,7 @@ router.patch('/offline-tasks/:id', requirePerm('cleaning.schedule.manage'), asyn
       if ((patch as any)[key] !== undefined) (t as any)[key] = (patch as any)[key]
     }
     if ((patch as any).status !== undefined) t.status = (patch as any).status
-    return res.json(t)
+    return res.json(stripOfflineTaskUrgency(t))
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'update_failed' })
   }
@@ -838,7 +845,6 @@ router.delete('/offline-tasks/:id', requirePerm('cleaning.schedule.manage'), asy
                   task_date: workTask.scheduled_date ? String(workTask.scheduled_date).slice(0, 10) : (dayOnly(offlineTask.date) || null),
                   assignee_id: workTask.assignee_id ? String(workTask.assignee_id) : null,
                   status: 'cancelled',
-                  urgency: workTask.urgency || null,
                   offline_task_id: String(offlineTask.id || id),
                   task_type: String(offlineTask.task_type || ''),
                 },
@@ -2197,7 +2203,6 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
            t.title,
            t.content,
            COALESCE(w.status, 'todo') AS status,
-           t.urgency,
            t.property_id,
            w.assignee_id AS assignee_id,
            COALESCE(t.photo_urls, '[]'::jsonb) AS photo_urls,
@@ -2227,7 +2232,6 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
           status: String(row.status || 'pending'),
           assignee_id: row.assignee_id ? String(row.assignee_id) : null,
           scheduled_at: null,
-          urgency: row.urgency ? String(row.urgency) : 'medium',
           photo_urls: normalizePhotoUrls(row.photo_urls),
           old_code: null,
           new_code: null,
@@ -2340,7 +2344,6 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
         status: String(t.status || 'pending'),
         assignee_id: t.assignee_id ? String(t.assignee_id) : null,
         scheduled_at: null,
-        urgency: t.urgency ? String(t.urgency) : 'medium',
         photo_urls: normalizePhotoUrls(t.photo_urls),
         old_code: null,
         new_code: null,

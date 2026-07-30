@@ -11,6 +11,7 @@ import {
 } from './notificationRules'
 import {
   AppNotificationPolicyKey,
+  filterAppNotificationRecipientsForPolicy,
   isAppNotificationPolicyKey,
   resolveAppNotificationPolicyRecipients,
 } from './appNotificationPolicies'
@@ -428,7 +429,9 @@ export async function emitNotificationEvent(params: EmitNotificationEventParams,
   const propertyId = String(params.propertyId || '').trim()
   const hasExplicitRecipients = Array.isArray(params.recipientUserIds) && params.recipientUserIds.length > 0
   if (hasExplicitRecipients) resolved.push(...params.recipientUserIds!.map((x) => String(x || '').trim()).filter(Boolean))
-  const mergedResolved = Array.from(new Set(resolved.filter(Boolean)))
+  const mergedResolved = appPolicyKey && isAppNotificationPolicyKey(appPolicyKey)
+    ? await filterAppNotificationRecipientsForPolicy(appPolicyKey, resolved, client)
+    : Array.from(new Set(resolved.filter(Boolean)))
   const filtered = propertyId ? await filterUserIdsByPropertyScope(mergedResolved, propertyId, client) : mergedResolved
   const actor = String(params.actorUserId || '').trim()
   const excludeActor = shouldExcludeActor(params)

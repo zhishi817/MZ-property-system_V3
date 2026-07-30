@@ -218,7 +218,7 @@ const APP_NOTIFICATION_POLICY_CATALOG: Record<AppNotificationPolicyKey, AppNotif
     label: '钥匙照片已上传',
     description: '清洁员上传钥匙照片后的 App 通知',
     source_event_types: ['KEY_PHOTO_UPLOADED'],
-    default_template_key: 'participants_plus_ops_manager',
+    default_template_key: 'inspection_plus_ops_manager',
     allowed_group_keys: ALL_APP_ALLOWED_GROUP_KEYS,
     supports_extra_users: true,
     default_enabled: true,
@@ -229,7 +229,7 @@ const APP_NOTIFICATION_POLICY_CATALOG: Record<AppNotificationPolicyKey, AppNotif
     label: '钥匙照片已删除',
     description: '钥匙照片被删除后的 App 通知',
     source_event_types: ['CLEANING_TASK_UPDATED'],
-    default_template_key: 'participants_plus_ops_manager',
+    default_template_key: 'inspection_plus_ops_manager',
     allowed_group_keys: ALL_APP_ALLOWED_GROUP_KEYS,
     supports_extra_users: true,
     default_enabled: true,
@@ -251,7 +251,7 @@ const APP_NOTIFICATION_POLICY_CATALOG: Record<AppNotificationPolicyKey, AppNotif
     label: '消耗品提交',
     description: '清洁员提交消耗品检查结果',
     source_event_types: ['CLEANING_TASK_UPDATED', 'CLEANING_COMPLETED'],
-    default_template_key: 'participants_plus_ops_manager',
+    default_template_key: 'inspection_plus_ops_manager',
     allowed_group_keys: ALL_APP_ALLOWED_GROUP_KEYS,
     supports_extra_users: true,
     default_enabled: true,
@@ -273,7 +273,7 @@ const APP_NOTIFICATION_POLICY_CATALOG: Record<AppNotificationPolicyKey, AppNotif
     label: '补货完成',
     description: '补货任务已完成',
     source_event_types: ['WORK_TASK_UPDATED'],
-    default_template_key: 'participants_plus_ops_manager',
+    default_template_key: 'inspection_plus_ops_manager',
     allowed_group_keys: ALL_APP_ALLOWED_GROUP_KEYS,
     supports_extra_users: true,
     default_enabled: true,
@@ -295,7 +295,7 @@ const APP_NOTIFICATION_POLICY_CATALOG: Record<AppNotificationPolicyKey, AppNotif
     label: '已挂钥匙',
     description: '挂钥匙视频已上传',
     source_event_types: ['WORK_TASK_UPDATED'],
-    default_template_key: 'participants_plus_ops_manager',
+    default_template_key: 'inspection_plus_ops_manager',
     allowed_group_keys: ALL_APP_ALLOWED_GROUP_KEYS,
     supports_extra_users: true,
     default_enabled: true,
@@ -306,7 +306,7 @@ const APP_NOTIFICATION_POLICY_CATALOG: Record<AppNotificationPolicyKey, AppNotif
     label: '补货凭证已提交',
     description: '检查员提交补货凭证或确认',
     source_event_types: ['CLEANING_TASK_UPDATED'],
-    default_template_key: 'participants_plus_ops_manager',
+    default_template_key: 'inspection_plus_ops_manager',
     allowed_group_keys: ALL_APP_ALLOWED_GROUP_KEYS,
     supports_extra_users: true,
     default_enabled: true,
@@ -426,6 +426,71 @@ const APP_NOTIFICATION_POLICY_CATALOG: Record<AppNotificationPolicyKey, AppNotif
 
 function uniqText(items: any[]) {
   return Array.from(new Set((items || []).map((item) => String(item || '').trim()).filter(Boolean)))
+}
+
+const APP_NOTIFICATION_POLICIES_EXCLUDING_ORDINARY_CLEANERS = new Set<AppNotificationPolicyKey>([
+  'key_photo_uploaded',
+  'key_photo_deleted',
+  'consumables_submitted',
+  'consumables_need_restock',
+  'restock_done',
+  'keys_hung',
+  'restock_proof_saved',
+  'key_upload_reminder',
+  'key_upload_sla_reminder',
+  'key_upload_sla_escalation',
+])
+
+const APP_NOTIFICATION_INSPECTION_ROLES = new Set([
+  'cleaning_inspector',
+  'cleaner_inspector',
+  'admin',
+  'offline_manager',
+  'customer_service',
+])
+
+export function shouldExcludeOrdinaryCleanerFromAppNotification(policyKey: AppNotificationPolicyKey, roles: any[]) {
+  if (!APP_NOTIFICATION_POLICIES_EXCLUDING_ORDINARY_CLEANERS.has(policyKey)) return false
+  const normalizedRoles = new Set((roles || []).map((role) => String(role || '').trim().toLowerCase()).filter(Boolean))
+  return normalizedRoles.has('cleaner') && !Array.from(APP_NOTIFICATION_INSPECTION_ROLES).some((role) => normalizedRoles.has(role))
+}
+
+export async function filterAppNotificationRecipientsForPolicy(
+  policyKey: AppNotificationPolicyKey,
+  recipientIds: string[],
+  client: any,
+) {
+  const ids = uniqText(recipientIds)
+  if (!ids.length || !APP_NOTIFICATION_POLICIES_EXCLUDING_ORDINARY_CLEANERS.has(policyKey)) return ids
+  try {
+    const result = await client.query(
+      `SELECT u.id::text AS id,
+              LOWER(COALESCE(u.role, '')) AS primary_role,
+              LOWER(COALESCE(ur.role_name, '')) AS role_name
+         FROM users u
+         LEFT JOIN user_roles ur ON ur.user_id::text = u.id::text
+        WHERE u.id::text = ANY($1::text[])`,
+      [ids],
+    )
+    const rolesByUser = new Map<string, string[]>()
+    for (const row of result?.rows || []) {
+      const id = String(row?.id || '').trim()
+      if (!id) continue
+      const roles = rolesByUser.get(id) || []
+      roles.push(String(row?.primary_role || '').trim(), String(row?.role_name || '').trim())
+      rolesByUser.set(id, roles.filter(Boolean))
+    }
+    // A protected notification must not be sent when the recipient cannot be
+    // positively classified; otherwise an unavailable role lookup bypasses the
+    // ordinary-cleaner privacy boundary.
+    return ids.filter((id) => {
+      const roles = rolesByUser.get(id)
+      return !!roles?.length && !shouldExcludeOrdinaryCleanerFromAppNotification(policyKey, roles)
+    })
+  } catch {
+    // Fail closed for protected notifications when role classification is unavailable.
+    return []
+  }
 }
 
 function uniqGroupKeys(items: any[]) {
@@ -758,11 +823,12 @@ export async function resolveAppNotificationPolicyRecipients(
     recipients.push(...ids)
   }
   recipients.push(...policy.extra_user_ids)
+  const filteredRecipients = await filterAppNotificationRecipientsForPolicy(policyKey, recipients, client)
   return {
     policy,
     template_group_keys: templateGroupKeys,
     selected_group_keys: selectedGroupKeys,
     audience_counts: audienceCounts,
-    recipients: Array.from(new Set(recipients.filter(Boolean))),
+    recipients: filteredRecipients,
   }
 }

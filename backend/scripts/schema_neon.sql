@@ -299,6 +299,8 @@ CREATE TABLE IF NOT EXISTS users (
 );
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS visa_document_url text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS visa_grant_number text;
 
 CREATE TABLE IF NOT EXISTS key_sets (
   id text PRIMARY KEY,

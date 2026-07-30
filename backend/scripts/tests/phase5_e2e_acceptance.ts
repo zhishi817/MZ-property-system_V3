@@ -188,6 +188,15 @@ function action(item: any, id: string) {
 }
 
 async function main() {
+  const allowWrites = String(process.env.PHASE5_ALLOW_DB_WRITES || '').trim() === '1'
+  if (!allowWrites) {
+    process.stdout.write('phase5_e2e_acceptance: skipped (set PHASE5_ALLOW_DB_WRITES=1 only for a confirmed non-production database)\n')
+    return
+  }
+  const databaseLabel = String(process.env.PHASE5_DATABASE_LABEL || '').trim()
+  assert(databaseLabel && !/prod|production/i.test(databaseLabel), 'PHASE5_DATABASE_LABEL must identify a confirmed non-production database')
+  assert(!/^(prod|production)$/i.test(String(process.env.NODE_ENV || '').trim()), 'Phase 5 E2E refuses NODE_ENV=production')
+  assert(!/^(prod|production)$/i.test(String(process.env.APP_ENV || '').trim()), 'Phase 5 E2E refuses APP_ENV=production')
   process.stdout.write('phase5_e2e_acceptance: loading db and modules\n')
   const { pgPool } = await import('../../src/dbAdapter')
   if (!pgPool) {

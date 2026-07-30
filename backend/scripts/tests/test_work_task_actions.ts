@@ -1,7 +1,7 @@
 import assert from 'assert'
-import { cleaningTaskExecutionSemantics, normalizeTaskExecutionSemantics } from '../../src/lib/cleaningInspection'
+import { cleaningTaskExecutionSemantics, normalizeTaskExecutionSemantics, projectInspectorTaskStatus } from '../../src/lib/cleaningInspection'
 import { buildWebTaskManagementPayload, buildWorkTaskActionPayload } from '../../src/lib/workTaskActions'
-import { resolveCleaningTaskActionStatus } from '../../src/lib/workTaskActionAudit'
+import { buildKeyPhotoUploadEventPatch, buildKeyPhotoUploadTaskPatch, keyPhotoUploadStatus, resolveCleaningTaskActionStatus } from '../../src/lib/workTaskActionAudit'
 
 const allExecPerms = [
   'cleaning_app.tasks.start',
@@ -22,6 +22,8 @@ function webActionById(payload: ReturnType<typeof buildWebTaskManagementPayload>
 function main() {
   assert.equal(normalizeTaskExecutionSemantics('key_handover_execution'), 'key_or_password_action')
   assert.equal(cleaningTaskExecutionSemantics({ roleKind: 'execution', taskType: 'checkin_clean', inspectionScope: 'password_only' }), 'key_or_password_action')
+  assert.equal(projectInspectorTaskStatus('inspected', 'inspect_and_hang'), 'to_hang_keys')
+  assert.equal(projectInspectorTaskStatus('inspected', 'password_only'), 'done')
 
   const passwordOnlyWebActions = buildWebTaskManagementPayload({
     source: 'cleaning',
@@ -81,9 +83,11 @@ function main() {
   })
   assert.equal(managerPayload.capabilities.is_manager, true)
   assert.equal(managerPayload.capabilities.is_task_participant, false)
-  assert.equal(actionById(managerPayload, 'upload_key_photo')?.enabled, false)
-  assert.equal(actionById(managerPayload, 'upload_key_photo')?.disabled_reason, 'not_participant')
+  assert.equal(actionById(managerPayload, 'upload_key_photo'), undefined)
+  assert.equal(actionById(managerPayload, 'fill_supplies'), undefined)
   assert.equal(actionById(managerPayload, 'mark_guest_checkout')?.enabled, true)
+  assert.equal(actionById(managerPayload, 'report_issue')?.label, '问题反馈')
+  assert.deepEqual(managerPayload.available_actions.map((action) => action.id), ['mark_guest_checkout', 'report_issue'])
 
   const customerServicePayload = buildWorkTaskActionPayload(cleaningTask, {
     userId: 'cs-1',
@@ -94,7 +98,27 @@ function main() {
   assert.equal(customerServicePayload.capabilities.is_manager, true)
   assert.equal(actionById(customerServicePayload, 'mark_guest_checkout')?.enabled, true)
   assert.equal(actionById(customerServicePayload, 'report_issue')?.enabled, true)
-  assert.equal(actionById(customerServicePayload, 'fill_supplies')?.disabled_reason, 'missing_base_permission')
+  assert.deepEqual(customerServicePayload.available_actions.map((action) => action.id), ['mark_guest_checkout', 'report_issue'])
+  assert.equal(actionById(customerServicePayload, 'mark_guest_checkout')?.label, '标记已退房')
+  assert.equal(actionById(customerServicePayload, 'report_issue')?.label, '问题反馈')
+  assert.equal(actionById(customerServicePayload, 'report_issue')?.placement, 'primary')
+
+  const customerServiceInspectionPayload = buildWorkTaskActionPayload({
+    ...cleaningTask,
+    id: 'w-cs-inspection',
+    task_kind: 'inspection',
+    task_type: 'checkin_clean',
+    inspection_scope: 'password_only',
+  }, {
+    userId: 'cs-1',
+    roleNames: ['customer_service'],
+    permissions: ['cleaning_app.issues.report'],
+    canViewAll: true,
+  })
+  assert.deepEqual(customerServiceInspectionPayload.available_actions.map((action) => action.id), ['report_issue'])
+  assert.equal(actionById(customerServiceInspectionPayload, 'mark_guest_checkout'), undefined)
+  assert.equal(actionById(customerServiceInspectionPayload, 'submit_inspection'), undefined)
+  assert.equal(actionById(customerServiceInspectionPayload, 'upload_access_video'), undefined)
 
   const offlineManagerPayload = buildWorkTaskActionPayload(cleaningTask, {
     userId: 'offline-manager-1',
@@ -104,7 +128,8 @@ function main() {
   })
   assert.equal(offlineManagerPayload.capabilities.is_manager, true)
   assert.equal(actionById(offlineManagerPayload, 'mark_guest_checkout')?.enabled, true)
-  assert.equal(actionById(offlineManagerPayload, 'fill_supplies')?.disabled_reason, 'not_participant')
+  assert.equal(actionById(offlineManagerPayload, 'fill_supplies'), undefined)
+  assert.deepEqual(offlineManagerPayload.available_actions.map((action) => action.id), ['mark_guest_checkout', 'report_issue'])
 
   const inspectionPayload = buildWorkTaskActionPayload({
     id: 'w-inspection',
@@ -123,8 +148,7 @@ function main() {
     permissions: ['cleaning_app.tasks.finish', 'cleaning_app.media.upload', 'cleaning_app.issues.report'],
     canViewAll: false,
   })
-  assert.equal(actionById(inspectionPayload, 'submit_inspection')?.enabled, true)
-  assert.equal(actionById(inspectionPayload, 'submit_inspection')?.label, '查看说明')
+  assert.equal(actionById(inspectionPayload, 'submit_inspection'), undefined)
   assert.equal(actionById(inspectionPayload, 'upload_access_video')?.intent, 'site_action')
   assert.equal(actionById(inspectionPayload, 'upload_access_video')?.target, 'InspectionComplete')
 
@@ -206,7 +230,7 @@ function main() {
   })
   assert.equal(adminInspectionParticipantPayload.capabilities.is_manager, true)
   assert.equal(actionById(adminInspectionParticipantPayload, 'submit_inspection')?.enabled, true)
-  assert.equal(actionById(adminInspectionParticipantPayload, 'upload_access_video')?.disabled_reason, 'not_participant')
+  assert.equal(actionById(adminInspectionParticipantPayload, 'upload_access_video'), undefined)
 
   const adminInspectionViewerPayload = buildWorkTaskActionPayload({
     id: 'w-admin-view-only-inspection',
@@ -224,8 +248,9 @@ function main() {
   })
   assert.equal(adminInspectionViewerPayload.capabilities.is_manager, true)
   assert.equal(adminInspectionViewerPayload.capabilities.is_task_participant, false)
-  assert.equal(actionById(adminInspectionViewerPayload, 'submit_inspection')?.enabled, false)
-  assert.equal(actionById(adminInspectionViewerPayload, 'submit_inspection')?.disabled_reason, 'not_participant')
+  assert.equal(actionById(adminInspectionViewerPayload, 'submit_inspection'), undefined)
+  assert.equal(actionById(adminInspectionViewerPayload, 'mark_guest_checkout')?.enabled, true)
+  assert.equal(actionById(adminInspectionViewerPayload, 'report_issue')?.label, '问题反馈')
 
   const nonParticipantInspectionPayload = buildWorkTaskActionPayload({
     id: 'w-non-participant',
@@ -264,6 +289,21 @@ function main() {
   assert.equal(actionById(completedPayload, 'upload_key_photo')?.enabled, false)
   assert.equal(actionById(completedPayload, 'upload_key_photo')?.disabled_reason, 'task_completed')
 
+  const deletedKeyAfterCleaningPayload = buildWorkTaskActionPayload({
+    ...cleaningTask,
+    id: 'w-deleted-key-after-cleaning',
+    status: 'done',
+    cleaning_submission_ready: false,
+    key_photo_url: null,
+  }, {
+    userId: 'cleaner-1',
+    roleNames: ['cleaner'],
+    permissions: allExecPerms,
+    canViewAll: false,
+  })
+  assert.equal(actionById(deletedKeyAfterCleaningPayload, 'upload_key_photo')?.enabled, true)
+  assert.equal(actionById(deletedKeyAfterCleaningPayload, 'upload_key_photo')?.disabled_reason, undefined)
+
   const toInspectPayload = buildWorkTaskActionPayload({
     id: 'w-to-inspect',
     source_type: 'cleaning_tasks',
@@ -282,6 +322,91 @@ function main() {
   assert.equal(actionById(toInspectPayload, 'submit_inspection')?.disabled_reason, undefined)
   assert.equal(actionById(toInspectPayload, 'upload_access_video')?.enabled, true)
   assert.equal(actionById(toInspectPayload, 'upload_access_video')?.disabled_reason, undefined)
+
+  const inspectionBeforeCleaningPayload = buildWorkTaskActionPayload({
+    id: 'w-inspection-before-cleaning',
+    source_type: 'cleaning_tasks',
+    task_kind: 'inspection',
+    task_type: 'checkout_clean',
+    status: 'to_inspect',
+    inspector_id: 'inspector-to-inspect',
+    cleaning_submission_ready: false,
+  }, {
+    userId: 'inspector-to-inspect',
+    roleNames: ['cleaning_inspector'],
+    permissions: allExecPerms,
+    canViewAll: false,
+  })
+  assert.equal(actionById(inspectionBeforeCleaningPayload, 'submit_inspection')?.enabled, false)
+  assert.equal(actionById(inspectionBeforeCleaningPayload, 'submit_inspection')?.disabled_reason, 'cleaning_submission_required')
+  assert.equal(actionById(inspectionBeforeCleaningPayload, 'upload_access_video')?.enabled, false)
+  assert.equal(actionById(inspectionBeforeCleaningPayload, 'upload_access_video')?.disabled_reason, 'cleaning_submission_required')
+
+  const cleanerRecoveryPayload = buildWorkTaskActionPayload({
+    ...cleaningTask,
+    id: 'w-cleaner-recovery-after-early-inspection',
+    status: 'inspected',
+    cleaning_submission_ready: false,
+  }, {
+    userId: 'cleaner-1',
+    roleNames: ['cleaner'],
+    permissions: allExecPerms,
+    canViewAll: false,
+  })
+  assert.equal(actionById(cleanerRecoveryPayload, 'fill_supplies')?.enabled, true)
+
+  const inspectedPayload = buildWorkTaskActionPayload({
+    id: 'w-inspected-waiting-video',
+    source_type: 'cleaning_tasks',
+    task_kind: 'inspection',
+    task_type: 'checkout_clean',
+    inspection_scope: 'inspect_and_hang',
+    status: 'inspected',
+    inspector_id: 'inspector-inspected',
+  }, {
+    userId: 'inspector-inspected',
+    roleNames: ['cleaning_inspector'],
+    permissions: allExecPerms,
+    canViewAll: false,
+  })
+  assert.equal(actionById(inspectedPayload, 'upload_access_video')?.enabled, true)
+  assert.equal(actionById(inspectedPayload, 'upload_access_video')?.disabled_reason, undefined)
+
+  const completedInspectionPayload = buildWorkTaskActionPayload({
+    id: 'w-inspection-completed',
+    source_type: 'cleaning_tasks',
+    task_kind: 'inspection',
+    task_type: 'checkout_clean',
+    inspection_scope: 'inspect_and_hang',
+    status: 'keys_hung',
+    inspector_id: 'inspector-completed',
+  }, {
+    userId: 'inspector-completed',
+    roleNames: ['cleaning_inspector'],
+    permissions: allExecPerms,
+    canViewAll: false,
+  })
+  assert.equal(actionById(completedInspectionPayload, 'submit_inspection')?.enabled, false)
+  assert.equal(actionById(completedInspectionPayload, 'submit_inspection')?.disabled_reason, 'task_completed')
+  assert.equal(actionById(completedInspectionPayload, 'submit_inspection')?.read_only, true)
+  assert.equal(actionById(completedInspectionPayload, 'upload_access_video')?.disabled_reason, 'task_completed')
+
+  const passwordOnlyCompletedPayload = buildWorkTaskActionPayload({
+    id: 'w-password-only-completed',
+    source_type: 'cleaning_tasks',
+    task_kind: 'inspection',
+    task_type: 'checkin_clean',
+    inspection_scope: 'password_only',
+    status: 'inspected',
+    inspector_id: 'inspector-password',
+  }, {
+    userId: 'inspector-password',
+    roleNames: ['cleaning_inspector'],
+    permissions: allExecPerms,
+    canViewAll: false,
+  })
+  assert.equal(actionById(passwordOnlyCompletedPayload, 'upload_access_video')?.enabled, false)
+  assert.equal(actionById(passwordOnlyCompletedPayload, 'upload_access_video')?.disabled_reason, 'task_completed')
 
   const keysHungPayload = buildWorkTaskActionPayload({
     id: 'w-keys-hung',
@@ -308,11 +433,75 @@ function main() {
   assert.equal(actionById(keysHungPayload, 'upload_access_video')?.disabled_reason, 'task_completed')
 
   assert.equal(resolveCleaningTaskActionStatus({ actionId: 'upload_key_photo', statusBefore: 'assigned' }), 'in_progress')
+  assert.equal(resolveCleaningTaskActionStatus({ actionId: 'upload_key_photo', statusBefore: 'restock_pending' }), 'restock_pending')
+  assert.equal(keyPhotoUploadStatus('in_progress', 'in_progress', 'restock_pending'), 'restock_pending')
+  assert.equal(keyPhotoUploadStatus('in_progress', 'in_progress', ''), 'in_progress')
   assert.equal(resolveCleaningTaskActionStatus({ actionId: 'fill_supplies', statusBefore: 'in_progress', needsRestock: false }), 'cleaned')
   assert.equal(resolveCleaningTaskActionStatus({ actionId: 'fill_supplies', statusBefore: 'in_progress', needsRestock: true }), 'restock_pending')
   assert.equal(resolveCleaningTaskActionStatus({ actionId: 'complete_cleaning', statusBefore: 'in_progress', isStayover: true }), 'cleaned')
   assert.equal(resolveCleaningTaskActionStatus({ actionId: 'upload_access_video', statusBefore: 'assigned' }), 'keys_hung')
+  assert.equal(resolveCleaningTaskActionStatus({ actionId: 'upload_access_video', statusBefore: 'assigned', isPasswordOnly: true }), 'inspected')
   assert.equal(resolveCleaningTaskActionStatus({ actionId: 'submit_inspection', statusBefore: 'to_inspect' }), 'inspected')
+  assert.equal(resolveCleaningTaskActionStatus({ actionId: 'submit_inspection', statusBefore: 'to_inspect', inspectionPhotosSaved: false }), 'to_inspect')
+
+  assert.deepEqual(buildKeyPhotoUploadTaskPatch({
+    statusBefore: 'done',
+    statusAfter: 'done',
+    startedAt: '2026-07-26T00:00:00.000Z',
+    keyPhotoUploadedAt: null,
+    now: '2026-07-27T00:00:00.000Z',
+  }), {
+    key_photo_uploaded_at: '2026-07-27T00:00:00.000Z',
+  })
+  assert.deepEqual(buildKeyPhotoUploadTaskPatch({
+    statusBefore: 'assigned',
+    statusAfter: 'in_progress',
+    startedAt: null,
+    keyPhotoUploadedAt: null,
+    now: '2026-07-27T00:00:00.000Z',
+  }), {
+    status: 'in_progress',
+    started_at: '2026-07-27T00:00:00.000Z',
+    key_photo_uploaded_at: '2026-07-27T00:00:00.000Z',
+  })
+  assert.deepEqual(buildKeyPhotoUploadTaskPatch({
+    statusBefore: 'restock_pending',
+    statusAfter: 'in_progress',
+    startedAt: '2026-07-27T00:00:00.000Z',
+    keyPhotoUploadedAt: '2026-07-27T00:00:00.000Z',
+    now: '2026-07-27T01:00:00.000Z',
+  }), {})
+  assert.deepEqual(buildKeyPhotoUploadTaskPatch({
+    statusBefore: 'in_progress',
+    statusAfter: 'restock_pending',
+    startedAt: '2026-07-27T00:00:00.000Z',
+    keyPhotoUploadedAt: '2026-07-27T00:00:00.000Z',
+    now: '2026-07-27T01:00:00.000Z',
+  }), {
+    status: 'restock_pending',
+  })
+  assert.deepEqual(buildKeyPhotoUploadEventPatch({
+    statusBefore: 'done',
+    statusAfter: 'done',
+    keyPhotoUrl: 'cleaning/task-1/key.jpg',
+  }), {
+    key_photo_url: 'cleaning/task-1/key.jpg',
+  })
+  assert.deepEqual(buildKeyPhotoUploadEventPatch({
+    statusBefore: 'assigned',
+    statusAfter: 'in_progress',
+    keyPhotoUrl: 'cleaning/task-1/key.jpg',
+  }), {
+    status: 'in_progress',
+    key_photo_url: 'cleaning/task-1/key.jpg',
+  })
+  assert.deepEqual(buildKeyPhotoUploadEventPatch({
+    statusBefore: 'restock_pending',
+    statusAfter: 'in_progress',
+    keyPhotoUrl: 'cleaning/task-1/key-reuploaded.jpg',
+  }), {
+    key_photo_url: 'cleaning/task-1/key-reuploaded.jpg',
+  })
 
   process.stdout.write('test_work_task_actions: ok\n')
 }

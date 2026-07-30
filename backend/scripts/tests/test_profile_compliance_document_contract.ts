@@ -1,0 +1,28 @@
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+
+const backendRoot = path.resolve(__dirname, '../..')
+const read = (relativePath: string) => fs.readFileSync(path.join(backendRoot, relativePath), 'utf8')
+
+const users = read('src/modules/users.ts')
+assert.match(users, /visa_document_url: z\.string\(\)\.trim\(\)\.max\(500\)\.optional\(\)\.nullable\(\)/)
+assert.match(users, /visa_grant_number: z\.string\(\)\.trim\(\)\.max\(120\)\.optional\(\)\.nullable\(\)/)
+assert.match(users, /ALTER TABLE users ADD COLUMN IF NOT EXISTS visa_document_url text/)
+assert.match(users, /ALTER TABLE users ADD COLUMN IF NOT EXISTS visa_grant_number text/)
+assert.match(users, /\['phone_au', 'display_name', 'avatar_url', 'legal_name', 'bank_account_name', 'bank_bsb', 'bank_account_number', 'personal_abn', 'photo_id_url', 'visa_document_url', 'visa_grant_number'\]/)
+assert.match(users, /patch\.visa_document_url = parsed\.data\.visa_document_url/)
+assert.match(users, /patch\.visa_grant_number = parsed\.data\.visa_grant_number/)
+
+const mzapp = read('src/modules/mzapp.ts')
+assert.match(mzapp, /watermarkMode === 'photo_id_full' \|\| watermarkMode === 'profile_document_full'/)
+assert.match(mzapp, /const PHOTO_ID_WATERMARK_TEXT = '仅用于MZ Property（ABN：42 657 925 365）记录,不做任何其他用途。\\nFor the records of MZ Property \(ABN: 42 657 925 365\) only, not for other purpose\.'/)
+assert.match(mzapp, /Array\.from\(\{ length: 5 \}\)/)
+
+for (const schemaFile of ['scripts/schema.sql', 'scripts/schema_neon.sql', 'scripts/init_db.ts']) {
+  const schema = read(schemaFile)
+  assert.match(schema, /visa_document_url text/)
+  assert.match(schema, /visa_grant_number text/)
+}
+
+console.log('profile compliance document contract: PASS')

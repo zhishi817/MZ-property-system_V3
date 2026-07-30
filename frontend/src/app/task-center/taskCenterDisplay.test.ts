@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cleaningTaskFlowLabelText, isDeferredInspectionDisplayTask, resolveTaskCenterColumns } from './taskCenterDisplay'
+import { cleaningNightsDisplayLabels, cleaningTaskFlowLabelText, isDeferredInspectionDisplayTask, resolveTaskCenterColumns } from './taskCenterDisplay'
 
 describe('taskCenterDisplay', () => {
   it('treats deferred inspection tasks as inspection-oriented display', () => {
@@ -36,6 +36,27 @@ describe('taskCenterDisplay', () => {
       task_kind: 'checkin_clean',
       inspection_mode: 'same_day',
     })).toBe('入住')
+  })
+
+  it('shows stayed and remaining nights on turnover cards', () => {
+    expect(cleaningNightsDisplayLabels({
+      task_source: 'cleaning',
+      task_kind: 'turnover',
+      task_ids: ['checkout-task', 'checkin-task'],
+      turnover_display: { stayed_nights: 4, remaining_nights: 3 },
+      nights: 3,
+    })).toEqual(['已住 4晚', '待住 3晚'])
+    expect(cleaningNightsDisplayLabels({
+      task_source: 'cleaning',
+      task_kind: 'turnover',
+      task_ids: ['checkout-task', 'checkin-task'],
+      turnover_display: { stayed_nights: null, remaining_nights: 3 },
+    })).toEqual(['待住 3晚'])
+    expect(cleaningNightsDisplayLabels({
+      task_source: 'cleaning',
+      task_kind: 'checkin_clean',
+      nights: 3,
+    })).toEqual(['住3晚'])
   })
 
   it('resolves task-center columns from the usable board width', () => {
