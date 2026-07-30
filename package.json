@@ -26,7 +26,7 @@
     "check:mobile": "npm run check:mobile:full",
     "check:fast": "npm run check:ledger && npm run check:feature-registry && npm run check:backend:fast && npm run check:frontend:fast && npm run check:mobile:fast",
     "check:full": "npm run check:fast && npm run check:backend:full && npm run check:frontend:full && npm run check:mobile:full",
-    "check:ci": "node -e \"process.exit(1)\"",
+    "check:ci": "npm run check:fast",
     "check:release": "npm run check:full",
     "check": "npm run check:full"
   }
