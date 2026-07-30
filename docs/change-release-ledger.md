@@ -2,7 +2,7 @@
 
 ## CRL-20260730-001 — Phase 3 root Dev 分支保护临时验收
 
-- **Status:** in-progress
+- **Status:** ready
 - **Updated:** 2026-07-30 Australia/Melbourne
 - **Request:** 在最终的 0-approval 规则下，以临时 PR 验证 root `Dev`：失败的必需检查阻止合并；恢复为绿色后无需独立批准即可满足门禁。
 - **Outcome:** 此临时单元先将 `check:ci` 改为确定失败，以证明真实 `Fast Regression` 检查阻断；恢复提交会还原原命令，只保留非业务标记和本台账记录。PR 完成验收后关闭并删除分支，绝不合并。
@@ -21,14 +21,14 @@
 ### Validation
 
 - Passed negative remote evidence: root PR #266 head `9bcc6d0f553c2485ea453b1507cede0494b2b407` made `Fast Regression` fail in GitHub Actions run `30506904345`; GitHub returned `mergeable_state: blocked`.
-- Pending recovery remote evidence: this commit restores the original command; the same check must turn green and the PR become mergeable without approval.
+- Passed recovery remote evidence: root PR #266 head `88246a549d96e6f7b29f2b13eadf131def1c99e3` made `Fast Regression` succeed in GitHub Actions run `30507274987`; GitHub returned `mergeable_state: clean`, `merged: false`, and zero reviews.
 - Local before push: exact diff inspected and `git diff --check` passed.
 
 ### Risks / Release Notes
 
 - This branch intentionally contains a one-commit check failure and must never be merged or deployed.
 - Sensitive-information review: no secrets, credentials, environment values, production data, or deployment configuration are involved.
-- Git state: temporary `codex/acceptance-root-phase3-final-20260730`, based on `origin/Dev` `d1761217d1b84c904dee990151c62ce2988781f0`; scheduled for closure/deletion after acceptance.
+- Git state: temporary `codex/acceptance-root-phase3-final-20260730`, based on `origin/Dev` `d1761217d1b84c904dee990151c62ce2988781f0`; final documentation evidence pending push, then the PR and branch will be closed/deleted without merge.
 
 ## CRL-20260729-011 — 根质量命令层级
 
