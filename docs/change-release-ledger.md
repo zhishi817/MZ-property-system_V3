@@ -1,5 +1,34 @@
 # Change Release Ledger
 
+## CRL-20260730-001 — Phase 3 root Dev 分支保护临时验收
+
+- **Status:** in-progress
+- **Updated:** 2026-07-30 Australia/Melbourne
+- **Request:** 在最终的 0-approval 规则下，以临时 PR 验证 root `Dev`：失败的必需检查阻止合并；恢复为绿色后无需独立批准即可满足门禁。
+- **Outcome:** 此临时单元先将 `check:ci` 改为确定失败，以证明真实 `Fast Regression` 检查阻断；恢复提交会还原原命令，只保留非业务标记和本台账记录。PR 完成验收后关闭并删除分支，绝不合并。
+
+### Files / Areas
+
+- `package.json` — 临时使 `check:ci` 失败，随后在同一 PR 恢复为 `npm run check:fast`。
+- `docs/phase3-acceptance-root-20260730.md` — 仅保留验收差异的非业务标记，随临时分支删除。
+- `docs/change-release-ledger.md` — 记录此临时治理验收。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies / business logic: none.
+- Required GitHub context: `Fast Regression`; policy requires a pull request, up-to-date base, resolved conversations, and no approval.
+
+### Validation
+
+- Pending remote evidence: first PR head must make `Fast Regression` fail and GitHub must show merge blocked; a subsequent restore must make the same check green and the PR mergeable without approval.
+- Local before push: exact diff inspected and `git diff --check` passed.
+
+### Risks / Release Notes
+
+- This branch intentionally contains a one-commit check failure and must never be merged or deployed.
+- Sensitive-information review: no secrets, credentials, environment values, production data, or deployment configuration are involved.
+- Git state: temporary `codex/acceptance-root-phase3-final-20260730`, based on `origin/Dev` `d1761217d1b84c904dee990151c62ce2988781f0`; scheduled for closure/deletion after acceptance.
+
 ## CRL-20260729-011 — 根质量命令层级
 
 - **Status:** pushed
