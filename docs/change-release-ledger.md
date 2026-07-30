@@ -1,5 +1,87 @@
 # Change Release Ledger
 
+## CRL-20260730-001 — PR #269 Dev → main 冲突解决候选
+
+- **Status:** staged
+- **Updated:** 2026-07-30 Australia/Melbourne
+- **Request:** 在独立 worktree 中解决 PR #269 的 Dev → main 冲突；保留不改名的 `Root Quality Check`、保留 main 的完整精确-ref 跨仓 workflow，并保留双方全部有效台账记录；未确认前不得提交、推送、合并或部署。
+- **Outcome:** 已在 detached `origin/Dev` worktree 中无提交合并 `origin/main` 并解决三个冲突；用户授权后安装 backend/frontend 的锁定依赖，并完成全部要求的根质量命令。三个审查文件现已精确暂存，等待创建 Dev 合并提交；尚未推送、PR 合并或部署。
+
+### Implementation
+
+- Previous behavior: PR #269 因两个同名新增 workflow 和同时改写台账开头而处于 `dirty` 冲突状态；Dev 的质量 workflow 不会报告受保护的 `Root Quality Check`。
+- New behavior: `quality.yml` 保留 main 的 `check` job 及准确的 `Root Quality Check` 名称，并将 Dev 的 Fast/Full 保留为独立 jobs；跨仓 workflow 使用 main 的完整精确-ref 集成版本；台账逐段合并并包含 Dev 记录与 main 的 `CRL-20260729-013`。
+- Key decisions: 不更改 branch protection、不删除或取消 required check、不整文件选择 ledger 的 ours/theirs、不修改 `main`；所有结果仅在隔离 worktree 中。
+
+### Files / Areas
+
+- `.github/workflows/quality.yml` — resolved: 保留 `Root Quality Check`，增加独立 Fast/Full jobs。
+- `.github/workflows/cross-repository-phase5-contract.yml` — resolved: 采用完整精确 root/mobile ref 集成验证。
+- `docs/change-release-ledger.md` — resolved: 逐段保留双方有效记录并记录本候选。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Config / environment: GitHub Actions workflow only; no production environment, external API, database, or mobile runtime action is executed.
+- Related units: CRL-20260729-010, CRL-20260729-011, CRL-20260729-013.
+
+### Validation
+
+- Ruby YAML parse — passed: both resolved workflows parse.
+- Conflict-marker scan — passed: no remaining merge markers in the three resolved files.
+- Initial `npm run check:fast` / `check:full` / `check:ci` — blocked only because the clean worktree did not yet contain dependencies (`tsc: command not found`); no source change was made for that condition.
+- User-authorized `npm ci --prefix backend` and `npm ci --prefix frontend` — passed; package-manager audit notices were reported but no audit fix or dependency change was made.
+- `npm run check:fast` — passed: Ledger/FR audit, backend build plus four selected backend contracts, frontend lint and 39 files / 171 tests. Root script explicitly skipped mobile Fast because the independent mobile checkout is absent from this isolated worktree.
+- `npm run check:full` — passed: inherited Fast, additional backend contracts, frontend production build. Root script explicitly skipped mobile Full for the same absent independent mobile checkout.
+- `npm run check:ci` — passed: Fast equivalent, including Ledger/FR audit, backend selected contracts, frontend lint and 39 files / 171 tests; root script explicitly skipped mobile Fast for the absent independent mobile checkout.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 3 changed files / 3 recorded files, Coverage PASS.
+- `python3 scripts/audit_feature_regression_registry.py` — passed: 8 FRs / 90 test mappings; 55 mobile mappings deferred.
+- `git diff --check` — passed.
+- Initial independent release review — NO-GO: no P0/P2, uncovered file, secret, production-write, database, or external-sync finding; its only P1 was the dependency-caused incomplete Fast/Full/CI validation above.
+- Independent read-only re-review — GO: no P0/P1 and no secret, production-write, database, external-sync, or uncovered-file finding. Non-blocking P2: local root commands explicitly skip mobile stages because this isolated worktree has no independent mobile checkout; remote PR `Root Quality Check` must still report successfully after a separately authorized push.
+
+### Risks / Release Notes
+
+- Risk: GitHub Actions has not yet run this uncommitted merge candidate, so actual remote reporting of `Root Quality Check` remains unverified; no branch-protection setting was changed.
+- Release gate: the resolved files are staged in an uncommitted merge candidate; after the authorized Dev push, the PR must actually report a successful protected `Root Quality Check` before merge.
+- Rollback: abort the isolated merge; no local or remote branch has advanced.
+- Sensitive-information review: no `.env` values, tokens, credentials, database URLs, cookies, private keys, sensitive logs, or production data are added.
+- Git state: detached worktree, exactly three files staged; no commit, push, PR merge, deployment, or branch-protection change yet.
+
+## CRL-20260729-013 — 默认分支跨仓精确 ref 集成门禁
+
+- **Status:** pushed
+- **Updated:** 2026-07-30 Australia/Melbourne
+- **Request:** 将跨仓库验收 workflow 放入 root 默认分支 `main`，按精确 root/mobile ref checkout、输出解析 SHA、运行双方 Full/Phase 5/Ledger/FR，并在失败时保存 manifest 与日志。
+- **Outcome:** `main` 新增自包含的手动跨仓集成门禁。workflow definition 在默认分支注册，但验证内容只来自输入的 `root_ref` 与 `mobile_ref`，不读取浮动分支；先确认这两个精确 ref 实际提供 Full、Ledger、FR 和 Phase 5 接口，再记录两个实际 SHA 并运行双方 `check:full`、Phase 5 契约、root Ledger/FR 和 mobile Ledger 审计。任一 checkout、接口、安装、审计或测试失败均由最终 gate 明确失败，但 `if: always()` 仍上传 manifest、SHA 和日志。
+
+### Files / Areas
+
+- `.github/workflows/cross-repository-phase5-contract.yml` — added: 默认分支注册的精确双 ref 集成 workflow、失败 manifest/日志与最终 fail gate。
+- `docs/change-release-ledger.md` — modified: 记录本 default-branch 治理单元。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Runtime dependency: workflow 的实现和 manifest/日志上传均在默认分支；被验证的命令接口必须由输入的两个精确 ref 提供，workflow 会先验证文件和 package scripts，并把任何缺失记录为失败，而不回退到 `main` 或 `Dev`。
+- Related units: root Dev `CRL-20260729-012` 与 mobile Dev `CRL-20260729-004` 提供严格 PR Ledger 审计；本条只负责默认分支 Actions 注册和精确组合运行。
+
+### Validation
+
+- Passed locally: Ruby YAML parse、Ledger audit (2 changed / 2 recorded)、`git diff --check`；workflow 静态检查确认输入为必填、两个 checkout 使用输入 ref、接口验证在安装前执行、失败 gate 和 artifact 上传使用 `if: always()`。
+- Passed: 修复后的独立只读审查为 GO、无 P0/P1。审查使用 root Dev/mob Dev 候选 ref 验证接口预检通过，并以旧 root main SHA 验证预检明确失败（缺 FR/Phase5/check:full），确认没有 main/Dev 回退。
+- Passed: root PR #264 merged this workflow into `main` as `d9fbd5adefc7320644ee75dd7b46b310fa3dc5ef`; GitHub Actions registered workflow ID `323095179` as active. The root `main` protection check was corrected from the nonexistent `Fast Regression` context to its actual `Root Quality Check` job; PR #264's Quality Check run #13 then passed before merge.
+- Passed: positive exact-SHA dispatch run #1 (`30468812377`) requested and resolved root `d1761217d1b84c904dee990151c62ce2988781f0` and mobile `164b162cf63e5324d659dce00980e46e40e1c3f0`. Both checkouts, interface verification, installs, root Ledger/FR audit, mobile Ledger audit, root/mobile `check:full`, and the Phase 5 contract succeeded. Artifact `cross-repository-integration-30468812377` contains `integration-manifest.json`, `resolved-shas.txt`, and all audit/test logs.
+- Passed: negative dispatch run #2 (`30481533717`) used invalid root ref `refs/does-not-exist-phase4-20260730` with the same exact mobile SHA and failed as required. Its manifest records `checkout_root: failure`, empty root SHA, no fallback to a branch, final failure gate, and successful artifact upload (`cross-repository-integration-30481533717`).
+- Not run: production deployment、production API、数据库写入、外部同步、EAS/native 或业务功能测试；均不属于本治理修正。
+
+### Risks / Release Notes
+
+- Workflow 失败会保留 artifact，而不会因前置步骤失败跳过证据收集。
+- 用户输入的无效 ref 会明确成为失败 gate；不会 checkout 默认分支作为回退。
+- Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
+- Git state: governance-only candidate was merged to `origin/main` by PR #264 as `d9fbd5adefc7320644ee75dd7b46b310fa3dc5ef`; this documentation-only evidence receipt awaits its own protected PR. Nothing is deployed.
+
 ## CRL-20260729-011 — 根质量命令层级
 
 - **Status:** pushed
