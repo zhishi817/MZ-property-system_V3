@@ -1,4 +1,5 @@
 import assert from 'assert'
+import fs from 'fs'
 
 process.env.R2_ENDPOINT = process.env.R2_ENDPOINT || 'https://example.r2.cloudflarestorage.com'
 process.env.R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID || 'contract-test-access-key'
@@ -29,6 +30,15 @@ assert.equal(isReferenceColumn('photo_urls'), true)
 assert.equal(isReferenceColumn('password_hash'), false)
 assert.equal(isApprovedCleanupPrefix('onboarding/r2-test/', []), false)
 assert.equal(isApprovedCleanupPrefix('onboarding/r2-test/', ['onboarding/r2-test/']), true)
+
+const r2Source = fs.readFileSync(require.resolve('../../src/r2'), 'utf8')
+assert.match(r2Source, /HeadObjectCommand/, 'uploads must verify the object in the configured bucket')
+assert.match(r2Source, /verifyUploadedR2Object/, 'upload success must wait for a post-upload verification')
+assert.match(r2Source, /actualSize <= 0 \|\| actualSize !== expectedSize/, 'verification must reject empty or size-mismatched objects')
+
+const auditSource = fs.readFileSync(require.resolve('../r2_orphan_audit'), 'utf8')
+assert.match(auditSource, /REFERENCE_SCAN_FAILED/, 'orphan cleanup must fail closed when a reference source cannot be scanned')
+assert.match(auditSource, /REFERENCE_SCAN_LIMIT/, 'orphan cleanup must refuse partial reference scans')
 
 const summary = summarizeR2Objects([oldObject, recentObject, referencedObject], new Set(['cleaning/used.jpg']), now, 7 * 24 * 60 * 60 * 1000)
 assert.deepEqual(summary, {

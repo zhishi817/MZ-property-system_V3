@@ -104,14 +104,19 @@ export async function assertCleaningSubmissionReady(taskId: string, executor: Qu
   const id = cleanText(taskId)
   if (!id || !executor) return null
   const taskResult = await executor.query(
-    `SELECT lower(COALESCE(inspection_scope, '')) AS inspection_scope
+    `SELECT lower(COALESCE(inspection_scope, '')) AS inspection_scope,
+            lower(COALESCE(task_type, type, '')) AS task_type
        FROM cleaning_tasks
       WHERE id::text = $1::text
       LIMIT 1`,
     [id],
   )
   const task = taskResult?.rows?.[0]
-  if (!task || lower(task.inspection_scope) === 'password_only') return null
+  if (
+    !task
+    || lower(task.inspection_scope) === 'password_only'
+    || lower(task.task_type) === 'checkin_clean'
+  ) return null
   const state = await getCleaningSubmissionState(id, executor)
   if (!state.ready) {
     const error: any = new Error('cleaning_submission_required')
