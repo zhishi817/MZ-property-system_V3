@@ -1,5 +1,60 @@
 # Change Release Ledger
 
+## CRL-20260731-008 — 清洁媒体完整性、多图展示与安全清理
+
+- **Status:** ready
+- **Updated:** 2026-07-31 Australia/Melbourne
+- **ID allocation:** 2026-07-31 Australia/Melbourne — 从 `CRL-20260731-001` 重编号为 `CRL-20260731-008`，避免与已存在的维修基础单元冲突；范围、验证与发布状态不变。
+- **Request:** 修复清洁任务和日终交接照片引用失效后的可观测性、客厅多图展示、受控媒体读取及 R2 清理保护；生产照片恢复另作 REC-001，不随本代码单元部署。
+- **Outcome:** 新照片仅在对象可验证后进入业务保存；管理端获得稳定的多图兼容字段；日终交接照片按记录所属人或管理角色安全读取；并防止清理遗漏仍被引用的 `cleaning/` 对象。生产照片恢复仍独立于代码发布。
+
+### Implementation
+
+- Previous behavior: 客厅照片接口和管理端只使用一张照片；媒体代理只认可任务与用品记录，导致已登记的日终交接照片被拒绝；清理与上传校验无法完整覆盖用品数组照片引用。
+- New behavior: 保持旧字段兼容，新增数组字段和稳定排序；对象上传后以 Head 校验大小与内容类型；代理认证任务、用品及日终交接记录，日终照片仅允许所属人或既有管理角色读取；清理引用扫描不完整或失败时直接中止。
+- Security correction: 同一对象 key 即使属于同一任务，只要登记为多个媒体类型也拒绝读取；同 key 跨任务媒体与日终媒体、跨日终用户或日终类别同样拒绝读取，避免授权降级。
+- Key decisions: 不在本单元恢复、删除或修改生产历史照片对象；R2 恢复采用独立、仅复制的操作记录。不得将 R2 上传成功误作业务保存成功。
+
+### Files / Areas
+
+- `backend/src/r2.ts` — modified: 上传后对象大小、非空和内容类型校验。
+- `backend/src/modules/cleaning_app.ts` — modified: consumables 多图契约、用品数组与日终交接照片的受控代理授权；库存管理员以已有 `inventory.view` 通过媒体路由入口，随后仍执行逐记录日终授权。
+- `backend/src/modules/mzapp.ts` — modified: 管理端聚合多图契约一致性。
+- `backend/scripts/r2_orphan_audit.ts` — modified: 所有清洁引用来源的 fail-closed 扫描与行数上限拒绝。
+- `backend/scripts/tests/test_cleaning_media_image.ts` — modified: 覆盖多图字段、用品数组与日终交接照片代理授权冲突，以及库存管理员入口权限、记录所属人与无关清洁员拒绝。
+- `backend/scripts/tests/test_r2_media_governance.ts` — modified: 覆盖上传对象验证和引用扫描拒绝。
+- `package.json` — modified: backend fast quality gate 纳入已登记媒体绑定、多图与冲突拒绝回归。
+- `docs/feature-regression-registry.md` — modified: FR-004 映射管理端多图与同 key 授权冲突保护点。
+- `mz-cleaning-app-frontend` — related independent mobile unit `CRL-20260731-008`：多图渲染与失败重试。
+
+### Impact / Dependencies
+
+- API: 新增兼容的 `living_room_photo_urls`，保留 `living_room_photo_url`；既有 `/cleaning-app/media/image` 现在可读取已登记的日终交接媒体，不增加公开读取入口。
+- Database / migration: none planned unless现有字段无法保存必要的验证元数据；若需要 migration，先取得单独批准。
+- Config / environment: R2 仅沿用现有生产配置；不记录凭据。
+- Dependencies: none planned.
+- Related units: REC-001（生产照片仅复制恢复）；CRL-20260731-009（执行人一致性）。
+
+### Validation
+
+- `npm run check:full` — passed after the cross-source conflict repair: root ledger/FR audit, backend build and all registered backend checks, frontend lint/tests/build; root worktree has no nested mobile repository so the mobile subcheck was explicitly skipped.
+- `npm run build --prefix backend` — passed after the cross-source conflict repair.
+- `npm run test:cleaning-media-image --prefix backend` — passed after the cross-source conflict repair, including task/day-end cross-source and internal conflict cases.
+- `npm run test:cleaning-media-image` — passed.
+- `npm run test:r2-media-governance` — passed.
+- `git diff --check` — passed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 9 changed files / 9 recorded files.
+- Post-review P1 correction — `/media/image` 入口以已有 `inventory.view` 覆盖库存管理员；`npm run build --prefix backend` and `npm run test:cleaning-media-image --prefix backend` passed. The test performs a loopback HTTP middleware check for inventory manager allow / unrelated finance deny, plus owner / unrelated cleaner record authorization assertions; no R2 or database was called.
+- Independent review — original review found and blocked the inventory-manager route-entry P1. Second independent read-only review: GO, no P0/P1; it verified the route gate remains followed by record-level task/day-end authorization. Non-blocking P2s remain: no mock-PG/R2 full route test and no actual R2 object read/write or production recovery test.
+- Staging, commit, push, deployment, mobile device acceptance, and REC-001 recovery — pending.
+
+### Risks / Release Notes
+
+- Risk: 旧客户端只读取单数字段，必须保留兼容；对象恢复前，失效历史引用仍应表现为明确可重试错误而非伪成功。
+- Sensitive-information review: 不记录 R2 endpoint、bucket、URL、token、数据库连接或对象内容。
+- Rollback: 回退代码可恢复旧字段读取；不触碰 REC-001 的生产恢复对象。
+- **Git state:** isolated worktree, approved for exact stage, commit, and paired root/mobile push; no deployment, REC-001 recovery, R2 operation, or database write.
+
 ## CRL-20260730-001 — PR #269 Dev → main 冲突解决候选
 
 - **Status:** staged

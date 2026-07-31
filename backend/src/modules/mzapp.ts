@@ -2715,17 +2715,20 @@ router.get('/cleaning-tasks/:id/consumables', async (req, res) => {
        ORDER BY created_at ASC, id ASC`,
       [String(id)],
     )
-    const livingPhotoRow = await pgPool.query(
+    const livingPhotoRows = await pgPool.query(
       `SELECT url
        FROM cleaning_task_media
        WHERE task_id::text = $1::text
          AND type = 'consumable_living_room_photo'
-       ORDER BY captured_at DESC NULLS LAST, created_at DESC
-       LIMIT 1`,
+       ORDER BY captured_at ASC NULLS LAST, created_at ASC, id ASC`,
       [String(id)],
     )
+    const livingRoomPhotoUrls = Array.from(new Set((livingPhotoRows?.rows || [])
+      .map((item: any) => String(item?.url || '').trim())
+      .filter(Boolean)))
     return res.json({
-      living_room_photo_url: String(livingPhotoRow?.rows?.[0]?.url || '').trim() || null,
+      living_room_photo_urls: livingRoomPhotoUrls,
+      living_room_photo_url: livingRoomPhotoUrls[0] || null,
       items: (rows.rows || []).map((x: any) => ({
         id: String(x.id || ''),
         item_id: String(x.item_id || ''),
