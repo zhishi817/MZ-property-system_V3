@@ -2,29 +2,37 @@ import assert from 'assert'
 import express from 'express'
 import fs from 'fs'
 import path from 'path'
-import dotenv from 'dotenv'
 
-dotenv.config({ path: path.resolve(__dirname, '../../.env.local'), override: true })
+const testDatabaseUrl = String(process.env.TEST_DATABASE_URL || '').trim()
+const testWriteEnabled = String(process.env.TEST_ALLOW_NONPROD_DB_WRITE || '').trim() === '1'
+if (!testDatabaseUrl || !testWriteEnabled) {
+  process.stdout.write('test_offline_task_assignment_first_patch: skipped (explicit TEST_DATABASE_URL and TEST_ALLOW_NONPROD_DB_WRITE=1 required)\n')
+  process.exit(0)
+}
 
 function dbIdentity(value: any) {
   const raw = String(value || '').trim()
   if (!raw) return ''
   try {
     const url = new URL(raw)
-    return `${url.protocol}//${url.username}@${url.hostname}:${url.port || '5432'}${url.pathname}`
+    return `${url.protocol}//${url.hostname}:${url.port || '5432'}${url.pathname}`
   } catch {
     return raw
   }
 }
 
-const activeDbIdentity = dbIdentity(process.env.DATABASE_URL)
+const activeDbIdentity = dbIdentity(testDatabaseUrl)
 const prodDbIdentity = dbIdentity(process.env.NEON_DATABASE_URL_PROD || process.env.DATABASE_URL_PROD)
 if (String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production') {
   throw new Error('Refusing to run write tests when NODE_ENV=production')
 }
+if (!prodDbIdentity) {
+  throw new Error('Refusing to run write tests without NEON_DATABASE_URL_PROD or DATABASE_URL_PROD for a fail-closed production identity check')
+}
 if (activeDbIdentity && prodDbIdentity && activeDbIdentity === prodDbIdentity) {
   throw new Error('Refusing to run write tests because DATABASE_URL matches production database URL')
 }
+process.env.DATABASE_URL = testDatabaseUrl
 
 const taskId = 'test-offline-assignment-first-patch'
 const assigneeId = 'test-offline-assignment-first-patch-assignee'
@@ -34,7 +42,7 @@ assert(['customer_service', 'offline_manager', 'admin'].includes(testRole), `uns
 
 async function request(app: express.Express) {
   const server = await new Promise<any>((resolve) => {
-    const listener = app.listen(0, () => resolve(listener))
+    const listener = app.listen(0, '127.0.0.1', () => resolve(listener))
   })
   try {
     const address = server.address()

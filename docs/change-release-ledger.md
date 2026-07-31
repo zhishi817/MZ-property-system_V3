@@ -18,9 +18,11 @@
 
 - `backend/src/modules/cleaning.ts` — modified: PATCH 语义、事务、锁、首次锁定前确保 canonical 表、canonical 返回、事件和线下人工任务角色门禁。
 - `backend/scripts/tests/test_task_assignment_canonical.ts` — modified: 保持既有 canonical 投影回归，并增加 PATCH 赋值、普通编辑保留与 null 拒绝覆盖。
-- `backend/scripts/tests/test_offline_task_assignment_patch.ts` — added: 既有 source/canonical、内容保留和 null 拒绝 HTTP 契约。
-- `backend/scripts/tests/test_offline_task_assignment_first_patch.ts` — added: 首次 PATCH 在无 canonical 投影时先确保表并创建投影的非生产 HTTP 契约，参数化覆盖客服、线下经理和 admin。
-- `backend/package.json` and `package.json` — modified: 为既有 assignment PATCH 契约提供明确脚本并接入 root backend full quality gate；首次无投影 PATCH 契约保留为单独的三角色非生产验证。
+- `backend/scripts/tests/test_offline_task_assignment_patch_contract.ts` — added: 纯静态契约确认 PATCH 的 assignee 语义、source/canonical 表确保、事务投影与 canonical 回读；可安全进入 root backend Full。
+- `backend/scripts/tests/test_offline_task_assignment_patch.ts` — added: source/canonical、内容保留和 null 拒绝的三角色非生产 HTTP 集成契约；仅在显式测试库与写入确认同时存在时运行。
+- `backend/scripts/tests/test_offline_task_assignment_first_patch_contract.ts` — added: 纯静态契约确认两张表的确保顺序位于 PATCH 事务及首个 `FOR UPDATE` 之前；可安全进入 root backend Full。
+- `backend/scripts/tests/test_offline_task_assignment_first_patch.ts` — added: 首次 PATCH 在无 canonical 投影时先确保表并创建投影的非生产 HTTP 集成契约，参数化覆盖客服、线下经理和 admin；仅在显式测试库与写入确认同时存在时运行。
+- `backend/package.json` and `package.json` — modified: 为两类 assignment PATCH 纯静态契约提供明确脚本并接入 root backend Full；两条三角色数据库验证均保留为显式、非自动的 integration 命令。
 - `docs/feature-regression-registry.md` — modified: FR-002 映射 source/canonical、null 和三角色保护点。
 - `mz-cleaning-app-frontend` — related independent mobile unit `CRL-20260731-009`: canonical response type、回读确认与失败状态。
 
@@ -33,14 +35,14 @@
 
 ### Validation
 
-- `npm run check:full` — passed: root ledger/FR audit、backend build and full registered checks、frontend lint/tests/build all passed; root worktree has no nested mobile repository so mobile subcheck was explicitly skipped. The isolated HTTP assignment test intentionally skipped in this aggregate run because no database was configured.
-- `test_offline_task_assignment_first_patch.ts` — passed separately with exit code 0 for `customer_service`, `offline_manager`, and `admin` against the non-production database; each run verifies the PATCH table-ensure order, no-prior-projection creation, canonical persistence and cleanup.
-- `test_offline_task_assignment_patch.ts` — prior three-role source/canonical, content preservation and null-rejection evidence remains recorded; the post-fix aggregate rerun exceeded the local output window and is not counted as a new pass.
-- `test_task_assignment_canonical.ts` — exercised only until the local process-output window; not counted as passed.
-- backend `tsc --noEmit` and `npm run build --prefix backend` — passed after the P1 fix; the temporary tracked `backend/dist/modules/cleaning.js` output was restored and is excluded from this unit.
+- Earlier root `npm run check:full` and database integration observations are historical only, and are excluded from the final evidence for this safety correction because the previous aggregate command could automatically invoke a database-write test.
+- `npm run check:backend:full` — passed after the correction; it invokes the two assignment contracts only, both pure static source checks.
+- `npm run build --prefix backend` — passed; its temporary tracked `backend/dist/modules/cleaning.js` output was restored and is excluded from this unit.
 - `git diff --check` — passed.
-- `python3 scripts/audit_change_release_ledger.py` and FR audit — passed: 8 changed files / 8 recorded files; 8 FRs / 91 mappings.
-- Independent review — initial NO-GO P1 was fixed by ensuring `work_tasks` before its first PATCH lock; P2 coverage was added to the mobile unit. Second independent read-only review: GO, no P0/P1. Non-blocking P2: the first-PATCH contract is not yet registered in an npm quality gate, though its three-role non-production evidence is recorded above.
+- `python3 scripts/audit_change_release_ledger.py` and FR audit — passed: 8 changed files / 8 recorded files; 8 FRs / 93 mappings.
+- P2 correction — `test:offline-task-assignment-first-patch` runs only `test_offline_task_assignment_first_patch_contract.ts`, which verifies the source/canonical table ensures occur before `pgRunInTransaction` and the first `FOR UPDATE`; root `check:backend:full` invokes it after the assignment PATCH contract. `npm run check:backend:full` passed.
+- Integration safety correction — `test:offline-task-assignment-patch` now also runs only a pure static contract. The two HTTP/database scripts are `test:offline-task-assignment-patch-integration` and `test:offline-task-assignment-first-patch-integration`; both require `TEST_DATABASE_URL` and `TEST_ALLOW_NONPROD_DB_WRITE=1`, refuse `NODE_ENV=production`, require `NEON_DATABASE_URL_PROD` or `DATABASE_URL_PROD` for a fail-closed production identity check, and reject a test identity matching production by hostname/port/database rather than username. They set `DATABASE_URL` only after that guard. Both safely skipped without the explicit test inputs, with no database call; with a dummy explicit test URL but no production identity, each rejected before importing the database module.
+- Independent review — initial NO-GO P1 was fixed by ensuring `work_tasks` before its first PATCH lock; P2 coverage was added to the mobile unit. The first quality-gate follow-up review found an unsafe automatic database-write P1 and insufficient order assertion P2; a second review found the older assignment PATCH integration was still automatic; a third review found the manual integration guard was not fail-closed without a production identity. All automatic database-write paths are removed from root Full and the manual commands now fail closed. A fourth review corrected stale historical validation text; final independent read-only re-review: GO, no P0/P1/P2. The three-role integration remains `partial` until explicitly run against a confirmed non-production database.
 - Staging, commit, push, deployment, and mobile device acceptance — staging, commit, and push approved; deployment and mobile device acceptance remain pending.
 
 ### Risks / Release Notes
@@ -48,7 +50,7 @@
 - Risk: assignment writes can affect visibility, events and notifications; event emission must happen only once after commit.
 - Sensitive-information review: no user details, tokens, database URLs, or production records in code/tests/ledger.
 - Rollback: code rollback leaves already-saved canonical assignments intact; no destructive data rollback.
-- **Git state:** isolated worktree, approved for exact stage, commit, and push; no deployment or production action.
+- **Git state:** isolated worktree, approved for exact stage, commit, and push; no deployment, database write, or production action.
 
 ## CRL-20260730-001 — PR #269 Dev → main 冲突解决候选
 
