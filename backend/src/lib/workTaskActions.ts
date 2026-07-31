@@ -395,7 +395,11 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
   const cleaningSubmissionReady = hasCleaningSubmissionSignal
     ? task.cleaning_submission_ready === true
     : isCleaningWorkSubmitted(task?.cleaning_status || task?.status)
-  const cleaningSubmissionRequired = isInspectionTask && !isPasswordOnly && hasCleaningSubmissionSignal && !cleaningSubmissionReady
+  const cleaningSubmissionRequired = isInspectionTask
+    && !isPasswordOnly
+    && !isCheckinInspection
+    && hasCleaningSubmissionSignal
+    && !cleaningSubmissionReady
   const isCompleted = isTerminalStatus(status) || (isPasswordOnly && status === 'inspected')
   const participants = normalizeTaskParticipants(task)
   const participantSummary = participantSummaryForUser(participants, userId)
