@@ -199,6 +199,13 @@ function normalizeStoredPhotoUrls(raw: any, fallback?: any) {
   return fallbackText ? [fallbackText] : []
 }
 
+export function selectUniqueRecordedCleaningMediaRow(rows: any[]) {
+  const matchedRows = Array.isArray(rows) ? rows : []
+  const matchedTaskIds = new Set(matchedRows.map((row: any) => String(row?.id || '').trim()).filter(Boolean))
+  const matchedMediaTypes = new Set(matchedRows.map((row: any) => String(row?.type || '').trim()).filter(Boolean))
+  return matchedTaskIds.size === 1 && matchedMediaTypes.size === 1 ? matchedRows[0] || null : null
+}
+
 async function listDayEndManagerUserIds() {
   const { listManagerUserIds } = require('./notifications')
   return await listManagerUserIds()
@@ -1157,6 +1164,7 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
 // Submit consumables checklist (cannot skip; low requires photo)
 const consumableSchema = z.object({
   living_room_photo_url: z.string().trim().min(1).optional(),
+  living_room_photo_urls: z.array(z.string().trim().min(1).max(800)).max(12).optional(),
   items: z.array(
     z.object({
       item_id: z.string().min(1),
@@ -1183,17 +1191,20 @@ router.get('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), a
        ORDER BY created_at ASC, id ASC`,
       [String(id)],
     )
-    const livingPhotoRow = await pgPool.query(
+    const livingPhotoRows = await pgPool.query(
       `SELECT url
        FROM cleaning_task_media
        WHERE task_id::text = $1::text
          AND type = 'consumable_living_room_photo'
-       ORDER BY captured_at DESC NULLS LAST, created_at DESC
-       LIMIT 1`,
+       ORDER BY captured_at ASC NULLS LAST, created_at ASC, id ASC`,
       [String(id)],
     )
+    const livingRoomPhotoUrls = Array.from(new Set((livingPhotoRows?.rows || [])
+      .map((row: any) => String(row?.url || '').trim())
+      .filter(Boolean)))
     return res.json({
-      living_room_photo_url: String(livingPhotoRow?.rows?.[0]?.url || '').trim() || null,
+      living_room_photo_urls: livingRoomPhotoUrls,
+      living_room_photo_url: livingRoomPhotoUrls[0] || null,
       items: (rows.rows || []).map((x: any) => ({
         id: String(x.id || ''),
         item_id: String(x.item_id || ''),
@@ -1282,7 +1293,7 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
 
         const existingRows = await client.query(`SELECT id FROM cleaning_consumable_usages WHERE task_id=$1 LIMIT 1`, [String(id)])
         const hadExisting = !!existingRows?.rowCount
-        const livingRoomPhotoUrl = String(parsed.data.living_room_photo_url || '').trim()
+        const livingRoomPhotoUrls = normalizeStoredPhotoUrls(parsed.data.living_room_photo_urls, parsed.data.living_room_photo_url)
 
         await client.query(`DELETE FROM cleaning_consumable_usages WHERE task_id=$1`, [String(id)])
         await client.query(`DELETE FROM cleaning_task_media WHERE task_id::text=$1::text AND type='consumable_living_room_photo'`, [String(id)])
@@ -1320,7 +1331,7 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
               note: it.note == null ? null : String(it.note || '').trim(),
             }
           })
-        if (livingRoomPhotoUrl) {
+        for (const livingRoomPhotoUrl of livingRoomPhotoUrls) {
           await pgInsert('cleaning_task_media', {
             id: require('uuid').v4(),
             task_id: String(id),
@@ -1665,6 +1676,31 @@ function canViewDayEndForAllUsers(user: any) {
   const roles = Array.isArray(user?.roles) ? user.roles.map((x: any) => String(x || '').trim()) : []
   const all = new Set([role, ...roles].filter(Boolean))
   return all.has('admin') || all.has('offline_manager') || all.has('customer_service') || all.has('inventory_manager')
+}
+
+export function selectUniqueRecordedDayEndMediaRow(rows: any[]) {
+  const matchedRows = Array.isArray(rows) ? rows : []
+  const matchedUserIds = new Set(matchedRows.map((row: any) => String(row?.user_id || '').trim()).filter(Boolean))
+  const matchedKinds = new Set(matchedRows.map((row: any) => String(row?.kind || '').trim()).filter(Boolean))
+  return matchedUserIds.size === 1 && matchedKinds.size === 1 ? matchedRows[0] || null : null
+}
+
+export function selectExclusiveRecordedCleaningMedia(taskRows: any[], dayEndRows: any[]) {
+  const matchedTaskRows = Array.isArray(taskRows) ? taskRows : []
+  const matchedDayEndRows = Array.isArray(dayEndRows) ? dayEndRows : []
+  const taskRow = selectUniqueRecordedCleaningMediaRow(matchedTaskRows)
+  const dayEndRow = selectUniqueRecordedDayEndMediaRow(matchedDayEndRows)
+  const taskConflict = matchedTaskRows.length > 0 && !taskRow
+  const dayEndConflict = matchedDayEndRows.length > 0 && !dayEndRow
+  if (taskConflict || dayEndConflict || (!!taskRow && !!dayEndRow)) return null
+  if (taskRow) return { source: 'task' as const, row: taskRow }
+  if (dayEndRow) return { source: 'day_end' as const, row: dayEndRow }
+  return null
+}
+
+export function canViewRecordedDayEndMedia(user: any, mediaRow: any, userId: string) {
+  return canViewDayEndForAllUsers(user)
+    || (Boolean(userId) && String(mediaRow?.user_id || '').trim() === userId)
 }
 
 function roleNamesOfUser(user: any) {
@@ -3075,9 +3111,17 @@ router.post('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'c
 })
 
 export default router
+export const CLEANING_MEDIA_IMAGE_READ_PERMISSIONS = [
+  'cleaning_app.media.upload',
+  'cleaning_app.tasks.finish',
+  'cleaning_app.inspect.finish',
+  'cleaning_app.issues.report',
+  'inventory.view',
+]
+
 router.get(
   '/media/image',
-  requireAnyPerm(['cleaning_app.media.upload', 'cleaning_app.tasks.finish', 'cleaning_app.inspect.finish', 'cleaning_app.issues.report']),
+  requireAnyPerm(CLEANING_MEDIA_IMAGE_READ_PERMISSIONS),
   async (req, res) => {
     try {
       const requestedKey = String((req.query as any)?.key || '').trim()
@@ -3106,14 +3150,56 @@ router.get(
           WHERE ctm.url = ANY($1::text[])`,
         [mediaReferences],
       )
+      const usageRows = await pgPool.query(
+        `SELECT ct.id,
+                ct.cleaner_id,
+                ct.inspector_id,
+                ct.assignee_id,
+                u.photo_url,
+                u.photo_urls
+           FROM cleaning_consumable_usages u
+           JOIN cleaning_tasks ct ON ct.id::text = u.task_id::text
+          WHERE COALESCE(u.photo_url, '') = ANY($1::text[])
+             OR EXISTS (
+               SELECT 1
+                 FROM unnest($1::text[]) AS reference(value)
+                WHERE position(reference.value IN COALESCE(u.photo_urls::text, '')) > 0
+             )`,
+        [mediaReferences],
+      )
+      const dayEndRows = await pgPool.query(
+        `SELECT user_id, kind, url
+           FROM cleaning_day_end_media
+          WHERE url = ANY($1::text[])`,
+        [mediaReferences],
+      )
       const user = (req as any).user || {}
       const userId = String(user.sub || '').trim()
-      const matchingMediaRows = (mediaRows?.rows || []).filter((row: any) => {
+      const usageMediaRows = (usageRows?.rows || []).flatMap((row: any) => normalizeStoredPhotoUrls(row.photo_urls, row.photo_url)
+        .map((url) => ({
+          id: row.id,
+          cleaner_id: row.cleaner_id,
+          inspector_id: row.inspector_id,
+          assignee_id: row.assignee_id,
+          type: 'consumable_item_photo',
+          url,
+        })))
+      const matchingMediaRows = [...(mediaRows?.rows || []), ...usageMediaRows].filter((row: any) => {
         const storedKey = r2KeyFromUrl(String(row?.url || '').trim()) || String(row?.url || '').trim()
         return storedKey === key
       })
-      const mediaRow = matchingMediaRows.length === 1 ? matchingMediaRows[0] : null
-      if (!mediaRow || !await canViewMzappRecordedCleaningMedia(user, mediaRow, userId, mediaRow.type)) {
+      const mediaRow = selectUniqueRecordedCleaningMediaRow(matchingMediaRows)
+      const matchingDayEndMediaRows = (dayEndRows?.rows || []).filter((row: any) => {
+        const storedKey = r2KeyFromUrl(String(row?.url || '').trim()) || String(row?.url || '').trim()
+        return storedKey === key
+      })
+      const recordedMedia = selectExclusiveRecordedCleaningMedia(matchingMediaRows, matchingDayEndMediaRows)
+      const canViewMedia = recordedMedia?.source === 'task'
+        ? await canViewMzappRecordedCleaningMedia(user, recordedMedia.row, userId, recordedMedia.row.type)
+        : recordedMedia?.source === 'day_end'
+          ? canViewRecordedDayEndMedia(user, recordedMedia.row, userId)
+          : false
+      if (!canViewMedia) {
         return res.status(403).json({ message: 'forbidden_media' })
       }
       const object = await r2GetObjectByKey(key)
