@@ -2,7 +2,7 @@
 
 ## CRL-20260731-008 — 清洁媒体完整性、多图展示与安全清理
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-31 Australia/Melbourne
 - **ID allocation:** 2026-07-31 Australia/Melbourne — 从 `CRL-20260731-001` 重编号为 `CRL-20260731-008`，避免与已存在的维修基础单元冲突；范围、验证与发布状态不变。
 - **Request:** 修复清洁任务和日终交接照片引用失效后的可观测性、客厅多图展示、受控媒体读取及 R2 清理保护；生产照片恢复另作 REC-001，不随本代码单元部署。
@@ -46,14 +46,14 @@
 - `python3 scripts/audit_change_release_ledger.py` — passed: 9 changed files / 9 recorded files.
 - Post-review P1 correction — `/media/image` 入口以已有 `inventory.view` 覆盖库存管理员；`npm run build --prefix backend` and `npm run test:cleaning-media-image --prefix backend` passed. The test performs a loopback HTTP middleware check for inventory manager allow / unrelated finance deny, plus owner / unrelated cleaner record authorization assertions; no R2 or database was called.
 - Independent review — original review found and blocked the inventory-manager route-entry P1. Second independent read-only review: GO, no P0/P1; it verified the route gate remains followed by record-level task/day-end authorization. Non-blocking P2s remain: no mock-PG/R2 full route test and no actual R2 object read/write or production recovery test.
-- Merge-conflict resolution — latest `Dev` is merged as a no-commit candidate; CRL-005, 007 and 008 ledger/FR entries are retained. `npm run check:fast` passed after resolution: ledger 7/7, FR 8/95, backend build and protected contracts, frontend lint with existing warnings, and 39 frontend test files / 171 tests; root mobile Fast was explicitly skipped because this isolated root worktree has no nested mobile checkout. Final independent read-only review: GO, no P0/P1; it confirmed that the five non-document files are already-merged CRL-005 code and that the effective PR range against `Dev` remains the nine CRL-008 root files.
+- Merge-conflict resolution — latest `Dev` is merged while retaining CRL-005, 007 and 008 ledger/FR entries. `npm run check:fast` passed after resolution: ledger 7/7, FR 8/95, backend build and protected contracts, frontend lint with existing warnings, and 39 frontend test files / 171 tests; root mobile Fast was explicitly skipped because this isolated root worktree has no nested mobile checkout. Final independent read-only review: GO, no P0/P1; it confirmed that the five non-document files are already-merged CRL-005 code and that the effective PR range against `Dev` remains the nine CRL-008 root files. Merge commit `c6efcc0ff4272c0e95c10cd75b36201261ed4a7e` was pushed to the existing CRL-008 branch and remote SHA/ahead-behind verification passed.
 
 ### Risks / Release Notes
 
 - Risk: 旧客户端只读取单数字段，必须保留兼容；对象恢复前，失效历史引用仍应表现为明确可重试错误而非伪成功。
 - Sensitive-information review: 不记录 R2 endpoint、bucket、URL、token、数据库连接或对象内容。
 - Rollback: 回退代码可恢复旧字段读取；不触碰 REC-001 的生产恢复对象。
-- **Git state:** root source commit `92ee27d87d4f7cdb82bb126d8b24abd98d735351` and related mobile commit `8a3f8becd274f961d053d9cf24e96c67dac305b6` are already pushed; this isolated root merge-resolution candidate is uncommitted and unpushed, with no deployment, REC-001 recovery, R2 operation, or database write.
+- **Git state:** root source commit `92ee27d87d4f7cdb82bb126d8b24abd98d735351`, merge-resolution commit `c6efcc0ff4272c0e95c10cd75b36201261ed4a7e`, and related mobile commit `8a3f8becd274f961d053d9cf24e96c67dac305b6` are pushed. No deployment, REC-001 recovery, R2 operation, or database write was performed.
 
 ## CRL-20260731-007 — 检查照片上传进度不重载草稿
 
