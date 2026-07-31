@@ -3,6 +3,7 @@ import assert from 'assert'
 type FakeTask = {
   status: string
   inspection_scope: string
+  task_type: string
 }
 
 function makeExecutor(task: FakeTask, mediaRows: any[], guestArrivalSkipAudit = false, cleaningReady = true) {
@@ -20,7 +21,7 @@ function makeExecutor(task: FakeTask, mediaRows: any[], guestArrivalSkipAudit = 
         }
       }
       if (sql.includes('FROM cleaning_tasks')) {
-        return { rows: [{ id: 'task-guard', status: task.status, task_type: 'checkin_clean', inspection_scope: task.inspection_scope, finished_at: null }] }
+        return { rows: [{ id: 'task-guard', status: task.status, task_type: task.task_type, inspection_scope: task.inspection_scope, finished_at: null }] }
       }
       if (sql.includes('FROM users')) return { rows: [] }
       return { rows: [], rowCount: 1 }
@@ -31,7 +32,7 @@ function makeExecutor(task: FakeTask, mediaRows: any[], guestArrivalSkipAudit = 
 async function main() {
   process.env.DATABASE_URL = 'postgres://unit-test'
   const { applyCleaningTaskActionTransition } = require('../../src/lib/workTaskActionAudit') as typeof import('../../src/lib/workTaskActionAudit')
-  const task: FakeTask = { status: 'to_inspect', inspection_scope: 'inspect_and_hang' }
+  const task: FakeTask = { status: 'to_inspect', inspection_scope: 'inspect_and_hang', task_type: 'checkin_clean' }
   const noPhotos = makeExecutor(task, [])
   const blocked = await applyCleaningTaskActionTransition({
     taskId: 'task-guard',
@@ -101,7 +102,13 @@ async function main() {
   assert.equal(passwordCompleted.status_after, 'inspected')
   assert.equal(passwordCompleted.finalization_pending, false)
 
-  const cleaningNotSubmitted = makeExecutor({ status: 'inspected', inspection_scope: 'inspect_and_hang' }, [], false, false)
+  const pureCheckinWithoutCleaning = makeExecutor({ status: 'to_inspect', inspection_scope: 'inspect_and_hang', task_type: 'checkin_clean' }, [], false, false)
+  await assert.doesNotReject(
+    () => import('../../src/lib/workTaskActionAudit').then(({ assertCleaningSubmissionReady }) => assertCleaningSubmissionReady('task-guard', pureCheckinWithoutCleaning as any)),
+  )
+  assert.equal(pureCheckinWithoutCleaning.queries.some((sql) => sql.includes('FROM cleaning_consumable_usages')), false)
+
+  const cleaningNotSubmitted = makeExecutor({ status: 'inspected', inspection_scope: 'inspect_and_hang', task_type: 'checkout_clean' }, [], false, false)
   await assert.rejects(
     () => import('../../src/lib/workTaskActionAudit').then(({ assertCleaningSubmissionReady }) => assertCleaningSubmissionReady('task-guard', cleaningNotSubmitted as any)),
     (error: any) => error?.code === 'CLEANING_SUBMISSION_REQUIRED' && error?.statusCode === 409,

@@ -250,10 +250,12 @@
 | 后端保存接口共享幂等 ID上限 | `backend/scripts/tests/test_idempotency_submit_id_contract.ts` | cleaning-app、mzapp 的检查/补品/反馈保存接口使用共享 256 字符上限，不回退到旧 120 字符限制 | not-wired | `npm run test:idempotency-submit-id-contract --prefix backend` |
 | 自完成补货凭证授权与前置 | `backend/scripts/tests/test_idempotency_submit_id_contract.ts` | 只有自完成任务的清洁执行人（或受控手工 action）可用 `self_complete_restock`；仍先要求消耗品记录，审计为 `fill_supplies`，不套用检查专用的房源照片前置 | partial | `npm run test:idempotency-submit-id-contract --prefix backend` |
 | 清洁未提交时阻止检查提交 | `backend/scripts/tests/test_work_task_actions.ts` | `cleaning_submission_ready=false` 时禁用检查照片和挂钥匙 action，并保留清洁补品 action | sufficient | `npm run test:work-task-actions --prefix backend` |
-| 检查提交前置断言和共享任务恢复 | `backend/scripts/tests/test_cleaning_task_transition_guard.ts` | 缺少清洁补品/房源照片时返回 `CLEANING_SUBMISSION_REQUIRED`；清洁提交状态满足后不阻断检查状态转换 | sufficient | `npm run test:cleaning-task-transition-guard --prefix backend` |
+| 纯入住检查不套用清洁提交前置 | `backend/scripts/tests/test_work_task_actions.ts` | `checkout_clean` 的 `cleaning_submission_ready=false` 仍禁用检查/挂钥匙；`checkin_clean` 不套用该门槛 | sufficient | `npm run test:work-task-actions --prefix backend` |
+| 检查提交前置断言和共享任务恢复 | `backend/scripts/tests/test_cleaning_task_transition_guard.ts` | `checkout_clean` 缺少清洁补品/房源照片时返回 `CLEANING_SUBMISSION_REQUIRED`；`checkin_clean` 只跳过清洁前置、仍保留检查照片状态门槛 | sufficient | `npm run test:cleaning-task-transition-guard --prefix backend` |
 | 移动端清洁恢复入口 | `mz-cleaning-app-frontend/src/lib/workTaskActions.test.ts` | 共享状态已为 `inspected` 但清洁提交状态为 false 时补品入口保持可编辑；钥匙照片删除后即使任务已完成仍保留重新上传入口 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand src/lib/workTaskActions.test.ts` |
 | 任务详情钥匙照片重传入口 | `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` | 清洁提交完成且钥匙照片已删除时，任务详情的上传钥匙按钮仍可点击 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand src/screens/tasks/TaskDetailScreen.test.tsx` |
-| 检查页提交前置提示 | `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.test.tsx` | 检查页保留本地内容，提交入口按任务前置状态处理；基础检查步骤回归 | partial | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand src/screens/tasks/InspectionPanelScreen.test.tsx` |
+| 检查页提交前置提示 | `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.test.tsx` | 检查页仅服从服务端 action；纯入住检查不被旧 `cleaning_submission_ready=false` 本地阻止 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tasks/InspectionPanelScreen.test.tsx` |
+| 检查照片上传进度不重载草稿 | `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.test.tsx` | 连续队列进度通知仍更新同步状态，但不重复读取冻结草稿 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tasks/InspectionPanelScreen.test.tsx` |
 | Android 本地照片格式统一 | `mz-cleaning-app-frontend/src/lib/imageCompression.test.ts` | HEIC 转换成功生成新的 JPEG URI；转换失败或伪造原 URI 结果时阻断上传 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/imageCompression.test.ts` |
 | Android 媒体预览失败反馈 | `mz-cleaning-app-frontend/src/components/CleaningMediaPreview.test.tsx` | 缩略图或原图加载失败显示明确错误并允许重试；本地 URI 同时用于两层 Image 时不产生重复 key，不伪装成黑色加载态 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/components/CleaningMediaPreview.test.tsx` |
 | Android 认证媒体私有缓存 | `mz-cleaning-app-frontend/src/lib/cleaningMediaCache.test.ts` | 带认证的远端清洁媒体下载为应用私有文件 URI，供安卓原生 Image 渲染，下载失败时保留已有缓存 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/cleaningMediaCache.test.ts` |
@@ -306,6 +308,8 @@
 - CRL-20260726-008：清洁人员房间完成照片接入唯一草稿队列与幂等提交
 - CRL-20260726-007：检查提交必须等待清洁补品与房源照片
 - CRL-20260728-001：移动端房号确认、遥控器合拍与检查后清洁问题追加
+- CRL-20260731-005：纯入住检查错误清洁照片前置修复
+- CRL-20260731-007：检查照片上传进度不重载草稿
 
 ### 非保护范围
 
