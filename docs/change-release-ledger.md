@@ -1,5 +1,73 @@
 # Change Release Ledger
 
+## CRL-20260731-007 — 检查照片上传进度不重载草稿
+
+- **Status:** ready
+- **Updated:** 2026-07-31 Australia/Melbourne
+- **Request:** 修复检查与补充页逐张上传照片时反复刷新整页草稿、导致内容跳动的问题。
+- **Outcome:** 队列通知只更新批次的状态和错误展示；初始进入或显式重试才读取完整草稿，过期异步读取不得覆盖当前页面。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.tsx` — modified: 将批次状态展示与完整草稿加载解耦，并增加过期读取保护。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.test.tsx` — modified: 覆盖连续队列进度不重复读取草稿且状态仍更新。
+- `docs/feature-regression-registry.md` and `docs/change-release-ledger.md` — modified: 记录上传进度稳定性保护与此发布单元。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Related units: CRL-20260731-005; CRL-20260731-008 is explicitly excluded.
+
+### Validation
+
+- `npm test -- --runInBand --no-cache src/screens/tasks/InspectionPanelScreen.test.tsx` — passed: 1 suite / 13 tests, including queue progress no-reload and same-task source change controlled reload.
+- `npm run typecheck` and `npm run lint` in `mz-cleaning-app-frontend` — passed; lint 0 errors / 111 existing warnings.
+- `npm run check:full` in `mz-cleaning-app-frontend` — passed: ledger range audit, typecheck, button audit, 50 suites / 245 tests.
+- `npm run test:cleaning-task-transition-guard --prefix backend`, `npm run test:work-task-actions --prefix backend`, backend `tsc --noEmit`, and backend build — passed.
+- Root ledger audit 7/7, FR audit (8 FRs / 92 mappings), mobile ledger audit 3/3, and both `git diff --check` — passed.
+- Independent review — initial NO-GO found stale validation ledger, a generated `backend/dist/modules/cleaning.js` outside selected CRLs, and missing non-queue refresh coverage; generated file was restored, evidence recorded, and controlled source-change reload coverage added. Second independent read-only review: GO, no P0/P1/P2.
+
+### Risks / Release Notes
+
+- Does not change photo upload order, idempotency handling, media retention, or server contracts. Device scroll-layout acceptance remains pending.
+- Git state: isolated worktree; approved for exact stage, commit, and push; no deployment or production action.
+
+## CRL-20260731-005 — 纯入住检查不再错误要求清洁提交
+
+- **Status:** ready
+- **Updated:** 2026-07-31 Australia/Melbourne
+- **Request:** 修复纯入住检查被错误要求先提交清洁补品和房源照片，进而阻止检查照片或挂钥匙流程的问题。
+- **Outcome:** `checkin_clean` 跳过不适用的清洁提交前置；`checkout_clean` 的清洁提交 409 门禁不变。后端 action、`/mzapp/work-tasks` payload 与移动端提交入口以同一服务端 action 为准。
+
+### Files / Areas
+
+- `backend/src/lib/workTaskActionAudit.ts` — modified: 中央前置断言按任务类型跳过纯入住检查。
+- `backend/src/lib/workTaskActions.ts` — modified: 旧 `cleaning_submission_ready=false` 不再禁用纯入住检查 action。
+- `backend/src/modules/mzapp.ts` — modified: 纯入住检查 payload 表示该清洁前置已满足。
+- `backend/scripts/tests/test_cleaning_task_transition_guard.ts` and `backend/scripts/tests/test_work_task_actions.ts` — modified: 覆盖入住例外与退房门禁保留。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.tsx` and `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.test.tsx` — modified: 仅信任服务端 action 禁用原因并覆盖旧字段回退。
+- `docs/feature-regression-registry.md` and `docs/change-release-ledger.md` — modified: 记录跨层门禁规则与发布单元。
+
+### Impact / Dependencies
+
+- API: `/mzapp/work-tasks` 对 `checkin_clean` 以 `cleaning_submission_ready=true` 表示该项不适用；响应结构不变。
+- Database / migration / dependencies: none.
+- Related units: CRL-20260731-007; CRL-20260731-008 is explicitly excluded.
+
+### Validation
+
+- `npm run test:cleaning-task-transition-guard --prefix backend` and `npm run test:work-task-actions --prefix backend` — passed.
+- backend `tsc --noEmit` and `npm run build --prefix backend` — passed.
+- `npm test -- --runInBand --no-cache src/screens/tasks/InspectionPanelScreen.test.tsx` — passed: 1 suite / 13 tests, including legacy false field does not block server-enabled pure checkin submission.
+- `npm run typecheck`, `npm run lint` (0 errors / 111 existing warnings), and `npm run check:full` (50 suites / 245 tests) in `mz-cleaning-app-frontend` — passed.
+- Root ledger audit 7/7, FR audit (8 FRs / 92 mappings), mobile ledger audit 3/3, and both `git diff --check` — passed.
+- Independent review — initial NO-GO found stale validation ledger, a generated `backend/dist/modules/cleaning.js` outside selected CRLs, and missing non-queue refresh coverage; generated file was restored, evidence recorded, and controlled source-change reload coverage added. Second independent read-only review: GO, no P0/P1/P2.
+
+### Risks / Release Notes
+
+- 仅移除不适用的清洁前置；本次检查照片、客人到达豁免和挂钥匙/密码视频门槛不变。
+- Git state: isolated worktree; approved for exact stage, commit, and push; no deployment or production action.
+
 ## CRL-20260730-001 — PR #269 Dev → main 冲突解决候选
 
 - **Status:** staged
