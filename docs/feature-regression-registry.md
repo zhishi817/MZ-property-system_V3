@@ -74,6 +74,7 @@
 
 - 同日合并卡必须保留正确的任务来源、执行人、检查模式、周转日期和状态。
 - 手动任务的有效字段可以继承，但不能用占位值覆盖有效自动任务字段。
+- 线下手动任务的执行人以 `work_tasks` canonical 投影为准；PATCH 指派必须与源任务原子一致，缺省字段不得覆盖既有执行人，`assignee_id: null` 在第一版返回业务错误。
 - 合并结果必须区分 active、取消、延后和已完成来源，不能仅按首个子任务推导。
 - 周转合并卡的入住晚数必须取后一个入住订单，并明确显示为“待住 X晚”，不能继续显示前一个退房订单的晚数。
 
@@ -90,6 +91,9 @@
 |---|---|---|---|---|
 | 检查模式、周转日期和来源优先级 | `backend/scripts/tests/test_cleaning_inspection_merge.ts` | same-day、pending、deferred、self-complete 合并 | sufficient | `npm run test:cleaning-inspection-merge --prefix backend` |
 | 退房标记跨关联任务传播与合并状态优先级 | `backend/scripts/tests/test_task_assignment_canonical.ts` | 客服标记退房后，同订单或同房源日期的有效入住检查任务得到 `checked_out_at`；未开始显示退房，清洁进行中显示进行中，补品完成后客服/检查人员显示待检查 | sufficient | `npx ts-node-dev --transpile-only backend/scripts/tests/test_task_assignment_canonical.ts` |
+| 线下任务执行人 source/canonical 一致性 | `backend/scripts/tests/test_offline_task_assignment_patch_contract.ts` | root backend Full 确认 assignee 的 omitted/null 语义、source/canonical 表确保、事务投影和 canonical 回读 | sufficient | `npm run test:offline-task-assignment-patch --prefix backend` |
+| 线下任务执行人三角色授权 | `backend/scripts/tests/test_offline_task_assignment_patch.ts` | 客服、线下经理和 admin 的 HTTP/数据库验证；仅在显式非生产测试库、写入确认与生产库身份比对均存在时运行 | partial | `npm run test:offline-task-assignment-patch-integration --prefix backend` |
+| 首次 PATCH 的 canonical 表确保顺序 | `backend/scripts/tests/test_offline_task_assignment_first_patch_contract.ts` | root backend Full 每次断言两张表确保均位于 `pgRunInTransaction` 和首个 `FOR UPDATE` 之前；独立 integration 脚本只在显式非生产测试库与写入确认下覆盖无投影首次写入与三角色 | sufficient | `npm run test:offline-task-assignment-first-patch --prefix backend` |
 | 自动/手动字段继承和历史数据兼容 | `backend/scripts/tests/test_cleaning_sync_v2.ts` | 手动 placeholder、旧任务、同步后字段保留 | not-wired | `npx ts-node-dev --transpile-only backend/scripts/tests/test_cleaning_sync_v2.ts` |
 | Web 合并卡展示 | `frontend/src/lib/cleaningDailyMerge.test.ts` | 每日清洁合并和来源展示；后一个入住订单的晚数优先并显示“待住 X晚” | partial | `npm run test --prefix frontend -- src/lib/cleaningDailyMerge.test.ts` |
 | Web 任务中心字段展示 | `frontend/src/app/task-center/taskCenterDisplay.test.ts` | 合并任务标题、状态和字段；退房入住卡显示“已住 X晚”和“待住 X晚” | partial | `npm run test --prefix frontend -- --coverage.enabled=false src/app/task-center/taskCenterDisplay.test.ts` |
@@ -105,9 +109,9 @@
 
 ### 最后验证
 
-- **CRL：** CRL-20260727-003
-- **Commit：** not yet
-- **日期：** 2026-07-27
+- **CRL：** CRL-20260731-009
+- **Commit：** not committed
+- **日期：** 2026-07-31
 
 ### 相关 CRL
 
@@ -121,6 +125,7 @@
 - CRL-20260725-016：客服退房状态同步到检查人员关联任务
 - CRL-20260725-017：修复退房标记覆盖清洁与检查进行状态
 - CRL-20260725-022：每日清洁周转卡显示后续订单待住晚数
+- CRL-20260731-009：线下任务执行人 canonical 一致性
 
 ### 非保护范围
 
