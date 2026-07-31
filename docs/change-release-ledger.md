@@ -1,5 +1,55 @@
 # Change Release Ledger
 
+## CRL-20260731-009 — 线下任务执行人 canonical 一致性
+
+- **Status:** ready
+- **Updated:** 2026-07-31 Australia/Melbourne
+- **ID allocation:** 2026-07-31 Australia/Melbourne — 从 `CRL-20260731-002` 重编号为 `CRL-20260731-009`，避免与已存在的预订网站前端框架单元冲突；范围、验证与发布状态不变。
+- **Request:** 修复 admin、客服、线下经理移动端修改线下任务执行人提示成功但未持久化的问题；第一版禁止清空执行人，`assignee_id: null` 返回业务错误。
+- **Outcome:** 后端在同一事务内更新线下源任务与 `work_tasks` 投影，返回 canonical 结果；移动端回读一致后才展示成功。
+
+### Implementation
+
+- Previous behavior: PATCH 忽略 `assignee_id`，移动端用本地选择值覆盖页面，造成假成功。
+- New behavior: 明确 missing/null/value 语义，锁定源记录与 canonical 投影并原子更新；成功事件和页面状态仅使用最终 canonical 值。客服、线下经理和 admin 复用已有线下人工任务门禁。
+- Key decisions: 不允许清空执行人；不新增权限绕过；不改变其他清洁任务的执行人规则。
+
+### Files / Areas
+
+- `backend/src/modules/cleaning.ts` — modified: PATCH 语义、事务、锁、首次锁定前确保 canonical 表、canonical 返回、事件和线下人工任务角色门禁。
+- `backend/scripts/tests/test_task_assignment_canonical.ts` — modified: 保持既有 canonical 投影回归，并增加 PATCH 赋值、普通编辑保留与 null 拒绝覆盖。
+- `backend/scripts/tests/test_offline_task_assignment_patch.ts` — added: 既有 source/canonical、内容保留和 null 拒绝 HTTP 契约。
+- `backend/scripts/tests/test_offline_task_assignment_first_patch.ts` — added: 首次 PATCH 在无 canonical 投影时先确保表并创建投影的非生产 HTTP 契约，参数化覆盖客服、线下经理和 admin。
+- `backend/package.json` and `package.json` — modified: 为既有 assignment PATCH 契约提供明确脚本并接入 root backend full quality gate；首次无投影 PATCH 契约保留为单独的三角色非生产验证。
+- `docs/feature-regression-registry.md` — modified: FR-002 映射 source/canonical、null 和三角色保护点。
+- `mz-cleaning-app-frontend` — related independent mobile unit `CRL-20260731-009`: canonical response type、回读确认与失败状态。
+
+### Impact / Dependencies
+
+- API: PATCH offline task returns canonical assignment fields while remaining compatible with current callers.
+- Database / migration: none planned.
+- Config / environment / dependencies: none.
+- Related units: CRL-20260731-008 is independent.
+
+### Validation
+
+- `npm run check:full` — passed: root ledger/FR audit、backend build and full registered checks、frontend lint/tests/build all passed; root worktree has no nested mobile repository so mobile subcheck was explicitly skipped. The isolated HTTP assignment test intentionally skipped in this aggregate run because no database was configured.
+- `test_offline_task_assignment_first_patch.ts` — passed separately with exit code 0 for `customer_service`, `offline_manager`, and `admin` against the non-production database; each run verifies the PATCH table-ensure order, no-prior-projection creation, canonical persistence and cleanup.
+- `test_offline_task_assignment_patch.ts` — prior three-role source/canonical, content preservation and null-rejection evidence remains recorded; the post-fix aggregate rerun exceeded the local output window and is not counted as a new pass.
+- `test_task_assignment_canonical.ts` — exercised only until the local process-output window; not counted as passed.
+- backend `tsc --noEmit` and `npm run build --prefix backend` — passed after the P1 fix; the temporary tracked `backend/dist/modules/cleaning.js` output was restored and is excluded from this unit.
+- `git diff --check` — passed.
+- `python3 scripts/audit_change_release_ledger.py` and FR audit — passed: 8 changed files / 8 recorded files; 8 FRs / 91 mappings.
+- Independent review — initial NO-GO P1 was fixed by ensuring `work_tasks` before its first PATCH lock; P2 coverage was added to the mobile unit. Second independent read-only review: GO, no P0/P1. Non-blocking P2: the first-PATCH contract is not yet registered in an npm quality gate, though its three-role non-production evidence is recorded above.
+- Staging, commit, push, deployment, and mobile device acceptance — staging, commit, and push approved; deployment and mobile device acceptance remain pending.
+
+### Risks / Release Notes
+
+- Risk: assignment writes can affect visibility, events and notifications; event emission must happen only once after commit.
+- Sensitive-information review: no user details, tokens, database URLs, or production records in code/tests/ledger.
+- Rollback: code rollback leaves already-saved canonical assignments intact; no destructive data rollback.
+- **Git state:** isolated worktree, approved for exact stage, commit, and push; no deployment or production action.
+
 ## CRL-20260730-001 — PR #269 Dev → main 冲突解决候选
 
 - **Status:** staged
