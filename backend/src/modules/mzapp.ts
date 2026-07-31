@@ -6334,7 +6334,9 @@ router.get('/work-tasks', async (req, res) => {
         if (taskIds.length) {
           const submissionRows = await pgPool.query(
             `SELECT t.id::text AS id,
-                    EXISTS (
+                    CASE
+                      WHEN lower(COALESCE(t.task_type, t.type, '')) = 'checkin_clean' THEN true
+                      ELSE EXISTS (
                       SELECT 1
                       FROM cleaning_consumable_usages u
                       WHERE u.task_id::text = t.id::text
@@ -6345,7 +6347,8 @@ router.get('/work-tasks', async (req, res) => {
                       WHERE m.task_id::text = t.id::text
                         AND m.type = 'consumable_living_room_photo'
                         AND COALESCE(TRIM(m.url), '') <> ''
-                    ) AS cleaning_submission_ready
+                    )
+                    END AS cleaning_submission_ready
                FROM cleaning_tasks t
               WHERE t.id::text = ANY($1::text[])`,
             [taskIds],

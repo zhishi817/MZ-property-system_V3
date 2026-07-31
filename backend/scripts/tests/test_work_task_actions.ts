@@ -1,4 +1,6 @@
 import assert from 'assert'
+import fs from 'fs'
+import path from 'path'
 import { cleaningTaskExecutionSemantics, normalizeTaskExecutionSemantics, projectInspectorTaskStatus } from '../../src/lib/cleaningInspection'
 import { buildWebTaskManagementPayload, buildWorkTaskActionPayload } from '../../src/lib/workTaskActions'
 import { buildKeyPhotoUploadEventPatch, buildKeyPhotoUploadTaskPatch, keyPhotoUploadStatus, resolveCleaningTaskActionStatus } from '../../src/lib/workTaskActionAudit'
@@ -20,6 +22,12 @@ function webActionById(payload: ReturnType<typeof buildWebTaskManagementPayload>
 }
 
 function main() {
+  const mzappSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/mzapp.ts'), 'utf8')
+  const submissionProjectionStart = mzappSource.indexOf('const cleaningSubmissionReadyByTaskId')
+  const submissionProjectionEnd = mzappSource.indexOf('const manualParticipantsByCleaningRef', submissionProjectionStart)
+  const submissionProjection = mzappSource.slice(submissionProjectionStart, submissionProjectionEnd)
+  assert(submissionProjection.includes("WHEN lower(COALESCE(t.task_type, t.type, '')) = 'checkin_clean' THEN true"), 'pure checkin task payload must mark the cleaning prerequisite as satisfied')
+
   assert.equal(normalizeTaskExecutionSemantics('key_handover_execution'), 'key_or_password_action')
   assert.equal(cleaningTaskExecutionSemantics({ roleKind: 'execution', taskType: 'checkin_clean', inspectionScope: 'password_only' }), 'key_or_password_action')
   assert.equal(projectInspectorTaskStatus('inspected', 'inspect_and_hang'), 'to_hang_keys')
@@ -341,6 +349,29 @@ function main() {
   assert.equal(actionById(inspectionBeforeCleaningPayload, 'submit_inspection')?.disabled_reason, 'cleaning_submission_required')
   assert.equal(actionById(inspectionBeforeCleaningPayload, 'upload_access_video')?.enabled, false)
   assert.equal(actionById(inspectionBeforeCleaningPayload, 'upload_access_video')?.disabled_reason, 'cleaning_submission_required')
+
+  const checkinInspectionWithoutCleaningPayload = buildWorkTaskActionPayload({
+    ...inspectionBeforeCleaningPayload.capabilities.task_state,
+    id: 'w-checkin-without-cleaning',
+    source_type: 'cleaning_tasks',
+    task_kind: 'inspection',
+    task_type: 'checkin_clean',
+    inspection_scope: 'inspect_and_hang',
+    status: 'to_inspect',
+    inspector_id: 'inspector-to-inspect',
+    cleaning_submission_ready: false,
+  }, {
+    userId: 'inspector-to-inspect',
+    roleNames: ['cleaning_inspector'],
+    permissions: allExecPerms,
+    canViewAll: false,
+  })
+  assert.equal(actionById(checkinInspectionWithoutCleaningPayload, 'submit_inspection')?.enabled, true)
+  assert.equal(actionById(checkinInspectionWithoutCleaningPayload, 'submit_inspection')?.disabled_reason, undefined)
+  assert.equal(actionById(checkinInspectionWithoutCleaningPayload, 'submit_inspection')?.label, '入住检查')
+  assert.equal(actionById(checkinInspectionWithoutCleaningPayload, 'upload_access_video')?.enabled, true)
+  assert.equal(actionById(checkinInspectionWithoutCleaningPayload, 'upload_access_video')?.disabled_reason, undefined)
+  assert.equal(actionById(checkinInspectionWithoutCleaningPayload, 'upload_access_video')?.label, '挂钥匙并完成')
 
   const cleanerRecoveryPayload = buildWorkTaskActionPayload({
     ...cleaningTask,
