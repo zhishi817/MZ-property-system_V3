@@ -2,7 +2,7 @@
 
 ## CRL-20260731-009 — 线下任务执行人 canonical 一致性
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-31 Australia/Melbourne
 - **ID allocation:** 2026-07-31 Australia/Melbourne — 从 `CRL-20260731-002` 重编号为 `CRL-20260731-009`，避免与已存在的预订网站前端框架单元冲突；范围、验证与发布状态不变。
 - **Request:** 修复 admin、客服、线下经理移动端修改线下任务执行人提示成功但未持久化的问题；第一版禁止清空执行人，`assignee_id: null` 返回业务错误。
@@ -39,6 +39,7 @@
 - Merge-conflict resolution — merged `origin/Dev` `4b806ffe2d8eed7455974549870287f2b880b7c5` into the existing 009 source branch. The resolved `package.json` preserves the 008 `test:cleaning-media-image` fast regression and the 009 assignment PATCH contracts in root backend Full; the ledger retains CRL-005, 007, 008, and 009.
 - `npm run check:backend:full` — passed after conflict resolution. The two assignment PATCH commands executed their pure static contracts; no test database variables were provided and no database call was made.
 - `npm run check:fast` — passed after conflict resolution: ledger 13/13, FR registry 8 FRs / 98 mappings with mobile mappings deferred because no nested checkout, backend build and protected media contracts, frontend lint with existing warnings, and 39 frontend test files / 171 tests. The root mobile fast subcheck was explicitly skipped because this isolated root worktree has no nested mobile repository.
+- Push receipt — merge-resolution commit `6ffd62c13cae92dc977422f80a9515141796bd6a` was pushed to the existing 009 source branch; local HEAD and the separately queried remote ref matched.
 - Earlier root `npm run check:full` and database integration observations are historical only, and are excluded from the final evidence for this safety correction because the previous aggregate command could automatically invoke a database-write test.
 - `npm run check:backend:full` — passed after the correction; it invokes the two assignment contracts only, both pure static source checks.
 - `npm run build --prefix backend` — passed; its temporary tracked `backend/dist/modules/cleaning.js` output was restored and is excluded from this unit.
@@ -54,7 +55,7 @@
 - Risk: assignment writes can affect visibility, events and notifications; event emission must happen only once after commit.
 - Sensitive-information review: no user details, tokens, database URLs, or production records in code/tests/ledger.
 - Rollback: code rollback leaves already-saved canonical assignments intact; no destructive data rollback.
-- **Git state:** isolated worktree; resolved merge candidate is ready for independent review, exact commit, and push. No deployment, database write, or production action.
+- **Git state:** conflict-resolution commit `6ffd62c13cae92dc977422f80a9515141796bd6a` is pushed to the existing source branch; the ledger receipt remains local until its own review and push. No deployment, database write, or production action.
 ## CRL-20260731-008 — 清洁媒体完整性、多图展示与安全清理
 
 - **Status:** pushed
