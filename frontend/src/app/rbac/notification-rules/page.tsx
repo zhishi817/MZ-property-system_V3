@@ -39,6 +39,22 @@ const EVENT_DESCRIPTIONS: Record<string, string> = {
   KEY_UPLOAD_SLA_ESCALATION: 'SLA 升级：超过时限仍未上传，升级通知经理组',
 }
 
+const TASK_SCOPED_EVENT_TYPES = new Set([
+  'CLEANING_TASK_UPDATED',
+  'CLEANING_COMPLETED',
+  'INSPECTION_COMPLETED',
+  'KEY_PHOTO_UPLOADED',
+  'ISSUE_REPORTED',
+  'WORK_TASK_UPDATED',
+  'WORK_TASK_COMPLETED',
+  'KEY_UPLOAD_REMINDER',
+  'KEY_UPLOAD_SLA_REMINDER',
+  'KEY_UPLOAD_SLA_ESCALATION',
+  'GUEST_LUGGAGE_UPDATED',
+])
+
+const MANAGER_ROLE_NAMES = new Set(['admin', 'offline_manager', 'customer_service'])
+
 function fmtDateTime(raw: string | null) {
   if (!raw) return '-'
   const d = new Date(raw)
@@ -110,6 +126,10 @@ export default function NotificationRulesPage() {
     .filter(Boolean)
     .map((u) => `例外用户:${u!.username}`)
   const state = current ? stateMeta(current.config_state) : null
+  const taskScopedEvent = !!current && TASK_SCOPED_EVENT_TYPES.has(current.event_type)
+  const selectableRoles = taskScopedEvent
+    ? roles.filter((role) => MANAGER_ROLE_NAMES.has(String(role.name || '').trim().toLowerCase()))
+    : roles
 
   async function saveCurrent() {
     if (!current) return
@@ -118,7 +138,7 @@ export default function NotificationRulesPage() {
       const selectors: Selector[] = [
         ...roleValues.map((x) => ({ recipient_type: 'role' as const, recipient_value: x })),
         ...audienceValues.map((x) => ({ recipient_type: 'audience' as const, recipient_value: x })),
-        ...userValues.map((x) => ({ recipient_type: 'user' as const, recipient_value: x })),
+        ...(taskScopedEvent ? [] : userValues.map((x) => ({ recipient_type: 'user' as const, recipient_value: x }))),
       ]
       const saved = await putJSON<Rule>(`/rbac/notification-rules/${current.event_type}`, {
         enabled: mode !== 'disabled',
@@ -231,22 +251,24 @@ export default function NotificationRulesPage() {
               <Card size="small" title="角色勾选">
                 <Alert
                   style={{ marginBottom: 12 }}
-                  type="warning"
+                  type={taskScopedEvent ? 'info' : 'warning'}
                   showIcon
-                  message="角色勾选 = 固定岗位广播"
-                  description="勾选角色后，会通知系统里所有拥有该角色的用户，不会自动限制为当前任务参与人。比如勾选 cleaner，会通知所有 cleaner，而不只是当前任务的清洁人员。"
+                  message={taskScopedEvent ? '任务类事件只允许管理角色固定广播' : '角色勾选 = 固定岗位广播'}
+                  description={taskScopedEvent
+                    ? '清洁员、检查员和指定个人必须通过当前任务参与人动态匹配；此旧规则页只允许追加 admin、线下经理或客服。'
+                    : '勾选角色后，会通知系统里所有拥有该角色的用户，不会自动限制为当前任务参与人。比如勾选 cleaner，会通知所有 cleaner，而不只是当前任务的清洁人员。'}
                 />
                 <Checkbox.Group
                   style={{ display: 'grid', gap: 8 }}
                   value={roleValues}
                   onChange={(vals) => { setRoleValues((vals || []).map((x) => String(x))); setDirty(true) }}
                 >
-                  {roles.map((role) => (
+                  {selectableRoles.map((role) => (
                     <Checkbox key={role.id} value={role.name}>
                       <Space>
                         <span>{role.name}</span>
                         {role.description ? <Typography.Text type="secondary">{role.description}</Typography.Text> : null}
-                        {(role.name === 'cleaner' || role.name === 'cleaning_inspector') ? (
+                        {!taskScopedEvent && (role.name === 'cleaner' || role.name === 'cleaning_inspector') ? (
                           <Typography.Text type="warning">勾选后会通知所有该角色用户</Typography.Text>
                         ) : null}
                       </Space>
@@ -279,6 +301,14 @@ export default function NotificationRulesPage() {
                 </Checkbox.Group>
               </Card>
 
+              {taskScopedEvent ? (
+                <Alert
+                  type="info"
+                  showIcon
+                  message="任务类事件不支持指定个人"
+                  description="请改用 App 通知规则中的当前任务参与人模板；后端会拒绝在此处保存指定个人，避免绕过任务归属。"
+                />
+              ) : (
               <Card size="small" title="例外人群">
                 <Select
                   mode="multiple"
@@ -295,6 +325,7 @@ export default function NotificationRulesPage() {
                   }))}
                 />
               </Card>
+              )}
 
               <Card size="small" title="备注">
                 <Input.TextArea

@@ -23,8 +23,6 @@ import {
 } from '../lib/idempotentStepReceipts'
 import {
   actorAndPerformerFromRequest,
-  assertCleaningSubmissionReady,
-  cleaningSubmissionRequiredPayload,
   applyCleaningTaskActionTransition,
   buildKeyPhotoUploadEventPatch,
   buildKeyPhotoUploadTaskPatch,
@@ -43,6 +41,12 @@ const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ de
 function stableUploadKeySegment(value: any, fallback: string) {
   const normalized = String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128)
   return normalized || fallback
+}
+
+function cleaningUploadRequestId(req: any) {
+  const incoming = String(req?.get?.('X-Cleaning-Upload-Request-Id') || req?.headers?.['x-cleaning-upload-request-id'] || '').trim()
+  const normalized = incoming.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 128)
+  return normalized || `srv-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 }
 
 let cleaningConsumablesSchemaReady = false
@@ -197,6 +201,13 @@ function normalizeStoredPhotoUrls(raw: any, fallback?: any) {
   }
   const fallbackText = String(fallback || '').trim()
   return fallbackText ? [fallbackText] : []
+}
+
+export function selectUniqueRecordedCleaningMediaRow(rows: any[]) {
+  const matchedRows = Array.isArray(rows) ? rows : []
+  const matchedTaskIds = new Set(matchedRows.map((row: any) => String(row?.id || '').trim()).filter(Boolean))
+  const matchedMediaTypes = new Set(matchedRows.map((row: any) => String(row?.type || '').trim()).filter(Boolean))
+  return matchedTaskIds.size === 1 && matchedMediaTypes.size === 1 ? matchedRows[0] || null : null
 }
 
 async function listDayEndManagerUserIds() {
@@ -1157,6 +1168,7 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
 // Submit consumables checklist (cannot skip; low requires photo)
 const consumableSchema = z.object({
   living_room_photo_url: z.string().trim().min(1).optional(),
+  living_room_photo_urls: z.array(z.string().trim().min(1).max(800)).max(12).optional(),
   items: z.array(
     z.object({
       item_id: z.string().min(1),
@@ -1183,17 +1195,20 @@ router.get('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), a
        ORDER BY created_at ASC, id ASC`,
       [String(id)],
     )
-    const livingPhotoRow = await pgPool.query(
+    const livingPhotoRows = await pgPool.query(
       `SELECT url
        FROM cleaning_task_media
        WHERE task_id::text = $1::text
          AND type = 'consumable_living_room_photo'
-       ORDER BY captured_at DESC NULLS LAST, created_at DESC
-       LIMIT 1`,
+       ORDER BY captured_at ASC NULLS LAST, created_at ASC, id ASC`,
       [String(id)],
     )
+    const livingRoomPhotoUrls = Array.from(new Set((livingPhotoRows?.rows || [])
+      .map((row: any) => String(row?.url || '').trim())
+      .filter(Boolean)))
     return res.json({
-      living_room_photo_url: String(livingPhotoRow?.rows?.[0]?.url || '').trim() || null,
+      living_room_photo_urls: livingRoomPhotoUrls,
+      living_room_photo_url: livingRoomPhotoUrls[0] || null,
       items: (rows.rows || []).map((x: any) => ({
         id: String(x.id || ''),
         item_id: String(x.item_id || ''),
@@ -1282,7 +1297,7 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
 
         const existingRows = await client.query(`SELECT id FROM cleaning_consumable_usages WHERE task_id=$1 LIMIT 1`, [String(id)])
         const hadExisting = !!existingRows?.rowCount
-        const livingRoomPhotoUrl = String(parsed.data.living_room_photo_url || '').trim()
+        const livingRoomPhotoUrls = normalizeStoredPhotoUrls(parsed.data.living_room_photo_urls, parsed.data.living_room_photo_url)
 
         await client.query(`DELETE FROM cleaning_consumable_usages WHERE task_id=$1`, [String(id)])
         await client.query(`DELETE FROM cleaning_task_media WHERE task_id::text=$1::text AND type='consumable_living_room_photo'`, [String(id)])
@@ -1320,7 +1335,7 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
               note: it.note == null ? null : String(it.note || '').trim(),
             }
           })
-        if (livingRoomPhotoUrl) {
+        for (const livingRoomPhotoUrl of livingRoomPhotoUrls) {
           await pgInsert('cleaning_task_media', {
             id: require('uuid').v4(),
             task_id: String(id),
@@ -1348,7 +1363,7 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
         const taskStatus = String(task.status || '').trim().toLowerCase()
         const isFinishedTask = ['cleaned', 'restock_pending', 'restocked', 'to_inspect', 'to_hang_keys', 'keys_hung', 'done', 'completed', 'ready'].includes(taskStatus)
         const patch: any = {}
-        if (!isFinishedTask) patch.status = needsRestock ? 'restock_pending' : 'cleaned'
+        if (!isFinishedTask && !String(actionResult?.status_after || '').trim()) patch.status = needsRestock ? 'restock_pending' : 'cleaned'
         if (!task.finished_at) patch.finished_at = now
         const up = await pgUpdate('cleaning_tasks', id, patch, client)
         const responsePayload = { ...(up || patch), action_result: actionResult }
@@ -1517,7 +1532,6 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
   try {
     if (hasPg) {
       if (!await canPerformCleaningTaskAction(user, String(id), ['upload_access_video'])) return res.status(403).json({ message: 'forbidden' })
-      await assertCleaningSubmissionReady(String(id), require('../dbAdapter').pgPool)
       const now = new Date().toISOString()
       const media = { id: require('uuid').v4(), task_id: id, type: 'lockbox_video', url: parsed.data.media_url, captured_at: parsed.data.captured_at || now, lat: parsed.data.lat, lng: parsed.data.lng }
       await pgInsert('cleaning_task_media', media as any)
@@ -1580,9 +1594,6 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
     }
     return res.json({ id, status: 'keys_hung', finalization_pending: true, missing_requirements: ['inspection_photos'] })
   } catch (e: any) {
-    if (e?.code === 'CLEANING_SUBMISSION_REQUIRED') {
-      return res.status(409).json(e?.details || cleaningSubmissionRequiredPayload({ consumables_submitted: false, property_photo_submitted: false, ready: false }))
-    }
     return res.status(500).json({ message: e?.message || 'error' })
   }
 })
@@ -1665,6 +1676,31 @@ function canViewDayEndForAllUsers(user: any) {
   const roles = Array.isArray(user?.roles) ? user.roles.map((x: any) => String(x || '').trim()) : []
   const all = new Set([role, ...roles].filter(Boolean))
   return all.has('admin') || all.has('offline_manager') || all.has('customer_service') || all.has('inventory_manager')
+}
+
+export function selectUniqueRecordedDayEndMediaRow(rows: any[]) {
+  const matchedRows = Array.isArray(rows) ? rows : []
+  const matchedUserIds = new Set(matchedRows.map((row: any) => String(row?.user_id || '').trim()).filter(Boolean))
+  const matchedKinds = new Set(matchedRows.map((row: any) => String(row?.kind || '').trim()).filter(Boolean))
+  return matchedUserIds.size === 1 && matchedKinds.size === 1 ? matchedRows[0] || null : null
+}
+
+export function selectExclusiveRecordedCleaningMedia(taskRows: any[], dayEndRows: any[]) {
+  const matchedTaskRows = Array.isArray(taskRows) ? taskRows : []
+  const matchedDayEndRows = Array.isArray(dayEndRows) ? dayEndRows : []
+  const taskRow = selectUniqueRecordedCleaningMediaRow(matchedTaskRows)
+  const dayEndRow = selectUniqueRecordedDayEndMediaRow(matchedDayEndRows)
+  const taskConflict = matchedTaskRows.length > 0 && !taskRow
+  const dayEndConflict = matchedDayEndRows.length > 0 && !dayEndRow
+  if (taskConflict || dayEndConflict || (!!taskRow && !!dayEndRow)) return null
+  if (taskRow) return { source: 'task' as const, row: taskRow }
+  if (dayEndRow) return { source: 'day_end' as const, row: dayEndRow }
+  return null
+}
+
+export function canViewRecordedDayEndMedia(user: any, mediaRow: any, userId: string) {
+  return canViewDayEndForAllUsers(user)
+    || (Boolean(userId) && String(mediaRow?.user_id || '').trim() === userId)
 }
 
 function roleNamesOfUser(user: any) {
@@ -1777,11 +1813,6 @@ router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspec
         )
         if (!lockedTask?.rows?.[0]) return { kind: 'missing' as const }
 
-        // This is deliberately checked while the task row is locked. A cleaner
-        // submission and an inspection submission cannot pass each other and
-        // leave the shared cleaning_tasks status in the wrong order.
-        await assertCleaningSubmissionReady(String(id), client)
-
         if (submitId && stepKey) {
           const receipt = await loadIdempotentStepReceipt(client, {
             scopeType: 'cleaning_task_inspection_photos',
@@ -1845,9 +1876,6 @@ router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspec
     }
     return res.status(201).json({ ok: true })
   } catch (e: any) {
-    if (e?.code === 'CLEANING_SUBMISSION_REQUIRED') {
-      return res.status(409).json(e?.details || cleaningSubmissionRequiredPayload({ consumables_submitted: false, property_photo_submitted: false, ready: false }))
-    }
     return res.status(500).json({ message: e?.message || 'error' })
   }
 })
@@ -1949,6 +1977,43 @@ const completionPhotosSchema = z
     ...actionAuditBodySchema,
   })
   .strict()
+
+const selfCompletePhotoExceptionItemSchema = z
+  .object({
+    area: z.enum(REQUIRED_COMPLETION_PHOTO_AREAS),
+    reason: z.enum(['network_pending', 'local_file_missing', 'business_save_pending']),
+    media_id: z.string().trim().min(1).max(160),
+    captured_at: z.string().trim().min(1).max(64),
+  })
+  .strict()
+
+const selfCompleteSchema = z
+  .object({
+    completion_photo_exception: z
+      .object({
+        items: z.array(selfCompletePhotoExceptionItemSchema).min(1).max(REQUIRED_COMPLETION_PHOTO_AREAS.length),
+      })
+      .strict()
+      .optional(),
+    ...actionAuditBodySchema,
+  })
+  .strict()
+
+function normalizedSelfCompletePhotoException(raw: any, missingAreas: readonly string[]) {
+  const items = Array.isArray(raw?.items) ? raw.items : []
+  const byArea = new Map<string, { area: string; reason: string; media_id: string; captured_at: string }>()
+  for (const item of items) {
+    const area = String(item?.area || '').trim()
+    if (!missingAreas.includes(area) || byArea.has(area)) continue
+    const reason = String(item?.reason || '').trim()
+    const mediaId = String(item?.media_id || '').trim()
+    const capturedAt = String(item?.captured_at || '').trim()
+    if (!['network_pending', 'local_file_missing', 'business_save_pending'].includes(reason) || !mediaId || !capturedAt) continue
+    byArea.set(area, { area, reason, media_id: mediaId, captured_at: capturedAt })
+  }
+  if (!missingAreas.length || missingAreas.some((area) => !byArea.has(area))) return null
+  return { items: missingAreas.map((area) => byArea.get(area)!) }
+}
 
 router.get('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.finish'), async (req, res) => {
   const { id } = req.params
@@ -2134,6 +2199,12 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
       const now = new Date().toISOString()
       const actionActor = actorAndPerformerFromRequest(user, parsed.data)
       const transactionResult = await pgRunInTransaction(async (client) => {
+        await client.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type='lockbox_video'`, [id])
+        await client.query(
+          `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, lat, lng)
+           VALUES ($1,$2,'lockbox_video',$3,$4,$5,$6)`,
+          [uuid.v4(), id, String(parsed.data.media_url), String(parsed.data.captured_at || now), parsed.data.lat ?? null, parsed.data.lng ?? null],
+        )
         const actionResult = await applyCleaningTaskActionTransition({
           taskId: String(id),
           actionId: 'upload_access_video',
@@ -2142,12 +2213,6 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
           performedByName: actionActor.performedByName,
           metadata: { route: 'cleaning_app.tasks.lockbox_video', self_complete_lockbox: selfCompleteLockbox },
         }, client)
-        await client.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type='lockbox_video'`, [id])
-        await client.query(
-          `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, lat, lng)
-           VALUES ($1,$2,'lockbox_video',$3,$4,$5,$6)`,
-          [uuid.v4(), id, String(parsed.data.media_url), String(parsed.data.captured_at || now), parsed.data.lat ?? null, parsed.data.lng ?? null],
-        )
         const upResult = await client.query(
           `UPDATE cleaning_tasks
              SET lockbox_video_uploaded_at = $2::timestamptz, updated_at = now()
@@ -2163,7 +2228,7 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
         taskId: `cleaning_task:${String(id)}`,
         sourceType: 'cleaning_tasks',
         sourceRefIds: [String(id)],
-        eventType: 'TASK_COMPLETED',
+        eventType: actionResult?.finalization_pending ? 'TASK_UPDATED' : 'TASK_COMPLETED',
         changeScope: 'list',
         changedFields: ['status', 'lockbox_video_uploaded_at', 'lockbox_video_url'],
         patch: {
@@ -2200,9 +2265,6 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
     }
     return res.status(201).json({ ok: true })
   } catch (e: any) {
-    if (e?.code === 'CLEANING_SUBMISSION_REQUIRED') {
-      return res.status(409).json(e?.details || cleaningSubmissionRequiredPayload({ consumables_submitted: false, property_photo_submitted: false, ready: false }))
-    }
     return res.status(500).json({ message: e?.message || 'error' })
   }
 })
@@ -2290,6 +2352,8 @@ router.post('/tasks/:id/lockbox-video/delete', requirePerm('cleaning_app.tasks.f
 router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish'), async (req, res) => {
   const user = (req as any).user
   const { id } = req.params
+  const parsed = selfCompleteSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
     if (hasPg) {
       await ensureCleaningTaskMediaNote()
@@ -2335,8 +2399,11 @@ router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish')
         const a = type.startsWith('completion_') ? type.slice('completion_'.length) : type
         if (a) got.add(a)
       }
-      const missingAreas = REQUIRED_COMPLETION_PHOTO_AREAS.filter((a) => !got.has(a) && !(a === 'remote_tv' && got.has('remote_controls')))
-      if (missingAreas.length) return res.status(400).json({ message: '房间完成照片未齐', missing_areas: missingAreas })
+      const missingAreas = REQUIRED_COMPLETION_PHOTO_AREAS.filter((a) => !got.has(a) && !(a === 'remote_tv' && (got.has('remote_controls') || got.has('remote_ac'))))
+      const completionPhotoException = normalizedSelfCompletePhotoException(parsed.data.completion_photo_exception, missingAreas)
+      if (missingAreas.length && !completionPhotoException) {
+        return res.status(400).json({ message: '房间完成照片未齐', missing_areas: missingAreas })
+      }
 
       let needsRestock = false
       if (!isStayoverTask) {
@@ -2354,7 +2421,7 @@ router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish')
         needsRestock = !!rNeed?.rowCount
       }
 
-      const actionActor = actorAndPerformerFromRequest(user, req.body || {})
+      const actionActor = actorAndPerformerFromRequest(user, parsed.data)
       const actionResult = await applyCleaningTaskActionTransition({
         taskId: String(id),
         actionId: 'complete_cleaning',
@@ -2367,6 +2434,7 @@ router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish')
           route: 'cleaning_app.tasks.self_complete',
           needs_restock: needsRestock,
           is_stayover: isStayoverTask,
+          ...(completionPhotoException ? { completion_photo_exception: completionPhotoException } : {}),
         },
       }, pgPool)
       const now = new Date().toISOString()
@@ -2390,6 +2458,7 @@ router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish')
             await emitNotificationEvent(
               {
                 type: 'CLEANING_COMPLETED',
+                policyKey: 'cleaning_completed',
                 entity: 'cleaning_task',
                 entityId: String(id),
                 propertyId,
@@ -2403,7 +2472,7 @@ router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish')
             )
           }
         } catch {}
-        return res.json({ ...(up || { id, ...patch }), action_result: actionResult })
+        return res.json({ ...(up || { id, ...patch }), action_result: actionResult, ...(completionPhotoException ? { completion_photo_exception: completionPhotoException } : {}) })
       }
       try {
         const { recordCleaningTaskStandardLinenUsage } = require('./inventory')
@@ -2412,7 +2481,7 @@ router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish')
           actorId: String(user?.sub || '').trim() || null,
         })
       } catch {}
-      return res.json({ ok: true, id: String(id), action_result: actionResult })
+      return res.json({ ok: true, id: String(id), action_result: actionResult, ...(completionPhotoException ? { completion_photo_exception: completionPhotoException } : {}) })
     }
     return res.json({ ok: true, id: String(id) })
   } catch (e: any) {
@@ -2500,7 +2569,6 @@ router.post('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.fi
       await ensureCleaningTaskMediaNote()
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
-      await assertCleaningSubmissionReady(String(id), pgPool)
       const uuid = require('uuid')
       const batchId = uuid.v4()
       await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'restock_proof:%'`, [id])
@@ -2546,9 +2614,6 @@ router.post('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.fi
     }
     return res.status(201).json({ ok: true })
   } catch (e: any) {
-    if (e?.code === 'CLEANING_SUBMISSION_REQUIRED') {
-      return res.status(409).json(e?.details || cleaningSubmissionRequiredPayload({ consumables_submitted: false, property_photo_submitted: false, ready: false }))
-    }
     return res.status(500).json({ message: e?.message || 'error' })
   }
 })
@@ -3046,8 +3111,9 @@ router.post('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'c
       if (managerIds.length) {
         const actorId = String(user.sub || '').trim()
         const actorName = await resolveUserDisplayName(actorId)
-        await emitNotificationEvent({
-          type: 'WORK_TASK_UPDATED',
+        const notificationResult = await emitNotificationEvent({
+          type: 'DAY_END_HANDOVER_MANAGER_REMINDER',
+          policyKey: 'day_end_handover_manager_reminder',
           entity: 'work_task',
           entityId: `day_end_handover_submitted:${date}:${actorId}`,
           updatedAt: new Date().toISOString(),
@@ -3066,8 +3132,13 @@ router.post('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'c
             event_id: `day_end_handover_submitted:${date}:${actorId}`,
           },
         })
+        if (!notificationResult?.ok || !notificationResult?.sent) {
+          console.error(`[notifications][emit_incomplete] source=day_end_handover_submitted date=${date} actor_user_id=${actorId} sent=${Number(notificationResult?.sent || 0)} error_code=${String(notificationResult?.error_code || '')}`)
+        }
       }
-    } catch {}
+    } catch (error: any) {
+      console.error(`[notifications][emit_failed] source=day_end_handover_submitted date=${date} error=${String(error?.message || 'unknown')}`)
+    }
     return res.status(201).json({ ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'error' })
@@ -3075,9 +3146,17 @@ router.post('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'c
 })
 
 export default router
+export const CLEANING_MEDIA_IMAGE_READ_PERMISSIONS = [
+  'cleaning_app.media.upload',
+  'cleaning_app.tasks.finish',
+  'cleaning_app.inspect.finish',
+  'cleaning_app.issues.report',
+  'inventory.view',
+]
+
 router.get(
   '/media/image',
-  requireAnyPerm(['cleaning_app.media.upload', 'cleaning_app.tasks.finish', 'cleaning_app.inspect.finish', 'cleaning_app.issues.report']),
+  requireAnyPerm(CLEANING_MEDIA_IMAGE_READ_PERMISSIONS),
   async (req, res) => {
     try {
       const requestedKey = String((req.query as any)?.key || '').trim()
@@ -3106,14 +3185,56 @@ router.get(
           WHERE ctm.url = ANY($1::text[])`,
         [mediaReferences],
       )
+      const usageRows = await pgPool.query(
+        `SELECT ct.id,
+                ct.cleaner_id,
+                ct.inspector_id,
+                ct.assignee_id,
+                u.photo_url,
+                u.photo_urls
+           FROM cleaning_consumable_usages u
+           JOIN cleaning_tasks ct ON ct.id::text = u.task_id::text
+          WHERE COALESCE(u.photo_url, '') = ANY($1::text[])
+             OR EXISTS (
+               SELECT 1
+                 FROM unnest($1::text[]) AS reference(value)
+                WHERE position(reference.value IN COALESCE(u.photo_urls::text, '')) > 0
+             )`,
+        [mediaReferences],
+      )
+      const dayEndRows = await pgPool.query(
+        `SELECT user_id, kind, url
+           FROM cleaning_day_end_media
+          WHERE url = ANY($1::text[])`,
+        [mediaReferences],
+      )
       const user = (req as any).user || {}
       const userId = String(user.sub || '').trim()
-      const matchingMediaRows = (mediaRows?.rows || []).filter((row: any) => {
+      const usageMediaRows = (usageRows?.rows || []).flatMap((row: any) => normalizeStoredPhotoUrls(row.photo_urls, row.photo_url)
+        .map((url) => ({
+          id: row.id,
+          cleaner_id: row.cleaner_id,
+          inspector_id: row.inspector_id,
+          assignee_id: row.assignee_id,
+          type: 'consumable_item_photo',
+          url,
+        })))
+      const matchingMediaRows = [...(mediaRows?.rows || []), ...usageMediaRows].filter((row: any) => {
         const storedKey = r2KeyFromUrl(String(row?.url || '').trim()) || String(row?.url || '').trim()
         return storedKey === key
       })
-      const mediaRow = matchingMediaRows.length === 1 ? matchingMediaRows[0] : null
-      if (!mediaRow || !await canViewMzappRecordedCleaningMedia(user, mediaRow, userId, mediaRow.type)) {
+      const mediaRow = selectUniqueRecordedCleaningMediaRow(matchingMediaRows)
+      const matchingDayEndMediaRows = (dayEndRows?.rows || []).filter((row: any) => {
+        const storedKey = r2KeyFromUrl(String(row?.url || '').trim()) || String(row?.url || '').trim()
+        return storedKey === key
+      })
+      const recordedMedia = selectExclusiveRecordedCleaningMedia(matchingMediaRows, matchingDayEndMediaRows)
+      const canViewMedia = recordedMedia?.source === 'task'
+        ? await canViewMzappRecordedCleaningMedia(user, recordedMedia.row, userId, recordedMedia.row.type)
+        : recordedMedia?.source === 'day_end'
+          ? canViewRecordedDayEndMedia(user, recordedMedia.row, userId)
+          : false
+      if (!canViewMedia) {
         return res.status(403).json({ message: 'forbidden_media' })
       }
       const object = await r2GetObjectByKey(key)
@@ -3149,10 +3270,22 @@ router.post(
   requireAnyPerm(['cleaning_app.media.upload', 'cleaning_app.tasks.finish', 'cleaning_app.inspect.finish', 'cleaning_app.issues.report']),
   upload.single('file'),
   async (req, res) => {
-  if (!req.file) return res.status(400).json({ message: 'missing file' })
+  const uploadRequestId = cleaningUploadRequestId(req)
+  if (!req.file) {
+    console.error(`[cleaning-upload] event=rejected request_id=${uploadRequestId} stage=validate error_code=MISSING_FILE`)
+    return res.status(400).json({ code: 'MISSING_FILE', message: 'missing file', upload_request_id: uploadRequestId })
+  }
+  let uploadStage = 'validate'
+  let taskId = ''
+  let mediaId = ''
+  let purpose = ''
   try {
     const user = (req as any).user || {}
     const body: any = (req as any).body || {}
+    taskId = String(body.task_id || '').trim()
+    mediaId = String(body.media_id || '').trim()
+    purpose = String(body.purpose || '').trim()
+    const fileBytes = Math.max(0, Number((req.file as any)?.size || (req.file as any)?.buffer?.length || 0))
     const isImage = isImageUploadCandidate(req.file.mimetype, req.file.originalname)
     const wantWatermark = String(body.watermark || '').trim() === '1' || String(body.purpose || '').trim() === 'key_photo'
     const watermarkText = String(body.watermark_text || '').trim()
@@ -3176,7 +3309,12 @@ router.post(
     const lines0 = (watermarkText ? watermarkText.split(/\r?\n/) : fallbackLines).map((x) => String(x || '').trim()).filter(Boolean)
     const lines = lines0.length > 2 ? lines0.slice(0, 2) : lines0
 
+    console.log(
+      `[cleaning-upload] event=received request_id=${uploadRequestId} task_id=${stableUploadKeySegment(taskId, 'unscoped')} media_id=${stableUploadKeySegment(mediaId, 'unscoped')} purpose=${stableUploadKeySegment(purpose, 'unspecified')} size_bytes=${fileBytes} mime=${stableUploadKeySegment(req.file.mimetype, 'unknown')} r2=${hasR2 ? 1 : 0}`,
+    )
+
     if (hasR2 && (req.file as any).buffer) {
+      uploadStage = 'normalize_image'
       const normalized = await normalizeCleaningImageUpload({
         buffer: (req.file as any).buffer,
         contentType: req.file.mimetype,
@@ -3184,6 +3322,7 @@ router.post(
       })
       let buf: Buffer = normalized.buffer
       if (normalized.isImage && wantWatermark && lines.length) {
+        uploadStage = 'watermark_image'
         try {
           const img = sharp(buf)
           const meta = await img.metadata()
@@ -3222,15 +3361,15 @@ router.post(
           }
         } catch {}
       }
-      const mediaId = String(body.media_id || '').trim()
-      const taskId = String(body.task_id || '').trim()
       const ext = normalized.normalized ? '.jpg' : ((isImage && wantWatermark && lines.length) ? '.jpg' : (path.extname(req.file.originalname) || ''))
       const key = mediaId
         ? `cleaning/media/${stableUploadKeySegment(taskId, 'unscoped')}/${stableUploadKeySegment(mediaId, 'media')}`
         : `cleaning/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
       const mime = normalized.normalized || (isImage && wantWatermark && lines.length) ? 'image/jpeg' : (req.file.mimetype || 'application/octet-stream')
+      uploadStage = 'upload_r2'
       const url = await r2Upload(key, mime, buf)
-      return res.status(201).json({ key, url })
+      console.log(`[cleaning-upload] event=stored request_id=${uploadRequestId} task_id=${stableUploadKeySegment(taskId, 'unscoped')} media_id=${stableUploadKeySegment(mediaId, 'unscoped')} stage=upload_r2`)
+      return res.status(201).json({ key, url, upload_request_id: uploadRequestId })
     }
     const filePath = (req.file as any).path ? String((req.file as any).path) : ''
     if (filePath && isImage && wantWatermark && lines.length) {
@@ -3272,9 +3411,14 @@ router.post(
       } catch {}
     }
     const url = `/uploads/${req.file.filename}`
-    return res.status(201).json({ url })
+    console.log(`[cleaning-upload] event=stored request_id=${uploadRequestId} task_id=${stableUploadKeySegment(taskId, 'unscoped')} media_id=${stableUploadKeySegment(mediaId, 'unscoped')} stage=local_upload`)
+    return res.status(201).json({ url, upload_request_id: uploadRequestId })
   } catch (e: any) {
-    if (e?.code === CLEANING_IMAGE_FORMAT_ERROR) return res.status(415).json({ code: CLEANING_IMAGE_FORMAT_ERROR, message: 'image_format_unsupported' })
-    return res.status(500).json({ message: e?.message || 'upload_failed' })
+    const errorCode = e?.code === CLEANING_IMAGE_FORMAT_ERROR ? CLEANING_IMAGE_FORMAT_ERROR : 'CLEANING_MEDIA_UPLOAD_FAILED'
+    console.error(
+      `[cleaning-upload] event=failed request_id=${uploadRequestId} task_id=${stableUploadKeySegment(taskId, 'unscoped')} media_id=${stableUploadKeySegment(mediaId, 'unscoped')} purpose=${stableUploadKeySegment(purpose, 'unspecified')} stage=${uploadStage} error_code=${errorCode}`,
+    )
+    if (e?.code === CLEANING_IMAGE_FORMAT_ERROR) return res.status(415).json({ code: CLEANING_IMAGE_FORMAT_ERROR, message: 'image_format_unsupported', upload_request_id: uploadRequestId })
+    return res.status(500).json({ code: errorCode, message: 'media_upload_failed', upload_request_id: uploadRequestId })
   }
 })

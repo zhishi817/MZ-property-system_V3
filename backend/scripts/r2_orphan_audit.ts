@@ -102,17 +102,18 @@ async function collectReferencedKeys(maxRowsPerColumn: number) {
     try {
       const rows = await pgPool.query(
         `SELECT CAST(${column} AS text) AS raw FROM ${table} WHERE ${column} IS NOT NULL LIMIT $1`,
-        [maxRowsPerColumn],
+        [maxRowsPerColumn + 1],
       )
+      if (Number(rows.rowCount || 0) > maxRowsPerColumn) {
+        throw new Error(`REFERENCE_SCAN_LIMIT table=${String(source.table_name)} column=${String(source.column_name)}`)
+      }
       scannedSources += 1
       scannedRows += Number(rows.rowCount || 0)
       for (const row of rows.rows || []) {
         for (const key of extractR2KeysFromValue(row.raw)) referenced.add(key)
       }
     } catch (error: any) {
-      // A single legacy/incompatible table must not hide references found in
-      // the rest of the database. Keep only a safe source-level diagnostic.
-      console.warn(`[r2-audit] skipped_source table=${String(source.table_name)} column=${String(source.column_name)} code=${String(error?.code || 'QUERY_FAILED')}`)
+      throw new Error(`REFERENCE_SCAN_FAILED table=${String(source.table_name)} column=${String(source.column_name)} code=${String(error?.code || 'QUERY_FAILED')}`)
     }
   }
   return { referenced, candidateSourceCount: Number(columns.rowCount || 0), scannedSources, scannedRows }

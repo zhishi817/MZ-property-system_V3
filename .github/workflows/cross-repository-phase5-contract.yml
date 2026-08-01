@@ -1,14 +1,14 @@
-name: Cross-Repository Phase 5 Contract
+name: Cross-Repository Integration Verification
 
 on:
   workflow_dispatch:
     inputs:
       root_ref:
-        description: Root repository branch, tag, or commit SHA to verify
+        description: Exact root repository branch, tag, or commit SHA to verify
         required: true
         type: string
       mobile_ref:
-        description: Mobile repository branch, tag, or commit SHA to verify
+        description: Exact mobile repository branch, tag, or commit SHA to verify
         required: true
         type: string
 
@@ -19,54 +19,263 @@ env:
   CI: "true"
 
 jobs:
-  phase5-contract:
-    name: Phase 5 Contract
+  integration:
+    name: Exact-ref integration gate
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
 
     steps:
+      - name: Initialize integration manifest
+        env:
+          REQUESTED_ROOT_REF: ${{ inputs.root_ref }}
+          REQUESTED_MOBILE_REF: ${{ inputs.mobile_ref }}
+        run: |
+          mkdir -p integration-logs
+          : > resolved-shas.txt
+          jq -n \
+            --arg workflow "${{ github.workflow }}" \
+            --arg run_id "${{ github.run_id }}" \
+            --arg workflow_definition_sha "${{ github.sha }}" \
+            --arg root_ref "$REQUESTED_ROOT_REF" \
+            --arg mobile_ref "$REQUESTED_MOBILE_REF" \
+            '{schema: 1, workflow: $workflow, run_id: $run_id,
+              workflow_definition_sha: $workflow_definition_sha,
+              requested_refs: {root: $root_ref, mobile: $mobile_ref}}' \
+            > integration-manifest.json
+
       - name: Checkout root repository at requested ref
+        id: checkout_root
+        continue-on-error: true
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.root_ref }}
-          fetch-depth: 1
+          path: root
+          fetch-depth: 0
 
       - name: Checkout mobile repository at requested ref
+        id: checkout_mobile
+        continue-on-error: true
         uses: actions/checkout@v4
         with:
           repository: zhishi817/mz-cleaning-app-frontend
           ref: ${{ inputs.mobile_ref }}
-          path: mz-cleaning-app-frontend
-          fetch-depth: 1
+          path: root/mz-cleaning-app-frontend
+          fetch-depth: 0
 
       - name: Record resolved commit SHAs
         id: refs
-        shell: bash
+        if: always()
+        env:
+          ROOT_CHECKOUT: ${{ steps.checkout_root.outcome }}
+          MOBILE_CHECKOUT: ${{ steps.checkout_mobile.outcome }}
         run: |
-          root_sha="$(git rev-parse HEAD)"
-          mobile_sha="$(git -C mz-cleaning-app-frontend rev-parse HEAD)"
-          printf 'root_sha=%s\nmobile_sha=%s\n' "$root_sha" "$mobile_sha" | tee phase5-contract-refs.txt
+          root_sha=""
+          mobile_sha=""
+          if [ "$ROOT_CHECKOUT" = "success" ]; then
+            root_sha="$(git -C root rev-parse HEAD)"
+          fi
+          if [ "$MOBILE_CHECKOUT" = "success" ]; then
+            mobile_sha="$(git -C root/mz-cleaning-app-frontend rev-parse HEAD)"
+          fi
+          printf 'root_sha=%s\nmobile_sha=%s\n' "$root_sha" "$mobile_sha" | tee resolved-shas.txt
+          jq \
+            --arg root_sha "$root_sha" \
+            --arg mobile_sha "$mobile_sha" \
+            --arg root_checkout "$ROOT_CHECKOUT" \
+            --arg mobile_checkout "$MOBILE_CHECKOUT" \
+            '.resolved_shas = {root: $root_sha, mobile: $mobile_sha}
+             | .steps.checkout_root = $root_checkout
+             | .steps.checkout_mobile = $mobile_checkout' \
+            integration-manifest.json > integration-manifest.next.json
+          mv integration-manifest.next.json integration-manifest.json
           {
             echo "root_sha=$root_sha"
             echo "mobile_sha=$mobile_sha"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Verify exact-ref governance interfaces
+        id: verify_interfaces
+        if: steps.checkout_root.outcome == 'success' && steps.checkout_mobile.outcome == 'success'
+        continue-on-error: true
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("root")
+          mobile = root / "mz-cleaning-app-frontend"
+          required_files = (
+              root / "scripts/audit_change_release_ledger.py",
+              root / "scripts/audit_feature_regression_registry.py",
+              root / "backend/scripts/tests/test_phase5_release_contract.ts",
+              mobile / "scripts/audit_change_release_ledger.py",
+          )
+          missing = [str(path) for path in required_files if not path.is_file()]
+          root_scripts = json.loads((root / "package.json").read_text())["scripts"]
+          mobile_scripts = json.loads((mobile / "package.json").read_text())["scripts"]
+          backend_scripts = json.loads((root / "backend/package.json").read_text())["scripts"]
+          required_scripts = (
+              ("root", root_scripts, "check:full"),
+              ("root", root_scripts, "check:ledger"),
+              ("root", root_scripts, "check:feature-registry"),
+              ("mobile", mobile_scripts, "check:full"),
+              ("mobile", mobile_scripts, "check:ledger"),
+              ("backend", backend_scripts, "test:phase5-release-contract"),
+          )
+          missing.extend(
+              f"{owner} package script {name}"
+              for owner, scripts, name in required_scripts
+              if name not in scripts
+          )
+          if missing:
+              raise SystemExit("Requested refs do not provide the integration interface:\n- " + "\n- ".join(missing))
+          print("Exact-ref governance interfaces: PASS")
+          PY
+
       - name: Setup Node
+        id: setup_node
+        if: steps.verify_interfaces.outcome == 'success'
+        continue-on-error: true
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: backend/package-lock.json
+          cache-dependency-path: |
+            root/backend/package-lock.json
+            root/frontend/package-lock.json
+            root/mz-cleaning-app-frontend/package-lock.json
 
-      - name: Install backend dependencies
-        run: npm ci --prefix backend
+      - name: Install locked dependencies
+        id: install_dependencies
+        if: steps.setup_node.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set +e
+          npm ci --prefix root/backend 2>&1 | tee integration-logs/root-backend-install.log
+          backend_status=${PIPESTATUS[0]}
+          npm ci --prefix root/frontend 2>&1 | tee integration-logs/root-frontend-install.log
+          frontend_status=${PIPESTATUS[0]}
+          npm ci --prefix root/mz-cleaning-app-frontend 2>&1 | tee integration-logs/mobile-install.log
+          mobile_status=${PIPESTATUS[0]}
+          test "$backend_status" -eq 0 && test "$frontend_status" -eq 0 && test "$mobile_status" -eq 0
+
+      - name: Run root Ledger and FR audits
+        id: root_audits
+        if: steps.verify_interfaces.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set +e
+          python3 root/scripts/audit_change_release_ledger.py 2>&1 | tee integration-logs/root-ledger-audit.log
+          ledger_status=${PIPESTATUS[0]}
+          python3 root/scripts/audit_feature_regression_registry.py 2>&1 | tee integration-logs/root-fr-audit.log
+          fr_status=${PIPESTATUS[0]}
+          test "$ledger_status" -eq 0 && test "$fr_status" -eq 0
+
+      - name: Run mobile Ledger audit
+        id: mobile_ledger_audit
+        if: steps.verify_interfaces.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python3 root/mz-cleaning-app-frontend/scripts/audit_change_release_ledger.py 2>&1 | tee integration-logs/mobile-ledger-audit.log
+
+      - name: Run root check full
+        id: root_full
+        if: steps.install_dependencies.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          npm run check:full --prefix root 2>&1 | tee integration-logs/root-check-full.log
+
+      - name: Run mobile check full
+        id: mobile_full
+        if: steps.install_dependencies.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          npm run check:full --prefix root/mz-cleaning-app-frontend 2>&1 | tee integration-logs/mobile-check-full.log
 
       - name: Run Phase 5 cross-repository contract
-        run: npm run test:phase5-release-contract --prefix backend
+        id: phase5_contract
+        if: steps.install_dependencies.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          npm run test:phase5-release-contract --prefix root/backend 2>&1 | tee integration-logs/phase5-contract.log
 
-      - name: Upload resolved refs
+      - name: Finalize integration manifest
+        if: always()
+        env:
+          ROOT_CHECKOUT: ${{ steps.checkout_root.outcome }}
+          MOBILE_CHECKOUT: ${{ steps.checkout_mobile.outcome }}
+          VERIFY_INTERFACES: ${{ steps.verify_interfaces.outcome }}
+          SETUP_NODE: ${{ steps.setup_node.outcome }}
+          INSTALL_DEPENDENCIES: ${{ steps.install_dependencies.outcome }}
+          ROOT_AUDITS: ${{ steps.root_audits.outcome }}
+          MOBILE_LEDGER_AUDIT: ${{ steps.mobile_ledger_audit.outcome }}
+          ROOT_FULL: ${{ steps.root_full.outcome }}
+          MOBILE_FULL: ${{ steps.mobile_full.outcome }}
+          PHASE5_CONTRACT: ${{ steps.phase5_contract.outcome }}
+        run: |
+          jq \
+            --arg root_checkout "$ROOT_CHECKOUT" \
+            --arg mobile_checkout "$MOBILE_CHECKOUT" \
+            --arg verify_interfaces "$VERIFY_INTERFACES" \
+            --arg setup_node "$SETUP_NODE" \
+            --arg install_dependencies "$INSTALL_DEPENDENCIES" \
+            --arg root_audits "$ROOT_AUDITS" \
+            --arg mobile_ledger_audit "$MOBILE_LEDGER_AUDIT" \
+            --arg root_full "$ROOT_FULL" \
+            --arg mobile_full "$MOBILE_FULL" \
+            --arg phase5_contract "$PHASE5_CONTRACT" \
+            '.steps += {
+              setup_node: $setup_node,
+              verify_interfaces: $verify_interfaces,
+              install_dependencies: $install_dependencies,
+              root_audits: $root_audits,
+              mobile_ledger_audit: $mobile_ledger_audit,
+              root_full: $root_full,
+              mobile_full: $mobile_full,
+              phase5_contract: $phase5_contract
+            }' \
+            integration-manifest.json > integration-manifest.next.json
+          mv integration-manifest.next.json integration-manifest.json
+          cat integration-manifest.json
+
+      - name: Fail when any exact-ref gate did not succeed
+        if: always()
+        env:
+          ROOT_CHECKOUT: ${{ steps.checkout_root.outcome }}
+          MOBILE_CHECKOUT: ${{ steps.checkout_mobile.outcome }}
+          VERIFY_INTERFACES: ${{ steps.verify_interfaces.outcome }}
+          SETUP_NODE: ${{ steps.setup_node.outcome }}
+          INSTALL_DEPENDENCIES: ${{ steps.install_dependencies.outcome }}
+          ROOT_AUDITS: ${{ steps.root_audits.outcome }}
+          MOBILE_LEDGER_AUDIT: ${{ steps.mobile_ledger_audit.outcome }}
+          ROOT_FULL: ${{ steps.root_full.outcome }}
+          MOBILE_FULL: ${{ steps.mobile_full.outcome }}
+          PHASE5_CONTRACT: ${{ steps.phase5_contract.outcome }}
+        run: |
+          failed=""
+          for gate in ROOT_CHECKOUT MOBILE_CHECKOUT VERIFY_INTERFACES SETUP_NODE INSTALL_DEPENDENCIES ROOT_AUDITS MOBILE_LEDGER_AUDIT ROOT_FULL MOBILE_FULL PHASE5_CONTRACT; do
+            value="$(printenv "$gate")"
+            if [ "$value" != "success" ]; then
+              failed="${failed}${gate}=${value:-not-run} "
+            fi
+          done
+          if [ -n "$failed" ]; then
+            echo "Cross-repository verification failed: $failed"
+            exit 1
+          fi
+          echo "Cross-repository verification passed for both resolved SHAs."
+
+      - name: Upload integration manifest and logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phase5-contract-${{ steps.refs.outputs.root_sha }}-${{ steps.refs.outputs.mobile_sha }}
-          path: phase5-contract-refs.txt
-          if-no-files-found: error
+          name: cross-repository-integration-${{ github.run_id }}
+          path: |
+            integration-manifest.json
+            resolved-shas.txt
+            integration-logs/
+          if-no-files-found: warn

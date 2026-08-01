@@ -72,7 +72,7 @@ async function main() {
   const { ensureCleaningSchemaV2 } = await import('../../src/services/cleaningSync')
   const { ensureNotificationStorage } = await import('../../src/services/notificationEvents')
   const { ensureNotificationRuleTables } = await import('../../src/services/notificationRules')
-  const { upsertWorkTaskFromOfflineTask } = await import('../../src/modules/cleaning')
+  const { router: cleaningRouter, upsertWorkTaskFromOfflineTask } = await import('../../src/modules/cleaning')
   const { router: taskCenterRouter } = await import('../../src/modules/task_center')
   const { router: mzappRouter } = await import('../../src/modules/mzapp')
 
@@ -90,10 +90,13 @@ async function main() {
   })
   app.use('/task-center', taskCenterRouter)
   app.use('/mzapp', mzappRouter)
+  app.use('/cleaning', cleaningRouter)
 
   const offlineNullId = 'test-assignment-offline-null'
   const offlineOldId = 'test-assignment-offline-old'
   const offlineDisplayId = 'test-assignment-offline-display'
+  const offlinePatchId = 'test-assignment-offline-patch'
+  const offlinePatchAssigneeId = 'test-assignment-offline-patch-assignee'
   const workId = 'test-assignment-work'
   const cleaningId = 'test-assignment-cleaning'
   const cleaningKeysHungId = 'test-assignment-keys-hung'
@@ -127,7 +130,7 @@ async function main() {
   const groupedNotifyCheckoutId = 'test-assignment-notify-checkout'
   const groupedNotifyCheckinId = 'test-assignment-notify-checkin'
   const groupedNotifyKey = 'test-assignment-notify-card'
-  const groupedNotifyUserIds = ['test-assignment-notify-cleaner', 'test-assignment-notify-inspector']
+  const groupedNotifyUserIds = ['test-assignment-notify-cleaner', 'test-assignment-notify-inspector', offlinePatchAssigneeId]
   let previousCleaningRule: any = null
   let previousCleaningRuleSelectors: any[] = []
   let cleaningRuleBackupReady = false
@@ -168,12 +171,12 @@ async function main() {
     updated_at timestamptz NOT NULL DEFAULT now()
   )`)
   await pgPool.query(`DELETE FROM work_tasks WHERE id = ANY($1::text[]) OR source_id = ANY($2::text[])`, [
-    [`cleaning_offline_tasks:${offlineNullId}`, `cleaning_offline_tasks:${offlineOldId}`, `cleaning_offline_tasks:${offlineDisplayId}`, workId],
-    [offlineNullId, offlineOldId, offlineDisplayId],
+    [`cleaning_offline_tasks:${offlineNullId}`, `cleaning_offline_tasks:${offlineOldId}`, `cleaning_offline_tasks:${offlineDisplayId}`, `cleaning_offline_tasks:${offlinePatchId}`, workId],
+    [offlineNullId, offlineOldId, offlineDisplayId, offlinePatchId],
   ])
   await pgPool.query(`DELETE FROM event_queue WHERE user_notification_id IN (SELECT id FROM user_notifications WHERE data->>'group_key' = $1)`, [groupedNotifyKey])
   await pgPool.query(`DELETE FROM user_notifications WHERE data->>'group_key' = $1`, [groupedNotifyKey])
-  await pgPool.query(`DELETE FROM cleaning_offline_tasks WHERE id = ANY($1::text[])`, [[offlineNullId, offlineOldId, offlineDisplayId]])
+  await pgPool.query(`DELETE FROM cleaning_offline_tasks WHERE id = ANY($1::text[])`, [[offlineNullId, offlineOldId, offlineDisplayId, offlinePatchId]])
   await pgPool.query(`DELETE FROM cleaning_tasks WHERE id = ANY($1::text[])`, [[
     cleaningId,
     cleaningKeysHungId,
@@ -196,6 +199,12 @@ async function main() {
     groupedNotifyCheckinId,
   ]])
   await pgPool.query(`DELETE FROM users WHERE id = ANY($1::text[])`, [groupedNotifyUserIds])
+  await pgPool.query(
+    `INSERT INTO users(id, username, password_hash, role)
+     VALUES($1, $2, 'test-only', 'cleaner')
+     ON CONFLICT (id) DO UPDATE SET username=EXCLUDED.username, password_hash=EXCLUDED.password_hash, role=EXCLUDED.role`,
+    [offlinePatchAssigneeId, offlinePatchAssigneeId],
+  )
   await pgPool.query(`INSERT INTO properties(id, address) VALUES($1, 'Test assignment property') ON CONFLICT (id) DO NOTHING`, [propertyId])
   await pgPool.query(
     `INSERT INTO properties(id, code, address)
@@ -491,6 +500,52 @@ async function main() {
     assert.ok(displayTask, 'offline work task should be visible in mzapp work-tasks')
     assert.equal(displayTask.assignee_id, 'canonical-display')
 
+    process.stdout.write('test_task_assignment_canonical: testing offline PATCH persists canonical assignment\n')
+    await pgPool.query(
+      `INSERT INTO cleaning_offline_tasks(id, date, task_type, title, content, kind, status, urgency, property_id, assignee_id)
+       VALUES($1, $2::date, 'property', 'Patch offline', 'before assignment', 'offline', 'todo', 'medium', $3, NULL)`,
+      [offlinePatchId, TEST_DATE, propertyId],
+    )
+    await upsertWorkTaskFromOfflineTask({
+      id: offlinePatchId,
+      date: TEST_DATE,
+      property_id: propertyId,
+      title: 'Patch offline',
+      content: 'before assignment',
+      assignee_id: null,
+      status: 'todo',
+      urgency: 'medium',
+      photo_urls: [],
+    }, 'todo', { syncAssignmentStatus: true })
+    const assignmentResult = await requestJson(
+      app,
+      'PATCH',
+      `/cleaning/offline-tasks/${offlinePatchId}`,
+      { assignee_id: offlinePatchAssigneeId },
+    )
+    assert.equal(assignmentResult.assignee_id, offlinePatchAssigneeId)
+    assert.equal(assignmentResult.assignment_status, 'assigned')
+    assert.equal(assignmentResult.work_task_id, `cleaning_offline_tasks:${offlinePatchId}`)
+    const assignedSource = await pgPool.query(`SELECT assignee_id FROM cleaning_offline_tasks WHERE id=$1`, [offlinePatchId])
+    assert.equal(assignedSource?.rows?.[0]?.assignee_id, offlinePatchAssigneeId)
+    const assignedCanonical = await fetchWorkTask(pgPool, `cleaning_offline_tasks:${offlinePatchId}`)
+    assert.equal(assignedCanonical?.assignee_id, offlinePatchAssigneeId)
+    assert.equal(assignedCanonical?.status, 'assigned')
+
+    const contentOnlyResult = await requestJson(
+      app,
+      'PATCH',
+      `/cleaning/offline-tasks/${offlinePatchId}`,
+      { content: 'content update must preserve assignment' },
+    )
+    assert.equal(contentOnlyResult.assignee_id, offlinePatchAssigneeId)
+    assert.equal((await fetchWorkTask(pgPool, `cleaning_offline_tasks:${offlinePatchId}`))?.assignee_id, offlinePatchAssigneeId)
+    await assert.rejects(
+      () => requestJson(app, 'PATCH', `/cleaning/offline-tasks/${offlinePatchId}`, { assignee_id: null }),
+      /OFFLINE_TASK_ASSIGNEE_REQUIRED/,
+    )
+    assert.equal((await fetchWorkTask(pgPool, `cleaning_offline_tasks:${offlinePatchId}`))?.assignee_id, offlinePatchAssigneeId)
+
     process.stdout.write('test_task_assignment_canonical: testing mzapp same-day checkin merge boundary\n')
     await pgPool.query(
       `INSERT INTO cleaning_tasks(
@@ -759,12 +814,12 @@ async function main() {
       ],
     ])
     await pgPool.query(`DELETE FROM work_tasks WHERE id = ANY($1::text[]) OR source_id = ANY($2::text[])`, [
-      [`cleaning_offline_tasks:${offlineNullId}`, `cleaning_offline_tasks:${offlineOldId}`, `cleaning_offline_tasks:${offlineDisplayId}`, workId],
-      [offlineNullId, offlineOldId, offlineDisplayId],
+      [`cleaning_offline_tasks:${offlineNullId}`, `cleaning_offline_tasks:${offlineOldId}`, `cleaning_offline_tasks:${offlineDisplayId}`, `cleaning_offline_tasks:${offlinePatchId}`, workId],
+      [offlineNullId, offlineOldId, offlineDisplayId, offlinePatchId],
     ])
     await pgPool.query(`DELETE FROM event_queue WHERE user_notification_id IN (SELECT id FROM user_notifications WHERE data->>'group_key' = $1)`, [groupedNotifyKey])
     await pgPool.query(`DELETE FROM user_notifications WHERE data->>'group_key' = $1`, [groupedNotifyKey])
-    await pgPool.query(`DELETE FROM cleaning_offline_tasks WHERE id = ANY($1::text[])`, [[offlineNullId, offlineOldId, offlineDisplayId]])
+    await pgPool.query(`DELETE FROM cleaning_offline_tasks WHERE id = ANY($1::text[])`, [[offlineNullId, offlineOldId, offlineDisplayId, offlinePatchId]])
     await pgPool.query(`DELETE FROM cleaning_tasks WHERE id = ANY($1::text[])`, [[
       cleaningId,
       cleaningKeysHungId,
