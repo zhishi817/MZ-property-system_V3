@@ -1,5 +1,50 @@
 # Change Release Ledger
 
+## CRL-20260802-001 — 根仓库 PR 合并质量门禁
+
+- **Status:** pushed
+- **Updated:** 2026-08-02 Australia/Melbourne
+- **ID allocation:** 2026-08-02 Australia/Melbourne — 原 `CRL-20260729-012` 与既有治理 PR #276 的编号冲突，现重编号为 `CRL-20260802-001`；范围、实现和历史验证不变。
+- **Request:** Phase 3：让 CI 从提示变成合并门禁；普通 PR 必跑 Fast，高风险 PR 必跑 Full，并为 `Dev`/`main` 的 GitHub 分支保护提供稳定检查名称。
+- **Outcome:** 根仓库现提供独立 Ledger、FR、风险分类、Fast 与 Full 检查；Full 对低风险 PR 显式成功而不是省略状态，高风险或非 PR 事件运行完整检查。本阶段未修改远端保护；既有状态须在这些 check 名称通过 reviewed PR 进入 GitHub 后再读取和配置。
+
+### Files / Areas
+
+- `.github/workflows/quality.yml` — modified: 拆分稳定门禁检查并按风险选择 Full。
+- `package.json` — modified: 将 Ledger 精确范围回归测试接入 Fast。
+- `scripts/audit_change_release_ledger.py` — modified: 支持严格 PR `--base/--head` 范围、重命名/空白检查和 fail-closed ref 解析。
+- `scripts/tests/test_audit_change_release_ledger.py` — added: 覆盖未登记已提交文件与无效 PR ref 的范围审计回归。
+- `scripts/ci/classify_pr_risk.sh` — added: 可本地复验的高风险路径分类。
+- `docs/ci-merge-gates.md` — added: 记录检查名称、路径策略和远端保护目标。
+- `docs/change-release-ledger.md` — modified: 记录本治理单元。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- GitHub configuration: 远端 `Dev`/`main` 保护规则必须在这些检查已实际出现后，通过 reviewed PR 配置；本地 workflow 文件本身不会改变 GitHub 保护状态。
+- Related units: CRL-20260729-011、移动端 CRL-20260729-004；Phase 4 将另行验证精确根/移动端 ref 组合。
+
+### Validation
+
+- Historical passed: Ruby YAML parse and `bash -n scripts/ci/classify_pr_risk.sh`.
+- Historical passed: classifier stdin examples — `docs/ci-merge-gates.md` and isolated Web component return `full_required=false`; `backend/src/modules/mzapp.ts` and `.github/workflows/quality.yml` return `full_required=true`.
+- Historical P1 repair: classifier examples now cover notification, migration, Web API/finance/RBAC paths and each returns `full_required=true`; the low-risk documentation/component examples remain `false`.
+- Historical passed: `git diff --check`, `npm run check:ledger` (4/4) and `npm run check:feature-registry` (8 FRs / 90 mappings; 55 independent-mobile mappings deferred in the standalone root worktree).
+- 2026-08-02 integration candidate: merges current `origin/Dev` `f1c10c78562ffe7b023c961f7ccc760362df7c6f` into the existing Phase 3 branch. It preserves the current protected job names `Root Quality Check`, `Fast Regression`, and `Full Regression`; adds the Phase 3 risk classifier and independent ledger/registry jobs; uses the PR head SHA for classification; and passes exact PR base/head to both Ledger workflow checks. Fresh validation and independent review are pending before commit or push.
+- Fresh local validation: Ruby YAML parse, `bash -n scripts/ci/classify_pr_risk.sh`, and conflict-marker scan passed. The classifier returns `full_required=false` for `docs/ci-merge-gates.md`, and `true` for `.github/workflows/quality.yml`, `backend/src/services/notificationRules.ts`, and `frontend/src/lib/api.ts`.
+- Fresh local validation: `npm run check:ledger` and direct ledger audit passed for the merge worktree (42/42); `npm run check:feature-registry` passed (8 FRs / 98 mappings; 57 independent-mobile mappings deferred); `git diff --check origin/Dev` passed. `test:ledger-range-audit` is not present in current `Dev` because it belongs to still-open PR #276, so it was not run for this candidate.
+- P1 correction validation: `npm run test:ledger-range-audit` passed (2 tests); exact `python3 scripts/audit_change_release_ledger.py --base origin/Dev --head HEAD` passed (4/4) and an unknown ref is rejected with its exact range in stderr.
+- Independent release review (2026-08-02): GO — the PR workflow now supplies exact base/head to both Ledger checks; strict three-dot range, no-rename coverage, whitespace failure and fail-closed refs are implemented; all 7 final PR files are recorded. P2 follow-up: add rename/delete and whitespace failure fixtures, and change the risk classifier's conservative two-dot diff to three-dot; neither causes the current PR to under-check or blocks this release.
+- Push and remote-gate receipt (2026-08-02): merge commit `7341eff501b8954899b5693e8b225882f721cdd4` was fast-forwarded to the pre-existing `origin/codex/phase3-ci-merge-gates` branch. PR #277 is open, clean and mergeable against `Dev` `f1c10c78562ffe7b023c961f7ccc760362df7c6f`; `Risk Classification`, `Change Ledger Audit`, `Regression Registry Audit`, `Fast Regression`, `Root Quality Check`, and high-risk `Full Regression` all completed successfully. The PR is not merged.
+- Not run: production API、数据库写入、外部同步、EAS/native 或业务功能测试；均不属于本治理修正。
+
+### Risks / Release Notes
+
+- Risk: GitHub protection settings are not changed by this candidate. Branch-protection configuration remains a separate reviewed administrative action.
+- Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
+- Rollback: revert this CRL's workflow, classifier and policy document; no application code or data is affected.
+- Git state: existing Phase 3 commits and merge commit `7341eff501b8954899b5693e8b225882f721cdd4` are pushed to `origin/codex/phase3-ci-merge-gates`; PR #277 remains open, and nothing is merged into `Dev`/`main` or deployed.
+
 ## CRL-20260801-013 — 已选任务通知安全发布包
 
 - **Status:** ready
