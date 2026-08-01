@@ -4,6 +4,7 @@ import { listInspectionTaskUserIds, listCleaningTaskUserIds, listUserIdsByRoles,
 import {
   getNotificationRule,
   isManagedNotificationEventType,
+  isTaskScopedLegacyNotificationEventType,
   NotificationAudienceType,
   NotificationManagedEventType,
   NotificationRuleConfigState,
@@ -12,6 +13,8 @@ import {
 import {
   AppNotificationPolicyKey,
   filterAppNotificationRecipientsForPolicy,
+  filterAppNotificationRecipientsToCurrentTaskScope,
+  filterNotificationRecipientsToCurrentTaskScope,
   isAppNotificationPolicyKey,
   resolveAppNotificationPolicyRecipients,
 } from './appNotificationPolicies'
@@ -429,9 +432,15 @@ export async function emitNotificationEvent(params: EmitNotificationEventParams,
   const propertyId = String(params.propertyId || '').trim()
   const hasExplicitRecipients = Array.isArray(params.recipientUserIds) && params.recipientUserIds.length > 0
   if (hasExplicitRecipients) resolved.push(...params.recipientUserIds!.map((x) => String(x || '').trim()).filter(Boolean))
-  const mergedResolved = appPolicyKey && isAppNotificationPolicyKey(appPolicyKey)
+  const protectedResolved = appPolicyKey && isAppNotificationPolicyKey(appPolicyKey)
     ? await filterAppNotificationRecipientsForPolicy(appPolicyKey, resolved, client)
     : Array.from(new Set(resolved.filter(Boolean)))
+  const scopeParams = { entity, entityId, data: params.data }
+  const mergedResolved = appPolicyKey && isAppNotificationPolicyKey(appPolicyKey)
+    ? await filterAppNotificationRecipientsToCurrentTaskScope(appPolicyKey, protectedResolved, scopeParams, client)
+    : isTaskScopedLegacyNotificationEventType(type)
+    ? await filterNotificationRecipientsToCurrentTaskScope(`legacy:${type}`, protectedResolved, scopeParams, client)
+    : protectedResolved
   const filtered = propertyId ? await filterUserIdsByPropertyScope(mergedResolved, propertyId, client) : mergedResolved
   const actor = String(params.actorUserId || '').trim()
   const excludeActor = shouldExcludeActor(params)
@@ -443,8 +452,8 @@ export async function emitNotificationEvent(params: EmitNotificationEventParams,
     selectedRoles,
     selectedAudiences,
     selectedUsersCount: selectedUsers.length,
-    resolvedCountBeforeScope: mergedResolved.length,
-    resolvedCountAfterScope: filtered.length,
+    resolvedCountBeforeScope: protectedResolved.length,
+    resolvedCountAfterScope: mergedResolved.length,
     resolvedCountAfterActor: to.length,
     finalCount: to.length,
     audienceCounts,

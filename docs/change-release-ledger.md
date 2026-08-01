@@ -1,5 +1,100 @@
 # Change Release Ledger
 
+## CRL-20260801-013 — 已选任务通知安全发布包
+
+- **Status:** ready
+- **Updated:** 2026-08-01 Australia/Melbourne
+- **Request:** 用户选择先发布截图中的“通知安全”组。
+- **Outcome:** 最终收件人范围限制、钥匙提醒受众、房源当日通知范围和失败诊断由根仓库发布；诊断日志的范围前/后计数按实际过滤阶段记录；独立移动端 `CRL-20260801-012` 保持 property-day 通知停留在详情页。
+- **Source-unit mapping:** local root `CRL-20260801-005/007`.
+
+### Files / Areas
+
+- `backend/src/services/appNotificationPolicies.ts` — task-scope final recipient protection.
+- `backend/src/services/notificationEvents.ts` — final guard before notification persistence and truthful task-scope diagnostic counts.
+- `backend/src/services/notificationRules.ts` — legacy task selector safety.
+- `backend/src/modules/rbac.ts` — unsafe-recipient validation response.
+- `backend/src/modules/task_center.ts` — scoped transfer notification.
+- `backend/src/modules/cleaning.ts` — deletion notification diagnostics.
+- `backend/src/modules/cleaning_app.ts` — completion and handover policy wiring.
+- `backend/src/modules/mzapp.ts` — property-day notification scope.
+- `backend/src/lib/keyUploadReminderJob.ts` — related cleaner, inspector and manager reminders.
+- `backend/src/lib/keyUploadSlaJob.ts` — SLA reminder audience.
+- `backend/scripts/repair_task_notification_rules.js` — read-only-by-default rule repair utility.
+- `backend/scripts/tests/test_app_notification_policies.ts` — recipient scope contracts.
+- `backend/scripts/tests/test_notification_rule_repair_script.ts` — repair utility safety contract.
+- `frontend/src/app/rbac/app-notification-policies/page.tsx` — direct-recipient restriction UI.
+- `frontend/src/app/rbac/notification-rules/page.tsx` — unsafe legacy selector UI restriction.
+- `docs/change-release-ledger.md` — this release record.
+
+### Impact / Dependencies
+
+- API: existing task notification payloads remain compatible; property-day navigation relies on the paired mobile release.
+- Database / migration / dependencies: none. The repair utility is read-only unless explicitly invoked with its destructive flag, which is outside this release.
+- Related units: independent mobile `CRL-20260801-012`.
+
+### Validation
+
+- Candidate assembly: `git diff --check` — passed before staging.
+- Candidate-wide `npm run check:backend` and `npm run check:frontend` — passed; backend compilation plus 13 local contract suites and frontend production build completed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 27 changed files, 27 recorded files after the completion-photo route contract was added.
+- Final rebase and PR-range validation — passed: `git diff --check origin/Dev...HEAD`, root range ledger coverage 27/27, `npm run check:backend`, and `npm run check:frontend` passed. Device and production validation remain unrun.
+
+### Risks / Release Notes
+
+- Shared backend paths with CRL-20260801-012 require verified hunk staging.
+- The independent review found and candidate assembly removed unrelated maintenance-workflow hunks; they are not part of this release.
+- The independent review also caught an initial route mismatch: `photo_exception` is now returned only by the mobile-consumed `completion-photos` read endpoint, with a dedicated route contract test.
+- No notification is sent and no database or production operation is performed by candidate preparation.
+- Git state: two rebased candidate commits are ready for final independent review; not pushed.
+
+## CRL-20260801-012 — 已选清洁、检查与媒体可靠性发布包
+
+- **Status:** ready
+- **Updated:** 2026-08-01 Australia/Melbourne
+- **Request:** 用户选择先发布截图中的“清洁、检查与媒体可靠性”组。
+- **Outcome:** 汇集未进入当前 `origin/Dev` 的自完成照片异常留痕、上传诊断、补品同步保护、检查媒体保存解耦和入住检查后待挂钥匙服务端改动；移动端由独立仓库的 `CRL-20260801-011` 配套发布。
+- **Source-unit mapping:** local root `CRL-20260731-005/007/008/009` and `CRL-20260801-001/002/003/004/006/008/009/010`. Existing upstream-equivalent hunks are not duplicated. The former local 20260731 IDs that collide with upstream ledger records are represented by this new release ID.
+
+### Files / Areas
+
+- `backend/src/lib/workTaskActionAudit.ts` — selected inspection and finalization state transitions.
+- `backend/src/lib/workTaskActions.ts` — selected self-completion and inspection actions.
+- `backend/src/modules/cleaning_app.ts` — selected media, self-completion and inspection-save paths.
+- `backend/src/modules/mzapp.ts` — selected work-task projection and completion-photo exception read route.
+- `backend/scripts/tests/test_cleaning_task_transition_guard.ts` — selected task-transition contracts.
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — selected idempotency contract.
+- `backend/scripts/tests/test_work_task_actions.ts` — selected action and read-only contracts.
+- `backend/scripts/tests/test_cleaning_upload_diagnostics.ts` — selected upload-diagnostic contract.
+- `backend/scripts/tests/test_completion_photo_exception_route.ts` — completion-photo route contract.
+- `frontend/src/app/cleaning/page.tsx` — selected self-completion status display.
+- `frontend/src/app/cleaning/cleaningSchedule.module.scss` — selected completion-photo exception hint styling.
+- `frontend/src/lib/cleaningDailyTaskStatus.ts` — selected self-completion status metadata.
+- `frontend/src/lib/cleaningDailyTaskStatus.test.ts` — selected status metadata contract.
+- `docs/change-release-ledger.md` — this release record.
+
+### Impact / Dependencies
+
+- API: compatible work-task, self-completion and upload diagnostic response additions.
+- Database / migration / dependencies: none.
+- Related units: independent mobile `CRL-20260801-011`; both repositories must be released together for cross-layer paths.
+
+### Validation
+
+- Candidate assembly: `git diff --check` — passed before staging.
+- `npm run check:backend` — passed: backend compilation and 13 local contract suites, including the paired mobile release contract.
+- `npm run check:frontend` — passed: lint completed with existing warnings, 39 Vitest files / 172 tests passed, and production build passed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 27 changed files, 27 recorded files after the completion-photo route contract was added.
+- `python3 scripts/audit_feature_regression_registry.py` — passed: 8 FRs / 90 mappings; 55 mobile mappings deferred because the mobile repository is independent.
+- `./node_modules/.bin/tsc -p tsconfig.json --noEmit`, `test_completion_photo_exception_route.ts`, and `npm run test:mzapp-media-visibility` — passed after correcting the exception read route from `inspection-photos` to `completion-photos`.
+- Final rebase and PR-range validation — passed: `git diff --check origin/Dev...HEAD`, root range ledger coverage 27/27, `npm run check:backend`, `npm run check:frontend`, and the completion-photo route contract passed. Device and production validation remain unrun.
+
+### Risks / Release Notes
+
+- Shared backend files also contain the notification release hunk; staging must remain hunk-scoped.
+- No production API, database write, R2 operation or secret handling is authorized.
+- Git state: two rebased candidate commits are ready for final independent review; not pushed.
+
 ## CRL-20260731-009 — 线下任务执行人 canonical 一致性
 
 - **Status:** pushed

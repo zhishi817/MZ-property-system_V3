@@ -3,25 +3,44 @@ import assert from 'assert'
 type FakeTask = {
   status: string
   inspection_scope: string
-  task_type: string
+  task_type?: string
+  inspection_mode?: string
 }
 
-function makeExecutor(task: FakeTask, mediaRows: any[], guestArrivalSkipAudit = false, cleaningReady = true) {
+function makeExecutor(
+  task: FakeTask,
+  inspectionMediaRows: any[],
+  guestArrivalSkipAudit = false,
+  cleaningReady = true,
+  lockboxVideoSaved = false,
+) {
   const queries: string[] = []
   return {
     queries,
     query: async (sql: string, params: any[] = []) => {
       queries.push(sql)
       if (sql.includes('FROM cleaning_tasks t')) {
-        return { rows: params[2] === true || guestArrivalSkipAudit || mediaRows.length ? [{ ok: 1 }] : [] }
+        return { rows: params[2] === true || guestArrivalSkipAudit || inspectionMediaRows.length ? [{ ok: 1 }] : [] }
       }
       if (sql.includes('FROM cleaning_consumable_usages')) {
         return {
           rows: [{ consumables_submitted: cleaningReady, property_photo_submitted: cleaningReady }],
         }
       }
+      if (sql.includes("m.type = 'lockbox_video'")) {
+        return { rows: lockboxVideoSaved ? [{ ok: 1 }] : [] }
+      }
       if (sql.includes('FROM cleaning_tasks')) {
-        return { rows: [{ id: 'task-guard', status: task.status, task_type: task.task_type, inspection_scope: task.inspection_scope, finished_at: null }] }
+        return {
+          rows: [{
+            id: 'task-guard',
+            status: task.status,
+            task_type: task.task_type || 'checkout_clean',
+            inspection_scope: task.inspection_scope,
+            inspection_mode: task.inspection_mode || null,
+            finished_at: null,
+          }],
+        }
       }
       if (sql.includes('FROM users')) return { rows: [] }
       return { rows: [], rowCount: 1 }
@@ -32,7 +51,7 @@ function makeExecutor(task: FakeTask, mediaRows: any[], guestArrivalSkipAudit = 
 async function main() {
   process.env.DATABASE_URL = 'postgres://unit-test'
   const { applyCleaningTaskActionTransition } = require('../../src/lib/workTaskActionAudit') as typeof import('../../src/lib/workTaskActionAudit')
-  const task: FakeTask = { status: 'to_inspect', inspection_scope: 'inspect_and_hang', task_type: 'checkin_clean' }
+  const task: FakeTask = { status: 'to_inspect', inspection_scope: 'inspect_and_hang', task_type: 'checkout_clean' }
   const noPhotos = makeExecutor(task, [])
   const blocked = await applyCleaningTaskActionTransition({
     taskId: 'task-guard',
@@ -53,14 +72,44 @@ async function main() {
   assert.equal(inspected.status_after, 'inspected')
   assert.equal(inspected.finalization_pending, false)
 
-  const videoOnly = makeExecutor(task, [])
+  const videoOnly = makeExecutor(task, [], false, true, true)
   const videoSaved = await applyCleaningTaskActionTransition({
     taskId: 'task-guard',
     actionId: 'upload_access_video',
     actorUserId: 'inspector-1',
   }, videoOnly as any)
-  assert.equal(videoSaved.status_after, 'keys_hung')
+  assert.equal(videoSaved.status_after, 'to_inspect')
   assert.equal(videoSaved.finalization_pending, true)
+  assert.deepEqual(videoSaved.missing_requirements, ['inspection_photos'])
+
+  const inspectionBeforeCleaner = makeExecutor(task, [{ ok: 1 }], false, false)
+  const inspectionSaved = await applyCleaningTaskActionTransition({
+    taskId: 'task-guard',
+    actionId: 'submit_inspection',
+    actorUserId: 'inspector-1',
+  }, inspectionBeforeCleaner as any)
+  assert.equal(inspectionSaved.status_after, 'to_inspect')
+  assert.equal(inspectionSaved.finalization_pending, true)
+  assert.deepEqual(inspectionSaved.missing_requirements, ['cleaning_consumables', 'cleaning_property_photo'])
+
+  const videoBeforeCleaner = makeExecutor(task, [{ ok: 1 }], false, false, true)
+  const videoSavedBeforeCleaner = await applyCleaningTaskActionTransition({
+    taskId: 'task-guard',
+    actionId: 'upload_access_video',
+    actorUserId: 'inspector-1',
+  }, videoBeforeCleaner as any)
+  assert.equal(videoSavedBeforeCleaner.status_after, 'to_inspect')
+  assert.equal(videoSavedBeforeCleaner.finalization_pending, true)
+  assert.deepEqual(videoSavedBeforeCleaner.missing_requirements, ['cleaning_consumables', 'cleaning_property_photo'])
+
+  const cleanerFinishesLast = makeExecutor(task, [{ ok: 1 }], false, true, true)
+  const finalized = await applyCleaningTaskActionTransition({
+    taskId: 'task-guard',
+    actionId: 'fill_supplies',
+    actorUserId: 'cleaner-1',
+  }, cleanerFinishesLast as any)
+  assert.equal(finalized.status_after, 'keys_hung')
+  assert.equal(finalized.finalization_pending, false)
 
   const selfCompleteVideo = makeExecutor(task, [], false, false)
   const selfCompleteVideoSaved = await applyCleaningTaskActionTransition({
@@ -92,6 +141,15 @@ async function main() {
   assert.equal(videoAfterSkip.status_after, 'keys_hung')
   assert.equal(videoAfterSkip.finalization_pending, false)
 
+  const checkinInspection = makeExecutor({ status: 'to_inspect', inspection_scope: 'inspect_and_hang', task_type: 'checkin_clean' }, [{ ok: 1 }], false, false)
+  const checkinInspectionSaved = await applyCleaningTaskActionTransition({
+    taskId: 'task-guard',
+    actionId: 'submit_inspection',
+    actorUserId: 'inspector-1',
+  }, checkinInspection as any)
+  assert.equal(checkinInspectionSaved.status_after, 'to_hang_keys')
+  assert.equal(checkinInspectionSaved.finalization_pending, false)
+
   task.inspection_scope = 'password_only'
   const passwordOnly = makeExecutor(task, [])
   const passwordCompleted = await applyCleaningTaskActionTransition({
@@ -102,17 +160,16 @@ async function main() {
   assert.equal(passwordCompleted.status_after, 'inspected')
   assert.equal(passwordCompleted.finalization_pending, false)
 
-  const pureCheckinWithoutCleaning = makeExecutor({ status: 'to_inspect', inspection_scope: 'inspect_and_hang', task_type: 'checkin_clean' }, [], false, false)
-  await assert.doesNotReject(
-    () => import('../../src/lib/workTaskActionAudit').then(({ assertCleaningSubmissionReady }) => assertCleaningSubmissionReady('task-guard', pureCheckinWithoutCleaning as any)),
-  )
-  assert.equal(pureCheckinWithoutCleaning.queries.some((sql) => sql.includes('FROM cleaning_consumable_usages')), false)
-
-  const cleaningNotSubmitted = makeExecutor({ status: 'inspected', inspection_scope: 'inspect_and_hang', task_type: 'checkout_clean' }, [], false, false)
-  await assert.rejects(
-    () => import('../../src/lib/workTaskActionAudit').then(({ assertCleaningSubmissionReady }) => assertCleaningSubmissionReady('task-guard', cleaningNotSubmitted as any)),
-    (error: any) => error?.code === 'CLEANING_SUBMISSION_REQUIRED' && error?.statusCode === 409,
-  )
+  const checkinNotSubmitted = makeExecutor({ status: 'to_inspect', inspection_scope: 'inspect_and_hang', task_type: 'checkin_clean' }, [], false, false, true)
+  const checkinVideoSaved = await applyCleaningTaskActionTransition({
+    taskId: 'task-guard',
+    actionId: 'upload_access_video',
+    actorUserId: 'inspector-1',
+  }, checkinNotSubmitted as any)
+  assert.equal(checkinVideoSaved.status_after, 'keys_hung')
+  assert.equal(checkinVideoSaved.finalization_pending, true)
+  assert.deepEqual(checkinVideoSaved.missing_requirements, ['inspection_photos'])
+  assert.equal(checkinNotSubmitted.queries.some((sql) => sql.includes('FROM cleaning_consumable_usages')), false)
 
   process.stdout.write('test_cleaning_task_transition_guard: ok\n')
 }

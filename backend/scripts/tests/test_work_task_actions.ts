@@ -297,6 +297,61 @@ function main() {
   assert.equal(actionById(completedPayload, 'upload_key_photo')?.enabled, false)
   assert.equal(actionById(completedPayload, 'upload_key_photo')?.disabled_reason, 'task_completed')
 
+  const selfCompleteRecoveryPayload = buildWorkTaskActionPayload({
+    ...cleaningTask,
+    id: 'w-self-complete-keys-hung',
+    inspection_mode: 'self_complete',
+    status: 'keys_hung',
+    completion_photos_ok: false,
+  }, {
+    userId: 'cleaner-1',
+    roleNames: ['cleaner'],
+    permissions: allExecPerms,
+    canViewAll: false,
+  })
+  assert.equal(actionById(selfCompleteRecoveryPayload, 'complete_cleaning')?.enabled, true)
+  assert.equal(actionById(selfCompleteRecoveryPayload, 'complete_cleaning')?.label, '继续自完成')
+  assert.equal(actionById(selfCompleteRecoveryPayload, 'complete_cleaning')?.read_only, undefined)
+
+  const selfCompleteReadOnlyPayload = buildWorkTaskActionPayload({
+    ...cleaningTask,
+    id: 'w-self-complete-cleaned',
+    inspection_mode: 'self_complete',
+    status: 'cleaned',
+    completion_photos_ok: true,
+  }, {
+    userId: 'cleaner-1',
+    roleNames: ['cleaner'],
+    permissions: allExecPerms,
+    canViewAll: false,
+  })
+  assert.equal(actionById(selfCompleteReadOnlyPayload, 'complete_cleaning')?.enabled, false)
+  assert.equal(actionById(selfCompleteReadOnlyPayload, 'complete_cleaning')?.disabled_reason, 'task_completed')
+  assert.equal(actionById(selfCompleteReadOnlyPayload, 'complete_cleaning')?.label, '查看完成照片')
+  assert.equal(actionById(selfCompleteReadOnlyPayload, 'complete_cleaning')?.read_only, true)
+
+  const selfCompleteExceptionReadOnlyPayload = buildWorkTaskActionPayload({
+    ...cleaningTask,
+    id: 'w-self-complete-photo-exception',
+    inspection_mode: 'self_complete',
+    status: 'cleaned',
+    completion_photos_ok: false,
+    completion_photo_exception: {
+      items: [{ area: 'living', reason: 'network_pending', media_id: 'media-living', captured_at: '2026-08-01T01:00:00.000Z' }],
+    },
+  }, {
+    userId: 'cleaner-1',
+    roleNames: ['cleaner'],
+    permissions: allExecPerms,
+    canViewAll: false,
+  })
+  assert.equal(actionById(selfCompleteExceptionReadOnlyPayload, 'complete_cleaning')?.label, '查看完成照片')
+  assert.equal(actionById(selfCompleteExceptionReadOnlyPayload, 'complete_cleaning')?.read_only, true)
+  assert(mzappSource.includes('completion_photo_exception'), 'work-task projection must expose a validated self-complete photo exception')
+  assert(mzappSource.includes("isSelfCompleteFinalized\n                    ? 'done'"), 'finalized self-complete must take precedence over lockbox-only projection')
+  const cleaningAppSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/cleaning_app.ts'), 'utf8')
+  assert(cleaningAppSource.includes('normalizedSelfCompletePhotoException(parsed.data.completion_photo_exception, missingAreas)'), 'self-complete route must validate exception evidence against every missing photo area')
+
   const deletedKeyAfterCleaningPayload = buildWorkTaskActionPayload({
     ...cleaningTask,
     id: 'w-deleted-key-after-cleaning',
@@ -345,10 +400,10 @@ function main() {
     permissions: allExecPerms,
     canViewAll: false,
   })
-  assert.equal(actionById(inspectionBeforeCleaningPayload, 'submit_inspection')?.enabled, false)
-  assert.equal(actionById(inspectionBeforeCleaningPayload, 'submit_inspection')?.disabled_reason, 'cleaning_submission_required')
-  assert.equal(actionById(inspectionBeforeCleaningPayload, 'upload_access_video')?.enabled, false)
-  assert.equal(actionById(inspectionBeforeCleaningPayload, 'upload_access_video')?.disabled_reason, 'cleaning_submission_required')
+  assert.equal(actionById(inspectionBeforeCleaningPayload, 'submit_inspection')?.enabled, true)
+  assert.equal(actionById(inspectionBeforeCleaningPayload, 'submit_inspection')?.disabled_reason, undefined)
+  assert.equal(actionById(inspectionBeforeCleaningPayload, 'upload_access_video')?.enabled, true)
+  assert.equal(actionById(inspectionBeforeCleaningPayload, 'upload_access_video')?.disabled_reason, undefined)
 
   const checkinInspectionWithoutCleaningPayload = buildWorkTaskActionPayload({
     ...inspectionBeforeCleaningPayload.capabilities.task_state,
@@ -372,6 +427,26 @@ function main() {
   assert.equal(actionById(checkinInspectionWithoutCleaningPayload, 'upload_access_video')?.enabled, true)
   assert.equal(actionById(checkinInspectionWithoutCleaningPayload, 'upload_access_video')?.disabled_reason, undefined)
   assert.equal(actionById(checkinInspectionWithoutCleaningPayload, 'upload_access_video')?.label, '挂钥匙并完成')
+
+  const checkinReadyForKeysPayload = buildWorkTaskActionPayload({
+    ...checkinInspectionWithoutCleaningPayload.capabilities.task_state,
+    id: 'w-checkin-ready-for-keys',
+    source_type: 'cleaning_tasks',
+    task_kind: 'inspection',
+    task_type: 'checkin_clean',
+    inspection_scope: 'inspect_and_hang',
+    status: 'to_hang_keys',
+    inspector_id: 'inspector-to-inspect',
+    cleaning_submission_ready: false,
+  }, {
+    userId: 'inspector-to-inspect',
+    roleNames: ['cleaning_inspector'],
+    permissions: allExecPerms,
+    canViewAll: false,
+  })
+  assert.equal(actionById(checkinReadyForKeysPayload, 'upload_access_video')?.enabled, true)
+  assert.equal(actionById(checkinReadyForKeysPayload, 'upload_access_video')?.disabled_reason, undefined)
+  assert.equal(actionById(checkinReadyForKeysPayload, 'upload_access_video')?.label, '挂钥匙并完成')
 
   const cleanerRecoveryPayload = buildWorkTaskActionPayload({
     ...cleaningTask,
@@ -473,6 +548,7 @@ function main() {
   assert.equal(resolveCleaningTaskActionStatus({ actionId: 'upload_access_video', statusBefore: 'assigned' }), 'keys_hung')
   assert.equal(resolveCleaningTaskActionStatus({ actionId: 'upload_access_video', statusBefore: 'assigned', isPasswordOnly: true }), 'inspected')
   assert.equal(resolveCleaningTaskActionStatus({ actionId: 'submit_inspection', statusBefore: 'to_inspect' }), 'inspected')
+  assert.equal(resolveCleaningTaskActionStatus({ actionId: 'submit_inspection', statusBefore: 'to_inspect', isCheckinInspectAndHang: true }), 'to_hang_keys')
   assert.equal(resolveCleaningTaskActionStatus({ actionId: 'submit_inspection', statusBefore: 'to_inspect', inspectionPhotosSaved: false }), 'to_inspect')
 
   assert.deepEqual(buildKeyPhotoUploadTaskPatch({
