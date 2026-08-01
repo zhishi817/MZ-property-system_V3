@@ -17,6 +17,7 @@ export const APP_NOTIFICATION_POLICY_KEYS = [
   'keys_hung',
   'restock_proof_saved',
   'task_ready',
+  'cleaning_completed',
   'guest_luggage_updated',
   'warehouse_key_updated',
   'work_task_updated',
@@ -323,6 +324,17 @@ const APP_NOTIFICATION_POLICY_CATALOG: Record<AppNotificationPolicyKey, AppNotif
     default_enabled: true,
     participant_group_key: 'cleaning_task_participants',
   },
+  cleaning_completed: {
+    policy_key: 'cleaning_completed',
+    label: '清洁任务已完成',
+    description: '清洁员自完成任务后的 App 通知',
+    source_event_types: ['CLEANING_COMPLETED'],
+    default_template_key: 'participants_plus_ops_manager_and_customer_service',
+    allowed_group_keys: ALL_APP_ALLOWED_GROUP_KEYS,
+    supports_extra_users: true,
+    default_enabled: true,
+    participant_group_key: 'cleaning_task_participants',
+  },
   guest_luggage_updated: {
     policy_key: 'guest_luggage_updated',
     label: '当天任务临时通知',
@@ -436,10 +448,34 @@ const APP_NOTIFICATION_POLICIES_EXCLUDING_ORDINARY_CLEANERS = new Set<AppNotific
   'restock_done',
   'keys_hung',
   'restock_proof_saved',
+  'key_upload_sla_escalation',
+])
+
+const TASK_SCOPED_APP_NOTIFICATION_POLICIES = new Set<AppNotificationPolicyKey>([
+  'guest_checked_out',
+  'guest_checked_out_cancelled',
+  'task_requirements_changed',
+  'task_deleted',
+  'key_photo_uploaded',
+  'key_photo_deleted',
+  'issue_reported',
+  'consumables_submitted',
+  'consumables_need_restock',
+  'restock_done',
+  'completion_photos_saved',
+  'keys_hung',
+  'restock_proof_saved',
+  'task_ready',
+  'cleaning_completed',
+  'guest_luggage_updated',
+  'work_task_updated',
+  'work_task_completed',
   'key_upload_reminder',
   'key_upload_sla_reminder',
   'key_upload_sla_escalation',
 ])
+
+const APP_NOTIFICATION_MANAGER_ROLES = ['admin', 'offline_manager', 'customer_service']
 
 const APP_NOTIFICATION_INSPECTION_ROLES = new Set([
   'cleaning_inspector',
@@ -487,8 +523,13 @@ export async function filterAppNotificationRecipientsForPolicy(
       const roles = rolesByUser.get(id)
       return !!roles?.length && !shouldExcludeOrdinaryCleanerFromAppNotification(policyKey, roles)
     })
-  } catch {
+  } catch (error: any) {
     // Fail closed for protected notifications when role classification is unavailable.
+    try {
+      console.error(
+        `[notifications][recipient_role_resolution_failed] policy_key=${policyKey} recipient_count=${ids.length} error=${String(error?.message || 'unknown')}`,
+      )
+    } catch {}
     return []
   }
 }
@@ -647,6 +688,24 @@ async function getStoredAppNotificationPolicy(policyKey: AppNotificationPolicyKe
   }
 }
 
+async function assertAppNotificationExtraUsersAreManagers(userIds: string[], client: any) {
+  const ids = uniqText(userIds)
+  if (!ids.length) return
+  const result = await client.query(
+    `SELECT DISTINCT u.id::text AS id
+       FROM users u
+       LEFT JOIN user_roles ur ON ur.user_id::text = u.id::text
+      WHERE u.id::text = ANY($1::text[])
+        AND (
+          LOWER(COALESCE(u.role, '')) = ANY($2::text[])
+          OR LOWER(COALESCE(ur.role_name, '')) = ANY($2::text[])
+        )`,
+    [ids, APP_NOTIFICATION_MANAGER_ROLES],
+  )
+  const managerIds = new Set((result?.rows || []).map((row: any) => String(row?.id || '').trim()).filter(Boolean))
+  if (ids.some((id) => !managerIds.has(id))) throw new Error('app_notification_extra_users_must_be_managers')
+}
+
 function toAppNotificationPolicyRecord(row: StoredAppPolicyRow, updatedByName: string | null): AppNotificationPolicyRecord {
   return {
     policy_key: row.policy_key,
@@ -695,6 +754,7 @@ export async function saveAppNotificationPolicy(
   const note = payload.note == null ? null : String(payload.note || '').trim() || null
   const actor = String(updatedBy || '').trim() || null
   await pgRunInTransaction(async (client) => {
+    await assertAppNotificationExtraUsersAreManagers(extraUserIds, client)
     const current = await client.query(`SELECT version FROM app_notification_policies WHERE policy_key = $1 LIMIT 1`, [policyKey])
     const nextVersion = Number(current?.rows?.[0]?.version || 0) + 1
     await client.query(
@@ -736,7 +796,9 @@ function resolveCleaningTaskIds(params: AppNotificationResolutionParams): string
   const data = params.data && typeof params.data === 'object' ? params.data : {}
   const ids = [
     ...(Array.isArray(data.task_ids) ? data.task_ids : []),
+    ...(Array.isArray(data.cleaning_task_ids) ? data.cleaning_task_ids : []),
     data.task_id,
+    data.source_task_id,
     params.entity === 'cleaning_task' ? params.entityId : null,
   ]
   return uniqText(ids)
@@ -778,6 +840,68 @@ async function listWorkTaskAssigneeIds(taskIds: string[], client: any): Promise<
     [ids],
   )
   return Array.from(new Set((r?.rows || []).map((row: any) => String(row.assignee_id || '').trim()).filter(Boolean)))
+}
+
+async function listCurrentTaskMemberIds(params: AppNotificationResolutionParams, client: any) {
+  const [cleaningTaskMembers, workTaskMembers] = await Promise.all([
+    listCleaningTaskColumns(resolveCleaningTaskIds(params), ['cleaner_id', 'inspector_id', 'assignee_id'], client),
+    listWorkTaskAssigneeIds(resolveWorkTaskIds(params), client),
+  ])
+  return uniqText([...cleaningTaskMembers, ...workTaskMembers])
+}
+
+async function listManagerRecipientIds(recipientIds: string[], client: any) {
+  const ids = uniqText(recipientIds)
+  if (!ids.length) return []
+  const result = await client.query(
+    `SELECT DISTINCT u.id::text AS id
+       FROM users u
+       LEFT JOIN user_roles ur ON ur.user_id::text = u.id::text
+      WHERE u.id::text = ANY($1::text[])
+        AND (
+          LOWER(COALESCE(u.role, '')) = ANY($2::text[])
+          OR LOWER(COALESCE(ur.role_name, '')) = ANY($2::text[])
+        )`,
+    [ids, APP_NOTIFICATION_MANAGER_ROLES],
+  )
+  return uniqText((result?.rows || []).map((row: any) => row?.id))
+}
+
+export async function filterNotificationRecipientsToCurrentTaskScope(
+  scopeKey: string,
+  recipientIds: string[],
+  params: AppNotificationResolutionParams,
+  client: any,
+) {
+  const ids = uniqText(recipientIds)
+  if (!ids.length) return ids
+  try {
+    const [memberIds, managerIds] = await Promise.all([
+      listCurrentTaskMemberIds(params, client),
+      listManagerRecipientIds(ids, client),
+    ])
+    const allowedIds = new Set([...memberIds, ...managerIds])
+    return ids.filter((id) => allowedIds.has(id))
+  } catch (error: any) {
+    // A task-scoped notification cannot safely fall back to a global recipient list.
+    try {
+      console.error(
+        `[notifications][task_membership_resolution_failed] scope_key=${scopeKey} recipient_count=${ids.length} entity=${String(params.entity || '')} entity_id=${String(params.entityId || '')} error=${String(error?.message || 'unknown')}`,
+      )
+    } catch {}
+    return []
+  }
+}
+
+export async function filterAppNotificationRecipientsToCurrentTaskScope(
+  policyKey: AppNotificationPolicyKey,
+  recipientIds: string[],
+  params: AppNotificationResolutionParams,
+  client: any,
+) {
+  const ids = uniqText(recipientIds)
+  if (!ids.length || !TASK_SCOPED_APP_NOTIFICATION_POLICIES.has(policyKey)) return ids
+  return await filterNotificationRecipientsToCurrentTaskScope(policyKey, ids, params, client)
 }
 
 async function resolveWarehouseRelatedUsers(data: any): Promise<string[]> {

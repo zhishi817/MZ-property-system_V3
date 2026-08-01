@@ -183,6 +183,21 @@ function buildCleaningTaskDeletionNotice(task: any) {
   }
 }
 
+function logNotificationEmissionOutcome(source: string, entityId: string, result: any) {
+  if (result?.ok && Number(result?.sent || 0) > 0) return
+  try {
+    console.error(
+      `[notifications][emit_incomplete] source=${source} entity_id=${entityId} sent=${Number(result?.sent || 0)} error_code=${String(result?.error_code || '')}`,
+    )
+  } catch {}
+}
+
+function logNotificationEmissionFailure(source: string, entityId: string, error: any) {
+  try {
+    console.error(`[notifications][emit_failed] source=${source} entity_id=${entityId} error=${String(error?.message || 'unknown')}`)
+  } catch {}
+}
+
 async function resolveCleaningTaskUpdateRecipients(taskIds: string[]) {
   try {
     const ids = Array.from(new Set(taskIds.map((x) => String(x || '').trim()).filter(Boolean)))
@@ -1613,7 +1628,7 @@ router.delete('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res
         const propertyId = String((after || before)?.property_id || '').trim()
         if (propertyId) {
           const { title, body } = buildCleaningTaskDeletionNotice(after || before)
-          await emitNotificationEvent(
+          const notificationResult = await emitNotificationEvent(
             {
               type: 'CLEANING_TASK_UPDATED',
               policyKey: 'task_deleted',
@@ -1637,8 +1652,11 @@ router.delete('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res
             },
             { operationId: uuid() },
           )
+          logNotificationEmissionOutcome('cleaning_task_deleted', String(id), notificationResult)
         }
-      } catch {}
+      } catch (error: any) {
+        logNotificationEmissionFailure('cleaning_task_deleted', String(id), error)
+      }
       addAudit('cleaning_task', String(id), 'delete', before, after, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') })
       return res.json({ ok: true })
     }
@@ -1688,7 +1706,7 @@ router.post('/tasks/bulk-delete', requirePerm('cleaning.task.assign'), async (re
             const propertyId = String((after || before)?.property_id || '').trim()
             if (propertyId) {
               const { title, body } = buildCleaningTaskDeletionNotice(after || before)
-              await emitNotificationEvent(
+              const notificationResult = await emitNotificationEvent(
                 {
                   type: 'CLEANING_TASK_UPDATED',
                   policyKey: 'task_deleted',
@@ -1712,8 +1730,11 @@ router.post('/tasks/bulk-delete', requirePerm('cleaning.task.assign'), async (re
                 },
                 { operationId: uuid(), pgClient: client },
               )
+              logNotificationEmissionOutcome('cleaning_task_bulk_deleted', String(id), notificationResult)
             }
-          } catch {}
+          } catch (error: any) {
+            logNotificationEmissionFailure('cleaning_task_bulk_deleted', String(id), error)
+          }
           addAudit('cleaning_task', String(id), 'delete', before, after, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') })
         }
         await client.query('COMMIT')

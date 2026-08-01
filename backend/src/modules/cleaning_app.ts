@@ -2458,6 +2458,7 @@ router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish')
             await emitNotificationEvent(
               {
                 type: 'CLEANING_COMPLETED',
+                policyKey: 'cleaning_completed',
                 entity: 'cleaning_task',
                 entityId: String(id),
                 propertyId,
@@ -3110,8 +3111,9 @@ router.post('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'c
       if (managerIds.length) {
         const actorId = String(user.sub || '').trim()
         const actorName = await resolveUserDisplayName(actorId)
-        await emitNotificationEvent({
-          type: 'WORK_TASK_UPDATED',
+        const notificationResult = await emitNotificationEvent({
+          type: 'DAY_END_HANDOVER_MANAGER_REMINDER',
+          policyKey: 'day_end_handover_manager_reminder',
           entity: 'work_task',
           entityId: `day_end_handover_submitted:${date}:${actorId}`,
           updatedAt: new Date().toISOString(),
@@ -3130,8 +3132,13 @@ router.post('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'c
             event_id: `day_end_handover_submitted:${date}:${actorId}`,
           },
         })
+        if (!notificationResult?.ok || !notificationResult?.sent) {
+          console.error(`[notifications][emit_incomplete] source=day_end_handover_submitted date=${date} actor_user_id=${actorId} sent=${Number(notificationResult?.sent || 0)} error_code=${String(notificationResult?.error_code || '')}`)
+        }
       }
-    } catch {}
+    } catch (error: any) {
+      console.error(`[notifications][emit_failed] source=day_end_handover_submitted date=${date} error=${String(error?.message || 'unknown')}`)
+    }
     return res.status(201).json({ ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'error' })
