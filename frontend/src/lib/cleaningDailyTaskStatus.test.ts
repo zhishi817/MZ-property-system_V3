@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { checkinTimingLabel, checkoutTimingLabel, dailyTaskStatusMeta, mergeDailyCapabilityGate, mergedDailyDisplayBadges, mergedDailyDisplayStatus, mergedDailyTaskStatus, visibleDailyDisplayBadges } from './cleaningDailyTaskStatus'
+import { checkinTimingLabel, checkoutTimingLabel, dailyTaskStatusMeta, mergeDailyCapabilityGate, mergedDailyDisplayBadges, mergedDailyDisplayStatus, mergedDailyTaskStatus, selfCompleteDailyStatusMeta, visibleDailyDisplayBadges } from './cleaningDailyTaskStatus'
 
 describe('cleaningDailyTaskStatus', () => {
   it('uses mobile-style labels for unassigned daily cleaning tasks', () => {
@@ -28,6 +28,18 @@ describe('cleaningDailyTaskStatus', () => {
       status_label: '已挂钥匙',
       status_tone: 'success',
     })
+  })
+
+  it('shows self-complete keys-hung work as pending final completion', () => {
+    expect(selfCompleteDailyStatusMeta({
+      status: 'keys_hung',
+      display_state: { task_semantics: { is_self_complete: true } },
+    })).toEqual({ label: '待自完成', tone: 'pending' })
+
+    expect(selfCompleteDailyStatusMeta({
+      status: 'cleaned',
+      display_state: { task_semantics: { is_self_complete: true } },
+    })).toEqual({ label: '已清洁', tone: 'success' })
   })
 
   it('keeps assigned above raw pending state for merged daily cards', () => {

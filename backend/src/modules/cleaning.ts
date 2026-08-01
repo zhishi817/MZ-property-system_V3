@@ -2096,6 +2096,54 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
       )
       const rawRows = r?.rows || []
       const activeTaskIds = Array.from(new Set(rawRows.map((row: any) => String(row?.id || '').trim()).filter(Boolean)))
+      if (activeTaskIds.length) {
+        try {
+          const completionAreasByTaskId = new Map<string, Set<string>>()
+          const mediaResult = await pgPool.query(
+            `SELECT task_id::text AS task_id, type
+             FROM cleaning_task_media
+             WHERE task_id::text = ANY($1::text[])
+               AND type LIKE 'completion_%'`,
+            [activeTaskIds],
+          )
+          for (const media of mediaResult?.rows || []) {
+            const taskId = String(media.task_id || '').trim()
+            const rawArea = String(media.type || '').replace(/^completion_/, '').trim()
+            const area = rawArea === 'remote_controls' || rawArea === 'remote_ac' ? 'remote_tv' : rawArea
+            if (!taskId || !area) continue
+            const areas = completionAreasByTaskId.get(taskId) || new Set<string>()
+            areas.add(area)
+            completionAreasByTaskId.set(taskId, areas)
+          }
+          const exceptionResult = await pgPool.query(
+            `SELECT DISTINCT ON (source_id::text) source_id::text AS task_id, metadata
+             FROM work_task_action_audits
+             WHERE source_type='cleaning_tasks'
+               AND source_id::text = ANY($1::text[])
+               AND performed_as_action='complete_cleaning'
+               AND metadata ? 'completion_photo_exception'
+             ORDER BY source_id::text, performed_at DESC, created_at DESC`,
+            [activeTaskIds],
+          )
+          const exceptionCountByTaskId = new Map<string, number>()
+          for (const audit of exceptionResult?.rows || []) {
+            const taskId = String(audit.task_id || '').trim()
+            const savedAreas = completionAreasByTaskId.get(taskId) || new Set<string>()
+            const exceptionAreas = new Set<string>()
+            for (const item of Array.isArray(audit.metadata?.completion_photo_exception?.items) ? audit.metadata.completion_photo_exception.items : []) {
+              const rawArea = String(item?.area || '').trim()
+              const area = rawArea === 'remote_controls' || rawArea === 'remote_ac' ? 'remote_tv' : rawArea
+              if (area && !savedAreas.has(area)) exceptionAreas.add(area)
+            }
+            if (taskId && exceptionAreas.size) exceptionCountByTaskId.set(taskId, exceptionAreas.size)
+          }
+          for (const row of rawRows) {
+            row.completion_photo_exception_count = exceptionCountByTaskId.get(String(row?.id || '').trim()) || 0
+          }
+        } catch (error: any) {
+          if (String(error?.code || '') !== '42P01') throw error
+        }
+      }
       const supersededByReplacementId = new Map<string, any[]>()
       if (activeTaskIds.length) {
         const sr = await pgPool.query(
@@ -2202,6 +2250,7 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
           inspection_mode: inspectionMode,
           inspection_scope: normalizeInspectionScope(row.inspection_scope),
           inspection_due_date: inspectionDueDate,
+          completion_photo_exception_count: Number(row.completion_photo_exception_count || 0),
         }
         if (d >= from && d <= to) {
           items.push({

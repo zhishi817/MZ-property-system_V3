@@ -41,8 +41,6 @@ import {
 } from '../lib/idempotentStepReceipts'
 import {
   actorAndPerformerFromRequest,
-  assertCleaningSubmissionReady,
-  cleaningSubmissionRequiredPayload,
   applyCleaningTaskActionTransition,
   recordWorkTaskActionAudit,
 } from '../lib/workTaskActionAudit'
@@ -52,6 +50,25 @@ import { activeCleaningTaskWhereSql, syncCheckoutOldCodeFromCheckinNewCode, vali
 export const router = Router()
 
 const REQUIRED_COMPLETION_PHOTO_AREAS = ['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'shower_drain', 'remote_tv', 'vacuum_used'] as const
+
+function completionPhotoMissingAreas(areas: Set<string>) {
+  return REQUIRED_COMPLETION_PHOTO_AREAS.filter((area) => !areas.has(area) && !(area === 'remote_tv' && (areas.has('remote_controls') || areas.has('remote_ac'))))
+}
+
+function normalizeSelfCompletePhotoException(raw: any, missingAreas: readonly string[]) {
+  const byArea = new Map<string, { area: string; reason: string; media_id: string; captured_at: string }>()
+  for (const item of Array.isArray(raw?.items) ? raw.items : []) {
+    const area = String(item?.area || '').trim()
+    const reason = String(item?.reason || '').trim()
+    const mediaId = String(item?.media_id || '').trim()
+    const capturedAt = String(item?.captured_at || '').trim()
+    if (!missingAreas.includes(area) || byArea.has(area) || !mediaId || !capturedAt) continue
+    if (!['network_pending', 'local_file_missing', 'business_save_pending'].includes(reason)) continue
+    byArea.set(area, { area, reason, media_id: mediaId, captured_at: capturedAt })
+  }
+  if (!missingAreas.length || missingAreas.some((area) => !byArea.has(area))) return null
+  return { items: missingAreas.map((area) => byArea.get(area)!) }
+}
 const actionAuditBodySchema = {
   performed_by_user_id: z.string().trim().min(1).max(120).optional(),
   performed_by_name: z.string().trim().min(1).max(160).optional(),
@@ -2470,12 +2487,15 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
     const propertyId = row.property_id ? String(row.property_id) : ''
     const selfCompleteLockbox = await canSubmitMzappSelfCompleteLockboxVideo(user, row, userId)
     if (!selfCompleteLockbox && !await canManageMzappLockboxVideo(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
-    if (!selfCompleteLockbox) await assertCleaningSubmissionReady(String(id), pgPool)
-
     const uuid = require('uuid')
     const mediaId = uuid.v4()
     const actionActor = actorAndPerformerFromRequest(user, req.body || {})
     const transactionResult = await pgRunInTransaction(async (client) => {
+      await client.query(
+        `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, uploader_id)
+         VALUES ($1,$2,'lockbox_video',$3,now(),$4)`,
+        [mediaId, id, mediaUrl, userId],
+      )
       const actionResult = await applyCleaningTaskActionTransition({
         taskId: String(id),
         actionId: 'upload_access_video',
@@ -2487,11 +2507,6 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
           self_complete_lockbox: selfCompleteLockbox,
         },
       }, client)
-      await client.query(
-        `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, uploader_id)
-         VALUES ($1,$2,'lockbox_video',$3,now(),$4)`,
-        [mediaId, id, mediaUrl, userId],
-      )
       await client.query(
         `UPDATE cleaning_tasks
          SET lockbox_video_uploaded_at = now(), updated_at = now()
@@ -2541,9 +2556,6 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
     } catch {}
     return res.status(201).json({ ok: true, action_result: actionResult })
   } catch (e: any) {
-    if (e?.code === 'CLEANING_SUBMISSION_REQUIRED') {
-      return res.status(409).json(e?.details || cleaningSubmissionRequiredPayload({ consumables_submitted: false, property_photo_submitted: false, ready: false }))
-    }
     return res.status(500).json({ message: e?.message || 'lockbox_video_failed' })
   }
 })
@@ -2763,8 +2775,6 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
     if (!await canSubmitMzappInspection(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
-    await assertCleaningSubmissionReady(String(id), pgPool)
-
     const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, bathroom: 3, shower_drain: 1, unclean: 12 }
     const byArea = new Map<string, number>()
     for (const it of parsed.data.items) {
@@ -2805,9 +2815,6 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
     } catch {}
     return res.status(201).json({ ok: true, action_result: actionResult })
   } catch (e: any) {
-    if (e?.code === 'CLEANING_SUBMISSION_REQUIRED') {
-      return res.status(409).json(e?.details || cleaningSubmissionRequiredPayload({ consumables_submitted: false, property_photo_submitted: false, ready: false }))
-    }
     return res.status(500).json({ message: e?.message || 'inspection_photos_failed' })
   }
 })
@@ -2846,7 +2853,29 @@ router.get('/cleaning-tasks/:id/completion-photos', async (req, res) => {
         created_at: x.created_at ? String(x.created_at) : null,
       }
     })
-    return res.json({ items })
+    const completionAreas = new Set(items.map((item) => String(item.area || '').trim()).filter(Boolean))
+    const missingAreas = completionPhotoMissingAreas(completionAreas)
+    let completionPhotoException: { items: { area: string; reason: string; media_id: string; captured_at: string }[] } | null = null
+    try {
+      const exceptionAudit = await pgPool.query(
+        `SELECT metadata
+         FROM work_task_action_audits
+         WHERE source_type='cleaning_tasks'
+           AND source_id::text=$1::text
+           AND performed_as_action='complete_cleaning'
+           AND metadata ? 'completion_photo_exception'
+         ORDER BY performed_at DESC, created_at DESC
+         LIMIT 1`,
+        [id],
+      )
+      completionPhotoException = normalizeSelfCompletePhotoException(
+        exceptionAudit?.rows?.[0]?.metadata?.completion_photo_exception,
+        missingAreas,
+      )
+    } catch (error: any) {
+      if (String(error?.code || '') !== '42P01') throw error
+    }
+    return res.json({ items, ...(completionPhotoException ? { photo_exception: completionPhotoException } : {}) })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'completion_photos_failed' })
   }
@@ -2958,8 +2987,6 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
         [id],
       )
       if (!consumables?.rowCount) return res.status(409).json({ message: '请先完成消耗品补充' })
-    } else {
-      await assertCleaningSubmissionReady(String(id), pgPool)
     }
 
     const uniq = new Set<string>()
@@ -3082,9 +3109,6 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
     }
     return res.status(201).json(responseBody)
   } catch (e: any) {
-    if (e?.code === 'CLEANING_SUBMISSION_REQUIRED') {
-      return res.status(409).json(e?.details || cleaningSubmissionRequiredPayload({ consumables_submitted: false, property_photo_submitted: false, ready: false }))
-    }
     return res.status(500).json({ message: e?.message || 'restock_proof_failed' })
   }
 })
@@ -6532,6 +6556,7 @@ router.get('/work-tasks', async (req, res) => {
           }
         }
         const completionAreasByTaskId = new Map<string, Set<string>>()
+        const completionPhotoExceptionByTaskId = new Map<string, any>()
         if (taskIds.length) {
           const cr = await pgPool.query(
             `SELECT task_id::text AS task_id, type
@@ -6549,6 +6574,26 @@ router.get('/work-tasks', async (req, res) => {
             const set = completionAreasByTaskId.get(tid) || new Set<string>()
             set.add(area)
             completionAreasByTaskId.set(tid, set)
+          }
+          try {
+            const er = await pgPool.query(
+              `SELECT DISTINCT ON (source_id::text) source_id::text AS task_id, metadata
+               FROM work_task_action_audits
+               WHERE source_type='cleaning_tasks'
+                 AND source_id::text = ANY($1::text[])
+                 AND performed_as_action='complete_cleaning'
+                 AND metadata ? 'completion_photo_exception'
+               ORDER BY source_id::text, performed_at DESC, created_at DESC`,
+              [taskIds],
+            )
+            for (const row of er?.rows || []) {
+              const taskId = String(row.task_id || '').trim()
+              if (taskId && row.metadata?.completion_photo_exception) {
+                completionPhotoExceptionByTaskId.set(taskId, row.metadata.completion_photo_exception)
+              }
+            }
+          } catch (error: any) {
+            if (String(error?.code || '') !== '42P01') throw error
           }
         }
         const cleanerGroups = new Map<string, any[]>()
@@ -6696,6 +6741,7 @@ router.get('/work-tasks', async (req, res) => {
             living_room_photo_url: row.living_room_photo_url,
             restock_items: restockByTaskId.get(String(row.id)) || [],
             completion_areas: Array.from(completionAreasByTaskId.get(String(row.id)) || []),
+            __completion_photo_exception: completionPhotoExceptionByTaskId.get(String(row.id)) || null,
             nights_override: row.nights_override == null ? null : Number(row.nights_override),
             order_checkin: row.order_checkin,
             order_checkout: row.order_checkout,
@@ -6883,7 +6929,19 @@ router.get('/work-tasks', async (req, res) => {
               if (k) completionAreas.add(k)
             }
           }
-          const completionPhotosOk = REQUIRED_COMPLETION_PHOTO_AREAS.every((a) => completionAreas.has(a) || (a === 'remote_tv' && completionAreas.has('remote_controls')))
+          const missingCompletionPhotoAreas = completionPhotoMissingAreas(completionAreas)
+          const completionPhotosOk = !missingCompletionPhotoAreas.length
+          const completionPhotoException = normalizeSelfCompletePhotoException(
+            {
+              items: p.ids.flatMap((sourceId) => {
+                const source = rows.find((row) => String(row.__raw_id) === String(sourceId))
+                const items = source?.__completion_photo_exception?.items
+                return Array.isArray(items) ? items : []
+              }),
+            },
+            missingCompletionPhotoAreas,
+          )
+          const completionPhotosSatisfied = completionPhotosOk || !!completionPhotoException
           const restockItems: any[] = []
           const seen = new Set<string>()
           const submittedConsumableIds = new Set<string>()
@@ -6933,6 +6991,7 @@ router.get('/work-tasks', async (req, res) => {
               ? 'to_inspect'
               : ''
           const isDoneLike = raw === 'cleaned' || raw === 'restock_pending' || raw === 'restocked' || raw === 'ready' || raw === 'inspected'
+          const isSelfCompleteFinalized = requireSelfComplete && isDoneLike && completionPhotosSatisfied
           const nightsFor = (x: any) => {
             const n0 =
               x?.nights_override != null
@@ -6978,9 +7037,11 @@ router.get('/work-tasks', async (req, res) => {
                             : relatedCheckoutProgress
                               ? relatedCheckoutProgress
                               : (String(inspectorAssigned || assigneeId || '').trim() ? 'assigned' : 'todo')
-                )
+              )
               : (
-                  raw === 'keys_hung'
+                  isSelfCompleteFinalized
+                    ? 'done'
+                    : raw === 'keys_hung'
                     ? 'keys_hung'
                     : lockboxVideoUrl
                     ? 'keys_hung'

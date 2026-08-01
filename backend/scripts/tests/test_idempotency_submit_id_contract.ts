@@ -56,7 +56,11 @@ async function main() {
   const mzappLockboxRoute = mzappSource.match(/router\.post\('\/cleaning-tasks\/:id\/lockbox-video'[\s\S]*?async function handleDeleteMzappLockboxVideo/)?.[0] || ''
   assert.ok(mzappLockboxRoute, 'MZapp lockbox route must remain discoverable')
   assert.match(mzappLockboxRoute, /const selfCompleteLockbox = await canSubmitMzappSelfCompleteLockboxVideo\(user, row, userId\)/, 'MZapp must recognize self-complete lockbox uploads')
-  assert.match(mzappLockboxRoute, /if \(!selfCompleteLockbox\) await assertCleaningSubmissionReady\(String\(id\), pgPool\)/, 'only ordinary inspection lockbox uploads may require inspection prerequisites')
+  assert.doesNotMatch(mzappLockboxRoute, /assertCleaningSubmissionReady|CLEANING_SUBMISSION_REQUIRED/, 'inspection lockbox evidence must not wait for cleaner evidence')
+  assert.ok(
+    mzappLockboxRoute.indexOf("VALUES ($1,$2,'lockbox_video'") < mzappLockboxRoute.indexOf('applyCleaningTaskActionTransition'),
+    'MZapp must save the lockbox video before reconciling shared task finalization',
+  )
   assert.match(mzappLockboxRoute, /self_complete_lockbox: selfCompleteLockbox/, 'MZapp must mark the shared transition explicitly')
   assert.match(mzappLockboxRoute, /pgRunInTransaction\(async \(client\)/, 'MZapp lockbox media and transition must share one transaction')
 

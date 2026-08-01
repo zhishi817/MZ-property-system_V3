@@ -5,6 +5,7 @@ export type CleaningDailyDisplayState = {
   status_label?: string | null
   status_tone?: TaskSemanticTone | null
   badges?: CleaningDailyDisplayBadge[] | null
+  task_semantics?: Record<string, unknown> | null
 }
 
 export type CleaningDailyDisplayBadge = {
@@ -73,6 +74,13 @@ export function dailyTaskStatusMeta(
   const tone = displayState?.status_tone || null
   if (label && tone) return { label, tone }
   return taskStatusMeta(key || status)
+}
+
+export function selfCompleteDailyStatusMeta(item: CleaningDailyStatusItem): { label: string; tone: TaskSemanticTone } {
+  const status = statusKeyOf(item)
+  const isSelfComplete = item.display_state?.task_semantics?.is_self_complete === true
+  if (isSelfComplete && status === 'keys_hung') return { label: '待自完成', tone: 'pending' }
+  return dailyTaskStatusMeta(item.status, item.display_state)
 }
 
 export function mergedDailyTaskStatus(items: CleaningDailyStatusItem[]): string {
