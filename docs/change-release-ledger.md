@@ -2,7 +2,7 @@
 
 ## CRL-20260802-001 — 根仓库 PR 合并质量门禁
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-08-02 Australia/Melbourne
 - **ID allocation:** 2026-08-02 Australia/Melbourne — 原 `CRL-20260729-012` 与既有治理 PR #276 的编号冲突，现重编号为 `CRL-20260802-001`；范围、实现和历史验证不变。
 - **Request:** Phase 3：让 CI 从提示变成合并门禁；普通 PR 必跑 Fast，高风险 PR 必跑 Full，并为 `Dev`/`main` 的 GitHub 分支保护提供稳定检查名称。
@@ -35,6 +35,7 @@
 - Fresh local validation: `npm run check:ledger` and direct ledger audit passed for the merge worktree (42/42); `npm run check:feature-registry` passed (8 FRs / 98 mappings; 57 independent-mobile mappings deferred); `git diff --check origin/Dev` passed. `test:ledger-range-audit` is not present in current `Dev` because it belongs to still-open PR #276, so it was not run for this candidate.
 - P1 correction validation: `npm run test:ledger-range-audit` passed (2 tests); exact `python3 scripts/audit_change_release_ledger.py --base origin/Dev --head HEAD` passed (4/4) and an unknown ref is rejected with its exact range in stderr.
 - Independent release review (2026-08-02): GO — the PR workflow now supplies exact base/head to both Ledger checks; strict three-dot range, no-rename coverage, whitespace failure and fail-closed refs are implemented; all 7 final PR files are recorded. P2 follow-up: add rename/delete and whitespace failure fixtures, and change the risk classifier's conservative two-dot diff to three-dot; neither causes the current PR to under-check or blocks this release.
+- Push and remote-gate receipt (2026-08-02): merge commit `7341eff501b8954899b5693e8b225882f721cdd4` was fast-forwarded to the pre-existing `origin/codex/phase3-ci-merge-gates` branch. PR #277 is open, clean and mergeable against `Dev` `f1c10c78562ffe7b023c961f7ccc760362df7c6f`; `Risk Classification`, `Change Ledger Audit`, `Regression Registry Audit`, `Fast Regression`, `Root Quality Check`, and high-risk `Full Regression` all completed successfully. The PR is not merged.
 - Not run: production API、数据库写入、外部同步、EAS/native 或业务功能测试；均不属于本治理修正。
 
 ### Risks / Release Notes
@@ -42,7 +43,7 @@
 - Risk: GitHub protection settings are not changed by this candidate. Branch-protection configuration remains a separate reviewed administrative action.
 - Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
 - Rollback: revert this CRL's workflow, classifier and policy document; no application code or data is affected.
-- Git state: existing Phase 3 commits remain on `origin/codex/phase3-ci-merge-gates`; this 2026-08-02 merge candidate is uncommitted and has not pushed, merged, or deployed anything.
+- Git state: existing Phase 3 commits and merge commit `7341eff501b8954899b5693e8b225882f721cdd4` are pushed to `origin/codex/phase3-ci-merge-gates`; PR #277 remains open, and nothing is merged into `Dev`/`main` or deployed.
 
 ## CRL-20260801-013 — 已选任务通知安全发布包
 
