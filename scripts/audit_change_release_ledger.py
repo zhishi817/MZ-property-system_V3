@@ -24,17 +24,13 @@ def git_output(*args: str) -> str:
         ["git", *args], cwd=ROOT, check=False, capture_output=True, text=True
     )
     if result.returncode:
-        detail = "\n".join(
-            part.strip() for part in (result.stdout, result.stderr) if part.strip()
-        )
-        command = "git " + " ".join(args)
-        raise GitInspectionError(detail or f"{command} failed with exit code {result.returncode}.")
+        detail = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+        raise GitInspectionError(detail or f"git {' '.join(args)} failed with exit code {result.returncode}.")
     return result.stdout
 
 
 def git_paths(*args: str) -> set[str]:
-    output = git_output(*args)
-    return {line.strip() for line in output.splitlines() if line.strip()}
+    return {line.strip() for line in git_output(*args).splitlines() if line.strip()}
 
 
 def changed_paths() -> set[str]:
@@ -45,34 +41,16 @@ def changed_paths() -> set[str]:
     )
 
 
-def resolve_commit(label: str, ref: str) -> str:
-    try:
-        return git_output("rev-parse", "--verify", f"{ref}^{{commit}}").strip()
-    except GitInspectionError as error:
-        raise GitInspectionError(
-            f"Unable to resolve {label} commit `{ref}`. Fetch the exact commit before auditing.\n{error}"
-        ) from error
-
-
 def changed_paths_in_range(base: str, head: str) -> tuple[set[str], str, str]:
-    """Return all paths changed by base...head and reject whitespace-invalid diffs.
-
-    The first command deliberately stays as ``git diff --name-only base...head``
-    so the PR scope is transparent. The no-rename form is unioned in so a rename
-    requires both its removed and added path to be named by the ledger.
-    """
-
-    base_sha = resolve_commit("base", base)
-    head_sha = resolve_commit("head", head)
-    revision_range = f"{base_sha}...{head_sha}"
     try:
-        paths = git_paths("diff", "--name-only", revision_range)
-        paths |= git_paths("diff", "--name-only", "--no-renames", revision_range)
-        git_output("diff", "--check", revision_range)
+        base_sha = git_output("rev-parse", "--verify", f"{base}^{{commit}}").strip()
+        head_sha = git_output("rev-parse", "--verify", f"{head}^{{commit}}").strip()
     except GitInspectionError as error:
-        raise GitInspectionError(
-            f"Unable to audit Git range {revision_range}. The PR range is invalid or incomplete.\n{error}"
-        ) from error
+        raise GitInspectionError(f"Unable to resolve exact PR range `{base}`...`{head}`.\n{error}") from error
+    revision_range = f"{base_sha}...{head_sha}"
+    paths = git_paths("diff", "--name-only", revision_range)
+    paths |= git_paths("diff", "--name-only", "--no-renames", revision_range)
+    git_output("diff", "--check", revision_range)
     return paths, base_sha, head_sha
 
 

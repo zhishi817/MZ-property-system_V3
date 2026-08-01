@@ -85,7 +85,7 @@ class LedgerRangeAuditTests(unittest.TestCase):
         result = self.run_audit("not-a-commit", head)
 
         self.assertEqual(result.returncode, 2)
-        self.assertIn("Unable to resolve base commit", result.stderr)
+        self.assertIn("not-a-commit", result.stderr)
         self.assertNotIn("Changed files: 0", result.stdout)
 
     def test_requires_both_paths_for_rename_and_deleted_path(self) -> None:
