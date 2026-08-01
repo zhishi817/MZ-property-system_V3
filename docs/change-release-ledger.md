@@ -2,7 +2,7 @@
 
 ## CRL-20260802-002 — Phase 5 精确 ref 契约补强
 
-- **Status:** in-progress
+- **Status:** committed
 - **Updated:** 2026-08-02 Australia/Melbourne
 - **ID allocation:** 原分支的 `CRL-20260729-013` 与 Dev 已存在的默认分支精确 ref 门禁记录冲突；本次整合改用新的连续 ID，保留两条历史记录。
 - **Request:** 按既有第三条分支逐条处理；不创建新分支，并让已有分支可经受保护的 `Dev` 发布路径交付。
@@ -32,7 +32,7 @@
 - Historical conflict analysis — passed: the resolved workflow is byte-for-byte equal to the prior Dev workflow; the old workflow is a subset of the retained exact-ref, failure-evidence implementation.
 - Historical local checks — passed: Ruby YAML parse; `ts-node-dev --transpile-only scripts/tests/test_phase5_release_contract.ts`; ledger audit 42/42 before the temporary untracked mobile symlink; FR audit 8 FRs / 98 mappings.
 - Previous blocker: the prior Dev audit script ignored `--base/--head`, so no Phase 4 PR was created or pushed.
-- 2026-08-02 restart: PR #277 is now merged to Dev as `c01d118c34cabc08bad51c8014d6de04ba995ef2`; this branch is merging that Dev head. Ruby YAML parsing for both relevant workflows, `git diff --check origin/Dev`, `python3 scripts/tests/test_audit_change_release_ledger.py` (2 tests), and `ts-node-dev --transpile-only scripts/tests/test_phase5_release_contract.ts` have passed. The staged effective diff against updated Dev remains the three files in this unit; exact committed-range audit and independent release review remain pending before commit, push, or PR creation.
+- 2026-08-02 restart: PR #277 is now merged to Dev as `c01d118c34cabc08bad51c8014d6de04ba995ef2`; this branch merged that Dev head in local commit `fd48e4374b8fbd6770965fb72a992826fa917df8`. Ruby YAML parsing for both relevant workflows, `git diff --check origin/Dev`, `python3 scripts/tests/test_audit_change_release_ledger.py` (2 tests), and `ts-node-dev --transpile-only scripts/tests/test_phase5_release_contract.ts` have passed. The exact committed range audit now passed: `python3 scripts/audit_change_release_ledger.py --base origin/Dev --head HEAD` reports the expected three files / three recorded files. Final independent release review remains required before push or PR creation.
 - Not run: GitHub Actions dispatch, production API/database, external sync, deployment, EAS/native, or device validation.
 
 ### Risks / Release Notes
@@ -40,7 +40,7 @@
 - Risk: static contract assertions detect interface drift but are not a live API/device acceptance test; exact-ref workflow dispatch remains a separately authorized action.
 - Rollback: revert only the three effective files in this unit; Dev's existing workflow remains unchanged.
 - Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
-- Git state: existing branch contains local commits `09233b7` and `363e082`, has not been pushed, and is merging current Dev; no Phase 4 PR, direct Dev push, deployment, or production action has occurred.
+- Git state: existing branch contains local commits `09233b7`, `363e082`, and `fd48e43`, has not been pushed; no Phase 4 PR, direct Dev push, deployment, or production action has occurred.
 
 ## CRL-20260802-001 — 根仓库 PR 合并质量门禁
 
