@@ -88,46 +88,6 @@ export async function getCleaningSubmissionState(taskId: string, executor: Query
   }
 }
 
-export function cleaningSubmissionRequiredPayload(state: CleaningSubmissionState) {
-  const missing_requirements = [
-    ...(!state.consumables_submitted ? ['cleaning_consumables'] : []),
-    ...(!state.property_photo_submitted ? ['cleaning_property_photo'] : []),
-  ]
-  return {
-    message: 'cleaning_submission_required',
-    code: 'CLEANING_SUBMISSION_REQUIRED',
-    missing_requirements,
-  }
-}
-
-export async function assertCleaningSubmissionReady(taskId: string, executor: Queryable | null = pgPool) {
-  const id = cleanText(taskId)
-  if (!id || !executor) return null
-  const taskResult = await executor.query(
-    `SELECT lower(COALESCE(inspection_scope, '')) AS inspection_scope,
-            lower(COALESCE(task_type, type, '')) AS task_type
-       FROM cleaning_tasks
-      WHERE id::text = $1::text
-      LIMIT 1`,
-    [id],
-  )
-  const task = taskResult?.rows?.[0]
-  if (
-    !task
-    || lower(task.inspection_scope) === 'password_only'
-    || lower(task.task_type) === 'checkin_clean'
-  ) return null
-  const state = await getCleaningSubmissionState(id, executor)
-  if (!state.ready) {
-    const error: any = new Error('cleaning_submission_required')
-    error.code = 'CLEANING_SUBMISSION_REQUIRED'
-    error.statusCode = 409
-    error.details = cleaningSubmissionRequiredPayload(state)
-    throw error
-  }
-  return state
-}
-
 async function hasInspectionPhotoMedia(taskId: string, executor: Queryable, allowGuestArrivalSkip = false) {
   const result = await executor.query(
     `SELECT 1
@@ -153,6 +113,19 @@ async function hasInspectionPhotoMedia(taskId: string, executor: Queryable, allo
         )
       LIMIT 1`,
     [taskId, INSPECTION_PHOTO_MEDIA_TYPES, allowGuestArrivalSkip],
+  )
+  return !!result?.rows?.length
+}
+
+async function hasLockboxVideoMedia(taskId: string, executor: Queryable) {
+  const result = await executor.query(
+    `SELECT 1
+       FROM cleaning_task_media m
+      WHERE m.task_id::text = $1::text
+        AND m.type = 'lockbox_video'
+        AND COALESCE(TRIM(m.url), '') <> ''
+      LIMIT 1`,
+    [taskId],
   )
   return !!result?.rows?.length
 }
@@ -213,13 +186,17 @@ export function resolveCleaningTaskActionStatus(input: {
   isStayover?: boolean
   inspectionPhotosSaved?: boolean
   isPasswordOnly?: boolean
+  isCheckinInspectAndHang?: boolean
 }) {
   const current = lower(input.statusBefore)
   if (isTerminalCleaningStatus(current)) return current || null
   if (input.actionId === 'upload_key_photo') return current && isDoneLikeCleaningStatus(current) ? current : 'in_progress'
   if (input.actionId === 'fill_supplies') return input.needsRestock ? 'restock_pending' : 'cleaned'
   if (input.actionId === 'complete_cleaning') return input.isStayover ? 'cleaned' : (input.needsRestock ? 'restock_pending' : 'cleaned')
-  if (input.actionId === 'submit_inspection') return input.inspectionPhotosSaved === false ? current || null : 'inspected'
+  if (input.actionId === 'submit_inspection') {
+    if (input.inspectionPhotosSaved === false) return current || null
+    return input.isCheckinInspectAndHang ? 'to_hang_keys' : 'inspected'
+  }
   if (input.actionId === 'upload_access_video') return input.isPasswordOnly ? 'inspected' : 'keys_hung'
   return current || null
 }
@@ -388,6 +365,7 @@ export async function applyCleaningTaskActionTransition(input: CleaningTaskTrans
             COALESCE(status, '') AS status,
             task_type,
             inspection_scope,
+            inspection_mode,
             finished_at
        FROM cleaning_tasks
       WHERE id::text = $1::text
@@ -399,13 +377,24 @@ export async function applyCleaningTaskActionTransition(input: CleaningTaskTrans
   const statusBefore = cleanText(row.status)
   const taskType = lower(row.task_type)
   const requiresInspectionPhotos = lower(row.inspection_scope) !== 'password_only'
+  const isCheckinInspectAndHang = taskType === 'checkin_clean' && requiresInspectionPhotos
   const selfCompleteLockboxVideo = input.actionId === 'upload_access_video' && input.metadata?.self_complete_lockbox === true
   const checksInspectionPhotos = !selfCompleteLockboxVideo
     && requiresInspectionPhotos
     && (input.actionId === 'submit_inspection' || input.actionId === 'upload_access_video')
-  if (checksInspectionPhotos) await assertCleaningSubmissionReady(taskId, executor)
   const guestArrivalSkip = input.metadata?.guest_arrival_skip === true
-  const inspectionPhotosSaved = checksInspectionPhotos ? await hasInspectionPhotoMedia(taskId, executor, guestArrivalSkip) : true
+  const regularCheckoutInspection = requiresInspectionPhotos
+    && taskType !== 'checkin_clean'
+    && lower(row.inspection_mode) !== 'self_complete'
+    && !selfCompleteLockboxVideo
+  const evaluatesSharedFinalization = regularCheckoutInspection
+    && ['submit_inspection', 'upload_access_video', 'fill_supplies'].includes(input.actionId)
+  const cleaningSubmission = evaluatesSharedFinalization
+    ? await getCleaningSubmissionState(taskId, executor)
+    : null
+  const inspectionPhotosSaved = (checksInspectionPhotos || evaluatesSharedFinalization)
+    ? await hasInspectionPhotoMedia(taskId, executor, guestArrivalSkip)
+    : true
   let statusAfter = resolveCleaningTaskActionStatus({
     actionId: input.actionId,
     statusBefore,
@@ -413,14 +402,40 @@ export async function applyCleaningTaskActionTransition(input: CleaningTaskTrans
     isStayover: input.isStayover === true || taskType === 'stayover_clean',
     inspectionPhotosSaved,
     isPasswordOnly: !requiresInspectionPhotos,
+    isCheckinInspectAndHang,
   })
   let recoveredStatus = ''
   if (input.actionId === 'upload_key_photo' && lower(statusBefore) === 'in_progress') {
     recoveredStatus = await latestCompletedStatusBeforeKeyUpload(taskId, executor)
     statusAfter = keyPhotoUploadStatus(statusBefore, statusAfter, recoveredStatus)
   }
-  const finalizationPending = checksInspectionPhotos && !inspectionPhotosSaved
-  const missingRequirements = finalizationPending ? ['inspection_photos'] : []
+  let finalizationPending = checksInspectionPhotos && !inspectionPhotosSaved
+  let missingRequirements = finalizationPending ? ['inspection_photos'] : []
+  if (regularCheckoutInspection && (input.actionId === 'submit_inspection' || input.actionId === 'upload_access_video')) {
+    missingRequirements = [
+      ...(!cleaningSubmission?.consumables_submitted ? ['cleaning_consumables'] : []),
+      ...(!cleaningSubmission?.property_photo_submitted ? ['cleaning_property_photo'] : []),
+      ...(!inspectionPhotosSaved ? ['inspection_photos'] : []),
+    ]
+    finalizationPending = missingRequirements.length > 0
+    if (finalizationPending) {
+      // Inspection evidence is saved independently. Do not advance the shared
+      // task to an inspector terminal status until the cleaner's evidence exists.
+      statusAfter = statusBefore || null
+    }
+  }
+  if (
+    regularCheckoutInspection
+    && input.actionId === 'fill_supplies'
+    && cleaningSubmission?.ready
+    && inspectionPhotosSaved
+    && !input.needsRestock
+    && await hasLockboxVideoMedia(taskId, executor)
+  ) {
+    // The cleaner can be the last writer. Reconcile already-saved inspection
+    // evidence here so the task does not stay open merely because it arrived first.
+    statusAfter = 'keys_hung'
+  }
   const patch: Record<string, any> = {}
   if (statusAfter && statusAfter !== statusBefore) patch.status = statusAfter
   if ((input.actionId === 'fill_supplies' || input.actionId === 'complete_cleaning') && !row.finished_at) patch.finished_at = new Date().toISOString()

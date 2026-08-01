@@ -35,6 +35,26 @@ export type NotificationRuleTemplate = {
   selectors: NotificationRuleSelector[]
 }
 
+const TASK_SCOPED_LEGACY_EVENT_TYPES = new Set<NotificationManagedEventType>([
+  'CLEANING_TASK_UPDATED',
+  'CLEANING_COMPLETED',
+  'INSPECTION_COMPLETED',
+  'KEY_PHOTO_UPLOADED',
+  'ISSUE_REPORTED',
+  'WORK_TASK_UPDATED',
+  'WORK_TASK_COMPLETED',
+  'KEY_UPLOAD_REMINDER',
+  'KEY_UPLOAD_SLA_REMINDER',
+  'KEY_UPLOAD_SLA_ESCALATION',
+  'GUEST_LUGGAGE_UPDATED',
+])
+
+const MANAGER_ROLE_NAMES = new Set(['admin', 'offline_manager', 'customer_service'])
+
+export function isTaskScopedLegacyNotificationEventType(raw: string): raw is NotificationManagedEventType {
+  return TASK_SCOPED_LEGACY_EVENT_TYPES.has(String(raw || '').trim() as NotificationManagedEventType)
+}
+
 export const NOTIFICATION_AUDIENCE_OPTIONS: Array<{ value: NotificationAudienceType; label: string; description: string }> = [
   { value: 'order_related_users', label: '订单关联人', description: '关联 cleaning task 的 cleaner / inspector / assignee' },
   { value: 'cleaning_task_users', label: '清洁任务参与人', description: '当前 cleaning task 的 cleaner / inspector / assignee' },
@@ -152,6 +172,18 @@ function uniqSelectors(selectors: NotificationRuleSelector[]) {
   return out
 }
 
+export function assertTaskScopedNotificationRuleSelectors(eventType: NotificationManagedEventType, selectors: NotificationRuleSelector[]) {
+  if (!TASK_SCOPED_LEGACY_EVENT_TYPES.has(eventType)) return
+  const hasUnsafeSelector = (selectors || []).some((selector) => {
+    if (selector.recipient_type === 'user') return true
+    if (selector.recipient_type !== 'role') return false
+    return !MANAGER_ROLE_NAMES.has(String(selector.recipient_value || '').trim().toLowerCase())
+  })
+  if (hasUnsafeSelector) {
+    throw new Error('task_notification_selector_must_use_task_audience_or_manager_role')
+  }
+}
+
 export function isManagedNotificationEventType(raw: string): raw is NotificationManagedEventType {
   return (ALL_NOTIFICATION_EVENT_TYPES as readonly string[]).includes(String(raw || '').trim())
 }
@@ -264,6 +296,7 @@ export async function saveNotificationRule(
   if (!hasPg || !pgPool) throw new Error('database not available')
   await ensureNotificationRuleTables()
   const selectors = uniqSelectors(payload.selectors || [])
+  assertTaskScopedNotificationRuleSelectors(eventType, selectors)
   const actor = String(updatedBy || '').trim() || null
   await pgRunInTransaction(async (client) => {
     const current = await client.query(`SELECT version FROM notification_event_rules WHERE event_type = $1 LIMIT 1`, [eventType])

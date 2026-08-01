@@ -2,11 +2,14 @@ import assert from 'assert'
 import {
   APP_NOTIFICATION_GROUP_ROLE_KEYS,
   filterAppNotificationRecipientsForPolicy,
+  filterAppNotificationRecipientsToCurrentTaskScope,
+  filterNotificationRecipientsToCurrentTaskScope,
   getAppNotificationPolicyCatalogMeta,
   resolveAppPolicyKeyFromKind,
   resolveAppPolicyTemplateGroupKeys,
   shouldExcludeOrdinaryCleanerFromAppNotification,
 } from '../../src/services/appNotificationPolicies'
+import { assertTaskScopedNotificationRuleSelectors, isTaskScopedLegacyNotificationEventType } from '../../src/services/notificationRules'
 
 async function run() {
   assert.deepStrictEqual(APP_NOTIFICATION_GROUP_ROLE_KEYS.admin_users, ['admin'])
@@ -39,6 +42,7 @@ async function run() {
   assert.strictEqual(getAppNotificationPolicyCatalogMeta('restock_done').default_template_key, 'inspection_plus_ops_manager')
   assert.strictEqual(getAppNotificationPolicyCatalogMeta('keys_hung').default_template_key, 'inspection_plus_ops_manager')
   assert.strictEqual(getAppNotificationPolicyCatalogMeta('restock_proof_saved').default_template_key, 'inspection_plus_ops_manager')
+  assert.strictEqual(getAppNotificationPolicyCatalogMeta('cleaning_completed').default_template_key, 'participants_plus_ops_manager_and_customer_service')
   assert.strictEqual(getAppNotificationPolicyCatalogMeta('guest_luggage_updated').default_template_key, 'participants_plus_ops_manager_and_customer_service')
   assert.strictEqual(getAppNotificationPolicyCatalogMeta('warehouse_key_updated').default_template_key, 'participants_plus_ops_manager')
   assert.strictEqual(getAppNotificationPolicyCatalogMeta('work_task_completed').default_template_key, 'worktask_assignee_plus_ops_manager')
@@ -57,6 +61,8 @@ async function run() {
   assert.strictEqual(shouldExcludeOrdinaryCleanerFromAppNotification('keys_hung', ['cleaning_inspector']), false)
   assert.strictEqual(shouldExcludeOrdinaryCleanerFromAppNotification('keys_hung', ['admin']), false)
   assert.strictEqual(shouldExcludeOrdinaryCleanerFromAppNotification('completion_photos_saved', ['cleaner']), false)
+  assert.strictEqual(shouldExcludeOrdinaryCleanerFromAppNotification('key_upload_reminder', ['cleaner']), false)
+  assert.strictEqual(shouldExcludeOrdinaryCleanerFromAppNotification('key_upload_sla_reminder', ['cleaner']), false)
 
   const filteredRecipients = await filterAppNotificationRecipientsForPolicy(
     'keys_hung',
@@ -81,6 +87,79 @@ async function run() {
     },
   })
   assert.deepStrictEqual(failedLookupRecipients, [])
+
+  const taskScopedRecipients = await filterAppNotificationRecipientsToCurrentTaskScope(
+    'task_requirements_changed',
+    ['former-inspector', 'current-cleaner', 'current-inspector', 'manager-1', 'unrelated-cleaner'],
+    {
+      entity: 'cleaning_task',
+      entityId: 'current-task',
+      data: { task_id: 'current-task' },
+    },
+    {
+      async query(sql: string) {
+        if (sql.includes('FROM cleaning_tasks')) {
+          return { rows: [{ cleaner_id: 'current-cleaner', inspector_id: 'current-inspector', assignee_id: '' }] }
+        }
+        if (sql.includes('FROM users')) return { rows: [{ id: 'manager-1' }] }
+        return { rows: [] }
+      },
+    },
+  )
+  assert.deepStrictEqual(taskScopedRecipients, ['current-cleaner', 'current-inspector', 'manager-1'])
+
+  const deletedTaskRecipients = await filterAppNotificationRecipientsToCurrentTaskScope(
+    'task_deleted',
+    ['former-inspector', 'current-cleaner', 'current-inspector', 'manager-1', 'unrelated-cleaner'],
+    {
+      entity: 'cleaning_task',
+      entityId: 'current-task',
+      data: { task_id: 'current-task' },
+    },
+    {
+      async query(sql: string) {
+        if (sql.includes('FROM cleaning_tasks')) {
+          return { rows: [{ cleaner_id: 'current-cleaner', inspector_id: 'current-inspector', assignee_id: '' }] }
+        }
+        if (sql.includes('FROM users')) return { rows: [{ id: 'manager-1' }] }
+        return { rows: [] }
+      },
+    },
+  )
+  assert.deepStrictEqual(deletedTaskRecipients, ['current-cleaner', 'current-inspector', 'manager-1'])
+
+  const legacyTaskRecipients = await filterNotificationRecipientsToCurrentTaskScope(
+    'legacy:WORK_TASK_UPDATED',
+    ['former-inspector', 'current-cleaner', 'current-inspector', 'manager-1', 'unrelated-cleaner'],
+    {
+      entity: 'cleaning_task',
+      entityId: 'current-task',
+      data: { task_id: 'current-task' },
+    },
+    {
+      async query(sql: string) {
+        if (sql.includes('FROM cleaning_tasks')) {
+          return { rows: [{ cleaner_id: 'current-cleaner', inspector_id: 'current-inspector', assignee_id: '' }] }
+        }
+        if (sql.includes('FROM users')) return { rows: [{ id: 'manager-1' }] }
+        return { rows: [] }
+      },
+    },
+  )
+  assert.deepStrictEqual(legacyTaskRecipients, ['current-cleaner', 'current-inspector', 'manager-1'])
+  assert.strictEqual(isTaskScopedLegacyNotificationEventType('WORK_TASK_UPDATED'), true)
+  assert.strictEqual(isTaskScopedLegacyNotificationEventType('DAY_END_HANDOVER_MANAGER_REMINDER'), false)
+
+  assert.throws(
+    () => assertTaskScopedNotificationRuleSelectors('CLEANING_TASK_UPDATED', [{ recipient_type: 'role', recipient_value: 'cleaning_inspector' }]),
+    /task_notification_selector_must_use_task_audience_or_manager_role/,
+  )
+  assert.throws(
+    () => assertTaskScopedNotificationRuleSelectors('KEY_UPLOAD_REMINDER', [{ recipient_type: 'user', recipient_value: 'user-1' }]),
+    /task_notification_selector_must_use_task_audience_or_manager_role/,
+  )
+  assert.doesNotThrow(() => assertTaskScopedNotificationRuleSelectors('CLEANING_TASK_UPDATED', [{ recipient_type: 'audience', recipient_value: 'cleaning_task_users' }]))
+  assert.doesNotThrow(() => assertTaskScopedNotificationRuleSelectors('CLEANING_TASK_UPDATED', [{ recipient_type: 'role', recipient_value: 'offline_manager' }]))
 
   console.log('ok')
 }

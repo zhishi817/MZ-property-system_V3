@@ -1,5 +1,218 @@
 # Change Release Ledger
 
+## CRL-20260802-002 — Phase 5 精确 ref 契约补强
+
+- **Status:** committed
+- **Updated:** 2026-08-02 Australia/Melbourne
+- **ID allocation:** 原分支的 `CRL-20260729-013` 与 Dev 已存在的默认分支精确 ref 门禁记录冲突；本次整合改用新的连续 ID，保留两条历史记录。
+- **Request:** 按既有第三条分支逐条处理；不创建新分支，并让已有分支可经受保护的 `Dev` 发布路径交付。
+- **Outcome:** 旧工作流的意图已被 Dev 中更完整的精确 ref 门禁覆盖；保留分支独有的 Phase 5 静态契约断言和回归说明，避免重复或降级现有 CI。此前阻断本单元的 PR 精确范围审计已由 Phase 3 PR #277 合并到 Dev 提供，现重新验证。
+
+### Implementation
+
+- Previous behavior: Phase 5 静态契约覆盖共享队列与事务，但没有明确锁定服务端 `available_actions` 到移动端类型与消费路径。
+- New behavior: 契约额外检查服务端 payload、移动端 API 类型和移动端优先消费服务端 actions 的链路；回归说明与当前 Dev 的 `Cross-Repository Integration Verification` 语义一致。
+- Key decisions: 采用 Dev 已有的完整工作流（精确 checkout、失败最终 gate、manifest 与日志 artifact）作为唯一实现，不把旧分支较弱的工作流重写回 Dev。
+
+### Files / Areas
+
+- `backend/scripts/tests/test_phase5_release_contract.ts` — modified: 增加 `available_actions` 服务端 payload、移动端类型与服务端 actions 消费链路的静态契约。
+- `docs/regression-test-levels.md` — modified: 说明手动精确双 ref 组合验证的命令、边界与证据。
+- `.github/workflows/cross-repository-phase5-contract.yml` — conflict-resolved to current Dev implementation; no effective PR diff, preventing CI regression.
+- `docs/change-release-ledger.md` — modified: 保留 #276、#278 两条治理记录并记录本次最新 Dev 整合。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- GitHub Actions: existing manual `workflow_dispatch` still requires explicit `root_ref` and `mobile_ref`; no dispatch is included in this change.
+- Related units: Dev `CRL-20260802-001` (merged by PR #277 as `c01d118c34cabc08bad51c8014d6de04ba995ef2`) supplies the required strict range audit; existing Dev `CRL-20260729-013` remains the workflow owner.
+
+### Validation
+
+- Historical conflict analysis — passed: the resolved workflow is byte-for-byte equal to the prior Dev workflow; the old workflow is a subset of the retained exact-ref, failure-evidence implementation.
+- Historical local checks — passed: Ruby YAML parse; `ts-node-dev --transpile-only scripts/tests/test_phase5_release_contract.ts`; ledger audit 42/42 before the temporary untracked mobile symlink; FR audit 8 FRs / 98 mappings.
+- Previous blocker: the prior Dev audit script ignored `--base/--head`, so no Phase 4 PR was created or pushed.
+- 2026-08-02 restart: PR #277 is now merged to Dev as `c01d118c34cabc08bad51c8014d6de04ba995ef2`; this branch merged that Dev head in local commit `fd48e4374b8fbd6770965fb72a992826fa917df8`. Ruby YAML parsing for both relevant workflows, `git diff --check origin/Dev`, `python3 scripts/tests/test_audit_change_release_ledger.py` (2 tests), and `ts-node-dev --transpile-only scripts/tests/test_phase5_release_contract.ts` have passed. The exact committed range audit passed: `python3 scripts/audit_change_release_ledger.py --base origin/Dev --head HEAD` reports the expected three files / three recorded files. Final independent release review was GO before the branch push and PR creation.
+- Push and PR receipt: existing branch was non-force pushed through `2a4d8e65c88460713140db94e9bd2abef7c0b5a7`; PR #278 originally passed Root Quality Gate and Vercel. PR #276 subsequently merged to Dev as `ffff6e439d112c610c7eba345e8011010312f32d`; the resulting ledger-only conflict was resolved in local merge commit `1d412b3e4ed591b5f1152094b5436db5f7189fe8`. `python3 scripts/tests/test_audit_change_release_ledger.py` passed (5 tests), `ts-node-dev --transpile-only scripts/tests/test_phase5_release_contract.ts` passed from `backend`, `npm run check:feature-registry` passed (8 FRs / 98 mappings), exact `python3 scripts/audit_change_release_ledger.py --base origin/Dev --head HEAD` passed (3/3), and `git diff --check origin/Dev...HEAD` passed. Final independent review: GO, no P0/P1; remote CI remains pending before any PR merge.
+- Not run: GitHub Actions exact-ref dispatch, production API/database, external sync, production deployment, EAS/native, or device validation. The PR's Vercel Preview deployment is not a production deployment.
+
+### Risks / Release Notes
+
+- Risk: static contract assertions detect interface drift but are not a live API/device acceptance test; exact-ref workflow dispatch remains a separately authorized action.
+- Rollback: revert only the three effective files in this unit; Dev's existing workflow remains unchanged.
+- Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
+- Git state: local merge commit `1d412b3e4ed591b5f1152094b5436db5f7189fe8` is on the pre-existing `origin/codex/phase4-exact-ref-integration` branch. No new branch, direct Dev push, PR merge, production deployment/action, or modification to the untracked mobile link has occurred.
+
+## CRL-20260802-003 — Ledger 范围审计边界回归
+
+- **Status:** committed
+- **Updated:** 2026-08-02 Australia/Melbourne
+- **Request:** 在既有 PR #276 上补齐 Phase 3 留下的范围审计边界回归，并将该已有 PR 更新到已合并 #277 后的 `Dev`，不创建分支、不直接推送 `Dev`。
+- **Outcome:** 保留 `Dev` 中 #277 的严格范围实现和质量门禁；本 PR 只补充 rename/delete、detached HEAD 与 whitespace 失败的回归覆盖，避免重复或覆盖已合并的实现。
+
+### Files / Areas
+
+- `scripts/tests/test_audit_change_release_ledger.py` — modified: 覆盖未登记文件、无效 ref、rename/delete、detached HEAD 与 `git diff --check` whitespace 失败。
+- `docs/change-release-ledger.md` — modified: 记录本治理单元及其与 #277 的合并关系。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Dependency: relies on the exact `--base/--head`, three-dot range, no-rename and whitespace validation already merged to `Dev` by PR #277.
+
+### Validation
+
+- 2026-08-02 integration result: merged current `origin/Dev` after PR #277 (`c01d118c34cabc08bad51c8014d6de04ba995ef2`) into the existing #276 source as local merge commit `594cb5f061d5296f39878b69eafe53b2767b1e6c`. `python3 scripts/tests/test_audit_change_release_ledger.py` passed (5 tests); exact `python3 scripts/audit_change_release_ledger.py --base origin/Dev --head HEAD` passed (2/2); and `git diff --check origin/Dev...HEAD` passed. The exact range contains only this ledger plus the test.
+- Independent release review (2026-08-02): GO — no P0/P1; final effective range retains Dev's workflow/audit implementation unchanged, has no secret, production-write, database, deployment or external-sync surface. The reviewer requested the `in-progress` state spelling, which was corrected before the merge commit.
+- Pending: push the existing branch, remote PR #276 CI and mergeability check. No merge is authorized by this record.
+- Not run: production API、数据库写入、外部同步、EAS/native 或业务功能测试；均不属于本治理回归。
+
+### Risks / Release Notes
+
+- Scope is intentionally limited to regression coverage; no workflow, package, application, deployment or GitHub protection configuration is changed by this PR.
+- Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
+- Git state: local merge commit `594cb5f061d5296f39878b69eafe53b2767b1e6c` is on the pre-existing `origin/codex/governance-ledger-root-20260729` branch; no new branch is created and nothing is directly pushed or merged to `Dev`/`main`.
+
+## CRL-20260802-001 — 根仓库 PR 合并质量门禁
+
+- **Status:** pushed
+- **Updated:** 2026-08-02 Australia/Melbourne
+- **ID allocation:** 2026-08-02 Australia/Melbourne — 原 `CRL-20260729-012` 与既有治理 PR #276 的编号冲突，现重编号为 `CRL-20260802-001`；范围、实现和历史验证不变。
+- **Request:** Phase 3：让 CI 从提示变成合并门禁；普通 PR 必跑 Fast，高风险 PR 必跑 Full，并为 `Dev`/`main` 的 GitHub 分支保护提供稳定检查名称。
+- **Outcome:** 根仓库现提供独立 Ledger、FR、风险分类、Fast 与 Full 检查；Full 对低风险 PR 显式成功而不是省略状态，高风险或非 PR 事件运行完整检查。本阶段未修改远端保护；既有状态须在这些 check 名称通过 reviewed PR 进入 GitHub 后再读取和配置。
+
+### Files / Areas
+
+- `.github/workflows/quality.yml` — modified: 拆分稳定门禁检查并按风险选择 Full。
+- `package.json` — modified: 将 Ledger 精确范围回归测试接入 Fast。
+- `scripts/audit_change_release_ledger.py` — modified: 支持严格 PR `--base/--head` 范围、重命名/空白检查和 fail-closed ref 解析。
+- `scripts/tests/test_audit_change_release_ledger.py` — added: 覆盖未登记已提交文件与无效 PR ref 的范围审计回归。
+- `scripts/ci/classify_pr_risk.sh` — added: 可本地复验的高风险路径分类。
+- `docs/ci-merge-gates.md` — added: 记录检查名称、路径策略和远端保护目标。
+- `docs/change-release-ledger.md` — modified: 记录本治理单元。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- GitHub configuration: 远端 `Dev`/`main` 保护规则必须在这些检查已实际出现后，通过 reviewed PR 配置；本地 workflow 文件本身不会改变 GitHub 保护状态。
+- Related units: CRL-20260729-011、移动端 CRL-20260729-004；Phase 4 将另行验证精确根/移动端 ref 组合。
+
+### Validation
+
+- Historical passed: Ruby YAML parse and `bash -n scripts/ci/classify_pr_risk.sh`.
+- Historical passed: classifier stdin examples — `docs/ci-merge-gates.md` and isolated Web component return `full_required=false`; `backend/src/modules/mzapp.ts` and `.github/workflows/quality.yml` return `full_required=true`.
+- Historical P1 repair: classifier examples now cover notification, migration, Web API/finance/RBAC paths and each returns `full_required=true`; the low-risk documentation/component examples remain `false`.
+- Historical passed: `git diff --check`, `npm run check:ledger` (4/4) and `npm run check:feature-registry` (8 FRs / 90 mappings; 55 independent-mobile mappings deferred in the standalone root worktree).
+- 2026-08-02 integration candidate: merges current `origin/Dev` `f1c10c78562ffe7b023c961f7ccc760362df7c6f` into the existing Phase 3 branch. It preserves the current protected job names `Root Quality Check`, `Fast Regression`, and `Full Regression`; adds the Phase 3 risk classifier and independent ledger/registry jobs; uses the PR head SHA for classification; and passes exact PR base/head to both Ledger workflow checks. Fresh validation and independent review are pending before commit or push.
+- Fresh local validation: Ruby YAML parse, `bash -n scripts/ci/classify_pr_risk.sh`, and conflict-marker scan passed. The classifier returns `full_required=false` for `docs/ci-merge-gates.md`, and `true` for `.github/workflows/quality.yml`, `backend/src/services/notificationRules.ts`, and `frontend/src/lib/api.ts`.
+- Fresh local validation: `npm run check:ledger` and direct ledger audit passed for the merge worktree (42/42); `npm run check:feature-registry` passed (8 FRs / 98 mappings; 57 independent-mobile mappings deferred); `git diff --check origin/Dev` passed. `test:ledger-range-audit` is not present in current `Dev` because it belongs to still-open PR #276, so it was not run for this candidate.
+- P1 correction validation: `npm run test:ledger-range-audit` passed (2 tests); exact `python3 scripts/audit_change_release_ledger.py --base origin/Dev --head HEAD` passed (4/4) and an unknown ref is rejected with its exact range in stderr.
+- Independent release review (2026-08-02): GO — the PR workflow now supplies exact base/head to both Ledger checks; strict three-dot range, no-rename coverage, whitespace failure and fail-closed refs are implemented; all 7 final PR files are recorded. P2 follow-up: add rename/delete and whitespace failure fixtures, and change the risk classifier's conservative two-dot diff to three-dot; neither causes the current PR to under-check or blocks this release.
+- Push and remote-gate receipt (2026-08-02): merge commit `7341eff501b8954899b5693e8b225882f721cdd4` was fast-forwarded to the pre-existing `origin/codex/phase3-ci-merge-gates` branch. Before merge, PR #277 was clean and passed `Risk Classification`, `Change Ledger Audit`, `Regression Registry Audit`, `Fast Regression`, `Root Quality Check`, and `Full Regression`; it was subsequently merged into `Dev` as `c01d118c34cabc08bad51c8014d6de04ba995ef2`.
+- Not run: production API、数据库写入、外部同步、EAS/native 或业务功能测试；均不属于本治理修正。
+
+### Risks / Release Notes
+
+- Risk: GitHub protection settings are not changed by this candidate. Branch-protection configuration remains a separate reviewed administrative action.
+- Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
+- Rollback: revert this CRL's workflow, classifier and policy document; no application code or data is affected.
+- Git state: existing Phase 3 commits and merge commit `7341eff501b8954899b5693e8b225882f721cdd4` are pushed to `origin/codex/phase3-ci-merge-gates`; PR #277 subsequently merged into `Dev` as `c01d118c34cabc08bad51c8014d6de04ba995ef2`. No `main` merge or deployment is recorded here.
+
+## CRL-20260801-013 — 已选任务通知安全发布包
+
+- **Status:** ready
+- **Updated:** 2026-08-01 Australia/Melbourne
+- **Request:** 用户选择先发布截图中的“通知安全”组。
+- **Outcome:** 最终收件人范围限制、钥匙提醒受众、房源当日通知范围和失败诊断由根仓库发布；诊断日志的范围前/后计数按实际过滤阶段记录；独立移动端 `CRL-20260801-012` 保持 property-day 通知停留在详情页。
+- **Source-unit mapping:** local root `CRL-20260801-005/007`.
+
+### Files / Areas
+
+- `backend/src/services/appNotificationPolicies.ts` — task-scope final recipient protection.
+- `backend/src/services/notificationEvents.ts` — final guard before notification persistence and truthful task-scope diagnostic counts.
+- `backend/src/services/notificationRules.ts` — legacy task selector safety.
+- `backend/src/modules/rbac.ts` — unsafe-recipient validation response.
+- `backend/src/modules/task_center.ts` — scoped transfer notification.
+- `backend/src/modules/cleaning.ts` — deletion notification diagnostics.
+- `backend/src/modules/cleaning_app.ts` — completion and handover policy wiring.
+- `backend/src/modules/mzapp.ts` — property-day notification scope.
+- `backend/src/lib/keyUploadReminderJob.ts` — related cleaner, inspector and manager reminders.
+- `backend/src/lib/keyUploadSlaJob.ts` — SLA reminder audience.
+- `backend/scripts/repair_task_notification_rules.js` — read-only-by-default rule repair utility.
+- `backend/scripts/tests/test_app_notification_policies.ts` — recipient scope contracts.
+- `backend/scripts/tests/test_notification_rule_repair_script.ts` — repair utility safety contract.
+- `frontend/src/app/rbac/app-notification-policies/page.tsx` — direct-recipient restriction UI.
+- `frontend/src/app/rbac/notification-rules/page.tsx` — unsafe legacy selector UI restriction.
+- `docs/change-release-ledger.md` — this release record.
+
+### Impact / Dependencies
+
+- API: existing task notification payloads remain compatible; property-day navigation relies on the paired mobile release.
+- Database / migration / dependencies: none. The repair utility is read-only unless explicitly invoked with its destructive flag, which is outside this release.
+- Related units: independent mobile `CRL-20260801-012`.
+
+### Validation
+
+- Candidate assembly: `git diff --check` — passed before staging.
+- Candidate-wide `npm run check:backend` and `npm run check:frontend` — passed; backend compilation plus 13 local contract suites and frontend production build completed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 27 changed files, 27 recorded files after the completion-photo route contract was added.
+- Final rebase and PR-range validation — passed: `git diff --check origin/Dev...HEAD`, root range ledger coverage 27/27, `npm run check:backend`, and `npm run check:frontend` passed. Device and production validation remain unrun.
+
+### Risks / Release Notes
+
+- Shared backend paths with CRL-20260801-012 require verified hunk staging.
+- The independent review found and candidate assembly removed unrelated maintenance-workflow hunks; they are not part of this release.
+- The independent review also caught an initial route mismatch: `photo_exception` is now returned only by the mobile-consumed `completion-photos` read endpoint, with a dedicated route contract test.
+- No notification is sent and no database or production operation is performed by candidate preparation.
+- Git state: two rebased candidate commits are ready for final independent review; not pushed.
+
+## CRL-20260801-012 — 已选清洁、检查与媒体可靠性发布包
+
+- **Status:** ready
+- **Updated:** 2026-08-01 Australia/Melbourne
+- **Request:** 用户选择先发布截图中的“清洁、检查与媒体可靠性”组。
+- **Outcome:** 汇集未进入当前 `origin/Dev` 的自完成照片异常留痕、上传诊断、补品同步保护、检查媒体保存解耦和入住检查后待挂钥匙服务端改动；移动端由独立仓库的 `CRL-20260801-011` 配套发布。
+- **Source-unit mapping:** local root `CRL-20260731-005/007/008/009` and `CRL-20260801-001/002/003/004/006/008/009/010`. Existing upstream-equivalent hunks are not duplicated. The former local 20260731 IDs that collide with upstream ledger records are represented by this new release ID.
+
+### Files / Areas
+
+- `backend/src/lib/workTaskActionAudit.ts` — selected inspection and finalization state transitions.
+- `backend/src/lib/workTaskActions.ts` — selected self-completion and inspection actions.
+- `backend/src/modules/cleaning_app.ts` — selected media, self-completion and inspection-save paths.
+- `backend/src/modules/mzapp.ts` — selected work-task projection and completion-photo exception read route.
+- `backend/scripts/tests/test_cleaning_task_transition_guard.ts` — selected task-transition contracts.
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — selected idempotency contract.
+- `backend/scripts/tests/test_work_task_actions.ts` — selected action and read-only contracts.
+- `backend/scripts/tests/test_cleaning_upload_diagnostics.ts` — selected upload-diagnostic contract.
+- `backend/scripts/tests/test_completion_photo_exception_route.ts` — completion-photo route contract.
+- `frontend/src/app/cleaning/page.tsx` — selected self-completion status display.
+- `frontend/src/app/cleaning/cleaningSchedule.module.scss` — selected completion-photo exception hint styling.
+- `frontend/src/lib/cleaningDailyTaskStatus.ts` — selected self-completion status metadata.
+- `frontend/src/lib/cleaningDailyTaskStatus.test.ts` — selected status metadata contract.
+- `docs/change-release-ledger.md` — this release record.
+
+### Impact / Dependencies
+
+- API: compatible work-task, self-completion and upload diagnostic response additions.
+- Database / migration / dependencies: none.
+- Related units: independent mobile `CRL-20260801-011`; both repositories must be released together for cross-layer paths.
+
+### Validation
+
+- Candidate assembly: `git diff --check` — passed before staging.
+- `npm run check:backend` — passed: backend compilation and 13 local contract suites, including the paired mobile release contract.
+- `npm run check:frontend` — passed: lint completed with existing warnings, 39 Vitest files / 172 tests passed, and production build passed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 27 changed files, 27 recorded files after the completion-photo route contract was added.
+- `python3 scripts/audit_feature_regression_registry.py` — passed: 8 FRs / 90 mappings; 55 mobile mappings deferred because the mobile repository is independent.
+- `./node_modules/.bin/tsc -p tsconfig.json --noEmit`, `test_completion_photo_exception_route.ts`, and `npm run test:mzapp-media-visibility` — passed after correcting the exception read route from `inspection-photos` to `completion-photos`.
+- Final rebase and PR-range validation — passed: `git diff --check origin/Dev...HEAD`, root range ledger coverage 27/27, `npm run check:backend`, `npm run check:frontend`, and the completion-photo route contract passed. Device and production validation remain unrun.
+
+### Risks / Release Notes
+
+- Shared backend files also contain the notification release hunk; staging must remain hunk-scoped.
+- No production API, database write, R2 operation or secret handling is authorized.
+- Git state: two rebased candidate commits are ready for final independent review; not pushed.
+
 ## CRL-20260731-009 — 线下任务执行人 canonical 一致性
 
 - **Status:** pushed

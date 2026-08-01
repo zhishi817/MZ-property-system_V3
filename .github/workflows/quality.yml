@@ -1,7 +1,8 @@
-name: Quality Check
+name: Root Quality Gate
 
 on:
   pull_request:
+    branches: [Dev, main]
   push:
     branches:
       - main
@@ -19,6 +20,33 @@ env:
   CI: "true"
 
 jobs:
+  risk:
+    name: Risk Classification
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      full_required: ${{ steps.classify.outputs.full_required }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: classify
+        name: Classify changed paths
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ "$EVENT_NAME" != 'pull_request' ]]; then
+            echo 'full_required=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          bash scripts/ci/classify_pr_risk.sh "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
   check:
     name: Root Quality Check
     runs-on: ubuntu-latest
@@ -29,6 +57,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Audit pull request Ledger range
+        if: github.event_name == 'pull_request'
+        run: |
+          python3 scripts/audit_change_release_ledger.py \
+            --base '${{ github.event.pull_request.base.sha }}' \
+            --head '${{ github.event.pull_request.head.sha }}'
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -53,6 +88,47 @@ jobs:
 
       - name: Run frontend checks
         run: npm run check:frontend
+
+  ledger:
+    name: Change Ledger Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Audit change ledger coverage
+        run: |
+          if [[ '${{ github.event_name }}' == 'pull_request' ]]; then
+            python3 scripts/audit_change_release_ledger.py \
+              --base '${{ github.event.pull_request.base.sha }}' \
+              --head '${{ github.event.pull_request.head.sha }}'
+          else
+            npm run check:ledger
+          fi
+
+  registry:
+    name: Regression Registry Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout root repository
+        uses: actions/checkout@v4
+
+      - name: Checkout mobile repository
+        uses: actions/checkout@v4
+        with:
+          repository: zhishi817/mz-cleaning-app-frontend
+          ref: Dev
+          path: mz-cleaning-app-frontend
+          fetch-depth: 1
+
+      - name: Audit feature-regression registry
+        run: npm run check:feature-registry
 
   fast:
     name: Fast Regression
@@ -97,17 +173,27 @@ jobs:
 
   full:
     name: Full Regression
-    if: github.event_name != 'pull_request'
+    needs: risk
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      RUN_FULL: ${{ github.event_name != 'pull_request' || needs.risk.outputs.full_required == 'true' || needs.risk.result != 'success' }}
 
     steps:
+      - name: Full check not required for this low-risk pull request
+        if: env.RUN_FULL != 'true'
+        run: |
+          echo 'Low-risk pull request: Root Full Check is satisfied without the slower suite.'
+
       - name: Checkout
+        if: env.RUN_FULL == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Checkout mobile repository
+        if: env.RUN_FULL == 'true'
         uses: actions/checkout@v4
         with:
           repository: zhishi817/mz-cleaning-app-frontend
@@ -116,6 +202,7 @@ jobs:
           fetch-depth: 1
 
       - name: Setup Node
+        if: env.RUN_FULL == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -126,13 +213,17 @@ jobs:
             mz-cleaning-app-frontend/package-lock.json
 
       - name: Install backend dependencies
+        if: env.RUN_FULL == 'true'
         run: npm ci --prefix backend
 
       - name: Install frontend dependencies
+        if: env.RUN_FULL == 'true'
         run: npm ci --prefix frontend
 
       - name: Install mobile dependencies
+        if: env.RUN_FULL == 'true'
         run: npm ci --prefix mz-cleaning-app-frontend
 
       - name: Run full regression
+        if: env.RUN_FULL == 'true'
         run: npm run check:full

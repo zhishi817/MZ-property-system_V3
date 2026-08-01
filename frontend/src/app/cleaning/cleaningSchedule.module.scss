@@ -765,6 +765,18 @@
   background: var(--semantic-danger-bg);
 }
 
+.completionPhotoExceptionHint {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--semantic-info-bd);
+  border-radius: 10px;
+  background: var(--semantic-info-bg);
+  color: var(--semantic-info-fg);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.5;
+}
+
 .conflictRow {
   display: flex;
   align-items: center;
