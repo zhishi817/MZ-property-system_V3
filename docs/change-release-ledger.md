@@ -2,7 +2,7 @@
 
 ## CRL-20260802-003 — Ledger 范围审计边界回归
 
-- **Status:** in-progress
+- **Status:** committed
 - **Updated:** 2026-08-02 Australia/Melbourne
 - **Request:** 在既有 PR #276 上补齐 Phase 3 留下的范围审计边界回归，并将该已有 PR 更新到已合并 #277 后的 `Dev`，不创建分支、不直接推送 `Dev`。
 - **Outcome:** 保留 `Dev` 中 #277 的严格范围实现和质量门禁；本 PR 只补充 rename/delete、detached HEAD 与 whitespace 失败的回归覆盖，避免重复或覆盖已合并的实现。
@@ -19,14 +19,16 @@
 
 ### Validation
 
-- 2026-08-02 integration candidate: resolving the existing PR #276 source against current `origin/Dev` after PR #277 merged as `c01d118c34cabc08bad51c8014d6de04ba995ef2`; `python3 scripts/tests/test_audit_change_release_ledger.py` passed (5 tests) and the staged `origin/Dev` comparison contains only this ledger plus the test. Exact-range audit, independent review and remote CI remain pending.
+- 2026-08-02 integration result: merged current `origin/Dev` after PR #277 (`c01d118c34cabc08bad51c8014d6de04ba995ef2`) into the existing #276 source as local merge commit `594cb5f061d5296f39878b69eafe53b2767b1e6c`. `python3 scripts/tests/test_audit_change_release_ledger.py` passed (5 tests); exact `python3 scripts/audit_change_release_ledger.py --base origin/Dev --head HEAD` passed (2/2); and `git diff --check origin/Dev...HEAD` passed. The exact range contains only this ledger plus the test.
+- Independent release review (2026-08-02): GO — no P0/P1; final effective range retains Dev's workflow/audit implementation unchanged, has no secret, production-write, database, deployment or external-sync surface. The reviewer requested the `in-progress` state spelling, which was corrected before the merge commit.
+- Pending: push the existing branch, remote PR #276 CI and mergeability check. No merge is authorized by this record.
 - Not run: production API、数据库写入、外部同步、EAS/native 或业务功能测试；均不属于本治理回归。
 
 ### Risks / Release Notes
 
 - Scope is intentionally limited to regression coverage; no workflow, package, application, deployment or GitHub protection configuration is changed by this PR.
 - Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
-- Git state: the integration is on the pre-existing `origin/codex/governance-ledger-root-20260729` branch; no new branch is created and nothing is directly pushed or merged to `Dev`/`main`.
+- Git state: local merge commit `594cb5f061d5296f39878b69eafe53b2767b1e6c` is on the pre-existing `origin/codex/governance-ledger-root-20260729` branch; no new branch is created and nothing is directly pushed or merged to `Dev`/`main`.
 
 ## CRL-20260802-001 — 根仓库 PR 合并质量门禁
 
