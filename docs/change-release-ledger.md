@@ -2,7 +2,7 @@
 
 ## CRL-20260802-002 — Phase 5 精确 ref 契约补强
 
-- **Status:** pushed
+- **Status:** in-progress
 - **Updated:** 2026-08-02 Australia/Melbourne
 - **ID allocation:** 原分支的 `CRL-20260729-013` 与 Dev 已存在的默认分支精确 ref 门禁记录冲突；本次整合改用新的连续 ID，保留两条历史记录。
 - **Request:** 按既有第三条分支逐条处理；不创建新分支，并让已有分支可经受保护的 `Dev` 发布路径交付。
@@ -19,7 +19,7 @@
 - `backend/scripts/tests/test_phase5_release_contract.ts` — modified: 增加 `available_actions` 服务端 payload、移动端类型与服务端 actions 消费链路的静态契约。
 - `docs/regression-test-levels.md` — modified: 说明手动精确双 ref 组合验证的命令、边界与证据。
 - `.github/workflows/cross-repository-phase5-contract.yml` — conflict-resolved to current Dev implementation; no effective PR diff, preventing CI regression.
-- `docs/change-release-ledger.md` — modified: 记录本整合单元及 ID 冲突处理。
+- `docs/change-release-ledger.md` — modified: 保留 #276、#278 两条治理记录并记录本次最新 Dev 整合。
 
 ### Impact / Dependencies
 
@@ -33,15 +33,45 @@
 - Historical local checks — passed: Ruby YAML parse; `ts-node-dev --transpile-only scripts/tests/test_phase5_release_contract.ts`; ledger audit 42/42 before the temporary untracked mobile symlink; FR audit 8 FRs / 98 mappings.
 - Previous blocker: the prior Dev audit script ignored `--base/--head`, so no Phase 4 PR was created or pushed.
 - 2026-08-02 restart: PR #277 is now merged to Dev as `c01d118c34cabc08bad51c8014d6de04ba995ef2`; this branch merged that Dev head in local commit `fd48e4374b8fbd6770965fb72a992826fa917df8`. Ruby YAML parsing for both relevant workflows, `git diff --check origin/Dev`, `python3 scripts/tests/test_audit_change_release_ledger.py` (2 tests), and `ts-node-dev --transpile-only scripts/tests/test_phase5_release_contract.ts` have passed. The exact committed range audit passed: `python3 scripts/audit_change_release_ledger.py --base origin/Dev --head HEAD` reports the expected three files / three recorded files. Final independent release review was GO before the branch push and PR creation.
-- Push and PR receipt: existing branch was non-force pushed through `2a4d8e65c88460713140db94e9bd2abef7c0b5a7`; PR #278 targets `Dev`, is open and mergeable, and its Root Quality Gate run `30706846366` completed successfully. Root Quality Check, Fast Regression, Change Ledger Audit, Regression Registry Audit, Risk Classification, and the low-risk Full Regression success path all passed; Vercel also passed. This receipt commit itself requires its own rerun before any PR merge.
-- Not run: GitHub Actions exact-ref dispatch, production API/database, external sync, production deployment, EAS/native, or device validation. The PR's Vercel Preview deployment completed successfully and is not a production deployment.
+- Push and PR receipt: existing branch was non-force pushed through `2a4d8e65c88460713140db94e9bd2abef7c0b5a7`; PR #278 originally passed Root Quality Gate and Vercel. PR #276 subsequently merged to Dev as `ffff6e439d112c610c7eba345e8011010312f32d`; the resulting ledger-only conflict is resolved. `python3 scripts/tests/test_audit_change_release_ledger.py` passed (5 tests), `ts-node-dev --transpile-only scripts/tests/test_phase5_release_contract.ts` passed from `backend`, `npm run check:feature-registry` passed (8 FRs / 98 mappings), and staged `git diff --check origin/Dev` passed. Exact committed-range audit, final independent review and remote CI are pending before a branch update.
+- Not run: GitHub Actions exact-ref dispatch, production API/database, external sync, production deployment, EAS/native, or device validation. The PR's Vercel Preview deployment is not a production deployment.
 
 ### Risks / Release Notes
 
 - Risk: static contract assertions detect interface drift but are not a live API/device acceptance test; exact-ref workflow dispatch remains a separately authorized action.
 - Rollback: revert only the three effective files in this unit; Dev's existing workflow remains unchanged.
 - Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
-- Git state: existing branch is pushed and represented by PR #278; no direct Dev push, PR merge, or production deployment/action has occurred. Its Vercel Preview deployment succeeded.
+- Git state: existing branch remains the pre-existing `origin/codex/phase4-exact-ref-integration`; local integration against current Dev is in progress. No new branch, direct Dev push, PR merge, production deployment/action, or modification to the untracked mobile link has occurred.
+
+## CRL-20260802-003 — Ledger 范围审计边界回归
+
+- **Status:** committed
+- **Updated:** 2026-08-02 Australia/Melbourne
+- **Request:** 在既有 PR #276 上补齐 Phase 3 留下的范围审计边界回归，并将该已有 PR 更新到已合并 #277 后的 `Dev`，不创建分支、不直接推送 `Dev`。
+- **Outcome:** 保留 `Dev` 中 #277 的严格范围实现和质量门禁；本 PR 只补充 rename/delete、detached HEAD 与 whitespace 失败的回归覆盖，避免重复或覆盖已合并的实现。
+
+### Files / Areas
+
+- `scripts/tests/test_audit_change_release_ledger.py` — modified: 覆盖未登记文件、无效 ref、rename/delete、detached HEAD 与 `git diff --check` whitespace 失败。
+- `docs/change-release-ledger.md` — modified: 记录本治理单元及其与 #277 的合并关系。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Dependency: relies on the exact `--base/--head`, three-dot range, no-rename and whitespace validation already merged to `Dev` by PR #277.
+
+### Validation
+
+- 2026-08-02 integration result: merged current `origin/Dev` after PR #277 (`c01d118c34cabc08bad51c8014d6de04ba995ef2`) into the existing #276 source as local merge commit `594cb5f061d5296f39878b69eafe53b2767b1e6c`. `python3 scripts/tests/test_audit_change_release_ledger.py` passed (5 tests); exact `python3 scripts/audit_change_release_ledger.py --base origin/Dev --head HEAD` passed (2/2); and `git diff --check origin/Dev...HEAD` passed. The exact range contains only this ledger plus the test.
+- Independent release review (2026-08-02): GO — no P0/P1; final effective range retains Dev's workflow/audit implementation unchanged, has no secret, production-write, database, deployment or external-sync surface. The reviewer requested the `in-progress` state spelling, which was corrected before the merge commit.
+- Pending: push the existing branch, remote PR #276 CI and mergeability check. No merge is authorized by this record.
+- Not run: production API、数据库写入、外部同步、EAS/native 或业务功能测试；均不属于本治理回归。
+
+### Risks / Release Notes
+
+- Scope is intentionally limited to regression coverage; no workflow, package, application, deployment or GitHub protection configuration is changed by this PR.
+- Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
+- Git state: local merge commit `594cb5f061d5296f39878b69eafe53b2767b1e6c` is on the pre-existing `origin/codex/governance-ledger-root-20260729` branch; no new branch is created and nothing is directly pushed or merged to `Dev`/`main`.
 
 ## CRL-20260802-001 — 根仓库 PR 合并质量门禁
 
@@ -78,7 +108,7 @@
 - Fresh local validation: `npm run check:ledger` and direct ledger audit passed for the merge worktree (42/42); `npm run check:feature-registry` passed (8 FRs / 98 mappings; 57 independent-mobile mappings deferred); `git diff --check origin/Dev` passed. `test:ledger-range-audit` is not present in current `Dev` because it belongs to still-open PR #276, so it was not run for this candidate.
 - P1 correction validation: `npm run test:ledger-range-audit` passed (2 tests); exact `python3 scripts/audit_change_release_ledger.py --base origin/Dev --head HEAD` passed (4/4) and an unknown ref is rejected with its exact range in stderr.
 - Independent release review (2026-08-02): GO — the PR workflow now supplies exact base/head to both Ledger checks; strict three-dot range, no-rename coverage, whitespace failure and fail-closed refs are implemented; all 7 final PR files are recorded. P2 follow-up: add rename/delete and whitespace failure fixtures, and change the risk classifier's conservative two-dot diff to three-dot; neither causes the current PR to under-check or blocks this release.
-- Push and remote-gate receipt (2026-08-02): merge commit `7341eff501b8954899b5693e8b225882f721cdd4` was fast-forwarded to the pre-existing `origin/codex/phase3-ci-merge-gates` branch. PR #277 is open, clean and mergeable against `Dev` `f1c10c78562ffe7b023c961f7ccc760362df7c6f`; `Risk Classification`, `Change Ledger Audit`, `Regression Registry Audit`, `Fast Regression`, `Root Quality Check`, and high-risk `Full Regression` all completed successfully. The PR is not merged.
+- Push and remote-gate receipt (2026-08-02): merge commit `7341eff501b8954899b5693e8b225882f721cdd4` was fast-forwarded to the pre-existing `origin/codex/phase3-ci-merge-gates` branch. Before merge, PR #277 was clean and passed `Risk Classification`, `Change Ledger Audit`, `Regression Registry Audit`, `Fast Regression`, `Root Quality Check`, and `Full Regression`; it was subsequently merged into `Dev` as `c01d118c34cabc08bad51c8014d6de04ba995ef2`.
 - Not run: production API、数据库写入、外部同步、EAS/native 或业务功能测试；均不属于本治理修正。
 
 ### Risks / Release Notes
@@ -86,7 +116,7 @@
 - Risk: GitHub protection settings are not changed by this candidate. Branch-protection configuration remains a separate reviewed administrative action.
 - Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
 - Rollback: revert this CRL's workflow, classifier and policy document; no application code or data is affected.
-- Git state: existing Phase 3 commits and merge commit `7341eff501b8954899b5693e8b225882f721cdd4` are pushed to `origin/codex/phase3-ci-merge-gates`; PR #277 remains open, and nothing is merged into `Dev`/`main` or deployed.
+- Git state: existing Phase 3 commits and merge commit `7341eff501b8954899b5693e8b225882f721cdd4` are pushed to `origin/codex/phase3-ci-merge-gates`; PR #277 subsequently merged into `Dev` as `c01d118c34cabc08bad51c8014d6de04ba995ef2`. No `main` merge or deployment is recorded here.
 
 ## CRL-20260801-013 — 已选任务通知安全发布包
 
