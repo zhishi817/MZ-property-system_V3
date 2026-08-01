@@ -2,7 +2,7 @@
 
 ## CRL-20260802-002 — Phase 5 精确 ref 契约补强
 
-- **Status:** in-progress
+- **Status:** blocked
 - **Updated:** 2026-08-02 Australia/Melbourne
 - **ID allocation:** 原分支的 `CRL-20260729-013` 与 Dev 已存在的默认分支精确 ref 门禁记录冲突；本次整合改用新的连续 ID，保留两条历史记录。
 - **Request:** 按既有第三条分支逐条处理；不创建新分支，并让已有分支可经受保护的 `Dev` 发布路径交付。
@@ -35,7 +35,8 @@
 - `python3 scripts/audit_change_release_ledger.py` — passed: 42 changed files / 42 recorded files in the merged worktree.
 - `python3 scripts/audit_feature_regression_registry.py` — passed: 8 FRs / 98 test mappings; 57 independent-mobile mappings deferred because the root and mobile repositories are independent.
 - `git diff --check origin/Dev` and effective-diff inspection — passed: the resulting change set against Dev contains only the Phase 5 contract, this ledger, and the regression-level description.
-- Pending: exact committed-range audit and independent release review; they run before staging, commit, and push.
+- `python3 scripts/audit_change_release_ledger.py --base origin/Dev --head HEAD` — **NOT VERIFIED / BLOCKED** after merge commit `09233b7`: current Dev's audit script silently ignores these arguments and reported only the untracked symlink (1 file), while `git diff --name-status origin/Dev...HEAD` correctly reports the three-file candidate range. This result is not accepted as a PR-range audit.
+- Independent review — pre-commit review was GO, but post-commit range review is **BLOCKED / NO-GO** on the missing exact base/head audit implementation. Phase 3 PR #277 must first merge its range-audit implementation into Dev; this candidate must then re-integrate that Dev head and repeat the exact audit plus final independent review before push or PR creation.
 - Not run: GitHub Actions dispatch, production API/database, external sync, deployment, EAS/native, or device validation.
 
 ### Risks / Release Notes
@@ -43,7 +44,7 @@
 - Risk: static contract assertions detect interface drift but are not a live API/device acceptance test; exact-ref workflow dispatch remains a separately authorized action.
 - Rollback: revert only the three effective files in this unit; Dev's existing workflow remains unchanged.
 - Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
-- Git state: existing branch is in an uncommitted merge with `origin/Dev`; no direct Dev push, PR merge, deployment, or production action has occurred.
+- Git state: existing branch has local merge commit `09233b7`; no push, Phase 4 PR, direct Dev push, PR merge, deployment, or production action has occurred.
 
 ## CRL-20260801-013 — 已选任务通知安全发布包
 
