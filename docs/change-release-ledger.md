@@ -2,7 +2,7 @@
 
 ## CRL-20260729-012 — PR 精确范围 Ledger 审计
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-08-02 Australia/Melbourne
 - **Request:** 修复根仓库与独立移动端的 PR 范围 Ledger 审计：必须使用精确 base/head，拒绝缺失 ref 或 Git 失败，并校验 diff whitespace。
 - **Outcome:** 根仓库 Ledger 审计新增显式 `--base/--head` 范围模式；PR workflow 在完整 fetch 后传入 GitHub payload 的精确 SHA。范围模式使用三点 diff、保留 rename 的旧/新路径、执行 `git diff --check`，并在 ref 缺失、范围不完整或任一 Git 命令失败时非零退出，不会把错误解释成零变更。
@@ -30,6 +30,7 @@
 - Fresh local validation: `npm run test:ledger-range-audit` passed (5 tests); `python3 scripts/audit_change_release_ledger.py` passed for the current merge worktree (41/41); the existing PR source range `origin/Dev...HEAD` passed (5/5); `git diff --check origin/Dev`, conflict-marker scan, and Ruby YAML parse for `.github/workflows/quality.yml` passed.
 - Fresh local validation: `npm run check:backend:fast` passed (TypeScript build plus five local static/loopback contracts); `npm run check:frontend:fast` passed (lint completed with pre-existing warnings; 39 files / 172 tests passed); `check:mobile:fast` correctly skipped because this isolated root worktree contains no nested independent mobile repository. The aggregate `npm run check:fast` is not final evidence because its ledger step intentionally reports the temporary dependency links as unrecorded; the links were then removed and the ledger audit rerun successfully.
 - Independent release review (2026-08-02): GO — no P0/P1. It confirmed the result range against `origin/Dev` is the five CRL-012 files, the 41 staged files are only the merged Dev parent content, Dev history and CRL-012 are both retained, and no conflict, secret, production-write, external-sync, dependency-lock, runtime or deployment risk is introduced. P2 limits remain: mobile is absent and skipped; device/production/API/database/EAS validation is not run.
+- Push and remote gate receipt (2026-08-02): merge commit `ace1bd9b07d553cfe27a524be98af949f4d75a76` was fast-forwarded to the pre-existing `origin/codex/governance-ledger-root-20260729` branch. PR #276 is open and mergeable/clean against `Dev` `f1c10c78562ffe7b023c961f7ccc760362df7c6f`; `Fast Regression` and `Root Quality Check` both completed successfully. The PR itself is not merged.
 - Not run: production API、数据库写入、外部同步、EAS/native 或业务功能测试；均不属于本治理修正。
 
 ### Risks / Release Notes
@@ -37,7 +38,7 @@
 - Range mode requires callers to provide both exact refs; a missing or shallow-fetched ref intentionally fails rather than weakening review coverage.
 - Rename paths are audited as both deletion and addition; ledger authors must name both paths when a PR renames a file.
 - Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
-- Git state: existing governance-only commit `dc1368b644158e940ed1666d98355edcfcfb9f1a` remains on `origin/codex/governance-ledger-root-20260729`; the 2026-08-02 merge candidate is uncommitted and has not pushed, merged, or deployed anything.
+- Git state: existing governance-only commit `dc1368b644158e940ed1666d98355edcfcfb9f1a` and merge commit `ace1bd9b07d553cfe27a524be98af949f4d75a76` are pushed to `origin/codex/governance-ledger-root-20260729`; PR #276 remains open, and nothing is merged into `Dev`/`main` or deployed.
 
 ## CRL-20260801-013 — 已选任务通知安全发布包
 
