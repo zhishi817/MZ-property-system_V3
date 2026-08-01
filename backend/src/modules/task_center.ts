@@ -401,7 +401,7 @@ function buildCleaningSaveDiff(before: any, assignment: any): TaskSaveDiff | nul
   if (oldInspector !== nextInspector) {
     changedFields.push('inspector_id')
     pushChanges.push('inspection')
-    recipients.push(oldInspector, nextInspector)
+    recipients.push(nextInspector)
   }
   if (oldInspectionMode !== nextInspectionMode) {
     changedFields.push('inspection_mode')
@@ -839,7 +839,11 @@ async function backfillOfflineTasksToWorkTasks(date: string, includeOverdue: boo
        NULLIF(COALESCE(t.content, ''), '') AS summary,
        t.date::date AS scheduled_date,
        t.assignee_id,
-       CASE WHEN COALESCE(t.status, 'todo') = 'done' THEN 'done' ELSE 'todo' END AS status,
+       CASE
+         WHEN lower(COALESCE(t.status, 'todo')) = 'done' THEN 'done'
+         WHEN NULLIF(COALESCE(t.assignee_id, ''), '') IS NOT NULL THEN 'assigned'
+         ELSE 'todo'
+       END AS status,
        COALESCE(t.created_at, t.updated_at, now()) AS created_at,
        COALESCE(t.updated_at, t.created_at, now()) AS updated_at
      FROM cleaning_offline_tasks t
@@ -2664,6 +2668,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
             const notificationResult = await emitNotificationEvent(
               {
                 type: 'CLEANING_TASK_UPDATED',
+                policyKey: 'task_requirements_changed',
                 entity: 'cleaning_task',
                 entityId: String(firstTask.id),
                 propertyId: firstTask.property_id ? String(firstTask.property_id) : undefined,

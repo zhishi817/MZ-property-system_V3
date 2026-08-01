@@ -74,6 +74,7 @@
 
 - 同日合并卡必须保留正确的任务来源、执行人、检查模式、周转日期和状态。
 - 手动任务的有效字段可以继承，但不能用占位值覆盖有效自动任务字段。
+- 线下手动任务的执行人以 `work_tasks` canonical 投影为准；PATCH 指派必须与源任务原子一致，缺省字段不得覆盖既有执行人，`assignee_id: null` 在第一版返回业务错误。
 - 合并结果必须区分 active、取消、延后和已完成来源，不能仅按首个子任务推导。
 - 周转合并卡的入住晚数必须取后一个入住订单，并明确显示为“待住 X晚”，不能继续显示前一个退房订单的晚数。
 
@@ -90,6 +91,9 @@
 |---|---|---|---|---|
 | 检查模式、周转日期和来源优先级 | `backend/scripts/tests/test_cleaning_inspection_merge.ts` | same-day、pending、deferred、self-complete 合并 | sufficient | `npm run test:cleaning-inspection-merge --prefix backend` |
 | 退房标记跨关联任务传播与合并状态优先级 | `backend/scripts/tests/test_task_assignment_canonical.ts` | 客服标记退房后，同订单或同房源日期的有效入住检查任务得到 `checked_out_at`；未开始显示退房，清洁进行中显示进行中，补品完成后客服/检查人员显示待检查 | sufficient | `npx ts-node-dev --transpile-only backend/scripts/tests/test_task_assignment_canonical.ts` |
+| 线下任务执行人 source/canonical 一致性 | `backend/scripts/tests/test_offline_task_assignment_patch_contract.ts` | root backend Full 确认 assignee 的 omitted/null 语义、source/canonical 表确保、事务投影和 canonical 回读 | sufficient | `npm run test:offline-task-assignment-patch --prefix backend` |
+| 线下任务执行人三角色授权 | `backend/scripts/tests/test_offline_task_assignment_patch.ts` | 客服、线下经理和 admin 的 HTTP/数据库验证；仅在显式非生产测试库、写入确认与生产库身份比对均存在时运行 | partial | `npm run test:offline-task-assignment-patch-integration --prefix backend` |
+| 首次 PATCH 的 canonical 表确保顺序 | `backend/scripts/tests/test_offline_task_assignment_first_patch_contract.ts` | root backend Full 每次断言两张表确保均位于 `pgRunInTransaction` 和首个 `FOR UPDATE` 之前；独立 integration 脚本只在显式非生产测试库与写入确认下覆盖无投影首次写入与三角色 | sufficient | `npm run test:offline-task-assignment-first-patch --prefix backend` |
 | 自动/手动字段继承和历史数据兼容 | `backend/scripts/tests/test_cleaning_sync_v2.ts` | 手动 placeholder、旧任务、同步后字段保留 | not-wired | `npx ts-node-dev --transpile-only backend/scripts/tests/test_cleaning_sync_v2.ts` |
 | Web 合并卡展示 | `frontend/src/lib/cleaningDailyMerge.test.ts` | 每日清洁合并和来源展示；后一个入住订单的晚数优先并显示“待住 X晚” | partial | `npm run test --prefix frontend -- src/lib/cleaningDailyMerge.test.ts` |
 | Web 任务中心字段展示 | `frontend/src/app/task-center/taskCenterDisplay.test.ts` | 合并任务标题、状态和字段；退房入住卡显示“已住 X晚”和“待住 X晚” | partial | `npm run test --prefix frontend -- --coverage.enabled=false src/app/task-center/taskCenterDisplay.test.ts` |
@@ -105,9 +109,9 @@
 
 ### 最后验证
 
-- **CRL：** CRL-20260727-003
-- **Commit：** not yet
-- **日期：** 2026-07-27
+- **CRL：** CRL-20260731-009
+- **Commit：** not committed
+- **日期：** 2026-07-31
 
 ### 相关 CRL
 
@@ -121,6 +125,7 @@
 - CRL-20260725-016：客服退房状态同步到检查人员关联任务
 - CRL-20260725-017：修复退房标记覆盖清洁与检查进行状态
 - CRL-20260725-022：每日清洁周转卡显示后续订单待住晚数
+- CRL-20260731-009：线下任务执行人 canonical 一致性
 
 ### 非保护范围
 
@@ -198,6 +203,7 @@
 - 自完成挂钥匙视频必须复用本机优先的媒体队列；文件上传成功但任务记录保存失败时，页面必须显示失败、保留本地文件和远端引用，并在重进/重试时只补做未完成步骤。该自完成视频动作不得套用普通检查的“清洁补品 + 房源照片 + 检查照片”前置；最终自完成仍按其自身视频、完成照片和补品门槛完成。
 - Android 照片在本地草稿、上传和历史媒体读取链路中必须保持可解码的 JPEG；格式转换失败不得把原始 HEIC/未知字节以错误 MIME 继续上传，也不得在客户端伪装成黑色缩略图。
 - 清洁照片上传响应中的稳定 `cleaning/...` 对象 key 必须跨队列、本地清理、业务提交和任务刷新保留；有 key 时不得只保存可能无法解析或访问的 R2 URL，缩略图、预览和原图必须可通过认证媒体代理读取。
+- 日终交接已登记的 `cleaning/...` 照片必须经同一认证媒体代理读取；仅记录所属人或既有日终管理角色可读取。同一 key 若跨任务媒体与日终媒体、跨日终用户或日终类别登记，必须拒绝读取。
 - 上传队列成功回调后，页面仍可能使用本地 `file://` 引用；在页面切换到远端媒体引用前不得立即删除本地副本，已同步孤儿文件交给既有延迟清理机制处理。
 - 钥匙照片被删除后，钥匙照片上传动作必须恢复可用，不得因为补品已提交、清洁状态已进入完成态或共享任务状态已推进而阻止重新上传；钥匙照片仍存在时继续保持已记录状态。
 - 补品提交完成后的钥匙重传不得把 `done`、`cleaned`、`restock_pending`、检查中间态或其他已推进状态覆盖为 `in_progress`；钥匙上传事件必须增量合并，不能用不完整任务刷新覆盖已保存的补品消耗照片。
@@ -250,14 +256,19 @@
 | 后端保存接口共享幂等 ID上限 | `backend/scripts/tests/test_idempotency_submit_id_contract.ts` | cleaning-app、mzapp 的检查/补品/反馈保存接口使用共享 256 字符上限，不回退到旧 120 字符限制 | not-wired | `npm run test:idempotency-submit-id-contract --prefix backend` |
 | 自完成补货凭证授权与前置 | `backend/scripts/tests/test_idempotency_submit_id_contract.ts` | 只有自完成任务的清洁执行人（或受控手工 action）可用 `self_complete_restock`；仍先要求消耗品记录，审计为 `fill_supplies`，不套用检查专用的房源照片前置 | partial | `npm run test:idempotency-submit-id-contract --prefix backend` |
 | 清洁未提交时阻止检查提交 | `backend/scripts/tests/test_work_task_actions.ts` | `cleaning_submission_ready=false` 时禁用检查照片和挂钥匙 action，并保留清洁补品 action | sufficient | `npm run test:work-task-actions --prefix backend` |
-| 检查提交前置断言和共享任务恢复 | `backend/scripts/tests/test_cleaning_task_transition_guard.ts` | 缺少清洁补品/房源照片时返回 `CLEANING_SUBMISSION_REQUIRED`；清洁提交状态满足后不阻断检查状态转换 | sufficient | `npm run test:cleaning-task-transition-guard --prefix backend` |
+| 纯入住检查不套用清洁提交前置 | `backend/scripts/tests/test_work_task_actions.ts` | `checkout_clean` 的 `cleaning_submission_ready=false` 仍禁用检查/挂钥匙；`checkin_clean` 不套用该门槛 | sufficient | `npm run test:work-task-actions --prefix backend` |
+| 检查提交前置断言和共享任务恢复 | `backend/scripts/tests/test_cleaning_task_transition_guard.ts` | `checkout_clean` 缺少清洁补品/房源照片时返回 `CLEANING_SUBMISSION_REQUIRED`；`checkin_clean` 只跳过清洁前置、仍保留检查照片状态门槛 | sufficient | `npm run test:cleaning-task-transition-guard --prefix backend` |
 | 移动端清洁恢复入口 | `mz-cleaning-app-frontend/src/lib/workTaskActions.test.ts` | 共享状态已为 `inspected` 但清洁提交状态为 false 时补品入口保持可编辑；钥匙照片删除后即使任务已完成仍保留重新上传入口 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand src/lib/workTaskActions.test.ts` |
 | 任务详情钥匙照片重传入口 | `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` | 清洁提交完成且钥匙照片已删除时，任务详情的上传钥匙按钮仍可点击 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand src/screens/tasks/TaskDetailScreen.test.tsx` |
-| 检查页提交前置提示 | `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.test.tsx` | 检查页保留本地内容，提交入口按任务前置状态处理；基础检查步骤回归 | partial | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand src/screens/tasks/InspectionPanelScreen.test.tsx` |
+| 检查页提交前置提示 | `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.test.tsx` | 检查页仅服从服务端 action；纯入住检查不被旧 `cleaning_submission_ready=false` 本地阻止 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tasks/InspectionPanelScreen.test.tsx` |
+| 检查照片上传进度不重载草稿 | `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.test.tsx` | 连续队列进度通知仍更新同步状态，但不重复读取冻结草稿 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tasks/InspectionPanelScreen.test.tsx` |
 | Android 本地照片格式统一 | `mz-cleaning-app-frontend/src/lib/imageCompression.test.ts` | HEIC 转换成功生成新的 JPEG URI；转换失败或伪造原 URI 结果时阻断上传 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/imageCompression.test.ts` |
 | Android 媒体预览失败反馈 | `mz-cleaning-app-frontend/src/components/CleaningMediaPreview.test.tsx` | 缩略图或原图加载失败显示明确错误并允许重试；本地 URI 同时用于两层 Image 时不产生重复 key，不伪装成黑色加载态 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/components/CleaningMediaPreview.test.tsx` |
 | Android 认证媒体私有缓存 | `mz-cleaning-app-frontend/src/lib/cleaningMediaCache.test.ts` | 带认证的远端清洁媒体下载为应用私有文件 URI，供安卓原生 Image 渲染，下载失败时保留已有缓存 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/cleaningMediaCache.test.ts` |
 | 后端图片上传、读取格式与已登记媒体绑定 | `backend/scripts/tests/test_cleaning_media_image.ts` | HEIC/缺失 MIME 统一为 JPEG；无效图片返回 `IMAGE_FORMAT_UNSUPPORTED`；代理只读取已登记媒体并在 R2 读取前 fail closed | sufficient | `npm run test:cleaning-media-image --prefix backend` |
+| 同 key 跨任务或跨媒体类型授权冲突 | `backend/scripts/tests/test_cleaning_media_image.ts` | 代理仅允许唯一任务且唯一媒体类型的已登记引用；任一冲突一律拒绝读取 | sufficient | `npm run test:cleaning-media-image --prefix backend` |
+| 日终交接媒体代理授权 | `backend/scripts/tests/test_cleaning_media_image.ts` | 已登记日终照片进入受控代理；库存管理员以 `inventory.view` 通过入口后仍受记录级授权，记录所属人允许、无关清洁员拒绝；同 key 跨日终用户或类别拒绝。实际 R2 对象读取端到端验证仍待补充 | partial | `npm run test:cleaning-media-image --prefix backend` |
+| 管理端客厅多图兼容和重试入口 | `mz-cleaning-app-frontend/src/lib/managerDailyTaskPhotos.test.ts` | 保留兼容单图字段并按稳定顺序展示全部客厅照片；失败照片保留当前页重试入口 | partial | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/managerDailyTaskPhotos.test.ts src/screens/tasks/ManagerDailyTaskScreen.test.ts` |
 | 任务媒体类型与参与关系读取授权 | `backend/scripts/tests/test_mzapp_media_visibility.ts` | 未分配用户不能用已知 key 越权；检查媒体、挂钥匙视频、补货凭证和普通媒体按任务级可见性分别判定 | sufficient | `npm run test:mzapp-media-visibility --prefix backend` |
 | 清洁媒体 key 跨钥匙上传和刷新保留 | `mz-cleaning-app-frontend/src/lib/keyUploadQueue.test.ts` | 上传返回 key 时钥匙业务 payload 优先使用 `cleaning/...` key；无 key 时保留 URL fallback | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/keyUploadQueue.test.ts` |
 | 清洁媒体 key 跨补品提交和刷新保留 | `mz-cleaning-app-frontend/src/lib/cleaningConsumablesSubmitQueue.test.ts` | 上传返回 key 时补品和完成照片业务 payload 优先使用 `cleaning/...` key | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/cleaningConsumablesSubmitQueue.test.ts` |
@@ -274,9 +285,9 @@
 
 ### 最后验证
 
-- **CRL：** CRL-20260729-004
-- **Commit：** not committed
-- **日期：** 2026-07-29
+- **CRL：** CRL-20260731-008
+- **Commit：** 92ee27d87d4f7cdb82bb126d8b24abd98d735351
+- **日期：** 2026-07-31
 
 ### 相关 CRL
 
@@ -306,6 +317,9 @@
 - CRL-20260726-008：清洁人员房间完成照片接入唯一草稿队列与幂等提交
 - CRL-20260726-007：检查提交必须等待清洁补品与房源照片
 - CRL-20260728-001：移动端房号确认、遥控器合拍与检查后清洁问题追加
+- CRL-20260731-005：纯入住检查错误清洁照片前置修复
+- CRL-20260731-007：检查照片上传进度不重载草稿
+- CRL-20260731-008：清洁媒体完整性、多图展示与安全清理
 
 ### 非保护范围
 

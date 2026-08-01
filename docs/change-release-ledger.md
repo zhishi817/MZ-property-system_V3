@@ -1,40 +1,405 @@
 # Change Release Ledger
 
-## CRL-20260729-013 — 精确双 Ref 跨仓库集成验证
+## CRL-20260802-002 — Phase 5 精确 ref 契约补强
 
-- **Status:** pushed
-- **Updated:** 2026-07-29 Australia/Melbourne
-- **Request:** Phase 4：增加手动跨仓库集成 workflow，输入 `root_ref` 与 `mobile_ref`，验证两个指定版本组合而不是各自 `Dev` 的漂移组合。
-- **Outcome:** 复用既有共享契约 workflow，并扩展为锁定依赖、根 Full、移动端 Full、共享 `available_actions` API/队列/事务契约和精确 SHA artifact 的单一手动入口。
+- **Status:** in-progress
+- **Updated:** 2026-08-02 Australia/Melbourne
+- **ID allocation:** 原分支的 `CRL-20260729-013` 与 Dev 已存在的默认分支精确 ref 门禁记录冲突；本次整合改用新的连续 ID，保留两条历史记录。
+- **Request:** 按既有第三条分支逐条处理；不创建新分支，并让已有分支可经受保护的 `Dev` 发布路径交付。
+- **Outcome:** 合并当前 `Dev` 后，旧工作流的意图已被 Dev 中更完整的精确 ref 门禁覆盖；保留分支独有的 Phase 5 静态契约断言和回归说明，避免重复或降级现有 CI。
+
+### Implementation
+
+- Previous behavior: Phase 5 静态契约覆盖共享队列与事务，但没有明确锁定服务端 `available_actions` 到移动端类型与消费路径。
+- New behavior: 契约额外检查服务端 payload、移动端 API 类型和移动端优先消费服务端 actions 的链路；回归说明与当前 Dev 的 `Cross-Repository Integration Verification` 语义一致。
+- Key decisions: 采用 Dev 已有的完整工作流（精确 checkout、失败最终 gate、manifest 与日志 artifact）作为唯一实现，不把旧分支较弱的工作流重写回 Dev。
 
 ### Files / Areas
 
-- `.github/workflows/cross-repository-phase5-contract.yml` — modified: 以精确双 ref checkout、三套 locked install、双方 Full 和共享契约组成一次组合验证。
-- `backend/scripts/tests/test_phase5_release_contract.ts` — modified: 共享契约额外断言服务端 `available_actions`、移动端 API 类型和服务端动作消费链路。
-- `docs/regression-test-levels.md` — modified: 记录手动输入、验证边界与 artifact 证据。
-- `docs/change-release-ledger.md` — modified: 记录本治理单元。
+- `backend/scripts/tests/test_phase5_release_contract.ts` — modified: 增加 `available_actions` 服务端 payload、移动端类型与服务端 actions 消费链路的静态契约。
+- `docs/regression-test-levels.md` — modified: 说明手动精确双 ref 组合验证的命令、边界与证据。
+- `.github/workflows/cross-repository-phase5-contract.yml` — conflict-resolved to current Dev implementation; no effective PR diff, preventing CI regression.
+- `docs/change-release-ledger.md` — modified: 记录本整合单元及 ID 冲突处理。
 
 ### Impact / Dependencies
 
 - API / database / migration / dependencies: none.
-- GitHub Actions: 手动 `workflow_dispatch`；执行者必须提供可解析的 root/mobile branch、tag 或 commit SHA。
-- Related units: CRL-20260729-011、移动端 CRL-20260729-003；Phase 3 的分支保护在其远端落库后可将本 workflow 作为发布前人工组合验证，而非每个 PR 的必需检查。
+- GitHub Actions: existing manual `workflow_dispatch` still requires explicit `root_ref` and `mobile_ref`; no dispatch is included in this change.
+- Related units: existing Dev `CRL-20260729-013` remains the workflow owner; this unit only augments the Phase 5 contract and its documentation.
 
 ### Validation
 
-- Passed: Ruby YAML parse confirms `Cross-Repository Integration`, `exact-ref-integration` and the 60-minute timeout; static workflow assertions confirm two required inputs, two exact-ref checkouts at `fetch-depth: 0`, all three `npm ci` steps, root Full, mobile Full, the shared contract command and SHA-named artifact.
-- Passed: a dependency-free static preflight against root candidate `d1761217d1b84c904dee990151c62ce2988781f0` plus mobile `Dev` candidate `bde7d1531b54b9854b9eeb9069e30de2d0b9b67b` confirms the existing queue/transaction assertions and the new server `available_actions` → mobile API type → server-action consumption assertions.
-- Passed: `git diff --check`, `npm run check:ledger` (4/4) and `npm run check:feature-registry` (8 FRs / 90 mappings; 55 independent-mobile mappings deferred in the standalone root worktree).
-- Not run: `npm run test:phase5-release-contract --prefix backend`, `npm run check:full`, `npm run check:full --prefix mz-cleaning-app-frontend`, or GitHub Actions dispatch. This fresh worktree has no dependency directories; Phase 4 does not authorize local `npm ci`, a push, or a remote workflow dispatch. The workflow itself performs locked installs once reviewed and dispatched with explicit refs.
-- Validation note: an initial ad-hoc static-preflight command used a nonexistent placeholder path and failed before reading source; it made no change and was immediately replaced by the passing preflight above.
+- Conflict analysis — passed: the resolved workflow is byte-for-byte equal to current `origin/Dev`; the old workflow is a subset of the retained exact-ref, failure-evidence implementation.
+- Ruby YAML parse — passed for `.github/workflows/cross-repository-phase5-contract.yml`.
+- `ts-node-dev --transpile-only scripts/tests/test_phase5_release_contract.ts` — passed: `test_phase5_release_contract: ok`. The isolated worktree linked the independent mobile source only for this read-only static test. The link remains untracked after its cleanup command was denied; it is not in the index and the earlier 42/42 ledger audit, which ran before the link was created, is the relevant merged-candidate evidence.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 42 changed files / 42 recorded files in the merged worktree.
+- `python3 scripts/audit_feature_regression_registry.py` — passed: 8 FRs / 98 test mappings; 57 independent-mobile mappings deferred because the root and mobile repositories are independent.
+- `git diff --check origin/Dev` and effective-diff inspection — passed: the resulting change set against Dev contains only the Phase 5 contract, this ledger, and the regression-level description.
+- Pending: exact committed-range audit and independent release review; they run before staging, commit, and push.
+- Not run: GitHub Actions dispatch, production API/database, external sync, deployment, EAS/native, or device validation.
 
 ### Risks / Release Notes
 
-- Risk: 根 `check:full` 在存在移动端 checkout 时已包含一次移动端 Full；本 workflow 再显式执行一次独立移动端 Full，是为将两个命令作为可读的独立证据，代价是手动 workflow 运行时间增加。
+- Risk: static contract assertions detect interface drift but are not a live API/device acceptance test; exact-ref workflow dispatch remains a separately authorized action.
+- Rollback: revert only the three effective files in this unit; Dev's existing workflow remains unchanged.
 - Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
-- Rollback: revert this workflow/documentation unit; no application source, database or remote data is affected.
-- Initial remote push: non-force created `origin/codex/phase4-exact-ref-integration` at `0b2b0a65fda62dd6f449f51280f9990c74d664f2`; verification at that point confirmed local and remote match, while `origin/Dev` was `d1761217d1b84c904dee990151c62ce2988781f0`.
-- Git state: this isolated feature branch is pushed without force; the remote-push confirmation is documentation-only. No Phase 4 workflow dispatch has been made.
+- Git state: existing branch is in an uncommitted merge with `origin/Dev`; no direct Dev push, PR merge, deployment, or production action has occurred.
+
+## CRL-20260801-013 — 已选任务通知安全发布包
+
+- **Status:** ready
+- **Updated:** 2026-08-01 Australia/Melbourne
+- **Request:** 用户选择先发布截图中的“通知安全”组。
+- **Outcome:** 最终收件人范围限制、钥匙提醒受众、房源当日通知范围和失败诊断由根仓库发布；诊断日志的范围前/后计数按实际过滤阶段记录；独立移动端 `CRL-20260801-012` 保持 property-day 通知停留在详情页。
+- **Source-unit mapping:** local root `CRL-20260801-005/007`.
+
+### Files / Areas
+
+- `backend/src/services/appNotificationPolicies.ts` — task-scope final recipient protection.
+- `backend/src/services/notificationEvents.ts` — final guard before notification persistence and truthful task-scope diagnostic counts.
+- `backend/src/services/notificationRules.ts` — legacy task selector safety.
+- `backend/src/modules/rbac.ts` — unsafe-recipient validation response.
+- `backend/src/modules/task_center.ts` — scoped transfer notification.
+- `backend/src/modules/cleaning.ts` — deletion notification diagnostics.
+- `backend/src/modules/cleaning_app.ts` — completion and handover policy wiring.
+- `backend/src/modules/mzapp.ts` — property-day notification scope.
+- `backend/src/lib/keyUploadReminderJob.ts` — related cleaner, inspector and manager reminders.
+- `backend/src/lib/keyUploadSlaJob.ts` — SLA reminder audience.
+- `backend/scripts/repair_task_notification_rules.js` — read-only-by-default rule repair utility.
+- `backend/scripts/tests/test_app_notification_policies.ts` — recipient scope contracts.
+- `backend/scripts/tests/test_notification_rule_repair_script.ts` — repair utility safety contract.
+- `frontend/src/app/rbac/app-notification-policies/page.tsx` — direct-recipient restriction UI.
+- `frontend/src/app/rbac/notification-rules/page.tsx` — unsafe legacy selector UI restriction.
+- `docs/change-release-ledger.md` — this release record.
+
+### Impact / Dependencies
+
+- API: existing task notification payloads remain compatible; property-day navigation relies on the paired mobile release.
+- Database / migration / dependencies: none. The repair utility is read-only unless explicitly invoked with its destructive flag, which is outside this release.
+- Related units: independent mobile `CRL-20260801-012`.
+
+### Validation
+
+- Candidate assembly: `git diff --check` — passed before staging.
+- Candidate-wide `npm run check:backend` and `npm run check:frontend` — passed; backend compilation plus 13 local contract suites and frontend production build completed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 27 changed files, 27 recorded files after the completion-photo route contract was added.
+- Final rebase and PR-range validation — passed: `git diff --check origin/Dev...HEAD`, root range ledger coverage 27/27, `npm run check:backend`, and `npm run check:frontend` passed. Device and production validation remain unrun.
+
+### Risks / Release Notes
+
+- Shared backend paths with CRL-20260801-012 require verified hunk staging.
+- The independent review found and candidate assembly removed unrelated maintenance-workflow hunks; they are not part of this release.
+- The independent review also caught an initial route mismatch: `photo_exception` is now returned only by the mobile-consumed `completion-photos` read endpoint, with a dedicated route contract test.
+- No notification is sent and no database or production operation is performed by candidate preparation.
+- Git state: two rebased candidate commits are ready for final independent review; not pushed.
+
+## CRL-20260801-012 — 已选清洁、检查与媒体可靠性发布包
+
+- **Status:** ready
+- **Updated:** 2026-08-01 Australia/Melbourne
+- **Request:** 用户选择先发布截图中的“清洁、检查与媒体可靠性”组。
+- **Outcome:** 汇集未进入当前 `origin/Dev` 的自完成照片异常留痕、上传诊断、补品同步保护、检查媒体保存解耦和入住检查后待挂钥匙服务端改动；移动端由独立仓库的 `CRL-20260801-011` 配套发布。
+- **Source-unit mapping:** local root `CRL-20260731-005/007/008/009` and `CRL-20260801-001/002/003/004/006/008/009/010`. Existing upstream-equivalent hunks are not duplicated. The former local 20260731 IDs that collide with upstream ledger records are represented by this new release ID.
+
+### Files / Areas
+
+- `backend/src/lib/workTaskActionAudit.ts` — selected inspection and finalization state transitions.
+- `backend/src/lib/workTaskActions.ts` — selected self-completion and inspection actions.
+- `backend/src/modules/cleaning_app.ts` — selected media, self-completion and inspection-save paths.
+- `backend/src/modules/mzapp.ts` — selected work-task projection and completion-photo exception read route.
+- `backend/scripts/tests/test_cleaning_task_transition_guard.ts` — selected task-transition contracts.
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — selected idempotency contract.
+- `backend/scripts/tests/test_work_task_actions.ts` — selected action and read-only contracts.
+- `backend/scripts/tests/test_cleaning_upload_diagnostics.ts` — selected upload-diagnostic contract.
+- `backend/scripts/tests/test_completion_photo_exception_route.ts` — completion-photo route contract.
+- `frontend/src/app/cleaning/page.tsx` — selected self-completion status display.
+- `frontend/src/app/cleaning/cleaningSchedule.module.scss` — selected completion-photo exception hint styling.
+- `frontend/src/lib/cleaningDailyTaskStatus.ts` — selected self-completion status metadata.
+- `frontend/src/lib/cleaningDailyTaskStatus.test.ts` — selected status metadata contract.
+- `docs/change-release-ledger.md` — this release record.
+
+### Impact / Dependencies
+
+- API: compatible work-task, self-completion and upload diagnostic response additions.
+- Database / migration / dependencies: none.
+- Related units: independent mobile `CRL-20260801-011`; both repositories must be released together for cross-layer paths.
+
+### Validation
+
+- Candidate assembly: `git diff --check` — passed before staging.
+- `npm run check:backend` — passed: backend compilation and 13 local contract suites, including the paired mobile release contract.
+- `npm run check:frontend` — passed: lint completed with existing warnings, 39 Vitest files / 172 tests passed, and production build passed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 27 changed files, 27 recorded files after the completion-photo route contract was added.
+- `python3 scripts/audit_feature_regression_registry.py` — passed: 8 FRs / 90 mappings; 55 mobile mappings deferred because the mobile repository is independent.
+- `./node_modules/.bin/tsc -p tsconfig.json --noEmit`, `test_completion_photo_exception_route.ts`, and `npm run test:mzapp-media-visibility` — passed after correcting the exception read route from `inspection-photos` to `completion-photos`.
+- Final rebase and PR-range validation — passed: `git diff --check origin/Dev...HEAD`, root range ledger coverage 27/27, `npm run check:backend`, `npm run check:frontend`, and the completion-photo route contract passed. Device and production validation remain unrun.
+
+### Risks / Release Notes
+
+- Shared backend files also contain the notification release hunk; staging must remain hunk-scoped.
+- No production API, database write, R2 operation or secret handling is authorized.
+- Git state: two rebased candidate commits are ready for final independent review; not pushed.
+
+## CRL-20260731-009 — 线下任务执行人 canonical 一致性
+
+- **Status:** pushed
+- **Updated:** 2026-07-31 Australia/Melbourne
+- **ID allocation:** 2026-07-31 Australia/Melbourne — 从 `CRL-20260731-002` 重编号为 `CRL-20260731-009`，避免与已存在的预订网站前端框架单元冲突；范围、验证与发布状态不变。
+- **Request:** 修复 admin、客服、线下经理移动端修改线下任务执行人提示成功但未持久化的问题；第一版禁止清空执行人，`assignee_id: null` 返回业务错误。
+- **Outcome:** 后端在同一事务内更新线下源任务与 `work_tasks` 投影，返回 canonical 结果；移动端回读一致后才展示成功。
+- **Conflict-resolution update:** 合并最新 `Dev` 时同时保留 CRL-005、007、008 的已发布记录和 008 的媒体快速质量门；009 的 PATCH 静态契约仍只进入 root backend Full。
+
+### Implementation
+
+- Previous behavior: PATCH 忽略 `assignee_id`，移动端用本地选择值覆盖页面，造成假成功。
+- New behavior: 明确 missing/null/value 语义，锁定源记录与 canonical 投影并原子更新；成功事件和页面状态仅使用最终 canonical 值。客服、线下经理和 admin 复用已有线下人工任务门禁。
+- Key decisions: 不允许清空执行人；不新增权限绕过；不改变其他清洁任务的执行人规则。
+
+### Files / Areas
+
+- `backend/src/modules/cleaning.ts` — modified: PATCH 语义、事务、锁、首次锁定前确保 canonical 表、canonical 返回、事件和线下人工任务角色门禁。
+- `backend/scripts/tests/test_task_assignment_canonical.ts` — modified: 保持既有 canonical 投影回归，并增加 PATCH 赋值、普通编辑保留与 null 拒绝覆盖。
+- `backend/scripts/tests/test_offline_task_assignment_patch_contract.ts` — added: 纯静态契约确认 PATCH 的 assignee 语义、source/canonical 表确保、事务投影与 canonical 回读；可安全进入 root backend Full。
+- `backend/scripts/tests/test_offline_task_assignment_patch.ts` — added: source/canonical、内容保留和 null 拒绝的三角色非生产 HTTP 集成契约；仅在显式测试库与写入确认同时存在时运行。
+- `backend/scripts/tests/test_offline_task_assignment_first_patch_contract.ts` — added: 纯静态契约确认两张表的确保顺序位于 PATCH 事务及首个 `FOR UPDATE` 之前；可安全进入 root backend Full。
+- `backend/scripts/tests/test_offline_task_assignment_first_patch.ts` — added: 首次 PATCH 在无 canonical 投影时先确保表并创建投影的非生产 HTTP 集成契约，参数化覆盖客服、线下经理和 admin；仅在显式测试库与写入确认同时存在时运行。
+- `backend/package.json` and `package.json` — modified: 为两类 assignment PATCH 纯静态契约提供明确脚本并接入 root backend Full；两条三角色数据库验证均保留为显式、非自动的 integration 命令。
+- `docs/feature-regression-registry.md` — modified: FR-002 映射 source/canonical、null 和三角色保护点。
+- `mz-cleaning-app-frontend` — related independent mobile unit `CRL-20260731-009`: canonical response type、回读确认与失败状态。
+
+### Impact / Dependencies
+
+- API: PATCH offline task returns canonical assignment fields while remaining compatible with current callers.
+- Database / migration: none planned.
+- Config / environment / dependencies: none.
+- Related units: CRL-20260731-008 is independent.
+
+### Validation
+
+- Merge-conflict resolution — merged `origin/Dev` `4b806ffe2d8eed7455974549870287f2b880b7c5` into the existing 009 source branch. The resolved `package.json` preserves the 008 `test:cleaning-media-image` fast regression and the 009 assignment PATCH contracts in root backend Full; the ledger retains CRL-005, 007, 008, and 009.
+- `npm run check:backend:full` — passed after conflict resolution. The two assignment PATCH commands executed their pure static contracts; no test database variables were provided and no database call was made.
+- `npm run check:fast` — passed after conflict resolution: ledger 13/13, FR registry 8 FRs / 98 mappings with mobile mappings deferred because no nested checkout, backend build and protected media contracts, frontend lint with existing warnings, and 39 frontend test files / 171 tests. The root mobile fast subcheck was explicitly skipped because this isolated root worktree has no nested mobile repository.
+- Push receipt — merge-resolution commit `6ffd62c13cae92dc977422f80a9515141796bd6a` was pushed to the existing 009 source branch; local HEAD and the separately queried remote ref matched.
+- Earlier root `npm run check:full` and database integration observations are historical only, and are excluded from the final evidence for this safety correction because the previous aggregate command could automatically invoke a database-write test.
+- `npm run check:backend:full` — passed after the correction; it invokes the two assignment contracts only, both pure static source checks.
+- `npm run build --prefix backend` — passed; its temporary tracked `backend/dist/modules/cleaning.js` output was restored and is excluded from this unit.
+- `git diff --check` — passed.
+- `python3 scripts/audit_change_release_ledger.py` and FR audit — passed: 8 changed files / 8 recorded files; 8 FRs / 93 mappings.
+- P2 correction — `test:offline-task-assignment-first-patch` runs only `test_offline_task_assignment_first_patch_contract.ts`, which verifies the source/canonical table ensures occur before `pgRunInTransaction` and the first `FOR UPDATE`; root `check:backend:full` invokes it after the assignment PATCH contract. `npm run check:backend:full` passed.
+- Integration safety correction — `test:offline-task-assignment-patch` now also runs only a pure static contract. The two HTTP/database scripts are `test:offline-task-assignment-patch-integration` and `test:offline-task-assignment-first-patch-integration`; both require `TEST_DATABASE_URL` and `TEST_ALLOW_NONPROD_DB_WRITE=1`, refuse `NODE_ENV=production`, require `NEON_DATABASE_URL_PROD` or `DATABASE_URL_PROD` for a fail-closed production identity check, and reject a test identity matching production by hostname/port/database rather than username. They set `DATABASE_URL` only after that guard. Both safely skipped without the explicit test inputs, with no database call; with a dummy explicit test URL but no production identity, each rejected before importing the database module.
+- Independent review — initial NO-GO P1 was fixed by ensuring `work_tasks` before its first PATCH lock; P2 coverage was added to the mobile unit. The first quality-gate follow-up review found an unsafe automatic database-write P1 and insufficient order assertion P2; a second review found the older assignment PATCH integration was still automatic; a third review found the manual integration guard was not fail-closed without a production identity. All automatic database-write paths are removed from root Full and the manual commands now fail closed. A fourth review corrected stale historical validation text; final independent read-only re-review: GO, no P0/P1/P2. The three-role integration remains `partial` until explicitly run against a confirmed non-production database.
+- Staging, commit, push, deployment, and mobile device acceptance — staging, commit, and push approved; deployment and mobile device acceptance remain pending.
+
+### Risks / Release Notes
+
+- Risk: assignment writes can affect visibility, events and notifications; event emission must happen only once after commit.
+- Sensitive-information review: no user details, tokens, database URLs, or production records in code/tests/ledger.
+- Rollback: code rollback leaves already-saved canonical assignments intact; no destructive data rollback.
+- **Git state:** conflict-resolution commit `6ffd62c13cae92dc977422f80a9515141796bd6a` is pushed to the existing source branch; the ledger receipt remains local until its own review and push. No deployment, database write, or production action.
+## CRL-20260731-008 — 清洁媒体完整性、多图展示与安全清理
+
+- **Status:** pushed
+- **Updated:** 2026-07-31 Australia/Melbourne
+- **ID allocation:** 2026-07-31 Australia/Melbourne — 从 `CRL-20260731-001` 重编号为 `CRL-20260731-008`，避免与已存在的维修基础单元冲突；范围、验证与发布状态不变。
+- **Request:** 修复清洁任务和日终交接照片引用失效后的可观测性、客厅多图展示、受控媒体读取及 R2 清理保护；生产照片恢复另作 REC-001，不随本代码单元部署。
+- **Outcome:** 新照片仅在对象可验证后进入业务保存；管理端获得稳定的多图兼容字段；日终交接照片按记录所属人或管理角色安全读取；并防止清理遗漏仍被引用的 `cleaning/` 对象。生产照片恢复仍独立于代码发布。
+
+### Implementation
+
+- Previous behavior: 客厅照片接口和管理端只使用一张照片；媒体代理只认可任务与用品记录，导致已登记的日终交接照片被拒绝；清理与上传校验无法完整覆盖用品数组照片引用。
+- New behavior: 保持旧字段兼容，新增数组字段和稳定排序；对象上传后以 Head 校验大小与内容类型；代理认证任务、用品及日终交接记录，日终照片仅允许所属人或既有管理角色读取；清理引用扫描不完整或失败时直接中止。
+- Security correction: 同一对象 key 即使属于同一任务，只要登记为多个媒体类型也拒绝读取；同 key 跨任务媒体与日终媒体、跨日终用户或日终类别同样拒绝读取，避免授权降级。
+- Key decisions: 不在本单元恢复、删除或修改生产历史照片对象；R2 恢复采用独立、仅复制的操作记录。不得将 R2 上传成功误作业务保存成功。
+
+### Files / Areas
+
+- `backend/src/r2.ts` — modified: 上传后对象大小、非空和内容类型校验。
+- `backend/src/modules/cleaning_app.ts` — modified: consumables 多图契约、用品数组与日终交接照片的受控代理授权；库存管理员以已有 `inventory.view` 通过媒体路由入口，随后仍执行逐记录日终授权。
+- `backend/src/modules/mzapp.ts` — modified: 管理端聚合多图契约一致性。
+- `backend/scripts/r2_orphan_audit.ts` — modified: 所有清洁引用来源的 fail-closed 扫描与行数上限拒绝。
+- `backend/scripts/tests/test_cleaning_media_image.ts` — modified: 覆盖多图字段、用品数组与日终交接照片代理授权冲突，以及库存管理员入口权限、记录所属人与无关清洁员拒绝。
+- `backend/scripts/tests/test_r2_media_governance.ts` — modified: 覆盖上传对象验证和引用扫描拒绝。
+- `package.json` — modified: backend fast quality gate 纳入已登记媒体绑定、多图与冲突拒绝回归。
+- `docs/feature-regression-registry.md` — modified: FR-004 映射管理端多图与同 key 授权冲突保护点。
+- `mz-cleaning-app-frontend` — related independent mobile unit `CRL-20260731-008`：多图渲染与失败重试。
+
+### Impact / Dependencies
+
+- API: 新增兼容的 `living_room_photo_urls`，保留 `living_room_photo_url`；既有 `/cleaning-app/media/image` 现在可读取已登记的日终交接媒体，不增加公开读取入口。
+- Database / migration: none planned unless现有字段无法保存必要的验证元数据；若需要 migration，先取得单独批准。
+- Config / environment: R2 仅沿用现有生产配置；不记录凭据。
+- Dependencies: none planned.
+- Related units: REC-001（生产照片仅复制恢复）；CRL-20260731-009（执行人一致性）；Dev 已合并的 CRL-20260731-005 与 007。
+
+### Validation
+
+- `npm run check:full` — passed after the cross-source conflict repair: root ledger/FR audit, backend build and all registered backend checks, frontend lint/tests/build; root worktree has no nested mobile repository so the mobile subcheck was explicitly skipped.
+- `npm run build --prefix backend` — passed after the cross-source conflict repair.
+- `npm run test:cleaning-media-image --prefix backend` — passed after the cross-source conflict repair, including task/day-end cross-source and internal conflict cases.
+- `npm run test:cleaning-media-image` — passed.
+- `npm run test:r2-media-governance` — passed.
+- `git diff --check` — passed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 9 changed files / 9 recorded files.
+- Post-review P1 correction — `/media/image` 入口以已有 `inventory.view` 覆盖库存管理员；`npm run build --prefix backend` and `npm run test:cleaning-media-image --prefix backend` passed. The test performs a loopback HTTP middleware check for inventory manager allow / unrelated finance deny, plus owner / unrelated cleaner record authorization assertions; no R2 or database was called.
+- Independent review — original review found and blocked the inventory-manager route-entry P1. Second independent read-only review: GO, no P0/P1; it verified the route gate remains followed by record-level task/day-end authorization. Non-blocking P2s remain: no mock-PG/R2 full route test and no actual R2 object read/write or production recovery test.
+- Merge-conflict resolution — latest `Dev` is merged while retaining CRL-005, 007 and 008 ledger/FR entries. `npm run check:fast` passed after resolution: ledger 7/7, FR 8/95, backend build and protected contracts, frontend lint with existing warnings, and 39 frontend test files / 171 tests; root mobile Fast was explicitly skipped because this isolated root worktree has no nested mobile checkout. Final independent read-only review: GO, no P0/P1; it confirmed that the five non-document files are already-merged CRL-005 code and that the effective PR range against `Dev` remains the nine CRL-008 root files. Merge commit `c6efcc0ff4272c0e95c10cd75b36201261ed4a7e` was pushed to the existing CRL-008 branch and remote SHA/ahead-behind verification passed.
+
+### Risks / Release Notes
+
+- Risk: 旧客户端只读取单数字段，必须保留兼容；对象恢复前，失效历史引用仍应表现为明确可重试错误而非伪成功。
+- Sensitive-information review: 不记录 R2 endpoint、bucket、URL、token、数据库连接或对象内容。
+- Rollback: 回退代码可恢复旧字段读取；不触碰 REC-001 的生产恢复对象。
+- **Git state:** root source commit `92ee27d87d4f7cdb82bb126d8b24abd98d735351`, merge-resolution commit `c6efcc0ff4272c0e95c10cd75b36201261ed4a7e`, and related mobile commit `8a3f8becd274f961d053d9cf24e96c67dac305b6` are pushed. No deployment, REC-001 recovery, R2 operation, or database write was performed.
+
+## CRL-20260731-007 — 检查照片上传进度不重载草稿
+
+- **Status:** ready
+- **Updated:** 2026-07-31 Australia/Melbourne
+- **Request:** 修复检查与补充页逐张上传照片时反复刷新整页草稿、导致内容跳动的问题。
+- **Outcome:** 队列通知只更新批次的状态和错误展示；初始进入或显式重试才读取完整草稿，过期异步读取不得覆盖当前页面。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.tsx` — modified: 将批次状态展示与完整草稿加载解耦，并增加过期读取保护。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.test.tsx` — modified: 覆盖连续队列进度不重复读取草稿且状态仍更新。
+- `docs/feature-regression-registry.md` and `docs/change-release-ledger.md` — modified: 记录上传进度稳定性保护与此发布单元。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Related units: CRL-20260731-005; CRL-20260731-008 is explicitly excluded.
+
+### Validation
+
+- `npm test -- --runInBand --no-cache src/screens/tasks/InspectionPanelScreen.test.tsx` — passed: 1 suite / 13 tests, including queue progress no-reload and same-task source change controlled reload.
+- `npm run typecheck` and `npm run lint` in `mz-cleaning-app-frontend` — passed; lint 0 errors / 111 existing warnings.
+- `npm run check:full` in `mz-cleaning-app-frontend` — passed: ledger range audit, typecheck, button audit, 50 suites / 245 tests.
+- `npm run test:cleaning-task-transition-guard --prefix backend`, `npm run test:work-task-actions --prefix backend`, backend `tsc --noEmit`, and backend build — passed.
+- Root ledger audit 7/7, FR audit (8 FRs / 92 mappings), mobile ledger audit 3/3, and both `git diff --check` — passed.
+- Independent review — initial NO-GO found stale validation ledger, a generated `backend/dist/modules/cleaning.js` outside selected CRLs, and missing non-queue refresh coverage; generated file was restored, evidence recorded, and controlled source-change reload coverage added. Second independent read-only review: GO, no P0/P1/P2.
+
+### Risks / Release Notes
+
+- Does not change photo upload order, idempotency handling, media retention, or server contracts. Device scroll-layout acceptance remains pending.
+- Git state: isolated worktree; approved for exact stage, commit, and push; no deployment or production action.
+
+## CRL-20260731-005 — 纯入住检查不再错误要求清洁提交
+
+- **Status:** ready
+- **Updated:** 2026-07-31 Australia/Melbourne
+- **Request:** 修复纯入住检查被错误要求先提交清洁补品和房源照片，进而阻止检查照片或挂钥匙流程的问题。
+- **Outcome:** `checkin_clean` 跳过不适用的清洁提交前置；`checkout_clean` 的清洁提交 409 门禁不变。后端 action、`/mzapp/work-tasks` payload 与移动端提交入口以同一服务端 action 为准。
+
+### Files / Areas
+
+- `backend/src/lib/workTaskActionAudit.ts` — modified: 中央前置断言按任务类型跳过纯入住检查。
+- `backend/src/lib/workTaskActions.ts` — modified: 旧 `cleaning_submission_ready=false` 不再禁用纯入住检查 action。
+- `backend/src/modules/mzapp.ts` — modified: 纯入住检查 payload 表示该清洁前置已满足。
+- `backend/scripts/tests/test_cleaning_task_transition_guard.ts` and `backend/scripts/tests/test_work_task_actions.ts` — modified: 覆盖入住例外与退房门禁保留。
+- `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.tsx` and `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.test.tsx` — modified: 仅信任服务端 action 禁用原因并覆盖旧字段回退。
+- `docs/feature-regression-registry.md` and `docs/change-release-ledger.md` — modified: 记录跨层门禁规则与发布单元。
+
+### Impact / Dependencies
+
+- API: `/mzapp/work-tasks` 对 `checkin_clean` 以 `cleaning_submission_ready=true` 表示该项不适用；响应结构不变。
+- Database / migration / dependencies: none.
+- Related units: CRL-20260731-007; CRL-20260731-008 is explicitly excluded.
+
+### Validation
+
+- `npm run test:cleaning-task-transition-guard --prefix backend` and `npm run test:work-task-actions --prefix backend` — passed.
+- backend `tsc --noEmit` and `npm run build --prefix backend` — passed.
+- `npm test -- --runInBand --no-cache src/screens/tasks/InspectionPanelScreen.test.tsx` — passed: 1 suite / 13 tests, including legacy false field does not block server-enabled pure checkin submission.
+- `npm run typecheck`, `npm run lint` (0 errors / 111 existing warnings), and `npm run check:full` (50 suites / 245 tests) in `mz-cleaning-app-frontend` — passed.
+- Root ledger audit 7/7, FR audit (8 FRs / 92 mappings), mobile ledger audit 3/3, and both `git diff --check` — passed.
+- Independent review — initial NO-GO found stale validation ledger, a generated `backend/dist/modules/cleaning.js` outside selected CRLs, and missing non-queue refresh coverage; generated file was restored, evidence recorded, and controlled source-change reload coverage added. Second independent read-only review: GO, no P0/P1/P2.
+
+### Risks / Release Notes
+
+- 仅移除不适用的清洁前置；本次检查照片、客人到达豁免和挂钥匙/密码视频门槛不变。
+- Git state: isolated worktree; approved for exact stage, commit, and push; no deployment or production action.
+
+## CRL-20260730-001 — PR #269 Dev → main 冲突解决候选
+
+- **Status:** staged
+- **Updated:** 2026-07-30 Australia/Melbourne
+- **Request:** 在独立 worktree 中解决 PR #269 的 Dev → main 冲突；保留不改名的 `Root Quality Check`、保留 main 的完整精确-ref 跨仓 workflow，并保留双方全部有效台账记录；未确认前不得提交、推送、合并或部署。
+- **Outcome:** 已在 detached `origin/Dev` worktree 中无提交合并 `origin/main` 并解决三个冲突；用户授权后安装 backend/frontend 的锁定依赖，并完成全部要求的根质量命令。三个审查文件现已精确暂存，等待创建 Dev 合并提交；尚未推送、PR 合并或部署。
+
+### Implementation
+
+- Previous behavior: PR #269 因两个同名新增 workflow 和同时改写台账开头而处于 `dirty` 冲突状态；Dev 的质量 workflow 不会报告受保护的 `Root Quality Check`。
+- New behavior: `quality.yml` 保留 main 的 `check` job 及准确的 `Root Quality Check` 名称，并将 Dev 的 Fast/Full 保留为独立 jobs；跨仓 workflow 使用 main 的完整精确-ref 集成版本；台账逐段合并并包含 Dev 记录与 main 的 `CRL-20260729-013`。
+- Key decisions: 不更改 branch protection、不删除或取消 required check、不整文件选择 ledger 的 ours/theirs、不修改 `main`；所有结果仅在隔离 worktree 中。
+
+### Files / Areas
+
+- `.github/workflows/quality.yml` — resolved: 保留 `Root Quality Check`，增加独立 Fast/Full jobs。
+- `.github/workflows/cross-repository-phase5-contract.yml` — resolved: 采用完整精确 root/mobile ref 集成验证。
+- `docs/change-release-ledger.md` — resolved: 逐段保留双方有效记录并记录本候选。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Config / environment: GitHub Actions workflow only; no production environment, external API, database, or mobile runtime action is executed.
+- Related units: CRL-20260729-010, CRL-20260729-011, CRL-20260729-013.
+
+### Validation
+
+- Ruby YAML parse — passed: both resolved workflows parse.
+- Conflict-marker scan — passed: no remaining merge markers in the three resolved files.
+- Initial `npm run check:fast` / `check:full` / `check:ci` — blocked only because the clean worktree did not yet contain dependencies (`tsc: command not found`); no source change was made for that condition.
+- User-authorized `npm ci --prefix backend` and `npm ci --prefix frontend` — passed; package-manager audit notices were reported but no audit fix or dependency change was made.
+- `npm run check:fast` — passed: Ledger/FR audit, backend build plus four selected backend contracts, frontend lint and 39 files / 171 tests. Root script explicitly skipped mobile Fast because the independent mobile checkout is absent from this isolated worktree.
+- `npm run check:full` — passed: inherited Fast, additional backend contracts, frontend production build. Root script explicitly skipped mobile Full for the same absent independent mobile checkout.
+- `npm run check:ci` — passed: Fast equivalent, including Ledger/FR audit, backend selected contracts, frontend lint and 39 files / 171 tests; root script explicitly skipped mobile Fast for the absent independent mobile checkout.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 3 changed files / 3 recorded files, Coverage PASS.
+- `python3 scripts/audit_feature_regression_registry.py` — passed: 8 FRs / 90 test mappings; 55 mobile mappings deferred.
+- `git diff --check` — passed.
+- Initial independent release review — NO-GO: no P0/P2, uncovered file, secret, production-write, database, or external-sync finding; its only P1 was the dependency-caused incomplete Fast/Full/CI validation above.
+- Independent read-only re-review — GO: no P0/P1 and no secret, production-write, database, external-sync, or uncovered-file finding. Non-blocking P2: local root commands explicitly skip mobile stages because this isolated worktree has no independent mobile checkout; remote PR `Root Quality Check` must still report successfully after a separately authorized push.
+
+### Risks / Release Notes
+
+- Risk: GitHub Actions has not yet run this uncommitted merge candidate, so actual remote reporting of `Root Quality Check` remains unverified; no branch-protection setting was changed.
+- Release gate: the resolved files are staged in an uncommitted merge candidate; after the authorized Dev push, the PR must actually report a successful protected `Root Quality Check` before merge.
+- Rollback: abort the isolated merge; no local or remote branch has advanced.
+- Sensitive-information review: no `.env` values, tokens, credentials, database URLs, cookies, private keys, sensitive logs, or production data are added.
+- Git state: detached worktree, exactly three files staged; no commit, push, PR merge, deployment, or branch-protection change yet.
+
+## CRL-20260729-013 — 默认分支跨仓精确 ref 集成门禁
+
+- **Status:** pushed
+- **Updated:** 2026-07-30 Australia/Melbourne
+- **Request:** 将跨仓库验收 workflow 放入 root 默认分支 `main`，按精确 root/mobile ref checkout、输出解析 SHA、运行双方 Full/Phase 5/Ledger/FR，并在失败时保存 manifest 与日志。
+- **Outcome:** `main` 新增自包含的手动跨仓集成门禁。workflow definition 在默认分支注册，但验证内容只来自输入的 `root_ref` 与 `mobile_ref`，不读取浮动分支；先确认这两个精确 ref 实际提供 Full、Ledger、FR 和 Phase 5 接口，再记录两个实际 SHA 并运行双方 `check:full`、Phase 5 契约、root Ledger/FR 和 mobile Ledger 审计。任一 checkout、接口、安装、审计或测试失败均由最终 gate 明确失败，但 `if: always()` 仍上传 manifest、SHA 和日志。
+
+### Files / Areas
+
+- `.github/workflows/cross-repository-phase5-contract.yml` — added: 默认分支注册的精确双 ref 集成 workflow、失败 manifest/日志与最终 fail gate。
+- `docs/change-release-ledger.md` — modified: 记录本 default-branch 治理单元。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Runtime dependency: workflow 的实现和 manifest/日志上传均在默认分支；被验证的命令接口必须由输入的两个精确 ref 提供，workflow 会先验证文件和 package scripts，并把任何缺失记录为失败，而不回退到 `main` 或 `Dev`。
+- Related units: root Dev `CRL-20260729-012` 与 mobile Dev `CRL-20260729-004` 提供严格 PR Ledger 审计；本条只负责默认分支 Actions 注册和精确组合运行。
+
+### Validation
+
+- Passed locally: Ruby YAML parse、Ledger audit (2 changed / 2 recorded)、`git diff --check`；workflow 静态检查确认输入为必填、两个 checkout 使用输入 ref、接口验证在安装前执行、失败 gate 和 artifact 上传使用 `if: always()`。
+- Passed: 修复后的独立只读审查为 GO、无 P0/P1。审查使用 root Dev/mob Dev 候选 ref 验证接口预检通过，并以旧 root main SHA 验证预检明确失败（缺 FR/Phase5/check:full），确认没有 main/Dev 回退。
+- Passed: root PR #264 merged this workflow into `main` as `d9fbd5adefc7320644ee75dd7b46b310fa3dc5ef`; GitHub Actions registered workflow ID `323095179` as active. The root `main` protection check was corrected from the nonexistent `Fast Regression` context to its actual `Root Quality Check` job; PR #264's Quality Check run #13 then passed before merge.
+- Passed: positive exact-SHA dispatch run #1 (`30468812377`) requested and resolved root `d1761217d1b84c904dee990151c62ce2988781f0` and mobile `164b162cf63e5324d659dce00980e46e40e1c3f0`. Both checkouts, interface verification, installs, root Ledger/FR audit, mobile Ledger audit, root/mobile `check:full`, and the Phase 5 contract succeeded. Artifact `cross-repository-integration-30468812377` contains `integration-manifest.json`, `resolved-shas.txt`, and all audit/test logs.
+- Passed: negative dispatch run #2 (`30481533717`) used invalid root ref `refs/does-not-exist-phase4-20260730` with the same exact mobile SHA and failed as required. Its manifest records `checkout_root: failure`, empty root SHA, no fallback to a branch, final failure gate, and successful artifact upload (`cross-repository-integration-30481533717`).
+- Not run: production deployment、production API、数据库写入、外部同步、EAS/native 或业务功能测试；均不属于本治理修正。
+
+### Risks / Release Notes
+
+- Workflow 失败会保留 artifact，而不会因前置步骤失败跳过证据收集。
+- 用户输入的无效 ref 会明确成为失败 gate；不会 checkout 默认分支作为回退。
+- Sensitive-information review: no secrets, `.env` values, tokens, cookies, passwords, database URLs, private keys, production data, or sensitive logs are added.
+- Git state: governance-only candidate was merged to `origin/main` by PR #264 as `d9fbd5adefc7320644ee75dd7b46b310fa3dc5ef`; this documentation-only evidence receipt awaits its own protected PR. Nothing is deployed.
 
 ## CRL-20260729-011 — 根质量命令层级
 
@@ -181,9 +546,49 @@
 - Local commit evidence: 根候选 `564afb8b9c1c7e8e5094d640458ab86e0bd36b04`（在已接入 CRL-010 后）与移动端候选 `db2f12ac1dbed98750b5f748e5ff298a3af9bffd`（CRL-001）均已本地提交；两个提交各自在新建干净 worktree 中通过相应质量命令。
 - Remote completion: 用户授权后，根候选已非 force 快进 `a571600a9a37c051b96637b26ba972bbd026487e..8074849a7a85a3c13767ad03346b1ed3578f82e4` 至 `origin/Dev`；移动端候选已非 force 快进 `b45d84529ba734b17fabf9bd0c786517394abafd..25d1f8963fae93e02130035071cb67d7be98444e` 至移动端 `origin/Dev`。随后的 fetch 均确认候选 HEAD 与各自 `origin/Dev` 的 ahead 0 / behind 0；`actionlint`、GitHub Actions dispatch、真实设备/EAS、生产 API/数据写入和外部同步均未运行。
 
-## CRL-20260729-007 — Photo ID 与签证图片只读大图预览
+## CRL-20260729-008 — MZStay 1.0.25 iOS/Android production 构建
 
 - **Status:** ready
+- **Updated:** 2026-07-30 Australia/Melbourne
+- **Request:** 发布 MZStay 1.0.25 版本元数据与 Android 内部分发 APK 配置。
+- **Outcome:** 候选将移动端版本、iOS build number、Android version code 统一为 `1.0.25 (25)`，并加入仅供内部 USB 安装的 `production-apk` EAS profile；不会重新创建或提交现有 IPA/AAB/APK 构建产物。
+
+### Files / Areas
+
+- `mz-cleaning-app-frontend/app.json` — modified: 版本、iOS build number 与 Android version code 升至 25。
+- `mz-cleaning-app-frontend/eas.json` — modified: 增加正式环境的内部 APK 构建 profile。
+- `mz-cleaning-app-frontend/package.json` — modified: 版本元数据升至 1.0.25。
+- `mz-cleaning-app-frontend/package-lock.json` — modified: 根包版本元数据同步。
+- `docs/change-release-ledger.md` — modified: 记录跨仓库发布状态。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Config / environment: `production-apk` 仅用于内部安装，不能提交到 Google Play；不改变既有 store AAB 配置。
+- Related units: 先前根 `2a0ecbc` 与移动端 `8c658e7` 已包含本次所选业务 CRL 的功能源码；本单元仅补充尚未推送的版本与 EAS 配置。
+
+### Validation
+
+- Passed: root ledger audit (1 changed / 1 recorded)、feature-registry audit (8 FRs / 90 mappings) and `git diff --check`.
+- Passed: isolated mobile candidate ledger audit (5 changed / 5 recorded)、typecheck、lint (0 errors / 111 existing warnings)、button audit、Fast Jest (3 suites / 13 tests) and full Jest (50 suites / 242 tests).
+- Passed: independent read-only release review returned GO with no P0/P1/P2 finding.
+- Existing artifact evidence: 1.0.25 的 iOS IPA、Android AAB 与内部 APK 已在此前构建完成；本次不以该历史构建替代当前 Git 候选验证。
+
+### Risks / Release Notes
+
+- Risk: 发布配置不自动提交 App Store Connect 或 Google Play，也不触发新的 EAS 构建；当前不包含 `expo-updates`，故 `channel: production` 不启用运行时 OTA 更新。
+- Sensitive-information review: 不记录或提交 `.env` 内容、token、凭证、数据库 URL、私钥、敏感日志或本地缓存。
+- Git state: selected candidate, uncommitted and unpushed.
+
+## Release reconciliation — 2026-07-30
+
+- Evidence: root commit `2a0ecbc` and mobile commit `8c658e7` were pushed on 2026-07-29 and contain the selected backend/web/mobile business source files. This reconciliation corrects the affected root CRL statuses from `ready` to `pushed`; it does not re-release those source files.
+- Scope: CRL-20260726-002 through -007, -009, -010; CRL-20260727-001 through -008; CRL-20260728-001 through -005; and CRL-20260729-001 through -007.
+- Remaining selected work: CRL-20260729-008 remains `ready` until its version/EAS configuration commit reaches the independent mobile `Dev` branch.
+
+## CRL-20260729-007 — Photo ID 与签证图片只读大图预览
+
+- **Status:** pushed
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** Photo ID 和签证照片需要支持放大查看。
 - **Outcome:** 待最终校验。编辑资料页的两种证件图片缩略图可点击打开全屏等比大图，支持 1x–4x 双指捏合缩放并拖动查看局部；维持只读和现有水印显示。
@@ -232,7 +637,7 @@
 
 ## CRL-20260729-005 — 移动端“我”页账户操作文字居中
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** 修复移动端“我”页中“退出登录”按钮文字未在操作行正中显示的问题。
 - **Outcome:** 用户澄清后，账号管理子页已恢复原先的 48pt 行高和 14pt 内边距；“我”主页底部红色“退出登录”按钮保留水平与垂直居中显示。
@@ -290,7 +695,7 @@
 
 ## CRL-20260729-006 — 移动端 Photo ID 与签证图片整版水印和 Visa Grant Number
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** Photo ID 预览必须显示覆盖整张图的 MZ Property 水印；新增仅支持图片的签证文件上传、同样的整版水印，并显示/保存 Visa Grant Number。
 - **Outcome:** 待验证完成。实现复用现有资料图片上传和服务端 Sharp 水印链路；Photo ID 与签证资料均以同一段中英文本的重复倾斜水印存档，本地原图预览同步展示整版覆盖层；签证图片地址和 Visa Grant Number 仅随当前登录用户的自助资料读写。
@@ -351,7 +756,7 @@
 
 ## CRL-20260729-004 — 管理详情恢复自完成完成照片展示
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** admin、客服和线下经理在任务详情看不到自完成拍摄的房间完成照片；要求以只读方式展示，且不影响清洁人员与检查人员的既有照片规则。
 - **Outcome:** 管理详情读取完成照片时会合并当前 active 任务、显式 `cleaning_task_ids`、旧缓存 `source_ids` 与主 `source_id`；合并卡不再遗漏自完成照片所属的清洁任务。多个关联任务中即使一条照片请求失败，其他成功返回的完成照片仍会按原有分组显示，失败仍显示诊断和重试。
@@ -396,7 +801,7 @@
 
 ## CRL-20260729-003 — 自完成挂钥匙视频弱网同步与检查前置隔离
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** 自完成上传挂钥匙视频需要显示上传状态、弱网可恢复；修复错误要求“等待清洁提交补品记录和房源照片，再提交检查”。
 - **Outcome:** 自完成视频先保存为应用私有队列项，再复用检查页同一个单 worker 上传、断点和业务保存机制；页面明确显示未上传、待同步、上传中、已上传未保存、保存失败与已同步。自完成视频保存不会再套用普通检查的“清洁补品 + 房源照片”前置；普通检查和 password-only 原门槛保持不变。最终点击“标记已完成”仍由既有自完成接口校验本任务的视频、完成照片和补品。
@@ -450,7 +855,7 @@
 
 ## CRL-20260729-002 — 修复自完成补品提交的空客厅照片参数
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** 自完成任务提交消耗品补充时报“参数错误 string must contain at least 1 characters”。
 - **Outcome:** 未拍可选“客厅补品照片”时，移动端不再发送 `living_room_photo_url: ""`；有远端照片引用时继续发送该字段。补品、补货凭证和完成照片保留既有弱网队列、稳定 `submit_id` 与分步业务保存方式。
@@ -495,7 +900,7 @@
 
 ## CRL-20260729-001 — 自完成照片全屏预览、水印与遥控器合并
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-29 Australia/Melbourne
 - **Request:** 修复自完成房间完成照片的大图不能完整显示且看不到水印；客厅、沙发、卧室、厨房明确拍摄对象并以小字提示；电视遥控器与空调遥控器合并为一张照片。
 - **Outcome:** 自完成房间完成照片打开后使用整屏预览并按设备宽度显示，避免固定小容器裁切；本地草稿大图立即显示房号、执行人和拍摄时间水印，上传后的图片继续由既有后端写入同样水印。客厅、沙发、卧室和厨房显示指定拍摄对象的小字提示。电视和空调遥控器合为一个必拍位，只保留一张并支持重拍替换；旧电视/空调/笼统遥控器完成照片均会合并显示。
@@ -538,7 +943,7 @@
 
 ## CRL-20260728-005 — 自完成补品确认、房号确认与完成照片补齐
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-28 Australia/Melbourne
 - **Request:** 自完成页面把房间完成照片的拍照按钮从黑色改为蓝色，并增加浴室下水口、遥控器照片；明确电视遥控器必拍，空调遥控器在墙上时可不拍。随后修复进入自完成页时所有未选消耗品被误显示为“现场够用”，并要求未结束任务进入时确认当前房号；已结束任务重进不再确认。
 - **Outcome:** 自完成页显示 8 个必拍区域（原有 5 个基础区域、浴室下水口、电视遥控器、吸尘器使用后）和 1 个可选的空调遥控器拍照位；“拍照”保持既有 44pt 按钮契约并为蓝色。未明确选择的消耗品在草稿中保持空状态并回显为“待确认”，只有用户明确选择“现场够用/已补充/下次退房补”才保存对应状态。已有错误草稿中 `status: ok` 且 `restock_status: null` 的项目也会恢复为“待确认”，而没有 `restock_status` 的旧版明确“足够”记录仍兼容为“现场够用”。未结束任务先显示房号确认，`cleaned`、`restock_pending` 等已结束任务重进直接查看。弱网草稿、逐张上传、单次完成照片业务保存与重进恢复继续复用既有队列。
@@ -591,7 +996,7 @@
 
 ## CRL-20260728-004 — 自完成补货结果与完成照片最终批次提交
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-28 Australia/Melbourne
 - **Request:** 优化移动端自完成任务的补充与完成页面：补货要区分“已补充”和“下次补”；房间完成照片复用检查/清洁人员的弱网、本机草稿、逐张上传和重进恢复规则；照片对象逐张上传，但最终完成记录一次写入数据库。
 - **Outcome:** 自完成消耗品逐项改为“现场够用 / 已补充 / 下次退房补”。“已补充”必须通过相机留下补货凭证；“下次退房补”不要求照片，并使用既有 `carry_forward` 记录供后续退房任务投影。完成照片拍下时只持久化到应用私有草稿；用户点击“标记已完成”时，队列才逐张上传，所有远端引用齐备后以一个稳定 `submit_id` + `completion_photos` 业务请求批量保存，成功后才调用自完成状态转换。后端明确允许自完成任务的清洁执行人保存此批补货凭证，仍要求消耗品先入库，但不错误套用检查专用的房源照片前置。
@@ -646,7 +1051,7 @@
 
 ## CRL-20260728-003 — 移动端消耗品补充标准
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-28 Australia/Melbourne
 - **Request:** 所有角色的消耗品补充页面，在补充物品旁显示卷纸、抽纸、洗护、垃圾袋、厨房用品等对应补充标准。
 - **Outcome:** 清洁人员的“补品填报”与“补充与完成”，以及检查人员的“检查与补充”，都会在受支持的消耗品名称下显示统一的“补充标准”。未知或自定义项目不显示猜测标准。
@@ -696,7 +1101,7 @@
 
 ## CRL-20260728-002 — 管理端历史工作情况与 MSQ 钥匙时间语义
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-28 Australia/Melbourne
 - **Request:** admin 移动端“今日工作情况”默认收起；按历史日期查看时复用既有历史任务与交接记录；MSQ 仓库钥匙当天显示“谁借出 HH:mm”，前一天显示“昨天 谁借出 HH:mm”，更早记录显示日期和时间。
 - **Outcome:** 管理模式下的工作情况卡片默认收起，展开时才读取当前所选日期的数据。切换到周/月并选择历史日期后，同一张卡片读取既有的任务和交接记录，标题显示该日期；当前页面对已读取日期缓存，下拉刷新才清空缓存并重新读取。MSQ 最近钥匙事件不再笼统显示“最近”，而按当天、昨天或明确日期展示借出/归还人和时间。
@@ -743,7 +1148,7 @@
 
 ## CRL-20260728-001 — 移动端房号确认、遥控器合拍与检查后清洁问题追加
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-28 Australia/Melbourne
 - **Request:** 清洁人员补品消耗将电视和空调遥控器合为一张照片，电视遥控器仍必拍、墙嵌空调遥控器可不拍；检查与补充成功保存到服务器后仅允许从相册追加清洁问题；清洁/检查人员进入对应页面先确认当前任务房号。
 - **Outcome:** 补品页现在只拍一张“电视与空调遥控器”照片，仍以电视遥控器照片作为提交门槛。补品页和检查页在开始填写前均要求确认房号。检查批次状态为 `synced` 后，已提交的检查和补货照片保持只读；检查员仍可从相册选取新的清洁问题照片，上传与服务端追加保存分开处理，服务端保存失败时可重试且不会重复上传已取得远端引用的照片。
@@ -807,7 +1212,7 @@
 
 ## CRL-20260727-008 — Android 上传成功后保留页面媒体引用
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-28 Australia/Melbourne
 - **Request:** 安卓移动端拍照上传后仍看不见照片，继续修复缩略图/原图在上传成功回调后的消失问题。
 - **Outcome:** 补品/完成照片、检查照片和钥匙照片队列不再在页面仍使用 `file://` 地址时立即删除本地副本；钥匙详情页在同步完成后主动刷新开发环境任务数据，把页面切换到远端 `cleaning/...` 引用；修复本地 URI 同时作为缩略图与原图 `Image` key 时产生的重复 key。已同步但暂时没有页面引用的本地文件由既有 24 小时孤儿媒体清理机制回收。
@@ -898,7 +1303,7 @@
 
 ## CRL-20260727-007 — 钥匙重传保持任务状态并保留补品照片
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-27 Australia/Melbourne
 - **Request:** 补品填报完成后重新上传钥匙照片，任务不得从已完成退回进行中；重新上传钥匙不能使此前拍摄的补品消耗照片消失。
 - **Outcome:** 钥匙重传使用统一动作结果写入任务，已完成/检查推进状态保持不变；钥匙上传事件改为只发移动端安全增量字段，避免触发整卡刷新覆盖补品消耗照片。后续核对发现完成页把读取失败误判为空，已补上读取失败保留现有照片、稳定任务 ID恢复和重传时只替换钥匙媒体。
@@ -955,7 +1360,7 @@
 
 ## CRL-20260727-006 — 清洁照片上传后统一保存稳定媒体 key
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-27 Australia/Melbourne
 - **Request:** 安卓移动端照片上传成功后，缩略图和原图仍不可见；继续检查并修复上传后媒体引用丢失问题。
 - **Outcome:** 清洁移动端上传成功后的业务引用已统一 key-first；新上传照片在本地清理、业务提交和任务刷新后仍保留 `cleaning/...` 稳定 key，并可通过认证媒体代理读取缩略图、预览和原图。
@@ -1011,7 +1416,7 @@
 
 ## CRL-20260727-005 — 钥匙照片删除后允许不受补品状态影响重新上传
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-27 Australia/Melbourne
 - **Request:** 钥匙照片被删除后，仍然可以重新上传，不受补品是否填写完成影响。
 - **Outcome:** 服务端任务动作 payload、移动端旧任务动作和任务详情按钮均按“当前是否仍有钥匙照片”判断；照片已删除时，即使清洁状态已经进入 `cleaned`/`done` 等完成态，上传入口仍可用；照片仍存在时继续保持已记录/不可重复上传。
@@ -1060,7 +1465,7 @@
 
 ## CRL-20260727-004 — Android 照片统一转 JPEG并修复黑色缩略图/原图失败
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-27 Australia/Melbourne
 - **Request:** 安卓系统拍摄的清洁照片在缩略图和原图中显示全黑，原图提示加载失败；需要给出并执行修复。
 - **Outcome:** 移动端本地草稿、检查照片队列和上传前不再把转换失败的原始字节伪装成 JPEG；后端清洁/mzapp 上传与清洁媒体读取统一解码、旋转并输出 JPEG；解码失败返回 `IMAGE_FORMAT_UNSUPPORTED`；预览组件显示明确失败和重试入口。
@@ -1128,7 +1533,7 @@
 
 ## CRL-20260727-003 — 网页任务中心周转卡显示已住与待住晚数
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-27 Australia/Melbourne
 - **Request:** 网页端任务中心卡里增加显示已住晚数和待住晚数。
 - **Outcome:** 退房入住合并卡按后端已有 `stayed_nights` / `remaining_nights` 字段显示“已住 X晚”和“待住 X晚”；单独入住卡继续显示原有“住 X晚”。任务详情元信息与卡片复用同一展示规则。
@@ -1176,7 +1581,7 @@
 
 ## CRL-20260727-002 — MZ 移动端按钮规范 skill 与统一触控尺寸
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-27 Australia/Melbourne
 - **Request:** 为 MZ 移动端建立可复用的仓库级按钮规范 skill，并按统一厚度、文字、loading、disabled、图标触控区域和并排布局规则优化现有页面。
 - **Outcome:** 新增 `mz-mobile-button-rules` 仓库级 skill；普通按钮以 `minHeight: 44` 为基准，compact/chip 与图标按钮保留语义例外但实际触控区域不小于 44；AppButton loading 保留原文案布局并禁用重复点击；新增按钮静态审计和组件回归测试。
@@ -1234,7 +1639,7 @@
 
 ## CRL-20260727-001 — 管理角色统一客服任务详情入口
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-27 Australia/Melbourne
 - **Request:** admin 的清洁/检查任务详情必须与客服显示一致，能够修改任务时间和密码、维护当天临时通知，并查看清洁及检查照片等管理信息。
 - **Outcome:** 管理角色从任务卡、通知搜索、通知详情和推送任务入口进入清洁类任务时统一打开 `ManagerDailyTask`，复用客服已有的管理编辑、临时通知和照片查看页面；不改变服务端 `available_actions` 的执行授权。
@@ -1285,7 +1690,7 @@
 
 ## CRL-20260726-010 — 管理角色任务详情动作与钥匙媒体版式统一
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-26 Australia/Melbourne
 - **Request:** 客服、admin、线下经理的钥匙照片应与挂钥匙视频保持同样的大媒体框；admin 任务详情不应在非参与任务上显示一整组灰色执行/检查按钮，而应与客服使用同样的管理动作布局。
 - **Outcome:** 每日清洁页的钥匙照片使用与视频一致的全宽 220 高媒体框；后端对非参与的 admin/线下经理隐藏 `not_participant` 执行动作，只保留客服式管理动作；有明确参与授权时仍显示对应动作；移动端旧 payload 兼容分支保持客服、admin、线下经理一致。
@@ -1334,7 +1739,7 @@
 
 ## CRL-20260726-009 — 挂钥匙视频业务保存状态不再误判为离线
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-26 Australia/Melbourne
 - **Request:** 修复手机已有网络、视频文件已经上传但任务记录保存失败时，完成页仍显示“联网恢复后自动保存”的错误描述。
 - **Outcome:** 完成页区分“媒体上传成功”和“业务记录保存成功”；优先显示真实保存错误，进入页面时主动尝试一次媒体队列处理并刷新状态。
@@ -1374,7 +1779,7 @@
 
 ## CRL-20260726-007 — 检查提交必须等待清洁补品与房源照片
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-26 Australia/Melbourne
 - **Request:** 修复检查先提交后把共享清洁任务推进到检查态、导致清洁无法继续记录的问题；检查必须等待清洁补品记录和房源照片提交成功。
 - **Outcome:** `/mzapp/work-tasks` 返回清洁提交前置状态；普通检查 action 在前置未满足时禁用；检查照片、补货凭证和挂钥匙视频后端入口统一拒绝绕过；检查照片主入口在任务行锁内先校验再写入，清洁仍可恢复提交。
@@ -1429,7 +1834,7 @@
 
 ## CRL-20260726-006 — 第五阶段跨层回归与发布前写入闸门
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-26 Australia/Melbourne
 - **Request:** 执行第五阶段：把补品队列/草稿/后端事务的不变量接入跨层发布前检查，并为真实数据库 E2E 增加非生产写入闸门。
 - **Outcome:** 增加跨层源码契约检查；补品队列测试覆盖 5xx 退避和稳定 ID 的持久化读取；Phase 5 E2E 默认跳过数据库写入，只有显式非生产标签和开关同时满足时才运行。
@@ -1479,7 +1884,7 @@
 
 ## CRL-20260726-005 — R2 媒体引用盘点与孤儿回收闸门
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-26 Australia/Melbourne
 - **Request:** 执行第四阶段：为 R2 媒体增加前缀感知的引用盘点、dry-run 孤儿识别和显式回收保护。
 - **Outcome:** 新增 R2 对象分页清单和批量删除基础能力、数据库引用抽取与候选摘要；默认只 dry-run，当前没有默认可删除临时前缀，任何删除都需要精确前缀授权和确认词。
@@ -1532,7 +1937,7 @@
 
 ## CRL-20260726-004 — 补品后端事务、启动预热与稳定媒体对象
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-26 Australia/Melbourne
 - **Request:** 执行第三阶段：为补品提交补齐事务边界、事务成功后的副作用、启动期结构检查和稳定 `media_id` 上传 key。
 - **Outcome:** 补品提交按任务行加锁，在单一事务内完成回执检查、旧记录替换、媒体写入、任务状态/审计和回执保存；事务提交后才返回并触发任务事件、SSE 和通知。补品相关结构初始化进入启动 warmup，带 `media_id` 的照片使用稳定 R2 key，重试覆盖同一对象而不是随机新对象。
@@ -1579,7 +1984,7 @@
 
 ## CRL-20260726-003 — 补品业务提交 submit_id 幂等保护
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-26 Australia/Melbourne
 - **Request:** 执行第 0 阶段和第二阶段：在第一阶段客户端队列/草稿基础上，补齐补品业务提交的服务端幂等保护。
 - **Outcome:** 第 0 阶段确认移动端已有稳定 `submit_id` 但补品请求未发送、后端补品接口无 receipt 检查、项目已有共享 `app_submit_receipts`。第二阶段已让移动端发送 `submit_id`，后端对同任务同提交同步骤的相同 payload 返回历史结果，payload 变化返回 `409 idempotency_conflict`，避免重复写入、任务事件和通知。
@@ -1623,7 +2028,7 @@
 
 ## CRL-20260726-002 — 补品提交队列唯一执行者与草稿媒体断点状态
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-07-26 Australia/Melbourne
 - **Request:** 第一阶段执行补品弱网提交优化：队列必须是唯一提交执行者，草稿必须是唯一进度事实来源，并覆盖重复入队、逐张上传、恢复、错误分类和本地清理。
 - **Outcome:** 两个补品提交入口只负责校验、持久化草稿和调用队列入口；队列统一执行照片上传与业务提交。草稿升级为带稳定 `draft_id`、`queue_item_id`、`submit_id`、`media_id` 的可恢复状态快照，逐张保存上传检查点；写盘读回成功后才删本地文件，删除失败进入清理任务。

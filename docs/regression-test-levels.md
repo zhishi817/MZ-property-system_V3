@@ -82,7 +82,7 @@ Release 入口运行 Full。若本次 CRL 涉及 migration、版本一致性或�
 
 ## 跨仓库集成（Phase 4）
 
-`Cross-Repository Integration` 只能手动触发，且必须输入 `root_ref` 与 `mobile_ref`。它分别 checkout 两个输入所解析的精确提交，安装三套 lockfile 依赖，运行根 `check:full`、独立移动端 `check:full`，再运行 `npm run test:phase5-release-contract --prefix backend` 静态核对共享 API（服务端 `available_actions` 到移动端类型/消费）、队列和事务契约。workflow 会上传实际解析得到的两个 commit SHA，不能把输入分支名当作组合验证证据。
+`Cross-Repository Integration Verification` 只能手动触发，且必须输入 `root_ref` 与 `mobile_ref`。它分别 checkout 两个输入所解析的精确提交，先验证所选 ref 提供所需命令接口，再安装三套 lockfile 依赖，运行根 `check:full`、独立移动端 `check:full`，以及 `npm run test:phase5-release-contract --prefix root/backend`。该静态契约核对共享 API（服务端 `available_actions` 到移动端类型/消费）、队列和事务链路。workflow 会记录实际解析的两个 commit SHA，并在任一 gate 失败时仍上传 manifest、SHA 与日志；不能把输入分支名当作组合验证证据。
 
 它不执行数据库 migration、生产 smoke、外部同步或真机/EAS 验证；这些仍需在对应发布审查中显式授权和记录。
 
