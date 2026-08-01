@@ -3,7 +3,6 @@ import { listManagerUserIds } from '../modules/notifications'
 import { emitNotificationEvent } from '../services/notificationEvents'
 
 type Level = 'remind' | 'escalate'
-const FIELD_ROLE_EXCLUDES = ['cleaner', 'cleaner_inspector', 'cleaning_inspector']
 
 function melbourneYmd(d: Date) {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Melbourne', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(d)
@@ -104,7 +103,7 @@ export async function runKeyUploadSlaCheck(position: number, level: Level) {
 
   if (!rows.length) return { ok: true, created: 0 }
 
-  const managerIds = await listManagerUserIds({ excludeRoles: FIELD_ROLE_EXCLUDES })
+  const managerIds = await listManagerUserIds()
 
   for (const r of rows) {
     const cleanerId = String(r.cleaner_id || '')
@@ -117,6 +116,15 @@ export async function runKeyUploadSlaCheck(position: number, level: Level) {
     const property_code = String(r.property_code || '').trim() || null
     const property_address = String(r.property_address || '').trim() || null
     const task_ids = Array.isArray(r.task_ids) ? r.task_ids.map((x: any) => String(x)) : []
+    const inspectorResult = task_ids.length
+      ? await pgPool.query(
+        `SELECT DISTINCT NULLIF(TRIM(inspector_id::text), '') AS inspector_id
+           FROM cleaning_tasks
+          WHERE id::text = ANY($1::text[])`,
+        [task_ids],
+      )
+      : { rows: [] }
+    const inspectorIds = Array.from(new Set((inspectorResult?.rows || []).map((row: any) => String(row?.inspector_id || '').trim()).filter(Boolean)))
     const payload = {
       date,
       position,
@@ -149,7 +157,7 @@ export async function runKeyUploadSlaCheck(position: number, level: Level) {
           eventId: id,
           title,
           body,
-          recipientUserIds: [cleanerId],
+          recipientUserIds: [cleanerId, ...inspectorIds],
           priority: 'high',
           data: { kind, level, position, event_id: id, cleaning_task_ids: task_ids, property_code },
         })

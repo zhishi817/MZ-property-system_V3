@@ -39,13 +39,55 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           if [[ "$EVENT_NAME" != 'pull_request' ]]; then
             echo 'full_required=true' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           bash scripts/ci/classify_pr_risk.sh "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+  check:
+    name: Root Quality Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Audit pull request Ledger range
+        if: github.event_name == 'pull_request'
+        run: |
+          python3 scripts/audit_change_release_ledger.py \
+            --base '${{ github.event.pull_request.base.sha }}' \
+            --head '${{ github.event.pull_request.head.sha }}'
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install backend dependencies
+        run: npm ci --prefix backend
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+
+      - name: Run ledger check
+        run: npm run check:ledger
+
+      - name: Run backend checks
+        run: npm run check:backend
+
+      - name: Run frontend checks
+        run: npm run check:frontend
 
   ledger:
     name: Change Ledger Audit
@@ -55,9 +97,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Audit change ledger coverage
-        run: npm run check:ledger
+        run: |
+          if [[ '${{ github.event_name }}' == 'pull_request' ]]; then
+            python3 scripts/audit_change_release_ledger.py \
+              --base '${{ github.event.pull_request.base.sha }}' \
+              --head '${{ github.event.pull_request.head.sha }}'
+          else
+            npm run check:ledger
+          fi
 
   registry:
     name: Regression Registry Audit
@@ -80,7 +131,7 @@ jobs:
         run: npm run check:feature-registry
 
   fast:
-    name: Root Fast Check
+    name: Fast Regression
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -121,7 +172,7 @@ jobs:
         run: npm run check:ci
 
   full:
-    name: Root Full Check
+    name: Full Regression
     needs: risk
     if: ${{ always() }}
     runs-on: ubuntu-latest

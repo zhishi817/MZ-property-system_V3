@@ -31,6 +31,13 @@ const EMPTY_FORM: AppNotificationPolicyForm = {
   note: '',
 }
 
+const MANAGER_ROLE_NAMES = new Set(['admin', 'offline_manager', 'customer_service'])
+
+function isManagerNotificationUser(user: AppNotificationUser) {
+  return [user.role, ...(Array.isArray(user.roles) ? user.roles : [])]
+    .some((role) => MANAGER_ROLE_NAMES.has(String(role || '').trim().toLowerCase()))
+}
+
 export default function AppNotificationPoliciesPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -67,6 +74,7 @@ export default function AppNotificationPoliciesPage() {
     if (!current) return []
     return groups.filter((item) => current.catalog_meta.allowed_group_keys.includes(item.key))
   }, [current, groups])
+  const managerUsers = useMemo(() => users.filter(isManagerNotificationUser), [users])
 
   useEffect(() => {
     if (!current) return
@@ -132,7 +140,7 @@ export default function AppNotificationPoliciesPage() {
           这里配置 App 新策略，只面向业务事件和模板，不暴露旧的 `role / audience / user` selector。
         </Typography.Paragraph>
         <Typography.Paragraph style={{ marginBottom: 0 }} type="secondary">
-          旧 `/rbac/notification-rules` 继续保留给 legacy / 非 App 通知；这里的“运营经理组”固定等于 `admin + 线下经理`，客服始终单独配置。
+          旧 `/rbac/notification-rules` 继续保留给 legacy / 非 App 通知；这里的“运营经理组”固定等于 `admin + 线下经理`，客服始终单独配置。任务类通知发送前还会按当前任务成员二次校验，指定个人仅可选管理角色。
         </Typography.Paragraph>
       </Card>
 
@@ -245,7 +253,7 @@ export default function AppNotificationPoliciesPage() {
                   style={{ width: '100%' }}
                   placeholder="追加指定个人"
                   onChange={(value) => setForm((prev) => ({ ...prev, extra_user_ids: value }))}
-                  options={users.map((item) => ({
+                  options={managerUsers.map((item) => ({
                     value: item.id,
                     label: `${item.username} · ${item.role}`,
                   }))}

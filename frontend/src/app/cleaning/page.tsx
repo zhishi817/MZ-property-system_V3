@@ -8,7 +8,7 @@ import dayjs, { type Dayjs } from 'dayjs'
 import { API_BASE, authHeaders, deleteJSON, getJSON, patchJSON, postJSON } from '../../lib/api'
 import { cleaningColorKind } from '../../lib/cleaningColor'
 import { splitTurnoverMerge } from '../../lib/cleaningDailyMerge'
-import { checkinTimingLabel, checkoutTimingLabel, dailyTaskStatusMeta, mergeDailyCapabilityGate, mergedDailyDisplayBadges, mergedDailyDisplayStatus, mergedDailyTaskStatus, visibleDailyDisplayBadges } from '../../lib/cleaningDailyTaskStatus'
+import { checkinTimingLabel, checkoutTimingLabel, mergeDailyCapabilityGate, mergedDailyDisplayBadges, mergedDailyDisplayStatus, mergedDailyTaskStatus, selfCompleteDailyStatusMeta, visibleDailyDisplayBadges } from '../../lib/cleaningDailyTaskStatus'
 import { type TaskSemanticTone, taskStatusMeta, taskTimingTone } from '../../lib/cleaningTaskUi'
 import styles from './cleaningSchedule.module.scss'
 
@@ -142,6 +142,7 @@ type CalendarItem = {
   checkout_old_code?: string | null
   checkout_new_code?: string | null
   photo_urls?: string[] | null
+  completion_photo_exception_count?: number
   display_conflicts?: CleaningTurnoverConflict[] | null
   turnover_display?: CleaningTurnoverDisplay | null
 } & TaskCapabilityFields
@@ -341,13 +342,18 @@ function displayScopeForSemantics(semantics: TaskExecutionSemantics): TaskDispla
 }
 
 function displayStatusMetaForItem(it: Pick<CalendarItem, 'status' | 'display_state'>) {
-  return dailyTaskStatusMeta(it.status, it.display_state)
+  return selfCompleteDailyStatusMeta(it)
 }
 
 function displayBadgesForItem(it: Pick<CalendarItem, 'display_state'>): TaskDisplayBadge[] {
   return Array.isArray(it.display_state?.badges)
     ? it.display_state.badges.filter((badge) => String(badge?.label || '').trim())
     : []
+}
+
+function completionPhotoExceptionCountForItem(it: Pick<CalendarItem, 'completion_photo_exception_count'>) {
+  const count = Number(it.completion_photo_exception_count || 0)
+  return Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0
 }
 
 function conflictFieldLabel(field: string | null | undefined) {
@@ -830,6 +836,7 @@ export default function CleaningPage() {
             scheduled_at: sched,
             key_photo_uploaded_at: firstKeyUploadedAt(all),
             has_key_photo: anyKeyUploaded(all),
+            completion_photo_exception_count: all.reduce((count, item) => count + completionPhotoExceptionCountForItem(item), 0),
             auto_sync_enabled: autoSync,
             nights: all.find((x) => x.nights != null)?.nights ?? null,
             summary_checkout_time: checkout?.summary_checkout_time || null,
@@ -2230,6 +2237,7 @@ export default function CleaningPage() {
 	              const statusMeta = displayStatusMetaForItem(it)
 	              const scopeBadge = displayScopeForItem(it)
 	              const displayBadges = visibleDailyDisplayBadges(displayBadgesForItem(it), [statusMeta.label, scopeBadge?.label])
+	              const completionPhotoExceptionCount = completionPhotoExceptionCountForItem(it)
 	              const editGate = managementGateForItem(it, 'edit_task')
 	              const deleteGate = editableFieldGateForItem(it, 'delete', 'cancel_task')
 	              const cleanerGate = editableFieldGateForItem(it, 'cleaner_id', 'assign_cleaner')
@@ -2317,6 +2325,11 @@ export default function CleaningPage() {
 	                  {conflicts.length ? (
 	                    <div className={styles.conflictPanel}>
 	                      {renderConflictRows(conflicts)}
+	                    </div>
+	                  ) : null}
+	                  {completionPhotoExceptionCount ? (
+	                    <div className={styles.completionPhotoExceptionHint}>
+	                      完成照片有 {completionPhotoExceptionCount} 个区域因网络或本地文件异常未写入任务记录；已保存照片仍可查看，未保存部分不作为完成照片。
 	                    </div>
 	                  ) : null}
 	                  <div className={styles.controlsRow}>

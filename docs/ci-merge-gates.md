@@ -7,10 +7,10 @@ Every pull request to `Dev` or `main` publishes these stable checks:
 - `Risk Classification`
 - `Change Ledger Audit`
 - `Regression Registry Audit`
-- `Root Fast Check`
-- `Root Full Check`
+- `Fast Regression`
+- `Full Regression`
 
-`Root Fast Check` is always required. `Root Full Check` runs `npm run check:full` for a high-risk pull request and on every push or manual dispatch. On a low-risk pull request it completes an explicit no-op step with success, so its required status is present rather than silently skipped.
+`Fast Regression` is always required. `Full Regression` runs `npm run check:full` for a high-risk pull request and on every push or manual dispatch. On a low-risk pull request it completes an explicit no-op step with success, so its required status is present rather than silently skipped.
 
 High-risk paths include CI/workflow and package changes; all backend source, schemas and migrations; Web API/auth/task-center/cleaning/finance/RBAC paths; shared code; and the feature-regression registry. These cover permissions, task state/actions, cleaning synchronization, upload queues, API clients, database changes, notifications and financial/shared business rules. The exact classifier is `scripts/ci/classify_pr_risk.sh` and can be tested locally with `--stdin`.
 

@@ -497,7 +497,9 @@ router.put('/notification-rules/:eventType', requirePerm('rbac.manage'), async (
     const saved = await saveNotificationRule(eventType, parsed.data, String((req as any)?.user?.sub || '').trim() || null)
     return res.json(saved)
   } catch (e: any) {
-    return res.status(500).json({ message: String(e?.message || 'save_failed') })
+    const message = String(e?.message || 'save_failed')
+    if (message === 'task_notification_selector_must_use_task_audience_or_manager_role') return res.status(400).json({ message })
+    return res.status(500).json({ message })
   }
 })
 
@@ -553,7 +555,9 @@ router.put('/app-notification-policies/:policyKey', requirePerm('rbac.manage'), 
   try {
     return res.json(await saveAppNotificationPolicy(policyKey, parsed.data, String((req as any)?.user?.sub || '').trim() || null))
   } catch (e: any) {
-    return res.status(500).json({ message: String(e?.message || 'save_failed') })
+    const message = String(e?.message || 'save_failed')
+    if (message === 'app_notification_extra_users_must_be_managers') return res.status(400).json({ message })
+    return res.status(500).json({ message })
   }
 })
 

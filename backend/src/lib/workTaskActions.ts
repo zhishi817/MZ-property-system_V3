@@ -185,14 +185,12 @@ function disabledReason(params: {
   isParticipant: boolean
   completed?: boolean
   blocked?: boolean
-  cleaningSubmissionRequired?: boolean
   alreadyDone?: boolean
 }) {
   if (!params.hasPermission) return 'missing_base_permission'
   if (!params.isParticipant) return 'not_participant'
   if (params.completed) return 'task_completed'
   if (params.blocked) return 'pending_inspection_decision'
-  if (params.cleaningSubmissionRequired) return 'cleaning_submission_required'
   if (params.alreadyDone) return 'already_recorded'
   return undefined
 }
@@ -395,8 +393,19 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
   const cleaningSubmissionReady = hasCleaningSubmissionSignal
     ? task.cleaning_submission_ready === true
     : isCleaningWorkSubmitted(task?.cleaning_status || task?.status)
-  const cleaningSubmissionRequired = isInspectionTask && !isPasswordOnly && hasCleaningSubmissionSignal && !cleaningSubmissionReady
   const isCompleted = isTerminalStatus(status) || (isPasswordOnly && status === 'inspected')
+  const hasSelfCompletePhotoException = task?.completion_photo_exception === true
+    || Array.isArray(task?.completion_photo_exception?.items)
+  const hasSelfCompleteFinalPhotoState = task?.completion_photos_ok === true || hasSelfCompletePhotoException
+  // `keys_hung` is terminal for the access-video action, not for the cleaner's
+  // self-complete workflow. A cleaner must be able to resume from it to save
+  // the required completion-photo batch and record the final completion.
+  const isSelfCompleteRecovery = isDirectCompleteEligible
+    && (status === 'keys_hung' || (isCompleted && !hasSelfCompleteFinalPhotoState))
+  const isSelfCompleteFinalStatus = ['cleaned', 'restock_pending', 'restocked', 'done', 'completed', 'ready'].includes(status)
+  const isReadOnlySelfComplete = isDirectCompleteEligible
+    && isSelfCompleteFinalStatus
+    && hasSelfCompleteFinalPhotoState
   const participants = normalizeTaskParticipants(task)
   const participantSummary = participantSummaryForUser(participants, userId)
   const isParticipant = participantSummary.hasAny
@@ -449,19 +458,24 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
     const completionReason = disabledReason({
       hasPermission: canFinish,
       isParticipant: participantSummary.can(isDirectCompleteEligible ? 'complete_cleaning' : 'fill_supplies'),
-      completed: isCompleted,
+      completed: isDirectCompleteEligible ? isReadOnlySelfComplete : isCompleted,
       blocked: isPendingInspectionDecision,
     })
     addWorkerAction({
       id: isDirectCompleteEligible ? 'complete_cleaning' : 'fill_supplies',
       label: isPendingInspectionDecision
         ? '待确认检查安排'
-        : isCleaningSubmitted
-          ? (isDirectCompleteEligible ? '完成记录' : '补品记录')
-          : (isStayoverTask ? '标记已完成' : (isSelfCompleteEligible ? '补充与完成' : '补品填报')),
+        : isReadOnlySelfComplete
+          ? '查看完成照片'
+          : isSelfCompleteRecovery
+            ? '继续自完成'
+            : isCleaningSubmitted
+              ? (isDirectCompleteEligible ? '完成记录' : '补品记录')
+              : (isStayoverTask ? '标记已完成' : (isSelfCompleteEligible ? '补充与完成' : '补品填报')),
       placement: completionReason === 'not_participant' ? 'more' : 'primary',
       enabled: actionEnabled(completionReason),
       ...(completionReason ? { disabled_reason: completionReason } : {}),
+      ...(isReadOnlySelfComplete ? { read_only: true } : {}),
       target: isDirectCompleteEligible ? 'CleaningSelfComplete' : 'SuppliesForm',
       intent: 'cleaning',
     }, participantSummary.can(isDirectCompleteEligible ? 'complete_cleaning' : 'fill_supplies'))
@@ -473,7 +487,6 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
         hasPermission: canInspect && canMediaUpload,
         isParticipant: participantSummary.can('submit_inspection'),
         completed: isCompleted,
-        cleaningSubmissionRequired,
       })
       addWorkerAction({
         id: 'submit_inspection',
@@ -490,7 +503,6 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
       hasPermission: canFinish && canMediaUpload,
       isParticipant: participantSummary.can('upload_access_video'),
       completed: isCompleted,
-      cleaningSubmissionRequired,
     })
     addWorkerAction({
       id: 'upload_access_video',

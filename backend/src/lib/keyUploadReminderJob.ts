@@ -2,8 +2,6 @@ import { hasPg, pgPool } from '../dbAdapter'
 import { listManagerUserIds } from '../modules/notifications'
 import { emitNotificationEvent } from '../services/notificationEvents'
 
-const FIELD_ROLE_EXCLUDES = ['cleaner', 'cleaner_inspector', 'cleaning_inspector']
-
 function melbourneYmd(now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Australia/Melbourne',
@@ -23,8 +21,10 @@ export async function runKeyUploadReminder(params: { at: string }) {
   const at = String(params.at || '').trim() || 'now'
   const date = melbourneYmd()
 
-  const pendingCleanersRes = await pgPool.query(
-    `SELECT DISTINCT COALESCE(NULLIF(TRIM(t.cleaner_id::text), ''), NULLIF(TRIM(t.assignee_id::text), '')) AS user_id
+  const pendingTasksRes = await pgPool.query(
+    `SELECT t.id::text AS task_id,
+            COALESCE(NULLIF(TRIM(t.cleaner_id::text), ''), NULLIF(TRIM(t.assignee_id::text), '')) AS cleaner_id,
+            NULLIF(TRIM(t.inspector_id::text), '') AS inspector_id
      FROM cleaning_tasks t
      WHERE COALESCE(t.task_date, t.date) = $1::date
        AND lower(COALESCE(t.status, '')) NOT IN ('cancelled', 'canceled')
@@ -41,26 +41,44 @@ export async function runKeyUploadReminder(params: { at: string }) {
        )`,
     [date],
   )
-  const cleanerIds = Array.from(new Set((pendingCleanersRes?.rows || []).map((row: any) => String(row.user_id || '').trim()).filter(Boolean)))
-  const managerIds = cleanerIds.length ? await listManagerUserIds({ excludeRoles: FIELD_ROLE_EXCLUDES }) : []
+  const pendingTasks = (pendingTasksRes?.rows || [])
+    .map((row: any) => ({
+      taskId: String(row.task_id || '').trim(),
+      cleanerId: String(row.cleaner_id || '').trim(),
+      inspectorId: String(row.inspector_id || '').trim(),
+    }))
+    .filter((row: { taskId: string; cleanerId: string }) => !!row.taskId && !!row.cleanerId)
+  const managerIds = pendingTasks.length ? await listManagerUserIds() : []
 
   const t0 = Date.now()
-  let cleanerSent = 0
-  for (const userId of cleanerIds) {
-    const eventId = `key_upload_reminder:${date}:${at}:cleaner:${userId}`
+  let taskParticipantSent = 0
+  for (const task of pendingTasks) {
+    const eventId = `key_upload_reminder:${date}:${at}:task:${task.taskId}`
+    const recipientUserIds = Array.from(new Set([task.cleanerId, task.inspectorId].filter(Boolean)))
     const r = await emitNotificationEvent({
       type: 'KEY_UPLOAD_REMINDER',
       policyKey: 'key_upload_reminder',
-      entity: 'work_task',
-      entityId: eventId,
+      entity: 'cleaning_task',
+      entityId: task.taskId,
       eventId,
       title: '提醒：上传钥匙照片',
       body: `请检查并上传今日任务的钥匙照片（${at}）`,
-      recipientUserIds: [userId],
+      recipientUserIds,
       priority: 'high',
-      data: { kind: 'key_upload_reminder', at, date, audience: 'cleaner', event_id: eventId },
+      data: {
+        entity: 'cleaning_task',
+        entityId: task.taskId,
+        action: 'open_task',
+        kind: 'key_upload_reminder',
+        at,
+        date,
+        audience: 'task_participants',
+        task_id: task.taskId,
+        cleaning_task_ids: [task.taskId],
+        event_id: eventId,
+      },
     })
-    cleanerSent += Number((r as any)?.sent || 0)
+    taskParticipantSent += Number((r as any)?.sent || 0)
   }
   let managerSent = 0
   for (const userId of managerIds) {
@@ -79,5 +97,12 @@ export async function runKeyUploadReminder(params: { at: string }) {
     })
     managerSent += Number((r as any)?.sent || 0)
   }
-  return { ok: true, at, date, duration_ms: Date.now() - t0, cleaners: { recipients: cleanerIds.length, sent: cleanerSent }, managers: { recipients: managerIds.length, sent: managerSent } }
+  return {
+    ok: true,
+    at,
+    date,
+    duration_ms: Date.now() - t0,
+    task_participants: { tasks: pendingTasks.length, sent: taskParticipantSent },
+    managers: { recipients: managerIds.length, sent: managerSent },
+  }
 }

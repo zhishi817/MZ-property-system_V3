@@ -4,6 +4,7 @@ import {
   DeleteObjectCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   ListObjectsV2Command,
 } from '@aws-sdk/client-s3'
 
@@ -36,8 +37,35 @@ function r2UploadMaxAttempts() {
   return Math.max(1, Math.min(5, Math.floor(raw)))
 }
 
+function normalizedContentType(value: unknown) {
+  return String(value || '').trim().toLowerCase().split(';', 1)[0]
+}
+
+async function verifyUploadedR2Object(key: string, contentType: string, expectedSize: number) {
+  if (!hasR2 || !r2) throw new Error('R2 not configured')
+  const head: any = await r2.send(new HeadObjectCommand({ Bucket: bucket, Key: key }))
+  const actualSize = Number(head?.ContentLength)
+  const actualType = normalizedContentType(head?.ContentType)
+  const expectedType = normalizedContentType(contentType)
+  if (!Number.isFinite(actualSize) || actualSize <= 0 || actualSize !== expectedSize || !actualType || actualType !== expectedType) {
+    const error: any = new Error('uploaded object verification failed')
+    error.code = 'R2_UPLOAD_VERIFY_FAILED'
+    throw error
+  }
+  return {
+    etag: head?.ETag ? String(head.ETag).replace(/^"|"$/g, '') : null,
+    size: actualSize,
+    contentType: actualType,
+  }
+}
+
 export async function r2Upload(key: string, contentType: string, body: Buffer) {
   if (!hasR2 || !r2) throw new Error('R2 not configured')
+  if (!Buffer.isBuffer(body) || body.length <= 0) {
+    const error: any = new Error('empty upload body')
+    error.code = 'R2_UPLOAD_VERIFY_FAILED'
+    throw error
+  }
   const timeoutMs = r2UploadTimeoutMs()
   const maxAttempts = r2UploadMaxAttempts()
   let lastErr: any = null
@@ -74,6 +102,7 @@ export async function r2Upload(key: string, contentType: string, body: Buffer) {
     err.code = code
     throw err
   }
+  await verifyUploadedR2Object(key, contentType, body.length)
   const pb = (publicBase || '').replace(/\/$/, '')
   // If publicBase already contains the bucket path, strip it; Cloudflare R2 public host is per-bucket
   const cleaned = pb && /\.r2\.dev($|\/)/.test(pb)
