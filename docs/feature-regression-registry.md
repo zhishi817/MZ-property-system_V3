@@ -563,3 +563,51 @@
 - PDF、OCR、签证有效期识别、自动审批和管理端证件资料浏览。
 - 头像上传、银行资料规则、普通个人资料字段和认证权限模型的重构。
 - 历史记录不可变快照、数据归档或新的报表统计。
+
+## FR-009：固定支出月度快照完整性
+
+- **维护责任范围：** web / backend recurring payments
+- **最后审查日期：** 2026-08-03
+- **状态：** active
+
+### 业务保护规则
+
+- 对于已启用、当月到期的固定支出模板，若该月份不存在快照，Web 自动补建必须包含固定金额、按营收百分比及金额为 `0` 的模板，不能只处理按营收百分比模板。
+- 已存在且已付款的按营收百分比快照不得被页面自动补建逻辑重新计算；已存在但未付款的按营收百分比快照仍可按既有流程刷新。
+- 房源营收以 `property_expenses.fixed_expense_id + month_key` 的月度快照为权威，不能以当前模板金额替代历史月度结果。
+- 自动补建只处理当前月；历史月份缺失快照必须通过受控回填单独处理，避免浏览历史月份时产生写入。
+
+### 跨层适用范围
+
+- **Web：** `/finance/recurring` 在当前月筛选到期模板后调用既有 `ensure-snapshot`。
+- **后端：** `POST /recurring/payments/:id/ensure-snapshot` 负责幂等创建月度快照，并由月度快照读取接口提供房源营收数据。
+- **入口：** 固定支出页面、房源营收页面。
+- **一致性：** 后端快照是历史支出的权威记录；前端仅决定哪些当前月模板需要请求补建。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 缺快照固定支出补建筛选 | `frontend/src/lib/recurringPaymentRules.test.ts` | 固定金额和金额为零的缺快照模板会补建；已有固定快照不重建 | sufficient | `npm run test --prefix frontend -- --run src/lib/recurringPaymentRules.test.ts` |
+| 按营收百分比已付款保护 | `frontend/src/lib/recurringPaymentRules.test.ts` | 缺快照或未付款快照可处理；已付款快照不重新计算 | sufficient | `npm run test --prefix frontend -- --run src/lib/recurringPaymentRules.test.ts` |
+
+### 验证策略
+
+- **Web 修改：** 运行月度快照筛选单测、frontend lint 与 production build。
+- **生产修复：** 在代码部署后，先做 2026-07 目标模板预览，再只对缺失快照调用既有幂等补建接口并复核笔数、金额和零金额快照数。
+- **发布前：** Registry/ledger audit、独立发布审查；不通过浏览历史月份触发生产写入。
+
+### 最后验证
+
+- **CRL：** CRL-20260803-003
+- **Commit：** `fdbd6a4d0241fecf202d1acd13b34b445e4f98ab`
+- **日期：** 2026-08-03
+
+### 相关 CRL
+
+- CRL-20260803-003：恢复固定支出缺失月度快照的补建筛选。
+
+### 非保护范围
+
+- 固定支出模板的金额、付款方式、启停状态和历史已存在快照的批量重算。
+- 除 2026-07 已确认缺失范围外的生产历史数据回填。
