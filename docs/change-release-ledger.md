@@ -33,7 +33,7 @@
 ### Release Attempt — commit candidate
 
 - **Base / fetch:** `origin/Dev@b9b015b549278b9dbefdb8ba5019979256d5c8b8`, fetched 2026-08-03 Australia/Melbourne.
-- **Candidate patch SHA-256:** `038f5544754f3c7d1b11adaa46e1f512be26da01e8a64a7000f84ad836c002aa` from the selected base-to-staged diff, excluding this ledger file.
+- **Candidate patch SHA-256:** `5510010c5c694ab0f5fa31b1a71e4e6c49e552d85f72e6ab747aa90c0e60e222` from the selected `origin/Dev...HEAD` diff, excluding this ledger file.
 - **Candidate content commit / branch:** `fdbd6a4d0241fecf202d1acd13b34b445e4f98ab` / `codex/fix-recurring-snapshots-20260803`; exact candidate scope is the five files listed above.
 - **Technical state / authorization:** committed / selected-for-commit (user approved execution on 2026-08-03); no push authorization.
 - **Dependencies:** existing idempotent snapshot endpoint; production data repair remains dependent on deployment of this candidate.
