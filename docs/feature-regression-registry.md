@@ -600,7 +600,7 @@
 ### 最后验证
 
 - **CRL：** CRL-20260803-003
-- **Commit：** not yet
+- **Commit：** `fdbd6a4d0241fecf202d1acd13b34b445e4f98ab`
 - **日期：** 2026-08-03
 
 ### 相关 CRL

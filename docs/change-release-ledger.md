@@ -2,7 +2,7 @@
 
 ## CRL-20260803-003 — 固定消耗品费月度快照补建修复
 
-- **Status:** ready
+- **Status:** committed
 - **Updated:** 2026-08-03 Australia/Melbourne
 - **Request:** 修复 2026-07 房源营收中的消耗品费均为 0；该月固定支出模板仍存在，但没有生成应有的月度支出快照。
 - **Outcome:** 当前月固定支出自动补建恢复为“所有缺少快照的到期模板均补建”；按营收百分比模板仅在快照未付款时允许已有快照参与刷新。历史 2026-07 数据回填作为部署后的受控生产操作，未由此代码自动执行。
@@ -27,23 +27,24 @@
 - `npm run check:full` — passed in the isolated worktree: root ledger-range audit (5 tests), Ledger (5/5), Feature Registry (9 FRs / 100 mappings), backend compile plus fast/full contract suites, frontend lint and 39 files / 173 tests, frontend production build; independent mobile checks skipped because `mz-cleaning-app-frontend/package.json` is absent in this worktree. Existing frontend lint/build warnings and stale Browserslist data remain warnings only.
 - `git diff --cached --check` — passed.
 - Independent release review — GO: no P0/P1; the candidate contains no untracked/generated files, database migration, external sync or sensitive material. P2 follow-up: add non-production page/request-boundary coverage without triggering snapshot writes.
+- `python3 scripts/audit_change_release_ledger.py --base origin/Dev --head fdbd6a4d0241fecf202d1acd13b34b445e4f98ab` and `git diff --check origin/Dev...fdbd6a4d0241fecf202d1acd13b34b445e4f98ab` — passed: 5 changed files, 5 recorded files.
 - Not run: browser flow (opening current-month fixed expenses deliberately POSTs snapshot writes), production API/database write, external sync, deployment or device validation.
 
 ### Release Attempt — commit candidate
 
 - **Base / fetch:** `origin/Dev@b9b015b549278b9dbefdb8ba5019979256d5c8b8`, fetched 2026-08-03 Australia/Melbourne.
 - **Candidate patch SHA-256:** `038f5544754f3c7d1b11adaa46e1f512be26da01e8a64a7000f84ad836c002aa` from the selected base-to-staged diff, excluding this ledger file.
-- **Candidate content commit / branch:** none / `codex/fix-recurring-snapshots-20260803`; exact staged scope is the five files listed above.
-- **Technical state / authorization:** verified / selected-for-commit (user approved execution on 2026-08-03); no push authorization.
+- **Candidate content commit / branch:** `fdbd6a4d0241fecf202d1acd13b34b445e4f98ab` / `codex/fix-recurring-snapshots-20260803`; exact candidate scope is the five files listed above.
+- **Technical state / authorization:** committed / selected-for-commit (user approved execution on 2026-08-03); no push authorization.
 - **Dependencies:** existing idempotent snapshot endpoint; production data repair remains dependent on deployment of this candidate.
-- **Commit conclusion:** GO — independent review returned GO and the exact staged candidate whitespace/coverage audits pass; the post-commit exact range audit remains required before any push decision.
+- **Commit conclusion:** GO — independent review returned GO and the exact post-commit range/whitespace/coverage audits pass; push remains separately unauthorized.
 
 ### Risks / Release Notes
 
 - Runtime risk: 页面仅对当前月自动补建；已缺失的历史月份不会被浏览行为修复，必须显式运行受控回填。
 - Paid percentage snapshots are intentionally excluded from automatic refresh to preserve historical paid amounts.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, production data, or sensitive logs are added.
-- Git state: candidate is in an isolated local release worktree based on `origin/Dev@b9b015b549278b9dbefdb8ba5019979256d5c8b8`; not committed, pushed, merged, deployed, or production-applied.
+- Git state: candidate content is committed locally as `fdbd6a4d0241fecf202d1acd13b34b445e4f98ab` in an isolated release worktree based on `origin/Dev@b9b015b549278b9dbefdb8ba5019979256d5c8b8`; not pushed, merged, deployed, or production-applied.
 
 ## CRL-20260802-002 — Phase 5 精确 ref 契约补强
 
