@@ -1,5 +1,51 @@
 # Change Release Ledger
 
+## CRL-20260803-003 — 固定消耗品费月度快照补建修复
+
+- **Status:** committed
+- **Updated:** 2026-08-03 Australia/Melbourne
+- **Request:** 修复 2026-07 房源营收中的消耗品费均为 0；该月固定支出模板仍存在，但没有生成应有的月度支出快照。
+- **Outcome:** 当前月固定支出自动补建恢复为“所有缺少快照的到期模板均补建”；按营收百分比模板仅在快照未付款时允许已有快照参与刷新。历史 2026-07 数据回填作为部署后的受控生产操作，未由此代码自动执行。
+
+### Files / Areas
+
+- `frontend/src/app/finance/recurring/page.tsx` — modified: 当前月快照补建候选改用共享完整性规则，包含普通固定消耗品费缺失快照。
+- `frontend/src/lib/recurringPaymentRules.ts` — modified: 新增固定支出快照是否需要补建的纯规则。
+- `frontend/src/lib/recurringPaymentRules.test.ts` — modified: 覆盖固定金额、零金额和按营收百分比的缺失/已付款/未付款快照筛选。
+- `docs/feature-regression-registry.md` — modified: 登记月度固定支出快照完整性不变量与测试映射。
+- `docs/change-release-ledger.md` — modified: 记录本修复单元。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none; 复用既有 `POST /recurring/payments/:id/ensure-snapshot` 幂等接口。
+- Production data: 2026-07 已确认有 97 个启用、到期的消耗品费模板缺少快照；其中模板金额合计 3850，38 个模板金额为 0。回填须在代码部署后按此范围独立预览、执行和复核。
+- Related unit: 2026-06-14 `99d6ccc` 的固定支出并发/快照读取改动误将筛选收窄为仅按营收百分比模板。
+
+### Validation
+
+- `vitest run --coverage=false frontend/src/lib/recurringPaymentRules.test.ts` — passed: 1 file / 4 tests.
+- `npm run check:full` — passed in the isolated worktree: root ledger-range audit (5 tests), Ledger (5/5), Feature Registry (9 FRs / 100 mappings), backend compile plus fast/full contract suites, frontend lint and 39 files / 173 tests, frontend production build; independent mobile checks skipped because `mz-cleaning-app-frontend/package.json` is absent in this worktree. Existing frontend lint/build warnings and stale Browserslist data remain warnings only.
+- `git diff --cached --check` — passed.
+- Independent release review — GO: no P0/P1; the candidate contains no untracked/generated files, database migration, external sync or sensitive material. P2 follow-up: add non-production page/request-boundary coverage without triggering snapshot writes.
+- `python3 scripts/audit_change_release_ledger.py --base origin/Dev --head fdbd6a4d0241fecf202d1acd13b34b445e4f98ab` and `git diff --check origin/Dev...fdbd6a4d0241fecf202d1acd13b34b445e4f98ab` — passed: 5 changed files, 5 recorded files.
+- Not run: browser flow (opening current-month fixed expenses deliberately POSTs snapshot writes), production API/database write, external sync, deployment or device validation.
+
+### Release Attempt — commit candidate
+
+- **Base / fetch:** `origin/Dev@b9b015b549278b9dbefdb8ba5019979256d5c8b8`, fetched 2026-08-03 Australia/Melbourne.
+- **Candidate patch SHA-256:** `5510010c5c694ab0f5fa31b1a71e4e6c49e552d85f72e6ab747aa90c0e60e222` from the selected `origin/Dev...HEAD` diff, excluding this ledger file.
+- **Candidate content commit / branch:** `fdbd6a4d0241fecf202d1acd13b34b445e4f98ab` / `codex/fix-recurring-snapshots-20260803`; exact candidate scope is the five files listed above.
+- **Technical state / authorization:** committed / selected-for-commit (user approved execution on 2026-08-03); no push authorization.
+- **Dependencies:** existing idempotent snapshot endpoint; production data repair remains dependent on deployment of this candidate.
+- **Commit conclusion:** GO — independent review returned GO and the exact post-commit range/whitespace/coverage audits pass; push remains separately unauthorized.
+
+### Risks / Release Notes
+
+- Runtime risk: 页面仅对当前月自动补建；已缺失的历史月份不会被浏览行为修复，必须显式运行受控回填。
+- Paid percentage snapshots are intentionally excluded from automatic refresh to preserve historical paid amounts.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, production data, or sensitive logs are added.
+- Git state: candidate content is committed locally as `fdbd6a4d0241fecf202d1acd13b34b445e4f98ab` in an isolated release worktree based on `origin/Dev@b9b015b549278b9dbefdb8ba5019979256d5c8b8`; not pushed, merged, deployed, or production-applied.
+
 ## CRL-20260802-002 — Phase 5 精确 ref 契约补强
 
 - **Status:** committed

@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from 'react'
 import { API_BASE, getJSON, authHeaders } from '../../../lib/api'
 import { sortActivePropertiesByRegionThenCode } from '../../../lib/properties'
 import { isDueForMonth, shouldIncludeForMonth } from '../../../lib/recurringStartMonth'
-import { isAutoPaidInRent } from '../../../lib/recurringPaymentRules'
+import { isAutoPaidInRent, shouldEnsureRecurringSnapshot } from '../../../lib/recurringPaymentRules'
 import AuditTrail from '../../../components/AuditTrail'
 
 type Recurring = { id: string; property_id?: string; property_ids?: string[]; scope?: 'company'|'property'; vendor?: string; category?: string; amount?: number; due_day_of_month?: number; frequency_months?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; payment_type?: 'bank_account'|'bpay'|'payid'|'rent_deduction'|'cash'; bpay_code?: string; pay_mobile_number?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses'; fixed_expense_id?: string; report_category?: string; start_month_key?: string; template_kind?: string; bill_account_no?: string; note?: string; is_paid?: boolean; is_due_month?: boolean; created_at?: string }
@@ -614,9 +614,12 @@ export default function RecurringPage() {
             return isDueForMonth(startKey || undefined, monthKey, Number((t as any).frequency_months || 1))
           })
           .filter((t) => {
-            const mode = String((t as any).amount_mode || 'fixed')
-            const hasRow = !!expByFixed[String(t.id)]
-            return mode === 'percent_of_property_total_income' && !hasRow
+            const snapshot = expByFixed[String(t.id)]
+            return shouldEnsureRecurringSnapshot({
+              amount_mode: (t as any).amount_mode,
+              has_snapshot: !!snapshot,
+              snapshot_status: snapshot?.status,
+            })
           })
         const limit = Math.max(1, Math.min(2, Number((window as any).__ensureSnapConcurrency || 1)))
         let idx = 0
