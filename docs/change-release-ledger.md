@@ -14376,12 +14376,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Branch: `codex/old-password-auto-backfill-20260804`
 - Base: `origin/Dev@3d99a878e4440200593aac8810402250e7cbdb67`; fetched at `2026-08-04 22:34 AEST`
 - Candidate patch SHA-256: `8bb746de28d76ad7a6df638f170bd359674481904f1939ea274eeef0db2aa2a4` excluding `docs/change-release-ledger.md`
-- Commit SHA: not committed; audit head pending
+- Candidate content commit SHA: `ee47ec49ff2c1feb771423b173c908e8f0455773`; audit head pending
 - Dependencies: none
 - Required validation: `PASS`; evidence: isolated in-memory regression, full backend no-emit TypeScript check, focused test typecheck, dev PostgreSQL compatibility contract with rollback, and exact-candidate `check:full` passed
 - Shared-hunk review: `PASS`; evidence: the candidate worktree contains only this CRL's four listed files
 - Generated-file review: `not applicable`; evidence: no generated file is selected
-- Technical state: `verified`
+- Technical state: `committed`; evidence: candidate content commit `ee47ec49ff2c1feb771423b173c908e8f0455773` is based on the recorded `origin/Dev` base
 - User authorization: `selected-for-commit`; evidence: user requested this exact old-password auto-update fix be pushed on 2026-08-04
 - Independent review: `GO`; evidence: renewed independent read-only review confirmed the PostgreSQL/query, range-validation and unique-constraint evidence; no P0/P1/P2, unrelated-file, generated-file or sensitive-information finding remains. This `GO` authorizes commit only.
 - Action conclusion: `GO`; blockers: none for the selected commit action
@@ -14391,7 +14391,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Historical risk: existing mismatched task pairs are not backfilled by this code change; any data repair remains a separate, explicit production-write decision.
 - Rollback: revert the compatibility query and its regression coverage; no schema, UI or mobile-package rollback is required.
 - Sensitive-information review: no secrets, `.env` values, tokens, passwords, database URLs, credentials, sensitive logs, or local caches were added or recorded.
-- Git state: isolated root release worktree based on `origin/Dev`; no staging, commit, push, deployment or production write has occurred. The candidate is verified and awaits renewed independent review.
+- Git state: isolated root release worktree based on `origin/Dev`; candidate content commit `ee47ec49ff2c1feb771423b173c908e8f0455773` exists locally. No push, PR, merge, deployment or production write has occurred.
 
 ## CRL-20260630-004 — 移动端中断上传状态自动重试
 
