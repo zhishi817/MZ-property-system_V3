@@ -14324,6 +14324,75 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
 - Git state: implementation pushed to nested mobile `Dev` in commit `0ef9c51`; this root ledger status update is recorded separately.
 
+## CRL-20260804-009 — 入住新密码回填退房旧密码的历史字段兼容
+
+- **Status:** ready
+- **Updated:** 2026-08-04 23:01 AEST
+- **Request:** 检查移动端任务为何新密码未自动成为同订单退房任务的旧密码，并修复该流程；随后先推送该修复。
+- **Outcome:** 同步查询同时识别当前 `task_type` 与历史 `type`，使历史任务在移动端保存入住新密码后仍可回填同订单退房旧密码；不改 UI、权限、接口格式或历史生产数据。
+
+### Implementation
+
+- Previous behavior: PostgreSQL 同步查询只匹配 `task_type`，但其他任务读取路径已兼容 `COALESCE(task_type, type)`。历史行若只留有 `type`，可显示和保存却无法参与旧密码回填。
+- New behavior: 按订单读取入住/退房任务时兼容两个类型字段，并优先有效且未取消的任务；仍尊重退房任务的 `auto_sync_enabled=false` 手工锁定，不覆盖其旧密码。
+- Key decisions: 只修复代码路径和回归测试；已存在的线上不一致记录不在本次自动改写，后续数据修复需另行明确授权和审计范围。
+
+### Files / Areas
+
+- `backend/src/services/cleaningSync.ts` — modified: 同订单任务查找兼容历史 `type` 字段并优先有效任务。
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — modified: 覆盖仅保留 `type` 的旧任务仍回填密码。
+- `docs/feature-regression-registry.md` — modified: 更新 FR-002 的密码回填不变量与测试映射。
+- `docs/change-release-ledger.md` — modified: 记录本修复与发布证据。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none；运行时只更新既有退房任务的 `old_code` 字段。
+- Config / environment: none.
+- Dependencies: none.
+- Related units: `CRL-20260625-003`、`CRL-20260625-004`、`FR-002`。
+
+### Validation
+
+- `ts-node --transpile-only ... backend/scripts/tests/test_cleaning_sync_v2.ts` — passed: in-memory mode (`DATABASE_URL` unset), including the historical `type`-only backfill assertion; no database connection or write occurred.
+- `tsc -p backend/tsconfig.json --noEmit` — passed in the isolated candidate using existing local dependency paths; no build artifacts written.
+- `tsc --noEmit ... backend/scripts/tests/test_cleaning_sync_v2.ts` — passed: focused strict typecheck of the changed test and transitive sync code.
+- `npm run check:feature-registry` — passed: 9 FRs / 101 test mappings.
+- `git diff --check` — passed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 4 changed files, all 4 recorded.
+- Independent release review — `NO-GO`: the in-memory regression did not exercise the PostgreSQL compatibility query, and required `check:full` evidence is absent. The reviewer also noted that the new active/non-cancelled task ordering lacks a competing-row regression case. No commit or push is permitted until the blocking evidence is resolved and a new independent review returns `GO`.
+- Dev database safety preflight — passed: configuration self-identifies as `dev`, does not equal the configured production connection, and required task/log tables, columns and constraints are present; no credential or business data was printed.
+- Dev PostgreSQL compatibility contract — passed: a transaction inserted random historical `type`-only checkin/checkout fixtures, ran the candidate's exact selection SQL and old-password update, then rolled back. A read-only follow-up confirmed no test orders or tasks remained. The helper-level probe was deliberately not used as release evidence because its schema-maintenance path waited on a dev DDL lock; its transaction was terminated and rollback cleanliness was confirmed.
+- Schema constraint review — passed: `uniq_cleaning_tasks_order_type` prevents two same-order/same-type candidates, so the reviewer’s active-vs-cancelled competing-row scenario cannot exist in the validated schema.
+- `npm run check:full` in a disposable worktree with this exact candidate — passed: ledger/range audit, backend build and contract checks, frontend lint/test/build all exited 0. The independent mobile directory is absent from the root-only worktree and was explicitly skipped by the repository script; it is not part of this root CRL. Existing lint, Browserslist and chart-size warnings remained non-blocking. Its isolated initial loopback-port sandbox error was rerun with local-bind permission via `npm run test:cleaning-media-image --prefix backend` — passed.
+
+### Release Attempts
+
+#### RA-20260804-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260804-009`
+- Intended action: `commit`
+- Branch: `codex/old-password-auto-backfill-20260804`
+- Base: `origin/Dev@3d99a878e4440200593aac8810402250e7cbdb67`; fetched at `2026-08-04 22:34 AEST`
+- Candidate patch SHA-256: `8bb746de28d76ad7a6df638f170bd359674481904f1939ea274eeef0db2aa2a4` excluding `docs/change-release-ledger.md`
+- Commit SHA: not committed; audit head pending
+- Dependencies: none
+- Required validation: `PASS`; evidence: isolated in-memory regression, full backend no-emit TypeScript check, focused test typecheck, dev PostgreSQL compatibility contract with rollback, and exact-candidate `check:full` passed
+- Shared-hunk review: `PASS`; evidence: the candidate worktree contains only this CRL's four listed files
+- Generated-file review: `not applicable`; evidence: no generated file is selected
+- Technical state: `verified`
+- User authorization: `selected-for-commit`; evidence: user requested this exact old-password auto-update fix be pushed on 2026-08-04
+- Independent review: `GO`; evidence: renewed independent read-only review confirmed the PostgreSQL/query, range-validation and unique-constraint evidence; no P0/P1/P2, unrelated-file, generated-file or sensitive-information finding remains. This `GO` authorizes commit only.
+- Action conclusion: `GO`; blockers: none for the selected commit action
+
+### Risks / Release Notes
+
+- Historical risk: existing mismatched task pairs are not backfilled by this code change; any data repair remains a separate, explicit production-write decision.
+- Rollback: revert the compatibility query and its regression coverage; no schema, UI or mobile-package rollback is required.
+- Sensitive-information review: no secrets, `.env` values, tokens, passwords, database URLs, credentials, sensitive logs, or local caches were added or recorded.
+- Git state: isolated root release worktree based on `origin/Dev`; no staging, commit, push, deployment or production write has occurred. The candidate is verified and awaits renewed independent review.
+
 ## CRL-20260630-004 — 移动端中断上传状态自动重试
 
 - **Status:** pushed
