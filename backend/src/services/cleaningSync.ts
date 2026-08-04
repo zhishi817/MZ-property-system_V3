@@ -311,8 +311,20 @@ async function loadTaskByOrder(orderId: string, taskType: string, client?: any):
     await ensureCleaningSchemaV2()
     const exec = client || pgPool!
     const r = await exec.query(
-      'SELECT * FROM cleaning_tasks WHERE (order_id::text) = $1 AND (task_type::text) = $2 LIMIT 1',
-      [String(orderId), String(taskType)]
+      `SELECT *
+       FROM cleaning_tasks
+       WHERE order_id::text = $1
+         AND lower(COALESCE(task_type, type, '')) = $2
+       ORDER BY
+         CASE
+           WHEN COALESCE(execution_state, 'active') = 'active'
+            AND lower(COALESCE(status, '')) NOT IN ('cancelled', 'canceled')
+           THEN 0
+           ELSE 1
+         END,
+         updated_at DESC NULLS LAST
+       LIMIT 1`,
+      [String(orderId), String(taskType).toLowerCase()]
     )
     return r?.rows?.[0] || null
   }

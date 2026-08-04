@@ -1,29 +1,30 @@
 import assert from 'assert'
 import { v4 as uuid } from 'uuid'
 import { pgPool } from '../../src/dbAdapter'
-import { ensureCleaningSchemaV2, syncOrderToCleaningTasks, backfillCleaningTasks } from '../../src/services/cleaningSync'
+import { ensureCleaningSchemaV2, syncCheckoutOldCodeFromCheckinNewCode, syncOrderToCleaningTasks, backfillCleaningTasks } from '../../src/services/cleaningSync'
 import { db } from '../../src/store'
 
 async function fetchTask(orderId: string) {
-  if (pgPool) {
-    const r = await pgPool.query(
-      `SELECT * FROM cleaning_tasks WHERE order_id=$1 AND task_type='checkout_clean' LIMIT 1`,
-      [orderId]
-    )
-    return r?.rows?.[0] || null
-  }
-  return (db.cleaningTasks as any[]).find((t: any) => String(t.order_id) === String(orderId) && String(t.task_type) === 'checkout_clean') || null
+  return fetchTaskByType(orderId, 'checkout_clean')
 }
 
 async function fetchTaskByType(orderId: string, taskType: string) {
   if (pgPool) {
     const r = await pgPool.query(
-      `SELECT * FROM cleaning_tasks WHERE order_id=$1 AND task_type=$2 LIMIT 1`,
+      `SELECT *
+       FROM cleaning_tasks
+       WHERE order_id=$1
+         AND lower(COALESCE(task_type, type, ''))=lower($2)
+       LIMIT 1`,
       [orderId, taskType]
     )
     return r?.rows?.[0] || null
   }
-  return (db.cleaningTasks as any[]).find((t: any) => String(t.order_id) === String(orderId) && String(t.task_type) === String(taskType)) || null
+  return (
+    (db.cleaningTasks as any[]).find(
+      (t: any) => String(t.order_id) === String(orderId) && String((t.task_type ?? t.type) || '').toLowerCase() === String(taskType).toLowerCase(),
+    ) || null
+  )
 }
 
 async function main() {
@@ -86,6 +87,26 @@ async function main() {
   await syncOrderToCleaningTasks(o1)
   const t1Password = await fetchTask(o1)
   assert.equal(String(t1Password.old_code), '9753', 'checkout old_code should follow checkin new_code for existing orders')
+
+  if (pgPool) {
+    await pgPool.query(`UPDATE cleaning_tasks SET task_type=NULL WHERE order_id=$1`, [o1])
+    await pgPool.query(`UPDATE cleaning_tasks SET new_code='8642' WHERE order_id=$1 AND type='checkin_clean'`, [o1])
+    await pgPool.query(`UPDATE cleaning_tasks SET old_code=NULL WHERE order_id=$1 AND type='checkout_clean'`, [o1])
+  } else {
+    const checkinTask = (db.cleaningTasks as any[]).find((x: any) => String(x.order_id) === o1 && String(x.type) === 'checkin_clean')
+    const checkoutTask = (db.cleaningTasks as any[]).find((x: any) => String(x.order_id) === o1 && String(x.type) === 'checkout_clean')
+    if (checkinTask) {
+      checkinTask.task_type = null
+      checkinTask.new_code = '8642'
+    }
+    if (checkoutTask) {
+      checkoutTask.task_type = null
+      checkoutTask.old_code = null
+    }
+  }
+  await syncCheckoutOldCodeFromCheckinNewCode({ orderId: o1 })
+  const legacyTaskTypePassword = await fetchTask(o1)
+  assert.equal(String(legacyTaskTypePassword.old_code), '8642', 'legacy type-only tasks should still sync checkin new_code to checkout old_code')
 
   if (pgPool) await pgPool.query('UPDATE orders SET checkout=$2::date WHERE id=$1', [o1, '2026-02-15'])
   else {
