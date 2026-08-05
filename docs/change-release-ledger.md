@@ -1,5 +1,65 @@
 # Change Release Ledger
 
+## CRL-20260805-004 — 任务中心延期检查冲突展示导出热修
+
+- **Status:** in-progress
+- **Updated:** 2026-08-05 Australia/Melbourne
+- **Request:** 修复 Vercel 构建中 `task-center/page.tsx` 导入了不存在的 `deferredInspectionConflictPresentation` 导出而导致的 TypeScript 编译失败。
+- **Outcome:** 延期检查与入住冲突卡片继续显示“入住冲突”危险标签、原定检查日期及入住日期/时间，且任务中心页面可完成类型检查和 Next.js 构建。
+
+### Implementation
+
+- **Previous behavior:** 页面调用冲突展示 helper，但发布候选遗漏 helper 导出和对应测试，Vercel 在编译阶段失败。
+- **New behavior:** `taskCenterDisplay.ts` 接收服务端已投影的冲突字段并仅格式化展示；它不推导冲突、不改任务状态或通知。无冲突时返回 `null`。
+- **Key decisions:** 仅补入原开发工作区中同一功能的显示 helper 和回归测试，不改变后端字段、权限、数据库迁移或任务冲突规则。
+
+### Files / Areas
+
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — 导出延期检查/入住冲突的任务卡标签和说明。
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — 覆盖有冲突及无冲突的显示契约。
+- `docs/feature-regression-registry.md` — 补充现有 Web 任务中心展示保护点的冲突显示说明。
+- `docs/change-release-ledger.md` — 本热修的范围、验证和发布证据。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Related units: `CRL-20260805-001`（服务端冲突投影）和 `CRL-20260805-002`（此前 root 发布包）。
+
+### Validation
+
+- `npm run test --prefix frontend -- --coverage.enabled=false src/app/task-center/taskCenterDisplay.test.ts` — passed: 1 suite / 5 tests.
+- `npm run lint --prefix frontend` — passed with existing project warnings only; no lint error.
+- `frontend/node_modules/.bin/tsc --noEmit -p frontend/tsconfig.json` — passed in the isolated candidate using the existing workspace dependency runtime.
+- `npm run build --prefix frontend` — NOT VERIFIED: it reached Next.js optimized-build compilation after the former missing-export point, but this runner did not return a final build completion result; no successful Vercel deployment is claimed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 4 changed files / 4 recorded.
+- `npm run check:feature-registry` — passed: 9 FRs / 101 test mappings.
+- `git diff --check` — passed.
+
+### Release Attempts
+
+#### RA-20260805-root-vercel-hotfix-01
+
+- Repository: root
+- Selected CRLs: CRL-20260805-004
+- Intended action: commit
+- Branch: `codex/release-selected-root-20260805`
+- Base: `origin/codex/release-selected-root-20260805` `578a231f936f392e1da0ea52287c128052f605a6`; remotely read back before the repair on 2026-08-05 Australia/Melbourne.
+- Candidate patch SHA-256: `a4f20bbf01f8b580d741f795447a311b633306a2a3b917481b9d2160a8ea6474` (excludes `docs/change-release-ledger.md`).
+- Commit SHA: not committed.
+- Dependencies: `CRL-20260805-001` supplies the server-projected conflict fields; `CRL-20260805-002` supplied the page caller that this hotfix completes.
+- Required validation: PASS with a documented build-evidence gap — targeted Vitest, lint, direct TypeScript check, ledger audit, feature-registry audit and whitespace check passed; local Next.js build completion and Vercel build result remain NOT VERIFIED.
+- Shared-hunk review: PASS — the four staged files are exclusive to this display-only hotfix and recorded here.
+- Generated-file review: not applicable — no generated output is selected.
+- Technical state: verified.
+- User authorization: selected-for-commit — user confirmed this scoped repair after receiving the Vercel diagnosis; a new exact commit/branch authorization remains required for push.
+- Independent review: GO for commit — independent recheck verified the base, exact non-ledger fingerprint, staged implementation/ledger scope, targeted test evidence and sensitive/generated-file boundary; no P0/P1/P2 finding.
+- Action conclusion: GO for commit; NOT VERIFIED for push, PR, merge, deployment and production behavior.
+
+### Risks / Release Notes
+
+- No production data, database migration, notification dispatch or external sync is triggered by this display-only repair.
+- Sensitive-information review: no secrets, `.env` values, tokens, credentials, database URLs, sensitive logs or local caches are included.
+
 ## CRL-20260805-002 — 已选 root 跨层发布包映射
 
 - **Status:** candidate

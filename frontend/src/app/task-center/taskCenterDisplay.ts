@@ -3,8 +3,12 @@ type TaskCenterDisplayTask = {
   task_kind?: string | null
   title?: string | null
   detail?: string | null
+  deferred_checkin_conflict?: boolean
   deferred_inspection_view?: boolean
   inspection_mode?: string | null
+  inspection_due_date?: string | null
+  conflict_checkin_task_date?: string | null
+  conflict_checkin_time?: string | null
   checkout_task_date?: string | null
   checkout_task_dates?: string[]
 }
@@ -64,6 +68,18 @@ export function cleaningTaskFlowLabelText(task: TaskCenterDisplayTask) {
   if (kind === 'checkin_clean') return '入住'
   if (kind === 'stayover_clean') return '入住中清洁'
   return String(task.detail || task.title || '任务安排').trim()
+}
+
+export function deferredInspectionConflictPresentation(task: TaskCenterDisplayTask) {
+  if (task.deferred_checkin_conflict !== true) return null
+  const checkinDate = String(task.conflict_checkin_task_date || '').trim() || '-'
+  const checkinTime = String(task.conflict_checkin_time || '').trim()
+  return {
+    key: 'deferred-checkin-conflict',
+    label: '入住冲突',
+    tone: 'danger' as const,
+    detail: `原定检查 ${String(task.inspection_due_date || '').trim() || '-'}；入住 ${checkinDate}${checkinTime ? ` ${checkinTime}` : ''}`,
+  }
 }
 
 function positiveNights(value: number | null | undefined) {
