@@ -1,8 +1,9 @@
 import assert from 'assert'
 import { v4 as uuid } from 'uuid'
 import { pgPool } from '../../src/dbAdapter'
-import { ensureCleaningSchemaV2, syncCheckoutOldCodeFromCheckinNewCode, syncOrderToCleaningTasks, backfillCleaningTasks } from '../../src/services/cleaningSync'
+import { ensureCleaningSchemaV2, syncCheckinOldCodeFromPreviousStay, syncCheckoutOldCodeFromCheckinNewCode, syncOrderToCleaningTasks, backfillCleaningTasks } from '../../src/services/cleaningSync'
 import { db } from '../../src/store'
+import { buildCleaningTurnoverDisplay, mergeCleaningTurnoverDisplays } from '../../src/lib/cleaningTurnoverDisplay'
 
 async function fetchTask(orderId: string) {
   return fetchTaskByType(orderId, 'checkout_clean')
@@ -33,6 +34,8 @@ async function main() {
   const o3 = uuid()
   const o4 = uuid()
   const o5 = uuid()
+  const o6 = uuid()
+  const o7 = uuid()
   const manualCheckin = uuid()
   const manualCheckout = uuid()
   const manualExtraCheckin = uuid()
@@ -45,13 +48,15 @@ async function main() {
     { id: o3, property_id: 'P_TEST_C', checkin: '2026-02-12', checkout: '2026-02-14', nights: 2, status: 'confirmed', confirmation_code: `TEST_SYNC_${o3.slice(0, 8)}` },
     { id: o4, property_id: 'P_TEST_D', checkin: '2026-02-18', checkout: '2026-02-21', nights: 3, status: 'confirmed', confirmation_code: `TEST_SYNC_${o4.slice(0, 8)}` },
     { id: o5, property_id: 'P_TEST_E', checkin: '2026-02-24', checkout: '2026-02-28', nights: 4, status: 'confirmed', confirmation_code: `TEST_SYNC_${o5.slice(0, 8)}` },
+    { id: o6, property_id: 'P_TEST_PASSWORD_CHAIN', checkin: '2026-02-01', checkout: '2026-02-03', nights: 2, status: 'confirmed', confirmation_code: `TEST_SYNC_${o6.slice(0, 8)}` },
+    { id: o7, property_id: 'P_TEST_PASSWORD_CHAIN', checkin: '2026-02-05', checkout: '2026-02-08', nights: 3, status: 'confirmed', confirmation_code: `TEST_SYNC_${o7.slice(0, 8)}` },
   ]
 
   if (pgPool) {
     await ensureCleaningSchemaV2()
-    await pgPool.query('DELETE FROM cleaning_sync_logs WHERE order_id = ANY($1)', [[o1, o2, o3, o4, o5]])
-    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o3, o4, o5], [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress, manualCheckinZeroNights]])
-    await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [[o1, o2, o3, o4, o5]])
+    await pgPool.query('DELETE FROM cleaning_sync_logs WHERE order_id = ANY($1)', [[o1, o2, o3, o4, o5, o6, o7]])
+    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o3, o4, o5, o6, o7], [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress, manualCheckinZeroNights]])
+    await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [[o1, o2, o3, o4, o5, o6, o7]])
     for (const o of orders) {
       await pgPool.query(
         `INSERT INTO orders(id, property_id, checkin, checkout, nights, status, confirmation_code)
@@ -74,6 +79,94 @@ async function main() {
   const t1i = await fetchTaskByType(o1, 'checkin_clean')
   assert.ok(t1i, 'should create checkin task for confirmed order')
   assert.equal(String(t1i.task_date).slice(0, 10), '2026-02-10')
+  assert.equal(t1i.old_code == null ? null : String(t1i.old_code), null, 'a checkin without a prior password source should remain blank')
+
+  await syncOrderToCleaningTasks(o6)
+  if (pgPool) {
+    await pgPool.query(`UPDATE cleaning_tasks SET new_code='2468' WHERE order_id=$1 AND lower(COALESCE(task_type, type, ''))='checkin_clean'`, [o6])
+    await pgPool.query(`UPDATE cleaning_tasks SET old_code='1357' WHERE order_id=$1 AND lower(COALESCE(task_type, type, ''))='checkout_clean'`, [o6])
+  } else {
+    const previousCheckin = await fetchTaskByType(o6, 'checkin_clean')
+    const previousCheckout = await fetchTaskByType(o6, 'checkout_clean')
+    if (previousCheckin) previousCheckin.new_code = '2468'
+    if (previousCheckout) previousCheckout.old_code = '1357'
+  }
+  await syncOrderToCleaningTasks(o7)
+  const incomingCheckin = await fetchTaskByType(o7, 'checkin_clean')
+  assert.ok(incomingCheckin, 'should create the incoming checkin task')
+  assert.equal(String(incomingCheckin.old_code), '1357', 'a checkin-only day should use the nearest previous checkout old_code')
+
+  if (pgPool) {
+    await pgPool.query(`UPDATE cleaning_tasks SET old_code=NULL WHERE order_id=$1 AND lower(COALESCE(task_type, type, ''))='checkout_clean'`, [o6])
+    await pgPool.query(`UPDATE cleaning_tasks SET new_code=NULL WHERE order_id=$1 AND lower(COALESCE(task_type, type, ''))='checkin_clean'`, [o6])
+  } else {
+    const previousCheckin = await fetchTaskByType(o6, 'checkin_clean')
+    const previousCheckout = await fetchTaskByType(o6, 'checkout_clean')
+    if (previousCheckin) previousCheckin.new_code = null
+    if (previousCheckout) previousCheckout.old_code = null
+  }
+  await syncCheckinOldCodeFromPreviousStay({ orderId: o7 })
+  const clearedIncomingCheckin = await fetchTaskByType(o7, 'checkin_clean')
+  assert.equal(clearedIncomingCheckin?.old_code == null ? null : String(clearedIncomingCheckin.old_code), null, 'an invalidated prior source should clear a previously auto-filled checkin old_code')
+
+  if (pgPool) {
+    await pgPool.query(`UPDATE cleaning_tasks SET new_code='2468' WHERE order_id=$1 AND lower(COALESCE(task_type, type, ''))='checkin_clean'`, [o6])
+    await pgPool.query(`UPDATE cleaning_tasks SET old_code=NULL, auto_sync_enabled=true WHERE order_id=$1 AND lower(COALESCE(task_type, type, ''))='checkin_clean'`, [o7])
+  } else {
+    const previousCheckin = await fetchTaskByType(o6, 'checkin_clean')
+    const previousCheckout = await fetchTaskByType(o6, 'checkout_clean')
+    const targetCheckin = await fetchTaskByType(o7, 'checkin_clean')
+    if (previousCheckin) previousCheckin.new_code = '2468'
+    if (previousCheckout) previousCheckout.old_code = null
+    if (targetCheckin) { targetCheckin.old_code = null; targetCheckin.auto_sync_enabled = true }
+  }
+  await syncCheckinOldCodeFromPreviousStay({ orderId: o7 })
+  const fallbackIncomingCheckin = await fetchTaskByType(o7, 'checkin_clean')
+  assert.equal(String(fallbackIncomingCheckin.old_code), '2468', 'a missing historical checkout old_code should fall back to the prior stay checkin new_code')
+
+  if (pgPool) {
+    await pgPool.query(`UPDATE cleaning_tasks SET new_code=NULL WHERE order_id=$1 AND lower(COALESCE(task_type, type, ''))='checkin_clean'`, [o6])
+  } else {
+    const previousCheckin = await fetchTaskByType(o6, 'checkin_clean')
+    if (previousCheckin) previousCheckin.new_code = null
+  }
+  await syncCheckinOldCodeFromPreviousStay({ orderId: o7 })
+  const clearedFallbackIncomingCheckin = await fetchTaskByType(o7, 'checkin_clean')
+  assert.equal(clearedFallbackIncomingCheckin?.old_code == null ? null : String(clearedFallbackIncomingCheckin.old_code), null, 'an invalidated fallback checkin new_code should clear a previously auto-filled old_code')
+
+  if (pgPool) {
+    await pgPool.query(`UPDATE cleaning_tasks SET old_code='manual-old-code', auto_sync_enabled=false WHERE order_id=$1 AND lower(COALESCE(task_type, type, ''))='checkin_clean'`, [o7])
+  } else {
+    const targetCheckin = await fetchTaskByType(o7, 'checkin_clean')
+    if (targetCheckin) { targetCheckin.old_code = 'manual-old-code'; targetCheckin.auto_sync_enabled = false }
+  }
+  const lockedWithoutSource = await syncCheckinOldCodeFromPreviousStay({ orderId: o7 })
+  assert.equal(lockedWithoutSource.action, 'no_change', 'a manually locked checkin old_code must remain unchanged when no historical source exists')
+  const lockedWithoutSourceCheckin = await fetchTaskByType(o7, 'checkin_clean')
+  assert.equal(String(lockedWithoutSourceCheckin?.old_code), 'manual-old-code')
+
+  if (pgPool) {
+    await pgPool.query(`UPDATE cleaning_tasks SET old_code='manual-old-code', auto_sync_enabled=false WHERE order_id=$1 AND lower(COALESCE(task_type, type, ''))='checkin_clean'`, [o7])
+    await pgPool.query(`UPDATE cleaning_tasks SET old_code='9753' WHERE order_id=$1 AND lower(COALESCE(task_type, type, ''))='checkout_clean'`, [o6])
+  } else {
+    const previousCheckout = await fetchTaskByType(o6, 'checkout_clean')
+    const targetCheckin = await fetchTaskByType(o7, 'checkin_clean')
+    if (previousCheckout) previousCheckout.old_code = '9753'
+    if (targetCheckin) { targetCheckin.old_code = 'manual-old-code'; targetCheckin.auto_sync_enabled = false }
+  }
+  const lockedCheckinPassword = await syncCheckinOldCodeFromPreviousStay({ orderId: o7 })
+  assert.equal(lockedCheckinPassword.action, 'skipped_locked', 'a manually locked checkin old_code must not be overwritten')
+  const lockedIncomingCheckin = await fetchTaskByType(o7, 'checkin_clean')
+  assert.equal(String(lockedIncomingCheckin.old_code), 'manual-old-code')
+
+  const pureCheckinDisplay = buildCleaningTurnoverDisplay({
+    propertyId: 'P_TEST_PASSWORD_CHAIN',
+    taskDate: '2026-02-05',
+    checkinTask: { id: 'pure-checkin', order_id: 'incoming', task_type: 'checkin_clean', task_date: '2026-02-05', old_code: '1357', new_code: '2468' },
+  })
+  assert.equal(pureCheckinDisplay.old_code, '1357', 'the canonical display must retain old_code for a pure checkin card')
+  const mergedPureCheckinDisplay = mergeCleaningTurnoverDisplays([pureCheckinDisplay])
+  assert.equal(mergedPureCheckinDisplay?.old_code, '1357', 'the merged display must retain old_code for a pure checkin card')
 
   if (pgPool) {
     await pgPool.query(`UPDATE cleaning_tasks SET new_code='9753' WHERE order_id=$1 AND task_type='checkin_clean'`, [o1])
@@ -273,9 +366,9 @@ async function main() {
   if (pgPool) {
     const countTasks = await pgPool.query(`SELECT COUNT(*)::int AS c FROM cleaning_tasks WHERE order_id = ANY($1)`, [[o1, o2]])
     assert.equal(Number(countTasks?.rows?.[0]?.c || 0), 4, 'backfill twice should not duplicate tasks')
-	    await pgPool.query('DELETE FROM cleaning_sync_logs WHERE order_id = ANY($1)', [[o1, o2, o4, o5]])
-	    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o4, o5], [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress, manualCheckinZeroNights]])
-	    await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [[o1, o2, o4, o5]])
+    await pgPool.query('DELETE FROM cleaning_sync_logs WHERE order_id = ANY($1)', [[o1, o2, o4, o5, o6, o7]])
+    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o4, o5, o6, o7], [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress, manualCheckinZeroNights]])
+    await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [[o1, o2, o4, o5, o6, o7]])
   } else {
     const tasks = (db.cleaningTasks as any[]).filter((t: any) => [o1, o2].includes(String(t.order_id)))
     assert.equal(tasks.length, 4, 'backfill twice should not duplicate tasks')

@@ -844,6 +844,211 @@ export async function syncCheckoutOldCodeFromCheckinNewCode(params: {
   return { action: 'updated' }
 }
 
+type PreviousCheckinPasswordSource = {
+  code: string
+  sourceTaskId: string
+  sourceOrderId: string
+  sourceField: 'old_code' | 'new_code'
+}
+
+async function loadPreviousCheckinPasswordSource(checkinTask: any, client?: any): Promise<PreviousCheckinPasswordSource | null> {
+  const propertyId = nonBlank(checkinTask?.property_id)
+  const checkinDay = dayOnly(checkinTask?.task_date ?? checkinTask?.date)
+  const targetOrderId = nonBlank(checkinTask?.order_id)
+  if (!propertyId || !checkinDay) return null
+
+  if (hasPg && (client || pgPool)) {
+    await ensureCleaningSchemaV2()
+    const exec = client || pgPool!
+    const r = await exec.query(
+      `SELECT checkout_task.*,
+              source_checkin.id AS source_checkin_task_id,
+              source_checkin.new_code AS source_checkin_new_code
+       FROM cleaning_tasks checkout_task
+       LEFT JOIN properties checkout_property_by_id
+         ON checkout_property_by_id.id::text = checkout_task.property_id::text
+       LEFT JOIN properties checkout_property_by_code
+         ON upper(checkout_property_by_code.code) = upper(checkout_task.property_id::text)
+       LEFT JOIN properties target_property_by_id
+         ON target_property_by_id.id::text = $1::text
+       LEFT JOIN properties target_property_by_code
+         ON upper(target_property_by_code.code) = upper($1::text)
+       LEFT JOIN LATERAL (
+         SELECT checkin_task.*
+         FROM cleaning_tasks checkin_task
+         WHERE checkin_task.order_id::text = checkout_task.order_id::text
+           AND lower(COALESCE(checkin_task.task_type, checkin_task.type, '')) = '${CHECKIN_TASK_TYPE}'
+           AND ${activeCleaningTaskWhereSql('checkin_task')}
+         ORDER BY checkin_task.updated_at DESC NULLS LAST
+         LIMIT 1
+       ) source_checkin ON true
+       WHERE lower(COALESCE(checkout_task.task_type, checkout_task.type, '')) = '${CHECKOUT_TASK_TYPE}'
+         AND ${activeCleaningTaskWhereSql('checkout_task')}
+         AND checkout_task.order_id IS NOT NULL
+         AND ($3::text IS NULL OR checkout_task.order_id::text <> $3::text)
+         AND COALESCE(checkout_task.task_date, checkout_task.date)::date <= $2::date
+         AND COALESCE(checkout_property_by_id.id::text, checkout_property_by_code.id::text, checkout_task.property_id::text)
+             = COALESCE(target_property_by_id.id::text, target_property_by_code.id::text, $1::text)
+         AND (
+           NULLIF(trim(COALESCE(checkout_task.old_code, '')), '') IS NOT NULL
+           OR NULLIF(trim(COALESCE(source_checkin.new_code, '')), '') IS NOT NULL
+         )
+       ORDER BY COALESCE(checkout_task.task_date, checkout_task.date)::date DESC,
+                checkout_task.updated_at DESC NULLS LAST
+       LIMIT 1`,
+      [propertyId, checkinDay, targetOrderId],
+    )
+    const row = r?.rows?.[0]
+    if (!row) return null
+    const checkoutCode = nonBlank(row.old_code)
+    if (checkoutCode) {
+      return {
+        code: checkoutCode,
+        sourceTaskId: String(row.id || ''),
+        sourceOrderId: String(row.order_id || ''),
+        sourceField: 'old_code',
+      }
+    }
+    const checkinCode = nonBlank(row.source_checkin_new_code)
+    if (!checkinCode) return null
+    return {
+      code: checkinCode,
+      sourceTaskId: String(row.source_checkin_task_id || row.id || ''),
+      sourceOrderId: String(row.order_id || ''),
+      sourceField: 'new_code',
+    }
+  }
+
+  const source = (db.cleaningTasks as any[])
+    .filter((task: any) => {
+      const taskType = String(task?.task_type ?? task?.type ?? '').trim().toLowerCase()
+      const taskDay = dayOnly(task?.task_date ?? task?.date)
+      return taskType === CHECKOUT_TASK_TYPE
+        && String(task?.property_id || '') === propertyId
+        && String(task?.order_id || '')
+        && (!targetOrderId || String(task.order_id) !== targetOrderId)
+        && !!taskDay
+        && taskDay <= checkinDay
+        && normalizeExecutionState(task) === ACTIVE_EXECUTION_STATE
+        && !isCancelledCleaningTaskStatus(task?.status)
+    })
+    .map((checkoutTask: any) => {
+      const sourceCheckin = (db.cleaningTasks as any[])
+        .filter((task: any) =>
+          String(task?.order_id || '') === String(checkoutTask.order_id || '')
+          && String(task?.task_type ?? task?.type ?? '').trim().toLowerCase() === CHECKIN_TASK_TYPE
+          && normalizeExecutionState(task) === ACTIVE_EXECUTION_STATE
+          && !isCancelledCleaningTaskStatus(task?.status),
+        )
+        .sort((a: any, b: any) => String(b?.updated_at || '').localeCompare(String(a?.updated_at || '')))[0]
+      const checkoutCode = nonBlank(checkoutTask.old_code)
+      const checkinCode = nonBlank(sourceCheckin?.new_code)
+      const code = checkoutCode || checkinCode
+      if (!code) return null
+      return {
+        code,
+        sourceTaskId: String(checkoutCode ? checkoutTask.id : (sourceCheckin?.id || checkoutTask.id || '')),
+        sourceOrderId: String(checkoutTask.order_id || ''),
+        sourceField: checkoutCode ? 'old_code' as const : 'new_code' as const,
+        taskDay: dayOnly(checkoutTask.task_date ?? checkoutTask.date) || '',
+        updatedAt: String(checkoutTask.updated_at || ''),
+      }
+    })
+    .filter(Boolean)
+    .sort((a: any, b: any) => b.taskDay.localeCompare(a.taskDay) || b.updatedAt.localeCompare(a.updatedAt))[0]
+
+  return source || null
+}
+
+export async function syncCheckinOldCodeFromPreviousStay(params: {
+  jobId?: string | null
+  orderId: string
+  client?: any
+}): Promise<{ action: 'updated' | 'no_change' | 'skipped_locked' }> {
+  const { jobId, orderId, client } = params
+  const checkinTask = await loadTaskByOrder(orderId, CHECKIN_TASK_TYPE, client)
+  if (!checkinTask) return { action: 'no_change' }
+  const source = await loadPreviousCheckinPasswordSource(checkinTask, client)
+  if (!source) {
+    if (checkinTask.auto_sync_enabled === false || !nonBlank(checkinTask.old_code)) return { action: 'no_change' }
+    const after = await updateTaskById(String(checkinTask.id), { old_code: null }, client)
+    await logCleaningSync({
+      jobId,
+      orderId,
+      taskId: checkinTask.id,
+      action: 'updated',
+      before: checkinTask,
+      after,
+      meta: { reason: 'checkin_old_code_source_unavailable' },
+      client,
+    })
+    try {
+      await emitWorkTaskEvent({
+        taskId: `cleaning_task:${String(checkinTask.id)}`,
+        sourceType: 'cleaning_tasks',
+        sourceRefIds: [String(checkinTask.id)],
+        eventType: 'TASK_UPDATED',
+        changeScope: 'detail',
+        changedFields: ['old_code'],
+        patch: { old_code: null },
+        causedByUserId: null,
+        visibilityHints: buildCleaningTaskVisibilityHints(after || checkinTask),
+      }, client)
+    } catch {}
+    return { action: 'updated' }
+  }
+  if (checkinTask.auto_sync_enabled === false) {
+    await logCleaningSync({
+      jobId,
+      orderId,
+      taskId: checkinTask.id,
+      action: 'skipped_locked',
+      before: checkinTask,
+      after: checkinTask,
+      meta: {
+        reason: 'checkin_old_code_from_previous_stay',
+        source_task_id: source.sourceTaskId,
+        source_order_id: source.sourceOrderId,
+        source_field: source.sourceField,
+      },
+      client,
+    })
+    return { action: 'skipped_locked' }
+  }
+  if (String(checkinTask.old_code ?? '').trim() === source.code) return { action: 'no_change' }
+
+  const after = await updateTaskById(String(checkinTask.id), { old_code: source.code }, client)
+  await logCleaningSync({
+    jobId,
+    orderId,
+    taskId: checkinTask.id,
+    action: 'updated',
+    before: checkinTask,
+    after,
+    meta: {
+      reason: 'checkin_old_code_from_previous_stay',
+      source_task_id: source.sourceTaskId,
+      source_order_id: source.sourceOrderId,
+      source_field: source.sourceField,
+    },
+    client,
+  })
+  try {
+    await emitWorkTaskEvent({
+      taskId: `cleaning_task:${String(checkinTask.id)}`,
+      sourceType: 'cleaning_tasks',
+      sourceRefIds: [String(checkinTask.id)],
+      eventType: 'TASK_UPDATED',
+      changeScope: 'detail',
+      changedFields: ['old_code'],
+      patch: { old_code: source.code },
+      causedByUserId: null,
+      visibilityHints: buildCleaningTaskVisibilityHints(after || checkinTask),
+    }, client)
+  } catch {}
+  return { action: 'updated' }
+}
+
 async function syncOneTask(params: {
   jobId?: string | null
   orderId: string
@@ -997,8 +1202,9 @@ export async function syncOrderToCleaningTasks(orderId: string, opts?: SyncOrder
     const rCheckin = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: checkinDay, statusLower, propertyId, derivedCode, keysRequired })
     const supersededCheckout = await supersedeTemporaryManualTasksForOrder({ jobId, orderId: id, propertyId, taskDate: checkoutDay, taskType: CHECKOUT_TASK_TYPE, client })
     const supersededCheckin = await supersedeTemporaryManualTasksForOrder({ jobId, orderId: id, propertyId, taskDate: checkinDay, taskType: CHECKIN_TASK_TYPE, client })
-    const rPassword = await syncCheckoutOldCodeFromCheckinNewCode({ jobId, orderId: id, client })
-    const actions = [rCheckout.action, rCheckin.action, rPassword.action]
+    const rCheckoutPassword = await syncCheckoutOldCodeFromCheckinNewCode({ jobId, orderId: id, client })
+    const rCheckinPassword = await syncCheckinOldCodeFromPreviousStay({ jobId, orderId: id, client })
+    const actions = [rCheckout.action, rCheckin.action, rCheckoutPassword.action, rCheckinPassword.action]
     await reconcileDeferredInspectionCheckinReplacement({ checkinOrderId: id, pgClient: client })
     if (actions.includes('created') || actions.includes('updated')) {
       await emitDeferredInspectionCheckinConflictAlerts({ checkinOrderId: id, pgClient: client })
