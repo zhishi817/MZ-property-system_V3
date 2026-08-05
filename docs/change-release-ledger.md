@@ -1,5 +1,61 @@
 # Change Release Ledger
 
+## CRL-20260805-006 — Python 运行缓存台账边界修复
+
+- **Status:** candidate
+- **Updated:** 2026-08-05 Australia/Melbourne
+- **Request:** 根治 CI 在 Python 台账审计回归测试生成 `.pyc` 缓存后，将该运行产物误判为未登记仓库变更的问题。
+- **Outcome:** Python `__pycache__` / 字节码是仓库统一忽略的运行缓存，不参与台账覆盖范围；真实未登记源码仍会导致审计失败。
+
+### Implementation
+
+- **Previous behavior:** 根仓库没有 Python 缓存忽略规则；回归测试导入审计模块后生成 `.pyc`，后续 `git ls-files --others --exclude-standard` 将其报告为未登记文件。
+- **New behavior:** `.gitignore` 统一忽略 `__pycache__/` 与 `*.py[cod]`；审计算法不变，仍检查所有未被忽略的真实路径。
+- **Key decisions:** 不在单条测试中关闭字节码生成，也不在审计代码中硬编码例外；由标准 Git 忽略边界处理所有 Python 工具和 CI 任务。
+
+### Files / Areas
+
+- `.gitignore` — 新增仓库级 Python 运行缓存忽略规则。
+- `scripts/tests/test_audit_change_release_ledger.py` — 覆盖缓存文件被忽略、真实未登记 Python 源文件仍失败。
+- `docs/change-release-ledger.md` — 记录本 root CI 基础设施修复。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Related unit: mobile `CRL-20260805-006` 仅处理同一根 CI 失败的独立测试超时；两者可独立验证与发布。
+
+### Validation
+
+- `python3 scripts/tests/test_audit_change_release_ledger.py` — passed: 13 tests; Python cache is ignored and an unrecorded source file still fails audit.
+- `python3 scripts/audit_change_release_ledger.py` — passed after test execution: 3 changed paths / 3 recorded paths; no `.pyc` cache leak.
+- `git diff --check` — passed.
+
+### Release Attempts
+
+#### RA-20260805-root-python-cache-01
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260805-006`
+- Intended action: `commit`
+- Branch: `codex/release-selected-root-20260805`
+- Base: `origin/codex/release-selected-root-20260805@28c5c1cf38822b95f6283abeeecf65e01032f297`; fetched and read back on 2026-08-05 Australia/Melbourne.
+- Candidate patch SHA-256: `cdcb554371be5f07efa445a2e9fff5f2d5d571943ad0cc6c75c63c51c66d7014` (staged implementation diff excluding `docs/change-release-ledger.md`).
+- Commit SHA: pending.
+- Dependencies: none.
+- Required validation: PASS — Python audit regressions 13/13, cache-ignore/source-reject assertions, local ledger audit and whitespace check.
+- Shared-hunk review: PASS — `.gitignore`, the audit regression test and ledger entry are exclusive to this CI repair.
+- Generated-file review: not applicable — cache files are excluded; no generated file is selected.
+- Technical state: `verified`
+- User authorization: `selected-for-commit`; evidence: user explicitly specified the repository-level Python cache boundary repair on 2026-08-05 Australia/Melbourne.
+- Independent review: GO for commit — independent read-only review verified the standard Git ignore boundary, cache/source regression pair, staged fingerprint and no P0/P1/P2 finding.
+- Action conclusion: `GO` for commit only; no push, PR merge, deployment or production action is authorized.
+
+### Risks / Release Notes
+
+- 被忽略的仅是 Python 解释器可再生成的缓存；任何未登记 `.py` 源文件仍应使审计失败。
+- Feature regression registry: unchanged — no product workflow, permission, state transition or client behavior is altered.
+- Sensitive-information review: no secrets, `.env` values, tokens, credentials, database URLs, sensitive logs or local caches are selected.
+
 ## CRL-20260805-005 — Root PR 台账范围审计兼容修复
 
 - **Status:** candidate

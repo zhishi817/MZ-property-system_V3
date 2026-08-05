@@ -178,6 +178,24 @@ class ReleaseReportTests(unittest.TestCase):
         self.assertEqual(1, code)
         self.assertIn("src/unrecorded.txt", stream.getvalue())
 
+    def test_worktree_audit_ignores_python_cache_but_rejects_source_path(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        fixture._write(".gitignore", "__pycache__/\n*.py[cod]\n")
+        git(fixture.root, "add", ".gitignore")
+        git(fixture.root, "commit", "-qm", "ignore python runtime cache")
+        fixture._write("scripts/__pycache__/audit.cpython-312.pyc", "cache")
+
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(0, AUDITOR.main([], root=fixture.root))
+
+        fixture._write("scripts/unrecorded_source.py", "print('source')\n")
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            code = AUDITOR.main([], root=fixture.root)
+
+        self.assertEqual(1, code)
+        self.assertIn("scripts/unrecorded_source.py", stream.getvalue())
+
     def test_complete_attempt_is_go_and_has_markdown_json_evidence(self) -> None:
         fixture = ReleaseReportFixture(self)
         report = fixture.report()
