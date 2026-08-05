@@ -2,7 +2,7 @@
 
 ## CRL-20260806-001 — 纯入住任务显示上一段有效旧密码（root）
 
-- **Status:** committed; push-ready
+- **Status:** pushed; not merged to Dev
 - **Updated:** 2026-08-06 Australia/Melbourne
 - **Request:** 纯入住任务应显示该房源上一位住客留下的旧密码。
 - **Outcome:** 订单同步会向当前 `checkin_clean` 写入同房源最近有效退房任务的既有 `old_code`；该字段缺失时仅回退到该历史订单的入住 `new_code`。没有可信来源时继续显示空白，手工锁定任务不覆盖。
@@ -56,10 +56,10 @@
 - Required validation: passed; targeted in-memory regression, no-output compiler, feature-registry audit, ledger audit, `check:full`, and non-production rollback contract passed
 - Shared-hunk review: passed; final independent review inspected the complete staged diff after validation
 - Generated-file review: not applicable; no generated files selected
-- Technical state: `committed`
+- Technical state: `pushed`
 - User authorization: `approved-for-push`; evidence: user confirmed pushing this repository, `cd56bdc7372b214ca1d9811a37ba9fda75c32f81` content commit and `codex/release-old-password-previous-stay-20260806` branch after the exact local release head was presented on 2026-08-06
 - Independent review: `GO` for push; final committed-range review verified the base → candidate content → head ancestor chain, matching non-ledger fingerprint, exact five-file range, authorization, and no secret/generated-file/scope collision. Existing lint warnings and the mobile Jest worker teardown advisory are pre-existing/non-blocking with exit code 0.
-- Action conclusion: `GO` for push; remote branch/commit evidence pending the push result
+- Action conclusion: `GO` for push (completed); GitHub accepted `origin/codex/release-old-password-previous-stay-20260806@b96c1eb688ed070da1c379fcdcce32db639dced4`; not merged, deployed, or applied to production data
 
 ### Risks / Release Notes
 
