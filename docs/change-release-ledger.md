@@ -87,11 +87,11 @@
 - Independent review: GO for commit — independent staged review of `0c971ff55a648d2a8dde982cba72e73959b8f4d84a9aafcd7960399aefe76dbb` found the CI entry restored, deep-cleaning DDL moved to its controlled migration, and stable-key retry safety present; no P0/P1/P2 blocker.
 - User authorization: selected-for-commit — user explicitly confirmed the selected scope and both high-risk inclusion groups.
 - Intended action: commit
-- Technical state: verified
-- Commit SHA: not committed
+- Technical state: committed
+- Commit SHA: `dad290645de78747648badc1c232119aabe96f30` (candidate content commit; audit head is recorded by the report command)
 - Shared-hunk review: PASS — candidate paths are explicit in this packaging record; no partial hunk from an unselected implementation unit is staged.
 - Generated-file review: not applicable — no generated build output is included.
-- Action conclusion: GO for commit; NOT VERIFIED for push, deployment and production behavior.
+- Action conclusion: GO for commit; NOT VERIFIED for push, deployment and production behavior. Push requires a separate, exact branch/commit authorization.
 
 
 ## CRL-20260805-001 — 延期检查与入住冲突替代、告警和任务投影
