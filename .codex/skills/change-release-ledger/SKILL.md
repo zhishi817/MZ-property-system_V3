@@ -20,9 +20,27 @@ Before the final response, add or update one release unit in the ledger using `a
 
 Use ID `CRL-YYYYMMDD-NNN`, choosing the next unused sequence for that date. One unit represents one user-selectable feature or fix. Split unrelated work into separate units.
 
-Record status, user-visible outcome, request, previous/new behavior, exact files, API/database/config/dependency impact, validation commands and actual results, risks, sensitive-information review, rollback, dependencies, related IDs, and available Git evidence. Use statuses `in-progress`, `ready`, `blocked`, `staged`, `committed`, or `pushed`.
+Record status, user-visible outcome, request, previous/new behavior, exact files, API/database/config/dependency impact, validation commands and actual results, risks, sensitive-information review, rollback, dependencies, related IDs, and available Git evidence. `Status` describes implementation tracking, not blanket release authority. New units should normally use `in-progress`, `ready`, or `blocked`; legacy `staged`, `committed`, or `pushed` values need exact Release Attempt evidence and never prove later edits to the same CRL are released.
 
 Never copy secrets, tokens, cookies, passwords, private keys, database URLs, `.env` values, or sensitive log contents into the ledger. If a unit changes later, append a dated update and preserve earlier failures or risks.
+
+## Release Attempts
+
+Keep Release Attempt records inside the relevant CRL; they are evidence records, not a second ledger. A CRL can have multiple attempts when its implementation changes after a prior commit or push.
+
+Each attempt must contain:
+
+- Attempt ID, repository, selected CRL IDs, intended action, branch, dependency CRLs/SHAs.
+- Exact base ref/SHA and fetch time; candidate patch SHA-256; candidate content commit SHA once committed. The report command supplies the exact audit head SHA because a commit cannot self-record its own object SHA.
+- Technical state: `candidate`, `verified`, `committed`, `pushed`, `merged`, or `deployed`.
+- User authorization: `not-selected`, `selected-for-commit`, or `approved-for-push`, with a concise reference to the user instruction. Never infer authorization from `ready`, a successful test, a commit, or a reviewer verdict.
+- Action conclusion: `GO`, `BLOCKED`, or `NOT VERIFIED`, plus evidence and blockers.
+
+`NOT VERIFIED` means required evidence is missing. `BLOCKED` means evidence identifies a failed gate, including a stale/invalid base, range mismatch, scope collision, uncovered path, test failure, generated-file issue, or sensitive-information risk. Do not use "probably ready" or similar wording.
+
+Candidate patch SHA-256 is the selected `base...head` content diff excluding `docs/change-release-ledger.md`, so recording the hash and commit evidence cannot become self-referential. The exact range audit still includes the ledger path. A recorded candidate content commit must be a descendant of the recorded base and an ancestor of the report head.
+
+`commit-ready` requires a `verified` attempt, `selected-for-commit`, and `GO` for the commit action. `push-ready` requires a `committed` attempt, a passing exact `base...head` range audit, `approved-for-push`, and `GO` for the push action. Changing the CRL selection, base SHA, candidate content commit SHA, or branch invalidates prior push authorization and requires a new attempt.
 
 ## Audit Coverage
 
@@ -34,23 +52,42 @@ python3 scripts/audit_change_release_ledger.py
 
 The audit must pass before claiming all current changes are recorded. Add a release unit only when its purpose is supported by current-task evidence; otherwise leave the file unattributed and tell the user.
 
+## Release Report
+
+After a candidate content commit exists, audit one exact attempt without modifying Git, the ledger, or remote state:
+
+```bash
+python3 scripts/audit_change_release_ledger.py \
+  --release-report \
+  --repo root \
+  --base <origin-dev-sha> \
+  --head <audit-head-sha> \
+  --crl <CRL-ID> \
+  --format markdown
+```
+
+Use the independent mobile repository's own script with `--repo mobile`; never use root output as mobile evidence. The report resolves only locally available refs and never fetches. It checks that locally fetched `origin/Dev` still equals the requested base, checks the exact three-dot range, selected files, shared-file evidence, generated-file evidence, candidate patch SHA-256, validation, review, authorization, and configured sensitive categories.
+
+`--format json` emits the same evidence for automation. Exit `0` means `GO`; `1` means `BLOCKED`; `2` means `NOT VERIFIED`. A report result is evidence for one action only and never performs staging, commit, push, PR creation, merge, deployment, EAS, API calls, or production writes.
+
 ## Select Features for Release
 
 Before staging, committing, pushing, or deploying:
 
-1. List non-pushed units with ID, feature, status, files, dependencies, validation, and risks.
-2. Ask the user to select IDs when multiple independent units exist and scope was not already specified.
-3. Expand required dependencies and explain why they travel together.
-4. Detect files shared by selected and unselected units.
-5. Stage exact exclusive files. For shared files, stage only verified hunks; if unsafe, ask whether to combine units.
-6. Inspect `git diff --cached --name-only` and `git diff --cached`, then check for sensitive information.
-7. Run required validation and update statuses only after actions succeed.
+1. Report root and mobile separately using `可供选择的候选`、`已选择但仍被阻塞`、`已获授权且可提交`、`已提交、已批准且可推送`、`已推送`、`不在本次范围`. A candidate is not automatically pushable.
+2. Ask the user to select IDs when multiple independent units exist and scope was not already specified. Selection permits staging/commit only; ask again for explicit push authorization after the exact commit SHA exists.
+3. Expand required dependencies and explain why they travel together. Record exact dependency SHAs when a dependency is already committed or pushed.
+4. Preserve mixed development worktrees. After scope selection, fetch and record `origin/Dev@SHA`, then create a clean release worktree from that SHA. Do not pull, rebase, stash, reset, clean, or broad-stage the development worktree to manufacture a candidate.
+5. Detect files shared by selected and unselected units. Stage exact exclusive files. For shared files, stage only verified hunks; if ownership cannot be proven, report `NOT VERIFIED` rather than assume it.
+6. Capture the staged candidate patch SHA-256 excluding `docs/change-release-ledger.md`, run required validation, and obtain independent read-only review before the content commit. A candidate-review `GO` is limited to the commit action.
+7. After commit, record the candidate content commit SHA in a later bookkeeping update if needed, then inspect `git diff --name-only <base>...<head>`, `git diff <base>...<head>`, and the exact range audit. Require the candidate content commit to be inside that range and its non-ledger patch fingerprint to match the reviewed candidate. Check for sensitive information and generated-file risk.
+8. Update an attempt's technical state only after its action succeeds. Record remote branch/SHA for push, PR evidence for review, merge evidence for `Dev`, and deployment evidence separately.
 
 Never use `git add .`, `git add -A`, wildcard staging, or unverified whole-file staging for a selective release.
 
 ## Ledger Template
 
-```markdown
+~~~~markdown
 ## CRL-YYYYMMDD-NNN — Feature name
 
 - **Status:** ready
@@ -80,11 +117,35 @@ Never use `git add .`, `git add -A`, wildcard staging, or unverified whole-file 
 
 - `command` — passed/failed/not run: evidence
 
+### Release Attempts
+
+- None yet, or one block per exact release attempt:
+
+```markdown
+#### RA-YYYYMMDD-NNN
+
+- Repository: `root` or `mobile`
+- Selected CRLs: `CRL-...`
+- Intended action: `commit` or `push`
+- Branch: `codex/<release-scope>` or `not created`
+- Base: `origin/Dev@<SHA>`; fetched at `<timestamp>`
+- Candidate patch SHA-256: `<hash excluding docs/change-release-ledger.md>` or `not created`
+- Commit SHA: `<candidate content SHA>` or `not committed`; audit head is emitted by the report command
+- Dependencies: `<CRL / SHA>` or none
+- Required validation: `PASS` / `FAIL` / `NOT VERIFIED`; evidence: `<safe concise evidence>`
+- Shared-hunk review: `PASS` / `not applicable` / `NOT VERIFIED`; evidence: `<review reference>`
+- Generated-file review: `PASS` / `not applicable` / `NOT VERIFIED`; evidence: `<review reference>`
+- Technical state: `candidate` / `verified` / `committed` / `pushed` / `merged` / `deployed`
+- User authorization: `not-selected` / `selected-for-commit` / `approved-for-push`; evidence: `<user instruction or not applicable>`
+- Independent review: `GO` / `NO-GO` / `NEEDS OWNER`; evidence: `<review reference or not run>`
+- Action conclusion: `GO` / `BLOCKED` / `NOT VERIFIED`; blockers: `<facts>`
+```
+
 ### Risks / Release Notes
 
 - Risk and rollback information
 - Sensitive-information review result
 - Git state: uncommitted
-```
+~~~~
 
 Use `not run` or `unknown` rather than inventing results.

@@ -28,6 +28,7 @@ import {
   TASK_CENTER_MAX_COLUMNS,
   cleaningNightsDisplayLabels,
   cleaningTaskFlowLabelText,
+  deferredInspectionConflictPresentation,
   isDeferredInspectionDisplayTask,
   resolveTaskCenterColumns,
 } from './taskCenterDisplay'
@@ -130,6 +131,10 @@ type TaskCenterTask = {
   inspection_mode?: 'pending_decision' | 'same_day' | 'deferred' | 'self_complete' | 'checked_done' | null
   inspection_scope?: 'inspect_and_hang' | 'password_only' | null
   inspection_due_date?: string | null
+  deferred_checkin_conflict?: boolean
+  conflict_checkin_task_id?: string | null
+  conflict_checkin_task_date?: string | null
+  conflict_checkin_time?: string | null
   deferred_inspection_view?: boolean
   can_configure_inspection?: boolean
   old_code?: string | null
@@ -369,10 +374,12 @@ function taskCardPrimaryMetaItems(params: {
   workTaskKindTag: TaskCardMetaItem | null
   syncTag: TaskCardMetaItem | null
   temporarilySkipped?: boolean
+  deferredCheckinConflict?: ReturnType<typeof deferredInspectionConflictPresentation>
   supersededCount: number
   conflictCount: number
 }) {
   const items: TaskCardMetaItem[] = []
+  if (params.deferredCheckinConflict) items.push(params.deferredCheckinConflict)
   if (params.conflictCount > 0) items.push({ key: 'conflict', label: '冲突', tone: 'danger' })
   if (params.temporarilySkipped) items.push({ key: 'skip', label: '暂不安排', tone: 'pending' })
   if (params.syncTag?.label === '待同步') items.push(params.syncTag)
@@ -877,7 +884,7 @@ export default function TaskCenterPage() {
   }, [])
 
   const loadStaff = useCallback(async () => {
-    const rows = await getJSON<Staff[]>('/cleaning/staff').catch(() => [])
+    const rows = await getJSON<Staff[]>('/cleaning/staff?scope=task_executor').catch(() => [])
     setStaff(Array.isArray(rows) ? rows : [])
   }, [])
 
@@ -1066,6 +1073,10 @@ export default function TaskCenterPage() {
   }, [filteredRows])
 
   const allBoardTasks = useMemo(() => allRows.flatMap((row) => row.subrows.flatMap((subrow) => subrow.tasks)), [allRows])
+  const deferredCheckinConflictCount = useMemo(
+    () => allBoardTasks.filter((task) => task.deferred_checkin_conflict).length,
+    [allBoardTasks],
+  )
 
   const cleanerOptions = useMemo(() => activeCleaners.map((item) => ({ value: item.id, label: item.name })), [activeCleaners])
   const inspectorOptions = useMemo(() => activeInspectors.map((item) => ({ value: item.id, label: item.name })), [activeInspectors])
@@ -1093,6 +1104,13 @@ export default function TaskCenterPage() {
 
   const cardStyleForTask = useCallback((task: TaskCenterTask) => {
     const assignedColor = assignedColorForTask(task)
+    if (task.deferred_checkin_conflict) {
+      return {
+        background: 'rgba(255, 237, 213, 0.94)',
+        borderColor: 'rgba(234, 88, 12, 0.65)',
+        boxShadow: '0 0 0 1px rgba(234, 88, 12, 0.16)',
+      }
+    }
     if (task.temporarily_skipped) {
       return {
         background: 'rgba(254, 242, 242, 0.92)',
@@ -1107,11 +1125,13 @@ export default function TaskCenterPage() {
   }, [assignedColorForTask, hexToRgba])
 
   const textColorForTask = useCallback((task: TaskCenterTask) => {
+    if (task.deferred_checkin_conflict) return '#9a3412'
     if (task.temporarily_skipped) return '#7f1d1d'
     return null
   }, [])
 
   const stripeColorForTask = useCallback((task: TaskCenterTask) => {
+    if (task.deferred_checkin_conflict) return '#ea580c'
     if (task.temporarily_skipped) return '#ef4444'
     const assignedColor = assignedColorForTask(task)
     if (assignedColor) return assignedColor
@@ -2038,6 +2058,8 @@ export default function TaskCenterPage() {
       : (task.task_kind || '线下任务')
     const factLabels = timingFacts.length ? timingFacts : [fallbackFact]
     const conflictCount = taskDisplayConflictCount(task)
+    const deferredCheckinConflict = deferredInspectionConflictPresentation(task)
+    const deferredCheckinConflictText = deferredCheckinConflict?.detail || ''
     const primaryMetaItems = taskCardPrimaryMetaItems({
       statusLabel: statusMeta.label,
       displayBadges,
@@ -2046,10 +2068,12 @@ export default function TaskCenterPage() {
       workTaskKindTag,
       syncTag,
       temporarilySkipped: task.temporarily_skipped,
+      deferredCheckinConflict,
       supersededCount,
       conflictCount,
     })
-    const footerNote = compactDetailText
+    const footerNote = deferredCheckinConflictText
+      || compactDetailText
       || (conflictCount > 0 ? '请先核对订单' : '')
       || (syncTag?.label === '已同步' ? '已同步' : '')
     return (
@@ -2434,6 +2458,12 @@ export default function TaskCenterPage() {
                 <strong>暂不安排</strong>
                 <em>{readiness.skipped_count} 个</em>
               </span>
+              {deferredCheckinConflictCount > 0 ? (
+                <span className={`${styles.taskCenterSummaryPill} ${semanticToneClass('danger')}`}>
+                  <strong>入住冲突</strong>
+                  <em>{deferredCheckinConflictCount} 个</em>
+                </span>
+              ) : null}
             </div>
             <Button className={styles.secondaryBtn} icon={<PlusOutlined />} onClick={createRow} disabled={boardSaving}>
               新增一行

@@ -4,6 +4,7 @@ import { createHash } from 'crypto'
 import { v4 as uuid } from 'uuid'
 import { defaultInspectionModeForTaskType } from '../lib/cleaningInspection'
 import { buildCleaningTaskVisibilityHints, emitWorkTaskEvent } from './workTaskEvents'
+import { emitDeferredInspectionCheckinConflictAlerts, reconcileDeferredInspectionCheckinReplacement } from './deferredInspectionCheckinConflict'
 
 export type CleaningSyncAction =
   | 'created'
@@ -171,6 +172,8 @@ export async function ensureCleaningSchemaV2(): Promise<void> {
          EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cleaning_tasks' AND column_name='keys_required') AS has_tasks_keys_required,
          EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cleaning_tasks' AND column_name='inspection_mode') AS has_tasks_inspection_mode,
          EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cleaning_tasks' AND column_name='inspection_due_date') AS has_tasks_inspection_due_date,
+         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cleaning_tasks' AND column_name='inspection_replaced_by_checkin_task_id') AS has_tasks_inspection_replacement_source,
+         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cleaning_tasks' AND column_name='inspection_replaced_original_due_date') AS has_tasks_inspection_replacement_due_date,
          EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='orders' AND column_name='keys_required') AS has_orders_keys_required,
          EXISTS (SELECT 1 FROM pg_constraint WHERE conname='uniq_cleaning_tasks_order_task_type_v3') AS has_tasks_uq_v3`
     )
@@ -185,7 +188,7 @@ export async function ensureCleaningSchemaV2(): Promise<void> {
       err.code = 'CLEANING_SCHEMA_MISSING'
       throw err
     }
-    if (!row?.has_tasks_keys_required || !row?.has_tasks_inspection_mode || !row?.has_tasks_inspection_due_date) {
+    if (!row?.has_tasks_keys_required || !row?.has_tasks_inspection_mode || !row?.has_tasks_inspection_due_date || !row?.has_tasks_inspection_replacement_source || !row?.has_tasks_inspection_replacement_due_date) {
       const err: any = new Error('cleaning_tasks_missing_sync_columns')
       err.code = 'CLEANING_SCHEMA_MISSING'
       throw err
@@ -239,6 +242,9 @@ export async function bootstrapCleaningSyncSchemaV2(): Promise<void> {
     await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
     await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_mode text;`)
     await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_due_date date;`)
+    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_replaced_by_checkin_task_id text;`)
+    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_replaced_original_due_date date;`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_inspection_replacement_source ON cleaning_tasks(inspection_replaced_by_checkin_task_id) WHERE inspection_replaced_by_checkin_task_id IS NOT NULL;`)
     await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS guest_special_request text;`)
     await pgPool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
     await ensureCleaningExecutionStateColumns()
@@ -955,6 +961,7 @@ export async function syncOrderToCleaningTasks(orderId: string, opts?: SyncOrder
     if (deleted) {
       const r1 = await syncOneTask({ jobId, orderId: id, deleted: true, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower: 'deleted', propertyId: null, derivedCode: null, keysRequired: keysRequiredFallback })
       const r2 = await syncOneTask({ jobId, orderId: id, deleted: true, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower: 'deleted', propertyId: null, derivedCode: null, keysRequired: keysRequiredFallback })
+      await reconcileDeferredInspectionCheckinReplacement({ checkinOrderId: id, pgClient: client })
       return { action: (r1.action === 'cancelled' || r2.action === 'cancelled') ? 'cancelled' : 'no_change' as const }
     }
 
@@ -962,6 +969,7 @@ export async function syncOrderToCleaningTasks(orderId: string, opts?: SyncOrder
     if (!order) {
       const r1 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower: 'missing', propertyId: null, derivedCode: null, keysRequired: keysRequiredFallback })
       const r2 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower: 'missing', propertyId: null, derivedCode: null, keysRequired: keysRequiredFallback })
+      await reconcileDeferredInspectionCheckinReplacement({ checkinOrderId: id, pgClient: client })
       return { action: (r1.action === 'cancelled' || r2.action === 'cancelled') ? 'cancelled' : 'no_change' as const }
     }
 
@@ -981,6 +989,7 @@ export async function syncOrderToCleaningTasks(orderId: string, opts?: SyncOrder
     if (!valid) {
       const r1 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower, propertyId, derivedCode: null, keysRequired })
       const r2 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower, propertyId, derivedCode: null, keysRequired })
+      await reconcileDeferredInspectionCheckinReplacement({ checkinOrderId: id, pgClient: client })
       return { action: (r1.action === 'cancelled' || r2.action === 'cancelled') ? 'cancelled' : 'no_change' as const }
     }
 
@@ -990,6 +999,10 @@ export async function syncOrderToCleaningTasks(orderId: string, opts?: SyncOrder
     const supersededCheckin = await supersedeTemporaryManualTasksForOrder({ jobId, orderId: id, propertyId, taskDate: checkinDay, taskType: CHECKIN_TASK_TYPE, client })
     const rPassword = await syncCheckoutOldCodeFromCheckinNewCode({ jobId, orderId: id, client })
     const actions = [rCheckout.action, rCheckin.action, rPassword.action]
+    await reconcileDeferredInspectionCheckinReplacement({ checkinOrderId: id, pgClient: client })
+    if (actions.includes('created') || actions.includes('updated')) {
+      await emitDeferredInspectionCheckinConflictAlerts({ checkinOrderId: id, pgClient: client })
+    }
     if (actions.includes('created')) return { action: 'created' as const }
     if (actions.includes('updated') || supersededCheckout > 0 || supersededCheckin > 0) return { action: 'updated' as const }
     if (actions.includes('cancelled')) return { action: 'cancelled' as const }

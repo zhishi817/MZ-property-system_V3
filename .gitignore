@@ -25,6 +25,10 @@ output/
 frontend/*.tsbuildinfo
 backend/*.tsbuildinfo
 
+# Python runtime caches
+__pycache__/
+*.py[cod]
+
 # Backend uploads (user content)
 backend/uploads/
 

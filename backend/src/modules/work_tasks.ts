@@ -234,6 +234,9 @@ router.post('/', requirePerm('cleaning.schedule.manage'), async (req, res) => {
     const payload = parsed.data
     const taskKind = String(payload.task_kind || '').trim()
     const sourceType = String(payload.source_type || '').trim() || 'work_tasks'
+    if (['property_maintenance', 'external_maintenance_orders'].includes(sourceType)) {
+      return res.status(409).json({ code: 'maintenance_workflow_action_required' })
+    }
     const rawSourceId = String(payload.source_id || '').trim()
     const sourceId = rawSourceId || uuid()
     const id = `${sourceType}:${sourceId}`
@@ -336,6 +339,9 @@ router.patch('/:id', requirePerm('cleaning.schedule.manage'), async (req, res) =
     const r0 = await pgPool.query('SELECT * FROM work_tasks WHERE id=$1 LIMIT 1', [id])
     const cur = r0?.rows?.[0] || null
     if (!cur) return res.status(404).json({ message: 'task not found' })
+    if (['property_maintenance', 'external_maintenance_orders'].includes(String(cur.source_type || '').trim())) {
+      return res.status(409).json({ code: 'maintenance_workflow_action_required' })
+    }
     if (patch.assignee_id !== undefined) {
       const beforeStatus = normStatus(cur.status)
       const incomingStatus = patch.status === undefined ? undefined : normStatus(patch.status)
@@ -486,6 +492,9 @@ router.post('/upsert-from-source', requirePerm('cleaning.schedule.manage'), asyn
   const patch = body.patch || {}
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    if (['property_maintenance', 'external_maintenance_orders'].includes(sourceType)) {
+      return res.status(409).json({ code: 'maintenance_workflow_action_required' })
+    }
     await upsertWorkTaskFromSource(sourceType, sourceId, patch)
     return res.json({ ok: true })
   } catch (e: any) {

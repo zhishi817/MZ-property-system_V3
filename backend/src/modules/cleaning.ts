@@ -11,6 +11,9 @@ import { defaultInspectionModeForTaskType, deferredProjectionDate, effectiveInsp
 import { buildWebTaskCapabilityPayload } from '../lib/webTaskCapabilities'
 import { assignedStatusFromAssignees, isCheckinSiteExecutionTask } from '../lib/cleaningAssignmentStatus'
 import { buildCleaningTurnoverDisplay } from '../lib/cleaningTurnoverDisplay'
+import { shouldIgnoreNightsOverrideForAutoCheckinTask } from '../lib/cleaningTaskNightOverride'
+import { isTaskExecutorEligibleRoleNames } from '../services/taskExecutorEligibility'
+import { emitDeferredInspectionCheckinConflictAlerts, isDeferredInspectionCheckinConflictRelevantChange, reconcileDeferredInspectionCheckinReplacement } from '../services/deferredInspectionCheckinConflict'
 
 export const router = Router()
 
@@ -345,7 +348,8 @@ async function ensureWorkTasksTable() {
 }
 
 function offlineWorkStatus(value: any, assigneeId?: any) {
-  if (String(value || '').trim().toLowerCase() === 'done') return 'done'
+  const status = String(value || '').trim().toLowerCase()
+  if (status === 'done') return 'done'
   return String(assigneeId || '').trim() ? 'assigned' : 'todo'
 }
 
@@ -420,7 +424,7 @@ async function backfillOfflineWorkTasks() {
        t.assignee_id,
        CASE
          WHEN lower(COALESCE(t.status, 'todo')) = 'done' THEN 'done'
-         WHEN NULLIF(trim(COALESCE(t.assignee_id, '')), '') IS NOT NULL THEN 'assigned'
+         WHEN NULLIF(COALESCE(t.assignee_id, ''), '') IS NOT NULL THEN 'assigned'
          ELSE 'todo'
        END,
        COALESCE(t.photo_urls, '[]'::jsonb),
@@ -433,6 +437,7 @@ async function backfillOfflineWorkTasks() {
 
 router.get('/staff', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), async (req, res) => {
   const kind = String((req.query as any)?.kind || '').trim().toLowerCase()
+  const taskExecutorScope = String((req.query as any)?.scope || '').trim().toLowerCase() === 'task_executor'
   const rolesForKind = (k: string): string[] => {
     if (k === 'cleaner') return ['cleaner', 'cleaner_inspector']
     if (k === 'inspector') return ['cleaning_inspector', 'cleaner_inspector']
@@ -474,9 +479,16 @@ router.get('/staff', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
           String(u.role || '').trim(),
           ...((Array.isArray(u.roles) ? u.roles : []).map((x: any) => String(x || '').trim())),
         ].filter(Boolean)))
-        if (!roleNames.some((role) => roles.includes(role))) continue
         const name = String(u.username || u.email || u.id || '').trim() || String(u.id)
         const base = { id: String(u.id), name, capacity_per_day: 0, is_active: true, color_hex: String(u.color_hex || '#3B82F6') }
+        if (taskExecutorScope) {
+          if (!isTaskExecutorEligibleRoleNames(roleNames)) continue
+          const executorKinds = kindsForRoles(roleNames, '')
+          if (executorKinds.length) for (const resolvedKind of executorKinds) out.push({ ...base, kind: resolvedKind })
+          else out.push({ ...base, kind: 'executor' })
+          continue
+        }
+        if (!roleNames.some((role) => roles.includes(role))) continue
         for (const resolvedKind of kindsForRoles(roleNames, kind)) {
           out.push({ ...base, kind: resolvedKind })
         }
@@ -486,12 +498,20 @@ router.get('/staff', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'staff_failed' })
   }
-  const users = (db.users || []).filter((u: any) => roles.includes(String(u.role || '')))
   const out: any[] = []
-  for (const u of users) {
+  for (const u of (db.users || [])) {
+    const roleNames = Array.from(new Set([String(u.role || '').trim(), ...((Array.isArray((u as any).roles) ? (u as any).roles : []).map((x: any) => String(x || '').trim()))].filter(Boolean)))
     const role = String(u.role || '')
     const name = String(u.username || u.email || u.id || '').trim() || String(u.id)
     const base = { id: String(u.id), name, capacity_per_day: 0, is_active: true, color_hex: String((u as any).color_hex || '#3B82F6') }
+    if (taskExecutorScope) {
+      if (!isTaskExecutorEligibleRoleNames(roleNames)) continue
+      const executorKinds = kindsForRoles(roleNames, '')
+      if (executorKinds.length) for (const resolvedKind of executorKinds) out.push({ ...base, kind: resolvedKind })
+      else out.push({ ...base, kind: 'executor' })
+      continue
+    }
+    if (!roleNames.some((item) => roles.includes(item))) continue
     if (role === 'cleaner' && kind !== 'inspector') out.push({ ...base, kind: 'cleaner' })
     else if (role === 'cleaning_inspector' && kind !== 'cleaner') out.push({ ...base, kind: 'inspector' })
     else if (role === 'cleaner_inspector') {
@@ -513,7 +533,7 @@ export const offlineTaskSchema = z.object({
   // Kept as an optional legacy input for older clients; offline tasks no longer use it.
   urgency: z.unknown().optional(),
   property_id: z.string().nullable().optional(),
-  assignee_id: z.string().trim().min(1).nullable().optional(),
+  assignee_id: z.string().nullable().optional(),
   photo_urls: z.array(z.string().trim().min(1).max(1200)).max(20).optional(),
 }).strict()
 
@@ -530,7 +550,12 @@ router.get('/offline-tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule
       await backfillOfflineWorkTasks()
       if (!date) {
         const r = await pgPool.query(
-          `SELECT t.*, COALESCE(w.status, 'todo') AS status, w.assignee_id AS assignee_id
+          `SELECT t.*,
+                  CASE
+                    WHEN lower(COALESCE(w.status, 'todo')) = 'todo' AND NULLIF(COALESCE(w.assignee_id, ''), '') IS NOT NULL THEN 'assigned'
+                    ELSE COALESCE(w.status, 'todo')
+                  END AS status,
+                  w.assignee_id AS assignee_id
              FROM cleaning_offline_tasks t
              JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
             ORDER BY t.date DESC, t.updated_at DESC, t.id DESC`,
@@ -539,7 +564,12 @@ router.get('/offline-tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule
       }
       if (includeOverdue) {
         const r = await pgPool.query(
-          `SELECT t.*, COALESCE(w.status, 'todo') AS status, w.assignee_id AS assignee_id
+          `SELECT t.*,
+                  CASE
+                    WHEN lower(COALESCE(w.status, 'todo')) = 'todo' AND NULLIF(COALESCE(w.assignee_id, ''), '') IS NOT NULL THEN 'assigned'
+                    ELSE COALESCE(w.status, 'todo')
+                  END AS status,
+                  w.assignee_id AS assignee_id
              FROM cleaning_offline_tasks t
              JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
             WHERE (t.date::date = $1::date)
@@ -550,7 +580,12 @@ router.get('/offline-tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule
         return res.json((r?.rows || []).map(stripOfflineTaskUrgency))
       }
       const r = await pgPool.query(
-        `SELECT t.*, COALESCE(w.status, 'todo') AS status, w.assignee_id AS assignee_id
+        `SELECT t.*,
+                CASE
+                  WHEN lower(COALESCE(w.status, 'todo')) = 'todo' AND NULLIF(COALESCE(w.assignee_id, ''), '') IS NOT NULL THEN 'assigned'
+                  ELSE COALESCE(w.status, 'todo')
+                END AS status,
+                w.assignee_id AS assignee_id
            FROM cleaning_offline_tasks t
            JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
           WHERE t.date::date = $1::date
@@ -694,6 +729,7 @@ router.patch('/offline-tasks/:id', requireCleaningManualCreateAccess, async (req
     return res.status(400).json({ message: '无效的执行人' })
   }
   const contentFieldAllowlist = new Set(['date', 'task_type', 'title', 'content', 'kind', 'property_id', 'assignee_id', 'photo_urls'])
+  const assignmentRequested = hasAssigneePatch
   try {
     if (hasPg && pgPool) {
       await ensureOfflineTasksTable()
@@ -703,7 +739,7 @@ router.patch('/offline-tasks/:id', requireCleaningManualCreateAccess, async (req
         const before = beforeRes?.rows?.[0] || null
         if (!before) return { kind: 'missing' as const }
         const beforeWorkResult = await client.query(
-          `SELECT id, status, assignee_id
+          `SELECT status, assignee_id
              FROM work_tasks
             WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1
             LIMIT 1
@@ -719,10 +755,7 @@ router.patch('/offline-tasks/:id', requireCleaningManualCreateAccess, async (req
         let row = before
         if (keys.length) {
           const set = keys.map((k, i) => (k === 'photo_urls' ? `"${k}" = $${i + 1}::jsonb` : `"${k}" = $${i + 1}`)).join(', ')
-          const values = keys.map((k) => {
-            if (k === 'photo_urls') return JSON.stringify(normalizePhotoUrls((patch as any)[k]))
-            return (patch as any)[k]
-          })
+          const values = keys.map((k) => k === 'photo_urls' ? JSON.stringify(normalizePhotoUrls((patch as any)[k])) : (patch as any)[k])
           const sql = `UPDATE cleaning_offline_tasks SET ${set}, updated_at=now() WHERE id=$${keys.length + 1} RETURNING *`
           const updated = await client.query(sql, [...values, String(id)])
           row = updated?.rows?.[0] || null
@@ -741,30 +774,26 @@ router.patch('/offline-tasks/:id', requireCleaningManualCreateAccess, async (req
         if (!workTask) throw new Error('offline_work_task_missing')
         const canonicalAssigneeId = String(workTask.assignee_id || '').trim() || null
         const canonicalStatus = offlineWorkStatus(workTask.status, canonicalAssigneeId)
-        const beforeStatus = offlineWorkStatus(beforeWork?.status ?? before.status, beforeWork?.assignee_id ?? before.assignee_id)
-        const canonicalRow = {
-          ...row,
-          status: canonicalStatus,
-          assignee_id: canonicalAssigneeId,
-          photo_urls: normalizePhotoUrls(row.photo_urls),
-        }
         return {
           kind: 'updated' as const,
-          row: canonicalRow,
+          row: { ...row, status: canonicalStatus, assignee_id: canonicalAssigneeId, photo_urls: normalizePhotoUrls(row.photo_urls) },
           workTask,
           keys,
           canonicalAssigneeId,
-          completedChanged: beforeStatus !== 'done' && canonicalStatus === 'done',
+          beforeCanonicalAssigneeId: beforeWork?.assignee_id ? String(beforeWork.assignee_id) : null,
+          beforeStatus: offlineWorkStatus(beforeWork?.status ?? before.status, beforeWork?.assignee_id ?? before.assignee_id),
         }
       })
       if (!result || result.kind === 'missing') return res.status(404).json({ message: 'task not found' })
       const row = result.row
-      const workTaskId = String(result.workTask.id || offlineWorkTaskId(String(row.id || id)))
-      const canonicalAssigneeId = result.canonicalAssigneeId
-      const completedChanged = result.completedChanged
       const keys = result.keys
-      if (keys.length && !completedChanged) {
-        const changedFields = keys.map((k) => {
+      const canonicalAssigneeId = result.canonicalAssigneeId
+      const beforeCanonicalAssigneeId = result.beforeCanonicalAssigneeId
+      const beforeStatus = result.beforeStatus
+      const completedChanged = beforeStatus !== 'done' && row.status === 'done'
+      if ((keys.length || assignmentRequested) && !completedChanged) {
+        const workTaskId = offlineWorkTaskId(String(row.id || id))
+        const changedFields = [...keys, ...(assignmentRequested ? ['assignee_id'] : [])].map((k) => {
           if (k === 'date') return 'scheduled_date'
           if (k === 'content') return 'summary'
           return k
@@ -777,13 +806,14 @@ router.patch('/offline-tasks/:id', requireCleaningManualCreateAccess, async (req
           else if (field === 'assignee_id') patchForEvent.assignee_id = canonicalAssigneeId
           else patchForEvent[field] = (row as any)[field]
         }
+        const assignmentChanged = assignmentRequested && beforeCanonicalAssigneeId !== (canonicalAssigneeId ? String(canonicalAssigneeId) : null)
         try {
           await emitWorkTaskEvent({
             taskId: `work_task:${workTaskId}`,
             sourceType: 'work_tasks',
             sourceRefIds: [workTaskId],
-            eventType: 'TASK_UPDATED',
-            changeScope: 'list',
+            eventType: assignmentChanged ? 'TASK_ASSIGNMENT_CHANGED' : 'TASK_UPDATED',
+            changeScope: assignmentChanged ? 'membership' : 'list',
             changedFields,
             patch: patchForEvent,
             causedByUserId: String((req as any).user?.sub || '').trim() || null,
@@ -792,6 +822,7 @@ router.patch('/offline-tasks/:id', requireCleaningManualCreateAccess, async (req
         } catch {}
       }
       if (completedChanged) {
+        const workTaskId = offlineWorkTaskId(String(row.id || id))
         try {
           await emitWorkTaskEvent({
             taskId: `work_task:${workTaskId}`,
@@ -833,7 +864,7 @@ router.patch('/offline-tasks/:id', requireCleaningManualCreateAccess, async (req
       }
       return res.json({
         ...stripOfflineTaskUrgency(row),
-        work_task_id: workTaskId,
+        work_task_id: String(result.workTask.id || offlineWorkTaskId(String(row.id || id))),
         assignment_status: canonicalAssigneeId ? 'assigned' : 'unassigned',
         updated_at: result.workTask.updated_at || row.updated_at || null,
       })
@@ -844,6 +875,7 @@ router.patch('/offline-tasks/:id', requireCleaningManualCreateAccess, async (req
     for (const key of contentFieldAllowlist) {
       if ((patch as any)[key] !== undefined) (t as any)[key] = (patch as any)[key]
     }
+    if (assignmentRequested) (t as any).assignee_id = String((patch as any).assignee_id || '').trim() || null
     if ((patch as any).status !== undefined) t.status = (patch as any).status
     return res.json(stripOfflineTaskUrgency(t))
   } catch (e: any) {
@@ -1161,6 +1193,9 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
       if (patch.guest_special_request === undefined && patch.note !== undefined) patch.guest_special_request = patch.note
       delete patch.note
       if (patch.keys_required === null) patch.keys_required = 1
+      if (patch.nights_override !== undefined && patch.nights_override !== null && shouldIgnoreNightsOverrideForAutoCheckinTask(before)) {
+        delete patch.nights_override
+      }
       const isCheckinSiteExecution = isCheckinSiteExecutionTask({
         task_type: patch.task_type ?? before.task_type,
         inspection_scope: patch.inspection_scope ?? before.inspection_scope,
@@ -1175,6 +1210,10 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
         if (patch.assignee_id !== undefined && patch.cleaner_id === undefined) patch.cleaner_id = patch.assignee_id
       }
       if (patch.task_date != null) patch.date = patch.task_date
+      if (patch.inspection_mode !== undefined || patch.inspection_due_date !== undefined) {
+        patch.inspection_replaced_by_checkin_task_id = null
+        patch.inspection_replaced_original_due_date = null
+      }
       validateAndApplyInspectionPatch({ patch, current: before })
       {
         const beforeStatus = String(before.status || 'pending')
@@ -1228,8 +1267,14 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
           } catch {}
         }
       }
+      const actualChangedFields = actualCleaningTaskChangedFields(before, updated, keys)
+      if (actualChangedFields.length && isDeferredInspectionCheckinConflictRelevantChange(actualChangedFields)) {
+        await reconcileDeferredInspectionCheckinReplacement({
+          taskIds: [String(id)],
+          actorUserId: String((req as any)?.user?.sub || '').trim() || null,
+        })
+      }
       try {
-        const actualChangedFields = actualCleaningTaskChangedFields(before, updated, keys)
         if (actualChangedFields.length) {
           const workPatch = buildCleaningTaskWorkPatch(updated, actualChangedFields)
           await emitWorkTaskEvent({
@@ -1243,6 +1288,12 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
             causedByUserId: String((req as any)?.user?.sub || '').trim() || null,
             visibilityHints: buildCleaningTaskVisibilityHints(updated),
           })
+          if (isDeferredInspectionCheckinConflictRelevantChange(actualChangedFields)) {
+            enqueueNotification(() => emitDeferredInspectionCheckinConflictAlerts({
+              taskIds: [String(id)],
+              actorUserId: String((req as any)?.user?.sub || '').trim() || null,
+            }))
+          }
         }
       } catch {}
       try {
@@ -1304,6 +1355,9 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
     if (localPatch.inspection_mode !== undefined) task.inspection_mode = localPatch.inspection_mode
     if (localPatch.inspection_due_date !== undefined) task.inspection_due_date = localPatch.inspection_due_date
     if (localPatch.keys_required !== undefined) task.keys_required = localPatch.keys_required
+    if (localPatch.nights_override !== undefined && localPatch.nights_override !== null && shouldIgnoreNightsOverrideForAutoCheckinTask(task)) {
+      delete localPatch.nights_override
+    }
     if (localPatch.nights_override !== undefined) task.nights_override = localPatch.nights_override
     if (localPatch.old_code !== undefined) task.old_code = localPatch.old_code
     if (localPatch.new_code !== undefined) task.new_code = localPatch.new_code
@@ -1547,6 +1601,13 @@ router.post('/tasks', requireCleaningManualCreateAccess, async (req, res) => {
             visibilityHints: buildCleaningTaskVisibilityHints(created),
           }, client)
         }
+        if (createdRows.length) {
+          await reconcileDeferredInspectionCheckinReplacement({
+            taskIds: createdRows.map((row) => String(row.id || '')).filter(Boolean),
+            actorUserId: String((req as any)?.user?.sub || '').trim() || null,
+            pgClient: client,
+          })
+        }
         await client.query('COMMIT')
       } catch (e) {
         try { await client.query('ROLLBACK') } catch {}
@@ -1578,6 +1639,12 @@ router.post('/tasks', requireCleaningManualCreateAccess, async (req, res) => {
             ),
           )
         } catch {}
+      }
+      if (createdRows.length) {
+        enqueueNotification(() => emitDeferredInspectionCheckinConflictAlerts({
+          taskIds: createdRows.map((row) => String(row.id || '')).filter(Boolean),
+          actorUserId: String((req as any)?.user?.sub || '').trim() || null,
+        }))
       }
       if (createdRows.length === 1) return res.json(createdRows[0])
       return res.json({ ok: true, created: createdRows.length })
@@ -1623,6 +1690,10 @@ router.delete('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res
         patch: { status: 'cancelled', execution_state: 'cancelled' },
         causedByUserId: actorId || null,
         visibilityHints: buildCleaningTaskVisibilityHints(after || before),
+      })
+      await reconcileDeferredInspectionCheckinReplacement({
+        taskIds: [String(id)],
+        actorUserId: actorId || null,
       })
       try {
         const propertyId = String((after || before)?.property_id || '').trim()
@@ -1737,6 +1808,11 @@ router.post('/tasks/bulk-delete', requirePerm('cleaning.task.assign'), async (re
           }
           addAudit('cleaning_task', String(id), 'delete', before, after, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') })
         }
+        await reconcileDeferredInspectionCheckinReplacement({
+          taskIds: ids,
+          actorUserId: actorId || null,
+          pgClient: client,
+        })
         await client.query('COMMIT')
       } catch (e) {
         try { await client.query('ROLLBACK') } catch {}
@@ -1813,6 +1889,10 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), async (req
             patch.cleaner_id = isCheckinSiteExecution ? null : patch.assignee_id
           }
           if (patch.task_date != null) patch.date = patch.task_date
+          if (patch.inspection_mode !== undefined || patch.inspection_due_date !== undefined) {
+            patch.inspection_replaced_by_checkin_task_id = null
+            patch.inspection_replaced_original_due_date = null
+          }
           validateAndApplyInspectionPatch({ patch, current: before })
           {
             const beforeStatus = String(before.status || 'pending')
@@ -1916,6 +1996,17 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), async (req
         return task
       })()
       if (r) updated.push(r)
+    }
+    if (hasPg && pgPool && updated.length && isDeferredInspectionCheckinConflictRelevantChange(Object.keys(basePatch))) {
+      const updatedIds = updated.map((task) => String(task?.id || '').trim()).filter(Boolean)
+      await reconcileDeferredInspectionCheckinReplacement({
+        taskIds: updatedIds,
+        actorUserId: String((req as any)?.user?.sub || '').trim() || null,
+      })
+      enqueueNotification(() => emitDeferredInspectionCheckinConflictAlerts({
+        taskIds: updatedIds,
+        actorUserId: String((req as any)?.user?.sub || '').trim() || null,
+      }))
     }
     return res.json({ ok: true, updated: updated.length })
   } catch (e: any) {

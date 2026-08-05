@@ -10,7 +10,7 @@
 ## FR-001：任务操作权限与 available_actions
 
 - **维护责任范围：** backend / web / mobile
-- **最后审查日期：** 2026-07-27
+- **最后审查日期：** 2026-08-05
 - **状态：** active
 
 ### 业务保护规则
@@ -18,6 +18,8 @@
 - 服务端 `available_actions` 是任务操作的权威来源；客户端不得在空列表时用旧角色或状态逻辑自行补按钮。
 - `password_only` 只适用于 `upload_access_video`；不得把 `submit_inspection` 或通用完成动作错误地改成 password-only。
 - 不同角色、参与者和任务状态的可操作性及禁用原因必须一致；客服、admin、线下经理在非参与任务上使用同样的管理动作矩阵，明确参与授权才显示对应执行动作。
+- 管理视图的“全部”保持管理详情入口；切换到“我的”后，任务卡必须进入既有执行详情，不能因管理角色跳回管理页。
+- “标记已退房”只可由真实 `checkout_clean` 来源生成；`checkin_clean` 即使带有订单号或旧缓存 action 也不得显示或调用该动作。合并卡只能携带真实退房子任务的来源 ID。
 
 ### 跨层适用范围
 
@@ -36,7 +38,9 @@
 | 详情页按服务端 action 进入 | `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` | 任务详情 action 展示和入口 | partial | `npm run test --prefix mz-cleaning-app-frontend -- src/screens/tasks/TaskDetailScreen.test.tsx` |
 | 管理角色详情动作矩阵（后端） | `backend/scripts/tests/test_work_task_actions.ts` | admin、线下经理与客服在非参与任务上只显示管理动作；显式参与授权保留检查入口 | sufficient | `npm run test:work-task-actions --prefix backend` |
 | 管理角色详情动作矩阵（移动端旧 payload） | `mz-cleaning-app-frontend/src/lib/workTaskActions.test.ts` | admin、线下经理与客服在旧 payload 下保持管理动作一致 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/workTaskActions.test.ts` |
-| 管理角色清洁任务详情入口一致 | `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.test.tsx` | admin 即使收到 `available_actions` 也进入与客服相同的 `ManagerDailyTask` 管理详情 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tabs/TasksScreen.test.tsx` |
+| 全部管理入口与我的执行入口 | `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.test.tsx` | 管理角色在“全部”进入 `ManagerDailyTask`；切换“我的”后进入执行详情 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tabs/TasksScreen.test.tsx` |
+| 入住检查退房动作防护（后端） | `backend/scripts/tests/test_work_task_actions.ts` | 后端不为入住检查提供退房动作 | sufficient | `npm run test:work-task-actions --prefix backend` |
+| 入住检查退房动作防护（移动端旧缓存） | `mz-cleaning-app-frontend/src/lib/workTaskActions.test.ts` | 旧客户端缓存不为入住检查提供退房动作 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand src/lib/workTaskActions.test.ts` |
 | 通知入口的本地 action 防护 | `mz-cleaning-app-frontend/src/screens/tasks/InspectionCompleteScreen.test.tsx` | 入口 action 被服务端禁用时阻止提交 | partial | `npm run test --prefix mz-cleaning-app-frontend -- src/screens/tasks/InspectionCompleteScreen.test.tsx` |
 
 ### 验证策略
@@ -98,7 +102,7 @@
 | 自动/手动字段继承和历史数据兼容 | `backend/scripts/tests/test_cleaning_sync_v2.ts` | 手动 placeholder、旧任务、同步后字段保留 | not-wired | `npx ts-node-dev --transpile-only backend/scripts/tests/test_cleaning_sync_v2.ts` |
 | 入住新密码回填退房旧密码的历史字段兼容 | `backend/scripts/tests/test_cleaning_sync_v2.ts` | `task_type` 缺失、仅保留历史 `type` 时仍将同订单入住 `new_code` 回填到退房 `old_code` | partial | `npx ts-node-dev --transpile-only backend/scripts/tests/test_cleaning_sync_v2.ts` |
 | Web 合并卡展示 | `frontend/src/lib/cleaningDailyMerge.test.ts` | 每日清洁合并和来源展示；后一个入住订单的晚数优先并显示“待住 X晚” | partial | `npm run test --prefix frontend -- src/lib/cleaningDailyMerge.test.ts` |
-| Web 任务中心字段展示 | `frontend/src/app/task-center/taskCenterDisplay.test.ts` | 合并任务标题、状态和字段；退房入住卡显示“已住 X晚”和“待住 X晚” | partial | `npm run test --prefix frontend -- --coverage.enabled=false src/app/task-center/taskCenterDisplay.test.ts` |
+| Web 任务中心字段展示 | `frontend/src/app/task-center/taskCenterDisplay.test.ts` | 合并任务标题、状态和字段；退房入住卡显示“已住 X晚”和“待住 X晚”；延期检查与入住冲突显示危险色标签及原定检查/入住时间 | partial | `npm run test --prefix frontend -- --coverage.enabled=false src/app/task-center/taskCenterDisplay.test.ts` |
 | 移动端周转展示 | `mz-cleaning-app-frontend/src/lib/turnoverDisplay.test.ts` | 合并卡周转和检查显示 | partial | `npm run test --prefix mz-cleaning-app-frontend -- src/lib/turnoverDisplay.test.ts` |
 | 移动端检查任务退房状态展示与流程优先级 | `mz-cleaning-app-frontend/src/lib/taskVisualTheme.test.ts` | 未开始检查任务显示“已退房”；合并任务有清洁进行中时显示“进行中”，清洁完成且检查未完成时显示“待检查” | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand src/lib/taskVisualTheme.test.ts` |
 
@@ -111,9 +115,9 @@
 
 ### 最后验证
 
-- **CRL：** CRL-20260731-009
+- **CRL：** CRL-20260805-008
 - **Commit：** not committed
-- **日期：** 2026-07-31
+- **日期：** 2026-08-05
 
 ### 相关 CRL
 
@@ -128,6 +132,7 @@
 - CRL-20260725-017：修复退房标记覆盖清洁与检查进行状态
 - CRL-20260725-022：每日清洁周转卡显示后续订单待住晚数
 - CRL-20260731-009：线下任务执行人 canonical 一致性
+- CRL-20260805-008：恢复线下任务指派 PATCH 业务契约与质量门执行链
 
 ### 非保护范围
 
@@ -192,7 +197,7 @@
 ## FR-004：检查、自完成、补品和挂钥匙流程
 
 - **维护责任范围：** backend / mobile
-- **最后审查日期：** 2026-07-29
+- **最后审查日期：** 2026-08-05
 - **状态：** active
 
 ### 业务保护规则
@@ -287,9 +292,9 @@
 
 ### 最后验证
 
-- **CRL：** CRL-20260731-008
-- **Commit：** 92ee27d87d4f7cdb82bb126d8b24abd98d735351
-- **日期：** 2026-07-31
+- **CRL：** CRL-20260805-008
+- **Commit：** not committed
+- **日期：** 2026-08-05
 
 ### 相关 CRL
 
@@ -322,6 +327,7 @@
 - CRL-20260731-005：纯入住检查错误清洁照片前置修复
 - CRL-20260731-007：检查照片上传进度不重载草稿
 - CRL-20260731-008：清洁媒体完整性、多图展示与安全清理
+- CRL-20260805-008：恢复清洁媒体读取唯一归属、日终媒体授权和质量门执行链
 
 ### 非保护范围
 

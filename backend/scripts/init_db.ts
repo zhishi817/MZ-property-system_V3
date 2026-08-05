@@ -168,6 +168,9 @@ async function run() {
     `ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS nights_override int;`,
     `ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS old_code text;`,
     `ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS new_code text;`,
+    `ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_replaced_by_checkin_task_id text;`,
+    `ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_replaced_original_due_date date;`,
+    `CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_inspection_replacement_source ON cleaning_tasks(inspection_replaced_by_checkin_task_id) WHERE inspection_replaced_by_checkin_task_id IS NOT NULL;`,
     `DO $$ BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'uniq_cleaning_tasks_order_type') THEN
         CREATE UNIQUE INDEX uniq_cleaning_tasks_order_type ON cleaning_tasks(order_id, type) WHERE order_id IS NOT NULL;
@@ -698,7 +701,6 @@ async function run() {
   for (const sql of stmts) {
     await pgPool.query(sql)
   }
-
   console.log('Database initialized')
   await pgPool.end()
 }

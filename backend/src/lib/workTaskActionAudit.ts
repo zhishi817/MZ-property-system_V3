@@ -50,6 +50,7 @@ const INSPECTION_PHOTO_MEDIA_TYPES = [
   'inspection_bedroom',
   'inspection_kitchen',
   'inspection_bathroom',
+  'inspection_balcony',
   'inspection_shower_drain',
   'inspection_unclean',
 ]

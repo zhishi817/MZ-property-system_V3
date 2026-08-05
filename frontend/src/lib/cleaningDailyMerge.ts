@@ -1,6 +1,18 @@
 export type CleaningTurnoverMergeItem = {
   order_id?: string | null
   order_code?: string | null
+  task_type?: string | null
+  type?: string | null
+  source?: string | null
+  auto_sync_enabled?: boolean | null
+}
+
+export function isOrderLinkedAutoCheckinNightsAuthoritative(item: CleaningTurnoverMergeItem | null | undefined): boolean {
+  const taskType = String(item?.task_type ?? item?.type ?? '').trim().toLowerCase()
+  return !!String(item?.order_id || '').trim()
+    && taskType === 'checkin_clean'
+    && String(item?.source || '').trim().toLowerCase() === 'auto'
+    && item?.auto_sync_enabled !== false
 }
 
 function pickTurnoverSide<T extends CleaningTurnoverMergeItem>(items: T[]): T | null {

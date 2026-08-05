@@ -25,6 +25,11 @@ export const router = Router()
 const upload = multer({ storage: multer.memoryStorage() })
 let ensureMaintenanceProgressSubmitSchemaPromise: Promise<void> | null = null
 
+function rejectLegacyMaintenanceWrite(res: any, code: string) {
+  res.status(410).json({ code })
+  return true
+}
+
 const PROPERTY_REGION_ORDER = ['Melbourne', 'Southbank', 'South Melbourne', 'West Melbourne', 'St Kilda', 'Docklands']
 function propertyRegionRank(region?: string | null) {
   const value = String(region || '').trim()
@@ -795,6 +800,7 @@ router.post('/repair/report', async (req, res) => {
   const token = h.startsWith('Bearer ') ? h.slice(7) : ''
   const v = verifyPublicToken(token)
   if (!v.ok) return res.status(401).json({ message: 'unauthorized' })
+  if (rejectLegacyMaintenanceWrite(res, 'maintenance_feedback_workflow_required')) return
   const body = req.body || {}
   const property_id = String(body.property_id || '').trim()
   const area = String(body.area || body.category || '').trim()
@@ -1035,6 +1041,7 @@ router.post('/maintenance-progress/submit', async (req, res) => {
   const token = h.startsWith('Bearer ') ? h.slice(7) : ''
   const v = verifyMaintenanceProgressJwt(token)
   if (!v.ok) return res.status(401).json({ message: 'unauthorized' })
+  if (rejectLegacyMaintenanceWrite(res, 'maintenance_mzstay_workflow_required')) return
   const body = req.body || {}
   const property_id = String(body.property_id || '').trim()
   const occurred_at = String(body.occurred_at || '').trim() || new Date().toISOString().slice(0, 10)
@@ -1556,6 +1563,7 @@ router.patch('/maintenance-share/:token', async (req, res) => {
   const bearer = h.startsWith('Bearer ') ? h.slice(7) : ''
   const v = verifyMaintenanceShareJwt(bearer)
   if (!v.ok) return res.status(401).json({ message: 'unauthorized' })
+  if (rejectLegacyMaintenanceWrite(res, 'maintenance_mzstay_workflow_required')) return
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
     const access = await getOrInitMaintenanceShareAccess()
