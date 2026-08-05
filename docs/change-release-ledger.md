@@ -40,15 +40,15 @@
 - Branch: `codex/release-selected-root-20260805`
 - Base: `origin/codex/release-selected-root-20260805@28c5c1cf38822b95f6283abeeecf65e01032f297`; fetched and read back on 2026-08-05 Australia/Melbourne.
 - Candidate patch SHA-256: `cdcb554371be5f07efa445a2e9fff5f2d5d571943ad0cc6c75c63c51c66d7014` (staged implementation diff excluding `docs/change-release-ledger.md`).
-- Commit SHA: pending.
+- Commit SHA: `5fa10fde78ba9e98a949ce504b4a709ecb37268e`; candidate content commit for this exact implementation range.
 - Dependencies: none.
 - Required validation: PASS — Python audit regressions 13/13, cache-ignore/source-reject assertions, local ledger audit and whitespace check.
 - Shared-hunk review: PASS — `.gitignore`, the audit regression test and ledger entry are exclusive to this CI repair.
 - Generated-file review: not applicable — cache files are excluded; no generated file is selected.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user explicitly specified the repository-level Python cache boundary repair on 2026-08-05 Australia/Melbourne.
 - Independent review: GO for commit — independent read-only review verified the standard Git ignore boundary, cache/source regression pair, staged fingerprint and no P0/P1/P2 finding.
-- Action conclusion: `GO` for commit only; no push, PR merge, deployment or production action is authorized.
+- Action conclusion: `GO` for commit completed; no push, PR merge, deployment or production action is authorized.
 
 ### Risks / Release Notes
 
