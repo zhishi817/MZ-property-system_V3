@@ -1,5 +1,64 @@
 # Change Release Ledger
 
+## CRL-20260805-007 — Root Quality Check mobile 源码检出修复
+
+- **Status:** ready
+- **Updated:** 2026-08-05 Australia/Melbourne
+- **Request:** 修复 root PR 的 `Root Quality Check` 在执行 Phase 5 跨仓库契约测试时缺少 mobile 源码、报 `ENOENT` 后长期显示运行中的问题。
+- **Outcome:** Root Quality Check 在后端测试前检出 mobile `Dev` 源码；若以后删掉该前置条件，独立工作流契约测试会立即失败，而不会再进入缺文件的 Phase 5 测试。
+
+### Implementation
+
+- **Previous behavior:** 该 job 只检出 root，`backend/scripts/tests/test_phase5_release_contract.ts` 读取 `mz-cleaning-app-frontend/src/...` 时找不到文件；`ts-node-dev` 在错误后仍处于监听状态，使 GitHub Check 等待到 job 超时。
+- **New behavior:** 该 job 使用现有 mobile `Dev` checkout 约定，在 `Run backend checks` 前提供 `mz-cleaning-app-frontend` 目录；`test:root-quality-workflow-contract` 静态断言此检出、仓库、分支、路径和执行顺序。
+- **Key decisions:** 不改业务代码、Phase 5 业务契约、测试超时或 CI 门槛；不安装 mobile 依赖，因为该 root 契约测试只读取其源文件。
+
+### Files / Areas
+
+- `.github/workflows/quality.yml` — Root Quality Check 增加 mobile `Dev` checkout。
+- `package.json` — 将工作流前置条件测试接入 `check:backend` 的最前面。
+- `scripts/tests/test_root_quality_workflow_contract.py` — 新增防回归静态工作流契约测试。
+- `docs/change-release-ledger.md` — 记录本 CI 基础设施修复。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Dependency: mobile `origin/Dev@606e2c8911f7e25e28a88759898cc34626d669ab` 是被检出的既有集成分支；本变更不修改 mobile 仓库。
+- Feature regression registry: unchanged — 没有业务工作流、权限、状态迁移或客户端行为变化。
+
+### Validation
+
+- `npm run test:root-quality-workflow-contract` — passed: 1 assertion suite verifies the root `check` job checks out mobile `Dev` at `mz-cleaning-app-frontend` before backend checks.
+- `npm run check:backend` — passed with temporary read-only links to the existing mobile source and backend dependency trees, both removed after the command: backend TypeScript build and all listed contract tests passed, including `test:phase5-release-contract`.
+- `npm run check:feature-registry` — passed: 9 FRs / 101 mappings; no business-regression entry is affected by this CI-only repair.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 4 changed paths / 4 recorded paths.
+- `git diff --check` — passed.
+
+### Release Attempts
+
+#### RA-20260805-root-quality-mobile-checkout-01
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260805-007`
+- Intended action: `commit`
+- Branch: `codex/release-selected-root-20260805`
+- Base: `origin/Dev@145ac720532abeaaa93203e7751d741d90bc17fb`; fetched on 2026-08-05 Australia/Melbourne. Existing PR branch remote head independently refreshed as `origin/codex/release-selected-root-20260805@104a4ca94496bebb955204b210aca750e7d6a3ad`.
+- Candidate patch SHA-256: `d612fd8f43ac7e0ca4bf38a5a3bcdd6dc62d252b4eea72c145a32c9761c62a92` (staged implementation diff excluding `docs/change-release-ledger.md`).
+- Commit SHA: not committed.
+- Dependencies: mobile `origin/Dev@606e2c8911f7e25e28a88759898cc34626d669ab` is read by the root Phase 5 contract; no mobile changes are included.
+- Required validation: PASS — focused workflow contract, full root `check:backend` with Phase 5 source reads, feature registry audit, ledger audit and whitespace check all passed.
+- Shared-hunk review: PASS — the workflow job, root package command, new contract test and new ledger entry are exclusive to this root CI repair.
+- Generated-file review: not applicable — no generated files are selected; validation-only temporary links were removed.
+- Technical state: `verified`.
+- User authorization: `selected-for-commit`; evidence: user said “修复” after receiving the exact missing-mobile-checkout fix scope on 2026-08-05 Australia/Melbourne.
+- Independent review: GO for commit — independent read-only review rechecked the root/mobile boundary, workflow order, staged fingerprint, ledger coverage and sensitive-information risk; no P0/P1/P2 finding.
+- Action conclusion: `GO` for commit — candidate is verified, exactly selected and independently reviewed. Push, PR update, merge, deployment and production behavior remain unauthorized / NOT VERIFIED.
+
+### Risks / Release Notes
+
+- Root Quality Check 仍需 GitHub 能读取 mobile 仓库；该仓库访问权限或 `Dev` 分支不可用时会明确 checkout 失败，不再以缺文件的后台测试表现。
+- Sensitive-information review: no secrets, `.env` values, tokens, credentials, database URLs, sensitive logs or local caches are selected.
+
 ## CRL-20260805-006 — Python 运行缓存台账边界修复
 
 - **Status:** candidate
