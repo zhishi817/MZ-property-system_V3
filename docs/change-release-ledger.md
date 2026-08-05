@@ -61,13 +61,31 @@
 - Independent review: GO for commit — `/root/review_root_crl008_commit_2` reported no P0/P1/P2, matched staged fingerprint `bf23fb489e805ca9f2a335f211329dd0dd0bc0f5bc0e6f8d2ba8cd7becc58db3`, confirmed staged scope, no generated/cache/mobile repo/secret/production-write risk.
 - Action conclusion: `GO`; commit succeeded at `a99af16875b93e27bad7d16a55366a0a2909fee5`. Push remains not authorized until a future exact commit SHA / branch approval and exact range audit.
 
+#### RA-20260805-root-pr286-push-02
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260629-005`, `CRL-20260629-006`, `CRL-20260731-004`, `CRL-20260803-005`, `CRL-20260804-010`, `CRL-20260805-001`, `CRL-20260805-002`, `CRL-20260805-004`, `CRL-20260805-005`, `CRL-20260805-006`, `CRL-20260805-007`, `CRL-20260805-008`.
+- Intended action: `push`
+- Branch: `codex/release-selected-root-20260805`
+- Base: `origin/Dev@145ac720532abeaaa93203e7751d741d90bc17fb`; fetched at `2026-08-05 22:40:12 AEST`. Remote branch before push: `origin/codex/release-selected-root-20260805@104a4ca94496bebb955204b210aca750e7d6a3ad`.
+- Candidate patch SHA-256: `fdb0c59845c1a083c592855bf1760ab4d045006595a60ddc33639439a785a765` (complete `origin/Dev...209d9b249f151d5efd6ef933094732873321ba94` implementation diff excluding `docs/change-release-ledger.md`).
+- Commit SHA: `a99af16875b93e27bad7d16a55366a0a2909fee5`; latest content commit in the complete PR candidate. Audit head is emitted by the release report command.
+- Dependencies: mobile `origin/Dev@606e2c8911f7e25e28a88759898cc34626d669ab` is read by Phase 5; root and mobile remain separate repositories.
+- Required validation: PASS — targeted assignment/media contracts, `npm run check:backend`, `npm run check:fast`, `npm run check:full`, feature-registry audit, ledger audit and `git diff --check` passed after resolving the prior P1.
+- Shared-hunk review: PASS — the full PR range is intentionally selected; shared workflow, package and ledger paths have recorded release-unit ownership.
+- Generated-file review: PASS — no generated files in the exact range; validation-only dependency directories and build outputs were cleaned.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after implementation commit `a99af16875b93e27bad7d16a55366a0a2909fee5` and branch head `209d9b249f151d5efd6ef933094732873321ba94` were reported, user replied “授权” to pushing root branch `codex/release-selected-root-20260805` to GitHub.
+- Independent review: GO for push — `/root/review_root_pr286_push_2` rechecked the staged exact attempt, matched full-range fingerprint `fdb0c59845c1a083c592855bf1760ab4d045006595a60ddc33639439a785a765`, confirmed the prior P1 was resolved, and found no P0/P1/P2 code issue, no generated/cache/mobile repo/secret/production-write risk.
+- Action conclusion: `GO`; blockers: none for branch push after exact range release-report passes.
+
 This repair changes the candidate SHA and invalidates the earlier push authorization for `7af7830`.
 
 ### Risks / Release Notes
 
 - Validation uses local/static contract tests and build only; no production database writes, no deployment, no branch push and no external sync.
 - Actual R2 object retrieval against live storage is not performed; this CRL verifies request authorization, format handling and fail-closed proxy selection before R2 read.
-- The implementation is not yet committed. A future push requires a new exact commit SHA authorization.
+- The implementation is committed locally but not pushed. A future push requires this exact full-range attempt to pass release-report.
 - Sensitive-information review: no secrets, `.env` values, tokens, credentials, database URLs, sensitive logs or local caches are selected.
 
 ## CRL-20260805-007 — Root Quality Check mobile 源码检出修复
