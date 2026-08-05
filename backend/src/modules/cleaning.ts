@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { requireAnyPerm, requirePerm, userHasAnyPerm } from '../auth'
 import { addAudit, db } from '../store'
-import { hasPg, pgPool, pgRunInTransaction } from '../dbAdapter'
+import { hasPg, pgPool } from '../dbAdapter'
 import { activeCleaningTaskWhereSql, backfillCleaningTasks, ensureCleaningSchemaV2, isCancelledCleaningTaskStatus, syncCheckoutOldCodeFromCheckinNewCode, syncOrderToCleaningTasks, validCleaningTaskOrderWhereSql } from '../services/cleaningSync'
 import { v4 as uuid } from 'uuid'
 import { emitNotificationEvent } from '../services/notificationEvents'
@@ -11,6 +11,7 @@ import { defaultInspectionModeForTaskType, deferredProjectionDate, effectiveInsp
 import { buildWebTaskCapabilityPayload } from '../lib/webTaskCapabilities'
 import { assignedStatusFromAssignees, isCheckinSiteExecutionTask } from '../lib/cleaningAssignmentStatus'
 import { buildCleaningTurnoverDisplay } from '../lib/cleaningTurnoverDisplay'
+import { emitDeferredInspectionCheckinConflictAlerts, isDeferredInspectionCheckinConflictRelevantChange, reconcileDeferredInspectionCheckinReplacement } from '../services/deferredInspectionCheckinConflict'
 
 export const router = Router()
 
@@ -345,7 +346,8 @@ async function ensureWorkTasksTable() {
 }
 
 function offlineWorkStatus(value: any, assigneeId?: any) {
-  if (String(value || '').trim().toLowerCase() === 'done') return 'done'
+  const status = String(value || '').trim().toLowerCase()
+  if (status === 'done') return 'done'
   return String(assigneeId || '').trim() ? 'assigned' : 'todo'
 }
 
@@ -361,24 +363,18 @@ function stripOfflineTaskUrgency(row: any) {
   return out
 }
 
-export async function upsertWorkTaskFromOfflineTask(
-  row: any,
-  requestedStatus?: any,
-  options: { client?: any; syncAssignmentStatus?: boolean } = {},
-) {
+export async function upsertWorkTaskFromOfflineTask(row: any, requestedStatus?: any) {
   if (!hasPg || !pgPool) return
   const id = String(row?.id || '').trim()
   if (!id) return
-  if (!options.client) await ensureWorkTasksTable()
-  const executor = options.client || pgPool
+  await ensureWorkTasksTable()
   const workId = `cleaning_offline_tasks:${id}`
   const scheduled = row?.date ? String(row.date).slice(0, 10) : null
   const assignee = String(row?.assignee_id || '').trim() || null
-  const status = offlineWorkStatus(requestedStatus === undefined ? row?.status : requestedStatus, assignee)
+  const status = offlineWorkStatus(requestedStatus === undefined ? row?.status : requestedStatus, row?.assignee_id)
   const updateStatus = requestedStatus !== undefined
-  const syncAssignmentStatus = !!options.syncAssignmentStatus
   const photoUrls = normalizePhotoUrls(row?.photo_urls)
-  await executor.query(
+  await pgPool.query(
     `INSERT INTO work_tasks(id, task_kind, source_type, source_id, property_id, title, summary, scheduled_date, assignee_id, status, photo_urls, created_at, updated_at)
      VALUES($1,'offline','cleaning_offline_tasks',$2,$3,$4,$5,$6::date,$7,$8,$9::jsonb,COALESCE($10::timestamptz, now()), now())
      ON CONFLICT (source_type, source_id) DO UPDATE SET
@@ -386,16 +382,12 @@ export async function upsertWorkTaskFromOfflineTask(
        title=EXCLUDED.title,
        summary=EXCLUDED.summary,
        scheduled_date=EXCLUDED.scheduled_date,
-       assignee_id=CASE WHEN $12::boolean THEN EXCLUDED.assignee_id ELSE work_tasks.assignee_id END,
-       status=CASE
-         WHEN $11::boolean THEN EXCLUDED.status
-         WHEN $12::boolean AND lower(COALESCE(work_tasks.status, 'todo')) IN ('todo', 'assigned') THEN EXCLUDED.status
-         ELSE work_tasks.status
-       END,
+       assignee_id=work_tasks.assignee_id,
+       status=CASE WHEN $11::boolean THEN EXCLUDED.status ELSE work_tasks.status END,
        photo_urls=EXCLUDED.photo_urls,
        updated_at=now()
      RETURNING *`,
-    [workId, id, row?.property_id || null, String(row?.title || ''), String(row?.content || '') || null, scheduled, assignee, status, JSON.stringify(photoUrls), row?.created_at || null, updateStatus, syncAssignmentStatus]
+    [workId, id, row?.property_id || null, String(row?.title || ''), String(row?.content || '') || null, scheduled, assignee, status, JSON.stringify(photoUrls), row?.created_at || null, updateStatus]
   )
 }
 
@@ -420,7 +412,7 @@ async function backfillOfflineWorkTasks() {
        t.assignee_id,
        CASE
          WHEN lower(COALESCE(t.status, 'todo')) = 'done' THEN 'done'
-         WHEN NULLIF(trim(COALESCE(t.assignee_id, '')), '') IS NOT NULL THEN 'assigned'
+         WHEN NULLIF(COALESCE(t.assignee_id, ''), '') IS NOT NULL THEN 'assigned'
          ELSE 'todo'
        END,
        COALESCE(t.photo_urls, '[]'::jsonb),
@@ -513,7 +505,7 @@ export const offlineTaskSchema = z.object({
   // Kept as an optional legacy input for older clients; offline tasks no longer use it.
   urgency: z.unknown().optional(),
   property_id: z.string().nullable().optional(),
-  assignee_id: z.string().trim().min(1).nullable().optional(),
+  assignee_id: z.string().nullable().optional(),
   photo_urls: z.array(z.string().trim().min(1).max(1200)).max(20).optional(),
 }).strict()
 
@@ -530,7 +522,12 @@ router.get('/offline-tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule
       await backfillOfflineWorkTasks()
       if (!date) {
         const r = await pgPool.query(
-          `SELECT t.*, COALESCE(w.status, 'todo') AS status, w.assignee_id AS assignee_id
+          `SELECT t.*,
+                  CASE
+                    WHEN lower(COALESCE(w.status, 'todo')) = 'todo' AND NULLIF(COALESCE(w.assignee_id, ''), '') IS NOT NULL THEN 'assigned'
+                    ELSE COALESCE(w.status, 'todo')
+                  END AS status,
+                  w.assignee_id AS assignee_id
              FROM cleaning_offline_tasks t
              JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
             ORDER BY t.date DESC, t.updated_at DESC, t.id DESC`,
@@ -539,7 +536,12 @@ router.get('/offline-tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule
       }
       if (includeOverdue) {
         const r = await pgPool.query(
-          `SELECT t.*, COALESCE(w.status, 'todo') AS status, w.assignee_id AS assignee_id
+          `SELECT t.*,
+                  CASE
+                    WHEN lower(COALESCE(w.status, 'todo')) = 'todo' AND NULLIF(COALESCE(w.assignee_id, ''), '') IS NOT NULL THEN 'assigned'
+                    ELSE COALESCE(w.status, 'todo')
+                  END AS status,
+                  w.assignee_id AS assignee_id
              FROM cleaning_offline_tasks t
              JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
             WHERE (t.date::date = $1::date)
@@ -550,7 +552,12 @@ router.get('/offline-tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule
         return res.json((r?.rows || []).map(stripOfflineTaskUrgency))
       }
       const r = await pgPool.query(
-        `SELECT t.*, COALESCE(w.status, 'todo') AS status, w.assignee_id AS assignee_id
+        `SELECT t.*,
+                CASE
+                  WHEN lower(COALESCE(w.status, 'todo')) = 'todo' AND NULLIF(COALESCE(w.assignee_id, ''), '') IS NOT NULL THEN 'assigned'
+                  ELSE COALESCE(w.status, 'todo')
+                END AS status,
+                w.assignee_id AS assignee_id
            FROM cleaning_offline_tasks t
            JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
           WHERE t.date::date = $1::date
@@ -602,7 +609,7 @@ router.post('/offline-tasks', requireCleaningManualCreateAccess, async (req, res
         [row.id, row.date, row.task_type, row.title, row.content, row.kind, row.status, row.urgency, row.property_id, row.assignee_id, JSON.stringify(row.photo_urls)]
       )
       const out = r?.rows?.[0] || row
-      await upsertWorkTaskFromOfflineTask(out, payload.status, { syncAssignmentStatus: true })
+      await upsertWorkTaskFromOfflineTask(out, payload.status)
       out.status = offlineWorkStatus(payload.status, out.assignee_id)
       out.photo_urls = normalizePhotoUrls(out.photo_urls)
       delete out.urgency
@@ -686,85 +693,77 @@ router.patch('/offline-tasks/:id', requireCleaningManualCreateAccess, async (req
   const parsed = offlineTaskSchema.partial().safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const patch = parsed.data
-  const hasAssigneePatch = Object.prototype.hasOwnProperty.call(req.body || {}, 'assignee_id')
-  if (hasAssigneePatch && patch.assignee_id === null) {
-    return res.status(400).json({ code: 'OFFLINE_TASK_ASSIGNEE_REQUIRED', message: '暂不支持清空执行人' })
-  }
-  if (hasAssigneePatch && !(await isValidAnyStaffId(patch.assignee_id))) {
-    return res.status(400).json({ message: '无效的执行人' })
-  }
-  const contentFieldAllowlist = new Set(['date', 'task_type', 'title', 'content', 'kind', 'property_id', 'assignee_id', 'photo_urls'])
+  const contentFieldAllowlist = new Set(['date', 'task_type', 'title', 'content', 'kind', 'property_id', 'photo_urls'])
+  const assignmentRequested = Object.prototype.hasOwnProperty.call(patch, 'assignee_id')
   try {
     if (hasPg && pgPool) {
       await ensureOfflineTasksTable()
-      await ensureWorkTasksTable()
-      const result = await pgRunInTransaction(async (client) => {
-        const beforeRes = await client.query('SELECT * FROM cleaning_offline_tasks WHERE id=$1 LIMIT 1 FOR UPDATE', [String(id)])
-        const before = beforeRes?.rows?.[0] || null
-        if (!before) return { kind: 'missing' as const }
-        const beforeWorkResult = await client.query(
-          `SELECT id, status, assignee_id
-             FROM work_tasks
-            WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1
-            LIMIT 1
-            FOR UPDATE`,
-          [String(id)],
+      const beforeRes = await pgPool.query('SELECT * FROM cleaning_offline_tasks WHERE id=$1 LIMIT 1', [String(id)])
+      const before = beforeRes?.rows?.[0] || null
+      if (!before) return res.status(404).json({ message: 'task not found' })
+      const keys = Object.keys(patch || {}).filter((k) => (
+        k !== 'status'
+        && contentFieldAllowlist.has(k)
+        && (patch as any)[k] !== undefined
+      ))
+      if (!keys.length) {
+        if ((patch as any).status === undefined) {
+          const statusResult = await pgPool.query(
+            `SELECT status, assignee_id FROM work_tasks WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1 LIMIT 1`,
+            [String(id)],
+          )
+          return res.json(stripOfflineTaskUrgency({ ...before, status: offlineWorkStatus(statusResult?.rows?.[0]?.status, statusResult?.rows?.[0]?.assignee_id) }))
+        }
+      }
+      const beforeStatusResult = await pgPool.query(
+        `SELECT status, assignee_id FROM work_tasks WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1 LIMIT 1`,
+        [String(id)],
+      )
+      const beforeStatus = offlineWorkStatus(
+        beforeStatusResult?.rows?.[0]?.status ?? before.status,
+        beforeStatusResult?.rows?.[0]?.assignee_id ?? before.assignee_id,
+      )
+      const beforeCanonicalAssigneeId = beforeStatusResult?.rows?.[0]?.assignee_id ? String(beforeStatusResult.rows[0].assignee_id) : null
+      let row = before
+      if (keys.length) {
+        const set = keys.map((k, i) => (k === 'photo_urls' ? `"${k}" = $${i + 1}::jsonb` : `"${k}" = $${i + 1}`)).join(', ')
+        const values = keys.map((k) => {
+          if (k === 'photo_urls') return JSON.stringify(normalizePhotoUrls((patch as any)[k]))
+          return (patch as any)[k] === undefined ? null : (patch as any)[k]
+        })
+        const sql = `UPDATE cleaning_offline_tasks SET ${set}, updated_at=now() WHERE id=$${keys.length + 1} RETURNING *`
+        const r1 = await pgPool.query(sql, [...values, String(id)])
+        row = r1?.rows?.[0] || null
+      }
+      if (!row) return res.status(404).json({ message: 'task not found' })
+      await upsertWorkTaskFromOfflineTask(row, (patch as any).status)
+      if (assignmentRequested) {
+        const nextAssigneeId = String((patch as any).assignee_id || '').trim() || null
+        await pgPool.query(
+          `UPDATE work_tasks
+              SET assignee_id = $1,
+                  status = CASE
+                    WHEN lower(COALESCE(status, 'todo')) = 'done' THEN 'done'
+                    WHEN $1::text IS NULL THEN 'todo'
+                    ELSE 'assigned'
+                  END,
+                  updated_at = now()
+            WHERE source_type = 'cleaning_offline_tasks' AND source_id = $2`,
+          [nextAssigneeId, String(id)],
         )
-        const beforeWork = beforeWorkResult?.rows?.[0] || null
-        const keys = Object.keys(patch || {}).filter((k) => (
-          k !== 'status'
-          && contentFieldAllowlist.has(k)
-          && (patch as any)[k] !== undefined
-        ))
-        let row = before
-        if (keys.length) {
-          const set = keys.map((k, i) => (k === 'photo_urls' ? `"${k}" = $${i + 1}::jsonb` : `"${k}" = $${i + 1}`)).join(', ')
-          const values = keys.map((k) => {
-            if (k === 'photo_urls') return JSON.stringify(normalizePhotoUrls((patch as any)[k]))
-            return (patch as any)[k]
-          })
-          const sql = `UPDATE cleaning_offline_tasks SET ${set}, updated_at=now() WHERE id=$${keys.length + 1} RETURNING *`
-          const updated = await client.query(sql, [...values, String(id)])
-          row = updated?.rows?.[0] || null
-        }
-        if (!row) return { kind: 'missing' as const }
-        await upsertWorkTaskFromOfflineTask(row, (patch as any).status, { client, syncAssignmentStatus: hasAssigneePatch })
-        const statusResult = await client.query(
-          `SELECT id, status, assignee_id, updated_at
-             FROM work_tasks
-            WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1
-            LIMIT 1
-            FOR UPDATE`,
-          [String(id)],
-        )
-        const workTask = statusResult?.rows?.[0] || null
-        if (!workTask) throw new Error('offline_work_task_missing')
-        const canonicalAssigneeId = String(workTask.assignee_id || '').trim() || null
-        const canonicalStatus = offlineWorkStatus(workTask.status, canonicalAssigneeId)
-        const beforeStatus = offlineWorkStatus(beforeWork?.status ?? before.status, beforeWork?.assignee_id ?? before.assignee_id)
-        const canonicalRow = {
-          ...row,
-          status: canonicalStatus,
-          assignee_id: canonicalAssigneeId,
-          photo_urls: normalizePhotoUrls(row.photo_urls),
-        }
-        return {
-          kind: 'updated' as const,
-          row: canonicalRow,
-          workTask,
-          keys,
-          canonicalAssigneeId,
-          completedChanged: beforeStatus !== 'done' && canonicalStatus === 'done',
-        }
-      })
-      if (!result || result.kind === 'missing') return res.status(404).json({ message: 'task not found' })
-      const row = result.row
-      const workTaskId = String(result.workTask.id || offlineWorkTaskId(String(row.id || id)))
-      const canonicalAssigneeId = result.canonicalAssigneeId
-      const completedChanged = result.completedChanged
-      const keys = result.keys
-      if (keys.length && !completedChanged) {
-        const changedFields = keys.map((k) => {
+      }
+      const statusResult = await pgPool.query(
+        `SELECT status, assignee_id FROM work_tasks WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1 LIMIT 1`,
+        [String(id)],
+      )
+      row.status = offlineWorkStatus(statusResult?.rows?.[0]?.status, statusResult?.rows?.[0]?.assignee_id)
+      row.assignee_id = statusResult?.rows?.[0]?.assignee_id ? String(statusResult.rows[0].assignee_id) : null
+      row.photo_urls = normalizePhotoUrls(row.photo_urls)
+      const canonicalAssigneeId = statusResult?.rows?.[0]?.assignee_id || null
+      const completedChanged = beforeStatus !== 'done' && row.status === 'done'
+      if ((keys.length || assignmentRequested) && !completedChanged) {
+        const workTaskId = offlineWorkTaskId(String(row.id || id))
+        const changedFields = [...keys, ...(assignmentRequested ? ['assignee_id'] : [])].map((k) => {
           if (k === 'date') return 'scheduled_date'
           if (k === 'content') return 'summary'
           return k
@@ -777,13 +776,14 @@ router.patch('/offline-tasks/:id', requireCleaningManualCreateAccess, async (req
           else if (field === 'assignee_id') patchForEvent.assignee_id = canonicalAssigneeId
           else patchForEvent[field] = (row as any)[field]
         }
+        const assignmentChanged = assignmentRequested && beforeCanonicalAssigneeId !== (canonicalAssigneeId ? String(canonicalAssigneeId) : null)
         try {
           await emitWorkTaskEvent({
             taskId: `work_task:${workTaskId}`,
             sourceType: 'work_tasks',
             sourceRefIds: [workTaskId],
-            eventType: 'TASK_UPDATED',
-            changeScope: 'list',
+            eventType: assignmentChanged ? 'TASK_ASSIGNMENT_CHANGED' : 'TASK_UPDATED',
+            changeScope: assignmentChanged ? 'membership' : 'list',
             changedFields,
             patch: patchForEvent,
             causedByUserId: String((req as any).user?.sub || '').trim() || null,
@@ -792,6 +792,7 @@ router.patch('/offline-tasks/:id', requireCleaningManualCreateAccess, async (req
         } catch {}
       }
       if (completedChanged) {
+        const workTaskId = offlineWorkTaskId(String(row.id || id))
         try {
           await emitWorkTaskEvent({
             taskId: `work_task:${workTaskId}`,
@@ -831,12 +832,7 @@ router.patch('/offline-tasks/:id', requireCleaningManualCreateAccess, async (req
           ),
         )
       }
-      return res.json({
-        ...stripOfflineTaskUrgency(row),
-        work_task_id: workTaskId,
-        assignment_status: canonicalAssigneeId ? 'assigned' : 'unassigned',
-        updated_at: result.workTask.updated_at || row.updated_at || null,
-      })
+      return res.json(stripOfflineTaskUrgency(row))
     }
     const rows = ((db as any).cleaningOfflineTasks || []) as any[]
     const t = rows.find((x: any) => String(x.id) === String(id))
@@ -844,6 +840,7 @@ router.patch('/offline-tasks/:id', requireCleaningManualCreateAccess, async (req
     for (const key of contentFieldAllowlist) {
       if ((patch as any)[key] !== undefined) (t as any)[key] = (patch as any)[key]
     }
+    if (assignmentRequested) (t as any).assignee_id = String((patch as any).assignee_id || '').trim() || null
     if ((patch as any).status !== undefined) t.status = (patch as any).status
     return res.json(stripOfflineTaskUrgency(t))
   } catch (e: any) {
@@ -1175,6 +1172,10 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
         if (patch.assignee_id !== undefined && patch.cleaner_id === undefined) patch.cleaner_id = patch.assignee_id
       }
       if (patch.task_date != null) patch.date = patch.task_date
+      if (patch.inspection_mode !== undefined || patch.inspection_due_date !== undefined) {
+        patch.inspection_replaced_by_checkin_task_id = null
+        patch.inspection_replaced_original_due_date = null
+      }
       validateAndApplyInspectionPatch({ patch, current: before })
       {
         const beforeStatus = String(before.status || 'pending')
@@ -1228,8 +1229,14 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
           } catch {}
         }
       }
+      const actualChangedFields = actualCleaningTaskChangedFields(before, updated, keys)
+      if (actualChangedFields.length && isDeferredInspectionCheckinConflictRelevantChange(actualChangedFields)) {
+        await reconcileDeferredInspectionCheckinReplacement({
+          taskIds: [String(id)],
+          actorUserId: String((req as any)?.user?.sub || '').trim() || null,
+        })
+      }
       try {
-        const actualChangedFields = actualCleaningTaskChangedFields(before, updated, keys)
         if (actualChangedFields.length) {
           const workPatch = buildCleaningTaskWorkPatch(updated, actualChangedFields)
           await emitWorkTaskEvent({
@@ -1243,6 +1250,12 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
             causedByUserId: String((req as any)?.user?.sub || '').trim() || null,
             visibilityHints: buildCleaningTaskVisibilityHints(updated),
           })
+          if (isDeferredInspectionCheckinConflictRelevantChange(actualChangedFields)) {
+            enqueueNotification(() => emitDeferredInspectionCheckinConflictAlerts({
+              taskIds: [String(id)],
+              actorUserId: String((req as any)?.user?.sub || '').trim() || null,
+            }))
+          }
         }
       } catch {}
       try {
@@ -1547,6 +1560,13 @@ router.post('/tasks', requireCleaningManualCreateAccess, async (req, res) => {
             visibilityHints: buildCleaningTaskVisibilityHints(created),
           }, client)
         }
+        if (createdRows.length) {
+          await reconcileDeferredInspectionCheckinReplacement({
+            taskIds: createdRows.map((row) => String(row.id || '')).filter(Boolean),
+            actorUserId: String((req as any)?.user?.sub || '').trim() || null,
+            pgClient: client,
+          })
+        }
         await client.query('COMMIT')
       } catch (e) {
         try { await client.query('ROLLBACK') } catch {}
@@ -1578,6 +1598,12 @@ router.post('/tasks', requireCleaningManualCreateAccess, async (req, res) => {
             ),
           )
         } catch {}
+      }
+      if (createdRows.length) {
+        enqueueNotification(() => emitDeferredInspectionCheckinConflictAlerts({
+          taskIds: createdRows.map((row) => String(row.id || '')).filter(Boolean),
+          actorUserId: String((req as any)?.user?.sub || '').trim() || null,
+        }))
       }
       if (createdRows.length === 1) return res.json(createdRows[0])
       return res.json({ ok: true, created: createdRows.length })
@@ -1623,6 +1649,10 @@ router.delete('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res
         patch: { status: 'cancelled', execution_state: 'cancelled' },
         causedByUserId: actorId || null,
         visibilityHints: buildCleaningTaskVisibilityHints(after || before),
+      })
+      await reconcileDeferredInspectionCheckinReplacement({
+        taskIds: [String(id)],
+        actorUserId: actorId || null,
       })
       try {
         const propertyId = String((after || before)?.property_id || '').trim()
@@ -1737,6 +1767,11 @@ router.post('/tasks/bulk-delete', requirePerm('cleaning.task.assign'), async (re
           }
           addAudit('cleaning_task', String(id), 'delete', before, after, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') })
         }
+        await reconcileDeferredInspectionCheckinReplacement({
+          taskIds: ids,
+          actorUserId: actorId || null,
+          pgClient: client,
+        })
         await client.query('COMMIT')
       } catch (e) {
         try { await client.query('ROLLBACK') } catch {}
@@ -1813,6 +1848,10 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), async (req
             patch.cleaner_id = isCheckinSiteExecution ? null : patch.assignee_id
           }
           if (patch.task_date != null) patch.date = patch.task_date
+          if (patch.inspection_mode !== undefined || patch.inspection_due_date !== undefined) {
+            patch.inspection_replaced_by_checkin_task_id = null
+            patch.inspection_replaced_original_due_date = null
+          }
           validateAndApplyInspectionPatch({ patch, current: before })
           {
             const beforeStatus = String(before.status || 'pending')
@@ -1916,6 +1955,17 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), async (req
         return task
       })()
       if (r) updated.push(r)
+    }
+    if (hasPg && pgPool && updated.length && isDeferredInspectionCheckinConflictRelevantChange(Object.keys(basePatch))) {
+      const updatedIds = updated.map((task) => String(task?.id || '').trim()).filter(Boolean)
+      await reconcileDeferredInspectionCheckinReplacement({
+        taskIds: updatedIds,
+        actorUserId: String((req as any)?.user?.sub || '').trim() || null,
+      })
+      enqueueNotification(() => emitDeferredInspectionCheckinConflictAlerts({
+        taskIds: updatedIds,
+        actorUserId: String((req as any)?.user?.sub || '').trim() || null,
+      }))
     }
     return res.json({ ok: true, updated: updated.length })
   } catch (e: any) {

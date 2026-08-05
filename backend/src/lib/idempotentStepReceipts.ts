@@ -1,5 +1,5 @@
 import crypto from 'crypto'
-import type { Pool } from 'pg'
+import type { Pool, PoolClient } from 'pg'
 
 export const IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH = 256
 
@@ -10,6 +10,15 @@ type ReceiptScope = {
   stepKey: string
 }
 
+type ReceiptClient = Pool | PoolClient
+
+export class IdempotentStepReceiptsNotReady extends Error {
+  constructor() {
+    super('idempotent_step_receipts_not_ready')
+    this.name = 'IdempotentStepReceiptsNotReady'
+  }
+}
+
 function cleanText(value: any) {
   return String(value || '').trim()
 }
@@ -18,27 +27,18 @@ export function buildIdempotencyPayloadHash(payload: any) {
   return crypto.createHash('sha256').update(JSON.stringify(payload || {})).digest('hex')
 }
 
-export async function ensureIdempotentStepReceiptsTable(pgPool: Pool) {
-  await pgPool.query(`
-    CREATE TABLE IF NOT EXISTS app_submit_receipts (
-      id text PRIMARY KEY,
-      scope_type text NOT NULL,
-      scope_id text NOT NULL,
-      submit_id text NOT NULL,
-      step_key text NOT NULL,
-      payload_hash text NOT NULL,
-      response_json jsonb,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      updated_at timestamptz NOT NULL DEFAULT now()
-    );
-  `)
-  await pgPool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS uniq_app_submit_receipts_scope
-      ON app_submit_receipts(scope_type, scope_id, submit_id, step_key);
-  `)
+/** The receipts migration owns DDL; API requests only verify readiness. */
+export async function assertIdempotentStepReceiptsReady(client: ReceiptClient) {
+  try {
+    await client.query(`SELECT id, scope_type, scope_id, submit_id, step_key, payload_hash, response_json, created_at, updated_at
+      FROM app_submit_receipts
+      LIMIT 0`)
+  } catch {
+    throw new IdempotentStepReceiptsNotReady()
+  }
 }
 
-export async function loadIdempotentStepReceipt(pgPool: Pool, scope: ReceiptScope) {
+export async function loadIdempotentStepReceipt(pgPool: ReceiptClient, scope: ReceiptScope) {
   const scopeType = cleanText(scope.scopeType)
   const scopeId = cleanText(scope.scopeId)
   const submitId = cleanText(scope.submitId)
@@ -57,7 +57,7 @@ export async function loadIdempotentStepReceipt(pgPool: Pool, scope: ReceiptScop
   return result?.rows?.[0] || null
 }
 
-export async function saveIdempotentStepReceipt(pgPool: Pool, scope: ReceiptScope, payloadHash: string, responseJson: any) {
+export async function saveIdempotentStepReceipt(pgPool: ReceiptClient, scope: ReceiptScope, payloadHash: string, responseJson: any) {
   const scopeType = cleanText(scope.scopeType)
   const scopeId = cleanText(scope.scopeId)
   const submitId = cleanText(scope.submitId)

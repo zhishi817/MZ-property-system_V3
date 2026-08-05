@@ -265,6 +265,8 @@ CREATE INDEX IF NOT EXISTS idx_cleaning_property ON cleaning_tasks(property_id);
 -- Extend cleaning_tasks with additional fields used by calendar UI
 ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS old_code text;
 ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS new_code text;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_replaced_by_checkin_task_id text;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_replaced_original_due_date date;
 ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS note text;
 ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS checkout_time text;
 ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS checkin_time text;
@@ -307,6 +309,9 @@ CREATE INDEX IF NOT EXISTS idx_cleaning_order_id ON cleaning_tasks(order_id);
 CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_task_date ON cleaning_tasks(task_date);
 CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_order_id ON cleaning_tasks(order_id);
 CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_status ON cleaning_tasks(status);
+CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_inspection_replacement_source
+  ON cleaning_tasks(inspection_replaced_by_checkin_task_id)
+  WHERE inspection_replaced_by_checkin_task_id IS NOT NULL;
 
 -- Cleaning sync logs (auditable actions)
 CREATE TABLE IF NOT EXISTS cleaning_sync_logs (

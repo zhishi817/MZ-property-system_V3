@@ -16,7 +16,7 @@ import { CLEANING_IMAGE_FORMAT_ERROR, encodeCleaningImageToJpeg, isImageUploadCa
 import { isCleaningMediaKey } from '../lib/cleaningMediaReference'
 import {
   buildIdempotencyPayloadHash,
-  ensureIdempotentStepReceiptsTable,
+  assertIdempotentStepReceiptsReady,
   IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH,
   loadIdempotentStepReceipt,
   saveIdempotentStepReceipt,
@@ -31,7 +31,7 @@ import {
 } from '../lib/workTaskActionAudit'
 import type { WorkTaskActionId } from '../lib/workTaskActions'
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
-import { canViewMzappRecordedCleaningMedia } from './mzapp'
+import { canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia } from './mzapp'
 
 export const router = Router()
 
@@ -74,7 +74,7 @@ async function ensureCleaningConsumablesSchema() {
     await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS photo_url text;`)
     await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS photo_urls text;`)
     await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS item_label text;`)
-    await ensureIdempotentStepReceiptsTable(pgPool)
+    await assertIdempotentStepReceiptsReady(pgPool)
     await ensureWorkTaskActionAuditsTable(pgPool)
     cleaningConsumablesSchemaReady = true
   })()
@@ -201,13 +201,6 @@ function normalizeStoredPhotoUrls(raw: any, fallback?: any) {
   }
   const fallbackText = String(fallback || '').trim()
   return fallbackText ? [fallbackText] : []
-}
-
-export function selectUniqueRecordedCleaningMediaRow(rows: any[]) {
-  const matchedRows = Array.isArray(rows) ? rows : []
-  const matchedTaskIds = new Set(matchedRows.map((row: any) => String(row?.id || '').trim()).filter(Boolean))
-  const matchedMediaTypes = new Set(matchedRows.map((row: any) => String(row?.type || '').trim()).filter(Boolean))
-  return matchedTaskIds.size === 1 && matchedMediaTypes.size === 1 ? matchedRows[0] || null : null
 }
 
 async function listDayEndManagerUserIds() {
@@ -1168,7 +1161,6 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
 // Submit consumables checklist (cannot skip; low requires photo)
 const consumableSchema = z.object({
   living_room_photo_url: z.string().trim().min(1).optional(),
-  living_room_photo_urls: z.array(z.string().trim().min(1).max(800)).max(12).optional(),
   items: z.array(
     z.object({
       item_id: z.string().min(1),
@@ -1195,20 +1187,17 @@ router.get('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), a
        ORDER BY created_at ASC, id ASC`,
       [String(id)],
     )
-    const livingPhotoRows = await pgPool.query(
+    const livingPhotoRow = await pgPool.query(
       `SELECT url
        FROM cleaning_task_media
        WHERE task_id::text = $1::text
          AND type = 'consumable_living_room_photo'
-       ORDER BY captured_at ASC NULLS LAST, created_at ASC, id ASC`,
+       ORDER BY captured_at DESC NULLS LAST, created_at DESC
+       LIMIT 1`,
       [String(id)],
     )
-    const livingRoomPhotoUrls = Array.from(new Set((livingPhotoRows?.rows || [])
-      .map((row: any) => String(row?.url || '').trim())
-      .filter(Boolean)))
     return res.json({
-      living_room_photo_urls: livingRoomPhotoUrls,
-      living_room_photo_url: livingRoomPhotoUrls[0] || null,
+      living_room_photo_url: String(livingPhotoRow?.rows?.[0]?.url || '').trim() || null,
       items: (rows.rows || []).map((x: any) => ({
         id: String(x.id || ''),
         item_id: String(x.item_id || ''),
@@ -1297,7 +1286,7 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
 
         const existingRows = await client.query(`SELECT id FROM cleaning_consumable_usages WHERE task_id=$1 LIMIT 1`, [String(id)])
         const hadExisting = !!existingRows?.rowCount
-        const livingRoomPhotoUrls = normalizeStoredPhotoUrls(parsed.data.living_room_photo_urls, parsed.data.living_room_photo_url)
+        const livingRoomPhotoUrl = String(parsed.data.living_room_photo_url || '').trim()
 
         await client.query(`DELETE FROM cleaning_consumable_usages WHERE task_id=$1`, [String(id)])
         await client.query(`DELETE FROM cleaning_task_media WHERE task_id::text=$1::text AND type='consumable_living_room_photo'`, [String(id)])
@@ -1335,7 +1324,7 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
               note: it.note == null ? null : String(it.note || '').trim(),
             }
           })
-        for (const livingRoomPhotoUrl of livingRoomPhotoUrls) {
+        if (livingRoomPhotoUrl) {
           await pgInsert('cleaning_task_media', {
             id: require('uuid').v4(),
             task_id: String(id),
@@ -1678,31 +1667,6 @@ function canViewDayEndForAllUsers(user: any) {
   return all.has('admin') || all.has('offline_manager') || all.has('customer_service') || all.has('inventory_manager')
 }
 
-export function selectUniqueRecordedDayEndMediaRow(rows: any[]) {
-  const matchedRows = Array.isArray(rows) ? rows : []
-  const matchedUserIds = new Set(matchedRows.map((row: any) => String(row?.user_id || '').trim()).filter(Boolean))
-  const matchedKinds = new Set(matchedRows.map((row: any) => String(row?.kind || '').trim()).filter(Boolean))
-  return matchedUserIds.size === 1 && matchedKinds.size === 1 ? matchedRows[0] || null : null
-}
-
-export function selectExclusiveRecordedCleaningMedia(taskRows: any[], dayEndRows: any[]) {
-  const matchedTaskRows = Array.isArray(taskRows) ? taskRows : []
-  const matchedDayEndRows = Array.isArray(dayEndRows) ? dayEndRows : []
-  const taskRow = selectUniqueRecordedCleaningMediaRow(matchedTaskRows)
-  const dayEndRow = selectUniqueRecordedDayEndMediaRow(matchedDayEndRows)
-  const taskConflict = matchedTaskRows.length > 0 && !taskRow
-  const dayEndConflict = matchedDayEndRows.length > 0 && !dayEndRow
-  if (taskConflict || dayEndConflict || (!!taskRow && !!dayEndRow)) return null
-  if (taskRow) return { source: 'task' as const, row: taskRow }
-  if (dayEndRow) return { source: 'day_end' as const, row: dayEndRow }
-  return null
-}
-
-export function canViewRecordedDayEndMedia(user: any, mediaRow: any, userId: string) {
-  return canViewDayEndForAllUsers(user)
-    || (Boolean(userId) && String(mediaRow?.user_id || '').trim() === userId)
-}
-
 function roleNamesOfUser(user: any) {
   const role = String(user?.role || '').trim()
   const roles = Array.isArray(user?.roles) ? user.roles.map((x: any) => String(x || '').trim()) : []
@@ -1802,7 +1766,7 @@ router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspec
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
       if (!await canPerformCleaningTaskAction(user, String(id), ['submit_inspection'])) return res.status(403).json({ message: 'forbidden' })
-      if (submitId && stepKey) await ensureIdempotentStepReceiptsTable(pgPool)
+      if (submitId && stepKey) await assertIdempotentStepReceiptsReady(pgPool)
       const transactionResult = await pgRunInTransaction(async (client) => {
         const lockedTask = await client.query(
           `SELECT id::text AS id
@@ -1894,7 +1858,7 @@ router.post('/tasks/:id/inspection-issue-photos', requireAnyPerm(['cleaning_app.
     const { pgPool } = require('../dbAdapter')
     if (!pgPool) return res.status(500).json({ message: 'pg not available' })
     if (!await canPerformCleaningTaskAction(user, String(id), ['submit_inspection', 'report_issue'])) return res.status(403).json({ message: 'forbidden' })
-    await ensureIdempotentStepReceiptsTable(pgPool)
+    await assertIdempotentStepReceiptsReady(pgPool)
 
     const submitId = String(parsed.data.submit_id || '').trim()
     const stepKey = String(parsed.data.step_key || '').trim()
@@ -2070,7 +2034,7 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
       if (!await canPerformCleaningTaskAction(user, String(id), ['upload_access_video', 'complete_cleaning'])) return res.status(403).json({ message: 'forbidden' })
-      if (submitId && stepKey) await ensureIdempotentStepReceiptsTable(pgPool)
+      if (submitId && stepKey) await assertIdempotentStepReceiptsReady(pgPool)
       const uuid = require('uuid')
       const batchId = uuid.v4()
       const transactionResult = await pgRunInTransaction(async (client) => {
@@ -3146,95 +3110,165 @@ router.post('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'c
 })
 
 export default router
-export const CLEANING_MEDIA_IMAGE_READ_PERMISSIONS = [
-  'cleaning_app.media.upload',
-  'cleaning_app.tasks.finish',
-  'cleaning_app.inspect.finish',
-  'cleaning_app.issues.report',
-  'inventory.view',
-]
+
+export function feedbackMediaUrlArray(raw: any): string[] {
+  if (Array.isArray(raw)) return raw.map((value) => String(value || '').trim()).filter(Boolean)
+  const text = String(raw || '').trim()
+  if (!text) return []
+  try {
+    const parsed = JSON.parse(text)
+    return Array.isArray(parsed) ? parsed.map((value) => String(value || '').trim()).filter(Boolean) : []
+  } catch {
+    return [text]
+  }
+}
+
+function feedbackMediaRowReferencesKey(row: any, key: string): boolean {
+  const projectItems = (() => {
+    const raw = row?.project_items
+    if (Array.isArray(raw)) return raw
+    try { return JSON.parse(String(raw || '')) } catch { return [] }
+  })()
+  const references = [
+    ...feedbackMediaUrlArray(row?.photo_urls),
+    ...feedbackMediaUrlArray(row?.repair_photo_urls),
+    ...feedbackMediaUrlArray(row?.attachment_urls),
+    ...(Array.isArray(projectItems) ? projectItems.flatMap((item: any) => [
+      ...feedbackMediaUrlArray(item?.before_photos),
+      ...feedbackMediaUrlArray(item?.after_photos),
+    ]) : []),
+  ]
+  return references.some((reference) => {
+    const normalized = String(reference || '').trim()
+    return normalized === key || r2KeyFromUrl(normalized) === key
+  })
+}
+
+function isPropertyFeedbackMediaKey(value: string): boolean {
+  const key = String(value || '').trim().replace(/^\/+/, '')
+  if (key.startsWith('cleaning/')) return isCleaningMediaKey(key)
+  if (!key.startsWith('mzapp/')) return false
+  return !key.includes('..') && !key.includes('\\') && !/[?#]/.test(key)
+}
+
+async function findPropertyFeedbackMediaRows(pool: any, key: string) {
+  const result = await pool.query(
+    `SELECT 'property_maintenance'::text AS feedback_source_type,
+            m.id::text AS feedback_source_id,
+            m.property_id,
+            to_jsonb(m.photo_urls) AS photo_urls,
+            to_jsonb(m.repair_photo_urls) AS repair_photo_urls,
+            to_jsonb(NULL::text) AS attachment_urls,
+            to_jsonb(m.project_items) AS project_items
+       FROM property_maintenance m
+      WHERE COALESCE(m.photo_urls::text, '') LIKE $1
+         OR COALESCE(m.repair_photo_urls::text, '') LIKE $1
+         OR COALESCE(m.project_items::text, '') LIKE $1
+     UNION ALL
+     SELECT 'property_deep_cleaning'::text AS feedback_source_type,
+            d.id::text AS feedback_source_id,
+            d.property_id,
+            to_jsonb(d.photo_urls) AS photo_urls,
+            to_jsonb(d.repair_photo_urls) AS repair_photo_urls,
+            to_jsonb(d.attachment_urls) AS attachment_urls,
+            to_jsonb(d.project_items) AS project_items
+       FROM property_deep_cleaning d
+      WHERE COALESCE(d.photo_urls::text, '') LIKE $1
+         OR COALESCE(d.repair_photo_urls::text, '') LIKE $1
+         OR COALESCE(d.attachment_urls::text, '') LIKE $1
+         OR COALESCE(d.project_items::text, '') LIKE $1
+     UNION ALL
+     SELECT 'property_daily_necessities'::text AS feedback_source_type,
+            n.id::text AS feedback_source_id,
+            n.property_id,
+            to_jsonb(n.photo_urls) AS photo_urls,
+            to_jsonb(NULL::text) AS repair_photo_urls,
+            to_jsonb(NULL::text) AS attachment_urls,
+            to_jsonb(NULL::text) AS project_items
+       FROM property_daily_necessities n
+      WHERE COALESCE(n.photo_urls::text, '') LIKE $1`,
+    [`%${key}%`],
+  )
+  return (result?.rows || []).filter((row: any) => feedbackMediaRowReferencesKey(row, key))
+}
 
 router.get(
   '/media/image',
-  requireAnyPerm(CLEANING_MEDIA_IMAGE_READ_PERMISSIONS),
+  requireAnyPerm(['cleaning_app.media.upload', 'cleaning_app.tasks.finish', 'cleaning_app.inspect.finish', 'cleaning_app.issues.report']),
   async (req, res) => {
     try {
       const requestedKey = String((req.query as any)?.key || '').trim()
       const sourceUrl = String((req.query as any)?.url || '').trim()
+      const sourceTaskId = String((req.query as any)?.source_task_id || '').trim()
+      const workTaskId = String((req.query as any)?.work_task_id || '').trim()
       const variant = String((req.query as any)?.variant || 'original').trim().toLowerCase()
       if (!requestedKey && !sourceUrl) return res.status(400).json({ message: 'missing_key' })
       if (!['original', 'thumbnail', 'preview'].includes(variant)) return res.status(400).json({ message: 'invalid_variant' })
       if (!hasR2) return res.status(404).json({ message: 'r2_not_configured' })
-      const key = requestedKey || r2KeyFromUrl(sourceUrl)
-      if (!isCleaningMediaKey(key)) {
+      const key = String(requestedKey || r2KeyFromUrl(sourceUrl) || '').trim()
+      if (!isPropertyFeedbackMediaKey(key)) {
         return res.status(403).json({ message: 'forbidden_key' })
       }
       if (!hasPg) return res.status(403).json({ message: 'forbidden_media' })
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(403).json({ message: 'forbidden_media' })
       const mediaReferences = Array.from(new Set([key, sourceUrl].map((value) => String(value || '').trim()).filter(Boolean)))
-      const mediaRows = await pgPool.query(
-        `SELECT ctm.type,
-                ctm.url,
-                ct.id,
-                ct.cleaner_id,
-                ct.inspector_id,
-                ct.assignee_id
-          FROM cleaning_task_media ctm
-           JOIN cleaning_tasks ct ON ct.id::text = ctm.task_id::text
-          WHERE ctm.url = ANY($1::text[])`,
-        [mediaReferences],
-      )
-      const usageRows = await pgPool.query(
-        `SELECT ct.id,
-                ct.cleaner_id,
-                ct.inspector_id,
-                ct.assignee_id,
-                u.photo_url,
-                u.photo_urls
-           FROM cleaning_consumable_usages u
-           JOIN cleaning_tasks ct ON ct.id::text = u.task_id::text
-          WHERE COALESCE(u.photo_url, '') = ANY($1::text[])
-             OR EXISTS (
-               SELECT 1
-                 FROM unnest($1::text[]) AS reference(value)
-                WHERE position(reference.value IN COALESCE(u.photo_urls::text, '')) > 0
-             )`,
-        [mediaReferences],
-      )
-      const dayEndRows = await pgPool.query(
-        `SELECT user_id, kind, url
-           FROM cleaning_day_end_media
-          WHERE url = ANY($1::text[])`,
-        [mediaReferences],
-      )
+      const mediaRows = isCleaningMediaKey(key)
+        ? await pgPool.query(
+          `SELECT ctm.type,
+                  ctm.url,
+                  ct.id,
+                  ct.cleaner_id,
+                  ct.inspector_id,
+                  ct.assignee_id
+            FROM cleaning_task_media ctm
+             JOIN cleaning_tasks ct ON ct.id::text = ctm.task_id::text
+            WHERE ctm.url = ANY($1::text[])`,
+          [mediaReferences],
+        )
+        : { rows: [] }
       const user = (req as any).user || {}
       const userId = String(user.sub || '').trim()
-      const usageMediaRows = (usageRows?.rows || []).flatMap((row: any) => normalizeStoredPhotoUrls(row.photo_urls, row.photo_url)
-        .map((url) => ({
-          id: row.id,
-          cleaner_id: row.cleaner_id,
-          inspector_id: row.inspector_id,
-          assignee_id: row.assignee_id,
-          type: 'consumable_item_photo',
-          url,
-        })))
-      const matchingMediaRows = [...(mediaRows?.rows || []), ...usageMediaRows].filter((row: any) => {
+      const matchingMediaRows = (mediaRows?.rows || []).filter((row: any) => {
         const storedKey = r2KeyFromUrl(String(row?.url || '').trim()) || String(row?.url || '').trim()
         return storedKey === key
       })
-      const mediaRow = selectUniqueRecordedCleaningMediaRow(matchingMediaRows)
-      const matchingDayEndMediaRows = (dayEndRows?.rows || []).filter((row: any) => {
-        const storedKey = r2KeyFromUrl(String(row?.url || '').trim()) || String(row?.url || '').trim()
-        return storedKey === key
-      })
-      const recordedMedia = selectExclusiveRecordedCleaningMedia(matchingMediaRows, matchingDayEndMediaRows)
-      const canViewMedia = recordedMedia?.source === 'task'
-        ? await canViewMzappRecordedCleaningMedia(user, recordedMedia.row, userId, recordedMedia.row.type)
-        : recordedMedia?.source === 'day_end'
-          ? canViewRecordedDayEndMedia(user, recordedMedia.row, userId)
+      const mediaRow = matchingMediaRows.length === 1 ? matchingMediaRows[0] : null
+      const feedbackMediaRows = mediaRow ? [] : await findPropertyFeedbackMediaRows(pgPool, key)
+      const feedbackMediaRow = feedbackMediaRows.length === 1 ? feedbackMediaRows[0] : null
+      const feedbackSourceTaskResult = feedbackMediaRow && sourceTaskId
+        ? await pgPool.query(
+          `SELECT id, property_id, cleaner_id, inspector_id, assignee_id
+             FROM cleaning_tasks
+            WHERE id = $1 AND property_id = $2
+            LIMIT 1`,
+          [sourceTaskId, String(feedbackMediaRow.property_id || '').trim()],
+        )
+        : null
+      const feedbackSourceTask = feedbackSourceTaskResult?.rows?.[0] || null
+      const maintenanceWorkTaskResult = feedbackMediaRow?.feedback_source_type === 'property_maintenance' && workTaskId
+        ? await pgPool.query(
+          `SELECT id::text AS id, assignee_id::text AS assignee_id
+             FROM work_tasks
+            WHERE id::text = $1
+              AND source_type = 'property_maintenance'
+              AND source_id::text = $2
+              AND property_id::text = $3
+            LIMIT 1`,
+          [workTaskId, String(feedbackMediaRow.feedback_source_id || '').trim(), String(feedbackMediaRow.property_id || '').trim()],
+        )
+        : null
+      const maintenanceWorkTask = maintenanceWorkTaskResult?.rows?.[0] || null
+      const canViewMaintenanceWorkTask = !!maintenanceWorkTask && (
+        roleNamesOfUser(user).some((role) => ['admin', 'offline_manager', 'customer_service'].includes(role))
+        || String(maintenanceWorkTask.assignee_id || '').trim() === userId
+      )
+      const canView = mediaRow
+        ? await canViewMzappRecordedCleaningMedia(user, mediaRow, userId, mediaRow.type)
+        : feedbackMediaRow
+          ? canViewMaintenanceWorkTask || await canViewMzappPropertyFeedback(user, feedbackSourceTask, userId)
           : false
-      if (!canViewMedia) {
+      if (!canView) {
         return res.status(403).json({ message: 'forbidden_media' })
       }
       const object = await r2GetObjectByKey(key)

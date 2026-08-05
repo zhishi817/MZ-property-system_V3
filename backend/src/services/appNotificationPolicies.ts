@@ -5,6 +5,7 @@ import { listUserIdsByRoles } from '../modules/notifications'
 export const APP_NOTIFICATION_POLICY_KEYS = [
   'guest_checked_out',
   'guest_checked_out_cancelled',
+  'deferred_inspection_checkin_conflict',
   'task_requirements_changed',
   'task_deleted',
   'key_photo_uploaded',
@@ -187,6 +188,17 @@ const APP_NOTIFICATION_POLICY_CATALOG: Record<AppNotificationPolicyKey, AppNotif
     description: '取消客人已退房后的 App 通知',
     source_event_types: ['CLEANING_TASK_UPDATED'],
     default_template_key: 'participants_plus_ops_manager_and_customer_service',
+    allowed_group_keys: ALL_APP_ALLOWED_GROUP_KEYS,
+    supports_extra_users: true,
+    default_enabled: true,
+    participant_group_key: 'cleaning_task_participants',
+  },
+  deferred_inspection_checkin_conflict: {
+    policy_key: 'deferred_inspection_checkin_conflict',
+    label: '延期检查遇入住冲突',
+    description: '延期检查尚未完成时，房源已有临时或同步入住安排',
+    source_event_types: ['CLEANING_TASK_UPDATED'],
+    default_template_key: 'ops_manager_only',
     allowed_group_keys: ALL_APP_ALLOWED_GROUP_KEYS,
     supports_extra_users: true,
     default_enabled: true,
@@ -588,6 +600,7 @@ export function resolveAppPolicyKeyFromKind(kindRaw: string, extras?: { level?: 
   if (!kind) return null
   if (kind === 'guest_checked_out') return 'guest_checked_out'
   if (kind === 'guest_checked_out_cancelled') return 'guest_checked_out_cancelled'
+  if (kind === 'deferred_inspection_checkin_conflict') return 'deferred_inspection_checkin_conflict'
   if (kind === 'cleaning_task_manager_fields_updated') return 'task_requirements_changed'
   if (kind === 'key_photo_uploaded') return 'key_photo_uploaded'
   if (kind === 'key_photo_deleted') return 'key_photo_deleted'

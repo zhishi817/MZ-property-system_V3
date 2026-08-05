@@ -14,14 +14,50 @@ For every repository mutation, use `.codex/skills/change-release-ledger/SKILL.md
 
 These requirements apply to every Codex thread and agent working in this repository.
 
+## Branch And Release Topology
+
+- A CRL is a tracking/release unit, **not** a Git branch. For one user-selected release scope, create or reuse one temporary release branch; do not create a branch for every screenshot row or for each CRL when several selected CRLs must travel together.
+- `Dev` is the default integration target for reviewed, release-ready fixes. A successful push to a temporary branch is not a push to `Dev` and must be reported as such.
+- Once the user has selected CRL IDs (or a single clearly bounded release scope) and asked to commit, push, or release, create or reuse a `codex/<release-scope>` temporary branch targeting `Dev`. A protected `Dev`, required PR, missing status check, or direct-push rejection is a normal reason to use that branch and PR flow, not a reason to stop after the user has authorized the release scope.
+- Do not create, switch to, push, or open a PR when no release scope has been selected; first list the available non-pushed units and obtain the user's selection. A temporary branch has one stated scope and must be reused for subsequent fixes within that scope rather than duplicated.
+- Open the PR against `Dev` after the independent release review and required checks pass. Use the repository's “automatically delete head branches” setting when it is enabled; after merge, verify and report the actual deletion result separately from PR creation and merge.
+- Keep the lifecycle explicit: branch name, selected CRL IDs, target `Dev`, PR status, merge result, and deletion result are separate facts. Never claim any of them from another.
+
+## Release Decision Contract
+
+- A CRL describes a user-selectable implementation change. A **Release Attempt** is one exact attempt to release one or more selected CRLs. Do not use a CRL's historical `pushed` label as evidence that later edits to the same CRL are released.
+- Every Release Attempt must record its repository, CRL IDs, target action, base ref/SHA and fetch time, candidate patch SHA-256, candidate content commit SHA when one exists, branch, dependencies, validation/review evidence, user authorization, and remote/PR/deployment evidence when those actions occur. The report command, not a self-referential ledger line, records the exact audit `head` SHA.
+- Report technical state separately from authorization and the action gate:
+  - technical state: `candidate`, `verified`, `committed`, `pushed`, `merged`, or `deployed`;
+  - authorization: `not-selected`, `selected-for-commit`, or `approved-for-push`;
+  - conclusion for one stated action: `GO`, `BLOCKED`, or `NOT VERIFIED`.
+- `NOT VERIFIED` means required evidence is absent. `BLOCKED` means evidence shows a failed test, stale/invalid base, scope collision, uncovered path, secret risk, or another concrete release violation. Never replace either with vague wording such as "基本可以推".
+- `commit-ready` is derived only when the attempt is `verified`, the user selected its exact scope for commit, and the commit action conclusion is `GO`. `push-ready` is derived only when the attempt is `committed`, its exact `base...head` range audit passes, and the user explicitly approved push of that repository, commit SHA, and branch.
+- A user selection authorizes staging/commit only. It never authorizes push. Any change to the selected CRLs, base SHA, commit SHA, or branch invalidates an earlier `approved-for-push` authorization.
+- Candidate patch SHA-256 is calculated from the selected `base...head` content diff excluding `docs/change-release-ledger.md`; attempt metadata must be excluded because recording a hash or commit SHA inside the same ledger commit would otherwise be self-referential. The exact range audit still includes and verifies the ledger path. A recorded candidate content commit must be an ancestor of the report head and a descendant of the recorded base.
+
+### Answering “哪些更新可以推送”
+
+- Inspect root and `mz-cleaning-app-frontend` as independent repositories. Do not infer mobile evidence from root evidence or the reverse.
+- A `candidate` is an implementation range awaiting this release attempt; it is not defined merely as a CRL with no historical push and must never be called pushable before all gates pass.
+- State only what was checked. If other local worktrees, commits, or `codex/*` branches were not inspected, report them as `NOT VERIFIED`, not absent.
+- Use this fixed result order: `可供选择的候选`、`已选择但仍被阻塞`、`已获授权且可提交`、`已提交、已批准且可推送`、`已推送`、`不在本次范围`.
+
+### Release Worktree Boundary
+
+- Do not pull, rebase, stash, reset, clean, or otherwise synchronize a mixed development worktree in order to prepare a release.
+- After the user has selected a release scope, fetch and record the exact `origin/Dev` SHA, then prepare the attempt in a clean release worktree based on that SHA. The release worktree may contain only selected CRL changes while preparing the candidate and must be clean again after its commit.
+- Preserve the original development worktree as source evidence only. Extract exact files or verified hunks; never derive a release scope from a broad working-tree diff.
+
 ## Pre-Release Independent Codex Review
 
-Before staging, committing, pushing, or deploying a release, open an independent Codex review task using `docs/codex-release-review.md`.
+Before committing, pushing, or deploying a release, open an independent Codex review task using `docs/codex-release-review.md`.
 
 - The review task is review-only: it must not modify files, commit, push, deploy, call production APIs, or write production data.
-- Provide the exact base/head, selected CRL IDs, changed surfaces, and completed regression commands.
+- For a pre-commit candidate, provide the exact base SHA, staged candidate patch SHA-256 (excluding ledger attempt metadata), selected CRL IDs, changed surfaces, and completed regression commands. For a committed range, provide the exact base/head, candidate content commit SHA, and require the range patch fingerprint to match the reviewed candidate.
 - The reviewer must inspect `AGENTS.md`, the ledger, the complete diff, test coverage, unrelated files, production-write risk, and secret/token risk.
 - A P0/P1 finding, uncovered current-task file, or unverified production/secret risk blocks release until the implementation thread resolves it and updates the ledger.
+- A reviewer `GO` for a candidate enables only the stated commit action. It is not user push authorization and does not establish push, PR, merge, deployment, or device/production evidence.
 - Keep the review report with the release discussion; the review thread does not replace targeted fixes or final validation.
 
 ## Self-Test And Optimization Guardrails

@@ -1,5 +1,193 @@
 # Change Release Ledger
 
+## CRL-20260805-002 — 已选 root 跨层发布包映射
+
+- **Status:** candidate
+- **Updated:** 2026-08-05 Australia/Melbourne
+- **Request:** 用户确认将已选 root 台账作为一个隔离候选包提交；此记录仅用于精确范围审计，不新增业务功能。
+- **Outcome:** 将已选的维护闭环、私有媒体、发票状态、延期检查替代、通知和发布治理文件绑定到同一可审计候选范围；反馈创建、项目创建和项目完成三步共用稳定重试键。
+- **Source-unit mapping:** CRL-20260731-001、CRL-20260731-003、CRL-20260731-004、CRL-20260731-011、CRL-20260801-001、CRL-20260801-002、CRL-20260801-003、CRL-20260801-004、CRL-20260801-005、CRL-20260801-006、CRL-20260801-007、CRL-20260801-008、CRL-20260801-009、CRL-20260801-010、CRL-20260801-011、CRL-20260801-014、CRL-20260802-004、CRL-20260803-001、CRL-20260803-002、CRL-20260803-004、CRL-20260803-005、CRL-20260804-001、CRL-20260804-002、CRL-20260804-003、CRL-20260804-004、CRL-20260804-006、CRL-20260804-007、CRL-20260804-008、CRL-20260804-010、CRL-20260804-011、CRL-20260804-012、CRL-20260804-013、CRL-20260804-014、CRL-20260805-001。CRL-20260804-009 已在本候选基线 origin/Dev 中，因此不重复产生补丁。
+
+### Files / Areas
+
+- `.codex/skills/change-release-ledger/SKILL.md` — 已选发布包中的精确候选路径。
+- `AGENTS.md` — 已选发布包中的精确候选路径。
+- `backend/package.json` — 已选发布包中的精确候选路径。
+- `backend/scripts/init_db.ts` — 已选发布包中的精确候选路径。
+- `backend/scripts/migrations/20260731_maintenance_workflow_foundation.sql` — 已选发布包中的精确候选路径。
+- `backend/scripts/migrations/20260805_app_submit_receipts.sql` — 已选发布包中的精确候选路径。
+- `backend/scripts/migrations/20260805_deferred_inspection_checkin_replacement.sql` — 已选发布包中的精确候选路径。
+- `backend/scripts/migrations/20260805_property_deep_cleaning_foundation.sql` — 深度清洁反馈投影和稳定草稿键的受控 schema 基础；本候选不执行迁移。
+- `backend/scripts/schema.sql` — 已选发布包中的精确候选路径。
+- `backend/scripts/schema_neon.sql` — 已选发布包中的精确候选路径。
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — 已选发布包中的精确候选路径。
+- `backend/scripts/tests/test_deferred_inspection_conflict_e2e.ts` — 已选发布包中的精确候选路径。
+- `backend/scripts/tests/test_invoice_payment_state.ts` — 已选发布包中的精确候选路径。
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — 已选发布包中的精确候选路径。
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts` — 已选发布包中的精确候选路径。
+- `backend/scripts/tests/test_maintenance_workflow_schema_contract.ts` — 已选发布包中的精确候选路径。
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — 已选发布包中的精确候选路径。
+- `backend/src/lib/idempotentStepReceipts.ts` — 已选发布包中的精确候选路径。
+- `backend/src/lib/maintenanceWorkflow.ts` — 已选发布包中的精确候选路径。
+- `backend/src/lib/maintenanceWorkflowSchema.ts` — 已选发布包中的精确候选路径。
+- `backend/src/lib/maintenanceWorkflowStore.ts` — 已选发布包中的精确候选路径。
+- `backend/src/modules/cleaning.ts` — 已选发布包中的精确候选路径。
+- `backend/src/modules/cleaning_app.ts` — 已选发布包中的精确候选路径。
+- `backend/src/modules/crud.ts` — 已选发布包中的精确候选路径。
+- `backend/src/modules/invoices.ts` — 已选发布包中的精确候选路径。
+- `backend/src/modules/maintenance.ts` — 已选发布包中的精确候选路径。
+- `backend/src/modules/mzapp.ts` — 已选发布包中的精确候选路径。
+- `backend/src/modules/public.ts` — 已选发布包中的精确候选路径。
+- `backend/src/modules/task_center.ts` — 已选发布包中的精确候选路径。
+- `backend/src/modules/work_tasks.ts` — 已选发布包中的精确候选路径。
+- `backend/src/services/appNotificationPolicies.ts` — 已选发布包中的精确候选路径。
+- `backend/src/services/cleaningSync.ts` — 已选发布包中的精确候选路径。
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — 已选发布包中的精确候选路径。
+- `backend/src/services/notificationEvents.ts` — 已选发布包中的精确候选路径。
+- `docs/change-release-ledger.md` — 已选发布包中的精确候选路径。
+- `docs/codex-release-review.md` — 已选发布包中的精确候选路径。
+- `frontend/src/app/finance/invoices/InvoicesCenterClient.tsx` — 已选发布包中的精确候选路径。
+- `frontend/src/app/finance/invoices/_components/InvoiceEditor.tsx` — 已选发布包中的精确候选路径。
+- `frontend/src/app/maintenance/records/page.tsx` — 已选发布包中的精确候选路径。
+- `frontend/src/app/task-center/page.tsx` — 已选发布包中的精确候选路径。
+- `frontend/src/components/MaintenanceFeedbackImage.tsx` — 已选发布包中的精确候选路径。
+- `frontend/src/lib/invoicePaymentMethods.test.ts` — 已选发布包中的精确候选路径。
+- `frontend/src/lib/invoicePaymentMethods.ts` — 已选发布包中的精确候选路径。
+- `frontend/src/lib/maintenanceFeedbackMedia.test.ts` — 已选发布包中的精确候选路径。
+- `frontend/src/lib/maintenanceFeedbackMedia.ts` — 已选发布包中的精确候选路径。
+- `frontend/src/lib/maintenanceWorkflowActions.test.ts` — 已选发布包中的精确候选路径。
+- `frontend/src/lib/maintenanceWorkflowActions.ts` — 已选发布包中的精确候选路径。
+- `package.json` — 已选发布包中的精确候选路径。
+- `scripts/audit_change_release_ledger.py` — 已选发布包中的精确候选路径。
+- `scripts/tests/test_audit_change_release_ledger.py` — 已选发布包中的精确候选路径。
+
+### Impact / Dependencies
+
+- Database / deployment: 包含受控迁移，但本候选不执行迁移、部署或生产写入。
+- Related repositories: 移动端配套候选由独立 mobile 发布包记录；两仓仍需分别提交、审查和授权推送。
+
+### Validation
+
+- 后端 TypeScript、维修工作流、发票、私有媒体、通知和延期检查替代的针对性测试已在隔离工作区通过。
+- 管理端 lint 以成功退出；仅有项目既有 warning。真实生产、数据库迁移和设备交互未验证。
+
+### Risks / Release Notes
+
+- 此映射记录不改变来源台账的业务范围；它只让精确范围审计能够验证用户已选的组合。
+
+#### RA-20260805-root-selected-01
+
+- Repository: root
+- Selected CRLs: CRL-20260805-002
+- Base: origin/Dev `145ac720532abeaaa93203e7751d741d90bc17fb`; fetched at 2026-08-05 16:19:36 AEST.
+- Branch: `codex/release-selected-root-20260805`
+- Candidate patch SHA-256: `0c971ff55a648d2a8dde982cba72e73959b8f4d84a9aafcd7960399aefe76dbb` (excludes `docs/change-release-ledger.md`).
+- Dependencies: selected maintenance foundation, deferred-inspection replacement, private-media authorization and invoice-state units; maintenance and idempotent-receipt migrations are included but not executed.
+- Required validation: PASS with one local-harness boundary — backend TypeScript; idempotency, maintenance schema/action, media visibility and deferred-inspection contracts; ledger regression test and current ledger coverage all passed. `check:ci` is restored and its script contract is covered, but a full local invocation reaches the ledger gate with temporary dependency symlinks reported as untracked; this does not demonstrate a CI runner result.
+- Independent review: GO for commit — independent staged review of `0c971ff55a648d2a8dde982cba72e73959b8f4d84a9aafcd7960399aefe76dbb` found the CI entry restored, deep-cleaning DDL moved to its controlled migration, and stable-key retry safety present; no P0/P1/P2 blocker.
+- User authorization: selected-for-commit — user explicitly confirmed the selected scope and both high-risk inclusion groups.
+- Intended action: commit
+- Technical state: verified
+- Commit SHA: not committed
+- Shared-hunk review: PASS — candidate paths are explicit in this packaging record; no partial hunk from an unselected implementation unit is staged.
+- Generated-file review: not applicable — no generated build output is included.
+- Action conclusion: GO for commit; NOT VERIFIED for push, deployment and production behavior.
+
+
+## CRL-20260805-001 — 延期检查与入住冲突替代、告警和任务投影
+
+- **Status:** candidate
+- **Updated:** 2026-08-05 Australia/Melbourne
+- **Request:** 用户选择并明确授权在本次 root 发布候选中包含延期检查替代、事务边界与通知写入。
+- **Outcome:** 延期检查与同日入住发生冲突时，任务替代关系被记录、任务中心显示冲突提示，并按既有策略发出受控告警。
+
+### Files / Areas
+
+- `backend/scripts/migrations/20260805_deferred_inspection_checkin_replacement.sql` — 添加受控替代关系字段与索引；本候选不执行迁移。
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — 冲突筛选、替代关系协调与通知事件构造。
+- `backend/src/modules/cleaning.ts` — 在任务创建、编辑、删除后协调冲突并发出受控通知。
+- `backend/src/modules/task_center.ts` — 在任务投影后显示冲突提示。
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — 规则与去重契约。
+- `backend/scripts/tests/test_deferred_inspection_conflict_e2e.ts` — 非生产集成契约。
+
+### Impact / Dependencies
+
+- Database: 新增迁移，尚未执行。
+- Related units: `CRL-20260801-011`。
+
+## CRL-20260804-010 — 维修反馈提交、状态与网页私有媒体
+
+- **Status:** candidate
+- **Updated:** 2026-08-05 Australia/Melbourne
+- **Request:** 用户选择本次维修反馈与私有照片闭环发布。
+- **Outcome:** 维修反馈按工作流状态提交，网页通过认证媒体代理显示私有照片，避免通用编辑覆盖流程字段。
+
+### Files / Areas
+
+- `frontend/src/app/maintenance/records/page.tsx` — 规范状态展示与认证媒体预览。
+- `frontend/src/components/MaintenanceFeedbackImage.tsx` — 可释放认证 Blob URL 的反馈图片组件。
+- `frontend/src/lib/maintenanceFeedbackMedia.ts` — 私有反馈图片代理与来源任务授权。
+- `frontend/src/lib/maintenanceFeedbackMedia.test.ts` — 私有反馈图片代理测试。
+- `frontend/src/lib/maintenanceWorkflowActions.ts` — 维修工作流动作客户端契约。
+- `frontend/src/lib/maintenanceWorkflowActions.test.ts` — 维修工作流动作测试。
+
+### Impact / Dependencies
+
+- API: 依赖服务端来源任务授权和 `pending_review` 投影。
+- Related units: `CRL-20260731-001`、`CRL-20260731-003`、`CRL-20260731-004`。
+
+## CRL-20260803-005 — 发票详情抽屉与收款状态恢复
+
+- **Status:** candidate
+- **Updated:** 2026-08-05 Australia/Melbourne
+- **Request:** 用户选择本次发票中心优化发布。
+- **Outcome:** 发票中心提供详情抽屉、统一支付方式选项，并支持受审计的已收款恢复待处理状态。
+
+### Files / Areas
+
+- `backend/src/modules/invoices.ts` — 恢复待处理的服务端事务。
+- `backend/scripts/tests/test_invoice_payment_state.ts` — 收款状态契约。
+- `frontend/src/app/finance/invoices/InvoicesCenterClient.tsx` — 抽屉与权限动作。
+- `frontend/src/app/finance/invoices/_components/InvoiceEditor.tsx` — 共享支付方式。
+- `frontend/src/lib/invoicePaymentMethods.ts` — 支付方式单一来源。
+- `frontend/src/lib/invoicePaymentMethods.test.ts` — 支付方式回归。
+
+### Impact / Dependencies
+
+- Finance integrity: 标记已付款和恢复待处理时，发票状态与 `invoice_payment_events` 在同一数据库事务中写入；任一写入失败将整体回滚，不再吞掉付款历史错误。
+
+## CRL-20260731-004 — 内部维修反馈创建收口
+
+- **Status:** candidate
+- **Updated:** 2026-08-05 Australia/Melbourne
+- **Request:** 用户将维修流程基础纳入本次 root 候选。
+- **Outcome:** 内部维修创建、任务投影及事件写入复用统一工作流存储，避免通用入口绕过流程。
+
+### Files / Areas
+
+- `backend/src/lib/maintenanceWorkflow.ts` — 工作流状态与动作校验。
+- `backend/src/lib/maintenanceWorkflowSchema.ts` — DDL helper。
+- `backend/src/lib/maintenanceWorkflowStore.ts` — 投影与事件写入。
+- `backend/src/lib/idempotentStepReceipts.ts` — 回执读取和写入同时接受连接池或事务客户端，保证维修动作的幂等回执与业务写入处于同一事务。
+- `backend/scripts/migrations/20260731_maintenance_workflow_foundation.sql` — 可控数据库基础；本候选不执行数据库操作。
+- `backend/scripts/migrations/20260805_app_submit_receipts.sql` — 幂等回执表和唯一索引的受控迁移；本候选不在请求路径执行 DDL。
+- `backend/scripts/migrations/20260805_property_deep_cleaning_foundation.sql` — 深度清洁反馈字段、稳定草稿键和唯一索引的受控迁移；项目和反馈 API 只进行 readiness 查询。
+- `backend/scripts/init_db.ts` — 初始化入口。
+- `backend/scripts/schema.sql` — 标准 schema。
+- `backend/scripts/schema_neon.sql` — Neon schema。
+- `backend/src/modules/maintenance.ts` — 专用维修写入。
+- `backend/src/modules/mzapp.ts` — 反馈创建后的项目创建和完成接口接受稳定重试键；锁定同一反馈行，并将业务更新与回执写入置于同一事务。
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — 覆盖项目创建/完成的重试键、行锁、回执作用域和事务边界静态契约。
+- `backend/src/modules/public.ts` — 旧公开入口迁移保护。
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts` — 状态机与投影契约。
+- `backend/scripts/tests/test_maintenance_workflow_schema_contract.ts` — schema 契约。
+
+### Impact / Dependencies
+
+- Database: 受控迁移，需在后续部署窗口单独执行。
+- Runtime boundary: 维修和深度清洁 API 仅做只读 schema readiness 检查；迁移未执行时分别返回 `maintenance_workflow_schema_not_ready` 或 `property_deep_cleaning_schema_not_ready`，不会在请求中执行 DDL。项目创建和完成在可用回执表上采用同一事务；反馈创建把稳定草稿键写入受控唯一索引，因此若业务写入后回执或 HTTP 响应中断，同键重试将返回既有反馈而非重复创建。
+- Related units: `CRL-20260731-001`、`CRL-20260731-003`、`CRL-20260804-010`。
+
 ## CRL-20260803-003 — 固定消耗品费月度快照补建修复
 
 - **Status:** committed
@@ -13935,10 +14123,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
 - Git state: pushed to root `Dev` in commit `3354f2b`; root ledger status update pushed separately.
 
-## CRL-20260629-001 — 清洁手动补位任务 Superseded 执行状态第一阶段
+## CRL-20260629-005 — 清洁手动补位任务 Superseded 执行状态第一阶段
 
 - **Status:** pushed
 - **Updated:** 2026-06-30 00:15 AEST
+- **ID allocation:** 修复与既有“日终交接弱网离线保存”记录重复的历史编号；本记录改为 `CRL-20260629-005`，范围、已推送状态和原提交不变。
 - **Request:** 先执行第一阶段；不要把所有手动 checkin/checkout 都自动 supersede，只有符合补位条件且没有执行记录的手动任务才自动 superseded，并且不要再用 `cancelled` 表示被替代。
 - **Outcome:** 清洁任务新增 `execution_state` 执行语义；订单同步创建 canonical 自动任务后，只会把满足条件的手动入住/退房补位任务标记为 `superseded`，保留原 `status`，并让网页端、移动端和任务中心主要读取路径统一过滤 active 任务。
 
@@ -13995,10 +14184,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
 - Git state: implementation pushed to root `Dev` in commit `cb66cb5`; this ledger status update is recorded separately.
 
-## CRL-20260629-002 — 清洁同房同日 Canonical Turnover Display 第二阶段
+## CRL-20260629-006 — 清洁同房同日 Canonical Turnover Display 第二阶段
 
 - **Status:** pushed
 - **Updated:** 2026-06-30 00:15 AEST
+- **ID allocation:** 修复与既有“移动端封装版本同步”记录重复的历史编号；本记录改为 `CRL-20260629-006`，范围、已推送状态和原提交不变。
 - **Request:** 执行阶段2；覆盖晚退、早入住、晚入住、客人需求等同房同日显示不一致问题。
 - **Outcome:** 移动端 `/mzapp/work-tasks` 和网页任务中心清洁合并任务现在复用同一套 canonical turnover display：退房信息按 outgoing checkout 订单/任务算，入住信息按 incoming checkin 订单/任务算；执行源只返回 active ids，superseded 手动补位任务只进入诊断/冲突信息。
 
@@ -14029,10 +14219,10 @@ Shared cross-thread record of repository changes and selectable release units. D
 ### Impact / Dependencies
 
 - API: `/mzapp/work-tasks` 和任务中心清洁任务响应新增 `turnover_display`、`active_source_ids`、`superseded_source_ids`、`all_related_source_ids`、`display_conflicts` 以及 checkout/checkin guest request/late/early tags 等字段；既有根字段继续保留。
-- Database / migration: none in this phase; depends on `CRL-20260629-001` adding `execution_state` and superseded metadata.
+- Database / migration: none in this phase; depends on `CRL-20260629-005` adding `execution_state` and superseded metadata.
 - Config / environment: none.
 - Dependencies: none.
-- Related units: depends on `CRL-20260629-001`; superseded source diagnostics require first-stage schema/data.
+- Related units: depends on `CRL-20260629-005`; superseded source diagnostics require first-stage schema/data.
 
 ### Validation
 
@@ -14095,11 +14285,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ### Impact / Dependencies
 
-- API: depends on `CRL-20260629-002` response fields; older cached mobile tasks continue falling back to legacy fields.
-- Database / migration: none in this phase; depends on `CRL-20260629-001` superseded metadata for meaningful diagnostics.
+- API: depends on `CRL-20260629-006` response fields; older cached mobile tasks continue falling back to legacy fields.
+- Database / migration: none in this phase; depends on `CRL-20260629-005` superseded metadata for meaningful diagnostics.
 - Config / environment: none.
 - Dependencies: none.
-- Related units: depends on `CRL-20260629-001` and `CRL-20260629-002`; should be released after backend schema/display changes.
+- Related units: depends on `CRL-20260629-005` and `CRL-20260629-006`; should be released after backend schema/display changes.
 
 ### Validation
 
@@ -14151,7 +14341,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Database / migration: none.
 - Config / environment: none.
 - Dependencies: none.
-- Related units: shares `backend/src/modules/task_center.ts`, `frontend/src/app/task-center/page.tsx`, and this ledger file with `CRL-20260629-001`, `CRL-20260629-002`, and `CRL-20260629-003`; selective release requires verified hunk-level staging or explicit combined scope.
+- Related units: shares `backend/src/modules/task_center.ts`, `frontend/src/app/task-center/page.tsx`, and this ledger file with `CRL-20260629-005`, `CRL-20260629-006`, and `CRL-20260629-003`; selective release requires verified hunk-level staging or explicit combined scope.
 
 ### Validation
 

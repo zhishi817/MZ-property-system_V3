@@ -411,6 +411,12 @@ function computeTotals(lines: Array<{ line_subtotal: number; tax_amount: number;
   const due = round2(total - paid)
   return { subtotal, tax_total: taxTotal, total, amount_paid: paid, amount_due: due }
 }
+
+export function pendingStatusForPaidInvoice(invoice: { status?: any; invoice_type?: any; sent_at?: any }) {
+  if (String(invoice?.status || '') !== 'paid') throw new Error('only_paid_can_restore_pending')
+  if (normalizeInvoiceType(invoice?.invoice_type) === 'receipt') throw new Error('cannot_restore_pending_receipt')
+  return invoice?.sent_at ? 'sent' : 'issued'
+}
  
 async function nextInvoiceNo(companyId: string, year: number, client: any) {
   const comp = await pgSelect('invoice_companies', '*', { id: companyId }, client)
@@ -1353,11 +1359,14 @@ router.post('/:id/mark-paid', requireAnyPerm(['invoice.payment.record','invoice.
          WHERE id=$11 RETURNING *`,
         [invoiceNo, issueDate, method, methodNote, totals.subtotal, totals.tax_total, totals.total, totals.amount_paid, totals.amount_due, actor, id]
       )
+      await client.query(
+        `INSERT INTO invoice_payment_events(
+           id, invoice_id, status, payment_method, payment_method_note, created_by, created_at
+         ) VALUES($1,$2,'paid',$3,$4,$5,now())`,
+        [uuid(), id, method, methodNote, actor],
+      )
       return upd?.rows?.[0]
     })
-    try {
-      await pgInsert('invoice_payment_events', { id: uuid(), invoice_id: id, status: 'paid', payment_method: method, payment_method_note: methodNote, created_by: actor, created_at: nowIso() } as any)
-    } catch {}
     addAudit('Invoice', id, 'mark_paid', before, row, actor, { ip: req.ip, user_agent: req.headers['user-agent'] })
     return res.json(row)
   } catch (e: any) {
@@ -1368,7 +1377,60 @@ router.post('/:id/mark-paid', requireAnyPerm(['invoice.payment.record','invoice.
     return res.status(400).json({ message: e?.message || 'mark_paid_failed' })
   }
 })
- 
+
+router.post('/:id/restore-pending', requireAnyPerm(['invoice.payment.record','invoice.draft.create','invoice.issue']), async (req, res) => {
+  try {
+    await ensureInvoiceTables()
+    const { id } = req.params
+    const user = (req as any).user || {}
+    const actor = user?.sub || user?.username || null
+    const beforeRows = await pgSelect('invoices', '*', { id })
+    const before = Array.isArray(beforeRows) ? beforeRows[0] : null
+    if (!before) return res.status(404).json({ message: 'not_found' })
+
+    const row = await pgRunInTransaction(async (client) => {
+      const rs = await client.query('SELECT * FROM invoices WHERE id=$1 FOR UPDATE', [id])
+      const inv = rs?.rows?.[0]
+      if (!inv) throw new Error('not_found')
+      const status = pendingStatusForPaidInvoice(inv)
+      const linesRs = await client.query('SELECT * FROM invoice_line_items WHERE invoice_id=$1 ORDER BY sort_order ASC', [id])
+      const totals = computeTotals((linesRs?.rows || []) as any, 0)
+      const updated = await client.query(
+        `UPDATE invoices
+         SET status=$1,
+             paid_at=NULL,
+             payment_method=NULL,
+             payment_method_note=NULL,
+             subtotal=$2,
+             tax_total=$3,
+             total=$4,
+             amount_paid=$5,
+             amount_due=$6,
+             updated_by=$7,
+             updated_at=now()
+         WHERE id=$8 RETURNING *`,
+        [status, totals.subtotal, totals.tax_total, totals.total, totals.amount_paid, totals.amount_due, actor, id]
+      )
+      await client.query(
+        `INSERT INTO invoice_payment_events(
+           id, invoice_id, status, payment_method, payment_method_note, created_by, created_at
+         ) VALUES($1,$2,'pending',NULL,'restored_pending',$3,now())`,
+        [uuid(), id, actor],
+      )
+      return updated?.rows?.[0]
+    })
+    if (!row) throw new Error('restore_pending_failed')
+    addAudit('Invoice', id, 'restore_pending', before, row, actor, { ip: req.ip, user_agent: req.headers['user-agent'] })
+    return res.json(row)
+  } catch (e: any) {
+    const msg = String(e?.message || '')
+    if (msg === 'not_found') return res.status(404).json({ message: 'not_found' })
+    if (msg === 'only_paid_can_restore_pending') return res.status(400).json({ message: 'only_paid_can_restore_pending' })
+    if (msg === 'cannot_restore_pending_receipt') return res.status(400).json({ message: 'cannot_restore_pending_receipt' })
+    return res.status(400).json({ message: e?.message || 'restore_pending_failed' })
+  }
+})
+
 router.post('/:id/record-payment', requirePerm('invoice.payment.record'), async (req, res) => {
   try {
     await ensureInvoiceTables()
