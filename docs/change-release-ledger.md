@@ -1,5 +1,61 @@
 # Change Release Ledger
 
+## CRL-20260805-005 — Root PR 台账范围审计兼容修复
+
+- **Status:** candidate
+- **Updated:** 2026-08-05 Australia/Melbourne
+- **Request:** 修复 root GitHub PR 质量门传入 `--base` 与 `--head` 时，台账审计脚本错误拒绝参数、导致 Change Ledger Audit 和 Root Quality Check 在业务检查前失败的问题。
+- **Outcome:** 审计脚本保留无参数的本地工作区覆盖审计和 `--release-report` 的精确发布审计，同时恢复只读 PR 范围审计；PR 传入成对 `--base` / `--head` 时，会校验三点差异的空白错误及所有变更路径是否已在台账登记。
+
+### Implementation
+
+- **Previous behavior:** `parse_args` 将任意 `--base` 或 `--head` 都限制为 `--release-report`，与质量工作流已有的 PR 范围调用不兼容。
+- **New behavior:** 仅在 `--base` 和 `--head` 成对出现、且不带 `--repo` / `--crl` / `--release-report` 时进入范围覆盖审计；单独传一个范围端点仍明确报错，发布报告的参数约束不变。
+- **Key decisions:** 不改 CI 工作流、不降低审计覆盖标准，也不改变任何业务功能、数据库或部署配置。
+
+### Files / Areas
+
+- `scripts/audit_change_release_ledger.py` — 新增 PR 范围覆盖审计，并恢复兼容参数解析。
+- `scripts/tests/test_audit_change_release_ledger.py` — 覆盖 legacy `--base` / `--head` 调用仍可成功完成范围审计。
+- `docs/change-release-ledger.md` — 记录本 root CI 基础设施修复。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Dependency: mobile `CRL-20260805-005` 必须单独进入 mobile `Dev`，因为 root 的 Fast/Full Regression 会检出并测试 mobile `Dev`。
+
+### Validation
+
+- `python3 scripts/tests/test_audit_change_release_ledger.py` — passed: 11 tests, including the restored `--base` / `--head` PR-range contract.
+- `python3 scripts/audit_change_release_ledger.py --base origin/Dev --head HEAD` — passed: current root PR range has 53 changed paths and all 53 are ledger-recorded.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 3 changed paths / 3 recorded paths in this candidate worktree.
+- `git diff --check` — passed.
+
+### Release Attempts
+
+#### RA-20260805-root-ci-pr-range-01
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260805-005`
+- Intended action: `commit`
+- Branch: `codex/release-selected-root-20260805`
+- Base: `origin/codex/release-selected-root-20260805@94023a7c3c5116b230d57be64d55b936a99128d0`; fetched and read back on 2026-08-05 Australia/Melbourne. Integration target observed separately as `origin/Dev@145ac720532abeaaa93203e7751d741d90bc17fb`.
+- Candidate patch SHA-256: `ddc6406663b9ebf7074c5c5ce6ef13ff4fbc3120313fa53da1dfc5c9e4e6eb2e` (staged implementation diff excluding `docs/change-release-ledger.md`).
+- Commit SHA: pending; candidate content commit will be recorded after the approved commit.
+- Dependencies: mobile `CRL-20260805-005` must separately enter mobile `Dev` before root PR regression can consume the repaired mobile test.
+- Required validation: PASS — 12 focused Python regression tests; PR range audit 53/53 recorded; local ledger audit 3/3; whitespace check passed.
+- Shared-hunk review: PASS — both script paths and the ledger entry are exclusive to this CI repair.
+- Generated-file review: not applicable — no generated files selected.
+- Technical state: `verified`
+- User authorization: `selected-for-commit`; evidence: user explicitly instructed execution of this two-repository repair on 2026-08-05 Australia/Melbourne.
+- Independent review: GO for commit — independent read-only recheck confirmed the exact three staged paths, fingerprint, Release Attempt metadata, success and failure range cases, and no P0/P1 finding.
+- Action conclusion: `GO` for commit only; no push, PR merge, deployment, or production action is authorized.
+
+### Risks / Release Notes
+
+- 该修复仅恢复 CI 的台账范围检查入口；它不会使未登记的变更通过审计。
+- Sensitive-information review: no secrets, `.env` values, tokens, credentials, database URLs, sensitive logs or local caches are included.
+
 ## CRL-20260805-004 — 任务中心延期检查冲突展示导出热修
 
 - **Status:** in-progress

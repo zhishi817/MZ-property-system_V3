@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Audit current ledger coverage or one exact, read-only Release Attempt."""
+"""Audit ledger coverage, a PR range, or one exact, read-only Release Attempt."""
 
 from __future__ import annotations
 
@@ -97,6 +97,31 @@ def coverage_audit(root: Path) -> int:
         return 2
     recorded = recorded_paths(root / LEDGER_RELATIVE_PATH)
     uncovered = sorted(changed - recorded)
+    print(f"Changed files: {len(changed)}")
+    print(f"Recorded changed files: {len(changed & recorded)}")
+    if uncovered:
+        print("Uncovered files:")
+        for path in uncovered:
+            print(f"- {path}")
+        return 1
+    print("Coverage: PASS")
+    return 0
+
+
+def range_coverage_audit(root: Path, base_reference: str, head_reference: str) -> int:
+    try:
+        base = resolve_ref(root, base_reference)
+        head = resolve_ref(root, head_reference)
+        revision_range = f"{base}...{head}"
+        changed = git_paths(root, "diff", "--name-only", revision_range)
+        changed |= git_paths(root, "diff", "--name-only", "--no-renames", revision_range)
+        run_git(root, "diff", "--check", revision_range)
+    except GitError as error:
+        print(str(error) or "Unable to inspect the pull-request range.", file=sys.stderr)
+        return 2
+    recorded = recorded_paths(root / LEDGER_RELATIVE_PATH)
+    uncovered = sorted(changed - recorded)
+    print(f"Audit scope: {base}...{head}")
     print(f"Changed files: {len(changed)}")
     print(f"Recorded changed files: {len(changed & recorded)}")
     if uncovered:
@@ -561,8 +586,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release-report", action="store_true", help="Audit one exact Release Attempt without changing Git or the ledger.")
     parser.add_argument("--repo", choices=("root", "mobile"), help="Repository boundary for --release-report.")
-    parser.add_argument("--base", help="Exact base commit or ref for --release-report.")
-    parser.add_argument("--head", help="Exact head commit or ref for --release-report.")
+    parser.add_argument("--base", help="Base commit/ref for a PR range or --release-report.")
+    parser.add_argument("--head", help="Head commit/ref for a PR range or --release-report.")
     parser.add_argument("--crl", action="append", default=[], help="Selected CRL ID; repeat for each selected unit.")
     parser.add_argument("--format", choices=("markdown", "json"), default="markdown", help="Output format for --release-report.")
     args = parser.parse_args(argv)
@@ -570,13 +595,17 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         absent = [name for name in ("repo", "base", "head") if not getattr(args, name)]
         if absent or not args.crl:
             parser.error("--release-report requires --repo, --base, --head, and at least one --crl.")
-    elif any((args.repo, args.base, args.head, args.crl)):
-        parser.error("--repo, --base, --head, and --crl require --release-report.")
+    elif args.repo or args.crl:
+        parser.error("--repo and --crl require --release-report.")
+    elif bool(args.base) != bool(args.head):
+        parser.error("--base and --head must be supplied together.")
     return args
 
 
 def main(argv: list[str] | None = None, root: Path = ROOT, expected_repository: str = "root") -> int:
     args = parse_args(argv)
+    if not args.release_report and args.base and args.head:
+        return range_coverage_audit(root, args.base, args.head)
     if not args.release_report:
         return coverage_audit(root)
     report = build_release_report(

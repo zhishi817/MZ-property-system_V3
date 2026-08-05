@@ -156,6 +156,28 @@ class ReleaseReportFixture:
 
 
 class ReleaseReportTests(unittest.TestCase):
+    def test_legacy_pr_range_audit_remains_available(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            code = AUDITOR.main(["--base", fixture.base, "--head", fixture.head], root=fixture.root)
+
+        self.assertEqual(0, code)
+        self.assertIn("Audit scope:", stream.getvalue())
+        self.assertIn("Coverage: PASS", stream.getvalue())
+
+    def test_legacy_pr_range_audit_rejects_unrecorded_path(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        fixture._write("src/unrecorded.txt", "unrecorded\n")
+        git(fixture.root, "add", "src/unrecorded.txt")
+        git(fixture.root, "commit", "-qm", "unrecorded fixture path")
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            code = AUDITOR.main(["--base", fixture.base, "--head", "HEAD"], root=fixture.root)
+
+        self.assertEqual(1, code)
+        self.assertIn("src/unrecorded.txt", stream.getvalue())
+
     def test_complete_attempt_is_go_and_has_markdown_json_evidence(self) -> None:
         fixture = ReleaseReportFixture(self)
         report = fixture.report()
