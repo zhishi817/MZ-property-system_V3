@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from 'react'
-import { App, Button, Card, DatePicker, Grid, Input, Modal, Select, Space, Table, Tag } from 'antd'
+import { App, Button, Card, DatePicker, Drawer, Grid, Input, Modal, Select, Space, Table, Tag } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
 import Link from 'next/link'
@@ -9,8 +9,10 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { API_BASE, authHeaders, deleteJSON, getJSON, postJSON } from '../../../lib/api'
 import { hasPerm } from '../../../lib/auth'
 import { buildInvoiceTemplateHtml, normalizeAssetUrl } from '../../../lib/invoiceTemplateHtml'
+import { invoicePaymentMethodOptions } from '../../../lib/invoicePaymentMethods'
 import { InvoiceCompaniesManager } from '../../../components/invoice/InvoiceCompaniesManager'
 import { InvoiceCustomersManager } from '../../../components/invoice/InvoiceCustomersManager'
+import TableRowActions from '../../../components/TableRowActions'
 import styles from './InvoicesCenter.module.css'
 
 type Company = {
@@ -25,6 +27,7 @@ type Invoice = {
   id: string
   company_id: string
   invoice_no?: string
+  invoice_type?: string
   status?: string
   issue_date?: string
   due_date?: string
@@ -32,7 +35,10 @@ type Invoice = {
   bill_to_name?: string
   bill_to_email?: string
   total?: number
+  amount_paid?: number
   amount_due?: number
+  paid_at?: string
+  payment_method?: string
   created_at?: string
 }
 
@@ -74,6 +80,7 @@ export default function InvoicesCenterClient() {
   const [previewId, setPreviewId] = useState<string>('')
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewInvoice, setPreviewInvoice] = useState<any>(null)
+  const [paymentActionLoading, setPaymentActionLoading] = useState(false)
 
   function isR2Url(u: string) {
     try {
@@ -281,6 +288,60 @@ export default function InvoicesCenterClient() {
     }
   }
 
+  async function changePaymentStatus(action: 'mark-paid' | 'restore-pending', paymentMethod?: string) {
+    if (!previewId) return
+    setPaymentActionLoading(true)
+    try {
+      const updated = await postJSON<any>(
+        `/invoices/${previewId}/${action}`,
+        action === 'mark-paid' ? { payment_method: String(paymentMethod || '').trim() } : {},
+      )
+      setPreviewInvoice((current: any) => ({ ...(current || {}), ...(updated || {}) }))
+      await loadInvoices()
+      message.success(action === 'mark-paid' ? '已标记为已付款' : '已恢复为待付款')
+    } catch (e: any) {
+      message.error(String(e?.message || (action === 'mark-paid' ? '标记付款失败' : '恢复待付款失败')))
+    } finally {
+      setPaymentActionLoading(false)
+    }
+  }
+
+  function confirmMarkPaid() {
+    let paymentMethod = ''
+    Modal.confirm({
+      title: '确认标记为已付款？',
+      content: (
+        <div style={{ display: 'grid', gap: 10 }}>
+          <div>请选择付款方式后保存，未收金额会变为 0。</div>
+          <Select
+            placeholder="请选择付款方式"
+            options={invoicePaymentMethodOptions}
+            onChange={(value) => { paymentMethod = String(value || '') }}
+          />
+        </div>
+      ),
+      okText: '标记已付款',
+      cancelText: '取消',
+      onOk: () => {
+        if (!paymentMethod) {
+          message.warning('请选择付款方式')
+          return Promise.reject(new Error('missing_payment_method'))
+        }
+        return changePaymentStatus('mark-paid', paymentMethod)
+      },
+    })
+  }
+
+  function confirmRestorePending() {
+    Modal.confirm({
+      title: '确认恢复为待付款？',
+      content: '已收金额会恢复为 0，未收金额恢复为发票总额；历史付款记录和审计记录会保留。',
+      okText: '恢复待付款',
+      cancelText: '取消',
+      onOk: () => changePaymentStatus('restore-pending'),
+    })
+  }
+
   useEffect(() => {
     if (!previewOpen || !previewId) return
     setPreviewLoading(true)
@@ -353,10 +414,11 @@ export default function InvoicesCenterClient() {
     { title: '收件人', dataIndex: 'bill_to_name', width: 180, render: (v, r) => v || r.bill_to_email || '-' },
     { title: '总计', dataIndex: 'total', width: 120, align: 'right', render: (v) => fmtMoney(v) },
     { title: '未收', dataIndex: 'amount_due', width: 120, align: 'right', render: (v) => fmtMoney(v) },
-    { title: '操作', key: 'act', width: 320, render: (_: any, r) => {
+    { title: '操作', key: 'act', width: 360, render: (_: any, r) => {
       const st = String(r.status || 'draft')
       const canVoid = hasPerm('invoice.void') && st !== 'refunded'
       const canDiscard = hasPerm('invoice.draft.create') && st === 'draft'
+      const canEdit = hasPerm('invoice.draft.create') || hasPerm('invoice.issue')
       const openDetail = () => {
         setPreviewId(String(r.id))
         setPreviewInvoice(null)
@@ -403,23 +465,24 @@ export default function InvoicesCenterClient() {
         })
       }
       return (
-        <Space wrap>
-          <Button onClick={openDetail}>详情</Button>
-          <Button onClick={() => printGeneratedInvoice(String(r.id))}>打印</Button>
-          <Button onClick={() => router.push(`/finance/invoices/${r.id}`)}>编辑</Button>
-          {st === 'draft' ? (
-            <Button danger disabled={!canDiscard} onClick={confirmDiscard}>
-              丢弃
-            </Button>
-          ) : (
-            <Button danger disabled={!canVoid} onClick={confirmDelete}>
-              删除
-            </Button>
-          )}
-        </Space>
+        <TableRowActions
+          actions={[
+            { key: 'detail', label: '详情', onClick: openDetail },
+            { key: 'edit', label: '编辑', onClick: () => router.push(`/finance/invoices/${r.id}`), hidden: !canEdit },
+            { key: 'print', label: '打印', onClick: () => printGeneratedInvoice(String(r.id)) },
+            st === 'draft'
+              ? { key: 'discard', label: '丢弃', danger: true, onClick: confirmDiscard, hidden: !canDiscard }
+              : { key: 'delete', label: '删除', danger: true, onClick: confirmDelete, hidden: !canVoid },
+          ]}
+        />
       )
     }},
   ]
+
+  const detailStatus = String(previewInvoice?.status || '')
+  const canChangePaymentStatus = hasPerm('invoice.payment.record') || hasPerm('invoice.draft.create') || hasPerm('invoice.issue')
+  const canMarkPaid = canChangePaymentStatus && !!previewInvoice && ['issued', 'sent'].includes(detailStatus)
+  const canRestorePending = canChangePaymentStatus && detailStatus === 'paid' && String(previewInvoice?.invoice_type || 'invoice') !== 'receipt'
 
   return (
     <div style={{ background: '#F5F7FA', padding: 16, minHeight: 'calc(100vh - 64px)' }}>
@@ -456,17 +519,32 @@ export default function InvoicesCenterClient() {
               rowSelection={{ selectedRowKeys: selectedInvoiceIds, onChange: (keys) => setSelectedInvoiceIds(keys as any) }}
               pagination={{ defaultPageSize: 20, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100] }}
             />
-            <Modal
+            <Drawer
+              title="发票详情"
               open={previewOpen}
-              onCancel={() => { setPreviewOpen(false); setPreviewId(''); setPreviewInvoice(null) }}
-              width={isMobile ? '95vw' : 900}
-              centered
+              onClose={() => { setPreviewOpen(false); setPreviewId(''); setPreviewInvoice(null) }}
+              placement="right"
+              width={isMobile ? '100%' : 900}
               keyboard
-              footer={null}
               destroyOnClose
-              styles={{ body: { height: isMobile ? '80vh' : 600, padding: 0, overflow: 'hidden' } }}
+              extra={
+                <Space>
+                  {canMarkPaid ? <Button type="primary" loading={paymentActionLoading} onClick={confirmMarkPaid}>标记已付款</Button> : null}
+                  {canRestorePending ? <Button loading={paymentActionLoading} onClick={confirmRestorePending}>恢复待付款</Button> : null}
+                </Space>
+              }
+              styles={{ body: { padding: 16, overflow: 'hidden' } }}
             >
-              <div style={{ width: '100%', height: '100%' }}>
+              <div style={{ width: '100%', height: '100%', display: 'grid', gridTemplateRows: previewInvoice ? 'auto minmax(0, 1fr)' : 'minmax(0, 1fr)', gap: 12 }}>
+                {previewInvoice ? (
+                  <Space wrap size={[24, 8]} style={{ color: 'rgba(17,24,39,0.75)' }}>
+                    <span>单号：{previewInvoice.invoice_no || '-'}</span>
+                    <span>状态：{statusTag(String(previewInvoice.status || 'draft'))}</span>
+                    <span>总计：{fmtMoney(previewInvoice.total)}</span>
+                    <span>已收：{fmtMoney(previewInvoice.amount_paid)}</span>
+                    <span>未收：{fmtMoney(previewInvoice.amount_due)}</span>
+                  </Space>
+                ) : null}
                 {previewLoading ? (
                   <div style={{ width: '100%', height: '100%', display:'flex', alignItems:'center', justifyContent:'center', color:'rgba(17,24,39,0.65)' }}>
                     加载中…
@@ -481,7 +559,7 @@ export default function InvoicesCenterClient() {
                   <iframe title="invoice-preview-html" srcDoc={previewHtml} style={{ width: '100%', height: '100%', border: 0 }} />
                 )}
               </div>
-            </Modal>
+            </Drawer>
           </>
         ) : activeTab === 'companies' ? (
           <InvoiceCompaniesManager

@@ -10,6 +10,7 @@ import { PlusOutlined, EditOutlined, DeleteOutlined, ArrowLeftOutlined, SettingO
 import { API_BASE, authHeaders, deleteJSON, getJSON, patchJSON, postJSON } from '../../../../lib/api'
 import { hasPerm } from '../../../../lib/auth'
 import { buildInvoicePayload } from '../../../../lib/invoicePayload'
+import { invoicePaymentMethodOptions } from '../../../../lib/invoicePaymentMethods'
 import { canBackendAutosaveDraft, computeLine, computeTotals, extractDiscount, normalizeLineItemsForSave, stableHash, type GstType } from '../../../../lib/invoiceEditorModel'
 import { sortActivePropertiesByRegionThenCode } from '../../../../lib/properties'
 import styles from './InvoiceEditor.module.css'
@@ -980,14 +981,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
                       <Form.Item name="payment_method" label="收款方式" rules={[{ required: true, message: '请选择收款方式' }]}>
                         <Select
                           placeholder="选择收款方式"
-                          options={[
-                            { value: 'bank_transfer', label: '银行转账' },
-                            { value: 'bpay', label: 'BPAY' },
-                            { value: 'payid', label: 'PayID' },
-                            { value: 'cash', label: '现金' },
-                            { value: 'rent_deduction', label: '租金扣除' },
-                            { value: 'other', label: '其他' },
-                          ]}
+                          options={invoicePaymentMethodOptions}
                         />
                       </Form.Item>
                     )}
@@ -1471,14 +1465,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
                     <Form.Item name="payment_method" label="付款方式" style={{ marginBottom: 8 }}>
                       <Select
                         placeholder="选择付款方式（可选）"
-                        options={[
-                          { value: 'bank_transfer', label: '银行转账' },
-                          { value: 'bpay', label: 'BPAY' },
-                          { value: 'payid', label: 'PayID' },
-                          { value: 'cash', label: '现金' },
-                          { value: 'rent_deduction', label: '租金扣除' },
-                          { value: 'other', label: '其他' },
-                        ]}
+                        options={invoicePaymentMethodOptions}
                       />
                     </Form.Item>
                     <Form.Item name="payment_method_note" label="付款方式备注" style={{ marginBottom: 0 }}>

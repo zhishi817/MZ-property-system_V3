@@ -5,6 +5,8 @@ import { buildExpenseFingerprint, hasFingerprint, setFingerprint, addDedupLog } 
 import { db, addAudit } from '../store'
 import { normalizeUrlList } from '../lib/normalizeUrlList'
 import { deepCleaningSourceSummary, maintenanceSourceSummary } from '../lib/autoExpenseSourceSummary'
+import { maintenanceWorkTaskStatus, normalizeMaintenanceWorkflowStatus } from '../lib/maintenanceWorkflow'
+import { maintenanceTaskSummaryFromDetails } from '../lib/maintenanceWorkflowStore'
 
 const router = Router()
 // Supabase removed
@@ -647,12 +649,8 @@ async function upsertWorkTaskFromMaintenanceRow(row: any) {
   const workId = `${srcType}:${srcId}`
   const scheduled = row?.eta ? String(row.eta).slice(0, 10) : null
   const title = String(row?.work_no || row?.id || '').trim()
-  const summary = String(row?.details || '').trim() || null
-  const status = normWorkTaskStatus(row?.status)
-  if (status === 'done' || status === 'cancelled') {
-    await pgPool.query(`DELETE FROM work_tasks WHERE source_type=$1 AND source_id=$2`, [srcType, srcId])
-    return
-  }
+  const summary = maintenanceTaskSummaryFromDetails(row?.details)
+  const status = maintenanceWorkTaskStatus(normalizeMaintenanceWorkflowStatus(row?.status, row?.review_status))
   const urgency = normWorkTaskUrgency(row?.urgency)
   const assignee = String(row?.assignee_id || '').trim() || null
   const propertyId = String(row?.property_id || '').trim() || null
@@ -1178,7 +1176,10 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
             } catch {}
             return candidate
           }
-          const userIds = Array.from(new Set(rows.map(r => String((r as any)?.created_by || '').trim()).filter(Boolean)))
+          const userIds = Array.from(new Set(rows.flatMap(r => [
+            String((r as any)?.created_by || '').trim(),
+            String((r as any)?.assignee_id || '').trim(),
+          ]).filter(Boolean)))
           const userMap: Record<string, string> = {}
           if (userIds.length) {
             try {
@@ -1202,13 +1203,14 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
               || String(r.worker_name || '').trim()
               || String(userMap[String(r.created_by || '')] || '').trim()
               || String(r.created_by || '').trim()
+            const assigneeName = String(userMap[String((r as any).assignee_id || '')] || '').trim()
             const submittedAt = asIsoOrEmpty(r.submitted_at)
               || asIsoOrEmpty((r as any).created_at)
               || (String(r.occurred_at || '').trim() ? `${String(r.occurred_at).slice(0,10)}T00:00:00.000Z` : '')
             const area = String((r as any).area || '').trim()
               || String((r as any).category_detail || '').trim()
               || guessCategoryFromDetails((r as any).details)
-            return { ...r, code, property_code: code, submitter_name: submitter, submitted_at: submittedAt || (r as any).submitted_at, area }
+            return { ...r, code, property_code: code, submitter_name: submitter, assignee_name: assigneeName || null, submitted_at: submittedAt || (r as any).submitted_at, area }
           })
           const toFixWorkNo = enriched.filter(r => !String((r as any)?.work_no || '').trim()).slice(0, 50)
           if (toFixWorkNo.length) {
@@ -1456,6 +1458,9 @@ router.get('/:resource/:id', requireResourcePerm('view'), async (req, res) => {
 router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
   const { resource } = req.params
   if (!okResource(resource)) return res.status(404).json({ message: 'resource not allowed' })
+  if (resource === 'property_maintenance') {
+    return res.status(409).json({ code: 'maintenance_feedback_creation_required' })
+  }
   const payload = { ...(req.body || {}) }
   if (!payload.id) payload.id = require('uuid').v4()
   const user = (req as any).user || {}
@@ -2564,6 +2569,17 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
   const { resource, id } = req.params
   if (!okResource(resource)) return res.status(404).json({ message: 'resource not allowed' })
   const payload = req.body || {}
+  if (resource === 'property_maintenance') {
+    const lifecycleFields = [
+      'status', 'assignee_id', 'eta', 'assigned_at', 'assigned_by', 'started_at', 'submitted_at',
+      'completion_photo_urls', 'review_status', 'reviewed_at', 'reviewed_by', 'review_note',
+      'closed_at', 'closed_by', 'cancelled_at', 'cancelled_by', 'cancel_reason',
+      'reopened_at', 'reopened_by', 'reopen_reason',
+    ]
+    if (lifecycleFields.some((field) => Object.prototype.hasOwnProperty.call(payload, field))) {
+      return res.status(409).json({ code: 'maintenance_workflow_action_required' })
+    }
+  }
   if (resource === 'property_maintenance' || resource === 'property_deep_cleaning') { delete (payload as any).property_code }
   if (resource === 'property_maintenance') {
     const normalizedArea = normalizeMaintenanceArea((payload as any).area, (payload as any).category, (payload as any).category_detail)
@@ -3052,6 +3068,9 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
 router.delete('/:resource/:id', requireResourcePerm('delete'), async (req, res) => {
   const { resource, id } = req.params
   if (!okResource(resource)) return res.status(404).json({ message: 'resource not allowed' })
+  if (resource === 'property_maintenance') {
+    return res.status(409).json({ code: 'maintenance_cancel_required' })
+  }
   try {
     if (hasPg) {
       let before: any = null

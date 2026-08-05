@@ -11,6 +11,27 @@ import { resizeUploadImage } from '../lib/uploadImageResize'
 import { ensurePdfJobsSchema } from '../services/pdfJobsSchema'
 import { generateWorkRecordPdf } from '../lib/workRecordPdf'
 import { WORK_RECORD_PDF_TEMPLATE_VERSION } from '../lib/workRecordPdfTemplate'
+import { assertMaintenanceWorkflowSchemaReady, MaintenanceWorkflowSchemaNotReady } from '../lib/maintenanceWorkflowSchema'
+import {
+  availableMaintenanceActions,
+  normalizeMaintenanceWorkflowStatus,
+  validateMaintenanceWorkflowAction,
+  type MaintenanceWorkflowAction,
+} from '../lib/maintenanceWorkflow'
+import {
+  insertMaintenanceWorkflowEvent,
+  maintenanceWorkflowSourceType,
+  upsertMaintenanceWorkTask,
+  type MaintenanceWorkflowDomain,
+} from '../lib/maintenanceWorkflowStore'
+import {
+  buildIdempotencyPayloadHash,
+  assertIdempotentStepReceiptsReady,
+  IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH,
+  IdempotentStepReceiptsNotReady,
+  loadIdempotentStepReceipt,
+  saveIdempotentStepReceipt,
+} from '../lib/idempotentStepReceipts'
 
 export const router = Router()
 const upload = multer({ storage: multer.memoryStorage() })
@@ -77,6 +98,123 @@ async function ensureMaintenanceShareTables() {
   );`)
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_maintenance_share_mid ON maintenance_share_links(maintenance_id);')
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_maintenance_share_expires ON maintenance_share_links(expires_at);')
+}
+
+type MaintenanceDomain = MaintenanceWorkflowDomain
+
+class MaintenanceWorkflowError extends Error {
+  constructor(public statusCode: number, public code: string) {
+    super(code)
+  }
+}
+
+function workflowDomain(value: any): MaintenanceDomain | null {
+  const domain = String(value || '').trim().toLowerCase()
+  return domain === 'internal' || domain === 'external' ? domain : null
+}
+
+function workflowTable(domain: MaintenanceDomain): string {
+  return domain === 'internal' ? 'property_maintenance' : 'external_maintenance_orders'
+}
+
+function workflowSourceType(domain: MaintenanceDomain): string {
+  return maintenanceWorkflowSourceType(domain)
+}
+
+function userRoleNames(user: any): string[] {
+  return Array.from(new Set([
+    String(user?.role || '').trim(),
+    ...(Array.isArray(user?.roles) ? user.roles.map((role: any) => String(role || '').trim()) : []),
+  ].filter(Boolean)))
+}
+
+function isMaintenanceManager(user: any): boolean {
+  return userRoleNames(user).some((role) => ['admin', 'offline_manager', 'customer_service'].includes(role))
+}
+
+function isMaintenanceExecutor(user: any): boolean {
+  return userRoleNames(user).includes('maintenance_staff')
+}
+
+function userId(user: any): string {
+  return String(user?.sub || user?.id || '').trim()
+}
+
+function userName(user: any): string | null {
+  const name = String(user?.username || user?.name || '').trim()
+  return name || null
+}
+
+function dateOnly(value: any): string | null {
+  const raw = String(value || '').trim().slice(0, 10)
+  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null
+}
+
+function nonEmptyStrings(value: any): string[] {
+  const raw = Array.isArray(value) ? value : value == null ? [] : [value]
+  return Array.from(new Set(raw.map((item) => String(item || '').trim()).filter(Boolean)))
+}
+
+function internalAssignmentRecordPatch(value: any): Record<string, any> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const patch: Record<string, any> = {}
+  const has = (key: string) => Object.prototype.hasOwnProperty.call(value, key)
+  if (has('property_id')) patch.property_id = String(value.property_id || '').trim() || null
+  if (has('submitter_name')) patch.submitter_name = String(value.submitter_name || '').trim() || null
+  if (has('urgency')) patch.urgency = String(value.urgency || '').trim() || null
+  if (has('details')) patch.details = value.details == null ? null : String(value.details)
+  if (has('invoice_description_en')) patch.invoice_description_en = value.invoice_description_en == null ? null : String(value.invoice_description_en)
+  if (has('photo_urls')) patch.photo_urls = nonEmptyStrings(value.photo_urls)
+  return patch
+}
+
+function workflowAction(value: any, decision: any): MaintenanceWorkflowAction | null {
+  const action = String(value || '').trim().toLowerCase()
+  if (action === 'review') {
+    const reviewDecision = String(decision || '').trim().toLowerCase()
+    if (reviewDecision === 'approved') return 'review_approved'
+    if (reviewDecision === 'rejected') return 'review_rejected'
+    return null
+  }
+  return ['assign', 'start', 'submit', 'reopen', 'cancel', 'hold'].includes(action)
+    ? action as MaintenanceWorkflowAction
+    : null
+}
+
+async function updateMaintenanceWorkflowRecord(client: any, domain: MaintenanceDomain, id: string, patch: Record<string, any>) {
+  const values: any[] = []
+  const sets = Object.entries(patch).map(([field, value]) => {
+    values.push(value)
+    const cast = field === 'completion_photo_urls' || field === 'photo_urls' ? '::jsonb' : ''
+    return `"${field}" = $${values.length}${cast}`
+  })
+  sets.push('updated_at = now()')
+  values.push(id)
+  const result = await client.query(
+    `UPDATE ${workflowTable(domain)}
+        SET ${sets.join(', ')}
+      WHERE id = $${values.length}
+      RETURNING *`,
+    values,
+  )
+  const row = result?.rows?.[0] || null
+  if (!row) throw new MaintenanceWorkflowError(404, 'maintenance_not_found')
+  return row
+}
+
+function workflowResponse(domain: MaintenanceDomain, row: any, user: any) {
+  const status = normalizeMaintenanceWorkflowStatus(row?.status, row?.review_status)
+  const assignedExecutor = isMaintenanceExecutor(user) && String(row?.assignee_id || '').trim() === userId(user)
+  return {
+    ok: true,
+    domain,
+    id: String(row?.id || ''),
+    status,
+    source_type: workflowSourceType(domain),
+    source_id: String(row?.id || ''),
+    work_task_id: `${workflowSourceType(domain)}:${String(row?.id || '')}`,
+    available_actions: availableMaintenanceActions({ status, isManager: isMaintenanceManager(user), isAssignedExecutor: assignedExecutor }),
+  }
 }
 
 router.post('/upload', requireAnyPerm(['property_maintenance.write','property.write','rbac.manage']), upload.single('file'), async (req, res) => {
@@ -259,6 +397,275 @@ router.get('/pdf-jobs/:id/download', requireAnyPerm(['property_maintenance.view'
     return res.status(200).send(obj.body)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'download failed' })
+  }
+})
+
+router.post('/workflow/external-orders', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  if (!isMaintenanceManager(user)) return res.status(403).json({ code: 'maintenance_manager_required' })
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+
+  const body = req.body || {}
+  const clientName = String(body.client_name || '').trim()
+  const siteName = String(body.site_name || '').trim()
+  const details = String(body.details || '').trim()
+  if (!clientName || !siteName || !details) return res.status(400).json({ code: 'external_maintenance_required_fields' })
+  const requestedAt = body.requested_at == null || body.requested_at === '' ? null : dateOnly(body.requested_at)
+  const scheduledDate = body.scheduled_date == null || body.scheduled_date === '' ? null : dateOnly(body.scheduled_date)
+  if ((body.requested_at != null && body.requested_at !== '' && !requestedAt) || (body.scheduled_date != null && body.scheduled_date !== '' && !scheduledDate)) {
+    return res.status(400).json({ code: 'maintenance_invalid_date' })
+  }
+
+  try {
+    await assertMaintenanceWorkflowSchemaReady(pgPool)
+    const client = await pgPool.connect()
+    try {
+      await client.query('BEGIN')
+      const id = uuidv4()
+      const suppliedOrderNo = String(body.order_no || '').trim()
+      const orderNo = suppliedOrderNo || `EXT-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${id.slice(0, 8).toUpperCase()}`
+      const created = await client.query(
+        `INSERT INTO external_maintenance_orders(
+           id, order_no, client_name, client_contact_name, client_contact_phone, client_contact_email,
+           site_name, site_address, access_notes, external_reference, source_channel,
+           requested_at, scheduled_date, area, details, urgency, status, created_by, created_at, updated_at
+         ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'external_manual',$11::date,$12::date,$13,$14,$15,'pending_assignment',$16,now(),now())
+         RETURNING *`,
+        [
+          id,
+          orderNo,
+          clientName,
+          String(body.client_contact_name || '').trim() || null,
+          String(body.client_contact_phone || '').trim() || null,
+          String(body.client_contact_email || '').trim() || null,
+          siteName,
+          String(body.site_address || '').trim() || null,
+          String(body.access_notes || '').trim() || null,
+          String(body.external_reference || '').trim() || null,
+          requestedAt,
+          scheduledDate,
+          String(body.area || '').trim() || null,
+          details,
+          String(body.urgency || '').trim() || 'medium',
+          userId(user) || null,
+        ],
+      )
+      const row = created?.rows?.[0]
+      await upsertMaintenanceWorkTask(client, 'external', row)
+      await insertMaintenanceWorkflowEvent(client, {
+        domain: 'external',
+        recordId: id,
+        eventType: 'created',
+        fromStatus: '',
+        toStatus: 'pending_assignment',
+        actorUserId: userId(user),
+        actorName: userName(user),
+        reason: null,
+        payload: { order_no: orderNo },
+      })
+      await client.query('COMMIT')
+      return res.status(201).json(workflowResponse('external', row, user))
+    } catch (error) {
+      try { await client.query('ROLLBACK') } catch {}
+      throw error
+    } finally {
+      client.release()
+    }
+  } catch (e: any) {
+    if (e instanceof MaintenanceWorkflowSchemaNotReady) return res.status(503).json({ code: e.message })
+    if (e instanceof MaintenanceWorkflowError) return res.status(e.statusCode).json({ code: e.code })
+    if (String(e?.code || '') === '23505') return res.status(409).json({ code: 'external_maintenance_order_no_conflict' })
+    return res.status(500).json({ message: e?.message || 'external_maintenance_create_failed' })
+  }
+})
+
+router.post('/workflow/:domain/:id/:action', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  const domain = workflowDomain(req.params.domain)
+  const id = String(req.params.id || '').trim()
+  const action = workflowAction(req.params.action, req.body?.decision)
+  if (!domain || !id || !action) return res.status(400).json({ code: 'maintenance_workflow_request_invalid' })
+
+  const body = req.body || {}
+  const reason = String(body.reason || body.review_note || body.note || '').trim() || null
+  const completionPhotoUrls = nonEmptyStrings(body.completion_photo_urls)
+  const actorId = userId(user)
+  const operationId = String(body.operation_id || '').trim()
+  if (operationId.length > IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH) {
+    return res.status(400).json({ code: 'maintenance_operation_id_invalid' })
+  }
+  const recordPatch = domain === 'internal' && action === 'assign'
+    ? internalAssignmentRecordPatch(body.record_patch)
+    : {}
+  const receiptScope = operationId
+    ? {
+        scopeType: 'maintenance_workflow_action',
+        scopeId: `${domain}:${id}:${actorId}`,
+        submitId: operationId,
+        stepKey: action,
+      }
+    : null
+  const receiptPayloadHash = receiptScope
+    ? buildIdempotencyPayloadHash({
+        action,
+        assignee_id: String(body.assignee_id || '').trim() || null,
+        scheduled_date: body.scheduled_date == null ? null : String(body.scheduled_date || '').trim(),
+        record_patch: recordPatch,
+      })
+    : ''
+  try {
+    await assertMaintenanceWorkflowSchemaReady(pgPool)
+    if (receiptScope) await assertIdempotentStepReceiptsReady(pgPool)
+    const client = await pgPool.connect()
+    try {
+      await client.query('BEGIN')
+      const locked = await client.query(`SELECT * FROM ${workflowTable(domain)} WHERE id=$1 FOR UPDATE`, [id])
+      const row = locked?.rows?.[0] || null
+      if (!row) throw new MaintenanceWorkflowError(404, 'maintenance_not_found')
+      if (receiptScope) {
+        const receipt = await loadIdempotentStepReceipt(client, receiptScope)
+        if (receipt) {
+          if (String(receipt.payload_hash || '') !== receiptPayloadHash) {
+            throw new MaintenanceWorkflowError(409, 'maintenance_idempotency_conflict')
+          }
+          await client.query('COMMIT')
+          return res.json(receipt.response_json || { ok: true })
+        }
+      }
+      const status = normalizeMaintenanceWorkflowStatus(row.status, row.review_status)
+      const assignedExecutor = isMaintenanceExecutor(user) && String(row.assignee_id || '').trim() === userId(user)
+      const existingCompletionPhotoUrls = nonEmptyStrings(row.completion_photo_urls)
+      const legacyCompletionPhotoUrls = existingCompletionPhotoUrls.length ? [] : nonEmptyStrings(row.repair_photo_urls)
+      const validation = validateMaintenanceWorkflowAction({
+        action,
+        status,
+        isManager: isMaintenanceManager(user),
+        isAssignedExecutor: assignedExecutor,
+        completionPhotoCount: action === 'submit'
+          ? completionPhotoUrls.length
+          : existingCompletionPhotoUrls.length || legacyCompletionPhotoUrls.length,
+        reason,
+      })
+      if (!validation.ok) {
+        const statusCode = validation.code === 'maintenance_completion_photo_required'
+          ? 422
+          : validation.code.includes('reason_required')
+            ? 400
+            : validation.code === 'maintenance_transition_invalid'
+              ? 409
+              : 403
+        throw new MaintenanceWorkflowError(statusCode, validation.code)
+      }
+
+      const actorName = userName(user)
+      let patch: Record<string, any> = {}
+      let nextStatus = status
+      let eventType: string = action
+      if (action === 'assign') {
+        const assigneeId = String(body.assignee_id || '').trim()
+        if (!assigneeId) throw new MaintenanceWorkflowError(400, 'maintenance_assignee_required')
+        const scheduledDate = body.scheduled_date === undefined
+          ? (domain === 'internal' ? dateOnly(row.eta) : dateOnly(row.scheduled_date))
+          : dateOnly(body.scheduled_date)
+        if (body.scheduled_date !== undefined && body.scheduled_date !== null && body.scheduled_date !== '' && !scheduledDate) {
+          throw new MaintenanceWorkflowError(400, 'maintenance_invalid_date')
+        }
+        nextStatus = 'assigned'
+        patch = {
+          status: nextStatus,
+          assignee_id: assigneeId,
+          assigned_at: new Date().toISOString(),
+          assigned_by: actorId || null,
+          ...(domain === 'internal' ? { eta: scheduledDate } : { scheduled_date: scheduledDate }),
+        }
+        eventType = String(row.assignee_id || '').trim() && String(row.assignee_id || '').trim() !== assigneeId ? 'reassigned' : 'assigned'
+      } else if (action === 'start') {
+        nextStatus = 'in_progress'
+        patch = { status: nextStatus, started_at: row.started_at || new Date().toISOString() }
+      } else if (action === 'submit') {
+        nextStatus = 'pending_review'
+        patch = {
+          status: nextStatus,
+          submitted_at: new Date().toISOString(),
+          completion_photo_urls: JSON.stringify(completionPhotoUrls),
+          ...(domain === 'internal'
+            ? { repair_notes: String(body.completion_note || body.note || '').trim() || null }
+            : { completion_notes: String(body.completion_note || body.note || '').trim() || null }),
+        }
+      } else if (action === 'review_approved') {
+        nextStatus = 'closed'
+        patch = {
+          status: nextStatus,
+          review_status: 'approved',
+          reviewed_at: new Date().toISOString(),
+          reviewed_by: actorId || null,
+          review_note: reason,
+          closed_at: new Date().toISOString(),
+          closed_by: actorId || null,
+        }
+      } else if (action === 'review_rejected') {
+        nextStatus = 'in_progress'
+        patch = {
+          status: nextStatus,
+          review_status: 'rejected',
+          reviewed_at: new Date().toISOString(),
+          reviewed_by: actorId || null,
+          review_note: reason,
+        }
+      } else if (action === 'reopen') {
+        nextStatus = 'in_progress'
+        patch = {
+          status: nextStatus,
+          review_status: 'reopened',
+          reopened_at: new Date().toISOString(),
+          reopened_by: actorId || null,
+          reopen_reason: reason,
+          closed_at: null,
+          closed_by: null,
+        }
+      } else if (action === 'cancel') {
+        nextStatus = 'cancelled'
+        patch = {
+          status: nextStatus,
+          cancelled_at: new Date().toISOString(),
+          cancelled_by: actorId || null,
+          cancel_reason: reason,
+        }
+      }
+
+      const updated = await updateMaintenanceWorkflowRecord(client, domain, id, { ...recordPatch, ...patch })
+      await upsertMaintenanceWorkTask(client, domain, updated)
+      await insertMaintenanceWorkflowEvent(client, {
+        domain,
+        recordId: id,
+        eventType,
+        fromStatus: status,
+        toStatus: nextStatus,
+        actorUserId: actorId,
+        actorName,
+        reason,
+        payload: action === 'assign'
+          ? { assignee_id: updated.assignee_id || null, updated_fields: Object.keys(recordPatch) }
+          : { completion_photo_count: completionPhotoUrls.length },
+      })
+      const response = workflowResponse(domain, updated, user)
+      if (receiptScope) await saveIdempotentStepReceipt(client, receiptScope, receiptPayloadHash, response)
+      await client.query('COMMIT')
+      return res.json(response)
+    } catch (error) {
+      try { await client.query('ROLLBACK') } catch {}
+      throw error
+    } finally {
+      client.release()
+    }
+  } catch (e: any) {
+    if (e instanceof IdempotentStepReceiptsNotReady) return res.status(503).json({ code: e.message })
+    if (e instanceof MaintenanceWorkflowSchemaNotReady) return res.status(503).json({ code: e.message })
+    if (e instanceof MaintenanceWorkflowError) return res.status(e.statusCode).json({ code: e.code })
+    return res.status(500).json({ message: e?.message || 'maintenance_workflow_action_failed' })
   }
 })
 

@@ -16,6 +16,26 @@ async function main() {
 
   const cleaningAppSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/cleaning_app.ts'), 'utf8')
   const mzappSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/mzapp.ts'), 'utf8')
+  const maintenanceSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/maintenance.ts'), 'utf8')
+  const receiptSource = fs.readFileSync(path.resolve(__dirname, '../../src/lib/idempotentStepReceipts.ts'), 'utf8')
+  const receiptMigration = fs.readFileSync(path.resolve(__dirname, '../../scripts/migrations/20260805_app_submit_receipts.sql'), 'utf8')
+  const deepCleaningMigration = fs.readFileSync(path.resolve(__dirname, '../../scripts/migrations/20260805_property_deep_cleaning_foundation.sql'), 'utf8')
+  const rootPackage = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../../package.json'), 'utf8')) as { scripts?: Record<string, string> }
+  assert.match(receiptSource, /assertIdempotentStepReceiptsReady/)
+  assert.doesNotMatch(receiptSource, /\b(?:CREATE|ALTER)\s+(?:TABLE|INDEX)/i, 'receipt helper must not perform request-path DDL')
+  assert.match(receiptMigration, /CREATE TABLE IF NOT EXISTS app_submit_receipts/)
+  assert.match(receiptMigration, /CREATE UNIQUE INDEX IF NOT EXISTS uniq_app_submit_receipts_scope/)
+  assert.match(maintenanceSource, /assertIdempotentStepReceiptsReady\(pgPool\)/)
+  assert.match(mzappSource, /assertIdempotentStepReceiptsReady\(pool\)/)
+  assert.equal(rootPackage.scripts?.['check:ci'], 'npm run check:fast', 'PR workflow check:ci entry must remain available')
+  assert.match(String(rootPackage.scripts?.['check:fast'] || ''), /test:ledger-range-audit/, 'fast CI must include ledger range-audit regression coverage')
+  const deepCleaningReadiness = mzappSource.match(/class PropertyDeepCleaningSchemaNotReady[\s\S]*?type FeedbackKind/)?.[0] || ''
+  assert.ok(deepCleaningReadiness, 'deep-cleaning readiness helper must remain discoverable')
+  assert.match(deepCleaningReadiness, /SELECT id, property_id, status[\s\S]*?client_item_id[\s\S]*?FROM property_deep_cleaning/)
+  assert.doesNotMatch(deepCleaningReadiness, /\b(?:CREATE|ALTER)\s+(?:TABLE|INDEX)/i, 'deep-cleaning request readiness must not perform DDL')
+  assert.match(deepCleaningMigration, /CREATE TABLE IF NOT EXISTS property_deep_cleaning/)
+  assert.match(deepCleaningMigration, /client_item_id text/)
+  assert.match(deepCleaningMigration, /CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_deep_cleaning_client_item/)
   const requiredCompletionAreas = "['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'shower_drain', 'remote_tv', 'vacuum_used']"
   assert.match(cleaningAppSource, new RegExp(`const REQUIRED_COMPLETION_PHOTO_AREAS = ${requiredCompletionAreas.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), 'self-complete endpoint must require bathroom drain, TV remote, and vacuum photo areas')
   assert.match(mzappSource, new RegExp(`const REQUIRED_COMPLETION_PHOTO_AREAS = ${requiredCompletionAreas.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), 'work-task status must use the same self-complete photo areas')
@@ -45,6 +65,29 @@ async function main() {
   assert.match(mzappSource, /stepKey === 'self_complete_restock'/, 'self-complete restock must use an explicit stable step key')
   assert.match(mzappSource, /SELECT 1 FROM cleaning_consumable_usages/, 'self-complete restock must still require consumables before saving proof')
   assert.match(mzappSource, /performedAsAction: selfCompleteRestock \? 'fill_supplies' : 'submit_inspection'/, 'self-complete restock must record the cleaner action instead of inspection')
+
+  assert.match(mzappSource, /const feedbackProjectCreateSchema[\s\S]*?submit_id: z\.string\(\)\.trim\(\)\.min\(1\)\.max\(IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH\)[\s\S]*?step_key:[\s\S]*?client_item_id:/, 'feedback project creation must accept the stable retry identifiers')
+  assert.match(mzappSource, /const feedbackProjectCompleteSchema[\s\S]*?submit_id: z\.string\(\)\.trim\(\)\.min\(1\)\.max\(IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH\)[\s\S]*?step_key:[\s\S]*?client_item_id:/, 'feedback project completion must accept the stable retry identifiers')
+  const feedbackProjectCreateRoute = mzappSource.match(/router\.post\('\/property-feedbacks\/:kind\/:id\/projects'[\s\S]*?router\.patch\('\/property-feedbacks\/:kind\/:id\/projects\/:projectId'/)?.[0] || ''
+  const feedbackProjectCompleteRoute = mzappSource.match(/router\.post\('\/property-feedbacks\/:kind\/:id\/projects\/:projectId\/complete'[\s\S]*?function urgencyRank/)?.[0] || ''
+  assert.ok(feedbackProjectCreateRoute, 'feedback project create route must remain discoverable')
+  assert.ok(feedbackProjectCompleteRoute, 'feedback project completion route must remain discoverable')
+  for (const [name, route, scopeType] of [
+    ['create', feedbackProjectCreateRoute, 'property_feedback_project_create'],
+    ['complete', feedbackProjectCompleteRoute, 'property_feedback_project_complete'],
+  ] as const) {
+    assert.match(route, /pgRunInTransaction\(async \(client\)/, `feedback project ${name} must share the receipt and business write transaction`)
+    assert.match(route, /loadPropertyFeedbackRow\(kind, id, client, true\)/, `feedback project ${name} must lock the parent feedback row before checking the receipt`)
+    assert.match(route, new RegExp(`scopeType: '${scopeType}'`), `feedback project ${name} must use its own receipt scope`)
+    assert.match(route, /loadIdempotentStepReceipt\(client, receiptScope\)/, `feedback project ${name} must return its saved receipt on retry`)
+    assert.match(route, /saveIdempotentStepReceipt\(client, receiptScope, payloadHash, body\)/, `feedback project ${name} must save its response before commit`)
+  }
+  assert.match(mzappSource, /persistFeedbackProjects\([\s\S]*?transactionClient\?: any/, 'project persistence must accept the route transaction client')
+  assert.match(mzappSource, /async function loadPropertyFeedbackByClientItemId/, 'feedback creation must have a durable stable-draft lookup')
+  assert.match(mzappSource, /property_maintenance WHERE property_id = \$1 AND client_item_id = \$2/, 'maintenance feedback retries must use the stable-draft key')
+  assert.match(mzappSource, /property_deep_cleaning WHERE property_id = \$1 AND client_item_id = \$2/, 'deep-cleaning feedback retries must use the stable-draft key')
+  assert.match(mzappSource, /clientItemId: clientItemId \|\| null/, 'maintenance feedback creation must persist the stable-draft key')
+  assert.match(mzappSource, /dedup_fingerprint, client_item_id/, 'deep-cleaning feedback creation must persist the stable-draft key')
 
   const selfCompleteLockboxRoute = cleaningAppSource.match(/router\.post\('\/tasks\/:id\/lockbox-video'[\s\S]*?async function handleDeleteLockboxVideo/)?.[0] || ''
   assert.ok(selfCompleteLockboxRoute, 'self-complete lockbox route must remain discoverable')

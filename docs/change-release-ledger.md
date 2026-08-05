@@ -1,5 +1,531 @@
 # Change Release Ledger
 
+## CRL-20260805-008 — Root 回归测试链与业务契约恢复
+
+- **Status:** pushed
+- **Updated:** 2026-08-05 Australia/Melbourne
+- **Request:** 修复完整 #286 推送复核发现的 P1：离线任务指派 PATCH 与清洁私有媒体图片的既有回归测试从 root 质量门执行链中丢失，并恢复对应业务契约。
+- **Outcome:** Root Quality / Full 再次执行两条离线任务指派静态契约；Fast 与 Root Quality / Full 再次执行私有媒体图片授权与格式契约；离线任务指派 PATCH 与清洁媒体读取恢复到既有 fail-closed 业务边界。
+
+### Implementation
+
+- **Previous behavior:** 测试源文件仍存在，但 backend 缺少两条 assignment contract 的 npm script；root `check:backend` 不运行两条 assignment contract 或 `test:cleaning-media-image`，`check:fast` 也不运行 media image contract。当前候选还让离线任务 PATCH 和清洁媒体代理偏离这些测试保护的既有业务边界。
+- **New behavior:** 恢复两个 backend script，`check:backend` 执行两条 assignment contract 与 media image contract，`check:fast` 执行 media image contract；`check:full` 通过 `check:backend` 继承三条保护。离线任务 PATCH 重新在事务内锁定 source/canonical、显式 assignee PATCH 才同步 canonical，缺省字段不覆盖既有执行人，`assignee_id: null` 返回业务错误。清洁媒体代理重新支持任务媒体、补品照片和日终交接照片的唯一归属判断；已登记清洁媒体冲突时不退回 maintenance feedback 授权路径；补品客厅照片保留 plural/legacy 双字段兼容。
+- **Key decisions:** 保持台账和质量门严格；不削弱媒体权限，不改测试断言，不改数据库 schema，不改 mobile 代码，不改 CI 超时。
+
+### Files / Areas
+
+- `backend/package.json` — 恢复两条离线任务指派静态契约的 npm script。
+- `backend/src/modules/cleaning.ts` — 恢复离线任务指派 PATCH 的事务、锁顺序、source/canonical 同步和 omitted/null 语义。
+- `backend/src/modules/cleaning_app.ts` — 恢复私有媒体代理的任务媒体、补品照片、日终照片唯一归属与 fail-closed 授权；恢复补品客厅多图兼容字段。
+- `package.json` — 将两条 assignment contract 接回 Root Quality / Full，将 media image contract 接回 Fast 与 Root Quality / Full。
+- `docs/feature-regression-registry.md` — 更新 FR-002 / FR-004 的最后验证指针和相关 CRL。
+- `docs/change-release-ledger.md` — 记录 P1 修复与后续重新审计要求。
+
+### Impact / Dependencies
+
+- API: restores existing `/cleaning/offline-tasks/:id` PATCH response fields for work-task assignment status; `/cleaning-app/tasks/:id/consumables` continues returning legacy `living_room_photo_url` and now also preserves plural `living_room_photo_urls`.
+- Database / migration / dependencies: none.
+- Permissions: media entry permission includes existing cleaning media permissions plus `inventory.view`; record-level day-end authorization remains fail-closed.
+- Related units: `CRL-20260731-009`（离线任务指派 canonical 契约）、`CRL-20260731-008`（清洁媒体完整性、多图展示与安全清理） and the full #286 root candidate.
+- Feature regression registry: FR-002 and FR-004 updated for `CRL-20260805-008`.
+
+### Validation
+
+- `npm run test:offline-task-assignment-patch --prefix backend` — passed after restoring the omitted-vs-explicit guard, `assignee_id: null` business rejection, staff validation and transactional source/canonical update.
+- `npm run test:offline-task-assignment-first-patch --prefix backend` — passed after restoring table-ensure-before-transaction and row-lock ordering.
+- `npm run test:cleaning-media-image --prefix backend` — failed before the media repair on missing/restored helper and SQL assertions; passed after restoring task media, consumable usage, day-end media and conflict fail-closed behavior.
+- `npm run check:backend` — passed, including `test:root-quality-workflow-contract`, backend build, two assignment contracts, `test:cleaning-media-image`, R2 governance and Phase 5 release contract.
+- `npm run check:fast` — passed using ignored validation-only dependency directories; ledger range audit, ledger audit, feature registry audit, backend build, idempotency, media image, R2, Phase 5, frontend tests and mobile typecheck all completed.
+- `npm run check:full` — passed using ignored validation-only dependency directories; backend full chain, frontend lint/test/build and mobile typecheck/lint/test completed. Existing lint warnings and the existing mobile Jest open-handle notice did not fail the command.
+- `git diff --check` — passed.
+- Cleanup: temporary validation-only dependency directories and symlinks were removed; generated `backend/dist/modules/cleaning.js` and `backend/dist/modules/rbac.js` from local build were restored because Render rebuilds `dist` and these outputs would otherwise broaden the selected range.
+
+### Release Attempts
+
+#### RA-20260805-root-crl008-commit-01
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260805-008`
+- Intended action: `commit`
+- Branch: `codex/release-selected-root-20260805`
+- Base: `origin/Dev@145ac720532abeaaa93203e7751d741d90bc17fb`; fetched at `2026-08-05 22:07:57 AEST`.
+- Candidate patch SHA-256: `bf23fb489e805ca9f2a335f211329dd0dd0bc0f5bc0e6f8d2ba8cd7becc58db3` (staged implementation diff excluding `docs/change-release-ledger.md`).
+- Commit SHA: `a99af16875b93e27bad7d16a55366a0a2909fee5`; audit head is emitted by the release report command.
+- Dependencies: existing full #286 branch range and mobile `origin/Dev@606e2c8911f7e25e28a88759898cc34626d669ab` for Phase 5 source contract; this attempt itself modifies only root.
+- Required validation: PASS — targeted assignment/media contracts, `npm run check:backend`, `npm run check:fast`, `npm run check:full`, feature-registry audit, ledger audit and `git diff --check` passed.
+- Shared-hunk review: PASS — changed shared files are intentionally scoped to `CRL-20260805-008`; generated `backend/dist` outputs were restored and are not staged.
+- Generated-file review: PASS — no generated files are staged.
+- Technical state: `pushed`
+- User authorization: `selected-for-commit`; evidence: user authorized and continued the focused P1 repair after the #286 push blocker.
+- Independent review: GO for commit — `/root/review_root_crl008_commit_2` reported no P0/P1/P2, matched staged fingerprint `bf23fb489e805ca9f2a335f211329dd0dd0bc0f5bc0e6f8d2ba8cd7becc58db3`, confirmed staged scope, no generated/cache/mobile repo/secret/production-write risk.
+- Action conclusion: `GO`; commit succeeded at `a99af16875b93e27bad7d16a55366a0a2909fee5`. Push remains not authorized until a future exact commit SHA / branch approval and exact range audit.
+
+#### RA-20260805-root-pr286-push-02
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260629-005`, `CRL-20260629-006`, `CRL-20260731-004`, `CRL-20260803-005`, `CRL-20260804-010`, `CRL-20260805-001`, `CRL-20260805-002`, `CRL-20260805-004`, `CRL-20260805-005`, `CRL-20260805-006`, `CRL-20260805-007`, `CRL-20260805-008`.
+- Intended action: `push`
+- Branch: `codex/release-selected-root-20260805`
+- Base: `origin/Dev@145ac720532abeaaa93203e7751d741d90bc17fb`; fetched at `2026-08-05 22:40:12 AEST`. Remote branch before push: `origin/codex/release-selected-root-20260805@104a4ca94496bebb955204b210aca750e7d6a3ad`.
+- Candidate patch SHA-256: `fdb0c59845c1a083c592855bf1760ab4d045006595a60ddc33639439a785a765` (complete `origin/Dev...209d9b249f151d5efd6ef933094732873321ba94` implementation diff excluding `docs/change-release-ledger.md`).
+- Commit SHA: `a99af16875b93e27bad7d16a55366a0a2909fee5`; latest content commit in the complete PR candidate. Audit head is emitted by the release report command.
+- Dependencies: mobile `origin/Dev@606e2c8911f7e25e28a88759898cc34626d669ab` is read by Phase 5; root and mobile remain separate repositories.
+- Required validation: PASS — targeted assignment/media contracts, `npm run check:backend`, `npm run check:fast`, `npm run check:full`, feature-registry audit, ledger audit and `git diff --check` passed after resolving the prior P1.
+- Shared-hunk review: PASS — the full PR range is intentionally selected; shared workflow, package and ledger paths have recorded release-unit ownership.
+- Generated-file review: PASS — no generated files in the exact range; validation-only dependency directories and build outputs were cleaned.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after implementation commit `a99af16875b93e27bad7d16a55366a0a2909fee5` and branch head `209d9b249f151d5efd6ef933094732873321ba94` were reported, user replied “授权” to pushing root branch `codex/release-selected-root-20260805` to GitHub.
+- Independent review: GO for push — `/root/review_root_pr286_push_2` rechecked the staged exact attempt, matched full-range fingerprint `fdb0c59845c1a083c592855bf1760ab4d045006595a60ddc33639439a785a765`, confirmed the prior P1 was resolved, and found no P0/P1/P2 code issue, no generated/cache/mobile repo/secret/production-write risk.
+- Action conclusion: `GO` for push completed — `git push origin HEAD:codex/release-selected-root-20260805` advanced `origin/codex/release-selected-root-20260805` from `104a4ca94496bebb955204b210aca750e7d6a3ad` to `bb5ecb83b8e04f11ed0d0a901719247ddec9efbe` on 2026-08-05 Australia/Melbourne. CI, PR merge to `Dev`, deployment and production behavior remain NOT VERIFIED.
+
+This repair changes the candidate SHA and invalidates the earlier push authorization for `7af7830`.
+
+### Risks / Release Notes
+
+- Validation uses local/static contract tests and build only; no production database writes, no deployment, no branch push and no external sync.
+- Actual R2 object retrieval against live storage is not performed; this CRL verifies request authorization, format handling and fail-closed proxy selection before R2 read.
+- The implementation has been pushed to the root candidate branch, not merged to `Dev` or `main`, and not deployed.
+- Sensitive-information review: no secrets, `.env` values, tokens, credentials, database URLs, sensitive logs or local caches are selected.
+
+## CRL-20260805-007 — Root Quality Check mobile 源码检出修复
+
+- **Status:** ready
+- **Updated:** 2026-08-05 Australia/Melbourne
+- **Request:** 修复 root PR 的 `Root Quality Check` 在执行 Phase 5 跨仓库契约测试时缺少 mobile 源码、报 `ENOENT` 后长期显示运行中的问题。
+- **Outcome:** Root Quality Check 在后端测试前检出 mobile `Dev` 源码；若以后删掉该前置条件，独立工作流契约测试会立即失败，而不会再进入缺文件的 Phase 5 测试。
+
+### Implementation
+
+- **Previous behavior:** 该 job 只检出 root，`backend/scripts/tests/test_phase5_release_contract.ts` 读取 `mz-cleaning-app-frontend/src/...` 时找不到文件；`ts-node-dev` 在错误后仍处于监听状态，使 GitHub Check 等待到 job 超时。
+- **New behavior:** 该 job 使用现有 mobile `Dev` checkout 约定，在 `Run backend checks` 前提供 `mz-cleaning-app-frontend` 目录；`test:root-quality-workflow-contract` 静态断言此检出、仓库、分支、路径和执行顺序。
+- **Key decisions:** 不改业务代码、Phase 5 业务契约、测试超时或 CI 门槛；不安装 mobile 依赖，因为该 root 契约测试只读取其源文件。
+
+### Files / Areas
+
+- `.github/workflows/quality.yml` — Root Quality Check 增加 mobile `Dev` checkout。
+- `package.json` — 将工作流前置条件测试接入 `check:backend` 的最前面。
+- `scripts/tests/test_root_quality_workflow_contract.py` — 新增防回归静态工作流契约测试。
+- `docs/change-release-ledger.md` — 记录本 CI 基础设施修复。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Dependency: mobile `origin/Dev@606e2c8911f7e25e28a88759898cc34626d669ab` 是被检出的既有集成分支；本变更不修改 mobile 仓库。
+- Feature regression registry: unchanged — 没有业务工作流、权限、状态迁移或客户端行为变化。
+
+### Validation
+
+- `npm run test:root-quality-workflow-contract` — passed: 1 assertion suite verifies the root `check` job checks out mobile `Dev` at `mz-cleaning-app-frontend` before backend checks.
+- `npm run check:backend` — passed with temporary read-only links to the existing mobile source and backend dependency trees, both removed after the command: backend TypeScript build and all listed contract tests passed, including `test:phase5-release-contract`.
+- `npm run check:feature-registry` — passed: 9 FRs / 101 mappings; no business-regression entry is affected by this CI-only repair.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 4 changed paths / 4 recorded paths.
+- `git diff --check` — passed.
+
+### Release Attempts
+
+#### RA-20260805-root-quality-mobile-checkout-01
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260805-007`
+- Intended action: `commit`
+- Branch: `codex/release-selected-root-20260805`
+- Base: `origin/Dev@145ac720532abeaaa93203e7751d741d90bc17fb`; fetched at 2026-08-05 Australia/Melbourne. Existing PR branch remote head independently refreshed as `origin/codex/release-selected-root-20260805@104a4ca94496bebb955204b210aca750e7d6a3ad`.
+- Candidate patch SHA-256: `d612fd8f43ac7e0ca4bf38a5a3bcdd6dc62d252b4eea72c145a32c9761c62a92` (staged implementation diff excluding `docs/change-release-ledger.md`).
+- Commit SHA: `3fe4f529634bfda34f9611788af055bf496e9d79`; candidate content commit for this exact implementation patch.
+- Dependencies: mobile `origin/Dev@606e2c8911f7e25e28a88759898cc34626d669ab` is read by the root Phase 5 contract; no mobile changes are included.
+- Required validation: PASS — focused workflow contract, full root `check:backend` with Phase 5 source reads, feature registry audit, ledger audit and whitespace check all passed.
+- Shared-hunk review: PASS — the workflow job, root package command, new contract test and new ledger entry are exclusive to this root CI repair.
+- Generated-file review: not applicable — no generated files are selected; validation-only temporary links were removed.
+- Technical state: `committed`.
+- User authorization: `selected-for-commit`; evidence: user said “修复” after receiving the exact missing-mobile-checkout fix scope on 2026-08-05 Australia/Melbourne.
+- Independent review: GO for commit — independent read-only review rechecked the root/mobile boundary, workflow order, staged fingerprint, ledger coverage and sensitive-information risk; no P0/P1/P2 finding.
+- Action conclusion: `GO` for commit completed — local content commit created on `codex/release-selected-root-20260805`. Push, PR update, merge, deployment and production behavior remain unauthorized / NOT VERIFIED.
+
+### Risks / Release Notes
+
+- Root Quality Check 仍需 GitHub 能读取 mobile 仓库；该仓库访问权限或 `Dev` 分支不可用时会明确 checkout 失败，不再以缺文件的后台测试表现。
+- `python3 scripts/audit_change_release_ledger.py --release-report --repo root --base 145ac720532abeaaa93203e7751d741d90bc17fb --head 02e883210dfe930a203f1193606f27ab7f8b91c2 --crl CRL-20260805-007 --format markdown` — BLOCKED for push as expected: the existing PR range contains prior selected release units while this attempt selects only CRL-007, and no exact new-SHA push authorization exists. A future push must authorize the full PR scope (or isolate this CRL on a new branch) and rerun the exact range audit.
+- Sensitive-information review: no secrets, `.env` values, tokens, credentials, database URLs, sensitive logs or local caches are selected.
+
+#### RA-20260805-root-pr286-push-01
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260629-005`, `CRL-20260629-006`, `CRL-20260731-004`, `CRL-20260803-005`, `CRL-20260804-010`, `CRL-20260805-001`, `CRL-20260805-002`, `CRL-20260805-004`, `CRL-20260805-005`, `CRL-20260805-006`, `CRL-20260805-007`.
+- Intended action: `push`
+- Branch: `codex/release-selected-root-20260805`
+- Base: `origin/Dev@145ac720532abeaaa93203e7751d741d90bc17fb`; fetched at 2026-08-05 Australia/Melbourne. Remote branch base: `origin/codex/release-selected-root-20260805@104a4ca94496bebb955204b210aca750e7d6a3ad`.
+- Candidate patch SHA-256: `d72a34a198b00b31a784dd3d0b1d39a29ca5e3cb8bf4836a608fdc649c9ab8e1` (complete `origin/Dev...HEAD` implementation diff excluding `docs/change-release-ledger.md`).
+- Commit SHA: `3fe4f529634bfda34f9611788af055bf496e9d79`; latest content commit in the complete PR candidate; preceding selected content commits are in the same exact range and recorded by their own attempts.
+- Dependencies: mobile `origin/Dev@606e2c8911f7e25e28a88759898cc34626d669ab` is read by Phase 5; root and mobile remain separate repositories.
+- Required validation: PASS — previous complete-range entries retain their recorded validation; the new CI repair passed `npm run check:backend`, workflow contract, registry and ledger audits.
+- Shared-hunk review: PASS — the full PR range is intentionally selected; shared workflow, package and ledger paths have recorded release-unit ownership.
+- Generated-file review: PASS — no generated files in the exact range.
+- Technical state: `committed`.
+- User authorization: `approved-for-push`; evidence: user replied “授权” to pushing this exact branch through `7af7830183c84f4024599d3fc74752fcd51d69cd` after requesting a complete #286 scope audit on 2026-08-05 Australia/Melbourne.
+- Independent review: NO-GO for push — independent full-range review found P1: `package.json` removed the offline-task-assignment PATCH / first-PATCH and cleaning-media-image test execution chains, while `backend/package.json` removed two still-existing assignment contract scripts. This lowers the Root Quality / Full regression gates for code in this same candidate.
+- Action conclusion: `BLOCKED`; blocker: restore the three regression command chains, rerun relevant quality checks and the complete-range audit, then obtain new-SHA push authorization.
+
+## CRL-20260805-006 — Python 运行缓存台账边界修复
+
+- **Status:** candidate
+- **Updated:** 2026-08-05 Australia/Melbourne
+- **Request:** 根治 CI 在 Python 台账审计回归测试生成 `.pyc` 缓存后，将该运行产物误判为未登记仓库变更的问题。
+- **Outcome:** Python `__pycache__` / 字节码是仓库统一忽略的运行缓存，不参与台账覆盖范围；真实未登记源码仍会导致审计失败。
+
+### Implementation
+
+- **Previous behavior:** 根仓库没有 Python 缓存忽略规则；回归测试导入审计模块后生成 `.pyc`，后续 `git ls-files --others --exclude-standard` 将其报告为未登记文件。
+- **New behavior:** `.gitignore` 统一忽略 `__pycache__/` 与 `*.py[cod]`；审计算法不变，仍检查所有未被忽略的真实路径。
+- **Key decisions:** 不在单条测试中关闭字节码生成，也不在审计代码中硬编码例外；由标准 Git 忽略边界处理所有 Python 工具和 CI 任务。
+
+### Files / Areas
+
+- `.gitignore` — 新增仓库级 Python 运行缓存忽略规则。
+- `scripts/tests/test_audit_change_release_ledger.py` — 覆盖缓存文件被忽略、真实未登记 Python 源文件仍失败。
+- `docs/change-release-ledger.md` — 记录本 root CI 基础设施修复。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Related unit: mobile `CRL-20260805-006` 仅处理同一根 CI 失败的独立测试超时；两者可独立验证与发布。
+
+### Validation
+
+- `python3 scripts/tests/test_audit_change_release_ledger.py` — passed: 13 tests; Python cache is ignored and an unrecorded source file still fails audit.
+- `python3 scripts/audit_change_release_ledger.py` — passed after test execution: 3 changed paths / 3 recorded paths; no `.pyc` cache leak.
+- `git diff --check` — passed.
+
+### Release Attempts
+
+#### RA-20260805-root-python-cache-01
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260805-006`
+- Intended action: `commit`
+- Branch: `codex/release-selected-root-20260805`
+- Base: `origin/codex/release-selected-root-20260805@28c5c1cf38822b95f6283abeeecf65e01032f297`; fetched and read back on 2026-08-05 Australia/Melbourne.
+- Candidate patch SHA-256: `cdcb554371be5f07efa445a2e9fff5f2d5d571943ad0cc6c75c63c51c66d7014` (staged implementation diff excluding `docs/change-release-ledger.md`).
+- Commit SHA: `5fa10fde78ba9e98a949ce504b4a709ecb37268e`; candidate content commit for this exact implementation range.
+- Dependencies: none.
+- Required validation: PASS — Python audit regressions 13/13, cache-ignore/source-reject assertions, local ledger audit and whitespace check.
+- Shared-hunk review: PASS — `.gitignore`, the audit regression test and ledger entry are exclusive to this CI repair.
+- Generated-file review: not applicable — cache files are excluded; no generated file is selected.
+- Technical state: `pushed`
+- User authorization: `approved-for-push`; evidence: user explicitly authorized pushing `codex/release-selected-root-20260805` through `104a4ca94496bebb955204b210aca750e7d6a3ad` on 2026-08-05 Australia/Melbourne.
+- Independent review: GO for commit — independent read-only review verified the standard Git ignore boundary, cache/source regression pair, staged fingerprint and no P0/P1/P2 finding.
+- Action conclusion: `GO` for push completed — `origin/codex/release-selected-root-20260805` advanced from `28c5c1cf38822b95f6283abeeecf65e01032f297` to `104a4ca94496bebb955204b210aca750e7d6a3ad`, updating root PR #286. CI, merge to `Dev`, deployment and production behavior remain NOT VERIFIED.
+
+### Risks / Release Notes
+
+- 被忽略的仅是 Python 解释器可再生成的缓存；任何未登记 `.py` 源文件仍应使审计失败。
+- Feature regression registry: unchanged — no product workflow, permission, state transition or client behavior is altered.
+- Sensitive-information review: no secrets, `.env` values, tokens, credentials, database URLs, sensitive logs or local caches are selected.
+
+## CRL-20260805-005 — Root PR 台账范围审计兼容修复
+
+- **Status:** candidate
+- **Updated:** 2026-08-05 Australia/Melbourne
+- **Request:** 修复 root GitHub PR 质量门传入 `--base` 与 `--head` 时，台账审计脚本错误拒绝参数、导致 Change Ledger Audit 和 Root Quality Check 在业务检查前失败的问题。
+- **Outcome:** 审计脚本保留无参数的本地工作区覆盖审计和 `--release-report` 的精确发布审计，同时恢复只读 PR 范围审计；PR 传入成对 `--base` / `--head` 时，会校验三点差异的空白错误及所有变更路径是否已在台账登记。
+
+### Implementation
+
+- **Previous behavior:** `parse_args` 将任意 `--base` 或 `--head` 都限制为 `--release-report`，与质量工作流已有的 PR 范围调用不兼容。
+- **New behavior:** 仅在 `--base` 和 `--head` 成对出现、且不带 `--repo` / `--crl` / `--release-report` 时进入范围覆盖审计；单独传一个范围端点仍明确报错，发布报告的参数约束不变。
+- **Key decisions:** 不改 CI 工作流、不降低审计覆盖标准，也不改变任何业务功能、数据库或部署配置。
+
+### Files / Areas
+
+- `scripts/audit_change_release_ledger.py` — 新增 PR 范围覆盖审计，并恢复兼容参数解析。
+- `scripts/tests/test_audit_change_release_ledger.py` — 覆盖 legacy `--base` / `--head` 调用仍可成功完成范围审计。
+- `docs/change-release-ledger.md` — 记录本 root CI 基础设施修复。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Dependency: mobile `CRL-20260805-005` 必须单独进入 mobile `Dev`，因为 root 的 Fast/Full Regression 会检出并测试 mobile `Dev`。
+
+### Validation
+
+- `python3 scripts/tests/test_audit_change_release_ledger.py` — passed: 12 tests, including restored `--base` / `--head` success and unrecorded-path failure contracts.
+- `python3 scripts/audit_change_release_ledger.py --base origin/Dev --head HEAD` — passed: current root PR range has 53 changed paths and all 53 are ledger-recorded.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 3 changed paths / 3 recorded paths in this candidate worktree.
+- `git diff --check` — passed.
+
+### Release Attempts
+
+#### RA-20260805-root-ci-pr-range-01
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260805-005`
+- Intended action: `commit`
+- Branch: `codex/release-selected-root-20260805`
+- Base: `origin/codex/release-selected-root-20260805@94023a7c3c5116b230d57be64d55b936a99128d0`; fetched and read back on 2026-08-05 Australia/Melbourne. Integration target observed separately as `origin/Dev@145ac720532abeaaa93203e7751d741d90bc17fb`.
+- Candidate patch SHA-256: `ddc6406663b9ebf7074c5c5ce6ef13ff4fbc3120313fa53da1dfc5c9e4e6eb2e` (staged implementation diff excluding `docs/change-release-ledger.md`).
+- Commit SHA: `3fb31e2`; candidate content commit for this exact implementation range.
+- Dependencies: mobile `CRL-20260805-005` entered `mobile origin/Dev` through merge commit `a6e4fbed79f2071a31faaeee04fd845e8320ee5a`, so root PR regression now consumes the repaired mobile test.
+- Required validation: PASS — 12 focused Python regression tests; PR range audit 53/53 recorded; local ledger audit 3/3; whitespace check passed.
+- Shared-hunk review: PASS — both script paths and the ledger entry are exclusive to this CI repair.
+- Generated-file review: not applicable — no generated files selected.
+- Technical state: `pushed`
+- User authorization: `approved-for-push`; evidence: user explicitly authorized pushing `codex/release-selected-root-20260805` through `28c5c1cf38822b95f6283abeeecf65e01032f297` on 2026-08-05 Australia/Melbourne.
+- Independent review: GO for commit — independent read-only recheck confirmed the exact three staged paths, fingerprint, Release Attempt metadata, success and failure range cases, and no P0/P1 finding.
+- Action conclusion: `GO` for push completed — `origin/codex/release-selected-root-20260805` advanced from `94023a7c3c5116b230d57be64d55b936a99128d0` to `28c5c1cf38822b95f6283abeeecf65e01032f297`, updating existing root PR #286. CI, merge to `Dev`, deployment and production behavior remain NOT VERIFIED.
+
+### Risks / Release Notes
+
+- 该修复仅恢复 CI 的台账范围检查入口；它不会使未登记的变更通过审计。
+- Sensitive-information review: no secrets, `.env` values, tokens, credentials, database URLs, sensitive logs or local caches are included.
+
+## CRL-20260805-004 — 任务中心延期检查冲突展示导出热修
+
+- **Status:** in-progress
+- **Updated:** 2026-08-05 Australia/Melbourne
+- **Request:** 修复 Vercel 构建中 `task-center/page.tsx` 导入了不存在的 `deferredInspectionConflictPresentation` 导出而导致的 TypeScript 编译失败。
+- **Outcome:** 延期检查与入住冲突卡片继续显示“入住冲突”危险标签、原定检查日期及入住日期/时间，且任务中心页面可完成类型检查和 Next.js 构建。
+
+### Implementation
+
+- **Previous behavior:** 页面调用冲突展示 helper，但发布候选遗漏 helper 导出和对应测试，Vercel 在编译阶段失败。
+- **New behavior:** `taskCenterDisplay.ts` 接收服务端已投影的冲突字段并仅格式化展示；它不推导冲突、不改任务状态或通知。无冲突时返回 `null`。
+- **Key decisions:** 仅补入原开发工作区中同一功能的显示 helper 和回归测试，不改变后端字段、权限、数据库迁移或任务冲突规则。
+
+### Files / Areas
+
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — 导出延期检查/入住冲突的任务卡标签和说明。
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — 覆盖有冲突及无冲突的显示契约。
+- `docs/feature-regression-registry.md` — 补充现有 Web 任务中心展示保护点的冲突显示说明。
+- `docs/change-release-ledger.md` — 本热修的范围、验证和发布证据。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Related units: `CRL-20260805-001`（服务端冲突投影）和 `CRL-20260805-002`（此前 root 发布包）。
+
+### Validation
+
+- `npm run test --prefix frontend -- --coverage.enabled=false src/app/task-center/taskCenterDisplay.test.ts` — passed: 1 suite / 5 tests.
+- `npm run lint --prefix frontend` — passed with existing project warnings only; no lint error.
+- `frontend/node_modules/.bin/tsc --noEmit -p frontend/tsconfig.json` — passed in the isolated candidate using the existing workspace dependency runtime.
+- `npm run build --prefix frontend` — NOT VERIFIED: it reached Next.js optimized-build compilation after the former missing-export point, but this runner did not return a final build completion result; no successful Vercel deployment is claimed.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 4 changed files / 4 recorded.
+- `npm run check:feature-registry` — passed: 9 FRs / 101 test mappings.
+- `git diff --check` — passed.
+
+### Release Attempts
+
+#### RA-20260805-root-vercel-hotfix-01
+
+- Repository: root
+- Selected CRLs: CRL-20260805-004
+- Intended action: push
+- Branch: `codex/release-selected-root-20260805`
+- Base: `origin/codex/release-selected-root-20260805` `578a231f936f392e1da0ea52287c128052f605a6`; remotely read back before the repair on 2026-08-05 Australia/Melbourne.
+- Candidate patch SHA-256: `a4f20bbf01f8b580d741f795447a311b633306a2a3b917481b9d2160a8ea6474` (excludes `docs/change-release-ledger.md`).
+- Commit SHA: `ac81a18909882a667de8dcc68176cee757173cd4` (hotfix content commit; subsequent ledger-evidence commits are excluded from the candidate fingerprint).
+- Dependencies: `CRL-20260805-001` supplies the server-projected conflict fields; `CRL-20260805-002` supplied the page caller that this hotfix completes.
+- Required validation: PASS with a documented build-evidence gap — targeted Vitest, lint, direct TypeScript check, ledger audit, feature-registry audit and whitespace check passed; local Next.js build completion and Vercel build result remain NOT VERIFIED.
+- Shared-hunk review: PASS — the four staged files are exclusive to this display-only hotfix and recorded here.
+- Generated-file review: not applicable — no generated output is selected.
+- Technical state: pushed.
+- User authorization: approved-for-push — user explicitly authorized this root branch through `94023a7c3c5116b230d57be64d55b936a99128d0` on 2026-08-05 Australia/Melbourne.
+- Independent review: GO for commit — independent recheck verified the base, exact non-ledger fingerprint, staged implementation/ledger scope, targeted test evidence and sensitive/generated-file boundary; no P0/P1/P2 finding.
+- Action conclusion: GO for push — `origin/codex/release-selected-root-20260805` was read back at `94023a7c3c5116b230d57be64d55b936a99128d0`; NOT VERIFIED for PR, merge to Dev, Vercel build completion, deployment and production behavior.
+
+### Risks / Release Notes
+
+- No production data, database migration, notification dispatch or external sync is triggered by this display-only repair.
+- Sensitive-information review: no secrets, `.env` values, tokens, credentials, database URLs, sensitive logs or local caches are included.
+
+## CRL-20260805-002 — 已选 root 跨层发布包映射
+
+- **Status:** candidate
+- **Updated:** 2026-08-05 Australia/Melbourne
+- **Request:** 用户确认将已选 root 台账作为一个隔离候选包提交；此记录仅用于精确范围审计，不新增业务功能。
+- **Outcome:** 将已选的维护闭环、私有媒体、发票状态、延期检查替代、通知和发布治理文件绑定到同一可审计候选范围；反馈创建、项目创建和项目完成三步共用稳定重试键。
+- **Source-unit mapping:** CRL-20260731-001、CRL-20260731-003、CRL-20260731-004、CRL-20260731-011、CRL-20260801-001、CRL-20260801-002、CRL-20260801-003、CRL-20260801-004、CRL-20260801-005、CRL-20260801-006、CRL-20260801-007、CRL-20260801-008、CRL-20260801-009、CRL-20260801-010、CRL-20260801-011、CRL-20260801-014、CRL-20260802-004、CRL-20260803-001、CRL-20260803-002、CRL-20260803-004、CRL-20260803-005、CRL-20260804-001、CRL-20260804-002、CRL-20260804-003、CRL-20260804-004、CRL-20260804-006、CRL-20260804-007、CRL-20260804-008、CRL-20260804-010、CRL-20260804-011、CRL-20260804-012、CRL-20260804-013、CRL-20260804-014、CRL-20260805-001。CRL-20260804-009 已在本候选基线 origin/Dev 中，因此不重复产生补丁。
+
+### Files / Areas
+
+- `.codex/skills/change-release-ledger/SKILL.md` — 已选发布包中的精确候选路径。
+- `AGENTS.md` — 已选发布包中的精确候选路径。
+- `backend/package.json` — 已选发布包中的精确候选路径。
+- `backend/scripts/init_db.ts` — 已选发布包中的精确候选路径。
+- `backend/scripts/migrations/20260731_maintenance_workflow_foundation.sql` — 已选发布包中的精确候选路径。
+- `backend/scripts/migrations/20260805_app_submit_receipts.sql` — 已选发布包中的精确候选路径。
+- `backend/scripts/migrations/20260805_deferred_inspection_checkin_replacement.sql` — 已选发布包中的精确候选路径。
+- `backend/scripts/migrations/20260805_property_deep_cleaning_foundation.sql` — 深度清洁反馈投影和稳定草稿键的受控 schema 基础；本候选不执行迁移。
+- `backend/scripts/schema.sql` — 已选发布包中的精确候选路径。
+- `backend/scripts/schema_neon.sql` — 已选发布包中的精确候选路径。
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — 已选发布包中的精确候选路径。
+- `backend/scripts/tests/test_deferred_inspection_conflict_e2e.ts` — 已选发布包中的精确候选路径。
+- `backend/scripts/tests/test_invoice_payment_state.ts` — 已选发布包中的精确候选路径。
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — 已选发布包中的精确候选路径。
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts` — 已选发布包中的精确候选路径。
+- `backend/scripts/tests/test_maintenance_workflow_schema_contract.ts` — 已选发布包中的精确候选路径。
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — 已选发布包中的精确候选路径。
+- `backend/src/lib/idempotentStepReceipts.ts` — 已选发布包中的精确候选路径。
+- `backend/src/lib/maintenanceWorkflow.ts` — 已选发布包中的精确候选路径。
+- `backend/src/lib/maintenanceWorkflowSchema.ts` — 已选发布包中的精确候选路径。
+- `backend/src/lib/maintenanceWorkflowStore.ts` — 已选发布包中的精确候选路径。
+- `backend/src/modules/cleaning.ts` — 已选发布包中的精确候选路径。
+- `backend/src/modules/cleaning_app.ts` — 已选发布包中的精确候选路径。
+- `backend/src/modules/crud.ts` — 已选发布包中的精确候选路径。
+- `backend/src/modules/invoices.ts` — 已选发布包中的精确候选路径。
+- `backend/src/modules/maintenance.ts` — 已选发布包中的精确候选路径。
+- `backend/src/modules/mzapp.ts` — 已选发布包中的精确候选路径。
+- `backend/src/modules/public.ts` — 已选发布包中的精确候选路径。
+- `backend/src/modules/task_center.ts` — 已选发布包中的精确候选路径。
+- `backend/src/modules/work_tasks.ts` — 已选发布包中的精确候选路径。
+- `backend/src/services/appNotificationPolicies.ts` — 已选发布包中的精确候选路径。
+- `backend/src/services/cleaningSync.ts` — 已选发布包中的精确候选路径。
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — 已选发布包中的精确候选路径。
+- `backend/src/services/notificationEvents.ts` — 已选发布包中的精确候选路径。
+- `docs/change-release-ledger.md` — 已选发布包中的精确候选路径。
+- `docs/codex-release-review.md` — 已选发布包中的精确候选路径。
+- `frontend/src/app/finance/invoices/InvoicesCenterClient.tsx` — 已选发布包中的精确候选路径。
+- `frontend/src/app/finance/invoices/_components/InvoiceEditor.tsx` — 已选发布包中的精确候选路径。
+- `frontend/src/app/maintenance/records/page.tsx` — 已选发布包中的精确候选路径。
+- `frontend/src/app/task-center/page.tsx` — 已选发布包中的精确候选路径。
+- `frontend/src/components/MaintenanceFeedbackImage.tsx` — 已选发布包中的精确候选路径。
+- `frontend/src/lib/invoicePaymentMethods.test.ts` — 已选发布包中的精确候选路径。
+- `frontend/src/lib/invoicePaymentMethods.ts` — 已选发布包中的精确候选路径。
+- `frontend/src/lib/maintenanceFeedbackMedia.test.ts` — 已选发布包中的精确候选路径。
+- `frontend/src/lib/maintenanceFeedbackMedia.ts` — 已选发布包中的精确候选路径。
+- `frontend/src/lib/maintenanceWorkflowActions.test.ts` — 已选发布包中的精确候选路径。
+- `frontend/src/lib/maintenanceWorkflowActions.ts` — 已选发布包中的精确候选路径。
+- `package.json` — 已选发布包中的精确候选路径。
+- `scripts/audit_change_release_ledger.py` — 已选发布包中的精确候选路径。
+- `scripts/tests/test_audit_change_release_ledger.py` — 已选发布包中的精确候选路径。
+
+### Impact / Dependencies
+
+- Database / deployment: 包含受控迁移，但本候选不执行迁移、部署或生产写入。
+- Related repositories: 移动端配套候选由独立 mobile 发布包记录；两仓仍需分别提交、审查和授权推送。
+
+### Validation
+
+- 后端 TypeScript、维修工作流、发票、私有媒体、通知和延期检查替代的针对性测试已在隔离工作区通过。
+- 管理端 lint 以成功退出；仅有项目既有 warning。真实生产、数据库迁移和设备交互未验证。
+
+### Risks / Release Notes
+
+- 此映射记录不改变来源台账的业务范围；它只让精确范围审计能够验证用户已选的组合。
+
+#### RA-20260805-root-selected-01
+
+- Repository: root
+- Selected CRLs: CRL-20260805-002
+- Base: origin/Dev `145ac720532abeaaa93203e7751d741d90bc17fb`; fetched at 2026-08-05 16:19:36 AEST.
+- Branch: `codex/release-selected-root-20260805`
+- Candidate patch SHA-256: `0c971ff55a648d2a8dde982cba72e73959b8f4d84a9aafcd7960399aefe76dbb` (excludes `docs/change-release-ledger.md`).
+- Dependencies: selected maintenance foundation, deferred-inspection replacement, private-media authorization and invoice-state units; maintenance and idempotent-receipt migrations are included but not executed.
+- Required validation: PASS with one local-harness boundary — backend TypeScript; idempotency, maintenance schema/action, media visibility and deferred-inspection contracts; ledger regression test and current ledger coverage all passed. `check:ci` is restored and its script contract is covered, but a full local invocation reaches the ledger gate with temporary dependency symlinks reported as untracked; this does not demonstrate a CI runner result.
+- Independent review: GO for commit — independent staged review of `0c971ff55a648d2a8dde982cba72e73959b8f4d84a9aafcd7960399aefe76dbb` found the CI entry restored, deep-cleaning DDL moved to its controlled migration, and stable-key retry safety present; no P0/P1/P2 blocker.
+- User authorization: approved-for-push — user explicitly authorized `codex/release-selected-root-20260805` through `578a231f936f392e1da0ea52287c128052f605a6` on 2026-08-05 Australia/Melbourne.
+- Intended action: push
+- Technical state: pushed
+- Commit SHA: `dad290645de78747648badc1c232119aabe96f30` (candidate content commit; audit head is recorded by the report command)
+- Shared-hunk review: PASS — candidate paths are explicit in this packaging record; no partial hunk from an unselected implementation unit is staged.
+- Generated-file review: not applicable — no generated build output is included.
+- Action conclusion: GO for push — `origin/codex/release-selected-root-20260805` was read back at `578a231f936f392e1da0ea52287c128052f605a6`; NOT VERIFIED for PR, merge to Dev, deployment and production behavior.
+
+
+## CRL-20260805-001 — 延期检查与入住冲突替代、告警和任务投影
+
+- **Status:** candidate
+- **Updated:** 2026-08-05 Australia/Melbourne
+- **Request:** 用户选择并明确授权在本次 root 发布候选中包含延期检查替代、事务边界与通知写入。
+- **Outcome:** 延期检查与同日入住发生冲突时，任务替代关系被记录、任务中心显示冲突提示，并按既有策略发出受控告警。
+
+### Files / Areas
+
+- `backend/scripts/migrations/20260805_deferred_inspection_checkin_replacement.sql` — 添加受控替代关系字段与索引；本候选不执行迁移。
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — 冲突筛选、替代关系协调与通知事件构造。
+- `backend/src/modules/cleaning.ts` — 在任务创建、编辑、删除后协调冲突并发出受控通知。
+- `backend/src/modules/task_center.ts` — 在任务投影后显示冲突提示。
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — 规则与去重契约。
+- `backend/scripts/tests/test_deferred_inspection_conflict_e2e.ts` — 非生产集成契约。
+
+### Impact / Dependencies
+
+- Database: 新增迁移，尚未执行。
+- Related units: `CRL-20260801-011`。
+
+## CRL-20260804-010 — 维修反馈提交、状态与网页私有媒体
+
+- **Status:** candidate
+- **Updated:** 2026-08-05 Australia/Melbourne
+- **Request:** 用户选择本次维修反馈与私有照片闭环发布。
+- **Outcome:** 维修反馈按工作流状态提交，网页通过认证媒体代理显示私有照片，避免通用编辑覆盖流程字段。
+
+### Files / Areas
+
+- `frontend/src/app/maintenance/records/page.tsx` — 规范状态展示与认证媒体预览。
+- `frontend/src/components/MaintenanceFeedbackImage.tsx` — 可释放认证 Blob URL 的反馈图片组件。
+- `frontend/src/lib/maintenanceFeedbackMedia.ts` — 私有反馈图片代理与来源任务授权。
+- `frontend/src/lib/maintenanceFeedbackMedia.test.ts` — 私有反馈图片代理测试。
+- `frontend/src/lib/maintenanceWorkflowActions.ts` — 维修工作流动作客户端契约。
+- `frontend/src/lib/maintenanceWorkflowActions.test.ts` — 维修工作流动作测试。
+
+### Impact / Dependencies
+
+- API: 依赖服务端来源任务授权和 `pending_review` 投影。
+- Related units: `CRL-20260731-001`、`CRL-20260731-003`、`CRL-20260731-004`。
+
+## CRL-20260803-005 — 发票详情抽屉与收款状态恢复
+
+- **Status:** candidate
+- **Updated:** 2026-08-05 Australia/Melbourne
+- **Request:** 用户选择本次发票中心优化发布。
+- **Outcome:** 发票中心提供详情抽屉、统一支付方式选项，并支持受审计的已收款恢复待处理状态。
+
+### Files / Areas
+
+- `backend/src/modules/invoices.ts` — 恢复待处理的服务端事务。
+- `backend/scripts/tests/test_invoice_payment_state.ts` — 收款状态契约。
+- `frontend/src/app/finance/invoices/InvoicesCenterClient.tsx` — 抽屉与权限动作。
+- `frontend/src/app/finance/invoices/_components/InvoiceEditor.tsx` — 共享支付方式。
+- `frontend/src/lib/invoicePaymentMethods.ts` — 支付方式单一来源。
+- `frontend/src/lib/invoicePaymentMethods.test.ts` — 支付方式回归。
+
+### Impact / Dependencies
+
+- Finance integrity: 标记已付款和恢复待处理时，发票状态与 `invoice_payment_events` 在同一数据库事务中写入；任一写入失败将整体回滚，不再吞掉付款历史错误。
+
+## CRL-20260731-004 — 内部维修反馈创建收口
+
+- **Status:** candidate
+- **Updated:** 2026-08-05 Australia/Melbourne
+- **Request:** 用户将维修流程基础纳入本次 root 候选。
+- **Outcome:** 内部维修创建、任务投影及事件写入复用统一工作流存储，避免通用入口绕过流程。
+
+### Files / Areas
+
+- `backend/src/lib/maintenanceWorkflow.ts` — 工作流状态与动作校验。
+- `backend/src/lib/maintenanceWorkflowSchema.ts` — DDL helper。
+- `backend/src/lib/maintenanceWorkflowStore.ts` — 投影与事件写入。
+- `backend/src/lib/idempotentStepReceipts.ts` — 回执读取和写入同时接受连接池或事务客户端，保证维修动作的幂等回执与业务写入处于同一事务。
+- `backend/scripts/migrations/20260731_maintenance_workflow_foundation.sql` — 可控数据库基础；本候选不执行数据库操作。
+- `backend/scripts/migrations/20260805_app_submit_receipts.sql` — 幂等回执表和唯一索引的受控迁移；本候选不在请求路径执行 DDL。
+- `backend/scripts/migrations/20260805_property_deep_cleaning_foundation.sql` — 深度清洁反馈字段、稳定草稿键和唯一索引的受控迁移；项目和反馈 API 只进行 readiness 查询。
+- `backend/scripts/init_db.ts` — 初始化入口。
+- `backend/scripts/schema.sql` — 标准 schema。
+- `backend/scripts/schema_neon.sql` — Neon schema。
+- `backend/src/modules/maintenance.ts` — 专用维修写入。
+- `backend/src/modules/mzapp.ts` — 反馈创建后的项目创建和完成接口接受稳定重试键；锁定同一反馈行，并将业务更新与回执写入置于同一事务。
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — 覆盖项目创建/完成的重试键、行锁、回执作用域和事务边界静态契约。
+- `backend/src/modules/public.ts` — 旧公开入口迁移保护。
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts` — 状态机与投影契约。
+- `backend/scripts/tests/test_maintenance_workflow_schema_contract.ts` — schema 契约。
+
+### Impact / Dependencies
+
+- Database: 受控迁移，需在后续部署窗口单独执行。
+- Runtime boundary: 维修和深度清洁 API 仅做只读 schema readiness 检查；迁移未执行时分别返回 `maintenance_workflow_schema_not_ready` 或 `property_deep_cleaning_schema_not_ready`，不会在请求中执行 DDL。项目创建和完成在可用回执表上采用同一事务；反馈创建把稳定草稿键写入受控唯一索引，因此若业务写入后回执或 HTTP 响应中断，同键重试将返回既有反馈而非重复创建。
+- Related units: `CRL-20260731-001`、`CRL-20260731-003`、`CRL-20260804-010`。
+
 ## CRL-20260803-003 — 固定消耗品费月度快照补建修复
 
 - **Status:** committed
@@ -13935,10 +14461,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
 - Git state: pushed to root `Dev` in commit `3354f2b`; root ledger status update pushed separately.
 
-## CRL-20260629-001 — 清洁手动补位任务 Superseded 执行状态第一阶段
+## CRL-20260629-005 — 清洁手动补位任务 Superseded 执行状态第一阶段
 
 - **Status:** pushed
 - **Updated:** 2026-06-30 00:15 AEST
+- **ID allocation:** 修复与既有“日终交接弱网离线保存”记录重复的历史编号；本记录改为 `CRL-20260629-005`，范围、已推送状态和原提交不变。
 - **Request:** 先执行第一阶段；不要把所有手动 checkin/checkout 都自动 supersede，只有符合补位条件且没有执行记录的手动任务才自动 superseded，并且不要再用 `cancelled` 表示被替代。
 - **Outcome:** 清洁任务新增 `execution_state` 执行语义；订单同步创建 canonical 自动任务后，只会把满足条件的手动入住/退房补位任务标记为 `superseded`，保留原 `status`，并让网页端、移动端和任务中心主要读取路径统一过滤 active 任务。
 
@@ -13995,10 +14522,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
 - Git state: implementation pushed to root `Dev` in commit `cb66cb5`; this ledger status update is recorded separately.
 
-## CRL-20260629-002 — 清洁同房同日 Canonical Turnover Display 第二阶段
+## CRL-20260629-006 — 清洁同房同日 Canonical Turnover Display 第二阶段
 
 - **Status:** pushed
 - **Updated:** 2026-06-30 00:15 AEST
+- **ID allocation:** 修复与既有“移动端封装版本同步”记录重复的历史编号；本记录改为 `CRL-20260629-006`，范围、已推送状态和原提交不变。
 - **Request:** 执行阶段2；覆盖晚退、早入住、晚入住、客人需求等同房同日显示不一致问题。
 - **Outcome:** 移动端 `/mzapp/work-tasks` 和网页任务中心清洁合并任务现在复用同一套 canonical turnover display：退房信息按 outgoing checkout 订单/任务算，入住信息按 incoming checkin 订单/任务算；执行源只返回 active ids，superseded 手动补位任务只进入诊断/冲突信息。
 
@@ -14029,10 +14557,10 @@ Shared cross-thread record of repository changes and selectable release units. D
 ### Impact / Dependencies
 
 - API: `/mzapp/work-tasks` 和任务中心清洁任务响应新增 `turnover_display`、`active_source_ids`、`superseded_source_ids`、`all_related_source_ids`、`display_conflicts` 以及 checkout/checkin guest request/late/early tags 等字段；既有根字段继续保留。
-- Database / migration: none in this phase; depends on `CRL-20260629-001` adding `execution_state` and superseded metadata.
+- Database / migration: none in this phase; depends on `CRL-20260629-005` adding `execution_state` and superseded metadata.
 - Config / environment: none.
 - Dependencies: none.
-- Related units: depends on `CRL-20260629-001`; superseded source diagnostics require first-stage schema/data.
+- Related units: depends on `CRL-20260629-005`; superseded source diagnostics require first-stage schema/data.
 
 ### Validation
 
@@ -14095,11 +14623,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ### Impact / Dependencies
 
-- API: depends on `CRL-20260629-002` response fields; older cached mobile tasks continue falling back to legacy fields.
-- Database / migration: none in this phase; depends on `CRL-20260629-001` superseded metadata for meaningful diagnostics.
+- API: depends on `CRL-20260629-006` response fields; older cached mobile tasks continue falling back to legacy fields.
+- Database / migration: none in this phase; depends on `CRL-20260629-005` superseded metadata for meaningful diagnostics.
 - Config / environment: none.
 - Dependencies: none.
-- Related units: depends on `CRL-20260629-001` and `CRL-20260629-002`; should be released after backend schema/display changes.
+- Related units: depends on `CRL-20260629-005` and `CRL-20260629-006`; should be released after backend schema/display changes.
 
 ### Validation
 
@@ -14151,7 +14679,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Database / migration: none.
 - Config / environment: none.
 - Dependencies: none.
-- Related units: shares `backend/src/modules/task_center.ts`, `frontend/src/app/task-center/page.tsx`, and this ledger file with `CRL-20260629-001`, `CRL-20260629-002`, and `CRL-20260629-003`; selective release requires verified hunk-level staging or explicit combined scope.
+- Related units: shares `backend/src/modules/task_center.ts`, `frontend/src/app/task-center/page.tsx`, and this ledger file with `CRL-20260629-005`, `CRL-20260629-006`, and `CRL-20260629-003`; selective release requires verified hunk-level staging or explicit combined scope.
 
 ### Validation
 

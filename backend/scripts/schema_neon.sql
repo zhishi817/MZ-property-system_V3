@@ -228,6 +228,8 @@ CREATE INDEX IF NOT EXISTS idx_cleaning_property ON cleaning_tasks(property_id);
 ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS order_id text;
 ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS task_type text;
 ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS task_date date;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_replaced_by_checkin_task_id text;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_replaced_original_due_date date;
 ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS auto_sync_enabled boolean DEFAULT true;
 ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS sync_fingerprint text;
 ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS source text DEFAULT 'auto';
@@ -242,6 +244,9 @@ ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS reschedule_required boolean;
 CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_task_date ON cleaning_tasks(task_date);
 CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_order_id ON cleaning_tasks(order_id);
 CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_status ON cleaning_tasks(status);
+CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_inspection_replacement_source
+  ON cleaning_tasks(inspection_replaced_by_checkin_task_id)
+  WHERE inspection_replaced_by_checkin_task_id IS NOT NULL;
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uniq_cleaning_tasks_order_task_type_v3') THEN
     BEGIN

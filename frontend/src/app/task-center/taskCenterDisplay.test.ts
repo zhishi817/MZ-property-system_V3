@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cleaningNightsDisplayLabels, cleaningTaskFlowLabelText, isDeferredInspectionDisplayTask, resolveTaskCenterColumns } from './taskCenterDisplay'
+import { cleaningNightsDisplayLabels, cleaningTaskFlowLabelText, deferredInspectionConflictPresentation, isDeferredInspectionDisplayTask, resolveTaskCenterColumns } from './taskCenterDisplay'
 
 describe('taskCenterDisplay', () => {
   it('treats deferred inspection tasks as inspection-oriented display', () => {
@@ -36,6 +36,24 @@ describe('taskCenterDisplay', () => {
       task_kind: 'checkin_clean',
       inspection_mode: 'same_day',
     })).toBe('入住')
+  })
+
+  it('presents deferred inspection check-in conflicts with the danger label and schedule', () => {
+    expect(deferredInspectionConflictPresentation({
+      task_source: 'cleaning',
+      task_kind: 'deferred_inspection',
+      deferred_inspection_view: true,
+      deferred_checkin_conflict: true,
+      inspection_due_date: '2026-08-03',
+      conflict_checkin_task_date: '2026-08-02',
+      conflict_checkin_time: '15:30',
+    })).toEqual({
+      key: 'deferred-checkin-conflict',
+      label: '入住冲突',
+      tone: 'danger',
+      detail: '原定检查 2026-08-03；入住 2026-08-02 15:30',
+    })
+    expect(deferredInspectionConflictPresentation({ deferred_checkin_conflict: false })).toBeNull()
   })
 
   it('shows stayed and remaining nights on turnover cards', () => {

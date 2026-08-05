@@ -58,6 +58,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Checkout mobile repository
+        uses: actions/checkout@v4
+        with:
+          repository: zhishi817/mz-cleaning-app-frontend
+          ref: Dev
+          path: mz-cleaning-app-frontend
+          fetch-depth: 1
+
       - name: Audit pull request Ledger range
         if: github.event_name == 'pull_request'
         run: |

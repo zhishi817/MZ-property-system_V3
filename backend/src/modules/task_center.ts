@@ -17,6 +17,7 @@ import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWor
 import { emitNotificationEvent } from '../services/notificationEvents'
 import { buildWebTaskCapabilityPayload, type WebTaskDisplayState, type WebTaskManagementAction } from '../lib/webTaskCapabilities'
 import { autoCleaningAssignmentStatus, isAutoAssignableCleaningStatus, isCheckinSiteExecutionTask } from '../lib/cleaningAssignmentStatus'
+import { emitDeferredInspectionCheckinConflictAlerts, isDeferredInspectionCheckinConflictRelevantChange, reconcileDeferredInspectionCheckinReplacement } from '../services/deferredInspectionCheckinConflict'
 
 export const router = Router()
 
@@ -70,6 +71,10 @@ type BoardTask = {
   inspection_mode?: 'pending_decision' | 'same_day' | 'deferred' | 'self_complete' | 'checked_done' | null
   inspection_scope?: 'inspect_and_hang' | 'password_only' | null
   inspection_due_date?: string | null
+  deferred_checkin_conflict?: boolean
+  conflict_checkin_task_id?: string | null
+  conflict_checkin_task_date?: string | null
+  conflict_checkin_time?: string | null
   deferred_inspection_view?: boolean
   can_configure_inspection?: boolean
   old_code?: string | null
@@ -999,6 +1004,7 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
       const inspectorId = deferreds.every((x) => text(x.inspector_id) === text(first.inspector_id))
         ? (text(first.inspector_id) || null)
         : null
+      const deferredCheckinConflict = deferreds.find((task) => task.deferred_checkin_conflict)
       out.push({
         ...first,
         item_key: `cleaning:deferred:${ids.join(',')}`,
@@ -1025,6 +1031,10 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
         summary_checkin_time: null,
         checkout_task_date: checkoutTaskDates[0] || null,
         checkout_task_dates: checkoutTaskDates,
+        deferred_checkin_conflict: !!deferredCheckinConflict,
+        conflict_checkin_task_id: deferredCheckinConflict?.conflict_checkin_task_id || null,
+        conflict_checkin_task_date: deferredCheckinConflict?.conflict_checkin_task_date || null,
+        conflict_checkin_time: deferredCheckinConflict?.conflict_checkin_time || null,
         deferred_inspection_view: true,
         can_configure_inspection: false,
       })
@@ -1174,6 +1184,10 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
          t.inspection_mode,
          t.inspection_scope,
          t.inspection_due_date::text AS inspection_due_date,
+         (checkin_conflict.id IS NOT NULL) AS deferred_checkin_conflict,
+         checkin_conflict.id::text AS conflict_checkin_task_id,
+         checkin_conflict.task_date::text AS conflict_checkin_task_date,
+         checkin_conflict.checkin_time AS conflict_checkin_time,
          t.scheduled_at,
          t.key_photo_uploaded_at,
          key_media.task_id IS NOT NULL AS has_key_photo,
@@ -1201,6 +1215,26 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
        ) key_media ON key_media.task_id = t.id::text
        LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
        LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+       LEFT JOIN LATERAL (
+         SELECT ci.id, COALESCE(ci.task_date, ci.date)::text AS task_date, NULLIF(TRIM(ci.checkin_time), '') AS checkin_time
+         FROM cleaning_tasks ci
+         LEFT JOIN properties ci_property_by_id ON ci_property_by_id.id::text = ci.property_id::text
+         LEFT JOIN properties ci_property_by_code ON upper(ci_property_by_code.code) = upper(ci.property_id::text)
+         LEFT JOIN orders ci_order ON ci_order.id::text = ci.order_id::text
+         WHERE lower(COALESCE(t.inspection_mode, '')) = 'deferred'
+           AND t.inspection_due_date IS NOT NULL
+           AND lower(COALESCE(t.status, '')) NOT IN ('inspected', 'done', 'completed', 'ready', 'keys_hung', 'cancelled', 'canceled')
+           AND lower(COALESCE(ci.task_type, ci.type, '')) = 'checkin_clean'
+           AND ci.id::text <> t.id::text
+           AND COALESCE(ci.task_date, ci.date)::date >= COALESCE(t.task_date, t.date)::date
+           AND COALESCE(ci.task_date, ci.date)::date <= t.inspection_due_date::date
+           AND ${activeCleaningTaskWhereSql('ci')}
+           AND ${validCleaningTaskOrderWhereSql('ci', 'ci_order')}
+           AND COALESCE(ci_property_by_id.id::text, ci_property_by_code.id::text, ci.property_id::text)
+               = COALESCE(p_id.id::text, p_code.id::text, t.property_id::text)
+         ORDER BY COALESCE(ci.task_date, ci.date) ASC, ci.checkin_time ASC NULLS LAST, ci.id
+         LIMIT 1
+       ) checkin_conflict ON true
        WHERE (
            ${dateScopes.join('\n           OR ')}
            OR ${inspectionDueScopes.join('\n           OR ')}
@@ -1319,6 +1353,10 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
           checkout_task_dates: rawType === 'checkout_clean' ? [d] : [],
           inspection_mode: inspectionMode as any,
           inspection_due_date: inspectionDueDate,
+          deferred_checkin_conflict: row.deferred_checkin_conflict === true,
+          conflict_checkin_task_id: row.conflict_checkin_task_id ? String(row.conflict_checkin_task_id) : null,
+          conflict_checkin_task_date: row.conflict_checkin_task_date ? String(row.conflict_checkin_task_date).slice(0, 10) : null,
+          conflict_checkin_time: row.conflict_checkin_time ? String(row.conflict_checkin_time) : null,
           deferred_inspection_view: false,
           can_configure_inspection: rawType === 'checkout_clean' || rawType === 'checkin_clean',
           turnover_display: buildCleaningTurnoverDisplay({
@@ -1394,6 +1432,10 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
           summary_checkin_time: null,
           inspection_mode: inspectionMode as any,
           inspection_due_date: inspectionDueDate,
+          deferred_checkin_conflict: row.deferred_checkin_conflict === true,
+          conflict_checkin_task_id: row.conflict_checkin_task_id ? String(row.conflict_checkin_task_id) : null,
+          conflict_checkin_task_date: row.conflict_checkin_task_date ? String(row.conflict_checkin_task_date).slice(0, 10) : null,
+          conflict_checkin_time: row.conflict_checkin_time ? String(row.conflict_checkin_time) : null,
           deferred_inspection_view: true,
           can_configure_inspection: false,
         })
@@ -2419,6 +2461,18 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                    inspection_mode = computed.next_inspection_mode,
                    inspection_scope = computed.next_inspection_scope,
                    inspection_due_date = computed.next_inspection_due_date,
+                   inspection_replaced_by_checkin_task_id = CASE
+                     WHEN task.inspection_mode IS DISTINCT FROM computed.next_inspection_mode
+                       OR task.inspection_due_date IS DISTINCT FROM computed.next_inspection_due_date
+                     THEN NULL
+                     ELSE task.inspection_replaced_by_checkin_task_id
+                   END,
+                   inspection_replaced_original_due_date = CASE
+                     WHEN task.inspection_mode IS DISTINCT FROM computed.next_inspection_mode
+                       OR task.inspection_due_date IS DISTINCT FROM computed.next_inspection_due_date
+                     THEN NULL
+                     ELSE task.inspection_replaced_original_due_date
+                   END,
                    status = computed.next_status,
                    updated_at = now()
                FROM computed
@@ -2430,6 +2484,11 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                    OR task.inspection_mode IS DISTINCT FROM computed.next_inspection_mode
                    OR task.inspection_scope IS DISTINCT FROM computed.next_inspection_scope
                    OR task.inspection_due_date IS DISTINCT FROM computed.next_inspection_due_date
+                   OR (
+                     (task.inspection_mode IS DISTINCT FROM computed.next_inspection_mode
+                       OR task.inspection_due_date IS DISTINCT FROM computed.next_inspection_due_date)
+                     AND (task.inspection_replaced_by_checkin_task_id IS NOT NULL OR task.inspection_replaced_original_due_date IS NOT NULL)
+                   )
                    OR task.status IS DISTINCT FROM computed.next_status
                  )
                RETURNING task.*`,
@@ -2706,6 +2765,29 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
             }
           } catch (error: any) {
             console.error(`[task-center] cleaning_assignment_notification_failed group_key=${group.key} task_ids=${taskIds.join(',')} message=${String(error?.message || error || '')}`)
+          }
+        }
+        const deferredInspectionConflictTaskIds = changedCleaningTasks
+          .filter((task) => {
+            const diff = cleaningDiffById.get(String(task.id))
+            return !!diff && isDeferredInspectionCheckinConflictRelevantChange(diff.changedFields)
+          })
+          .map((task) => String(task.id || '').trim())
+          .filter(Boolean)
+        if (deferredInspectionConflictTaskIds.length) {
+          await reconcileDeferredInspectionCheckinReplacement({
+            taskIds: deferredInspectionConflictTaskIds,
+            actorUserId: actorId || null,
+            pgClient: client,
+          })
+          const conflictAlertResult = await emitDeferredInspectionCheckinConflictAlerts({
+            taskIds: deferredInspectionConflictTaskIds,
+            actorUserId: actorId || null,
+            pgClient: client,
+          })
+          if (Number(conflictAlertResult?.sent || 0) > 0) {
+            pushNotificationEvents += 1
+            pushNotificationRecipients += Number(conflictAlertResult.sent || 0)
           }
         }
         for (const task of changedWorkTasks) {
