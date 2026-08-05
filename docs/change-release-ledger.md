@@ -51,15 +51,15 @@
 - Branch: `codex/release-selected-root-20260805`
 - Base: `origin/Dev@145ac720532abeaaa93203e7751d741d90bc17fb`; fetched at `2026-08-05 22:07:57 AEST`.
 - Candidate patch SHA-256: `bf23fb489e805ca9f2a335f211329dd0dd0bc0f5bc0e6f8d2ba8cd7becc58db3` (staged implementation diff excluding `docs/change-release-ledger.md`).
-- Commit SHA: not committed; audit head will be emitted by the release report command after commit.
+- Commit SHA: `a99af16875b93e27bad7d16a55366a0a2909fee5`; audit head is emitted by the release report command.
 - Dependencies: existing full #286 branch range and mobile `origin/Dev@606e2c8911f7e25e28a88759898cc34626d669ab` for Phase 5 source contract; this attempt itself modifies only root.
 - Required validation: PASS — targeted assignment/media contracts, `npm run check:backend`, `npm run check:fast`, `npm run check:full`, feature-registry audit, ledger audit and `git diff --check` passed.
 - Shared-hunk review: PASS — changed shared files are intentionally scoped to `CRL-20260805-008`; generated `backend/dist` outputs were restored and are not staged.
 - Generated-file review: PASS — no generated files are staged.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user authorized and continued the focused P1 repair after the #286 push blocker.
 - Independent review: GO for commit — `/root/review_root_crl008_commit_2` reported no P0/P1/P2, matched staged fingerprint `bf23fb489e805ca9f2a335f211329dd0dd0bc0f5bc0e6f8d2ba8cd7becc58db3`, confirmed staged scope, no generated/cache/mobile repo/secret/production-write risk.
-- Action conclusion: `GO`; blockers: none for commit. Push remains not authorized until a future exact commit SHA / branch approval and exact range audit.
+- Action conclusion: `GO`; commit succeeded at `a99af16875b93e27bad7d16a55366a0a2909fee5`. Push remains not authorized until a future exact commit SHA / branch approval and exact range audit.
 
 This repair changes the candidate SHA and invalidates the earlier push authorization for `7af7830`.
 
