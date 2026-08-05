@@ -2,7 +2,7 @@
 
 ## CRL-20260805-008 — Root 回归测试链与业务契约恢复
 
-- **Status:** ready
+- **Status:** pushed
 - **Updated:** 2026-08-05 Australia/Melbourne
 - **Request:** 修复完整 #286 推送复核发现的 P1：离线任务指派 PATCH 与清洁私有媒体图片的既有回归测试从 root 质量门执行链中丢失，并恢复对应业务契约。
 - **Outcome:** Root Quality / Full 再次执行两条离线任务指派静态契约；Fast 与 Root Quality / Full 再次执行私有媒体图片授权与格式契约；离线任务指派 PATCH 与清洁媒体读取恢复到既有 fail-closed 业务边界。
@@ -56,7 +56,7 @@
 - Required validation: PASS — targeted assignment/media contracts, `npm run check:backend`, `npm run check:fast`, `npm run check:full`, feature-registry audit, ledger audit and `git diff --check` passed.
 - Shared-hunk review: PASS — changed shared files are intentionally scoped to `CRL-20260805-008`; generated `backend/dist` outputs were restored and are not staged.
 - Generated-file review: PASS — no generated files are staged.
-- Technical state: `committed`
+- Technical state: `pushed`
 - User authorization: `selected-for-commit`; evidence: user authorized and continued the focused P1 repair after the #286 push blocker.
 - Independent review: GO for commit — `/root/review_root_crl008_commit_2` reported no P0/P1/P2, matched staged fingerprint `bf23fb489e805ca9f2a335f211329dd0dd0bc0f5bc0e6f8d2ba8cd7becc58db3`, confirmed staged scope, no generated/cache/mobile repo/secret/production-write risk.
 - Action conclusion: `GO`; commit succeeded at `a99af16875b93e27bad7d16a55366a0a2909fee5`. Push remains not authorized until a future exact commit SHA / branch approval and exact range audit.
@@ -77,7 +77,7 @@
 - Technical state: `committed`
 - User authorization: `approved-for-push`; evidence: after implementation commit `a99af16875b93e27bad7d16a55366a0a2909fee5` and branch head `209d9b249f151d5efd6ef933094732873321ba94` were reported, user replied “授权” to pushing root branch `codex/release-selected-root-20260805` to GitHub.
 - Independent review: GO for push — `/root/review_root_pr286_push_2` rechecked the staged exact attempt, matched full-range fingerprint `fdb0c59845c1a083c592855bf1760ab4d045006595a60ddc33639439a785a765`, confirmed the prior P1 was resolved, and found no P0/P1/P2 code issue, no generated/cache/mobile repo/secret/production-write risk.
-- Action conclusion: `GO`; blockers: none for branch push after exact range release-report passes.
+- Action conclusion: `GO` for push completed — `git push origin HEAD:codex/release-selected-root-20260805` advanced `origin/codex/release-selected-root-20260805` from `104a4ca94496bebb955204b210aca750e7d6a3ad` to `bb5ecb83b8e04f11ed0d0a901719247ddec9efbe` on 2026-08-05 Australia/Melbourne. CI, PR merge to `Dev`, deployment and production behavior remain NOT VERIFIED.
 
 This repair changes the candidate SHA and invalidates the earlier push authorization for `7af7830`.
 
@@ -85,7 +85,7 @@ This repair changes the candidate SHA and invalidates the earlier push authoriza
 
 - Validation uses local/static contract tests and build only; no production database writes, no deployment, no branch push and no external sync.
 - Actual R2 object retrieval against live storage is not performed; this CRL verifies request authorization, format handling and fail-closed proxy selection before R2 read.
-- The implementation is committed locally but not pushed. A future push requires this exact full-range attempt to pass release-report.
+- The implementation has been pushed to the root candidate branch, not merged to `Dev` or `main`, and not deployed.
 - Sensitive-information review: no secrets, `.env` values, tokens, credentials, database URLs, sensitive logs or local caches are selected.
 
 ## CRL-20260805-007 — Root Quality Check mobile 源码检出修复
