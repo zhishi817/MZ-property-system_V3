@@ -1,5 +1,73 @@
 # Change Release Ledger
 
+## CRL-20260806-001 — 纯入住任务显示上一段有效旧密码（root）
+
+- **Status:** pushed; not merged to Dev
+- **Updated:** 2026-08-06 Australia/Melbourne
+- **Request:** 纯入住任务应显示该房源上一位住客留下的旧密码。
+- **Outcome:** 订单同步会向当前 `checkin_clean` 写入同房源最近有效退房任务的既有 `old_code`；该字段缺失时仅回退到该历史订单的入住 `new_code`。没有可信来源时继续显示空白，手工锁定任务不覆盖。
+
+### Implementation
+
+- Previous behavior: 仅入住任务没有同订单退房任务，旧密码同步和统一周转投影都会留下空白。
+- New behavior: 同步查询排除当前订单，按最近有效退房任务取密码并保留来源优先级；可信来源失效时清空此前自动填入的值。纯入住展示及二次合并保留任务自身的 `old_code`，退房来源仍优先。
+- Key decisions: 不从当前订单新密码、手机号或其他猜测值生成旧密码；不新增表、字段、接口、迁移或外部同步；`auto_sync_enabled=false` 的手工锁定继续不覆盖。
+
+### Files / Areas
+
+- `backend/src/services/cleaningSync.ts` — 增加上一段有效密码解析及当前入住任务同步，并写入既有刷新事件。
+- `backend/src/lib/cleaningTurnoverDisplay.ts` — 纯入住与二次合并投影保留 `old_code`。
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — 覆盖来源优先级、来源失效清空、历史回退、无来源留空、手工锁定和纯入住投影。
+- `docs/feature-regression-registry.md` — 扩展 FR-002 密码来源不变量与回归映射。
+- `docs/change-release-ledger.md` — 记录本发布单元。
+
+### Impact / Dependencies
+
+- API: 既有任务 payload 在有可信历史来源时填充既有 `old_code` 字段；没有新接口形状。
+- Database / migration / config / dependencies: none.
+- Production data: 代码不会回填既有历史任务；任何生产数据修复须另行授权。
+- Related units: `CRL-20260625-003`, `CRL-20260804-009`, `FR-002`.
+
+### Validation
+
+- `env -u DATABASE_URL -u NEON_DATABASE_URL -u NEON_DATABASE_URL_PROD ts-node --transpile-only backend/scripts/tests/test_cleaning_sync_v2.ts` — passed in in-memory mode; no database connection or write occurred.
+- `tsc -p backend/tsconfig.json --noEmit` — passed using existing local backend dependencies via compiler-only resolution options; no generated output was written.
+- `python3 scripts/audit_feature_regression_registry.py` — passed: 9 FRs and 103 test mappings.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 5 changed files, all recorded.
+- `npm run check:full` — passed in the clean release worktree after the user authorized isolated dependency installs. Root backend/Web checks, mobile typecheck and 51 mobile Jest suites (246 tests) passed. Existing lint warnings remain (root/mobile); mobile Jest also reported an existing forced worker-exit teardown advisory, with exit code 0.
+- Database-backed rollback contract — passed after a preflight confirmed `dev`, a connection distinct from production, read/write eligibility only for the test transaction, and required schema. In one rolled-back transaction, temporary task rows verified checkout `old_code` priority, prior checkin `new_code` fallback, and clearing the automatic value when no source remains. No data was committed.
+- Independent review — `NO-GO`: found a P1 where an invalidated historical source left a stale automatically synchronized value. The resolver and regression test were updated in this same release unit; revalidation and a renewed independent review are required before commit.
+- P1 remediation revalidation — passed: the targeted in-memory test now invalidates an already-used source and asserts that the prior automatic value is cleared; the no-output backend compiler, feature-registry audit and ledger audit also passed again.
+- Second independent review — `NEEDS OWNER`: no P0/P1 remained, but requested two P2 regression cases (fallback-source invalidation and no-source manual-lock preservation). Those test cases were added; revalidation and a renewed independent review are required before commit.
+- P2 remediation revalidation — passed: the targeted in-memory test now separately covers fallback `new_code` invalidation and an unlocked source-free task clearing while preserving a manually locked source-free task; the no-output backend compiler, feature-registry audit and ledger audit also passed again.
+
+### Release Attempts
+
+#### RA-20260806-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260806-001`
+- Intended action: `push`
+- Branch: `codex/release-old-password-previous-stay-20260806`
+- Base: `origin/Dev@fdd4fc3111f85b90982025dd43e58defc1698f3c`; fetched at 2026-08-06 Australia/Melbourne
+- Candidate patch SHA-256: `6979414ed26c24235a579ebed50c32ce9259031a674fbcbfb87670671b9b9a5b`, excluding `docs/change-release-ledger.md`
+- Commit SHA: `cd56bdc7372b214ca1d9811a37ba9fda75c32f81`; candidate content commit (audit head recorded by the report command)
+- Dependencies: existing `origin/Dev` history only; no additional CRL required
+- Required validation: passed; targeted in-memory regression, no-output compiler, feature-registry audit, ledger audit, `check:full`, and non-production rollback contract passed
+- Shared-hunk review: passed; final independent review inspected the complete staged diff after validation
+- Generated-file review: not applicable; no generated files selected
+- Technical state: `pushed`
+- User authorization: `approved-for-push`; evidence: user confirmed pushing this repository, `cd56bdc7372b214ca1d9811a37ba9fda75c32f81` content commit and `codex/release-old-password-previous-stay-20260806` branch after the exact local release head was presented on 2026-08-06
+- Independent review: `GO` for push; final committed-range review verified the base → candidate content → head ancestor chain, matching non-ledger fingerprint, exact five-file range, authorization, and no secret/generated-file/scope collision. Existing lint warnings and the mobile Jest worker teardown advisory are pre-existing/non-blocking with exit code 0.
+- Action conclusion: `GO` for push (completed); GitHub accepted `origin/codex/release-old-password-previous-stay-20260806@b96c1eb688ed070da1c379fcdcce32db639dced4`; not merged, deployed, or applied to production data
+
+### Risks / Release Notes
+
+- Existing production pure-checkin tasks stay unchanged until a later order sync or separately authorized data repair.
+- Rollback: revert this unit's resolver, sync call and display fallbacks; no schema rollback is needed.
+- Sensitive-information review: no secrets, credentials, database URLs, raw passwords, media or production data are recorded.
+- Git state: isolated clean release worktree; commits exist locally, but no push, PR, deployment or production write has occurred.
+
 ## CRL-20260805-013 — 入住检查退房动作类型保护（root）
 
 - **Status:** ready
