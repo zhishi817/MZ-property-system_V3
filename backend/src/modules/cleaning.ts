@@ -11,6 +11,8 @@ import { defaultInspectionModeForTaskType, deferredProjectionDate, effectiveInsp
 import { buildWebTaskCapabilityPayload } from '../lib/webTaskCapabilities'
 import { assignedStatusFromAssignees, isCheckinSiteExecutionTask } from '../lib/cleaningAssignmentStatus'
 import { buildCleaningTurnoverDisplay } from '../lib/cleaningTurnoverDisplay'
+import { shouldIgnoreNightsOverrideForAutoCheckinTask } from '../lib/cleaningTaskNightOverride'
+import { isTaskExecutorEligibleRoleNames } from '../services/taskExecutorEligibility'
 import { emitDeferredInspectionCheckinConflictAlerts, isDeferredInspectionCheckinConflictRelevantChange, reconcileDeferredInspectionCheckinReplacement } from '../services/deferredInspectionCheckinConflict'
 
 export const router = Router()
@@ -435,6 +437,7 @@ async function backfillOfflineWorkTasks() {
 
 router.get('/staff', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), async (req, res) => {
   const kind = String((req.query as any)?.kind || '').trim().toLowerCase()
+  const taskExecutorScope = String((req.query as any)?.scope || '').trim().toLowerCase() === 'task_executor'
   const rolesForKind = (k: string): string[] => {
     if (k === 'cleaner') return ['cleaner', 'cleaner_inspector']
     if (k === 'inspector') return ['cleaning_inspector', 'cleaner_inspector']
@@ -476,9 +479,16 @@ router.get('/staff', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
           String(u.role || '').trim(),
           ...((Array.isArray(u.roles) ? u.roles : []).map((x: any) => String(x || '').trim())),
         ].filter(Boolean)))
-        if (!roleNames.some((role) => roles.includes(role))) continue
         const name = String(u.username || u.email || u.id || '').trim() || String(u.id)
         const base = { id: String(u.id), name, capacity_per_day: 0, is_active: true, color_hex: String(u.color_hex || '#3B82F6') }
+        if (taskExecutorScope) {
+          if (!isTaskExecutorEligibleRoleNames(roleNames)) continue
+          const executorKinds = kindsForRoles(roleNames, '')
+          if (executorKinds.length) for (const resolvedKind of executorKinds) out.push({ ...base, kind: resolvedKind })
+          else out.push({ ...base, kind: 'executor' })
+          continue
+        }
+        if (!roleNames.some((role) => roles.includes(role))) continue
         for (const resolvedKind of kindsForRoles(roleNames, kind)) {
           out.push({ ...base, kind: resolvedKind })
         }
@@ -488,12 +498,20 @@ router.get('/staff', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'staff_failed' })
   }
-  const users = (db.users || []).filter((u: any) => roles.includes(String(u.role || '')))
   const out: any[] = []
-  for (const u of users) {
+  for (const u of (db.users || [])) {
+    const roleNames = Array.from(new Set([String(u.role || '').trim(), ...((Array.isArray((u as any).roles) ? (u as any).roles : []).map((x: any) => String(x || '').trim()))].filter(Boolean)))
     const role = String(u.role || '')
     const name = String(u.username || u.email || u.id || '').trim() || String(u.id)
     const base = { id: String(u.id), name, capacity_per_day: 0, is_active: true, color_hex: String((u as any).color_hex || '#3B82F6') }
+    if (taskExecutorScope) {
+      if (!isTaskExecutorEligibleRoleNames(roleNames)) continue
+      const executorKinds = kindsForRoles(roleNames, '')
+      if (executorKinds.length) for (const resolvedKind of executorKinds) out.push({ ...base, kind: resolvedKind })
+      else out.push({ ...base, kind: 'executor' })
+      continue
+    }
+    if (!roleNames.some((item) => roles.includes(item))) continue
     if (role === 'cleaner' && kind !== 'inspector') out.push({ ...base, kind: 'cleaner' })
     else if (role === 'cleaning_inspector' && kind !== 'cleaner') out.push({ ...base, kind: 'inspector' })
     else if (role === 'cleaner_inspector') {
@@ -1175,6 +1193,9 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
       if (patch.guest_special_request === undefined && patch.note !== undefined) patch.guest_special_request = patch.note
       delete patch.note
       if (patch.keys_required === null) patch.keys_required = 1
+      if (patch.nights_override !== undefined && patch.nights_override !== null && shouldIgnoreNightsOverrideForAutoCheckinTask(before)) {
+        delete patch.nights_override
+      }
       const isCheckinSiteExecution = isCheckinSiteExecutionTask({
         task_type: patch.task_type ?? before.task_type,
         inspection_scope: patch.inspection_scope ?? before.inspection_scope,
@@ -1334,6 +1355,9 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
     if (localPatch.inspection_mode !== undefined) task.inspection_mode = localPatch.inspection_mode
     if (localPatch.inspection_due_date !== undefined) task.inspection_due_date = localPatch.inspection_due_date
     if (localPatch.keys_required !== undefined) task.keys_required = localPatch.keys_required
+    if (localPatch.nights_override !== undefined && localPatch.nights_override !== null && shouldIgnoreNightsOverrideForAutoCheckinTask(task)) {
+      delete localPatch.nights_override
+    }
     if (localPatch.nights_override !== undefined) task.nights_override = localPatch.nights_override
     if (localPatch.old_code !== undefined) task.old_code = localPatch.old_code
     if (localPatch.new_code !== undefined) task.new_code = localPatch.new_code

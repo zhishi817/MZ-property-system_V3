@@ -884,7 +884,7 @@ export default function TaskCenterPage() {
   }, [])
 
   const loadStaff = useCallback(async () => {
-    const rows = await getJSON<Staff[]>('/cleaning/staff').catch(() => [])
+    const rows = await getJSON<Staff[]>('/cleaning/staff?scope=task_executor').catch(() => [])
     setStaff(Array.isArray(rows) ? rows : [])
   }, [])
 

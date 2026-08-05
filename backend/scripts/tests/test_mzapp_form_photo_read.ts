@@ -21,6 +21,7 @@ async function main() {
   assert.equal(await canViewFormPhotoTaskRows({ role: 'cleaner' }, rows, 'outsider-1'), false)
   assert.equal(await canViewFormPhotoTaskRows({ role: 'admin' }, rows, 'admin-1'), true)
   assert.deepEqual(formPhotoMediaType('inspection_living'), { source: 'inspection', area: 'living' })
+  assert.deepEqual(formPhotoMediaType('inspection_balcony'), { source: 'inspection', area: 'balcony' })
   assert.equal(formPhotoMediaType('inspection_consumables_confirmed'), null)
   assert.deepEqual(formPhotoMediaType('restock_proof:coffee'), { source: 'restock', item_id: 'coffee' })
 
@@ -35,9 +36,12 @@ async function main() {
     const moduleSource = fs.readFileSync(path.resolve(__dirname, `../../src/modules/${moduleName}.ts`), 'utf8')
     assert.match(moduleSource, /area: z\.enum\(\[[\s\S]*?'bathroom'/, `${moduleName} inspection photo schema must accept bathroom`)
     assert.match(moduleSource, /bathroom:\s*3/, `${moduleName} inspection photo limit must be three`)
+    assert.match(moduleSource, /area: z\.enum\(\[[\s\S]*?'balcony'/, `${moduleName} inspection photo schema must accept balcony`)
+    assert.match(moduleSource, /balcony:\s*3/, `${moduleName} balcony inspection photo limit must be three`)
   }
   const actionAuditSource = fs.readFileSync(path.resolve(__dirname, '../../src/lib/workTaskActionAudit.ts'), 'utf8')
   assert.match(actionAuditSource, /'inspection_bathroom'/, 'inspection action photo gate must count bathroom media')
+  assert.match(actionAuditSource, /'inspection_balcony'/, 'inspection action photo gate must count balcony media')
   process.stdout.write('test_mzapp_form_photo_read: ok\n')
 }
 
