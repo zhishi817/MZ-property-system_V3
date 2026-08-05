@@ -45,12 +45,12 @@
 - Branch: `codex/release-selected-root-20260805`
 - Base: `origin/codex/release-selected-root-20260805` `578a231f936f392e1da0ea52287c128052f605a6`; remotely read back before the repair on 2026-08-05 Australia/Melbourne.
 - Candidate patch SHA-256: `a4f20bbf01f8b580d741f795447a311b633306a2a3b917481b9d2160a8ea6474` (excludes `docs/change-release-ledger.md`).
-- Commit SHA: not committed.
+- Commit SHA: `ac81a18909882a667de8dcc68176cee757173cd4` (hotfix content commit; subsequent ledger-evidence commits are excluded from the candidate fingerprint).
 - Dependencies: `CRL-20260805-001` supplies the server-projected conflict fields; `CRL-20260805-002` supplied the page caller that this hotfix completes.
 - Required validation: PASS with a documented build-evidence gap — targeted Vitest, lint, direct TypeScript check, ledger audit, feature-registry audit and whitespace check passed; local Next.js build completion and Vercel build result remain NOT VERIFIED.
 - Shared-hunk review: PASS — the four staged files are exclusive to this display-only hotfix and recorded here.
 - Generated-file review: not applicable — no generated output is selected.
-- Technical state: verified.
+- Technical state: committed.
 - User authorization: selected-for-commit — user confirmed this scoped repair after receiving the Vercel diagnosis; a new exact commit/branch authorization remains required for push.
 - Independent review: GO for commit — independent recheck verified the base, exact non-ledger fingerprint, staged implementation/ledger scope, targeted test evidence and sensitive/generated-file boundary; no P0/P1/P2 finding.
 - Action conclusion: GO for commit; NOT VERIFIED for push, PR, merge, deployment and production behavior.
