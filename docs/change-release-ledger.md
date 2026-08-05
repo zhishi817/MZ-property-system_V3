@@ -41,15 +41,15 @@
 - Branch: `codex/release-selected-root-20260805`
 - Base: `origin/codex/release-selected-root-20260805@94023a7c3c5116b230d57be64d55b936a99128d0`; fetched and read back on 2026-08-05 Australia/Melbourne. Integration target observed separately as `origin/Dev@145ac720532abeaaa93203e7751d741d90bc17fb`.
 - Candidate patch SHA-256: `ddc6406663b9ebf7074c5c5ce6ef13ff4fbc3120313fa53da1dfc5c9e4e6eb2e` (staged implementation diff excluding `docs/change-release-ledger.md`).
-- Commit SHA: pending; candidate content commit will be recorded after the approved commit.
+- Commit SHA: `3fb31e2`; candidate content commit for this exact implementation range.
 - Dependencies: mobile `CRL-20260805-005` must separately enter mobile `Dev` before root PR regression can consume the repaired mobile test.
 - Required validation: PASS — 12 focused Python regression tests; PR range audit 53/53 recorded; local ledger audit 3/3; whitespace check passed.
 - Shared-hunk review: PASS — both script paths and the ledger entry are exclusive to this CI repair.
 - Generated-file review: not applicable — no generated files selected.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user explicitly instructed execution of this two-repository repair on 2026-08-05 Australia/Melbourne.
 - Independent review: GO for commit — independent read-only recheck confirmed the exact three staged paths, fingerprint, Release Attempt metadata, success and failure range cases, and no P0/P1 finding.
-- Action conclusion: `GO` for commit only; no push, PR merge, deployment, or production action is authorized.
+- Action conclusion: `GO` for commit completed; no push, PR merge, deployment, or production action is authorized.
 
 ### Risks / Release Notes
 
