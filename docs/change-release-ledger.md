@@ -1,5 +1,75 @@
 # Change Release Ledger
 
+## CRL-20260805-008 — Root 回归测试链与业务契约恢复
+
+- **Status:** ready
+- **Updated:** 2026-08-05 Australia/Melbourne
+- **Request:** 修复完整 #286 推送复核发现的 P1：离线任务指派 PATCH 与清洁私有媒体图片的既有回归测试从 root 质量门执行链中丢失，并恢复对应业务契约。
+- **Outcome:** Root Quality / Full 再次执行两条离线任务指派静态契约；Fast 与 Root Quality / Full 再次执行私有媒体图片授权与格式契约；离线任务指派 PATCH 与清洁媒体读取恢复到既有 fail-closed 业务边界。
+
+### Implementation
+
+- **Previous behavior:** 测试源文件仍存在，但 backend 缺少两条 assignment contract 的 npm script；root `check:backend` 不运行两条 assignment contract 或 `test:cleaning-media-image`，`check:fast` 也不运行 media image contract。当前候选还让离线任务 PATCH 和清洁媒体代理偏离这些测试保护的既有业务边界。
+- **New behavior:** 恢复两个 backend script，`check:backend` 执行两条 assignment contract 与 media image contract，`check:fast` 执行 media image contract；`check:full` 通过 `check:backend` 继承三条保护。离线任务 PATCH 重新在事务内锁定 source/canonical、显式 assignee PATCH 才同步 canonical，缺省字段不覆盖既有执行人，`assignee_id: null` 返回业务错误。清洁媒体代理重新支持任务媒体、补品照片和日终交接照片的唯一归属判断；已登记清洁媒体冲突时不退回 maintenance feedback 授权路径；补品客厅照片保留 plural/legacy 双字段兼容。
+- **Key decisions:** 保持台账和质量门严格；不削弱媒体权限，不改测试断言，不改数据库 schema，不改 mobile 代码，不改 CI 超时。
+
+### Files / Areas
+
+- `backend/package.json` — 恢复两条离线任务指派静态契约的 npm script。
+- `backend/src/modules/cleaning.ts` — 恢复离线任务指派 PATCH 的事务、锁顺序、source/canonical 同步和 omitted/null 语义。
+- `backend/src/modules/cleaning_app.ts` — 恢复私有媒体代理的任务媒体、补品照片、日终照片唯一归属与 fail-closed 授权；恢复补品客厅多图兼容字段。
+- `package.json` — 将两条 assignment contract 接回 Root Quality / Full，将 media image contract 接回 Fast 与 Root Quality / Full。
+- `docs/feature-regression-registry.md` — 更新 FR-002 / FR-004 的最后验证指针和相关 CRL。
+- `docs/change-release-ledger.md` — 记录 P1 修复与后续重新审计要求。
+
+### Impact / Dependencies
+
+- API: restores existing `/cleaning/offline-tasks/:id` PATCH response fields for work-task assignment status; `/cleaning-app/tasks/:id/consumables` continues returning legacy `living_room_photo_url` and now also preserves plural `living_room_photo_urls`.
+- Database / migration / dependencies: none.
+- Permissions: media entry permission includes existing cleaning media permissions plus `inventory.view`; record-level day-end authorization remains fail-closed.
+- Related units: `CRL-20260731-009`（离线任务指派 canonical 契约）、`CRL-20260731-008`（清洁媒体完整性、多图展示与安全清理） and the full #286 root candidate.
+- Feature regression registry: FR-002 and FR-004 updated for `CRL-20260805-008`.
+
+### Validation
+
+- `npm run test:offline-task-assignment-patch --prefix backend` — passed after restoring the omitted-vs-explicit guard, `assignee_id: null` business rejection, staff validation and transactional source/canonical update.
+- `npm run test:offline-task-assignment-first-patch --prefix backend` — passed after restoring table-ensure-before-transaction and row-lock ordering.
+- `npm run test:cleaning-media-image --prefix backend` — failed before the media repair on missing/restored helper and SQL assertions; passed after restoring task media, consumable usage, day-end media and conflict fail-closed behavior.
+- `npm run check:backend` — passed, including `test:root-quality-workflow-contract`, backend build, two assignment contracts, `test:cleaning-media-image`, R2 governance and Phase 5 release contract.
+- `npm run check:fast` — passed using ignored validation-only dependency directories; ledger range audit, ledger audit, feature registry audit, backend build, idempotency, media image, R2, Phase 5, frontend tests and mobile typecheck all completed.
+- `npm run check:full` — passed using ignored validation-only dependency directories; backend full chain, frontend lint/test/build and mobile typecheck/lint/test completed. Existing lint warnings and the existing mobile Jest open-handle notice did not fail the command.
+- `git diff --check` — passed.
+- Cleanup: temporary validation-only dependency directories and symlinks were removed; generated `backend/dist/modules/cleaning.js` and `backend/dist/modules/rbac.js` from local build were restored because Render rebuilds `dist` and these outputs would otherwise broaden the selected range.
+
+### Release Attempts
+
+#### RA-20260805-root-crl008-commit-01
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260805-008`
+- Intended action: `commit`
+- Branch: `codex/release-selected-root-20260805`
+- Base: `origin/Dev@145ac720532abeaaa93203e7751d741d90bc17fb`; fetched at `2026-08-05 22:07:57 AEST`.
+- Candidate patch SHA-256: `bf23fb489e805ca9f2a335f211329dd0dd0bc0f5bc0e6f8d2ba8cd7becc58db3` (staged implementation diff excluding `docs/change-release-ledger.md`).
+- Commit SHA: not committed; audit head will be emitted by the release report command after commit.
+- Dependencies: existing full #286 branch range and mobile `origin/Dev@606e2c8911f7e25e28a88759898cc34626d669ab` for Phase 5 source contract; this attempt itself modifies only root.
+- Required validation: PASS — targeted assignment/media contracts, `npm run check:backend`, `npm run check:fast`, `npm run check:full`, feature-registry audit, ledger audit and `git diff --check` passed.
+- Shared-hunk review: PASS — changed shared files are intentionally scoped to `CRL-20260805-008`; generated `backend/dist` outputs were restored and are not staged.
+- Generated-file review: PASS — no generated files are staged.
+- Technical state: `verified`
+- User authorization: `selected-for-commit`; evidence: user authorized and continued the focused P1 repair after the #286 push blocker.
+- Independent review: GO for commit — `/root/review_root_crl008_commit_2` reported no P0/P1/P2, matched staged fingerprint `bf23fb489e805ca9f2a335f211329dd0dd0bc0f5bc0e6f8d2ba8cd7becc58db3`, confirmed staged scope, no generated/cache/mobile repo/secret/production-write risk.
+- Action conclusion: `GO`; blockers: none for commit. Push remains not authorized until a future exact commit SHA / branch approval and exact range audit.
+
+This repair changes the candidate SHA and invalidates the earlier push authorization for `7af7830`.
+
+### Risks / Release Notes
+
+- Validation uses local/static contract tests and build only; no production database writes, no deployment, no branch push and no external sync.
+- Actual R2 object retrieval against live storage is not performed; this CRL verifies request authorization, format handling and fail-closed proxy selection before R2 read.
+- The implementation is not yet committed. A future push requires a new exact commit SHA authorization.
+- Sensitive-information review: no secrets, `.env` values, tokens, credentials, database URLs, sensitive logs or local caches are selected.
+
 ## CRL-20260805-007 — Root Quality Check mobile 源码检出修复
 
 - **Status:** ready
@@ -59,6 +129,24 @@
 - Root Quality Check 仍需 GitHub 能读取 mobile 仓库；该仓库访问权限或 `Dev` 分支不可用时会明确 checkout 失败，不再以缺文件的后台测试表现。
 - `python3 scripts/audit_change_release_ledger.py --release-report --repo root --base 145ac720532abeaaa93203e7751d741d90bc17fb --head 02e883210dfe930a203f1193606f27ab7f8b91c2 --crl CRL-20260805-007 --format markdown` — BLOCKED for push as expected: the existing PR range contains prior selected release units while this attempt selects only CRL-007, and no exact new-SHA push authorization exists. A future push must authorize the full PR scope (or isolate this CRL on a new branch) and rerun the exact range audit.
 - Sensitive-information review: no secrets, `.env` values, tokens, credentials, database URLs, sensitive logs or local caches are selected.
+
+#### RA-20260805-root-pr286-push-01
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260629-005`, `CRL-20260629-006`, `CRL-20260731-004`, `CRL-20260803-005`, `CRL-20260804-010`, `CRL-20260805-001`, `CRL-20260805-002`, `CRL-20260805-004`, `CRL-20260805-005`, `CRL-20260805-006`, `CRL-20260805-007`.
+- Intended action: `push`
+- Branch: `codex/release-selected-root-20260805`
+- Base: `origin/Dev@145ac720532abeaaa93203e7751d741d90bc17fb`; fetched at 2026-08-05 Australia/Melbourne. Remote branch base: `origin/codex/release-selected-root-20260805@104a4ca94496bebb955204b210aca750e7d6a3ad`.
+- Candidate patch SHA-256: `d72a34a198b00b31a784dd3d0b1d39a29ca5e3cb8bf4836a608fdc649c9ab8e1` (complete `origin/Dev...HEAD` implementation diff excluding `docs/change-release-ledger.md`).
+- Commit SHA: `3fe4f529634bfda34f9611788af055bf496e9d79`; latest content commit in the complete PR candidate; preceding selected content commits are in the same exact range and recorded by their own attempts.
+- Dependencies: mobile `origin/Dev@606e2c8911f7e25e28a88759898cc34626d669ab` is read by Phase 5; root and mobile remain separate repositories.
+- Required validation: PASS — previous complete-range entries retain their recorded validation; the new CI repair passed `npm run check:backend`, workflow contract, registry and ledger audits.
+- Shared-hunk review: PASS — the full PR range is intentionally selected; shared workflow, package and ledger paths have recorded release-unit ownership.
+- Generated-file review: PASS — no generated files in the exact range.
+- Technical state: `committed`.
+- User authorization: `approved-for-push`; evidence: user replied “授权” to pushing this exact branch through `7af7830183c84f4024599d3fc74752fcd51d69cd` after requesting a complete #286 scope audit on 2026-08-05 Australia/Melbourne.
+- Independent review: NO-GO for push — independent full-range review found P1: `package.json` removed the offline-task-assignment PATCH / first-PATCH and cleaning-media-image test execution chains, while `backend/package.json` removed two still-existing assignment contract scripts. This lowers the Root Quality / Full regression gates for code in this same candidate.
+- Action conclusion: `BLOCKED`; blocker: restore the three regression command chains, rerun relevant quality checks and the complete-range audit, then obtain new-SHA push authorization.
 
 ## CRL-20260805-006 — Python 运行缓存台账边界修复
 
