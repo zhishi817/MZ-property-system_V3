@@ -2,7 +2,7 @@
 
 ## CRL-20260806-001 — 纯入住任务显示上一段有效旧密码（root）
 
-- **Status:** verified; approved for commit
+- **Status:** committed; push authorization pending
 - **Updated:** 2026-08-06 Australia/Melbourne
 - **Request:** 纯入住任务应显示该房源上一位住客留下的旧密码。
 - **Outcome:** 订单同步会向当前 `checkin_clean` 写入同房源最近有效退房任务的既有 `old_code`；该字段缺失时仅回退到该历史订单的入住 `new_code`。没有可信来源时继续显示空白，手工锁定任务不覆盖。
@@ -49,17 +49,17 @@
 - Selected CRLs: `CRL-20260806-001`
 - Intended action: `commit`
 - Branch: `codex/release-old-password-previous-stay-20260806`
-- Base: `origin/Dev@fdd4fc3111f85b90982025dd43e58defc1698f3c`; fetched on 2026-08-06 Australia/Melbourne
+- Base: `origin/Dev@fdd4fc3111f85b90982025dd43e58defc1698f3c`; fetched at 2026-08-06 Australia/Melbourne
 - Candidate patch SHA-256: `6979414ed26c24235a579ebed50c32ce9259031a674fbcbfb87670671b9b9a5b`, excluding `docs/change-release-ledger.md`
-- Candidate content commit SHA: not committed
+- Commit SHA: `cd56bdc7372b214ca1d9811a37ba9fda75c32f81`; candidate content commit (audit head recorded by the report command)
 - Dependencies: existing `origin/Dev` history only; no additional CRL required
 - Required validation: passed; targeted in-memory regression, no-output compiler, feature-registry audit, ledger audit, `check:full`, and non-production rollback contract passed
 - Shared-hunk review: passed; final independent review inspected the complete staged diff after validation
 - Generated-file review: not applicable; no generated files selected
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user selected this exact pure-checkin old-password item and requested GitHub submission on 2026-08-06
 - Independent review: `GO` for commit only; no P0/P1/P2, secret risk, generated artifact, or scope collision found. Existing lint warnings and the mobile Jest worker teardown advisory are pre-existing/non-blocking with exit code 0.
-- Action conclusion: `GO` for commit; push requires a fresh authorization after the exact commit SHA exists
+- Action conclusion: `GO` for commit (completed); push requires a fresh authorization for the exact commit SHA and branch
 
 ### Risks / Release Notes
 
