@@ -54,12 +54,12 @@
 - Branch: `codex/release-20260805-all-root`
 - Base: `origin/Dev@abe4d65e81ad11f407aae7a15806837de67eea1a`; fetched at `2026-08-05 23:40:45 +1000`
 - Candidate patch SHA-256: `0aab8e6d777a6a908ea35b2c19521ef55355325907f8152363671dc950df7ec9` (excluding `docs/change-release-ledger.md`)
-- Commit SHA: not committed; audit head is emitted by the release report.
+- Commit SHA: `27845fb7b7d4515272ba41eebbede17f7c348432`; candidate content commit.
 - Dependencies: paired mobile RA-20260805-002 covers mobile `CRL-20260805-001` through `CRL-20260805-003`; no dependency SHA exists yet.
 - Required validation: PASS; remediation passed backend TypeScript build, `test:work-task-actions`, and cross-repository Phase 5 release contract; prior candidate validation remains passing.
 - Shared-hunk review: PASS; all staged files are covered by the selected root CRLs, including the shared ledger.
 - Generated-file review: PASS; no generated output is staged.
-- Technical state: verified
+- Technical state: committed
 - User authorization: selected-for-commit; evidence: 2026-08-05 instruction “我要全部提交 推送到Dev分支”.
 - Independent review: GO; evidence: 2026-08-06 independent read-only review found no P0/P1/P2; GO for commit only.
 - Action conclusion: GO; blockers: none for the commit action.
@@ -122,12 +122,12 @@
 - Branch: `codex/release-20260805-all-root`
 - Base: `origin/Dev@abe4d65e81ad11f407aae7a15806837de67eea1a`; fetched at `2026-08-05 23:40:45 +1000`
 - Candidate patch SHA-256: `0aab8e6d777a6a908ea35b2c19521ef55355325907f8152363671dc950df7ec9` (excluding `docs/change-release-ledger.md`)
-- Commit SHA: not committed; audit head is emitted by the release report.
+- Commit SHA: `27845fb7b7d4515272ba41eebbede17f7c348432`; candidate content commit.
 - Dependencies: paired mobile RA-20260805-002 covers mobile `CRL-20260805-001` through `CRL-20260805-003`; no dependency SHA exists yet.
 - Required validation: PASS; remediation passed backend TypeScript build, `test:work-task-actions`, and cross-repository Phase 5 release contract; prior candidate validation remains passing.
 - Shared-hunk review: PASS; all staged files are covered by the selected root CRLs, including the shared ledger.
 - Generated-file review: PASS; no generated output is staged.
-- Technical state: verified
+- Technical state: committed
 - User authorization: selected-for-commit; evidence: 2026-08-05 instruction “我要全部提交 推送到Dev分支”.
 - Independent review: GO; evidence: 2026-08-06 independent read-only review found no P0/P1/P2; GO for commit only.
 - Action conclusion: GO; blockers: none for the commit action.
@@ -190,12 +190,12 @@
 - Branch: `codex/release-20260805-all-root`
 - Base: `origin/Dev@abe4d65e81ad11f407aae7a15806837de67eea1a`; fetched at `2026-08-05 23:40:45 +1000`
 - Candidate patch SHA-256: `0aab8e6d777a6a908ea35b2c19521ef55355325907f8152363671dc950df7ec9` (excluding `docs/change-release-ledger.md`)
-- Commit SHA: not committed; audit head is emitted by the release report.
+- Commit SHA: `27845fb7b7d4515272ba41eebbede17f7c348432`; candidate content commit.
 - Dependencies: paired mobile RA-20260805-002 covers mobile `CRL-20260805-001` through `CRL-20260805-003`; no dependency SHA exists yet.
 - Required validation: PASS; remediation passed backend TypeScript build, `test:work-task-actions`, and cross-repository Phase 5 release contract; prior candidate validation remains passing.
 - Shared-hunk review: PASS; all staged files are covered by the selected root CRLs, including the shared ledger.
 - Generated-file review: PASS; no generated output is staged.
-- Technical state: verified
+- Technical state: committed
 - User authorization: selected-for-commit; evidence: 2026-08-05 instruction “我要全部提交 推送到Dev分支”.
 - Independent review: GO; evidence: 2026-08-06 independent read-only review found no P0/P1/P2; GO for commit only.
 - Action conclusion: GO; blockers: none for the commit action.
@@ -254,12 +254,12 @@
 - Branch: `codex/release-20260805-all-root`
 - Base: `origin/Dev@abe4d65e81ad11f407aae7a15806837de67eea1a`; fetched at `2026-08-05 23:40:45 +1000`
 - Candidate patch SHA-256: `0aab8e6d777a6a908ea35b2c19521ef55355325907f8152363671dc950df7ec9` (excluding `docs/change-release-ledger.md`)
-- Commit SHA: not committed; audit head is emitted by the release report.
+- Commit SHA: `27845fb7b7d4515272ba41eebbede17f7c348432`; candidate content commit.
 - Dependencies: paired mobile RA-20260805-002 covers mobile `CRL-20260805-001` through `CRL-20260805-003`; no dependency SHA exists yet.
 - Required validation: PASS; remediation passed backend TypeScript build, `test:work-task-actions`, and cross-repository Phase 5 release contract; prior candidate validation remains passing.
 - Shared-hunk review: PASS; all staged files are covered by the selected root CRLs, including the shared ledger.
 - Generated-file review: PASS; no generated output is staged.
-- Technical state: verified
+- Technical state: committed
 - User authorization: selected-for-commit; evidence: 2026-08-05 instruction “我要全部提交 推送到Dev分支”.
 - Independent review: GO; evidence: 2026-08-06 independent read-only review found no P0/P1/P2; GO for commit only.
 - Action conclusion: GO; blockers: none for the commit action.
@@ -322,12 +322,12 @@
 - Branch: `codex/release-20260805-all-root`
 - Base: `origin/Dev@abe4d65e81ad11f407aae7a15806837de67eea1a`; fetched at `2026-08-05 23:40:45 +1000`
 - Candidate patch SHA-256: `0aab8e6d777a6a908ea35b2c19521ef55355325907f8152363671dc950df7ec9` (excluding `docs/change-release-ledger.md`)
-- Commit SHA: not committed; audit head is emitted by the release report.
+- Commit SHA: `27845fb7b7d4515272ba41eebbede17f7c348432`; candidate content commit.
 - Dependencies: paired mobile RA-20260805-002 covers mobile `CRL-20260805-001` through `CRL-20260805-003`; no dependency SHA exists yet.
 - Required validation: PASS; remediation passed backend TypeScript build, `test:work-task-actions`, and cross-repository Phase 5 release contract; prior candidate validation remains passing.
 - Shared-hunk review: PASS; all staged files are covered by the selected root CRLs, including the shared ledger.
 - Generated-file review: PASS; no generated output is staged.
-- Technical state: verified
+- Technical state: committed
 - User authorization: selected-for-commit; evidence: 2026-08-05 instruction “我要全部提交 推送到Dev分支”.
 - Independent review: GO; evidence: 2026-08-06 independent read-only review found no P0/P1/P2; GO for commit only.
 - Action conclusion: GO; blockers: none for the commit action.
