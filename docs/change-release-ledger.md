@@ -45,10 +45,10 @@
 - Required validation: PASS — Python audit regressions 13/13, cache-ignore/source-reject assertions, local ledger audit and whitespace check.
 - Shared-hunk review: PASS — `.gitignore`, the audit regression test and ledger entry are exclusive to this CI repair.
 - Generated-file review: not applicable — cache files are excluded; no generated file is selected.
-- Technical state: `committed`
-- User authorization: `selected-for-commit`; evidence: user explicitly specified the repository-level Python cache boundary repair on 2026-08-05 Australia/Melbourne.
+- Technical state: `pushed`
+- User authorization: `approved-for-push`; evidence: user explicitly authorized pushing `codex/release-selected-root-20260805` through `104a4ca94496bebb955204b210aca750e7d6a3ad` on 2026-08-05 Australia/Melbourne.
 - Independent review: GO for commit — independent read-only review verified the standard Git ignore boundary, cache/source regression pair, staged fingerprint and no P0/P1/P2 finding.
-- Action conclusion: `GO` for commit completed; no push, PR merge, deployment or production action is authorized.
+- Action conclusion: `GO` for push completed — `origin/codex/release-selected-root-20260805` advanced from `28c5c1cf38822b95f6283abeeecf65e01032f297` to `104a4ca94496bebb955204b210aca750e7d6a3ad`, updating root PR #286. CI, merge to `Dev`, deployment and production behavior remain NOT VERIFIED.
 
 ### Risks / Release Notes
 
