@@ -42,7 +42,7 @@
 - Selected CRLs: `CRL-20260805-007`
 - Intended action: `commit`
 - Branch: `codex/release-selected-root-20260805`
-- Base: `origin/Dev@145ac720532abeaaa93203e7751d741d90bc17fb`; fetched on 2026-08-05 Australia/Melbourne. Existing PR branch remote head independently refreshed as `origin/codex/release-selected-root-20260805@104a4ca94496bebb955204b210aca750e7d6a3ad`.
+- Base: `origin/Dev@145ac720532abeaaa93203e7751d741d90bc17fb`; fetched at 2026-08-05 Australia/Melbourne. Existing PR branch remote head independently refreshed as `origin/codex/release-selected-root-20260805@104a4ca94496bebb955204b210aca750e7d6a3ad`.
 - Candidate patch SHA-256: `d612fd8f43ac7e0ca4bf38a5a3bcdd6dc62d252b4eea72c145a32c9761c62a92` (staged implementation diff excluding `docs/change-release-ledger.md`).
 - Commit SHA: `3fe4f529634bfda34f9611788af055bf496e9d79`; candidate content commit for this exact implementation patch.
 - Dependencies: mobile `origin/Dev@606e2c8911f7e25e28a88759898cc34626d669ab` is read by the root Phase 5 contract; no mobile changes are included.
@@ -57,6 +57,7 @@
 ### Risks / Release Notes
 
 - Root Quality Check 仍需 GitHub 能读取 mobile 仓库；该仓库访问权限或 `Dev` 分支不可用时会明确 checkout 失败，不再以缺文件的后台测试表现。
+- `python3 scripts/audit_change_release_ledger.py --release-report --repo root --base 145ac720532abeaaa93203e7751d741d90bc17fb --head 02e883210dfe930a203f1193606f27ab7f8b91c2 --crl CRL-20260805-007 --format markdown` — BLOCKED for push as expected: the existing PR range contains prior selected release units while this attempt selects only CRL-007, and no exact new-SHA push authorization exists. A future push must authorize the full PR scope (or isolate this CRL on a new branch) and rerun the exact range audit.
 - Sensitive-information review: no secrets, `.env` values, tokens, credentials, database URLs, sensitive logs or local caches are selected.
 
 ## CRL-20260805-006 — Python 运行缓存台账边界修复
