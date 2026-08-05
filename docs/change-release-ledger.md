@@ -26,7 +26,7 @@
 
 ### Validation
 
-- `python3 scripts/tests/test_audit_change_release_ledger.py` — passed: 11 tests, including the restored `--base` / `--head` PR-range contract.
+- `python3 scripts/tests/test_audit_change_release_ledger.py` — passed: 12 tests, including restored `--base` / `--head` success and unrecorded-path failure contracts.
 - `python3 scripts/audit_change_release_ledger.py --base origin/Dev --head HEAD` — passed: current root PR range has 53 changed paths and all 53 are ledger-recorded.
 - `python3 scripts/audit_change_release_ledger.py` — passed: 3 changed paths / 3 recorded paths in this candidate worktree.
 - `git diff --check` — passed.
