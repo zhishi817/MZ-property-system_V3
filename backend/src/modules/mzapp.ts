@@ -2657,7 +2657,7 @@ const inspectionPhotosSchema = z
   .object({
     items: z.array(
       z.object({
-        area: z.enum(['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'bathroom', 'shower_drain', 'unclean']),
+        area: z.enum(['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'bathroom', 'balcony', 'shower_drain', 'unclean']),
         url: z.string().trim().min(1).max(800),
         note: z.string().trim().max(800).optional().nullable(),
         captured_at: z.string().trim().max(64).optional(),
@@ -2811,7 +2811,7 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
     if (!await canSubmitMzappInspection(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
-    const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, bathroom: 3, shower_drain: 1, unclean: 12 }
+    const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, bathroom: 3, balcony: 3, shower_drain: 1, unclean: 12 }
     const byArea = new Map<string, number>()
     for (const it of parsed.data.items) {
       const a = String(it.area)
@@ -3235,9 +3235,12 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
       await pgPool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
     } catch {}
     const action = String(req.body?.action || 'set').trim().toLowerCase()
-    const r0 = await pgPool.query('SELECT id, checked_out_at FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
+    const r0 = await pgPool.query('SELECT id, checked_out_at, task_type, type FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
+    if (String(row.task_type || row.type || '').trim().toLowerCase() !== 'checkout_clean') {
+      return res.status(400).json({ message: 'guest_checkout_requires_checkout_task' })
+    }
     const taskIds = await expandGuestCheckoutTaskIds([id])
     const prevCheckedOutAt = row.checked_out_at ? String(row.checked_out_at) : null
     if (action === 'unset' || action === 'clear' || action === 'cancel') {
@@ -3391,20 +3394,20 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
       await pgPool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
     } catch {}
     const action = String(parsed.data.action || 'set').trim().toLowerCase()
-    let ids2 = ids
-    try {
-      const rTypes = await pgPool.query(
-        `SELECT id::text AS id, order_id::text AS order_id, task_type::text AS task_type
-         FROM cleaning_tasks
-         WHERE id::text = ANY($1::text[])`,
-        [ids],
-      )
-      const checkoutIds = (rTypes?.rows || [])
-        .filter((x: any) => String(x?.task_type || '').trim().toLowerCase() === 'checkout_clean')
-        .map((x: any) => String(x?.id || '').trim())
-        .filter(Boolean)
-      if (checkoutIds.length) ids2 = Array.from(new Set(checkoutIds))
-    } catch {}
+    const rTypes = await pgPool.query(
+      `SELECT id::text AS id,
+              order_id::text AS order_id,
+              COALESCE(NULLIF(task_type, ''), NULLIF(type, ''))::text AS task_type
+       FROM cleaning_tasks
+       WHERE id::text = ANY($1::text[])`,
+      [ids],
+    )
+    const checkoutIds = (rTypes?.rows || [])
+      .filter((x: any) => String(x?.task_type || '').trim().toLowerCase() === 'checkout_clean')
+      .map((x: any) => String(x?.id || '').trim())
+      .filter(Boolean)
+    if (checkoutIds.length !== ids.length) return res.status(400).json({ message: 'guest_checkout_requires_checkout_task' })
+    let ids2 = Array.from(new Set(checkoutIds))
     ids2 = await expandGuestCheckoutTaskIds(ids2)
     if (action === 'unset' || action === 'clear' || action === 'cancel') {
       let prevCheckedOutAt: string | null = null

@@ -27,6 +27,13 @@ function main() {
   const submissionProjectionEnd = mzappSource.indexOf('const manualParticipantsByCleaningRef', submissionProjectionStart)
   const submissionProjection = mzappSource.slice(submissionProjectionStart, submissionProjectionEnd)
   assert(submissionProjection.includes("WHEN lower(COALESCE(t.task_type, t.type, '')) = 'checkin_clean' THEN true"), 'pure checkin task payload must mark the cleaning prerequisite as satisfied')
+  const bulkGuestCheckoutStart = mzappSource.indexOf("router.post('/cleaning-tasks/guest-checked-out'")
+  const bulkCheckoutTypeQueryStart = mzappSource.indexOf('const rTypes = await pgPool.query(', bulkGuestCheckoutStart)
+  const bulkCheckoutTypeQueryEnd = mzappSource.indexOf('ids2 = await expandGuestCheckoutTaskIds(ids2)', bulkCheckoutTypeQueryStart)
+  const bulkCheckoutTypeQuery = mzappSource.slice(bulkCheckoutTypeQueryStart, bulkCheckoutTypeQueryEnd)
+  assert.match(bulkCheckoutTypeQuery, /COALESCE\(NULLIF\(task_type, ''\), NULLIF\(type, ''\)\)::text AS task_type/, 'bulk guest checkout must support legacy type values')
+  assert.match(bulkCheckoutTypeQuery, /checkoutIds\.length !== ids\.length/, 'mixed checkin and checkout IDs must be rejected')
+  assert.doesNotMatch(bulkCheckoutTypeQuery, /catch\s*\{\}/, 'a bulk checkout type lookup failure must propagate to the fail-closed route error response')
 
   assert.equal(normalizeTaskExecutionSemantics('key_handover_execution'), 'key_or_password_action')
   assert.equal(cleaningTaskExecutionSemantics({ roleKind: 'execution', taskType: 'checkin_clean', inspectionScope: 'password_only' }), 'key_or_password_action')
@@ -127,6 +134,22 @@ function main() {
   assert.equal(actionById(customerServiceInspectionPayload, 'mark_guest_checkout'), undefined)
   assert.equal(actionById(customerServiceInspectionPayload, 'submit_inspection'), undefined)
   assert.equal(actionById(customerServiceInspectionPayload, 'upload_access_video'), undefined)
+
+  const managerCheckinPayload = buildWorkTaskActionPayload({
+    ...cleaningTask,
+    id: 'w-manager-checkin',
+    task_kind: 'inspection',
+    task_type: 'checkin_clean',
+    inspection_scope: 'inspect_and_hang',
+    order_id: 'order-checkin-1',
+    start_time: '3pm',
+  }, {
+    userId: 'admin-1',
+    roleNames: ['admin'],
+    permissions: allExecPerms,
+    canViewAll: true,
+  })
+  assert.equal(actionById(managerCheckinPayload, 'mark_guest_checkout'), undefined, 'an order-linked checkin task must never expose a guest checkout action')
 
   const offlineManagerPayload = buildWorkTaskActionPayload(cleaningTask, {
     userId: 'offline-manager-1',

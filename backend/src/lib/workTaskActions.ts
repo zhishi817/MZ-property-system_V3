@@ -381,7 +381,7 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
   const isInspectionTask = isCleaningSource && taskKind === 'inspection'
   const isExecutionTask = isCleaningSource && (taskKind === 'execution' || lower(task?.execution_role) === 'execution' || isKeyOrPasswordActionSemantics(task?.execution_semantics))
   const isStayoverTask = isCleaningTask && isStayoverTaskType(task?.task_type)
-  const isCheckoutTask = lower(task?.task_type) === 'checkout_clean' || !!cleanText(task?.start_time)
+  const isCheckoutTask = lower(task?.task_type) === 'checkout_clean'
   const inspectionMode = normalizeInspectionMode(task)
   const isPasswordOnly = isPasswordOnlyInspectionTask(task)
   const isCheckinInspection = isInspectionTask && lower(task?.task_type) === 'checkin_clean'
@@ -533,7 +533,7 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
   }
 
   if (isManagerCleaningSource) {
-    if (!isPasswordOnly && (isCheckoutTask || !!cleanText(task?.order_id_checkout) || !!cleanText(task?.order_id))) {
+    if (!isPasswordOnly && isCheckoutTask) {
       const checkedOut = !!cleanText(task?.checked_out_at)
       addAction({
         id: 'mark_guest_checkout',

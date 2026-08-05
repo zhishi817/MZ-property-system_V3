@@ -18,6 +18,7 @@ import { emitNotificationEvent } from '../services/notificationEvents'
 import { buildWebTaskCapabilityPayload, type WebTaskDisplayState, type WebTaskManagementAction } from '../lib/webTaskCapabilities'
 import { autoCleaningAssignmentStatus, isAutoAssignableCleaningStatus, isCheckinSiteExecutionTask } from '../lib/cleaningAssignmentStatus'
 import { emitDeferredInspectionCheckinConflictAlerts, isDeferredInspectionCheckinConflictRelevantChange, reconcileDeferredInspectionCheckinReplacement } from '../services/deferredInspectionCheckinConflict'
+import { assignedTaskExecutorIds, isTaskExecutorEligibleRoleNames } from '../services/taskExecutorEligibility'
 
 export const router = Router()
 
@@ -2174,16 +2175,25 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
   for (const row of rowMap.values()) {
     if (!row.subrow_order.length) row.subrow_order = [defaultSubrowKey()]
   }
-  const inspectorIds = Array.from(new Set(
-    payload.cleaning_assignments.map((item) => text(item.inspector_id)).filter(Boolean),
-  ))
+  const assignedUserIds = assignedTaskExecutorIds({
+    cleaningAssignments: payload.cleaning_assignments,
+    workAssignments: payload.work_assignments,
+  })
+  if (!hasPg || !pgPool) {
+    const usersById = new Map<string, any>((db.users || []).map((item: any) => [String(item.id), item]))
+    const invalidId = assignedUserIds.find((id) => {
+      const user = usersById.get(id)
+      return !user || !isTaskExecutorEligibleRoleNames([String(user.role || ''), ...((Array.isArray(user.roles) ? user.roles : []).map((role: any) => String(role || '')))])
+    })
+    if (invalidId) return res.status(400).json({ message: '无效的任务执行人员' })
+  }
   try {
     if (hasPg && pgPool) {
       await ensureCleaningSchemaV2()
       await ensureCleaningInspectionScopeColumn()
       await ensureWorkTasksTable()
       await ensureTaskCenterTables()
-      if (inspectorIds.length) {
+      if (assignedUserIds.length) {
         const staffResult = await pgPool.query(
           `SELECT
              u.id::text AS id,
@@ -2193,15 +2203,15 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
            LEFT JOIN user_roles ur ON ur.user_id = u.id::text
            WHERE u.id::text = ANY($1::text[])
            GROUP BY u.id`,
-          [inspectorIds],
+          [assignedUserIds],
         )
-        const validIds = new Set<string>()
+        const roleNamesById = new Map<string, string[]>()
         for (const row of staffResult.rows || []) {
           const roles = [String(row.role || ''), ...(Array.isArray(row.roles) ? row.roles.map((item: any) => String(item || '')) : [])]
-          if (roles.some((role) => role === 'cleaning_inspector' || role === 'cleaner_inspector')) validIds.add(String(row.id))
+          roleNamesById.set(String(row.id), roles)
         }
-        const invalidId = inspectorIds.find((id) => !validIds.has(id))
-        if (invalidId) return res.status(400).json({ message: '无效的检查人员' })
+        const invalidId = assignedUserIds.find((id) => !isTaskExecutorEligibleRoleNames(roleNamesById.get(id) || []))
+        if (invalidId) return res.status(400).json({ message: '无效的任务执行人员' })
       }
       if (payload.cleaning_assignments.length) {
         const taskTypeResult = await pgPool.query(

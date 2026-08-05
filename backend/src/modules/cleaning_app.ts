@@ -1686,7 +1686,7 @@ const inspectionPhotosSchema = z
   .object({
     items: z.array(
       z.object({
-        area: z.enum(['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'bathroom', 'shower_drain', 'unclean']),
+        area: z.enum(['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'bathroom', 'balcony', 'shower_drain', 'unclean']),
         url: z.string().trim().min(1),
         note: z.string().trim().max(800).optional().nullable(),
         captured_at: z.string().trim().max(64).optional(),
@@ -1757,7 +1757,7 @@ router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspec
     const submitId = String(parsed.data.submit_id || '').trim()
     const stepKey = String(parsed.data.step_key || '').trim()
     const payloadHash = buildIdempotencyPayloadHash(parsed.data)
-    const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, bathroom: 3, shower_drain: 1, unclean: 12 }
+    const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, bathroom: 3, balcony: 3, shower_drain: 1, unclean: 12 }
     const byArea = new Map<string, number>()
     for (const it of parsed.data.items) {
       const a = String(it.area)

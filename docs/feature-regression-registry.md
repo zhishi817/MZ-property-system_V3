@@ -18,6 +18,8 @@
 - 服务端 `available_actions` 是任务操作的权威来源；客户端不得在空列表时用旧角色或状态逻辑自行补按钮。
 - `password_only` 只适用于 `upload_access_video`；不得把 `submit_inspection` 或通用完成动作错误地改成 password-only。
 - 不同角色、参与者和任务状态的可操作性及禁用原因必须一致；客服、admin、线下经理在非参与任务上使用同样的管理动作矩阵，明确参与授权才显示对应执行动作。
+- 管理视图的“全部”保持管理详情入口；切换到“我的”后，任务卡必须进入既有执行详情，不能因管理角色跳回管理页。
+- “标记已退房”只可由真实 `checkout_clean` 来源生成；`checkin_clean` 即使带有订单号或旧缓存 action 也不得显示或调用该动作。合并卡只能携带真实退房子任务的来源 ID。
 
 ### 跨层适用范围
 
@@ -36,7 +38,9 @@
 | 详情页按服务端 action 进入 | `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` | 任务详情 action 展示和入口 | partial | `npm run test --prefix mz-cleaning-app-frontend -- src/screens/tasks/TaskDetailScreen.test.tsx` |
 | 管理角色详情动作矩阵（后端） | `backend/scripts/tests/test_work_task_actions.ts` | admin、线下经理与客服在非参与任务上只显示管理动作；显式参与授权保留检查入口 | sufficient | `npm run test:work-task-actions --prefix backend` |
 | 管理角色详情动作矩阵（移动端旧 payload） | `mz-cleaning-app-frontend/src/lib/workTaskActions.test.ts` | admin、线下经理与客服在旧 payload 下保持管理动作一致 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/workTaskActions.test.ts` |
-| 管理角色清洁任务详情入口一致 | `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.test.tsx` | admin 即使收到 `available_actions` 也进入与客服相同的 `ManagerDailyTask` 管理详情 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tabs/TasksScreen.test.tsx` |
+| 全部管理入口与我的执行入口 | `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.test.tsx` | 管理角色在“全部”进入 `ManagerDailyTask`；切换“我的”后进入执行详情 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tabs/TasksScreen.test.tsx` |
+| 入住检查退房动作防护（后端） | `backend/scripts/tests/test_work_task_actions.ts` | 后端不为入住检查提供退房动作 | sufficient | `npm run test:work-task-actions --prefix backend` |
+| 入住检查退房动作防护（移动端旧缓存） | `mz-cleaning-app-frontend/src/lib/workTaskActions.test.ts` | 旧客户端缓存不为入住检查提供退房动作 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand src/lib/workTaskActions.test.ts` |
 | 通知入口的本地 action 防护 | `mz-cleaning-app-frontend/src/screens/tasks/InspectionCompleteScreen.test.tsx` | 入口 action 被服务端禁用时阻止提交 | partial | `npm run test --prefix mz-cleaning-app-frontend -- src/screens/tasks/InspectionCompleteScreen.test.tsx` |
 
 ### 验证策略

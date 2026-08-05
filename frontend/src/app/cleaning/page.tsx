@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { API_BASE, authHeaders, deleteJSON, getJSON, patchJSON, postJSON } from '../../lib/api'
 import { cleaningColorKind } from '../../lib/cleaningColor'
-import { splitTurnoverMerge } from '../../lib/cleaningDailyMerge'
+import { isOrderLinkedAutoCheckinNightsAuthoritative, splitTurnoverMerge } from '../../lib/cleaningDailyMerge'
 import { checkinTimingLabel, checkoutTimingLabel, mergeDailyCapabilityGate, mergedDailyDisplayBadges, mergedDailyDisplayStatus, mergedDailyTaskStatus, selfCompleteDailyStatusMeta, visibleDailyDisplayBadges } from '../../lib/cleaningDailyTaskStatus'
 import { type TaskSemanticTone, taskStatusMeta, taskTimingTone } from '../../lib/cleaningTaskUi'
 import styles from './cleaningSchedule.module.scss'
@@ -194,6 +194,7 @@ type EditTaskForm = {
   checkout_order_id: string | null
   checkin_manual_ids: string[]
   checkout_manual_ids: string[]
+  checkin_nights_authoritative: boolean
   guest_special_request: string
   nights_override: number | null
   checkout_ids: string[]
@@ -1071,7 +1072,8 @@ export default function CleaningPage() {
       checkinRows.length === 1
         ? (checkinRows[0]?.nights_override != null ? Number(checkinRows[0]?.nights_override) : null)
         : (nightsAllSame ? (checkinRows[0]?.nights_override != null ? Number(checkinRows[0]?.nights_override) : null) : null)
-    const resolvedNightsOverride = nightsOverride ?? fallbackNightsOverride
+    const checkinNightsAuthoritative = checkinRows.length > 0 && checkinRows.every((row) => isOrderLinkedAutoCheckinNightsAuthoritative(row))
+    const resolvedNightsOverride = checkinNightsAuthoritative ? null : (nightsOverride ?? fallbackNightsOverride)
     const checkoutKey = (r: CleaningTaskRow | null) => String(r?.old_code ?? '').trim()
     const checkinKey = (r: CleaningTaskRow | null) => String(r?.new_code ?? '').trim()
     const checkoutPwd = checkoutRows.length > 0 && checkoutRows.every((r) => checkoutKey(r) === checkoutKey(checkoutRows[0])) ? (checkoutKey(checkoutRows[0]) || '') : ''
@@ -1122,6 +1124,7 @@ export default function CleaningPage() {
       checkout_order_id: stayoverMode ? null : checkoutOrderId,
       checkin_manual_ids: stayoverMode ? [] : checkinManualIds,
       checkout_manual_ids: stayoverMode ? [] : checkoutManualIds,
+      checkin_nights_authoritative: stayoverMode ? false : checkinNightsAuthoritative,
       guest_special_request: guestSpecialRequest,
       nights_override: stayoverMode ? null : resolvedNightsOverride,
       checkout_ids: stayoverMode ? [] : checkoutIdsAll,
@@ -1244,7 +1247,7 @@ export default function CleaningPage() {
         if (editForm.checkin_ids.some((x) => String(x) === String(id))) {
           p.task_date = editForm.checkin_task_date.format('YYYY-MM-DD')
           p.new_code = toNull(editForm.checkin_password)
-          p.nights_override = editForm.nights_override ?? null
+          if (!editForm.checkin_nights_authoritative) p.nights_override = editForm.nights_override ?? null
           p.checkin_time = toNull(editForm.checkin_time)
         }
         return patchJSON(`/cleaning/tasks/${encodeURIComponent(id)}`, p)
