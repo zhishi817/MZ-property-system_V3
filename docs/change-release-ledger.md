@@ -44,15 +44,15 @@
 - Branch: `codex/release-selected-root-20260805`
 - Base: `origin/Dev@145ac720532abeaaa93203e7751d741d90bc17fb`; fetched on 2026-08-05 Australia/Melbourne. Existing PR branch remote head independently refreshed as `origin/codex/release-selected-root-20260805@104a4ca94496bebb955204b210aca750e7d6a3ad`.
 - Candidate patch SHA-256: `d612fd8f43ac7e0ca4bf38a5a3bcdd6dc62d252b4eea72c145a32c9761c62a92` (staged implementation diff excluding `docs/change-release-ledger.md`).
-- Commit SHA: not committed.
+- Commit SHA: `3fe4f529634bfda34f9611788af055bf496e9d79`; candidate content commit for this exact implementation patch.
 - Dependencies: mobile `origin/Dev@606e2c8911f7e25e28a88759898cc34626d669ab` is read by the root Phase 5 contract; no mobile changes are included.
 - Required validation: PASS — focused workflow contract, full root `check:backend` with Phase 5 source reads, feature registry audit, ledger audit and whitespace check all passed.
 - Shared-hunk review: PASS — the workflow job, root package command, new contract test and new ledger entry are exclusive to this root CI repair.
 - Generated-file review: not applicable — no generated files are selected; validation-only temporary links were removed.
-- Technical state: `verified`.
+- Technical state: `committed`.
 - User authorization: `selected-for-commit`; evidence: user said “修复” after receiving the exact missing-mobile-checkout fix scope on 2026-08-05 Australia/Melbourne.
 - Independent review: GO for commit — independent read-only review rechecked the root/mobile boundary, workflow order, staged fingerprint, ledger coverage and sensitive-information risk; no P0/P1/P2 finding.
-- Action conclusion: `GO` for commit — candidate is verified, exactly selected and independently reviewed. Push, PR update, merge, deployment and production behavior remain unauthorized / NOT VERIFIED.
+- Action conclusion: `GO` for commit completed — local content commit created on `codex/release-selected-root-20260805`. Push, PR update, merge, deployment and production behavior remain unauthorized / NOT VERIFIED.
 
 ### Risks / Release Notes
 
