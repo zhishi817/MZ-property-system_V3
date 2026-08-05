@@ -85,13 +85,13 @@
 - Dependencies: selected maintenance foundation, deferred-inspection replacement, private-media authorization and invoice-state units; maintenance and idempotent-receipt migrations are included but not executed.
 - Required validation: PASS with one local-harness boundary — backend TypeScript; idempotency, maintenance schema/action, media visibility and deferred-inspection contracts; ledger regression test and current ledger coverage all passed. `check:ci` is restored and its script contract is covered, but a full local invocation reaches the ledger gate with temporary dependency symlinks reported as untracked; this does not demonstrate a CI runner result.
 - Independent review: GO for commit — independent staged review of `0c971ff55a648d2a8dde982cba72e73959b8f4d84a9aafcd7960399aefe76dbb` found the CI entry restored, deep-cleaning DDL moved to its controlled migration, and stable-key retry safety present; no P0/P1/P2 blocker.
-- User authorization: selected-for-commit — user explicitly confirmed the selected scope and both high-risk inclusion groups.
-- Intended action: commit
-- Technical state: committed
+- User authorization: approved-for-push — user explicitly authorized `codex/release-selected-root-20260805` through `578a231f936f392e1da0ea52287c128052f605a6` on 2026-08-05 Australia/Melbourne.
+- Intended action: push
+- Technical state: pushed
 - Commit SHA: `dad290645de78747648badc1c232119aabe96f30` (candidate content commit; audit head is recorded by the report command)
 - Shared-hunk review: PASS — candidate paths are explicit in this packaging record; no partial hunk from an unselected implementation unit is staged.
 - Generated-file review: not applicable — no generated build output is included.
-- Action conclusion: GO for commit; NOT VERIFIED for push, deployment and production behavior. Push requires a separate, exact branch/commit authorization.
+- Action conclusion: GO for push — `origin/codex/release-selected-root-20260805` was read back at `578a231f936f392e1da0ea52287c128052f605a6`; NOT VERIFIED for PR, merge to Dev, deployment and production behavior.
 
 
 ## CRL-20260805-001 — 延期检查与入住冲突替代、告警和任务投影
