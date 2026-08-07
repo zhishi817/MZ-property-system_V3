@@ -2,8 +2,8 @@
 
 ## CRL-20260807-009 — Phase 5 跨仓服务端动作契约门禁校正（root）
 
-- **Status:** ready
-- **Updated:** 2026-08-07 23:24 AEST
+- **Status:** committed
+- **Updated:** 2026-08-07 23:40 AEST
 - **Request:** 授权修复阻断维修完工照片后端发布的根仓/移动端 Phase 5 测试契约断裂。
 - **Outcome:** 根仓的 Phase 5 源码契约继续验证移动端类型声明及 `available_actions` 的服务端动作直接透传；不再要求当前移动端从未实现的 `canRenderServerAction` helper。
 
@@ -32,19 +32,19 @@
 
 ### Release Attempts
 
-- Will travel in `RA-20260807-root-maintenance-media-01` with selected root CRLs `CRL-20260807-007`, `CRL-20260807-008` and `CRL-20260807-009`; no commit, push or deployment yet.
+- Committed in `RA-20260807-root-maintenance-media-01` content commit `28563bb1827a514f965905bd35407459ee524241` with selected root CRLs `CRL-20260807-007`, `CRL-20260807-008` and `CRL-20260807-009`; not pushed, merged or deployed.
 
 ### Risks / Release Notes
 
 - Risk: 这是源码级跨仓契约，仍不能替代将来以精确 root/mobile SHA 运行的远端集成工作流。
 - Rollback: revert this test-only correction; no runtime or data rollback is needed.
 - Sensitive-information review: no secret, token, media URL, environment value or production data is recorded.
-- Git state: isolated candidate branch; uncommitted and not pushed.
+- Git state: isolated candidate branch; committed locally and not pushed.
 
 ## CRL-20260807-008 — FR-004 失效移动端测试映射校正（root）
 
-- **Status:** ready
-- **Updated:** 2026-08-07 23:24 AEST
+- **Status:** committed
+- **Updated:** 2026-08-07 23:40 AEST
 - **Request:** 授权修复阻断后端发布的 FR-004 失效移动端测试映射。
 - **Outcome:** 有效的管理详情完工照片关联/部分失败测试只指向现存的 `ManagerDailyTaskScreen.test.ts`；已删除的客厅多图测试明确标为 `missing`，不再让质量门引用不存在的文件或把未覆盖行为误报为已验证。
 
@@ -74,19 +74,19 @@
 
 ### Release Attempts
 
-- Will travel in `RA-20260807-root-maintenance-media-01` with selected root CRLs `CRL-20260807-007`, `CRL-20260807-008` and `CRL-20260807-009`; no commit, push or deployment yet.
+- Committed in `RA-20260807-root-maintenance-media-01` content commit `28563bb1827a514f965905bd35407459ee524241` with selected root CRLs `CRL-20260807-007`, `CRL-20260807-008` and `CRL-20260807-009`; not pushed, merged or deployed.
 
 ### Risks / Release Notes
 
 - Risk: 管理端客厅多图兼容和重试仍无当前自动化覆盖，须由未来的移动端独立 CRL 补测试；该风险不应被本次后端图片代理修复掩盖。
 - Rollback: revert only the registry mapping correction; no runtime or data rollback is needed.
 - Sensitive-information review: no secret, token, media URL, environment value or production data is recorded.
-- Git state: isolated candidate branch; uncommitted and not pushed.
+- Git state: isolated candidate branch; committed locally and not pushed.
 
 ## CRL-20260807-007 — 维修完工照片任务投影与私有读取（root）
 
-- **Status:** ready
-- **Updated:** 2026-08-07 23:39 AEST
+- **Status:** committed
+- **Updated:** 2026-08-07 23:40 AEST
 - **Request:** 修复任务执行人提交维修完工后，相册照片无法显示缩略图或大图；先推送并部署后端。
 - **Outcome:** 专用维修动作保存的完工照片、备注和未完成原因会投影到 `work_tasks`；已保存的内部/外部维修 `mzapp/` 私有照片可由认证媒体代理按精确记录提供缩略图、预览和原图。
 
@@ -136,22 +136,22 @@
 - Branch: `codex/release-maintenance-media-20260807`.
 - Base: `origin/Dev@fab297f37fc05c9825293b2cf954d2abe56ed3ef`; fetched 2026-08-07 22:40 AEST.
 - Candidate patch SHA-256: `02b9f8f4cbdb6df51ffc8353caba6322c1f587c7970c801edf4ec6c6927b15dc`; final staged selected-content diff after P1 remediation, excluding `docs/change-release-ledger.md`.
-- Commit SHA: not committed.
+- Commit SHA: `28563bb1827a514f965905bd35407459ee524241`; candidate content commit. The exact audit head is emitted by the release report command.
 - Dependencies: `CRL-20260806-006` is present in the base; `CRL-20260807-008` corrects the FR-004 mapping and `CRL-20260807-009` corrects the stale Phase 5 test assertion; mobile OTA is explicitly excluded from this root attempt.
 - Required validation: PASS; the P1 targeted media contract and the complete quality gate both passed after remediation.
 - Shared-hunk review: PASS; renewed independent read-only review inspected the complete staged diff, including `cleaning_app.ts`, the media contract test, registry and ledger hunk ownership.
 - Generated-file review: PASS; no generated output, cache, dependency directory, secret or environment file remains in the candidate.
-- Technical state: verified.
+- Technical state: committed.
 - User authorization: selected-for-commit; evidence: user instructed “先推送部署后端吧” and authorized the FR-004 mapping correction and CRL-20260807-009 test correction on 2026-08-07. Per release policy, push/deployment still require the exact candidate commit and branch to be confirmed.
 - Independent review: GO for `commit`; renewed review verified the P1 remediation, the exact `02b9f8f4cbdb6df51ffc8353caba6322c1f587c7970c801edf4ec6c6927b15dc` non-ledger fingerprint, all seven selected files, root base and current `origin/Dev`, with no P0/P1/P2, generated-file or sensitive-information finding. The earlier NO-GO remains recorded above as historical evidence.
-- Action conclusion: GO for `commit`; exact push authorization and deployment verification remain pending.
+- Action conclusion: GO for `commit` completed; the push action remains NOT VERIFIED until the exact branch and commit are authorized, and deployment remains pending merge and separate deployment evidence.
 
 ### Risks / Release Notes
 
 - Risk: local contract tests cannot prove deployed Postgres/R2 behavior or iOS image decoding; no production media was read or written.
 - Rollback: revert this isolated projection/proxy unit; no historical media object or workflow record is deleted.
 - Sensitive-information review: no secret, token, raw private URL, media byte, `.env` value, database URL, cookie or production data is included.
-- Git state: isolated candidate branch; uncommitted and not pushed.
+- Git state: isolated candidate branch; committed locally and not pushed.
 
 ## CRL-20260807-006 — 后端私有媒体授权契约合并回归修复（root）
 
