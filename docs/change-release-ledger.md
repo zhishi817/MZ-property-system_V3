@@ -29,8 +29,8 @@
 - `npm run test:cleaning-media-image --prefix backend` — passed.
 - `./backend/node_modules/.bin/tsc -p backend/tsconfig.json --noEmit` — passed.
 - `npm run check:feature-registry` — passed: 9 FRs / 103 mappings.
-- `npm run check:fast` — partially passed through ledger range audit (13 tests), ledger coverage, FR audit, backend build, idempotency, media-image and R2-media contracts; then stopped because the isolated root worktree has no `mz-cleaning-app-frontend/` checkout required by the cross-repository Phase 5 static test. GitHub Fast Regression explicitly checks out mobile `Dev` at that path before running this command, so this local failure is an environment gap, not a test failure in this repair.
-- `git diff --check` and `python3 scripts/audit_change_release_ledger.py` — pending final rerun after this record update.
+- `npm run check:fast` — passed with a temporary read-only mobile `origin/Dev@817b803a88177a8d43b4e02965fffde59e852789` checkout: backend contracts, frontend 42 suites / 180 tests, and mobile TypeScript all passed. Temporary links/worktree and compiler outputs were removed afterward.
+- `git diff --check` and `python3 scripts/audit_change_release_ledger.py` — passed.
 
 ### Release Attempt
 
@@ -38,7 +38,7 @@
 
 - Repository: `root`.
 - Selected CRLs: `CRL-20260806-006`, `CRL-20260807-001`, `CRL-20260807-002`, `CRL-20260807-003`, `CRL-20260807-004`, `CRL-20260807-005`, `CRL-20260807-006`.
-- Intended action: `commit`.
+- Intended action: `push`.
 - Branch: `codex/release-selected-20260807-root`.
 - Base: `origin/Dev@b3e3034dd8a3bcbb6e679cd17d75fdcf75bcce69`; fetched at 2026-08-07 20:15 AEST.
 - Candidate patch SHA-256: `271b17705d7b20f7132f4107f344d4ba585b198c02caed0cc7748fcddc60b38d` from exact `origin/Dev...candidate` content excluding the ledger.
@@ -48,16 +48,16 @@
 - Shared-hunk review: PASS; only the existing FR-006 media row and the shared ledger receive scoped updates; the backend test path belongs solely to this merge-regression repair.
 - Generated-file review: PASS; no generated output, cache, dependency directory, local environment file or secret is staged.
 - Technical state: committed.
-- User authorization: selected-for-commit; evidence: user replied “提交” for `CRL-20260807-006` on 2026-08-07. Push, merge, deployment, migration and production actions remain unauthorized.
-- Independent review: GO; evidence: 2026-08-07 independent read-only review verified the full `origin/Dev...candidate` range, matching `271b1770…` fingerprint, exact 7-CRL scope, staged paths, Fast Regression evidence, FR/ledger audits, and sensitive/generated-file review for commit only.
-- Action conclusion: GO; blockers: none for this local commit. Push, merge, deployment, migration and production actions remain unauthorized.
+- User authorization: approved-for-push; evidence: user replied “推送” after local head `bce8ddfdf6f570ba817957f078f442e75a932b4d` was presented on 2026-08-07; authorization is limited to this branch. Merge, deployment, migration and production actions remain unauthorized.
+- Independent review: NOT VERIFIED; push-specific independent review of this authorization receipt and exact range is pending.
+- Action conclusion: NOT VERIFIED; blockers: push-specific independent review and final exact range report pending.
 
 ### Risks / Release Notes
 
 - Risk: 这是源码/契约测试，不替代非生产环境真实 JWT、Postgres 关系和 R2 读取验证。
 - Rollback: 恢复测试与 FR 映射的上一版本；不回退媒体代理授权实现。
 - Sensitive-information review: no secrets, credentials, local caches or production data involved.
-- Git state: candidate content committed at `7d05bfe7a099d212117d8a13bec82feb2bdf35cd`; push remains unauthorized.
+- Git state: candidate content committed at `7d05bfe7a099d212117d8a13bec82feb2bdf35cd`; push authorized, pending independent review and final range report.
 
 ## CRL-20260807-002 — 房源问题反馈访问候选映射（root）
 
