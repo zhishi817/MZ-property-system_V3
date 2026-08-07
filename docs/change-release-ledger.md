@@ -3,7 +3,7 @@
 ## CRL-20260807-009 — Phase 5 跨仓服务端动作契约门禁校正（root）
 
 - **Status:** committed
-- **Updated:** 2026-08-07 23:40 AEST
+- **Updated:** 2026-08-07 23:49 AEST
 - **Request:** 授权修复阻断维修完工照片后端发布的根仓/移动端 Phase 5 测试契约断裂。
 - **Outcome:** 根仓的 Phase 5 源码契约继续验证移动端类型声明及 `available_actions` 的服务端动作直接透传；不再要求当前移动端从未实现的 `canRenderServerAction` helper。
 
@@ -132,7 +132,7 @@
 
 - Repository: `root`.
 - Selected CRLs: `CRL-20260807-007`, `CRL-20260807-008`, `CRL-20260807-009`.
-- Intended action: `commit`.
+- Intended action: `push`.
 - Branch: `codex/release-maintenance-media-20260807`.
 - Base: `origin/Dev@fab297f37fc05c9825293b2cf954d2abe56ed3ef`; fetched at 2026-08-07 22:40 AEST.
 - Candidate patch SHA-256: `02b9f8f4cbdb6df51ffc8353caba6322c1f587c7970c801edf4ec6c6927b15dc`; final staged selected-content diff after P1 remediation, excluding `docs/change-release-ledger.md`.
@@ -142,9 +142,9 @@
 - Shared-hunk review: PASS; renewed independent read-only review inspected the complete staged diff, including `cleaning_app.ts`, the media contract test, registry and ledger hunk ownership.
 - Generated-file review: PASS; no generated output, cache, dependency directory, secret or environment file remains in the candidate.
 - Technical state: committed.
-- User authorization: selected-for-commit; evidence: user instructed “先推送部署后端吧” and authorized the FR-004 mapping correction and CRL-20260807-009 test correction on 2026-08-07. Per release policy, push/deployment still require the exact candidate commit and branch to be confirmed.
-- Independent review: GO for `commit`; renewed review verified the P1 remediation, the exact `02b9f8f4cbdb6df51ffc8353caba6322c1f587c7970c801edf4ec6c6927b15dc` non-ledger fingerprint, all seven selected files, root base and current `origin/Dev`, with no P0/P1/P2, generated-file or sensitive-information finding. The earlier NO-GO remains recorded above as historical evidence.
-- Action conclusion: GO for `commit` completed; the push action remains NOT VERIFIED until the exact branch and commit are authorized, and deployment remains pending merge and separate deployment evidence.
+- User authorization: approved-for-push; evidence: after the exact local branch `codex/release-maintenance-media-20260807`, audit head `6d9ecd43c34e6f86edb34a59a2b99c1a6dc4629d`, base and candidate content commit were presented, the user replied “推送” on 2026-08-07. Authorization is limited to this root candidate branch; merge and deployment remain separate.
+- Independent review: NO-GO for `push` (metadata only): the read-only pre-push review reconfirmed the exact range, `02b9f8f4cbdb6df51ffc8353caba6322c1f587c7970c801edf4ec6c6927b15dc` non-ledger fingerprint, seven selected paths, no P0, no secret/generated-file or production-write risk, and private-media authorization; it blocked solely because this Release Attempt still declared `commit` / `selected-for-commit`. This update resolves that documented metadata gap; a renewed exact-range push review remains required before pushing. The earlier code-review NO-GO P1 and subsequent GO for `commit` remain recorded above.
+- Action conclusion: BLOCKED pending the renewed independent push review and a passing exact-range release report; merge and deployment remain outside this action.
 
 ### Risks / Release Notes
 
