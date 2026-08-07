@@ -100,8 +100,9 @@
 - Generated-file review: PASS — no generated output, cache, dependency directory, secret or local environment file is staged.
 - User authorization: `approved-for-push`; evidence: the user replied “推送” on 2026-08-07 after `codex/release-selected-20260807-root` and candidate content commit `722981d87db9d085b419d0553ed3cf32b7ecb379` were presented. Deployment, migration and production actions remain separately unauthorized.
 - Independent review: GO; evidence: 2026-08-07 independent read-only review accepted exact hash `dbf1da52c5c8ea5bce680dea5a00f0d4afd25b4320f62246bf5fc03adb8c45ea`, all 17 staged paths, validation evidence, and sensitive/generated-file review for commit only.
-- Technical state: `committed`.
-- Action conclusion: NOT VERIFIED for push until the updated exact committed-range audit and independent review complete; deployment, migration and production actions remain separately unauthorized.
+- Technical state: `pushed`.
+- Remote push: `origin/codex/release-selected-20260807-root@39e74e0658f29bf7e281bbfe59a919281b269cb3`, confirmed by `git ls-remote` on 2026-08-07 Australia/Melbourne.
+- Action conclusion: GO for push (completed); not merged to `Dev`, deployed, migrated, or applied to production data.
 
 ## CRL-20260806-006 — 维修执行人专用动作当前 Dev 契约重基线（root）
 
