@@ -2,7 +2,7 @@
 
 ## CRL-20260807-006 — 后端私有媒体授权契约合并回归修复（root）
 
-- **Status:** ready
+- **Status:** committed
 - **Updated:** 2026-08-07 Australia/Melbourne
 - **Request:** 修复根仓库 Fast Regression 中私有媒体授权实现与后端契约测试在合并后不一致的问题。
 - **Outcome:** 回归测试改为断言当前的来源记录级授权、真实房源反馈授权与 fail-closed 行为，不再要求已移除的通用权限中间件文本。
@@ -42,12 +42,12 @@
 - Branch: `codex/release-selected-20260807-root`.
 - Base: `origin/Dev@b3e3034dd8a3bcbb6e679cd17d75fdcf75bcce69`; fetched at 2026-08-07 20:15 AEST.
 - Candidate patch SHA-256: `271b17705d7b20f7132f4107f344d4ba585b198c02caed0cc7748fcddc60b38d` from exact `origin/Dev...candidate` content excluding the ledger.
-- Commit SHA: not committed; audit head is emitted by the report command after commit.
+- Commit SHA: `7d05bfe7a099d212117d8a13bec82feb2bdf35cd`; candidate content commit. The exact audit head is emitted separately by the report command.
 - Dependencies: existing selected root candidate at `origin/codex/release-selected-20260807-root@39e74e0658f29bf7e281bbfe59a919281b269cb3` and its local ledger receipt `2b1d36b9aecbdcfd8b173c3ac7a17f53c0766f32`; this new media-contract repair is a required companion to `CRL-20260807-002` in the same PR range.
 - Required validation: PASS; evidence: target media contract and backend no-output compile passed; full `npm run check:fast` passed with a temporary read-only mobile `origin/Dev@817b803a88177a8d43b4e02965fffde59e852789` checkout (backend contracts, frontend 42/180 tests, and mobile TypeScript all passed); temporary links and compiler outputs were removed afterward.
 - Shared-hunk review: PASS; only the existing FR-006 media row and the shared ledger receive scoped updates; the backend test path belongs solely to this merge-regression repair.
 - Generated-file review: PASS; no generated output, cache, dependency directory, local environment file or secret is staged.
-- Technical state: verified.
+- Technical state: committed.
 - User authorization: selected-for-commit; evidence: user replied “提交” for `CRL-20260807-006` on 2026-08-07. Push, merge, deployment, migration and production actions remain unauthorized.
 - Independent review: GO; evidence: 2026-08-07 independent read-only review verified the full `origin/Dev...candidate` range, matching `271b1770…` fingerprint, exact 7-CRL scope, staged paths, Fast Regression evidence, FR/ledger audits, and sensitive/generated-file review for commit only.
 - Action conclusion: GO; blockers: none for this local commit. Push, merge, deployment, migration and production actions remain unauthorized.
@@ -57,7 +57,7 @@
 - Risk: 这是源码/契约测试，不替代非生产环境真实 JWT、Postgres 关系和 R2 读取验证。
 - Rollback: 恢复测试与 FR 映射的上一版本；不回退媒体代理授权实现。
 - Sensitive-information review: no secrets, credentials, local caches or production data involved.
-- Git state: uncommitted.
+- Git state: candidate content committed at `7d05bfe7a099d212117d8a13bec82feb2bdf35cd`; push remains unauthorized.
 
 ## CRL-20260807-002 — 房源问题反馈访问候选映射（root）
 
