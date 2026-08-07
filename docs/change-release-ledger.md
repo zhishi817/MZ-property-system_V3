@@ -93,15 +93,15 @@
 - Branch: `codex/release-selected-20260807-root`.
 - Base: `origin/Dev@b3e3034dd8a3bcbb6e679cd17d75fdcf75bcce69`; fetched at 2026-08-07 Australia/Melbourne.
 - Candidate patch SHA-256: `dbf1da52c5c8ea5bce680dea5a00f0d4afd25b4320f62246bf5fc03adb8c45ea` from the exact staged non-ledger content.
-- Commit SHA: not created; the staged candidate is cleanly based on the recorded base.
+- Commit SHA: `722981d87db9d085b419d0553ed3cf32b7ecb379`; candidate content commit, with the exact audit head emitted separately by the release report.
 - Required validation: PASS; evidence: ledger audit 17/17、staged whitespace check；maintenance-workflow、property-feedback-access、mzapp-media-visibility 和 offline-password-structure contracts；`npm run build --prefix backend`；`npm run lint --prefix frontend`（仅既有 warning）及 `npm run build --prefix frontend` 均通过。
 - Dependencies: the five collision-safe 20260807 mappings preserve the user-selected source labels without claiming the older remote CRLs are released. Feedback migration must be deployed before the backend; mobile maintenance execution remains a paired, unverified release dependency.
 - Shared-hunk review: PASS — `frontend/src/app/properties/page.tsx` is deliberately shared by the selected type and creation-time units, and every other staged path has one listed mapping.
 - Generated-file review: PASS — no generated output, cache, dependency directory, secret or local environment file is staged.
 - User authorization: `selected-for-commit` — the user selected the source units; push, deployment, migration and production actions remain separately unauthorized.
 - Independent review: GO; evidence: 2026-08-07 independent read-only review accepted exact hash `dbf1da52c5c8ea5bce680dea5a00f0d4afd25b4320f62246bf5fc03adb8c45ea`, all 17 staged paths, validation evidence, and sensitive/generated-file review for commit only.
-- Technical state: `candidate`.
-- Action conclusion: GO for commit; exact selected scope is approved for local commit only. Push, deployment, migration and production actions remain separately unauthorized.
+- Technical state: `committed`.
+- Action conclusion: GO for commit (completed); push, deployment, migration and production actions remain separately unauthorized.
 
 ## CRL-20260806-006 — 维修执行人专用动作当前 Dev 契约重基线（root）
 
