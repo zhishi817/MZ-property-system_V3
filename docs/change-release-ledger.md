@@ -134,7 +134,7 @@
 - Selected CRLs: `CRL-20260807-007`, `CRL-20260807-008`, `CRL-20260807-009`.
 - Intended action: `commit`.
 - Branch: `codex/release-maintenance-media-20260807`.
-- Base: `origin/Dev@fab297f37fc05c9825293b2cf954d2abe56ed3ef`; fetched 2026-08-07 22:40 AEST.
+- Base: `origin/Dev@fab297f37fc05c9825293b2cf954d2abe56ed3ef`; fetched at 2026-08-07 22:40 AEST.
 - Candidate patch SHA-256: `02b9f8f4cbdb6df51ffc8353caba6322c1f587c7970c801edf4ec6c6927b15dc`; final staged selected-content diff after P1 remediation, excluding `docs/change-release-ledger.md`.
 - Commit SHA: `28563bb1827a514f965905bd35407459ee524241`; candidate content commit. The exact audit head is emitted by the release report command.
 - Dependencies: `CRL-20260806-006` is present in the base; `CRL-20260807-008` corrects the FR-004 mapping and `CRL-20260807-009` corrects the stale Phase 5 test assertion; mobile OTA is explicitly excluded from this root attempt.
