@@ -1,5 +1,6 @@
 "use client"
 import { Table, Card, Button, Modal, Form, Input, InputNumber, Select, message, Space, Row, Col, Tag, Divider, Switch, AutoComplete, Drawer, Descriptions } from 'antd'
+import dayjs from 'dayjs'
 import React, { useEffect, useState } from 'react'
 import { API_BASE } from '../../lib/api'
 import { hasPerm } from '../../lib/auth'
@@ -9,7 +10,7 @@ import TableRowActions from '../../components/TableRowActions'
 import { PROPERTY_REGION_ORDER, cmpPropertyCode } from '../../lib/properties'
 import { PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH, hydratePropertyPayableTemplatesForForm, normalizePropertyPayableTemplates, propertyPayableCategoryLabel, propertyPayablePaymentTypeLabel } from '../../lib/propertyPayables'
 
-type Property = { id: string; code?: string; address: string; type: string; capacity: number; region?: string; area_sqm?: number; landlord_id?: string; wifi_ssid?: string; wifi_password?: string }
+type Property = { id: string; code?: string; address: string; type: string; capacity: number; region?: string; area_sqm?: number; landlord_id?: string; wifi_ssid?: string; wifi_password?: string; created_at?: string }
 const REGION_FILTER_OPTIONS = [
   ...PROPERTY_REGION_ORDER.map((value) => ({ value, label: value })),
   { value: '未分区', label: '未分区' },
@@ -41,6 +42,7 @@ export default function PropertiesPage() {
   const [batchOpen, setBatchOpen] = useState(false)
   const [batchForm] = Form.useForm()
   const [regionFilter, setRegionFilter] = useState<string | undefined>(undefined)
+  const [createdAtSortOrder, setCreatedAtSortOrder] = useState<'ascend' | 'descend' | undefined>(undefined)
   async function getJson(url: string, init?: RequestInit) {
     try {
       const r = await fetch(url, init)
@@ -57,6 +59,7 @@ export default function PropertiesPage() {
       case '两房两卫': return 2
       case '三房两卫':
       case '三房三卫': return 3
+      case '4房3.5卫': return 4
       default: return 0
     }
   }
@@ -193,6 +196,15 @@ export default function PropertiesPage() {
       <div onClick={(e) => e.stopPropagation()}>{originNode}</div>
     ),
   } : undefined
+  const compareCreatedAt = (a: Property, b: Property) => {
+    const aTime = Date.parse(String(a.created_at || '')) || 0
+    const bTime = Date.parse(String(b.created_at || '')) || 0
+    return aTime - bTime
+  }
+  const handleTableChange = (_pagination: any, _filters: any, sorter: any) => {
+    const activeSorter = Array.isArray(sorter) ? sorter[0] : sorter
+    setCreatedAtSortOrder(activeSorter?.field === 'created_at' ? activeSorter.order : undefined)
+  }
   const columns = [
     { title: '房号', dataIndex: 'code' },
     { title: '地址', dataIndex: 'address' },
@@ -201,6 +213,14 @@ export default function PropertiesPage() {
     { title: '可住人数', dataIndex: 'capacity' },
     { title: '区域', dataIndex: 'region' },
     { title: '面积(㎡)', dataIndex: 'area_sqm' },
+    {
+      title: '创建时间',
+      dataIndex: 'created_at',
+      render: (value: string | undefined) => value ? dayjs(value).format('YYYY-MM-DD') : '-',
+      sorter: compareCreatedAt,
+      sortDirections: ['ascend', 'descend'],
+      sortOrder: createdAtSortOrder,
+    },
     { title: '操作', render: (_: any, r: Property) => (
       <div onClick={(e) => e.stopPropagation()}>
         <TableRowActions
@@ -243,10 +263,16 @@ export default function PropertiesPage() {
           if (regionFilter === '未分区') return !p.region || String(p.region) === '其他'
           return String(p.region) === regionFilter
         }
-        const rows = data.filter(p => matchQuery(p) && matchRegion(p)).slice().sort((a,b)=> cmpPropertyCode(a.code, b.code))
-        if (regionFilter) {
+        const rows = data.filter(p => matchQuery(p) && matchRegion(p)).slice().sort((a,b)=> {
+          if (createdAtSortOrder) {
+            const createdAtResult = compareCreatedAt(a, b)
+            if (createdAtResult) return createdAtSortOrder === 'ascend' ? createdAtResult : -createdAtResult
+          }
+          return cmpPropertyCode(a.code, b.code)
+        })
+        if (regionFilter || createdAtSortOrder) {
           return (
-            <Table rowKey={(r:any)=>r.id} columns={columns as any} dataSource={rows} rowSelection={rowSelection} pagination={{ pageSize: 10 }} onRow={(record: Property) => ({ onClick: () => openDetail(record.id), style: { cursor: 'pointer' } })} />
+            <Table rowKey={(r:any)=>r.id} columns={columns as any} dataSource={rows} rowSelection={rowSelection} pagination={{ pageSize: 10 }} onChange={handleTableChange} onRow={(record: Property) => ({ onClick: () => openDetail(record.id), style: { cursor: 'pointer' } })} />
           )
         }
         const groups: { name: string, rows: any[] }[] = []
@@ -267,7 +293,7 @@ export default function PropertiesPage() {
         return groups.map(g => (
           <div key={g.name}>
             <Divider orientation="left">{g.name}</Divider>
-            <Table rowKey={(r:any)=>r.id} columns={columns as any} dataSource={g.rows} rowSelection={rowSelection} pagination={{ pageSize: 10 }} onRow={(record: Property) => ({ onClick: () => openDetail(record.id), style: { cursor: 'pointer' } })} />
+            <Table rowKey={(r:any)=>r.id} columns={columns as any} dataSource={g.rows} rowSelection={rowSelection} pagination={{ pageSize: 10 }} onChange={handleTableChange} onRow={(record: Property) => ({ onClick: () => openDetail(record.id), style: { cursor: 'pointer' } })} />
           </div>
         ))
       })()}
@@ -307,7 +333,7 @@ export default function PropertiesPage() {
                 <Input placeholder="输入街道和门牌号，自动提示格式化地址" />
               </AutoComplete>
             </Form.Item></Col>
-            <Col span={8}><Form.Item name="type" label="房型分类" rules={[{ required: true }]}><Select onChange={(v) => setTypeSel(v)} options={[{value:'一房一卫',label:'一房一卫'},{value:'两房一卫',label:'两房一卫'},{value:'两房两卫',label:'两房两卫'},{value:'三房两卫',label:'三房两卫'},{value:'三房三卫',label:'三房三卫'}]} /></Form.Item></Col>
+            <Col span={8}><Form.Item name="type" label="房型分类" rules={[{ required: true }]}><Select onChange={(v) => setTypeSel(v)} options={[{value:'一房一卫',label:'一房一卫'},{value:'两房一卫',label:'两房一卫'},{value:'两房两卫',label:'两房两卫'},{value:'三房两卫',label:'三房两卫'},{value:'三房三卫',label:'三房三卫'},{value:'4房3.5卫',label:'4房3.5卫'}]} /></Form.Item></Col>
             <Col span={8}><Form.Item name="capacity" label="可住人数" rules={[{ required: true }]}><InputNumber min={1} style={{ width: '100%' }} /></Form.Item></Col>
             <Col span={8}><Form.Item name="area_sqm" label="房源面积(㎡)"><InputNumber min={1} style={{ width: '100%' }} /></Form.Item></Col>
             <Col span={8}><Form.Item name="wifi_ssid" label="Wi-Fi 用户名"><Input /></Form.Item></Col>
@@ -493,7 +519,7 @@ export default function PropertiesPage() {
                 <Input placeholder="输入街道和门牌号，自动提示格式化地址" />
               </AutoComplete>
             </Form.Item></Col>
-            <Col span={8}><Form.Item name="type" label="房型" rules={[{ required: true }]}><Select onChange={(v) => setTypeEdit(v)} options={[{value:'一房一卫',label:'一房一卫'},{value:'两房一卫',label:'两房一卫'},{value:'两房两卫',label:'两房两卫'},{value:'三房两卫',label:'三房两卫'},{value:'三房三卫',label:'三房三卫'}]} /></Form.Item></Col>
+            <Col span={8}><Form.Item name="type" label="房型" rules={[{ required: true }]}><Select onChange={(v) => setTypeEdit(v)} options={[{value:'一房一卫',label:'一房一卫'},{value:'两房一卫',label:'两房一卫'},{value:'两房两卫',label:'两房两卫'},{value:'三房两卫',label:'三房两卫'},{value:'三房三卫',label:'三房三卫'},{value:'4房3.5卫',label:'4房3.5卫'}]} /></Form.Item></Col>
             <Col span={8}><Form.Item name="capacity" label="可住人数" rules={[{ required: true }]}><InputNumber min={1} style={{ width: '100%' }} /></Form.Item></Col>
             <Col span={8}><Form.Item name="area_sqm" label="面积(㎡)"><InputNumber min={1} style={{ width: '100%' }} /></Form.Item></Col>
             <Col span={8}><Form.Item name="wifi_ssid" label="Wi-Fi 用户名"><Input /></Form.Item></Col>

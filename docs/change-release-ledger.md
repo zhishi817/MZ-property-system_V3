@@ -1,5 +1,125 @@
 # Change Release Ledger
 
+## CRL-20260807-002 — 房源问题反馈访问候选映射（root）
+
+- **Status:** candidate
+- **Updated:** 2026-08-07 Australia/Melbourne
+- **Source-unit mapping:** 当前源工作区标记为 `CRL-20260806-001`（房源级问题反馈授权），但该编号在远端历史台账已有不同含义，故本候选以新编号保留可审计范围；原编号不得作为已发布证据。
+- **Outcome:** 反馈历史以受控迁移提供创建人、更新人和软删除字段，并以契约测试约束白名单、逐记录 capability 和私有媒体的服务端授权。
+
+### Files / Areas
+
+- `backend/scripts/migrations/20260806_property_feedback_history_access_control.sql` — 反馈审计与软删除字段迁移。
+- `backend/src/modules/mzapp.ts` — 房源范围解析、capability、软删除和写入边界。
+- `backend/src/modules/cleaning_app.ts` — 私有反馈媒体的关系授权。
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — 历史媒体访问契约。
+- `backend/scripts/tests/test_property_feedback_access_contract.ts` — 反馈访问和媒体授权契约。
+- `docs/change-release-ledger.md` — 记录候选映射。
+
+### Validation / Risks
+
+- `npm run build --prefix backend`、`npm run lint --prefix frontend`（仅既有 warning）和 `npm run build --prefix frontend` 已通过；反馈访问及媒体授权契约亦在此干净候选通过。
+- 数据库迁移、部署、生产数据写入和发布均未执行。编号冲突须在正式提交范围中继续保留此映射，不能回写为历史发布状态。
+
+## CRL-20260807-003 — Booking 编辑结算保护候选映射（root）
+
+- **Status:** candidate
+- **Source-unit mapping:** 当前源工作区标记为 `CRL-20260802-001`，该编号在远端历史台账已有不同含义。
+- **Outcome:** Booking 编辑以原始总额重算结算金额，后端不信任网页传入的结算金额；网页回显原始总额与计算结果。
+
+### Files / Areas
+
+- `backend/src/modules/orders.ts` — 原始金额与服务端结算保护。
+- `frontend/src/app/orders/page.tsx` — 原始金额输入与计算结果回显。
+- `docs/change-release-ledger.md` — 记录候选映射。
+
+### Validation / Risks
+
+- `npm run build --prefix backend`、`npm run lint --prefix frontend`（仅既有 warning）和 `npm run build --prefix frontend` 已通过；部署、生产数据写入和发布均未执行。
+
+## CRL-20260807-004 — 4房3.5卫房型候选映射（root）
+
+- **Status:** candidate
+- **Source-unit mapping:** 当前源工作区标记为 `CRL-20260806-002`，该编号在远端历史台账已有不同含义。
+- **Outcome:** 房源列表和详情编辑均支持 `4房3.5卫`，并按四个卧室处理床型。
+
+### Files / Areas
+
+- `frontend/src/app/properties/page.tsx` — 列表/新建房型选项及四卧室映射。
+- `frontend/src/app/properties/[id]/page.tsx` — 详情编辑房型选项及四卧室映射。
+- `docs/change-release-ledger.md` — 记录候选映射。
+
+## CRL-20260807-005 — 密码盒位置结构化必填候选映射（root）
+
+- **Status:** candidate
+- **Source-unit mapping:** 当前源工作区标记为 `CRL-20260806-003`，该编号在远端历史台账已有不同含义。
+- **Outcome:** 物理密码盒保存时要求关联房源、编号和精确位置，网页与后端使用同一结构约束。
+
+### Files / Areas
+
+- `backend/src/modules/cms_company_secrets.ts` — 密码盒保存约束。
+- `backend/src/lib/companyOfflinePasswordRules.ts` — 供保存入口复用的结构化必填规则。
+- `backend/scripts/tests/test_offline_password_structure.ts` — 密码盒关联房源、编号和位置的回归约束。
+- `frontend/src/app/cms/offline-passwords/page.tsx` — 必填位置和编辑权限边界。
+- `docs/change-release-ledger.md` — 记录候选映射。
+
+### Validation / Risks
+
+- `test_offline_password_structure.ts`、`npm run build --prefix backend`、`npm run lint --prefix frontend`（仅既有 warning）和 `npm run build --prefix frontend` 已通过。
+- 不记录或输出任何密码值；部署、生产数据写入和发布均未执行。
+
+## CRL-20260807-001 — 房源列表创建时间排序（root）
+
+- **Status:** candidate
+- **Outcome:** 房源列表显示创建日期，并在现有筛选范围内支持按完整创建时间升序或降序；未排序时仍按原房号规则。
+
+### Files / Areas
+
+- `frontend/src/app/properties/page.tsx` — 创建时间列、排序状态和区域分组交互。
+- `docs/change-release-ledger.md` — 记录候选映射。
+
+### Validation / Risks
+
+- `npm run lint --prefix frontend`（仅既有 warning）和 `npm run build --prefix frontend` 已通过。
+- 仅验证管理端编译；尚未执行浏览器交互或部署。
+
+### Release Attempt
+
+#### RA-20260807-root-selected-01
+
+- Repository: `root`.
+- Selected CRLs: `CRL-20260806-006`, `CRL-20260807-001`, `CRL-20260807-002`, `CRL-20260807-003`, `CRL-20260807-004`, `CRL-20260807-005`.
+- Intended action: `commit`.
+- Branch: `codex/release-selected-20260807-root`.
+- Base: `origin/Dev@b3e3034dd8a3bcbb6e679cd17d75fdcf75bcce69`; fetched at 2026-08-07 Australia/Melbourne.
+- Candidate patch SHA-256: `dbf1da52c5c8ea5bce680dea5a00f0d4afd25b4320f62246bf5fc03adb8c45ea` from the exact staged non-ledger content.
+- Commit SHA: not created; the staged candidate is cleanly based on the recorded base.
+- Required validation: PASS; evidence: ledger audit 17/17、staged whitespace check；maintenance-workflow、property-feedback-access、mzapp-media-visibility 和 offline-password-structure contracts；`npm run build --prefix backend`；`npm run lint --prefix frontend`（仅既有 warning）及 `npm run build --prefix frontend` 均通过。
+- Dependencies: the five collision-safe 20260807 mappings preserve the user-selected source labels without claiming the older remote CRLs are released. Feedback migration must be deployed before the backend; mobile maintenance execution remains a paired, unverified release dependency.
+- Shared-hunk review: PASS — `frontend/src/app/properties/page.tsx` is deliberately shared by the selected type and creation-time units, and every other staged path has one listed mapping.
+- Generated-file review: PASS — no generated output, cache, dependency directory, secret or local environment file is staged.
+- User authorization: `selected-for-commit` — the user selected the source units; push, deployment, migration and production actions remain separately unauthorized.
+- Independent review: GO; evidence: 2026-08-07 independent read-only review accepted exact hash `dbf1da52c5c8ea5bce680dea5a00f0d4afd25b4320f62246bf5fc03adb8c45ea`, all 17 staged paths, validation evidence, and sensitive/generated-file review for commit only.
+- Technical state: `candidate`.
+- Action conclusion: GO for commit; exact selected scope is approved for local commit only. Push, deployment, migration and production actions remain separately unauthorized.
+
+## CRL-20260806-006 — 维修执行人专用动作当前 Dev 契约重基线（root）
+
+- **Status:** candidate
+- **Updated:** 2026-08-07 Australia/Melbourne
+- **Outcome:** 执行人只获得“标记完成 / 未完成”两个专用动作；完成必须有照片并进入待审核，未完成必须有原因且保持处理中。契约测试不再依赖已淘汰的 `maintenanceWorkflowForWorkTask`，而验证专用维修响应的 `available_actions` 与通用工单标记接口对维修来源的拒绝边界。
+
+### Files / Areas
+
+- `backend/src/lib/maintenanceWorkflow.ts`、`backend/src/modules/maintenance.ts` — 专用动作、状态和事件处理。
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts` — 当前 Dev 投影契约。
+- `docs/change-release-ledger.md` — 本次候选重基线记录。
+
+### Validation / Risks
+
+- `test_maintenance_workflow_actions.ts`、`npm run build --prefix backend` 和 `git diff --check` 已通过。
+- 与移动端 `CRL-20260806-004` 的真实 API/设备集成、迁移部署和发布均未验证，不能据此宣称可部署。
+
 ## CRL-20260806-001 — 纯入住任务显示上一段有效旧密码（root）
 
 - **Status:** pushed; not merged to Dev

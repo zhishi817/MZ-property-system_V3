@@ -1,0 +1,38 @@
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+
+const backendRoot = path.resolve(__dirname, '../..')
+const read = (relativePath: string) => fs.readFileSync(path.join(backendRoot, relativePath), 'utf8')
+const mzapp = read('src/modules/mzapp.ts')
+const cleaningApp = read('src/modules/cleaning_app.ts')
+const migration = read('scripts/migrations/20260806_property_feedback_history_access_control.sql')
+const historyListStart = mzapp.indexOf("router.get('/property-feedbacks'")
+const historyListEnd = mzapp.indexOf("router.post('/property-feedbacks'", historyListStart)
+assert(historyListStart >= 0 && historyListEnd > historyListStart, 'property feedback history route must exist')
+const historyListRoute = mzapp.slice(historyListStart, historyListEnd)
+
+assert.match(historyListRoute, /FROM properties[\s\S]*WHERE \(\$1::text IS NOT NULL AND id::text = \$1\)/)
+assert.doesNotMatch(historyListRoute, /feedback_source_task_required/)
+assert.match(mzapp, /created_by_user_id text/)
+assert.match(mzapp, /updated_by_user_id text/)
+assert.match(mzapp, /deleted_by_user_id text/)
+assert.match(mzapp, /hasOnlyPropertyFeedbackContentFields/)
+assert.match(mzapp, /feedback_content_fields_only/)
+assert.match(mzapp, /canAccessPropertyFeedbackRow/)
+assert.match(mzapp, /hasRole\(user, 'offline_manager'\)/)
+assert.match(mzapp, /deleted_at = now\(\)/)
+assert.match(mzapp, /deleted_by_user_id = \$2/)
+assert.match(mzapp, /created_by_user_id \|\| ''/)
+assert.match(mzapp, /const id = require\('uuid'\)\.v4\(\)/)
+assert.match(mzapp, /source_id = \$3/)
+assert.doesNotMatch(mzapp, /DELETE FROM \$\{table\} WHERE id = \$1 RETURNING id/)
+assert.match(cleaningApp, /JOIN properties p ON p\.id::text = m\.property_id::text/)
+assert.match(cleaningApp, /m\.deleted_at IS NULL/)
+assert.match(cleaningApp, /canViewMzappPropertyFeedback\(user, feedbackMediaRow, userId\)/)
+assert.doesNotMatch(cleaningApp.slice(cleaningApp.indexOf("'/media/image'"), cleaningApp.indexOf("'/upload'", cleaningApp.indexOf("'/media/image'"))), /requireAnyPerm/)
+assert.match(migration, /created_by_user_id text/)
+assert.match(migration, /deleted_at timestamptz/)
+assert.match(migration, /deleted_by_user_id text/)
+
+console.log('property feedback access contract: PASS')

@@ -1096,14 +1096,16 @@ export default function OrdersPage() {
   async function submitEdit() {
     const v = await editForm.validateFields()
     const nights = v.checkin && v.checkout ? Math.max(0, dayjs(v.checkout).diff(dayjs(v.checkin), 'day')) : 0
-    const price = Number(v.price || 0)
+    const isBooking = String(v.source || '').toLowerCase().includes('book')
+    const totalPaymentRaw = isBooking ? Number(v.total_payment_raw ?? 0) : null
+    const price = isBooking ? Number((Number(totalPaymentRaw || 0) * BOOKING_NET_RATE).toFixed(2)) : Number(v.price || 0)
     const cleaning = Number(v.cleaning_fee || 0)
     const lateFee = getLateCheckoutAmount(v)
     const cancelFee = Number(v.cancel_fee || 0)
     const net = computeLandlordRentNet(price, cleaning, v.status, cancelFee)
     const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
     const selectedEdit = (Array.isArray(properties) ? properties : []).find(p => p.id === v.property_id)
-    const payload = { ...v, property_code: (v.property_code || selectedEdit?.code || selectedEdit?.address || v.property_id), checkin: dayjs(v.checkin).format('YYYY-MM-DD') + 'T12:00:00', checkout: dayjs(v.checkout).format('YYYY-MM-DD') + 'T11:59:59', nights, net_income: Number(net).toFixed(2) ? Number(Number(net).toFixed(2)) : net, avg_nightly_price: Number(avg).toFixed(2) ? Number(Number(avg).toFixed(2)) : avg, price: Number(price).toFixed(2) ? Number(Number(price).toFixed(2)) : price, cleaning_fee: Number(cleaning).toFixed(2) ? Number(Number(cleaning).toFixed(2)) : cleaning, payment_currency: (v.payment_currency || 'AUD'), count_in_income: v.count_in_income != null ? !!v.count_in_income : ((v.status || '') === 'canceled' ? false : true) }
+    const payload = { ...v, property_code: (v.property_code || selectedEdit?.code || selectedEdit?.address || v.property_id), checkin: dayjs(v.checkin).format('YYYY-MM-DD') + 'T12:00:00', checkout: dayjs(v.checkout).format('YYYY-MM-DD') + 'T11:59:59', nights, net_income: Number(net).toFixed(2) ? Number(Number(net).toFixed(2)) : net, avg_nightly_price: Number(avg).toFixed(2) ? Number(Number(avg).toFixed(2)) : avg, price: Number(price).toFixed(2) ? Number(Number(price).toFixed(2)) : price, total_payment_raw: isBooking ? (Number(totalPaymentRaw).toFixed(2) ? Number(Number(totalPaymentRaw).toFixed(2)) : totalPaymentRaw) : undefined, cleaning_fee: Number(cleaning).toFixed(2) ? Number(Number(cleaning).toFixed(2)) : cleaning, payment_currency: (v.payment_currency || 'AUD'), count_in_income: v.count_in_income != null ? !!v.count_in_income : ((v.status || '') === 'canceled' ? false : true) }
     let res: Response | null = null
     try {
       res = await fetch(`${API_BASE}/orders/${current?.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ ...payload, force: true }) })
@@ -2215,9 +2217,30 @@ export default function OrdersPage() {
                 <DatePicker style={{ width: '100%' }} format="DD/MM/YYYY" disabledDate={(d) => { const ci = editForm.getFieldValue('checkin'); return ci ? d.isSame(ci, 'day') || d.isBefore(ci, 'day') : false }} />
               </Form.Item>
             </Col>
-            <Col span={8}>
-              <Form.Item name="price" label="总租金(AUD)"><InputNumber min={0} step={1} style={{ width: '100%' }} /></Form.Item>
-            </Col>
+            <Form.Item noStyle shouldUpdate={(prev, current) => prev.source !== current.source || prev.total_payment_raw !== current.total_payment_raw}>
+              {() => {
+                const isBooking = String(editForm.getFieldValue('source') || '').toLowerCase().includes('book')
+                if (isBooking) {
+                  const raw = Number(editForm.getFieldValue('total_payment_raw') || 0)
+                  const computed = Number((raw * BOOKING_NET_RATE).toFixed(2))
+                  return (
+                    <>
+                      <Col span={8}>
+                        <Form.Item name="total_payment_raw" label="总租金(AUD)" rules={[{ required: true }]}>
+                          <InputNumber min={0} step={1} style={{ width: '100%' }} />
+                        </Form.Item>
+                      </Col>
+                      <Col span={8}>
+                        <Form.Item label={`结算租金(AUD，*${BOOKING_NET_RATE} 后)`}>
+                          <InputNumber value={computed} disabled style={{ width: '100%' }} />
+                        </Form.Item>
+                      </Col>
+                    </>
+                  )
+                }
+                return <Col span={8}><Form.Item name="price" label="总租金(AUD)"><InputNumber min={0} step={1} style={{ width: '100%' }} /></Form.Item></Col>
+              }}
+            </Form.Item>
             <Col span={8}>
               <Form.Item name="cleaning_fee" label="清洁费"><InputNumber min={0} step={1} style={{ width: '100%' }} /></Form.Item>
             </Col>
@@ -2269,7 +2292,9 @@ export default function OrdersPage() {
                 {() => {
                   const v = editForm.getFieldsValue()
                   const nights = v.checkin && v.checkout ? Math.max(0, dayjs(v.checkout).diff(dayjs(v.checkin), 'day')) : 0
-                  const price = Number(v.price || 0)
+                  const isBooking = String(v.source || '').toLowerCase().includes('book')
+                  const raw = isBooking ? Number(v.total_payment_raw || 0) : null
+                  const price = isBooking ? Number((Number(raw || 0) * BOOKING_NET_RATE).toFixed(2)) : Number(v.price || 0)
                   const cleaning = Number(v.cleaning_fee || 0)
                   const lateFee = getLateCheckoutAmount(v)
                   const cancelFee = Number(v.cancel_fee || 0)
@@ -2281,6 +2306,8 @@ export default function OrdersPage() {
                     <Card size="small" style={{ background: '#f5f5f5' }}>
                       <Space wrap>
                         <Tag color="blue">入住天数: {nights}</Tag>
+                        {isBooking ? <Tag color="default">原始总租金: {Number(raw || 0).toFixed(2)}</Tag> : null}
+                        {isBooking ? <Tag color="blue">结算租金(*{BOOKING_NET_RATE}): {Number(price || 0).toFixed(2)}</Tag> : null}
                         <Tag color="green">房东净租金: {Number(net).toFixed(2)}</Tag>
                         {v.late_checkout || v.late_checkout_fee ? <Tag color="purple">晚退收入: {lateFee}</Tag> : null}
                         {v.cancel_fee ? <Tag color="orange">取消费: {cancelFee}</Tag> : null}
