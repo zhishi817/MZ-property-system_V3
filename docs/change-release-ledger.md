@@ -1,5 +1,64 @@
 # Change Release Ledger
 
+## CRL-20260807-006 — 后端私有媒体授权契约合并回归修复（root）
+
+- **Status:** ready
+- **Updated:** 2026-08-07 Australia/Melbourne
+- **Request:** 修复根仓库 Fast Regression 中私有媒体授权实现与后端契约测试在合并后不一致的问题。
+- **Outcome:** 回归测试改为断言当前的来源记录级授权、真实房源反馈授权与 fail-closed 行为，不再要求已移除的通用权限中间件文本。
+
+### Implementation
+
+- Previous behavior: `test_cleaning_media_image.ts` 要求 `/media/image` 使用已移除的 `requireAnyPerm(CLEANING_MEDIA_IMAGE_READ_PERMISSIONS)`，导致 Fast Regression 失败；测试的模拟路由并不覆盖实际的媒体来源关系授权。
+- New behavior: 测试验证任务、日终及房源反馈分别使用服务端记录级授权；无关角色和匿名调用失败，未授权路径在 R2 读取前返回 `forbidden_media`。
+- Key decisions: 保持当前按真实媒体记录、任务/房源关系和当前用户的后端授权实现；不恢复宽泛权限门，不改数据库、R2 或移动端。
+
+### Files / Areas
+
+- `backend/scripts/tests/test_cleaning_media_image.ts` — 将过期的通用权限门断言替换为当前记录级授权契约。
+- `docs/feature-regression-registry.md` — 更新日终媒体授权测试映射，反映当前记录级规则。
+- `docs/change-release-ledger.md` — 记录独立的合并回归修复单元。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Related units: `CRL-20260807-002`（历史问题反馈访问候选映射）；该候选变更了媒体代理的授权来源。
+
+### Validation
+
+- `npm run test:cleaning-media-image --prefix backend` — passed.
+- `./backend/node_modules/.bin/tsc -p backend/tsconfig.json --noEmit` — passed.
+- `npm run check:feature-registry` — passed: 9 FRs / 103 mappings.
+- `npm run check:fast` — partially passed through ledger range audit (13 tests), ledger coverage, FR audit, backend build, idempotency, media-image and R2-media contracts; then stopped because the isolated root worktree has no `mz-cleaning-app-frontend/` checkout required by the cross-repository Phase 5 static test. GitHub Fast Regression explicitly checks out mobile `Dev` at that path before running this command, so this local failure is an environment gap, not a test failure in this repair.
+- `git diff --check` and `python3 scripts/audit_change_release_ledger.py` — pending final rerun after this record update.
+
+### Release Attempt
+
+#### RA-20260807-root-media-ci-01
+
+- Repository: `root`.
+- Selected CRLs: `CRL-20260806-006`, `CRL-20260807-001`, `CRL-20260807-002`, `CRL-20260807-003`, `CRL-20260807-004`, `CRL-20260807-005`, `CRL-20260807-006`.
+- Intended action: `commit`.
+- Branch: `codex/release-selected-20260807-root`.
+- Base: `origin/Dev@b3e3034dd8a3bcbb6e679cd17d75fdcf75bcce69`; fetched at 2026-08-07 20:15 AEST.
+- Candidate patch SHA-256: `271b17705d7b20f7132f4107f344d4ba585b198c02caed0cc7748fcddc60b38d` from exact `origin/Dev...candidate` content excluding the ledger.
+- Commit SHA: not committed; audit head is emitted by the report command after commit.
+- Dependencies: existing selected root candidate at `origin/codex/release-selected-20260807-root@39e74e0658f29bf7e281bbfe59a919281b269cb3` and its local ledger receipt `2b1d36b9aecbdcfd8b173c3ac7a17f53c0766f32`; this new media-contract repair is a required companion to `CRL-20260807-002` in the same PR range.
+- Required validation: PASS; evidence: target media contract and backend no-output compile passed; full `npm run check:fast` passed with a temporary read-only mobile `origin/Dev@817b803a88177a8d43b4e02965fffde59e852789` checkout (backend contracts, frontend 42/180 tests, and mobile TypeScript all passed); temporary links and compiler outputs were removed afterward.
+- Shared-hunk review: PASS; only the existing FR-006 media row and the shared ledger receive scoped updates; the backend test path belongs solely to this merge-regression repair.
+- Generated-file review: PASS; no generated output, cache, dependency directory, local environment file or secret is staged.
+- Technical state: verified.
+- User authorization: selected-for-commit; evidence: user replied “提交” for `CRL-20260807-006` on 2026-08-07. Push, merge, deployment, migration and production actions remain unauthorized.
+- Independent review: GO; evidence: 2026-08-07 independent read-only review verified the full `origin/Dev...candidate` range, matching `271b1770…` fingerprint, exact 7-CRL scope, staged paths, Fast Regression evidence, FR/ledger audits, and sensitive/generated-file review for commit only.
+- Action conclusion: GO; blockers: none for this local commit. Push, merge, deployment, migration and production actions remain unauthorized.
+
+### Risks / Release Notes
+
+- Risk: 这是源码/契约测试，不替代非生产环境真实 JWT、Postgres 关系和 R2 读取验证。
+- Rollback: 恢复测试与 FR 映射的上一版本；不回退媒体代理授权实现。
+- Sensitive-information review: no secrets, credentials, local caches or production data involved.
+- Git state: uncommitted.
+
 ## CRL-20260807-002 — 房源问题反馈访问候选映射（root）
 
 - **Status:** candidate
