@@ -5,7 +5,7 @@ import path from 'path'
 process.env.DATABASE_URL = ''
 
 async function main() {
-  const { canViewMzappInspectionMedia, canViewMzappLockboxVideo, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia } = await import('../../src/modules/mzapp')
+  const { canViewMzappInspectionMedia, canViewMzappLockboxVideo, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia, propertyFeedbackCapabilities } = await import('../../src/modules/mzapp')
   const { feedbackMediaUrlArray } = await import('../../src/modules/cleaning_app')
 
   const row = {
@@ -74,8 +74,33 @@ async function main() {
   )
   assert.equal(
     await canViewMzappPropertyFeedback({ sub: 'outsider-1', role: 'cleaner', roles: ['cleaner'] }, row, 'outsider-1'),
+    true,
+    'an authenticated internal user can read property-scoped feedback history without being this task participant',
+  )
+  assert.equal(
+    await canViewMzappPropertyFeedback({}, row, ''),
     false,
-    'an unrelated cleaner cannot read another task property feedback',
+    'an unauthenticated caller cannot read property feedback history',
+  )
+  assert.deepEqual(
+    propertyFeedbackCapabilities({ sub: 'creator-1', role: 'cleaner', roles: ['cleaner'] }, 'daily_necessities', { created_by_user_id: 'creator-1' }),
+    { can_edit_content: true, can_delete: true, can_move_category: false },
+    'the true submitter can only edit/delete their own non-workflow feedback record',
+  )
+  assert.deepEqual(
+    propertyFeedbackCapabilities({ sub: 'other-1', role: 'cleaner', roles: ['cleaner'] }, 'daily_necessities', { created_by_user_id: 'creator-1' }),
+    { can_edit_content: false, can_delete: false, can_move_category: false },
+    'a non-owner cannot mutate another user feedback record',
+  )
+  assert.deepEqual(
+    propertyFeedbackCapabilities({ sub: 'manager-1', role: 'offline_manager', roles: ['offline_manager'] }, 'deep_cleaning', { created_by_user_id: null }),
+    { can_edit_content: true, can_delete: true, can_move_category: true },
+    'offline managers can manage legacy records but legacy rows remain ordinary-user read-only',
+  )
+  assert.deepEqual(
+    propertyFeedbackCapabilities({ sub: 'creator-1', role: 'cleaner', roles: ['cleaner'] }, 'maintenance', { created_by_user_id: 'creator-1', status: 'in_progress' }),
+    { can_edit_content: true, can_delete: false, can_move_category: false },
+    'a submitter cannot directly withdraw maintenance after it entered workflow',
   )
   assert.deepEqual(
     feedbackMediaUrlArray(['cleaning/feedback-a.jpg', 'cleaning/feedback-b.jpg']),
@@ -91,8 +116,10 @@ async function main() {
   assert.match(mediaRoute, /isPropertyFeedbackMediaKey/, 'feedback route must only accept approved private feedback key namespaces')
   assert.match(mediaRoute, /findPropertyFeedbackMediaRows/, 'feedback media must resolve its feedback record before reading R2')
   assert.match(mediaRoute, /feedbackMediaRows\.length === 1/, 'ambiguous feedback references must fail closed before reading R2')
-  assert.match(mediaRoute, /canViewMzappPropertyFeedback/, 'feedback media must require the current task participant')
-  assert.match(mediaRoute, /source_task_id/, 'feedback media must receive the current task source')
+  assert.match(mediaRoute, /canViewMzappPropertyFeedback/, 'feedback media must re-check the current authenticated user')
+  assert.doesNotMatch(mediaRoute, /requireAnyPerm/, 'feedback image reading must not require a task execution permission')
+  assert.match(mediaRouteSource, /JOIN properties p ON p\.id::text = m\.property_id::text/, 'feedback media must resolve maintenance media through its real property')
+  assert.match(mediaRouteSource, /m\.deleted_at IS NULL/, 'soft-deleted feedback must not resolve normal media URLs')
   assert.match(mediaRouteSource, /to_jsonb\(m\.photo_urls\) AS photo_urls/, 'maintenance text[] media must be normalized to a JSON array before exact reference matching')
   assert.match(mediaRouteSource, /to_jsonb\(d\.photo_urls\) AS photo_urls/, 'deep-cleaning legacy media must be normalized before exact reference matching')
 

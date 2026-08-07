@@ -176,7 +176,7 @@ function workflowAction(value: any, decision: any): MaintenanceWorkflowAction | 
     if (reviewDecision === 'rejected') return 'review_rejected'
     return null
   }
-  return ['assign', 'start', 'submit', 'reopen', 'cancel', 'hold'].includes(action)
+  return ['assign', 'start', 'submit', 'executor_complete', 'executor_unfinished', 'reopen', 'cancel', 'hold'].includes(action)
     ? action as MaintenanceWorkflowAction
     : null
 }
@@ -544,7 +544,7 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
         status,
         isManager: isMaintenanceManager(user),
         isAssignedExecutor: assignedExecutor,
-        completionPhotoCount: action === 'submit'
+        completionPhotoCount: action === 'submit' || action === 'executor_complete'
           ? completionPhotoUrls.length
           : existingCompletionPhotoUrls.length || legacyCompletionPhotoUrls.length,
         reason,
@@ -563,6 +563,7 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
       const actorName = userName(user)
       let patch: Record<string, any> = {}
       let nextStatus = status
+      let eventFromStatus = status
       let eventType: string = action
       if (action === 'assign') {
         const assigneeId = String(body.assignee_id || '').trim()
@@ -595,6 +596,52 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
             ? { repair_notes: String(body.completion_note || body.note || '').trim() || null }
             : { completion_notes: String(body.completion_note || body.note || '').trim() || null }),
         }
+      } else if (action === 'executor_complete') {
+        const startedAt = row.started_at || new Date().toISOString()
+        if (status === 'assigned') {
+          await insertMaintenanceWorkflowEvent(client, {
+            domain,
+            recordId: id,
+            eventType: 'started',
+            fromStatus: 'assigned',
+            toStatus: 'in_progress',
+            actorUserId: actorId,
+            actorName,
+            reason: null,
+            payload: { implicit: true },
+          })
+          eventFromStatus = 'in_progress'
+        }
+        nextStatus = 'pending_review'
+        patch = {
+          status: nextStatus,
+          started_at: startedAt,
+          submitted_at: new Date().toISOString(),
+          completion_photo_urls: JSON.stringify(completionPhotoUrls),
+          ...(domain === 'internal'
+            ? { repair_notes: String(body.completion_note || body.note || '').trim() || null }
+            : { completion_notes: String(body.completion_note || body.note || '').trim() || null }),
+        }
+        eventType = 'executor_completed'
+      } else if (action === 'executor_unfinished') {
+        const startedAt = row.started_at || new Date().toISOString()
+        if (status === 'assigned') {
+          await insertMaintenanceWorkflowEvent(client, {
+            domain,
+            recordId: id,
+            eventType: 'started',
+            fromStatus: 'assigned',
+            toStatus: 'in_progress',
+            actorUserId: actorId,
+            actorName,
+            reason: null,
+            payload: { implicit: true },
+          })
+          eventFromStatus = 'in_progress'
+        }
+        nextStatus = 'in_progress'
+        patch = { status: nextStatus, started_at: startedAt }
+        eventType = 'executor_unfinished'
       } else if (action === 'review_approved') {
         nextStatus = 'closed'
         patch = {
@@ -642,7 +689,7 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
         domain,
         recordId: id,
         eventType,
-        fromStatus: status,
+        fromStatus: eventFromStatus,
         toStatus: nextStatus,
         actorUserId: actorId,
         actorName,

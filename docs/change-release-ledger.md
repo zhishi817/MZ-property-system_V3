@@ -1,5 +1,185 @@
 # Change Release Ledger
 
+## CRL-20260807-006 — 后端私有媒体授权契约合并回归修复（root）
+
+- **Status:** committed
+- **Updated:** 2026-08-07 Australia/Melbourne
+- **Request:** 修复根仓库 Fast Regression 中私有媒体授权实现与后端契约测试在合并后不一致的问题。
+- **Outcome:** 回归测试改为断言当前的来源记录级授权、真实房源反馈授权与 fail-closed 行为，不再要求已移除的通用权限中间件文本。
+
+### Implementation
+
+- Previous behavior: `test_cleaning_media_image.ts` 要求 `/media/image` 使用已移除的 `requireAnyPerm(CLEANING_MEDIA_IMAGE_READ_PERMISSIONS)`，导致 Fast Regression 失败；测试的模拟路由并不覆盖实际的媒体来源关系授权。
+- New behavior: 测试验证任务、日终及房源反馈分别使用服务端记录级授权；无关角色和匿名调用失败，未授权路径在 R2 读取前返回 `forbidden_media`。
+- Key decisions: 保持当前按真实媒体记录、任务/房源关系和当前用户的后端授权实现；不恢复宽泛权限门，不改数据库、R2 或移动端。
+
+### Files / Areas
+
+- `backend/scripts/tests/test_cleaning_media_image.ts` — 将过期的通用权限门断言替换为当前记录级授权契约。
+- `docs/feature-regression-registry.md` — 更新日终媒体授权测试映射，反映当前记录级规则。
+- `docs/change-release-ledger.md` — 记录独立的合并回归修复单元。
+
+### Impact / Dependencies
+
+- API / database / migration / dependencies: none.
+- Related units: `CRL-20260807-002`（历史问题反馈访问候选映射）；该候选变更了媒体代理的授权来源。
+
+### Validation
+
+- `npm run test:cleaning-media-image --prefix backend` — passed.
+- `./backend/node_modules/.bin/tsc -p backend/tsconfig.json --noEmit` — passed.
+- `npm run check:feature-registry` — passed: 9 FRs / 103 mappings.
+- `npm run check:fast` — passed with a temporary read-only mobile `origin/Dev@817b803a88177a8d43b4e02965fffde59e852789` checkout: backend contracts, frontend 42 suites / 180 tests, and mobile TypeScript all passed. Temporary links/worktree and compiler outputs were removed afterward.
+- `git diff --check` and `python3 scripts/audit_change_release_ledger.py` — passed.
+
+### Release Attempt
+
+#### RA-20260807-root-media-ci-01
+
+- Repository: `root`.
+- Selected CRLs: `CRL-20260806-006`, `CRL-20260807-001`, `CRL-20260807-002`, `CRL-20260807-003`, `CRL-20260807-004`, `CRL-20260807-005`, `CRL-20260807-006`.
+- Intended action: `push`.
+- Branch: `codex/release-selected-20260807-root`.
+- Base: `origin/Dev@b3e3034dd8a3bcbb6e679cd17d75fdcf75bcce69`; fetched at 2026-08-07 20:15 AEST.
+- Candidate patch SHA-256: `271b17705d7b20f7132f4107f344d4ba585b198c02caed0cc7748fcddc60b38d` from exact `origin/Dev...candidate` content excluding the ledger.
+- Commit SHA: `7d05bfe7a099d212117d8a13bec82feb2bdf35cd`; candidate content commit. The exact audit head is emitted separately by the report command.
+- Dependencies: existing selected root candidate at `origin/codex/release-selected-20260807-root@39e74e0658f29bf7e281bbfe59a919281b269cb3` and its local ledger receipt `2b1d36b9aecbdcfd8b173c3ac7a17f53c0766f32`; this new media-contract repair is a required companion to `CRL-20260807-002` in the same PR range.
+- Required validation: PASS; evidence: target media contract and backend no-output compile passed; full `npm run check:fast` passed with a temporary read-only mobile `origin/Dev@817b803a88177a8d43b4e02965fffde59e852789` checkout (backend contracts, frontend 42/180 tests, and mobile TypeScript all passed); temporary links and compiler outputs were removed afterward.
+- Shared-hunk review: PASS; only the existing FR-006 media row and the shared ledger receive scoped updates; the backend test path belongs solely to this merge-regression repair.
+- Generated-file review: PASS; no generated output, cache, dependency directory, local environment file or secret is staged.
+- Technical state: committed.
+- User authorization: approved-for-push; evidence: user replied “推送” after local head `bce8ddfdf6f570ba817957f078f442e75a932b4d` was presented on 2026-08-07; authorization is limited to this branch. Merge, deployment, migration and production actions remain unauthorized.
+- Independent review: GO; evidence: 2026-08-07 independent read-only pre-push review accepted `origin/Dev@b3e3034dd8a3bcbb6e679cd17d75fdcf75bcce69...b1de3a07a51771da19a40a6f1cf96642eafc1cae`, matching `271b1770…` fingerprint, exact 7-CRL scope, authorization receipt, shared-hunk, generated-file and sensitive-information checks for push only.
+- Action conclusion: GO; blockers: none for pushing this branch. Merge, deployment, migration and production actions remain outside the authorized action.
+
+### Risks / Release Notes
+
+- Risk: 这是源码/契约测试，不替代非生产环境真实 JWT、Postgres 关系和 R2 读取验证。
+- Rollback: 恢复测试与 FR 映射的上一版本；不回退媒体代理授权实现。
+- Sensitive-information review: no secrets, credentials, local caches or production data involved.
+- Git state: candidate content committed at `7d05bfe7a099d212117d8a13bec82feb2bdf35cd`; push authorized, pending independent review and final range report.
+
+## CRL-20260807-002 — 房源问题反馈访问候选映射（root）
+
+- **Status:** candidate
+- **Updated:** 2026-08-07 Australia/Melbourne
+- **Source-unit mapping:** 当前源工作区标记为 `CRL-20260806-001`（房源级问题反馈授权），但该编号在远端历史台账已有不同含义，故本候选以新编号保留可审计范围；原编号不得作为已发布证据。
+- **Outcome:** 反馈历史以受控迁移提供创建人、更新人和软删除字段，并以契约测试约束白名单、逐记录 capability 和私有媒体的服务端授权。
+
+### Files / Areas
+
+- `backend/scripts/migrations/20260806_property_feedback_history_access_control.sql` — 反馈审计与软删除字段迁移。
+- `backend/src/modules/mzapp.ts` — 房源范围解析、capability、软删除和写入边界。
+- `backend/src/modules/cleaning_app.ts` — 私有反馈媒体的关系授权。
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — 历史媒体访问契约。
+- `backend/scripts/tests/test_property_feedback_access_contract.ts` — 反馈访问和媒体授权契约。
+- `docs/change-release-ledger.md` — 记录候选映射。
+
+### Validation / Risks
+
+- `npm run build --prefix backend`、`npm run lint --prefix frontend`（仅既有 warning）和 `npm run build --prefix frontend` 已通过；反馈访问及媒体授权契约亦在此干净候选通过。
+- 数据库迁移、部署、生产数据写入和发布均未执行。编号冲突须在正式提交范围中继续保留此映射，不能回写为历史发布状态。
+
+## CRL-20260807-003 — Booking 编辑结算保护候选映射（root）
+
+- **Status:** candidate
+- **Source-unit mapping:** 当前源工作区标记为 `CRL-20260802-001`，该编号在远端历史台账已有不同含义。
+- **Outcome:** Booking 编辑以原始总额重算结算金额，后端不信任网页传入的结算金额；网页回显原始总额与计算结果。
+
+### Files / Areas
+
+- `backend/src/modules/orders.ts` — 原始金额与服务端结算保护。
+- `frontend/src/app/orders/page.tsx` — 原始金额输入与计算结果回显。
+- `docs/change-release-ledger.md` — 记录候选映射。
+
+### Validation / Risks
+
+- `npm run build --prefix backend`、`npm run lint --prefix frontend`（仅既有 warning）和 `npm run build --prefix frontend` 已通过；部署、生产数据写入和发布均未执行。
+
+## CRL-20260807-004 — 4房3.5卫房型候选映射（root）
+
+- **Status:** candidate
+- **Source-unit mapping:** 当前源工作区标记为 `CRL-20260806-002`，该编号在远端历史台账已有不同含义。
+- **Outcome:** 房源列表和详情编辑均支持 `4房3.5卫`，并按四个卧室处理床型。
+
+### Files / Areas
+
+- `frontend/src/app/properties/page.tsx` — 列表/新建房型选项及四卧室映射。
+- `frontend/src/app/properties/[id]/page.tsx` — 详情编辑房型选项及四卧室映射。
+- `docs/change-release-ledger.md` — 记录候选映射。
+
+## CRL-20260807-005 — 密码盒位置结构化必填候选映射（root）
+
+- **Status:** candidate
+- **Source-unit mapping:** 当前源工作区标记为 `CRL-20260806-003`，该编号在远端历史台账已有不同含义。
+- **Outcome:** 物理密码盒保存时要求关联房源、编号和精确位置，网页与后端使用同一结构约束。
+
+### Files / Areas
+
+- `backend/src/modules/cms_company_secrets.ts` — 密码盒保存约束。
+- `backend/src/lib/companyOfflinePasswordRules.ts` — 供保存入口复用的结构化必填规则。
+- `backend/scripts/tests/test_offline_password_structure.ts` — 密码盒关联房源、编号和位置的回归约束。
+- `frontend/src/app/cms/offline-passwords/page.tsx` — 必填位置和编辑权限边界。
+- `docs/change-release-ledger.md` — 记录候选映射。
+
+### Validation / Risks
+
+- `test_offline_password_structure.ts`、`npm run build --prefix backend`、`npm run lint --prefix frontend`（仅既有 warning）和 `npm run build --prefix frontend` 已通过。
+- 不记录或输出任何密码值；部署、生产数据写入和发布均未执行。
+
+## CRL-20260807-001 — 房源列表创建时间排序（root）
+
+- **Status:** candidate
+- **Outcome:** 房源列表显示创建日期，并在现有筛选范围内支持按完整创建时间升序或降序；未排序时仍按原房号规则。
+
+### Files / Areas
+
+- `frontend/src/app/properties/page.tsx` — 创建时间列、排序状态和区域分组交互。
+- `docs/change-release-ledger.md` — 记录候选映射。
+
+### Validation / Risks
+
+- `npm run lint --prefix frontend`（仅既有 warning）和 `npm run build --prefix frontend` 已通过。
+- 仅验证管理端编译；尚未执行浏览器交互或部署。
+
+### Release Attempt
+
+#### RA-20260807-root-selected-01
+
+- Repository: `root`.
+- Selected CRLs: `CRL-20260806-006`, `CRL-20260807-001`, `CRL-20260807-002`, `CRL-20260807-003`, `CRL-20260807-004`, `CRL-20260807-005`.
+- Intended action: `push`.
+- Branch: `codex/release-selected-20260807-root`.
+- Base: `origin/Dev@b3e3034dd8a3bcbb6e679cd17d75fdcf75bcce69`; fetched at 2026-08-07 Australia/Melbourne.
+- Candidate patch SHA-256: `dbf1da52c5c8ea5bce680dea5a00f0d4afd25b4320f62246bf5fc03adb8c45ea` from the exact staged non-ledger content.
+- Commit SHA: `722981d87db9d085b419d0553ed3cf32b7ecb379`; candidate content commit, with the exact audit head emitted separately by the release report.
+- Required validation: PASS; evidence: ledger audit 17/17、staged whitespace check；maintenance-workflow、property-feedback-access、mzapp-media-visibility 和 offline-password-structure contracts；`npm run build --prefix backend`；`npm run lint --prefix frontend`（仅既有 warning）及 `npm run build --prefix frontend` 均通过。
+- Dependencies: the five collision-safe 20260807 mappings preserve the user-selected source labels without claiming the older remote CRLs are released. Feedback migration must be deployed before the backend; mobile maintenance execution remains a paired, unverified release dependency.
+- Shared-hunk review: PASS — `frontend/src/app/properties/page.tsx` is deliberately shared by the selected type and creation-time units, and every other staged path has one listed mapping.
+- Generated-file review: PASS — no generated output, cache, dependency directory, secret or local environment file is staged.
+- User authorization: `approved-for-push`; evidence: the user replied “推送” on 2026-08-07 after `codex/release-selected-20260807-root` and candidate content commit `722981d87db9d085b419d0553ed3cf32b7ecb379` were presented. Deployment, migration and production actions remain separately unauthorized.
+- Independent review: GO; evidence: 2026-08-07 independent read-only review accepted exact hash `dbf1da52c5c8ea5bce680dea5a00f0d4afd25b4320f62246bf5fc03adb8c45ea`, all 17 staged paths, validation evidence, and sensitive/generated-file review for commit only.
+- Technical state: `pushed`.
+- Remote push: `origin/codex/release-selected-20260807-root@39e74e0658f29bf7e281bbfe59a919281b269cb3`, confirmed by `git ls-remote` on 2026-08-07 Australia/Melbourne.
+- Action conclusion: GO for push (completed); not merged to `Dev`, deployed, migrated, or applied to production data.
+
+## CRL-20260806-006 — 维修执行人专用动作当前 Dev 契约重基线（root）
+
+- **Status:** candidate
+- **Updated:** 2026-08-07 Australia/Melbourne
+- **Outcome:** 执行人只获得“标记完成 / 未完成”两个专用动作；完成必须有照片并进入待审核，未完成必须有原因且保持处理中。契约测试不再依赖已淘汰的 `maintenanceWorkflowForWorkTask`，而验证专用维修响应的 `available_actions` 与通用工单标记接口对维修来源的拒绝边界。
+
+### Files / Areas
+
+- `backend/src/lib/maintenanceWorkflow.ts`、`backend/src/modules/maintenance.ts` — 专用动作、状态和事件处理。
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts` — 当前 Dev 投影契约。
+- `docs/change-release-ledger.md` — 本次候选重基线记录。
+
+### Validation / Risks
+
+- `test_maintenance_workflow_actions.ts`、`npm run build --prefix backend` 和 `git diff --check` 已通过。
+- 与移动端 `CRL-20260806-004` 的真实 API/设备集成、迁移部署和发布均未验证，不能据此宣称可部署。
+
 ## CRL-20260806-001 — 纯入住任务显示上一段有效旧密码（root）
 
 - **Status:** pushed; not merged to Dev

@@ -49,6 +49,7 @@ export default function PropertyDetail({ params }: { params: { id: string } }) {
       case '两房两卫': return 2
       case '三房两卫':
       case '三房三卫': return 3
+      case '4房3.5卫': return 4
       default: return 0
     }
   }
@@ -82,7 +83,7 @@ export default function PropertyDetail({ params }: { params: { id: string } }) {
       <Form form={form} layout="vertical" disabled={!hasPerm('property.write')}>
         <Form.Item label="房号"><Input value={data?.code} readOnly /></Form.Item>
         <Form.Item name="address" label="地址" rules={[{ required: true }]}><Input /></Form.Item>
-        <Form.Item name="type" label="房型" rules={[{ required: true }]}><Select options={[{value:'一房一卫',label:'一房一卫'},{value:'两房一卫',label:'两房一卫'},{value:'两房两卫',label:'两房两卫'},{value:'三房两卫',label:'三房两卫'},{value:'三房三卫',label:'三房三卫'}]} /></Form.Item>
+        <Form.Item name="type" label="房型" rules={[{ required: true }]}><Select options={[{value:'一房一卫',label:'一房一卫'},{value:'两房一卫',label:'两房一卫'},{value:'两房两卫',label:'两房两卫'},{value:'三房两卫',label:'三房两卫'},{value:'三房三卫',label:'三房三卫'},{value:'4房3.5卫',label:'4房3.5卫'}]} /></Form.Item>
         <Form.Item name="capacity" label="可住人数" rules={[{ required: true }]}><InputNumber min={1} style={{ width: '100%' }} /></Form.Item>
         <Form.Item name="region" label="区域"><Select options={(dicts.regions || []).map((v: string) => ({ value: v, label: v }))} /></Form.Item>
         <Form.Item name="area_sqm" label="面积(㎡)"><InputNumber min={1} style={{ width: '100%' }} /></Form.Item>

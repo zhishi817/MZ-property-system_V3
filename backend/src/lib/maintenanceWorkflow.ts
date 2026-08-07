@@ -5,6 +5,8 @@ export type MaintenanceWorkflowAction =
   | 'assign'
   | 'start'
   | 'submit'
+  | 'executor_complete'
+  | 'executor_unfinished'
   | 'review_approved'
   | 'review_rejected'
   | 'reopen'
@@ -45,10 +47,12 @@ export function availableMaintenanceActions(input: {
     if (input.status === 'closed') actions.add('reopen')
   }
   if (input.isAssignedExecutor) {
-    if (input.status === 'assigned') actions.add('start')
-    if (input.status === 'in_progress') {
-      actions.add('submit')
-      actions.add('hold')
+    if (input.status === 'assigned' || input.status === 'in_progress') {
+      // The executor UI deliberately stays at two business actions. The
+      // workflow route records an implicit start when an assigned executor
+      // marks a repair complete or unfinished for the first time.
+      actions.add('executor_complete')
+      actions.add('executor_unfinished')
     }
   }
   return Array.from(actions)
@@ -65,14 +69,17 @@ export function validateMaintenanceWorkflowAction(input: {
   const reason = String(input.reason || '').trim()
   const managerActions: MaintenanceWorkflowAction[] = ['assign', 'review_approved', 'review_rejected', 'reopen', 'cancel']
   if (managerActions.includes(input.action) && !input.isManager) return { ok: false, code: 'maintenance_manager_required' }
-  if (['start', 'submit'].includes(input.action) && !input.isAssignedExecutor) return { ok: false, code: 'maintenance_assignee_required' }
+  if (['start', 'submit', 'executor_complete', 'executor_unfinished'].includes(input.action) && !input.isAssignedExecutor) return { ok: false, code: 'maintenance_assignee_required' }
   if (input.action === 'hold' && !input.isManager && !input.isAssignedExecutor) return { ok: false, code: 'maintenance_assignee_required' }
   if (input.action === 'assign' && !['pending_assignment', 'assigned', 'in_progress'].includes(input.status)) return { ok: false, code: 'maintenance_transition_invalid' }
   if (input.action === 'start' && input.status !== 'assigned') return { ok: false, code: 'maintenance_transition_invalid' }
   if (input.action === 'submit' && input.status !== 'in_progress') return { ok: false, code: 'maintenance_transition_invalid' }
-  if ((input.action === 'submit' || input.action === 'review_approved') && Number(input.completionPhotoCount || 0) < 1) {
+  if (input.action === 'executor_complete' && !['assigned', 'in_progress'].includes(input.status)) return { ok: false, code: 'maintenance_transition_invalid' }
+  if (input.action === 'executor_unfinished' && !['assigned', 'in_progress'].includes(input.status)) return { ok: false, code: 'maintenance_transition_invalid' }
+  if ((input.action === 'submit' || input.action === 'executor_complete' || input.action === 'review_approved') && Number(input.completionPhotoCount || 0) < 1) {
     return { ok: false, code: 'maintenance_completion_photo_required' }
   }
+  if (input.action === 'executor_unfinished' && !reason) return { ok: false, code: 'maintenance_unfinished_reason_required' }
   if ((input.action === 'review_approved' || input.action === 'review_rejected') && input.status !== 'pending_review') {
     return { ok: false, code: 'maintenance_transition_invalid' }
   }

@@ -1,38 +1,14 @@
 import assert from 'assert'
-import express from 'express'
 import fs from 'fs'
 import sharp from 'sharp'
-import { requireAnyPerm } from '../../src/auth'
 import { CLEANING_IMAGE_FORMAT_ERROR, normalizeCleaningImageUpload } from '../../src/lib/cleaningMediaImage'
 import {
   canViewRecordedDayEndMedia,
-  CLEANING_MEDIA_IMAGE_READ_PERMISSIONS,
   selectExclusiveRecordedCleaningMedia,
   selectUniqueRecordedCleaningMediaRow,
   selectUniqueRecordedDayEndMediaRow,
 } from '../../src/modules/cleaning_app'
-
-async function mediaImageGateStatus(user: any) {
-  const app = express()
-  app.use((req: any, _res, next) => {
-    req.user = JSON.parse(String(req.headers['x-test-user'] || '{}'))
-    next()
-  })
-  app.get('/media/image', requireAnyPerm(CLEANING_MEDIA_IMAGE_READ_PERMISSIONS), (_req, res) => res.status(204).end())
-  const server = await new Promise<any>((resolve) => {
-    const listener = app.listen(0, '127.0.0.1', () => resolve(listener))
-  })
-  try {
-    const address = server.address()
-    const port = typeof address === 'object' && address ? address.port : 0
-    const response = await fetch(`http://127.0.0.1:${port}/media/image`, {
-      headers: { 'x-test-user': JSON.stringify(user) },
-    })
-    return response.status
-  } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()))
-  }
-}
+import { canViewMzappPropertyFeedback } from '../../src/modules/mzapp'
 
 async function main() {
   const route = fs.readFileSync(require.resolve('../../src/modules/cleaning_app'), 'utf8')
@@ -41,7 +17,8 @@ async function main() {
   assert.match(route, /FROM cleaning_day_end_media/, 'media proxy must resolve recorded day-end handover photos')
   assert.match(route, /canViewMzappRecordedCleaningMedia/, 'media proxy must enforce task-specific media visibility before reading R2')
   assert.match(route, /canViewRecordedDayEndMedia/, 'media proxy must enforce day-end owner or manager visibility before reading R2')
-  assert.match(route, /requireAnyPerm\(CLEANING_MEDIA_IMAGE_READ_PERMISSIONS\)/, 'media proxy must use the shared media-read permission gate')
+  assert.match(route, /canViewMzappPropertyFeedback\(user, feedbackMediaRow, userId\)/, 'property-feedback media must use the resolved property record and current authenticated user')
+  assert.match(route, /if \(!canView\) \{\s*return res\.status\(403\)\.json\(\{ message: 'forbidden_media' \}\)/, 'source-specific authorization must fail closed before R2 is read')
   assert.match(route, /forbidden_media/, 'unrecorded or unauthorized media keys must fail closed')
   assert.match(route, /selectUniqueRecordedCleaningMediaRow/, 'media proxy must use the single-task and single-type authorization selector')
   assert.match(route, /living_room_photo_urls: livingRoomPhotoUrls/, 'consumables response must expose the compatible plural living-photo field')
@@ -60,11 +37,12 @@ async function main() {
   assert.equal(selectExclusiveRecordedCleaningMedia([ordinary], [dayEnd, { ...dayEnd, user_id: 'cleaner-b' }]), null, 'day-end conflict plus one task record must fail closed')
   assert.equal(selectExclusiveRecordedCleaningMedia([ordinary], [dayEnd]), null, 'one key recorded by task and day-end records must fail closed')
   const inventoryManager = { sub: 'inventory-manager', role: 'inventory_manager', roles: ['inventory_manager'] }
-  assert.equal(await mediaImageGateStatus(inventoryManager), 204, 'inventory_manager must reach recorded day-end media authorization through the route gate')
-  assert.equal(await mediaImageGateStatus({ sub: 'finance-user', role: 'finance', roles: ['finance'] }), 403, 'unrelated role must be rejected by the route gate')
   assert.equal(canViewRecordedDayEndMedia(inventoryManager, dayEnd, 'inventory-manager'), true, 'inventory_manager may read a recorded day-end photo')
+  assert.equal(canViewRecordedDayEndMedia({ sub: 'finance-user', role: 'finance', roles: ['finance'] }, dayEnd, 'finance-user'), false, 'unrelated role must not read a recorded day-end photo')
   assert.equal(canViewRecordedDayEndMedia({ sub: 'cleaner-a', role: 'cleaner', roles: ['cleaner'] }, dayEnd, 'cleaner-a'), true, 'day-end owner may read their recorded photo')
   assert.equal(canViewRecordedDayEndMedia({ sub: 'cleaner-b', role: 'cleaner', roles: ['cleaner'] }, dayEnd, 'cleaner-b'), false, 'unrelated cleaner must not read another owner\'s day-end photo')
+  assert.equal(await canViewMzappPropertyFeedback({}, { id: 'property-a' }, ''), false, 'anonymous callers must not read property-feedback media')
+  assert.equal(await canViewMzappPropertyFeedback({ sub: 'internal-user' }, { id: 'property-a' }, 'internal-user'), true, 'an authenticated internal user may read media after the route resolved one real property record')
   const png = await sharp({
     create: {
       width: 8,

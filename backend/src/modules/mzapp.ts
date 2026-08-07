@@ -1346,12 +1346,10 @@ export async function canViewMzappRecordedCleaningMedia(user: any, row: any, use
 }
 
 export async function canViewMzappPropertyFeedback(user: any, row: any, userId: string) {
-  if (canViewAll(user)) return true
-  const taskUserIds = [row?.cleaner_id, row?.inspector_id, row?.assignee_id]
-    .map((value) => String(value || '').trim())
-    .filter(Boolean)
-  if (userId && taskUserIds.includes(userId)) return true
-  return userHasManualWorkTaskAction(user, userId, 'cleaning_tasks', String(row?.id || '').trim(), 'report_issue')
+  // Property-feedback history is an internal, property-scoped record. It is
+  // intentionally not tied to the current cleaning-task participant list:
+  // callers must still resolve one real property before calling this helper.
+  return Boolean(String(user?.sub || userId || '').trim())
 }
 
 async function canViewMzappTaskConsumables(user: any, row: any, userId: string) {
@@ -7928,9 +7926,18 @@ function makeFeedbackFingerprint(args: {
 let propertyDailyNecessitiesColumnsEnsured = false
 let propertyDailyNecessitiesColumnsEnsuring: Promise<void> | null = null
 
+// Required by migration 20260806_property_feedback_history_access_control:
+// created_by_user_id text, updated_by_user_id text, deleted_at timestamptz,
+// deleted_by_user_id text. Request paths verify this contract instead of
+// silently accepting a partly migrated feedback table.
+async function assertPropertyFeedbackAccessColumns(client: any, table: string) {
+  await client.query(`SELECT created_by_user_id, updated_by_user_id, deleted_at, deleted_by_user_id FROM ${table} LIMIT 0`)
+}
+
 async function ensurePropertyMaintenanceColumns() {
   if (!pgPool) throw new MaintenanceWorkflowSchemaNotReady()
-  return assertMaintenanceWorkflowSchemaReady(pgPool)
+  await assertMaintenanceWorkflowSchemaReady(pgPool)
+  await assertPropertyFeedbackAccessColumns(pgPool, 'property_maintenance')
 }
 
 type InternalMaintenanceFeedbackSource = 'cleaning_feedback' | 'inspection_feedback' | 'manager_feedback'
@@ -8003,10 +8010,10 @@ async function createInternalMaintenanceFromFeedback(input: {
     await client.query('BEGIN')
     const created = await client.query(
       `INSERT INTO property_maintenance(
-        id, property_id, occurred_at, details, created_by, created_at,
+        id, property_id, occurred_at, details, created_by, created_by_user_id, created_at,
         status, submitted_at, submitter_name, photo_urls, work_no, area,
         invoice_description_en, dedup_fingerprint, feedback_source, source_task_id, category_detail, client_item_id
-      ) VALUES ($1,$2,$3,$4,$5,$6,'pending_assignment',$7,$8,$9${input.photoCast},$10,$11,$12,$13,$14,$15,$16,$17)
+      ) VALUES ($1,$2,$3,$4,$5,$5,$6,'pending_assignment',$7,$8,$9${input.photoCast},$10,$11,$12,$13,$14,$15,$16,$17)
       RETURNING *`,
       [
         input.id,
@@ -8069,7 +8076,8 @@ async function ensurePropertyDeepCleaningColumns(client: any = pgPool) {
   try {
     await client.query(`SELECT id, property_id, status, submitted_at, project_desc, started_at, ended_at,
       duration_minutes, photo_urls, repair_photo_urls, attachment_urls, work_no, completed_at,
-      review_status, project_items, invoice_description_en, dedup_fingerprint, client_item_id
+      review_status, project_items, invoice_description_en, dedup_fingerprint, client_item_id,
+      created_by_user_id, updated_by_user_id, deleted_at, deleted_by_user_id
       FROM property_deep_cleaning
       LIMIT 0`)
   } catch {
@@ -8253,6 +8261,11 @@ async function ensurePropertyDailyNecessitiesColumns() {
     await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS submitter_name text;')
     await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS invoice_description_en text;')
     await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
+    await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS updated_at timestamptz;')
+    await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS created_by_user_id text;')
+    await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS updated_by_user_id text;')
+    await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS deleted_at timestamptz;')
+    await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS deleted_by_user_id text;')
     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_prop ON property_daily_necessities(property_id);')
     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_status ON property_daily_necessities(status);')
     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_created_at ON property_daily_necessities(created_at);')
@@ -8272,7 +8285,6 @@ router.get('/property-feedbacks', async (req, res) => {
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const propertyId = String((req.query as any)?.property_id || '').trim()
   const propertyCode = String((req.query as any)?.property_code || '').trim()
-  const sourceTaskId = String((req.query as any)?.source_task_id || '').trim()
   if (!propertyId && !propertyCode) return res.status(400).json({ message: 'missing property_id' })
 
   const statusRaw = String((req.query as any)?.status || 'open,in_progress').trim()
@@ -8291,25 +8303,25 @@ router.get('/property-feedbacks', async (req, res) => {
   try {
     if (!hasPg || !pgPool) return res.json([])
     const pool = pgPool
-    if (!canViewAll(user)) {
-      if (!sourceTaskId) return res.status(403).json({ message: 'feedback_source_task_required' })
-      const sourceTaskResult = await pool.query(
-        `SELECT ct.id, ct.property_id, ct.cleaner_id, ct.inspector_id, ct.assignee_id
-           FROM cleaning_tasks ct
-           LEFT JOIN properties p ON p.id = ct.property_id
-          WHERE ct.id = $1
-            AND (
-              ($2::text IS NOT NULL AND ct.property_id = $2)
-              OR ($3::text IS NOT NULL AND p.code = $3)
-            )
-          LIMIT 1`,
-        [sourceTaskId, propertyId || null, propertyCode || null],
-      )
-      const sourceTask = sourceTaskResult?.rows?.[0] || null
-      if (!sourceTask || !await canViewMzappPropertyFeedback(user, sourceTask, String(user?.sub || '').trim())) {
-        return res.status(403).json({ message: 'forbidden_property_feedback' })
-      }
+    // Resolve an exact property first so this company-wide internal read rule
+    // cannot be widened by an arbitrary property identifier.
+    const propertyResult = await pool.query(
+      `SELECT id::text AS id, code
+         FROM properties
+        WHERE ($1::text IS NOT NULL AND id::text = $1)
+          AND ($2::text IS NULL OR code = $2)
+        UNION ALL
+       SELECT id::text AS id, code
+         FROM properties
+        WHERE $1::text IS NULL AND $2::text IS NOT NULL AND code = $2
+        LIMIT 2`,
+      [propertyId || null, propertyCode || null],
+    )
+    const property = propertyResult?.rows?.[0] || null
+    if (!property || propertyResult.rows.length !== 1 || !await canViewMzappPropertyFeedback(user, property, String(user?.sub || '').trim())) {
+      return res.status(403).json({ message: 'forbidden_property_feedback' })
     }
+    const scopedPropertyId = String(property.id || '').trim()
     const unresolvedMaintSql = feedbackStatusWhereSql('m', want)
     const unresolvedDeepSql = feedbackStatusWhereSql('d', want)
     const settle = async (label: string, loader: () => Promise<any[]>) => {
@@ -8325,145 +8337,49 @@ router.get('/property-feedbacks', async (req, res) => {
           await ensurePropertyMaintenanceColumns()
         } catch {}
         const r = await pool.query(
-          `SELECT m.id, m.property_id, COALESCE(m.property_code, p.code) AS property_code,
-                  m.area, m.category_detail, m.details, m.photo_urls, m.repair_photo_urls,
-                  m.repair_notes, m.invoice_description_en, m.submitter_name, m.submitted_at, m.created_at, m.status, m.completed_at,
-                  m.review_status, m.project_items, m.feedback_source, m.source_task_id
+          `SELECT m.*
              FROM property_maintenance m
-             LEFT JOIN properties p ON p.id = m.property_id
-            WHERE (
-                ($1::text IS NOT NULL AND m.property_id = $1)
-                OR (
-                  $2::text IS NOT NULL
-                  AND (
-                    COALESCE(m.property_code, p.code) = $2
-                    OR m.property_id = $2
-                    OR m.property_id IN (SELECT id FROM properties WHERE code = $2 LIMIT 5)
-                  )
-                )
-              )
+            WHERE m.property_id::text = $1
+              AND m.deleted_at IS NULL
               AND (${unresolvedMaintSql})
             ORDER BY COALESCE(m.submitted_at, m.created_at) DESC
-            LIMIT $3`,
-          [propertyId || null, propertyCode || null, limit],
+            LIMIT $2`,
+          [scopedPropertyId, limit],
         )
-        return (r?.rows || []).map((row: any) => {
-          const summary = summarizeProjectItems('maintenance', row.project_items, row)
-          return {
-            id: String(row.id),
-            property_id: row.property_id ? String(row.property_id) : propertyId || null,
-            source_task_id: row.source_task_id ? String(row.source_task_id) : null,
-            feedback_source: row.feedback_source ? String(row.feedback_source) : 'legacy',
-            workflow_status: String(row.status || '').trim() || 'pending_assignment',
-            kind: 'maintenance',
-            area: row.area || null,
-            category: null,
-            detail: String(row.details || ''),
-            invoice_description_en: row.invoice_description_en ? String(row.invoice_description_en) : null,
-            media_urls: summary.photo_urls,
-            repair_photo_urls: summary.repair_photo_urls,
-            repair_notes: row.repair_notes ? String(row.repair_notes) : null,
-            created_by_name: row.submitter_name || null,
-            created_at: row.submitted_at || row.created_at || null,
-            status: mapWorkStatus(row.status),
-            review_status: row.review_status ? String(row.review_status) : null,
-            completed_at: row.completed_at || summary.completed_at || null,
-            project_items: summary.items,
-          }
-        })
+        return (r?.rows || []).map((row: any) => propertyFeedbackResponseFromRow('maintenance', row, user))
       }),
       settle('deep_cleaning', async () => {
         try {
           await ensurePropertyDeepCleaningColumns()
         } catch {}
         const r = await pool.query(
-          `SELECT d.id, d.property_id, COALESCE(d.property_code, p.code) AS property_code,
-                  d.project_desc, d.details, d.notes, d.photo_urls, d.attachment_urls, d.repair_photo_urls,
-                  d.repair_notes, d.invoice_description_en, d.submitter_name, d.submitted_at, d.created_at, d.status, d.completed_at,
-                  d.review_status, d.project_items
+          `SELECT d.*
              FROM property_deep_cleaning d
-             LEFT JOIN properties p ON p.id = d.property_id
-            WHERE (
-                ($1::text IS NOT NULL AND d.property_id = $1)
-                OR (
-                  $2::text IS NOT NULL
-                  AND (
-                    COALESCE(d.property_code, p.code) = $2
-                    OR d.property_id = $2
-                    OR d.property_id IN (SELECT id FROM properties WHERE code = $2 LIMIT 5)
-                  )
-                )
-              )
+            WHERE d.property_id::text = $1
+              AND d.deleted_at IS NULL
               AND (${unresolvedDeepSql})
             ORDER BY COALESCE(d.submitted_at, d.created_at) DESC
-            LIMIT $3`,
-          [propertyId || null, propertyCode || null, limit],
+            LIMIT $2`,
+          [scopedPropertyId, limit],
         )
-        return (r?.rows || []).map((row: any) => {
-          const summary = summarizeProjectItems('deep_cleaning', row.project_items, row)
-          return {
-            id: String(row.id),
-            property_id: row.property_id ? String(row.property_id) : propertyId || null,
-            kind: 'deep_cleaning',
-            areas: String(row.project_desc || '')
-              .split('、')
-              .map((s) => String(s || '').trim())
-              .filter(Boolean),
-            detail: String(row.details || row.notes || ''),
-            invoice_description_en: row.invoice_description_en ? String(row.invoice_description_en) : null,
-            media_urls: summary.photo_urls,
-            repair_photo_urls: summary.repair_photo_urls,
-            repair_notes: row.repair_notes ? String(row.repair_notes) : null,
-            created_by_name: row.submitter_name || null,
-            created_at: row.submitted_at || row.created_at || null,
-            status: mapWorkStatus(row.status),
-            review_status: row.review_status ? String(row.review_status) : null,
-            completed_at: row.completed_at || summary.completed_at || null,
-            project_items: summary.items,
-          }
-        })
+        return (r?.rows || []).map((row: any) => propertyFeedbackResponseFromRow('deep_cleaning', row, user))
       }),
       settle('daily_necessities', async () => {
         try {
           await ensurePropertyDailyNecessitiesColumns()
         } catch {}
-        const params: any[] = [propertyId || null, propertyCode || null, dailyFilter, limit]
+        const params: any[] = [scopedPropertyId, dailyFilter, limit]
         const r = await pool.query(
-          `SELECT n.id, n.property_id, COALESCE(n.property_code, p.code) AS property_code,
-                  n.status, n.item_name, n.quantity, n.note, n.invoice_description_en, n.photo_urls, n.submitter_name,
-                  n.submitted_at, n.created_at
+          `SELECT n.*
              FROM property_daily_necessities n
-             LEFT JOIN properties p ON p.id = n.property_id
-            WHERE (
-                ($1::text IS NOT NULL AND n.property_id = $1)
-                OR (
-                  $2::text IS NOT NULL
-                  AND (
-                    COALESCE(n.property_code, p.code) = $2
-                    OR n.property_id = $2
-                    OR n.property_id IN (SELECT id FROM properties WHERE code = $2 LIMIT 5)
-                  )
-                )
-              )
-              AND COALESCE(n.status, '') = ANY($3::text[])
+            WHERE n.property_id::text = $1
+              AND n.deleted_at IS NULL
+              AND COALESCE(n.status, '') = ANY($2::text[])
             ORDER BY COALESCE(n.submitted_at, n.created_at) DESC
-            LIMIT $4`,
+            LIMIT $3`,
           params,
         )
-        return (r?.rows || []).map((row: any) => ({
-          id: String(row.id),
-          property_id: row.property_id ? String(row.property_id) : propertyId || null,
-          kind: 'daily_necessities',
-          status: String(row.status || '').trim(),
-          item_name: row.item_name ? String(row.item_name) : null,
-          quantity: row.quantity == null ? null : Number(row.quantity),
-          note: row.note ? String(row.note) : null,
-          detail: String(row.note || ''),
-          invoice_description_en: row.invoice_description_en ? String(row.invoice_description_en) : null,
-          media_urls: Array.isArray(row.photo_urls) ? row.photo_urls : row.photo_urls ? row.photo_urls : [],
-          created_by_name: row.submitter_name || null,
-          created_at: row.submitted_at || row.created_at || null,
-        }))
+        return (r?.rows || []).map((row: any) => propertyFeedbackResponseFromRow('daily_necessities', row, user))
       }),
     ])
     const out = [
@@ -8722,9 +8638,9 @@ router.post('/property-feedbacks', async (req, res) => {
 
       await pgPool.query(
         `INSERT INTO property_daily_necessities(
-          id, property_id, status, item_name, quantity, note, photo_urls,
-          source_task_id, created_by, created_at, submitted_at, submitter_name, invoice_description_en, dedup_fingerprint
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13,$14)
+        id, property_id, status, item_name, quantity, note, photo_urls,
+          source_task_id, created_by, created_by_user_id, created_at, submitted_at, submitter_name, invoice_description_en, dedup_fingerprint
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$9,$10,$11,$12,$13,$14)
         RETURNING id`,
         [
           id,
@@ -8791,9 +8707,9 @@ router.post('/property-feedbacks', async (req, res) => {
     if (dup.rowCount) return await respondReceipt(200, { ok: true, existing_id: String(dup.rows[0].id) })
     await pgPool.query(
       `INSERT INTO property_deep_cleaning(
-        id, property_id, occurred_at, project_desc, details, created_by, created_at,
+        id, property_id, occurred_at, project_desc, details, created_by, created_by_user_id, created_at,
         status, submitted_at, submitter_name, work_no, photo_urls, attachment_urls, review_status, invoice_description_en, dedup_fingerprint, client_item_id
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,${photoExpr},${attachExpr},$14,$15,$16,$17)
+      ) VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,${photoExpr},${attachExpr},$14,$15,$16,$17)
       RETURNING id`,
       [
         id,
@@ -8847,13 +8763,13 @@ async function loadPropertyFeedbackRow(kind: FeedbackKind, id: string, client: a
   if (kind === 'maintenance') {
     await ensurePropertyMaintenanceColumns()
     const r = await client.query(
-      `SELECT *, 'property_maintenance'::text AS feedback_source_table FROM property_maintenance WHERE id = $1 LIMIT 1${lockClause}`,
+      `SELECT *, 'property_maintenance'::text AS feedback_source_table FROM property_maintenance WHERE id = $1 AND deleted_at IS NULL LIMIT 1${lockClause}`,
       [id],
     )
     return r.rows?.[0] || null
   }
   await ensurePropertyDeepCleaningColumns(client)
-  const r = await client.query(`SELECT * FROM property_deep_cleaning WHERE id = $1 LIMIT 1${lockClause}`, [id])
+  const r = await client.query(`SELECT * FROM property_deep_cleaning WHERE id = $1 AND deleted_at IS NULL LIMIT 1${lockClause}`, [id])
   return r.rows?.[0] || null
 }
 
@@ -8883,8 +8799,8 @@ async function loadPropertyFeedbackByClientItemId(kind: FeedbackKind, propertyId
   return result.rows?.[0] || null
 }
 
-function isPropertyFeedbackAdmin(user: any) {
-  return hasRole(user, 'admin')
+function isPropertyFeedbackManager(user: any) {
+  return hasRole(user, 'admin') || hasRole(user, 'offline_manager')
 }
 
 function feedbackSourceType(kind: PropertyFeedbackRecordKind) {
@@ -8909,12 +8825,43 @@ async function loadAnyPropertyFeedbackRow(kind: PropertyFeedbackRecordKind, id: 
   if (!client) return null
   await ensurePropertyFeedbackKindColumns(kind, client)
   const table = feedbackSourceType(kind)
-  const r = await client.query(`SELECT * FROM ${table} WHERE id = $1 LIMIT 1`, [id])
+  const r = await client.query(`SELECT * FROM ${table} WHERE id = $1 AND deleted_at IS NULL LIMIT 1`, [id])
   return r.rows?.[0] || null
 }
 
-function propertyFeedbackResponseFromRow(kind: PropertyFeedbackRecordKind, row: any) {
+export function propertyFeedbackCapabilities(user: any, kind: PropertyFeedbackRecordKind, row: any) {
+  const actorUserId = String(user?.sub || '').trim()
+  const creatorUserId = String(row?.created_by_user_id || '').trim()
+  const isManager = isPropertyFeedbackManager(user)
+  const isCreator = Boolean(actorUserId && creatorUserId && actorUserId === creatorUserId)
+  const maintenancePendingAssignment = kind !== 'maintenance' || normalizeMaintenanceWorkflowStatus(row?.status, row?.review_status) === 'pending_assignment'
+  return {
+    can_edit_content: isManager || isCreator,
+    can_delete: (isManager || isCreator) && maintenancePendingAssignment,
+    can_move_category: isManager && kind !== 'maintenance',
+  }
+}
+
+function canMutatePropertyFeedbackContent(user: any, kind: PropertyFeedbackRecordKind, row: any) {
+  return propertyFeedbackCapabilities(user, kind, row).can_edit_content
+}
+
+async function canAccessPropertyFeedbackRow(client: any, user: any, row: any) {
+  const propertyId = String(row?.property_id || '').trim()
+  if (!propertyId || !client) return false
+  const property = await client.query('SELECT id::text AS id FROM properties WHERE id::text = $1 LIMIT 1', [propertyId])
+  return Boolean(property?.rowCount) && await canViewMzappPropertyFeedback(user, property.rows[0], String(user?.sub || '').trim())
+}
+
+class PropertyFeedbackMutationError extends Error {
+  constructor(public statusCode: number, public code: string) {
+    super(code)
+  }
+}
+
+function propertyFeedbackResponseFromRow(kind: PropertyFeedbackRecordKind, row: any, user?: any) {
   if (!row) return null
+  const capabilities = user ? propertyFeedbackCapabilities(user, kind, row) : undefined
   if (kind === 'maintenance') {
     const summary = summarizeProjectItems('maintenance', row.project_items, row)
     return {
@@ -8937,6 +8884,7 @@ function propertyFeedbackResponseFromRow(kind: PropertyFeedbackRecordKind, row: 
       review_status: row.review_status ? String(row.review_status) : null,
       completed_at: row.completed_at || summary.completed_at || null,
       project_items: summary.items,
+      ...(capabilities ? { capabilities } : {}),
     }
   }
   if (kind === 'deep_cleaning') {
@@ -8961,6 +8909,7 @@ function propertyFeedbackResponseFromRow(kind: PropertyFeedbackRecordKind, row: 
       review_status: row.review_status ? String(row.review_status) : null,
       completed_at: row.completed_at || summary.completed_at || null,
       project_items: summary.items,
+      ...(capabilities ? { capabilities } : {}),
     }
   }
   return {
@@ -8977,6 +8926,7 @@ function propertyFeedbackResponseFromRow(kind: PropertyFeedbackRecordKind, row: 
     media_urls: normalizeUrlArray(row.photo_urls),
     created_by_name: row.submitter_name || null,
     created_at: row.submitted_at || row.created_at || null,
+    ...(capabilities ? { capabilities } : {}),
   }
 }
 
@@ -9012,18 +8962,31 @@ function feedbackAfterPhotos(row: any, kind: PropertyFeedbackRecordKind) {
   return normalizeUrlArray(row.repair_photo_urls)
 }
 
-async function deletePropertyFeedbackRecord(client: any, kind: PropertyFeedbackRecordKind, id: string) {
+async function deletePropertyFeedbackRecord(client: any, kind: PropertyFeedbackRecordKind, id: string, actorUserId: string) {
   const table = feedbackSourceType(kind)
-  const r = await client.query(`DELETE FROM ${table} WHERE id = $1 RETURNING id`, [id])
+  const maintenanceStatusSql = kind === 'maintenance' ? ", status = 'cancelled'" : ''
+  const r = await client.query(
+    `UPDATE ${table}
+        SET deleted_at = now(),
+            deleted_by_user_id = $2,
+            updated_by_user_id = $2,
+            updated_at = now()${maintenanceStatusSql}
+      WHERE id = $1 AND deleted_at IS NULL
+      RETURNING id`,
+    [id, actorUserId],
+  )
   await client.query(`DELETE FROM work_tasks WHERE source_type = $1 AND source_id = $2`, [feedbackSourceType(kind), id])
   return (r.rowCount || 0) > 0
 }
 
 async function insertMovedPropertyFeedbackRecord(client: any, targetKind: PropertyFeedbackRecordKind, sourceKind: PropertyFeedbackRecordKind, row: any) {
-  const id = String(row.id || '').trim()
+  // Keep a soft-deleted source record as audit history; a moved copy needs a
+  // fresh ID so it can later move back without a primary-key collision.
+  const id = require('uuid').v4()
   const propertyId = String(row.property_id || '').trim()
   const propertyCode = String(row.property_code || '').trim() || null
   const createdBy = String(row.created_by || '').trim() || null
+  const createdByUserId = String(row.created_by_user_id || '').trim() || null
   const createdAt = row.created_at || new Date().toISOString()
   const submittedAt = row.submitted_at || createdAt
   const submitterName = String(row.submitter_name || '').trim() || null
@@ -9045,10 +9008,10 @@ async function insertMovedPropertyFeedbackRecord(client: any, targetKind: Proper
     const afterExpr = afterType === 'text[]' ? '$11::text[]' : '$11::jsonb'
     await client.query(
       `INSERT INTO property_maintenance(
-        id, property_id, property_code, occurred_at, details, created_by, created_at,
+        id, property_id, property_code, occurred_at, details, created_by, created_by_user_id, created_at,
         status, submitted_at, submitter_name, photo_urls, repair_photo_urls,
         repair_notes, area, work_no, completed_at, review_status, invoice_description_en, dedup_fingerprint
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$12,${beforeExpr},${afterExpr},$13,$14,$15,$16,$17,$18,$19)`,
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$13,${beforeExpr},${afterExpr},$14,$15,$16,$17,$18,$19,$20)`,
       [
         id,
         propertyId,
@@ -9056,6 +9019,7 @@ async function insertMovedPropertyFeedbackRecord(client: any, targetKind: Proper
         String(submittedAt || createdAt).slice(0, 10),
         detail,
         createdBy,
+        createdByUserId,
         createdAt,
         completed ? 'completed' : sourceStatus === 'cancelled' ? 'cancelled' : sourceStatus === 'in_progress' ? 'in_progress' : 'pending',
         submittedAt,
@@ -9071,7 +9035,7 @@ async function insertMovedPropertyFeedbackRecord(client: any, targetKind: Proper
         makeFeedbackFingerprint({ kind: 'maintenance', property_id: propertyId, area, detail }),
       ],
     )
-    return
+    return id
   }
 
   if (targetKind === 'deep_cleaning') {
@@ -9083,10 +9047,10 @@ async function insertMovedPropertyFeedbackRecord(client: any, targetKind: Proper
     const afterExpr = afterType === 'text[]' ? '$13::text[]' : '$13::jsonb'
     await client.query(
       `INSERT INTO property_deep_cleaning(
-        id, property_id, property_code, occurred_at, project_desc, details, notes, created_by, created_at,
+        id, property_id, property_code, occurred_at, project_desc, details, notes, created_by, created_by_user_id, created_at,
         status, submitted_at, submitter_name, photo_urls, attachment_urls, repair_photo_urls,
         repair_notes, work_no, completed_at, review_status, invoice_description_en, dedup_fingerprint
-      ) VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$14,${beforeExpr},${attachmentExpr},${afterExpr},$15,$16,$17,$18,$19,$20)`,
+      ) VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$15,${beforeExpr},${attachmentExpr},${afterExpr},$16,$17,$18,$19,$20,$21)`,
       [
         id,
         propertyId,
@@ -9095,6 +9059,7 @@ async function insertMovedPropertyFeedbackRecord(client: any, targetKind: Proper
         area,
         detail,
         createdBy,
+        createdByUserId,
         createdAt,
         completed ? 'completed' : sourceStatus === 'cancelled' ? 'cancelled' : sourceStatus === 'in_progress' ? 'in_progress' : 'pending',
         submittedAt,
@@ -9110,7 +9075,7 @@ async function insertMovedPropertyFeedbackRecord(client: any, targetKind: Proper
         makeFeedbackFingerprint({ kind: 'deep_cleaning', property_id: propertyId, areas: [area], detail }),
       ],
     )
-    return
+    return id
   }
 
   const itemName = String(row.item_name || area || '问题反馈').trim() || '问题反馈'
@@ -9122,8 +9087,8 @@ async function insertMovedPropertyFeedbackRecord(client: any, targetKind: Proper
   await client.query(
     `INSERT INTO property_daily_necessities(
       id, property_id, property_code, status, item_name, quantity, note, photo_urls,
-      source_task_id, created_by, created_at, submitted_at, submitter_name, invoice_description_en, dedup_fingerprint
-    ) VALUES ($1,$2,$3,$4,$5,$6,$8,${photoExpr},$9,$10,$11,$12,$13,$14,$15)`,
+      source_task_id, created_by, created_by_user_id, created_at, submitted_at, submitter_name, invoice_description_en, dedup_fingerprint
+    ) VALUES ($1,$2,$3,$4,$5,$6,$8,${photoExpr},$9,$10,$11,$12,$13,$14,$15,$16)`,
     [
       id,
       propertyId,
@@ -9135,6 +9100,7 @@ async function insertMovedPropertyFeedbackRecord(client: any, targetKind: Proper
       note,
       String(row.source_task_id || '').trim() || null,
       createdBy,
+      createdByUserId,
       createdAt,
       submittedAt,
       submitterName,
@@ -9142,24 +9108,51 @@ async function insertMovedPropertyFeedbackRecord(client: any, targetKind: Proper
       sha256Hex([propertyId, completed ? 'replaced' : 'need_replace', normalizeForFingerprint(itemName), String(quantity), normalizeForFingerprint(note)].join('|')),
     ],
   )
+  return id
 }
 
 router.delete('/property-feedbacks/:kind/:id', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  if (!isPropertyFeedbackAdmin(user)) return res.status(403).json({ message: 'forbidden' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   const kind = String(req.params.kind || '').trim() as PropertyFeedbackRecordKind
   const id = String(req.params.id || '').trim()
   if (kind !== 'maintenance' && kind !== 'deep_cleaning' && kind !== 'daily_necessities') return res.status(400).json({ message: 'invalid kind' })
-  if (kind === 'maintenance') return res.status(409).json({ code: 'maintenance_cancel_required' })
   if (!id) return res.status(400).json({ message: 'missing id' })
   try {
     await ensurePropertyFeedbackKindColumns(kind)
-    const deleted = await pgRunInTransaction(async (client: any) => deletePropertyFeedbackRecord(client, kind, id))
+    const actorUserId = String(user?.sub || '').trim()
+    const deleted = await pgRunInTransaction(async (client: any) => {
+      const row = await loadAnyPropertyFeedbackRow(kind, id, client)
+      if (!row) return false
+      if (!await canAccessPropertyFeedbackRow(client, user, row)) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
+      const capabilities = propertyFeedbackCapabilities(user, kind, row)
+      if (!capabilities.can_delete) {
+        if (kind === 'maintenance' && (isPropertyFeedbackManager(user) || String(row.created_by_user_id || '').trim() === actorUserId)) {
+          throw new PropertyFeedbackMutationError(409, 'maintenance_cancel_required')
+        }
+        throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
+      }
+      const didDelete = await deletePropertyFeedbackRecord(client, kind, id, actorUserId)
+      if (didDelete && kind === 'maintenance') {
+        await insertMaintenanceWorkflowEvent(client, {
+          domain: 'internal',
+          recordId: id,
+          eventType: 'feedback_withdrawn',
+          fromStatus: normalizeMaintenanceWorkflowStatus(row.status, row.review_status),
+          toStatus: 'cancelled',
+          actorUserId,
+          actorName: String(user?.username || user?.sub || '').trim() || 'unknown',
+          reason: 'feedback_withdrawn',
+          payload: { property_id: String(row.property_id || '').trim() },
+        })
+      }
+      return didDelete
+    })
     if (!deleted) return res.status(404).json({ message: 'not found' })
     return res.json({ ok: true, deleted: true })
   } catch (e: any) {
+    if (e instanceof PropertyFeedbackMutationError) return res.status(e.statusCode).json({ code: e.code })
     return res.status(500).json({ message: e?.message || 'property_feedback_delete_failed' })
   }
 })
@@ -9167,7 +9160,7 @@ router.delete('/property-feedbacks/:kind/:id', async (req, res) => {
 router.post('/property-feedbacks/:kind/:id/move', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  if (!isPropertyFeedbackAdmin(user)) return res.status(403).json({ message: 'forbidden' })
+  if (!isPropertyFeedbackManager(user)) return res.status(403).json({ message: 'forbidden' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   const sourceKind = String(req.params.kind || '').trim() as PropertyFeedbackRecordKind
   const id = String(req.params.id || '').trim()
@@ -9183,34 +9176,56 @@ router.post('/property-feedbacks/:kind/:id/move', async (req, res) => {
     const row = await pgRunInTransaction(async (client: any) => {
       const sourceRow = await loadAnyPropertyFeedbackRow(sourceKind, id, client)
       if (!sourceRow) return null
-      if (sourceKind === targetKind) return propertyFeedbackResponseFromRow(sourceKind, sourceRow)
-      const targetExisting = await loadAnyPropertyFeedbackRow(targetKind, id, client)
-      if (targetExisting) {
-        const err: any = new Error('target_conflict')
-        err.statusCode = 409
-        throw err
-      }
-      await insertMovedPropertyFeedbackRecord(client, targetKind, sourceKind, sourceRow)
-      await client.query(`DELETE FROM ${feedbackSourceType(sourceKind)} WHERE id = $1`, [id])
+      if (!await canAccessPropertyFeedbackRow(client, user, sourceRow)) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
+      if (!propertyFeedbackCapabilities(user, sourceKind, sourceRow).can_move_category) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
+      if (sourceKind === targetKind) return propertyFeedbackResponseFromRow(sourceKind, sourceRow, user)
+      const movedId = await insertMovedPropertyFeedbackRecord(client, targetKind, sourceKind, sourceRow)
+      await client.query(
+        `UPDATE ${feedbackSourceType(targetKind)}
+            SET updated_by_user_id = $2,
+                updated_at = now()
+          WHERE id = $1 AND deleted_at IS NULL`,
+        [movedId, String(user?.sub || '').trim()],
+      )
+      await client.query(
+        `UPDATE ${feedbackSourceType(sourceKind)}
+            SET deleted_at = now(),
+                deleted_by_user_id = $2,
+                updated_by_user_id = $2,
+                updated_at = now()
+          WHERE id = $1 AND deleted_at IS NULL`,
+        [id, String(user?.sub || '').trim()],
+      )
       await client.query(
         `UPDATE work_tasks
             SET source_type = $1,
                 task_kind = $2,
+                source_id = $3,
                 updated_at = now()
-          WHERE source_type = $3
-            AND source_id = $4`,
-        [feedbackSourceType(targetKind), feedbackTaskKind(targetKind), feedbackSourceType(sourceKind), id],
+          WHERE source_type = $4
+            AND source_id = $5`,
+        [feedbackSourceType(targetKind), feedbackTaskKind(targetKind), movedId, feedbackSourceType(sourceKind), id],
       )
-      const moved = await loadAnyPropertyFeedbackRow(targetKind, id, client)
-      return propertyFeedbackResponseFromRow(targetKind, moved)
+      const moved = await loadAnyPropertyFeedbackRow(targetKind, movedId, client)
+      return propertyFeedbackResponseFromRow(targetKind, moved, user)
     })
     if (!row) return res.status(404).json({ message: 'not found' })
     return res.json({ ok: true, row })
   } catch (e: any) {
     if (e?.statusCode === 409 || String(e?.message || '') === 'target_conflict') return res.status(409).json({ message: 'target_conflict' })
+    if (e instanceof PropertyFeedbackMutationError) return res.status(e.statusCode).json({ code: e.code })
     return res.status(500).json({ message: e?.message || 'property_feedback_move_failed' })
   }
 })
+
+function hasOnlyPropertyFeedbackContentFields(kind: PropertyFeedbackRecordKind, payload: Record<string, unknown>) {
+  const allowed = kind === 'maintenance'
+    ? new Set(['area', 'category', 'detail', 'media_urls'])
+    : kind === 'deep_cleaning'
+      ? new Set(['areas', 'detail', 'media_urls'])
+      : new Set(['item_name', 'quantity', 'note', 'media_urls'])
+  return Object.keys(payload).every((key) => allowed.has(key))
+}
 
 router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
   const user = (req as any).user
@@ -9221,12 +9236,20 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
   if (kind !== 'maintenance' && kind !== 'deep_cleaning' && kind !== 'daily_necessities') return res.status(400).json({ message: 'invalid kind' })
   const parsed = feedbackPatchSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
+  if (!hasOnlyPropertyFeedbackContentFields(kind, parsed.data)) return res.status(400).json({ code: 'feedback_content_fields_only' })
   try {
+    await pgRunInTransaction(async (client: any) => {
+      const row = await loadAnyPropertyFeedbackRow(kind, id, client)
+      if (!row) throw new PropertyFeedbackMutationError(404, 'property_feedback_not_found')
+      if (!await canAccessPropertyFeedbackRow(client, user, row)) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
+      if (!canMutatePropertyFeedbackContent(user, kind, row)) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
+    })
     if (kind === 'maintenance') {
       await ensurePropertyMaintenanceColumns()
       const row = await loadPropertyFeedbackRow('maintenance', id)
       if (!row) return res.status(404).json({ message: 'not found' })
       const nextArea = parsed.data.area !== undefined ? String(parsed.data.area || '').trim() : String(row.area || '').trim()
+      const nextCategory = parsed.data.category !== undefined ? String(parsed.data.category || '').trim() : String(row.category_detail || '').trim()
       const nextDetail = parsed.data.detail !== undefined ? String(parsed.data.detail || '').trim() : String(row.details || '').trim()
       const nextNote = parsed.data.note !== undefined ? String(parsed.data.note || '').trim() : String(row.repair_notes || '').trim()
       const nextInvoiceDescriptionEn = parsed.data.invoice_description_en !== undefined ? String(parsed.data.invoice_description_en || '').trim() : String(row.invoice_description_en || '').trim()
@@ -9238,24 +9261,26 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
       if (!nextArea || !nextDetail) return res.status(400).json({ message: 'missing maintenance fields' })
       const beforeType = await getColumnType('property_maintenance', 'photo_urls')
       const afterType = await getColumnType('property_maintenance', 'repair_photo_urls')
-      const beforeExpr = beforeType === 'text[]' ? '$4::text[]' : '$4::jsonb'
-      const afterExpr = afterType === 'text[]' ? '$6::text[]' : '$6::jsonb'
+      const beforeExpr = beforeType === 'text[]' ? '$5::text[]' : '$5::jsonb'
+      const afterExpr = afterType === 'text[]' ? '$7::text[]' : '$7::jsonb'
       await pgPool.query(
         `UPDATE property_maintenance
             SET area = $2,
-                details = $3,
+                category_detail = $3,
+                details = $4,
                 photo_urls = ${beforeExpr},
-                repair_notes = $5,
+                repair_notes = $6,
                 repair_photo_urls = ${afterExpr},
-                invoice_description_en = $7,
-                status = $8,
-                review_status = $9,
-                completed_at = $10,
+                invoice_description_en = $8,
+                status = $9,
+                review_status = $10,
+                completed_at = $11,
                 updated_at = now()
           WHERE id = $1`,
         [
           id,
           nextArea,
+          nextCategory || null,
           nextDetail,
           beforeType === 'text[]' ? nextMedia : JSON.stringify(nextMedia),
           nextNote || null,
@@ -9420,6 +9445,7 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
       },
     })
   } catch (e: any) {
+    if (e instanceof PropertyFeedbackMutationError) return res.status(e.statusCode).json({ code: e.code })
     return res.status(500).json({ message: e?.message || 'property_feedback_patch_failed' })
   }
 })
@@ -9572,6 +9598,7 @@ async function persistFeedbackProjects(
 router.post('/property-feedbacks/:kind/:id/projects', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
+  if (!isPropertyFeedbackManager(user)) return res.status(403).json({ code: 'forbidden_property_feedback_workflow' })
   const kind = String(req.params.kind || '').trim() as FeedbackKind
   const id = String(req.params.id || '').trim()
   if (kind !== 'maintenance' && kind !== 'deep_cleaning') return res.status(400).json({ message: 'invalid kind' })
@@ -9594,6 +9621,7 @@ router.post('/property-feedbacks/:kind/:id/projects', async (req, res) => {
     const response = await pgRunInTransaction(async (client) => {
       const row = await loadPropertyFeedbackRow(kind, id, client, true)
       if (!row) return { statusCode: 404, body: { message: 'not found' } }
+      if (!await canAccessPropertyFeedbackRow(client, user, row)) return { statusCode: 403, body: { code: 'forbidden_property_feedback' } }
       if (receiptScope) {
         await assertIdempotentStepReceiptsReady(client)
         const receipt = await loadIdempotentStepReceipt(client, receiptScope)
@@ -9654,6 +9682,7 @@ router.post('/property-feedbacks/:kind/:id/projects', async (req, res) => {
 router.patch('/property-feedbacks/:kind/:id/projects/:projectId', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
+  if (!isPropertyFeedbackManager(user)) return res.status(403).json({ code: 'forbidden_property_feedback_workflow' })
   const kind = String(req.params.kind || '').trim() as FeedbackKind
   const id = String(req.params.id || '').trim()
   const projectId = String(req.params.projectId || '').trim()
@@ -9663,6 +9692,7 @@ router.patch('/property-feedbacks/:kind/:id/projects/:projectId', async (req, re
   try {
     const row = await loadPropertyFeedbackRow(kind, id)
     if (!row) return res.status(404).json({ message: 'not found' })
+    if (!await canAccessPropertyFeedbackRow(pgPool, user, row)) return res.status(403).json({ code: 'forbidden_property_feedback' })
     const current = summarizeProjectItems(kind, row.project_items, row).items
     const found = current.find((it: PropertyFeedbackProjectItem) => it.id === projectId)
     if (!found) return res.status(404).json({ message: 'project_not_found' })
@@ -9683,6 +9713,7 @@ router.patch('/property-feedbacks/:kind/:id/projects/:projectId', async (req, re
 router.post('/property-feedbacks/:kind/:id/projects/:projectId/complete', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
+  if (!isPropertyFeedbackManager(user)) return res.status(403).json({ code: 'forbidden_property_feedback_workflow' })
   const kind = String(req.params.kind || '').trim() as FeedbackKind
   const id = String(req.params.id || '').trim()
   const projectId = String(req.params.projectId || '').trim()
@@ -9706,6 +9737,7 @@ router.post('/property-feedbacks/:kind/:id/projects/:projectId/complete', async 
     const response = await pgRunInTransaction(async (client) => {
       const row = await loadPropertyFeedbackRow(kind, id, client, true)
       if (!row) return { statusCode: 404, body: { message: 'not found' } }
+      if (!await canAccessPropertyFeedbackRow(client, user, row)) return { statusCode: 403, body: { code: 'forbidden_property_feedback' } }
       if (receiptScope) {
         await assertIdempotentStepReceiptsReady(client)
         const receipt = await loadIdempotentStepReceipt(client, receiptScope)
