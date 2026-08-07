@@ -89,7 +89,7 @@
 
 - Repository: `root`.
 - Selected CRLs: `CRL-20260806-006`, `CRL-20260807-001`, `CRL-20260807-002`, `CRL-20260807-003`, `CRL-20260807-004`, `CRL-20260807-005`.
-- Intended action: `commit`.
+- Intended action: `push`.
 - Branch: `codex/release-selected-20260807-root`.
 - Base: `origin/Dev@b3e3034dd8a3bcbb6e679cd17d75fdcf75bcce69`; fetched at 2026-08-07 Australia/Melbourne.
 - Candidate patch SHA-256: `dbf1da52c5c8ea5bce680dea5a00f0d4afd25b4320f62246bf5fc03adb8c45ea` from the exact staged non-ledger content.
@@ -98,10 +98,10 @@
 - Dependencies: the five collision-safe 20260807 mappings preserve the user-selected source labels without claiming the older remote CRLs are released. Feedback migration must be deployed before the backend; mobile maintenance execution remains a paired, unverified release dependency.
 - Shared-hunk review: PASS — `frontend/src/app/properties/page.tsx` is deliberately shared by the selected type and creation-time units, and every other staged path has one listed mapping.
 - Generated-file review: PASS — no generated output, cache, dependency directory, secret or local environment file is staged.
-- User authorization: `selected-for-commit` — the user selected the source units; push, deployment, migration and production actions remain separately unauthorized.
+- User authorization: `approved-for-push`; evidence: the user replied “推送” on 2026-08-07 after `codex/release-selected-20260807-root` and candidate content commit `722981d87db9d085b419d0553ed3cf32b7ecb379` were presented. Deployment, migration and production actions remain separately unauthorized.
 - Independent review: GO; evidence: 2026-08-07 independent read-only review accepted exact hash `dbf1da52c5c8ea5bce680dea5a00f0d4afd25b4320f62246bf5fc03adb8c45ea`, all 17 staged paths, validation evidence, and sensitive/generated-file review for commit only.
 - Technical state: `committed`.
-- Action conclusion: GO for commit (completed); push, deployment, migration and production actions remain separately unauthorized.
+- Action conclusion: NOT VERIFIED for push until the updated exact committed-range audit and independent review complete; deployment, migration and production actions remain separately unauthorized.
 
 ## CRL-20260806-006 — 维修执行人专用动作当前 Dev 契约重基线（root）
 
