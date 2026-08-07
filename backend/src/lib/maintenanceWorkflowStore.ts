@@ -33,6 +33,20 @@ export function maintenanceTaskSummaryFromDetails(value: any): string | null {
   }
 }
 
+function maintenanceCompletionPhotoUrls(value: any): string[] {
+  const values = Array.isArray(value)
+    ? value
+    : (() => {
+        try {
+          const parsed = JSON.parse(String(value || ''))
+          return Array.isArray(parsed) ? parsed : []
+        } catch {
+          return []
+        }
+      })()
+  return Array.from(new Set(values.map((item) => String(item || '').trim()).filter(Boolean)))
+}
+
 export async function upsertMaintenanceWorkTask(client: any, domain: MaintenanceWorkflowDomain, row: any) {
   const sourceType = maintenanceWorkflowSourceType(domain)
   const sourceId = String(row?.id || '').trim()
@@ -43,11 +57,17 @@ export async function upsertMaintenanceWorkTask(client: any, domain: Maintenance
   const scheduledDate = domain === 'internal' ? dateOnly(row?.eta) : dateOnly(row?.scheduled_date)
   const propertyId = domain === 'internal' ? (String(row?.property_id || '').trim() || null) : null
   const summary = maintenanceTaskSummaryFromDetails(row?.details)
+  const completionPhotoUrls = maintenanceCompletionPhotoUrls(row?.completion_photo_urls)
+  const completionNote = domain === 'internal'
+    ? (String(row?.repair_notes || '').trim() || null)
+    : (String(row?.completion_notes || '').trim() || null)
+  const completionReason = String(row?.completion_reason || '').trim() || null
   await client.query(
     `INSERT INTO work_tasks(
        id, task_kind, source_type, source_id, property_id, title, summary,
-       scheduled_date, assignee_id, status, urgency, created_by, updated_by, created_at, updated_at
-     ) VALUES($1,'maintenance',$2,$3,$4,$5,$6,$7::date,$8,$9,$10,$11,$12,COALESCE($13::timestamptz, now()),now())
+       scheduled_date, assignee_id, status, urgency, completion_photo_urls, completion_note, completion_reason,
+       created_by, updated_by, created_at, updated_at
+     ) VALUES($1,'maintenance',$2,$3,$4,$5,$6,$7::date,$8,$9,$10,$11::jsonb,$12,$13,$14,$15,COALESCE($16::timestamptz, now()),now())
      ON CONFLICT (source_type, source_id) DO UPDATE SET
        task_kind=EXCLUDED.task_kind,
        property_id=EXCLUDED.property_id,
@@ -57,6 +77,9 @@ export async function upsertMaintenanceWorkTask(client: any, domain: Maintenance
        assignee_id=EXCLUDED.assignee_id,
        status=EXCLUDED.status,
        urgency=EXCLUDED.urgency,
+       completion_photo_urls=EXCLUDED.completion_photo_urls,
+       completion_note=EXCLUDED.completion_note,
+       completion_reason=EXCLUDED.completion_reason,
        updated_by=EXCLUDED.updated_by,
        updated_at=now()`,
     [
@@ -70,6 +93,9 @@ export async function upsertMaintenanceWorkTask(client: any, domain: Maintenance
       String(row?.assignee_id || '').trim() || null,
       maintenanceWorkTaskStatus(status),
       String(row?.urgency || '').trim() || 'medium',
+      JSON.stringify(completionPhotoUrls),
+      completionNote,
+      completionReason,
       String(row?.created_by || '').trim() || null,
       String(row?.updated_by || '').trim() || null,
       row?.created_at || null,

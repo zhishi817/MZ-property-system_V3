@@ -1,5 +1,158 @@
 # Change Release Ledger
 
+## CRL-20260807-009 — Phase 5 跨仓服务端动作契约门禁校正（root）
+
+- **Status:** ready
+- **Updated:** 2026-08-07 23:24 AEST
+- **Request:** 授权修复阻断维修完工照片后端发布的根仓/移动端 Phase 5 测试契约断裂。
+- **Outcome:** 根仓的 Phase 5 源码契约继续验证移动端类型声明及 `available_actions` 的服务端动作直接透传；不再要求当前移动端从未实现的 `canRenderServerAction` helper。
+
+### Implementation
+
+- Previous behavior: `test_phase5_release_contract.ts` 同时验证了当前直接透传实现，并额外要求不存在于移动端 `origin/Dev@b45d84529ba734b17fabf9bd0c786517394abafd` 的 helper 文本，令根仓发布门禁在未改动业务代码时失败。
+- New behavior: 保留精确的 `hasServerActions(task)` / `available_actions` 直接返回契约，删除过期、冗余的 helper 名称断言。
+- Key decisions: 不改移动端运行时代码、不改变权限或动作生成规则、不新增依赖、不发 OTA。
+
+### Files / Areas
+
+- `backend/scripts/tests/test_phase5_release_contract.ts` — 删除与当前移动端实现不一致的静态 helper 名称断言。
+- `docs/change-release-ledger.md` — 记录独立的发布门禁校正与同批发布依赖。
+
+### Impact / Dependencies
+
+- Runtime / API / database / migration / config / dependencies: none.
+- Related units: 必须随 `CRL-20260807-007`、`CRL-20260807-008` 一起进入 `RA-20260807-root-maintenance-media-01`，以解除该根仓候选唯一剩余的完整质量门阻断；移动端 OTA 明确不在范围。
+- Production data / external sync: none.
+
+### Validation
+
+- Root `origin/Dev@fab297f37fc05c9825293b2cf954d2abe56ed3ef` 与 mobile `origin/Dev@b45d84529ba734b17fabf9bd0c786517394abafd` 源码比对 — confirmed: 前者要求过期 helper，后者只实现服务端动作直接透传。
+- `npm run test:phase5-release-contract --prefix backend` — passed against mobile `origin/Dev@b45d84529ba734b17fabf9bd0c786517394abafd`.
+- `npm run check:full` — passed in the isolated candidate using root `origin/Dev@fab297f37fc05c9825293b2cf954d2abe56ed3ef` and mobile `origin/Dev@b45d84529ba734b17fabf9bd0c786517394abafd`: backend contracts/build, frontend lint / 42 suites / 180 tests / production build, and mobile typecheck / lint / 50 suites / 242 tests all exited 0. Existing frontend lint warnings, Browserslist/chart-size warnings, 111 mobile lint warnings and the mobile Jest forced-worker-exit advisory remain non-blocking and pre-existing.
+
+### Release Attempts
+
+- Will travel in `RA-20260807-root-maintenance-media-01` with selected root CRLs `CRL-20260807-007`, `CRL-20260807-008` and `CRL-20260807-009`; no commit, push or deployment yet.
+
+### Risks / Release Notes
+
+- Risk: 这是源码级跨仓契约，仍不能替代将来以精确 root/mobile SHA 运行的远端集成工作流。
+- Rollback: revert this test-only correction; no runtime or data rollback is needed.
+- Sensitive-information review: no secret, token, media URL, environment value or production data is recorded.
+- Git state: isolated candidate branch; uncommitted and not pushed.
+
+## CRL-20260807-008 — FR-004 失效移动端测试映射校正（root）
+
+- **Status:** ready
+- **Updated:** 2026-08-07 23:24 AEST
+- **Request:** 授权修复阻断后端发布的 FR-004 失效移动端测试映射。
+- **Outcome:** 有效的管理详情完工照片关联/部分失败测试只指向现存的 `ManagerDailyTaskScreen.test.ts`；已删除的客厅多图测试明确标为 `missing`，不再让质量门引用不存在的文件或把未覆盖行为误报为已验证。
+
+### Implementation
+
+- Previous behavior: FR-004 同时引用了当前移动端 `origin/Dev` 已不存在的 `src/lib/managerDailyTaskPhotos.test.ts`；完整质量门因此失败。
+- New behavior: 已被现存测试覆盖的完成照片关联行改用唯一有效测试；客厅多图兼容/重试行保留为业务风险，但覆盖状态降为 `missing`。
+- Key decisions: 不恢复历史测试、不改移动端运行时代码、不把未执行的测试标为 partial 或 sufficient。
+
+### Files / Areas
+
+- `docs/feature-regression-registry.md` — 校正 FR-004 的有效测试映射和未覆盖声明。
+- `docs/change-release-ledger.md` — 记录独立发布单元及其与维修图片修复的发布依赖。
+
+### Impact / Dependencies
+
+- Runtime / API / database / migration / config / dependencies: none.
+- Related units: 必须与 `CRL-20260807-007` 一起发布，原因仅是解除其完整质量门阻断；不属于移动端 OTA。
+- Production data / external sync: none.
+
+### Validation
+
+- Mobile `origin/Dev@b45d84529ba734b17fabf9bd0c786517394abafd` 文件清单 — confirmed: `ManagerDailyTaskScreen.test.ts` 存在，`managerDailyTaskPhotos.test.ts` 不存在。
+- Historical commit `8a3f8be` — confirmed: 缺失测试曾覆盖客厅多图，但它不在当前移动端 Dev，不可作为当前质量门证据。
+- `npm run check:feature-registry` — passed in the isolated candidate: 10 FRs / 105 mappings.
+- `npm run check:full` — passed after the user-authorized `CRL-20260807-009` correction; see the shared release attempt for the exact root/mobile baselines and complete root, frontend and mobile command evidence.
+
+### Release Attempts
+
+- Will travel in `RA-20260807-root-maintenance-media-01` with selected root CRLs `CRL-20260807-007`, `CRL-20260807-008` and `CRL-20260807-009`; no commit, push or deployment yet.
+
+### Risks / Release Notes
+
+- Risk: 管理端客厅多图兼容和重试仍无当前自动化覆盖，须由未来的移动端独立 CRL 补测试；该风险不应被本次后端图片代理修复掩盖。
+- Rollback: revert only the registry mapping correction; no runtime or data rollback is needed.
+- Sensitive-information review: no secret, token, media URL, environment value or production data is recorded.
+- Git state: isolated candidate branch; uncommitted and not pushed.
+
+## CRL-20260807-007 — 维修完工照片任务投影与私有读取（root）
+
+- **Status:** ready
+- **Updated:** 2026-08-07 23:39 AEST
+- **Request:** 修复任务执行人提交维修完工后，相册照片无法显示缩略图或大图；先推送并部署后端。
+- **Outcome:** 专用维修动作保存的完工照片、备注和未完成原因会投影到 `work_tasks`；已保存的内部/外部维修 `mzapp/` 私有照片可由认证媒体代理按精确记录提供缩略图、预览和原图。
+
+### Implementation
+
+- Previous behavior: 专用维修动作保存了源维修记录的 `completion_photo_urls`，但 `work_tasks` 投影没有同步这些字段；媒体代理也不会把完工图片当作可读取的已保存维修媒体。
+- New behavior: `upsertMaintenanceWorkTask` 在创建和更新投影时同步完成字段。图片代理仅从未删除的内部维修记录或对应的外部维修单精确匹配图片 key；外部维修仅允许管理角色或当前被分配的 `maintenance_staff` 读取。
+- Key decisions: 通用 `/mzapp/work-tasks/:id/mark` 对维修来源的拦截不变；任务执行人由移动端走已存在的维修专用完成/未完成接口。复用既有 `/cleaning-app/media/image` 认证代理，不暴露 R2 直链，也不新增上传队列。
+- Independent-review P1 remediation: 官方 `/maintenance/upload` 产生 `maintenance/...` 私有 key；该前缀现在只在同一认证代理的精确记录匹配与既有角色/执行人授权之后接受，不开放直接对象 URL 或非记录关联读取。
+
+### Files / Areas
+
+- `backend/src/lib/maintenanceWorkflowStore.ts` — 完工字段投影与 JSON/text[] 兼容归一化。
+- `backend/src/modules/cleaning_app.ts` — 完工图片的精确媒体归属、外部维修角色/执行人授权和图片代理读取。
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts` — 任务投影字段契约。
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — 内外部完工图片代理契约。
+- `docs/feature-regression-registry.md` — 新增维修完工投影与私有读取保护项。
+- `docs/change-release-ledger.md` — 本发布单元与发布尝试记录。
+
+### Impact / Dependencies
+
+- API: `GET /mzapp/work-tasks` 将读取已同步的完工字段；`GET /cleaning-app/media/image` 支持同一认证下的 `thumbnail`、`preview`、`original` 变体。
+- Database / migration: none. `work_tasks` 的完成字段由当前 `mzapp` 工作任务初始化路径既有维护；本候选不新增 migration 或运行时 DDL。
+- Config / dependencies: none.
+- Related units: 已在 `origin/Dev` 的 `CRL-20260806-006` 维修专用动作；配套移动端 `CRL-20260807-007` 仍待单独发布 OTA。
+- Production data / external sync: none.
+
+### Validation
+
+- `npm run test:maintenance-workflow-actions --prefix backend` — passed: `maintenance workflow actions: PASS`.
+- `npm run test:mzapp-media-visibility --prefix backend` — passed: `test_mzapp_media_visibility: ok`.
+- `npm run check:ledger` and `npm run check:feature-registry` — passed in the isolated root candidate: 6/6 ledger coverage and 10 FRs / 105 mappings, with mobile mappings deferred because the root repository does not contain the independent mobile checkout.
+- `npm run check:full` — passed in the isolated candidate after `CRL-20260807-009`: root ledger/registry, backend build and contracts including the two target contracts and Phase 5, frontend lint / 42 suites / 180 tests / production build, and mobile typecheck / lint / 50 suites / 242 tests all exited 0 against the recorded exact root/mobile baselines. Existing warning-only frontend/mobile lint output, Browserslist/chart-size warnings and the mobile Jest forced-worker-exit advisory are pre-existing and non-blocking.
+- Independent review — NO-GO for commit: official maintenance uploads use `maintenance/...`, but the initial proxy namespace guard rejected that key before exact-record and role/assignee authorization; the P1 is remediated in this CRL and requires revalidation plus a renewed independent review.
+- `npm run test:mzapp-media-visibility --prefix backend` — passed after P1 remediation: official `maintenance/...` upload namespace is accepted only through the existing recorded-media proxy path.
+- `npm run check:full` — passed again after P1 remediation in the isolated candidate against the recorded root/mobile baselines: backend build/contracts, frontend lint / 42 suites / 180 tests / production build, and mobile typecheck / lint / 50 suites / 242 tests all exited 0. Existing warning-only frontend/mobile lint output, Browserslist/chart-size warnings and the mobile Jest forced-worker-exit advisory remain pre-existing and non-blocking.
+- Generated `backend/dist` outputs and temporary dependency links were removed after the interrupted failing command; they are not candidate files.
+- `git diff --check` — passed.
+
+### Release Attempts
+
+#### RA-20260807-root-maintenance-media-01
+
+- Repository: `root`.
+- Selected CRLs: `CRL-20260807-007`, `CRL-20260807-008`, `CRL-20260807-009`.
+- Intended action: `commit`.
+- Branch: `codex/release-maintenance-media-20260807`.
+- Base: `origin/Dev@fab297f37fc05c9825293b2cf954d2abe56ed3ef`; fetched 2026-08-07 22:40 AEST.
+- Candidate patch SHA-256: `02b9f8f4cbdb6df51ffc8353caba6322c1f587c7970c801edf4ec6c6927b15dc`; final staged selected-content diff after P1 remediation, excluding `docs/change-release-ledger.md`.
+- Commit SHA: not committed.
+- Dependencies: `CRL-20260806-006` is present in the base; `CRL-20260807-008` corrects the FR-004 mapping and `CRL-20260807-009` corrects the stale Phase 5 test assertion; mobile OTA is explicitly excluded from this root attempt.
+- Required validation: PASS; the P1 targeted media contract and the complete quality gate both passed after remediation.
+- Shared-hunk review: PASS; renewed independent read-only review inspected the complete staged diff, including `cleaning_app.ts`, the media contract test, registry and ledger hunk ownership.
+- Generated-file review: PASS; no generated output, cache, dependency directory, secret or environment file remains in the candidate.
+- Technical state: verified.
+- User authorization: selected-for-commit; evidence: user instructed “先推送部署后端吧” and authorized the FR-004 mapping correction and CRL-20260807-009 test correction on 2026-08-07. Per release policy, push/deployment still require the exact candidate commit and branch to be confirmed.
+- Independent review: GO for `commit`; renewed review verified the P1 remediation, the exact `02b9f8f4cbdb6df51ffc8353caba6322c1f587c7970c801edf4ec6c6927b15dc` non-ledger fingerprint, all seven selected files, root base and current `origin/Dev`, with no P0/P1/P2, generated-file or sensitive-information finding. The earlier NO-GO remains recorded above as historical evidence.
+- Action conclusion: GO for `commit`; exact push authorization and deployment verification remain pending.
+
+### Risks / Release Notes
+
+- Risk: local contract tests cannot prove deployed Postgres/R2 behavior or iOS image decoding; no production media was read or written.
+- Rollback: revert this isolated projection/proxy unit; no historical media object or workflow record is deleted.
+- Sensitive-information review: no secret, token, raw private URL, media byte, `.env` value, database URL, cookie or production data is included.
+- Git state: isolated candidate branch; uncommitted and not pushed.
+
 ## CRL-20260807-006 — 后端私有媒体授权契约合并回归修复（root）
 
 - **Status:** committed
