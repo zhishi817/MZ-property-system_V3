@@ -3,7 +3,7 @@
 ## CRL-20260807-009 — Phase 5 跨仓服务端动作契约门禁校正（root）
 
 - **Status:** committed
-- **Updated:** 2026-08-07 23:49 AEST
+- **Updated:** 2026-08-07 23:51 AEST
 - **Request:** 授权修复阻断维修完工照片后端发布的根仓/移动端 Phase 5 测试契约断裂。
 - **Outcome:** 根仓的 Phase 5 源码契约继续验证移动端类型声明及 `available_actions` 的服务端动作直接透传；不再要求当前移动端从未实现的 `canRenderServerAction` helper。
 
@@ -143,8 +143,8 @@
 - Generated-file review: PASS; no generated output, cache, dependency directory, secret or environment file remains in the candidate.
 - Technical state: committed.
 - User authorization: approved-for-push; evidence: after the exact local branch `codex/release-maintenance-media-20260807`, audit head `6d9ecd43c34e6f86edb34a59a2b99c1a6dc4629d`, base and candidate content commit were presented, the user replied “推送” on 2026-08-07. Authorization is limited to this root candidate branch; merge and deployment remain separate.
-- Independent review: NO-GO for `push` (metadata only): the read-only pre-push review reconfirmed the exact range, `02b9f8f4cbdb6df51ffc8353caba6322c1f587c7970c801edf4ec6c6927b15dc` non-ledger fingerprint, seven selected paths, no P0, no secret/generated-file or production-write risk, and private-media authorization; it blocked solely because this Release Attempt still declared `commit` / `selected-for-commit`. This update resolves that documented metadata gap; a renewed exact-range push review remains required before pushing. The earlier code-review NO-GO P1 and subsequent GO for `commit` remain recorded above.
-- Action conclusion: BLOCKED pending the renewed independent push review and a passing exact-range release report; merge and deployment remain outside this action.
+- Independent review: GO for `push`; the renewed independent read-only review inspected exact `origin/Dev@fab297f37fc05c9825293b2cf954d2abe56ed3ef...9ea5e5afbab3f34c788d0d17045f36bd27d7a9cf`, reconfirmed the candidate content commit, selected CRLs, branch, non-ledger fingerprint, complete range, private-media authorization, no P0/P1/P2, no unselected/generated/sensitive file and no production-write risk. Its earlier metadata-only NO-GO is preserved as historical evidence.
+- Action conclusion: GO for `push`; the final exact-range release report must pass before the network action. Merge and deployment remain outside this action.
 
 ### Risks / Release Notes
 
