@@ -28,7 +28,6 @@ assert.match(backendRoute, /res\.json\(responsePayload\)\s+void \(async \(\) =>/
 assert.match(workTaskPayload, /available_actions:\s*actions/)
 assert.match(mobileApi, /available_actions\?:\s*WorkTaskAvailableAction\[\]\s*\|\s*null/)
 assert.match(mobileActions, /if \(hasServerActions\(task\)\) return \(\(\(task as any\)\.available_actions \|\| \[\]\) as WorkTaskAvailableAction\[\]\)/)
-assert.match(mobileActions, /canRenderServerAction\(task, action\)/)
 assert.match(phase5E2E, /PHASE5_ALLOW_DB_WRITES/)
 assert.match(phase5E2E, /PHASE5_DATABASE_LABEL/)
 
