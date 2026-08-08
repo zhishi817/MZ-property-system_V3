@@ -1,9 +1,63 @@
-import { postJSON } from './api'
+import { deleteJSON, postJSON } from './api'
 
 export type MaintenanceWorkflowActionResponse = {
   ok: boolean
   status: string
   id: string
+}
+
+export type InternalMaintenanceFeedbackCreateResponse = {
+  ok: boolean
+  id?: string
+  existing_id?: string
+}
+
+export type InternalMaintenanceFeedbackDeleteResponse = {
+  ok: boolean
+  deleted: boolean
+}
+
+export function internalMaintenanceFeedbackCreatePath() {
+  return '/mzapp/property-feedbacks'
+}
+
+export function internalMaintenanceFeedbackDeletePath(recordId: string) {
+  const id = String(recordId || '').trim()
+  if (!id) throw new Error('maintenance_record_id_required')
+  return `/mzapp/property-feedbacks/maintenance/${encodeURIComponent(id)}`
+}
+
+export async function deleteInternalMaintenanceFeedback(recordId: string) {
+  return deleteJSON<InternalMaintenanceFeedbackDeleteResponse>(
+    internalMaintenanceFeedbackDeletePath(recordId),
+    { timeoutMs: 30_000 },
+  )
+}
+
+export async function createInternalMaintenanceFeedback(input: {
+  propertyId: string
+  area: string
+  detail: string
+  mediaUrls?: string[]
+  invoiceDescriptionEn?: string | null
+  submitId: string
+}) {
+  const propertyId = String(input.propertyId || '').trim()
+  const area = String(input.area || '').trim()
+  const detail = String(input.detail || '').trim()
+  if (!propertyId || !area || !detail) throw new Error('maintenance_feedback_fields_required')
+  const submitId = String(input.submitId || '').trim()
+  if (!submitId) throw new Error('maintenance_submit_id_required')
+  return postJSON<InternalMaintenanceFeedbackCreateResponse>(internalMaintenanceFeedbackCreatePath(), {
+    kind: 'maintenance',
+    property_id: propertyId,
+    area,
+    detail,
+    media_urls: Array.from(new Set((input.mediaUrls || []).map((url) => String(url || '').trim()).filter(Boolean))),
+    invoice_description_en: String(input.invoiceDescriptionEn || '').trim() || undefined,
+    submit_id: submitId,
+    step_key: 'web_maintenance_feedback_create',
+  }, { timeoutMs: 30_000 })
 }
 
 export function internalMaintenanceAssignmentChanged(input: {

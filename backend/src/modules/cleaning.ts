@@ -437,7 +437,9 @@ async function backfillOfflineWorkTasks() {
 
 router.get('/staff', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), async (req, res) => {
   const kind = String((req.query as any)?.kind || '').trim().toLowerCase()
-  const taskExecutorScope = String((req.query as any)?.scope || '').trim().toLowerCase() === 'task_executor'
+  const staffScope = String((req.query as any)?.scope || '').trim().toLowerCase()
+  const taskExecutorScope = staffScope === 'task_executor'
+  const maintenanceExecutorScope = staffScope === 'maintenance_executor'
   const rolesForKind = (k: string): string[] => {
     if (k === 'cleaner') return ['cleaner', 'cleaner_inspector']
     if (k === 'inspector') return ['cleaning_inspector', 'cleaner_inspector']
@@ -481,11 +483,18 @@ router.get('/staff', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
         ].filter(Boolean)))
         const name = String(u.username || u.email || u.id || '').trim() || String(u.id)
         const base = { id: String(u.id), name, capacity_per_day: 0, is_active: true, color_hex: String(u.color_hex || '#3B82F6') }
+        if (maintenanceExecutorScope) {
+          out.push({ ...base, kind: 'executor' })
+          continue
+        }
         if (taskExecutorScope) {
           if (!isTaskExecutorEligibleRoleNames(roleNames)) continue
           const executorKinds = kindsForRoles(roleNames, '')
-          if (executorKinds.length) for (const resolvedKind of executorKinds) out.push({ ...base, kind: resolvedKind })
-          else out.push({ ...base, kind: 'executor' })
+          if (executorKinds.length) {
+            for (const resolvedKind of executorKinds) out.push({ ...base, kind: resolvedKind })
+          } else {
+            out.push({ ...base, kind: 'executor' })
+          }
           continue
         }
         if (!roleNames.some((role) => roles.includes(role))) continue
@@ -500,15 +509,25 @@ router.get('/staff', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
   }
   const out: any[] = []
   for (const u of (db.users || [])) {
-    const roleNames = Array.from(new Set([String(u.role || '').trim(), ...((Array.isArray((u as any).roles) ? (u as any).roles : []).map((x: any) => String(x || '').trim()))].filter(Boolean)))
+    const roleNames = Array.from(new Set([
+      String(u.role || '').trim(),
+      ...((Array.isArray((u as any).roles) ? (u as any).roles : []).map((x: any) => String(x || '').trim())),
+    ].filter(Boolean)))
     const role = String(u.role || '')
     const name = String(u.username || u.email || u.id || '').trim() || String(u.id)
     const base = { id: String(u.id), name, capacity_per_day: 0, is_active: true, color_hex: String((u as any).color_hex || '#3B82F6') }
+    if (maintenanceExecutorScope) {
+      out.push({ ...base, kind: 'executor' })
+      continue
+    }
     if (taskExecutorScope) {
       if (!isTaskExecutorEligibleRoleNames(roleNames)) continue
       const executorKinds = kindsForRoles(roleNames, '')
-      if (executorKinds.length) for (const resolvedKind of executorKinds) out.push({ ...base, kind: resolvedKind })
-      else out.push({ ...base, kind: 'executor' })
+      if (executorKinds.length) {
+        for (const resolvedKind of executorKinds) out.push({ ...base, kind: resolvedKind })
+      } else {
+        out.push({ ...base, kind: 'executor' })
+      }
       continue
     }
     if (!roleNames.some((item) => roles.includes(item))) continue
