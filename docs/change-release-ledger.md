@@ -9,6 +9,21 @@
 - **Validation:** backend workflow contract, frontend targeted tests and backend/frontend type checks passed.
 - **Risk / dependency:** preparation uses idempotent schema checks at runtime; deployment needs the paired mobile CRL-20260808-001 and non-production concurrency verification. No production write was made here.
 
+### Files / Areas
+
+- `backend/src/lib/maintenanceWorkflow.ts`
+- `backend/src/lib/maintenanceWorkflowSchema.ts`
+- `backend/src/lib/idempotentStepReceipts.ts`
+- `backend/src/modules/maintenance.ts`
+- `backend/src/modules/mzapp.ts`
+- `frontend/src/app/maintenance/records/page.tsx`
+- `frontend/src/lib/maintenanceWorkflowActions.ts`
+- `frontend/src/lib/api.ts`
+- `frontend/src/lib/api.test.ts`
+- `frontend/src/lib/maintenanceWorkflowActions.test.ts`
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts`
+- `docs/change-release-ledger.md`
+
 ## CRL-20260808-002 — 维修分派投影与任务中心权限一致性（root）
 
 - **Status:** candidate; selected-for-commit.
@@ -16,6 +31,15 @@
 - **Files / Areas:** `backend/src/lib/maintenanceWorkflowStore.ts`, `backend/src/modules/task_center.ts`, `backend/src/modules/cleaning.ts`, `backend/src/modules/maintenance.ts`, `frontend/src/app/task-center/page.tsx`, `backend/scripts/tests/test_maintenance_workflow_actions.ts`.
 - **Validation:** backend workflow contract and TypeScript compile passed.
 - **Risk / dependency:** 依赖 mobile CRL-20260808-002 对服务端回执的本地状态收口；真实登录角色仍待非生产验证。
+
+### Files / Areas
+
+- `backend/src/lib/maintenanceWorkflowStore.ts`
+- `backend/src/modules/task_center.ts`
+- `backend/src/modules/cleaning.ts`
+- `backend/src/modules/maintenance.ts`
+- `frontend/src/app/task-center/page.tsx`
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts`
 
 ## CRL-20260808-003 — 已取消维修禁止删除与旧状态筛选兼容（root）
 
@@ -25,6 +49,15 @@
 - **Validation:** frontend action tests and backend workflow contract passed.
 - **Risk / dependency:** 不物理删除、不迁移历史数据；保留既有审计软删除接口。
 
+### Files / Areas
+
+- `backend/src/modules/crud.ts`
+- `backend/src/modules/mzapp.ts`
+- `frontend/src/app/maintenance/records/page.tsx`
+- `frontend/src/lib/maintenanceWorkflowActions.ts`
+- `frontend/src/lib/maintenanceWorkflowActions.test.ts`
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts`
+
 ## CRL-20260808-004 — 维修工作流与幂等表的兼容准备（root）
 
 - **Status:** candidate; selected-for-commit.
@@ -32,6 +65,12 @@
 - **Files / Areas:** `backend/src/lib/maintenanceWorkflowSchema.ts`, `backend/src/lib/idempotentStepReceipts.ts`, `backend/src/modules/mzapp.ts`.
 - **Validation:** backend TypeScript compile and maintenance workflow contract passed.
 - **Risk / dependency:** 首次部署会执行受限的 `CREATE/ALTER ... IF NOT EXISTS` 兼容 DDL；需按正常后端部署窗口执行，未在本次运行任何生产 SQL。
+
+### Files / Areas
+
+- `backend/src/lib/maintenanceWorkflowSchema.ts`
+- `backend/src/lib/idempotentStepReceipts.ts`
+- `backend/src/modules/mzapp.ts`
 
 ## CRL-20260808-005 — 网页维修操作栏均衡两行布局（root）
 
@@ -41,6 +80,10 @@
 - **Validation:** frontend TypeScript check and production build passed (exit 0); build emitted pre-existing Browserslist and chart-size warnings only.
 - **Risk / dependency:** 仅展示层，不改变权限、删除确认或 API。
 
+### Files / Areas
+
+- `frontend/src/app/maintenance/records/page.tsx`
+
 ## CRL-20260808-006 — 历史维修完工照片的受控回填与认证预览（root）
 
 - **Status:** candidate; selected-for-commit.
@@ -48,6 +91,14 @@
 - **Files / Areas:** `backend/src/modules/mzapp.ts`, `backend/scripts/tests/test_mzapp_media_visibility.ts`, `backend/scripts/tests/test_maintenance_workflow_actions.ts`, `frontend/src/lib/maintenanceFeedbackMedia.ts`, `frontend/src/lib/maintenanceFeedbackMedia.test.ts`.
 - **Validation:** two backend media/workflow contracts and frontend media tests passed.
 - **Risk / dependency:** paired mobile CRL-20260808-006 must travel with this server behavior; no R2 direct URL or media-byte read is introduced.
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts`
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts`
+- `frontend/src/lib/maintenanceFeedbackMedia.ts`
+- `frontend/src/lib/maintenanceFeedbackMedia.test.ts`
 
 ## CRL-20260808-007 — 维修完工照片投影契约补强（root）
 
@@ -59,20 +110,28 @@
 
 ### Files / Areas
 
-- `frontend/src/lib/api.test.ts` — 409 业务错误码回归。
+- `backend/src/lib/maintenanceWorkflowStore.ts`
+- `backend/src/modules/mzapp.ts`
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts`
 
 ### Release Attempt
 
 #### RA-20260808-root-maintenance-01
 
-- Repository: root; branch: `codex/release-maintenance-20260808-root`; intended action: commit.
+- Repository: root
+- Intended action: commit
+- Branch: `codex/release-maintenance-20260808-root`
 - Selected CRLs: `CRL-20260808-001`, `CRL-20260808-002`, `CRL-20260808-003`, `CRL-20260808-004`, `CRL-20260808-005`, `CRL-20260808-006`, `CRL-20260808-007`.
-- Base: `origin/Dev@6ea97fb999f9fb67630aac3c5b8973e61ccde3c6`; fetched 2026-08-08 23:04:23 AEST.
+- Base: `origin/Dev@6ea97fb999f9fb67630aac3c5b8973e61ccde3c6`; fetched at 2026-08-08 23:04:23 AEST.
 - Candidate patch SHA-256: `a80c4418e4eaedbaf3eeef0a2a03298933233cc3a5354a6c84da49742bf10474`, from the staged candidate excluding `docs/change-release-ledger.md`.
-- Candidate content commit: `ec523a75a12869e4fce351df3e0f92d91b664a96`. Dependencies: mobile RA-20260808-mobile-maintenance-01 for CRL-20260808-001/002/006.
-- Validation: backend/frontend TypeScript checks, targeted backend media/workflow contracts (including cancelled-delete rejection, completion projection and project-mutation transaction locking), frontend 10-test suite, and frontend production build all passed. The production build emitted pre-existing Browserslist and chart-size warnings only.
-- Shared-hunk / generated / secret review: all staged source paths are attributed above; no generated `backend/dist`, dependency link, cache, environment file, token or private media value is selected.
-- Technical state: committed. User authorization: selected-for-commit (user confirmation on 2026-08-08). Independent review: GO for commit only on 2026-08-08 after verifying exact fingerprint `a80c4418e4eaedbaf3eeef0a2a03298933233cc3a5354a6c84da49742bf10474`; cancelled-delete, legacy `maintenance/` proxy, completion-projection and project-mutation transaction-lock P1 defects are remediated. Action conclusion: GO for commit completed; push remains unauthorized.
+- Commit SHA: `ec523a75a12869e4fce351df3e0f92d91b664a96` (candidate content commit)
+- Dependencies: mobile RA-20260808-mobile-maintenance-01 for CRL-20260808-001/002/006.
+- Required validation: PASS — backend/frontend TypeScript checks, targeted backend media/workflow contracts, frontend 10-test suite and frontend production build passed; pre-existing Browserslist/chart-size warnings only.
+- Shared-hunk review: PASS — all selected paths are attributed to the selected CRLs; no shared path is used by an unselected CRL.
+- Generated-file review: PASS — no `backend/dist`, cache, environment file, token or private media value is selected.
+- Independent review: GO — commit-only review accepted exact fingerprint `a80c4418e4eaedbaf3eeef0a2a03298933233cc3a5354a6c84da49742bf10474`; four P1 defects are remediated.
+- User authorization: selected-for-commit — user confirmation on 2026-08-08.
+- Technical state: committed
 
 ## CRL-20260807-009 — Phase 5 跨仓服务端动作契约门禁校正（root）
 
