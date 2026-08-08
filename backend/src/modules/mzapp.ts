@@ -9,7 +9,7 @@ import sharp from 'sharp'
 import fs from 'fs'
 import { listPermissionCodesForUser, userHasAnyPerm } from '../auth'
 import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
-import { emitNotificationEvent } from '../services/notificationEvents'
+import { emitNotificationEvent, ensureNotificationStorage } from '../services/notificationEvents'
 import {
   canEditGuestLuggageForRoles,
   planGuestLuggageMutation,
@@ -31,9 +31,10 @@ import { deepCleaningSourceSummary, maintenanceSourceSummary } from '../lib/auto
 import { buildCleaningTurnoverDisplay, mergeCleaningTurnoverDisplays } from '../lib/cleaningTurnoverDisplay'
 import { CLEANING_IMAGE_FORMAT_ERROR, isImageUploadCandidate, normalizeCleaningImageUpload } from '../lib/cleaningMediaImage'
 import { isCleaningMediaKey } from '../lib/cleaningMediaReference'
-import { assertMaintenanceWorkflowSchemaReady, MaintenanceWorkflowSchemaNotReady } from '../lib/maintenanceWorkflowSchema'
-import { normalizeMaintenanceWorkflowStatus } from '../lib/maintenanceWorkflow'
+import { assertMaintenanceWorkflowSchemaReady, ensureMaintenanceWorkflowFoundation, MaintenanceWorkflowSchemaNotReady } from '../lib/maintenanceWorkflowSchema'
+import { availableMaintenanceActions, normalizeMaintenanceWorkflowStatus } from '../lib/maintenanceWorkflow'
 import {
+  ensureMaintenanceWorkTasksTable,
   insertMaintenanceWorkflowEvent,
   maintenanceTaskSummaryFromDetails,
   upsertMaintenanceWorkTask,
@@ -108,6 +109,10 @@ function normStatus(v: any): string {
   if (s === 'cancelled' || s === 'canceled') return 'cancelled'
   if (s === 'in_progress') return 'in_progress'
   if (s === 'assigned') return 'assigned'
+  // Maintenance work-task projections keep this canonical workflow state so
+  // the mobile client can distinguish an executor's completed task from an
+  // assigned task that is still actionable.
+  if (s === 'pending_review') return 'pending_review'
   return 'todo'
 }
 
@@ -185,6 +190,25 @@ function hasRole(user: any, roleName: string) {
 
 function canViewAll(user: any) {
   return hasRole(user, 'admin') || hasRole(user, 'offline_manager') || hasRole(user, 'customer_service')
+}
+
+function maintenanceWorkflowForWorkTask(task: any, user: any) {
+  const sourceType = String(task?.source_type || '').trim()
+  const domain = sourceType === 'property_maintenance'
+    ? 'internal'
+    : sourceType === 'external_maintenance_orders'
+      ? 'external'
+      : null
+  if (!domain) return null
+  const status = normalizeMaintenanceWorkflowStatus(task?.status)
+  const actorId = String(user?.sub || user?.id || '').trim()
+  const isManager = canViewAll(user)
+  const isAssignedExecutor = !!actorId && String(task?.assignee_id || '').trim() === actorId
+  return {
+    domain,
+    status,
+    available_actions: availableMaintenanceActions({ status, isManager, isAssignedExecutor }),
+  }
 }
 
 const PROPERTY_FOLLOWUP_SOURCE_TYPES = ['property_maintenance', 'property_deep_cleaning', 'property_daily_necessities'] as const
@@ -2030,6 +2054,11 @@ export async function warmupMzappModule() {
   await ensureCleaningCheckoutColumns()
   await ensureCleaningCustomerColumns()
   await ensureCleaningInspectionColumns()
+  await ensurePropertyMaintenanceColumns()
+  await ensureMaintenanceWorkflowFoundation(pgPool)
+  await ensureMaintenanceWorkTasksTable(pgPool)
+  await assertIdempotentStepReceiptsReady(pgPool)
+  await ensureNotificationStorage()
   try {
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_task_type_captured_created ON cleaning_task_media(task_id, type, captured_at DESC, created_at DESC)`)
   } catch {}
@@ -7615,9 +7644,11 @@ router.get('/work-tasks', async (req, res) => {
         }
       }
       const { __merged_children, ...cleanTask } = taskWithParticipants as any
+      const maintenanceWorkflow = maintenanceWorkflowForWorkTask(taskWithParticipants, user)
       return {
         ...cleanTask,
         ...payload,
+        ...(maintenanceWorkflow ? { maintenance_workflow: maintenanceWorkflow } : {}),
       }
     })
 
@@ -8002,12 +8033,13 @@ async function createInternalMaintenanceFromFeedback(input: {
   clientItemId?: string | null
   feedbackSource: InternalMaintenanceFeedbackSource
   sourceTaskId: string | null
-}) {
+}, transactionClient?: any) {
   if (!pgPool) throw new InternalMaintenanceFeedbackError(500, 'pg_not_available')
-  await assertMaintenanceWorkflowSchemaReady(pgPool)
-  const client = await pgPool.connect()
+  await ensureMaintenanceWorkTasksTable(pgPool)
+  const client = transactionClient || await pgPool.connect()
+  const ownsTransaction = !transactionClient
   try {
-    await client.query('BEGIN')
+    if (ownsTransaction) await client.query('BEGIN')
     const created = await client.query(
       `INSERT INTO property_maintenance(
         id, property_id, occurred_at, details, created_by, created_by_user_id, created_at,
@@ -8053,13 +8085,15 @@ async function createInternalMaintenanceFromFeedback(input: {
         property_id: input.propertyId,
       },
     })
-    await client.query('COMMIT')
+    if (ownsTransaction) await client.query('COMMIT')
     return row
   } catch (error) {
-    try { await client.query('ROLLBACK') } catch {}
+    if (ownsTransaction) {
+      try { await client.query('ROLLBACK') } catch {}
+    }
     throw error
   } finally {
-    client.release()
+    if (ownsTransaction) client.release()
   }
 }
 
@@ -8145,7 +8179,10 @@ function feedbackPhotoFallbacks(kind: FeedbackKind, fallback?: any) {
   )
   const fallbackAfter = kind === 'deep_cleaning'
     ? normalizeUrlArray(fallback?.repair_photo_urls)
-    : normalizeUrlArray(fallback?.repair_photo_urls || fallback?.attachment_urls)
+    : Array.from(new Set([
+      ...normalizeUrlArray(fallback?.completion_photo_urls),
+      ...normalizeUrlArray(fallback?.repair_photo_urls || fallback?.attachment_urls),
+    ]))
   return { fallbackBefore, fallbackAfter }
 }
 
@@ -8450,7 +8487,11 @@ router.post('/property-feedbacks', async (req, res) => {
     const duplicateWindowHours = 24
 
     if (parsed.data.kind === 'maintenance') {
-      await assertMaintenanceWorkflowSchemaReady(pool)
+      try {
+        await ensurePropertyMaintenanceColumns()
+      } catch {}
+      await ensureMaintenanceWorkflowFoundation(pool)
+      await ensureMaintenanceWorkTasksTable(pool)
       let origin: { feedbackSource: InternalMaintenanceFeedbackSource; sourceTaskId: string | null }
       try {
         origin = await resolveInternalMaintenanceFeedbackOrigin(user, parsed.data.property_id, parsed.data.source_task_id)
@@ -8564,39 +8605,46 @@ router.post('/property-feedbacks', async (req, res) => {
         category_detail: categoryDetail,
         detail,
       })
-      const dup = await pgPool.query(
-        `SELECT id
-           FROM property_maintenance
-          WHERE property_id = $1
-            AND dedup_fingerprint = $2
-            AND (status IS NULL OR lower(status) NOT IN ('completed','done','ready','canceled','cancelled'))
-            AND COALESCE(submitted_at, created_at) >= now() - ($3::int * interval '1 hour')
-          ORDER BY COALESCE(submitted_at, created_at) DESC
-          LIMIT 1`,
-        [parsed.data.property_id, fingerprint, duplicateWindowHours],
-      )
-      if (dup.rowCount) return await respondReceipt(200, { ok: true, existing_id: String(dup.rows[0].id) })
-      await createInternalMaintenanceFromFeedback({
-        id,
-        propertyId: parsed.data.property_id,
-        occurredAt,
-        details: detail,
-        createdBy,
-        createdAt,
-        submitterName,
-        photoCast,
-        photoValue,
-        workNo,
-        area,
-        categoryDetail: categoryDetail || null,
-        invoiceDescriptionEn: singleInvoiceDescriptionEn || null,
-        fingerprint,
-        clientItemId: clientItemId || null,
-        feedbackSource: origin.feedbackSource,
-        sourceTaskId: origin.sourceTaskId,
+      const createdOrExisting = await pgRunInTransaction(async (client: any) => {
+        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`maintenance-feedback:${String(parsed.data.property_id)}:${fingerprint}`])
+        const dup = await client.query(
+          `SELECT id
+             FROM property_maintenance
+            WHERE property_id = $1
+              AND dedup_fingerprint = $2
+              AND (status IS NULL OR lower(status) NOT IN ('completed','done','ready','canceled','cancelled'))
+              AND COALESCE(submitted_at, created_at) >= now() - ($3::int * interval '1 hour')
+            ORDER BY COALESCE(submitted_at, created_at) DESC
+            LIMIT 1`,
+          [parsed.data.property_id, fingerprint, duplicateWindowHours],
+        )
+        if (dup.rowCount) return { existingId: String(dup.rows[0].id) }
+        const created = await createInternalMaintenanceFromFeedback({
+          id,
+          propertyId: parsed.data.property_id,
+          occurredAt,
+          details: detail,
+          createdBy,
+          createdAt,
+          submitterName,
+          photoCast,
+          photoValue,
+          workNo,
+          area,
+          categoryDetail: categoryDetail || null,
+          invoiceDescriptionEn: singleInvoiceDescriptionEn || null,
+          fingerprint,
+          clientItemId: clientItemId || null,
+          feedbackSource: origin.feedbackSource,
+          sourceTaskId: origin.sourceTaskId,
+        }, client)
+        return { id: String(created.id) }
       })
-      await notifyPropertyFeedbackCreated({
-        id,
+      if (!createdOrExisting) throw new InternalMaintenanceFeedbackError(500, 'maintenance_feedback_create_failed')
+      if (createdOrExisting.existingId) return await respondReceipt(200, { ok: true, existing_id: createdOrExisting.existingId })
+      const createdId = String(createdOrExisting.id || id)
+      void notifyPropertyFeedbackCreated({
+        id: createdId,
         kind: 'maintenance',
         propertyId: parsed.data.property_id,
         sourceTaskId: origin.sourceTaskId,
@@ -8751,8 +8799,6 @@ router.post('/property-feedbacks', async (req, res) => {
     return await respondReceipt(201, { ok: true, id })
   } catch (e: any) {
     if (e instanceof IdempotentStepReceiptsNotReady) return res.status(503).json({ code: e.message })
-    if (e instanceof MaintenanceWorkflowSchemaNotReady) return res.status(503).json({ code: e.message })
-    if (e instanceof PropertyDeepCleaningSchemaNotReady) return res.status(503).json({ code: e.message })
     return res.status(500).json({ message: e?.message || 'property_feedbacks_create_failed' })
   }
 })
@@ -8774,10 +8820,8 @@ async function loadPropertyFeedbackRow(kind: FeedbackKind, id: string, client: a
 }
 
 /**
- * Stable mobile draft IDs provide a durable fallback if a business write commits
- * but its optional receipt write/HTTP response is interrupted. The controlled
- * migrations make the property-scoped key unique, so this lookup cannot return
- * a duplicate feedback record.
+ * A stable mobile draft ID remains the durable fallback when a business write
+ * commits but the receipt response is interrupted.
  */
 async function loadPropertyFeedbackByClientItemId(kind: FeedbackKind, propertyId: string, clientItemId: string, client: any = pgPool) {
   if (!client) return null
@@ -8801,6 +8845,10 @@ async function loadPropertyFeedbackByClientItemId(kind: FeedbackKind, propertyId
 
 function isPropertyFeedbackManager(user: any) {
   return hasRole(user, 'admin') || hasRole(user, 'offline_manager')
+}
+
+function isMaintenanceFeedbackDeleteManager(user: any) {
+  return isPropertyFeedbackManager(user) || hasRole(user, 'customer_service')
 }
 
 function feedbackSourceType(kind: PropertyFeedbackRecordKind) {
@@ -8833,11 +8881,17 @@ export function propertyFeedbackCapabilities(user: any, kind: PropertyFeedbackRe
   const actorUserId = String(user?.sub || '').trim()
   const creatorUserId = String(row?.created_by_user_id || '').trim()
   const isManager = isPropertyFeedbackManager(user)
+  const canDeleteMaintenance = isMaintenanceFeedbackDeleteManager(user)
   const isCreator = Boolean(actorUserId && creatorUserId && actorUserId === creatorUserId)
-  const maintenancePendingAssignment = kind !== 'maintenance' || normalizeMaintenanceWorkflowStatus(row?.status, row?.review_status) === 'pending_assignment'
+  const maintenanceStatus = normalizeMaintenanceWorkflowStatus(row?.status, row?.review_status)
+  const maintenancePendingAssignment = kind !== 'maintenance' || maintenanceStatus === 'pending_assignment'
   return {
     can_edit_content: isManager || isCreator,
-    can_delete: (isManager || isCreator) && maintenancePendingAssignment,
+    can_delete: kind === 'maintenance'
+      ? (maintenanceStatus !== 'cancelled' && (canDeleteMaintenance || (isCreator && maintenancePendingAssignment)))
+      : (isManager || isCreator),
+    // Moving categories can create a work item and change workflow projection;
+    // it is deliberately manager-only even for the original submitter.
     can_move_category: isManager && kind !== 'maintenance',
   }
 }
@@ -8959,7 +9013,10 @@ function feedbackBeforePhotos(row: any, kind: PropertyFeedbackRecordKind) {
 
 function feedbackAfterPhotos(row: any, kind: PropertyFeedbackRecordKind) {
   if (kind === 'daily_necessities') return []
-  return normalizeUrlArray(row.repair_photo_urls)
+  return Array.from(new Set([
+    ...normalizeUrlArray(row.completion_photo_urls),
+    ...normalizeUrlArray(row.repair_photo_urls),
+  ]))
 }
 
 async function deletePropertyFeedbackRecord(client: any, kind: PropertyFeedbackRecordKind, id: string, actorUserId: string) {
@@ -9126,9 +9183,12 @@ router.delete('/property-feedbacks/:kind/:id', async (req, res) => {
       const row = await loadAnyPropertyFeedbackRow(kind, id, client)
       if (!row) return false
       if (!await canAccessPropertyFeedbackRow(client, user, row)) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
+      if (kind === 'maintenance' && normalizeMaintenanceWorkflowStatus(row.status, row.review_status) === 'cancelled') {
+        throw new PropertyFeedbackMutationError(409, 'maintenance_cancel_required')
+      }
       const capabilities = propertyFeedbackCapabilities(user, kind, row)
       if (!capabilities.can_delete) {
-        if (kind === 'maintenance' && (isPropertyFeedbackManager(user) || String(row.created_by_user_id || '').trim() === actorUserId)) {
+        if (kind === 'maintenance' && String(row.created_by_user_id || '').trim() === actorUserId) {
           throw new PropertyFeedbackMutationError(409, 'maintenance_cancel_required')
         }
         throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')

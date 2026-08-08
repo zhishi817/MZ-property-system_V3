@@ -48,9 +48,8 @@ export function availableMaintenanceActions(input: {
   }
   if (input.isAssignedExecutor) {
     if (input.status === 'assigned' || input.status === 'in_progress') {
-      // The executor UI deliberately stays at two business actions. The
-      // workflow route records an implicit start when an assigned executor
-      // marks a repair complete or unfinished for the first time.
+      // Any active internal user may be assigned. The assignee is the only
+      // executor; the workflow route records an implicit start when needed.
       actions.add('executor_complete')
       actions.add('executor_unfinished')
     }
@@ -70,7 +69,7 @@ export function validateMaintenanceWorkflowAction(input: {
   const managerActions: MaintenanceWorkflowAction[] = ['assign', 'review_approved', 'review_rejected', 'reopen', 'cancel']
   if (managerActions.includes(input.action) && !input.isManager) return { ok: false, code: 'maintenance_manager_required' }
   if (['start', 'submit', 'executor_complete', 'executor_unfinished'].includes(input.action) && !input.isAssignedExecutor) return { ok: false, code: 'maintenance_assignee_required' }
-  if (input.action === 'hold' && !input.isManager && !input.isAssignedExecutor) return { ok: false, code: 'maintenance_assignee_required' }
+  if (input.action === 'hold' && !input.isManager) return { ok: false, code: 'maintenance_manager_required' }
   if (input.action === 'assign' && !['pending_assignment', 'assigned', 'in_progress'].includes(input.status)) return { ok: false, code: 'maintenance_transition_invalid' }
   if (input.action === 'start' && input.status !== 'assigned') return { ok: false, code: 'maintenance_transition_invalid' }
   if (input.action === 'submit' && input.status !== 'in_progress') return { ok: false, code: 'maintenance_transition_invalid' }

@@ -4,6 +4,9 @@ import { MAINTENANCE_WORK_TASK_SOURCE_TYPES } from './maintenanceWorkflowSchema'
 
 export type MaintenanceWorkflowDomain = 'internal' | 'external'
 
+let maintenanceWorkTasksTableReady = false
+let maintenanceWorkTasksTableEnsuring: Promise<void> | null = null
+
 export function maintenanceWorkflowSourceType(domain: MaintenanceWorkflowDomain): string {
   return MAINTENANCE_WORK_TASK_SOURCE_TYPES[domain]
 }
@@ -11,6 +14,47 @@ export function maintenanceWorkflowSourceType(domain: MaintenanceWorkflowDomain)
 function dateOnly(value: any): string | null {
   const raw = String(value || '').trim().slice(0, 10)
   return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null
+}
+
+export async function ensureMaintenanceWorkTasksTable(client: any) {
+  if (maintenanceWorkTasksTableReady) return
+  if (maintenanceWorkTasksTableEnsuring) return maintenanceWorkTasksTableEnsuring
+  maintenanceWorkTasksTableEnsuring = (async () => {
+    await client.query(`CREATE TABLE IF NOT EXISTS work_tasks (
+    id text PRIMARY KEY,
+    task_kind text NOT NULL,
+    source_type text NOT NULL,
+    source_id text NOT NULL,
+    property_id text,
+    title text NOT NULL DEFAULT '',
+    summary text,
+    scheduled_date date,
+    assignee_id text,
+    status text NOT NULL DEFAULT 'todo',
+    urgency text NOT NULL DEFAULT 'medium',
+    completion_photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb,
+    completion_note text,
+    completion_reason text,
+    created_by text,
+    updated_by text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+    );`)
+    await client.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS completion_photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb;`)
+    await client.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS completion_note text;`)
+    await client.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS completion_reason text;`)
+    await client.query('CREATE UNIQUE INDEX IF NOT EXISTS uniq_work_tasks_source ON work_tasks(source_type, source_id);')
+    await client.query('CREATE INDEX IF NOT EXISTS idx_work_tasks_day_assignee ON work_tasks(scheduled_date, assignee_id, status);')
+    maintenanceWorkTasksTableReady = true
+  })()
+    .catch((error) => {
+      maintenanceWorkTasksTableEnsuring = null
+      throw error
+    })
+    .finally(() => {
+      if (maintenanceWorkTasksTableReady) maintenanceWorkTasksTableEnsuring = null
+    })
+  return maintenanceWorkTasksTableEnsuring
 }
 
 export function maintenanceTaskSummaryFromDetails(value: any): string | null {
@@ -73,7 +117,7 @@ export async function upsertMaintenanceWorkTask(client: any, domain: Maintenance
        property_id=EXCLUDED.property_id,
        title=EXCLUDED.title,
        summary=EXCLUDED.summary,
-       scheduled_date=EXCLUDED.scheduled_date,
+       scheduled_date=COALESCE(EXCLUDED.scheduled_date, work_tasks.scheduled_date),
        assignee_id=EXCLUDED.assignee_id,
        status=EXCLUDED.status,
        urgency=EXCLUDED.urgency,

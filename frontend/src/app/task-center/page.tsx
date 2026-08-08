@@ -37,7 +37,7 @@ import styles from '../cleaning/cleaningSchedule.module.scss'
 type Staff = {
   id: string
   name: string
-  kind?: 'cleaner' | 'inspector' | 'maintenance'
+  kind?: 'cleaner' | 'inspector' | 'maintenance' | 'executor'
   is_active?: boolean
   color_hex?: string | null
 }
@@ -851,6 +851,7 @@ function checkinSyncTag(task: Pick<TaskCenterTask, 'task_source' | 'checkin_sync
 export default function TaskCenterPage() {
   const [date, setDate] = useState<Dayjs>(() => defaultTaskCenterDate())
   const [staff, setStaff] = useState<Staff[]>([])
+  const [maintenanceStaff, setMaintenanceStaff] = useState<Staff[]>([])
   const [properties, setProperties] = useState<{ id: string; code?: string; address?: string; region?: string | null }[]>([])
   const [dayData, setDayData] = useState<TaskCenterDay | null>(null)
   const [loading, setLoading] = useState(true)
@@ -884,8 +885,12 @@ export default function TaskCenterPage() {
   }, [])
 
   const loadStaff = useCallback(async () => {
-    const rows = await getJSON<Staff[]>('/cleaning/staff?scope=task_executor').catch(() => [])
-    setStaff(Array.isArray(rows) ? rows : [])
+    const [taskExecutorRows, maintenanceExecutorRows] = await Promise.all([
+      getJSON<Staff[]>('/cleaning/staff?scope=task_executor').catch(() => []),
+      getJSON<Staff[]>('/cleaning/staff?scope=maintenance_executor').catch(() => []),
+    ])
+    setStaff(Array.isArray(taskExecutorRows) ? taskExecutorRows : [])
+    setMaintenanceStaff(Array.isArray(maintenanceExecutorRows) ? maintenanceExecutorRows : [])
   }, [])
 
   const loadProps = useCallback(async () => {
@@ -998,14 +1003,16 @@ export default function TaskCenterPage() {
   }, [boardDirty])
 
   const activeStaff = useMemo(() => staff.filter((item) => item.is_active !== false), [staff])
-  const activeCleaners = useMemo(() => activeStaff.filter((item) => (item.kind || 'cleaner') === 'cleaner'), [activeStaff])
-  const activeInspectors = useMemo(() => activeStaff.filter((item) => (item.kind || 'cleaner') === 'inspector'), [activeStaff])
+  const activeMaintenanceStaff = useMemo(() => maintenanceStaff.filter((item) => item.is_active !== false), [maintenanceStaff])
 
   const staffById = useMemo(() => {
     const map = new Map<string, Staff>()
     for (const item of activeStaff) map.set(String(item.id), item)
+    for (const item of activeMaintenanceStaff) {
+      if (!map.has(String(item.id))) map.set(String(item.id), item)
+    }
     return map
-  }, [activeStaff])
+  }, [activeMaintenanceStaff, activeStaff])
 
   const allRows = useMemo(() => dayData?.rows || [], [dayData?.rows])
   const propertyFollowups = useMemo(() => dayData?.property_followups || [], [dayData?.property_followups])
@@ -1078,9 +1085,19 @@ export default function TaskCenterPage() {
     [allBoardTasks],
   )
 
-  const cleanerOptions = useMemo(() => activeCleaners.map((item) => ({ value: item.id, label: item.name })), [activeCleaners])
-  const inspectorOptions = useMemo(() => activeInspectors.map((item) => ({ value: item.id, label: item.name })), [activeInspectors])
-  const allStaffOptions = useMemo(() => activeStaff.map((item) => ({ value: item.id, label: item.name })), [activeStaff])
+  const allStaffOptions = useMemo(() => activeStaff.reduce((options, item) => {
+    if (!options.some((option) => String(option.value) === String(item.id))) {
+      options.push({ value: item.id, label: item.name })
+    }
+    return options
+  }, [] as { value: string; label: string }[]), [activeStaff])
+
+  const maintenanceStaffOptions = useMemo(() => activeMaintenanceStaff.reduce((options, item) => {
+    if (!options.some((option) => String(option.value) === String(item.id))) {
+      options.push({ value: item.id, label: item.name })
+    }
+    return options
+  }, [] as { value: string; label: string }[]), [activeMaintenanceStaff])
 
   const normalizeHex = useCallback((hex: any): string | null => {
     const value = String(hex || '').trim()
@@ -2309,8 +2326,8 @@ export default function TaskCenterPage() {
               </Button>
             ) : null}
             {displayRow.inspectionIds.length ? (
-              <Select
-                allowClear
+                      <Select
+                        allowClear
                 showSearch
 	                optionFilterProp="label"
 	                value={displayRow.assignments?.inspector_id || undefined}
@@ -2327,7 +2344,7 @@ export default function TaskCenterPage() {
                 }, 'inspector_id', value ? String(value) : null)}
                 className={styles.taskCenterRowSelect}
                 placeholder="检查人员"
-                options={inspectorOptions}
+                options={allStaffOptions}
               />
             ) : null}
             {displayRow.workIds.length ? (
@@ -2533,15 +2550,15 @@ export default function TaskCenterPage() {
                       <div className={styles.propertyFollowupProperty}>{task.title}</div>
                       <div className={styles.propertyFollowupDetail}>{task.detail || task.summary || '暂无详情'}</div>
 	                      <Select
-	                        allowClear
+	                        allowClear={task.source_type !== 'property_maintenance'}
 	                        showSearch
 	                        optionFilterProp="label"
 	                        value={task.assignee_id || undefined}
 	                        disabled={boardSaving || !executorGate.enabled}
 	                        title={executorDisabledReason || undefined}
 	                        onChange={(value) => updatePropertyFollowupAssignee(task.task_id, value ? String(value) : null)}
-                        placeholder="选择执行人（可不安排）"
-                        options={allStaffOptions}
+                        placeholder={task.source_type === 'property_maintenance' ? '选择执行人（不安排则保持待分配）' : '选择执行人（可不安排）'}
+                        options={task.source_type === 'property_maintenance' ? maintenanceStaffOptions : allStaffOptions}
                         style={{ width: '100%' }}
                       />
                     </div>
@@ -2633,7 +2650,7 @@ export default function TaskCenterPage() {
 	                        title={detailAssignCleanerDisabledReason || undefined}
 	                        onChange={(value) => setDetailDraft((prev) => (prev ? { ...prev, cleaner_id: value ? String(value) : null } : prev))}
                         style={{ width: '100%' }}
-                        options={cleanerOptions}
+                        options={allStaffOptions}
                       />
                     </div>
                   ) : (
@@ -2789,7 +2806,7 @@ export default function TaskCenterPage() {
 	                          return { ...prev, inspector_id: nextValue }
 	                        })}
 	                        style={{ width: '100%' }}
-	                        options={detailUsesExecutorAssignment ? allStaffOptions : inspectorOptions}
+                        options={allStaffOptions}
 	                      />
                     </div>
                     {detailDraft.inspection_mode === 'deferred' ? (

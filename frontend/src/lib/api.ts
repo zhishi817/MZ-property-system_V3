@@ -193,7 +193,7 @@ async function parseErrorResponse(res: Response) {
   const traceId = String(res.headers.get('x-trace-id') || '').trim()
   if (/application\/json/i.test(ct)) {
     const j = await res.json().catch(() => null) as any
-    const msg = String(j?.message || j?.error || `HTTP ${res.status}`)
+    const msg = String(j?.message || j?.error || j?.code || `HTTP ${res.status}`)
     throw withApiFailure(buildApiError(msg, { ...(j || {}), trace_id: j?.trace_id || traceId || undefined, status: res.status }), classifyApiFailure({ response: res }), { status: res.status, trace_id: j?.trace_id || traceId || undefined })
   }
   const text = await res.text().catch(() => '')

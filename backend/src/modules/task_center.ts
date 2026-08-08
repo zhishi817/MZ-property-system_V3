@@ -19,6 +19,9 @@ import { buildWebTaskCapabilityPayload, type WebTaskDisplayState, type WebTaskMa
 import { autoCleaningAssignmentStatus, isAutoAssignableCleaningStatus, isCheckinSiteExecutionTask } from '../lib/cleaningAssignmentStatus'
 import { emitDeferredInspectionCheckinConflictAlerts, isDeferredInspectionCheckinConflictRelevantChange, reconcileDeferredInspectionCheckinReplacement } from '../services/deferredInspectionCheckinConflict'
 import { assignedTaskExecutorIds, isTaskExecutorEligibleRoleNames } from '../services/taskExecutorEligibility'
+import { ensureMaintenanceWorkflowFoundation } from '../lib/maintenanceWorkflowSchema'
+import { normalizeMaintenanceWorkflowStatus } from '../lib/maintenanceWorkflow'
+import { insertMaintenanceWorkflowEvent, upsertMaintenanceWorkTask } from '../lib/maintenanceWorkflowStore'
 
 export const router = Router()
 
@@ -681,6 +684,7 @@ async function ensureWorkTasksTable() {
 
 async function syncPropertyFollowupWorkTasks() {
   if (!hasPg || !pgPool) return
+  await ensureMaintenanceWorkflowFoundation(pgPool)
   await ensureWorkTasksTable()
   const tableResult = await pgPool.query(
     `SELECT
@@ -699,7 +703,8 @@ async function syncPropertyFollowupWorkTasks() {
              COALESCE(NULLIF(m.work_no::text, ''), '维修任务') AS title,
              NULLIF(COALESCE(m.details::text, ''), '') AS summary,
              'medium'::text AS urgency,
-             NULL::text AS source_assignee_id,
+             NULLIF(BTRIM(m.assignee_id::text), '') AS source_assignee_id,
+             m.eta::date AS source_scheduled_date,
              COALESCE(m.created_at, m.submitted_at, now()) AS created_at
         FROM property_maintenance m
         LEFT JOIN properties p ON p.id::text = m.property_id::text OR upper(p.code::text) = upper(m.property_id::text)
@@ -715,6 +720,7 @@ async function syncPropertyFollowupWorkTasks() {
              NULLIF(COALESCE(d.project_desc::text, d.details::text, ''), '') AS summary,
              'medium'::text AS urgency,
              NULL::text AS source_assignee_id,
+             NULL::date AS source_scheduled_date,
              COALESCE(d.created_at, d.submitted_at, now()) AS created_at
         FROM property_deep_cleaning d
         LEFT JOIN properties p ON p.id::text = d.property_id::text OR upper(p.code::text) = upper(d.property_id::text)
@@ -730,6 +736,7 @@ async function syncPropertyFollowupWorkTasks() {
              NULLIF(CONCAT_WS('，', NULLIF(n.note::text, ''), CASE WHEN COALESCE(n.quantity, 0) > 0 THEN '数量 ' || n.quantity::text ELSE NULL END), '') AS summary,
              'medium'::text AS urgency,
              NULL::text AS source_assignee_id,
+             NULL::date AS source_scheduled_date,
              COALESCE(n.created_at, n.submitted_at, now()) AS created_at
         FROM property_daily_necessities n
         LEFT JOIN properties p ON p.id::text = n.property_id::text OR upper(p.code::text) = upper(n.property_id::text)
@@ -780,7 +787,7 @@ async function syncPropertyFollowupWorkTasks() {
             p.property_id,
             p.title,
             p.summary,
-            p.next_checkout_date,
+            COALESCE(p.source_scheduled_date, p.next_checkout_date),
             p.source_assignee_id,
             CASE WHEN p.source_assignee_id IS NULL THEN 'todo' ELSE 'assigned' END,
             CASE WHEN p.urgency IN ('low','medium','high','urgent') THEN p.urgency ELSE 'medium' END,
@@ -793,11 +800,21 @@ async function syncPropertyFollowupWorkTasks() {
        title = EXCLUDED.title,
        summary = EXCLUDED.summary,
        scheduled_date = CASE
+         WHEN work_tasks.source_type = 'property_maintenance' THEN EXCLUDED.scheduled_date
          WHEN work_tasks.assignee_id IS NULL OR work_tasks.scheduled_date IS NULL THEN EXCLUDED.scheduled_date
          ELSE work_tasks.scheduled_date
        END,
-       assignee_id = COALESCE(work_tasks.assignee_id, EXCLUDED.assignee_id),
+       assignee_id = CASE
+         WHEN work_tasks.source_type = 'property_maintenance' THEN EXCLUDED.assignee_id
+         ELSE COALESCE(work_tasks.assignee_id, EXCLUDED.assignee_id)
+       END,
        status = CASE
+         WHEN work_tasks.source_type = 'property_maintenance' THEN
+           CASE
+             WHEN EXCLUDED.assignee_id IS NULL THEN 'todo'
+             WHEN lower(COALESCE(work_tasks.status, '')) = 'in_progress' THEN 'in_progress'
+             ELSE 'assigned'
+           END
          WHEN lower(COALESCE(work_tasks.status, 'todo')) IN ('todo','assigned')
            THEN CASE WHEN COALESCE(work_tasks.assignee_id, EXCLUDED.assignee_id) IS NULL THEN 'todo' ELSE 'assigned' END
          ELSE work_tasks.status
@@ -808,6 +825,15 @@ async function syncPropertyFollowupWorkTasks() {
            OR work_tasks.property_id IS DISTINCT FROM EXCLUDED.property_id
            OR work_tasks.title IS DISTINCT FROM EXCLUDED.title
            OR work_tasks.summary IS DISTINCT FROM EXCLUDED.summary
+           OR (work_tasks.source_type = 'property_maintenance' AND (
+             work_tasks.scheduled_date IS DISTINCT FROM EXCLUDED.scheduled_date
+             OR work_tasks.assignee_id IS DISTINCT FROM EXCLUDED.assignee_id
+             OR work_tasks.status IS DISTINCT FROM CASE
+               WHEN EXCLUDED.assignee_id IS NULL THEN 'todo'
+               WHEN lower(COALESCE(work_tasks.status, '')) = 'in_progress' THEN 'in_progress'
+               ELSE 'assigned'
+             END
+           ))
            OR ((work_tasks.assignee_id IS NULL OR work_tasks.scheduled_date IS NULL) AND work_tasks.scheduled_date IS DISTINCT FROM EXCLUDED.scheduled_date)
            OR (work_tasks.assignee_id IS NULL AND EXCLUDED.assignee_id IS NOT NULL)
          THEN now()
@@ -2175,15 +2201,43 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
   for (const row of rowMap.values()) {
     if (!row.subrow_order.length) row.subrow_order = [defaultSubrowKey()]
   }
+  let maintenanceWorkAssignmentIds = new Set<string>()
+  if (hasPg && pgPool && payload.work_assignments.length) {
+    await ensureWorkTasksTable()
+    const sourceResult = await pgPool.query(
+      `SELECT id::text AS id, source_type
+         FROM work_tasks
+        WHERE id::text = ANY($1::text[])`,
+      [payload.work_assignments.map((item) => item.task_id)],
+    )
+    maintenanceWorkAssignmentIds = new Set((sourceResult.rows || [])
+      .filter((row: any) => String(row.source_type || '') === 'property_maintenance')
+      .map((row: any) => String(row.id)))
+  } else if (payload.work_assignments.length) {
+    maintenanceWorkAssignmentIds = new Set((((db as any).workTasks || []) as any[])
+      .filter((row: any) => String(row.source_type || '') === 'property_maintenance')
+      .map((row: any) => String(row.id)))
+  }
+  const genericWorkAssignments = payload.work_assignments.filter((item) => !maintenanceWorkAssignmentIds.has(String(item.task_id)))
   const assignedUserIds = assignedTaskExecutorIds({
     cleaningAssignments: payload.cleaning_assignments,
-    workAssignments: payload.work_assignments,
+    workAssignments: genericWorkAssignments,
   })
+  const maintenanceAssignedUserIds = payload.work_assignments
+    .filter((item) => maintenanceWorkAssignmentIds.has(String(item.task_id)) && item.assignee_assignment_action === 'assign')
+    .map((item) => String(item.assignee_id || '').trim())
+    .filter(Boolean)
   if (!hasPg || !pgPool) {
     const usersById = new Map<string, any>((db.users || []).map((item: any) => [String(item.id), item]))
+    const missingMaintenanceUserId = maintenanceAssignedUserIds.find((id) => !usersById.has(id))
+    if (missingMaintenanceUserId) return res.status(400).json({ message: '维修执行人员不存在' })
     const invalidId = assignedUserIds.find((id) => {
       const user = usersById.get(id)
-      return !user || !isTaskExecutorEligibleRoleNames([String(user.role || ''), ...((Array.isArray(user.roles) ? user.roles : []).map((role: any) => String(role || '')))])
+      if (!user) return true
+      return !isTaskExecutorEligibleRoleNames([
+        String(user.role || ''),
+        ...((Array.isArray(user.roles) ? user.roles : []).map((role: any) => String(role || ''))),
+      ])
     })
     if (invalidId) return res.status(400).json({ message: '无效的任务执行人员' })
   }
@@ -2193,7 +2247,9 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
       await ensureCleaningInspectionScopeColumn()
       await ensureWorkTasksTable()
       await ensureTaskCenterTables()
-      if (assignedUserIds.length) {
+      if (payload.work_assignments.length) await ensureMaintenanceWorkflowFoundation(pgPool)
+      const staffIds = Array.from(new Set([...assignedUserIds, ...maintenanceAssignedUserIds]))
+      if (staffIds.length) {
         const staffResult = await pgPool.query(
           `SELECT
              u.id::text AS id,
@@ -2203,13 +2259,15 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
            LEFT JOIN user_roles ur ON ur.user_id = u.id::text
            WHERE u.id::text = ANY($1::text[])
            GROUP BY u.id`,
-          [assignedUserIds],
+          [staffIds],
         )
         const roleNamesById = new Map<string, string[]>()
         for (const row of staffResult.rows || []) {
           const roles = [String(row.role || ''), ...(Array.isArray(row.roles) ? row.roles.map((item: any) => String(item || '')) : [])]
           roleNamesById.set(String(row.id), roles)
         }
+        const missingMaintenanceUserId = maintenanceAssignedUserIds.find((id) => !roleNamesById.has(id))
+        if (missingMaintenanceUserId) return res.status(400).json({ message: '维修执行人员不存在' })
         const invalidId = assignedUserIds.find((id) => !isTaskExecutorEligibleRoleNames(roleNamesById.get(id) || []))
         if (invalidId) return res.status(400).json({ message: '无效的任务执行人员' })
       }
@@ -2249,6 +2307,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
       let changedWorkTasks: any[] = []
       const cleaningDiffById = new Map<string, TaskSaveDiff>()
       const workDiffById = new Map<string, TaskSaveDiff>()
+      const maintenanceWorkAssignments: Array<{ assignment: any; before: any }> = []
       const cleaningAssignmentById = new Map<string, any>(payload.cleaning_assignments.map((item: any) => [String(item.task_id), item]))
       try {
         await client.query('BEGIN')
@@ -2304,7 +2363,14 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
           const beforeById = new Map<string, any>((beforeResult.rows || []).map((row: any) => [String(row.id), row]))
           for (const assignment of payload.work_assignments) {
             delete (assignment as any).status
-            const diff = buildWorkSaveDiff(beforeById.get(String(assignment.task_id)), assignment)
+            const before = beforeById.get(String(assignment.task_id))
+            if (String(before?.source_type || '') === 'property_maintenance') {
+              maintenanceWorkAssignments.push({ assignment, before })
+              const diff = buildWorkSaveDiff(before, assignment)
+              if (diff) workDiffById.set(diff.taskId, diff)
+              continue
+            }
+            const diff = buildWorkSaveDiff(before, assignment)
             if (diff) workDiffById.set(diff.taskId, diff)
           }
         }
@@ -2506,7 +2572,8 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
           )
           changedCleaningTasks = result.rows || []
         }
-          if (payload.work_assignments.length) {
+          const genericWorkAssignments = payload.work_assignments.filter((assignment) => !maintenanceWorkAssignments.some((item) => item.assignment === assignment))
+          if (genericWorkAssignments.length) {
             const result = await client.query(
               `UPDATE work_tasks AS task
                SET title = COALESCE(NULLIF(x.title, ''), task.title),
@@ -2561,7 +2628,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
                    )
                  )
              RETURNING task.*`,
-            [JSON.stringify(payload.work_assignments), updatedBy],
+            [JSON.stringify(genericWorkAssignments), updatedBy],
           )
           changedWorkTasks = result.rows || []
           if (changedWorkTasks.some((task: any) => String(task.source_type || '') === 'cleaning_offline_tasks') && await hasCleaningOfflineTasksTable()) {
@@ -2578,6 +2645,50 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
               [changedWorkTasks.map((task: any) => String(task.id))],
             )
           }
+        }
+        for (const { assignment, before } of maintenanceWorkAssignments) {
+          const assignmentAction = String(assignment.assignee_assignment_action || '').trim()
+          if (!assignmentAction) continue
+          if (assignmentAction !== 'assign') throw new Error('maintenance_unassign_not_supported')
+          const assigneeId = String(assignment.assignee_id || '').trim()
+          if (!assigneeId) throw new Error('maintenance_assignee_required')
+          const sourceId = String(before.source_id || '').trim()
+          const sourceResult = await client.query('SELECT * FROM property_maintenance WHERE id::text=$1 FOR UPDATE', [sourceId])
+          const sourceRow = sourceResult.rows?.[0] || null
+          if (!sourceRow) throw new Error('maintenance_not_found')
+          const sourceStatus = normalizeMaintenanceWorkflowStatus(sourceRow.status, sourceRow.review_status)
+          if (!['pending_assignment', 'assigned', 'in_progress'].includes(sourceStatus)) {
+            throw new Error('maintenance_transition_invalid')
+          }
+          const scheduledDate = assignment.scheduled_date == null ? null : dayOnly(assignment.scheduled_date)
+          const updatedResult = await client.query(
+            `UPDATE property_maintenance
+                SET status='assigned', assignee_id=$2, assigned_at=now(), assigned_by=$3,
+                    eta=COALESCE($4::date, eta), updated_at=now()
+              WHERE id::text=$1
+              RETURNING *`,
+            [sourceId, assigneeId, String(user.sub || '').trim() || null, scheduledDate],
+          )
+          const updated = updatedResult.rows?.[0] || null
+          if (!updated) throw new Error('maintenance_not_found')
+          await upsertMaintenanceWorkTask(client, 'internal', updated)
+          await insertMaintenanceWorkflowEvent(client, {
+            domain: 'internal',
+            recordId: sourceId,
+            eventType: String(sourceRow.assignee_id || '').trim() && String(sourceRow.assignee_id || '').trim() !== assigneeId ? 'reassigned' : 'assigned',
+            fromStatus: sourceStatus,
+            toStatus: 'assigned',
+            actorUserId: String(user.sub || '').trim(),
+            actorName: String(user.username || '').trim() || null,
+            reason: null,
+            payload: { assignee_id: assigneeId, source: 'task_center' },
+          })
+          const projectionResult = await client.query(
+            `SELECT * FROM work_tasks WHERE source_type='property_maintenance' AND source_id=$1 LIMIT 1`,
+            [sourceId],
+          )
+          const projection = projectionResult.rows?.[0] || null
+          if (projection) changedWorkTasks.push(projection)
         }
         const workAssigneeIds = Array.from(new Set(changedWorkTasks.map((task: any) => String(task.assignee_id || '').trim()).filter(Boolean)))
         const workAssigneeNames = new Map<string, string>()
@@ -2926,6 +3037,29 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
       for (const task of (((db as any).workTasks || []) as any[])) {
         const assignment = workById.get(String(task.id))
         if (!assignment) continue
+        if (String(task.source_type || '') === 'property_maintenance') {
+          const assignmentActionValue = String((assignment as any).assignee_assignment_action || '').trim()
+          if (!assignmentActionValue) continue
+          if (assignmentActionValue !== 'assign') throw new Error('maintenance_unassign_not_supported')
+          const assigneeId = String((assignment as any).assignee_id || '').trim()
+          if (!assigneeId) throw new Error('maintenance_assignee_required')
+          const source = (((db as any).propertyMaintenance || []) as any[])
+            .find((item: any) => String(item.id) === String(task.source_id))
+          if (!source) throw new Error('maintenance_not_found')
+          const sourceStatus = normalizeMaintenanceWorkflowStatus(source.status, source.review_status)
+          if (!['pending_assignment', 'assigned', 'in_progress'].includes(sourceStatus)) {
+            throw new Error('maintenance_transition_invalid')
+          }
+          source.status = 'assigned'
+          source.assignee_id = assigneeId
+          source.assigned_at = new Date().toISOString()
+          source.assigned_by = String(user.sub || '').trim() || null
+          if ((assignment as any).scheduled_date != null) source.eta = dayOnly((assignment as any).scheduled_date)
+          task.assignee_id = assigneeId
+          task.status = 'assigned'
+          if ((assignment as any).scheduled_date != null) task.scheduled_date = dayOnly((assignment as any).scheduled_date)
+          continue
+        }
         if (assignmentAction((assignment as any).assignee_assignment_action)) {
           task.assignee_id = (assignment as any).assignee_id ?? null
           if (['todo', 'assigned'].includes(String(task.status || 'todo').toLowerCase())) task.status = (assignment as any).assignee_id ? 'assigned' : 'todo'
