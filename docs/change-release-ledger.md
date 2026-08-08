@@ -50,8 +50,9 @@
 - Intended action: `commit`
 - Branch: `codex/release-maintenance-20260808-root`
 - Base: `origin/Dev@6ea97fb999f9fb67630aac3c5b8973e61ccde3c6`; fetched at 2026-08-09 00:10:14 AEST.
-- Candidate patch SHA-256: `8358c092d011fd63682b6ca5fbe91b9e9887190abe28df08330997c436ef192c` from the staged candidate, excluding `docs/change-release-ledger.md`.
-- Candidate content commit SHA: `baa431eff220bc46438d0fe8c585e7d16fa04874`.
+- Candidate patch SHA-256: `f323e31be2e51a56c58981a61fd6084be394d531bb705e8e475baefaae858d9e` from the exact `origin/Dev...audit head` content, excluding `docs/change-release-ledger.md`.
+- Staged correction patch SHA-256: `8358c092d011fd63682b6ca5fbe91b9e9887190abe28df08330997c436ef192c`; independently reviewed before the content commit.
+- Commit SHA: `baa431eff220bc46438d0fe8c585e7d16fa04874` (candidate content commit).
 - Dependencies: CRL-20260808-001 through CRL-20260808-007 are already on this branch; CRL-20260808-008 corrects their CI and idempotency boundary.
 - Required validation: PASS — backend no-emit compile; idempotency, R2 and phase5 contracts; frontend 43 files / 185 tests; registry/ledger audits.
 - Shared-hunk review: PASS — the four staged paths are listed in this CRL; no unselected path is staged.
