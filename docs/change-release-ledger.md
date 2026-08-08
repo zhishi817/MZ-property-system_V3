@@ -2,7 +2,7 @@
 
 ## CRL-20260808-008 — 幂等回执表迁移边界回归修复（root）
 
-- **Status:** ready.
+- **Status:** committed.
 - **Updated:** 2026-08-09 Australia/Melbourne.
 - **Request:** GitHub Fast Regression 报错，阻止合并 root 维修发布分支。
 - **Outcome:** 幂等回执 API 路径仅校验 `app_submit_receipts` 是否已由迁移准备好；不再在运行时请求或启动预热中创建表/索引。迁移缺失时，维修动作和房源反馈创建均返回受控的 `503 idempotent_step_receipts_not_ready`，同时恢复稳定移动草稿 ID 的持久去重查询。
@@ -51,21 +51,21 @@
 - Branch: `codex/release-maintenance-20260808-root`
 - Base: `origin/Dev@6ea97fb999f9fb67630aac3c5b8973e61ccde3c6`; fetched at 2026-08-09 00:10:14 AEST.
 - Candidate patch SHA-256: `8358c092d011fd63682b6ca5fbe91b9e9887190abe28df08330997c436ef192c` from the staged candidate, excluding `docs/change-release-ledger.md`.
-- Candidate content commit SHA: not committed.
+- Candidate content commit SHA: `baa431eff220bc46438d0fe8c585e7d16fa04874`.
 - Dependencies: CRL-20260808-001 through CRL-20260808-007 are already on this branch; CRL-20260808-008 corrects their CI and idempotency boundary.
 - Required validation: PASS — backend no-emit compile; idempotency, R2 and phase5 contracts; frontend 43 files / 185 tests; registry/ledger audits.
 - Shared-hunk review: PASS — the four staged paths are listed in this CRL; no unselected path is staged.
 - Generated-file review: PASS — no generated output, secret, environment or local-media path is staged.
-- Technical state: verified.
+- Technical state: committed.
 - User authorization: selected-for-commit — user confirmation on 2026-08-09.
 - Independent review: GO — second-pass independent review accepted the exact staged fingerprint after confirming the 503 mapping and static regression assertion.
-- Action conclusion: GO — commit authorized for this exact staged candidate.
+- Action conclusion: GO — candidate committed as `baa431eff220bc46438d0fe8c585e7d16fa04874`; push remains unauthorized.
 
 ### Risks / Release Notes
 
 - 后端发布必须确保已有回执表迁移先完成；否则相关重试接口会安全失败而不会自动建表。
 - Sensitive-information review: no credentials, tokens, `.env`, database URLs or sensitive logs added.
-- Git state: uncommitted in the clean root release worktree; prior pushed SHA is superseded for the root branch.
+- Git state: candidate content committed; release bookkeeping update pending. Prior pushed SHA is superseded for the root branch.
 
 ## CRL-20260808-001 — 网页维修创建 409、受派执行与重复创建保护（root）
 
