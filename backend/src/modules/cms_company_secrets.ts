@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { requirePerm } from '../auth'
 import { hasPg } from '../dbAdapter'
 import { decryptCompanySecret, encryptCompanySecret, hasCompanySecretKey } from '../lib/companySecretCrypto'
+import { offlinePasswordStructureIssue } from '../lib/companyOfflinePasswordRules'
 
 export const router = Router()
 
@@ -70,9 +71,6 @@ const secretKindSchema = z.enum([
   'other',
 ])
 
-const propertyLinkedKinds = new Set(['mailbox', 'backup_key', 'door_lock', 'mailbox_lockbox', 'garage_lockbox', 'mailbox_key_lockbox', 'locker'])
-const numberedBoxKinds = new Set(['backup_key', 'mailbox_lockbox', 'garage_lockbox', 'mailbox_key_lockbox'])
-
 const createSchema = z.object({
   title: z.string().min(1),
   property_code: z.string().optional(),
@@ -87,15 +85,8 @@ const createSchema = z.object({
   note: z.string().optional(),
   status: z.enum(['active', 'inactive']).optional(),
 }).strict().superRefine((data, ctx) => {
-  if (propertyLinkedKinds.has(data.secret_kind) && !data.property_ids?.some((id) => String(id || '').trim())) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['property_ids'], message: 'at least one linked property is required' })
-  }
-  if (numberedBoxKinds.has(data.secret_kind) && !String(data.box_number || '').trim()) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['box_number'], message: 'password box number is required' })
-  }
-  if (data.secret_kind === 'company_rotating' && !data.rotation_interval_days) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['rotation_interval_days'], message: 'rotation interval is required' })
-  }
+  const issue = offlinePasswordStructureIssue(data)
+  if (issue) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [issue.path], message: issue.message })
 })
 
 const patchSchema = z.object({
@@ -297,7 +288,7 @@ router.patch('/company/secrets/:id', requirePerm('company_secret_items.write'), 
   const now = new Date().toISOString()
 
   try {
-    const r0 = await pgPool.query("SELECT id, secret_kind, box_number, property_codes, property_ids, rotation_interval_days FROM company_secret_items WHERE id=$1 AND item_type='offline_password' LIMIT 1", [id])
+    const r0 = await pgPool.query("SELECT id, secret_kind, box_number, location, property_codes, property_ids, rotation_interval_days FROM company_secret_items WHERE id=$1 AND item_type='offline_password' LIMIT 1", [id])
     const existing = r0?.rows?.[0]
     if (!existing) return res.status(404).json({ message: 'not found' })
 
@@ -323,19 +314,15 @@ router.patch('/company/secrets/:id', requirePerm('company_secret_items.write'), 
       if (!enc) return res.status(500).json({ message: 'encrypt_failed' })
       patch.secret_enc = enc
     }
-    const nextKind = patch.secret_kind ?? existing.secret_kind
-    const nextBoxNumber = patch.box_number ?? existing.box_number
-    const nextPropertyIds = patch.property_ids ?? existing.property_ids
-    const nextRotationInterval = patch.rotation_interval_days ?? existing.rotation_interval_days
-    if (numberedBoxKinds.has(nextKind) && !String(nextBoxNumber || '').trim()) {
-      return res.status(400).json({ message: 'password box number is required' })
+    const nextStructure = {
+      secret_kind: patch.secret_kind !== undefined ? patch.secret_kind : existing.secret_kind,
+      box_number: patch.box_number !== undefined ? patch.box_number : existing.box_number,
+      location: patch.location !== undefined ? patch.location : existing.location,
+      property_ids: patch.property_ids !== undefined ? patch.property_ids : existing.property_ids,
+      rotation_interval_days: patch.rotation_interval_days !== undefined ? patch.rotation_interval_days : existing.rotation_interval_days,
     }
-    if (propertyLinkedKinds.has(nextKind) && (!Array.isArray(nextPropertyIds) || !nextPropertyIds.some((propertyId: any) => String(propertyId || '').trim()))) {
-      return res.status(400).json({ message: 'at least one linked property is required' })
-    }
-    if (nextKind === 'company_rotating' && !Number(nextRotationInterval || 0)) {
-      return res.status(400).json({ message: 'rotation interval is required' })
-    }
+    const structureIssue = offlinePasswordStructureIssue(nextStructure)
+    if (structureIssue) return res.status(400).json({ message: structureIssue.message })
     patch.updated_at = now
     patch.updated_by = userId
 

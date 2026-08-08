@@ -6,6 +6,7 @@ import dayjs from 'dayjs'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import TableRowActions from '../../../components/TableRowActions'
 import { deleteJSON, getJSON, patchJSON, postJSON } from '../../../lib/api'
+import { hasPerm } from '../../../lib/auth'
 
 type OfflinePasswordRow = {
   id: string
@@ -67,6 +68,8 @@ export default function Page() {
   const secretKind = Form.useWatch('secret_kind', form)
   const propertyLinked = PROPERTY_LINKED_KINDS.has(secretKind)
   const numberedBox = NUMBERED_BOX_KINDS.has(secretKind)
+  const canWrite = mounted && hasPerm('company_secret_items.write')
+  const canDelete = mounted && hasPerm('company_secret_items.delete')
 
   const propertyById = useMemo(() => new Map(properties.map((property) => [String(property.id), property])), [properties])
   const propertyIdByCode = useMemo(() => new Map(properties
@@ -132,7 +135,9 @@ export default function Page() {
 
   useEffect(() => { setMounted(true) }, [])
   useEffect(() => { load() }, [load])
-  useEffect(() => { loadProperties() }, [loadProperties])
+  useEffect(() => {
+    if (canWrite) void loadProperties()
+  }, [canWrite, loadProperties])
   useEffect(() => {
     if (!open) return
     if (!editing) {
@@ -311,7 +316,7 @@ export default function Page() {
       render: (value: any) => value === 'inactive' ? <Tag>停用</Tag> : <Tag color="green">启用</Tag>,
     },
     { title: '更新时间', dataIndex: 'updated_at', width: 190, render: (value: any) => value ? new Date(value).toLocaleString() : '-' },
-    {
+    ...(canWrite || canDelete ? [{
       title: '操作',
       width: 170,
       fixed: 'right' as const,
@@ -319,13 +324,13 @@ export default function Page() {
         <div onClick={(event) => event.stopPropagation()}>
           <TableRowActions
             actions={[
-              { key: 'edit', label: '编辑', onClick: () => openEdit(row) },
-              { key: 'delete', label: '删除', danger: true, onClick: () => remove(row) },
+              { key: 'edit', label: '编辑', onClick: () => openEdit(row), hidden: !canWrite },
+              { key: 'delete', label: '删除', danger: true, onClick: () => remove(row), hidden: !canDelete },
             ]}
           />
         </div>
       ),
-    },
+    }] : []),
   ]
 
   if (!mounted) return null
@@ -349,7 +354,7 @@ export default function Page() {
             onChange={(event) => setQuery(event.target.value)}
             style={{ width: 640, maxWidth: '100%' }}
           />
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新增线下密码</Button>
+          {canWrite ? <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新增线下密码</Button> : null}
         </Space>
 
         <Table
@@ -418,8 +423,12 @@ export default function Page() {
               </Form.Item>
             </Space>
           )}
-          <Form.Item name="location" label="位置">
-            <Input placeholder="例如：大门左侧、办公室前台" />
+          <Form.Item
+            name="location"
+            label={numberedBox ? '密码盒位置（楼栋/入口/信箱）' : '位置'}
+            rules={numberedBox ? [{ required: true, message: '请填写密码盒所在楼栋、入口或信箱位置' }] : []}
+          >
+            <Input placeholder={numberedBox ? '例如：A 座入口右侧，1 号信箱内' : '例如：大门左侧、办公室前台'} />
           </Form.Item>
           <Form.Item
             name="secret"

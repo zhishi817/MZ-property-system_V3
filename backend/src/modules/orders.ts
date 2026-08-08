@@ -419,6 +419,11 @@ const createOrderSchema = z.object({
   idempotency_key: z.string().optional(),
 })
 const updateOrderSchema = createOrderSchema.partial()
+const BOOKING_NET_RATE = 0.83
+
+function isBookingSource(source: any): boolean {
+  return String(source || '').trim().toLowerCase().includes('book')
+}
 
 function parseDate(s?: string): Date | null {
   if (!s) return null
@@ -572,15 +577,14 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
     } catch { nights = 0 }
   }
   const cleaning = round2(o.cleaning_fee || 0) || 0
-  const sourceKey = String(o.source || '').toLowerCase()
-  const isBooking = sourceKey.includes('book')
+  const isBooking = isBookingSource(o.source)
   const totalRaw = o.total_payment_raw != null ? (round2(o.total_payment_raw) ?? 0) : null
   let price = round2(o.price || 0) || 0
   let processedStatus: string | undefined = (o as any).processed_status || undefined
   let totalPaymentRaw: number | undefined = (o as any).total_payment_raw || undefined
   if (isBooking && totalRaw !== null) {
     totalPaymentRaw = totalRaw
-    price = round2(totalRaw * 0.83) || 0
+    price = round2(totalRaw * BOOKING_NET_RATE) || 0
     processedStatus = 'computed_0_83'
   }
   const net = o.net_income != null ? (round2(o.net_income) || 0) : ((round2(price - cleaning) || 0))
@@ -777,11 +781,26 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
       nights = ms > 0 ? Math.round(ms / (1000 * 60 * 60 * 24)) : 0
     } catch { nights = 0 }
   }
-  const price = o.price != null ? (round2(o.price) || 0) : (round2(base.price || 0) || 0)
+  const source = o.source != null ? o.source : base.source
+  const isBooking = isBookingSource(source)
+  const rawTotal = o.total_payment_raw != null ? round2(o.total_payment_raw) : round2((base as any).total_payment_raw)
+  const price = isBooking && rawTotal != null
+    ? (round2(rawTotal * BOOKING_NET_RATE) || 0)
+    : (o.price != null ? (round2(o.price) || 0) : (round2(base.price || 0) || 0))
   const cleaning = o.cleaning_fee != null ? (round2(o.cleaning_fee) || 0) : (round2(base.cleaning_fee || 0) || 0)
-  const net = o.net_income != null ? (round2(o.net_income) || 0) : ((round2(price - cleaning) || 0))
-  const avg = o.avg_nightly_price != null ? (round2(o.avg_nightly_price) || 0) : (nights && nights > 0 ? (round2(net / nights) || 0) : 0)
-  const updated: Order = { ...base, ...o, id, price, cleaning_fee: cleaning, nights, net_income: net, avg_nightly_price: avg }
+  const nextStatusRaw = String(o.status != null ? o.status : base.status).trim().toLowerCase()
+  const bookingConfirmed = isBooking && rawTotal != null && !nextStatusRaw.includes('cancel')
+  const net = bookingConfirmed
+    ? (round2(price - cleaning) || 0)
+    : (o.net_income != null ? (round2(o.net_income) || 0) : ((round2(price - cleaning) || 0)))
+  const avg = bookingConfirmed
+    ? (nights && nights > 0 ? (round2(net / nights) || 0) : 0)
+    : (o.avg_nightly_price != null ? (round2(o.avg_nightly_price) || 0) : (nights && nights > 0 ? (round2(net / nights) || 0) : 0))
+  const updated: Order = { ...base, ...o, source, id, price, cleaning_fee: cleaning, nights, net_income: net, avg_nightly_price: avg }
+  if (isBooking && rawTotal != null) {
+    ;(updated as any).total_payment_raw = rawTotal
+    ;(updated as any).processed_status = 'computed_0_83'
+  }
   function normalizeStatus(raw: any): string { return String(raw || '').trim().toLowerCase() }
   function isCanceledStatus(raw: any): boolean {
     const s = normalizeStatus(raw)
@@ -817,7 +836,7 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
 
   if (hasPg) {
     try {
-      const allow = ['source','external_id','property_id','guest_name','guest_phone','note','stay_type','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
+      const allow = ['source','external_id','property_id','guest_name','guest_phone','note','stay_type','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code','total_payment_raw','processed_status']
       const allowExtra = ['payment_currency','payment_received']
       const allowAll = [...allow, ...allowExtra]
       const payload: any = {}
@@ -887,7 +906,7 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
           await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text')
           await pgPool?.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = \"idx_orders_confirmation_code_unique\") THEN BEGIN DROP INDEX IF EXISTS idx_orders_confirmation_code_unique; EXCEPTION WHEN others THEN NULL; END; END IF; END $$;')
           await pgPool?.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_source_confirmation_code_unique ON orders(source, confirmation_code) WHERE confirmation_code IS NOT NULL')
-          const allow = ['source','external_id','property_id','guest_name','guest_phone','note','stay_type','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
+          const allow = ['source','external_id','property_id','guest_name','guest_phone','note','stay_type','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code','total_payment_raw','processed_status']
           const allowExtra2 = ['payment_currency','payment_received']
           const payload2: any = {}
           for (const k of [...allow, ...allowExtra2]) { if ((updated as any)[k] !== undefined) payload2[k] = (updated as any)[k] }

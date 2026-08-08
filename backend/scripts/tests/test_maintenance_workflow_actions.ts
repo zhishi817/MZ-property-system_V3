@@ -17,7 +17,7 @@ assert.equal(maintenanceWorkTaskStatus('closed'), 'done')
 
 assert.deepEqual(
   availableMaintenanceActions({ status: 'assigned', isManager: false, isAssignedExecutor: true }),
-  ['start'],
+  ['executor_complete', 'executor_unfinished'],
 )
 assert.deepEqual(
   availableMaintenanceActions({ status: 'pending_review', isManager: true, isAssignedExecutor: false }),
@@ -30,6 +30,22 @@ assert.deepEqual(
 )
 assert.deepEqual(
   validateMaintenanceWorkflowAction({ action: 'submit', status: 'in_progress', isManager: false, isAssignedExecutor: true, completionPhotoCount: 1 }),
+  { ok: true },
+)
+assert.deepEqual(
+  validateMaintenanceWorkflowAction({ action: 'executor_complete', status: 'assigned', isManager: false, isAssignedExecutor: true, completionPhotoCount: 1 }),
+  { ok: true },
+)
+assert.deepEqual(
+  validateMaintenanceWorkflowAction({ action: 'executor_complete', status: 'assigned', isManager: false, isAssignedExecutor: true, completionPhotoCount: 0 }),
+  { ok: false, code: 'maintenance_completion_photo_required' },
+)
+assert.deepEqual(
+  validateMaintenanceWorkflowAction({ action: 'executor_unfinished', status: 'in_progress', isManager: false, isAssignedExecutor: true }),
+  { ok: false, code: 'maintenance_unfinished_reason_required' },
+)
+assert.deepEqual(
+  validateMaintenanceWorkflowAction({ action: 'executor_unfinished', status: 'in_progress', isManager: false, isAssignedExecutor: true, reason: '配件缺失' }),
   { ok: true },
 )
 assert.deepEqual(
@@ -67,12 +83,19 @@ assert.match(maintenanceRouter, /SELECT \* FROM \$\{workflowTable\(domain\)\} WH
 assert.match(maintenanceRouter, /record_patch/)
 assert.match(maintenanceRouter, /operation_id/)
 assert.match(maintenanceRouter, /saveIdempotentStepReceipt\(client, receiptScope/)
-assert.match(maintenanceRouter, /assertMaintenanceWorkflowSchemaReady\(pgPool\)/)
+assert.match(maintenanceRouter, /upsertMaintenanceWorkTask\(client, domain, updated\)/)
 assert.match(workflowStore, /maintenance_workflow_events/)
 assert.match(workflowStore, /maintenanceTaskSummaryFromDetails/)
 assert.match(maintenanceRouter, /completion_photo_urls/)
+assert.match(maintenanceRouter, /executor_complete/)
+assert.match(maintenanceRouter, /executor_unfinished/)
 assert.match(maintenanceRouter, /external_maintenance_orders/)
 assert.match(mzapp, /\['property_maintenance', 'external_maintenance_orders'\]\.includes\(String\(row\.source_type/)
+// Maintenance actions are intentionally projected by the dedicated maintenance
+// endpoint.  The work-task endpoint rejects its generic "mark" action for
+// maintenance sources, so it must not depend on the retired work-task helper.
+assert.match(maintenanceRouter, /function workflowResponse\(domain: MaintenanceDomain, row: any, user: any\)/)
+assert.match(maintenanceRouter, /available_actions: availableMaintenanceActions/)
 assert.match(crud, /maintenance_feedback_creation_required/)
 assert.match(crud, /maintenance_cancel_required/)
 assert.match(workTasks, /maintenance_workflow_action_required/)
@@ -84,7 +107,7 @@ assert.match(mzapp, /feedbackSource: isInspectorFeedback \? 'inspection_feedback
 assert.match(mzapp, /createInternalMaintenanceFromFeedback/)
 assert.match(mzapp, /'pending_assignment'/)
 assert.match(mzapp, /feedback_source, source_task_id, category_detail/)
-assert.match(mzapp, /assertMaintenanceWorkflowSchemaReady\(pool\)/)
+assert.match(mzapp, /assertMaintenanceWorkflowSchemaReady\(pgPool\)/)
 assert.match(mzapp, /upsertMaintenanceWorkTask\(client, 'internal', row\)/)
 assert.match(mzapp, /insertMaintenanceWorkflowEvent\(client, \{[\s\S]*domain: 'internal'/)
 assert.match(mzapp, /workflow_status/)
@@ -100,10 +123,13 @@ assert.match(mzapp, /candidate\.status !== 'completed'/)
 assert.match(crud, /assignee_name: assigneeName/)
 assert.match(workflowStore, /MAINTENANCE_WORK_TASK_SOURCE_TYPES/)
 assert.match(workflowStore, /ON CONFLICT \(source_type, source_id\)/)
+assert.match(workflowStore, /completion_photo_urls=EXCLUDED\.completion_photo_urls/)
+assert.match(workflowStore, /completion_note=EXCLUDED\.completion_note/)
+assert.match(workflowStore, /completion_reason=EXCLUDED\.completion_reason/)
 assert.match(publicRouter, /maintenance_feedback_workflow_required/)
 assert.match(publicRouter, /maintenance_mzstay_workflow_required/)
-assert.match(cleaningApp, /work_task_id/)
-assert.match(cleaningApp, /feedback_source_type === 'property_maintenance'/)
-assert.match(cleaningApp, /canViewMaintenanceWorkTask/)
+assert.match(cleaningApp, /JOIN properties p ON p\.id::text = m\.property_id::text/)
+assert.match(cleaningApp, /m\.deleted_at IS NULL/)
+assert.match(cleaningApp, /canViewMzappPropertyFeedback\(user, feedbackMediaRow, userId\)/)
 
 console.log('maintenance workflow actions: PASS')

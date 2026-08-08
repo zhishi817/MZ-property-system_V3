@@ -10,7 +10,7 @@
 ## FR-001：任务操作权限与 available_actions
 
 - **维护责任范围：** backend / web / mobile
-- **最后审查日期：** 2026-08-05
+- **最后审查日期：** 2026-08-07
 - **状态：** active
 
 ### 业务保护规则
@@ -251,7 +251,7 @@
 | 浴室整体照片与必拍校验 | `mz-cleaning-app-frontend/src/lib/inspectionPanelSubmitQueue.test.ts` | 其他区域已有照片但浴室为空时，提交被拒绝并提示浴室照片 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand src/lib/inspectionPanelSubmitQueue.test.ts` |
 | 自完成补货结果、房号确认和完成照片区域 | `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.test.tsx` | 自完成页显示“现场够用/已补充/下次退房补”；已补充必须有凭证，空白项目和误存的 `ok` + 空补货结果都不伪装为已选择；未结束任务先确认房号，已结束任务直接查看；客厅/沙发/卧室/厨房显示指定拍摄提示；电视和空调遥控器合为一个必拍位且只保留一张，旧遥控器区域兼容显示；本地大图显示水印并使用全屏预览 | partial | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tasks/CleaningSelfCompleteScreen.test.tsx` |
 | 自完成挂钥匙视频弱网恢复与普通检查前置隔离 | `mz-cleaning-app-frontend/src/lib/inspectionMediaQueue.test.ts` | 自完成视频使用同一私有队列和自完成业务路由；业务保存失败不误报已同步；普通检查仍受前置阻断，自完成视频不要求普通检查补品/房源照片；两条路由事务保存动作、媒体和时间 | partial | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/inspectionMediaQueue.test.ts src/screens/tasks/CleaningSelfCompleteScreen.test.tsx && npm run test:cleaning-task-transition-guard --prefix backend && npm run test:idempotency-submit-id-contract --prefix backend` |
-| 管理详情自完成完成照片关联与部分失败展示 | `mz-cleaning-app-frontend/src/screens/tasks/ManagerDailyTaskScreen.test.ts` | active source、`cleaning_task_ids`、旧来源 ID 均进入完成照片读取；一个关联任务失败时成功照片继续保留并去重 | partial | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tasks/ManagerDailyTaskScreen.test.ts src/lib/managerDailyTaskPhotos.test.ts` |
+| 管理详情自完成完成照片关联与部分失败展示 | `mz-cleaning-app-frontend/src/screens/tasks/ManagerDailyTaskScreen.test.ts` | active source、`cleaning_task_ids`、旧来源 ID 均进入完成照片读取；一个关联任务失败时成功照片继续保留并去重 | partial | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tasks/ManagerDailyTaskScreen.test.ts` |
 | 自完成完成照片跨层区域一致性 | `backend/scripts/tests/test_idempotency_submit_id_contract.ts` | 自完成最终完成门槛和工作任务状态投影均要求浴室下水口、电视遥控器、吸尘器使用后；保存 schema 接受电视和可选空调遥控器区域，并兼容旧遥控器记录 | partial | `npm run test:idempotency-submit-id-contract --prefix backend` |
 | 自完成队列分步提交与可选字段 | `mz-cleaning-app-frontend/src/lib/cleaningConsumablesSubmitQueue.test.ts` | 完成照片先本机暂存，只有标记完成时才进入逐张上传与单次业务保存；补品同步不得提前上传或保存暂存完成照片；未拍可选客厅补品照片时不传空字符串 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand src/lib/cleaningConsumablesSubmitQueue.test.ts` |
 | 完成照片读取失败不清空当前显示 | `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.test.tsx` | 已有完成照片后再次读取失败时仍保留照片，不把失败误判为空 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tasks/CleaningSelfCompleteScreen.test.tsx` |
@@ -277,8 +277,8 @@
 | Android 认证媒体私有缓存 | `mz-cleaning-app-frontend/src/lib/cleaningMediaCache.test.ts` | 带认证的远端清洁媒体下载为应用私有文件 URI，供安卓原生 Image 渲染，下载失败时保留已有缓存 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/cleaningMediaCache.test.ts` |
 | 后端图片上传、读取格式与已登记媒体绑定 | `backend/scripts/tests/test_cleaning_media_image.ts` | HEIC/缺失 MIME 统一为 JPEG；无效图片返回 `IMAGE_FORMAT_UNSUPPORTED`；代理只读取已登记媒体并在 R2 读取前 fail closed | sufficient | `npm run test:cleaning-media-image --prefix backend` |
 | 同 key 跨任务或跨媒体类型授权冲突 | `backend/scripts/tests/test_cleaning_media_image.ts` | 代理仅允许唯一任务且唯一媒体类型的已登记引用；任一冲突一律拒绝读取 | sufficient | `npm run test:cleaning-media-image --prefix backend` |
-| 日终交接媒体代理授权 | `backend/scripts/tests/test_cleaning_media_image.ts` | 已登记日终照片进入受控代理；库存管理员以 `inventory.view` 通过入口后仍受记录级授权，记录所属人允许、无关清洁员拒绝；同 key 跨日终用户或类别拒绝。实际 R2 对象读取端到端验证仍待补充 | partial | `npm run test:cleaning-media-image --prefix backend` |
-| 管理端客厅多图兼容和重试入口 | `mz-cleaning-app-frontend/src/lib/managerDailyTaskPhotos.test.ts` | 保留兼容单图字段并按稳定顺序展示全部客厅照片；失败照片保留当前页重试入口 | partial | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/managerDailyTaskPhotos.test.ts src/screens/tasks/ManagerDailyTaskScreen.test.ts` |
+| 日终交接媒体代理授权 | `backend/scripts/tests/test_cleaning_media_image.ts` | 已登记日终照片进入受控代理；库存管理员作为日终管理角色仍受记录级授权，记录所属人允许、无关角色或清洁员拒绝；同 key 跨日终用户或类别拒绝。实际 R2 对象读取端到端验证仍待补充 | partial | `npm run test:cleaning-media-image --prefix backend` |
+| 管理端客厅多图兼容和重试入口 | — | 当前移动端 `origin/Dev` 已无历史多图测试；需恢复或新增测试以覆盖兼容单图、稳定顺序和失败重试 | missing | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tasks/ManagerDailyTaskScreen.test.ts` |
 | 任务媒体类型与参与关系读取授权 | `backend/scripts/tests/test_mzapp_media_visibility.ts` | 未分配用户不能用已知 key 越权；检查媒体、挂钥匙视频、补货凭证和普通媒体按任务级可见性分别判定 | sufficient | `npm run test:mzapp-media-visibility --prefix backend` |
 | 清洁媒体 key 跨钥匙上传和刷新保留 | `mz-cleaning-app-frontend/src/lib/keyUploadQueue.test.ts` | 上传返回 key 时钥匙业务 payload 优先使用 `cleaning/...` key；无 key 时保留 URL fallback | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/keyUploadQueue.test.ts` |
 | 清洁媒体 key 跨补品提交和刷新保留 | `mz-cleaning-app-frontend/src/lib/cleaningConsumablesSubmitQueue.test.ts` | 上传返回 key 时补品和完成照片业务 payload 优先使用 `cleaning/...` key | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/cleaningConsumablesSubmitQueue.test.ts` |
@@ -622,3 +622,50 @@
 
 - 固定支出模板的金额、付款方式、启停状态和历史已存在快照的批量重算。
 - 除 2026-07 已确认缺失范围外的生产历史数据回填。
+
+## FR-010：维修完工投影与私有图片读取
+
+- **维护责任范围：** backend / mobile
+- **最后审查日期：** 2026-08-07
+- **状态：** active
+
+### 业务保护规则
+
+- 维修执行人通过服务端专用完成动作保存的完工照片、备注和未完成原因，必须同步到同一 `work_tasks` 来源投影；不得恢复通用工单 `mark` 接口来绕过维修状态机。
+- 已保存的内部维修完工图片只能从未删除的真实房源维修记录精确匹配；外部维修完工图片只允许管理角色或当前被分配的 `maintenance_staff` 读取。
+- 缩略图、预览和原图都必须通过认证的 `/cleaning-app/media/image` 读取；客户端不得使用 R2 直链或把本地未保存预览当作已保存证据。
+
+### 跨层适用范围
+
+- **后端：** `maintenanceWorkflowStore` 任务投影、`cleaning_app` 媒体归属与授权代理。
+- **客户端：** 维修任务详情只使用后端返回的完成字段和认证媒体 URL；移动端 OTA 不属于本根仓发布单元。
+- **入口：** 任务详情中的维修完成/未完成动作，以及相册缩略图和全屏预览。
+- **一致性：** 服务端以源维修记录、分配关系和角色决定图片读取；客户端不自行扩大权限。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 完工字段投影 | `backend/scripts/tests/test_maintenance_workflow_actions.ts` | 维修任务投影在冲突更新时同步完工照片、备注和原因 | partial | `npm run test:maintenance-workflow-actions --prefix backend` |
+| 完工图片认证读取 | `backend/scripts/tests/test_mzapp_media_visibility.ts` | 内部真实房源精确匹配、外部维修单分配/角色授权和私有代理读取 | partial | `npm run test:mzapp-media-visibility --prefix backend` |
+
+### 验证策略
+
+- **代码验证：** 运行两个后端契约测试、后端 TypeScript 编译、feature registry 与 ledger audit。
+- **集成验证：** 仅在明确确认的非生产环境中，以执行人、管理角色及非关联账号验证内部/外部图片的缩略图、预览、原图和 403 边界。
+- **发布后：** 在真实 TestFlight 维修任务执行“相册选图 → 标记完成 → 重新打开任务 → 缩略图/大图”，不对生产数据做额外测试写入。
+
+### 最后验证
+
+- **CRL：** CRL-20260807-007
+- **Commit：** not committed
+- **日期：** 2026-08-07
+
+### 相关 CRL
+
+- CRL-20260806-006：维修执行人专用动作当前 Dev 契约重基线。
+- CRL-20260807-007（mobile）：维修详情专用动作路由与认证图片展示。
+
+### 非保护范围
+
+- 维修审核关闭、费用结算、历史生产数据回填和 R2 对象物理删除。

@@ -3145,13 +3145,6 @@ export function canViewRecordedDayEndMedia(user: any, mediaRow: any, userId: str
 }
 
 export default router
-export const CLEANING_MEDIA_IMAGE_READ_PERMISSIONS = [
-  'cleaning_app.media.upload',
-  'cleaning_app.tasks.finish',
-  'cleaning_app.inspect.finish',
-  'cleaning_app.issues.report',
-  'inventory.view',
-]
 
 export function feedbackMediaUrlArray(raw: any): string[] {
   if (Array.isArray(raw)) return raw.map((value) => String(value || '').trim()).filter(Boolean)
@@ -3174,6 +3167,7 @@ function feedbackMediaRowReferencesKey(row: any, key: string): boolean {
   const references = [
     ...feedbackMediaUrlArray(row?.photo_urls),
     ...feedbackMediaUrlArray(row?.repair_photo_urls),
+    ...feedbackMediaUrlArray(row?.completion_photo_urls),
     ...feedbackMediaUrlArray(row?.attachment_urls),
     ...(Array.isArray(projectItems) ? projectItems.flatMap((item: any) => [
       ...feedbackMediaUrlArray(item?.before_photos),
@@ -3189,8 +3183,19 @@ function feedbackMediaRowReferencesKey(row: any, key: string): boolean {
 function isPropertyFeedbackMediaKey(value: string): boolean {
   const key = String(value || '').trim().replace(/^\/+/, '')
   if (key.startsWith('cleaning/')) return isCleaningMediaKey(key)
-  if (!key.startsWith('mzapp/')) return false
+  if (!key.startsWith('mzapp/') && !key.startsWith('maintenance/')) return false
   return !key.includes('..') && !key.includes('\\') && !/[?#]/.test(key)
+}
+
+function canViewExternalMaintenanceCompletionMedia(user: any, row: any, userId: string): boolean {
+  const roles = Array.from(new Set([
+    String(user?.role || '').trim(),
+    ...(Array.isArray(user?.roles) ? user.roles.map((role: any) => String(role || '').trim()) : []),
+  ].filter(Boolean)))
+  if (roles.some((role) => ['admin', 'offline_manager', 'customer_service'].includes(role))) return true
+  return roles.includes('maintenance_staff')
+    && !!userId
+    && String(row?.assignee_id || '').trim() === userId
 }
 
 async function findPropertyFeedbackMediaRows(pool: any, key: string) {
@@ -3200,35 +3205,67 @@ async function findPropertyFeedbackMediaRows(pool: any, key: string) {
             m.property_id,
             to_jsonb(m.photo_urls) AS photo_urls,
             to_jsonb(m.repair_photo_urls) AS repair_photo_urls,
+            to_jsonb(m.completion_photo_urls) AS completion_photo_urls,
             to_jsonb(NULL::text) AS attachment_urls,
-            to_jsonb(m.project_items) AS project_items
+            to_jsonb(m.project_items) AS project_items,
+            NULL::text AS assignee_id
        FROM property_maintenance m
-      WHERE COALESCE(m.photo_urls::text, '') LIKE $1
-         OR COALESCE(m.repair_photo_urls::text, '') LIKE $1
-         OR COALESCE(m.project_items::text, '') LIKE $1
+       JOIN properties p ON p.id::text = m.property_id::text
+      WHERE m.deleted_at IS NULL
+        AND (
+          COALESCE(m.photo_urls::text, '') LIKE $1
+          OR COALESCE(m.repair_photo_urls::text, '') LIKE $1
+          OR COALESCE(m.completion_photo_urls::text, '') LIKE $1
+          OR COALESCE(m.project_items::text, '') LIKE $1
+        )
      UNION ALL
      SELECT 'property_deep_cleaning'::text AS feedback_source_type,
             d.id::text AS feedback_source_id,
             d.property_id,
             to_jsonb(d.photo_urls) AS photo_urls,
             to_jsonb(d.repair_photo_urls) AS repair_photo_urls,
+            to_jsonb(NULL::text) AS completion_photo_urls,
             to_jsonb(d.attachment_urls) AS attachment_urls,
-            to_jsonb(d.project_items) AS project_items
+            to_jsonb(d.project_items) AS project_items,
+            NULL::text AS assignee_id
        FROM property_deep_cleaning d
-      WHERE COALESCE(d.photo_urls::text, '') LIKE $1
-         OR COALESCE(d.repair_photo_urls::text, '') LIKE $1
-         OR COALESCE(d.attachment_urls::text, '') LIKE $1
-         OR COALESCE(d.project_items::text, '') LIKE $1
+       JOIN properties p ON p.id::text = d.property_id::text
+      WHERE d.deleted_at IS NULL
+        AND (
+          COALESCE(d.photo_urls::text, '') LIKE $1
+          OR COALESCE(d.repair_photo_urls::text, '') LIKE $1
+          OR COALESCE(d.attachment_urls::text, '') LIKE $1
+          OR COALESCE(d.project_items::text, '') LIKE $1
+        )
      UNION ALL
      SELECT 'property_daily_necessities'::text AS feedback_source_type,
             n.id::text AS feedback_source_id,
             n.property_id,
             to_jsonb(n.photo_urls) AS photo_urls,
             to_jsonb(NULL::text) AS repair_photo_urls,
+            to_jsonb(NULL::text) AS completion_photo_urls,
             to_jsonb(NULL::text) AS attachment_urls,
-            to_jsonb(NULL::text) AS project_items
+            to_jsonb(NULL::text) AS project_items,
+            NULL::text AS assignee_id
        FROM property_daily_necessities n
-      WHERE COALESCE(n.photo_urls::text, '') LIKE $1`,
+      JOIN properties p ON p.id::text = n.property_id::text
+      WHERE n.deleted_at IS NULL
+        AND COALESCE(n.photo_urls::text, '') LIKE $1
+     UNION ALL
+     SELECT 'external_maintenance_orders'::text AS feedback_source_type,
+            e.id::text AS feedback_source_id,
+            NULL::text AS property_id,
+            to_jsonb(NULL::text) AS photo_urls,
+            to_jsonb(NULL::text) AS repair_photo_urls,
+            to_jsonb(e.completion_photo_urls) AS completion_photo_urls,
+            to_jsonb(NULL::text) AS attachment_urls,
+            to_jsonb(NULL::text) AS project_items,
+            w.assignee_id::text AS assignee_id
+       FROM external_maintenance_orders e
+       JOIN work_tasks w
+         ON w.source_type = 'external_maintenance_orders'
+        AND w.source_id::text = e.id::text
+      WHERE COALESCE(e.completion_photo_urls::text, '') LIKE $1`,
     [`%${key}%`],
   )
   return (result?.rows || []).filter((row: any) => feedbackMediaRowReferencesKey(row, key))
@@ -3236,12 +3273,10 @@ async function findPropertyFeedbackMediaRows(pool: any, key: string) {
 
 router.get(
   '/media/image',
-  requireAnyPerm(CLEANING_MEDIA_IMAGE_READ_PERMISSIONS),
   async (req, res) => {
     try {
       const requestedKey = String((req.query as any)?.key || '').trim()
       const sourceUrl = String((req.query as any)?.url || '').trim()
-      const sourceTaskId = String((req.query as any)?.source_task_id || '').trim()
       const workTaskId = String((req.query as any)?.work_task_id || '').trim()
       const variant = String((req.query as any)?.variant || 'original').trim().toLowerCase()
       if (!requestedKey && !sourceUrl) return res.status(400).json({ message: 'missing_key' })
@@ -3319,16 +3354,6 @@ router.get(
       const recordedMedia = selectExclusiveRecordedCleaningMedia(matchingMediaRows, matchingDayEndRows)
       const feedbackMediaRows = recordedMedia || hasRecordedCleaningMedia ? [] : await findPropertyFeedbackMediaRows(pgPool, key)
       const feedbackMediaRow = feedbackMediaRows.length === 1 ? feedbackMediaRows[0] : null
-      const feedbackSourceTaskResult = feedbackMediaRow && sourceTaskId
-        ? await pgPool.query(
-          `SELECT id, property_id, cleaner_id, inspector_id, assignee_id
-             FROM cleaning_tasks
-            WHERE id = $1 AND property_id = $2
-            LIMIT 1`,
-          [sourceTaskId, String(feedbackMediaRow.property_id || '').trim()],
-        )
-        : null
-      const feedbackSourceTask = feedbackSourceTaskResult?.rows?.[0] || null
       const maintenanceWorkTaskResult = feedbackMediaRow?.feedback_source_type === 'property_maintenance' && workTaskId
         ? await pgPool.query(
           `SELECT id::text AS id, assignee_id::text AS assignee_id
@@ -3351,7 +3376,9 @@ router.get(
         : recordedMedia?.source === 'day_end'
           ? canViewRecordedDayEndMedia(user, recordedMedia.row, userId)
         : feedbackMediaRow
-          ? canViewMaintenanceWorkTask || await canViewMzappPropertyFeedback(user, feedbackSourceTask, userId)
+          ? String(feedbackMediaRow.feedback_source_type || '') === 'external_maintenance_orders'
+            ? canViewExternalMaintenanceCompletionMedia(user, feedbackMediaRow, userId)
+            : canViewMaintenanceWorkTask || await canViewMzappPropertyFeedback(user, feedbackMediaRow, userId)
           : false
       if (!canView) {
         return res.status(403).json({ message: 'forbidden_media' })
