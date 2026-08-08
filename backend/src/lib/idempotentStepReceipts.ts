@@ -11,12 +11,6 @@ type ReceiptScope = {
 }
 
 type ReceiptClient = Pool | PoolClient
-type ReceiptQueryable = {
-  query: (sql: string, values?: any[]) => Promise<any>
-}
-
-let idempotentStepReceiptsReady = false
-let idempotentStepReceiptsEnsuring: Promise<void> | null = null
 
 export class IdempotentStepReceiptsNotReady extends Error {
   constructor() {
@@ -43,39 +37,6 @@ export async function assertIdempotentStepReceiptsReady(client: ReceiptClient) {
     throw new IdempotentStepReceiptsNotReady()
   }
 }
-
-export async function ensureIdempotentStepReceiptsTable(pgPool: ReceiptQueryable) {
-  if (idempotentStepReceiptsReady) return
-  if (idempotentStepReceiptsEnsuring) return idempotentStepReceiptsEnsuring
-  idempotentStepReceiptsEnsuring = (async () => {
-    await pgPool.query(`
-      CREATE TABLE IF NOT EXISTS app_submit_receipts (
-        id text PRIMARY KEY,
-        scope_type text NOT NULL,
-        scope_id text NOT NULL,
-        submit_id text NOT NULL,
-        step_key text NOT NULL,
-        payload_hash text NOT NULL,
-        response_json jsonb,
-        created_at timestamptz NOT NULL DEFAULT now(),
-        updated_at timestamptz NOT NULL DEFAULT now()
-      );
-    `)
-    await pgPool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS uniq_app_submit_receipts_scope
-        ON app_submit_receipts(scope_type, scope_id, submit_id, step_key);
-    `)
-    idempotentStepReceiptsReady = true
-  })().catch((error) => {
-    idempotentStepReceiptsEnsuring = null
-    throw error
-  }).finally(() => {
-    if (idempotentStepReceiptsReady) idempotentStepReceiptsEnsuring = null
-  })
-  return idempotentStepReceiptsEnsuring
-}
-
-
 
 export async function loadIdempotentStepReceipt(pgPool: ReceiptClient, scope: ReceiptScope) {
   const scopeType = cleanText(scope.scopeType)

@@ -43,7 +43,6 @@ import { buildWorkTaskActionPayload, type WorkTaskActionId, type WorkTaskPartici
 import {
   buildIdempotencyPayloadHash,
   assertIdempotentStepReceiptsReady,
-  ensureIdempotentStepReceiptsTable,
   IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH,
   IdempotentStepReceiptsNotReady,
   loadIdempotentStepReceipt,
@@ -2058,7 +2057,7 @@ export async function warmupMzappModule() {
   await ensurePropertyMaintenanceColumns()
   await ensureMaintenanceWorkflowFoundation(pgPool)
   await ensureMaintenanceWorkTasksTable(pgPool)
-  await ensureIdempotentStepReceiptsTable(pgPool)
+  await assertIdempotentStepReceiptsReady(pgPool)
   await ensureNotificationStorage()
   try {
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_task_type_captured_created ON cleaning_task_media(task_id, type, captured_at DESC, created_at DESC)`)
@@ -8466,7 +8465,7 @@ router.post('/property-feedbacks', async (req, res) => {
       return res.status(statusCode).json(body)
     }
     if (receiptScope) {
-      await ensureIdempotentStepReceiptsTable(pool)
+      await assertIdempotentStepReceiptsReady(pool)
       const receipt = await loadIdempotentStepReceipt(pool, receiptScope)
       if (receipt) {
         if (String(receipt.payload_hash || '') !== payloadHash) {
@@ -8474,6 +8473,10 @@ router.post('/property-feedbacks', async (req, res) => {
         }
         return res.status(200).json(receipt.response_json || { ok: true })
       }
+    }
+    if (receiptScope && clientItemId && (parsed.data.kind === 'maintenance' || parsed.data.kind === 'deep_cleaning')) {
+      const existing = await loadPropertyFeedbackByClientItemId(parsed.data.kind, parsed.data.property_id, clientItemId, pool)
+      if (existing?.id) return res.status(200).json({ ok: true, id: String(existing.id), existing_id: String(existing.id) })
     }
     const now = new Date()
     const createdAt = now.toISOString()
@@ -8631,6 +8634,7 @@ router.post('/property-feedbacks', async (req, res) => {
           categoryDetail: categoryDetail || null,
           invoiceDescriptionEn: singleInvoiceDescriptionEn || null,
           fingerprint,
+          clientItemId: clientItemId || null,
           feedbackSource: origin.feedbackSource,
           sourceTaskId: origin.sourceTaskId,
         }, client)
@@ -8794,6 +8798,7 @@ router.post('/property-feedbacks', async (req, res) => {
     })
     return await respondReceipt(201, { ok: true, id })
   } catch (e: any) {
+    if (e instanceof IdempotentStepReceiptsNotReady) return res.status(503).json({ code: e.message })
     return res.status(500).json({ message: e?.message || 'property_feedbacks_create_failed' })
   }
 })
@@ -8812,6 +8817,30 @@ async function loadPropertyFeedbackRow(kind: FeedbackKind, id: string, client: a
   await ensurePropertyDeepCleaningColumns(client)
   const r = await client.query(`SELECT * FROM property_deep_cleaning WHERE id = $1 AND deleted_at IS NULL LIMIT 1${lockClause}`, [id])
   return r.rows?.[0] || null
+}
+
+/**
+ * A stable mobile draft ID remains the durable fallback when a business write
+ * commits but the receipt response is interrupted.
+ */
+async function loadPropertyFeedbackByClientItemId(kind: FeedbackKind, propertyId: string, clientItemId: string, client: any = pgPool) {
+  if (!client) return null
+  const stableId = String(clientItemId || '').trim()
+  if (!stableId) return null
+  if (kind === 'maintenance') {
+    await assertMaintenanceWorkflowSchemaReady(client)
+    const result = await client.query(
+      `SELECT id FROM property_maintenance WHERE property_id = $1 AND client_item_id = $2 LIMIT 1`,
+      [propertyId, stableId],
+    )
+    return result.rows?.[0] || null
+  }
+  await ensurePropertyDeepCleaningColumns(client)
+  const result = await client.query(
+    `SELECT id FROM property_deep_cleaning WHERE property_id = $1 AND client_item_id = $2 LIMIT 1`,
+    [propertyId, stableId],
+  )
+  return result.rows?.[0] || null
 }
 
 function isPropertyFeedbackManager(user: any) {

@@ -1,5 +1,72 @@
 # Change Release Ledger
 
+## CRL-20260808-008 — 幂等回执表迁移边界回归修复（root）
+
+- **Status:** ready.
+- **Updated:** 2026-08-09 Australia/Melbourne.
+- **Request:** GitHub Fast Regression 报错，阻止合并 root 维修发布分支。
+- **Outcome:** 幂等回执 API 路径仅校验 `app_submit_receipts` 是否已由迁移准备好；不再在运行时请求或启动预热中创建表/索引。迁移缺失时，维修动作和房源反馈创建均返回受控的 `503 idempotent_step_receipts_not_ready`，同时恢复稳定移动草稿 ID 的持久去重查询。
+
+### Implementation
+
+- Previous behavior: `idempotentStepReceipts` 同时承担就绪检查和 `CREATE TABLE` / `CREATE INDEX`，维修流程与房源反馈路径可触发 DDL；快速回归因此失败。
+- New behavior: DDL 只保留在已有的 `backend/scripts/migrations/20260805_app_submit_receipts.sql`；所有受影响调用改为 `assertIdempotentStepReceiptsReady`。
+- Key decision: 不执行任何数据库迁移或生产 SQL；后端部署前必须按正式迁移流程应用已有迁移。
+
+### Files / Areas
+
+- `backend/src/lib/idempotentStepReceipts.ts` — 删除运行时 DDL helper，只保留就绪检查与回执读写。
+- `backend/src/modules/maintenance.ts` — 维修状态动作只检查回执表就绪，并将缺表明确映射为 503。
+- `backend/src/modules/mzapp.ts` — 启动预热和房源反馈创建不再触发回执表 DDL，并将回执迁移缺失映射为 503。
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — 固化房源反馈创建在回执迁移缺失时的 503 契约。
+- `docs/change-release-ledger.md` — 记录此 CI 阻塞修复。
+
+### Impact / Dependencies
+
+- API: 幂等回执表未迁移时，受影响请求返回 `503 idempotent_step_receipts_not_ready`，不会隐式写 DDL。
+- Retry: 携带相同 `client_item_id` 的维修/深度清洁反馈在回执中断后返回既有记录，不重复创建。
+- Database / migration: 复用已有 `backend/scripts/migrations/20260805_app_submit_receipts.sql`；本次不新增或执行迁移。
+- Dependencies: 依赖 CRL-20260808-001 的维修操作幂等保护。
+
+### Validation
+
+- GitHub Fast Regression — failed before repair: `receipt helper must not perform request-path DDL`。
+- `./backend/node_modules/.bin/tsc -p backend --noEmit` — passed.
+- `npm run test:idempotency-submit-id-contract --prefix backend` — passed: DDL boundary, stable draft lookup and project receipt transaction contracts.
+- `npm run test:r2-media-governance --prefix backend` — passed.
+- `npm run test:phase5-release-contract --prefix backend` — passed: root/mobile static contract (using the existing clean mobile release worktree only as the CI checkout substitute).
+- `npm run check:frontend:test` — passed: 43 files / 185 tests.
+- `npm run check:feature-registry` — passed: 10 FRs / 105 test mappings; `python3 scripts/audit_change_release_ledger.py` — passed: 4/4 changed files recorded; `git diff --check` — passed.
+- GitHub Fast Regression after the corrective commit/push — pending.
+- Independent review (first pass) — NO-GO: staged-only patch fingerprint was not the recorded full branch-range fingerprint, and feedback creation mapped missing receipt migration to 500. Both findings remediated; re-review pending.
+- Independent review (second pass) — GO for commit: staged fingerprint `8358c092d011fd63682b6ca5fbe91b9e9887190abe28df08330997c436ef192c` matches this attempt; no P0/P1/P2, scope collision, sensitive-information, generated-file or production-write finding.
+
+### Release Attempts
+
+#### RA-20260809-root-maintenance-ci-repair-01
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260808-001`, `CRL-20260808-002`, `CRL-20260808-003`, `CRL-20260808-004`, `CRL-20260808-005`, `CRL-20260808-006`, `CRL-20260808-007`, `CRL-20260808-008`.
+- Intended action: `commit`
+- Branch: `codex/release-maintenance-20260808-root`
+- Base: `origin/Dev@6ea97fb999f9fb67630aac3c5b8973e61ccde3c6`; fetched at 2026-08-09 00:10:14 AEST.
+- Candidate patch SHA-256: `8358c092d011fd63682b6ca5fbe91b9e9887190abe28df08330997c436ef192c` from the staged candidate, excluding `docs/change-release-ledger.md`.
+- Candidate content commit SHA: not committed.
+- Dependencies: CRL-20260808-001 through CRL-20260808-007 are already on this branch; CRL-20260808-008 corrects their CI and idempotency boundary.
+- Required validation: PASS — backend no-emit compile; idempotency, R2 and phase5 contracts; frontend 43 files / 185 tests; registry/ledger audits.
+- Shared-hunk review: PASS — the four staged paths are listed in this CRL; no unselected path is staged.
+- Generated-file review: PASS — no generated output, secret, environment or local-media path is staged.
+- Technical state: verified.
+- User authorization: selected-for-commit — user confirmation on 2026-08-09.
+- Independent review: GO — second-pass independent review accepted the exact staged fingerprint after confirming the 503 mapping and static regression assertion.
+- Action conclusion: GO — commit authorized for this exact staged candidate.
+
+### Risks / Release Notes
+
+- 后端发布必须确保已有回执表迁移先完成；否则相关重试接口会安全失败而不会自动建表。
+- Sensitive-information review: no credentials, tokens, `.env`, database URLs or sensitive logs added.
+- Git state: uncommitted in the clean root release worktree; prior pushed SHA is superseded for the root branch.
+
 ## CRL-20260808-001 — 网页维修创建 409、受派执行与重复创建保护（root）
 
 - **Status:** candidate; selected-for-commit.
@@ -119,7 +186,7 @@
 #### RA-20260808-root-maintenance-01
 
 - Repository: root
-- Intended action: commit
+- Intended action: push
 - Branch: `codex/release-maintenance-20260808-root`
 - Selected CRLs: `CRL-20260808-001`, `CRL-20260808-002`, `CRL-20260808-003`, `CRL-20260808-004`, `CRL-20260808-005`, `CRL-20260808-006`, `CRL-20260808-007`.
 - Base: `origin/Dev@6ea97fb999f9fb67630aac3c5b8973e61ccde3c6`; fetched at 2026-08-08 23:04:23 AEST.
@@ -130,8 +197,11 @@
 - Shared-hunk review: PASS — all selected paths are attributed to the selected CRLs; no shared path is used by an unselected CRL.
 - Generated-file review: PASS — no `backend/dist`, cache, environment file, token or private media value is selected.
 - Independent review: GO — commit-only review accepted exact fingerprint `a80c4418e4eaedbaf3eeef0a2a03298933233cc3a5354a6c84da49742bf10474`; four P1 defects are remediated.
-- User authorization: selected-for-commit — user confirmation on 2026-08-08.
-- Technical state: committed
+- User authorization: approved-for-push — user instruction “推送” on 2026-08-08 for `codex/release-maintenance-20260808-root@099ed2b7c09b8eb1066c3b55cc2318a44d9857d9`.
+- Technical state: pushed
+- Remote push: `origin/codex/release-maintenance-20260808-root@099ed2b7c09b8eb1066c3b55cc2318a44d9857d9`, verified by `git ls-remote` on 2026-08-08.
+- PR status: NOT VERIFIED — GitHub connector rejected the create-PR request; no PR, merge, deployment or OTA was created.
+- Action conclusion: GO — exact authorized branch push completed; PR, merge, deployment and OTA remain outside this completed action.
 
 ## CRL-20260807-009 — Phase 5 跨仓服务端动作契约门禁校正（root）
 

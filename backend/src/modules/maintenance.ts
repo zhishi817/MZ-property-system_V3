@@ -26,9 +26,10 @@ import {
   type MaintenanceWorkflowDomain,
 } from '../lib/maintenanceWorkflowStore'
 import {
+  assertIdempotentStepReceiptsReady,
   buildIdempotencyPayloadHash,
-  ensureIdempotentStepReceiptsTable,
   IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH,
+  IdempotentStepReceiptsNotReady,
   loadIdempotentStepReceipt,
   saveIdempotentStepReceipt,
 } from '../lib/idempotentStepReceipts'
@@ -562,7 +563,7 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
   try {
     await ensureMaintenanceWorkflowFoundation(pgPool)
     await ensureMaintenanceWorkTasksTable(pgPool)
-    if (receiptScope) await ensureIdempotentStepReceiptsTable(pgPool)
+    if (receiptScope) await assertIdempotentStepReceiptsReady(pgPool)
     const client = await pgPool.connect()
     try {
       await client.query('BEGIN')
@@ -767,6 +768,7 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
     }
   } catch (e: any) {
     if (e instanceof MaintenanceWorkflowError) return res.status(e.statusCode).json({ code: e.code })
+    if (e instanceof IdempotentStepReceiptsNotReady) return res.status(503).json({ code: e.message })
     return res.status(500).json({ message: e?.message || 'maintenance_workflow_action_failed' })
   }
 })

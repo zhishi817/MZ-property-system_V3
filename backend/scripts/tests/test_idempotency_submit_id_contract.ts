@@ -21,6 +21,7 @@ async function main() {
   const receiptMigration = fs.readFileSync(path.resolve(__dirname, '../../scripts/migrations/20260805_app_submit_receipts.sql'), 'utf8')
   const deepCleaningMigration = fs.readFileSync(path.resolve(__dirname, '../../scripts/migrations/20260805_property_deep_cleaning_foundation.sql'), 'utf8')
   const rootPackage = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../../package.json'), 'utf8')) as { scripts?: Record<string, string> }
+  const feedbackCreateRoute = mzappSource.match(/router\.post\('\/property-feedbacks'[\s\S]*?async function loadPropertyFeedbackRow/)?.[0] || ''
   assert.match(receiptSource, /assertIdempotentStepReceiptsReady/)
   assert.doesNotMatch(receiptSource, /\b(?:CREATE|ALTER)\s+(?:TABLE|INDEX)/i, 'receipt helper must not perform request-path DDL')
   assert.match(receiptMigration, /CREATE TABLE IF NOT EXISTS app_submit_receipts/)
@@ -29,6 +30,8 @@ async function main() {
   assert.match(mzappSource, /assertIdempotentStepReceiptsReady\(pool\)/)
   assert.equal(rootPackage.scripts?.['check:ci'], 'npm run check:fast', 'PR workflow check:ci entry must remain available')
   assert.match(String(rootPackage.scripts?.['check:fast'] || ''), /test:ledger-range-audit/, 'fast CI must include ledger range-audit regression coverage')
+  assert.ok(feedbackCreateRoute, 'feedback creation route must remain discoverable')
+  assert.match(feedbackCreateRoute, /if \(e instanceof IdempotentStepReceiptsNotReady\) return res\.status\(503\)\.json\(\{ code: e\.message \}\)/, 'feedback creation must map a missing receipt migration to a controlled 503')
   const deepCleaningReadiness = mzappSource.match(/class PropertyDeepCleaningSchemaNotReady[\s\S]*?type FeedbackKind/)?.[0] || ''
   assert.ok(deepCleaningReadiness, 'deep-cleaning readiness helper must remain discoverable')
   assert.match(deepCleaningReadiness, /SELECT id, property_id, status[\s\S]*?client_item_id[\s\S]*?FROM property_deep_cleaning/)
