@@ -865,6 +865,21 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
               parts.push(`"created_by" = ANY($${values.length}::text[])`)
               continue
             }
+            if (resource === 'property_maintenance' && k === 'status') {
+              const status = String((filters as any)[k] || '').trim().toLowerCase()
+              const canonicalStatuses: Record<string, string[]> = {
+                pending_assignment: ['pending_assignment', 'pending'],
+                in_progress: ['in_progress', 'repairing', 'started'],
+                pending_review: ['pending_review', 'review_pending', 'awaiting_review', 'completed', 'done', 'ready'],
+                cancelled: ['cancelled', 'canceled'],
+              }
+              const matchingStatuses = canonicalStatuses[status]
+              if (matchingStatuses) {
+                values.push(matchingStatuses)
+                parts.push(`"status" = ANY($${values.length}::text[])`)
+                continue
+              }
+            }
             if (k.endsWith('_from')) {
               const col = k.slice(0, -5)
               if (/^[a-zA-Z0-9_]+$/.test(col)) {

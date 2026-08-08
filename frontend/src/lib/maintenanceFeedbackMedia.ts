@@ -4,12 +4,31 @@ function cleanReference(value: unknown) {
   return String(value || '').trim()
 }
 
+function maintenancePhotoReferences(value: unknown) {
+  if (Array.isArray(value)) return value.map(cleanReference).filter(Boolean)
+  const text = cleanReference(value)
+  if (!text) return []
+  try {
+    const parsed = JSON.parse(text)
+    return Array.isArray(parsed) ? parsed.map(cleanReference).filter(Boolean) : [text]
+  } catch {
+    return [text]
+  }
+}
+
+export function maintenanceAfterPhotoReferences(record: { completion_photo_urls?: unknown; repair_photo_urls?: unknown } | null | undefined) {
+  return Array.from(new Set([
+    ...maintenancePhotoReferences(record?.completion_photo_urls),
+    ...maintenancePhotoReferences(record?.repair_photo_urls),
+  ]))
+}
+
 function privateFeedbackObjectKey(reference: string) {
   const direct = reference.replace(/^\/+/, '')
-  if (/^(cleaning|mzapp)\//.test(direct)) return direct
+  if (/^(cleaning|mzapp|maintenance)\//.test(direct)) return direct
   if (!/^https?:\/\//i.test(reference)) return ''
   try {
-    const match = new URL(reference).pathname.match(/\/(cleaning|mzapp)\/.+$/)
+    const match = new URL(reference).pathname.match(/\/(cleaning|mzapp|maintenance)\/.+$/)
     return match ? match[0].replace(/^\/+/, '') : ''
   } catch {
     return ''

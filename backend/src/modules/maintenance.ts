@@ -11,7 +11,7 @@ import { resizeUploadImage } from '../lib/uploadImageResize'
 import { ensurePdfJobsSchema } from '../services/pdfJobsSchema'
 import { generateWorkRecordPdf } from '../lib/workRecordPdf'
 import { WORK_RECORD_PDF_TEMPLATE_VERSION } from '../lib/workRecordPdfTemplate'
-import { assertMaintenanceWorkflowSchemaReady, MaintenanceWorkflowSchemaNotReady } from '../lib/maintenanceWorkflowSchema'
+import { ensureMaintenanceWorkflowFoundation } from '../lib/maintenanceWorkflowSchema'
 import {
   availableMaintenanceActions,
   normalizeMaintenanceWorkflowStatus,
@@ -19,6 +19,7 @@ import {
   type MaintenanceWorkflowAction,
 } from '../lib/maintenanceWorkflow'
 import {
+  ensureMaintenanceWorkTasksTable,
   insertMaintenanceWorkflowEvent,
   maintenanceWorkflowSourceType,
   upsertMaintenanceWorkTask,
@@ -26,9 +27,8 @@ import {
 } from '../lib/maintenanceWorkflowStore'
 import {
   buildIdempotencyPayloadHash,
-  assertIdempotentStepReceiptsReady,
+  ensureIdempotentStepReceiptsTable,
   IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH,
-  IdempotentStepReceiptsNotReady,
   loadIdempotentStepReceipt,
   saveIdempotentStepReceipt,
 } from '../lib/idempotentStepReceipts'
@@ -132,10 +132,6 @@ function isMaintenanceManager(user: any): boolean {
   return userRoleNames(user).some((role) => ['admin', 'offline_manager', 'customer_service'].includes(role))
 }
 
-function isMaintenanceExecutor(user: any): boolean {
-  return userRoleNames(user).includes('maintenance_staff')
-}
-
 function userId(user: any): string {
   return String(user?.sub || user?.id || '').trim()
 }
@@ -204,7 +200,7 @@ async function updateMaintenanceWorkflowRecord(client: any, domain: MaintenanceD
 
 function workflowResponse(domain: MaintenanceDomain, row: any, user: any) {
   const status = normalizeMaintenanceWorkflowStatus(row?.status, row?.review_status)
-  const assignedExecutor = isMaintenanceExecutor(user) && String(row?.assignee_id || '').trim() === userId(user)
+  const assignedExecutor = !!userId(user) && String(row?.assignee_id || '').trim() === userId(user)
   return {
     ok: true,
     domain,
@@ -215,6 +211,50 @@ function workflowResponse(domain: MaintenanceDomain, row: any, user: any) {
     work_task_id: `${workflowSourceType(domain)}:${String(row?.id || '')}`,
     available_actions: availableMaintenanceActions({ status, isManager: isMaintenanceManager(user), isAssignedExecutor: assignedExecutor }),
   }
+}
+
+async function reconcileLegacyInternalMaintenanceAssignee(client: any, row: any, user: any, action: MaintenanceWorkflowAction) {
+  if (!['executor_complete', 'executor_unfinished'].includes(action)) return row
+  const actorId = userId(user)
+  if (!actorId || String(row?.assignee_id || '').trim()) return row
+
+  const status = normalizeMaintenanceWorkflowStatus(row?.status, row?.review_status)
+  if (!['pending_assignment', 'assigned', 'in_progress'].includes(status)) return row
+
+  // Historical Task Center assignment changed only the work_tasks projection.
+  // Reconcile only an unassigned source record and only for the authenticated
+  // projected assignee; never use a name match or override an existing assignee.
+  const projectionResult = await client.query(
+    `SELECT assignee_id, scheduled_date
+       FROM work_tasks
+      WHERE source_type=$1 AND source_id=$2
+      LIMIT 1`,
+    [workflowSourceType('internal'), String(row.id)],
+  )
+  const projection = projectionResult?.rows?.[0] || null
+  if (String(projection?.assignee_id || '').trim() !== actorId) return row
+
+  const fallbackEta = dateOnly(projection?.scheduled_date)
+  const updated = await updateMaintenanceWorkflowRecord(client, 'internal', String(row.id), {
+    status: 'assigned',
+    assignee_id: actorId,
+    assigned_at: new Date().toISOString(),
+    assigned_by: actorId,
+    ...(row?.eta ? {} : fallbackEta ? { eta: fallbackEta } : {}),
+  })
+  await upsertMaintenanceWorkTask(client, 'internal', updated)
+  await insertMaintenanceWorkflowEvent(client, {
+    domain: 'internal',
+    recordId: String(row.id),
+    eventType: 'assignment_reconciled',
+    fromStatus: status,
+    toStatus: 'assigned',
+    actorUserId: actorId,
+    actorName: userName(user),
+    reason: null,
+    payload: { source: 'legacy_work_task_projection' },
+  })
+  return updated
 }
 
 router.post('/upload', requireAnyPerm(['property_maintenance.write','property.write','rbac.manage']), upload.single('file'), async (req, res) => {
@@ -418,7 +458,8 @@ router.post('/workflow/external-orders', async (req, res) => {
   }
 
   try {
-    await assertMaintenanceWorkflowSchemaReady(pgPool)
+    await ensureMaintenanceWorkflowFoundation(pgPool)
+    await ensureMaintenanceWorkTasksTable(pgPool)
     const client = await pgPool.connect()
     try {
       await client.query('BEGIN')
@@ -473,7 +514,6 @@ router.post('/workflow/external-orders', async (req, res) => {
       client.release()
     }
   } catch (e: any) {
-    if (e instanceof MaintenanceWorkflowSchemaNotReady) return res.status(503).json({ code: e.message })
     if (e instanceof MaintenanceWorkflowError) return res.status(e.statusCode).json({ code: e.code })
     if (String(e?.code || '') === '23505') return res.status(409).json({ code: 'external_maintenance_order_no_conflict' })
     return res.status(500).json({ message: e?.message || 'external_maintenance_create_failed' })
@@ -509,21 +549,25 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
       }
     : null
   const receiptPayloadHash = receiptScope
-    ? buildIdempotencyPayloadHash({
+      ? buildIdempotencyPayloadHash({
         action,
         assignee_id: String(body.assignee_id || '').trim() || null,
         scheduled_date: body.scheduled_date == null ? null : String(body.scheduled_date || '').trim(),
         record_patch: recordPatch,
+        completion_photo_urls: completionPhotoUrls,
+        completion_note: String(body.completion_note || body.note || '').trim() || null,
+        reason,
       })
     : ''
   try {
-    await assertMaintenanceWorkflowSchemaReady(pgPool)
-    if (receiptScope) await assertIdempotentStepReceiptsReady(pgPool)
+    await ensureMaintenanceWorkflowFoundation(pgPool)
+    await ensureMaintenanceWorkTasksTable(pgPool)
+    if (receiptScope) await ensureIdempotentStepReceiptsTable(pgPool)
     const client = await pgPool.connect()
     try {
       await client.query('BEGIN')
       const locked = await client.query(`SELECT * FROM ${workflowTable(domain)} WHERE id=$1 FOR UPDATE`, [id])
-      const row = locked?.rows?.[0] || null
+      let row = locked?.rows?.[0] || null
       if (!row) throw new MaintenanceWorkflowError(404, 'maintenance_not_found')
       if (receiptScope) {
         const receipt = await loadIdempotentStepReceipt(client, receiptScope)
@@ -535,8 +579,11 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
           return res.json(receipt.response_json || { ok: true })
         }
       }
+      if (domain === 'internal') {
+        row = await reconcileLegacyInternalMaintenanceAssignee(client, row, user, action)
+      }
       const status = normalizeMaintenanceWorkflowStatus(row.status, row.review_status)
-      const assignedExecutor = isMaintenanceExecutor(user) && String(row.assignee_id || '').trim() === userId(user)
+      const assignedExecutor = !!userId(user) && String(row.assignee_id || '').trim() === userId(user)
       const existingCompletionPhotoUrls = nonEmptyStrings(row.completion_photo_urls)
       const legacyCompletionPhotoUrls = existingCompletionPhotoUrls.length ? [] : nonEmptyStrings(row.repair_photo_urls)
       const validation = validateMaintenanceWorkflowAction({
@@ -568,6 +615,8 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
       if (action === 'assign') {
         const assigneeId = String(body.assignee_id || '').trim()
         if (!assigneeId) throw new MaintenanceWorkflowError(400, 'maintenance_assignee_required')
+        const assigneeResult = await client.query('SELECT id FROM users WHERE id::text = $1 LIMIT 1', [assigneeId])
+        if (!assigneeResult?.rows?.[0]) throw new MaintenanceWorkflowError(400, 'maintenance_assignee_not_found')
         const scheduledDate = body.scheduled_date === undefined
           ? (domain === 'internal' ? dateOnly(row.eta) : dateOnly(row.scheduled_date))
           : dateOnly(body.scheduled_date)
@@ -603,7 +652,7 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
             domain,
             recordId: id,
             eventType: 'started',
-            fromStatus: 'assigned',
+            fromStatus: status,
             toStatus: 'in_progress',
             actorUserId: actorId,
             actorName,
@@ -630,7 +679,7 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
             domain,
             recordId: id,
             eventType: 'started',
-            fromStatus: 'assigned',
+            fromStatus: status,
             toStatus: 'in_progress',
             actorUserId: actorId,
             actorName,
@@ -640,7 +689,15 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
           eventFromStatus = 'in_progress'
         }
         nextStatus = 'in_progress'
-        patch = { status: nextStatus, started_at: startedAt }
+        patch = {
+          status: nextStatus,
+          started_at: startedAt,
+          ...(completionPhotoUrls.length ? { completion_photo_urls: JSON.stringify(completionPhotoUrls) } : {}),
+          ...(domain === 'internal'
+            ? { repair_notes: String(body.completion_note || body.note || '').trim() || null }
+            : { completion_notes: String(body.completion_note || body.note || '').trim() || null }),
+          completion_reason: reason,
+        }
         eventType = 'executor_unfinished'
       } else if (action === 'review_approved') {
         nextStatus = 'closed'
@@ -709,8 +766,6 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
       client.release()
     }
   } catch (e: any) {
-    if (e instanceof IdempotentStepReceiptsNotReady) return res.status(503).json({ code: e.message })
-    if (e instanceof MaintenanceWorkflowSchemaNotReady) return res.status(503).json({ code: e.message })
     if (e instanceof MaintenanceWorkflowError) return res.status(e.statusCode).json({ code: e.code })
     return res.status(500).json({ message: e?.message || 'maintenance_workflow_action_failed' })
   }

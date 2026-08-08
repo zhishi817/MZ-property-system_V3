@@ -5,13 +5,14 @@ import html2canvas from 'html2canvas'
 import type { UploadFile } from 'antd/es/upload/interface'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { apiUpdate, apiDelete, apiCreate, getJSON, API_BASE, authHeaders } from '../../../lib/api'
+import { apiUpdate, getJSON, API_BASE, authHeaders } from '../../../lib/api'
 import { hasPerm } from '../../../lib/auth'
 import { downloadNamedBlob } from '../../../lib/download'
 import { sortProperties } from '../../../lib/properties'
+import TableRowActions from '../../../components/TableRowActions'
 import MaintenanceFeedbackImage from '../../../components/MaintenanceFeedbackImage'
-import { loadMaintenanceFeedbackMedia } from '../../../lib/maintenanceFeedbackMedia'
-import { assignInternalMaintenance, internalMaintenanceAssignmentChanged } from '../../../lib/maintenanceWorkflowActions'
+import { loadMaintenanceFeedbackMedia, maintenanceAfterPhotoReferences } from '../../../lib/maintenanceFeedbackMedia'
+import { assignInternalMaintenance, createInternalMaintenanceFeedback, deleteInternalMaintenanceFeedback, internalMaintenanceAssignmentChanged } from '../../../lib/maintenanceWorkflowActions'
 import { runWorkRecordPdfJob } from '../../../lib/workRecordPdfJobs'
 import styles from './records.module.scss'
 
@@ -29,13 +30,14 @@ type RepairOrder = {
   submitter_id?: string
   submitted_at?: string
   urgency?: 'urgent'|'normal'|'not_urgent'|'high'|'medium'|'low'
-  status?: 'pending_assignment'|'pending'|'assigned'|'in_progress'|'pending_review'|'review_pending'|'completed'|'closed'|'canceled'|'cancelled'
+  status?: 'pending_assignment'|'pending'|'assigned'|'in_progress'|'repairing'|'started'|'pending_review'|'review_pending'|'awaiting_review'|'completed'|'done'|'ready'|'closed'|'canceled'|'cancelled'
   assignee_id?: string
   eta?: string
   completed_at?: string
   remark?: string
   repair_notes?: string
   repair_photo_urls?: string[]
+  completion_photo_urls?: string[]
   photo_urls?: string[]
   assignee_name?: string | null
   maintenance_amount?: number | string | null
@@ -51,6 +53,10 @@ type RepairOrder = {
 function newMaintenanceAssignmentOperationId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID()
   return `maintenance-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+function isCancelledMaintenanceStatus(status?: string | null) {
+  return ['canceled', 'cancelled'].includes(String(status || '').trim().toLowerCase())
 }
 
 export default function MaintenanceRecordsUnified() {
@@ -76,6 +82,7 @@ export default function MaintenanceRecordsUnified() {
   const [form] = Form.useForm()
   const { message } = App.useApp()
   const canDownload = hasPerm('property_maintenance.view') || hasPerm('property_maintenance.write') || hasPerm('rbac.manage')
+  const canDeleteMaintenance = hasPerm('property_maintenance.delete')
   const [pwdOpen, setPwdOpen] = useState(false)
   const [pwdForm] = Form.useForm()
   const [viewOpen, setViewOpen] = useState(false)
@@ -87,9 +94,11 @@ export default function MaintenanceRecordsUnified() {
   const [createOpen, setCreateOpen] = useState(false)
   const [createForm] = Form.useForm()
   const [createFiles, setCreateFiles] = useState<UploadFile[]>([])
+  const [createSaving, setCreateSaving] = useState(false)
   const storedPhotoPreviewVersionRef = useRef(0)
   const storedPhotoObjectUrlsRef = useRef(new Set<string>())
   const assignmentOperationRef = useRef<{ key: string; id: string } | null>(null)
+  const createOperationRef = useRef<{ key: string; id: string } | null>(null)
 
   const releaseStoredPhotoObjectUrls = () => {
     storedPhotoObjectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
@@ -531,24 +540,18 @@ export default function MaintenanceRecordsUnified() {
 
   const statusOptions = [
     { value: 'pending_assignment', label: '待分派' },
-    { value: 'pending', label: '待维修' },
     { value: 'assigned', label: '已分配' },
     { value: 'in_progress', label: '维修中' },
     { value: 'pending_review', label: '待审核' },
-    { value: 'review_pending', label: '待审核（旧状态）' },
-    { value: 'completed', label: '已完成（旧状态）' },
     { value: 'closed', label: '已关闭' },
-    { value: 'canceled', label: '已取消' },
     { value: 'cancelled', label: '已取消' },
   ]
   function statusLabel(s?: string) {
     const v = String(s || '')
-    if (v === 'pending_assignment') return '待分派'
-    if (v === 'pending') return '待维修'
+    if (v === 'pending_assignment' || v === 'pending') return '待分派'
     if (v === 'assigned') return '已分配'
-    if (v === 'in_progress') return '维修中'
-    if (v === 'pending_review' || v === 'review_pending') return '待审核'
-    if (v === 'completed') return '已完成（旧状态）'
+    if (v === 'in_progress' || v === 'repairing' || v === 'started') return '维修中'
+    if (v === 'pending_review' || v === 'review_pending' || v === 'awaiting_review' || v === 'completed' || v === 'done' || v === 'ready') return '待审核'
     if (v === 'closed') return '已关闭'
     if (v === 'canceled' || v === 'cancelled') return '已取消'
     return v || '-'
@@ -558,8 +561,8 @@ export default function MaintenanceRecordsUnified() {
     const label = statusLabel(v)
     if (v === 'pending_assignment' || v === 'pending') return <Tag color="default">{label}</Tag>
     if (v === 'assigned') return <Tag color="blue">{label}</Tag>
-    if (v === 'in_progress') return <Tag color="orange">{label}</Tag>
-    if (v === 'pending_review' || v === 'review_pending') return <Tag color="gold">{label}</Tag>
+    if (v === 'in_progress' || v === 'repairing' || v === 'started') return <Tag color="orange">{label}</Tag>
+    if (v === 'pending_review' || v === 'review_pending' || v === 'awaiting_review' || v === 'completed' || v === 'done' || v === 'ready') return <Tag color="gold">{label}</Tag>
     if (v === 'completed' || v === 'closed') return <Tag color="purple">{label}</Tag>
     if (v === 'canceled' || v === 'cancelled') return <Tag color="red">{label}</Tag>
     return <Tag>{label}</Tag>
@@ -744,11 +747,55 @@ function issueAreaLabel(r?: any): string {
       setPdfPreview(p => ({ ...p, loading: false }))
     }
   }
-  async function remove(id: string) {
-    try {
-      await apiDelete('property_maintenance', id)
-      message.success('已删除'); setPage(1); loadMaintenance(true)
-    } catch (e: any) { message.error(e?.message || '删除失败') }
+  function remove(record: RepairOrder) {
+    const id = String(record?.id || '').trim()
+    if (!id) return
+    if (isCancelledMaintenanceStatus(record.status)) {
+      message.info('已取消的维修记录无需删除')
+      return
+    }
+    Modal.confirm({
+      title: '确认删除维修记录？',
+      content: '删除后将从维修记录和任务中心移除；历史审计保留，关联照片不再可访问。',
+      okText: '确认删除',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await deleteInternalMaintenanceFeedback(id)
+          message.success('已删除')
+          setPage(1)
+          await loadMaintenance(true)
+        } catch (e: any) {
+          message.error(e?.message || '删除失败')
+          throw e
+        }
+      },
+    })
+  }
+  function maintenanceRowActions(record: RepairOrder) {
+    return [
+      { key: 'detail', label: '详情', onClick: () => openView(record) },
+      { key: 'share', label: '分享', onClick: () => shareLink(record) },
+      { key: 'export', label: '导出PDF', onClick: () => openExportPdf(record), loading: downloadingId === String(record.id), hidden: !canDownload },
+      { key: 'edit', label: '编辑', onClick: () => openEdit(record), hidden: !hasPerm('property_maintenance.write') },
+      {
+        key: 'delete',
+        label: '删除',
+        danger: true,
+        onClick: () => remove(record),
+        hidden: !canDeleteMaintenance || isCancelledMaintenanceStatus(record.status),
+      },
+    ]
+  }
+  function maintenanceTableRowActions(record: RepairOrder) {
+    const actions = maintenanceRowActions(record)
+    return (
+      <Space direction="vertical" size={8}>
+        <TableRowActions actions={actions.filter((action) => ['detail', 'share', 'export'].includes(action.key))} />
+        <TableRowActions actions={actions.filter((action) => ['edit', 'delete'].includes(action.key))} />
+      </Space>
+    )
   }
   async function fetchAllForExport() {
     const all: any[] = []
@@ -918,13 +965,7 @@ function issueAreaLabel(r?: any): string {
                             <div style={{ gridColumn:'1 / span 2' }}>其他人备注：{String((r as any).pay_other_note || '-')}</div>
                           ) : null}
                         </div>
-                        <Space>
-                          <Button onClick={()=>openView(r)}>详情</Button>
-                          <Button onClick={()=>shareLink(r)}>分享</Button>
-                          <Button onClick={()=>openExportPdf(r)} loading={downloadingId === String(r.id)} disabled={!canDownload}>导出PDF</Button>
-                          <Button onClick={()=>openEdit(r)} disabled={!hasPerm('property_maintenance.write')}>编辑</Button>
-                          <Button danger onClick={()=>remove(r.id)} disabled={!hasPerm('property_maintenance.delete')}>删除</Button>
-                        </Space>
+                        <TableRowActions actions={maintenanceRowActions(r)} />
                       </Space>
                     </Card>
                   ))}
@@ -953,15 +994,7 @@ function issueAreaLabel(r?: any): string {
               { title:'其他人备注', dataIndex:'pay_other_note', width: 160 },
               { title:'状态', dataIndex:'status', width: 120, render:(s:string)=> statusTag(s) },
               { title:'分配人员', dataIndex:'assignee_name', width: 140, render: (_: any, r: RepairOrder) => String(r.assignee_name || '-') },
-              { title:'操作', width: 320, render: (_:any, r:RepairOrder) => (
-                <Space wrap>
-                  <Button onClick={()=>openView(r)}>详情</Button>
-                  <Button onClick={()=>shareLink(r)}>分享</Button>
-                  <Button onClick={()=>openExportPdf(r)} loading={downloadingId === String(r.id)} disabled={!canDownload}>导出PDF</Button>
-                  <Button onClick={()=>openEdit(r)} disabled={!hasPerm('property_maintenance.write')}>编辑</Button>
-                  <Button danger onClick={()=>remove(r.id)} disabled={!hasPerm('property_maintenance.delete')}>删除</Button>
-                </Space>
-              ) },
+              { title:'操作', width: 400, fixed: 'right', render: (_:any, r:RepairOrder) => maintenanceTableRowActions(r) },
             ]
             return (
               <div style={{ width:'100%', overflowX:'auto' }}>
@@ -987,7 +1020,7 @@ function issueAreaLabel(r?: any): string {
                       if (ps !== pageSize) { setPageSize(ps); setPage(1) } else { setPage(p) }
                     }
                   }}
-                  scroll={{ x: 1800 }}
+                  scroll={{ x: 1880 }}
                   columns={columns as any}
                 />
               </div>
@@ -1104,11 +1137,7 @@ function issueAreaLabel(r?: any): string {
             <Descriptions bordered column={1} labelStyle={{ width: '120px' }}>
               <Descriptions.Item label="照片">
                 {(() => {
-                  const raw: any = (viewRow as any)?.repair_photo_urls
-                  let arr: string[] = Array.isArray(raw) ? raw : []
-                  if (!arr.length && typeof raw === 'string') {
-                    try { const j = JSON.parse(raw); if (Array.isArray(j)) arr = j } catch {}
-                  }
+                  const arr = maintenanceAfterPhotoReferences(viewRow)
                   if (!arr.length) return '-'
                   return (
                     <Image.PreviewGroup>
@@ -1157,26 +1186,31 @@ function issueAreaLabel(r?: any): string {
           </Form.Item>
         </Form>
       </Modal>
-      <Modal open={createOpen} onCancel={()=>{ setCreateOpen(false); createForm.resetFields(); setCreateFiles([]); setCreatePhotos([]) }} onOk={async ()=>{
-        const v = await createForm.validateFields()
-        const payload: any = {
-          property_id: v.property_id,
-          area: v.area,
-          status: 'pending',
-          submitted_at: new Date().toISOString(),
-        }
-        if (v.details) {
-          try { payload.details = JSON.stringify([{ content: String(v.details || '') }]) } catch { payload.details = String(v.details || '') }
-        }
-        if (v.invoice_description_en) payload.invoice_description_en = String(v.invoice_description_en || '').trim()
-        if (v.submitter_name) payload.submitter_name = v.submitter_name
-        if (createPhotos.length) payload.photo_urls = createPhotos
+      <Modal open={createOpen} confirmLoading={createSaving} okButtonProps={{ disabled: createSaving }} onCancel={()=>{ if (createSaving) return; createOperationRef.current = null; setCreateOpen(false); createForm.resetFields(); setCreateFiles([]); setCreatePhotos([]) }} onOk={async ()=>{
+        if (createSaving) return
         try {
-          await apiCreate('property_maintenance', payload)
+          setCreateSaving(true)
+          const v = await createForm.validateFields()
+          const detail = String(v.details || '').trim()
+          const invoiceDescriptionEn = String(v.invoice_description_en || '').trim() || null
+          const operationKey = JSON.stringify({ property_id: v.property_id, area: v.area, detail, media_urls: createPhotos, invoice_description_en: invoiceDescriptionEn })
+          const submitId = createOperationRef.current?.key === operationKey
+            ? createOperationRef.current.id
+            : newMaintenanceAssignmentOperationId()
+          createOperationRef.current = { key: operationKey, id: submitId }
+          await createInternalMaintenanceFeedback({
+            propertyId: String(v.property_id || ''),
+            area: String(v.area || ''),
+            detail,
+            mediaUrls: createPhotos,
+            invoiceDescriptionEn,
+            submitId,
+          })
           message.success('已新增维修记录')
+          createOperationRef.current = null
           setCreateOpen(false); createForm.resetFields(); setCreateFiles([]); setCreatePhotos([])
           setPage(1); loadMaintenance(true)
-        } catch (e: any) { message.error(e?.message || '新增失败') }
+        } catch (e: any) { message.error(e?.message || '新增失败') } finally { setCreateSaving(false) }
       }} title="新增维修记录" okText="保存">
         <Form form={createForm} layout="vertical">
           <Form.Item name="property_id" label="房号" rules={[{ required: true }]}>
@@ -1194,9 +1228,7 @@ function issueAreaLabel(r?: any): string {
           <Form.Item name="area" label="问题区域" rules={[{ required: true }]}>
             <Select options={['入户走廊','客厅','厨房','卧室','阳台','浴室','其他'].map(x => ({ value:x, label:x }))} />
           </Form.Item>
-          <Form.Item name="submitter_name" label="提交人" rules={[{ required: true }]}>
-            <Input placeholder="请输入提交人姓名" />
-          </Form.Item>
+          <Typography.Text type="secondary">提交人将由系统按当前登录账号记录。</Typography.Text>
           <Form.Item name="details" label="问题摘要" rules={[{ required: true, min: 3 }]}>
             <Input.TextArea rows={3} />
           </Form.Item>

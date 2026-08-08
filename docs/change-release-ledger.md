@@ -1,5 +1,79 @@
 # Change Release Ledger
 
+## CRL-20260808-001 — 网页维修创建 409、受派执行与重复创建保护（root）
+
+- **Status:** candidate; selected-for-commit.
+- **Outcome:** 网页创建改走受控的内部维修反馈入口；后端只向实际受派人提供维修执行动作，并用事务锁、幂等回执和预热消除冷启动超时后的重复创建。
+- **Files / Areas:** `backend/src/lib/maintenanceWorkflow.ts`, `backend/src/lib/maintenanceWorkflowSchema.ts`, `backend/src/lib/idempotentStepReceipts.ts`, `backend/src/modules/maintenance.ts`, `backend/src/modules/mzapp.ts`, `frontend/src/app/maintenance/records/page.tsx`, `frontend/src/lib/maintenanceWorkflowActions.ts`, `frontend/src/lib/api.ts`, `backend/scripts/tests/test_maintenance_workflow_actions.ts`, `frontend/src/lib/maintenanceWorkflowActions.test.ts`, `frontend/src/lib/api.test.ts`.
+- `frontend/src/lib/api.test.ts` — 409 无文案时保留服务端业务错误码的回归。
+- **Validation:** backend workflow contract, frontend targeted tests and backend/frontend type checks passed.
+- **Risk / dependency:** preparation uses idempotent schema checks at runtime; deployment needs the paired mobile CRL-20260808-001 and non-production concurrency verification. No production write was made here.
+
+## CRL-20260808-002 — 维修分派投影与任务中心权限一致性（root）
+
+- **Status:** candidate; selected-for-commit.
+- **Outcome:** 任务中心从源维修记录同步受派人、只在受派关系成立时向执行端给出动作，并保持内部用户可受派但非受派人不可执行。
+- **Files / Areas:** `backend/src/lib/maintenanceWorkflowStore.ts`, `backend/src/modules/task_center.ts`, `backend/src/modules/cleaning.ts`, `backend/src/modules/maintenance.ts`, `frontend/src/app/task-center/page.tsx`, `backend/scripts/tests/test_maintenance_workflow_actions.ts`.
+- **Validation:** backend workflow contract and TypeScript compile passed.
+- **Risk / dependency:** 依赖 mobile CRL-20260808-002 对服务端回执的本地状态收口；真实登录角色仍待非生产验证。
+
+## CRL-20260808-003 — 已取消维修禁止删除与旧状态筛选兼容（root）
+
+- **Status:** candidate; selected-for-commit.
+- **Outcome:** 已取消记录从操作栏和函数入口双重禁止删除；标准状态筛选兼容历史同义值。
+- **Files / Areas:** `backend/src/modules/crud.ts`, `frontend/src/app/maintenance/records/page.tsx`, `frontend/src/lib/maintenanceWorkflowActions.ts`, `frontend/src/lib/maintenanceWorkflowActions.test.ts`, `backend/scripts/tests/test_maintenance_workflow_actions.ts`.
+- **Validation:** frontend action tests and backend workflow contract passed.
+- **Risk / dependency:** 不物理删除、不迁移历史数据；保留既有审计软删除接口。
+
+## CRL-20260808-004 — 维修工作流与幂等表的兼容准备（root）
+
+- **Status:** candidate; selected-for-commit.
+- **Outcome:** 后端在进入维修创建链路前幂等准备工作流基础字段、外部维修表和提交回执表，避免旧环境缺字段导致 409/500。
+- **Files / Areas:** `backend/src/lib/maintenanceWorkflowSchema.ts`, `backend/src/lib/idempotentStepReceipts.ts`, `backend/src/modules/mzapp.ts`.
+- **Validation:** backend TypeScript compile and maintenance workflow contract passed.
+- **Risk / dependency:** 首次部署会执行受限的 `CREATE/ALTER ... IF NOT EXISTS` 兼容 DDL；需按正常后端部署窗口执行，未在本次运行任何生产 SQL。
+
+## CRL-20260808-005 — 网页维修操作栏均衡两行布局（root）
+
+- **Status:** candidate; selected-for-commit.
+- **Outcome:** 详情、分享、导出 PDF 置于首行，编辑、删除置于第二行；取消或无权限时继续隐藏相应操作。
+- **Files / Areas:** `frontend/src/app/maintenance/records/page.tsx`.
+- **Validation:** frontend TypeScript check and production build passed (exit 0); build emitted pre-existing Browserslist and chart-size warnings only.
+- **Risk / dependency:** 仅展示层，不改变权限、删除确认或 API。
+
+## CRL-20260808-006 — 历史维修完工照片的受控回填与认证预览（root）
+
+- **Status:** candidate; selected-for-commit.
+- **Outcome:** 历史反馈把已保存的 `completion_photo_urls` 合并为维修后照片；移动端仅经认证代理读取，仍要求精确来源记录关联。
+- **Files / Areas:** `backend/src/modules/mzapp.ts`, `backend/scripts/tests/test_mzapp_media_visibility.ts`, `backend/scripts/tests/test_maintenance_workflow_actions.ts`, `frontend/src/lib/maintenanceFeedbackMedia.ts`, `frontend/src/lib/maintenanceFeedbackMedia.test.ts`.
+- **Validation:** two backend media/workflow contracts and frontend media tests passed.
+- **Risk / dependency:** paired mobile CRL-20260808-006 must travel with this server behavior; no R2 direct URL or media-byte read is introduced.
+
+## CRL-20260808-007 — 维修完工照片投影契约补强（root）
+
+- **Status:** candidate; selected-for-commit.
+- **Outcome:** 维护任务投影保留完成照片、备注和未完成原因；历史反馈回退和分类移动不丢失已保存完工照片；项目新增与完工在同一事务中锁定反馈记录，避免并发覆盖项目或照片。
+- **Files / Areas:** `backend/src/lib/maintenanceWorkflowStore.ts`, `backend/src/modules/mzapp.ts`, `backend/scripts/tests/test_maintenance_workflow_actions.ts`.
+- **Validation:** maintenance workflow contract passed，覆盖任务投影字段、已取消删除拒绝和项目创建/完工事务行锁契约。
+- **Risk / dependency:** 依赖已存在的认证媒体代理和移动端本地草稿策略；部署后需以真实受派账号验证缩略图与大图。
+
+### Files / Areas
+
+- `frontend/src/lib/api.test.ts` — 409 业务错误码回归。
+
+### Release Attempt
+
+#### RA-20260808-root-maintenance-01
+
+- Repository: root; branch: `codex/release-maintenance-20260808-root`; intended action: commit.
+- Selected CRLs: `CRL-20260808-001`, `CRL-20260808-002`, `CRL-20260808-003`, `CRL-20260808-004`, `CRL-20260808-005`, `CRL-20260808-006`, `CRL-20260808-007`.
+- Base: `origin/Dev@6ea97fb999f9fb67630aac3c5b8973e61ccde3c6`; fetched 2026-08-08 23:04:23 AEST.
+- Candidate patch SHA-256: `a80c4418e4eaedbaf3eeef0a2a03298933233cc3a5354a6c84da49742bf10474`, from the staged candidate excluding `docs/change-release-ledger.md`.
+- Candidate content commit: not yet created. Dependencies: mobile RA-20260808-mobile-maintenance-01 for CRL-20260808-001/002/006.
+- Validation: backend/frontend TypeScript checks, targeted backend media/workflow contracts (including cancelled-delete rejection, completion projection and project-mutation transaction locking), frontend 10-test suite, and frontend production build all passed. The production build emitted pre-existing Browserslist and chart-size warnings only.
+- Shared-hunk / generated / secret review: all staged source paths are attributed above; no generated `backend/dist`, dependency link, cache, environment file, token or private media value is selected.
+- Technical state: verified. User authorization: selected-for-commit (user confirmation on 2026-08-08). Independent review: GO for commit only on 2026-08-08 after verifying exact fingerprint `a80c4418e4eaedbaf3eeef0a2a03298933233cc3a5354a6c84da49742bf10474`; cancelled-delete, legacy `maintenance/` proxy, completion-projection and project-mutation transaction-lock P1 defects are remediated. Action conclusion: GO for commit only.
+
 ## CRL-20260807-009 — Phase 5 跨仓服务端动作契约门禁校正（root）
 
 - **Status:** committed
