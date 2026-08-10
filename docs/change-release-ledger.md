@@ -50,17 +50,18 @@
 - Required validation: PASS; root media/workflow contracts and no-emit TypeScript passed.
 - Shared-hunk review: PASS; the staged candidate contains only the exact selected CRL files, and shared docs hunks describe only these four units.
 - Generated-file review: PASS; staged paths contain no `dist`, build, cache, coverage or map output.
-- Technical state: committed.
+- Technical state: pushed.
 - User authorization: approved-for-push; user approved the exact root candidate content commit `74d596c5dd370710b87f6bcdb2e5122726d90adf` and branch `codex/release-20260809-001-003-004-006` on 2026-08-10.
 - Independent review: GO for `b63c4dadb58b050b443fa25daa689c1a41c1526e9e7b0b80521c0bc69dd98252 after resolving the listed P1 source-task/work-task, URL-variant, raw-key and historical-reference bypasses; no P0/P1 remain. P2 legacy R2 post-materialization size cap is recorded and accepted for this commit scope.
-- Action conclusion: GO for push; the re-fetched `origin/Dev` base remains exact and the pre-push range report is required before network push.
+- Remote push evidence: `origin/codex/release-20260809-001-003-004-006@89faa34a14128303baf7427d8b274ae2f1ebb148` created at 2026-08-10 21:37:55 AEST; `Dev` unchanged.
+- Action conclusion: GO for push completed; PR creation against `Dev` is the next separate step.
 
 ### Risks / Release Notes
 
 - Production deployment and real-device verification are not part of this source release.
 - P2 retained risk: legacy R2 response body size is checked after the response body is materialized. The 15 MB post-read cap remains, but streaming byte enforcement is a separate hardening change not included in this selected repair.
 - Sensitive-information review: no credentials, tokens, private object URLs, media bytes, database URLs, `.env` values or logs are included.
-- Git state: candidate content commit `74d596c5dd370710b87f6bcdb2e5122726d90adf`; release receipt `5e39ac62a72117290e82198e40567b3a967d1d3d`; remote push pending.
+- Git state: candidate content commit `74d596c5dd370710b87f6bcdb2e5122726d90adf`; pre-push ledger receipts through `89faa34a14128303baf7427d8b274ae2f1ebb148`; remote evidence receipt pending.
 
 ## CRL-20260809-004 — 内部维修详情缓存前照片回填（root）
 
