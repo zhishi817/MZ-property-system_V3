@@ -182,7 +182,11 @@ async function updateMaintenanceWorkflowRecord(client: any, domain: MaintenanceD
   const values: any[] = []
   const sets = Object.entries(patch).map(([field, value]) => {
     values.push(value)
-    const cast = field === 'completion_photo_urls' || field === 'photo_urls' ? '::jsonb' : ''
+    const cast = field === 'completion_photo_urls'
+      ? '::jsonb'
+      : field === 'photo_urls'
+        ? '::text[]'
+        : ''
     return `"${field}" = $${values.length}${cast}`
   })
   sets.push('updated_at = now()')

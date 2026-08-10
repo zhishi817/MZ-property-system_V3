@@ -1,5 +1,181 @@
 # Change Release Ledger
 
+## CRL-20260809-006 — 维修待审核状态投影保护（root）
+
+- **Status:** candidate
+- **Updated:** 2026-08-10 00:55 AEST
+- **Request:** 提交并发布所选维修状态、照片和离线媒体修复到 `Dev`。
+- **Outcome:** 内部维修源记录已是 `pending_review` 时，任务中心同步和移动工作任务读取保留权威状态，不再被陈旧 `assigned` 投影回退。
+
+### Implementation
+
+- Previous behavior: `property_maintenance` 的源状态可在同步后被工作任务投影覆盖。
+- New behavior: 同步和读取均使用规范化源状态，且既有 `pending_review` 不接受 `assigned` 回退。
+- Key decisions: 不改数据库、权限或生产数据。
+
+### Files / Areas
+
+- `backend/src/lib/maintenanceWorkflowStore.ts` — 保护待审核投影状态。
+- `backend/src/modules/task_center.ts` — 从权威维修来源投影状态。
+- `backend/src/modules/mzapp.ts` — 工作任务响应使用权威维修状态。
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts` — 状态投影回归。
+- `docs/feature-regression-registry.md` — FR-010 回归映射。
+- `docs/change-release-ledger.md` — 本次发布记录。
+
+### Impact / Dependencies
+
+- API: `GET /mzapp/work-tasks` 的现有 `status` 字段改为正确的权威值。
+- Database / migration / config / dependencies: none.
+- Related units: `CRL-20260809-003`, `CRL-20260809-004`, `CRL-20260809-001`.
+
+### Validation
+
+- `npm run test:maintenance-workflow-actions --prefix backend` — passed.
+- `./backend/node_modules/.bin/tsc --noEmit -p backend/tsconfig.json` — passed in the clean candidate using the existing dependency tree.
+- P1 authorization repair regression — passed: current/legacy/raw-key offline references from both `key` and `url` always resolve the unscoped exact association first, including canonical identity matches against a stored legacy/current representation; `source_task_id`, malformed/wrong `work_task_id`, duplicate association, a key masking an unsafe or safe offline URL, and all `.r2.dev/mzapp/...` HTTP/query/fragment/explicit-port/userinfo variants cannot bypass the offline authorization branch.
+- `git diff --check` — passed before ledger assembly.
+
+### Release Attempts
+
+#### RA-20260810-root-maintenance-media-01
+
+- Repository: root
+- Selected CRLs: CRL-20260809-001, CRL-20260809-003, CRL-20260809-004, CRL-20260809-006.
+- Intended action: commit.
+- Branch: codex/release-20260809-001-003-004-006.
+- Base: origin/Dev@6d59d89eb115e23b3c97345059d14718855c6b5b; fetched at 2026-08-10 04:51:59 AEST.
+- Candidate patch SHA-256: b63c4dadb58b050b443fa25daa689c1a41c1526e9e7b0b80521c0bc69dd98252 (staged content excluding `docs/change-release-ledger.md` after P1 repairs).
+- Commit SHA: not committed.
+- Dependencies: mobile CRL-20260809-004 and mobile CRL-20260810-001 must release with the server media contract.
+- Required validation: PASS; root media/workflow contracts and no-emit TypeScript passed.
+- Shared-hunk review: PASS; the staged candidate contains only the exact selected CRL files, and shared docs hunks describe only these four units.
+- Generated-file review: PASS; staged paths contain no `dist`, build, cache, coverage or map output.
+- Technical state: verified.
+- User authorization: selected-for-commit; user selected the four root CRLs and authorized a mobile CRL renumber on 2026-08-10.
+- Independent review: GO for `b63c4dadb58b050b443fa25daa689c1a41c1526e9e7b0b80521c0bc69dd98252 after resolving the listed P1 source-task/work-task, URL-variant, raw-key and historical-reference bypasses; no P0/P1 remain. P2 legacy R2 post-materialization size cap is recorded and accepted for this commit scope.
+- Action conclusion: GO for commit only; push needs new SHA-bound user approval.
+
+### Risks / Release Notes
+
+- Production deployment and real-device verification are not part of this source release.
+- P2 retained risk: legacy R2 response body size is checked after the response body is materialized. The 15 MB post-read cap remains, but streaming byte enforcement is a separate hardening change not included in this selected repair.
+- Sensitive-information review: no credentials, tokens, private object URLs, media bytes, database URLs, `.env` values or logs are included.
+- Git state: candidate worktree only; uncommitted.
+
+## CRL-20260809-004 — 内部维修详情缓存前照片回填（root）
+
+- **Status:** candidate
+- **Updated:** 2026-08-10 00:55 AEST
+- **Request:** 与 mobile 配套发布旧缓存详情的维修前照片回填。
+- **Outcome:** 根仓记录 API/投影依赖和回归契约；实际详情展示由配对 mobile CRL 完成。
+
+### Implementation
+
+- Previous behavior: 旧缓存详情可能遗漏服务端返回的维修前照片字段。
+- New behavior: 配对 mobile 仅刷新一次当前任务，并经既有认证代理显示字段。
+
+### Files / Areas
+
+- `docs/feature-regression-registry.md` — FR-010 记录跨层回归。
+- `docs/change-release-ledger.md` — 本 root/mobile 配对记录。
+
+### Impact / Dependencies
+
+- API / database / migration / config / dependencies: none in root beyond the existing work-task projection.
+- Related units: mobile `CRL-20260809-004`; `CRL-20260809-006`.
+
+### Validation
+
+- Root workflow contract is covered by `npm run test:maintenance-workflow-actions --prefix backend` — passed.
+
+### Release Attempts
+
+- See `RA-20260810-root-maintenance-media-01` in CRL-20260809-006.
+
+### Risks / Release Notes
+
+- Device and deployed authenticated-media verification remain separate.
+
+## CRL-20260809-003 — 维修分派前照片 text-array 参数修复（root）
+
+- **Status:** candidate
+- **Updated:** 2026-08-10 00:55 AEST
+- **Request:** 提交网页维修分派被 PostgreSQL 参数类型阻断的修复。
+- **Outcome:** `photo_urls` 使用 `text[]`，仅 `completion_photo_urls` 使用 `jsonb`，分派事务不再因前照片数组类型而回滚。
+
+### Implementation
+
+- Previous behavior: 两类照片字段共享 JSONB 类型转换。
+- New behavior: 分派更新按字段使用正确的数据库类型。
+
+### Files / Areas
+
+- `backend/src/modules/maintenance.ts` — 前照片参数使用 `text[]`。
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts` — 字段类型回归。
+- `docs/feature-regression-registry.md` — FR-010 映射。
+- `docs/change-release-ledger.md` — 本次发布记录。
+
+### Impact / Dependencies
+
+- API: existing assignment endpoint accepts its unchanged payload correctly.
+- Database / migration / config / dependencies: none.
+- Related units: `CRL-20260809-006`.
+
+### Validation
+
+- `npm run test:maintenance-workflow-actions --prefix backend` — passed.
+
+### Release Attempts
+
+- See `RA-20260810-root-maintenance-media-01` in CRL-20260809-006.
+
+### Risks / Release Notes
+
+- No production transaction was executed.
+
+## CRL-20260809-001 — 线下任务照片稳定服务端引用与认证读取（root）
+
+- **Status:** candidate
+- **Updated:** 2026-08-10 00:55 AEST
+- **Request:** 将线下任务照片从公共 URL 身份改为服务端稳定引用，并安全兼容已记录历史 URL。
+- **Outcome:** 新上传返回兼容 URL、对象 key 与稳定 `remote_reference`；保存和读取要求精确任务关联，当前 `r2://` 引用和已记录 legacy 引用均经认证代理和任务读取权限检查。
+
+### Implementation
+
+- Previous behavior: 线下任务将公共上传 URL 作为唯一身份，读取端可错误映射历史 bucket。
+- New behavior: 服务端规范化 `mzapp/` 当前引用；未知旧主机拒绝，legacy 只在原记录精确关联后由服务端读取。
+- Key decisions: 不新增表、不迁移历史对象、不暴露直链；配对 mobile 客户端改由 `CRL-20260810-001` 记录。
+
+### Files / Areas
+
+- `backend/src/lib/mzappTaskPhotoReference.ts` — stable reference 和 legacy 验证。
+- `backend/src/modules/mzapp.ts` — 上传响应和线下任务照片保存。
+- `backend/src/modules/cleaning_app.ts` — 精确关联和认证读取代理。
+- `backend/scripts/tests/test_mzapp_task_photo_reference.ts` — 当前/legacy 引用与路由合约。
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — manager、assignee、outsider 授权。
+- `backend/scripts/tests/test_cleaning_media_image.ts` — 精确关联和缺失对象终态。
+- `docs/feature-regression-registry.md` — FR-005 回归映射。
+- `docs/change-release-ledger.md` — 本次发布记录。
+
+### Impact / Dependencies
+
+- API: non-document `POST /mzapp/upload` 新增 `key` 和 `remote_reference`; existing URL remains compatible.
+- Database / migration / config / dependencies: none.
+- Related units: mobile `CRL-20260810-001`.
+
+### Validation
+
+- `test_mzapp_task_photo_reference.ts`, `test_mzapp_media_visibility.ts`, `test_cleaning_media_image.ts` — passed in the clean candidate.
+- Backend no-emit TypeScript — passed.
+
+### Release Attempts
+
+- See `RA-20260810-root-maintenance-media-01` in CRL-20260809-006.
+
+### Risks / Release Notes
+
+- Real R2 reads and device authorization are not source-test evidence; no production object read or write occurred.
+
 ## CRL-20260808-008 — 幂等回执表迁移边界回归修复（root）
 
 - **Status:** committed.

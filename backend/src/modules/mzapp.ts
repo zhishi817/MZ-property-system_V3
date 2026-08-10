@@ -7,6 +7,7 @@ import { hasR2, r2Upload } from '../r2'
 import crypto from 'crypto'
 import sharp from 'sharp'
 import fs from 'fs'
+import { canonicalizeMzappTaskPhotoReference, createMzappTaskPhotoRemoteReference } from '../lib/mzappTaskPhotoReference'
 import { listPermissionCodesForUser, userHasAnyPerm } from '../auth'
 import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
 import { emitNotificationEvent, ensureNotificationStorage } from '../services/notificationEvents'
@@ -32,7 +33,7 @@ import { buildCleaningTurnoverDisplay, mergeCleaningTurnoverDisplays } from '../
 import { CLEANING_IMAGE_FORMAT_ERROR, isImageUploadCandidate, normalizeCleaningImageUpload } from '../lib/cleaningMediaImage'
 import { isCleaningMediaKey } from '../lib/cleaningMediaReference'
 import { assertMaintenanceWorkflowSchemaReady, ensureMaintenanceWorkflowFoundation, MaintenanceWorkflowSchemaNotReady } from '../lib/maintenanceWorkflowSchema'
-import { availableMaintenanceActions, normalizeMaintenanceWorkflowStatus } from '../lib/maintenanceWorkflow'
+import { availableMaintenanceActions, maintenanceWorkTaskStatus, normalizeMaintenanceWorkflowStatus } from '../lib/maintenanceWorkflow'
 import {
   ensureMaintenanceWorkTasksTable,
   insertMaintenanceWorkflowEvent,
@@ -1367,6 +1368,30 @@ export async function canViewMzappRecordedCleaningMedia(user: any, row: any, use
   }
   if (await canViewMzappTaskConsumables(user, row, userId)) return true
   return userHasManualWorkTaskAction(user, userId, 'cleaning_tasks', String(row?.id || '').trim(), 'complete_cleaning')
+}
+
+export async function canViewMzappOfflineWorkTaskMedia(user: any, row: any, userId: string) {
+  if (await canViewAllWorkTasks(user)) return true
+  const uid = String(userId || '').trim()
+  const taskId = String(row?.id || '').trim()
+  if (!uid || !taskId) return false
+  if (String(row?.assignee_id || '').trim() === uid) return true
+  if (!hasPg || !pgPool) return false
+  try {
+    const result = await pgPool.query(
+      `SELECT 1
+         FROM work_task_participants
+        WHERE source_type = 'work_tasks'
+          AND source_id = $1
+          AND user_id = $2
+          AND source_relation = 'manual'
+        LIMIT 1`,
+      [taskId, uid],
+    )
+    return Boolean(result?.rowCount)
+  } catch {
+    return false
+  }
 }
 
 export async function canViewMzappPropertyFeedback(user: any, row: any, userId: string) {
@@ -5331,7 +5356,11 @@ router.post('/upload', upload.single('file'), async (req, res) => {
       const key = `mzapp/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
       const mime = normalized.normalized || (watermarkRequested && isImage) ? 'image/jpeg' : (req.file.mimetype || 'application/octet-stream')
       const url = await r2Upload(key, mime, buffer)
-      return res.status(201).json({ url })
+      return res.status(201).json({
+        url,
+        key,
+        remote_reference: createMzappTaskPhotoRemoteReference(key),
+      })
     }
     const filePath = (req.file as any).path ? String((req.file as any).path) : ''
     if (filePath && watermarkRequested && isImage) {
@@ -5869,7 +5898,6 @@ router.patch('/work-tasks/:id/photos', async (req, res) => {
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
 
-  const photoUrls = normalizeWorkTaskPhotoUrls(parsed.data.photo_urls)
   try {
     await ensureWorkTasksTable()
     const current = await pgPool.query(
@@ -5883,6 +5911,14 @@ router.patch('/work-tasks/:id/photos', async (req, res) => {
     if (!row) return res.status(404).json({ message: 'task not found' })
     if (!canViewAll(user) && String(row.assignee_id || '').trim() !== userId) {
       return res.status(403).json({ message: 'forbidden' })
+    }
+    const existingPhotoUrls = normalizeWorkTaskPhotoUrls(row.photo_urls)
+    const isOfflineTask = String(row.source_type || '').trim() === 'cleaning_offline_tasks'
+    const photoUrls = isOfflineTask
+      ? normalizeWorkTaskPhotoUrls(parsed.data.photo_urls.map((reference) => canonicalizeMzappTaskPhotoReference(reference, existingPhotoUrls)))
+      : normalizeWorkTaskPhotoUrls(parsed.data.photo_urls)
+    if (isOfflineTask && photoUrls.length !== normalizeWorkTaskPhotoUrls(parsed.data.photo_urls).length) {
+      return res.status(400).json({ code: 'invalid_task_photo_reference', message: 'invalid_task_photo_reference' })
     }
 
     const updated = await pgPool.query(
@@ -6195,6 +6231,8 @@ router.get('/work-tasks', async (req, res) => {
           p.wifi_password AS property_wifi_password,
           p.router_location AS property_router_location,
           pm.photo_urls AS maintenance_before_photo_urls,
+          pm.status AS maintenance_source_status,
+          pm.review_status AS maintenance_source_review_status,
           COALESCE(NULLIF(TRIM(au.display_name), ''), NULLIF(TRIM(au.username), ''), NULLIF(TRIM(au.email), ''), w.assignee_id::text) AS assignee_name
         FROM work_tasks w
         LEFT JOIN properties p ON p.id = w.property_id
@@ -6219,6 +6257,12 @@ router.get('/work-tasks', async (req, res) => {
       )
       for (const x of rows) {
         const completionPhotoUrls = normalizeWorkTaskPhotoUrls(x.completion_photo_urls)
+        const maintenanceSourceStatus = String(x.maintenance_source_status || '').trim()
+        const maintenanceSourceReviewStatus = String(x.maintenance_source_review_status || '').trim()
+        const maintenanceProjectionStatus = String(x.source_type || '') === 'property_maintenance'
+          && (maintenanceSourceStatus || maintenanceSourceReviewStatus)
+          ? maintenanceWorkTaskStatus(normalizeMaintenanceWorkflowStatus(maintenanceSourceStatus, maintenanceSourceReviewStatus))
+          : null
         out.push({
           id: String(x.id),
           task_kind: String(x.task_kind || ''),
@@ -6235,7 +6279,7 @@ router.get('/work-tasks', async (req, res) => {
           assignee_id: x.assignee_id ? String(x.assignee_id) : null,
           assignee_name: x.assignee_name ? String(x.assignee_name) : null,
           cleaner_name: x.assignee_name ? String(x.assignee_name) : null,
-          status: effectiveWorkTaskStatus(x.status, x.assignee_id),
+          status: maintenanceProjectionStatus ?? effectiveWorkTaskStatus(x.status, x.assignee_id),
           execution_role: 'work',
           execution_semantics: 'work_task',
           urgency: String(x.task_kind || '').toLowerCase() === 'offline' ? null : normUrgency(x.urgency),

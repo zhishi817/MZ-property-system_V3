@@ -14,6 +14,7 @@ import { buildCleaningTaskVisibilityHints, emitWorkTaskEvent } from '../services
 import { effectiveInspectionMode, isInspectionFinishedStatus } from '../lib/cleaningInspection'
 import { CLEANING_IMAGE_FORMAT_ERROR, encodeCleaningImageToJpeg, isImageUploadCandidate, normalizeCleaningImageUpload } from '../lib/cleaningMediaImage'
 import { isCleaningMediaKey } from '../lib/cleaningMediaReference'
+import { currentMzappTaskPhotoKeyFromReference, isLegacyMzappTaskPhotoPublicUrl, mzappTaskPhotoReferenceVariants, normalizeMzappTaskPhotoKey } from '../lib/mzappTaskPhotoReference'
 import {
   buildIdempotencyPayloadHash,
   assertIdempotentStepReceiptsReady,
@@ -31,7 +32,7 @@ import {
 } from '../lib/workTaskActionAudit'
 import type { WorkTaskActionId } from '../lib/workTaskActions'
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
-import { canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia } from './mzapp'
+import { canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia } from './mzapp'
 
 export const router = Router()
 
@@ -3271,16 +3272,167 @@ async function findPropertyFeedbackMediaRows(pool: any, key: string) {
   return (result?.rows || []).filter((row: any) => feedbackMediaRowReferencesKey(row, key))
 }
 
+const OFFLINE_TASK_MEDIA_MAX_BYTES = 15 * 1024 * 1024
+
+function safeOfflineWorkTaskId(value: unknown) {
+  const id = String(value || '').trim()
+  return /^[A-Za-z0-9:_-]{1,180}$/.test(id) ? id : ''
+}
+
+function inspectMzappR2Url(value: unknown) {
+  const raw = String(value || '').trim()
+  if (!raw) return null
+  try {
+    const url = new URL(raw)
+    if (!url.hostname.toLowerCase().endsWith('.r2.dev') || !url.pathname.startsWith('/mzapp/')) return null
+    const authority = /^https:\/\/([^/?#]*)/i.exec(raw)?.[1] || ''
+    const hasUnsafeVariant = Boolean(url.protocol !== 'https:' || url.search || url.hash || url.username || url.password || url.port || authority.includes('@') || /:\d+$/.test(authority))
+    return { hasUnsafeVariant }
+  } catch {
+    return null
+  }
+}
+
+function offlineTaskMediaError(code: string, message: string) {
+  const error: any = new Error(message)
+  error.code = code
+  return error
+}
+
+async function findOfflineWorkTaskPhotoRows(pool: any, references: string[]) {
+  const keys = Array.from(new Set(references
+    .map((reference) => normalizeMzappTaskPhotoKey(reference))
+    .filter((key): key is string => Boolean(key))))
+  const result = await pool.query(
+    `SELECT w.id,
+            w.assignee_id,
+            w.photo_urls
+       FROM work_tasks w
+      WHERE w.source_type = 'cleaning_offline_tasks'
+        AND EXISTS (
+          SELECT 1
+            FROM jsonb_array_elements_text(w.photo_urls) AS stored(value)
+           WHERE stored.value = ANY($1::text[])
+              OR (
+                CASE
+                  WHEN stored.value ~* '^r2://[a-z0-9][a-z0-9._-]{0,119}/mzapp/[^?#]+$'
+                    THEN regexp_replace(stored.value, '^r2://[^/]+/', '')
+                  WHEN stored.value ~* '^https://[^/?#@:]+\\.r2\\.dev/mzapp/[^?#]+$'
+                    THEN regexp_replace(stored.value, '^https://[^/]+/', '')
+                  ELSE ''
+                END
+              ) = ANY($2::text[])
+        )
+      LIMIT 2`,
+    [references, keys],
+  )
+  return result?.rows || []
+}
+
+async function loadLegacyOfflineTaskPhoto(reference: string) {
+  if (!isLegacyMzappTaskPhotoPublicUrl(reference)) throw offlineTaskMediaError('OFFLINE_MEDIA_INVALID_REFERENCE', 'invalid_media_reference')
+  let response: Response
+  try {
+    response = await fetch(reference, {
+      redirect: 'error',
+      signal: AbortSignal.timeout(15_000),
+    })
+  } catch {
+    throw offlineTaskMediaError('OFFLINE_MEDIA_LEGACY_UNAVAILABLE', 'legacy_media_unavailable')
+  }
+  if (response.status === 404) return null
+  if (!response.ok) throw offlineTaskMediaError('OFFLINE_MEDIA_LEGACY_UNAVAILABLE', 'legacy_media_unavailable')
+  const declaredLength = Number(response.headers.get('content-length') || 0)
+  if (Number.isFinite(declaredLength) && declaredLength > OFFLINE_TASK_MEDIA_MAX_BYTES) {
+    throw offlineTaskMediaError('OFFLINE_MEDIA_TOO_LARGE', 'legacy_media_too_large')
+  }
+  const body = Buffer.from(await response.arrayBuffer())
+  if (!body.length) return null
+  if (body.length > OFFLINE_TASK_MEDIA_MAX_BYTES) throw offlineTaskMediaError('OFFLINE_MEDIA_TOO_LARGE', 'legacy_media_too_large')
+  return {
+    body,
+    contentType: String(response.headers.get('content-type') || 'application/octet-stream'),
+    etag: undefined as string | undefined,
+  }
+}
+
 router.get(
   '/media/image',
   async (req, res) => {
     try {
       const requestedKey = String((req.query as any)?.key || '').trim()
       const sourceUrl = String((req.query as any)?.url || '').trim()
-      const workTaskId = String((req.query as any)?.work_task_id || '').trim()
+      const requestedWorkTaskIdRaw = String((req.query as any)?.work_task_id || '').trim()
+      const requestedWorkTaskId = safeOfflineWorkTaskId(requestedWorkTaskIdRaw)
+      const workTaskId = requestedWorkTaskId
       const variant = String((req.query as any)?.variant || 'original').trim().toLowerCase()
       if (!requestedKey && !sourceUrl) return res.status(400).json({ message: 'missing_key' })
       if (!['original', 'thumbnail', 'preview'].includes(variant)) return res.status(400).json({ message: 'invalid_variant' })
+      const requestedKeyCurrentKey = currentMzappTaskPhotoKeyFromReference(requestedKey)
+      const sourceUrlCurrentKey = currentMzappTaskPhotoKeyFromReference(sourceUrl)
+      const requestedKeyHasQueryOrFragment = /^https?:\/\//i.test(requestedKey) && /[?#]/.test(requestedKey)
+      const sourceUrlHasQueryOrFragment = /^https?:\/\//i.test(sourceUrl) && /[?#]/.test(sourceUrl)
+      const requestedKeyMzappR2Url = inspectMzappR2Url(requestedKey)
+      const sourceUrlMzappR2Url = inspectMzappR2Url(sourceUrl)
+      const offlineReferences = Array.from(new Set([
+        ...mzappTaskPhotoReferenceVariants(requestedKey),
+        ...mzappTaskPhotoReferenceVariants(sourceUrl),
+      ]))
+      // Resolve every current/legacy mzapp reference against offline tasks before
+      // considering the generic feedback-media branch. Otherwise a caller could
+      // add an unrelated source_task_id (or an incorrect work_task_id) and bypass
+      // the exact offline association and authorization gate below.
+      const isOfflineTaskPhotoCandidate = offlineReferences.length > 0
+      if ((requestedKeyCurrentKey && requestedKeyHasQueryOrFragment) || (sourceUrlCurrentKey && sourceUrlHasQueryOrFragment) || requestedKeyMzappR2Url?.hasUnsafeVariant || sourceUrlMzappR2Url?.hasUnsafeVariant) {
+        return res.status(403).json({ code: 'forbidden_media', message: 'forbidden_media' })
+      }
+      if (isOfflineTaskPhotoCandidate && requestedWorkTaskIdRaw && !requestedWorkTaskId) {
+        return res.status(403).json({ code: 'forbidden_media', message: 'forbidden_media' })
+      }
+      if (isOfflineTaskPhotoCandidate) {
+        if (!hasPg) return res.status(403).json({ code: 'forbidden_media', message: 'forbidden_media' })
+        const { pgPool } = require('../dbAdapter')
+        if (!pgPool) return res.status(403).json({ code: 'forbidden_media', message: 'forbidden_media' })
+        const offlineRows = await findOfflineWorkTaskPhotoRows(pgPool, offlineReferences)
+        const offlineRow = offlineRows.length === 1 ? offlineRows[0] : null
+        if (offlineRows.length && (!offlineRow || (requestedWorkTaskId && String(offlineRow.id || '').trim() !== requestedWorkTaskId))) {
+          return res.status(403).json({ code: 'forbidden_media', message: 'forbidden_media' })
+        }
+        if (offlineRow) {
+          const user = (req as any).user || {}
+          const userId = String(user.sub || '').trim()
+          if (!await canViewMzappOfflineWorkTaskMedia(user, offlineRow, userId)) {
+            return res.status(403).json({ code: 'forbidden_media', message: 'forbidden_media' })
+          }
+          const offlineStoredReference = offlineReferences.find((reference) => normalizeStoredPhotoUrls(offlineRow.photo_urls).includes(reference))
+          if (!offlineStoredReference) {
+            return res.status(403).json({ code: 'forbidden_media', message: 'forbidden_media' })
+          }
+          const offlineObjectKey = currentMzappTaskPhotoKeyFromReference(offlineStoredReference) || normalizeMzappTaskPhotoKey(offlineStoredReference)
+          const object = offlineObjectKey
+            ? hasR2
+              ? await r2GetObjectByKey(offlineObjectKey)
+              : undefined
+            : await loadLegacyOfflineTaskPhoto(offlineStoredReference)
+          if (offlineObjectKey && !hasR2) {
+            return res.status(503).json({ code: 'media_storage_unavailable', message: 'media_storage_unavailable' })
+          }
+          if (!object || !object.body?.length) return res.status(404).json({ code: 'media_not_found', message: 'not_found' })
+          const maxEdge = variant === 'thumbnail' ? 480 : 1600
+          const quality = variant === 'thumbnail' ? 68 : 82
+          const responseBody = await encodeCleaningImageToJpeg(object.body, variant === 'original' ? undefined : { maxEdge, quality })
+          res.setHeader('Content-Type', 'image/jpeg')
+          res.setHeader('Cache-Control', 'private, max-age=86400')
+          if (object.etag) {
+            const baseEtag = String(object.etag).replace(/^W\//, '').replace(/^"|"$/g, '')
+            res.setHeader('ETag', `W/"${baseEtag}-${variant}-jpeg"`)
+          }
+          return res.status(200).send(responseBody)
+        }
+        // A zero-row result is not an offline record and may instead be a
+        // separately recorded property-feedback reference. That generic source
+        // remains protected by its own exact-record selector below.
+      }
       if (!hasR2) return res.status(404).json({ message: 'r2_not_configured' })
       const key = String(requestedKey || r2KeyFromUrl(sourceUrl) || '').trim()
       if (!isPropertyFeedbackMediaKey(key)) {

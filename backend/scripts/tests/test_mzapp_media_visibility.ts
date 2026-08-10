@@ -5,7 +5,7 @@ import path from 'path'
 process.env.DATABASE_URL = ''
 
 async function main() {
-  const { canViewMzappInspectionMedia, canViewMzappLockboxVideo, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia, propertyFeedbackCapabilities } = await import('../../src/modules/mzapp')
+  const { canViewMzappInspectionMedia, canViewMzappLockboxVideo, canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia, propertyFeedbackCapabilities } = await import('../../src/modules/mzapp')
   const { feedbackMediaUrlArray } = await import('../../src/modules/cleaning_app')
 
   const row = {
@@ -60,6 +60,23 @@ async function main() {
     await canViewMzappRecordedCleaningMedia({ sub: 'outsider-1', role: 'cleaning_inspector', roles: ['cleaning_inspector'] }, row, 'outsider-1', 'lockbox_video'),
     false,
     'unassigned inspector cannot read another task lockbox video media by object key',
+  )
+
+  const offlineRow = { id: 'cleaning_offline_tasks:offline-1', assignee_id: 'assignee-1' }
+  assert.equal(
+    await canViewMzappOfflineWorkTaskMedia({ sub: 'offline-manager-1', role: 'offline_manager', roles: ['offline_manager'] }, offlineRow, 'offline-manager-1'),
+    true,
+    'offline managers can read an exact recorded offline task photo',
+  )
+  assert.equal(
+    await canViewMzappOfflineWorkTaskMedia({ sub: 'assignee-1', role: 'cleaner', roles: ['cleaner'] }, offlineRow, 'assignee-1'),
+    true,
+    'the assigned offline worker can read their task photo',
+  )
+  assert.equal(
+    await canViewMzappOfflineWorkTaskMedia({ sub: 'outsider-1', role: 'cleaner', roles: ['cleaner'] }, offlineRow, 'outsider-1'),
+    false,
+    'an unrelated worker cannot read another offline task photo',
   )
 
   assert.equal(
@@ -122,6 +139,7 @@ async function main() {
   assert.match(mediaRoute, /findPropertyFeedbackMediaRows/, 'feedback media must resolve its feedback record before reading R2')
   assert.match(mediaRoute, /feedbackMediaRows\.length === 1/, 'ambiguous feedback references must fail closed before reading R2')
   assert.match(mediaRoute, /canViewMzappPropertyFeedback/, 'feedback media must re-check the current authenticated user')
+  assert.match(mediaRoute, /canViewMzappOfflineWorkTaskMedia/, 'offline task media must use the dedicated task visibility rule')
   assert.doesNotMatch(mediaRoute, /requireAnyPerm/, 'feedback image reading must not require a task execution permission')
   assert.match(mediaRouteSource, /JOIN properties p ON p\.id::text = m\.property_id::text/, 'feedback media must resolve maintenance media through its real property')
   assert.match(mediaRouteSource, /m\.deleted_at IS NULL/, 'soft-deleted feedback must not resolve normal media URLs')
