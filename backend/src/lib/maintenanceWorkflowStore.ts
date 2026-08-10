@@ -119,7 +119,13 @@ export async function upsertMaintenanceWorkTask(client: any, domain: Maintenance
        summary=EXCLUDED.summary,
        scheduled_date=COALESCE(EXCLUDED.scheduled_date, work_tasks.scheduled_date),
        assignee_id=EXCLUDED.assignee_id,
-       status=EXCLUDED.status,
+       status=CASE
+         WHEN work_tasks.task_kind='maintenance'
+           AND lower(COALESCE(work_tasks.status, ''))='pending_review'
+           AND lower(COALESCE(EXCLUDED.status, ''))='assigned'
+           THEN work_tasks.status
+         ELSE EXCLUDED.status
+       END,
        urgency=EXCLUDED.urgency,
        completion_photo_urls=EXCLUDED.completion_photo_urls,
        completion_note=EXCLUDED.completion_note,
