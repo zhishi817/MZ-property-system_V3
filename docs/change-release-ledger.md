@@ -43,7 +43,7 @@
 - Selected CRLs: CRL-20260809-001, CRL-20260809-003, CRL-20260809-004, CRL-20260809-006.
 - Intended action: push.
 - Branch: codex/release-20260809-001-003-004-006.
-- Base: origin/Dev@6d59d89eb115e23b3c97345059d14718855c6b5b; re-fetched and unchanged at 2026-08-10 21:36:03 AEST.
+- Base: origin/Dev@6d59d89eb115e23b3c97345059d14718855c6b5b; fetched at 2026-08-10 21:36:03 AEST and unchanged on recheck.
 - Candidate patch SHA-256: b63c4dadb58b050b443fa25daa689c1a41c1526e9e7b0b80521c0bc69dd98252 (staged content excluding `docs/change-release-ledger.md` after P1 repairs).
 - Commit SHA: 74d596c5dd370710b87f6bcdb2e5122726d90adf (candidate content commit).
 - Dependencies: mobile CRL-20260809-004 and mobile CRL-20260810-001 must release with the server media contract.
