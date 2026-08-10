@@ -45,22 +45,22 @@
 - Branch: codex/release-20260809-001-003-004-006.
 - Base: origin/Dev@6d59d89eb115e23b3c97345059d14718855c6b5b; fetched at 2026-08-10 04:51:59 AEST.
 - Candidate patch SHA-256: b63c4dadb58b050b443fa25daa689c1a41c1526e9e7b0b80521c0bc69dd98252 (staged content excluding `docs/change-release-ledger.md` after P1 repairs).
-- Commit SHA: not committed.
+- Commit SHA: 74d596c5dd370710b87f6bcdb2e5122726d90adf (candidate content commit).
 - Dependencies: mobile CRL-20260809-004 and mobile CRL-20260810-001 must release with the server media contract.
 - Required validation: PASS; root media/workflow contracts and no-emit TypeScript passed.
 - Shared-hunk review: PASS; the staged candidate contains only the exact selected CRL files, and shared docs hunks describe only these four units.
 - Generated-file review: PASS; staged paths contain no `dist`, build, cache, coverage or map output.
-- Technical state: verified.
+- Technical state: committed.
 - User authorization: selected-for-commit; user selected the four root CRLs and authorized a mobile CRL renumber on 2026-08-10.
 - Independent review: GO for `b63c4dadb58b050b443fa25daa689c1a41c1526e9e7b0b80521c0bc69dd98252 after resolving the listed P1 source-task/work-task, URL-variant, raw-key and historical-reference bypasses; no P0/P1 remain. P2 legacy R2 post-materialization size cap is recorded and accepted for this commit scope.
-- Action conclusion: GO for commit only; push needs new SHA-bound user approval.
+- Action conclusion: GO for commit completed; push is NOT VERIFIED until the user explicitly approves this exact content commit and branch.
 
 ### Risks / Release Notes
 
 - Production deployment and real-device verification are not part of this source release.
 - P2 retained risk: legacy R2 response body size is checked after the response body is materialized. The 15 MB post-read cap remains, but streaming byte enforcement is a separate hardening change not included in this selected repair.
 - Sensitive-information review: no credentials, tokens, private object URLs, media bytes, database URLs, `.env` values or logs are included.
-- Git state: candidate worktree only; uncommitted.
+- Git state: candidate content commit `74d596c5dd370710b87f6bcdb2e5122726d90adf`; release receipt pending.
 
 ## CRL-20260809-004 — 内部维修详情缓存前照片回填（root）
 
