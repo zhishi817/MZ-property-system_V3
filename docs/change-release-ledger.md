@@ -54,7 +54,8 @@
 - User authorization: approved-for-push; user approved the exact root candidate content commit `74d596c5dd370710b87f6bcdb2e5122726d90adf` and branch `codex/release-20260809-001-003-004-006` on 2026-08-10.
 - Independent review: GO for `b63c4dadb58b050b443fa25daa689c1a41c1526e9e7b0b80521c0bc69dd98252 after resolving the listed P1 source-task/work-task, URL-variant, raw-key and historical-reference bypasses; no P0/P1 remain. P2 legacy R2 post-materialization size cap is recorded and accepted for this commit scope.
 - Remote push evidence: `origin/codex/release-20260809-001-003-004-006@89faa34a14128303baf7427d8b274ae2f1ebb148` created at 2026-08-10 21:37:55 AEST; `Dev` unchanged.
-- Action conclusion: GO for push completed; PR creation against `Dev` is the next separate step.
+- PR evidence: NOT VERIFIED; this environment has no `gh` command and no `GITHUB_TOKEN`/`GH_TOKEN`, so no root PR was created automatically.
+- Action conclusion: GO for push completed; root PR creation against `Dev` remains pending external GitHub authorization.
 
 ### Risks / Release Notes
 
