@@ -705,6 +705,15 @@ async function syncPropertyFollowupWorkTasks() {
              'medium'::text AS urgency,
              NULLIF(BTRIM(m.assignee_id::text), '') AS source_assignee_id,
              m.eta::date AS source_scheduled_date,
+             CASE
+               WHEN lower(COALESCE(m.status::text, '')) = 'closed'
+                 OR lower(COALESCE(m.review_status::text, '')) IN ('approved', 'closed') THEN 'done'
+               WHEN lower(COALESCE(m.status::text, '')) IN ('cancelled', 'canceled') THEN 'cancelled'
+               WHEN lower(COALESCE(m.status::text, '')) IN ('pending_review', 'review_pending', 'awaiting_review', 'completed', 'done', 'ready') THEN 'pending_review'
+               WHEN lower(COALESCE(m.status::text, '')) IN ('in_progress', 'repairing', 'started') THEN 'in_progress'
+               WHEN lower(COALESCE(m.status::text, '')) = 'assigned' THEN 'assigned'
+               ELSE 'todo'
+             END AS source_task_status,
              COALESCE(m.created_at, m.submitted_at, now()) AS created_at
         FROM property_maintenance m
         LEFT JOIN properties p ON p.id::text = m.property_id::text OR upper(p.code::text) = upper(m.property_id::text)
@@ -721,6 +730,7 @@ async function syncPropertyFollowupWorkTasks() {
              'medium'::text AS urgency,
              NULL::text AS source_assignee_id,
              NULL::date AS source_scheduled_date,
+             NULL::text AS source_task_status,
              COALESCE(d.created_at, d.submitted_at, now()) AS created_at
         FROM property_deep_cleaning d
         LEFT JOIN properties p ON p.id::text = d.property_id::text OR upper(p.code::text) = upper(d.property_id::text)
@@ -737,6 +747,7 @@ async function syncPropertyFollowupWorkTasks() {
              'medium'::text AS urgency,
              NULL::text AS source_assignee_id,
              NULL::date AS source_scheduled_date,
+             NULL::text AS source_task_status,
              COALESCE(n.created_at, n.submitted_at, now()) AS created_at
         FROM property_daily_necessities n
         LEFT JOIN properties p ON p.id::text = n.property_id::text OR upper(p.code::text) = upper(n.property_id::text)
@@ -789,7 +800,11 @@ async function syncPropertyFollowupWorkTasks() {
             p.summary,
             COALESCE(p.source_scheduled_date, p.next_checkout_date),
             p.source_assignee_id,
-            CASE WHEN p.source_assignee_id IS NULL THEN 'todo' ELSE 'assigned' END,
+            CASE
+              WHEN p.source_type = 'property_maintenance' THEN p.source_task_status
+              WHEN p.source_assignee_id IS NULL THEN 'todo'
+              ELSE 'assigned'
+            END,
             CASE WHEN p.urgency IN ('low','medium','high','urgent') THEN p.urgency ELSE 'medium' END,
             p.created_at,
             now()
@@ -809,12 +824,7 @@ async function syncPropertyFollowupWorkTasks() {
          ELSE COALESCE(work_tasks.assignee_id, EXCLUDED.assignee_id)
        END,
        status = CASE
-         WHEN work_tasks.source_type = 'property_maintenance' THEN
-           CASE
-             WHEN EXCLUDED.assignee_id IS NULL THEN 'todo'
-             WHEN lower(COALESCE(work_tasks.status, '')) = 'in_progress' THEN 'in_progress'
-             ELSE 'assigned'
-           END
+         WHEN work_tasks.source_type = 'property_maintenance' THEN EXCLUDED.status
          WHEN lower(COALESCE(work_tasks.status, 'todo')) IN ('todo','assigned')
            THEN CASE WHEN COALESCE(work_tasks.assignee_id, EXCLUDED.assignee_id) IS NULL THEN 'todo' ELSE 'assigned' END
          ELSE work_tasks.status
@@ -828,11 +838,7 @@ async function syncPropertyFollowupWorkTasks() {
            OR (work_tasks.source_type = 'property_maintenance' AND (
              work_tasks.scheduled_date IS DISTINCT FROM EXCLUDED.scheduled_date
              OR work_tasks.assignee_id IS DISTINCT FROM EXCLUDED.assignee_id
-             OR work_tasks.status IS DISTINCT FROM CASE
-               WHEN EXCLUDED.assignee_id IS NULL THEN 'todo'
-               WHEN lower(COALESCE(work_tasks.status, '')) = 'in_progress' THEN 'in_progress'
-               ELSE 'assigned'
-             END
+             OR work_tasks.status IS DISTINCT FROM EXCLUDED.status
            ))
            OR ((work_tasks.assignee_id IS NULL OR work_tasks.scheduled_date IS NULL) AND work_tasks.scheduled_date IS DISTINCT FROM EXCLUDED.scheduled_date)
            OR (work_tasks.assignee_id IS NULL AND EXCLUDED.assignee_id IS NOT NULL)

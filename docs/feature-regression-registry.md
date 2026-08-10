@@ -340,7 +340,7 @@
 ## FR-005：离线媒体上传、业务提交与本地清理
 
 - **维护责任范围：** backend / mobile
-- **最后审查日期：** 2026-07-28
+- **最后审查日期：** 2026-08-10
 - **状态：** active
 
 ### 业务保护规则
@@ -356,6 +356,8 @@
 - 业务提交成功后才清理整份草稿；网络/5xx 使用退避和上限，400/401/403、本地文件丢失进入明确阻断状态。
 - 同一队列项不可并发执行；已上传媒体和业务提交超时重试不得重新上传已确认的照片。
 - 检查已成功同步后的清洁问题追加必须单独持久化本地草稿；上传成功但追加业务保存失败时保留远端引用，重试不得重复上传。
+- 线下任务说明照片的新写入必须保存服务端返回的 `r2://<namespace>/mzapp/...` 稳定引用；认证读取必须先精确匹配 `work_tasks.photo_urls` 和 `work_task_id`，再校验 manager/view-all、assignee 或 manual participant。历史 `.r2.dev/mzapp/...` 只能在已记录同一任务时由服务端兼容读取。
+- 认证读取的 401/403 与 404 必须分别显示权限不足与照片不可用，均不得重试；只有网络、超时或 5xx 可显示重试。终态响应不得继续使用缓存副本。
 
 ### 跨层适用范围
 
@@ -384,6 +386,11 @@
 | 本地媒体引用和孤儿清理 | `mz-cleaning-app-frontend/src/lib/localMediaHousekeeping.test.ts` | 嵌套队列引用、旧且未引用文件 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- src/lib/localMediaHousekeeping.test.ts` |
 | 媒体上传和本地/远端状态 | `mz-cleaning-app-frontend/src/lib/cleaningMedia.test.ts` | 上传失败、远端引用和重试 | partial | `npm run test --prefix mz-cleaning-app-frontend -- src/lib/cleaningMedia.test.ts` |
 | 钥匙媒体队列 | `mz-cleaning-app-frontend/src/lib/keyUploadQueue.test.ts` | 钥匙照片入队和恢复同步 | partial | `npm run test --prefix mz-cleaning-app-frontend -- src/lib/keyUploadQueue.test.ts` |
+| 线下任务照片稳定引用 | `backend/scripts/tests/test_mzapp_task_photo_reference.ts` | 当前引用规范化、已记录 legacy 兼容和路由接线 | sufficient | `ts-node-dev --transpile-only scripts/tests/test_mzapp_task_photo_reference.ts`（在 backend） |
+| 线下任务照片代理授权 | `backend/scripts/tests/test_mzapp_media_visibility.ts` | manager、assignee、participant 与 outsider 的读取边界 | sufficient | `npm run test:mzapp-media-visibility --prefix backend` |
+| 线下任务照片精确关联 | `backend/scripts/tests/test_cleaning_media_image.ts` | 当前任务关联和缺失对象终态 | sufficient | `npm run test:cleaning-media-image --prefix backend` |
+| 移动端稳定引用响应 | `mz-cleaning-app-frontend/src/lib/api.test.ts` | 记录 `remoteReference` 并兼容 URL | sufficient | `npm run test -- --runInBand --no-cache src/lib/api.test.ts`（在 mobile） |
+| 移动端终态读取边界 | `mz-cleaning-app-frontend/src/lib/cleaningMediaCache.test.ts` | 403/404 终态与网络重试 | sufficient | `npm run test -- --runInBand --no-cache src/lib/cleaningMediaCache.test.ts`（在 mobile） |
 
 ### 验证策略
 
@@ -626,7 +633,7 @@
 ## FR-010：维修完工投影与私有图片读取
 
 - **维护责任范围：** backend / mobile
-- **最后审查日期：** 2026-08-07
+- **最后审查日期：** 2026-08-10
 - **状态：** active
 
 ### 业务保护规则
@@ -634,6 +641,8 @@
 - 维修执行人通过服务端专用完成动作保存的完工照片、备注和未完成原因，必须同步到同一 `work_tasks` 来源投影；不得恢复通用工单 `mark` 接口来绕过维修状态机。
 - 已保存的内部维修完工图片只能从未删除的真实房源维修记录精确匹配；外部维修完工图片只允许管理角色或当前被分配的 `maintenance_staff` 读取。
 - 缩略图、预览和原图都必须通过认证的 `/cleaning-app/media/image` 读取；客户端不得使用 R2 直链或把本地未保存预览当作已保存证据。
+- `property_maintenance` 的 `pending_review` 源状态是权威状态：任务中心陈旧的 `assigned` 同步不得回退它，`GET /mzapp/work-tasks` 必须投影规范化源状态。维修前照片字段必须在旧缓存详情只刷新一次后显示，并保留同一任务上下文给认证代理。
+- 网页维修分派的 `photo_urls` 参数保持 PostgreSQL `text[]`，不得按完成照片的 `jsonb` 绑定。
 
 ### 跨层适用范围
 
@@ -648,6 +657,8 @@
 |---|---|---|---|---|
 | 完工字段投影 | `backend/scripts/tests/test_maintenance_workflow_actions.ts` | 维修任务投影在冲突更新时同步完工照片、备注和原因 | partial | `npm run test:maintenance-workflow-actions --prefix backend` |
 | 完工图片认证读取 | `backend/scripts/tests/test_mzapp_media_visibility.ts` | 内部真实房源精确匹配、外部维修单分配/角色授权和私有代理读取 | partial | `npm run test:mzapp-media-visibility --prefix backend` |
+| 维修源状态与前照片类型 | `backend/scripts/tests/test_maintenance_workflow_actions.ts` | `text[]` 前照片绑定和待审核状态不回退 | sufficient | `npm run test:maintenance-workflow-actions --prefix backend` |
+| 维修详情缓存前照片回填 | `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` | 旧详情缓存只刷新一次并显示前照片 | sufficient | `npm run test -- --runInBand --no-cache src/screens/tasks/TaskDetailScreen.test.tsx`（在 mobile） |
 
 ### 验证策略
 
