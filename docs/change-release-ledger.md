@@ -62,7 +62,7 @@
 - Production deployment and real-device verification are not part of this source release.
 - P2 retained risk: legacy R2 response body size is checked after the response body is materialized. The 15 MB post-read cap remains, but streaming byte enforcement is a separate hardening change not included in this selected repair.
 - Sensitive-information review: no credentials, tokens, private object URLs, media bytes, database URLs, `.env` values or logs are included.
-- Git state: candidate content commit `74d596c5dd370710b87f6bcdb2e5122726d90adf`; pre-push ledger receipts through `89faa34a14128303baf7427d8b274ae2f1ebb148`; remote evidence receipt pending.
+- Git state: release metadata receipts are pushed; the exact remote branch head is verified separately with post-push `git ls-remote`; `Dev` remains unchanged pending PR.
 
 ## CRL-20260809-004 — 内部维修详情缓存前照片回填（root）
 
