@@ -50,18 +50,18 @@
 
 - Repository: `root`; selected CRLs: `CRL-20260811-004`, `CRL-20260811-006`; intended action: `commit`.
 - Branch: `codex/release-feedback-p1-20260811-root`; base: `origin/Dev@b32760c219dc8bec5dfbbc46e6f1f140c2ac0d65`, fetched 2026-08-11.
-- Candidate patch SHA-256: `7b00f8df3df908dfa1ea232b66a9fbd82b40d079a8acb287744454f1826fed0a` excluding `docs/change-release-ledger.md`; candidate content commit: not committed.
+- Candidate patch SHA-256: `7b00f8df3df908dfa1ea232b66a9fbd82b40d079a8acb287744454f1826fed0a` excluding `docs/change-release-ledger.md`; candidate content commit: `28dc9068575290141a64cb91250e3c355be64bce`.
 - Dependencies: mobile `CRL-20260811-004`, `CRL-20260811-005`, `CRL-20260811-006`, `CRL-20260811-007`; root/mobile `CRL-20260811-006` must release as a compatible pair.
 - Required validation: PASS — targeted backend contracts and `npm run check:full`; paired mobile `npm run check:ci` after the retry repair is recorded in its `RA-20260811-mobile-feedback-p1-03`.
 - Shared-hunk / generated-file review: PASS — exact staged range contains only selected source/tests/docs; generated `backend/dist` output remains restored and excluded.
 - Independent review: GO for commit — independent read-only review found no P0/P1 in the exact paired root/mobile fingerprints; real PostgreSQL/proxy/device validation remains a P2 post-commit gate.
-- Technical state: `verified`; user authorization: `selected-for-commit`; action conclusion: `GO` for commit.
+- Technical state: `committed`; user authorization: `selected-for-commit`; action conclusion: `GO` for commit completed. Push still requires exact commit-bound authorization for the current branch head.
 
 ### Risks / Release Notes
 
 - Rollback: 移除本 CRL 的声明边界；不影响任何已发布代码或数据。
 - Sensitive-information review: 未添加或记录 secrets、`.env`、token、数据库 URL、生产数据或敏感日志。
-- Git state: selected root candidate based on `origin/Dev@b32760c219dc8bec5dfbbc46e6f1f140c2ac0d65`; not committed, pushed, PR-created, deployed, OTA-published or production-verified.
+- Git state: candidate content commit `28dc9068575290141a64cb91250e3c355be64bce` created on `codex/release-feedback-p1-20260811-root`; not pushed, PR-created, merged, deployed, OTA-published or production-verified.
 
 ## CRL-20260811-006 — 已完成非维修任务补充完成记录照片（root）
 
@@ -104,7 +104,7 @@
 - Test scope: 当前后端测试验证 action、规范引用与路由源码契约；真实 HTTP 写入、对象读取及设备显示只可在明确授权的非生产环境执行，生产数据未访问或写入。
 - Rollback: 删除该 action 与追加路由；既有完成照片字段、维修流程和任务状态不需要数据回滚。
 - Sensitive-information review: 未添加或记录 secrets、`.env`、token、数据库 URL、生产数据或敏感日志。
-- Git state: selected root candidate based on `origin/Dev@b32760c219dc8bec5dfbbc46e6f1f140c2ac0d65`; not committed, pushed, PR-created, deployed, OTA-published or production-verified.
+- Git state: candidate content commit `28dc9068575290141a64cb91250e3c355be64bce` created on `codex/release-feedback-p1-20260811-root`; not pushed, PR-created, merged, deployed, OTA-published or production-verified.
 
 ## CRL-20260809-006 — 维修待审核状态投影保护（root）
 
