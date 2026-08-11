@@ -5635,6 +5635,81 @@ router.post('/work-tasks/:id/mark', async (req, res) => {
   }
 })
 
+const workTaskCompletionPhotoAppendSchema = z.object({
+  photo_urls: z.array(z.string().trim().min(1).max(1200)).min(1).max(20),
+}).strict()
+
+router.post('/work-tasks/:id/completion-photos', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const userId = String(user.sub || '').trim()
+  if (!userId && !canViewAll(user)) return res.status(401).json({ message: 'unauthorized' })
+  const id = String(req.params.id || '').trim()
+  if (!id) return res.status(400).json({ message: 'missing id' })
+  const parsed = workTaskCompletionPhotoAppendSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+
+  try {
+    await ensureWorkTasksTable()
+    const current = await pgPool.query(
+      `SELECT id, source_type, assignee_id, status, completion_photo_urls
+       FROM work_tasks
+       WHERE id=$1
+       LIMIT 1`,
+      [id],
+    )
+    const row = current?.rows?.[0] || null
+    if (!row) return res.status(404).json({ message: 'task not found' })
+    if (['property_maintenance', 'external_maintenance_orders'].includes(String(row.source_type || '').trim())) {
+      return res.status(409).json({ code: 'maintenance_workflow_action_required' })
+    }
+    if (String(row.source_type || '').trim() !== 'cleaning_offline_tasks') {
+      return res.status(409).json({ code: 'completion_photo_action_not_supported', message: 'completion_photo_action_not_supported' })
+    }
+    if (!isWorkTaskDoneStatus(row.status)) return res.status(409).json({ code: 'task_not_completed', message: 'task_not_completed' })
+    if (!canViewAll(user) && String(row.assignee_id || '').trim() !== userId) return res.status(403).json({ message: 'forbidden' })
+
+    const requestedPhotoUrls = normalizeWorkTaskPhotoUrls(parsed.data.photo_urls)
+    const completionPhotoUrls = normalizeWorkTaskPhotoUrls(requestedPhotoUrls.map((reference) => (
+      canonicalizeMzappTaskPhotoReference(reference, normalizeWorkTaskPhotoUrls(row.completion_photo_urls))
+    )))
+    if (completionPhotoUrls.length !== requestedPhotoUrls.length) {
+      return res.status(400).json({ code: 'invalid_task_photo_reference', message: 'invalid_task_photo_reference' })
+    }
+    const mergedCompletionPhotoUrls = mergeStoredPhotoUrls(row.completion_photo_urls, completionPhotoUrls)
+    const updated = await pgPool.query(
+      `UPDATE work_tasks
+       SET completion_photo_urls=$2::jsonb,
+           updated_at=now()
+       WHERE id=$1
+         AND lower(COALESCE(status, '')) IN ('done', 'completed', 'ready')
+       RETURNING id, assignee_id, completion_photo_urls`,
+      [id, JSON.stringify(mergedCompletionPhotoUrls)],
+    )
+    const out = updated?.rows?.[0] || null
+    if (!out) return res.status(409).json({ code: 'task_not_completed', message: 'task_not_completed' })
+
+    try {
+      await emitWorkTaskEvent({
+        taskId: `work_task:${id}`,
+        sourceType: 'work_tasks',
+        sourceRefIds: [id],
+        eventType: 'TASK_UPDATED',
+        changeScope: 'list',
+        changedFields: ['completion_photo_urls'],
+        patch: { completion_photo_urls: mergedCompletionPhotoUrls },
+        causedByUserId: userId || null,
+        visibilityHints: buildWorkTaskVisibilityHints({ assignee_id: out.assignee_id }),
+      })
+    } catch {}
+
+    return res.json({ ok: true, completion_photo_urls: normalizeWorkTaskPhotoUrls(out.completion_photo_urls) })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'completion_photo_append_failed' })
+  }
+})
+
 const workTaskReorderSchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   task_ids: z.array(z.string().min(1)).min(1),

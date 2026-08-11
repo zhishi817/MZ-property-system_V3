@@ -320,6 +320,75 @@ function main() {
   assert.equal(actionById(completedPayload, 'upload_key_photo')?.enabled, false)
   assert.equal(actionById(completedPayload, 'upload_key_photo')?.disabled_reason, 'task_completed')
 
+  const completedGenericWorkTaskPayload = buildWorkTaskActionPayload({
+    id: 'w-completed-offline-task',
+    source_type: 'cleaning_offline_tasks',
+    source_id: 'offline-source-1',
+    task_kind: 'offline',
+    status: 'done',
+    assignee_id: 'cleaner-1',
+  }, {
+    userId: 'cleaner-1',
+    roleNames: ['cleaner'],
+    permissions: [],
+    canViewAll: false,
+  })
+  assert.equal(actionById(completedGenericWorkTaskPayload, 'append_completion_photo')?.enabled, true)
+  assert.equal(actionById(completedGenericWorkTaskPayload, 'append_completion_photo')?.target, 'TaskDetail')
+  assert.equal(actionById(completedGenericWorkTaskPayload, 'append_completion_photo')?.intent, 'completion')
+
+  const completedGenericWorkTaskViewerPayload = buildWorkTaskActionPayload({
+    id: 'w-completed-offline-viewer',
+    source_type: 'cleaning_offline_tasks',
+    source_id: 'offline-source-2',
+    task_kind: 'offline',
+    status: 'done',
+    assignee_id: 'cleaner-1',
+  }, {
+    userId: 'cleaner-2',
+    roleNames: ['cleaner'],
+    permissions: [],
+    canViewAll: false,
+  })
+  assert.equal(actionById(completedGenericWorkTaskViewerPayload, 'append_completion_photo')?.enabled, false)
+  assert.equal(actionById(completedGenericWorkTaskViewerPayload, 'append_completion_photo')?.disabled_reason, 'not_participant')
+
+  const completedMaintenancePayload = buildWorkTaskActionPayload({
+    id: 'w-completed-maintenance',
+    source_type: 'property_maintenance',
+    source_id: 'maintenance-source-1',
+    task_kind: 'maintenance',
+    status: 'done',
+    assignee_id: 'cleaner-1',
+  }, {
+    userId: 'cleaner-1',
+    roleNames: ['cleaner'],
+    permissions: [],
+    canViewAll: false,
+  })
+  assert.equal(actionById(completedMaintenancePayload, 'append_completion_photo'), undefined)
+  const completedUnmappedPayload = buildWorkTaskActionPayload({
+    id: 'w-completed-unmapped',
+    source_type: 'property_daily_necessities',
+    source_id: 'daily-source-1',
+    task_kind: 'daily_necessities',
+    status: 'done',
+    assignee_id: 'cleaner-1',
+  }, {
+    userId: 'cleaner-1',
+    roleNames: ['cleaner'],
+    permissions: [],
+    canViewAll: false,
+  })
+  assert.equal(actionById(completedUnmappedPayload, 'append_completion_photo'), undefined, 'unmapped task media sources must not expose an offline completion-photo action')
+  assert(mzappSource.includes("router.post('/work-tasks/:id/completion-photos'"), 'completed task photo append route must exist')
+  assert(mzappSource.includes("code: 'task_not_completed'"), 'completed task photo append route must reject non-terminal tasks')
+  assert(mzappSource.includes("code: 'maintenance_workflow_action_required'"), 'maintenance must keep its dedicated completion workflow')
+  assert(mzappSource.includes("code: 'completion_photo_action_not_supported'"), 'unmapped task sources must not write an offline completion-photo association')
+  assert(mzappSource.includes('canonicalizeMzappTaskPhotoReference(reference, normalizeWorkTaskPhotoUrls(row.completion_photo_urls))'), 'offline completion photos must persist only canonical task-media references')
+  assert(mzappSource.includes("code: 'invalid_task_photo_reference'"), 'invalid completion-photo references must be rejected before persistence')
+  assert(mzappSource.includes("changedFields: ['completion_photo_urls']"), 'completion photo append must publish a task refresh event')
+
   const selfCompleteRecoveryPayload = buildWorkTaskActionPayload({
     ...cleaningTask,
     id: 'w-self-complete-keys-hung',
