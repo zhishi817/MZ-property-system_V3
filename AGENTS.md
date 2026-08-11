@@ -36,6 +36,13 @@ These requirements apply to every Codex thread and agent working in this reposit
 - A user selection authorizes staging/commit only. It never authorizes push. Any change to the selected CRLs, base SHA, commit SHA, or branch invalidates an earlier `approved-for-push` authorization.
 - Candidate patch SHA-256 is calculated from the selected `base...head` content diff excluding `docs/change-release-ledger.md`; attempt metadata must be excluded because recording a hash or commit SHA inside the same ledger commit would otherwise be self-referential. The exact range audit still includes and verifies the ledger path. A recorded candidate content commit must be an ancestor of the report head and a descendant of the recorded base.
 
+### Completion And Delivery Claims
+
+- Never use unqualified wording such as “已修复”, “已完成”, “已交付”, “已发布”, or “已上线” when the evidence only proves a smaller stage. Say `source fixed`, `local regression passed`, `committed`, `pushed to branch`, `merged into Dev`, `backend deployed`, `OTA published`, or `device verified` exactly as supported by evidence.
+- A local code change, passing local tests, a CRL entry, a commit, a branch push, a PR, and a `Dev` merge are separate facts. None proves a later fact. In particular, a mobile user-visible defect is not “fixed for users” until the required backend version (when applicable), the matching OTA/build/channel, and the declared real-device regression are all recorded.
+- At the end of every implementation or release report, state the CRL ID, repository, commit SHA or `not committed`, remote branch/SHA or `not pushed`, PR/merge state or `not created`/`not merged`, deployment/OTA state or `not deployed`/`not published`, and device/production verification or `not run`. Do not omit an unperformed stage.
+- When asked whether a repair was committed, pushed, or released, re-check and report the exact repository and evidence. Do not infer Git or delivery state from a prior “fix completed” statement, local diff, test result, ledger status, or another repository’s status.
+
 ### Answering “哪些更新可以推送”
 
 - Inspect root and `mz-cleaning-app-frontend` as independent repositories. Do not infer mobile evidence from root evidence or the reverse.

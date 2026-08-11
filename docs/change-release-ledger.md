@@ -1,5 +1,111 @@
 # Change Release Ledger
 
+## CRL-20260811-004 — 修复交付状态与完成声明强制边界（root governance）
+
+- **Status:** candidate
+- **Updated:** 2026-08-11 Australia/Melbourne
+- **Request:** 防止再次把本地已修复、已测试、已提交、已推送、已合并、已部署或已通过 OTA/真机验证混为一谈，导致用户以为修复已经交付。
+- **Outcome:** root 与独立 mobile 仓库规则都强制按证据声明修复阶段；每次实现或发布回报必须明确提交、推送、PR/合并、部署/OTA 与设备验证是否实际完成。任何未执行的阶段都必须直说，不能以“已修复”省略。
+
+### Files / Areas
+
+- `AGENTS.md` — 增加完成与交付声明规则：本地修复、测试、提交、推送、合并、部署/OTA 和真机验证必须逐项分开报告。
+- `docs/change-release-ledger.md` — 记录本治理候选。
+
+### Impact / Dependencies
+
+- **Runtime / API / database / migration / configuration / dependencies:** none；此单元不改变业务代码、权限、媒体对象或生产数据。
+- **Release process:** 配对的 mobile `CRL-20260811-004` 将同一规则写入独立仓库；两处规则共同适用于后续回报，不替代独立审查、范围审计或用户的推送/部署授权。
+
+### Validation
+
+- `npm run check:feature-registry` — passed：治理规则不改变业务 FR 映射结构。
+- `python3 scripts/audit_change_release_ledger.py` — passed after this ledger entry is included.
+- `npm run check:full` — passed：root ledger/FR 审计、backend build 与测试、frontend lint/test/build 均通过；此干净 release worktree 不含嵌套 mobile 仓库，因此脚本中的 `check:mobile` 明确跳过，mobile 由独立仓库的 `check:ci` 覆盖。
+- Application tests/builds/device/deployment/OTA/production verification — not run：无运行时代码变更。
+
+### Release Attempts
+
+#### RA-20260811-root-feedback-p1-01
+
+- Repository: `root`; selected CRLs: `CRL-20260811-004`, `CRL-20260811-006`; intended action: `commit`.
+- Branch: `codex/release-feedback-p1-20260811-root`; base: `origin/Dev@b32760c219dc8bec5dfbbc46e6f1f140c2ac0d65`, fetched 2026-08-11.
+- Candidate patch SHA-256: `59399cf4e0ed4f91d839361bf345e4f9a268525222765ba7ffd550ebe1805271` excluding `docs/change-release-ledger.md`; candidate content commit: not committed.
+- Dependencies: mobile `CRL-20260811-005`, `CRL-20260811-006`, `CRL-20260811-007`; root/mobile `CRL-20260811-006` must release as a compatible pair.
+- Required validation: `NOT VERIFIED`; shared-hunk / generated-file review: `PASS`; independent review: `NO-GO` (pre-fix reviewer found P1 completion-photo proxy/read-context, false-success/delete, mobile governance and full-gate gaps).
+- Technical state: `candidate`; user authorization: `selected-for-commit` (user selected `004`, `005`, `006`, `007` on 2026-08-11; exact commit-bound push authorization is still required); action conclusion: `BLOCKED`; blockers: reviewer P1 and full quality gates were not yet complete for this superseded candidate.
+
+#### RA-20260811-root-feedback-p1-02
+
+- Repository: `root`; selected CRLs: `CRL-20260811-004`, `CRL-20260811-006`; intended action: `commit`.
+- Branch: `codex/release-feedback-p1-20260811-root`; base: `origin/Dev@b32760c219dc8bec5dfbbc46e6f1f140c2ac0d65`, fetched 2026-08-11.
+- Candidate patch SHA-256: `7b00f8df3df908dfa1ea232b66a9fbd82b40d079a8acb287744454f1826fed0a` excluding `docs/change-release-ledger.md`; candidate content commit: not committed.
+- Dependencies: mobile `CRL-20260811-004`, `CRL-20260811-005`, `CRL-20260811-006`, `CRL-20260811-007`; root/mobile `CRL-20260811-006` must release as a compatible pair.
+- Required validation: PASS — targeted backend contracts and `npm run check:full`; mobile verification is recorded in the paired mobile attempt.
+- Shared-hunk / generated-file review: PASS — only selected source/tests/docs are present; generated `backend/dist` output was restored and excluded.
+- Independent review: `NO-GO` for the paired release — the exact mobile candidate lost acknowledged remote references when its completion-record save failed; root/mobile `CRL-20260811-006` must not be committed independently.
+- Technical state: `candidate`; user authorization: `selected-for-commit`; action conclusion: `BLOCKED` until the paired mobile retry repair passes a new exact-candidate review.
+
+#### RA-20260811-root-feedback-p1-03
+
+- Repository: `root`; selected CRLs: `CRL-20260811-004`, `CRL-20260811-006`; intended action: `commit`.
+- Branch: `codex/release-feedback-p1-20260811-root`; base: `origin/Dev@b32760c219dc8bec5dfbbc46e6f1f140c2ac0d65`, fetched 2026-08-11.
+- Candidate patch SHA-256: `7b00f8df3df908dfa1ea232b66a9fbd82b40d079a8acb287744454f1826fed0a` excluding `docs/change-release-ledger.md`; candidate content commit: not committed.
+- Dependencies: mobile `CRL-20260811-004`, `CRL-20260811-005`, `CRL-20260811-006`, `CRL-20260811-007`; root/mobile `CRL-20260811-006` must release as a compatible pair.
+- Required validation: PASS — targeted backend contracts and `npm run check:full`; paired mobile `npm run check:ci` after the retry repair is recorded in its `RA-20260811-mobile-feedback-p1-03`.
+- Shared-hunk / generated-file review: PASS — exact staged range contains only selected source/tests/docs; generated `backend/dist` output remains restored and excluded.
+- Independent review: GO for commit — independent read-only review found no P0/P1 in the exact paired root/mobile fingerprints; real PostgreSQL/proxy/device validation remains a P2 post-commit gate.
+- Technical state: `verified`; user authorization: `selected-for-commit`; action conclusion: `GO` for commit.
+
+### Risks / Release Notes
+
+- Rollback: 移除本 CRL 的声明边界；不影响任何已发布代码或数据。
+- Sensitive-information review: 未添加或记录 secrets、`.env`、token、数据库 URL、生产数据或敏感日志。
+- Git state: selected root candidate based on `origin/Dev@b32760c219dc8bec5dfbbc46e6f1f140c2ac0d65`; not committed, pushed, PR-created, deployed, OTA-published or production-verified.
+
+## CRL-20260811-006 — 已完成非维修任务补充完成记录照片（root）
+
+- **Status:** candidate
+- **Updated:** 2026-08-11 Australia/Melbourne
+- **Request:** 修复已完成任务仍可选择“任务处理”照片但离开页面即丢失的问题；不得影响维修任务的既有专用工作流。
+- **Outcome:** 后端只向已完成、已授权的 `cleaning_offline_tasks` 下发 `append_completion_photo`，并新增受权限控制的追加接口，将规范照片引用去重写入既有 `work_tasks.completion_photo_urls`。认证媒体代理会以同一任务精确匹配 `photo_urls` 与 `completion_photo_urls`；维修和未映射来源被明确拒绝，通用“标记完成”状态流转不重新开启。
+
+### Files / Areas
+
+- `backend/src/lib/workTaskActions.ts` — 仅为已完成、已授权的 `cleaning_offline_tasks` 下发补充完成记录照片动作。
+- `backend/src/modules/mzapp.ts` — 新增完成照片追加路由、任务来源/权限/状态边界、规范引用校验和事件通知；不新增 schema 或迁移。
+- `backend/src/modules/cleaning_app.ts` — 认证媒体代理在同一线下任务的 `photo_urls` 与 `completion_photo_urls` 中精确匹配，再做既有授权检查。
+- `backend/scripts/tests/test_work_task_actions.ts` — 覆盖动作授权、维修/未映射来源排除、规范引用与路由契约。
+- `backend/scripts/tests/test_cleaning_media_image.ts` — 覆盖代理对完成记录照片的精确关联与授权契约。
+- `docs/feature-regression-registry.md` — 更新 FR-001 的服务端 action、保存与私有读取回归映射。
+- `docs/change-release-ledger.md` — 记录 root 候选及跨仓库依赖。
+
+### Impact / Dependencies
+
+- **API:** 新增 `POST /mzapp/work-tasks/:id/completion-photos`；仅对 `cleaning_offline_tasks` 追加既有完成照片字段，返回规范化后的完成照片列表。
+- **Database / migration / config / dependencies:** none；复用 `work_tasks.completion_photo_urls`，不写生产数据。
+- **Related units:** 必须与独立 mobile 仓库的 `CRL-20260811-006` 一起发布；`CRL-20260811-005` 修复反馈提交来源字段，`CRL-20260811-007` 修复缩略图失败可见性。
+
+### Validation
+
+- `ts-node-dev --transpile-only scripts/tests/test_work_task_actions.ts`（在 `backend`）— passed：已完成线下任务动作、非参与者禁用、维修/未映射来源排除、规范引用及追加路由契约。
+- `ts-node-dev --transpile-only scripts/tests/test_cleaning_media_image.ts`（在 `backend`）— passed：认证代理对同一线下任务的任务照片/完成记录照片精确关联与授权契约。
+- `npm run build`（在 `backend`）— passed：TypeScript 编译通过；构建生成的无关 `dist` 差异已在候选工作区精确撤回，未纳入本 CRL。
+- `npm run check:full`（在 root）— passed：同一候选的完整 root 门禁通过；详见 `RA-20260811-root-feedback-p1-02`。
+- `git diff --check` — passed after final ledger update.
+
+### Release Attempts
+
+- `RA-20260811-root-feedback-p1-01` — same selected root release attempt recorded under `CRL-20260811-004`; the root/mobile `CRL-20260811-006` dependency, exact base, candidate fingerprint and commit/push gates apply unchanged.
+
+### Risks / Release Notes
+
+- Runtime risk: 这是 root/mobile 配对接口；服务端未部署而客户端先发布时，客户端不能获得该服务端 action，入口会保持隐藏。发布必须验证同一服务端版本、移动候选和真机保存/重开读取。
+- Test scope: 当前后端测试验证 action、规范引用与路由源码契约；真实 HTTP 写入、对象读取及设备显示只可在明确授权的非生产环境执行，生产数据未访问或写入。
+- Rollback: 删除该 action 与追加路由；既有完成照片字段、维修流程和任务状态不需要数据回滚。
+- Sensitive-information review: 未添加或记录 secrets、`.env`、token、数据库 URL、生产数据或敏感日志。
+- Git state: selected root candidate based on `origin/Dev@b32760c219dc8bec5dfbbc46e6f1f140c2ac0d65`; not committed, pushed, PR-created, deployed, OTA-published or production-verified.
+
 ## CRL-20260809-006 — 维修待审核状态投影保护（root）
 
 - **Status:** candidate
