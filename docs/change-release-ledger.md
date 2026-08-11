@@ -1,5 +1,196 @@
 # Change Release Ledger
 
+## CRL-20260811-009 — 线下任务历史公共基址照片认证读取（root）
+
+- **Status:** in-progress
+- **Updated:** 2026-08-12 Australia/Melbourne
+- **Request:** 修复开发环境线下任务顶部「任务照片」的历史 HTTPS 引用被移动端直连对象而显示无权限；本次仅选择 root/mobile `CRL-20260811-009` 提交。
+- **Outcome:** 已记录在同一 `work_tasks.photo_urls` 的历史 HTTPS 对象，只有在其匹配当前配置 public base、使用安全对象 key、请求携带精确 `work_task_id` 且既有 offline 授权允许时，才由认证媒体代理读取。新写入格式和任务处理照片链路不在本 CRL 范围。
+
+### Implementation
+
+- Previous behavior: 不含 `mzapp/` 路径的历史 current-public-base URL 不会进入 offline-task 认证分支，移动端只能直连对象。
+- New behavior: 受控 parser 只接受当前配置 public base 下无查询、片段、认证信息、端口或路径穿越的 HTTPS URL；路由先精确匹配 `photo_urls` 和 `work_task_id`，再使用既有 `canViewMzappOfflineWorkTaskMedia` 授权后以对象 key 读取。
+- Key decisions: 不接受任意 URL、不改新写入 `r2://` 身份、不新增公开链接、权限、数据库迁移、数据/R2 操作。本次明确排除 `completion_photo_urls` / 任务处理照片的 CRL-20260811-005；PR #300 的更新保留 `Dev` 已合入的完成记录照片链路，仅解决共享代理代码的合并冲突。
+
+### Files / Areas
+
+- `backend/src/lib/mzappTaskPhotoReference.ts` — 当前 public base 的安全历史离线照片解析和受控候选识别。
+- `backend/src/modules/cleaning_app.ts` — 仅将已关联的历史任务照片导入既有 offline 授权代理并按解析 key 读取。
+- `backend/scripts/tests/test_mzapp_task_photo_reference.ts`, `backend/scripts/tests/test_cleaning_media_image.ts`, `backend/scripts/tests/test_mzapp_media_visibility.ts` — public-base、路径安全、精确任务关联和权限分支回归。
+- `docs/feature-regression-registry.md`, `docs/change-release-ledger.md` — 本 CRL 的回归与发布证据。
+
+### Impact / Dependencies
+
+- API: 不新增路由；既有 `GET /cleaning-app/media/image` 对携带准确 `work_task_id` 的已记录历史任务照片增加受控兼容读取。
+- Database / migration / configuration / R2 / production data: none.
+- Paired mobile unit: mobile `CRL-20260811-009` 必须使用同一精确任务上下文；本 root 候选不依赖未选的 CRL-20260811-005。
+
+### Validation
+
+- `test_mzapp_task_photo_reference.ts`, `test_cleaning_media_image.ts`, `test_mzapp_media_visibility.ts` — passed in this clean candidate.
+- Backend TypeScript no-emit check — passed in this clean candidate using the existing read-only dependency tree.
+- Mobile paired helper/component/screen tests — passed in the rebased paired clean candidate (53 tests).
+- Full mobile suite — passed in the rebased paired clean candidate (55 suites / 281 tests). Deployed API, real-device, OTA/build and production verification — not run.
+
+### Release Attempts
+
+#### RA-20260811-009-root-01
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260811-009`
+- Intended action: `push`
+- Branch: `codex/release-offline-task-photo-auth-20260811`
+- Base: `origin/Dev@b32760c219dc8bec5dfbbc46e6f1f140c2ac0d65`; fetched at `2026-08-12T00:31:03+10:00`.
+- Candidate patch SHA-256: `1cd19d8209d0eacf6c3ca3511798f86b21e89aee22757f473ca653a5d281d2e0`, excluding `docs/change-release-ledger.md`.
+- Commit SHA: `799533c897cae3c609bfcda8b5cd9acaca01f5a5`.
+- Dependencies: mobile `CRL-20260811-009`; no unselected CRL is included.
+- Required validation: PASS; exact candidate contract tests and no-emit TypeScript passed.
+- Shared-hunk review: PASS; final independent staged review confirmed all 7 paths belong to this selected CRL and no unselected hunk is included.
+- Generated-file review: PASS; final independent staged review found no generated output, cache, dependency artifact or sensitive file.
+- Technical state: pushed.
+- User authorization: approved-for-push; evidence: user instructed “推送” for the exact branch after content commit and ledger head were reported.
+- Independent review: GO for `commit` only; final independent read-only review confirmed fingerprint `1cd19d8209d0eacf6c3ca3511798f86b21e89aee22757f473ca653a5d281d2e0`, exact scope and validation evidence.
+- Action conclusion: GO for `push` completed; remote branch was verified at `28bc1d7eda31c619a9b33c4b1678dd17afbd1aad`; PR #300 is open, not merged, not deployed and device/production verification not run.
+
+#### RA-20260811-009-root-02
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260811-009`
+- Intended action: `commit`
+- Branch: `codex/release-offline-task-photo-auth-20260811`
+- Base: `origin/Dev@a1823d3a0c7f45eef768ce33c443e1e2a65bced7`; fetched at `2026-08-12T01:25:46+10:00`.
+- Candidate patch SHA-256: `2c0f381e6c896dd0f69ed9a8c6658c161d9f21be25cb64e8d6426f2128a8ade0`, excluding `docs/change-release-ledger.md`.
+- Commit SHA: not committed.
+- Dependencies: mobile `CRL-20260811-009@4d0d256515e7b921b879e4856f321b2187119767`; current `Dev` includes root completion-photo repair from PR #299.
+- Required validation: PASS; `npm run check:full` passed against the merged root candidate and paired committed mobile CRL-009 candidate (root ledger/registry audit, backend build and contracts, frontend lint/185 tests/production build, mobile gate), and the three targeted media contracts plus backend TypeScript no-emit passed.
+- Shared-hunk review: PASS; independent read-only re-review confirmed the exact 7 paths relative to current `Dev` belong to CRL-20260811-009, with PR #299 completion-photo protection retained only as the merged parent.
+- Generated-file review: PASS; independent read-only re-review found no untracked temporary link, build artifact, generated output or sensitive file in the candidate.
+- Technical state: verified.
+- User authorization: selected-for-commit; evidence: user authorized rebuilding from latest `Dev`, resolving PR #300 conflicts and updating the PR.
+- Independent review: GO for `commit`; same-hash read-only re-review confirmed base/MERGE_HEAD, scope, full gate, safety and fingerprint `2c0f381e6c896dd0f69ed9a8c6658c161d9f21be25cb64e8d6426f2128a8ade0`.
+- Action conclusion: GO for `commit`; push remains unauthorized until the new commit SHA and branch are explicitly approved.
+
+### Risks / Release Notes
+
+- Risk: any different historical host/prefix must first receive a separate source-to-object incident trace; it is not accepted by this resolver.
+- Rollback: revert the parser/adapter pair; no data rollback is needed.
+- Sensitive-information review: no credentials, tokens, database URLs, private media references, image bytes, user records, logs or caches included.
+- Git state: initial candidate content commit `799533c897cae3c609bfcda8b5cd9acaca01f5a5` was pushed with audit head `28bc1d7eda31c619a9b33c4b1678dd17afbd1aad` as PR #300; the current exact merged candidate is not yet committed, pushed or merged.
+
+## CRL-20260811-004 — 修复交付状态与完成声明强制边界（root governance）
+
+- **Status:** candidate
+- **Updated:** 2026-08-11 Australia/Melbourne
+- **Request:** 防止再次把本地已修复、已测试、已提交、已推送、已合并、已部署或已通过 OTA/真机验证混为一谈，导致用户以为修复已经交付。
+- **Outcome:** root 与独立 mobile 仓库规则都强制按证据声明修复阶段；每次实现或发布回报必须明确提交、推送、PR/合并、部署/OTA 与设备验证是否实际完成。任何未执行的阶段都必须直说，不能以“已修复”省略。
+
+### Files / Areas
+
+- `AGENTS.md` — 增加完成与交付声明规则：本地修复、测试、提交、推送、合并、部署/OTA 和真机验证必须逐项分开报告。
+- `docs/change-release-ledger.md` — 记录本治理候选。
+
+### Impact / Dependencies
+
+- **Runtime / API / database / migration / configuration / dependencies:** none；此单元不改变业务代码、权限、媒体对象或生产数据。
+- **Release process:** 配对的 mobile `CRL-20260811-004` 将同一规则写入独立仓库；两处规则共同适用于后续回报，不替代独立审查、范围审计或用户的推送/部署授权。
+
+### Validation
+
+- `npm run check:feature-registry` — passed：治理规则不改变业务 FR 映射结构。
+- `python3 scripts/audit_change_release_ledger.py` — passed after this ledger entry is included.
+- `npm run check:full` — passed：root ledger/FR 审计、backend build 与测试、frontend lint/test/build 均通过；此干净 release worktree 不含嵌套 mobile 仓库，因此脚本中的 `check:mobile` 明确跳过，mobile 由独立仓库的 `check:ci` 覆盖。
+- Application tests/builds/device/deployment/OTA/production verification — not run：无运行时代码变更。
+
+### Release Attempts
+
+#### RA-20260811-root-feedback-p1-01
+
+- Repository: `root`; selected CRLs: `CRL-20260811-004`, `CRL-20260811-006`; intended action: `commit`.
+- Branch: `codex/release-feedback-p1-20260811-root`; base: `origin/Dev@b32760c219dc8bec5dfbbc46e6f1f140c2ac0d65`, fetched 2026-08-11.
+- Candidate patch SHA-256: `59399cf4e0ed4f91d839361bf345e4f9a268525222765ba7ffd550ebe1805271` excluding `docs/change-release-ledger.md`; candidate content commit: not committed.
+- Dependencies: mobile `CRL-20260811-005`, `CRL-20260811-006`, `CRL-20260811-007`; root/mobile `CRL-20260811-006` must release as a compatible pair.
+- Required validation: `NOT VERIFIED`; shared-hunk / generated-file review: `PASS`; independent review: `NO-GO` (pre-fix reviewer found P1 completion-photo proxy/read-context, false-success/delete, mobile governance and full-gate gaps).
+- Technical state: `candidate`; user authorization: `selected-for-commit` (user selected `004`, `005`, `006`, `007` on 2026-08-11; exact commit-bound push authorization is still required); action conclusion: `BLOCKED`; blockers: reviewer P1 and full quality gates were not yet complete for this superseded candidate.
+
+#### RA-20260811-root-feedback-p1-02
+
+- Repository: `root`; selected CRLs: `CRL-20260811-004`, `CRL-20260811-006`; intended action: `commit`.
+- Branch: `codex/release-feedback-p1-20260811-root`; base: `origin/Dev@b32760c219dc8bec5dfbbc46e6f1f140c2ac0d65`, fetched 2026-08-11.
+- Candidate patch SHA-256: `7b00f8df3df908dfa1ea232b66a9fbd82b40d079a8acb287744454f1826fed0a` excluding `docs/change-release-ledger.md`; candidate content commit: not committed.
+- Dependencies: mobile `CRL-20260811-004`, `CRL-20260811-005`, `CRL-20260811-006`, `CRL-20260811-007`; root/mobile `CRL-20260811-006` must release as a compatible pair.
+- Required validation: PASS — targeted backend contracts and `npm run check:full`; mobile verification is recorded in the paired mobile attempt.
+- Shared-hunk / generated-file review: PASS — only selected source/tests/docs are present; generated `backend/dist` output was restored and excluded.
+- Independent review: `NO-GO` for the paired release — the exact mobile candidate lost acknowledged remote references when its completion-record save failed; root/mobile `CRL-20260811-006` must not be committed independently.
+- Technical state: `candidate`; user authorization: `selected-for-commit`; action conclusion: `BLOCKED` until the paired mobile retry repair passes a new exact-candidate review.
+
+#### RA-20260811-root-feedback-p1-03
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260811-004`, `CRL-20260811-006`
+- Intended action: `push`
+- Branch: `codex/release-feedback-p1-20260811-root`
+- Base: `origin/Dev@b32760c219dc8bec5dfbbc46e6f1f140c2ac0d65`; fetched at 2026-08-11 Australia/Melbourne.
+- Candidate patch SHA-256: `7b00f8df3df908dfa1ea232b66a9fbd82b40d079a8acb287744454f1826fed0a` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `28dc9068575290141a64cb91250e3c355be64bce` (candidate content commit)
+- Dependencies: mobile `CRL-20260811-004`, `CRL-20260811-005`, `CRL-20260811-006`, `CRL-20260811-007`; root/mobile `CRL-20260811-006` must release as a compatible pair.
+- Required validation: PASS — targeted backend contracts and `npm run check:full`; paired mobile `npm run check:ci` after the retry repair is recorded in its `RA-20260811-mobile-feedback-p1-03`.
+- Shared-hunk review: PASS — exact staged range contains only selected source/tests/docs.
+- Generated-file review: PASS — generated `backend/dist` output remains restored and excluded.
+- Independent review: GO for push — independent read-only review found no P0/P1 in the exact committed root/mobile ranges; real Dev backend/proxy/device validation remains a P2 post-push gate.
+- Technical state: pushed
+- User authorization: approved-for-push — user replied “批准” after the exact root `6a6f8b985c4951acf7c91f1aae745cdf7570eb78` commit and branch were presented on 2026-08-11.
+- Action conclusion: GO — push succeeded; `origin/codex/release-feedback-p1-20260811-root` was verified by `git ls-remote` at `6a6f8b985c4951acf7c91f1aae745cdf7570eb78`. PR, merge, deployment, OTA and device/production verification remain separate and not performed.
+
+### Risks / Release Notes
+
+- Rollback: 移除本 CRL 的声明边界；不影响任何已发布代码或数据。
+- Sensitive-information review: 未添加或记录 secrets、`.env`、token、数据库 URL、生产数据或敏感日志。
+- Git state: candidate content commit `28dc9068575290141a64cb91250e3c355be64bce` is pushed with audit head `6a6f8b985c4951acf7c91f1aae745cdf7570eb78` on `origin/codex/release-feedback-p1-20260811-root`; PR not created, not merged, not deployed, no OTA, and device/production verification not run.
+
+## CRL-20260811-006 — 已完成非维修任务补充完成记录照片（root）
+
+- **Status:** candidate
+- **Updated:** 2026-08-11 Australia/Melbourne
+- **Request:** 修复已完成任务仍可选择“任务处理”照片但离开页面即丢失的问题；不得影响维修任务的既有专用工作流。
+- **Outcome:** 后端只向已完成、已授权的 `cleaning_offline_tasks` 下发 `append_completion_photo`，并新增受权限控制的追加接口，将规范照片引用去重写入既有 `work_tasks.completion_photo_urls`。认证媒体代理会以同一任务精确匹配 `photo_urls` 与 `completion_photo_urls`；维修和未映射来源被明确拒绝，通用“标记完成”状态流转不重新开启。
+
+### Files / Areas
+
+- `backend/src/lib/workTaskActions.ts` — 仅为已完成、已授权的 `cleaning_offline_tasks` 下发补充完成记录照片动作。
+- `backend/src/modules/mzapp.ts` — 新增完成照片追加路由、任务来源/权限/状态边界、规范引用校验和事件通知；不新增 schema 或迁移。
+- `backend/src/modules/cleaning_app.ts` — 认证媒体代理在同一线下任务的 `photo_urls` 与 `completion_photo_urls` 中精确匹配，再做既有授权检查。
+- `backend/scripts/tests/test_work_task_actions.ts` — 覆盖动作授权、维修/未映射来源排除、规范引用与路由契约。
+- `backend/scripts/tests/test_cleaning_media_image.ts` — 覆盖代理对完成记录照片的精确关联与授权契约。
+- `docs/feature-regression-registry.md` — 更新 FR-001 的服务端 action、保存与私有读取回归映射。
+- `docs/change-release-ledger.md` — 记录 root 候选及跨仓库依赖。
+
+### Impact / Dependencies
+
+- **API:** 新增 `POST /mzapp/work-tasks/:id/completion-photos`；仅对 `cleaning_offline_tasks` 追加既有完成照片字段，返回规范化后的完成照片列表。
+- **Database / migration / config / dependencies:** none；复用 `work_tasks.completion_photo_urls`，不写生产数据。
+- **Related units:** 必须与独立 mobile 仓库的 `CRL-20260811-006` 一起发布；`CRL-20260811-005` 修复反馈提交来源字段，`CRL-20260811-007` 修复缩略图失败可见性。
+
+### Validation
+
+- `ts-node-dev --transpile-only scripts/tests/test_work_task_actions.ts`（在 `backend`）— passed：已完成线下任务动作、非参与者禁用、维修/未映射来源排除、规范引用及追加路由契约。
+- `ts-node-dev --transpile-only scripts/tests/test_cleaning_media_image.ts`（在 `backend`）— passed：认证代理对同一线下任务的任务照片/完成记录照片精确关联与授权契约。
+- `npm run build`（在 `backend`）— passed：TypeScript 编译通过；构建生成的无关 `dist` 差异已在候选工作区精确撤回，未纳入本 CRL。
+- `npm run check:full`（在 root）— passed：同一候选的完整 root 门禁通过；详见 `RA-20260811-root-feedback-p1-02`。
+- `git diff --check` — passed after final ledger update.
+
+### Release Attempts
+
+- `RA-20260811-root-feedback-p1-01` — same selected root release attempt recorded under `CRL-20260811-004`; the root/mobile `CRL-20260811-006` dependency, exact base, candidate fingerprint and commit/push gates apply unchanged.
+
+### Risks / Release Notes
+
+- Runtime risk: 这是 root/mobile 配对接口；服务端未部署而客户端先发布时，客户端不能获得该服务端 action，入口会保持隐藏。发布必须验证同一服务端版本、移动候选和真机保存/重开读取。
+- Test scope: 当前后端测试验证 action、规范引用与路由源码契约；真实 HTTP 写入、对象读取及设备显示只可在明确授权的非生产环境执行，生产数据未访问或写入。
+- Rollback: 删除该 action 与追加路由；既有完成照片字段、维修流程和任务状态不需要数据回滚。
+- Sensitive-information review: 未添加或记录 secrets、`.env`、token、数据库 URL、生产数据或敏感日志。
+- Git state: candidate content commit `28dc9068575290141a64cb91250e3c355be64bce` is pushed with audit head `6a6f8b985c4951acf7c91f1aae745cdf7570eb78` on `origin/codex/release-feedback-p1-20260811-root`; PR not created, not merged, not deployed, no OTA, and device/production verification not run.
+
 ## CRL-20260809-006 — 维修待审核状态投影保护（root）
 
 - **Status:** candidate

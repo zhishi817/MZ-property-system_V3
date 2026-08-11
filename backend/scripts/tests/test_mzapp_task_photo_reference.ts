@@ -10,9 +10,11 @@ process.env.R2_STORAGE_NAMESPACE = ''
 const {
   canonicalizeMzappTaskPhotoReference,
   createMzappTaskPhotoRemoteReference,
+  currentOfflineTaskPhotoKeyFromReference,
   currentMzappTaskPhotoKeyFromReference,
   isLegacyMzappTaskPhotoPublicUrl,
   mzappTaskPhotoReferenceVariants,
+  offlineTaskPhotoReferenceVariants,
   normalizeMzappTaskPhotoKey,
 } = require('../../src/lib/mzappTaskPhotoReference') as typeof import('../../src/lib/mzappTaskPhotoReference')
 
@@ -46,6 +48,18 @@ assert.deepEqual(
   'a safe legacy source URL retains its exact reference and canonical key identities so a supplied key cannot mask its offline association',
 )
 assert.equal(currentMzappTaskPhotoKeyFromReference('https://legacy-task-photo.r2.dev/mzapp/offline-task-photo.jpg'), null, 'legacy hosts cannot resolve as current storage keys')
+assert.equal(
+  currentOfflineTaskPhotoKeyFromReference('https://offline-task-contract.r2.dev/historical/offline-task-photo.jpg'),
+  'historical/offline-task-photo.jpg',
+  'an already-recorded current-public-base historical offline photo resolves to its safe object key',
+)
+assert.deepEqual(
+  offlineTaskPhotoReferenceVariants('https://offline-task-contract.r2.dev/historical/offline-task-photo.jpg'),
+  ['https://offline-task-contract.r2.dev/historical/offline-task-photo.jpg'],
+  'a historical current-public-base URL stays an exact persisted-reference candidate',
+)
+assert.equal(currentOfflineTaskPhotoKeyFromReference('https://unknown-task-photo.r2.dev/historical/offline-task-photo.jpg'), null, 'an unknown public base must not resolve as an offline task object key')
+assert.equal(currentOfflineTaskPhotoKeyFromReference('https://offline-task-contract.r2.dev/historical/../private.jpg'), null, 'historical compatibility must reject traversal before URL normalization')
 assert.equal(isLegacyMzappTaskPhotoPublicUrl('https://legacy-task-photo.r2.dev/mzapp/offline-task-photo.jpg'), true, 'a recorded legacy R2 image may be read through the authenticated server proxy')
 assert.equal(isLegacyMzappTaskPhotoPublicUrl('http://legacy-task-photo.r2.dev/mzapp/offline-task-photo.jpg'), false, 'legacy media fallback must not permit plaintext HTTP')
 assert.equal(isLegacyMzappTaskPhotoPublicUrl('https://legacy-task-photo.r2.dev/mzapp/../private.jpg'), false, 'legacy media fallback must reject unsafe paths')
@@ -56,8 +70,8 @@ assert.match(routerSource, /canonicalizeMzappTaskPhotoReference\(reference, exis
 
 const mediaRouterSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/cleaning_app.ts'), 'utf8')
 assert.match(mediaRouterSource, /findOfflineWorkTaskPhotoRows/, 'the media proxy must resolve offline work-task photos from their exact business row')
-assert.match(mediaRouterSource, /mzappTaskPhotoReferenceVariants\(requestedKey\)[\s\S]*mzappTaskPhotoReferenceVariants\(sourceUrl\)/, 'key and source URL must independently enter the offline exact-association path before generic feedback lookup')
-assert.match(mediaRouterSource, /jsonb_array_elements_text\(w\.photo_urls\) AS stored\(value\)/, 'offline media ownership must inspect each exact stored photo reference, not a URL prefix match')
+assert.match(mediaRouterSource, /offlineTaskPhotoReferenceVariants\(requestedKey\)[\s\S]*offlineTaskPhotoReferenceVariants\(sourceUrl\)/, 'key and source URL must independently enter the offline exact-association path before generic feedback lookup')
+assert.match(mediaRouterSource, /jsonb_array_elements_text\(\s*COALESCE\(w\.photo_urls, '\[\]'::jsonb\) \|\| COALESCE\(w\.completion_photo_urls, '\[\]'::jsonb\)\s*\) AS stored\(value\)/, 'offline media ownership must inspect each exact stored task or completion-photo reference, not a URL prefix match')
 assert.match(mediaRouterSource, /stored\.value = ANY\(\$1::text\[\]\)[\s\S]*LIMIT 2/, 'a legacy client without work_task_id may only use the bounded unique-reference lookup')
 assert.ok(mediaRouterSource.includes("regexp_replace(stored.value, '^https://[^/]+/', '')"), 'raw keys must fail closed when an exact stored legacy URL has the same canonical mzapp object key')
 assert.match(mediaRouterSource, /requestedWorkTaskIdRaw && !requestedWorkTaskId/, 'a malformed work_task_id must fail closed')
@@ -68,6 +82,7 @@ assert.match(mediaRouterSource, /authority\.includes\('@'\) \|\| \/:\\d\+\$\/.te
 assert.match(mediaRouterSource, /requestedKeyMzappR2Url\?\.hasUnsafeVariant \|\| sourceUrlMzappR2Url\?\.hasUnsafeVariant/, 'an unsafe URL must fail closed even when a supplied key would otherwise mask it')
 assert.match(mediaRouterSource, /findOfflineWorkTaskPhotoRows\(pgPool, offlineReferences\)/, 'offline lookup must consider every supplied candidate reference before validating task access')
 assert.match(mediaRouterSource, /offlineStoredReference = offlineReferences\.find/, 'the object read must use the exact stored offline reference that established authorization')
+assert.match(mediaRouterSource, /currentOfflineTaskPhotoKeyFromReference/, 'a current-public-base historical reference must resolve only inside the authenticated offline proxy')
 assert.match(mediaRouterSource, /offlineRows\.length && \(!offlineRow \|\| \(requestedWorkTaskId && String\(offlineRow\.id \|\| ''\)\.trim\(\) !== requestedWorkTaskId\)\)/, 'duplicate or wrong-task offline references must fail closed before generic media lookup')
 assert.match(mediaRouterSource, /canViewMzappOfflineWorkTaskMedia/, 'offline media reads must enforce authenticated task access before loading bytes')
 assert.match(mediaRouterSource, /loadLegacyOfflineTaskPhoto/, 'legacy R2 reads must stay server-side after authorization')

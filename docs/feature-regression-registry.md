@@ -10,7 +10,7 @@
 ## FR-001：任务操作权限与 available_actions
 
 - **维护责任范围：** backend / web / mobile
-- **最后审查日期：** 2026-08-07
+- **最后审查日期：** 2026-08-11
 - **状态：** active
 
 ### 业务保护规则
@@ -20,6 +20,7 @@
 - 不同角色、参与者和任务状态的可操作性及禁用原因必须一致；客服、admin、线下经理在非参与任务上使用同样的管理动作矩阵，明确参与授权才显示对应执行动作。
 - 管理视图的“全部”保持管理详情入口；切换到“我的”后，任务卡必须进入既有执行详情，不能因管理角色跳回管理页。
 - “标记已退房”只可由真实 `checkout_clean` 来源生成；`checkin_clean` 即使带有订单号或旧缓存 action 也不得显示或调用该动作。合并卡只能携带真实退房子任务的来源 ID。
+- 已完成的线下任务如需补充完成照片，必须由服务端显式下发 `append_completion_photo`；客户端只调用受权限控制的追加接口写入 `completion_photo_urls`，不能重新启用通用“标记完成”。追加成功以前不得显示为已保存；没有服务端删除动作时不得显示本地假删除。维修任务继续使用专用维修工作流。
 
 ### 跨层适用范围
 
@@ -36,6 +37,9 @@
 | 检查照片和 password-only 完成门槛 | `backend/scripts/tests/test_cleaning_task_transition_guard.ts` | 缺照片阻止检查完成；密码任务视频完成 | sufficient | `npm run test:cleaning-task-transition-guard --prefix backend` |
 | 移动端提交后刷新保留退房标记 | `mz-cleaning-app-frontend/src/lib/workTasksStore.test.ts` | 服务端缺少 `checked_out_at` 时按稳定任务来源保留本地标记；服务端明确返回 `null` 时清除 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/workTasksStore.test.ts` |
 | 详情页按服务端 action 进入 | `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` | 任务详情 action 展示和入口 | partial | `npm run test --prefix mz-cleaning-app-frontend -- src/screens/tasks/TaskDetailScreen.test.tsx` |
+| 已完成线下任务补充完成照片（后端 action / 写入） | `backend/scripts/tests/test_work_task_actions.ts` | 只对已完成、已授权的 `cleaning_offline_tasks` 下发动作；维修和未映射来源均被排除，追加只接受规范任务照片引用 | partial | `npm run test:work-task-actions --prefix backend` |
+| 已完成线下任务补充完成照片（私有读取） | `backend/scripts/tests/test_cleaning_media_image.ts` | 认证代理必须以同一 `work_task_id` 精确匹配 `photo_urls` 或 `completion_photo_urls`，并在授权前拒绝歧义/未关联引用 | partial | `npm run test:cleaning-media-image --prefix backend` |
+| 已完成线下任务补充完成照片（移动端） | `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` | 有服务端动作时立即写入；缩略图/预览传任务上下文；保存失败不显示未落库照片；已完成照片无服务端删除动作时隐藏删除入口 | partial | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tasks/TaskDetailScreen.test.tsx` |
 | 管理角色详情动作矩阵（后端） | `backend/scripts/tests/test_work_task_actions.ts` | admin、线下经理与客服在非参与任务上只显示管理动作；显式参与授权保留检查入口 | sufficient | `npm run test:work-task-actions --prefix backend` |
 | 管理角色详情动作矩阵（移动端旧 payload） | `mz-cleaning-app-frontend/src/lib/workTaskActions.test.ts` | admin、线下经理与客服在旧 payload 下保持管理动作一致 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/workTaskActions.test.ts` |
 | 全部管理入口与我的执行入口 | `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.test.tsx` | 管理角色在“全部”进入 `ManagerDailyTask`；切换“我的”后进入执行详情 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tabs/TasksScreen.test.tsx` |
@@ -62,6 +66,7 @@
 - CRL-20260723-006：弱网视频提交与检查照片完成状态解耦
 - CRL-20260724-010：任务详情展示补品填报照片与弱网状态
 - CRL-20260727-001：管理角色统一客服任务详情入口
+- CRL-20260811-006：已完成非维修任务补充完成记录照片（候选，未提交）
 
 ### 非保护范围
 
@@ -340,7 +345,7 @@
 ## FR-005：离线媒体上传、业务提交与本地清理
 
 - **维护责任范围：** backend / mobile
-- **最后审查日期：** 2026-08-10
+- **最后审查日期：** 2026-08-11
 - **状态：** active
 
 ### 业务保护规则
@@ -356,8 +361,9 @@
 - 业务提交成功后才清理整份草稿；网络/5xx 使用退避和上限，400/401/403、本地文件丢失进入明确阻断状态。
 - 同一队列项不可并发执行；已上传媒体和业务提交超时重试不得重新上传已确认的照片。
 - 检查已成功同步后的清洁问题追加必须单独持久化本地草稿；上传成功但追加业务保存失败时保留远端引用，重试不得重复上传。
-- 线下任务说明照片的新写入必须保存服务端返回的 `r2://<namespace>/mzapp/...` 稳定引用；认证读取必须先精确匹配 `work_tasks.photo_urls` 和 `work_task_id`，再校验 manager/view-all、assignee 或 manual participant。历史 `.r2.dev/mzapp/...` 只能在已记录同一任务时由服务端兼容读取。
+- 线下任务说明照片的新写入必须保存服务端返回的 `r2://<namespace>/mzapp/...` 稳定引用；认证读取必须先精确匹配 `work_tasks.photo_urls` 和 `work_task_id`，再校验 manager/view-all、assignee 或 manual participant。历史 `.r2.dev/mzapp/...` 或当前配置 public base 下的安全 HTTPS 对象只能在已记录同一任务时由服务端认证代理读取；未知主机、查询/片段、认证信息、端口、路径穿越和未关联引用一律拒绝。
 - 认证读取的 401/403 与 404 必须分别显示权限不足与照片不可用，均不得重试；只有网络、超时或 5xx 可显示重试。终态响应不得继续使用缓存副本。
+- 移动端缩略图读取失败不得只显示空白占位：必须保留并显示经认证代理分类后的 403/404 原因，网络、超时或 5xx 必须提供明确的重试入口；这只说明客户端边界，实际服务端根因仍须由受控请求追踪确认。
 
 ### 跨层适用范围
 
@@ -386,11 +392,15 @@
 | 本地媒体引用和孤儿清理 | `mz-cleaning-app-frontend/src/lib/localMediaHousekeeping.test.ts` | 嵌套队列引用、旧且未引用文件 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- src/lib/localMediaHousekeeping.test.ts` |
 | 媒体上传和本地/远端状态 | `mz-cleaning-app-frontend/src/lib/cleaningMedia.test.ts` | 上传失败、远端引用和重试 | partial | `npm run test --prefix mz-cleaning-app-frontend -- src/lib/cleaningMedia.test.ts` |
 | 钥匙媒体队列 | `mz-cleaning-app-frontend/src/lib/keyUploadQueue.test.ts` | 钥匙照片入队和恢复同步 | partial | `npm run test --prefix mz-cleaning-app-frontend -- src/lib/keyUploadQueue.test.ts` |
-| 线下任务照片稳定引用 | `backend/scripts/tests/test_mzapp_task_photo_reference.ts` | 当前引用规范化、已记录 legacy 兼容和路由接线 | sufficient | `ts-node-dev --transpile-only scripts/tests/test_mzapp_task_photo_reference.ts`（在 backend） |
+| 线下任务历史 public-base 读取 | `backend/scripts/tests/test_mzapp_task_photo_reference.ts` | 当前引用规范化；当前 public base 历史 URL 的安全 key、未知主机和路径穿越边界 | sufficient | `ts-node-dev --transpile-only scripts/tests/test_mzapp_task_photo_reference.ts`（在 backend） |
 | 线下任务照片代理授权 | `backend/scripts/tests/test_mzapp_media_visibility.ts` | manager、assignee、participant 与 outsider 的读取边界 | sufficient | `npm run test:mzapp-media-visibility --prefix backend` |
-| 线下任务照片精确关联 | `backend/scripts/tests/test_cleaning_media_image.ts` | 当前任务关联和缺失对象终态 | sufficient | `npm run test:cleaning-media-image --prefix backend` |
+| 线下任务照片精确关联 | `backend/scripts/tests/test_cleaning_media_image.ts` | `photo_urls` 当前任务关联、历史 URL 认证读取和缺失对象终态 | sufficient | `npm run test:cleaning-media-image --prefix backend` |
+| 线下任务历史 URL 客户端认证构造 | `mz-cleaning-app-frontend/src/lib/cleaningMedia.test.ts` | 仅显式 offline task context 且含 `work_task_id` 的历史 HTTPS 引用走认证代理 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/cleaningMedia.test.ts` |
+| 线下任务历史 URL 缩略图与预览 | `mz-cleaning-app-frontend/src/components/CleaningMediaPreview.test.tsx` | 缩略图和预览复用同一代理和任务上下文 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/components/CleaningMediaPreview.test.tsx` |
+| 线下任务历史 URL 页面上下文 | `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` | 顶部任务照片的缩略图与预览显式进入 offline 认证读取 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tasks/TaskDetailScreen.test.tsx` |
 | 移动端稳定引用响应 | `mz-cleaning-app-frontend/src/lib/api.test.ts` | 记录 `remoteReference` 并兼容 URL | sufficient | `npm run test -- --runInBand --no-cache src/lib/api.test.ts`（在 mobile） |
 | 移动端终态读取边界 | `mz-cleaning-app-frontend/src/lib/cleaningMediaCache.test.ts` | 403/404 终态与网络重试 | sufficient | `npm run test -- --runInBand --no-cache src/lib/cleaningMediaCache.test.ts`（在 mobile） |
+| 移动端缩略图失败可见性 | `mz-cleaning-app-frontend/src/components/CleaningMediaImage.test.tsx` | 403/404 显示终态原因；临时读取错误显示重试入口 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/components/CleaningMediaImage.test.tsx` |
 
 ### 验证策略
 
@@ -404,9 +414,9 @@
 
 ### 最后验证
 
-- **CRL：** CRL-20260728-004
+- **CRL：** CRL-20260811-009
 - **Commit：** not yet
-- **日期：** 2026-07-28
+- **日期：** 2026-08-12
 
 ### 相关 CRL
 
@@ -421,6 +431,7 @@
 - CRL-20260726-005：R2 媒体引用盘点与孤儿回收闸门
 - CRL-20260726-006：第五阶段跨层回归与发布前写入闸门
 - CRL-20260728-001：移动端房号确认、遥控器合拍与检查后清洁问题追加
+- CRL-20260811-009：线下任务历史公共基址照片认证读取（root/mobile pair）
 
 ### 非保护范围
 
