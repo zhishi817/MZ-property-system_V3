@@ -48,14 +48,21 @@
 
 #### RA-20260811-root-feedback-p1-03
 
-- Repository: `root`; selected CRLs: `CRL-20260811-004`, `CRL-20260811-006`; intended action: `commit`.
-- Branch: `codex/release-feedback-p1-20260811-root`; base: `origin/Dev@b32760c219dc8bec5dfbbc46e6f1f140c2ac0d65`, fetched 2026-08-11.
-- Candidate patch SHA-256: `7b00f8df3df908dfa1ea232b66a9fbd82b40d079a8acb287744454f1826fed0a` excluding `docs/change-release-ledger.md`; candidate content commit: `28dc9068575290141a64cb91250e3c355be64bce`.
+- Repository: `root`
+- Selected CRLs: `CRL-20260811-004`, `CRL-20260811-006`
+- Intended action: `commit`
+- Branch: `codex/release-feedback-p1-20260811-root`
+- Base: `origin/Dev@b32760c219dc8bec5dfbbc46e6f1f140c2ac0d65`; fetched at 2026-08-11 Australia/Melbourne.
+- Candidate patch SHA-256: `7b00f8df3df908dfa1ea232b66a9fbd82b40d079a8acb287744454f1826fed0a` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `28dc9068575290141a64cb91250e3c355be64bce` (candidate content commit)
 - Dependencies: mobile `CRL-20260811-004`, `CRL-20260811-005`, `CRL-20260811-006`, `CRL-20260811-007`; root/mobile `CRL-20260811-006` must release as a compatible pair.
 - Required validation: PASS — targeted backend contracts and `npm run check:full`; paired mobile `npm run check:ci` after the retry repair is recorded in its `RA-20260811-mobile-feedback-p1-03`.
-- Shared-hunk / generated-file review: PASS — exact staged range contains only selected source/tests/docs; generated `backend/dist` output remains restored and excluded.
+- Shared-hunk review: PASS — exact staged range contains only selected source/tests/docs.
+- Generated-file review: PASS — generated `backend/dist` output remains restored and excluded.
 - Independent review: GO for commit — independent read-only review found no P0/P1 in the exact paired root/mobile fingerprints; real PostgreSQL/proxy/device validation remains a P2 post-commit gate.
-- Technical state: `committed`; user authorization: `selected-for-commit`; action conclusion: `GO` for commit completed. Push still requires exact commit-bound authorization for the current branch head.
+- Technical state: committed
+- User authorization: selected-for-commit — user selected CRL-004,005,006,007 on 2026-08-11.
+- Action conclusion: GO — commit completed; push still requires exact commit-bound authorization for the current branch head.
 
 ### Risks / Release Notes
 
