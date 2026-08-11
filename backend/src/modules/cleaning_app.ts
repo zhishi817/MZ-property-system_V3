@@ -14,7 +14,7 @@ import { buildCleaningTaskVisibilityHints, emitWorkTaskEvent } from '../services
 import { effectiveInspectionMode, isInspectionFinishedStatus } from '../lib/cleaningInspection'
 import { CLEANING_IMAGE_FORMAT_ERROR, encodeCleaningImageToJpeg, isImageUploadCandidate, normalizeCleaningImageUpload } from '../lib/cleaningMediaImage'
 import { isCleaningMediaKey } from '../lib/cleaningMediaReference'
-import { currentMzappTaskPhotoKeyFromReference, isLegacyMzappTaskPhotoPublicUrl, mzappTaskPhotoReferenceVariants, normalizeMzappTaskPhotoKey } from '../lib/mzappTaskPhotoReference'
+import { currentOfflineTaskPhotoKeyFromReference, currentMzappTaskPhotoKeyFromReference, isLegacyMzappTaskPhotoPublicUrl, offlineTaskPhotoReferenceVariants, normalizeMzappTaskPhotoKey } from '../lib/mzappTaskPhotoReference'
 import {
   buildIdempotencyPayloadHash,
   assertIdempotentStepReceiptsReady,
@@ -3378,8 +3378,8 @@ router.get(
       const requestedKeyMzappR2Url = inspectMzappR2Url(requestedKey)
       const sourceUrlMzappR2Url = inspectMzappR2Url(sourceUrl)
       const offlineReferences = Array.from(new Set([
-        ...mzappTaskPhotoReferenceVariants(requestedKey),
-        ...mzappTaskPhotoReferenceVariants(sourceUrl),
+        ...offlineTaskPhotoReferenceVariants(requestedKey),
+        ...offlineTaskPhotoReferenceVariants(sourceUrl),
       ]))
       // Resolve every current/legacy mzapp reference against offline tasks before
       // considering the generic feedback-media branch. Otherwise a caller could
@@ -3415,7 +3415,7 @@ router.get(
           if (!offlineStoredReference) {
             return res.status(403).json({ code: 'forbidden_media', message: 'forbidden_media' })
           }
-          const offlineObjectKey = currentMzappTaskPhotoKeyFromReference(offlineStoredReference) || normalizeMzappTaskPhotoKey(offlineStoredReference)
+          const offlineObjectKey = currentOfflineTaskPhotoKeyFromReference(offlineStoredReference) || normalizeMzappTaskPhotoKey(offlineStoredReference)
           const object = offlineObjectKey
             ? hasR2
               ? await r2GetObjectByKey(offlineObjectKey)
