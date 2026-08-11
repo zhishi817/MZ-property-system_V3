@@ -140,6 +140,7 @@ async function main() {
   assert.match(mediaRoute, /feedbackMediaRows\.length === 1/, 'ambiguous feedback references must fail closed before reading R2')
   assert.match(mediaRoute, /canViewMzappPropertyFeedback/, 'feedback media must re-check the current authenticated user')
   assert.match(mediaRoute, /canViewMzappOfflineWorkTaskMedia/, 'offline task media must use the dedicated task visibility rule')
+  assert.match(mediaRouteSource, /offlineTaskPhotoReferenceVariants/, 'current-public-base historical offline URLs must remain inside the dedicated offline authorization branch')
   assert.doesNotMatch(mediaRoute, /requireAnyPerm/, 'feedback image reading must not require a task execution permission')
   assert.match(mediaRouteSource, /JOIN properties p ON p\.id::text = m\.property_id::text/, 'feedback media must resolve maintenance media through its real property')
   assert.match(mediaRouteSource, /m\.deleted_at IS NULL/, 'soft-deleted feedback must not resolve normal media URLs')

@@ -22,13 +22,18 @@ function currentStorageNamespace() {
   return `bucket-${crypto.createHash('sha256').update(bucket).digest('hex')}`
 }
 
+function currentR2PublicBase() {
+  const bucket = cleanText(process.env.R2_BUCKET)
+  const publicBase = cleanText(process.env.R2_PUBLIC_BASE_URL || process.env.R2_PUBLIC_BASE).replace(/\/+$/, '')
+  return publicBase && /\.r2\.dev($|\/)/i.test(publicBase)
+    ? publicBase.replace(new RegExp(`/${bucket.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`), '')
+    : publicBase
+}
+
 function currentR2UploadBases() {
   const endpoint = cleanText(process.env.R2_ENDPOINT).replace(/\/+$/, '')
   const bucket = cleanText(process.env.R2_BUCKET)
-  const publicBase = cleanText(process.env.R2_PUBLIC_BASE_URL || process.env.R2_PUBLIC_BASE).replace(/\/+$/, '')
-  const normalizedPublicBase = publicBase && /\.r2\.dev($|\/)/i.test(publicBase)
-    ? publicBase.replace(new RegExp(`/${bucket.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`), '')
-    : publicBase
+  const normalizedPublicBase = currentR2PublicBase()
   return [normalizedPublicBase, endpoint && bucket ? `${endpoint}/${bucket}` : ''].filter(Boolean)
 }
 
@@ -68,6 +73,40 @@ export function currentMzappTaskPhotoKeyFromReference(value: unknown) {
   return currentMzappKeyFromUrl(value)
 }
 
+function normalizeHistoricalOfflineTaskPhotoKey(value: unknown) {
+  const key = cleanText(value).replace(/^\/+/, '')
+  if (!key || key.length > 1000 || key.includes('..') || key.includes('\\') || /[?#]/.test(key)) return null
+  return key
+}
+
+function currentHistoricalOfflineTaskPhotoKeyFromUrl(value: unknown) {
+  const raw = cleanText(value)
+  if (!/^https:\/\//i.test(raw)) return null
+  // URL() normalizes `..` segments. Reject them before parsing so this narrow
+  // historical compatibility path cannot escape its recorded object key.
+  if (/(?:\/|%2f)(?:\.|%2e){1,2}(?=\/|%2f|$)/i.test(raw)) return null
+  const publicBase = currentR2PublicBase()
+  if (!publicBase) return null
+  try {
+    const url = new URL(raw)
+    const base = new URL(publicBase)
+    if (url.protocol !== 'https:' || url.username || url.password || url.port || url.search || url.hash) return null
+    if (base.protocol !== 'https:' || base.username || base.password || base.port || base.search || base.hash) return null
+    if (url.origin !== base.origin) return null
+    const basePath = base.pathname.replace(/\/+$/, '')
+    const key = basePath
+      ? url.pathname.startsWith(`${basePath}/`) ? url.pathname.slice(basePath.length + 1) : ''
+      : url.pathname.slice(1)
+    return normalizeHistoricalOfflineTaskPhotoKey(key)
+  } catch {
+    return null
+  }
+}
+
+export function currentOfflineTaskPhotoKeyFromReference(value: unknown) {
+  return currentMzappTaskPhotoKeyFromReference(value) || currentHistoricalOfflineTaskPhotoKeyFromUrl(value)
+}
+
 export function isLegacyMzappTaskPhotoPublicUrl(value: unknown) {
   const raw = cleanText(value)
   if (!/^https:\/\//i.test(raw)) return false
@@ -95,6 +134,18 @@ export function mzappTaskPhotoReferenceVariants(value: unknown) {
   }
   if (!currentKey && !rawKey && !legacy) return []
   return Array.from(new Set([raw, key, key ? createMzappTaskPhotoRemoteReference(key) : null].filter((reference): reference is string => Boolean(reference))))
+}
+
+/**
+ * A pre-canonical offline task row may hold a current-public-base object URL
+ * whose key is outside `mzapp/`. It is only a candidate for the task-media
+ * proxy; callers must still prove exact row association and authorization.
+ */
+export function offlineTaskPhotoReferenceVariants(value: unknown) {
+  const raw = cleanText(value)
+  const mzappVariants = mzappTaskPhotoReferenceVariants(raw)
+  if (mzappVariants.length) return mzappVariants
+  return currentHistoricalOfflineTaskPhotoKeyFromUrl(raw) ? [raw] : []
 }
 
 function isLegacyLocalUploadPath(value: unknown) {

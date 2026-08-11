@@ -1,5 +1,65 @@
 # Change Release Ledger
 
+## CRL-20260811-009 — 线下任务历史公共基址照片认证读取（root）
+
+- **Status:** candidate
+- **Updated:** 2026-08-11 Australia/Melbourne
+- **Request:** 修复开发环境线下任务顶部「任务照片」的历史 HTTPS 引用被移动端直连对象而显示无权限；本次仅选择 root/mobile `CRL-20260811-009` 提交。
+- **Outcome:** 已记录在同一 `work_tasks.photo_urls` 的历史 HTTPS 对象，只有在其匹配当前配置 public base、使用安全对象 key、请求携带精确 `work_task_id` 且既有 offline 授权允许时，才由认证媒体代理读取。新写入格式和任务处理照片链路不在本 CRL 范围。
+
+### Implementation
+
+- Previous behavior: 不含 `mzapp/` 路径的历史 current-public-base URL 不会进入 offline-task 认证分支，移动端只能直连对象。
+- New behavior: 受控 parser 只接受当前配置 public base 下无查询、片段、认证信息、端口或路径穿越的 HTTPS URL；路由先精确匹配 `photo_urls` 和 `work_task_id`，再使用既有 `canViewMzappOfflineWorkTaskMedia` 授权后以对象 key 读取。
+- Key decisions: 不接受任意 URL、不改新写入 `r2://` 身份、不新增公开链接、权限、数据库迁移、数据/R2 操作。本次明确排除 `completion_photo_urls` / 任务处理照片的 CRL-20260811-005。
+
+### Files / Areas
+
+- `backend/src/lib/mzappTaskPhotoReference.ts` — 当前 public base 的安全历史离线照片解析和受控候选识别。
+- `backend/src/modules/cleaning_app.ts` — 仅将已关联的历史任务照片导入既有 offline 授权代理并按解析 key 读取。
+- `backend/scripts/tests/test_mzapp_task_photo_reference.ts`, `backend/scripts/tests/test_cleaning_media_image.ts`, `backend/scripts/tests/test_mzapp_media_visibility.ts` — public-base、路径安全、精确任务关联和权限分支回归。
+- `docs/feature-regression-registry.md`, `docs/change-release-ledger.md` — 本 CRL 的回归与发布证据。
+
+### Impact / Dependencies
+
+- API: 不新增路由；既有 `GET /cleaning-app/media/image` 对携带准确 `work_task_id` 的已记录历史任务照片增加受控兼容读取。
+- Database / migration / configuration / R2 / production data: none.
+- Paired mobile unit: mobile `CRL-20260811-009` 必须使用同一精确任务上下文；本 root 候选不依赖未选的 CRL-20260811-005。
+
+### Validation
+
+- `test_mzapp_task_photo_reference.ts`, `test_cleaning_media_image.ts`, `test_mzapp_media_visibility.ts` — passed in this clean candidate.
+- Backend TypeScript no-emit check — passed in this clean candidate using the existing read-only dependency tree.
+- Mobile paired helper/component/screen tests — passed in the rebased paired clean candidate (53 tests).
+- Full mobile suite — passed in the rebased paired clean candidate (55 suites / 281 tests). Deployed API, real-device, OTA/build and production verification — not run.
+
+### Release Attempts
+
+#### RA-20260811-009-root-01
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260811-009`
+- Intended action: `commit`
+- Branch: `codex/release-offline-task-photo-auth-20260811`
+- Base: `origin/Dev@b32760c219dc8bec5dfbbc46e6f1f140c2ac0d65`; fetched at `2026-08-12T00:31:03+10:00`.
+- Candidate patch SHA-256: `1cd19d8209d0eacf6c3ca3511798f86b21e89aee22757f473ca653a5d281d2e0`, excluding `docs/change-release-ledger.md`.
+- Commit SHA: not committed.
+- Dependencies: mobile `CRL-20260811-009`; no unselected CRL is included.
+- Required validation: PASS; exact candidate contract tests and no-emit TypeScript passed.
+- Shared-hunk review: PASS; final independent staged review confirmed all 7 paths belong to this selected CRL and no unselected hunk is included.
+- Generated-file review: PASS; final independent staged review found no generated output, cache, dependency artifact or sensitive file.
+- Technical state: verified.
+- User authorization: selected-for-commit; evidence: user confirmed paired root/mobile `CRL-20260811-009` after remote CRL-008 use was verified.
+- Independent review: GO for `commit` only; final independent read-only review confirmed fingerprint `1cd19d8209d0eacf6c3ca3511798f86b21e89aee22757f473ca653a5d281d2e0`, exact scope and validation evidence.
+- Action conclusion: GO for `commit`; push, PR, merge, deployment, OTA and device verification are not authorized or verified.
+
+### Risks / Release Notes
+
+- Risk: any different historical host/prefix must first receive a separate source-to-object incident trace; it is not accepted by this resolver.
+- Rollback: revert the parser/adapter pair; no data rollback is needed.
+- Sensitive-information review: no credentials, tokens, database URLs, private media references, image bytes, user records, logs or caches included.
+- Git state: candidate created in a clean release worktree; no generated output, dependency artifact, local cache or unrelated worktree change is in scope.
+
 ## CRL-20260809-006 — 维修待审核状态投影保护（root）
 
 - **Status:** candidate
