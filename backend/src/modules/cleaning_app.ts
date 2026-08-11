@@ -3306,24 +3306,25 @@ async function findOfflineWorkTaskPhotoRows(pool: any, references: string[]) {
   const result = await pool.query(
     `SELECT w.id,
             w.assignee_id,
-            w.photo_urls
+            w.photo_urls,
+            w.completion_photo_urls
        FROM work_tasks w
       WHERE w.source_type = 'cleaning_offline_tasks'
-        AND (
-          EXISTS (
-            SELECT 1
-              FROM jsonb_array_elements_text(w.photo_urls) AS stored(value)
-             WHERE stored.value = ANY($1::text[])
-                OR (
-                  CASE
-                    WHEN stored.value ~* '^r2://[a-z0-9][a-z0-9._-]{0,119}/mzapp/[^?#]+$'
-                      THEN regexp_replace(stored.value, '^r2://[^/]+/', '')
-                    WHEN stored.value ~* '^https://[^/?#@:]+\\.r2\\.dev/mzapp/[^?#]+$'
-                      THEN regexp_replace(stored.value, '^https://[^/]+/', '')
-                    ELSE ''
-                  END
-                ) = ANY($2::text[])
-          )
+        AND EXISTS (
+          SELECT 1
+            FROM jsonb_array_elements_text(
+              COALESCE(w.photo_urls, '[]'::jsonb) || COALESCE(w.completion_photo_urls, '[]'::jsonb)
+            ) AS stored(value)
+           WHERE stored.value = ANY($1::text[])
+              OR (
+                CASE
+                  WHEN stored.value ~* '^r2://[a-z0-9][a-z0-9._-]{0,119}/mzapp/[^?#]+$'
+                    THEN regexp_replace(stored.value, '^r2://[^/]+/', '')
+                  WHEN stored.value ~* '^https://[^/?#@:]+\\.r2\\.dev/mzapp/[^?#]+$'
+                    THEN regexp_replace(stored.value, '^https://[^/]+/', '')
+                  ELSE ''
+                END
+              ) = ANY($2::text[])
         )
       LIMIT 2`,
     [references, keys],
@@ -3406,7 +3407,11 @@ router.get(
           if (!await canViewMzappOfflineWorkTaskMedia(user, offlineRow, userId)) {
             return res.status(403).json({ code: 'forbidden_media', message: 'forbidden_media' })
           }
-          const offlineStoredReference = offlineReferences.find((reference) => normalizeStoredPhotoUrls(offlineRow.photo_urls).includes(reference))
+          const offlineStoredReferences = new Set([
+            ...normalizeStoredPhotoUrls(offlineRow.photo_urls),
+            ...normalizeStoredPhotoUrls(offlineRow.completion_photo_urls),
+          ])
+          const offlineStoredReference = offlineReferences.find((reference) => offlineStoredReferences.has(reference))
           if (!offlineStoredReference) {
             return res.status(403).json({ code: 'forbidden_media', message: 'forbidden_media' })
           }

@@ -71,7 +71,7 @@ assert.match(routerSource, /canonicalizeMzappTaskPhotoReference\(reference, exis
 const mediaRouterSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/cleaning_app.ts'), 'utf8')
 assert.match(mediaRouterSource, /findOfflineWorkTaskPhotoRows/, 'the media proxy must resolve offline work-task photos from their exact business row')
 assert.match(mediaRouterSource, /offlineTaskPhotoReferenceVariants\(requestedKey\)[\s\S]*offlineTaskPhotoReferenceVariants\(sourceUrl\)/, 'key and source URL must independently enter the offline exact-association path before generic feedback lookup')
-assert.match(mediaRouterSource, /jsonb_array_elements_text\(w\.photo_urls\) AS stored\(value\)/, 'offline media ownership must inspect each exact stored photo reference, not a URL prefix match')
+assert.match(mediaRouterSource, /jsonb_array_elements_text\(\s*COALESCE\(w\.photo_urls, '\[\]'::jsonb\) \|\| COALESCE\(w\.completion_photo_urls, '\[\]'::jsonb\)\s*\) AS stored\(value\)/, 'offline media ownership must inspect each exact stored task or completion-photo reference, not a URL prefix match')
 assert.match(mediaRouterSource, /stored\.value = ANY\(\$1::text\[\]\)[\s\S]*LIMIT 2/, 'a legacy client without work_task_id may only use the bounded unique-reference lookup')
 assert.ok(mediaRouterSource.includes("regexp_replace(stored.value, '^https://[^/]+/', '')"), 'raw keys must fail closed when an exact stored legacy URL has the same canonical mzapp object key')
 assert.match(mediaRouterSource, /requestedWorkTaskIdRaw && !requestedWorkTaskId/, 'a malformed work_task_id must fail closed')

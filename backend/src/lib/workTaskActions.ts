@@ -6,6 +6,7 @@ export type WorkTaskActionId =
   | 'submit_inspection'
   | 'upload_access_video'
   | 'complete_cleaning'
+  | 'append_completion_photo'
   | 'report_issue'
   | 'mark_guest_checkout'
 
@@ -17,7 +18,7 @@ export type WorkTaskActionTarget =
   | 'CleaningSelfComplete'
   | 'FeedbackForm'
 
-export type WorkTaskActionIntent = 'cleaning' | 'inspection' | 'site_action' | 'issue' | 'manager'
+export type WorkTaskActionIntent = 'cleaning' | 'inspection' | 'site_action' | 'completion' | 'issue' | 'manager'
 
 export type WebTaskManagementActionId =
   | 'edit_task'
@@ -427,6 +428,7 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
 
   const isCustomerServiceCleaningSource = isCleaningSource && isCustomerService
   const isManagerCleaningSource = isCleaningSource && isManager
+  const isGenericWorkTaskCompleted = ['done', 'completed', 'ready'].includes(status)
   const addWorkerAction = (action: WorkTaskAvailableAction, participantAuthorized: boolean) => {
     // Managers can still receive an explicitly granted participant action, but
     // an unassigned manager should see the same manager-only matrix as support.
@@ -564,6 +566,25 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
       ...(!issueAllowed ? { disabled_reason: canReportIssue ? 'not_participant' : 'missing_base_permission' } : {}),
       target: 'FeedbackForm',
       intent: 'issue',
+    })
+  }
+
+  // Only the mapped offline-task source can append a terminal completion photo.
+  // This remains an explicit server capability rather than a client-side
+  // exception to the normal completion action. Other sources need their own
+  // persisted association and authenticated-read contract before exposing it.
+  if (sourceType === 'cleaning_offline_tasks' && isGenericWorkTaskCompleted) {
+    const completionPhotoReason = !context.canViewAll && !participantSummary.hasAny
+      ? 'not_participant'
+      : undefined
+    addAction({
+      id: 'append_completion_photo',
+      label: '补充完成记录照片',
+      placement: 'more',
+      enabled: actionEnabled(completionPhotoReason),
+      ...(completionPhotoReason ? { disabled_reason: completionPhotoReason } : {}),
+      target: 'TaskDetail',
+      intent: 'completion',
     })
   }
 
