@@ -112,7 +112,8 @@
 
 - Repository: `root`.
 - Selected CRLs: `CRL-20260812-001`, `CRL-20260812-002`, `CRL-20260812-003`, `CRL-20260812-006`, `CRL-20260812-007`, `CRL-20260812-008`.
-- Intended action: `commit`; branch: `codex/release-crl-20260812-001-007`; target: `Dev`.
+- Intended action: `commit`; target: `Dev`.
+- Branch: `codex/release-crl-20260812-001-007`.
 - Base: `origin/Dev@aa0d0d3f0ad42dcb4f3640cd947dc526bb05f6c9`; fetched at `2026-08-12T15:35:31+10:00` and unchanged when this candidate was prepared.
 - Candidate patch SHA-256: `3ec5de4e841fdafcaf6ce32679ff854f759d79200977f0d8657e17395a99a4e9`, excluding `docs/change-release-ledger.md`.
 - Commit SHA: `7046279c978ff982c1731b8a1af55fa3916c60de` (candidate content commit; audit head is emitted by the report command).
