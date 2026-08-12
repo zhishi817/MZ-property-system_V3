@@ -141,8 +141,8 @@
 - Generated-file review: PASS — no generated, cache, environment or sensitive artifact is in the exact range.
 - Technical state: `committed`.
 - User authorization: `approved-for-push`; evidence: user replied “批准” after root `7046279c978ff982c1731b8a1af55fa3916c60de`, mobile `f57ca04e835659592f2dd46a54c7cec6a334df40` and both branch names were presented.
-- Independent review: NEEDS OWNER; evidence: committed-range push review pending.
-- Action conclusion: `NOT VERIFIED`; blockers: committed-range push review and exact release report pending.
+- Independent review: GO for `push`; evidence: independent committed-range review matched base/head/content commit/fingerprint, confirmed all-source owner/date day-end fail-closed behavior, CRL coverage, generated-file/secret safety and paired mobile contract.
+- Action conclusion: `GO` for push; blockers: none.
 
 ### Risks / Release Notes
 
