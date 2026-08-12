@@ -4,6 +4,7 @@ import sharp from 'sharp'
 import { CLEANING_IMAGE_FORMAT_ERROR, normalizeCleaningImageUpload } from '../../src/lib/cleaningMediaImage'
 import {
   canViewRecordedDayEndMedia,
+  isExclusiveDayEndHandoverMedia,
   selectExclusiveRecordedCleaningMedia,
   selectUniqueRecordedCleaningMediaRow,
   selectUniqueRecordedDayEndMediaRow,
@@ -21,6 +22,9 @@ async function main() {
   assert.match(route, /hasTaskOrDayEndMedia \|\| feedbackMediaRows\.length > 0/, 'a temporary-notice key colliding with task, day-end, feedback, or external-maintenance media must fail closed')
   assert.match(route, /const canView = hasGuestLuggageSourceConflict\s*\? false/, 'cross-source temporary-notice collisions must not fall back to a different source authorization rule')
   assert.match(route, /FROM cleaning_day_end_media/, 'media proxy must resolve recorded day-end handover photos')
+  assert.match(route, /isExclusiveDayEndHandoverMedia\(/, 'the owner/date day-end branch must reject a key recorded by any other private-media source before reading R2')
+  assert.match(route, /findPropertyFeedbackMediaRows\(pgPool, dayEndKey\)/, 'the owner/date day-end branch must include feedback and external-maintenance records in cross-source collision detection')
+  assert.match(route, /FROM guest_luggage_notices[\s\S]*dayEndKeyPattern/, 'the owner/date day-end branch must include temporary-notice records in cross-source collision detection')
   assert.match(route, /canViewMzappRecordedCleaningMedia/, 'media proxy must enforce task-specific media visibility before reading R2')
   assert.match(route, /canViewRecordedDayEndMedia/, 'media proxy must enforce day-end owner or manager visibility before reading R2')
   assert.match(route, /canViewMzappPropertyFeedback\(user, feedbackMediaRow, userId\)/, 'property-feedback media must use the resolved property record and current authenticated user')
@@ -49,7 +53,7 @@ async function main() {
   assert.equal(selectUniqueRecordedCleaningMediaRow([ordinary]), ordinary)
   assert.equal(selectUniqueRecordedCleaningMediaRow([ordinary, { ...ordinary, type: 'inspection_photo' }]), null, 'one key recorded under two types must fail closed')
   assert.equal(selectUniqueRecordedCleaningMediaRow([ordinary, { ...ordinary, id: 'task-b' }]), null, 'one key recorded under two tasks must fail closed')
-  const dayEnd = { user_id: 'cleaner-a', kind: 'warehouse_key_return', url: 'cleaning/day-end.jpg' }
+  const dayEnd = { user_id: 'cleaner-a', date: '2026-08-12', kind: 'warehouse_key_return', url: 'cleaning/day-end.jpg' }
   assert.equal(selectUniqueRecordedDayEndMediaRow([dayEnd]), dayEnd)
   assert.equal(selectUniqueRecordedDayEndMediaRow([dayEnd, { ...dayEnd, user_id: 'cleaner-b' }]), null, 'one key recorded for two day-end users must fail closed')
   assert.equal(selectUniqueRecordedDayEndMediaRow([dayEnd, { ...dayEnd, kind: 'remaining_consumables' }]), null, 'one key recorded for two day-end kinds must fail closed')
@@ -58,6 +62,11 @@ async function main() {
   assert.equal(selectExclusiveRecordedCleaningMedia([ordinary, { ...ordinary, id: 'task-b' }], [dayEnd]), null, 'task conflict plus one day-end record must fail closed')
   assert.equal(selectExclusiveRecordedCleaningMedia([ordinary], [dayEnd, { ...dayEnd, user_id: 'cleaner-b' }]), null, 'day-end conflict plus one task record must fail closed')
   assert.equal(selectExclusiveRecordedCleaningMedia([ordinary], [dayEnd]), null, 'one key recorded by task and day-end records must fail closed')
+  assert.equal(isExclusiveDayEndHandoverMedia([dayEnd], [], [], [], 'cleaner-a', '2026-08-12'), true, 'one exact day-end record may be read by its owner/date route')
+  assert.equal(isExclusiveDayEndHandoverMedia([dayEnd], [ordinary], [], [], 'cleaner-a', '2026-08-12'), false, 'day-end owner/date media must reject a task-media collision')
+  assert.equal(isExclusiveDayEndHandoverMedia([dayEnd], [], [{ id: 'notice-a' }], [], 'cleaner-a', '2026-08-12'), false, 'day-end owner/date media must reject a temporary-notice collision')
+  assert.equal(isExclusiveDayEndHandoverMedia([dayEnd], [], [], [{ id: 'feedback-a' }], 'cleaner-a', '2026-08-12'), false, 'day-end owner/date media must reject a feedback or external-maintenance collision')
+  assert.equal(isExclusiveDayEndHandoverMedia([dayEnd, { ...dayEnd, user_id: 'cleaner-b' }], [], [], [], 'cleaner-a', '2026-08-12'), false, 'day-end owner/date media must reject another day-end owner collision')
   const inventoryManager = { sub: 'inventory-manager', role: 'inventory_manager', roles: ['inventory_manager'] }
   assert.equal(canViewRecordedDayEndMedia(inventoryManager, dayEnd, 'inventory-manager'), true, 'inventory_manager may read a recorded day-end photo')
   assert.equal(canViewRecordedDayEndMedia({ sub: 'finance-user', role: 'finance', roles: ['finance'] }, dayEnd, 'finance-user'), false, 'unrelated role must not read a recorded day-end photo')

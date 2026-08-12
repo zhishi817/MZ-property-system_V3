@@ -1,5 +1,50 @@
 # Change Release Ledger
 
+## CRL-20260812-008 — 日终媒体跨来源冲突 fail-closed 补丁（root）
+
+- **Status:** ready
+- **Updated:** 2026-08-12 Australia/Melbourne
+- **Request:** 在 1–7 联合发布的独立推送复核发现日终 owner/date 专用读取绕过跨来源冲突校验后，先阻断该私有媒体越权路径。
+- **Outcome:** 日终 owner/date 请求在读取 R2 前汇总同 key 的任务、消耗品、日终、临时通知、房源反馈和外部维护登记；存在任一跨来源或多个日终记录时返回 403。
+
+### Implementation
+
+- Previous behavior: 专用日终分支只验证请求 owner/date 的唯一记录与读者角色，随后直接读取 R2；同 key 的其他私有来源未参与冲突判定。
+- New behavior: 专用分支复用既有任务/日终唯一选择器，并要求精确 owner/date 的唯一日终记录且不存在临时通知、反馈或外部维护关联，才进入 R2 读取。
+- Key decisions: 仅加严私有代理授权；不增加公开 URL、路由、表结构、R2 写入、数据迁移或生产数据操作。
+
+### Files / Areas
+
+- `backend/src/modules/cleaning_app.ts` — 日终 owner/date 专用读取的全来源碰撞检测与 fail-closed 门禁。
+- `backend/scripts/tests/test_cleaning_media_image.ts` — 日终与任务、临时通知、反馈/外部维护及其他日终记录冲突回归。
+- `docs/feature-regression-registry.md` — FR-004 的日终媒体跨来源保护规则与测试映射。
+- `docs/change-release-ledger.md` — 本补丁记录及前一推送尝试的 NO-GO 回执。
+
+### Impact / Dependencies
+
+- API: existing `GET /cleaning-app/media/image` only; incompatible/ambiguous private references now consistently return 403.
+- Database / migration / configuration / R2 / production data: none.
+- Dependencies: follows root `CRL-20260812-001` and `CRL-20260812-006`; it is required before their shared proxy range can be pushed.
+
+### Validation
+
+- `npm run test:cleaning-media-image --prefix backend` — passed: executable exclusive-source helper regression and source-contract assertions passed.
+- `npm run test:mzapp-media-visibility --prefix backend` — passed: temporary-notice authorization contract remains covered.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_day_end_media_proxy_contract.ts` (from `backend`) — passed: owner/date association and authorization contract remains valid.
+- `npm run build --prefix backend` — passed: TypeScript build passed; generated `dist` outputs are excluded from this unit.
+- `git diff --check` — passed.
+
+### Release Attempts
+
+- None yet. User selected this patch together with root/mobile 1–7 for the same isolated release branch; the changed root candidate requires a new content commit, push-range audit and explicit post-commit push authorization.
+
+### Risks / Release Notes
+
+- Risk: valid records that reuse a private object key across any source now fail closed and need a newly uploaded unique object before they can be viewed.
+- Rollback: revert only the collision gate; no data rollback is required.
+- Sensitive-information review: no credentials, tokens, private URLs, object bytes, database connection values or production data are recorded.
+- Git state: uncommitted in the isolated release worktree; no push, PR, deployment, OTA or device verification.
+
 ## CRL-20260812-003 — 远端台账身份不可变门禁（root governance）
 
 - **Status:** ready
@@ -59,8 +104,25 @@
 - Generated-file review: PASS; evidence: no generated files, cache, environment or sensitive artifact in the exact range.
 - Technical state: `committed`.
 - User authorization: `approved-for-push`; evidence: user instructed “推送” after both exact committed branch heads were presented.
-- Independent review: NEEDS OWNER; evidence: committed-range re-review pending.
-- Action conclusion: `NOT VERIFIED`; blockers: committed-range re-review and exact release report pending.
+- Independent review: NO-GO; evidence: committed-range re-review found a P1 owner/date day-end branch bypass of cross-source collision detection.
+- Action conclusion: `BLOCKED`; blockers: P1 is repaired in new root `CRL-20260812-008`, which was not part of this committed candidate and needs its own selected attempt and re-review.
+
+#### RA-20260812-root-001-008-03
+
+- Repository: `root`.
+- Selected CRLs: `CRL-20260812-001`, `CRL-20260812-002`, `CRL-20260812-003`, `CRL-20260812-006`, `CRL-20260812-007`, `CRL-20260812-008`.
+- Intended action: `commit`; branch: `codex/release-crl-20260812-001-007`; target: `Dev`.
+- Base: `origin/Dev@aa0d0d3f0ad42dcb4f3640cd947dc526bb05f6c9`; fetched at `2026-08-12T15:35:31+10:00` and unchanged when this candidate was prepared.
+- Candidate patch SHA-256: `3ec5de4e841fdafcaf6ce32679ff854f759d79200977f0d8657e17395a99a4e9`, excluding `docs/change-release-ledger.md`.
+- Candidate content commit: not committed.
+- Dependencies: prior root candidate content commit `3c038520fe3d08d1a661845322144c44915ba573`; paired mobile candidate content commit `f57ca04e835659592f2dd46a54c7cec6a334df40` for mobile `CRL-20260812-001`, `-002`, `-003`, `-006`, `-007`.
+- Required validation: PASS — `test:cleaning-media-image`, `test:mzapp-media-visibility`, day-end proxy contract, backend TypeScript build, ledger audit, feature-registry audit and `git diff --check` passed in the isolated worktree.
+- Shared-hunk review: PASS — only selected CRL source, test and FR-registry hunks are staged; the release ledger remains unstaged while recording this attempt.
+- Generated-file review: PASS — generated backend `dist` outputs and the temporary dependency symlink were removed before staging.
+- Technical state: `candidate`.
+- User authorization: `selected-for-commit`; evidence: user explicitly instructed “包含 CRL-20260812-008 一起修复并推送”.
+- Independent review: GO for `commit`; evidence: independent read-only review reconfirmed the exact non-ledger fingerprint, all-source day-end collision gate, CRL ownership, generated-file/secret safety and validation evidence; P2 HTTP-fixture coverage remains honestly partial in FR-004.
+- Action conclusion: `GO` for commit; blockers: none for commit. Push authorization must be rebound after the new commit SHA is presented.
 
 ### Risks / Release Notes
 
