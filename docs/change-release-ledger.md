@@ -78,7 +78,8 @@
 
 - Repository: `root`.
 - Selected CRLs: `CRL-20260812-001`, `CRL-20260812-002`, `CRL-20260812-003`, `CRL-20260812-006`, `CRL-20260812-007`.
-- Intended action: `commit`; branch: `codex/release-crl-20260812-001-007`; target: `Dev`.
+- Intended action: `commit`; target: `Dev`.
+- Branch: `codex/release-crl-20260812-001-007`.
 - Base: `origin/Dev@aa0d0d3f0ad42dcb4f3640cd947dc526bb05f6c9`; fetched at `2026-08-12T11:33:27+10:00`.
 - Candidate patch SHA-256: `e1c6b8c465265950f81f42e4c1c684f50cea441c0fd93cbf2c63d78b47abd07a`, excluding `docs/change-release-ledger.md`.
 - Candidate content commit: `3c038520fe3d08d1a661845322144c44915ba573`.
@@ -114,7 +115,7 @@
 - Intended action: `commit`; branch: `codex/release-crl-20260812-001-007`; target: `Dev`.
 - Base: `origin/Dev@aa0d0d3f0ad42dcb4f3640cd947dc526bb05f6c9`; fetched at `2026-08-12T15:35:31+10:00` and unchanged when this candidate was prepared.
 - Candidate patch SHA-256: `3ec5de4e841fdafcaf6ce32679ff854f759d79200977f0d8657e17395a99a4e9`, excluding `docs/change-release-ledger.md`.
-- Candidate content commit: `7046279c978ff982c1731b8a1af55fa3916c60de`.
+- Commit SHA: `7046279c978ff982c1731b8a1af55fa3916c60de` (candidate content commit; audit head is emitted by the report command).
 - Dependencies: prior root candidate content commit `3c038520fe3d08d1a661845322144c44915ba573`; paired mobile candidate content commit `f57ca04e835659592f2dd46a54c7cec6a334df40` for mobile `CRL-20260812-001`, `-002`, `-003`, `-006`, `-007`.
 - Required validation: PASS — `test:cleaning-media-image`, `test:mzapp-media-visibility`, day-end proxy contract, backend TypeScript build, ledger audit, feature-registry audit and `git diff --check` passed in the isolated worktree.
 - Shared-hunk review: PASS — only selected CRL source, test and FR-registry hunks are staged; the release ledger remains unstaged while recording this attempt.
