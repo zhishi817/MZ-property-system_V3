@@ -36,13 +36,13 @@
 - Intended action: `commit`; branch: `codex/release-crl-20260812-001-007`; target: `Dev`.
 - Base: `origin/Dev@aa0d0d3f0ad42dcb4f3640cd947dc526bb05f6c9`; fetched at `2026-08-12T11:33:27+10:00`.
 - Candidate patch SHA-256: `e1c6b8c465265950f81f42e4c1c684f50cea441c0fd93cbf2c63d78b47abd07a`, excluding `docs/change-release-ledger.md`.
-- Candidate content commit: not committed.
+- Candidate content commit: `3c038520fe3d08d1a661845322144c44915ba573`.
 - Dependencies: paired mobile `CRL-20260812-001`, `-002`, `-003`, `-006`, `-007`; no unselected root CRL is staged.
 - Required validation: PASS — ledger-range tests and coverage audit, feature-registry audit, complete backend gate (including paired phase-5 contract), frontend lint (existing warnings only), 43 test files / 185 tests, and production build all passed. Independent-review P1 repair then passed the specific media, day-end and visibility contracts plus a fresh backend build.
 - Shared-hunk review: PASS — independent read-only review confirmed every staged path belongs to the selected CRLs.
 - Generated-file / secret review: PASS — generated backend `dist` diffs and temporary dependency links were removed; staged paths contain no environment, credential, cache or media artifact.
 - Independent review: GO for `commit` — P1 cross-source media authorization findings were repaired; the reviewer reconfirmed this exact fingerprint, source coverage, generated-file/secret safety and paired dependencies.
-- Technical state: `verified`; user authorization: `selected-for-commit` (user selected the joint 1–7 release scope); action conclusion: `GO` for commit. Push remains unapproved until the exact commit SHA is presented.
+- Technical state: `committed`; user authorization: `selected-for-commit` (user selected the joint 1–7 release scope); action conclusion: `GO` for commit completed. Push remains unapproved until the final ledger audit head is presented.
 
 ### Risks / Release Notes
 
