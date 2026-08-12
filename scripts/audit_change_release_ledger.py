@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Audit ledger coverage, a PR range, or one exact, read-only Release Attempt."""
+"""Audit current ledger coverage or one exact, read-only Release Attempt."""
 
 from __future__ import annotations
 
@@ -22,6 +22,16 @@ ATTEMPT_HEADING = re.compile(r"^#### (RA-[^\s]+)\b")
 FIELD_LINE = re.compile(r"^- (?:\*\*)?([^:*]+?)(?:\*\*)?:\s*(.*)$")
 CRL_ID = re.compile(r"CRL-\d{8}-\d{3}")
 SHA = re.compile(r"\b[0-9a-fA-F]{7,64}\b")
+PUBLISHED_TECHNICAL_STATE = re.compile(
+    r"^- Technical state:\s*(?:pushed|merged|deployed)\b", re.IGNORECASE
+)
+BEHAVIOR_UPDATE_HEADING = re.compile(r"^### Update\b")
+IMMUTABLE_IDENTITY_SUBSECTIONS = (
+    "### Implementation",
+    "### Files / Areas",
+    "### Impact / Dependencies",
+)
+IMMUTABLE_IDENTITY_FIELDS = ("Request", "Outcome")
 
 
 @dataclass(frozen=True)
@@ -91,37 +101,38 @@ def recorded_paths(ledger: Path) -> set[str]:
 
 def coverage_audit(root: Path) -> int:
     try:
+        sections = parse_crl_sections(root / LEDGER_RELATIVE_PATH)
+    except ValueError as error:
+        print("Ledger structure errors:")
+        print(f"- {error}")
+        return 1
+    structure_errors = published_crl_update_errors(sections)
+    if structure_errors:
+        print("Ledger structure errors:")
+        for error in structure_errors:
+            print(f"- {error}")
+        return 1
+    try:
+        lineage_errors = remote_lineage_errors(root, sections)
+    except GitError:
+        print("Ledger lineage: NOT VERIFIED (locally fetched origin/Dev ledger is unavailable).")
+        return 2
+    except ValueError as error:
+        print("Ledger lineage errors:")
+        print(f"- {error}")
+        return 1
+    if lineage_errors:
+        print("Ledger lineage errors:")
+        for error in lineage_errors:
+            print(f"- {error}")
+        return 1
+    try:
         changed = changed_paths(root)
     except GitError as error:
         print(str(error) or "Unable to inspect Git changes.", file=sys.stderr)
         return 2
     recorded = recorded_paths(root / LEDGER_RELATIVE_PATH)
     uncovered = sorted(changed - recorded)
-    print(f"Changed files: {len(changed)}")
-    print(f"Recorded changed files: {len(changed & recorded)}")
-    if uncovered:
-        print("Uncovered files:")
-        for path in uncovered:
-            print(f"- {path}")
-        return 1
-    print("Coverage: PASS")
-    return 0
-
-
-def range_coverage_audit(root: Path, base_reference: str, head_reference: str) -> int:
-    try:
-        base = resolve_ref(root, base_reference)
-        head = resolve_ref(root, head_reference)
-        revision_range = f"{base}...{head}"
-        changed = git_paths(root, "diff", "--name-only", revision_range)
-        changed |= git_paths(root, "diff", "--name-only", "--no-renames", revision_range)
-        run_git(root, "diff", "--check", revision_range)
-    except GitError as error:
-        print(str(error) or "Unable to inspect the pull-request range.", file=sys.stderr)
-        return 2
-    recorded = recorded_paths(root / LEDGER_RELATIVE_PATH)
-    uncovered = sorted(changed - recorded)
-    print(f"Audit scope: {base}...{head}")
     print(f"Changed files: {len(changed)}")
     print(f"Recorded changed files: {len(changed & recorded)}")
     if uncovered:
@@ -158,7 +169,11 @@ def subsection(lines: tuple[str, ...], heading: str) -> tuple[str, ...]:
 def parse_crl_sections(ledger: Path) -> dict[str, CrlSection]:
     if not ledger.exists():
         raise ValueError("Ledger file is missing.")
-    lines = tuple(ledger.read_text(encoding="utf-8").splitlines())
+    return parse_crl_sections_text(ledger.read_text(encoding="utf-8"))
+
+
+def parse_crl_sections_text(text: str) -> dict[str, CrlSection]:
+    lines = tuple(text.splitlines())
     starts = [(index, match.group(1)) for index, line in enumerate(lines) if (match := CRL_HEADING.match(line))]
     sections: dict[str, CrlSection] = {}
     for position, (start, identifier) in enumerate(starts):
@@ -201,6 +216,83 @@ def parse_attempts(section: CrlSection) -> list[ReleaseAttempt]:
             )
         )
     return attempts
+
+
+def published_crl_update_errors(sections: dict[str, CrlSection]) -> list[str]:
+    """Reject a behavior update appended after a CRL was already released."""
+    errors: list[str] = []
+    for section in sections.values():
+        published_at = max(
+            (
+                index
+                for index, line in enumerate(section.lines)
+                if PUBLISHED_TECHNICAL_STATE.match(line)
+            ),
+            default=None,
+        )
+        if published_at is None:
+            continue
+        if any(BEHAVIOR_UPDATE_HEADING.match(line) for line in section.lines[published_at + 1 :]):
+            errors.append(
+                "Published CRL cannot add a behavior update after release evidence: "
+                f"{section.identifier}. Allocate a new CRL and link the earlier unit."
+            )
+    return errors
+
+
+def normalized_identity_text(value: str) -> str:
+    return " ".join(value.split())
+
+
+def identity_field(section: CrlSection, name: str) -> str:
+    marker = re.compile(rf"^- \*\*{re.escape(name)}:\*\*\s*(.*)$")
+    return next(
+        (
+            normalized_identity_text(match.group(1))
+            for line in section.lines
+            if (match := marker.match(line))
+        ),
+        "",
+    )
+
+
+def immutable_identity(section: CrlSection) -> dict[str, str]:
+    identity = {"title": normalized_identity_text(section.lines[0]) if section.lines else ""}
+    identity.update({name: identity_field(section, name) for name in IMMUTABLE_IDENTITY_FIELDS})
+    identity.update(
+        {
+            heading: normalized_identity_text("\n".join(subsection(section.lines, heading)))
+            for heading in IMMUTABLE_IDENTITY_SUBSECTIONS
+        }
+    )
+    return identity
+
+
+def remote_lineage_errors(root: Path, sections: dict[str, CrlSection]) -> list[str]:
+    """Require local CRLs to preserve every existing origin/Dev business identity."""
+    remote_text = run_git(root, "show", f"origin/Dev:{LEDGER_RELATIVE_PATH.as_posix()}")
+    assert isinstance(remote_text, str)
+    remote_sections = parse_crl_sections_text(remote_text)
+    errors: list[str] = []
+    missing_ids = sorted(remote_sections.keys() - sections.keys())
+    if missing_ids:
+        errors.append(
+            "Local ledger omits CRLs already present in origin/Dev: "
+            + ", ".join(missing_ids)
+            + ". Restore the remote records before adding new units."
+        )
+    for identifier in sorted(remote_sections.keys() & sections.keys()):
+        remote_identity = immutable_identity(remote_sections[identifier])
+        local_identity = immutable_identity(sections[identifier])
+        changed_parts = [
+            name for name in remote_identity if remote_identity[name] != local_identity[name]
+        ]
+        if changed_parts:
+            errors.append(
+                f"CRL {identifier} changes origin/Dev immutable business identity "
+                f"({', '.join(changed_parts)}). Allocate a new CRL and retain the remote record unchanged."
+            )
+    return errors
 
 
 def field_value(attempt: ReleaseAttempt, name: str) -> str:
@@ -368,6 +460,26 @@ def build_release_report(
         errors.append(str(error))
         checks.append(check_item("ledger structure", "FAIL", str(error)))
         return finalize_report(report, errors, missing)
+    structure_errors = published_crl_update_errors(sections)
+    if structure_errors:
+        errors.extend(structure_errors)
+        checks.append(check_item("ledger structure", "FAIL", "; ".join(structure_errors)))
+        return finalize_report(report, errors, missing)
+    try:
+        lineage_errors = remote_lineage_errors(root, sections)
+    except GitError:
+        missing.append("Locally fetched origin/Dev ledger is unavailable, so immutable CRL lineage is not verified.")
+        checks.append(check_item("remote ledger lineage", "NOT VERIFIED", "origin/Dev ledger is unavailable locally; report never fetches."))
+    except ValueError as error:
+        errors.append(str(error))
+        checks.append(check_item("remote ledger lineage", "FAIL", str(error)))
+        return finalize_report(report, errors, missing)
+    else:
+        if lineage_errors:
+            errors.extend(lineage_errors)
+            checks.append(check_item("remote ledger lineage", "FAIL", "; ".join(lineage_errors)))
+            return finalize_report(report, errors, missing)
+        checks.append(check_item("remote ledger lineage", "PASS", "Current CRL identities preserve the fetched origin/Dev ledger."))
     unavailable = sorted(selected_ids - sections.keys())
     if unavailable:
         errors.append(f"Selected CRL IDs are missing from this ledger: {', '.join(unavailable)}.")
@@ -586,8 +698,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release-report", action="store_true", help="Audit one exact Release Attempt without changing Git or the ledger.")
     parser.add_argument("--repo", choices=("root", "mobile"), help="Repository boundary for --release-report.")
-    parser.add_argument("--base", help="Base commit/ref for a PR range or --release-report.")
-    parser.add_argument("--head", help="Head commit/ref for a PR range or --release-report.")
+    parser.add_argument("--base", help="Exact base commit or ref for --release-report.")
+    parser.add_argument("--head", help="Exact head commit or ref for --release-report.")
     parser.add_argument("--crl", action="append", default=[], help="Selected CRL ID; repeat for each selected unit.")
     parser.add_argument("--format", choices=("markdown", "json"), default="markdown", help="Output format for --release-report.")
     args = parser.parse_args(argv)
@@ -595,17 +707,13 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         absent = [name for name in ("repo", "base", "head") if not getattr(args, name)]
         if absent or not args.crl:
             parser.error("--release-report requires --repo, --base, --head, and at least one --crl.")
-    elif args.repo or args.crl:
-        parser.error("--repo and --crl require --release-report.")
-    elif bool(args.base) != bool(args.head):
-        parser.error("--base and --head must be supplied together.")
+    elif any((args.repo, args.base, args.head, args.crl)):
+        parser.error("--repo, --base, --head, and --crl require --release-report.")
     return args
 
 
 def main(argv: list[str] | None = None, root: Path = ROOT, expected_repository: str = "root") -> int:
     args = parse_args(argv)
-    if not args.release_report and args.base and args.head:
-        return range_coverage_audit(root, args.base, args.head)
     if not args.release_report:
         return coverage_audit(root)
     report = build_release_report(

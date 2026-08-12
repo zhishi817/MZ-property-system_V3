@@ -5,7 +5,7 @@ import path from 'path'
 process.env.DATABASE_URL = ''
 
 async function main() {
-  const { canViewMzappInspectionMedia, canViewMzappLockboxVideo, canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia, propertyFeedbackCapabilities } = await import('../../src/modules/mzapp')
+  const { canViewMzappGuestLuggageNoticeMedia, canViewMzappInspectionMedia, canViewMzappLockboxVideo, canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia, propertyFeedbackCapabilities } = await import('../../src/modules/mzapp')
   const { feedbackMediaUrlArray } = await import('../../src/modules/cleaning_app')
 
   const row = {
@@ -79,6 +79,18 @@ async function main() {
     'an unrelated worker cannot read another offline task photo',
   )
 
+  const guestLuggageRow = { id: 'guest-luggage-1', property_id: 'property-1', task_date: '2026-08-12' }
+  assert.equal(
+    await canViewMzappGuestLuggageNoticeMedia({ sub: 'manager-1', role: 'offline_manager', roles: ['offline_manager'] }, guestLuggageRow, 'manager-1'),
+    true,
+    'offline managers can read an exact recorded same-day temporary-notice photo',
+  )
+  assert.equal(
+    await canViewMzappGuestLuggageNoticeMedia({}, guestLuggageRow, ''),
+    false,
+    'unauthenticated callers cannot read temporary-notice photos',
+  )
+
   assert.equal(
     await canViewMzappPropertyFeedback({ sub: 'cleaner-1', role: 'cleaner', roles: ['cleaner'] }, row, 'cleaner-1'),
     true,
@@ -140,6 +152,10 @@ async function main() {
   assert.match(mediaRoute, /feedbackMediaRows\.length === 1/, 'ambiguous feedback references must fail closed before reading R2')
   assert.match(mediaRoute, /canViewMzappPropertyFeedback/, 'feedback media must re-check the current authenticated user')
   assert.match(mediaRoute, /canViewMzappOfflineWorkTaskMedia/, 'offline task media must use the dedicated task visibility rule')
+  assert.match(mediaRoute, /guest_luggage_id/, 'temporary-notice media must require its notice context')
+  assert.match(mediaRoute, /guest_luggage_notices/, 'temporary-notice media must resolve its saved notice record before reading R2')
+  assert.match(mediaRoute, /canViewMzappGuestLuggageNoticeMedia/, 'temporary-notice media must re-check the current authenticated user')
+  assert.match(mediaRoute, /hasGuestLuggageSourceConflict/, 'temporary-notice media must fail closed on a cross-source collision')
   assert.match(mediaRouteSource, /offlineTaskPhotoReferenceVariants/, 'current-public-base historical offline URLs must remain inside the dedicated offline authorization branch')
   assert.doesNotMatch(mediaRoute, /requireAnyPerm/, 'feedback image reading must not require a task execution permission')
   assert.match(mediaRouteSource, /JOIN properties p ON p\.id::text = m\.property_id::text/, 'feedback media must resolve maintenance media through its real property')

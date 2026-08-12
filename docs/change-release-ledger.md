@@ -1,5 +1,214 @@
 # Change Release Ledger
 
+## CRL-20260812-003 — 远端台账身份不可变门禁（root governance）
+
+- **Status:** ready
+- **Updated:** 2026-08-12 Australia/Melbourne
+- **Request:** 解决共享工作区台账可覆盖远端历史记录的问题，并让选定发布候选只能从已抓取的 `origin/Dev` 基线建立。
+- **Outcome:** 台账审计会保留全部远端 CRL，并锁定同编号的业务身份；远端记录缺失或业务身份变更会明确阻断，干净候选可以按远端基线独立审计。
+
+### Implementation
+
+- Previous behavior: 台账覆盖检查无法识别本地历史 CRL 被遗漏或改写。
+- New behavior: 审计和 Release Attempt 报告校验 `origin/Dev` 的 CRL 身份；本次候选使用干净远端基线，不修改任何已发布 CRL。
+
+### Files / Areas
+
+- `AGENTS.md`、`.codex/skills/change-release-ledger/SKILL.md` — 远端谱系与选择性发布规则。
+- `scripts/audit_change_release_ledger.py`、`scripts/tests/test_audit_change_release_ledger.py` — 审计实现与谱系回归。
+- `docs/change-release-ledger.md` — 本治理单元记录。
+
+### Impact / Dependencies
+
+- Runtime / API / database / migration / configuration / production data: none.
+- Paired unit: mobile `CRL-20260812-003`; both repositories independently审计。
+
+### Validation
+
+- Candidate validation in progress: ledger regression, compile and exact coverage audit are run from this clean worktree before commit.
+
+### Release Attempts
+
+#### RA-20260812-root-001-007-01
+
+- Repository: `root`.
+- Selected CRLs: `CRL-20260812-001`, `CRL-20260812-002`, `CRL-20260812-003`, `CRL-20260812-006`, `CRL-20260812-007`.
+- Intended action: `commit`; branch: `codex/release-crl-20260812-001-007`; target: `Dev`.
+- Base: `origin/Dev@aa0d0d3f0ad42dcb4f3640cd947dc526bb05f6c9`; fetched at `2026-08-12T11:33:27+10:00`.
+- Candidate patch SHA-256: `e1c6b8c465265950f81f42e4c1c684f50cea441c0fd93cbf2c63d78b47abd07a`, excluding `docs/change-release-ledger.md`.
+- Candidate content commit: not committed.
+- Dependencies: paired mobile `CRL-20260812-001`, `-002`, `-003`, `-006`, `-007`; no unselected root CRL is staged.
+- Required validation: PASS — ledger-range tests and coverage audit, feature-registry audit, complete backend gate (including paired phase-5 contract), frontend lint (existing warnings only), 43 test files / 185 tests, and production build all passed. Independent-review P1 repair then passed the specific media, day-end and visibility contracts plus a fresh backend build.
+- Shared-hunk review: PASS — independent read-only review confirmed every staged path belongs to the selected CRLs.
+- Generated-file / secret review: PASS — generated backend `dist` diffs and temporary dependency links were removed; staged paths contain no environment, credential, cache or media artifact.
+- Independent review: GO for `commit` — P1 cross-source media authorization findings were repaired; the reviewer reconfirmed this exact fingerprint, source coverage, generated-file/secret safety and paired dependencies.
+- Technical state: `verified`; user authorization: `selected-for-commit` (user selected the joint 1–7 release scope); action conclusion: `GO` for commit. Push remains unapproved until the exact commit SHA is presented.
+
+### Risks / Release Notes
+
+- Risk: a stale or missing local `origin/Dev` reference returns a gate failure rather than inferring history.
+- Sensitive-information review: no secrets, credentials, tokens, database URLs, logs, caches or production data are included.
+
+## CRL-20260812-002 — 房源新增合同房型选项（root）
+
+- **Status:** ready
+- **Updated:** 2026-08-12 Australia/Melbourne
+- **Request:** 网页端房源新增合同的 Property Type 下拉增加 4 房 3 卫和 4 房 3.5 卫选项。
+- **Outcome:** 创建或编辑合同可选择 `4 Bedrooms 3 Bathrooms` 与 `4 Bedrooms 3.5 Bathrooms`，沿用现有英文值保存与 PDF 文本处理。
+
+### Implementation
+
+- Previous behavior: 下拉只有现有 1 至 3 房选项。
+- New behavior: 现有 `propertyTypeOptions` 添加两条一致格式的 4 房选项；创建和编辑共用同一表单。
+
+### Files / Areas
+
+- `frontend/src/app/landlords/_components/LandlordDocumentsPage.tsx` — 合同 Property Type 下拉选项。
+- `docs/change-release-ledger.md` — 本单元记录。
+
+### Impact / Dependencies
+
+- API / database / migration / configuration / dependencies: none.
+- Dependencies: none; no backend or mobile pairing is needed.
+
+### Validation
+
+- Candidate validation in progress: frontend lint, test and production build are run before commit.
+
+### Release Attempts
+
+- None yet. User selected this unit for a joint commit candidate; push remains unapproved until exact commit SHA is presented.
+
+### Risks / Release Notes
+
+- Risk: no logged-in browser data write is included; this is a static form-option change.
+- Sensitive-information review: no secrets, credentials, private documents, logs or production data are included.
+
+## CRL-20260812-001 — 日终交接照片本地预览与精确认证读取（root）
+
+- **Status:** ready
+- **Updated:** 2026-08-12 Australia/Melbourne
+- **Request:** 修复日终交接照片上传后未形成业务关联时的无权限预览，同时让已保存日终照片按 owner/date 经过认证读取。
+- **Outcome:** 后端仅在请求 owner/date 与持久化日终记录精确匹配、读者是记录 owner 或既有管理角色时读取私有对象；歧义、跨上下文和未关联对象继续失败关闭。
+
+### Implementation
+
+- Previous behavior: 日终读取与其他清洁媒体来源共用查询，无法从客户端提供精确日终 owner/date 关联。
+- New behavior: `/cleaning-app/media/image` 接受成对的 `day_end_user_id` 与 `day_end_date`，对普通日终媒体和 reject 照片各自验证记录关联与既有角色授权。
+
+### Files / Areas
+
+- `backend/src/modules/cleaning_app.ts` — 日终照片精确关联、授权和 fail-closed 代理分支。
+- `backend/scripts/tests/test_day_end_media_proxy_contract.ts` — owner/date、唯一命中和授权源码契约。
+- `docs/change-release-ledger.md` — 本 root 单元记录。
+
+### Impact / Dependencies
+
+- API: existing `GET /cleaning-app/media/image` gains optional paired day-end read context; no new route.
+- Database / migration / configuration / R2 / production data: none.
+- Paired mobile unit: mobile `CRL-20260812-001` keeps unsaved local preview and supplies the same owner/date only for authenticated reads.
+
+### Validation
+
+- Candidate validation in progress: backend contract tests, TypeScript and paired mobile regression are run before commit.
+
+### Release Attempts
+
+- None yet. User selected this unit for a joint commit candidate; push remains unapproved until exact commit SHA is presented.
+
+### Risks / Release Notes
+
+- Risk: deployment, real authenticated proxy request, R2 object read and device verification remain separate from local validation.
+- Sensitive-information review: no credentials, tokens, private media references, image bytes, database URLs or production data are included.
+
+## CRL-20260812-007 — 当天任务临时通知保存前本地预览（root registry）
+
+- **Status:** ready
+- **Updated:** 2026-08-12 Australia/Melbourne
+- **Request:** 临时通知已选择照片在管理端显示红叉/无权限；修复保存前照片预览，同时保留已保存照片的认证读取边界。
+- **Outcome:** 候选实现将未保存照片保留在移动端本地 URI，只有保存接口确认并返回通知记录后才转入带 `guest_luggage_id` 的认证读取；未关联私有对象继续由服务端拒绝。
+
+### Implementation
+
+- Previous behavior: 管理页只保留上传返回的私有远端引用，并立即请求认证代理；通知尚未写入 `guest_luggage_notices.photo_urls` 时，这个读取按预期被拒绝，页面显示红叉。
+- New behavior: FR-004 明确保存前本地预览、保存后认证读取和保存失败保留重试状态的边界，并映射移动端回归测试。
+- Key decisions: 不放宽 `/cleaning-app/media/image`、不新增公开 URL、数据库迁移、R2 操作或生产数据修复；root 端继续依赖 `CRL-20260812-006` 的记录级授权。
+
+### Files / Areas
+
+- `docs/feature-regression-registry.md` — FR-004 补充保存前本地预览与保存后通知上下文的保护规则和测试映射。
+- `docs/change-release-ledger.md` — 记录本 root 注册表单元。
+
+### Impact / Dependencies
+
+- Runtime / API / database / migration / configuration / R2 / production data: none in root.
+- Paired mobile unit: mobile `CRL-20260812-007` implements the local-preview state; it depends on root/mobile `CRL-20260812-006` for already-saved photo authorization.
+
+### Validation
+
+- `npm run test:mzapp-media-visibility`、`npm run test:cleaning-media-image`、`npm run build`（`backend`）— passed：通知记录级授权、跨来源拒绝与后端 TypeScript 构建通过；构建产生的 3 个无关 `dist` 文件已恢复，未纳入候选。
+- `npm run test -- --runInBand --no-cache src/screens/tasks/ManagerDailyTaskScreen.test.ts src/lib/cleaningMedia.test.ts src/components/CleaningMediaPreview.test.tsx src/components/GuestLuggageCard.test.tsx`（paired mobile）— passed：4 suites / 28 tests，覆盖保存前本地 URI 与保存后通知 ID 认证读取。
+- `npm run typecheck`、`npm run lint`、`npm run test -- --runInBand --no-cache`（paired mobile）— passed：typecheck 通过；lint 为 0 error / 114 条既有 warning；Jest 56 suites / 285 tests 通过。
+- `npm run check:feature-registry`、`python3 scripts/audit_change_release_ledger.py`（root）— passed：FR-004 映射有效，6 个 root 改动全部有台账记录。
+- `python3 scripts/audit_change_release_ledger.py`、`git diff --check`（mobile）— passed：11 个 mobile 改动全部有台账记录，且两端 diff 格式检查通过。
+
+### Release Attempts
+
+- None yet.
+
+### Risks / Release Notes
+
+- Risk: this repair is not device proof and does not recover an already-missing object or incomplete business association.
+- Rollback: revert only the local-preview protection/mapping; no data rollback is required.
+- Sensitive-information review: no credentials, tokens, private media URL, object key, database connection, image bytes or production data recorded.
+- Git state: uncommitted in an isolated worktree; no push, PR, deployment, OTA or device verification.
+
+## CRL-20260812-006 — 当天任务临时通知照片认证读取（root）
+
+- **Status:** ready
+- **Updated:** 2026-08-12 Australia/Melbourne
+- **Request:** 修复移动端当天任务临时通知的已保存照片无法显示或预览失败；保持私有媒体认证读取，不暴露对象 URL。
+- **Outcome:** 源码修复完成：认证图片代理只在请求携带通知记录上下文、图片与 `guest_luggage_notices.photo_urls` 精确匹配且当前用户是当日对应任务执行人或既有管理查看角色时读取图片。
+
+### Implementation
+
+- Previous behavior: 临时通知照片未进入任何认证媒体来源查询，`cleaning/...` 私有引用会被代理拒绝。
+- New behavior: 为临时通知建立独立的精确记录和授权分支；同一对象若同时命中其他媒体来源则拒绝，避免跨来源放行。
+- Key decisions: 不新增公开 URL、R2 直连、上传路径、数据库迁移或生产数据操作；历史引用仅在其精确保存在通知记录中时兼容。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — 临时通知媒体的服务端角色/任务授权。
+- `backend/src/modules/cleaning_app.ts` — 认证图片代理的临时通知精确关联和冲突拒绝。
+- `backend/scripts/tests/test_mzapp_media_visibility.ts`, `backend/scripts/tests/test_cleaning_media_image.ts` — 授权、代理来源和跨来源冲突契约回归。
+- `docs/feature-regression-registry.md`, `docs/change-release-ledger.md` — 私有媒体来源及本 CRL 保护记录。
+
+### Impact / Dependencies
+
+- API: 既有 `GET /cleaning-app/media/image` 仅增加私有 `guest_luggage_id` 读取上下文；不新增公开路由。
+- Database / migration / configuration / R2 / production data: none.
+- Paired mobile unit: mobile `CRL-20260812-006` 传递相同通知上下文给缩略图和原图预览；两端需兼容发布。
+
+### Validation
+
+- `npm run test:mzapp-media-visibility`（backend）— passed：临时通知的管理角色/未认证边界与认证代理来源契约通过。
+- `npm run test:cleaning-media-image`（backend）— passed：临时通知、消耗品、任务、日结、反馈和离线来源仍经已登记关联与 fail-closed 分支读取。
+- `npm run build`（backend）— passed：使用既有依赖树完成 TypeScript 构建；生成的 3 个无关 `dist` 输出已从隔离工作区恢复，未纳入本 CRL。
+- `npm run typecheck`、`npm run lint`、`npm run test -- --runInBand --no-cache`（paired mobile）— passed：typecheck 通过，lint 为 0 error / 114 既有 warning，完整 Jest 56 suites / 284 tests 通过。
+- `git diff --check` — passed.
+- `npm run check:feature-registry`、`python3 scripts/audit_change_release_ledger.py`（root）— passed：FR-004 的 4 个临时通知保护映射有效，root 当前 6 个改动均已记录。
+
+### Release Attempts
+
+- None yet.
+
+### Risks / Release Notes
+
+- Risk: 共享认证媒体代理变更必须验证既有任务、日结、反馈和离线照片分支不被放宽。
+- Rollback: 移除临时通知来源分支与移动端上下文参数；不需要数据回滚。
+- Sensitive-information review: 不记录或提交 token、私有图片 URL、对象 key、数据库连接或生产数据。
+- Git state: uncommitted in an isolated worktree; no commit, push, PR, deployment, OTA or device verification.
+
 ## CRL-20260811-009 — 线下任务历史公共基址照片认证读取（root）
 
 - **Status:** in-progress

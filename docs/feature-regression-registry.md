@@ -205,7 +205,7 @@
 ## FR-004：检查、自完成、补品和挂钥匙流程
 
 - **维护责任范围：** backend / mobile
-- **最后审查日期：** 2026-08-05
+- **最后审查日期：** 2026-08-12
 - **状态：** active
 
 ### 业务保护规则
@@ -219,6 +219,8 @@
 - Android 照片在本地草稿、上传和历史媒体读取链路中必须保持可解码的 JPEG；格式转换失败不得把原始 HEIC/未知字节以错误 MIME 继续上传，也不得在客户端伪装成黑色缩略图。
 - 清洁照片上传响应中的稳定 `cleaning/...` 对象 key 必须跨队列、本地清理、业务提交和任务刷新保留；有 key 时不得只保存可能无法解析或访问的 R2 URL，缩略图、预览和原图必须可通过认证媒体代理读取。
 - 日终交接已登记的 `cleaning/...` 照片必须经同一认证媒体代理读取；仅记录所属人或既有日终管理角色可读取。同一 key 若跨任务媒体与日终媒体、跨日终用户或日终类别登记，必须拒绝读取。
+- 当天任务临时通知照片必须精确关联一条 `guest_luggage_notices.photo_urls` 记录，并携带相同的 `guest_luggage_id` 用于缩略图和原图预览；只有当日对应房源的活跃清洁/检查执行人或既有管理查看角色可读取，缺少上下文、未关联、歧义或跨来源冲突一律拒绝。
+- 当天任务临时通知刚上传但尚未保存关联的照片，只能用该次选图的本地 URI 预览；不得请求认证代理或把未关联对象伪装成已保存。保存成功后才清除本地预览并以返回通知 ID 读取已登记引用；保存失败时必须保留本地 URI 与远端引用以便重试。
 - 上传队列成功回调后，页面仍可能使用本地 `file://` 引用；在页面切换到远端媒体引用前不得立即删除本地副本，已同步孤儿文件交给既有延迟清理机制处理。
 - 钥匙照片被删除后，钥匙照片上传动作必须恢复可用，不得因为补品已提交、清洁状态已进入完成态或共享任务状态已推进而阻止重新上传；钥匙照片仍存在时继续保持已记录状态。
 - 补品提交完成后的钥匙重传不得把 `done`、`cleaned`、`restock_pending`、检查中间态或其他已推进状态覆盖为 `in_progress`；钥匙上传事件必须增量合并，不能用不完整任务刷新覆盖已保存的补品消耗照片。
@@ -283,6 +285,11 @@
 | 后端图片上传、读取格式与已登记媒体绑定 | `backend/scripts/tests/test_cleaning_media_image.ts` | HEIC/缺失 MIME 统一为 JPEG；无效图片返回 `IMAGE_FORMAT_UNSUPPORTED`；代理只读取已登记媒体并在 R2 读取前 fail closed | sufficient | `npm run test:cleaning-media-image --prefix backend` |
 | 同 key 跨任务或跨媒体类型授权冲突 | `backend/scripts/tests/test_cleaning_media_image.ts` | 代理仅允许唯一任务且唯一媒体类型的已登记引用；任一冲突一律拒绝读取 | sufficient | `npm run test:cleaning-media-image --prefix backend` |
 | 日终交接媒体代理授权 | `backend/scripts/tests/test_cleaning_media_image.ts` | 已登记日终照片进入受控代理；库存管理员作为日终管理角色仍受记录级授权，记录所属人允许、无关角色或清洁员拒绝；同 key 跨日终用户或类别拒绝。实际 R2 对象读取端到端验证仍待补充 | partial | `npm run test:cleaning-media-image --prefix backend` |
+| 当天任务临时通知后端授权 | `backend/scripts/tests/test_mzapp_media_visibility.ts` | 认证代理按保存通知记录和当前角色授权，并拒绝缺少通知上下文或跨来源冲突 | sufficient | `npm run test:mzapp-media-visibility --prefix backend` |
+| 当天任务临时通知客户端认证请求 | `mz-cleaning-app-frontend/src/lib/cleaningMedia.test.ts` | 缩略图和预览构造同一 `guest_luggage_id` 认证请求 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/cleaningMedia.test.ts` |
+| 当天任务临时通知原图预览上下文 | `mz-cleaning-app-frontend/src/components/CleaningMediaPreview.test.tsx` | 缩略图与原图预览带相同通知上下文 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/components/CleaningMediaPreview.test.tsx` |
+| 当天任务临时通知卡片传参 | `mz-cleaning-app-frontend/src/components/GuestLuggageCard.test.tsx` | 卡片向缩略图和预览传递相同 notice ID 与 Bearer token | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/components/GuestLuggageCard.test.tsx` |
+| 当天任务临时通知保存前本地预览 | `mz-cleaning-app-frontend/src/screens/tasks/ManagerDailyTaskScreen.test.ts` | 刚上传照片优先保留本地 URI，已保存照片才携带 notice ID 走认证读取 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tasks/ManagerDailyTaskScreen.test.ts` |
 | 管理端客厅多图兼容和重试入口 | — | 当前移动端 `origin/Dev` 已无历史多图测试；需恢复或新增测试以覆盖兼容单图、稳定顺序和失败重试 | missing | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tasks/ManagerDailyTaskScreen.test.ts` |
 | 任务媒体类型与参与关系读取授权 | `backend/scripts/tests/test_mzapp_media_visibility.ts` | 未分配用户不能用已知 key 越权；检查媒体、挂钥匙视频、补货凭证和普通媒体按任务级可见性分别判定 | sufficient | `npm run test:mzapp-media-visibility --prefix backend` |
 | 清洁媒体 key 跨钥匙上传和刷新保留 | `mz-cleaning-app-frontend/src/lib/keyUploadQueue.test.ts` | 上传返回 key 时钥匙业务 payload 优先使用 `cleaning/...` key；无 key 时保留 URL fallback | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/keyUploadQueue.test.ts` |
@@ -300,12 +307,14 @@
 
 ### 最后验证
 
-- **CRL：** CRL-20260805-008
+- **CRL：** CRL-20260812-007
 - **Commit：** not committed
-- **日期：** 2026-08-05
+- **日期：** 2026-08-12
 
 ### 相关 CRL
 
+- CRL-20260812-006：当天任务临时通知已保存照片认证读取
+- CRL-20260812-007：当天任务临时通知保存前本地预览
 - CRL-20260723-006：弱网视频提交与检查照片完成状态解耦
 - CRL-20260724-014：修复厨房照片连续拍摄卡住
 - CRL-20260725-021：修复检查与补品保存的超长幂等 ID失败
