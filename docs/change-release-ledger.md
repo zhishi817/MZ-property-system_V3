@@ -47,13 +47,12 @@
 - Base: `origin/Dev@aa0d0d3f0ad42dcb4f3640cd947dc526bb05f6c9`; fetched at `2026-08-12T16:32:37+10:00`.
 - Candidate patch SHA-256: `a91244fe5b8244a75dad3adc7930cb2fbf4e6bfab781948a1db10fefc16a2cbc`, excluding `docs/change-release-ledger.md`.
 - Commit SHA: `9ba3a1f72accc721af79c60b695e6eb7d1d73f44` (candidate content commit; final audit head is emitted by the release report).
-- Remote branch: `origin/codex/release-crl-20260812-001-007@96174c4ea207b035721c6f087884b5c24cb2b9bb`; pushed at `2026-08-12T17:52:03+10:00`.
 - Dependencies: paired mobile `CRL-20260812-001` through `CRL-20260812-007` and `CRL-20260812-009`; root `CRL-20260812-008` is root-only. All base-range root paths are attributed to the selected CRLs.
 - Required validation: PASS — exact PR range and working-tree ledger audits, 18 ledger regression tests, 4 workflow-contract tests, YAML/Bash syntax, and the complete `npm run check:ci` gate passed after the fail-closed repair.
 - Shared-hunk review: PASS — staged CI files belong only to `CRL-20260812-009`; the complete candidate has no unselected changed path.
 - Generated-file / secret review: PASS — no generated outputs, environment files, credentials, tokens, media objects or production data are staged.
 - Independent review: GO for `commit` — the initial fail-open lookup-error P1 was repaired; independent re-review reproduced nonzero error handling, matched this exact fingerprint, and found no generated file or secret risk. P2: mobile governance references a missing review document; it does not block this CI repair.
-- Technical state: `pushed`.
+- Technical state: `committed`.
 - User authorization: `selected-for-commit`; evidence: user asked to repair the root/mobile PR merge gates.
 - Action conclusion: `GO` for commit completed. Push requires a new explicit approval bound to the final branch head.
 
@@ -67,11 +66,12 @@
 - Base: `origin/Dev@aa0d0d3f0ad42dcb4f3640cd947dc526bb05f6c9`; fetched at `2026-08-12T17:33:59+10:00` and unchanged.
 - Candidate patch SHA-256: `a91244fe5b8244a75dad3adc7930cb2fbf4e6bfab781948a1db10fefc16a2cbc`, excluding `docs/change-release-ledger.md`.
 - Commit SHA: `9ba3a1f72accc721af79c60b695e6eb7d1d73f44` (candidate content commit; final audit head is emitted by the release report).
+- Remote branch at action verification: `origin/codex/release-crl-20260812-001-007@96174c4ea207b035721c6f087884b5c24cb2b9bb`; source-range push verified at `2026-08-12T17:52:03+10:00`.
 - Dependencies: paired mobile content commit `ec95bf316d9f483f3dbb628295e62cb699ef6c98` for mobile `CRL-20260812-001` through `CRL-20260812-007` and `CRL-20260812-009`; root `CRL-20260812-008` is root-only.
 - Required validation: PASS — complete root `npm run check:ci` passed after the fail-closed repair; exact range/current ledger audits and whitespace checks pass.
 - Shared-hunk review: PASS — complete selected range has no unselected path; current CI-repair paths are exclusive to `CRL-20260812-009`.
 - Generated-file review: PASS — no generated outputs, environment files, credentials, tokens, media objects or production data are in the candidate.
-- Technical state: `committed`.
+- Technical state: `pushed`.
 - User authorization: `approved-for-push`; evidence: user replied “授权” to push root content commit `9ba3a1f72accc721af79c60b695e6eb7d1d73f44` (review head `2ea0e9eb79e9c07611f08f0af5c5f7bc8a8adc47`) to this branch and authorized this final authorization receipt.
 - Independent review: GO for `push` — independent exact-range review matched base, content commit and fingerprint; all 15 paths are selected, with no generated or sensitive files. P2: mobile governance references a missing review document; it does not block this CI repair push.
 - Action conclusion: `GO` for push completed; remote branch SHA was verified after the fast-forward push.
