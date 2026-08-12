@@ -72,8 +72,8 @@
 - Generated-file review: PASS — no generated outputs, environment files, credentials, tokens, media objects or production data are in the candidate.
 - Technical state: `committed`.
 - User authorization: `not-selected`; evidence: prior approval bound to the pre-receipt branch head, and user now authorized creation of this push-attempt receipt only.
-- Independent review: `not run`; evidence: exact push-attempt review must bind this receipt's final range.
-- Action conclusion: `NOT VERIFIED`; blockers: independent push review and explicit approval for the final push attempt are pending.
+- Independent review: GO for `push` — independent exact-range review matched base, content commit and fingerprint; all 15 paths are selected, with no generated or sensitive files. P2: mobile governance references a missing review document; it does not block this CI repair push.
+- Action conclusion: `NOT VERIFIED`; blocker: explicit approved-for-push authorization for this exact root content commit and branch is pending.
 
 ### Risks / Release Notes
 
