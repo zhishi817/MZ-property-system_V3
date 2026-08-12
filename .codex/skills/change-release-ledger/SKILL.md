@@ -18,11 +18,13 @@ Keep every repository change traceable to a release unit in `docs/change-release
 
 Before the final response, add or update one release unit in the ledger using `apply_patch`.
 
-Use ID `CRL-YYYYMMDD-NNN`, choosing the next unused sequence for that date. One unit represents one user-selectable feature or fix. Split unrelated work into separate units.
+Use ID `CRL-YYYYMMDD-NNN`, choosing the next unused sequence for that date after checking both the current ledger and freshly fetched `origin/Dev`. Within one repository ledger, an ID has one immutable business-unit lineage; resolve a collision by assigning a new ID and recording a controlled historical migration, never by silently reusing the number. A paired root/mobile feature may share an ID, but each repository must retain its own explicit entry and release evidence. One unit represents one user-selectable feature or fix. Split unrelated work into separate units.
+
+The audit compares the current ledger with the locally fetched `origin/Dev` ledger. A current ledger must retain every remote CRL, and a shared ID must preserve its title, Request, Outcome, `### Implementation`, `### Files / Areas`, and `### Impact / Dependencies` exactly (whitespace aside). Status, validation evidence, Release Attempts, risks, and a dated reconciliation receipt may change under their existing rules. If `origin/Dev` is unavailable, the audit is `NOT VERIFIED`; if a remote entry is missing or its business identity differs, it is `BLOCKED` and the later work needs a new CRL.
 
 Record status, user-visible outcome, request, previous/new behavior, exact files, API/database/config/dependency impact, validation commands and actual results, risks, sensitive-information review, rollback, dependencies, related IDs, and available Git evidence. `Status` describes implementation tracking, not blanket release authority. New units should normally use `in-progress`, `ready`, or `blocked`; legacy `staged`, `committed`, or `pushed` values need exact Release Attempt evidence and never prove later edits to the same CRL are released.
 
-Never copy secrets, tokens, cookies, passwords, private keys, database URLs, `.env` values, or sensitive log contents into the ledger. If a unit changes later, append a dated update and preserve earlier failures or risks.
+Never copy secrets, tokens, cookies, passwords, private keys, database URLs, `.env` values, or sensitive log contents into the ledger. A dated update may add only evidence, clarification, or a historical-reconciliation receipt. Once a unit has a committed, pushed, merged, or deployed Release Attempt, any new runtime, API, schema, UI, or behavior change must receive a new CRL and link the earlier unit; do not append it under the released CRL or reuse its Git state.
 
 ## Release Attempts
 
@@ -50,7 +52,7 @@ Run:
 python3 scripts/audit_change_release_ledger.py
 ```
 
-The audit must pass before claiming all current changes are recorded. Add a release unit only when its purpose is supported by current-task evidence; otherwise leave the file unattributed and tell the user.
+The audit must pass before claiming all current changes are recorded. It requires a locally fetched `origin/Dev` ledger for lineage verification. Add a release unit only when its purpose is supported by current-task evidence; otherwise leave the file unattributed and tell the user.
 
 ## Release Report
 

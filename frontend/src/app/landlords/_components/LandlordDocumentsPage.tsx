@@ -265,6 +265,8 @@ const propertyTypeOptions = [
   { value: '2 Bedrooms 2 Bathrooms', label: '2 Bedrooms 2 Bathrooms' },
   { value: '3 Bedrooms 2 Bathrooms', label: '3 Bedrooms 2 Bathrooms' },
   { value: '3 Bedrooms 3 Bathrooms', label: '3 Bedrooms 3 Bathrooms' },
+  { value: '4 Bedrooms 3 Bathrooms', label: '4 Bedrooms 3 Bathrooms' },
+  { value: '4 Bedrooms 3.5 Bathrooms', label: '4 Bedrooms 3.5 Bathrooms' },
 ]
 
 const parkingOptions = [
