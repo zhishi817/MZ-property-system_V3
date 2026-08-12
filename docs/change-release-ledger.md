@@ -114,15 +114,15 @@
 - Intended action: `commit`; branch: `codex/release-crl-20260812-001-007`; target: `Dev`.
 - Base: `origin/Dev@aa0d0d3f0ad42dcb4f3640cd947dc526bb05f6c9`; fetched at `2026-08-12T15:35:31+10:00` and unchanged when this candidate was prepared.
 - Candidate patch SHA-256: `3ec5de4e841fdafcaf6ce32679ff854f759d79200977f0d8657e17395a99a4e9`, excluding `docs/change-release-ledger.md`.
-- Candidate content commit: not committed.
+- Candidate content commit: `7046279c978ff982c1731b8a1af55fa3916c60de`.
 - Dependencies: prior root candidate content commit `3c038520fe3d08d1a661845322144c44915ba573`; paired mobile candidate content commit `f57ca04e835659592f2dd46a54c7cec6a334df40` for mobile `CRL-20260812-001`, `-002`, `-003`, `-006`, `-007`.
 - Required validation: PASS — `test:cleaning-media-image`, `test:mzapp-media-visibility`, day-end proxy contract, backend TypeScript build, ledger audit, feature-registry audit and `git diff --check` passed in the isolated worktree.
 - Shared-hunk review: PASS — only selected CRL source, test and FR-registry hunks are staged; the release ledger remains unstaged while recording this attempt.
 - Generated-file review: PASS — generated backend `dist` outputs and the temporary dependency symlink were removed before staging.
-- Technical state: `candidate`.
+- Technical state: `committed`.
 - User authorization: `selected-for-commit`; evidence: user explicitly instructed “包含 CRL-20260812-008 一起修复并推送”.
 - Independent review: GO for `commit`; evidence: independent read-only review reconfirmed the exact non-ledger fingerprint, all-source day-end collision gate, CRL ownership, generated-file/secret safety and validation evidence; P2 HTTP-fixture coverage remains honestly partial in FR-004.
-- Action conclusion: `GO` for commit; blockers: none for commit. Push authorization must be rebound after the new commit SHA is presented.
+- Action conclusion: `GO` for commit completed; blockers: none for commit. Push authorization must be rebound after the new commit SHA is presented.
 
 ### Risks / Release Notes
 
