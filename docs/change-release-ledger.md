@@ -41,16 +41,20 @@
 
 - Repository: `root`.
 - Selected CRLs: `CRL-20260812-001`, `CRL-20260812-002`, `CRL-20260812-003`, `CRL-20260812-006`, `CRL-20260812-007`, `CRL-20260812-008`, `CRL-20260812-009`.
-- Intended action: `commit`; branch: `codex/release-crl-20260812-001-007`; target: `Dev`.
+- Intended action: `commit`.
+- Branch: `codex/release-crl-20260812-001-007`.
+- Target: `Dev`.
 - Base: `origin/Dev@aa0d0d3f0ad42dcb4f3640cd947dc526bb05f6c9`; fetched at `2026-08-12T16:32:37+10:00`.
 - Candidate patch SHA-256: `a91244fe5b8244a75dad3adc7930cb2fbf4e6bfab781948a1db10fefc16a2cbc`, excluding `docs/change-release-ledger.md`.
 - Commit SHA: `9ba3a1f72accc721af79c60b695e6eb7d1d73f44` (candidate content commit; final audit head is emitted by the release report).
-- Dependencies: paired mobile `CRL-20260812-001` through `CRL-20260812-009`; all base-range root paths are attributed to the selected CRLs.
+- Dependencies: paired mobile `CRL-20260812-001` through `CRL-20260812-007` and `CRL-20260812-009`; root `CRL-20260812-008` is root-only. All base-range root paths are attributed to the selected CRLs.
 - Required validation: PASS — exact PR range and working-tree ledger audits, 18 ledger regression tests, 4 workflow-contract tests, YAML/Bash syntax, and the complete `npm run check:ci` gate passed after the fail-closed repair.
 - Shared-hunk review: PASS — staged CI files belong only to `CRL-20260812-009`; the complete candidate has no unselected changed path.
 - Generated-file / secret review: PASS — no generated outputs, environment files, credentials, tokens, media objects or production data are staged.
 - Independent review: GO for `commit` — the initial fail-open lookup-error P1 was repaired; independent re-review reproduced nonzero error handling, matched this exact fingerprint, and found no generated file or secret risk. P2: mobile governance references a missing review document; it does not block this CI repair.
-- Technical state: `committed`; user authorization: `selected-for-commit` (user asked to repair the root/mobile PR merge gates); action conclusion: `GO` for commit completed. Push requires a new explicit approval bound to the final branch head.
+- Technical state: `committed`.
+- User authorization: `selected-for-commit`; evidence: user asked to repair the root/mobile PR merge gates.
+- Action conclusion: `GO` for commit completed. Push requires a new explicit approval bound to the final branch head.
 
 ### Risks / Release Notes
 
