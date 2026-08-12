@@ -1,5 +1,62 @@
 # Change Release Ledger
 
+## CRL-20260812-009 — Root/mobile PR 范围审计与配对分支 CI 修复
+
+- **Status:** ready
+- **Updated:** 2026-08-12 Australia/Melbourne
+- **Request:** 修复 root PR #303 与 mobile PR #24 的合并门禁失败：两端工作流传递 `--base/--head` 时被审计器误拒绝，root 还错误固定 checkout mobile `Dev` 而无法校验同批次移动端分支。
+- **Outcome:** PR 工作流恢复只读精确 `base...head` 台账覆盖审计；Release Attempt 仍必须显式使用 `--release-report`。Root Quality Gate 会优先 checkout 存在的同名移动端分支，仅在确认不存在时回退 `Dev`；查询异常会 fail-closed，使 root/mobile 成对 PR 能校验一致版本。
+
+### Implementation
+
+- Previous behavior: 新审计器把 `--base/--head` 错限为 Release Attempt 参数，两个 PR 的质量工作流在参数解析阶段退出；root 的注册表和回归作业始终读取 mobile `Dev`，缺少尚在 PR #24 的测试文件。
+- New behavior: 非 Release Attempt 模式允许成对 `--base/--head` 做 PR 三点范围覆盖与空白检查，同时保留 `--repo`/`--crl` 只允许 Release Attempt；root 工作流按当前 root PR 分支查找同名移动端分支，仅 `git ls-remote` 的“未找到 ref”结果回退，网络、认证或命令异常直接失败。
+- Key decisions: 不伪造 CRL、授权或 release-report 参数；不修改业务页面、API、权限、数据库、OTA 或部署。
+
+### Files / Areas
+
+- `scripts/audit_change_release_ledger.py` — 恢复 PR 范围审计 CLI 合约。
+- `scripts/tests/test_audit_change_release_ledger.py` — 回归 PR 范围审计 CLI 合约。
+- `scripts/ci/resolve_mobile_ci_ref.sh` — root 的同名移动端分支解析、确认未找到时的 `Dev` 回退及异常 fail-closed。
+- `.github/workflows/quality.yml` — 在需要移动端源码的 root 作业中使用解析后的移动端 ref。
+- `scripts/tests/test_root_quality_workflow_contract.py` — CI 分支解析与工作流契约回归。
+- `docs/change-release-ledger.md` — 本 root 配对 CI 修复记录。
+
+### Impact / Dependencies
+
+- CI only; no runtime API, database, migration, configuration, production data or external sync change.
+- Paired unit: mobile `CRL-20260812-009`; root/mobile PR #303/#24 must both contain the compatible range-audit CLI.
+
+### Validation
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_audit_change_release_ledger.py` — passed: 18 tests, including PR range success, uncovered path failure and incomplete range rejection.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_root_quality_workflow_contract.py` — passed: matching selection, confirmed-missing fallback and lookup-error failure are required for all four root jobs that checkout mobile.
+- `python3 scripts/audit_change_release_ledger.py --base origin/Dev --head HEAD` — passed for PR #303: 12 changed / 12 recorded paths.
+- `ruby -ryaml -e 'YAML.load_file(...)'`, `python3 scripts/audit_change_release_ledger.py` and `git diff --check` — passed.
+- `npm run check:ci` — passed after the fail-closed repair with temporary ignored dependency/paired-source links: ledger/FR audits, backend build/contracts, frontend 43 files / 185 tests and paired mobile typecheck all passed; generated backend outputs were restored and links removed.
+
+### Release Attempts
+
+#### RA-20260812-root-001-009-05
+
+- Repository: `root`.
+- Selected CRLs: `CRL-20260812-001`, `CRL-20260812-002`, `CRL-20260812-003`, `CRL-20260812-006`, `CRL-20260812-007`, `CRL-20260812-008`, `CRL-20260812-009`.
+- Intended action: `commit`; branch: `codex/release-crl-20260812-001-007`; target: `Dev`.
+- Base: `origin/Dev@aa0d0d3f0ad42dcb4f3640cd947dc526bb05f6c9`; fetched at `2026-08-12T16:32:37+10:00`.
+- Candidate patch SHA-256: `a91244fe5b8244a75dad3adc7930cb2fbf4e6bfab781948a1db10fefc16a2cbc`, excluding `docs/change-release-ledger.md`.
+- Candidate content commit: `not committed`.
+- Dependencies: paired mobile `CRL-20260812-001` through `CRL-20260812-009`; all base-range root paths are attributed to the selected CRLs.
+- Required validation: PASS — exact PR range and working-tree ledger audits, 18 ledger regression tests, 4 workflow-contract tests, YAML/Bash syntax, and the complete `npm run check:ci` gate passed after the fail-closed repair.
+- Shared-hunk review: PASS — staged CI files belong only to `CRL-20260812-009`; the complete candidate has no unselected changed path.
+- Generated-file / secret review: PASS — no generated outputs, environment files, credentials, tokens, media objects or production data are staged.
+- Independent review: GO for `commit` — the initial fail-open lookup-error P1 was repaired; independent re-review reproduced nonzero error handling, matched this exact fingerprint, and found no generated file or secret risk. P2: mobile governance references a missing review document; it does not block this CI repair.
+- Technical state: `candidate`; user authorization: `selected-for-commit` (user asked to repair the root/mobile PR merge gates); action conclusion: `GO` for commit.
+
+### Risks / Release Notes
+
+- Risk: if no matching mobile branch exists, CI intentionally validates `Dev`; if the remote lookup itself fails, CI now fails rather than validating an unpaired source. This preserves ordinary root-only PR behavior without silently weakening paired PR validation.
+- Sensitive-information review: no credentials, tokens, environment values or production data are added.
+
 ## CRL-20260812-008 — 日终媒体跨来源冲突 fail-closed 补丁（root）
 
 - **Status:** ready

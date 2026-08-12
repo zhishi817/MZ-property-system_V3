@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 
@@ -163,6 +163,36 @@ class ReleaseReportFixture:
 
 
 class ReleaseReportTests(unittest.TestCase):
+    def test_cli_range_coverage_accepts_base_and_head_without_release_report(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        stream = io.StringIO()
+
+        with redirect_stdout(stream):
+            code = AUDITOR.main(["--base", fixture.base, "--head", fixture.head], root=fixture.root)
+
+        self.assertEqual(0, code)
+        self.assertIn("Audit scope:", stream.getvalue())
+        self.assertIn("Coverage: PASS", stream.getvalue())
+
+    def test_cli_range_coverage_reports_unrecorded_paths(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        fixture._write("src/unrecorded.txt", "outside the fixture ledger\n")
+        git(fixture.root, "add", "src/unrecorded.txt")
+        git(fixture.root, "commit", "-qm", "unrecorded range path")
+        stream = io.StringIO()
+
+        with redirect_stdout(stream):
+            code = AUDITOR.main(["--base", fixture.base, "--head", "HEAD"], root=fixture.root)
+
+        self.assertEqual(1, code)
+        self.assertIn("src/unrecorded.txt", stream.getvalue())
+
+    def test_cli_range_coverage_requires_complete_range(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        with self.assertRaises(SystemExit) as error, redirect_stderr(io.StringIO()):
+            AUDITOR.main(["--base", fixture.base], root=fixture.root)
+        self.assertEqual(2, error.exception.code)
+
     def test_complete_attempt_is_go_and_has_markdown_json_evidence(self) -> None:
         fixture = ReleaseReportFixture(self)
         report = fixture.report()
