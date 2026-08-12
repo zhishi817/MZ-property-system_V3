@@ -32,7 +32,7 @@ import {
 } from '../lib/workTaskActionAudit'
 import type { WorkTaskActionId } from '../lib/workTaskActions'
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
-import { canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia } from './mzapp'
+import { canViewMzappGuestLuggageNoticeMedia, canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia } from './mzapp'
 
 export const router = Router()
 
@@ -3139,6 +3139,25 @@ export function selectExclusiveRecordedCleaningMedia(taskRows: any[], dayEndRows
   return null
 }
 
+export function isExclusiveDayEndHandoverMedia(
+  dayEndRows: any[],
+  taskRows: any[],
+  guestLuggageRows: any[],
+  feedbackRows: any[],
+  requestedUserId: string,
+  requestedDate: string,
+) {
+  const matchedDayEndRows = Array.isArray(dayEndRows) ? dayEndRows : []
+  const recordedMedia = selectExclusiveRecordedCleaningMedia(taskRows, matchedDayEndRows)
+  const selectedDayEndRow = recordedMedia?.source === 'day_end' ? recordedMedia.row : null
+  return matchedDayEndRows.length === 1
+    && !!selectedDayEndRow
+    && String(selectedDayEndRow.user_id || '').trim() === requestedUserId
+    && String(selectedDayEndRow.date || '').trim() === requestedDate
+    && !(Array.isArray(guestLuggageRows) && guestLuggageRows.length)
+    && !(Array.isArray(feedbackRows) && feedbackRows.length)
+}
+
 export function canViewRecordedDayEndMedia(user: any, mediaRow: any, userId: string) {
   const roles = new Set(roleNamesOfUser(user))
   return roles.has('admin') || roles.has('offline_manager') || roles.has('customer_service') || roles.has('inventory_manager')
@@ -3272,6 +3291,64 @@ async function findPropertyFeedbackMediaRows(pool: any, key: string) {
   return (result?.rows || []).filter((row: any) => feedbackMediaRowReferencesKey(row, key))
 }
 
+function safeDayEndMediaUserId(value: unknown) {
+  const id = String(value || '').trim()
+  return /^[A-Za-z0-9:_-]{1,180}$/.test(id) ? id : ''
+}
+
+function safeDayEndMediaDate(value: unknown) {
+  const date = String(value || '').trim()
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : ''
+}
+
+function dayEndMediaRowReferencesKey(row: any, key: string) {
+  const reference = String(row?.url || '').trim()
+  return reference === key || r2KeyFromUrl(reference) === key
+}
+
+function dayEndRejectMediaRowReferencesKey(row: any, key: string) {
+  const raw = row?.photos_json
+  const photos = Array.isArray(raw)
+    ? raw
+    : (() => {
+        try { return JSON.parse(String(raw || '[]')) } catch { return [] }
+      })()
+  return (Array.isArray(photos) ? photos : []).some((photo: any) => {
+    const reference = String(photo?.url || '').trim()
+    return reference === key || r2KeyFromUrl(reference) === key
+  })
+}
+
+async function findDayEndHandoverMediaRows(pool: any, userId: string, date: string, key: string) {
+  const pattern = `%${key}%`
+  const [mediaResult, rejectResult] = await Promise.all([
+    pool.query(
+      `SELECT 'day_end_media'::text AS source_type, user_id, date::text AS date, url, NULL::jsonb AS photos_json
+         FROM cleaning_day_end_media
+        WHERE user_id = $1::text
+          AND date = $2::date
+          AND COALESCE(url, '') LIKE $3`,
+      [userId, date, pattern],
+    ),
+    pool.query(
+      `SELECT 'day_end_reject'::text AS source_type, user_id, date::text AS date, NULL::text AS url, photos_json
+         FROM cleaning_day_end_reject_items
+        WHERE user_id = $1::text
+          AND date = $2::date
+          AND COALESCE(photos_json::text, '') LIKE $3`,
+      [userId, date, pattern],
+    ),
+  ])
+  return [
+    ...(mediaResult?.rows || []).filter((row: any) => dayEndMediaRowReferencesKey(row, key)),
+    ...(rejectResult?.rows || []).filter((row: any) => dayEndRejectMediaRowReferencesKey(row, key)),
+  ]
+}
+
+function canViewDayEndHandoverMedia(user: any, row: any, userId: string) {
+  return String(row?.user_id || '').trim() === userId || canViewDayEndForAllUsers(user)
+}
+
 const OFFLINE_TASK_MEDIA_MAX_BYTES = 15 * 1024 * 1024
 
 function safeOfflineWorkTaskId(value: unknown) {
@@ -3368,6 +3445,13 @@ router.get(
       const requestedWorkTaskIdRaw = String((req.query as any)?.work_task_id || '').trim()
       const requestedWorkTaskId = safeOfflineWorkTaskId(requestedWorkTaskIdRaw)
       const workTaskId = requestedWorkTaskId
+      const guestLuggageId = String((req.query as any)?.guest_luggage_id || '').trim()
+      const sourceTaskId = String((req.query as any)?.source_task_id || '').trim()
+      const requestedDayEndUserIdRaw = String((req.query as any)?.day_end_user_id || '').trim()
+      const requestedDayEndDateRaw = String((req.query as any)?.day_end_date || '').trim()
+      const requestedDayEndUserId = safeDayEndMediaUserId(requestedDayEndUserIdRaw)
+      const requestedDayEndDate = safeDayEndMediaDate(requestedDayEndDateRaw)
+      const hasDayEndContext = Boolean(requestedDayEndUserIdRaw || requestedDayEndDateRaw)
       const variant = String((req.query as any)?.variant || 'original').trim().toLowerCase()
       if (!requestedKey && !sourceUrl) return res.status(400).json({ message: 'missing_key' })
       if (!['original', 'thumbnail', 'preview'].includes(variant)) return res.status(400).json({ message: 'invalid_variant' })
@@ -3440,6 +3524,137 @@ router.get(
         // separately recorded property-feedback reference. That generic source
         // remains protected by its own exact-record selector below.
       }
+      if (hasDayEndContext) {
+        if (!requestedDayEndUserId || !requestedDayEndDate || sourceTaskId || requestedWorkTaskIdRaw || guestLuggageId) {
+          return res.status(403).json({ code: 'forbidden_media', message: 'forbidden_media' })
+        }
+        const dayEndKey = String(requestedKey || r2KeyFromUrl(sourceUrl) || '').trim()
+        if (!isCleaningMediaKey(dayEndKey)) {
+          return res.status(403).json({ code: 'forbidden_media', message: 'forbidden_media' })
+        }
+        if (!hasPg) return res.status(403).json({ code: 'forbidden_media', message: 'forbidden_media' })
+        const { pgPool } = require('../dbAdapter')
+        if (!pgPool) return res.status(403).json({ code: 'forbidden_media', message: 'forbidden_media' })
+        const dayEndRows = await findDayEndHandoverMediaRows(pgPool, requestedDayEndUserId, requestedDayEndDate, dayEndKey)
+        const dayEndRow = dayEndRows.length === 1 ? dayEndRows[0] : null
+        const dayEndKeyPattern = `%${dayEndKey}%`
+        const [
+          taskMediaResult,
+          consumableMediaResult,
+          allDayEndMediaResult,
+          allDayEndRejectResult,
+          guestLuggageResult,
+          feedbackMediaRows,
+        ] = await Promise.all([
+          pgPool.query(
+            `SELECT ctm.type,
+                    ctm.url,
+                    ct.id,
+                    ct.cleaner_id,
+                    ct.inspector_id,
+                    ct.assignee_id
+               FROM cleaning_task_media ctm
+               JOIN cleaning_tasks ct ON ct.id::text = ctm.task_id::text
+              WHERE COALESCE(ctm.url, '') LIKE $1`,
+            [dayEndKeyPattern],
+          ),
+          pgPool.query(
+            `SELECT ct.id,
+                    ct.cleaner_id,
+                    ct.inspector_id,
+                    ct.assignee_id,
+                    u.photo_url,
+                    u.photo_urls
+               FROM cleaning_consumable_usages u
+               JOIN cleaning_tasks ct ON ct.id::text = u.task_id::text
+              WHERE COALESCE(u.photo_url, '') LIKE $1
+                 OR COALESCE(u.photo_urls::text, '') LIKE $1`,
+            [dayEndKeyPattern],
+          ),
+          pgPool.query(
+            `SELECT user_id,
+                    date::text AS date,
+                    kind,
+                    url
+               FROM cleaning_day_end_media
+              WHERE COALESCE(url, '') LIKE $1`,
+            [dayEndKeyPattern],
+          ),
+          pgPool.query(
+            `SELECT user_id,
+                    date::text AS date,
+                    photos_json
+               FROM cleaning_day_end_reject_items
+              WHERE COALESCE(photos_json::text, '') LIKE $1`,
+            [dayEndKeyPattern],
+          ),
+          pgPool.query(
+            `SELECT id,
+                    photo_urls
+               FROM guest_luggage_notices
+              WHERE COALESCE(photo_urls::text, '') LIKE $1`,
+            [dayEndKeyPattern],
+          ),
+          findPropertyFeedbackMediaRows(pgPool, dayEndKey),
+        ])
+        const matchingTaskMediaRows = [
+          ...(taskMediaResult?.rows || []),
+          ...(consumableMediaResult?.rows || []).flatMap((row: any) => normalizeStoredPhotoUrls(row.photo_urls, row.photo_url)
+            .map((url) => ({
+              id: row.id,
+              cleaner_id: row.cleaner_id,
+              inspector_id: row.inspector_id,
+              assignee_id: row.assignee_id,
+              type: 'consumable_item_photo',
+              url,
+            }))),
+        ].filter((row: any) => (r2KeyFromUrl(String(row?.url || '').trim()) || String(row?.url || '').trim()) === dayEndKey)
+        const matchingAllDayEndRows = [
+          ...(allDayEndMediaResult?.rows || []).filter((row: any) => dayEndMediaRowReferencesKey(row, dayEndKey)),
+          ...(allDayEndRejectResult?.rows || []).flatMap((row: any) => {
+            const raw = row?.photos_json
+            const photos = Array.isArray(raw)
+              ? raw
+              : (() => {
+                  try { return JSON.parse(String(raw || '[]')) } catch { return [] }
+                })()
+            return (Array.isArray(photos) ? photos : [])
+              .map((photo: any) => String(photo?.url || '').trim())
+              .filter((url) => (r2KeyFromUrl(url) || url) === dayEndKey)
+              .map((url) => ({ ...row, kind: 'day_end_reject', url }))
+          }),
+        ]
+        const matchingGuestLuggageRows = (guestLuggageResult?.rows || []).filter((row: any) => (
+          normalizeStoredPhotoUrls(row.photo_urls).some((url) => (r2KeyFromUrl(url) || url) === dayEndKey)
+        ))
+        const user = (req as any).user || {}
+        const userId = String(user.sub || '').trim()
+        if (!dayEndRow
+          || !isExclusiveDayEndHandoverMedia(
+            matchingAllDayEndRows,
+            matchingTaskMediaRows,
+            matchingGuestLuggageRows,
+            feedbackMediaRows,
+            requestedDayEndUserId,
+            requestedDayEndDate,
+          )
+          || !canViewDayEndHandoverMedia(user, dayEndRow, userId)) {
+          return res.status(403).json({ code: 'forbidden_media', message: 'forbidden_media' })
+        }
+        if (!hasR2) return res.status(503).json({ code: 'media_storage_unavailable', message: 'media_storage_unavailable' })
+        const object = await r2GetObjectByKey(dayEndKey)
+        if (!object || !object.body?.length) return res.status(404).json({ code: 'media_not_found', message: 'not_found' })
+        const maxEdge = variant === 'thumbnail' ? 480 : 1600
+        const quality = variant === 'thumbnail' ? 68 : 82
+        const responseBody = await encodeCleaningImageToJpeg(object.body, variant === 'original' ? undefined : { maxEdge, quality })
+        res.setHeader('Content-Type', 'image/jpeg')
+        res.setHeader('Cache-Control', 'private, max-age=86400')
+        if (object.etag) {
+          const baseEtag = String(object.etag).replace(/^W\//, '').replace(/^"|"$/g, '')
+          res.setHeader('ETag', `W/"${baseEtag}-${variant}-jpeg"`)
+        }
+        return res.status(200).send(responseBody)
+      }
       if (!hasR2) return res.status(404).json({ message: 'r2_not_configured' })
       const key = String(requestedKey || r2KeyFromUrl(sourceUrl) || '').trim()
       if (!isPropertyFeedbackMediaKey(key)) {
@@ -3482,6 +3697,15 @@ router.get(
           [mediaReferences],
         )
         : { rows: [] }
+      const guestLuggageRows = isCleaningMediaKey(key)
+        ? await pgPool.query(
+          `SELECT id, property_id::text AS property_id, task_date::text AS task_date, photo_urls
+             FROM guest_luggage_notices
+            WHERE COALESCE(photo_urls::text, '') LIKE $1
+            LIMIT 2`,
+          [`%${key}%`],
+        )
+        : { rows: [] }
       const dayEndRows = isCleaningMediaKey(key)
         ? await pgPool.query(
           `SELECT user_id, kind, url
@@ -3501,6 +3725,13 @@ router.get(
           type: 'consumable_item_photo',
           url,
         })))
+      const matchingGuestLuggageRows = (guestLuggageRows?.rows || []).filter((row: any) => (
+        normalizeStoredPhotoUrls(row.photo_urls).some((url) => (r2KeyFromUrl(url) || url) === key)
+      ))
+      const guestLuggageMediaRow = matchingGuestLuggageRows.length === 1
+        && String(matchingGuestLuggageRows[0]?.id || '').trim() === guestLuggageId
+        ? matchingGuestLuggageRows[0]
+        : null
       const matchingMediaRows = [...(mediaRows?.rows || []), ...usageMediaRows].filter((row: any) => {
         const storedKey = r2KeyFromUrl(String(row?.url || '').trim()) || String(row?.url || '').trim()
         return storedKey === key
@@ -3509,9 +3740,20 @@ router.get(
         const storedKey = r2KeyFromUrl(String(row?.url || '').trim()) || String(row?.url || '').trim()
         return storedKey === key
       })
-      const hasRecordedCleaningMedia = matchingMediaRows.length > 0 || matchingDayEndRows.length > 0
-      const recordedMedia = selectExclusiveRecordedCleaningMedia(matchingMediaRows, matchingDayEndRows)
-      const feedbackMediaRows = recordedMedia || hasRecordedCleaningMedia ? [] : await findPropertyFeedbackMediaRows(pgPool, key)
+      const hasTaskOrDayEndMedia = matchingMediaRows.length > 0 || matchingDayEndRows.length > 0
+      const taskOrDayEndMedia = selectExclusiveRecordedCleaningMedia(matchingMediaRows, matchingDayEndRows)
+      const recordedMedia = hasTaskOrDayEndMedia && matchingGuestLuggageRows.length === 0
+        ? taskOrDayEndMedia
+        : null
+      // A temporary-notice association must never hide another private-media source.
+      // It needs a feedback/external-maintenance lookup for collision detection.  Without
+      // a notice, retain the established fail-closed task/day-end boundary: even an
+      // ambiguous task/day-end association must not fall through to feedback access.
+      const feedbackMediaRows = matchingGuestLuggageRows.length > 0 || !hasTaskOrDayEndMedia
+        ? await findPropertyFeedbackMediaRows(pgPool, key)
+        : []
+      const hasGuestLuggageSourceConflict = matchingGuestLuggageRows.length > 0
+        && (hasTaskOrDayEndMedia || feedbackMediaRows.length > 0)
       const feedbackMediaRow = feedbackMediaRows.length === 1 ? feedbackMediaRows[0] : null
       const maintenanceWorkTaskResult = feedbackMediaRow?.feedback_source_type === 'property_maintenance' && workTaskId
         ? await pgPool.query(
@@ -3530,15 +3772,19 @@ router.get(
         roleNamesOfUser(user).some((role) => ['admin', 'offline_manager', 'customer_service'].includes(role))
         || String(maintenanceWorkTask.assignee_id || '').trim() === userId
       )
-      const canView = recordedMedia?.source === 'task'
-        ? await canViewMzappRecordedCleaningMedia(user, recordedMedia.row, userId, recordedMedia.row.type)
-        : recordedMedia?.source === 'day_end'
-          ? canViewRecordedDayEndMedia(user, recordedMedia.row, userId)
-        : feedbackMediaRow
-          ? String(feedbackMediaRow.feedback_source_type || '') === 'external_maintenance_orders'
-            ? canViewExternalMaintenanceCompletionMedia(user, feedbackMediaRow, userId)
-            : canViewMaintenanceWorkTask || await canViewMzappPropertyFeedback(user, feedbackMediaRow, userId)
-          : false
+      const canView = hasGuestLuggageSourceConflict
+        ? false
+        : recordedMedia?.source === 'task'
+          ? await canViewMzappRecordedCleaningMedia(user, recordedMedia.row, userId, recordedMedia.row.type)
+          : recordedMedia?.source === 'day_end'
+            ? canViewRecordedDayEndMedia(user, recordedMedia.row, userId)
+            : guestLuggageMediaRow
+              ? await canViewMzappGuestLuggageNoticeMedia(user, guestLuggageMediaRow, userId)
+              : feedbackMediaRow
+                ? String(feedbackMediaRow.feedback_source_type || '') === 'external_maintenance_orders'
+                  ? canViewExternalMaintenanceCompletionMedia(user, feedbackMediaRow, userId)
+                  : canViewMaintenanceWorkTask || await canViewMzappPropertyFeedback(user, feedbackMediaRow, userId)
+                : false
       if (!canView) {
         return res.status(403).json({ message: 'forbidden_media' })
       }

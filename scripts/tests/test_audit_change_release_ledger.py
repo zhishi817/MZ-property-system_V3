@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for the read-only Release Attempt report."""
+"""Regression tests for ledger lineage and read-only Release Attempt reports."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 
@@ -80,6 +80,13 @@ class ReleaseReportFixture:
         return f"""# Change Release Ledger
 {other_crl}
 ## CRL-20260803-777 — Fixture release attempt
+
+- **Request:** Preserve this fixture's business identity.
+- **Outcome:** Fixture behavior remains separately attributable.
+
+### Implementation
+
+- Fixture implementation identity.
 
 ### Files / Areas
 
@@ -156,9 +163,10 @@ class ReleaseReportFixture:
 
 
 class ReleaseReportTests(unittest.TestCase):
-    def test_legacy_pr_range_audit_remains_available(self) -> None:
+    def test_cli_range_coverage_accepts_base_and_head_without_release_report(self) -> None:
         fixture = ReleaseReportFixture(self)
         stream = io.StringIO()
+
         with redirect_stdout(stream):
             code = AUDITOR.main(["--base", fixture.base, "--head", fixture.head], root=fixture.root)
 
@@ -166,35 +174,24 @@ class ReleaseReportTests(unittest.TestCase):
         self.assertIn("Audit scope:", stream.getvalue())
         self.assertIn("Coverage: PASS", stream.getvalue())
 
-    def test_legacy_pr_range_audit_rejects_unrecorded_path(self) -> None:
+    def test_cli_range_coverage_reports_unrecorded_paths(self) -> None:
         fixture = ReleaseReportFixture(self)
-        fixture._write("src/unrecorded.txt", "unrecorded\n")
+        fixture._write("src/unrecorded.txt", "outside the fixture ledger\n")
         git(fixture.root, "add", "src/unrecorded.txt")
-        git(fixture.root, "commit", "-qm", "unrecorded fixture path")
+        git(fixture.root, "commit", "-qm", "unrecorded range path")
         stream = io.StringIO()
+
         with redirect_stdout(stream):
             code = AUDITOR.main(["--base", fixture.base, "--head", "HEAD"], root=fixture.root)
 
         self.assertEqual(1, code)
         self.assertIn("src/unrecorded.txt", stream.getvalue())
 
-    def test_worktree_audit_ignores_python_cache_but_rejects_source_path(self) -> None:
+    def test_cli_range_coverage_requires_complete_range(self) -> None:
         fixture = ReleaseReportFixture(self)
-        fixture._write(".gitignore", "__pycache__/\n*.py[cod]\n")
-        git(fixture.root, "add", ".gitignore")
-        git(fixture.root, "commit", "-qm", "ignore python runtime cache")
-        fixture._write("scripts/__pycache__/audit.cpython-312.pyc", "cache")
-
-        with redirect_stdout(io.StringIO()):
-            self.assertEqual(0, AUDITOR.main([], root=fixture.root))
-
-        fixture._write("scripts/unrecorded_source.py", "print('source')\n")
-        stream = io.StringIO()
-        with redirect_stdout(stream):
-            code = AUDITOR.main([], root=fixture.root)
-
-        self.assertEqual(1, code)
-        self.assertIn("scripts/unrecorded_source.py", stream.getvalue())
+        with self.assertRaises(SystemExit) as error, redirect_stderr(io.StringIO()):
+            AUDITOR.main(["--base", fixture.base], root=fixture.root)
+        self.assertEqual(2, error.exception.code)
 
     def test_complete_attempt_is_go_and_has_markdown_json_evidence(self) -> None:
         fixture = ReleaseReportFixture(self)
@@ -385,8 +382,96 @@ class ReleaseReportTests(unittest.TestCase):
                 ],
                 root=fixture.root,
                 expected_repository=EXPECTED_REPOSITORY,
-            )
+        )
         self.assertEqual(1, code)
+
+        coverage_output = io.StringIO()
+        with redirect_stdout(coverage_output):
+            coverage_code = AUDITOR.main([], root=fixture.root, expected_repository=EXPECTED_REPOSITORY)
+        self.assertEqual(1, coverage_code)
+        self.assertIn("Duplicate CRL ID", coverage_output.getvalue())
+
+    def test_published_crl_cannot_append_behavior_update(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        ledger = fixture.root / "docs/change-release-ledger.md"
+        ledger.write_text(
+            ledger.read_text(encoding="utf-8").replace(
+                "- Technical state: `committed`", "- Technical state: pushed"
+            )
+            + "\n### Update — Fixture behavior correction\n\n- New behavior: fixture changes after publication.\n",
+            encoding="utf-8",
+        )
+
+        coverage_output = io.StringIO()
+        with redirect_stdout(coverage_output):
+            coverage_code = AUDITOR.main([], root=fixture.root, expected_repository=EXPECTED_REPOSITORY)
+
+        self.assertEqual(1, coverage_code)
+        self.assertIn("Published CRL cannot add a behavior update", coverage_output.getvalue())
+        self.assertEqual("BLOCKED", fixture.report()["conclusion"])
+
+    def test_origin_crl_identity_change_blocks_coverage_audit(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        git(fixture.root, "update-ref", "refs/remotes/origin/Dev", fixture.head)
+        ledger = fixture.root / "docs/change-release-ledger.md"
+        ledger.write_text(
+            ledger.read_text(encoding="utf-8").replace(
+                "Fixture release attempt", "Different business unit"
+            ),
+            encoding="utf-8",
+        )
+
+        coverage_output = io.StringIO()
+        with redirect_stdout(coverage_output):
+            coverage_code = AUDITOR.main([], root=fixture.root, expected_repository=EXPECTED_REPOSITORY)
+
+        self.assertEqual(1, coverage_code)
+        self.assertIn("immutable business identity", coverage_output.getvalue())
+        report = fixture.report()
+        self.assertEqual("BLOCKED", report["conclusion"])
+        self.assertTrue(any("immutable business identity" in blocker for blocker in report["blockers"]))
+
+    def test_origin_crl_cannot_be_omitted_from_local_ledger(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        git(fixture.root, "update-ref", "refs/remotes/origin/Dev", fixture.head)
+        (fixture.root / "docs/change-release-ledger.md").write_text(
+            "# Change Release Ledger\n", encoding="utf-8"
+        )
+
+        coverage_output = io.StringIO()
+        with redirect_stdout(coverage_output):
+            coverage_code = AUDITOR.main([], root=fixture.root, expected_repository=EXPECTED_REPOSITORY)
+
+        self.assertEqual(1, coverage_code)
+        self.assertIn("omits CRLs already present in origin/Dev", coverage_output.getvalue())
+
+    def test_validation_evidence_may_change_without_reusing_business_identity(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        git(fixture.root, "update-ref", "refs/remotes/origin/Dev", fixture.head)
+        ledger = fixture.root / "docs/change-release-ledger.md"
+        ledger.write_text(
+            ledger.read_text(encoding="utf-8").replace(
+                "fixture-validation` — passed: isolated Git fixture",
+                "fixture-validation` — passed: refreshed local evidence",
+            ),
+            encoding="utf-8",
+        )
+
+        with redirect_stdout(io.StringIO()):
+            coverage_code = AUDITOR.main([], root=fixture.root, expected_repository=EXPECTED_REPOSITORY)
+
+        self.assertEqual(0, coverage_code)
+
+    def test_missing_origin_dev_is_not_verified(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        git(fixture.root, "update-ref", "-d", "refs/remotes/origin/Dev")
+
+        coverage_output = io.StringIO()
+        with redirect_stdout(coverage_output):
+            coverage_code = AUDITOR.main([], root=fixture.root, expected_repository=EXPECTED_REPOSITORY)
+
+        self.assertEqual(2, coverage_code)
+        self.assertIn("NOT VERIFIED", coverage_output.getvalue())
 
 
 if __name__ == "__main__":
