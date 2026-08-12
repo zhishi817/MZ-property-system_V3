@@ -56,6 +56,25 @@
 - User authorization: `selected-for-commit`; evidence: user asked to repair the root/mobile PR merge gates.
 - Action conclusion: `GO` for commit completed. Push requires a new explicit approval bound to the final branch head.
 
+#### RA-20260812-root-001-009-06
+
+- Repository: `root`.
+- Selected CRLs: `CRL-20260812-001`, `CRL-20260812-002`, `CRL-20260812-003`, `CRL-20260812-006`, `CRL-20260812-007`, `CRL-20260812-008`, `CRL-20260812-009`.
+- Intended action: `push`.
+- Branch: `codex/release-crl-20260812-001-007`.
+- Target: `Dev`.
+- Base: `origin/Dev@aa0d0d3f0ad42dcb4f3640cd947dc526bb05f6c9`; fetched at `2026-08-12T17:33:59+10:00` and unchanged.
+- Candidate patch SHA-256: `a91244fe5b8244a75dad3adc7930cb2fbf4e6bfab781948a1db10fefc16a2cbc`, excluding `docs/change-release-ledger.md`.
+- Commit SHA: `9ba3a1f72accc721af79c60b695e6eb7d1d73f44` (candidate content commit; final audit head is emitted by the release report).
+- Dependencies: paired mobile content commit `ec95bf316d9f483f3dbb628295e62cb699ef6c98` for mobile `CRL-20260812-001` through `CRL-20260812-007` and `CRL-20260812-009`; root `CRL-20260812-008` is root-only.
+- Required validation: PASS — complete root `npm run check:ci` passed after the fail-closed repair; exact range/current ledger audits and whitespace checks pass.
+- Shared-hunk review: PASS — complete selected range has no unselected path; current CI-repair paths are exclusive to `CRL-20260812-009`.
+- Generated-file review: PASS — no generated outputs, environment files, credentials, tokens, media objects or production data are in the candidate.
+- Technical state: `committed`.
+- User authorization: `not-selected`; evidence: prior approval bound to the pre-receipt branch head, and user now authorized creation of this push-attempt receipt only.
+- Independent review: `not run`; evidence: exact push-attempt review must bind this receipt's final range.
+- Action conclusion: `NOT VERIFIED`; blockers: independent push review and explicit approval for the final push attempt are pending.
+
 ### Risks / Release Notes
 
 - Risk: if no matching mobile branch exists, CI intentionally validates `Dev`; if the remote lookup itself fails, CI now fails rather than validating an unpaired source. This preserves ordinary root-only PR behavior without silently weakening paired PR validation.
