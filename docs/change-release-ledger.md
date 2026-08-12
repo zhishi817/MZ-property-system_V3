@@ -139,10 +139,11 @@
 - Required validation: PASS — prior complete root gate plus CRL-008 targeted media/day-end regressions, backend build, ledger and FR audits passed; fresh base remains valid.
 - Shared-hunk review: PASS — exact range contains only selected root units and their documented shared files.
 - Generated-file review: PASS — no generated, cache, environment or sensitive artifact is in the exact range.
-- Technical state: `committed`.
+- Technical state: `pushed`.
 - User authorization: `approved-for-push`; evidence: user replied “批准” after root `7046279c978ff982c1731b8a1af55fa3916c60de`, mobile `f57ca04e835659592f2dd46a54c7cec6a334df40` and both branch names were presented.
 - Independent review: GO for `push`; evidence: independent committed-range review matched base/head/content commit/fingerprint, confirmed all-source owner/date day-end fail-closed behavior, CRL coverage, generated-file/secret safety and paired mobile contract.
-- Action conclusion: `GO` for push; blockers: none.
+- Action conclusion: `GO` for push completed; blockers: none.
+- Remote branch / SHA: `origin/codex/release-crl-20260812-001-007@4b07f78e1dfba9a884af5a926da03cdc4064b672`, confirmed immediately after the source-range push.
 
 ### Risks / Release Notes
 
