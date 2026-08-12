@@ -44,6 +44,20 @@
 - Independent review: GO for `commit` — P1 cross-source media authorization findings were repaired; the reviewer reconfirmed this exact fingerprint, source coverage, generated-file/secret safety and paired dependencies.
 - Technical state: `committed`; user authorization: `selected-for-commit` (user selected the joint 1–7 release scope); action conclusion: `GO` for commit completed. Push remains unapproved until the final ledger audit head is presented.
 
+#### RA-20260812-root-001-007-02
+
+- Repository: `root`.
+- Selected CRLs: `CRL-20260812-001`, `CRL-20260812-002`, `CRL-20260812-003`, `CRL-20260812-006`, `CRL-20260812-007`.
+- Intended action: `push`; branch: `codex/release-crl-20260812-001-007`; target: `Dev`.
+- Base: `origin/Dev@aa0d0d3f0ad42dcb4f3640cd947dc526bb05f6c9`; refreshed at `2026-08-12T15:35:31+10:00` and unchanged.
+- Candidate patch SHA-256: `e1c6b8c465265950f81f42e4c1c684f50cea441c0fd93cbf2c63d78b47abd07a`, excluding `docs/change-release-ledger.md`.
+- Candidate content commit: `3c038520fe3d08d1a661845322144c44915ba573`; current audit head is emitted by the release report.
+- Dependencies: paired mobile candidate content commit `f57ca04e835659592f2dd46a54c7cec6a334df40` for mobile `CRL-20260812-001`, `-002`, `-003`, `-006`, `-007`.
+- Required validation: PASS — prior complete root gate and current exact fingerprint/range checks remain valid.
+- Shared-hunk / generated-file / secret review: PASS — prior independent review and current clean range evidence.
+- Technical state: `committed`; user authorization: `approved-for-push` (user instructed “推送” after both exact committed branch heads were presented).
+- Independent review: pending committed-range re-review; action conclusion: `NOT VERIFIED` until that review and the exact release report pass.
+
 ### Risks / Release Notes
 
 - Risk: a stale or missing local `origin/Dev` reference returns a gate failure rather than inferring history.
