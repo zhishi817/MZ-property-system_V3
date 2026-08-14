@@ -16626,13 +16626,13 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Branch: `codex/p1-ntf01-ntf02`
 - Base: `origin/Dev@3fa5e4309d000c371a032f7a5275e27c2a648e4f`; fetched 2026-08-15 Australia/Melbourne.
 - Candidate patch SHA-256: `204be7b22a1c6f9cffc74a1bcabcd9cb14880af1a742d5a1d502e605a0ae592e`, excluding `docs/change-release-ledger.md`.
-- Candidate content commit: not committed.
+- Commit SHA: `ac1f00723384583e323516a94b22ef49bb654a1f` (candidate content commit; exact audit head follows in the range report).
 - Dependencies: `mobile/CRL-20260814-004` is the compatible client recovery; `mobile/CRL-20260815-001` is an additional grouped client-only repair.
 - Required validation: `PASS` — focused Root contracts, ledger coverage audit, whitespace check and exact staged pre-commit audit passed.
 - Independent review: `GO` for this commit action only.
-- Technical state: `verified`.
+- Technical state: `committed`.
 - User authorization: `selected-for-commit`.
-- Action conclusion: `GO` for the selected commit action only.
+- Action conclusion: `GO` — selected content commit created locally; push remains unauthorized.
 
 ### Risks / Release Notes
 
