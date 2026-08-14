@@ -16635,6 +16635,25 @@ Shared cross-thread record of repository changes and selectable release units. D
 - User authorization: `selected-for-commit`.
 - Action conclusion: `GO` — selected content commit created locally; push remains unauthorized.
 
+#### RA-20260815-p1-ntf01-ntf02-root-02
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260814-003`
+- Selected CRL identities: `root/CRL-20260814-003`
+- Intended action: `push`; target: `Dev`.
+- Branch: `codex/p1-ntf01-ntf02`
+- Base: `origin/Dev@3fa5e4309d000c371a032f7a5275e27c2a648e4f`; fetched at `2026-08-15T01:30:38+1000 AEST` and unchanged.
+- Candidate patch SHA-256: `204be7b22a1c6f9cffc74a1bcabcd9cb14880af1a742d5a1d502e605a0ae592e`, excluding `docs/change-release-ledger.md`.
+- Commit SHA: `ac1f00723384583e323516a94b22ef49bb654a1f` (candidate content commit; exact audit head is emitted by the release report).
+- Dependencies: paired `mobile/CRL-20260814-004` content commit `d52658c020deb50c8602d9154058cfd932aac264`; grouped `mobile/CRL-20260815-001` uses that same mobile commit.
+- Required validation: `PASS` — focused Root contracts, whitespace, current-ledger and exact committed-range audits passed.
+- Shared-hunk review: `PASS` — 15 selected non-ledger fingerprints only; no unselected hunk is in the candidate.
+- Generated-file review: `PASS` — no generated outputs, credentials, environment data, media payloads or production data are selected.
+- Technical state: `committed`.
+- User authorization: `approved-for-push`; evidence: user instructed “两个一起推送吧” on 2026-08-15 after the exact Root branch, candidate content commit and audit head were presented; limited to this branch and paired Mobile branch, not to PR, merge, deployment or OTA.
+- Independent review: `GO` for `push` — independent read-only review verified the exact committed source range, candidate fingerprint, selected CRL identity, generated/sensitive-file boundary and the receipt-only staged hunk; no P0/P1/P2 finding.
+- Action conclusion: `GO` for push; pre-network exact-range audit must pass before the remote action.
+
 ### Risks / Release Notes
 
 - Runtime risk: local tests cannot prove the deployed backend version or the compatible mobile OTA/build is installed.
