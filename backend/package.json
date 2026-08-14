@@ -31,6 +31,7 @@
     "test:offline-task-assignment-patch": "ts-node-dev --transpile-only scripts/tests/test_offline_task_assignment_patch_contract.ts",
     "test:app-notification-policies": "ts-node-dev --transpile-only scripts/tests/test_app_notification_policies.ts",
     "test:mzapp-media-visibility": "ts-node-dev --transpile-only scripts/tests/test_mzapp_media_visibility.ts",
+    "test:guest-luggage-media-contract": "ts-node-dev --transpile-only scripts/tests/test_guest_luggage_media_contract.ts",
     "test:cleaning-inspection-merge": "ts-node-dev --transpile-only scripts/tests/test_cleaning_inspection_merge.ts",
     "test:guest-luggage-rules": "ts-node-dev --transpile-only scripts/tests/test_guest_luggage_rules.ts",
     "test:orders-overlap": "ts-node-dev --transpile-only scripts/tests/test_orders_overlap.ts",

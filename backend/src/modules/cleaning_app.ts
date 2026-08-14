@@ -3207,6 +3207,33 @@ function isPropertyFeedbackMediaKey(value: string): boolean {
   return !key.includes('..') && !key.includes('\\') && !/[?#]/.test(key)
 }
 
+export function guestLuggageMediaRowReferencesKey(row: any, key: string): boolean {
+  return normalizeStoredPhotoUrls(row?.photo_urls).some((reference) => {
+    const normalized = String(reference || '').trim()
+    return normalized === key || r2KeyFromUrl(normalized) === key
+  })
+}
+
+export function selectUniqueGuestLuggageMediaRow(rows: any[], guestLuggageId: unknown) {
+  const expectedId = String(guestLuggageId || '').trim()
+  if (!expectedId || !Array.isArray(rows) || rows.length !== 1) return null
+  const row = rows[0]
+  return String(row?.id || '').trim() === expectedId ? row : null
+}
+
+async function findGuestLuggageMediaRows(pool: any, key: string, sourceUrl: string) {
+  const references = Array.from(new Set([key, sourceUrl].map((value) => String(value || '').trim()).filter(Boolean)))
+  if (!references.length) return []
+  const result = await pool.query(
+    `SELECT id, property_id::text AS property_id, task_date::text AS task_date, photo_urls
+       FROM guest_luggage_notices
+      WHERE photo_urls ?| $1::text[]
+      LIMIT 2`,
+    [references],
+  )
+  return (result?.rows || []).filter((row: any) => guestLuggageMediaRowReferencesKey(row, key))
+}
+
 function canViewExternalMaintenanceCompletionMedia(user: any, row: any, userId: string): boolean {
   const roles = Array.from(new Set([
     String(user?.role || '').trim(),
@@ -3697,15 +3724,18 @@ router.get(
           [mediaReferences],
         )
         : { rows: [] }
-      const guestLuggageRows = isCleaningMediaKey(key)
-        ? await pgPool.query(
+      const hasGuestLuggageContext = Boolean(guestLuggageId)
+      const guestLuggageRows = hasGuestLuggageContext
+        ? { rows: await findGuestLuggageMediaRows(pgPool, key, sourceUrl) }
+        : isCleaningMediaKey(key)
+          ? await pgPool.query(
           `SELECT id, property_id::text AS property_id, task_date::text AS task_date, photo_urls
              FROM guest_luggage_notices
             WHERE COALESCE(photo_urls::text, '') LIKE $1
             LIMIT 2`,
           [`%${key}%`],
-        )
-        : { rows: [] }
+          )
+          : { rows: [] }
       const dayEndRows = isCleaningMediaKey(key)
         ? await pgPool.query(
           `SELECT user_id, kind, url
@@ -3728,10 +3758,7 @@ router.get(
       const matchingGuestLuggageRows = (guestLuggageRows?.rows || []).filter((row: any) => (
         normalizeStoredPhotoUrls(row.photo_urls).some((url) => (r2KeyFromUrl(url) || url) === key)
       ))
-      const guestLuggageMediaRow = matchingGuestLuggageRows.length === 1
-        && String(matchingGuestLuggageRows[0]?.id || '').trim() === guestLuggageId
-        ? matchingGuestLuggageRows[0]
-        : null
+      const guestLuggageMediaRow = selectUniqueGuestLuggageMediaRow(matchingGuestLuggageRows, guestLuggageId)
       const matchingMediaRows = [...(mediaRows?.rows || []), ...usageMediaRows].filter((row: any) => {
         const storedKey = r2KeyFromUrl(String(row?.url || '').trim()) || String(row?.url || '').trim()
         return storedKey === key
@@ -3749,7 +3776,7 @@ router.get(
       // It needs a feedback/external-maintenance lookup for collision detection.  Without
       // a notice, retain the established fail-closed task/day-end boundary: even an
       // ambiguous task/day-end association must not fall through to feedback access.
-      const feedbackMediaRows = matchingGuestLuggageRows.length > 0 || !hasTaskOrDayEndMedia
+      const feedbackMediaRows = !!guestLuggageMediaRow || (!hasTaskOrDayEndMedia && !hasGuestLuggageContext)
         ? await findPropertyFeedbackMediaRows(pgPool, key)
         : []
       const hasGuestLuggageSourceConflict = matchingGuestLuggageRows.length > 0
@@ -3772,9 +3799,13 @@ router.get(
         roleNamesOfUser(user).some((role) => ['admin', 'offline_manager', 'customer_service'].includes(role))
         || String(maintenanceWorkTask.assignee_id || '').trim() === userId
       )
-      const canView = hasGuestLuggageSourceConflict
-        ? false
-        : recordedMedia?.source === 'task'
+      const canView = hasGuestLuggageContext
+        ? !hasGuestLuggageSourceConflict
+          && !!guestLuggageMediaRow
+          && await canViewMzappGuestLuggageNoticeMedia(user, guestLuggageMediaRow, userId)
+        : hasGuestLuggageSourceConflict
+          ? false
+          : recordedMedia?.source === 'task'
           ? await canViewMzappRecordedCleaningMedia(user, recordedMedia.row, userId, recordedMedia.row.type)
           : recordedMedia?.source === 'day_end'
             ? canViewRecordedDayEndMedia(user, recordedMedia.row, userId)

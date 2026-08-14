@@ -1411,11 +1411,11 @@ async function canViewMzappTaskConsumables(user: any, row: any, userId: string) 
 }
 
 export async function canViewMzappGuestLuggageNoticeMedia(user: any, row: any, userId: string) {
-  if (canViewAll(user)) return true
-  const uid = String(userId || '').trim()
+  if (canViewAll(user) || canEditGuestLuggage(user)) return true
+  const viewerId = String(userId || '').trim()
   const propertyId = String(row?.property_id || '').trim()
   const taskDate = String(row?.task_date || '').slice(0, 10)
-  if (!uid || !propertyId || !taskDate || !hasPg || !pgPool) return false
+  if (!propertyId || !/^\d{4}-\d{2}-\d{2}$/.test(taskDate) || !viewerId || !hasPg || !pgPool) return false
   try {
     const assigned = await pgPool.query(
       `SELECT 1
@@ -1425,9 +1425,9 @@ export async function canViewMzappGuestLuggageNoticeMedia(user: any, row: any, u
         WHERE COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = $1
           AND COALESCE(t.task_date, t.date)::date = $2::date
           AND ${activeCleaningTaskWhereSql('t')}
-          AND ($3 = COALESCE(t.cleaner_id::text, t.assignee_id::text) OR $3 = t.inspector_id::text)
+          AND $3::text = ANY(ARRAY[t.cleaner_id::text, t.inspector_id::text, t.assignee_id::text])
         LIMIT 1`,
-      [propertyId, taskDate, uid],
+      [propertyId, taskDate, viewerId],
     )
     return Boolean(assigned?.rowCount)
   } catch {

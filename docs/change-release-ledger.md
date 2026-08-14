@@ -16553,6 +16553,93 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
 - Git state: implementation pushed to nested mobile `Dev` in commit `0ef9c51`; this root ledger status update is recorded separately.
 
+## CRL-20260814-003 — P1-NTF-01 Legacy Recovery：当天临时通知私有照片认证读取（root）
+
+- **Repository:** `root`
+- **Status:** verified; selected-for-commit
+- **Updated:** 2026-08-15 Australia/Melbourne
+- **Request:** 从 `root` Legacy source `CRL-20260813-002` 恢复 P1-NTF-01 的当天临时通知私有照片读取修复到 `origin/Dev@3fa5e4309d000c371a032f7a5275e27c2a648e4f`，仅处理 `guest_luggage_id + photo_urls` 精确关联、认证授权读取及对应回归。
+- **Outcome:** 有 `guest_luggage_id` 的 `mzapp/...` 请求现在按保存的 `guest_luggage_notices.photo_urls` 精确查找，只有唯一且 ID 相同的记录才会进入既有角色授权；该上下文不会回落到反馈、任务或日结媒体来源。错误/缺失通知 ID、非该通知照片、歧义和越权读取保持失败关闭。
+
+### Implementation
+
+- Previous behavior: 当前 Dev 的临时通知行查询仅在 `isCleaningMediaKey(key)` 时执行；真实保存为 `mzapp/...` 的照片没有来源行，最终返回 403。
+- New behavior: 有通知上下文时，代理以 `photo_urls ?|` 查询保存的精确引用，再以规范化 key 二次校验和唯一通知行选择；查询结果保留统一的 `{ rows }` 形状。该上下文仅能通过通知行与角色授权，不能回落到反馈、任务或日结来源。清洁员、检查员、指派人员和既有管理角色仍必须通过同房源、同日期、活跃任务授权。
+- Key decisions: 没有复制 Legacy 整段代理。最新 Dev 的 `hasGuestLuggageSourceConflict`、`isExclusiveDayEndHandoverMedia` 和跨来源歧义拒绝保留；不触及通知收件人、Inbox、Badge、Push 或其他媒体域。
+
+### Files / Areas
+
+- `backend/src/modules/cleaning_app.ts` — source-specific `mzapp/...` 精确关联、唯一行选择；保留共享代理冲突拒绝。
+- `backend/src/modules/mzapp.ts` — 临时通知读取角色授权与活跃任务约束。
+- `backend/scripts/tests/test_guest_luggage_media_contract.ts` — 精确照片、错误/缺失 ID、歧义和授权边界契约，以及内存桩路由级正反例。
+- `backend/scripts/tests/test_cleaning_media_image.ts` — 共享代理的静态冲突/回落防护契约与新的临时通知上下文分支一致。
+- `backend/package.json`, `package.json` — 将该契约接入已有后端检查路径。
+- `docs/change-release-ledger.md` — 本恢复候选记录。
+
+### Impact / Dependencies
+
+- API: 现有认证媒体 endpoint 只增加来源正确的成功路径；错误关联继续 403。
+- Database / migration / production data: none.
+- Depends on: 配套 `mobile/CRL-20260814-004` 传递同一 `guest_luggage_id`；两端都尚未发布。
+- Deferred: `docs/notification-registry.yaml` 不存在于此 clean baseline，且不在本照片读取调用链中；不作为 P1-NTF-01 前置条件。
+
+### Validation
+
+- `npm run test:guest-luggage-media-contract --prefix backend` — passed; route-level memory stub covers authorized cleaner/inspector 200, wrong notification ID 403, non-notification photo 403, and unauthorized user 403 before R2 access.
+- `npm run test:mzapp-media-visibility --prefix backend` — passed.
+- `npm run test:cleaning-media-image --prefix backend` — passed.
+- `npm run build --prefix backend` — passed (`tsc -p .`); generated `dist` artifacts were restored and excluded from the candidate.
+- `npm run check:feature-registry` and `git diff --check` — passed.
+- Independent candidate review (2026-08-15): initial `NO-GO` identified the route result-shape mismatch and source fallback; both remediated in this candidate. Final independent review: `GO` for the commit action.
+- Production deployment, compatible OTA/build, and real-role device verification: not run.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared for selected `root/CRL-20260814-003` only.
+- **Allowed paths:** only the six non-ledger paths listed in **Files / Areas** plus this ledger section.
+- **Untracked review:** the new contract test is an intentional selected candidate file; no unrelated untracked file is allowed.
+- `backend/package.json` — SHA-256: `db72d3efad685e182970cd6dc71cc43fca6301439dd8f550d6c7f7047c2be753`
+- `backend/scripts/tests/test_cleaning_media_image.ts` — SHA-256: `56d008bc7328ccd99491662c2b5d5b6754da656d08c158ec36eb246c58f99f07`
+- `backend/scripts/tests/test_cleaning_media_image.ts` — SHA-256: `b383a42eb65edd5776c4ac896e56c795f8b20bec8918e07b53a32323572f6a7c`
+- `backend/scripts/tests/test_guest_luggage_media_contract.ts` — SHA-256: `02c573d2d589471424e3d7fa3de8c70ca0fdf5add97c5ff0c3183dae3e7e3865`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `3a916071e71be66b382c5b40b47f6a7b85d5fc2690632af6b0184814605ff63f`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `6402d3181fe64cef6501f86ba6eaf015938ebdc7c253f3039d688d76df2cc7b9`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `6e4119b1ca8d41540c43265f683a32eb5773f912f06c5a5a57c4bbcec817e9bd`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `7dd837d0a044671ae89c7ab85ce175eb848e6698861e88e50f1566c5efe0ac41`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `adb94bac93f10f1d1a6b187a3867a82641ad85b0de0abf2da5f1d2e3b2a57d7d`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `af6003f103a450b543a1e61dfd8a80c548cfcd00aba5f186191b36fb0506f852`
+- `backend/src/modules/mzapp.ts` — SHA-256: `4c585690aadc826a3352b06ce4aefcfe92addc659e18220344f1592b4bfa21cd`
+- `backend/src/modules/mzapp.ts` — SHA-256: `8a377d95bd1d935bd210138f327d9c0bf400fc5b3322b27615babd08994527d4`
+- `backend/src/modules/mzapp.ts` — SHA-256: `aca4a4275c48a8b1d57776615d366c01af547377440bfd6400bbb7cef93b9606`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d03ac191142e0858fcfaed56f6a4c0bed3e4fbc9dddbdc104464b289f077aa7a`
+- `package.json` — SHA-256: `ed93587a9c679440ed392de2c59d134bb7df1089a4273a25c534e3294b798a95`
+
+### Release Attempts
+
+#### RA-20260815-p1-ntf01-ntf02-root-01
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260814-003`
+- Selected CRL identities: `root/CRL-20260814-003`
+- Intended action: `commit`
+- Branch: `codex/p1-ntf01-ntf02`
+- Base: `origin/Dev@3fa5e4309d000c371a032f7a5275e27c2a648e4f`; fetched 2026-08-15 Australia/Melbourne.
+- Candidate patch SHA-256: `204be7b22a1c6f9cffc74a1bcabcd9cb14880af1a742d5a1d502e605a0ae592e`, excluding `docs/change-release-ledger.md`.
+- Candidate content commit: not committed.
+- Dependencies: `mobile/CRL-20260814-004` is the compatible client recovery; `mobile/CRL-20260815-001` is an additional grouped client-only repair.
+- Required validation: `PASS` — focused Root contracts, ledger coverage audit, whitespace check and exact staged pre-commit audit passed.
+- Independent review: `GO` for this commit action only.
+- Technical state: `verified`.
+- User authorization: `selected-for-commit`.
+- Action conclusion: `GO` for the selected commit action only.
+
+### Risks / Release Notes
+
+- Runtime risk: local tests cannot prove the deployed backend version or the compatible mobile OTA/build is installed.
+- Security boundary: exact association and collision rejection are fail-closed; no raw R2 URL or broad permission is introduced.
+- Sensitive-information review: no secrets, credentials, tokens, `.env` values, private media payloads, production data, or logs are added.
+
 ## CRL-20260814-002 — Root Legacy 冻结边界与分层台账门禁
 
 - **Repository:** `root`
