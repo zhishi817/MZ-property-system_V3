@@ -7,6 +7,14 @@ description: Maintain a shared, cross-thread repository change ledger and prepar
 
 Keep every repository change traceable to a release unit in `docs/change-release-ledger.md`. Treat the ledger as shared state across all threads using the same worktree.
 
+## Legacy Frozen Workspace Boundary
+
+`LEGACY_FROZEN_WORKSPACE` is the formal state for every staged, unstaged, and untracked delta present in an original dirty worktree at its recorded freeze snapshot. It is not a date-based category: do not infer an unresolved hunk's creation date or attempt a bulk retrospective CRL attribution.
+
+Keep a frozen workspace as source evidence only. Do not reset, restore, stage, commit, or release it as a whole. When the user later selects one historical business change, create a new CRL and extract only that verified file/hunk scope into a clean worktree from the current `origin/Dev` baseline.
+
+Root and Mobile remain independent repositories. A canonical CRL identity is always repository-qualified where ambiguity is possible: `root/CRL-YYYYMMDD-NNN` or `mobile/CRL-YYYYMMDD-NNN`. The numeric ID alone is unique only inside its own repository ledger.
+
 ## At Task Start
 
 1. Read the ledger if it exists.
@@ -19,6 +27,8 @@ Keep every repository change traceable to a release unit in `docs/change-release
 Before the final response, add or update one release unit in the ledger using `apply_patch`.
 
 Use ID `CRL-YYYYMMDD-NNN`, choosing the next unused sequence for that date after checking both the current ledger and freshly fetched `origin/Dev`. Within one repository ledger, an ID has one immutable business-unit lineage; resolve a collision by assigning a new ID and recording a controlled historical migration, never by silently reusing the number. A paired root/mobile feature may share an ID, but each repository must retain its own explicit entry and release evidence. One unit represents one user-selectable feature or fix. Split unrelated work into separate units.
+
+Every new CRL must include `- **Repository:** \`root\`` or `- **Repository:** \`mobile\`` directly below its heading. Cite related units, dependencies, scope manifests, and Release Attempts with their canonical identity when they cross a repository boundary.
 
 The audit compares the current ledger with the locally fetched `origin/Dev` ledger. A current ledger must retain every remote CRL, and a shared ID must preserve its title, Request, Outcome, `### Implementation`, `### Files / Areas`, and `### Impact / Dependencies` exactly (whitespace aside). Status, validation evidence, Release Attempts, risks, and a dated reconciliation receipt may change under their existing rules. If `origin/Dev` is unavailable, the audit is `NOT VERIFIED`; if a remote entry is missing or its business identity differs, it is `BLOCKED` and the later work needs a new CRL.
 
@@ -53,6 +63,12 @@ python3 scripts/audit_change_release_ledger.py
 ```
 
 The audit must pass before claiming all current changes are recorded. It requires a locally fetched `origin/Dev` ledger for lineage verification. Add a release unit only when its purpose is supported by current-task evidence; otherwise leave the file unattributed and tell the user.
+
+Use three separate audit layers. They prove different things and must not be substituted for one another:
+
+1. **Current-worktree coverage:** `python3 scripts/audit_change_release_ledger.py` checks local path coverage and fetched `origin/Dev` lineage. It is not a release candidate and does not classify a Legacy frozen workspace.
+2. **Local pre-commit candidate:** after exact staging in a clean candidate worktree, run `python3 scripts/audit_change_release_ledger.py --pre-commit --repo <root|mobile> --crl <CRL-ID>`. It blocks untracked paths, selected-path mismatches, missing repository-qualified identity, and hunk fingerprints that do not exactly match `### Staged Commit Scope`.
+3. **PR committed range:** run `--release-report` with exact `--base`, `--head`, `--repo`, and selected `--crl` values. It checks only `base...head`: canonical CRL identity, selected paths/hunks, candidate content receipt, Git ancestry/base freshness, and generated/sensitive-file evidence. It must not claim visibility into any separate historical working tree.
 
 ## Release Report
 
@@ -93,6 +109,7 @@ Never use `git add .`, `git add -A`, wildcard staging, or unverified whole-file 
 ## CRL-YYYYMMDD-NNN — Feature name
 
 - **Status:** ready
+- **Repository:** `root` or `mobile`
 - **Updated:** YYYY-MM-DD HH:MM timezone
 - **Request:** Original request
 - **Outcome:** User-visible result
@@ -119,6 +136,13 @@ Never use `git add .`, `git add -A`, wildcard staging, or unverified whole-file 
 
 - `command` — passed/failed/not run: evidence
 
+### Staged Commit Scope
+
+- **Repository:** `root` or `mobile`
+- **Status:** `not prepared` or `prepared`
+- **Untracked review:** `not prepared` or `none`; a prepared candidate must come from a clean worktree.
+- `` `path/to/file` — SHA-256: `<zero-context staged hunk fingerprint>` `` for every non-ledger staged hunk; add one line per hunk. Run the local pre-commit gate once to obtain any unexpected fingerprint, record the reviewed scope, stage only the ledger hunk, then rerun until it passes.
+
 ### Release Attempts
 
 - None yet, or one block per exact release attempt:
@@ -128,6 +152,7 @@ Never use `git add .`, `git add -A`, wildcard staging, or unverified whole-file 
 
 - Repository: `root` or `mobile`
 - Selected CRLs: `CRL-...`
+- Selected CRL identities: `root/CRL-...` or `mobile/CRL-...`; must exactly match the selected repository-qualified set
 - Intended action: `commit` or `push`
 - Branch: `codex/<release-scope>` or `not created`
 - Base: `origin/Dev@<SHA>`; fetched at `<timestamp>`

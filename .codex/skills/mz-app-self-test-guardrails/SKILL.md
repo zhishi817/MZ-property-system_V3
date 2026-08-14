@@ -213,6 +213,12 @@ Select validation by change scope; do not mechanically run every command for a s
 
 The repository quality commands must execute all critical protected tests that are declared wired. Run `npm run check:feature-registry` in addition to the ledger audit. Do not mark a test `sufficient` if its file exists but its command is not part of the relevant quality gate.
 
+### Ledger-Governance Validation
+
+When the approved change is limited to ledger governance, audit scripts, Agent instructions, or Skills, do not create or modify a Feature Regression Registry entry unless a business invariant changed. State that no application route, API, role, database, or production environment is in scope.
+
+For a Root/Mobile ledger-gate change, run the auditor's focused regression test in each independent repository and cover at least: a passing repository-qualified CRL candidate, an untracked-path block, a staged-hunk scope mismatch block, and an exact `base...head` content-receipt/hunk check. Confirm the audit command reads Git only and makes no production/API/database writes. If CI configuration is excluded from the authorized scope, report the command as CI-ready rather than claiming that a workflow now invokes it.
+
 ## Phase 6: Release Ledger
 
 After repository mutations:
