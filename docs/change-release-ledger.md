@@ -16553,6 +16553,127 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
 - Git state: implementation pushed to nested mobile `Dev` in commit `0ef9c51`; this root ledger status update is recorded separately.
 
+## CRL-20260814-002 — Root Legacy 冻结边界与分层台账门禁
+
+- **Repository:** `root`
+- **Status:** ready
+- **Updated:** 2026-08-14 21:51 AEST
+- **Request:** 为已冻结的 Root/Mobile 脏工作区建立非日期化的 `LEGACY_FROZEN_WORKSPACE` 边界，并提供可执行的本地提交与已提交范围审计门禁；不追溯、恢复或发布任何 Legacy 业务 hunk。
+- **Outcome:** Root 与 Mobile 的 CRL 在跨仓引用时使用 `repository/CRL-ID` 身份。本地候选必须在干净工作树中逐 hunk 匹配，已提交候选则按精确 `base...head` 复核；台账 receipt 仅能独立记录已完成的内容提交，不能夹带业务 hunk。
+
+### Implementation
+
+- Previous behavior: 台账检查只能覆盖当前路径或范围路径；它无法验证仓库限定身份、暂存 hunk、未跟踪文件，且会让历史脏工作区与新的候选范围混淆。
+- New behavior: 审计脚本新增 `--pre-commit` 本地候选层和强化的 `--release-report` 已提交范围层；两层均核对仓库限定 CRL、文件范围与零上下文 hunk 指纹。Root Agent 与两份 Skill 明确冻结边界、干净工作树和 CI 只能检查提交范围的限制。
+- Key decisions: 保留既有 current-worktree 与 `--base/--head` 覆盖审计；不改业务代码、Registry、CI 工作流、测试配置、数据库、API 或生产数据。
+
+### Files / Areas
+
+- `AGENTS.md` — modified: Root 的冻结边界与分层门禁执行规则。
+- `.codex/skills/change-release-ledger/SKILL.md` — modified: 记录冻结边界、仓库限定 CRL 与三层审计契约。
+- `.codex/skills/mz-app-self-test-guardrails/SKILL.md` — modified: 规定治理改动的非业务验证范围。
+- `scripts/audit_change_release_ledger.py` — modified: 本地候选、范围 hunk、仓库身份和清洁工作树检查。
+- `scripts/tests/test_audit_change_release_ledger.py` — modified: 覆盖通过候选、未跟踪阻断、hunk 不匹配阻断、精确范围 receipt、跨 CRL ledger hunk 与伪造 receipt 指纹阻断。
+- `docs/change-release-ledger.md` — modified: 本治理 CRL 与 Release Attempt receipt。
+
+### Impact / Dependencies
+
+- API / database / configuration / CI: none.
+- Production / device / user role: none.
+- Dependencies: `mobile/CRL-20260814-003` implements the corresponding independent mobile gate; neither CRL depends on frozen business hunk extraction.
+- Related units: `root/CRL-20260814-001` remains separate local reconciliation history and is not selected.
+
+### Validation
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_audit_change_release_ledger.py` — passed: 25 tests, including verified receipt acceptance, cross-CRL staged-ledger blocking and bad receipt content-fingerprint blocking.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/audit_change_release_ledger.py --pre-commit --repo root --crl CRL-20260814-002` — passed: canonical identity, selected paths, untracked review, selected-ledger section and 50 non-ledger hunk fingerprints all matched.
+- `quick_validate.py .codex/skills/change-release-ledger` and `quick_validate.py .codex/skills/mz-app-self-test-guardrails` — passed.
+- `git diff --check` — passed.
+- `npm run check:feature-registry` — passed: 10 FRs / 124 test mappings; Registry is unchanged because this CRL changes no business invariant.
+- Governance read-only boundary: audit functions invoke local Git only; no application route, API, role, database or production environment is in scope.
+
+### Staged Commit Scope
+- **Repository:** `root`
+- **Status:** `prepared`
+- **Untracked review:** `none; clean candidate worktree confirmed`
+- `.codex/skills/change-release-ledger/SKILL.md` — SHA-256: `0fba6054e1471052d13d4554961901822776cfc28d43a11b435a9a999cf21a04`
+- `.codex/skills/change-release-ledger/SKILL.md` — SHA-256: `197c5dad7ac899a25ce84ab056badd253c9378f0b0b1ff027145cb13045844cf`
+- `.codex/skills/change-release-ledger/SKILL.md` — SHA-256: `43d2c9ba97665c3d5cf4d7df1d9f9448b8cea129d9c7d173c1bc00e149cca54d`
+- `.codex/skills/change-release-ledger/SKILL.md` — SHA-256: `4aea832c2a08f8ae112d2516d088d5cc9ade5e6c7dd31b6f35886d708d32c9f1`
+- `.codex/skills/change-release-ledger/SKILL.md` — SHA-256: `9b507ff71d7afd22c836a411886c5acec9a359a7be4311296db20b3d88aa7a89`
+- `.codex/skills/change-release-ledger/SKILL.md` — SHA-256: `dd4e1e455aee42ab22ff83b0d2a006151707f28221d50e566a7fa01049757a78`
+- `.codex/skills/mz-app-self-test-guardrails/SKILL.md` — SHA-256: `55e29b09798c21d3f94cd1aef69f1e464ce5a2877517b2e4a0e9a00f87eafa18`
+- `AGENTS.md` — SHA-256: `eaefd2614fd5078ae03cacb17b0e914d854e160adb56a2bfc7de3cb865becd72`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `083ef52fc94eb84c1b3c31664ceed363afa9f160a16cced2322e81c9bc5b0fd4`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `1b5fb463fe8b606c69fd3ad49036a661e1ab79a4502de6b91a2f0b232fe14cc9`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `1ef22f982683632d8ed31c49e1ccd02d3b7b382f0fbb7bbbbf1904086c2db89b`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `2f2f3ea524fa8dc6bdfcba6478c1b60cc41923fac335e6639238efdc48a663d4`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `3c87548c0d2dee7bc05b9a2333aa1e56118e26fbb2c34c7ee92fd94a40b82d90`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `3e405d2e1507e4a91eae6f6e5ac0df48ac8fcc0263fbde1c94180383e8e97b72`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `4c002c6d6d6c0a32bc5e452a07c966dc574276a844794646fef318ad77dd9d7d`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `5b2610bcd0634eee2baf832f6704ec6aef5a1702c98b2409f07f91d43c2007e5`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `6d9512eeb8e4805a941342974256584217a41e0692dcfc198a7adcef41d9a496`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `746ecc9cbb934cec606301456af45c0d6e0c67df436ee4d009391d7c982bb911`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `756885373f68d750d6a2bf38dd92dd9948874328a26299293f22912825aa3cad`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `79d1aaebd23ddee11835a4fc261b8e717482db2a067a1948be733bcc96caa738`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `7a58322322222e04f85959112d756d500a945d890d85381782de00c524ff2c5f`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `7d790629856ef31206f868bb787867c271abc3e5e8fa74734f2ed22f054fd917`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `8a8bf574f4aeb7a54c19f0e27d195f516775bebbd79d3b0c2982da2221548b9a`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `a5f40ea25ea24eb72232e86f515ec9aad938c0bd038673e52187568a3230b7f6`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `aba40c7c5b638b0aa5e45170270d09c823da5fbefed9eb69aada75253a80d674`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `ad634c3f0c14813775755f71ccd7cfc68057d1fb490fb1f5f7b23cc4e690251b`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `bc04c4e69f5676f0a7cc9e4e708826c0141604f70b52d871a7530b4a9d72d839`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `c0aa41a837e7e919153c730e8ad68300c6d1dcc14914640d56692807b52a9d03`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `c2ab069008de147304c5a70ff14a823500e7a5af39b41894dd1944a19766500a`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `d6c85fb8f6e44d4c718cfc85465dabccf2529711e19e4578ab3c989655fea979`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `d8d478cad2d7be4c4739f21544a69b2ebeadb71572bdd62849e459d0780456ed`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `da0ef8af0955ae37368fc1a8ad9c7431fb7c89d1eeb964be621b5dce4d358a2c`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `dd116879f46b3132b750e05695200ffa05a539d3a27d0fbbfaa9606cf21e9127`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `e18ebe631614ba9dbb1ebeb4eb383a4054dd865328e97573253389ccfceecd20`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `ebf020791d1c43d9707b639483eebf734910fed212aa69e0f62f0965704ea06b`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `0b620cf9b6c305e072112d4c7b449983237a82218e1164b433340e12920300a0`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `15f37fb6f8b3a21962c4b1bdab98e1413ff15df2d4379fc8f013a16a898e1ca2`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `1b56bce748713445ac39acd0888cac8a993f6d941e3e3876cca9f68c5e232b92`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `1d73a376f7b5cd04cc95ae04bcd1ccee962c68e1e04b87853219a6d713a626c2`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `3c74aa30f9eeb68a793e2c116732a7032df60973c6bacfc0d0d22138a8351df6`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `4c1a4677467cb5666c0c8962a8c3d2f59154d300badfeba41f969bbfefc4a77f`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `508d78c04107f9e32751101177e30213357c2143f73aac991c4dfad7db80dd92`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `5706288a9f16b3855da6e59a56b13bf02486af738f5252946b6a838b090ae7a9`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `676eb10015149674c81add84d5ec4f13618f3be130cfc1006d7bcc6540a03fa6`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `94dbabf5153e6c88778d8239c1f9b10c240afadfe857ee68e9b08be6532ca518`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `a8326eacbe464d251d899eceef0e4520a40ac4d6bbcf2e5850f482c79988d121`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `b0377f0242f15649d3e202191f1e75aae776d24f6ca8443ce1d787ab514a2731`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `d50dd262e05813f14d6bdce9176afcb1a2182df3863853edf3b000af94dab356`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `e4d8fb2566eea9a3782ba2b69ede09f130d7318a9122f3d40bb5c3849f853b3d`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `fd491f6dfddc306969f87b2dc024acdbd956f7c4497996477d38053c0f8f3767`
+### Release Attempts
+
+#### RA-20260814-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260814-002`
+- Selected CRL identities: `root/CRL-20260814-002`
+- Intended action: `commit`
+- Branch: `codex/governance-ledger-gates-20260814`
+- Base: `origin/Dev@daef663ce0cd77fad5b6a1e8b1b609b6d6d21fb1`; fetched at `2026-08-14 AEST`
+- Candidate patch SHA-256: `4bdfbb32ccfbcbd0477fe9095ef55f8619b5e30b47652ac61b4a382cb2b630d9` excluding `docs/change-release-ledger.md`
+- Commit SHA: `not committed`; audit head is emitted by the report command
+- Dependencies: `mobile/CRL-20260814-003` is parallel governance only; no cross-repository content dependency.
+- Required validation: focused audit suite, Skill validation, feature registry check, diff check and exact pre-commit gate passed.
+- Shared-hunk review: PASS — 50 declared non-ledger hunks plus the selected CRL ledger section.
+- Generated-file review: not applicable.
+- Technical state: `verified`
+- User authorization: `selected-for-commit` — user said “就这样做吧”.
+- Independent review: `GO` — 2026-08-14 fresh independent read-only pre-commit review found no P0/P1.
+- Action conclusion: `GO` — commit only; push, PR, merge and deployment remain separate actions.
+
+### Risks / Release Notes
+
+- Risk: this gate intentionally cannot prove or classify frozen historical working-tree deltas; a later business recovery needs a new CRL and fresh hunk extraction.
+- Rollback: revert only this governance CRL's commits; no runtime data or client state needs rollback.
+- Sensitive-information review: no secrets, credentials, tokens, `.env` values, private URLs, caches, logs or production data are added.
+- Git state: clean worktree candidate on `origin/Dev@daef663ce0cd77fad5b6a1e8b1b609b6d6d21fb1`; not committed, not pushed, no PR, not deployed, no device verification.
+
 ## CRL-20260804-009 — 入住新密码回填退房旧密码的历史字段兼容
 
 - **Status:** ready
