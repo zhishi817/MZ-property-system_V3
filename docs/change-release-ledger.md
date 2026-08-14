@@ -16658,12 +16658,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Base: `origin/Dev@daef663ce0cd77fad5b6a1e8b1b609b6d6d21fb1`; fetched at `2026-08-14 AEST`
 - Candidate patch SHA-256: `4bdfbb32ccfbcbd0477fe9095ef55f8619b5e30b47652ac61b4a382cb2b630d9` excluding `docs/change-release-ledger.md`
 - Commit SHA: `4f95e6f9e8fbde5dcdb6fb4e7c5d4dd70deec172`; content commit for this selected CRL
-- Remote branch: `origin/codex/governance-ledger-gates-20260814@4f84d9992fbd74c901e46271745b5c6c3b2b3dc0`; initial push succeeded on 2026-08-14.
 - Dependencies: `mobile/CRL-20260814-003` is parallel governance only; no cross-repository content dependency.
 - Required validation: `PASS` — focused audit suite, Skill validation, feature registry check, diff check and exact pre-commit gate passed.
 - Shared-hunk review: PASS — 50 declared non-ledger hunks plus the selected CRL ledger section.
 - Generated-file review: not applicable.
-- Technical state: `pushed`
+- Technical state: `committed`
 - User authorization: `selected-for-commit` — user said “就这样做吧”.
 - Independent review: `GO` — 2026-08-14 fresh independent read-only pre-commit review found no P0/P1.
 - Action conclusion: `GO` — commit only; push, PR, merge and deployment remain separate actions.
@@ -16678,11 +16677,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Base: `origin/Dev@daef663ce0cd77fad5b6a1e8b1b609b6d6d21fb1`; fetched at `2026-08-14 22:34 AEST`
 - Candidate patch SHA-256: `4bdfbb32ccfbcbd0477fe9095ef55f8619b5e30b47652ac61b4a382cb2b630d9` excluding `docs/change-release-ledger.md`
 - Commit SHA: `4f95e6f9e8fbde5dcdb6fb4e7c5d4dd70deec172`; content commit for this selected CRL
+- Remote branch: `origin/codex/governance-ledger-gates-20260814@4f84d9992fbd74c901e46271745b5c6c3b2b3dc0`; initial push succeeded on 2026-08-14.
 - Dependencies: `mobile/CRL-20260814-003` is parallel governance only; no cross-repository content dependency.
 - Required validation: `PASS` — focused audit suite, Skill validation, feature registry check, diff check and exact range audit passed.
 - Shared-hunk review: `PASS` — 50 declared non-ledger hunks plus the selected CRL ledger section.
 - Generated-file review: not applicable.
-- Technical state: `committed`
+- Technical state: `pushed`
 - User authorization: `approved-for-push` — user said “推送” after receiving the exact Root branch and current HEAD `c1b43545c0fb6dd233ae78a05f6b0dcfdc6cbe7b`.
 - Independent review: `GO` — 2026-08-14 fresh independent read-only pre-commit review found no P0/P1.
 - Action conclusion: `GO` — pushed to the authorized branch; PR, merge and deployment remain separate actions.
