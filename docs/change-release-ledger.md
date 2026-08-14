@@ -16659,7 +16659,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Candidate patch SHA-256: `4bdfbb32ccfbcbd0477fe9095ef55f8619b5e30b47652ac61b4a382cb2b630d9` excluding `docs/change-release-ledger.md`
 - Commit SHA: `4f95e6f9e8fbde5dcdb6fb4e7c5d4dd70deec172`; content commit for this selected CRL
 - Dependencies: `mobile/CRL-20260814-003` is parallel governance only; no cross-repository content dependency.
-- Required validation: focused audit suite, Skill validation, feature registry check, diff check and exact pre-commit gate passed.
+- Required validation: `PASS` — focused audit suite, Skill validation, feature registry check, diff check and exact pre-commit gate passed.
 - Shared-hunk review: PASS — 50 declared non-ledger hunks plus the selected CRL ledger section.
 - Generated-file review: not applicable.
 - Technical state: `committed`
