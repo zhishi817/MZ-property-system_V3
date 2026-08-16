@@ -1,13 +1,14 @@
-import { inferYearByDelta } from '../src/modules/jobs'
+import { inferAirbnbEmailDate } from '../src/modules/jobs'
 
 const cases = [
-  { baseYear: 2026, baseMonth: 1, parsedMonth: 4, expect: 2026 },
-  { baseYear: 2025, baseMonth: 12, parsedMonth: 1, expect: 2026 },
-  { baseYear: 2026, baseMonth: 11, parsedMonth: 1, expect: 2027 },
-  { baseYear: 2026, baseMonth: 1, parsedMonth: 12, expect: 2025 },
+  { header: '2026-01-10T00:00:00Z', month: 4, day: 2, expect: '2026-04-02' },
+  { header: '2025-12-15T00:00:00Z', month: 1, day: 2, expect: '2026-01-02' },
+  { header: '2026-11-10T00:00:00Z', month: 1, day: 2, expect: '2027-01-02' },
+  { header: '2026-01-10T00:00:00Z', month: 12, day: 2, expect: '2026-12-02' },
 ]
 
 for (const c of cases) {
-  const y = inferYearByDelta(c.baseYear, c.baseMonth, c.parsedMonth)
-  console.log(JSON.stringify({ base: `${c.baseYear}-${String(c.baseMonth).padStart(2,'0')}`, parsedMonth: c.parsedMonth, result: y, expect: c.expect }))
+  const date = inferAirbnbEmailDate(new Date(c.header), c.month, c.day).date
+  if (date !== c.expect) throw new Error(`expected ${c.expect}, got ${date}`)
+  console.log(JSON.stringify({ header: c.header, month: c.month, day: c.day, result: date, expect: c.expect }))
 }
