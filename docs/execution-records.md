@@ -457,3 +457,53 @@
 ### Open Issues / Follow-ups
 
 - 未做 Android/iOS 真机、EAS 构建、真实弱网与真实对象存储/接口验证；上线前建议用自完成周转任务实测“断网拍摄 → 重进 → 联网 → 仅业务保存重试”。
+
+## Airbnb 邮件订单缺失年份跨年解析与受控修复
+
+- Date: 2026-08-16
+- Task: 修复 Airbnb 邮件在日期文本不带年份时，把次年预订写成邮件当年的问题；提供历史数据的受控修复工具。
+- Status: partially implemented
+
+### Confirmed Plan
+
+- 只改后端 Airbnb 邮件日期解析、对应回归测试、历史数据受控工具和必要的防复发文档；不改管理端页面的日期渲染。
+- 以 `Australia/Melbourne` 邮件头日历日为基准：无年份日期严格早于邮件当天时取下一年；显式四位年份优先；无效日期拒绝。
+- 历史修复默认只读。任何写入都须固定候选数、确认住晚一致性/任务锁定/日期冲突，并只更新订单后投递现有清洁同步队列。
+
+### Implementation Result
+
+- 替换月份差值猜测为日期级、时区固定的解析函数，并让 HTML 解析同时接受可选的显式年份。
+- 缺失年份的成功解析会标记 `year_inferred=true`，保留既有原始日期文本字段用于追踪。
+- 月份猜测型旧修复脚本已 fail-closed；新增的受控工具默认 `BEGIN TRANSACTION READ ONLY`，应用模式还要求明确环境确认、精确候选数和清洁队列确认参数。
+- 生产只读预检识别到 20 笔高置信候选；住晚异常、闰日滚动异常、已锁任务和目标日期冲突均为 0。未输出客户、确认码或连接信息，也未写生产数据。
+
+### Validation
+
+- Clean-candidate validation pending.
+
+### Files / Areas
+
+- `backend/src/modules/jobs.ts`
+- `backend/scripts/test_email_year_rule.ts`
+- `backend/scripts/test_infer_year.ts`
+- `backend/scripts/repair_airbnb_email_year_rollover.ts`
+- `backend/scripts/fix_email_year_v3.ts`
+- `backend/scripts/fix_email_orders_year_v2.ts`
+- `docs/feature-regression-registry.md`
+- `docs/change-release-ledger.md`
+- `docs/execution-records.md`
+
+### Open Issues / Follow-ups
+
+- 生产数据修复只可在部署后重新只读预检、用户明确批准精确写入动作，并复核 20 个同步任务队列全部完成后执行。
+
+### Update - 2026-08-16 23:16 AEST
+
+- Status: partially implemented
+- Implementation Result:
+  - Clean candidate created from `origin/Dev@9a5149166ac5c372383a76ca2800b4d54679650d`; no mixed-worktree files were selected.
+- Validation:
+  - Date regressions, legacy helper check, repair-tool help, no-emit TypeScript, redirected backend build, Registry audit, Ledger audit, diff check and production read-only preflight passed.
+  - The candidate has not been independently reviewed, committed, pushed, deployed, or applied to production data.
+- Open Issues / Follow-ups:
+  - Complete the independent release review and exact staged-scope audit before a content commit.
