@@ -16639,12 +16639,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Branch: `codex/airbnb-email-year-rollover-20260816`
 - Base: `origin/Dev@9a5149166ac5c372383a76ca2800b4d54679650d`; fetched at `2026-08-16 23:12 AEST`
 - Candidate patch SHA-256: `9c47bb70546b7c579864cb4dfac51ee0ebacabc93463d7281628a191ad9960fc` excluding `docs/change-release-ledger.md`
-- Commit SHA: not committed
+- Commit SHA: `2644e581f5fadca01369a574722275fb092fd18f`
 - Dependencies: none
 - Required validation: `PASS`; evidence: focused date regressions, helper check, repair-tool help, no-emit TypeScript, redirected backend build, Registry audit, Ledger coverage audit, diff check, and production read-only preflight passed.
 - Shared-hunk review: `PASS`; evidence: clean candidate contains only this CRL; all 24 non-ledger staged hunks are listed in the selected scope and local pre-commit gate passed.
 - Generated-file review: `not applicable`; evidence: no generated file is selected.
-- Technical state: `verified`; evidence: selected candidate passed the local pre-commit gate and independent review for the commit action.
+- Technical state: `committed`; evidence: content commit `2644e581f5fadca01369a574722275fb092fd18f` is a descendant of the recorded `origin/Dev` base and contains the reviewed candidate.
 - User authorization: `selected-for-commit`; evidence: user confirmed this single root CRL on 2026-08-16.
 - Independent review: `GO`; evidence: independent read-only review of the final staged 9-file / 24-hunk candidate, `origin/Dev@9a5149166ac5c372383a76ca2800b4d54679650d`, and non-ledger patch `9c47bb70546b7c579864cb4dfac51ee0ebacabc93463d7281628a191ad9960fc` found no P0/P1/P2, generated-file, secret, or production-write finding. Its GO is for commit only.
 - Action conclusion: `GO`; blockers: none for the selected commit action.
