@@ -16649,6 +16649,25 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Independent review: `GO`; evidence: independent read-only review of the final staged 9-file / 24-hunk candidate, `origin/Dev@9a5149166ac5c372383a76ca2800b4d54679650d`, and non-ledger patch `9c47bb70546b7c579864cb4dfac51ee0ebacabc93463d7281628a191ad9960fc` found no P0/P1/P2, generated-file, secret, or production-write finding. Its GO is for commit only.
 - Action conclusion: `GO`; blockers: none for the selected commit action.
 
+#### RA-20260816-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260816-001`
+- Selected CRL identities: `root/CRL-20260816-001`
+- Intended action: `push`
+- Branch: `codex/airbnb-email-year-rollover-20260816`
+- Base: `origin/Dev@9a5149166ac5c372383a76ca2800b4d54679650d`; fetched at `2026-08-16 23:32 AEST`
+- Candidate patch SHA-256: `9c47bb70546b7c579864cb4dfac51ee0ebacabc93463d7281628a191ad9960fc` excluding `docs/change-release-ledger.md`
+- Commit SHA: `2644e581f5fadca01369a574722275fb092fd18f`
+- Dependencies: none
+- Required validation: `PASS`; evidence: refreshed `origin/Dev` still equals the recorded base and the exact `base...8e28102be76a8ed9beecce22d33100655dd3df3b` range audit passed before this push-attempt receipt.
+- Shared-hunk review: `PASS`; evidence: exact committed range has the same 24 non-ledger scoped hunks reviewed for the content commit.
+- Generated-file review: `not applicable`; evidence: exact committed range has no generated files.
+- Technical state: `committed`; evidence: the candidate content commit is present on the clean local release branch; remote feature branch state has not been asserted.
+- User authorization: `approved-for-push`; evidence: user replied `推送` on 2026-08-16 after being shown this root branch and its exact committed release range.
+- Independent review: `GO`; evidence: independent read-only push-range review rechecked the proposed receipt and the exact committed content range against `origin/Dev@9a5149166ac5c372383a76ca2800b4d54679650d`; it found no scope, hunk, generated-file, sensitive-information, or production-write finding. The prior `refreshed at` wording was corrected to the required `fetched at` evidence form before staging.
+- Action conclusion: `GO`; blockers: none for the authorized push action, pending the post-receipt exact range audit.
+
 ### Risks / Release Notes
 
 - Runtime risk: a replay/archive email without a year is intentionally interpreted as the next occurrence after its header date; records that carry an explicit four-digit year bypass this inference.
