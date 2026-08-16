@@ -16553,6 +16553,110 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
 - Git state: implementation pushed to nested mobile `Dev` in commit `0ef9c51`; this root ledger status update is recorded separately.
 
+## CRL-20260816-001 — Airbnb 邮件订单缺失年份跨年解析与受控修复（root）
+
+- **Status:** ready (verified release candidate; not committed)
+- **Repository:** `root`
+- **Updated:** 2026-08-16 23:12 AEST
+- **Request:** 修复 Airbnb 邮件订单日期文本未带年份时被解析为邮件当年、导致次年预订在后台显示为当年的问题；核对同类订单并提供可审计的受控数据修复路径。
+- **Outcome:** 解析器改为以邮件头的 Australia/Melbourne 日历日为基准：无显式年份的日期若严格早于邮件当天则取下一年，否则保留邮件年份；显式年份始终优先。受控脚本默认只读，并在应用前固定候选数、检查住晚/已锁定任务/日期冲突；应用时只更新订单并投递既有清洁同步队列，不直接修改 `cleaning_tasks`。
+
+### Implementation
+
+- Previous behavior: `inferYearByDelta()` 只对年末到年初的少数月份做偏移，8 月收到的次年 2 月预订会被固定为当年 2 月；解析结果已在写入订单前出错。
+- New behavior: `inferAirbnbEmailDate()` 校验真实日历日期，支持可选显式四位年份，并按邮件当地日历日计算下一次日期。`extractFieldsFromHtml()` 同时保存原始日期文本并在无年份成功解析时标记 `year_inferred=true`。
+- Key decisions: 不更改管理端日期渲染，因为它正确显示数据库值；不执行手工清洁任务更新。旧的、依赖月份猜测的修复脚本改为 fail-closed，避免再次写入错误年份。
+
+### Files / Areas
+
+- `backend/src/modules/jobs.ts` — Airbnb 邮件日期解析规则、显式年份支持和缺失年份标记。
+- `backend/scripts/test_email_year_rule.ts` — 事故场景、同日、跨年、闰日、无效日期和显式年份回归。
+- `backend/scripts/test_infer_year.ts` — 遗留解析检查改用新规则。
+- `backend/scripts/repair_airbnb_email_year_rollover.ts` — 默认只读、可固定候选数的订单修复与清洁同步队列投递工具。
+- `backend/scripts/fix_email_year_v3.ts` — 已弃用且 fail-closed。
+- `backend/scripts/fix_email_orders_year_v2.ts` — 已弃用且 fail-closed。
+- `docs/feature-regression-registry.md` — FR-014 保护规则与验证映射。
+- `docs/execution-records.md` — 本次执行范围、证据和未执行的生产动作。
+- `docs/change-release-ledger.md` — 本 CRL 和发布尝试。
+
+### Impact / Dependencies
+
+- API / UI: API 字段与管理端 UI 不变；管理端将在服务器存储正确后显示正确日期。
+- Database / migration: no schema migration. 受控脚本只在明确 apply 参数、环境确认和前置校验均通过时更新既有订单，并投递已有 `cleaning_sync_jobs`。
+- Production data: read-only preflight identified 20 high-confidence candidates; all had matching stay lengths, no leap-day rollover mismatch, no locked active task, and no target-date collision. No production write has occurred.
+- Dependencies: existing `cleaning_sync_jobs` worker must be healthy before any approved apply action is considered complete.
+
+### Validation
+
+- `test_email_year_rule.ts` in `backend` — passed: incident date resolves to the following February year; same-day, forward date, year boundary, leap-day, invalid date and explicit-year cases passed.
+- `test_infer_year.ts` in `backend` — passed.
+- `repair_airbnb_email_year_rollover.ts --help` in `backend` — passed; default mode and apply safeguards documented.
+- `tsc -p . --noEmit` in `backend` — passed using the existing local dependency runtime.
+- `npm run build -- --outDir /private/tmp/mz-airbnb-email-year-build-20260816` in `backend` — passed; generated output was intentionally kept outside the candidate worktree.
+- `repair_airbnb_email_year_rollover.ts` against the provided production connection — read-only preflight passed: 20 candidates, 0 nights mismatches, 0 leap-day rollover mismatches, 0 locked tasks, 0 date collisions.
+- `python3 scripts/audit_feature_regression_registry.py` — passed: 11 FRs / 127 test mappings; 69 mobile mappings deferred by the baseline audit.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 9 changed files / 9 recorded.
+- `git diff --check` — passed.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared in clean release worktree.
+- **Untracked review:** none.
+- `backend/scripts/fix_email_orders_year_v2.ts` — SHA-256: `8e010f3ab9e4e74010f3a84efae40774466d1b32ddc76139175be01d36f41724`
+- `backend/scripts/fix_email_year_v3.ts` — SHA-256: `d1ec816175a9169e66edfcf2fa92e7753ef338678fcd5072895cba61f6b16163`
+- `backend/scripts/repair_airbnb_email_year_rollover.ts` — SHA-256: `c199cd811c428940a899f7d96b8937c36c31be28e37f54bb964cfa22f7ec81f5`
+- `backend/scripts/test_email_year_rule.ts` — SHA-256: `112f5fdd5013c6054dbb6e9f376bedd30f4b9a9f524bfdaabcebce8740ea335c`
+- `backend/scripts/test_email_year_rule.ts` — SHA-256: `063d4858a7f516a9115c0087c0c32c58d6241a114d58f5c501a6ca171b96ac50`
+- `backend/scripts/test_email_year_rule.ts` — SHA-256: `55aeea25a65ca1237eee38b4d9afffea2063eca582c5ae2cd3678cc0711cbaa7`
+- `backend/scripts/test_email_year_rule.ts` — SHA-256: `68bc411d9980065aca64ee85f7039a8105942a364a4a4bfa9e676531335dfc4e`
+- `backend/scripts/test_email_year_rule.ts` — SHA-256: `6f8e15db83c7b1c94d476977203d2cbdd2bf1f63a2582420d22c14fb872108b0`
+- `backend/scripts/test_email_year_rule.ts` — SHA-256: `7ae90fa0aeb195eafb225bccc3cda2aa6aa28b0df7243ff803e8ff08e59965ac`
+- `backend/scripts/test_email_year_rule.ts` — SHA-256: `7cac4480374535f4345d529e80ee4122eac7de0d98a27656fd2dcba1a3cd67f5`
+- `backend/scripts/test_email_year_rule.ts` — SHA-256: `cbf7261c18b4e45431b2113abbf9c321c89e7f3156b81700dca853dc67e83325`
+- `backend/scripts/test_infer_year.ts` — SHA-256: `1fae1079edbe7322bc2abfabeca918ee05995dc64080cd3ab8292a70fd9aa8f1`
+- `backend/scripts/test_infer_year.ts` — SHA-256: `2ccf333dbe6bf98ca10d5bd2827588c91ca988513132f021a1d34acf93307e4e`
+- `backend/scripts/test_infer_year.ts` — SHA-256: `a169df625d1fd1b7bdd5cef5c4a950ce0107e65fd13fb995fd1c50a030d56304`
+- `backend/src/modules/jobs.ts` — SHA-256: `103826d13c4c560b7d97f0c2ba629c31b303356a4eaed013242114b7d8302c59`
+- `backend/src/modules/jobs.ts` — SHA-256: `1bf1aaf88e0f3ef0b290a56aa9e8bb8b90cef0ae7ae1de386418a36b8afd7798`
+- `backend/src/modules/jobs.ts` — SHA-256: `507c9d5e51061590a19294a46580dfe40b99112aaf011b656217bc520488bf94`
+- `backend/src/modules/jobs.ts` — SHA-256: `6b648c3e915d0557a9730bd132d096eeff82c58db0baed16cff3f4b1cf027986`
+- `backend/src/modules/jobs.ts` — SHA-256: `779762c4b694641aa871d9073117f3b048f49c66b56dc60719ace2c54200d2ee`
+- `backend/src/modules/jobs.ts` — SHA-256: `795caa851475773158af111b97ef9dc1a88d8ae3ed68bd1754e0d8e9fdbbb73e`
+- `backend/src/modules/jobs.ts` — SHA-256: `99a76cc1c399f19347004c227173ca9c45bd79699038031c104cae90812c0d25`
+- `backend/src/modules/jobs.ts` — SHA-256: `e60b6841238c3f8d31c861b9ff296433bd2a79da7e00f1e8584c1311339fb21c`
+- `docs/execution-records.md` — SHA-256: `bcda1b45d7cd532cf7d27872c4509484feee80d31d890764a68bf28538450fbd`
+- `docs/feature-regression-registry.md` — SHA-256: `c1f377c0a060cedf1957ae438a8a9f06821f34928741c57a6b3ac1f9976521e0`
+
+### Release Attempts
+
+#### RA-20260816-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260816-001`
+- Selected CRL identities: `root/CRL-20260816-001`
+- Intended action: `commit`
+- Branch: `codex/airbnb-email-year-rollover-20260816`
+- Base: `origin/Dev@9a5149166ac5c372383a76ca2800b4d54679650d`; fetched at `2026-08-16 23:12 AEST`
+- Candidate patch SHA-256: `9c47bb70546b7c579864cb4dfac51ee0ebacabc93463d7281628a191ad9960fc` excluding `docs/change-release-ledger.md`
+- Commit SHA: not committed
+- Dependencies: none
+- Required validation: `PASS`; evidence: focused date regressions, helper check, repair-tool help, no-emit TypeScript, redirected backend build, Registry audit, Ledger coverage audit, diff check, and production read-only preflight passed.
+- Shared-hunk review: `PASS`; evidence: clean candidate contains only this CRL; all 24 non-ledger staged hunks are listed in the selected scope and local pre-commit gate passed.
+- Generated-file review: `not applicable`; evidence: no generated file is selected.
+- Technical state: `verified`; evidence: selected candidate passed the local pre-commit gate and independent review for the commit action.
+- User authorization: `selected-for-commit`; evidence: user confirmed this single root CRL on 2026-08-16.
+- Independent review: `GO`; evidence: independent read-only review of the final staged 9-file / 24-hunk candidate, `origin/Dev@9a5149166ac5c372383a76ca2800b4d54679650d`, and non-ledger patch `9c47bb70546b7c579864cb4dfac51ee0ebacabc93463d7281628a191ad9960fc` found no P0/P1/P2, generated-file, secret, or production-write finding. Its GO is for commit only.
+- Action conclusion: `GO`; blockers: none for the selected commit action.
+
+### Risks / Release Notes
+
+- Runtime risk: a replay/archive email without a year is intentionally interpreted as the next occurrence after its header date; records that carry an explicit four-digit year bypass this inference.
+- Production-repair risk: before any apply, re-run the exact dry-run against the deployed source, require the expected count to remain 20, and verify queued jobs finish before treating task dates as corrected.
+- Rollback: revert the parser/test changes from a clean candidate. For an approved data repair, record the before-state export from the controlled operation; never re-enable the deprecated month-only scripts.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, customer names, confirmation codes, or sensitive logs were added.
+- Git state: clean release candidate branch based on recorded `origin/Dev`; not committed, pushed, merged, deployed, or applied to production data.
+
 ## CRL-20260814-003 — P1-NTF-01 Legacy Recovery：当天临时通知私有照片认证读取（root）
 
 - **Repository:** `root`

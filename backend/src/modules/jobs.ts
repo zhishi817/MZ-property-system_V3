@@ -23,14 +23,29 @@ export function ymdInTz(d: Date, tz: string): { year: number; month: number; day
   return { year: get('year'), month: get('month'), day: get('day') }
 }
 
-export function inferYearByDelta(baseYear: number, baseMonth: number, parsedMonth: number): number {
-  const bm = Number(baseMonth)
-  const pm = Number(parsedMonth)
-  if (bm === 12 && (pm === 1 || pm === 2)) return baseYear + 1
-  if (bm === 11 && pm === 1) return baseYear + 1
-  if (bm === 1 && (pm === 12 || pm === 11)) return baseYear - 1
-  if (bm === 2 && pm === 12) return baseYear - 1
-  return baseYear
+function validDateOnly(year: number, month: number, day: number): string | undefined {
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day) || month < 1 || month > 12 || day < 1) return undefined
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate()
+  if (day > lastDay) return undefined
+  return toDateOnly(year, month, day)
+}
+
+function dayKey(year: number, month: number, day: number): number {
+  return year * 10000 + month * 100 + day
+}
+
+export function inferAirbnbEmailDate(headerDate: Date, month: number, day: number, explicitYear?: number): { date?: string; yearInferred: boolean } {
+  if (isNaN(headerDate.getTime())) return { yearInferred: false }
+  if (explicitYear != null) return { date: validDateOnly(explicitYear, month, day), yearInferred: false }
+
+  const header = ymdInTz(headerDate, 'Australia/Melbourne')
+  let year = header.year
+  let date = validDateOnly(year, month, day)
+  if (!date || dayKey(year, month, day) < dayKey(header.year, header.month, header.day)) {
+    year += 1
+    date = validDateOnly(year, month, day)
+  }
+  return { date, yearInferred: !!date }
 }
 
 async function withAdvisoryLock<T>(key1: number, key2: number, fn: (dbClient: PoolClient) => Promise<T>): Promise<T> {
@@ -497,9 +512,6 @@ export function extractFieldsFromHtml(html: string, headerDate: Date): {
   const cheerio = require('cheerio')
   const $ = cheerio.load(html || '')
   const bodyText = normalizeText(($('body').text() || ''))
-  const mel = ymdInTz(headerDate, 'Australia/Melbourne')
-  const baseYear = mel.year
-  const baseMonth = mel.month
   let confirmation_code: string | undefined
   let guest_name: string | undefined
   let listing_name: string | undefined
@@ -510,7 +522,7 @@ export function extractFieldsFromHtml(html: string, headerDate: Date): {
   let cleaning_fee: number | undefined
   let raw_checkin_text: string | undefined
   let raw_checkout_text: string | undefined
-  let year_inferred: boolean | undefined
+  let year_inferred = false
   function pickCodeCandidates(): string[] {
     const list: string[] = []
     $('p, div, td, span').each((_i: number, el: any) => {
@@ -582,6 +594,11 @@ export function extractFieldsFromHtml(html: string, headerDate: Date): {
     if (firstGood) listing_name = firstGood
   }
   if (listing_name) listing_name = cleanListingName(listing_name)
+  function parseEmailDate(month: number, day: number, explicitYear?: number): { date?: string; yearInferred: boolean } {
+    const parsed = inferAirbnbEmailDate(headerDate, month, day, explicitYear)
+    if (parsed.yearInferred) year_inferred = true
+    return parsed
+  }
   function pickDateFlexible(kind: 'checkin' | 'checkout'): { date?: string; raw?: string } {
     const labelRe = kind === 'checkin' ? /check\s*[--–—]?\s*in/i : /check\s*[--–—]?\s*out/i
     const idx = bodyText.search(labelRe)
@@ -591,14 +608,14 @@ export function extractFieldsFromHtml(html: string, headerDate: Date): {
       ? /(check\s*[--–—]?\s*in)(Sun|Mon|Tue|Wed|Thu|Fri|Sat)/i
       : /(check\s*[--–—]?\s*out)(Sun|Mon|Tue|Wed|Thu|Fri|Sat)/i
     const window = windowRaw.replace(joinFix, '$1 $2')
-    const dayRe = /\b(Sun|Mon|Tue|Wed|Thu|Fri|Sat|Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday),?\s*(\d{1,2})\s+([A-Za-z]{3,9})/i
+    const dayRe = /\b(Sun|Mon|Tue|Wed|Thu|Fri|Sat|Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday),?\s*(\d{1,2})\s+([A-Za-z]{3,9})(?:,?\s+(\d{4}))?/i
     const m = dayRe.exec(window)
     if (!m) return {}
     const day = Number(m[2])
     const mon = parseMonthStr(m[3] || '') || 0
     if (!mon || !day) return {}
-    const y = inferYearByDelta(baseYear, baseMonth, mon)
-    return { date: toDateOnly(y, mon, day), raw: normalizeText(m[0] || '') }
+    const parsed = parseEmailDate(mon, day, m[4] ? Number(m[4]) : undefined)
+    return { date: parsed.date, raw: normalizeText(m[0] || '') }
   }
   {
     const r = pickDateFlexible('checkin')
@@ -614,13 +631,13 @@ export function extractFieldsFromHtml(html: string, headerDate: Date): {
     $('p.heading2, h2.heading2, .heading2').each((_i: number, el: any) => {
       const t = normalizeText($(el).text() || '')
       if (!t) return
-      const m = /([A-Za-z]{3,9}),?\s*(\d{1,2})\s+([A-Za-z]{3,9})/i.exec(t)
+      const m = /([A-Za-z]{3,9]),?\s*(\d{1,2})\s+([A-Za-z]{3,9})(?:,?\s+(\d{4}))?/i.exec(t)
       if (!m) return
       const day = Number(m[2])
       const mon = parseMonthStr(m[3] || '') || 0
       if (!mon || !day) return
-      const y = inferYearByDelta(baseYear, baseMonth, mon)
-      out.push({ date: toDateOnly(y, mon, day), raw: normalizeText(m[0] || '') })
+      const parsed = parseEmailDate(mon, day, m[4] ? Number(m[4]) : undefined)
+      if (parsed.date) out.push({ date: parsed.date, raw: normalizeText(m[0] || '') })
     })
     return out
   }
