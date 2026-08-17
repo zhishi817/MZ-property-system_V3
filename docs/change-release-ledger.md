@@ -78,7 +78,8 @@
 - Required validation: PASS; evidence: prior exact range report, clean-candidate FR registry audit and scoped diff check, plus paired clean-candidate 11-test screen regression.
 - Shared-hunk review: PASS; evidence: the exact range contains only declared FR-004 hunks and ledger receipts; no unselected content hunk is present.
 - Generated-file review: not applicable; no generated path is in the exact range.
-- Technical state: `committed`
+- Technical state: `pushed`
+- Remote push evidence: `origin/codex/hang-key-video-20260817` accepted the exact audited head `4f92497cb6f7ccbce2bb11eddcae752b8f0de3e8` at `2026-08-17 17:15:25 AEST`.
 - User authorization: `approved-for-push`; evidence: after the exact root/mobile branch and commit SHAs were reported, the user instructed “推送” on 2026-08-17.
 - Independent review: GO; evidence: independent read-only final push review rechecked the refetched base, exact range, candidate content commit, fingerprint, scope, validation and sensitive/generated-file evidence; it approved only this branch push.
 - Action conclusion: GO; blockers: none for the authorized branch push after the final exact range report passes.
