@@ -205,7 +205,7 @@
 ## FR-004：检查、自完成、补品和挂钥匙流程
 
 - **维护责任范围：** backend / mobile
-- **最后审查日期：** 2026-08-12
+- **最后审查日期：** 2026-08-17
 - **状态：** active
 
 ### 业务保护规则
@@ -222,6 +222,7 @@
 - 当天任务临时通知照片必须精确关联一条 `guest_luggage_notices.photo_urls` 记录，并携带相同的 `guest_luggage_id` 用于缩略图和原图预览；只有当日对应房源的活跃清洁/检查执行人或既有管理查看角色可读取，缺少上下文、未关联、歧义或跨来源冲突一律拒绝。
 - 当天任务临时通知刚上传但尚未保存关联的照片，只能用该次选图的本地 URI 预览；不得请求认证代理或把未关联对象伪装成已保存。保存成功后才清除本地预览并以返回通知 ID 读取已登记引用；保存失败时必须保留本地 URI 与远端引用以便重试。
 - 上传队列成功回调后，页面仍可能使用本地 `file://` 引用；在页面切换到远端媒体引用前不得立即删除本地副本，已同步孤儿文件交给既有延迟清理机制处理。
+- 挂钥匙页收到后台检查队列事件时只能静默同步当前校验结果，不能重置为阻塞“校验中”；重拍必须先成功持久化新的本地队列项，才能清理旧的未同步视频。
 - 钥匙照片被删除后，钥匙照片上传动作必须恢复可用，不得因为补品已提交、清洁状态已进入完成态或共享任务状态已推进而阻止重新上传；钥匙照片仍存在时继续保持已记录状态。
 - 补品提交完成后的钥匙重传不得把 `done`、`cleaned`、`restock_pending`、检查中间态或其他已推进状态覆盖为 `in_progress`；钥匙上传事件必须增量合并，不能用不完整任务刷新覆盖已保存的补品消耗照片。
 - 正式检查与补充已成功保存到服务器后，只允许从相册追加新的“清洁问题反馈”；已提交的检查、补货和问题照片必须保持只读，追加问题不得替换历史媒体或再次推进任务状态。
@@ -258,6 +259,7 @@
 | 浴室整体照片与必拍校验 | `mz-cleaning-app-frontend/src/lib/inspectionPanelSubmitQueue.test.ts` | 其他区域已有照片但浴室为空时，提交被拒绝并提示浴室照片 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand src/lib/inspectionPanelSubmitQueue.test.ts` |
 | 自完成补货结果、房号确认和完成照片区域 | `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.test.tsx` | 自完成页显示“现场够用/已补充/下次退房补”；已补充必须有凭证，空白项目和误存的 `ok` + 空补货结果都不伪装为已选择；未结束任务先确认房号，已结束任务直接查看；客厅/沙发/卧室/厨房显示指定拍摄提示；电视和空调遥控器合为一个必拍位且只保留一张，旧遥控器区域兼容显示；本地大图显示水印并使用全屏预览 | partial | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tasks/CleaningSelfCompleteScreen.test.tsx` |
 | 自完成挂钥匙视频弱网恢复与普通检查前置隔离 | `mz-cleaning-app-frontend/src/lib/inspectionMediaQueue.test.ts` | 自完成视频使用同一私有队列和自完成业务路由；业务保存失败不误报已同步；普通检查仍受前置阻断，自完成视频不要求普通检查补品/房源照片；两条路由事务保存动作、媒体和时间 | partial | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/inspectionMediaQueue.test.ts src/screens/tasks/CleaningSelfCompleteScreen.test.tsx && npm run test:cleaning-task-transition-guard --prefix backend && npm run test:idempotency-submit-id-contract --prefix backend` |
+| 挂钥匙视频静默刷新与重拍本地保留 | `mz-cleaning-app-frontend/src/screens/tasks/InspectionCompleteScreen.test.tsx` | 全局检查队列事件不会把已打开的完成页切回阻塞校验；新视频本地入队失败时保留旧的待上传视频，入队成功后才清理旧副本 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tasks/InspectionCompleteScreen.test.tsx` |
 | 管理详情自完成完成照片关联与部分失败展示 | `mz-cleaning-app-frontend/src/screens/tasks/ManagerDailyTaskScreen.test.ts` | active source、`cleaning_task_ids`、旧来源 ID 均进入完成照片读取；一个关联任务失败时成功照片继续保留并去重 | partial | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tasks/ManagerDailyTaskScreen.test.ts` |
 | 自完成完成照片跨层区域一致性 | `backend/scripts/tests/test_idempotency_submit_id_contract.ts` | 自完成最终完成门槛和工作任务状态投影均要求浴室下水口、电视遥控器、吸尘器使用后；保存 schema 接受电视和可选空调遥控器区域，并兼容旧遥控器记录 | partial | `npm run test:idempotency-submit-id-contract --prefix backend` |
 | 自完成队列分步提交与可选字段 | `mz-cleaning-app-frontend/src/lib/cleaningConsumablesSubmitQueue.test.ts` | 完成照片先本机暂存，只有标记完成时才进入逐张上传与单次业务保存；补品同步不得提前上传或保存暂存完成照片；未拍可选客厅补品照片时不传空字符串 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand src/lib/cleaningConsumablesSubmitQueue.test.ts` |
@@ -307,15 +309,17 @@
 
 ### 最后验证
 
-- **CRL：** CRL-20260812-008
+- **CRL：** mobile/CRL-20260817-001；root/CRL-20260817-001（此前记录保留）
 - **Commit：** not committed
-- **日期：** 2026-08-12
+- **日期：** 2026-08-17
 
 ### 相关 CRL
 
 - CRL-20260812-006：当天任务临时通知已保存照片认证读取
 - CRL-20260812-007：当天任务临时通知保存前本地预览
 - CRL-20260812-008：日终媒体跨来源冲突 fail-closed 补丁
+- mobile/CRL-20260817-001：挂钥匙视频静默刷新与重拍本地保留
+- root/CRL-20260817-001：FR-004 挂钥匙视频回归映射
 - CRL-20260723-006：弱网视频提交与检查照片完成状态解耦
 - CRL-20260724-014：修复厨房照片连续拍摄卡住
 - CRL-20260725-021：修复检查与补品保存的超长幂等 ID失败
