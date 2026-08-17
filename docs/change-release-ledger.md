@@ -64,6 +64,25 @@
 - Independent review: GO; evidence: independent read-only review of the exact base, candidate fingerprint, staged scope, full diff and validation found no P0/P1/P2 and approved the commit action only.
 - Action conclusion: GO; blockers: none for the authorized local commit action.
 
+#### RA-20260817-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260817-001`
+- Selected CRL identities: `root/CRL-20260817-001`
+- Intended action: `push`
+- Branch: `codex/hang-key-video-20260817`
+- Base: `origin/Dev@275124c9a8123f6fe9d56d3bc7d5200ab7e07d13`; refetched at `2026-08-17 17:13:15 AEST`.
+- Candidate patch SHA-256: `a562adbeec3c19595cb8b252c11a17c9f25b7b4abf195729411c1c76ac1ddf6e` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `33e6ed1bb4b06ebd178edc6db8a14b7278b08a3b`; audit head will be emitted by the final exact range report.
+- Dependencies: paired `mobile/CRL-20260817-001`; no root runtime dependency is modified.
+- Required validation: PASS; evidence: prior exact range report, clean-candidate FR registry audit and scoped diff check, plus paired clean-candidate 11-test screen regression.
+- Shared-hunk review: PASS; evidence: the exact range contains only declared FR-004 hunks and ledger receipts; no unselected content hunk is present.
+- Generated-file review: not applicable; no generated path is in the exact range.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after the exact root/mobile branch and commit SHAs were reported, the user instructed “推送” on 2026-08-17.
+- Independent review: GO; evidence: independent read-only final push review rechecked the refetched base, exact range, candidate content commit, fingerprint, scope, validation and sensitive/generated-file evidence; it approved only this branch push.
+- Action conclusion: GO; blockers: none for the authorized branch push after the final exact range report passes.
+
 ### Risks / Release Notes
 
 - Risk: registry evidence does not prove an installed client runtime; device regression remains required before user-facing delivery.
