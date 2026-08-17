@@ -54,12 +54,12 @@
 - Branch: `codex/hang-key-video-20260817`
 - Base: `origin/Dev@275124c9a8123f6fe9d56d3bc7d5200ab7e07d13`; fetched at `2026-08-17 16:55:27 AEST`.
 - Candidate patch SHA-256: `a562adbeec3c19595cb8b252c11a17c9f25b7b4abf195729411c1c76ac1ddf6e` excluding `docs/change-release-ledger.md`.
-- Commit SHA: `not committed`.
+- Commit SHA: `33e6ed1bb4b06ebd178edc6db8a14b7278b08a3b`.
 - Dependencies: paired `mobile/CRL-20260817-001`; no root runtime dependency is modified.
 - Required validation: PASS; evidence: clean-candidate FR registry audit and scoped diff check, plus paired clean-candidate 11-test screen regression.
 - Shared-hunk review: PASS; evidence: only the six declared FR-004 textual hunks are staged in a clean root candidate; no unselected content hunk is staged.
 - Generated-file review: not applicable; no generated path is staged.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user selected `root/CRL-20260817-001` and instructed “先提交这个” on 2026-08-17.
 - Independent review: GO; evidence: independent read-only review of the exact base, candidate fingerprint, staged scope, full diff and validation found no P0/P1/P2 and approved the commit action only.
 - Action conclusion: GO; blockers: none for the authorized local commit action.
