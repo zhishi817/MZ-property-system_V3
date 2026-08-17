@@ -15,6 +15,16 @@ describe('maintenanceFeedbackMediaProxyUrl', () => {
     expect(maintenanceFeedbackMediaProxyUrl('https://media.example.test/private/maintenance/feedback-after.jpg')).toContain('key=maintenance%2Ffeedback-after.jpg')
   })
 
+  it('uses the authenticated proxy for historical deep-cleaning keys and URLs', () => {
+    expect(maintenanceFeedbackMediaProxyUrl('deep-cleaning/feedback-before.jpg')).toContain('key=deep-cleaning%2Ffeedback-before.jpg')
+    expect(maintenanceFeedbackMediaProxyUrl('https://media.example.test/private/deep-cleaning-upload/feedback-after.jpg')).toContain('key=deep-cleaning-upload%2Ffeedback-after.jpg')
+  })
+
+  it('uses the authenticated proxy for daily-replacement inventory keys and legacy URLs', () => {
+    expect(maintenanceFeedbackMediaProxyUrl('inventory/daily-after.jpg')).toContain('key=inventory%2Fdaily-after.jpg')
+    expect(maintenanceFeedbackMediaProxyUrl('https://media.example.test/private/inventory/daily-before.jpg')).toContain('key=inventory%2Fdaily-before.jpg')
+  })
+
   it('does not proxy public or malformed references', () => {
     expect(maintenanceFeedbackMediaProxyUrl('/uploads/maintenance.jpg')).toBe('')
     expect(maintenanceFeedbackMediaProxyUrl('')).toBe('')
