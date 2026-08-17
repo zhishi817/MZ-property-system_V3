@@ -16936,7 +16936,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Selected CRL identities: `root/CRL-20260817-002, root/CRL-20260817-003, root/CRL-20260817-004, root/CRL-20260817-005, root/CRL-20260817-006, root/CRL-20260817-007`.
 - Intended action: `commit`.
 - Branch: `codex/p1-fdb-fin-20260817-final`; target: `Dev`.
-- Base: `origin/Dev@9bb6822890acbcaa19e265d1a76e1e4ce093a2d2`; refetched 2026-08-17.
+- Base: `origin/Dev@9bb6822890acbcaa19e265d1a76e1e4ce093a2d2`; fetched at `2026-08-18T00:08:41+1000`.
 - Candidate patch SHA-256: `1a5dcb321dfb344b28583f570be2ed32fb758b25a8fc1a5a65df180f8ef2cf78`, excluding `docs/change-release-ledger.md`.
 - Commit SHA: `e1f0f5475ae5adc19a0f2e6566fd0fad7e6c92ad`; candidate content commit.
 - Dependencies: paired mobile CRLs `002` through `007`; both repositories must travel together.
