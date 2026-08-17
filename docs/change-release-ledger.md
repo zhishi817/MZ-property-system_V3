@@ -1,5 +1,95 @@
 # Change Release Ledger
 
+## CRL-20260817-001 — FR-004 挂钥匙视频本地保留回归映射（root governance）
+
+- **Repository:** `root`
+- **Status:** ready (clean candidate validated and independently approved for local commit)
+- **Updated:** 2026-08-17 Australia/Melbourne
+- **Request:** 为移动端挂钥匙页面静默刷新和重拍视频本地保留修复登记 FR-004 回归契约；不修改 root 运行时代码。
+- **Outcome:** FR-004 明确后台检查队列事件不得将已打开的完成页重置为阻塞校验，并将“新视频入队成功后才清理旧副本”的页面回归测试设为充分覆盖。
+
+### Implementation
+
+- Previous behavior: FR-004 已保护上传成功后的页面 `file://` 引用，但未明确队列刷新不得闪屏，以及重拍入队失败时必须保留先前视频。
+- New behavior: 业务规则和测试映射记录两个可验证的移动端安全契约，并链接本次配对 mobile CRL。
+- Key decisions: 仅更新回归登记；不改 backend、web、API、数据库、媒体授权、R2、配置或生产数据。
+
+### Files / Areas
+
+- `docs/feature-regression-registry.md` — FR-004 业务规则、测试映射、验证和相关 CRL。
+- `docs/change-release-ledger.md` — 本 root governance 单元与提交尝试记录。
+
+### Impact / Dependencies
+
+- Root runtime/API/database/migration/configuration/storage/production data: none.
+- Dependency: paired `mobile/CRL-20260817-001` contains the executable screen repair and regression tests.
+- Excluded: backend or web implementation, media queue policy changes, OTA/build, deployment and production verification.
+
+### Validation
+
+- `npm run check:feature-registry` — passed in this clean candidate: 11 FRs / 128 test mappings; 70 mobile mappings are intentionally deferred by this root-only audit.
+- Candidate `git diff --check` and initial staged `git diff --cached --check` — passed.
+- Paired mobile screen regression passed in its clean candidate: 1 suite / 11 tests.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none; clean candidate branch `codex/hang-key-video-20260817` starts from `origin/Dev@275124c9a8123f6fe9d56d3bc7d5200ab7e07d13`.
+- `docs/feature-regression-registry.md` — SHA-256: `26b6bccb72a936b70b9b55bcc2aacb7b9d633c6b2c6d97e8a3a5750cbe1fdc0f`
+- `docs/feature-regression-registry.md` — SHA-256: `2a565e5aeb6ea47d328861249e8ae1c1c67800d7ba85179ab87838a4822edc2e`
+- `docs/feature-regression-registry.md` — SHA-256: `3e2ba0a078247f93d69e8b327d2e5ad00947589cceff22ba5038c161d9063e88`
+- `docs/feature-regression-registry.md` — SHA-256: `4d561d0f1565a307ddf76dd4b5b4216630a65eb65d6957e10f35e90b056c3cf8`
+- `docs/feature-regression-registry.md` — SHA-256: `77f8ab03a0816a2e24a6b733d5cb0397b050a8f03b4e6159eac763ab5c3a468e`
+- `docs/feature-regression-registry.md` — SHA-256: `bd269ccaa4a3e3971b5bf6c47d2a20532ef25b6fbef5d0141314645b9ffe5800`
+
+### Release Attempts
+
+#### RA-20260817-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260817-001`
+- Selected CRL identities: `root/CRL-20260817-001`
+- Intended action: `commit`
+- Branch: `codex/hang-key-video-20260817`
+- Base: `origin/Dev@275124c9a8123f6fe9d56d3bc7d5200ab7e07d13`; fetched at `2026-08-17 16:55:27 AEST`.
+- Candidate patch SHA-256: `a562adbeec3c19595cb8b252c11a17c9f25b7b4abf195729411c1c76ac1ddf6e` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `33e6ed1bb4b06ebd178edc6db8a14b7278b08a3b`.
+- Dependencies: paired `mobile/CRL-20260817-001`; no root runtime dependency is modified.
+- Required validation: PASS; evidence: clean-candidate FR registry audit and scoped diff check, plus paired clean-candidate 11-test screen regression.
+- Shared-hunk review: PASS; evidence: only the six declared FR-004 textual hunks are staged in a clean root candidate; no unselected content hunk is staged.
+- Generated-file review: not applicable; no generated path is staged.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: user selected `root/CRL-20260817-001` and instructed “先提交这个” on 2026-08-17.
+- Independent review: GO; evidence: independent read-only review of the exact base, candidate fingerprint, staged scope, full diff and validation found no P0/P1/P2 and approved the commit action only.
+- Action conclusion: GO; blockers: none for the authorized local commit action.
+
+#### RA-20260817-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260817-001`
+- Selected CRL identities: `root/CRL-20260817-001`
+- Intended action: `push`
+- Branch: `codex/hang-key-video-20260817`
+- Base: `origin/Dev@275124c9a8123f6fe9d56d3bc7d5200ab7e07d13`; refetched at `2026-08-17 17:13:15 AEST`.
+- Candidate patch SHA-256: `a562adbeec3c19595cb8b252c11a17c9f25b7b4abf195729411c1c76ac1ddf6e` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `33e6ed1bb4b06ebd178edc6db8a14b7278b08a3b`; audit head will be emitted by the final exact range report.
+- Dependencies: paired `mobile/CRL-20260817-001`; no root runtime dependency is modified.
+- Required validation: PASS; evidence: prior exact range report, clean-candidate FR registry audit and scoped diff check, plus paired clean-candidate 11-test screen regression.
+- Shared-hunk review: PASS; evidence: the exact range contains only declared FR-004 hunks and ledger receipts; no unselected content hunk is present.
+- Generated-file review: not applicable; no generated path is in the exact range.
+- Technical state: `pushed`
+- Remote push evidence: `origin/codex/hang-key-video-20260817` accepted the exact audited head `4f92497cb6f7ccbce2bb11eddcae752b8f0de3e8` at `2026-08-17 17:15:25 AEST`.
+- User authorization: `approved-for-push`; evidence: after the exact root/mobile branch and commit SHAs were reported, the user instructed “推送” on 2026-08-17.
+- Independent review: GO; evidence: independent read-only final push review rechecked the refetched base, exact range, candidate content commit, fingerprint, scope, validation and sensitive/generated-file evidence; it approved only this branch push.
+- Action conclusion: GO; blockers: none for the authorized branch push after the final exact range report passes.
+
+### Risks / Release Notes
+
+- Risk: registry evidence does not prove an installed client runtime; device regression remains required before user-facing delivery.
+- Sensitive-information review: no credentials, tokens, private URLs, media bytes, logs or production records are added.
+- Git state: candidate branch only; not committed, pushed, deployed or device-verified.
+
 ## CRL-20260812-009 — Root/mobile PR 范围审计与配对分支 CI 修复
 
 - **Status:** ready
