@@ -16938,17 +16938,17 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Branch: `codex/p1-fdb-fin-20260817-final`; target: `Dev`.
 - Base: `origin/Dev@9bb6822890acbcaa19e265d1a76e1e4ce093a2d2`; refetched 2026-08-17.
 - Candidate patch SHA-256: `1a5dcb321dfb344b28583f570be2ed32fb758b25a8fc1a5a65df180f8ef2cf78`, excluding `docs/change-release-ledger.md`.
-- Commit SHA: not committed.
+- Commit SHA: `e1f0f5475ae5adc19a0f2e6566fd0fad7e6c92ad`; candidate content commit.
 - Dependencies: paired mobile CRLs `002` through `007`; both repositories must travel together.
 - Required validation: PASS — focused media contracts, backend build, frontend/mobile evidence, registry and hunk gates recorded for the isolated candidate.
 - Current isolated-candidate recheck: the receipt contract and feature-registry audit passed; a full backend build is NOT VERIFIED in this worktree because it intentionally has no `node_modules` and no dependency installation is authorized.
 - Shared-hunk review: PASS — the identity and FIN hardening hunks are intentionally paired with their original unpushed source units under this exact selected range.
 - Generated-file / secret review: PASS — no generated files, credentials, private bytes, logs or production data are staged.
-- Technical state: `verified`.
+- Technical state: `committed`.
 - User authorization: `selected-for-commit`; evidence: user explicitly authorized replacement of unpushed CRL-002 through CRL-004 scope evidence with corrected CRL-005 through CRL-007 follow-ups.
 - Independent review: GO for commit — final independent read-only review verified the exact base, candidate fingerprint, full staged range, zero request-time DDL boundary, registry mappings and scoped evidence.
 - Prior blocked attempt: `RA-20260817-003` was independently NO-GO for push because of incorrect CRL mappings, incomplete media contract registration and request-time schema bootstrap; it remains preserved as source evidence on the prior recovery branch and is superseded here rather than erased.
-- Action conclusion: `GO` for local commit only; push, PR, merge, deployment, OTA, production writes and device verification remain unapproved.
+- Action conclusion: `GO` — candidate content committed locally; push, PR, merge, deployment, OTA, production writes and device verification remain unapproved.
 
 ### Risks / Release Notes
 
