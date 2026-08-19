@@ -81,12 +81,12 @@
 - Branch: `codex/airbnb-date-card-parser-20260820`
 - Base: `origin/Dev@9bb6822890acbcaa19e265d1a76e1e4ce093a2d2`; fetched at 2026-08-20 00:24 AEST.
 - Candidate patch SHA-256: `09254843b848f8df02099f6f6248eaf9b8f564d25e6287928d4fd6bc9fb60dee` excluding `docs/change-release-ledger.md`.
-- Commit SHA: not committed.
+- Commit SHA: `26bfc7c406d63a970a5398115c1d8468dd2e77bd`; audit head is emitted by the exact range report.
 - Dependencies: no schema, database, mobile or deployment dependency; historical 77-order repair is explicitly excluded.
 - Required validation: PASS; focused regression, existing email parser regression, no-emit TypeScript, registry audit, diff check and exact staged-scope audit passed.
 - Shared-hunk review: PASS; independent read-only review checked the selected `backend/src/modules/jobs.ts` and documentation hunks against this CRL only.
 - Generated-file review: not applicable; no generated path is staged.
-- Technical state: `candidate`; evidence: five staged files in the clean release branch.
+- Technical state: `committed`; evidence: candidate content commit `26bfc7c406d63a970a5398115c1d8468dd2e77bd` is a descendant of the recorded base.
 - User authorization: `selected-for-commit`; evidence: user explicitly instructed `提交` for this prepared `root/CRL-20260820-001` candidate on 2026-08-20. This does not authorize push, merge or deployment.
 - Independent review: GO; independent read-only review inspected the exact candidate fingerprint, complete staged diff, AGENTS.md, CRL scope, validation, production-write and secret boundaries. Its GO permits only the stated commit action.
 - Action conclusion: GO; blockers: none for the selected commit action.
