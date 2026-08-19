@@ -507,3 +507,50 @@
   - The candidate has not been independently reviewed, committed, pushed, deployed, or applied to production data.
 - Open Issues / Follow-ups:
   - Complete the independent release review and exact staged-scope audit before a content commit.
+
+## Airbnb 邮件订单入住日期漏解析修复
+
+- Date: 2026-08-20
+- Task: Airbnb 邮件订单入住日期漏解析修复
+- Status: partially implemented
+
+### Confirmed Plan
+
+- 先修复后端 Airbnb 邮件解析器并补回归测试，防止新的缺入住/退房订单进入 `confirmed`。
+- 保持邮件导入运行；不重跑旧邮件同步、不改生产订单、不直接改 `cleaning_tasks`，也不投递生产清洁同步队列。
+- 代码发布后才进行 77 笔历史订单的只读预演、队列能力补强和经单独授权的数据修复。
+
+### Implementation Result
+
+- 日期解析改为优先读取实际订单日期卡片；当页面较早出现不含日期的 `Check-in details` 时，继续遍历后续候选标签。
+- 只有唯一、入住早于退房且与已解析住晚一致的日期组合才会同时作为订单入住/退房日期；重复的相同日期标签保持幂等。
+- 缺入住、缺退房、日期非法或住晚冲突会在写订单前返回稳定错误码，并由既有 `email_sync_items` 失败审计记录，不会创建 `confirmed` 订单或清洁同步任务。
+
+### Validation
+
+- 待执行：`npm run test:email-year-rule --prefix backend`、后端 TypeScript 编译、feature registry/ledger audit 与 diff 检查。
+- 未执行：部署、生产邮件导入、生产数据库写入、清洁队列投递和历史 77 笔修复。
+
+### Files / Areas
+
+- `backend/src/modules/jobs.ts`
+- `backend/scripts/test_email_year_rule.ts`
+- `docs/feature-regression-registry.md`
+- `docs/change-release-ledger.md`
+- `docs/execution-records.md`
+
+### Open Issues / Follow-ups
+
+- 本地验证和独立发布审查通过后，仍需用户分别授权提交、推送/合并、部署及生产历史数据修复。
+- 历史修复前必须完成 77 笔只读预演，并先补齐只影响入住任务、不会覆盖已指派/人工任务的队列处理边界。
+
+### Update - 2026-08-20 00:17 AEST
+
+- Status: partially implemented
+- Implementation Result:
+  - 后端解析器与写入前日期校验已在干净候选工作区完成；没有执行任何生产写入、队列投递或旧邮件重跑。
+- Validation:
+  - 日期规则/日期卡片回归和既有邮件金额解析回归通过；后端 no-emit TypeScript 编译、feature registry audit、ledger audit 和 diff 检查通过。
+  - 初始直接编译因干净工作区没有依赖目录而无法解析依赖；随后只读复用既有本地依赖完成编译，未安装任何包。
+- Open Issues / Follow-ups:
+  - 仍需独立只读发布审查和用户对提交、推送/合并及部署的逐项授权；部署后才能进入 77 笔只读预演和后续历史修复。
