@@ -91,6 +91,26 @@
 - Independent review: GO; independent read-only review inspected the exact candidate fingerprint, complete staged diff, AGENTS.md, CRL scope, validation, production-write and secret boundaries. Its GO permits only the stated commit action.
 - Action conclusion: GO; blockers: none for the selected commit action.
 
+#### RA-20260820-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260820-001`
+- Selected CRL identities: `root/CRL-20260820-001`
+- Intended action: `push`
+- Branch: `codex/airbnb-date-card-parser-20260820`
+- Base: `origin/Dev@9bb6822890acbcaa19e265d1a76e1e4ce093a2d2`; fetched at 2026-08-20 00:39 AEST.
+- Candidate patch SHA-256: `09254843b848f8df02099f6f6248eaf9b8f564d25e6287928d4fd6bc9fb60dee` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `26bfc7c406d63a970a5398115c1d8468dd2e77bd`; previous exact audit head `b0cca158d8eee9cd195379c6eac5874b379d9b0f` is the remote branch content at the time of this receipt.
+- Dependencies: no schema, database, mobile or deployment dependency; historical 77-order repair is explicitly excluded.
+- Required validation: PASS for the previously pushed exact code range: focused regression, existing email parser regression, no-emit TypeScript, registry audit, diff check, pre-commit audit and exact range audit all passed.
+- Shared-hunk review: PASS; the previously reviewed code range is unchanged and this receipt modifies only the selected CRL Release Attempts section.
+- Generated-file review: not applicable; no generated path is present.
+- Technical state: `pushed`; evidence: origin accepted `b0cca158d8eee9cd195379c6eac5874b379d9b0f` on `codex/airbnb-date-card-parser-20260820` before this receipt.
+- Remote push evidence: `origin/codex/airbnb-date-card-parser-20260820@b0cca158d8eee9cd195379c6eac5874b379d9b0f` accepted on 2026-08-20.
+- User authorization: `selected-for-commit`; evidence: user instructed `补台账并推送` for this receipt on 2026-08-20. It authorizes creation of this receipt commit only; a resulting commit SHA is required for a separate push authorization.
+- Independent review: GO for the receipt commit only; independent read-only review rechecked the staged RA-002 receipt, exact existing code range, fingerprint, scope, production-write and secret boundaries. It does not authorize push.
+- Action conclusion: NOT VERIFIED; blocker: explicit push authorization for the resulting receipt commit SHA and branch.
+
 ### Risks / Release Notes
 
 - Runtime risk: unknown future Airbnb templates without one unique, valid date pair will now fail closed rather than silently create an incomplete confirmed order; operations must monitor the stable email-sync error code.
