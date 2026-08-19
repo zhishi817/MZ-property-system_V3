@@ -25,10 +25,10 @@ export function maintenanceAfterPhotoReferences(record: { completion_photo_urls?
 
 function privateFeedbackObjectKey(reference: string) {
   const direct = reference.replace(/^\/+/, '')
-  if (/^(cleaning|mzapp|maintenance)\//.test(direct)) return direct
+  if (/^(cleaning|mzapp|maintenance|deep-cleaning|deep-cleaning-upload|inventory)\//.test(direct)) return direct
   if (!/^https?:\/\//i.test(reference)) return ''
   try {
-    const match = new URL(reference).pathname.match(/\/(cleaning|mzapp|maintenance)\/.+$/)
+    const match = new URL(reference).pathname.match(/\/(cleaning|mzapp|maintenance|deep-cleaning|deep-cleaning-upload|inventory)\/.+$/)
     return match ? match[0].replace(/^\/+/, '') : ''
   } catch {
     return ''

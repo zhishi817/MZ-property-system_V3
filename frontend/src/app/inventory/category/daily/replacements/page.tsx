@@ -9,6 +9,7 @@ import { API_BASE, authHeaders, deleteJSON, getJSON, patchJSON, postJSON } from 
 import { sortProperties } from '../../../../../lib/properties'
 import { hasPerm } from '../../../../../lib/auth'
 import TableRowActions from '../../../../../components/TableRowActions'
+import MaintenanceFeedbackImage from '../../../../../components/MaintenanceFeedbackImage'
 
 type PropertyRow = { id: string; code?: string | null; address?: string | null; region?: string | null }
 type DailyItem = { id: string; item_name: string; sku: string; is_active?: boolean }
@@ -548,7 +549,7 @@ export default function DailyReplacementsPage() {
                 <Image.PreviewGroup>
                   <Space wrap>
                     {(Array.isArray(viewing.before_photo_urls) ? viewing.before_photo_urls : Array.isArray(viewing.photo_urls) ? viewing.photo_urls : []).map((url) => (
-                      <Image key={url} src={url} width={180} alt="before" />
+                      <MaintenanceFeedbackImage key={url} reference={url} width={180} alt="更换前照片" />
                     ))}
                   </Space>
                 </Image.PreviewGroup>
@@ -563,7 +564,7 @@ export default function DailyReplacementsPage() {
                 <Image.PreviewGroup>
                   <Space wrap>
                     {(viewing.after_photo_urls || []).map((url) => (
-                      <Image key={url} src={url} width={180} alt="after" />
+                      <MaintenanceFeedbackImage key={url} reference={url} width={180} alt="更换后照片" />
                     ))}
                   </Space>
                 </Image.PreviewGroup>
