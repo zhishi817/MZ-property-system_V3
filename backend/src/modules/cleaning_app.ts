@@ -3178,7 +3178,7 @@ export function feedbackMediaUrlArray(raw: any): string[] {
   }
 }
 
-function feedbackMediaRowReferencesKey(row: any, key: string): boolean {
+export function feedbackMediaRowReferencesKey(row: any, key: string): boolean {
   const projectItems = (() => {
     const raw = row?.project_items
     if (Array.isArray(raw)) return raw
@@ -3186,6 +3186,8 @@ function feedbackMediaRowReferencesKey(row: any, key: string): boolean {
   })()
   const references = [
     ...feedbackMediaUrlArray(row?.photo_urls),
+    ...feedbackMediaUrlArray(row?.before_photo_urls),
+    ...feedbackMediaUrlArray(row?.after_photo_urls),
     ...feedbackMediaUrlArray(row?.repair_photo_urls),
     ...feedbackMediaUrlArray(row?.completion_photo_urls),
     ...feedbackMediaUrlArray(row?.attachment_urls),
@@ -3203,7 +3205,7 @@ function feedbackMediaRowReferencesKey(row: any, key: string): boolean {
 function isPropertyFeedbackMediaKey(value: string): boolean {
   const key = String(value || '').trim().replace(/^\/+/, '')
   if (key.startsWith('cleaning/')) return isCleaningMediaKey(key)
-  if (!key.startsWith('mzapp/') && !key.startsWith('maintenance/')) return false
+  if (!key.startsWith('mzapp/') && !key.startsWith('maintenance/') && !key.startsWith('deep-cleaning/') && !key.startsWith('deep-cleaning-upload/') && !key.startsWith('inventory/')) return false
   return !key.includes('..') && !key.includes('\\') && !/[?#]/.test(key)
 }
 
@@ -3251,6 +3253,8 @@ async function findPropertyFeedbackMediaRows(pool: any, key: string) {
             m.id::text AS feedback_source_id,
             m.property_id,
             to_jsonb(m.photo_urls) AS photo_urls,
+            to_jsonb(NULL::text) AS before_photo_urls,
+            to_jsonb(NULL::text) AS after_photo_urls,
             to_jsonb(m.repair_photo_urls) AS repair_photo_urls,
             to_jsonb(m.completion_photo_urls) AS completion_photo_urls,
             to_jsonb(NULL::text) AS attachment_urls,
@@ -3270,6 +3274,8 @@ async function findPropertyFeedbackMediaRows(pool: any, key: string) {
             d.id::text AS feedback_source_id,
             d.property_id,
             to_jsonb(d.photo_urls) AS photo_urls,
+            to_jsonb(NULL::text) AS before_photo_urls,
+            to_jsonb(NULL::text) AS after_photo_urls,
             to_jsonb(d.repair_photo_urls) AS repair_photo_urls,
             to_jsonb(NULL::text) AS completion_photo_urls,
             to_jsonb(d.attachment_urls) AS attachment_urls,
@@ -3289,6 +3295,8 @@ async function findPropertyFeedbackMediaRows(pool: any, key: string) {
             n.id::text AS feedback_source_id,
             n.property_id,
             to_jsonb(n.photo_urls) AS photo_urls,
+            to_jsonb(n.before_photo_urls) AS before_photo_urls,
+            to_jsonb(n.after_photo_urls) AS after_photo_urls,
             to_jsonb(NULL::text) AS repair_photo_urls,
             to_jsonb(NULL::text) AS completion_photo_urls,
             to_jsonb(NULL::text) AS attachment_urls,
@@ -3297,12 +3305,18 @@ async function findPropertyFeedbackMediaRows(pool: any, key: string) {
        FROM property_daily_necessities n
       JOIN properties p ON p.id::text = n.property_id::text
       WHERE n.deleted_at IS NULL
-        AND COALESCE(n.photo_urls::text, '') LIKE $1
+        AND (
+          COALESCE(n.photo_urls::text, '') LIKE $1
+          OR COALESCE(n.before_photo_urls::text, '') LIKE $1
+          OR COALESCE(n.after_photo_urls::text, '') LIKE $1
+        )
      UNION ALL
      SELECT 'external_maintenance_orders'::text AS feedback_source_type,
             e.id::text AS feedback_source_id,
             NULL::text AS property_id,
             to_jsonb(NULL::text) AS photo_urls,
+            to_jsonb(NULL::text) AS before_photo_urls,
+            to_jsonb(NULL::text) AS after_photo_urls,
             to_jsonb(NULL::text) AS repair_photo_urls,
             to_jsonb(e.completion_photo_urls) AS completion_photo_urls,
             to_jsonb(NULL::text) AS attachment_urls,

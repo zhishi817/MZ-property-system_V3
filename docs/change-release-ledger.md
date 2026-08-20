@@ -1,5 +1,77 @@
 # Change Release Ledger
 
+## CRL-20260820-002 — Dev/main 分支同步与台账冲突保留（root）
+
+- **Repository:** `root`
+- **Status:** ready; prior RA-20260820-003 blocker is superseded by the independently reviewed RA-20260820-004 candidate.
+- **Updated:** 2026-08-20 Australia/Melbourne
+- **Request:** 解决 PR #316（`Dev` → `main`）的合并冲突，同时让当前 `Dev` 重新包含 `main` 上已经存在的历史发布记录；不得丢弃任一 CRL、回归规则或既有源码改动。
+- **Outcome:** 在隔离候选分支把 `origin/main@d5683977042daa386d615c97534ef765d8869255` 合入 `origin/Dev@a7e766d64230a718e66084c611ed54eb6ca7a24b`；唯一冲突的台账顶部条目按两侧完整内容保留。现有 `main` 代码仅作为既有 CRL 的回流依赖，不引入新的业务行为。
+
+### Implementation
+
+- Previous behavior: `Dev` 和 `main` 均从 `9bb6822890acbcaa19e265d1a76e1e4ce093a2d2` 独立追加台账顶部条目，PR #316 无法自动合并。
+- New behavior: 反向同步把 `main` 作为 `Dev` 的合并父提交；`CRL-20260820-001` 与 `CRL-20260817-004` 均完整保留，自动合并的历史媒体实现继续由原有 CRL 归属。
+- Key decisions: 不修改 `main`、不改业务实现内容、不重跑邮件、不部署、不写生产数据库或任务队列。
+
+### Files / Areas
+
+- `docs/change-release-ledger.md` — 解决顶部台账冲突并记录本次分支同步。
+- `docs/feature-regression-registry.md` — 自动三方合并既有 FR-010、FR-015、FR-016 与 FR-014 的独立规则。
+- `backend/src/modules/cleaning_app.ts`, `backend/src/modules/mzapp.ts`, `backend/scripts/tests/test_mzapp_media_visibility.ts`, `backend/scripts/tests/test_mzapp_expense_receipt_media_contract.ts`, `frontend/src/lib/maintenanceFeedbackMedia.ts`, `frontend/src/lib/maintenanceFeedbackMedia.test.ts`, `frontend/src/app/inventory/category/daily/replacements/page.tsx` — 从 `origin/main` 原样回流的既有实现；本 CRL 仅登记整合范围，不重新定义其业务内容。
+
+### Impact / Dependencies
+
+- API / database / migration / configuration / production data: none newly introduced by this reconciliation.
+- Dependencies: `root/CRL-20260817-002` through `root/CRL-20260817-007` are already contained by `origin/main`; `root/CRL-20260820-001` is already contained by `origin/Dev`. Their historical staged fingerprints remain unchanged; this CRL owns the new merge-range fingerprint because the combined FR context differs from the original source candidate.
+- Target: after the candidate is independently reviewed and explicitly authorized for push, merge it into `Dev`; only then can PR #316 be re-evaluated for `main`.
+
+### Validation
+
+- Local merge preflight — passed: only `docs/change-release-ledger.md` conflicted; `docs/feature-regression-registry.md` and existing source/test paths merged automatically.
+- `backend/scripts/test_email_year_rule.ts`, `backend/scripts/test_email_parse.ts`, `backend/scripts/tests/test_mzapp_media_visibility.ts`, `backend/scripts/tests/test_mzapp_expense_receipt_media_contract.ts`, `backend/scripts/tests/test_cleaning_media_image.ts` — passed locally with fixed fixtures and an ephemeral loopback server only; no production database or external service was contacted.
+- `frontend/src/lib/maintenanceFeedbackMedia.test.ts` — passed: 1 file / 7 tests.
+- `tsc -p backend/.tsconfig.codex-validation.json --noEmit` — passed using a temporary local dependency mapping that was deleted immediately after the check; no package installation or generated output was retained.
+- `python3 scripts/audit_feature_regression_registry.py`, `python3 scripts/audit_change_release_ledger.py`, `git diff --cached --check` — passed before staged-scope reconciliation.
+- `python3 scripts/audit_change_release_ledger.py --pre-commit --repo root --crl CRL-20260817-002 ... --crl CRL-20260820-002` — passed: 9 staged paths / 37 non-ledger hunks, no untracked or unselected path.
+- Independent release review — NO-GO for commit: the incoming expense-receipt media contract is declared `sufficient` but is not wired into `check:backend` / `check:full`; no complete `npm run check:full` evidence exists. The reviewer also noted a non-blocking loopback-listener hardening follow-up.
+- Not run: `npm run check:full`, commit, push, PR merge, deployment and production verification.
+- Superseding candidate evidence is recorded under `root/CRL-20260820-003` / RA-20260820-004: the quality-chain repair, isolated `npm run check:full`, 39-hunk pre-commit gate and fresh independent commit review all passed; RA-20260820-003 remains preserved as the historical NO-GO.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared.
+- **Untracked review:** none; the candidate worktree began clean from `origin/Dev` and temporary validation configuration was removed.
+
+### Release Attempts
+
+#### RA-20260820-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260817-002`, `CRL-20260817-003`, `CRL-20260817-004`, `CRL-20260817-005`, `CRL-20260817-006`, `CRL-20260817-007`, `CRL-20260820-002`
+- Selected CRL identities: `root/CRL-20260817-002`, `root/CRL-20260817-003`, `root/CRL-20260817-004`, `root/CRL-20260817-005`, `root/CRL-20260817-006`, `root/CRL-20260817-007`, `root/CRL-20260820-002`
+- Intended action: `commit`
+- Branch: `codex/dev-main-conflict-resolution-20260820`
+- Base: `origin/Dev@a7e766d64230a718e66084c611ed54eb6ca7a24b`; fetched at 2026-08-20 11:20 AEST.
+- Candidate patch SHA-256: `4831fdf5b917c80704109c359c25044bc0a209997be6994c56227471699d9f7a` excluding `docs/change-release-ledger.md`.
+- Commit SHA: not committed
+- Dependencies: `origin/main@d5683977042daa386d615c97534ef765d8869255`; the named root CRLs are pre-existing `main` content, not new source work.
+- Required validation: FAIL; evidence: five fixed-fixture backend contracts, seven-test frontend media regression, no-emit backend compile, registry/ledger audits, whitespace check and exact staged-scope gate passed without production I/O, but the protected receipt-media contract is not wired into `check:backend` / `check:full` and no full quality-gate evidence exists.
+- Shared-hunk review: PASS; evidence: complete staged diff review and the exact staged-scope gate cover 9 paths / 37 hunks with no untracked or unselected path.
+- Generated-file review: PASS; evidence: no generated output or temporary validation file remains in the candidate.
+- Technical state: candidate
+- User authorization: selected-for-commit; evidence: user instructed `执行下一步` after the Dev → main conflict cause and resolution plan were explained on 2026-08-20.
+- Independent review: NO-GO; evidence: independent read-only review found P1 quality-gate omissions for the incoming receipt-media contract and missing complete quality-gate evidence. P2: explicitly bind the fixture listener to `127.0.0.1` in a separately authorized fix.
+- Action conclusion: BLOCKED; blockers: a separately authorized quality-chain repair and successful relevant full validation are required before a new candidate/review. Push, Dev merge, main merge, deployment and production verification remain out of scope.
+
+### Risks / Release Notes
+
+- Risk: the pre-existing `main` media changes must remain byte-for-byte attributable to their original CRLs; no conflict resolution may discard their ledger entries or FR mappings.
+- Release blocker: do not commit this candidate until the incoming receipt-media contract is wired into the root backend quality chain and the resulting changed candidate receives fresh validation and independent review.
+- Rollback: abandon this unpushed candidate branch; neither `Dev` nor `main` changes until a later authorized merge.
+- Sensitive-information review: no credentials, tokens, private media bytes, database URLs, production records or logs are added.
+
 ## CRL-20260820-001 — Airbnb 邮件日期卡片漏解析与失败闭环（root）
 
 - **Repository:** `root`
@@ -120,6 +192,81 @@
 - Sensitive-information review: no database URL, credentials, guest names, confirmation codes, raw email content or production query output are recorded.
 - Git state: staged candidate on `codex/airbnb-date-card-parser-20260820`; not committed, pushed, merged, deployed or production-verified.
 
+## CRL-20260817-004 — 报销凭证认证媒体读取与临时预览边界（root）
+
+- **Repository:** `root`
+- **Status:** ready; source fixed and combined local regression passed
+- **Updated:** 2026-08-17 Australia/Melbourne
+- **Request:** 修复 P1-FIN-01 中已保存报销凭证被移动端直接读取私有 URL 的链路缺口。
+- **Outcome:** `GET /mzapp/expense-receipts/:receiptId/images/:imageId` 在对象读取前验证未删除凭证、精确图片关联和既有凭证/财务权限；错误图片 ID、越权或不认可引用为 `403 forbidden_media`，已授权缺对象为 `404 media_not_found`。现有写入/历史 URL 不再是移动端显示能力。
+
+### Implementation
+
+- `backend/src/modules/mzapp.ts` 增加凭证专用认证读取、首图 ID 和本地 `/uploads/...` 只读兼容；不复用 cleaning proxy 或放宽 R2 ACL。
+- `backend/scripts/tests/test_mzapp_expense_receipt_media_contract.ts` 覆盖提交者、admin、finance_staff、customer_service、错误图片 ID、越权与缺对象。
+- `docs/feature-regression-registry.md` 的 FR-016 固化凭证精确关联与 temporary-only 草稿边界。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts`
+- `backend/scripts/tests/test_mzapp_expense_receipt_media_contract.ts`
+- `docs/feature-regression-registry.md`
+- `docs/change-release-ledger.md`
+
+### Impact / Dependencies
+
+- Paired unit: `mobile/CRL-20260817-004`；两端必须一起发布。
+- Database / migration / R2 ACL / configuration / production data: none.
+- Excludes legacy `/mzapp/expenses`、web `expense_invoices`、Photo ID/Visa 和对象恢复。
+
+### Validation
+
+- `backend/scripts/tests/test_mzapp_expense_receipt_media_contract.ts` — passed in an isolated local Express loopback: authorized exact reads 200, wrong image ID and outsider 403 before R2, missing object 404.
+- `npm run build --prefix backend`, `npm run check:feature-registry`, ledger audit and `git diff --check` — passed in the combined candidate.
+
+### Staged Commit Scope
+
+- **Repository:** root
+- **Status:** prepared.
+- **Untracked review:** none; the clean candidate has no untracked files after exact staging.
+- `backend/src/modules/mzapp.ts` — SHA-256: `c2b141d9d9f250607de9ea9032a97ad4c34c9f4c2a51aef64134751222d35fb2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `32c2f95097165a395fe1163ac3a076b00eab3aabdf4dbf893aac362574014503`
+- `backend/src/modules/mzapp.ts` — SHA-256: `de0151ccf3975f7ead60208b1c1b9dba3ad1a2e64211f0266193010392542ce3`
+- `backend/src/modules/mzapp.ts` — SHA-256: `590a4e2555b048bf718d60460c1d01a514ae991c18c8fbd5b2750a6b7bd6ac2a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `a35f3c694e29da8289efd243687fc222d598879c88da95bfeb61ef617c4b209d`
+- `backend/src/modules/mzapp.ts` — SHA-256: `990473e969cfef723b076675498df9bf31054dedd2270a98559569ede5e21a81`
+- Historical release-scope fingerprint before the Dev/main quality-gate update: `cc61d2c39d1a1c55c673fb62859317d77391f4deda9a570e015852970240b17d`.
+- Historical release-scope fingerprint before the Dev/main reconciliation: `d88e5449976e00a92b99c3125a2974a6a4f5010ab77835120211a0f40cadd0e5`.
+- Historical release-scope fingerprint before the Dev/main quality-gate update: `218be9f84925f090308def5a9ded03f468176f7dd143a6d91404cfe005be708b`.
+
+### Release Attempts
+
+#### RA-20260817-002
+
+- Repository: `root`.
+- Selected CRLs: `CRL-20260817-002`, `CRL-20260817-003`, `CRL-20260817-004`.
+- Selected CRL identities: `root/CRL-20260817-002, root/CRL-20260817-003, root/CRL-20260817-004`.
+- Intended action: `commit`.
+- Branch: `codex/p1-fdb-fin-20260817-recovery`; target: `Dev`.
+- Base: `origin/Dev@9bb6822890acbcaa19e265d1a76e1e4ce093a2d2`; fetched at `2026-08-17T15:15:48+10:00`.
+- Candidate patch SHA-256: `645415322a6c540552dc0c4aceb9f0250feda729a0673313492fdc47c8a75b79`, excluding `docs/change-release-ledger.md`.
+- Commit SHA: not committed; candidate content commit will be recorded only after the content commit exists.
+- Dependencies: paired `mobile/CRL-20260817-002`, `mobile/CRL-20260817-003` and `mobile/CRL-20260817-004`; root and mobile candidates must travel together.
+- Required validation: PASS — media visibility and cleaning-reader contracts, expense-receipt loopback contract, backend TypeScript no-emit check, Web feedback test/lint, feature-registry and combined pre-commit gate passed on the latest Dev candidate.
+- Shared-hunk review: PASS — deep-cleaning and inventory exact key-normalization hunks remain scoped to their feedback units; finance keeps its dedicated receipt reader.
+- Generated-file / secret review: PASS — temporary dependency links were removed; no generated files, credentials, private media bytes, production logs or production data are staged.
+- Technical state: `verified`.
+- User authorization: `selected-for-commit`; evidence: user authorized the latest-Dev recovery after the stale-base stop.
+- Independent review: GO for `commit` — independent read-only review rechecked the latest-Dev base, candidate fingerprint, CRL identity recovery, scoped diff, validation evidence and secret/production-write boundary.
+- Action conclusion: `GO` for local commit only; push, PR, merge, deployment, OTA and device verification require separate authorization and evidence.
+
+### Risks / Release Notes
+
+- Recovery evidence: former unpushed candidate used colliding local IDs; this new canonical unit was rebuilt from `origin/Dev@9bb6822890acbcaa19e265d1a76e1e4ce093a2d2`.
+
+- Source tests do not prove historical object availability or deployed/mobile runtime behavior; authorized missing objects remain terminal `404`.
+- Sensitive-information review: no credentials, private media bytes, production logs or production data are recorded.
+
 ## CRL-20260817-001 — FR-004 挂钥匙视频本地保留回归映射（root governance）
 
 - **Repository:** `root`
@@ -210,6 +357,94 @@
 - Sensitive-information review: no credentials, tokens, private URLs, media bytes, logs or production records are added.
 - Git state: candidate branch only; not committed, pushed, deployed or device-verified.
 
+## CRL-20260817-003 — 日用品更换前后私有照片精确认证读取（root）
+
+- **Repository:** `root`
+- **Status:** ready; source fixed and combined local regression passed
+- **Updated:** 2026-08-17 Australia/Melbourne
+- **Request:** 修复 P1-FDB-03 日用品更换记录前/后私有照片无法可靠显示的问题，同时保留精确关联和 fail-closed 授权。
+- **Outcome:** `before_photo_urls`、兼容 `photo_urls` 与 `after_photo_urls` 都参与唯一日用品记录关联；`inventory/...` 只在已授权、关联记录上进入既有认证代理。无关/歧义/越权保持 `403`；移动 payload 返回前后照片，Web 复用认证图片组件。
+
+### Implementation
+
+- `backend/src/modules/cleaning_app.ts`、`backend/src/modules/mzapp.ts` 补充前后字段、候选查询和反馈 payload；`backend/scripts/tests/test_mzapp_media_visibility.ts` 断言精确关联。
+- `frontend/src/lib/maintenanceFeedbackMedia.ts`、其测试与日用品更换页将 `inventory/...` 交给既有认证组件，禁止裸 URL。
+- `docs/feature-regression-registry.md` 的 FR-015 映射三端回归。
+
+### Files / Areas
+
+- `backend/src/modules/cleaning_app.ts`
+- `backend/src/modules/mzapp.ts`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts`
+- `frontend/src/lib/maintenanceFeedbackMedia.ts`
+- `frontend/src/lib/maintenanceFeedbackMedia.test.ts`
+- `frontend/src/app/inventory/category/daily/replacements/page.tsx`
+- `docs/feature-regression-registry.md`
+- `docs/change-release-ledger.md`
+
+### Impact / Dependencies
+
+- Paired unit: `mobile/CRL-20260817-003`；两端必须一起发布。
+- No role, schema, upload, R2 ACL, notification, Push, Badge or production-data change.
+
+### Validation
+
+- `npm run test:mzapp-media-visibility --prefix backend` and `npm run test:cleaning-media-image --prefix backend` — passed.
+- `npm run test --prefix frontend -- --run src/lib/maintenanceFeedbackMedia.test.ts --coverage.enabled=false` — passed: 1 suite / 7 tests; frontend lint and production build completed with only existing warnings.
+- Backend build, registry/ledger audit and `git diff --check` — passed in the combined candidate.
+
+### Staged Commit Scope
+
+- **Repository:** root
+- **Status:** prepared.
+- **Untracked review:** none; the clean candidate has no untracked files after exact staging.
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `dcb704d77b29bff0e0a7cb6039a8378a5a346947e32a87366569166926a03561`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `1349bd235995a54128b5cdb81203be215c33c58cd0c9789e3ed7ae1fa461298b`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `d643a71fd9c3639f2f6b292f56573364b79302bae7d3dce865788ca58f935e8f`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `c53b069805f8150ad4a5f542ebd8fc90bb0fb100bae0f4aef3696f2f3402950e`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `4b5c848d9cfad48c55654d8de2696c82736ca716045c7e9e9142a5663f39b904`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `a161d24a98f2c00807da9dec218300af7e720cd9f6eba21c9a5ce09b5dd1c7ef`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `d4936409071cb513fb8f59dc3bee562cb4c685f0063f014291a479403ca25c86`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `96d62cc49c5180a051f0aedad9e3c357c8faf60ebc889ce3b2ada927f1c73e3b`
+- `frontend/src/lib/maintenanceFeedbackMedia.ts` — SHA-256: `c1bc0526b017fcb8efd831ec59d8a066c9f06a3b06f1d5284ea59eb378d36e9e`
+- `frontend/src/lib/maintenanceFeedbackMedia.ts` — SHA-256: `9c6e586a4a1619fd20979a42bd5e5be04cceb54b6ef962ecc05a2d58b4be12dd`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ca084d33e7559bd4accb4bdbb1e0789cc294e469f20644ba8f3e97f95ca81e11`
+- `frontend/src/app/inventory/category/daily/replacements/page.tsx` — SHA-256: `ca73b9cb4e1059902064b6608dee774e87f26ab01e20343a6f4bb339036ed50a`
+- `frontend/src/app/inventory/category/daily/replacements/page.tsx` — SHA-256: `e2f6b6ebfa1c018b5b3464b447397bc05b1d9b796ff920c910cfb3d152d0b63e`
+- `frontend/src/app/inventory/category/daily/replacements/page.tsx` — SHA-256: `75a232590cb1aaa7363d0dfc0bbca774d0b69651da4b08833c6bda606a88424d`
+- `frontend/src/lib/maintenanceFeedbackMedia.test.ts` — SHA-256: `d97c0db741b1ae2a9524ee4319b52b54866aa11b5a040e0b6d76bf88e8a1bc3d`
+- `docs/feature-regression-registry.md` — SHA-256: `aa5c8df3c2e50efbcd24a044acf12b7b267af449bd23455f728c543669678858`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `28932b43ef3a519acdd6bb1bfb1e355a594b7eba834210664cb024e06bbf2ba8`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `a2d47b6b555369f12a309c1c92731b8530ed52d4a413dad436fc3324f816db0a`
+
+### Release Attempts
+
+#### RA-20260817-002
+
+- Repository: `root`.
+- Selected CRLs: `CRL-20260817-002`, `CRL-20260817-003`, `CRL-20260817-004`.
+- Selected CRL identities: `root/CRL-20260817-002, root/CRL-20260817-003, root/CRL-20260817-004`.
+- Intended action: `commit`.
+- Branch: `codex/p1-fdb-fin-20260817-recovery`; target: `Dev`.
+- Base: `origin/Dev@9bb6822890acbcaa19e265d1a76e1e4ce093a2d2`; fetched at `2026-08-17T15:15:48+10:00`.
+- Candidate patch SHA-256: `645415322a6c540552dc0c4aceb9f0250feda729a0673313492fdc47c8a75b79`, excluding `docs/change-release-ledger.md`.
+- Commit SHA: not committed; candidate content commit will be recorded only after the content commit exists.
+- Dependencies: paired `mobile/CRL-20260817-002`, `mobile/CRL-20260817-003` and `mobile/CRL-20260817-004`; root and mobile candidates must travel together.
+- Required validation: PASS — media visibility and cleaning-reader contracts, expense-receipt loopback contract, backend TypeScript no-emit check, Web feedback test/lint, feature-registry and combined pre-commit gate passed on the latest Dev candidate.
+- Shared-hunk review: PASS — deep-cleaning and inventory exact key-normalization hunks remain scoped to their feedback units; finance keeps its dedicated receipt reader.
+- Generated-file / secret review: PASS — temporary dependency links were removed; no generated files, credentials, private media bytes, production logs or production data are staged.
+- Technical state: `verified`.
+- User authorization: `selected-for-commit`; evidence: user authorized the latest-Dev recovery after the stale-base stop.
+- Independent review: GO for `commit` — independent read-only review rechecked the latest-Dev base, candidate fingerprint, CRL identity recovery, scoped diff, validation evidence and secret/production-write boundary.
+- Action conclusion: `GO` for local commit only; push, PR, merge, deployment, OTA and device verification require separate authorization and evidence.
+
+### Risks / Release Notes
+
+- Recovery evidence: former unpushed candidate used colliding local IDs; this new canonical unit was rebuilt from `origin/Dev@9bb6822890acbcaa19e265d1a76e1e4ce093a2d2`.
+
+- Existing historical objects and records are not production-checked; an authorized missing object remains `404`, never a raw URL fallback.
+- Sensitive-information review: no credentials, private URLs, media bytes, production logs or production data are recorded.
+
 ## CRL-20260812-009 — Root/mobile PR 范围审计与配对分支 CI 修复
 
 - **Status:** ready
@@ -290,6 +525,88 @@
 
 - Risk: if no matching mobile branch exists, CI intentionally validates `Dev`; if the remote lookup itself fails, CI now fails rather than validating an unpaired source. This preserves ordinary root-only PR behavior without silently weakening paired PR validation.
 - Sensitive-information review: no credentials, tokens, environment values or production data are added.
+
+## CRL-20260817-002 — P1-FDB-02 历史深清反馈私有照片认证读取（root）
+
+- **Repository:** `root`
+- **Status:** ready; source fixed and combined local regression passed
+- **Updated:** 2026-08-17 Australia/Melbourne
+- **Request:** 修复历史深清反馈照片在 Web/Mobile 私有媒体读取中显示为空白的问题，不放宽 R2 权限或绕过认证。
+- **Outcome:** `deep-cleaning/...` 与 `deep-cleaning-upload/...` 仅作为既有 `/cleaning-app/media/image` 的受控反馈 key；唯一、未删除、关联真实房源的深清记录和当前授权仍是读取前提，Web 详情不回退原始私有 URL。
+
+### Implementation
+
+- `backend/src/modules/cleaning_app.ts` 仅扩展两个历史深清前缀；`backend/scripts/tests/test_mzapp_media_visibility.ts` 覆盖各持久化字段、项目照片和前缀。
+- `frontend/src/lib/maintenanceFeedbackMedia.ts` 及测试将深清 key/legacy URL 规范化为现有认证代理；FR-010 记录跨端不变量。
+
+### Files / Areas
+
+- `backend/src/modules/cleaning_app.ts`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts`
+- `frontend/src/lib/maintenanceFeedbackMedia.ts`
+- `frontend/src/lib/maintenanceFeedbackMedia.test.ts`
+- `docs/feature-regression-registry.md`
+- `docs/change-release-ledger.md`
+
+### Impact / Dependencies
+
+- Paired unit: `mobile/CRL-20260817-002`；两端必须一起发布。
+- No public URL, R2 ACL, role, data migration, notification or ordinary-cleaning media change.
+
+### Validation
+
+- `npm run test:mzapp-media-visibility --prefix backend` and `npm run test:cleaning-media-image --prefix backend` — passed.
+- `npm run test --prefix frontend -- --run src/lib/maintenanceFeedbackMedia.test.ts --coverage.enabled=false` — passed: 1 suite / 7 tests; backend/frontend builds completed.
+- Registry/ledger audit and `git diff --check` — passed in the combined candidate.
+
+### Staged Commit Scope
+
+- **Repository:** root
+- **Status:** prepared.
+- **Untracked review:** none; the clean candidate has no untracked files after exact staging.
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `d643a71fd9c3639f2f6b292f56573364b79302bae7d3dce865788ca58f935e8f`
+- `frontend/src/lib/maintenanceFeedbackMedia.ts` — SHA-256: `c1bc0526b017fcb8efd831ec59d8a066c9f06a3b06f1d5284ea59eb378d36e9e`
+- `frontend/src/lib/maintenanceFeedbackMedia.ts` — SHA-256: `9c6e586a4a1619fd20979a42bd5e5be04cceb54b6ef962ecc05a2d58b4be12dd`
+- `frontend/src/lib/maintenanceFeedbackMedia.test.ts` — SHA-256: `d97c0db741b1ae2a9524ee4319b52b54866aa11b5a040e0b6d76bf88e8a1bc3d`
+- `docs/feature-regression-registry.md` — SHA-256: `f74727dbbde70d9f5de095a8952ecc1980cbc1672908c4f5954509f3dbdc9539`
+- `docs/feature-regression-registry.md` — SHA-256: `9ba52fee1f6477a720448fa6a5ea43572a21ddc3f75c50f2b76de62b08bbc031`
+- `docs/feature-regression-registry.md` — SHA-256: `bc2fc535c809e01703e9d66e95e227559be41737d17febdcef0ba86453c71fa0`
+- `docs/feature-regression-registry.md` — SHA-256: `da1c6a706711367dfe27e4cfa94fe27c374cd3fd7238c84c897129645ccbbe22`
+- `docs/feature-regression-registry.md` — SHA-256: `8164467f4d1f8beb090adbcf7a36d89253b92ab7fe76bf8756410a9bc101c08f`
+- `docs/feature-regression-registry.md` — SHA-256: `1a198964b9de8e72efcea69fac48ef5e3567555f6dc5e2137d0c76ea34f6a6ae`
+- `docs/feature-regression-registry.md` — SHA-256: `ab5030dce6324942b28ea936ded3694583cc3df9e6db49edf96694ab01ad57e2`
+- `docs/feature-regression-registry.md` — SHA-256: `d67a4c047527cb34376c4199bbb3d77ae9db62bf02b33dc86870f5316da96102`
+- `docs/feature-regression-registry.md` — SHA-256: `6f8992c2a422c0fe2f1e5404ea0b9005126a9030028ec93d8171b5c92aa1d1dd`
+- `docs/feature-regression-registry.md` — SHA-256: `08b15905dccf9042686c926a4f1f5d273c69abb2c1b0a5764c227bef07971a6f`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `e67b6b6608f9091e4b27892246fc8936a31764c6e945bbe1a9b2ae2ae695d29b`
+
+### Release Attempts
+
+#### RA-20260817-002
+
+- Repository: `root`.
+- Selected CRLs: `CRL-20260817-002`, `CRL-20260817-003`, `CRL-20260817-004`.
+- Selected CRL identities: `root/CRL-20260817-002, root/CRL-20260817-003, root/CRL-20260817-004`.
+- Intended action: `commit`.
+- Branch: `codex/p1-fdb-fin-20260817-recovery`; target: `Dev`.
+- Base: `origin/Dev@9bb6822890acbcaa19e265d1a76e1e4ce093a2d2`; fetched at `2026-08-17T15:15:48+10:00`.
+- Candidate patch SHA-256: `645415322a6c540552dc0c4aceb9f0250feda729a0673313492fdc47c8a75b79`, excluding `docs/change-release-ledger.md`.
+- Commit SHA: not committed; candidate content commit will be recorded only after the content commit exists.
+- Dependencies: paired `mobile/CRL-20260817-002`, `mobile/CRL-20260817-003` and `mobile/CRL-20260817-004`; root and mobile candidates must travel together.
+- Required validation: PASS — media visibility and cleaning-reader contracts, expense-receipt loopback contract, backend TypeScript no-emit check, Web feedback test/lint, feature-registry and combined pre-commit gate passed on the latest Dev candidate.
+- Shared-hunk review: PASS — deep-cleaning and inventory exact key-normalization hunks remain scoped to their feedback units; finance keeps its dedicated receipt reader.
+- Generated-file / secret review: PASS — temporary dependency links were removed; no generated files, credentials, private media bytes, production logs or production data are staged.
+- Technical state: `verified`.
+- User authorization: `selected-for-commit`; evidence: user authorized the latest-Dev recovery after the stale-base stop.
+- Independent review: GO for `commit` — independent read-only review rechecked the latest-Dev base, candidate fingerprint, CRL identity recovery, scoped diff, validation evidence and secret/production-write boundary.
+- Action conclusion: `GO` for local commit only; push, PR, merge, deployment, OTA and device verification require separate authorization and evidence.
+
+### Risks / Release Notes
+
+- Recovery evidence: former unpushed candidate used colliding local IDs; this new canonical unit was rebuilt from `origin/Dev@9bb6822890acbcaa19e265d1a76e1e4ce093a2d2`.
+
+- Historical object presence is unverified; authorized absence is terminal `404`, not a public URL fallback.
+- Sensitive-information review: no credentials, private media bytes, production logs or production data are recorded.
 
 ## CRL-20260812-008 — 日终媒体跨来源冲突 fail-closed 补丁（root）
 
@@ -16763,6 +17080,95 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
 - Git state: implementation pushed to nested mobile `Dev` in commit `0ef9c51`; this root ledger status update is recorded separately.
 
+## CRL-20260817-007 — P1-FIN-01 凭证读取无 DDL 边界与契约补全（root）
+
+- **Repository:** `root`
+- **Status:** ready; source fixed and local regression passed
+- **Updated:** 2026-08-17 Australia/Melbourne
+- **Request:** 消除凭证私有图片 GET 的 request-time schema DDL 风险，并补全精确认证读取的发布证据。
+- **Outcome:** `GET /mzapp/expense-receipts/:receiptId/images/:imageId` 只做已授权凭证、精确图片关联和对象读取；该路径不调用 `ensureMzappExpenseReceiptSchema()`。
+
+### Implementation
+
+- The prior unpushed source candidate was independently blocked because this GET could issue `CREATE` / `ALTER` / index DDL. This replacement candidate removes that request-time bootstrap.
+- The contract test rejects any schema-write attempt while preserving exact association, authorization, `403` and `404` assertions.
+- The local media-contract governance artifact is retained outside this Git candidate; no untracked governance artifact is staged or released.
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — receipt-image GET read-only boundary.
+- `backend/scripts/tests/test_mzapp_expense_receipt_media_contract.ts` — zero-DDL contract assertion.
+- `docs/feature-regression-registry.md` — FIN source/follow-up identity and zero-DDL invariant.
+- `docs/change-release-ledger.md` — superseding combined release evidence.
+
+### Impact / Dependencies
+
+- Paired unit: `mobile/CRL-20260817-007`; original source unit: `root/mobile CRL-20260817-004`.
+- Database / migration / production data: no request-time DDL or production write. Existing write-route schema bootstrap is excluded.
+- Storage / authorization: existing `mzapp/expenses/...` and legacy `/uploads/...` compatibility plus existing receipt authorization remain unchanged.
+
+### Validation
+
+- Receipt loopback contract, backend build, registry/ledger audit and diff check passed locally before final replacement-candidate review.
+
+### Staged Commit Scope
+
+- **Repository:** root
+- **Status:** prepared.
+- **Untracked review:** none; the isolated Git candidate has no untracked files.
+- Historical release-scope fingerprint before the Dev/main quality-gate update: `cc61d2c39d1a1c55c673fb62859317d77391f4deda9a570e015852970240b17d`.
+- `backend/src/modules/mzapp.ts` — SHA-256: `990473e969cfef723b076675498df9bf31054dedd2270a98559569ede5e21a81`
+- Historical release-scope fingerprint before the Dev/main reconciliation: `d88e5449976e00a92b99c3125a2974a6a4f5010ab77835120211a0f40cadd0e5`.
+- Historical release-scope fingerprint before the Dev/main quality-gate update: `218be9f84925f090308def5a9ded03f468176f7dd143a6d91404cfe005be708b`.
+
+### Release Attempts
+
+#### RA-20260817-004
+
+- Repository: `root`.
+- Selected CRLs: `CRL-20260817-002`, `CRL-20260817-003`, `CRL-20260817-004`, `CRL-20260817-005`, `CRL-20260817-006`, `CRL-20260817-007`.
+- Selected CRL identities: `root/CRL-20260817-002, root/CRL-20260817-003, root/CRL-20260817-004, root/CRL-20260817-005, root/CRL-20260817-006, root/CRL-20260817-007`.
+- Intended action: `commit`.
+- Branch: `codex/p1-fdb-fin-20260817-final`; target: `Dev`.
+- Base: `origin/Dev@9bb6822890acbcaa19e265d1a76e1e4ce093a2d2`; fetched at `2026-08-18T00:08:41+1000`.
+- Candidate patch SHA-256: `1a5dcb321dfb344b28583f570be2ed32fb758b25a8fc1a5a65df180f8ef2cf78`, excluding `docs/change-release-ledger.md`.
+- Commit SHA: `e1f0f5475ae5adc19a0f2e6566fd0fad7e6c92ad`; candidate content commit.
+- Dependencies: paired mobile CRLs `002` through `007`; both repositories must travel together.
+- Required validation: PASS — focused media contracts, backend build, frontend/mobile evidence, registry and hunk gates recorded for the isolated candidate.
+- Current isolated-candidate recheck: the receipt contract and feature-registry audit passed; a full backend build is NOT VERIFIED in this worktree because it intentionally has no `node_modules` and no dependency installation is authorized.
+- Shared-hunk review: PASS — the identity and FIN hardening hunks are intentionally paired with their original unpushed source units under this exact selected range.
+- Generated-file / secret review: PASS — no generated files, credentials, private bytes, logs or production data are staged.
+- Technical state: `committed`.
+- User authorization: `selected-for-commit`; evidence: user explicitly authorized replacement of unpushed CRL-002 through CRL-004 scope evidence with corrected CRL-005 through CRL-007 follow-ups.
+- Independent review: GO for commit — final independent read-only review verified the exact base, candidate fingerprint, full staged range, zero request-time DDL boundary, registry mappings and scoped evidence.
+- Prior blocked attempt: `RA-20260817-003` was independently NO-GO for push because of incorrect CRL mappings, incomplete media contract registration and request-time schema bootstrap; it remains preserved as source evidence on the prior recovery branch and is superseded here rather than erased.
+- Action conclusion: `GO` — candidate content committed locally; push, PR, merge, deployment, OTA, production writes and device verification remain unapproved.
+
+#### RA-20260818-001
+
+- Repository: `root`.
+- Selected CRLs: `CRL-20260817-002`, `CRL-20260817-003`, `CRL-20260817-004`, `CRL-20260817-005`, `CRL-20260817-006`, `CRL-20260817-007`.
+- Selected CRL identities: `root/CRL-20260817-002, root/CRL-20260817-003, root/CRL-20260817-004, root/CRL-20260817-005, root/CRL-20260817-006, root/CRL-20260817-007`.
+- Intended action: `push`.
+- Branch: `codex/p1-fdb-fin-20260817-final`; target: `Dev`.
+- Base: `origin/Dev@9bb6822890acbcaa19e265d1a76e1e4ce093a2d2`; fetched at `2026-08-18T00:08:41+1000`.
+- Candidate patch SHA-256: `1a5dcb321dfb344b28583f570be2ed32fb758b25a8fc1a5a65df180f8ef2cf78`, excluding `docs/change-release-ledger.md`.
+- Commit SHA: `e1f0f5475ae5adc19a0f2e6566fd0fad7e6c92ad`; candidate content commit.
+- Pre-push receipt parent: `df6eb127bbb54a96eee6583285526dff69f1fcf6`.
+- Dependencies: paired mobile CRLs `002` through `007`; both repositories must travel together.
+- Required validation: PASS — exact `base...pre-push receipt parent` release report passed with selected paths, 37 hunk fingerprints, clean worktree and no sensitive/generated files.
+- Shared-hunk review: PASS — unchanged from the committed candidate range.
+- Generated-file / secret review: PASS — no generated files, credentials, private bytes, logs or production data are selected.
+- Technical state: `committed`.
+- User authorization: approved-for-push — user confirmed `codex/p1-fdb-fin-20260817-final@7eae27c8ec2eb5aa27bd6aef7d038ba9e646d63c` on 2026-08-19; final receipt-head confirmation remains required before the network push.
+- Independent review: GO for push-attempt receipt commit — independent read-only review verified the exact base, branch, content commit, staged ledger-only scope and absence of nonledger or sensitive changes; this does not authorize `git push`.
+- Action conclusion: `NOT VERIFIED` pending final receipt, push review and final commit-bound confirmation.
+
+### Risks / Release Notes
+
+- The reader now fails rather than self-migrating if the target lacks the existing receipt schema; schema preparation is a separate explicitly authorized deployment concern.
+- Source/local tests do not prove deployed API, historical object availability or device rendering.
+
 ## CRL-20260816-001 — Airbnb 邮件订单缺失年份跨年解析与受控修复（root）
 
 - **Status:** ready (verified release candidate; not committed)
@@ -16886,6 +17292,47 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, customer names, confirmation codes, or sensitive logs were added.
 - Git state: clean release candidate branch based on recorded `origin/Dev`; not committed, pushed, merged, deployed, or applied to production data.
 
+## CRL-20260817-006 — P1-FDB-03 规范回归编号校正（root）
+
+- **Repository:** `root`
+- **Status:** ready; candidate prepared for combined local commit
+- **Updated:** 2026-08-17 Australia/Melbourne
+- **Request:** 修正日用品前后照片保护规则的错误 CRL 编号。
+- **Outcome:** FR-015 明确关联 `root/mobile CRL-20260817-003`；不修改日用品媒体授权或渲染逻辑。
+
+### Implementation
+
+- The combined hunk is deliberately shared with the original source unit because the correction changes its CRL identity only.
+
+### Files / Areas
+
+- `docs/feature-regression-registry.md` — FR-015 paired CRL identity.
+- `docs/change-release-ledger.md` — scope evidence.
+
+### Impact / Dependencies
+
+- Paired unit: `mobile/CRL-20260817-006`; original source unit: `root/mobile CRL-20260817-003`.
+- API / database / migration / storage / authorization / production data: none.
+
+### Validation
+
+- Registry, ledger and diff checks passed in the isolated replacement candidate.
+
+### Staged Commit Scope
+
+- **Repository:** root
+- **Status:** prepared.
+- **Untracked review:** none; clean isolated candidate.
+- `docs/feature-regression-registry.md` — SHA-256: `aa5c8df3c2e50efbcd24a044acf12b7b267af449bd23455f728c543669678858`
+
+### Release Attempts
+
+- None independently recorded; the exact paired combined attempt is recorded under root/CRL-20260817-007.
+
+### Risks / Release Notes
+
+- Governance reconciliation only; it does not prove deployment, object availability or device rendering.
+
 ## CRL-20260814-003 — P1-NTF-01 Legacy Recovery：当天临时通知私有照片认证读取（root）
 
 - **Repository:** `root`
@@ -16993,6 +17440,49 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Runtime risk: local tests cannot prove the deployed backend version or the compatible mobile OTA/build is installed.
 - Security boundary: exact association and collision rejection are fail-closed; no raw R2 URL or broad permission is introduced.
 - Sensitive-information review: no secrets, credentials, tokens, `.env` values, private media payloads, production data, or logs are added.
+
+## CRL-20260817-005 — P1-FDB-02 规范回归编号校正（root）
+
+- **Repository:** `root`
+- **Status:** ready; candidate prepared for combined local commit
+- **Updated:** 2026-08-17 Australia/Melbourne
+- **Request:** 修正历史深清私有媒体的回归登记错误编号，并将其与未推送的安全替代候选一起提交。
+- **Outcome:** FR-010 明确关联 `root/mobile CRL-20260817-002`；不改变深清媒体的精确关联、授权或渲染行为。
+
+### Implementation
+
+- Retains the independently rejected prior push evidence in the new combined Release Attempt; does not delete or overwrite it.
+- Only canonical regression identity evidence changes.
+
+### Files / Areas
+
+- `docs/feature-regression-registry.md` — FR-010 paired CRL identity.
+- `docs/change-release-ledger.md` — scope and release evidence.
+
+### Impact / Dependencies
+
+- Paired unit: `mobile/CRL-20260817-005`; original source unit: `root/mobile CRL-20260817-002`.
+- API / database / migration / storage / authorization / production data: none.
+
+### Validation
+
+- Registry, ledger and diff checks passed in the isolated replacement candidate.
+
+### Staged Commit Scope
+
+- **Repository:** root
+- **Status:** prepared.
+- **Untracked review:** none; clean isolated candidate.
+- `docs/feature-regression-registry.md` — SHA-256: `ab5030dce6324942b28ea936ded3694583cc3df9e6db49edf96694ab01ad57e2`
+- `docs/feature-regression-registry.md` — SHA-256: `6f8992c2a422c0fe2f1e5404ea0b9005126a9030028ec93d8171b5c92aa1d1dd`
+
+### Release Attempts
+
+- None independently recorded; the exact paired combined attempt is recorded under root/CRL-20260817-007.
+
+### Risks / Release Notes
+
+- Governance reconciliation only; it does not prove deployment, object availability or device rendering.
 
 ## CRL-20260814-002 — Root Legacy 冻结边界与分层台账门禁
 
@@ -17250,3 +17740,74 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Rollback: remove `uploading` from `isRetryableStatus()` and remove the new interrupted-upload recovery test.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, sensitive logs, or local caches were added.
 - Git state: implementation pushed to nested mobile `Dev` in commit `0ef9c51`; this root ledger status update is recorded separately.
+## CRL-20260820-003 — 凭证媒体契约质量门接线与本机夹具边界（root）
+
+- **Repository:** `root`
+- **Status:** ready; isolated candidate validated and independently approved for commit.
+- **Updated:** 2026-08-20 Australia/Melbourne
+- **Request:** 已授权修复 RA-20260820-003 独立审查发现的发布阻断：将已登记为 `sufficient` 的报销凭证认证媒体契约纳入 root 后端质量链，并将其测试夹具限制为本机 loopback；随后完成完整根仓质量验证并重新审查。
+- **Outcome:** `check:backend`（以及包含它的 `check:full`）执行专用凭证媒体契约；该 fixture 只绑定 `127.0.0.1`。不改变凭证读取权限、API、数据库、对象存储、移动端逻辑或生产数据。
+
+### Implementation
+
+- Previous behavior: `test_mzapp_expense_receipt_media_contract.ts` 虽登记为 FR-016 的充分保护，却没有 npm script 或 `check:backend` 接线；fixture 的 `app.listen(0)` 由运行时默认选择监听地址。
+- New behavior: 后端定义专用测试 script，root `check:backend` 显式调用它，FR-016 的验证映射指出该质量链；fixture 仅监听 `127.0.0.1` 的随机端口。
+- Key decisions: 只修复质量门与测试边界；不修改 `mzapp` 路由、授权判定、R2、schema、依赖版本、CI 工作流或任何生产数据。
+
+### Files / Areas
+
+- `package.json` — 将专用契约测试纳入 root `check:backend`，使 `check:full` 覆盖它。
+- `backend/package.json` — 暴露 `test:expense-receipt-media-contract`。
+- `backend/scripts/tests/test_mzapp_expense_receipt_media_contract.ts` — fixture 显式绑定 loopback。
+- `docs/feature-regression-registry.md` — FR-016 的执行命令与质量链保护说明。
+- `docs/change-release-ledger.md` — 本 CRL 与发布尝试记录。
+
+### Impact / Dependencies
+
+- API / roles / database / migration / R2 / configuration / production data: none.
+- Dependencies: `root/CRL-20260820-002` remains the blocked Dev/main synchronization candidate; `root/CRL-20260817-004` and `root/CRL-20260817-007` provide the incoming receipt-media contract and original source evidence.
+- Quality boundary: this isolated root `check:full` exercised mobile `origin/Dev` at `2375d8a7c2e0adcb1c3f66ee21e5046f8a3b474b`, but it does not prove an OTA/build, deployment, real device behavior or production behavior.
+
+### Validation
+
+- `npm run test:expense-receipt-media-contract --prefix backend` — passed: the Express fixture bound only to `127.0.0.1`; fixed mock database/R2 contract passed with no production I/O.
+- `npm run check:full` — passed in the isolated reconciliation candidate with empty database environment variables: ledger/registry audits, all backend contracts (including this one), frontend lint + 187 tests + production build, and independent mobile `origin/Dev@2375d8a7c2e0adcb1c3f66ee21e5046f8a3b474b` typecheck/lint + 328 tests. Existing lint warnings did not produce errors.
+- `python3 scripts/audit_change_release_ledger.py --pre-commit --repo root --crl CRL-20260817-002 ... --crl CRL-20260820-003` — passed: 11 staged files / 39 non-ledger hunks, no untracked or unselected path.
+- Independent release review — GO for commit: read-only review of the full staged diff, immutable ledger lineage, candidate fingerprint, quality evidence, secret/generated-file and production-write boundaries found no P0/P1/P2.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared.
+- **Untracked review:** none; the isolated candidate contains no untracked file after temporary validation links, caches and generated output were removed.
+- `backend/package.json` — SHA-256: `01ef1c16e6333d21445523e7307857fe63ec8a18026eb96bb210189f5c56e3d2`
+- `backend/scripts/tests/test_mzapp_expense_receipt_media_contract.ts` — SHA-256: `b6e0b713cf91836682f4dd7f3f896c103bb6eed192bda101ac9d98de6c1d7b89`
+- `docs/feature-regression-registry.md` — SHA-256: `5f2d40e9d5f0a1185995989524ba8a7e9cb4ab5a1d30aa194dfd1cf11ebea7a1`
+- `package.json` — SHA-256: `a4830585fce8375c3cb2132e113512b37e148a263d232d230ca819096302c807`
+
+### Release Attempts
+
+#### RA-20260820-004
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260817-002`, `CRL-20260817-003`, `CRL-20260817-004`, `CRL-20260817-005`, `CRL-20260817-006`, `CRL-20260817-007`, `CRL-20260820-002`, `CRL-20260820-003`
+- Selected CRL identities: `root/CRL-20260817-002`, `root/CRL-20260817-003`, `root/CRL-20260817-004`, `root/CRL-20260817-005`, `root/CRL-20260817-006`, `root/CRL-20260817-007`, `root/CRL-20260820-002`, `root/CRL-20260820-003`
+- Intended action: `commit`
+- Branch: `codex/dev-main-conflict-resolution-20260820`
+- Base: `origin/Dev@a7e766d64230a718e66084c611ed54eb6ca7a24b`; fetched at 2026-08-20 11:40 AEST.
+- Candidate patch SHA-256: `b416df589ccb7250f18e9fa7b7112c30605750fc197ecee91c38111bf81a9b42` excluding `docs/change-release-ledger.md`.
+- Commit SHA: not committed
+- Dependencies: `origin/main@d5683977042daa386d615c97534ef765d8869255`; synchronization candidate `root/CRL-20260820-002` and its declared historical root CRLs.
+- Required validation: PASS; evidence: the dedicated contract and isolated `npm run check:full` passed with database environment variables empty; all temporary links, caches and generated output were removed afterward.
+- Shared-hunk review: PASS; evidence: the pre-commit gate matches 39 non-ledger hunks, and independent review verified incoming `origin/main` implementation is unchanged except the CRL-003 loopback fixture hardening.
+- Generated-file review: PASS; evidence: all temporary dependency links, frontend cache/build output and backend build output were removed or restored before staging.
+- Technical state: verified
+- User authorization: selected-for-commit; evidence: user replied `授权` to the explicitly listed quality-chain and loopback-fixture repair scope on 2026-08-20.
+- Independent review: GO for commit; evidence: independent read-only review verified the full staged diff, `b416df589ccb7250f18e9fa7b7112c30605750fc197ecee91c38111bf81a9b42` candidate fingerprint, quality evidence and no sensitive/generated-file or production-write risk.
+- Action conclusion: GO for commit only. Push, Dev/main merge, deployment and production verification require separate authorization.
+
+### Risks / Release Notes
+
+- Risk: `check:full` can validate the root candidate only; the mobile repository remains a separate, unmodified dependency and is not device proof.
+- Rollback: remove the added npm script/quality-chain invocation and restore the test listener in an authorized follow-up; no data rollback is required.
+- Sensitive-information review: no `.env`, credentials, tokens, database URLs, private media bytes or production data are added.
