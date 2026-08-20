@@ -7,6 +7,53 @@
 - 测试映射必须说明保护点和测试场景；只登记测试文件名不算覆盖证据。
 - `sufficient` 表示当前测试覆盖该保护点；`partial` 表示已有测试但仍有缺口；`not-wired` 表示测试存在但尚未进入对应质量检查；`missing` 表示尚无测试。
 
+## FR-015：日用品更换前后私有照片认证读取
+
+- **维护责任范围：** backend / web / mobile
+- **最后审查日期：** 2026-08-17
+- **状态：** active
+
+### 业务保护规则
+
+- `property_daily_necessities` 的更换前照片来自 `before_photo_urls`（兼容历史 `photo_urls`），更换后照片来自 `after_photo_urls`；三者都必须作为同一日用品记录的媒体关联参与授权判断，不能只读取旧的 `photo_urls`。
+- 仅当 `inventory/...` 私有对象 key 与一条唯一、已授权的日用品记录精确关联时，认证媒体代理才可读取。错误记录、无关 key、歧义关联和未授权用户必须返回 `403`；已授权但对象不存在保持 `404`。
+- Web 与移动端必须将 `inventory/...` 直接 key 和历史 R2 URL 规范化后交给认证媒体读取组件，禁止回退裸私有 URL。移动端日用品 `replaced` / `no_action` 历史记录须保留前后照片，详情和 viewer 使用相同任务上下文。
+
+### 跨层适用范围
+
+- **后端：** `/cleaning-app/media/image` 的 `inventory/...` 来源识别、日用品记录精确关联和移动反馈 payload。
+- **Web：** 日用品更换前后照片的认证缩略图和预览。
+- **移动端：** 日用品处理历史、缩略图、详情、viewer 与认证媒体代理上下文。
+- **一致性：** 不改变 R2 ACL、角色矩阵、对象归属、数据库结构或照片上传写入链路。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 后照片精确关联与私有来源拒绝 | `backend/scripts/tests/test_mzapp_media_visibility.ts` | `after_photo_urls` 命中允许；无关 `inventory/...` key 拒绝；日用品前后字段和查询候选存在 | sufficient | `npm run test:mzapp-media-visibility --prefix backend` |
+| Web 直接 key / 历史 R2 URL 认证读取 | `frontend/src/lib/maintenanceFeedbackMedia.test.ts` | `inventory/...` key 和 legacy URL 均生成现有认证代理请求 | sufficient | `npm run test --prefix frontend -- --run src/lib/maintenanceFeedbackMedia.test.ts --coverage.enabled=false` |
+| 移动端前后照片与任务上下文 | `mz-cleaning-app-frontend/src/lib/cleaningMedia.test.ts` | 前后 `inventory/...` 照片走认证代理；日用品更换记录进入历史详情并展示两组照片 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/cleaningMedia.test.ts src/screens/tasks/FeedbackFormScreen.test.tsx` |
+
+### 验证策略
+
+- **本地：** 后端精确关联、Web URL 规范化、移动端认证渲染与历史详情的定向回归；共享代理和移动媒体工具的全依赖回归在提交前完成。
+- **发布后：** 以有权账号验证日用品通知/反馈的缩略图 → 详情 → viewer；独立错误记录、无关 key 与越权用户仍应为 `403`。
+
+### 最后验证
+
+- **CRL：** root/CRL-20260817-003；paired mobile/CRL-20260817-003
+- **Commit：** not committed
+- **日期：** 2026-08-17
+
+### 相关 CRL
+
+- root/CRL-20260817-003：日用品前后照片精确关联、认证读取与 Web 预览候选。
+- mobile/CRL-20260817-003：日用品历史前后照片认证渲染候选。
+
+### 非保护范围
+
+- 日用品库存数量、通知收件人、Push、Badge、R2 ACL、对象恢复和历史数据修复。
+
 ## FR-001：任务操作权限与 available_actions
 
 - **维护责任范围：** backend / web / mobile
@@ -655,10 +702,10 @@
 - 固定支出模板的金额、付款方式、启停状态和历史已存在快照的批量重算。
 - 除 2026-07 已确认缺失范围外的生产历史数据回填。
 
-## FR-010：维修完工投影与私有图片读取
+## FR-010：维修完工投影与房源反馈私有图片读取
 
-- **维护责任范围：** backend / mobile
-- **最后审查日期：** 2026-08-10
+- **维护责任范围：** backend / web / mobile
+- **最后审查日期：** 2026-08-17
 - **状态：** active
 
 ### 业务保护规则
@@ -666,14 +713,15 @@
 - 维修执行人通过服务端专用完成动作保存的完工照片、备注和未完成原因，必须同步到同一 `work_tasks` 来源投影；不得恢复通用工单 `mark` 接口来绕过维修状态机。
 - 已保存的内部维修完工图片只能从未删除的真实房源维修记录精确匹配；外部维修完工图片只允许管理角色或当前被分配的 `maintenance_staff` 读取。
 - 缩略图、预览和原图都必须通过认证的 `/cleaning-app/media/image` 读取；客户端不得使用 R2 直链或把本地未保存预览当作已保存证据。
+- 历史 `property_deep_cleaning` 记录中的 `deep-cleaning/...` 与 `deep-cleaning-upload/...` 私有引用，只能在唯一、未删除且关联真实房源的深清记录精确匹配后进入同一认证代理；错误、未关联、歧义、已删除或未认证读取保持 `403`，不能降级为 R2 直链。
 - `property_maintenance` 的 `pending_review` 源状态是权威状态：任务中心陈旧的 `assigned` 同步不得回退它，`GET /mzapp/work-tasks` 必须投影规范化源状态。维修前照片字段必须在旧缓存详情只刷新一次后显示，并保留同一任务上下文给认证代理。
 - 网页维修分派的 `photo_urls` 参数保持 PostgreSQL `text[]`，不得按完成照片的 `jsonb` 绑定。
 
 ### 跨层适用范围
 
 - **后端：** `maintenanceWorkflowStore` 任务投影、`cleaning_app` 媒体归属与授权代理。
-- **客户端：** 维修任务详情只使用后端返回的完成字段和认证媒体 URL；移动端 OTA 不属于本根仓发布单元。
-- **入口：** 任务详情中的维修完成/未完成动作，以及相册缩略图和全屏预览。
+- **客户端：** Web 维修/反馈详情与移动端房源反馈只使用认证媒体 URL；移动端 OTA 不属于本根仓发布单元。
+- **入口：** 维修完成/未完成动作、历史深清反馈列表/详情，以及相册缩略图和全屏预览。
 - **一致性：** 服务端以源维修记录、分配关系和角色决定图片读取；客户端不自行扩大权限。
 
 ### 测试映射
@@ -682,29 +730,33 @@
 |---|---|---|---|---|
 | 完工字段投影 | `backend/scripts/tests/test_maintenance_workflow_actions.ts` | 维修任务投影在冲突更新时同步完工照片、备注和原因 | partial | `npm run test:maintenance-workflow-actions --prefix backend` |
 | 完工图片认证读取 | `backend/scripts/tests/test_mzapp_media_visibility.ts` | 内部真实房源精确匹配、外部维修单分配/角色授权和私有代理读取 | partial | `npm run test:mzapp-media-visibility --prefix backend` |
+| 历史深清服务端认证读取 | `backend/scripts/tests/test_mzapp_media_visibility.ts` | 深清的三个持久化字段与项目 before/after 保留精确关联；两个历史前缀仅进入既有唯一关联和认证授权分支 | partial | `npm run test:mzapp-media-visibility --prefix backend` |
+| 历史深清 Web 认证读取 | `frontend/src/lib/maintenanceFeedbackMedia.test.ts` | `deep-cleaning/`、`deep-cleaning-upload/` 的 Web 详情读取认证代理，不回退为原始 URL | sufficient | `npm run test --prefix frontend -- --run src/lib/maintenanceFeedbackMedia.test.ts --coverage.enabled=false` |
+| 历史深清 Mobile 认证读取 | `mz-cleaning-app-frontend/src/lib/cleaningMedia.test.ts` | 两个历史前缀的移动端缩略图和预览携带认证信息与任务上下文，不回退为原始 URL | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/cleaningMedia.test.ts` |
 | 维修源状态与前照片类型 | `backend/scripts/tests/test_maintenance_workflow_actions.ts` | `text[]` 前照片绑定和待审核状态不回退 | sufficient | `npm run test:maintenance-workflow-actions --prefix backend` |
 | 维修详情缓存前照片回填 | `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` | 旧详情缓存只刷新一次并显示前照片 | sufficient | `npm run test -- --runInBand --no-cache src/screens/tasks/TaskDetailScreen.test.tsx`（在 mobile） |
 
 ### 验证策略
 
-- **代码验证：** 运行两个后端契约测试、后端 TypeScript 编译、feature registry 与 ledger audit。
+- **代码验证：** 运行后端精确关联契约、Web/Mobile 认证读取回归、后端 TypeScript 编译、feature registry 与 ledger audit。
 - **集成验证：** 仅在明确确认的非生产环境中，以执行人、管理角色及非关联账号验证内部/外部图片的缩略图、预览、原图和 403 边界。
 - **发布后：** 在真实 TestFlight 维修任务执行“相册选图 → 标记完成 → 重新打开任务 → 缩略图/大图”，不对生产数据做额外测试写入。
 
 ### 最后验证
 
-- **CRL：** CRL-20260807-007
+- **CRL：** root/CRL-20260817-002
 - **Commit：** not committed
-- **日期：** 2026-08-07
+- **日期：** 2026-08-17
 
 ### 相关 CRL
 
 - CRL-20260806-006：维修执行人专用动作当前 Dev 契约重基线。
 - CRL-20260807-007（mobile）：维修详情专用动作路由与认证图片展示。
+- root/CRL-20260817-002、mobile/CRL-20260817-002：历史深清私有媒体前缀兼容与认证读取。
 
 ### 非保护范围
 
-- 维修审核关闭、费用结算、历史生产数据回填和 R2 对象物理删除。
+- 维修审核关闭、费用结算、历史生产数据回填、R2 对象物理删除，以及 R2 ACL/公开读取策略。
 
 ## FR-014：Airbnb 邮件订单缺失年份的跨年日期解析
 
@@ -758,3 +810,56 @@
 ### 非保护范围
 
 - 带显式年份的第三方订单、非 Airbnb 邮件来源、前端自行猜测日期、批量重建全部清洁任务，以及未通过高置信预检的历史订单。
+
+## FR-016：报销凭证认证媒体读取
+
+- **维护责任范围：** backend / mobile（专用报销凭证媒体路由）
+- **最后审查日期：** 2026-08-17
+- **状态：** active
+
+### 业务保护规则
+
+- 已提交的报销凭证图片只能通过凭证 ID、图片 ID 和当前认证用户读取；客户端不得把 `expense_receipt_images.url`、`first_image_url` 或对象存储 URL 直接交给 `Image`。
+- 服务端必须先解析未删除的 `expense_receipts` 记录、精确匹配其 `expense_receipt_images.id`，并在读取对象字节前复用既有凭证权限：凭证提交者须拥有记录所含全部 scope 的 `view.self`；`admin`、`finance_staff`、`customer_service` 保留既有财务详情读取权限。
+- 图片 ID 不属于请求凭证、无权限读者或不被认可的存储引用必须返回 `403 forbidden_media`，且不得访问对象存储；已授权且精确关联的对象缺失返回 `404 media_not_found`。
+- 未提交的上传仅可用当前设备的临时本地 URI 预览；未关联草稿不得调用凭证认证读取路由，也不得回退到裸 URL。保存、重置或移除后必须清除该临时预览映射。
+- 认证响应必须是私有、不可复用缓存；不得复用 `/cleaning-app/media/image`、不得放宽 R2 ACL，也不迁移既有历史对象。
+- 凭证图片 GET 是读取路径：不得调用 `ensureMzappExpenseReceiptSchema()` 或发出任何 DDL。缺少既有凭证 schema 是独立部署/迁移问题，读取请求不得以自建表或改表绕过。
+
+### 跨层适用范围
+
+- **后端：** `expense_receipts`、`expense_receipt_images` 的精确关联，`GET /mzapp/expense-receipts/:receiptId/images/:imageId` 和 R2/历史 `/uploads` 的只读兼容读取。
+- **客户端：** `ExpenseCenterScreen` 的新建草稿、我的记录缩略图、详情缩略图和全屏查看器。
+- **入口：** 移动端“我 → 支出中心”。
+- **一致性：** 数据库的凭证-图片行与当前认证权限是字节读取唯一权威；R2 对象存在不等于可被客户端直接读取。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 凭证-图片精确关联、四类授权角色、越权/错误图片 403、对象缺失 404、读取路径零 DDL | `backend/scripts/tests/test_mzapp_expense_receipt_media_contract.ts` | 仅绑定 `127.0.0.1` 的 Express 路由夹具验证读者必须先通过记录关联和权限，只有允许请求到达 R2，并拒绝 `CREATE` / `ALTER` | sufficient | `npm run test:expense-receipt-media-contract --prefix backend`（由 root `check:backend` / `check:full` 执行） |
+| 认证源构造与草稿/已保存读取边界 | `mz-cleaning-app-frontend/src/lib/expenseReceiptMedia.test.ts` | 认证 header、凭证图片路径与缺失上下文拒绝；页面裸 URL 分支另由 source audit 覆盖 | partial | `npm run test -- --runInBand --no-cache src/lib/expenseReceiptMedia.test.ts`（在 mobile） |
+
+### 验证策略
+
+- **代码验证：** root `check:backend` / `check:full` 必须运行后端凭证媒体契约；另运行移动端凭证媒体测试、两端 typecheck、Registry/ledger audit 和 diff 检查。
+- **发布后：** 用凭证提交者、admin、finance_staff、customer_service 与无关角色依次验证我的记录缩略图、详情缩略图和大图；只读取已有测试凭证，不创建或修改生产财务数据。
+- **存储验证：** 对已授权而对象丢失的历史记录预期得到 404，不以公开 URL或放宽 ACL 绕过。
+
+### 最后验证
+
+- **CRL：** root/CRL-20260820-003；paired mobile/CRL-20260817-007
+- **Commit：** not committed
+- **日期：** 2026-08-20
+
+### 相关 CRL
+
+- root/CRL-20260817-004：报销凭证认证读取与移动端临时预览边界。
+- mobile/CRL-20260817-004：凭证专用认证 source 与 temporary-only 草稿预览。
+- root/CRL-20260817-007、mobile/CRL-20260817-007：凭证图片 GET 的无 DDL 读取边界与私有媒体契约登记。
+- root/CRL-20260820-003：将既有 root 凭证媒体契约接入完整质量链，并通过 isolated root `check:full` 复核。
+
+### 非保护范围
+
+- 旧版 `/mzapp/expenses`、网页 `expense_invoices` 和报表附件的媒体迁移；它们须以独立来源审计处理。
+- R2 ACL 修改、历史对象复制/删除、生产财务数据回填或任何公开下载能力。

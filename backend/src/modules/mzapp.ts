@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { hasPg, pgPool, pgRunInTransaction } from '../dbAdapter'
 import multer from 'multer'
 import path from 'path'
-import { hasR2, r2Upload } from '../r2'
+import { hasR2, r2GetObjectByKey, r2KeyFromUrl, r2Upload } from '../r2'
 import crypto from 'crypto'
 import sharp from 'sharp'
 import fs from 'fs'
@@ -765,6 +765,53 @@ async function listReceiptImages(receiptId: string, db: any = pgPool) {
     [receiptId],
   )
   return r?.rows || []
+}
+
+export function selectMzappExpenseReceiptImage(receipt: any, imageId: unknown) {
+  const id = String(imageId || '').trim()
+  if (!id || !receipt || !String(receipt?.id || '').trim()) return null
+  const matches = (Array.isArray(receipt?.images) ? receipt.images : [])
+    .filter((image: any) => String(image?.id || '').trim() === id)
+  return matches.length === 1 ? matches[0] : null
+}
+
+export function mzappExpenseReceiptMediaObjectKey(reference: unknown) {
+  const key = String(r2KeyFromUrl(String(reference || '').trim()) || '').trim()
+  if (!key.startsWith('mzapp/expenses/')) return null
+  if (key.includes('..') || key.includes('\\') || /[?#]/.test(key)) return null
+  return key
+}
+
+function mzappExpenseReceiptLocalUploadPath(reference: unknown) {
+  const raw = String(reference || '').trim()
+  if (!/^\/uploads\/[A-Za-z0-9][A-Za-z0-9._-]*$/i.test(raw)) return null
+  const root = path.resolve(process.cwd(), 'uploads')
+  const target = path.resolve(root, path.basename(raw))
+  return target.startsWith(`${root}${path.sep}`) ? target : null
+}
+
+function receiptImageContentType(filePath: string) {
+  const ext = path.extname(filePath).toLowerCase()
+  if (ext === '.png') return 'image/png'
+  if (ext === '.webp') return 'image/webp'
+  if (ext === '.gif') return 'image/gif'
+  return 'image/jpeg'
+}
+
+export async function canViewMzappExpenseReceiptMedia(user: any, receipt: any) {
+  if (!user || !receipt) return false
+  if (hasRole(user, 'admin') || hasRole(user, 'finance_staff') || hasRole(user, 'customer_service')) return true
+  const actor = mzappActorId(user)
+  if (String(receipt?.created_by || '') !== actor || String(receipt?.generated_from || '') !== 'mzapp') return false
+  const scopeNames = (Array.isArray(receipt?.items) ? receipt.items : [])
+    .map((item: any) => String(item?.scope || '').trim())
+  const scopes = Array.from(new Set(scopeNames))
+    .filter((scope): scope is MzappExpenseScope => scope === 'company' || scope === 'property')
+  if (!scopes.length) return false
+  for (const scope of scopes) {
+    if (!(await mzappUserHasScopePerm(user, scope, 'view.self'))) return false
+  }
+  return true
 }
 
 async function listReceiptItems(receiptId: string, db: any = pgPool) {
@@ -5117,13 +5164,14 @@ router.get('/expense-receipts/mine', async (req, res) => {
           GROUP BY receipt_id
        ),
        first_image AS (
-         SELECT DISTINCT ON (receipt_id) receipt_id, url AS first_image_url
+         SELECT DISTINCT ON (receipt_id) receipt_id, id AS first_image_id, url AS first_image_url
            FROM expense_receipt_images
           ORDER BY receipt_id, sort_index ASC, created_at ASC NULLS LAST, id ASC
        )
        SELECT r.*,
               COALESCE(s.item_count, 0) AS item_count,
               COALESCE(s.scope_summary, '未分配') AS scope_summary,
+              f.first_image_id,
               f.first_image_url
          FROM expense_receipts
          r
@@ -5142,11 +5190,58 @@ router.get('/expense-receipts/mine', async (req, res) => {
       receipt_total_amount: roundMoney(row?.receipt_total_amount || 0),
       item_count: Number(row?.item_count || 0),
       scope_summary: String(row?.scope_summary || '未分配'),
+      first_image_id: String(row?.first_image_id || '').trim() || null,
       first_image_url: String(row?.first_image_url || '').trim() || null,
     }))
     return res.json({ items: items.slice(offset, offset + limit), total: items.length })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'list_failed' })
+  }
+})
+
+router.get('/expense-receipts/:receiptId/images/:imageId', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const receiptId = String(req.params.receiptId || '').trim()
+  const imageId = String(req.params.imageId || '').trim()
+  if (!receiptId || !imageId) return res.status(400).json({ message: 'invalid_media_context' })
+  if (!hasPg || !pgPool) return res.status(503).json({ message: 'media_storage_unavailable' })
+  try {
+    const receipt = await buildReceiptDetail(receiptId, pgPool)
+    if (!receipt) return res.status(404).json({ code: 'media_not_found', message: 'not_found' })
+    if (!(await canViewMzappExpenseReceiptMedia(user, receipt))) {
+      return res.status(403).json({ code: 'forbidden_media', message: 'forbidden_media' })
+    }
+    const image = selectMzappExpenseReceiptImage(receipt, imageId)
+    if (!image) return res.status(403).json({ code: 'forbidden_media', message: 'forbidden_media' })
+
+    const reference = String(image?.url || '').trim()
+    const objectKey = mzappExpenseReceiptMediaObjectKey(reference)
+    if (objectKey) {
+      if (!hasR2) return res.status(503).json({ code: 'media_storage_unavailable', message: 'media_storage_unavailable' })
+      const object = await r2GetObjectByKey(objectKey)
+      if (!object || !object.body?.length) return res.status(404).json({ code: 'media_not_found', message: 'not_found' })
+      res.setHeader('Content-Type', object.contentType || 'application/octet-stream')
+      res.setHeader('Cache-Control', 'private, no-store, max-age=0')
+      res.setHeader('X-Content-Type-Options', 'nosniff')
+      return res.status(200).send(object.body)
+    }
+
+    const localPath = mzappExpenseReceiptLocalUploadPath(reference)
+    if (!localPath) return res.status(404).json({ code: 'media_not_found', message: 'not_found' })
+    let body: Buffer
+    try {
+      body = await fs.promises.readFile(localPath)
+    } catch {
+      return res.status(404).json({ code: 'media_not_found', message: 'not_found' })
+    }
+    if (!body.length) return res.status(404).json({ code: 'media_not_found', message: 'not_found' })
+    res.setHeader('Content-Type', receiptImageContentType(localPath))
+    res.setHeader('Cache-Control', 'private, no-store, max-age=0')
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+    return res.status(200).send(body)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'media_read_failed' })
   }
 })
 
@@ -9121,7 +9216,11 @@ function propertyFeedbackResponseFromRow(kind: PropertyFeedbackRecordKind, row: 
     note: row.note ? String(row.note) : null,
     detail: String(row.note || ''),
     invoice_description_en: row.invoice_description_en ? String(row.invoice_description_en) : null,
-    media_urls: normalizeUrlArray(row.photo_urls),
+    media_urls: Array.from(new Set([
+      ...normalizeUrlArray(row.before_photo_urls),
+      ...normalizeUrlArray(row.photo_urls),
+    ])),
+    repair_photo_urls: normalizeUrlArray(row.after_photo_urls),
     created_by_name: row.submitter_name || null,
     created_at: row.submitted_at || row.created_at || null,
     ...(capabilities ? { capabilities } : {}),

@@ -6,7 +6,7 @@ process.env.DATABASE_URL = ''
 
 async function main() {
   const { canViewMzappGuestLuggageNoticeMedia, canViewMzappInspectionMedia, canViewMzappLockboxVideo, canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia, propertyFeedbackCapabilities } = await import('../../src/modules/mzapp')
-  const { feedbackMediaUrlArray } = await import('../../src/modules/cleaning_app')
+  const { feedbackMediaRowReferencesKey, feedbackMediaUrlArray } = await import('../../src/modules/cleaning_app')
 
   const row = {
     id: 'media-visibility-task',
@@ -141,6 +141,22 @@ async function main() {
     ['cleaning/feedback-a.jpg', 'cleaning/feedback-b.jpg'],
     'PostgreSQL text[] media values must stay as individual references for feedback authorization',
   )
+  assert.equal(
+    feedbackMediaRowReferencesKey({
+      before_photo_urls: ['inventory/daily-before.jpg'],
+      after_photo_urls: ['inventory/daily-after.jpg'],
+    }, 'inventory/daily-after.jpg'),
+    true,
+    'a daily-replacement after photo must exact-match its recorded source row',
+  )
+  assert.equal(
+    feedbackMediaRowReferencesKey({
+      before_photo_urls: ['inventory/daily-before.jpg'],
+      after_photo_urls: ['inventory/daily-after.jpg'],
+    }, 'inventory/unrelated.jpg'),
+    false,
+    'an unrecorded inventory key must not become readable through a daily-replacement row',
+  )
 
   const mediaRouteSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/cleaning_app.ts'), 'utf8')
   const mediaRouteStart = mediaRouteSource.indexOf("'/media/image'")
@@ -166,6 +182,15 @@ async function main() {
   assert.match(mediaRouteSource, /feedbackMediaUrlArray\(row\?\.completion_photo_urls\)/, 'completion photo references must be exact-matched after candidate lookup')
   assert.match(mediaRouteSource, /key\.startsWith\('maintenance\/'\)/, 'legacy web maintenance object keys must use the authenticated feedback-media proxy')
   assert.match(mediaRouteSource, /to_jsonb\(d\.photo_urls\) AS photo_urls/, 'deep-cleaning legacy media must be normalized before exact reference matching')
+  assert.match(mediaRouteSource, /to_jsonb\(d\.repair_photo_urls\) AS repair_photo_urls/, 'deep-cleaning repair photos must remain exact-match candidates')
+  assert.match(mediaRouteSource, /to_jsonb\(d\.attachment_urls\) AS attachment_urls/, 'deep-cleaning attachments must remain exact-match candidates')
+  assert.match(mediaRouteSource, /to_jsonb\(d\.project_items\) AS project_items/, 'deep-cleaning project before/after photos must remain exact-match candidates')
+  assert.match(mediaRouteSource, /key\.startsWith\('deep-cleaning\/'\)/, 'historical deep-cleaning keys must enter the authenticated feedback-media branch')
+  assert.match(mediaRouteSource, /key\.startsWith\('deep-cleaning-upload\/'\)/, 'historical deep-cleaning upload keys must enter the authenticated feedback-media branch')
+  assert.match(mediaRouteSource, /key\.startsWith\('inventory\/'\)/, 'daily-replacement inventory keys must use the authenticated feedback-media proxy')
+  assert.match(mediaRouteSource, /to_jsonb\(n\.before_photo_urls\) AS before_photo_urls/, 'daily-replacement before photos must be eligible for exact feedback-media authorization')
+  assert.match(mediaRouteSource, /to_jsonb\(n\.after_photo_urls\) AS after_photo_urls/, 'daily-replacement after photos must be eligible for exact feedback-media authorization')
+  assert.match(mediaRouteSource, /n\.after_photo_urls::text/, 'daily-replacement after photos must participate in candidate lookup before the proxy reads R2')
 
   for (const role of ['admin', 'offline_manager', 'customer_service', 'cleaning_inspector', 'cleaner_inspector']) {
     assert.equal(
