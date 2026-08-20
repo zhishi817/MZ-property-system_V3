@@ -162,15 +162,15 @@
 - Branch: `codex/cleaning-sync-checkin-protection-20260820`
 - Base: `origin/Dev@cce3663cd2a5f3532258755176261541428c71eb`; fetched at 2026-08-20 19:45 AEST.
 - Candidate patch SHA-256: `3635aeb6ef31962095ebb005e1d23bb75093ff8de865fd60e8855a18d30fc60b` excluding `docs/change-release-ledger.md`.
-- Commit SHA: not committed
+- Commit SHA: `3e80acfa4aaf9e68c4571deda5d5324db924ee47` (candidate content commit)
 - Dependencies: `root/CRL-20260820-001` is deployed to production; the scope-aware index migration must be applied before this candidate's `checkin_only` repair path may be used in any deployed process.
 - Required validation: PASS — focused memory-mode regression, backend TypeScript build, `check:backend`, `check:full`, Registry/current-worktree audits and the exact pre-commit hunk gate passed with all database environment variables empty. New regressions prove a cancelled scoped update cannot skip an ordinary job or cancel tasks, and a scoped delete cannot supersede an ordinary job.
 - Shared-hunk review: PASS — the regenerated pre-commit gate confirms all 12 staged paths and 45 non-ledger hunks exactly match this CRL; no untracked artifact remains.
 - Generated-file review: PASS — temporary dependency/mobile links, frontend cache/coverage and generated `backend/dist` output were removed; no `.env`, credential, token, raw email, production record or cache is selected.
-- Technical state: verified candidate
+- Technical state: committed
 - User authorization: selected-for-commit; evidence: user authorized the recommended create-only task protection, scope-aware queue-index migration source repair and subsequent P1 corrections on 2026-08-20.
 - Independent review: GO for commit — fourth independent read-only review verified the exact RA-008 fingerprint, 12 staged paths and 45 non-ledger hunks; it found no P0/P1/P2. It specifically confirmed cancelled-order cleanup and deleted supersede are full-only, while scoped cancellation/delete regressions preserve ordinary pending jobs and task projections.
-- Action conclusion: GO for commit — the selected candidate may be committed. Push, migration execution, Dev/main merge, deployment and production verification require separate authorization.
+- Action conclusion: GO for commit — candidate content commit `3e80acfa4aaf9e68c4571deda5d5324db924ee47` is recorded. Push, migration execution, Dev/main merge, deployment and production verification require separate authorization.
 
 ### Risks / Release Notes
 
