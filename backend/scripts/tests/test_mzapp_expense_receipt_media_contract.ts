@@ -83,7 +83,7 @@ async function withServer(run: (baseUrl: string) => Promise<void>) {
   })
   app.use('/mzapp', router)
   const server = await new Promise<any>((resolve) => {
-    const listener = app.listen(0, () => resolve(listener))
+    const listener = app.listen(0, '127.0.0.1', () => resolve(listener))
   })
   try {
     const address = server.address()

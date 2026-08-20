@@ -594,60 +594,104 @@ export function extractFieldsFromHtml(html: string, headerDate: Date): {
     if (firstGood) listing_name = firstGood
   }
   if (listing_name) listing_name = cleanListingName(listing_name)
-  function parseEmailDate(month: number, day: number, explicitYear?: number): { date?: string; yearInferred: boolean } {
-    const parsed = inferAirbnbEmailDate(headerDate, month, day, explicitYear)
-    if (parsed.yearInferred) year_inferred = true
-    return parsed
-  }
-  function pickDateFlexible(kind: 'checkin' | 'checkout'): { date?: string; raw?: string } {
-    const labelRe = kind === 'checkin' ? /check\s*[--–—]?\s*in/i : /check\s*[--–—]?\s*out/i
-    const idx = bodyText.search(labelRe)
-    if (idx < 0) return {}
-    const windowRaw = bodyText.slice(idx, idx + 120)
-    const joinFix = kind === 'checkin'
-      ? /(check\s*[--–—]?\s*in)(Sun|Mon|Tue|Wed|Thu|Fri|Sat)/i
-      : /(check\s*[--–—]?\s*out)(Sun|Mon|Tue|Wed|Thu|Fri|Sat)/i
-    const window = windowRaw.replace(joinFix, '$1 $2')
-    const dayRe = /\b(Sun|Mon|Tue|Wed|Thu|Fri|Sat|Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday),?\s*(\d{1,2})\s+([A-Za-z]{3,9})(?:,?\s+(\d{4}))?/i
-    const m = dayRe.exec(window)
-    if (!m) return {}
+  type DateCandidate = { date: string; raw: string; yearInferred: boolean }
+  const dayRe = /\b(Sun|Mon|Tue|Wed|Thu|Fri|Sat|Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday),?\s*(\d{1,2})\s+([A-Za-z]{3,9})(?:,?\s+(\d{4}))?/i
+  const mx = /([0-9]+)\s+nights?\s+room\s+fee/i.exec(bodyText)
+  if (mx) nights = Number(mx[1])
+  function parseDateText(text: string): DateCandidate | undefined {
+    const m = dayRe.exec(text)
+    if (!m) return undefined
     const day = Number(m[2])
     const mon = parseMonthStr(m[3] || '') || 0
-    if (!mon || !day) return {}
-    const parsed = parseEmailDate(mon, day, m[4] ? Number(m[4]) : undefined)
-    return { date: parsed.date, raw: normalizeText(m[0] || '') }
+    if (!mon || !day) return undefined
+    const parsed = inferAirbnbEmailDate(headerDate, mon, day, m[4] ? Number(m[4]) : undefined)
+    if (!parsed.date) return undefined
+    return { date: parsed.date, raw: normalizeText(m[0] || ''), yearInferred: parsed.yearInferred }
   }
-  {
-    const r = pickDateFlexible('checkin')
-    if (r.date) { checkin = r.date; raw_checkin_text = r.raw }
+  function labelPattern(kind: 'checkin' | 'checkout'): string {
+    return kind === 'checkin' ? 'check\\s*[-–—]?\\s*in' : 'check\\s*[-–—]?\\s*out'
   }
-  {
-    const r = pickDateFlexible('checkout')
-    if (r.date) { checkout = r.date; raw_checkout_text = r.raw }
+  function dateAfterLabel(text: string, kind: 'checkin' | 'checkout'): DateCandidate | undefined {
+    const label = labelPattern(kind)
+    const labelRe = new RegExp(label, 'i')
+    const idx = text.search(labelRe)
+    if (idx < 0) return undefined
+    const windowRaw = text.slice(idx, idx + 180)
+    const joinFix = new RegExp(`(${label})(Sun|Mon|Tue|Wed|Thu|Fri|Sat)`, 'i')
+    return parseDateText(windowRaw.replace(joinFix, '$1 $2'))
   }
-  // Fallback: some templates show dates as headings without explicit labels
-  function pickDatesFromHeadings(): Array<{ date: string; raw: string }> {
-    const out: Array<{ date: string; raw: string }> = []
-    $('p.heading2, h2.heading2, .heading2').each((_i: number, el: any) => {
-      const t = normalizeText($(el).text() || '')
-      if (!t) return
-      const m = /([A-Za-z]{3,9]),?\s*(\d{1,2})\s+([A-Za-z]{3,9})(?:,?\s+(\d{4}))?/i.exec(t)
-      if (!m) return
-      const day = Number(m[2])
-      const mon = parseMonthStr(m[3] || '') || 0
-      if (!mon || !day) return
-      const parsed = parseEmailDate(mon, day, m[4] ? Number(m[4]) : undefined)
-      if (parsed.date) out.push({ date: parsed.date, raw: normalizeText(m[0] || '') })
+  function dedupeDateCandidates(candidates: DateCandidate[]): DateCandidate[] {
+    const byDate = new Map<string, DateCandidate>()
+    candidates.forEach(candidate => {
+      if (!byDate.has(candidate.date)) byDate.set(candidate.date, candidate)
     })
-    return out
+    return Array.from(byDate.values())
   }
-  if (!checkin || !checkout) {
-    const ds = pickDatesFromHeadings()
-    if (!checkin && ds[0]) { checkin = ds[0].date; raw_checkin_text = ds[0].raw }
-    if (!checkout && ds[1]) { checkout = ds[1].date; raw_checkout_text = ds[1].raw }
+  function collectStructuredDateCandidates(kind: 'checkin' | 'checkout'): DateCandidate[] {
+    const candidates: DateCandidate[] = []
+    const labelRe = new RegExp(labelPattern(kind), 'i')
+    $('td, th, p, div, span, section').each((_i: number, el: any) => {
+      const text = normalizeText($(el).text() || '')
+      if (!text || text.length > 260 || !labelRe.test(text)) return
+      const candidate = dateAfterLabel(text, kind)
+      if (candidate) candidates.push(candidate)
+    })
+    return dedupeDateCandidates(candidates)
   }
-  const mx = /([0-9]+)\s+nights\s+room\s+fee/i.exec(bodyText)
-  if (mx) nights = Number(mx[1])
+  function collectTextDateCandidates(kind: 'checkin' | 'checkout'): DateCandidate[] {
+    const candidates: DateCandidate[] = []
+    const labelRe = new RegExp(labelPattern(kind), 'gi')
+    let match: RegExpExecArray | null
+    while ((match = labelRe.exec(bodyText))) {
+      const candidate = dateAfterLabel(bodyText.slice(match.index, match.index + 180), kind)
+      if (candidate) candidates.push(candidate)
+    }
+    return dedupeDateCandidates(candidates)
+  }
+  function selectDatePair(checkinCandidates: DateCandidate[], checkoutCandidates: DateCandidate[]): { checkin?: DateCandidate; checkout?: DateCandidate } {
+    const pairs = new Map<string, { checkin: DateCandidate; checkout: DateCandidate }>()
+    checkinCandidates.forEach(ci => checkoutCandidates.forEach(co => {
+      const stayNights = Math.round((Date.parse(`${co.date}T00:00:00Z`) - Date.parse(`${ci.date}T00:00:00Z`)) / (24 * 60 * 60 * 1000))
+      if (stayNights <= 0) return
+      if (nights && nights > 0 && stayNights !== nights) return
+      pairs.set(`${ci.date}|${co.date}`, { checkin: ci, checkout: co })
+    }))
+    return pairs.size === 1 ? Array.from(pairs.values())[0] : {}
+  }
+  let checkinCandidates = collectStructuredDateCandidates('checkin')
+  let checkoutCandidates = collectStructuredDateCandidates('checkout')
+  if (!checkinCandidates.length) checkinCandidates = collectTextDateCandidates('checkin')
+  if (!checkoutCandidates.length) checkoutCandidates = collectTextDateCandidates('checkout')
+  // Fallback: older templates sometimes use ordered date headings without labels.
+  if (!checkinCandidates.length || !checkoutCandidates.length) {
+    const headingDates: DateCandidate[] = []
+    $('p.heading2, h2.heading2, .heading2').each((_i: number, el: any) => {
+      const candidate = parseDateText(normalizeText($(el).text() || ''))
+      if (candidate) headingDates.push(candidate)
+    })
+    const uniqueHeadings = dedupeDateCandidates(headingDates)
+    if (!checkinCandidates.length && uniqueHeadings[0]) checkinCandidates = [uniqueHeadings[0]]
+    if (!checkoutCandidates.length && uniqueHeadings[1]) checkoutCandidates = [uniqueHeadings[1]]
+  }
+  const selectedDatePair = selectDatePair(checkinCandidates, checkoutCandidates)
+  if (selectedDatePair.checkin && selectedDatePair.checkout) {
+    checkin = selectedDatePair.checkin.date
+    checkout = selectedDatePair.checkout.date
+    raw_checkin_text = selectedDatePair.checkin.raw
+    raw_checkout_text = selectedDatePair.checkout.raw
+    year_inferred = selectedDatePair.checkin.yearInferred || selectedDatePair.checkout.yearInferred
+  } else {
+    if (checkinCandidates.length === 1) {
+      checkin = checkinCandidates[0].date
+      raw_checkin_text = checkinCandidates[0].raw
+      year_inferred = checkinCandidates[0].yearInferred
+    }
+    if (checkoutCandidates.length === 1) {
+      checkout = checkoutCandidates[0].date
+      raw_checkout_text = checkoutCandidates[0].raw
+      year_inferred = year_inferred || checkoutCandidates[0].yearInferred
+    }
+  }
   function parseAmountAfter(label: string): number | undefined {
     const re = new RegExp(label + '\\s*(?:A\\$|AU\\$|AUD\\s*\\$?|\\$)?\\s*([0-9][0-9,.]*)', 'i')
     const m = re.exec(bodyText)
@@ -659,6 +703,30 @@ export function extractFieldsFromHtml(html: string, headerDate: Date): {
   cleaning_fee = parseAmountAfter('Cleaning fee') || 0
   const probe = { code_candidates: codeCandidates, listing_name_raw: listing_name, dates: { checkin_text: raw_checkin_text, checkout_text: raw_checkout_text }, amount: { price, cleaning_fee } }
   return { confirmation_code, guest_name, listing_name, checkin, checkout, nights, price, cleaning_fee, raw_checkin_text, raw_checkout_text, year_inferred, probe }
+}
+
+export type AirbnbStayDateErrorCode = 'CHECKIN_DATE_NOT_FOUND' | 'CHECKOUT_DATE_NOT_FOUND' | 'CHECKIN_CHECKOUT_DATE_INVALID' | 'CHECKIN_CHECKOUT_NIGHTS_MISMATCH'
+
+export function validateAirbnbStayDates(checkin?: string | null, checkout?: string | null, parsedNights?: number): { reason?: AirbnbStayDateErrorCode; nights?: number } {
+  if (!checkin) return { reason: 'CHECKIN_DATE_NOT_FOUND' }
+  if (!checkout) return { reason: 'CHECKOUT_DATE_NOT_FOUND' }
+  const parseIsoDate = (value: string): number | undefined => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+    if (!m) return undefined
+    const year = Number(m[1])
+    const month = Number(m[2])
+    const day = Number(m[3])
+    const timestamp = Date.UTC(year, month - 1, day)
+    const date = new Date(timestamp)
+    if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return undefined
+    return timestamp
+  }
+  const checkinTime = parseIsoDate(checkin)
+  const checkoutTime = parseIsoDate(checkout)
+  if (checkinTime == null || checkoutTime == null || checkoutTime <= checkinTime) return { reason: 'CHECKIN_CHECKOUT_DATE_INVALID' }
+  const nights = Math.round((checkoutTime - checkinTime) / (24 * 60 * 60 * 1000))
+  if (parsedNights != null && parsedNights > 0 && nights !== parsedNights) return { reason: 'CHECKIN_CHECKOUT_NIGHTS_MISMATCH' }
+  return { nights }
 }
 
 async function processMessage(acc: { user: string; pass: string; folder: string }, msg: any, propIndex: Record<string, string>, dryRun: boolean, sourceTag: string) {
@@ -771,10 +839,24 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
   }
   const ci: string | null = fields.checkin ? String(fields.checkin) : null
   const co: string | null = fields.checkout ? String(fields.checkout) : null
-  let nights = fields.nights
-  if ((!nights || nights <= 0) && ci && co) {
-    try { const a = new Date(ci); const b = new Date(co); const ms = b.getTime() - a.getTime(); nights = ms > 0 ? Math.round(ms / (1000 * 60 * 60 * 24)) : 0 } catch { nights = 0 }
+  const dateValidation = validateAirbnbStayDates(ci, co, fields.nights)
+  if (dateValidation.reason) {
+    const sample = {
+      confirmation_code: cc,
+      guest_name: fields.guest_name,
+      listing_name: fields.listing_name,
+      checkin: ci,
+      checkout: co,
+      nights: fields.nights,
+      price: fields.price,
+      cleaning_fee: fields.cleaning_fee,
+      property_match: true,
+      property_id: pid,
+      probe: fields.probe,
+    }
+    return { matched: true, inserted: false, skipped_duplicate: false, failed: true, reason: dateValidation.reason, sample, last_uid: Number(msg.uid || 0) }
   }
+  const nights = fields.nights && fields.nights > 0 ? fields.nights : dateValidation.nights
   const price = round2(fields.price || 0) || 0
   const cleaning = round2(fields.cleaning_fee || 0) || 0
   const net = round2(price - cleaning) || 0
@@ -2527,6 +2609,8 @@ export async function runEmailSyncJob(opts: EmailSyncOptions = {}): Promise<any>
                     const t = String(raw || '').toLowerCase()
                     if (!t) return null
                     if (/not_whitelisted/i.test(t)) return 'not_whitelisted'
+                    if (/^checkin_date_not_found$|^checkout_date_not_found$/i.test(String(raw || ''))) return 'missing_field'
+                    if (/^checkin_checkout_(date_invalid|nights_mismatch)$/i.test(String(raw || ''))) return 'parse_error'
                     if (/missing/i.test(t)) return 'missing_field'
                     if (/db/i.test(t)) return 'db_error'
                     if (/property/i.test(t)) return 'property_not_found'
