@@ -1,5 +1,6 @@
 import { hasPg, pgPool } from '../dbAdapter'
 import { ensureCleaningSyncJobsSchema } from './cleaningSyncJobsSchema'
+import { cleaningSyncJobScope } from './cleaningSyncJobs'
 
 export type CleaningSyncWorkerResult = { processed: number; ok: number; failed: number; reclaimed: number }
 
@@ -40,6 +41,33 @@ function classifyError(e: any): { retriable: boolean; code: string; message: str
   if (code === 'ECONNRESET' || code === 'ETIMEDOUT' || code === 'EPIPE') return { retriable: true, code, message }
   if (/timeout/i.test(message)) return { retriable: true, code, message }
   return { retriable: true, code, message }
+}
+
+export function __test_syncScopeForJob(job: any): 'full' | 'checkin_only' {
+  return cleaningSyncJobScope(job?.payload_snapshot)
+}
+
+export function __test_syncOrderOptionsForJob(job: any): { scope: 'full' | 'checkin_only'; deleted: boolean } {
+  return {
+    scope: __test_syncScopeForJob(job),
+    deleted: String(job?.action || '').trim() === 'deleted',
+  }
+}
+
+export async function __test_dispatchCleaningSyncJob(
+  job: any,
+  client: any,
+  syncOrderToCleaningTasks: (orderId: string, opts: any) => Promise<any>,
+): Promise<void> {
+  const id = String(job?.id || '')
+  const orderId = String(job?.order_id || '')
+  const action = String(job?.action || '')
+  const syncOptions = __test_syncOrderOptionsForJob(job)
+  if (action === 'deleted') {
+    await syncOrderToCleaningTasks(orderId, { deleted: syncOptions.deleted, client, jobId: id, scope: syncOptions.scope })
+    return
+  }
+  await syncOrderToCleaningTasks(orderId, { client, jobId: id, scope: syncOptions.scope })
 }
 
 async function reclaimStuckRunning(timeoutMinutes: number): Promise<number> {
@@ -170,23 +198,20 @@ async function runOne(job: any) {
   const id = String(job?.id || '')
   const orderId = String(job?.order_id || '')
   const action = String(job?.action || '')
+  const syncOptions = __test_syncOrderOptionsForJob(job)
+  const scope = syncOptions.scope
   if (!id || !orderId || !action) throw Object.assign(new Error('invalid_job'), { code: 'JOB_INVALID' })
 
   const client = await pgPool!.connect()
   try {
     await client.query('BEGIN')
     await applyTxTimeouts(client)
-    if (action === 'deleted') {
+    if (action === 'deleted' && scope === 'full') {
       try { await client.query(`DELETE FROM finance_transactions WHERE ref_type='order' AND ref_id=$1`, [orderId]) } catch {}
       try { await client.query(`DELETE FROM company_incomes WHERE ref_type='order' AND ref_id=$1`, [orderId]) } catch {}
     }
     const { syncOrderToCleaningTasks } = require('./cleaningSync')
-    if (action === 'deleted') {
-      await syncOrderToCleaningTasks(orderId, { deleted: true, client, jobId: id })
-      await client.query('COMMIT')
-      return
-    }
-    await syncOrderToCleaningTasks(orderId, { client, jobId: id })
+    await __test_dispatchCleaningSyncJob(job, client, syncOrderToCleaningTasks)
     await client.query('COMMIT')
   } catch (e) {
     try { await client.query('ROLLBACK') } catch {}

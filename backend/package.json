@@ -17,6 +17,7 @@
     "db:alter-email-meta": "ts-node-dev --transpile-only scripts/run_alter_orders_email_meta.ts",
     "backfill:auto-expenses": "ts-node-dev --transpile-only scripts/run_auto_expenses_backfill.ts",
     "test:cleaning-rules": "ts-node-dev --transpile-only scripts/tests/test_cleaning_rules.ts",
+    "test:cleaning-sync-v2": "ts-node-dev --transpile-only scripts/tests/test_cleaning_sync_v2.ts",
     "test:deferred-inspection-checkin-replacement": "ts-node-dev --transpile-only scripts/tests/test_deferred_inspection_checkin_conflict.ts",
     "test:invoice-payment-state": "ts-node-dev --transpile-only scripts/tests/test_invoice_payment_state.ts",
     "test:cleaning-media-image": "ts-node-dev --transpile-only scripts/tests/test_cleaning_media_image.ts",

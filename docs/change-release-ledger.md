@@ -1,5 +1,183 @@
 # Change Release Ledger
 
+## CRL-20260820-004 — 历史订单入住任务受控队列范围保护（root）
+
+- **Repository:** `root`
+- **Status:** ready for independent commit review; RA-20260820-008 contains the rebuilt P1 correction and is not committed.
+- **Updated:** 2026-08-20 Australia/Melbourne
+- **Request:** 在历史 Airbnb 订单日期更正前，为既有 `cleaning_sync_jobs` 增加仅处理 `checkin_clean` 的受控同步范围；不得直接写 `cleaning_tasks`，且不得改变现有退房任务、人工/已锁定/已分配/已完成任务或财务投影。
+- **Outcome:** 新增显式 `checkin_only` 队列作用域。它只在订单有效、有入住日期且尚无入住任务时创建 `checkin_clean`；任何已有入住任务都记录 `skipped_protected`。普通与受控 job 通过 scope-aware active-job identity 隔离，不会互相覆盖；订单取消清理及 deleted supersede 仅由 `full` 执行。该作用域不创建、更新、取消或重算退房任务，不删除财务记录，也不触发延后检查替换或通知副作用。
+
+### Implementation
+
+- Previous behavior: `cleaning_sync_jobs` 的 worker 对所有 `created`/`updated` 订单运行完整双向同步；日期更正批次会同时触及入住和退房投影，不能安全用于只补入住任务。active job 只按 `(order_id, action)` 合并，普通与受控范围会互相覆盖。
+- New behavior: worker 从 job 的 `payload_snapshot.sync_scope` 读取 `checkin_only`；默认值仍是完整同步。该范围先验证订单状态和入住日期，只在不存在入住任务时创建任务，已有记录一律 fail-closed 跳过；随后仅为新建任务执行既有入住旧密码回填。作用域纳入 active-job 查询和唯一索引表达式，普通与受控 job 可并存、同作用域仍幂等合并。`checkin_only` 遇到取消订单或 deleted action 仅保留其无操作路径，不会跳过普通 job 或取消任何任务。
+- Key decisions: 不修改普通订单同步默认语义；新增 scope-aware active-job index migration，部署时必须先执行该迁移后才可使用受控历史修复；不提供自动历史回填。后续修复脚本仍须先取得逐笔原始邮件证据、经用户授权写订单值后才可投递此作用域。
+
+### Files / Areas
+
+- `backend/src/services/cleaningSync.ts` — scoped checkin-only creation, existing-task protection and idempotent conflict behavior.
+- `backend/src/services/cleaningSyncJobs.ts` — scope normalization plus same-scope active-job merge lookup.
+- `backend/src/services/cleaningSyncJobsWorker.ts` — passes the shared queue scope through without financial deletion for a scoped job.
+- `backend/scripts/migrations/20260820_cleaning_sync_job_scope_identity.sql` — migrates the active-job unique index to include normalized scope.
+- `backend/scripts/schema.sql`, `backend/scripts/schema_neon.sql`, `backend/scripts/init_db.ts` — new-database/bootstrap scope-aware index definition.
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — legacy missing-checkin repair, checkout preservation, existing-task/manual-edit protection, two-way queue-scope isolation, same-scope idempotency and migration-contract regression.
+- `backend/package.json`, `package.json` — expose and wire the scoped-sync regression into the backend quality chain.
+- `docs/feature-regression-registry.md` — FR-002 adds the create-only and scope-isolation invariants and maps them to the wired regression.
+- `docs/change-release-ledger.md` — this CRL.
+
+### Impact / Dependencies
+
+- API / configuration: none.
+- Database / migration: a scope-aware replacement of `uniq_cleaning_sync_jobs_order_action_active` is required before any deployed process may enqueue mixed normal and `checkin_only` jobs. This candidate contains migration source only; no database DDL has run.
+- Production data / queue: none in this candidate; no historical job has been enqueued.
+- Dependencies: root/CRL-20260820-001 must already be deployed to prevent new incomplete Airbnb orders. Any historical repair depends on a separate original-email evidence retrieval and explicit production-write authorization.
+
+### Validation
+
+- `env -u DATABASE_URL -u DATABASE_URL_PROD -u NEON_DATABASE_URL_PROD -u PGHOST -u PGPORT -u PGDATABASE -u PGUSER -u PGPASSWORD npm run test:cleaning-sync-v2 --prefix backend` — passed in memory mode: legacy缺入住订单只创建入住任务、原退房日期和已分配状态不变；`checkin_only` 缺入住日期不操作，已有入住任务（含未锁定/未分配/`pending` 的手工日期、旧密码和排期）一律保护跳过；普通→受控、受控→普通 active job 均不合并，同作用域仍幂等合并；索引迁移、schema 和 init 定义均要求 scope identity。另验证 worker 保留 `deleted + checkin_only` 的无操作路径，取消订单的受控 update 与受控 delete 均不会跳过普通 job 或取消任何任务。
+- `npm run build --prefix backend` — passed: TypeScript compile succeeds.
+- `env -u DATABASE_URL -u DATABASE_URL_PROD -u NEON_DATABASE_URL_PROD -u PGHOST -u PGPORT -u PGDATABASE -u PGUSER -u PGPASSWORD npm run check:backend` — passed after the cancellation/supersede P1 correction in the isolated candidate: full backend quality chain including the wired scoped-sync regression. Existing local backend dependency runtime exactly matched `backend/package-lock.json`; the independent mobile `origin/Dev@2375d8a7c2e0adcb1c3f66ee21e5046f8a3b474b` was linked only for the Phase 5 static contract. No dependency install, database connection or production I/O occurred. The first sandbox run was blocked only by its loopback-listener restriction; the controlled local-loopback re-run passed.
+- `env -u DATABASE_URL -u DATABASE_URL_PROD -u NEON_DATABASE_URL_PROD -u PGHOST -u PGPORT -u PGDATABASE -u PGUSER -u PGPASSWORD npm run check:full` — passed after the same P1 correction in the isolated candidate with temporary ignored dependency links to clean source baselines: ledger/FR audits, complete backend chain, frontend lint (existing warnings only), frontend 43 files / 187 tests / production build, and clean-mobile typecheck/lint/test all passed. The links, frontend cache/coverage and generated `backend/dist` output were removed afterwards. No dependency install, database connection or production I/O occurred.
+- `git diff --cached --check`, `npm run check:feature-registry`, `python3 scripts/audit_change_release_ledger.py`, `python3 scripts/audit_change_release_ledger.py --pre-commit --repo root --crl CRL-20260820-004` — passed after the P1 correction: Registry has 13 FRs / 136 mappings; current-worktree coverage and the exact pre-commit gate confirm all 12 candidate paths and 45 non-ledger hunks.
+- Independent release review — RA-20260820-005, RA-20260820-006 and RA-20260820-007 remain preserved NO-GO records; the corrected candidate requires a fresh read-only review before any commit.
+- Not run: commit, push, PR, merge, deployment, production queue run, production data write and device verification.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared; exact hunk receipt is rebuilt after RA-20260820-007 P1 and a fresh independent commit review is pending.
+- **Untracked review:** none; the isolated worktree began clean from `origin/Dev@cce3663cd2a5f3532258755176261541428c71eb` and all temporary validation links/generated output were removed.
+- `backend/package.json` — SHA-256: `f84ebfe3b645afd786ce3f6aceb234b82ca1c1384ad33b01ad2f12b30913489f`
+- `backend/scripts/init_db.ts` — SHA-256: `1dcfce304d60de16786cfeee7d206ad9fba457f12fad920361e5fc8a5396f0b1`
+- `backend/scripts/migrations/20260820_cleaning_sync_job_scope_identity.sql` — SHA-256: `ea0bd25a68e5483eabc16e8b742f86ab00e54541e9cd3baa49dbaa8dd082dfae`
+- `backend/scripts/schema.sql` — SHA-256: `2a51fea1230a0909a4ed8d2a0e41172415fa1e6aaee52fbfb04c6cd53ccb6560`
+- `backend/scripts/schema_neon.sql` — SHA-256: `23235add76f61461fe18b4cf66ba4d9ff9e77b0528829f13ff1a331dff3661eb`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `091af84cf03b8215d86288bf546387b210bcc60b03c2d277b52845ad1c06dfe1`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `13320a2288b4e2b5b6ed65a4bcbb5b62be469b564ad18894a6c120b4770ea48e`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `5714b1d0261565c9c19fd8b029cc168fddf30814bf294f574c4f64bf2dfd3550`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `75e77f38e8be518ce6ceda7013b09986b0b77508b348b4685e4ed25ceaa8640e`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `972c5967cc4dffc6221ad0128fa3c5da980329ea68f7b52d062be49de0357ea2`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `97c0f14b0389a201ea3897e4da12d04bd011145ad535b00aa2375449565a8d4b`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `d790bb420d8fd95262facc21a4c5f87e78ae5c88006ef585f1c77fbda0b47ae1`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `dccdfdf6fce4b4798fc35e9f28a0949cc4a8072509272143258f1f275c6e8d52`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `0df9bd7c39112721f4a668c78a17120a2118e4b3825aafd7f25b809deafeae2f`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `37899dc4f6c708adc3ae1abce966b5da7e574ee4d04783d34029e989745f5c05`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `501a5e21148754e6d5241cfe1c4fb04c376b1405d6509e86876e7e1b961343d9`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `51771a3ff3991a4a01bc614d2a54544c6103d3157e96400a4c89c1dfc43c89dc`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `73d4d3d3ab37e877e1539703bc7fab9c805368b1db79f90256df08dd9c1b1a2f`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `7eb9f34545789b04784941f3dd5322eee1276cd30984784bf1c2edfb3c26bafc`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `80792de3e1dede7becfd60e6af413ad199f6981aec28a43389a3f737250c7cbb`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `8f689b38c6821f1f0589630e0b0d132103c3416af599bc9cd8dc52bd6cfccc02`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `9df806108d38a9768158f4063efc46accb3319e9428af9e934ec85ba504ebedf`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `a2081c7ad689b18350796b985db76205a023433c16255f3db7f8e3d9ae0ba4b0`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `a5765b6636a943785d531c4a42bf2141a7eba42a24de6058864a14ef59ed2642`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `be121d9388d5eee987b386d2009d6a3dd755868e800702d09f8b38cb6d966968`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `e2b99d5102bc30b629391969d67776992bf6dbbb1424081764fc30be9f91aea9`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `fea727aa2d06132053c7870ed7dcbfb78bb05a4fa7afc9582e4ad4f665e2ac0e`
+- `backend/src/services/cleaningSyncJobs.ts` — SHA-256: `478e12a0478328f491091852f86bed2bd413d19b642bbbc8eaf288ccc55fb22b`
+- `backend/src/services/cleaningSyncJobs.ts` — SHA-256: `4ca2afb1e91dfda52dcfb18368b5949fccbf45487957dd41488a9f59f43218ec`
+- `backend/src/services/cleaningSyncJobs.ts` — SHA-256: `5bbe09d2484413f7a3f14abb8c4c15478410c66f27cc1e48bd23feee782eb151`
+- `backend/src/services/cleaningSyncJobs.ts` — SHA-256: `6e55fa346d08a63f41f35c1920220142207f466e7346f2dcbff0b6b2ebc08ab0`
+- `backend/src/services/cleaningSyncJobs.ts` — SHA-256: `80b751dabee98842a0d677511ac32d8a8b945a8407cfc59ab897fd1ff292e6b0`
+- `backend/src/services/cleaningSyncJobs.ts` — SHA-256: `a6ccd453755d529dff57de501c31d8b2d420135dbfa30ee8f12c1ac6100d2cf5`
+- `backend/src/services/cleaningSyncJobsWorker.ts` — SHA-256: `029bfcf05699faeeaaf9e7401663f2a3644118892c8cf09911597cac3fd3cfe3`
+- `backend/src/services/cleaningSyncJobsWorker.ts` — SHA-256: `0f570cfb3c847ed0ceb195e445260a8776a589645d6b7ffc1873ace982effb09`
+- `backend/src/services/cleaningSyncJobsWorker.ts` — SHA-256: `2626666c366eabff21616b3f629423d65de7d1abcddc0e1ecd3715bac7ca0dfd`
+- `backend/src/services/cleaningSyncJobsWorker.ts` — SHA-256: `8a82d7d89324a3e4fd186f144389aafd5431427536716f5b60fe624b5ce2af23`
+- `backend/src/services/cleaningSyncJobsWorker.ts` — SHA-256: `b91bb929ab556da6934fb9ec42a0eae22359843f3815849fdb0fa7eb92d303a6`
+- `docs/feature-regression-registry.md` — SHA-256: `231d329c84c94e5f2a8520dc17e865f6fc20fb751968c6f475c50abb54bc6d4b`
+- `docs/feature-regression-registry.md` — SHA-256: `342369ba0c6c2c8d321ad304946a8bf518aa6ff0ddf49ef5e1afc805dc2c847d`
+- `docs/feature-regression-registry.md` — SHA-256: `c8cca7a88c4418eeddb1dc5aaea7df50148ad71bce91ec3e06c0d1ac1b9f1218`
+- `docs/feature-regression-registry.md` — SHA-256: `e7299dd69e2fe039587ddcf309456320be551d3d6f485a2096678e0fde3b8788`
+- `docs/feature-regression-registry.md` — SHA-256: `e9955d9cdd22d72ab95ba2c9273ea99e62a5d13b6cf91f6dc0528bbe2a6fda8d`
+- `docs/feature-regression-registry.md` — SHA-256: `f0ab60d1628d0ac1a56c459288fcc1fb2cb7385fbca1c39fc8cc6135a917028b`
+- `package.json` — SHA-256: `24ee7824b8974f626b959982987e57c9908a66c9270cd43528000f13750f07ed`
+
+### Release Attempts
+
+#### RA-20260820-005
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260820-004`
+- Selected CRL identities: `root/CRL-20260820-004`
+- Intended action: `commit`
+- Branch: `codex/cleaning-sync-checkin-protection-20260820`
+- Base: `origin/Dev@cce3663cd2a5f3532258755176261541428c71eb`; fetched at 2026-08-20 19:45 AEST.
+- Candidate patch SHA-256: `f07d50b2e231eabcfe46ef7e6e0b3b5d5cc16a12e8301676659f22fefa91082b` excluding `docs/change-release-ledger.md`.
+- Commit SHA: not committed
+- Dependencies: `root/CRL-20260820-001` is deployed to production; this candidate does not include or re-release its parser code.
+- Required validation: FAIL; focused scoped-sync regression, TypeScript build and full `check:backend` passed with database environment variables empty, but independent review found an untested scoped-delete worker path that could create a checkin task.
+- Shared-hunk review: PASS; all six staged paths belong only to this CRL in the clean candidate.
+- Generated-file review: PASS; no generated `dist`, dependency links, caches or untracked artifacts remain.
+- Technical state: candidate
+- User authorization: selected-for-commit; evidence: user instructed `建议顺序执行` for the stated remediation sequence on 2026-08-20.
+- Independent review: NO-GO for commit; P1 in `cleaningSyncJobsWorker.ts`: an `action='deleted'` job carrying `sync_scope='checkin_only'` was passed as `deleted=false`, so it could enter checkin creation/update instead of the explicit scoped no-op path.
+- Action conclusion: BLOCKED; fix the scoped-delete handoff, add a worker-path regression, regenerate the candidate fingerprint and obtain a fresh independent review. Push, Dev/main merge, deployment and production verification require separate authorization.
+
+#### RA-20260820-006
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260820-004`
+- Selected CRL identities: `root/CRL-20260820-004`
+- Intended action: `commit`
+- Branch: `codex/cleaning-sync-checkin-protection-20260820`
+- Base: `origin/Dev@cce3663cd2a5f3532258755176261541428c71eb`; fetched at 2026-08-20 19:45 AEST.
+- Candidate patch SHA-256: `a780914a50bcd0a49f5325aca9cf66577ff1593c51053647edf00be920645e27` excluding `docs/change-release-ledger.md`.
+- Commit SHA: not committed
+- Dependencies: `root/CRL-20260820-001` is deployed to production; this candidate does not include or re-release its parser code.
+- Required validation: BLOCKED — the focused scoped-sync regression, TypeScript build and full `check:backend` passed after the scoped-delete correction with all database environment variables empty; `git diff --cached --check` and the regenerated 6-file/27-hunk pre-commit ledger gate also passed, but independent review identified unprotected manual existing-task edits and queue-scope coalescing that the regression does not cover.
+- Shared-hunk review: PASS — the clean candidate contains only this CRL's six paths and every staged hunk matches the recorded scope.
+- Generated-file review: PASS — no generated `dist`, dependency links, caches or untracked artifacts remain.
+- Technical state: candidate; blocked by independent review findings.
+- User authorization: selected-for-commit; evidence: user instructed `建议顺序执行` for the stated remediation sequence on 2026-08-20.
+- Independent review: NO-GO for commit — (P1) `enqueueCleaningSyncJobTx` and the active-job unique index coalesce normal and `checkin_only` jobs by only `(order_id, action)`, allowing later payload replacement to change a scoped repair into a full sync; (P1) an unassigned pending checkin task manually edited through the ordinary task API remains indistinguishable from an automatic task and can have its date/password/schedule silently overwritten.
+- Action conclusion: BLOCKED — redesign queue scope isolation and restrict this historical scope to safe missing-task creation (or another explicit manual-edit evidence contract), add two-way normal/scoped queue-collision and manual-edit regressions, regenerate the candidate fingerprint and obtain a new independent GO. This may require an explicit schema/index migration decision; do not commit, push, merge, deploy or write production data.
+
+#### RA-20260820-007
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260820-004`
+- Selected CRL identities: `root/CRL-20260820-004`
+- Intended action: `commit`
+- Branch: `codex/cleaning-sync-checkin-protection-20260820`
+- Base: `origin/Dev@cce3663cd2a5f3532258755176261541428c71eb`; fetched at 2026-08-20 19:45 AEST.
+- Candidate patch SHA-256: `75e69100aa5c083343ede00cbd4857380969a6b1c435eaa1c1e4aca243ff6fd8` excluding `docs/change-release-ledger.md`.
+- Commit SHA: not committed
+- Dependencies: `root/CRL-20260820-001` is deployed to production; the scope-aware index migration must be applied before this candidate's `checkin_only` repair path may be used in any deployed process.
+- Required validation: PASS — focused memory-mode regression, backend TypeScript build, `check:backend`, `check:full`, Registry audit, current-worktree ledger coverage and the regenerated pre-commit hunk gate passed with all database environment variables empty.
+- Shared-hunk review: PASS — the regenerated pre-commit gate confirms all 12 staged paths and 43 non-ledger hunks exactly match this CRL; no untracked artifact remains.
+- Generated-file review: PASS — temporary dependency/mobile links and generated `backend/dist` output were removed; no `.env`, credential, token, raw email, production record or cache is selected.
+- Technical state: candidate
+- User authorization: selected-for-commit; evidence: user authorized the recommended create-only task protection and scope-aware queue-index migration source repair on 2026-08-20.
+- Independent review: NO-GO for commit — P1: although active-job lookup is scope-aware, the cancelled-order cleanup and `deleted` supersede paths still ignored scope. A `checkin_only` job could skip ordinary jobs or cancel existing checkout tasks.
+- Action conclusion: BLOCKED — restrict cancellation cleanup and delete supersede to `full`, add both regressions, regenerate the candidate fingerprint and obtain a fresh independent review. Push, migration execution, Dev/main merge, deployment and production verification require separate authorization.
+
+#### RA-20260820-008
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260820-004`
+- Selected CRL identities: `root/CRL-20260820-004`
+- Intended action: `commit`
+- Branch: `codex/cleaning-sync-checkin-protection-20260820`
+- Base: `origin/Dev@cce3663cd2a5f3532258755176261541428c71eb`; fetched at 2026-08-20 19:45 AEST.
+- Candidate patch SHA-256: `3635aeb6ef31962095ebb005e1d23bb75093ff8de865fd60e8855a18d30fc60b` excluding `docs/change-release-ledger.md`.
+- Commit SHA: not committed
+- Dependencies: `root/CRL-20260820-001` is deployed to production; the scope-aware index migration must be applied before this candidate's `checkin_only` repair path may be used in any deployed process.
+- Required validation: PASS — focused memory-mode regression, backend TypeScript build, `check:backend`, `check:full`, Registry/current-worktree audits and the exact pre-commit hunk gate passed with all database environment variables empty. New regressions prove a cancelled scoped update cannot skip an ordinary job or cancel tasks, and a scoped delete cannot supersede an ordinary job.
+- Shared-hunk review: PASS — the regenerated pre-commit gate confirms all 12 staged paths and 45 non-ledger hunks exactly match this CRL; no untracked artifact remains.
+- Generated-file review: PASS — temporary dependency/mobile links, frontend cache/coverage and generated `backend/dist` output were removed; no `.env`, credential, token, raw email, production record or cache is selected.
+- Technical state: verified candidate
+- User authorization: selected-for-commit; evidence: user authorized the recommended create-only task protection, scope-aware queue-index migration source repair and subsequent P1 corrections on 2026-08-20.
+- Independent review: GO for commit — fourth independent read-only review verified the exact RA-008 fingerprint, 12 staged paths and 45 non-ledger hunks; it found no P0/P1/P2. It specifically confirmed cancelled-order cleanup and deleted supersede are full-only, while scoped cancellation/delete regressions preserve ordinary pending jobs and task projections.
+- Action conclusion: GO for commit — the selected candidate may be committed. Push, migration execution, Dev/main merge, deployment and production verification require separate authorization.
+
+### Risks / Release Notes
+
+- Risk: a caller that omits `payload_snapshot.sync_scope` retains existing full-sync semantics; the historical repair script must explicitly set `checkin_only` and carry its repair batch identifier.
+- Rollback: stop enqueuing scoped jobs; no stored production mutation is introduced by this source candidate.
+- Sensitive-information review: no `.env`, credentials, tokens, database URLs, raw email content, task records or financial records are added.
+
 ## CRL-20260820-002 — Dev/main 分支同步与台账冲突保留（root）
 
 - **Repository:** `root`
