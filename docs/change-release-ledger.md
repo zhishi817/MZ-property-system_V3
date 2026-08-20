@@ -17796,15 +17796,15 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Branch: `codex/dev-main-conflict-resolution-20260820`
 - Base: `origin/Dev@a7e766d64230a718e66084c611ed54eb6ca7a24b`; fetched at 2026-08-20 11:40 AEST.
 - Candidate patch SHA-256: `b416df589ccb7250f18e9fa7b7112c30605750fc197ecee91c38111bf81a9b42` excluding `docs/change-release-ledger.md`.
-- Commit SHA: not committed
+- Commit SHA: `40639891b26163bd56b196a27cae64f7bc60b3a3`; candidate content commit.
 - Dependencies: `origin/main@d5683977042daa386d615c97534ef765d8869255`; synchronization candidate `root/CRL-20260820-002` and its declared historical root CRLs.
 - Required validation: PASS; evidence: the dedicated contract and isolated `npm run check:full` passed with database environment variables empty; all temporary links, caches and generated output were removed afterward.
 - Shared-hunk review: PASS; evidence: the pre-commit gate matches 39 non-ledger hunks, and independent review verified incoming `origin/main` implementation is unchanged except the CRL-003 loopback fixture hardening.
 - Generated-file review: PASS; evidence: all temporary dependency links, frontend cache/build output and backend build output were removed or restored before staging.
-- Technical state: verified
+- Technical state: committed
 - User authorization: selected-for-commit; evidence: user replied `授权` to the explicitly listed quality-chain and loopback-fixture repair scope on 2026-08-20.
 - Independent review: GO for commit; evidence: independent read-only review verified the full staged diff, `b416df589ccb7250f18e9fa7b7112c30605750fc197ecee91c38111bf81a9b42` candidate fingerprint, quality evidence and no sensitive/generated-file or production-write risk.
-- Action conclusion: GO for commit only. Push, Dev/main merge, deployment and production verification require separate authorization.
+- Action conclusion: GO — local content commit `40639891b26163bd56b196a27cae64f7bc60b3a3` created. Push, Dev/main merge, deployment and production verification require separate authorization.
 
 ### Risks / Release Notes
 
