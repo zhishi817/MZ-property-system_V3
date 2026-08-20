@@ -718,6 +718,9 @@
 - 未带年份时，必须以邮件头在 `Australia/Melbourne` 的当地日历日为基准：日期严格早于邮件当天才进入下一年；同日或之后的日期仍为邮件当年。
 - 解析前必须校验日历日期；无效日期不得被 JavaScript 自动归一化为另一月份或年份。
 - 无年份且成功解析的日期必须保留原始文本并写入 `year_inferred=true`，使后续审计可区分推断和显式日期。
+- Airbnb 已确认/已变更订单邮件必须优先从实际订单日期卡片提取入住和退房；页面中较早出现但不含日期的 `Check-in details` 等说明文字不得阻断后续真实日期字段的解析。
+- 入住和退房必须从全部候选中组成唯一、合法且与已解析住晚一致的区间；重复同日期标签可去重，缺日期、日期倒置、住晚冲突或多组冲突候选不得写入 `confirmed` 订单。
+- 上述日期不完整或冲突时，导入记录必须以稳定错误码（如 `CHECKIN_DATE_NOT_FOUND`）失败并保留解析审计；不得创建订单或投递清洁同步任务。
 - 对已入库的高置信历史记录，修复只能在固定候选数、住晚一致性、任务锁定和目标日期冲突预检均通过后执行；修复不得直接更新 `cleaning_tasks`，必须投递既有清洁同步队列。
 
 ### 跨层适用范围
@@ -731,25 +734,26 @@
 
 | 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
 |---|---|---|---|---|
-| 缺失年份的年界、同日、事故日期、墨尔本日界、闰日、无效日期和显式年份 | `backend/scripts/test_email_year_rule.ts` | 12 月到 1 月、1 月到 12 月、8 月确认次年 2 月、UTC 与 Australia/Melbourne 日界不同、闰年 2 月 29 日、4 月 31 日拒绝、显式年份优先 | sufficient | `npm run test:email-year-rule --prefix backend` |
+| 缺失年份的年界、同日、事故日期、墨尔本日界、闰日、无效日期、显式年份和日期卡片 | `backend/scripts/test_email_year_rule.ts` | 12 月到 1 月、1 月到 12 月、8 月确认次年 2 月、UTC 与 Australia/Melbourne 日界不同、闰年 2 月 29 日、4 月 31 日拒绝、显式年份优先；`Check-in details` 在前、真实入住/退房日期卡、重复标签、缺入住/退房和住晚冲突 | sufficient | `npm run test:email-year-rule --prefix backend` |
 | 遗留年份推断调用点 | `backend/scripts/test_infer_year.ts` | 年初、年末和同年未来日期都按下一次出现日期解析 | partial | `./backend/node_modules/.bin/ts-node --transpile-only backend/scripts/test_infer_year.ts` |
 | 历史订单修复前置安全 | `backend/scripts/repair_airbnb_email_year_rollover.ts` | 默认只读；固定候选数；住晚、已锁任务、目标日期冲突和 apply 双重确认 | partial | `./backend/node_modules/.bin/ts-node --transpile-only backend/scripts/repair_airbnb_email_year_rollover.ts` |
 
 ### 验证策略
 
-- **代码验证：** 执行日期规则回归、后端 TypeScript no-emit 编译、Registry/ledger audit 和 diff 检查。
+- **代码验证：** 执行日期规则/日期卡片回归、后端 TypeScript no-emit 编译、Registry/ledger audit 和 diff 检查。
 - **生产预检：** 只读重跑严格候选查询，确认候选数、住晚、任务锁定和日期冲突均符合已批准的固定值；不得输出客户信息或数据库连接信息。
 - **生产修复：** 只在代码已部署且另行批准的精确写入操作中，使用 `--apply --expected-count=<approved-count> --acknowledge-cleaning-jobs` 与环境确认；随后确认同步队列完成和订单/任务日期一致。
 
 ### 最后验证
 
-- **CRL：** CRL-20260816-001
+- **CRL：** CRL-20260820-001
 - **Commit：** not committed
-- **日期：** 2026-08-16
+- **日期：** 2026-08-20
 
 ### 相关 CRL
 
 - CRL-20260816-001：Airbnb 邮件订单缺失年份跨年解析与受控修复（root）
+- CRL-20260820-001：Airbnb 邮件日期卡片漏解析与失败闭环（root）
 
 ### 非保护范围
 

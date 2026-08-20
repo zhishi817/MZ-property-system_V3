@@ -1,5 +1,125 @@
 # Change Release Ledger
 
+## CRL-20260820-001 — Airbnb 邮件日期卡片漏解析与失败闭环（root）
+
+- **Repository:** `root`
+- **Status:** ready (staged local candidate; commit review pending)
+- **Updated:** 2026-08-20 Australia/Melbourne
+- **Request:** 修复 Airbnb 订单邮件中较早出现的 `Check-in details` 文案遮蔽真实入住日期卡片，导致订单缺入住日期却仍进入 `confirmed` 并漏建入住任务的问题；先仅执行解析器与回归修复。
+- **Outcome:** 解析器优先读取订单日期卡片，再遍历所有标签候选并只接受唯一、合法且住晚一致的入住/退房组合。缺入住、缺退房、日期非法或住晚冲突会在任何订单/清洁同步写入前失败，并在既有邮件审计中保留稳定错误码。
+
+### Implementation
+
+- Previous behavior: 纯文本扁平化后只取第一个 `Check-in`，`Check-in details` 不含日期时即停止查找；随后 `processMessage()` 仍可写入缺入住日期的 `confirmed` 订单并投递通用清洁同步。
+- New behavior: 先在短 HTML 结构节点中提取日期卡片候选，缺失时扫描全部文本标签；去重后用退房、日期顺序和 `nights` 选择唯一组合。相同日期的重复标签不改变结果，多组冲突候选不任选其一。
+- New failure boundary: `validateAirbnbStayDates()` 在确认/变更订单写入前返回 `CHECKIN_DATE_NOT_FOUND`、`CHECKOUT_DATE_NOT_FOUND`、`CHECKIN_CHECKOUT_DATE_INVALID` 或 `CHECKIN_CHECKOUT_NIGHTS_MISMATCH`；导入项成为失败审计，订单和 `cleaning_sync_jobs` 均不写入。
+- Key decisions: 不暂停正常邮件导入；不重跑旧邮件；不直接更新 `cleaning_tasks`；历史 77 笔订单仍需在部署后单独完成只读预演、队列范围防护和授权修复。
+
+### Files / Areas
+
+- `backend/src/modules/jobs.ts` — 日期卡片候选提取、成对校验、稳定失败码与写入前 fail-closed 边界。
+- `backend/scripts/test_email_year_rule.ts` — 日期卡片、前置说明文本、重复标签、缺入住/退房、住晚冲突和同邮件重解析回归。
+- `docs/feature-regression-registry.md` — FR-014 日期卡片与失败闭环保护规则和验证映射。
+- `docs/execution-records.md` — 已授权第一步、已执行边界和待办记录。
+- `docs/change-release-ledger.md` — 本 CRL。
+
+### Impact / Dependencies
+
+- API / UI: API 字段和管理端展示不变；新异常邮件会在既有邮件同步审计中失败，而不产生不完整订单。
+- Database / migration: no schema migration; 不修改既有生产订单、任务或财务数据。
+- Queue: 新订单仅在日期组合完整通过校验后才会沿用既有 `cleaning_sync_jobs`；本 CRL 不改变 worker 的历史任务撤销/人工任务保护策略。
+- Dependencies: 发布前需通过后端编译、日期回归、registry/ledger audit 和独立只读发布审查；生产历史修复还依赖后续 checkin-only 队列范围防护。
+
+### Validation
+
+- `backend/scripts/test_email_year_rule.ts` — passed using the existing local TypeScript runtime: cross-year/date inference plus date card, preceding `Check-in details`, repeated labels, missing checkin/checkout, conflict and same-message reparse scenarios passed.
+- `backend/scripts/test_email_parse.ts` — passed using the existing local TypeScript runtime: existing payout/cleaning-fee parser contract still passes.
+- `tsc -p backend/.tsconfig.codex-validation.json --noEmit` — passed; the temporary config was removed immediately after the check and only mapped the clean candidate to the existing local dependency runtime. The initial direct compile was not runnable because a fresh worktree intentionally has no `backend/node_modules`; no dependency install was performed.
+- `python3 scripts/audit_feature_regression_registry.py` — passed: 11 FRs / 128 mappings; 70 mobile mappings remain deferred by the baseline audit.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 5 changed files / 5 recorded.
+- `git diff --check` — passed.
+- `python3 scripts/audit_change_release_ledger.py --pre-commit --repo root --crl CRL-20260820-001` — passed: 5 staged files, no untracked/unselected paths and 22 non-ledger hunks exactly match the selected CRL scope.
+- Independent release review — GO for commit only: no P0/P1, generated-file, secret, production-write or scope finding. It noted that the focused date-card test is not currently wired into the all-backend CI chain; this is accepted P2 follow-up, not a commit blocker.
+- Not run: 部署、生产邮件导入、生产数据库写入、清洁队列投递和 77 笔历史订单修复。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared; branch `codex/airbnb-date-card-parser-20260820` is based on `origin/Dev@9bb6822890acbcaa19e265d1a76e1e4ce093a2d2`, refreshed at 2026-08-20 00:24 AEST.
+- **Untracked review:** none; no user worktree files were selected.
+- `backend/src/modules/jobs.ts` — SHA-256: `148dde46407fb5de1bf2bbf0de9266ee34b00caed5bc5ed1132f12d3ab868677`
+- `backend/src/modules/jobs.ts` — SHA-256: `24b7186c45f40666ac74ab9f1f7e2814f47d6cb58b705ed0d664943da07c4001`
+- `backend/src/modules/jobs.ts` — SHA-256: `408e5e4903393b11f0096e1023f493fbfeb35d53df089bd3ddf7c84d835e2abb`
+- `backend/src/modules/jobs.ts` — SHA-256: `548bc3b869e24a1dd8c8308e46b05122147b7f561774a21cf399a4131a4bfbc0`
+- `backend/src/modules/jobs.ts` — SHA-256: `9b0490a5a1bf5b27d61c0e87a96ca5fd4c951e604f2779d118beef20fee88daa`
+- `backend/src/modules/jobs.ts` — SHA-256: `c2f5cafaba39dc68db76e0a9a3ec2be0c462fda27773835e804dab9a0e4b9f53`
+- `backend/src/modules/jobs.ts` — SHA-256: `cac0a46ee2cb69f5b5bd6e75f8fedd21fd33fb7193c9adc4eb540c72f27d945d`
+- `backend/src/modules/jobs.ts` — SHA-256: `d5166904b0de412f7cd30650899d1fc13bc9580912896813fc08851d2b8fe8a8`
+- `backend/src/modules/jobs.ts` — SHA-256: `d89e1d0ac1860beb390b90826cf556fff264a9d6c26c4e72ca2f7726c3217209`
+- `backend/src/modules/jobs.ts` — SHA-256: `de8cb2a6b2c6af2f4d8ff64054191e0291445d087dd49002c5f3665062ffd37f`
+- `backend/src/modules/jobs.ts` — SHA-256: `f0ad5e7fa234b167186ef5dc06a1f11837300a38f648f46aea04185ce38d7fa5`
+- `backend/src/modules/jobs.ts` — SHA-256: `f505c5d75b68544f9f6b77506105b93efb7450c064fb9b84570c1aba18b9ef00`
+- `backend/src/modules/jobs.ts` — SHA-256: `fb9ab90488318ee0de4d99851ed27e68d293f9970286d4e6ad3f482daef6950c`
+- `backend/scripts/test_email_year_rule.ts` — SHA-256: `3f15912b87d5a1e4402f7ab78775153ad7a5541158fdfac4d9c4f4713f7d89e9`
+- `backend/scripts/test_email_year_rule.ts` — SHA-256: `fec1c955b0a86b0b4c2033c8e001c060f1739873fc410078539709cd59c8450b`
+- `docs/execution-records.md` — SHA-256: `68c8260a1ab9a84a398a5f48075074166d50910b5b4345cfa5b325504945dc33`
+- `docs/feature-regression-registry.md` — SHA-256: `2dcd8e6ffcac4739babde317861fe8d72693f7c64dc1bf8992a78b6fbf1f32b0`
+- `docs/feature-regression-registry.md` — SHA-256: `4cc56f802528f6aece5680d8ec926c99ef607f4dc4aece5863e00e88ea19a4a0`
+- `docs/feature-regression-registry.md` — SHA-256: `4eb4f766965c8e1af9d8136ccd90112ea8ee3ae975b4906f744bbfba2bc9f376`
+- `docs/feature-regression-registry.md` — SHA-256: `8b1360ffbe57b7aa44341c5ea2dbfede8ec39e6038deffabe14c3398102dccaf`
+- `docs/feature-regression-registry.md` — SHA-256: `bae26300db6232763444191f91748cb283783b5433317ebf79894362c68c244b`
+- `docs/feature-regression-registry.md` — SHA-256: `df4fbb7db812b7190f799d1f129f7bf9a06c9b7972b57f9db73d64d30c68e61d`
+
+### Release Attempts
+
+#### RA-20260820-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260820-001`
+- Selected CRL identities: `root/CRL-20260820-001`
+- Intended action: `commit`
+- Branch: `codex/airbnb-date-card-parser-20260820`
+- Base: `origin/Dev@9bb6822890acbcaa19e265d1a76e1e4ce093a2d2`; fetched at 2026-08-20 00:24 AEST.
+- Candidate patch SHA-256: `09254843b848f8df02099f6f6248eaf9b8f564d25e6287928d4fd6bc9fb60dee` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `26bfc7c406d63a970a5398115c1d8468dd2e77bd`; audit head is emitted by the exact range report.
+- Dependencies: no schema, database, mobile or deployment dependency; historical 77-order repair is explicitly excluded.
+- Required validation: PASS; focused regression, existing email parser regression, no-emit TypeScript, registry audit, diff check and exact staged-scope audit passed.
+- Shared-hunk review: PASS; independent read-only review checked the selected `backend/src/modules/jobs.ts` and documentation hunks against this CRL only.
+- Generated-file review: not applicable; no generated path is staged.
+- Technical state: `committed`; evidence: candidate content commit `26bfc7c406d63a970a5398115c1d8468dd2e77bd` is a descendant of the recorded base.
+- User authorization: `selected-for-commit`; evidence: user explicitly instructed `提交` for this prepared `root/CRL-20260820-001` candidate on 2026-08-20. This does not authorize push, merge or deployment.
+- Independent review: GO; independent read-only review inspected the exact candidate fingerprint, complete staged diff, AGENTS.md, CRL scope, validation, production-write and secret boundaries. Its GO permits only the stated commit action.
+- Action conclusion: GO; blockers: none for the selected commit action.
+
+#### RA-20260820-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260820-001`
+- Selected CRL identities: `root/CRL-20260820-001`
+- Intended action: `push`
+- Branch: `codex/airbnb-date-card-parser-20260820`
+- Base: `origin/Dev@9bb6822890acbcaa19e265d1a76e1e4ce093a2d2`; fetched at 2026-08-20 00:39 AEST.
+- Candidate patch SHA-256: `09254843b848f8df02099f6f6248eaf9b8f564d25e6287928d4fd6bc9fb60dee` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `26bfc7c406d63a970a5398115c1d8468dd2e77bd`; previous exact audit head `b0cca158d8eee9cd195379c6eac5874b379d9b0f` is the remote branch content at the time of this receipt.
+- Dependencies: no schema, database, mobile or deployment dependency; historical 77-order repair is explicitly excluded.
+- Required validation: PASS for the previously pushed exact code range: focused regression, existing email parser regression, no-emit TypeScript, registry audit, diff check, pre-commit audit and exact range audit all passed.
+- Shared-hunk review: PASS; the previously reviewed code range is unchanged and this receipt modifies only the selected CRL Release Attempts section.
+- Generated-file review: not applicable; no generated path is present.
+- Technical state: `pushed`; evidence: origin accepted `b0cca158d8eee9cd195379c6eac5874b379d9b0f` on `codex/airbnb-date-card-parser-20260820` before this receipt.
+- Remote push evidence: `origin/codex/airbnb-date-card-parser-20260820@b0cca158d8eee9cd195379c6eac5874b379d9b0f` accepted on 2026-08-20.
+- User authorization: `selected-for-commit`; evidence: user instructed `补台账并推送` for this receipt on 2026-08-20. It authorizes creation of this receipt commit only; a resulting commit SHA is required for a separate push authorization.
+- Independent review: GO for the receipt commit only; independent read-only review rechecked the staged RA-002 receipt, exact existing code range, fingerprint, scope, production-write and secret boundaries. It does not authorize push.
+- Action conclusion: NOT VERIFIED; blocker: explicit push authorization for the resulting receipt commit SHA and branch.
+
+### Risks / Release Notes
+
+- Runtime risk: unknown future Airbnb templates without one unique, valid date pair will now fail closed rather than silently create an incomplete confirmed order; operations must monitor the stable email-sync error code.
+- Test follow-up: `test:email-year-rule` is a focused regression command but is not yet part of the all-backend CI command chain; add that wiring in a separately selected CRL.
+- Historical risk: this code does not repair the 77 existing orders or remove/replace their task projections.
+- Rollback: revert the parser/validator and test changes from a clean candidate; no schema or production-data rollback is required for this first step.
+- Sensitive-information review: no database URL, credentials, guest names, confirmation codes, raw email content or production query output are recorded.
+- Git state: staged candidate on `codex/airbnb-date-card-parser-20260820`; not committed, pushed, merged, deployed or production-verified.
+
 ## CRL-20260817-001 — FR-004 挂钥匙视频本地保留回归映射（root governance）
 
 - **Repository:** `root`

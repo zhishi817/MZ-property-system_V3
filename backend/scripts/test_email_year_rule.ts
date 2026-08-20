@@ -1,4 +1,4 @@
-import { extractFieldsFromHtml, inferAirbnbEmailDate } from '../src/modules/jobs'
+import { extractFieldsFromHtml, inferAirbnbEmailDate, validateAirbnbStayDates } from '../src/modules/jobs'
 
 function htmlWithMonths(ciMon: string, coMon: string, ciDay: number = 2, coDay: number = 5) {
   return `
@@ -54,5 +54,36 @@ const explicit = extractFieldsFromHtml(htmlWithMonths('Feb', 'Feb', 7, 15).repla
 assertEqual(explicit.checkin, '2028-02-07', 'explicit checkin year is parsed from HTML')
 assertEqual(explicit.checkout, '2028-02-15', 'explicit checkout year is parsed from HTML')
 assertEqual(explicit.year_inferred, false, 'explicit HTML year does not set inferred flag')
+
+const cardHeaderDate = new Date('2026-08-19T12:00:00Z')
+const cardHtml = `
+<html><body>
+  <div>Check-in details</div>
+  <div class="date-card">
+    <div><span>Check-in</span><span>Thu, 20 Aug</span><span>3:00 pm</span></div>
+    <div><span>Checkout</span><span>Fri, 21 Aug</span><span>10:00 am</span></div>
+  </div>
+  <p>1 night room fee</p>
+</body></html>`
+const card = extractFieldsFromHtml(cardHtml, cardHeaderDate)
+assertEqual(card.checkin, '2026-08-20', 'date card checkin wins over earlier Check-in details text')
+assertEqual(card.checkout, '2026-08-21', 'date card checkout is parsed as a pair')
+assertEqual(card.nights, 1, 'singular night count is parsed')
+assertEqual(card.raw_checkin_text, 'Thu, 20 Aug', 'date card retains raw checkin text')
+assertEqual(card.raw_checkout_text, 'Fri, 21 Aug', 'date card retains raw checkout text')
+
+const repeatedCard = extractFieldsFromHtml(cardHtml.replace('</body>', '<div>Check-in Thu, 20 Aug</div><div>Checkout Fri, 21 Aug</div></body>'), cardHeaderDate)
+assertEqual(repeatedCard.checkin, '2026-08-20', 'duplicate checkin labels with the same date are idempotent')
+assertEqual(repeatedCard.checkout, '2026-08-21', 'duplicate checkout labels with the same date are idempotent')
+assertEqual(JSON.stringify(repeatedCard), JSON.stringify(extractFieldsFromHtml(cardHtml.replace('</body>', '<div>Check-in Thu, 20 Aug</div><div>Checkout Fri, 21 Aug</div></body>'), cardHeaderDate)), 'same message reparse is stable')
+
+const missingCheckin = extractFieldsFromHtml('<html><body><div>Checkout Fri, 21 Aug</div><p>1 night room fee</p></body></html>', cardHeaderDate)
+assertEqual(validateAirbnbStayDates(missingCheckin.checkin, missingCheckin.checkout, missingCheckin.nights).reason, 'CHECKIN_DATE_NOT_FOUND', 'missing checkin receives a stable failure code')
+
+const missingCheckout = extractFieldsFromHtml('<html><body><div>Check-in Thu, 20 Aug</div><p>1 night room fee</p></body></html>', cardHeaderDate)
+assertEqual(validateAirbnbStayDates(missingCheckout.checkin, missingCheckout.checkout, missingCheckout.nights).reason, 'CHECKOUT_DATE_NOT_FOUND', 'missing checkout receives a stable failure code')
+
+const conflictingDates = extractFieldsFromHtml(cardHtml.replace('1 night room fee', '2 nights room fee'), cardHeaderDate)
+assertEqual(validateAirbnbStayDates(conflictingDates.checkin, conflictingDates.checkout, conflictingDates.nights).reason, 'CHECKIN_CHECKOUT_NIGHTS_MISMATCH', 'date and night conflicts fail closed')
 
 console.log('all tests passed')
