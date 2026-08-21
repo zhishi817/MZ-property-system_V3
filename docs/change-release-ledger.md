@@ -172,6 +172,25 @@
 - Independent review: GO for commit — fourth independent read-only review verified the exact RA-008 fingerprint, 12 staged paths and 45 non-ledger hunks; it found no P0/P1/P2. It specifically confirmed cancelled-order cleanup and deleted supersede are full-only, while scoped cancellation/delete regressions preserve ordinary pending jobs and task projections.
 - Action conclusion: GO for commit — candidate content commit `3e80acfa4aaf9e68c4571deda5d5324db924ee47` is recorded. Push, migration execution, Dev/main merge, deployment and production verification require separate authorization.
 
+#### RA-20260821-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260820-004`
+- Selected CRL identities: `root/CRL-20260820-004`
+- Intended action: `push`
+- Branch: `codex/cleaning-sync-checkin-protection-20260820`
+- Base: `origin/Dev@cce3663cd2a5f3532258755176261541428c71eb`; fetched at 2026-08-21 18:45 AEST.
+- Candidate patch SHA-256: `3635aeb6ef31962095ebb005e1d23bb75093ff8de865fd60e8855a18d30fc60b` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `3e80acfa4aaf9e68c4571deda5d5324db924ee47` (candidate content commit)
+- Dependencies: `root/CRL-20260820-001` is deployed to production; the scope-aware index migration remains a separately authorized deployment prerequisite.
+- Required validation: PASS — prior exact content candidate passed focused regression, backend build, `check:backend`, `check:full`, Registry/current-worktree audits and pre-commit/range audits with all database environment variables empty.
+- Shared-hunk review: PASS — exact content range has 12 selected paths and 45 non-ledger hunks; no untracked or generated artifact remains.
+- Generated-file review: PASS — no `.env`, credential, token, raw email, production record, cache or generated output is in the range.
+- Technical state: committed
+- User authorization: not-selected; user authorized push of the prior final receipt on 2026-08-21, but this required push-attempt receipt changes the final branch head and must be confirmed by its exact SHA before network push.
+- Independent review: GO for the exact content commit — RA-20260820-008 fourth independent review found no P0/P1/P2; this receipt does not alter runtime code.
+- Action conclusion: NOT VERIFIED — obtain explicit push confirmation for the final receipt head, then run the exact push range audit and push only this branch. Do not merge, deploy, run migration or write production data.
+
 ### Risks / Release Notes
 
 - Risk: a caller that omits `payload_snapshot.sync_scope` retains existing full-sync semantics; the historical repair script must explicitly set `checkin_only` and carry its repair batch identifier.
