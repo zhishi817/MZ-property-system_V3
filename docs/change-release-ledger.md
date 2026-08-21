@@ -187,9 +187,9 @@
 - Shared-hunk review: PASS — exact content range has 12 selected paths and 45 non-ledger hunks; no untracked or generated artifact remains.
 - Generated-file review: PASS — no `.env`, credential, token, raw email, production record, cache or generated output is in the range.
 - Technical state: committed
-- User authorization: not-selected; user authorized push of the prior final receipt on 2026-08-21, but this required push-attempt receipt changes the final branch head and must be confirmed by its exact SHA before network push.
+- User authorization: approved-for-push; evidence: user explicitly replied `授权` on 2026-08-21 after the final receipt head `605afec5ce6b5cf60562216576652e3232e2ac83` and branch were shown. Selected CRL, base, candidate content commit and branch are unchanged.
 - Independent review: GO for the exact content commit — RA-20260820-008 fourth independent review found no P0/P1/P2; this receipt does not alter runtime code.
-- Action conclusion: NOT VERIFIED — obtain explicit push confirmation for the final receipt head, then run the exact push range audit and push only this branch. Do not merge, deploy, run migration or write production data.
+- Action conclusion: GO for push once the exact range audit passes; push only this branch. Do not merge, deploy, run migration or write production data.
 
 ### Risks / Release Notes
 
