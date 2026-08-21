@@ -13,9 +13,17 @@ export type CleaningSyncAction =
   | 'superseded'
   | 'no_change'
   | 'skipped_locked'
+  | 'skipped_protected'
   | 'failed'
 
-export type SyncOrderToCleaningTasksOpts = { deleted?: boolean; client?: any; jobId?: string }
+export type CleaningSyncScope = 'full' | 'checkin_only'
+
+export type SyncOrderToCleaningTasksOpts = {
+  deleted?: boolean
+  client?: any
+  jobId?: string
+  scope?: CleaningSyncScope
+}
 
 const CHECKOUT_TASK_TYPE = 'checkout_clean'
 const CHECKIN_TASK_TYPE = 'checkin_clean'
@@ -341,13 +349,29 @@ async function loadTaskByOrder(orderId: string, taskType: string, client?: any):
   )
 }
 
-async function insertTask(row: any, client?: any): Promise<any> {
+async function insertTask(row: any, client?: any, opts?: { preserveExisting?: boolean }): Promise<any | null> {
   if (hasPg && (client || pgPool)) {
     await ensureCleaningSchemaV2()
     const exec = client || pgPool!
     let keysRequired = row?.keys_required == null ? null : Number(row.keys_required)
     if (!Number.isFinite(keysRequired as any) || !(keysRequired as any)) keysRequired = null
     if (!keysRequired) keysRequired = 1
+    const conflictSql = opts?.preserveExisting
+      ? `ON CONFLICT ON CONSTRAINT uniq_cleaning_tasks_order_task_type_v3 DO NOTHING`
+      : `ON CONFLICT ON CONSTRAINT uniq_cleaning_tasks_order_task_type_v3
+      DO UPDATE SET
+        property_id = EXCLUDED.property_id,
+        task_date = EXCLUDED.task_date,
+        date = EXCLUDED.date,
+        execution_state = EXCLUDED.execution_state,
+        inspection_mode = COALESCE(cleaning_tasks.inspection_mode, EXCLUDED.inspection_mode),
+        inspection_due_date = CASE
+          WHEN cleaning_tasks.inspection_mode = 'deferred' AND cleaning_tasks.inspection_due_date IS NOT NULL THEN cleaning_tasks.inspection_due_date
+          ELSE EXCLUDED.inspection_due_date
+        END,
+        sync_fingerprint = EXCLUDED.sync_fingerprint,
+        source = EXCLUDED.source,
+        updated_at = now()`
     const sql = `
       INSERT INTO cleaning_tasks(
         id, order_id, property_id,
@@ -362,20 +386,7 @@ async function insertTask(row: any, client?: any): Promise<any> {
         updated_at
       )
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,now())
-      ON CONFLICT ON CONSTRAINT uniq_cleaning_tasks_order_task_type_v3
-      DO UPDATE SET
-        property_id = EXCLUDED.property_id,
-        task_date = EXCLUDED.task_date,
-        date = EXCLUDED.date,
-        execution_state = EXCLUDED.execution_state,
-        inspection_mode = COALESCE(cleaning_tasks.inspection_mode, EXCLUDED.inspection_mode),
-        inspection_due_date = CASE
-          WHEN cleaning_tasks.inspection_mode = 'deferred' AND cleaning_tasks.inspection_due_date IS NOT NULL THEN cleaning_tasks.inspection_due_date
-          ELSE EXCLUDED.inspection_due_date
-        END,
-        sync_fingerprint = EXCLUDED.sync_fingerprint,
-        source = EXCLUDED.source,
-        updated_at = now()
+      ${conflictSql}
       RETURNING *
     `
     const params = [
@@ -403,7 +414,7 @@ async function insertTask(row: any, client?: any): Promise<any> {
       row.manual_task_purpose ? String(row.manual_task_purpose) : null,
     ]
     const r = await exec.query(sql, params)
-    return r?.rows?.[0] || row
+    return r?.rows?.[0] || null
   }
   const next = { ...row }
   ;(db.cleaningTasks as any[]).push(next)
@@ -1060,8 +1071,11 @@ async function syncOneTask(params: {
   propertyId: string | null
   derivedCode?: string | null
   keysRequired: 1 | 2
+  protectExisting?: boolean
+  createOnly?: boolean
+  conflictRetry?: boolean
 }) {
-  const { jobId, orderId, deleted, client, taskType, date, statusLower, propertyId, derivedCode, keysRequired } = params
+  const { jobId, orderId, deleted, client, taskType, date, statusLower, propertyId, derivedCode, keysRequired, protectExisting = false, createOnly = false, conflictRetry = true } = params
   const beforeTask = await loadTaskByOrder(orderId, taskType, client)
 
   if (deleted || !date) {
@@ -1101,9 +1115,39 @@ async function syncOneTask(params: {
       execution_state: ACTIVE_EXECUTION_STATE,
       manual_task_purpose: null,
     }
-    const after = await insertTask(row, client)
+    const after = await insertTask(row, client, { preserveExisting: protectExisting })
+    if (!after && protectExisting && conflictRetry) {
+      return syncOneTask({ ...params, conflictRetry: false })
+    }
+    if (!after) {
+      await logCleaningSync({
+        jobId,
+        orderId,
+        taskId: null,
+        action: protectExisting ? 'skipped_protected' : 'failed',
+        before: null,
+        after: null,
+        meta: { taskType, reason: protectExisting ? 'concurrent_task_unavailable' : 'task_insert_failed' },
+        client,
+      })
+      return { action: protectExisting ? ('skipped_protected' as const) : ('failed' as const) }
+    }
     await logCleaningSync({ jobId, orderId, taskId: after?.id, action: 'created', before: null, after, meta: { fingerprint, taskType }, client })
     return { action: 'created' as const }
+  }
+
+  if (createOnly) {
+    await logCleaningSync({
+      jobId,
+      orderId,
+      taskId: beforeTask.id,
+      action: 'skipped_protected',
+      before: beforeTask,
+      after: beforeTask,
+      meta: { fingerprint, taskType, reason: 'existing_task_not_repaired' },
+      client,
+    })
+    return { action: 'skipped_protected' as const }
   }
 
   if (beforeTask.auto_sync_enabled === false) {
@@ -1159,10 +1203,60 @@ export async function syncOrderToCleaningTasks(orderId: string, opts?: SyncOrder
   const client = opts?.client
   const deleted = !!opts?.deleted
   const jobId = opts?.jobId ? String(opts.jobId) : null
+  const scope: CleaningSyncScope = opts?.scope === 'checkin_only' ? 'checkin_only' : 'full'
   const startedAt = Date.now()
   try {
     await ensureCleaningSchemaV2()
     const keysRequiredFallback: 1 | 2 = 1
+    if (scope === 'checkin_only') {
+      if (deleted) {
+        await logCleaningSync({ jobId, orderId: id, taskId: null, action: 'no_change', before: null, after: null, meta: { scope, reason: 'deleted_order_not_processed' }, client })
+        return { action: 'no_change' as const }
+      }
+      const order = await loadOrder(id, client)
+      if (!order) {
+        await logCleaningSync({ jobId, orderId: id, taskId: null, action: 'no_change', before: null, after: null, meta: { scope, reason: 'order_not_found' }, client })
+        return { action: 'no_change' as const }
+      }
+      const statusLower = String(order.status || '').trim().toLowerCase()
+      const checkinDay = normalizeCheckinDay(order)
+      if (!isValidStatus(statusLower) || !checkinDay) {
+        await logCleaningSync({
+          jobId,
+          orderId: id,
+          taskId: null,
+          action: 'no_change',
+          before: null,
+          after: null,
+          meta: { scope, reason: !isValidStatus(statusLower) ? 'order_not_active' : 'checkin_date_missing' },
+          client,
+        })
+        return { action: 'no_change' as const }
+      }
+      const keysRequired0 = order?.keys_required == null ? keysRequiredFallback : Number(order.keys_required)
+      const keysRequired = (Number.isFinite(keysRequired0) && keysRequired0 >= 2 ? 2 : 1) as 1 | 2
+      const digits = String(order.guest_phone || '').replace(/\D/g, '')
+      const derivedCode = digits.length >= 4 ? digits.slice(-4) : null
+      const rCheckin = await syncOneTask({
+        jobId,
+        orderId: id,
+        deleted: false,
+        client,
+        taskType: CHECKIN_TASK_TYPE,
+        date: checkinDay,
+        statusLower,
+        propertyId: order.property_id ? String(order.property_id) : null,
+        derivedCode,
+        keysRequired,
+        protectExisting: true,
+        createOnly: true,
+      })
+      if (rCheckin.action === 'skipped_protected') return { action: 'skipped_protected' as const }
+      if (rCheckin.action !== 'created') return { action: 'no_change' as const }
+      const rCheckinPassword = await syncCheckinOldCodeFromPreviousStay({ jobId, orderId: id, client })
+      if (rCheckinPassword.action === 'skipped_locked') return { action: 'skipped_locked' as const }
+      return { action: 'created' as const }
+    }
     if (deleted) {
       const r1 = await syncOneTask({ jobId, orderId: id, deleted: true, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower: 'deleted', propertyId: null, derivedCode: null, keysRequired: keysRequiredFallback })
       const r2 = await syncOneTask({ jobId, orderId: id, deleted: true, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower: 'deleted', propertyId: null, derivedCode: null, keysRequired: keysRequiredFallback })
@@ -1308,6 +1402,7 @@ export async function backfillCleaningTasks(params: { dateFrom: string; dateTo: 
     cancelled: 0,
     no_change: 0,
     skipped_locked: 0,
+    skipped_protected: 0,
     failed: 0,
   }
 
@@ -1324,6 +1419,7 @@ export async function backfillCleaningTasks(params: { dateFrom: string; dateTo: 
         else if (a === 'updated') stats.updated++
         else if (a === 'cancelled') stats.cancelled++
         else if (a === 'skipped_locked') stats.skipped_locked++
+        else if (a === 'skipped_protected') stats.skipped_protected++
         else stats.no_change++
       } catch {
         stats.failed++

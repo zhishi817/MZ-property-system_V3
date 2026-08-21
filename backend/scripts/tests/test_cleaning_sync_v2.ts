@@ -1,7 +1,11 @@
 import assert from 'assert'
+import { readFileSync } from 'fs'
+import { resolve } from 'path'
 import { v4 as uuid } from 'uuid'
 import { pgPool } from '../../src/dbAdapter'
 import { ensureCleaningSchemaV2, syncCheckinOldCodeFromPreviousStay, syncCheckoutOldCodeFromCheckinNewCode, syncOrderToCleaningTasks, backfillCleaningTasks } from '../../src/services/cleaningSync'
+import { cleaningSyncJobScope, enqueueCleaningSyncJobTx } from '../../src/services/cleaningSyncJobs'
+import { __test_dispatchCleaningSyncJob, __test_syncOrderOptionsForJob, __test_syncScopeForJob } from '../../src/services/cleaningSyncJobsWorker'
 import { db } from '../../src/store'
 import { buildCleaningTurnoverDisplay, mergeCleaningTurnoverDisplays } from '../../src/lib/cleaningTurnoverDisplay'
 
@@ -28,6 +32,96 @@ async function fetchTaskByType(orderId: string, taskType: string) {
   )
 }
 
+async function assertScopedQueueIdentity() {
+  const rows: Array<{ id: string; order_id: string; action: string; payload_snapshot: any; fingerprint: string; status: string }> = []
+  const orderStatuses = new Map<string, string>()
+  let crossScopeSideEffects = 0
+  const client = {
+    async query(sql: string, params: any[] = []) {
+      if (sql.includes("SELECT lower(coalesce(status, '')) AS s FROM orders")) {
+        return { rows: [{ s: orderStatuses.get(String(params[0])) || 'confirmed' }] }
+      }
+      if (sql.includes('SELECT id, status') && sql.includes('FROM cleaning_sync_jobs')) {
+        const [orderId, action, scope] = params
+        return {
+          rows: rows
+            .filter((row) => row.order_id === orderId && row.action === action && row.status === 'pending' && cleaningSyncJobScope(row.payload_snapshot) === scope)
+            .slice(0, 1),
+        }
+      }
+      if (sql.includes('UPDATE cleaning_sync_jobs') && sql.includes('SET fingerprint=$2')) {
+        const [id, fingerprint, payloadSnapshot] = params
+        const row = rows.find((item) => item.id === id)
+        assert.ok(row, 'same-scope update must target the existing queue row')
+        row.fingerprint = fingerprint
+        row.payload_snapshot = payloadSnapshot
+        return { rowCount: 1, rows: [] }
+      }
+      if (
+        (sql.includes("UPDATE cleaning_sync_jobs") && (sql.includes("SET status='skipped'") || sql.includes("SET status='done'"))) ||
+        sql.includes('UPDATE cleaning_tasks')
+      ) {
+        crossScopeSideEffects += 1
+        return { rowCount: 0, rows: [] }
+      }
+      if (sql.includes('INSERT INTO cleaning_sync_jobs')) {
+        const [id, orderId, action, fingerprint, payloadSnapshot] = params
+        rows.push({ id, order_id: orderId, action, fingerprint, payload_snapshot: payloadSnapshot, status: 'pending' })
+        return { rowCount: 1, rows: [] }
+      }
+      throw new Error(`unexpected_queue_sql:${sql.replace(/\s+/g, ' ').trim().slice(0, 100)}`)
+    },
+  }
+
+  process.env.CLEANING_SYNC_JOBS_EVENT_ENABLED = 'false'
+  const fullThenScoped = 'queue-full-then-scoped'
+  const fullFirst = await enqueueCleaningSyncJobTx(client, { order_id: fullThenScoped, action: 'updated', payload_snapshot: { id: fullThenScoped, revision: 'full-1' } })
+  const scopedSecond = await enqueueCleaningSyncJobTx(client, { order_id: fullThenScoped, action: 'updated', payload_snapshot: { id: fullThenScoped, revision: 'scoped-1', sync_scope: 'checkin_only' } })
+  assert.equal(fullFirst.merged, false)
+  assert.equal(scopedSecond.merged, false, 'a checkin-only job must not merge into a pending normal job')
+  assert.equal(rows.length, 2)
+  assert.deepEqual(rows.map((row) => cleaningSyncJobScope(row.payload_snapshot)).sort(), ['checkin_only', 'full'])
+  assert.equal(rows.find((row) => cleaningSyncJobScope(row.payload_snapshot) === 'full')?.payload_snapshot.revision, 'full-1')
+
+  const scopedThenFull = 'queue-scoped-then-full'
+  const scopedFirst = await enqueueCleaningSyncJobTx(client, { order_id: scopedThenFull, action: 'updated', payload_snapshot: { id: scopedThenFull, revision: 'scoped-1', sync_scope: 'checkin_only' } })
+  const fullSecond = await enqueueCleaningSyncJobTx(client, { order_id: scopedThenFull, action: 'updated', payload_snapshot: { id: scopedThenFull, revision: 'full-1' } })
+  assert.equal(scopedFirst.merged, false)
+  assert.equal(fullSecond.merged, false, 'a normal job must not merge into a pending checkin-only job')
+  assert.equal(rows.filter((row) => row.order_id === scopedThenFull).length, 2)
+  assert.deepEqual(rows.filter((row) => row.order_id === scopedThenFull).map((row) => cleaningSyncJobScope(row.payload_snapshot)).sort(), ['checkin_only', 'full'])
+
+  const fullMerge = await enqueueCleaningSyncJobTx(client, { order_id: fullThenScoped, action: 'updated', payload_snapshot: { id: fullThenScoped, revision: 'full-2' } })
+  assert.equal(fullMerge.merged, true, 'same-scope normal jobs should remain idempotently coalesced')
+  assert.equal(rows.length, 4)
+  assert.equal(rows.find((row) => row.order_id === fullThenScoped && cleaningSyncJobScope(row.payload_snapshot) === 'full')?.payload_snapshot.revision, 'full-2')
+  assert.equal(rows.find((row) => row.order_id === fullThenScoped && cleaningSyncJobScope(row.payload_snapshot) === 'checkin_only')?.payload_snapshot.revision, 'scoped-1')
+
+  const scopedCancelled = 'queue-scoped-cancelled'
+  await enqueueCleaningSyncJobTx(client, { order_id: scopedCancelled, action: 'updated', payload_snapshot: { id: scopedCancelled, revision: 'full-1' } })
+  orderStatuses.set(scopedCancelled, 'cancelled')
+  const cancelledScopedResult = await enqueueCleaningSyncJobTx(client, { order_id: scopedCancelled, action: 'updated', payload_snapshot: { id: scopedCancelled, revision: 'scoped-1', sync_scope: 'checkin_only' } })
+  assert.deepEqual(cancelledScopedResult, { id: '', merged: false }, 'a scoped update for a cancelled order must be a no-op')
+  assert.equal(rows.filter((row) => row.order_id === scopedCancelled && cleaningSyncJobScope(row.payload_snapshot) === 'full' && row.status === 'pending').length, 1, 'a scoped cancellation no-op must preserve the normal pending job')
+  assert.equal(crossScopeSideEffects, 0, 'a scoped cancellation no-op must not skip normal jobs or cancel tasks')
+
+  const scopedDeleted = 'queue-scoped-deleted'
+  await enqueueCleaningSyncJobTx(client, { order_id: scopedDeleted, action: 'updated', payload_snapshot: { id: scopedDeleted, revision: 'full-1' } })
+  const deletedScopedResult = await enqueueCleaningSyncJobTx(client, { order_id: scopedDeleted, action: 'deleted', payload_snapshot: { id: scopedDeleted, revision: 'scoped-delete', sync_scope: 'checkin_only' } })
+  assert.equal(deletedScopedResult.merged, false)
+  assert.equal(rows.filter((row) => row.order_id === scopedDeleted && cleaningSyncJobScope(row.payload_snapshot) === 'full' && row.status === 'pending').length, 1, 'a scoped delete must not supersede the normal pending job')
+  assert.equal(rows.filter((row) => row.order_id === scopedDeleted && cleaningSyncJobScope(row.payload_snapshot) === 'checkin_only' && row.action === 'deleted' && row.status === 'pending').length, 1, 'the scoped delete remains isolated for the worker no-op path')
+  assert.equal(crossScopeSideEffects, 0, 'a scoped delete must not change normal queue state or task projections')
+
+  const migration = readFileSync(resolve(__dirname, '../migrations/20260820_cleaning_sync_job_scope_identity.sql'), 'utf8')
+  assert.match(migration, /DROP INDEX IF EXISTS uniq_cleaning_sync_jobs_order_action_active/i)
+  assert.match(migration, /payload_snapshot->>'sync_scope'/)
+  for (const file of ['../schema.sql', '../schema_neon.sql', '../init_db.ts']) {
+    const source = readFileSync(resolve(__dirname, file), 'utf8')
+    assert.match(source, /payload_snapshot->>'sync_scope'/, `${file} must initialize the scope-aware active-job identity`)
+  }
+}
+
 async function main() {
   const o1 = uuid()
   const o2 = uuid()
@@ -36,11 +130,33 @@ async function main() {
   const o5 = uuid()
   const o6 = uuid()
   const o7 = uuid()
+  const o8 = uuid()
   const manualCheckin = uuid()
   const manualCheckout = uuid()
   const manualExtraCheckin = uuid()
   const manualCheckoutInProgress = uuid()
   const manualCheckinZeroNights = uuid()
+
+  await assertScopedQueueIdentity()
+
+  assert.equal(__test_syncScopeForJob({ payload_snapshot: { sync_scope: 'checkin_only' } }), 'checkin_only', 'worker must forward the explicit checkin-only queue scope')
+  assert.equal(__test_syncScopeForJob({ payload_snapshot: { sync_scope: 'unknown' } }), 'full', 'unknown queue scope must retain the existing full-sync default')
+  assert.deepEqual(
+    __test_syncOrderOptionsForJob({ action: 'deleted', payload_snapshot: { sync_scope: 'checkin_only' } }),
+    { scope: 'checkin_only', deleted: true },
+    'a scoped delete job must remain a no-op delete path instead of creating a checkin task',
+  )
+  const deletedScopedWorkerCalls: Array<{ orderId: string; opts: any }> = []
+  await __test_dispatchCleaningSyncJob(
+    { id: 'scoped-delete-job', order_id: 'scoped-delete-order', action: 'deleted', payload_snapshot: { sync_scope: 'checkin_only' } },
+    { test_client: true },
+    async (orderId, opts) => { deletedScopedWorkerCalls.push({ orderId, opts }) },
+  )
+  assert.deepEqual(
+    deletedScopedWorkerCalls,
+    [{ orderId: 'scoped-delete-order', opts: { deleted: true, client: { test_client: true }, jobId: 'scoped-delete-job', scope: 'checkin_only' } }],
+    'worker delete dispatch must retain deleted=true so the scoped service path is a no-op',
+  )
 
   const orders = [
     { id: o1, property_id: 'P_TEST_A', checkin: '2026-02-10', checkout: '2026-02-12', nights: 2, status: 'confirmed', confirmation_code: `TEST_SYNC_${o1.slice(0, 8)}` },
@@ -50,13 +166,14 @@ async function main() {
     { id: o5, property_id: 'P_TEST_E', checkin: '2026-02-24', checkout: '2026-02-28', nights: 4, status: 'confirmed', confirmation_code: `TEST_SYNC_${o5.slice(0, 8)}` },
     { id: o6, property_id: 'P_TEST_PASSWORD_CHAIN', checkin: '2026-02-01', checkout: '2026-02-03', nights: 2, status: 'confirmed', confirmation_code: `TEST_SYNC_${o6.slice(0, 8)}` },
     { id: o7, property_id: 'P_TEST_PASSWORD_CHAIN', checkin: '2026-02-05', checkout: '2026-02-08', nights: 3, status: 'confirmed', confirmation_code: `TEST_SYNC_${o7.slice(0, 8)}` },
+    { id: o8, property_id: 'P_TEST_CHECKIN_SCOPE', checkin: null, checkout: '2026-02-26', nights: 1, status: 'confirmed', confirmation_code: `TEST_SYNC_${o8.slice(0, 8)}` },
   ]
 
   if (pgPool) {
     await ensureCleaningSchemaV2()
-    await pgPool.query('DELETE FROM cleaning_sync_logs WHERE order_id = ANY($1)', [[o1, o2, o3, o4, o5, o6, o7]])
-    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o3, o4, o5, o6, o7], [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress, manualCheckinZeroNights]])
-    await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [[o1, o2, o3, o4, o5, o6, o7]])
+    await pgPool.query('DELETE FROM cleaning_sync_logs WHERE order_id = ANY($1)', [[o1, o2, o3, o4, o5, o6, o7, o8]])
+    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o3, o4, o5, o6, o7, o8], [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress, manualCheckinZeroNights]])
+    await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [[o1, o2, o3, o4, o5, o6, o7, o8]])
     for (const o of orders) {
       await pgPool.query(
         `INSERT INTO orders(id, property_id, checkin, checkout, nights, status, confirmation_code)
@@ -80,6 +197,100 @@ async function main() {
   assert.ok(t1i, 'should create checkin task for confirmed order')
   assert.equal(String(t1i.task_date).slice(0, 10), '2026-02-10')
   assert.equal(t1i.old_code == null ? null : String(t1i.old_code), null, 'a checkin without a prior password source should remain blank')
+
+  await syncOrderToCleaningTasks(o8)
+  const o8CheckoutBeforeRepair = await fetchTask(o8)
+  assert.ok(o8CheckoutBeforeRepair, 'a legacy incomplete order can have only a checkout task')
+  assert.equal(await fetchTaskByType(o8, 'checkin_clean'), null, 'a missing checkin date must not create a checkin task')
+  const o8MissingDateRepair = await syncOrderToCleaningTasks(o8, { scope: 'checkin_only' })
+  assert.equal(o8MissingDateRepair.action, 'no_change', 'checkin-only repair must not cancel or create work without a checkin date')
+  if (pgPool) {
+    await pgPool.query(`UPDATE cleaning_tasks SET assignee_id='CHECKOUT_ASSIGNEE', status='assigned' WHERE id=$1`, [String(o8CheckoutBeforeRepair.id)])
+    await pgPool.query(`UPDATE orders SET checkin=$2::date, checkout=$3::date, nights=3 WHERE id=$1`, [o8, '2026-02-25', '2026-02-28'])
+  } else {
+    const checkout = await fetchTask(o8)
+    if (checkout) { checkout.assignee_id = 'CHECKOUT_ASSIGNEE'; checkout.status = 'assigned' }
+    const order = (db.orders as any[]).find((x: any) => String(x.id) === o8)
+    if (order) { order.checkin = '2026-02-25'; order.checkout = '2026-02-28'; order.nights = 3 }
+  }
+  const o8CheckinRepair = await syncOrderToCleaningTasks(o8, { scope: 'checkin_only' })
+  assert.equal(o8CheckinRepair.action, 'created', 'checkin-only repair should create the missing checkin task')
+  const o8Checkin = await fetchTaskByType(o8, 'checkin_clean')
+  const o8CheckoutAfterRepair = await fetchTask(o8)
+  assert.ok(o8Checkin)
+  assert.equal(String(o8Checkin.task_date).slice(0, 10), '2026-02-25')
+  assert.equal(String(o8CheckoutAfterRepair?.task_date).slice(0, 10), '2026-02-26', 'checkin-only repair must not move the existing checkout task')
+  assert.equal(String(o8CheckoutAfterRepair?.status), 'assigned', 'checkin-only repair must not overwrite the existing checkout task')
+  if (pgPool) {
+    await pgPool.query(`UPDATE cleaning_tasks SET old_code='MANUAL_OLD_CODE', scheduled_at=now(), status='pending', locked=false, auto_sync_enabled=true WHERE id=$1`, [String(o8Checkin.id)])
+    await pgPool.query(`UPDATE orders SET checkin=$2::date WHERE id=$1`, [o8, '2026-02-24'])
+  } else {
+    const checkin = await fetchTaskByType(o8, 'checkin_clean')
+    if (checkin) { checkin.old_code = 'MANUAL_OLD_CODE'; checkin.scheduled_at = '2026-02-25T09:00:00.000Z'; checkin.status = 'pending'; checkin.locked = false; checkin.auto_sync_enabled = true }
+    const order = (db.orders as any[]).find((x: any) => String(x.id) === o8)
+    if (order) order.checkin = '2026-02-24'
+  }
+  const o8ManualExistingSkip = await syncOrderToCleaningTasks(o8, { scope: 'checkin_only' })
+  assert.equal(o8ManualExistingSkip.action, 'skipped_protected', 'a pending, unassigned manually edited checkin task must not be overwritten')
+  const o8ManualExisting = await fetchTaskByType(o8, 'checkin_clean')
+  assert.equal(String(o8ManualExisting?.task_date).slice(0, 10), '2026-02-25')
+  assert.equal(String(o8ManualExisting?.old_code), 'MANUAL_OLD_CODE')
+  assert.ok(o8ManualExisting?.scheduled_at, 'a manually scheduled checkin task must remain scheduled')
+
+  const o8CheckinRepeat = await syncOrderToCleaningTasks(o8, { scope: 'checkin_only' })
+  assert.equal(o8CheckinRepeat.action, 'skipped_protected', 'repeating a scoped repair must preserve an existing checkin task')
+
+  if (pgPool) {
+    await pgPool.query(`UPDATE cleaning_tasks SET assignee_id='CHECKIN_ASSIGNEE', status='assigned' WHERE id=$1`, [String(o8Checkin.id)])
+    await pgPool.query(`UPDATE orders SET checkin=$2::date WHERE id=$1`, [o8, '2026-02-24'])
+  } else {
+    const checkin = await fetchTaskByType(o8, 'checkin_clean')
+    if (checkin) { checkin.assignee_id = 'CHECKIN_ASSIGNEE'; checkin.status = 'assigned' }
+    const order = (db.orders as any[]).find((x: any) => String(x.id) === o8)
+    if (order) order.checkin = '2026-02-24'
+  }
+  const o8AssignedSkip = await syncOrderToCleaningTasks(o8, { scope: 'checkin_only' })
+  assert.equal(o8AssignedSkip.action, 'skipped_protected', 'assigned checkin task must be protected from a scoped repair')
+  assert.equal(String((await fetchTaskByType(o8, 'checkin_clean'))?.task_date).slice(0, 10), '2026-02-25')
+
+  if (pgPool) {
+    await pgPool.query(`UPDATE cleaning_tasks SET assignee_id=NULL, status='pending', locked=true WHERE id=$1`, [String(o8Checkin.id)])
+    await pgPool.query(`UPDATE orders SET checkin=$2::date WHERE id=$1`, [o8, '2026-02-23'])
+  } else {
+    const checkin = await fetchTaskByType(o8, 'checkin_clean')
+    if (checkin) { checkin.assignee_id = null; checkin.status = 'pending'; checkin.locked = true }
+    const order = (db.orders as any[]).find((x: any) => String(x.id) === o8)
+    if (order) order.checkin = '2026-02-23'
+  }
+  const o8LockedSkip = await syncOrderToCleaningTasks(o8, { scope: 'checkin_only' })
+  assert.equal(o8LockedSkip.action, 'skipped_protected', 'locked checkin task must be protected from a scoped repair')
+  assert.equal(String((await fetchTaskByType(o8, 'checkin_clean'))?.task_date).slice(0, 10), '2026-02-25')
+
+  if (pgPool) {
+    await pgPool.query(`UPDATE cleaning_tasks SET locked=false, auto_sync_enabled=false WHERE id=$1`, [String(o8Checkin.id)])
+    await pgPool.query(`UPDATE orders SET checkin=$2::date WHERE id=$1`, [o8, '2026-02-22'])
+  } else {
+    const checkin = await fetchTaskByType(o8, 'checkin_clean')
+    if (checkin) { checkin.locked = false; checkin.auto_sync_enabled = false }
+    const order = (db.orders as any[]).find((x: any) => String(x.id) === o8)
+    if (order) order.checkin = '2026-02-22'
+  }
+  const o8AutoSyncSkip = await syncOrderToCleaningTasks(o8, { scope: 'checkin_only' })
+  assert.equal(o8AutoSyncSkip.action, 'skipped_protected', 'auto-sync-disabled checkin task must be protected from a scoped repair')
+  assert.equal(String((await fetchTaskByType(o8, 'checkin_clean'))?.task_date).slice(0, 10), '2026-02-25')
+
+  if (pgPool) {
+    await pgPool.query(`UPDATE cleaning_tasks SET auto_sync_enabled=true, status='completed', finished_at=now() WHERE id=$1`, [String(o8Checkin.id)])
+    await pgPool.query(`UPDATE orders SET checkin=$2::date WHERE id=$1`, [o8, '2026-02-21'])
+  } else {
+    const checkin = await fetchTaskByType(o8, 'checkin_clean')
+    if (checkin) { checkin.auto_sync_enabled = true; checkin.status = 'completed'; checkin.finished_at = new Date().toISOString() }
+    const order = (db.orders as any[]).find((x: any) => String(x.id) === o8)
+    if (order) order.checkin = '2026-02-21'
+  }
+  const o8CompletedSkip = await syncOrderToCleaningTasks(o8, { scope: 'checkin_only' })
+  assert.equal(o8CompletedSkip.action, 'skipped_protected', 'completed checkin task must be protected from a scoped repair')
+  assert.equal(String((await fetchTaskByType(o8, 'checkin_clean'))?.task_date).slice(0, 10), '2026-02-25')
 
   await syncOrderToCleaningTasks(o6)
   if (pgPool) {

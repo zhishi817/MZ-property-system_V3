@@ -3,6 +3,20 @@ import { pgRunAfterCommit } from '../dbAdapter'
 import { ensureCleaningSyncJobsSchema } from './cleaningSyncJobsSchema'
 
 export type CleaningSyncJobAction = 'created' | 'updated' | 'deleted'
+export type CleaningSyncJobScope = 'full' | 'checkin_only'
+
+export function cleaningSyncJobScope(snapshot: any): CleaningSyncJobScope {
+  return String(snapshot?.sync_scope || '').trim().toLowerCase() === 'checkin_only'
+    ? 'checkin_only'
+    : 'full'
+}
+
+function snapshotWithScope(snapshot: any, scope: CleaningSyncJobScope): any {
+  if (snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)) {
+    return { ...snapshot, sync_scope: scope }
+  }
+  return { sync_scope: scope, original_payload_snapshot: snapshot ?? null }
+}
 
 function stableStringify(v: any): string {
   const seen = new WeakSet()
@@ -61,7 +75,8 @@ export async function enqueueCleaningSyncJobTx(
   }
   const orderId = String(params.order_id || '').trim()
   const action = String(params.action || '').trim() as CleaningSyncJobAction
-  const snapshot = params.payload_snapshot ?? null
+  const scope = cleaningSyncJobScope(params.payload_snapshot)
+  const snapshot = snapshotWithScope(params.payload_snapshot, scope)
   if (!orderId) throw new Error('order_id_required')
   if (!action || !['created', 'updated', 'deleted'].includes(action)) throw new Error('action_required')
 
@@ -82,6 +97,9 @@ export async function enqueueCleaningSyncJobTx(
       )
       const statusLower = String(rs?.rows?.[0]?.s || '')
       if (isInactiveOrderStatus(statusLower)) {
+        // A historical checkin-only repair must never supersede normal work or
+        // cancel existing task projections merely because its order is inactive.
+        if (scope !== 'full') return { id: '', merged: false }
         try {
           await client.query(
             `UPDATE cleaning_sync_jobs
@@ -106,7 +124,7 @@ export async function enqueueCleaningSyncJobTx(
 
   const fp = fingerprintOf(action, orderId, snapshot)
 
-  if (action === 'deleted') {
+  if (action === 'deleted' && scope === 'full') {
     try {
       await client.query(
         `UPDATE cleaning_sync_jobs
@@ -120,10 +138,13 @@ export async function enqueueCleaningSyncJobTx(
   const existing = await client.query(
     `SELECT id, status
      FROM cleaning_sync_jobs
-     WHERE order_id=$1 AND action=$2 AND status IN ('pending','running')
+     WHERE order_id=$1
+       AND action=$2
+       AND COALESCE(NULLIF(lower(trim(payload_snapshot->>'sync_scope')), ''), 'full')=$3
+       AND status IN ('pending','running')
      ORDER BY updated_at DESC, created_at DESC
      LIMIT 1`,
-    [orderId, action]
+    [orderId, action, scope]
   )
   const row = existing?.rows?.[0]
   const existingId = row ? String(row.id || '') : ''
