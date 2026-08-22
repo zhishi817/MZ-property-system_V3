@@ -695,7 +695,12 @@ async function run() {
     `CREATE INDEX IF NOT EXISTS idx_cleaning_sync_jobs_status_next ON cleaning_sync_jobs(status, next_retry_at);`,
     `CREATE INDEX IF NOT EXISTS idx_cleaning_sync_jobs_order ON cleaning_sync_jobs(order_id);`,
     `CREATE INDEX IF NOT EXISTS idx_cleaning_sync_jobs_running ON cleaning_sync_jobs(running_started_at);`,
-    `CREATE UNIQUE INDEX IF NOT EXISTS uniq_cleaning_sync_jobs_order_action_active ON cleaning_sync_jobs(order_id, action) WHERE status IN ('pending','running');`
+    `DROP INDEX IF EXISTS uniq_cleaning_sync_jobs_order_action_active;`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS uniq_cleaning_sync_jobs_order_action_active ON cleaning_sync_jobs(
+      order_id,
+      action,
+      COALESCE(NULLIF(lower(trim(payload_snapshot->>'sync_scope')), ''), 'full')
+    ) WHERE status IN ('pending','running');`
   ]
 
   for (const sql of stmts) {

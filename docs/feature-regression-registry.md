@@ -135,10 +135,12 @@
 - 周转合并卡的入住晚数必须取后一个入住订单，并明确显示为“待住 X晚”，不能继续显示前一个退房订单的晚数。
 - 同一订单的入住 `new_code` 必须回填有效退房任务的 `old_code`；同步查询同时兼容当前 `task_type` 与历史仅有 `type` 的任务行，并保留手工锁定退房任务不覆盖的边界。
 - 纯入住任务的 `old_code` 必须优先继承同房源最近一笔有效退房任务的 `old_code`；历史退房任务缺该字段时，只能回退到该上一笔订单的入住 `new_code`，绝不能使用当前订单的 `new_code` 或猜测密码。来源失效后须清空此前自动填入的值；没有可信来源时保持空白，手工锁定的入住任务不得覆盖。
+- 历史订单的 `checkin_only` 修复只能创建缺失的 `checkin_clean`；任何已有入住任务（包括未分配、未锁定或仍为 `pending` 的人工编辑）都必须保护跳过，不得改写日期、密码、排期、状态或退房/延期检查投影。
+- 普通同步与 `checkin_only` 同步的 active queue identity 必须包含作用域；两者可并存但不得互相覆盖 payload 或改变彼此的执行范围。同一作用域的重试仍可幂等合并。订单取消清理和删除 job 的 supersede 仅属于 `full`，受控 job 对这些场景必须无操作，不得取消任务或改变普通 job。
 
 ### 跨层适用范围
 
-- **后端：** 合并查询、字段继承、来源优先级、历史空值和占位值兼容。
+- **后端：** 合并查询、字段继承、来源优先级、历史空值和占位值兼容；清洁同步 job 的作用域身份、受控入住补建和索引迁移。
 - **客户端：** 合并卡标题、状态、执行人、检查/清洁顺序和详情内容。
 - **入口：** Web 清洁安排表、Web 任务中心、移动端任务列表和详情。
 - **一致性：** 同一任务在 Web、移动端和刷新后使用同一合并结果。
@@ -152,7 +154,7 @@
 | 线下任务执行人 source/canonical 一致性 | `backend/scripts/tests/test_offline_task_assignment_patch_contract.ts` | root backend Full 确认 assignee 的 omitted/null 语义、source/canonical 表确保、事务投影和 canonical 回读 | sufficient | `npm run test:offline-task-assignment-patch --prefix backend` |
 | 线下任务执行人三角色授权 | `backend/scripts/tests/test_offline_task_assignment_patch.ts` | 客服、线下经理和 admin 的 HTTP/数据库验证；仅在显式非生产测试库、写入确认与生产库身份比对均存在时运行 | partial | `npm run test:offline-task-assignment-patch-integration --prefix backend` |
 | 首次 PATCH 的 canonical 表确保顺序 | `backend/scripts/tests/test_offline_task_assignment_first_patch_contract.ts` | root backend Full 每次断言两张表确保均位于 `pgRunInTransaction` 和首个 `FOR UPDATE` 之前；独立 integration 脚本只在显式非生产测试库与写入确认下覆盖无投影首次写入与三角色 | sufficient | `npm run test:offline-task-assignment-first-patch --prefix backend` |
-| 自动/手动字段继承和历史数据兼容 | `backend/scripts/tests/test_cleaning_sync_v2.ts` | 手动 placeholder、旧任务、同步后字段保留 | not-wired | `npx ts-node-dev --transpile-only backend/scripts/tests/test_cleaning_sync_v2.ts` |
+| 自动/手动字段继承、受控入住补建和队列作用域隔离 | `backend/scripts/tests/test_cleaning_sync_v2.ts` | 手动 placeholder、旧任务、同步后字段保留；`checkin_only` 只补缺失任务并保留未锁定人工日期/密码/排期；普通↔受控 job 双向不合并、同作用域幂等合并；取消订单的 scoped update 与 scoped delete 均不改变普通 job 或任务投影；scope-aware active-job 索引迁移/初始化契约 | sufficient | `npm run test:cleaning-sync-v2 --prefix backend`（由 root `check:backend` / `check:full` 执行） |
 | 入住/纯入住旧密码的历史字段兼容 | `backend/scripts/tests/test_cleaning_sync_v2.ts` | `task_type` 缺失时同订单回填；纯入住优先取上一笔退房 `old_code`、退房历史缺字段时回退上一笔入住 `new_code`、两类来源失效均清空自动值、无来源保持空白、手工锁定不覆盖，统一展示保留纯入住旧密码 | partial | `npx ts-node-dev --transpile-only backend/scripts/tests/test_cleaning_sync_v2.ts` |
 | Web 合并卡展示 | `frontend/src/lib/cleaningDailyMerge.test.ts` | 每日清洁合并和来源展示；后一个入住订单的晚数优先并显示“待住 X晚” | partial | `npm run test --prefix frontend -- src/lib/cleaningDailyMerge.test.ts` |
 | Web 任务中心字段展示 | `frontend/src/app/task-center/taskCenterDisplay.test.ts` | 合并任务标题、状态和字段；退房入住卡显示“已住 X晚”和“待住 X晚”；延期检查与入住冲突显示危险色标签及原定检查/入住时间 | partial | `npm run test --prefix frontend -- --coverage.enabled=false src/app/task-center/taskCenterDisplay.test.ts` |
@@ -168,9 +170,9 @@
 
 ### 最后验证
 
-- **CRL：** CRL-20260806-001
+- **CRL：** root/CRL-20260820-004
 - **Commit：** not committed
-- **日期：** 2026-08-06
+- **日期：** 2026-08-20
 
 ### 相关 CRL
 
@@ -188,6 +190,7 @@
 - CRL-20260805-008：恢复线下任务指派 PATCH 业务契约与质量门执行链
 - CRL-20260804-009：历史 `type` 兼容的同订单密码回填
 - CRL-20260806-001：纯入住任务继承上一段有效旧密码
+- root/CRL-20260820-004：历史订单入住任务受控队列范围保护
 
 ### 非保护范围
 
