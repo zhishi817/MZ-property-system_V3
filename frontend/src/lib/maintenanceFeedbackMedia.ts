@@ -16,6 +16,10 @@ function maintenancePhotoReferences(value: unknown) {
   }
 }
 
+export function authenticatedMaintenancePhotoReferences(value: unknown) {
+  return maintenancePhotoReferences(value).filter((reference) => Boolean(maintenanceFeedbackMediaProxyUrl(reference)))
+}
+
 export function maintenanceAfterPhotoReferences(record: { completion_photo_urls?: unknown; repair_photo_urls?: unknown } | null | undefined) {
   return Array.from(new Set([
     ...maintenancePhotoReferences(record?.completion_photo_urls),

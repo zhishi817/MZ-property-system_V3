@@ -938,26 +938,52 @@ function canConfigureInspection(task: { task_type?: string | null; deferred_insp
   return tt === 'checkout_clean' || tt === 'turnover'
 }
 
-function isStayoverTask(task: { task_type?: string | null; title?: string | null }) {
-  const taskType = lower(task.task_type)
+function isStayoverTask(task: { task_type?: string | null; task_kind?: string | null; title?: string | null }) {
+  const taskType = lower(task.task_type || task.task_kind)
   const label = text(task.title)
   return taskType === 'stayover_clean' || label.includes('入住中清洁') || label.toLowerCase().includes('stayover')
 }
 
-function isCheckinOnlyTask(task: { task_type?: string | null; title?: string | null; task_ids?: string[] }) {
+function isCheckinOnlyTask(task: { task_type?: string | null; task_kind?: string | null; title?: string | null; task_ids?: string[] }) {
   if ((task.task_ids || []).length > 1) return false
   if (isStayoverTask(task)) return false
-  const taskType = lower(task.task_type)
+  const taskType = lower(task.task_type || task.task_kind)
   const label = text(task.title)
   return taskType === 'checkin_clean' || (label.includes('入住') && !label.includes('退房'))
 }
 
-function requiresCleanerAssignment(task: { task_type?: string | null; title?: string | null; task_ids?: string[] }) {
+function requiresCleanerAssignment(task: { task_type?: string | null; task_kind?: string | null; title?: string | null; task_ids?: string[] }) {
   return !isCheckinOnlyTask(task)
 }
 
 function inspectionModeOf(task: any) {
   return effectiveInspectionMode(task)
+}
+
+export function isTaskCenterPendingInspection(task: Pick<BoardTask,
+  'task_source'
+  | 'task_kind'
+  | 'task_ids'
+  | 'title'
+  | 'status'
+  | 'temporarily_skipped'
+  | 'deferred_inspection_view'
+  | 'inspection_mode'
+  | 'inspection_scope'
+  | 'assignee_id'
+  | 'cleaner_id'
+  | 'inspector_id'
+>) {
+  if (task.task_source !== 'cleaning') return false
+  if (task.temporarily_skipped || task.deferred_inspection_view) return false
+  if (isCompletedBoardStatus(task.status)) return false
+  const mode = inspectionModeOf(task)
+  if (mode === 'pending_decision') return true
+  if (mode !== 'same_day' && mode !== 'deferred') return false
+  const assignedInspectorId = isCheckinOnlyTask(task)
+    ? task.assignee_id || task.inspector_id || task.cleaner_id
+    : task.inspector_id
+  return !text(assignedInspectorId)
 }
 
 function summaryText(task: any): { title: string; detail: string } {
@@ -1946,14 +1972,7 @@ function buildEntryReadiness(tasks: BoardTask[]) {
     if (!requiresCleanerAssignment(task)) return false
     return !text(task.cleaner_id || task.assignee_id)
   })
-  const pendingInspection = cleaningTasks.filter((task) => {
-    if (task.temporarily_skipped || task.deferred_inspection_view) return false
-    if (isCompletedBoardStatus(task.status)) return false
-    const mode = inspectionModeOf(task)
-    if (mode === 'pending_decision') return true
-    if ((mode === 'same_day' || mode === 'deferred') && !text(task.inspector_id)) return true
-    return false
-  })
+  const pendingInspection = cleaningTasks.filter(isTaskCenterPendingInspection)
   const skippedCount = cleaningTasks.filter((task) => task.temporarily_skipped).length
   return {
     ready_for_final_grouping: unresolvedPrimary.length === 0,
