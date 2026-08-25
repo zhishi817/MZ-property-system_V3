@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { maintenanceAfterPhotoReferences, maintenanceFeedbackMediaProxyUrl } from './maintenanceFeedbackMedia'
+import { authenticatedMaintenancePhotoReferences, maintenanceAfterPhotoReferences, maintenanceFeedbackMediaProxyUrl } from './maintenanceFeedbackMedia'
 
 describe('maintenanceFeedbackMediaProxyUrl', () => {
   it('uses the authenticated proxy for a recorded cleaning object key', () => {
@@ -28,6 +28,14 @@ describe('maintenanceFeedbackMediaProxyUrl', () => {
   it('does not proxy public or malformed references', () => {
     expect(maintenanceFeedbackMediaProxyUrl('/uploads/maintenance.jpg')).toBe('')
     expect(maintenanceFeedbackMediaProxyUrl('')).toBe('')
+  })
+
+  it('fails closed by excluding photo references without an authenticated proxy path', () => {
+    expect(authenticatedMaintenancePhotoReferences([
+      'maintenance/feedback-after.jpg',
+      'https://untrusted.example.test/maintenance.jpg',
+      '/uploads/maintenance.jpg',
+    ])).toEqual(['maintenance/feedback-after.jpg'])
   })
 
   it('includes executor completion photos before legacy repair photos in the web detail view', () => {

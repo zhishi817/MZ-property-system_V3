@@ -1756,6 +1756,32 @@
   gap: 8px;
 }
 
+.propertyFollowupCardActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  min-width: 0;
+}
+
+.propertyFollowupDetailAction {
+  height: 26px;
+  padding-inline: 8px;
+  border: 1px solid #dbeafe;
+  border-radius: 999px;
+  color: #2563eb;
+  background: #f8fbff;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.propertyFollowupDetailAction:hover,
+.propertyFollowupDetailAction:focus-visible {
+  color: #1d4ed8 !important;
+  border-color: #93c5fd !important;
+  background: #eff6ff !important;
+}
+
 .propertyFollowupProperty {
   overflow: hidden;
   color: #0f172a;
@@ -1777,6 +1803,208 @@
   -webkit-line-clamp: 2;
 }
 
+.maintenanceDetailModal :global(.ant-modal-content) {
+  overflow: hidden;
+  border-radius: 16px;
+}
+
+.maintenanceDetailModal :global(.ant-modal-header) {
+  margin-bottom: 0;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid #edf1f5;
+}
+
+.maintenanceDetailModal :global(.ant-modal-body) {
+  padding: 20px 24px 24px;
+}
+
+.maintenanceDetailModal :global(.ant-modal-footer) {
+  margin-top: 0;
+  padding: 12px 24px 16px;
+  border-top: 1px solid #edf1f5;
+}
+
+.maintenanceDetailModalTitle {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.maintenanceDetailModalTitle span:last-child {
+  overflow: hidden;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maintenanceDetailContent {
+  display: grid;
+  gap: 16px;
+}
+
+.maintenanceDetailHero {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid #dbeafe;
+  border-radius: 12px;
+  background: #f8fbff;
+}
+
+.maintenanceDetailHeroIcon {
+  display: grid;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 9px;
+  color: #2563eb;
+  background: #dbeafe;
+  font-size: 16px;
+}
+
+.maintenanceDetailEyebrow {
+  margin-bottom: 4px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.maintenanceDetailSummary {
+  color: #0f172a;
+  font-size: 15px;
+  font-weight: 750;
+  line-height: 1.55;
+}
+
+.maintenanceDetailInfoGrid,
+.maintenanceDetailPhotoSections {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.maintenanceDetailInfoCard,
+.maintenanceDetailNoteCard,
+.maintenanceDetailPhotoCard {
+  padding: 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.maintenanceDetailNoteCard {
+  background: #fcfcfd;
+}
+
+.maintenanceDetailSectionTitle,
+.maintenanceDetailPhotoTitle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.maintenanceDetailSectionTitle :global(.anticon),
+.maintenanceDetailPhotoTitle :global(.anticon) {
+  color: #2563eb;
+}
+
+.maintenanceDetailFieldList {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.maintenanceDetailFieldList > div {
+  display: grid;
+  gap: 3px;
+}
+
+.maintenanceDetailFieldList span {
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.maintenanceDetailFieldList strong {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.maintenanceDetailBodyText {
+  margin: 12px 0 0;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.maintenanceDetailPhotoTitle {
+  justify-content: space-between;
+}
+
+.maintenanceDetailPhotoTitle span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.maintenanceDetailPhotoTitle em {
+  color: #94a3b8;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 650;
+}
+
+.maintenanceDetailPhotoGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(136px, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.maintenanceDetailPhotoItem {
+  overflow: hidden;
+  min-height: 148px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.maintenanceDetailPhotoItem :global(.ant-image),
+.maintenanceDetailPhotoItem :global(.ant-image-img) {
+  display: block;
+  width: 100% !important;
+}
+
+.maintenanceDetailPhotoItem :global(.ant-image-img) {
+  height: 148px !important;
+}
+
+.maintenanceDetailPhotoEmpty {
+  display: grid;
+  min-height: 104px;
+  margin-top: 12px;
+  place-items: center;
+  border: 1px dashed #cbd5e1;
+  border-radius: 10px;
+  color: #94a3b8;
+  font-size: 12px;
+  background: #f8fafc;
+}
+
 @media (max-width: 1180px) {
   .propertyFollowupGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1795,6 +2023,23 @@
   }
 
   .propertyFollowupGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .maintenanceDetailModal :global(.ant-modal-header) {
+    padding: 16px 18px 14px;
+  }
+
+  .maintenanceDetailModal :global(.ant-modal-body) {
+    padding: 16px 18px 20px;
+  }
+
+  .maintenanceDetailModal :global(.ant-modal-footer) {
+    padding: 12px 18px 14px;
+  }
+
+  .maintenanceDetailInfoGrid,
+  .maintenanceDetailPhotoSections {
     grid-template-columns: minmax(0, 1fr);
   }
 }
@@ -2153,6 +2398,31 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   text-align: right;
+}
+
+.taskCenterCompactStaffStack {
+  display: grid;
+  justify-items: end;
+  gap: 1px;
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 44%;
+}
+
+.taskCenterCompactStaffStack .taskCenterCompactTitleMeta {
+  max-width: 100%;
+}
+
+.taskCenterCompactInspectorMeta {
+  max-width: 100%;
+  overflow: hidden;
+  color: #475569;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 14px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .taskCenterCompactFooter {

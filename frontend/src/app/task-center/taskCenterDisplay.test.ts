@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cleaningNightsDisplayLabels, cleaningTaskFlowLabelText, deferredInspectionConflictPresentation, isDeferredInspectionDisplayTask, resolveTaskCenterColumns } from './taskCenterDisplay'
+import { cleaningNightsDisplayLabels, cleaningTaskFlowLabelText, deferredInspectionConflictPresentation, hasTaskCenterRequiredExecutor, isDeferredInspectionDisplayTask, maintenanceDetailContentText, resolveTaskCenterColumns, taskCenterInspectionAssignmentPatch } from './taskCenterDisplay'
 
 describe('taskCenterDisplay', () => {
   it('treats deferred inspection tasks as inspection-oriented display', () => {
@@ -85,5 +85,49 @@ describe('taskCenterDisplay', () => {
     expect(resolveTaskCenterColumns(1220)).toBe(3)
     expect(resolveTaskCenterColumns(1320)).toBe(4)
     expect(resolveTaskCenterColumns(1800)).toBe(4)
+  })
+
+  it('keeps pure check-in inspector-row assignments on the executor field', () => {
+    expect(taskCenterInspectionAssignmentPatch({ isPureCheckin: true, inspectorId: 'mia' })).toEqual({
+      assignee_id: 'mia',
+      cleaner_id: null,
+      inspector_id: null,
+      inspection_mode: 'same_day',
+    })
+    expect(taskCenterInspectionAssignmentPatch({ isPureCheckin: true, inspectorId: null })).toEqual({
+      assignee_id: null,
+      cleaner_id: null,
+      inspector_id: null,
+      inspection_mode: 'pending_decision',
+    })
+    expect(taskCenterInspectionAssignmentPatch({ isPureCheckin: false, inspectorId: 'oscar' })).toEqual({
+      inspector_id: 'oscar',
+      inspection_mode: 'same_day',
+    })
+  })
+
+  it('requires a cleaner even when a regular cleaning task already has an inspector', () => {
+    expect(hasTaskCenterRequiredExecutor({
+      task_source: 'cleaning',
+      task_kind: 'checkout_clean',
+      inspector_id: 'zhi-f',
+    })).toBe(false)
+    expect(hasTaskCenterRequiredExecutor({
+      task_source: 'cleaning',
+      task_kind: 'checkout_clean',
+      cleaner_id: 'mia',
+      inspector_id: 'zhi-f',
+    })).toBe(true)
+    expect(hasTaskCenterRequiredExecutor({
+      task_source: 'cleaning',
+      task_kind: 'checkin_clean',
+      assignee_id: 'zhi-f',
+    })).toBe(true)
+  })
+
+  it('shows structured maintenance content as readable text instead of raw JSON', () => {
+    expect(maintenanceDetailContentText('{"content":"衣柜门脱轨"}')).toBe('衣柜门脱轨')
+    expect(maintenanceDetailContentText('{"description":"水龙头漏水"}')).toBe('水龙头漏水')
+    expect(maintenanceDetailContentText('衣柜门脱轨')).toBe('衣柜门脱轨')
   })
 })
