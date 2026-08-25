@@ -23,6 +23,9 @@ FIELD_LINE = re.compile(r"^- (?:\*\*)?([^:*]+?)(?:\*\*)?:\s*(.*)$")
 CRL_ID = re.compile(r"CRL-\d{8}-\d{3}")
 CRL_IDENTITY = re.compile(r"\b(root|mobile)/(CRL-\d{8}-\d{3})\b")
 SHA = re.compile(r"\b[0-9a-fA-F]{7,64}\b")
+DEPENDENCY_REFERENCE = re.compile(
+    r"^(root|mobile)/(CRL-\d{8}-\d{3})@([0-9a-fA-F]{40})$"
+)
 PUBLISHED_TECHNICAL_STATE = re.compile(
     r"^- Technical state:\s*(?:pushed|merged|deployed)\b", re.IGNORECASE
 )
@@ -64,6 +67,13 @@ class StagedCommitScope:
     status: str | None
     hunk_fingerprints: frozenset[tuple[str, str]]
     untracked_review: str
+
+
+@dataclass(frozen=True)
+class DependencyReference:
+    repository: str
+    crl_id: str
+    sha: str
 
 
 class GitError(RuntimeError):
@@ -386,6 +396,114 @@ def remote_lineage_errors(root: Path, sections: dict[str, CrlSection]) -> list[s
 
 def field_value(attempt: ReleaseAttempt, name: str) -> str:
     return attempt.fields.get(canonical_field_name(name), "")
+
+
+def parse_dependency_references(value: str) -> tuple[DependencyReference, ...]:
+    """Parse exact dependency identities without accepting free-form release notes."""
+    normalized = value.replace("`", "").strip().rstrip(".")
+    if normalized.lower() == "none":
+        return ()
+    if not normalized:
+        raise ValueError("Release Attempt Dependencies field is missing.")
+    references: list[DependencyReference] = []
+    for item in normalized.split(";"):
+        match = DEPENDENCY_REFERENCE.fullmatch(item.strip())
+        if not match:
+            raise ValueError(
+                "Dependencies must be `none` or semicolon-separated "
+                "`root|mobile/CRL-YYYYMMDD-NNN@<40-character commit SHA>` references."
+            )
+        references.append(
+            DependencyReference(
+                repository=match.group(1),
+                crl_id=match.group(2),
+                sha=match.group(3).lower(),
+            )
+        )
+    if len(set(references)) != len(references):
+        raise ValueError("Dependencies contains a duplicate canonical dependency reference.")
+    return tuple(references)
+
+
+def dependency_reference_text(reference: DependencyReference) -> str:
+    return f"{reference.repository}/{reference.crl_id}@{reference.sha}"
+
+
+def dependency_issues(
+    root: Path,
+    attempt: ReleaseAttempt,
+    expected_repository: str,
+    head: str,
+    sections: dict[str, CrlSection],
+) -> tuple[list[DependencyReference], list[str], list[str], list[dict[str, str]]]:
+    """Validate same-repository CRL/commit binding and fail closed across repositories."""
+    errors: list[str] = []
+    missing: list[str] = []
+    checks: list[dict[str, str]] = []
+    try:
+        references = list(parse_dependency_references(field_value(attempt, "Dependencies")))
+    except ValueError as error:
+        errors.append(str(error))
+        checks.append(check_item("dependency references", "FAIL", str(error)))
+        return [], errors, missing, checks
+    local_references = [reference for reference in references if reference.repository == expected_repository]
+    cross_references = [reference for reference in references if reference.repository != expected_repository]
+    local_errors: list[str] = []
+    for reference in local_references:
+        section = sections.get(reference.crl_id)
+        if section is None:
+            local_errors.append(
+                f"Same-repository dependency {dependency_reference_text(reference)} does not name a CRL in this ledger."
+            )
+            continue
+        try:
+            resolved = resolve_ref(root, reference.sha)
+        except GitError:
+            local_errors.append(
+                f"Same-repository dependency {dependency_reference_text(reference)} cannot be resolved locally."
+            )
+            continue
+        if resolved != reference.sha or not is_ancestor(root, resolved, head):
+            local_errors.append(
+                f"Same-repository dependency {dependency_reference_text(reference)} is not an ancestor of the report head."
+            )
+            continue
+        reference_identity = canonical_crl_identity(reference.repository, reference.crl_id)
+        matching_attempt = False
+        for dependency_attempt in parse_attempts(section):
+            if reference_identity not in dependency_attempt.selected_identities:
+                continue
+            commit_match = SHA.search(field_value(dependency_attempt, "Commit SHA"))
+            if not commit_match:
+                continue
+            try:
+                dependency_commit = resolve_ref(root, commit_match.group(0))
+            except GitError:
+                continue
+            if dependency_commit == reference.sha:
+                matching_attempt = True
+                break
+        if not matching_attempt:
+            local_errors.append(
+                f"Same-repository dependency {dependency_reference_text(reference)} is not bound to a recorded content commit for that CRL."
+            )
+    if local_errors:
+        errors.extend(local_errors)
+        checks.append(check_item("same-repository dependencies", "FAIL", "; ".join(local_errors)))
+    else:
+        evidence = "No same-repository dependencies." if not local_references else "; ".join(
+            dependency_reference_text(reference) for reference in local_references
+        )
+        checks.append(check_item("same-repository dependencies", "PASS", evidence))
+    if cross_references:
+        evidence = field_value(attempt, "Cross-repository dependency verification")
+        missing.append(
+            "Cross-repository dependencies cannot be verified from a free-text field; run the paired repository's exact verification instead."
+        )
+        checks.append(check_item("cross-repository dependencies", "NOT VERIFIED", evidence or "not recorded"))
+    else:
+        checks.append(check_item("cross-repository dependencies", "PASS", "No cross-repository dependencies."))
+    return references, errors, missing, checks
 
 
 def leading_status(value: str, allowed: tuple[str, ...]) -> str | None:
@@ -879,6 +997,7 @@ def build_release_report(
         "release_attempt": None,
         "branch": None,
         "dependencies": "not recorded",
+        "dependency_references": [],
         "changed_files": [],
         "selected_files": [],
         "unselected_changed_files": [],
@@ -1031,6 +1150,19 @@ def build_release_report(
     else:
         checks.append(check_item("branch", "PASS", branch))
     report["dependencies"] = safe_text(field_value(attempt, "Dependencies"))
+    dependency_references, dependency_errors, dependency_missing, dependency_checks = dependency_issues(
+        root,
+        attempt,
+        expected_repository,
+        head,
+        sections,
+    )
+    report["dependency_references"] = [
+        dependency_reference_text(reference) for reference in dependency_references
+    ]
+    errors.extend(dependency_errors)
+    missing.extend(dependency_missing)
+    checks.extend(dependency_checks)
     report["validation"] = {
         "required_validation": safe_text(field_value(attempt, "Required validation")),
         "ledger_validation_entries": [safe_text(line) for line in selected_sections[0].validation_lines if line.strip()],

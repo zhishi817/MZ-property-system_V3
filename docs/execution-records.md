@@ -554,3 +554,40 @@
   - 初始直接编译因干净工作区没有依赖目录而无法解析依赖；随后只读复用既有本地依赖完成编译，未安装任何包。
 - Open Issues / Follow-ups:
   - 仍需独立只读发布审查和用户对提交、推送/合并及部署的逐项授权；部署后才能进入 77 笔只读预演和后续历史修复。
+
+## Release Attempt 依赖 SHA 门禁
+
+- Date: 2026-08-25
+- Task: 根仓库与移动端 Release Attempt 依赖证据硬化
+- Status: implemented locally; not released
+
+### Confirmed Plan
+
+- 在各自基于最新 `origin/Dev` 的干净候选 worktree 实施，保留原开发 worktree 的所有未提交内容。
+- 将同仓库依赖收紧为可解析的完整 SHA，并同时验证真实 CRL、该 CRL 的已记录内容提交及候选 `head` 祖先关系。
+- 对跨仓库依赖 fail-closed：自由文本 `PASS` 不可单独作为证明，必须通过配对仓库的独立精确核验。
+
+### Implementation Result
+
+- Root 与 mobile 的 `scripts/audit_change_release_ledger.py` 都新增 canonical dependency reference 解析和门禁：`none`，或 `root|mobile/CRL-YYYYMMDD-NNN@<40-character commit SHA>`。
+- 初始独立审查发现 P1：不存在的 CRL 或任意祖先 SHA 仍可能被错误放行；已在 root/mobile 同步修复为 CRL 存在、内容提交绑定和 ancestry 三项均必需。
+- 同仓库依赖不可解析、不存在、未绑定到声明 CRL 的已记录内容提交，或不在精确 `base...head` 祖先链时均为 `BLOCKED`；跨仓库自由文本一律不能将报告提升到 GO。
+- 两个仓库分别登记 `root/CRL-20260825-001` 与 `mobile/CRL-20260825-001`；编号相同但仓库身份独立。
+
+### Validation
+
+- Root: `PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_audit_change_release_ledger.py` — passed, 31 tests.
+- Mobile: `PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_audit_change_release_ledger.py` — passed, 31 tests.
+- 初始独立审查为 NO-GO（仅 commit）：发现并阻断上述 P1；修复后仍需重跑提交前门禁与独立审查。已暂存候选范围，但尚未提交、推送、创建 PR、合并、部署、OTA 或进行设备/生产验证。
+
+### Files / Areas
+
+- `scripts/audit_change_release_ledger.py` in root and mobile.
+- `scripts/tests/test_audit_change_release_ledger.py` in root and mobile.
+- `docs/change-release-ledger.md` in root and mobile.
+- `docs/execution-records.md` in root.
+
+### Open Issues / Follow-ups
+
+- Historical Release Attempts with free-form dependency prose require a new evidence receipt before a future exact release report can give GO；现有自由文本会被精确审计判为 BLOCKED；no historical CRL identity was modified here.
+- Commit, push, PR/merge, deployment/OTA and device/production proof remain separate authorizations and evidence gates.

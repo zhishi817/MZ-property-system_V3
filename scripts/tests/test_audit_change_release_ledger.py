@@ -142,6 +142,26 @@ class ReleaseReportFixture:
 - User authorization: `approved-for-push`; evidence: `fixture approval`
 - Independent review: `GO`; evidence: `fixture review`
 - Action conclusion: `GO`; blockers: none
+
+## CRL-20260803-778 — Fixture dependency
+
+- **Repository:** `{EXPECTED_REPOSITORY}`
+- **Request:** Provide a verifiable dependency fixture.
+- **Outcome:** The dependency CRL is bound to the candidate content commit.
+
+### Files / Areas
+
+- `src/dependency.txt` — dependency fixture path.
+
+### Release Attempts
+
+#### RA-20260803-778
+
+- Repository: `{EXPECTED_REPOSITORY}`
+- Selected CRLs: `CRL-20260803-778`
+- Selected CRL identities: `{EXPECTED_REPOSITORY}/CRL-20260803-778`
+- Commit SHA: `{commit_sha}`
+- Technical state: `committed`
 """
 
     def _create(self) -> None:
@@ -205,6 +225,28 @@ class ReleaseReportFixture:
             head_reference=head or self.head,
             crl_ids=["CRL-20260803-777"],
         )
+
+    def update_attempt_field(self, name: str, value: str) -> None:
+        ledger = self.root / "docs/change-release-ledger.md"
+        new_line = f"- {name}: {value}"
+        lines = ledger.read_text(encoding="utf-8").splitlines()
+        for index, line in enumerate(lines):
+            if line.startswith(f"- {name}:"):
+                lines[index] = new_line
+                break
+        else:
+            dependency_index = next(
+                index for index, line in enumerate(lines) if line.startswith("- Dependencies:")
+            )
+            lines.insert(dependency_index + 1, new_line)
+        content = "\n".join(lines) + "\n"
+        self._write(
+            "docs/change-release-ledger.md",
+            content,
+        )
+        git(self.root, "add", "docs/change-release-ledger.md")
+        git(self.root, "commit", "-qm", f"record {name.lower()} evidence")
+        self.head = git(self.root, "rev-parse", "HEAD")
 
     def stage_pre_commit_candidate(self, content: str = "pre-commit candidate\n") -> None:
         self._write("src/feature.txt", content)
@@ -396,6 +438,93 @@ class ReleaseReportTests(unittest.TestCase):
         self.assertEqual([], report["unselected_changed_files"])
         self.assertIn("Release Attempt Report", AUDITOR.markdown_report(report))
         self.assertEqual("GO", json.loads(json.dumps(report))["conclusion"])
+
+    def test_same_repository_dependency_must_be_an_ancestor_of_head(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        current_branch = git(fixture.root, "branch", "--show-current")
+        git(fixture.root, "checkout", "-qb", "dependency-side", fixture.base)
+        fixture._write("src/dependency.txt", "side dependency\n")
+        git(fixture.root, "add", "src/dependency.txt")
+        git(fixture.root, "commit", "-qm", "side dependency")
+        side_commit = git(fixture.root, "rev-parse", "HEAD")
+        git(fixture.root, "checkout", "-q", current_branch)
+        fixture.update_attempt_field(
+            "Dependencies",
+            f"{EXPECTED_REPOSITORY}/CRL-20260803-778@{side_commit}",
+        )
+
+        report = fixture.report()
+
+        self.assertEqual("BLOCKED", report["conclusion"])
+        self.assertTrue(any("is not an ancestor" in blocker for blocker in report["blockers"]))
+
+    def test_same_repository_dependency_ancestor_is_verified(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        fixture.update_attempt_field(
+            "Dependencies",
+            f"{EXPECTED_REPOSITORY}/CRL-20260803-778@{fixture.candidate_commit}",
+        )
+
+        report = fixture.report()
+
+        self.assertEqual("GO", report["conclusion"])
+        self.assertIn(
+            f"{EXPECTED_REPOSITORY}/CRL-20260803-778@{fixture.candidate_commit}",
+            report["dependency_references"],
+        )
+
+    def test_same_repository_dependency_requires_an_existing_crl(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        fixture.update_attempt_field(
+            "Dependencies",
+            f"{EXPECTED_REPOSITORY}/CRL-20260803-779@{fixture.candidate_commit}",
+        )
+
+        report = fixture.report()
+
+        self.assertEqual("BLOCKED", report["conclusion"])
+        self.assertTrue(any("does not name a CRL" in blocker for blocker in report["blockers"]))
+
+    def test_same_repository_dependency_sha_must_bind_to_its_crl(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        fixture.update_attempt_field(
+            "Dependencies",
+            f"{EXPECTED_REPOSITORY}/CRL-20260803-778@{fixture.base}",
+        )
+
+        report = fixture.report()
+
+        self.assertEqual("BLOCKED", report["conclusion"])
+        self.assertTrue(any("is not bound" in blocker for blocker in report["blockers"]))
+
+    def test_cross_repository_dependency_requires_exact_separate_evidence(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        other_repository = "mobile" if EXPECTED_REPOSITORY == "root" else "root"
+        reference = f"{other_repository}/CRL-20260803-778@{fixture.candidate_commit}"
+        fixture.update_attempt_field("Dependencies", reference)
+
+        unverified = fixture.report()
+
+        self.assertEqual("NOT VERIFIED", unverified["conclusion"])
+        self.assertTrue(any("cannot be verified from a free-text field" in item for item in unverified["missing_evidence"]))
+        fixture.update_attempt_field(
+            "Cross-repository dependency verification",
+            f"PASS — {reference} confirmed in the paired repository at fixture-time.",
+        )
+
+        asserted = fixture.report()
+
+        self.assertEqual("NOT VERIFIED", asserted["conclusion"])
+        self.assertTrue(any("cannot be verified from a free-text field" in item for item in asserted["missing_evidence"]))
+
+    def test_dependency_reference_requires_full_canonical_sha(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        fixture.update_attempt_field("Dependencies", f"{EXPECTED_REPOSITORY}/CRL-20260803-778")
+
+        report = fixture.report()
+
+        self.assertEqual("BLOCKED", report["conclusion"])
+        self.assertTrue(any("Dependencies must be" in blocker for blocker in report["blockers"]))
 
     def test_cli_json_is_read_only_and_returns_go(self) -> None:
         fixture = ReleaseReportFixture(self)
