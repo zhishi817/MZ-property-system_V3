@@ -66,15 +66,15 @@
 - Branch: `codex/release-dependency-sha-gates-20260825`
 - Base: `origin/Dev@fb30d1028435298f1a3c5e8a47481e00fae5f5bb`; fetched at `2026-08-25 20:14 AEST`
 - Candidate patch SHA-256: `c7e9b61f240eedc24cfcc615d55c9e6dd7d3ec559cedc7916c20210d6f56c0b5` excluding `docs/change-release-ledger.md`.
-- Commit SHA: `not committed`
+- Commit SHA: `2d26f517710ebe9f5b24ad01d97c420a513a29ad`; candidate content commit.
 - Dependencies: `none`
 - Required validation: `PASS`; evidence: root 31-test auditor regression, `git diff --check`, rebuilt pre-commit gate and ledger coverage audit passed.
 - Shared-hunk review: `PASS`; the selected script/test hunks are fully declared in this CRL and no unselected hunk is staged.
 - Generated-file review: `not applicable`; source and Markdown files only.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user selected root/mobile `CRL-20260825-001` together for release.
 - Independent review: `GO for commit`; evidence: fresh independent read-only review verified the P1 closure, exact candidate fingerprint `c7e9b61f240eedc24cfcc615d55c9e6dd7d3ec559cedc7916c20210d6f56c0b5`, scope and secret/production-write boundaries.
-- Action conclusion: `GO`; selected root/mobile governance candidates may be committed separately; push remains unauthorized.
+- Action conclusion: `GO`; candidate content commit created; a post-commit exact range audit and commit-bound user push authorization remain required before push.
 
 ## CRL-20260820-004 — 历史订单入住任务受控队列范围保护（root）
 
