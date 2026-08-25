@@ -1,5 +1,145 @@
 # Change Release Ledger
 
+## CRL-20260825-002 — 网页任务中心检查分派与维修详情展示（root）
+
+- **Repository:** `root`
+- **Status:** commit-ready; selected for commit
+- **Updated:** 2026-08-26 Australia/Melbourne
+- **Request:** 修复网页任务中心待确认检查误计数、清洁卡检查人员展示、任务在检查人员行之间拖动后回到旧行、仅分派检查人却漏入未安排统计，以及维修详情照片展示与可读性。
+- **Outcome:** 纯入住任务以 `assignee_id` 满足检查安排，普通清洁仍以 `inspector_id` 判断；清洁卡显示检查人员，普通清洁即使已有检查人也会在缺少清洁人员时列入未安排。维修详情仅显示可经既有鉴权媒体代理读取的报修/维修后照片，历史 JSON 报修内容显示为可读文本，并以 Ant Design 信息层级呈现。
+
+### Implementation
+
+- Previous behavior: 后端待确认检查只查看 `inspector_id`，纯入住任务已安排执行人仍被误计数；网页拖动只更新 `inspector_id`，而保存层对纯入住持久化 `assignee_id`，刷新后任务回到旧行。普通清洁已有检查人会遗漏未安排提示，卡片没有检查人员文本。维修详情缺少受控入口，原始 JSON 和照片呈现缺乏层级。
+- New behavior: 后端与网页均复用纯入住/普通清洁的字段语义；纯入住拖入检查行写入执行人字段，普通清洁保持检查人字段。普通清洁未安排判断以清洁人员为准。维修待办卡在右上角提供只读详情，内容以摘要、位置/类别、维修说明与前后照片证据区呈现；未知、公共或不支持的图片引用在任务中心入口不渲染，已识别私有引用继续经认证组件读取。
+- Key decisions: 不改变任务中心日读取/投影同步、保存 API、维修状态机、媒体代理、R2 权限、数据库 schema 或生产数据；不新增私有图片原始 URL 回退；本入口先按可构造鉴权代理的引用过滤，再交给图片组件。
+
+### Files / Areas
+
+- `backend/src/modules/task_center.ts` — 纯入住任务待确认检查判断。
+- `backend/scripts/tests/test_task_center_inspection_readiness.ts` — 后端待确认检查计数回归。
+- `frontend/src/app/task-center/page.tsx` — 检查人员显示、拖放分派语义、未安排统计及维修只读详情。
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — 纯入住/普通任务字段补丁、未安排执行人判断和维修 JSON 摘要。
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — 字段语义、未安排及维修摘要回归。
+- `frontend/src/app/cleaning/cleaningSchedule.module.scss` — 检查人员标签、详情入口和维修详情布局。
+- `frontend/src/lib/maintenanceFeedbackMedia.ts` — 任务中心图片入口的可鉴权引用过滤。
+- `frontend/src/lib/maintenanceFeedbackMedia.test.ts` — 拒绝未知/公共图片引用的 fail-closed 回归。
+- `docs/feature-regression-registry.md` — FR-002 与 FR-010 规则和测试映射。
+- `docs/change-release-ledger.md` — 本 CRL 与提交证据。
+
+### Impact / Dependencies
+
+- API / database / migration / configuration / R2 / production data: none.
+- Existing dependencies: `POST /task-center/save-board` 的纯入住执行人持久化语义、`GET /crud/property_maintenance/:id` 的既有查看授权、`/cleaning-app/media/image` 的精确关联认证读取。
+- Excluded: mobile app、任务/维修状态机、人员角色规则、媒体代理及存储策略、生产数据修复、部署。
+
+### Validation
+
+- The isolated release worktree has no installed dependency tree. No dependency installation was performed; the existing source-worktree dependency runtime was temporarily linked only to resolve the verified commands below.
+- `./backend/node_modules/.bin/tsc --noEmit -p backend/tsconfig.json` — passed.
+- `./backend/node_modules/.bin/ts-node --transpile-only --project backend/tsconfig.json backend/scripts/tests/test_task_center_inspection_readiness.ts` — passed; output: `task center inspection readiness tests passed`.
+- From `frontend/`: `./node_modules/.bin/vitest run src/app/task-center/taskCenterDisplay.test.ts src/lib/maintenanceFeedbackMedia.test.ts` — passed, 16/16 tests.
+- From `frontend/`: `./node_modules/.bin/tsc --noEmit -p tsconfig.json` — passed.
+- From `frontend/`: `./node_modules/.bin/next lint` — passed with pre-existing project warnings outside this CRL.
+- From `frontend/`: `./node_modules/.bin/next build` — passed with pre-existing project lint and static chart-size warnings outside this CRL.
+- `npm run check:feature-registry` — passed: 13 FRs, 138 test mappings, 73 mobile mappings deferred.
+- `npm run test:mzapp-media-visibility --prefix backend` — passed; local authorization/source-contract regression only, no external API call.
+- A direct `npm run check:full` invocation stopped at its initial ledger audit because temporary, untracked dependency links were present. The final ledger gates run only after those links are removed; the applicable component checks are recorded individually.
+- The subsequent isolated `npm run check:full` run passed ledger/FR checks and all listed backend checks through `test:r2-media-governance`, but stopped at `test:phase5-release-contract`: this root candidate worktree has no separate `mz-cleaning-app-frontend` checkout, so its required mobile source file is absent. This is an environment/test gap; it is not recorded as a full-gate pass.
+- `npm run check:frontend` — passed: lint with pre-existing warnings, 43 test files / 191 tests, and production build. The build emitted existing Browserslist and static chart-size warnings outside this CRL.
+- `git diff --cached --check` — passed before final ledger evidence update.
+- Manual/API production check: not run. `GET /task-center/day` may run task-projection synchronization and was intentionally not invoked.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared; all selected paths and exact non-ledger staged hunk fingerprints are recorded for the local commit gate.
+- **Untracked review:** none; the only new file is the selected `backend/scripts/tests/test_task_center_inspection_readiness.ts`.
+- `backend/scripts/tests/test_task_center_inspection_readiness.ts` — SHA-256: `387541f97d2dbac3f355f2169435bdbc2ce4c3ffeeaa8efc243de67d506f26ef`
+- `backend/src/modules/task_center.ts` — SHA-256: `1f2feb2b14b6aaae730980d705b712d45d47f319729ead297a455b1b9b598df5`
+- `backend/src/modules/task_center.ts` — SHA-256: `28fb6e7ddf10204d3105e5bfdfe39496dc1c468174c7b7c03939c0877fdc7db2`
+- `backend/src/modules/task_center.ts` — SHA-256: `3ae21fdf2e4cb803f7f8c7cd6c256cfb2f1d7e4021f91f802baea757a569607e`
+- `backend/src/modules/task_center.ts` — SHA-256: `a97026d1ba41d6a756b8e873b94c80dcbf82a02959401c3d74dae97f3cfdb2e2`
+- `backend/src/modules/task_center.ts` — SHA-256: `acb528dd2010d46307c6701bc644954431c6553773d559e15206b1e01f4f6bcc`
+- `backend/src/modules/task_center.ts` — SHA-256: `d357f668423e23bca51c722f327381eca20e6f2f685f7038a39245a9ddc4efcd`
+- `docs/feature-regression-registry.md` — SHA-256: `145a58d3f5c76b34a86821a0aa8af854f69e4912ae4ab89ac925edfd5a1908e8`
+- `docs/feature-regression-registry.md` — SHA-256: `2b2a4a1336fd9f60cd7551a7742c850570b73444f23169a4966bd7bcac38b628`
+- `docs/feature-regression-registry.md` — SHA-256: `2c9cdd791698a88236bfb91a0d95eb850e23eb8ffb8d31bacf6243659069cb81`
+- `docs/feature-regression-registry.md` — SHA-256: `3fa7cbed755148eaa5da6f03310b659f417698769ca61e66ab7cfc443066aa67`
+- `docs/feature-regression-registry.md` — SHA-256: `5eb4ebcc6864824ace0b6d6a92605f9c601ebb335defcd2518929a36274473e7`
+- `docs/feature-regression-registry.md` — SHA-256: `6a92df5e6942a4b8b142e476caf92b4472918d1af3600612fae84d615d8ea56c`
+- `docs/feature-regression-registry.md` — SHA-256: `6e4f7cfa3d72604ea5ac90576d1560d22cd5fc4b8fedd3fc872adfcbc88d5f94`
+- `docs/feature-regression-registry.md` — SHA-256: `880b4ada1007dae176296e41847985ab4750941fe455b91e6b09e28b7d791efa`
+- `docs/feature-regression-registry.md` — SHA-256: `9b27cf9d9b85f54b850a28e40ff5f111f37592ed199e0ba6932597e1bc051ea0`
+- `docs/feature-regression-registry.md` — SHA-256: `a74a7b189a257ab4aa83587b83ac0a9fb537ca5445f7668888768a9c308bbcbf`
+- `docs/feature-regression-registry.md` — SHA-256: `bd52e7e1e6b710afc201ca35cbce71759fac772e44ed498119770527978e5178`
+- `docs/feature-regression-registry.md` — SHA-256: `c3a8e39670d363955c4f5112a76f997f771edde1414087199f30285282959b3a`
+- `docs/feature-regression-registry.md` — SHA-256: `e9f61e926550cbe3ac6fc2e722adb75d11a7db4fb832af37d349e878c8647609`
+- `frontend/src/app/cleaning/cleaningSchedule.module.scss` — SHA-256: `3e3dbb503d3be0f79da6afe3d14359c366af1a2e1442e5edcbf6446cb10b92f7`
+- `frontend/src/app/cleaning/cleaningSchedule.module.scss` — SHA-256: `45dfb57220423a9c83fac41ea58d77c52ff4a5fa57079142be2e7bf1f7f766b3`
+- `frontend/src/app/cleaning/cleaningSchedule.module.scss` — SHA-256: `52ed1affc402efc148dae02a1db76da1810659bb4b3a0c52dddbf26e6e19d059`
+- `frontend/src/app/cleaning/cleaningSchedule.module.scss` — SHA-256: `fc7bea90df5fb542b49d84aae362ef356ff4132f2520c80f528db301e5010368`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `032d3db8d1e8ea89ce733327810a25736df2b8b394eec20749bf90de293dc77c`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `17481fa8fd5806aa1a0827583598f8a45d9be44766cba4454f2a1a0b7aec20a3`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `23f04af4e5251d749e36168d23b60478c8e15fc865665494ecacfb7a92bd148f`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `402b71fb088c758d02b4eede3007cfa38c114bdcaea15497fbb9a013fd27f965`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `4672d65af4adaf3033c3bfa7436ea6c54572b01164432146db19cde387cf4e5c`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `45b197cdfeb2683c067b10050170e58491a4a942a0c49afb592a70108156bd5f`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `67c08a4c8a979da57bc20f7db3d77922e0a675b482635a7e33dc88e668b8f43f`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `75ae36542fcad4b48c1a94ef74716e6b5bac458dc7b65c747a3d51ddddda94c0`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `499a6ca0d5e213015b673afbb166fc2811fe2486108d906e66c2845d2fec11c5`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `4b3c6a1d0d5617928f6e54bc78366bef4051e9d65f3754bfcc2682e242c8aaff`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `564848f10f3018b6fab3cd49e705989f9e879cd709fe4e87cef92e4a90f932cc`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `5f4736e396755a657a1caa3bb308a3bf474cfcf36c5dbb42c1cd500bbe6d57d9`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `8297a7067efb5dc582a54b7000e006ea2520bd58ab58ac03f7d021316adf35e8`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `846874fff7ea2a11bd24ac5e3b193cb10b7a6f4e43a839e45c9cc7ff114a5eb6`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `8d40c550a5bb8b7abd88f18077828d909b45bcfbfff3ae01d2a563ee0279ce13`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `a73ce88fdc7266005572e16ab392330c3afc2177401cedee7e56011edf9c3c13`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `a9597d44efa82fb7a3b1146d3477787a9169c3ce29d57718d7b6087cc8ff9af0`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `b013d988dd613a92538fced558465c8eb8227bbc9e73d8853fcedbf58c7f3a1d`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `b2b8028f4b1712850bead93bbb6794dad368f4a1302f8ee4fb1141f72907c918`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `bc84a010d215b7f794680bd78ca7629f1775b4ab12a7b5bb19ba28dabdc8e354`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `c05eee89c42023a010c22dde0926e18edbbd0a24c24061d8157eb8868703dcba`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `ca4917ffe53db870a19f613632b777495c561fe93a50b3d1e977ab92b1ef8af0`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `e15bbe5619b476a63fc6572e5174e0f4eb25be95d8d499ea9c153620f47ac0e4`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `e56e1984bd4b59c3f39594bffab51b64e81aa204b16a186bec54de173fd213a4`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `e8687239bb6083d66e9b936b88af4ce85709b31f83739b4a8aff051d09b22062`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `32d47cd96ffe5f3807b36c6b8e386e8133855f1c665cb5b8d1de9cee94d8f194`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `8f91a5553183e16ae3bf83959100150dfde9b53cf13a156bb0117a2748c3265e`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `3dfd178f9bb0c494d0a257d0491bf2784fe7cda7249906e2161baac1c284b985`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `7312dc48239b8888474511fb14ef60590298a68eb9187ddc0538b3e96fa06384`
+- `frontend/src/lib/maintenanceFeedbackMedia.test.ts` — SHA-256: `9e3ce66851970e2a55e52d400a041097f48f418592ed04387fdbbe322f150df9`
+- `frontend/src/lib/maintenanceFeedbackMedia.test.ts` — SHA-256: `e6330a3dc9cb53117c03e1bbe2aee91016e9f512c262a0ad38f87ee78ef6487b`
+- `frontend/src/lib/maintenanceFeedbackMedia.ts` — SHA-256: `f6beb9ee5a9116d6dad0434e66fc4ea68ebea6f0e7f0606308b9a4f82864ed0b`
+
+### Release Attempts
+
+#### RA-20260825-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260825-002`
+- Selected CRL identities: `root/CRL-20260825-002`
+- Intended action: `commit`
+- Branch: `codex/maintenance-detail-20260825`
+- Base: `origin/Dev@c7ff3676dc76c61b3e19b0fdbdc57d6de19ff87e`; fetched at `2026-08-25 23:35 AEST`
+- Candidate patch SHA-256: `6d4167efe84a4144b74e2227d0c80337d855d2a5cff1c6e9211366f140a36ee0` excluding `docs/change-release-ledger.md`.
+- Commit SHA: not committed.
+- Dependencies: none.
+- Required validation: PASS for the selected root code against the existing local dependency runtime; a fresh dependency installation was not performed. The root full gate still has the separately recorded mobile-checkout environment gap.
+- Shared-hunk review: PASS; the final pre-commit gate matched all ten selected paths and 56 non-ledger hunk fingerprints.
+- Generated-file review: not applicable; selected files are source, tests, SCSS and markdown only.
+- Technical state: verified.
+- User authorization: selected-for-commit; evidence: user requested “将刚刚任务中心的修复内容提交”.
+- Independent review: GO for commit after read-only review of the current 10-path candidate. The previous raw-URL fallback and media-regression P1 findings were corrected; no P0/P1/P2 findings remain for this commit action.
+- Action conclusion: GO for commit only; user authorization remains selected-for-commit, not approved-for-push.
+
+### Risks / Release Notes
+
+- Existing `property_maintenance` read permission still determines whether the detail and its photos can be opened; no new image access is granted.
+- Manual regression remains required with an authorized task-center account for counter, drag/save/reload and before/after photo display.
+- Sensitive-information review: no credentials, tokens, private URLs, media bytes, task records or production data are included.
+- Git state: candidate branch based on `origin/Dev`; not committed, not pushed, no PR, deployment or production/device verification.
+
 ## CRL-20260825-001 — Release Attempt 依赖 SHA 门禁（root）
 
 - **Repository:** `root`

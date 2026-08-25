@@ -123,7 +123,7 @@
 ## FR-002：自动任务与手动任务合并及字段继承
 
 - **维护责任范围：** backend / web / mobile
-- **最后审查日期：** 2026-07-27
+- **最后审查日期：** 2026-08-25
 - **状态：** active
 
 ### 业务保护规则
@@ -137,6 +137,9 @@
 - 纯入住任务的 `old_code` 必须优先继承同房源最近一笔有效退房任务的 `old_code`；历史退房任务缺该字段时，只能回退到该上一笔订单的入住 `new_code`，绝不能使用当前订单的 `new_code` 或猜测密码。来源失效后须清空此前自动填入的值；没有可信来源时保持空白，手工锁定的入住任务不得覆盖。
 - 历史订单的 `checkin_only` 修复只能创建缺失的 `checkin_clean`；任何已有入住任务（包括未分配、未锁定或仍为 `pending` 的人工编辑）都必须保护跳过，不得改写日期、密码、排期、状态或退房/延期检查投影。
 - 普通同步与 `checkin_only` 同步的 active queue identity 必须包含作用域；两者可并存但不得互相覆盖 payload 或改变彼此的执行范围。同一作用域的重试仍可幂等合并。订单取消清理和删除 job 的 supersede 仅属于 `full`，受控 job 对这些场景必须无操作，不得取消任务或改变普通 job。
+- 纯入住现场执行任务的检查完成依赖真实执行人 `assignee_id`；任务中心后端计数与网页本地草稿必须把该字段视为已安排，普通清洁任务仍以 `inspector_id` 为检查人。拖入或拖出检查人员行后，刷新不得把任务留在旧人员行。
+- 普通清洁卡已安排检查时，在清洁人员名称下展示“检查：姓名”；纯入住现场执行不把执行人重复显示为普通检查人。
+- 任务中心“未安排”提示对普通退房/清洁任务必须以清洁人员为准；仅分配检查人员时仍必须显示为未安排，检查人员不能代替清洁人员。纯入住现场执行仍以执行人判断。
 
 ### 跨层适用范围
 
@@ -157,7 +160,8 @@
 | 自动/手动字段继承、受控入住补建和队列作用域隔离 | `backend/scripts/tests/test_cleaning_sync_v2.ts` | 手动 placeholder、旧任务、同步后字段保留；`checkin_only` 只补缺失任务并保留未锁定人工日期/密码/排期；普通↔受控 job 双向不合并、同作用域幂等合并；取消订单的 scoped update 与 scoped delete 均不改变普通 job 或任务投影；scope-aware active-job 索引迁移/初始化契约 | sufficient | `npm run test:cleaning-sync-v2 --prefix backend`（由 root `check:backend` / `check:full` 执行） |
 | 入住/纯入住旧密码的历史字段兼容 | `backend/scripts/tests/test_cleaning_sync_v2.ts` | `task_type` 缺失时同订单回填；纯入住优先取上一笔退房 `old_code`、退房历史缺字段时回退上一笔入住 `new_code`、两类来源失效均清空自动值、无来源保持空白、手工锁定不覆盖，统一展示保留纯入住旧密码 | partial | `npx ts-node-dev --transpile-only backend/scripts/tests/test_cleaning_sync_v2.ts` |
 | Web 合并卡展示 | `frontend/src/lib/cleaningDailyMerge.test.ts` | 每日清洁合并和来源展示；后一个入住订单的晚数优先并显示“待住 X晚” | partial | `npm run test --prefix frontend -- src/lib/cleaningDailyMerge.test.ts` |
-| Web 任务中心字段展示 | `frontend/src/app/task-center/taskCenterDisplay.test.ts` | 合并任务标题、状态和字段；退房入住卡显示“已住 X晚”和“待住 X晚”；延期检查与入住冲突显示危险色标签及原定检查/入住时间 | partial | `npm run test --prefix frontend -- --coverage.enabled=false src/app/task-center/taskCenterDisplay.test.ts` |
+| Web 任务中心字段展示与未安排统计 | `frontend/src/app/task-center/taskCenterDisplay.test.ts` | 合并任务标题、状态和字段；退房入住卡显示“已住 X晚”和“待住 X晚”；纯入住拖入或拖出检查人员行时保留/清空 `assignee_id`，普通任务仍写 `inspector_id`；只有检查人员的普通清洁任务仍计入未安排 | partial | `npm run test --prefix frontend -- --coverage.enabled=false src/app/task-center/taskCenterDisplay.test.ts` |
+| 任务中心待确认检查计数 | `backend/scripts/tests/test_task_center_inspection_readiness.ts` | 已分派纯入住现场执行任务不计入待确认检查；未分派纯入住与无检查人的普通清洁仍计入 | sufficient | `./backend/node_modules/.bin/ts-node-dev --transpile-only backend/scripts/tests/test_task_center_inspection_readiness.ts` |
 | 移动端周转展示 | `mz-cleaning-app-frontend/src/lib/turnoverDisplay.test.ts` | 合并卡周转和检查显示 | partial | `npm run test --prefix mz-cleaning-app-frontend -- src/lib/turnoverDisplay.test.ts` |
 | 移动端检查任务退房状态展示与流程优先级 | `mz-cleaning-app-frontend/src/lib/taskVisualTheme.test.ts` | 未开始检查任务显示“已退房”；合并任务有清洁进行中时显示“进行中”，清洁完成且检查未完成时显示“待检查” | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand src/lib/taskVisualTheme.test.ts` |
 
@@ -170,9 +174,9 @@
 
 ### 最后验证
 
-- **CRL：** root/CRL-20260820-004
+- **CRL：** root/CRL-20260825-002
 - **Commit：** not committed
-- **日期：** 2026-08-20
+- **日期：** 2026-08-25
 
 ### 相关 CRL
 
@@ -191,6 +195,7 @@
 - CRL-20260804-009：历史 `type` 兼容的同订单密码回填
 - CRL-20260806-001：纯入住任务继承上一段有效旧密码
 - root/CRL-20260820-004：历史订单入住任务受控队列范围保护
+- root/CRL-20260825-002：任务中心检查分派与维修详情展示
 
 ### 非保护范围
 
@@ -255,7 +260,7 @@
 ## FR-004：检查、自完成、补品和挂钥匙流程
 
 - **维护责任范围：** backend / mobile
-- **最后审查日期：** 2026-08-17
+- **最后审查日期：** 2026-08-25
 - **状态：** active
 
 ### 业务保护规则
@@ -719,12 +724,13 @@
 - 历史 `property_deep_cleaning` 记录中的 `deep-cleaning/...` 与 `deep-cleaning-upload/...` 私有引用，只能在唯一、未删除且关联真实房源的深清记录精确匹配后进入同一认证代理；错误、未关联、歧义、已删除或未认证读取保持 `403`，不能降级为 R2 直链。
 - `property_maintenance` 的 `pending_review` 源状态是权威状态：任务中心陈旧的 `assigned` 同步不得回退它，`GET /mzapp/work-tasks` 必须投影规范化源状态。维修前照片字段必须在旧缓存详情只刷新一次后显示，并保留同一任务上下文给认证代理。
 - 网页维修分派的 `photo_urls` 参数保持 PostgreSQL `text[]`，不得按完成照片的 `jsonb` 绑定。
+- 任务中心中的 `property_maintenance` 卡片可按既有查看权限读取单条详情，并将历史 JSON 形式的报修内容规范为可读文本，分区展示报修与维修后照片；必须复用既有认证媒体读取组件和 `Image.PreviewGroup`，不得新增原始 URL 回退、通用媒体权限或写操作。
 
 ### 跨层适用范围
 
 - **后端：** `maintenanceWorkflowStore` 任务投影、`cleaning_app` 媒体归属与授权代理。
-- **客户端：** Web 维修/反馈详情与移动端房源反馈只使用认证媒体 URL；移动端 OTA 不属于本根仓发布单元。
-- **入口：** 维修完成/未完成动作、历史深清反馈列表/详情，以及相册缩略图和全屏预览。
+- **客户端：** Web 维修/反馈详情、任务中心维修详情与移动端房源反馈只使用认证媒体 URL；移动端 OTA 不属于本根仓发布单元。
+- **入口：** 维修完成/未完成动作、历史深清反馈列表/详情、任务中心房源待办详情，以及相册缩略图和全屏预览。
 - **一致性：** 服务端以源维修记录、分配关系和角色决定图片读取；客户端不自行扩大权限。
 
 ### 测试映射
@@ -738,6 +744,7 @@
 | 历史深清 Mobile 认证读取 | `mz-cleaning-app-frontend/src/lib/cleaningMedia.test.ts` | 两个历史前缀的移动端缩略图和预览携带认证信息与任务上下文，不回退为原始 URL | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/cleaningMedia.test.ts` |
 | 维修源状态与前照片类型 | `backend/scripts/tests/test_maintenance_workflow_actions.ts` | `text[]` 前照片绑定和待审核状态不回退 | sufficient | `npm run test:maintenance-workflow-actions --prefix backend` |
 | 维修详情缓存前照片回填 | `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` | 旧详情缓存只刷新一次并显示前照片 | sufficient | `npm run test -- --runInBand --no-cache src/screens/tasks/TaskDetailScreen.test.tsx`（在 mobile） |
+| 任务中心维修详情可读摘要 | `frontend/src/app/task-center/taskCenterDisplay.test.ts` | 历史 `details` 的 `content`、`description` 等 JSON 字段被规范为可读报修内容；图片仍由现有认证媒体组件读取 | partial | `npm run test --prefix frontend -- --coverage.enabled=false src/app/task-center/taskCenterDisplay.test.ts` |
 
 ### 验证策略
 
@@ -747,15 +754,16 @@
 
 ### 最后验证
 
-- **CRL：** root/CRL-20260817-002
+- **CRL：** root/CRL-20260825-002
 - **Commit：** not committed
-- **日期：** 2026-08-17
+- **日期：** 2026-08-25
 
 ### 相关 CRL
 
 - CRL-20260806-006：维修执行人专用动作当前 Dev 契约重基线。
 - CRL-20260807-007（mobile）：维修详情专用动作路由与认证图片展示。
 - root/CRL-20260817-002、mobile/CRL-20260817-002：历史深清私有媒体前缀兼容与认证读取。
+- root/CRL-20260825-002：任务中心检查分派与维修详情展示。
 
 ### 非保护范围
 

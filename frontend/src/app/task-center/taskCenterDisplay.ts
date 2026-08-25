@@ -3,6 +3,9 @@ type TaskCenterDisplayTask = {
   task_kind?: string | null
   title?: string | null
   detail?: string | null
+  assignee_id?: string | null
+  cleaner_id?: string | null
+  inspector_id?: string | null
   deferred_checkin_conflict?: boolean
   deferred_inspection_view?: boolean
   inspection_mode?: string | null
@@ -109,6 +112,57 @@ export function cleaningNightsDisplayLabels(task: TaskCenterNightsDisplayTask) {
   if (stayedNights != null) labels.push(`已住 ${stayedNights}晚`)
   if (remainingNights != null) labels.push(`待住 ${remainingNights}晚`)
   return labels
+}
+
+export function taskCenterInspectionAssignmentPatch(params: {
+  isPureCheckin: boolean
+  inspectorId: string | null | undefined
+}): {
+  assignee_id?: string | null
+  cleaner_id?: string | null
+  inspector_id: string | null
+  inspection_mode: 'same_day' | 'pending_decision'
+} {
+  const inspectorId = String(params.inspectorId || '').trim() || null
+  const inspectionMode = inspectorId ? 'same_day' as const : 'pending_decision' as const
+  if (params.isPureCheckin) {
+    return {
+      assignee_id: inspectorId,
+      cleaner_id: null,
+      inspector_id: null,
+      inspection_mode: inspectionMode,
+    }
+  }
+  return {
+    inspector_id: inspectorId,
+    inspection_mode: inspectionMode,
+  }
+}
+
+export function hasTaskCenterRequiredExecutor(task: TaskCenterDisplayTask) {
+  if (lower(task.task_source) !== 'cleaning') return Boolean(String(task.assignee_id || '').trim())
+  if (lower(task.task_kind) === 'checkin_clean') {
+    return Boolean(String(task.assignee_id || task.inspector_id || task.cleaner_id || '').trim())
+  }
+  return Boolean(String(task.cleaner_id || task.assignee_id || '').trim())
+}
+
+export function maintenanceDetailContentText(value: unknown) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  try {
+    const parsed = JSON.parse(raw)
+    if (typeof parsed === 'string') return parsed.trim()
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      for (const key of ['content', 'description', 'detail', 'message', 'note']) {
+        const candidate = (parsed as Record<string, unknown>)[key]
+        if (typeof candidate === 'string' && candidate.trim()) return candidate.trim()
+      }
+    }
+  } catch {
+    // Historical maintenance details are often plain text; preserve them unchanged.
+  }
+  return raw
 }
 
 export function resolveTaskCenterColumns(containerWidth: number) {

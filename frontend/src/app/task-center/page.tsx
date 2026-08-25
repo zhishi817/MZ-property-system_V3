@@ -1,12 +1,14 @@
 "use client"
 
-import { Alert, Button, DatePicker, Empty, Input, Modal, Select, Skeleton, Space, Switch, message } from 'antd'
-import { DeleteOutlined, HolderOutlined, LeftOutlined, PlusOutlined, ReloadOutlined, RightOutlined, SaveOutlined } from '@ant-design/icons'
+import { Alert, Button, DatePicker, Empty, Image, Input, Modal, Select, Skeleton, Space, Switch, message } from 'antd'
+import { DeleteOutlined, EnvironmentOutlined, EyeOutlined, FileTextOutlined, HolderOutlined, LeftOutlined, PictureOutlined, PlusOutlined, ReloadOutlined, RightOutlined, SaveOutlined, ToolOutlined } from '@ant-design/icons'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { getJSON, postJSON } from '../../lib/api'
 import { upsertAdminNotification } from '../../lib/adminNotifications'
 import { getRole } from '../../lib/auth'
+import MaintenanceFeedbackImage from '../../components/MaintenanceFeedbackImage'
+import { authenticatedMaintenancePhotoReferences, maintenanceAfterPhotoReferences, maintenanceFeedbackMediaProxyUrl } from '../../lib/maintenanceFeedbackMedia'
 import {
   type TaskSemanticTone,
   inspectionScopeLabel,
@@ -29,8 +31,11 @@ import {
   cleaningNightsDisplayLabels,
   cleaningTaskFlowLabelText,
   deferredInspectionConflictPresentation,
+  hasTaskCenterRequiredExecutor,
   isDeferredInspectionDisplayTask,
+  maintenanceDetailContentText,
   resolveTaskCenterColumns,
+  taskCenterInspectionAssignmentPatch,
 } from './taskCenterDisplay'
 import styles from '../cleaning/cleaningSchedule.module.scss'
 
@@ -187,6 +192,20 @@ type TaskCenterTask = {
   status_action?: CleaningStatusAction | null
   display_state?: TaskDisplayState | null
   management_actions?: TaskManagementAction[] | null
+}
+
+type PropertyMaintenanceDetail = {
+  id: string
+  work_no?: string | null
+  property_code?: string | null
+  details?: string | null
+  area?: string | null
+  category?: string | null
+  category_detail?: string | null
+  repair_notes?: string | null
+  photo_urls?: unknown
+  completion_photo_urls?: unknown
+  repair_photo_urls?: unknown
 }
 
 type TaskCenterSubrow = {
@@ -432,8 +451,8 @@ function combinedManagementGate(tasks: TaskCenterTask[], id: TaskManagementActio
   return blocked || { enabled: true, disabledReason: '' }
 }
 
-const UNASSIGNED_VISIBLE_SUMMARY_TITLE = '统计当前页面显示的清洁任务和线下其他任务里，尚未完成安排的任务；清洁任务需清洁人员和检查人员都为空，线下其他任务需执行人为空；不含退房日房源待办'
-const PENDING_INSPECTION_SUMMARY_TITLE = '统计检查安排待确认，或已设为同日/延期检查但还没有检查人员的清洁任务'
+const UNASSIGNED_VISIBLE_SUMMARY_TITLE = '统计当前页面显示的尚未安排任务：退房/清洁任务必须有清洁人员，检查人员不能代替清洁；入住现场执行任务和线下其他任务需执行人；不含退房日房源待办'
+const PENDING_INSPECTION_SUMMARY_TITLE = '统计检查安排待确认，或已设为同日/延期检查但普通清洁缺检查人员、纯入住缺执行人员的任务'
 
 function saveBoardErrorMessage(error: any) {
   const msg = String(error?.message || '').trim()
@@ -860,6 +879,9 @@ export default function TaskCenterPage() {
   const [dragOverKey, setDragOverKey] = useState<string | null>(null)
   const [detailTask, setDetailTask] = useState<TaskCenterTask | null>(null)
   const [detailDraft, setDetailDraft] = useState<TaskDetailDraft | null>(null)
+  const [maintenanceDetailTask, setMaintenanceDetailTask] = useState<TaskCenterTask | null>(null)
+  const [maintenanceDetail, setMaintenanceDetail] = useState<PropertyMaintenanceDetail | null>(null)
+  const [maintenanceDetailLoading, setMaintenanceDetailLoading] = useState(false)
   const [viewerRole, setViewerRole] = useState<string | null>(null)
   const [boardDirty, setBoardDirty] = useState(false)
   const [boardSaving, setBoardSaving] = useState(false)
@@ -902,6 +924,27 @@ export default function TaskCenterPage() {
     dirtyCleaningTaskIdsRef.current.clear()
     dirtyWorkTaskIdsRef.current.clear()
     cleaningNotificationGroupsRef.current.clear()
+  }, [])
+
+  const openMaintenanceDetail = useCallback(async (task: TaskCenterTask) => {
+    if (task.source_type !== 'property_maintenance' || !task.source_id) return
+    setMaintenanceDetailTask(task)
+    setMaintenanceDetail(null)
+    setMaintenanceDetailLoading(true)
+    try {
+      const record = await getJSON<PropertyMaintenanceDetail>(`/crud/property_maintenance/${encodeURIComponent(task.source_id)}`)
+      setMaintenanceDetail(record)
+    } catch {
+      message.error('无法读取维修详情，请稍后重试')
+    } finally {
+      setMaintenanceDetailLoading(false)
+    }
+  }, [])
+
+  const closeMaintenanceDetail = useCallback(() => {
+    setMaintenanceDetailTask(null)
+    setMaintenanceDetail(null)
+    setMaintenanceDetailLoading(false)
   }, [])
 
   const markCleaningTaskDirty = useCallback((task: TaskCenterTask) => {
@@ -1057,9 +1100,7 @@ export default function TaskCenterPage() {
       for (const subrow of row.subrows) {
         for (const task of subrow.tasks) {
           if (task.task_source === 'cleaning') {
-            const cleanerId = String(task.cleaner_id || task.assignee_id || '').trim()
-            const inspectorId = String(task.inspector_id || '').trim()
-            if (cleanerId || inspectorId) continue
+            if (hasTaskCenterRequiredExecutor(task)) continue
           } else if (task.task_source === 'work') {
             const assigneeId = String(task.assignee_id || '').trim()
             if (assigneeId) continue
@@ -1539,12 +1580,19 @@ export default function TaskCenterPage() {
               if (params.field === 'inspector_id') {
                 const matched = task.task_source === 'cleaning' && activeCleaningTaskIds(task).some((id) => inspectionSet.has(String(id)))
                 if (!matched) return task
-                const nextInspectionMode: TaskCenterTask['inspection_mode'] = params.value ? 'same_day' : 'pending_decision'
+                const pureCheckin = isCheckinOnlyCleaningTask(task)
+                const patch = taskCenterInspectionAssignmentPatch({
+                  isPureCheckin: pureCheckin,
+                  inspectorId: params.value,
+                })
                 return {
                   ...task,
-                  inspector_id: params.value,
-                  inspection_mode: nextInspectionMode,
-                  status: autoCleaningStatus(task.status, task.cleaner_id || task.assignee_id || null, params.value),
+                  ...patch,
+                  status: autoCleaningStatus(
+                    task.status,
+                    pureCheckin ? patch.assignee_id || null : task.cleaner_id || task.assignee_id || null,
+                    patch.inspector_id || null,
+                  ),
                 }
               }
               const matched = task.task_source === 'work' && workSet.has(String(task.task_id))
@@ -1694,24 +1742,41 @@ export default function TaskCenterPage() {
     const targetInspectorId = task.task_source === 'cleaning' && row.row_type !== 'deferred'
       ? String(row.assignments?.inspector_id || '').trim()
       : ''
+    const pureCheckin = movedTask.task_source === 'cleaning' && isCheckinOnlyCleaningTask(movedTask)
     if (targetInspectorId) {
+      const patch = taskCenterInspectionAssignmentPatch({
+        isPureCheckin: pureCheckin,
+        inspectorId: targetInspectorId,
+      })
       movedTask = {
         ...movedTask,
-        inspector_id: targetInspectorId,
-        inspection_mode: 'same_day',
+        ...patch,
         inspection_due_date: null,
-        status: autoCleaningStatus(movedTask.status, movedTask.cleaner_id || movedTask.assignee_id || null, targetInspectorId),
+        status: autoCleaningStatus(
+          movedTask.status,
+          pureCheckin ? patch.assignee_id || null : movedTask.cleaner_id || movedTask.assignee_id || null,
+          patch.inspector_id || null,
+        ),
       }
     } else {
-      const currentInspectorId = String(movedTask.inspector_id || '').trim()
+      const currentInspectorId = String(pureCheckin
+        ? movedTask.assignee_id || movedTask.inspector_id || movedTask.cleaner_id || ''
+        : movedTask.inspector_id || '').trim()
       const movedOutOfInspectorRow = !!sourceInspectorId && sourceInspectorId === currentInspectorId && sourceRowKey !== row.row_key
       if (movedOutOfInspectorRow && canAutoReassignInspectorOnDrop(movedTask)) {
+        const patch = taskCenterInspectionAssignmentPatch({
+          isPureCheckin: pureCheckin,
+          inspectorId: null,
+        })
         movedTask = {
           ...movedTask,
-          inspector_id: null,
-          inspection_mode: 'pending_decision',
+          ...patch,
           inspection_due_date: null,
-          status: autoCleaningStatus(movedTask.status, movedTask.cleaner_id || movedTask.assignee_id || null, null),
+          status: autoCleaningStatus(
+            movedTask.status,
+            pureCheckin ? patch.assignee_id || null : movedTask.cleaner_id || movedTask.assignee_id || null,
+            patch.inspector_id || null,
+          ),
         }
       }
     }
@@ -1728,7 +1793,9 @@ export default function TaskCenterPage() {
     if (movedTask.task_source === 'cleaning' && beforeCleaningSnapshot) {
       const afterCleaningSnapshot = cleaningAssignmentSnapshot(movedTask)
       const inspectionChanged =
-        beforeCleaningSnapshot.inspector_id !== afterCleaningSnapshot.inspector_id
+        beforeCleaningSnapshot.assignee_id !== afterCleaningSnapshot.assignee_id
+        || beforeCleaningSnapshot.cleaner_id !== afterCleaningSnapshot.cleaner_id
+        || beforeCleaningSnapshot.inspector_id !== afterCleaningSnapshot.inspector_id
         || beforeCleaningSnapshot.inspection_mode !== afterCleaningSnapshot.inspection_mode
         || beforeCleaningSnapshot.inspection_scope !== afterCleaningSnapshot.inspection_scope
         || beforeCleaningSnapshot.inspection_due_date !== afterCleaningSnapshot.inspection_due_date
@@ -2063,6 +2130,12 @@ export default function TaskCenterPage() {
       : detailText
     const assignedStaffId = preferredStaffIdForTask(task)
     const assignedStaffName = assignedStaffId ? String(staffById.get(assignedStaffId)?.name || '').trim() : ''
+    const inspectorStaffId = task.task_source === 'cleaning'
+      && !isCheckinOnlyCleaningTask(task)
+      && ['same_day', 'deferred'].includes(resolvedInspectionModeForTask(task))
+      ? String(task.inspector_id || '').trim()
+      : ''
+    const inspectorStaffName = inspectorStaffId ? String(staffById.get(inspectorStaffId)?.name || '').trim() : ''
     const supersededCount = supersededCleaningTaskIds(task).length
     const hasOrderTags = orderTags.length > 0
     const nightsTags = taskNightsTags(task)
@@ -2119,7 +2192,12 @@ export default function TaskCenterPage() {
           <div className={styles.taskCenterCompactHero}>
             <div className={styles.taskCenterCompactTitle} style={textColor ? { color: textColor } : undefined}>
               <span className={styles.taskCenterCompactTitleText}>{task.title}</span>
-              {assignedStaffName ? <span className={styles.taskCenterCompactTitleMeta}>{assignedStaffName}</span> : null}
+              {(assignedStaffName || inspectorStaffName) ? (
+                <span className={styles.taskCenterCompactStaffStack}>
+                  {assignedStaffName ? <span className={styles.taskCenterCompactTitleMeta}>{assignedStaffName}</span> : null}
+                  {inspectorStaffName ? <span className={styles.taskCenterCompactInspectorMeta}>检查：{inspectorStaffName}</span> : null}
+                </span>
+              ) : null}
             </div>
             {factLabels.length ? (
               <div className={styles.taskCenterCompactFacts} style={textColor ? { color: textColor } : undefined}>
@@ -2545,7 +2623,20 @@ export default function TaskCenterPage() {
                     <div key={task.item_key} className={styles.propertyFollowupCard}>
                       <div className={styles.propertyFollowupCardTop}>
                         <span className={`${styles.inlineSemanticPill} ${semanticToneClass(meta.tone)}`}>{meta.label}</span>
-                        <span className={`${styles.statusChip} ${semanticToneClass(statusMeta.tone)}`}>{statusMeta.label}</span>
+                        <div className={styles.propertyFollowupCardActions}>
+                          {task.source_type === 'property_maintenance' && task.source_id ? (
+                            <Button
+                              type="text"
+                              size="small"
+                              icon={<EyeOutlined />}
+                              className={styles.propertyFollowupDetailAction}
+                              onClick={() => { void openMaintenanceDetail(task) }}
+                            >
+                              详情
+                            </Button>
+                          ) : null}
+                          <span className={`${styles.statusChip} ${semanticToneClass(statusMeta.tone)}`}>{statusMeta.label}</span>
+                        </div>
                       </div>
                       <div className={styles.propertyFollowupProperty}>{task.title}</div>
                       <div className={styles.propertyFollowupDetail}>{task.detail || task.summary || '暂无详情'}</div>
@@ -2571,6 +2662,107 @@ export default function TaskCenterPage() {
           </div>
         </div>
       </div>
+
+      <Modal
+        open={!!maintenanceDetailTask}
+        title={maintenanceDetailTask ? (
+          <div className={styles.maintenanceDetailModalTitle}>
+            <span>维修详情</span>
+            <span>{maintenanceDetailTask.title}</span>
+          </div>
+        ) : '维修详情'}
+        width={720}
+        footer={<Button onClick={closeMaintenanceDetail}>关闭</Button>}
+        onCancel={closeMaintenanceDetail}
+        destroyOnClose
+        className={styles.maintenanceDetailModal}
+      >
+        {maintenanceDetailLoading ? (
+          <Skeleton active paragraph={{ rows: 6 }} />
+        ) : maintenanceDetail ? (() => {
+          const beforePhotos = authenticatedMaintenancePhotoReferences(maintenanceDetail.photo_urls)
+          const afterPhotos = maintenanceAfterPhotoReferences(maintenanceDetail)
+            .filter((reference) => Boolean(maintenanceFeedbackMediaProxyUrl(reference)))
+          const reportText = maintenanceDetailContentText(maintenanceDetail.details) || '暂无报修说明'
+          const categoryText = [maintenanceDetail.category, maintenanceDetail.category_detail].filter(Boolean).join(' / ') || '未填写'
+          return (
+            <div className={styles.maintenanceDetailContent}>
+              <section className={styles.maintenanceDetailHero}>
+                <span className={styles.maintenanceDetailHeroIcon}><ToolOutlined /></span>
+                <div>
+                  <div className={styles.maintenanceDetailEyebrow}>报修事项</div>
+                  <div className={styles.maintenanceDetailSummary}>{reportText}</div>
+                </div>
+              </section>
+
+              <div className={styles.maintenanceDetailInfoGrid}>
+                <section className={styles.maintenanceDetailInfoCard}>
+                  <div className={styles.maintenanceDetailSectionTitle}><EnvironmentOutlined /> 位置与类别</div>
+                  <div className={styles.maintenanceDetailFieldList}>
+                    <div>
+                      <span>位置</span>
+                      <strong>{maintenanceDetail.area || '未填写'}</strong>
+                    </div>
+                    <div>
+                      <span>类别</span>
+                      <strong>{categoryText}</strong>
+                    </div>
+                  </div>
+                </section>
+                <section className={styles.maintenanceDetailInfoCard}>
+                  <div className={styles.maintenanceDetailSectionTitle}><FileTextOutlined /> 报修内容</div>
+                  <p className={styles.maintenanceDetailBodyText}>{reportText}</p>
+                </section>
+              </div>
+
+              {maintenanceDetail.repair_notes ? (
+                <section className={styles.maintenanceDetailNoteCard}>
+                  <div className={styles.maintenanceDetailSectionTitle}><ToolOutlined /> 维修说明</div>
+                  <p className={styles.maintenanceDetailBodyText}>{maintenanceDetail.repair_notes}</p>
+                </section>
+              ) : null}
+
+              <div className={styles.maintenanceDetailPhotoSections}>
+                <section className={styles.maintenanceDetailPhotoCard}>
+                  <div className={styles.maintenanceDetailPhotoTitle}>
+                    <span><PictureOutlined /> 报修照片</span>
+                    <em>{beforePhotos.length} 张</em>
+                  </div>
+                  {beforePhotos.length ? (
+                    <Image.PreviewGroup>
+                      <div className={styles.maintenanceDetailPhotoGrid}>
+                        {beforePhotos.map((reference, index) => (
+                          <div key={`before:${index}:${reference}`} className={styles.maintenanceDetailPhotoItem}>
+                            <MaintenanceFeedbackImage reference={reference} width="100%" height={148} style={{ objectFit: 'cover' }} />
+                          </div>
+                        ))}
+                      </div>
+                    </Image.PreviewGroup>
+                  ) : <div className={styles.maintenanceDetailPhotoEmpty}>暂无报修照片</div>}
+                </section>
+
+                <section className={styles.maintenanceDetailPhotoCard}>
+                  <div className={styles.maintenanceDetailPhotoTitle}>
+                    <span><PictureOutlined /> 维修后照片</span>
+                    <em>{afterPhotos.length} 张</em>
+                  </div>
+                  {afterPhotos.length ? (
+                    <Image.PreviewGroup>
+                      <div className={styles.maintenanceDetailPhotoGrid}>
+                        {afterPhotos.map((reference, index) => (
+                          <div key={`after:${index}:${reference}`} className={styles.maintenanceDetailPhotoItem}>
+                            <MaintenanceFeedbackImage reference={reference} width="100%" height={148} style={{ objectFit: 'cover' }} />
+                          </div>
+                        ))}
+                      </div>
+                    </Image.PreviewGroup>
+                  ) : <div className={styles.maintenanceDetailPhotoEmpty}>暂无维修后照片</div>}
+                </section>
+              </div>
+            </div>
+          )
+        })() : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无维修详情" />}
+      </Modal>
 
       <Modal
         open={!!detailTask}
