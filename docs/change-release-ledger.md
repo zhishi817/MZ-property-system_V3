@@ -123,15 +123,15 @@
 - Branch: `codex/maintenance-detail-20260825`
 - Base: `origin/Dev@c7ff3676dc76c61b3e19b0fdbdc57d6de19ff87e`; fetched at `2026-08-25 23:35 AEST`
 - Candidate patch SHA-256: `6d4167efe84a4144b74e2227d0c80337d855d2a5cff1c6e9211366f140a36ee0` excluding `docs/change-release-ledger.md`.
-- Commit SHA: not committed.
+- Commit SHA: `808dc951b4d1516c7207ee4657709036311ee716` (candidate content commit).
 - Dependencies: none.
 - Required validation: PASS for the selected root code against the existing local dependency runtime; a fresh dependency installation was not performed. The root full gate still has the separately recorded mobile-checkout environment gap.
 - Shared-hunk review: PASS; the final pre-commit gate matched all ten selected paths and 56 non-ledger hunk fingerprints.
 - Generated-file review: not applicable; selected files are source, tests, SCSS and markdown only.
-- Technical state: verified.
+- Technical state: committed.
 - User authorization: selected-for-commit; evidence: user requested “将刚刚任务中心的修复内容提交”.
 - Independent review: GO for commit after read-only review of the current 10-path candidate. The previous raw-URL fallback and media-regression P1 findings were corrected; no P0/P1/P2 findings remain for this commit action.
-- Action conclusion: GO for commit only; user authorization remains selected-for-commit, not approved-for-push.
+- Action conclusion: GO for the completed commit only; user authorization remains selected-for-commit, not approved-for-push.
 
 ### Risks / Release Notes
 
