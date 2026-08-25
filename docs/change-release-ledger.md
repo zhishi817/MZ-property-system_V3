@@ -1,5 +1,81 @@
 # Change Release Ledger
 
+## CRL-20260825-001 — Release Attempt 依赖 SHA 门禁（root）
+
+- **Repository:** `root`
+- **Status:** commit-ready; selected for commit
+- **Updated:** 2026-08-25 Australia/Melbourne
+- **Request:** 将 Release Attempt 的依赖从不可审计的自由文本升级为可验证的精确 Git 证据，避免修复 A 未进入修复 B 的候选范围却被误认为已包含。
+- **Outcome:** `--release-report` 现在只接受 `none` 或以分号分隔的 `root|mobile/CRL-YYYYMMDD-NNN@<40-character commit SHA>` 依赖。同仓库依赖必须指向真实 CRL、该 CRL 已记录的内容提交且为报告 head 的祖先；跨仓库自由文本绝不能单独放行，必须留待配对仓库的独立精确核验。
+
+### Implementation
+
+- Previous behavior: `Dependencies` 只作为报告中的原样文字输出，无法证明同仓库依赖提交实际位于 `base...head`，也无法要求跨仓库配对核验。
+- New behavior: 审计器解析规范依赖引用、拒绝缩写 SHA/自由文本/重复引用；同仓库同时验证 CRL 存在、Release Attempt 内容提交绑定和 ancestry。跨仓库依赖无论自由文本是否写 `PASS` 都保持 `NOT VERIFIED`，不能伪造成已交付。
+- Independent review correction: 初始独立审查发现 P1：格式正确但不存在的 CRL 或任意祖先 SHA 曾可被错误放行；已补 CRL 存在、内容提交绑定和跨仓库 fail-closed 回归测试，需重新独立审查。
+- Key decisions: 不自动访问或修改另一仓库；在没有可机读的配对仓库精确报告时，宁可阻断 GO，也不把一套 worktree 的声明误当作另一仓库已合入的状态。
+
+### Files / Areas
+
+- `scripts/audit_change_release_ledger.py` — validate canonical dependency SHA references and report same-/cross-repository dependency gates.
+- `scripts/tests/test_audit_change_release_ledger.py` — cover same-repository ancestor/non-ancestor, cross-repository evidence, and malformed-reference cases.
+- `docs/change-release-ledger.md` — this root CRL.
+- `docs/execution-records.md` — confirmed plan and local execution result.
+
+### Impact / Dependencies
+
+- Application/API/database/production data: none.
+- Dependencies: none for this governance-only root candidate.
+- Feature Regression Registry: not applicable; no business workflow, route, API contract, role, data model or runtime behavior changed.
+
+### Validation
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_audit_change_release_ledger.py` — passed: 31 tests, including不存在 CRL、CRL/内容提交错配和跨仓库自由文本 `PASS` 的 fail-closed cases.
+- `git diff --check` and `python3 scripts/audit_change_release_ledger.py` — passed: 4 changed files, all 4 recorded; coverage PASS against the freshly fetched `origin/Dev` ledger.
+- Not run: staging, commit, push, PR, merge, deployment, OTA, device verification and production verification.
+
+### Risks / Release Notes
+
+- Existing historical Release Attempts that retain free-form dependency prose will be `BLOCKED` when individually re-audited until a new evidence receipt records canonical SHA references; their immutable historical business identity is not rewritten.
+- Cross-repository `PASS` evidence is deliberately a separate human/repository verification gate, not a claim that this root worktree can inspect mobile delivery state.
+- Git state: staged candidate on `codex/release-dependency-sha-gates-20260825`, based on `origin/Dev@fb30d1028435298f1a3c5e8a47481e00fae5f5bb`; not committed, not pushed, no PR, deployment, OTA or device/production verification.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** `prepared`
+- **Untracked review:** `none`; clean candidate worktree contains no untracked files.
+- `scripts/audit_change_release_ledger.py` — SHA-256: `35a567ae523ab5e48fafc5c5730930e30de900f418297725c1610b21415632e2`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `5face8b4a3b365b72d9824a6db642ed64212180aa7a18b066e913ae97691c172`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `8ed7c84b22c102aec7899db08cec1fd07217f9f7a37006ad33eab4ab85584b7d`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `d035b9cddb33844caa52dd989824b25764e1ccaebe9afc120fa3aac1ce8c3c75`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `ea0d520934a41863871e543767534294985eba49897588d8a33e650f1d987f7d`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `02726b2e1f619dde8f0f50b7f56173a195f14c260ea46b890144538ed215c178`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `ed03eb415f78c0963da1ed708a7d84404aa195568bf21c397749eb411bf23be0`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `fe648e5a6d7a40added4f5e7d7b597af540404162f5dd777fd96aa573a882d23`
+- `docs/execution-records.md` — SHA-256: `b41a5f07d93ea7e02cb096a10109b135150bce4db11786ba79a19dacbe62f5e1`
+
+### Release Attempts
+
+#### RA-20260825-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260825-001`
+- Selected CRL identities: `root/CRL-20260825-001`
+- Intended action: `commit`
+- Branch: `codex/release-dependency-sha-gates-20260825`
+- Base: `origin/Dev@fb30d1028435298f1a3c5e8a47481e00fae5f5bb`; fetched at `2026-08-25 20:14 AEST`
+- Candidate patch SHA-256: `c7e9b61f240eedc24cfcc615d55c9e6dd7d3ec559cedc7916c20210d6f56c0b5` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `not committed`
+- Dependencies: `none`
+- Required validation: `PASS`; evidence: root 31-test auditor regression, `git diff --check`, rebuilt pre-commit gate and ledger coverage audit passed.
+- Shared-hunk review: `PASS`; the selected script/test hunks are fully declared in this CRL and no unselected hunk is staged.
+- Generated-file review: `not applicable`; source and Markdown files only.
+- Technical state: `verified`
+- User authorization: `selected-for-commit`; evidence: user selected root/mobile `CRL-20260825-001` together for release.
+- Independent review: `GO for commit`; evidence: fresh independent read-only review verified the P1 closure, exact candidate fingerprint `c7e9b61f240eedc24cfcc615d55c9e6dd7d3ec559cedc7916c20210d6f56c0b5`, scope and secret/production-write boundaries.
+- Action conclusion: `GO`; selected root/mobile governance candidates may be committed separately; push remains unauthorized.
+
 ## CRL-20260820-004 — 历史订单入住任务受控队列范围保护（root）
 
 - **Repository:** `root`
