@@ -217,6 +217,25 @@
 - Independent review: `GO for commit`; evidence: independent read-only review reproduced the candidate fingerprint, confirmed origin/Dev CRL-20260827-001 is unchanged, found five selected paths / 20 hunk matches and no workflow, secret or production-write risk.
 - Action conclusion: `GO` for commit completed locally; PR-branch update, PR merge and deployment remain separate actions.
 
+#### RA-20260827-004
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260819-003`
+- Selected CRL identities: `root/CRL-20260819-003`
+- Intended action: `push`; purpose: fast-forward PR #325's existing release branch with the reviewed conflict-resolution result.
+- Branch: `codex/release-p2-id-src-20260827`
+- Base: `origin/Dev@1c4020e61d7a949e76a3451a636c2964ec70f2bf`; fetched at `2026-08-27 22:46 AEST`.
+- Candidate patch SHA-256: `1493f203ae5011a6fb4ba6ac7818c975f8343cb9d6cf1879ccb93adf23efac7d`, excluding `docs/change-release-ledger.md`.
+- Commit SHA: `5ec2a4db7e43d11068968c9fe1e0fab181d96e1f`; audit head `efc447d970e3aa543fb796974dc9c4f970c505f5`.
+- Dependencies: `none`.
+- Required validation: `PASS`; evidence: RA-20260827-003 exact `1c4020e...efc447d` range audit is GO; current origin/Dev and PR branch were freshly fetched, and the existing branch is an ancestor of the audit head.
+- Shared-hunk review: `PASS`; evidence: the exact range contains the selected five files and 20 non-ledger hunk fingerprints only.
+- Generated-file review: `PASS`; evidence: no generated or sensitive file is in the exact range.
+- Technical state: `committed`.
+- User authorization: `approved-for-push`; evidence: user confirmed fast-forwarding the reviewed PR #325 result to the existing branch without force, Dev merge or deployment on 2026-08-27.
+- Independent review: `GO for push`; evidence: independent read-only range review reproduced the selected 5-file / 20-hunk fingerprint, found no workflow, generated-file, sensitive-information or production-write risk, and confirmed both origin/Dev and the remote PR head are ancestors of the candidate.
+- Action conclusion: `GO` for push; selected CRL, base, candidate content commit and target branch are unchanged from the authorized review.
+
 ### Risks / Release Notes
 
 - The new mobile client must be released only with a compatible backend; cached historical references become presence-only and are not displayed as raw URLs.
