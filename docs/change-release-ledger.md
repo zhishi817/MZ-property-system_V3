@@ -231,10 +231,11 @@
 - Required validation: `PASS`; evidence: RA-20260827-003 exact `1c4020e...efc447d` range audit is GO; current origin/Dev and PR branch were freshly fetched, and the existing branch is an ancestor of the audit head.
 - Shared-hunk review: `PASS`; evidence: the exact range contains the selected five files and 20 non-ledger hunk fingerprints only.
 - Generated-file review: `PASS`; evidence: no generated or sensitive file is in the exact range.
-- Technical state: `committed`.
+- Technical state: `pushed`.
 - User authorization: `approved-for-push`; evidence: user confirmed fast-forwarding the reviewed PR #325 result to the existing branch without force, Dev merge or deployment on 2026-08-27.
 - Independent review: `GO for push`; evidence: independent read-only range review reproduced the selected 5-file / 20-hunk fingerprint, found no workflow, generated-file, sensitive-information or production-write risk, and confirmed both origin/Dev and the remote PR head are ancestors of the candidate.
-- Action conclusion: `GO` for push; selected CRL, base, candidate content commit and target branch are unchanged from the authorized review.
+- Remote branch / source head: `origin/codex/release-p2-id-src-20260827@cfab3feec816954ac667752651c4186ac929adc9`; verified immediately after the non-force fast-forward.
+- Action conclusion: `GO` for push completed; PR merge and deployment remain separate actions.
 
 ### Risks / Release Notes
 
