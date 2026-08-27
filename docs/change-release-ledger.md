@@ -84,6 +84,25 @@
 - Independent review: `GO for commit`; evidence: fresh independent read-only review reproduced the candidate fingerprint, reviewed the complete staged range and found no P0/P1/P2, secret or production-write risk.
 - Action conclusion: `GO` for commit completed locally; push remains unauthorized.
 
+#### RA-20260827-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260819-003`
+- Selected CRL identities: `root/CRL-20260819-003`
+- Intended action: `push`; target: `Dev`.
+- Branch: `codex/release-p2-id-src-20260827`
+- Base: `origin/Dev@3a9fe9970d672c2bb2a27a915282ec9e11ac08e0`; fetched at `2026-08-27 19:37 AEST`.
+- Candidate patch SHA-256: `1493f203ae5011a6fb4ba6ac7818c975f8343cb9d6cf1879ccb93adf23efac7d`, excluding `docs/change-release-ledger.md`.
+- Commit SHA: `c4438062d6ab291a8f27ae2337cad7567422d694` (candidate content commit; exact audit head follows in the range report).
+- Dependencies: `none`.
+- Required validation: `PASS`; evidence: isolated backend no-output TypeScript, profile-document contract, registry and whitespace checks passed; no production access occurred.
+- Shared-hunk review: `PASS`; evidence: exact range matched 20 selected non-ledger hunks and no unselected file.
+- Generated-file review: `PASS`; evidence: five selected paths are TypeScript source/tests and Markdown only; no generated or sensitive file is in range.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: user said “继续” after Root branch head `56047b042da7fcf5de38a0709600fb531d3bfdd0` and the exact push scope were presented on 2026-08-27.
+- Independent review: `GO for push`; evidence: fresh independent read-only committed-range review reproduced the candidate fingerprint, confirmed the selected range and fresh base, and found no P0/P1/P2, secret or production-write risk.
+- Action conclusion: `GO` for push; exact committed range and user authorization are verified. PR, merge and deployment remain unauthorized.
+
 ### Risks / Release Notes
 
 - The new mobile client must be released only with a compatible backend; cached historical references become presence-only and are not displayed as raw URLs.
