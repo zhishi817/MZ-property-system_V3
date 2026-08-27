@@ -84,9 +84,9 @@
 - Shared-hunk review: `PASS`; all nine selected non-ledger hunk fingerprints match the committed range.
 - Generated-file review: not applicable; Python source, tests and Markdown only.
 - Technical state: `committed`.
-- User authorization: `not-selected`; evidence: final post-receipt audit head has not yet been presented for exact push confirmation.
+- User authorization: `approved-for-push`; evidence: user confirmed Root `7d74d287e7a1ae911e28548b101845a3fff18ea8`, candidate content commit `58736b2179607b8d8fdc2a3ddf2b5085f1173d90`, and branch `codex/historical-receipt-audit-20260827` on 2026-08-27.
 - Independent review: `GO for commit`; evidence: the reviewed candidate is unchanged; this does not constitute push authorization.
-- Action conclusion: `NOT VERIFIED`; blockers: commit this push-attempt receipt, re-audit its exact final head, then obtain user push authorization bound to that head and branch.
+- Action conclusion: `GO` for the authorized push once the current exact range report remains GO; blockers: none.
 
 ### Risks / Release Notes
 
