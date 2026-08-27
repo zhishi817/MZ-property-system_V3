@@ -60,12 +60,11 @@
 - Base: `origin/Dev@3a9fe9970d672c2bb2a27a915282ec9e11ac08e0`; fetched at `2026-08-27 AEST`
 - Candidate patch SHA-256: `abee2e7d5846e7708a8e91a79f5f7a9377a392b0f022777a9b78b71f706c1d29` excluding `docs/change-release-ledger.md`.
 - Commit SHA: `58736b2179607b8d8fdc2a3ddf2b5085f1173d90` (candidate content commit).
-- Remote branch: `origin/codex/historical-receipt-audit-20260827@7263689d8d99b3a1033aba15eca878d4fdac58a3`; verified by `git ls-remote` after push on 2026-08-27.
 - Dependencies: none.
 - Required validation: `PASS`; evidence: 37-test auditor regression, Python compile and root feature-registry audit passed.
 - Shared-hunk review: `PASS`; all nine selected non-ledger staged hunk fingerprints are declared and no unselected hunk is staged.
 - Generated-file review: not applicable; Python source, tests and Markdown only.
-- Technical state: `pushed`.
+- Technical state: `committed`.
 - User authorization: `selected-for-commit`; evidence: user confirmed approval for this bounded root/mobile governance repair on 2026-08-27.
 - Independent review: `GO for commit`; evidence: second independent read-only review verified the receipt-base source immutability P1 closure, exact candidate fingerprint, staged scope and secret/production-write boundaries.
 - Action conclusion: `GO` for the completed commit only; blockers: none. Push requires a committed-range audit and a new exact user push authorization.
@@ -80,11 +79,12 @@
 - Base: `origin/Dev@3a9fe9970d672c2bb2a27a915282ec9e11ac08e0`; fetched at `2026-08-27 AEST`
 - Candidate patch SHA-256: `abee2e7d5846e7708a8e91a79f5f7a9377a392b0f022777a9b78b71f706c1d29` excluding `docs/change-release-ledger.md`.
 - Commit SHA: `58736b2179607b8d8fdc2a3ddf2b5085f1173d90` (candidate content commit).
+- Remote branch: `origin/codex/historical-receipt-audit-20260827@7263689d8d99b3a1033aba15eca878d4fdac58a3`; verified by `git ls-remote` after the authorized push on 2026-08-27.
 - Dependencies: none.
 - Required validation: `PASS`; evidence: refreshed remote baseline plus the exact committed root range audit at the pre-push receipt head passed.
 - Shared-hunk review: `PASS`; all nine selected non-ledger hunk fingerprints match the committed range.
 - Generated-file review: not applicable; Python source, tests and Markdown only.
-- Technical state: `committed`.
+- Technical state: `pushed`.
 - User authorization: `approved-for-push`; evidence: user confirmed Root `7d74d287e7a1ae911e28548b101845a3fff18ea8`, candidate content commit `58736b2179607b8d8fdc2a3ddf2b5085f1173d90`, and branch `codex/historical-receipt-audit-20260827` on 2026-08-27.
 - Independent review: `GO for commit`; evidence: the reviewed candidate is unchanged; this does not constitute push authorization.
 - Action conclusion: `GO`; the authorized branch push completed and its first remote head was independently verified. PR, merge, deployment, OTA and device/production verification remain not run.
