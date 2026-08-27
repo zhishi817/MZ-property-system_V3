@@ -207,15 +207,15 @@
 - Branch: `codex/release-p2-id-src-20260827`
 - Base: `origin/Dev@1c4020e61d7a949e76a3451a636c2964ec70f2bf`; fetched at `2026-08-27 22:16 AEST`.
 - Candidate patch SHA-256: `1493f203ae5011a6fb4ba6ac7818c975f8343cb9d6cf1879ccb93adf23efac7d`, excluding `docs/change-release-ledger.md`.
-- Commit SHA: `not committed`.
+- Commit SHA: `5ec2a4db7e43d11068968c9fe1e0fab181d96e1f`; local merge commit.
 - Dependencies: `none`.
 - Required validation: `PASS`; evidence: latest-Dev isolated merge has one ledger conflict only; 20 selected non-ledger hunk fingerprints, no untracked or unselected file, and whitespace check passed.
 - Shared-hunk review: `PASS`; evidence: P2 range against current Dev remains exactly the pre-recorded five files and 20 non-ledger hunks.
 - Generated-file review: `PASS`; evidence: range contains TypeScript source/tests and Markdown only; no generated or sensitive file is staged.
-- Technical state: `verified`.
+- Technical state: `committed`.
 - User authorization: `selected-for-commit`; evidence: user requested resolving PR #325's reported conflict on 2026-08-27.
 - Independent review: `GO for commit`; evidence: independent read-only review reproduced the candidate fingerprint, confirmed origin/Dev CRL-20260827-001 is unchanged, found five selected paths / 20 hunk matches and no workflow, secret or production-write risk.
-- Action conclusion: `GO` for commit; isolated merge candidate is verified. Push, PR merge and deployment remain separate actions.
+- Action conclusion: `GO` for commit completed locally; PR-branch update, PR merge and deployment remain separate actions.
 
 ### Risks / Release Notes
 
