@@ -289,6 +289,25 @@ def parse_attempts(section: CrlSection) -> list[ReleaseAttempt]:
     return attempts
 
 
+def release_attempt_block(section: CrlSection, identifier: str) -> tuple[str, ...] | None:
+    """Return one Release Attempt's original ledger lines, including its heading."""
+    starts = [index for index, line in enumerate(section.lines) if ATTEMPT_HEADING.match(line)]
+    for position, start in enumerate(starts):
+        heading = ATTEMPT_HEADING.match(section.lines[start])
+        assert heading is not None
+        if heading.group(1) != identifier:
+            continue
+        end = starts[position + 1] if position + 1 < len(starts) else len(section.lines)
+        return section.lines[start:end]
+    return None
+
+
+def ledger_sections_at_ref(root: Path, reference: str) -> dict[str, CrlSection]:
+    text = run_git(root, "show", f"{reference}:{LEDGER_RELATIVE_PATH.as_posix()}")
+    assert isinstance(text, str)
+    return parse_crl_sections_text(text)
+
+
 def canonical_crl_identity(repository: str, identifier: str) -> str:
     return f"{repository}/{identifier}"
 
@@ -728,6 +747,10 @@ def receipt_only_issues(
     if not exact_attempts:
         return errors + ["Ledger-only receipt has no Release Attempt bound to exactly the selected canonical CRL identities."]
     attempt = exact_attempts[-1]
+    if historical_receipt_enabled(attempt):
+        return errors + historical_receipt_precommit_issues(
+            root, attempt, selected_sections, selected_identities
+        )
     if leading_status(field_value(attempt, "Technical state"), ("committed", "pushed", "merged", "deployed")) is None:
         errors.append("Ledger-only receipt must record a committed-or-later technical state.")
     if leading_status(field_value(attempt, "Independent review"), ("go",)) != "go":
@@ -766,6 +789,173 @@ def content_patch_sha256(root: Path, base: str, head: str) -> str:
     )
     assert isinstance(output, bytes)
     return hashlib.sha256(output).hexdigest()
+
+
+def staged_content_patch_sha256(root: Path) -> str:
+    output = run_git(
+        root,
+        "diff",
+        "--cached",
+        "--binary",
+        "--",
+        ".",
+        ":(exclude)docs/change-release-ledger.md",
+        text=False,
+    )
+    assert isinstance(output, bytes)
+    return hashlib.sha256(output).hexdigest()
+
+
+def historical_receipt_enabled(attempt: ReleaseAttempt) -> bool:
+    return leading_status(field_value(attempt, "Historical receipt"), ("true", "false")) == "true"
+
+
+def historical_source_issues(
+    root: Path,
+    attempt: ReleaseAttempt,
+    selected_sections: list[CrlSection],
+    selected_identities: frozenset[str],
+    current_boundary: str,
+) -> list[str]:
+    """Verify that a ledger-only receipt points to a prior, scoped source Attempt."""
+    errors: list[str] = []
+    source_identifier = field_value(attempt, "Historical source attempt").strip().strip("`")
+    if not source_identifier:
+        return ["Historical receipt has no Historical source attempt."]
+    if not re.fullmatch(r"RA-\d{8}-\d{3}", source_identifier):
+        return ["Historical source attempt must name exactly one Release Attempt ID."]
+    if source_identifier == attempt.identifier:
+        return ["Historical receipt cannot use itself as its Historical source attempt."]
+    source_candidates = [
+        (section, candidate)
+        for section in selected_sections
+        for candidate in parse_attempts(section)
+        if candidate.identifier == source_identifier
+        and candidate.selected_identities == selected_identities
+    ]
+    if not source_candidates:
+        return [
+            "Historical source attempt is missing or does not bind exactly the selected canonical CRL identities."
+        ]
+    if len(source_candidates) != 1:
+        return ["Historical source attempt is ambiguous across the selected CRL sections."]
+    source_section, source_attempt = source_candidates[0]
+    source_repositories = {identity.split("/", 1)[0] for identity in selected_identities}
+    if len(source_repositories) != 1 or leading_status(
+        field_value(source_attempt, "Repository"), ("root", "mobile")
+    ) != next(iter(source_repositories)):
+        errors.append("Historical source attempt Repository does not match its selected canonical CRL identity.")
+    try:
+        boundary_sections = ledger_sections_at_ref(root, current_boundary)
+    except GitError:
+        return errors + ["Unable to read the receipt base ledger for historical-source verification."]
+    boundary_section = boundary_sections.get(source_section.identifier)
+    boundary_attempts = [] if boundary_section is None else [
+        candidate
+        for candidate in parse_attempts(boundary_section)
+        if candidate.identifier == source_identifier
+        and candidate.selected_identities == selected_identities
+    ]
+    if len(boundary_attempts) != 1:
+        errors.append("Historical source attempt must already exist exactly once in the receipt base ledger.")
+    else:
+        boundary_block = release_attempt_block(boundary_section, source_identifier)
+        current_block = release_attempt_block(source_section, source_identifier)
+        if boundary_block is None or current_block is None or boundary_block != current_block:
+            errors.append("Historical source attempt must remain byte-for-byte unchanged from the receipt base ledger.")
+    if historical_receipt_enabled(source_attempt):
+        errors.append("Historical source attempt must be a normal source Attempt, not another historical receipt.")
+    source_base_field = field_value(source_attempt, "Base")
+    source_base_match = SHA.search(source_base_field)
+    source_commit_match = SHA.search(field_value(source_attempt, "Commit SHA"))
+    source_patch_match = SHA.search(field_value(source_attempt, "Candidate patch SHA-256"))
+    if not source_base_match or "fetched at" not in source_base_field.lower():
+        errors.append("Historical source attempt requires a parseable Base SHA with fetch-time evidence.")
+    if not source_commit_match:
+        errors.append("Historical source attempt requires a parseable content Commit SHA.")
+    if not source_patch_match:
+        errors.append("Historical source attempt requires a parseable Candidate patch SHA-256.")
+    if errors:
+        return errors
+    assert source_base_match and source_commit_match and source_patch_match
+    try:
+        source_base = resolve_ref(root, source_base_match.group(0))
+        source_commit = resolve_ref(root, source_commit_match.group(0))
+    except GitError:
+        return ["Historical source attempt records a base or content commit that cannot be resolved."]
+    if not is_ancestor(root, source_base, source_commit):
+        errors.append("Historical source content commit is not descended from its recorded source base.")
+    if not is_ancestor(root, source_commit, current_boundary):
+        errors.append("Historical source content commit is not an ancestor of the current receipt boundary.")
+    if content_patch_sha256(root, source_base, source_commit) != source_patch_match.group(0).lower():
+        errors.append("Historical source candidate patch fingerprint does not match its recorded source content commit.")
+    source_technical = leading_status(
+        field_value(source_attempt, "Technical state"),
+        ("committed", "pushed", "merged", "deployed"),
+    )
+    if source_technical is None:
+        errors.append("Historical source attempt is not recorded as committed or later.")
+    if leading_status(field_value(source_attempt, "Independent review"), ("go",)) != "go":
+        errors.append("Historical source attempt has no independent-review GO evidence.")
+    try:
+        source_paths = range_paths(root, source_base, source_commit)
+        source_hunks: set[tuple[str, str]] = set()
+        non_text_paths: list[str] = []
+        for path in source_paths:
+            if path == LEDGER_RELATIVE_PATH.as_posix():
+                continue
+            fingerprints = diff_hunk_fingerprints(root, path, f"{source_base}...{source_commit}")
+            if not fingerprints:
+                non_text_paths.append(path)
+            source_hunks.update(fingerprints)
+    except GitError:
+        return errors + ["Unable to inspect the historical source Attempt range."]
+    declared_hunks = selected_scope_hunks(selected_sections)
+    if non_text_paths:
+        errors.append("Historical source range contains a path without a textual hunk fingerprint.")
+    if source_hunks != declared_hunks:
+        errors.append("Historical source hunk fingerprints do not exactly match the selected CRL Staged Commit Scope.")
+    if generated_paths(source_paths):
+        errors.append("Historical source range contains generated files.")
+    if sensitive_categories(root, source_base, source_commit, source_paths):
+        errors.append("Historical source range has sensitive-file or credential-pattern risk.")
+    return errors
+
+
+def historical_receipt_precommit_issues(
+    root: Path,
+    attempt: ReleaseAttempt,
+    selected_sections: list[CrlSection],
+    selected_identities: frozenset[str],
+) -> list[str]:
+    """Allow the first ledger-only historical receipt commit before its SHA exists."""
+    errors: list[str] = []
+    action = leading_status(field_value(attempt, "Intended action"), ("commit", "push"))
+    if action != "commit":
+        errors.append("Initial historical receipt candidate must declare Intended action: commit.")
+    authorization = leading_status(
+        field_value(attempt, "User authorization"),
+        ("selected-for-commit", "approved-for-push", "not-selected"),
+    )
+    if authorization not in {"selected-for-commit", "approved-for-push"}:
+        errors.append("Initial historical receipt candidate has no selected-for-commit authorization.")
+    base_field = field_value(attempt, "Base")
+    try:
+        current_head = resolve_ref(root, "HEAD")
+    except GitError:
+        return errors + ["Unable to resolve HEAD for the historical receipt candidate."]
+    if current_head not in base_field.lower() or "fetched at" not in base_field.lower():
+        errors.append("Historical receipt candidate Base must record the current HEAD SHA and fetch-time evidence.")
+    commit_field = field_value(attempt, "Commit SHA")
+    if SHA.search(commit_field):
+        errors.append("Initial historical receipt candidate must record Commit SHA as not committed.")
+    recorded_patch = SHA.search(field_value(attempt, "Candidate patch SHA-256"))
+    if not recorded_patch or recorded_patch.group(0).lower() != staged_content_patch_sha256(root):
+        errors.append("Historical receipt candidate patch fingerprint does not match the staged ledger-only content.")
+    errors.extend(
+        historical_source_issues(root, attempt, selected_sections, selected_identities, current_head)
+    )
+    return errors
 
 
 def generated_paths(paths: list[str]) -> list[str]:
@@ -1126,6 +1316,8 @@ def build_release_report(
         return finalize_report(report, errors, missing)
     attempt = exact_attempts[-1]
     report["release_attempt"] = attempt.identifier
+    historical_receipt = historical_receipt_enabled(attempt)
+    report["historical_receipt"] = historical_receipt
     checks.append(check_item("release attempt", "PASS", f"Using {attempt.identifier}."))
     attempt_repository = leading_status(field_value(attempt, "Repository"), ("root", "mobile"))
     if attempt_repository != expected_repository:
@@ -1246,6 +1438,20 @@ def build_release_report(
             checks.append(check_item("selected range coverage", "FAIL", f"{len(unselected)} unselected changed file(s)."))
         else:
             checks.append(check_item("selected range coverage", "PASS", f"{len(changed)} changed file(s) are selected."))
+        if historical_receipt:
+            if changed != [LEDGER_RELATIVE_PATH.as_posix()]:
+                errors.append("Historical receipt exact range must change only docs/change-release-ledger.md.")
+                checks.append(check_item("historical receipt boundary", "FAIL", ", ".join(changed) or "no changed files"))
+            else:
+                checks.append(check_item("historical receipt boundary", "PASS", "Exact range is ledger-only."))
+            historical_errors = historical_source_issues(
+                root, attempt, selected_sections, selected_identities, base
+            )
+            if historical_errors:
+                errors.extend(historical_errors)
+                checks.append(check_item("historical source proof", "FAIL", "; ".join(historical_errors)))
+            else:
+                checks.append(check_item("historical source proof", "PASS", field_value(attempt, "Historical source attempt")))
         scope_errors, scope_missing = selected_scope_issues(
             selected_sections, expected_repository
         )
@@ -1267,7 +1473,11 @@ def build_release_report(
             if not fingerprints:
                 non_text_hunk_paths.append(path)
             actual_hunks.update(fingerprints)
-        if non_text_hunk_paths:
+        if historical_receipt:
+            report["unexpected_hunks"] = []
+            report["missing_hunks"] = []
+            checks.append(check_item("committed hunk fingerprints", "PASS", "Historical source hunk scope was verified separately."))
+        elif non_text_hunk_paths:
             errors.append("Exact range contains a path without a textual hunk fingerprint.")
             checks.append(check_item("committed hunk fingerprints", "FAIL", ", ".join(non_text_hunk_paths)))
         else:

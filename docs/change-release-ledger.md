@@ -1,5 +1,79 @@
 # Change Release Ledger
 
+## CRL-20260827-001 — 历史台账回执精确审计模式（root）
+
+- **Repository:** `root`
+- **Status:** commit-ready; selected for commit
+- **Updated:** 2026-08-27 Australia/Melbourne
+- **Request:** 为已合入历史修复的补充台账回执提供独立、可验证且默认拒绝的精确审计模式，避免现有正常 `base...head` 审计把“仅记录旧事实”的文档范围错误阻断，同时不能允许虚构历史修复证据。
+- **Outcome:** 普通 `--release-report` 完全保持原有规则。只有明确标记的历史回执才可在当前范围仅变更台账文档；审计器仍会在同一 CRL 内验证历史来源 Release Attempt 的规范身份、来源必须已存在于回执基线且原始块未被改写、基线与内容提交祖先关系、候选补丁指纹、完整已登记的源码 hunk、独立审查 GO，以及当前范围严格仅为台账文档。任何缺证据、来源不匹配或非文档改动均为 `BLOCKED`。
+
+### Implementation
+
+- Previous behavior: 对一个已在 `Dev` 合入的历史内容提交补充回执时，当前回执提交的 `base...head` 不包含原始源码 hunks，因此常规精确范围门禁必然拒绝，即使旧内容本身真实存在。
+- New behavior: 为明确的 `Historical receipt: true` 增加独立 fail-closed 来源证明；来源 RA 必须在回执基线的台账中唯一存在，且其完整块与当前台账逐行一致。首次文档候选可在还没有自身提交 SHA 时验证，随后精确范围报告验证当前文档边界与历史内容来源。普通提交和普通回执没有标记时不进入此分支。
+- Key decisions: 不信任自由文本或外部仓库声明；不自动补写历史 CRL，不改变旧内容提交、PR、合并或部署事实；本次只交付审计能力及其回归，不推送任何历史回执。
+
+### Files / Areas
+
+- `scripts/audit_change_release_ledger.py` — 历史回执标记、来源 Release Attempt 和严格文档边界的 fail-closed 审计。
+- `scripts/tests/test_audit_change_release_ledger.py` — 首次候选、已验证文档范围、来源不存在和当前范围混入源码的回归。
+- `docs/change-release-ledger.md` — 本独立 root CRL、验证与提交证据。
+
+### Impact / Dependencies
+
+- Application / API / database / configuration / production data / deployment: none.
+- Dependencies: none. 历史来源只在同一仓库、同一 CRL 的既有 Release Attempt 中核验；跨仓库仍不由本模式代替独立仓库审计。
+- Feature Regression Registry: not applicable; no business workflow, route, API contract, role, data model or runtime behavior changes.
+
+### Validation
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_audit_change_release_ledger.py` — passed: 37 tests, including历史来源缺失、当前范围伪造来源、当前范围改写来源和非台账范围的 fail-closed cases.
+- `python3 -m py_compile scripts/audit_change_release_ledger.py scripts/tests/test_audit_change_release_ledger.py` — passed.
+- `npm run check:feature-registry` — passed: 13 FRs, 138 test mappings, 73 mobile mappings deferred; no FR change is needed for this governance-only CRL.
+- Pending: staged pre-commit gate, independent review, commit, exact committed-range report; push/PR/merge/deployment/OTA/device/production verification are not authorized or run.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** `prepared`; all selected paths and exact non-ledger staged hunk fingerprints are recorded for the local commit gate.
+- **Untracked review:** `none`; clean isolated candidate has no untracked files.
+- `scripts/audit_change_release_ledger.py` — SHA-256: `38567cd473ca3720b2e918874ae434aaa7fdc79934e329a26d19ffa4612f5db6`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `6d341ceeb659f454ecf26800f2de475c77c6a8ca2150128182d1bfcb6819e82e`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `8173e20d7f18aed0115b6b31bbd9bb277ad9119427712a4e07bafc1ba710ca7d`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `acb8630a7a5ebbcf97c317a7238503c2eb05acf7dd02d21deb97aac19834145f`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `c0c69b7ccbc19d52cc7943a07655458a30b1e56102cc0e1535120b0a19361b32`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `d59bddc05d6199eefd8de4a83e279c53bf28580ea8d9eec80824a2ae99c25359`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `4b658a571e81d7f2fa5967c10a4cc3dfd69a39fa0be8cbc1da20221eba3f828c`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `86407ab044b0665a2ca05f4ff3cd4406c43003002f17dfc7c62a62f53f7ab2a3`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `b497745cd4cca439d5c42312d8bd88a6600174d3297f817dc7b26cd1d2367f3b`
+
+### Release Attempts
+
+#### RA-20260827-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260827-001`
+- Selected CRL identities: `root/CRL-20260827-001`
+- Intended action: `commit`
+- Branch: `codex/historical-receipt-audit-20260827`
+- Base: `origin/Dev@3a9fe9970d672c2bb2a27a915282ec9e11ac08e0`; fetched at `2026-08-27 AEST`
+- Candidate patch SHA-256: `abee2e7d5846e7708a8e91a79f5f7a9377a392b0f022777a9b78b71f706c1d29` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `not committed`.
+- Dependencies: none.
+- Required validation: `PASS`; evidence: 37-test auditor regression, Python compile and root feature-registry audit passed.
+- Shared-hunk review: `PASS`; all nine selected non-ledger staged hunk fingerprints are declared and no unselected hunk is staged.
+- Generated-file review: not applicable; Python source, tests and Markdown only.
+- Technical state: `verified`.
+- User authorization: `selected-for-commit`; evidence: user confirmed approval for this bounded root/mobile governance repair on 2026-08-27.
+- Independent review: `GO for commit`; evidence: second independent read-only review verified the receipt-base source immutability P1 closure, exact candidate fingerprint, staged scope and secret/production-write boundaries.
+- Action conclusion: `GO` for the approved commit only; blockers: none. Push requires a committed-range audit and a new exact user push authorization.
+
+### Risks / Release Notes
+
+- This adds audit policy only. It does not release, push, merge, deploy or otherwise change the two pre-existing historical receipt commits.
+- Fail-closed conditions deliberately prevent accepting an arbitrary CRL ID, source SHA, mutable prose, or a current source-code modification as historical evidence.
+
 ## CRL-20260825-002 — 网页任务中心检查分派与维修详情展示（root）
 
 - **Repository:** `root`
