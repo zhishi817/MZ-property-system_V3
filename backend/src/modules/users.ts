@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { requireAnyPerm, requirePerm } from '../auth'
 import { hasPg, pgSelect, pgUpdate } from '../dbAdapter'
 import { db } from '../store'
+import { hasR2, r2GetObjectByKey, r2KeyFromUrl } from '../r2'
 import bcrypt from 'bcryptjs'
 
 export const router = Router()
@@ -89,6 +90,64 @@ function filterPatchByExistingColumns(patch: Record<string, any>, columns: Set<s
   return next
 }
 
+const PROFILE_DOCUMENT_FIELDS = {
+  photo_id: 'photo_id_url',
+  visa_document: 'visa_document_url',
+} as const
+
+type ProfileDocumentType = keyof typeof PROFILE_DOCUMENT_FIELDS
+
+function profileDocumentType(value: any): ProfileDocumentType | null {
+  const normalized = String(value || '').trim().toLowerCase()
+  return normalized === 'photo_id' || normalized === 'visa_document' ? normalized : null
+}
+
+function profileDocumentStorageKey(value: any): string | null {
+  const reference = String(value || '').trim()
+  if (!reference) return null
+  if (reference.startsWith('mzapp/')) return reference
+  return r2KeyFromUrl(reference)
+}
+
+function ownedProfileDocumentKey(userId: string, type: ProfileDocumentType) {
+  return `mzapp/profile-documents/${encodeURIComponent(userId)}/${type}/`
+}
+
+function isOwnedProfileDocumentReference(value: any, userId: string, type: ProfileDocumentType) {
+  const key = profileDocumentStorageKey(value)
+  return !!key && key.startsWith(ownedProfileDocumentKey(userId, type))
+}
+
+function canReuseExistingProfileDocumentReference(value: any, currentValue: any) {
+  const incoming = String(value || '').trim()
+  return !!incoming && incoming === String(currentValue || '').trim()
+}
+
+function canAssignProfileDocumentReference(value: any, currentValue: any, userId: string, type: ProfileDocumentType) {
+  if (value === null) return true
+  return isOwnedProfileDocumentReference(value, userId, type)
+    || canReuseExistingProfileDocumentReference(value, currentValue)
+}
+
+function ownProfileResponse(row: any) {
+  return {
+    id: row.id,
+    username: row.username,
+    role: row.role,
+    phone_au: row.phone_au || null,
+    display_name: row.display_name || null,
+    avatar_url: row.avatar_url || null,
+    legal_name: row.legal_name || null,
+    bank_account_name: row.bank_account_name || null,
+    bank_bsb: row.bank_bsb || null,
+    bank_account_number: row.bank_account_number || null,
+    personal_abn: row.personal_abn || null,
+    visa_grant_number: row.visa_grant_number || null,
+    photo_id_uploaded: !!String(row.photo_id_url || '').trim(),
+    visa_document_uploaded: !!String(row.visa_document_url || '').trim(),
+  }
+}
+
 router.get('/contacts', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
@@ -136,28 +195,49 @@ router.get('/me', async (req, res) => {
       ) as any[]) || []
       const row = rows[0]
       if (!row) return res.status(404).json({ message: 'user not found' })
-      return res.json(row)
+      return res.json(ownProfileResponse(row))
     }
     const row = (db.users || []).find((u: any) => String(u.id) === id)
     if (!row) return res.status(404).json({ message: 'user not found' })
-    return res.json({
-      id: row.id,
-      username: row.username,
-      role: row.role,
-      phone_au: (row as any).phone_au || null,
-      display_name: (row as any).display_name || null,
-      avatar_url: (row as any).avatar_url || null,
-      legal_name: (row as any).legal_name || null,
-      bank_account_name: (row as any).bank_account_name || null,
-      bank_bsb: (row as any).bank_bsb || null,
-      bank_account_number: (row as any).bank_account_number || null,
-      personal_abn: (row as any).personal_abn || null,
-      photo_id_url: (row as any).photo_id_url || null,
-      visa_document_url: (row as any).visa_document_url || null,
-      visa_grant_number: (row as any).visa_grant_number || null,
-    })
+    return res.json(ownProfileResponse(row))
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'user_failed' })
+  }
+})
+
+router.get('/me/profile-documents/:documentType', async (req, res) => {
+  const user = (req as any).user
+  const id = String(user?.sub || '').trim()
+  const type = profileDocumentType(req.params.documentType)
+  if (!id) return res.status(401).json({ message: 'unauthorized' })
+  if (!type || !hasR2) return res.status(404).json({ message: 'not_found' })
+  const field = PROFILE_DOCUMENT_FIELDS[type]
+  try {
+    await ensureProfileColumns()
+    let storedReference: any = null
+    if (hasPg) {
+      const columns = await getUsersColumns()
+      if (!columns.has(field)) return res.status(404).json({ message: 'not_found' })
+      const rows = (await pgSelect('users', field, { id }) as any[]) || []
+      storedReference = rows[0]?.[field]
+    } else {
+      const row = (db.users || []).find((candidate: any) => String(candidate.id) === id)
+      storedReference = (row as any)?.[field]
+    }
+    const key = profileDocumentStorageKey(storedReference)
+    if (!key) return res.status(404).json({ message: 'not_found' })
+    const isDedicatedKey = key.startsWith('mzapp/profile-documents/')
+    if ((isDedicatedKey && !isOwnedProfileDocumentReference(storedReference, id, type)) || !key.startsWith('mzapp/')) {
+      return res.status(404).json({ message: 'not_found' })
+    }
+    const object = await r2GetObjectByKey(key)
+    if (!object?.body?.length) return res.status(404).json({ message: 'not_found' })
+    res.setHeader('Content-Type', object.contentType || 'application/octet-stream')
+    res.setHeader('Cache-Control', 'private, no-store, max-age=0')
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+    return res.status(200).send(object.body)
+  } catch {
+    return res.status(500).json({ message: 'profile_document_read_failed' })
   }
 })
 
@@ -174,6 +254,20 @@ router.patch('/me', async (req, res) => {
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'no database configured' })
       const columns = await getUsersColumns()
+      const requestedDocumentTypes = (Object.keys(PROFILE_DOCUMENT_FIELDS) as ProfileDocumentType[])
+        .filter((type) => parsed.data[PROFILE_DOCUMENT_FIELDS[type]] !== undefined && columns.has(PROFILE_DOCUMENT_FIELDS[type]))
+      if (requestedDocumentTypes.length) {
+        const existingColumns = requestedDocumentTypes.map((type) => PROFILE_DOCUMENT_FIELDS[type]).join(', ')
+        const existingResult = await pgPool.query(`SELECT ${existingColumns} FROM users WHERE id=$1 LIMIT 1`, [id])
+        const existing = existingResult?.rows?.[0]
+        if (!existing) return res.status(404).json({ message: 'user not found' })
+        for (const type of requestedDocumentTypes) {
+          const field = PROFILE_DOCUMENT_FIELDS[type]
+          if (!canAssignProfileDocumentReference(parsed.data[field], existing[field], id, type)) {
+            return res.status(400).json({ message: 'invalid_profile_document_reference' })
+          }
+        }
+      }
       const patch: any = {}
       if (parsed.data.display_name !== undefined) patch.display_name = parsed.data.display_name
       if (parsed.data.phone_au !== undefined) patch.phone_au = parsed.data.phone_au
@@ -199,10 +293,16 @@ router.patch('/me', async (req, res) => {
       const sql = `UPDATE users SET ${set} WHERE id=$${keys.length + 1} RETURNING ${returning}`
       const r = await pgPool.query(sql, [...values, id])
       const row = r?.rows?.[0]
-      return res.json(row || { ok: true })
+      return res.json(row ? ownProfileResponse(row) : { ok: true })
     }
     const row = (db.users || []).find((u: any) => String(u.id) === id)
     if (!row) return res.status(404).json({ message: 'user not found' })
+    for (const type of Object.keys(PROFILE_DOCUMENT_FIELDS) as ProfileDocumentType[]) {
+      const field = PROFILE_DOCUMENT_FIELDS[type]
+      if (parsed.data[field] !== undefined && !canAssignProfileDocumentReference(parsed.data[field], (row as any)[field], id, type)) {
+        return res.status(400).json({ message: 'invalid_profile_document_reference' })
+      }
+    }
     if (parsed.data.display_name !== undefined) (row as any).display_name = parsed.data.display_name
     if (parsed.data.phone_au !== undefined) (row as any).phone_au = parsed.data.phone_au
     if (parsed.data.avatar_url !== undefined) (row as any).avatar_url = parsed.data.avatar_url
@@ -214,22 +314,7 @@ router.patch('/me', async (req, res) => {
     if (parsed.data.photo_id_url !== undefined) (row as any).photo_id_url = parsed.data.photo_id_url
     if (parsed.data.visa_document_url !== undefined) (row as any).visa_document_url = parsed.data.visa_document_url
     if (parsed.data.visa_grant_number !== undefined) (row as any).visa_grant_number = parsed.data.visa_grant_number
-    return res.json({
-      id: row.id,
-      username: row.username,
-      role: row.role,
-      phone_au: (row as any).phone_au || null,
-      display_name: (row as any).display_name || null,
-      avatar_url: (row as any).avatar_url || null,
-      legal_name: (row as any).legal_name || null,
-      bank_account_name: (row as any).bank_account_name || null,
-      bank_bsb: (row as any).bank_bsb || null,
-      bank_account_number: (row as any).bank_account_number || null,
-      personal_abn: (row as any).personal_abn || null,
-      photo_id_url: (row as any).photo_id_url || null,
-      visa_document_url: (row as any).visa_document_url || null,
-      visa_grant_number: (row as any).visa_grant_number || null,
-    })
+    return res.json(ownProfileResponse(row))
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'update_failed' })
   }

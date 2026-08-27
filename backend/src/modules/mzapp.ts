@@ -98,6 +98,12 @@ const WORK_TASK_PARTICIPANT_ACTION_IDS = new Set<WorkTaskActionId | '*'>((
 
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
 const PHOTO_ID_WATERMARK_TEXT = '仅用于MZ Property（ABN：42 657 925 365）记录,不做任何其他用途。\nFor the records of MZ Property (ABN: 42 657 925 365) only, not for other purpose.'
+const PROFILE_DOCUMENT_TYPES = new Set(['photo_id', 'visa_document'])
+
+function profileDocumentTypeForUpload(value: any): 'photo_id' | 'visa_document' | null {
+  const type = String(value || '').trim().toLowerCase()
+  return PROFILE_DOCUMENT_TYPES.has(type) ? type as 'photo_id' | 'visa_document' : null
+}
 
 function dayOnly(v: any): string | null {
   const s = String(v ?? '').slice(0, 10)
@@ -5419,6 +5425,25 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     const watermarkMode = String(body.watermark_mode || '').trim().toLowerCase()
     const watermarkRequested = watermarkMode === 'photo_id_full' || watermarkMode === 'profile_document_full'
     const isImage = isImageUploadCandidate(req.file.mimetype, req.file.originalname)
+    const explicitDocumentType = String(body.profile_document_type || '').trim().toLowerCase()
+    const inferredDocumentType = watermarkMode === 'photo_id_full'
+      ? 'photo_id'
+      : watermarkMode === 'profile_document_full'
+        ? 'visa_document'
+        : ''
+    if (explicitDocumentType && !profileDocumentTypeForUpload(explicitDocumentType)) {
+      return res.status(400).json({ message: 'invalid_profile_document_type' })
+    }
+    if (explicitDocumentType && inferredDocumentType && explicitDocumentType !== inferredDocumentType) {
+      return res.status(400).json({ message: 'profile_document_watermark_mismatch' })
+    }
+    const profileDocumentType = profileDocumentTypeForUpload(explicitDocumentType || inferredDocumentType)
+    if (profileDocumentType && (!watermarkRequested || !isImage)) {
+      return res.status(400).json({ message: 'profile_document_requires_watermarked_image' })
+    }
+    if (profileDocumentType && !hasR2) {
+      return res.status(503).json({ message: 'secure_profile_document_storage_unavailable' })
+    }
     const esc = (s: string) =>
       String(s || '')
         .replace(/&/g, '&amp;')
@@ -5473,10 +5498,14 @@ router.post('/upload', upload.single('file'), async (req, res) => {
       let buffer: Buffer = normalized.buffer
       buffer = await applyPhotoIdWatermark(buffer)
       const ext = normalized.normalized || (watermarkRequested && isImage) ? '.jpg' : (path.extname(req.file.originalname) || '')
-      const key = `mzapp/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
+      const userId = String(user?.sub || '').trim()
+      if (profileDocumentType && !userId) return res.status(401).json({ message: 'unauthorized' })
+      const key = profileDocumentType
+        ? `mzapp/profile-documents/${encodeURIComponent(userId)}/${profileDocumentType}/${crypto.randomUUID()}${ext}`
+        : `mzapp/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
       const mime = normalized.normalized || (watermarkRequested && isImage) ? 'image/jpeg' : (req.file.mimetype || 'application/octet-stream')
       const url = await r2Upload(key, mime, buffer)
-      return res.status(201).json({
+      return res.status(201).json(profileDocumentType ? { url: key, key } : {
         url,
         key,
         remote_reference: createMzappTaskPhotoRemoteReference(key),
