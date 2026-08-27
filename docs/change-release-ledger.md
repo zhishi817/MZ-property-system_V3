@@ -75,7 +75,7 @@
 - Base: `origin/Dev@3a9fe9970d672c2bb2a27a915282ec9e11ac08e0`; fetched at `2026-08-27 17:18 AEST`
 - Candidate patch SHA-256: `1493f203ae5011a6fb4ba6ac7818c975f8343cb9d6cf1879ccb93adf23efac7d` excluding `docs/change-release-ledger.md`.
 - Commit SHA: `c443806` (candidate content commit; exact audit head follows in the range report).
-- Dependencies: none for the root commit; mobile/CRL-20260819-003 remains a paired delivery dependency.
+- Dependencies: `none`.
 - Required validation: `PASS`; evidence: isolated backend no-output TypeScript, profile-document contract, registry and whitespace checks passed; no production access occurred.
 - Shared-hunk review: `PASS`; evidence: pre-commit gate matched 20 selected non-ledger hunks and no unselected file.
 - Generated-file review: `PASS`; evidence: five selected paths are TypeScript source/tests and Markdown only; no generated or sensitive file is staged.
