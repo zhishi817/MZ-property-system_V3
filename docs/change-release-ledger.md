@@ -1,5 +1,249 @@
 # Change Release Ledger
 
+## CRL-20260827-001 — 历史台账回执精确审计模式（root）
+
+- **Repository:** `root`
+- **Status:** commit-ready; selected for commit
+- **Updated:** 2026-08-27 Australia/Melbourne
+- **Request:** 为已合入历史修复的补充台账回执提供独立、可验证且默认拒绝的精确审计模式，避免现有正常 `base...head` 审计把“仅记录旧事实”的文档范围错误阻断，同时不能允许虚构历史修复证据。
+- **Outcome:** 普通 `--release-report` 完全保持原有规则。只有明确标记的历史回执才可在当前范围仅变更台账文档；审计器仍会在同一 CRL 内验证历史来源 Release Attempt 的规范身份、来源必须已存在于回执基线且原始块未被改写、基线与内容提交祖先关系、候选补丁指纹、完整已登记的源码 hunk、独立审查 GO，以及当前范围严格仅为台账文档。任何缺证据、来源不匹配或非文档改动均为 `BLOCKED`。
+
+### Implementation
+
+- Previous behavior: 对一个已在 `Dev` 合入的历史内容提交补充回执时，当前回执提交的 `base...head` 不包含原始源码 hunks，因此常规精确范围门禁必然拒绝，即使旧内容本身真实存在。
+- New behavior: 为明确的 `Historical receipt: true` 增加独立 fail-closed 来源证明；来源 RA 必须在回执基线的台账中唯一存在，且其完整块与当前台账逐行一致。首次文档候选可在还没有自身提交 SHA 时验证，随后精确范围报告验证当前文档边界与历史内容来源。普通提交和普通回执没有标记时不进入此分支。
+- Key decisions: 不信任自由文本或外部仓库声明；不自动补写历史 CRL，不改变旧内容提交、PR、合并或部署事实；本次只交付审计能力及其回归，不推送任何历史回执。
+
+### Files / Areas
+
+- `scripts/audit_change_release_ledger.py` — 历史回执标记、来源 Release Attempt 和严格文档边界的 fail-closed 审计。
+- `scripts/tests/test_audit_change_release_ledger.py` — 首次候选、已验证文档范围、来源不存在和当前范围混入源码的回归。
+- `docs/change-release-ledger.md` — 本独立 root CRL、验证与提交证据。
+
+### Impact / Dependencies
+
+- Application / API / database / configuration / production data / deployment: none.
+- Dependencies: none. 历史来源只在同一仓库、同一 CRL 的既有 Release Attempt 中核验；跨仓库仍不由本模式代替独立仓库审计。
+- Feature Regression Registry: not applicable; no business workflow, route, API contract, role, data model or runtime behavior changes.
+
+### Validation
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_audit_change_release_ledger.py` — passed: 37 tests, including历史来源缺失、当前范围伪造来源、当前范围改写来源和非台账范围的 fail-closed cases.
+- `python3 -m py_compile scripts/audit_change_release_ledger.py scripts/tests/test_audit_change_release_ledger.py` — passed.
+- `npm run check:feature-registry` — passed: 13 FRs, 138 test mappings, 73 mobile mappings deferred; no FR change is needed for this governance-only CRL.
+- Pending: staged pre-commit gate, independent review, commit, exact committed-range report; push/PR/merge/deployment/OTA/device/production verification are not authorized or run.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** `prepared`; all selected paths and exact non-ledger staged hunk fingerprints are recorded for the local commit gate.
+- **Untracked review:** `none`; clean isolated candidate has no untracked files.
+- `scripts/audit_change_release_ledger.py` — SHA-256: `38567cd473ca3720b2e918874ae434aaa7fdc79934e329a26d19ffa4612f5db6`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `6d341ceeb659f454ecf26800f2de475c77c6a8ca2150128182d1bfcb6819e82e`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `8173e20d7f18aed0115b6b31bbd9bb277ad9119427712a4e07bafc1ba710ca7d`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `acb8630a7a5ebbcf97c317a7238503c2eb05acf7dd02d21deb97aac19834145f`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `c0c69b7ccbc19d52cc7943a07655458a30b1e56102cc0e1535120b0a19361b32`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `d59bddc05d6199eefd8de4a83e279c53bf28580ea8d9eec80824a2ae99c25359`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `4b658a571e81d7f2fa5967c10a4cc3dfd69a39fa0be8cbc1da20221eba3f828c`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `86407ab044b0665a2ca05f4ff3cd4406c43003002f17dfc7c62a62f53f7ab2a3`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `b497745cd4cca439d5c42312d8bd88a6600174d3297f817dc7b26cd1d2367f3b`
+
+### Release Attempts
+
+#### RA-20260827-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260827-001`
+- Selected CRL identities: `root/CRL-20260827-001`
+- Intended action: `commit`
+- Branch: `codex/historical-receipt-audit-20260827`
+- Base: `origin/Dev@3a9fe9970d672c2bb2a27a915282ec9e11ac08e0`; fetched at `2026-08-27 AEST`
+- Candidate patch SHA-256: `abee2e7d5846e7708a8e91a79f5f7a9377a392b0f022777a9b78b71f706c1d29` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `58736b2179607b8d8fdc2a3ddf2b5085f1173d90` (candidate content commit).
+- Dependencies: none.
+- Required validation: `PASS`; evidence: 37-test auditor regression, Python compile and root feature-registry audit passed.
+- Shared-hunk review: `PASS`; all nine selected non-ledger staged hunk fingerprints are declared and no unselected hunk is staged.
+- Generated-file review: not applicable; Python source, tests and Markdown only.
+- Technical state: `committed`.
+- User authorization: `selected-for-commit`; evidence: user confirmed approval for this bounded root/mobile governance repair on 2026-08-27.
+- Independent review: `GO for commit`; evidence: second independent read-only review verified the receipt-base source immutability P1 closure, exact candidate fingerprint, staged scope and secret/production-write boundaries.
+- Action conclusion: `GO` for the completed commit only; blockers: none. Push requires a committed-range audit and a new exact user push authorization.
+
+#### RA-20260827-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260827-001`
+- Selected CRL identities: `root/CRL-20260827-001`
+- Intended action: `push`
+- Branch: `codex/historical-receipt-audit-20260827`
+- Base: `origin/Dev@3a9fe9970d672c2bb2a27a915282ec9e11ac08e0`; fetched at `2026-08-27 AEST`
+- Candidate patch SHA-256: `abee2e7d5846e7708a8e91a79f5f7a9377a392b0f022777a9b78b71f706c1d29` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `58736b2179607b8d8fdc2a3ddf2b5085f1173d90` (candidate content commit).
+- Remote branch: `origin/codex/historical-receipt-audit-20260827@7263689d8d99b3a1033aba15eca878d4fdac58a3`; verified by `git ls-remote` after the authorized push on 2026-08-27.
+- Dependencies: none.
+- Required validation: `PASS`; evidence: refreshed remote baseline plus the exact committed root range audit at the pre-push receipt head passed.
+- Shared-hunk review: `PASS`; all nine selected non-ledger hunk fingerprints match the committed range.
+- Generated-file review: not applicable; Python source, tests and Markdown only.
+- Technical state: `pushed`.
+- User authorization: `approved-for-push`; evidence: user confirmed Root `7d74d287e7a1ae911e28548b101845a3fff18ea8`, candidate content commit `58736b2179607b8d8fdc2a3ddf2b5085f1173d90`, and branch `codex/historical-receipt-audit-20260827` on 2026-08-27.
+- Independent review: `GO for commit`; evidence: the reviewed candidate is unchanged; this does not constitute push authorization.
+- Action conclusion: `GO`; the authorized branch push completed and its first remote head was independently verified. PR, merge, deployment, OTA and device/production verification remain not run.
+
+### Risks / Release Notes
+
+- This adds audit policy only. It does not release, push, merge, deploy or otherwise change the two pre-existing historical receipt commits.
+- Fail-closed conditions deliberately prevent accepting an arbitrary CRL ID, source SHA, mutable prose, or a current source-code modification as historical evidence.
+
+## CRL-20260819-003 — Photo ID / Visa 私有文档自助读取边界（root）
+
+- **Repository:** `root`
+- **Status:** ready; selected for commit
+- **Updated:** 2026-08-27 17:30 AEST
+- **Request:** 修复 Photo ID / Visa 仍通过资料响应暴露对象 URL、任意引用可写入及缺少自助认证读取边界的问题。
+- **Outcome:** 资料接口仅返回存在标记；服务端按当前用户和证件类型分配、校验私有 key，并通过认证自助 reader 返回文件字节。非资料入口无法获得证件 URL/key。
+
+### Implementation
+
+- Previous behavior: `/users/me` 返回 `photo_id_url` / `visa_document_url`，客户端会缓存并直接使用；资料更新可接受任意符合长度的地址。
+- New behavior: `/users/me` 与 `PATCH /users/me` 响应改为 presence flags；`GET /users/me/profile-documents/:documentType` 只读取当前用户、允许类型和已关联的私有对象，并设置私有无缓存响应。上传端强制水印类型、私有存储和 owner/type 命名空间，更新端拒绝跨用户、跨类型和任意 URL 引用。
+- Key decisions: 保留已存旧 `mzapp/...` 记录的只读兼容；不迁移历史数据、不改变 R2 ACL、不写生产数据。
+
+### Files / Areas
+
+- `backend/src/modules/users.ts` — presence-only profile DTO、owner/type 私有 reader 与 PATCH 引用校验。
+- `backend/src/modules/mzapp.ts` — profile-document upload metadata、强制水印/私有存储与随机 key。
+- `backend/scripts/tests/test_profile_compliance_document_contract.ts` — 自助文档私有边界静态合约。
+- `docs/feature-regression-registry.md` — FR-008 的私有 reader/cache 不变量。
+- `docs/change-release-ledger.md` — 本 CRL 与提交证据。
+
+### Impact / Dependencies
+
+- API: `/users/me` DTO replaces document URL fields with `photo_id_uploaded` / `visa_document_uploaded`; adds authenticated `GET /users/me/profile-documents/:type`.
+- Database / migration: none; existing profile document columns remain the private association.
+- Config / environment / R2: existing private R2 configuration only; no value, ACL or object mutation is recorded.
+- Dependencies: mobile/CRL-20260819-003 consumes the new flags, upload key and self-service reader before any mobile delivery.
+
+### Validation
+
+- `./backend/node_modules/.bin/tsc --noEmit -p backend/tsconfig.json` — passed in the isolated candidate with a temporary dependency link, then removed.
+- `./backend/node_modules/.bin/ts-node --transpile-only --project backend/tsconfig.json backend/scripts/tests/test_profile_compliance_document_contract.ts` — passed: `profile compliance document contract: PASS`.
+- `npm run check:feature-registry` — passed: 13 FRs, 138 test mappings, 73 deferred mobile mappings.
+- `git diff --check` — passed.
+- Production API, database, R2 object and device checks — not run.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** `prepared`
+- **Untracked review:** `none`; clean candidate worktree has no untracked files.
+- `backend/scripts/tests/test_profile_compliance_document_contract.ts` — SHA-256: `9d7b71f0e905fa805308ec4f22b19c7397d89cb5ac9fe01d546369057f3f060d`
+- `backend/scripts/tests/test_profile_compliance_document_contract.ts` — SHA-256: `a01499834f6a32846dc472e107e8776aae42b26a8ade6c8fe4f905efb4956d1e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `118c1663265a1c0020cd2d4bdab4144389ee68e0105d53eca3c987f398eb9623`
+- `backend/src/modules/mzapp.ts` — SHA-256: `84070110c65016c9e8782a102733e72e5d9bc556c0f8a19711a7f8a3ce4bd100`
+- `backend/src/modules/mzapp.ts` — SHA-256: `8664ceb8a2c2408a206f5934eca9dc49d1d2ea5d567c324254e33b7f3d5beb50`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d4420cb4cb34c43d25bae3f3302306ab8ed89d923fe458aac52230ab4fc053ef`
+- `backend/src/modules/users.ts` — SHA-256: `045ee4614aa52dd2379e6c874b3d8cf106886478ef2f37c050eaea74f0e827ba`
+- `backend/src/modules/users.ts` — SHA-256: `0ca3861e0173533facdd79d3921c04a20b00f3f8bfc72cfeaf867fc2169c13a5`
+- `backend/src/modules/users.ts` — SHA-256: `222bc80d3fd6f4df7b9b485f5a440e3eba5ddbf823ed4d10d51b3ea526a36cf3`
+- `backend/src/modules/users.ts` — SHA-256: `34d5eaeb56bc9f07cb2b6d4f5f19554192688bcfdaddc1d1ef2dcb5995d12f22`
+- `backend/src/modules/users.ts` — SHA-256: `40aaec4f01c94dcf09287a692c29b85f673968918cdd97d13d608d5578b93fe0`
+- `backend/src/modules/users.ts` — SHA-256: `b36d7d46d52e4b4bfd998f694a24c51c65da97d623326055629e2664abcbadd5`
+- `backend/src/modules/users.ts` — SHA-256: `c662ea432ed49ed970b1aaf9a9b4302e867e033a68ad34d5a7f381bb032af01d`
+- `backend/src/modules/users.ts` — SHA-256: `f780d5f580f43fd975fedb57a07b56486c41248b2d5cda320cfed58a46c36735`
+- `backend/src/modules/users.ts` — SHA-256: `f965f41a62a77fca1540fa0989d3bfa9491c89da895437e549e5753537c2dbe9`
+- `docs/feature-regression-registry.md` — SHA-256: `01778ae020f236794bd023f0d0dbffdbbcb424a81da8757aeec4378c94cdfb01`
+- `docs/feature-regression-registry.md` — SHA-256: `0d9df9af5c7e078ab4500e5667a9df7516bbb913ffe5be23e8a7764cd299499a`
+- `docs/feature-regression-registry.md` — SHA-256: `75289ec032ec28e796035771725169e666e96ed584d37a480cebcf277bd45704`
+- `docs/feature-regression-registry.md` — SHA-256: `7cdc61b412892d902ce24997ee324c1bfe957499aeeb8f34c59ad6dc73332305`
+- `docs/feature-regression-registry.md` — SHA-256: `9ad55babb8bfb7555904f4153f81c05433994c737a307697181e2dbc9d2d8fcd`
+
+### Release Attempts
+
+#### RA-20260827-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260819-003`
+- Selected CRL identities: `root/CRL-20260819-003`
+- Intended action: `commit`
+- Branch: `codex/release-p2-id-src-20260827`
+- Base: `origin/Dev@3a9fe9970d672c2bb2a27a915282ec9e11ac08e0`; fetched at `2026-08-27 17:18 AEST`
+- Candidate patch SHA-256: `1493f203ae5011a6fb4ba6ac7818c975f8343cb9d6cf1879ccb93adf23efac7d` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `c443806` (candidate content commit; exact audit head follows in the range report).
+- Dependencies: `none`.
+- Required validation: `PASS`; evidence: isolated backend no-output TypeScript, profile-document contract, registry and whitespace checks passed; no production access occurred.
+- Shared-hunk review: `PASS`; evidence: pre-commit gate matched 20 selected non-ledger hunks and no unselected file.
+- Generated-file review: `PASS`; evidence: five selected paths are TypeScript source/tests and Markdown only; no generated or sensitive file is staged.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: user confirmed the selected P2 commit scope on 2026-08-27.
+- Independent review: `GO for commit`; evidence: fresh independent read-only review reproduced the candidate fingerprint, reviewed the complete staged range and found no P0/P1/P2, secret or production-write risk.
+- Action conclusion: `GO` for commit completed locally; push remains unauthorized.
+
+#### RA-20260827-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260819-003`
+- Selected CRL identities: `root/CRL-20260819-003`
+- Intended action: `push`; target: `Dev`.
+- Branch: `codex/release-p2-id-src-20260827`
+- Base: `origin/Dev@3a9fe9970d672c2bb2a27a915282ec9e11ac08e0`; fetched at `2026-08-27 19:37 AEST`.
+- Candidate patch SHA-256: `1493f203ae5011a6fb4ba6ac7818c975f8343cb9d6cf1879ccb93adf23efac7d`, excluding `docs/change-release-ledger.md`.
+- Commit SHA: `c4438062d6ab291a8f27ae2337cad7567422d694` (candidate content commit; exact audit head follows in the range report).
+- Dependencies: `none`.
+- Required validation: `PASS`; evidence: isolated backend no-output TypeScript, profile-document contract, registry and whitespace checks passed; no production access occurred.
+- Shared-hunk review: `PASS`; evidence: exact range matched 20 selected non-ledger hunks and no unselected file.
+- Generated-file review: `PASS`; evidence: five selected paths are TypeScript source/tests and Markdown only; no generated or sensitive file is in range.
+- Technical state: `pushed`
+- User authorization: `approved-for-push`; evidence: user said “继续” after Root branch head `56047b042da7fcf5de38a0709600fb531d3bfdd0` and the exact push scope were presented on 2026-08-27.
+- Independent review: `GO for push`; evidence: fresh independent read-only committed-range review reproduced the candidate fingerprint, confirmed the selected range and fresh base, and found no P0/P1/P2, secret or production-write risk.
+- Remote branch / SHA: `origin/codex/release-p2-id-src-20260827@cc07bc0c03444b39a759aa7a91fa55a0f9fbd1e6`; verified immediately after the source-range push.
+- Action conclusion: `GO` for push completed; PR, merge and deployment remain unauthorized.
+
+#### RA-20260827-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260819-003`
+- Selected CRL identities: `root/CRL-20260819-003`
+- Intended action: `commit`; purpose: merge current `origin/Dev` into PR #325's existing release branch to resolve the ledger-only conflict.
+- Branch: `codex/release-p2-id-src-20260827`
+- Base: `origin/Dev@1c4020e61d7a949e76a3451a636c2964ec70f2bf`; fetched at `2026-08-27 22:16 AEST`.
+- Candidate patch SHA-256: `1493f203ae5011a6fb4ba6ac7818c975f8343cb9d6cf1879ccb93adf23efac7d`, excluding `docs/change-release-ledger.md`.
+- Commit SHA: `5ec2a4db7e43d11068968c9fe1e0fab181d96e1f`; local merge commit.
+- Dependencies: `none`.
+- Required validation: `PASS`; evidence: latest-Dev isolated merge has one ledger conflict only; 20 selected non-ledger hunk fingerprints, no untracked or unselected file, and whitespace check passed.
+- Shared-hunk review: `PASS`; evidence: P2 range against current Dev remains exactly the pre-recorded five files and 20 non-ledger hunks.
+- Generated-file review: `PASS`; evidence: range contains TypeScript source/tests and Markdown only; no generated or sensitive file is staged.
+- Technical state: `committed`.
+- User authorization: `selected-for-commit`; evidence: user requested resolving PR #325's reported conflict on 2026-08-27.
+- Independent review: `GO for commit`; evidence: independent read-only review reproduced the candidate fingerprint, confirmed origin/Dev CRL-20260827-001 is unchanged, found five selected paths / 20 hunk matches and no workflow, secret or production-write risk.
+- Action conclusion: `GO` for commit completed locally; PR-branch update, PR merge and deployment remain separate actions.
+
+#### RA-20260827-004
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260819-003`
+- Selected CRL identities: `root/CRL-20260819-003`
+- Intended action: `push`; purpose: fast-forward PR #325's existing release branch with the reviewed conflict-resolution result.
+- Branch: `codex/release-p2-id-src-20260827`
+- Base: `origin/Dev@1c4020e61d7a949e76a3451a636c2964ec70f2bf`; fetched at `2026-08-27 22:46 AEST`.
+- Candidate patch SHA-256: `1493f203ae5011a6fb4ba6ac7818c975f8343cb9d6cf1879ccb93adf23efac7d`, excluding `docs/change-release-ledger.md`.
+- Commit SHA: `5ec2a4db7e43d11068968c9fe1e0fab181d96e1f`; audit head `efc447d970e3aa543fb796974dc9c4f970c505f5`.
+- Dependencies: `none`.
+- Required validation: `PASS`; evidence: RA-20260827-003 exact `1c4020e...efc447d` range audit is GO; current origin/Dev and PR branch were freshly fetched, and the existing branch is an ancestor of the audit head.
+- Shared-hunk review: `PASS`; evidence: the exact range contains the selected five files and 20 non-ledger hunk fingerprints only.
+- Generated-file review: `PASS`; evidence: no generated or sensitive file is in the exact range.
+- Technical state: `pushed`.
+- User authorization: `approved-for-push`; evidence: user confirmed fast-forwarding the reviewed PR #325 result to the existing branch without force, Dev merge or deployment on 2026-08-27.
+- Independent review: `GO for push`; evidence: independent read-only range review reproduced the selected 5-file / 20-hunk fingerprint, found no workflow, generated-file, sensitive-information or production-write risk, and confirmed both origin/Dev and the remote PR head are ancestors of the candidate.
+- Remote branch / source head: `origin/codex/release-p2-id-src-20260827@cfab3feec816954ac667752651c4186ac929adc9`; verified immediately after the non-force fast-forward.
+- Action conclusion: `GO` for push completed; PR merge and deployment remain separate actions.
+
+### Risks / Release Notes
+
+- The new mobile client must be released only with a compatible backend; cached historical references become presence-only and are not displayed as raw URLs.
+- Sensitive-information review: no credentials, tokens, database URLs, object URLs, media bytes or production records are included.
+- Rollback: revert this source unit; no historical document object or database association is deleted.
+- Git state: uncommitted, not pushed, no PR, deployment or production verification.
+
 ## CRL-20260825-002 — 网页任务中心检查分派与维修详情展示（root）
 
 - **Repository:** `root`
@@ -18224,3 +18468,136 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Risk: `check:full` can validate the root candidate only; the mobile repository remains a separate, unmodified dependency and is not device proof.
 - Rollback: remove the added npm script/quality-chain invocation and restore the test listener in an authorized follow-up; no data rollback is required.
 - Sensitive-information review: no `.env`, credentials, tokens, database URLs, private media bytes or production data are added.
+## CRL-20260830-001 — PDF 队列事件唤醒与空队列轮询退出（root）
+
+- **Status:** candidate
+- **Repository:** `root`
+- **Updated:** 2026-08-30 Australia/Melbourne
+- **Request:** 将生产 PDF 空队列的一分钟常驻轮询改为按需事件唤醒与低频灾备恢复，以消除其对 Neon autosuspend 的持续阻断；不修改生产 Render、Neon、数据库或数据。
+- **Outcome:** Finance、维修和深度清洁在成功入队或重用 queued PDF job 后启动本 Web 进程的即时处理；worker 在未显式 mode 时停用，Cron 的 once mode 有界 drain 当前到期 job 后退出。Web 存活期保留 1/5/30 分钟 retry kick，重启后的恢复由单独配置的 Cron 负责。
+
+### Implementation
+
+- Previous behavior: 独立 PDF Background Worker 在缺省配置下以 `*/1 * * * *` 运行，每分钟即使队列为空也会访问 `pdf_jobs`；维修、深度清洁入队不触发即时 kick；失败 retry 依赖常驻轮询。
+- New behavior: worker mode 缺失/未知时 fail-closed；`once` drain 受 batch、最大 job 数和最大运行时间约束，并在每个 job 前重新检查运行时限，完成后关闭 Chromium/PG；`daemon` 必须同时有有效的显式 cron。PDF producer 仅在 autocommit INSERT 成功返回后 kick；失败的 `next_retry_at` 在 Web 存活期由 1/5/30 分钟本地 timer 唤醒，多个未来 retry due time 会分别保留，避免后一个 retry 被较早 timer 覆盖。
+- Key decisions: 未把状态 GET 变成触发式轮询；没有新增 schema、迁移、索引、缓存或生产配置。Render Cron 和旧 worker 的实际切换保留为代码提交后的独立操作闸门。
+
+### Files / Areas
+
+- `backend/src/services/pdfJobsRuntime.ts` — added: fail-closed mode、受限数值和 retry 时间的纯运行时契约。
+- `backend/src/services/pdfJobsWorker.ts` — modified: 有界 drain、Web 存活期 retry kick 与 post-commit kick 约束。
+- `backend/src/worker_pdf_jobs.ts` — modified: explicit once/daemon/disabled mode 与 one-shot 资源关闭。
+- `backend/src/modules/maintenance.ts` — modified: queued reuse/new enqueue 后 kick。
+- `backend/src/modules/deep_cleaning.ts` — modified: queued reuse/new enqueue 后 kick。
+- `backend/scripts/tests/test_pdf_jobs_runtime_contract.ts` — added: runtime/producer source contract。
+- `backend/package.json` — modified: PDF runtime test script。
+- `package.json` — modified: `check:backend` 纳入 PDF runtime contract。
+- `docs/feature-regression-registry.md` — modified: FR-017 PDF worker 不变量与测试映射。
+- `docs/change-release-ledger.md` — modified: 本 CRL 与 Release Attempt。
+
+### Impact / Dependencies
+
+- API: PDF create/status/download response shape unchanged.
+- Database / migration: none; existing `pdf_jobs`, lease and `next_retry_at` semantics retained.
+- Config / environment: source requires later explicit Render configuration for `PDF_JOBS_MODE=once` Cron and any daemon; no configuration changed in this attempt.
+- Dependencies: existing Finance kick retained; maintenance and deep-cleaning now use the same service.
+- Related units: FR-017; production high-frequency audit is read-only evidence, not a release unit.
+
+### Validation
+
+- `NODE_PATH=<existing local backend node_modules> node -r ts-node/register/transpile-only scripts/tests/test_pdf_jobs_runtime_contract.ts` — passed: fail-closed mode, 1/5/30 retry, finite drain and all producer post-commit-kick source contracts passed; no database connection was configured.
+- `npm run build --prefix backend` — passed in the isolated candidate using only a temporary local dependency link; generated `backend/dist` output was removed afterwards and is not selected.
+- `npm run check:feature-registry` — passed: 14 FRs, 140 test mappings, 73 deferred mobile mappings.
+- `npm run check:backend` — completed all preceding backend checks but stopped at its existing cross-repository Phase 5 contract because this clean root worktree deliberately has no mobile checkout; it is not recorded as a full-gate pass.
+- `npm run test:phase5-release-contract --prefix backend` — passed after the expected mobile `origin/Dev` fixture was temporarily supplied; temporary links and generated output were removed afterwards.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 10 changed files, 10 recorded changed files.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared; all selected paths and exact non-ledger staged hunk fingerprints are recorded for the local commit gate.
+- **Untracked review:** none; the isolated candidate contains no untracked files after temporary validation dependencies and generated output were removed.
+- `package.json` — SHA-256: `048330b085fc126d1ea4a67c8d57de50f8139a2c4afb985530523654225b1f3b`
+- `backend/package.json` — SHA-256: `634afb73ee33de5d60829b19d1c6031e7195ac1d11694347da1fe447ead19281`
+- `backend/scripts/tests/test_pdf_jobs_runtime_contract.ts` — SHA-256: `9b12af8c1114dd527e6587ed5a20b45e5aeaaaa00ea037fcd7f133ff193a434e`
+- `backend/src/modules/deep_cleaning.ts` — SHA-256: `31fa42af2d60bb6d03e50aad09952e804d00d3ddee9642750b146fc993a22e58`
+- `backend/src/modules/deep_cleaning.ts` — SHA-256: `645a9557b36fd2348615a65f9cf8f435dcf85f183b08d258b27befd083772e1c`
+- `backend/src/modules/deep_cleaning.ts` — SHA-256: `e8391054cabe7463613398d9115102fb037048e06d332f65b2a5a3602b084d35`
+- `backend/src/modules/maintenance.ts` — SHA-256: `098bb71a5b570a2baafb4d6830a4717d935611022decc832887f99d914205891`
+- `backend/src/modules/maintenance.ts` — SHA-256: `68d2257b63af5f9df738b023982e312a4d7c8be1b1c72589b8f5201953df7df5`
+- `backend/src/modules/maintenance.ts` — SHA-256: `bf0b409469e687e91c798fade5395a53aa630f8d0949c1b21d54155438e0e663`
+- `backend/src/services/pdfJobsRuntime.ts` — SHA-256: `2b7c5ea5e97cedf7fd215d7feddd714caa6984bc93e6f39d200ab756cacc9cdb`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `014aeddc737c803127ce3825f0f1a840f068a52f899b3dcb879c6651b14c46bb`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `02ec4c566a41f3d5376d2c5fcc244cfa70623269b748f014c150f20b9affa565`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `18e51ddf689c7b08ef7b0fb38ab862f45611499e2bfb2ddcd67ce4ec0989941a`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `1a7dfbeb4308df085c54ca082b26ed44662b0175e071813e536065a8d277c61c`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `5a5811b930580467841a24dd5035b02cef705cb0b8a3a308663a30d8b8b7b271`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `723c484911272d80c9cf6e91c1c248439cc7f8a818f50168e85fef2a4953b621`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `7951fd0a9852fa6883d1333fee11057ead1ad9490c1cec63c92f9851e0d0523d`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `8a705a59e3711d7b85d27f5f5db666171d71358e751eb4500d4b495b84fd9b0b`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `8d9820a2004eb57f99c126b591d0c2fc898ff8bdab289d1165a86745e421b1ad`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `91bcdcb0cf3eab5dec07e4d374541e4f904df4856b3236902c381fa6833d586e`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `9e79982797aea32b392b2f00f96bc113332aaccc16803204a0e186228c32e6d5`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `9eb93609a4ffdbe921e624df39b97bb30fecabcb4bf446ad42dddad9dba7b0bf`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `b259e938499bee6bd86b9139fceae823a6287ab789b1adfc529a6d5aea480ebb`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `cf44cb2496cc929a06ac6a8fd4bad88986aca2fccf6e11977b0d445542da4788`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `e92b8a469919974173c181831750aa64d3d0a7f7c6a64e082470fb0bdc709833`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `fc6a51dc79b95d997db0b7827c71f3befd43c57071eb53026ad49c7f9118c96b`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `fc8498cabdd3eb78aa9746831a007ba2850fab0385d100ef9b3e7417f97eae8e`
+- `backend/src/worker_pdf_jobs.ts` — SHA-256: `02f91217b9b6eea2af6afd163dcbba01292450bf4251299d97621a9f08a2ae56`
+- `backend/src/worker_pdf_jobs.ts` — SHA-256: `3384e215cdb520ec6ea3dd0afcfa1286ca5409ad2cc18b9ba1b37387a36dbd64`
+- `backend/src/worker_pdf_jobs.ts` — SHA-256: `4906db16e2d4d49087fcbfba50af68f6b2d3624a71ef6f17671412cab3f9b1ac`
+- `backend/src/worker_pdf_jobs.ts` — SHA-256: `54627cb5a9c1a4db0e53ab1f6f2e12d12a999602b8b3cb9e9267ffbe61f916f7`
+- `backend/src/worker_pdf_jobs.ts` — SHA-256: `8b12b7af849c9c6e5e91a2c45b48dc27301ceed4fca3dc53848f90b9e9341e2f`
+- `backend/src/worker_pdf_jobs.ts` — SHA-256: `9f9224bf3dd1f47d3b25bc831777f843446c7f2e117b35f6b2e0ff32ea5daecb`
+- `backend/src/worker_pdf_jobs.ts` — SHA-256: `be5db4e7cdd37fc0e8e410b431cbc8fb22974e3606d48cc3ce99b9ed10ea4c54`
+- `backend/src/worker_pdf_jobs.ts` — SHA-256: `e82a3305e96da6ce473a6126464da66b239a8dfc58a55872a286ce048769ae91`
+- `docs/feature-regression-registry.md` — SHA-256: `007c2dfa07d961e5ea311c3854bbc0c2d1eb65fc684dabbddb7156a817861964`
+
+### Release Attempts
+
+#### RA-20260830-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260830-001`
+- Selected CRL identities: `root/CRL-20260830-001`
+- Intended action: `commit`
+- Branch: `codex/pdf-queue-scale-zero-20260830`
+- Base: `origin/Dev@1c4020e61d7a949e76a3451a636c2964ec70f2bf`; fetched at `2026-08-30 Australia/Melbourne`
+- Candidate patch SHA-256: `afa6d353765eb0bbe85795057a497c1e1e087afbdd41cd59132167d2121cc4cb` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `cfa3b22d9734851580a16b80849f8c106cec8e74` (candidate content commit); committed locally on 2026-08-30.
+- Dependencies: none.
+- Required validation: PASS; evidence: PDF runtime contract, isolated backend build, the all-backend checks before the expected missing-mobile fixture, a separately passed Phase 5 contract with a temporary clean mobile fixture, Feature Registry audit and current-worktree ledger audit passed.
+- Shared-hunk review: PASS; evidence: the isolated candidate contains only this CRL's declared 10 files and all 36 non-ledger staged hunks are listed above.
+- Generated-file review: PASS; evidence: generated `backend/dist` output was explicitly excluded and cleaned; no generated or local-cache path is staged.
+- Technical state: committed.
+- User authorization: selected-for-commit; evidence: user instructed "先执行发布一" on 2026-08-30, bounded to the PDF queue release.
+- Independent review: GO for commit after a follow-up read-only review. The prior P1 (only the earliest retry timer retained) is closed by retaining/re-arming all due times and preserving kicks requested while a drain is in flight; no P0/P1/P2, secret, generated-file, configuration or production-write finding.
+- Action conclusion: GO — the authorized local candidate content commit was created. Push, PR, merge, deployment, Render configuration and production verification require separate authorization.
+
+#### RA-20260830-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260830-001`
+- Selected CRL identities: `root/CRL-20260830-001`
+- Intended action: `push`
+- Branch: `codex/pdf-queue-scale-zero-20260830`
+- Base: `origin/Dev@1c4020e61d7a949e76a3451a636c2964ec70f2bf`; fetched at `2026-08-30 Australia/Melbourne`
+- Candidate patch SHA-256: `afa6d353765eb0bbe85795057a497c1e1e087afbdd41cd59132167d2121cc4cb` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `cfa3b22d9734851580a16b80849f8c106cec8e74` (candidate content commit).
+- Remote branch: `origin/codex/pdf-queue-scale-zero-20260830@4b2c32d89b87643f03575f924774070db07790d5`; verified by `git ls-remote` after the authorized push on 2026-08-30.
+- Dependencies: none.
+- Required validation: PASS; evidence: refreshed `origin/Dev` plus the exact committed-range audit at `4b2c32d89b87643f03575f924774070db07790d5` passed.
+- Shared-hunk review: PASS; all 36 selected non-ledger hunk fingerprints match the committed range.
+- Generated-file review: PASS; no generated or local-cache path is in the committed range.
+- Technical state: pushed.
+- User authorization: approved-for-push; evidence: user instructed `授权推送` for this previously identified root branch and audited release head on 2026-08-30.
+- Independent review: GO for commit; the reviewed candidate fingerprint is unchanged. This is not authorization for any later ledger receipt push.
+- Action conclusion: GO — branch push completed and remote head was independently verified. PR, merge, deployment, Render configuration and production verification remain not run.
+
+### Risks / Release Notes
+
+- Reliability boundary: 1/5/30 retry is durable only while a Web process survives; after a restart, recovery latency depends on the separately configured Cron schedule. This is an accepted disaster-recovery tradeoff, not a hard retry SLA.
+- Rollback: restore the former worker only through an explicit Render configuration/deployment decision; source rollback reverts this CRL. Do not re-enable `*/1` as a default.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, or production logs are included.
+- Git state: isolated root candidate on `codex/pdf-queue-scale-zero-20260830`; uncommitted; not pushed, PR not created, not deployed, no production write.
