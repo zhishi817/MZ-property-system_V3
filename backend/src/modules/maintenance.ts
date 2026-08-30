@@ -9,6 +9,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { pdfTaskLimiter } from '../lib/pdfTaskLimiter'
 import { resizeUploadImage } from '../lib/uploadImageResize'
 import { ensurePdfJobsSchema } from '../services/pdfJobsSchema'
+import { schedulePdfJobsKick } from '../services/pdfJobsWorker'
 import { generateWorkRecordPdf } from '../lib/workRecordPdf'
 import { WORK_RECORD_PDF_TEMPLATE_VERSION } from '../lib/workRecordPdfTemplate'
 import { ensureMaintenanceWorkflowFoundation } from '../lib/maintenanceWorkflowSchema'
@@ -363,6 +364,7 @@ router.post('/pdf-jobs/:id', requireAnyPerm(['property_maintenance.view','proper
       )
       const existing = r0.rows?.[0] || null
       if (existing?.id) {
+        if (String(existing.status || '') === 'queued') schedulePdfJobsKick(1)
         return res.json({ job_id: String(existing.id), status: String(existing.status || 'running'), reused: true })
       }
     }
@@ -378,6 +380,7 @@ router.post('/pdf-jobs/:id', requireAnyPerm(['property_maintenance.view','proper
        VALUES($1,'maintenance_record_pdf','queued',0,'queued',NULL,$2::jsonb,'[]'::jsonb,0,3,now(),now(),now())`,
       [id, JSON.stringify(params)]
     )
+    schedulePdfJobsKick(2)
     return res.json({ job_id: id, status: 'queued', reused: false })
   } catch (e: any) {
     const code = String(e?.code || '')

@@ -9,6 +9,12 @@ import { generateWorkRecordPdf, type WorkRecordPdfKind, type WorkRecordPdfPhotos
 import { generateStatementPhotoPackBundle, type StatementPhotoPackSection } from '../lib/monthlyStatementPhotoPack'
 import { collectMonthlyInvoiceAttachments } from '../lib/monthlyStatementInvoiceAttachments'
 import { reconcileMonthlyAutoExpenses } from '../lib/monthlyStatementExpenseReconcile'
+import {
+  addPdfJobsRetryDueAt,
+  pdfJobRetryDelayMs,
+  positiveInteger,
+  removeDuePdfJobsRetryDueAts,
+} from './pdfJobsRuntime'
 
 export type PdfJobFile = {
   kind: string
@@ -49,13 +55,6 @@ async function applyTxTimeouts(client: any) {
   if (lockTimeoutMs) await client.query(`SET LOCAL lock_timeout = ${lockTimeoutMs}`)
   if (statementTimeoutMs) await client.query(`SET LOCAL statement_timeout = ${statementTimeoutMs}`)
   if (idleTimeoutMs) await client.query(`SET LOCAL idle_in_transaction_session_timeout = ${idleTimeoutMs}`)
-}
-
-function backoffMinutes(attempts: number) {
-  const n = Math.max(1, Number(attempts || 0))
-  if (n <= 1) return 1
-  if (n === 2) return 5
-  return 30
 }
 
 function classifyError(e: any): { retriable: boolean; code: string; message: string } {
@@ -154,11 +153,46 @@ async function claimJobs(limit: number, workerId: string): Promise<any[]> {
 let kickScheduled = false
 let kickInFlight = false
 let kickRequestedLimit = 1
+let kickPending = false
 let lastEmptyDiagAt = 0
+let retryKickTimer: ReturnType<typeof setTimeout> | null = null
+let retryKickAt = 0
+let retryKickDueAts: number[] = []
 
+function armPdfJobsRetryKick() {
+  const nextAt = retryKickDueAts[0]
+  if (nextAt == null) return
+  if (retryKickTimer && retryKickAt === nextAt) return
+  if (retryKickTimer) clearTimeout(retryKickTimer)
+  retryKickAt = nextAt
+  const delayMs = Math.max(1_000, nextAt - Date.now())
+  retryKickTimer = setTimeout(() => {
+    retryKickTimer = null
+    retryKickAt = 0
+    retryKickDueAts = removeDuePdfJobsRetryDueAts(retryKickDueAts, Date.now())
+    schedulePdfJobsKick(1)
+    armPdfJobsRetryKick()
+  }, delayMs)
+  try { retryKickTimer.unref?.() } catch {}
+}
+
+function schedulePdfJobsRetryKick(delayMs: number) {
+  const boundedDelayMs = positiveInteger(delayMs, 60_000, 1_000, 30 * 60_000)
+  retryKickDueAts = addPdfJobsRetryDueAt(retryKickDueAts, Date.now() + boundedDelayMs)
+  armPdfJobsRetryKick()
+}
+
+/**
+ * Call only after the transaction that inserted/reused a queued job has
+ * committed. The callback is deliberately local to the Web process: it is an
+ * immediate path, not a replacement for the durable recovery Cron Job.
+ */
 export function schedulePdfJobsKick(limit = 1) {
   kickRequestedLimit = Math.max(kickRequestedLimit, Math.max(1, Math.min(10, Number(limit || 1))))
-  if (kickScheduled || kickInFlight) return
+  if (kickScheduled || kickInFlight) {
+    kickPending = true
+    return
+  }
   kickScheduled = true
   setTimeout(async () => {
     kickScheduled = false
@@ -166,13 +200,21 @@ export function schedulePdfJobsKick(limit = 1) {
     kickInFlight = true
     const runLimit = kickRequestedLimit
     kickRequestedLimit = 1
+    kickPending = false
     try {
-      await processPdfJobsOnce({ limit: runLimit })
+      await processPdfJobsDrain({
+        batchSize: runLimit,
+        maxJobs: 50,
+        maxRunMs: 10 * 60_000,
+      })
     } catch (e: any) {
       try { console.error(`[pdf-jobs][kick] failed message=${String(e?.message || '')}`) } catch {}
     } finally {
       kickInFlight = false
-      if (kickRequestedLimit > 1) schedulePdfJobsKick(kickRequestedLimit)
+      if (kickPending) {
+        kickPending = false
+        schedulePdfJobsKick(kickRequestedLimit)
+      }
     }
   }, 0)
 }
@@ -870,13 +912,13 @@ async function runMergeMonthlyPack(job: any, workerId: string) {
   await updateJob(id, { status: 'success', progress: 100, stage: 'done', detail, result_files: files, locked_by: null, lease_expires_at: null, last_error_code: null, last_error_message: null })
 }
 
-async function markFailedOrRetry(job: any, info: { retriable: boolean; code: string; message: string }) {
+async function markFailedOrRetry(job: any, info: { retriable: boolean; code: string; message: string }): Promise<number | null> {
   const id = String(job?.id || '')
   const attempts = Number(job?.attempts || 0)
   const maxAttempts = Number(job?.max_attempts || 3)
   const willRetry = info.retriable && attempts < maxAttempts
   if (willRetry) {
-    const nextMin = backoffMinutes(attempts)
+    const retryDelayMs = pdfJobRetryDelayMs(attempts)
     await pgPool!.query(
       `UPDATE pdf_jobs
        SET status='queued',
@@ -889,9 +931,9 @@ async function markFailedOrRetry(job: any, info: { retriable: boolean; code: str
            last_error_message=$4,
            updated_at=now()
        WHERE id=$1`,
-      [id, String(nextMin), info.code || null, info.message || null]
+      [id, String(Math.floor(retryDelayMs / 60_000)), info.code || null, info.message || null]
     )
-    return
+    return retryDelayMs
   }
   await pgPool!.query(
     `UPDATE pdf_jobs
@@ -906,9 +948,10 @@ async function markFailedOrRetry(job: any, info: { retriable: boolean; code: str
      WHERE id=$1`,
     [id, info.code || null, info.message || null]
   )
+  return null
 }
 
-export async function processPdfJobsOnce(opts: { limit?: number } = {}): Promise<PdfJobsWorkerResult> {
+export async function processPdfJobsOnce(opts: { limit?: number; scheduleRetries?: boolean } = {}): Promise<PdfJobsWorkerResult> {
   if (!hasPg || !pgPool) return { processed: 0, ok: 0, failed: 0, reclaimed: 0 }
   try {
     await ensurePdfJobsSchema()
@@ -964,9 +1007,45 @@ export async function processPdfJobsOnce(opts: { limit?: number } = {}): Promise
     } catch (e: any) {
       const info = classifyError(e)
       console.log(`[pdf-jobs][worker] run failed jobId=${jobId} kind=${kind} code=${info.code} retriable=${info.retriable} message=${info.message}`)
-      try { await markFailedOrRetry(job, info) } catch {}
+      try {
+        const retryDelayMs = await markFailedOrRetry(job, info)
+        if (retryDelayMs != null && opts.scheduleRetries !== false) schedulePdfJobsRetryKick(retryDelayMs)
+      } catch {}
       failed++
     }
   }
   return { processed: jobs.length, ok, failed, reclaimed }
+}
+
+/**
+ * Drain only jobs that are due at invocation time. The bounds make Cron's
+ * `once` mode finite even when a historical queue is unexpectedly large.
+ */
+export async function processPdfJobsDrain(opts: {
+  batchSize?: number
+  maxJobs?: number
+  maxRunMs?: number
+  scheduleRetries?: boolean
+} = {}): Promise<PdfJobsWorkerResult> {
+  const batchSize = positiveInteger(opts.batchSize, 2, 1, 10)
+  const maxJobs = positiveInteger(opts.maxJobs, 50, 1, 500)
+  const effectiveBatchSize = Math.min(batchSize, maxJobs)
+  const maxRunMs = positiveInteger(opts.maxRunMs, 10 * 60_000, 1_000, 55 * 60_000)
+  const startedAt = Date.now()
+  const total: PdfJobsWorkerResult = { processed: 0, ok: 0, failed: 0, reclaimed: 0 }
+
+  while (total.processed < maxJobs && Date.now() - startedAt < maxRunMs) {
+    const remaining = maxJobs - total.processed
+    const result = await processPdfJobsOnce({
+      limit: Math.min(effectiveBatchSize, remaining),
+      scheduleRetries: opts.scheduleRetries,
+    })
+    total.processed += result.processed
+    total.ok += result.ok
+    total.failed += result.failed
+    total.reclaimed += result.reclaimed
+    if (!result.processed) break
+  }
+
+  return total
 }

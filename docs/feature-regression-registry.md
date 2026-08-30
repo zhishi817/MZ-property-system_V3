@@ -7,6 +7,52 @@
 - 测试映射必须说明保护点和测试场景；只登记测试文件名不算覆盖证据。
 - `sufficient` 表示当前测试覆盖该保护点；`partial` 表示已有测试但仍有缺口；`not-wired` 表示测试存在但尚未进入对应质量检查；`missing` 表示尚无测试。
 
+## FR-017：PDF 队列事件唤醒与灾备恢复边界
+
+- **维护责任范围：** backend / Render PDF worker
+- **最后审查日期：** 2026-08-30
+- **状态：** active
+
+### 业务保护规则
+
+- Finance、维修与深度清洁的 `pdf_jobs` 新建或复用的 `queued` job，必须在其入队 SQL 成功提交后安排一次进程内 kick；不得在事务提交前 claim。
+- Web 存活期间，第一次、第二次和后续可重试失败分别在 1、5、30 分钟后再次 kick；该 timer 是即时恢复，不被表述为跨重启的持久调度。
+- Render Cron 的 `PDF_JOBS_MODE=once` 必须先回收过期 lease，再逐 job 有界 drain 所有当前到期 job，随后关闭浏览器和数据库资源并退出；不能只处理单个 job。运行时间预算在启动每个 job 前检查；已开始的单个 PDF 不强杀，以避免中断已获取的 lease。
+- 缺失、未知或不完整的 worker mode / daemon cron 配置必须停用 PDF scheduler；绝不回退为 `*/1` 轮询。`disabled` 不得访问 `pdf_jobs`。
+- PDF 状态 GET 保持只读；正常即时处理来自 post-commit kick，不得把状态页刷新改造成新的全局轮询。
+
+### 跨层适用范围
+
+- **后端：** finance、maintenance、deep-cleaning 的 PDF 入队路由；`pdfJobsWorker` 的 claim、retry 与 drain。
+- **Render：** 独立 Cron Job 显式使用 `PDF_JOBS_MODE=once`；旧 Background Worker 仅在显式 daemon mode 加有效 cron 时运行。
+- **一致性：** job 的 lease、`FOR UPDATE SKIP LOCKED`、失败状态及 `next_retry_at` 仍是数据库权威；无数据库 schema/data migration。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| fail-closed mode、1/5/30 retry、有限 drain 和无旧默认轮询 | `backend/scripts/tests/test_pdf_jobs_runtime_contract.ts` | 缺失/未知 mode 停用；once/daemon 显式；多 job 不同 retry due time 均保留；逐 job drain 与 Cron 退出路径存在；不存在 `*/1` fallback | sufficient | `npm run test:pdf-jobs-runtime --prefix backend`（由 root `check:backend` / `check:full` 执行） |
+| 三类 producer 的 post-commit wake | `backend/scripts/tests/test_pdf_jobs_runtime_contract.ts` | finance、maintenance、deep-cleaning 的 queued reuse 和每个 INSERT 都在响应前安排 kick | sufficient | `npm run test:pdf-jobs-runtime --prefix backend` |
+
+### 验证策略
+
+- **本地：** 执行 PDF runtime contract、后端 TypeScript build、Registry/ledger 审计与精确 diff 审查。
+- **部署后：** 月中空队列持续 10 分钟不应出现周期性 `pdf_jobs` claim；创建一条非生产验证 job 应即时开始。Cron 的首次验证、Render 设置和生产数据边界须另行批准。
+
+### 最后验证
+
+- **CRL：** root/CRL-20260830-001
+- **Commit：** not committed
+- **日期：** 2026-08-30
+
+### 相关 CRL
+
+- root/CRL-20260830-001：PDF 空队列轮询改为事件唤醒与低频灾备恢复候选。
+
+### 非保护范围
+
+- Render Cron 创建、旧 Background Worker 停用/删除、生产数据库写入、PDF 模板内容、其他高频 API、运行时 DDL 和移动端刷新优化。
+
 ## FR-015：日用品更换前后私有照片认证读取
 
 - **维护责任范围：** backend / web / mobile
