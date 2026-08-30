@@ -18425,6 +18425,26 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Independent review: GO for commit after a follow-up read-only review. The prior P1 (only the earliest retry timer retained) is closed by retaining/re-arming all due times and preserving kicks requested while a drain is in flight; no P0/P1/P2, secret, generated-file, configuration or production-write finding.
 - Action conclusion: GO — the authorized local candidate content commit was created. Push, PR, merge, deployment, Render configuration and production verification require separate authorization.
 
+#### RA-20260830-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260830-001`
+- Selected CRL identities: `root/CRL-20260830-001`
+- Intended action: `push`
+- Branch: `codex/pdf-queue-scale-zero-20260830`
+- Base: `origin/Dev@1c4020e61d7a949e76a3451a636c2964ec70f2bf`; fetched at `2026-08-30 Australia/Melbourne`
+- Candidate patch SHA-256: `afa6d353765eb0bbe85795057a497c1e1e087afbdd41cd59132167d2121cc4cb` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `cfa3b22d9734851580a16b80849f8c106cec8e74` (candidate content commit).
+- Remote branch: `origin/codex/pdf-queue-scale-zero-20260830@4b2c32d89b87643f03575f924774070db07790d5`; verified by `git ls-remote` after the authorized push on 2026-08-30.
+- Dependencies: none.
+- Required validation: PASS; evidence: refreshed `origin/Dev` plus the exact committed-range audit at `4b2c32d89b87643f03575f924774070db07790d5` passed.
+- Shared-hunk review: PASS; all 36 selected non-ledger hunk fingerprints match the committed range.
+- Generated-file review: PASS; no generated or local-cache path is in the committed range.
+- Technical state: pushed.
+- User authorization: approved-for-push; evidence: user instructed `授权推送` for this previously identified root branch and audited release head on 2026-08-30.
+- Independent review: GO for commit; the reviewed candidate fingerprint is unchanged. This is not authorization for any later ledger receipt push.
+- Action conclusion: GO — branch push completed and remote head was independently verified. PR, merge, deployment, Render configuration and production verification remain not run.
+
 ### Risks / Release Notes
 
 - Reliability boundary: 1/5/30 retry is durable only while a Web process survives; after a restart, recovery latency depends on the separately configured Cron schedule. This is an accepted disaster-recovery tradeoff, not a hard retry SLA.
