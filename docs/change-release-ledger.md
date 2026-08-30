@@ -94,6 +94,156 @@
 - This adds audit policy only. It does not release, push, merge, deploy or otherwise change the two pre-existing historical receipt commits.
 - Fail-closed conditions deliberately prevent accepting an arbitrary CRL ID, source SHA, mutable prose, or a current source-code modification as historical evidence.
 
+## CRL-20260819-003 — Photo ID / Visa 私有文档自助读取边界（root）
+
+- **Repository:** `root`
+- **Status:** ready; selected for commit
+- **Updated:** 2026-08-27 17:30 AEST
+- **Request:** 修复 Photo ID / Visa 仍通过资料响应暴露对象 URL、任意引用可写入及缺少自助认证读取边界的问题。
+- **Outcome:** 资料接口仅返回存在标记；服务端按当前用户和证件类型分配、校验私有 key，并通过认证自助 reader 返回文件字节。非资料入口无法获得证件 URL/key。
+
+### Implementation
+
+- Previous behavior: `/users/me` 返回 `photo_id_url` / `visa_document_url`，客户端会缓存并直接使用；资料更新可接受任意符合长度的地址。
+- New behavior: `/users/me` 与 `PATCH /users/me` 响应改为 presence flags；`GET /users/me/profile-documents/:documentType` 只读取当前用户、允许类型和已关联的私有对象，并设置私有无缓存响应。上传端强制水印类型、私有存储和 owner/type 命名空间，更新端拒绝跨用户、跨类型和任意 URL 引用。
+- Key decisions: 保留已存旧 `mzapp/...` 记录的只读兼容；不迁移历史数据、不改变 R2 ACL、不写生产数据。
+
+### Files / Areas
+
+- `backend/src/modules/users.ts` — presence-only profile DTO、owner/type 私有 reader 与 PATCH 引用校验。
+- `backend/src/modules/mzapp.ts` — profile-document upload metadata、强制水印/私有存储与随机 key。
+- `backend/scripts/tests/test_profile_compliance_document_contract.ts` — 自助文档私有边界静态合约。
+- `docs/feature-regression-registry.md` — FR-008 的私有 reader/cache 不变量。
+- `docs/change-release-ledger.md` — 本 CRL 与提交证据。
+
+### Impact / Dependencies
+
+- API: `/users/me` DTO replaces document URL fields with `photo_id_uploaded` / `visa_document_uploaded`; adds authenticated `GET /users/me/profile-documents/:type`.
+- Database / migration: none; existing profile document columns remain the private association.
+- Config / environment / R2: existing private R2 configuration only; no value, ACL or object mutation is recorded.
+- Dependencies: mobile/CRL-20260819-003 consumes the new flags, upload key and self-service reader before any mobile delivery.
+
+### Validation
+
+- `./backend/node_modules/.bin/tsc --noEmit -p backend/tsconfig.json` — passed in the isolated candidate with a temporary dependency link, then removed.
+- `./backend/node_modules/.bin/ts-node --transpile-only --project backend/tsconfig.json backend/scripts/tests/test_profile_compliance_document_contract.ts` — passed: `profile compliance document contract: PASS`.
+- `npm run check:feature-registry` — passed: 13 FRs, 138 test mappings, 73 deferred mobile mappings.
+- `git diff --check` — passed.
+- Production API, database, R2 object and device checks — not run.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** `prepared`
+- **Untracked review:** `none`; clean candidate worktree has no untracked files.
+- `backend/scripts/tests/test_profile_compliance_document_contract.ts` — SHA-256: `9d7b71f0e905fa805308ec4f22b19c7397d89cb5ac9fe01d546369057f3f060d`
+- `backend/scripts/tests/test_profile_compliance_document_contract.ts` — SHA-256: `a01499834f6a32846dc472e107e8776aae42b26a8ade6c8fe4f905efb4956d1e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `118c1663265a1c0020cd2d4bdab4144389ee68e0105d53eca3c987f398eb9623`
+- `backend/src/modules/mzapp.ts` — SHA-256: `84070110c65016c9e8782a102733e72e5d9bc556c0f8a19711a7f8a3ce4bd100`
+- `backend/src/modules/mzapp.ts` — SHA-256: `8664ceb8a2c2408a206f5934eca9dc49d1d2ea5d567c324254e33b7f3d5beb50`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d4420cb4cb34c43d25bae3f3302306ab8ed89d923fe458aac52230ab4fc053ef`
+- `backend/src/modules/users.ts` — SHA-256: `045ee4614aa52dd2379e6c874b3d8cf106886478ef2f37c050eaea74f0e827ba`
+- `backend/src/modules/users.ts` — SHA-256: `0ca3861e0173533facdd79d3921c04a20b00f3f8bfc72cfeaf867fc2169c13a5`
+- `backend/src/modules/users.ts` — SHA-256: `222bc80d3fd6f4df7b9b485f5a440e3eba5ddbf823ed4d10d51b3ea526a36cf3`
+- `backend/src/modules/users.ts` — SHA-256: `34d5eaeb56bc9f07cb2b6d4f5f19554192688bcfdaddc1d1ef2dcb5995d12f22`
+- `backend/src/modules/users.ts` — SHA-256: `40aaec4f01c94dcf09287a692c29b85f673968918cdd97d13d608d5578b93fe0`
+- `backend/src/modules/users.ts` — SHA-256: `b36d7d46d52e4b4bfd998f694a24c51c65da97d623326055629e2664abcbadd5`
+- `backend/src/modules/users.ts` — SHA-256: `c662ea432ed49ed970b1aaf9a9b4302e867e033a68ad34d5a7f381bb032af01d`
+- `backend/src/modules/users.ts` — SHA-256: `f780d5f580f43fd975fedb57a07b56486c41248b2d5cda320cfed58a46c36735`
+- `backend/src/modules/users.ts` — SHA-256: `f965f41a62a77fca1540fa0989d3bfa9491c89da895437e549e5753537c2dbe9`
+- `docs/feature-regression-registry.md` — SHA-256: `01778ae020f236794bd023f0d0dbffdbbcb424a81da8757aeec4378c94cdfb01`
+- `docs/feature-regression-registry.md` — SHA-256: `0d9df9af5c7e078ab4500e5667a9df7516bbb913ffe5be23e8a7764cd299499a`
+- `docs/feature-regression-registry.md` — SHA-256: `75289ec032ec28e796035771725169e666e96ed584d37a480cebcf277bd45704`
+- `docs/feature-regression-registry.md` — SHA-256: `7cdc61b412892d902ce24997ee324c1bfe957499aeeb8f34c59ad6dc73332305`
+- `docs/feature-regression-registry.md` — SHA-256: `9ad55babb8bfb7555904f4153f81c05433994c737a307697181e2dbc9d2d8fcd`
+
+### Release Attempts
+
+#### RA-20260827-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260819-003`
+- Selected CRL identities: `root/CRL-20260819-003`
+- Intended action: `commit`
+- Branch: `codex/release-p2-id-src-20260827`
+- Base: `origin/Dev@3a9fe9970d672c2bb2a27a915282ec9e11ac08e0`; fetched at `2026-08-27 17:18 AEST`
+- Candidate patch SHA-256: `1493f203ae5011a6fb4ba6ac7818c975f8343cb9d6cf1879ccb93adf23efac7d` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `c443806` (candidate content commit; exact audit head follows in the range report).
+- Dependencies: `none`.
+- Required validation: `PASS`; evidence: isolated backend no-output TypeScript, profile-document contract, registry and whitespace checks passed; no production access occurred.
+- Shared-hunk review: `PASS`; evidence: pre-commit gate matched 20 selected non-ledger hunks and no unselected file.
+- Generated-file review: `PASS`; evidence: five selected paths are TypeScript source/tests and Markdown only; no generated or sensitive file is staged.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: user confirmed the selected P2 commit scope on 2026-08-27.
+- Independent review: `GO for commit`; evidence: fresh independent read-only review reproduced the candidate fingerprint, reviewed the complete staged range and found no P0/P1/P2, secret or production-write risk.
+- Action conclusion: `GO` for commit completed locally; push remains unauthorized.
+
+#### RA-20260827-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260819-003`
+- Selected CRL identities: `root/CRL-20260819-003`
+- Intended action: `push`; target: `Dev`.
+- Branch: `codex/release-p2-id-src-20260827`
+- Base: `origin/Dev@3a9fe9970d672c2bb2a27a915282ec9e11ac08e0`; fetched at `2026-08-27 19:37 AEST`.
+- Candidate patch SHA-256: `1493f203ae5011a6fb4ba6ac7818c975f8343cb9d6cf1879ccb93adf23efac7d`, excluding `docs/change-release-ledger.md`.
+- Commit SHA: `c4438062d6ab291a8f27ae2337cad7567422d694` (candidate content commit; exact audit head follows in the range report).
+- Dependencies: `none`.
+- Required validation: `PASS`; evidence: isolated backend no-output TypeScript, profile-document contract, registry and whitespace checks passed; no production access occurred.
+- Shared-hunk review: `PASS`; evidence: exact range matched 20 selected non-ledger hunks and no unselected file.
+- Generated-file review: `PASS`; evidence: five selected paths are TypeScript source/tests and Markdown only; no generated or sensitive file is in range.
+- Technical state: `pushed`
+- User authorization: `approved-for-push`; evidence: user said “继续” after Root branch head `56047b042da7fcf5de38a0709600fb531d3bfdd0` and the exact push scope were presented on 2026-08-27.
+- Independent review: `GO for push`; evidence: fresh independent read-only committed-range review reproduced the candidate fingerprint, confirmed the selected range and fresh base, and found no P0/P1/P2, secret or production-write risk.
+- Remote branch / SHA: `origin/codex/release-p2-id-src-20260827@cc07bc0c03444b39a759aa7a91fa55a0f9fbd1e6`; verified immediately after the source-range push.
+- Action conclusion: `GO` for push completed; PR, merge and deployment remain unauthorized.
+
+#### RA-20260827-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260819-003`
+- Selected CRL identities: `root/CRL-20260819-003`
+- Intended action: `commit`; purpose: merge current `origin/Dev` into PR #325's existing release branch to resolve the ledger-only conflict.
+- Branch: `codex/release-p2-id-src-20260827`
+- Base: `origin/Dev@1c4020e61d7a949e76a3451a636c2964ec70f2bf`; fetched at `2026-08-27 22:16 AEST`.
+- Candidate patch SHA-256: `1493f203ae5011a6fb4ba6ac7818c975f8343cb9d6cf1879ccb93adf23efac7d`, excluding `docs/change-release-ledger.md`.
+- Commit SHA: `5ec2a4db7e43d11068968c9fe1e0fab181d96e1f`; local merge commit.
+- Dependencies: `none`.
+- Required validation: `PASS`; evidence: latest-Dev isolated merge has one ledger conflict only; 20 selected non-ledger hunk fingerprints, no untracked or unselected file, and whitespace check passed.
+- Shared-hunk review: `PASS`; evidence: P2 range against current Dev remains exactly the pre-recorded five files and 20 non-ledger hunks.
+- Generated-file review: `PASS`; evidence: range contains TypeScript source/tests and Markdown only; no generated or sensitive file is staged.
+- Technical state: `committed`.
+- User authorization: `selected-for-commit`; evidence: user requested resolving PR #325's reported conflict on 2026-08-27.
+- Independent review: `GO for commit`; evidence: independent read-only review reproduced the candidate fingerprint, confirmed origin/Dev CRL-20260827-001 is unchanged, found five selected paths / 20 hunk matches and no workflow, secret or production-write risk.
+- Action conclusion: `GO` for commit completed locally; PR-branch update, PR merge and deployment remain separate actions.
+
+#### RA-20260827-004
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260819-003`
+- Selected CRL identities: `root/CRL-20260819-003`
+- Intended action: `push`; purpose: fast-forward PR #325's existing release branch with the reviewed conflict-resolution result.
+- Branch: `codex/release-p2-id-src-20260827`
+- Base: `origin/Dev@1c4020e61d7a949e76a3451a636c2964ec70f2bf`; fetched at `2026-08-27 22:46 AEST`.
+- Candidate patch SHA-256: `1493f203ae5011a6fb4ba6ac7818c975f8343cb9d6cf1879ccb93adf23efac7d`, excluding `docs/change-release-ledger.md`.
+- Commit SHA: `5ec2a4db7e43d11068968c9fe1e0fab181d96e1f`; audit head `efc447d970e3aa543fb796974dc9c4f970c505f5`.
+- Dependencies: `none`.
+- Required validation: `PASS`; evidence: RA-20260827-003 exact `1c4020e...efc447d` range audit is GO; current origin/Dev and PR branch were freshly fetched, and the existing branch is an ancestor of the audit head.
+- Shared-hunk review: `PASS`; evidence: the exact range contains the selected five files and 20 non-ledger hunk fingerprints only.
+- Generated-file review: `PASS`; evidence: no generated or sensitive file is in the exact range.
+- Technical state: `pushed`.
+- User authorization: `approved-for-push`; evidence: user confirmed fast-forwarding the reviewed PR #325 result to the existing branch without force, Dev merge or deployment on 2026-08-27.
+- Independent review: `GO for push`; evidence: independent read-only range review reproduced the selected 5-file / 20-hunk fingerprint, found no workflow, generated-file, sensitive-information or production-write risk, and confirmed both origin/Dev and the remote PR head are ancestors of the candidate.
+- Remote branch / source head: `origin/codex/release-p2-id-src-20260827@cfab3feec816954ac667752651c4186ac929adc9`; verified immediately after the non-force fast-forward.
+- Action conclusion: `GO` for push completed; PR merge and deployment remain separate actions.
+
+### Risks / Release Notes
+
+- The new mobile client must be released only with a compatible backend; cached historical references become presence-only and are not displayed as raw URLs.
+- Sensitive-information review: no credentials, tokens, database URLs, object URLs, media bytes or production records are included.
+- Rollback: revert this source unit; no historical document object or database association is deleted.
+- Git state: uncommitted, not pushed, no PR, deployment or production verification.
+
 ## CRL-20260825-002 — 网页任务中心检查分派与维修详情展示（root）
 
 - **Repository:** `root`

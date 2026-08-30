@@ -666,8 +666,9 @@
 - Photo ID 与签证资料仅支持图片上传；不引入 PDF、OCR 或证件识别流程。
 - 两类图片必须在服务端上传时写入同一段整版、重复倾斜水印：`仅用于MZ Property（ABN：42 657 925 365）记录,不做任何其他用途。` / `For the records of MZ Property (ABN: 42 657 925 365) only, not for other purpose.`；客户端本地原图预览也必须覆盖等价整版水印，不能以右下角单点水印代替。
 - Photo ID 与签证图片缩略图可打开只读、等比的全屏大图；大图必须支持 1x–4x 双指捏合缩放与放大后拖动查看局部，并可通过关闭按钮、背景或系统返回关闭。全屏层不得新增下载、替换、删除、上传、保存或权限能力。
-- 签证资料包含图片地址和 Visa Grant Number；既有本地个人资料缓存缺字段时必须安全补为 `null` / 空字符串，不能使资料页崩溃或把字段误写为其他用户的数据。
-- 敏感资料仅通过认证用户自己的 `GET/PATCH /users/me` 读取或修改；通讯录和任务列表等非个人资料入口不得返回或展示 Photo ID、签证文件地址、Visa Grant Number。
+- 签证资料只保留“已上传”存在标记和 Visa Grant Number；既有本地个人资料缓存中的地址或 key 必须归一化为存在标记，不能使资料页崩溃或把字段误写为其他用户的数据。
+- `GET /users/me` 只返回当前用户的 `photo_id_uploaded` / `visa_document_uploaded`，不返回对象 URL 或 storage key；图片字节只能由认证的 `GET /users/me/profile-documents/:type` 读取，响应禁止共享缓存。通讯录和任务列表等非个人资料入口不得返回或展示 Photo ID、签证文件地址、Visa Grant Number。
+- 服务端仅接受当前用户、对应证件类型的 `mzapp/profile-documents/<owner>/<type>/...` 私有引用；上传必须由服务端分配该 key 并强制匹配水印类型，不能写入任意 URL 或其他用户的对象键。
 - 图片上传成功不等于资料保存成功：上传结果必须通过 `/users/me` 落到当前用户的对应字段；失败时不得把失败的本地预览当成已存档资料。
 
 ### 跨层适用范围
@@ -681,9 +682,9 @@
 
 | 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
 |---|---|---|---|---|
-| 自助字段、迁移脚本和整版水印模式 | `backend/scripts/tests/test_profile_compliance_document_contract.ts` | 校验 `/users/me` schema/字段读写、三个 schema 初始化入口、Photo ID 与签证水印模式和后端重复水印实现 | partial | `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_profile_compliance_document_contract.ts` |
+| 自助字段、私有读取和整版水印模式 | `backend/scripts/tests/test_profile_compliance_document_contract.ts` | 校验 presence flags、认证私有 reader、owner/type key 校验、三个 schema 初始化入口和两种水印模式 | partial | `./node_modules/.bin/ts-node --transpile-only scripts/tests/test_profile_compliance_document_contract.ts` |
 | 资料页签证字段、水印、上传和缩放大图 | `mz-cleaning-app-frontend/src/screens/me/ProfileEditScreen.test.tsx` | 合规角色可见 Visa Grant Number/签证图片上传；Photo ID 与签证均传入专属水印模式、显示本地整版水印，并可打开/关闭 1x–4x 缩放大图 | partial | `npm run test -- --runInBand --no-cache src/screens/me/ProfileEditScreen.test.tsx` |
-| 本地资料缓存字段持久化 | `mz-cleaning-app-frontend/src/lib/profileStore.test.ts` | 签证文件地址和 Visa Grant Number 写入后可恢复 | partial | `npm run test -- --runInBand --no-cache src/lib/profileStore.test.ts` |
+| 本地资料缓存字段持久化 | `mz-cleaning-app-frontend/src/lib/profileStore.test.ts` | 证件 URL/key 只持久化为 `uploaded` 标记，Visa Grant Number 仍可恢复 | partial | `npm run test -- --runInBand --no-cache src/lib/profileStore.test.ts` |
 
 ### 验证策略
 
@@ -694,13 +695,14 @@
 
 ### 最后验证
 
-- **CRL：** CRL-20260729-006
+- **CRL：** root/CRL-20260819-003; mobile/CRL-20260819-003
 - **Commit：** not yet
 - **日期：** 2026-07-29
 
 ### 相关 CRL
 
-- CRL-20260729-006：移动端 Photo ID 与签证图片整版水印和 Visa Grant Number
+- root/CRL-20260819-003：Photo ID/Visa presence-only API、owner/type 私有 key 与认证 reader
+- mobile/CRL-20260819-003：presence-only cache、认证文档显示与专属上传元数据
 
 ### 非保护范围
 
