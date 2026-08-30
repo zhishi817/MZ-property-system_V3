@@ -18680,6 +18680,26 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Independent review: `GO` for the local commit only; evidence: independent read-only review of RA-20260830-003 found no P0/P1/P2, recomputed the candidate fingerprint, verified all six staged paths, exact predicate equivalence, retained write/ack helper paths, GitHub Actions root/mobile boundary and secret/production-write exclusions. It did not authorize push, PR, merge, deployment or production verification.
 - Action conclusion: `GO` — the authorized candidate content commit was created locally. This ledger-only receipt records its exact SHA; push still requires a passing exact range audit and new explicit authorization.
 
+#### RA-20260830-004
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260830-002`
+- Selected CRL identities: `root/CRL-20260830-002`
+- Intended action: `push`
+- Branch: `codex/r1-guest-luggage-batch-20260830`
+- Base: `origin/Dev@75276708ed32253e4dca2d1c98d5c3ab363b4d43`; fetched at `2026-08-30 22:00 AEST`.
+- Candidate patch SHA-256: `56776ed153b93e502ac5165c17c5e4c5e1cd569dd55e79ba8b43e160832f2959` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `a0ebb2293ae238d11475471cab304fa2e1b00cea` (candidate content commit).
+- Remote branch: `origin/codex/r1-guest-luggage-batch-20260830@881851a20325923a73b17986c1dd910694775c54`; verified with `git ls-remote` after the authorized push on 2026-08-30.
+- Dependencies: none.
+- Required validation: PASS; evidence: exact committed-range audit for `75276708ed32253e4dca2d1c98d5c3ab363b4d43...881851a20325923a73b17986c1dd910694775c54` passed; reviewed candidate patch fingerprint, hunk scope, required validation and sensitive/generated-file checks remained unchanged.
+- Shared-hunk review: PASS; evidence: committed range contains only this CRL's six declared paths and nine non-ledger hunk fingerprints match the independent review.
+- Generated-file review: PASS; evidence: no generated/cache/configuration path is in the committed range.
+- Technical state: `pushed`.
+- User authorization: `approved-for-push`; evidence: after receiving the exact branch and `881851a20325923a73b17986c1dd910694775c54` prompt, user replied `授权` on 2026-08-30.
+- Independent review: `GO` for commit; evidence: the reviewed candidate fingerprint is unchanged. This does not authorize PR, merge, deployment or production verification.
+- Action conclusion: `GO` — exact authorized head was pushed and independently verified. PR, merge, deployment and production verification require separate authorization.
+
 ### Risks / Release Notes
 
 - Risk: a mismatch between single-notice and batch assignment SQL could expose a notice to the wrong task/date or omit an acknowledgement; the new contract pins property/date/version binding and active-task semantics, while deployment verification must compare a real read-only payload.
