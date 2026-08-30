@@ -18670,15 +18670,15 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Branch: `codex/r1-guest-luggage-batch-20260830`
 - Base: `origin/Dev@75276708ed32253e4dca2d1c98d5c3ab363b4d43`; fetched at `2026-08-30 22:00 AEST`.
 - Candidate patch SHA-256: `56776ed153b93e502ac5165c17c5e4c5e1cd569dd55e79ba8b43e160832f2959` excluding `docs/change-release-ledger.md`.
-- Commit SHA: `not committed`.
-- Dependencies: none; independent from root/CRL-20260830-001 PDF queue release.
+- Commit SHA: `a0ebb2293ae238d11475471cab304fa2e1b00cea` (candidate content commit).
+- Dependencies: none.
 - Required validation: PASS; evidence: batch contract, existing guest-luggage rules/media contracts, MZ app media visibility, backend build, all root backend checks before the expected cross-repository Phase 5 fixture gap, Feature Registry audit, current-worktree ledger audit and scoped diff check passed.
 - Shared-hunk review: PASS; evidence: the release worktree contains only this CRL's declared five non-ledger paths, with all nine staged hunks listed above; `docs/change-release-ledger.md` is the required release-attempt receipt only.
 - Generated-file review: PASS; evidence: generated `backend/dist` output and temporary dependency link were removed; no generated/cache/configuration path is selected.
-- Technical state: `verified`.
+- Technical state: `committed`.
 - User authorization: `selected-for-commit`; evidence: user authorized “R1 独立评审与提交准备” on 2026-08-30; no push authorization.
 - Independent review: `GO` for the local commit only; evidence: independent read-only review of RA-20260830-003 found no P0/P1/P2, recomputed the candidate fingerprint, verified all six staged paths, exact predicate equivalence, retained write/ack helper paths, GitHub Actions root/mobile boundary and secret/production-write exclusions. It did not authorize push, PR, merge, deployment or production verification.
-- Action conclusion: `GO` — exact selected candidate passed the local pre-commit ledger gate and independent review. A local commit is ready when separately instructed; push still requires a committed SHA, exact range audit and new explicit authorization.
+- Action conclusion: `GO` — the authorized candidate content commit was created locally. This ledger-only receipt records its exact SHA; push still requires a passing exact range audit and new explicit authorization.
 
 ### Risks / Release Notes
 
