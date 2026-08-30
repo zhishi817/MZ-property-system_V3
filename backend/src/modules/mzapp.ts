@@ -1990,9 +1990,14 @@ async function loadGuestLuggageNotice(noticeId: string, viewerUserId: string, cl
      ORDER BY a.role_kind, user_name`,
     [String(row.property_id || ''), String(row.task_date || '').slice(0, 10), noticeId, version],
   )
+  return guestLuggageNoticeDetailFromRow(row, assignments?.rows || [], viewerUserId)
+}
+
+function guestLuggageNoticeDetailFromRow(row: any, assignmentRows: any[], viewerUserId: string) {
+  const version = Number(row?.version || 1)
   const cleaners: any[] = []
   const inspectors: any[] = []
-  for (const item of assignments?.rows || []) {
+  for (const item of assignmentRows || []) {
     const mapped = {
       user_id: String(item.user_id || ''),
       user_name: String(item.user_name || item.user_id || ''),
@@ -2019,6 +2024,70 @@ async function loadGuestLuggageNotice(noticeId: string, viewerUserId: string, cl
     current_user_acknowledged: currentUserAcknowledged,
     acknowledgements: { cleaners, inspectors },
   }
+}
+
+export async function loadGuestLuggageNoticesForWorkTasks(rows0: any[], viewerUserId: string, client: any = pgPool) {
+  if (!client) return []
+  const rows = (rows0 || []).filter((row: any) => String(row?.id || '').trim())
+  if (!rows.length) return []
+
+  const noticeIds = rows.map((row: any) => String(row.id || '').trim())
+  const propertyIds = rows.map((row: any) => String(row.property_id || '').trim())
+  const taskDates = rows.map((row: any) => String(row.task_date || '').slice(0, 10))
+  const versions = rows.map((row: any) => Math.max(1, Number(row.version || 1)))
+  const assignments = await client.query(
+    `WITH notices AS (
+       SELECT n.notice_id, n.property_id, n.task_date, n.notice_version
+       FROM unnest($1::text[], $2::text[], $3::date[], $4::integer[])
+         AS n(notice_id, property_id, task_date, notice_version)
+     ), assigned AS (
+       SELECT n.notice_id,
+              'cleaner'::text AS role_kind,
+              COALESCE(t.cleaner_id::text, t.assignee_id::text) AS user_id
+       FROM notices n
+       JOIN cleaning_tasks t ON COALESCE(t.task_date, t.date)::date = n.task_date
+       LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+       LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+       WHERE COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = n.property_id
+         AND ${activeCleaningTaskWhereSql('t')}
+       UNION ALL
+       SELECT n.notice_id,
+              'inspector'::text AS role_kind,
+              t.inspector_id::text AS user_id
+       FROM notices n
+       JOIN cleaning_tasks t ON COALESCE(t.task_date, t.date)::date = n.task_date
+       LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+       LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+       WHERE COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = n.property_id
+         AND ${activeCleaningTaskWhereSql('t')}
+     )
+     SELECT DISTINCT a.notice_id, a.role_kind, a.user_id,
+            COALESCE(NULLIF(TRIM(u.username), ''), NULLIF(TRIM(u.legal_name), ''), NULLIF(TRIM(u.email), ''), a.user_id) AS user_name,
+            ack.acknowledged_at::text AS acknowledged_at
+     FROM assigned a
+     JOIN notices n ON n.notice_id = a.notice_id
+     LEFT JOIN users u ON u.id::text = a.user_id
+     LEFT JOIN guest_luggage_acknowledgements ack
+       ON ack.notice_id = n.notice_id
+      AND ack.user_id = a.user_id
+      AND ack.notice_version = n.notice_version
+     WHERE COALESCE(a.user_id, '') <> ''
+     ORDER BY a.notice_id, a.role_kind, user_name`,
+    [noticeIds, propertyIds, taskDates, versions],
+  )
+  const assignmentsByNoticeId = new Map<string, any[]>()
+  for (const item of assignments?.rows || []) {
+    const noticeId = String(item.notice_id || '').trim()
+    if (!noticeId) continue
+    const list = assignmentsByNoticeId.get(noticeId) || []
+    list.push(item)
+    assignmentsByNoticeId.set(noticeId, list)
+  }
+  return rows.map((row: any) => guestLuggageNoticeDetailFromRow(
+    row,
+    assignmentsByNoticeId.get(String(row.id || '').trim()) || [],
+    viewerUserId,
+  ))
 }
 
 async function listGuestLuggageRecipients(propertyId: string, taskDate: string) {
@@ -6763,15 +6832,14 @@ router.get('/work-tasks', async (req, res) => {
         if (guestLuggagePropertyIds.length) {
           await ensureGuestLuggageTables()
           const luggageRows = await pgPool.query(
-            `SELECT id, property_id::text AS property_id, task_date::text AS task_date
+            `SELECT id, property_id::text AS property_id, task_date::text AS task_date, note, photo_urls, version,
+                    created_by, updated_by, created_at::text AS created_at, updated_at::text AS updated_at
              FROM guest_luggage_notices
              WHERE property_id::text = ANY($1::text[])
                AND task_date::date BETWEEN $2::date AND $3::date`,
             [guestLuggagePropertyIds, dateFrom, dateTo],
           )
-          const luggageDetails = await Promise.all(
-            (luggageRows?.rows || []).map((row: any) => loadGuestLuggageNotice(String(row.id || ''), userId)),
-          )
+          const luggageDetails = await loadGuestLuggageNoticesForWorkTasks(luggageRows?.rows || [], userId)
           for (const detail of luggageDetails) {
             if (!detail) continue
             guestLuggageByTaskKey.set(`${detail.property_id}|${detail.task_date}`, detail)

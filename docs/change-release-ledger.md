@@ -18601,3 +18601,88 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Rollback: restore the former worker only through an explicit Render configuration/deployment decision; source rollback reverts this CRL. Do not re-enable `*/1` as a default.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, or production logs are included.
 - Git state: isolated root candidate on `codex/pdf-queue-scale-zero-20260830`; uncommitted; not pushed, PR not created, not deployed, no production write.
+## CRL-20260830-002 — 任务列表行李通知批量装配与 N+1 修复（root）
+
+- **Status:** in-progress
+- **Repository:** `root`
+- **Updated:** 2026-08-30 Australia/Melbourne
+- **Request:** 修复生产 Query Performance 中 `/mzapp/work-tasks` 对每条行李通知分别执行 `guest_luggage_notices WHERE id` 与清洁任务授权 CTE 的高频 N+1 调用；保持既有授权和响应语义，不修改生产数据、配置或数据库结构。
+- **Outcome:** 任务列表先批量读取范围内 notice，再以单个批量授权查询装配全部 cleaner/inspector acknowledgement；单条编辑、保存和确认接口仍复用原有逐条 helper，API payload 不增加或删除字段。
+
+### Implementation
+
+- Previous behavior: `/mzapp/work-tasks` 先查询范围内 notice ID，然后 `Promise.all` 逐条调用 `loadGuestLuggageNotice()`；每条都会再查询 notice 详情并执行一次包含 cleaning task、properties、users 与 acknowledgement 的授权 CTE。
+- New behavior: 任务列表的范围查询直接读取 notice 所需字段，`loadGuestLuggageNoticesForWorkTasks()` 以 notice id、property、task date 和 version 的并行数组执行一次批量授权查询，再按 notice 回填原有详情结构。
+- Key decisions: batch SQL 精确保留 `cleaner_id → assignee_id` 回退、独立 inspector、`activeCleaningTaskWhereSql`、property code/id 归一化、version-scoped acknowledgement 和用户名排序；不把批量 helper 用于写入/确认路径，避免扩大本次变更范围。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — modified: 新增任务列表专用批量 notice/assignment loader；`/work-tasks` 改用它，保留原单条 helper。
+- `backend/scripts/tests/test_guest_luggage_work_tasks_batch.ts` — added: 批量 SQL 参数、授权/ack payload、空列表与不再逐条调用的 contract。
+- `backend/package.json` — modified: 增加可独立执行的 batch contract script。
+- `package.json` — modified: root `check:backend` / `check:full` 纳入该保护。
+- `docs/feature-regression-registry.md` — modified: FR-018 的业务不变量和质量门映射。
+- `docs/change-release-ledger.md` — modified: 本独立 root release unit。
+
+### Impact / Dependencies
+
+- API: `/mzapp/work-tasks` 的 `guest_luggage` shape unchanged.
+- Database / migration: none; existing tables, active-task predicate and acknowledgement version semantics retained.
+- Config / environment: none.
+- Dependencies: existing `guest_luggage_notices`, `guest_luggage_acknowledgements`, `cleaning_tasks`, property normalization and active-task semantics.
+- Related units: root/CRL-20260812-006; independent from root/CRL-20260830-001 PDF worker release.
+
+### Validation
+
+- `npm run test:guest-luggage-work-tasks-batch --prefix backend` — passed: empty list makes no query; multiple notices use one authorization query and preserve existing acknowledgement payload semantics.
+- `npm run test:guest-luggage-rules --prefix backend` — passed: existing edit permission, version and recipient rules remain unchanged.
+- `npm run test:guest-luggage-media-contract --prefix backend` — passed: saved temporary-notice photo association and authenticated-media route remain fail-closed.
+- `npm run test:mzapp-media-visibility --prefix backend` — passed: existing task/media visibility contract remains intact.
+- `npm run build --prefix backend` — passed: TypeScript compilation completed; three unrelated generated dist changes were restored and are excluded.
+- `npm run check:backend` — partial: every root backend check, including the new batch contract, passed; the last existing `test:phase5-release-contract` stopped because this root-only isolated worktree intentionally has no `mz-cleaning-app-frontend` checkout. It is not an R1 test failure and is not recorded as a full-chain pass.
+- `npm run check:feature-registry` — passed: 15 active FRs / 141 test mappings; 73 mobile mappings deferred because the independent mobile repository is excluded.
+- `python3 scripts/audit_change_release_ledger.py` — passed: all 6 changed paths are recorded and remote ledger lineage is available.
+- `git diff --check` and final scoped diff review — passed: exactly the six declared R1 paths are present; no generated dist file, dependency link, secret, configuration or production artifact remains.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared; all selected non-ledger paths and exact staged hunk fingerprints are recorded for the local commit gate.
+- **Untracked review:** none; the isolated release worktree has no unrelated or untracked path.
+- `backend/package.json` — SHA-256: `9f682528324371560f0d412733665b43496ba209a54a4adf4ffd9af83be45def`
+- `backend/scripts/tests/test_guest_luggage_work_tasks_batch.ts` — SHA-256: `2bd264eeab2ab54e54cd255faf2bdde4f37d4bfb3602777bbb6305bf47533887`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2e2276d4451e02566f8baa4da0cbad80541dc166172f1026f301771099297688`
+- `backend/src/modules/mzapp.ts` — SHA-256: `64596ebe8e755fa9e85107b283e5b9debb691ad5fe6dec3d557ac1d2ab9362c4`
+- `backend/src/modules/mzapp.ts` — SHA-256: `8e74cd12de78cab3fb481aa927539a4ecb7b35f60c5d61006919216ca000d2b6`
+- `backend/src/modules/mzapp.ts` — SHA-256: `98170ddeb75c0adee2003e1de532102082a71e40f5585f38c39fde819675fd2c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f2b4514139bf0e88105878b51ef6d063fa67797bd85d70894b280e40a7d4f257`
+- `docs/feature-regression-registry.md` — SHA-256: `cd4912e90b7c1b0fa10637dd7ac0ab66586e7cf28fdd72326e419f569d3cbc27`
+- `package.json` — SHA-256: `7d768006b126e328422ef678d929d64ae2d2b2d559b7ef1ba2ac9c895ae7e743`
+
+### Release Attempts
+
+#### RA-20260830-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260830-002`
+- Selected CRL identities: `root/CRL-20260830-002`
+- Intended action: `commit`
+- Branch: `codex/r1-guest-luggage-batch-20260830`
+- Base: `origin/Dev@75276708ed32253e4dca2d1c98d5c3ab363b4d43`; fetched at `2026-08-30 22:00 AEST`.
+- Candidate patch SHA-256: `56776ed153b93e502ac5165c17c5e4c5e1cd569dd55e79ba8b43e160832f2959` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `not committed`.
+- Dependencies: none; independent from root/CRL-20260830-001 PDF queue release.
+- Required validation: PASS; evidence: batch contract, existing guest-luggage rules/media contracts, MZ app media visibility, backend build, all root backend checks before the expected cross-repository Phase 5 fixture gap, Feature Registry audit, current-worktree ledger audit and scoped diff check passed.
+- Shared-hunk review: PASS; evidence: the release worktree contains only this CRL's declared five non-ledger paths, with all nine staged hunks listed above; `docs/change-release-ledger.md` is the required release-attempt receipt only.
+- Generated-file review: PASS; evidence: generated `backend/dist` output and temporary dependency link were removed; no generated/cache/configuration path is selected.
+- Technical state: `verified`.
+- User authorization: `selected-for-commit`; evidence: user authorized “R1 独立评审与提交准备” on 2026-08-30; no push authorization.
+- Independent review: `GO` for the local commit only; evidence: independent read-only review of RA-20260830-003 found no P0/P1/P2, recomputed the candidate fingerprint, verified all six staged paths, exact predicate equivalence, retained write/ack helper paths, GitHub Actions root/mobile boundary and secret/production-write exclusions. It did not authorize push, PR, merge, deployment or production verification.
+- Action conclusion: `GO` — exact selected candidate passed the local pre-commit ledger gate and independent review. A local commit is ready when separately instructed; push still requires a committed SHA, exact range audit and new explicit authorization.
+
+### Risks / Release Notes
+
+- Risk: a mismatch between single-notice and batch assignment SQL could expose a notice to the wrong task/date or omit an acknowledgement; the new contract pins property/date/version binding and active-task semantics, while deployment verification must compare a real read-only payload.
+- Rollback: restore the former task-list call to the preserved single-notice helper and remove this unit's test/quality mapping; no schema or data rollback is required.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, private media references, customer data or production logs are added.
+- Git state: isolated `codex/r1-guest-luggage-batch-20260830` worktree based on `origin/Dev@75276708ed32253e4dca2d1c98d5c3ab363b4d43`; staged but uncommitted, unpushed, not deployed and not production-verified.
