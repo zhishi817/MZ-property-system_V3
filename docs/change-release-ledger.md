@@ -18415,15 +18415,15 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Branch: `codex/pdf-queue-scale-zero-20260830`
 - Base: `origin/Dev@1c4020e61d7a949e76a3451a636c2964ec70f2bf`; fetched at `2026-08-30 Australia/Melbourne`
 - Candidate patch SHA-256: `afa6d353765eb0bbe85795057a497c1e1e087afbdd41cd59132167d2121cc4cb` excluding `docs/change-release-ledger.md`.
-- Commit SHA: not committed; audit head pending.
+- Commit SHA: `cfa3b22d9734851580a16b80849f8c106cec8e74` (candidate content commit); committed locally on 2026-08-30.
 - Dependencies: none.
 - Required validation: PASS; evidence: PDF runtime contract, isolated backend build, the all-backend checks before the expected missing-mobile fixture, a separately passed Phase 5 contract with a temporary clean mobile fixture, Feature Registry audit and current-worktree ledger audit passed.
 - Shared-hunk review: PASS; evidence: the isolated candidate contains only this CRL's declared 10 files and all 36 non-ledger staged hunks are listed above.
 - Generated-file review: PASS; evidence: generated `backend/dist` output was explicitly excluded and cleaned; no generated or local-cache path is staged.
-- Technical state: verified.
+- Technical state: committed.
 - User authorization: selected-for-commit; evidence: user instructed "先执行发布一" on 2026-08-30, bounded to the PDF queue release.
 - Independent review: GO for commit after a follow-up read-only review. The prior P1 (only the earliest retry timer retained) is closed by retaining/re-arming all due times and preserving kicks requested while a drain is in flight; no P0/P1/P2, secret, generated-file, configuration or production-write finding.
-- Action conclusion: GO for the authorized local commit only. Push, PR, merge, deployment, Render configuration and production verification require separate authorization.
+- Action conclusion: GO — the authorized local candidate content commit was created. Push, PR, merge, deployment, Render configuration and production verification require separate authorization.
 
 ### Risks / Release Notes
 
