@@ -9,6 +9,9 @@ if (!isProd) {
 
 import cron from 'node-cron'
 import { hasPg, pgPool } from './dbAdapter'
+import { resetChromiumBrowser } from './lib/playwright'
+import { processPdfJobsDrain } from './services/pdfJobsWorker'
+import { positiveInteger, resolvePdfJobsWorkerMode } from './services/pdfJobsRuntime'
 
 function boolEnv(name: string, def: boolean): boolean {
   const v = process.env[name]
@@ -17,18 +20,43 @@ function boolEnv(name: string, def: boolean): boolean {
   return s === '1' || s === 'true' || s === 'yes' || s === 'on'
 }
 
-async function runOnce() {
-  const { processPdfJobsOnce } = require('./services/pdfJobsWorker')
-  const r = await processPdfJobsOnce({
-    limit: Math.min(5, Math.max(1, Number(process.env.PDF_JOBS_BATCH || 2))),
+function envPositiveInteger(name: string, fallback: number, min: number, max: number) {
+  return positiveInteger(process.env[name], fallback, min, max)
+}
+
+async function runDrain(scheduleRetries: boolean, batchSizeOverride?: number) {
+  const r = await processPdfJobsDrain({
+    batchSize: batchSizeOverride || envPositiveInteger('PDF_JOBS_BATCH', 2, 1, 10),
+    maxJobs: envPositiveInteger('PDF_JOBS_DRAIN_MAX_JOBS', 50, 1, 500),
+    maxRunMs: envPositiveInteger('PDF_JOBS_DRAIN_MAX_MS', 10 * 60_000, 1_000, 55 * 60_000),
+    scheduleRetries,
   })
-  console.log(`[pdf-jobs][run-once] processed=${r.processed || 0} ok=${r.ok || 0} failed=${r.failed || 0} reclaimed=${r.reclaimed || 0}`)
+  console.log(`[pdf-jobs][drain] processed=${r.processed || 0} ok=${r.ok || 0} failed=${r.failed || 0} reclaimed=${r.reclaimed || 0}`)
+}
+
+async function closeOnceResources() {
+  try { await resetChromiumBrowser() } catch {}
+  try { await pgPool?.end?.() } catch {}
 }
 
 async function main() {
   const enabled = boolEnv('PDF_JOBS_ENABLED', true)
   if (!enabled) {
     console.log('[pdf-jobs][worker] disabled')
+    return
+  }
+  const runtime = resolvePdfJobsWorkerMode(process.env.PDF_JOBS_MODE)
+  if (runtime.mode === 'disabled') {
+    console.log(`[pdf-jobs][worker] disabled reason=${runtime.reason || 'configured'}`)
+    return
+  }
+  const expr = String(process.env.PDF_JOBS_CRON || '').trim()
+  if (runtime.mode === 'daemon' && !expr) {
+    console.log('[pdf-jobs][worker] disabled reason=daemon_cron_missing')
+    return
+  }
+  if (runtime.mode === 'daemon' && !cron.validate(expr)) {
+    console.log('[pdf-jobs][worker] disabled reason=daemon_cron_invalid')
     return
   }
   if (!hasPg) {
@@ -46,16 +74,23 @@ async function main() {
   const front = String(process.env.FRONTEND_BASE_URL || '').trim()
   const workerId = String(process.env.PDF_JOBS_WORKER_ID || '') || `pdf_worker_${process.pid}`
   console.log('[pdf-jobs][worker] starting')
-  console.log(`[pdf-jobs][worker] worker_mode=dedicated worker_id=${workerId} API_BASE_RESOLVED=${apiBase || '(empty)'} FRONTEND_BASE_URL=${front || '(empty)'}`)
+  console.log(`[pdf-jobs][worker] worker_mode=${runtime.mode} worker_id=${workerId} API_BASE_RESOLVED=${apiBase || '(empty)'} FRONTEND_BASE_URL=${front || '(empty)'}`)
   try {
-    const expr = String(process.env.PDF_JOBS_CRON || '*/1 * * * *')
+    if (runtime.mode === 'once') {
+      try {
+        await runDrain(false, 1)
+      } finally {
+        await closeOnceResources()
+      }
+      return
+    }
     console.log(`[pdf-jobs][worker] cron=${expr}`)
     let inFlight = false
     const task = cron.schedule(expr, async () => {
       if (inFlight) return
       inFlight = true
       try {
-        await runOnce()
+        await runDrain(true)
       } catch (e: any) {
         console.error(`[pdf-jobs][worker] error message=${String(e?.message || '')} code=${String(e?.code || '')}`)
       } finally {
@@ -63,8 +98,8 @@ async function main() {
       }
     }, { scheduled: true })
     task.start()
-    if (boolEnv('PDF_JOBS_RUN_ON_START', true)) {
-      try { await runOnce() } catch (e: any) { console.error(`[pdf-jobs][worker] run_on_start_failed message=${String(e?.message || '')}`) }
+    if (boolEnv('PDF_JOBS_RUN_ON_START', false)) {
+      try { await runDrain(true) } catch (e: any) { console.error(`[pdf-jobs][worker] run_on_start_failed message=${String(e?.message || '')}`) }
     }
   } catch (e: any) {
     console.error(`[pdf-jobs][worker] init error message=${String(e?.message || '')}`)
