@@ -18318,3 +18318,116 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Risk: `check:full` can validate the root candidate only; the mobile repository remains a separate, unmodified dependency and is not device proof.
 - Rollback: remove the added npm script/quality-chain invocation and restore the test listener in an authorized follow-up; no data rollback is required.
 - Sensitive-information review: no `.env`, credentials, tokens, database URLs, private media bytes or production data are added.
+## CRL-20260830-001 — PDF 队列事件唤醒与空队列轮询退出（root）
+
+- **Status:** candidate
+- **Repository:** `root`
+- **Updated:** 2026-08-30 Australia/Melbourne
+- **Request:** 将生产 PDF 空队列的一分钟常驻轮询改为按需事件唤醒与低频灾备恢复，以消除其对 Neon autosuspend 的持续阻断；不修改生产 Render、Neon、数据库或数据。
+- **Outcome:** Finance、维修和深度清洁在成功入队或重用 queued PDF job 后启动本 Web 进程的即时处理；worker 在未显式 mode 时停用，Cron 的 once mode 有界 drain 当前到期 job 后退出。Web 存活期保留 1/5/30 分钟 retry kick，重启后的恢复由单独配置的 Cron 负责。
+
+### Implementation
+
+- Previous behavior: 独立 PDF Background Worker 在缺省配置下以 `*/1 * * * *` 运行，每分钟即使队列为空也会访问 `pdf_jobs`；维修、深度清洁入队不触发即时 kick；失败 retry 依赖常驻轮询。
+- New behavior: worker mode 缺失/未知时 fail-closed；`once` drain 受 batch、最大 job 数和最大运行时间约束，并在每个 job 前重新检查运行时限，完成后关闭 Chromium/PG；`daemon` 必须同时有有效的显式 cron。PDF producer 仅在 autocommit INSERT 成功返回后 kick；失败的 `next_retry_at` 在 Web 存活期由 1/5/30 分钟本地 timer 唤醒，多个未来 retry due time 会分别保留，避免后一个 retry 被较早 timer 覆盖。
+- Key decisions: 未把状态 GET 变成触发式轮询；没有新增 schema、迁移、索引、缓存或生产配置。Render Cron 和旧 worker 的实际切换保留为代码提交后的独立操作闸门。
+
+### Files / Areas
+
+- `backend/src/services/pdfJobsRuntime.ts` — added: fail-closed mode、受限数值和 retry 时间的纯运行时契约。
+- `backend/src/services/pdfJobsWorker.ts` — modified: 有界 drain、Web 存活期 retry kick 与 post-commit kick 约束。
+- `backend/src/worker_pdf_jobs.ts` — modified: explicit once/daemon/disabled mode 与 one-shot 资源关闭。
+- `backend/src/modules/maintenance.ts` — modified: queued reuse/new enqueue 后 kick。
+- `backend/src/modules/deep_cleaning.ts` — modified: queued reuse/new enqueue 后 kick。
+- `backend/scripts/tests/test_pdf_jobs_runtime_contract.ts` — added: runtime/producer source contract。
+- `backend/package.json` — modified: PDF runtime test script。
+- `package.json` — modified: `check:backend` 纳入 PDF runtime contract。
+- `docs/feature-regression-registry.md` — modified: FR-017 PDF worker 不变量与测试映射。
+- `docs/change-release-ledger.md` — modified: 本 CRL 与 Release Attempt。
+
+### Impact / Dependencies
+
+- API: PDF create/status/download response shape unchanged.
+- Database / migration: none; existing `pdf_jobs`, lease and `next_retry_at` semantics retained.
+- Config / environment: source requires later explicit Render configuration for `PDF_JOBS_MODE=once` Cron and any daemon; no configuration changed in this attempt.
+- Dependencies: existing Finance kick retained; maintenance and deep-cleaning now use the same service.
+- Related units: FR-017; production high-frequency audit is read-only evidence, not a release unit.
+
+### Validation
+
+- `NODE_PATH=<existing local backend node_modules> node -r ts-node/register/transpile-only scripts/tests/test_pdf_jobs_runtime_contract.ts` — passed: fail-closed mode, 1/5/30 retry, finite drain and all producer post-commit-kick source contracts passed; no database connection was configured.
+- `npm run build --prefix backend` — passed in the isolated candidate using only a temporary local dependency link; generated `backend/dist` output was removed afterwards and is not selected.
+- `npm run check:feature-registry` — passed: 14 FRs, 140 test mappings, 73 deferred mobile mappings.
+- `npm run check:backend` — completed all preceding backend checks but stopped at its existing cross-repository Phase 5 contract because this clean root worktree deliberately has no mobile checkout; it is not recorded as a full-gate pass.
+- `npm run test:phase5-release-contract --prefix backend` — passed after the expected mobile `origin/Dev` fixture was temporarily supplied; temporary links and generated output were removed afterwards.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 10 changed files, 10 recorded changed files.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared; all selected paths and exact non-ledger staged hunk fingerprints are recorded for the local commit gate.
+- **Untracked review:** none; the isolated candidate contains no untracked files after temporary validation dependencies and generated output were removed.
+- `package.json` — SHA-256: `048330b085fc126d1ea4a67c8d57de50f8139a2c4afb985530523654225b1f3b`
+- `backend/package.json` — SHA-256: `634afb73ee33de5d60829b19d1c6031e7195ac1d11694347da1fe447ead19281`
+- `backend/scripts/tests/test_pdf_jobs_runtime_contract.ts` — SHA-256: `9b12af8c1114dd527e6587ed5a20b45e5aeaaaa00ea037fcd7f133ff193a434e`
+- `backend/src/modules/deep_cleaning.ts` — SHA-256: `31fa42af2d60bb6d03e50aad09952e804d00d3ddee9642750b146fc993a22e58`
+- `backend/src/modules/deep_cleaning.ts` — SHA-256: `645a9557b36fd2348615a65f9cf8f435dcf85f183b08d258b27befd083772e1c`
+- `backend/src/modules/deep_cleaning.ts` — SHA-256: `e8391054cabe7463613398d9115102fb037048e06d332f65b2a5a3602b084d35`
+- `backend/src/modules/maintenance.ts` — SHA-256: `098bb71a5b570a2baafb4d6830a4717d935611022decc832887f99d914205891`
+- `backend/src/modules/maintenance.ts` — SHA-256: `68d2257b63af5f9df738b023982e312a4d7c8be1b1c72589b8f5201953df7df5`
+- `backend/src/modules/maintenance.ts` — SHA-256: `bf0b409469e687e91c798fade5395a53aa630f8d0949c1b21d54155438e0e663`
+- `backend/src/services/pdfJobsRuntime.ts` — SHA-256: `2b7c5ea5e97cedf7fd215d7feddd714caa6984bc93e6f39d200ab756cacc9cdb`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `014aeddc737c803127ce3825f0f1a840f068a52f899b3dcb879c6651b14c46bb`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `02ec4c566a41f3d5376d2c5fcc244cfa70623269b748f014c150f20b9affa565`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `18e51ddf689c7b08ef7b0fb38ab862f45611499e2bfb2ddcd67ce4ec0989941a`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `1a7dfbeb4308df085c54ca082b26ed44662b0175e071813e536065a8d277c61c`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `5a5811b930580467841a24dd5035b02cef705cb0b8a3a308663a30d8b8b7b271`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `723c484911272d80c9cf6e91c1c248439cc7f8a818f50168e85fef2a4953b621`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `7951fd0a9852fa6883d1333fee11057ead1ad9490c1cec63c92f9851e0d0523d`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `8a705a59e3711d7b85d27f5f5db666171d71358e751eb4500d4b495b84fd9b0b`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `8d9820a2004eb57f99c126b591d0c2fc898ff8bdab289d1165a86745e421b1ad`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `91bcdcb0cf3eab5dec07e4d374541e4f904df4856b3236902c381fa6833d586e`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `9e79982797aea32b392b2f00f96bc113332aaccc16803204a0e186228c32e6d5`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `9eb93609a4ffdbe921e624df39b97bb30fecabcb4bf446ad42dddad9dba7b0bf`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `b259e938499bee6bd86b9139fceae823a6287ab789b1adfc529a6d5aea480ebb`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `cf44cb2496cc929a06ac6a8fd4bad88986aca2fccf6e11977b0d445542da4788`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `e92b8a469919974173c181831750aa64d3d0a7f7c6a64e082470fb0bdc709833`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `fc6a51dc79b95d997db0b7827c71f3befd43c57071eb53026ad49c7f9118c96b`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `fc8498cabdd3eb78aa9746831a007ba2850fab0385d100ef9b3e7417f97eae8e`
+- `backend/src/worker_pdf_jobs.ts` — SHA-256: `02f91217b9b6eea2af6afd163dcbba01292450bf4251299d97621a9f08a2ae56`
+- `backend/src/worker_pdf_jobs.ts` — SHA-256: `3384e215cdb520ec6ea3dd0afcfa1286ca5409ad2cc18b9ba1b37387a36dbd64`
+- `backend/src/worker_pdf_jobs.ts` — SHA-256: `4906db16e2d4d49087fcbfba50af68f6b2d3624a71ef6f17671412cab3f9b1ac`
+- `backend/src/worker_pdf_jobs.ts` — SHA-256: `54627cb5a9c1a4db0e53ab1f6f2e12d12a999602b8b3cb9e9267ffbe61f916f7`
+- `backend/src/worker_pdf_jobs.ts` — SHA-256: `8b12b7af849c9c6e5e91a2c45b48dc27301ceed4fca3dc53848f90b9e9341e2f`
+- `backend/src/worker_pdf_jobs.ts` — SHA-256: `9f9224bf3dd1f47d3b25bc831777f843446c7f2e117b35f6b2e0ff32ea5daecb`
+- `backend/src/worker_pdf_jobs.ts` — SHA-256: `be5db4e7cdd37fc0e8e410b431cbc8fb22974e3606d48cc3ce99b9ed10ea4c54`
+- `backend/src/worker_pdf_jobs.ts` — SHA-256: `e82a3305e96da6ce473a6126464da66b239a8dfc58a55872a286ce048769ae91`
+- `docs/feature-regression-registry.md` — SHA-256: `007c2dfa07d961e5ea311c3854bbc0c2d1eb65fc684dabbddb7156a817861964`
+
+### Release Attempts
+
+#### RA-20260830-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260830-001`
+- Selected CRL identities: `root/CRL-20260830-001`
+- Intended action: `commit`
+- Branch: `codex/pdf-queue-scale-zero-20260830`
+- Base: `origin/Dev@1c4020e61d7a949e76a3451a636c2964ec70f2bf`; fetched at `2026-08-30 Australia/Melbourne`
+- Candidate patch SHA-256: `afa6d353765eb0bbe85795057a497c1e1e087afbdd41cd59132167d2121cc4cb` excluding `docs/change-release-ledger.md`.
+- Commit SHA: not committed; audit head pending.
+- Dependencies: none.
+- Required validation: PASS; evidence: PDF runtime contract, isolated backend build, the all-backend checks before the expected missing-mobile fixture, a separately passed Phase 5 contract with a temporary clean mobile fixture, Feature Registry audit and current-worktree ledger audit passed.
+- Shared-hunk review: PASS; evidence: the isolated candidate contains only this CRL's declared 10 files and all 36 non-ledger staged hunks are listed above.
+- Generated-file review: PASS; evidence: generated `backend/dist` output was explicitly excluded and cleaned; no generated or local-cache path is staged.
+- Technical state: verified.
+- User authorization: selected-for-commit; evidence: user instructed "先执行发布一" on 2026-08-30, bounded to the PDF queue release.
+- Independent review: GO for commit after a follow-up read-only review. The prior P1 (only the earliest retry timer retained) is closed by retaining/re-arming all due times and preserving kicks requested while a drain is in flight; no P0/P1/P2, secret, generated-file, configuration or production-write finding.
+- Action conclusion: GO for the authorized local commit only. Push, PR, merge, deployment, Render configuration and production verification require separate authorization.
+
+### Risks / Release Notes
+
+- Reliability boundary: 1/5/30 retry is durable only while a Web process survives; after a restart, recovery latency depends on the separately configured Cron schedule. This is an accepted disaster-recovery tradeoff, not a hard retry SLA.
+- Rollback: restore the former worker only through an explicit Render configuration/deployment decision; source rollback reverts this CRL. Do not re-enable `*/1` as a default.
+- Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, or production logs are included.
+- Git state: isolated root candidate on `codex/pdf-queue-scale-zero-20260830`; uncommitted; not pushed, PR not created, not deployed, no production write.
