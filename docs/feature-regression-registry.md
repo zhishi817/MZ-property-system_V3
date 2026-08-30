@@ -7,6 +7,52 @@
 - 测试映射必须说明保护点和测试场景；只登记测试文件名不算覆盖证据。
 - `sufficient` 表示当前测试覆盖该保护点；`partial` 表示已有测试但仍有缺口；`not-wired` 表示测试存在但尚未进入对应质量检查；`missing` 表示尚无测试。
 
+## FR-018：任务列表行李通知批量授权等价性
+
+- **维护责任范围：** backend / mobile
+- **最后审查日期：** 2026-08-30
+- **状态：** active
+
+### 业务保护规则
+
+- `GET /mzapp/work-tasks` 返回的每条 `guest_luggage` 必须保留现有 notice 内容、版本、确认状态、cleaner/inspector 分组、用户名排序和当前用户确认语义。
+- 批量装配只允许使用该 notice 的物业、任务日期及版本；cleaner 仍按 `cleaner_id → assignee_id` 回退，inspector 仍独立计算，且只承认 active cleaning task。不得因批量读取扩大跨物业、跨日期、已取消或 superseded 任务的可见范围。
+- 一次工作任务列表刷新不得对每条 notice 分别调用 `loadGuestLuggageNotice()`；notice 详情和授权结果必须以固定数量的批量查询装配。
+
+### 跨层适用范围
+
+- **后端：** `/mzapp/work-tasks` 的行李通知读取、active task 授权、确认状态投影。
+- **客户端：** Mobile 继续消费既有 `guest_luggage` payload；不新增字段、不在客户端重新推导授权。
+- **入口：** 任务列表及其既有刷新、焦点恢复和 SSE 触发路径。
+- **一致性：** 服务端仍是 notice 归属、参与人及 acknowledgement 的唯一权威；本修复不改变写入、确认或媒体代理权限。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 批量 notice 授权与 payload 等价 | `backend/scripts/tests/test_guest_luggage_work_tasks_batch.ts` | 多 notice 只执行一次授权查询；逐 notice 的 property/date/version、cleaner→assignee 回退、inspector 分组、acknowledgement、当前用户确认和空列表语义保持；任务列表不再逐条调用 helper | sufficient | `npm run test:guest-luggage-work-tasks-batch --prefix backend`（由 root `check:backend` / `check:full` 执行） |
+
+### 验证策略
+
+- **本地：** 运行批量 contract、既有 guest-luggage 规则/媒体可见性 contract、后端 TypeScript build、Registry/ledger 审计与精确 diff 审查。
+- **部署后：** 在无业务写入的真实任务列表读取窗口比较 payload，并记录 Query Performance 增量；应不再出现每个 notice 各一条详情查询与授权 CTE。
+
+### 最后验证
+
+- **CRL：** root/CRL-20260830-002
+- **Commit：** not committed
+- **日期：** 2026-08-30
+
+### 相关 CRL
+
+- root/CRL-20260830-002：任务列表行李通知批量装配与 N+1 修复。
+- root/CRL-20260812-006：当天任务临时通知已保存照片认证读取。
+
+### 非保护范围
+
+- 行李通知新增、编辑、删除、确认写入、通知派发和媒体代理权限策略。
+- Mobile 刷新合并、私有媒体缓存、auth role cache、运行时 DDL 与 PDF worker。
+
 ## FR-017：PDF 队列事件唤醒与灾备恢复边界
 
 - **维护责任范围：** backend / Render PDF worker
