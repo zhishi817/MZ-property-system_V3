@@ -1,7 +1,9 @@
 import dayjs from 'dayjs'
 
 export const PROPERTY_PAYABLE_TEMPLATE_KIND = 'property_payable'
-export const PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH = 30
+// 31 is clamped by the backend to each billing month's actual final day.
+export const PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH = 31
+export const PROPERTY_PAYABLE_SETTLEMENT_DUE_LABEL = '账单月最后一天'
 
 export const PROPERTY_PAYABLE_CATEGORY_OPTIONS = [
   { value: 'electricity', label: '电费' },

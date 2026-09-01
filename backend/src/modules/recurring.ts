@@ -107,8 +107,9 @@ const RECURRING_SNAPSHOT_CONFLICT_WHERE = `fixed_expense_id IS NOT NULL AND fixe
 const TEMPLATE_KIND_FIXED_EXPENSE = 'fixed_expense'
 const TEMPLATE_KIND_PROPERTY_PAYABLE = 'property_payable'
 const PROPERTY_PAYABLE_MENU_PERM = 'menu.finance.property_payables.visible'
-export const PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH = 30
-export const PROPERTY_PAYABLE_PAYMENT_GRACE_DAYS = 5
+// 31 is deliberately clamped by computeDueISO, so every billing month uses its
+// real last calendar day (including February), rather than a synthetic "30th".
+export const PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH = 31
 const PROPERTY_PAYABLE_ALLOWED_FREQUENCY_MONTHS = [1, 2, 3, 6, 12] as const
 
 export function normalizePropertyPayableFrequencyMonths(value: any): number {
@@ -194,6 +195,41 @@ export function computePropertyPayableTemplateDates(payment: any, monthKey: stri
     bill_period_start: null,
     bill_period_end: null,
   }
+}
+
+export type PropertyPayableCalendarStage = 'bill_received' | 'bill_expected' | 'unscheduled'
+
+/**
+ * The calendar is a bill-handling schedule, not a settlement-deadline calendar.
+ * An actual bill receipt takes precedence over the template estimate.  When the
+ * template has no estimate and no bill has arrived, leave it out of the dated
+ * calendar instead of fabricating a month-end event.
+ */
+export function resolvePropertyPayableCalendarSchedule(row: {
+  status?: any
+  bill_received_date?: any
+  bill_expected_date?: any
+}): { calendar_date: string | null; calendar_stage: PropertyPayableCalendarStage } {
+  if (String(row?.status || '').toLowerCase() === 'paid') {
+    return { calendar_date: null, calendar_stage: 'unscheduled' }
+  }
+  const received = toISODate(row?.bill_received_date)
+  if (received) return { calendar_date: received, calendar_stage: 'bill_received' }
+  const expected = toISODate(row?.bill_expected_date)
+  if (expected) return { calendar_date: expected, calendar_stage: 'bill_expected' }
+  return { calendar_date: null, calendar_stage: 'unscheduled' }
+}
+
+export function isPropertyPayableReceiptPaymentOverdue(row: {
+  status?: any
+  bill_received_date?: any
+  bill_expected_date?: any
+}, today: string): boolean {
+  if (String(row?.status || '').toLowerCase() === 'paid') return false
+  const received = toISODate(row?.bill_received_date)
+  const expected = toISODate(row?.bill_expected_date)
+  const handlingDate = received || expected
+  return !!handlingDate && handlingDate < today
 }
 
 function normalizePropertyPayableTemplatePayload(payload: Record<string, any>, fallback?: Record<string, any> | null) {
@@ -901,9 +937,15 @@ function buildPropertyPayableWorkbenchMonth(
       const paid = String(snapshot?.status || '') === 'paid'
       const amountConfirmed = normalizeBool(snapshot?.amount_confirmed)
       const billNotReceived = !paid && !amountConfirmed && !billReceivedDate
-      const overdueAfterDate = billExpectedDate ? addDaysISO(billExpectedDate, PROPERTY_PAYABLE_PAYMENT_GRACE_DAYS) : null
-      const paymentOverdue = !paid && !!overdueAfterDate && overdueAfterDate < today
-      const billOverdue = billNotReceived && !paymentOverdue && !!billExpectedDate && billExpectedDate < today
+      // The handling date is the actual receipt when present; otherwise it is
+      // the expected receipt.  It is the overdue boundary for an unpaid bill,
+      // so a late receipt/payment task remains visible and first in the queue.
+      const paymentOverdue = isPropertyPayableReceiptPaymentOverdue({
+        status: paid ? 'paid' : (snapshot?.status || 'pending'),
+        bill_received_date: billReceivedDate,
+        bill_expected_date: billExpectedDate,
+      }, today)
+      const billOverdue = billNotReceived && paymentOverdue
       const paymentDueSoon = !paid && amountConfirmed && !paymentOverdue && !!dueDate && dueDate <= dueSoonCutoff
       let workflowStatus = 'pending'
       let sortBucket = 5
@@ -914,9 +956,15 @@ function buildPropertyPayableWorkbenchMonth(
       else if (!amountConfirmed && billNotReceived) { workflowStatus = 'awaiting_bill'; sortBucket = 3 }
       else if (!amountConfirmed) { workflowStatus = 'awaiting_confirmation'; sortBucket = 4 }
       else { workflowStatus = 'awaiting_payment'; sortBucket = 5 }
+      const calendarSchedule = resolvePropertyPayableCalendarSchedule({
+        status: paid ? 'paid' : (snapshot?.status || 'pending'),
+        bill_received_date: billReceivedDate,
+        bill_expected_date: billExpectedDate,
+      })
       return {
         template_id: String(tpl.id),
         snapshot_id: snapshot?.id ? String(snapshot.id) : null,
+        month_key: monthKey,
         property_id: String(tpl.property_id || '').trim() || null,
         property_code: tpl.property_code || null,
         property_address: tpl.property_address || null,
@@ -944,15 +992,18 @@ function buildPropertyPayableWorkbenchMonth(
         pay_mobile_number: tpl.pay_mobile_number || null,
         amount: Number(snapshot?.amount ?? tpl.amount ?? 0),
         due_date: dueDate || null,
+        settlement_due_date: dueDate || null,
         bill_expected_date: billExpectedDate,
         bill_received_date: billReceivedDate,
+        calendar_date: calendarSchedule.calendar_date,
+        calendar_stage: calendarSchedule.calendar_stage,
         bill_period_start: billPeriodStart,
         bill_period_end: billPeriodEnd,
         paid_date: snapshot?.paid_date ? String(snapshot.paid_date).slice(0, 10) : null,
         status: paid ? 'paid' : (snapshot?.status || 'pending'),
         workflow_status: workflowStatus,
         bill_status: paid || amountConfirmed ? 'handled' : (billReceivedDate ? 'received' : (billOverdue ? 'not_received_overdue' : 'awaiting_bill')),
-        payment_status: paid ? 'paid' : (amountConfirmed ? (paymentOverdue ? 'overdue' : (paymentDueSoon ? 'due_soon' : 'awaiting_payment')) : 'not_ready'),
+        payment_status: paid ? 'paid' : (paymentOverdue ? 'overdue' : (amountConfirmed ? (paymentDueSoon ? 'due_soon' : 'awaiting_payment') : 'not_ready')),
         note: snapshot?.note || null,
         amount_confirmed: amountConfirmed,
         amount_confirmed_by: snapshot?.amount_confirmed_by || null,
@@ -987,6 +1038,210 @@ function buildPropertyPayableWorkbenchMonth(
   }
   return { rows, summary, month_key: monthKey }
 }
+
+type PropertyPayableCalendarFilters = {
+  propertyId: string | null
+  status: string | null
+  query: string
+}
+
+function parsePropertyPayableCalendarMonth(value: any): string | null {
+  const monthKey = String(value || '').trim()
+  if (!/^\d{4}-\d{2}$/.test(monthKey) || !Number.isFinite(monthKeyToIndex(monthKey))) return null
+  return monthKey
+}
+
+function parsePropertyPayableCalendarDate(value: any): string | null {
+  const dateISO = String(value || '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateISO)) return null
+  const parsed = new Date(`${dateISO}T00:00:00.000Z`)
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === dateISO ? dateISO : null
+}
+
+function parsePropertyPayableCalendarFilters(query: any): { filters?: PropertyPayableCalendarFilters; error?: string } {
+  const propertyId = String(query?.property_id || '').trim() || null
+  const status = String(query?.status || '').trim() || null
+  const allowedStatuses = new Set(['bill_not_received', 'awaiting_confirmation', 'payment_overdue', 'payment_due_soon', 'awaiting_payment'])
+  if (status && !allowedStatuses.has(status)) return { error: 'invalid status' }
+  return {
+    filters: {
+      propertyId,
+      status,
+      query: String(query?.q || '').trim().toLowerCase(),
+    },
+  }
+}
+
+function matchesPropertyPayableCalendarFilters(row: any, filters: PropertyPayableCalendarFilters): boolean {
+  if (filters.propertyId && String(row?.property_id || '') !== filters.propertyId) return false
+  const workflowStatus = String(row?.workflow_status || '')
+  if (filters.status === 'awaiting_confirmation' && workflowStatus !== 'awaiting_confirmation' && workflowStatus !== 'awaiting_bill') return false
+  if (filters.status && filters.status !== 'awaiting_confirmation' && workflowStatus !== filters.status) return false
+  if (!filters.query) return true
+  const haystack = [row?.property_code, row?.property_address, row?.vendor, row?.category, row?.bill_account_no]
+    .map((item) => String(item || '').toLowerCase())
+    .join(' ')
+  return haystack.includes(filters.query)
+}
+
+function propertyPayableCalendarRowKey(row: any): string {
+  return `${String(row?.template_id || '')}:${String(row?.month_key || '')}`
+}
+
+function sortPropertyPayableCalendarRows(rows: any[]): any[] {
+  return rows.slice().sort((a, b) => {
+    const ab = Number(a?.sort_bucket || 99)
+    const bb = Number(b?.sort_bucket || 99)
+    if (ab !== bb) return ab - bb
+    const ap = String(a?.property_code || a?.property_address || '')
+    const bp = String(b?.property_code || b?.property_address || '')
+    if (ap !== bp) return ap.localeCompare(bp)
+    return String(a?.vendor || '').localeCompare(String(b?.vendor || ''))
+  })
+}
+
+async function loadPropertyPayableCalendarData(monthKey: string) {
+  const monthStart = monthStartUTC(monthKey)
+  if (!monthStart) throw new Error('invalid month key')
+  const nextMonthStart = addMonthsUTC(monthStart, 1)
+  const startISO = monthStart.toISOString().slice(0, 10)
+  const nextStartISO = nextMonthStart.toISOString().slice(0, 10)
+  const [tplRes, expRes] = await Promise.all([
+    pgPool!.query(
+      `SELECT rp.*,
+              p.code AS property_code,
+              p.address AS property_address
+         FROM recurring_payments rp
+         LEFT JOIN properties p ON p.id = rp.property_id
+        WHERE COALESCE(rp.template_kind, $1) = $2
+          AND COALESCE(rp.scope, 'property') = 'property'
+        ORDER BY COALESCE(rp.status, 'active') ASC, COALESCE(rp.vendor, '') ASC, COALESCE(p.code, '') ASC`,
+      [TEMPLATE_KIND_FIXED_EXPENSE, TEMPLATE_KIND_PROPERTY_PAYABLE]
+    ),
+    pgPool!.query(
+      `SELECT id,
+              fixed_expense_id,
+              month_key,
+              amount,
+              due_date,
+              bill_expected_date,
+              bill_received_date,
+              bill_period_start,
+              bill_period_end,
+              paid_date,
+              status,
+              note,
+              amount_confirmed,
+              amount_confirmed_by,
+              amount_confirmed_at,
+              paid_by,
+              paid_confirmed_at
+         FROM property_expenses
+        WHERE fixed_expense_id IS NOT NULL
+          AND fixed_expense_id <> ''
+          AND (
+            month_key = $1
+            OR (bill_received_date >= to_date($2, 'YYYY-MM-DD') AND bill_received_date < to_date($3, 'YYYY-MM-DD'))
+          )`,
+      [monthKey, startISO, nextStartISO]
+    ),
+  ])
+  const templates: any[] = Array.isArray(tplRes.rows) ? tplRes.rows : []
+  const snapshotsByMonth = new Map<string, Map<string, any>>()
+  for (const snapshot of Array.isArray(expRes.rows) ? expRes.rows : []) {
+    const snapshotMonthKey = String(snapshot?.month_key || '').trim()
+    const templateId = String(snapshot?.fixed_expense_id || '').trim()
+    if (!parsePropertyPayableCalendarMonth(snapshotMonthKey) || !templateId) continue
+    const byTemplate = snapshotsByMonth.get(snapshotMonthKey) || new Map<string, any>()
+    byTemplate.set(templateId, snapshot)
+    snapshotsByMonth.set(snapshotMonthKey, byTemplate)
+  }
+  const today = currentDateISOAU()
+  const dueSoonCutoff = addDaysISO(today, 3) || today
+  const primary = buildPropertyPayableWorkbenchMonth(templates, snapshotsByMonth.get(monthKey) || new Map<string, any>(), monthKey, today, dueSoonCutoff)
+  const rowsByKey = new Map<string, any>()
+  primary.rows.forEach((row) => rowsByKey.set(propertyPayableCalendarRowKey(row), row))
+  for (const [snapshotMonthKey, snapshots] of snapshotsByMonth.entries()) {
+    if (snapshotMonthKey === monthKey) continue
+    const result = buildPropertyPayableWorkbenchMonth(templates, snapshots, snapshotMonthKey, today, dueSoonCutoff)
+    result.rows.forEach((row) => rowsByKey.set(propertyPayableCalendarRowKey(row), row))
+  }
+  return { primaryRows: primary.rows, rows: Array.from(rowsByKey.values()) }
+}
+
+router.get('/property-payables/calendar', requirePerm(PROPERTY_PAYABLE_MENU_PERM), requireAnyPerm(['recurring_payments.view', 'finance.tx.write']), async (req, res) => {
+  if (!hasPg) return res.status(500).json({ message: 'pg not available' })
+  const monthKey = parsePropertyPayableCalendarMonth((req as any).query?.month_key || currentMonthKeyAU())
+  const parsedFilters = parsePropertyPayableCalendarFilters((req as any).query || {})
+  if (!monthKey) return res.status(400).json({ message: 'invalid month key' })
+  if (parsedFilters.error || !parsedFilters.filters) return res.status(400).json({ message: parsedFilters.error || 'invalid filters' })
+  try {
+    const { primaryRows, rows } = await loadPropertyPayableCalendarData(monthKey)
+    const calendarRows = rows
+      .filter((row) => row.status !== 'paid')
+      .filter((row) => matchesPropertyPayableCalendarFilters(row, parsedFilters.filters!))
+      .filter((row) => String(row.calendar_date || '').slice(0, 7) === monthKey)
+    const unscheduledRows = primaryRows
+      .filter((row) => row.status !== 'paid')
+      .filter((row) => matchesPropertyPayableCalendarFilters(row, parsedFilters.filters!))
+      .filter((row) => !row.calendar_date)
+    const byDate = new Map<string, any>()
+    const ensureDay = (date: string) => {
+      const current = byDate.get(date) || {
+        date,
+        event_count: 0,
+        bill_received_count: 0,
+        bill_expected_count: 0,
+        overdue_count: 0,
+      }
+      byDate.set(date, current)
+      return current
+    }
+    calendarRows.forEach((row) => {
+      const day = ensureDay(String(row.calendar_date))
+      day.event_count += 1
+      if (row.calendar_stage === 'bill_received') day.bill_received_count += 1
+      if (row.calendar_stage === 'bill_expected') day.bill_expected_count += 1
+      if (row.is_overdue) day.overdue_count += 1
+    })
+    return res.json({
+      month_key: monthKey,
+      days: Array.from(byDate.values()).sort((a: any, b: any) => String(a.date).localeCompare(String(b.date))),
+      unscheduled_count: unscheduledRows.length,
+    })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'property payable calendar failed' })
+  }
+})
+
+router.get('/property-payables/calendar-day', requirePerm(PROPERTY_PAYABLE_MENU_PERM), requireAnyPerm(['recurring_payments.view', 'finance.tx.write']), async (req, res) => {
+  if (!hasPg) return res.status(500).json({ message: 'pg not available' })
+  const dateISO = parsePropertyPayableCalendarDate((req as any).query?.date)
+  const parsedFilters = parsePropertyPayableCalendarFilters((req as any).query || {})
+  if (!dateISO) return res.status(400).json({ message: 'invalid date' })
+  if (parsedFilters.error || !parsedFilters.filters) return res.status(400).json({ message: parsedFilters.error || 'invalid filters' })
+  const page = Math.max(1, Math.floor(Number((req as any).query?.page || 1)))
+  const pageSize = Math.min(50, Math.max(1, Math.floor(Number((req as any).query?.page_size || 20))))
+  try {
+    const { rows } = await loadPropertyPayableCalendarData(dateISO.slice(0, 7))
+    const rowsByKey = new Map<string, any>()
+    rows
+      .filter((row) => row.status !== 'paid' && String(row.calendar_date || '') === dateISO)
+      .filter((row) => matchesPropertyPayableCalendarFilters(row, parsedFilters.filters!))
+      .forEach((row) => rowsByKey.set(propertyPayableCalendarRowKey(row), row))
+    const matchedRows = sortPropertyPayableCalendarRows(Array.from(rowsByKey.values()))
+    const start = (page - 1) * pageSize
+    return res.json({
+      date: dateISO,
+      total: matchedRows.length,
+      page,
+      page_size: pageSize,
+      rows: matchedRows.slice(start, start + pageSize),
+    })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'property payable calendar day failed' })
+  }
+})
 
 router.get('/property-payables/workbench', requirePerm(PROPERTY_PAYABLE_MENU_PERM), requireAnyPerm(['recurring_payments.view', 'finance.tx.write']), async (req, res) => {
   if (!hasPg) return res.status(500).json({ message: 'pg not available' })
