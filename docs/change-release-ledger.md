@@ -18708,7 +18708,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Git state: isolated `codex/r1-guest-luggage-batch-20260830` worktree based on `origin/Dev@75276708ed32253e4dca2d1c98d5c3ab363b4d43`; staged but uncommitted, unpushed, not deployed and not production-verified.
 ## CRL-20260901-001 — 房源代付按收账日期分布的现有日历优化（root）
 
-- **Status:** candidate (selected for local commit; clean release candidate prepared)
+- **Status:** committed locally; not pushed
 - **Repository:** `root`
 - **Updated:** 2026-09-01 Australia/Melbourne
 - **Request:** 修复房源代付现有月历把全部待处理账单按付款截止日集中显示在每月 30 号的问题。保留付款截止日作为账单月最后一天的结算字段；日历必须按实际收到账单日优先、预计收到账单日兜底分布，未设置任一收账日期的账单不得伪造到月末。右侧当天区域必须和左侧使用相同账单卡片样式，不能以窄表格截断信息；到账日已过而仍未登记付款的账单必须显示逾期并优先处理。月历首尾可见的相邻月份日期必须保留其真实逾期摘要和可打开的账单。
@@ -18839,11 +18839,28 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 ### Release Attempts
 
-- **RA-20260901-001 (commit):** repository `root`; selected CRL `root/CRL-20260901-001`; branch `codex/property-payables-calendar-20260901`; base `origin/Dev@4bb355d29bc66aa85cb5a65a6042d68a28de11b7` fetched 2026-09-01; candidate patch SHA-256 `55574060aee66658f37be593a2fe1ccb1969072ebb263c4b1b56bd2b7138ff17` excluding `docs/change-release-ledger.md`; commit SHA `not committed`; dependencies none; required validation PASS (targeted backend date/template tests, source-hash-matched backend/frontend builds, clean registry and ledger audits, diff check); shared-hunk review PASS (only ten declared paths staged); generated-file review PASS (no generated/config/cache paths staged); technical state `verified`; user authorization `selected-for-commit` (user said 提交这个更新); independent review `GO for commit` (independent read-only review recomputed the same fingerprint, found no P0/P1/P2, and confirmed the 10-path/78-hunk scope, permission, no-write and secret boundaries); action conclusion `GO` for the local commit only. Push, PR, merge, deployment and production verification are not authorized.
+#### RA-20260901-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260901-001`
+- Selected CRL identities: `root/CRL-20260901-001`
+- Intended action: `commit`
+- Branch: `codex/property-payables-calendar-20260901`
+- Base: `origin/Dev@4bb355d29bc66aa85cb5a65a6042d68a28de11b7`; fetched at `2026-09-01`.
+- Candidate patch SHA-256: `55574060aee66658f37be593a2fe1ccb1969072ebb263c4b1b56bd2b7138ff17` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `e4e1d2da5cafbff42cde3abf2fbd9c7ef513c96b` (candidate content commit).
+- Dependencies: none.
+- Required validation: PASS; evidence: targeted backend date/template tests, source-hash-matched backend/frontend builds, clean registry and ledger audits, and diff check.
+- Shared-hunk review: PASS; evidence: only ten declared paths and 78 non-ledger fingerprints were staged.
+- Generated-file review: PASS; evidence: no generated, cache, configuration or sensitive path was staged.
+- Technical state: `committed`.
+- User authorization: `selected-for-commit`; evidence: user said “提交这个更新”.
+- Independent review: `GO` for commit; evidence: independent read-only review recomputed the same fingerprint and found no P0/P1/P2.
+- Action conclusion: `GO` — local commit created. Push, PR, merge, deployment and production verification are not authorized.
 
 ### Risks / Release Notes
 
 - Manual regression remains required with an authorized non-production account: confirm a row with expected `2026-09-01` and no payment is red and first on 2 September; entering actual `2026-09-03` removes that overdue state until 4 September; when viewing September, an overdue `2026-08-31` remains visible and clickable in the first grid cell without being copied to September; rows without either date appear only in “待安排”; paid rows leave the pending calendar; and right-side cards match the left queue's room, vendor, dates, status and actions without truncation.
 - Compatibility risk: overdue semantics now change from the former `预计收账日 + 5 天` or month-end boundary to the first day after the actual/expected receipt date when payment is absent. This is the user-directed priority rule and requires non-production manual sign-off before release.
 - Sensitive-information review: no credentials, tokens, private URLs, customer data, database URLs, `.env` values, caches, or generated build outputs were added.
-- Git state: not committed, not pushed, not deployed, and not production/device verified.
+- Git state: candidate content commit `e4e1d2da5cafbff42cde3abf2fbd9c7ef513c96b` exists locally on `codex/property-payables-calendar-20260901`; not pushed, not deployed, and not production/device verified.
