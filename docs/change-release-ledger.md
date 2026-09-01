@@ -18708,7 +18708,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Git state: isolated `codex/r1-guest-luggage-batch-20260830` worktree based on `origin/Dev@75276708ed32253e4dca2d1c98d5c3ab363b4d43`; staged but uncommitted, unpushed, not deployed and not production-verified.
 ## CRL-20260901-001 — 房源代付按收账日期分布的现有日历优化（root）
 
-- **Status:** committed locally; not pushed
+- **Status:** committed locally; approved for push
 - **Repository:** `root`
 - **Updated:** 2026-09-01 Australia/Melbourne
 - **Request:** 修复房源代付现有月历把全部待处理账单按付款截止日集中显示在每月 30 号的问题。保留付款截止日作为账单月最后一天的结算字段；日历必须按实际收到账单日优先、预计收到账单日兜底分布，未设置任一收账日期的账单不得伪造到月末。右侧当天区域必须和左侧使用相同账单卡片样式，不能以窄表格截断信息；到账日已过而仍未登记付款的账单必须显示逾期并优先处理。月历首尾可见的相邻月份日期必须保留其真实逾期摘要和可打开的账单。
@@ -18857,6 +18857,25 @@ Shared cross-thread record of repository changes and selectable release units. D
 - User authorization: `selected-for-commit`; evidence: user said “提交这个更新”.
 - Independent review: `GO` for commit; evidence: independent read-only review recomputed the same fingerprint and found no P0/P1/P2.
 - Action conclusion: `GO` — local commit created. Push, PR, merge, deployment and production verification are not authorized.
+
+#### RA-20260901-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260901-001`
+- Selected CRL identities: `root/CRL-20260901-001`
+- Intended action: `push`
+- Branch: `codex/property-payables-calendar-20260901`
+- Base: `origin/Dev@4bb355d29bc66aa85cb5a65a6042d68a28de11b7`; fetched at `2026-09-01` immediately before this push attempt.
+- Candidate patch SHA-256: `55574060aee66658f37be593a2fe1ccb1969072ebb263c4b1b56bd2b7138ff17` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `e4e1d2da5cafbff42cde3abf2fbd9c7ef513c96b` (candidate content commit).
+- Dependencies: none.
+- Required validation: PASS; evidence: RA-20260901-001 validation plus clean exact-range audit before this push attempt.
+- Shared-hunk review: PASS; evidence: the committed range contains only the same ten selected paths and 78 reviewed non-ledger hunk fingerprints.
+- Generated-file review: PASS; evidence: the committed range has no generated, cache, configuration or sensitive path.
+- Technical state: `committed`.
+- User authorization: `approved-for-push`; evidence: user said “推送更新” after receiving the exact local branch and content/receipt commit SHAs.
+- Independent review: `GO` for the candidate content commit; evidence: the exact range must retain the reviewed non-ledger fingerprint.
+- Action conclusion: `GO` for pushing this exact range only; PR, merge, deployment and production verification remain outside scope.
 
 ### Risks / Release Notes
 
