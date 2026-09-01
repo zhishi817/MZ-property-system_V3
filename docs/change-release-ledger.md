@@ -18706,3 +18706,180 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Rollback: restore the former task-list call to the preserved single-notice helper and remove this unit's test/quality mapping; no schema or data rollback is required.
 - Sensitive-information review: no secrets, `.env` values, tokens, database URLs, credentials, private media references, customer data or production logs are added.
 - Git state: isolated `codex/r1-guest-luggage-batch-20260830` worktree based on `origin/Dev@75276708ed32253e4dca2d1c98d5c3ab363b4d43`; staged but uncommitted, unpushed, not deployed and not production-verified.
+## CRL-20260901-001 — 房源代付按收账日期分布的现有日历优化（root）
+
+- **Status:** committed locally; approved for push
+- **Repository:** `root`
+- **Updated:** 2026-09-01 Australia/Melbourne
+- **Request:** 修复房源代付现有月历把全部待处理账单按付款截止日集中显示在每月 30 号的问题。保留付款截止日作为账单月最后一天的结算字段；日历必须按实际收到账单日优先、预计收到账单日兜底分布，未设置任一收账日期的账单不得伪造到月末。右侧当天区域必须和左侧使用相同账单卡片样式，不能以窄表格截断信息；到账日已过而仍未登记付款的账单必须显示逾期并优先处理。月历首尾可见的相邻月份日期必须保留其真实逾期摘要和可打开的账单。
+- **Outcome:** 后端为 workbench rows 增加 `month_key`、`calendar_date`、`calendar_stage` 与 `settlement_due_date`，并新增只读的月度摘要和当天分页查询。现有月历格子显示实际到账、预计到账及逾期汇总；前端同时读取当前月及首尾可见相邻月份的摘要，因此 9 月首格的 8 月 31 日会显示原本的逾期且可点开同一张账单，不会复制到 9 月。右侧当天区域改为和左侧一致的可搜索、分页账单卡片，保留既有确认账单、上传发票、登记支付连续操作。未付款逾期按“实际到账日优先，否则预计到账日”的已过日期判定并排在最前；付款截止日显示为账单月真实最后一天（31 作为月末 clamp 值），不是固定 30 日。
+
+### Implementation
+
+- `calendar_date` 优先采用 `bill_received_date`；没有实际日期时采用 `bill_expected_date`；两者都没有时为 `null / unscheduled`，不进入带日期日历。
+- 已付账单不出现在待处理日历，仍由既有“已付记录”承接。
+- 到账日已过而仍未登记付款的账单直接进入 `payment_overdue`：实际到账日覆盖预计到账日；没有实际到账时，预计到账日是逾期边界。该规则不要求金额已确认。
+- 确认账单、上传发票和登记支付继续复用既有写入接口；右侧日历当天卡片通过 `month_key` 操作对应账单月份，支持实际收账跨月显示，并按服务端逾期优先级排序。
+- 月历不再为相同账单额外添加月底风险副本，避免重新形成月底集中；付款截止日保留为结算字段及模板展示，不作为日历事件日期。
+- 前端为 42 格月历读取上月、当前月和下月的只读摘要；相邻日期仍以原始 ISO 日期调用当天查询，当前月切换时的默认选中日期仍限制在当前账单月，避免误把相邻日期当成当前月默认事项。
+
+### Files / Areas
+
+- `backend/src/modules/recurring.ts` — 账单月最后一天计算、日历日期解析、只读月度摘要和当天分页 API、付款/收账风险分离。
+- `backend/src/modules/properties.ts` — 房源模板同步使用月末 clamp 值。
+- `backend/scripts/tests/test_property_payable_bill_dates.ts` — 月末、实际优先、预计兜底、到账日逾期、未安排和已付不入待处理日历的回归。
+- `frontend/src/app/finance/property-payables/page.tsx` — 保留现有三栏日历布局，改为收账日期摘要和当天分页账单卡片；补齐可见相邻月份日期的摘要读取与点击处理。
+- `frontend/src/app/globals.css` — 日历逾期摘要、当天卡片加载和分页样式；移除未使用的窄表格样式。
+- `frontend/src/lib/propertyPayables.ts`、`frontend/src/components/PropertyPayableTemplatesForm.tsx`、`frontend/src/app/properties/page.tsx` — 付款截止日展示为“账单月最后一天”。
+- `docs/feature-regression-registry.md` — FR-019 保护规则与验证映射。
+- `docs/change-release-ledger.md` — 本 CRL。
+
+### Impact / Dependencies
+
+- **API:** additive `GET /recurring/property-payables/calendar` 和 `GET /recurring/property-payables/calendar-day`; monthly day summary adds `overdue_count`; existing workbench row response adds calendar metadata and leaves legacy fields intact.
+- **Database / migration:** none. Legacy stored `due_day_of_month=30` is read through the month-end calculation; no production data is rewritten.
+- **Production data / external sync:** none. New calendar routes are SELECT-only and no production request was executed in this task.
+- **Dependencies:** existing property-payable templates, `property_expenses` snapshots, invoice upload route, and payment confirmation routes.
+
+### Validation
+
+- `npm run build --prefix backend` — passed.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_property_payable_bill_dates.ts` in `backend` — passed: `test_property_payable_bill_dates: ok`, including actual-over-expected calendar priority, expected/actual receipt-date overdue, and paid exclusion. An initial root-directory invocation failed due the repository's ts-node module-resolution configuration; rerunning from `backend` used its intended `tsconfig` and passed.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_property_payable_template_sync.ts` in `backend` — passed: `test_property_payable_template_sync: ok`.
+- `npm run lint --prefix frontend` — passed. The repository still reports pre-existing project-wide image/accessibility and Hook-dependency warnings; none names the modified property-payables page.
+- `npm run build --prefix frontend` — passed after replacing the narrow right-side table with the existing bill-card renderer and pagination, and after adding adjacent-month summary retrieval. Existing project-wide ESLint warnings and stale Browserslist dataset warnings remain; no new type/build error was reported for this change.
+ `npm run check:feature-registry` — passed in the clean candidate: 15 existing FRs plus this new FR-019; 141 root test mappings and 73 deferred mobile mappings.
+- `git diff --check -- <selected files>` — passed after adding the ledger/registry records.
+ `python3 scripts/audit_change_release_ledger.py` — passed in the clean candidate: 10 changed files, 10 recorded files.
+- Manual authenticated UI/API regression — not run: no safe local test account/environment was identified, and production data was outside the authorized scope.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared in clean `origin/Dev@4bb355d29bc66aa85cb5a65a6042d68a28de11b7` worktree on `codex/property-payables-calendar-20260901`.
+- **Untracked review:** none.
+- `backend/scripts/tests/test_property_payable_bill_dates.ts` — SHA-256: `960fb81d4dd52004f84bd1d1c5dc18fb4804159d6977bf23d0f7159eba6b6186`
+- `backend/scripts/tests/test_property_payable_bill_dates.ts` — SHA-256: `c75db22af4a9764141572280f59e94f1f263845cf9175a08d723643e0033fc0b`
+- `backend/scripts/tests/test_property_payable_bill_dates.ts` — SHA-256: `c9fc1b1a4ae45dcede0ab8507f20ad85b5ea0dd697a70fe097fcf1b52f92f256`
+- `backend/src/modules/properties.ts` — SHA-256: `356dd4bb88bae08c5d0adcbc411529fa6d69db05c52ee14050622bc83d4074ea`
+- `backend/src/modules/recurring.ts` — SHA-256: `08b8020b35784bd2669f0c12a9da660aac9b8283796a312af24013e21534d85f`
+- `backend/src/modules/recurring.ts` — SHA-256: `0d029b8512f473d5eeb7ff980667ccae894211eefa37a4de4a086cf724b9af2d`
+- `backend/src/modules/recurring.ts` — SHA-256: `201eaadd6049b8ec5121a94441967933aae977bb6e2e4e12531f03df20824bd9`
+- `backend/src/modules/recurring.ts` — SHA-256: `2d8e02cf570efa0f554293b45402ad4db0e8e18e1c104364788fe350008c6187`
+- `backend/src/modules/recurring.ts` — SHA-256: `51c5ae7172ed0bd27f015281f0c12939a219c59c0b029802dbe99ebb0e6a8c7b`
+- `backend/src/modules/recurring.ts` — SHA-256: `6148da3cf18275917468ac18ab3750baf00038654a57d14eb7dd4150d569fb40`
+- `backend/src/modules/recurring.ts` — SHA-256: `9e05426d5fcee060c1151a936893728edd106db4afb0f7333a2fd2c72ef40743`
+- `backend/src/modules/recurring.ts` — SHA-256: `d0a225e0910fb06d418a16a9819817a3688f4c73718b9096ae2d4ce337d816f4`
+- `backend/src/modules/recurring.ts` — SHA-256: `e0ef9818b97eaaef8a31e72d69795e5c80dba84162ef7c6971b55450f5fdfa7a`
+- `docs/feature-regression-registry.md` — SHA-256: `8a85a7ad1d769be5594f7efd0944bfa43f60f803e48f63eb62678de3f128e087`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `19ec793fb07e4658e60badfc66786a342648bb4ece81aa6d1df389fdda0bab48`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `1d026067d511b5d2c0d1385c5b9be7d3160234f87277d1ed883c1c073232ec6f`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `1efa2731b0a84a3ca56e029f7abe29958791fc9a328f101d605b6b1a8667bbac`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `201a294169907355da3cc106c133f2b9970c7a385b00ab07139d7a856dd702f1`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `29b32f35eae44604677c3a8c4115ab9201e1a42a44aaee98f2c96cf510593a71`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `31a8ca20380b55e482c49de6696237808d7ade8a201fdcd093cf5868d16d04f4`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `3933c1ee6e3001af8d6f38c990e4c590235e5aa5a45ad1979977d447dda4b2ab`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `3a24021557e4cb398495695dfff8186bd29250a153b5f46763b8a5dc3537e67a`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `3cf3dad6c98cfb782f41ea6b441c9980675fa0361d8d067e9b5def84ab3c359c`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `4c5b0e91f62c1dfc5ee3bfa8a842d3332b1a6a3aa67f505e779ba024ae52dc69`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `55aeef9a42ad178ce39030221bf4a81d6ad2b5f6f4cbe4be01221c0d81f02986`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `5d88f039b9ba0335ecd24dbaac573f384c9a043c3661e93565c1528781801552`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `700eaf65602315aac1027528004103347d683ab961e19336e2075394fe9dc677`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `70739816673d520f7deb802f5d46bdebe2f035d2c84a94a2dc70ab134047d9a3`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `7d269251f6263a6875edff39f1b7a0ec5e25f691540d392b1b81dcc52987261c`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `83b12015652596c62442843c27863c9a54f986ac37536896189874322d279188`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `8c4b8ce72bf13a1867eb5afaef17c757ccbca0a390f9a0d1665316ba531c7169`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `8cd95cbf05aa9cdde3d273db69bf39dd8f518726853994c5237c916468fb2cca`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `8f9e555b7511edebf97d2d78cc2c71a957f37b3c6b352c53aa22a4c0e3b839d3`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `90ff09639993db194081d1f0c7f7edaed8a646355fcf99baa3987b77f9b6951d`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `91990836595c57425f8c39b4dcb02c3d5f596fc617112ab1b7f22ca2eb27428a`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `91c870f3a358d88e58787678e37f6125acf7b7acc1f4cc9ca50c88de27899f69`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `93d4aed0ff86fe703a8dc4dee2aa68dafa959cf6abcbf1100dffa528ede82e91`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `97617547cb0723a409ef01cc768a5a662e3ae6e314b57425b265605622ab8361`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `97793cd576d207daa3e1af81c830218fccc4ac0ab8b804068eaba3fc42716d66`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `9864dbde44154ecf401956629fcd6fd5698cc0b59427e6d608b093e6bd0dbd12`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `999365527ac2f14eaa210bde30bd66404e6596d49423256a43c8fae6c05effed`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `a133a64184df355f0520341abd60cff25878ecb99fcfbe5f0dfb6720206638a2`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `a8556b89005357283e563b8003e34495f10e3743ef813bee66722aa7f8c2ecab`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `b0bfa9269a678f98c9957dbf22604efae258ad714a95f353930cf05b8a3806d9`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `b19e23e1fe762a0c44d31d8e279c54fcbf556fcaa6970a88b06f8aa9a0a6969f`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `b360104987fb9c398d2965ea5dbf8467739292b2d926802db1b96f22e162863f`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `b713e94d14b33c6916c1ff40cb8481a16d669abc9711a9ccdd3345d77b18b2b1`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `ba072d6b07a79253208dee1708e5357bcadff9128c9aacdba8b8b1c9b42d2c6d`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `c0fb3b94a031ff283918479c3da9b4de82ae1cdbcbf99ed48cc1bfa6c4c9f1d4`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `c99c2a5628f6b680c7dc293af57054b10dfeac495160e65572d9a0894c38ed98`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `d37bb9a651d1909b48809fbf9f4ca353da9369d6a05d4e2cf74d1cb7e12adab6`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `d862dfecae31a85e36629e0210fea28140ca7b645b01cac7510886928ee5e8c5`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `dac0c72a5a8bb2b36078ab2f473256867f7c4094b741dc4c4e06ca4da5c323fe`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `df43f5cfb3a69f9722e76bad954fc6d02f31c94a3f59a59e1f90282975823344`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `e525bcf897ee8bdfe386a198a9d35821ed184c823f07ac68b7155b2926130b83`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `f4a68809a3fb8e9490862799bb48414d14048d1f6293c0002139f54e0d8787ac`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `f5483e197eaf928f211a81107b0643f82b5fc9a3af2051258274365a3537fac5`
+- `frontend/src/app/finance/property-payables/page.tsx` — SHA-256: `f8db5ddad6c95ff2d95652ca3fe94910747533e111f0d00897553696638e32fd`
+- `frontend/src/app/globals.css` — SHA-256: `204195a282b2ce423624563fb41d09f330bed03e271d55a39747f9d4b494e46d`
+- `frontend/src/app/globals.css` — SHA-256: `211992929514c9f31245be98d8a388bfcc2941554d73a83d35c3d1a70783ccd8`
+- `frontend/src/app/globals.css` — SHA-256: `22f97fdac820867f4f36211ef42cb27147f61318726aa0ab9caf82781c1b306d`
+- `frontend/src/app/globals.css` — SHA-256: `25f811cec0ec814439a64bfb718bb076594b5c99f274949e9c5cea76f931a7bf`
+- `frontend/src/app/globals.css` — SHA-256: `5742bd2ad65cedf7b39376b621d02c3d8c6a841f8a05f4dc5680f03d57fa94ef`
+- `frontend/src/app/globals.css` — SHA-256: `6617709fd5e37545170e280ca0f46c2ba9f5df215aec75ae6a3c3942d3cde0ea`
+- `frontend/src/app/globals.css` — SHA-256: `770e9c6e5adad01abdd98a6c1b7f0cb5ef700955add5e21bf7d15a8b51ddb35c`
+- `frontend/src/app/globals.css` — SHA-256: `7c70fdf6db212cd03bf730b04abe20e69ef681a23c49e09d19e5a0663c27a23a`
+- `frontend/src/app/globals.css` — SHA-256: `810af2c53d0c7ee184b99d067dd85cfac3c0dd95bae544923190f4cbc3042769`
+- `frontend/src/app/globals.css` — SHA-256: `92492b568fdc25a07b0223a2087c1d2c5792f99a5bbaf1c237051fd663156290`
+- `frontend/src/app/globals.css` — SHA-256: `93731b4e5eaf146e71c3dd762f3107e7bf997726ce4748f1cebb97846a7a25ab`
+- `frontend/src/app/globals.css` — SHA-256: `c5843c4a095eb582ad1f48358a9ee8bd0a6b29ff97063adc90313c665b241454`
+- `frontend/src/app/globals.css` — SHA-256: `c98f2450e80914a64522c776291945b891e1e901674d0dce5b54b579ee994ae6`
+- `frontend/src/app/globals.css` — SHA-256: `cf13f79d6711650030dcc7e095f58d6c000468189069a748d7eac0f6397bc571`
+- `frontend/src/app/globals.css` — SHA-256: `df660f0ee45a71682a361b8a668cfb6812647588f437a3a2f8ae28ede4697659`
+- `frontend/src/app/properties/page.tsx` — SHA-256: `b48d82c44d35961d4e8b1ce3c62dcc659b647203b70457a4b76694a4b990800e`
+- `frontend/src/app/properties/page.tsx` — SHA-256: `f61130283e95dc81407763d528ea4497b226e7d4771163ce7a7ecb48b036e49a`
+- `frontend/src/components/PropertyPayableTemplatesForm.tsx` — SHA-256: `56a05ca20d549bbc681ced48c550807ea5db5025588140a6761cfda0f7218cf2`
+- `frontend/src/components/PropertyPayableTemplatesForm.tsx` — SHA-256: `c53342761dd0af074fb052f21f4d721cd4b1f93f959ed08070e7ea1d6e2daf68`
+- `frontend/src/lib/propertyPayables.ts` — SHA-256: `5708665927695ebc06672f813edd843dace851e53fd760d46f00272cc4432d9a`
+
+### Release Attempts
+
+#### RA-20260901-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260901-001`
+- Selected CRL identities: `root/CRL-20260901-001`
+- Intended action: `commit`
+- Branch: `codex/property-payables-calendar-20260901`
+- Base: `origin/Dev@4bb355d29bc66aa85cb5a65a6042d68a28de11b7`; fetched at `2026-09-01`.
+- Candidate patch SHA-256: `55574060aee66658f37be593a2fe1ccb1969072ebb263c4b1b56bd2b7138ff17` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `e4e1d2da5cafbff42cde3abf2fbd9c7ef513c96b` (candidate content commit).
+- Dependencies: none.
+- Required validation: PASS; evidence: targeted backend date/template tests, source-hash-matched backend/frontend builds, clean registry and ledger audits, and diff check.
+- Shared-hunk review: PASS; evidence: only ten declared paths and 78 non-ledger fingerprints were staged.
+- Generated-file review: PASS; evidence: no generated, cache, configuration or sensitive path was staged.
+- Technical state: `committed`.
+- User authorization: `selected-for-commit`; evidence: user said “提交这个更新”.
+- Independent review: `GO` for commit; evidence: independent read-only review recomputed the same fingerprint and found no P0/P1/P2.
+- Action conclusion: `GO` — local commit created. Push, PR, merge, deployment and production verification are not authorized.
+
+#### RA-20260901-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260901-001`
+- Selected CRL identities: `root/CRL-20260901-001`
+- Intended action: `push`
+- Branch: `codex/property-payables-calendar-20260901`
+- Base: `origin/Dev@4bb355d29bc66aa85cb5a65a6042d68a28de11b7`; fetched at `2026-09-01` immediately before this push attempt.
+- Candidate patch SHA-256: `55574060aee66658f37be593a2fe1ccb1969072ebb263c4b1b56bd2b7138ff17` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `e4e1d2da5cafbff42cde3abf2fbd9c7ef513c96b` (candidate content commit).
+- Dependencies: none.
+- Required validation: PASS; evidence: RA-20260901-001 validation plus clean exact-range audit before this push attempt.
+- Shared-hunk review: PASS; evidence: the committed range contains only the same ten selected paths and 78 reviewed non-ledger hunk fingerprints.
+- Generated-file review: PASS; evidence: the committed range has no generated, cache, configuration or sensitive path.
+- Technical state: `committed`.
+- User authorization: `approved-for-push`; evidence: user said “推送更新” after receiving the exact local branch and content/receipt commit SHAs.
+- Independent review: `GO` for the candidate content commit; evidence: the exact range must retain the reviewed non-ledger fingerprint.
+- Action conclusion: `GO` for pushing this exact range only; PR, merge, deployment and production verification remain outside scope.
+
+### Risks / Release Notes
+
+- Manual regression remains required with an authorized non-production account: confirm a row with expected `2026-09-01` and no payment is red and first on 2 September; entering actual `2026-09-03` removes that overdue state until 4 September; when viewing September, an overdue `2026-08-31` remains visible and clickable in the first grid cell without being copied to September; rows without either date appear only in “待安排”; paid rows leave the pending calendar; and right-side cards match the left queue's room, vendor, dates, status and actions without truncation.
+- Compatibility risk: overdue semantics now change from the former `预计收账日 + 5 天` or month-end boundary to the first day after the actual/expected receipt date when payment is absent. This is the user-directed priority rule and requires non-production manual sign-off before release.
+- Sensitive-information review: no credentials, tokens, private URLs, customer data, database URLs, `.env` values, caches, or generated build outputs were added.
+- Git state: candidate content commit `e4e1d2da5cafbff42cde3abf2fbd9c7ef513c96b` exists locally on `codex/property-payables-calendar-20260901`; not pushed, not deployed, and not production/device verified.

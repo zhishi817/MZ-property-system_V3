@@ -7,7 +7,8 @@ import { v4 as uuidv4 } from 'uuid'
 
 export const router = Router()
 const PROPERTY_PAYABLE_TEMPLATE_KIND = 'property_payable'
-const PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH = 30
+// The recurring module clamps 31 to the actual end of each billing month.
+const PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH = 31
 
 router.get('/', (req, res) => {
   const q: any = req.query || {}

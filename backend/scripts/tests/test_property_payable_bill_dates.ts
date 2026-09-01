@@ -3,8 +3,10 @@ import {
   computeMonthDayISO,
   computeOptionalMonthDayISO,
   computePropertyPayableTemplateDates,
+  isPropertyPayableReceiptPaymentOverdue,
   isDueMonthKey,
   normalizePropertyPayableFrequencyMonths,
+  resolvePropertyPayableCalendarSchedule,
 } from '../../src/modules/recurring'
 
 assert.equal(computeMonthDayISO('2026-02', 31, 0), '2026-02-28', 'non-leap February should fall back to last day')
@@ -38,6 +40,53 @@ assert.deepEqual(computePropertyPayableTemplateDates({
   bill_period_start: null,
   bill_period_end: null,
 })
+
+assert.equal(
+  computePropertyPayableTemplateDates({ due_day_of_month: 30 }, '2026-10').due_date,
+  '2026-10-31',
+  'property payable settlement should use the billing month actual final day, not the stored legacy 30th'
+)
+
+assert.deepEqual(
+  resolvePropertyPayableCalendarSchedule({ bill_received_date: '2026-09-08', bill_expected_date: '2026-09-06' }),
+  { calendar_date: '2026-09-08', calendar_stage: 'bill_received' },
+  'actual receipt date must take priority in the calendar'
+)
+assert.deepEqual(
+  resolvePropertyPayableCalendarSchedule({ bill_expected_date: '2026-09-06' }),
+  { calendar_date: '2026-09-06', calendar_stage: 'bill_expected' },
+  'expected receipt date should schedule unreceived bills'
+)
+assert.deepEqual(
+  resolvePropertyPayableCalendarSchedule({}),
+  { calendar_date: null, calendar_stage: 'unscheduled' },
+  'a bill without an actual or expected receipt date must not be fabricated onto month end'
+)
+assert.deepEqual(
+  resolvePropertyPayableCalendarSchedule({ status: 'paid', bill_received_date: '2026-09-08' }),
+  { calendar_date: null, calendar_stage: 'unscheduled' },
+  'paid bills belong to the paid view rather than the pending calendar'
+)
+assert.equal(
+  isPropertyPayableReceiptPaymentOverdue({ bill_expected_date: '2026-09-01' }, '2026-09-02'),
+  true,
+  'an unpaid bill is overdue as soon as its expected receipt date has passed'
+)
+assert.equal(
+  isPropertyPayableReceiptPaymentOverdue({ bill_expected_date: '2026-09-01', bill_received_date: '2026-09-03' }, '2026-09-02'),
+  false,
+  'a later actual receipt date takes precedence over an earlier estimate when determining overdue status'
+)
+assert.equal(
+  isPropertyPayableReceiptPaymentOverdue({ bill_received_date: '2026-09-01' }, '2026-09-02'),
+  true,
+  'an unpaid bill is overdue after its actual receipt date has passed'
+)
+assert.equal(
+  isPropertyPayableReceiptPaymentOverdue({ status: 'paid', bill_received_date: '2026-09-01' }, '2026-09-02'),
+  false,
+  'paid bills cannot be overdue'
+)
 
 assert.equal(normalizePropertyPayableFrequencyMonths(1), 1, 'monthly frequency should be kept')
 assert.equal(normalizePropertyPayableFrequencyMonths(2), 2, 'two-month frequency should be kept')
