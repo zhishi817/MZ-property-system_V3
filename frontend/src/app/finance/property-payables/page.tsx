@@ -1,6 +1,6 @@
 "use client"
 
-import { App, Button, Card, Col, DatePicker, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, Popconfirm, Row, Segmented, Select, Space, Statistic, Table, Tag, Upload } from 'antd'
+import { App, Button, Card, Col, DatePicker, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, Pagination, Popconfirm, Row, Segmented, Select, Space, Statistic, Table, Tag, Upload } from 'antd'
 import { LeftOutlined, PlusOutlined, RightOutlined, UploadOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -11,6 +11,7 @@ import {
   PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH,
   PROPERTY_PAYABLE_FREQUENCY_OPTIONS,
   PROPERTY_PAYABLE_PAYMENT_TYPE_OPTIONS,
+  PROPERTY_PAYABLE_SETTLEMENT_DUE_LABEL,
   PROPERTY_PAYABLE_TEMPLATE_KIND,
   canMarkPropertyPayablePaid,
   formatPropertyPayableMonthKey,
@@ -29,6 +30,7 @@ type Property = { id: string; code?: string; address?: string; region?: string; 
 type WorkbenchRow = {
   template_id: string
   snapshot_id?: string | null
+  month_key?: string | null
   property_id?: string | null
   property_code?: string | null
   property_address?: string | null
@@ -56,8 +58,11 @@ type WorkbenchRow = {
   pay_mobile_number?: string | null
   amount?: number
   due_date?: string | null
+  settlement_due_date?: string | null
   bill_expected_date?: string | null
   bill_received_date?: string | null
+  calendar_date?: string | null
+  calendar_stage?: 'bill_received' | 'bill_expected' | 'unscheduled' | null
   bill_period_start?: string | null
   bill_period_end?: string | null
   paid_date?: string | null
@@ -77,16 +82,20 @@ type WorkbenchRow = {
 }
 type ExpenseInvoice = { id: string; expense_id: string; url: string; file_name?: string; mime_type?: string; file_size?: number }
 type WorkbenchMonthData = { rows: WorkbenchRow[]; summary: any; month_key?: string }
-type WorkbenchBatchData = WorkbenchMonthData & { months?: Record<string, WorkbenchMonthData>; month_keys?: string[] }
+type PropertyPayableCalendarDay = {
+  date: string
+  event_count: number
+  bill_received_count: number
+  bill_expected_count: number
+  overdue_count: number
+}
+type PropertyPayableCalendarData = { month_key: string; days: PropertyPayableCalendarDay[]; unscheduled_count: number }
+type PropertyPayableCalendarDayData = { date: string; total: number; page: number; page_size: number; rows: WorkbenchRow[] }
 type PropertyPayablesView = 'queue' | 'calendar' | 'paid' | 'templates'
 type PropertyPayableStatusFilter = 'bill_not_received' | 'awaiting_confirmation' | 'payment_overdue' | 'payment_due_soon' | 'awaiting_payment' | 'paid'
 
 function monthKey(d: dayjs.Dayjs) {
   return d.format('YYYY-MM')
-}
-
-function surroundingMonthKeys(d: dayjs.Dayjs) {
-  return [d.subtract(1, 'month').format('YYYY-MM'), d.format('YYYY-MM'), d.add(1, 'month').format('YYYY-MM')]
 }
 
 function statusTag(row: WorkbenchRow) {
@@ -138,7 +147,7 @@ function formatMoney(value: any) {
 
 function sameWorkbenchRow(a?: WorkbenchRow | null, b?: WorkbenchRow | null) {
   if (!a || !b) return false
-  return String(a.template_id || '') === String(b.template_id || '') && String(a.due_date || '') === String(b.due_date || '')
+  return String(a.template_id || '') === String(b.template_id || '') && String(a.month_key || '') === String(b.month_key || '')
 }
 
 function isDueSoon(row?: WorkbenchRow | null) {
@@ -153,6 +162,8 @@ function isDueSoon(row?: WorkbenchRow | null) {
 }
 
 function workbenchMonthKey(row?: WorkbenchRow | null, fallback?: string) {
+  const rowMonthKey = String(row?.month_key || '').trim()
+  if (/^\d{4}-\d{2}$/.test(rowMonthKey)) return rowMonthKey
   const dueDate = String(row?.due_date || '').trim()
   if (/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) return dueDate.slice(0, 7)
   return String(fallback || '').trim()
@@ -164,12 +175,19 @@ export default function PropertyPayablesPage() {
   const [activeView, setActiveView] = useState<PropertyPayablesView>('queue')
   const [statusFilter, setStatusFilter] = useState<PropertyPayableStatusFilter | undefined>()
   const [rows, setRows] = useState<WorkbenchRow[]>([])
-  const [calendarRows, setCalendarRows] = useState<WorkbenchRow[]>([])
+  const [calendarSummaryDays, setCalendarSummaryDays] = useState<PropertyPayableCalendarDay[]>([])
+  const [unscheduledCalendarCount, setUnscheduledCalendarCount] = useState(0)
+  const [calendarLoading, setCalendarLoading] = useState(false)
   const [summary, setSummary] = useState({ unpaid_amount: 0, bill_not_received_count: 0, awaiting_confirmation_count: 0, overdue_count: 0, paid_amount: 0 })
   const [properties, setProperties] = useState<Property[]>([])
   const [selectedPropertyId, setSelectedPropertyId] = useState<string | undefined>()
   const [loading, setLoading] = useState(true)
   const [selectedDay, setSelectedDay] = useState<string | null>(null)
+  const [dayRows, setDayRows] = useState<WorkbenchRow[]>([])
+  const [dayTotal, setDayTotal] = useState(0)
+  const [dayPage, setDayPage] = useState(1)
+  const [daySearch, setDaySearch] = useState('')
+  const [dayLoading, setDayLoading] = useState(false)
   const [detailRow, setDetailRow] = useState<WorkbenchRow | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
@@ -186,42 +204,90 @@ export default function PropertyPayablesPage() {
 
   const selectedMonthKey = monthKey(month)
 
-  const fetchWorkbenchMonths = useCallback(async (targetMonthKeys: string[], currentMonthKey: string) => {
-    const params = new URLSearchParams()
-    params.set('month_key', currentMonthKey)
-    params.set('month_keys', targetMonthKeys.join(','))
-    return getJSON<WorkbenchBatchData>(`/recurring/property-payables/workbench?${params.toString()}`)
-  }, [])
-
   const loadWorkbench = useCallback(async () => {
     setLoading(true)
     try {
-      const monthKeys = surroundingMonthKeys(month)
-      const currentMonthKey = monthKey(month)
-      const data = await fetchWorkbenchMonths(monthKeys, currentMonthKey)
-      const dataByMonth = data?.months || {}
-      const currentData = dataByMonth[currentMonthKey] || data
-      const mergedCalendarRows = monthKeys
-        .map((mk) => dataByMonth[mk] || (mk === currentMonthKey ? currentData : null))
-        .flatMap((item) => Array.isArray(item?.rows) ? item.rows : [])
-        .filter((item, index, list) => list.findIndex((row) => `${row.template_id}:${row.due_date || ''}` === `${item.template_id}:${item.due_date || ''}`) === index)
-      setRows(Array.isArray(currentData?.rows) ? currentData.rows : [])
-      setCalendarRows(mergedCalendarRows)
+      const data = await getJSON<WorkbenchMonthData>(`/recurring/property-payables/workbench?month_key=${encodeURIComponent(selectedMonthKey)}`)
+      setRows(Array.isArray(data?.rows) ? data.rows : [])
       setSummary({
-        unpaid_amount: Number(currentData?.summary?.unpaid_amount || 0),
-        bill_not_received_count: Number(currentData?.summary?.bill_not_received_count || 0),
-        awaiting_confirmation_count: Number(currentData?.summary?.awaiting_confirmation_count || 0),
-        overdue_count: Number(currentData?.summary?.overdue_count || 0),
-        paid_amount: Number(currentData?.summary?.paid_amount || 0),
+        unpaid_amount: Number(data?.summary?.unpaid_amount || 0),
+        bill_not_received_count: Number(data?.summary?.bill_not_received_count || 0),
+        awaiting_confirmation_count: Number(data?.summary?.awaiting_confirmation_count || 0),
+        overdue_count: Number(data?.summary?.overdue_count || 0),
+        paid_amount: Number(data?.summary?.paid_amount || 0),
       })
     } catch (e: any) {
       message.error(e?.message || '加载房源代付失败')
       setRows([])
-      setCalendarRows([])
     } finally {
       setLoading(false)
     }
-  }, [fetchWorkbenchMonths, message, month])
+  }, [message, selectedMonthKey])
+
+  const loadCalendar = useCallback(async () => {
+    if (statusFilter === 'paid') {
+      setCalendarSummaryDays([])
+      setUnscheduledCalendarCount(0)
+      setCalendarLoading(false)
+      return
+    }
+    setCalendarLoading(true)
+    try {
+      const currentMonth = dayjs(`${selectedMonthKey}-01`)
+      const visibleMonthKeys = [
+        currentMonth.subtract(1, 'month').format('YYYY-MM'),
+        selectedMonthKey,
+        currentMonth.add(1, 'month').format('YYYY-MM'),
+      ]
+      const calendarData = await Promise.all(visibleMonthKeys.map(async (monthKey) => {
+        const params = new URLSearchParams({ month_key: monthKey })
+        if (selectedPropertyId) params.set('property_id', selectedPropertyId)
+        if (statusFilter) params.set('status', statusFilter)
+        return getJSON<PropertyPayableCalendarData>(`/recurring/property-payables/calendar?${params.toString()}`)
+      }))
+      const summaryByDate = new Map<string, PropertyPayableCalendarDay>()
+      calendarData.forEach((data) => {
+        const days = Array.isArray(data?.days) ? data.days : []
+        days.forEach((day) => summaryByDate.set(day.date, day))
+      })
+      setCalendarSummaryDays(Array.from(summaryByDate.values()))
+      setUnscheduledCalendarCount(Number(calendarData[1]?.unscheduled_count || 0))
+    } catch (e: any) {
+      message.error(e?.message || '加载收账日历失败')
+      setCalendarSummaryDays([])
+      setUnscheduledCalendarCount(0)
+    } finally {
+      setCalendarLoading(false)
+    }
+  }, [message, selectedMonthKey, selectedPropertyId, statusFilter])
+
+  const loadCalendarDay = useCallback(async () => {
+    if (!selectedDay || statusFilter === 'paid') {
+      setDayRows([])
+      setDayTotal(0)
+      return
+    }
+    setDayLoading(true)
+    try {
+      const params = new URLSearchParams({ date: selectedDay, page: String(dayPage), page_size: '20' })
+      if (selectedPropertyId) params.set('property_id', selectedPropertyId)
+      if (statusFilter) params.set('status', statusFilter)
+      if (daySearch) params.set('q', daySearch)
+      const data = await getJSON<PropertyPayableCalendarDayData>(`/recurring/property-payables/calendar-day?${params.toString()}`)
+      setDayRows(Array.isArray(data?.rows) ? data.rows : [])
+      setDayTotal(Number(data?.total || 0))
+    } catch (e: any) {
+      message.error(e?.message || '加载当天账单失败')
+      setDayRows([])
+      setDayTotal(0)
+    } finally {
+      setDayLoading(false)
+    }
+  }, [dayPage, daySearch, message, selectedDay, selectedPropertyId, statusFilter])
+
+  const refreshPropertyPayables = useCallback(async () => {
+    await Promise.all([loadWorkbench(), loadCalendar(), loadCalendarDay()])
+  }, [loadCalendar, loadCalendarDay, loadWorkbench])
 
   async function loadProperties() {
     const data = await getJSON<Property[]>('/properties').catch(() => [])
@@ -235,6 +301,10 @@ export default function PropertyPayablesPage() {
   useEffect(() => {
     void loadWorkbench()
   }, [loadWorkbench])
+
+  useEffect(() => {
+    void loadCalendar()
+  }, [loadCalendar])
 
   const propertyOptions = useMemo(() => sortActivePropertiesByRegionThenCode(properties || []).map((item) => {
     const code = String(item.code || '').trim()
@@ -252,13 +322,6 @@ export default function PropertyPayablesPage() {
       .filter((row) => !selectedPropertyId || String(row.property_id || '') === selectedPropertyId)
       .filter((row) => !statusFilter || statusKey(row) === statusFilter),
     [rows, selectedPropertyId, statusFilter]
-  )
-
-  const filteredCalendarRows = useMemo(
-    () => calendarRows
-      .filter((row) => !selectedPropertyId || String(row.property_id || '') === selectedPropertyId)
-      .filter((row) => !statusFilter || statusKey(row) === statusFilter),
-    [calendarRows, selectedPropertyId, statusFilter]
   )
 
   const visibleSummary = useMemo(() => {
@@ -309,36 +372,10 @@ export default function PropertyPayablesPage() {
     })
   }, [rows, selectedPropertyId])
 
-  const rowsByDueDate = useMemo(() => {
-    const map = new Map<string, WorkbenchRow[]>()
-    for (const row of filteredCalendarRows) {
-      const key = String(row.due_date || '').trim()
-      if (!key) continue
-      const list = map.get(key) || []
-      list.push(row)
-      map.set(key, list)
-    }
-    map.forEach((list, key) => {
-      map.set(
-        key,
-        list.slice().sort((a, b) => {
-          const apx = rowSortPriority(a)
-          const bpx = rowSortPriority(b)
-          if (apx !== bpx) return apx - bpx
-          const ap = String(a.property_code || a.property_address || '')
-          const bp = String(b.property_code || b.property_address || '')
-          if (ap !== bp) return ap.localeCompare(bp)
-          return String(a.vendor || '').localeCompare(String(b.vendor || ''))
-        })
-      )
-    })
-    return map
-  }, [filteredCalendarRows])
-
-  const selectedDayRows = useMemo(() => {
-    if (!selectedDay) return []
-    return rowsByDueDate.get(selectedDay) || []
-  }, [rowsByDueDate, selectedDay])
+  const calendarSummaryByDate = useMemo(
+    () => new Map(calendarSummaryDays.map((item) => [item.date, item])),
+    [calendarSummaryDays]
+  )
 
   const calendarDays = useMemo(() => {
     const first = month.startOf('month')
@@ -349,11 +386,22 @@ export default function PropertyPayablesPage() {
 
   useEffect(() => {
     const preferred = month.isSame(dayjs(), 'month') ? dayjs().format('YYYY-MM-DD') : month.startOf('month').format('YYYY-MM-DD')
+    const currentMonthDays = calendarSummaryDays.filter((item) => item.date.slice(0, 7) === selectedMonthKey)
     setSelectedDay((prev) => {
       if (prev && prev.slice(0, 7) === selectedMonthKey) return prev
-      return preferred
+      return currentMonthDays.find((item) => item.overdue_count > 0)?.date
+        || currentMonthDays.find((item) => item.event_count > 0)?.date
+        || preferred
     })
-  }, [month, selectedMonthKey])
+  }, [calendarSummaryDays, month, selectedMonthKey])
+
+  useEffect(() => {
+    setDayPage(1)
+  }, [daySearch, selectedDay, selectedPropertyId, statusFilter])
+
+  useEffect(() => {
+    void loadCalendarDay()
+  }, [loadCalendarDay])
 
   function openConfirm(row: WorkbenchRow) {
     setConfirmingRow(row)
@@ -379,7 +427,7 @@ export default function PropertyPayablesPage() {
       message.success('本月账单信息已确认')
       setConfirmOpen(false)
       setConfirmingRow(null)
-      await loadWorkbench()
+      await refreshPropertyPayables()
     } catch (e: any) {
       message.error(e?.message || '确认账单失败')
     } finally {
@@ -471,7 +519,7 @@ export default function PropertyPayablesPage() {
       message.success(editingTemplate ? '模板已更新' : '模板已创建')
       setTemplateOpen(false)
       setEditingTemplate(null)
-      await loadWorkbench()
+      await refreshPropertyPayables()
     } catch (e: any) {
       message.error(e?.message || '保存模板失败')
     } finally {
@@ -492,7 +540,7 @@ export default function PropertyPayablesPage() {
         setDetailOpen(false)
         setDetailRow(null)
       }
-      await loadWorkbench()
+      await refreshPropertyPayables()
     } catch (e: any) {
       message.error(e?.message || '删除模板失败')
     }
@@ -508,7 +556,7 @@ export default function PropertyPayablesPage() {
       const json = await resp.json().catch(() => ({}))
       if (!resp.ok) throw new Error(json?.message || `HTTP ${resp.status}`)
       message.success('已标记为已付')
-      await loadWorkbench()
+      await refreshPropertyPayables()
     } catch (e: any) {
       message.error(e?.message || '标记已付失败')
     }
@@ -524,7 +572,7 @@ export default function PropertyPayablesPage() {
       const json = await resp.json().catch(() => ({}))
       if (!resp.ok) throw new Error(json?.message || `HTTP ${resp.status}`)
       message.success('已取消已付')
-      await loadWorkbench()
+      await refreshPropertyPayables()
     } catch (e: any) {
       message.error(e?.message || '取消已付失败')
     }
@@ -532,10 +580,10 @@ export default function PropertyPayablesPage() {
 
   useEffect(() => {
     if (!detailRow) return
-    const next = rowsByDueDate.get(String(detailRow.due_date || ''))?.find((row) => sameWorkbenchRow(row, detailRow))
-      || filteredCalendarRows.find((row) => sameWorkbenchRow(row, detailRow))
+    const next = dayRows.find((row) => sameWorkbenchRow(row, detailRow))
+      || rows.find((row) => sameWorkbenchRow(row, detailRow))
     if (next && next !== detailRow) setDetailRow(next)
-  }, [detailRow, filteredCalendarRows, rowsByDueDate])
+  }, [dayRows, detailRow, rows])
 
   async function openInvoices(row: WorkbenchRow) {
     if (!row.snapshot_id) {
@@ -645,7 +693,7 @@ export default function PropertyPayablesPage() {
     const tone = statusTone(row)
     return (
       <Card
-        key={`${row.template_id}:${row.due_date || selectedMonthKey}:${mode}`}
+        key={`${row.template_id}:${row.month_key || row.due_date || selectedMonthKey}:${mode}`}
         size="small"
         className={`property-payable-work-card property-payable-work-card--${tone}`}
       >
@@ -670,10 +718,9 @@ export default function PropertyPayablesPage() {
 
   const renderCalendarDay = (day: dayjs.Dayjs) => {
     const dateISO = day.format('YYYY-MM-DD')
-    const dayRows = rowsByDueDate.get(dateISO) || []
+    const daySummary = calendarSummaryByDate.get(dateISO)
     const inMonth = day.isSame(month, 'month')
     const selected = selectedDay === dateISO
-    const visible = dayRows.slice(0, 3)
     return (
       <button
         key={dateISO}
@@ -683,15 +730,12 @@ export default function PropertyPayablesPage() {
       >
         <span className="property-payable-month-date">
           <span>{day.date()}</span>
-          {dayRows.length ? <span className="property-payable-month-count">{dayRows.length}</span> : null}
+          {daySummary?.event_count ? <span className={`property-payable-month-count${daySummary.overdue_count ? ' is-overdue' : ''}`}>{daySummary.event_count}</span> : null}
         </span>
         <span className="property-payable-month-events">
-          {visible.map((row) => (
-            <span key={`${row.template_id}:${row.due_date}`} className={`property-payable-month-pill property-payable-month-pill--${statusTone(row)}`}>
-              {row.property_code || row.property_address || '-'}
-            </span>
-          ))}
-          {dayRows.length > visible.length ? <span className="property-payable-month-more">+{dayRows.length - visible.length} more</span> : null}
+          {daySummary?.overdue_count ? <span className="property-payable-month-summary property-payable-month-summary--risk">逾期 {daySummary.overdue_count}</span> : null}
+          {daySummary?.bill_received_count ? <span className="property-payable-month-summary property-payable-month-summary--actual">实际到账 {daySummary.bill_received_count}</span> : null}
+          {daySummary?.bill_expected_count ? <span className="property-payable-month-summary property-payable-month-summary--expected">预计到账 {daySummary.bill_expected_count}</span> : null}
         </span>
       </button>
     )
@@ -754,7 +798,7 @@ export default function PropertyPayablesPage() {
                 { label: '模板管理', value: 'templates' },
               ]}
             />
-            <span className="property-payables-workbench-hint">单月日历，无横向拖动；点击日期后在右侧处理当天账单。</span>
+            <span className="property-payables-workbench-hint">按实际/预计到账日分布；到账日已过且未付款的账单优先显示。</span>
           </div>
 
           {activeView === 'queue' || activeView === 'calendar' ? (
@@ -786,15 +830,16 @@ export default function PropertyPayablesPage() {
                 <div className="property-payables-panel-header">
                   <div>
                     <strong>{month.format('YYYY 年 MM 月')}</strong>
-                    <span>只显示当前月，避免滑动和页面滚动冲突</span>
+                    <span>实际到账优先；无实际时按预计到账日；逾期按到账日标红并优先处理</span>
                   </div>
                   <Space>
+                    {unscheduledCalendarCount ? <Tag color="gold">{unscheduledCalendarCount} 待安排</Tag> : null}
                     <Button onClick={() => shiftCalendar(-1)}>‹</Button>
                     <Button onClick={() => setMonth(dayjs())}>本月</Button>
                     <Button onClick={() => shiftCalendar(1)}>›</Button>
                   </Space>
                 </div>
-                <div className="property-payables-calendar-shell">
+                <div className="property-payables-calendar-shell" aria-busy={calendarLoading}>
                   <div className="property-payables-weekdays">
                     {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((item) => <div key={item}>{item}</div>)}
                   </div>
@@ -808,12 +853,34 @@ export default function PropertyPayablesPage() {
                 <div className="property-payables-panel-header">
                   <div>
                     <strong>{selectedDay || '选择日期'}</strong>
-                    <span>当天付款截止账单</span>
+                    <span>当天到账处理；逾期账单优先</span>
                   </div>
-                  <Tag color={selectedDayRows.length ? 'red' : undefined}>{selectedDayRows.length}</Tag>
+                  <Tag color={dayRows.some((row) => isPropertyPayableOverdue(row)) ? 'red' : dayTotal ? 'blue' : undefined}>{dayTotal}</Tag>
                 </div>
                 <div className="property-payables-panel-scroll">
-                  {selectedDayRows.length ? selectedDayRows.map((row) => renderBillCard(row, 'detail')) : <Empty description="当天没有付款截止账单" />}
+                  <Input.Search
+                    allowClear
+                    placeholder="搜索房源、收费公司或账号"
+                    onSearch={(value) => { setDaySearch(value.trim()); setDayPage(1) }}
+                    className="property-payable-day-search"
+                  />
+                  {selectedDay ? (
+                    <>
+                      {dayLoading ? <div className="property-payable-day-loading">加载当天账单…</div> : null}
+                      {dayRows.length ? dayRows.map((row) => renderBillCard(row)) : (!dayLoading ? <Empty description="当天没有预计/实际到账账单" /> : null)}
+                      {dayTotal > 20 ? (
+                        <Pagination
+                          className="property-payable-day-pagination"
+                          current={dayPage}
+                          pageSize={20}
+                          total={dayTotal}
+                          showSizeChanger={false}
+                          size="small"
+                          onChange={(page) => setDayPage(page)}
+                        />
+                      ) : null}
+                    </>
+                  ) : <Empty description="请选择日期" />}
                 </div>
               </aside>
             </div>
@@ -845,7 +912,7 @@ export default function PropertyPayablesPage() {
                   { title: '默认金额', dataIndex: 'amount', render: (v: number) => formatMoney(v) },
                   { title: '账单周期', dataIndex: 'frequency_months', render: (v: number) => propertyPayableFrequencyLabel(v) },
                   { title: '预计收到账单日', dataIndex: 'bill_expected_day_of_month', render: (v: number) => v ? `账单月 ${v} 号` : '-' },
-                  { title: '付款截止日', dataIndex: 'due_day_of_month', render: () => `账单月 ${PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH} 号` },
+                  { title: '付款截止日', dataIndex: 'due_day_of_month', render: () => PROPERTY_PAYABLE_SETTLEMENT_DUE_LABEL },
                   {
                     title: '操作',
                     key: 'ops',
@@ -956,7 +1023,7 @@ export default function PropertyPayablesPage() {
       >
         <Form form={confirmForm} layout="vertical">
           <Card size="small" style={{ marginBottom: 16 }}>
-            这里只会更新当前账单月份快照的实际收到账单日期、金额和备注，不会改动代付模板；付款截止日固定为账单月 {PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH} 号。
+            这里只会更新当前账单月份快照的实际收到账单日期、金额和备注，不会改动代付模板；付款截止日为{PROPERTY_PAYABLE_SETTLEMENT_DUE_LABEL}。
           </Card>
           <Form.Item name="bill_received_date" label="实际收到账单日期" rules={[{ required: true, message: '请选择收到账单日期' }]}>
             <DatePicker style={{ width: '100%' }} />
@@ -1021,7 +1088,7 @@ export default function PropertyPayablesPage() {
             </Col>
             <Col span={12}>
               <Form.Item label="付款截止日">
-                <Input value={`账单月 ${PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH} 号`} disabled />
+                <Input value={PROPERTY_PAYABLE_SETTLEMENT_DUE_LABEL} disabled />
               </Form.Item>
             </Col>
             <Col span={12}>

@@ -8,7 +8,7 @@ import PropertyPayableTemplatesForm from '../../components/PropertyPayableTempla
 import { rememberPropertyPayableVendors } from '../../components/PropertyPayableVendorInput'
 import TableRowActions from '../../components/TableRowActions'
 import { PROPERTY_REGION_ORDER, cmpPropertyCode } from '../../lib/properties'
-import { PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH, hydratePropertyPayableTemplatesForForm, normalizePropertyPayableTemplates, propertyPayableCategoryLabel, propertyPayablePaymentTypeLabel } from '../../lib/propertyPayables'
+import { PROPERTY_PAYABLE_SETTLEMENT_DUE_LABEL, hydratePropertyPayableTemplatesForForm, normalizePropertyPayableTemplates, propertyPayableCategoryLabel, propertyPayablePaymentTypeLabel } from '../../lib/propertyPayables'
 
 type Property = { id: string; code?: string; address: string; type: string; capacity: number; region?: string; area_sqm?: number; landlord_id?: string; wifi_ssid?: string; wifi_password?: string; created_at?: string }
 const REGION_FILTER_OPTIONS = [
@@ -462,7 +462,7 @@ export default function PropertiesPage() {
                       <Descriptions.Item label="起始月份">{tpl.start_month_key || '-'}</Descriptions.Item>
                       <Descriptions.Item label="Account Number">{tpl.bill_account_no || '-'}</Descriptions.Item>
                       <Descriptions.Item label="预计收到账单日">{tpl.bill_expected_day_of_month ? `每月 ${tpl.bill_expected_day_of_month} 号` : '-'}</Descriptions.Item>
-                      <Descriptions.Item label="付款截止日">每月 {PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH} 号</Descriptions.Item>
+                      <Descriptions.Item label="付款截止日">{PROPERTY_PAYABLE_SETTLEMENT_DUE_LABEL}</Descriptions.Item>
                       <Descriptions.Item label="付款方式">{propertyPayablePaymentTypeLabel(tpl.payment_type)}</Descriptions.Item>
                       <Descriptions.Item label="收款方">{tpl.pay_account_name || '-'}</Descriptions.Item>
                       <Descriptions.Item label="模板备注" span={2}>{tpl.note || '-'}</Descriptions.Item>

@@ -4,7 +4,7 @@ import { Button, Card, Col, DatePicker, Divider, Form, Input, InputNumber, Row, 
 import dayjs from 'dayjs'
 import {
   PROPERTY_PAYABLE_CATEGORY_OPTIONS,
-  PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH,
+  PROPERTY_PAYABLE_SETTLEMENT_DUE_LABEL,
   PROPERTY_PAYABLE_FREQUENCY_OPTIONS,
   PROPERTY_PAYABLE_PAYMENT_TYPE_OPTIONS,
   defaultPropertyPayableTemplate,
@@ -156,7 +156,7 @@ export default function PropertyPayableTemplatesForm(props: { form: any; name?: 
                   </Col>
                   <Col span={8}>
                     <Form.Item label="付款截止日">
-                      <Input value={`账单月 ${PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH} 号`} disabled />
+                      <Input value={PROPERTY_PAYABLE_SETTLEMENT_DUE_LABEL} disabled />
                     </Form.Item>
                   </Col>
                   <Col span={8}>

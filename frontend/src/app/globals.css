@@ -801,70 +801,62 @@ body :where(.ant-modal-body, .ant-drawer-body) :where(.ant-row, .ant-col, .ant-f
   height: 20px;
   padding: 0 6px;
   border-radius: 999px;
-  background: #fff1f0;
-  color: #cf1322;
+  background: #e6f4ff;
+  color: #0958d9;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-size: 11px;
 }
 
+.property-payable-month-count.is-overdue {
+  background: #fff1f0;
+  color: #cf1322;
+}
+
 .property-payable-month-events {
   display: block;
 }
 
-.property-payable-month-pill {
+.property-payable-month-summary {
   display: block;
-  width: 100%;
   margin-bottom: 5px;
-  padding: 4px 6px;
-  border-radius: 6px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   font-size: 11px;
   font-weight: 700;
-  line-height: 1.2;
+  line-height: 1.25;
 }
 
-.property-payable-month-pill--red {
-  border: 1px solid #ffccc7;
-  background: #fff1f0;
-  color: #a8071a;
-}
-
-.property-payable-month-pill--amber {
-  border: 1px solid #ffe58f;
-  background: #fffbe6;
-  color: #ad6800;
-}
-
-.property-payable-month-pill--blue {
-  border: 1px solid #91caff;
-  background: #e6f4ff;
-  color: #0958d9;
-}
-
-.property-payable-month-pill--green {
-  border: 1px solid #b7eb8f;
-  background: #f6ffed;
+.property-payable-month-summary--actual {
   color: #237804;
 }
 
-.property-payable-month-pill--gray {
-  border: 1px solid #d9d9d9;
-  background: #fafafa;
-  color: #595959;
+.property-payable-month-summary--expected {
+  color: #0958d9;
 }
 
-.property-payable-month-more {
-  color: #8c8c8c;
-  font-size: 11px;
-  font-weight: 700;
+.property-payable-month-summary--risk {
+  color: #cf1322;
 }
 
 .property-payables-table-panel {
   padding: 12px;
+}
+
+.property-payable-day-search {
+  display: block;
+  margin-bottom: 10px;
+}
+
+.property-payable-day-loading {
+  margin-bottom: 10px;
+  color: #8c8c8c;
+  font-size: 12px;
+}
+
+.property-payable-day-pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
 }
 
 @media (max-width: 1280px) {
@@ -940,10 +932,6 @@ body :where(.ant-modal-body, .ant-drawer-body) :where(.ant-row, .ant-col, .ant-f
   .property-payable-month-day {
     min-height: 72px;
     padding: 6px;
-  }
-
-  .property-payable-month-pill {
-    display: none;
   }
 
   .property-payables-workbench--queue .property-payables-calendar-panel,
