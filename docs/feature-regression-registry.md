@@ -7,6 +7,53 @@
 - 测试映射必须说明保护点和测试场景；只登记测试文件名不算覆盖证据。
 - `sufficient` 表示当前测试覆盖该保护点；`partial` 表示已有测试但仍有缺口；`not-wired` 表示测试存在但尚未进入对应质量检查；`missing` 表示尚无测试。
 
+## FR-021：Profile、日终和清洁媒体请求路径不得修改 schema
+
+- **维护责任范围：** backend
+- **最后审查日期：** 2026-09-02
+- **状态：** active
+
+### 业务保护规则
+
+- 已登录的 Contacts、Profile、Profile document、`/cleaning-app` 与 `/mzapp` 清洁任务媒体和日终交接请求只能读取或写入业务数据；不得在请求中执行 `CREATE`、`ALTER`、`DROP` 或以 `information_schema` 推断这些业务字段是否存在。
+- Profile 的 11 个资料字段、`cleaning_task_media.note` / `(task_id, type)` 索引，以及日终 media、handover、reject projection 只能由 `20260902_r5_1_request_schema` migration 建立或演进。
+- 有 PostgreSQL 时，进程启动只读取一次固定 migration marker；marker 缺失、启动检查尚未完成或检查失败时，受影响路由必须在既有权限 middleware 之后返回 `503 { code: 'r5_request_schema_not_ready' }`，不能回退到运行时 DDL 或静默忽略。
+- 本 FR 不覆盖日终提醒 cron、日用品/库存、发票、auth 或其他模块的历史 runtime DDL；它们仍属 R5-2 inventory，不能因 R5-1 被误称为已清除。
+
+### 跨层适用范围
+
+- **后端：** `/users/contacts`、`/users/me`、Profile document、Profile PATCH；`/cleaning-app` 的 inspection、completion、lockbox、self-complete、restock 媒体和 day-end read/write 路径；`/mzapp/cleaning-tasks` 的 lockbox-video 与 restock-proof write 路径。
+- **数据库：** `backend/scripts/migrations/20260902_r5_1_request_schema.sql` 是唯一允许修改本组 schema 的交付物；生产 migration 必须在应用部署前单独授权、执行和验证。
+- **一致性：** 不改变既有认证、权限、Profile DTO、媒体引用或日终业务数据；migration 未就绪时明确拒绝，避免半结构 schema 产生错误 payload。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| migration owns R5-1 DDL，受影响 API 无 schema mutation | `backend/scripts/tests/test_r5_1_request_schema_contract.ts` | 覆盖 Profile / `/cleaning-app` 与 `/mzapp` cleaning-media / day-end 全部入口、固定 marker startup check、权限后 503 fail-closed、migration 内容与 marker 写入顺序 | sufficient | `npm run test:r5-request-schema --prefix backend`（由 root `check:fast` / `check:backend` / `check:full` 执行） |
+| Profile document API 仍保留私有资料契约 | `backend/scripts/tests/test_profile_compliance_document_contract.ts` | Profile 字段迁移位置改变后，私有 reader、引用约束、presence DTO 和 schema 初始化文件仍保持既有语义 | sufficient | `npm run test:profile-compliance-document --prefix backend` |
+
+### 验证策略
+
+- **本地：** R5-1 contract、Profile contract、backend TypeScript build、Registry/ledger audit 和精确 diff 审查。
+- **部署前：** 单独用目标数据库确认 migration 文件可完整执行且 marker 在成功后出现；不得先部署已删除 request-DDL 的应用。
+- **部署后：** 对 Contacts、Profile、Profile document、清洁媒体和日终 read/write 抓取 SQL；正常业务请求中 DDL 必须为零，Query Performance 中本组高频 DDL 应消失。
+
+### 最后验证
+
+- **CRL：** root/CRL-20260902-002
+- **Commit：** not committed
+- **日期：** 2026-09-02
+
+### 相关 CRL
+
+- root/CRL-20260902-002：R5-1 request-path schema mutation removal candidate.
+
+### 非保护范围
+
+- 日终提醒 cron、key upload SLA、日用品/库存、发票、auth 和其他模块的 runtime DDL inventory / cleanup。
+- Production migration、Render deployment、production SQL 或数据写入。
+
 ## FR-020：受保护请求的角色快照与安全失效
 
 - **维护责任范围：** backend auth / RBAC

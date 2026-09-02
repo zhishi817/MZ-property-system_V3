@@ -1,5 +1,188 @@
 # Change Release Ledger
 
+## CRL-20260902-002 — R5-1 请求路径 schema mutation 移除（root）
+
+- **Repository:** `root`
+- **Status:** committed; awaiting explicit push authorization
+- **Updated:** 2026-09-02 Australia/Melbourne
+- **Request:** 将 Profile、日终交接和清洁任务媒体中高频 `CREATE/ALTER ... IF NOT EXISTS` 从 API 请求路径迁移到受控 migration；不处理其它模块 runtime DDL，不执行生产数据库或 Render 操作。
+- **Outcome:** 新增 `20260902_r5_1_request_schema` SQL migration，在全部目标 DDL 成功后记录固定 marker。应用启动只查询该 marker；标记未就绪时受影响路由在既有权限 middleware 后返回受控 503，绝不在请求中建表、加字段或查询 schema catalog。Profile 路由改为读取已迁移的固定字段集合，清洁媒体和日终路由移除 runtime ensure helper。
+
+### Implementation
+
+- Previous behavior: `/users/contacts`、`/users/me`、Profile document / PATCH 每次请求执行 11 条 profile `ALTER TABLE`；多个 cleaning-media 和 day-end 路由每次执行 `ALTER TABLE`、`CREATE TABLE` 和 `CREATE INDEX IF NOT EXISTS`。
+- New behavior: `backend/scripts/migrations/20260902_r5_1_request_schema.sql` 是该范围唯一 DDL 所有者；它完整建立 legacy `cleaning_task_media` 表、字段和索引。`r5RequestSchema` 仅在进程 warmup 查询 version marker，路由使用 fail-closed middleware。受影响 request handlers 不再调用 `ensureProfileColumns`、`ensureCleaningTaskMediaNote`、`ensureCleaningDayEndMediaTable`、`ensureCleaningDayEndHandoverTable` 或 MZapp 的 `ensureCleaningTaskMediaTable`；MZapp 的 lockbox/restock 入口先完成既有访问判定，再读取同一 marker 并在未就绪时返回 503。
+- Key decisions: migration-first → app-second；不使用每请求 `information_schema` 检查；本次不触及提醒 cron、库存、发票、auth、其它 module initialization 或其 DDL。该未提交候选原临时使用 `CRL-20260902-001`，发现与独立 R4 未提交候选冲突后，在任何 commit/push 前改为 `CRL-20260902-002`；R4 已占用临时 `FR-020`，R5 在任何 commit/push 前分配为 `FR-021`；两项调整均不改写远端既有台账。
+
+### Files / Areas
+
+- `backend/scripts/migrations/20260902_r5_1_request_schema.sql` — Profile、day-end 和 cleaning-media 的受控 schema migration / marker。
+- `backend/src/lib/r5RequestSchema.ts` — 单次固定 migration marker warmup 与 route fail-closed guard。
+- `backend/src/index.ts` — startup warmup 注册。
+- `backend/src/modules/users.ts` — Profile/contacts/document/PATCH 请求不再建表或扫描 schema。
+- `backend/src/modules/cleaning_app.ts` — inspection、completion、lockbox、self-complete、restock 与 day-end request paths 不再执行 DDL。
+- `backend/src/modules/mzapp.ts` — legacy lockbox-video 与 restock-proof request paths/warmup 不再建表、加字段或建索引。
+- `backend/scripts/tests/test_r5_1_request_schema_contract.ts` — R5-1 route / marker / migration contract。
+- `backend/scripts/tests/test_profile_compliance_document_contract.ts` — Profile private-document contract updated for migration-owned columns。
+- `backend/package.json`、`package.json` — targeted contract 命令及 root quality gate 接线。
+- `docs/feature-regression-registry.md`、`docs/change-release-ledger.md` — FR-021 与本候选记录。
+
+### Impact / Dependencies
+
+- API: 目标路由在 PostgreSQL marker 未就绪时返回 `503 r5_request_schema_not_ready`；既有授权、payload 和业务写入语义不变。
+- Database: migration 必须先于应用版本执行；本候选没有执行任何数据库命令，也没有生产数据/schema 写入。
+- Deployment: Render / Neon / cron / worker 配置无变化；部署、migration、提交、推送、PR、merge 和生产验证均不在本次授权范围。
+- Deferred R5-2: `dayEndHandoverReminderJob`、`keyUploadSlaJob`、RBAC user-update legacy DDL 及其它 inventory 中的 runtime DDL 保持未改动。
+
+### Validation
+
+- `npm run test:r5-request-schema --prefix backend` equivalent — passed after the repaired candidate: the R5 static contract now covers `/cleaning-app` and `/mzapp` media routes, MZapp warmup, marker guard order and complete migration DDL ownership.
+- `npm run test:profile-compliance-document --prefix backend` equivalent — passed after the repaired candidate.
+- `tsc --noEmit -p backend/tsconfig.json` — passed after the repaired candidate using a temporary, lockfile-matching local dependency symlink that was removed immediately; no `node_modules` or generated output remains in the candidate.
+- `python3 scripts/audit_change_release_ledger.py --pre-commit --repo root --crl CRL-20260902-002` — passed: 12 staged files, 69 exact non-ledger hunks, no untracked files.
+- Initial independent review found the omitted `/mzapp` helper and incomplete migration; this repaired candidate requires a new read-only review before commit.
+- Not run: production migration, production route/SQL capture, Render deployment, commit, push, PR, merge, OTA or device verification.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared; selected for the local commit candidate only.
+- **Untracked review:** none; clean isolated candidate has no untracked files.
+- `backend/package.json` — SHA-256: `c89ac847682a948fee7e4695e6f9bba09af3d3680cb24ca39f7a3f58526f69c5`
+- `backend/scripts/migrations/20260902_r5_1_request_schema.sql` — SHA-256: `6021cd850430ffa3126491b0d801806e608227d78780f2031b6fef5fec8ac1c8`
+- `backend/scripts/tests/test_profile_compliance_document_contract.ts` — SHA-256: `1ed30ba3b6761612bf959797f22ad450005881ee46484f5f3dda3604049dfd12`
+- `backend/scripts/tests/test_profile_compliance_document_contract.ts` — SHA-256: `765b1bee41f8d02b822a50043ea4664b4e6c3c1b430aca057b3c97de25e9abce`
+- `backend/scripts/tests/test_r5_1_request_schema_contract.ts` — SHA-256: `d58c2913fd9b826e486acb0cc89c170861a445dd2255539369a4d25229d98ae2`
+- `backend/src/index.ts` — SHA-256: `00f594c1fde3e4eae560b198cb7ca5af2926d632a3d5874bcfff0681afdfc9b5`
+- `backend/src/index.ts` — SHA-256: `cd48a1713fbdf1cb95e96cacf9d7002f1ea3655516e73a1d21b2448e1842d776`
+- `backend/src/lib/r5RequestSchema.ts` — SHA-256: `da74b293259971f9761385725800ddaaa98050082002f1861ddf12218a8a117d`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `0e7f74d199f2c98dee761f81a13d29328e0db67d27866f9423e66220a909f5ff`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `31001b3ff1cc4318351cd6966ae17bf59cc278619bdf46e352e2ccaf5a3f85cc`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `3d0167d68a17eb0c807c17e704c92cca437c92c33d5b9e651be39d3ef51aed98`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `405d44b8172497daca218b0e5f1efb221acb01d048c874b13eac8bfba30e5c48`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `4eedc0785b8b0d9576c845bd974fae0f5c4a76aff09316ee4131af6f4edd0986`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `4ff0b5636d0efee18d6a2c77f4225c57f3035da93711467e8be93c499c97cee5`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `60575081a8ba815b3d14f499aac8d81dff508d6c4f0a6447fafd1a475ab63d51`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `6d5536af8250097199dc19fd6826311bc0f0221da1556a400d550f5b30e6e9e6`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `6df52896ea3d559da84322701a6a5b5749521df2df07eab4e3d3b2ca303d4d21`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `6fe725d5b7a526d003e34459d28ded1bbc0091aed26b8f6f2e7bbe2d0e9990b9`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `77f73a709c44fd5225157f9fb64f827623f926a8aff9a48afcfdbb26fc214d8b`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `7909cb660427e35a180afca0afd4a51b1dbedbfba2b4370b29749c8b1e1971ea`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `7969ca3ad0bae6814c088a6067c90ee8dd031339e9eaaf77c50d4837fce592b2`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `79c3a6f9f5c5934242154bde4ede500a3e4fcf3161d1a9c5238998a8cb9354ac`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `7a85ea9c13accc91b25f13b80fe89daceab3f938591115f83bac9d1732adaa94`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `921357b4c40549db53e2dbabd76eb2a1ebaba39387888884d95c43e71a2512f1`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `95f00910d997c3bf7e87204240c9a729434ea443835aed6b13d3eeb96b7f4d79`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `9715f509f331de762ffea24fd39957b3f87aeb9f074df004aaf68a08b4240a20`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `a5073100f94913774e772aa311d8fcc5bf474e71676b6e8afd39855a8f7563a3`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `a593aeab135a945956978653cdbd146e5ef98e813a82567fc98d415e72f3339d`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `aa1cf143343d2bb4168982394cbb075484d74e171c9e881b35026ea941b33931`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `aedc67202fce1fd421a05b1151dd897a7d907b5ed71ce9f46a7bdaffe7276ae0`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `b3148332e4cbfe8ce217b04555af58d57db039e58f1cc5b7769f58405d74fa5c`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `b590cf6a76a15424ff25db922f5fbf7dcf8d009c750804e1c8a7c600ffaee711`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `b7fd5e22bfb6c3476c6340426ecf6563c739720ab4f4049ad6f9b1dc7a62ee2c`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `bef426dae625c48ca801a8112598fd9169c8777b1f55ad65b9caa857583e062c`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `c6571236105bc6bc6d335d61a046aa2204392afdf5a6aa0f712d491a8d135295`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `d2cb2d01afef2f2387bba19bceb2c76c698d614423b8bc1e08ad7815d69bcdc4`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `dadc71c65e36379b06a90cdf6c2173916ec21e9db0ffa396799e36f0f975cb9d`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `fcb83ffffbe5308db8dd8a7d8cdea6ad21d7fe2858c643c40118947269575f56`
+- `backend/src/modules/mzapp.ts` — SHA-256: `11de5a38f80c2c8118e665a64f7851c56d0c168103e1be53e964cf6377ca405c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `17726c776fe00624e97314c6d44ebdeaaf74c0b0214e57fffff1952ccfd007f7`
+- `backend/src/modules/mzapp.ts` — SHA-256: `24cb4badc985ad2512ae9aeefd25477e0daaea23c845c0985e9ee437c016c247`
+- `backend/src/modules/mzapp.ts` — SHA-256: `86ca93630a60fad8cb305293ab824f230f4659785e8a6cce03c2f8c16c98f5fc`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ab8973727471025288cf9ea7af8e11b9f91a322c6dec217b749f8c6f0d4e023b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `bfa33db79813e8bc7b26cf8ceca3a906a4a1c7b2b2512dbb4744ad5a9dce8c32`
+- `backend/src/modules/mzapp.ts` — SHA-256: `c59391424c8975455c4ffcbde14630bdc3e9060f36c1850f12739a926405be2c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `c8dc724d48e5827c130cab95fe6545cefd51ebb91a9ce9cb1f7d1084e8a7525f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `dcf5b947187e56243e0167a786b433530bb7221e5857f01c4fceb7faa4d8f4da`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e60ae7f05a22eca0f5d36a37958955574016f4d5486ef5f9ec0c3fd128510a58`
+- `backend/src/modules/users.ts` — SHA-256: `01b3f0fc7445e03a130c60d22e6d44c341a5c4d175d3fae22ab68be3536d16c3`
+- `backend/src/modules/users.ts` — SHA-256: `56b709de275e795782917e58be66ca4c3426ef795799ea682a764d0e390d2236`
+- `backend/src/modules/users.ts` — SHA-256: `60381df9aeac9e56f1037286a1e6a45de2bf3e903d1decb5a9386a061973a08d`
+- `backend/src/modules/users.ts` — SHA-256: `749800a4603f3267531797e86c4b191d415a28a3503b7fa7372a6ec8ce710935`
+- `backend/src/modules/users.ts` — SHA-256: `7bddd701c569e002b062d893774e5f2f5dfc2132763520c09241fa5bbe31210d`
+- `backend/src/modules/users.ts` — SHA-256: `7e9708d9ba0bbe8505740acb748e826317d68ce061a2e0628ef64238a397ed86`
+- `backend/src/modules/users.ts` — SHA-256: `897249a83b9f4929a5455de613633267b188d77e1cd6ed9d80d250fab9cc0e97`
+- `backend/src/modules/users.ts` — SHA-256: `9cc940c9f77ba423398e44b1e2bd9d8722af8301ba63e19aa3ef4cf50b91a051`
+- `backend/src/modules/users.ts` — SHA-256: `aa3a574479fe5e6f40981595c87bae5913df1aad6d0c19d221a8cd8881576b85`
+- `backend/src/modules/users.ts` — SHA-256: `b76e73aa901b326b487d57aa42ef5ec00e9205598d5522c033768aa87ba564cc`
+- `backend/src/modules/users.ts` — SHA-256: `beb8dd28c282a0aca48b0af80dfcd3d87a93ac436e778c4cef56f3cda2ef2719`
+- `backend/src/modules/users.ts` — SHA-256: `c43e4351883666dca73f6fbbe8fdc0f50fdc5aa4686158afb70650214cc98754`
+- `backend/src/modules/users.ts` — SHA-256: `c7b2a08dd510ffcbb23cc4d5d379d46bc2fc9f1f9c4e40fb2d9287678875d06e`
+- `backend/src/modules/users.ts` — SHA-256: `d655918ed3fbbc3f3aee2f4d860553e627311ad6d060ed6c794166cd0f22e6e8`
+- `backend/src/modules/users.ts` — SHA-256: `d684db35e437e9eec6f6643efb1fd74c907fd0d945b4b48be3d91107b838906f`
+- `backend/src/modules/users.ts` — SHA-256: `d88f3bd64d089864e4eac150a4b90a124483a27d083e8c59e6cebaa4c5405339`
+- `backend/src/modules/users.ts` — SHA-256: `e8f08851300c609a284f4561aa6ec46c66b5c40c46ed0d45c7c8938ce806f6ef`
+- `backend/src/modules/users.ts` — SHA-256: `ee37acde85c1c727c885a65895ad15e909484098287ea20446c5e586ded1f431`
+- `docs/feature-regression-registry.md` — SHA-256: `f38b4fc3388563604a17873d4ba50290cb47d674e66da4d342e8cde4c5a247db`
+- `package.json` — SHA-256: `df268996e3f3d855b3fcda96a0769d2ff3bcbae537e98333a25ed6ed7c475ccf`
+- `package.json` — SHA-256: `94a1c3b3833cedf6d519cbe3eb5e8180abe83add32954229a63e7189ef028de8`
+
+### Release Attempts
+
+#### RA-20260902-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260902-002`
+- Selected CRL identities: `root/CRL-20260902-002`
+- Intended action: `commit`
+- Branch: `codex/r5-1-request-schema-20260902`
+- Base: `origin/Dev@a3ec750f335f714bdff52ac16399b3dbeffbe22d`; fetched at `2026-09-02T00:06:22+10:00`
+- Candidate patch SHA-256: `8298a242bc0c4a92ee7306b028ea9e462db4cbd7cfd3a23231854f898a5afdca` excluding `docs/change-release-ledger.md`
+- Commit SHA: `not committed`; audit head is emitted by the report command
+- Dependencies: none
+- Required validation: `PASS`; evidence: TypeScript build, R5 request-schema/Profile contracts, feature-registry and ledger audits, SQL/diff review are recorded above; no production migration or checks run.
+- Shared-hunk review: `PASS`; evidence: isolated candidate contains only root/CRL-20260902-002 paths and no untracked files.
+- Generated-file review: `PASS`; evidence: no generated build output or cache is staged.
+- Technical state: `verified`
+- User authorization: `selected-for-commit`; evidence: user requested “按推荐顺序执行” on 2026-09-02 after R4 and R5-1 were listed as separate candidate releases.
+- Independent review: `NO-GO`; evidence: read-only review found `/mzapp` lockbox/restock request paths and MZapp warmup still called `ensureCleaningTaskMediaTable`, while the migration could not create the table.
+- Action conclusion: `BLOCKED`; blockers: repaired candidate must remove that helper/calls, make the migration the full owner, add coverage and receive a new review.
+
+#### RA-20260902-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260902-002`
+- Selected CRL identities: `root/CRL-20260902-002`
+- Intended action: `commit`
+- Branch: `codex/r5-1-request-schema-20260902`
+- Base: `origin/Dev@a3ec750f335f714bdff52ac16399b3dbeffbe22d`; fetched at `2026-09-02T00:06:22+10:00`
+- Candidate patch SHA-256: `85adea61a03e0c6f2f368f511e0f5987b8db444684fbe3faba8c2b746fce72f5` excluding `docs/change-release-ledger.md`
+- Commit SHA: `not committed`; audit head is emitted by the report command
+- Dependencies: none
+- Required validation: `PASS`; evidence: repaired R5 schema and Profile contracts, TypeScript no-emit, pre-commit ledger gate and diff check pass; no production validation run.
+- Shared-hunk review: `PASS`; evidence: clean isolated candidate contains only root/CRL-20260902-002 paths and no untracked files.
+- Generated-file review: `PASS`; evidence: temporary validation dependency symlink was removed; no generated output or cache is staged.
+- Technical state: `verified`
+- User authorization: `selected-for-commit`; evidence: user requested “按推荐顺序执行” on 2026-09-02; repair remains within the selected R5-1 request-path schema-mutation scope.
+- Independent review: `GO`; evidence: repaired-candidate read-only review found no P0/P1/P2 and confirmed the migration now owns the full `cleaning_task_media` table/index contract, `/mzapp` request and warmup paths contain no schema mutation, and the remaining `keyUploadSlaJob` DDL is explicitly deferred to R5-2.
+- Action conclusion: `GO`; blockers: none for the selected local commit. Push, PR, merge, migration and application deployment remain separately unauthorized.
+
+#### RA-20260902-006
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260902-002`
+- Selected CRL identities: `root/CRL-20260902-002`
+- Intended action: `commit`
+- Branch: `codex/r5-1-request-schema-realign-20260902`
+- Base: `origin/Dev@0fc8036901fa5074f521bcabcde84e08dc5fa7c1`; fetched at `2026-09-02T11:15:07+10:00` before the isolated re-alignment.
+- Candidate patch SHA-256: `34926b244c76df3118e9ed29c3e4c9e3881e5c75744810976cb165ae7a005c25` excluding `docs/change-release-ledger.md`
+- Commit SHA: `9ab11cb26a7ad8aa321feffe82fdab550bbe849d`; this candidate content commit is an ancestor of the following ledger receipt.
+- Dependencies: `root/CRL-20260902-001@f8917078d0246a863c20d85578a0ed75ebd190b5`
+- Dependency rationale: the R4 content commit is an ancestor of the selected base; this candidate retains its auth-role snapshot quality gate while adding the R5 request-schema checks.
+- Required validation: `PASS`; pre-commit ledger gate (12 paths / 69 non-ledger hunks), feature-registry audit, root quality-workflow contract, R5 request-schema contract, Profile document contract, R4 auth role-snapshot contract and TypeScript no-emit all passed. The repaired root `check:backend` explicitly wires both R5 and Profile contracts, so CI and `check:full` retain the FR-021 test. TypeScript used a temporary symlink to a backend dependency tree whose `backend/package-lock.json` SHA-256 exactly matches the candidate; the link was removed immediately. No production command ran.
+- Shared-hunk review: `PASS`; exact `origin/Dev...candidate` diff has 12 selected paths only, no untracked/generated file, and static inspection confirms target request handlers retain no `ensure*` / `CREATE` / `ALTER` schema-mutation call.
+- Generated-file review: `PASS`; no untracked/generated path exists in the isolated candidate at preparation time.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: user selected the R5-1 release unit and then authorized the next re-alignment step on 2026-09-02. This does not authorize push, migration, deployment or production verification.
+- Independent review: `GO`; repaired-candidate review verified `quality.yml` executes `check:backend`, which now contains the R5 schema, Profile document and R4 auth-role snapshot contracts; `check:full` calls the same backend gate. It independently matched base, 12 selected paths, 69 non-ledger hunks and candidate SHA-256 `34926b244c76df3118e9ed29c3e4c9e3881e5c75744810976cb165ae7a005c25`, with no P0/P1/P2, untracked/generated or sensitive paths.
+- Action conclusion: `GO` for the completed local commit. Push, PR, merge, migration, deployment and production verification remain separately unauthorized.
+
+### Risks / Release Notes
+
+- Deploying this application before the migration would correctly make the affected production routes return 503; the required release order is migration first, then application deployment.
+- This CRL does not prove Neon autosuspend because non-R5-1 callers may still access the database.
+
 ## CRL-20260827-001 — 历史台账回执精确审计模式（root）
 
 - **Repository:** `root`
