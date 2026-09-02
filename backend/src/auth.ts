@@ -13,13 +13,34 @@ const SESSION_IDLE_TIMEOUT_MINUTES = Number(process.env.SESSION_IDLE_TIMEOUT_MIN
 
 type User = { id: string; username: string; role: string }
 
-type SessionRow = { id: string; revoked?: boolean; expires_at?: any; last_seen_at?: any; created_at?: any }
+type SessionRow = { id: string; user_id?: any; revoked?: boolean; expires_at?: any; last_seen_at?: any; created_at?: any }
+type RoleSnapshot = { role: string; roles: string[] }
+type RoleSnapshotCacheEntry = RoleSnapshot & { at: number; globalVersion: number; userVersion: number }
+type RoleLookupResult =
+  | { kind: 'found'; snapshot: RoleSnapshot }
+  | { kind: 'missing' }
+  | { kind: 'db_error' }
+type RoleSnapshotLoader = (userId: string, fallbackRole: string) => Promise<RoleLookupResult>
+type RoleInflightEntry = {
+  globalVersion: number
+  userVersion: number
+  promise: Promise<RoleLookupResult>
+}
+type AuthRequestState = { token: string; user: any; sessionUnverified: boolean }
+
 const sessionCache = new Map<string, { row: SessionRow | null; at: number }>()
 const sessionLastSeenUpdateAt = new Map<string, number>()
 const permsCache = new Map<string, { okSet: Set<string>; at: number }>()
+const roleSnapshotCache = new Map<string, RoleSnapshotCacheEntry>()
+const roleSnapshotInflight = new Map<string, RoleInflightEntry>()
+const roleSnapshotUserVersions = new Map<string, number>()
+const authRequestStateKey = Symbol('mz.auth.requestState')
+let roleSnapshotGlobalVersion = 0
 const SESSION_CACHE_TTL_MS = Number(process.env.SESSION_CACHE_TTL_MS || 15000)
 const SESSION_TOUCH_INTERVAL_MS = Number(process.env.SESSION_TOUCH_INTERVAL_MS || 60000)
 const PERM_CACHE_TTL_MS = Number(process.env.PERM_CACHE_TTL_MS || 5 * 60 * 1000)
+const ROLE_SNAPSHOT_TTL_MS = 15000
+const AUTH_CACHE_MAX_ENTRIES = 1000
 
 const MOBILE_EXPENSE_SELF_PERMISSIONS = [
   'cleaning_app.expense.company.submit',
@@ -88,6 +109,123 @@ export function clearPermissionCacheForRoles(roleNames?: string[]) {
     const key = String(roleName || '').trim()
     if (key) permsCache.delete(key)
   }
+}
+
+function roleSnapshotVersion(userId: string) {
+  return {
+    globalVersion: roleSnapshotGlobalVersion,
+    userVersion: roleSnapshotUserVersions.get(userId) || 0,
+  }
+}
+
+function roleSnapshotVersionMatches(userId: string, entry: { globalVersion: number; userVersion: number }) {
+  const current = roleSnapshotVersion(userId)
+  return current.globalVersion === entry.globalVersion && current.userVersion === entry.userVersion
+}
+
+/**
+ * User versions exist only to reject a result that started before a targeted
+ * invalidation. Once neither a snapshot nor an in-flight lookup can observe a
+ * version, removing it cannot make an older result current again.
+ */
+function pruneRoleSnapshotUserVersions() {
+  for (const userId of roleSnapshotUserVersions.keys()) {
+    if (!roleSnapshotCache.has(userId) && !roleSnapshotInflight.has(userId)) {
+      roleSnapshotUserVersions.delete(userId)
+    }
+  }
+}
+
+function pruneRoleSnapshotCache(now = Date.now()) {
+  for (const [userId, entry] of roleSnapshotCache) {
+    if (!roleSnapshotVersionMatches(userId, entry) || now - entry.at > ROLE_SNAPSHOT_TTL_MS) {
+      roleSnapshotCache.delete(userId)
+    }
+  }
+  while (roleSnapshotCache.size >= AUTH_CACHE_MAX_ENTRIES) {
+    const oldest = roleSnapshotCache.keys().next().value
+    if (!oldest) break
+    roleSnapshotCache.delete(oldest)
+  }
+  pruneRoleSnapshotUserVersions()
+}
+
+function getRoleSnapshot(userId: string, now = Date.now()): RoleSnapshot | null {
+  const entry = roleSnapshotCache.get(userId)
+  if (!entry) return null
+  if (!roleSnapshotVersionMatches(userId, entry) || now - entry.at > ROLE_SNAPSHOT_TTL_MS) {
+    roleSnapshotCache.delete(userId)
+    return null
+  }
+  // Map insertion order is the LRU order.
+  roleSnapshotCache.delete(userId)
+  roleSnapshotCache.set(userId, entry)
+  return { role: entry.role, roles: [...entry.roles] }
+}
+
+function putRoleSnapshot(userId: string, snapshot: RoleSnapshot, version: { globalVersion: number; userVersion: number }, now = Date.now()) {
+  if (!roleSnapshotVersionMatches(userId, version)) return
+  pruneRoleSnapshotCache(now)
+  roleSnapshotCache.set(userId, {
+    role: snapshot.role,
+    roles: [...snapshot.roles],
+    at: now,
+    ...version,
+  })
+}
+
+function putSessionCache(sessionId: string, row: SessionRow | null, now = Date.now()) {
+  for (const [key, entry] of sessionCache) {
+    if (now - entry.at > SESSION_CACHE_TTL_MS) {
+      sessionCache.delete(key)
+      sessionLastSeenUpdateAt.delete(key)
+    }
+  }
+  while (sessionCache.size >= AUTH_CACHE_MAX_ENTRIES) {
+    const oldest = sessionCache.keys().next().value
+    if (!oldest) break
+    sessionCache.delete(oldest)
+    sessionLastSeenUpdateAt.delete(oldest)
+  }
+  sessionCache.set(sessionId, { row, at: now })
+}
+
+/**
+ * A user-targeted security invalidation. New requests must not reuse an older
+ * role query that was still in flight when the write committed.
+ */
+export function invalidateUserAuthState(userId: string) {
+  const key = String(userId || '').trim()
+  if (!key) return
+  roleSnapshotCache.delete(key)
+  roleSnapshotUserVersions.set(key, (roleSnapshotUserVersions.get(key) || 0) + 1)
+  pruneRoleSnapshotUserVersions()
+  for (const [sessionId, entry] of sessionCache) {
+    if (String(entry.row?.user_id || '').trim() === key) {
+      sessionCache.delete(sessionId)
+      sessionLastSeenUpdateAt.delete(sessionId)
+    }
+  }
+}
+
+/**
+ * Role rename/delete/bootstrap can affect many identities, so clear this
+ * process-local cache after their transaction commits.
+ */
+export function clearAllRoleSnapshots() {
+  roleSnapshotGlobalVersion += 1
+  roleSnapshotCache.clear()
+  pruneRoleSnapshotUserVersions()
+}
+
+function requestAuthState(req: Request, token: string): AuthRequestState | null {
+  const state = (req as any)[authRequestStateKey] as AuthRequestState | undefined
+  if (!state || state.token !== token || !state.user) return null
+  return state
+}
+
+function rememberRequestAuthState(req: Request, token: string, user: any, sessionUnverified: boolean) {
+  ;(req as any)[authRequestStateKey] = { token, user, sessionUnverified } as AuthRequestState
 }
 
 export const users: Record<string, User & { password: string }> = {
@@ -197,7 +335,16 @@ export async function auth(req: Request, res: Response, next: NextFunction) {
   if (token) {
     try {
       const decoded: any = jwt.verify(token, SECRET)
+      const requestState = requestAuthState(req, token)
+      if (requestState) {
+        ;(req as any).user = requestState.user
+        if (requestState.sessionUnverified) {
+          ;(req as any).session_unverified = true
+        }
+        return next()
+      }
       const sid = decoded?.sid
+      let sessionUnverified = false
       if (sid && hasPg) {
         try {
           const now = Date.now()
@@ -208,7 +355,7 @@ export async function auth(req: Request, res: Response, next: NextFunction) {
           } else {
             const rows: any = await pgSelect('sessions', '*', { id: sid })
             s = rows && rows[0]
-            sessionCache.set(String(sid), { row: s || null, at: now })
+            putSessionCache(String(sid), s || null, now)
           }
           if (!s) return res.status(401).json({ message: 'session not found' })
           const exp = new Date(s.expires_at).getTime()
@@ -217,8 +364,6 @@ export async function auth(req: Request, res: Response, next: NextFunction) {
           if (s.revoked) return res.status(401).json({ message: 'session revoked' })
           if (exp < now) return res.status(401).json({ message: 'session expired' })
           if (now - last > idleMs) return res.status(401).json({ message: 'session idle timeout' })
-          const nextUser = await hydrateCurrentUserRoles(decoded)
-          ;(req as any).user = nextUser
           try {
             const lastTouch = sessionLastSeenUpdateAt.get(String(sid)) || 0
             if (now - lastTouch >= SESSION_TOUCH_INTERVAL_MS) {
@@ -228,14 +373,16 @@ export async function auth(req: Request, res: Response, next: NextFunction) {
             }
           } catch {}
         } catch (e: any) {
-          const nextUser = await hydrateCurrentUserRoles(decoded)
-          ;(req as any).user = nextUser
-          ;(req as any).session_unverified = true
+          sessionUnverified = true
         }
-      } else {
-        const nextUser = await hydrateCurrentUserRoles(decoded)
-        ;(req as any).user = nextUser
       }
+      const roleResolution = await hydrateCurrentUserRoles(decoded)
+      if (roleResolution.kind === 'missing') return res.status(401).json({ message: 'user not found' })
+      ;(req as any).user = roleResolution.user
+      if (sessionUnverified) {
+        ;(req as any).session_unverified = true
+      }
+      rememberRequestAuthState(req, token, roleResolution.user, sessionUnverified)
     } catch {}
   }
   next()
@@ -292,43 +439,123 @@ async function fetchUserRolesForUserId(userId: string, fallbackRole: string) {
   return Array.from(new Set(roles))
 }
 
-async function hydrateCurrentUserRoles(decoded: any) {
-  const sub = String(decoded?.sub || '').trim()
-  if (!sub) return decoded
+function jwtFallbackUser(decoded: any) {
   const fallbackRole = String(decoded?.role || '').trim()
-  try {
-    const { pgPool } = require('./dbAdapter')
-    if (hasPg && pgPool) {
-      await ensureUserRolesTable()
-      const result = await pgPool.query(
-        `SELECT u.role,
-                COALESCE(
-                  ARRAY_AGG(DISTINCT ur.role_name) FILTER (WHERE ur.role_name IS NOT NULL),
-                  ARRAY[]::text[]
-                ) AS roles
-         FROM users u
-         LEFT JOIN user_roles ur ON ur.user_id::text = u.id::text
-         WHERE u.id::text = $1
-         GROUP BY u.id, u.role
-         LIMIT 1`,
-        [sub],
-      )
-      const row = result?.rows?.[0] || null
-      if (row) {
-        const role = String(row.role || fallbackRole).trim()
-        const roles = Array.isArray(row.roles)
-          ? row.roles.map((value: any) => String(value || '').trim()).filter(Boolean)
-          : []
-        if (role) roles.unshift(role)
-        return { ...(decoded || {}), role, roles: Array.from(new Set(roles)) }
-      }
-    }
-  } catch {}
   const roles = Array.isArray(decoded?.roles)
     ? decoded.roles.map((value: any) => String(value || '').trim()).filter(Boolean)
     : []
   if (fallbackRole) roles.unshift(fallbackRole)
   return { ...(decoded || {}), roles: Array.from(new Set(roles)) }
+}
+
+function userWithRoleSnapshot(decoded: any, snapshot: RoleSnapshot) {
+  return {
+    ...(decoded || {}),
+    role: snapshot.role,
+    roles: Array.from(new Set([snapshot.role, ...snapshot.roles].map((value) => String(value || '').trim()).filter(Boolean))),
+  }
+}
+
+async function queryCurrentUserRoleSnapshot(userId: string, fallbackRole: string): Promise<RoleLookupResult> {
+  try {
+    const { pgPool } = require('./dbAdapter')
+    if (!hasPg || !pgPool) return { kind: 'db_error' }
+    await ensureUserRolesTable()
+    const result = await pgPool.query(
+      `SELECT u.role,
+              COALESCE(
+                ARRAY_AGG(DISTINCT ur.role_name) FILTER (WHERE ur.role_name IS NOT NULL),
+                ARRAY[]::text[]
+              ) AS roles
+       FROM users u
+       LEFT JOIN user_roles ur ON ur.user_id::text = u.id::text
+       WHERE u.id::text = $1
+       GROUP BY u.id, u.role
+       LIMIT 1`,
+      [userId],
+    )
+    const row = result?.rows?.[0] || null
+    // A successful zero-row read means the identity was deleted. It is never
+    // interchangeable with a database outage and must not use JWT fallback.
+    if (!row) return { kind: 'missing' }
+    const role = String(row.role || fallbackRole).trim()
+    const roles = Array.isArray(row.roles)
+      ? row.roles.map((value: any) => String(value || '').trim()).filter(Boolean)
+      : []
+    if (role) roles.unshift(role)
+    return { kind: 'found', snapshot: { role, roles: Array.from(new Set(roles)) } }
+  } catch {
+    return { kind: 'db_error' }
+  }
+}
+
+async function loadCurrentUserRoleSnapshot(userId: string, fallbackRole: string, loader: RoleSnapshotLoader = queryCurrentUserRoleSnapshot): Promise<RoleLookupResult> {
+  const now = Date.now()
+  const cached = getRoleSnapshot(userId, now)
+  if (cached) return { kind: 'found', snapshot: cached }
+
+  const version = roleSnapshotVersion(userId)
+  const inflight = roleSnapshotInflight.get(userId)
+  if (inflight && roleSnapshotVersionMatches(userId, inflight)) return inflight.promise
+
+  const entry: RoleInflightEntry = {
+    ...version,
+    promise: Promise.resolve({ kind: 'db_error' } as RoleLookupResult),
+  }
+  entry.promise = Promise.resolve()
+    .then(() => loader(userId, fallbackRole))
+    .then((result) => {
+      if (result.kind === 'found') putRoleSnapshot(userId, result.snapshot, entry, Date.now())
+      return result
+    })
+    .catch(() => ({ kind: 'db_error' } as RoleLookupResult))
+    .finally(() => {
+      if (roleSnapshotInflight.get(userId) === entry) roleSnapshotInflight.delete(userId)
+      pruneRoleSnapshotUserVersions()
+    })
+  roleSnapshotInflight.set(userId, entry)
+  return entry.promise
+}
+
+type HydratedUserResult =
+  | { kind: 'found' | 'fallback'; user: any }
+  | { kind: 'missing' }
+
+async function hydrateCurrentUserRoles(decoded: any, loader?: RoleSnapshotLoader): Promise<HydratedUserResult> {
+  const sub = String(decoded?.sub || '').trim()
+  if (!sub) return { kind: 'found', user: decoded }
+  const result = await loadCurrentUserRoleSnapshot(sub, String(decoded?.role || '').trim(), loader)
+  if (result.kind === 'found') return { kind: 'found', user: userWithRoleSnapshot(decoded, result.snapshot) }
+  if (result.kind === 'missing') return { kind: 'missing' }
+  // Database errors preserve the existing JWT fallback behaviour, but this
+  // result is deliberately not cached or shared past the in-flight lookup.
+  return { kind: 'fallback', user: jwtFallbackUser(decoded) }
+}
+
+// Keep behavioural coverage independent from a live database. This is not an
+// HTTP API and must only be consumed by the backend contract test.
+export const __authRoleSnapshotTestOnly = {
+  hydrate(decoded: any, loader: RoleSnapshotLoader) {
+    return hydrateCurrentUserRoles(decoded, loader)
+  },
+  invalidateUser(userId: string) {
+    invalidateUserAuthState(userId)
+  },
+  clear() {
+    roleSnapshotCache.clear()
+    roleSnapshotInflight.clear()
+    roleSnapshotUserVersions.clear()
+    roleSnapshotGlobalVersion = 0
+  },
+  cacheSize() {
+    return roleSnapshotCache.size
+  },
+  versionStateSize() {
+    return roleSnapshotUserVersions.size
+  },
+  inflightSize() {
+    return roleSnapshotInflight.size
+  },
 }
 
 async function hasAnyPermViaPg(roleName: string, codes: string[]): Promise<boolean> {
@@ -478,23 +705,19 @@ export function allowCronTokenOrPerm(code: string) {
   }
 }
 
-export function me(req: Request, res: Response) {
+export async function me(req: Request, res: Response) {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  ;(async () => {
-    try {
-      const currentUser = await hydrateCurrentUserRoles(user)
-      const nextRoles = Array.isArray(currentUser?.roles) ? currentUser.roles : []
-      const permissions = await listPermissionCodesForUser(currentUser)
-      res.json({ id: currentUser.sub, role: currentUser.role, roles: nextRoles, username: currentUser.username, permissions })
-    } catch {
-      const roles = Array.isArray(user.roles) && user.roles.length ? user.roles : undefined
-      res.json({ id: user.sub, role: user.role, roles, username: user.username, permissions: [] })
-    }
-  })().catch(() => {
+  try {
+    // Global auth has already hydrated this request. Repeating the lookup here
+    // was one of the high-frequency user_roles callers.
+    const nextRoles = Array.isArray(user?.roles) ? user.roles : []
+    const permissions = await listPermissionCodesForUser(user)
+    return res.json({ id: user.sub, role: user.role, roles: nextRoles, username: user.username, permissions })
+  } catch {
     const roles = Array.isArray(user.roles) && user.roles.length ? user.roles : undefined
-    res.json({ id: user.sub, role: user.role, roles, username: user.username, permissions: [] })
-  })
+    return res.json({ id: user.sub, role: user.role, roles, username: user.username, permissions: [] })
+  }
 }
 
 export async function setDeletePassword(req: Request, res: Response) {
