@@ -18998,15 +18998,15 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Branch: `codex/r4-auth-role-snapshot-20260902`
 - Base: `origin/Dev@a3ec750f335f714bdff52ac16399b3dbeffbe22d`; fetched at `2026-09-02T00:06:22+10:00`
 - Candidate patch SHA-256: `fa84a3e09f7428baa3d3f4f0ffaeec2d44b7b3ce21ba18350ece1b5479df59cf` excluding `docs/change-release-ledger.md`
-- Commit SHA: `not committed`; audit head is emitted by the report command
+- Commit SHA: `f8917078d0246a863c20d85578a0ed75ebd190b5` (candidate content commit; exact audit head follows in the range report)
 - Dependencies: none
 - Required validation: `PASS`; evidence: repaired auth snapshot contract, TypeScript no-emit, pre-commit ledger gate and diff check pass; no production validation run.
 - Shared-hunk review: `PASS`; evidence: clean isolated candidate contains only root/CRL-20260902-001 paths and no untracked files.
 - Generated-file review: `PASS`; evidence: temporary validation dependency symlink was removed; no generated output or cache is staged.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user requested “按推荐顺序执行” on 2026-09-02; repair remains within the selected R4 auth cache lifecycle scope.
 - Independent review: `GO`; evidence: repaired-candidate read-only review found no P0/P1; it verified the bounded version-state lifecycle, stale in-flight invalidation and 2,000 idle-invalidation regression, exact source fingerprint and staged-scope gate. The pre-existing RBAC user-route runtime DDL remains explicitly deferred to R5-2.
-- Action conclusion: `GO`; blockers: none for the selected local commit. Push, PR, merge, deployment and production/device verification remain separately unauthorized.
+- Action conclusion: `GO`; the selected local commit completed. A committed-range audit and new exact user push authorization are required before push; PR, merge, deployment and production/device verification remain separately unauthorized.
 
 ### Risks / Release Notes
 
