@@ -19015,7 +19015,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Selected CRL identities: `root/CRL-20260902-001`
 - Intended action: `push`
 - Branch: `codex/r4-auth-role-snapshot-20260902`
-- Base: `origin/Dev@a3ec750f335f714bdff52ac16399b3dbeffbe22d`; freshly confirmed at `2026-09-02 Australia/Melbourne`
+- Base: `origin/Dev@a3ec750f335f714bdff52ac16399b3dbeffbe22d`; fetched at `2026-09-02 11:03:39 AEST`
 - Candidate patch SHA-256: `fa84a3e09f7428baa3d3f4f0ffaeec2d44b7b3ce21ba18350ece1b5479df59cf` excluding `docs/change-release-ledger.md`
 - Commit SHA: `f8917078d0246a863c20d85578a0ed75ebd190b5` (candidate content commit); prior receipt head `5f0a30bd12c28646a2ffd4242248aadf2852759b`
 - Dependencies: none
