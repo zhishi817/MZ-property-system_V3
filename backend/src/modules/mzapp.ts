@@ -56,6 +56,7 @@ import {
 } from '../lib/workTaskActionAudit'
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
 import { activeCleaningTaskWhereSql, syncCheckoutOldCodeFromCheckinNewCode, validCleaningTaskOrderWhereSql } from '../services/cleaningSync'
+import { isR5RequestSchemaReady } from '../lib/r5RequestSchema'
 
 export const router = Router()
 
@@ -2176,52 +2177,12 @@ router.post('/alerts/:id/read', async (req, res) => {
   }
 })
 
-let mediaEnsured = false
-let mediaEnsuring: Promise<void> | null = null
-
-async function ensureCleaningTaskMediaTable() {
-  if (!hasPg || !pgPool) return
-  if (mediaEnsured) return
-  if (mediaEnsuring) return mediaEnsuring
-  mediaEnsuring = (async () => {
-    await pgPool.query(`CREATE TABLE IF NOT EXISTS cleaning_task_media (
-        id text PRIMARY KEY,
-        task_id text REFERENCES cleaning_tasks(id) ON DELETE CASCADE,
-        type text,
-        url text NOT NULL,
-        note text,
-        captured_at timestamptz,
-        lat numeric,
-        lng numeric,
-        uploader_id text,
-        size integer,
-        mime text,
-        created_at timestamptz DEFAULT now()
-      );`)
-    await pgPool.query(`ALTER TABLE cleaning_task_media ADD COLUMN IF NOT EXISTS note text;`)
-    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_task ON cleaning_task_media(task_id);`)
-    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_type ON cleaning_task_media(type);`)
-    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_task_type ON cleaning_task_media(task_id, type);`)
-    mediaEnsured = true
-  })()
-    .catch((e) => {
-      mediaEnsured = false
-      mediaEnsuring = null
-      throw e
-    })
-    .finally(() => {
-      mediaEnsuring = null
-    })
-  return mediaEnsuring
-}
-
 export async function warmupMzappModule() {
   if (!(hasPg && pgPool)) return
   await ensureWorkTasksTable()
   await ensureWorkTaskParticipantsTable()
   await ensureGuestLuggageTables()
   await ensureCleaningTaskSortColumns()
-  await ensureCleaningTaskMediaTable()
   await ensureCleaningChecklistTables()
   await ensureCleaningCheckoutColumns()
   await ensureCleaningCustomerColumns()
@@ -2231,9 +2192,6 @@ export async function warmupMzappModule() {
   await ensureMaintenanceWorkTasksTable(pgPool)
   await assertIdempotentStepReceiptsReady(pgPool)
   await ensureNotificationStorage()
-  try {
-    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_task_type_captured_created ON cleaning_task_media(task_id, type, captured_at DESC, created_at DESC)`)
-  } catch {}
 }
 
 let checkoutEnsured = false
@@ -2683,7 +2641,6 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
   if (!mediaUrl) return res.status(400).json({ message: 'missing media_url' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
-    await ensureCleaningTaskMediaTable()
     const r0 = await pgPool.query(
       `SELECT id,
               inspector_id,
@@ -2703,6 +2660,7 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
     const propertyId = row.property_id ? String(row.property_id) : ''
     const selfCompleteLockbox = await canSubmitMzappSelfCompleteLockboxVideo(user, row, userId)
     if (!selfCompleteLockbox && !await canManageMzappLockboxVideo(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
+    if (!isR5RequestSchemaReady()) return res.status(503).json({ code: 'r5_request_schema_not_ready' })
     const uuid = require('uuid')
     const mediaId = uuid.v4()
     const actionActor = actorAndPerformerFromRequest(user, req.body || {})
@@ -2784,7 +2742,6 @@ async function handleDeleteMzappLockboxVideo(req: any, res: any) {
   if (!id) return res.status(400).json({ message: 'missing id' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
-    await ensureCleaningTaskMediaTable()
     const r0 = await pgPool.query(
       `SELECT id::text AS id,
               status,
@@ -2802,6 +2759,7 @@ async function handleDeleteMzappLockboxVideo(req: any, res: any) {
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
     if (!await canManageMzappLockboxVideo(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
+    if (!isR5RequestSchemaReady()) return res.status(503).json({ code: 'r5_request_schema_not_ready' })
 
     const needsRestockResult = await pgPool.query(
       `SELECT 1
@@ -3187,13 +3145,13 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
     const submitId = String(parsed.data.submit_id || '').trim()
     const stepKey = String(parsed.data.step_key || '').trim()
     const payloadHash = buildIdempotencyPayloadHash(parsed.data)
-    await ensureCleaningTaskMediaTable()
     const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id, inspection_mode, task_type FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
     const selfCompleteRestock = stepKey === 'self_complete_restock'
       && await canSubmitMzappSelfCompleteRestock(user, row, userId)
     if (!selfCompleteRestock && !await canSubmitMzappInspection(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
+    if (!isR5RequestSchemaReady()) return res.status(503).json({ code: 'r5_request_schema_not_ready' })
     if (selfCompleteRestock) {
       const consumables = await pgPool.query(
         `SELECT 1 FROM cleaning_consumable_usages WHERE task_id::text=$1::text LIMIT 1`,

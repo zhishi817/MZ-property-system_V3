@@ -55,6 +55,7 @@ import { r2Status } from './r2'
 import { getPlaywrightDiagnostics } from './lib/playwright'
 import { runNotificationQueueCleanup, runNotificationQueueRecoveryOnce, startNotificationQueueWorker } from './services/notificationQueueWorker'
 import { bootstrapCleaningSyncSchemaV2 } from './services/cleaningSync'
+import { warmupR5RequestSchema } from './lib/r5RequestSchema'
  
  
 // 环境保险锁（Render 上用 RENDER_ENV=dev/prod 显式区分，避免误判）
@@ -1011,6 +1012,7 @@ async function runStartupWarmups() {
   startupWarmupState.steps = []
 
   const steps: Array<{ name: string; run: () => Promise<void> }> = [
+    { name: 'r5_request_schema', run: warmupR5RequestSchema },
     { name: 'auth', run: warmupAuthModule },
     { name: 'cleaning_sync_schema', run: bootstrapCleaningSyncSchemaV2 },
     { name: 'mzapp', run: warmupMzappModule },

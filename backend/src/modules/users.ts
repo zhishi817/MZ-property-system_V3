@@ -4,6 +4,7 @@ import { requireAnyPerm, requirePerm } from '../auth'
 import { hasPg, pgSelect, pgUpdate } from '../dbAdapter'
 import { db } from '../store'
 import { hasR2, r2GetObjectByKey, r2KeyFromUrl } from '../r2'
+import { requireR5RequestSchema } from '../lib/r5RequestSchema'
 import bcrypt from 'bcryptjs'
 
 export const router = Router()
@@ -31,25 +32,6 @@ const changePasswordSchema = z
     new_password: z.string().min(6).max(128),
   })
   .strict()
-
-async function ensureProfileColumns() {
-  if (!hasPg) return
-  try {
-    const { pgPool } = require('../dbAdapter')
-    if (!pgPool) return
-    await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name text')
-    await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url text')
-    await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_au text')
-    await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS legal_name text')
-    await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS bank_account_name text')
-    await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS bank_bsb text')
-    await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS bank_account_number text')
-    await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS personal_abn text')
-    await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS photo_id_url text')
-    await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS visa_document_url text')
-    await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS visa_grant_number text')
-  } catch {}
-}
 
 let usersColumnCache: { expiresAt: number; columns: Set<string> } | null = null
 
@@ -82,13 +64,8 @@ function buildUserSelect(columns: Set<string>, required: string[], optional: rea
   return selected.join(', ')
 }
 
-function filterPatchByExistingColumns(patch: Record<string, any>, columns: Set<string>) {
-  const next: Record<string, any> = {}
-  for (const key of Object.keys(patch)) {
-    if (columns.has(key)) next[key] = patch[key]
-  }
-  return next
-}
+const PROFILE_USER_COLUMNS = ['id', 'username', 'role', 'phone_au', 'display_name', 'avatar_url', 'legal_name', 'bank_account_name', 'bank_bsb', 'bank_account_number', 'personal_abn', 'photo_id_url', 'visa_document_url', 'visa_grant_number'] as const
+const CONTACT_USER_COLUMNS = ['id', 'username', 'role', 'phone_au', 'display_name', 'avatar_url'] as const
 
 const PROFILE_DOCUMENT_FIELDS = {
   photo_id: 'photo_id_url',
@@ -148,17 +125,12 @@ function ownProfileResponse(row: any) {
   }
 }
 
-router.get('/contacts', async (req, res) => {
+router.get('/contacts', requireR5RequestSchema, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   try {
-    await ensureProfileColumns()
     if (hasPg) {
-      const columns = await getUsersColumns()
-      const rows = (await pgSelect(
-        'users',
-        buildUserSelect(columns, ['id', 'username', 'role'], ['phone_au', 'display_name', 'avatar_url']),
-      ) as any[]) || []
+      const rows = (await pgSelect('users', CONTACT_USER_COLUMNS.join(', ')) as any[]) || []
       return res.json(rows)
     }
     const rows = (db.users || []).map((u: any) => ({
@@ -175,24 +147,14 @@ router.get('/contacts', async (req, res) => {
   }
 })
 
-router.get('/me', async (req, res) => {
+router.get('/me', requireR5RequestSchema, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const id = String(user.sub || '').trim()
   if (!id) return res.status(401).json({ message: 'unauthorized' })
   try {
-    await ensureProfileColumns()
     if (hasPg) {
-      const columns = await getUsersColumns()
-      const rows = (await pgSelect(
-        'users',
-        buildUserSelect(
-          columns,
-          ['id', 'username', 'role'],
-          ['phone_au', 'display_name', 'avatar_url', 'legal_name', 'bank_account_name', 'bank_bsb', 'bank_account_number', 'personal_abn', 'photo_id_url', 'visa_document_url', 'visa_grant_number'],
-        ),
-        { id },
-      ) as any[]) || []
+      const rows = (await pgSelect('users', PROFILE_USER_COLUMNS.join(', '), { id }) as any[]) || []
       const row = rows[0]
       if (!row) return res.status(404).json({ message: 'user not found' })
       return res.json(ownProfileResponse(row))
@@ -205,7 +167,7 @@ router.get('/me', async (req, res) => {
   }
 })
 
-router.get('/me/profile-documents/:documentType', async (req, res) => {
+router.get('/me/profile-documents/:documentType', requireR5RequestSchema, async (req, res) => {
   const user = (req as any).user
   const id = String(user?.sub || '').trim()
   const type = profileDocumentType(req.params.documentType)
@@ -213,11 +175,8 @@ router.get('/me/profile-documents/:documentType', async (req, res) => {
   if (!type || !hasR2) return res.status(404).json({ message: 'not_found' })
   const field = PROFILE_DOCUMENT_FIELDS[type]
   try {
-    await ensureProfileColumns()
     let storedReference: any = null
     if (hasPg) {
-      const columns = await getUsersColumns()
-      if (!columns.has(field)) return res.status(404).json({ message: 'not_found' })
       const rows = (await pgSelect('users', field, { id }) as any[]) || []
       storedReference = rows[0]?.[field]
     } else {
@@ -241,7 +200,7 @@ router.get('/me/profile-documents/:documentType', async (req, res) => {
   }
 })
 
-router.patch('/me', async (req, res) => {
+router.patch('/me', requireR5RequestSchema, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const id = String(user.sub || '').trim()
@@ -249,13 +208,11 @@ router.patch('/me', async (req, res) => {
   const parsed = mePatchSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
-    await ensureProfileColumns()
     if (hasPg) {
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'no database configured' })
-      const columns = await getUsersColumns()
       const requestedDocumentTypes = (Object.keys(PROFILE_DOCUMENT_FIELDS) as ProfileDocumentType[])
-        .filter((type) => parsed.data[PROFILE_DOCUMENT_FIELDS[type]] !== undefined && columns.has(PROFILE_DOCUMENT_FIELDS[type]))
+        .filter((type) => parsed.data[PROFILE_DOCUMENT_FIELDS[type]] !== undefined)
       if (requestedDocumentTypes.length) {
         const existingColumns = requestedDocumentTypes.map((type) => PROFILE_DOCUMENT_FIELDS[type]).join(', ')
         const existingResult = await pgPool.query(`SELECT ${existingColumns} FROM users WHERE id=$1 LIMIT 1`, [id])
@@ -280,17 +237,11 @@ router.patch('/me', async (req, res) => {
       if (parsed.data.photo_id_url !== undefined) patch.photo_id_url = parsed.data.photo_id_url
       if (parsed.data.visa_document_url !== undefined) patch.visa_document_url = parsed.data.visa_document_url
       if (parsed.data.visa_grant_number !== undefined) patch.visa_grant_number = parsed.data.visa_grant_number
-      const safePatch = filterPatchByExistingColumns(patch, columns)
-      const keys = Object.keys(safePatch)
+      const keys = Object.keys(patch)
       if (!keys.length) return res.json({ ok: true })
       const set = keys.map((k, i) => `"${k}"=$${i + 1}`).join(', ')
-      const values = keys.map((k) => safePatch[k] === undefined ? null : safePatch[k])
-      const returning = buildUserSelect(
-        columns,
-        ['id', 'username', 'role'],
-        ['phone_au', 'display_name', 'avatar_url', 'legal_name', 'bank_account_name', 'bank_bsb', 'bank_account_number', 'personal_abn', 'photo_id_url', 'visa_document_url', 'visa_grant_number'],
-      )
-      const sql = `UPDATE users SET ${set} WHERE id=$${keys.length + 1} RETURNING ${returning}`
+      const values = keys.map((k) => patch[k] === undefined ? null : patch[k])
+      const sql = `UPDATE users SET ${set} WHERE id=$${keys.length + 1} RETURNING ${PROFILE_USER_COLUMNS.join(', ')}`
       const r = await pgPool.query(sql, [...values, id])
       const row = r?.rows?.[0]
       return res.json(row ? ownProfileResponse(row) : { ok: true })
