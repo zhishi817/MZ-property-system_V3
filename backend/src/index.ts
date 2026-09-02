@@ -48,7 +48,7 @@ import { publicRouter as guestSitePublicRouter, adminRouter as guestSiteAdminRou
 import { runKeyUploadReminder } from './lib/keyUploadReminderJob'
 import { runKeyUploadSlaCheck } from './lib/keyUploadSlaJob'
 import { runDayEndHandoverReminder } from './lib/dayEndHandoverReminderJob'
-import { auth, warmupAuthModule } from './auth'
+import { auth, clearAllRoleSnapshots, invalidateUserAuthState, warmupAuthModule } from './auth'
 import publicRouter from './modules/public'
 import publicAdminRouter from './modules/public_admin'
 import { r2Status } from './r2'
@@ -313,11 +313,24 @@ app.post('/internal/bootstrap-admin', async (req, res) => {
     if (!existing) {
       const id = uuid()
       await pgPool.query('INSERT INTO users(id, username, email, password_hash, role) VALUES ($1,$2,$3,$4,$5)', [id, username, email, hash, role])
+      clearAllRoleSnapshots()
       return res.json({ ok: true, action: 'created', id, username, email, role })
     }
     const id = String(existing.id)
-    await pgPool.query('UPDATE users SET password_hash=$1, role=$2 WHERE id=$3', [hash, role, id])
-    try { await pgPool.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [id]) } catch {}
+    const client = await pgPool.connect()
+    try {
+      await client.query('BEGIN')
+      await client.query('UPDATE users SET password_hash=$1, role=$2 WHERE id=$3', [hash, role, id])
+      try { await client.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [id]) } catch {}
+      await client.query('COMMIT')
+    } catch (e) {
+      try { await client.query('ROLLBACK') } catch {}
+      throw e
+    } finally {
+      client.release()
+    }
+    invalidateUserAuthState(id)
+    clearAllRoleSnapshots()
     return res.json({ ok: true, action: 'reset', id, username: existing.username, email: existing.email, role })
   } catch (e: any) {
     return res.status(500).json({ message: String(e?.message || 'bootstrap_failed') })

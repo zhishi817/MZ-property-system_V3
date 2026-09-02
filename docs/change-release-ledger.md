@@ -18883,3 +18883,134 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Compatibility risk: overdue semantics now change from the former `预计收账日 + 5 天` or month-end boundary to the first day after the actual/expected receipt date when payment is absent. This is the user-directed priority rule and requires non-production manual sign-off before release.
 - Sensitive-information review: no credentials, tokens, private URLs, customer data, database URLs, `.env` values, caches, or generated build outputs were added.
 - Git state: candidate content commit `e4e1d2da5cafbff42cde3abf2fbd9c7ef513c96b` exists locally on `codex/property-payables-calendar-20260901`; not pushed, not deployed, and not production/device verified.
+## CRL-20260902-001 — 认证角色快照缓存与安全失效（root）
+
+- **Status:** implemented; selected for commit pending repaired-candidate review
+- **Repository:** `root`
+- **Updated:** 2026-09-02 Australia/Melbourne
+- **Request:** 在不改数据库 schema、Render、Neon、生产数据或 Mobile 的前提下，降低受保护 API 对 `users LEFT JOIN user_roles` 的重复读取；同一 HTTP request 的重复 auth 必须复用已认证身份。缓存仅允许短暂保存数据库成功读取到的用户角色快照；用户不存在不得回退 JWT；用户/角色安全变更后必须失效。
+
+### Implementation
+
+- 在 `backend/src/auth.ts` 增加按 `userId` 的 15 秒成功角色快照、TTL/容量淘汰和 single-flight；同一 user 的并发 miss 只合并一条角色查询，任何成功或失败分支都释放 in-flight。失效 version 仅在同 user 仍有 snapshot 或 in-flight lookup 时保留；最后一个旧 lookup 结束后清理，避免历史用户 ID 永久累积，同时不允许失效前请求回写。
+- 区分角色查询三种结果：数据库成功且存在用户、数据库成功但用户不存在、数据库错误。只有数据库错误允许保留现有 JWT role fallback；fallback 不缓存；用户不存在保持 `401`。
+- `auth` 以 request-local 标记幂等化：同一 token 在同一 request 已完成 hydrate 时只复用 `req.user`，不再重新查询；`/auth/me` 同样复用该已 hydrate 的身份。
+- 用户角色修改、用户删除、密码重置及 session revoke 在数据库事务 `COMMIT` 后失效该用户的 session/role 快照；role rename/delete 与 bootstrap 成功后清空本实例角色快照。rollback 或失败不失效。
+- 新增仅后端的角色快照合同回归，并接入 root backend quality chain；不引入依赖、原生/部署配置或数据库迁移。
+
+### Files / Areas
+
+- `backend/src/auth.ts` — request-local auth、角色快照、single-flight、cache lifecycle 与失效导出。
+- `backend/src/modules/rbac.ts` — role/user 成功写入提交后的失效和用户角色写入事务边界。
+- `backend/src/modules/auth.ts` — password reset 成功提交后的用户 auth-state 失效。
+- `backend/src/index.ts` — internal bootstrap 成功后的角色快照失效。
+- `backend/scripts/tests/test_auth_role_snapshot.ts` — 正常 cache/single-flight、user-missing、DB-error fallback、request idempotence、TTL/失效、stale in-flight 与 version-state 容量合同。
+- `backend/package.json`、`package.json` — 仅新增/接入该测试命令，不改变依赖。
+- `docs/feature-regression-registry.md`、`docs/change-release-ledger.md` — FR 与本 CRL。
+
+### Impact / Dependencies
+
+- **API:** response schema unchanged. Normal角色成员变更在不同 Render 实例间仍可能最多约 15 秒最终一致；本实例在 commit 后立即失效。
+- **Security boundary:** 用户不存在不可信任 JWT fallback；数据库错误 fallback 不落 cache；删除用户/密码重置会清理已知 session cache、session touch 与角色快照。
+- **Database / migration / production data:** none. 本次不执行任何生产请求或数据库写入。
+- **Dependencies:** existing `jsonwebtoken`、Postgres adapter、sessions、users、user_roles 与 RBAC router only.
+
+### Validation
+
+- `npm run build --prefix backend` — passed in the clean candidate using the existing local backend dependency tree; generated `dist` output was restored before reporting.
+- `npm run test:auth-role-snapshot --prefix backend` equivalent — passed after the repaired candidate: concurrent lookup, cache/empty roles, missing user, DB fallback, stale in-flight invalidation and 2,000 idle-user invalidations all satisfy the contract.
+- `tsc --noEmit -p backend/tsconfig.json` — passed after the repaired candidate using a temporary, lockfile-matching local dependency symlink that was removed immediately; no `node_modules` or generated output remains in the candidate.
+- `npm run check:backend` — all invoked backend subcommands passed through the final Phase 5 contract. The first isolated-worktree invocation stopped only because the independent mobile repository is not present at the expected sibling path; the final read-only Phase 5 contract then passed with a temporary local symlink. Therefore the exact aggregate command did not exit 0 in the bare root worktree, but no assertion or source failure remains.
+- `npm run check:feature-registry` — passed: 17 FRs, 145 root test mappings and 73 deferred mobile mappings.
+- Initial independent review found unbounded `roleSnapshotUserVersions`; repaired candidate keeps versions only while a snapshot/in-flight lookup can observe them and requires a new read-only review before commit.
+- `git diff --check` — passed.
+- no production/database/device/Render/Neon verification was run.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared; selected for the local commit candidate only.
+- **Untracked review:** none; clean isolated candidate has no untracked files.
+- `backend/package.json` — SHA-256: `273b8610d19a25c0d319788bc3f20e6772abe39ae35e07065afe9efd08b166e1`
+- `backend/scripts/tests/test_auth_role_snapshot.ts` — SHA-256: `71eba36e92ee3da019455579940578270e9fd018adf66294f49e0d3e77cf987a`
+- `backend/src/auth.ts` — SHA-256: `11e8af0549133c94e49e5442e73ca4dd34754dddb824ff724ebdeb81900cc919`
+- `backend/src/auth.ts` — SHA-256: `25ffa79f28fb8d9d71e6c62938386ea025ca4468b03149308ae13113fbd145f9`
+- `backend/src/auth.ts` — SHA-256: `2a95716f44d46599df9fb17c721c54241beb2a111389db903f7645db6100f6b3`
+- `backend/src/auth.ts` — SHA-256: `4273476033e97d744b3d5c862a4cc4ff14d1bbe91952e696826a65b2e9afb05a`
+- `backend/src/auth.ts` — SHA-256: `42f9030e8f55d1251afc55b258e6e61e67b34f98d2963bc4f5f6f664db584bd7`
+- `backend/src/auth.ts` — SHA-256: `462dd139f8283ed9cdd65c5e42f3be395cefc50bb8914e0d181cbdc4432678f6`
+- `backend/src/auth.ts` — SHA-256: `a8c67536519182435b5895a888dc510dac119622c4ed709f760e47835a6ce154`
+- `backend/src/auth.ts` — SHA-256: `5f9d4925509b53bbfd7b846a95b6777307f7a3759e2627da4f6bb0f999e443e5`
+- `backend/src/auth.ts` — SHA-256: `a6e9623821da5ebc05ebb4beb8b491de6b0bb89612537c7219b825f8c2968b2c`
+- `backend/src/auth.ts` — SHA-256: `ab18ed4fabe09d1a4f43f57935ec148656d8263fef0eba60aeaf4a84b71dd797`
+- `backend/src/auth.ts` — SHA-256: `b3f12d06fb2d864d78ba1882aadb8cc1ee7d79d88b3fada6fdba4963d4c18058`
+- `backend/src/auth.ts` — SHA-256: `bc8cd43dd5e9aaaa647399c98c81e067667e27b2fae177403f33af7fbc2163a7`
+- `backend/src/auth.ts` — SHA-256: `cb124d6f259ca4b630903f4db6b621af3bc60258baf1c3854604f188de48e0c4`
+- `backend/src/auth.ts` — SHA-256: `d53955ea355f478642cee19b4c80efe339c3eddcb34dbbac2cc07df9f41e7aaa`
+- `backend/src/auth.ts` — SHA-256: `dbefb1dcfed8e45abcb88ec42b7062c24be08fc9da6a130e81540b9f577e9806`
+- `backend/src/auth.ts` — SHA-256: `dadc9f4c26e261deffc8e82fef817a155a94507bdf30b3d008434243c9002fef`
+- `backend/src/auth.ts` — SHA-256: `ee0747832cb57a10a093415866bc73398aacbcb5958fc00586fa1da9fcaef458`
+- `backend/src/index.ts` — SHA-256: `64eecb312235e93f9559a1586641dae5c049757c6be451eb7330ef1a7451f685`
+- `backend/src/index.ts` — SHA-256: `b1a872769501f6852b57d0ba61f5019d2dce9b093d5d3ec772799868357aff6a`
+- `backend/src/index.ts` — SHA-256: `bca4797789c933302fe0f848db715e25de720c79aaa22714ab79f762941a58b6`
+- `backend/src/modules/auth.ts` — SHA-256: `1a82fd84f16d93fba17dcde3fc753c0416d8ba6f51f030cb36261f5c4e641b76`
+- `backend/src/modules/auth.ts` — SHA-256: `70f489cb0ed43db3947c6694d2c53d20937505f70f24a000e442e8a39b00aba7`
+- `backend/src/modules/auth.ts` — SHA-256: `e342a591d4f095201b629d1596268bdd98b78c4eceb01f5d6802dc7f36bdf4ab`
+- `backend/src/modules/rbac.ts` — SHA-256: `0653ee42c2af4d91ed17cd05eb0acd1c102022ea9f41816e0ed35da5c4a9cb63`
+- `backend/src/modules/rbac.ts` — SHA-256: `0a98d56619321c93d8e2e9e61d09626d0bb1e700b43130fc63932ad2f44fb3fa`
+- `backend/src/modules/rbac.ts` — SHA-256: `43ac9bfceb412ea49af1d406c23dd4cb472a7a746bbd05f084d2d86283841a2c`
+- `backend/src/modules/rbac.ts` — SHA-256: `4b22ee62afbb98a2648ad97bb9431e68a295a2e8c2cf90b5c480ff3df5bb5bce`
+- `backend/src/modules/rbac.ts` — SHA-256: `774df7a97f99c6fd51d6ffff070b0e016d7ee5fca650ba69af1c06610e321632`
+- `backend/src/modules/rbac.ts` — SHA-256: `7efa301127f30ec1d5d6078af17c30fef215cc224cb557eea73f7036d30be91f`
+- `backend/src/modules/rbac.ts` — SHA-256: `b1989e41b7ed2508d10dc4c59ca08defa18def1de82f4e6c334d5421c527fcb6`
+- `backend/src/modules/rbac.ts` — SHA-256: `c52b3cddeb2a2539905411a2524264a660010b950223cccb6eb66a91781af322`
+- `backend/src/modules/rbac.ts` — SHA-256: `ef5250f823955cb734a37836f16ca94afe1d4002f2919ace2bb7de406ba3b5f1`
+- `docs/feature-regression-registry.md` — SHA-256: `e2ed4703370d90d18a26f966320cce0b571d35747125cefb18e8d90e09cd785f`
+- `package.json` — SHA-256: `76b45da8eb14c76889f1355d1fecef825cf67f5d4e2b08ca79604ecd504e44e5`
+
+### Release Attempts
+
+#### RA-20260902-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260902-001`
+- Selected CRL identities: `root/CRL-20260902-001`
+- Intended action: `commit`
+- Branch: `codex/r4-auth-role-snapshot-20260902`
+- Base: `origin/Dev@a3ec750f335f714bdff52ac16399b3dbeffbe22d`; fetched at `2026-09-02T00:06:22+10:00`
+- Candidate patch SHA-256: `326f046a93d376b7a750cec95f364a7c637bb86f8ec64b22221811c531f95b04` excluding `docs/change-release-ledger.md`
+- Commit SHA: `not committed`; audit head is emitted by the report command
+- Dependencies: none
+- Required validation: `PASS`; evidence: backend build, targeted role-snapshot contract, backend quality chain/Phase 5 contract, feature-registry audit and diff check are recorded above; no production checks run.
+- Shared-hunk review: `PASS`; evidence: isolated candidate contains only root/CRL-20260902-001 paths and no untracked files.
+- Generated-file review: `PASS`; evidence: no generated build output or cache is staged.
+- Technical state: `verified`
+- User authorization: `selected-for-commit`; evidence: user requested “按推荐顺序执行” on 2026-09-02 after R4 and R5-1 were listed as separate candidate releases.
+- Independent review: `NO-GO`; evidence: read-only review found `roleSnapshotUserVersions` had no bounded lifecycle and would retain every invalidated user ID.
+- Action conclusion: `BLOCKED`; blockers: repaired candidate must prove stale lookup safety and bounded version lifecycle, then receive a new review.
+
+#### RA-20260902-004
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260902-001`
+- Selected CRL identities: `root/CRL-20260902-001`
+- Intended action: `commit`
+- Branch: `codex/r4-auth-role-snapshot-20260902`
+- Base: `origin/Dev@a3ec750f335f714bdff52ac16399b3dbeffbe22d`; fetched at `2026-09-02T00:06:22+10:00`
+- Candidate patch SHA-256: `fa84a3e09f7428baa3d3f4f0ffaeec2d44b7b3ce21ba18350ece1b5479df59cf` excluding `docs/change-release-ledger.md`
+- Commit SHA: `not committed`; audit head is emitted by the report command
+- Dependencies: none
+- Required validation: `PASS`; evidence: repaired auth snapshot contract, TypeScript no-emit, pre-commit ledger gate and diff check pass; no production validation run.
+- Shared-hunk review: `PASS`; evidence: clean isolated candidate contains only root/CRL-20260902-001 paths and no untracked files.
+- Generated-file review: `PASS`; evidence: temporary validation dependency symlink was removed; no generated output or cache is staged.
+- Technical state: `verified`
+- User authorization: `selected-for-commit`; evidence: user requested “按推荐顺序执行” on 2026-09-02; repair remains within the selected R4 auth cache lifecycle scope.
+- Independent review: `GO`; evidence: repaired-candidate read-only review found no P0/P1; it verified the bounded version-state lifecycle, stale in-flight invalidation and 2,000 idle-invalidation regression, exact source fingerprint and staged-scope gate. The pre-existing RBAC user-route runtime DDL remains explicitly deferred to R5-2.
+- Action conclusion: `GO`; blockers: none for the selected local commit. Push, PR, merge, deployment and production/device verification remain separately unauthorized.
+
+### Risks / Release Notes
+
+- This is an in-process cache only. A role membership change on another Render instance can remain visible for at most the 15-second role-snapshot TTL; user-missing, deletion and session-revoke handling are not allowed to use JWT fallback.
+- The existing five-minute role-permission cache and cross-instance realtime invalidation are deliberately outside this CRL.
+- Sensitive-information review: no `.env`, credentials, tokens, database URLs, customer data, generated output or local cache is included.
+- Git state: clean release worktree `codex/r4-auth-role-snapshot-20260902` based on `origin/Dev@a3ec750f335f714bdff52ac16399b3dbeffbe22d`; source changes are uncommitted, unpushed, not PR'd, not deployed and not production/device verified.

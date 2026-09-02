@@ -7,6 +7,52 @@
 - 测试映射必须说明保护点和测试场景；只登记测试文件名不算覆盖证据。
 - `sufficient` 表示当前测试覆盖该保护点；`partial` 表示已有测试但仍有缺口；`not-wired` 表示测试存在但尚未进入对应质量检查；`missing` 表示尚无测试。
 
+## FR-020：受保护请求的角色快照与安全失效
+
+- **维护责任范围：** backend auth / RBAC
+- **最后审查日期：** 2026-09-02
+- **状态：** active
+
+### 业务保护规则
+
+- 同一用户在一个 15 秒快照窗口内的受保护请求，只能复用一次数据库成功读取到的 `users LEFT JOIN user_roles` 角色结果；相同用户的并发 cache miss 只能合并为一次进行中的读取。缓存仅保存成功用户与其角色集合，合法空角色集合也是成功结果。
+- 数据库成功返回用户不存在时必须拒绝认证，绝不能以 JWT 中的旧角色回退；只有数据库查询错误可以保留既有 JWT fallback，且 fallback 不得写入角色快照或成为后续请求的缓存。
+- 同一 HTTP request 中重复挂载的 `auth`、`/auth/me` 和 `/rbac/my-permissions` 必须复用第一次 hydrate 的 `req.user`；`/rbac/my-permissions` 的显式 auth middleware 不得删除。
+- 用户角色/密码变更、用户删除和 password-reset 的事务提交后必须立刻清理该用户本实例的角色和已知 session cache；写入 rollback 或失败不得失效。role rename/delete 与 internal bootstrap 成功后必须清空本实例角色快照。
+- 角色快照及 in-flight map 必须有限：过期项或 LRU 超过容量时清理；single-flight 无论成功、用户不存在或数据库失败都必须释放。正常角色成员关系在多 Render 实例间允许最多约 15 秒最终一致，不以该缓存绕过用户删除或 session 吊销。
+
+### 跨层适用范围
+
+- **后端：** 全局 `auth`、`/auth/me`、`/rbac/my-permissions` 与用户/角色/密码写入的提交后失效。
+- **客户端：** 不改变 token、API payload 或角色展示；客户端继续按服务端 `req.user`、permissions 响应做授权。
+- **一致性：** `users` 与 `user_roles` 仍是角色权威，sessions 仍是会话权威；本 FR 不引入跨实例 Redis/pubsub 或数据库 migration。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 成功快照、single-flight、空角色、missing、DB-error fallback 与用户失效 | `backend/scripts/tests/test_auth_role_snapshot.ts` | 10 个并发相同用户只执行一次 loader；成功与空角色集合命中 cache；missing 不回退/不 cache；DB error 回退但每次重查；invalidate 后重查 | sufficient | `npm run test:auth-role-snapshot --prefix backend`（由 root `check:backend` / `check:full` 执行） |
+| request-level idempotence 与提交后失效边界 | `backend/scripts/tests/test_auth_role_snapshot.ts` | `auth` request marker、`/auth/me` 不二次 hydrate、`/rbac/my-permissions` 保留 auth、user role write 使用 transaction 后才失效 | sufficient | `npm run test:auth-role-snapshot --prefix backend` |
+
+### 验证策略
+
+- **本地：** auth-role snapshot contract、backend TypeScript build、feature-registry/ledger audit 和精确 diff 审查。
+- **部署后：** 在相同受保护 API 请求量窗口比较 `users LEFT JOIN user_roles` Calls 增量；角色变更后在当前实例立即生效，并记录多实例最多 15 秒的预期最终一致窗口。
+
+### 最后验证
+
+- **CRL：** root/CRL-20260902-001
+- **Commit：** not committed
+- **日期：** 2026-09-02
+
+### 相关 CRL
+
+- root/CRL-20260902-001：认证角色快照、同请求幂等和安全失效。
+
+### 非保护范围
+
+- Redis/pubsub 跨实例即时权限撤销、权限码的 5 分钟 role-permission cache、数据库 schema/migration、Render/Neon 设置、Mobile/Web 刷新逻辑。
+
 ## FR-018：任务列表行李通知批量授权等价性
 
 - **维护责任范围：** backend / mobile

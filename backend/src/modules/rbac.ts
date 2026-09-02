@@ -2,8 +2,8 @@ import { Router } from 'express'
 import { db } from '../store'
 import { saveRolePermissions, saveRoles } from '../persistence'
 import { z } from 'zod'
-import { clearPermissionCacheForRoles, requirePerm, auth } from '../auth'
-import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
+import { clearAllRoleSnapshots, clearPermissionCacheForRoles, invalidateUserAuthState, requirePerm, auth } from '../auth'
+import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete, pgRunInTransaction } from '../dbAdapter'
 import bcrypt from 'bcryptjs'
 import { getPermissionMeta } from '../permissionsCatalog'
 import {
@@ -324,6 +324,10 @@ router.patch('/roles/:id', requirePerm('rbac.manage'), async (req, res) => {
         }
         const after = await client.query('SELECT * FROM roles WHERE id = $1 LIMIT 1', [newId])
         await client.query('COMMIT')
+        if (newId !== oldId) {
+          clearAllRoleSnapshots()
+          clearPermissionCacheForRoles([oldId, oldId.replace(/^role\./, ''), oldName, newId, newName])
+        }
         return res.json(after?.rows?.[0] || { ...old, ...payload, id: newId, name: newName })
       } catch (e: any) {
         try { await client.query('ROLLBACK') } catch {}
@@ -349,6 +353,8 @@ router.patch('/roles/:id', requirePerm('rbac.manage'), async (req, res) => {
   if (newId !== oldId) {
     db.rolePermissions = db.rolePermissions.map((rp) => ((rp.role_id === oldId || rp.role_id === oldId.replace(/^role\./, '') || rp.role_id === oldName) ? { ...rp, role_id: newId } : rp))
     try { saveRolePermissions(db.rolePermissions) } catch {}
+    clearAllRoleSnapshots()
+    clearPermissionCacheForRoles([oldId, oldId.replace(/^role\./, ''), oldName, newId, newName])
   }
   try { saveRoles(db.roles) } catch {}
   return res.json(db.roles[idx])
@@ -388,6 +394,8 @@ router.delete('/roles/:id', requirePerm('rbac.manage'), async (req, res) => {
         try { await client.query('DELETE FROM role_permissions WHERE role_id = ANY($1)', [variants]) } catch {}
         await client.query('DELETE FROM roles WHERE id = $1', [roleId])
         await client.query('COMMIT')
+        clearAllRoleSnapshots()
+        clearPermissionCacheForRoles(variants)
         return res.json({ ok: true })
       } catch (e: any) {
         try { await client.query('ROLLBACK') } catch {}
@@ -413,6 +421,8 @@ router.delete('/roles/:id', requirePerm('rbac.manage'), async (req, res) => {
   db.roles.splice(idx, 1)
   try { saveRolePermissions(db.rolePermissions) } catch {}
   try { saveRoles(db.roles) } catch {}
+  clearAllRoleSnapshots()
+  clearPermissionCacheForRoles(Array.from(variants))
   return res.json({ ok: true })
 })
 
@@ -1027,57 +1037,38 @@ router.patch('/users/:id', requirePerm('rbac.manage'), async (req, res) => {
       } catch {}
       const rolesPayload = payload.roles
       delete payload.roles
-      if (rolesPayload !== undefined) {
-        try {
-          const { pgPool } = require('../dbAdapter')
-          if (pgPool) {
-            const cur = await pgPool.query('SELECT role FROM users WHERE id::text=$1 LIMIT 1', [String(id)])
-            const curRole = String(cur?.rows?.[0]?.role || '').trim()
-            const norm = normalizeRolesInput({ role: payload.role != null ? payload.role : curRole, roles: rolesPayload })
-            const nextPrimary = String(payload.role || '').trim() || (norm.roles.includes(curRole) ? curRole : (norm.roles[0] || curRole))
-            payload.role = nextPrimary
-            const rolesAll = Array.from(new Set([nextPrimary, ...norm.roles].map((x) => String(x || '').trim()).filter(Boolean)))
-            await ensureUserRolesTable()
-            await pgPool.query('DELETE FROM user_roles WHERE user_id::text=$1', [String(id)])
-            for (const rn of rolesAll) {
-              await pgPool.query('INSERT INTO user_roles (user_id, role_name) VALUES ($1,$2) ON CONFLICT (user_id, role_name) DO NOTHING', [String(id), rn])
-            }
+      const invalidatesAuth = rolesPayload !== undefined || payload.role !== undefined || didResetPassword
+      const updated = await pgRunInTransaction(async (client: any) => {
+        const current = await client.query('SELECT role FROM users WHERE id::text=$1 LIMIT 1 FOR UPDATE', [String(id)])
+        const currentRow = current?.rows?.[0] || null
+        if (!currentRow) return null
+
+        if (rolesPayload !== undefined) {
+          const curRole = String(currentRow.role || '').trim()
+          const norm = normalizeRolesInput({ role: payload.role != null ? payload.role : curRole, roles: rolesPayload })
+          const nextPrimary = String(payload.role || '').trim() || (norm.roles.includes(curRole) ? curRole : (norm.roles[0] || curRole))
+          payload.role = nextPrimary
+          const rolesAll = Array.from(new Set([nextPrimary, ...norm.roles].map((x) => String(x || '').trim()).filter(Boolean)))
+          await ensureUserRolesTable()
+          await client.query('DELETE FROM user_roles WHERE user_id::text=$1', [String(id)])
+          for (const roleName of rolesAll) {
+            await client.query('INSERT INTO user_roles (user_id, role_name) VALUES ($1,$2) ON CONFLICT (user_id, role_name) DO NOTHING', [String(id), roleName])
           }
-        } catch {}
-      }
-      const updated = await pgUpdate('users', id, payload as any)
-      if (payload.role) {
-        try {
-          const { pgPool } = require('../dbAdapter')
-          if (pgPool) {
-            await ensureUserRolesTable()
-            await pgPool.query('INSERT INTO user_roles (user_id, role_name) VALUES ($1,$2) ON CONFLICT (user_id, role_name) DO NOTHING', [String(id), String(payload.role)])
-          }
-        } catch {}
-      }
-      if (didResetPassword) {
-        try {
-          const { pgPool } = require('../dbAdapter')
-          if (pgPool) {
-            await pgPool.query(`CREATE TABLE IF NOT EXISTS sessions (
-              id text PRIMARY KEY,
-              user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-              created_at timestamptz DEFAULT now(),
-              last_seen_at timestamptz DEFAULT now(),
-              expires_at timestamptz NOT NULL,
-              revoked boolean NOT NULL DEFAULT false,
-              ip text,
-              user_agent text,
-              device text
-            );`)
-            await pgPool.query('CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);')
-            await pgPool.query('CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);')
-            await pgPool.query('CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions(user_id) WHERE revoked = false;')
-            await pgPool.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [id])
-          }
-        } catch {}
-      }
-      return res.json(updated || { id, ...payload })
+        }
+
+        const next = await pgUpdate('users', String(id), payload as any, client)
+        if (payload.role) {
+          await ensureUserRolesTable()
+          await client.query('INSERT INTO user_roles (user_id, role_name) VALUES ($1,$2) ON CONFLICT (user_id, role_name) DO NOTHING', [String(id), String(payload.role)])
+        }
+        if (didResetPassword) {
+          await client.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [String(id)])
+        }
+        return next
+      })
+      if (!updated) return res.status(404).json({ message: 'user not found' })
+      if (invalidatesAuth) invalidateUserAuthState(String(id))
+      return res.json(updated)
     }
     // Supabase branch removed
     return res.json({ id, ...payload })
@@ -1087,8 +1078,14 @@ router.patch('/users/:id', requirePerm('rbac.manage'), async (req, res) => {
 router.delete('/users/:id', requirePerm('rbac.manage'), async (req, res) => {
   const { id } = req.params
   try {
-    if (hasPg) { await pgDelete('users', id); return res.json({ ok: true }) }
+    if (hasPg) {
+      const deleted = await pgDelete('users', id)
+      if (!deleted) return res.status(404).json({ message: 'user not found' })
+      invalidateUserAuthState(String(id))
+      return res.json({ ok: true })
+    }
     // Supabase branch removed
+    invalidateUserAuthState(String(id))
     return res.json({ ok: true })
   } catch (e: any) { return res.status(500).json({ message: e.message }) }
 })
