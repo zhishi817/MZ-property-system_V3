@@ -19008,6 +19008,25 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Independent review: `GO`; evidence: repaired-candidate read-only review found no P0/P1; it verified the bounded version-state lifecycle, stale in-flight invalidation and 2,000 idle-invalidation regression, exact source fingerprint and staged-scope gate. The pre-existing RBAC user-route runtime DDL remains explicitly deferred to R5-2.
 - Action conclusion: `GO`; the selected local commit completed. A committed-range audit and new exact user push authorization are required before push; PR, merge, deployment and production/device verification remain separately unauthorized.
 
+#### RA-20260902-005
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260902-001`
+- Selected CRL identities: `root/CRL-20260902-001`
+- Intended action: `push`
+- Branch: `codex/r4-auth-role-snapshot-20260902`
+- Base: `origin/Dev@a3ec750f335f714bdff52ac16399b3dbeffbe22d`; freshly confirmed at `2026-09-02 Australia/Melbourne`
+- Candidate patch SHA-256: `fa84a3e09f7428baa3d3f4f0ffaeec2d44b7b3ce21ba18350ece1b5479df59cf` excluding `docs/change-release-ledger.md`
+- Commit SHA: `f8917078d0246a863c20d85578a0ed75ebd190b5` (candidate content commit); prior receipt head `5f0a30bd12c28646a2ffd4242248aadf2852759b`
+- Dependencies: none
+- Required validation: `PASS`; evidence: RA-20260902-004 exact `a3ec750f...5f0a30bd` range audit passed; source/receipt scope is unchanged.
+- Shared-hunk review: `PASS`; evidence: committed range matched all 36 selected non-ledger hunks and no unselected path.
+- Generated-file review: `PASS`; evidence: exact range contains no generated or sensitive file.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: user explicitly requested “推送R4” on 2026-09-02 after the exact R4 content commit, receipt head and branch were presented.
+- Independent review: `GO for commit`; evidence: repaired candidate review found no P0/P1; this push receipt does not change runtime source.
+- Action conclusion: `GO`; push may proceed only after this receipt's exact committed-range audit passes. PR, merge, deployment and production/device verification remain separate.
+
 ### Risks / Release Notes
 
 - This is an in-process cache only. A role membership change on another Render instance can remain visible for at most the 15-second role-snapshot TTL; user-missing, deletion and session-revoke handling are not allowed to use JWT fallback.
