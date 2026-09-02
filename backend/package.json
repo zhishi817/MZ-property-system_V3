@@ -38,6 +38,7 @@
     "test:cleaning-inspection-merge": "ts-node-dev --transpile-only scripts/tests/test_cleaning_inspection_merge.ts",
     "test:guest-luggage-rules": "ts-node-dev --transpile-only scripts/tests/test_guest_luggage_rules.ts",
     "test:guest-luggage-work-tasks-batch": "ts-node-dev --transpile-only scripts/tests/test_guest_luggage_work_tasks_batch.ts",
+    "test:auth-role-snapshot": "ts-node-dev --transpile-only scripts/tests/test_auth_role_snapshot.ts",
     "test:orders-overlap": "ts-node-dev --transpile-only scripts/tests/test_orders_overlap.ts",
     "test:auto-expense-source-summary": "ts-node-dev --transpile-only scripts/tests/test_auto_expense_source_summary.ts",
     "test:company-revenue-report": "ts-node-dev --transpile-only scripts/tests/test_company_revenue_report.ts",

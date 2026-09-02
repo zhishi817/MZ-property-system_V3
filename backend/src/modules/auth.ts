@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { login, me, setDeletePassword } from '../auth'
+import { invalidateUserAuthState, login, me, setDeletePassword } from '../auth'
 import { hasPg, pgSelect } from '../dbAdapter'
 import { z } from 'zod'
 import crypto from 'crypto'
@@ -114,10 +114,11 @@ router.post('/reset', async (req, res) => {
       await client.query('UPDATE users SET password_hash=$1 WHERE id=$2', [pwHash, String(row.user_id)])
       await client.query('UPDATE password_resets SET used_at=now() WHERE id=$1', [String(row.id)])
       try { await client.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [String(row.user_id)]) } catch {}
-      return { ok: true }
+      return { ok: true, userId: String(row.user_id) }
     })
 
     if (!result?.ok) return res.status(400).json({ message: 'invalid_or_expired' })
+    invalidateUserAuthState(String(result.userId || ''))
     return res.json({ ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: String(e?.message || 'reset_failed') })
