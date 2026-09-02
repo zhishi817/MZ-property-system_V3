@@ -168,7 +168,8 @@
 - Base: `origin/Dev@0fc8036901fa5074f521bcabcde84e08dc5fa7c1`; fetched at `2026-09-02T11:15:07+10:00` before the isolated re-alignment.
 - Candidate patch SHA-256: `34926b244c76df3118e9ed29c3e4c9e3881e5c75744810976cb165ae7a005c25` excluding `docs/change-release-ledger.md`
 - Commit SHA: `9ab11cb26a7ad8aa321feffe82fdab550bbe849d`; this candidate content commit is an ancestor of the following ledger receipt.
-- Dependencies: `root/CRL-20260902-001@f8917078d0246a863c20d85578a0ed75ebd190b5`; its content commit is an ancestor of the selected base, and this candidate retains its auth-role snapshot quality gate while adding the R5 request-schema checks.
+- Dependencies: `root/CRL-20260902-001@f8917078d0246a863c20d85578a0ed75ebd190b5`
+- Dependency rationale: the R4 content commit is an ancestor of the selected base; this candidate retains its auth-role snapshot quality gate while adding the R5 request-schema checks.
 - Required validation: `PASS`; pre-commit ledger gate (12 paths / 69 non-ledger hunks), feature-registry audit, root quality-workflow contract, R5 request-schema contract, Profile document contract, R4 auth role-snapshot contract and TypeScript no-emit all passed. The repaired root `check:backend` explicitly wires both R5 and Profile contracts, so CI and `check:full` retain the FR-021 test. TypeScript used a temporary symlink to a backend dependency tree whose `backend/package-lock.json` SHA-256 exactly matches the candidate; the link was removed immediately. No production command ran.
 - Shared-hunk review: `PASS`; exact `origin/Dev...candidate` diff has 12 selected paths only, no untracked/generated file, and static inspection confirms target request handlers retain no `ensure*` / `CREATE` / `ALTER` schema-mutation call.
 - Generated-file review: `PASS`; no untracked/generated path exists in the isolated candidate at preparation time.
