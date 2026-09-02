@@ -33,6 +33,7 @@ import {
 import type { WorkTaskActionId } from '../lib/workTaskActions'
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
 import { canViewMzappGuestLuggageNoticeMedia, canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia } from './mzapp'
+import { requireR5RequestSchema } from '../lib/r5RequestSchema'
 
 export const router = Router()
 
@@ -1592,79 +1593,6 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
   }
 })
 
-async function ensureCleaningTaskMediaNote() {
-  try {
-    if (!hasPg) return
-    const { pgPool } = require('../dbAdapter')
-    if (!pgPool) return
-    await pgPool.query(`ALTER TABLE cleaning_task_media ADD COLUMN IF NOT EXISTS note text;`)
-    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_task_type ON cleaning_task_media(task_id, type);`)
-  } catch {}
-}
-
-async function ensureCleaningDayEndMediaTable() {
-  try {
-    if (!hasPg) return
-    const { pgPool } = require('../dbAdapter')
-    if (!pgPool) return
-    await pgPool.query(`CREATE TABLE IF NOT EXISTS cleaning_day_end_media (
-      id text PRIMARY KEY,
-      user_id text NOT NULL,
-      date date NOT NULL,
-      kind text NOT NULL DEFAULT 'backup_key_return',
-      url text NOT NULL,
-      captured_at timestamptz,
-      created_at timestamptz NOT NULL DEFAULT now()
-    );`)
-    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_day_end_media_user_date ON cleaning_day_end_media(user_id, date);`)
-    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_day_end_media_date ON cleaning_day_end_media(date);`)
-  } catch {}
-}
-
-async function ensureCleaningDayEndHandoverTable() {
-  try {
-    if (!hasPg) return
-    const { pgPool } = require('../dbAdapter')
-    if (!pgPool) return
-    await ensureCleaningDayEndMediaTable()
-    await pgPool.query(`CREATE TABLE IF NOT EXISTS cleaning_day_end_handover (
-      user_id text NOT NULL,
-      date date NOT NULL,
-      no_dirty_linen boolean NOT NULL DEFAULT false,
-      no_warehouse_key boolean NOT NULL DEFAULT false,
-      submitted_at timestamptz NOT NULL DEFAULT now(),
-      key_submitted_at timestamptz,
-      dirty_linen_submitted_at timestamptz,
-      warehouse_key_submitted_at timestamptz,
-      consumable_submitted_at timestamptz,
-      reject_submitted_at timestamptz,
-      updated_at timestamptz NOT NULL DEFAULT now(),
-      PRIMARY KEY (user_id, date)
-    );`)
-    await pgPool.query(`ALTER TABLE cleaning_day_end_handover ADD COLUMN IF NOT EXISTS no_warehouse_key boolean NOT NULL DEFAULT false;`)
-    await pgPool.query(`ALTER TABLE cleaning_day_end_handover ADD COLUMN IF NOT EXISTS key_submitted_at timestamptz;`)
-    await pgPool.query(`ALTER TABLE cleaning_day_end_handover ADD COLUMN IF NOT EXISTS dirty_linen_submitted_at timestamptz;`)
-    await pgPool.query(`ALTER TABLE cleaning_day_end_handover ADD COLUMN IF NOT EXISTS warehouse_key_submitted_at timestamptz;`)
-    await pgPool.query(`ALTER TABLE cleaning_day_end_handover ADD COLUMN IF NOT EXISTS consumable_submitted_at timestamptz;`)
-    await pgPool.query(`ALTER TABLE cleaning_day_end_handover ADD COLUMN IF NOT EXISTS reject_submitted_at timestamptz;`)
-    await pgPool.query(`ALTER TABLE cleaning_day_end_handover ALTER COLUMN submitted_at DROP DEFAULT;`)
-    await pgPool.query(`ALTER TABLE cleaning_day_end_handover ALTER COLUMN submitted_at DROP NOT NULL;`)
-    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_day_end_handover_date ON cleaning_day_end_handover(date);`)
-    await pgPool.query(`CREATE TABLE IF NOT EXISTS cleaning_day_end_reject_items (
-      id text PRIMARY KEY,
-      user_id text NOT NULL,
-      date date NOT NULL,
-      linen_type text NOT NULL,
-      quantity integer NOT NULL DEFAULT 1,
-      used_room text NOT NULL,
-      photos_json jsonb NOT NULL DEFAULT '[]'::jsonb,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      updated_at timestamptz NOT NULL DEFAULT now()
-    );`)
-    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_day_end_reject_items_user_date ON cleaning_day_end_reject_items(user_id, date);`)
-  } catch {}
-}
-
 function canViewDayEndForAllUsers(user: any) {
   const role = String(user?.role || '').trim()
   const roles = Array.isArray(user?.roles) ? user.roles.map((x: any) => String(x || '').trim()) : []
@@ -1714,11 +1642,10 @@ const inspectionIssuePhotosSchema = z
   })
   .strict()
 
-router.get('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspect.finish', 'cleaning_app.tasks.finish']), async (req, res) => {
+router.get('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspect.finish', 'cleaning_app.tasks.finish']), requireR5RequestSchema, async (req, res) => {
   const { id } = req.params
   try {
     if (hasPg) {
-      await ensureCleaningTaskMediaNote()
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
       const r = await pgPool.query(
@@ -1747,7 +1674,7 @@ router.get('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspect
   }
 })
 
-router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspect.finish', 'cleaning_app.tasks.finish']), async (req, res) => {
+router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspect.finish', 'cleaning_app.tasks.finish']), requireR5RequestSchema, async (req, res) => {
   const user = (req as any).user
   const { id } = req.params
   const parsed = inspectionPhotosSchema.safeParse(req.body || {})
@@ -1767,7 +1694,6 @@ router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspec
       if ((byArea.get(a) || 0) > lim) return res.status(400).json({ message: '超出数量限制', area: a, limit: lim })
     }
     if (hasPg) {
-      await ensureCleaningTaskMediaNote()
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
       if (!await canPerformCleaningTaskAction(user, String(id), ['submit_inspection'])) return res.status(403).json({ message: 'forbidden' })
@@ -1852,14 +1778,13 @@ router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspec
 // After the formal inspection is saved, inspectors can still append cleaning
 // issue evidence from their album. This route never replaces the submitted
 // inspection batch and deliberately does not advance the task state again.
-router.post('/tasks/:id/inspection-issue-photos', requireAnyPerm(['cleaning_app.inspect.finish', 'cleaning_app.issues.report']), async (req, res) => {
+router.post('/tasks/:id/inspection-issue-photos', requireAnyPerm(['cleaning_app.inspect.finish', 'cleaning_app.issues.report']), requireR5RequestSchema, async (req, res) => {
   const user = (req as any).user
   const { id } = req.params
   const parsed = inspectionIssuePhotosSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
     if (!hasPg) return res.status(201).json({ ok: true })
-    await ensureCleaningTaskMediaNote()
     const { pgPool } = require('../dbAdapter')
     if (!pgPool) return res.status(500).json({ message: 'pg not available' })
     if (!await canPerformCleaningTaskAction(user, String(id), ['submit_inspection', 'report_issue'])) return res.status(403).json({ message: 'forbidden' })
@@ -1984,11 +1909,10 @@ function normalizedSelfCompletePhotoException(raw: any, missingAreas: readonly s
   return { items: missingAreas.map((area) => byArea.get(area)!) }
 }
 
-router.get('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.finish'), async (req, res) => {
+router.get('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.finish'), requireR5RequestSchema, async (req, res) => {
   const { id } = req.params
   try {
     if (hasPg) {
-      await ensureCleaningTaskMediaNote()
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
       const r = await pgPool.query(
@@ -2017,7 +1941,7 @@ router.get('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.finis
   }
 })
 
-router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.finish'), async (req, res) => {
+router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.finish'), requireR5RequestSchema, async (req, res) => {
   const user = (req as any).user
   const { id } = req.params
   const parsed = completionPhotosSchema.safeParse(req.body || {})
@@ -2035,7 +1959,6 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
       if ((byArea.get(a) || 0) > lim) return res.status(400).json({ message: '超出数量限制', area: a, limit: lim })
     }
     if (hasPg) {
-      await ensureCleaningTaskMediaNote()
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
       if (!await canPerformCleaningTaskAction(user, String(id), ['upload_access_video', 'complete_cleaning'])) return res.status(403).json({ message: 'forbidden' })
@@ -2143,14 +2066,13 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
 })
 
 const lockboxVideoSchema = z.object({ media_url: z.string().min(1), captured_at: z.string().optional(), lat: z.number().optional(), lng: z.number().optional(), ...actionAuditBodySchema })
-router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish'), async (req, res) => {
+router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish'), requireR5RequestSchema, async (req, res) => {
   const user = (req as any).user
   const { id } = req.params
   const parsed = lockboxVideoSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
     if (hasPg) {
-      await ensureCleaningTaskMediaNote()
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
       if (!await canPerformCleaningTaskAction(user, String(id), ['upload_access_video'])) return res.status(403).json({ message: 'forbidden' })
@@ -2245,7 +2167,6 @@ async function handleDeleteLockboxVideo(req: any, res: any) {
   if (!taskId) return res.status(400).json({ message: 'missing id' })
   try {
     if (!hasPg) return res.json({ ok: true })
-    await ensureCleaningTaskMediaNote()
     const { pgPool } = require('../dbAdapter')
     if (!pgPool) return res.status(500).json({ message: 'pg not available' })
     const userId = String(user?.sub || '').trim()
@@ -2315,17 +2236,16 @@ async function handleDeleteLockboxVideo(req: any, res: any) {
   }
 }
 
-router.delete('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish'), handleDeleteLockboxVideo)
-router.post('/tasks/:id/lockbox-video/delete', requirePerm('cleaning_app.tasks.finish'), handleDeleteLockboxVideo)
+router.delete('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish'), requireR5RequestSchema, handleDeleteLockboxVideo)
+router.post('/tasks/:id/lockbox-video/delete', requirePerm('cleaning_app.tasks.finish'), requireR5RequestSchema, handleDeleteLockboxVideo)
 
-router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish'), async (req, res) => {
+router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish'), requireR5RequestSchema, async (req, res) => {
   const user = (req as any).user
   const { id } = req.params
   const parsed = selfCompleteSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
     if (hasPg) {
-      await ensureCleaningTaskMediaNote()
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
 
@@ -2473,11 +2393,10 @@ const restockProofSchema = z
   })
   .strict()
 
-router.get('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.finish', 'cleaning_app.tasks.finish']), async (req, res) => {
+router.get('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.finish', 'cleaning_app.tasks.finish']), requireR5RequestSchema, async (req, res) => {
   const { id } = req.params
   try {
     if (hasPg) {
-      await ensureCleaningTaskMediaNote()
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
       const r = await pgPool.query(
@@ -2522,7 +2441,7 @@ router.get('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.fin
   }
 })
 
-router.post('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.finish', 'cleaning_app.tasks.finish']), async (req, res) => {
+router.post('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.finish', 'cleaning_app.tasks.finish']), requireR5RequestSchema, async (req, res) => {
   const user = (req as any).user
   const { id } = req.params
   const parsed = restockProofSchema.safeParse(req.body || {})
@@ -2535,7 +2454,6 @@ router.post('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.fi
       uniq.add(k)
     }
     if (hasPg) {
-      await ensureCleaningTaskMediaNote()
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
       const uuid = require('uuid')
@@ -2737,7 +2655,7 @@ const dayEndHandoverPostSchema = z
   })
   .strict()
 
-router.get('/day-end/backup-keys', requireAnyPerm(['cleaning_app.tasks.finish', 'cleaning_app.inspect.finish', 'cleaning_app.calendar.view.all']), async (req, res) => {
+router.get('/day-end/backup-keys', requireAnyPerm(['cleaning_app.tasks.finish', 'cleaning_app.inspect.finish', 'cleaning_app.calendar.view.all']), requireR5RequestSchema, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const parsed = dayEndBackupKeysListSchema.safeParse(req.query || {})
@@ -2746,7 +2664,6 @@ router.get('/day-end/backup-keys', requireAnyPerm(['cleaning_app.tasks.finish', 
     if (!hasPg) return res.json({ items: [] })
     const { pgPool } = require('../dbAdapter')
     if (!pgPool) return res.json({ items: [] })
-    await ensureCleaningDayEndMediaTable()
     const date = String(parsed.data.date || '').slice(0, 10)
     const canAll = canViewDayEndForAllUsers(user)
     const userId = canAll && parsed.data.user_id ? String(parsed.data.user_id) : String(user.sub || '')
@@ -2772,7 +2689,7 @@ router.get('/day-end/backup-keys', requireAnyPerm(['cleaning_app.tasks.finish', 
   }
 })
 
-router.get('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'cleaning_app.inspect.finish', 'cleaning_app.calendar.view.all']), async (req, res) => {
+router.get('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'cleaning_app.inspect.finish', 'cleaning_app.calendar.view.all']), requireR5RequestSchema, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const parsed = dayEndHandoverListSchema.safeParse(req.query || {})
@@ -2781,7 +2698,6 @@ router.get('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'cl
     if (!hasPg) return res.json({ key_photos: [], dirty_linen_photos: [], return_wash_photos: [], warehouse_key_photos: [], consumable_photos: [], reject_items: [], no_dirty_linen: false, no_warehouse_key: false, submitted_at: null, updated_at: null })
     const { pgPool } = require('../dbAdapter')
     if (!pgPool) return res.json({ key_photos: [], dirty_linen_photos: [], return_wash_photos: [], warehouse_key_photos: [], consumable_photos: [], reject_items: [], no_dirty_linen: false, no_warehouse_key: false, submitted_at: null, updated_at: null })
-    await ensureCleaningDayEndHandoverTable()
     const date = String(parsed.data.date || '').slice(0, 10)
     const canAll = canViewDayEndForAllUsers(user)
     const userId = canAll && parsed.data.user_id ? String(parsed.data.user_id) : String(user.sub || '')
@@ -2906,7 +2822,7 @@ const dayEndBackupKeysPostSchema = z
   })
   .strict()
 
-router.post('/day-end/backup-keys', requireAnyPerm(['cleaning_app.tasks.finish', 'cleaning_app.inspect.finish']), async (req, res) => {
+router.post('/day-end/backup-keys', requireAnyPerm(['cleaning_app.tasks.finish', 'cleaning_app.inspect.finish']), requireR5RequestSchema, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const parsed = dayEndBackupKeysPostSchema.safeParse(req.body || {})
@@ -2915,7 +2831,6 @@ router.post('/day-end/backup-keys', requireAnyPerm(['cleaning_app.tasks.finish',
     if (!hasPg) return res.status(201).json({ ok: true })
     const { pgPool } = require('../dbAdapter')
     if (!pgPool) return res.status(500).json({ message: 'pg not available' })
-    await ensureCleaningDayEndMediaTable()
     const uuid = require('uuid')
     const userId = String(user.sub || '').trim()
     const date = String(parsed.data.date || '').slice(0, 10)
@@ -2934,7 +2849,7 @@ router.post('/day-end/backup-keys', requireAnyPerm(['cleaning_app.tasks.finish',
   }
 })
 
-router.post('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'cleaning_app.inspect.finish']), async (req, res) => {
+router.post('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'cleaning_app.inspect.finish']), requireR5RequestSchema, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const parsed = dayEndHandoverPostSchema.safeParse(req.body || {})
@@ -2943,7 +2858,6 @@ router.post('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'c
     if (!hasPg) return res.status(201).json({ ok: true })
     const { pgPool } = require('../dbAdapter')
     if (!pgPool) return res.status(500).json({ message: 'pg not available' })
-    await ensureCleaningDayEndHandoverTable()
     const uuid = require('uuid')
     const userId = String(user.sub || '').trim()
     const date = String(parsed.data.date || '').slice(0, 10)
