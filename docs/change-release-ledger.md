@@ -3,7 +3,7 @@
 ## CRL-20260902-002 — R5-1 请求路径 schema mutation 移除（root）
 
 - **Repository:** `root`
-- **Status:** verified candidate; selected for local commit
+- **Status:** committed; awaiting explicit push authorization
 - **Updated:** 2026-09-02 Australia/Melbourne
 - **Request:** 将 Profile、日终交接和清洁任务媒体中高频 `CREATE/ALTER ... IF NOT EXISTS` 从 API 请求路径迁移到受控 migration；不处理其它模块 runtime DDL，不执行生产数据库或 Render 操作。
 - **Outcome:** 新增 `20260902_r5_1_request_schema` SQL migration，在全部目标 DDL 成功后记录固定 marker。应用启动只查询该 marker；标记未就绪时受影响路由在既有权限 middleware 后返回受控 503，绝不在请求中建表、加字段或查询 schema catalog。Profile 路由改为读取已迁移的固定字段集合，清洁媒体和日终路由移除 runtime ensure helper。
@@ -167,15 +167,15 @@
 - Branch: `codex/r5-1-request-schema-realign-20260902`
 - Base: `origin/Dev@0fc8036901fa5074f521bcabcde84e08dc5fa7c1`; fetched on 2026-09-02 before the isolated re-alignment.
 - Candidate patch SHA-256: `34926b244c76df3118e9ed29c3e4c9e3881e5c75744810976cb165ae7a005c25` excluding `docs/change-release-ledger.md`
-- Commit SHA: `not committed`; audit head is emitted by the report command.
+- Commit SHA: `9ab11cb26a7ad8aa321feffe82fdab550bbe849d`; this candidate content commit is an ancestor of the following ledger receipt.
 - Dependencies: root/CRL-20260902-001 is already present in the base; this candidate retains its auth-role snapshot quality gate and adds the R5 request-schema checks.
 - Required validation: `PASS`; pre-commit ledger gate (12 paths / 69 non-ledger hunks), feature-registry audit, root quality-workflow contract, R5 request-schema contract, Profile document contract, R4 auth role-snapshot contract and TypeScript no-emit all passed. The repaired root `check:backend` explicitly wires both R5 and Profile contracts, so CI and `check:full` retain the FR-021 test. TypeScript used a temporary symlink to a backend dependency tree whose `backend/package-lock.json` SHA-256 exactly matches the candidate; the link was removed immediately. No production command ran.
 - Shared-hunk review: `PASS`; exact `origin/Dev...candidate` diff has 12 selected paths only, no untracked/generated file, and static inspection confirms target request handlers retain no `ensure*` / `CREATE` / `ALTER` schema-mutation call.
 - Generated-file review: `PASS`; no untracked/generated path exists in the isolated candidate at preparation time.
-- Technical state: `candidate`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user selected the R5-1 release unit and then authorized the next re-alignment step on 2026-09-02. This does not authorize push, migration, deployment or production verification.
 - Independent review: `GO`; repaired-candidate review verified `quality.yml` executes `check:backend`, which now contains the R5 schema, Profile document and R4 auth-role snapshot contracts; `check:full` calls the same backend gate. It independently matched base, 12 selected paths, 69 non-ledger hunks and candidate SHA-256 `34926b244c76df3118e9ed29c3e4c9e3881e5c75744810976cb165ae7a005c25`, with no P0/P1/P2, untracked/generated or sensitive paths.
-- Action conclusion: `GO` for local commit only. Push, PR, merge, migration, deployment and production verification remain separately unauthorized.
+- Action conclusion: `GO` for the completed local commit. Push, PR, merge, migration, deployment and production verification remain separately unauthorized.
 
 ### Risks / Release Notes
 
