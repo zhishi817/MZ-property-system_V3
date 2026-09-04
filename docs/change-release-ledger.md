@@ -134,11 +134,12 @@
 - Required validation: `PASS`; evidence: RA-20260904-008 validation, revised independent commit review, exact pre-commit gates and committed-range report all passed; candidate fingerprint is unchanged.
 - Shared-hunk review: `PASS`; evidence: exact base range contains only this CRL's six selected files and 44 non-ledger hunks.
 - Generated-file review: `PASS`; evidence: exact range contains no generated file, cache, untracked path or configured sensitive category.
-- Technical state: `committed`
+- Technical state: `pushed`
+- Remote branch: `origin/codex/ci-faster-quality-gates-20260904@20a6ca98965a8947017259642cf2fda839cdab15`; initial non-force push and matching `git ls-remote` verification completed at 2026-09-04 21:48:46 AEST. This ledger-only outcome receipt will be fast-forwarded on the same branch.
 - Remote preflight: `PASS`; evidence: freshly fetched `origin/Dev` still matches the recorded base and `refs/heads/codex/ci-faster-quality-gates-20260904` does not exist remotely at 2026-09-04 21:44:16 AEST.
 - User authorization: `approved-for-push`; evidence: after receiving content commit `849fe422ebe926a9873a8d2c87d5cdc31528d86c`, receipt head `513b20395b9a8ae655fe49962797aaa902266c6e` and branch `codex/ci-faster-quality-gates-20260904`, the user replied `推送` on 2026-09-04.
 - Independent review: `GO for push receipt`; evidence: independent review verified base → content commit → receipt ancestry, candidate fingerprint, exact 6-file / 44-hunk scope, bound push authorization, fresh base, absent remote branch and no P0/P1. The accepted documentation P2 does not affect Actions coverage.
-- Action conclusion: `GO`; blockers: none；non-force push is permitted only after this ledger-only receipt passes its pre-commit gate, is committed, the resulting clean-tree exact range report is GO, and the live remote preflight still matches.
+- Action conclusion: `GO`; blockers: none；the authorized exact range reached `origin/codex/ci-faster-quality-gates-20260904@20a6ca98965a8947017259642cf2fda839cdab15` by non-force push and the initial remote SHA matched local HEAD. This ledger-only outcome receipt remains to be committed and fast-forwarded; PR, merge, remote protection changes and deployment remain unauthorized.
 
 ### Risks / Release Notes
 
