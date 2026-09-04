@@ -1,5 +1,154 @@
 # Change Release Ledger
 
+## CRL-20260904-006 — 根仓库 CI 分层提速与重复检查消除（root）
+
+- **Repository:** `root`
+- **Status:** ready; selected-for-commit
+- **Updated:** 2026-09-04 21:22 AEST
+- **Request:** 缩短每次推送/PR 等待 GitHub checks 的时间；保持现有 required check 名称和失败门禁，不用 `paths-ignore` 留下永久 Expected 状态。
+- **Outcome:** 普通 feature → `Dev` PR 只执行一次 Fast Regression，Full Regression 延后到合入 `Dev` 或 `main` 后的 push（以及手动触发）执行；原本重复安装依赖并再次运行 backend/frontend 的 `Root Quality Check` 改为轻量结果汇总器。仅修改台账的 PR 仍执行精确 Ledger 范围审计，其余稳定 check 以显式 no-op 成功返回，不再 checkout 仓库或安装依赖。PR 触发目标收窄为 `Dev`，避免同一 `Dev` 提交在 `Dev` → `main` 阶段同时启动 push 和 pull_request 两套根工作流。
+
+### Implementation
+
+- 保留工作流名 `Root Quality Gate` 以及 `Risk Classification`、`Change Ledger Audit`、`Regression Registry Audit`、`Fast Regression`、`Full Regression`、`Root Quality Check` 的稳定 job 名称。
+- `Root Quality Check` 通过 `needs` 汇总五层结果，任何层不是 `success` 都失败；自身不再 checkout、安装依赖或重复运行 backend/frontend。
+- 风险分类器新增 `ledger_only` 输出并保留 `full_required` 兼容输出；仅 `docs/change-release-ledger.md` 变化时走快速路径，混合源码变化不会被误判。
+- `check:fast` 接入工作流契约测试，锁定事件分层、required-check 汇总器、ledger-only 路径及 mobile ref fail-closed 行为。
+- 首轮独立审查发现当前 `check:full` 不包含 ledger range 与 submit-id 两项 Fast-only 契约；修订后集成 push/manual 同时并行运行 Fast 与 Full，仅 feature PR 延后 Full，避免提速时丢失覆盖。
+- 本变更只涉及 CI/治理，不改变业务路由、API、数据库、生产数据、依赖版本或移动端源码，因此未新增 Feature Regression 条目。
+
+### Files / Areas
+
+- `.github/workflows/quality.yml` — modified: PR/集成事件分层、ledger-only no-op、轻量 required-check 汇总器。
+- `scripts/ci/classify_pr_risk.sh` — modified: 新增 `ledger_only` 分类输出并规范空白路径输入。
+- `scripts/tests/test_root_quality_workflow_contract.py` — modified: 覆盖触发拓扑、Fast/Full 分层、汇总器、ledger-only 分类和 mobile ref 契约。
+- `package.json` — modified: 工作流契约测试加入 `check:fast`。
+- `docs/ci-merge-gates.md` — modified: 记录新的 feature → Dev → main 门禁与执行边界。
+- `docs/change-release-ledger.md` — modified: 本 CRL。
+
+### Impact / Dependencies
+
+- CI behavior: feature PR 的关键路径预计由 Full/重复 Root 检查的约 9–20 分钟降为单次 Fast Regression 的约 7 分钟；实际耗时必须在该工作流合入后由 GitHub run 验证。
+- Required checks: 稳定 job 名称保留；现有保护规则若要求 `Root Quality Check`、`Fast Regression` 或其他稳定名称，仍会收到明确成功/失败上下文。
+- Release topology: 仅支持 feature → `Dev` PR，再由 `Dev` → `main`；直接 feature → `main` 的 PR 不触发本 root 工作流。
+- Dependencies / configuration: none；未安装或升级依赖，未修改远程 branch protection。
+- Production / database / external writes: none。
+
+### Validation
+
+- `python3 scripts/tests/test_root_quality_workflow_contract.py` — PASS：8 tests，覆盖 Dev-only PR、Dev/main push、轻量汇总器、Fast/Full 分层、ledger-only/mixed 分类和 mobile ref resolver。
+- Ruby YAML parse of `.github/workflows/quality.yml` — PASS。
+- `printf 'docs/change-release-ledger.md\\n' | bash scripts/ci/classify_pr_risk.sh --stdin` — PASS：`ledger_only=true`、`full_required=false`。
+- mixed workflow + ledger classifier probe — PASS：`ledger_only=false`、`full_required=true`。
+- `bash -n scripts/ci/classify_pr_risk.sh` and `bash -n scripts/ci/resolve_mobile_ci_ref.sh` — PASS。
+- `npm run test:ledger-range-audit` — PASS：37 tests。
+- `npm run check:feature-registry` — PASS：19 FRs / 157 mappings；本次为 CI 治理变更，无需新增 FR。
+- `python3 scripts/audit_change_release_ledger.py` — PASS：6 个变更文件全部由本 CRL 覆盖。
+- `python3 scripts/audit_change_release_ledger.py --pre-commit --repo root --crl CRL-20260904-006` — PASS：6 个暂存文件、44 个非台账 hunk、0 unexpected/missing/untracked。
+- `git diff --check` — PASS。
+- backend/frontend/mobile 的业务 build、lint 与全量测试 — not run；本候选不改业务源码或依赖，且隔离 root 工作树未安装三端依赖。真实 Fast/Full 命令仍需 GitHub hosted run 验证。
+- GitHub hosted execution timing and remote branch-protection compatibility — not run；需要提交/推送并由真实 PR/push 事件验证。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared.
+- **Untracked review:** none；候选来自 freshly fetched `origin/Dev` 独立干净工作树，未跟踪文件为零。
+- `.github/workflows/quality.yml` — SHA-256: `105d6078708782a787f8d47b1de9a1793ffa97e451f0a8addb99f934abdc6dc1`
+- `.github/workflows/quality.yml` — SHA-256: `1fcf42a0fe340ddff5fbdf035d33c7ecdec45012d3ebebbb3a74a51cf8379462`
+- `.github/workflows/quality.yml` — SHA-256: `20d3c3f4087c40fb333140c11e85c309c3542ce9ab12c53055259f3cd8816aab`
+- `.github/workflows/quality.yml` — SHA-256: `24eb955313acc754672fe2f7814bac15ad3a6ba1c79e7d53191ca0f47bbb3bfb`
+- `.github/workflows/quality.yml` — SHA-256: `2f03c6ae1dfd7ffe8ed7aa6f22c3d5082985399f8c221483d665143ea19d5bab`
+- `.github/workflows/quality.yml` — SHA-256: `3059403be514f806388fc3c290496ae9e24d1186183af8dda21e6cbd858c13f4`
+- `.github/workflows/quality.yml` — SHA-256: `344510304c2555ef7db930b459590537762bb8da7b51337316f56988d2d406c8`
+- `.github/workflows/quality.yml` — SHA-256: `45e02d605854af19a3e3b54c549c002e5a28d4f430d5c16c7ea0c9ec8db3be4b`
+- `.github/workflows/quality.yml` — SHA-256: `4d914cb7fa4c11e347ec7ba8c2854c69e4f54eed4e1317a85d1f5e3a859c1a49`
+- `.github/workflows/quality.yml` — SHA-256: `4f5e94193570f1d00cf31ac30a6f5d649d5d388dca9ac92fa721a2b1616973c5`
+- `.github/workflows/quality.yml` — SHA-256: `5e0eeeb819439292a7ada8dc8560c16369b4979979d9aa10542dfba261e49fea`
+- `.github/workflows/quality.yml` — SHA-256: `6cd4962e2aa5cbb21cfcd698053bd90d70f47a0013b1e84507d55d5974c3a081`
+- `.github/workflows/quality.yml` — SHA-256: `775e1ad376cb2eaeaaab5255a490f5c3d810ebf28c6ff4dde914fb7a7215f773`
+- `.github/workflows/quality.yml` — SHA-256: `78ac4cfe89339a5eaa9be723339eebaf4a62bfeb863e3d610c5332e617e5bd61`
+- `.github/workflows/quality.yml` — SHA-256: `7e08a732c30cb0cc4abfe770ca37430153652599f3efd3fb49450a3b389e25be`
+- `.github/workflows/quality.yml` — SHA-256: `84ac554f06d0f87afa0069ebfd6bd63861b8a20193510b08d255a70538f18977`
+- `.github/workflows/quality.yml` — SHA-256: `9d4764d44f4ed4cecc2a861323447fd6df87e265f20ec76d053ed87b409dcfbf`
+- `.github/workflows/quality.yml` — SHA-256: `a26bf892d69183e7e6341880a0f194bf0a258ab1aa2e97fdf1c89f6ac652716f`
+- `.github/workflows/quality.yml` — SHA-256: `af33c05fa62051d41b84f8a73fc848c1b662bf920960230e67e63abd99aac57a`
+- `.github/workflows/quality.yml` — SHA-256: `b06e256a3167df3d14872fd6abf07072b41363d1abe82f201897961ba76dfd3d`
+- `.github/workflows/quality.yml` — SHA-256: `b8b1c2954c3ff3186f00f01bcc8faf9a358e7bc4987fb65dbf835f655a3f0a5a`
+- `.github/workflows/quality.yml` — SHA-256: `bb22c5334ad42611070ce6d38dd8744eac1138f7862f387e5b66edebdfadca37`
+- `.github/workflows/quality.yml` — SHA-256: `c4c9900fcae98275e2fe36dc5c57eca969ef7cec4e859cbc1672a48b9f5d896c`
+- `.github/workflows/quality.yml` — SHA-256: `c6c0653c78650e70bece1afd6d6ce5a105ae1b1b94dc3db2aa5fdafc63dbd150`
+- `.github/workflows/quality.yml` — SHA-256: `d72c82fc662c81bf629bcca27d7c289bc44ba7cfdc26a7f40669ac834398262e`
+- `.github/workflows/quality.yml` — SHA-256: `e5f6e1d0bcd2de35908e236670c5649b9fb54ba43be8c2893833d21a2ca6259d`
+- `.github/workflows/quality.yml` — SHA-256: `f19b4c10bec73b3cd34ec0262e743489158111299bcf65ebe7d58dd87193aadf`
+- `.github/workflows/quality.yml` — SHA-256: `f44aa4fc855ec00f7a38525401a208af770bc821165cf533c635d3f6ab58d9d0`
+- `docs/ci-merge-gates.md` — SHA-256: `1384800d4007bd1227c1c33209d02e1146153a22cbb82516d5b6f15b685a38aa`
+- `docs/ci-merge-gates.md` — SHA-256: `3a90b7d500355b1bd449c1d4f4b3291b37f9d4e55007852dc460f77e8eb6dfb7`
+- `docs/ci-merge-gates.md` — SHA-256: `8e48f6739282374288838560ab5e1dc5fd626972e6a20947dd0843472e808afc`
+- `docs/ci-merge-gates.md` — SHA-256: `941ca713a5316a0d66ec79b99dc2f248cbe740bc51d35371f20bc7e2db86fa24`
+- `package.json` — SHA-256: `e9141874ec642d26d2911c5647a337f3194fc444ab47822629805094f2d5ed9d`
+- `scripts/ci/classify_pr_risk.sh` — SHA-256: `30adff4191634e41a9b073769e3ac253fa6bb44ac01119624fe90e81c57dd218`
+- `scripts/ci/classify_pr_risk.sh` — SHA-256: `8ee5a6f099b2638fed36831cc6da03a12422f2d01566a9710050904888bd349a`
+- `scripts/tests/test_root_quality_workflow_contract.py` — SHA-256: `201b2ee538363c132892d06cb0e8263230f44dd166c0a35adbf11df1cf0aa690`
+- `scripts/tests/test_root_quality_workflow_contract.py` — SHA-256: `272a4a8924dc0b59579fc6bfb8f068eac888704f1bb4ff18ad6ebda26e766840`
+- `scripts/tests/test_root_quality_workflow_contract.py` — SHA-256: `606a38a744d9ff7cbe218e68828d11420d699e2d9490e861becfad71c122f5a1`
+- `scripts/tests/test_root_quality_workflow_contract.py` — SHA-256: `6a337f337fa019a3e4e9ecb3be5a4d882d22f97fc62265b991bdd3a7632712ef`
+- `scripts/tests/test_root_quality_workflow_contract.py` — SHA-256: `8610b24c48f3686bb1c08dedfde7a11a37cb7fbe0c213f472b5fc57c5d410fa3`
+- `scripts/tests/test_root_quality_workflow_contract.py` — SHA-256: `a84f705b770ca70c80c2ac56a6fcfb719a4e3c6cdc04b07956a3e371604d41bf`
+- `scripts/tests/test_root_quality_workflow_contract.py` — SHA-256: `b02e5d74e4e309589b9261b69eaf63743a1a5b4001b91c10413905a39a7a91cc`
+- `scripts/tests/test_root_quality_workflow_contract.py` — SHA-256: `b4227e73245017f3c912f014c512812554a36b3da271c327b1670a4a039aa4ad`
+- `scripts/tests/test_root_quality_workflow_contract.py` — SHA-256: `e3eed88b9340c28873eb262b6d6522ad8386ff053caf2562a2e90cdfe6f47325`
+
+### Release Attempts
+
+#### RA-20260904-008
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260904-006`
+- Selected CRL identities: `root/CRL-20260904-006`
+- Intended action: `commit`
+- Branch: `codex/ci-faster-quality-gates-20260904`
+- Base: `origin/Dev@f7601de20442e245db282879bc7dc2a2ee346ce7`; fetched at `2026-09-04 21:27:47 AEST`
+- Candidate patch SHA-256: `685d0921eb297361fd82ef19997a1fbfc732f48e7b5b43a441a2b15baecf6169`
+- Commit SHA: `849fe422ebe926a9873a8d2c87d5cdc31528d86c` (candidate content commit; exact audit head follows in the committed-range report).
+- Dependencies: none.
+- Required validation: `PASS`; evidence: revised workflow contract 8/8, ledger-audit tests 37/37, YAML parse, shell syntax, classifier probes, registry audit, ledger coverage, diff check and exact 44-hunk pre-commit gate passed.
+- Shared-hunk review: `PASS`; evidence: isolated clean `origin/Dev` candidate contains only this CRL's five non-ledger files plus its ledger block; `package.json` has one exact selected hunk.
+- Generated-file review: `PASS`; evidence: staged paths are source, test, workflow and Markdown/JSON governance files only; no untracked paths.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: after receiving the exact `root/CRL-20260904-006` scope, the user replied `提交` on 2026-09-04.
+- Independent review: `GO for commit`; evidence: initial candidate received NO-GO for skipping Fast-only ledger-range/idempotency coverage on integration events; revised candidate keeps Fast running in parallel with Full on integration events, independently matched fingerprint `685d0921eb297361fd82ef19997a1fbfc732f48e7b5b43a441a2b15baecf6169`, and had no P0/P1. One accepted P2 is the pre-existing conflict with `docs/regression-test-levels.md`.
+- Action conclusion: `GO`; blockers: none；the exact reviewed candidate was committed as `849fe422ebe926a9873a8d2c87d5cdc31528d86c`. Push, PR, merge, remote protection changes and deployment remain unauthorized.
+
+#### RA-20260904-009
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260904-006`
+- Selected CRL identities: `root/CRL-20260904-006`
+- Intended action: `push`
+- Branch: `codex/ci-faster-quality-gates-20260904`
+- Base: `origin/Dev@f7601de20442e245db282879bc7dc2a2ee346ce7`; fetched at `2026-09-04 21:44:16 AEST`
+- Candidate patch SHA-256: `685d0921eb297361fd82ef19997a1fbfc732f48e7b5b43a441a2b15baecf6169`
+- Commit SHA: `849fe422ebe926a9873a8d2c87d5cdc31528d86c` (candidate content commit); prior commit receipt head `513b20395b9a8ae655fe49962797aaa902266c6e`; exact push-audit head will be emitted by the range report.
+- Dependencies: none.
+- Required validation: `PASS`; evidence: RA-20260904-008 validation, revised independent commit review, exact pre-commit gates and committed-range report all passed; candidate fingerprint is unchanged.
+- Shared-hunk review: `PASS`; evidence: exact base range contains only this CRL's six selected files and 44 non-ledger hunks.
+- Generated-file review: `PASS`; evidence: exact range contains no generated file, cache, untracked path or configured sensitive category.
+- Technical state: `pushed`
+- Remote branch: `origin/codex/ci-faster-quality-gates-20260904@20a6ca98965a8947017259642cf2fda839cdab15`; initial non-force push and matching `git ls-remote` verification completed at 2026-09-04 21:48:46 AEST. This ledger-only outcome receipt will be fast-forwarded on the same branch.
+- Remote preflight: `PASS`; evidence: freshly fetched `origin/Dev` still matches the recorded base and `refs/heads/codex/ci-faster-quality-gates-20260904` does not exist remotely at 2026-09-04 21:44:16 AEST.
+- User authorization: `approved-for-push`; evidence: after receiving content commit `849fe422ebe926a9873a8d2c87d5cdc31528d86c`, receipt head `513b20395b9a8ae655fe49962797aaa902266c6e` and branch `codex/ci-faster-quality-gates-20260904`, the user replied `推送` on 2026-09-04.
+- Independent review: `GO for push receipt`; evidence: independent review verified base → content commit → receipt ancestry, candidate fingerprint, exact 6-file / 44-hunk scope, bound push authorization, fresh base, absent remote branch and no P0/P1. The accepted documentation P2 does not affect Actions coverage.
+- Action conclusion: `GO`; blockers: none；the authorized exact range reached `origin/codex/ci-faster-quality-gates-20260904@20a6ca98965a8947017259642cf2fda839cdab15` by non-force push and the initial remote SHA matched local HEAD. This ledger-only outcome receipt remains to be committed and fast-forwarded; PR, merge, remote protection changes and deployment remain unauthorized.
+
+### Risks / Release Notes
+
+- Risk: 完整回归不再阻塞 feature PR，而是在合入 `Dev` 的确切提交上执行；若希望 Full 继续作为 PR 合并前门禁，不应采用本候选。
+- Accepted P2: `docs/regression-test-levels.md` 仍声称 `check:full` 直接包含 `check:fast`，与当前 `package.json` 及本次并行 Fast/Full 模型不一致；不影响实际 Actions 覆盖，后续应单独统一该历史文档。
+- Rollback: 恢复 `.github/workflows/quality.yml` 的 `Dev, main` PR 触发、原 `check` job 和高风险 PR Full 条件，并移除 `ledger_only` 与新增契约断言；无数据回滚。
+- Sensitive-information review: PASS；改动不含 secret、token、cookie、数据库 URL、环境变量值或生产日志。
+- Git state: 基于 freshly fetched `origin/Dev@f7601de20442e245db282879bc7dc2a2ee346ce7` 的独立候选分支 `codex/ci-faster-quality-gates-20260904`；未提交、未推送、未创建 PR、未部署。
+
 ## CRL-20260904-005 — 月报 PDF 服务认证与空数据防伪修复（root）
 
 - **Repository:** `root`
