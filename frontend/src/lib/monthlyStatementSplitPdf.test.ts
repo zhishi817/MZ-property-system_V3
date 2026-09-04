@@ -10,6 +10,24 @@ describe('monthly statement split pdf', () => {
     expect(s).toContain('/finance/merge-monthly-pack')
   })
 
+  it('sends forceNew on the same retry click without waiting for React state', () => {
+    const p = path.join(process.cwd(), 'src', 'app', 'finance', 'properties-overview', 'page.tsx')
+    const s = fs.readFileSync(p, 'utf8')
+    expect(s).toContain('const forceNewMergeJobRef = useRef(false)')
+    expect(s).toContain('const forceNewMergeJob = forceNewMergeJobRef.current')
+    expect(s).toContain('forceNewMergeJobRef.current = true')
+    expect(s).toContain('forceNew: forceNewMergeJob')
+    expect(s).not.toContain('setForceNewMergeJob')
+  })
+
+  it('keeps public print routes out of the admin RBAC bootstrap', () => {
+    const p = path.join(process.cwd(), 'src', 'components', 'AdminLayout.tsx')
+    const s = fs.readFileSync(p, 'utf8')
+    expect(s).toMatch(/async function bootstrapSession\(\) \{\s*if \(!mounted \|\| !authed \|\| isPublic\) return/)
+    expect(s).toContain('if (!mounted || !authed || isPublic || authState')
+    expect(s).toContain("if (token && !existing) localStorage.setItem('token', token)")
+  })
+
   it('hides MONTHLY STATEMENT header for module-only pdfs', () => {
     const p = path.join(process.cwd(), 'src', 'components', 'MonthlyStatement.tsx')
     const s = fs.readFileSync(p, 'utf8')

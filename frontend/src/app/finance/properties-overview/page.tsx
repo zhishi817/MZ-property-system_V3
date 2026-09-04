@@ -70,7 +70,7 @@ export default function PropertyRevenuePage() {
   const [mergeSplit, setMergeSplit] = useState<MergeSplitInfo | null>(null)
   const [mergeNoPhotos, setMergeNoPhotos] = useState<boolean>(false)
   const [splitDl, setSplitDl] = useState<{ maintenance: boolean; deepCleaning: boolean }>({ maintenance: false, deepCleaning: false })
-  const [forceNewMergeJob, setForceNewMergeJob] = useState<boolean>(false)
+  const forceNewMergeJobRef = useRef(false)
   const printRef = useRef<HTMLDivElement>(null)
   const mergeStartBtnRef = useRef<HTMLButtonElement | null>(null)
   const [period, setPeriod] = useState<'month'|'year'|'half-year'|'fiscal-year'>('month')
@@ -1252,6 +1252,8 @@ export default function PropertyRevenuePage() {
         <Button type="primary" ref={mergeStartBtnRef} onClick={async () => {
           if (!printRef.current || !previewPid) return
           if (isMerging) return
+          const forceNewMergeJob = forceNewMergeJobRef.current
+          forceNewMergeJobRef.current = false
           const waitMonthlyReady = async () => {
             const el = printRef.current as HTMLElement
             if (!el) return
@@ -1415,7 +1417,6 @@ export default function PropertyRevenuePage() {
                 const j = await create.json() as any
                 const jobId = String(j?.job_id || j?.id || '').trim()
                 if (!jobId) throw new Error('创建任务失败（missing job_id）')
-                setForceNewMergeJob(false)
                 updateMerge(15, j?.reused ? '已复用后台任务，正在生成...' : '任务已创建，正在生成...', `任务ID：${jobId}`)
                 const t0 = Date.now()
                 const basePollMs = Math.max(1200, Math.min(6000, Number((window as any).__mergePollMs || 2000)))
@@ -1459,7 +1460,6 @@ export default function PropertyRevenuePage() {
                 }
                 throw new Error('合并超时，请稍后在页面重试')
               } catch (e: any) {
-                setForceNewMergeJob(false)
                 mergeFail(e?.message || '合并下载失败', false)
                 return
               }
@@ -1764,7 +1764,14 @@ export default function PropertyRevenuePage() {
       </Modal>
       <Modal title="合并PDF下载" open={mergeUi.open} onCancel={() => setMergeUi((prev) => ({ ...prev, open: false }))} footer={<>
         {(period === 'month' && mergeUi.status === 'exception') ? (
-          <Button type="primary" onClick={() => { setForceNewMergeJob(true); try { mergeStartBtnRef.current?.click() } catch {} }}>重试</Button>
+          <Button type="primary" onClick={() => {
+            forceNewMergeJobRef.current = true
+            try {
+              mergeStartBtnRef.current?.click()
+            } finally {
+              forceNewMergeJobRef.current = false
+            }
+          }}>重试</Button>
         ) : null}
         <Button onClick={() => setMergeUi((prev) => ({ ...prev, open: false }))}>{mergeUi.status === 'active' ? '隐藏' : '关闭'}</Button>
       </>} width={520} maskClosable={mergeUi.status !== 'active'} keyboard={mergeUi.status !== 'active'} closable={mergeUi.status !== 'active'}>
