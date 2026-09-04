@@ -7,6 +7,53 @@
 - 测试映射必须说明保护点和测试场景；只登记测试文件名不算覆盖证据。
 - `sufficient` 表示当前测试覆盖该保护点；`partial` 表示已有测试但仍有缺口；`not-wired` 表示测试存在但尚未进入对应质量检查；`missing` 表示尚无测试。
 
+## FR-023：房源营收前台恢复刷新与读取降频
+
+- **维护责任范围：** web admin property revenue
+- **最后审查日期：** 2026-09-04
+- **状态：** active
+
+### 业务保护规则
+
+- `/finance/properties-overview` 首次进入必须加载当前范围数据且只能加载一轮；React Strict Mode 重放 mount/range effects 时不得登记第二轮请求。窗口 focus 与页面恢复 visible 事件必须合并防抖，最近一次完整成功刷新未满 60 秒时不得再次发起营收数据请求。
+- 超过 60 秒的前台恢复刷新必须包含订单、财务、房源支出和范围租金，避免旧支出被错误显示为 `$0`；该刷新在后台静默执行，不切换整页或表格 loading。
+- `properties`、`landlords`、`recurring_payments` 作为低频参考数据在页面会话内复用 5 分钟；范围租金缓存不得因每次 focus 被强制清空。月份、年度或范围由用户明确改变时仍必须刷新对应动态数据和范围租金。
+- 月报预览或 PDF / 照片任务处理中不得启动后台恢复刷新；期间收到的恢复事件只记录一次，相关窗口或任务结束后再按 60 秒新鲜度规则补一次刷新。
+- 后台刷新任一动态数据源失败时必须保留刷新前的完整动态数据显示安全提示；租金读取失败不得以空 map 覆盖已显示租金。显式范围切换失败不得沿用上一范围的动态数据。
+
+### 跨层适用范围
+
+- **客户端：** 房源营收页的初始加载、范围切换、focus / visibility 恢复、月报预览和 PDF 任务期间的刷新调度。
+- **后端：** 不改变 API 或查询；继续使用既有 `/orders`、`/finance`、`property_expenses`、`/finance/rent-income-by-property`、`/properties`、`/landlords` 和 `recurring_payments`。
+- **一致性：** 房源支出仍是营收汇总的必需动态来源；缓存只减少短时间重复读取，不改变金额算法或后端权威数据。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| Strict Mode 首次/范围去重、60 秒恢复新鲜度与 5 分钟参考数据缓存 | `frontend/src/lib/propertyRevenueRefreshPolicy.test.ts` | 用 fake timer 重放两次 initial/range effects，首次只产生 1 次请求且真实范围变化只追加 1 次；hidden、暂停和 60 秒内不刷新；首次/到期恢复刷新；参考数据缺失、未到期和到期判断 | sufficient | `npm run test --prefix frontend -- --coverage.enabled=false src/lib/propertyRevenueRefreshPolicy.test.ts` |
+| 页面刷新接线、失败保留与报告期间延后 | `frontend/src/lib/propertyRevenueExpenseFields.test.ts` | focus/visibility 使用后台刷新且不使用 pathname 重复触发；参考数据复用；动态失败保留；报告暂停后只调度一次 | partial | `npm run test --prefix frontend -- --coverage.enabled=false src/lib/propertyRevenueExpenseFields.test.ts` |
+
+### 验证策略
+
+- **本地：** 运行上述定向测试、frontend TypeScript、lint、全量测试与 production build，并执行 Feature Registry / ledger audit。
+- **开发环境：** 部署后用 Network 验证首次加载一次、60 秒内反复切换为 0 个新增营收请求、超过 60 秒只进行一次无 loading 的后台刷新；打开月报期间切换窗口不刷新，关闭后最多补一次。
+- **数据库观测：** 若年度视图在降频后仍慢，再单独统计 `/finance/rent-income-by-property` 的按月查询数量并评估后端范围聚合；本 FR 不提前扩展后端。
+
+### 最后验证
+
+- **CRL：** root/CRL-20260904-008
+- **Commit：** not committed
+- **日期：** 2026-09-04
+
+### 相关 CRL
+
+- root/CRL-20260903-006：房源营收支出读取失败可见，并要求恢复刷新不得遗漏 `property_expenses`。
+
+### 非保护范围
+
+- 后端年度范围聚合、其他财务页面缓存、月报金额公式、PDF 队列、数据库 schema、生产部署与真实账号浏览器验证。
+
 ## FR-022：月报 PDF 内部服务身份、只读渲染与数据完整性边界
 
 - **维护责任范围：** backend auth / Render PDF worker / frontend public shell and monthly statement print
