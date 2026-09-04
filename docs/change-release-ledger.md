@@ -192,7 +192,7 @@
 - Base: `origin/Dev@3934d9b57a61be06272cf8b94b77a57538bf843a`; fetched at `2026-09-04 15:24 AEST`
 - Candidate patch SHA-256: `39e98b1021fca4ee0abfba304a50558a4dc2ed9377249b01851aec6175c3b402` excluding `docs/change-release-ledger.md`
 - Commit SHA: `266a01c90c14300baf5606dbfbb87d032d7f4e64`; candidate content commit created locally on `codex/release-20260904-001-003`; audit head is emitted by the report command.
-- Dependencies: none; these three independent selected CRLs travel together only for this user-selected local commit, with verified shared maintenance hunks.
+- Dependencies: none
 - Required validation: PASS; direct maintenance workflow and auto-expense regressions, 30 frontend targeted tests, backend build, frontend build, frontend lint (warnings only), feature-registry audit and diff checks passed.
 - Shared-hunk review: PASS; exact source hunks were three-way integrated and combined behavior revalidated in this clean candidate.
 - Generated-file review: PASS; only TypeScript/TSX/SCSS/Markdown source, tests and design QA are staged; temporary build output and dependency links were removed.
