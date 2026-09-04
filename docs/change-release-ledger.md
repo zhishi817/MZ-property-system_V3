@@ -160,7 +160,8 @@
 - Required validation: PASS; evidence: targeted PDF/auth/runtime plus maintenance/schema/auto-expense/company-revenue/orders contracts, full frontend 44 files / 208 tests, frontend typecheck/lint/build, backend build, registry audit and diff check passed on the fresh base.
 - Shared-hunk review: PASS; evidence: `docs/feature-regression-registry.md` adds only FR-022 while retaining the latest Dev maintenance updates; ledger adds only this new CRL/attempt.
 - Generated-file review: PASS; evidence: build outputs are ignored or outside the worktree and no generated files are staged.
-- Technical state: `committed`
+- Technical state: `pushed`
+- Remote branch: `origin/codex/monthly-pdf-auth-data-20260904@4ded2602b80d2173cc31ca01f00fb77a1d8f140a`; initial non-force push and matching `git ls-remote` verification completed at `2026-09-04 20:32:54 AEST`; this ledger-only receipt is to be fast-forwarded on the same branch.
 - User authorization: `selected-for-commit`; evidence: user instruction “先把这次修复提交推送吧”. Push authorization must be rebound after the exact commit SHA exists.
 - Independent review: `GO for commit`; evidence: the revised-candidate review found 0 P0/P1, confirmed that PDF-service database failures return non-2xx without empty-memory fallback, allowed GET paths cannot reach schema ensure/DDL/maintenance backfill DML, and `RA-20260904-006` is unique. The reviewer independently matched the exact candidate fingerprint and 18-file / 78-hunk scope. One non-blocking P2 remains: the no-write SQL regression guard is source-contract based rather than a route-level dynamic SQL spy.
 - Action conclusion: `GO`; the selected local content commit completed. Push still requires this exact committed-range audit and renewed user authorization bound to the content commit SHA and branch; PR, merge, deployment and production verification remain unauthorized.
@@ -183,7 +184,7 @@
 - Remote preflight: `PASS`; evidence: freshly fetched `origin/Dev` still matched the recorded base and `refs/heads/codex/monthly-pdf-auth-data-20260904` did not exist remotely at `2026-09-04 20:25:23 AEST`.
 - User authorization: `approved-for-push`; evidence: after receiving root content commit `d06501336c190c0d8a72301cc7d7357bbd52aa46`, receipt head `f691ee3952a5ac79371e9ba18711c768e7bc8457`, branch `codex/monthly-pdf-auth-data-20260904` and the GO range result, the user replied `推送` on `2026-09-04`.
 - Independent review: `GO for push receipt`; evidence: independent read-only review verified this ledger-only receipt, exact root/base/content-commit/branch/fingerprint binding, unique RA ID, clean 18-file / 78-hunk committed range, explicit user push authorization, fresh base and absent remote branch; no P0/P1 remained. The existing source-contract-only SQL guard is a non-blocking P2.
-- Action conclusion: `GO` for committing this ledger-only receipt and then non-force pushing the exact branch only if the updated pre-commit gate, post-commit exact release report and repeated remote preflight are all GO. PR, merge, deployment and production verification remain unauthorized.
+- Action conclusion: `GO`; blockers: none; the authorized exact range reached `origin/codex/monthly-pdf-auth-data-20260904` and its initial remote SHA matched local HEAD. This ledger-only receipt will be fast-forwarded on the same branch; PR, merge, deployment and production verification remain unauthorized.
 
 ### Risks / Release Notes
 
