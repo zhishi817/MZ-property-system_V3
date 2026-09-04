@@ -91,7 +91,7 @@
 - Base: `origin/Dev@08b0699c06cefdafc3e52051558d746a7aa93dd8`; fetched at `2026-09-04 22:21:11 AEST`
 - Candidate patch SHA-256: `96d068dc805d0d6356fccf57ee27d878495d36818cb945c094d3cee687b8f82a`
 - Commit SHA: `30e2fe8d1385e8bbc4567456da616d10fcf00d8d` (candidate content commit; exact audit head follows in the committed-range report).
-- Dependencies: `root/CRL-20260904-005` contained by the recorded base.
+- Dependencies: `root/CRL-20260904-005@d06501336c190c0d8a72301cc7d7357bbd52aa46`
 - Required validation: `PASS`; evidence: frontend lint, 44-file / 210-test frontend suite and production build; backend TypeScript build, PDF service auth, PDF runtime and auth-role snapshot contracts; Feature Registry, current-worktree ledger coverage and diff check all passed.
 - Shared-hunk review: `PASS`; evidence: isolated clean candidate contains only this CRL's five non-ledger files plus its ledger block, with 27 recorded non-ledger hunks.
 - Generated-file review: `PASS`; evidence: backend build outputs were restored to base; no generated file, cache, dependency directory or untracked path is selected.
