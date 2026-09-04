@@ -6,6 +6,7 @@ import { requirePerm, requireAnyPerm } from '../auth'
 // Supabase removed
 import { hasPg, pgPool, pgSelect, pgInsert, pgUpdate, pgDelete, pgRunInTransaction } from '../dbAdapter'
 import { v4 as uuid } from 'uuid'
+import { isPdfRenderServiceUser } from '../services/pdfRenderServiceAuth'
 
 export const router = Router()
 
@@ -190,6 +191,10 @@ router.get('/', async (req, res) => {
   const from = dayOnly((req.query as any)?.from)
   const to = dayOnly((req.query as any)?.to)
   const hasRange = !!(from && to)
+  const pdfRenderReadOnly = isPdfRenderServiceUser((req as any).user)
+  if (pdfRenderReadOnly && !hasPg) {
+    return res.status(503).json({ code: 'pdf_render_data_unavailable', source: 'orders' })
+  }
   try {
     if (hasPg) {
       let remote: any[] = []
@@ -240,7 +245,9 @@ router.get('/', async (req, res) => {
           const rs = await pgPool?.query(sql, [ids])
           const arr = (rs?.rows || []) as any[]
           arr.forEach(r => { totals[String(r.order_id)] = Number(r.total || 0) })
-        } catch {}
+        } catch (e) {
+          if (pdfRenderReadOnly) throw e
+        }
         try {
           const { pgPool } = require('../dbAdapter')
           const rs = await pgPool?.query(
@@ -297,6 +304,9 @@ router.get('/', async (req, res) => {
     })
     return res.json(out)
   } catch {
+    if (pdfRenderReadOnly) {
+      return res.status(503).json({ code: 'pdf_render_data_unavailable', source: 'orders' })
+    }
     const out2 = db.orders.filter((o: any) => {
       if (!hasRange) return true
       const ci = dayOnly(o?.checkin)

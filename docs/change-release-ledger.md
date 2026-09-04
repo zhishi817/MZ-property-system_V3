@@ -1,5 +1,198 @@
 # Change Release Ledger
 
+## CRL-20260904-005 — 月报 PDF 服务认证与空数据防伪修复（root）
+
+- **Repository:** `root`
+- **Status:** verified; selected-for-commit
+- **Updated:** 2026-09-04 20:12 AEST
+- **Request:** 修复月度报告合并 PDF 无法下载及后续“可以下载但金额全部为零”：后台 Worker 的 `u-pdf-job` 服务身份在用户角色快照安全加固后被当作不存在的真人用户返回 401，同时打印页会把必需数据接口失败吞成空数组并错误标记为已加载；保持普通 missing-user 拒绝，不通过创建生产数据库假用户或恢复通用 JWT admin fallback 绕过。
+- **Outcome:** PDF Worker 改用具有精确用途、服务、scope 和 audience 的短期服务声明；全局认证只在月报渲染依赖的显式 GET 路径内接受该身份，其他路径和写请求拒绝。服务身份的月报读取禁用 GET 内的建表/回填和数据库失败后的内存空数据 fallback。打印页跳转登录或出现认证失败时归类为不可重试的 `PRINT_AUTH`；任一必需数据源失败则以固定来源名和 `PRINT_DATA_LOAD` 结束，不再生成全零/缺项 PDF；所有读取成功的真实零数据月份仍可生成。
+
+### Implementation
+
+- Previous behavior: Worker 内联签发 `{ sub: 'u-pdf-job', role: 'admin' }`；认证层成功查询不到 `users` 行时按真人 missing-user 返回 401，前端清除 Cookie 并跳转 `/login`。Worker 在登录页等待月报根节点直至超时，并把 timeout 当作可重试错误。即使认证恢复，只要订单、租金分段或财务等读取失败，打印页也会把相关数组清空、将 loaded 置为 true 并挂出 ready；Worker 只数静态表格行，因此会把全零报表当成成功文件。
+- New behavior: Worker 与认证 middleware 复用同一服务声明定义。认证先验证签名，再要求 subject、username、token use、service、scope 和 audience 全部精确匹配；只允许月报打印实际依赖的 GET 路径，构造的 admin 能力不能离开该路径白名单。普通用户不存在仍返回 401。对该服务身份，房源、订单、财务、房东和四个 CRUD 读取必须使用 PostgreSQL；查询或必需辅助表读取失败返回非 2xx，不允许退回进程内数组。房东规则读取不执行 schema ensure，深清读取不执行 DDL，维修读取不执行 work number/元数据回填。登录跳转在根节点等待前/等待中被识别为 `PRINT_AUTH`，该错误不自动重试。打印页对每个必需数据源独立记录成功/失败，失败后即使页面表格骨架已渲染也不会声明 ready；Worker 等待 ready 或固定错误标记，优先保留认证错误分类，否则返回 `PRINT_DATA_LOAD`。
+- Key decisions: 不新增数据库用户、schema、migration、secret 或依赖；不恢复任意缺失用户的 JWT 角色；不改变真人用户的既有内存 fallback、schema ensure 或维修 GET 回填行为。只有 PDF 服务身份采用数据库 fail-closed/read-only 分支。真实零金额不能仅凭数值判断为错误，只有请求失败才阻断；暴露给 Worker 的错误仅包含固定数据源名称。路径与数据完整性均 fail-closed，未来打印页新增读取依赖时必须同步评审。
+- 2026-09-04 reconciliation receipt: 初始隔离候选误用了 `root/CRL-20260904-004`；该编号已由“已关闭维修仅修正完成日期的保存误拦截”占用。本月报修复在提交前改用经 freshly fetched `origin/Dev` 与现有候选复核后未占用的 `root/CRL-20260904-005`；旧编号不属于本修复的任何发布证据。
+
+### Files / Areas
+
+- `backend/src/services/pdfRenderServiceAuth.ts` — added: 共享的 PDF 服务声明、精确验证、只读路径白名单和受限请求身份。
+- `backend/src/auth.ts` — modified: 在真人角色 hydration 前识别并限制合法 PDF 服务请求；无效/越界服务令牌返回 401/403。
+- `backend/src/services/pdfJobsWorker.ts` — modified: 使用共享服务声明；登录跳转快速报 `PRINT_AUTH`；认证失败不可重试；打印页返回数据失败源时快速报 `PRINT_DATA_LOAD`。
+- `backend/src/modules/properties.ts` — modified: PDF 服务身份没有 PostgreSQL 数据源时拒绝返回进程内数据。
+- `backend/src/modules/orders.ts` — modified: PDF 服务身份的订单/内部扣款查询失败返回 503，不退回内存数据。
+- `backend/src/modules/finance.ts` — modified: PDF 服务身份的财务及租金分段内部扣款查询失败 fail closed。
+- `backend/src/modules/landlords.ts` — modified: PDF 服务身份读取房东时跳过管理费规则 schema ensure，并要求规则表读取真实成功。
+- `backend/src/lib/managementFeeRules.ts` — modified: 提供可选的“规则表必须存在”只读读取语义；真人调用保持原有缺表兼容。
+- `backend/src/modules/crud.ts` — modified: PDF 服务身份的月报 CRUD 数据强制 PostgreSQL、禁止 deep-cleaning DDL、recurring 缺表建表及 maintenance GET 回填，查询失败返回 503。
+- `backend/scripts/tests/test_pdf_render_service_auth.ts` — added: 服务声明、路径/方法、`/auth/me`、普通 missing-user、Worker 认证及数据加载 fail-fast 契约。
+- `backend/package.json` — modified: 新增目标回归命令。
+- `package.json` — modified: 将目标回归接入 root `check:backend` / `check:full`。
+- `frontend/src/app/public/monthly-statement-print/page.tsx` — modified: 独立跟踪必需数据请求失败，防止空数组被当成加载成功；参数解析完成前不挂载报表。
+- `frontend/src/components/MonthlyStatement.tsx` — modified: 深清/维修读取失败进入统一错误标记；打印 ready 要求无数据源错误。
+- `frontend/src/lib/monthlyStatementPrint.ts` — modified: 新增固定失败源、确定性错误汇总和打印基础数据 ready 判定。
+- `frontend/src/lib/monthlyStatementPrint.test.ts` — modified: 覆盖失败源排序/恢复、失败阻断和真实零数据放行。
+- `docs/feature-regression-registry.md` — modified: 新增 FR-022，登记内部身份、只读渲染与数据完整性保护。
+- `docs/change-release-ledger.md` — modified: 本 CRL 及发布尝试。
+
+### Impact / Dependencies
+
+- API: 合法内部 PDF 服务令牌仅可通过明确列出的月报 GET 依赖；无效服务声明为 401，合法但越界的方法/路径为 403。服务读取无 PostgreSQL或查询失败返回 503；真实用户 API payload 与 fallback 行为不变。
+- PDF behavior: 必需读取失败不再产出“成功但全零/缺项”的文件；任务返回 `PRINT_AUTH` 或 `PRINT_DATA_LOAD`。请求全部成功但业务值确实为零时，输出行为不变。
+- Database / migration / production data: none；PDF 服务身份路径仅执行 SELECT，禁止现有 GET 内的 DDL 与回填 DML。
+- Configuration / dependencies: none; 继续使用已有后端 JWT 签名配置，不新增或记录任何环境变量值。
+- Deployment dependency: 修复发布时 V3-Docker 与 PDF-Recovery 必须运行同一后端提交；部署和生产任务验证不在本次授权范围。
+- Related units: root/CRL-20260902-001（真人用户角色快照安全边界）；root/CRL-20260830-001（PDF 事件唤醒与灾备恢复）。
+
+### Validation
+
+- `npm run test:pdf-render-service-auth --prefix backend` — PASS：精确服务声明、GET 白名单、POST/越界拒绝、`/auth/me`、真人 missing-user 和 Worker fail-fast 静态契约通过。
+- `npm run test:auth-role-snapshot --prefix backend` — PASS：真人 missing-user、DB-error fallback、缓存、single-flight 与失效契约保持。
+- `npm run test:pdf-jobs-runtime --prefix backend` — PASS：PDF mode、retry 和 producer kick 契约保持。
+- `npm run build --prefix backend -- --outDir /private/tmp/mz-monthly-pdf-release-build-20260904-v2` — PASS：后端 TypeScript 编译通过，输出位于候选目录外。
+- `npm run test:maintenance-workflow-schema --prefix backend`、`test:maintenance-workflow-actions`、`test:maintenance-auto-expense`、`test:company-revenue-report`、`test:orders-overlap` — PASS：服务只读分支未破坏既有维修、管理费与订单契约。
+- `npm run test`（frontend）— PASS：44 files / 208 tests，覆盖率门禁通过。
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json`（frontend）— PASS。
+- `npm run lint`（frontend）— PASS；仅有仓库既有 warning，本次打印页仍有既有 `carryStartMonth` hook dependency warning，无新增 lint error。
+- `npm run build`（frontend）— PASS：95 个页面生成，`/public/monthly-statement-print` 构建成功；输出含仓库既有 lint/chart/localStorage warning。
+- `npm run check:feature-registry` — PASS（19 FR / 157 mappings）。
+- `git diff --check` — PASS。
+- Scoped sensitive/generated-file review — PASS：变更只包含已登记的 TypeScript、JSON 和 Markdown 源码/测试/登记文件；实现只记录固定数据源名称，不记录响应体、令牌、URL 或客户数据；临时依赖链接已移除，构建输出未进入候选差异。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared.
+- **Untracked review:** none; 新增服务声明和测试已精确暂存，临时依赖链接已移除。
+- `backend/package.json` — SHA-256: `3d757db6dee644314d293c9b922323309e2a575eb32cd189a6a9949e370cd976`
+- `backend/scripts/tests/test_pdf_render_service_auth.ts` — SHA-256: `92dc1962188cf217d93a950db1a8c76cb718fcb346cd344a60915ba5b32945db`
+- `backend/src/auth.ts` — SHA-256: `0a4a5d5628590cffbc3c57b2b93ac631f91f4949e9c2830cad9a099782c9e58a`
+- `backend/src/auth.ts` — SHA-256: `da125edf160aebdd9326ff3123315af58f0f97308b39088ad340232658bd2add`
+- `backend/src/lib/managementFeeRules.ts` — SHA-256: `88ce8e3c00f2793d9d174ceff560aa36993bd8c55488b3388e135d53df27ad9d`
+- `backend/src/lib/managementFeeRules.ts` — SHA-256: `9ba8442f11263189994140de10c0fbb21df6d209e55b9279a0e334f6a3d0595f`
+- `backend/src/modules/crud.ts` — SHA-256: `347f9913fdc17e15493668341b6e57a3c02ec78b5c3bf18d50af747652c733e4`
+- `backend/src/modules/crud.ts` — SHA-256: `5754e5363a091b3dac9b8034c4d34929504b1515560a9718f1ffa3b88a6b19dd`
+- `backend/src/modules/crud.ts` — SHA-256: `86870b0fe8b07b3206a72b4657e236b9da43b2be61266cef3e3f37bd43d38408`
+- `backend/src/modules/crud.ts` — SHA-256: `8c4fcb307adf3e625ee4f836b9e06992f8d55ced51d3682e781f421779164b7e`
+- `backend/src/modules/crud.ts` — SHA-256: `8ee7f1d7cc9e77518d95b8e60a368fabfac9d70f1795118b19139355363a10f7`
+- `backend/src/modules/crud.ts` — SHA-256: `b9895572331a79c45ab856b2a6bdf8db30efd9669cc27ab03127ff2944043463`
+- `backend/src/modules/crud.ts` — SHA-256: `d63d4f1bf92462357498f7ada40f021f5dd00676ee34e7ec8b582eb3c9b651b2`
+- `backend/src/modules/finance.ts` — SHA-256: `3220f21ea4b132f61ee591672c679d62ec54edbb36710c28b00b99b53ef5ba9b`
+- `backend/src/modules/finance.ts` — SHA-256: `a9bc20f5a24a485d0346268302d6fe93c27b4570a3acdd0dc14a66ff46ec193f`
+- `backend/src/modules/finance.ts` — SHA-256: `d106bd057330edcf3371b7002a71e3a73833d5bb09f70a6207d00c3d71df56f2`
+- `backend/src/modules/finance.ts` — SHA-256: `d9d57747058cd72240def759de9918200b4621245ca4478591d9b8c4f243a14b`
+- `backend/src/modules/finance.ts` — SHA-256: `fafeb3cfe4f4474dfb91297e85b17bb7792f88779eed02f775d42102c5911ba4`
+- `backend/src/modules/landlords.ts` — SHA-256: `11a7b763a54543473c43c99688628756792e5e6b72ac69c1d5ae270e87520369`
+- `backend/src/modules/landlords.ts` — SHA-256: `1da8cacf124d33c94b7bd91396c2b0b18416ec805c9b043a6d25233319098f51`
+- `backend/src/modules/landlords.ts` — SHA-256: `66d2ea661a46dd40453f2172c230cb6f4dcb82920bbb7f66c6d2b9c853f71f98`
+- `backend/src/modules/landlords.ts` — SHA-256: `8df7605a29eb8bda82545a5eed70a158dd8cf716652f11470e70c50792566511`
+- `backend/src/modules/landlords.ts` — SHA-256: `a651cbb783c4a942626ecfdd5af3d6f3ae11a66ef69205af202967be083f63e9`
+- `backend/src/modules/orders.ts` — SHA-256: `03a7a941150ea4ee0803dc87ad9e312f9a30b154969718fd491ba49f8ce925f3`
+- `backend/src/modules/orders.ts` — SHA-256: `0884dd5e1a0b61c1cbd53e5169303f1850c051bc9990d898931bf4d9b15618dd`
+- `backend/src/modules/orders.ts` — SHA-256: `6205d5f9d8397140bd4a4ad96322c4d542274df2c786bb7ccf43360c913102eb`
+- `backend/src/modules/orders.ts` — SHA-256: `a92ce87789c4ce4cf1a28d0432bc52fb4ea1799a393c74bd0d2fb1ba25e1428c`
+- `backend/src/modules/properties.ts` — SHA-256: `03c0b928074da51f34bcebbda0895337b4698b0725016be198c668086733e7b3`
+- `backend/src/modules/properties.ts` — SHA-256: `25ed2901b7bf0bc0a5d575b650bc721c9763d8ded02673d8d5d65f8a910ea716`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `04a76fadfff234e5a0917465b5824ae7d76c10749088349623564377cdb648d2`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `402285a172fb78eb0a45f86bb8f0e99d19b33488803c7b0a2ad0ef2636b5ee1d`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `505edbcce068a0e998077063c1aecaabba0968971654a3b9d01eac03651e8bcc`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `59395865779cefb79eabcb0c866b416435653f80e425f7c32017e1b8af2c6292`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `7fa66f490e106d82afdb0b24cdbc1eee2e35acc176dcc1c31bcce89346862926`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `a4713cdaa49c526fe19171ae36156f206b1d5cd4da110f69097b045190c6d891`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `b0f1d3223b809e9da863519f3a0f452becfb230da0611e5ff729e8e7309aaf7d`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `b47bc7c75bd00975371952eb028e11ea28a1ede467be8e5ba5e432f6c9998a78`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `bc819931b1203ef19491f4f0fd9fc28a13fce187f2e4c3462df147636d9b45ce`
+- `backend/src/services/pdfJobsWorker.ts` — SHA-256: `c5c046fa01b25daa3ef0d947ed147a1547bd23b50a939d246acbfcd1ccd5030b`
+- `backend/src/services/pdfRenderServiceAuth.ts` — SHA-256: `505b530672c076ee4a424d75c2c35764123d0942eaa6f4ee60f1b2f66acdb370`
+- `docs/feature-regression-registry.md` — SHA-256: `d48365e2bc6895fcb92741e3c07a048957fda92de1eb918e85f0d2a8c279a084`
+- `frontend/src/app/public/monthly-statement-print/page.tsx` — SHA-256: `0ec73c6307e13dc4ef2deb1d8eb93181f932cdf3c4397a18fec463d0843df782`
+- `frontend/src/app/public/monthly-statement-print/page.tsx` — SHA-256: `10e80999d8107a98e7f478cda9000abb0d7a4598bdfb827c43fd5f5cc07a03a2`
+- `frontend/src/app/public/monthly-statement-print/page.tsx` — SHA-256: `2bf1010e3ecc5f908c5af941ab23be6e9ff45011139b8ba1637e4bcf31cb7421`
+- `frontend/src/app/public/monthly-statement-print/page.tsx` — SHA-256: `2ec1ca953b9399c0724577cb7fffbd21adf03e3a27b7db9ee18beaa14f7f5cd4`
+- `frontend/src/app/public/monthly-statement-print/page.tsx` — SHA-256: `307e8dc26d5eea6c2d5048c8a1ee811410251eb639249e3d010e5a19e4bb71c3`
+- `frontend/src/app/public/monthly-statement-print/page.tsx` — SHA-256: `553f571163596e14cb88d70680e5f04bd1af6bb68c89bf7fca1bca14947c8f52`
+- `frontend/src/app/public/monthly-statement-print/page.tsx` — SHA-256: `67957409a2678633482fb321e89ddf36a97e294e0fe7fd3bac475009801d932e`
+- `frontend/src/app/public/monthly-statement-print/page.tsx` — SHA-256: `b0ef5e930c1bf9dbebe1f9816613b17238cb2f3a7703b0131adcdca3661257b6`
+- `frontend/src/app/public/monthly-statement-print/page.tsx` — SHA-256: `bce57e5a6469776a78441e95a96f570c5ea03af3fa30cba2f91f4b82d418f4d9`
+- `frontend/src/app/public/monthly-statement-print/page.tsx` — SHA-256: `ccd95492371f8d5b3e54d1860b5119e8f826fbf2e8cce31187006f5ba74f244c`
+- `frontend/src/app/public/monthly-statement-print/page.tsx` — SHA-256: `cdc5b44c6eb3a1ece8c1ca0ef986760b8c5baf6cc80021394b6dd694fa178851`
+- `frontend/src/app/public/monthly-statement-print/page.tsx` — SHA-256: `d5f3e3ec5c36bbddf92b47e02c197fffbf1fcc27d40c26a810d55dafc3a06cbc`
+- `frontend/src/app/public/monthly-statement-print/page.tsx` — SHA-256: `db9bce040764bae8ce1e940d9c7f304e17618173ccdd6a6ef399c8a57a367f3b`
+- `frontend/src/app/public/monthly-statement-print/page.tsx` — SHA-256: `e18fb70c9e3d60570fc7186cac7a8ad81a1ea3bc7560d4bfb773a4c5e02be027`
+- `frontend/src/app/public/monthly-statement-print/page.tsx` — SHA-256: `e3f5e6401fde3d159208caf7b347c1c47ce72125a51f94aaeb6a798e3cdec8e3`
+- `frontend/src/app/public/monthly-statement-print/page.tsx` — SHA-256: `e6c77b52b6190c09a5606e8fdc07e816244b0f53584a1442cdfa3bd09a5bd128`
+- `frontend/src/app/public/monthly-statement-print/page.tsx` — SHA-256: `edb85b3bd57c8a846a59e8d24e3c7baad71f1719bf51176aa09a366583377a66`
+- `frontend/src/app/public/monthly-statement-print/page.tsx` — SHA-256: `f8d473dea0525892deed3a8955cbe72c33ac57bde8a5a577ccbc544fd27153cb`
+- `frontend/src/app/public/monthly-statement-print/page.tsx` — SHA-256: `fb8b9276427b69e04649d9ab5217cace96fac283a14889e54f896ba31da95d42`
+- `frontend/src/app/public/monthly-statement-print/page.tsx` — SHA-256: `fd6413fd41064985a7be21989059fa11619462af931ae7092ac1fd523d96f94c`
+- `frontend/src/components/MonthlyStatement.tsx` — SHA-256: `0190a650a5f3906d8d02790b384bda98da71f9168a44fb4b6929a4693fbf29b4`
+- `frontend/src/components/MonthlyStatement.tsx` — SHA-256: `24bf77b370587f71dd9e0b74f2cee96ab835ff82855aa86e8e0b9bd186e1baa0`
+- `frontend/src/components/MonthlyStatement.tsx` — SHA-256: `2a6b24e725ae287acda27edcab8019ca91bfee631312aea70b80cd0c2e8d6367`
+- `frontend/src/components/MonthlyStatement.tsx` — SHA-256: `40f8a9368d4a0298496ba772ba82c367234d823f45fff500671d12bfd993abfa`
+- `frontend/src/components/MonthlyStatement.tsx` — SHA-256: `4663d5f8fe2f390057dcff0668c8a5facb1289696ec9c03c8786db5a03ce1e24`
+- `frontend/src/components/MonthlyStatement.tsx` — SHA-256: `682614da9575c11ee4f46071152d32a0f39c625b4f65dbc788fa3efc031bcf13`
+- `frontend/src/components/MonthlyStatement.tsx` — SHA-256: `84051c6c55dd95b9d9a900bebc948cb2ae7ec22189e574245ab0e1a00ae86fbd`
+- `frontend/src/components/MonthlyStatement.tsx` — SHA-256: `9b97e9a9d5ac2bcdf8007d5b19a867bcde1fe76a96a0c211d5eb5d5f202a1dd0`
+- `frontend/src/components/MonthlyStatement.tsx` — SHA-256: `c406a56d3765b734edd81bf42adf83174644fd090506f8e5448cffd36c0dca70`
+- `frontend/src/components/MonthlyStatement.tsx` — SHA-256: `c581f92c0ac269415639e5d9500fc337a137e0495e9bd726a673336138412a04`
+- `frontend/src/components/MonthlyStatement.tsx` — SHA-256: `cf29448c3101498ac91e3651bef43815da7cd3a2063c739499f4421abb90fb66`
+- `frontend/src/components/MonthlyStatement.tsx` — SHA-256: `f5976ebe9e0992c9f0a2f2e8fe31a5b58d1b8c300c0d30c851854f4c87e9c7dd`
+- `frontend/src/components/MonthlyStatement.tsx` — SHA-256: `f8af91953a4f0935c86c96b0e18d04d60f1c0927a15e5beb2b12faf0ef5c235c`
+- `frontend/src/lib/monthlyStatementPrint.test.ts` — SHA-256: `010306acb214a2b0400fe318456f4bebc0b815a8f2bc3727379d30c7b4ce83a9`
+- `frontend/src/lib/monthlyStatementPrint.test.ts` — SHA-256: `a8334a5b3b1116f4821b010894696a1bb72d0dfe1e22e4cdf38b45779f99312f`
+- `frontend/src/lib/monthlyStatementPrint.ts` — SHA-256: `c91673128008bcf9e54acb79d17e1e13e9bce946266d9450650531502687961c`
+- `package.json` — SHA-256: `79d14c1cff558349b28986f97447a5716b859317755abf7be9f3c23828ba384b`
+
+### Release Attempts
+
+#### RA-20260904-006
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260904-005`
+- Selected CRL identities: `root/CRL-20260904-005`
+- Intended action: `commit`
+- Branch: `codex/monthly-pdf-auth-data-20260904`
+- Base: `origin/Dev@f5853cc7cf3a9afa45291e3a0594e52ec502b6b8`; fetched at `2026-09-04 20:21:45 AEST`
+- Candidate patch SHA-256: `b358ffb72dc0ee22582ecf7a175caf2df77e7e50bf276c0f2e0945e120380cdc`
+- Commit SHA: `d06501336c190c0d8a72301cc7d7357bbd52aa46` (candidate content commit; exact audit head follows in the range report)
+- Dependencies: `none`
+- Required validation: PASS; evidence: targeted PDF/auth/runtime plus maintenance/schema/auto-expense/company-revenue/orders contracts, full frontend 44 files / 208 tests, frontend typecheck/lint/build, backend build, registry audit and diff check passed on the fresh base.
+- Shared-hunk review: PASS; evidence: `docs/feature-regression-registry.md` adds only FR-022 while retaining the latest Dev maintenance updates; ledger adds only this new CRL/attempt.
+- Generated-file review: PASS; evidence: build outputs are ignored or outside the worktree and no generated files are staged.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: user instruction “先把这次修复提交推送吧”. Push authorization must be rebound after the exact commit SHA exists.
+- Independent review: `GO for commit`; evidence: the revised-candidate review found 0 P0/P1, confirmed that PDF-service database failures return non-2xx without empty-memory fallback, allowed GET paths cannot reach schema ensure/DDL/maintenance backfill DML, and `RA-20260904-006` is unique. The reviewer independently matched the exact candidate fingerprint and 18-file / 78-hunk scope. One non-blocking P2 remains: the no-write SQL regression guard is source-contract based rather than a route-level dynamic SQL spy.
+- Action conclusion: `GO`; the selected local content commit completed. Push still requires this exact committed-range audit and renewed user authorization bound to the content commit SHA and branch; PR, merge, deployment and production verification remain unauthorized.
+
+#### RA-20260904-007
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260904-005`
+- Selected CRL identities: `root/CRL-20260904-005`
+- Intended action: `push`
+- Branch: `codex/monthly-pdf-auth-data-20260904`
+- Base: `origin/Dev@f5853cc7cf3a9afa45291e3a0594e52ec502b6b8`; fetched at `2026-09-04 20:25:23 AEST`
+- Candidate patch SHA-256: `b358ffb72dc0ee22582ecf7a175caf2df77e7e50bf276c0f2e0945e120380cdc`
+- Commit SHA: `d06501336c190c0d8a72301cc7d7357bbd52aa46` (candidate content commit); prior commit receipt head `f691ee3952a5ac79371e9ba18711c768e7bc8457`; the final audit head is emitted by the report command.
+- Dependencies: `none`
+- Required validation: `PASS`; evidence: RA-20260904-006 validation, independent commit review, pre-commit ledger gate and exact committed-range audit passed; the non-ledger candidate fingerprint is unchanged.
+- Shared-hunk review: `PASS`; evidence: exact committed range contains only this CRL's 18 selected files / 78 non-ledger hunks and the required ledger receipts.
+- Generated-file review: `PASS`; evidence: exact range contains no generated file, cache, dependency link or configured sensitive category.
+- Technical state: `pushed`
+- Remote branch: `origin/codex/monthly-pdf-auth-data-20260904@4ded2602b80d2173cc31ca01f00fb77a1d8f140a`; initial non-force push and matching `git ls-remote` verification completed at `2026-09-04 20:32:54 AEST`; this ledger-only receipt is to be fast-forwarded on the same branch.
+- Remote preflight: `PASS`; evidence: freshly fetched `origin/Dev` still matched the recorded base and `refs/heads/codex/monthly-pdf-auth-data-20260904` did not exist remotely at `2026-09-04 20:25:23 AEST`.
+- User authorization: `approved-for-push`; evidence: after receiving root content commit `d06501336c190c0d8a72301cc7d7357bbd52aa46`, receipt head `f691ee3952a5ac79371e9ba18711c768e7bc8457`, branch `codex/monthly-pdf-auth-data-20260904` and the GO range result, the user replied `推送` on `2026-09-04`.
+- Independent review: `GO for push receipt`; evidence: independent read-only review verified this ledger-only receipt, exact root/base/content-commit/branch/fingerprint binding, unique RA ID, clean 18-file / 78-hunk committed range, explicit user push authorization, fresh base and absent remote branch; no P0/P1 remained. The existing source-contract-only SQL guard is a non-blocking P2.
+- Action conclusion: `GO`; blockers: none; the authorized exact range reached `origin/codex/monthly-pdf-auth-data-20260904` and its initial remote SHA matched local HEAD. This ledger-only receipt will be fast-forwarded on the same branch; PR, merge, deployment and production verification remain unauthorized.
+
+### Risks / Release Notes
+
+- Risk: 路径和数据完整性均故意 fail-closed；未来月报打印页新增 API 依赖但未同步登记时会收到 403 或 `PRINT_DATA_LOAD`，而不会静默扩大服务权限或生成不完整 PDF。瞬时读取失败可能使一次任务失败并按既有策略重试，但不会留下错误的全零文件。
+- Rollback: 回退共享服务声明、auth 服务分支、打印页失败状态、Worker fail-fast 与目标测试/登记；无需数据库或数据回滚。
+- Sensitive-information review: PASS；当前改动未加入 `.env`、JWT 原值、密码、Token、数据库 URL、客户数据、生产日志或私有媒体。
+- Git state: 基于 freshly fetched `origin/Dev@f5853cc7cf3a9afa45291e3a0594e52ec502b6b8` 的独立干净候选；已精确暂存本 CRL 的非台账文件，未提交、未推送、未部署、未做生产下载验证。
+
 ## CRL-20260904-004 — 已关闭维修仅修正完成日期的保存误拦截（root）
 
 - **Repository:** `root`
