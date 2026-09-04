@@ -69,7 +69,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   }, [pathname])
 
   async function bootstrapSession() {
-    if (!mounted || !authed) return
+    if (!mounted || !authed || isPublic) return
     setAuthState('auth_loading')
     const me = await getJSON<any>('/auth/me', { authSensitive: true, timeoutMs: 5000 })
     setUsername((me as any)?.username || null)
@@ -81,7 +81,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   }
 
   useEffect(() => {
-    if (!mounted || !authed) return
+    if (!mounted || !authed || isPublic) return
     let cancelled = false
     ;(async () => {
       try {
@@ -99,10 +99,10 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
       }
     })()
     return () => { cancelled = true }
-  }, [mounted, authed, router])
+  }, [mounted, authed, isPublic, router])
 
   useEffect(() => {
-    if (!mounted || !authed || authState !== 'backend_unavailable') return
+    if (!mounted || !authed || isPublic || authState !== 'backend_unavailable') return
     let cancelled = false
     const timer = setInterval(() => {
       getJSON('/health', { timeoutMs: 1500 })
@@ -116,7 +116,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
       cancelled = true
       clearInterval(timer)
     }
-  }, [mounted, authed, authState])
+  }, [mounted, authed, isPublic, authState])
 
   useEffect(() => {
     if (!mounted) return

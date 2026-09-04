@@ -1,5 +1,134 @@
 # Change Release Ledger
 
+## CRL-20260904-007 — 月报重试新建任务与公开打印页 RBAC 隔离（root）
+
+- **Repository:** `root`
+- **Status:** ready; selected-for-commit
+- **Updated:** 2026-09-04 22:28 AEST
+- **Request:** 修复月报合并 PDF 的两个已确认问题：错误弹窗点击“重试”仍复用旧任务，以及第一次新建任务的公开打印页额外请求 `/rbac/my-permissions`，被受限 PDF 服务身份以 403 拒绝并导致 `PRINT_AUTH`。
+- **Outcome:** 月报“重试”改用同步的一次性 ref，在触发同一次创建请求前写入、由处理器立即消费并清零，确保 payload 为 `forceNew: true`；普通首次下载仍为 false。`AdminLayout` 在 public route 不再运行真人管理端 session / RBAC bootstrap 或 backend-unavailable 恢复轮询，但保留 Cookie 到请求令牌的既有读取链路。PDF 服务白名单不增加 RBAC 接口，继续最小权限。
+
+### Implementation
+
+- Previous behavior: “重试”先调用异步 `setForceNewMergeJob(true)`，随后立即对主下载按钮执行 `.click()`；同一 render 的闭包仍读取 false，因此后端可复用旧 queued / failed job。另一方面，`AdminLayout` 虽然对 `/public/monthly-statement-print` 只渲染 children，挂载后的 `bootstrapSession()` 仍会先 `/auth/me` 再 `preloadRolePerms()`；后者请求 `/rbac/my-permissions`，合法 PDF 服务令牌因该路径不在白名单内返回 403，Worker 将页面上的 401/403 归类为 `PRINT_AUTH`。
+- New behavior: 重试入口同步设置 `forceNewMergeJobRef.current=true`，主处理器在任何 await 前复制到局部变量并立即清零；请求体只使用该局部值，重试 click 返回后再用 `finally` 防止未消费标志泄漏到下一次普通下载。`AdminLayout.bootstrapSession`、首次 bootstrap effect 和 backend-unavailable recovery effect 全部在 `isPublic` 时返回；现有 Cookie/localStorage 同步 effect 保留，且 `authHeaders()` 本身仍可直接读取 Cookie。
+- Security decision: 不给 PDF 服务身份开放 `/rbac/my-permissions`，不新增数据库虚拟用户，不扩大角色或写权限；后端契约新增该路径必须为 403 的明确断言。
+- Scope decision: 两个问题都发生在同一月报合并任务的管理端创建 → 公开打印链路，作为一个可选择的 root 修复单元；不修改月报金额算法、模板、队列 lease/retry、Render 配置、数据库或移动端。
+
+### Files / Areas
+
+- `frontend/src/app/finance/properties-overview/page.tsx` — modified: 重试意图由异步 state 改为同步消费的一次性 ref。
+- `frontend/src/components/AdminLayout.tsx` — modified: public route 跳过通用 session/RBAC bootstrap 与恢复轮询，保留请求令牌可用性。
+- `frontend/src/lib/monthlyStatementSplitPdf.test.ts` — modified: 增加重试 payload 时序和公开打印页 RBAC 隔离源码契约。
+- `backend/scripts/tests/test_pdf_render_service_auth.ts` — modified: 明确 `/rbac/my-permissions` 对 PDF 服务身份保持 403。
+- `docs/feature-regression-registry.md` — modified: 更新 FR-017 与 FR-022 的业务不变量和测试映射。
+- `docs/change-release-ledger.md` — modified: 本 CRL。
+
+### Impact / Dependencies
+
+- User-visible behavior: 月报失败后点击“重试”会创建新的后台任务；第一次创建任务时，公开打印页不再因为无关 RBAC 请求触发 `PRINT_AUTH`。
+- Authentication: public shell 不加载管理端角色快照；进入任何非 public 管理路由后仍按原流程加载。公开页的数据请求仍由 `authHeaders()` 从 Cookie/Storage 读取令牌。
+- Dependencies: 依赖已包含在 base `origin/Dev@08b0699c06cefdafc3e52051558d746a7aa93dd8` 的 `root/CRL-20260904-005` 受限服务身份和数据加载防伪契约；无新依赖、环境变量、schema 或 migration。
+- Production / database / external writes: none；本轮只修改隔离本地候选并运行不写生产数据的源码、测试和构建检查。
+
+### Validation
+
+- `npm run test --prefix frontend -- --coverage.enabled=false src/lib/monthlyStatementSplitPdf.test.ts` — PASS：5 tests；覆盖同次 click 的 `forceNew` ref 消费、移除异步 setter 以及 public AdminLayout 跳过 bootstrap 并保留 Cookie token 同步。
+- `npm run test:pdf-render-service-auth --prefix backend` — PASS：服务身份声明、允许路径和显式 RBAC 403 契约。
+- `npm run lint --prefix frontend` — PASS；仅输出仓库既有的 hook / img warnings，本次 `AdminLayout` 的 `bootstrapSession` warning 在 base 已存在，没有新增 lint error。
+- `npm run test --prefix frontend -- --coverage.enabled=false` — PASS：44 files / 210 tests。
+- `npm run build --prefix frontend` — PASS：Next.js production build、lint 与 TypeScript 检查完成；`/public/monthly-statement-print` 和 `/finance/properties-overview` 均成功生成。
+- `npm run build --prefix backend` — PASS：TypeScript 编译完成；命令更新的已跟踪 `backend/dist` 历史产物仅为验证副作用，已精确还原，未进入候选。
+- `npm run test:pdf-jobs-runtime --prefix backend` — PASS：队列 mode、retry、drain 和 producer wake 契约保持。
+- `npm run test:auth-role-snapshot --prefix backend` — PASS：真人用户角色快照和 missing-user 边界保持。
+- `npm run check:feature-registry` — PASS：19 FRs / 159 test mappings。
+- `python3 scripts/audit_change_release_ledger.py` — PASS：6 个变更文件全部由本 CRL 覆盖。
+- `git diff --check` — PASS。
+- 已登录开发环境首次下载、失败后重试、Render worker 与生产下载 — not run；本轮未获部署或创建真实 PDF job 的授权。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared.
+- **Untracked review:** none；候选来自 freshly fetched `origin/Dev` 独立干净工作树，未跟踪文件为零。
+- `backend/scripts/tests/test_pdf_render_service_auth.ts` — SHA-256: `1b6052bc336e639874dfb84dcc327742d05eac390081d45fbbb1c8bce19a1c5a`
+- `backend/scripts/tests/test_pdf_render_service_auth.ts` — SHA-256: `be4bb7ab5ad88caac207dfa6a2e01283429dae573bbad3f1c31150dd58406376`
+- `docs/feature-regression-registry.md` — SHA-256: `1d38a9f9e11b974e270e2bc2d660bdc0f6a4c2a6461f1f6eebbc8aba958d83d1`
+- `docs/feature-regression-registry.md` — SHA-256: `2e2877ff762e6c8c0802d19c1344620ef1e4a30de11772a8f44a3030055e09cf`
+- `docs/feature-regression-registry.md` — SHA-256: `39de4010f476e60506e545ab838c0e8df3dbc74f7ff27d4198f46cc1bc80453c`
+- `docs/feature-regression-registry.md` — SHA-256: `3b7b72681b17ff291e38d9d83d86c63c17d0cffc4924c77ef83d4514fb435bd9`
+- `docs/feature-regression-registry.md` — SHA-256: `64ec4762b5747996f33a6f39f012b48c96e3c923eea981d8095cd240a5afe512`
+- `docs/feature-regression-registry.md` — SHA-256: `663a4082d2e2c4ea4e8a6f58ac7b86bf2e85cd96658bb02179bd2031d84c1f68`
+- `docs/feature-regression-registry.md` — SHA-256: `68e125145336f5a4effa8e6bf5c97411ff5ab4f959ab95f14793064f24704758`
+- `docs/feature-regression-registry.md` — SHA-256: `7b6b6818531930c5bebcf2494faa9271b8f62603ffbce46ced8cffaf8ef5d78c`
+- `docs/feature-regression-registry.md` — SHA-256: `9cd089510abaf9c507e8e36c825e449734197a076088d21356ace58d77017748`
+- `docs/feature-regression-registry.md` — SHA-256: `ab85cc0e9dde2b9d9ef2ae089484627ae54d49cae923384e443ca23ade0cb933`
+- `docs/feature-regression-registry.md` — SHA-256: `b443e6f9cd52052a58d15c088c257ce9a4f2bc0ded00aeb62acfd396a175495b`
+- `docs/feature-regression-registry.md` — SHA-256: `bd0e3be6250ca8bac12838e3d0601e9ca14fa762dd7cc989d5315a9815a5c71d`
+- `docs/feature-regression-registry.md` — SHA-256: `c9ec12eea6c674867e2334070809926468d67fa534ca266c59c2c03bc192ebba`
+- `docs/feature-regression-registry.md` — SHA-256: `f3a270fd6db922a3747caffbc535a6c8ecf556ec1d552ebcb524b5ce8bc84ad0`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `0723c82961bec2323f201e6e929caaa335aed03cb0d627e5bc3b3204e3984e84`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `0fbb3f8396ef5e2a5adab65382d47a2ce8a155fbc34393bebd5e4473b411ce9b`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `3e44723ade62a023a5985c530ea4ab47dc0d52d2b2a88117ff271fff21f8d71a`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `47b507c44dc97a44ae088d4cc5020bb81a8c4c3641cc1a727a63231997343376`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `67c4a704832401da7fc8e94ca1a3421e3220feeabd25c74d44fbd643a6c94e84`
+- `frontend/src/components/AdminLayout.tsx` — SHA-256: `713341b353bae88f6eb38026a80edef0c167e7f2fadbee76358031a09e24badc`
+- `frontend/src/components/AdminLayout.tsx` — SHA-256: `87b6a565647ac08a024f190ea77704369e30b30c4b278ed216cd01b12771e121`
+- `frontend/src/components/AdminLayout.tsx` — SHA-256: `8e9e3f988434a8fe21894fcfa5165f399af78166c7b6b4d5f47ce27a835fd10d`
+- `frontend/src/components/AdminLayout.tsx` — SHA-256: `b28f051f4f3f03ee62560da83249d2955bed3f36e430c0edb70fdb5ea4acca56`
+- `frontend/src/components/AdminLayout.tsx` — SHA-256: `c5d9f5410b4f83ace34e0691bb6e882414d3c0929b8c28add1d5e1997b1dd3b8`
+- `frontend/src/lib/monthlyStatementSplitPdf.test.ts` — SHA-256: `55f896cb74b9f2285199e1bd416630eccbd87801f265b33d1e987655d3276949`
+
+### Release Attempts
+
+#### RA-20260904-010
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260904-007`
+- Selected CRL identities: `root/CRL-20260904-007`
+- Intended action: `commit`
+- Branch: `codex/monthly-pdf-retry-auth-followup-20260904`
+- Base: `origin/Dev@08b0699c06cefdafc3e52051558d746a7aa93dd8`; fetched at `2026-09-04 22:21:11 AEST`
+- Candidate patch SHA-256: `96d068dc805d0d6356fccf57ee27d878495d36818cb945c094d3cee687b8f82a`
+- Commit SHA: `30e2fe8d1385e8bbc4567456da616d10fcf00d8d` (candidate content commit; exact audit head follows in the committed-range report).
+- Dependencies: `root/CRL-20260904-005@d06501336c190c0d8a72301cc7d7357bbd52aa46`
+- Required validation: `PASS`; evidence: frontend lint, 44-file / 210-test frontend suite and production build; backend TypeScript build, PDF service auth, PDF runtime and auth-role snapshot contracts; Feature Registry, current-worktree ledger coverage and diff check all passed.
+- Shared-hunk review: `PASS`; evidence: isolated clean candidate contains only this CRL's five non-ledger files plus its ledger block, with 27 recorded non-ledger hunks.
+- Generated-file review: `PASS`; evidence: backend build outputs were restored to base; no generated file, cache, dependency directory or untracked path is selected.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: user requested `提交推送` after receiving the exact `root/CRL-20260904-007` scope on 2026-09-04. Under the release contract this authorizes the commit stage only; push requires confirmation bound to the resulting commit SHA.
+- Independent review: `GO for commit`; evidence: independent read-only reviewer复算候选指纹 `96d068dc805d0d6356fccf57ee27d878495d36818cb945c094d3cee687b8f82a`，核对完整 6-file staged diff、27 个 hunk、base/branch/依赖、无 untracked/generated/secret，未发现 P0/P1。接受一个非阻断 P2：当前前端回归为源码契约测试，未真实挂载组件或拦截网络请求。
+- Action conclusion: `GO`; blockers: none；exact reviewed candidate 已提交为 `30e2fe8d1385e8bbc4567456da616d10fcf00d8d`。Push 仍需在 committed-range audit 通过后，由用户针对确切 branch/SHA 重新确认；PR、merge 与部署未授权。
+
+#### RA-20260904-011
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260904-007`
+- Selected CRL identities: `root/CRL-20260904-007`
+- Intended action: `push`
+- Branch: `codex/monthly-pdf-retry-auth-followup-20260904`
+- Base: `origin/Dev@08b0699c06cefdafc3e52051558d746a7aa93dd8`; fetched at `2026-09-04 22:32:30 AEST`
+- Candidate patch SHA-256: `96d068dc805d0d6356fccf57ee27d878495d36818cb945c094d3cee687b8f82a`
+- Commit SHA: `30e2fe8d1385e8bbc4567456da616d10fcf00d8d` (candidate content commit); prior commit receipt head `6f729738d4c4565a5d4f11f947131ff01a3fb594`; exact push-audit head will be emitted by the range report.
+- Dependencies: `root/CRL-20260904-005@d06501336c190c0d8a72301cc7d7357bbd52aa46`
+- Required validation: `PASS`; evidence: RA-20260904-010 validation and independent commit review passed; exact `08b0699c...6f729738` committed-range report passed with the unchanged candidate fingerprint.
+- Shared-hunk review: `PASS`; evidence: exact committed range contains only this CRL's six selected files and 27 non-ledger hunks.
+- Generated-file review: `PASS`; evidence: exact range contains no generated file, cache, untracked path or configured sensitive category.
+- Technical state: `pushed`
+- Remote branch: `origin/codex/monthly-pdf-retry-auth-followup-20260904@e4dda55fc7dadbe26a495e4d692109fb95772bab`; initial non-force push and matching `git ls-remote` verification completed at `2026-09-04 22:37:06 AEST`. This ledger-only outcome receipt will be fast-forwarded on the same branch.
+- Remote preflight: `PASS`; evidence: freshly fetched `origin/Dev` still matches the recorded base and `refs/heads/codex/monthly-pdf-retry-auth-followup-20260904` does not exist remotely at `2026-09-04 22:32:30 AEST`.
+- User authorization: `approved-for-push`; evidence: after receiving root content commit `30e2fe8d1385e8bbc4567456da616d10fcf00d8d`, receipt head `6f729738d4c4565a5d4f11f947131ff01a3fb594` and branch `codex/monthly-pdf-retry-auth-followup-20260904`, the user replied `推送` on `2026-09-04`.
+- Independent review: `GO for push receipt`; evidence: independent read-only reviewer复算 `08b0699c...6f729738` 非台账指纹为 `96d068dc805d0d6356fccf57ee27d878495d36818cb945c094d3cee687b8f82a`，确认 base → content commit → receipt HEAD 祖先链、CRL-005 依赖、6 个 committed 文件 / 27 个 hunk、精确用户授权、fresh base、远端目标分支不存在，且无 P0/P1、生成物、敏感项或 mobile 混入；沿用已接受的源码契约测试 P2。
+- Action conclusion: `GO`; blockers: none；授权的精确范围已 non-force push 到 `origin/codex/monthly-pdf-retry-auth-followup-20260904@e4dda55fc7dadbe26a495e4d692109fb95772bab`，首次远端 SHA 与本地 HEAD 一致。本 ledger-only outcome receipt 将在同一分支 fast-forward；PR、merge、部署及生产验证未授权。
+
+### Risks / Release Notes
+
+- Risk: `PUBLIC_SHELL_PATHS` 中的所有公开页面都会跳过 Admin session/RBAC bootstrap；它们原本已经绕过管理壳渲染，且请求令牌读取独立存在。进入私有路由时 `isPublic` 变化会重新触发正常 bootstrap。
+- Accepted P2: `monthlyStatementSplitPdf.test.ts` 使用源码字符串保护关键顺序，没有真实点击后拦截首次 POST payload 或确认 public route 的网络请求清单；现有实现顺序经完整 diff 审查正确，已登录开发/Render 端到端验证仍需部署后单独执行。
+- Rollback: 恢复 AdminLayout 两个 effect 和 `bootstrapSession` 的 public guard，并恢复月报重试 state；无数据回滚。
+- Sensitive-information review: PASS；改动不含 secret、token、cookie 值、数据库 URL、客户数据或生产日志。
+- Git state: 基于 freshly fetched `origin/Dev@08b0699c06cefdafc3e52051558d746a7aa93dd8` 的隔离分支 `codex/monthly-pdf-retry-auth-followup-20260904`；not committed、not pushed、PR not created、not merged、not deployed、production/device verification not run。
+
 ## CRL-20260904-006 — 根仓库 CI 分层提速与重复检查消除（root）
 
 - **Repository:** `root`
