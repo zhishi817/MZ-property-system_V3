@@ -4,6 +4,8 @@ export type MaintenanceWorkflowActionResponse = {
   ok: boolean
   status: string
   id: string
+  can_manage_workflow?: boolean
+  available_actions?: string[]
 }
 
 export type InternalMaintenanceFeedbackCreateResponse = {
@@ -72,10 +74,41 @@ export function internalMaintenanceAssignmentChanged(input: {
     || date(input.currentScheduledDate) !== date(input.nextScheduledDate)
 }
 
+export function shouldUpdateInternalMaintenanceRecordViaCrud(input: {
+  assignmentChanged: boolean
+  recordActualRepairerWithCompletion: boolean
+}) {
+  return !input.assignmentChanged || input.recordActualRepairerWithCompletion
+}
+
 export function internalMaintenanceAssignPath(recordId: string) {
   const id = String(recordId || '').trim()
   if (!id) throw new Error('maintenance_record_id_required')
   return `/maintenance/workflow/internal/${encodeURIComponent(id)}/assign`
+}
+
+export function internalMaintenanceReviewPath(recordId: string) {
+  return internalMaintenanceWorkflowPath(recordId, 'review')
+}
+
+export function internalMaintenanceWorkflowPath(recordId: string, action: string) {
+  const id = String(recordId || '').trim()
+  if (!id) throw new Error('maintenance_record_id_required')
+  const safeAction = String(action || '').trim()
+  if (!safeAction) throw new Error('maintenance_workflow_action_required')
+  return `/maintenance/workflow/internal/${encodeURIComponent(id)}/${encodeURIComponent(safeAction)}`
+}
+
+export function shouldAutoApproveInternalMaintenanceSettlement(input: {
+  status?: string | null
+  payMethod?: string | null
+  canManageWorkflow?: boolean
+}) {
+  const status = String(input.status || '').trim().toLowerCase()
+  const payMethod = String(input.payMethod || '').trim()
+  return ['pending_review', 'review_pending', 'awaiting_review', 'completed', 'done', 'ready'].includes(status)
+    && !!payMethod
+    && input.canManageWorkflow === true
 }
 
 export async function assignInternalMaintenance(input: {
@@ -91,6 +124,43 @@ export async function assignInternalMaintenance(input: {
     assignee_id: assigneeId,
     scheduled_date: input.scheduledDate,
     ...(input.recordPatch && Object.keys(input.recordPatch).length ? { record_patch: input.recordPatch } : {}),
+    ...(String(input.operationId || '').trim() ? { operation_id: String(input.operationId).trim() } : {}),
+  }, { timeoutMs: 10_000 })
+}
+
+export async function approveInternalMaintenance(input: {
+  recordId: string
+  assigneeId?: string | null
+  completedAt?: string | null
+  operationId?: string
+}) {
+  return postJSON<MaintenanceWorkflowActionResponse>(internalMaintenanceReviewPath(input.recordId), {
+    decision: 'approved',
+    ...(String(input.assigneeId || '').trim() ? { assignee_id: String(input.assigneeId).trim() } : {}),
+    ...(String(input.completedAt || '').trim() ? { completed_at: String(input.completedAt).trim() } : {}),
+    ...(String(input.operationId || '').trim() ? { operation_id: String(input.operationId).trim() } : {}),
+  }, { timeoutMs: 10_000 })
+}
+
+export async function manageInternalMaintenanceWorkflow(input: {
+  recordId: string
+  action: 'manager_start' | 'manager_complete' | 'review' | 'reopen' | 'cancel'
+  assigneeId?: string | null
+  decision?: 'approved' | 'rejected'
+  completionPhotoUrls?: string[]
+  completionNote?: string | null
+  completedAt?: string | null
+  reason?: string | null
+  operationId?: string
+}) {
+  const completionPhotoUrls = Array.from(new Set((input.completionPhotoUrls || []).map((url) => String(url || '').trim()).filter(Boolean)))
+  return postJSON<MaintenanceWorkflowActionResponse>(internalMaintenanceWorkflowPath(input.recordId, input.action), {
+    ...(String(input.assigneeId || '').trim() ? { assignee_id: String(input.assigneeId).trim() } : {}),
+    ...(input.decision ? { decision: input.decision } : {}),
+    ...(completionPhotoUrls.length ? { completion_photo_urls: completionPhotoUrls } : {}),
+    ...(String(input.completionNote || '').trim() ? { completion_note: String(input.completionNote).trim() } : {}),
+    ...(String(input.completedAt || '').trim() ? { completed_at: String(input.completedAt).trim() } : {}),
+    ...(String(input.reason || '').trim() ? { reason: String(input.reason).trim() } : {}),
     ...(String(input.operationId || '').trim() ? { operation_id: String(input.operationId).trim() } : {}),
   }, { timeoutMs: 10_000 })
 }

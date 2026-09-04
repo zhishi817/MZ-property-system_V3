@@ -2,8 +2,9 @@ import { Router } from 'express'
 import multer from 'multer'
 import path from 'path'
 import { hasR2, r2GetObjectByKey, r2Upload } from '../r2'
-import { requireAnyPerm } from '../auth'
+import { requireAnyPerm, userHasAnyPerm } from '../auth'
 import { hasPg, pgPool } from '../dbAdapter'
+import { syncInternalMaintenanceAutoExpenseWithClient } from './crud'
 import crypto from 'crypto'
 import { v4 as uuidv4 } from 'uuid'
 import { pdfTaskLimiter } from '../lib/pdfTaskLimiter'
@@ -12,15 +13,21 @@ import { ensurePdfJobsSchema } from '../services/pdfJobsSchema'
 import { schedulePdfJobsKick } from '../services/pdfJobsWorker'
 import { generateWorkRecordPdf } from '../lib/workRecordPdf'
 import { WORK_RECORD_PDF_TEMPLATE_VERSION } from '../lib/workRecordPdfTemplate'
-import { ensureMaintenanceWorkflowFoundation } from '../lib/maintenanceWorkflowSchema'
+import { assertMaintenanceWorkflowSchemaReady, MaintenanceWorkflowSchemaNotReady } from '../lib/maintenanceWorkflowSchema'
+import {
+  assertMaintenanceRuntimeSchemaReady,
+  assertMaintenanceShareLinksSchemaReady,
+  isMaintenanceRuntimeSchemaReady,
+  MaintenanceRuntimeSchemaNotReady,
+} from '../lib/maintenanceRuntimeSchema'
 import {
   availableMaintenanceActions,
+  MAINTENANCE_WORKFLOW_MANAGE_PERMISSION,
   normalizeMaintenanceWorkflowStatus,
   validateMaintenanceWorkflowAction,
   type MaintenanceWorkflowAction,
 } from '../lib/maintenanceWorkflow'
 import {
-  ensureMaintenanceWorkTasksTable,
   insertMaintenanceWorkflowEvent,
   maintenanceWorkflowSourceType,
   upsertMaintenanceWorkTask,
@@ -47,6 +54,23 @@ function randomToken(bytes = 24) {
   return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
 }
 
+async function assertMaintenanceRouteSchemaReady(options: { shareLinks?: boolean } = {}) {
+  if (!pgPool) throw new MaintenanceRuntimeSchemaNotReady()
+  assertMaintenanceRuntimeSchemaReady()
+  try {
+    await assertMaintenanceWorkflowSchemaReady(pgPool)
+  } catch {
+    throw new MaintenanceRuntimeSchemaNotReady()
+  }
+  if (options.shareLinks) await assertMaintenanceShareLinksSchemaReady(pgPool)
+}
+
+function sendMaintenanceRuntimeSchemaNotReady(res: any, error: unknown) {
+  if (!(error instanceof MaintenanceRuntimeSchemaNotReady)) return false
+  res.status(503).json({ code: 'maintenance_runtime_schema_not_ready' })
+  return true
+}
+
 function pdfLimiter(req: any, res: any, next: any) {
   pdfTaskLimiter.acquire().then((release) => {
     let done = false
@@ -62,44 +86,6 @@ function pdfLimiter(req: any, res: any, next: any) {
   }).catch(() => {
     return res.status(429).json({ message: 'PDF任务繁忙，请稍后重试' })
   })
-}
-
-async function ensurePropertyMaintenanceTable() {
-  if (!pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_maintenance (
-    id text PRIMARY KEY,
-    property_id text REFERENCES properties(id) ON DELETE SET NULL,
-    occurred_at date,
-    worker_name text,
-    details text,
-    created_by text,
-    created_at timestamptz DEFAULT now()
-  );`)
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_maintenance_pid ON property_maintenance(property_id);')
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_maintenance_date ON property_maintenance(occurred_at);')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_notes text;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS property_code text;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category_detail text;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS invoice_description_en text;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS completed_at timestamptz;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS updated_at timestamptz;')
-}
-
-async function ensureMaintenanceShareTables() {
-  if (!pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS maintenance_share_links (
-    token_hash text PRIMARY KEY,
-    maintenance_id text NOT NULL REFERENCES property_maintenance(id) ON DELETE CASCADE,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    expires_at timestamptz NOT NULL,
-    revoked_at timestamptz
-  );`)
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_maintenance_share_mid ON maintenance_share_links(maintenance_id);')
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_maintenance_share_expires ON maintenance_share_links(expires_at);')
 }
 
 type MaintenanceDomain = MaintenanceWorkflowDomain
@@ -123,15 +109,8 @@ function workflowSourceType(domain: MaintenanceDomain): string {
   return maintenanceWorkflowSourceType(domain)
 }
 
-function userRoleNames(user: any): string[] {
-  return Array.from(new Set([
-    String(user?.role || '').trim(),
-    ...(Array.isArray(user?.roles) ? user.roles.map((role: any) => String(role || '').trim()) : []),
-  ].filter(Boolean)))
-}
-
-function isMaintenanceManager(user: any): boolean {
-  return userRoleNames(user).some((role) => ['admin', 'offline_manager', 'customer_service'].includes(role))
+async function canManageMaintenanceWorkflow(user: any): Promise<boolean> {
+  return await userHasAnyPerm(user, [MAINTENANCE_WORKFLOW_MANAGE_PERMISSION])
 }
 
 function userId(user: any): string {
@@ -146,6 +125,13 @@ function userName(user: any): string | null {
 function dateOnly(value: any): string | null {
   const raw = String(value || '').trim().slice(0, 10)
   return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null
+}
+
+function completedAtFromWorkflowBody(value: any): string {
+  if (value == null || value === '') return new Date().toISOString()
+  const day = dateOnly(value)
+  if (!day) throw new MaintenanceWorkflowError(400, 'maintenance_invalid_completed_date')
+  return `${day}T12:00:00.000Z`
 }
 
 function nonEmptyStrings(value: any): string[] {
@@ -174,7 +160,7 @@ function workflowAction(value: any, decision: any): MaintenanceWorkflowAction | 
     if (reviewDecision === 'rejected') return 'review_rejected'
     return null
   }
-  return ['assign', 'start', 'submit', 'executor_complete', 'executor_unfinished', 'reopen', 'cancel', 'hold'].includes(action)
+  return ['assign', 'start', 'submit', 'executor_complete', 'executor_unfinished', 'manager_start', 'manager_complete', 'reopen', 'cancel', 'hold'].includes(action)
     ? action as MaintenanceWorkflowAction
     : null
 }
@@ -204,7 +190,7 @@ async function updateMaintenanceWorkflowRecord(client: any, domain: MaintenanceD
   return row
 }
 
-function workflowResponse(domain: MaintenanceDomain, row: any, user: any) {
+function workflowResponse(domain: MaintenanceDomain, row: any, user: any, canManageWorkflow: boolean) {
   const status = normalizeMaintenanceWorkflowStatus(row?.status, row?.review_status)
   const assignedExecutor = !!userId(user) && String(row?.assignee_id || '').trim() === userId(user)
   return {
@@ -215,7 +201,8 @@ function workflowResponse(domain: MaintenanceDomain, row: any, user: any) {
     source_type: workflowSourceType(domain),
     source_id: String(row?.id || ''),
     work_task_id: `${workflowSourceType(domain)}:${String(row?.id || '')}`,
-    available_actions: availableMaintenanceActions({ status, isManager: isMaintenanceManager(user), isAssignedExecutor: assignedExecutor }),
+    can_manage_workflow: canManageWorkflow,
+    available_actions: availableMaintenanceActions({ status, isManager: canManageWorkflow, isAssignedExecutor: assignedExecutor }),
   }
 }
 
@@ -284,7 +271,7 @@ router.post('/share-link/:id', requireAnyPerm(['property_maintenance.view','prop
   if (!id) return res.status(400).json({ message: 'missing id' })
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensureMaintenanceShareTables()
+    await assertMaintenanceRouteSchemaReady({ shareLinks: true })
     const r0 = await pgPool.query('SELECT id FROM property_maintenance WHERE id=$1 LIMIT 1', [id])
     if (!r0.rowCount) return res.status(404).json({ message: 'not found' })
     const token = randomToken(24)
@@ -296,6 +283,7 @@ router.post('/share-link/:id', requireAnyPerm(['property_maintenance.view','prop
     )
     return res.json({ token, expires_at: expiresAt })
   } catch (e: any) {
+    if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'create share link failed' })
   }
 })
@@ -308,6 +296,7 @@ router.post('/pdf/:id', requireAnyPerm(['property_maintenance.view','property_ma
     const showChineseRaw = String((req as any)?.query?.showChinese ?? '').trim().toLowerCase()
     const showChinese = showChineseRaw === '1' || showChineseRaw === 'true' || showChineseRaw === 'yes'
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    await assertMaintenanceRouteSchemaReady()
     const apiBase = (() => {
       const host = String((req.headers['x-forwarded-host'] as any) || req.headers.host || '').split(',')[0].trim()
       const proto = String((req.headers['x-forwarded-proto'] as any) || req.protocol || 'https').split(',')[0].trim()
@@ -324,6 +313,7 @@ router.post('/pdf/:id', requireAnyPerm(['property_maintenance.view','property_ma
     if (built.notLoaded > 0) res.setHeader('X-WorkRecordPdfWarnings', `images_not_loaded=${built.notLoaded}`)
     return res.status(200).send(built.pdf)
   } catch (e: any) {
+    if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
     const msg = String(e?.message || 'generate pdf failed')
     if (msg === 'not found') return res.status(404).json({ message: 'not found' })
     if (msg === 'no photos to render') return res.status(422).json({ message: 'no photos to render' })
@@ -342,10 +332,10 @@ router.post('/pdf-jobs/:id', requireAnyPerm(['property_maintenance.view','proper
     const forceNew = body.forceNew === true || body.forceNew === 1 || body.forceNew === '1'
     if (!rid) return res.status(400).json({ message: 'missing id' })
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    await assertMaintenanceRouteSchemaReady()
     if (!String(process.env.FRONTEND_BASE_URL || '').trim()) return res.status(500).json({ message: 'missing FRONTEND_BASE_URL' })
     if (!hasR2) return res.status(500).json({ message: 'R2 not configured' })
     await ensurePdfJobsSchema()
-    await ensurePropertyMaintenanceTable()
     const rowCheck = await pgPool.query('SELECT id FROM property_maintenance WHERE id=$1 LIMIT 1', [rid])
     if (!rowCheck.rowCount) return res.status(404).json({ message: 'not found' })
     if (!forceNew) {
@@ -383,6 +373,7 @@ router.post('/pdf-jobs/:id', requireAnyPerm(['property_maintenance.view','proper
     schedulePdfJobsKick(2)
     return res.json({ job_id: id, status: 'queued', reused: false })
   } catch (e: any) {
+    if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
     const code = String(e?.code || '')
     if (code === 'PDF_JOBS_SCHEMA_MISSING') return res.status(500).json({ message: 'pdf_jobs table missing (apply migration)' })
     return res.status(500).json({ message: e?.message || 'create job failed' })
@@ -451,8 +442,10 @@ router.get('/pdf-jobs/:id/download', requireAnyPerm(['property_maintenance.view'
 router.post('/workflow/external-orders', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  if (!isMaintenanceManager(user)) return res.status(403).json({ code: 'maintenance_manager_required' })
+  const canManageWorkflow = await canManageMaintenanceWorkflow(user)
+  if (!canManageWorkflow) return res.status(403).json({ code: 'maintenance_manager_required' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  if (!isMaintenanceRuntimeSchemaReady()) return res.status(503).json({ code: 'maintenance_runtime_schema_not_ready' })
 
   const body = req.body || {}
   const clientName = String(body.client_name || '').trim()
@@ -466,8 +459,7 @@ router.post('/workflow/external-orders', async (req, res) => {
   }
 
   try {
-    await ensureMaintenanceWorkflowFoundation(pgPool)
-    await ensureMaintenanceWorkTasksTable(pgPool)
+    await assertMaintenanceWorkflowSchemaReady(pgPool)
     const client = await pgPool.connect()
     try {
       await client.query('BEGIN')
@@ -514,7 +506,7 @@ router.post('/workflow/external-orders', async (req, res) => {
         payload: { order_no: orderNo },
       })
       await client.query('COMMIT')
-      return res.status(201).json(workflowResponse('external', row, user))
+      return res.status(201).json(workflowResponse('external', row, user, canManageWorkflow))
     } catch (error) {
       try { await client.query('ROLLBACK') } catch {}
       throw error
@@ -522,6 +514,7 @@ router.post('/workflow/external-orders', async (req, res) => {
       client.release()
     }
   } catch (e: any) {
+    if (e instanceof MaintenanceWorkflowSchemaNotReady) return res.status(503).json({ code: 'maintenance_workflow_schema_not_ready' })
     if (e instanceof MaintenanceWorkflowError) return res.status(e.statusCode).json({ code: e.code })
     if (String(e?.code || '') === '23505') return res.status(409).json({ code: 'external_maintenance_order_no_conflict' })
     return res.status(500).json({ message: e?.message || 'external_maintenance_create_failed' })
@@ -536,6 +529,10 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
   const id = String(req.params.id || '').trim()
   const action = workflowAction(req.params.action, req.body?.decision)
   if (!domain || !id || !action) return res.status(400).json({ code: 'maintenance_workflow_request_invalid' })
+  if (!isMaintenanceRuntimeSchemaReady()) return res.status(503).json({ code: 'maintenance_runtime_schema_not_ready' })
+  if (domain !== 'internal' && (action === 'manager_start' || action === 'manager_complete')) {
+    return res.status(409).json({ code: 'maintenance_workflow_action_invalid_for_domain' })
+  }
 
   const body = req.body || {}
   const reason = String(body.reason || body.review_note || body.note || '').trim() || null
@@ -563,14 +560,15 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
         scheduled_date: body.scheduled_date == null ? null : String(body.scheduled_date || '').trim(),
         record_patch: recordPatch,
         completion_photo_urls: completionPhotoUrls,
+        completed_at: body.completed_at == null ? null : String(body.completed_at),
         completion_note: String(body.completion_note || body.note || '').trim() || null,
         reason,
       })
     : ''
   try {
-    await ensureMaintenanceWorkflowFoundation(pgPool)
-    await ensureMaintenanceWorkTasksTable(pgPool)
+    await assertMaintenanceWorkflowSchemaReady(pgPool)
     if (receiptScope) await assertIdempotentStepReceiptsReady(pgPool)
+    const canManageWorkflow = await canManageMaintenanceWorkflow(user)
     const client = await pgPool.connect()
     try {
       await client.query('BEGIN')
@@ -597,9 +595,9 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
       const validation = validateMaintenanceWorkflowAction({
         action,
         status,
-        isManager: isMaintenanceManager(user),
+        isManager: canManageWorkflow,
         isAssignedExecutor: assignedExecutor,
-        completionPhotoCount: action === 'submit' || action === 'executor_complete'
+        completionPhotoCount: action === 'submit' || action === 'executor_complete' || action === 'manager_complete'
           ? completionPhotoUrls.length
           : existingCompletionPhotoUrls.length || legacyCompletionPhotoUrls.length,
         reason,
@@ -620,6 +618,7 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
       let nextStatus = status
       let eventFromStatus = status
       let eventType: string = action
+      let completedByAssigneeId: string | null = null
       if (action === 'assign') {
         const assigneeId = String(body.assignee_id || '').trim()
         if (!assigneeId) throw new MaintenanceWorkflowError(400, 'maintenance_assignee_required')
@@ -643,11 +642,16 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
       } else if (action === 'start') {
         nextStatus = 'in_progress'
         patch = { status: nextStatus, started_at: row.started_at || new Date().toISOString() }
+      } else if (action === 'manager_start') {
+        nextStatus = 'in_progress'
+        patch = { status: nextStatus, started_at: row.started_at || new Date().toISOString() }
+        eventType = 'manager_started'
       } else if (action === 'submit') {
         nextStatus = 'pending_review'
         patch = {
           status: nextStatus,
           submitted_at: new Date().toISOString(),
+          ...(domain === 'internal' ? { completed_at: new Date().toISOString() } : {}),
           completion_photo_urls: JSON.stringify(completionPhotoUrls),
           ...(domain === 'internal'
             ? { repair_notes: String(body.completion_note || body.note || '').trim() || null }
@@ -674,12 +678,48 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
           status: nextStatus,
           started_at: startedAt,
           submitted_at: new Date().toISOString(),
+          ...(domain === 'internal' ? { completed_at: new Date().toISOString() } : {}),
           completion_photo_urls: JSON.stringify(completionPhotoUrls),
           ...(domain === 'internal'
             ? { repair_notes: String(body.completion_note || body.note || '').trim() || null }
             : { completion_notes: String(body.completion_note || body.note || '').trim() || null }),
         }
         eventType = 'executor_completed'
+      } else if (action === 'manager_complete') {
+        const completedAt = completedAtFromWorkflowBody(body.completed_at)
+        const requestedAssigneeId = String(body.assignee_id || body.actual_repairer_id || '').trim()
+        const actualRepairerId = requestedAssigneeId || String(row.assignee_id || '').trim()
+        if (!actualRepairerId) throw new MaintenanceWorkflowError(400, 'maintenance_actual_repairer_required')
+        if (requestedAssigneeId) {
+          const assigneeResult = await client.query('SELECT id FROM users WHERE id::text = $1 LIMIT 1', [requestedAssigneeId])
+          if (!assigneeResult?.rows?.[0]) throw new MaintenanceWorkflowError(400, 'maintenance_assignee_not_found')
+        }
+        completedByAssigneeId = actualRepairerId
+        if (status !== 'in_progress') {
+          await insertMaintenanceWorkflowEvent(client, {
+            domain,
+            recordId: id,
+            eventType: 'manager_started',
+            fromStatus: status,
+            toStatus: 'in_progress',
+            actorUserId: actorId,
+            actorName,
+            reason: null,
+            payload: { implicit: true },
+          })
+          eventFromStatus = 'in_progress'
+        }
+        nextStatus = 'pending_review'
+        patch = {
+          status: nextStatus,
+          started_at: row.started_at || completedAt,
+          submitted_at: completedAt,
+          completed_at: completedAt,
+          completion_photo_urls: JSON.stringify(completionPhotoUrls),
+          repair_notes: String(body.completion_note || body.note || '').trim() || null,
+          assignee_id: completedByAssigneeId,
+        }
+        eventType = 'manager_completed'
       } else if (action === 'executor_unfinished') {
         const startedAt = row.started_at || new Date().toISOString()
         if (status === 'assigned') {
@@ -708,6 +748,17 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
         }
         eventType = 'executor_unfinished'
       } else if (action === 'review_approved') {
+        const completedAt = domain === 'internal' && String(body.completed_at || '').trim()
+          ? completedAtFromWorkflowBody(body.completed_at)
+          : null
+        const requestedAssigneeId = String(body.assignee_id || body.actual_repairer_id || '').trim()
+        const actualRepairerId = requestedAssigneeId || String(row.assignee_id || '').trim()
+        if (!actualRepairerId) throw new MaintenanceWorkflowError(400, 'maintenance_actual_repairer_required')
+        if (requestedAssigneeId) {
+          const assigneeResult = await client.query('SELECT id FROM users WHERE id::text = $1 LIMIT 1', [requestedAssigneeId])
+          if (!assigneeResult?.rows?.[0]) throw new MaintenanceWorkflowError(400, 'maintenance_assignee_not_found')
+        }
+        completedByAssigneeId = actualRepairerId
         nextStatus = 'closed'
         patch = {
           status: nextStatus,
@@ -717,6 +768,8 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
           review_note: reason,
           closed_at: new Date().toISOString(),
           closed_by: actorId || null,
+          assignee_id: completedByAssigneeId,
+          ...(completedAt ? { completed_at: completedAt } : {}),
         }
       } else if (action === 'review_rejected') {
         nextStatus = 'in_progress'
@@ -749,6 +802,14 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
       }
 
       const updated = await updateMaintenanceWorkflowRecord(client, domain, id, { ...recordPatch, ...patch })
+      const autoExpenseSync = domain === 'internal' && action === 'review_approved'
+        ? await syncInternalMaintenanceAutoExpenseWithClient(client, updated)
+        : null
+      if (String(updated?.pay_method || '').trim().toLowerCase() === 'landlord_pay'
+        && autoExpenseSync?.error
+        && autoExpenseSync.error !== 'manual_override') {
+        throw new MaintenanceWorkflowError(422, `maintenance_auto_expense_${autoExpenseSync.error}`)
+      }
       await upsertMaintenanceWorkTask(client, domain, updated)
       await insertMaintenanceWorkflowEvent(client, {
         domain,
@@ -761,9 +822,15 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
         reason,
         payload: action === 'assign'
           ? { assignee_id: updated.assignee_id || null, updated_fields: Object.keys(recordPatch) }
-          : { completion_photo_count: completionPhotoUrls.length },
+          : {
+              completion_photo_count: completionPhotoUrls.length,
+              ...(completedByAssigneeId ? { actual_repairer_id: completedByAssigneeId } : {}),
+            },
       })
-      const response = workflowResponse(domain, updated, user)
+      const response = {
+        ...workflowResponse(domain, updated, user, canManageWorkflow),
+        ...(autoExpenseSync ? { auto_expense_sync: autoExpenseSync } : {}),
+      }
       if (receiptScope) await saveIdempotentStepReceipt(client, receiptScope, receiptPayloadHash, response)
       await client.query('COMMIT')
       return res.json(response)
@@ -774,6 +841,7 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
       client.release()
     }
   } catch (e: any) {
+    if (e instanceof MaintenanceWorkflowSchemaNotReady) return res.status(503).json({ code: 'maintenance_workflow_schema_not_ready' })
     if (e instanceof MaintenanceWorkflowError) return res.status(e.statusCode).json({ code: e.code })
     if (e instanceof IdempotentStepReceiptsNotReady) return res.status(503).json({ code: e.message })
     return res.status(500).json({ message: e?.message || 'maintenance_workflow_action_failed' })

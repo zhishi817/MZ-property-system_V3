@@ -195,7 +195,7 @@
 ## FR-015：日用品更换前后私有照片认证读取
 
 - **维护责任范围：** backend / web / mobile
-- **最后审查日期：** 2026-08-17
+- **最后审查日期：** 2026-09-03
 - **状态：** active
 
 ### 业务保护规则
@@ -900,12 +900,16 @@
 ## FR-010：维修完工投影与房源反馈私有图片读取
 
 - **维护责任范围：** backend / web / mobile
-- **最后审查日期：** 2026-08-17
+- **最后审查日期：** 2026-09-04
 - **状态：** active
 
 ### 业务保护规则
 
 - 维修执行人通过服务端专用完成动作保存的完工照片、备注和未完成原因，必须同步到同一 `work_tasks` 来源投影；不得恢复通用工单 `mark` 接口来绕过维修状态机。
+- 管理者通过 `manager_complete` 提交审核或 `review_approved` 关闭时，必须保存已有分派人员或明确提交且经校验的实际维修人员；没有实际维修人员时服务端必须拒绝，不能仅靠网页必填规则。
+- 对历史 `pending_review` 且无分派人员的内部维修，管理员选择审核关闭或填写扣款方式触发自动审核时，网页必须显示实际维修人员并随 `review_approved` 原子提交。
+- `completed_at` 是房东支付维修自动费用的会计入账日期；通用 `property_maintenance` 编辑不得写入，必须由 `manager_complete` 或内部 `review_approved` 工作流动作受权限和审计约束地写入。历史待审核记录在审核关闭时填写的日期必须原子保存后再生成费用。
+- 维修列表/详情读取、费用编辑、创建、完成、审核关闭、MZapp `work_tasks` 与维修 `property-feedbacks` 读取/排序、task-center 维修投影/分派、维修分享链接和维修 PDF 生成/排队及自动费用写入路径不得执行 `CREATE`、`ALTER` 或索引 DDL；相关维修、`work_tasks`、`maintenance_share_links` 结构和历史 `photo_urls` 兼容转换只由受控迁移 `20260903_maintenance_runtime_schema` 完成。每个上述请求路径都先只读核对 migration marker，缺标记时返回 `503 maintenance_runtime_schema_not_ready`，不能仅依赖启动预热；路由本地 catch 必须保留该 503，不能误转为通用 500，也不能吞掉断言后继续查询或写入。独立的清洁/检查、task-center layout、`public_access` 与 `pdf_jobs` schema 保持各自契约，不得扩大 maintenance marker 的含义。
 - 已保存的内部维修完工图片只能从未删除的真实房源维修记录精确匹配；外部维修完工图片只允许管理角色或当前被分配的 `maintenance_staff` 读取。
 - 缩略图、预览和原图都必须通过认证的 `/cleaning-app/media/image` 读取；客户端不得使用 R2 直链或把本地未保存预览当作已保存证据。
 - 历史 `property_deep_cleaning` 记录中的 `deep-cleaning/...` 与 `deep-cleaning-upload/...` 私有引用，只能在唯一、未删除且关联真实房源的深清记录精确匹配后进入同一认证代理；错误、未关联、歧义、已删除或未认证读取保持 `403`，不能降级为 R2 直链。
@@ -924,7 +928,9 @@
 
 | 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
 |---|---|---|---|---|
-| 完工字段投影 | `backend/scripts/tests/test_maintenance_workflow_actions.ts` | 维修任务投影在冲突更新时同步完工照片、备注和原因 | partial | `npm run test:maintenance-workflow-actions --prefix backend` |
+| 完工字段投影与实际维修人员 | `backend/scripts/tests/test_maintenance_workflow_actions.ts` | 维修任务投影在冲突更新时同步完工照片、备注和原因；关闭必须有实际维修人员 | sufficient | `npm run test:maintenance-workflow-actions --prefix backend` |
+| 维修运行时 schema 边界 | `backend/scripts/tests/test_maintenance_workflow_schema_contract.ts` | marker 迁移拥有维修/工单/分享链接结构；关闭、task-center 维修投影/分派、分享和 PDF 路径在任何写入前只做 readiness，并保留受控 503，不得运行 runtime DDL | sufficient | `npm run test:maintenance-workflow-schema --prefix backend` |
+| 自动费用 schema 边界 | `backend/scripts/tests/test_maintenance_auto_expense.ts` | 自动费用路径只做 readiness 检查，不得运行 runtime DDL | sufficient | `npm run test:maintenance-auto-expense --prefix backend` |
 | 完工图片认证读取 | `backend/scripts/tests/test_mzapp_media_visibility.ts` | 内部真实房源精确匹配、外部维修单分配/角色授权和私有代理读取 | partial | `npm run test:mzapp-media-visibility --prefix backend` |
 | 历史深清服务端认证读取 | `backend/scripts/tests/test_mzapp_media_visibility.ts` | 深清的三个持久化字段与项目 before/after 保留精确关联；两个历史前缀仅进入既有唯一关联和认证授权分支 | partial | `npm run test:mzapp-media-visibility --prefix backend` |
 | 历史深清 Web 认证读取 | `frontend/src/lib/maintenanceFeedbackMedia.test.ts` | `deep-cleaning/`、`deep-cleaning-upload/` 的 Web 详情读取认证代理，不回退为原始 URL | sufficient | `npm run test --prefix frontend -- --run src/lib/maintenanceFeedbackMedia.test.ts --coverage.enabled=false` |
@@ -935,19 +941,20 @@
 
 ### 验证策略
 
-- **代码验证：** 运行后端精确关联契约、Web/Mobile 认证读取回归、后端 TypeScript 编译、feature registry 与 ledger audit。
+- **代码验证：** 运行后端完成投影、schema marker/无 runtime DDL、Web/Mobile 认证读取回归、后端 TypeScript 编译、feature registry 与 ledger audit。
 - **集成验证：** 仅在明确确认的非生产环境中，以执行人、管理角色及非关联账号验证内部/外部图片的缩略图、预览、原图和 403 边界。
 - **发布后：** 在真实 TestFlight 维修任务执行“相册选图 → 标记完成 → 重新打开任务 → 缩略图/大图”，不对生产数据做额外测试写入。
 
 ### 最后验证
 
-- **CRL：** root/CRL-20260825-002
+- **CRL：** root/CRL-20260903-008, root/CRL-20260903-009
 - **Commit：** not committed
-- **日期：** 2026-08-25
+- **日期：** 2026-09-03
 
 ### 相关 CRL
 
 - CRL-20260806-006：维修执行人专用动作当前 Dev 契约重基线。
+- root/CRL-20260903-008：维修关闭 schema migration/readiness、实际维修人员强制与未完成原因投影修复。
 - CRL-20260807-007（mobile）：维修详情专用动作路由与认证图片展示。
 - root/CRL-20260817-002、mobile/CRL-20260817-002：历史深清私有媒体前缀兼容与认证读取。
 - root/CRL-20260825-002：任务中心检查分派与维修详情展示。

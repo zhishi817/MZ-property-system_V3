@@ -2,6 +2,7 @@ import { pgRunInTransaction } from '../dbAdapter'
 import { v4 as uuidv4 } from 'uuid'
 import { deepCleaningSourceSummary, maintenanceSourceSummary } from './autoExpenseSourceSummary'
 import { buildDailyNecessityAutoExpenseDecision } from './dailyNecessitiesAutoExpense'
+import { maintenanceAutoExpenseOccurredAt, maintenanceAutoExpenseStatus } from './maintenanceAutoExpense'
 
 function autoToISODateOnly(v: any): string | null {
   if (!v) return null
@@ -151,9 +152,11 @@ function deriveAutoExpenseFields(kind: 'maintenance' | 'deep_cleaning' | 'daily_
   return {
     refType: kind,
     refId,
-    status: autoNormStatus(row?.status),
+    status: kind === 'maintenance' ? maintenanceAutoExpenseStatus(row) : autoNormStatus(row?.status),
     payMethod: autoNormPayMethod(row?.pay_method),
-    occurredAt: autoToISODateOnly(row?.completed_at) || autoToISODateOnly(row?.occurred_at),
+    occurredAt: kind === 'maintenance'
+      ? maintenanceAutoExpenseOccurredAt(row)
+      : autoToISODateOnly(row?.completed_at) || autoToISODateOnly(row?.occurred_at),
     amount,
     category: 'other',
     categoryDetail,
@@ -177,7 +180,7 @@ export async function reconcileMonthlyAutoExpenses(input: { monthKey: string; pr
   })()
   return await pgRunInTransaction(async (client) => {
     const maintenanceRs = await client.query(
-      `SELECT id, property_id, status, pay_method, maintenance_amount, has_parts, parts_amount, maintenance_amount_includes_parts, has_gst, maintenance_amount_includes_gst, total_amount, completed_at, occurred_at, created_at, details, repair_notes, invoice_description_en
+      `SELECT id, property_id, status, review_status, pay_method, maintenance_amount, has_parts, parts_amount, maintenance_amount_includes_parts, has_gst, maintenance_amount_includes_gst, total_amount, completed_at, occurred_at, created_at, details, repair_notes, invoice_description_en
        FROM property_maintenance
        WHERE property_id=$1
          AND coalesce(completed_at::date, occurred_at) >= $2::date

@@ -1,0 +1,26 @@
+export const propertyRevenueExpenseFields = [
+  'id',
+  'property_id',
+  'occurred_at',
+  'paid_date',
+  'due_date',
+  'month_key',
+  'amount',
+  'currency',
+  'category',
+  'category_detail',
+  'note',
+  'pay_method',
+  'generated_from',
+  'ref_type',
+  'ref_id',
+  'is_auto',
+  'manual_override',
+  'fixed_expense_id',
+  'status',
+  'source_title',
+  'source_summary',
+  'created_at',
+] as const
+
+export const propertyRevenueExpenseFieldsParam = propertyRevenueExpenseFields.join(',')

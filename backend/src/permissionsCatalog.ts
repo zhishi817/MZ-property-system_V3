@@ -240,6 +240,23 @@ const fixed: Record<string, Omit<PermissionMeta, 'code'>> = {
       '误录入会导致对账偏差、结算纠纷与审计风险',
     ],
   },
+  'property_maintenance.workflow.manage': {
+    displayName: '维修记录：流程管理（高危）',
+    riskLevel: 'high',
+    purpose: '允许手动推进维修状态、确认维修后照片、审核关闭或重开维修记录，并可能触发房东费用自动入账。',
+    scenarios: [
+      '运营管理人员在网页维护维修分派、完成、审核、关闭、取消或重开',
+      '已确认维修后照片后，将补登记的维修提交待审核或关闭',
+    ],
+    denyImpact: [
+      '只能编辑普通维修字段，不能推进维修工作流或审核关闭',
+      '维修后照片不会在网页端自动进入待审核状态',
+    ],
+    privacyRisk: [
+      '误操作会改变维修审计链、任务状态及房东费用入账结果',
+      '应与维修记录编辑权限一并按岗位最小授权配置',
+    ],
+  },
   'finance.payout': {
     displayName: '财务：结算/打款（高危）',
     riskLevel: 'high',

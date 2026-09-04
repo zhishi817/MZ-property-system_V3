@@ -5,8 +5,11 @@ import { buildExpenseFingerprint, hasFingerprint, setFingerprint, addDedupLog } 
 import { db, addAudit } from '../store'
 import { normalizeUrlList } from '../lib/normalizeUrlList'
 import { deepCleaningSourceSummary, maintenanceSourceSummary } from '../lib/autoExpenseSourceSummary'
+import { maintenanceAutoExpenseOccurredAt, maintenanceAutoExpenseStatus } from '../lib/maintenanceAutoExpense'
 import { maintenanceWorkTaskStatus, normalizeMaintenanceWorkflowStatus } from '../lib/maintenanceWorkflow'
 import { maintenanceTaskSummaryFromDetails } from '../lib/maintenanceWorkflowStore'
+import { assertMaintenanceRuntimeSchemaReady, isMaintenanceRuntimeSchemaReady } from '../lib/maintenanceRuntimeSchema'
+import { assertMaintenanceWorkflowSchemaReady, MaintenanceWorkflowSchemaNotReady } from '../lib/maintenanceWorkflowSchema'
 
 const router = Router()
 // Supabase removed
@@ -287,248 +290,44 @@ async function hasManualOverrideForRef(client: any, refType: string, refId: stri
   return !!(r?.rows?.[0]?.ok)
 }
 
-let autoExpenseSchemaEnsured = false
-let autoExpenseSchemaEnsuring: Promise<void> | null = null
+let propertyMaintenanceSchemaReady = false
 
-async function ensureAutoExpenseSchema(client: any) {
-  if (autoExpenseSchemaEnsured) return
-  if (autoExpenseSchemaEnsuring) return autoExpenseSchemaEnsuring
-  autoExpenseSchemaEnsuring = (async () => {
-  let sp = 0
-  const safeQuery = async (sql: string) => {
-    const name = `s${sp++}`
-    await client.query(`SAVEPOINT ${name}`)
-    try {
-      await client.query(sql)
-      await client.query(`RELEASE SAVEPOINT ${name}`)
-      return { ok: true as const, error: '' }
-    } catch (e: any) {
-      try { await client.query(`ROLLBACK TO SAVEPOINT ${name}`) } catch {}
-      try { await client.query(`RELEASE SAVEPOINT ${name}`) } catch {}
-      return { ok: false as const, error: String(e?.message || e || '') }
-    }
+async function assertPropertyMaintenanceSchema() {
+  if (!hasPg || !pgPool || propertyMaintenanceSchemaReady) return
+  await assertMaintenanceWorkflowSchemaReady(pgPool)
+  await pgPool.query(
+    `SELECT work_no, status, urgency, submitter_name, assignee_id, eta, completed_at, submitted_at,
+            repair_notes, repair_photo_urls, maintenance_amount, has_parts, parts_amount,
+            maintenance_amount_includes_parts, has_gst, maintenance_amount_includes_gst, total_amount,
+            pay_method, pay_other_note, invoice_description_en, property_code, photo_urls, area
+       FROM property_maintenance
+      LIMIT 0`
+  )
+  const columns = await pgPool.query(
+    `SELECT data_type, udt_name
+       FROM information_schema.columns
+      WHERE table_schema='public' AND table_name='property_maintenance' AND column_name='photo_urls'
+      LIMIT 1`
+  )
+  const photoUrlsColumn = columns?.rows?.[0]
+  if (String(photoUrlsColumn?.data_type || '') !== 'ARRAY' || String(photoUrlsColumn?.udt_name || '') !== '_text') {
+    throw new MaintenanceWorkflowSchemaNotReady()
   }
-  const must = async (sql: string) => {
-    const r = await safeQuery(sql)
-    if (!r.ok) throw new Error(r.error || 'schema ensure failed')
-  }
-  await must(`CREATE TABLE IF NOT EXISTS company_expenses (
-    id text PRIMARY KEY,
-    occurred_at date NOT NULL,
-    amount numeric NOT NULL,
-    currency text NOT NULL DEFAULT 'AUD',
-    category text,
-    category_detail text,
-    expense_name text,
-    note text,
-    invoice_url text,
-    created_at timestamptz DEFAULT now(),
-    created_by text,
-    deleted_at timestamptz,
-    deleted_by text,
-    delete_source text,
-    fixed_expense_id text,
-    month_key text,
-    due_date date,
-    paid_date date,
-    status text,
-    generated_from text,
-    ref_type text,
-    ref_id text,
-    is_auto boolean DEFAULT false,
-    manual_override boolean DEFAULT false,
-    source_title text,
-    source_summary text
-  );`)
-  await must(`CREATE TABLE IF NOT EXISTS property_expenses (
-    id text PRIMARY KEY,
-    property_id text,
-    occurred_at date NOT NULL,
-    amount numeric NOT NULL,
-    currency text NOT NULL DEFAULT 'AUD',
-    category text,
-    category_detail text,
-    expense_name text,
-    note text,
-    invoice_url text,
-    created_at timestamptz DEFAULT now(),
-    created_by text,
-    deleted_at timestamptz,
-    deleted_by text,
-    delete_source text,
-    fixed_expense_id text,
-    month_key text,
-    due_date date,
-    paid_date date,
-    status text,
-    pay_method text,
-    pay_other_note text,
-    generated_from text,
-    ref_type text,
-    ref_id text,
-    is_auto boolean DEFAULT false,
-    manual_override boolean DEFAULT false,
-    source_title text,
-    source_summary text
-  );`)
-  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS category_detail text;')
-  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS expense_name text;')
-  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS note text;')
-  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS deleted_at timestamptz;')
-  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS deleted_by text;')
-  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS delete_source text;')
-  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS month_key text;')
-  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS due_date date;')
-  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS pay_method text;')
-  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS pay_other_note text;')
-  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS generated_from text;')
-  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS ref_type text;')
-  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS ref_id text;')
-  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS is_auto boolean DEFAULT false;')
-  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS manual_override boolean DEFAULT false;')
-  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS source_title text;')
-  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS source_summary text;')
-  await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_ref ON property_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;")
-  await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_fixed_expense_month_key ON property_expenses(fixed_expense_id, month_key) WHERE fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> '';")
-  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS category_detail text;')
-  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS expense_name text;')
-  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS note text;')
-  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS invoice_url text;')
-  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS deleted_at timestamptz;')
-  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS deleted_by text;')
-  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS delete_source text;')
-  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS month_key text;')
-  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS due_date date;')
-  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;')
-  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_type text;')
-  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_id text;')
-  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS is_auto boolean DEFAULT false;')
-  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS manual_override boolean DEFAULT false;')
-  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS source_title text;')
-  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS source_summary text;')
-  await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses_ref ON company_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;")
-  await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses_fixed_month ON company_expenses(fixed_expense_id, month_key) WHERE fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> '';")
-  autoExpenseSchemaEnsured = true
-  })().catch((e: any) => {
-    autoExpenseSchemaEnsuring = null
-    throw e
-  })
-  return autoExpenseSchemaEnsuring
+  propertyMaintenanceSchemaReady = true
 }
 
-let propertyMaintenanceSchemaEnsured = false
-let propertyMaintenanceSchemaEnsuring: Promise<void> | null = null
+let workTasksSchemaReady = false
 
-async function ensurePropertyMaintenanceSchema() {
-  if (!hasPg) return
-  if (propertyMaintenanceSchemaEnsured) return
-  if (propertyMaintenanceSchemaEnsuring) return propertyMaintenanceSchemaEnsuring
-  propertyMaintenanceSchemaEnsuring = (async () => {
-    const { pgPool } = require('../dbAdapter')
-    if (!pgPool) return
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS status text;`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS urgency text;`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitter_name text;`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS assignee_id text;`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS eta date;`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS completed_at timestamptz;`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitted_at timestamptz;`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_notes text;`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount numeric;`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS has_parts boolean;`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS parts_amount numeric;`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount_includes_parts boolean;`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS has_gst boolean;`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount_includes_gst boolean;`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_method text;`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_other_note text;`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS invoice_description_en text;`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS property_code text;`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;`)
-    try {
-      const c = await pgPool.query(
-        `SELECT data_type, udt_name
-         FROM information_schema.columns
-         WHERE table_schema = 'public'
-           AND table_name = 'property_maintenance'
-           AND column_name = 'photo_urls'
-         LIMIT 1`
-      )
-      const dataType = String(c?.rows?.[0]?.data_type || '')
-      const udtName = String(c?.rows?.[0]?.udt_name || '')
-      const isTextArray = dataType === 'ARRAY' && udtName === '_text'
-      if (!isTextArray) {
-        await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls_text text[];`)
-        await pgPool.query(`UPDATE property_maintenance SET photo_urls_text = ARRAY[]::text[] WHERE photo_urls_text IS NULL;`)
-        await pgPool.query(`
-          UPDATE property_maintenance
-          SET photo_urls_text = ARRAY(SELECT jsonb_array_elements_text(to_jsonb(photo_urls)))
-          WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'array'
-        `)
-        await pgPool.query(`
-          UPDATE property_maintenance
-          SET photo_urls_text = ARRAY[trim(both '"' from to_jsonb(photo_urls)::text)]
-          WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'string'
-        `)
-        await pgPool.query(`ALTER TABLE property_maintenance DROP COLUMN photo_urls;`)
-        await pgPool.query(`ALTER TABLE property_maintenance RENAME COLUMN photo_urls_text TO photo_urls;`)
-        await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
-      }
-    } catch (e: any) {
-      throw new Error(String(e?.message || 'photo_urls type migration failed'))
-    }
-    propertyMaintenanceSchemaEnsured = true
-  })().catch((e: any) => {
-    propertyMaintenanceSchemaEnsuring = null
-    throw e
-  })
-  return propertyMaintenanceSchemaEnsuring
-}
-
-let workTasksSchemaEnsured = false
-let workTasksSchemaEnsuring: Promise<void> | null = null
-
-async function ensureWorkTasksSchema() {
-  if (!hasPg) return
-  if (workTasksSchemaEnsured) return
-  if (workTasksSchemaEnsuring) return workTasksSchemaEnsuring
-  workTasksSchemaEnsuring = (async () => {
-    const { pgPool } = require('../dbAdapter')
-    if (!pgPool) return
-    await pgPool.query(`CREATE TABLE IF NOT EXISTS work_tasks (
-      id text PRIMARY KEY,
-      task_kind text NOT NULL,
-      source_type text NOT NULL,
-      source_id text NOT NULL,
-      property_id text,
-      title text NOT NULL DEFAULT '',
-      summary text,
-      scheduled_date date,
-      start_time text,
-      end_time text,
-      assignee_id text,
-      status text NOT NULL DEFAULT 'todo',
-      urgency text NOT NULL DEFAULT 'medium',
-      photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb,
-      created_by text,
-      updated_by text,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      updated_at timestamptz NOT NULL DEFAULT now()
-    );`)
-    try { await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb;`) } catch {}
-    try { await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_work_tasks_source ON work_tasks(source_type, source_id);`) } catch {}
-    try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day_assignee ON work_tasks(scheduled_date, assignee_id, status);`) } catch {}
-    try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_kind_day ON work_tasks(task_kind, scheduled_date);`) } catch {}
-    try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day ON work_tasks(scheduled_date);`) } catch {}
-    workTasksSchemaEnsured = true
-  })().catch((e: any) => {
-    workTasksSchemaEnsuring = null
-    throw e
-  })
-  return workTasksSchemaEnsuring
+async function assertWorkTasksSchema() {
+  if (!hasPg || !pgPool || workTasksSchemaReady) return
+  await pgPool.query(
+    `SELECT id, task_kind, source_type, source_id, property_id, title, summary, scheduled_date,
+            start_time, end_time, assignee_id, status, urgency, sort_index, photo_urls,
+            completion_photo_urls, completion_note, completion_reason, created_by, updated_by, created_at, updated_at
+       FROM work_tasks
+      LIMIT 0`
+  )
+  workTasksSchemaReady = true
 }
 
 function normWorkTaskStatus(v: any): string {
@@ -641,7 +440,7 @@ async function upsertWorkTaskFromMaintenanceRow(row: any) {
   if (!hasPg) return
   const { pgPool } = require('../dbAdapter')
   if (!pgPool) return
-  await ensureWorkTasksSchema()
+  await assertWorkTasksSchema()
   const id = String(row?.id || '').trim()
   if (!id) return
   const srcType = 'property_maintenance'
@@ -675,7 +474,7 @@ async function upsertWorkTaskFromDeepCleaningRow(row: any) {
   if (!hasPg) return
   const { pgPool } = require('../dbAdapter')
   if (!pgPool) return
-  await ensureWorkTasksSchema()
+  await assertWorkTasksSchema()
   const id = String(row?.id || '').trim()
   if (!id) return
   const srcType = 'property_deep_cleaning'
@@ -732,9 +531,11 @@ async function syncAutoExpensesForSourceRowWithClient(client: any, kind: 'mainte
   const refId = String(row?.id || '')
   if (!refId) return { ok: true, skipped: true, error: 'missing_ref_id' }
   const propertyId = String(row?.property_id || '')
-  const status = normStatus(row?.status)
+  const status = kind === 'maintenance' ? maintenanceAutoExpenseStatus(row) : normStatus(row?.status)
   const payMethod = normPayMethod(row?.pay_method)
-  const occurredAt = toISODateOnly(row?.completed_at) || toISODateOnly(row?.occurred_at) || toISODateOnly(row?.created_at)
+  const occurredAt = kind === 'maintenance'
+    ? maintenanceAutoExpenseOccurredAt(row)
+    : toISODateOnly(row?.completed_at) || toISODateOnly(row?.occurred_at) || toISODateOnly(row?.created_at)
   const amount = kind === 'maintenance'
     ? calcMaintenanceTotal(row)
     : (() => {
@@ -751,12 +552,12 @@ async function syncAutoExpensesForSourceRowWithClient(client: any, kind: 'mainte
   const sourceSummary = kind === 'maintenance' ? maintenanceSourceSummary(row) : deepCleaningSourceSummary(row)
   const generatedFrom = refId
 
-  await ensureAutoExpenseSchema(client)
+  assertMaintenanceRuntimeSchemaReady()
   if (await hasManualOverrideForRef(client, refType, refId)) {
     return { ok: true, skipped: true, error: 'manual_override' }
   }
 
-  if (status !== 'completed' || !(amount > 0) || !occurredAt) {
+  if (status !== 'completed') {
     await voidAutoExpensesByRef(client, refType, refId)
     return { ok: true, skipped: false, error: '' }
   }
@@ -765,6 +566,14 @@ async function syncAutoExpensesForSourceRowWithClient(client: any, kind: 'mainte
     if (!propertyId) {
       await voidAutoExpensesByRef(client, refType, refId)
       return { ok: true, skipped: true, error: 'missing_property_id' }
+    }
+    if (!(amount > 0)) {
+      await voidAutoExpensesByRef(client, refType, refId)
+      return { ok: true, skipped: true, error: 'missing_maintenance_amount' }
+    }
+    if (!occurredAt) {
+      await voidAutoExpensesByRef(client, refType, refId)
+      return { ok: true, skipped: true, error: 'missing_accounting_date' }
     }
     await client.query(
       `UPDATE company_expenses
@@ -777,6 +586,10 @@ async function syncAutoExpensesForSourceRowWithClient(client: any, kind: 'mainte
   }
 
   if (payMethod === 'company_pay') {
+    if (!(amount > 0) || !occurredAt) {
+      await voidAutoExpensesByRef(client, refType, refId)
+      return { ok: true, skipped: true, error: '' }
+    }
     await client.query(
       `UPDATE property_expenses
           SET status='void'
@@ -791,6 +604,10 @@ async function syncAutoExpensesForSourceRowWithClient(client: any, kind: 'mainte
   return { ok: true, skipped: false, error: '' }
 }
 
+export async function syncInternalMaintenanceAutoExpenseWithClient(client: any, row: any) {
+  return await syncAutoExpensesForSourceRowWithClient(client, 'maintenance', row)
+}
+
 async function upsertMaintenancePropertyExpenseInSavepoint(client: any, row: any) {
   const refType = 'maintenance'
   const refId = String(row?.id || '')
@@ -799,7 +616,7 @@ async function upsertMaintenancePropertyExpenseInSavepoint(client: any, row: any
   await client.query('SAVEPOINT auto_expense')
   try {
     if (!refId) { await client.query('RELEASE SAVEPOINT auto_expense'); return { ok: true, error: '', skipped: true } }
-    const result = await syncAutoExpensesForSourceRowWithClient(client, 'maintenance', row)
+    const result = await syncInternalMaintenanceAutoExpenseWithClient(client, row)
     await client.query('RELEASE SAVEPOINT auto_expense')
     return result
   } catch (e: any) {
@@ -814,6 +631,9 @@ async function upsertMaintenancePropertyExpenseInSavepoint(client: any, row: any
 router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
   const { resource } = req.params
   if (!okResource(resource)) return res.status(404).json({ message: 'resource not allowed' })
+  if (hasPg && resource === 'property_maintenance' && !isMaintenanceRuntimeSchemaReady()) {
+    return res.status(503).json({ code: 'maintenance_runtime_schema_not_ready' })
+  }
   const filter: Record<string, any> = { ...(req.query || {}) }
   const roleNames = Array.from(new Set([String((req as any)?.user?.role || '').trim(), ...((Array.isArray((req as any)?.user?.roles) ? (req as any).user.roles : []) as any[]).map((x: any) => String(x || '').trim())].filter(Boolean)))
   const canIncludeDeleted = roleNames.includes('admin') || roleNames.includes('finance_staff')
@@ -928,7 +748,7 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
         if (pgPool) {
           try {
             if (resource === 'property_maintenance') {
-              await ensurePropertyMaintenanceSchema()
+              await assertPropertyMaintenanceSchema()
             }
             if (resource === 'property_deep_cleaning') {
               try {
@@ -1439,6 +1259,9 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
 router.get('/:resource/:id', requireResourcePerm('view'), async (req, res) => {
   const { resource, id } = req.params
   if (!okResource(resource)) return res.status(404).json({ message: 'resource not allowed' })
+  if (hasPg && resource === 'property_maintenance' && !isMaintenanceRuntimeSchemaReady()) {
+    return res.status(503).json({ code: 'maintenance_runtime_schema_not_ready' })
+  }
   const roleNames = Array.from(new Set([String((req as any)?.user?.role || '').trim(), ...((Array.isArray((req as any)?.user?.roles) ? (req as any).user.roles : []) as any[]).map((x: any) => String(x || '').trim())].filter(Boolean)))
   const canIncludeDeleted = roleNames.includes('admin') || roleNames.includes('finance_staff')
   const includeDeleted = canIncludeDeleted && String((req.query as any)?.include_deleted || '') === '1'
@@ -1448,6 +1271,7 @@ router.get('/:resource/:id', requireResourcePerm('view'), async (req, res) => {
   const peerRoleActorKeys = shouldScopePeerRole ? await listPeerRoleActorKeys(user) : []
   try {
     if (hasPg) {
+      if (resource === 'property_maintenance') await assertPropertyMaintenanceSchema()
       const rowsRaw = await pgSelect(resource, '*', { id })
       const rows: any[] = Array.isArray(rowsRaw) ? rowsRaw : []
       const row = rows[0] || null
@@ -1473,6 +1297,9 @@ router.get('/:resource/:id', requireResourcePerm('view'), async (req, res) => {
 router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
   const { resource } = req.params
   if (!okResource(resource)) return res.status(404).json({ message: 'resource not allowed' })
+  if (hasPg && ['property_maintenance', 'property_deep_cleaning'].includes(resource) && !isMaintenanceRuntimeSchemaReady()) {
+    return res.status(503).json({ code: 'maintenance_runtime_schema_not_ready' })
+  }
   if (resource === 'property_maintenance') {
     return res.status(409).json({ code: 'maintenance_feedback_creation_required' })
   }
@@ -1663,54 +1490,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
             }
           }
           const workNo = payload.work_no || await genWorkNo()
-          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;`)
-          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS status text;`)
-          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS urgency text;`)
-          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitted_at timestamptz;`)
-          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS completed_at timestamptz;`)
-          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitter_name text;`)
-          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount numeric(12,2);`)
-          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS has_parts boolean;`)
-          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS parts_amount numeric(12,2);`)
-          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount_includes_parts boolean;`)
-          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS has_gst boolean;`)
-          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount_includes_gst boolean;`)
-          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS total_amount numeric(12,2);`)
-          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_method text;`)
-          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_other_note text;`)
-          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
-          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;`)
-          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;`)
-          try {
-            const c = await pgPool.query(
-              `SELECT data_type, udt_name
-               FROM information_schema.columns
-               WHERE table_schema = 'public'
-                 AND table_name = 'property_maintenance'
-                 AND column_name = 'photo_urls'
-               LIMIT 1`
-            )
-            const dataType = String(c?.rows?.[0]?.data_type || '')
-            const udtName = String(c?.rows?.[0]?.udt_name || '')
-            const isTextArray = dataType === 'ARRAY' && udtName === '_text'
-            if (!isTextArray) {
-              await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls_text text[];`)
-              await pgPool.query(`UPDATE property_maintenance SET photo_urls_text = ARRAY[]::text[] WHERE photo_urls_text IS NULL;`)
-              await pgPool.query(`
-                UPDATE property_maintenance
-                SET photo_urls_text = ARRAY(SELECT jsonb_array_elements_text(to_jsonb(photo_urls)))
-                WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'array'
-              `)
-              await pgPool.query(`
-                UPDATE property_maintenance
-                SET photo_urls_text = ARRAY[trim(both '"' from to_jsonb(photo_urls)::text)]
-                WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'string'
-              `)
-              await pgPool.query(`ALTER TABLE property_maintenance DROP COLUMN photo_urls;`)
-              await pgPool.query(`ALTER TABLE property_maintenance RENAME COLUMN photo_urls_text TO photo_urls;`)
-              await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
-            }
-          } catch {}
+          await assertPropertyMaintenanceSchema()
           const sql = `INSERT INTO property_maintenance (
             id, property_id, occurred_at, worker_name,
             details, created_by, photo_urls, repair_photo_urls,
@@ -2191,46 +1971,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
             return res.status(500).json({ message: (e4 as any)?.message || 'create failed (column add)' })
           }
         }
-        if (resource === 'property_maintenance' && /does not exist|relation .* does not exist/i.test(msg)) {
-          try {
-            const { pgPool } = require('../dbAdapter')
-            if (pgPool) {
-              await pgPool.query(`CREATE TABLE IF NOT EXISTS property_maintenance (
-                id text PRIMARY KEY,
-                property_id text REFERENCES properties(id) ON DELETE SET NULL,
-                occurred_at date NOT NULL,
-                worker_name text,
-                details text,
-                created_by text,
-                created_at timestamptz DEFAULT now()
-              );`)
-              await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_property_maintenance_pid ON property_maintenance(property_id);`)
-              await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_property_maintenance_date ON property_maintenance(occurred_at);`)
-              await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls jsonb;`)
-              await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;`)
-              await pgPool.query(`ALTER TABLE property_maintenance ALTER COLUMN details TYPE text USING details::text;`)
-              const sql2 = `INSERT INTO property_maintenance (id, property_id, occurred_at, worker_name, details, created_by, photo_urls, property_code, area)
-                VALUES ($1,$2,$3,$4,$5::text,$6,$7::jsonb,$8,$9) RETURNING *`
-              const detailsArr = Array.isArray(payload.details) ? payload.details : (payload.details ? [payload.details] : [])
-              if (detailsArr.length > 1) {
-                const created: any[] = []
-                for (const d of detailsArr) {
-                  const id = require('uuid').v4()
-                  const values2 = [id, payload.property_id || null, payload.occurred_at || new Date().toISOString().slice(0,10), payload.worker_name || '', JSON.stringify([d || {}]), payload.created_by || null, JSON.stringify(Array.isArray(payload.photo_urls) ? payload.photo_urls : []), payload.property_code || null, payload.area || null]
-                  const res2 = await pgPool.query(sql2, values2)
-                  if (res2.rows && res2.rows[0]) created.push(res2.rows[0])
-                }
-                row = created
-              } else {
-                const values2 = [payload.id, payload.property_id || null, payload.occurred_at || new Date().toISOString().slice(0,10), payload.worker_name || '', JSON.stringify(detailsArr || []), payload.created_by || null, JSON.stringify(Array.isArray(payload.photo_urls) ? payload.photo_urls : []), payload.property_code || null, payload.area || null]
-                const res2 = await pgPool.query(sql2, values2)
-                row = res2.rows && res2.rows[0]
-              }
-            }
-          } catch (e2) {
-            return res.status(500).json({ message: (e2 as any)?.message || 'create failed (table init)' })
-          }
-        } else if (resource === 'property_deep_cleaning' && /does not exist|relation .* does not exist/i.test(msg)) {
+        if (resource === 'property_deep_cleaning' && /does not exist|relation .* does not exist/i.test(msg)) {
           try {
             const { pgPool } = require('../dbAdapter')
             if (pgPool) {
@@ -2303,35 +2044,6 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
             }
           } catch (e2) {
             return res.status(500).json({ message: (e2 as any)?.message || 'create failed (table init)' })
-          }
-        } else if (resource === 'property_maintenance' && /column\s+"?property_code"?\s+of\s+relation\s+"?property_maintenance"?\s+does\s+not\s+exist/i.test(msg)) {
-          try {
-            const { pgPool } = require('../dbAdapter')
-            if (pgPool) {
-              await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS property_code text;`)
-              await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls jsonb;`)
-              await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;`)
-              await pgPool.query(`ALTER TABLE property_maintenance ALTER COLUMN details TYPE text USING details::text;`)
-              const sql2 = `INSERT INTO property_maintenance (id, property_id, occurred_at, worker_name, details, created_by, photo_urls, property_code, area)
-                VALUES ($1,$2,$3,$4,$5::text,$6,$7::jsonb,$8,$9) RETURNING *`
-              const detailsArr = Array.isArray(detailsRaw) ? detailsRaw : []
-              if (detailsArr.length > 1) {
-                const created: any[] = []
-                for (const d of detailsArr) {
-                  const id = require('uuid').v4()
-                  const values2 = [id, payload.property_id || null, payload.occurred_at || new Date().toISOString().slice(0,10), payload.worker_name || '', JSON.stringify([d || {}]), payload.created_by || null, JSON.stringify(Array.isArray(payload.photo_urls) ? payload.photo_urls : []), payload.property_code || null, payload.area || null]
-                  const res2 = await pgPool.query(sql2, values2)
-                  if (res2.rows && res2.rows[0]) created.push(res2.rows[0])
-                }
-                row = created
-              } else {
-                const values2 = [payload.id, payload.property_id || null, payload.occurred_at || new Date().toISOString().slice(0,10), payload.worker_name || '', JSON.stringify(detailsArr || []), payload.created_by || null, JSON.stringify(Array.isArray(payload.photo_urls) ? payload.photo_urls : []), payload.property_code || null, payload.area || null]
-                const res2 = await pgPool.query(sql2, values2)
-                row = res2.rows && res2.rows[0]
-              }
-            }
-          } catch (e3) {
-            return res.status(500).json({ message: (e3 as any)?.message || 'create failed (column add)' })
           }
         } else if (resource === 'property_maintenance' && /column\s+"?photo_urls"?\s+.*type\s+text\[\].*jsonb/i.test(msg)) {
           try {
@@ -2583,11 +2295,14 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
 router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) => {
   const { resource, id } = req.params
   if (!okResource(resource)) return res.status(404).json({ message: 'resource not allowed' })
+  if (hasPg && ['property_maintenance', 'property_deep_cleaning'].includes(resource) && !isMaintenanceRuntimeSchemaReady()) {
+    return res.status(503).json({ code: 'maintenance_runtime_schema_not_ready' })
+  }
   const payload = req.body || {}
   if (resource === 'property_maintenance') {
     const lifecycleFields = [
       'status', 'assignee_id', 'eta', 'assigned_at', 'assigned_by', 'started_at', 'submitted_at',
-      'completion_photo_urls', 'review_status', 'reviewed_at', 'reviewed_by', 'review_note',
+      'completed_at', 'completion_photo_urls', 'review_status', 'reviewed_at', 'reviewed_by', 'review_note',
       'closed_at', 'closed_by', 'cancelled_at', 'cancelled_by', 'cancel_reason',
       'reopened_at', 'reopened_by', 'reopen_reason',
     ]
@@ -2635,10 +2350,7 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
       } catch {}
       let toUpdate: any = payload
       if (resource === 'property_maintenance') {
-        try {
-          const { pgPool } = require('../dbAdapter')
-          if (pgPool) await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS total_amount numeric(12,2);`)
-        } catch {}
+        await assertPropertyMaintenanceSchema()
         const boolFields = ['has_parts', 'maintenance_amount_includes_parts', 'has_gst', 'maintenance_amount_includes_gst']
         for (const k of boolFields) {
           if (!Object.prototype.hasOwnProperty.call(toUpdate, k)) continue
@@ -3083,6 +2795,9 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
 router.delete('/:resource/:id', requireResourcePerm('delete'), async (req, res) => {
   const { resource, id } = req.params
   if (!okResource(resource)) return res.status(404).json({ message: 'resource not allowed' })
+  if (hasPg && ['property_maintenance', 'property_deep_cleaning'].includes(resource) && !isMaintenanceRuntimeSchemaReady()) {
+    return res.status(503).json({ code: 'maintenance_runtime_schema_not_ready' })
+  }
   if (resource === 'property_maintenance') {
     return res.status(409).json({ code: 'maintenance_cancel_required' })
   }
@@ -3126,7 +2841,7 @@ router.delete('/:resource/:id', requireResourcePerm('delete'), async (req, res) 
       }
       if (resource === 'property_maintenance' || resource === 'property_deep_cleaning') {
         await pgRunInTransaction(async (client) => {
-          await ensureAutoExpenseSchema(client)
+          assertMaintenanceRuntimeSchemaReady()
           await voidAutoExpensesByRef(client, resource === 'property_maintenance' ? 'maintenance' : 'deep_cleaning', id)
           await pgDelete(resource, id, client)
         })

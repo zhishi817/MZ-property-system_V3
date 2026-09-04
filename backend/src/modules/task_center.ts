@@ -19,7 +19,8 @@ import { buildWebTaskCapabilityPayload, type WebTaskDisplayState, type WebTaskMa
 import { autoCleaningAssignmentStatus, isAutoAssignableCleaningStatus, isCheckinSiteExecutionTask } from '../lib/cleaningAssignmentStatus'
 import { emitDeferredInspectionCheckinConflictAlerts, isDeferredInspectionCheckinConflictRelevantChange, reconcileDeferredInspectionCheckinReplacement } from '../services/deferredInspectionCheckinConflict'
 import { assignedTaskExecutorIds, isTaskExecutorEligibleRoleNames } from '../services/taskExecutorEligibility'
-import { ensureMaintenanceWorkflowFoundation } from '../lib/maintenanceWorkflowSchema'
+import { assertMaintenanceWorkflowSchemaReady } from '../lib/maintenanceWorkflowSchema'
+import { assertMaintenanceRuntimeSchemaReady, MaintenanceRuntimeSchemaNotReady } from '../lib/maintenanceRuntimeSchema'
 import { normalizeMaintenanceWorkflowStatus } from '../lib/maintenanceWorkflow'
 import { insertMaintenanceWorkflowEvent, upsertMaintenanceWorkTask } from '../lib/maintenanceWorkflowStore'
 
@@ -651,41 +652,25 @@ function dedupeBoardTasks(tasks: BoardTask[]): BoardTask[] {
   return out
 }
 
-async function ensureWorkTasksTable() {
+async function assertTaskCenterMaintenanceSchemaReady() {
   if (!hasPg || !pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS work_tasks (
-    id text PRIMARY KEY,
-    task_kind text NOT NULL,
-    source_type text NOT NULL,
-    source_id text NOT NULL,
-    property_id text,
-    title text NOT NULL DEFAULT '',
-    summary text,
-    scheduled_date date,
-    start_time text,
-    end_time text,
-    assignee_id text,
-    status text NOT NULL DEFAULT 'todo',
-    urgency text NOT NULL DEFAULT 'medium',
-    photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb,
-    created_by text,
-    updated_by text,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now(),
-    sort_index integer
-  );`)
-  await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb;`)
-  await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS sort_index integer;`)
-  await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_work_tasks_source ON work_tasks(source_type, source_id);`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day_assignee ON work_tasks(scheduled_date, assignee_id, status);`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_kind_day ON work_tasks(task_kind, scheduled_date);`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day ON work_tasks(scheduled_date);`)
+  assertMaintenanceRuntimeSchemaReady()
+  try {
+    await assertMaintenanceWorkflowSchemaReady(pgPool)
+  } catch {
+    throw new MaintenanceRuntimeSchemaNotReady()
+  }
+}
+
+function sendMaintenanceRuntimeSchemaNotReady(res: any, error: unknown) {
+  if (!(error instanceof MaintenanceRuntimeSchemaNotReady)) return false
+  res.status(503).json({ code: 'maintenance_runtime_schema_not_ready' })
+  return true
 }
 
 async function syncPropertyFollowupWorkTasks() {
   if (!hasPg || !pgPool) return
-  await ensureMaintenanceWorkflowFoundation(pgPool)
-  await ensureWorkTasksTable()
+  await assertTaskCenterMaintenanceSchemaReady()
   const tableResult = await pgPool.query(
     `SELECT
        to_regclass('public.property_maintenance') IS NOT NULL AS has_maintenance,
@@ -1566,7 +1551,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
 
 async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnscheduled: boolean, includeFuture: boolean): Promise<BoardTask[]> {
   if (hasPg && pgPool) {
-    await ensureWorkTasksTable()
+    await assertTaskCenterMaintenanceSchemaReady()
     await backfillOfflineTasksToWorkTasks(date, includeOverdue, includeFuture)
     const doneSet = ['done', 'completed', 'cancelled', 'canceled']
     const where: string[] = []
@@ -2189,6 +2174,7 @@ router.get('/day', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 
     const payload = await buildTaskCenterDay(date, includeOverdue, includeUnscheduled, includeFuture, canManageSchedule)
     return res.json(payload)
   } catch (e: any) {
+    if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'task_center_day_failed' })
   }
 })
@@ -2228,16 +2214,21 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
   }
   let maintenanceWorkAssignmentIds = new Set<string>()
   if (hasPg && pgPool && payload.work_assignments.length) {
-    await ensureWorkTasksTable()
-    const sourceResult = await pgPool.query(
-      `SELECT id::text AS id, source_type
-         FROM work_tasks
-        WHERE id::text = ANY($1::text[])`,
-      [payload.work_assignments.map((item) => item.task_id)],
-    )
-    maintenanceWorkAssignmentIds = new Set((sourceResult.rows || [])
-      .filter((row: any) => String(row.source_type || '') === 'property_maintenance')
-      .map((row: any) => String(row.id)))
+    try {
+      await assertTaskCenterMaintenanceSchemaReady()
+      const sourceResult = await pgPool.query(
+        `SELECT id::text AS id, source_type
+           FROM work_tasks
+          WHERE id::text = ANY($1::text[])`,
+        [payload.work_assignments.map((item) => item.task_id)],
+      )
+      maintenanceWorkAssignmentIds = new Set((sourceResult.rows || [])
+        .filter((row: any) => String(row.source_type || '') === 'property_maintenance')
+        .map((row: any) => String(row.id)))
+    } catch (e: any) {
+      if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
+      return res.status(500).json({ message: e?.message || 'task_center_save_board_failed' })
+    }
   } else if (payload.work_assignments.length) {
     maintenanceWorkAssignmentIds = new Set((((db as any).workTasks || []) as any[])
       .filter((row: any) => String(row.source_type || '') === 'property_maintenance')
@@ -2270,9 +2261,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
     if (hasPg && pgPool) {
       await ensureCleaningSchemaV2()
       await ensureCleaningInspectionScopeColumn()
-      await ensureWorkTasksTable()
       await ensureTaskCenterTables()
-      if (payload.work_assignments.length) await ensureMaintenanceWorkflowFoundation(pgPool)
       const staffIds = Array.from(new Set([...assignedUserIds, ...maintenanceAssignedUserIds]))
       if (staffIds.length) {
         const staffResult = await pgPool.query(
@@ -3101,6 +3090,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
     }
     return res.json({ ok: true, rows: rowMap.size, items: payload.items.length })
   } catch (e: any) {
+    if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'task_center_save_board_failed' })
   }
 })

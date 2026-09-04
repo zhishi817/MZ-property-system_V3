@@ -1,5 +1,5 @@
 "use client"
-import { Card, DatePicker, Table, Select, Button, Modal, message, Switch, Progress, Spin } from 'antd'
+import { Alert, Card, DatePicker, Table, Select, Button, Modal, message, Switch, Progress, Spin } from 'antd'
 import styles from './ExpandedRow.module.css'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -22,6 +22,7 @@ import { DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH } from '../../../lib/monthl
 import { canDownloadSplitPart, pickSplitPhotosMode, splitPartPhotoCount, type MergeSplitInfo } from '../../../lib/monthlyStatementPhotoSplit'
 import { findLandlordForProperty, resolveManagementFeeRuleForMonth, type LandlordWithManagementFeeRules } from '../../../lib/managementFeeRules'
 import { runStatementPhotoPackJob } from '../../../lib/statementPhotoPackJobs'
+import { propertyRevenueExpenseFieldsParam } from '../../../lib/propertyRevenueExpenseFields'
 
 type Order = { id: string; property_id?: string; stay_type?: 'guest' | 'owner'; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number; status?: string; count_in_income?: boolean }
 type Tx = StatementTx
@@ -46,6 +47,7 @@ export default function PropertyRevenuePage() {
   const [txs, setTxs] = useState<Tx[]>([])
   const [deepCleaningExpenseTxs, setDeepCleaningExpenseTxs] = useState<Tx[]>([])
   const [pageLoading, setPageLoading] = useState<boolean>(true)
+  const [propertyExpenseLoadError, setPropertyExpenseLoadError] = useState<string | null>(null)
   const [rangeLoading, setRangeLoading] = useState<boolean>(false)
   const [excludeOrphanFixedSnapshots, setExcludeOrphanFixedSnapshots] = useState<boolean>(true)
   const [orphanFixedSnapshots, setOrphanFixedSnapshots] = useState<any[]>([])
@@ -85,7 +87,7 @@ export default function PropertyRevenuePage() {
   const mountedRef = useRef<boolean>(true)
   const reloadTimerRef = useRef<any>(null)
   const reloadInFlightRef = useRef<boolean>(false)
-  const reloadOrdersOnlyRef = useRef<null | (() => void)>(null)
+  const scheduleReloadRef = useRef<null | (() => void)>(null)
   const reloadAllRef = useRef<null | (() => Promise<void>)>(null)
   const rangeReloadPrimedRef = useRef<boolean>(false)
   useEffect(() => { rentIncomeByMonthRef.current = rentIncomeByMonth }, [rentIncomeByMonth])
@@ -298,6 +300,7 @@ export default function PropertyRevenuePage() {
         const rq = currentRangeQuery()
         const ordersPath = rq ? `/orders?from=${encodeURIComponent(rq.from)}&to=${encodeURIComponent(rq.to)}` : '/orders'
         const financePath = rq ? `/finance?from=${encodeURIComponent(rq.from)}&to=${encodeURIComponent(rq.to)}` : '/finance'
+        let nextPropertyExpenseLoadError: string | null = null
         const [ordersRes, propsRes, landlordsRes, finRes, pexpRes, recursRes] = await Promise.all([
           getJSON<Order[]>(ordersPath).catch(() => [] as any[]),
           getJSON<any>('/properties').catch(() => [] as any[]),
@@ -307,8 +310,11 @@ export default function PropertyRevenuePage() {
             month_key_from: rq.monthFrom,
             month_key_to: rq.monthTo,
             limit: 5000,
-            fields: 'id,property_id,occurred_at,paid_date,due_date,month_key,amount,currency,category,category_detail,note,pay_method,generated_from,ref_type,ref_id,is_auto,manual_override,fixed_expense_id,status,source_title,source_summary,created_at,updated_at',
-          } as any) : undefined).catch(() => [] as any[]),
+            fields: propertyRevenueExpenseFieldsParam,
+          } as any) : undefined).catch(() => {
+            nextPropertyExpenseLoadError = '本页支出、总支出和净收入可能不完整，请刷新后重试。'
+            return [] as any[]
+          }),
           apiList<any[]>('recurring_payments').catch(() => [] as any[]),
         ])
         if (!mountedRef.current) return
@@ -316,6 +322,7 @@ export default function PropertyRevenuePage() {
         setOrders(Array.isArray(ordersRes) ? ordersRes : [])
         setProperties(propsArr)
         setLandlords(Array.isArray(landlordsRes) ? landlordsRes : [])
+        setPropertyExpenseLoadError(nextPropertyExpenseLoadError)
         rawRef.current = { fin: Array.isArray(finRes) ? finRes : [], pexp: Array.isArray(pexpRes) ? pexpRes : [], recurs: Array.isArray(recursRes) ? recursRes : [] }
         const built = buildTxsFromRaw(rawRef.current.fin, rawRef.current.pexp, rawRef.current.recurs, propsArr, excludeOrphanFixedSnapshots)
         setOrphanFixedSnapshots(built.orphanRows)
@@ -345,14 +352,14 @@ export default function PropertyRevenuePage() {
         reloadInFlightRef.current = false
       }
     }
-    const scheduleReloadOrders = () => {
+    const scheduleReload = () => {
       try { if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current) } catch {}
-      reloadTimerRef.current = setTimeout(() => { reload({ ordersOnly: true }) }, 350)
+      reloadTimerRef.current = setTimeout(() => { reload() }, 350)
     }
     reloadAllRef.current = () => reload()
-    reloadOrdersOnlyRef.current = scheduleReloadOrders
-    const onVis = () => { if (document.visibilityState === 'visible') scheduleReloadOrders() }
-    const onFocus = () => { scheduleReloadOrders() }
+    scheduleReloadRef.current = scheduleReload
+    const onVis = () => { if (document.visibilityState === 'visible') scheduleReload() }
+    const onFocus = () => { scheduleReload() }
 
     reload()
     document.addEventListener('visibilitychange', onVis)
@@ -369,7 +376,7 @@ export default function PropertyRevenuePage() {
   useEffect(() => {
     const p = String(pathname || '')
     if (p === '/finance/properties-overview' || p === '/finance/performance/revenue') {
-      try { reloadOrdersOnlyRef.current?.() } catch {}
+      try { scheduleReloadRef.current?.() } catch {}
     }
   }, [pathname])
 
@@ -1050,6 +1057,15 @@ export default function PropertyRevenuePage() {
         <span style={{ marginLeft: 8 }}>排除孤儿快照</span>
         <Switch checked={excludeOrphanFixedSnapshots} onChange={setExcludeOrphanFixedSnapshots as any} disabled={pageLoading || rangeLoading} />
       </div>
+      {propertyExpenseLoadError ? (
+        <Alert
+          type="error"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="房源支出加载失败"
+          description={propertyExpenseLoadError}
+        />
+      ) : null}
       <Modal
         open={orphanOpen}
         onCancel={() => setOrphanOpen(false)}
