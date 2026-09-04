@@ -10,6 +10,7 @@ import { maintenanceWorkTaskStatus, normalizeMaintenanceWorkflowStatus } from '.
 import { maintenanceTaskSummaryFromDetails } from '../lib/maintenanceWorkflowStore'
 import { assertMaintenanceRuntimeSchemaReady, isMaintenanceRuntimeSchemaReady } from '../lib/maintenanceRuntimeSchema'
 import { assertMaintenanceWorkflowSchemaReady, MaintenanceWorkflowSchemaNotReady } from '../lib/maintenanceWorkflowSchema'
+import { isPdfRenderServiceUser } from '../services/pdfRenderServiceAuth'
 
 const router = Router()
 // Supabase removed
@@ -631,6 +632,10 @@ async function upsertMaintenancePropertyExpenseInSavepoint(client: any, row: any
 router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
   const { resource } = req.params
   if (!okResource(resource)) return res.status(404).json({ message: 'resource not allowed' })
+  const pdfRenderReadOnly = isPdfRenderServiceUser((req as any).user)
+  if (pdfRenderReadOnly && !hasPg) {
+    return res.status(503).json({ code: 'pdf_render_data_unavailable', source: resource })
+  }
   if (hasPg && resource === 'property_maintenance' && !isMaintenanceRuntimeSchemaReady()) {
     return res.status(503).json({ code: 'maintenance_runtime_schema_not_ready' })
   }
@@ -750,7 +755,7 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
             if (resource === 'property_maintenance') {
               await assertPropertyMaintenanceSchema()
             }
-            if (resource === 'property_deep_cleaning') {
+            if (resource === 'property_deep_cleaning' && !pdfRenderReadOnly) {
               try {
                 await pgPool.query(`CREATE TABLE IF NOT EXISTS property_deep_cleaning (
                   id text PRIMARY KEY,
@@ -868,6 +873,7 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
               if (typeof total === 'number') res.setHeader('X-Total-Count', String(total))
             }
           } catch (e: any) {
+            if (pdfRenderReadOnly) throw e
             const msg = String(e?.message || '')
             if (resource === 'fixed_expenses' && /relation\s+"?fixed_expenses"?\s+does\s+not\s+exist/i.test(msg)) {
               await pgPool.query(`CREATE TABLE IF NOT EXISTS fixed_expenses (
@@ -1048,7 +1054,7 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
             return { ...r, code, property_code: code, submitter_name: submitter, assignee_name: assigneeName || null, submitted_at: submittedAt || (r as any).submitted_at, area }
           })
           const toFixWorkNo = enriched.filter(r => !String((r as any)?.work_no || '').trim()).slice(0, 50)
-          if (toFixWorkNo.length) {
+          if (!pdfRenderReadOnly && toFixWorkNo.length) {
             await Promise.all(toFixWorkNo.map(async (r) => { (r as any).work_no = await backfillWorkNo(r) }))
           }
           const toFixMeta = enriched.filter(r => {
@@ -1057,7 +1063,7 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
             const needArea = !String((r as any)?.area || '').trim()
             return needSubmitter || needSubmittedAt || needArea
           }).slice(0, 50)
-          if (toFixMeta.length) {
+          if (!pdfRenderReadOnly && toFixMeta.length) {
             await Promise.all(toFixMeta.map(async (r: any) => {
               try {
                 const sets: string[] = []
@@ -1117,7 +1123,11 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
           return res.json(enriched)
         }
         return res.json(rows)
-      } catch {}
+      } catch (e: any) {
+        if (pdfRenderReadOnly) {
+          return res.status(503).json({ code: 'pdf_render_data_unavailable', source: resource })
+        }
+      }
     }
     // Supabase branch removed
     // in-memory fallback

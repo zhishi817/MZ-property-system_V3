@@ -1,11 +1,18 @@
 "use client"
 import dayjs from 'dayjs'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { apiList, getJSON } from '../../../lib/api'
 import MonthlyStatementView from '../../../components/MonthlyStatement'
 import { buildStatementTxs } from '../../../lib/statementTx'
 import { computeMonthlyStatementBalanceDebug } from '../../../lib/statementBalances'
-import { DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH, resolveExcludeOrphanFixedSnapshotsParam, resolveMonthlyStatementCarryStartMonth } from '../../../lib/monthlyStatementPrint'
+import {
+  DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH,
+  resolveExcludeOrphanFixedSnapshotsParam,
+  resolveMonthlyStatementCarryStartMonth,
+  serializeMonthlyStatementLoadFailures,
+  updateMonthlyStatementLoadFailures,
+  type MonthlyStatementLoadSource,
+} from '../../../lib/monthlyStatementPrint'
 import { findLandlordForProperty, resolveManagementFeeRuleForMonth, type LandlordWithManagementFeeRules } from '../../../lib/managementFeeRules'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number }
@@ -14,6 +21,7 @@ type Landlord = LandlordWithManagementFeeRules
 export default function PublicMonthlyStatementPrintPage() {
   const [month, setMonth] = useState<any>(dayjs())
   const [propertyId, setPropertyId] = useState<string | undefined>(undefined)
+  const [paramsLoaded, setParamsLoaded] = useState<boolean>(false)
   const [orders, setOrders] = useState<Order[]>([])
   const [orderSegments, setOrderSegments] = useState<any[]>([])
   const [txs, setTxs] = useState<any[]>([])
@@ -38,9 +46,13 @@ export default function PublicMonthlyStatementPrintPage() {
   const [rawRecurs, setRawRecurs] = useState<any[]>([])
   const [rawTxLoaded, setRawTxLoaded] = useState<boolean>(false)
   const [orphanCount, setOrphanCount] = useState<number>(0)
+  const [failedBaseSources, setFailedBaseSources] = useState<MonthlyStatementLoadSource[]>([])
   const ref = useRef<HTMLDivElement>(null)
   const inited = useRef<boolean>(false)
   const fetchTimeoutMs = 25000
+  const setBaseSourceFailed = useCallback((source: MonthlyStatementLoadSource, failed: boolean) => {
+    setFailedBaseSources(current => updateMonthlyStatementLoadFailures(current, source, failed))
+  }, [])
 
   useEffect(() => {
     if (inited.current) return
@@ -89,71 +101,111 @@ export default function PublicMonthlyStatementPrintPage() {
       }
       setExcludeOrphanFixedSnapshots(resolveExcludeOrphanFixedSnapshotsParam(excludeOrphans))
       setCarryStartMonth(resolveMonthlyStatementCarryStartMonth(carryStart))
-    } catch {}
+    } catch {
+      setPropertyId(undefined)
+    } finally {
+      setParamsLoaded(true)
+    }
   }, [])
 
   useEffect(() => {
     setPropertiesLoaded(false)
+    setBaseSourceFailed('properties', false)
     getJSON<any>('/properties', { timeoutMs: fetchTimeoutMs })
       .then(j => setProperties(j || []))
-      .catch(() => setProperties([]))
+      .catch(() => {
+        setProperties([])
+        setBaseSourceFailed('properties', true)
+      })
       .finally(() => setPropertiesLoaded(true))
-  }, [])
+  }, [setBaseSourceFailed])
   useEffect(() => {
+    if (!paramsLoaded) return
     setOrdersLoaded(false)
     setOrderSegmentsLoaded(false)
     setLandlordsLoaded(false)
+    setBaseSourceFailed('orders', false)
+    setBaseSourceFailed('rent_segments', false)
+    setBaseSourceFailed('landlords', false)
+    let cancelled = false
     ;(async () => {
       const pid = String(propertyId || '').trim()
       const mk = month?.format ? String(month.format('YYYY-MM') || '').trim() : ''
       if (!pid || !/^\d{4}-\d{2}$/.test(mk)) {
-        setOrders([])
-        setOrderSegments([])
-        setOrdersLoaded(true)
-        setOrderSegmentsLoaded(true)
+        if (!cancelled) {
+          setOrders([])
+          setOrderSegments([])
+          setOrdersLoaded(true)
+          setOrderSegmentsLoaded(true)
+        }
         return
       }
-      try {
-        const [rows, segResp] = await Promise.all([
-          getJSON<any[]>('/orders', { timeoutMs: fetchTimeoutMs }),
-          getJSON<any>(`/finance/rent-segments?${new URLSearchParams({ month: mk, property_id: pid }).toString()}`, { timeoutMs: fetchTimeoutMs }),
-        ])
-        const all = Array.isArray(rows) ? rows : []
-        setOrders(all.filter((o: any) => String(o?.property_id || '') === pid))
-        setOrderSegments(Array.isArray(segResp?.segments) ? segResp.segments : [])
-      } catch {
-        setOrders([])
-        setOrderSegments([])
-      } finally {
-        setOrdersLoaded(true)
-        setOrderSegmentsLoaded(true)
-      }
+      await Promise.all([
+        getJSON<any[]>('/orders', { timeoutMs: fetchTimeoutMs })
+          .then((rows) => {
+            if (cancelled) return
+            const all = Array.isArray(rows) ? rows : []
+            setOrders(all.filter((o: any) => String(o?.property_id || '') === pid))
+          })
+          .catch(() => {
+            if (cancelled) return
+            setOrders([])
+            setBaseSourceFailed('orders', true)
+          })
+          .finally(() => { if (!cancelled) setOrdersLoaded(true) }),
+        getJSON<any>(`/finance/rent-segments?${new URLSearchParams({ month: mk, property_id: pid }).toString()}`, { timeoutMs: fetchTimeoutMs })
+          .then((segResp) => {
+            if (!cancelled) setOrderSegments(Array.isArray(segResp?.segments) ? segResp.segments : [])
+          })
+          .catch(() => {
+            if (cancelled) return
+            setOrderSegments([])
+            setBaseSourceFailed('rent_segments', true)
+          })
+          .finally(() => { if (!cancelled) setOrderSegmentsLoaded(true) }),
+      ])
     })()
     getJSON<Landlord[]>('/landlords', { timeoutMs: fetchTimeoutMs })
-      .then(setLandlords)
-      .catch(() => setLandlords([]))
-      .finally(() => setLandlordsLoaded(true))
-  }, [propertyId, month])
+      .then(rows => { if (!cancelled) setLandlords(rows) })
+      .catch(() => {
+        if (cancelled) return
+        setLandlords([])
+        setBaseSourceFailed('landlords', true)
+      })
+      .finally(() => { if (!cancelled) setLandlordsLoaded(true) })
+    return () => { cancelled = true }
+  }, [paramsLoaded, propertyId, month, setBaseSourceFailed])
 
   useEffect(() => {
     setRawTxLoaded(false)
+    setBaseSourceFailed('finance', false)
+    setBaseSourceFailed('property_expenses', false)
+    setBaseSourceFailed('recurring_payments', false)
+    let cancelled = false
     ;(async () => {
-      try {
-        const fin: any[] = await getJSON<any[]>('/finance', { timeoutMs: fetchTimeoutMs })
-        const pexp: any[] = await apiList<any[]>('property_expenses', undefined, { timeoutMs: fetchTimeoutMs })
-        const recurs: any[] = await apiList<any[]>('recurring_payments', undefined, { timeoutMs: fetchTimeoutMs })
-        setRawFin(Array.isArray(fin) ? fin : [])
-        setRawPexp(Array.isArray(pexp) ? pexp : [])
-        setRawRecurs(Array.isArray(recurs) ? recurs : [])
-      } catch {
-        setRawFin([])
-        setRawPexp([])
-        setRawRecurs([])
-      } finally {
-        setRawTxLoaded(true)
+      const load = async (
+        source: MonthlyStatementLoadSource,
+        request: () => Promise<any[]>,
+        applyRows: (rows: any[]) => void,
+      ) => {
+        try {
+          const rows = await request()
+          if (!cancelled) applyRows(Array.isArray(rows) ? rows : [])
+        } catch {
+          if (cancelled) return
+          applyRows([])
+          setBaseSourceFailed(source, true)
+        }
       }
+      await Promise.all([
+        load('finance', () => getJSON<any[]>('/finance', { timeoutMs: fetchTimeoutMs }), setRawFin),
+        load('property_expenses', () => apiList<any[]>('property_expenses', undefined, { timeoutMs: fetchTimeoutMs }), setRawPexp),
+        load('recurring_payments', () => apiList<any[]>('recurring_payments', undefined, { timeoutMs: fetchTimeoutMs }), setRawRecurs),
+      ])
+      if (!cancelled) setRawTxLoaded(true)
     })()
-  }, [])
+    return () => { cancelled = true }
+  }, [setBaseSourceFailed])
 
   useEffect(() => {
     if (!propertiesLoaded || !rawTxLoaded) {
@@ -232,7 +284,9 @@ export default function PublicMonthlyStatementPrintPage() {
     })
   }, [balanceDebug, propertyId, month, excludeOrphanFixedSnapshots, orphanCount])
 
-  if (!propertyId) return <div />
+  if (!paramsLoaded || !propertyId) return <div />
+
+  const baseDataError = serializeMonthlyStatementLoadFailures(failedBaseSources)
 
   return (
     <MonthlyStatementView
@@ -248,6 +302,7 @@ export default function PublicMonthlyStatementPrintPage() {
       txsLoaded={txsLoaded}
       propertiesLoaded={propertiesLoaded}
       landlordsLoaded={landlordsLoaded}
+      dataLoadError={baseDataError}
       showChinese={showChinese}
       showInvoices={false}
       sections={sections}

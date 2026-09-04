@@ -46,6 +46,7 @@ import { deepCleaningSourceSummary, maintenanceSourceSummary } from '../lib/auto
 import { buildCompanyRevenueReport } from '../lib/companyRevenueReport'
 import { buildDailyNecessityAutoExpenseDecision } from '../lib/dailyNecessitiesAutoExpense'
 import { maintenanceAutoExpenseOccurredAt, maintenanceAutoExpenseStatus } from '../lib/maintenanceAutoExpense'
+import { isPdfRenderServiceUser } from '../services/pdfRenderServiceAuth'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
@@ -300,6 +301,10 @@ router.get('/company-revenue/report', requireAnyPerm(companyRevenueViewPerms), a
 })
 
 router.get('/', async (req, res) => {
+  const pdfRenderReadOnly = isPdfRenderServiceUser((req as any).user)
+  if (pdfRenderReadOnly && !hasPg) {
+    return res.status(503).json({ code: 'pdf_render_data_unavailable', source: 'finance' })
+  }
   try {
     if (hasPg) {
       const q: any = req.query || {}
@@ -385,6 +390,9 @@ router.get('/', async (req, res) => {
       return true
     }))
   } catch {
+    if (pdfRenderReadOnly) {
+      return res.status(503).json({ code: 'pdf_render_data_unavailable', source: 'finance' })
+    }
     const q: any = req.query || {}
     const from = autoToISODateOnly(q.from)
     const to = autoToISODateOnly(q.to)
@@ -2835,6 +2843,7 @@ function parseMonthKeyOrNull(monthKey: any): { monthKey: string; start: string; 
 }
 
 router.get('/rent-segments', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
+  const pdfRenderReadOnly = isPdfRenderServiceUser((req as any).user)
   try {
     const m = parseMonthKeyOrNull((req.query as any)?.month)
     const property_id = String(((req.query as any)?.property_id) || '').trim()
@@ -2857,7 +2866,9 @@ router.get('/rent-segments', requireAnyPerm(['finance.payout', 'finance.tx.write
         )
         const arr = (dRs?.rows || []) as any[]
         arr.forEach((r) => { totals[String(r.order_id)] = Number(r.total || 0) })
-      } catch {}
+      } catch (e) {
+        if (pdfRenderReadOnly) throw e
+      }
     }
     const enriched = orders.map((o) => ({ ...o, internal_deduction_total: Number((totals[String(o.id)] || 0).toFixed(2)) }))
     const segments = computeMonthSegmentsForOrders(enriched, m.monthKey)

@@ -8,7 +8,11 @@ import { formatStatementDesc } from '../lib/statementDesc'
 import { Table } from 'antd'
 import { forwardRef, useEffect, useRef, useState } from 'react'
 import { API_BASE, authHeaders, fetchWithTimeout } from '../lib/api'
-import { DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH } from '../lib/monthlyStatementPrint'
+import {
+  DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH,
+  isMonthlyStatementBaseDataReady,
+  serializeMonthlyStatementLoadFailures,
+} from '../lib/monthlyStatementPrint'
 import { findLandlordForProperty, resolveManagementFeeRuleForMonth, type LandlordWithManagementFeeRules } from '../lib/managementFeeRules'
 
 type Order = { id: string; property_id?: string; stay_type?: 'guest' | 'owner' | string; checkin?: string; checkout?: string; price?: number; nights?: number; status?: string; count_in_income?: boolean }
@@ -50,6 +54,7 @@ export default forwardRef<HTMLDivElement, {
   txsLoaded?: boolean
   propertiesLoaded?: boolean
   landlordsLoaded?: boolean
+  dataLoadError?: string
   showChinese?: boolean
   showInvoices?: boolean
   sections?: string[]
@@ -60,7 +65,7 @@ export default forwardRef<HTMLDivElement, {
   mode?: 'preview' | 'pdf'
   pdfMode?: boolean
   renderEngine?: 'canvas' | 'print'
-}>(function MonthlyStatementView({ month, propertyId, orders, orderSegments, txs, properties, landlords, ordersLoaded, txsLoaded, propertiesLoaded, landlordsLoaded, showChinese = true, showInvoices = false, sections, includeJobPhotos = true, photosMode = 'full', photoW, photoQ, mode, pdfMode = false, renderEngine = 'canvas' }, ref) {
+}>(function MonthlyStatementView({ month, propertyId, orders, orderSegments, txs, properties, landlords, ordersLoaded, txsLoaded, propertiesLoaded, landlordsLoaded, dataLoadError, showChinese = true, showInvoices = false, sections, includeJobPhotos = true, photosMode = 'full', photoW, photoQ, mode, pdfMode = false, renderEngine = 'canvas' }, ref) {
   const resolvedMode: 'preview' | 'pdf' = mode || ((pdfMode || renderEngine === 'print') ? 'pdf' : 'preview')
   const isPdfMode = resolvedMode === 'pdf'
   const sectionSet = new Set((Array.isArray(sections) ? sections : []).map(s => String(s || '').trim().toLowerCase()).filter(Boolean))
@@ -127,8 +132,10 @@ export default forwardRef<HTMLDivElement, {
   const [invoiceMap, setInvoiceMap] = useState<Record<string, ExpenseInvoice[]>>({})
   const [deepCleanings, setDeepCleanings] = useState<DeepCleaning[]>([])
   const [deepCleaningsLoaded, setDeepCleaningsLoaded] = useState(false)
+  const [deepCleaningsLoadFailed, setDeepCleaningsLoadFailed] = useState(false)
   const [maintenances, setMaintenances] = useState<Maintenance[]>([])
   const [maintenancesLoaded, setMaintenancesLoaded] = useState(false)
+  const [maintenancesLoadFailed, setMaintenancesLoadFailed] = useState(false)
   const [expandAllDeepClean, setExpandAllDeepClean] = useState(false)
   const [expandedDeepClean, setExpandedDeepClean] = useState<Record<string, boolean>>({})
   const [expandAllMaintenance, setExpandAllMaintenance] = useState(false)
@@ -175,6 +182,7 @@ export default forwardRef<HTMLDivElement, {
     (async () => {
       try {
         setDeepCleaningsLoaded(false)
+        setDeepCleaningsLoadFailed(false)
         if (!propertyId || !needDeepData) { setDeepCleanings([]); setDeepCleaningsLoaded(true); return }
         const codeRaw = String(property?.code || '').trim()
         const code = (() => {
@@ -188,12 +196,9 @@ export default forwardRef<HTMLDivElement, {
           return `${API_BASE}/crud/property_deep_cleaning?${qs.toString()}`
         }
         const fetchList = async (u: string) => {
-          try {
-            const res = await fetchWithTimeout(u, { headers: authHeaders() }, { timeoutMs: fetchTimeoutMs })
-            return res.ok ? await res.json() : []
-          } catch {
-            return []
-          }
+          const res = await fetchWithTimeout(u, { headers: authHeaders() }, { timeoutMs: fetchTimeoutMs })
+          if (!res.ok) throw new Error(`deep cleaning request failed (${res.status})`)
+          return await res.json()
         }
         const primary = await fetchList(buildUrl({ property_id: propertyId }))
         const fallbackUrls = (!primary?.length)
@@ -214,6 +219,7 @@ export default forwardRef<HTMLDivElement, {
         setDeepCleanings(inMonth as any)
       } catch {
         setDeepCleanings([])
+        setDeepCleaningsLoadFailed(true)
       } finally {
         setDeepCleaningsLoaded(true)
       }
@@ -223,18 +229,16 @@ export default forwardRef<HTMLDivElement, {
     ;(async () => {
       try {
         setMaintenancesLoaded(false)
+        setMaintenancesLoadFailed(false)
         if (!propertyId || !needMaintData) { setMaintenances([]); setMaintenancesLoaded(true); return }
         const buildUrl = (params: Record<string, string>) => {
           const qs = new URLSearchParams({ ...params, limit: '5000' })
           return `${API_BASE}/crud/property_maintenance?${qs.toString()}`
         }
         const fetchList = async (u: string) => {
-          try {
-            const res = await fetchWithTimeout(u, { headers: authHeaders() }, { timeoutMs: fetchTimeoutMs })
-            return res.ok ? await res.json() : []
-          } catch {
-            return []
-          }
+          const res = await fetchWithTimeout(u, { headers: authHeaders() }, { timeoutMs: fetchTimeoutMs })
+          if (!res.ok) throw new Error(`maintenance request failed (${res.status})`)
+          return await res.json()
         }
         const primary = await fetchList(buildUrl({ property_id: propertyId }))
         const codeRaw = String(property?.code || '').trim()
@@ -262,6 +266,7 @@ export default forwardRef<HTMLDivElement, {
         setMaintenances(inMonth as any)
       } catch {
         setMaintenances([])
+        setMaintenancesLoadFailed(true)
       } finally {
         setMaintenancesLoaded(true)
       }
@@ -617,14 +622,19 @@ export default forwardRef<HTMLDivElement, {
     return { segs, laneMap, laneCount: lanesEnd.length }
   }
   const sourceColor: Record<string, string> = { airbnb: '#FF9F97', booking: '#98B6EC', offline: '#DC8C03', other: '#98B6EC' }
-  const baseDataReady = (() => {
-    if (!(isPdfMode && renderEngine === 'print')) return true
-    const o = (typeof ordersLoaded === 'boolean') ? ordersLoaded : true
-    const t = (typeof txsLoaded === 'boolean') ? txsLoaded : true
-    const p = (typeof propertiesLoaded === 'boolean') ? propertiesLoaded : true
-    const l = (typeof landlordsLoaded === 'boolean') ? landlordsLoaded : true
-    return o && t && p && l
-  })()
+  const statementLoadError = serializeMonthlyStatementLoadFailures(
+    dataLoadError,
+    deepCleaningsLoadFailed ? 'deep_cleaning' : '',
+    maintenancesLoadFailed ? 'maintenance' : '',
+  )
+  const baseDataReady = isMonthlyStatementBaseDataReady({
+    isPrintMode: isPdfMode && renderEngine === 'print',
+    ordersLoaded,
+    txsLoaded,
+    propertiesLoaded,
+    landlordsLoaded,
+    dataLoadError: statementLoadError,
+  })
   const [deepRendered, setDeepRendered] = useState(false)
   const [maintRendered, setMaintRendered] = useState(false)
 
@@ -677,6 +687,7 @@ export default forwardRef<HTMLDivElement, {
       ref={ref as any}
       data-monthly-statement-root="1"
       data-monthly-statement-ready={monthlyStatementReady ? '1' : '0'}
+      data-monthly-statement-error={statementLoadError}
       data-mode={resolvedMode}
       data-pdf-mode={isPdfMode ? '1' : '0'}
       data-deep-clean-loaded={deepCleaningsLoaded ? '1' : '0'}

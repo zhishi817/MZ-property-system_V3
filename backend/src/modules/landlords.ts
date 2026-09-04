@@ -13,14 +13,21 @@ import {
   ruleHasRecordedManagementFeeUsage,
   syncLandlordCachedManagementFeeRate,
 } from '../lib/managementFeeRules'
+import { isPdfRenderServiceUser } from '../services/pdfRenderServiceAuth'
 
 export const router = Router()
 
-async function attachManagementFeeRules(rows: any[]) {
+async function attachManagementFeeRules(
+  rows: any[],
+  options?: { ensureSchema?: boolean; requireExistingTable?: boolean },
+) {
   const list = Array.isArray(rows) ? rows : []
   if (!list.length || !hasPg) return list
-  await ensureManagementFeeRulesTable()
-  const byLandlord = await listManagementFeeRulesByLandlordIds(list.map((x: any) => String(x?.id || '')))
+  if (options?.ensureSchema !== false) await ensureManagementFeeRulesTable()
+  const byLandlord = await listManagementFeeRulesByLandlordIds(
+    list.map((x: any) => String(x?.id || '')),
+    { requireExistingTable: options?.requireExistingTable },
+  )
   return list.map((row: any) => {
     const landlordId = String(row?.id || '')
     const rules = byLandlord[landlordId] || []
@@ -36,13 +43,20 @@ async function attachManagementFeeRules(rows: any[]) {
 router.get('/', (req, res) => {
   const q: any = req.query || {}
   const includeArchived = String(q.include_archived || '').toLowerCase() === 'true'
+  const pdfRenderReadOnly = isPdfRenderServiceUser((req as any).user)
+  if (pdfRenderReadOnly && !hasPg) {
+    return res.status(503).json({ code: 'pdf_render_data_unavailable', source: 'landlords' })
+  }
   // Supabase branch removed
   if (hasPg) {
     const filter = includeArchived ? {} : { archived: false }
     pgSelect('landlords', '*', filter as any)
       .then(async (data) => {
         const rows = includeArchived ? (data || []) : (data || []).filter((x: any) => !x.archived)
-        const withRules = await attachManagementFeeRules(rows as any[])
+        const withRules = await attachManagementFeeRules(rows as any[], {
+          ensureSchema: !pdfRenderReadOnly,
+          requireExistingTable: pdfRenderReadOnly,
+        })
         res.json(withRules)
       })
       .catch((err) => res.status(500).json({ message: err.message }))
