@@ -135,6 +135,26 @@
 - Independent review: `GO for commit`; evidence: the reviewer independently recomputed fingerprint `ab8dd09264af6e3cb6e418f45d0358c78aa28977856d160b622071c042988122`, confirmed the Strict Mode lifecycle fix prevents duplicate initial/range reloads while preserving in-flight foreground follow-up, confirmed 6 staged files / 41 hunks / no untracked or generated files, and found no P0/P1/P2 or secret/production-write risk.
 - Action conclusion: `GO`; blockers: none; the exact reviewed candidate was committed as `f96c49f79afb6a1c303a05d799faca5d70eca302`. Push requires a new committed-range audit and explicit authorization for this exact branch/SHA; PR, merge and deployment are not authorized.
 
+#### RA-20260905-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260904-008`
+- Selected CRL identities: `root/CRL-20260904-008`
+- Intended action: `push`
+- Branch: `codex/property-revenue-refresh-efficiency-20260904`
+- Remote evidence: pending push; read-only preflight at `2026-09-05 00:09:17 AEST` found no matching remote branch.
+- Base: `origin/Dev@421b1eaca5b0220fbec47054c5daa23d359aa3dd`; fetched at `2026-09-05 00:08:49 AEST`
+- Candidate patch SHA-256: `ab8dd09264af6e3cb6e418f45d0358c78aa28977856d160b622071c042988122`
+- Commit SHA: `f96c49f79afb6a1c303a05d799faca5d70eca302` (candidate content commit; exact audit head follows in the committed-range report).
+- Dependencies: none
+- Required validation: `PASS`; evidence: repaired candidate targeted 8/8, TypeScript, targeted lint, full 45-file / 215-test suite, production build, root `check:fast`, registry/ledger audits and diff check passed; no source changed after the reviewed content commit.
+- Shared-hunk review: `PASS`; evidence: committed range contains only this CRL's five non-ledger paths plus its ledger block, with all 41 non-ledger hunks matching the recorded scope.
+- Generated-file review: `PASS`; evidence: committed range and clean checkout contain no generated file, cache, dependency directory or untracked path.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after receiving branch `codex/property-revenue-refresh-efficiency-20260904`, content commit `f96c49f79afb6a1c303a05d799faca5d70eca302` and audited local head `da7f0bac22ab1f0e94516458ddc9a24db5bef852`, the user explicitly requested `推送` on 2026-09-05.
+- Independent review: `GO for push`; evidence: independent read-only reviewer verified fresh `origin/Dev`, base → content commit → audited HEAD ancestry, independently recomputed fingerprint `ab8dd09264af6e3cb6e418f45d0358c78aa28977856d160b622071c042988122`, confirmed the exact 6-file / 41-hunk scope and bound user authorization, confirmed the remote branch is absent, and found no P0/P1/P2, generated-file, secret, production-write or repository-boundary risk.
+- Action conclusion: `GO`; blockers: none; the reviewed committed range is authorized for a non-force push to the stated branch after the ledger-only approval receipt and final exact range audit pass. PR, merge and deployment are not authorized.
+
 ### Risks / Release Notes
 
 - Risk: 年度/财年范围在一次超过 60 秒的恢复刷新中仍会逐月调用既有 rent-income endpoint；频率已显著降低，但若单次年度刷新仍慢，需要新的后端范围聚合 CRL，不能在本前端修复中顺手扩张。
