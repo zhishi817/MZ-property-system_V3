@@ -114,11 +114,12 @@
 - Required validation: `PASS`; evidence: RA-20260904-010 validation and independent commit review passed; exact `08b0699c...6f729738` committed-range report passed with the unchanged candidate fingerprint.
 - Shared-hunk review: `PASS`; evidence: exact committed range contains only this CRL's six selected files and 27 non-ledger hunks.
 - Generated-file review: `PASS`; evidence: exact range contains no generated file, cache, untracked path or configured sensitive category.
-- Technical state: `committed`
+- Technical state: `pushed`
+- Remote branch: `origin/codex/monthly-pdf-retry-auth-followup-20260904@e4dda55fc7dadbe26a495e4d692109fb95772bab`; initial non-force push and matching `git ls-remote` verification completed at `2026-09-04 22:37:06 AEST`. This ledger-only outcome receipt will be fast-forwarded on the same branch.
 - Remote preflight: `PASS`; evidence: freshly fetched `origin/Dev` still matches the recorded base and `refs/heads/codex/monthly-pdf-retry-auth-followup-20260904` does not exist remotely at `2026-09-04 22:32:30 AEST`.
 - User authorization: `approved-for-push`; evidence: after receiving root content commit `30e2fe8d1385e8bbc4567456da616d10fcf00d8d`, receipt head `6f729738d4c4565a5d4f11f947131ff01a3fb594` and branch `codex/monthly-pdf-retry-auth-followup-20260904`, the user replied `推送` on `2026-09-04`.
 - Independent review: `GO for push receipt`; evidence: independent read-only reviewer复算 `08b0699c...6f729738` 非台账指纹为 `96d068dc805d0d6356fccf57ee27d878495d36818cb945c094d3cee687b8f82a`，确认 base → content commit → receipt HEAD 祖先链、CRL-005 依赖、6 个 committed 文件 / 27 个 hunk、精确用户授权、fresh base、远端目标分支不存在，且无 P0/P1、生成物、敏感项或 mobile 混入；沿用已接受的源码契约测试 P2。
-- Action conclusion: `GO`; blockers: none；本 ledger-only push receipt 提交并通过最终 exact committed-range audit 后，可将该精确范围 non-force push 到记录分支；PR、merge、部署及生产验证未授权。
+- Action conclusion: `GO`; blockers: none；授权的精确范围已 non-force push 到 `origin/codex/monthly-pdf-retry-auth-followup-20260904@e4dda55fc7dadbe26a495e4d692109fb95772bab`，首次远端 SHA 与本地 HEAD 一致。本 ledger-only outcome receipt 将在同一分支 fast-forward；PR、merge、部署及生产验证未授权。
 
 ### Risks / Release Notes
 
