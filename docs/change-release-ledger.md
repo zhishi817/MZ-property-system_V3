@@ -126,7 +126,7 @@
 - Base: `origin/Dev@421b1eaca5b0220fbec47054c5daa23d359aa3dd`; fetched at `2026-09-04 23:42:39 AEST`
 - Candidate patch SHA-256: `ab8dd09264af6e3cb6e418f45d0358c78aa28977856d160b622071c042988122`
 - Commit SHA: `f96c49f79afb6a1c303a05d799faca5d70eca302` (candidate content commit; exact audit head follows in the committed-range report).
-- Dependencies: none; the related root/CRL-20260903-006 behavior is already part of the recorded `origin/Dev` base and is not a separate release dependency for this attempt.
+- Dependencies: none
 - Required validation: `PASS`; evidence: repaired candidate targeted 8/8, TypeScript, targeted lint, full 45-file / 215-test suite, production build, repaired root `check:fast`, registry/ledger audits and diff check passed.
 - Shared-hunk review: `PASS`; evidence: clean current `origin/Dev` candidate contains only this CRL's five non-ledger paths and 41 recorded non-ledger hunks; ledger is the sixth selected path.
 - Generated-file review: `PASS`; evidence: all temporary dependency mappings, build outputs and caches were removed before final staging.
