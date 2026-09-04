@@ -5,7 +5,7 @@ const deleteJSON = vi.hoisted(() => vi.fn())
 
 vi.mock('./api', () => ({ postJSON, deleteJSON }))
 
-import { approveInternalMaintenance, assignInternalMaintenance, correctInternalMaintenanceCompletion, createInternalMaintenanceFeedback, deleteInternalMaintenanceFeedback, internalMaintenanceAssignmentChanged, internalMaintenanceAssignPath, internalMaintenanceFeedbackCreatePath, internalMaintenanceFeedbackDeletePath, internalMaintenanceHasNewCompletionPhoto, internalMaintenanceReviewPath, internalMaintenanceWorkflowPath, manageInternalMaintenanceWorkflow, shouldAutoApproveInternalMaintenanceSettlement, shouldUpdateInternalMaintenanceRecordViaCrud } from './maintenanceWorkflowActions'
+import { approveInternalMaintenance, assignInternalMaintenance, correctInternalMaintenanceCompletion, createInternalMaintenanceFeedback, deleteInternalMaintenanceFeedback, internalMaintenanceAssignmentChanged, internalMaintenanceAssignPath, internalMaintenanceCompletionCorrectionOrdinaryChanges, internalMaintenanceFeedbackCreatePath, internalMaintenanceFeedbackDeletePath, internalMaintenanceHasNewCompletionPhoto, internalMaintenanceReviewPath, internalMaintenanceWorkflowPath, manageInternalMaintenanceWorkflow, shouldAutoApproveInternalMaintenanceSettlement, shouldUpdateInternalMaintenanceRecordViaCrud } from './maintenanceWorkflowActions'
 
 describe('internal maintenance workflow assignment', () => {
   beforeEach(() => {
@@ -159,6 +159,55 @@ describe('internal maintenance workflow assignment', () => {
       reason: '原完成日期录入错误',
       operation_id: 'correct-operation-1',
     }, { timeoutMs: 10_000 })
+  })
+
+  it('does not block a closed completion-date correction because form hydration loaded ordinary values', () => {
+    const ordinaryValues = {
+      propertyId: 'property-1',
+      submitterName: 'Miranda',
+      urgency: 'normal',
+      details: '阳台门破损',
+      invoiceDescriptionEn: '',
+      maintenanceAmount: 50,
+      hasParts: false,
+      partsAmount: 0,
+      maintenanceAmountIncludesParts: false,
+      hasGst: false,
+      maintenanceAmountIncludesGst: false,
+      payMethod: 'rent_deduction',
+      payOtherNote: '',
+      beforePhotoUrls: ['maintenance/before-2.jpg', 'maintenance/before-1.jpg'],
+    }
+
+    expect(internalMaintenanceCompletionCorrectionOrdinaryChanges({
+      current: ordinaryValues,
+      next: { ...ordinaryValues, beforePhotoUrls: ['maintenance/before-1.jpg', 'maintenance/before-2.jpg'] },
+    })).toEqual([])
+  })
+
+  it('identifies actual ordinary changes that must not be combined with a closed completion correction', () => {
+    const ordinaryValues = {
+      propertyId: 'property-1',
+      submitterName: 'Miranda',
+      urgency: 'normal',
+      details: '阳台门破损',
+      invoiceDescriptionEn: '',
+      maintenanceAmount: 50,
+      hasParts: false,
+      hasGst: false,
+      payMethod: 'rent_deduction',
+      beforePhotoUrls: ['maintenance/before-1.jpg'],
+    }
+
+    expect(internalMaintenanceCompletionCorrectionOrdinaryChanges({
+      current: ordinaryValues,
+      next: {
+        ...ordinaryValues,
+        maintenanceAmount: 80,
+        payMethod: 'company_pay',
+        beforePhotoUrls: ['maintenance/before-2.jpg'],
+      },
+    })).toEqual(['维修金额', '扣款方式', '维修前照片'])
   })
 
   it('only auto-approves a settlement for a permission holder in a pending-review status', () => {

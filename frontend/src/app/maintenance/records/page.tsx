@@ -12,7 +12,7 @@ import { sortProperties } from '../../../lib/properties'
 import TableRowActions from '../../../components/TableRowActions'
 import MaintenanceFeedbackImage from '../../../components/MaintenanceFeedbackImage'
 import { loadMaintenanceFeedbackMedia, maintenanceAfterPhotoReferences } from '../../../lib/maintenanceFeedbackMedia'
-import { approveInternalMaintenance, assignInternalMaintenance, correctInternalMaintenanceCompletion, createInternalMaintenanceFeedback, deleteInternalMaintenanceFeedback, internalMaintenanceAssignmentChanged, internalMaintenanceHasNewCompletionPhoto, manageInternalMaintenanceWorkflow, shouldAutoApproveInternalMaintenanceSettlement, shouldUpdateInternalMaintenanceRecordViaCrud } from '../../../lib/maintenanceWorkflowActions'
+import { approveInternalMaintenance, assignInternalMaintenance, correctInternalMaintenanceCompletion, createInternalMaintenanceFeedback, deleteInternalMaintenanceFeedback, internalMaintenanceAssignmentChanged, internalMaintenanceCompletionCorrectionOrdinaryChanges, internalMaintenanceHasNewCompletionPhoto, manageInternalMaintenanceWorkflow, shouldAutoApproveInternalMaintenanceSettlement, shouldUpdateInternalMaintenanceRecordViaCrud } from '../../../lib/maintenanceWorkflowActions'
 import { runWorkRecordPdfJob } from '../../../lib/workRecordPdfJobs'
 import styles from './records.module.scss'
 
@@ -561,19 +561,48 @@ export default function MaintenanceRecordsUnified() {
         && currentWorkflowStatus === 'closed'
         && (completionDateChanged || completionPhotosChanged || completionNoteChanged || completionAssigneeChanged)
       const automaticCompletionCorrectionReason = '管理员直接修正已关闭维修完成信息'
-      const correctionTouchesOrdinaryFields = form.isFieldsTouched([
-        'property_id', 'submitter_name', 'urgency', 'details', 'invoice_description_en',
-        'maintenance_amount', 'has_parts', 'parts_amount', 'maintenance_amount_includes_parts',
-        'has_gst', 'maintenance_amount_includes_gst', 'pay_method', 'pay_other_note',
-      ]) || JSON.stringify(prePhotos) !== JSON.stringify((editing.photo_urls || []).map((url) => String(url || '').trim()).filter(Boolean))
+      const correctionOrdinaryChanges = internalMaintenanceCompletionCorrectionOrdinaryChanges({
+        current: {
+          propertyId: editing.property_id || '',
+          submitterName: String(editing.submitter_name || (editing as any).worker_name || (editing as any).created_by || ''),
+          urgency: editing.urgency || 'normal',
+          details: summaryFromDetails(editing.details),
+          invoiceDescriptionEn: editing.invoice_description_en || '',
+          maintenanceAmount: editing.maintenance_amount,
+          hasParts: editing.has_parts,
+          partsAmount: editing.parts_amount,
+          maintenanceAmountIncludesParts: editing.maintenance_amount_includes_parts,
+          hasGst: editing.has_gst,
+          maintenanceAmountIncludesGst: editing.maintenance_amount_includes_gst,
+          payMethod: editing.pay_method,
+          payOtherNote: editing.pay_other_note,
+          beforePhotoUrls: editing.photo_urls,
+        },
+        next: {
+          propertyId: v.property_id,
+          submitterName: v.submitter_name,
+          urgency: v.urgency,
+          details: v.details,
+          invoiceDescriptionEn: v.invoice_description_en,
+          maintenanceAmount: v.maintenance_amount,
+          hasParts: v.has_parts,
+          partsAmount: v.parts_amount,
+          maintenanceAmountIncludesParts: v.maintenance_amount_includes_parts,
+          hasGst: v.has_gst,
+          maintenanceAmountIncludesGst: v.maintenance_amount_includes_gst,
+          payMethod: v.pay_method,
+          payOtherNote: v.pay_other_note,
+          beforePhotoUrls: prePhotos,
+        },
+      })
       if (closedCompletionFieldsChanged && requestedWorkflowStatus !== currentWorkflowStatus) {
         throw new Error('修正完成信息不能与重新打开或其他状态变更同时保存')
       }
       if (closedCompletionFieldsChanged && !nextAssigneeId) {
         throw new Error('请填写实际维修人员后再保存完成信息')
       }
-      if (closedCompletionFieldsChanged && correctionTouchesOrdinaryFields) {
-        throw new Error('修正完成信息请单独保存；金额、扣款方式和报修资料请另行保存')
+      if (closedCompletionFieldsChanged && correctionOrdinaryChanges.length) {
+        throw new Error(`修正完成信息请单独保存；${correctionOrdinaryChanges.join('、')}已修改，请另行保存`)
       }
       if (closedCompletionFieldsChanged && nextCompletionPhotoUrls.length < 1) {
         throw new Error('已关闭维修必须至少保留一张维修后照片')
