@@ -4,6 +4,7 @@ import { hasPg, pgPool, pgSelect, pgInsert, pgUpdate, pgDelete, pgRunInTransacti
 import { z } from 'zod'
 import { requirePerm } from '../auth'
 import { v4 as uuidv4 } from 'uuid'
+import { isPdfRenderServiceUser } from '../services/pdfRenderServiceAuth'
 
 export const router = Router()
 const PROPERTY_PAYABLE_TEMPLATE_KIND = 'property_payable'
@@ -13,6 +14,9 @@ const PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH = 31
 router.get('/', (req, res) => {
   const q: any = req.query || {}
   const includeArchived = String(q.include_archived || '').toLowerCase() === 'true'
+  if (isPdfRenderServiceUser((req as any).user) && !hasPg) {
+    return res.status(503).json({ code: 'pdf_render_data_unavailable', source: 'properties' })
+  }
   // Supabase branch removed
   if (hasPg) {
     const filter = includeArchived ? {} : { archived: false }

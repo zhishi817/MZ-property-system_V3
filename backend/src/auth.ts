@@ -4,6 +4,12 @@ import { v4 as uuid } from 'uuid'
 import { roleHasPermission, db } from './store'
 import { hasPg, pgSelect } from './dbAdapter'
 import bcrypt from 'bcryptjs'
+import {
+  hasPdfRenderServiceIntent,
+  isPdfRenderServiceClaims,
+  isPdfRenderServiceRequestAllowed,
+  pdfRenderServiceUser,
+} from './services/pdfRenderServiceAuth'
 
 const SECRET = process.env.JWT_SECRET || 'dev-secret'
 const DEFAULT_SESSION_MAX_AGE_HOURS = 7 * 24
@@ -341,6 +347,19 @@ export async function auth(req: Request, res: Response, next: NextFunction) {
         if (requestState.sessionUnverified) {
           ;(req as any).session_unverified = true
         }
+        return next()
+      }
+      if (hasPdfRenderServiceIntent(decoded)) {
+        if (!isPdfRenderServiceClaims(decoded)) {
+          return res.status(401).json({ message: 'invalid service token' })
+        }
+        const requestPath = String(req.originalUrl || req.path || '')
+        if (!isPdfRenderServiceRequestAllowed(req.method, requestPath)) {
+          return res.status(403).json({ message: 'service token forbidden' })
+        }
+        const serviceUser = pdfRenderServiceUser()
+        ;(req as any).user = serviceUser
+        rememberRequestAuthState(req, token, serviceUser, false)
         return next()
       }
       const sid = decoded?.sid

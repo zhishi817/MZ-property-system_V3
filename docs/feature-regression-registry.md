@@ -7,6 +7,59 @@
 - 测试映射必须说明保护点和测试场景；只登记测试文件名不算覆盖证据。
 - `sufficient` 表示当前测试覆盖该保护点；`partial` 表示已有测试但仍有缺口；`not-wired` 表示测试存在但尚未进入对应质量检查；`missing` 表示尚无测试。
 
+## FR-022：月报 PDF 内部服务身份、只读渲染与数据完整性边界
+
+- **维护责任范围：** backend auth / Render PDF worker / frontend monthly statement print
+- **最后审查日期：** 2026-09-04
+- **状态：** active
+
+### 业务保护规则
+
+- 月报后台打印只能使用具有精确 subject、username、token use、service、scope 和 audience 的短期签名服务令牌；普通数据库用户不存在时仍必须返回 401，不能恢复任意 JWT 角色回退。
+- PDF 服务身份只能访问月报打印页实际依赖的显式 GET 路径；任何写请求、未列出的读取路径、缺失或错误服务声明必须在路由处理前以 401/403 拒绝。
+- PDF 服务身份的允许路径只能使用 PostgreSQL SELECT；数据库不可用、查询失败或必需规则表缺失时返回非 2xx，不得退回进程内空数组，不得触发 GET 内的 schema ensure、建表、改表或维修元数据回填。
+- `pdfJobsWorker` 与认证 middleware 必须复用同一份服务声明定义，不能各自维护容易漂移的字符串或把服务身份注册成可交互登录的数据库用户。
+- 打印页跳转 `/login` 或出现 401/403 时必须归类为 `PRINT_AUTH`，在等待月报根节点超时前尽快失败，且不得进入 1/5/30 分钟自动重试队列。
+- 月报打印页必须区分“请求成功但业务数据为零”和“请求失败后得到空数组”：任一必需读取失败时不得设置 `data-monthly-statement-ready=1`，也不得生成全零或缺项 PDF；真实零数据只有在所有必需读取成功后才允许输出。
+- 打印页只向 Worker 暴露固定的数据源名称，不暴露响应体、令牌或 URL；Worker 读取到失败源后以 `PRINT_DATA_LOAD` 终止当前渲染，保留可重试语义供瞬时网络错误恢复。
+
+### 跨层适用范围
+
+- **后端：** 全局 `auth` 的内部服务分支、`/auth/me` 读取、月报打印所需的只读 API 路径和普通 missing-user 拒绝。
+- **Render：** V3-Docker 的进程内 PDF kick 与独立 PDF-Recovery Cron 使用同一 Worker/服务令牌契约。
+- **客户端：** 公开月报打印页跟踪房源、订单、租金分段、房东、财务、房源支出、周期付款、深清和维修读取结果；不改变管理端真实用户登录、角色展示、月报金额算法或下载按钮。
+- **一致性：** 数据库用户与 session 继续作为真人身份权威；内部服务身份的管理员能力仅在显式月报只读路径内有效。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 精确服务声明、允许路径及数据库只读拒绝 | `backend/scripts/tests/test_pdf_render_service_auth.ts` | 正确服务令牌可读取 `/auth/me` 和月报依赖路径；错误 audience/claim 为 401；POST 和未列出路径为 403；普通 missing-user 仍失败；服务读取的 DB-error fallback、DDL 与 GET 回填均由源码契约阻断 | sufficient | `npm run test:pdf-render-service-auth --prefix backend`（由 root `check:backend` / `check:full` 执行） |
+| Worker 共享声明及认证/数据失败快速终止 | `backend/scripts/tests/test_pdf_render_service_auth.ts` | Worker 不再内联旧虚拟 admin payload；`PRINT_AUTH` 不可重试；登录跳转先于月报根节点等待；Worker 等待 ready 或 error 并将数据 error 转为 `PRINT_DATA_LOAD` | sufficient | `npm run test:pdf-render-service-auth --prefix backend` |
+| 打印数据失败不得伪装成全零成功 | `frontend/src/lib/monthlyStatementPrint.test.ts` | 失败源固定排序/去重；所有读取成功时允许真实零数据，任一读取失败时 ready 为 false | sufficient | `npm run test --prefix frontend` |
+| 真人用户角色快照安全边界 | `backend/scripts/tests/test_auth_role_snapshot.ts` | missing-user 不回退、DB-error 才回退、缓存/并发/失效行为保持 | sufficient | `npm run test:auth-role-snapshot --prefix backend` |
+
+### 验证策略
+
+- **本地：** 执行 PDF 服务认证、月报加载状态、既有 auth-role snapshot、PDF runtime contract、前后端 TypeScript/build、Registry/ledger audit 和精确 diff 审查。
+- **部署后：** 先部署同一提交的前端、V3-Docker 与 PDF-Recovery；使用已授权的现有月报执行一次真实下载，确认 `/auth/me` 和全部必需数据读取成功、未跳登录、任务完成且金额与页面预览一致。该操作会创建/处理 PDF job，必须单独授权。
+
+### 最后验证
+
+- **CRL：** root/CRL-20260904-005
+- **Commit：** not committed
+- **日期：** 2026-09-04
+
+### 相关 CRL
+
+- root/CRL-20260904-005：月报 PDF 内部服务身份认证与数据加载失败防伪修复。
+- root/CRL-20260902-001：真人用户角色快照、同请求幂等和安全失效。
+- root/CRL-20260830-001：PDF 队列事件唤醒与低频灾备恢复。
+
+### 非保护范围
+
+- PDF 模板排版、账务计算公式、发票合并结果、R2 对象存在性、Render 环境变量实际值、生产部署、生产 PDF 任务或真人账号权限调整。
+
 ## FR-021：Profile、日终和清洁媒体请求路径不得修改 schema
 
 - **维护责任范围：** backend

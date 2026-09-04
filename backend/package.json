@@ -35,6 +35,7 @@
     "test:mzapp-media-visibility": "ts-node-dev --transpile-only scripts/tests/test_mzapp_media_visibility.ts",
     "test:expense-receipt-media-contract": "ts-node-dev --transpile-only scripts/tests/test_mzapp_expense_receipt_media_contract.ts",
     "test:pdf-jobs-runtime": "ts-node-dev --transpile-only scripts/tests/test_pdf_jobs_runtime_contract.ts",
+    "test:pdf-render-service-auth": "ts-node-dev --transpile-only scripts/tests/test_pdf_render_service_auth.ts",
     "test:r5-request-schema": "ts-node-dev --transpile-only scripts/tests/test_r5_1_request_schema_contract.ts",
     "test:profile-compliance-document": "ts-node-dev --transpile-only scripts/tests/test_profile_compliance_document_contract.ts",
     "test:guest-luggage-media-contract": "ts-node-dev --transpile-only scripts/tests/test_guest_luggage_media_contract.ts",

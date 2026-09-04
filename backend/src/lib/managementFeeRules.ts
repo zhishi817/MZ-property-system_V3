@@ -40,7 +40,10 @@ export async function ensureManagementFeeRulesTable() {
   return ensurePromise
 }
 
-export async function listManagementFeeRulesByLandlordIds(landlordIds: string[]): Promise<Record<string, LandlordManagementFeeRule[]>> {
+export async function listManagementFeeRulesByLandlordIds(
+  landlordIds: string[],
+  options?: { requireExistingTable?: boolean },
+): Promise<Record<string, LandlordManagementFeeRule[]>> {
   const ids = Array.from(new Set((landlordIds || []).map((x) => String(x || '').trim()).filter(Boolean)))
   const out: Record<string, LandlordManagementFeeRule[]> = {}
   ids.forEach((id) => { out[id] = [] })
@@ -56,7 +59,7 @@ export async function listManagementFeeRulesByLandlordIds(landlordIds: string[])
     )
   } catch (error: any) {
     // A report/list read must stay read-only when the separately managed migration is not applied.
-    if (String(error?.code || '') === '42P01') return out
+    if (String(error?.code || '') === '42P01' && !options?.requireExistingTable) return out
     throw error
   }
   for (const row of (rs.rows || [])) {

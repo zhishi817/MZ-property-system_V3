@@ -15,6 +15,7 @@ import {
   positiveInteger,
   removeDuePdfJobsRetryDueAts,
 } from './pdfJobsRuntime'
+import { pdfRenderServiceClaims } from './pdfRenderServiceAuth'
 
 export type PdfJobFile = {
   kind: string
@@ -74,7 +75,7 @@ function classifyError(e: any): { retriable: boolean; code: string; message: str
     'PHOTO_LOAD_INCOMPLETE',
     'MERGE_ATTACHMENT_PREFLIGHT_FAILED',
   ])
-  if (code === 'PDF_JOBS_SCHEMA_MISSING' || code === 'JOB_INVALID') return { retriable: false, code, message }
+  if (code === 'PDF_JOBS_SCHEMA_MISSING' || code === 'JOB_INVALID' || code === 'PRINT_AUTH') return { retriable: false, code, message }
   if (nonRetriableCodes.has(code)) return { retriable: false, code, message }
   if (retriableCodes.has(code)) return { retriable: true, code, message }
   if (code === 'ECONNRESET' || code === 'ETIMEDOUT' || code === 'EPIPE') return { retriable: true, code, message }
@@ -246,8 +247,7 @@ async function updateJob(id: string, patch: Partial<{ status: string; progress: 
 }
 
 function internalAuthToken() {
-  const payload: any = { sub: 'u-pdf-job', role: 'admin', username: 'pdf_job' }
-  return jwt.sign(payload, SECRET, { expiresIn: `${Math.max(1, Number(process.env.PDF_JOB_TOKEN_HOURS || 2))}h` })
+  return jwt.sign(pdfRenderServiceClaims(), SECRET, { expiresIn: `${Math.max(1, Number(process.env.PDF_JOB_TOKEN_HOURS || 2))}h` })
 }
 
 function frontBaseUrl(): string {
@@ -402,27 +402,43 @@ async function generateStatementBasePdf(opts: { jobId: string; month: string; pr
         }
         await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
         await page.evaluate(() => (document as any).fonts?.ready).catch(() => {})
-        await page.waitForSelector('[data-monthly-statement-root="1"]', { timeout: waitTimeoutMs })
+        const urlAfterLoad = String(page.url?.() || '')
+        if (urlAfterLoad.includes('/login')) {
+          throw Object.assign(new Error('print page redirected to /login'), { code: 'PRINT_AUTH' })
+        }
+        await page.waitForFunction(() => {
+          const path = String(window.location?.pathname || '')
+          return path === '/login' || !!document.querySelector('[data-monthly-statement-root="1"]')
+        }, undefined, { timeout: waitTimeoutMs })
         const u0 = String(page.url?.() || '')
-        if (u0.includes('/login')) throw new Error('print page redirected to /login')
+        if (u0.includes('/login')) {
+          throw Object.assign(new Error('print page redirected to /login'), { code: 'PRINT_AUTH' })
+        }
+        await page.waitForSelector('[data-monthly-statement-root="1"]', { timeout: 1000 })
         await page.waitForFunction(() => {
           const el = document.querySelector('[data-monthly-statement-root="1"]') as any
           if (!el) return false
           const ready = String(el.getAttribute('data-monthly-statement-ready') || '') === '1'
-          return ready
-        }, { timeout: waitTimeoutMs } as any)
+          const dataError = String(el.getAttribute('data-monthly-statement-error') || '').trim()
+          return ready || !!dataError
+        }, undefined, { timeout: waitTimeoutMs })
         try {
           diag.stats = await page.evaluate(() => {
             const root = document.querySelector('[data-monthly-statement-root="1"]') as HTMLElement | null
             const rows = document.querySelectorAll('[data-monthly-statement-root="1"] [data-statement-row="1"]').length
             const tables = document.querySelectorAll('[data-monthly-statement-root="1"] table').length
             const cookieHasAuth = typeof document !== 'undefined' ? (document.cookie || '').includes('auth=') : false
-            return { hasRoot: !!root, statementRows: rows, tables, cookieHasAuth, href: String(location?.href || '') }
+            const dataLoadError = String(root?.getAttribute('data-monthly-statement-error') || '').trim()
+            return { hasRoot: !!root, statementRows: rows, tables, cookieHasAuth, dataLoadError, href: String(location?.href || '') }
           })
         } catch {}
         const authFailed = Array.isArray(diag.badResponses) && diag.badResponses.some((s: string) => /\((401|403)\)\s*$/.test(String(s || '')))
         if (authFailed) throw Object.assign(new Error('print page has unauthorized api responses (401/403)'), { code: 'PRINT_AUTH' })
         if (diag?.stats?.cookieHasAuth === false) throw Object.assign(new Error('print page missing auth cookie'), { code: 'PRINT_AUTH' })
+        const dataLoadError = String(diag?.stats?.dataLoadError || '').trim()
+        if (dataLoadError) {
+          throw Object.assign(new Error(`print page data load failed: ${dataLoadError}`), { code: 'PRINT_DATA_LOAD' })
+        }
         const rows = Number(diag?.stats?.statementRows || 0) || 0
         const rf = Array.isArray(diag?.requestFails) ? diag.requestFails.length : 0
         const br = Array.isArray(diag?.badResponses) ? diag.badResponses.length : 0
@@ -810,6 +826,7 @@ async function runMergeMonthlyPack(job: any, workerId: string) {
       const ce = Array.isArray(diag?.console) ? diag.console.length : 0
       const pe = Array.isArray(diag?.pageErrors) ? diag.pageErrors.length : 0
       const rows = Number(diag?.stats?.statementRows || 0) || 0
+      const dataLoadError = String(diag?.stats?.dataLoadError || '').trim()
       const cookie = diag?.stats?.cookieHasAuth === false ? 'cookie_auth=0' : ''
       const hosts = (() => {
         try {
@@ -823,6 +840,7 @@ async function runMergeMonthlyPack(job: any, workerId: string) {
         } catch { return [] as string[] }
       })()
       parts.push(`rows=${rows}`)
+      if (dataLoadError) parts.push(`data_error=${dataLoadError}`)
       if (rf) parts.push(`request_fail=${rf}`)
       if (br) parts.push(`http>=400=${br}`)
       if (ce) parts.push(`console=${ce}`)
