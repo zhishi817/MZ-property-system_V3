@@ -1,5 +1,148 @@
 # Change Release Ledger
 
+## CRL-20260904-008 — 房源营收无感刷新与数据库读取降频（root）
+
+- **Repository:** `root`
+- **Status:** commit-ready; selected-for-commit
+- **Updated:** 2026-09-05 00:01 AEST
+- **Request:** 修复房源营收页面在切换浏览器、回到标签页或重新点击页面时反复进入 loading 并重复读取数据的问题，同时优化由前台恢复触发的数据库访问次数。
+- **Outcome:** 首次进入和用户明确切换月份/范围仍刷新；focus 与 visibility 恢复事件合并防抖，最近一次完整成功刷新未满 60 秒时不发请求，过期后静默刷新且不显示整页 loading。房源、房东和周期付款参考数据在页面会话内缓存 5 分钟，范围租金不再每次 focus 强制失效。月报预览或 PDF/照片任务期间延后恢复刷新，后台失败保留原数据显示提示。
+
+### Implementation
+
+- Previous behavior: `window.focus`、`document.visibilitychange` 和 pathname 返回均调度完整 `reload()`；每次都会切换 `pageLoading`，读取订单、房源、房东、财务、房源支出、周期付款，并按范围逐月强制读取租金。focus 与 visibility 虽有 350ms 防抖，但没有新鲜度门槛，路由 effect 还会重复调度。
+- New behavior: 删除 pathname 重复刷新；恢复事件继续使用 350ms 合并，但通过 60 秒成功时间戳判断是否需要刷新，并以 background 模式更新。background 不设置 `pageLoading` / `rangeLoading`；任一动态请求失败时整组保留刷新前数据，租金请求失败也不再写入空 map。报告预览或活跃 PDF/照片任务阻塞恢复刷新，并在解除后最多调度一次。
+- Read reduction: 60 秒内任意 focus/visible 事件新增 0 个营收请求。参考数据未过 5 分钟时，过期恢复只读取 orders、finance、property_expenses 和每个范围月份一条 rent-income 请求；月视图从原 7 个前端请求降为 4 个，年度视图从 18 个降为 15 个。参考数据到期后才恢复完整读取。这里记录的是前端请求数，不冒充后端 SQL statement 数。
+- Explicit range behavior: 用户改变月份、年度、半年或财年时仍强制刷新范围租金；若此时已有后台刷新在途，登记一次前台刷新并在前者结束后执行，避免丢失范围变化。删除了与范围 reload 并行的第二条租金 effect，避免同一范围重复请求。
+- Strict Mode repair: 首轮独立审查发现开发环境会重放 mount/range effects，原候选会把重放误判为在途补刷并固定多跑一轮。修订后以同一个 lifecycle ref 认领唯一 initial load，并只在 range key 真正变化时触发范围 reload；fake-timer 请求计数回归覆盖双 setup。
+- Key decisions: 保留 root/CRL-20260903-006 的不变量——过期恢复刷新仍必须读取 `property_expenses`，不能只刷新订单导致支出显示旧值或 `$0`；本次不新增后端聚合接口、不改金额算法、不改 PDF 队列。
+
+### Files / Areas
+
+- `frontend/src/app/finance/properties-overview/page.tsx` — modified: 新鲜度门槛、静默恢复刷新、参考数据缓存、失败回退、报告期间延后及范围刷新合并。
+- `frontend/src/lib/propertyRevenueRefreshPolicy.ts` — added: Strict Mode-safe initial/range lifecycle，以及 60 秒恢复新鲜度与 5 分钟参考数据新鲜度的纯判断。
+- `frontend/src/lib/propertyRevenueRefreshPolicy.test.ts` — added: fake-timer 请求计数覆盖双 setup 和真实范围变化，并覆盖 hidden/paused/fresh/stale 与参考数据缓存边界。
+- `frontend/src/lib/propertyRevenueExpenseFields.test.ts` — modified: 更新房源支出失败可见性，并保护页面刷新接线、失败保留、显式范围强制租金和报告延后契约。
+- `docs/feature-regression-registry.md` — modified: 新增 FR-023 房源营收前台恢复刷新与读取降频。
+- `docs/change-release-ledger.md` — modified: 本 CRL。
+
+### Impact / Dependencies
+
+- API: 不新增或修改 endpoint / payload；只改变既有读取请求的客户端调度频率。
+- Database / migration: none；没有执行数据库查询或写入，SQL 级读取次数需部署后单独观测，年度范围的后端批量聚合不在本次范围。
+- Config / environment: none。
+- Dependencies: none；隔离候选复用 lockfile 完全一致的现有前端依赖进行验证，没有安装或升级包。
+- Related units: root/CRL-20260903-006（房源支出读取失败可见与恢复时完整刷新）。
+- Production / external writes: none；未打开已登录页面、未调用业务 API、未创建 PDF job、未部署。
+
+### Validation
+
+- `npm run test --prefix frontend -- --coverage.enabled=false src/lib/propertyRevenueRefreshPolicy.test.ts src/lib/propertyRevenueExpenseFields.test.ts`（等价 Vitest 定向命令）— PASS：修订候选 2 files / 8 tests，包含 Strict Mode 双 setup 请求计数。
+- `./node_modules/.bin/tsc --noEmit`（隔离候选通过临时链接复用 lockfile 一致的现有依赖）— PASS。
+- `./node_modules/.bin/next lint --file ...` — PASS：无 error；房源营收页只报告仓库既有 exhaustive-deps warnings。
+- `npm run test --prefix frontend -- --coverage.enabled=false` — PASS：修订候选 45 files / 215 tests。
+- `npm run build --prefix frontend` — PASS：Next.js production compile、lint、TypeScript 和 95 个静态页面生成完成；`/finance/properties-overview` 与月报公开打印页均生成。
+- `npm run check:fast` — PASS：Strict Mode 修订后重跑，root workflow/ledger/registry gates、backend build 与受保护契约、45 files / 215 tests（含 coverage）及 mobile typecheck 全部完成；为满足本地跨仓门禁，mobile 源码使用其干净 `origin/Dev` 快照，单独 typecheck exit 0。所有临时依赖映射及生成物均已清理。
+- `npm run check:feature-registry` — PASS：20 FRs / 161 test mappings；73 个 mobile mappings 按仓库规则 deferred。
+- `python3 scripts/audit_change_release_ledger.py` — PASS：6 个变更文件全部由本 CRL 覆盖，远端 CRL lineage 保持。
+- `git diff --check` — PASS。
+- 已登录开发环境 Network 请求计数、数据库 SQL 观测、生产验证 — not run；本轮刻意不触发可能带业务副作用的真实数据或 PDF 流程。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared.
+- **Untracked review:** none；两个新增文件已按精确路径暂存，临时依赖链接、build cache、TypeScript cache 和后端编译产物均已删除。
+- `docs/feature-regression-registry.md` — SHA-256: `59ff75bf368c3cbd34e7c8103b021866a8b564874e06433d763541add9a4de47`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `01ead14d47b852486d53a576eed6156fc8aa7b0e5ee3624b7d70696643cd6edd`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `0d549cb6380e9f0607cfbab0b756bacd9e71ead186c0886da86ba737c06edbd2`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `12838a062fc3cb081fb97ed85d4c1df0da811c369f92c62fef98ab27066a1952`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `2049b4e7a6e5da900c385a08a0557fa9799e989796a86c0030a337096c41dab0`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `2b705d95759d0b1693a2ef4f563a9df5fc91b3907ee2294d5fffc03d492b2d10`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `2dd6507b71ba047d36bc527feb735a1a4d83e3dc5b0eb282555dcd8958568755`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `33cea4c6576eb27ad6fc2e145cdd290807095127feae033f4570be48fd2c38ad`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `370d0c0209a344fd9e88402ec71045baffa7a29618003112d15a63eae775e53a`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `39fbca9a204fb5d7a2cac02d716d29118ec7258ceec7669680c5ada885da6cf4`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `3c32d8c8afd94e6cd833a82d9a1364efca874fb17df1da993760487ccaf92141`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `499f19d8d1ca5b09c365b2789f5d47063a6d49c04a3d6cb7881b91c570829b9f`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `53cd2a42668ab3e5ee22ead3577c94ae1bf409dfbbda36d2517cf1a8ae8d8a2a`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `60d47682b9ed5dfdc001a56eebbfad3d507121ee22244dd138e991c489348891`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `633ed60ad6323549b0bb79622533cdf384d39f1da13693e251c4d3c194c77374`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `638d43b775c45dd725edac4c07413512f770c963c69ed4a2b0678d2116f68e46`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `65a544d81879d49e0505d504f5834aa0dba3c8971463ba6a7207420e188cb18f`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `666fba2c45bdffa6eef00de37675c2272019b92f2e6fe4e4766a94bb167e03df`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `6bc38d64daab0bf7050a1b524645b8cd2ccd11c21b5fc4c8650890b3c3b77c44`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `80ed0b8b9ce677305610d18aeab74c46ba02f45991c8de1395cd5bd80d01e16b`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `920e15796a35c5be79db1abedf5ede2f6994fac93cf20c786ff12c01c7c29817`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `9d847a05c8dc7070fa5b1c544fe9399799dfea50a8602125fec42f87d7230cfb`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `9e97bb7a3a11a79ab4014fea38be7cf14516c7e90c588a272f3d907ce0e94611`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `a369fb468553ece66f412ca9f0d8c581df99ae702688b91135140129bde12875`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `b7596727206df66e7629f5bd0c2b71874e79bd82453170829113261c5d576c12`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `c0419220230f8b089983afda0305a9f8511ca35945d413ac4968919faab69b1c`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `c48f8d011c5d83f7d97cf42ca67a6c52599c2c4d8e5182483f59c2a91cc5387f`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `cfeddfa71e16293a7c88e9906961d1af3594d01d9911ae3fd59185633afed345`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `d3c19c0bd845b98c38d0662ba25c4e02ff3bf68d5755ee0de30555aadcb6f331`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `da036b395db2f21780f0f7e11a3ad04f16970950b20c4d57003583505f62fac3`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `e1ccbdeb537a1772029810139a7255dc91573ee0f405d531bc4a871476dc93e0`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `e263ef0898872d1d97bf2fb5482e4622ec76324637986bd3eb9b9db86e0fa8d4`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `e78356063462015c2d76556f4b296c4b1039fd69b3d4c15e101947079be75ff2`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `f2aa2f8c89295fb001a49a28e544ceaf5019aa2ea74ae2dcc69481d1fbdb7987`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `fa363118e21728ab50c6f1a157cc5e0ab5643207e35bfa5f6d997e623153ef8e`
+- `frontend/src/lib/propertyRevenueExpenseFields.test.ts` — SHA-256: `02ff3b6de94a2f1063b35393def4e9269fbb14f46087e1405bb6866e47a9aa9d`
+- `frontend/src/lib/propertyRevenueExpenseFields.test.ts` — SHA-256: `2d93b736b3b34068815270808078ea476d6c1ab46d6bbd59e71845f857fd5626`
+- `frontend/src/lib/propertyRevenueExpenseFields.test.ts` — SHA-256: `554ce6614fe7fbca272d09a9e1d4f88745a1e4f3288efae0620d30eff9723f43`
+- `frontend/src/lib/propertyRevenueExpenseFields.test.ts` — SHA-256: `bd0ae209c21135625b204cefb400a6cae50194a1e60b1f459309187215aef9ca`
+- `frontend/src/lib/propertyRevenueRefreshPolicy.test.ts` — SHA-256: `837dd21b375861edc953325553d0797249a812b38684fd1a6097b5766383c5a3`
+- `frontend/src/lib/propertyRevenueRefreshPolicy.ts` — SHA-256: `690575fc0095cc7b5781fed089738dc9bee1669c1eb0c660ff4e9af286018eed`
+
+### Release Attempts
+
+#### RA-20260904-012
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260904-008`
+- Selected CRL identities: `root/CRL-20260904-008`
+- Intended action: `commit`
+- Branch: `codex/property-revenue-refresh-efficiency-20260904`
+- Base: `origin/Dev@421b1eaca5b0220fbec47054c5daa23d359aa3dd`; fetched at `2026-09-04 23:42:39 AEST`
+- Candidate patch SHA-256: `26d0eee4725f9e10ed881aa41fac485b92867907a53926d08e77449bf3c8e7ad`
+- Commit SHA: not committed
+- Dependencies: root/CRL-20260903-006, already contained in the recorded base.
+- Required validation: `PASS`; evidence: frontend targeted tests 7/7, TypeScript, targeted lint, full 45-file / 214-test suite, production build, root `check:fast`, registry/ledger audits and diff check passed.
+- Shared-hunk review: `PASS`; evidence: clean current `origin/Dev` candidate contains only this CRL's five non-ledger paths and 39 recorded non-ledger hunks; ledger is the sixth selected path.
+- Generated-file review: `PASS`; evidence: temporary dependency links, build caches, TypeScript caches and backend build outputs were removed before staging; staged paths contain no generated output.
+- Technical state: `verified`
+- User authorization: `selected-for-commit`; evidence: user explicitly requested `提交这个优化` for the just-reported root/CRL-20260904-008 candidate on 2026-09-04.
+- Independent review: `NO-GO`; evidence: independent reviewer confirmed the fingerprint and six-file scope, then found one P1 caused by `reactStrictMode: true`: development effect replay would mark the initial request as needing a queued follow-up and issue a guaranteed second full reload.
+- Action conclusion: `BLOCKED`; blocker: P1 Strict Mode duplicate-initial-load finding. This original candidate was not committed. Push, PR, merge and deployment are not authorized.
+
+#### RA-20260904-013
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260904-008`
+- Selected CRL identities: `root/CRL-20260904-008`
+- Intended action: `commit`
+- Branch: `codex/property-revenue-refresh-efficiency-20260904`
+- Base: `origin/Dev@421b1eaca5b0220fbec47054c5daa23d359aa3dd`; fetched at `2026-09-04 23:42:39 AEST`
+- Candidate patch SHA-256: `ab8dd09264af6e3cb6e418f45d0358c78aa28977856d160b622071c042988122`
+- Commit SHA: not committed
+- Dependencies: root/CRL-20260903-006, already contained in the recorded base.
+- Required validation: `PASS`; evidence: repaired candidate targeted 8/8, TypeScript, targeted lint, full 45-file / 215-test suite, production build, repaired root `check:fast`, registry/ledger audits and diff check passed.
+- Shared-hunk review: `PASS`; evidence: clean current `origin/Dev` candidate contains only this CRL's five non-ledger paths and 41 recorded non-ledger hunks; ledger is the sixth selected path.
+- Generated-file review: `PASS`; evidence: all temporary dependency mappings, build outputs and caches were removed before final staging.
+- Technical state: `candidate`
+- User authorization: `selected-for-commit`; evidence: user explicitly requested `提交这个优化` for root/CRL-20260904-008 on 2026-09-04; the repaired candidate remains the same selected behavior and only resolves the blocking duplicate-load finding.
+- Independent review: `GO for commit`; evidence: the reviewer independently recomputed fingerprint `ab8dd09264af6e3cb6e418f45d0358c78aa28977856d160b622071c042988122`, confirmed the Strict Mode lifecycle fix prevents duplicate initial/range reloads while preserving in-flight foreground follow-up, confirmed 6 staged files / 41 hunks / no untracked or generated files, and found no P0/P1/P2 or secret/production-write risk.
+- Action conclusion: `GO` for the stated local commit only; final pre-commit gate PASS with all 41 non-ledger hunks matching scope. Push, PR, merge and deployment are not authorized.
+
+### Risks / Release Notes
+
+- Risk: 年度/财年范围在一次超过 60 秒的恢复刷新中仍会逐月调用既有 rent-income endpoint；频率已显著降低，但若单次年度刷新仍慢，需要新的后端范围聚合 CRL，不能在本前端修复中顺手扩张。
+- Manual gap: 页面接线回归目前是源码契约测试，尚未在已登录浏览器以 Network 面板实测 0/4/15 请求边界；FR-023 对该项标记为 partial。
+- Rollback: 恢复原 focus/visibility/pathname 的完整 reload、30 秒租金缓存和范围 rent effect；无数据回滚。
+- Sensitive-information review: PASS；候选不含 secret、token、cookie、数据库 URL、客户数据、生产日志或本地缓存。
+- Git state: 基于 freshly fetched `origin/Dev@421b1eaca5b0220fbec47054c5daa23d359aa3dd` 的隔离分支 `codex/property-revenue-refresh-efficiency-20260904`；not committed、not pushed、PR not created、not merged、not deployed、development/production verification not run。
+
 ## CRL-20260904-007 — 月报重试新建任务与公开打印页 RBAC 隔离（root）
 
 - **Repository:** `root`
