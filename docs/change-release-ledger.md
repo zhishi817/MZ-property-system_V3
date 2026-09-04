@@ -100,6 +100,26 @@
 - Independent review: `GO for commit`; evidence: independent read-only reviewer复算候选指纹 `96d068dc805d0d6356fccf57ee27d878495d36818cb945c094d3cee687b8f82a`，核对完整 6-file staged diff、27 个 hunk、base/branch/依赖、无 untracked/generated/secret，未发现 P0/P1。接受一个非阻断 P2：当前前端回归为源码契约测试，未真实挂载组件或拦截网络请求。
 - Action conclusion: `GO`; blockers: none；exact reviewed candidate 已提交为 `30e2fe8d1385e8bbc4567456da616d10fcf00d8d`。Push 仍需在 committed-range audit 通过后，由用户针对确切 branch/SHA 重新确认；PR、merge 与部署未授权。
 
+#### RA-20260904-011
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260904-007`
+- Selected CRL identities: `root/CRL-20260904-007`
+- Intended action: `push`
+- Branch: `codex/monthly-pdf-retry-auth-followup-20260904`
+- Base: `origin/Dev@08b0699c06cefdafc3e52051558d746a7aa93dd8`; fetched at `2026-09-04 22:32:30 AEST`
+- Candidate patch SHA-256: `96d068dc805d0d6356fccf57ee27d878495d36818cb945c094d3cee687b8f82a`
+- Commit SHA: `30e2fe8d1385e8bbc4567456da616d10fcf00d8d` (candidate content commit); prior commit receipt head `6f729738d4c4565a5d4f11f947131ff01a3fb594`; exact push-audit head will be emitted by the range report.
+- Dependencies: `root/CRL-20260904-005@d06501336c190c0d8a72301cc7d7357bbd52aa46`
+- Required validation: `PASS`; evidence: RA-20260904-010 validation and independent commit review passed; exact `08b0699c...6f729738` committed-range report passed with the unchanged candidate fingerprint.
+- Shared-hunk review: `PASS`; evidence: exact committed range contains only this CRL's six selected files and 27 non-ledger hunks.
+- Generated-file review: `PASS`; evidence: exact range contains no generated file, cache, untracked path or configured sensitive category.
+- Technical state: `committed`
+- Remote preflight: `PASS`; evidence: freshly fetched `origin/Dev` still matches the recorded base and `refs/heads/codex/monthly-pdf-retry-auth-followup-20260904` does not exist remotely at `2026-09-04 22:32:30 AEST`.
+- User authorization: `approved-for-push`; evidence: after receiving root content commit `30e2fe8d1385e8bbc4567456da616d10fcf00d8d`, receipt head `6f729738d4c4565a5d4f11f947131ff01a3fb594` and branch `codex/monthly-pdf-retry-auth-followup-20260904`, the user replied `推送` on `2026-09-04`.
+- Independent review: `GO for push receipt`; evidence: independent read-only reviewer复算 `08b0699c...6f729738` 非台账指纹为 `96d068dc805d0d6356fccf57ee27d878495d36818cb945c094d3cee687b8f82a`，确认 base → content commit → receipt HEAD 祖先链、CRL-005 依赖、6 个 committed 文件 / 27 个 hunk、精确用户授权、fresh base、远端目标分支不存在，且无 P0/P1、生成物、敏感项或 mobile 混入；沿用已接受的源码契约测试 P2。
+- Action conclusion: `GO`; blockers: none；本 ledger-only push receipt 提交并通过最终 exact committed-range audit 后，可将该精确范围 non-force push 到记录分支；PR、merge、部署及生产验证未授权。
+
 ### Risks / Release Notes
 
 - Risk: `PUBLIC_SHELL_PATHS` 中的所有公开页面都会跳过 Admin session/RBAC bootstrap；它们原本已经绕过管理壳渲染，且请求令牌读取独立存在。进入私有路由时 `isPublic` 变化会重新触发正常 bootstrap。
