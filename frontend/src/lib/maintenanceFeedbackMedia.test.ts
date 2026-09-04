@@ -44,4 +44,11 @@ describe('maintenanceFeedbackMediaProxyUrl', () => {
       repair_photo_urls: ['mzapp/maintenance-completion.jpg', 'cleaning/legacy-repair.jpg'],
     })).toEqual(['mzapp/maintenance-completion.jpg', 'cleaning/legacy-repair.jpg'])
   })
+
+  it('falls back to legacy repair photos when the canonical completion list is empty', () => {
+    expect(maintenanceAfterPhotoReferences({
+      completion_photo_urls: [],
+      repair_photo_urls: ['maintenance/historical-after.jpg'],
+    })).toEqual(['maintenance/historical-after.jpg'])
+  })
 })

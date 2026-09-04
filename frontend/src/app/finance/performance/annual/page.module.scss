@@ -1,0 +1,287 @@
+.pageCard {
+  min-height: calc(100vh - 96px);
+}
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.filterControl {
+  width: 130px;
+}
+
+.languageControl {
+  width: 170px;
+}
+
+.statusControl,
+.regionControl {
+  width: 160px;
+}
+
+.searchControl {
+  width: min(280px, 100%);
+}
+
+.loadAlert {
+  margin-bottom: 16px;
+}
+
+.workspaceGrid {
+  display: grid;
+  grid-template-columns: minmax(480px, 0.9fr) minmax(0, 1.1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.listCard,
+.reportCard {
+  min-width: 0;
+  height: calc(100vh - 210px);
+  overflow: hidden;
+}
+
+.reportCard :global(.ant-card-body) {
+  height: 100%;
+  overflow: auto;
+}
+
+.selectedRow td {
+  background: #e6f4ff !important;
+}
+
+.propertyCode {
+  color: rgba(0, 0, 0, 0.88);
+  font-weight: 600;
+}
+
+.propertyMeta,
+.propertyProgress,
+.reportAddress {
+  margin-top: 3px;
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.propertyMeta {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.propertyProgress {
+  color: rgba(0, 0, 0, 0.65);
+}
+
+.emptyWorkspace,
+.drawerLoading {
+  display: grid;
+  min-height: 420px;
+  place-items: center;
+}
+
+.reportHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: flex-start;
+  padding: 8px 0 12px;
+}
+
+.reportTitle {
+  margin: 0 !important;
+}
+
+.overviewGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(260px, 0.75fr);
+  gap: 12px;
+}
+
+.overviewMain,
+.overviewAside {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.metricsGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: 10px;
+}
+
+.metricsGrid :global(.ant-card-body) {
+  padding: 16px;
+}
+
+.metricsGrid :global(.ant-statistic-content) {
+  font-size: 22px;
+}
+
+.innerCard {
+  min-width: 0;
+}
+
+.sectionAlert {
+  margin-bottom: 12px;
+}
+
+.previewViewport {
+  overflow: auto;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #f5f5f5;
+  padding: 12px;
+}
+
+.previewSurface {
+  min-width: 1120px;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.drawerFooter {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+}
+
+.drawerReportMeta {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.drawerReportMeta h5 {
+  margin: 0 0 4px !important;
+}
+
+.editorGrid {
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.monthSelector {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  position: sticky;
+  top: 0;
+}
+
+.monthButton {
+  height: 40px;
+}
+
+.monthButton > span {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.monthButton :global(.ant-tag) {
+  margin-inline-end: 0;
+}
+
+.monthEditor {
+  min-width: 0;
+}
+
+.moneyGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.fieldLabel {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  color: rgba(0, 0, 0, 0.88);
+}
+
+.fieldLabel > span:first-child {
+  font-size: 13px;
+}
+
+.moneyInput {
+  width: 100%;
+}
+
+.editorMetaFields {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 20px;
+  border-top: 1px solid #f0f0f0;
+  padding-top: 16px;
+}
+
+.printSource {
+  position: fixed;
+  top: 0;
+  left: -100000px;
+  width: 277mm;
+  pointer-events: none;
+  background: #fff;
+}
+
+@media (max-width: 1399px) {
+  .overviewGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .metricsGrid {
+    grid-template-columns: repeat(2, minmax(150px, 1fr));
+  }
+}
+
+@media (max-width: 1000px) {
+  .workspaceGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .listCard,
+  .reportCard {
+    height: auto;
+    min-height: 520px;
+  }
+}
+
+@media (max-width: 820px) {
+  .overviewGrid,
+  .editorGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .reportHeader,
+  .drawerFooter {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .monthSelector {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    position: static;
+  }
+
+  .moneyGrid {
+    grid-template-columns: 1fr;
+  }
+}

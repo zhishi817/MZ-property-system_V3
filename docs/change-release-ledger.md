@@ -1,5 +1,208 @@
 # Change Release Ledger
 
+## CRL-20260904-001 — 年度报告分栏工作台与标准查看编辑操作（root）
+
+- **Repository:** `root`
+- **Status:** verified; selected-for-commit
+- **Updated:** 2026-09-04 15:24 AEST
+- **Request:** 按已选方案 2 优化房源年度报告页面；每个房源提供与其他后台页面一致的详情、编辑操作，避免把草稿报告直接堆在列表下方，并允许编辑年度报告中可人工维护的月份。
+- **Outcome:** 年度报告页改为左侧房源记录、右侧报告工作区的分栏布局；详情、月份数据、按需预览分离，编辑使用右侧抽屉，系统月份保持只读，手工月份可保存或删除，并增加未保存修改保护。
+
+### Implementation
+
+- 复用既有年度报告汇总、单房源报告、手工月份 PUT/DELETE 和 PDF 导出接口；未新增后端接口、数据库结构、迁移、依赖或第二套年度报告模型。
+- 列表提供财年、语言、状态、区域和房号/地址筛选，使用标准 `TableRowActions` 展示 `详情`、`编辑`。
+- 右侧工作区默认显示概览，另有 `12个月数据` 与 `报告预览`；完整 PDF 仅在用户主动预览时显示，下载仍复用现有打印组件。
+- 编辑入口沿用既有 `finance.payout` 权限；手工月份支持金额、完整状态和备注，系统生成月份明确只读；切换房源、财年或关闭抽屉前检查未保存修改。
+- 使用请求序号避免快速切换房源时旧响应覆盖新选择；宽度不足时收拢内部网格或退化为上下布局。
+
+### Files / Areas
+
+- `frontend/src/app/finance/performance/annual/page.tsx`
+- `frontend/src/app/finance/performance/annual/page.module.scss`
+- `design-qa.md`
+- `docs/change-release-ledger.md`
+
+### Impact / Dependencies
+
+- API / database / migration / configuration: none; depends on the existing annual-report endpoints and existing `finance.payout` permission.
+- Production data / external sync: none during implementation and validation.
+- Existing behavior retained: report status remains system-derived; system months are not manually editable; PDF draft/completeness semantics are unchanged.
+- Risk: editing is intentionally limited to fields already accepted by the manual-month API. Production authenticated regression remains not run.
+
+### Validation
+
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` from `frontend`: PASS.
+- `npm run lint` from `frontend`: PASS with repository-pre-existing warnings outside the changed annual-report page; no warning was reported for the changed page.
+- `npm test --prefix frontend -- src/lib/annualReport.test.ts`: the 8 targeted tests passed, but the command returned non-zero because the repository-wide coverage threshold is applied to a single-file run; this was not a test assertion failure.
+- `./node_modules/.bin/vitest run src/lib/annualReport.test.ts --coverage.enabled=false`: PASS, 1 file / 8 tests.
+- `npm run build` from `frontend`: PASS, 95 static pages generated; `/finance/performance/annual` built successfully.
+- Browser interaction against a temporary local mock API: PASS for list selection, detail workspace, manual-month editor, system-month read-only view, unsaved-change confirmation and on-demand report preview.
+- Fresh-page browser console: PASS, no errors or warnings.
+- Product Design comparison recorded in `design-qa.md`: PASS; no P0/P1/P2 visual findings.
+- `git diff --check`: PASS before ledger update; rerun required after final ledger update.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared.
+- **Untracked review:** PASS — clean isolated candidate has no untracked paths after removing temporary dependency links and build output.
+- **Combined selected-candidate hunk scope:** The complete non-ledger fingerprint set for `root/CRL-20260904-001` through `root/CRL-20260904-003` is recorded here because this user-selected commit intentionally combines their verified shared maintenance hunks.
+- `backend/scripts/tests/test_maintenance_auto_expense.ts` — SHA-256: `d4d74934c41e645b0ec5fe98647810873ea8778cb1a600ba1d652daf575e2626`
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts` — SHA-256: `47304527678f3ecc8a3ccef0f47ec36ad21260a0bafe94e624bb203981d712fd`
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts` — SHA-256: `6091612f10494a7cbf4f506382b61ef6b3379965efb95ee0aa5a6fd92b06e9eb`
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts` — SHA-256: `958592f78a9715bd6ccf1481d9a87a07dc1155b9b9e8a194e7eaea123e318527`
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts` — SHA-256: `b1260836184b9d477e3d5d5c38b69d0da7b35ae707fc42f05fe0d51cbee8ad91`
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts` — SHA-256: `cea7d56e45ac2675f857ad3636387e7a95eed9648aab78ab98747d23c847c8ee`
+- `backend/src/lib/maintenanceWorkflow.ts` — SHA-256: `030bfba1794b0da54b2e08ff61c20da1b6624c2dec91cca9d4f9130f80776f2c`
+- `backend/src/lib/maintenanceWorkflow.ts` — SHA-256: `3a9354341eaa21f0e5e80a5822a93a27a3adf7190499bfc88fcf8af512630671`
+- `backend/src/lib/maintenanceWorkflow.ts` — SHA-256: `7f98d12654190a1a87d388ac1db93ba40f351970ec2796574fffcf4a1167b77b`
+- `backend/src/lib/maintenanceWorkflow.ts` — SHA-256: `b27ab9ea8021aa0e44dfe065c5c7092ebd3b27e4a8983137b16f238aac9daf26`
+- `backend/src/lib/maintenanceWorkflowStore.ts` — SHA-256: `ab7c976f4b00cf38d7393e976dccdd84176e6a68eab5a05439ccc8b2d62b7b72`
+- `backend/src/modules/maintenance.ts` — SHA-256: `09f526cdabca0f3f571f0f6128723a8917a870b654ae11d8fbd5ec50cb939097`
+- `backend/src/modules/maintenance.ts` — SHA-256: `132f5cf24ce0e752afaa26886c112c63bbf5685e9b33cf10e2a8b1cfce164791`
+- `backend/src/modules/maintenance.ts` — SHA-256: `1abfce701dd9e10452c478c5d5660ddb29987b9e195e9fcf7a5dfdeab7c2ecbc`
+- `backend/src/modules/maintenance.ts` — SHA-256: `236ea33bc6626e59512bf7b76b71a4c7b0689e6dc99232e1b980056700d5d18e`
+- `backend/src/modules/maintenance.ts` — SHA-256: `6968622f2cf0cc9b21fe3f0b5abbbe7c1b32a27b1e4fee921d252d7377ca0fbc`
+- `backend/src/modules/maintenance.ts` — SHA-256: `94afb580175fafd2534b0b1e19e9fdeb30b12871c3f905592b09e1bf2998b36e`
+- `backend/src/modules/maintenance.ts` — SHA-256: `9ab7004f22ebb32cd3bf0f87dd6bcfb55f8b274bdcb6d96d7ce0d0de736fab52`
+- `backend/src/modules/maintenance.ts` — SHA-256: `ac13d468a734b7ac7c075dabe0a6a9272715e3d192aa798a1e20dd63f95c0be4`
+- `backend/src/modules/maintenance.ts` — SHA-256: `b338aedb22c6c6b2cd1f764806c0959ef69a7ccb8643350f5a2869b31aa68870`
+- `design-qa.md` — SHA-256: `584425e5989c16f81108633983bccc0f010653d998fd0ad5b3d3435728a7a297`
+- `docs/feature-regression-registry.md` — SHA-256: `1944722e6260ef0c632d92498de306febbbb601e11ab20d962d978c54d290503`
+- `docs/feature-regression-registry.md` — SHA-256: `1f8512c02799cae5236c89882dc7b5f3619d821070aa554f088afc6bd17bf193`
+- `docs/feature-regression-registry.md` — SHA-256: `282e30d06cc42b9627f69495c286e8b43d5e80ee2b1b1674a8580d4fb2530213`
+- `docs/feature-regression-registry.md` — SHA-256: `4a518806946ff23d00b1997e6bbb9b527a4069ba773047181edcb79060cbf5dc`
+- `docs/feature-regression-registry.md` — SHA-256: `674cb4ff64be07d1f0137db6341e493dc8aa78728df5cff1f89d8af8337b96ce`
+- `docs/feature-regression-registry.md` — SHA-256: `9a904c8b95c63def6c855577113e95126fd1b2564f96ea0f637ecd9fb7b9bfee`
+- `docs/feature-regression-registry.md` — SHA-256: `b0aa3f021402bd8abed42c756ef0ffbdf196e85370c202988d2110ba013cd83a`
+- `docs/feature-regression-registry.md` — SHA-256: `b73340093d47629d35254775030a189cb9d161bab5f422007e08c9e7525e429c`
+- `docs/feature-regression-registry.md` — SHA-256: `b9e4acc693371d6bf3452ebaf78d233ae9b2caed9e089a94a4d9795b5800544f`
+- `docs/feature-regression-registry.md` — SHA-256: `e29128f2b77245994bc4c1e723ab03c6c2bb1888545cf70d942bc21727fd01fb`
+- `docs/feature-regression-registry.md` — SHA-256: `e8792768b00c21e048d5eb30b81de4c0905dc830483952a1e72045023ce07ead`
+- `frontend/src/app/finance/performance/annual/page.module.scss` — SHA-256: `a1b61f9535150acc81d119f22f8269040ddb6542871be05024110a1e9aad3d4e`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `009ae01968f9ca906a115b7b190de2f3ea1a8074990590e2b290da7836f885dd`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `088044dbc723341668b93076f6a8e107fcbfa9447ddc0dc4b6314b2a573ab637`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `091a803b86ea15ee21e45e6160aa2c053aefb1ee3377dbd115d29ac46ab993da`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `0cbaea40d45b244d1b78e81c0ed0ba866a50f1d0af167bab6148523a93b73aa8`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `1c88348dfe970487be2824d1973c7bd4a900f7ca137cc1e6e4a8a1669ac4c409`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `1d17b97fc9066c8858e12c0c0020667144f6f49b29cef1c3191e5478c7e69fe3`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `22f186e12f3ed9c85113796aa2b78370bdf1b704f13286e4900a142bdc718c34`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `243e5b86db59edfb48cc9f4b8b5bd5b41524bc7cae21c4b7709b1f756f8e5ab0`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `2d8ca2699f9eca4c9971e5ea996279cc23c99f3e0e50c291abe77afdb1151903`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `30043c8074dd469fc65f9b8a06031ad19e50e30aecfd656a58fe5aff93a405dd`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `305bd126e7ee258bb735aaacd36b9c4942780331f400395f692f506abfcbaf44`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `33fe3144c7b6908962e1b09469d74b3b8bd3d8d0222bf211ecfdf9b69af83386`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `340122c8aba5c2bac1890995b689cb5fb93767cd95882f768a98b99a4928eb2b`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `3797d68340cb0780693c0c6e606fd884221332b4bc091d1a1f6d8e48a902f415`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `392cb36cd8583c2719998db5c9890ee70a356ce2e97ed59947a249af829b7330`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `3ce84db8dc3af3d665acfaaf4da44fb50268b4a1277b90e39fdea52991e0e41e`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `410538faa5c66470b418ab8a6a4c1f77d3a1f840467469fd91e612d7a2235b4e`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `49253ef0d225f50273a30f6fcb0d421411513c1c0cca0ce6456d4e363839f73d`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `5096c59c8e7ab32634552aff80a74748c064e15aec5db5df8565be600e293c3e`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `51d8409fa149897c5e447affb21ffafbc6fdaac69fc5d97dee314a1ee653b25a`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `520044552c73cb4397bb811ec09cde7cb91af7c11477bd130d19f92bfbd9a76c`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `531f1986e3d9a7f68ad1a7bb384eed3bf47f5dc5ab87f9e4b3df3a59698308fc`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `6ab86dc87f62b119bb7abf57fd2e4faaa34cca107db97705afaba0a7f6638d29`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `6afb66840d03f018bb17e456934b765383a979a63870e86c97813a19b80cdbda`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `6afe0ab16b845a74e5fe8be1e42727971076f67a2cb1923e5751b1a6349c5629`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `73c6b3baacdb11f1026726047de37b62e4eb6ab0fc00f057fe0a85f6a645735a`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `7525a8d4e0229b6e922b45fc593cb30e7c4f5a6a3f441b871981d75ba7b78c84`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `778b561a059fb7dae8a78b6ed0de64cd6d302dd51ac7686d8781f1ab2c2c81ab`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `79011bf548778e3949ac6c3b9c70d9fd1cde08250c01fda296d494cfceb16f99`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `7b45eaa8c134ed239fd73f65ece77f81dbe3abd20a6bbff03c7d766e6c1ca947`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `82a129a4e8fe885d090b42175d38ac346d2ff7c84bd8ddb43718d9b6a0e26896`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `82a9847d1c13929b7a598e93f228a4ce0971d91a5c246560a1cfcbc8847f06a2`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `8625bf3ef28c2fa407fab0cee1a95cf8b9267c6e6f3a02b5ee96fa7a4c478024`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `8b3fc5279ca04ed9c145d95977393a25060fa2edf2ce5dac52fa6dfefbc6b318`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `8c4606561809fe304ce2980e0ce6c945f8cc43923b2959d97e70d463e47ff15b`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `90f83e95254244f1b3ef63cae3104d149763ac35d423fe40ca70faed1f235819`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `925e8a6b26509efb654c8b2ff60c630b5898efd39e1984a029347d8be4a6de2e`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `a2a8746ed9073cd07ef9ecad2758e01dfd833f3f3584685b395d831e0858367f`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `a53647af46191c882cfb57f3ae5a195517543c55ef146d483b301aacea939df4`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `a7403903e2e30ab96e0d14868bb15afb748c4b2e9385711670602ddd3f2d039e`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `ac1899a8b679beada6b7364a5e8639e39fb4d1f182e67ae6a2b72a4802fdfd7b`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `ac2d910c541475a460a9fc58387d7f70a543b5873822e40c40c1d8030815dfd2`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `ac6666b341d5ee87c43275efaf3f81c37922a690383e081059b939cdcc941c88`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `ad8a2d88eb32006bc8b4f3fe7ac7c967293230faa146e80061bd6445b78e7b0c`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `b1434f279643286f884e86124eea72102d44bee9176e7d2c213734998b4e2465`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `ba25e1f657205ad9a4836b81a979b6dc5ec020569a8408e205c8ee22fc19abc4`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `c2854f789c3d88ebc15912be909cd790a1b20bc34e017b1394c114edbd687f42`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `d0d4c15e6915e4d1cf2a5b8471f059000cdad00b265745b5ffda75b88759a61c`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `d3282ec8414d4fbe71321480c41997bb59a85e371b720233da5834bce9bcfe07`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `d5705a435d7b129726383296001d33c7f1b5ff3ea46e70d3833a0d02339ec5a4`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `da5bf7be933f3ddcbedb8a47ff6582e7c1e3547090ca98bff3f82dbf4480b3b8`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `de0822876f24d8ae0debb151a2815bdab91e756cd3a06ac78e2613d4565751dc`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `e21bb3091e9a3a1a22ad29a5c0bfc63c1f64062ed56f4f81036351c940e6aed2`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `e3154e88b4ff942be6f672de0aa93729572b87c16c636834f39ca3d60cc8c275`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `e51cd416080d76918747e768f20611f2a9d401ddf1224d33219b26c720090689`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `e542016753b7ec3e299ee9307c30ed064930339e9dd5d19572def786f97efeda`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `e7181c00b5921260462fdb6a2fa7ce29737740fb3ef163a7b702023569178284`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `ed5c89a7d2d0eded487d6d611a300c539fcca762710171cfa91c3842fb8542cf`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `ee4cf2348871a304fbffdbb67ce080d8e8b266cdaa83693caba4d445d613b3cd`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `eeaf268766447c2e981513d742920e20cf4b43ef5a281f442113f38dfee859cd`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `f2b4c48f62d3dda6ddcbe5b53cf4b61d10909c6596f2c819f5f1198cd5382db8`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `f8449382c56d8459403381a621d6fda92252d3500fc93c325dac9eace1b91a2b`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `fa2121bc52c3abce7305b7dc2c7a75e17c58e4d0cdae149164c4677bfd1ea746`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `fd9e2a1959ab4c9ec180590a128079f49e8a2479b9b8f80b0cb0fccf78db72d9`
+- `frontend/src/app/finance/performance/annual/page.tsx` — SHA-256: `fecaca60599831ad20ba9d1ad5df40ad993496fcbef5dad57c1bf3a745087baa`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `0cf8ccdaffe1da214ca58c3e16f441653dae47a8f2cb928abc09a355e44d5e5c`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `0f2f6fe3081255cb33cbb22fc843cd5b9492e12327a0d8e54223a77ea6110cfc`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `185c72d9c00dc989bed5a16a5792a49189fab804218e0e06e25ad22b10e7f4da`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `1f3d57e1b7cc5e43df9975b99dede545496d210488bc5a472ffba4be1129759d`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `202ab2e19b63284056871d0ed1c10f8b331f623b7d09c42225d7e8fb4f5f9166`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `35873ff96718cb305a4b8e1c59d255037324b2c971b64e600b34d39158bc781d`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `46e2dc03e7eafb0e13dea5bdae3f7e3ecdafaf09f1bf70af32ff7eb2093a1cd1`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `4bb4b38c79720e64e6a9d47cd26ba10c74867ffa564f76ae897e2edf74de9d81`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `5f698fd497903cb0fbaabf89475020daf4271cfb7691784d5c212690c59d7ccc`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `646f83f501b9d4119a114002c61c4ae77db991b5dcfef26725053c688fe62f84`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `64c74f249b3b8c6c0d4cd628ef9b993d1079a4dd0cc9fa50f496c14f810e24ba`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `71ef9c9b0b88ee2cf1ada618df98cb7c0559f86abd19ca4a06fedea18fa531bc`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `74e72889974172eeadb61e2aa3ebd9c5551aac05d88c24b8909b36819dbf3bc9`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `77b79d0cf8cf50b91bbd1d72069c413a43498f9905703aacf9bb74b4365105f2`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `8694c05d545e7efeeb326091b257d6c63f2fa3ff63e9a8fcb04f07dab4e83865`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `8dcb965fcb62f4e8dcf060c2996c40d31fa4f749b1234232a59ddf1574d71d71`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `938955e96b2625701812d1adaea16a4d4c08d762f2d42c9713907dc151353606`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `a41174b7c56c845c7bf75c715496d2255ec1020bbd444622862743d6b8905046`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `af664410283453dc451dcde823e07cbeaf6e0a0735798c6af46887fffe8779b0`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `bc732acc9b411cdb26f03306dc871848a86c14f45c5ece3c51ab6076f4b52222`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `c164cc62d9bba6f171e1dd2a2274c6bfdb19e7e01c6c1ac688db62f4d97156a0`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `cd94a0a1883b76acc5742e710656405250fe7b90a83da03593464dbfd03b2078`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `d5150e7a0078d84990ce08aabee23a3fd4ebbe6a5beb18cc7e387b1ec6e3ebaf`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `d7f5f895590a053eec33f72b1143b5d692e2e5e9c9c2343858e2f2587f17bb80`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `e68d1d307e6c294099671bd73c234573d0d6abe07bc7fffc9a554945e4fb3278`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `f3074ebfce07ddd5283a8f0802cb44356d0adb7fe6c3dc70c7db44f10b3ff211`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `ff6040a9eb89972f5ae2e7380ac9f6de5362cdc379658ab8b12df68c4ce05357`
+- `frontend/src/lib/maintenanceFeedbackMedia.test.ts` — SHA-256: `5c4ba392fa9047ec46a8c60672d9a65146eb29fe91b96769f0260f6dd040000f`
+- `frontend/src/lib/maintenanceWorkflowActions.test.ts` — SHA-256: `10f2f257cdf88add6626dd9d8b430ab9f8c4983d63de2fd1431408c80287ac4c`
+- `frontend/src/lib/maintenanceWorkflowActions.test.ts` — SHA-256: `7db51a62a2d242d04d4a537ccd5ba9b94c3f63144349b7e0ded0ed157b9db3ce`
+- `frontend/src/lib/maintenanceWorkflowActions.test.ts` — SHA-256: `e2165e9ca05573e668d9e279d0442ee27ea23fdc2342d4ef043f85e15e5e8d22`
+- `frontend/src/lib/maintenanceWorkflowActions.ts` — SHA-256: `80200486fbd70a9bc8ceea8a890769ac2044799b3016047fc9ff98e5bfa799ba`
+- `frontend/src/lib/maintenanceWorkflowActions.ts` — SHA-256: `f7f50da720adc9191b43162908c5a4a6b856afe8d4620365a3a924b408ea19ea`
+
+### Release Attempts
+
+#### RA-20260904-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260904-001`, `CRL-20260904-002`, `CRL-20260904-003`
+- Selected CRL identities: `root/CRL-20260904-001`, `root/CRL-20260904-002`, `root/CRL-20260904-003`
+- Intended action: `commit`
+- Branch: `codex/release-20260904-001-003`
+- Base: `origin/Dev@3934d9b57a61be06272cf8b94b77a57538bf843a`; fetched at `2026-09-04 15:24 AEST`
+- Candidate patch SHA-256: `39e98b1021fca4ee0abfba304a50558a4dc2ed9377249b01851aec6175c3b402` excluding `docs/change-release-ledger.md`
+- Commit SHA: `not committed`; audit head is emitted by the report command.
+- Dependencies: none; these three independent selected CRLs travel together only for this user-selected local commit, with verified shared maintenance hunks.
+- Required validation: PASS; direct maintenance workflow and auto-expense regressions, 30 frontend targeted tests, backend build, frontend build, frontend lint (warnings only), feature-registry audit and diff checks passed.
+- Shared-hunk review: PASS; exact source hunks were three-way integrated and combined behavior revalidated in this clean candidate.
+- Generated-file review: PASS; only TypeScript/TSX/SCSS/Markdown source, tests and design QA are staged; temporary build output and dependency links were removed.
+- Technical state: verified
+- User authorization: selected-for-commit; user requested `将 root/CRL-20260904-001 到 003 提交` on 2026-09-04. Push, PR, merge, deployment, migration and production verification are not authorized.
+- Independent review: GO for commit; independent read-only review of RA-20260904-002 found no P0/P1/P2, verified the candidate SHA, selected 14-file scope, 131 hunk fingerprints, clean candidate and sensitive/generated-file boundary.
+- Action conclusion: GO for local commit; push, PR, merge, deployment, migration and production verification remain outside the authorization.
+
+
+
 ## CRL-20260903-007 — 年度报告房源记录与状态总览（root）
 
 - **Repository:** `root`
@@ -9853,6 +10056,74 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Rollback: revert the compact-card helper/render changes in `frontend/src/app/task-center/page.tsx` and restore the previous `.taskCenterCompact*` styles in `frontend/src/app/cleaning/cleaningSchedule.module.scss`.
 - Sensitive-information review: no secrets, `.env` values, database URLs, credentials, raw production guest/request content, tokens, cookies, private keys, sensitive logs, or local caches were added.
 - Git state: uncommitted.
+
+## CRL-20260904-003 — 已关闭维修完成信息受控修正与自动费用同步（root）
+
+- **Repository:** `root`
+- **Status:** verified; selected-for-commit
+- **Updated:** 2026-09-04 15:24 AEST
+- **Request:** 修复已关闭维修记录在网页中可填写实际完成日期、实际维修人员、维修后照片和维修备注，却被通用编辑静默忽略并仍提示“已保存”的问题；房东支付自动费用必须以修正后的实际完成日期同步入账，不能破坏人工覆盖费用。
+- **Outcome:** 已关闭内部维修的完成信息对拥有既有维修管理权限的用户可直接编辑。页面自动以固定审计原因调用专用 `correct_completion` 动作，保留实际完成日期、实际维修人员、维修后照片和备注的前后值；仍至少保留一张维修后照片。详情与编辑抽屉复用同一维修后照片解析：即使权威 `completion_photo_urls` 为空数组，历史 `repair_photo_urls` 中已保存的照片仍会显示。服务端在业务写入前复用既有 runtime-schema readiness 检查，锁定源记录并在同一事务内写入审计事件和同步自动费用；自动费用人工覆盖时返回 `409 maintenance_auto_expense_manual_override`，不会部分保存。
+
+### Implementation
+
+- Previous behavior: 已关闭记录的日期控件可编辑，但通用 `property_maintenance` PATCH 按既有保护忽略 `completed_at`；页面仍无条件提示“已保存”。后照片也可能写入非权威的报修照片字段，造成用户以为完成信息已更新。
+- New behavior: 保持通用 PATCH 对完成信息的写保护，新增仅限内部管理域、仅限 `closed` 状态的 `correct_completion` 专用工作流动作。该动作要求非空审计原因，校验实际维修人员和至少一张维修后照片，以 `FOR UPDATE` 锁定记录，保存前后值审计事件；仅会计日期变更时调用既有自动费用同步。费用为人工覆盖时整笔事务回滚。
+- Web behavior: 已关闭记录的管理者可直接编辑实际维修人员、日期、维修后照片和备注；页面自动提交固定审计原因，不再要求勾选修正模式或手填原因。修正不得与金额、扣款方式、报修字段或重开操作混合保存，成功提示明确说明修正记录已保存。
+
+### Files / Areas
+
+- `backend/src/lib/maintenanceWorkflow.ts`
+- `backend/src/modules/maintenance.ts`
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts`
+- `backend/scripts/tests/test_maintenance_auto_expense.ts`
+- `frontend/src/lib/maintenanceWorkflowActions.ts`
+- `frontend/src/lib/maintenanceWorkflowActions.test.ts`
+- `frontend/src/app/maintenance/records/page.tsx`
+- `frontend/src/lib/maintenanceFeedbackMedia.test.ts`
+- `docs/feature-regression-registry.md`
+- `docs/change-release-ledger.md`
+
+### Impact / Dependencies
+
+- API: new `POST /maintenance/workflow/internal/:id/correct_completion` using the existing workflow router and idempotency receipt. The generic maintenance PATCH remains unable to write `completed_at` or completion result fields.
+- Permissions: no new role or permission is introduced. The action reuses existing internal maintenance manager authorization; offline managers remain governed by their existing optional assignment/permission configuration.
+- Database / migration: none. The action requires the existing maintenance runtime schema marker; missing marker returns `503 maintenance_runtime_schema_not_ready` before any business write.
+- Finance: a landlord-paid auto expense follows the corrected `completed_at` in the same transaction. An auto expense marked `manual_override` blocks only this correction with `409` and preserves all existing data.
+- Dependencies: existing maintenance runtime-schema and auto-expense contracts are reused; this unit does not include root/CRL-20260904-002 or any task-center, annual report, mobile, migration or production-data work.
+
+### Validation
+
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts` — passed by direct `ts-node`: manager-only closed correction, reason/status validation, authoritative completion-photo handling, audit-event contract and no generic PATCH bypass.
+- `backend/scripts/tests/test_maintenance_auto_expense.ts` — passed by direct `ts-node`: corrected accounting date reaches auto-expense sync and manual override prevents a partial correction.
+- `frontend/src/lib/maintenanceWorkflowActions.test.ts` — passed by Vitest: 1 file / 11 tests, dedicated action payload and idempotency header.
+- `frontend/src/lib/maintenanceFeedbackMedia.test.ts` — passed by Vitest: 1 file / 9 tests; an empty authoritative completion-photo array falls back to the historical after-photo field used by both the detail and edit views.
+- `./backend/node_modules/.bin/tsc --noEmit -p backend/tsconfig.json` — passed in the isolated candidate using a temporary local dependency link.
+- `./frontend/node_modules/.bin/tsc --noEmit -p frontend/tsconfig.json` — passed in the isolated candidate using a temporary local dependency link.
+- `npm run build` in `frontend` — passed on the final source. The build retains pre-existing repository-wide ESLint dependency/image warnings and local static-render chart/localStorage warnings; none are introduced by this CRL and no warning is a build failure.
+- `git diff --check` — passed.
+- `./frontend/node_modules/.bin/tsc --noEmit -p frontend/tsconfig.json` — passed again after the Web photo-compatibility regression test was added.
+- `npm run check:feature-registry` — passed: 18 FRs / 151 test mappings; 73 mobile mappings remain explicitly deferred.
+- `python3 scripts/audit_change_release_ledger.py` — passed after the temporary dependency link was removed: 10 changed files / 10 recorded changed files.
+- Final untracked-file review — passed after temporary build/dependency cleanup; no untracked file remains.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared.
+- **Untracked review:** PASS — clean isolated candidate has no untracked paths after removing temporary dependency links and build output.
+- The combined selected-candidate hunk fingerprint set is recorded under `root/CRL-20260904-001` for the explicitly selected three-CRL commit.
+
+### Release Attempts
+
+- Refer to `RA-20260904-002` under `root/CRL-20260904-001`: this CRL is selected-for-commit in the same exact candidate; independent review remains the pre-commit blocker.
+
+### Risks / Release Notes
+
+- Completion-date correction can move a landlord-paid maintenance expense between accounting months; the explicit reason and audit event make that change traceable.
+- Editing cost, payment method, review outcome or a manually overridden expense remains outside this action and requires its existing separate process.
+- Sensitive-information review: source, tests and documentation only; no credentials, database URLs, customer data, generated assets, logs or dependency artifacts are included.
+- Git state: uncommitted; no remote branch, PR, merge, deployment or production/device verification.
 
 ## CRL-20260712-005 — 手动补位合并继承安全字段并记录冲突
 
@@ -20201,3 +20472,64 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Rollback is application rollback before migration deployment. After migration, it is additive/idempotent and should be retained while rolling application code back.
 - Sensitive-information review: source, SQL migration and tests only; no credentials, database URLs, customer data, generated artifacts or logs are included.
 - Git state: uncommitted.
+## CRL-20260904-002 — 维修审核退回待分派
+
+- **Status:** verified; selected-for-commit
+- **Repository:** `root`
+- **Updated:** 2026-09-04 15:24 AEST
+- **Request:** 维修记录在待审核阶段选择“退回维修”时，应回到待分派，不要求管理员当场选择新的维修人员。
+- **Outcome:** 审核退回后记录显示为待分派，原维修人员和旧排期被解除；管理员可稍后按正常分派流程重新选择维修人员，退回原因与上一轮维修照片继续保留。
+
+### Implementation
+
+- Previous behavior: Web 把“退回维修”的目标写成 `in_progress`；服务端也将 `review_rejected` 写回维修中并保留原维修人员和排期。待审核记录已有扣款方式时，Web 还可能把实际维修人员误判为退回动作的必填项。
+- New behavior: Web 明确展示“退回维修（待分派）”，仅提交拒绝决定和退回原因；服务端在同一事务中写入 `pending_assignment` 并解除旧分派、开始时间、排期和内部完成日期，任务中心投影同步为无执行人的待办。
+- Key decisions: 不删除上一轮维修照片或维修说明；被解除的维修人员、排期、完成日期和照片数量写入既有 workflow event payload 作为审计上下文。Web 只有在维修后照片集合实际增加新引用时才触发自动提交审核，避免旧照片、排序或删除操作使重新分派保存立即跳回待审核。
+
+### Files / Areas
+
+- `backend/src/modules/maintenance.ts` — modified: 审核拒绝转入待分派、原子清空旧分派状态并记录退回审计上下文。
+- `backend/src/lib/maintenanceWorkflowStore.ts` — modified: 无执行人的维修待办投影清除旧 `scheduled_date`。
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts` — modified: 固化审核退回、字段解除、审计上下文、Web 目标状态和任务投影契约。
+- `frontend/src/app/maintenance/records/page.tsx` — modified: 退回动作目标、说明、必填条件、提交分支和成功提示改为待分派语义。
+- `frontend/src/lib/maintenanceWorkflowActions.ts` — modified: 新增维修后照片引用增量判断，避免旧照片、排序或删除被当成本次上传。
+- `frontend/src/lib/maintenanceWorkflowActions.test.ts` — modified: 覆盖无维修人员的拒绝审核请求和旧照片防误提交。
+- `docs/feature-regression-registry.md` — modified: 更新 FR-010 的审核退回业务保护规则和测试映射。
+- `docs/change-release-ledger.md` — modified: 记录本独立候选单元。
+
+### Impact / Dependencies
+
+- API: `POST /maintenance/workflow/:domain/:id/review` 的 `decision=rejected` 成功状态由 `in_progress` 改为 `pending_assignment`，不接受也不要求下一位维修人员。
+- Database / migration: none; 仅更新现有记录字段和既有 workflow event payload，不新增或修改 schema。
+- Config / environment: none.
+- Dependencies: no package dependency changes.
+- Related units: none; 基于 `origin/Dev@3934d9b57a61be06272cf8b94b77a57538bf843a` 的独立候选。
+
+### Validation
+
+- `npm run test:maintenance-workflow-actions --prefix backend` — passed: 维修审核退回、源记录字段、审计事件与任务投影静态契约通过。
+- `npm run test --prefix frontend -- --run src/lib/maintenanceWorkflowActions.test.ts --coverage.enabled=false` — passed: 12 tests，包含无维修人员拒绝审核载荷和旧照片变化判断。
+- `npm run build --prefix backend` — passed: TypeScript compilation succeeded; the command also exposed unrelated tracked `dist` drift already present on the base, and those generated changes were excluded from this candidate.
+- `npm run lint --prefix frontend` — passed with existing repository warnings only; no new lint error in the changed maintenance page.
+- `npm run build --prefix frontend` — passed: production compilation, type validation and 95-page static generation completed; existing lint/Browserslist/Recharts warnings remain.
+- `npm run check:feature-registry` — passed: 18 FRs / 151 test mappings / 73 deferred mobile mappings.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 8 changed files / 8 recorded files / coverage PASS against freshly fetched `origin/Dev`.
+- Production/API/database writes — not run; not authorized and not required for this source candidate.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared.
+- **Untracked review:** PASS — clean isolated candidate has no untracked paths after removing temporary dependency links and build output.
+- The combined selected-candidate hunk fingerprint set is recorded under `root/CRL-20260904-001` for the explicitly selected three-CRL commit.
+
+### Release Attempts
+
+- Refer to `RA-20260904-002` under `root/CRL-20260904-001`: this CRL is selected-for-commit in the same exact candidate; independent review remains the pre-commit blocker.
+
+### Risks / Release Notes
+
+- Returning a previously reviewed task deliberately clears the current assignee and schedule; operational teams must assign it again before an executor can act.
+- Existing completion photos remain attached as review evidence. A later completion can reuse or supplement them, but unchanged photos alone no longer trigger automatic resubmission on an ordinary save.
+- Sensitive-information review: source, tests and documentation only; no credentials, database URLs, customer data, generated artifacts or logs are included.
+- Git state: uncommitted; not pushed, no PR, not merged, not deployed, production verification not run.
