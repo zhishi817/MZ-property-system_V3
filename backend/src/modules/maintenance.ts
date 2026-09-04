@@ -160,7 +160,7 @@ function workflowAction(value: any, decision: any): MaintenanceWorkflowAction | 
     if (reviewDecision === 'rejected') return 'review_rejected'
     return null
   }
-  return ['assign', 'start', 'submit', 'executor_complete', 'executor_unfinished', 'manager_start', 'manager_complete', 'reopen', 'cancel', 'hold'].includes(action)
+  return ['assign', 'start', 'submit', 'executor_complete', 'executor_unfinished', 'manager_start', 'manager_complete', 'correct_completion', 'reopen', 'cancel', 'hold'].includes(action)
     ? action as MaintenanceWorkflowAction
     : null
 }
@@ -530,7 +530,7 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
   const action = workflowAction(req.params.action, req.body?.decision)
   if (!domain || !id || !action) return res.status(400).json({ code: 'maintenance_workflow_request_invalid' })
   if (!isMaintenanceRuntimeSchemaReady()) return res.status(503).json({ code: 'maintenance_runtime_schema_not_ready' })
-  if (domain !== 'internal' && (action === 'manager_start' || action === 'manager_complete')) {
+  if (domain !== 'internal' && (action === 'manager_start' || action === 'manager_complete' || action === 'correct_completion')) {
     return res.status(409).json({ code: 'maintenance_workflow_action_invalid_for_domain' })
   }
 
@@ -619,6 +619,15 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
       let eventFromStatus = status
       let eventType: string = action
       let completedByAssigneeId: string | null = null
+      let completionCorrection: {
+        previousCompletedAt: string | null
+        nextCompletedAt: string | null
+        previousAssigneeId: string | null
+        nextAssigneeId: string | null
+        completionPhotosChanged: boolean
+        completionNoteChanged: boolean
+        accountingDateChanged: boolean
+      } | null = null
       if (action === 'assign') {
         const assigneeId = String(body.assignee_id || '').trim()
         if (!assigneeId) throw new MaintenanceWorkflowError(400, 'maintenance_assignee_required')
@@ -772,14 +781,72 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
           ...(completedAt ? { completed_at: completedAt } : {}),
         }
       } else if (action === 'review_rejected') {
-        nextStatus = 'in_progress'
+        nextStatus = 'pending_assignment'
         patch = {
           status: nextStatus,
+          assignee_id: null,
+          assigned_at: null,
+          assigned_by: null,
+          started_at: null,
+          ...(domain === 'internal' ? { eta: null, completed_at: null } : { scheduled_date: null }),
           review_status: 'rejected',
           reviewed_at: new Date().toISOString(),
           reviewed_by: actorId || null,
           review_note: reason,
         }
+      } else if (action === 'correct_completion') {
+        const hasCompletedAt = Object.prototype.hasOwnProperty.call(body, 'completed_at')
+          && String(body.completed_at || '').trim() !== ''
+        const hasCompletionPhotos = Object.prototype.hasOwnProperty.call(body, 'completion_photo_urls')
+        const hasCompletionNote = Object.prototype.hasOwnProperty.call(body, 'completion_note')
+        const requestedAssigneeId = String(body.assignee_id || body.actual_repairer_id || '').trim()
+        if (!hasCompletedAt && !hasCompletionPhotos && !hasCompletionNote && !requestedAssigneeId) {
+          throw new MaintenanceWorkflowError(400, 'maintenance_completion_correction_empty')
+        }
+
+        const nextCompletedAt = hasCompletedAt ? completedAtFromWorkflowBody(body.completed_at) : String(row.completed_at || '').trim() || null
+        const nextAssigneeId = requestedAssigneeId || String(row.assignee_id || '').trim() || null
+        if (!nextAssigneeId) throw new MaintenanceWorkflowError(400, 'maintenance_actual_repairer_required')
+        if (requestedAssigneeId) {
+          const assigneeResult = await client.query('SELECT id FROM users WHERE id::text = $1 LIMIT 1', [requestedAssigneeId])
+          if (!assigneeResult?.rows?.[0]) throw new MaintenanceWorkflowError(400, 'maintenance_assignee_not_found')
+        }
+
+        const currentCompletionPhotoUrls = existingCompletionPhotoUrls.length ? existingCompletionPhotoUrls : legacyCompletionPhotoUrls
+        const nextCompletionPhotoUrls = hasCompletionPhotos ? nonEmptyStrings(body.completion_photo_urls) : currentCompletionPhotoUrls
+        if (nextCompletionPhotoUrls.length < 1) {
+          throw new MaintenanceWorkflowError(422, 'maintenance_completion_photo_required')
+        }
+        const previousCompletedAt = String(row.completed_at || '').trim() || null
+        const previousAssigneeId = String(row.assignee_id || '').trim() || null
+        const previousCompletionNote = String(row.repair_notes || '').trim() || null
+        const nextCompletionNote = hasCompletionNote ? (String(body.completion_note || '').trim() || null) : previousCompletionNote
+        const accountingDateChanged = hasCompletedAt && dateOnly(previousCompletedAt) !== dateOnly(nextCompletedAt)
+        const completionPhotosChanged = hasCompletionPhotos
+          && JSON.stringify(nextCompletionPhotoUrls) !== JSON.stringify(currentCompletionPhotoUrls)
+        const completionNoteChanged = hasCompletionNote && nextCompletionNote !== previousCompletionNote
+        const assigneeChanged = nextAssigneeId !== previousAssigneeId
+        if (!accountingDateChanged && !completionPhotosChanged && !completionNoteChanged && !assigneeChanged) {
+          throw new MaintenanceWorkflowError(400, 'maintenance_completion_correction_no_change')
+        }
+
+        patch = {
+          ...(hasCompletedAt ? { completed_at: nextCompletedAt } : {}),
+          ...(requestedAssigneeId ? { assignee_id: nextAssigneeId } : {}),
+          ...(hasCompletionPhotos ? { completion_photo_urls: JSON.stringify(nextCompletionPhotoUrls) } : {}),
+          ...(hasCompletionNote ? { repair_notes: nextCompletionNote } : {}),
+        }
+        completedByAssigneeId = nextAssigneeId
+        completionCorrection = {
+          previousCompletedAt,
+          nextCompletedAt,
+          previousAssigneeId,
+          nextAssigneeId,
+          completionPhotosChanged,
+          completionNoteChanged,
+          accountingDateChanged,
+        }
+        eventType = 'completion_corrected'
       } else if (action === 'reopen') {
         nextStatus = 'in_progress'
         patch = {
@@ -802,9 +869,12 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
       }
 
       const updated = await updateMaintenanceWorkflowRecord(client, domain, id, { ...recordPatch, ...patch })
-      const autoExpenseSync = domain === 'internal' && action === 'review_approved'
+      const autoExpenseSync = domain === 'internal' && (action === 'review_approved' || completionCorrection?.accountingDateChanged === true)
         ? await syncInternalMaintenanceAutoExpenseWithClient(client, updated)
         : null
+      if (action === 'correct_completion' && completionCorrection?.accountingDateChanged && autoExpenseSync?.error === 'manual_override') {
+        throw new MaintenanceWorkflowError(409, 'maintenance_auto_expense_manual_override')
+      }
       if (String(updated?.pay_method || '').trim().toLowerCase() === 'landlord_pay'
         && autoExpenseSync?.error
         && autoExpenseSync.error !== 'manual_override') {
@@ -822,6 +892,23 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
         reason,
         payload: action === 'assign'
           ? { assignee_id: updated.assignee_id || null, updated_fields: Object.keys(recordPatch) }
+          : action === 'review_rejected'
+            ? {
+                previous_assignee_id: String(row.assignee_id || '').trim() || null,
+                previous_scheduled_date: domain === 'internal' ? row.eta || null : row.scheduled_date || null,
+                previous_completed_at: domain === 'internal' ? row.completed_at || null : null,
+                previous_completion_photo_count: nonEmptyStrings(row.completion_photo_urls).length,
+              }
+          : action === 'correct_completion' && completionCorrection
+            ? {
+                previous_completed_at: completionCorrection.previousCompletedAt,
+                completed_at: updated.completed_at || completionCorrection.nextCompletedAt,
+                previous_assignee_id: completionCorrection.previousAssigneeId,
+                actual_repairer_id: updated.assignee_id || completionCorrection.nextAssigneeId,
+                completion_photos_changed: completionCorrection.completionPhotosChanged,
+                completion_note_changed: completionCorrection.completionNoteChanged,
+                accounting_date_changed: completionCorrection.accountingDateChanged,
+              }
           : {
               completion_photo_count: completionPhotoUrls.length,
               ...(completedByAssigneeId ? { actual_repairer_id: completedByAssigneeId } : {}),

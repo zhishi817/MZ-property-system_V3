@@ -74,6 +74,14 @@ export function internalMaintenanceAssignmentChanged(input: {
     || date(input.currentScheduledDate) !== date(input.nextScheduledDate)
 }
 
+export function internalMaintenanceHasNewCompletionPhoto(currentPhotoUrls?: string[] | null, nextPhotoUrls?: string[] | null) {
+  const current = new Set((currentPhotoUrls || []).map((value) => String(value || '').trim()).filter(Boolean))
+  return (nextPhotoUrls || []).some((value) => {
+    const normalized = String(value || '').trim()
+    return !!normalized && !current.has(normalized)
+  })
+}
+
 export function shouldUpdateInternalMaintenanceRecordViaCrud(input: {
   assignmentChanged: boolean
   recordActualRepairerWithCompletion: boolean
@@ -138,6 +146,30 @@ export async function approveInternalMaintenance(input: {
     decision: 'approved',
     ...(String(input.assigneeId || '').trim() ? { assignee_id: String(input.assigneeId).trim() } : {}),
     ...(String(input.completedAt || '').trim() ? { completed_at: String(input.completedAt).trim() } : {}),
+    ...(String(input.operationId || '').trim() ? { operation_id: String(input.operationId).trim() } : {}),
+  }, { timeoutMs: 10_000 })
+}
+
+export async function correctInternalMaintenanceCompletion(input: {
+  recordId: string
+  completedAt?: string | null
+  assigneeId?: string | null
+  completionPhotoUrls?: string[]
+  completionNote?: string | null
+  reason: string
+  operationId?: string
+}) {
+  const reason = String(input.reason || '').trim()
+  if (!reason) throw new Error('maintenance_completion_correction_reason_required')
+  const completionPhotoUrls = input.completionPhotoUrls === undefined
+    ? undefined
+    : Array.from(new Set(input.completionPhotoUrls.map((url) => String(url || '').trim()).filter(Boolean)))
+  return postJSON<MaintenanceWorkflowActionResponse>(internalMaintenanceWorkflowPath(input.recordId, 'correct_completion'), {
+    ...(String(input.completedAt || '').trim() ? { completed_at: String(input.completedAt).trim() } : {}),
+    ...(String(input.assigneeId || '').trim() ? { assignee_id: String(input.assigneeId).trim() } : {}),
+    ...(completionPhotoUrls !== undefined ? { completion_photo_urls: completionPhotoUrls } : {}),
+    ...(input.completionNote !== undefined ? { completion_note: input.completionNote } : {}),
+    reason,
     ...(String(input.operationId || '').trim() ? { operation_id: String(input.operationId).trim() } : {}),
   }, { timeoutMs: 10_000 })
 }

@@ -5,7 +5,7 @@ const deleteJSON = vi.hoisted(() => vi.fn())
 
 vi.mock('./api', () => ({ postJSON, deleteJSON }))
 
-import { approveInternalMaintenance, assignInternalMaintenance, createInternalMaintenanceFeedback, deleteInternalMaintenanceFeedback, internalMaintenanceAssignmentChanged, internalMaintenanceAssignPath, internalMaintenanceFeedbackCreatePath, internalMaintenanceFeedbackDeletePath, internalMaintenanceReviewPath, internalMaintenanceWorkflowPath, manageInternalMaintenanceWorkflow, shouldAutoApproveInternalMaintenanceSettlement, shouldUpdateInternalMaintenanceRecordViaCrud } from './maintenanceWorkflowActions'
+import { approveInternalMaintenance, assignInternalMaintenance, correctInternalMaintenanceCompletion, createInternalMaintenanceFeedback, deleteInternalMaintenanceFeedback, internalMaintenanceAssignmentChanged, internalMaintenanceAssignPath, internalMaintenanceFeedbackCreatePath, internalMaintenanceFeedbackDeletePath, internalMaintenanceHasNewCompletionPhoto, internalMaintenanceReviewPath, internalMaintenanceWorkflowPath, manageInternalMaintenanceWorkflow, shouldAutoApproveInternalMaintenanceSettlement, shouldUpdateInternalMaintenanceRecordViaCrud } from './maintenanceWorkflowActions'
 
 describe('internal maintenance workflow assignment', () => {
   beforeEach(() => {
@@ -63,6 +63,21 @@ describe('internal maintenance workflow assignment', () => {
     })).toBe(true)
   })
 
+  it('does not treat unchanged rejected-review photos as a new completion submission', () => {
+    expect(internalMaintenanceHasNewCompletionPhoto(
+      ['maintenance/after-1.jpg', 'maintenance/after-2.jpg'],
+      ['maintenance/after-2.jpg', 'maintenance/after-1.jpg'],
+    )).toBe(false)
+    expect(internalMaintenanceHasNewCompletionPhoto(
+      ['maintenance/after-1.jpg', 'maintenance/after-2.jpg'],
+      ['maintenance/after-1.jpg'],
+    )).toBe(false)
+    expect(internalMaintenanceHasNewCompletionPhoto(
+      ['maintenance/after-1.jpg'],
+      ['maintenance/after-1.jpg', 'maintenance/rework-after.jpg'],
+    )).toBe(true)
+  })
+
   it('approves a pending-review maintenance record through the audited workflow route', async () => {
     postJSON.mockResolvedValue({ ok: true, id: 'record-1', status: 'closed' })
 
@@ -102,6 +117,47 @@ describe('internal maintenance workflow assignment', () => {
       assignee_id: 'repairer-1',
       completed_at: '2026-08-13',
       operation_id: 'review-operation-3',
+    }, { timeoutMs: 10_000 })
+  })
+
+  it('returns rejected review to the server workflow without requiring an assignee', async () => {
+    postJSON.mockResolvedValue({ ok: true, id: 'record-1', status: 'pending_assignment' })
+
+    await manageInternalMaintenanceWorkflow({
+      recordId: 'record/1',
+      action: 'review',
+      decision: 'rejected',
+      reason: '需要重新安排维修',
+      operationId: 'reject-operation-1',
+    })
+
+    expect(postJSON).toHaveBeenCalledWith('/maintenance/workflow/internal/record%2F1/review', {
+      decision: 'rejected',
+      reason: '需要重新安排维修',
+      operation_id: 'reject-operation-1',
+    }, { timeoutMs: 10_000 })
+  })
+
+  it('corrects closed completion information through the audited workflow route', async () => {
+    postJSON.mockResolvedValue({ ok: true, id: 'record-1', status: 'closed' })
+
+    await correctInternalMaintenanceCompletion({
+      recordId: 'record/1',
+      completedAt: '2026-08-26',
+      assigneeId: 'repairer-2',
+      completionPhotoUrls: ['maintenance/after-repaired.jpg'],
+      completionNote: null,
+      reason: '原完成日期录入错误',
+      operationId: 'correct-operation-1',
+    })
+
+    expect(postJSON).toHaveBeenCalledWith('/maintenance/workflow/internal/record%2F1/correct_completion', {
+      completed_at: '2026-08-26',
+      assignee_id: 'repairer-2',
+      completion_photo_urls: ['maintenance/after-repaired.jpg'],
+      completion_note: null,
+      reason: '原完成日期录入错误',
+      operation_id: 'correct-operation-1',
     }, { timeoutMs: 10_000 })
   })
 
