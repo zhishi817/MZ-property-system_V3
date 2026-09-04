@@ -3,7 +3,6 @@ import { Alert, Card, DatePicker, Table, Select, Button, Modal, message, Switch,
 import styles from './ExpandedRow.module.css'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { usePathname } from 'next/navigation'
 import { getJSON, apiList, API_BASE, authHeaders, patchJSON } from '../../../lib/api'
 import { sortProperties, sortPropertiesByRegionThenCode } from '../../../lib/properties'
 import MonthlyStatementView from '../../../components/MonthlyStatement'
@@ -23,18 +22,36 @@ import { canDownloadSplitPart, pickSplitPhotosMode, splitPartPhotoCount, type Me
 import { findLandlordForProperty, resolveManagementFeeRuleForMonth, type LandlordWithManagementFeeRules } from '../../../lib/managementFeeRules'
 import { runStatementPhotoPackJob } from '../../../lib/statementPhotoPackJobs'
 import { propertyRevenueExpenseFieldsParam } from '../../../lib/propertyRevenueExpenseFields'
+import {
+  PROPERTY_REVENUE_RESUME_STALE_MS,
+  claimPropertyRevenueInitialLoad,
+  claimPropertyRevenueRangeChange,
+  createPropertyRevenueReloadLifecycle,
+  shouldRefreshPropertyRevenueOnResume,
+  shouldRefreshPropertyRevenueReferences,
+} from '../../../lib/propertyRevenueRefreshPolicy'
 
 type Order = { id: string; property_id?: string; stay_type?: 'guest' | 'owner'; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number; status?: string; count_in_income?: boolean }
 type Tx = StatementTx
 type Landlord = LandlordWithManagementFeeRules
+type Property = { id: string; code?: string; address?: string; region?: string }
 type DeepCleaning = { id: string; property_id?: string; property_code?: string; code?: string; occurred_at?: string; completed_at?: string; submitted_at?: string; created_at?: string; pay_method?: any; total_cost?: any; labor_cost?: any; consumables?: any; work_no?: string }
 type RevenueStatus = { scheduled_email_set: boolean; transferred: boolean }
 type PendingOps = Record<string, { scheduled?: boolean; transfer?: boolean }>
 type MergeUiStatus = 'active' | 'exception' | 'success'
+type LoadResult<T> = { value: T; ok: boolean }
+type ReferenceData = { properties: Property[]; landlords: Landlord[]; recurs: any[]; fetchedAt: number }
+
+const loadOrFallback = async <T,>(request: Promise<T>, fallback: T): Promise<LoadResult<T>> => {
+  try {
+    return { value: await request, ok: true }
+  } catch {
+    return { value: fallback, ok: false }
+  }
+}
 
 export default function PropertyRevenuePage() {
   const getDefaultRevenueMonth = (now = dayjs()) => (now.date() < 6 ? now.subtract(1, 'month') : now)
-  const pathname = usePathname()
   const [month, setMonth] = useState<any>(getDefaultRevenueMonth())
   const [orders, setOrders] = useState<Order[]>([])
   const [rentIncomeByMonth, setRentIncomeByMonth] = useState<Record<string, Record<string, number>>>({})
@@ -52,7 +69,7 @@ export default function PropertyRevenuePage() {
   const [excludeOrphanFixedSnapshots, setExcludeOrphanFixedSnapshots] = useState<boolean>(true)
   const [orphanFixedSnapshots, setOrphanFixedSnapshots] = useState<any[]>([])
   const [orphanOpen, setOrphanOpen] = useState(false)
-  const [properties, setProperties] = useState<{ id: string; code?: string; address?: string; region?: string }[]>([])
+  const [properties, setProperties] = useState<Property[]>([])
   const [landlords, setLandlords] = useState<Landlord[]>([])
   const [selectedPid, setSelectedPid] = useState<string | undefined>(undefined)
   const [selectedRegion, setSelectedRegion] = useState<string | undefined>(undefined)
@@ -81,7 +98,17 @@ export default function PropertyRevenuePage() {
   const [pendingOps, setPendingOps] = useState<PendingOps>({})
   const statusKeyOf = (pid: string, monthKey: string) => `${String(pid)}__${String(monthKey)}`
   const isMerging = mergeUi.open && mergeUi.status === 'active'
+  const backgroundRefreshPaused = previewOpen
+    || (mergeUi.status === 'active' && Boolean(mergeUi.stage))
+    || (photoPackUi.status === 'active' && Boolean(photoPackUi.stage))
   const rawRef = useRef<{ fin: any[]; pexp: any[]; recurs: any[] } | null>(null)
+  const ordersRef = useRef<Order[]>([])
+  const referenceDataRef = useRef<ReferenceData | null>(null)
+  const lastSuccessfulReloadAtRef = useRef<number>(0)
+  const backgroundRefreshPausedRef = useRef<boolean>(false)
+  const deferredResumeRefreshRef = useRef<boolean>(false)
+  const reloadAfterFlightRef = useRef<boolean>(false)
+  const excludeOrphanFixedSnapshotsRef = useRef<boolean>(excludeOrphanFixedSnapshots)
   const deepCleaningCacheRef = useRef<Map<string, Tx[]>>(new Map())
   const monthPhotoStatsSigRef = useRef<string>('')
   const mountedRef = useRef<boolean>(true)
@@ -89,8 +116,9 @@ export default function PropertyRevenuePage() {
   const reloadInFlightRef = useRef<boolean>(false)
   const scheduleReloadRef = useRef<null | (() => void)>(null)
   const reloadAllRef = useRef<null | (() => Promise<void>)>(null)
-  const rangeReloadPrimedRef = useRef<boolean>(false)
+  const reloadLifecycleRef = useRef(createPropertyRevenueReloadLifecycle())
   useEffect(() => { rentIncomeByMonthRef.current = rentIncomeByMonth }, [rentIncomeByMonth])
+  useEffect(() => { excludeOrphanFixedSnapshotsRef.current = excludeOrphanFixedSnapshots }, [excludeOrphanFixedSnapshots])
   const downloadNamedBlob = (blob: Blob, filename: string) => {
     try {
       const url = URL.createObjectURL(blob)
@@ -194,13 +222,12 @@ export default function PropertyRevenuePage() {
   const fetchRentIncomeByProperty = async (monthKey: string, force = false) => {
     const mk = String(monthKey || '').trim()
     if (!/^\d{4}-\d{2}$/.test(mk)) return
-    const maxAgeMs = 30 * 1000
     const fetchedAt = Number(rentIncomeFetchedAtRef.current[mk] || 0)
-    if (!force && rentIncomeByMonthRef.current[mk] && fetchedAt && Date.now() - fetchedAt < maxAgeMs) return
+    if (!force && rentIncomeByMonthRef.current[mk] && fetchedAt && Date.now() - fetchedAt < PROPERTY_REVENUE_RESUME_STALE_MS) return
     if (!force && rentIncomeRequestsRef.current[mk]) return rentIncomeRequestsRef.current[mk]
     const qs = new URLSearchParams({ month: mk }).toString()
     const req = (async () => {
-      const resp = await getJSON<any>(`/finance/rent-income-by-property?${qs}`).catch(() => null as any)
+      const resp = await getJSON<any>(`/finance/rent-income-by-property?${qs}`)
       const map: Record<string, number> = {}
       const rows = Array.isArray(resp?.rows) ? resp.rows : []
       for (const r of rows) {
@@ -228,22 +255,6 @@ export default function PropertyRevenuePage() {
       cur = cur.add(1, 'month')
     }
     await Promise.all(monthKeys.map((mk) => fetchRentIncomeByProperty(mk, force)))
-  }
-
-  const invalidateRentIncomeForRange = () => {
-    const rr = rangeRef.current
-    if (!rr?.start || !rr?.end) return
-    const keys: string[] = []
-    let cur = rr.start.startOf('month')
-    const last = rr.end.startOf('month')
-    while (cur.isSame(last, 'month') || cur.isBefore(last, 'month')) {
-      keys.push(cur.format('YYYY-MM'))
-      cur = cur.add(1, 'month')
-    }
-    for (const k of keys) {
-      delete rentIncomeFetchedAtRef.current[k]
-      delete rentIncomeRequestsRef.current[k]
-    }
   }
 
   const fetchRentSegments = async (pidRaw: string, monthKeyRaw: string, force = false) => {
@@ -280,51 +291,91 @@ export default function PropertyRevenuePage() {
 
   useEffect(() => {
     mountedRef.current = true
-    const reload = async (opts?: { ordersOnly?: boolean }) => {
-      const ordersOnly = !!opts?.ordersOnly
-      if (reloadInFlightRef.current) return
+    const reload = async (opts?: { background?: boolean; forceReferences?: boolean; forceRentIncome?: boolean }): Promise<void> => {
+      const background = !!opts?.background
+      if (reloadInFlightRef.current) {
+        if (!background) reloadAfterFlightRef.current = true
+        return
+      }
       reloadInFlightRef.current = true
+      if (!background) setPageLoading(true)
       try {
-        if (ordersOnly) {
-          setRangeLoading(true)
-          const rq = currentRangeQuery()
-          const ordersPath = rq ? `/orders?from=${encodeURIComponent(rq.from)}&to=${encodeURIComponent(rq.to)}` : '/orders'
-          const ordersRes = await getJSON<Order[]>(ordersPath).catch(() => [] as any[])
-          if (!mountedRef.current) return
-          setOrders(Array.isArray(ordersRes) ? ordersRes : [])
-          invalidateRentIncomeForRange()
-          await refreshRentIncomeForRange(true).catch(() => {})
-          return
-        }
-        setPageLoading(true)
         const rq = currentRangeQuery()
         const ordersPath = rq ? `/orders?from=${encodeURIComponent(rq.from)}&to=${encodeURIComponent(rq.to)}` : '/orders'
         const financePath = rq ? `/finance?from=${encodeURIComponent(rq.from)}&to=${encodeURIComponent(rq.to)}` : '/finance'
-        let nextPropertyExpenseLoadError: string | null = null
-        const [ordersRes, propsRes, landlordsRes, finRes, pexpRes, recursRes] = await Promise.all([
-          getJSON<Order[]>(ordersPath).catch(() => [] as any[]),
-          getJSON<any>('/properties').catch(() => [] as any[]),
-          getJSON<Landlord[]>('/landlords').catch(() => [] as any[]),
-          getJSON<Tx[]>(financePath).catch(() => [] as any[]),
-          apiList<any[]>('property_expenses', rq ? ({
+        const previousRaw = rawRef.current
+        const cachedReferences = referenceDataRef.current
+        const refreshReferences = !!opts?.forceReferences || shouldRefreshPropertyRevenueReferences({
+          hasCachedData: !!cachedReferences,
+          lastSuccessfulRefreshAt: Number(cachedReferences?.fetchedAt || 0),
+          now: Date.now(),
+        })
+
+        let propertiesResult: LoadResult<Property[]> = { value: cachedReferences?.properties || [], ok: true }
+        let landlordsResult: LoadResult<Landlord[]> = { value: cachedReferences?.landlords || [], ok: true }
+        let recurringResult: LoadResult<any[]> = { value: cachedReferences?.recurs || previousRaw?.recurs || [], ok: true }
+        const referenceResultsPromise = refreshReferences
+          ? Promise.all([
+              loadOrFallback(getJSON<Property[]>('/properties'), cachedReferences?.properties || []),
+              loadOrFallback(getJSON<Landlord[]>('/landlords'), cachedReferences?.landlords || []),
+              loadOrFallback(apiList<any[]>('recurring_payments'), cachedReferences?.recurs || previousRaw?.recurs || []),
+            ])
+          : null
+
+        const [ordersResult, financeResult, propertyExpensesResult] = await Promise.all([
+          loadOrFallback(getJSON<Order[]>(ordersPath), background ? ordersRef.current : []),
+          loadOrFallback(getJSON<Tx[]>(financePath), background ? (previousRaw?.fin || []) : []),
+          loadOrFallback(apiList<any[]>('property_expenses', rq ? ({
             month_key_from: rq.monthFrom,
             month_key_to: rq.monthTo,
             limit: 5000,
             fields: propertyRevenueExpenseFieldsParam,
-          } as any) : undefined).catch(() => {
-            nextPropertyExpenseLoadError = '本页支出、总支出和净收入可能不完整，请刷新后重试。'
-            return [] as any[]
-          }),
-          apiList<any[]>('recurring_payments').catch(() => [] as any[]),
+          } as any) : undefined), background ? (previousRaw?.pexp || []) : []),
         ])
+
+        if (referenceResultsPromise) [propertiesResult, landlordsResult, recurringResult] = await referenceResultsPromise
+
         if (!mountedRef.current) return
-        const propsArr = Array.isArray(propsRes) ? propsRes : []
-        setOrders(Array.isArray(ordersRes) ? ordersRes : [])
+
+        const dynamicSucceeded = ordersResult.ok && financeResult.ok && propertyExpensesResult.ok
+        const referencesSucceeded = !refreshReferences || (propertiesResult.ok && landlordsResult.ok && recurringResult.ok)
+        const keepPreviousDynamic = background && !dynamicSucceeded
+        const keepPreviousReferences = background && refreshReferences && !referencesSucceeded && !!cachedReferences
+        const ordersArr = keepPreviousDynamic
+          ? ordersRef.current
+          : (Array.isArray(ordersResult.value) ? ordersResult.value : [])
+        const propsArr = keepPreviousReferences
+          ? (cachedReferences?.properties || [])
+          : (Array.isArray(propertiesResult.value) ? propertiesResult.value : [])
+        const landlordsArr = keepPreviousReferences
+          ? (cachedReferences?.landlords || [])
+          : (Array.isArray(landlordsResult.value) ? landlordsResult.value : [])
+        const financeArr = keepPreviousDynamic
+          ? (previousRaw?.fin || [])
+          : (Array.isArray(financeResult.value) ? financeResult.value : [])
+        const propertyExpensesArr = keepPreviousDynamic
+          ? (previousRaw?.pexp || [])
+          : (Array.isArray(propertyExpensesResult.value) ? propertyExpensesResult.value : [])
+        const recurringArr = keepPreviousReferences
+          ? (cachedReferences?.recurs || [])
+          : (Array.isArray(recurringResult.value) ? recurringResult.value : [])
+
+        ordersRef.current = ordersArr
+        setOrders(ordersArr)
         setProperties(propsArr)
-        setLandlords(Array.isArray(landlordsRes) ? landlordsRes : [])
-        setPropertyExpenseLoadError(nextPropertyExpenseLoadError)
-        rawRef.current = { fin: Array.isArray(finRes) ? finRes : [], pexp: Array.isArray(pexpRes) ? pexpRes : [], recurs: Array.isArray(recursRes) ? recursRes : [] }
-        const built = buildTxsFromRaw(rawRef.current.fin, rawRef.current.pexp, rawRef.current.recurs, propsArr, excludeOrphanFixedSnapshots)
+        setLandlords(landlordsArr)
+        setPropertyExpenseLoadError(propertyExpensesResult.ok ? null : '本页支出、总支出和净收入可能不完整，请刷新后重试。')
+
+        if (refreshReferences) {
+          if (referencesSucceeded) {
+            referenceDataRef.current = { properties: propsArr, landlords: landlordsArr, recurs: recurringArr, fetchedAt: Date.now() }
+          } else if (!cachedReferences) {
+            referenceDataRef.current = { properties: propsArr, landlords: landlordsArr, recurs: recurringArr, fetchedAt: 0 }
+          }
+        }
+
+        rawRef.current = { fin: financeArr, pexp: propertyExpensesArr, recurs: recurringArr }
+        const built = buildTxsFromRaw(financeArr, propertyExpensesArr, recurringArr, propsArr, excludeOrphanFixedSnapshotsRef.current)
         setOrphanFixedSnapshots(built.orphanRows)
         if (built.orphanCount > 0) {
           const amt = (built.orphanTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -332,7 +383,7 @@ export default function PropertyRevenuePage() {
             key: 'orphanFixedExpenseSnapshots',
             content: (
               <span>
-                检测到 {built.orphanCount} 条孤儿固定支出快照（合计 ${amt}）。当前{excludeOrphanFixedSnapshots ? '已排除' : '仍计入'}房源营收统计。
+                检测到 {built.orphanCount} 条孤儿固定支出快照（合计 ${amt}）。当前{excludeOrphanFixedSnapshotsRef.current ? '已排除' : '仍计入'}房源营收统计。
                 <Button type="link" style={{ padding: 0, marginLeft: 8 }} onClick={() => setOrphanOpen(true)}>查看明细</Button>
               </span>
             ),
@@ -342,31 +393,68 @@ export default function PropertyRevenuePage() {
           message.destroy('orphanFixedExpenseSnapshots')
         }
         setTxs(built.txs)
-        invalidateRentIncomeForRange()
-        await refreshRentIncomeForRange(true).catch(() => {})
+
+        let rentIncomeSucceeded = true
+        try {
+          await refreshRentIncomeForRange(!!opts?.forceRentIncome)
+        } catch {
+          rentIncomeSucceeded = false
+        }
+
+        const refreshSucceeded = dynamicSucceeded
+          && referencesSucceeded
+          && rentIncomeSucceeded
+        if (refreshSucceeded) {
+          lastSuccessfulReloadAtRef.current = Date.now()
+          if (background) message.destroy('propertyRevenueBackgroundRefresh')
+        } else if (background) {
+          message.warning({
+            key: 'propertyRevenueBackgroundRefresh',
+            content: '后台刷新部分失败，已保留当前数据，请稍后重试。',
+            duration: 4,
+          })
+        }
       } finally {
-        if (mountedRef.current) {
+        if (mountedRef.current && !background) {
           setPageLoading(false)
           setRangeLoading(false)
         }
         reloadInFlightRef.current = false
+        if (mountedRef.current && reloadAfterFlightRef.current) {
+          reloadAfterFlightRef.current = false
+          void reload({ forceRentIncome: true })
+        }
       }
     }
     const scheduleReload = () => {
       try { if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current) } catch {}
-      reloadTimerRef.current = setTimeout(() => { reload() }, 350)
+      reloadTimerRef.current = setTimeout(() => {
+        if (!mountedRef.current || document.visibilityState !== 'visible') return
+        if (backgroundRefreshPausedRef.current) {
+          deferredResumeRefreshRef.current = true
+          return
+        }
+        if (!shouldRefreshPropertyRevenueOnResume({
+          isVisible: true,
+          isPaused: false,
+          lastSuccessfulRefreshAt: lastSuccessfulReloadAtRef.current,
+          now: Date.now(),
+        })) return
+        void reload({ background: true })
+      }, 350)
     }
-    reloadAllRef.current = () => reload()
+    reloadAllRef.current = () => reload({ forceRentIncome: true })
     scheduleReloadRef.current = scheduleReload
     const onVis = () => { if (document.visibilityState === 'visible') scheduleReload() }
     const onFocus = () => { scheduleReload() }
 
-    reload()
+    if (claimPropertyRevenueInitialLoad(reloadLifecycleRef.current)) void reload({ forceRentIncome: true })
     document.addEventListener('visibilitychange', onVis)
     window.addEventListener('focus', onFocus)
     return () => {
       mountedRef.current = false
       reloadAllRef.current = null
+      scheduleReloadRef.current = null
       try { if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current) } catch {}
       document.removeEventListener('visibilitychange', onVis)
       window.removeEventListener('focus', onFocus)
@@ -374,11 +462,13 @@ export default function PropertyRevenuePage() {
   }, [])
 
   useEffect(() => {
-    const p = String(pathname || '')
-    if (p === '/finance/properties-overview' || p === '/finance/performance/revenue') {
+    const wasPaused = backgroundRefreshPausedRef.current
+    backgroundRefreshPausedRef.current = backgroundRefreshPaused
+    if (wasPaused && !backgroundRefreshPaused && deferredResumeRefreshRef.current) {
+      deferredResumeRefreshRef.current = false
       try { scheduleReloadRef.current?.() } catch {}
     }
-  }, [pathname])
+  }, [backgroundRefreshPaused])
 
   useEffect(() => {
     const raw = rawRef.current
@@ -431,16 +521,10 @@ export default function PropertyRevenuePage() {
 
   useEffect(() => {
     if (!start || !end) return
-    if (!rangeReloadPrimedRef.current) {
-      rangeReloadPrimedRef.current = true
-      return
-    }
+    const rangeKey = `${start.format('YYYY-MM')}|${end.format('YYYY-MM')}`
+    if (!claimPropertyRevenueRangeChange(reloadLifecycleRef.current, rangeKey)) return
     reloadAllRef.current?.().catch(() => {})
   }, [start, end])
-
-  useEffect(() => {
-    refreshRentIncomeForRange(false).catch(() => {})
-  }, [start?.format('YYYY-MM'), end?.format('YYYY-MM')])
 
   const statusRange = useMemo(() => {
     if (!start || !end) return null
