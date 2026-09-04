@@ -142,7 +142,7 @@
 - Selected CRL identities: `root/CRL-20260904-008`
 - Intended action: `push`
 - Branch: `codex/property-revenue-refresh-efficiency-20260904`
-- Remote evidence: pending push; read-only preflight at `2026-09-05 00:09:17 AEST` found no matching remote branch.
+- Remote evidence: initial non-force push reached `origin/codex/property-revenue-refresh-efficiency-20260904@0c89531504e8a8a4c5826b78686483e0b1e1eb2d` and matching `git ls-remote` verification completed at `2026-09-05 00:14:47 AEST`; this ledger-only outcome receipt will be fast-forwarded on the same branch.
 - Base: `origin/Dev@421b1eaca5b0220fbec47054c5daa23d359aa3dd`; fetched at `2026-09-05 00:08:49 AEST`
 - Candidate patch SHA-256: `ab8dd09264af6e3cb6e418f45d0358c78aa28977856d160b622071c042988122`
 - Commit SHA: `f96c49f79afb6a1c303a05d799faca5d70eca302` (candidate content commit; exact audit head follows in the committed-range report).
@@ -150,10 +150,12 @@
 - Required validation: `PASS`; evidence: repaired candidate targeted 8/8, TypeScript, targeted lint, full 45-file / 215-test suite, production build, root `check:fast`, registry/ledger audits and diff check passed; no source changed after the reviewed content commit.
 - Shared-hunk review: `PASS`; evidence: committed range contains only this CRL's five non-ledger paths plus its ledger block, with all 41 non-ledger hunks matching the recorded scope.
 - Generated-file review: `PASS`; evidence: committed range and clean checkout contain no generated file, cache, dependency directory or untracked path.
-- Technical state: `committed`
+- Technical state: `pushed`
+- Remote branch: `origin/codex/property-revenue-refresh-efficiency-20260904@0c89531504e8a8a4c5826b78686483e0b1e1eb2d`; initial remote SHA matched the audited local HEAD before this outcome receipt.
+- Remote preflight: `PASS`; evidence: freshly fetched `origin/Dev` matched the recorded base and the target remote branch did not exist before the non-force push.
 - User authorization: `approved-for-push`; evidence: after receiving branch `codex/property-revenue-refresh-efficiency-20260904`, content commit `f96c49f79afb6a1c303a05d799faca5d70eca302` and audited local head `da7f0bac22ab1f0e94516458ddc9a24db5bef852`, the user explicitly requested `推送` on 2026-09-05.
 - Independent review: `GO for push`; evidence: independent read-only reviewer verified fresh `origin/Dev`, base → content commit → audited HEAD ancestry, independently recomputed fingerprint `ab8dd09264af6e3cb6e418f45d0358c78aa28977856d160b622071c042988122`, confirmed the exact 6-file / 41-hunk scope and bound user authorization, confirmed the remote branch is absent, and found no P0/P1/P2, generated-file, secret, production-write or repository-boundary risk.
-- Action conclusion: `GO`; blockers: none; the reviewed committed range is authorized for a non-force push to the stated branch after the ledger-only approval receipt and final exact range audit pass. PR, merge and deployment are not authorized.
+- Action conclusion: `GO`; blockers: none; the authorized exact range was non-force pushed and the initial remote SHA matched local HEAD. This ledger-only outcome receipt will be fast-forwarded to the same branch; PR, merge and deployment are not authorized.
 
 ### Risks / Release Notes
 
