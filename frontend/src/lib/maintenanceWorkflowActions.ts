@@ -89,6 +89,79 @@ export function shouldUpdateInternalMaintenanceRecordViaCrud(input: {
   return !input.assignmentChanged || input.recordActualRepairerWithCompletion
 }
 
+export type InternalMaintenanceCompletionOrdinaryValues = {
+  propertyId?: string | null
+  submitterName?: string | null
+  urgency?: string | null
+  details?: string | null
+  invoiceDescriptionEn?: string | null
+  maintenanceAmount?: number | string | null
+  hasParts?: boolean | null
+  partsAmount?: number | string | null
+  maintenanceAmountIncludesParts?: boolean | null
+  hasGst?: boolean | null
+  maintenanceAmountIncludesGst?: boolean | null
+  payMethod?: string | null
+  payOtherNote?: string | null
+  beforePhotoUrls?: string[] | null
+}
+
+function normalizedMaintenanceText(value: unknown) {
+  return String(value || '').trim()
+}
+
+function normalizedMaintenanceAmount(value: unknown) {
+  if (value === undefined) return undefined
+  const amount = Number(value || 0)
+  return Number.isFinite(amount) ? amount : normalizedMaintenanceText(value)
+}
+
+function normalizedMaintenancePhotoUrls(values?: string[] | null) {
+  return Array.from(new Set((values || []).map((value) => normalizedMaintenanceText(value)).filter(Boolean))).sort()
+}
+
+export function internalMaintenanceCompletionCorrectionOrdinaryChanges(input: {
+  current: InternalMaintenanceCompletionOrdinaryValues
+  next: InternalMaintenanceCompletionOrdinaryValues
+}) {
+  const changed: string[] = []
+  const current = input.current
+  const next = input.next
+  const compareText = (label: string, currentValue: unknown, nextValue: unknown) => {
+    if (normalizedMaintenanceText(currentValue) !== normalizedMaintenanceText(nextValue)) changed.push(label)
+  }
+  const compareAmount = (label: string, currentValue: unknown, nextValue: unknown) => {
+    if (normalizedMaintenanceAmount(currentValue) !== normalizedMaintenanceAmount(nextValue)) changed.push(label)
+  }
+  const compareBoolean = (label: string, currentValue: unknown, nextValue: unknown) => {
+    if (currentValue === true !== (nextValue === true)) changed.push(label)
+  }
+
+  compareText('房号', current.propertyId, next.propertyId)
+  compareText('提交人', current.submitterName, next.submitterName)
+  compareText('紧急程度', current.urgency || 'normal', next.urgency || 'normal')
+  compareText('问题摘要', current.details, next.details)
+  compareText('开票英文描述', current.invoiceDescriptionEn, next.invoiceDescriptionEn)
+  compareAmount('维修金额', current.maintenanceAmount, next.maintenanceAmount)
+  compareBoolean('是否有配件费', current.hasParts, next.hasParts)
+  if (current.hasParts === true || next.hasParts === true) {
+    compareAmount('配件费金额', current.partsAmount, next.partsAmount)
+    compareBoolean('维修金额含配件费', current.maintenanceAmountIncludesParts, next.maintenanceAmountIncludesParts)
+  }
+  compareBoolean('是否有 GST', current.hasGst, next.hasGst)
+  if (current.hasGst === true || next.hasGst === true) {
+    compareBoolean('维修金额含 GST', current.maintenanceAmountIncludesGst, next.maintenanceAmountIncludesGst)
+  }
+  compareText('扣款方式', current.payMethod, next.payMethod)
+  if (normalizedMaintenanceText(current.payMethod) === 'other_pay' || normalizedMaintenanceText(next.payMethod) === 'other_pay') {
+    compareText('其他付款备注', current.payOtherNote, next.payOtherNote)
+  }
+  if (JSON.stringify(normalizedMaintenancePhotoUrls(current.beforePhotoUrls)) !== JSON.stringify(normalizedMaintenancePhotoUrls(next.beforePhotoUrls))) {
+    changed.push('维修前照片')
+  }
+  return changed
+}
+
 export function internalMaintenanceAssignPath(recordId: string) {
   const id = String(recordId || '').trim()
   if (!id) throw new Error('maintenance_record_id_required')

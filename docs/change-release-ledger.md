@@ -1,5 +1,83 @@
 # Change Release Ledger
 
+## CRL-20260904-004 — 已关闭维修仅修正完成日期的保存误拦截（root）
+
+- **Repository:** `root`
+- **Status:** verified; selected-for-commit
+- **Updated:** 2026-09-04 19:06 AEST
+- **Request:** 已关闭维修已有金额、扣款方式和维修后照片时，管理员只修改“实际完成日期”应可直接保存；不得因为编辑抽屉加载了普通字段而提示必须另行保存。
+- **Outcome:** 已通过本地验证。已关闭维修修正的普通字段隔离判断从表单 touched 状态改为打开记录与当前表单的规范化实际值比较；仅修正完成信息会继续调用既有 `correct_completion` 专用接口，真实金额、扣款方式或报修资料变更仍会被明确阻止混合提交。
+
+### Implementation
+
+- 复用既有 `correctInternalMaintenanceCompletion` 专用工作流和自动费用同步事务；不新增接口、权限、数据库结构、迁移或配置。
+- 提取可测试的普通字段差异比较：忽略照片排序和等价的初始化值，识别真实的房源、报修资料、金额、GST、扣款方式及维修前照片变化。
+- 页面在任何业务写入前执行实际值差异检查；若同时存在关闭后完成信息修正和普通字段变更，提示具体字段并要求分开保存。
+
+### Files / Areas
+
+- `frontend/src/app/maintenance/records/page.tsx`
+- `frontend/src/lib/maintenanceWorkflowActions.ts`
+- `frontend/src/lib/maintenanceWorkflowActions.test.ts`
+- `docs/feature-regression-registry.md`
+- `docs/change-release-ledger.md`
+
+### Impact / Dependencies
+
+- Depends on merged `root/CRL-20260904-003` closed-maintenance `correct_completion` contract and its financial-date synchronization.
+- API / database / migration / configuration / mobile: none.
+- Production data, external sync and deployment: not touched. Local code validation only.
+- Risk: this is a client-side guard repair; authenticated browser and real finance synchronization remain untested in this implementation candidate.
+
+### Validation
+
+- `./node_modules/.bin/vitest run src/lib/maintenanceWorkflowActions.test.ts --coverage.enabled=false` from `frontend`: PASS — 1 file / 15 tests, including hydrated ordinary values plus completion-date-only correction and real ordinary-change isolation.
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` from `frontend`: PASS.
+- `npm run lint` from `frontend`: PASS with existing repository warnings outside this candidate; the maintenance records page retains its three pre-existing hook-dependency warnings and has no new lint finding.
+- `npm run build` from `frontend`: PASS; production compilation and type validation completed. Existing repository lint warnings and an outdated Browserslist notice remain.
+- `npm run check:feature-registry`: PASS — 18 FRs、153 条测试映射；本 CRL 的 FR-010 映射已覆盖。
+- `python3 scripts/audit_change_release_ledger.py`: PASS — 5 个变更文件均被 CRL-20260904-004 覆盖。
+- `git diff --check`: PASS；候选仅有此 CRL 列出的 5 个受控文件，未发现未跟踪文件或敏感配置变更。
+- `npm run check:frontend`: PASS — frontend lint、全量 Vitest 和 production build 均通过；输出仅含仓库既有 warning。
+- `npm run check:backend`: 各组成检查均通过；在隔离 root 工作树中，最后的 Phase 5 跨仓契约因独立 mobile 目录不存在而停止，随后以 mobile `origin/Dev` 的干净快照单独运行 `npm run test:phase5-release-contract --prefix backend` 并 PASS。首轮沙箱内本地端口 `EPERM` 不属于断言失败，允许本地端口后重跑相关契约通过。
+- `npm run check:full`: 未取得单一命令 PASS；临时依赖链接先被 ledger coverage gate 正确拦截，随后 backend/frontend/registry/ledger 组成门禁在移除全部临时链接后分别完成并通过。
+- No authenticated browser, production data, migration or finance write was run.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared.
+- **Untracked review:** none; isolated candidate contains no untracked path after temporary validation links and generated build output were removed.
+- `docs/feature-regression-registry.md` — SHA-256: `22dfb88a913bc252fe3d8bec1dd5af3001004e366ad97ad789d12df0dafd953c`
+- `docs/feature-regression-registry.md` — SHA-256: `a38062fa8c73c8c5d4f655e86f4939bb2dc407e49af3ab4d701af5dd19a44faf`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `02d9779b6c0278e9233a819cac45d18b2ff2ea39aff4cf85997c9177edf947f0`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `3b67448393921e88f8c61d9848c358e1ad531e924aea798fff1107b03c697aa1`
+- `frontend/src/app/maintenance/records/page.tsx` — SHA-256: `fc1abf866e41076e76814cd28c2962e144f1293b48fcd9dd9c327f5837afc470`
+- `frontend/src/lib/maintenanceWorkflowActions.test.ts` — SHA-256: `d8731bf763e97c52983132a761f1cfcba97bbad3905b42dca9f15d2856dfdf49`
+- `frontend/src/lib/maintenanceWorkflowActions.test.ts` — SHA-256: `f4b4a98b410904a8ca9b6a578c7ba239c1d328dad1d60d921aa4437a9b50373f`
+- `frontend/src/lib/maintenanceWorkflowActions.ts` — SHA-256: `1ab052eff96eed087954892c12518e07e87631b81fe4d36f30ab305d9474742c`
+
+### Release Attempts
+
+#### RA-20260904-004
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260904-004`
+- Selected CRL identities: `root/CRL-20260904-004`
+- Intended action: `commit`
+- Branch: `codex/maintenance-completion-save-20260904`
+- Base: `origin/Dev@d54c2b3e3da97eba4659d8314e8b20f046c6a2a5`; fetched at `2026-09-04 19:06:20 AEST`
+- Candidate patch SHA-256: `e2b8bd44592ea45dc03ad44408548689baa382924a60d8b75d5fad5661b215b6`
+- Commit SHA: `not committed`
+- Dependencies: `root/CRL-20260904-003@266a01c90c14300baf5606dbfbb87d032d7f4e64`
+- Required validation: `PASS`; evidence: targeted 15/15 frontend tests, frontend TypeScript, complete frontend gate, backend build and complete contract set, feature-registry audit, ledger coverage and diff check passed; the cross-repository Phase 5 contract used a clean mobile `origin/Dev` snapshot.
+- Shared-hunk review: `PASS`; evidence: the two registry hunks and all application hunks are exactly fingerprinted for this CRL; no unselected candidate hunk is staged.
+- Generated-file review: `PASS`; evidence: generated backend dist and frontend build output are not staged, and all temporary validation links were removed.
+- Technical state: `verified`
+- User authorization: `selected-for-commit`; evidence: user instruction `提交推送 root/CRL-20260904-004` selects this exact root CRL for commit.
+- Independent review: `GO`; evidence: independent read-only task `review_crl_20260904_004_commit` recomputed the candidate fingerprint, reviewed all 5 staged files / 8 non-ledger hunks, found no P0/P1/P2 issue, and approved only the commit action.
+- Action conclusion: `GO`; blockers: none for the exact commit action; push remains a separate post-commit gate.
+
 ## CRL-20260904-001 — 年度报告分栏工作台与标准查看编辑操作（root）
 
 - **Repository:** `root`
