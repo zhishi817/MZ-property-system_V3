@@ -74,8 +74,7 @@
 - Required validation: `PASS`; evidence: targeted 15/15 frontend tests, frontend TypeScript, complete frontend gate, backend build and complete contract set, feature-registry audit, ledger coverage and diff check passed; the cross-repository Phase 5 contract used a clean mobile `origin/Dev` snapshot.
 - Shared-hunk review: `PASS`; evidence: the two registry hunks and all application hunks are exactly fingerprinted for this CRL; no unselected candidate hunk is staged.
 - Generated-file review: `PASS`; evidence: generated backend dist and frontend build output are not staged, and all temporary validation links were removed.
-- Technical state: `pushed`
-- Remote branch: `origin/codex/maintenance-completion-save-20260904@8737827edeb3621b7d613d77bcbf56218df5ac7a`; initial non-force push and matching `git ls-remote` verification completed at `2026-09-04 19:23:58 AEST`; this ledger-only receipt is to be fast-forwarded on the same branch.
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user instruction `提交推送 root/CRL-20260904-004` selects this exact root CRL for commit.
 - Independent review: `GO`; evidence: independent read-only task `review_crl_20260904_004_commit` recomputed the candidate fingerprint, reviewed all 5 staged files / 8 non-ledger hunks, found no P0/P1/P2 issue, and approved only the commit action.
 - Action conclusion: `GO`; blockers: none for the exact commit action; content commit `b948c6c7f777641088bb1a11fb0a34ad9ad9ec95` created. Push remains a separate post-commit gate.
@@ -95,7 +94,8 @@
 - Required validation: `PASS`; evidence: RA-20260904-004 targeted and complete constituent validation, final pre-commit gate, independent commit review, and exact committed-range audit all passed.
 - Shared-hunk review: `PASS`; evidence: exact committed range contains only this CRL's 5 selected files / 8 non-ledger hunks, including the two fingerprinted registry hunks.
 - Generated-file review: `PASS`; evidence: exact range contains no generated file, cache, dependency link or configured sensitive category.
-- Technical state: `committed`
+- Technical state: `pushed`
+- Remote branch: `origin/codex/maintenance-completion-save-20260904@8737827edeb3621b7d613d77bcbf56218df5ac7a`; initial non-force push and matching `git ls-remote` verification completed at `2026-09-04 19:23:58 AEST`; this ledger-only receipt is to be fast-forwarded on the same branch.
 - Remote preflight: `PASS`; evidence: `origin/Dev` still matched the recorded base and `refs/heads/codex/maintenance-completion-save-20260904` did not exist remotely at `2026-09-04 19:21:50 AEST`.
 - User authorization: `approved-for-push`; evidence: after receiving root content commit `b948c6c7f777641088bb1a11fb0a34ad9ad9ec95`, branch `codex/maintenance-completion-save-20260904`, and audit head `0c9eb5e7f47e1d0a381c4e0e10bea80dc2ec6cc5`, the user replied `推送` on `2026-09-04`.
 - Independent review: `GO`; evidence: independent read-only task `review_crl_20260904_004_commit` reviewed RA-20260904-005 for push, recomputed the exact range fingerprint, confirmed the 5-file / 8-hunk boundary, clean dependency/base state, no existing same-name remote branch, and no P0/P1/P2, generated-file or sensitive-information finding.
