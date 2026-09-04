@@ -13,6 +13,7 @@ export type MaintenanceWorkflowAction =
   | 'manager_complete'
   | 'review_approved'
   | 'review_rejected'
+  | 'correct_completion'
   | 'reopen'
   | 'cancel'
   | 'hold'
@@ -50,7 +51,10 @@ export function availableMaintenanceActions(input: {
     if (input.status === 'pending_assignment' || input.status === 'assigned' || input.status === 'in_progress') actions.add('manager_complete')
     if (input.status === 'in_progress') actions.add('hold')
     if (input.status === 'pending_review') actions.add('review')
-    if (input.status === 'closed') actions.add('reopen')
+    if (input.status === 'closed') {
+      actions.add('correct_completion')
+      actions.add('reopen')
+    }
   }
   if (input.isAssignedExecutor) {
     if (input.status === 'assigned' || input.status === 'in_progress') {
@@ -72,7 +76,7 @@ export function validateMaintenanceWorkflowAction(input: {
   reason?: string | null
 }): { ok: true } | { ok: false; code: string } {
   const reason = String(input.reason || '').trim()
-  const managerActions: MaintenanceWorkflowAction[] = ['assign', 'manager_start', 'manager_complete', 'review_approved', 'review_rejected', 'reopen', 'cancel']
+  const managerActions: MaintenanceWorkflowAction[] = ['assign', 'manager_start', 'manager_complete', 'review_approved', 'review_rejected', 'correct_completion', 'reopen', 'cancel']
   if (managerActions.includes(input.action) && !input.isManager) return { ok: false, code: 'maintenance_manager_required' }
   if (['start', 'submit', 'executor_complete', 'executor_unfinished'].includes(input.action) && !input.isAssignedExecutor) return { ok: false, code: 'maintenance_assignee_required' }
   if (input.action === 'hold' && !input.isManager) return { ok: false, code: 'maintenance_manager_required' }
@@ -91,6 +95,10 @@ export function validateMaintenanceWorkflowAction(input: {
     return { ok: false, code: 'maintenance_transition_invalid' }
   }
   if (input.action === 'review_rejected' && !reason) return { ok: false, code: 'maintenance_review_reason_required' }
+  if (input.action === 'correct_completion') {
+    if (input.status !== 'closed') return { ok: false, code: 'maintenance_transition_invalid' }
+    if (!reason) return { ok: false, code: 'maintenance_completion_correction_reason_required' }
+  }
   if (input.action === 'reopen' && input.status !== 'closed') return { ok: false, code: 'maintenance_transition_invalid' }
   if (input.action === 'cancel') {
     if (!['pending_assignment', 'assigned', 'in_progress'].includes(input.status)) return { ok: false, code: 'maintenance_transition_invalid' }

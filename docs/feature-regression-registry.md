@@ -908,29 +908,36 @@
 - 维修执行人通过服务端专用完成动作保存的完工照片、备注和未完成原因，必须同步到同一 `work_tasks` 来源投影；不得恢复通用工单 `mark` 接口来绕过维修状态机。
 - 管理者通过 `manager_complete` 提交审核或 `review_approved` 关闭时，必须保存已有分派人员或明确提交且经校验的实际维修人员；没有实际维修人员时服务端必须拒绝，不能仅靠网页必填规则。
 - 对历史 `pending_review` 且无分派人员的内部维修，管理员选择审核关闭或填写扣款方式触发自动审核时，网页必须显示实际维修人员并随 `review_approved` 原子提交。
-- `completed_at` 是房东支付维修自动费用的会计入账日期；通用 `property_maintenance` 编辑不得写入，必须由 `manager_complete` 或内部 `review_approved` 工作流动作受权限和审计约束地写入。历史待审核记录在审核关闭时填写的日期必须原子保存后再生成费用。
+- `completed_at` 是房东支付维修自动费用的会计入账日期；通用 `property_maintenance` 编辑不得写入，必须由 `manager_complete`、内部 `review_approved` 或已关闭内部记录的 `correct_completion` 专用管理动作受权限和审计约束地写入。已关闭记录的网页管理者可直接编辑完成信息，页面代为提交固定审计原因；API 调用仍必须带原因。`correct_completion` 锁定源记录，并和自动费用同步置于同一事务；关联自动费用已被人工覆盖时必须以 `409 maintenance_auto_expense_manual_override` 拒绝，不能部分保存日期或照片。历史待审核记录在审核关闭时填写的日期必须原子保存后再生成费用。
+- 已关闭记录的实际完成日期、实际维修人员、维修后照片和维修备注对拥有既有管理权限的用户可直接编辑；每次保存自动生成修正事件并保留前后值。维修后照片仍至少保留一张，普通报修字段、金额和扣款方式不得与该修正在同一次保存混合提交。
+- 网页维修详情与编辑抽屉必须复用同一套维修后照片解析：当权威 `completion_photo_urls` 为空数组或空 JSON、历史 `repair_photo_urls` 仍有照片时，两处都显示该历史照片，不能因空数组真值而隐藏已保存照片。
 - 维修列表/详情读取、费用编辑、创建、完成、审核关闭、MZapp `work_tasks` 与维修 `property-feedbacks` 读取/排序、task-center 维修投影/分派、维修分享链接和维修 PDF 生成/排队及自动费用写入路径不得执行 `CREATE`、`ALTER` 或索引 DDL；相关维修、`work_tasks`、`maintenance_share_links` 结构和历史 `photo_urls` 兼容转换只由受控迁移 `20260903_maintenance_runtime_schema` 完成。每个上述请求路径都先只读核对 migration marker，缺标记时返回 `503 maintenance_runtime_schema_not_ready`，不能仅依赖启动预热；路由本地 catch 必须保留该 503，不能误转为通用 500，也不能吞掉断言后继续查询或写入。独立的清洁/检查、task-center layout、`public_access` 与 `pdf_jobs` schema 保持各自契约，不得扩大 maintenance marker 的含义。
 - 已保存的内部维修完工图片只能从未删除的真实房源维修记录精确匹配；外部维修完工图片只允许管理角色或当前被分配的 `maintenance_staff` 读取。
 - 缩略图、预览和原图都必须通过认证的 `/cleaning-app/media/image` 读取；客户端不得使用 R2 直链或把本地未保存预览当作已保存证据。
 - 历史 `property_deep_cleaning` 记录中的 `deep-cleaning/...` 与 `deep-cleaning-upload/...` 私有引用，只能在唯一、未删除且关联真实房源的深清记录精确匹配后进入同一认证代理；错误、未关联、歧义、已删除或未认证读取保持 `403`，不能降级为 R2 直链。
 - `property_maintenance` 的 `pending_review` 源状态是权威状态：任务中心陈旧的 `assigned` 同步不得回退它，`GET /mzapp/work-tasks` 必须投影规范化源状态。维修前照片字段必须在旧缓存详情只刷新一次后显示，并保留同一任务上下文给认证代理。
+- 管理员审核退回维修时，源记录必须回到 `pending_assignment`，原维修人员、分派时间、分派人、开始时间、预计完成时间和内部完成日期必须在同一事务中解除；`work_tasks` 投影同步为无执行人的 `todo` 且不得保留旧排期。退回原因和上一轮维修照片继续保留为审核证据，网页不得因为这些未变化的旧照片自动再次提交审核，也不得要求退回时当场选择下一位维修人员。
 - 网页维修分派的 `photo_urls` 参数保持 PostgreSQL `text[]`，不得按完成照片的 `jsonb` 绑定。
 - 任务中心中的 `property_maintenance` 卡片可按既有查看权限读取单条详情，并将历史 JSON 形式的报修内容规范为可读文本，分区展示报修与维修后照片；必须复用既有认证媒体读取组件和 `Image.PreviewGroup`，不得新增原始 URL 回退、通用媒体权限或写操作。
 
 ### 跨层适用范围
 
-- **后端：** `maintenanceWorkflowStore` 任务投影、`cleaning_app` 媒体归属与授权代理。
-- **客户端：** Web 维修/反馈详情、任务中心维修详情与移动端房源反馈只使用认证媒体 URL；移动端 OTA 不属于本根仓发布单元。
-- **入口：** 维修完成/未完成动作、历史深清反馈列表/详情、任务中心房源待办详情，以及相册缩略图和全屏预览。
-- **一致性：** 服务端以源维修记录、分配关系和角色决定图片读取；客户端不自行扩大权限。
+- **后端：** 维修审核退回状态写入、`maintenanceWorkflowStore` 任务投影、已关闭维修的受控完成信息修正、自动费用事务同步，以及 `cleaning_app` 媒体归属与授权代理。
+- **客户端：** Web 维修记录的审核退回动作、已关闭维修的受控修正入口、Web 维修/反馈详情、任务中心维修详情与移动端房源反馈只使用认证媒体 URL；移动端 OTA 不属于本根仓发布单元。
+- **入口：** Web 维修编辑抽屉的审核退回、已关闭维修修正、维修完成/未完成动作、审核关闭、历史深清反馈列表/详情、任务中心房源待办详情，以及相册缩略图和全屏预览。
+- **一致性：** 服务端以源维修记录、分配关系和角色决定状态及图片读取；审核退回后的任务中心投影必须跟随源状态，涉及会计日期的状态后修正必须和自动费用同步一起提交，客户端不自行扩大权限。
 
 ### 测试映射
 
 | 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
 |---|---|---|---|---|
-| 完工字段投影与实际维修人员 | `backend/scripts/tests/test_maintenance_workflow_actions.ts` | 维修任务投影在冲突更新时同步完工照片、备注和原因；关闭必须有实际维修人员 | sufficient | `npm run test:maintenance-workflow-actions --prefix backend` |
+| 完工字段投影、实际维修人员与关闭后修正 | `backend/scripts/tests/test_maintenance_workflow_actions.ts` | 维修任务投影在冲突更新时同步完工照片、备注和原因；关闭必须有实际维修人员；已关闭修正仅限管理者、保留至少一张后照片且走专用动作，网页直接编辑会自动留下审计原因 | sufficient | `npm run test:maintenance-workflow-actions --prefix backend` |
+| 审核退回待分派 | `backend/scripts/tests/test_maintenance_workflow_actions.ts` | `review_rejected` 回到 `pending_assignment`，原分派、开始时间、排期和内部完成日期被清空，任务投影不保留旧排期，并保留上一轮关键上下文到审计事件 | sufficient | `npm run test:maintenance-workflow-actions --prefix backend` |
+| Web 退回与旧照片防误提交 | `frontend/src/lib/maintenanceWorkflowActions.test.ts` | 拒绝审核请求只提交决定、原因和幂等键，不要求维修人员；未变化的旧照片不视为新一次完成提交 | sufficient | `npm run test --prefix frontend -- --run src/lib/maintenanceWorkflowActions.test.ts --coverage.enabled=false` |
+| 关闭后修正 Web 请求 | `frontend/src/lib/maintenanceWorkflowActions.test.ts` | 专用修正动作发送实际完成日期、实际维修人员、维修后照片、备注、原因与幂等键，不走通用 PATCH | sufficient | `npm run test --prefix frontend -- --run src/lib/maintenanceWorkflowActions.test.ts --coverage.enabled=false` |
+| 网页详情/编辑维修后照片兼容 | `frontend/src/lib/maintenanceFeedbackMedia.test.ts` | 合并权威完成照片与历史 `repair_photo_urls`；权威数组为空时仍回退到历史照片，供详情和编辑抽屉共同使用 | partial | `npm run test --prefix frontend -- --run src/lib/maintenanceFeedbackMedia.test.ts --coverage.enabled=false` |
 | 维修运行时 schema 边界 | `backend/scripts/tests/test_maintenance_workflow_schema_contract.ts` | marker 迁移拥有维修/工单/分享链接结构；关闭、task-center 维修投影/分派、分享和 PDF 路径在任何写入前只做 readiness，并保留受控 503，不得运行 runtime DDL | sufficient | `npm run test:maintenance-workflow-schema --prefix backend` |
-| 自动费用 schema 边界 | `backend/scripts/tests/test_maintenance_auto_expense.ts` | 自动费用路径只做 readiness 检查，不得运行 runtime DDL | sufficient | `npm run test:maintenance-auto-expense --prefix backend` |
+| 自动费用 schema 边界与会计日期修正 | `backend/scripts/tests/test_maintenance_auto_expense.ts` | 自动费用路径只做 readiness 检查，不得运行 runtime DDL；关闭后会计日期修正与费用同步同事务，人工覆盖时拒绝部分更新 | sufficient | `npm run test:maintenance-auto-expense --prefix backend` |
 | 完工图片认证读取 | `backend/scripts/tests/test_mzapp_media_visibility.ts` | 内部真实房源精确匹配、外部维修单分配/角色授权和私有代理读取 | partial | `npm run test:mzapp-media-visibility --prefix backend` |
 | 历史深清服务端认证读取 | `backend/scripts/tests/test_mzapp_media_visibility.ts` | 深清的三个持久化字段与项目 before/after 保留精确关联；两个历史前缀仅进入既有唯一关联和认证授权分支 | partial | `npm run test:mzapp-media-visibility --prefix backend` |
 | 历史深清 Web 认证读取 | `frontend/src/lib/maintenanceFeedbackMedia.test.ts` | `deep-cleaning/`、`deep-cleaning-upload/` 的 Web 详情读取认证代理，不回退为原始 URL | sufficient | `npm run test --prefix frontend -- --run src/lib/maintenanceFeedbackMedia.test.ts --coverage.enabled=false` |
@@ -941,27 +948,29 @@
 
 ### 验证策略
 
-- **代码验证：** 运行后端完成投影、schema marker/无 runtime DDL、Web/Mobile 认证读取回归、后端 TypeScript 编译、feature registry 与 ledger audit。
+- **代码验证：** 运行后端完成投影、审核退回待分派、关闭后修正/费用原子性、schema marker/无 runtime DDL、Web/Mobile 认证读取回归、后端与前端 TypeScript 编译、feature registry 与 ledger audit。
 - **集成验证：** 仅在明确确认的非生产环境中，以执行人、管理角色及非关联账号验证内部/外部图片的缩略图、预览、原图和 403 边界。
 - **发布后：** 在真实 TestFlight 维修任务执行“相册选图 → 标记完成 → 重新打开任务 → 缩略图/大图”，不对生产数据做额外测试写入。
 
 ### 最后验证
 
-- **CRL：** root/CRL-20260903-008, root/CRL-20260903-009
+- **CRL：** root/CRL-20260903-008, root/CRL-20260903-009, root/CRL-20260904-002, root/CRL-20260904-003
 - **Commit：** not committed
-- **日期：** 2026-09-03
+- **日期：** 2026-09-04
 
 ### 相关 CRL
 
 - CRL-20260806-006：维修执行人专用动作当前 Dev 契约重基线。
 - root/CRL-20260903-008：维修关闭 schema migration/readiness、实际维修人员强制与未完成原因投影修复。
+- root/CRL-20260904-003：已关闭维修完成日期、实际维修人员、维修后照片与备注的受控修正及房东支付自动费用同步。
 - CRL-20260807-007（mobile）：维修详情专用动作路由与认证图片展示。
 - root/CRL-20260817-002、mobile/CRL-20260817-002：历史深清私有媒体前缀兼容与认证读取。
 - root/CRL-20260825-002：任务中心检查分派与维修详情展示。
+- root/CRL-20260904-002：维修审核退回待分派并解除旧分派。
 
 ### 非保护范围
 
-- 维修审核关闭、费用结算、历史生产数据回填、R2 对象物理删除，以及 R2 ACL/公开读取策略。
+- 历史生产数据回填、R2 对象物理删除，以及 R2 ACL/公开读取策略；已关闭维修的修正不改变金额、扣款方式、审核结论或费用的人工覆盖值。
 
 ## FR-014：Airbnb 邮件订单缺失年份的跨年日期解析
 

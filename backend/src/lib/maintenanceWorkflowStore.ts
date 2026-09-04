@@ -117,7 +117,10 @@ export async function upsertMaintenanceWorkTask(client: any, domain: Maintenance
        property_id=EXCLUDED.property_id,
        title=EXCLUDED.title,
        summary=EXCLUDED.summary,
-       scheduled_date=COALESCE(EXCLUDED.scheduled_date, work_tasks.scheduled_date),
+       scheduled_date=CASE
+         WHEN lower(COALESCE(EXCLUDED.status, ''))='todo' AND EXCLUDED.assignee_id IS NULL THEN NULL
+         ELSE COALESCE(EXCLUDED.scheduled_date, work_tasks.scheduled_date)
+       END,
        assignee_id=EXCLUDED.assignee_id,
        status=CASE
          WHEN work_tasks.task_kind='maintenance'

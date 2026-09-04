@@ -34,6 +34,8 @@ const runtimeMigration = read('scripts/migrations/20260903_maintenance_runtime_s
 assert.match(maintenance, /action === 'submit'[\s\S]*completed_at: new Date\(\)\.toISOString\(\)/)
 assert.match(maintenance, /action === 'executor_complete'[\s\S]*completed_at: new Date\(\)\.toISOString\(\)/)
 assert.match(maintenance, /action === 'review_approved'[\s\S]*syncInternalMaintenanceAutoExpenseWithClient\(client, updated\)/)
+assert.match(maintenance, /completionCorrection\?\.accountingDateChanged === true[\s\S]*syncInternalMaintenanceAutoExpenseWithClient\(client, updated\)/)
+assert.match(maintenance, /action === 'correct_completion'[\s\S]*maintenance_auto_expense_manual_override/)
 assert.match(maintenance, /maintenance_auto_expense_\$\{autoExpenseSync\.error\}/)
 assert.match(crud, /kind === 'maintenance' \? maintenanceAutoExpenseStatus\(row\) : normStatus\(row\?\.status\)/)
 assert.match(crud, /assertMaintenanceRuntimeSchemaReady\(\)/)
