@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Print a GitHub Actions output line: full_required=true|false.
+# Print GitHub Actions output lines:
+#   full_required=true|false
+#   ledger_only=true|false
 # Usage: classify_pr_risk.sh <base-sha> <head-sha>
 #        printf '%s\n' path ... | classify_pr_risk.sh --stdin
 
@@ -19,7 +21,15 @@ fi
 # paths own API/auth, task/cleaning state, financial data or RBAC settings.
 readonly HIGH_RISK_PATTERN='^(\.github/workflows/|package(-lock)?\.json$|shared/|backend/(package(-lock)?\.json$|src/|scripts/(schema|init_db|migrations/)|migrations/)|frontend/(package(-lock)?\.json$|src/(lib/|app/(task-center|cleaning|login|auth|finance|rbac)/))|docs/feature-regression-registry\.md$)'
 
-if printf '%s\n' "$changed_paths" | grep -Eq "$HIGH_RISK_PATTERN"; then
+normalized_paths="$(printf '%s\n' "$changed_paths" | sed '/^[[:space:]]*$/d')"
+
+if [[ -n "$normalized_paths" ]] && ! printf '%s\n' "$normalized_paths" | grep -Evq '^docs/change-release-ledger\.md$'; then
+  echo 'ledger_only=true'
+else
+  echo 'ledger_only=false'
+fi
+
+if printf '%s\n' "$normalized_paths" | grep -Eq "$HIGH_RISK_PATTERN"; then
   echo 'full_required=true'
 else
   echo 'full_required=false'
