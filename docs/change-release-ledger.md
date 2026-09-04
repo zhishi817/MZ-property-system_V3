@@ -110,15 +110,15 @@
 - Branch: `codex/ci-faster-quality-gates-20260904`
 - Base: `origin/Dev@f7601de20442e245db282879bc7dc2a2ee346ce7`; fetched at `2026-09-04 21:27:47 AEST`
 - Candidate patch SHA-256: `685d0921eb297361fd82ef19997a1fbfc732f48e7b5b43a441a2b15baecf6169`
-- Commit SHA: `not committed`; audit head will be emitted by the exact range report after commit.
+- Commit SHA: `849fe422ebe926a9873a8d2c87d5cdc31528d86c` (candidate content commit; exact audit head follows in the committed-range report).
 - Dependencies: none.
 - Required validation: `PASS`; evidence: revised workflow contract 8/8, ledger-audit tests 37/37, YAML parse, shell syntax, classifier probes, registry audit, ledger coverage, diff check and exact 44-hunk pre-commit gate passed.
 - Shared-hunk review: `PASS`; evidence: isolated clean `origin/Dev` candidate contains only this CRL's five non-ledger files plus its ledger block; `package.json` has one exact selected hunk.
 - Generated-file review: `PASS`; evidence: staged paths are source, test, workflow and Markdown/JSON governance files only; no untracked paths.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: after receiving the exact `root/CRL-20260904-006` scope, the user replied `提交` on 2026-09-04.
 - Independent review: `GO for commit`; evidence: initial candidate received NO-GO for skipping Fast-only ledger-range/idempotency coverage on integration events; revised candidate keeps Fast running in parallel with Full on integration events, independently matched fingerprint `685d0921eb297361fd82ef19997a1fbfc732f48e7b5b43a441a2b15baecf6169`, and had no P0/P1. One accepted P2 is the pre-existing conflict with `docs/regression-test-levels.md`.
-- Action conclusion: `GO`; blockers: none；the exact reviewed candidate may be committed. Push, PR, merge, remote protection changes and deployment remain unauthorized.
+- Action conclusion: `GO`; blockers: none；the exact reviewed candidate was committed as `849fe422ebe926a9873a8d2c87d5cdc31528d86c`. Push, PR, merge, remote protection changes and deployment remain unauthorized.
 
 ### Risks / Release Notes
 
