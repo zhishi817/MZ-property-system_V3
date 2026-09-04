@@ -153,17 +153,17 @@
 - Selected CRL identities: `root/CRL-20260904-005`
 - Intended action: `commit`
 - Branch: `codex/monthly-pdf-auth-data-20260904`
-- Base: `origin/Dev@f5853cc7cf3a9afa45291e3a0594e52ec502b6b8`; refreshed at `2026-09-04 20:21:45 AEST`
+- Base: `origin/Dev@f5853cc7cf3a9afa45291e3a0594e52ec502b6b8`; fetched at `2026-09-04 20:21:45 AEST`
 - Candidate patch SHA-256: `b358ffb72dc0ee22582ecf7a175caf2df77e7e50bf276c0f2e0945e120380cdc`
-- Commit SHA: not committed
-- Dependencies: root/CRL-20260902-001 and root/CRL-20260830-001 are already contained in the selected base; no additional candidate dependency.
+- Commit SHA: `d06501336c190c0d8a72301cc7d7357bbd52aa46` (candidate content commit; exact audit head follows in the range report)
+- Dependencies: `none`
 - Required validation: PASS; evidence: targeted PDF/auth/runtime plus maintenance/schema/auto-expense/company-revenue/orders contracts, full frontend 44 files / 208 tests, frontend typecheck/lint/build, backend build, registry audit and diff check passed on the fresh base.
 - Shared-hunk review: PASS; evidence: `docs/feature-regression-registry.md` adds only FR-022 while retaining the latest Dev maintenance updates; ledger adds only this new CRL/attempt.
 - Generated-file review: PASS; evidence: build outputs are ignored or outside the worktree and no generated files are staged.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user instruction “先把这次修复提交推送吧”. Push authorization must be rebound after the exact commit SHA exists.
 - Independent review: `GO for commit`; evidence: the revised-candidate review found 0 P0/P1, confirmed that PDF-service database failures return non-2xx without empty-memory fallback, allowed GET paths cannot reach schema ensure/DDL/maintenance backfill DML, and `RA-20260904-006` is unique. The reviewer independently matched the exact candidate fingerprint and 18-file / 78-hunk scope. One non-blocking P2 remains: the no-write SQL regression guard is source-contract based rather than a route-level dynamic SQL spy.
-- Action conclusion: `GO` for committing this exact candidate only. Push still requires the exact resulting commit SHA, committed-range audit and renewed user authorization; PR, merge, deployment and production verification remain unauthorized.
+- Action conclusion: `GO`; the selected local content commit completed. Push still requires this exact committed-range audit and renewed user authorization bound to the content commit SHA and branch; PR, merge, deployment and production verification remain unauthorized.
 
 ### Risks / Release Notes
 
