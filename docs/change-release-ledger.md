@@ -120,6 +120,26 @@
 - Independent review: `GO for commit`; evidence: initial candidate received NO-GO for skipping Fast-only ledger-range/idempotency coverage on integration events; revised candidate keeps Fast running in parallel with Full on integration events, independently matched fingerprint `685d0921eb297361fd82ef19997a1fbfc732f48e7b5b43a441a2b15baecf6169`, and had no P0/P1. One accepted P2 is the pre-existing conflict with `docs/regression-test-levels.md`.
 - Action conclusion: `GO`; blockers: none；the exact reviewed candidate was committed as `849fe422ebe926a9873a8d2c87d5cdc31528d86c`. Push, PR, merge, remote protection changes and deployment remain unauthorized.
 
+#### RA-20260904-009
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260904-006`
+- Selected CRL identities: `root/CRL-20260904-006`
+- Intended action: `push`
+- Branch: `codex/ci-faster-quality-gates-20260904`
+- Base: `origin/Dev@f7601de20442e245db282879bc7dc2a2ee346ce7`; fetched at `2026-09-04 21:44:16 AEST`
+- Candidate patch SHA-256: `685d0921eb297361fd82ef19997a1fbfc732f48e7b5b43a441a2b15baecf6169`
+- Commit SHA: `849fe422ebe926a9873a8d2c87d5cdc31528d86c` (candidate content commit); prior commit receipt head `513b20395b9a8ae655fe49962797aaa902266c6e`; exact push-audit head will be emitted by the range report.
+- Dependencies: none.
+- Required validation: `PASS`; evidence: RA-20260904-008 validation, revised independent commit review, exact pre-commit gates and committed-range report all passed; candidate fingerprint is unchanged.
+- Shared-hunk review: `PASS`; evidence: exact base range contains only this CRL's six selected files and 44 non-ledger hunks.
+- Generated-file review: `PASS`; evidence: exact range contains no generated file, cache, untracked path or configured sensitive category.
+- Technical state: `committed`
+- Remote preflight: `PASS`; evidence: freshly fetched `origin/Dev` still matches the recorded base and `refs/heads/codex/ci-faster-quality-gates-20260904` does not exist remotely at 2026-09-04 21:44:16 AEST.
+- User authorization: `approved-for-push`; evidence: after receiving content commit `849fe422ebe926a9873a8d2c87d5cdc31528d86c`, receipt head `513b20395b9a8ae655fe49962797aaa902266c6e` and branch `codex/ci-faster-quality-gates-20260904`, the user replied `推送` on 2026-09-04.
+- Independent review: `GO for push receipt`; evidence: independent review verified base → content commit → receipt ancestry, candidate fingerprint, exact 6-file / 44-hunk scope, bound push authorization, fresh base, absent remote branch and no P0/P1. The accepted documentation P2 does not affect Actions coverage.
+- Action conclusion: `GO`; blockers: none；non-force push is permitted only after this ledger-only receipt passes its pre-commit gate, is committed, the resulting clean-tree exact range report is GO, and the live remote preflight still matches.
+
 ### Risks / Release Notes
 
 - Risk: 完整回归不再阻塞 feature PR，而是在合入 `Dev` 的确切提交上执行；若希望 Full 继续作为 PR 合并前门禁，不应采用本候选。
