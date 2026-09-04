@@ -86,7 +86,7 @@
 - Selected CRL identities: `root/CRL-20260904-004`
 - Intended action: `push`
 - Branch: `codex/maintenance-completion-save-20260904`
-- Base: `origin/Dev@d54c2b3e3da97eba4659d8314e8b20f046c6a2a5`; fetched at `2026-09-04 19:16:09 AEST`
+- Base: `origin/Dev@d54c2b3e3da97eba4659d8314e8b20f046c6a2a5`; fetched again at `2026-09-04 19:21:50 AEST`
 - Candidate patch SHA-256: `e2b8bd44592ea45dc03ad44408548689baa382924a60d8b75d5fad5661b215b6`
 - Commit SHA: `b948c6c7f777641088bb1a11fb0a34ad9ad9ec95`; audit head is emitted by the report command.
 - Dependencies: `none`
@@ -95,9 +95,10 @@
 - Shared-hunk review: `PASS`; evidence: exact committed range contains only this CRL's 5 selected files / 8 non-ledger hunks, including the two fingerprinted registry hunks.
 - Generated-file review: `PASS`; evidence: exact range contains no generated file, cache, dependency link or configured sensitive category.
 - Technical state: `committed`
-- User authorization: `not-selected`; evidence: post-commit push authorization must bind the exact root repository, content commit and branch.
+- Remote preflight: `PASS`; evidence: `origin/Dev` still matched the recorded base and `refs/heads/codex/maintenance-completion-save-20260904` did not exist remotely at `2026-09-04 19:21:50 AEST`.
+- User authorization: `approved-for-push`; evidence: after receiving root content commit `b948c6c7f777641088bb1a11fb0a34ad9ad9ec95`, branch `codex/maintenance-completion-save-20260904`, and audit head `0c9eb5e7f47e1d0a381c4e0e10bea80dc2ec6cc5`, the user replied `推送` on `2026-09-04`.
 - Independent review: `GO`; evidence: independent read-only task `review_crl_20260904_004_commit` reviewed RA-20260904-005 for push, recomputed the exact range fingerprint, confirmed the 5-file / 8-hunk boundary, clean dependency/base state, no existing same-name remote branch, and no P0/P1/P2, generated-file or sensitive-information finding.
-- Action conclusion: `NOT VERIFIED`; blockers: push technical review passed; post-commit authorization for the exact root content commit and branch is pending.
+- Action conclusion: `GO`; blockers: none for the exact non-force push to `codex/maintenance-completion-save-20260904`; PR, merge and deployment remain separate actions.
 
 ## CRL-20260904-001 — 年度报告分栏工作台与标准查看编辑操作（root）
 
