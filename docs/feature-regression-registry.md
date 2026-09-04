@@ -9,7 +9,7 @@
 
 ## FR-022：月报 PDF 内部服务身份、只读渲染与数据完整性边界
 
-- **维护责任范围：** backend auth / Render PDF worker / frontend monthly statement print
+- **维护责任范围：** backend auth / Render PDF worker / frontend public shell and monthly statement print
 - **最后审查日期：** 2026-09-04
 - **状态：** active
 
@@ -19,6 +19,7 @@
 - PDF 服务身份只能访问月报打印页实际依赖的显式 GET 路径；任何写请求、未列出的读取路径、缺失或错误服务声明必须在路由处理前以 401/403 拒绝。
 - PDF 服务身份的允许路径只能使用 PostgreSQL SELECT；数据库不可用、查询失败或必需规则表缺失时返回非 2xx，不得退回进程内空数组，不得触发 GET 内的 schema ensure、建表、改表或维修元数据回填。
 - `pdfJobsWorker` 与认证 middleware 必须复用同一份服务声明定义，不能各自维护容易漂移的字符串或把服务身份注册成可交互登录的数据库用户。
+- 公开月报打印路由可以复用全局页面壳，但不得触发真人管理端的 session / RBAC preload；打印请求仍可从 `auth` Cookie 取得服务令牌，且 `/rbac/my-permissions` 必须继续处于 PDF 服务身份白名单之外。
 - 打印页跳转 `/login` 或出现 401/403 时必须归类为 `PRINT_AUTH`，在等待月报根节点超时前尽快失败，且不得进入 1/5/30 分钟自动重试队列。
 - 月报打印页必须区分“请求成功但业务数据为零”和“请求失败后得到空数组”：任一必需读取失败时不得设置 `data-monthly-statement-ready=1`，也不得生成全零或缺项 PDF；真实零数据只有在所有必需读取成功后才允许输出。
 - 打印页只向 Worker 暴露固定的数据源名称，不暴露响应体、令牌或 URL；Worker 读取到失败源后以 `PRINT_DATA_LOAD` 终止当前渲染，保留可重试语义供瞬时网络错误恢复。
@@ -34,9 +35,10 @@
 
 | 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
 |---|---|---|---|---|
-| 精确服务声明、允许路径及数据库只读拒绝 | `backend/scripts/tests/test_pdf_render_service_auth.ts` | 正确服务令牌可读取 `/auth/me` 和月报依赖路径；错误 audience/claim 为 401；POST 和未列出路径为 403；普通 missing-user 仍失败；服务读取的 DB-error fallback、DDL 与 GET 回填均由源码契约阻断 | sufficient | `npm run test:pdf-render-service-auth --prefix backend`（由 root `check:backend` / `check:full` 执行） |
+| 精确服务声明、允许路径及数据库只读拒绝 | `backend/scripts/tests/test_pdf_render_service_auth.ts` | 正确服务令牌可读取 `/auth/me` 和月报依赖路径；错误 audience/claim 为 401；POST、`/rbac/my-permissions` 和其他未列出路径为 403；普通 missing-user 仍失败；服务读取的 DB-error fallback、DDL 与 GET 回填均由源码契约阻断 | sufficient | `npm run test:pdf-render-service-auth --prefix backend`（由 root `check:backend` / `check:full` 执行） |
 | Worker 共享声明及认证/数据失败快速终止 | `backend/scripts/tests/test_pdf_render_service_auth.ts` | Worker 不再内联旧虚拟 admin payload；`PRINT_AUTH` 不可重试；登录跳转先于月报根节点等待；Worker 等待 ready 或 error 并将数据 error 转为 `PRINT_DATA_LOAD` | sufficient | `npm run test:pdf-render-service-auth --prefix backend` |
 | 打印数据失败不得伪装成全零成功 | `frontend/src/lib/monthlyStatementPrint.test.ts` | 失败源固定排序/去重；所有读取成功时允许真实零数据，任一读取失败时 ready 为 false | sufficient | `npm run test --prefix frontend` |
+| 公开打印页隔离通用 RBAC 启动 | `frontend/src/lib/monthlyStatementSplitPdf.test.ts` | `AdminLayout` 的初始启动与 backend-unavailable 恢复均在 public route 跳过，同时保留 Cookie 令牌读取；服务白名单的 RBAC 拒绝由后端契约共同保护 | sufficient | `npm run test --prefix frontend -- --coverage.enabled=false src/lib/monthlyStatementSplitPdf.test.ts && npm run test:pdf-render-service-auth --prefix backend` |
 | 真人用户角色快照安全边界 | `backend/scripts/tests/test_auth_role_snapshot.ts` | missing-user 不回退、DB-error 才回退、缓存/并发/失效行为保持 | sufficient | `npm run test:auth-role-snapshot --prefix backend` |
 
 ### 验证策略
@@ -46,13 +48,14 @@
 
 ### 最后验证
 
-- **CRL：** root/CRL-20260904-005
+- **CRL：** root/CRL-20260904-007
 - **Commit：** not committed
 - **日期：** 2026-09-04
 
 ### 相关 CRL
 
 - root/CRL-20260904-005：月报 PDF 内部服务身份认证与数据加载失败防伪修复。
+- root/CRL-20260904-007：公开打印页隔离通用 RBAC 启动并保持服务权限最小化。
 - root/CRL-20260902-001：真人用户角色快照、同请求幂等和安全失效。
 - root/CRL-20260830-001：PDF 队列事件唤醒与低频灾备恢复。
 
@@ -201,8 +204,8 @@
 
 ## FR-017：PDF 队列事件唤醒与灾备恢复边界
 
-- **维护责任范围：** backend / Render PDF worker
-- **最后审查日期：** 2026-08-30
+- **维护责任范围：** backend / Render PDF worker / web monthly statement download
+- **最后审查日期：** 2026-09-04
 - **状态：** active
 
 ### 业务保护规则
@@ -212,11 +215,13 @@
 - Render Cron 的 `PDF_JOBS_MODE=once` 必须先回收过期 lease，再逐 job 有界 drain 所有当前到期 job，随后关闭浏览器和数据库资源并退出；不能只处理单个 job。运行时间预算在启动每个 job 前检查；已开始的单个 PDF 不强杀，以避免中断已获取的 lease。
 - 缺失、未知或不完整的 worker mode / daemon cron 配置必须停用 PDF scheduler；绝不回退为 `*/1` 轮询。`disabled` 不得访问 `pdf_jobs`。
 - PDF 状态 GET 保持只读；正常即时处理来自 post-commit kick，不得把状态页刷新改造成新的全局轮询。
+- 管理端月报错误弹窗的“重试”必须让同一次新建任务请求明确发送 `forceNew: true`；普通首次下载仍发送 false。不得先异步更新 React state 再立即点击隐藏按钮，否则当前请求可能继续复用旧的 queued / failed job。
 
 ### 跨层适用范围
 
 - **后端：** finance、maintenance、deep-cleaning 的 PDF 入队路由；`pdfJobsWorker` 的 claim、retry 与 drain。
 - **Render：** 独立 Cron Job 显式使用 `PDF_JOBS_MODE=once`；旧 Background Worker 仅在显式 daemon mode 加有效 cron 时运行。
+- **客户端：** 月报下载入口的首次创建与显式重试必须向同一个 producer 传递不同的 `forceNew` 意图，不新增第二套队列。
 - **一致性：** job 的 lease、`FOR UPDATE SKIP LOCKED`、失败状态及 `next_retry_at` 仍是数据库权威；无数据库 schema/data migration。
 
 ### 测试映射
@@ -225,21 +230,23 @@
 |---|---|---|---|---|
 | fail-closed mode、1/5/30 retry、有限 drain 和无旧默认轮询 | `backend/scripts/tests/test_pdf_jobs_runtime_contract.ts` | 缺失/未知 mode 停用；once/daemon 显式；多 job 不同 retry due time 均保留；逐 job drain 与 Cron 退出路径存在；不存在 `*/1` fallback | sufficient | `npm run test:pdf-jobs-runtime --prefix backend`（由 root `check:backend` / `check:full` 执行） |
 | 三类 producer 的 post-commit wake | `backend/scripts/tests/test_pdf_jobs_runtime_contract.ts` | finance、maintenance、deep-cleaning 的 queued reuse 和每个 INSERT 都在响应前安排 kick | sufficient | `npm run test:pdf-jobs-runtime --prefix backend` |
+| 管理端错误后强制新建月报任务 | `frontend/src/lib/monthlyStatementSplitPdf.test.ts` | “重试”先设置同步 ref，本次 click 立即消费并清零，create payload 使用该局部值；不再依赖异步 state | sufficient | `npm run test --prefix frontend -- --coverage.enabled=false src/lib/monthlyStatementSplitPdf.test.ts` |
 
 ### 验证策略
 
-- **本地：** 执行 PDF runtime contract、后端 TypeScript build、Registry/ledger 审计与精确 diff 审查。
+- **本地：** 执行 PDF runtime contract、月报下载前端定向测试、前后端 build、Registry/ledger 审计与精确 diff 审查。
 - **部署后：** 月中空队列持续 10 分钟不应出现周期性 `pdf_jobs` claim；创建一条非生产验证 job 应即时开始。Cron 的首次验证、Render 设置和生产数据边界须另行批准。
 
 ### 最后验证
 
-- **CRL：** root/CRL-20260830-001
+- **CRL：** root/CRL-20260904-007
 - **Commit：** not committed
-- **日期：** 2026-08-30
+- **日期：** 2026-09-04
 
 ### 相关 CRL
 
 - root/CRL-20260830-001：PDF 空队列轮询改为事件唤醒与低频灾备恢复候选。
+- root/CRL-20260904-007：管理端月报错误重试同步强制创建新任务。
 
 ### 非保护范围
 

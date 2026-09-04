@@ -62,7 +62,7 @@ async function main() {
   allowedPaths.forEach((requestPath) => {
     assert.equal(isPdfRenderServiceRequestAllowed('GET', requestPath), true, `${requestPath} must remain readable`)
   })
-  for (const requestPath of ['/users', '/finance/merge-monthly-pack', '/finance/rent-segments/extra', '/auth/me/extra']) {
+  for (const requestPath of ['/users', '/rbac/my-permissions', '/finance/merge-monthly-pack', '/finance/rent-segments/extra', '/auth/me/extra']) {
     assert.equal(isPdfRenderServiceRequestAllowed('GET', requestPath), false, `${requestPath} must stay outside the service scope`)
   }
   assert.equal(isPdfRenderServiceRequestAllowed('POST', '/finance'), false, 'service identity must be read-only')
@@ -120,8 +120,8 @@ async function main() {
 
   const forbiddenPathReq: any = {
     method: 'GET',
-    path: '/users',
-    originalUrl: '/users',
+    path: '/rbac/my-permissions',
+    originalUrl: '/rbac/my-permissions',
     headers: { authorization: `Bearer ${validToken}` },
     socket: {},
   }
