@@ -191,15 +191,15 @@
 - Branch: `codex/release-20260904-001-003`
 - Base: `origin/Dev@3934d9b57a61be06272cf8b94b77a57538bf843a`; fetched at `2026-09-04 15:24 AEST`
 - Candidate patch SHA-256: `39e98b1021fca4ee0abfba304a50558a4dc2ed9377249b01851aec6175c3b402` excluding `docs/change-release-ledger.md`
-- Commit SHA: `not committed`; audit head is emitted by the report command.
+- Commit SHA: `266a01c90c14300baf5606dbfbb87d032d7f4e64`; candidate content commit created locally on `codex/release-20260904-001-003`; audit head is emitted by the report command.
 - Dependencies: none; these three independent selected CRLs travel together only for this user-selected local commit, with verified shared maintenance hunks.
 - Required validation: PASS; direct maintenance workflow and auto-expense regressions, 30 frontend targeted tests, backend build, frontend build, frontend lint (warnings only), feature-registry audit and diff checks passed.
 - Shared-hunk review: PASS; exact source hunks were three-way integrated and combined behavior revalidated in this clean candidate.
 - Generated-file review: PASS; only TypeScript/TSX/SCSS/Markdown source, tests and design QA are staged; temporary build output and dependency links were removed.
-- Technical state: verified
+- Technical state: committed
 - User authorization: selected-for-commit; user requested `将 root/CRL-20260904-001 到 003 提交` on 2026-09-04. Push, PR, merge, deployment, migration and production verification are not authorized.
 - Independent review: GO for commit; independent read-only review of RA-20260904-002 found no P0/P1/P2, verified the candidate SHA, selected 14-file scope, 131 hunk fingerprints, clean candidate and sensitive/generated-file boundary.
-- Action conclusion: GO for local commit; push, PR, merge, deployment, migration and production verification remain outside the authorization.
+- Action conclusion: GO for local commit; content commit `266a01c90c14300baf5606dbfbb87d032d7f4e64` created. Push, PR, merge, deployment, migration and production verification remain outside the authorization.
 
 
 
