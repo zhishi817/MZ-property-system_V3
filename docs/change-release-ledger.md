@@ -17939,6 +17939,25 @@ Shared cross-thread record of repository changes and selectable release units. D
 - User authorization: `selected-for-commit`; user explicitly authorized adding `root/CRL-20260903-009` and a local commit of root CRL 001–009 only after all specified validation and independent review. Push, PR, merge, migration, deployment and production verification are not authorized.
 - Action conclusion: `GO`; exact candidate content was committed locally. Push, PR, merge, migration, deployment and production/device verification remain unauthorized.
 
+#### RA-20260904-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260903-001`, `CRL-20260903-002`, `CRL-20260903-003`, `CRL-20260903-004`, `CRL-20260903-005`, `CRL-20260903-006`, `CRL-20260903-007`, `CRL-20260903-008`, `CRL-20260903-009`
+- Selected CRL identities: `root/CRL-20260903-001`, `root/CRL-20260903-002`, `root/CRL-20260903-003`, `root/CRL-20260903-004`, `root/CRL-20260903-005`, `root/CRL-20260903-006`, `root/CRL-20260903-007`, `root/CRL-20260903-008`, `root/CRL-20260903-009`
+- Intended action: `push`
+- Branch: `codex/maintenance-finance-annual-20260903-gated`
+- Base: `origin/Dev@a40ce6fbf7059897ba4885e97180d218e5e6f9fa`; fetched at `2026-09-04T10:30:49+10:00`
+- Candidate patch SHA-256: `88363698087d76f4137011d0592175437e78b791aaef0a14ec8cdea4b3b413b5` excluding `docs/change-release-ledger.md`
+- Commit SHA: `5ff1388239e2be3192ed18cbcce45ea18617f59a`; candidate content commit; exact audit head is emitted by the release report command
+- Dependencies: `none`
+- Required validation: `PASS`; maintenance schema/workflow/auto-expense/PDF contracts, finance compatibility, annual report, frontend targeted 21 tests, feature-registry audit and CRL-009 transpile passed; full clean-worktree typecheck remains `NOT VERIFIED` because dependencies are absent.
+- Shared-hunk review: `PASS`; committed range contains exactly 38 selected files and 285 selected non-ledger hunks.
+- Generated-file review: `PASS`; no generated, binary, dependency/cache or sensitive file is included.
+- Independent review: `GO for local commit`; exact candidate fingerprint was independently recomputed with no P0/P1. No source changed after that review.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; user explicitly requested “推送1-9” on 2026-09-04 after the exact root CRL 001–009 content commit, receipt head and branch were reported.
+- Action conclusion: `GO`; push this exact temporary branch only after its receipt head passes the committed-range audit. PR, merge, migration, deployment and production/device verification remain unauthorized.
+
 ## CRL-20260624-010 — 移动端包版本同步到 1.0.22
 
 - **Status:** pushed
