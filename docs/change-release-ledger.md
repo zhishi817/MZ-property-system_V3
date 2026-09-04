@@ -111,7 +111,7 @@
 - Required validation: `PASS`; evidence: frontend targeted tests 7/7, TypeScript, targeted lint, full 45-file / 214-test suite, production build, root `check:fast`, registry/ledger audits and diff check passed.
 - Shared-hunk review: `PASS`; evidence: clean current `origin/Dev` candidate contains only this CRL's five non-ledger paths and 39 recorded non-ledger hunks; ledger is the sixth selected path.
 - Generated-file review: `PASS`; evidence: temporary dependency links, build caches, TypeScript caches and backend build outputs were removed before staging; staged paths contain no generated output.
-- Technical state: `verified`
+- Technical state: `candidate`
 - User authorization: `selected-for-commit`; evidence: user explicitly requested `提交这个优化` for the just-reported root/CRL-20260904-008 candidate on 2026-09-04.
 - Independent review: `NO-GO`; evidence: independent reviewer confirmed the fingerprint and six-file scope, then found one P1 caused by `reactStrictMode: true`: development effect replay would mark the initial request as needing a queued follow-up and issue a guaranteed second full reload.
 - Action conclusion: `BLOCKED`; blocker: P1 Strict Mode duplicate-initial-load finding. This original candidate was not committed. Push, PR, merge and deployment are not authorized.
@@ -125,15 +125,15 @@
 - Branch: `codex/property-revenue-refresh-efficiency-20260904`
 - Base: `origin/Dev@421b1eaca5b0220fbec47054c5daa23d359aa3dd`; fetched at `2026-09-04 23:42:39 AEST`
 - Candidate patch SHA-256: `ab8dd09264af6e3cb6e418f45d0358c78aa28977856d160b622071c042988122`
-- Commit SHA: not committed
+- Commit SHA: `f96c49f79afb6a1c303a05d799faca5d70eca302` (candidate content commit; exact audit head follows in the committed-range report).
 - Dependencies: root/CRL-20260903-006, already contained in the recorded base.
 - Required validation: `PASS`; evidence: repaired candidate targeted 8/8, TypeScript, targeted lint, full 45-file / 215-test suite, production build, repaired root `check:fast`, registry/ledger audits and diff check passed.
 - Shared-hunk review: `PASS`; evidence: clean current `origin/Dev` candidate contains only this CRL's five non-ledger paths and 41 recorded non-ledger hunks; ledger is the sixth selected path.
 - Generated-file review: `PASS`; evidence: all temporary dependency mappings, build outputs and caches were removed before final staging.
-- Technical state: `candidate`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user explicitly requested `提交这个优化` for root/CRL-20260904-008 on 2026-09-04; the repaired candidate remains the same selected behavior and only resolves the blocking duplicate-load finding.
 - Independent review: `GO for commit`; evidence: the reviewer independently recomputed fingerprint `ab8dd09264af6e3cb6e418f45d0358c78aa28977856d160b622071c042988122`, confirmed the Strict Mode lifecycle fix prevents duplicate initial/range reloads while preserving in-flight foreground follow-up, confirmed 6 staged files / 41 hunks / no untracked or generated files, and found no P0/P1/P2 or secret/production-write risk.
-- Action conclusion: `GO` for the stated local commit only; final pre-commit gate PASS with all 41 non-ledger hunks matching scope. Push, PR, merge and deployment are not authorized.
+- Action conclusion: `GO`; blockers: none; the exact reviewed candidate was committed as `f96c49f79afb6a1c303a05d799faca5d70eca302`. Push requires a new committed-range audit and explicit authorization for this exact branch/SHA; PR, merge and deployment are not authorized.
 
 ### Risks / Release Notes
 
