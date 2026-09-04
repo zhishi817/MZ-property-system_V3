@@ -80,15 +80,15 @@
 - Branch: `codex/orders-ux-20260905`
 - Base: `origin/Dev@a0c79c99472bb31821de388ae60450a61a39ea17`; fetched at `2026-09-05 AEST`
 - Candidate patch SHA-256: `2ebabde2ac63cf86aa9eeba11ee84a042bbb05eb193221944ea7ae9c7b1133da` (excludes ledger attempt metadata)
-- Commit SHA: not committed
+- Commit SHA: `54e64a4bac3b7416fb79cc39484e73eed9ec074e` (candidate content commit; exact audited range head follows in the committed-range report)
 - Dependencies: none
 - Required validation: `PASS`; evidence: backend in-memory PATCH contract, backend TypeScript, frontend targeted 2/2, frontend lint, frontend production build, feature-registry audit and diff check passed in this clean candidate.
 - Shared-hunk review: `PASS`; evidence: exactly seven selected staged paths, 21 non-ledger hunk fingerprints and no unselected staged path.
 - Generated-file review: `PASS`; evidence: temporary dependency links and frontend `.next` build cache were removed before final staging review.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user requested `提交推送` for the current order-management repair on 2026-09-05. Per release policy, push remains separately gated on the exact committed SHA and branch.
 - Independent review: `GO for commit`; evidence: independent read-only review recomputed candidate fingerprint, confirmed the exact seven-file / 21-hunk scope, validations, no untracked/generated files and no P0/P1, secret or production-write risk. It found a P2 ledger wording mismatch (`22` versus 21) which was corrected before this gate rerun.
-- Action conclusion: `GO`; blockers: none. The exact reviewed candidate is eligible for commit; push remains separately unauthorized until the exact commit SHA and branch are presented to the user.
+- Action conclusion: `GO`; blockers: none. The exact reviewed candidate was committed as `54e64a4bac3b7416fb79cc39484e73eed9ec074e`; push remains separately unauthorized until the exact committed range head and branch are presented to the user.
 
 ### Risks / Release Notes
 
