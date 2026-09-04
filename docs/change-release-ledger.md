@@ -165,6 +165,26 @@
 - Independent review: `GO for commit`; evidence: the revised-candidate review found 0 P0/P1, confirmed that PDF-service database failures return non-2xx without empty-memory fallback, allowed GET paths cannot reach schema ensure/DDL/maintenance backfill DML, and `RA-20260904-006` is unique. The reviewer independently matched the exact candidate fingerprint and 18-file / 78-hunk scope. One non-blocking P2 remains: the no-write SQL regression guard is source-contract based rather than a route-level dynamic SQL spy.
 - Action conclusion: `GO`; the selected local content commit completed. Push still requires this exact committed-range audit and renewed user authorization bound to the content commit SHA and branch; PR, merge, deployment and production verification remain unauthorized.
 
+#### RA-20260904-007
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260904-005`
+- Selected CRL identities: `root/CRL-20260904-005`
+- Intended action: `push`
+- Branch: `codex/monthly-pdf-auth-data-20260904`
+- Base: `origin/Dev@f5853cc7cf3a9afa45291e3a0594e52ec502b6b8`; fetched at `2026-09-04 20:25:23 AEST`
+- Candidate patch SHA-256: `b358ffb72dc0ee22582ecf7a175caf2df77e7e50bf276c0f2e0945e120380cdc`
+- Commit SHA: `d06501336c190c0d8a72301cc7d7357bbd52aa46` (candidate content commit); prior commit receipt head `f691ee3952a5ac79371e9ba18711c768e7bc8457`; the final audit head is emitted by the report command.
+- Dependencies: `none`
+- Required validation: `PASS`; evidence: RA-20260904-006 validation, independent commit review, pre-commit ledger gate and exact committed-range audit passed; the non-ledger candidate fingerprint is unchanged.
+- Shared-hunk review: `PASS`; evidence: exact committed range contains only this CRL's 18 selected files / 78 non-ledger hunks and the required ledger receipts.
+- Generated-file review: `PASS`; evidence: exact range contains no generated file, cache, dependency link or configured sensitive category.
+- Technical state: `committed`
+- Remote preflight: `PASS`; evidence: freshly fetched `origin/Dev` still matched the recorded base and `refs/heads/codex/monthly-pdf-auth-data-20260904` did not exist remotely at `2026-09-04 20:25:23 AEST`.
+- User authorization: `approved-for-push`; evidence: after receiving root content commit `d06501336c190c0d8a72301cc7d7357bbd52aa46`, receipt head `f691ee3952a5ac79371e9ba18711c768e7bc8457`, branch `codex/monthly-pdf-auth-data-20260904` and the GO range result, the user replied `推送` on `2026-09-04`.
+- Independent review: `GO for push receipt`; evidence: independent read-only review verified this ledger-only receipt, exact root/base/content-commit/branch/fingerprint binding, unique RA ID, clean 18-file / 78-hunk committed range, explicit user push authorization, fresh base and absent remote branch; no P0/P1 remained. The existing source-contract-only SQL guard is a non-blocking P2.
+- Action conclusion: `GO` for committing this ledger-only receipt and then non-force pushing the exact branch only if the updated pre-commit gate, post-commit exact release report and repeated remote preflight are all GO. PR, merge, deployment and production verification remain unauthorized.
+
 ### Risks / Release Notes
 
 - Risk: 路径和数据完整性均故意 fail-closed；未来月报打印页新增 API 依赖但未同步登记时会收到 403 或 `PRINT_DATA_LOAD`，而不会静默扩大服务权限或生成不完整 PDF。瞬时读取失败可能使一次任务失败并按既有策略重试，但不会留下错误的全零文件。
