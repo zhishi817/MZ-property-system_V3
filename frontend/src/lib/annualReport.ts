@@ -36,6 +36,7 @@ export type AnnualReportLanguage = (typeof ANNUAL_REPORT_LANGUAGE_OPTIONS)[numbe
 export type AnnualReportMonthSource = 'manual' | 'system'
 export type AnnualReportMonthStatus = 'complete' | 'missing_manual' | 'missing_system_data' | 'warning'
 export type AnnualReportStatus = 'complete' | 'draft_incomplete'
+export type AnnualReportSummaryStatus = AnnualReportStatus | 'unavailable'
 
 export type AnnualReportWarning = {
   code: string
@@ -125,6 +126,15 @@ export function isAnnualReportManualMonth(month: Pick<AnnualReportMonth, 'source
 export function annualReportHasIssues(report: AnnualPropertyReport | null | undefined) {
   if (!report) return false
   return report.report_status !== 'complete' || report.warnings.length > 0 || report.months.some((month) => !month.is_complete)
+}
+
+export function formatAnnualReportSummaryStatus(status: AnnualReportSummaryStatus, language: AnnualReportLanguage) {
+  const labels = {
+    complete: { en: 'Complete', bilingual: 'Complete 完整' },
+    draft_incomplete: { en: 'Draft / Incomplete', bilingual: 'Draft / Incomplete 待补录' },
+    unavailable: { en: 'Unavailable', bilingual: 'Unavailable 无法读取' },
+  } as const
+  return labels[status][language]
 }
 
 export function getAnnualReportMissingMonths(report: AnnualPropertyReport | null | undefined) {

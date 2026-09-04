@@ -25,6 +25,7 @@
     "test:work-task-actions": "ts-node-dev --transpile-only scripts/tests/test_work_task_actions.ts",
     "test:maintenance-workflow-schema": "ts-node-dev --transpile-only scripts/tests/test_maintenance_workflow_schema_contract.ts",
     "test:maintenance-workflow-actions": "ts-node-dev --transpile-only scripts/tests/test_maintenance_workflow_actions.ts",
+    "test:maintenance-auto-expense": "ts-node-dev --transpile-only scripts/tests/test_maintenance_auto_expense.ts",
     "test:cleaning-task-transition-guard": "ts-node-dev --transpile-only scripts/tests/test_cleaning_task_transition_guard.ts",
     "test:idempotency-submit-id-contract": "ts-node-dev --transpile-only scripts/tests/test_idempotency_submit_id_contract.ts",
     "test:offline-task-urgency-contract": "ts-node-dev --transpile-only scripts/tests/test_offline_task_urgency_contract.ts",

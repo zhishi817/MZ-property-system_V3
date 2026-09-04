@@ -1,8 +1,11 @@
 import assert from 'assert'
+import fs from 'node:fs'
+import path from 'node:path'
 import {
   buildAnnualPropertyReport,
   findLandlordByPropertyId,
   listAnnualReportMonthKeys,
+  summarizeAnnualPropertyReport,
   type AnnualReportManualMonthRow,
 } from '../../src/lib/annualPropertyReport'
 
@@ -142,6 +145,31 @@ function main() {
     ], 'p1')
     assert.equal(linked?.id, 'l1')
     assert.equal(findLandlordByPropertyId([{ id: 'l1', property_ids: ['p1'] }], 'p2'), null)
+  }
+
+  {
+    const summary = summarizeAnnualPropertyReport(buildReport(), 'Melbourne')
+    assert.deepEqual(summary, {
+      property: { id: 'p1', code: 'SH1901', address: '123 Test St', region: 'Melbourne' },
+      report_status: 'draft_incomplete',
+      complete_month_count: 0,
+      missing_month_count: 12,
+      warning_count: 12,
+    })
+  }
+
+  {
+    const backendRoot = path.resolve(__dirname, '../..')
+    const financeRouter = fs.readFileSync(path.join(backendRoot, 'src/modules/finance.ts'), 'utf8')
+    const annualReportSource = fs.readFileSync(path.join(backendRoot, 'src/lib/annualPropertyReport.ts'), 'utf8')
+    assert.match(financeRouter, /router\.get\('\/annual-report\/summaries'[\s\S]*?listAnnualPropertyReportSummaries\(fiscalYear\)/)
+    const batchSummarySource = annualReportSource.slice(
+      annualReportSource.indexOf('async function loadAnnualPropertyReportSummariesFromPg'),
+      annualReportSource.indexOf('export async function listAnnualPropertyReportSummaries')
+    )
+    assert.match(batchSummarySource, /property_id = ANY\(\$1::text\[\]\)/)
+    assert.match(batchSummarySource, /buildAnnualPropertyReport\(/)
+    assert.doesNotMatch(batchSummarySource, /loadAnnualPropertyReport\(/)
   }
 }
 

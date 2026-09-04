@@ -6,6 +6,7 @@ import {
   formatAnnualReportMonthStatus,
   formatAnnualReportWarningMessage,
   formatAnnualReportFilename,
+  formatAnnualReportSummaryStatus,
   getVisibleAnnualReportExpenseLineKeys,
   getAnnualReportMissingMonths,
   getAnnualReportLineLabel,
@@ -175,6 +176,9 @@ describe('annualReport helpers', () => {
     expect(getAnnualReportLineLabel('management_fee', 'en')).toBe('Agency Fees')
     expect(formatAnnualReportMonthStatus('missing_manual', 'en')).toBe('Missing Manual')
     expect(formatAnnualReportWarningMessage({ code: 'missing_manual', month_key: '2025-07', message: 'ignored' }, 'en')).toBe('2025-07 Missing manual month summary')
+    expect(formatAnnualReportSummaryStatus('complete', 'bilingual')).toBe('Complete 完整')
+    expect(formatAnnualReportSummaryStatus('draft_incomplete', 'bilingual')).toBe('Draft / Incomplete 待补录')
+    expect(formatAnnualReportSummaryStatus('unavailable', 'en')).toBe('Unavailable')
   })
 
   it('keeps the legacy route redirected to the new annual report page', () => {

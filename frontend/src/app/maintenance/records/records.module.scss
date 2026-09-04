@@ -92,6 +92,207 @@
   gap: 10px;
 }
 
+.maintenanceDrawer :global(.ant-drawer-header) {
+  padding: 18px 24px;
+}
+
+.maintenanceDrawer :global(.ant-drawer-body) {
+  padding: 22px 24px 28px;
+  background: #f8fafc;
+}
+
+.maintenanceDrawer :global(.ant-drawer-footer) {
+  padding: 14px 24px;
+  background: #fff;
+}
+
+.drawerTitle {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.drawerTitleText {
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 24px;
+}
+
+.drawerSubtitle {
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 18px;
+}
+
+.drawerFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.drawerFooterSummary {
+  display: grid;
+  gap: 2px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.drawerFooterSummary strong {
+  color: #0f172a;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.workflowOverview,
+.workflowActionPanel,
+.drawerSection,
+.issueDisclosure {
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.workflowOverview {
+  padding: 18px;
+}
+
+.workflowOverviewHeader,
+.workflowActionHeading,
+.sectionTitleRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.workflowOverview :global(.ant-steps) {
+  margin-top: 18px;
+}
+
+.workflowOverview :global(.ant-steps-item-title) {
+  color: #475569;
+  font-size: 12px;
+}
+
+.eyebrow {
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 18px;
+}
+
+.workflowOverviewTitle,
+.workflowActionTitle,
+.sectionTitle {
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 24px;
+}
+
+.workflowActionPanel {
+  margin-top: 16px;
+  padding: 18px;
+  border-color: #f5d5a8;
+  background: #fffbeb;
+}
+
+.workflowActionHeading :global(.ant-typography) {
+  max-width: 330px;
+  text-align: right;
+}
+
+.compactFormItem {
+  margin: 16px 0 0;
+}
+
+.compactFormItem:last-child {
+  margin-bottom: 0;
+}
+
+.drawerSectionDivider {
+  margin: 26px 0 14px;
+}
+
+.drawerSection {
+  margin-top: 18px;
+  padding: 18px;
+}
+
+.sectionTitleRow {
+  margin-bottom: 16px;
+}
+
+.issueDisclosure {
+  margin-top: 12px;
+  overflow: hidden;
+}
+
+.issueDisclosure summary {
+  display: flex;
+  min-height: 64px;
+  cursor: pointer;
+  list-style: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+}
+
+.issueDisclosure summary::-webkit-details-marker {
+  display: none;
+}
+
+.issueDisclosure summary > span:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.issueDisclosure summary strong {
+  color: #0f172a;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.issueDisclosure summary em {
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  font-style: normal;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.disclosureHint {
+  color: #64748b;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.issueDisclosure[open] .disclosureHint {
+  font-size: 0;
+}
+
+.issueDisclosure[open] .disclosureHint::after {
+  content: '收起';
+  font-size: 12px;
+}
+
+.issueDisclosureBody {
+  border-top: 1px solid #e2e8f0;
+  padding: 18px;
+}
+
 @media (max-width: 900px) {
   .feeRow2 {
     grid-template-columns: 1fr;
@@ -101,5 +302,35 @@
   }
   .feeDashedRow {
     grid-template-columns: 1fr;
+  }
+  .maintenanceDrawer :global(.ant-drawer-body) {
+    padding: 18px 16px 24px;
+  }
+  .maintenanceDrawer :global(.ant-drawer-header),
+  .maintenanceDrawer :global(.ant-drawer-footer) {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+  .drawerFooter,
+  .workflowActionHeading,
+  .sectionTitleRow {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .drawerFooter :global(.ant-space) {
+    width: 100%;
+  }
+  .drawerFooter :global(.ant-space-item) {
+    flex: 1;
+  }
+  .drawerFooter :global(.ant-btn) {
+    width: 100%;
+  }
+  .workflowActionHeading :global(.ant-typography) {
+    max-width: none;
+    text-align: left;
+  }
+  .workflowOverview :global(.ant-steps-item-title) {
+    font-size: 11px;
   }
 }

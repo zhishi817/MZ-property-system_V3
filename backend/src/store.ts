@@ -594,6 +594,7 @@ const defaultPerms = [
   'cleaning.view','cleaning.schedule.manage','cleaning.task.assign',
   'finance.payout','finance.tx.write',
   'order.deduction.manage',
+  'property_maintenance.workflow.manage',
   'inventory.view','inventory.move','inventory.item.manage','inventory.po.manage','landlord.manage',
   'inventory_linen_purchase_orders.view','inventory_linen_purchase_orders.create','inventory_linen_purchase_orders.write','inventory_linen_purchase_orders.pay',
   'inventory_linen_deliveries.view','inventory_linen_deliveries.create','inventory_linen_deliveries.write','inventory_linen_deliveries.archive',

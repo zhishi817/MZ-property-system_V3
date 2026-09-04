@@ -5,7 +5,7 @@ import { hasR2, r2Upload } from '../r2'
 import { ensurePdfJobsSchema } from './pdfJobsSchema'
 import { getChromiumBrowser, resetChromiumBrowser } from '../lib/playwright'
 import { waitForImages } from '../lib/waitForImages'
-import { generateWorkRecordPdf, type WorkRecordPdfKind, type WorkRecordPdfPhotosMode } from '../lib/workRecordPdf'
+import { assertWorkRecordPdfSchemaReady, generateWorkRecordPdf, type WorkRecordPdfKind, type WorkRecordPdfPhotosMode } from '../lib/workRecordPdf'
 import { generateStatementPhotoPackBundle, type StatementPhotoPackSection } from '../lib/monthlyStatementPhotoPack'
 import { collectMonthlyInvoiceAttachments } from '../lib/monthlyStatementInvoiceAttachments'
 import { reconcileMonthlyAutoExpenses } from '../lib/monthlyStatementExpenseReconcile'
@@ -82,7 +82,7 @@ function classifyError(e: any): { retriable: boolean; code: string; message: str
   return { retriable: true, code, message }
 }
 
-async function reclaimExpiredLeases(): Promise<number> {
+async function reclaimExpiredLeases(maintenanceRecordPdfReady: boolean): Promise<number> {
   if (!hasPg || !pgPool) return 0
   const r = await pgPool.query(
     `UPDATE pdf_jobs
@@ -97,12 +97,14 @@ async function reclaimExpiredLeases(): Promise<number> {
          updated_at=now()
      WHERE status='running'
        AND lease_expires_at IS NOT NULL
-       AND lease_expires_at < now()`
+       AND lease_expires_at < now()
+       AND ($1::boolean OR kind <> 'maintenance_record_pdf')`,
+    [maintenanceRecordPdfReady],
   )
   return Number(r?.rowCount || 0)
 }
 
-async function claimJobs(limit: number, workerId: string): Promise<any[]> {
+async function claimJobs(limit: number, workerId: string, maintenanceRecordPdfReady: boolean): Promise<any[]> {
   if (!hasPg || !pgPool) return []
   const n = Math.max(1, Math.min(10, Number(limit || 3)))
   const client = await pgPool.connect()
@@ -115,6 +117,7 @@ async function claimJobs(limit: number, workerId: string): Promise<any[]> {
          SELECT id
          FROM pdf_jobs
          WHERE status='queued' AND next_retry_at <= now()
+           AND ($4::boolean OR kind <> 'maintenance_record_pdf')
          ORDER BY
            CASE kind
              WHEN 'statement_photo_pack' THEN 0
@@ -138,7 +141,7 @@ async function claimJobs(limit: number, workerId: string): Promise<any[]> {
        FROM picked
        WHERE j.id = picked.id
        RETURNING j.*`,
-      [n, workerId, String(leaseSec)]
+      [n, workerId, String(leaseSec), maintenanceRecordPdfReady]
     )
     await client.query('COMMIT')
     return r?.rows || []
@@ -523,6 +526,7 @@ async function runWorkRecordPdfJob(job: any, workerId: string, kind: WorkRecordP
     e.code = 'JOB_INVALID'
     throw e
   }
+  await assertWorkRecordPdfSchemaReady(kind)
   await updateJob(id, { progress: 8, stage: 'collect_images', detail: '正在收集图片...', locked_by: workerId })
   const initialMode = workRecordPhotosMode(job)
   let mode = initialMode
@@ -965,9 +969,10 @@ export async function processPdfJobsOnce(opts: { limit?: number; scheduleRetries
     }
     throw e
   }
-  const reclaimed = await reclaimExpiredLeases().catch(() => 0)
+  const maintenanceRecordPdfReady = await assertWorkRecordPdfSchemaReady('maintenance').then(() => true).catch(() => false)
+  const reclaimed = await reclaimExpiredLeases(maintenanceRecordPdfReady).catch(() => 0)
   const workerId = String(process.env.PDF_JOBS_WORKER_ID || '') || `pdf_worker_${process.pid}`
-  const jobs = await claimJobs(Number(opts.limit || 2), workerId)
+  const jobs = await claimJobs(Number(opts.limit || 2), workerId, maintenanceRecordPdfReady)
   if (!jobs.length) {
     const emptyDiagEnabled = String(process.env.PDF_JOBS_EMPTY_DIAG_ENABLED || 'false').toLowerCase() === 'true'
     const emptyDiagIntervalMs = Math.max(60000, Math.min(60 * 60 * 1000, Number(process.env.PDF_JOBS_EMPTY_DIAG_INTERVAL_MS || 10 * 60 * 1000)))
