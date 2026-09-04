@@ -201,6 +201,25 @@
 - Independent review: GO for commit; independent read-only review of RA-20260904-002 found no P0/P1/P2, verified the candidate SHA, selected 14-file scope, 131 hunk fingerprints, clean candidate and sensitive/generated-file boundary.
 - Action conclusion: GO for local commit; content commit `266a01c90c14300baf5606dbfbb87d032d7f4e64` created. Push, PR, merge, deployment, migration and production verification remain outside the authorization.
 
+#### RA-20260904-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260904-001`, `CRL-20260904-002`, `CRL-20260904-003`
+- Selected CRL identities: `root/CRL-20260904-001`, `root/CRL-20260904-002`, `root/CRL-20260904-003`
+- Intended action: `push`
+- Branch: `codex/release-20260904-001-003`
+- Base: `origin/Dev@3934d9b57a61be06272cf8b94b77a57538bf843a`; fetched at `2026-09-04 16:07 AEST`
+- Candidate patch SHA-256: `39e98b1021fca4ee0abfba304a50558a4dc2ed9377249b01851aec6175c3b402` excluding `docs/change-release-ledger.md`
+- Commit SHA: `266a01c90c14300baf5606dbfbb87d032d7f4e64`; audit head is emitted by the report command.
+- Dependencies: none
+- Required validation: PASS; RA-20260904-002 validation, final pre-commit gate, independent review and exact committed-range audit all passed.
+- Shared-hunk review: PASS; exact source hunks were three-way integrated and combined behavior revalidated in the clean candidate.
+- Generated-file review: PASS; no generated files, caches, dependency links or sensitive-file categories in the exact range.
+- Technical state: committed
+- User authorization: approved-for-push; user said `推送` after receiving the exact branch `codex/release-20260904-001-003`, content commit `266a01c90c14300baf5606dbfbb87d032d7f4e64` and audit head `e4694f84bda32314aa8e1bbabe0f7701e9e5adf7` on 2026-09-04.
+- Independent review: GO for commit; RA-20260904-002 independent review found no P0/P1/P2 and the non-ledger candidate fingerprint is unchanged.
+- Action conclusion: GO for push; exact branch, base, candidate content commit and candidate patch fingerprint are unchanged. PR, merge, deployment, migration and production verification remain outside the authorization.
+
 
 
 ## CRL-20260903-007 — 年度报告房源记录与状态总览（root）
