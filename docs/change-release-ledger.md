@@ -90,15 +90,15 @@
 - Branch: `codex/monthly-pdf-retry-auth-followup-20260904`
 - Base: `origin/Dev@08b0699c06cefdafc3e52051558d746a7aa93dd8`; fetched at `2026-09-04 22:21:11 AEST`
 - Candidate patch SHA-256: `96d068dc805d0d6356fccf57ee27d878495d36818cb945c094d3cee687b8f82a`
-- Commit SHA: not committed
+- Commit SHA: `30e2fe8d1385e8bbc4567456da616d10fcf00d8d` (candidate content commit; exact audit head follows in the committed-range report).
 - Dependencies: `root/CRL-20260904-005` contained by the recorded base.
 - Required validation: `PASS`; evidence: frontend lint, 44-file / 210-test frontend suite and production build; backend TypeScript build, PDF service auth, PDF runtime and auth-role snapshot contracts; Feature Registry, current-worktree ledger coverage and diff check all passed.
 - Shared-hunk review: `PASS`; evidence: isolated clean candidate contains only this CRL's five non-ledger files plus its ledger block, with 27 recorded non-ledger hunks.
 - Generated-file review: `PASS`; evidence: backend build outputs were restored to base; no generated file, cache, dependency directory or untracked path is selected.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user requested `提交推送` after receiving the exact `root/CRL-20260904-007` scope on 2026-09-04. Under the release contract this authorizes the commit stage only; push requires confirmation bound to the resulting commit SHA.
 - Independent review: `GO for commit`; evidence: independent read-only reviewer复算候选指纹 `96d068dc805d0d6356fccf57ee27d878495d36818cb945c094d3cee687b8f82a`，核对完整 6-file staged diff、27 个 hunk、base/branch/依赖、无 untracked/generated/secret，未发现 P0/P1。接受一个非阻断 P2：当前前端回归为源码契约测试，未真实挂载组件或拦截网络请求。
-- Action conclusion: `GO`; blockers: none；该结论仅允许提交 exact candidate，不授权 push、PR、merge 或部署。
+- Action conclusion: `GO`; blockers: none；exact reviewed candidate 已提交为 `30e2fe8d1385e8bbc4567456da616d10fcf00d8d`。Push 仍需在 committed-range audit 通过后，由用户针对确切 branch/SHA 重新确认；PR、merge 与部署未授权。
 
 ### Risks / Release Notes
 
