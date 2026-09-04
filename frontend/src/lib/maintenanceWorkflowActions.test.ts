@@ -5,7 +5,7 @@ const deleteJSON = vi.hoisted(() => vi.fn())
 
 vi.mock('./api', () => ({ postJSON, deleteJSON }))
 
-import { assignInternalMaintenance, createInternalMaintenanceFeedback, deleteInternalMaintenanceFeedback, internalMaintenanceAssignmentChanged, internalMaintenanceAssignPath, internalMaintenanceFeedbackCreatePath, internalMaintenanceFeedbackDeletePath } from './maintenanceWorkflowActions'
+import { approveInternalMaintenance, assignInternalMaintenance, createInternalMaintenanceFeedback, deleteInternalMaintenanceFeedback, internalMaintenanceAssignmentChanged, internalMaintenanceAssignPath, internalMaintenanceFeedbackCreatePath, internalMaintenanceFeedbackDeletePath, internalMaintenanceReviewPath, internalMaintenanceWorkflowPath, manageInternalMaintenanceWorkflow, shouldAutoApproveInternalMaintenanceSettlement, shouldUpdateInternalMaintenanceRecordViaCrud } from './maintenanceWorkflowActions'
 
 describe('internal maintenance workflow assignment', () => {
   beforeEach(() => {
@@ -46,6 +46,94 @@ describe('internal maintenance workflow assignment', () => {
       nextAssigneeId: 'user-2',
       nextScheduledDate: '2026-08-05',
     })).toBe(true)
+  })
+
+  it('does not send a second generic CRUD update after the assignment workflow saves the record patch', () => {
+    expect(shouldUpdateInternalMaintenanceRecordViaCrud({
+      assignmentChanged: true,
+      recordActualRepairerWithCompletion: false,
+    })).toBe(false)
+    expect(shouldUpdateInternalMaintenanceRecordViaCrud({
+      assignmentChanged: false,
+      recordActualRepairerWithCompletion: false,
+    })).toBe(true)
+    expect(shouldUpdateInternalMaintenanceRecordViaCrud({
+      assignmentChanged: true,
+      recordActualRepairerWithCompletion: true,
+    })).toBe(true)
+  })
+
+  it('approves a pending-review maintenance record through the audited workflow route', async () => {
+    postJSON.mockResolvedValue({ ok: true, id: 'record-1', status: 'closed' })
+
+    await approveInternalMaintenance({ recordId: 'record/1', operationId: 'review-operation-1' })
+
+    expect(internalMaintenanceReviewPath('record/1')).toBe('/maintenance/workflow/internal/record%2F1/review')
+    expect(postJSON).toHaveBeenCalledWith('/maintenance/workflow/internal/record%2F1/review', {
+      decision: 'approved',
+      operation_id: 'review-operation-1',
+    }, { timeoutMs: 10_000 })
+  })
+
+  it('records a missing actual repairer atomically with pending-review approval', async () => {
+    postJSON.mockResolvedValue({ ok: true, id: 'record-1', status: 'closed' })
+
+    await approveInternalMaintenance({ recordId: 'record/1', assigneeId: 'repairer-1', operationId: 'review-operation-2' })
+
+    expect(postJSON).toHaveBeenCalledWith('/maintenance/workflow/internal/record%2F1/review', {
+      decision: 'approved',
+      assignee_id: 'repairer-1',
+      operation_id: 'review-operation-2',
+    }, { timeoutMs: 10_000 })
+  })
+
+  it('records the actual completion date atomically with pending-review approval', async () => {
+    postJSON.mockResolvedValue({ ok: true, id: 'record-1', status: 'closed' })
+
+    await approveInternalMaintenance({
+      recordId: 'record/1',
+      assigneeId: 'repairer-1',
+      completedAt: '2026-08-13',
+      operationId: 'review-operation-3',
+    })
+
+    expect(postJSON).toHaveBeenCalledWith('/maintenance/workflow/internal/record%2F1/review', {
+      decision: 'approved',
+      assignee_id: 'repairer-1',
+      completed_at: '2026-08-13',
+      operation_id: 'review-operation-3',
+    }, { timeoutMs: 10_000 })
+  })
+
+  it('only auto-approves a settlement for a permission holder in a pending-review status', () => {
+    expect(shouldAutoApproveInternalMaintenanceSettlement({ status: 'review_pending', payMethod: 'rent_deduction', canManageWorkflow: true })).toBe(true)
+    expect(shouldAutoApproveInternalMaintenanceSettlement({ status: 'pending_review', payMethod: 'company_pay', canManageWorkflow: true })).toBe(true)
+    expect(shouldAutoApproveInternalMaintenanceSettlement({ status: 'in_progress', payMethod: 'rent_deduction', canManageWorkflow: true })).toBe(false)
+    expect(shouldAutoApproveInternalMaintenanceSettlement({ status: 'pending_review', payMethod: '', canManageWorkflow: true })).toBe(false)
+    expect(shouldAutoApproveInternalMaintenanceSettlement({ status: 'pending_review', payMethod: 'rent_deduction', canManageWorkflow: false })).toBe(false)
+  })
+
+  it('uses the auditable workflow route for manager completion', async () => {
+    postJSON.mockResolvedValue({ ok: true, id: 'record-1', status: 'pending_review' })
+
+    await manageInternalMaintenanceWorkflow({
+      recordId: 'record/1',
+      action: 'manager_complete',
+      assigneeId: 'repairer-1',
+      completionPhotoUrls: ['maintenance/after.jpg'],
+      completionNote: '已更换马桶盖',
+      completedAt: '2026-09-03',
+      operationId: 'complete-operation-1',
+    })
+
+    expect(internalMaintenanceWorkflowPath('record/1', 'manager_complete')).toBe('/maintenance/workflow/internal/record%2F1/manager_complete')
+    expect(postJSON).toHaveBeenCalledWith('/maintenance/workflow/internal/record%2F1/manager_complete', {
+      assignee_id: 'repairer-1',
+      completion_photo_urls: ['maintenance/after.jpg'],
+      completion_note: '已更换马桶盖',
+      completed_at: '2026-09-03',
+      operation_id: 'complete-operation-1',
+    }, { timeoutMs: 10_000 })
   })
 
   it('creates a web repair through the feedback workflow without an assignee', async () => {

@@ -29,6 +29,7 @@ import {
   getAnnualReportFiscalYearForMonth,
   isAnnualReportManualMonth,
   isSupportedAnnualReportFiscalYear,
+  listAnnualPropertyReportSummaries,
   listAnnualReportManualRows,
   loadAnnualPropertyReport,
   upsertAnnualReportManualMonth,
@@ -44,6 +45,7 @@ import { collectMonthlyInvoiceAttachments } from '../lib/monthlyStatementInvoice
 import { deepCleaningSourceSummary, maintenanceSourceSummary } from '../lib/autoExpenseSourceSummary'
 import { buildCompanyRevenueReport } from '../lib/companyRevenueReport'
 import { buildDailyNecessityAutoExpenseDecision } from '../lib/dailyNecessitiesAutoExpense'
+import { maintenanceAutoExpenseOccurredAt, maintenanceAutoExpenseStatus } from '../lib/maintenanceAutoExpense'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
@@ -770,9 +772,11 @@ function deriveAutoExpenseFields(kind: 'maintenance' | 'deep_cleaning' | 'daily_
   return {
     refType: kind,
     refId,
-    status: autoNormStatus(row?.status),
+    status: kind === 'maintenance' ? maintenanceAutoExpenseStatus(row) : autoNormStatus(row?.status),
     payMethod: autoNormPayMethod(row?.pay_method),
-    occurredAt: autoToISODateOnly(row?.completed_at) || autoToISODateOnly(row?.occurred_at),
+    occurredAt: kind === 'maintenance'
+      ? maintenanceAutoExpenseOccurredAt(row)
+      : autoToISODateOnly(row?.completed_at) || autoToISODateOnly(row?.occurred_at),
     amount,
     propertyId: String(row?.property_id || ''),
     category: 'other',
@@ -788,7 +792,7 @@ async function collectAutoExpenseSourceItems(executor: any, input: { from: strin
   const propertyIdFilter = String(input.propertyIdFilter || '').trim()
   if (input.type === 'all' || input.type === 'maintenance') {
     const mt = await executor.query(
-      `SELECT id, property_id, status, pay_method, work_no, maintenance_amount, has_parts, parts_amount, maintenance_amount_includes_parts, has_gst, maintenance_amount_includes_gst, total_amount, completed_at, occurred_at, created_at, details, repair_notes, invoice_description_en
+      `SELECT id, property_id, status, review_status, pay_method, work_no, maintenance_amount, has_parts, parts_amount, maintenance_amount_includes_parts, has_gst, maintenance_amount_includes_gst, total_amount, completed_at, occurred_at, created_at, details, repair_notes, invoice_description_en
          FROM property_maintenance
         WHERE coalesce(completed_at::date, occurred_at) BETWEEN $1::date AND $2::date
           AND ($4::text IS NULL OR $4::text = '' OR property_id = $4::text)
@@ -2539,6 +2543,19 @@ const annualReportManualPayloadSchema = z.object({
   other_expense: annualReportNullableAmountSchema,
 })
 
+router.get('/annual-report/summaries', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
+  try {
+    const fyParsed = annualReportFiscalYearSchema.safeParse((req.query as any)?.fy)
+    if (!fyParsed.success) return res.status(400).json({ message: 'invalid fy' })
+    const fiscalYear = Number(fyParsed.data)
+    if (!isSupportedAnnualReportFiscalYear(fiscalYear)) return res.status(400).json({ message: 'unsupported fiscal year' })
+    const reports = await listAnnualPropertyReportSummaries(fiscalYear)
+    return res.json({ fiscal_year: fiscalYear, reports })
+  } catch {
+    return res.status(500).json({ message: 'annual report summaries failed' })
+  }
+})
+
 router.get('/annual-report', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
   try {
     const propertyId = String((req.query as any)?.property_id || '').trim()
@@ -2824,7 +2841,7 @@ router.get('/rent-segments', requireAnyPerm(['finance.payout', 'finance.tx.write
     if (!m) return res.status(400).json({ message: 'invalid month' })
     if (!property_id) return res.status(400).json({ message: 'missing property_id' })
     if (!hasPg || !pgPool) return res.status(400).json({ message: 'pg required' })
-    const orderSegmentCols = 'id, property_id, stay_type, checkin, checkout, price, cleaning_fee, nights, net_income, status, count_in_income, confirmation_code, guest_name, source, channel, created_at, updated_at'
+    const orderSegmentCols = 'id, property_id, stay_type, checkin, checkout, price, cleaning_fee, nights, net_income, status, count_in_income, confirmation_code, guest_name, source, created_at'
     const ordersRs = await pgPool.query(
       `SELECT ${orderSegmentCols} FROM orders WHERE property_id = $1 AND checkin < $3::date AND checkout > $2::date`,
       [property_id, m.start, m.nextStart]

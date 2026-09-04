@@ -32,10 +32,10 @@ import { deepCleaningSourceSummary, maintenanceSourceSummary } from '../lib/auto
 import { buildCleaningTurnoverDisplay, mergeCleaningTurnoverDisplays } from '../lib/cleaningTurnoverDisplay'
 import { CLEANING_IMAGE_FORMAT_ERROR, isImageUploadCandidate, normalizeCleaningImageUpload } from '../lib/cleaningMediaImage'
 import { isCleaningMediaKey } from '../lib/cleaningMediaReference'
-import { assertMaintenanceWorkflowSchemaReady, ensureMaintenanceWorkflowFoundation, MaintenanceWorkflowSchemaNotReady } from '../lib/maintenanceWorkflowSchema'
-import { availableMaintenanceActions, maintenanceWorkTaskStatus, normalizeMaintenanceWorkflowStatus } from '../lib/maintenanceWorkflow'
+import { assertMaintenanceWorkflowSchemaReady, MaintenanceWorkflowSchemaNotReady } from '../lib/maintenanceWorkflowSchema'
+import { assertMaintenanceRuntimeSchemaReady, isMaintenanceRuntimeSchemaReady, MaintenanceRuntimeSchemaNotReady } from '../lib/maintenanceRuntimeSchema'
+import { availableMaintenanceActions, MAINTENANCE_WORKFLOW_MANAGE_PERMISSION, maintenanceWorkTaskStatus, normalizeMaintenanceWorkflowStatus } from '../lib/maintenanceWorkflow'
 import {
-  ensureMaintenanceWorkTasksTable,
   insertMaintenanceWorkflowEvent,
   maintenanceTaskSummaryFromDetails,
   upsertMaintenanceWorkTask,
@@ -200,7 +200,7 @@ function canViewAll(user: any) {
   return hasRole(user, 'admin') || hasRole(user, 'offline_manager') || hasRole(user, 'customer_service')
 }
 
-function maintenanceWorkflowForWorkTask(task: any, user: any) {
+function maintenanceWorkflowForWorkTask(task: any, user: any, canManageWorkflow: boolean) {
   const sourceType = String(task?.source_type || '').trim()
   const domain = sourceType === 'property_maintenance'
     ? 'internal'
@@ -210,12 +210,12 @@ function maintenanceWorkflowForWorkTask(task: any, user: any) {
   if (!domain) return null
   const status = normalizeMaintenanceWorkflowStatus(task?.status)
   const actorId = String(user?.sub || user?.id || '').trim()
-  const isManager = canViewAll(user)
   const isAssignedExecutor = !!actorId && String(task?.assignee_id || '').trim() === actorId
   return {
     domain,
     status,
-    available_actions: availableMaintenanceActions({ status, isManager, isAssignedExecutor }),
+    can_manage_workflow: canManageWorkflow,
+    available_actions: availableMaintenanceActions({ status, isManager: canManageWorkflow, isAssignedExecutor }),
   }
 }
 
@@ -1646,58 +1646,20 @@ function normalizeTimeOrDefault(v: any, fallback: string) {
   return s || fallback
 }
 
-let workTasksEnsured = false
-let workTasksEnsuring: Promise<void> | null = null
+let workTasksSchemaReady = false
 
-async function ensureWorkTasksTable() {
+async function assertWorkTasksSchemaReady() {
   if (!hasPg || !pgPool) return
-  if (workTasksEnsured) return
-  if (workTasksEnsuring) return workTasksEnsuring
-  workTasksEnsuring = (async () => {
-    await pgPool.query(`CREATE TABLE IF NOT EXISTS work_tasks (
-      id text PRIMARY KEY,
-      task_kind text NOT NULL,
-      source_type text NOT NULL,
-      source_id text NOT NULL,
-      property_id text,
-      title text NOT NULL DEFAULT '',
-      summary text,
-      scheduled_date date,
-      start_time text,
-      end_time text,
-      assignee_id text,
-      status text NOT NULL DEFAULT 'todo',
-      urgency text NOT NULL DEFAULT 'medium',
-      sort_index integer,
-      photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb,
-      completion_photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb,
-      completion_note text,
-      completion_reason text,
-      created_by text,
-      updated_by text,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      updated_at timestamptz NOT NULL DEFAULT now()
-    );`)
-    await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS sort_index integer;`)
-    await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb;`)
-    await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS completion_photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb;`)
-    await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS completion_note text;`)
-    await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS completion_reason text;`)
-    await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_work_tasks_source ON work_tasks(source_type, source_id);`)
-    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day_assignee ON work_tasks(scheduled_date, assignee_id, status);`)
-    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_kind_day ON work_tasks(task_kind, scheduled_date);`)
-    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day ON work_tasks(scheduled_date);`)
-    workTasksEnsured = true
-  })()
-    .catch((e) => {
-      workTasksEnsured = false
-      workTasksEnsuring = null
-      throw e
-    })
-    .finally(() => {
-      workTasksEnsuring = null
-    })
-  return workTasksEnsuring
+  assertMaintenanceRuntimeSchemaReady()
+  if (workTasksSchemaReady) return
+  await assertMaintenanceWorkflowSchemaReady(pgPool)
+  workTasksSchemaReady = true
+}
+
+function sendMaintenanceRuntimeSchemaNotReady(res: any, error: unknown) {
+  if (!(error instanceof MaintenanceRuntimeSchemaNotReady)) return false
+  res.status(503).json({ code: 'maintenance_runtime_schema_not_ready' })
+  return true
 }
 
 let workTaskParticipantsEnsured = false
@@ -2179,7 +2141,8 @@ router.post('/alerts/:id/read', async (req, res) => {
 
 export async function warmupMzappModule() {
   if (!(hasPg && pgPool)) return
-  await ensureWorkTasksTable()
+  if (!isMaintenanceRuntimeSchemaReady()) throw new MaintenanceRuntimeSchemaNotReady()
+  await assertWorkTasksSchemaReady()
   await ensureWorkTaskParticipantsTable()
   await ensureGuestLuggageTables()
   await ensureCleaningTaskSortColumns()
@@ -2188,8 +2151,6 @@ export async function warmupMzappModule() {
   await ensureCleaningCustomerColumns()
   await ensureCleaningInspectionColumns()
   await ensurePropertyMaintenanceColumns()
-  await ensureMaintenanceWorkflowFoundation(pgPool)
-  await ensureMaintenanceWorkTasksTable(pgPool)
   await assertIdempotentStepReceiptsReady(pgPool)
   await ensureNotificationStorage()
 }
@@ -5677,7 +5638,7 @@ router.post('/work-tasks/:id/mark', async (req, res) => {
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
 
   try {
-    await ensureWorkTasksTable()
+    await assertWorkTasksSchemaReady()
     const r0 = await pgPool.query('SELECT * FROM work_tasks WHERE id=$1 LIMIT 1', [id])
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
@@ -5807,6 +5768,7 @@ router.post('/work-tasks/:id/mark', async (req, res) => {
     )
     return res.json({ ok: true, completion_photo_urls: completionPhotoUrls, completion_note: note, completion_reason: reason })
   } catch (e: any) {
+    if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'mark_failed' })
   }
 })
@@ -5827,7 +5789,7 @@ router.post('/work-tasks/:id/completion-photos', async (req, res) => {
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
 
   try {
-    await ensureWorkTasksTable()
+    await assertWorkTasksSchemaReady()
     const current = await pgPool.query(
       `SELECT id, source_type, assignee_id, status, completion_photo_urls
        FROM work_tasks
@@ -5882,6 +5844,7 @@ router.post('/work-tasks/:id/completion-photos', async (req, res) => {
 
     return res.json({ ok: true, completion_photo_urls: normalizeWorkTaskPhotoUrls(out.completion_photo_urls) })
   } catch (e: any) {
+    if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'completion_photo_append_failed' })
   }
 })
@@ -5914,7 +5877,7 @@ router.post('/work-tasks/reorder', async (req, res) => {
   if (!taskIds.length) return res.status(400).json({ message: 'missing task_ids' })
 
   try {
-    await ensureWorkTasksTable()
+    await assertWorkTasksSchemaReady()
     const r0 = await pgPool.query(
       `SELECT id, assignee_id, scheduled_date, source_type
        FROM work_tasks
@@ -5977,6 +5940,7 @@ router.post('/work-tasks/reorder', async (req, res) => {
     }
     return res.json({ ok: true })
   } catch (e: any) {
+    if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'work_task_reorder_failed' })
   }
 })
@@ -6005,7 +5969,7 @@ router.post('/work-tasks/mixed-reorder', async (req, res) => {
     .filter((item) => item.id)
 
   try {
-    await ensureWorkTasksTable()
+    await assertWorkTasksSchemaReady()
     await ensureCleaningTaskSortColumns()
 
     const workIds = Array.from(new Set(workEntries.map((item) => item.id)))
@@ -6128,6 +6092,7 @@ router.post('/work-tasks/mixed-reorder', async (req, res) => {
     }
     return res.json({ ok: true })
   } catch (e: any) {
+    if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
     const status = Number(e?.statusCode || 0)
     if (status >= 400 && status < 600) return res.status(status).json({ message: e?.message || 'mixed_reorder_failed' })
     return res.status(500).json({ message: e?.message || 'mixed_reorder_failed' })
@@ -6150,7 +6115,7 @@ router.patch('/work-tasks/:id/photos', async (req, res) => {
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
 
   try {
-    await ensureWorkTasksTable()
+    await assertWorkTasksSchemaReady()
     const current = await pgPool.query(
       `SELECT id, source_type, source_id, assignee_id, photo_urls
        FROM work_tasks
@@ -6212,6 +6177,7 @@ router.patch('/work-tasks/:id/photos', async (req, res) => {
 
     return res.json({ ok: true, photo_urls: photoUrls })
   } catch (e: any) {
+    if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'work_task_photos_failed' })
   }
 })
@@ -6432,7 +6398,7 @@ router.get('/work-tasks', async (req, res) => {
 
   try {
     if (!hasPg || !pgPool) return res.json([])
-    await ensureWorkTasksTable()
+    await assertWorkTasksSchemaReady()
     await ensureWorkTaskParticipantsTable()
     await ensureCleaningTaskSortColumns()
     await ensureCleaningCheckoutColumns()
@@ -7900,6 +7866,7 @@ router.get('/work-tasks', async (req, res) => {
 
     const manualParticipantsByRef = await loadManualWorkTaskParticipantsByRef(visibleOut)
     markWorkTasksStep('manual_participants')
+    const canManageMaintenanceWorkflow = await userHasAnyPerm(user, [MAINTENANCE_WORKFLOW_MANAGE_PERMISSION])
     const responseOut = visibleOut.map((task) => {
       const taskWithParticipants = attachWorkTaskParticipants(task, manualParticipantsByRef)
       const mergedChildren = Array.isArray((task as any).__merged_children) ? (task as any).__merged_children : []
@@ -7938,7 +7905,7 @@ router.get('/work-tasks', async (req, res) => {
         }
       }
       const { __merged_children, ...cleanTask } = taskWithParticipants as any
-      const maintenanceWorkflow = maintenanceWorkflowForWorkTask(taskWithParticipants, user)
+      const maintenanceWorkflow = maintenanceWorkflowForWorkTask(taskWithParticipants, user, canManageMaintenanceWorkflow)
       return {
         ...cleanTask,
         ...payload,
@@ -7954,6 +7921,7 @@ router.get('/work-tasks', async (req, res) => {
     markWorkTasksStep('error')
     setWorkTasksTimingHeaders()
     logSlowWorkTasks('error')
+    if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'mzapp_work_tasks_failed' })
   }
 })
@@ -8261,6 +8229,7 @@ async function assertPropertyFeedbackAccessColumns(client: any, table: string) {
 
 async function ensurePropertyMaintenanceColumns() {
   if (!pgPool) throw new MaintenanceWorkflowSchemaNotReady()
+  assertMaintenanceRuntimeSchemaReady()
   await assertMaintenanceWorkflowSchemaReady(pgPool)
   await assertPropertyFeedbackAccessColumns(pgPool, 'property_maintenance')
 }
@@ -8329,7 +8298,8 @@ async function createInternalMaintenanceFromFeedback(input: {
   sourceTaskId: string | null
 }, transactionClient?: any) {
   if (!pgPool) throw new InternalMaintenanceFeedbackError(500, 'pg_not_available')
-  await ensureMaintenanceWorkTasksTable(pgPool)
+  if (!isMaintenanceRuntimeSchemaReady()) throw new MaintenanceRuntimeSchemaNotReady()
+  await assertMaintenanceWorkflowSchemaReady(pgPool)
   const client = transactionClient || await pgPool.connect()
   const ownsTransaction = !transactionClient
   try {
@@ -8653,6 +8623,7 @@ router.get('/property-feedbacks', async (req, res) => {
       return res.status(403).json({ message: 'forbidden_property_feedback' })
     }
     const scopedPropertyId = String(property.id || '').trim()
+    assertMaintenanceRuntimeSchemaReady()
     const unresolvedMaintSql = feedbackStatusWhereSql('m', want)
     const unresolvedDeepSql = feedbackStatusWhereSql('d', want)
     const settle = async (label: string, loader: () => Promise<any[]>) => {
@@ -8727,6 +8698,7 @@ router.get('/property-feedbacks', async (req, res) => {
     if (!out.length && errors.length) return res.status(500).json({ message: 'property_feedbacks_failed', errors })
     return res.json(out.slice(0, limit))
   } catch (e: any) {
+    if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'property_feedbacks_failed' })
   }
 })
@@ -8781,11 +8753,12 @@ router.post('/property-feedbacks', async (req, res) => {
     const duplicateWindowHours = 24
 
     if (parsed.data.kind === 'maintenance') {
+      if (!isMaintenanceRuntimeSchemaReady()) {
+        return res.status(503).json({ code: 'maintenance_runtime_schema_not_ready' })
+      }
       try {
         await ensurePropertyMaintenanceColumns()
       } catch {}
-      await ensureMaintenanceWorkflowFoundation(pool)
-      await ensureMaintenanceWorkTasksTable(pool)
       let origin: { feedbackSource: InternalMaintenanceFeedbackSource; sourceTaskId: string | null }
       try {
         origin = await resolveInternalMaintenanceFeedbackOrigin(user, parsed.data.property_id, parsed.data.source_task_id)

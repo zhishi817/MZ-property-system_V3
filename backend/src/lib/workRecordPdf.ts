@@ -3,6 +3,7 @@ import { getChromiumBrowser, resetChromiumBrowser } from './playwright'
 import { waitForImages } from './waitForImages'
 import { renderWorkRecordPdfHtml } from './workRecordPdfTemplate'
 import { normalizePhotoUrlForPdf } from './normalizePhotoUrlForPdf'
+import { assertMaintenanceRuntimeSchemaReady, MaintenanceRuntimeSchemaNotReady } from './maintenanceRuntimeSchema'
 
 export type WorkRecordPdfKind = 'maintenance' | 'deep_cleaning'
 export type WorkRecordPdfPhotosMode = 'full' | 'compressed' | 'thumbnail'
@@ -26,33 +27,6 @@ export type GenerateWorkRecordPdfResult = {
 function isPlaywrightClosedError(e: any) {
   const msg = String(e?.message || '')
   return /(Target page, context or browser has been closed|browser has been closed|browser disconnected|Target closed)/i.test(msg)
-}
-
-async function ensurePropertyMaintenanceTable() {
-  if (!pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_maintenance (
-    id text PRIMARY KEY,
-    property_id text REFERENCES properties(id) ON DELETE SET NULL,
-    occurred_at date,
-    worker_name text,
-    details text,
-    notes text,
-    created_by text,
-    created_at timestamptz DEFAULT now()
-  );`)
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_maintenance_pid ON property_maintenance(property_id);')
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_maintenance_date ON property_maintenance(occurred_at);')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_notes text;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS property_code text;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category text;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category_detail text;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS invoice_description_en text;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS started_at timestamptz;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS completed_at timestamptz;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS updated_at timestamptz;')
 }
 
 async function ensurePropertyDeepCleaningTable() {
@@ -104,6 +78,24 @@ async function ensurePropertyDeepCleaningTable() {
   await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS invoice_description_en text;')
 }
 
+export async function assertWorkRecordPdfSchemaReady(kind: WorkRecordPdfKind) {
+  if (kind !== 'maintenance') return
+  if (!pgPool) throw new MaintenanceRuntimeSchemaNotReady()
+  assertMaintenanceRuntimeSchemaReady()
+  try {
+    await pgPool.query(
+      `SELECT id, property_id, occurred_at, worker_name, details, created_by, created_at,
+              photo_urls, repair_photo_urls, repair_notes, property_code, work_no,
+              category, category_detail, invoice_description_en, area, started_at,
+              completed_at, updated_at
+         FROM property_maintenance
+        LIMIT 0`,
+    )
+  } catch {
+    throw new MaintenanceRuntimeSchemaNotReady()
+  }
+}
+
 function dayStrAtTZ(d: Date, tz: string): string {
   const parts = new Intl.DateTimeFormat('en-AU', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(d)
   const get = (t: string) => parts.find(p => p.type === t)?.value || ''
@@ -153,7 +145,7 @@ function photoCompressOptions(photosMode: WorkRecordPdfPhotosMode) {
 async function loadRow(kind: WorkRecordPdfKind, recordId: string) {
   if (!hasPg || !pgPool) throw new Error('no database configured')
   if (kind === 'maintenance') {
-    await ensurePropertyMaintenanceTable()
+    await assertWorkRecordPdfSchemaReady(kind)
     const r0 = await pgPool.query(
       `SELECT m.*, COALESCE(m.property_code, p.code) AS property_code
        FROM property_maintenance m

@@ -1,5 +1,5 @@
 "use client"
-import { Alert, Button, Card, Checkbox, Input, InputNumber, Select, Space, Spin, Table, message } from 'antd'
+import { Alert, Button, Card, Checkbox, Input, InputNumber, Select, Space, Spin, Table, Tag, message } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import FiscalYearStatement from '../../../../components/FiscalYearStatement'
 import { deleteJSON, getJSON, putJSON } from '../../../../lib/api'
@@ -10,14 +10,24 @@ import {
   annualReportHasIssues,
   canDownloadAnnualReport,
   formatAnnualReportFilename,
+  formatAnnualReportSummaryStatus,
   type AnnualReportLanguage,
   type AnnualPropertyReport,
   type AnnualReportLineKey,
+  type AnnualReportSummaryStatus,
 } from '../../../../lib/annualReport'
 import { exportElementToPdfBlob } from '../../../../lib/pdfExport'
 import { sortActivePropertiesByRegionThenCode } from '../../../../lib/properties'
 
 type PropertyOption = { id: string; code?: string; address?: string; region?: string | null; archived?: boolean | null }
+type AnnualReportSummary = {
+  property: { id: string; code: string | null; address: string | null; region: string | null }
+  report_status: AnnualReportSummaryStatus
+  complete_month_count: number
+  missing_month_count: number
+  warning_count: number
+}
+type AnnualReportSummaryResponse = { fiscal_year: number; reports: AnnualReportSummary[] }
 
 type ManualDraft = {
   is_complete: boolean
@@ -75,6 +85,9 @@ export default function AnnualReportPage() {
   const [reportLanguage, setReportLanguage] = useState<AnnualReportLanguage>('bilingual')
   const [propertyId, setPropertyId] = useState<string | undefined>(undefined)
   const [properties, setProperties] = useState<PropertyOption[]>([])
+  const [reportSummaries, setReportSummaries] = useState<AnnualReportSummary[]>([])
+  const [summariesLoading, setSummariesLoading] = useState(false)
+  const [summariesLoadError, setSummariesLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [savingManualMonths, setSavingManualMonths] = useState(false)
   const [deletingMonthKey, setDeletingMonthKey] = useState<string | null>(null)
@@ -88,6 +101,24 @@ export default function AnnualReportPage() {
       .then((rows) => setProperties(sortActivePropertiesByRegionThenCode(Array.isArray(rows) ? rows : [])))
       .catch(() => setProperties([]))
   }, [])
+
+  const loadReportSummaries = useCallback(async () => {
+    setSummariesLoading(true)
+    setSummariesLoadError(null)
+    try {
+      const response = await getJSON<AnnualReportSummaryResponse>(`/finance/annual-report/summaries?${new URLSearchParams({ fy: String(fiscalYear) }).toString()}`)
+      setReportSummaries(Array.isArray(response?.reports) ? response.reports : [])
+    } catch {
+      setReportSummaries([])
+      setSummariesLoadError('年度报告记录加载失败，请刷新后重试。')
+    } finally {
+      setSummariesLoading(false)
+    }
+  }, [fiscalYear])
+
+  useEffect(() => {
+    loadReportSummaries().catch(() => {})
+  }, [loadReportSummaries])
 
   const loadReport = useCallback(async (pid?: string) => {
     const targetPropertyId = String(pid || propertyId || '').trim()
@@ -170,7 +201,7 @@ export default function AnnualReportPage() {
           ...draft.lines,
         })
       }
-      await loadReport(propertyId)
+      await Promise.all([loadReport(propertyId), loadReportSummaries()])
       message.success(`已应用 ${pendingMonths.length} 个月的修改`)
     } catch (e: any) {
       message.error(e?.message || '应用修改失败')
@@ -183,7 +214,7 @@ export default function AnnualReportPage() {
     setDeletingMonthKey(monthKey)
     try {
       await deleteJSON(`/finance/annual-report/manual-months/${encodeURIComponent(String(propertyId || ''))}/${encodeURIComponent(monthKey)}`)
-      await loadReport(propertyId)
+      await Promise.all([loadReport(propertyId), loadReportSummaries()])
       message.success(`${monthKey} 已删除`)
     } catch (e: any) {
       message.error(e?.message || '删除失败')
@@ -257,8 +288,69 @@ export default function AnnualReportPage() {
         </Button>
       </Space>
 
+      <Card
+        size="small"
+        title={`FY${fiscalYear} 房源年度报告记录`}
+        extra={<span style={{ color: '#666' }}>{summariesLoading ? '正在读取状态…' : `${reportSummaries.length} 个房源`}</span>}
+        style={{ marginBottom: 16 }}
+      >
+        {summariesLoadError ? (
+          <Alert
+            type="error"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message="年度报告记录加载失败"
+            description={summariesLoadError}
+            action={<Button size="small" onClick={() => loadReportSummaries().catch(() => {})}>重试</Button>}
+          />
+        ) : null}
+        <Table
+          rowKey={(row) => row.property.id}
+          loading={summariesLoading}
+          size="small"
+          pagination={{ pageSize: 20, showSizeChanger: true, pageSizeOptions: [20, 50, 100] }}
+          dataSource={reportSummaries}
+          columns={[
+            {
+              title: '房源',
+              key: 'property',
+              width: 280,
+              render: (_: any, row: AnnualReportSummary) => (
+                <div>
+                  <div style={{ fontWeight: 600 }}>{row.property.code || row.property.address || row.property.id}</div>
+                  {row.property.address && row.property.address !== row.property.code ? <div style={{ color: '#666', fontSize: 12 }}>{row.property.address}</div> : null}
+                </div>
+              ),
+            },
+            { title: '区域', dataIndex: ['property', 'region'], width: 150, render: (value: string | null) => value || '-' },
+            {
+              title: '年度状态',
+              dataIndex: 'report_status',
+              width: 190,
+              render: (status: AnnualReportSummaryStatus) => (
+                <Tag color={status === 'complete' ? 'green' : status === 'draft_incomplete' ? 'orange' : 'red'}>
+                  {formatAnnualReportSummaryStatus(status, reportLanguage)}
+                </Tag>
+              ),
+            },
+            { title: '完整月份', dataIndex: 'complete_month_count', width: 120, align: 'right' as const, render: (value: number) => `${Number(value || 0)}/12` },
+            { title: '待补录/警告', key: 'issues', width: 140, align: 'right' as const, render: (_: any, row: AnnualReportSummary) => Number(row.missing_month_count || 0) + Number(row.warning_count || 0) },
+            {
+              title: '操作',
+              key: 'actions',
+              width: 110,
+              fixed: 'right' as const,
+              render: (_: any, row: AnnualReportSummary) => (
+                <Button type="link" onClick={() => setPropertyId(row.property.id)}>查看报告</Button>
+              ),
+            },
+          ]}
+          scroll={{ x: 980 }}
+        />
+      </Card>
+
       {!propertyId ? (
-        <Alert type="info" showIcon message="请选择房源后查看年度报告。" />
+        <Alert type="info" showIcon message="请从上方选择房源，或在年度报告记录表中点击“查看报告”。" />
       ) : null}
 
       {report && annualReportHasIssues(report) ? (

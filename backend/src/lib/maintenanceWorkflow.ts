@@ -1,5 +1,7 @@
 import { MAINTENANCE_WORKFLOW_STATUSES } from './maintenanceWorkflowSchema'
 
+export const MAINTENANCE_WORKFLOW_MANAGE_PERMISSION = 'property_maintenance.workflow.manage'
+
 export type MaintenanceWorkflowStatus = typeof MAINTENANCE_WORKFLOW_STATUSES[number]
 export type MaintenanceWorkflowAction =
   | 'assign'
@@ -7,6 +9,8 @@ export type MaintenanceWorkflowAction =
   | 'submit'
   | 'executor_complete'
   | 'executor_unfinished'
+  | 'manager_start'
+  | 'manager_complete'
   | 'review_approved'
   | 'review_rejected'
   | 'reopen'
@@ -42,6 +46,8 @@ export function availableMaintenanceActions(input: {
       actions.add('assign')
       actions.add('cancel')
     }
+    if (input.status === 'pending_assignment' || input.status === 'assigned') actions.add('manager_start')
+    if (input.status === 'pending_assignment' || input.status === 'assigned' || input.status === 'in_progress') actions.add('manager_complete')
     if (input.status === 'in_progress') actions.add('hold')
     if (input.status === 'pending_review') actions.add('review')
     if (input.status === 'closed') actions.add('reopen')
@@ -66,16 +72,18 @@ export function validateMaintenanceWorkflowAction(input: {
   reason?: string | null
 }): { ok: true } | { ok: false; code: string } {
   const reason = String(input.reason || '').trim()
-  const managerActions: MaintenanceWorkflowAction[] = ['assign', 'review_approved', 'review_rejected', 'reopen', 'cancel']
+  const managerActions: MaintenanceWorkflowAction[] = ['assign', 'manager_start', 'manager_complete', 'review_approved', 'review_rejected', 'reopen', 'cancel']
   if (managerActions.includes(input.action) && !input.isManager) return { ok: false, code: 'maintenance_manager_required' }
   if (['start', 'submit', 'executor_complete', 'executor_unfinished'].includes(input.action) && !input.isAssignedExecutor) return { ok: false, code: 'maintenance_assignee_required' }
   if (input.action === 'hold' && !input.isManager) return { ok: false, code: 'maintenance_manager_required' }
   if (input.action === 'assign' && !['pending_assignment', 'assigned', 'in_progress'].includes(input.status)) return { ok: false, code: 'maintenance_transition_invalid' }
   if (input.action === 'start' && input.status !== 'assigned') return { ok: false, code: 'maintenance_transition_invalid' }
+  if (input.action === 'manager_start' && !['pending_assignment', 'assigned', 'in_progress'].includes(input.status)) return { ok: false, code: 'maintenance_transition_invalid' }
   if (input.action === 'submit' && input.status !== 'in_progress') return { ok: false, code: 'maintenance_transition_invalid' }
+  if (input.action === 'manager_complete' && !['pending_assignment', 'assigned', 'in_progress'].includes(input.status)) return { ok: false, code: 'maintenance_transition_invalid' }
   if (input.action === 'executor_complete' && !['assigned', 'in_progress'].includes(input.status)) return { ok: false, code: 'maintenance_transition_invalid' }
   if (input.action === 'executor_unfinished' && !['assigned', 'in_progress'].includes(input.status)) return { ok: false, code: 'maintenance_transition_invalid' }
-  if ((input.action === 'submit' || input.action === 'executor_complete' || input.action === 'review_approved') && Number(input.completionPhotoCount || 0) < 1) {
+  if ((input.action === 'submit' || input.action === 'executor_complete' || input.action === 'manager_complete' || input.action === 'review_approved') && Number(input.completionPhotoCount || 0) < 1) {
     return { ok: false, code: 'maintenance_completion_photo_required' }
   }
   if (input.action === 'executor_unfinished' && !reason) return { ok: false, code: 'maintenance_unfinished_reason_required' }

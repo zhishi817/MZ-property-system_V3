@@ -11,6 +11,8 @@ import crypto from 'crypto'
 import sharp from 'sharp'
 import { resizeUploadImage } from '../lib/uploadImageResize'
 import { isAllowedR2ImageKey } from '../lib/r2ImageProxyPolicy'
+import { assertMaintenanceWorkflowSchemaReady } from '../lib/maintenanceWorkflowSchema'
+import { assertMaintenanceShareLinksSchemaReady, MaintenanceRuntimeSchemaNotReady } from '../lib/maintenanceRuntimeSchema'
 
 const SECRET = process.env.JWT_SECRET || 'dev-secret'
 const DEFAULT_PUBLIC_CLEANING_PASSWORD = process.env.PUBLIC_CLEANING_PASSWORD || 'mz-cleaning'
@@ -167,6 +169,31 @@ async function ensurePublicAccessTable() {
   try { await pgPool.query(`ALTER TABLE public_access ADD COLUMN IF NOT EXISTS password_enc text;`) } catch {}
 }
 
+async function assertPublicAccessTableReady() {
+  if (!pgPool) throw new Error('public_access_schema_not_ready')
+  await pgPool.query(
+    `SELECT area, password_hash, password_enc, password_updated_at, created_at
+       FROM public_access
+      LIMIT 0`,
+  )
+}
+
+async function assertMaintenanceShareRouteSchemaReady() {
+  if (!pgPool) throw new MaintenanceRuntimeSchemaNotReady()
+  await assertMaintenanceShareLinksSchemaReady(pgPool)
+  try {
+    await assertMaintenanceWorkflowSchemaReady(pgPool)
+  } catch {
+    throw new MaintenanceRuntimeSchemaNotReady()
+  }
+}
+
+function sendMaintenanceRuntimeSchemaNotReady(res: any, error: unknown) {
+  if (!(error instanceof MaintenanceRuntimeSchemaNotReady)) return false
+  res.status(503).json({ code: 'maintenance_runtime_schema_not_ready' })
+  return true
+}
+
 async function ensureCmsPagesTable() {
   if (!pgPool) return
   await pgPool.query(`CREATE TABLE IF NOT EXISTS cms_pages (
@@ -238,7 +265,7 @@ async function getOrInitCleaningAccess(): Promise<{ area: string; password_hash:
 async function getOrInitMaintenanceShareAccess(): Promise<{ area: string; password_hash: string; password_updated_at: string } | null> {
   try {
     if (hasPg) {
-      await ensurePublicAccessTable()
+      await assertPublicAccessTableReady()
       const rows = await pgSelect('public_access', '*', { area: 'maintenance_share' }) as any[]
       const existing = rows && rows[0]
       if (existing) return existing
@@ -440,19 +467,6 @@ function safeDateToIso(v: any): string | null {
     if (Number.isNaN(d.getTime())) return null
     return d.toISOString()
   } catch { return null }
-}
-
-async function ensureMaintenanceShareLinksTable() {
-  if (!pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS maintenance_share_links (
-    token_hash text PRIMARY KEY,
-    maintenance_id text NOT NULL REFERENCES property_maintenance(id) ON DELETE CASCADE,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    expires_at timestamptz NOT NULL,
-    revoked_at timestamptz
-  );`)
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_maintenance_share_mid ON maintenance_share_links(maintenance_id);')
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_maintenance_share_expires ON maintenance_share_links(expires_at);')
 }
 
 async function ensureDeepCleaningShareLinksTable() {
@@ -926,7 +940,7 @@ router.get('/maintenance-share/:token', async (req, res) => {
   if (!token) return res.status(400).json({ message: 'missing token' })
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensureMaintenanceShareLinksTable()
+    await assertMaintenanceShareRouteSchemaReady()
     const tokenHash = sha256Hex(token)
     const r = await pgPool.query(
       'SELECT maintenance_id FROM maintenance_share_links WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at > now() LIMIT 1',
@@ -934,7 +948,6 @@ router.get('/maintenance-share/:token', async (req, res) => {
     )
     const maintenanceId = String(r.rows?.[0]?.maintenance_id || '')
     if (!maintenanceId) return res.status(404).json({ message: 'not found' })
-    await ensurePropertyMaintenanceShareColumns()
     const rows = await pgSelect('property_maintenance', '*', { id: maintenanceId }) as any[]
     const row = rows && rows[0]
     if (!row) return res.status(404).json({ message: 'not found' })
@@ -949,6 +962,7 @@ router.get('/maintenance-share/:token', async (req, res) => {
     const code = propCode || String(row?.property_code || '').trim()
     return res.json({ ...row, property_code: code || row?.property_code, code: code || row?.code })
   } catch (e: any) {
+    if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'get failed' })
   }
 })
@@ -961,11 +975,11 @@ router.post('/maintenance-share/login', async (req, res) => {
   if (!pwd) return res.status(400).json({ message: 'missing password' })
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    await assertMaintenanceShareRouteSchemaReady()
     const access = await getOrInitMaintenanceShareAccess()
     if (!access) return res.status(500).json({ message: 'access not configured' })
     const ok = await bcrypt.compare(pwd, access.password_hash)
     if (!ok) return res.status(401).json({ message: 'invalid password' })
-    await ensureMaintenanceShareLinksTable()
     const tokenHash = sha256Hex(tk)
     const r = await pgPool.query(
       'SELECT maintenance_id FROM maintenance_share_links WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at > now() LIMIT 1',
@@ -973,7 +987,6 @@ router.post('/maintenance-share/login', async (req, res) => {
     )
     const maintenanceId = String(r.rows?.[0]?.maintenance_id || '')
     if (!maintenanceId) return res.status(404).json({ message: 'not found' })
-    await ensurePropertyMaintenanceShareColumns()
     const rows = await pgSelect('property_maintenance', '*', { id: maintenanceId }) as any[]
     const row = rows && rows[0]
     if (!row) return res.status(404).json({ message: 'not found' })
@@ -990,6 +1003,7 @@ router.post('/maintenance-share/login', async (req, res) => {
     const maintenance = { ...row, property_code: code || row?.property_code, code: code || row?.code }
     return res.json({ token: shareToken, maintenance })
   } catch (e: any) {
+    if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'login failed' })
   }
 })
@@ -1018,6 +1032,8 @@ router.post('/maintenance-progress/upload', upload.single('file'), async (req, r
   if (!v.ok) return res.status(401).json({ message: 'unauthorized' })
   if (!req.file) return res.status(400).json({ message: 'missing file' })
   try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    await assertMaintenanceShareRouteSchemaReady()
     const access = await getOrInitMaintenanceShareAccess()
     if (!access) return res.status(500).json({ message: 'access not configured' })
     const iatSec = Number(v.iat || 0) * 1000
@@ -1032,6 +1048,7 @@ router.post('/maintenance-progress/upload', upload.single('file'), async (req, r
     const url = await r2Upload(key, img.contentType || req.file.mimetype || 'application/octet-stream', img.buffer)
     return res.status(201).json({ url })
   } catch (e: any) {
+    if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'upload failed' })
   }
 })
@@ -1053,6 +1070,7 @@ router.post('/maintenance-progress/submit', async (req, res) => {
   if (!detailsArr.length) return res.status(400).json({ message: 'missing details' })
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    await assertMaintenanceShareRouteSchemaReady()
     const access = await getOrInitMaintenanceShareAccess()
     if (!access) return res.status(500).json({ message: 'access not configured' })
     const iatSec = Number(v.iat || 0) * 1000
@@ -1538,6 +1556,8 @@ router.post('/maintenance-share/upload', upload.single('file'), async (req, res)
   if (!v.ok) return res.status(401).json({ message: 'unauthorized' })
   if (!req.file) return res.status(400).json({ message: 'missing file' })
   try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    await assertMaintenanceShareRouteSchemaReady()
     const access = await getOrInitMaintenanceShareAccess()
     if (!access) return res.status(500).json({ message: 'access not configured' })
     const iatSec = Number(v.iat || 0) * 1000
@@ -1552,6 +1572,7 @@ router.post('/maintenance-share/upload', upload.single('file'), async (req, res)
     const url = await r2Upload(key, img.contentType || req.file.mimetype || 'application/octet-stream', img.buffer)
     return res.status(201).json({ url })
   } catch (e: any) {
+    if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'upload failed' })
   }
 })
@@ -1566,6 +1587,7 @@ router.patch('/maintenance-share/:token', async (req, res) => {
   if (rejectLegacyMaintenanceWrite(res, 'maintenance_mzstay_workflow_required')) return
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    await assertMaintenanceShareRouteSchemaReady()
     const access = await getOrInitMaintenanceShareAccess()
     if (!access) return res.status(500).json({ message: 'access not configured' })
     const iatSec = Number(v.iat || 0) * 1000
@@ -1573,7 +1595,6 @@ router.patch('/maintenance-share/:token', async (req, res) => {
     if (iatSec < pwdAt) return res.status(401).json({ message: 'token invalidated' })
     const tokenHash = sha256Hex(tk)
     if (String(v.token_hash || '') !== tokenHash) return res.status(401).json({ message: 'unauthorized' })
-    await ensureMaintenanceShareLinksTable()
     const r = await pgPool.query(
       'SELECT maintenance_id FROM maintenance_share_links WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at > now() LIMIT 1',
       [tokenHash]
@@ -1581,7 +1602,6 @@ router.patch('/maintenance-share/:token', async (req, res) => {
     const maintenanceId = String(r.rows?.[0]?.maintenance_id || '')
     if (!maintenanceId) return res.status(404).json({ message: 'not found' })
     if (String(v.maintenance_id || '') !== maintenanceId) return res.status(401).json({ message: 'unauthorized' })
-    await ensurePropertyMaintenanceShareColumns()
     const body = req.body || {}
     const allowed = [
       'status','urgency','assignee_id','eta','completed_at',
@@ -1601,6 +1621,7 @@ router.patch('/maintenance-share/:token', async (req, res) => {
     addAudit('property_maintenance', maintenanceId, 'update', before, updated)
     return res.json(updated || { ok: true })
   } catch (e: any) {
+    if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'update failed' })
   }
 })

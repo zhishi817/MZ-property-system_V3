@@ -1,5 +1,5 @@
 "use client"
-import { Card, Table, Space, Button, Input, Select, DatePicker, Modal, Form, App, Upload, Grid, Drawer, Image, InputNumber, Switch, Typography, Tag, Row, Col, Divider, Spin, Descriptions, Progress } from 'antd'
+import { Alert, Card, Table, Space, Button, Input, Select, DatePicker, Modal, Form, App, Upload, Grid, Drawer, Image, InputNumber, Switch, Typography, Tag, Row, Col, Divider, Spin, Descriptions, Progress, Steps } from 'antd'
 import { AppstoreOutlined, CreditCardOutlined, EnvironmentOutlined, InfoCircleOutlined, PercentageOutlined, DollarCircleOutlined, PictureOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import html2canvas from 'html2canvas'
 import type { UploadFile } from 'antd/es/upload/interface'
@@ -12,7 +12,7 @@ import { sortProperties } from '../../../lib/properties'
 import TableRowActions from '../../../components/TableRowActions'
 import MaintenanceFeedbackImage from '../../../components/MaintenanceFeedbackImage'
 import { loadMaintenanceFeedbackMedia, maintenanceAfterPhotoReferences } from '../../../lib/maintenanceFeedbackMedia'
-import { assignInternalMaintenance, createInternalMaintenanceFeedback, deleteInternalMaintenanceFeedback, internalMaintenanceAssignmentChanged } from '../../../lib/maintenanceWorkflowActions'
+import { approveInternalMaintenance, assignInternalMaintenance, createInternalMaintenanceFeedback, deleteInternalMaintenanceFeedback, internalMaintenanceAssignmentChanged, manageInternalMaintenanceWorkflow, shouldAutoApproveInternalMaintenanceSettlement, shouldUpdateInternalMaintenanceRecordViaCrud } from '../../../lib/maintenanceWorkflowActions'
 import { runWorkRecordPdfJob } from '../../../lib/workRecordPdfJobs'
 import styles from './records.module.scss'
 
@@ -50,13 +50,99 @@ type RepairOrder = {
   pay_other_note?: string | null
 }
 
-function newMaintenanceAssignmentOperationId() {
+function newMaintenanceWorkflowOperationId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID()
   return `maintenance-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
 function isCancelledMaintenanceStatus(status?: string | null) {
   return ['canceled', 'cancelled'].includes(String(status || '').trim().toLowerCase())
+}
+
+function normalizedMaintenanceWorkflowStatus(status?: string | null) {
+  const value = String(status || '').trim().toLowerCase()
+  if (value === 'closed') return 'closed'
+  if (value === 'canceled' || value === 'cancelled') return 'cancelled'
+  if (['pending_review', 'review_pending', 'awaiting_review', 'completed', 'done', 'ready'].includes(value)) return 'pending_review'
+  if (['in_progress', 'repairing', 'started'].includes(value)) return 'in_progress'
+  if (value === 'assigned') return 'assigned'
+  return 'pending_assignment'
+}
+
+function maintenanceWorkflowTargetOptions(status?: string | null) {
+  const current = normalizedMaintenanceWorkflowStatus(status)
+  const optionsByStatus: Record<string, { value: string; label: string }[]> = {
+    pending_assignment: [
+      { value: 'pending_assignment', label: '待分派（不变）' },
+      { value: 'in_progress', label: '维修中' },
+      { value: 'pending_review', label: '待审核（需维修后照片）' },
+      { value: 'closed', label: '关闭（需维修后照片）' },
+      { value: 'cancelled', label: '取消' },
+    ],
+    assigned: [
+      { value: 'assigned', label: '已分配（不变）' },
+      { value: 'in_progress', label: '维修中' },
+      { value: 'pending_review', label: '待审核（需维修后照片）' },
+      { value: 'closed', label: '关闭（需维修后照片）' },
+      { value: 'cancelled', label: '取消' },
+    ],
+    in_progress: [
+      { value: 'in_progress', label: '维修中（不变）' },
+      { value: 'pending_review', label: '待审核（需维修后照片）' },
+      { value: 'closed', label: '关闭（需维修后照片）' },
+      { value: 'cancelled', label: '取消' },
+    ],
+    pending_review: [
+      { value: 'pending_review', label: '待审核（不变）' },
+      { value: 'closed', label: '审核关闭' },
+      { value: 'in_progress', label: '退回维修' },
+    ],
+    closed: [
+      { value: 'closed', label: '已关闭（不变）' },
+      { value: 'in_progress', label: '重新打开维修' },
+    ],
+    cancelled: [{ value: 'cancelled', label: '已取消（不变）' }],
+  }
+  return optionsByStatus[current] || []
+}
+
+function maintenanceWorkflowStep(status?: string | null) {
+  const current = normalizedMaintenanceWorkflowStatus(status)
+  if (current === 'in_progress') return 1
+  if (current === 'pending_review') return 2
+  if (current === 'closed') return 3
+  return 0
+}
+
+function maintenanceDrawerActionCopy(input: { currentStatus?: string | null; targetStatus?: string | null; hasCompletionPhoto: boolean; canManageWorkflow: boolean }) {
+  const current = normalizedMaintenanceWorkflowStatus(input.currentStatus)
+  const target = normalizedMaintenanceWorkflowStatus(input.targetStatus || current)
+
+  if (!input.canManageWorkflow) {
+    return { title: '保存记录', detail: '保存本次填写的记录内容；状态仍由具备流程权限的人员处理。' }
+  }
+  if (target === 'cancelled' && target !== current) {
+    return { title: '取消维修', detail: '需要填写取消原因，保存后记录将停止流转。' }
+  }
+  if (target === 'in_progress' && current === 'pending_review') {
+    return { title: '退回维修', detail: '需要填写退回原因；记录会回到维修中。' }
+  }
+  if (target === 'in_progress' && current === 'closed') {
+    return { title: '重新打开维修', detail: '需要填写重新打开原因；记录会回到维修中。' }
+  }
+  if (target === 'in_progress' && target !== current) {
+    return { title: '开始维修', detail: '保存后记录进入维修中。' }
+  }
+  if (target === 'closed' && target !== current) {
+    return { title: '审核并关闭', detail: '登记实际维修人员、完成日期和维修后照片后，按既有流程审核关闭。' }
+  }
+  if (target === 'pending_review' && target !== current) {
+    return { title: '提交审核', detail: '登记实际维修人员、完成日期和至少一张维修后照片后，保存进入待审核。' }
+  }
+  if (['pending_assignment', 'assigned', 'in_progress'].includes(current) && input.hasCompletionPhoto) {
+    return { title: '提交审核', detail: '检测到维修后照片；保存后会按既有流程进入待审核。' }
+  }
+  return { title: '保存更新', detail: '保存本次填写的记录内容，不直接改写生命周期状态。' }
 }
 
 export default function MaintenanceRecordsUnified() {
@@ -83,6 +169,7 @@ export default function MaintenanceRecordsUnified() {
   const { message } = App.useApp()
   const canDownload = hasPerm('property_maintenance.view') || hasPerm('property_maintenance.write') || hasPerm('rbac.manage')
   const canDeleteMaintenance = hasPerm('property_maintenance.delete')
+  const canManageMaintenanceWorkflow = hasPerm('property_maintenance.workflow.manage')
   const [pwdOpen, setPwdOpen] = useState(false)
   const [pwdForm] = Form.useForm()
   const [viewOpen, setViewOpen] = useState(false)
@@ -98,6 +185,8 @@ export default function MaintenanceRecordsUnified() {
   const storedPhotoPreviewVersionRef = useRef(0)
   const storedPhotoObjectUrlsRef = useRef(new Set<string>())
   const assignmentOperationRef = useRef<{ key: string; id: string } | null>(null)
+  const reviewOperationRef = useRef<{ key: string; id: string } | null>(null)
+  const workflowOperationRef = useRef<{ key: string; id: string } | null>(null)
   const createOperationRef = useRef<{ key: string; id: string } | null>(null)
 
   const releaseStoredPhotoObjectUrls = () => {
@@ -354,12 +443,16 @@ export default function MaintenanceRecordsUnified() {
     setEditing(row)
     form.setFieldsValue({
       property_id: row.property_id || '',
-      status: row.status || 'pending',
+      status: normalizedMaintenanceWorkflowStatus(row.status),
+      workflow_target_status: normalizedMaintenanceWorkflowStatus(row.status),
+      workflow_reason: '',
       assignee_id: row.assignee_id || '',
       eta: row.eta ? dayjs(row.eta) : null,
+      completed_at: row.completed_at ? dayjs(row.completed_at) : null,
       urgency: row.urgency || 'normal',
       details: summaryFromDetails(row.details),
       invoice_description_en: (row as any).invoice_description_en || '',
+      repair_notes: (row as any).repair_notes || '',
       submitter_name: String((row as any)?.submitter_name || (row as any)?.worker_name || (row as any)?.created_by || ''),
       maintenance_amount: (row as any)?.maintenance_amount !== undefined ? Number((row as any)?.maintenance_amount || 0) : undefined,
       has_parts: (row as any)?.has_parts ?? undefined,
@@ -373,7 +466,7 @@ export default function MaintenanceRecordsUnified() {
     storedPhotoPreviewVersionRef.current += 1
     const previewVersion = storedPhotoPreviewVersionRef.current
     releaseStoredPhotoObjectUrls()
-    const rawRepair: any = (row as any).repair_photo_urls
+    const rawRepair: any = (row as any).completion_photo_urls || (row as any).repair_photo_urls
     let urls: string[] = Array.isArray(rawRepair) ? rawRepair : []
     if (!urls.length && typeof rawRepair === 'string') {
       try {
@@ -392,6 +485,8 @@ export default function MaintenanceRecordsUnified() {
   }
 
   async function save() {
+    let workflowTransitionAttempted = false
+    let recordFieldsSaved = false
     try {
       if (saving) return
       if (files.some((f) => f.status === 'uploading') || preFiles.some((f) => f.status === 'uploading')) {
@@ -403,7 +498,8 @@ export default function MaintenanceRecordsUnified() {
 
       const v = await form.validateFields()
       if (!editing) throw new Error('维修记录不存在，请刷新后重试')
-      const workflowAssignable = ['pending_assignment', 'pending', 'assigned', 'in_progress'].includes(String(editing.status || ''))
+      const currentWorkflowStatus = normalizedMaintenanceWorkflowStatus(editing.status)
+      const workflowAssignable = ['pending_assignment', 'assigned', 'in_progress'].includes(currentWorkflowStatus)
       const nextAssigneeId = String(v.assignee_id || '').trim()
       const nextScheduledDate = v.eta ? dayjs(v.eta).format('YYYY-MM-DD') : null
       const assignmentChanged = workflowAssignable && internalMaintenanceAssignmentChanged({
@@ -417,6 +513,48 @@ export default function MaintenanceRecordsUnified() {
       }
       if (!nextAssigneeId && nextScheduledDate) {
         throw new Error('请选择维修人员后再设置预计完成时间')
+      }
+      const requestedWorkflowStatus = canManageMaintenanceWorkflow
+        ? normalizedMaintenanceWorkflowStatus(v.workflow_target_status || currentWorkflowStatus)
+        : currentWorkflowStatus
+      const pendingReviewActualRepairerRequired = canManageMaintenanceWorkflow
+        && currentWorkflowStatus === 'pending_review'
+        && !String(editing.assignee_id || '').trim()
+        && (requestedWorkflowStatus === 'closed'
+          || shouldAutoApproveInternalMaintenanceSettlement({
+            status: currentWorkflowStatus,
+            payMethod: v.pay_method,
+            canManageWorkflow: canManageMaintenanceWorkflow,
+          }))
+      if (pendingReviewActualRepairerRequired && !nextAssigneeId) {
+        throw new Error('请选择实际维修人员后再审核关闭')
+      }
+      const canRecordActualRepairerWithCompletion = canManageMaintenanceWorkflow
+        && assignmentChanged
+        && ['pending_assignment', 'assigned', 'in_progress'].includes(currentWorkflowStatus)
+        && (['pending_review', 'closed'].includes(requestedWorkflowStatus)
+          || (requestedWorkflowStatus === currentWorkflowStatus && repairPhotos.length > 0))
+      if (assignmentChanged && requestedWorkflowStatus !== currentWorkflowStatus && !canRecordActualRepairerWithCompletion) {
+        throw new Error('分配维修人员和修改状态请分两次保存，避免覆盖流程记录')
+      }
+      const shouldAutoCompleteAfterPhoto = canManageMaintenanceWorkflow
+        && requestedWorkflowStatus === currentWorkflowStatus
+        && ['pending_assignment', 'assigned', 'in_progress'].includes(currentWorkflowStatus)
+        && repairPhotos.length > 0
+      const targetWorkflowStatus = shouldAutoCompleteAfterPhoto ? 'pending_review' : requestedWorkflowStatus
+      const recordActualRepairerWithCompletion = canRecordActualRepairerWithCompletion
+        && ['pending_review', 'closed'].includes(targetWorkflowStatus)
+      const workflowReason = String(v.workflow_reason || '').trim()
+      if (targetWorkflowStatus === 'cancelled' && targetWorkflowStatus !== currentWorkflowStatus && !workflowReason) {
+        throw new Error('取消维修记录必须填写原因')
+      }
+      if (targetWorkflowStatus === 'in_progress' && ['pending_review', 'closed'].includes(currentWorkflowStatus) && !workflowReason) {
+        throw new Error(currentWorkflowStatus === 'closed' ? '重新打开维修必须填写原因' : '退回维修必须填写原因')
+      }
+      if (['pending_review', 'closed'].includes(targetWorkflowStatus)
+        && ['pending_assignment', 'assigned', 'in_progress'].includes(currentWorkflowStatus)
+        && repairPhotos.length < 1) {
+        throw new Error('完成维修前必须至少上传一张维修后照片')
       }
       const payload: any = {
         property_id: v.property_id || undefined,
@@ -439,8 +577,8 @@ export default function MaintenanceRecordsUnified() {
         const invoiceDescriptionEn = String(v.invoice_description_en || '').trim()
         payload.invoice_description_en = invoiceDescriptionEn || null
       }
-      const st = String(editing?.status || '')
-      if (['in_progress', 'pending_review', 'review_pending', 'completed', 'closed'].includes(st)) {
+      const recordCanBeEdited = currentWorkflowStatus !== 'cancelled'
+      if (recordCanBeEdited) {
         if (repairPhotos.length) payload.repair_photo_urls = repairPhotos
         if (Object.prototype.hasOwnProperty.call(v, 'repair_notes')) {
           const repairNotes = String(v.repair_notes || '').trim()
@@ -448,7 +586,7 @@ export default function MaintenanceRecordsUnified() {
         }
       }
       if (prePhotos.length) payload.photo_urls = prePhotos
-      if (['pending_review', 'review_pending', 'completed', 'closed'].includes(st)) {
+      if (recordCanBeEdited) {
         if (v.maintenance_amount !== undefined) payload.maintenance_amount = Number(v.maintenance_amount || 0)
         if (v.has_parts === true) {
           payload.has_parts = true
@@ -473,8 +611,8 @@ export default function MaintenanceRecordsUnified() {
 
       const recordPatch = Object.fromEntries(Object.entries(payload).filter(([, value]) => value !== undefined))
       let nextEditing: RepairOrder = editing
-      let updated: RepairOrder | null = null
-      if (assignmentChanged) {
+      let automaticallyApproved = false
+      if (assignmentChanged && !recordActualRepairerWithCompletion) {
         message.loading({ key: 'maint-record-save', content: '分配维修人员中…', duration: 0 })
         const operationKey = JSON.stringify({
           id: editing.id,
@@ -484,7 +622,7 @@ export default function MaintenanceRecordsUnified() {
         })
         const operationId = assignmentOperationRef.current?.key === operationKey
           ? assignmentOperationRef.current.id
-          : newMaintenanceAssignmentOperationId()
+          : newMaintenanceWorkflowOperationId()
         assignmentOperationRef.current = { key: operationKey, id: operationId }
         const assigned = await assignInternalMaintenance({
           recordId: editing.id,
@@ -501,26 +639,146 @@ export default function MaintenanceRecordsUnified() {
           eta: nextScheduledDate || undefined,
         }
         assignmentOperationRef.current = null
-      } else {
-        updated = await apiUpdate<RepairOrder>('property_maintenance', editing.id, payload)
+      }
+      if (shouldUpdateInternalMaintenanceRecordViaCrud({ assignmentChanged, recordActualRepairerWithCompletion }) && Object.keys(recordPatch).length) {
+        const updated = await apiUpdate<RepairOrder>('property_maintenance', editing.id, recordPatch)
+        recordFieldsSaved = true
+        if (updated?.id) nextEditing = { ...nextEditing, ...updated }
       }
 
-      if (updated?.id) {
-        nextEditing = { ...nextEditing, ...updated }
+      let workflowStatusAfter = assignmentChanged && !recordActualRepairerWithCompletion ? 'assigned' : currentWorkflowStatus
+      const runWorkflowAction = async (action: 'manager_start' | 'manager_complete' | 'review' | 'reopen' | 'cancel', input: Record<string, any> = {}) => {
+        const operationKey = JSON.stringify({ id: editing.id, action, ...input })
+        const operationId = workflowOperationRef.current?.key === operationKey
+          ? workflowOperationRef.current.id
+          : newMaintenanceWorkflowOperationId()
+        workflowOperationRef.current = { key: operationKey, id: operationId }
+        workflowTransitionAttempted = true
+        const response = await manageInternalMaintenanceWorkflow({ recordId: editing.id, action, operationId, ...input })
+        workflowOperationRef.current = null
+        workflowStatusAfter = normalizedMaintenanceWorkflowStatus(response?.status)
+        nextEditing = { ...nextEditing, status: workflowStatusAfter as RepairOrder['status'] }
+        return response
+      }
+
+      if (!(assignmentChanged && !recordActualRepairerWithCompletion) && targetWorkflowStatus !== currentWorkflowStatus) {
+        if (targetWorkflowStatus === 'in_progress') {
+          if (['pending_assignment', 'assigned'].includes(currentWorkflowStatus)) {
+            message.loading({ key: 'maint-record-save', content: '更新为维修中…', duration: 0 })
+            await runWorkflowAction('manager_start')
+          } else if (currentWorkflowStatus === 'pending_review') {
+            message.loading({ key: 'maint-record-save', content: '退回维修中…', duration: 0 })
+            await runWorkflowAction('review', { decision: 'rejected', reason: workflowReason })
+          } else if (currentWorkflowStatus === 'closed') {
+            message.loading({ key: 'maint-record-save', content: '重新打开维修中…', duration: 0 })
+            await runWorkflowAction('reopen', { reason: workflowReason })
+          }
+        } else if (targetWorkflowStatus === 'pending_review' && ['pending_assignment', 'assigned', 'in_progress'].includes(currentWorkflowStatus)) {
+          message.loading({ key: 'maint-record-save', content: '提交维修后照片中…', duration: 0 })
+          const completedAt = v.completed_at ? dayjs(v.completed_at).format('YYYY-MM-DD') : undefined
+          await runWorkflowAction('manager_complete', {
+            assigneeId: recordActualRepairerWithCompletion ? nextAssigneeId : undefined,
+            completionPhotoUrls: repairPhotos,
+            completionNote: String(v.repair_notes || '').trim() || null,
+            completedAt,
+          })
+          nextEditing = {
+            ...nextEditing,
+            ...(recordActualRepairerWithCompletion ? { assignee_id: nextAssigneeId } : {}),
+            completed_at: completedAt || new Date().toISOString(),
+            completion_photo_urls: repairPhotos,
+          }
+        } else if (targetWorkflowStatus === 'cancelled') {
+          message.loading({ key: 'maint-record-save', content: '取消维修记录中…', duration: 0 })
+          await runWorkflowAction('cancel', { reason: workflowReason })
+        }
+      }
+
+      const shouldExplicitlyClose = !(assignmentChanged && !recordActualRepairerWithCompletion)
+        && targetWorkflowStatus === 'closed'
+        && currentWorkflowStatus !== 'closed'
+      if (shouldExplicitlyClose && ['pending_assignment', 'assigned', 'in_progress'].includes(currentWorkflowStatus)) {
+        message.loading({ key: 'maint-record-save', content: '提交维修后照片中…', duration: 0 })
+        const completedAt = v.completed_at ? dayjs(v.completed_at).format('YYYY-MM-DD') : undefined
+        await runWorkflowAction('manager_complete', {
+          assigneeId: recordActualRepairerWithCompletion ? nextAssigneeId : undefined,
+          completionPhotoUrls: repairPhotos,
+          completionNote: String(v.repair_notes || '').trim() || null,
+          completedAt,
+        })
+        nextEditing = {
+          ...nextEditing,
+          ...(recordActualRepairerWithCompletion ? { assignee_id: nextAssigneeId } : {}),
+          completed_at: completedAt || new Date().toISOString(),
+          completion_photo_urls: repairPhotos,
+        }
+      }
+
+      const automaticReview = shouldAutoApproveInternalMaintenanceSettlement({
+        status: workflowStatusAfter,
+        payMethod: v.pay_method,
+        canManageWorkflow: canManageMaintenanceWorkflow,
+      })
+      if (!(assignmentChanged && !recordActualRepairerWithCompletion) && workflowStatusAfter === 'pending_review' && (shouldExplicitlyClose || automaticReview)) {
+        message.loading({ key: 'maint-record-save', content: shouldExplicitlyClose ? '审核关闭中…' : '保存费用并审核关闭中…', duration: 0 })
+        const reviewCompletedAt = v.completed_at ? dayjs(v.completed_at).format('YYYY-MM-DD') : undefined
+        const operationKey = JSON.stringify({
+          id: editing.id,
+          status: workflowStatusAfter,
+          pay_method: String(v.pay_method || '').trim(),
+          explicit_close: shouldExplicitlyClose,
+          assignee_id: pendingReviewActualRepairerRequired ? nextAssigneeId : undefined,
+          completed_at: reviewCompletedAt,
+        })
+        const operationId = reviewOperationRef.current?.key === operationKey
+          ? reviewOperationRef.current.id
+          : newMaintenanceWorkflowOperationId()
+        reviewOperationRef.current = { key: operationKey, id: operationId }
+        workflowTransitionAttempted = true
+        const reviewActualRepairerId = pendingReviewActualRepairerRequired ? nextAssigneeId : undefined
+        const approved = await approveInternalMaintenance({
+          recordId: editing.id,
+          assigneeId: reviewActualRepairerId,
+          completedAt: reviewCompletedAt,
+          operationId,
+        })
+        reviewOperationRef.current = null
+        nextEditing = {
+          ...nextEditing,
+          ...(reviewActualRepairerId ? { assignee_id: reviewActualRepairerId } : {}),
+          ...(reviewCompletedAt ? { completed_at: reviewCompletedAt } : {}),
+          status: String(approved?.status || 'closed') as RepairOrder['status'],
+        }
+        automaticallyApproved = true
       }
       setList((prev) => prev.map((x) => (String(x.id) === String(editing.id) ? { ...x, ...nextEditing } : x)))
-      message.success({ key: 'maint-record-save', content: assignmentChanged ? '已保存并分配维修人员' : '已保存' })
+      message.success({
+        key: 'maint-record-save',
+        content: recordActualRepairerWithCompletion
+          ? automaticallyApproved
+            ? '已记录实际维修人员并审核关闭'
+            : '已记录实际维修人员并进入待审核'
+          : assignmentChanged
+            ? '已保存并分配维修人员'
+            : automaticallyApproved
+              ? '已保存费用并审核关闭'
+              : targetWorkflowStatus === 'pending_review' && workflowStatusAfter === 'pending_review'
+                ? '已保存并进入待审核'
+                : '已保存',
+      })
       setOpen(false)
       setEditing(null)
       loadMaintenance(page === 1, { silent: true, page })
     } catch (e: any) {
-      message.error({ key: 'maint-record-save', content: e?.message || '保存失败' })
+      const detail = e?.message || '保存失败'
+      if (workflowTransitionAttempted) void loadMaintenance(page === 1, { silent: true, page })
+      message.error({ key: 'maint-record-save', content: recordFieldsSaved && workflowTransitionAttempted ? `记录字段已保存，但状态更新失败，请重试：${detail}` : detail })
     } finally {
       setSaving(false)
     }
   }
 
-  const statusWatch = Form.useWatch('status', form)
+  const workflowTargetStatusWatch = Form.useWatch('workflow_target_status', form)
   const hasPartsWatch = Form.useWatch('has_parts', form)
   const maintenanceAmountWatch = Form.useWatch('maintenance_amount', form)
   const partsAmountWatch = Form.useWatch('parts_amount', form)
@@ -537,6 +795,41 @@ export default function MaintenanceRecordsUnified() {
     has_gst: hasGstWatch,
     maintenance_amount_includes_gst: includesGstWatch,
   }), [hasGstWatch, hasPartsWatch, includesGstWatch, includesPartsWatch, maintenanceAmountWatch, partsAmountWatch])
+
+  const editCurrentWorkflowStatus = normalizedMaintenanceWorkflowStatus(editing?.status)
+  const editTargetWorkflowStatus = canManageMaintenanceWorkflow
+    ? normalizedMaintenanceWorkflowStatus(workflowTargetStatusWatch || editCurrentWorkflowStatus)
+    : editCurrentWorkflowStatus
+  const drawerAction = maintenanceDrawerActionCopy({
+    currentStatus: editCurrentWorkflowStatus,
+    targetStatus: editTargetWorkflowStatus,
+    hasCompletionPhoto: repairPhotos.length > 0,
+    canManageWorkflow: canManageMaintenanceWorkflow,
+  })
+  const editingPropertyCode = String((editing as any)?.code
+    || (editing as any)?.property_code
+    || props.find((property) => String(property.id) === String(editing?.property_id || ''))?.code
+    || editing?.property_id
+    || '-')
+  const workflowReasonRequired = canManageMaintenanceWorkflow
+    && ((editTargetWorkflowStatus === 'cancelled' && editTargetWorkflowStatus !== editCurrentWorkflowStatus)
+      || (editTargetWorkflowStatus === 'in_progress' && ['pending_review', 'closed'].includes(editCurrentWorkflowStatus)))
+  const completionPhotoRequired = canManageMaintenanceWorkflow
+    && ['pending_review', 'closed'].includes(editTargetWorkflowStatus)
+    && ['pending_assignment', 'assigned', 'in_progress'].includes(editCurrentWorkflowStatus)
+  const recordingCompletion = canManageMaintenanceWorkflow
+    && ['pending_review', 'closed'].includes(editTargetWorkflowStatus)
+    && ['pending_assignment', 'assigned', 'in_progress'].includes(editCurrentWorkflowStatus)
+  const pendingReviewActualRepairerRequired = canManageMaintenanceWorkflow
+    && editCurrentWorkflowStatus === 'pending_review'
+    && !String(editing?.assignee_id || '').trim()
+    && (editTargetWorkflowStatus === 'closed'
+      || shouldAutoApproveInternalMaintenanceSettlement({
+        status: editCurrentWorkflowStatus,
+        payMethod: payMethodWatch,
+        canManageWorkflow: canManageMaintenanceWorkflow,
+      }))
+  const recordingActualRepairer = recordingCompletion || pendingReviewActualRepairerRequired
 
   const statusOptions = [
     { value: 'pending_assignment', label: '待分派' },
@@ -1196,7 +1489,7 @@ function issueAreaLabel(r?: any): string {
           const operationKey = JSON.stringify({ property_id: v.property_id, area: v.area, detail, media_urls: createPhotos, invoice_description_en: invoiceDescriptionEn })
           const submitId = createOperationRef.current?.key === operationKey
             ? createOperationRef.current.id
-            : newMaintenanceAssignmentOperationId()
+            : newMaintenanceWorkflowOperationId()
           createOperationRef.current = { key: operationKey, id: submitId }
           await createInternalMaintenanceFeedback({
             propertyId: String(v.property_id || ''),
@@ -1278,24 +1571,87 @@ function issueAreaLabel(r?: any): string {
         </Form>
       </Modal>
       <Drawer
-        title="更新维修记录"
-        width={720}
+        title={
+          <div className={styles.drawerTitle}>
+            <div>
+              <div className={styles.drawerTitleText}>更新维修记录</div>
+              <div className={styles.drawerSubtitle}>房号 {editingPropertyCode} · {String(editing?.work_no || editing?.id || '未生成工单号')}</div>
+            </div>
+            {editing ? statusTag(editing.status) : null}
+          </div>
+        }
+        width={isMobile ? '100%' : 760}
+        className={styles.maintenanceDrawer}
         onClose={closeEdit}
         open={open}
         closable={!saving}
         maskClosable={!saving}
         footer={
-          <div style={{ textAlign: 'right' }}>
+          <div className={styles.drawerFooter}>
+            <div className={styles.drawerFooterSummary}>
+              <span>本次处理</span>
+              <strong>{drawerAction.title}</strong>
+            </div>
             <Space>
               <Button onClick={closeEdit} disabled={saving}>取消</Button>
-              <Button type="primary" onClick={save} loading={saving} disabled={saving}>保存</Button>
+              <Button type="primary" onClick={save} loading={saving} disabled={saving}>{drawerAction.title}</Button>
             </Space>
           </div>
         }
       >
         <Spin spinning={saving} tip="保存中…">
         <Form form={form} layout="vertical">
-          <Divider orientation="left">基础信息</Divider>
+          <div className={styles.workflowOverview}>
+            <div className={styles.workflowOverviewHeader}>
+              <div>
+                <div className={styles.eyebrow}>维修流程</div>
+                <div className={styles.workflowOverviewTitle}>当前处于「{statusLabel(editing?.status)}」</div>
+              </div>
+              {editing?.urgency ? urgencyTag(editing.urgency) : null}
+            </div>
+            <Steps
+              size="small"
+              current={maintenanceWorkflowStep(editing?.status)}
+              status={editCurrentWorkflowStatus === 'cancelled' ? 'error' : 'process'}
+              items={[
+                { title: '待分派' },
+                { title: '维修中' },
+                { title: '待审核' },
+                { title: '已关闭' },
+              ]}
+            />
+          </div>
+
+          <div className={styles.workflowActionPanel}>
+            <div className={styles.workflowActionHeading}>
+              <div>
+                <div className={styles.eyebrow}>本次处理</div>
+                <div className={styles.workflowActionTitle}>{drawerAction.title}</div>
+              </div>
+              <Typography.Text type="secondary">{drawerAction.detail}</Typography.Text>
+            </div>
+            {canManageMaintenanceWorkflow ? (
+              <>
+                <Form.Item name="workflow_target_status" label="选择处理动作" className={styles.compactFormItem}>
+                  <Select options={maintenanceWorkflowTargetOptions(editing?.status)} disabled={saving} />
+                </Form.Item>
+                {workflowReasonRequired ? (
+                  <Form.Item name="workflow_reason" label="状态变更原因" rules={[{ required: true, whitespace: true, message: '请填写状态变更原因' }]} className={styles.compactFormItem}>
+                    <Input.TextArea rows={2} placeholder="请说明取消、退回维修或重新打开的原因" />
+                  </Form.Item>
+                ) : null}
+              </>
+            ) : (
+              <Alert
+                type="info"
+                showIcon
+                message="当前账号可编辑记录内容"
+                description="如需分配、完工、审核、重开或取消维修，请在权限管理中授予“维修流程管理”权限。"
+              />
+            )}
+          </div>
+
+          <Divider orientation="left" className={styles.drawerSectionDivider}>工单与分派</Divider>
           <Row gutter={16}>
             <Col span={12}>
               <Form.Item name="property_id" label="房号">
@@ -1308,12 +1664,7 @@ function issueAreaLabel(r?: any): string {
               </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item name="status" label="状态" extra="状态由维修流程操作更新，编辑记录不会直接改写生命周期。">
-                <Select options={statusOptions} disabled />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              {(String(statusWatch || '') === 'pending' || String(statusWatch || '') === 'assigned' || String(statusWatch || '') === 'in_progress') ? (
+              {['pending_assignment', 'assigned', 'in_progress'].includes(editCurrentWorkflowStatus) ? (
                 <Form.Item name="urgency" label="紧急程度">
                   <Select options={[
                     { value:'urgent', label:'紧急' },
@@ -1323,7 +1674,7 @@ function issueAreaLabel(r?: any): string {
                 </Form.Item>
               ) : null}
             </Col>
-            {['pending_assignment', 'pending', 'assigned', 'in_progress'].includes(String(editing?.status || '')) ? (
+            {canManageMaintenanceWorkflow && ['pending_assignment', 'pending', 'assigned', 'in_progress'].includes(String(editing?.status || '')) && !recordingCompletion ? (
               <>
                 <Col span={12}>
                   <Form.Item name="assignee_id" label="分配维修人员" extra="选择后点击保存，即会完成分配。">
@@ -1345,9 +1696,21 @@ function issueAreaLabel(r?: any): string {
               </>
             ) : (
               <Col span={24}>
-                <Typography.Text type="secondary">当前状态不能分配维修人员。</Typography.Text>
+                <Typography.Text type="secondary">{canManageMaintenanceWorkflow ? '当前状态不能分配维修人员。' : '当前账号没有维修流程管理权限，不能分配维修人员。'}</Typography.Text>
               </Col>
             )}
+          </Row>
+
+          <details className={styles.issueDisclosure}>
+            <summary>
+              <span>
+                <strong>问题与维修前照片</strong>
+                <em>{summaryFromDetails(editing?.details) || '展开查看或编辑报修内容'}</em>
+              </span>
+              <span className={styles.disclosureHint}>展开</span>
+            </summary>
+            <div className={styles.issueDisclosureBody}>
+              <Row gutter={16}>
             <Col span={24}>
               <Form.Item name="details" label="问题摘要"><Input.TextArea rows={3} /></Form.Item>
             </Col>
@@ -1401,17 +1764,44 @@ function issueAreaLabel(r?: any): string {
                 </Upload>
               </Form.Item>
             </Col>
-          </Row>
+              </Row>
+            </div>
+          </details>
 
-          {['pending_assignment', 'assigned', 'in_progress', 'pending_review', 'review_pending', 'completed', 'closed'].includes(String(statusWatch || '')) ? (
+          {normalizedMaintenanceWorkflowStatus(editing?.status) !== 'cancelled' ? (
             <>
-              <Divider orientation="left">维修反馈</Divider>
+              <section className={styles.drawerSection}>
+              <div className={styles.sectionTitleRow}>
+                <div>
+                  <div className={styles.eyebrow}>维修结果</div>
+                  <div className={styles.sectionTitle}>维修说明、完成照片与实际完成日期</div>
+                </div>
+                <Tag color={completionPhotoRequired ? 'gold' : 'default'}>{completionPhotoRequired ? '提交审核时必填' : '按需补充'}</Tag>
+              </div>
               <Row gutter={16}>
                 <Col span={24}>
-                  <Form.Item name="repair_notes" label="维修记录描述"><Input.TextArea rows={3} /></Form.Item>
+                  <Form.Item name="repair_notes" label="维修说明"><Input.TextArea rows={3} placeholder="说明维修完成内容或需要注意的事项" /></Form.Item>
                 </Col>
+                {recordingActualRepairer ? (
+                  <Col span={12}>
+                    <Form.Item
+                      name="assignee_id"
+                      label="实际维修人员"
+                      extra="关闭或提交审核时，记录实际完成维修的人员；不填写预计完成时间。"
+                      rules={editing?.assignee_id ? undefined : [{ required: true, message: '请选择实际维修人员' }]}
+                    >
+                      <Select
+                        showSearch
+                        optionFilterProp="label"
+                        options={userOptions}
+                        placeholder="请选择实际维修人员"
+                        disabled={saving}
+                      />
+                    </Form.Item>
+                  </Col>
+                ) : null}
                 <Col span={24}>
-                  <Form.Item label="维修后照片">
+                  <Form.Item label="维修后照片" extra={completionPhotoRequired ? '提交审核前至少上传一张维修后照片。' : '建议上传维修后的现场照片，作为结算和审核依据。'}>
                     <Upload listType="picture-card" multiple fileList={files} onRemove={(f)=>{ setFiles(fl=>fl.filter(x=>x.uid!==f.uid)); const originalUrl = storedPhotoUrl(f); if (originalUrl) setRepairPhotos(u=>u.filter(x=>x!==originalUrl)) }}
                       customRequest={async ({ file, onProgress, onSuccess, onError }: any) => {
                         const fd = new FormData(); fd.append('file', file)
@@ -1455,13 +1845,28 @@ function issueAreaLabel(r?: any): string {
                     </Upload>
                   </Form.Item>
                 </Col>
+                {canManageMaintenanceWorkflow ? (
+                  <Col span={12}>
+                    <Form.Item name="completed_at" label="实际完成日期" extra="用于维修费用的入账日期；留空则由完成流程写入当前日期。">
+                      <DatePicker style={{ width: '100%' }} disabled={saving} />
+                    </Form.Item>
+                  </Col>
+                ) : null}
               </Row>
+              </section>
             </>
           ) : null}
 
-          {['pending_review', 'review_pending', 'completed', 'closed'].includes(String(statusWatch || '')) ? (
+          {normalizedMaintenanceWorkflowStatus(editing?.status) !== 'cancelled' ? (
             <>
-              <Divider orientation="left">费用结算</Divider>
+              <section className={styles.drawerSection}>
+              <div className={styles.sectionTitleRow}>
+                <div>
+                  <div className={styles.eyebrow}>费用结算</div>
+                  <div className={styles.sectionTitle}>登记金额与费用承担方式</div>
+                </div>
+                <Typography.Text type="secondary">总计 {fmtAmount(feeTotal?.total)}</Typography.Text>
+              </div>
               <div className={styles.feeGrid}>
                 <div className={styles.feeRow2}>
                   <Form.Item name="maintenance_amount" label="维修金额（AUD）">
@@ -1476,7 +1881,7 @@ function issueAreaLabel(r?: any): string {
                       }}
                     />
                   </Form.Item>
-                  <Typography.Text type="secondary">完成时间由维修流程提交时自动记录。</Typography.Text>
+                  <Typography.Text type="secondary">费用和扣款方式可先登记；进入待审核或关闭时会按流程结算。</Typography.Text>
                 </div>
                 <div className={styles.feeRow1}>
                   <Form.Item label="总金额（AUD）">
@@ -1563,6 +1968,7 @@ function issueAreaLabel(r?: any): string {
                   </Form.Item>
                 </div>
               </div>
+              </section>
             </>
           ) : null}
         </Form>

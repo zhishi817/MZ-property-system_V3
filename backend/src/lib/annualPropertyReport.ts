@@ -112,6 +112,19 @@ export type AnnualPropertyReport = {
   }
 }
 
+export type AnnualPropertyReportSummary = {
+  property: {
+    id: string
+    code: string | null
+    address: string | null
+    region: string | null
+  }
+  report_status: AnnualReportStatus | 'unavailable'
+  complete_month_count: number
+  missing_month_count: number
+  warning_count: number
+}
+
 export type AnnualReportManualMonthRow = {
   id: string
   property_id: string
@@ -798,6 +811,267 @@ export async function loadAnnualPropertyReport(propertyId: string, fiscalYear: n
     manualRows,
     systemMonths,
     managementFeeRules,
+  })
+}
+
+export function summarizeAnnualPropertyReport(report: AnnualPropertyReport, region?: string | null): AnnualPropertyReportSummary {
+  return {
+    property: {
+      id: report.property.id,
+      code: report.property.code,
+      address: report.property.address,
+      region: region ? String(region) : null,
+    },
+    report_status: report.report_status,
+    complete_month_count: report.totals.complete_month_count,
+    missing_month_count: report.totals.missing_month_count,
+    warning_count: report.warnings.length,
+  }
+}
+
+async function mapWithConcurrency<T, R>(items: T[], limit: number, mapper: (item: T) => Promise<R>): Promise<R[]> {
+  const output = new Array<R>(items.length)
+  let nextIndex = 0
+  const workers = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex
+      nextIndex += 1
+      output[index] = await mapper(items[index])
+    }
+  })
+  await Promise.all(workers)
+  return output
+}
+
+function createEmptySystemMonths(fiscalYear: number): Record<string, NormalizedSystemMonth> {
+  return Object.fromEntries(
+    listAnnualReportMonthKeys(fiscalYear).map((monthKey) => [monthKey, {
+      rent_income: 0,
+      other_income: 0,
+      expense_lines: {},
+      has_activity: false,
+    }])
+  ) as Record<string, NormalizedSystemMonth>
+}
+
+function unavailableAnnualPropertyReportSummary(property: any, fiscalYear: number): AnnualPropertyReportSummary {
+  return {
+    property: {
+      id: String(property?.id || ''),
+      code: property?.code ? String(property.code) : null,
+      address: property?.address ? String(property.address) : null,
+      region: property?.region ? String(property.region) : null,
+    },
+    report_status: 'unavailable',
+    complete_month_count: 0,
+    missing_month_count: listAnnualReportMonthKeys(fiscalYear).length,
+    warning_count: 0,
+  }
+}
+
+async function loadAnnualPropertyReportSummariesFromPg(fiscalYear: number): Promise<AnnualPropertyReportSummary[]> {
+  const properties = (await pgPool!.query(
+    `SELECT id, code, address, region, landlord_id
+       FROM properties
+      WHERE archived IS DISTINCT FROM true
+      ORDER BY region ASC NULLS LAST, code ASC NULLS LAST, id ASC`
+  )).rows || []
+  const propertyIds = properties.map((property: any) => String(property?.id || '').trim()).filter(Boolean)
+  if (!propertyIds.length) return []
+
+  try {
+    const period = getAnnualReportPeriodBounds(fiscalYear)
+    if (!period) throw new Error('unsupported fiscal year')
+    const nextStart = `${fiscalYear}-07-01`
+    const directLandlordIds = properties
+      .map((property: any) => String(property?.landlord_id || '').trim())
+      .filter(Boolean)
+
+    const [manualRowsResult, ordersResult, incomeResult, recurringResult, expenseResult, landlordsResult] = await Promise.all([
+      pgPool!.query(
+        `SELECT *
+           FROM property_annual_report_manual_months
+          WHERE property_id = ANY($1::text[])
+            AND fiscal_year = $2
+          ORDER BY property_id ASC, month_key ASC`,
+        [propertyIds, fiscalYear]
+      ).catch((error: any) => {
+        if (String(error?.code || '') === '42P01') return { rows: [] as any[] }
+        throw error
+      }),
+      pgPool!.query(
+        `SELECT id, property_id, stay_type, checkin, checkout, price, cleaning_fee, nights, net_income, status, count_in_income
+           FROM orders
+          WHERE property_id = ANY($1::text[])
+            AND checkin < $3::date
+            AND checkout > $2::date`,
+        [propertyIds, period.period_start, nextStart]
+      ),
+      pgPool!.query(
+        `SELECT *
+           FROM finance_transactions
+          WHERE kind = 'income'
+            AND property_id = ANY($1::text[])
+            AND occurred_at::date >= $2::date
+            AND occurred_at::date <= $3::date`,
+        [propertyIds, period.period_start, period.period_end]
+      ).catch(() => ({ rows: [] as any[] })),
+      pgPool!.query(
+        `SELECT id, report_category
+           FROM recurring_payments`
+      ).catch(() => ({ rows: [] as any[] })),
+      pgPool!.query(
+        `SELECT *
+           FROM property_expenses
+          WHERE property_id = ANY($1::text[])
+            AND (
+              (month_key IS NOT NULL AND month_key >= $2 AND month_key <= $3)
+              OR (
+                month_key IS NULL
+                AND COALESCE(paid_date, occurred_at)::date >= $4::date
+                AND COALESCE(paid_date, occurred_at)::date <= $5::date
+              )
+            )`,
+        [propertyIds, `${fiscalYear - 1}-07`, `${fiscalYear}-06`, period.period_start, period.period_end]
+      ).catch(() => ({ rows: [] as any[] })),
+      pgPool!.query(
+        `SELECT id, property_ids
+           FROM landlords
+          WHERE id = ANY($1::text[])
+             OR COALESCE(property_ids, ARRAY[]::text[]) && $2::text[]`,
+        [directLandlordIds, propertyIds]
+      ),
+    ])
+
+    const manualRowsByProperty = new Map<string, AnnualReportManualMonthRow[]>()
+    for (const row of (manualRowsResult.rows || [])) {
+      const normalized = normalizeManualRow(row)
+      if (!manualRowsByProperty.has(normalized.property_id)) manualRowsByProperty.set(normalized.property_id, [])
+      manualRowsByProperty.get(normalized.property_id)!.push(normalized)
+    }
+
+    const systemMonthsByProperty = new Map<string, Record<string, NormalizedSystemMonth>>()
+    for (const propertyId of propertyIds) systemMonthsByProperty.set(propertyId, createEmptySystemMonths(fiscalYear))
+    const systemMonthFor = (propertyId: string, monthKey: string) => {
+      const byMonth = systemMonthsByProperty.get(propertyId)
+      return byMonth?.[monthKey] || null
+    }
+
+    const orderRows = ordersResult.rows || []
+    const orderIds = orderRows.map((row: any) => String(row?.id || '')).filter(Boolean)
+    const deductionByOrderId = new Map<string, number>()
+    if (orderIds.length) {
+      const deductionsResult = await pgPool!.query(
+        `SELECT order_id, COALESCE(SUM(amount), 0) AS total
+           FROM order_internal_deductions
+          WHERE is_active = true
+            AND order_id = ANY($1::text[])
+          GROUP BY order_id`,
+        [orderIds]
+      ).catch(() => ({ rows: [] as any[] }))
+      for (const row of (deductionsResult.rows || [])) {
+        deductionByOrderId.set(String(row.order_id), Number(row.total || 0))
+      }
+    }
+    const ordersByProperty = new Map<string, any[]>()
+    for (const row of orderRows) {
+      const propertyId = String(row?.property_id || '').trim()
+      if (!systemMonthsByProperty.has(propertyId)) continue
+      if (!ordersByProperty.has(propertyId)) ordersByProperty.set(propertyId, [])
+      ordersByProperty.get(propertyId)!.push({
+        ...row,
+        internal_deduction_total: round2(deductionByOrderId.get(String(row?.id || '')) || 0),
+      })
+    }
+    for (const [propertyId, orders] of ordersByProperty) {
+      for (const monthKey of listAnnualReportMonthKeys(fiscalYear).filter((key) => !isAnnualReportManualMonth(fiscalYear, key))) {
+        const systemMonth = systemMonthFor(propertyId, monthKey)
+        if (!systemMonth) continue
+        const segments = computeMonthSegmentsForOrders(orders as any[], monthKey)
+        systemMonth.rent_income = round2(sumSegmentsVisibleNetIncome(segments))
+        systemMonth.has_activity = systemMonth.has_activity || segments.length > 0
+      }
+    }
+
+    const monthSet = new Set(listAnnualReportMonthKeys(fiscalYear))
+    for (const row of (incomeResult.rows || [])) {
+      const propertyId = String(row?.property_id || '').trim()
+      const monthKey = monthKeyFromDateLike(row)
+      const systemMonth = systemMonthFor(propertyId, monthKey)
+      if (!systemMonth || !monthSet.has(monthKey) || isAnnualReportManualMonth(fiscalYear, monthKey)) continue
+      if (!shouldIncludeOtherIncome(row as FinanceTransaction)) continue
+      systemMonth.other_income = round2(systemMonth.other_income + Number(row.amount || 0))
+      systemMonth.has_activity = true
+    }
+
+    const recurringCategoryById = new Map<string, string>()
+    for (const row of (recurringResult.rows || [])) recurringCategoryById.set(String(row.id || ''), String(row.report_category || ''))
+    for (const row of (expenseResult.rows || [])) {
+      if (row?.deleted_at || isVoidedLike(row)) continue
+      const propertyId = String(row?.property_id || '').trim()
+      const monthKey = monthKeyFromDateLike(row)
+      const systemMonth = systemMonthFor(propertyId, monthKey)
+      if (!systemMonth || !monthSet.has(monthKey) || isAnnualReportManualMonth(fiscalYear, monthKey)) continue
+      const fixedExpenseId = String(row?.fixed_expense_id || '').trim()
+      const recurringCategory = fixedExpenseId ? recurringCategoryById.get(fixedExpenseId) : ''
+      const category = normalizeExpenseCategory(recurringCategory || row?.category, row?.category_detail)
+      systemMonth.expense_lines[category] = round2(Number(systemMonth.expense_lines[category] || 0) + round2(row?.amount || 0))
+      systemMonth.has_activity = true
+    }
+
+    const landlords = landlordsResult.rows || []
+    const landlordById = new Map(landlords.map((landlord: any) => [String(landlord?.id || '').trim(), landlord]))
+    const ownerByPropertyId = new Map<string, any>()
+    for (const property of properties) {
+      const propertyId = String(property?.id || '').trim()
+      const directOwner = landlordById.get(String(property?.landlord_id || '').trim()) || null
+      const reverseOwner = directOwner ? null : findLandlordByPropertyId(landlords, propertyId)
+      if (directOwner || reverseOwner) ownerByPropertyId.set(propertyId, directOwner || reverseOwner)
+    }
+    const managementFeeRulesByLandlordId = await listManagementFeeRulesByLandlordIds(
+      Array.from(ownerByPropertyId.values()).map((landlord: any) => String(landlord?.id || '').trim()).filter(Boolean)
+    )
+
+    return properties.map((property: any) => {
+      const propertyId = String(property?.id || '').trim()
+      const ownerCurrent = toOwnerSummary(ownerByPropertyId.get(propertyId) || null)
+      const report = buildAnnualPropertyReport({
+        fiscal_year: fiscalYear,
+        property: {
+          id: propertyId,
+          code: property?.code || null,
+          address: property?.address || null,
+          landlord_id: property?.landlord_id || null,
+        },
+        ownerCurrent,
+        ownerSnapshot: ownerCurrent ? { ...ownerCurrent, snapshot_mode: 'current_owner_at_generation' } : null,
+        manualRows: manualRowsByProperty.get(propertyId) || [],
+        systemMonths: systemMonthsByProperty.get(propertyId) || createEmptySystemMonths(fiscalYear),
+        managementFeeRules: ownerCurrent?.id ? (managementFeeRulesByLandlordId[ownerCurrent.id] || []) : [],
+      })
+      return summarizeAnnualPropertyReport(report, property?.region)
+    })
+  } catch {
+    return properties.map((property: any) => unavailableAnnualPropertyReportSummary(property, fiscalYear))
+  }
+}
+
+export async function listAnnualPropertyReportSummaries(fiscalYear: number): Promise<AnnualPropertyReportSummary[]> {
+  if (!isSupportedAnnualReportFiscalYear(fiscalYear)) throw new Error('unsupported fiscal year')
+  if (hasPg && pgPool) return loadAnnualPropertyReportSummariesFromPg(fiscalYear)
+  const properties = (db.properties || [])
+    .filter((property: any) => property?.archived !== true)
+    .slice()
+    .sort((a: any, b: any) => `${String(a?.region || '')}:${String(a?.code || '')}:${String(a?.id || '')}`.localeCompare(`${String(b?.region || '')}:${String(b?.code || '')}:${String(b?.id || '')}`))
+  return mapWithConcurrency(properties, 3, async (property: any) => {
+    try {
+      return summarizeAnnualPropertyReport(
+        await loadAnnualPropertyReport(String(property?.id || '').trim(), fiscalYear),
+        property?.region ? String(property.region) : null,
+      )
+    } catch {
+      return unavailableAnnualPropertyReportSummary(property, fiscalYear)
+    }
   })
 }
 
