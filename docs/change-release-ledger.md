@@ -1,5 +1,71 @@
 # Change Release Ledger
 
+## CRL-20260905-002 — 订单排序缺失时间回归断言修复（root）
+
+- **Repository:** `root`
+- **Status:** commit-ready; selected for commit
+- **Updated:** 2026-09-05 AEST
+- **Request:** 修复订单排序新增稳定兜底规则后，Fast Regression 中遗留断言与现行规则不一致而失败的问题。
+- **Outcome:** 当邮件时间和创建时间均缺失时，旧回归测试明确断言按稳定订单 ID 的降序兜底；CI 不再错误期待原输入顺序。
+
+### Implementation
+
+- Previous behavior: `frontend/tests/orderSort.test.ts` 对两个均缺少邮件时间和创建时间的订单仍期望输入顺序 `a, c`，与已发布的 `orderSort` 稳定 ID 降序兜底规则冲突，导致 Fast Regression 失败。
+- New behavior: 用例名称明确稳定 ID 兜底，期望改为 `b, c, a`。不修改 `orderSort` 实现、订单数据、页面、API 或业务排序规则。
+
+### Files / Areas
+
+- `frontend/tests/orderSort.test.ts` — modified: 对缺失时间的稳定 ID 降序断言与已发布排序规则一致。
+- `docs/change-release-ledger.md` — modified: 本 CI 回归修复记录。
+
+### Impact / Dependencies
+
+- API / database / migration / configuration / dependencies: none.
+- Related unit: `root/CRL-20260905-001`（已发布订单排序规则）；本单元只修复遗留测试预期，不改变其运行时行为。
+- Production / external writes: none；未调用业务 API、同步、数据库或部署。
+
+### Validation
+
+- `npm run test --prefix frontend -- --coverage.enabled=false tests/orderSort.test.ts` — PASS; 1 file / 3 tests.
+- `npm run test --prefix frontend -- --coverage.enabled=false` — PASS; 46 files / 217 tests, including both legacy and FR-024 order-sort suites.
+- `npm run check:fast` — NOT VERIFIED locally: the clean candidate intentionally has no installed dependencies. With temporary links, its ledger gate correctly blocked those untracked links; without them, `check:fast` passed root workflow/ledger/registry gates before the backend compiler could not resolve candidate-local dependencies. No source/test failure remained.
+- `npm run check:feature-registry` — PASS; 21 FRs / 164 mappings, 73 mobile mappings deferred by policy.
+- `git diff --check` — PASS.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared.
+- **Untracked review:** none; the clean release worktree has no untracked files, generated output or temporary dependency links.
+- `frontend/tests/orderSort.test.ts` — SHA-256: `70473e78db51ebff4e71beeb7eb165e8f738263f0146e6400db2c733ce8f7cb8`
+- `frontend/tests/orderSort.test.ts` — SHA-256: `cdc325b360c0017add9263e73a2852390447ab83d692dc6d8fcc02273ad58cfc`
+
+### Release Attempts
+
+#### RA-20260905-004
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260905-002`
+- Selected CRL identities: `root/CRL-20260905-002`
+- Intended action: `commit`
+- Branch: `codex/orders-ux-20260905`
+- Base: `origin/Dev@a0c79c99472bb31821de388ae60450a61a39ea17`; fetched at `2026-09-05 14:28:56 AEST`
+- Candidate patch SHA-256: `7eddb7de4ac1f46fb6db187841b587e4aff814c4d55cdf19f5aec97c03752124` (excludes ledger attempt metadata).
+- Commit SHA: not committed.
+- Dependencies: `root/CRL-20260905-001@a554d366e0631210bd77bd975d3d0939b0b84d6c` is already the published parent of this candidate branch; this unit changes only the legacy assertion that covers its stable fallback.
+- Required validation: `PASS` for the targeted three-test suite and full frontend suite; `NOT VERIFIED` for `check:fast` only because this clean candidate has no local dependency installation, as recorded above.
+- Shared-hunk review: `PASS`; evidence: exactly two staged paths and the two non-ledger test hunk fingerprints above are selected by this CRL.
+- Generated-file review: `PASS`; evidence: no generated, cache, dependency-link or sensitive file is staged or untracked.
+- Technical state: `candidate`
+- User authorization: `selected-for-commit`; evidence: user explicitly replied `提交` on 2026-09-05 for this currently presented CI repair. Push is not authorized.
+- Independent review: `GO for commit`; evidence: independent read-only reviewer recomputed the non-ledger fingerprint, confirmed the exact two-file/two-hunk scope, no untracked/generated/sensitive content, no production-write risk and no P0/P1. It noted only an unrelated existing P2: FR-024's historical "最后验证 Commit" field remains `not committed`.
+- Action conclusion: `GO`; blockers: none for the authorized local commit. Push requires a new exact-SHA authorization and a committed-range audit.
+
+### Risks / Release Notes
+
+- The authenticated admin browser regression for the existing FR-024 remains outside this test-only repair.
+- Sensitive-information review: no credentials, customer data, generated files or build cache are part of the intended scope.
+
 ## CRL-20260905-001 — 订单取消位置稳定、更新失败原因与详情日历直达（root）
 
 - **Repository:** `root`
