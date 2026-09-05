@@ -26,13 +26,13 @@ describe('order sorting', () => {
     expect(sorted.map(x=>x.id)).toEqual(['b','a','c'])
   })
 
-  it('handles missing values safely', () => {
+  it('uses the stable id fallback when email times are missing', () => {
     const list = [
       o('a'),
       o('b', '2026-01-01T00:00:00Z'),
       o('c')
     ]
     const sorted = sortOrders(list, 'email_header_at', 'descend')
-    expect(sorted.map(x=>x.id)).toEqual(['b','a','c'])
+    expect(sorted.map(x=>x.id)).toEqual(['b','c','a'])
   })
 })

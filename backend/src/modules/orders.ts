@@ -431,6 +431,41 @@ const createOrderSchema = z.object({
 const updateOrderSchema = createOrderSchema.partial()
 const BOOKING_NET_RATE = 0.83
 
+const ORDER_FIELD_LABELS: Record<string, string> = {
+  source: '来源',
+  property_id: '房号',
+  confirmation_code: '确认码',
+  guest_name: '客人姓名',
+  guest_phone: '客人电话',
+  checkin: '入住日期',
+  checkout: '退房日期',
+  price: '总租金',
+  total_payment_raw: '原始总租金',
+  cleaning_fee: '清洁费',
+  net_income: '房东净租金',
+  avg_nightly_price: '晚均价',
+  nights: '入住天数',
+  payment_currency: '付款币种',
+  status: '订单状态',
+}
+
+function orderValidationError(error: z.ZodError) {
+  const fieldErrors: Record<string, string> = {}
+  for (const issue of error.issues) {
+    const field = String(issue.path[0] || '')
+    if (!field || fieldErrors[field]) continue
+    const label = ORDER_FIELD_LABELS[field] || field
+    fieldErrors[field] = issue.code === 'invalid_type'
+      ? `${label}格式不正确`
+      : (issue.message || `${label}无效`)
+  }
+  return {
+    message: '订单信息校验失败',
+    code: 'ORDER_VALIDATION_FAILED',
+    field_errors: fieldErrors,
+  }
+}
+
 function isBookingSource(source: any): boolean {
   return String(source || '').trim().toLowerCase().includes('book')
 }
@@ -759,9 +794,8 @@ router.post('/validate-duplicate', requireAnyPerm(['order.create','order.manage'
 router.patch('/:id', requirePerm('order.write'), async (req, res) => {
   const { id } = req.params
   const operationId = uuid()
-  const opNow = new Date().toISOString()
   const parsed = updateOrderSchema.safeParse(req.body)
-  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  if (!parsed.success) return res.status(400).json(orderValidationError(parsed.error))
   const o = parsed.data
   const force = String((req.body as any).force ?? (req.query as any).force ?? '').toLowerCase() === 'true'
   const idx = db.orders.findIndex((x) => x.id === id)
@@ -773,7 +807,7 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
       base = Array.isArray(rows) ? (rows[0] as Order | undefined) : undefined
     } catch {}
   }
-  if (!base) return res.status(404).json({ message: 'order not found' })
+  if (!base) return res.status(404).json({ message: '订单不存在或已被删除', code: 'ORDER_NOT_FOUND' })
   if (!base) base = {} as Order
   let nights = o.nights
   const checkin = o.checkin || base.checkin
@@ -781,7 +815,7 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
   try {
     const ci0 = normalizeStart(checkin || '')
     const co0 = normalizeEnd(checkout || '')
-    if (ci0 && co0 && !(ci0 < co0)) return res.status(400).json({ message: '入住日期必须早于退房日期' })
+    if (ci0 && co0 && !(ci0 < co0)) return res.status(400).json({ message: '入住日期必须早于退房日期', code: 'INVALID_STAY_DATE' })
   } catch {}
   if (!nights && checkin && checkout) {
     try {
@@ -830,10 +864,10 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
     const locked = await isOrderMonthLocked(prevRow)
     if (!locked) {
       const { roleHasPermission } = require('../store')
-      if (!roleHasPermission(role, 'order.cancel')) return res.status(403).json({ message: 'no permission to cancel' })
+      if (!roleHasPermission(role, 'order.cancel')) return res.status(403).json({ message: '没有取消订单的权限', code: 'ORDER_CANCEL_FORBIDDEN' })
     } else {
       const { roleHasPermission } = require('../store')
-      if (!roleHasPermission(role, 'order.cancel.override')) return res.status(403).json({ message: 'payout locked, override cancel required' })
+      if (!roleHasPermission(role, 'order.cancel.override')) return res.status(403).json({ message: '该订单所属结算期已锁定，需要取消覆盖权限', code: 'PAYOUT_LOCKED' })
     }
   }
   const changedCore = (
@@ -949,11 +983,11 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
           } catch {}
           return res.json(row)
         } catch (e2: any) {
-          return res.status(500).json({ message: '数据库更新失败', error: String(e2?.message || '') })
+          return res.status(500).json({ message: '订单保存失败，请稍后重试', code: 'ORDER_UPDATE_FAILED', operation_id: operationId })
         }
       }
-      if (msg.includes('duplicate') || msg.includes('unique')) return res.status(409).json({ message: '确认码已存在' })
-      return res.status(500).json({ message: '数据库更新失败', error: msg })
+      if (msg.includes('duplicate') || msg.includes('unique')) return res.status(409).json({ message: '确认码已存在', code: 'ORDER_CONFIRMATION_CODE_DUPLICATE' })
+      return res.status(500).json({ message: '订单保存失败，请稍后重试', code: 'ORDER_UPDATE_FAILED', operation_id: operationId })
     }
   }
   // Supabase branch removed

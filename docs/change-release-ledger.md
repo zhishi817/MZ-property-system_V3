@@ -1,5 +1,206 @@
 # Change Release Ledger
 
+## CRL-20260905-002 — 订单排序缺失时间回归断言修复（root）
+
+- **Repository:** `root`
+- **Status:** commit-ready; selected for commit
+- **Updated:** 2026-09-05 AEST
+- **Request:** 修复订单排序新增稳定兜底规则后，Fast Regression 中遗留断言与现行规则不一致而失败的问题。
+- **Outcome:** 当邮件时间和创建时间均缺失时，旧回归测试明确断言按稳定订单 ID 的降序兜底；CI 不再错误期待原输入顺序。
+
+### Implementation
+
+- Previous behavior: `frontend/tests/orderSort.test.ts` 对两个均缺少邮件时间和创建时间的订单仍期望输入顺序 `a, c`，与已发布的 `orderSort` 稳定 ID 降序兜底规则冲突，导致 Fast Regression 失败。
+- New behavior: 用例名称明确稳定 ID 兜底，期望改为 `b, c, a`。不修改 `orderSort` 实现、订单数据、页面、API 或业务排序规则。
+
+### Files / Areas
+
+- `frontend/tests/orderSort.test.ts` — modified: 对缺失时间的稳定 ID 降序断言与已发布排序规则一致。
+- `docs/change-release-ledger.md` — modified: 本 CI 回归修复记录。
+
+### Impact / Dependencies
+
+- API / database / migration / configuration / dependencies: none.
+- Related unit: `root/CRL-20260905-001`（已发布订单排序规则）；本单元只修复遗留测试预期，不改变其运行时行为。
+- Production / external writes: none；未调用业务 API、同步、数据库或部署。
+
+### Validation
+
+- `npm run test --prefix frontend -- --coverage.enabled=false tests/orderSort.test.ts` — PASS; 1 file / 3 tests.
+- `npm run test --prefix frontend -- --coverage.enabled=false` — PASS; 46 files / 217 tests, including both legacy and FR-024 order-sort suites.
+- `npm run check:fast` — NOT VERIFIED locally: the clean candidate intentionally has no installed dependencies. With temporary links, its ledger gate correctly blocked those untracked links; without them, `check:fast` passed root workflow/ledger/registry gates before the backend compiler could not resolve candidate-local dependencies. No source/test failure remained.
+- `npm run check:feature-registry` — PASS; 21 FRs / 164 mappings, 73 mobile mappings deferred by policy.
+- `git diff --check` — PASS.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared.
+- **Untracked review:** none; the clean release worktree has no untracked files, generated output or temporary dependency links.
+- `frontend/tests/orderSort.test.ts` — SHA-256: `70473e78db51ebff4e71beeb7eb165e8f738263f0146e6400db2c733ce8f7cb8`
+- `frontend/tests/orderSort.test.ts` — SHA-256: `cdc325b360c0017add9263e73a2852390447ab83d692dc6d8fcc02273ad58cfc`
+
+### Release Attempts
+
+#### RA-20260905-004
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260905-002`
+- Selected CRL identities: `root/CRL-20260905-002`
+- Intended action: `commit`
+- Branch: `codex/orders-ux-20260905`
+- Base: `origin/Dev@a0c79c99472bb31821de388ae60450a61a39ea17`; fetched at `2026-09-05 14:28:56 AEST`
+- Candidate patch SHA-256: `cba36e70ede245c51f0a752a1bc535442ba37cf6b580b9dd944364a9786111ff` (exact `origin/Dev` base to candidate content commit, excluding ledger attempt metadata; the CRL-002-only staged test hunk fingerprint remains recorded above).
+- Commit SHA: `aad313a2129186c18eab39e5a3617948a1ac3a95` (candidate content commit).
+- Dependencies: root/CRL-20260905-001@54e64a4bac3b7416fb79cc39484e73eed9ec074e
+- Required validation: `PASS` for the targeted three-test suite and full frontend suite; `NOT VERIFIED` for `check:fast` only because this clean candidate has no local dependency installation, as recorded above.
+- Shared-hunk review: `PASS`; evidence: exactly two staged paths and the two non-ledger test hunk fingerprints above are selected by this CRL.
+- Generated-file review: `PASS`; evidence: no generated, cache, dependency-link or sensitive file is staged or untracked.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: user explicitly replied `提交` on 2026-09-05 for this currently presented CI repair. Push is not authorized.
+- Independent review: `GO for commit`; evidence: independent read-only reviewer recomputed the non-ledger fingerprint, confirmed the exact two-file/two-hunk scope, no untracked/generated/sensitive content, no production-write risk and no P0/P1. It noted only an unrelated existing P2: FR-024's historical "最后验证 Commit" field remains `not committed`.
+- Action conclusion: `GO`; the authorized local content commit completed as `aad313a2129186c18eab39e5a3617948a1ac3a95`. Push requires a new exact-SHA authorization and a committed-range audit.
+
+#### RA-20260905-005
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260905-001`, `CRL-20260905-002`
+- Selected CRL identities: `root/CRL-20260905-001`, `root/CRL-20260905-002`
+- Intended action: `push`
+- Branch: `codex/orders-ux-20260905`
+- Base: `origin/Dev@a0c79c99472bb31821de388ae60450a61a39ea17`; fetched at `2026-09-05 17:06:26 AEST`
+- Candidate patch SHA-256: `cba36e70ede245c51f0a752a1bc535442ba37cf6b580b9dd944364a9786111ff` (exact base to candidate content commit, excluding ledger attempt metadata).
+- Commit SHA: `aad313a2129186c18eab39e5a3617948a1ac3a95` (latest candidate content commit).
+- Remote branch: `origin/codex/orders-ux-20260905@598d3a5bd43878564c6284f25857a3563f45a46d`; non-force push completed and `git ls-remote` matched at 2026-09-05 AEST.
+- Dependencies: none.
+- Required validation: `PASS`; targeted legacy order-sort suite 3/3 and full frontend suite 46 files/217 tests passed. `check:fast` remains `NOT VERIFIED` only because the clean candidate has no local dependencies; it is not a source or test failure.
+- Shared-hunk review: `PASS`; evidence: the `origin/Dev...candidate` source range contains the 21 recorded CRL-001 hunks plus the two CRL-002 test hunks; `docs/change-release-ledger.md` is the only shared ledger path.
+- Generated-file review: `PASS`; evidence: clean checkout, no generated files, dependency links, cache or sensitive path in the range.
+- Technical state: `pushed`
+- User authorization: `approved-for-push`; evidence: after receiving branch `codex/orders-ux-20260905`, candidate content commit `aad313a2129186c18eab39e5a3617948a1ac3a95` and local receipt head `6b8f6666968d6923207c765be92a8fdcd845a605`, the user explicitly replied `推送` and then confirmed that CRL-001 plus CRL-002 may be jointly audited as the `Dev` merge range on 2026-09-05. The network push remains only the new delta after already-remote `a554d366e0631210bd77bd975d3d0939b0b84d6c`.
+- Independent review: `GO for push`; evidence: independent read-only reviewer verified the exact `origin/Dev...current` range, recomputed non-ledger fingerprint `cba36e70ede245c51f0a752a1bc535442ba37cf6b580b9dd944364a9786111ff`, confirmed the eight selected files / 23 non-ledger hunks, base → content → receipt ancestry, remote delta boundary, clean generated/sensitive review and no P0/P1. The reviewer initially queried whether the ledger receipt head invalidated authorization, then confirmed the contract binds authorization to the unchanged selected CRLs, base, candidate content commit and branch; the report head is intentionally recorded separately. Existing FR-024 validation-commit wording remains P2 only.
+- Action conclusion: `GO`; blockers: none. The authorized exact range was non-force pushed; the remote branch SHA matched the final audited head. This ledger-only outcome receipt will be fast-forwarded to the same branch. PR, merge, deployment and production verification remain outside scope.
+
+### Risks / Release Notes
+
+- The authenticated admin browser regression for the existing FR-024 remains outside this test-only repair.
+- Sensitive-information review: no credentials, customer data, generated files or build cache are part of the intended scope.
+
+## CRL-20260905-001 — 订单取消位置稳定、更新失败原因与详情日历直达（root）
+
+- **Repository:** `root`
+- **Status:** commit-ready; selected-for-commit
+- **Updated:** 2026-09-05 AEST
+- **Request:** 网页端订单管理：取消订单必须保留原记录位置；订单更新失败必须显示具体失败原因；订单详情可直接跳转到日历模式。
+- **Outcome:** 取消订单保留原邮件时间和入住区间，列表使用确定性排序，日历以红色状态继续显示取消记录。订单 PATCH 返回安全、可读的错误代码和字段原因，编辑抽屉展示对应提示。订单详情新增“查看日历”，直接定位该订单房号与入住月份。
+
+### Implementation
+
+- Previous behavior: 同一邮件时间的订单依赖数据库返回顺序；取消且不计收入的订单会从日历及当天视图排除。PATCH 的字段校验、权限、结算期、重复确认码和数据库失败缺少统一安全错误契约，网页只显示笼统“更新失败”。订单详情只能关闭或编辑，不能直接打开对应日历。
+- New behavior: `orderSort` 先按用户选定时间排序，同值/缺失值以 `created_at` 和订单 ID 确定顺序，不使用订单状态。日历记录视图不再按收入资格排除取消单，沿用既有红色状态样式。PATCH 对可预期失败返回中文 `message`、稳定 `code`，字段错误使用 `field_errors`；未知持久化失败只给安全操作编号，不泄露 SQL 或数据库信息。编辑抽屉将字段原因显示在相应表单项，详情“查看日历”仅按当前订单的房源和入住月份定位并关闭抽屉。
+- Key decisions: 不修改取消后的财务计入规则、订单日期、首次邮件时间、导入/邮件同步、清洁任务或数据库 schema；日历保留取消订单只改变记录可见性，不把它重新计入收入。
+
+### Files / Areas
+
+- `backend/src/modules/orders.ts` — modified: PATCH 安全错误契约、字段级验证原因与取消/结算/重复确认码说明。
+- `backend/scripts/tests/test_order_update_error_contract.ts` — added: 内存 PATCH 契约覆盖字段原因、日期原因和取消后邮件时间不变。
+- `frontend/src/lib/orderSort.ts` — modified: 确定性时间排序，取消不改变位置。
+- `frontend/src/lib/orderSort.test.ts` — added: 取消前后排序与相同邮件时间回归。
+- `frontend/src/app/orders/page.tsx` — modified: 取消订单日历保留、编辑失败原因展示和详情日历直达。
+- `docs/feature-regression-registry.md` — modified: 新增 FR-024 订单保护规则与测试映射。
+- `docs/change-release-ledger.md` — modified: 本 CRL 与发布证据。
+
+### Impact / Dependencies
+
+- API: `PATCH /orders/:id` 的失败响应新增/规范化 `code`、`field_errors` 和安全 `operation_id`；成功 payload 不变。
+- Database / migration: none；不读写生产数据库、不改 schema。
+- Config / dependencies: none；不安装或升级依赖。
+- Production / external writes: none；未调用真实业务 API、同步、邮件或部署。
+
+### Validation
+
+- `./node_modules/.bin/ts-node --transpile-only scripts/tests/test_order_update_error_contract.ts` (in `backend`) — PASS; local in-memory PATCH contract only, with no database or external service.
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (in `backend`) — PASS.
+- `npm run test -- --coverage.enabled=false src/lib/orderSort.test.ts` (in `frontend`) — PASS; 1 file / 2 tests.
+- `npm run lint` (in `frontend`) — PASS; existing repository warnings only, no error.
+- `npm run build` (in `frontend`) — PASS; `/orders` production compilation included; existing Browserlist/lint warnings only.
+- `npm run check:feature-registry` — PASS; 21 FRs / 164 mappings, 73 mobile mappings deferred by registry policy.
+- `git diff --check` — PASS.
+- Manual authenticated browser regression and production verification: not run.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared.
+- **Untracked review:** none; both newly added tests are explicitly staged. Temporary dependency links and frontend build cache were removed before staging review.
+- `backend/scripts/tests/test_order_update_error_contract.ts` — SHA-256: `5f1a71911bf5998fb15f3934409ffb6a8b3ae352fada71eb810409e02c2e2ba3`
+- `backend/src/modules/orders.ts` — SHA-256: `1383b8a6a8a96fa0be43b6e61f2b4fc8caaea6e25c964fbeb52be585d6c40fae`
+- `backend/src/modules/orders.ts` — SHA-256: `238fd2929ec9c65c8cc4fcbd81af0d75ab9aa19905e561d3183c0302b7f1042c`
+- `backend/src/modules/orders.ts` — SHA-256: `340d63f119cf97de7d14b41fcf6fb36f0522c864d2af91934175dc4bd570641c`
+- `backend/src/modules/orders.ts` — SHA-256: `5ae3b9709ff7995ac25d5f5e1982e44656768ea3dda23856320e2c62b6975a43`
+- `backend/src/modules/orders.ts` — SHA-256: `65a29cb01f00d5a4f1cc74d8c665d1e43ef5791a285f972b8976d561df910ef3`
+- `backend/src/modules/orders.ts` — SHA-256: `74d31fec2f2dd5478e7da386ce9817ce4950b22a4e690f39a1a7d025b631db33`
+- `backend/src/modules/orders.ts` — SHA-256: `8565b34cd14ca8029fbebb38b1fcb1bed1e34575edb9d6cc5ae817bd9da48d21`
+- `backend/src/modules/orders.ts` — SHA-256: `8c58b2852212104d2c606652c72d760db57dafbb5e623c9dc08c985d3cd3ec97`
+- `backend/src/modules/orders.ts` — SHA-256: `f090b496cd8aa9dd9e1b6ed33c78a5616e61c4f21cc3530ca91741ec2315ce33`
+- `docs/feature-regression-registry.md` — SHA-256: `ad6d35ff9f739407839d273682ad4763687d002aa3d31bf0f7b756234d6deb23`
+- `frontend/src/app/orders/page.tsx` — SHA-256: `0bc84e9241cc5e194d719c77c815f1d6bbe0ec48db438e79a88e1dcf5476f34b`
+- `frontend/src/app/orders/page.tsx` — SHA-256: `1b1f64c5c22287b83f9c876c99a2c7b8fbffee6bb8cf514e37f22dfa192e3b08`
+- `frontend/src/app/orders/page.tsx` — SHA-256: `4bcf0555f0aeca140debf088aa20f067037e5924cddbdbbdade05c51660b944c`
+- `frontend/src/app/orders/page.tsx` — SHA-256: `5a5d621cdb97bd9c5edc758fbd0b9c31f2096ba1e1a2966a44a351b036a4f870`
+- `frontend/src/app/orders/page.tsx` — SHA-256: `92d94d60972232c63faa4dc6fb8308b760543eb6877b260beb3c1093a5361c2f`
+- `frontend/src/app/orders/page.tsx` — SHA-256: `a296cbe90e62b11a30c0d9210ca1401670daa2b1ea9b2e98518bff0eef6def1c`
+- `frontend/src/app/orders/page.tsx` — SHA-256: `c625e4be47b564f69a38ebb6d6b8286a3d8dea4f319e30f76befbb8bf4b43479`
+- `frontend/src/lib/orderSort.test.ts` — SHA-256: `0d3d756ba7cf9024c0c10680e6f651b6fbf324654694b5c502b27c57d46f65d3`
+- `frontend/src/lib/orderSort.ts` — SHA-256: `986cfd624f43cabf7a7747a4d1d34b88cc6dc9036ae4dd96a9b99431115e094e`
+- `frontend/src/lib/orderSort.ts` — SHA-256: `f9fd902825246594bae153261399d401af458b77f17b4fe7f059dbf4f091ed21`
+
+### Release Attempts
+
+#### RA-20260905-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260905-001`
+- Selected CRL identities: `root/CRL-20260905-001`
+- Intended action: `commit`
+- Branch: `codex/orders-ux-20260905`
+- Base: `origin/Dev@a0c79c99472bb31821de388ae60450a61a39ea17`; fetched at `2026-09-05 AEST`
+- Candidate patch SHA-256: `2ebabde2ac63cf86aa9eeba11ee84a042bbb05eb193221944ea7ae9c7b1133da` (excludes ledger attempt metadata)
+- Commit SHA: `54e64a4bac3b7416fb79cc39484e73eed9ec074e` (candidate content commit; exact audited range head follows in the committed-range report)
+- Dependencies: none
+- Required validation: `PASS`; evidence: backend in-memory PATCH contract, backend TypeScript, frontend targeted 2/2, frontend lint, frontend production build, feature-registry audit and diff check passed in this clean candidate.
+- Shared-hunk review: `PASS`; evidence: exactly seven selected staged paths, 21 non-ledger hunk fingerprints and no unselected staged path.
+- Generated-file review: `PASS`; evidence: temporary dependency links and frontend `.next` build cache were removed before final staging review.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: user requested `提交推送` for the current order-management repair on 2026-09-05. Per release policy, push remains separately gated on the exact committed SHA and branch.
+- Independent review: `GO for commit`; evidence: independent read-only review recomputed candidate fingerprint, confirmed the exact seven-file / 21-hunk scope, validations, no untracked/generated files and no P0/P1, secret or production-write risk. It found a P2 ledger wording mismatch (`22` versus 21) which was corrected before this gate rerun.
+- Action conclusion: `GO`; blockers: none. The exact reviewed candidate was committed as `54e64a4bac3b7416fb79cc39484e73eed9ec074e`; push remains separately unauthorized until the exact committed range head and branch are presented to the user.
+
+#### RA-20260905-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260905-001`
+- Selected CRL identities: `root/CRL-20260905-001`
+- Intended action: `push`
+- Branch: `codex/orders-ux-20260905`
+- Base: `origin/Dev@a0c79c99472bb31821de388ae60450a61a39ea17`; fetched at `2026-09-05 13:12:39 AEST`
+- Candidate patch SHA-256: `2ebabde2ac63cf86aa9eeba11ee84a042bbb05eb193221944ea7ae9c7b1133da` (excludes ledger attempt metadata)
+- Commit SHA: `54e64a4bac3b7416fb79cc39484e73eed9ec074e` (candidate content commit); prior audited receipt head `f0e0c40947312a4a33457315f64f16605c6bc81f`.
+- Remote branch: `origin/codex/orders-ux-20260905@6a6950250a41a3597c3b5f1ee1fd70e526bb32c5`; non-force push and matching `git ls-remote` verification completed on 2026-09-05.
+- Dependencies: none
+- Required validation: `PASS`; evidence: previous candidate validation and committed-range audit passed; source content is unchanged.
+- Shared-hunk review: `PASS`; evidence: exact committed range contains only the seven selected paths and 21 recorded non-ledger hunk fingerprints.
+- Generated-file review: `PASS`; evidence: exact committed range contains no generated, cache, configuration or sensitive path.
+- Technical state: `pushed`
+- User authorization: `approved-for-push`; evidence: after receiving branch `codex/orders-ux-20260905`, content commit `54e64a4bac3b7416fb79cc39484e73eed9ec074e` and audited receipt head `f0e0c40947312a4a33457315f64f16605c6bc81f`, the user explicitly replied `推送` on 2026-09-05.
+- Independent review: `GO for push`; evidence: independent read-only reviewer recomputed fingerprint `2ebabde2ac63cf86aa9eeba11ee84a042bbb05eb193221944ea7ae9c7b1133da`, confirmed base → content commit → receipt ancestry, the exact seven-file / 21-hunk scope, authorization binding and no P0/P1, generated-file, secret or production-write risk.
+- Action conclusion: `GO`; blockers: none. The authorized exact range was non-force pushed and the remote SHA matched local head. This ledger-only outcome receipt will be fast-forwarded to the same branch; PR, merge, deployment and production verification remain outside scope.
+
+### Risks / Release Notes
+
+- Manual gap: an authenticated admin browser regression for the cancellation display, field-level error rendering and detail-to-calendar route is not run; no production action occurred.
+- Sensitive-information review: staged source and tests must not include credentials, database URLs, customer data, generated files or build cache.
+
 ## CRL-20260904-008 — 房源营收无感刷新与数据库读取降频（root）
 
 - **Repository:** `root`

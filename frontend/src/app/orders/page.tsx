@@ -942,6 +942,51 @@ export default function OrdersPage() {
     setCalMonth(d0.isValid() ? d0 : dayjs())
     setView('calendar')
   }
+
+  function jumpToCalendarForOrder(order: Order) {
+    const pid = String(order?.property_id || '').trim()
+    if (!pid) { message.warning('订单缺少房源信息，无法跳转日历'); return }
+    const checkin = dayjs(String(order?.checkin || '').slice(0, 10))
+    if (!checkin.isValid()) { message.warning('订单缺少有效入住日期，无法跳转日历'); return }
+    setCalPid(pid)
+    setCalMonth(checkin.startOf('month'))
+    setDetailOpen(false)
+    setView('calendar')
+  }
+
+  function showOrderUpdateFailure(status: number, body: any) {
+    const fieldErrors = body?.field_errors && typeof body.field_errors === 'object' ? body.field_errors as Record<string, unknown> : {}
+    const fields = Object.entries(fieldErrors)
+      .filter(([name, reason]) => !!name && typeof reason === 'string' && !!reason.trim())
+      .map(([name, reason]) => ({ name, errors: [String(reason)] }))
+    if (fields.length) editForm.setFields(fields as any)
+
+    const firstReason = fields[0]?.errors?.[0]
+    const apiMessage = String(body?.message || '').trim()
+    const code = String(body?.code || '').trim()
+    if (firstReason) {
+      message.error(`${apiMessage || '订单信息校验失败'}：${firstReason}`)
+      return
+    }
+    if (apiMessage && apiMessage !== 'forbidden' && apiMessage !== 'unauthorized') {
+      const operation = String(body?.operation_id || '').trim()
+      message.error(operation ? `${apiMessage}（操作编号：${operation}）` : apiMessage)
+      return
+    }
+    if (code === 'ORDER_UPDATE_FAILED') {
+      message.error('订单保存失败，请稍后重试')
+      return
+    }
+    if (status === 401 || apiMessage === 'unauthorized') {
+      message.error('登录状态已失效，请重新登录后再保存')
+      return
+    }
+    if (status === 403 || apiMessage === 'forbidden') {
+      message.error('没有编辑订单的权限')
+      return
+    }
+    message.error(`订单更新失败（HTTP ${status}）`)
+  }
   async function saveDetailDeduction() {
     if (!detail) return
     const payload = { amount: detailDedAmount, item_desc: detailDedDesc, note: detailDedNote }
@@ -1110,7 +1155,7 @@ export default function OrdersPage() {
     try {
       res = await fetch(`${API_BASE}/orders/${current?.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ ...payload, force: true }) })
     } catch (e: any) {
-      message.error('网络错误，更新失败')
+      message.error('网络连接失败，无法连接订单服务，请检查网络后重试')
       return
     }
     if (res!.ok) {
@@ -1121,9 +1166,12 @@ export default function OrdersPage() {
       message.success('订单已更新'); setEditOpen(false); load()
     }
     else {
-      let msg = '更新失败'
-      try { const j = await res!.json(); if (j?.message) msg = j.message } catch { try { msg = await res!.text() } catch {} }
-      message.error(msg)
+      let body: any = null
+      try {
+        const text = await res!.text()
+        body = text ? JSON.parse(text) : null
+      } catch {}
+      showOrderUpdateFailure(res!.status, body)
     }
   }
 
@@ -1383,9 +1431,9 @@ export default function OrdersPage() {
       const ci = String(o.checkin || '').slice(0,10)
       const co = String(o.checkout || '').slice(0,10)
       if (!ci || !co) return false
-      const include = (!isCanceledStatus((o as any).status)) || !!(o as any).count_in_income
       const okPlatform = platformFilter === 'all' || sourcePlatform(o.source) === platformFilter
-      return include && o.property_id === calPid && okPlatform
+      // 日历是订单记录视图而非财务报表：取消单仍以红色保留原入住区间。
+      return o.property_id === calPid && okPlatform
     })
     return orders.map(o => {
       const stKey = String((o as any).status || '').toLowerCase()
@@ -1478,8 +1526,7 @@ export default function OrdersPage() {
       .filter(o => {
         const ciDay = dayStr(o.checkin)
         const coDay = dayStr(o.checkout)
-        const include = (!isCanceledStatus((o as any).status)) || !!(o as any).count_in_income
-        return include && o.property_id === calPid && matchesPlatformFilter(o) && ciDay && coDay && ciDay <= dateStr && coDay > dateStr
+        return o.property_id === calPid && matchesPlatformFilter(o) && ciDay && coDay && ciDay <= dateStr && coDay > dateStr
       }) as any,
       sortKey,
       sortOrder
@@ -2402,6 +2449,7 @@ export default function OrdersPage() {
       width={520}
       footer={
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          {detail ? <Button onClick={() => jumpToCalendarForOrder(detail)}>查看日历</Button> : null}
           <Button onClick={() => setDetailOpen(false)}>关闭</Button>
           {detail && hasPerm('order.write') ? (
             <Button type="primary" onClick={() => { setDetailOpen(false); openEdit(detail) }}>编辑记录</Button>
