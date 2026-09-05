@@ -52,7 +52,7 @@
 - Base: `origin/Dev@a0c79c99472bb31821de388ae60450a61a39ea17`; fetched at `2026-09-05 14:28:56 AEST`
 - Candidate patch SHA-256: `cba36e70ede245c51f0a752a1bc535442ba37cf6b580b9dd944364a9786111ff` (exact `origin/Dev` base to candidate content commit, excluding ledger attempt metadata; the CRL-002-only staged test hunk fingerprint remains recorded above).
 - Commit SHA: `aad313a2129186c18eab39e5a3617948a1ac3a95` (candidate content commit).
-- Dependencies: root/CRL-20260905-001@a554d366e0631210bd77bd975d3d0939b0b84d6c
+- Dependencies: root/CRL-20260905-001@54e64a4bac3b7416fb79cc39484e73eed9ec074e
 - Required validation: `PASS` for the targeted three-test suite and full frontend suite; `NOT VERIFIED` for `check:fast` only because this clean candidate has no local dependency installation, as recorded above.
 - Shared-hunk review: `PASS`; evidence: exactly two staged paths and the two non-ledger test hunk fingerprints above are selected by this CRL.
 - Generated-file review: `PASS`; evidence: no generated, cache, dependency-link or sensitive file is staged or untracked.
