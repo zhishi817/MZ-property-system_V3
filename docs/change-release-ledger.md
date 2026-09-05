@@ -61,6 +61,25 @@
 - Independent review: `GO for commit`; evidence: independent read-only reviewer recomputed the non-ledger fingerprint, confirmed the exact two-file/two-hunk scope, no untracked/generated/sensitive content, no production-write risk and no P0/P1. It noted only an unrelated existing P2: FR-024's historical "最后验证 Commit" field remains `not committed`.
 - Action conclusion: `GO`; the authorized local content commit completed as `aad313a2129186c18eab39e5a3617948a1ac3a95`. Push requires a new exact-SHA authorization and a committed-range audit.
 
+#### RA-20260905-005
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260905-001`, `CRL-20260905-002`
+- Selected CRL identities: `root/CRL-20260905-001`, `root/CRL-20260905-002`
+- Intended action: `push`
+- Branch: `codex/orders-ux-20260905`
+- Base: `origin/Dev@a0c79c99472bb31821de388ae60450a61a39ea17`; fetched at `2026-09-05 17:06:26 AEST`
+- Candidate patch SHA-256: `cba36e70ede245c51f0a752a1bc535442ba37cf6b580b9dd944364a9786111ff` (exact base to candidate content commit, excluding ledger attempt metadata).
+- Commit SHA: `aad313a2129186c18eab39e5a3617948a1ac3a95` (latest candidate content commit).
+- Dependencies: none.
+- Required validation: `PASS`; targeted legacy order-sort suite 3/3 and full frontend suite 46 files/217 tests passed. `check:fast` remains `NOT VERIFIED` only because the clean candidate has no local dependencies; it is not a source or test failure.
+- Shared-hunk review: `PASS`; evidence: the `origin/Dev...candidate` source range contains the 21 recorded CRL-001 hunks plus the two CRL-002 test hunks; `docs/change-release-ledger.md` is the only shared ledger path.
+- Generated-file review: `PASS`; evidence: clean checkout, no generated files, dependency links, cache or sensitive path in the range.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after receiving branch `codex/orders-ux-20260905`, candidate content commit `aad313a2129186c18eab39e5a3617948a1ac3a95` and local receipt head `6b8f6666968d6923207c765be92a8fdcd845a605`, the user explicitly replied `推送` and then confirmed that CRL-001 plus CRL-002 may be jointly audited as the `Dev` merge range on 2026-09-05. The network push remains only the new delta after already-remote `a554d366e0631210bd77bd975d3d0939b0b84d6c`.
+- Independent review: `GO for push`; evidence: independent read-only reviewer verified the exact `origin/Dev...current` range, recomputed non-ledger fingerprint `cba36e70ede245c51f0a752a1bc535442ba37cf6b580b9dd944364a9786111ff`, confirmed the eight selected files / 23 non-ledger hunks, base → content → receipt ancestry, remote delta boundary, clean generated/sensitive review and no P0/P1. The reviewer initially queried whether the ledger receipt head invalidated authorization, then confirmed the contract binds authorization to the unchanged selected CRLs, base, candidate content commit and branch; the report head is intentionally recorded separately. Existing FR-024 validation-commit wording remains P2 only.
+- Action conclusion: `GO`; blockers: none. Before the non-force push, refresh `origin/Dev`, rerun this exact joint-range report at the clean receipt head and verify the remote branch still points to `a554d366e0631210bd77bd975d3d0939b0b84d6c`.
+
 ### Risks / Release Notes
 
 - The authenticated admin browser regression for the existing FR-024 remains outside this test-only repair.
