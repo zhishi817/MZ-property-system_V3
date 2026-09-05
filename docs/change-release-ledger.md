@@ -50,16 +50,16 @@
 - Intended action: `commit`
 - Branch: `codex/orders-ux-20260905`
 - Base: `origin/Dev@a0c79c99472bb31821de388ae60450a61a39ea17`; fetched at `2026-09-05 14:28:56 AEST`
-- Candidate patch SHA-256: `7eddb7de4ac1f46fb6db187841b587e4aff814c4d55cdf19f5aec97c03752124` (excludes ledger attempt metadata).
-- Commit SHA: not committed.
+- Candidate patch SHA-256: `cba36e70ede245c51f0a752a1bc535442ba37cf6b580b9dd944364a9786111ff` (exact `origin/Dev` base to candidate content commit, excluding ledger attempt metadata; the CRL-002-only staged test hunk fingerprint remains recorded above).
+- Commit SHA: `aad313a2129186c18eab39e5a3617948a1ac3a95` (candidate content commit).
 - Dependencies: `root/CRL-20260905-001@a554d366e0631210bd77bd975d3d0939b0b84d6c` is already the published parent of this candidate branch; this unit changes only the legacy assertion that covers its stable fallback.
 - Required validation: `PASS` for the targeted three-test suite and full frontend suite; `NOT VERIFIED` for `check:fast` only because this clean candidate has no local dependency installation, as recorded above.
 - Shared-hunk review: `PASS`; evidence: exactly two staged paths and the two non-ledger test hunk fingerprints above are selected by this CRL.
 - Generated-file review: `PASS`; evidence: no generated, cache, dependency-link or sensitive file is staged or untracked.
-- Technical state: `candidate`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user explicitly replied `提交` on 2026-09-05 for this currently presented CI repair. Push is not authorized.
 - Independent review: `GO for commit`; evidence: independent read-only reviewer recomputed the non-ledger fingerprint, confirmed the exact two-file/two-hunk scope, no untracked/generated/sensitive content, no production-write risk and no P0/P1. It noted only an unrelated existing P2: FR-024's historical "最后验证 Commit" field remains `not committed`.
-- Action conclusion: `GO`; blockers: none for the authorized local commit. Push requires a new exact-SHA authorization and a committed-range audit.
+- Action conclusion: `GO`; the authorized local content commit completed as `aad313a2129186c18eab39e5a3617948a1ac3a95`. Push requires a new exact-SHA authorization and a committed-range audit.
 
 ### Risks / Release Notes
 
