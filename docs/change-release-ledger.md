@@ -90,6 +90,25 @@
 - Independent review: `GO for commit`; evidence: independent read-only review recomputed candidate fingerprint, confirmed the exact seven-file / 21-hunk scope, validations, no untracked/generated files and no P0/P1, secret or production-write risk. It found a P2 ledger wording mismatch (`22` versus 21) which was corrected before this gate rerun.
 - Action conclusion: `GO`; blockers: none. The exact reviewed candidate was committed as `54e64a4bac3b7416fb79cc39484e73eed9ec074e`; push remains separately unauthorized until the exact committed range head and branch are presented to the user.
 
+#### RA-20260905-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260905-001`
+- Selected CRL identities: `root/CRL-20260905-001`
+- Intended action: `push`
+- Branch: `codex/orders-ux-20260905`
+- Base: `origin/Dev@a0c79c99472bb31821de388ae60450a61a39ea17`; fetched at `2026-09-05 13:12:39 AEST`
+- Candidate patch SHA-256: `2ebabde2ac63cf86aa9eeba11ee84a042bbb05eb193221944ea7ae9c7b1133da` (excludes ledger attempt metadata)
+- Commit SHA: `54e64a4bac3b7416fb79cc39484e73eed9ec074e` (candidate content commit); prior audited receipt head `f0e0c40947312a4a33457315f64f16605c6bc81f`.
+- Dependencies: none
+- Required validation: `PASS`; evidence: previous candidate validation and committed-range audit passed; source content is unchanged.
+- Shared-hunk review: `PASS`; evidence: exact committed range contains only the seven selected paths and 21 recorded non-ledger hunk fingerprints.
+- Generated-file review: `PASS`; evidence: exact committed range contains no generated, cache, configuration or sensitive path.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after receiving branch `codex/orders-ux-20260905`, content commit `54e64a4bac3b7416fb79cc39484e73eed9ec074e` and audited receipt head `f0e0c40947312a4a33457315f64f16605c6bc81f`, the user explicitly replied `推送` on 2026-09-05.
+- Independent review: `GO for push`; evidence: independent read-only reviewer recomputed fingerprint `2ebabde2ac63cf86aa9eeba11ee84a042bbb05eb193221944ea7ae9c7b1133da`, confirmed base → content commit → receipt ancestry, the exact seven-file / 21-hunk scope, authorization binding and no P0/P1, generated-file, secret or production-write risk.
+- Action conclusion: `GO`; blockers: none. After this ledger-only receipt is committed and the exact clean range audit passes, this exact branch may be non-force pushed. PR, merge, deployment and production verification remain outside scope.
+
 ### Risks / Release Notes
 
 - Manual gap: an authenticated admin browser regression for the cancellation display, field-level error rendering and detail-to-calendar route is not run; no production action occurred.
