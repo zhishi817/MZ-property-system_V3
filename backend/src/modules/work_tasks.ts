@@ -5,6 +5,7 @@ import { hasPg, pgPool } from '../dbAdapter'
 import { v4 as uuid } from 'uuid'
 import { emitNotificationEvent } from '../services/notificationEvents'
 import { buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
+import { assertR5TaskRuntimeSchemaReady, requireR5TaskRuntimeSchema } from '../lib/r5RequestSchema'
 
 export const router = Router()
 
@@ -14,35 +15,6 @@ function enqueueNotification(task: () => Promise<any>) {
       try { console.error(`[work-tasks][notification_async_failed] message=${String(e?.message || '')}`) } catch {}
     })
   })
-}
-
-async function ensureWorkTasksTable() {
-  if (!hasPg || !pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS work_tasks (
-    id text PRIMARY KEY,
-    task_kind text NOT NULL,
-    source_type text NOT NULL,
-    source_id text NOT NULL,
-    property_id text,
-    title text NOT NULL DEFAULT '',
-    summary text,
-    scheduled_date date,
-    start_time text,
-    end_time text,
-    assignee_id text,
-    status text NOT NULL DEFAULT 'todo',
-    urgency text NOT NULL DEFAULT 'medium',
-    photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb,
-    created_by text,
-    updated_by text,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
-  );`)
-  await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb;`)
-  await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_work_tasks_source ON work_tasks(source_type, source_id);`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day_assignee ON work_tasks(scheduled_date, assignee_id, status);`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_kind_day ON work_tasks(task_kind, scheduled_date);`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day ON work_tasks(scheduled_date);`)
 }
 
 function normId(v: any): string | null {
@@ -103,7 +75,7 @@ const patchSchema = createSchema.partial().strict()
 
 async function upsertWorkTaskFromSource(sourceType: string, sourceId: string, patch: any) {
   if (!hasPg || !pgPool) return
-  await ensureWorkTasksTable()
+  assertR5TaskRuntimeSchemaReady()
   const st = String(sourceType || '').trim()
   const sid = String(sourceId || '').trim()
   if (!st || !sid) return
@@ -173,7 +145,7 @@ async function propagateToSource(sourceType: string, sourceId: string, patch: an
   }
 }
 
-router.get('/day', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), async (req, res) => {
+router.get('/day', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), requireR5TaskRuntimeSchema, async (req, res) => {
   const date = dayOnly((req.query as any)?.date)
   if (!date) return res.status(400).json({ message: 'invalid date' })
   const includeOverdue = String((req.query as any)?.include_overdue || '').trim() === '1'
@@ -181,7 +153,6 @@ router.get('/day', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 
   const includeFuture = String((req.query as any)?.include_future || '').trim() !== '0'
   try {
     if (!hasPg || !pgPool) return res.json({ date, pool: [], groups: {}, tasks: [] })
-    await ensureWorkTasksTable()
     const doneSet = ['done', 'completed', 'cancelled', 'canceled']
     const where: string[] = []
     const vals: any[] = [date, doneSet]
@@ -224,12 +195,11 @@ router.get('/day', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 
   }
 })
 
-router.post('/', requirePerm('cleaning.schedule.manage'), async (req, res) => {
+router.post('/', requirePerm('cleaning.schedule.manage'), requireR5TaskRuntimeSchema, async (req, res) => {
   const parsed = createSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensureWorkTasksTable()
     const user = (req as any).user || {}
     const payload = parsed.data
     const taskKind = String(payload.task_kind || '').trim()
@@ -326,14 +296,13 @@ router.post('/', requirePerm('cleaning.schedule.manage'), async (req, res) => {
   }
 })
 
-router.patch('/:id', requirePerm('cleaning.schedule.manage'), async (req, res) => {
+router.patch('/:id', requirePerm('cleaning.schedule.manage'), requireR5TaskRuntimeSchema, async (req, res) => {
   const id = String((req.params as any)?.id || '').trim()
   if (!id) return res.status(400).json({ message: 'missing id' })
   const parsed = patchSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensureWorkTasksTable()
     const user = (req as any).user || {}
     const patch = parsed.data as any
     const r0 = await pgPool.query('SELECT * FROM work_tasks WHERE id=$1 LIMIT 1', [id])
@@ -485,7 +454,7 @@ router.patch('/:id', requirePerm('cleaning.schedule.manage'), async (req, res) =
   }
 })
 
-router.post('/upsert-from-source', requirePerm('cleaning.schedule.manage'), async (req, res) => {
+router.post('/upsert-from-source', requirePerm('cleaning.schedule.manage'), requireR5TaskRuntimeSchema, async (req, res) => {
   const body = req.body || {}
   const sourceType = String(body.source_type || '').trim()
   const sourceId = String(body.source_id || '').trim()

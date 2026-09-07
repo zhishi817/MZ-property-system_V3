@@ -55,9 +55,6 @@ const INSPECTION_PHOTO_MEDIA_TYPES = [
   'inspection_unclean',
 ]
 
-let workTaskActionAuditsEnsured = false
-let workTaskActionAuditsEnsuring: Promise<void> | null = null
-
 export async function getCleaningSubmissionState(taskId: string, executor: Queryable | null = pgPool): Promise<CleaningSubmissionState> {
   const id = cleanText(taskId)
   if (!id || !executor) {
@@ -236,40 +233,6 @@ export function buildKeyPhotoUploadEventPatch(input: {
   return patch
 }
 
-export async function ensureWorkTaskActionAuditsTable(executor: Queryable | null = pgPool) {
-  if (!hasPg || !executor) return
-  if (workTaskActionAuditsEnsured) return
-  if (workTaskActionAuditsEnsuring) return workTaskActionAuditsEnsuring
-  workTaskActionAuditsEnsuring = (async () => {
-    await executor.query(`CREATE TABLE IF NOT EXISTS work_task_action_audits (
-      id text PRIMARY KEY,
-      source_type text NOT NULL,
-      source_id text NOT NULL,
-      performed_by_user_id text,
-      performed_by_name text,
-      performed_as_action text NOT NULL,
-      performed_at timestamptz NOT NULL DEFAULT now(),
-      actor_user_id text,
-      status_before text,
-      status_after text,
-      metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
-      created_at timestamptz NOT NULL DEFAULT now()
-    );`)
-    await executor.query(`CREATE INDEX IF NOT EXISTS idx_work_task_action_audits_source ON work_task_action_audits(source_type, source_id, performed_at DESC);`)
-    await executor.query(`CREATE INDEX IF NOT EXISTS idx_work_task_action_audits_actor ON work_task_action_audits(actor_user_id, performed_at DESC);`)
-    await executor.query(`CREATE INDEX IF NOT EXISTS idx_work_task_action_audits_performer ON work_task_action_audits(performed_by_user_id, performed_at DESC);`)
-    workTaskActionAuditsEnsured = true
-  })()
-    .catch((error) => {
-      workTaskActionAuditsEnsuring = null
-      throw error
-    })
-    .finally(() => {
-      if (workTaskActionAuditsEnsured) workTaskActionAuditsEnsuring = null
-    })
-  return workTaskActionAuditsEnsuring
-}
-
 export async function resolvePerformedByName(userId: string, fallback?: string | null, executor: Queryable | null = pgPool) {
   const explicit = cleanText(fallback)
   if (explicit) return explicit
@@ -309,7 +272,6 @@ export async function recordWorkTaskActionAudit(input: WorkTaskActionAuditInput,
   const actorUserId = cleanText(input.actorUserId) || null
   const performedByUserId = cleanText(input.performedByUserId) || actorUserId
   if (!sourceType || !sourceId || !input.performedAsAction) return null
-  await ensureWorkTaskActionAuditsTable(executor)
   const performedByName = await resolvePerformedByName(performedByUserId || '', input.performedByName, executor)
   const id = crypto.randomUUID()
   const performedAt = new Date().toISOString()
@@ -360,7 +322,6 @@ export async function applyCleaningTaskActionTransition(input: CleaningTaskTrans
   if (!hasPg || !executor) return { status_before: null, status_after: null, audit: null }
   const taskId = cleanText(input.taskId)
   if (!taskId) return { status_before: null, status_after: null, audit: null }
-  await ensureWorkTaskActionAuditsTable(executor)
   const r = await executor.query(
     `SELECT id::text AS id,
             COALESCE(status, '') AS status,

@@ -73,6 +73,8 @@ async function main() {
   }
   console.log('[cleaning-sync-jobs][worker] starting')
   try {
+    const { warmupR5TaskRuntimeSchema } = require('./lib/r5RequestSchema')
+    await warmupR5TaskRuntimeSchema()
     const { bootstrapCleaningSyncSchemaV2 } = require('./services/cleaningSync')
     await bootstrapCleaningSyncSchemaV2()
   } catch (e: any) {

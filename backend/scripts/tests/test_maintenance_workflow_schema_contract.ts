@@ -105,7 +105,7 @@ assert.match(runtimeMigration, /CREATE INDEX IF NOT EXISTS idx_work_tasks_kind_d
 assert.match(runtimeMigration, /CREATE INDEX IF NOT EXISTS idx_work_tasks_day/)
 const workTaskReadiness = mzapp.slice(
   mzapp.indexOf('async function assertWorkTasksSchemaReady()'),
-  mzapp.indexOf('let workTaskParticipantsEnsured'),
+  mzapp.indexOf('function workTaskSourceRefs('),
 )
 assert.match(workTaskReadiness, /assertMaintenanceWorkflowSchemaReady\(pgPool\)/)
 assert.match(workTaskReadiness, /assertMaintenanceRuntimeSchemaReady\(\)/, 'MZapp work-task read and reorder paths must fail closed when the maintenance migration marker is absent')

@@ -14,6 +14,7 @@ import { buildCleaningTurnoverDisplay } from '../lib/cleaningTurnoverDisplay'
 import { shouldIgnoreNightsOverrideForAutoCheckinTask } from '../lib/cleaningTaskNightOverride'
 import { isTaskExecutorEligibleRoleNames } from '../services/taskExecutorEligibility'
 import { emitDeferredInspectionCheckinConflictAlerts, isDeferredInspectionCheckinConflictRelevantChange, reconcileDeferredInspectionCheckinReplacement } from '../services/deferredInspectionCheckinConflict'
+import { requireR5TaskRuntimeSchema } from '../lib/r5RequestSchema'
 
 export const router = Router()
 
@@ -987,7 +988,7 @@ router.delete('/offline-tasks/:id', requirePerm('cleaning.schedule.manage'), asy
   }
 })
 
-router.get('/tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), async (req, res) => {
+router.get('/tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), requireR5TaskRuntimeSchema, async (req, res) => {
   const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
   const parsed = dateSchema.safeParse((req.query as any)?.date)
   const date = parsed.success ? parsed.data : undefined
@@ -1190,7 +1191,7 @@ async function isValidAnyStaffId(id: any): Promise<boolean> {
   return all.some((x: any) => String(x.id) === sid && x.is_active !== false)
 }
 
-router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res) => {
+router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRuntimeSchema, async (req, res) => {
   const { id } = req.params
   const operationId = uuid()
   const opNow = new Date().toISOString()
@@ -1511,7 +1512,7 @@ const createTaskSchema = z.object({
   note: z.union([z.string(), z.null()]).optional(),
 }).strict()
 
-router.post('/tasks', requireCleaningManualCreateAccess, async (req, res) => {
+router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSchema, async (req, res) => {
   const parsed = createTaskSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (!(await isValidStaffId((parsed.data as any).cleaner_id ?? null, 'cleaner'))) return res.status(400).json({ message: '无效的清洁人员' })
@@ -1688,7 +1689,7 @@ router.post('/tasks', requireCleaningManualCreateAccess, async (req, res) => {
   }
 })
 
-router.delete('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res) => {
+router.delete('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRuntimeSchema, async (req, res) => {
   const { id } = req.params
   const actor = (req as any).user
   const actorId = actor?.sub ? String(actor.sub) : undefined
@@ -1764,7 +1765,7 @@ router.delete('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res
 })
 
 const bulkDeleteSchema = z.object({ ids: z.array(z.string().min(1)).min(1) }).strict()
-router.post('/tasks/bulk-delete', requirePerm('cleaning.task.assign'), async (req, res) => {
+router.post('/tasks/bulk-delete', requirePerm('cleaning.task.assign'), requireR5TaskRuntimeSchema, async (req, res) => {
   const parsed = bulkDeleteSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const actor = (req as any).user
@@ -1859,7 +1860,7 @@ router.post('/tasks/bulk-delete', requirePerm('cleaning.task.assign'), async (re
 })
 
 const bulkPatchSchema = z.object({ ids: z.array(z.string().min(1)).min(1), patch: patchTaskSchema }).strict()
-router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), async (req, res) => {
+router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), requireR5TaskRuntimeSchema, async (req, res) => {
   const parsed = bulkPatchSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (!(await isValidStaffId((parsed.data.patch as any).cleaner_id ?? null, 'cleaner'))) return res.status(400).json({ message: '无效的清洁人员' })
@@ -2587,7 +2588,7 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
   }
 })
 
-router.post('/backfill', requirePerm('cleaning.schedule.manage'), async (req, res) => {
+router.post('/backfill', requirePerm('cleaning.schedule.manage'), requireR5TaskRuntimeSchema, async (req, res) => {
   const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
   const fromParsed = dateSchema.safeParse((req.query as any)?.date_from)
   const toParsed = dateSchema.safeParse((req.query as any)?.date_to)

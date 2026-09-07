@@ -1,6 +1,7 @@
 import { hasPg, pgPool } from '../dbAdapter'
 import { emitNotificationEvent } from '../services/notificationEvents'
 import { listManagerUserIds } from '../modules/notifications'
+import { assertR5TaskRuntimeSchemaReady } from './r5RequestSchema'
 
 const FIELD_ROLE_EXCLUDES = ['cleaner', 'cleaner_inspector', 'cleaning_inspector']
 
@@ -19,16 +20,7 @@ function melbourneYmd(now = new Date()) {
 
 async function listPendingDayEndHandoverUsers(date: string) {
   if (!hasPg || !pgPool) return []
-  await pgPool.query(
-    `CREATE TABLE IF NOT EXISTS cleaning_day_end_handover (
-      user_id text NOT NULL,
-      date date NOT NULL,
-      no_dirty_linen boolean DEFAULT false,
-      submitted_at timestamptz DEFAULT now(),
-      updated_at timestamptz DEFAULT now(),
-      PRIMARY KEY (user_id, date)
-    );`,
-  )
+  assertR5TaskRuntimeSchemaReady()
   const result = await pgPool.query(
     `
       WITH active_task_users AS (

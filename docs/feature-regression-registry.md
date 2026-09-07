@@ -7,6 +7,56 @@
 - 测试映射必须说明保护点和测试场景；只登记测试文件名不算覆盖证据。
 - `sufficient` 表示当前测试覆盖该保护点；`partial` 表示已有测试但仍有缺口；`not-wired` 表示测试存在但尚未进入对应质量检查；`missing` 表示尚无测试。
 
+## FR-025：核心任务事件、参与人和 RBAC 运行路径不得修改 schema
+
+- **维护责任范围：** backend task events / cleaning task routes / MZapp / RBAC
+- **最后审查日期：** 2026-09-07
+- **状态：** active
+
+### 业务保护规则
+
+- `work_task_events_sequence_no_seq`、`work_task_event_versions`、`work_task_events`、`work_task_action_audits`、`work_task_participants` 及其 R5-2A 所有索引/约束只能由 `20260902_r5_2a_core_task_schema` migration 建立或演进；事件写入不得再执行 `CREATE`、`ALTER`、`DROP` 或 catalog/schema repair。
+- `emitWorkTaskEvent()` 仍必须在同一业务语义内初始化缺失的 version row、分配唯一 `sequence_no`、写入 event 并通知；这属于业务数据初始化，不是 schema 初始化。并发写入不得产生重复 version 或 sequence。
+- R5-2A 迁移负责 `work_tasks` 的五个扩展字段、`cleaning_tasks` 的任务列表/checkout/customer/inspection 字段、`orders.keys_required`、`users.delete_password_hash` / `color_hex`；所选 MZapp、Cleaning、Key Upload、day-end、RBAC 和 worker 路径不得在请求、cron、SSE、worker 或 module warmup 中再建表、加字段或建索引。
+- 有 PostgreSQL 时，进程启动只读取一次固定 R5-2A marker。marker 缺失、检查失败或尚未完成时，依赖上述 schema 的受保护 HTTP 路由须在既有身份/权限检查之后返回 `503 { code: 'r5_task_runtime_schema_not_ready' }`；cron、worker 和事件写入必须 fail closed，不能回退 runtime DDL。全局 auth 不得因该 task marker 额外阻断与本 FR 无关的受保护路由。
+- migration 必须先于删除 runtime DDL 的应用部署；marker 只能在所有 owned DDL 和 canonical dependency validation 成功后写入。已有完整 canonical migration 覆盖的依赖只验证契约，不重复定义其 schema。
+
+### 跨层适用范围
+
+- **后端：** task events / action audit、`/work-task-events/stream`、Task Center save-board、`/work-tasks`、所选 Cleaning/MZapp task 路由、MZapp alerts、RBAC roles/permissions、Key Upload/day-end cron 及 cleaning sync/backfill workers。
+- **数据库：** `backend/scripts/migrations/20260902_r5_2a_core_task_schema.sql` 是本组新增/历史 runtime schema owner；`schema_migrations` marker 是启动期 readiness 的唯一读取。
+- **一致性：** 不改变 event payload、participants 授权、任务排序/checkout/customer/inspection 业务规则、RBAC 权限语义或用户 session；缺 marker 时停止依赖该 schema 的业务操作，避免半结构写入。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| migration owns R5-2A DDL、marker 顺序和 canonical sequence/index/constraint contract | `backend/scripts/tests/test_r5_2a_core_task_schema_contract.ts` | 静态验证 migration 先校验 R5-1、建立/验证 event/event-version/action-audit/participants 与字段契约，所有完成后才写 marker | sufficient | `npm run test:r5-task-runtime-schema --prefix backend`（由 root `check:fast` / `check:backend` / `check:full` 执行） |
+| HTTP、SSE、cron、worker、event 写入无 R5-2A runtime DDL 且 marker fail-closed | `backend/scripts/tests/test_r5_2a_core_task_schema_contract.ts` | 覆盖启动一次 marker、health readiness、权限后 503、selected routes、workers、Key Upload/day-end、RBAC 和 Task Center save-board；全局 auth 保持独立 | sufficient | `npm run test:r5-task-runtime-schema --prefix backend` |
+| 并发 event version / sequence 与无 runtime DDL | `backend/scripts/tests/test_r5_2a_work_task_event_concurrency_integration.ts` | 在明确授权的非生产数据库中并发 emit 10 个事件，验证 version 为 1–10、sequence 唯一、SQL 无 DDL | partial | `R5_2A_TEST_DATABASE_URL=<non-production> R5_2A_TEST_DATABASE_WRITE=yes npm run test:r5-task-event-concurrency --prefix backend` |
+
+### 验证策略
+
+- **本地：** R5-2A static contract、auth role snapshot、backend TypeScript build、Feature Registry/ledger audit 和精确 diff 审查；不连接数据库。
+- **非生产数据库：** 先独立执行 controlled migration 并确认 marker，再显式授权运行并发 event integration；不得使用 production URL。
+- **部署前后：** 必须 migration first、marker confirmed、再部署应用。对任务事件、participants、MZapp/alerts、RBAC、Key Upload/day-end 的实际业务窗口抓取 SQL；本组 `CREATE` / `ALTER` / `CREATE INDEX` 应为零。
+
+### 最后验证
+
+- **CRL：** root/CRL-20260907-001
+- **Commit：** not committed
+- **日期：** 2026-09-07
+
+### 相关 CRL
+
+- root/CRL-20260902-003：原 R5-2A source candidate，未在其历史 base 推送。
+- root/CRL-20260907-001：当前 Dev 对齐候选。
+
+### 非保护范围
+
+- R5-2B maintenance/property-guide runtime DDL、R5-2C inventory/CRUD/finance/orders/invoices、guest luggage/notification storage 等未选 runtime schema 路径。
+- Production migration、Render 部署、production SQL 或数据写入；以及未经单独授权的 non-production concurrency integration。
+
 ## FR-024：订单取消记录位置、更新失败原因与详情日历定位
 
 - **维护责任范围：** backend / web

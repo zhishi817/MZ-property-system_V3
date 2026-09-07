@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken'
 import { Pool, PoolClient } from 'pg'
 import { v4 as uuid } from 'uuid'
 import { hasPg, pgPool } from '../dbAdapter'
+import { assertR5TaskRuntimeSchemaReady } from '../lib/r5RequestSchema'
 
 export type WorkTaskEventType =
   | 'TASK_CREATED'
@@ -77,8 +78,6 @@ const DEFAULT_RESYNC_GAP = 100
 const PING_INTERVAL_MS = 25000
 const SECRET = process.env.JWT_SECRET || 'dev-secret'
 const clients = new Set<SSEClient>()
-let schemaEnsured = false
-let schemaEnsuring: Promise<void> | null = null
 let listenerStarted = false
 let listenerStarting: Promise<void> | null = null
 let listenerPool: Pool | null = null
@@ -193,50 +192,6 @@ function normalizeEvent(row: WorkTaskEventRow): WorkTaskEvent {
   }
 }
 
-async function ensureWorkTaskEventSchemaInternal(executor: DbExecutor) {
-  await executor.query(`CREATE SEQUENCE IF NOT EXISTS work_task_events_sequence_no_seq AS bigint;`)
-  await executor.query(`CREATE TABLE IF NOT EXISTS work_task_event_versions (
-    task_id text PRIMARY KEY,
-    last_version bigint NOT NULL DEFAULT 0,
-    updated_at timestamptz NOT NULL DEFAULT now()
-  );`)
-  await executor.query(`CREATE TABLE IF NOT EXISTS work_task_events (
-    id text PRIMARY KEY,
-    event_id text NOT NULL UNIQUE,
-    sequence_no bigint NOT NULL UNIQUE,
-    task_id text NOT NULL,
-    task_version bigint NOT NULL,
-    source_type text NOT NULL,
-    source_ref_ids text[] NOT NULL DEFAULT '{}',
-    event_type text NOT NULL,
-    change_scope text NOT NULL,
-    changed_fields text[] NOT NULL DEFAULT '{}',
-    payload jsonb NOT NULL DEFAULT '{}'::jsonb,
-    occurred_at timestamptz NOT NULL,
-    caused_by_user_id text,
-    visibility_hints jsonb,
-    created_at timestamptz NOT NULL DEFAULT now()
-  );`)
-  await executor.query(`CREATE INDEX IF NOT EXISTS idx_work_task_events_sequence_no ON work_task_events(sequence_no);`)
-  await executor.query(`CREATE INDEX IF NOT EXISTS idx_work_task_events_task_id_version ON work_task_events(task_id, task_version);`)
-  await executor.query(`CREATE INDEX IF NOT EXISTS idx_work_task_events_occurred_at ON work_task_events(occurred_at DESC);`)
-}
-
-export async function ensureWorkTaskEventSchema() {
-  if (!hasPg || !pgPool) return
-  if (schemaEnsured) return
-  if (schemaEnsuring) return schemaEnsuring
-  schemaEnsuring = (async () => {
-    await ensureWorkTaskEventSchemaInternal(pgPool)
-    schemaEnsured = true
-    schemaEnsuring = null
-  })().catch((error) => {
-    schemaEnsuring = null
-    throw error
-  })
-  return schemaEnsuring
-}
-
 function writeSSE(res: Response, event: string, data: any, id?: string) {
   if (id) res.write(`id: ${id}\n`)
   res.write(`event: ${event}\n`)
@@ -256,7 +211,7 @@ function isVisibleToUser(event: WorkTaskEvent, user: any) {
 
 async function fetchEventById(eventId: string) {
   if (!hasPg || !pgPool) return null
-  await ensureWorkTaskEventSchema()
+  assertR5TaskRuntimeSchemaReady()
   const result = await pgPool.query(`SELECT * FROM work_task_events WHERE event_id = $1 LIMIT 1`, [eventId])
   const row = result?.rows?.[0]
   return row ? normalizeEvent(row) : null
@@ -264,7 +219,7 @@ async function fetchEventById(eventId: string) {
 
 async function fetchEventsAfterSequence(sequenceNo: number, limit: number) {
   if (!hasPg || !pgPool) return []
-  await ensureWorkTaskEventSchema()
+  assertR5TaskRuntimeSchemaReady()
   const result = await pgPool.query(
     `SELECT * FROM work_task_events WHERE sequence_no > $1 ORDER BY sequence_no ASC LIMIT $2`,
     [sequenceNo, limit],
@@ -274,7 +229,7 @@ async function fetchEventsAfterSequence(sequenceNo: number, limit: number) {
 
 async function countEventsAfterSequence(sequenceNo: number) {
   if (!hasPg || !pgPool) return 0
-  await ensureWorkTaskEventSchema()
+  assertR5TaskRuntimeSchemaReady()
   const result = await pgPool.query(`SELECT COUNT(*)::int AS count FROM work_task_events WHERE sequence_no > $1`, [sequenceNo])
   return Number(result?.rows?.[0]?.count || 0)
 }
@@ -339,7 +294,7 @@ async function startListenerInternal() {
 
 export async function startWorkTaskEventListener() {
   if (!hasPg || !pgPool || !clients.size) return
-  await ensureWorkTaskEventSchema()
+  assertR5TaskRuntimeSchemaReady()
   if (listenerStarted) return
   if (listenerStarting) return listenerStarting
   listenerStarting = startListenerInternal()
@@ -371,8 +326,8 @@ async function stopWorkTaskEventListener() {
 
 export async function emitWorkTaskEvent(input: EmitWorkTaskEventInput, client?: DbExecutor) {
   if (!hasPg || !pgPool) return null
+  assertR5TaskRuntimeSchemaReady()
   const executor = client || pgPool
-  await ensureWorkTaskEventSchemaInternal(executor)
   const eventId = uuid()
   const id = uuid()
   const occurredAt = input.occurredAt || new Date().toISOString()
@@ -434,7 +389,7 @@ export async function streamWorkTaskEvents(req: Request, res: Response) {
   const user = resolveRequestUser(req)
   if (!user) return res.status(401).json({ message: 'unauthorized' })
 
-  await ensureWorkTaskEventSchema()
+  assertR5TaskRuntimeSchemaReady()
 
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')

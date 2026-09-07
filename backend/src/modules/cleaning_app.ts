@@ -27,13 +27,12 @@ import {
   applyCleaningTaskActionTransition,
   buildKeyPhotoUploadEventPatch,
   buildKeyPhotoUploadTaskPatch,
-  ensureWorkTaskActionAuditsTable,
   recordWorkTaskActionAudit,
 } from '../lib/workTaskActionAudit'
 import type { WorkTaskActionId } from '../lib/workTaskActions'
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
 import { canViewMzappGuestLuggageNoticeMedia, canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia } from './mzapp'
-import { requireR5RequestSchema } from '../lib/r5RequestSchema'
+import { assertR5TaskRuntimeSchemaReady, requireR5RequestSchema, requireR5TaskRuntimeSchema } from '../lib/r5RequestSchema'
 
 export const router = Router()
 
@@ -77,7 +76,6 @@ async function ensureCleaningConsumablesSchema() {
     await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS photo_urls text;`)
     await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS item_label text;`)
     await assertIdempotentStepReceiptsReady(pgPool)
-    await ensureWorkTaskActionAuditsTable(pgPool)
     cleaningConsumablesSchemaReady = true
   })()
     .catch((error) => {
@@ -741,31 +739,6 @@ function normalizeParticipantActionIds(value: any) {
     .filter((item) => WORK_TASK_PARTICIPANT_ACTION_IDS.has(item as any))
 }
 
-async function ensureWorkTaskParticipantsTable() {
-  if (!hasPg) return
-  const { pgPool } = require('../dbAdapter')
-  if (!pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS work_task_participants (
-    id text PRIMARY KEY,
-    source_type text NOT NULL,
-    source_id text NOT NULL,
-    user_id text NOT NULL,
-    participant_role text NOT NULL DEFAULT 'collaborator',
-    action_ids jsonb NOT NULL DEFAULT '["*"]'::jsonb,
-    source_relation text NOT NULL DEFAULT 'manual',
-    created_by text,
-    updated_by text,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
-  );`)
-  await pgPool.query(`ALTER TABLE IF EXISTS work_task_participants ADD COLUMN IF NOT EXISTS participant_role text NOT NULL DEFAULT 'collaborator';`)
-  await pgPool.query(`ALTER TABLE IF EXISTS work_task_participants ADD COLUMN IF NOT EXISTS action_ids jsonb NOT NULL DEFAULT '["*"]'::jsonb;`)
-  await pgPool.query(`ALTER TABLE IF EXISTS work_task_participants ADD COLUMN IF NOT EXISTS source_relation text NOT NULL DEFAULT 'manual';`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_task_participants_source ON work_task_participants(source_type, source_id);`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_task_participants_user ON work_task_participants(user_id);`)
-  await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_work_task_participants_manual ON work_task_participants(source_type, source_id, user_id, source_relation);`)
-}
-
 function canBasePerformWorkTaskAction(actionId: WorkTaskActionId, permissions: string[]) {
   const set = new Set((permissions || []).map((item) => String(item || '').trim()).filter(Boolean))
   const canStart = set.has('cleaning_app.tasks.start')
@@ -826,7 +799,7 @@ async function canPerformCleaningTaskAction(user: any, taskId: string, actionIds
   const row = taskRes?.rows?.[0] || null
   if (!row) return false
   if (allowedBaseActions.some((actionId) => legacyCleaningTaskActionAllowed(row, userId, actionId))) return true
-  await ensureWorkTaskParticipantsTable()
+  assertR5TaskRuntimeSchemaReady()
   const grants = await pgPool.query(
     `SELECT action_ids
        FROM work_task_participants
@@ -843,7 +816,7 @@ async function canPerformCleaningTaskAction(user: any, taskId: string, actionIds
 }
 
 const startSchema = z.object({ media_url: z.string().min(1), captured_at: z.string().optional(), lat: z.number().optional(), lng: z.number().optional(), ...actionAuditBodySchema })
-router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), async (req, res) => {
+router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   const { id } = req.params
   const parsed = startSchema.safeParse(req.body)
@@ -1083,8 +1056,8 @@ async function handleDeleteKeyPhoto(req: any, res: any) {
   }
 }
 
-router.delete('/tasks/:id/key-photo', requirePerm('cleaning_app.tasks.start'), handleDeleteKeyPhoto)
-router.post('/tasks/:id/key-photo/delete', requirePerm('cleaning_app.tasks.start'), handleDeleteKeyPhoto)
+router.delete('/tasks/:id/key-photo', requirePerm('cleaning_app.tasks.start'), requireR5TaskRuntimeSchema, handleDeleteKeyPhoto)
+router.post('/tasks/:id/key-photo/delete', requirePerm('cleaning_app.tasks.start'), requireR5TaskRuntimeSchema, handleDeleteKeyPhoto)
 
 // Report issue
 const issueSchema = z.object({ title: z.string().min(1), detail: z.string().optional(), severity: z.string().optional(), media_url: z.string().optional() })
@@ -1222,7 +1195,7 @@ router.get('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), a
   }
 })
 
-router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), async (req, res) => {
+router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   const { id } = req.params
   const parsed = consumableSchema.safeParse(req.body)
@@ -1468,7 +1441,7 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
 })
 
 // Restock done
-router.patch('/tasks/:id/restock', requireAnyPerm(['cleaning_app.restock.manage', 'cleaning_app.tasks.finish']), async (req, res) => {
+router.patch('/tasks/:id/restock', requireAnyPerm(['cleaning_app.restock.manage', 'cleaning_app.tasks.finish']), requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   const { id } = req.params
   try {
@@ -1519,7 +1492,7 @@ router.patch('/tasks/:id/restock', requireAnyPerm(['cleaning_app.restock.manage'
 
 // Inspection complete with lockbox video
 const inspectSchema = z.object({ media_url: z.string().min(1), captured_at: z.string().optional(), lat: z.number().optional(), lng: z.number().optional() })
-router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.finish'), async (req, res) => {
+router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.finish'), requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   const { id } = req.params
   const parsed = inspectSchema.safeParse(req.body)
@@ -1674,7 +1647,7 @@ router.get('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspect
   }
 })
 
-router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspect.finish', 'cleaning_app.tasks.finish']), requireR5RequestSchema, async (req, res) => {
+router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspect.finish', 'cleaning_app.tasks.finish']), requireR5RequestSchema, requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   const { id } = req.params
   const parsed = inspectionPhotosSchema.safeParse(req.body || {})
@@ -1778,7 +1751,7 @@ router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspec
 // After the formal inspection is saved, inspectors can still append cleaning
 // issue evidence from their album. This route never replaces the submitted
 // inspection batch and deliberately does not advance the task state again.
-router.post('/tasks/:id/inspection-issue-photos', requireAnyPerm(['cleaning_app.inspect.finish', 'cleaning_app.issues.report']), requireR5RequestSchema, async (req, res) => {
+router.post('/tasks/:id/inspection-issue-photos', requireAnyPerm(['cleaning_app.inspect.finish', 'cleaning_app.issues.report']), requireR5RequestSchema, requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   const { id } = req.params
   const parsed = inspectionIssuePhotosSchema.safeParse(req.body || {})
@@ -1941,7 +1914,7 @@ router.get('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.finis
   }
 })
 
-router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.finish'), requireR5RequestSchema, async (req, res) => {
+router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.finish'), requireR5RequestSchema, requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   const { id } = req.params
   const parsed = completionPhotosSchema.safeParse(req.body || {})
@@ -2066,7 +2039,7 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
 })
 
 const lockboxVideoSchema = z.object({ media_url: z.string().min(1), captured_at: z.string().optional(), lat: z.number().optional(), lng: z.number().optional(), ...actionAuditBodySchema })
-router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish'), requireR5RequestSchema, async (req, res) => {
+router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish'), requireR5RequestSchema, requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   const { id } = req.params
   const parsed = lockboxVideoSchema.safeParse(req.body || {})
@@ -2236,10 +2209,10 @@ async function handleDeleteLockboxVideo(req: any, res: any) {
   }
 }
 
-router.delete('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish'), requireR5RequestSchema, handleDeleteLockboxVideo)
-router.post('/tasks/:id/lockbox-video/delete', requirePerm('cleaning_app.tasks.finish'), requireR5RequestSchema, handleDeleteLockboxVideo)
+router.delete('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish'), requireR5RequestSchema, requireR5TaskRuntimeSchema, handleDeleteLockboxVideo)
+router.post('/tasks/:id/lockbox-video/delete', requirePerm('cleaning_app.tasks.finish'), requireR5RequestSchema, requireR5TaskRuntimeSchema, handleDeleteLockboxVideo)
 
-router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish'), requireR5RequestSchema, async (req, res) => {
+router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish'), requireR5RequestSchema, requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   const { id } = req.params
   const parsed = selfCompleteSchema.safeParse(req.body || {})

@@ -294,8 +294,11 @@ export async function login(req: Request, res: Response) {
       if (hash) ok = await bcrypt.compare(password, hash)
     } catch {}
     if (!ok) return res.status(401).json({ message: 'invalid credentials' })
-    const sid = await createSessionForUser(String(row.id), req)
+    // Role lookup must complete before issuing a session.  This is deliberately
+    // independent of the R5-2A task marker: auth only needs the canonical RBAC
+    // schema and must not make unrelated protected routes marker-gated.
     const roles = await fetchUserRolesForUserId(String(row.id), String(row.role || '').trim())
+    const sid = await createSessionForUser(String(row.id), req)
     const payload: any = { sub: row.id, role: row.role, roles, username: row.username }
     if (sid) payload.sid = sid
     const token = jwt.sign(payload, SECRET, { expiresIn: `${SESSION_MAX_AGE_HOURS}h` })
@@ -308,8 +311,8 @@ export async function login(req: Request, res: Response) {
     if (found) {
       const ok = found.password_hash ? await bcrypt.compare(password, found.password_hash) : false
       if (!ok) return res.status(401).json({ message: 'invalid credentials' })
-      const sid = await createSessionForUser(String(found.id), req)
       const roles = await fetchUserRolesForUserId(String(found.id), String(found.role || '').trim())
+      const sid = await createSessionForUser(String(found.id), req)
       const payload: any = { sub: found.id, role: found.role, roles, username: found.username || found.email }
       if (sid) payload.sid = sid
       const token = jwt.sign(payload, SECRET, { expiresIn: `${SESSION_MAX_AGE_HOURS}h` })
@@ -407,39 +410,7 @@ export async function auth(req: Request, res: Response, next: NextFunction) {
   next()
 }
 
-let userRolesEnsured = false
-let userRolesEnsuring: Promise<void> | null = null
-
-async function ensureUserRolesTable() {
-  if (!hasPg) return
-  if (userRolesEnsured) return
-  if (userRolesEnsuring) return userRolesEnsuring
-  const { pgPool } = require('./dbAdapter')
-  if (!pgPool) return
-  userRolesEnsuring = (async () => {
-    await pgPool.query(
-      `CREATE TABLE IF NOT EXISTS user_roles (
-        user_id text NOT NULL,
-        role_name text NOT NULL,
-        created_at timestamptz NOT NULL DEFAULT now(),
-        PRIMARY KEY (user_id, role_name)
-      );`,
-    )
-    userRolesEnsured = true
-  })()
-    .catch((e) => {
-      userRolesEnsured = false
-      userRolesEnsuring = null
-      throw e
-    })
-    .finally(() => {
-      userRolesEnsuring = null
-    })
-  return userRolesEnsuring
-}
-
 export async function warmupAuthModule() {
-  await ensureUserRolesTable()
   await Promise.all(['cleaner', 'cleaning_inspector', 'cleaner_inspector', 'customer_service', 'admin']
     .map((roleName) => listPermissionCodesViaPg(roleName).catch(() => new Set<string>())))
 }
@@ -449,7 +420,6 @@ async function fetchUserRolesForUserId(userId: string, fallbackRole: string) {
   try {
     const { pgPool } = require('./dbAdapter')
     if (hasPg && pgPool) {
-      await ensureUserRolesTable()
       const rr = await pgPool.query('SELECT role_name FROM user_roles WHERE user_id=$1', [String(userId)])
       roles = (rr?.rows || []).map((x: any) => String(x.role_name || '').trim()).filter(Boolean)
     }
@@ -479,7 +449,6 @@ async function queryCurrentUserRoleSnapshot(userId: string, fallbackRole: string
   try {
     const { pgPool } = require('./dbAdapter')
     if (!hasPg || !pgPool) return { kind: 'db_error' }
-    await ensureUserRolesTable()
     const result = await pgPool.query(
       `SELECT u.role,
               COALESCE(

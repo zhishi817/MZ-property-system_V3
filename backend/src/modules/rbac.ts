@@ -6,6 +6,7 @@ import { clearAllRoleSnapshots, clearPermissionCacheForRoles, invalidateUserAuth
 import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete, pgRunInTransaction } from '../dbAdapter'
 import bcrypt from 'bcryptjs'
 import { getPermissionMeta } from '../permissionsCatalog'
+import { requireR5TaskRuntimeSchema } from '../lib/r5RequestSchema'
 import {
   ALL_NOTIFICATION_EVENT_TYPES,
   getNotificationRule,
@@ -107,7 +108,6 @@ async function resolveRolePermissionBinding(rawRoleId: string) {
 
   if (hasPg) {
     try {
-      await ensureRolesTable()
       const { pgPool } = require('../dbAdapter')
       if (pgPool) {
         const found = await pgPool.query(
@@ -135,24 +135,8 @@ async function resolveRolePermissionBinding(rawRoleId: string) {
   return { normalizedId, altId, targetRoleId, variants: Array.from(variants) }
 }
 
-async function ensureRolesTable() {
-  if (!hasPg) return
-  try {
-    const { pgPool } = require('../dbAdapter')
-    if (!pgPool) return
-    await pgPool.query(`CREATE TABLE IF NOT EXISTS roles (
-      id text PRIMARY KEY,
-      name text NOT NULL,
-      description text,
-      created_at timestamptz DEFAULT now()
-    );`)
-    await pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS uniq_roles_name ON roles(name);')
-  } catch {}
-}
-
 async function listRbacRoles() {
   if (hasPg) {
-    await ensureRolesTable()
     const rows = await pgSelect('roles', '*') as any[] || []
     return rows.map((x: any) => ({
       id: String(x.id || ''),
@@ -196,10 +180,9 @@ async function listRbacUsers() {
   }))
 }
 
-router.get('/roles', async (_req, res) => {
+router.get('/roles', requireR5TaskRuntimeSchema, async (_req, res) => {
   try {
     if (hasPg) {
-      await ensureRolesTable()
       let rows = await pgSelect('roles', '*') as any[] || []
       if (!rows || rows.length === 0) {
         try {
@@ -226,7 +209,7 @@ const roleCreateSchema = z.object({
   description: z.string().max(200).optional().transform((s) => (typeof s === 'string' ? s.trim() : s)),
 })
 
-router.post('/roles', requirePerm('rbac.manage'), async (req, res) => {
+router.post('/roles', requirePerm('rbac.manage'), requireR5TaskRuntimeSchema, async (req, res) => {
   const parsed = roleCreateSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const name = parsed.data.name
@@ -234,7 +217,6 @@ router.post('/roles', requirePerm('rbac.manage'), async (req, res) => {
   const role = { id: `role.${name}`, name, description: parsed.data.description || undefined }
   try {
     if (hasPg) {
-      await ensureRolesTable()
       try {
         const created = await pgInsert('roles', role as any)
         return res.status(201).json(created || role)
@@ -261,7 +243,7 @@ const roleUpdateSchema = z.object({
   description: z.string().max(200).optional().transform((s) => (typeof s === 'string' ? s.trim() : s)),
 })
 
-router.patch('/roles/:id', requirePerm('rbac.manage'), async (req, res) => {
+router.patch('/roles/:id', requirePerm('rbac.manage'), requireR5TaskRuntimeSchema, async (req, res) => {
   const parsed = roleUpdateSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const reqId = String(req.params.id || '').trim()
@@ -277,7 +259,6 @@ router.patch('/roles/:id', requirePerm('rbac.manage'), async (req, res) => {
 
   try {
     if (hasPg) {
-      await ensureRolesTable()
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'database not available' })
 
@@ -306,17 +287,7 @@ router.patch('/roles/:id', requirePerm('rbac.manage'), async (req, res) => {
             oldId,
           ])
           try { await client.query('UPDATE users SET role=$1 WHERE role=$2', [newName, oldName]) } catch {}
-          try {
-            await client.query(
-              `CREATE TABLE IF NOT EXISTS user_roles (
-                user_id text NOT NULL,
-                role_name text NOT NULL,
-                created_at timestamptz NOT NULL DEFAULT now(),
-                PRIMARY KEY (user_id, role_name)
-              );`,
-            )
-            await client.query('UPDATE user_roles SET role_name=$1 WHERE role_name=$2', [newName, oldName])
-          } catch {}
+          try { await client.query('UPDATE user_roles SET role_name=$1 WHERE role_name=$2', [newName, oldName]) } catch {}
           try { await client.query('UPDATE role_permissions SET role_id=$1 WHERE role_id=$2 OR role_id=$3 OR role_id=$4', [newId, oldId, oldId.replace(/^role\./, ''), oldName]) } catch {}
         } else {
           const nextDesc = parsed.data.description !== undefined ? parsed.data.description : old.description
@@ -360,7 +331,7 @@ router.patch('/roles/:id', requirePerm('rbac.manage'), async (req, res) => {
   return res.json(db.roles[idx])
 })
 
-router.delete('/roles/:id', requirePerm('rbac.manage'), async (req, res) => {
+router.delete('/roles/:id', requirePerm('rbac.manage'), requireR5TaskRuntimeSchema, async (req, res) => {
   const reqId = String(req.params.id || '').trim()
   if (!reqId) return res.status(400).json({ message: 'id required' })
 
@@ -369,7 +340,6 @@ router.delete('/roles/:id', requirePerm('rbac.manage'), async (req, res) => {
 
   try {
     if (hasPg) {
-      await ensureRolesTable()
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'database not available' })
 
@@ -434,7 +404,7 @@ router.get('/permissions', (req, res) => {
   }))
 })
 
-router.get('/role-permissions', async (req, res) => {
+router.get('/role-permissions', requireR5TaskRuntimeSchema, async (req, res) => {
   const { role_id } = req.query as { role_id?: string }
   try {
     if (hasPg) {
@@ -582,7 +552,7 @@ router.post('/app-notification-policies/:policyKey/reset', requirePerm('rbac.man
 })
 
 const setSchema = z.object({ role_id: z.string(), permissions: z.array(z.string().min(1)) })
-router.post('/role-permissions', requirePerm('rbac.manage'), async (req, res) => {
+router.post('/role-permissions', requirePerm('rbac.manage'), requireR5TaskRuntimeSchema, async (req, res) => {
   const parsed = setSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const { role_id, permissions } = parsed.data
@@ -645,20 +615,6 @@ router.post('/role-permissions', requirePerm('rbac.manage'), async (req, res) =>
         } catch {}
         console.log(`[RBAC] write start env=${process.env.NODE_ENV} hasPg=${hasPg} host=${host} db=${dbname} role_id=${role_id} count=${set.size}`)
       } catch {}
-      try {
-        const { pgPool } = require('../dbAdapter')
-        if (pgPool) {
-          await pgPool.query(`CREATE TABLE IF NOT EXISTS role_permissions (
-            id text PRIMARY KEY,
-            role_id text NOT NULL,
-            permission_code text NOT NULL,
-            created_at timestamptz DEFAULT now()
-          );`)
-          await pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS uniq_role_perm ON role_permissions(role_id, permission_code);')
-        }
-      } catch (e: any) {
-        console.error(`[RBAC] schema ensure error message=${String(e?.message || '')} stack=${String(e?.stack || '')}`)
-      }
       const { pgPool } = require('../dbAdapter')
       const { v4: uuid } = require('uuid')
       if (!pgPool) { console.error('[RBAC] no pgPool'); return res.status(500).json({ message: 'database not available' }) }
@@ -695,7 +651,7 @@ router.post('/role-permissions', requirePerm('rbac.manage'), async (req, res) =>
   res.json({ ok: true })
 })
 
-router.delete('/role-permissions', requirePerm('rbac.manage'), async (req, res) => {
+router.delete('/role-permissions', requirePerm('rbac.manage'), requireR5TaskRuntimeSchema, async (req, res) => {
   const role_id = String((req.query as any)?.role_id || '').trim()
   if (!role_id) return res.status(400).json({ message: 'role_id required' })
   const binding = await resolveRolePermissionBinding(role_id)
@@ -703,15 +659,6 @@ router.delete('/role-permissions', requirePerm('rbac.manage'), async (req, res) 
     if (hasPg) {
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'database not available' })
-      try {
-        await pgPool.query(`CREATE TABLE IF NOT EXISTS role_permissions (
-          id text PRIMARY KEY,
-          role_id text NOT NULL,
-          permission_code text NOT NULL,
-          created_at timestamptz DEFAULT now()
-        );`)
-        await pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS uniq_role_perm ON role_permissions(role_id, permission_code);')
-      } catch {}
       await pgPool.query('DELETE FROM role_permissions WHERE role_id = ANY($1::text[])', [binding.variants])
       clearPermissionCacheForRoles(binding.variants)
       return res.json({ ok: true })
@@ -725,7 +672,7 @@ router.delete('/role-permissions', requirePerm('rbac.manage'), async (req, res) 
 })
 
 // current user's permissions
-router.get('/my-permissions', auth, async (req, res) => {
+router.get('/my-permissions', auth, requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const roleNames: string[] = Array.from(
@@ -746,7 +693,6 @@ router.get('/my-permissions', auth, async (req, res) => {
       const rolePerms = async (roleName: string) => {
         let roleId = db.roles.find(r => r.name === roleName)?.id
         try {
-          await ensureRolesTable()
           const rr = (await pgSelect('roles', 'id,name', { name: roleName })) as any[] || []
           if (rr && rr[0] && rr[0].id) roleId = String(rr[0].id)
         } catch {}
@@ -872,22 +818,6 @@ const userUpdateSchema = z.object({
   return out
 })
 
-async function ensureUserRolesTable() {
-  if (!hasPg) return
-  const { pgPool } = require('../dbAdapter')
-  if (!pgPool) return
-  await pgPool.query(
-    `CREATE TABLE IF NOT EXISTS user_roles (
-      user_id text NOT NULL,
-      role_name text NOT NULL,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      PRIMARY KEY (user_id, role_name)
-    );`,
-  )
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_user_roles_user_id ON user_roles(user_id);')
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_user_roles_role_name ON user_roles(role_name);')
-}
-
 function normalizeRolesInput(params: { role?: any; roles?: any }) {
   const primary = String(params.role ?? '').trim()
   const rolesArr = Array.isArray(params.roles) ? params.roles : []
@@ -897,12 +827,11 @@ function normalizeRolesInput(params: { role?: any; roles?: any }) {
   return { role: primary, roles: uniq }
 }
 
-router.get('/users', requirePerm('rbac.manage'), async (_req, res) => {
+router.get('/users', requirePerm('rbac.manage'), requireR5TaskRuntimeSchema, async (_req, res) => {
   try {
     if (hasPg) {
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.json([])
-      await ensureUserRolesTable().catch(() => null)
       const r = await pgPool.query(
         `SELECT
            u.*,
@@ -923,14 +852,13 @@ router.get('/users', requirePerm('rbac.manage'), async (_req, res) => {
   } catch (e: any) { return res.status(500).json({ message: e.message }) }
 })
 
-router.get('/users/:id', requirePerm('rbac.manage'), async (req, res) => {
+router.get('/users/:id', requirePerm('rbac.manage'), requireR5TaskRuntimeSchema, async (req, res) => {
   const id = String(req.params.id || '').trim()
   if (!id) return res.status(400).json({ message: 'id required' })
   try {
     if (hasPg) {
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
-      await ensureUserRolesTable().catch(() => null)
       const r = await pgPool.query(
         `SELECT
            u.*,
@@ -955,7 +883,7 @@ router.get('/users/:id', requirePerm('rbac.manage'), async (req, res) => {
   } catch (e: any) { return res.status(500).json({ message: e.message }) }
 })
 
-router.post('/users', requirePerm('rbac.manage'), async (req, res) => {
+router.post('/users', requirePerm('rbac.manage'), requireR5TaskRuntimeSchema, async (req, res) => {
   const parsed = userCreateSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const { v4: uuid } = require('uuid')
@@ -967,32 +895,8 @@ router.post('/users', requirePerm('rbac.manage'), async (req, res) => {
   try {
     if (hasPg) {
       try {
-        const { pgPool } = require('../dbAdapter')
-        if (pgPool) {
-          await pgPool.query(`CREATE TABLE IF NOT EXISTS users (
-            id text PRIMARY KEY,
-            username text UNIQUE,
-            email text UNIQUE,
-            phone_au text,
-            password_hash text NOT NULL,
-            role text NOT NULL,
-            color_hex text NOT NULL DEFAULT '#3B82F6',
-            created_at timestamptz DEFAULT now()
-          );`)
-          await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);')
-          await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);')
-          await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_phone_au ON users(phone_au);')
-          await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS delete_password_hash text;')
-          await pgPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS color_hex text NOT NULL DEFAULT '#3B82F6';`)
-          await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_au text;')
-        }
-      } catch (e: any) {
-        try { console.error(`[RBAC] ensure users table error message=${String(e?.message || '')}`) } catch {}
-      }
-      try {
         const created = await pgInsert('users', row as any)
         try {
-          await ensureUserRolesTable()
           const { pgPool } = require('../dbAdapter')
           if (pgPool && rolesAll.length) {
             for (const rn of rolesAll) {
@@ -1018,7 +922,7 @@ router.post('/users', requirePerm('rbac.manage'), async (req, res) => {
   } catch (e: any) { return res.status(500).json({ message: e.message }) }
 })
 
-router.patch('/users/:id', requirePerm('rbac.manage'), async (req, res) => {
+router.patch('/users/:id', requirePerm('rbac.manage'), requireR5TaskRuntimeSchema, async (req, res) => {
   const parsed = userUpdateSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const didResetPassword = !!parsed.data.password
@@ -1027,14 +931,6 @@ router.patch('/users/:id', requirePerm('rbac.manage'), async (req, res) => {
   const { id } = req.params
   try {
     if (hasPg) {
-      try {
-        const { pgPool } = require('../dbAdapter')
-        if (pgPool) {
-          await pgPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS color_hex text NOT NULL DEFAULT '#3B82F6';`)
-          await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_au text;')
-          await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_phone_au ON users(phone_au);')
-        }
-      } catch {}
       const rolesPayload = payload.roles
       delete payload.roles
       const invalidatesAuth = rolesPayload !== undefined || payload.role !== undefined || didResetPassword
@@ -1049,7 +945,6 @@ router.patch('/users/:id', requirePerm('rbac.manage'), async (req, res) => {
           const nextPrimary = String(payload.role || '').trim() || (norm.roles.includes(curRole) ? curRole : (norm.roles[0] || curRole))
           payload.role = nextPrimary
           const rolesAll = Array.from(new Set([nextPrimary, ...norm.roles].map((x) => String(x || '').trim()).filter(Boolean)))
-          await ensureUserRolesTable()
           await client.query('DELETE FROM user_roles WHERE user_id::text=$1', [String(id)])
           for (const roleName of rolesAll) {
             await client.query('INSERT INTO user_roles (user_id, role_name) VALUES ($1,$2) ON CONFLICT (user_id, role_name) DO NOTHING', [String(id), roleName])
@@ -1058,7 +953,6 @@ router.patch('/users/:id', requirePerm('rbac.manage'), async (req, res) => {
 
         const next = await pgUpdate('users', String(id), payload as any, client)
         if (payload.role) {
-          await ensureUserRolesTable()
           await client.query('INSERT INTO user_roles (user_id, role_name) VALUES ($1,$2) ON CONFLICT (user_id, role_name) DO NOTHING', [String(id), String(payload.role)])
         }
         if (didResetPassword) {
