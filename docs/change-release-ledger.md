@@ -234,7 +234,8 @@
 - Base: `origin/Dev@b0e54dd16afe67566cde8c987715e5283e622de2`; fetched at `2026-09-07T22:11:46+10:00` before the isolated worktree was created and re-fetched unchanged at `2026-09-07T22:45:16+10:00` before the commit decision.
 - Candidate patch SHA-256: `c1f439ac975109387596843a3daf65534e66fc034668f9ca0cc27c21ba653958` (current staged candidate excluding `docs/change-release-ledger.md`).
 - Commit SHA: `84e68321876bb419669318cba20bd91d5b41e678` at `2026-09-07T23:00:20+10:00`; this commit contains the reviewed R5-2A candidate plus its pre-commit ledger authorization record. The following ledger-only receipt records this immutable content SHA.
-- Dependencies: `root/CRL-20260902-003@ee57b25a9a5871c6296488548c312dcdc10ccf1e`
+- Dependencies: `none`
+- Historical source evidence: unpushed local candidate `root/CRL-20260902-003@ee57b25a9a5871c6296488548c312dcdc10ccf1e`; it is provenance only, not a release dependency in the current Dev ledger.
 - Required validation: `PASS`; clean-lockfile backend install, targeted R5/auth/maintenance contracts, backend build, full backend quality chain, Feature Registry, diff and current staged ledger gate passed. Non-production database concurrency test is intentionally not run.
 - Shared-hunk review: `PASS`; 26 selected staged paths and 167 exact non-ledger hunk fingerprints match this CRL.
 - Generated-file review: `PASS`; temporary `backend/node_modules`, Mobile fixture and generated `backend/dist` output were removed; no untracked file remains.
