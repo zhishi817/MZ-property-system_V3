@@ -233,15 +233,15 @@
 - Branch: `codex/r5-2a-realign-20260907`
 - Base: `origin/Dev@b0e54dd16afe67566cde8c987715e5283e622de2`; fetched at `2026-09-07T22:11:46+10:00` before the isolated worktree was created and re-fetched unchanged at `2026-09-07T22:45:16+10:00` before the commit decision.
 - Candidate patch SHA-256: `c1f439ac975109387596843a3daf65534e66fc034668f9ca0cc27c21ba653958` (current staged candidate excluding `docs/change-release-ledger.md`).
-- Commit SHA: `not committed`
+- Commit SHA: `84e68321876bb419669318cba20bd91d5b41e678` at `2026-09-07T23:00:20+10:00`; this commit contains the reviewed R5-2A candidate plus its pre-commit ledger authorization record. The following ledger-only receipt records this immutable content SHA.
 - Dependencies: `root/CRL-20260902-003@ee57b25a9a5871c6296488548c312dcdc10ccf1e`
 - Required validation: `PASS`; clean-lockfile backend install, targeted R5/auth/maintenance contracts, backend build, full backend quality chain, Feature Registry, diff and current staged ledger gate passed. Non-production database concurrency test is intentionally not run.
 - Shared-hunk review: `PASS`; 26 selected staged paths and 167 exact non-ledger hunk fingerprints match this CRL.
 - Generated-file review: `PASS`; temporary `backend/node_modules`, Mobile fixture and generated `backend/dist` output were removed; no untracked file remains.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; at `2026-09-07T22:58:05+10:00`, user authorized only the exact `root/CRL-20260907-001` candidate on `codex/r5-2a-realign-20260907` with non-ledger SHA-256 `c1f439ac975109387596843a3daf65534e66fc034668f9ca0cc27c21ba653958`. Push, PR, migration, deployment and production verification remain unapproved.
 - Independent review: `GO for commit`; independent read-only reviewer recomputed the non-ledger fingerprint, confirmed the 26-file/167-hunk scope, no untracked/generated/sensitive path and no P0/P1. It verified that R5 task warmup is appended without replacing current Dev maintenance warmup/readiness. Review does not authorize push, PR, migration or deployment.
-- Action conclusion: `GO` for the stated local commit only. Push remains separately unauthorized.
+- Action conclusion: `GO` for the stated local commit; completed as the candidate content commit above. Push remains separately unauthorized.
 
 ### Risks / Release Notes
 
