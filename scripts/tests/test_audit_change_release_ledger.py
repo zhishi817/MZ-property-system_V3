@@ -590,6 +590,37 @@ class ReleaseReportTests(unittest.TestCase):
         self.assertEqual(1, code)
         self.assertIn("src/unrecorded.txt", stream.getvalue())
 
+    def test_recorded_paths_accepts_comma_grouped_file_bullets(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            ledger = Path(temporary) / "change-release-ledger.md"
+            ledger.write_text(
+                """# Change Release Ledger
+
+## CRL-20260909-001 — Fixture
+
+### Files / Areas
+
+- `src/first.ts`, `src/second.ts`, `package.json` — grouped fixture paths.
+- `docs/change-release-ledger.md` — standalone fixture path; explanation code `src/not-a-path.ts` is ignored.
+This prose mentions `src/unrecorded.ts` — it is not a file-list bullet.
+
+### Validation
+
+- `fixture-check` — not run.
+""",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                {
+                    "src/first.ts",
+                    "src/second.ts",
+                    "package.json",
+                    "docs/change-release-ledger.md",
+                },
+                AUDITOR.recorded_paths(ledger),
+            )
+
     def test_cli_range_coverage_requires_complete_range(self) -> None:
         fixture = ReleaseReportFixture(self)
         with self.assertRaises(SystemExit) as error, redirect_stderr(io.StringIO()):

@@ -120,9 +120,10 @@ def recorded_paths(ledger: Path) -> set[str]:
         if in_files and line.startswith("### "):
             in_files = False
         if in_files:
-            match = re.match(r"^- `([^`]+)`(?:\s|$)", line)
-            if match:
-                paths.add(match.group(1))
+            if not line.startswith("- "):
+                continue
+            listed_paths, _, _ = line[2:].partition(" — ")
+            paths.update(re.findall(r"`([^`]+)`", listed_paths))
     return paths
 
 
