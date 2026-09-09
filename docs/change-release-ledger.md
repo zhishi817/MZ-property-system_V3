@@ -230,15 +230,15 @@
 - Branch: `codex/r5-2a-current-dev-20260909`
 - Base: `origin/Dev@80e32de24f0684c3b409bc2eabdf5e8b11aa7c8a`; re-fetched and unchanged at `2026-09-09T21:47:13+10:00` before the authorized local commit.
 - Candidate patch SHA-256: `727b03179c381d85e354eb384b7091482a0a5ac0feb0a9f5993f5af332f1235e` (exact current-base candidate content diff excluding ledger attempt metadata).
-- Commit SHA: `not committed`
+- Commit SHA: `a04f3a75e2ceb2b8b8715b8df35695bc543d894d` (candidate content commit; descendant of the recorded base and ancestor of the forthcoming ledger receipt).
 - Dependencies: source evidence `root/CRL-20260907-001@84e68321876bb419669318cba20bd91d5b41e678`; no merged dependency.
 - Required validation: `PASS for selected R5-2A commit scope`; selected backend/static gates, final pre-commit ledger gate and independent review passed. Full `check:fast` remains separately incomplete because this isolated root worktree lacks an unapproved sibling Mobile fixture; the non-production concurrency integration remains unrun without database/write authorization.
 - Shared-hunk review: `PASS`; independent read-only review confirmed the 26 selected paths and 167 non-ledger fingerprints match the current-Dev candidate exactly, with no unselected staged hunk.
 - Generated-file review: `PASS`; final staged-candidate scan found no lockfile, dependency-version, configuration, workflow, generated-output, cache or sensitive-information change. The non-production concurrency test contains only variable names and explicit target guards.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; explicit user instruction `授权提交` on 2026-09-09 authorizes this exact CRL, branch and current candidate only. It does not authorize push, PR, merge, migration, deployment or production verification.
 - Independent review: `GO for commit`; independent read-only review found no P0/P1/P2, verified base/HEAD, candidate hash, marker/sequence/version contract, exact hunk scope and the static validation evidence. This conclusion permits only a local commit after user selection.
-- Action conclusion: `GO` for the local commit only; the selected candidate has a fresh unchanged base, exact staged scope and independent-review GO.
+- Action conclusion: `GO` for the authorized local commit; content commit `a04f3a75e2ceb2b8b8715b8df35695bc543d894d` was created from the fresh unchanged base with exact staged scope and independent-review GO. Push remains unapproved.
 
 ### Risks / Release Notes
 
