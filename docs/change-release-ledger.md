@@ -234,15 +234,16 @@
 - Base: `origin/Dev@b0e54dd16afe67566cde8c987715e5283e622de2`; fetched at `2026-09-07T22:11:46+10:00` before the isolated worktree was created and re-fetched unchanged at `2026-09-07T22:45:16+10:00` before the commit decision.
 - Candidate patch SHA-256: `c1f439ac975109387596843a3daf65534e66fc034668f9ca0cc27c21ba653958` (current staged candidate excluding `docs/change-release-ledger.md`).
 - Commit SHA: `84e68321876bb419669318cba20bd91d5b41e678` at `2026-09-07T23:00:20+10:00`; this commit contains the reviewed R5-2A candidate plus its pre-commit ledger authorization record. The following ledger-only receipt records this immutable content SHA.
+- Remote branch/SHA: `origin/codex/r5-2a-realign-20260907@092d47d1607a763d3eca4fb01b944de437d2961c`; non-force push completed and `git ls-remote` matched at `2026-09-09T12:51:53+10:00`.
 - Dependencies: `none`
 - Historical source evidence: unpushed local candidate `root/CRL-20260902-003@ee57b25a9a5871c6296488548c312dcdc10ccf1e`; it is provenance only, not a release dependency in the current Dev ledger.
 - Required validation: `PASS`; clean-lockfile backend install, targeted R5/auth/maintenance contracts, backend build, full backend quality chain, Feature Registry, diff and current staged ledger gate passed. Non-production database concurrency test is intentionally not run.
 - Shared-hunk review: `PASS`; 26 selected staged paths and 167 exact non-ledger hunk fingerprints match this CRL.
 - Generated-file review: `PASS`; temporary `backend/node_modules`, Mobile fixture and generated `backend/dist` output were removed; no untracked file remains.
-- Technical state: `committed`
+- Technical state: `pushed`
 - User authorization: `approved-for-push`; at `2026-09-09T12:50:22+10:00`, user explicitly authorized pushing the exact committed `root/CRL-20260907-001` range on `codex/r5-2a-realign-20260907` after the fresh `origin/Dev` check confirmed base `b0e54dd16afe67566cde8c987715e5283e622de2` and HEAD `d24cd87b5e11de577c10094602148aea96af84a0`. PR, migration, deployment and production verification remain unapproved.
 - Independent review: `GO for commit`; independent read-only reviewer recomputed the non-ledger fingerprint, confirmed the 26-file/167-hunk scope, no untracked/generated/sensitive path and no P0/P1. It verified that R5 task warmup is appended without replacing current Dev maintenance warmup/readiness. Review does not authorize push, PR, migration or deployment.
-- Action conclusion: `GO` for the stated push only; the branch must be pushed without force and its remote SHA verified afterward. PR, migration, deployment and production verification remain separately unauthorized.
+- Action conclusion: `GO` for the stated push; completed non-force and remote SHA verified above. PR, migration, deployment and production verification remain separately unauthorized.
 
 ### Risks / Release Notes
 
