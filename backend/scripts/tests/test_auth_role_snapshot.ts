@@ -99,7 +99,18 @@ async function main() {
   assert.match(authSource, /\.finally\(\(\) => \{[\s\S]{0,180}roleSnapshotInflight\.delete/, 'single-flight entries must be released after success or failure')
   assert.match(authSource, /function pruneRoleSnapshotUserVersions\(\)/, 'version metadata must have a lifecycle cleanup path')
   assert.doesNotMatch(authSource.slice(authSource.indexOf('export async function me'), authSource.indexOf('export async function setDeletePassword')), /hydrateCurrentUserRoles/, '/auth/me must reuse request hydration')
-  assert.match(rbacSource, /router\.get\('\/my-permissions', auth, async/, 'RBAC must retain explicit auth middleware and rely on idempotence')
+  assert.doesNotMatch(authSource, /R5TaskRuntimeSchema/, 'global auth must not make unrelated protected routes depend on the R5-2A task marker')
+  const loginStart = authSource.indexOf('export async function login')
+  const loginEnd = authSource.indexOf('export async function auth', loginStart)
+  const loginBody = authSource.slice(loginStart, loginEnd)
+  const postgresLoginStart = loginBody.indexOf('if (row)')
+  const noPgLoginStart = loginBody.indexOf('if (!hasPg && !row && db.users.length)')
+  const postgresLoginBody = loginBody.slice(postgresLoginStart, noPgLoginStart)
+  const noPgLoginBody = loginBody.slice(noPgLoginStart)
+  for (const [name, branch] of [['PostgreSQL', postgresLoginBody], ['no-PG', noPgLoginBody]] as const) {
+    assert.ok(branch.indexOf('fetchUserRolesForUserId') < branch.indexOf('createSessionForUser'), `${name} login must resolve roles before creating a session`)
+  }
+  assert.match(rbacSource, /router\.get\('\/my-permissions', auth, requireR5TaskRuntimeSchema, async/, 'RBAC must retain explicit auth before the R5 marker and rely on idempotence')
   assert.match(rbacSource, /await pgRunInTransaction\(async \(client: any\) =>/, 'user role writes must use one transaction')
   assert.match(rbacSource, /if \(invalidatesAuth\) invalidateUserAuthState/, 'user auth cache invalidation must occur only after the transaction resolves')
 

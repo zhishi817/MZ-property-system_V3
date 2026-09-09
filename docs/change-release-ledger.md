@@ -1,5 +1,273 @@
 # Change Release Ledger
 
+## CRL-20260909-002 — R5-2A runtime DDL 清理的当前 Dev 重提取（root）
+
+- **Repository:** `root`
+- **Status:** in-progress
+- **Updated:** 2026-09-09 Australia/Melbourne
+- **Request:** 原 R5-2A PR #355 已关闭且未合并；以已合入多路径账本修复的当前 `origin/Dev` 重建同一业务范围候选，避免旧 PR workflow SHA 继续运行旧审计器。
+- **Outcome:** 在保持任务事件、版本/sequence、参与者、MZapp、RBAC、清洁同步与选定 cron 行为的前提下，移除 R5-2A 范围内的 runtime DDL；migration 成为唯一 schema owner，启动时仅读取 marker，缺失时相关路径 fail closed。
+
+### Implementation
+
+- Previous behavior: 旧候选 `root/CRL-20260907-001@84e68321876bb419669318cba20bd91d5b41e678` 已推送但关联 PR #355 关闭未合并，且其 workflow 重跑固定在旧 head `45a11af`，不会使用已合入 Dev 的多路径账本解析器。
+- New behavior: 从 `origin/Dev@80e32de24f0684c3b409bc2eabdf5e8b11aa7c8a` 的干净 worktree 中精确重放旧内容提交的 25 个非账本 hunk；不导入旧 CRL、旧 release receipt 或旧分支历史。当前 Dev 的 ledger parser、其他功能和配置保持不变。
+- Key decisions: 保留业务层的 version-row 初始化、显式 sequence 分配、事件写入与通知；它们不是 schema DDL。仍严格执行 migration first → marker confirmed → 应用部署。未授权任何数据库、Render、Neon、生产或非生产并发写入。
+
+### Files / Areas
+
+- `backend/scripts/migrations/20260902_r5_2a_core_task_schema.sql` — added: R5-2A 的 event/version/action-audit/participants、所选 task/RBAC 字段与 marker 的正式 migration contract。
+- `backend/src/lib/r5RequestSchema.ts`, `backend/src/index.ts` — modified: 进程启动期一次 marker warmup、readiness 与 HTTP/worker fail-closed helper。
+- `backend/src/services/workTaskEvents.ts`, `backend/src/lib/workTaskActionAudit.ts`, `backend/src/modules/work_task_events.ts`, `backend/src/modules/task_center.ts` — modified: 事件、版本、动作审计、SSE/save-board 不再修复 schema。
+- `backend/src/modules/cleaning.ts`, `backend/src/modules/cleaning_app.ts`, `backend/src/modules/mzapp.ts`, `backend/src/modules/work_tasks.ts`, `backend/src/services/cleaningSync.ts`, `backend/src/worker_cleaning_sync.ts`, `backend/src/worker_cleaning_backfill.ts` — modified: 选定 task/participant/checkout/customer/inspection 路径与 worker 删除 R5-2A runtime DDL。
+- `backend/src/auth.ts`, `backend/src/modules/rbac.ts`, `backend/src/lib/keyUploadSlaJob.ts`, `backend/src/lib/dayEndHandoverReminderJob.ts` — modified: 选定 RBAC 与 cron 路径删除 schema ensure；auth role-cache 语义保持独立。
+- `backend/package.json`, `package.json` — modified: 仅增加 R5-2A static contract 的质量命令接线；无依赖版本或 lockfile 改动。
+- `backend/scripts/tests/test_r5_2a_core_task_schema_contract.ts`, `backend/scripts/tests/test_r5_2a_work_task_event_concurrency_integration.ts`, `backend/scripts/tests/test_auth_role_snapshot.ts`, `backend/scripts/tests/test_maintenance_workflow_schema_contract.ts` — added/modified: R5-2A static contract、非生产数据库并发测试、auth fixture 与 maintenance 断言边界。
+- `docs/feature-regression-registry.md`, `docs/change-release-ledger.md` — modified: FR-025 保护规则与本次当前-Dev 候选证据。
+
+### Impact / Dependencies
+
+- API / behavior: marker 缺失时仅依赖本 schema 的受保护路径在既有身份/权限检查之后稳定返回 `503 r5_task_runtime_schema_not_ready`；全局 auth 及无关受保护 API 不被 task marker 阻断。
+- Database / migration: migration 尚未执行；将来必须单独授权、先执行 migration、确认 marker，再部署应用。
+- Dependencies: source evidence only: `root/CRL-20260907-001@84e68321876bb419669318cba20bd91d5b41e678`; no merged code dependency. Current base includes `root/CRL-20260909-001` ledger-parser repair.
+- Excluded: R5-2B/C、Task Center 其它 legacy DDL、notification/push/rules、offline/calendar、retry queue、mobile/web、production and non-production database writes、Render/Neon/deployment.
+
+### Validation
+
+- `git diff --binary 84e6832^ 84e6832 -- <25 selected paths> | git apply --check` — PASS against `origin/Dev@80e32de`; no conflict or overwrite was needed.
+- `npm ci --prefix backend` — PASS using the candidate's own lockfile; no package version or lockfile change. npm reported pre-existing third-party dependency advisories, which are outside this R5 scope.
+- `npm run test:r5-task-runtime-schema --prefix backend` — PASS.
+- `npm run test:auth-role-snapshot --prefix backend` — PASS.
+- `npm run test:maintenance-workflow-schema --prefix backend` — PASS.
+- `npm run build --prefix backend` — PASS; its ten tracked `backend/dist` outputs were verified as local build artifacts and restored before candidate review.
+- `npm run check:feature-registry` — PASS: 22 FRs / 167 mappings; 73 Mobile mappings deferred by policy.
+- `python3 scripts/audit_change_release_ledger.py` — PASS: 26 changed files, 26 recorded.
+- `npm run check:fast` — NOT VERIFIED as a complete command: its completed preceding gates passed through R5-2A and R2-media static tests, then `test_phase5_release_contract.ts` required a sibling `mz-cleaning-app-frontend` source checkout that this isolated root worktree intentionally lacks. Direct execution confirms `ENOENT` for that missing Mobile fixture, not a R5 assertion failure. No Mobile source, dependency install or fixture link was authorized.
+- `git diff --check` — PASS after applying the exact source hunk set and after cleaning local build artifacts.
+- Non-production event concurrency integration: not run; it requires a separately confirmed non-production database and write authorization.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared; exact non-ledger staged hunk fingerprints are recorded for the local commit gate.
+- **Untracked review:** none; clean current-Dev candidate contains no untracked files. Required migration and test source paths are staged. `backend/node_modules` remains ignored; ten generated `backend/dist` build artifacts were restored and are not staged.
+- `backend/package.json` — SHA-256: `6fcf3ff37479fa6242eece3b02970d26d0039e6c501b1fb352f6d52d6e5369e9`
+- `backend/scripts/migrations/20260902_r5_2a_core_task_schema.sql` — SHA-256: `09c4cd81249f26b9051c9a6d4aad2b30e63a4d2d71b8548e8f013d8585d73de4`
+- `backend/scripts/tests/test_auth_role_snapshot.ts` — SHA-256: `c4f299db80cd71fb5abb9725e761ed532a36f8d55b45d0f35bd8fa522273128c`
+- `backend/scripts/tests/test_maintenance_workflow_schema_contract.ts` — SHA-256: `e85c88db7b6173f1dbaf0b4fd8e8c32ff5ce94ecf8eb08659f630c1787663460`
+- `backend/scripts/tests/test_r5_2a_core_task_schema_contract.ts` — SHA-256: `eb10b8f46c2a9692d35db7842fed9ef7f8bf6a4bd9f42cbb3bbd113bd9a8ac2e`
+- `backend/scripts/tests/test_r5_2a_work_task_event_concurrency_integration.ts` — SHA-256: `2bafb3bf060e701b42d8441b8ec2a5cf67455f53c5a8c32f2b6150c80379d22e`
+- `backend/src/auth.ts` — SHA-256: `094c61cae4fedaf7e7af875c1b412657e2b7d2f0cca1134f130e1fef87bef20a`
+- `backend/src/auth.ts` — SHA-256: `12a5c28e4d56bbc9271b952c908dc5d31f36bef662671c535ec1dcbb64fb88be`
+- `backend/src/auth.ts` — SHA-256: `27bd93a3de3be9225c1a033b14ce77b1618e194030029923ddc1dff7e00b2bfc`
+- `backend/src/auth.ts` — SHA-256: `3bc4e9b5875728c0466b5f7a5a0b1ef58f52ba408d4b5a8328e964b3e70904ee`
+- `backend/src/auth.ts` — SHA-256: `62c457910cadae26487ae12bb6097c4b0b9370c46b7aa18f991572c0317a3136`
+- `backend/src/auth.ts` — SHA-256: `ab05c4ed5e0c1ad34bd248a4a2fba3863a5d123202e09a13dc66f6c202de94fd`
+- `backend/src/auth.ts` — SHA-256: `ba0d59c74d758d49297ba43176eab9202ebe018e9e904446bdc2f57b575a838b`
+- `backend/src/auth.ts` — SHA-256: `beaf34b849499abbfce691f437f30a55a98a808e1f03a2431cee55687595c8c8`
+- `backend/src/index.ts` — SHA-256: `3ab1225353bc37268e002db6ec57b3a09271c9b2dae637ba070561782a8d5ae8`
+- `backend/src/index.ts` — SHA-256: `866e0fb81bdc0add520dddbcf890ea08a55c47237b1a754393919a53992265d5`
+- `backend/src/index.ts` — SHA-256: `a27323319060d27361d0db5a530e04bf3a435b503b71b16ee8eaee2295395626`
+- `backend/src/index.ts` — SHA-256: `dadf45f5c1457cb9d7d1803901ce57aa43fbc3f9d7c6fbadaf16af9e98a4a4bd`
+- `backend/src/index.ts` — SHA-256: `dbc6109014b27d4011e3d341e481f5b42b552fb32d8f74221e3ca44c71a09827`
+- `backend/src/lib/dayEndHandoverReminderJob.ts` — SHA-256: `0838db751fde827fa3917328e530717fde893dd1794078dcb2a3693e6795f5a4`
+- `backend/src/lib/dayEndHandoverReminderJob.ts` — SHA-256: `c4ed029d6182c1e1eb54fe64f05774b3d5731cb45a99b4b11ce37278f9deab4e`
+- `backend/src/lib/keyUploadSlaJob.ts` — SHA-256: `006ef26aa7c9b73e71793f6ac9f01ab94bd2d34256d3675ead16cb4c5479d7d7`
+- `backend/src/lib/keyUploadSlaJob.ts` — SHA-256: `728f1df7f8889ff07f9a4c42e707eb509f97c934add8c2d5498fce5a277de9d8`
+- `backend/src/lib/keyUploadSlaJob.ts` — SHA-256: `a81e3a0524822ccc9fb28954c95794611ddd06d725941e10eb555a32591d3adf`
+- `backend/src/lib/r5RequestSchema.ts` — SHA-256: `2408d910caad73ba50004e7d0a73e194bb5cb4a2d516e55a4801f2d9846737d7`
+- `backend/src/lib/r5RequestSchema.ts` — SHA-256: `43a04f0a3d285d5e074da737b5eec077fa4100b2070dfe63d27c97166d3942c8`
+- `backend/src/lib/r5RequestSchema.ts` — SHA-256: `56c0b059cfd80746de57e7b4cc422300c0e18ee51309487fff05ae856e4b741e`
+- `backend/src/lib/r5RequestSchema.ts` — SHA-256: `7b599df42c39bc5a756be5993daa51694f996cab00a0498019f76625272f8edd`
+- `backend/src/lib/r5RequestSchema.ts` — SHA-256: `b09b374f28ba1e08282a97e7f80d129383526c321ea95fd9236eded36457fd2a`
+- `backend/src/lib/workTaskActionAudit.ts` — SHA-256: `0837c53c2b028875280554dc90ac8edb18fcbdf339d7f25da56130ef58458d59`
+- `backend/src/lib/workTaskActionAudit.ts` — SHA-256: `1673d437d20dc1a9c415ee827e4dcff76fdfc38aec537239dda2bbc807bbe556`
+- `backend/src/lib/workTaskActionAudit.ts` — SHA-256: `64fc4b68c9e0eb2970613a0896b4061d3c07ec64aab3b8d2f26ba138db015555`
+- `backend/src/lib/workTaskActionAudit.ts` — SHA-256: `8003d5e08e391029517cf44ab52c529b6dfb60acdb417f15377264410871e240`
+- `backend/src/modules/cleaning.ts` — SHA-256: `1b063fe4a547c4823e3798fb0ba9f196e057f22dc8e39c53c2ef524ee6ebfb72`
+- `backend/src/modules/cleaning.ts` — SHA-256: `2f453100924739109a2914820ff872a10e68f456631c4e3d38270beb427cbeee`
+- `backend/src/modules/cleaning.ts` — SHA-256: `34c47dfa93e140628a6f218e4a18363196e8f9338692f1ded3d8572103fc8a9c`
+- `backend/src/modules/cleaning.ts` — SHA-256: `3aa558695fa9a7e4cbd7a02e666b279dc91907499c2fde3fb0e774673da36e57`
+- `backend/src/modules/cleaning.ts` — SHA-256: `648ac8a6f9c4a985764d1741a7dbdd903ce8994be8e0da7b4749c9d62ca51401`
+- `backend/src/modules/cleaning.ts` — SHA-256: `775c21ead89053e6d47c9c217dcd1b8a575c6978de6cd63e8297ff9789b39c4b`
+- `backend/src/modules/cleaning.ts` — SHA-256: `7ca23c1813513ed896a824aa31ec0376b4b07abdd1483e07c81c25af37c5ab94`
+- `backend/src/modules/cleaning.ts` — SHA-256: `88609bba241035e38438d8045205820ae82480f6cd7ab68d51d27a4f498853e9`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `15adcad6eac3a71b43b4852856ee999a7d68e6dce8f56ccc29b56892a47ff984`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `19cc376b56d09ea825a2bbb63464416a6d2887dca5dc1e2951aefda6e90b110d`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `33b6eb17ea85a4035d9400a7023fb980b2b7ac2a5adb072669026166342588de`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `4619de82e035819dccf1b455e2c558a5231a38229dbd412dfdd7f4febe697abe`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `5d7d849dc2b3f6320397638f82b06e19a94f851fa5d8b4376fb6c5927e82f77d`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `6cb63223106ad37494d96852b4d36ca56eac92b8407512f6a4b6067a2f45adf0`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `927a6221a53cccd442266b77a015d14277094161c22e8767fb4b1c7498cb5fd5`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `973f95663812aede3da20995717c0fd70fea5d0c883dde2322de0e32bde001cb`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `a2f27a4bb2844c066876c8b3d9fe31954b6ad6c5588d1592d82ccf5deb489fc3`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `a916a81c4b942f9c8102316dc948a2856f483394cffdcae11d778d4883c2d968`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `ae76f2a3b33570770c1f887d96942f9d426359d70d9170859cad71a196505ceb`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `bca4b85f69c5509f6b73ae12bd07a674ee0288a18012a693c0bd3c106a5e4bcf`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `ce5ae8a7c96700aa42d8014659b3db220b3605ea1523945e16fb91584a7a9cca`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `e5a26ba296ebfe473c7f6ee38ee1c292cb22d6e71ce6b6d74506792a3a74ae3c`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `f62ec900e9918ce2bb93e082f0f146c4640166819e84e2e674d757fe53309d6d`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `f7da0c5a974e30ac9317cd2a8caf46ac3c7b56182524b6483d6698b7f71e5360`
+- `backend/src/modules/mzapp.ts` — SHA-256: `03c5da8b3b40b38f10854e6c2ac873c8cccc2af75f98dfef64ce3b6eb9883e64`
+- `backend/src/modules/mzapp.ts` — SHA-256: `0b5941e339245857a8ac9fe82413ebe36818a75a5c106a2dc5c6f8304d76844a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `0daea0821c94283573835a9109dce89c31a5c84cae6d06c1fac26f5e9119e251`
+- `backend/src/modules/mzapp.ts` — SHA-256: `0f07d4d6869113d32fc5bd1758cf89b87afeeb480b8e0f919a89a46a034fe25e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `264f9729c61fb510aa76bf341d3d8b33986f725880bc9f56ab13d92547e8becf`
+- `backend/src/modules/mzapp.ts` — SHA-256: `28575b281ddf82f71d6739c3de09d15f19fa1033c5ffbf6f2238692ccede6e5d`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2981c50626b87765de47875e21c6b9863b200ba9598ceffa3e3837bd43faca1a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2b0c1a302b1d974b349a851791a95a617020b91b233750be1b311b4430465288`
+- `backend/src/modules/mzapp.ts` — SHA-256: `354a2892642322bd002c8bc143fdd5b99a41a19be0f7c78becacc5e305cc837f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `3f54b44cfb09dc59a016550358ba0151aa42c893ff0553e64e7412e42ee882b9`
+- `backend/src/modules/mzapp.ts` — SHA-256: `4822a56abf3eedc99c3b2fe882b45123f9fb9dee10afd83822a2dccd413d2de9`
+- `backend/src/modules/mzapp.ts` — SHA-256: `4b6ce081f8bcdf65a0b8322d44577ea20642b9fd3ccda98397fecddd6962aa37`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5836a00430a9aca5bab4aa62c70b0926ffd5825ba3d7a65d481556defba8b442`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5f643c027885bc9915360ac75fa7e5774106e952d8327ff19c921ee99da6b9b9`
+- `backend/src/modules/mzapp.ts` — SHA-256: `6a650bc7a7121f87f18f56333a8894264ebb2d1c0660ebdf668b99cc48efd9f4`
+- `backend/src/modules/mzapp.ts` — SHA-256: `6c453e43c546b2dead3a4401583d315a841d28adc7541878e5c48004819380d7`
+- `backend/src/modules/mzapp.ts` — SHA-256: `6f6085809f351fa23c20d9946218a51eb2cbb94a5c35f5d22df63e683e4d0c49`
+- `backend/src/modules/mzapp.ts` — SHA-256: `714d572d0b91e17b4a8d213061962c73cc03926b7b39b23e83604feb4092947d`
+- `backend/src/modules/mzapp.ts` — SHA-256: `737d505a3e7be504c18fa0083aed5400db84b32274466179a8d7ed51a1bddef3`
+- `backend/src/modules/mzapp.ts` — SHA-256: `74e35a94bd09ff14c0065ca22b0f0ed85702fecc221c3b232fa85c06e062edf5`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7657c6406e27767427cb535366b11efdd58a2e0f4619481b65d8f945cb403973`
+- `backend/src/modules/mzapp.ts` — SHA-256: `76808dfc50370baca697f7dbd0018ef3fbccd7cae1e9923b0d6c1893849c7c29`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7d1f21a4a1f24797a912af25bc594a24810bb9555e3f6771d22384ada27be635`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7d6f5d7777e22fb340e1314c05a5e29cdcc2afb4ee689430c744fab723c9ce95`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7f3b61848fcc237433cf9dd62bc30ca222ea14c9c904dbe928268caa21266b83`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7f4056caa9535798659c86f98cebd9c7154a75a308c59a66488e2b90bfbc2da8`
+- `backend/src/modules/mzapp.ts` — SHA-256: `875837db0ff2079965cb1521996f6da898a43b33267ef693a3a6c5e0201821c0`
+- `backend/src/modules/mzapp.ts` — SHA-256: `9b59cdb7c1eba3dbbc7b72676a86d8c2c7ab1ab7587feb898ae0ad404cfb2484`
+- `backend/src/modules/mzapp.ts` — SHA-256: `a3540b48075afe0ad10e62129a089bea8b1dc4c6939c0f09a09a25b1258625ce`
+- `backend/src/modules/mzapp.ts` — SHA-256: `a4a7f2d5322e10a7e60cdeaa0a2433fb159f540db93d066a20eeeb6ee94d0a2c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `b32468710addaeb3fc4013d1572cfe478bba495b88240daea65da08bb5f6dcb3`
+- `backend/src/modules/mzapp.ts` — SHA-256: `b41399732248dae0c10293539b617060b77e4c55ce553f14dca058f0c369f131`
+- `backend/src/modules/mzapp.ts` — SHA-256: `b8936f1a6c0c8ebf5c99bc8b57b2b68cea984798a20071a76c1261f7176a93fd`
+- `backend/src/modules/mzapp.ts` — SHA-256: `bbc5c1da69f507c25d163c8ae3eec7c835c465eef3b53de6e5a38525b4aeb657`
+- `backend/src/modules/mzapp.ts` — SHA-256: `c2e78e59f7032de88e35e1b896917ef17a16515cb50ea77e4397aa15946f2005`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d03da44ab72203a12040a7ae66b3da13ab018c0d2868a1ba43831a5bc05023e3`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d1890538564ec99a8027cc21f19d84076bb7e3dbd6aa4ce8495f0e49a6c3bdde`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e2442ca27b03b4754fd0ade9bfd767b3e3e6959b73ad6adb523697b872089349`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e469de057bde0d625fe2066d54529b1a8a05458a930f94c660a39f774180a82d`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e522239ea760f8577ef5bce43d41da318cbf8ae1fc7d145968a14f6dcf5cd7af`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e995d79eed2b2a7561b49cc7e6d0b3ef9af3e20323d2b078eb72e51ae6c4cd65`
+- `backend/src/modules/mzapp.ts` — SHA-256: `edaa45f470181c6ba6517f13f2a4f8650571bb18a7405e5791cd2ab680338251`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f68ec2cea75c232b1ec5ae3e31e10a7b4d8c5aef54f85e5c37b95a60f9db8055`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f87f409e5e129b5c18ea396da60200de3868ffb00f1545ce594ed1bb5cce05ac`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f9b09ccccf8dc24260bd6c558d7656b6872597afdc83d5ca5c5cbd3f1708e468`
+- `backend/src/modules/rbac.ts` — SHA-256: `01d86b1c59fa489d0d4104bedba9db2c8168de7e40f194b0160d2a5f69129629`
+- `backend/src/modules/rbac.ts` — SHA-256: `02379ec21183130956cee7cdbc0966d0276c535d182c709b437543c284c1eef9`
+- `backend/src/modules/rbac.ts` — SHA-256: `0bd800821dc1403c365eb053b7b7fd8e46d68c35a7257931f64ca5520f6c3605`
+- `backend/src/modules/rbac.ts` — SHA-256: `233b2bf2f7d6d2890c68051d884ab9dad8f0e1963286774c20b8ff1feb56a8a2`
+- `backend/src/modules/rbac.ts` — SHA-256: `2711fe6e59e4fb51c73319aceeb4977d4ef8896e2a56acbb380b1adbf359c2d4`
+- `backend/src/modules/rbac.ts` — SHA-256: `31d6b952ad12c40ac276da19518d18d4b1def96b3def5fd46322f6262f6edb30`
+- `backend/src/modules/rbac.ts` — SHA-256: `3453eeb8656c9191ac2554bfe3ccd9c8b6c37571e1c5ca0d74776256b535c8d8`
+- `backend/src/modules/rbac.ts` — SHA-256: `356f8c59e62d595196a3a30f55b5f3ef04eac1079a04b3f61bfacf9970bf4d6e`
+- `backend/src/modules/rbac.ts` — SHA-256: `5644b11d45cb6b07d2cab488a2996ac6d12d769403596271ff1c2e8a0f650f8d`
+- `backend/src/modules/rbac.ts` — SHA-256: `5b76e9629e1490d56581bf7265dd2ab16a2b82447916ccc178f4aa9a1644151a`
+- `backend/src/modules/rbac.ts` — SHA-256: `67db033564da0c5569f941cc0bcbccfafa44efdb02087c349c392598c9902979`
+- `backend/src/modules/rbac.ts` — SHA-256: `68d2f8f123d6482759c59a7dd353e2d978f1ab805abf4eba56f7f6e0803914eb`
+- `backend/src/modules/rbac.ts` — SHA-256: `7ee63d6d1c28331aa28f6c461ec2dd993a9498e93b4871dba3711c3a5e6d6fbc`
+- `backend/src/modules/rbac.ts` — SHA-256: `856e03d1e575001896bef8a9ec3b0aece6abf1753988d748d2c2261be61aa8d2`
+- `backend/src/modules/rbac.ts` — SHA-256: `93172a1dbc507ad9184fc5aa7a580adfbe29795ebe02475a6a3f3a677e1aed9e`
+- `backend/src/modules/rbac.ts` — SHA-256: `a1288a48c3ff991077fc1b768a13856994e08accb63c2f22c6da8526c80e3992`
+- `backend/src/modules/rbac.ts` — SHA-256: `a184142c235d7b6365d89ec5d1c1e8262bbe04023a34f685b410d597155d7bab`
+- `backend/src/modules/rbac.ts` — SHA-256: `a3280ac7e051b5a5994b0585f6167fc4c73f5cff27c7da05677cd1a5e12d44b3`
+- `backend/src/modules/rbac.ts` — SHA-256: `a7d4fde4b8d16bc5ae6d70483b2dd84ef5ce616360ff9fe1a8ed448232855b10`
+- `backend/src/modules/rbac.ts` — SHA-256: `a90245d680fdfc2293bfa866fa4080e08568546e4c802ce2e04dc6e1f94b0e9d`
+- `backend/src/modules/rbac.ts` — SHA-256: `b238dcb136ee5c1aaaca30117f0d5c98d032bed87b85191721275c74333862e7`
+- `backend/src/modules/rbac.ts` — SHA-256: `bddaa694234f0261ea9326d81ca228cb16a2e07682a691de245c19c9f4119f33`
+- `backend/src/modules/rbac.ts` — SHA-256: `bf29026c0c72022d74362c7863ea24b75a7d89444075226942f9ece514a2f341`
+- `backend/src/modules/rbac.ts` — SHA-256: `c5880ea23e8a75814aed791ad22b8fb18315647c5cb78e1196156eb043c76b1c`
+- `backend/src/modules/rbac.ts` — SHA-256: `d3896dcdbc4517dfbe6ddb0564fa86b0ea7c5f3f51e2a84b894f3b2267d69d8c`
+- `backend/src/modules/rbac.ts` — SHA-256: `d9a1d38bc269f5e3f5c8f54b931ad6bf0e815fed7ff9e9cf0fc219d9e6c51a45`
+- `backend/src/modules/rbac.ts` — SHA-256: `debef5670f50b2493778074cbe269a7a211bf219667d6bc00095f5b68b57d335`
+- `backend/src/modules/rbac.ts` — SHA-256: `e76d0708494b3708b4c2ab05a571479cb2dbe96fc2deb6182ac9fa5309a5f78c`
+- `backend/src/modules/rbac.ts` — SHA-256: `e7c6ffe9133699353fffa0521f6820a8736a9bbbd151262ab75420b27308d902`
+- `backend/src/modules/rbac.ts` — SHA-256: `eb3b6909b2fbe3cd6d6b62b7f8342d6fce7b25e1cffc0e5d0fd6299379afad8a`
+- `backend/src/modules/rbac.ts` — SHA-256: `f64f66fa94c4dcde6a037c4a766de42efebdb1dda8424ac7224351601b245dba`
+- `backend/src/modules/rbac.ts` — SHA-256: `f911f1165871880dd30523048447fa216ff4d2f33d694f6a54b552b6d3afff9a`
+- `backend/src/modules/task_center.ts` — SHA-256: `9fa3e928879ef7385d647e4ca04466d0c919fc192d3e8dc0cecc428ecad52b6a`
+- `backend/src/modules/task_center.ts` — SHA-256: `f73f75afe1937ade1358ae814fd9a59b229c11e8358a1cfcb40944128ce85c54`
+- `backend/src/modules/work_task_events.ts` — SHA-256: `2af1a3a35d286217628ab98086fc28511649820c1221daac7d10eb6b39fd47ff`
+- `backend/src/modules/work_task_events.ts` — SHA-256: `322d0f9c3e8af54db5d3ac491d3f31a5781e857d77ad0b32e0f150295111079a`
+- `backend/src/modules/work_task_events.ts` — SHA-256: `4c4974eb3c4a3bdcbc687489b06f423d3b6946d4e168abb33a7bda52c71cbbe0`
+- `backend/src/modules/work_tasks.ts` — SHA-256: `0d69860397699ca9064fb148a2603008c59f00f502b0f34a56d2ad972705fd19`
+- `backend/src/modules/work_tasks.ts` — SHA-256: `0d766235c18320ed48a38b2ccd09e2219632619eb0bdc87784c95686c8247aee`
+- `backend/src/modules/work_tasks.ts` — SHA-256: `2f13b5dd4036de38be06a71739b71e3b1ace1e3c9931658dede3ce4807454229`
+- `backend/src/modules/work_tasks.ts` — SHA-256: `4113c85bc2dc255957e4378046e442aad2e329fcce27b5303f506cd0ce1cb688`
+- `backend/src/modules/work_tasks.ts` — SHA-256: `6320d7e4c9130acd6f6e26cdb9f71ae25a6346993720f7b0fd1d9888860474a5`
+- `backend/src/modules/work_tasks.ts` — SHA-256: `7e3c511a6b7917c95a0790404183d6c01f7120483025803366f3175acd79a812`
+- `backend/src/modules/work_tasks.ts` — SHA-256: `98435ece270f437df98e5cee6ab1bb497e1de12154d8cdd96b81b2d22e9b8d39`
+- `backend/src/modules/work_tasks.ts` — SHA-256: `bd7c7e395175733069c77038957b1a4fefbd54d920506ce8a1fccccec8b50a3b`
+- `backend/src/modules/work_tasks.ts` — SHA-256: `dd2f0fada5e8606ac5403c12b48cf0bd23777104c68a4dfeb3c9486793d6a54d`
+- `backend/src/modules/work_tasks.ts` — SHA-256: `fdfb95888043c8dadabc0c1ac7c9a3883eb779510ef13fc33ebe08df7bb7b9b4`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `3ede97db6129d2270fe0d73187bfc1462f33150f9d9ac68258b99e545e9e8aca`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `6840bd4fbacf2f6097287a942272663fc65e5b5d61c351ea6e97e60d5d1f81b7`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `ae9306dfdb9d859d5f55d3f664c570dc596ab83c7d89012a8c615af2bc150df2`
+- `backend/src/services/workTaskEvents.ts` — SHA-256: `4133514b18c5a12441923c9ee482e15f4529d812e375a007f091c0066c30f3e5`
+- `backend/src/services/workTaskEvents.ts` — SHA-256: `4d1a155647be4f8d58b2a7d5faf723037749f14178bf8ca9ca73ebfdf2bade4b`
+- `backend/src/services/workTaskEvents.ts` — SHA-256: `5dd2e92f0bbf9872a460f4f6773c32386b1b5b609cfd52c1dcab1999d764a86d`
+- `backend/src/services/workTaskEvents.ts` — SHA-256: `8d0d6f68b23788aa6ccbcf24384e02539f1ab64639ae7de15cced4a7adaf7b21`
+- `backend/src/services/workTaskEvents.ts` — SHA-256: `a2661c5bd626a46e6b71950679908fdaae7b0317d0e9d2f6c93bd21db061d8f0`
+- `backend/src/services/workTaskEvents.ts` — SHA-256: `a6921f86e566d127946d419d4fcd355b5a6be183c6da789831e7422fcc9e733a`
+- `backend/src/services/workTaskEvents.ts` — SHA-256: `bd938c1035e71bf0f6d484aefcd353e4da51fb0ffbee88618544884755062e2d`
+- `backend/src/services/workTaskEvents.ts` — SHA-256: `c21922795f6516b523f8830a0afce4bfc6489ecd522d3e4bbb37896257380c52`
+- `backend/src/services/workTaskEvents.ts` — SHA-256: `e892bccf8b022f1f0d6e7f67e984029984da4a13451ac0d9f4a07d9294df2e14`
+- `backend/src/services/workTaskEvents.ts` — SHA-256: `e9ff543a22a5e47c9c0fee14e5a728fb0ca0984e1930721ba6a6a65ed2eb6f6c`
+- `backend/src/worker_cleaning_backfill.ts` — SHA-256: `f9f880a3178d0d97136c9dd75fb42694e32ee9a46fb010c557d90d4cfd3249c5`
+- `backend/src/worker_cleaning_sync.ts` — SHA-256: `2cf1dbef366bd390d10aca9ff1776aa3863ec37e7cd5774952be8d0af43a4ffc`
+- `docs/feature-regression-registry.md` — SHA-256: `d2042b81b668bf9371b10b54c7ad62f06beb9c6a9d7f0086bd65190e651b3768`
+- `package.json` — SHA-256: `1d61dd05ec6bccd7f181420ee1b7596c2cdbb2d5a1b6ef3e38a1079c0aebb8a3`
+- `package.json` — SHA-256: `2d036c66b5d1e1165ff880cfcd35b2b485e06b112b19482f4e302e7d3d83c370`
+
+### Release Attempts
+
+#### RA-20260909-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260909-002`
+- Selected CRL identities: `root/CRL-20260909-002`
+- Intended action: `commit`
+- Branch: `codex/r5-2a-current-dev-20260909`
+- Base: `origin/Dev@80e32de24f0684c3b409bc2eabdf5e8b11aa7c8a`; fetched at `2026-09-09T21:47:13+10:00` and confirmed unchanged before the authorized local commit.
+- Candidate patch SHA-256: `727b03179c381d85e354eb384b7091482a0a5ac0feb0a9f5993f5af332f1235e` (exact current-base candidate content diff excluding ledger attempt metadata).
+- Commit SHA: `a04f3a75e2ceb2b8b8715b8df35695bc543d894d` (candidate content commit; descendant of the recorded base and ancestor of the forthcoming ledger receipt).
+- Dependencies: `none`
+- Source evidence: `root/CRL-20260907-001@84e68321876bb419669318cba20bd91d5b41e678` only; it is not a merged or release dependency.
+- Required validation: `PASS for selected R5-2A commit scope`; selected backend/static gates, final pre-commit ledger gate and independent review passed. Full `check:fast` remains separately incomplete because this isolated root worktree lacks an unapproved sibling Mobile fixture; the non-production concurrency integration remains unrun without database/write authorization.
+- Shared-hunk review: `PASS`; independent read-only review confirmed the 26 selected paths and 167 non-ledger fingerprints match the current-Dev candidate exactly, with no unselected staged hunk.
+- Generated-file review: `PASS`; final staged-candidate scan found no lockfile, dependency-version, configuration, workflow, generated-output, cache or sensitive-information change. The non-production concurrency test contains only variable names and explicit target guards.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; explicit user instruction `授权提交` on 2026-09-09 authorizes this exact CRL, branch and current candidate only. It does not authorize push, PR, merge, migration, deployment or production verification.
+- Independent review: `GO for commit`; independent read-only review found no P0/P1/P2, verified base/HEAD, candidate hash, marker/sequence/version contract, exact hunk scope and the static validation evidence. This conclusion permits only a local commit after user selection.
+- Action conclusion: `GO` for the authorized local commit; content commit `a04f3a75e2ceb2b8b8715b8df35695bc543d894d` was created from the fresh unchanged base with exact staged scope and independent-review GO. Push remains unapproved.
+
+#### RA-20260909-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260909-002`
+- Selected CRL identities: `root/CRL-20260909-002`
+- Intended action: `push`
+- Branch: `codex/r5-2a-current-dev-20260909`
+- Base: `origin/Dev@80e32de24f0684c3b409bc2eabdf5e8b11aa7c8a`; fetched at `2026-09-09T22:04:56+10:00` and confirmed unchanged before push preflight.
+- Candidate patch SHA-256: `727b03179c381d85e354eb384b7091482a0a5ac0feb0a9f5993f5af332f1235e` (same reviewed content diff, excluding ledger metadata).
+- Commit SHA: `a04f3a75e2ceb2b8b8715b8df35695bc543d894d` (candidate content commit); current local receipt head `03108c045c77490844d0bb3719142df13133cedf`.
+- Dependencies: `none`
+- Required validation: `PASS`; selected R5-2A backend/static validation, pre-commit gate and committed-range audit for RA-20260909-002 passed. No source content changed after that audit.
+- Shared-hunk review: `PASS`; the content candidate retains the independently reviewed 26 selected paths and 167 non-ledger hunk fingerprints.
+- Generated-file review: `PASS`; committed candidate is clean of generated files, cache, dependency-version, configuration and sensitive-information changes.
+- Technical state: `committed`
+- Remote preflight: `PASS`; fresh `origin/Dev` matches the recorded base and `refs/heads/codex/r5-2a-current-dev-20260909` did not exist remotely at `2026-09-09T22:04:56+10:00`.
+- User authorization: `approved-for-push`; after receiving the exact branch and audited receipt head `03108c045c77490844d0bb3719142df13133cedf`, the user explicitly replied `授权` on 2026-09-09. This authorizes only a non-force push of this unchanged CRL/base/content-commit/branch range.
+- Independent review: `GO for push-attempt receipt`; independent read-only review verified that this ledger-only receipt binds the already authorized, unchanged `root/CRL-20260909-002` content range: base `80e32de24f0684c3b409bc2eabdf5e8b11aa7c8a`, content commit `a04f3a75e2ceb2b8b8715b8df35695bc543d894d`, branch `codex/r5-2a-current-dev-20260909`, candidate SHA-256 `727b03179c381d85e354eb384b7091482a0a5ac0feb0a9f5993f5af332f1235e`, and remote-branch-absent preflight. No P0/P1 finding.
+- Action conclusion: `GO` for committing this ledger-only push-attempt receipt. It does not itself push, create a PR, merge, migrate, deploy or verify production.
+
+### Risks / Release Notes
+
+- P1 migration/deployment risk: applying this code before its controlled migration and marker confirmation will intentionally fail closed on selected paths. Migration execution and deployment remain separately gated.
+- P2 integration risk: the source patch applied cleanly, but current-base backend checks and exact hunk review have not yet established release readiness.
+- Sensitive-information review: candidate contains no credential, database URL, token, cache or generated-output change by source scope; final audit remains pending.
+
+
 ## CRL-20260909-001 — Change Ledger 多路径覆盖解析修复（root）
 
 - **Repository:** `root`
