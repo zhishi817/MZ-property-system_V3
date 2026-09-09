@@ -51,12 +51,12 @@
 - Selected CRL identities: `root/CRL-20260909-001`
 - Intended action: `commit`
 - Branch: `codex/ledger-multipath-coverage-20260909`
-- Base: `origin/Dev@b0e54dd16afe67566cde8c987715e5283e622de2`; fetched unchanged at `2026-09-09T16:13:31+10:00` before the isolated worktree was created.
+- Base: `origin/Dev@b0e54dd16afe67566cde8c987715e5283e622de2`; fetched at `2026-09-09T16:13:31+10:00` before the isolated worktree was created and confirmed unchanged.
 - Candidate patch SHA-256: `3657693c4a21462696bc7fcab4b3521d755f689f099d25a040b893b713e03f39` (staged content excluding `docs/change-release-ledger.md`; updated after the P1 parser-boundary correction).
 - Commit SHA: `40f994666a09d9d9090460bb84788e2c16c1b006` (candidate content commit; descendant of the recorded base).
 - Dependencies: `none`
 - Required validation: `PASS`; focused auditor test (38 tests), current-worktree ledger coverage and diff check passed. The staged gate will be rerun after this corrected scope receipt. The R5-2A remote PR range is intentionally not run from this isolated branch because the R5 CRL is absent.
-- Shared-hunk review: `not applicable`; no shared runtime or application path is selected.
+- Shared-hunk review: `PASS`; the exact `b0e54dd16afe67566cde8c987715e5283e622de2...40f994666a09d9d9090460bb84788e2c16c1b006` non-ledger diff was independently reviewed. All three historically shared paths have only this CRL's selected parser, test and ledger hunks; no unrelated or overlapping runtime hunk is included.
 - Generated-file review: `PASS`; no generated, dependency, credential or cache path is staged.
 - Technical state: `committed`
 - User authorization: `selected-for-commit`; at `2026-09-09T16:13:31+10:00`, user authorized the narrowly scoped `root/CRL-20260909-001` Ledger coverage repair. Push, PR, merge, migration, deployment and production verification remain unapproved.
