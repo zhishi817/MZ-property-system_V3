@@ -241,6 +241,26 @@
 - Independent review: `GO for commit`; independent read-only review found no P0/P1/P2, verified base/HEAD, candidate hash, marker/sequence/version contract, exact hunk scope and the static validation evidence. This conclusion permits only a local commit after user selection.
 - Action conclusion: `GO` for the authorized local commit; content commit `a04f3a75e2ceb2b8b8715b8df35695bc543d894d` was created from the fresh unchanged base with exact staged scope and independent-review GO. Push remains unapproved.
 
+#### RA-20260909-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260909-002`
+- Selected CRL identities: `root/CRL-20260909-002`
+- Intended action: `push`
+- Branch: `codex/r5-2a-current-dev-20260909`
+- Base: `origin/Dev@80e32de24f0684c3b409bc2eabdf5e8b11aa7c8a`; fetched at `2026-09-09T22:04:56+10:00` and confirmed unchanged before push preflight.
+- Candidate patch SHA-256: `727b03179c381d85e354eb384b7091482a0a5ac0feb0a9f5993f5af332f1235e` (same reviewed content diff, excluding ledger metadata).
+- Commit SHA: `a04f3a75e2ceb2b8b8715b8df35695bc543d894d` (candidate content commit); current local receipt head `03108c045c77490844d0bb3719142df13133cedf`.
+- Dependencies: `none`
+- Required validation: `PASS`; selected R5-2A backend/static validation, pre-commit gate and committed-range audit for RA-20260909-002 passed. No source content changed after that audit.
+- Shared-hunk review: `PASS`; the content candidate retains the independently reviewed 26 selected paths and 167 non-ledger hunk fingerprints.
+- Generated-file review: `PASS`; committed candidate is clean of generated files, cache, dependency-version, configuration and sensitive-information changes.
+- Technical state: `committed`
+- Remote preflight: `PASS`; fresh `origin/Dev` matches the recorded base and `refs/heads/codex/r5-2a-current-dev-20260909` did not exist remotely at `2026-09-09T22:04:56+10:00`.
+- User authorization: `approved-for-push`; after receiving the exact branch and audited receipt head `03108c045c77490844d0bb3719142df13133cedf`, the user explicitly replied `授权` on 2026-09-09. This authorizes only a non-force push of this unchanged CRL/base/content-commit/branch range.
+- Independent review: `GO for push-attempt receipt`; independent read-only review verified that this ledger-only receipt binds the already authorized, unchanged `root/CRL-20260909-002` content range: base `80e32de24f0684c3b409bc2eabdf5e8b11aa7c8a`, content commit `a04f3a75e2ceb2b8b8715b8df35695bc543d894d`, branch `codex/r5-2a-current-dev-20260909`, candidate SHA-256 `727b03179c381d85e354eb384b7091482a0a5ac0feb0a9f5993f5af332f1235e`, and remote-branch-absent preflight. No P0/P1 finding.
+- Action conclusion: `GO` for committing this ledger-only push-attempt receipt. It does not itself push, create a PR, merge, migrate, deploy or verify production.
+
 ### Risks / Release Notes
 
 - P1 migration/deployment risk: applying this code before its controlled migration and marker confirmation will intentionally fail closed on selected paths. Migration execution and deployment remain separately gated.
