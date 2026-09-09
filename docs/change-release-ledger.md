@@ -1,5 +1,73 @@
 # Change Release Ledger
 
+## CRL-20260909-001 — Change Ledger 多路径覆盖解析修复（root）
+
+- **Repository:** `root`
+- **Status:** in-progress
+- **Updated:** 2026-09-09 Australia/Melbourne
+- **Request:** 修复 R5-2A PR 的 Change Ledger Audit：账本把多个文件放在同一个逗号分隔 bullet 中时，CI 只识别单文件 bullet，导致已记录的路径被误报为 uncovered。
+- **Outcome:** `Files / Areas` 的单个 bullet 可安全记录多个反引号路径；CI 仅读取该区域的 `- ` 文件列表，并且只提取说明分隔符 `—` 前的路径列表。
+
+### Implementation
+
+- Previous behavior: `recorded_paths()` 只匹配紧接空白或行尾的第一个反引号路径。逗号紧跟反引号的多路径 bullet 因而一个路径也不会登记，R5-2A 的 26 个变更只有 20 个被 CI 覆盖审计识别。
+- New behavior: 仅对 `Files / Areas` 中以 `- ` 开始的文件 bullet，在说明分隔符 `—` 前提取全部反引号路径；保持普通说明文本、`### Staged Commit Scope` 和其它账本区块不参与路径覆盖。
+- Key decisions: 修复审计器而不篡改已推送 R5-2A CRL 的业务范围或重写 Git 历史；不修改任何应用、migration、工作流或生产配置。
+
+### Files / Areas
+
+- `scripts/audit_change_release_ledger.py` — modified: parses all listed paths from a comma-grouped `Files / Areas` bullet.
+- `scripts/tests/test_audit_change_release_ledger.py` — modified: protects grouped-path parsing plus non-bullet/description-code exclusion.
+- `docs/change-release-ledger.md` — modified: records this ledger-governance repair.
+
+### Impact / Dependencies
+
+- API / database / migration / configuration / dependencies: none.
+- CI behavior: Change Ledger Audit correctly attributes a PR range when a CRL documents multiple paths in one `Files / Areas` bullet.
+- Related unit: `root/CRL-20260907-001`; this repair changes only audit attribution, not R5-2A behavior.
+- Excluded: application code, migration SQL, GitHub workflow definitions, mobile, Render, Neon and all production actions.
+
+### Validation
+
+- `python3 scripts/tests/test_audit_change_release_ledger.py` — PASS: 38 tests, including comma-grouped and standalone `Files / Areas` path coverage.
+- `npm run check:ledger` — PASS: current three-file governance worktree is fully recorded.
+- `git diff --check` — PASS.
+- R5-2A remote range: not executed in this isolated branch because it deliberately does not contain `root/CRL-20260907-001`; after this governance repair merges, update the R5-2A branch from Dev and let its CI rerun the exact PR range.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared.
+- **Untracked review:** none; clean candidate contains only this ledger-governance repair.
+- `scripts/audit_change_release_ledger.py` — SHA-256: `a901eab20ecb6702a6e6994ac9be77b548684ec6df97e76c0085764d8b4f5b5a`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `514683d25e4829f4e2528a0162c5c273519e4379178e156b705e3cdb888ab796`
+
+### Release Attempts
+
+#### RA-20260909-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260909-001`
+- Selected CRL identities: `root/CRL-20260909-001`
+- Intended action: `commit`
+- Branch: `codex/ledger-multipath-coverage-20260909`
+- Base: `origin/Dev@b0e54dd16afe67566cde8c987715e5283e622de2`; fetched at `2026-09-09T16:13:31+10:00` before the isolated worktree was created and confirmed unchanged.
+- Candidate patch SHA-256: `3657693c4a21462696bc7fcab4b3521d755f689f099d25a040b893b713e03f39` (staged content excluding `docs/change-release-ledger.md`; updated after the P1 parser-boundary correction).
+- Commit SHA: `40f994666a09d9d9090460bb84788e2c16c1b006` (candidate content commit; descendant of the recorded base).
+- Dependencies: `none`
+- Required validation: `PASS`; focused auditor test (38 tests), current-worktree ledger coverage and diff check passed. The staged gate will be rerun after this corrected scope receipt. The R5-2A remote PR range is intentionally not run from this isolated branch because the R5 CRL is absent.
+- Shared-hunk review: `PASS`; the exact `b0e54dd16afe67566cde8c987715e5283e622de2...40f994666a09d9d9090460bb84788e2c16c1b006` non-ledger diff was independently reviewed. All three historically shared paths have only this CRL's selected parser, test and ledger hunks; no unrelated or overlapping runtime hunk is included.
+- Generated-file review: `PASS`; no generated, dependency, credential or cache path is staged.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; at `2026-09-09T16:13:31+10:00`, user authorized the narrowly scoped `root/CRL-20260909-001` Ledger coverage repair. Push, PR, merge, migration, deployment and production verification remain unapproved.
+- Independent review: `GO`; independent re-review of the corrected candidate confirmed the `- ` bullet-only and pre-`—` boundary, comma-grouped coverage, both negative cases, the exact candidate fingerprint, three-file scope, validation and sensitive-file review. This review permits local commit only.
+- Action conclusion: `GO`; the authorized local commit completed. Push, PR, merge, migration, deployment and production verification remain unapproved.
+
+### Risks / Release Notes
+
+- The parser intentionally reads only the part of each bullet before ` — `, preventing inline code in the explanatory text from masquerading as a recorded file.
+- No credentials, generated assets, database URLs, API calls or production state are involved.
+
 ## CRL-20260905-002 — 订单排序缺失时间回归断言修复（root）
 
 - **Repository:** `root`
