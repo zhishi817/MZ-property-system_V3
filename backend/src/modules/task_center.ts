@@ -23,6 +23,7 @@ import { assertMaintenanceWorkflowSchemaReady } from '../lib/maintenanceWorkflow
 import { assertMaintenanceRuntimeSchemaReady, MaintenanceRuntimeSchemaNotReady } from '../lib/maintenanceRuntimeSchema'
 import { normalizeMaintenanceWorkflowStatus } from '../lib/maintenanceWorkflow'
 import { insertMaintenanceWorkflowEvent, upsertMaintenanceWorkTask } from '../lib/maintenanceWorkflowStore'
+import { requireR5TaskRuntimeSchema } from '../lib/r5RequestSchema'
 
 export const router = Router()
 
@@ -2179,7 +2180,11 @@ router.get('/day', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 
   }
 })
 
-router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res) => {
+// This route emits work-task events after its transaction.  Require the core
+// task schema before any board mutation so a missing marker cannot return a
+// successful save while its corresponding realtime events are dropped.
+// Task Center's own legacy schema helpers remain outside R5-2A.
+router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRuntimeSchema, async (req, res) => {
   const parsed = saveBoardSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const payload = parsed.data

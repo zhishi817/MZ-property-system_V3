@@ -56,7 +56,7 @@ import {
 } from '../lib/workTaskActionAudit'
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
 import { activeCleaningTaskWhereSql, syncCheckoutOldCodeFromCheckinNewCode, validCleaningTaskOrderWhereSql } from '../services/cleaningSync'
-import { isR5RequestSchemaReady } from '../lib/r5RequestSchema'
+import { assertR5TaskRuntimeSchemaReady, isR5RequestSchemaReady, isR5TaskRuntimeSchemaReady, requireR5TaskRuntimeSchema } from '../lib/r5RequestSchema'
 
 export const router = Router()
 
@@ -1339,7 +1339,7 @@ async function userHasManualWorkTaskAction(user: any, userId: string, sourceType
   if (!uid || !st || !sid) return false
   const permissions = await listPermissionCodesForUser(user)
   if (!canBasePerformWorkTaskAction(actionId, permissions)) return false
-  await ensureWorkTaskParticipantsTable()
+  assertR5TaskRuntimeSchemaReady()
   const r = await pgPool.query(
     `SELECT action_ids
        FROM work_task_participants
@@ -1661,47 +1661,6 @@ function sendMaintenanceRuntimeSchemaNotReady(res: any, error: unknown) {
   res.status(503).json({ code: 'maintenance_runtime_schema_not_ready' })
   return true
 }
-
-let workTaskParticipantsEnsured = false
-let workTaskParticipantsEnsuring: Promise<void> | null = null
-
-async function ensureWorkTaskParticipantsTable() {
-  if (!hasPg || !pgPool) return
-  if (workTaskParticipantsEnsured) return
-  if (workTaskParticipantsEnsuring) return workTaskParticipantsEnsuring
-  workTaskParticipantsEnsuring = (async () => {
-    await pgPool.query(`CREATE TABLE IF NOT EXISTS work_task_participants (
-      id text PRIMARY KEY,
-      source_type text NOT NULL,
-      source_id text NOT NULL,
-      user_id text NOT NULL,
-      participant_role text NOT NULL DEFAULT 'collaborator',
-      action_ids jsonb NOT NULL DEFAULT '["*"]'::jsonb,
-      source_relation text NOT NULL DEFAULT 'manual',
-      created_by text,
-      updated_by text,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      updated_at timestamptz NOT NULL DEFAULT now()
-    );`)
-    await pgPool.query(`ALTER TABLE IF EXISTS work_task_participants ADD COLUMN IF NOT EXISTS participant_role text NOT NULL DEFAULT 'collaborator';`)
-    await pgPool.query(`ALTER TABLE IF EXISTS work_task_participants ADD COLUMN IF NOT EXISTS action_ids jsonb NOT NULL DEFAULT '["*"]'::jsonb;`)
-    await pgPool.query(`ALTER TABLE IF EXISTS work_task_participants ADD COLUMN IF NOT EXISTS source_relation text NOT NULL DEFAULT 'manual';`)
-    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_task_participants_source ON work_task_participants(source_type, source_id);`)
-    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_task_participants_user ON work_task_participants(user_id);`)
-    await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_work_task_participants_manual ON work_task_participants(source_type, source_id, user_id, source_relation);`)
-    workTaskParticipantsEnsured = true
-  })()
-    .catch((e) => {
-      workTaskParticipantsEnsured = false
-      workTaskParticipantsEnsuring = null
-      throw e
-    })
-    .finally(() => {
-      workTaskParticipantsEnsuring = null
-    })
-  return workTaskParticipantsEnsuring
-}
-
 function workTaskSourceRefs(task: any) {
   const sourceType = String(task?.source_type || '').trim()
   const ids = Array.from(new Set([
@@ -1748,7 +1707,7 @@ async function loadManualWorkTaskParticipantsByRef(tasks: any[]) {
   const refs = tasks.flatMap(workTaskSourceRefs)
   const sourceTypes = Array.from(new Set(refs.map((ref) => ref.source_type).filter(Boolean)))
   if (!sourceTypes.length) return map
-  await ensureWorkTaskParticipantsTable()
+  assertR5TaskRuntimeSchemaReady()
   for (const sourceType of sourceTypes) {
     const sourceIds = Array.from(new Set(refs.filter((ref) => ref.source_type === sourceType).map((ref) => ref.source_id).filter(Boolean)))
     if (!sourceIds.length) continue
@@ -1797,24 +1756,6 @@ function attachWorkTaskParticipants(task: any, manualByRef: Map<string, WorkTask
       ...manual,
     ],
   }
-}
-
-async function ensureMzappAlertsTable() {
-  if (!hasPg || !pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS mzapp_alerts (
-    id text PRIMARY KEY,
-    kind text NOT NULL,
-    target_user_id text NOT NULL,
-    level text NOT NULL,
-    date date,
-    position integer,
-    payload jsonb NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    read_at timestamptz
-  );`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_mzapp_alerts_target_unread ON mzapp_alerts(target_user_id, read_at, created_at);`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_mzapp_alerts_kind ON mzapp_alerts(kind);`)
-  await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_mzapp_alerts_dedupe ON mzapp_alerts(kind, target_user_id, date, position, level);`)
 }
 
 let guestLuggageEnsured = false
@@ -2090,14 +2031,13 @@ async function emitGuestLuggageTaskEvents(params: {
   }
 }
 
-router.get('/alerts', async (req, res) => {
+router.get('/alerts', requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const uid = String(user.sub || '').trim()
   if (!uid) return res.status(401).json({ message: 'unauthorized' })
   try {
     if (!hasPg || !pgPool) return res.json([])
-    await ensureMzappAlertsTable()
     const unread = String((req.query as any)?.unread || '0').trim() === '1'
     const kind = String((req.query as any)?.kind || '').trim()
     const limit0 = Number((req.query as any)?.limit || 50)
@@ -2122,7 +2062,7 @@ router.get('/alerts', async (req, res) => {
   }
 })
 
-router.post('/alerts/:id/read', async (req, res) => {
+router.post('/alerts/:id/read', requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const uid = String(user.sub || '').trim()
@@ -2131,7 +2071,6 @@ router.post('/alerts/:id/read', async (req, res) => {
   if (!id) return res.status(400).json({ message: 'missing id' })
   try {
     if (!hasPg || !pgPool) return res.json({ ok: true })
-    await ensureMzappAlertsTable()
     await pgPool.query('UPDATE mzapp_alerts SET read_at=now() WHERE id=$1 AND target_user_id=$2', [id, uid])
     return res.json({ ok: true })
   } catch (e: any) {
@@ -2143,87 +2082,12 @@ export async function warmupMzappModule() {
   if (!(hasPg && pgPool)) return
   if (!isMaintenanceRuntimeSchemaReady()) throw new MaintenanceRuntimeSchemaNotReady()
   await assertWorkTasksSchemaReady()
-  await ensureWorkTaskParticipantsTable()
+  assertR5TaskRuntimeSchemaReady()
   await ensureGuestLuggageTables()
-  await ensureCleaningTaskSortColumns()
   await ensureCleaningChecklistTables()
-  await ensureCleaningCheckoutColumns()
-  await ensureCleaningCustomerColumns()
-  await ensureCleaningInspectionColumns()
   await ensurePropertyMaintenanceColumns()
   await assertIdempotentStepReceiptsReady(pgPool)
   await ensureNotificationStorage()
-}
-
-let checkoutEnsured = false
-let checkoutEnsuring: Promise<void> | null = null
-
-async function ensureCleaningCheckoutColumns() {
-  if (!hasPg || !pgPool) return
-  if (checkoutEnsured) return
-  if (checkoutEnsuring) return checkoutEnsuring
-  checkoutEnsuring = (async () => {
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS checked_out_at timestamptz;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS checkout_marked_by text;`)
-    checkoutEnsured = true
-  })()
-    .catch((e) => {
-      checkoutEnsured = false
-      checkoutEnsuring = null
-      throw e
-    })
-    .finally(() => {
-      checkoutEnsuring = null
-    })
-  return checkoutEnsuring
-}
-
-let cleaningCustomerEnsured = false
-let cleaningCustomerEnsuring: Promise<void> | null = null
-
-async function ensureCleaningCustomerColumns() {
-  if (!hasPg || !pgPool) return
-  if (cleaningCustomerEnsured) return
-  if (cleaningCustomerEnsuring) return cleaningCustomerEnsuring
-  cleaningCustomerEnsuring = (async () => {
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS guest_special_request text;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
-    await pgPool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
-    cleaningCustomerEnsured = true
-  })()
-    .catch((e) => {
-      cleaningCustomerEnsured = false
-      cleaningCustomerEnsuring = null
-      throw e
-    })
-    .finally(() => {
-      cleaningCustomerEnsuring = null
-    })
-  return cleaningCustomerEnsuring
-}
-
-let cleaningInspectionEnsured = false
-let cleaningInspectionEnsuring: Promise<void> | null = null
-
-async function ensureCleaningInspectionColumns() {
-  if (!hasPg || !pgPool) return
-  if (cleaningInspectionEnsured) return
-  if (cleaningInspectionEnsuring) return cleaningInspectionEnsuring
-  cleaningInspectionEnsuring = (async () => {
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_mode text;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_scope text;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_due_date date;`)
-    cleaningInspectionEnsured = true
-  })()
-    .catch((e) => {
-      cleaningInspectionEnsured = false
-      cleaningInspectionEnsuring = null
-      throw e
-    })
-    .finally(() => {
-      cleaningInspectionEnsuring = null
-    })
-  return cleaningInspectionEnsuring
 }
 
 function normalizeInspectionScope(value: any): 'inspect_and_hang' | 'password_only' | null {
@@ -2484,43 +2348,7 @@ async function loadFormPhotoRecords(taskRows: FormPhotoTaskRow[]) {
   return records.filter((record) => record.id && record.url)
 }
 
-let cleaningSortEnsured = false
-let cleaningSortEnsuring: Promise<void> | null = null
-
-async function ensureCleaningTaskSortColumns() {
-  if (!hasPg || !pgPool) return
-  if (cleaningSortEnsured) return
-  if (cleaningSortEnsuring) return cleaningSortEnsuring
-  cleaningSortEnsuring = (async () => {
-    const r = await pgPool.query(
-        `SELECT column_name
-         FROM information_schema.columns
-         WHERE table_schema = 'public'
-           AND table_name = 'cleaning_tasks'
-         AND column_name = ANY($1::text[])`,
-      [['sort_index_cleaner', 'sort_index_inspector']],
-    )
-    const have = new Set((r?.rows || []).map((x: any) => String(x.column_name || '')))
-    if (!have.has('sort_index_cleaner')) {
-      await pgPool.query(`ALTER TABLE IF EXISTS cleaning_tasks ADD COLUMN IF NOT EXISTS sort_index_cleaner integer;`)
-    }
-    if (!have.has('sort_index_inspector')) {
-      await pgPool.query(`ALTER TABLE IF EXISTS cleaning_tasks ADD COLUMN IF NOT EXISTS sort_index_inspector integer;`)
-    }
-    cleaningSortEnsured = true
-  })()
-    .catch((e) => {
-      cleaningSortEnsured = false
-      cleaningSortEnsuring = null
-      throw e
-    })
-    .finally(() => {
-      cleaningSortEnsuring = null
-    })
-  return cleaningSortEnsuring
-}
-
-router.post('/cleaning-tasks/reorder', async (req, res) => {
+router.post('/cleaning-tasks/reorder', requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const userId = String(user.sub || '')
@@ -2539,7 +2367,7 @@ router.post('/cleaning-tasks/reorder', async (req, res) => {
 
   try {
     if (!hasPg || !pgPool) return res.json({ ok: false })
-    await ensureCleaningTaskSortColumns()
+    assertR5TaskRuntimeSchemaReady()
 
     let idx = 1
     const entryById = new Map<string, number>()
@@ -2622,6 +2450,7 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
     const selfCompleteLockbox = await canSubmitMzappSelfCompleteLockboxVideo(user, row, userId)
     if (!selfCompleteLockbox && !await canManageMzappLockboxVideo(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
     if (!isR5RequestSchemaReady()) return res.status(503).json({ code: 'r5_request_schema_not_ready' })
+    if (!isR5TaskRuntimeSchemaReady()) return res.status(503).json({ code: 'r5_task_runtime_schema_not_ready' })
     const uuid = require('uuid')
     const mediaId = uuid.v4()
     const actionActor = actorAndPerformerFromRequest(user, req.body || {})
@@ -2721,6 +2550,7 @@ async function handleDeleteMzappLockboxVideo(req: any, res: any) {
     if (!row) return res.status(404).json({ message: 'not found' })
     if (!await canManageMzappLockboxVideo(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
     if (!isR5RequestSchemaReady()) return res.status(503).json({ code: 'r5_request_schema_not_ready' })
+    if (!isR5TaskRuntimeSchemaReady()) return res.status(503).json({ code: 'r5_task_runtime_schema_not_ready' })
 
     const needsRestockResult = await pgPool.query(
       `SELECT 1
@@ -2929,6 +2759,7 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
     if (!await canSubmitMzappInspection(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
+    if (!isR5TaskRuntimeSchemaReady()) return res.status(503).json({ code: 'r5_task_runtime_schema_not_ready' })
     const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, bathroom: 3, balcony: 3, shower_drain: 1, unclean: 12 }
     const byArea = new Map<string, number>()
     for (const it of parsed.data.items) {
@@ -3113,6 +2944,7 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
       && await canSubmitMzappSelfCompleteRestock(user, row, userId)
     if (!selfCompleteRestock && !await canSubmitMzappInspection(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
     if (!isR5RequestSchemaReady()) return res.status(503).json({ code: 'r5_request_schema_not_ready' })
+    if (!isR5TaskRuntimeSchemaReady()) return res.status(503).json({ code: 'r5_task_runtime_schema_not_ready' })
     if (selfCompleteRestock) {
       const consumables = await pgPool.query(
         `SELECT 1 FROM cleaning_consumable_usages WHERE task_id::text=$1::text LIMIT 1`,
@@ -3339,7 +3171,7 @@ async function emitGuestCheckoutRealtimeEvents(params: {
   }
 }
 
-router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
+router.post('/cleaning-tasks/:id/guest-checked-out', requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const userId = String(user.sub || '')
@@ -3348,10 +3180,7 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
   if (!id) return res.status(400).json({ message: 'missing id' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
-    await ensureCleaningCheckoutColumns()
-    try {
-      await pgPool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
-    } catch {}
+    assertR5TaskRuntimeSchemaReady()
     const action = String(req.body?.action || 'set').trim().toLowerCase()
     const r0 = await pgPool.query('SELECT id, checked_out_at, task_type, type FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
     const row = r0?.rows?.[0] || null
@@ -3496,7 +3325,7 @@ const guestCheckedOutBulkSchema = z
   })
   .strict()
 
-router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
+router.post('/cleaning-tasks/guest-checked-out', requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const userId = String(user.sub || '')
@@ -3507,10 +3336,7 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
   const ids = Array.from(new Set(parsed.data.task_ids.map((x) => String(x || '').trim()).filter(Boolean)))
   if (!ids.length) return res.status(400).json({ message: 'missing task_ids' })
   try {
-    await ensureCleaningCheckoutColumns()
-    try {
-      await pgPool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
-    } catch {}
+    assertR5TaskRuntimeSchemaReady()
     const action = String(parsed.data.action || 'set').trim().toLowerCase()
     const rTypes = await pgPool.query(
       `SELECT id::text AS id,
@@ -3677,7 +3503,7 @@ const orderCheckedOutSchema = z
   })
   .strict()
 
-router.post('/cleaning-tasks/order-checked-out', async (req, res) => {
+router.post('/cleaning-tasks/order-checked-out', requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const userId = String(user.sub || '')
@@ -3688,10 +3514,7 @@ router.post('/cleaning-tasks/order-checked-out', async (req, res) => {
   const orderId = String(parsed.data.order_id || '').trim()
   if (!orderId) return res.status(400).json({ message: 'missing order_id' })
   try {
-    await ensureCleaningCheckoutColumns()
-    try {
-      await pgPool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
-    } catch {}
+    assertR5TaskRuntimeSchemaReady()
 
     const action = String(parsed.data.action || 'set').trim().toLowerCase()
     const rTasks = await pgPool.query(
@@ -3862,7 +3685,7 @@ const orderKeysRequiredSchema = z
   })
   .strict()
 
-router.post('/cleaning-tasks/order-keys-required', async (req, res) => {
+router.post('/cleaning-tasks/order-keys-required', requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   if (!(hasRole(user, 'customer_service') || hasRole(user, 'admin') || hasRole(user, 'offline_manager'))) return res.status(403).json({ message: 'forbidden' })
@@ -3872,10 +3695,7 @@ router.post('/cleaning-tasks/order-keys-required', async (req, res) => {
   const orderId = String(parsed.data.order_id || '').trim()
   const nextK = Math.max(1, Math.min(2, Math.trunc(Number(parsed.data.keys_required))))
   try {
-    await ensureCleaningCustomerColumns()
-    try {
-      await pgPool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
-    } catch {}
+    assertR5TaskRuntimeSchemaReady()
 
     const r0 = await pgPool.query(`SELECT keys_required FROM orders WHERE id::text = $1::text LIMIT 1`, [orderId])
     const prevK0 = r0?.rows?.[0]?.keys_required == null ? 1 : Number(r0.rows[0].keys_required)
@@ -3989,7 +3809,7 @@ async function handleManagerFields(req: any, res: any) {
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   const pool = pgPool
   try {
-    await ensureCleaningCustomerColumns()
+    assertR5TaskRuntimeSchemaReady()
     const repId = String(parsed.data.task_ids[0] || '').trim()
     let propertyCode = ''
     let propertyId = ''
@@ -4398,8 +4218,8 @@ async function handleManagerFields(req: any, res: any) {
   }
 }
 
-router.patch('/cleaning-tasks/manager-fields', handleManagerFields)
-router.post('/cleaning-tasks/manager-fields', handleManagerFields)
+router.patch('/cleaning-tasks/manager-fields', requireR5TaskRuntimeSchema, handleManagerFields)
+router.post('/cleaning-tasks/manager-fields', requireR5TaskRuntimeSchema, handleManagerFields)
 
 const guestLuggageUpsertSchema = z
   .object({
@@ -5622,7 +5442,7 @@ async function completePropertyFollowupSource(client: any, row: any, completedAt
   }
 }
 
-router.post('/work-tasks/:id/mark', async (req, res) => {
+router.post('/work-tasks/:id/mark', requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const userId = String(user.sub || '')
@@ -5639,6 +5459,7 @@ router.post('/work-tasks/:id/mark', async (req, res) => {
 
   try {
     await assertWorkTasksSchemaReady()
+    assertR5TaskRuntimeSchemaReady()
     const r0 = await pgPool.query('SELECT * FROM work_tasks WHERE id=$1 LIMIT 1', [id])
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
@@ -5777,7 +5598,7 @@ const workTaskCompletionPhotoAppendSchema = z.object({
   photo_urls: z.array(z.string().trim().min(1).max(1200)).min(1).max(20),
 }).strict()
 
-router.post('/work-tasks/:id/completion-photos', async (req, res) => {
+router.post('/work-tasks/:id/completion-photos', requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const userId = String(user.sub || '').trim()
@@ -5790,6 +5611,7 @@ router.post('/work-tasks/:id/completion-photos', async (req, res) => {
 
   try {
     await assertWorkTasksSchemaReady()
+    assertR5TaskRuntimeSchemaReady()
     const current = await pgPool.query(
       `SELECT id, source_type, assignee_id, status, completion_photo_urls
        FROM work_tasks
@@ -5863,7 +5685,7 @@ const mixedTaskReorderSchema = z.object({
   }).strict()).min(1),
 }).strict()
 
-router.post('/work-tasks/reorder', async (req, res) => {
+router.post('/work-tasks/reorder', requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const userId = String(user.sub || '').trim()
@@ -5878,6 +5700,7 @@ router.post('/work-tasks/reorder', async (req, res) => {
 
   try {
     await assertWorkTasksSchemaReady()
+    assertR5TaskRuntimeSchemaReady()
     const r0 = await pgPool.query(
       `SELECT id, assignee_id, scheduled_date, source_type
        FROM work_tasks
@@ -5945,7 +5768,7 @@ router.post('/work-tasks/reorder', async (req, res) => {
   }
 })
 
-router.post('/work-tasks/mixed-reorder', async (req, res) => {
+router.post('/work-tasks/mixed-reorder', requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const userId = String(user.sub || '').trim()
@@ -5970,7 +5793,7 @@ router.post('/work-tasks/mixed-reorder', async (req, res) => {
 
   try {
     await assertWorkTasksSchemaReady()
-    await ensureCleaningTaskSortColumns()
+    assertR5TaskRuntimeSchemaReady()
 
     const workIds = Array.from(new Set(workEntries.map((item) => item.id)))
     let scopeAssignee = canViewAll(user) ? '' : userId
@@ -6103,7 +5926,7 @@ const workTaskPhotosSchema = z.object({
   photo_urls: z.array(z.string().trim().min(1).max(1200)).max(20),
 }).strict()
 
-router.patch('/work-tasks/:id/photos', async (req, res) => {
+router.patch('/work-tasks/:id/photos', requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const userId = String(user.sub || '').trim()
@@ -6116,6 +5939,7 @@ router.patch('/work-tasks/:id/photos', async (req, res) => {
 
   try {
     await assertWorkTasksSchemaReady()
+    assertR5TaskRuntimeSchemaReady()
     const current = await pgPool.query(
       `SELECT id, source_type, source_id, assignee_id, photo_urls
        FROM work_tasks
@@ -6198,7 +6022,7 @@ async function canManageWorkTaskParticipants(user: any) {
   return canViewAll(user)
 }
 
-router.get('/work-task-participants', async (req, res) => {
+router.get('/work-task-participants', requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   if (!await canManageWorkTaskParticipants(user)) return res.status(403).json({ message: 'forbidden' })
@@ -6212,7 +6036,7 @@ router.get('/work-task-participants', async (req, res) => {
     .slice(0, 50)
   if (!sourceIds.length) return res.json({ items: [] })
   try {
-    await ensureWorkTaskParticipantsTable()
+    assertR5TaskRuntimeSchemaReady()
     const r = await pgPool.query(
       `SELECT p.id,
               p.source_type,
@@ -6251,7 +6075,7 @@ router.get('/work-task-participants', async (req, res) => {
   }
 })
 
-router.post('/work-task-participants/set', async (req, res) => {
+router.post('/work-task-participants/set', requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const userId = String(user.sub || '').trim()
@@ -6279,7 +6103,7 @@ router.post('/work-task-participants/set', async (req, res) => {
   }
   const grants = Array.from(grantMap.values())
   try {
-    await ensureWorkTaskParticipantsTable()
+    assertR5TaskRuntimeSchemaReady()
     const client = await pgPool.connect()
     try {
       await client.query('BEGIN')
@@ -6347,7 +6171,7 @@ router.post('/work-task-participants/set', async (req, res) => {
   }
 })
 
-router.get('/work-tasks', async (req, res) => {
+router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
   const workTasksStartedAt = Date.now()
   let workTasksLastStepAt = workTasksStartedAt
   const workTasksTimings: string[] = []
@@ -6399,11 +6223,7 @@ router.get('/work-tasks', async (req, res) => {
   try {
     if (!hasPg || !pgPool) return res.json([])
     await assertWorkTasksSchemaReady()
-    await ensureWorkTaskParticipantsTable()
-    await ensureCleaningTaskSortColumns()
-    await ensureCleaningCheckoutColumns()
-    await ensureCleaningCustomerColumns()
-    await ensureCleaningInspectionColumns()
+    assertR5TaskRuntimeSchemaReady()
     markWorkTasksStep('schema')
 
     const out: any[] = []

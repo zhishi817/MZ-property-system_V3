@@ -50,9 +50,6 @@ const NON_SUPERSEDABLE_MANUAL_STATUSES = new Set([
 const DEFAULT_CHECKOUT_TIME = '10am'
 const DEFAULT_CHECKIN_TIME = '3pm'
 
-let schemaEnsured: Promise<void> | null = null
-let schemaBootstrapped: Promise<void> | null = null
-
 export function activeCleaningTaskWhereSql(alias = 't'): string {
   const a = alias ? `${alias}.` : ''
   return `(COALESCE(${a}execution_state, CASE WHEN lower(COALESCE(${a}status, '')) IN ('cancelled','canceled') THEN 'cancelled' ELSE 'active' END) = 'active'
@@ -152,117 +149,14 @@ function isValidStatus(raw: any): boolean {
 }
 
 export async function ensureCleaningSchemaV2(): Promise<void> {
-  if (!hasPg || !pgPool) return
-  if (schemaEnsured) return schemaEnsured
-  schemaEnsured = (async () => {
-    const r = await pgPool.query(
-      `SELECT
-         to_regclass('public.cleaning_tasks') AS cleaning_tasks,
-         to_regclass('public.cleaning_sync_logs') AS cleaning_sync_logs`
-    )
-    const ct = r?.rows?.[0]?.cleaning_tasks
-    const cl = r?.rows?.[0]?.cleaning_sync_logs
-    if (!ct) {
-      const err: any = new Error('cleaning_tasks_missing')
-      err.code = 'CLEANING_SCHEMA_MISSING'
-      throw err
-    }
-    if (!cl) {
-      const err: any = new Error('cleaning_sync_logs_missing')
-      err.code = 'CLEANING_SCHEMA_MISSING'
-      throw err
-    }
-    const rc = await pgPool.query(
-      `SELECT
-         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cleaning_sync_logs' AND column_name='job_id') AS has_logs_job_id,
-         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cleaning_tasks' AND column_name='cleaner_id') AS has_tasks_cleaner_id,
-         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cleaning_tasks' AND column_name='inspector_id') AS has_tasks_inspector_id,
-         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cleaning_tasks' AND column_name='keys_required') AS has_tasks_keys_required,
-         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cleaning_tasks' AND column_name='inspection_mode') AS has_tasks_inspection_mode,
-         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cleaning_tasks' AND column_name='inspection_due_date') AS has_tasks_inspection_due_date,
-         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cleaning_tasks' AND column_name='inspection_replaced_by_checkin_task_id') AS has_tasks_inspection_replacement_source,
-         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cleaning_tasks' AND column_name='inspection_replaced_original_due_date') AS has_tasks_inspection_replacement_due_date,
-         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='orders' AND column_name='keys_required') AS has_orders_keys_required,
-         EXISTS (SELECT 1 FROM pg_constraint WHERE conname='uniq_cleaning_tasks_order_task_type_v3') AS has_tasks_uq_v3`
-    )
-    const row = rc?.rows?.[0] || {}
-    if (!row?.has_logs_job_id) {
-      const err: any = new Error('cleaning_sync_logs_missing_job_id')
-      err.code = 'CLEANING_SCHEMA_MISSING'
-      throw err
-    }
-    if (!row?.has_tasks_cleaner_id || !row?.has_tasks_inspector_id) {
-      const err: any = new Error('cleaning_tasks_missing_cleaner_fields')
-      err.code = 'CLEANING_SCHEMA_MISSING'
-      throw err
-    }
-    if (!row?.has_tasks_keys_required || !row?.has_tasks_inspection_mode || !row?.has_tasks_inspection_due_date || !row?.has_tasks_inspection_replacement_source || !row?.has_tasks_inspection_replacement_due_date) {
-      const err: any = new Error('cleaning_tasks_missing_sync_columns')
-      err.code = 'CLEANING_SCHEMA_MISSING'
-      throw err
-    }
-    if (!row?.has_orders_keys_required) {
-      const err: any = new Error('orders_missing_keys_required')
-      err.code = 'CLEANING_SCHEMA_MISSING'
-      throw err
-    }
-    if (!row?.has_tasks_uq_v3) {
-      const err: any = new Error('cleaning_tasks_missing_unique_constraint_v3')
-      err.code = 'CLEANING_SCHEMA_MISSING'
-      throw err
-    }
-    await ensureCleaningExecutionStateColumns()
-  })().catch((e) => {
-    schemaEnsured = null
-    throw e
-  })
-  return schemaEnsured
-}
-
-async function ensureCleaningExecutionStateColumns(execArg?: any): Promise<void> {
-  if (!hasPg || !pgPool) return
-  const exec = execArg || pgPool
-  await exec.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS execution_state text;`)
-  await exec.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS manual_task_purpose text;`)
-  await exec.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS superseded_by text;`)
-  await exec.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS superseded_reason text;`)
-  await exec.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS superseded_at timestamptz;`)
-  await exec.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS supersede_conflicts jsonb NOT NULL DEFAULT '[]'::jsonb;`)
-  await exec.query(
-    `UPDATE cleaning_tasks
-        SET execution_state = CASE
-          WHEN lower(COALESCE(status, '')) IN ('cancelled','canceled') THEN 'cancelled'
-          ELSE 'active'
-        END
-      WHERE execution_state IS NULL
-         OR execution_state NOT IN ('active','superseded','cancelled')`,
-  )
-  await exec.query(`ALTER TABLE cleaning_tasks ALTER COLUMN execution_state SET DEFAULT 'active';`)
-  await exec.query(`ALTER TABLE cleaning_tasks ALTER COLUMN execution_state SET NOT NULL;`)
-  await exec.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_execution_state ON cleaning_tasks(execution_state);`)
-  await exec.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_active_lookup ON cleaning_tasks(property_id, task_date, task_type) WHERE execution_state = 'active';`)
+  // Compatibility shim for legacy callers outside R5-2A (notably Task Center).
+  // R5-2A HTTP paths use requireR5TaskRuntimeSchema after authorization, and
+  // workers warm the marker before work. Do not let this shared legacy name
+  // silently broaden the R5 marker failure boundary into deferred modules.
 }
 
 export async function bootstrapCleaningSyncSchemaV2(): Promise<void> {
-  if (!hasPg || !pgPool) return
-  if (schemaBootstrapped) return schemaBootstrapped
-  schemaBootstrapped = (async () => {
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_mode text;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_due_date date;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_replaced_by_checkin_task_id text;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_replaced_original_due_date date;`)
-    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_inspection_replacement_source ON cleaning_tasks(inspection_replaced_by_checkin_task_id) WHERE inspection_replaced_by_checkin_task_id IS NOT NULL;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS guest_special_request text;`)
-    await pgPool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
-    await ensureCleaningExecutionStateColumns()
-    schemaEnsured = null
-    await ensureCleaningSchemaV2()
-  })().catch((e) => {
-    schemaBootstrapped = null
-    throw e
-  })
-  return schemaBootstrapped
+  await ensureCleaningSchemaV2()
 }
 
 export async function logCleaningSync(params: {
