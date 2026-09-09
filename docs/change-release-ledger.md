@@ -229,7 +229,7 @@
 - Repository: `root`
 - Selected CRLs: `CRL-20260907-001`
 - Selected CRL identities: `root/CRL-20260907-001`
-- Intended action: `commit`
+- Intended action: `push`
 - Branch: `codex/r5-2a-realign-20260907`
 - Base: `origin/Dev@b0e54dd16afe67566cde8c987715e5283e622de2`; fetched at `2026-09-07T22:11:46+10:00` before the isolated worktree was created and re-fetched unchanged at `2026-09-07T22:45:16+10:00` before the commit decision.
 - Candidate patch SHA-256: `c1f439ac975109387596843a3daf65534e66fc034668f9ca0cc27c21ba653958` (current staged candidate excluding `docs/change-release-ledger.md`).
@@ -240,9 +240,9 @@
 - Shared-hunk review: `PASS`; 26 selected staged paths and 167 exact non-ledger hunk fingerprints match this CRL.
 - Generated-file review: `PASS`; temporary `backend/node_modules`, Mobile fixture and generated `backend/dist` output were removed; no untracked file remains.
 - Technical state: `committed`
-- User authorization: `selected-for-commit`; at `2026-09-07T22:58:05+10:00`, user authorized only the exact `root/CRL-20260907-001` candidate on `codex/r5-2a-realign-20260907` with non-ledger SHA-256 `c1f439ac975109387596843a3daf65534e66fc034668f9ca0cc27c21ba653958`. Push, PR, migration, deployment and production verification remain unapproved.
+- User authorization: `approved-for-push`; at `2026-09-09T12:50:22+10:00`, user explicitly authorized pushing the exact committed `root/CRL-20260907-001` range on `codex/r5-2a-realign-20260907` after the fresh `origin/Dev` check confirmed base `b0e54dd16afe67566cde8c987715e5283e622de2` and HEAD `d24cd87b5e11de577c10094602148aea96af84a0`. PR, migration, deployment and production verification remain unapproved.
 - Independent review: `GO for commit`; independent read-only reviewer recomputed the non-ledger fingerprint, confirmed the 26-file/167-hunk scope, no untracked/generated/sensitive path and no P0/P1. It verified that R5 task warmup is appended without replacing current Dev maintenance warmup/readiness. Review does not authorize push, PR, migration or deployment.
-- Action conclusion: `GO` for the stated local commit; completed as the candidate content commit above. Push remains separately unauthorized.
+- Action conclusion: `GO` for the stated push only; the branch must be pushed without force and its remote SHA verified afterward. PR, migration, deployment and production verification remain separately unauthorized.
 
 ### Risks / Release Notes
 
