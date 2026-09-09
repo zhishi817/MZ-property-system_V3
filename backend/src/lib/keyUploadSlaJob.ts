@@ -1,6 +1,7 @@
 import { pgPool, hasPg } from '../dbAdapter'
 import { listManagerUserIds } from '../modules/notifications'
 import { emitNotificationEvent } from '../services/notificationEvents'
+import { assertR5TaskRuntimeSchemaReady } from './r5RequestSchema'
 
 type Level = 'remind' | 'escalate'
 
@@ -11,43 +12,9 @@ function melbourneYmd(d: Date) {
   return `${m.year}-${m.month}-${m.day}`
 }
 
-async function ensureMzappAlertsTable() {
-  if (!hasPg || !pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS mzapp_alerts (
-    id text PRIMARY KEY,
-    kind text NOT NULL,
-    target_user_id text NOT NULL,
-    level text NOT NULL,
-    date date,
-    position integer,
-    payload jsonb NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    read_at timestamptz
-  );`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_mzapp_alerts_target_unread ON mzapp_alerts(target_user_id, read_at, created_at);`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_mzapp_alerts_kind ON mzapp_alerts(kind);`)
-  await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_mzapp_alerts_dedupe ON mzapp_alerts(kind, target_user_id, date, position, level);`)
-}
-
-async function ensureKeyUploadDeps() {
-  if (!hasPg || !pgPool) return
-  await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS key_photo_uploaded_at timestamptz`)
-  await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS sort_index_cleaner integer`)
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS cleaning_task_media (
-    id text primary key,
-    task_id text not null,
-    type text not null,
-    url text not null,
-    created_at timestamptz not null default now(),
-    note text
-  )`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_task_type ON cleaning_task_media(task_id, type)`)
-}
-
 export async function runKeyUploadSlaCheck(position: number, level: Level) {
   if (!hasPg || !pgPool) return { ok: false, skipped: 'no_pg' as const }
-  await ensureMzappAlertsTable()
-  await ensureKeyUploadDeps()
+  assertR5TaskRuntimeSchemaReady()
 
   const date = melbourneYmd(new Date())
 

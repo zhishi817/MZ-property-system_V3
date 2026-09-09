@@ -55,7 +55,7 @@ import { r2Status } from './r2'
 import { getPlaywrightDiagnostics } from './lib/playwright'
 import { runNotificationQueueCleanup, runNotificationQueueRecoveryOnce, startNotificationQueueWorker } from './services/notificationQueueWorker'
 import { bootstrapCleaningSyncSchemaV2 } from './services/cleaningSync'
-import { warmupR5RequestSchema } from './lib/r5RequestSchema'
+import { warmupR5RequestSchema, warmupR5TaskRuntimeSchema } from './lib/r5RequestSchema'
 import { warmupMaintenanceRuntimeSchema } from './lib/maintenanceRuntimeSchema'
  
  
@@ -115,6 +115,14 @@ const startupWarmupState: {
   steps?: StartupWarmupStepState[]
 } = { status: hasPg ? 'pending' : 'skipped' }
 let startupWarmupPromise: Promise<void> | null = null
+
+function areRequiredR5WarmupsReady() {
+  if (!hasPg) return true
+  const byName = new Map((startupWarmupState.steps || []).map((step) => [step.name, step.status]))
+  return byName.get('r5_request_schema') === 'ready'
+    && byName.get('r5_task_runtime_schema') === 'ready'
+}
+
 function numberEnv(name: string, fallback: number, min: number) {
   const raw = process.env[name]
   const value = raw === undefined || raw === '' ? fallback : Number(raw)
@@ -223,9 +231,15 @@ app.get('/health/ready', async (_req, res) => {
     const result: any = {
       status: 'ok',
       warmup: startupWarmupState,
+      r5_schema_ready: areRequiredR5WarmupsReady(),
       pg: false,
       pool: getPgPoolStats(),
       latency_ms: Date.now() - started,
+    }
+    if (!result.r5_schema_ready) {
+      result.status = 'not_ready'
+      result.latency_ms = Date.now() - started
+      return res.status(503).json(result)
     }
     if (pgPool) {
       const r = await pgPool.query('SELECT 1 AS ok')
@@ -1014,6 +1028,7 @@ async function runStartupWarmups() {
 
   const steps: Array<{ name: string; run: () => Promise<void> }> = [
     { name: 'r5_request_schema', run: warmupR5RequestSchema },
+    { name: 'r5_task_runtime_schema', run: warmupR5TaskRuntimeSchema },
     { name: 'maintenance_runtime_schema', run: warmupMaintenanceRuntimeSchema },
     { name: 'auth', run: warmupAuthModule },
     { name: 'cleaning_sync_schema', run: bootstrapCleaningSyncSchemaV2 },
