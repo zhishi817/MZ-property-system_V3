@@ -7,6 +7,57 @@
 - 测试映射必须说明保护点和测试场景；只登记测试文件名不算覆盖证据。
 - `sufficient` 表示当前测试覆盖该保护点；`partial` 表示已有测试但仍有缺口；`not-wired` 表示测试存在但尚未进入对应质量检查；`missing` 表示尚无测试。
 
+## FR-026：Property Guide 与已退休 Maintenance 路径不得在运行时修改 schema
+
+- **维护责任范围：** backend Property Guide admin/public/link-sync；已确认无调用者的 Maintenance legacy helper
+- **最后审查日期：** 2026-09-10
+- **状态：** active
+
+### 业务保护规则
+
+- `property_guides`、`property_guide_revisions`、`property_guide_public_links`、`property_guide_public_sessions` 与 `property_guide_link_sync_logs` 及本组索引只能由 `20260910_r5_2b_property_guides_schema` migration 建立或演进；管理端、公开指南、任务列表链接解析和链接同步不得执行 `CREATE`、`ALTER`、`DROP` 或 schema repair。
+- 进程启动只读取一次固定 R5-2B marker。marker 缺失或启动检查失败时，已有权限检查通过后的 Guide admin/link-sync API 与格式已验证的公开指南 API 返回 `503 { code: 'property_guide_runtime_schema_not_ready' }`；不得回退 runtime DDL。
+- Mobile/Web 任务列表的 `resolvePropertyPublicGuideLinks()` 在 marker 未就绪时只保留既有 `properties.access_guide_link` fallback，不查询 Guide 表，也不得让缺 marker 造成整个任务列表为空。
+- 历史 `property_guide_public_links.token_enc IS NULL` 代表不可逆的旧链接数据。迁移只保留可空字段，绝不自动重建、撤销或更换该链接；现有 stored-link fallback 保持原样。
+- `public_access` 的 Guide 密码读取继续使用现有只读列契约和既有首次业务数据初始化，不在本 FR 中重定义其 schema。Maintenance 的已退休 foundation/work-task/progress helpers 不能再以“兼容”名义保留 runtime DDL；现有 `20260903_maintenance_runtime_schema` 仍是其正式 schema owner。
+
+### 跨层适用范围
+
+- **后端：** `/property-guides`、`/property-guide-link-sync`、`/public/guide/p/:token`、`/cleaning-app/tasks` 与 `/mzapp/work-tasks` 的 Guide 链接解析。
+- **数据库：** `backend/scripts/migrations/20260910_r5_2b_property_guides_schema.sql`；启动期 `schema_migrations` marker 是 Guide schema 的唯一 readiness 读取。
+- **一致性：** Guide revision/copy/publish/public-session 和 link-sync 业务语义保持不变；生产预检确认的 0 个重复 property 记录与 3 条缺 `token_enc` 历史链接不在 source migration 中被数据改写。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| migration owns canonical Guide schema、backfill、duplicate reconciliation 与 marker 顺序 | `backend/scripts/tests/test_r5_2b_property_guide_schema_contract.ts` | 静态验证所有 Guide table/index、可空 `token_enc`、marker 最后写入 | sufficient | `npm run test:r5-property-guide-runtime-schema --prefix backend` |
+| admin/public/link-sync 无 runtime DDL、503 与 task-list fallback | `backend/scripts/tests/test_r5_2b_property_guide_schema_contract.ts` | 验证 startup marker、Guide API 受控失败、link resolver fallback、legacy Maintenance helper removal | sufficient | `npm run test:r5-property-guide-runtime-schema --prefix backend` |
+| Guide 链接 URL 工具语义 | `backend/scripts/test_guide_link_sync_utils.ts` | 保留 public URL 组合与来源处理 | partial | `npm run test:guide-link-sync --prefix backend` |
+
+### 验证策略
+
+- **本地：** R5-2B static contract、Guide link utility、R5-1/R5-2A/Maintenance regression contracts 与 backend TypeScript build；不连接数据库。
+- **部署前：** 单独授权执行目标数据库 migration，确认 marker、Guide canonical columns/indexes 与历史 `token_enc` NULL 数量；随后才允许部署应用。
+- **部署后：** 对 Guide admin/public/sync 和 task-list refresh 抓取 SQL。上述运行路径的 `CREATE` / `ALTER` / `CREATE INDEX` 必须为零；任务列表 fallback 与既有 public-link token/session 流程需手工确认。
+
+### 最后验证
+
+- **CRL：** root/CRL-20260910-001
+- **Commit：** not committed
+- **日期：** 2026-09-10
+
+### 相关 CRL
+
+- root/CRL-20260902-002：R5-1 request schema marker 前置依赖。
+- root/CRL-20260909-002：R5-2A core task runtime schema boundary。
+- root/CRL-20260910-001：本次 R5-2B source candidate。
+
+### 非保护范围
+
+- CMS、Deep Cleaning、Inventory、CRUD、Finance、Orders、Invoices、其他 `public_access` 调用者，以及未列出的 R5-2C inventory。
+- 未经单独授权的数据库 migration、Render 部署、生产数据写入、Mobile OTA 或真实设备验证。
+
 ## FR-025：核心任务事件、参与人和 RBAC 运行路径不得修改 schema
 
 - **维护责任范围：** backend task events / cleaning task routes / MZapp / RBAC

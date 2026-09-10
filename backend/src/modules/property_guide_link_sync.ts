@@ -5,8 +5,19 @@ import { requireAnyPerm } from '../auth'
 import { hasPg, pgPool, pgRunInTransaction } from '../dbAdapter'
 import { addAudit } from '../store'
 import { buildPublicGuideUrl, pickPublicBaseUrl } from '../lib/guideLinkSyncUtils'
+import {
+  assertPropertyGuideRuntimeSchemaReady,
+  isPropertyGuideRuntimeSchemaReady,
+  PropertyGuideRuntimeSchemaNotReady,
+} from '../lib/propertyGuideRuntimeSchema'
 
 export const router = Router()
+
+function sendPropertyGuideRuntimeSchemaNotReady(res: any, error: unknown) {
+  if (!(error instanceof PropertyGuideRuntimeSchemaNotReady)) return false
+  res.status(error.status).json({ code: error.code })
+  return true
+}
 
 type SyncMode = 'realtime' | 'batch' | 'manual'
 type SyncStatus = 'success' | 'failed' | 'skipped'
@@ -46,7 +57,7 @@ export async function resolvePropertyPublicGuideLinks(entries: Array<{ propertyI
   }
   const out = new Map(fallbackById)
   const ids = Array.from(fallbackById.keys())
-  if (!hasPg || !pgPool || !ids.length) return out
+  if (!hasPg || !pgPool || !ids.length || !isPropertyGuideRuntimeSchemaReady()) return out
   try {
     const result = await pgPool.query(
       `SELECT DISTINCT ON (g.property_id) g.property_id::text AS property_id, l.token_enc
@@ -78,25 +89,6 @@ export async function resolvePropertyPublicGuideLink(propertyId: string, fallbac
   if (!id) return normalizeStoredGuideLink(fallbackLink) || null
   const links = await resolvePropertyPublicGuideLinks([{ propertyId: id, fallbackLink }])
   return links.get(id) || null
-}
-
-async function ensureSyncLogsTable() {
-  if (!hasPg || !pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_guide_link_sync_logs (
-    id bigserial PRIMARY KEY,
-    synced_at timestamptz NOT NULL DEFAULT now(),
-    mode text NOT NULL,
-    status text NOT NULL,
-    source_property_id text,
-    target_property_id text,
-    guide_id text,
-    token_hash text,
-    old_link text,
-    new_link text,
-    error_message text
-  );`)
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_pgls_target ON property_guide_link_sync_logs(target_property_id, synced_at DESC);')
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_pgls_status ON property_guide_link_sync_logs(status, synced_at DESC);')
 }
 
 async function notifyFailure(payload: any) {
@@ -133,7 +125,7 @@ export async function syncPropertyAccessGuideLink({
   actorId?: string
 }) {
   if (!hasPg || !pgPool) throw new Error('no database configured')
-  await ensureSyncLogsTable()
+  assertPropertyGuideRuntimeSchemaReady()
 
   const baseUrl = pickPublicBaseUrl(reqOrigin)
   const newLink = token ? buildPublicGuideUrl(token, baseUrl) : ''
@@ -240,7 +232,7 @@ router.post('/run', requireAnyPerm(['property.write', 'property_guides.write', '
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensureSyncLogsTable()
+    assertPropertyGuideRuntimeSchemaReady()
     const includeArchived = !!parsed.data.include_archived
     const ids = Array.isArray(parsed.data.property_ids) ? parsed.data.property_ids.map((x) => String(x).trim()).filter(Boolean) : []
     const limit = parsed.data.limit ?? 500
@@ -292,6 +284,7 @@ router.post('/run', requireAnyPerm(['property.write', 'property_guides.write', '
     const skippedCount = out.filter((x) => x?.status === 'skipped').length
     return res.json({ ok: true, total: out.length, success: okCount, failed: failCount, skipped: skippedCount, items: out })
   } catch (e: any) {
+    if (sendPropertyGuideRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'run failed' })
   }
 })
@@ -300,11 +293,13 @@ router.post('/trigger/:propertyId', requireAnyPerm(['property.write', 'property_
   const propertyId = String((req.params as any)?.propertyId || '').trim()
   if (!propertyId) return res.status(400).json({ message: 'missing propertyId' })
   try {
+    assertPropertyGuideRuntimeSchemaReady()
     const actor = (req as any)?.user?.sub || null
     const origin = String(req.headers.origin || '')
     const r = await syncPropertyAccessGuideLink({ propertyId, mode: 'manual', reqOrigin: origin, actorId: actor || undefined })
     return res.json(r)
   } catch (e: any) {
+    if (sendPropertyGuideRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'trigger failed' })
   }
 })
@@ -312,7 +307,7 @@ router.post('/trigger/:propertyId', requireAnyPerm(['property.write', 'property_
 router.get('/logs', requireAnyPerm(['property_guides.view', 'property.write', 'rbac.manage']), async (req, res) => {
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensureSyncLogsTable()
+    assertPropertyGuideRuntimeSchemaReady()
     const q: any = req.query || {}
     const propertyId = q.property_id ? String(q.property_id).trim() : ''
     const limit = Math.max(1, Math.min(500, Number(q.limit || 50)))
@@ -323,6 +318,7 @@ router.get('/logs', requireAnyPerm(['property_guides.view', 'property.write', 'r
     const r = await pgPool!.query('SELECT * FROM property_guide_link_sync_logs ORDER BY synced_at DESC, id DESC LIMIT $1', [limit])
     return res.json(r?.rows || [])
   } catch (e: any) {
+    if (sendPropertyGuideRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'list logs failed' })
   }
 })
@@ -330,7 +326,7 @@ router.get('/logs', requireAnyPerm(['property_guides.view', 'property.write', 'r
 router.get('/status', requireAnyPerm(['property_guides.view', 'property.write', 'rbac.manage']), async (req, res) => {
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensureSyncLogsTable()
+    assertPropertyGuideRuntimeSchemaReady()
     const propertyId = String((req.query as any)?.property_id || '').trim()
     if (!propertyId) return res.status(400).json({ message: 'missing property_id' })
     const origin = String(req.headers.origin || '')
@@ -371,6 +367,7 @@ router.get('/status', requireAnyPerm(['property_guides.view', 'property.write', 
       active_token_hash: row?.token_hash || null,
     })
   } catch (e: any) {
+    if (sendPropertyGuideRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'status failed' })
   }
 })

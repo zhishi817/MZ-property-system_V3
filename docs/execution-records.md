@@ -1,5 +1,44 @@
 # Execution Records
 
+## 执行R5-2B
+
+- Date: 2026-09-10
+- Task: 执行R5-2B
+- Status: implemented
+
+### Confirmed Plan
+
+- 仅将 Property Guide admin/public/link-sync 的 runtime DDL 迁移为正式 migration 与启动期 marker；保留任务列表 stored-link fallback 与历史空 `token_enc` 数据。
+- 删除无调用者或固定 410 后的 Maintenance legacy DDL helper；不重定义已由正式 migration 覆盖的 Maintenance schema。
+- 在干净 `origin/Dev@d3900127718e6f933ff6672573225eae5cba2ada` 候选中验证；不执行数据库 migration、Render 部署、提交、推送或移动端发布。
+
+### Implementation Result
+
+- 新增 `20260910_r5_2b_property_guides_schema` migration 与 `propertyGuideRuntimeSchema` startup marker。Guide admin/public/sync 现在读取内存 readiness，正常请求不再执行 Guide DDL。
+- marker 未就绪时 Guide API 返回 `property_guide_runtime_schema_not_ready`；任务列表链接解析直接保留既有 stored link fallback，避免影响整个任务列表。
+- 生产只读预检结果已保留为 source 约束：无重复 Guide property，3 条历史 public link 缺少不可逆 `token_enc`；本轮不修改这些记录。
+- 已移除 Maintenance foundation/work-task/progress schema helper 与 legacy path 内 DDL；CMS、Deep Cleaning、Inventory、Finance、Orders、Invoices 和 Mobile UI 未改动。
+
+### Validation
+
+- Isolated `npm ci --prefix backend`、R5-2B static contract、Guide link utility、R5-1/R5-2A/Maintenance static contracts及 backend TypeScript build 均通过。
+- 本轮未执行数据库 migration、Render 部署、生产 SQL 写入、真实 Web/Mobile smoke test、commit、push、PR 或 merge。
+
+### Files / Areas
+
+- `backend/scripts/migrations/20260910_r5_2b_property_guides_schema.sql`
+- `backend/src/lib/propertyGuideRuntimeSchema.ts`
+- `backend/src/modules/property_guides.ts`
+- `backend/src/modules/property_guide_link_sync.ts`
+- `backend/src/modules/public.ts`
+- `backend/src/lib/maintenanceWorkflowSchema.ts`
+- `backend/src/lib/maintenanceWorkflowStore.ts`
+
+### Open Issues / Follow-ups
+
+- 下一阶段需单独授权 production migration，并先确认 migration marker、canonical Guide schema 与 3 条历史 `token_enc` NULL 不变，再部署 Render。
+- 提交前仍需运行最终 ledger/feature registry audit、精确 diff 审查和独立只读 release review。
+
 ## 维修任务中心与分享/PDF 请求时 schema 收口
 
 - Date: 2026-09-04
