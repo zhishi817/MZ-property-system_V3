@@ -137,6 +137,26 @@
 - Independent review: `GO for commit`; evidence: independent read-only review recomputed the candidate fingerprint, inspected all 14 staged files / 70 non-ledger hunks, migration/marker/Guide public fallback/Maintenance removal and found no P0/P1. Accepted P2: `public_access` retains an excluded read-only capability query.
 - Action conclusion: `GO`; blockers: none. The independently reviewed content candidate committed as `15180c581297952148cf7a437725319149ad2a5d`; push, PR, merge, migration, deployment and production verification remain unapproved.
 
+#### RA-20260910-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260910-001`
+- Selected CRL identities: `root/CRL-20260910-001`
+- Intended action: `push`
+- Branch: `codex/r5-2b-property-guides-20260910`
+- Base: `origin/Dev@d3900127718e6f933ff6672573225eae5cba2ada`; fetched at `2026-09-10T04:55:44Z` and confirmed unchanged.
+- Candidate patch SHA-256: `d2d2d917af23b892d222cdf207bebbc0ef592ec1dad5138bfddd85eb81535b58` excluding `docs/change-release-ledger.md`
+- Commit SHA: `15180c581297952148cf7a437725319149ad2a5d` (candidate content commit); current receipt head before this staged push-attempt record is `0b8fad7b48f8727495e511f8dcfe855650ab06b6`.
+- Dependencies: `root/CRL-20260902-002@9ab11cb26a7ad8aa321feffe82fdab550bbe849d`; `root/CRL-20260909-002@a04f3a75e2ceb2b8b8715b8df35695bc543d894d`
+- Required validation: `PASS`; evidence: prior commit candidate validation, independent commit review and exact committed-range report passed with unchanged source content.
+- Shared-hunk review: `PASS`; evidence: exact committed source range has only this CRL's 14 selected paths and 70 non-ledger hunk fingerprints.
+- Generated-file review: `PASS`; evidence: no generated/cache/dependency/lockfile/sensitive path is in the candidate range.
+- Technical state: `committed`
+- Remote preflight: `PASS`; evidence: fresh `origin/Dev` still equals the recorded base and `refs/heads/codex/r5-2b-property-guides-20260910` was absent.
+- User authorization: `approved-for-push`; evidence: after receiving branch `codex/r5-2b-property-guides-20260910`, content commit `15180c581297952148cf7a437725319149ad2a5d` and current receipt head `0b8fad7b48f8727495e511f8dcfe855650ab06b6`, the user instructed “先推送”. This authorizes only a non-force push of the unchanged content commit and branch.
+- Independent review: `GO for ledger-only push receipt and non-force push`; evidence: independent read-only review verified the staged RA-002 binding, unchanged source fingerprint, clean source range, fresh base and absent remote branch; no P0/P1. Accepted P2: excluded `public_access` read-only capability check.
+- Action conclusion: `GO`; blockers: none. This authorizes committing this ledger-only push-attempt receipt and non-force pushing the unchanged content commit/range; PR, merge, migration, deployment and production verification remain unapproved.
+
 ### Risks / Release Notes
 
 - Deployment order is mandatory: controlled migration → marker/structure confirmation → Render deployment → Guide admin/public/task-list smoke verification. Reversing it correctly produces Guide-only 503 responses.
