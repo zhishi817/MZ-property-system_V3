@@ -127,15 +127,15 @@
 - Branch: `codex/r5-2b-property-guides-20260910`
 - Base: `origin/Dev@d3900127718e6f933ff6672573225eae5cba2ada`; fetched at `2026-09-10T04:50:22Z`
 - Candidate patch SHA-256: `d2d2d917af23b892d222cdf207bebbc0ef592ec1dad5138bfddd85eb81535b58` excluding `docs/change-release-ledger.md`
-- Commit SHA: `not committed`
+- Commit SHA: `15180c581297952148cf7a437725319149ad2a5d` (candidate content commit)
 - Dependencies: `root/CRL-20260902-002`, `root/CRL-20260909-002`
 - Required validation: `PASS`; evidence: R5-2B、Guide link、R5-1、R5-2A、Maintenance contract tests and backend build passed in the isolated candidate.
 - Shared-hunk review: `PASS`; evidence: clean current-Dev candidate has one selected CRL and no unselected candidate hunk.
 - Generated-file review: `PASS`; evidence: generated `backend/dist` output was restored and is not staged.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user instruction “先独立复审并提交 R5-2B 源码”.
 - Independent review: `GO for commit`; evidence: independent read-only review recomputed the candidate fingerprint, inspected all 14 staged files / 70 non-ledger hunks, migration/marker/Guide public fallback/Maintenance removal and found no P0/P1. Accepted P2: `public_access` retains an excluded read-only capability query.
-- Action conclusion: `GO`; blockers: none. This conclusion authorizes only the reviewed local content commit; push, PR, merge, migration, deployment and production verification remain unapproved.
+- Action conclusion: `GO`; blockers: none. The independently reviewed content candidate committed as `15180c581297952148cf7a437725319149ad2a5d`; push, PR, merge, migration, deployment and production verification remain unapproved.
 
 ### Risks / Release Notes
 
