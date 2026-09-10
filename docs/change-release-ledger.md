@@ -132,7 +132,8 @@
 - Required validation: `PASS`; evidence: R5-2B、Guide link、R5-1、R5-2A、Maintenance contract tests and backend build passed in the isolated candidate.
 - Shared-hunk review: `PASS`; evidence: clean current-Dev candidate has one selected CRL and no unselected candidate hunk.
 - Generated-file review: `PASS`; evidence: generated `backend/dist` output was restored and is not staged.
-- Technical state: `committed`
+- Technical state: `pushed`
+- Remote branch: `origin/codex/r5-2b-property-guides-20260910@44bb4d898dba2845e53cbf951974a47e82a28246`; initial non-force push completed and `git ls-remote` matched at 2026-09-10T04:59Z. This ledger-only outcome receipt will be fast-forwarded on the same branch.
 - User authorization: `selected-for-commit`; evidence: user instruction “先独立复审并提交 R5-2B 源码”.
 - Independent review: `GO for commit`; evidence: independent read-only review recomputed the candidate fingerprint, inspected all 14 staged files / 70 non-ledger hunks, migration/marker/Guide public fallback/Maintenance removal and found no P0/P1. Accepted P2: `public_access` retains an excluded read-only capability query.
 - Action conclusion: `GO`; blockers: none. The independently reviewed content candidate committed as `15180c581297952148cf7a437725319149ad2a5d`; push, PR, merge, migration, deployment and production verification remain unapproved.
@@ -155,7 +156,7 @@
 - Remote preflight: `PASS`; evidence: fresh `origin/Dev` still equals the recorded base and `refs/heads/codex/r5-2b-property-guides-20260910` was absent.
 - User authorization: `approved-for-push`; evidence: after receiving branch `codex/r5-2b-property-guides-20260910`, content commit `15180c581297952148cf7a437725319149ad2a5d` and current receipt head `0b8fad7b48f8727495e511f8dcfe855650ab06b6`, the user instructed “先推送”. This authorizes only a non-force push of the unchanged content commit and branch.
 - Independent review: `GO for ledger-only push receipt and non-force push`; evidence: independent read-only review verified the staged RA-002 binding, unchanged source fingerprint, clean source range, fresh base and absent remote branch; no P0/P1. Accepted P2: excluded `public_access` read-only capability check.
-- Action conclusion: `GO`; blockers: none. This authorizes committing this ledger-only push-attempt receipt and non-force pushing the unchanged content commit/range; PR, merge, migration, deployment and production verification remain unapproved.
+- Action conclusion: `GO`; blockers: none. The authorized non-force push reached `origin/codex/r5-2b-property-guides-20260910@44bb4d898dba2845e53cbf951974a47e82a28246`; the initial remote SHA matched the audited local head. This ledger-only outcome receipt will be fast-forwarded; PR, merge, migration, deployment and production verification remain unapproved.
 
 ### Risks / Release Notes
 
