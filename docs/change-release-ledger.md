@@ -128,7 +128,7 @@
 - Base: `origin/Dev@d3900127718e6f933ff6672573225eae5cba2ada`; fetched at `2026-09-10T04:50:22Z`
 - Candidate patch SHA-256: `d2d2d917af23b892d222cdf207bebbc0ef592ec1dad5138bfddd85eb81535b58` excluding `docs/change-release-ledger.md`
 - Commit SHA: `15180c581297952148cf7a437725319149ad2a5d` (candidate content commit)
-- Dependencies: `root/CRL-20260902-002`, `root/CRL-20260909-002`
+- Dependencies: `root/CRL-20260902-002@9ab11cb26a7ad8aa321feffe82fdab550bbe849d`; `root/CRL-20260909-002@a04f3a75e2ceb2b8b8715b8df35695bc543d894d`
 - Required validation: `PASS`; evidence: R5-2B、Guide link、R5-1、R5-2A、Maintenance contract tests and backend build passed in the isolated candidate.
 - Shared-hunk review: `PASS`; evidence: clean current-Dev candidate has one selected CRL and no unselected candidate hunk.
 - Generated-file review: `PASS`; evidence: generated `backend/dist` output was restored and is not staged.
