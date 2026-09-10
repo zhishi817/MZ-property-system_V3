@@ -57,6 +57,7 @@ import { runNotificationQueueCleanup, runNotificationQueueRecoveryOnce, startNot
 import { bootstrapCleaningSyncSchemaV2 } from './services/cleaningSync'
 import { warmupR5RequestSchema, warmupR5TaskRuntimeSchema } from './lib/r5RequestSchema'
 import { warmupMaintenanceRuntimeSchema } from './lib/maintenanceRuntimeSchema'
+import { warmupPropertyGuideRuntimeSchema } from './lib/propertyGuideRuntimeSchema'
  
  
 // 环境保险锁（Render 上用 RENDER_ENV=dev/prod 显式区分，避免误判）
@@ -1030,6 +1031,7 @@ async function runStartupWarmups() {
     { name: 'r5_request_schema', run: warmupR5RequestSchema },
     { name: 'r5_task_runtime_schema', run: warmupR5TaskRuntimeSchema },
     { name: 'maintenance_runtime_schema', run: warmupMaintenanceRuntimeSchema },
+    { name: 'property_guide_runtime_schema', run: warmupPropertyGuideRuntimeSchema },
     { name: 'auth', run: warmupAuthModule },
     { name: 'cleaning_sync_schema', run: bootstrapCleaningSyncSchemaV2 },
     { name: 'mzapp', run: warmupMzappModule },

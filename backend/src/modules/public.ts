@@ -13,6 +13,7 @@ import { resizeUploadImage } from '../lib/uploadImageResize'
 import { isAllowedR2ImageKey } from '../lib/r2ImageProxyPolicy'
 import { assertMaintenanceWorkflowSchemaReady } from '../lib/maintenanceWorkflowSchema'
 import { assertMaintenanceShareLinksSchemaReady, MaintenanceRuntimeSchemaNotReady } from '../lib/maintenanceRuntimeSchema'
+import { assertPropertyGuideRuntimeSchemaReady, PropertyGuideRuntimeSchemaNotReady } from '../lib/propertyGuideRuntimeSchema'
 
 const SECRET = process.env.JWT_SECRET || 'dev-secret'
 const DEFAULT_PUBLIC_CLEANING_PASSWORD = process.env.PUBLIC_CLEANING_PASSWORD || 'mz-cleaning'
@@ -25,7 +26,6 @@ const DEFAULT_PUBLIC_PROPERTY_GUIDE_PASSWORD = process.env.PROPERTY_GUIDE_PUBLIC
 
 export const router = Router()
 const upload = multer({ storage: multer.memoryStorage() })
-let ensureMaintenanceProgressSubmitSchemaPromise: Promise<void> | null = null
 
 function rejectLegacyMaintenanceWrite(res: any, code: string) {
   res.status(410).json({ code })
@@ -194,6 +194,12 @@ function sendMaintenanceRuntimeSchemaNotReady(res: any, error: unknown) {
   return true
 }
 
+function sendPropertyGuideRuntimeSchemaNotReady(res: any, error: unknown) {
+  if (!(error instanceof PropertyGuideRuntimeSchemaNotReady)) return false
+  res.status(error.status).json({ code: error.code })
+  return true
+}
+
 async function ensureCmsPagesTable() {
   if (!pgPool) return
   await pgPool.query(`CREATE TABLE IF NOT EXISTS cms_pages (
@@ -340,7 +346,7 @@ async function getOrInitPropertyExpenseAccess(): Promise<{ area: string; passwor
 async function getOrInitPropertyGuideAccess(): Promise<{ area: string; password_hash: string; password_updated_at: string } | null> {
   try {
     if (hasPg) {
-      await ensurePublicAccessTable()
+      await assertPublicAccessTableReady()
       const rows = await pgSelect('public_access', '*', { area: 'property_guide' }) as any[]
       const existing = rows && rows[0]
       if (existing) return existing
@@ -480,111 +486,6 @@ async function ensureDeepCleaningShareLinksTable() {
   );`)
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_deep_cleaning_share_mid ON deep_cleaning_share_links(deep_cleaning_id);')
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_deep_cleaning_share_expires ON deep_cleaning_share_links(expires_at);')
-}
-
-async function ensurePropertyGuidePublicLinksTable() {
-  if (!pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_guides (
-    id text PRIMARY KEY,
-    property_id text NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
-    language text NOT NULL,
-    version text NOT NULL,
-    status text NOT NULL,
-    content_json jsonb,
-    created_by text,
-    updated_by text,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz,
-    published_at timestamptz
-  );`)
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guides_property_id ON property_guides(property_id);')
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guides_lang ON property_guides(property_id, language);')
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guides_status ON property_guides(status);')
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_guide_public_links (
-    token_hash text PRIMARY KEY,
-    guide_id text NOT NULL REFERENCES property_guides(id) ON DELETE CASCADE,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    expires_at timestamptz,
-    revoked_at timestamptz
-  );`)
-  try { await pgPool.query('ALTER TABLE property_guide_public_links ALTER COLUMN expires_at DROP NOT NULL') } catch {}
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guide_links_guide_id ON property_guide_public_links(guide_id);')
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guide_links_expires_at ON property_guide_public_links(expires_at);')
-}
-
-async function ensurePropertyGuidePublicSessionsTable() {
-  if (!pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_guide_public_sessions (
-    session_id_hash text PRIMARY KEY,
-    token_hash text NOT NULL REFERENCES property_guide_public_links(token_hash) ON DELETE CASCADE,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    expires_at timestamptz NOT NULL,
-    revoked_at timestamptz
-  );`)
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guide_sessions_token_hash ON property_guide_public_sessions(token_hash);')
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guide_sessions_expires_at ON property_guide_public_sessions(expires_at);')
-}
-
-async function ensurePropertyMaintenanceShareColumns() {
-  if (!pgPool) return
-  await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;`)
-  await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS status text;`)
-  await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS urgency text;`)
-  await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS assignee_id text;`)
-  await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS eta date;`)
-  await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS completed_at timestamptz;`)
-  await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitted_at timestamptz;`)
-  await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_notes text;`)
-  await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;`)
-  await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount numeric;`)
-  await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS has_parts boolean;`)
-  await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS parts_amount numeric;`)
-  await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_method text;`)
-  await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_other_note text;`)
-  await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;`)
-}
-
-async function ensureMaintenanceProgressSubmitSchema() {
-  if (!pgPool) return
-  if (ensureMaintenanceProgressSubmitSchemaPromise) return ensureMaintenanceProgressSubmitSchemaPromise
-  ensureMaintenanceProgressSubmitSchemaPromise = (async () => {
-    await ensurePropertyMaintenanceShareColumns()
-    await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
-    await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS worker_name text;`)
-    await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS occurred_at date;`)
-    const c = await pgPool!.query(
-      `SELECT data_type, udt_name
-       FROM information_schema.columns
-       WHERE table_schema = 'public'
-         AND table_name = 'property_maintenance'
-         AND column_name = 'photo_urls'
-       LIMIT 1`
-    )
-    const dataType = String(c?.rows?.[0]?.data_type || '')
-    const udtName = String(c?.rows?.[0]?.udt_name || '')
-    const isTextArray = dataType === 'ARRAY' && udtName === '_text'
-    if (!isTextArray) {
-      await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls_text text[];`)
-      await pgPool!.query(`UPDATE property_maintenance SET photo_urls_text = ARRAY[]::text[] WHERE photo_urls_text IS NULL;`)
-      await pgPool!.query(`
-        UPDATE property_maintenance
-        SET photo_urls_text = ARRAY(SELECT jsonb_array_elements_text(to_jsonb(photo_urls)))
-        WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'array'
-      `)
-      await pgPool!.query(`
-        UPDATE property_maintenance
-        SET photo_urls_text = ARRAY[trim(both '"' from to_jsonb(photo_urls)::text)]
-        WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'string'
-      `)
-      await pgPool!.query(`ALTER TABLE property_maintenance DROP COLUMN photo_urls;`)
-      await pgPool!.query(`ALTER TABLE property_maintenance RENAME COLUMN photo_urls_text TO photo_urls;`)
-      await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
-    }
-  })().catch((e) => {
-    ensureMaintenanceProgressSubmitSchemaPromise = null
-    throw e
-  })
-  return ensureMaintenanceProgressSubmitSchemaPromise
 }
 
 async function ensurePropertyDeepCleaningShareColumns() {
@@ -833,54 +734,6 @@ router.post('/repair/report', async (req, res) => {
   if (item_type === 'appliance' && (!labelPhotos || labelPhotos.length === 0)) return res.status(400).json({ message: 'appliance requires label photos' })
   try {
     if (hasPg) {
-      // ensure property_maintenance columns exist
-      await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;`)
-      await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS status text;`)
-      await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS urgency text;`)
-      await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS assignee_id text;`)
-      await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS eta date;`)
-      await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS completed_at timestamptz;`)
-      await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitted_at timestamptz;`)
-      await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitter_name text;`)
-      await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_notes text;`)
-      await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;`)
-      await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS item_type text;`)
-      await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS label_photo_urls jsonb;`)
-      await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;`)
-      const pool = pgPool!
-      await pool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
-      try {
-        const c = await pool.query(
-          `SELECT data_type, udt_name
-           FROM information_schema.columns
-           WHERE table_schema = 'public'
-             AND table_name = 'property_maintenance'
-             AND column_name = 'photo_urls'
-           LIMIT 1`
-        )
-        const dataType = String(c?.rows?.[0]?.data_type || '')
-        const udtName = String(c?.rows?.[0]?.udt_name || '')
-        const isTextArray = dataType === 'ARRAY' && udtName === '_text'
-        if (!isTextArray) {
-          await pool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls_text text[];`)
-          await pool.query(`UPDATE property_maintenance SET photo_urls_text = ARRAY[]::text[] WHERE photo_urls_text IS NULL;`)
-          await pool.query(`
-            UPDATE property_maintenance
-            SET photo_urls_text = ARRAY(SELECT jsonb_array_elements_text(to_jsonb(photo_urls)))
-            WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'array'
-          `)
-          await pool.query(`
-            UPDATE property_maintenance
-            SET photo_urls_text = ARRAY[trim(both '"' from to_jsonb(photo_urls)::text)]
-            WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'string'
-          `)
-          await pool.query(`ALTER TABLE property_maintenance DROP COLUMN photo_urls;`)
-          await pool.query(`ALTER TABLE property_maintenance RENAME COLUMN photo_urls_text TO photo_urls;`)
-          await pool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
-        }
-      } catch (e: any) {
-        return res.status(500).json({ message: String(e?.message || 'photo_urls type migration failed') })
-      }
       const id = uuidv4()
       const workNo = await generateWorkNo()
       const sql = `INSERT INTO property_maintenance (id, property_id, occurred_at, worker_name, details, created_by, photo_urls, label_photo_urls, item_type, property_code, work_no, area, status, urgency, assignee_id, eta, submitted_at, submitter_name)
@@ -1076,7 +929,6 @@ router.post('/maintenance-progress/submit', async (req, res) => {
     const iatSec = Number(v.iat || 0) * 1000
     const pwdAt = new Date(access.password_updated_at).getTime()
     if (iatSec < pwdAt) return res.status(401).json({ message: 'token invalidated' })
-    await ensureMaintenanceProgressSubmitSchema()
     const pool = pgPool
     if (!pool) return res.status(500).json({ message: 'no database configured' })
     const propRow = await pool.query(`SELECT code FROM properties WHERE id = $1 LIMIT 1`, [property_id])
@@ -1812,7 +1664,7 @@ router.get('/guide/p/:token/status', async (req, res) => {
   if (!token || token.length < 32) return res.status(404).json({ message: 'not found' })
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensurePropertyGuidePublicLinksTable()
+    assertPropertyGuideRuntimeSchemaReady()
     const tokenHash = sha256Hex(token)
     const r = await pgPool.query(
       `SELECT l.expires_at, l.revoked_at, g.language, g.version
@@ -1829,6 +1681,7 @@ router.get('/guide/p/:token/status', async (req, res) => {
     const expired = expires_at ? (new Date(expires_at).getTime() <= Date.now()) : false
     return res.json({ active: !revoked && !expired, expires_at, revoked, language: row?.language || null, version: row?.version || null })
   } catch (e: any) {
+    if (sendPropertyGuideRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'status failed' })
   }
 })
@@ -1840,12 +1693,12 @@ router.post('/guide/p/:token/login', async (req, res) => {
   if (!/^\d{4,6}$/.test(password)) return res.status(400).json({ message: 'password must be 4-6 digits' })
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    assertPropertyGuideRuntimeSchemaReady()
     const access = await getOrInitPropertyGuideAccess()
     if (!access) return res.status(500).json({ message: 'access not configured' })
     const ok = await bcrypt.compare(password, access.password_hash)
     if (!ok) return res.status(401).json({ message: 'invalid password' })
 
-    await ensurePropertyGuidePublicLinksTable()
     const tokenHash = sha256Hex(token)
     const r = await pgPool.query(
       `SELECT l.expires_at, l.revoked_at, g.id AS guide_id, g.status
@@ -1862,7 +1715,6 @@ router.post('/guide/p/:token/login', async (req, res) => {
     if (linkExpiresAt != null && linkExpiresAt <= Date.now()) return res.status(404).json({ message: 'not found' })
     if (String(row?.status || '') !== 'published') return res.status(404).json({ message: 'not found' })
 
-    await ensurePropertyGuidePublicSessionsTable()
     const now = Date.now()
     const maxMs = 12 * 3600 * 1000
     const sessionExpiresMs = linkExpiresAt != null ? Math.min(now + maxMs, linkExpiresAt) : (now + maxMs)
@@ -1884,6 +1736,7 @@ router.post('/guide/p/:token/login', async (req, res) => {
     })
     return res.json({ ok: true, expires_at: sessionExpiresAt, session_id: sessionId })
   } catch (e: any) {
+    if (sendPropertyGuideRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'login failed' })
   }
 })
@@ -1893,8 +1746,7 @@ router.get('/guide/p/:token', async (req, res) => {
   if (!token || token.length < 32) return res.status(404).json({ message: 'not found' })
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensurePropertyGuidePublicLinksTable()
-    await ensurePropertyGuidePublicSessionsTable()
+    assertPropertyGuideRuntimeSchemaReady()
     const tokenHash = sha256Hex(token)
     const r = await pgPool.query(
       `SELECT l.expires_at, l.revoked_at, g.id AS guide_id, g.property_id, g.language, g.version, g.content_json, g.status
@@ -1958,6 +1810,7 @@ router.get('/guide/p/:token', async (req, res) => {
       session_expires_at: new Date(sessExpiresAt).toISOString(),
     })
   } catch (e: any) {
+    if (sendPropertyGuideRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'get failed' })
   }
 })

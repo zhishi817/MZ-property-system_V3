@@ -8,6 +8,7 @@ import { requireAnyPerm } from '../auth'
 import { hasPg, pgPool, pgSelect, pgInsert, pgUpdate, pgRunInTransaction } from '../dbAdapter'
 import { hasR2, r2Upload } from '../r2'
 import { syncPropertyAccessGuideLink } from './property_guide_link_sync'
+import { assertPropertyGuideRuntimeSchemaReady, PropertyGuideRuntimeSchemaNotReady } from '../lib/propertyGuideRuntimeSchema'
 
 export const router = Router()
 
@@ -50,108 +51,10 @@ function randomToken(bytes = 24) {
   return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
 }
 
-async function ensurePropertyGuidesTable() {
-  if (!pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_guides (
-    id text PRIMARY KEY,
-    property_id text NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
-    language text NOT NULL,
-    version text NOT NULL,
-    revision integer NOT NULL DEFAULT 1,
-    status text NOT NULL,
-    content_json jsonb,
-    created_by text,
-    updated_by text,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz,
-    published_at timestamptz
-  );`)
-  try { await pgPool.query('ALTER TABLE property_guides ALTER COLUMN property_id DROP NOT NULL') } catch {}
-  await pgPool.query('ALTER TABLE property_guides ADD COLUMN IF NOT EXISTS revision integer NOT NULL DEFAULT 1')
-  await pgPool.query('ALTER TABLE property_guides ADD COLUMN IF NOT EXISTS base_version text')
-  await pgPool.query('ALTER TABLE property_guides ADD COLUMN IF NOT EXISTS building_key text')
-  await pgPool.query('ALTER TABLE property_guides ADD COLUMN IF NOT EXISTS copied_from_id text')
-  await pgPool.query('ALTER TABLE property_guides ADD COLUMN IF NOT EXISTS copied_at timestamptz')
-  await pgPool.query('ALTER TABLE property_guides ADD COLUMN IF NOT EXISTS copied_by text')
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guides_property_id ON property_guides(property_id);')
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guides_lang ON property_guides(property_id, language);')
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guides_status ON property_guides(status);')
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guides_building_key ON property_guides(building_key);')
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guides_building_lang_base ON property_guides(building_key, language, base_version);')
-  try {
-    await pgPool.query(`
-      UPDATE property_guides g
-      SET 
-        base_version = COALESCE(NULLIF(g.base_version,''), regexp_replace(COALESCE(g.version,''), '-copy-.*$', '')),
-        building_key = COALESCE(
-          NULLIF(g.building_key,''),
-          NULLIF(trim(p.building_name),''),
-          upper(regexp_replace(COALESCE(p.code,''), '^([A-Za-z]+-?\\d+).*$','\\1')),
-          p.code
-        )
-      FROM properties p
-      WHERE g.property_id = p.id
-        AND (
-          g.base_version IS NULL OR g.base_version = '' OR g.building_key IS NULL OR g.building_key = ''
-        )
-    `)
-  } catch {}
-  try {
-    await pgPool.query(`
-      WITH ranked AS (
-        SELECT
-          id,
-          property_id,
-          row_number() OVER (
-            PARTITION BY property_id
-            ORDER BY (status='published') DESC, published_at DESC NULLS LAST, updated_at DESC NULLS LAST, created_at DESC
-          ) AS rn
-        FROM property_guides
-        WHERE property_id IS NOT NULL
-      )
-      UPDATE property_guides g
-      SET property_id = NULL,
-          status = 'archived',
-          updated_at = now()
-      FROM ranked r
-      WHERE g.id = r.id AND r.rn > 1
-    `)
-  } catch {}
-  try {
-    await pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS uq_property_guides_property_id ON property_guides(property_id) WHERE property_id IS NOT NULL;')
-  } catch {}
-}
-
-async function ensurePropertyGuideRevisionsTable() {
-  if (!pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_guide_revisions (
-    id bigserial PRIMARY KEY,
-    guide_id text NOT NULL REFERENCES property_guides(id) ON DELETE CASCADE,
-    revision integer NOT NULL,
-    action text NOT NULL,
-    content_json jsonb,
-    change_note text,
-    changed_by text,
-    changed_at timestamptz NOT NULL DEFAULT now()
-  );`)
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guide_revisions_guide_id ON property_guide_revisions(guide_id);')
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guide_revisions_changed_at ON property_guide_revisions(changed_at);')
-}
-
-async function ensurePropertyGuidePublicLinksTable() {
-  if (!pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_guide_public_links (
-    token_hash text PRIMARY KEY,
-    token_enc text,
-    guide_id text NOT NULL REFERENCES property_guides(id) ON DELETE CASCADE,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    expires_at timestamptz,
-    revoked_at timestamptz
-  );`)
-  await pgPool.query('ALTER TABLE property_guide_public_links ADD COLUMN IF NOT EXISTS token_enc text')
-  try { await pgPool.query('ALTER TABLE property_guide_public_links ALTER COLUMN expires_at DROP NOT NULL') } catch {}
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guide_links_guide_id ON property_guide_public_links(guide_id);')
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guide_links_expires_at ON property_guide_public_links(expires_at);')
+function sendPropertyGuideRuntimeSchemaNotReady(res: any, error: unknown) {
+  if (!(error instanceof PropertyGuideRuntimeSchemaNotReady)) return false
+  res.status(error.status).json({ code: error.code })
+  return true
 }
 
 const guideStatusSchema = z.enum(['draft', 'published', 'archived'])
@@ -239,7 +142,7 @@ async function resolvePropertyByIdOrCode(client: any, input: string) {
 router.get('/', requireAnyPerm(['property_guides.view', 'rbac.manage']), async (req, res) => {
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensurePropertyGuidesTable()
+    assertPropertyGuideRuntimeSchemaReady()
     const q: any = req.query || {}
     const property_id = q.property_id ? String(q.property_id) : ''
     const language = q.language ? String(q.language) : ''
@@ -258,6 +161,7 @@ router.get('/', requireAnyPerm(['property_guides.view', 'rbac.manage']), async (
     const rows = await pgPool.query(`SELECT * FROM property_guides${clause} ORDER BY updated_at DESC NULLS LAST, created_at DESC`, vals)
     return res.json(rows?.rows || [])
   } catch (e: any) {
+    if (sendPropertyGuideRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'list failed' })
   }
 })
@@ -265,7 +169,7 @@ router.get('/', requireAnyPerm(['property_guides.view', 'rbac.manage']), async (
 router.get('/building-usage', requireAnyPerm(['property_guides.view', 'rbac.manage']), async (req, res) => {
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensurePropertyGuidesTable()
+    assertPropertyGuideRuntimeSchemaReady()
     const q: any = req.query || {}
     const building_key = String(q.building_key || '').trim()
     const language = String(q.language || '').trim()
@@ -281,6 +185,7 @@ router.get('/building-usage', requireAnyPerm(['property_guides.view', 'rbac.mana
     )
     return res.json(rows?.rows || [])
   } catch (e: any) {
+    if (sendPropertyGuideRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'usage failed' })
   }
 })
@@ -290,8 +195,7 @@ router.post('/', requireAnyPerm(['property_guides.write', 'rbac.manage']), async
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensurePropertyGuidesTable()
-    await ensurePropertyGuideRevisionsTable()
+    assertPropertyGuideRuntimeSchemaReady()
     const user = (req as any).user || {}
     const id = uuidv4()
     const prop = await resolvePropertyByIdOrCode(pgPool, parsed.data.property_id)
@@ -325,6 +229,7 @@ router.post('/', requireAnyPerm(['property_guides.write', 'rbac.manage']), async
     })
     return res.status(201).json(row || payload)
   } catch (e: any) {
+    if (sendPropertyGuideRuntimeSchemaNotReady(res, e)) return
     const msg = String(e?.message || '')
     if (msg.toLowerCase().includes('uq_property_guides_property_id')) return res.status(409).json({ message: '该房源已存在入住指南' })
     return res.status(500).json({ message: e?.message || 'create failed' })
@@ -338,8 +243,7 @@ router.patch('/:id', requireAnyPerm(['property_guides.write', 'rbac.manage']), a
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensurePropertyGuidesTable()
-    await ensurePropertyGuideRevisionsTable()
+    assertPropertyGuideRuntimeSchemaReady()
     const user = (req as any).user || {}
     const updated = await pgRunInTransaction(async (client) => {
       const existing = await client.query('SELECT * FROM property_guides WHERE id=$1 FOR UPDATE', [id])
@@ -400,6 +304,7 @@ router.patch('/:id', requireAnyPerm(['property_guides.write', 'rbac.manage']), a
     if (!updated) return res.status(404).json({ message: 'not found' })
     return res.json(updated)
   } catch (e: any) {
+    if (sendPropertyGuideRuntimeSchemaNotReady(res, e)) return
     const msg = String(e?.message || 'update failed')
     const statusCode = Number(e?.statusCode || 0)
     if (msg === 'property_not_found') return res.status(400).json({ message: '房号不存在' })
@@ -414,9 +319,7 @@ router.delete('/:id', requireAnyPerm(['property_guides.write', 'rbac.manage']), 
   if (!id) return res.status(400).json({ message: 'missing id' })
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensurePropertyGuidesTable()
-    await ensurePropertyGuideRevisionsTable()
-    await ensurePropertyGuidePublicLinksTable()
+    assertPropertyGuideRuntimeSchemaReady()
     const deleted = await pgRunInTransaction(async (client) => {
       const r = await client.query('SELECT id, status FROM property_guides WHERE id=$1 FOR UPDATE', [id])
       const row = r?.rows?.[0]
@@ -433,6 +336,7 @@ router.delete('/:id', requireAnyPerm(['property_guides.write', 'rbac.manage']), 
     if (!deleted) return res.status(404).json({ message: 'not found' })
     return res.json({ ok: true, id })
   } catch (e: any) {
+    if (sendPropertyGuideRuntimeSchemaNotReady(res, e)) return
     const msg = String(e?.message || 'delete failed')
     if (msg === 'cannot_delete_published') return res.status(400).json({ message: '已发布的入住指南不允许删除，请先归档后再删除' })
     return res.status(Number(e?.statusCode || 0) || 500).json({ message: msg })
@@ -444,8 +348,7 @@ router.post('/:id/publish', requireAnyPerm(['property_guides.write', 'rbac.manag
   if (!id) return res.status(400).json({ message: 'missing id' })
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensurePropertyGuidesTable()
-    await ensurePropertyGuideRevisionsTable()
+    assertPropertyGuideRuntimeSchemaReady()
     const updated = await pgRunInTransaction(async (client) => {
       const existing = await client.query('SELECT * FROM property_guides WHERE id=$1 FOR UPDATE', [id])
       const row = existing?.rows?.[0]
@@ -478,6 +381,7 @@ router.post('/:id/publish', requireAnyPerm(['property_guides.write', 'rbac.manag
     if (!updated) return res.status(404).json({ message: 'not found' })
     return res.json(updated)
   } catch (e: any) {
+    if (sendPropertyGuideRuntimeSchemaNotReady(res, e)) return
     const msg = String(e?.message || 'publish failed')
     if (msg === 'missing_property') return res.status(400).json({ message: '请先填写房号后再发布' })
     return res.status(Number(e?.statusCode || 0) || 500).json({ message: msg })
@@ -489,8 +393,7 @@ router.post('/:id/archive', requireAnyPerm(['property_guides.write', 'rbac.manag
   if (!id) return res.status(400).json({ message: 'missing id' })
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensurePropertyGuidesTable()
-    await ensurePropertyGuideRevisionsTable()
+    assertPropertyGuideRuntimeSchemaReady()
     const updated = await pgRunInTransaction(async (client) => {
       const existing = await client.query('SELECT * FROM property_guides WHERE id=$1 FOR UPDATE', [id])
       const row = existing?.rows?.[0]
@@ -513,6 +416,7 @@ router.post('/:id/archive', requireAnyPerm(['property_guides.write', 'rbac.manag
     if (!updated) return res.status(404).json({ message: 'not found' })
     return res.json(updated)
   } catch (e: any) {
+    if (sendPropertyGuideRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'archive failed' })
   }
 })
@@ -523,8 +427,7 @@ router.post('/:id/duplicate', requireAnyPerm(['property_guides.write', 'rbac.man
   const version = req.body?.version ? String(req.body.version) : ''
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensurePropertyGuidesTable()
-    await ensurePropertyGuideRevisionsTable()
+    assertPropertyGuideRuntimeSchemaReady()
     const existing = await pgSelect('property_guides', '*', { id }) as any[]
     const row = existing && existing[0]
     if (!row) return res.status(404).json({ message: 'not found' })
@@ -563,6 +466,7 @@ router.post('/:id/duplicate', requireAnyPerm(['property_guides.write', 'rbac.man
     })
     return res.status(201).json(inserted || payload)
   } catch (e: any) {
+    if (sendPropertyGuideRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'duplicate failed' })
   }
 })
@@ -572,8 +476,7 @@ router.post('/:id/copy', requireAnyPerm(['property_guides.write', 'rbac.manage']
   if (!id) return res.status(400).json({ message: 'missing id' })
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensurePropertyGuidesTable()
-    await ensurePropertyGuideRevisionsTable()
+    assertPropertyGuideRuntimeSchemaReady()
     const user = (req as any).user || {}
     const now = new Date().toISOString()
     const created = await pgRunInTransaction(async (client) => {
@@ -629,6 +532,7 @@ router.post('/:id/copy', requireAnyPerm(['property_guides.write', 'rbac.manage']
     if (!created) return res.status(404).json({ message: 'not found' })
     return res.status(201).json(created)
   } catch (e: any) {
+    if (sendPropertyGuideRuntimeSchemaNotReady(res, e)) return
     const msg = String(e?.message || 'copy failed')
     if (msg === 'source_missing_property') return res.status(400).json({ message: '源指南缺少房号，无法复制' })
     if (msg === 'property_not_found') return res.status(400).json({ message: '房号不存在' })
@@ -641,10 +545,11 @@ router.get('/:id/revisions', requireAnyPerm(['property_guides.view', 'rbac.manag
   if (!id) return res.status(400).json({ message: 'missing id' })
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensurePropertyGuideRevisionsTable()
+    assertPropertyGuideRuntimeSchemaReady()
     const rows = await pgPool.query('SELECT * FROM property_guide_revisions WHERE guide_id=$1 ORDER BY revision DESC, changed_at DESC', [id])
     return res.json(rows?.rows || [])
   } catch (e: any) {
+    if (sendPropertyGuideRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'list revisions failed' })
   }
 })
@@ -667,8 +572,7 @@ router.post('/:id/public-link', requireAnyPerm(['property_guides.write', 'rbac.m
   if (!id) return res.status(400).json({ message: 'missing id' })
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensurePropertyGuidesTable()
-    await ensurePropertyGuidePublicLinksTable()
+    assertPropertyGuideRuntimeSchemaReady()
     const existing = await pgSelect('property_guides', '*', { id }) as any[]
     const row = existing && existing[0]
     if (!row) return res.status(404).json({ message: 'not found' })
@@ -702,6 +606,7 @@ router.post('/:id/public-link', requireAnyPerm(['property_guides.write', 'rbac.m
     } catch {}
     return res.json({ token, expires_at: expiresAt })
   } catch (e: any) {
+    if (sendPropertyGuideRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'create link failed' })
   }
 })
@@ -711,7 +616,7 @@ router.get('/:id/public-links', requireAnyPerm(['property_guides.view', 'rbac.ma
   if (!id) return res.status(400).json({ message: 'missing id' })
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensurePropertyGuidePublicLinksTable()
+    assertPropertyGuideRuntimeSchemaReady()
     const rows = await pgPool.query('SELECT token_hash, token_enc, guide_id, created_at, expires_at, revoked_at FROM property_guide_public_links WHERE guide_id=$1 ORDER BY created_at DESC', [id])
     const out = (rows?.rows || []).map((r: any) => {
       let token = ''
@@ -729,6 +634,7 @@ router.get('/:id/public-links', requireAnyPerm(['property_guides.view', 'rbac.ma
     })
     return res.json(out)
   } catch (e: any) {
+    if (sendPropertyGuideRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'list links failed' })
   }
 })
@@ -738,12 +644,13 @@ router.post('/public-links/:tokenHash/revoke', requireAnyPerm(['property_guides.
   if (!tokenHash) return res.status(400).json({ message: 'missing token_hash' })
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensurePropertyGuidePublicLinksTable()
+    assertPropertyGuideRuntimeSchemaReady()
     const now = new Date().toISOString()
     const r = await pgPool.query('UPDATE property_guide_public_links SET revoked_at=$1 WHERE token_hash=$2 AND revoked_at IS NULL', [now, tokenHash])
     if (!r?.rowCount) return res.status(404).json({ message: 'not found' })
     return res.json({ ok: true })
   } catch (e: any) {
+    if (sendPropertyGuideRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'revoke failed' })
   }
 })
