@@ -103,15 +103,15 @@
 - Branch: `codex/task-center-deferred-date-20260916`
 - Base: `origin/Dev@59f3ef6688759c44046d21e1e053578a00ba9d6e`; fetched at `2026-09-16T11:31:15Z`
 - Candidate patch SHA-256: `3761c6198e5b88185236aae27cdac5a44540d79f910eb27a08377f3fe8ff598a` excluding `docs/change-release-ledger.md`
-- Commit SHA: not committed
+- Commit SHA: `99e9d16e5eaa58daf83e70659075489221f5ec34` (candidate content commit)
 - Dependencies: none
 - Required validation: `PASS`; evidence: final isolated `npm run check:full` passed root ledger/registry, backend build/tests, frontend lint/test/build, and independent clean mobile typecheck/lint/test; target backend and frontend regression tests passed. PostgreSQL route integration and browser drag-and-drop remain unrun.
 - Shared-hunk review: `PASS`; evidence: clean fetched-base candidate stages only this selected CRL's seven non-ledger paths and exact hunk fingerprints.
 - Generated-file review: `PASS`; evidence: no generated output, dependency links, local caches, sensitive paths or untracked files are staged.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user instructed “提交” for this single deferred-inspection-date prevention fix; push, PR and deployment are not authorized.
 - Independent review: `GO for commit`; evidence: independent read-only review inspected `AGENTS.md`, release-review instructions, ledger, all eight staged files / 38 non-ledger hunks and Actions wiring; independently recomputed the exact candidate fingerprint `3761c6198e5b88185236aae27cdac5a44540d79f910eb27a08377f3fe8ff598a`; found no P0/P1/P2, unselected file, generated output, production-write or secret risk. Review did not rerun tests and explicitly retained PostgreSQL/browser gaps.
-- Action conclusion: `GO` for the selected local commit only; full local checks, independent review and exact staged-scope gate passed. Push, PR, merge and deployment remain unauthorized.
+- Action conclusion: `GO` for the selected local commit only; the independently reviewed candidate was committed as `99e9d16e5eaa58daf83e70659075489221f5ec34` after full local checks and exact staged-scope gate passed. Push, PR, merge and deployment remain unauthorized.
 
 ### Risks / Release Notes
 
