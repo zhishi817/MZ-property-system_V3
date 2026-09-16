@@ -19,6 +19,27 @@ const VALID_TASK_EXECUTION_SEMANTICS = new Set<TaskExecutionSemantics>([
   'work_task',
 ])
 
+function inspectionDayOnly(value: any): string | null {
+  const day = String(value || '').slice(0, 10)
+  return /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : null
+}
+
+export function resolveBoardInspectionDueDate(params: {
+  inspectionMode: InspectionMode
+  requestedDueDate?: any
+  previousDueDate?: any
+  previousInspectionMode?: any
+  modeChangeAction?: 'set' | null
+}): string | null {
+  if (params.previousInspectionMode === 'deferred' && params.inspectionMode !== 'deferred' && params.modeChangeAction !== 'set') {
+    throw new Error('inspection_mode_change_confirmation_required')
+  }
+  if (params.inspectionMode !== 'deferred') return null
+  const due = inspectionDayOnly(params.requestedDueDate) || inspectionDayOnly(params.previousDueDate)
+  if (!due) throw new Error('inspection_due_date_required')
+  return due
+}
+
 export function normalizeTaskExecutionSemantics(value: any): TaskExecutionSemantics | null {
   const raw = String(value || '').trim().toLowerCase()
   if (!raw) return null

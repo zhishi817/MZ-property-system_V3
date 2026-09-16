@@ -50,6 +50,17 @@ export function isDeferredInspectionDisplayTask(task: TaskCenterDisplayTask) {
   return task.deferred_inspection_view === true || lower(task.inspection_mode) === 'deferred'
 }
 
+export function taskCenterBoardInspectionDueDate(params: {
+  inspectionMode: string | null | undefined
+  inspectionDueDate: string | null | undefined
+  previousInspectionMode?: string | null
+  previousInspectionDueDate?: string | null
+}) {
+  if (params.inspectionMode !== 'deferred') return null
+  return params.inspectionDueDate
+    || (params.previousInspectionMode === 'deferred' ? params.previousInspectionDueDate || null : null)
+}
+
 export function deferredInspectionCheckoutText(task: TaskCenterDisplayTask) {
   if (!isDeferredInspectionDisplayTask(task)) return ''
   const dates = uniqueText([
@@ -117,14 +128,17 @@ export function cleaningNightsDisplayLabels(task: TaskCenterNightsDisplayTask) {
 export function taskCenterInspectionAssignmentPatch(params: {
   isPureCheckin: boolean
   inspectorId: string | null | undefined
+  currentInspectionMode?: string | null
 }): {
   assignee_id?: string | null
   cleaner_id?: string | null
   inspector_id: string | null
-  inspection_mode: 'same_day' | 'pending_decision'
+  inspection_mode: 'same_day' | 'pending_decision' | 'deferred'
 } {
   const inspectorId = String(params.inspectorId || '').trim() || null
-  const inspectionMode = inspectorId ? 'same_day' as const : 'pending_decision' as const
+  const inspectionMode = params.currentInspectionMode === 'deferred'
+    ? 'deferred' as const
+    : inspectorId ? 'same_day' as const : 'pending_decision' as const
   if (params.isPureCheckin) {
     return {
       assignee_id: inspectorId,
