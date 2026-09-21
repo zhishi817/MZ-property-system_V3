@@ -35,6 +35,7 @@ import {
   isDeferredInspectionDisplayTask,
   maintenanceDetailContentText,
   resolveTaskCenterColumns,
+  taskCenterBoardInspectionDueDate,
   taskCenterInspectionAssignmentPatch,
 } from './taskCenterDisplay'
 import styles from '../cleaning/cleaningSchedule.module.scss'
@@ -190,6 +191,7 @@ type TaskCenterTask = {
   current_row_key?: string
   current_subrow_key?: string
   status_action?: CleaningStatusAction | null
+  inspection_mode_action?: 'set' | null
   display_state?: TaskDisplayState | null
   management_actions?: TaskManagementAction[] | null
 }
@@ -297,6 +299,7 @@ type TaskDetailDraft = {
   inspector_id: string | null
   assignee_id: string | null
   inspection_mode: 'pending_decision' | 'same_day' | 'deferred' | 'self_complete' | 'checked_done'
+  inspection_mode_action: 'set' | null
   inspection_scope: 'inspect_and_hang' | 'password_only'
   inspection_due_date: Dayjs | null
   keys_hung: boolean
@@ -1398,6 +1401,7 @@ export default function TaskCenterPage() {
       inspector_id: pureCheckin ? null : (task.inspector_id || null),
       assignee_id: pureCheckin ? (task.assignee_id || task.inspector_id || task.cleaner_id || null) : (task.assignee_id || null),
       inspection_mode: inspectionMode,
+      inspection_mode_action: task.inspection_mode_action || null,
       inspection_scope: normalizeInspectionScope(task.inspection_scope),
       inspection_due_date: task.inspection_due_date ? dayjs(task.inspection_due_date) : null,
       keys_hung: isKeysHungStatus(task.status),
@@ -1443,9 +1447,10 @@ export default function TaskCenterPage() {
               : autoWorkStatus(item.status, draft.assignee_id || null),
             status_action: task.task_source === 'cleaning' ? nextStatusAction : item.status_action,
             inspection_mode: task.task_source === 'cleaning' ? nextInspectionMode : item.inspection_mode,
+            inspection_mode_action: task.task_source === 'cleaning' ? draft.inspection_mode_action : item.inspection_mode_action,
             inspection_scope: task.task_source === 'cleaning' ? draft.inspection_scope : item.inspection_scope,
             inspection_due_date: task.task_source === 'cleaning'
-              ? ((draft.task_completed && !draft.keys_hung) || draft.inspection_mode !== 'deferred' ? null : (draft.inspection_due_date ? draft.inspection_due_date.format('YYYY-MM-DD') : null))
+              ? (draft.inspection_mode !== 'deferred' ? null : (draft.inspection_due_date ? draft.inspection_due_date.format('YYYY-MM-DD') : null))
               : item.inspection_due_date,
             title: task.task_source === 'work' ? String(draft.title || '').trim() : item.title,
             summary: task.task_source === 'work' ? String(draft.summary || '').trim() : item.summary,
@@ -1515,6 +1520,10 @@ export default function TaskCenterPage() {
 
   const saveTaskDetail = useCallback(async () => {
     if (!detailTask || !detailDraft) return
+    if (detailTask.task_source === 'cleaning' && detailDraft.inspection_mode === 'deferred' && !detailDraft.inspection_due_date) {
+      message.error('延期检查必须选择检查日期')
+      return
+    }
     if (!isInspectionModeAllowedForTask({
       inspectionMode: detailDraft.inspection_mode,
       inspectionScope: detailDraft.inspection_scope,
@@ -1584,6 +1593,7 @@ export default function TaskCenterPage() {
                 const patch = taskCenterInspectionAssignmentPatch({
                   isPureCheckin: pureCheckin,
                   inspectorId: params.value,
+                  currentInspectionMode: task.inspection_mode,
                 })
                 return {
                   ...task,
@@ -1747,11 +1757,12 @@ export default function TaskCenterPage() {
       const patch = taskCenterInspectionAssignmentPatch({
         isPureCheckin: pureCheckin,
         inspectorId: targetInspectorId,
+        currentInspectionMode: movedTask.inspection_mode,
       })
       movedTask = {
         ...movedTask,
         ...patch,
-        inspection_due_date: null,
+        inspection_due_date: patch.inspection_mode === 'deferred' ? movedTask.inspection_due_date : null,
         status: autoCleaningStatus(
           movedTask.status,
           pureCheckin ? patch.assignee_id || null : movedTask.cleaner_id || movedTask.assignee_id || null,
@@ -1767,11 +1778,12 @@ export default function TaskCenterPage() {
         const patch = taskCenterInspectionAssignmentPatch({
           isPureCheckin: pureCheckin,
           inspectorId: null,
+          currentInspectionMode: movedTask.inspection_mode,
         })
         movedTask = {
           ...movedTask,
           ...patch,
-          inspection_due_date: null,
+          inspection_due_date: patch.inspection_mode === 'deferred' ? movedTask.inspection_due_date : null,
           status: autoCleaningStatus(
             movedTask.status,
             pureCheckin ? patch.assignee_id || null : movedTask.cleaner_id || movedTask.assignee_id || null,
@@ -1832,6 +1844,7 @@ export default function TaskCenterPage() {
       inspector_id?: string | null
       inspector_assignment_action?: 'assign' | 'unassign'
       inspection_mode: TaskCenterTask['inspection_mode']
+      inspection_mode_action?: 'set'
       inspection_scope: TaskCenterTask['inspection_scope']
       inspection_due_date: string | null
       status_action?: CleaningStatusAction
@@ -1873,6 +1886,16 @@ export default function TaskCenterPage() {
             const pureCheckin = isCheckinOnlyCleaningTask(task)
             const current = cleaningAssignmentSnapshot(task)
             const previous = assignmentBaselineRef.current.cleaning.get(id) || null
+            const inspectionDueDate = taskCenterBoardInspectionDueDate({
+              inspectionMode: current.inspection_mode,
+              inspectionDueDate: current.inspection_due_date,
+              previousInspectionMode: previous?.inspection_mode,
+              previousInspectionDueDate: previous?.inspection_due_date,
+            })
+            if (current.inspection_mode === 'deferred' && !inspectionDueDate) {
+              message.error('延期检查必须选择检查日期')
+              return
+            }
             const assigneeChanged = previous ? previous.assignee_id !== current.assignee_id : !!current.assignee_id
             const cleanerChanged = previous ? previous.cleaner_id !== current.cleaner_id : !!current.cleaner_id
             const inspectorChanged = previous ? previous.inspector_id !== current.inspector_id : !!current.inspector_id
@@ -1883,7 +1906,7 @@ export default function TaskCenterPage() {
               || inspectorChanged
               || previous.inspection_mode !== current.inspection_mode
               || previous.inspection_scope !== current.inspection_scope
-              || previous.inspection_due_date !== current.inspection_due_date
+              || previous.inspection_due_date !== inspectionDueDate
               || !!statusAction
             if (changed) {
               const item: {
@@ -1895,6 +1918,7 @@ export default function TaskCenterPage() {
                 inspector_id?: string | null
                 inspector_assignment_action?: 'assign' | 'unassign'
                 inspection_mode: TaskCenterTask['inspection_mode']
+                inspection_mode_action?: 'set'
                 inspection_scope: TaskCenterTask['inspection_scope']
                 inspection_due_date: string | null
                 status_action?: CleaningStatusAction
@@ -1905,7 +1929,10 @@ export default function TaskCenterPage() {
                 task_id: id,
                 inspection_mode: current.inspection_mode,
                 inspection_scope: current.inspection_scope,
-                inspection_due_date: current.inspection_due_date,
+                inspection_due_date: inspectionDueDate,
+              }
+              if (previous?.inspection_mode === 'deferred' && current.inspection_mode !== 'deferred' && task.inspection_mode_action === 'set') {
+                item.inspection_mode_action = 'set'
               }
               const group = cleaningNotificationGroupsRef.current.get(id)
               if (group) {
@@ -2865,6 +2892,7 @@ export default function TaskCenterPage() {
                           task_completed: false,
                           keys_hung: false,
                           inspection_mode: nextMode,
+                          inspection_mode_action: nextMode !== prev.inspection_mode ? 'set' : prev.inspection_mode_action,
                           inspection_scope: nextMode === 'self_complete' ? 'inspect_and_hang' : prev.inspection_scope,
                           inspection_due_date: nextMode === 'deferred' ? prev.inspection_due_date : null,
                           inspector_id: nextMode === 'pending_decision' || nextMode === 'self_complete' || nextMode === 'checked_done' ? null : prev.inspector_id,
