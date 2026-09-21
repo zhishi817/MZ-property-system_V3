@@ -113,6 +113,26 @@
 - Independent review: `GO for commit`; evidence: independent read-only review inspected `AGENTS.md`, release-review instructions, ledger, all eight staged files / 38 non-ledger hunks and Actions wiring; independently recomputed the exact candidate fingerprint `3761c6198e5b88185236aae27cdac5a44540d79f910eb27a08377f3fe8ff598a`; found no P0/P1/P2, unselected file, generated output, production-write or secret risk. Review did not rerun tests and explicitly retained PostgreSQL/browser gaps.
 - Action conclusion: `GO` for the selected local commit only; the independently reviewed candidate was committed as `99e9d16e5eaa58daf83e70659075489221f5ec34` after full local checks and exact staged-scope gate passed. Push, PR, merge and deployment remain unauthorized.
 
+#### RA-20260921-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260915-001`
+- Selected CRL identities: `root/CRL-20260915-001`
+- Intended action: `push`
+- Branch: `codex/task-center-deferred-date-20260916`
+- Base: `origin/Dev@59f3ef6688759c44046d21e1e053578a00ba9d6e`; fetched at `2026-09-21T00:01:53Z` and confirmed unchanged.
+- Candidate patch SHA-256: `3761c6198e5b88185236aae27cdac5a44540d79f910eb27a08377f3fe8ff598a` excluding `docs/change-release-ledger.md`
+- Commit SHA: `99e9d16e5eaa58daf83e70659075489221f5ec34` (candidate content commit); pre-push receipt base head is `34d6eecd6bcea2c93a8e1e45040e006b58457344`.
+- Dependencies: none
+- Required validation: `PASS`; evidence: prior full candidate validation, independent commit review and refreshed exact-range report passed with unchanged source content; no test rerun was required for this ledger-only push receipt.
+- Shared-hunk review: `PASS`; evidence: refreshed exact committed range contains only this CRL's eight selected paths and 38 non-ledger hunk fingerprints.
+- Generated-file review: `PASS`; evidence: exact range contains no generated output, dependency links, local caches, sensitive paths or untracked files.
+- Technical state: `committed`
+- Remote preflight: `PASS`; evidence: refreshed `origin/Dev` still equals the recorded base and `refs/heads/codex/task-center-deferred-date-20260916` is absent.
+- User authorization: `approved-for-push`; evidence: after receiving branch `codex/task-center-deferred-date-20260916`, content commit `99e9d16e5eaa58daf83e70659075489221f5ec34` and receipt head `34d6eecd6bcea2c93a8e1e45040e006b58457344`, user instructed “先推送”. This authorizes only the unchanged root candidate on this branch.
+- Independent review: `GO for push`; evidence: independent read-only review inspected the staged RA, exact committed range, authorization, refreshed base and absent remote branch; independently recomputed the unchanged content fingerprint, verified the `base -> content commit -> receipt head` ancestry and found no P0/P1/P2, unselected file, generated output or sensitive-information risk. Tests were not rerun for this ledger-only receipt.
+- Action conclusion: `GO` for a normal non-force push of this unchanged root candidate to `codex/task-center-deferred-date-20260916`; blockers: none. PR, merge, deployment and production/device verification remain unauthorized.
+
 ### Risks / Release Notes
 
 - PostgreSQL transaction path and browser interaction still require non-production validation; local tests do not prove deployed behavior.
