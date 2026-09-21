@@ -11,6 +11,7 @@ import {
   effectiveInspectionMode,
   isInspectionModeAllowedForTask,
   mergeTurnoverTaskPlan,
+  resolveBoardInspectionDueDate,
 } from '../lib/cleaningInspection'
 import { buildCleaningTurnoverDisplay } from '../lib/cleaningTurnoverDisplay'
 import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
@@ -2128,6 +2129,7 @@ const saveBoardSchema = z.object({
     inspector_id: z.string().min(1).nullable().optional(),
     inspector_assignment_action: z.enum(['assign', 'unassign']).optional(),
     inspection_mode: z.enum(['pending_decision', 'same_day', 'deferred', 'self_complete', 'checked_done']),
+    inspection_mode_action: z.literal('set').optional(),
     inspection_scope: z.enum(['inspect_and_hang', 'password_only']).nullable().optional(),
     inspection_due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
     status_action: z.enum(['set_keys_hung', 'clear_keys_hung', 'set_completed', 'clear_completed']).optional(),
@@ -2351,6 +2353,13 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
           const beforeById = new Map<string, any>((beforeResult.rows || []).map((row: any) => [String(row.id), row]))
           for (const assignment of payload.cleaning_assignments) {
             const before = beforeById.get(String(assignment.task_id))
+            assignment.inspection_due_date = resolveBoardInspectionDueDate({
+              inspectionMode: assignment.inspection_mode,
+              requestedDueDate: assignment.inspection_due_date,
+              previousDueDate: before?.inspection_due_date,
+              previousInspectionMode: before?.inspection_mode,
+              modeChangeAction: assignment.inspection_mode_action,
+            })
             const actionStatus = cleaningStatusFromAction(before, assignment)
             if (actionStatus) {
               ;(assignment as any).status = actionStatus
@@ -2994,6 +3003,18 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
       })
     }
 
+    const memoryCleaningById = new Map((((db as any).cleaningTasks || []) as any[])
+      .map((task) => [String(task.id), task]))
+    for (const assignment of payload.cleaning_assignments) {
+      const before = memoryCleaningById.get(String(assignment.task_id)) as any
+      assignment.inspection_due_date = resolveBoardInspectionDueDate({
+        inspectionMode: assignment.inspection_mode,
+        requestedDueDate: assignment.inspection_due_date,
+        previousDueDate: before?.inspection_due_date,
+        previousInspectionMode: before?.inspection_mode,
+        modeChangeAction: assignment.inspection_mode_action,
+      })
+    }
     for (const row of rowMap.values()) {
       memoryBoardRows.set(`${payload.date}|${mode}|${row.row_key}`, {
         row_key: row.row_key,
@@ -3096,6 +3117,12 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
     return res.json({ ok: true, rows: rowMap.size, items: payload.items.length })
   } catch (e: any) {
     if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
+    if (e?.message === 'inspection_due_date_required') {
+      return res.status(400).json({ message: '延期检查必须选择检查日期', code: 'inspection_due_date_required' })
+    }
+    if (e?.message === 'inspection_mode_change_confirmation_required') {
+      return res.status(400).json({ message: '请在任务详情中明确修改延期检查安排', code: 'inspection_mode_change_confirmation_required' })
+    }
     return res.status(500).json({ message: e?.message || 'task_center_save_board_failed' })
   }
 })

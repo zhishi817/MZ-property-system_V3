@@ -7,6 +7,51 @@
 - 测试映射必须说明保护点和测试场景；只登记测试文件名不算覆盖证据。
 - `sufficient` 表示当前测试覆盖该保护点；`partial` 表示已有测试但仍有缺口；`not-wired` 表示测试存在但尚未进入对应质量检查；`missing` 表示尚无测试。
 
+## FR-027：任务中心延期检查日期不得因保存安排消失
+
+- **维护责任范围：** backend Task Center 保存；web 任务安排页
+- **最后审查日期：** 2026-09-16
+- **状态：** active
+
+### 业务保护规则
+
+- 原任务仍为 `deferred` 时，保存排序、分组、人员或完成状态必须保留有效的 `inspection_due_date`；载荷日期为空时沿用已存日期，两者都为空时拒绝保存，不能写成 `deferred + NULL`。
+- 调整检查人员或拖动延期检查卡片只改人员和位置，不自动改成同日检查；从延期改为非延期必须由任务详情的明确模式选择发起，旧式隐式模式切换请求由服务端拒绝。
+- 显式转为非延期模式时才清除延期日。本规则不补录已经缺日期的历史记录。
+
+### 跨层适用范围
+
+- **后端：** `POST /task-center/save-board` 的 PostgreSQL 和内存保存路径在写入前使用同一日期与模式校验；失败返回稳定 400，不提交本次安排。
+- **Web：** `/task-center` 的任务详情、人员行、卡片拖动和统一保存沿用原延期日；缺日期时给出提示。
+- **一致性：** 延期日是服务端的持久化字段，网页前置校验不能代替服务端保护；移动端显示逻辑不在本次更改范围。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 保存接口不清空延期日 | `backend/scripts/tests/test_cleaning_inspection_merge.ts` | 内存接口验证空载荷沿用、完成后保留、无新旧日期拒绝、隐式改模式拒绝、明确改模式才清空；PostgreSQL 路径尚未集成验证 | partial | `npm run test:cleaning-inspection-merge --prefix backend` |
+| 网页人员调整与日期沿用 | `frontend/src/app/task-center/taskCenterDisplay.test.ts` | 延期日沿用、无日期保持待阻止状态、分配或清除检查人员仍为延期模式；真实拖放交互尚未人工验证 | partial | `npm run test --prefix frontend -- --coverage.enabled=false src/app/task-center/taskCenterDisplay.test.ts` |
+
+### 验证策略
+
+- **本地：** 执行两项针对性回归、前后端类型检查、frontend lint/build 和 `check:feature-registry`。
+- **集成：** 仅在已确认的非生产数据库中验证 PostgreSQL 保存与事务回滚，再用管理员页面人工验证拖放、完成、刷新后的延期日。
+- **发布后：** 复核生产部署版本和对应页面；本地测试不视为线上防线生效。
+
+### 最后验证
+
+- **CRL：** root/CRL-20260915-001
+- **Commit：** not committed
+- **日期：** 2026-09-16
+
+### 相关 CRL
+
+- root/CRL-20260915-001：任务中心延期检查日期防清空。
+
+### 非保护范围
+
+- 历史日期恢复、订单同步、移动端任务列表、通知、数据库 schema 和生产数据写入。
+
 ## FR-026：Property Guide 与已退休 Maintenance 路径不得在运行时修改 schema
 
 - **维护责任范围：** backend Property Guide admin/public/link-sync；已确认无调用者的 Maintenance legacy helper

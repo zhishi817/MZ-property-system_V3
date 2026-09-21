@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cleaningNightsDisplayLabels, cleaningTaskFlowLabelText, deferredInspectionConflictPresentation, hasTaskCenterRequiredExecutor, isDeferredInspectionDisplayTask, maintenanceDetailContentText, resolveTaskCenterColumns, taskCenterInspectionAssignmentPatch } from './taskCenterDisplay'
+import { cleaningNightsDisplayLabels, cleaningTaskFlowLabelText, deferredInspectionConflictPresentation, hasTaskCenterRequiredExecutor, isDeferredInspectionDisplayTask, maintenanceDetailContentText, resolveTaskCenterColumns, taskCenterBoardInspectionDueDate, taskCenterInspectionAssignmentPatch } from './taskCenterDisplay'
 
 describe('taskCenterDisplay', () => {
   it('treats deferred inspection tasks as inspection-oriented display', () => {
@@ -36,6 +36,27 @@ describe('taskCenterDisplay', () => {
       task_kind: 'checkin_clean',
       inspection_mode: 'same_day',
     })).toBe('入住')
+  })
+
+  it('keeps an unchanged deferred inspection date when saving board changes', () => {
+    expect(taskCenterBoardInspectionDueDate({
+      inspectionMode: 'deferred',
+      inspectionDueDate: null,
+      previousInspectionMode: 'deferred',
+      previousInspectionDueDate: '2026-09-07',
+    })).toBe('2026-09-07')
+    expect(taskCenterBoardInspectionDueDate({
+      inspectionMode: 'deferred',
+      inspectionDueDate: null,
+      previousInspectionMode: 'pending_decision',
+      previousInspectionDueDate: null,
+    })).toBeNull()
+    expect(taskCenterBoardInspectionDueDate({
+      inspectionMode: 'same_day',
+      inspectionDueDate: null,
+      previousInspectionMode: 'deferred',
+      previousInspectionDueDate: '2026-09-07',
+    })).toBeNull()
   })
 
   it('presents deferred inspection check-in conflicts with the danger label and schedule', () => {
@@ -104,6 +125,16 @@ describe('taskCenterDisplay', () => {
       inspector_id: 'oscar',
       inspection_mode: 'same_day',
     })
+    expect(taskCenterInspectionAssignmentPatch({
+      isPureCheckin: false,
+      inspectorId: 'angela',
+      currentInspectionMode: 'deferred',
+    })).toEqual({ inspector_id: 'angela', inspection_mode: 'deferred' })
+    expect(taskCenterInspectionAssignmentPatch({
+      isPureCheckin: false,
+      inspectorId: null,
+      currentInspectionMode: 'deferred',
+    })).toEqual({ inspector_id: null, inspection_mode: 'deferred' })
   })
 
   it('requires a cleaner even when a regular cleaning task already has an inspector', () => {

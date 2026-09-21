@@ -1,5 +1,146 @@
 # Change Release Ledger
 
+## CRL-20260915-001 — 任务中心延期检查日期防清空（root）
+
+- **Repository:** `root`
+- **Status:** verified for selected local commit (full local checks and independent review passed; not pushed)
+- **Updated:** 2026-09-16 Australia/Melbourne
+- **Request:** Angela 的 9 月 7 日延期检查因任务中心保存后日期为空而从日历消失；只防止今后再次清空，不恢复历史数据。
+- **Outcome:** 任务中心保存原延期检查时保留已存日期；无新旧日期则拒绝保存。人员调整与拖动保留延期模式；只有在任务详情明确改检查模式后才可清除延期日。
+
+### Implementation
+
+- Previous behavior: `/task-center/save-board` 直接写入载荷中的空 `inspection_due_date`；网页完成状态、人员行或拖动也可能将延期日期清空或把 `deferred` 自动改为 `same_day`。
+- New behavior: PostgreSQL 和内存保存路径在业务写入前共同校验延期日期与明确模式动作。仍为延期时空载荷沿用已存日期；两者都空返回 400；原延期任务未带 `inspection_mode_action: set` 却退出延期模式也返回 400。网页详情与统一保存作前置校验，人员行和拖动不改变延期模式或日期。
+- Key decisions: 仅修复任务中心保存链路；不回填历史、改表、修改订单同步或移动端。
+
+### Files / Areas
+
+- `backend/src/lib/cleaningInspection.ts` — added: 批量保存延期日期与模式变更校验。
+- `backend/src/modules/task_center.ts` — modified: PostgreSQL 和内存保存共用校验，提供稳定 400 错误。
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — modified: 规则及本地内存保存接口回归。
+- `frontend/src/app/task-center/page.tsx` — modified: 详情、人员行、拖动与统一保存保留延期语义。
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — modified: 日期沿用与人员调整规则。
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — modified: 日期与人员调整回归。
+- `docs/feature-regression-registry.md` — modified: 新增 FR-027 回归保护。
+- `docs/change-release-ledger.md` — modified: 本 CRL 记录。
+
+### Impact / Dependencies
+
+- API: `POST /task-center/save-board` 对无可用延期日期返回 `400 inspection_due_date_required`；无明确模式动作的延期退出返回 `400 inspection_mode_change_confirmation_required`。
+- Database / migration / configuration / dependencies: none；复用 `cleaning_tasks.inspection_due_date`。
+- Production data: none；既有空日期记录不恢复。
+- Related units: FR-027；无其他必带 CRL。
+- Excluded: 移动端、订单同步、通知、历史快照、生产修正与部署。
+
+### Validation
+
+- `./node_modules/.bin/tsc --noEmit -p .`（backend） — passed in isolated `origin/Dev` worktree。
+- `./node_modules/.bin/tsc --project . --outDir /private/tmp/mz-deferred-audit.xzG3aP/backend-compiled`（backend） — passed; emitted outside the candidate, no tracked `backend/dist` changed。
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json`（frontend） — passed in isolated worktree。
+- `./node_modules/.bin/ts-node --transpile-only scripts/tests/test_cleaning_inspection_merge.ts`（backend） — passed; in-memory route used localhost only and did not connect to PostgreSQL。
+- `npm run test -- --coverage.enabled=false src/app/task-center/taskCenterDisplay.test.ts`（frontend） — passed, 9 tests。
+- `npm run lint`（frontend） — passed with existing project warnings。
+- `./node_modules/.bin/next build`（frontend） — passed with existing project warnings。
+- `npm run check:feature-registry` — passed: 24 FRs, 172 mappings。
+- `npm run check:full` — PASS on final isolated-candidate run: root ledger and FR checks, backend build/tests, frontend lint/test/build (46 suites, 218 tests), and clean independent mobile baseline typecheck/lint/test (58 suites, 345 tests). Process-local database variables were blank; no production connection or external sync. Existing frontend/mobile lint warnings remain.
+- Earlier full-check attempts: temporary dependency symlinks initially appeared untracked, then the mobile repository was absent; both test-harness conditions were corrected. A parallel mobile Jest run had one 5-second timeout; the affected file passed 10/10 on rerun, serial mobile suite passed 58/58, and the final `check:full` passed. Temporary symlinks and generated `backend/dist` files were removed/restored before staging.
+- PostgreSQL save-route integration, real browser drag-and-drop, deployed production and device verification — not run。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none; temporary dependency links were removed and generated backend output was restored. The clean-base candidate contains only this selected CRL's eight paths.
+- Scope: only the eight paths above, based on fetched `origin/Dev@59f3ef6688759c44046d21e1e053578a00ba9d6e`.
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `43bfdea1f3125e32c61b44c1aaec3a3d9b9d01fb623e69a83d30acf45175a30d`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `43e01934aa1613efb8fd9dfa17de4e6d67fa1a644236ad4ac592386aca151795`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `6701c653e715e6aa86627c16bdd592aa890b8b59071cbfb00a0aff951321dd98`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `84207d9b4367deb398168b186c54da2ad4530460a06e8661deaa7f84a0ad9e7a`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `afadb80d4836412f4b643cfae928893adbbd13ef8a5c90cf6886767d5590d4b7`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `bf3492bf5cc9a3afe37a401de4219941b43cd4bde96725d615246405e70f61aa`
+- `backend/src/lib/cleaningInspection.ts` — SHA-256: `8b3e38f987d4ee1a50809969fe9ddb1a880378ee0695092acf9f60cd94dcbcb5`
+- `backend/src/modules/task_center.ts` — SHA-256: `2a8c041f809c46f0cfa3112974c6cd09a3e79e6b07838f8bd8d9942a8d58aa02`
+- `backend/src/modules/task_center.ts` — SHA-256: `6f091d515eb2c15b19e12704f109f4204c2cdeef0cfcb125f6cad44b1a656cdd`
+- `backend/src/modules/task_center.ts` — SHA-256: `c08df3ab2464bb48ec4251d7aa9859c08fcae065eea6e77ee77822dc67ea67a8`
+- `backend/src/modules/task_center.ts` — SHA-256: `d3af1a65396c1b334560faab9c6b4b2c26cb14c84ec9e2b82d1cf71d4777700d`
+- `backend/src/modules/task_center.ts` — SHA-256: `f26cd77349180dd1ed24ad83f227224a1715b2289ed8851b2e32bc2db33c8293`
+- `docs/feature-regression-registry.md` — SHA-256: `1311676c1cdfa572b7803dc6c0064b9a1068dcfcbae44e97f653b7833d17343e`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `022d5360e0f474488a36cb1ca000adda038803e1d33476fd71746d06f8a84dff`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `04f364677328dcb978c9d9f50102e0ff251bf1416f42c322bd6fa49d6901a44f`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `1f9f8859d60ce7183bd7b989e82e58b84c991bd0f3faccbad8aefb2b5be884ba`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `214e2a424909928da2259b415067b1d3913f331d0fb8c8465741b30a1f647576`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `24aaade47d3ce0e7b7ba5cad48c1e7895306fe877a1cd81011782dfe02125271`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `3d1f3da8df298053d3d6be70daa6a15e6de9e81f37b45bf310c127148796c6dd`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `3fab3a5ae972b29b156e7e46200a02d95cc30a0912d692485ec9cb28e3adb406`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `488420a588819205759c063f94359c90f219235eeb5a87a754b182d26fd97a67`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `5e8a7c395ecbd689af873453d0a52853949e76c947866c317e9006563db723ba`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `744f5a1e51de7bd36eab883aadde74b4dd98c33c3697fc3a7ba27330917bb409`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `8311b15f0cdf590da190056d3ac647a20855fe9a38a9d6c7e96b969dd1ec3835`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `969826170cfd3dc7c7535a2ca7173470a6a8b10369c58fa5c447154df22d9348`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `9d9e2deab4ec303a0e285ea33a2cda21440f9f690331fd490deba66cf608a334`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `a36282ed7cd8369e833fdfc8778adfa037cecc4684c857631184b0d58906706a`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `a7181e9cf8065d5a7cec1845b31f4429c6bb17f135ce5dfad43619c9825aef23`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `ba1eed26718aabe6305399754b1b79aec24bec83d3e1ec11ac3a1c31480f90f0`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `dab3f02658b1b62524c2b0a25096b4803569328c9ac735657f858a4aa44a07c7`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `f3c2332b848a4ede95d2283dfbb3e1656cea35d31007fd47695c955cc41f0f20`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `226b1a4c21e06454b716cc6b68dd8b823956b0737ba8bd4d3fb32da3eb04aa3c`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `3b2e16789d1f0314be386ff6e8c3e0e2f341d7f13dafebb9edb235e341856521`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `aa6e89b68b8c6549975f0534f16bfb79628672b675be0eddda316885d8bb4949`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `073bbaf9ecbcce97e5b25a01c3d3fabc3d50a1dfe89736089c67833a2b918331`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `2e18c9de0f4128d1932552422895ecf3c60106da91f9c049f954b7057395a5a2`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `5bfbe0aadb1604a37f4a8cb0543fe0f134624215b4a5d24bb4ab46588d64d663`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `ea76cbadd5ad98624fa9418b323db1f978d197325b179b809b1b432f794a6273`
+
+### Release Attempts
+
+#### RA-20260916-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260915-001`
+- Selected CRL identities: `root/CRL-20260915-001`
+- Intended action: `commit`
+- Branch: `codex/task-center-deferred-date-20260916`
+- Base: `origin/Dev@59f3ef6688759c44046d21e1e053578a00ba9d6e`; fetched at `2026-09-16T11:31:15Z`
+- Candidate patch SHA-256: `3761c6198e5b88185236aae27cdac5a44540d79f910eb27a08377f3fe8ff598a` excluding `docs/change-release-ledger.md`
+- Commit SHA: `99e9d16e5eaa58daf83e70659075489221f5ec34` (candidate content commit)
+- Dependencies: none
+- Required validation: `PASS`; evidence: final isolated `npm run check:full` passed root ledger/registry, backend build/tests, frontend lint/test/build, and independent clean mobile typecheck/lint/test; target backend and frontend regression tests passed. PostgreSQL route integration and browser drag-and-drop remain unrun.
+- Shared-hunk review: `PASS`; evidence: clean fetched-base candidate stages only this selected CRL's seven non-ledger paths and exact hunk fingerprints.
+- Generated-file review: `PASS`; evidence: no generated output, dependency links, local caches, sensitive paths or untracked files are staged.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: user instructed “提交” for this single deferred-inspection-date prevention fix; push, PR and deployment are not authorized.
+- Independent review: `GO for commit`; evidence: independent read-only review inspected `AGENTS.md`, release-review instructions, ledger, all eight staged files / 38 non-ledger hunks and Actions wiring; independently recomputed the exact candidate fingerprint `3761c6198e5b88185236aae27cdac5a44540d79f910eb27a08377f3fe8ff598a`; found no P0/P1/P2, unselected file, generated output, production-write or secret risk. Review did not rerun tests and explicitly retained PostgreSQL/browser gaps.
+- Action conclusion: `GO` for the selected local commit only; the independently reviewed candidate was committed as `99e9d16e5eaa58daf83e70659075489221f5ec34` after full local checks and exact staged-scope gate passed. Push, PR, merge and deployment remain unauthorized.
+
+#### RA-20260921-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260915-001`
+- Selected CRL identities: `root/CRL-20260915-001`
+- Intended action: `push`
+- Branch: `codex/task-center-deferred-date-20260916`
+- Base: `origin/Dev@59f3ef6688759c44046d21e1e053578a00ba9d6e`; fetched at `2026-09-21T00:01:53Z` and confirmed unchanged.
+- Candidate patch SHA-256: `3761c6198e5b88185236aae27cdac5a44540d79f910eb27a08377f3fe8ff598a` excluding `docs/change-release-ledger.md`
+- Commit SHA: `99e9d16e5eaa58daf83e70659075489221f5ec34` (candidate content commit); pre-push receipt base head is `34d6eecd6bcea2c93a8e1e45040e006b58457344`.
+- Dependencies: none
+- Required validation: `PASS`; evidence: prior full candidate validation, independent commit review and refreshed exact-range report passed with unchanged source content; no test rerun was required for this ledger-only push receipt.
+- Shared-hunk review: `PASS`; evidence: refreshed exact committed range contains only this CRL's eight selected paths and 38 non-ledger hunk fingerprints.
+- Generated-file review: `PASS`; evidence: exact range contains no generated output, dependency links, local caches, sensitive paths or untracked files.
+- Technical state: `pushed`
+- Remote branch: `origin/codex/task-center-deferred-date-20260916@92ef35ad397f548dbf90103b6ef7739afcf6df83`; initial normal non-force push completed and `git ls-remote` matched at 2026-09-21 UTC. This ledger-only outcome receipt will be fast-forwarded on the same branch.
+- Remote preflight: `PASS`; evidence: refreshed `origin/Dev` still equals the recorded base and `refs/heads/codex/task-center-deferred-date-20260916` is absent.
+- User authorization: `approved-for-push`; evidence: after receiving branch `codex/task-center-deferred-date-20260916`, content commit `99e9d16e5eaa58daf83e70659075489221f5ec34` and receipt head `34d6eecd6bcea2c93a8e1e45040e006b58457344`, user instructed “先推送”. This authorizes only the unchanged root candidate on this branch.
+- Independent review: `GO for push`; evidence: independent read-only review inspected the staged RA, exact committed range, authorization, refreshed base and absent remote branch; independently recomputed the unchanged content fingerprint, verified the `base -> content commit -> receipt head` ancestry and found no P0/P1/P2, unselected file, generated output or sensitive-information risk. Tests were not rerun for this ledger-only receipt.
+- Action conclusion: `GO`; blockers: none. The authorized unchanged candidate reached `origin/codex/task-center-deferred-date-20260916@92ef35ad397f548dbf90103b6ef7739afcf6df83` and the initial remote SHA matched the audited local head. This ledger-only outcome receipt will be fast-forwarded; PR, merge, deployment and production/device verification remain unauthorized.
+
+### Risks / Release Notes
+
+- PostgreSQL transaction path and browser interaction still require non-production validation; local tests do not prove deployed behavior.
+- The original mixed `Dev` checkout has unrelated divergent ledger history and remains untouched. This isolated candidate is not yet a commit or release.
+- Sensitive-information review: no credentials, database URLs, tokens, customer details or production logs added.
+- Git state: local `codex/task-center-deferred-date-20260916` candidate from fetched `origin/Dev`; selected paths staged for review, not committed, pushed, merged or deployed; production/device verification not run.
+
 ## CRL-20260910-001 — R5-2B Property Guide 与已退休 Maintenance runtime DDL 清理（root）
 
 - **Repository:** `root`
