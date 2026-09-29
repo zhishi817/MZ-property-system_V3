@@ -37,11 +37,12 @@ export type NotificationEventType =
   | 'GUEST_LUGGAGE_UPDATED'
   | 'WAREHOUSE_KEY_UPDATED'
   | 'WORK_TASK_UPDATED'
+  | 'PERSONNEL_SETTLEMENT_CONFIRMATION_REQUESTED'
 
 export type EmitNotificationEventParams = {
   type: NotificationEventType
   policyKey?: AppNotificationPolicyKey | null
-  entity: 'order' | 'cleaning_task' | 'work_task' | 'property_feedback' | 'warehouse_key'
+  entity: 'order' | 'cleaning_task' | 'work_task' | 'property_feedback' | 'warehouse_key' | 'personnel_weekly_settlement'
   entityId: string
   eventId?: string | null
   propertyId?: string | null
@@ -159,6 +160,7 @@ function buildDefaultTitleBody(params: EmitNotificationEventParams) {
   if (type === 'GUEST_LUGGAGE_UPDATED') return { title: '当天任务临时通知', body: '当天任务新增或更新了一条临时通知，请查看照片和说明。' }
   if (type === 'WAREHOUSE_KEY_UPDATED') return { title: '仓库钥匙更新', body: 'MSQ 仓库钥匙状态已更新' }
   if (type === 'WORK_TASK_UPDATED') return { title: '任务有更新', body: '任务已更新' }
+  if (type === 'PERSONNEL_SETTLEMENT_CONFIRMATION_REQUESTED') return { title: '请确认上周费用结算', body: '请核对并确认工作量及金额。' }
   return { title: '通知', body: '有新的更新' }
 }
 
@@ -227,6 +229,7 @@ function resolvePriority(params: EmitNotificationEventParams): NotificationPrior
   if (params.type === 'KEY_UPLOAD_SLA_ESCALATION') return 'high'
   if (params.type === 'GUEST_LUGGAGE_UPDATED') return 'high'
   if (params.type === 'WAREHOUSE_KEY_UPDATED') return 'high'
+  if (params.type === 'PERSONNEL_SETTLEMENT_CONFIRMATION_REQUESTED') return 'high'
   return 'low'
 }
 

@@ -1,5 +1,163 @@
 # Execution Records
 
+## 合作方先提交、财务后核对的周结算闭环
+
+- Date: 2026-09-22
+- Task: 纠正周结算业务顺序，并联动 Root 网页、后端和移动端
+- Status: implemented and locally verified in fixed Preview; not released
+
+### Confirmed Plan
+
+- 合作方先在移动端核实上一完整周工作量并提交，系统在提交时自动计算；财务不得先生成。
+- 财务发现问题时填写原因并退回，系统按最新规则重算，合作方再次确认后重新交给财务。
+- 无问题时财务先完成银行转账，再点击“确认已付款”，直接生成已付款清洁支出，不保留中间待付款步骤。
+- 缺费用规则不阻止本人提交，但必须阻止付款；初次提交不发本人确认通知，退回再次确认只通知结算本人。
+
+### Implementation Result
+
+- 新增本人周预览和幂等提交 API，初次提交直接进入网页“待财务核对”。
+- 网页移除生成、批量运行和发起确认，新增“退回再次确认”；付款前补齐待处理、未计入和计算阻断检查。
+- 周任务停止自动生成/通知，旧财务先生成端点返回 410；历史状态与文件继续只读兼容。
+- 配套移动端增加上一完整周预览、预计金额和“提交本周工作量”，并显示退回原因与“确认并重新提交”。
+
+### Validation
+
+- Root backend TypeScript、Phase 3/5 聚焦合同测试通过。
+- Root frontend TypeScript 与 2 个聚焦 Vitest 文件共 8 tests 通过。
+- Mobile TypeScript 与费用结算专项 Jest 1 suite / 13 tests 通过。
+- 未执行数据库写入集成、真实通知、浏览器/模拟器、银行转账、生产或真机验证。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementWorkflow.ts`
+- `backend/src/lib/personnelWorkloadClaims.ts`
+- `backend/src/lib/personnelSettlementWeeklyJob.ts`
+- `backend/src/modules/personnel_settlements.ts`
+- `frontend/src/app/finance/settlements/`
+- `docs/notification-registry.yaml`
+- `docs/feature-regression-registry.md`
+- paired mobile `src/lib/api.ts` and `src/screens/me/PersonnelSettlementScreen.tsx`
+
+### Open Issues / Follow-ups
+
+- 在明确可写的 Preview 数据库和隔离账号上补做一次“本人提交 → 财务退回 → 本人再次确认 → 财务确认已付款”的完整业务回归。
+- 当前 fixed Preview 是混合开发工作区；未 commit、push、PR、merge、deploy、OTA 或真机验证。
+
+## 周结算统一核对入口与合作式文案
+
+- Date: 2026-09-13
+- Task: 合并移动端文字问题与补充费用流程，同步根治后端半成功风险并优化网页文案
+- Status: implemented and locally verified in fixed Preview; not released
+
+### Confirmed Plan
+
+- 周结算只保留一个“工作内容或金额有疑问”入口，分为有结构的“补充工作或费用”和纯文字“现有结算需要核对”。
+- 有结构的补充内容必须先包含日期、金额、说明和照片/截图，再与结算重新核对一次性提交。
+- 将系统中面向合作方的“申报/审核/批准/处理异议”优化为“反馈/核对/确认计入/重新核对”，保留内部技术状态兼容。
+
+### Implementation Result
+
+- 后端新增结算内 claim 原子提交端点，事务锁同时保护 claim 和本人周结算状态。
+- 网页已统一人员反馈、核对动作、状态和通知文案；不改计算、权限、GST、PDF 或付款语义。
+- 配套移动端已使用新端点，只在最终业务操作成功后清理本地草稿和证明文件。
+
+### Validation
+
+- Backend Phase 3 test and build passed。
+- Frontend focused Vitest、lint and TypeScript no-emit passed；固定 Preview web 文案已热更新并只读检查。
+- Feature Registry and `git diff --check` passed；Root ledger audit 仅被三个既有且与本轮无关的 `backend/dist/modules/*.js` 构建文件阻塞。
+- 未执行新 API 的真实数据写入或数据库集成测试。
+
+### Files / Areas
+
+- `backend/src/lib/personnelWorkloadClaims.ts`
+- `backend/src/lib/personnelSettlementWorkflow.ts`
+- `backend/src/modules/personnel_settlements.ts`
+- `frontend/src/app/finance/settlements/`
+- `docs/feature-regression-registry.md`
+
+### Open Issues / Follow-ups
+
+- 发布前应在可清理的 Preview 数据上验证一次“上传证明 → 原子提交 → 财务核对 → 重新生成结算”。
+- 未 commit、push、PR、merge、deploy、OTA、production 或真机验证。
+
+## 周结算只显示当前最新版文件
+
+- Date: 2026-09-12
+- Task: 修复移动端同一周结算同时显示多个 PDF 版本
+- Status: implemented in fixed Preview; not released
+
+### Confirmed Plan
+
+- 本人详情只展示与当前结算状态一致的最新一份 PDF；当前状态没有文件时不回退旧状态。
+- 保留数据库不可变文件历史和财务管理端历史核对，不删除旧 PDF。
+- 移动端再做同样的防御筛选，避免旧后端或缓存响应重新显示多个版本。
+
+### Implementation Result
+
+- 后端本人周详情响应从完整文件历史收窄为 0 或 1 个当前状态最新文件。
+- 财务/管理接口、文件生成、下载鉴权和历史记录没有改变。
+- 配套移动端已增加相同筛选和 UI 回归；同状态 v3/v2 只显示 v3，旧状态不会补位。
+
+### Validation
+
+- Backend Phase 5 focused test、TypeScript no-emit、隔离 production build和 Feature Registry 均通过。
+- 配套 Mobile focused Jest、typecheck、lint和完整 `check:ci` 通过；完整 Jest 为 62 suites / 356 tests，lint 为 0 errors / 556 existing warnings。
+- 固定 Preview 三端已重新启动，模拟器可连接本地 API；当前登录账号没有周结算单，因此未取得含 v3/v2 的账号级视觉证据。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementDocuments.ts`
+- `backend/src/modules/personnel_settlements.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts`
+- `docs/feature-regression-registry.md`
+- paired mobile `src/screens/me/PersonnelSettlementScreen.tsx`
+- paired mobile `src/screens/me/PersonnelSettlementScreen.test.tsx`
+
+### Open Issues / Follow-ups
+
+- 历史文件仍可供财务审计；本次没有删除数据库行或对象文件。
+- 未 commit、push、PR、merge、deploy、OTA、production 或真机验证。
+
+## ABN 取消数学校验和
+
+- Date: 2026-09-11
+- Task: ABN 取消数学校验和
+- Status: implemented
+
+### Confirmed Plan
+
+- 网页、后端和移动端统一取消 ABN 数学校验和，只保留归一化后的 11 位数字检查。
+- 保留 GST 三态与 ABN 必填关系；明确格式通过不代表 ABR、归属或 GST 官方验证。
+- 不改 schema，不执行数据库写入，不扩大到费用规则、银行权限或结算状态机。
+
+### Implementation Result
+
+- 后端共享人员资料保存只拒绝非 11 位 ABN；校验和不通过但长度正确的号码可以保存。
+- 网页提示改为只检查 11 位数字并明确不做数学或 ABR 验证；技术错误继续映射为中文。
+- 配套移动端本人资料校验与中英文错误文案同步改为 11 位格式检查。
+
+### Validation
+
+- Backend Phase 1 focused contract passed；Frontend focused Vitest 1 file / 3 tests passed；Mobile focused Jest 2 suites / 5 tests and typecheck passed。
+- Root backend/frontend no-emit TypeScript passed；frontend lint passed with unrelated existing warnings。首次普通 TypeScript/lint 仅因 sandbox 无权写本地构建缓存失败，改用不写 incremental/ESLint cache 的等价检查后通过。
+- Mobile `npm run check:ci` passed: TypeScript、lint 0 errors / 110 existing warnings、strict button audit、62 suites / 352 tests and ledger audit。
+- Root Feature Registry passed: 25 FRs / 195 mappings；获取最新 `origin/Dev` 后 Root ledger audit 57/57、Mobile ledger audit 23/23 均通过；两个仓库 `git diff --check` 均通过。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementProfiles.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts`
+- `frontend/src/app/finance/settlements/page.tsx`
+- `frontend/src/app/finance/settlements/personnelProfileUi.ts`
+- `frontend/src/app/finance/settlements/personnelProfileUi.test.ts`
+- paired mobile `src/lib/personnelSettlementProfile.ts`, `src/lib/i18n.tsx`
+
+### Open Issues / Follow-ups
+
+- 系统不验证号码是否存在、归属人员或已注册 GST；财务需按业务流程核对。
+- 未执行数据库写入、外部 ABR 查询、commit、push、PR、merge、deployment 或生产/设备验证。
+
 ## 执行R5-2B
 
 - Date: 2026-09-10
@@ -261,7 +419,7 @@
 
 - Date: 2026-09-03
 - Task: 使审核关闭的房东支付内部维修自动进入房源费用，并以实际完成日入账。
-- Status: partially implemented
+- Status: implemented and integrated in fixed Preview; not released
 
 ### Confirmed Plan
 
@@ -1049,3 +1207,290 @@
 
 - Historical Release Attempts with free-form dependency prose require a new evidence receipt before a future exact release report can give GO；现有自由文本会被精确审计判为 BLOCKED；no historical CRL identity was modified here.
 - Commit, push, PR/merge, deployment/OTA and device/production proof remain separate authorizations and evidence gates.
+
+## 费用结算阶段 5
+
+- Date: 2026-09-11
+- Task: 费用结算阶段 5
+- Status: implemented and integrated in fixed Preview; not released
+
+### Confirmed Plan
+
+- 每周结束后，按 Australia/Melbourne 周期自动生成上一完整周的人员结算草稿，并保留手工执行入口。
+- 发起确认前锁定并校验工作量；只通知结算本人确认“工作量及金额正确”。
+- 待确认阶段显示结算草稿；确认后按 GST 状态生成 `Tax Invoice` 或普通 `Invoice`，财务批准和付款后保留对应历史版本。
+- 继续复用阶段 3 的公司费用和线下转账登记，不连接银行 API。
+
+### Implementation Result
+
+- 新增 Phase 5 migration、独立 readiness、事务级数据库 advisory lock、周任务运行记录、幂等人工/定时入口和默认关闭的周一 00:05 scheduler。
+- 新增精确本人通知、稳定去重键和移动端费用结算跳转；不通过角色或群组扩大收件人。
+- 新增私有 A4 PDF、认证下载和不可变状态版本；待确认文件不是税务发票，GST 未注册文件 GST 为 0，财务调整作为 GST 外明细显示，不包含银行账号或对象 key。
+- 网页增加手工运行、运行历史和文件历史；移动端增加认证下载与系统查看/分享。
+
+### Validation
+
+- 后端 TypeScript、Phase 1–5 合同和 isolated build 通过。
+- synthetic PDF 生成、`pdfinfo` 和人工视觉检查通过；单页 A4，无 JavaScript，内容无裁切。
+- 网页 TypeScript、focused tests、full Vitest 51 files / 230 tests、lint 和 isolated Next build 通过；移动端 TypeScript、focused Jest、full Jest 62 suites / 352 tests、strict button audit、lint 和 iOS Expo export 通过。
+- 固定 Preview 开发数据库身份闸门通过，已按用户明确授权执行 `20260911_personnel_settlement_phase5.sql`；marker、文件表和 job run 表 readiness 通过。
+- 合成集成通过：2 人结算、2 条本人 Inbox/Queue 通知、pending claim 门禁、幂等重跑、事务锁 `skipped`、GST/非 GST、8 个不可变文件版本、owner/admin 文件下载、non-owner 404、银行权限脱敏、2 条已付款公司费用；合成数据、会话和私有源文件已清理且零计数复核通过。
+- port 3000 真实 Chromium 页面通过：现有后台 Card/Tabs/Table 风格、两名人员金额/状态和 `partial/succeeded/skipped` 运行历史正确，无费用结算 HTTP 错误。最终 Tax Invoice 为单页 A4、无 JavaScript/加密/裁切。
+- 本轮后端 no-emit TypeScript、Phase 1–5 合同和隔离构建通过；网页 TypeScript、3 files / 7 tests 和 lint 通过；移动端 TypeScript、62 suites / 352 tests 和 strict button audit 通过。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementWeeklyJob.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase5_integration.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts`
+- `backend/package.json`
+- `backend/src/lib/personnelSettlementDocuments.ts`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts`
+- `backend/src/lib/personnelSettlementWorkflow.ts`
+- `backend/src/modules/personnel_settlements.ts`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx`
+- `docs/notification-registry.yaml`
+- paired mobile settlement screen, notice navigation and API client
+
+### Open Issues / Follow-ups
+
+- scheduler 仍默认关闭；任何目标环境启用前仍需 migration marker、部署配置和运行日志证据。
+- R2、真实 push、真机 PDF Share、生产 migration/data、commit/push/PR/merge/deployment/OTA 未执行，分别需要后续证据和授权。
+- `invoice_companies` 默认记录上线前需由财务确认是 Homixa 的正确法定名称、ABN 和地址。
+
+## 费用结算阶段 6：清洁按房型计价
+
+- Date: 2026-09-11
+- Task: 将清洁人员费用从统一任务单价改为六档房型单价
+- Status: source implemented and locally regressed in fixed Preview; not released
+
+### Confirmed Plan
+
+- 清洁规则固定使用 `一房一卫`、`两房一卫`、`两房两卫`、`三房两卫`、`三房三卫`、`4房3.5卫` 六种房型，每位清洁人员必须完整填写六档单价。
+- 周结算通过 `cleaning_tasks.property_id -> properties.type` 精确匹配房型；旧统一清洁单价不再作为新结算回退值。
+- 房型缺失、超出支持范围或缺少对应单价时阻止该人员自动生成并交由财务人工复核；已锁定历史结算保持不变。
+- 复用现有规则明细 `conditions` JSONB，不新增 migration 或平行表结构。
+
+### Implementation Result
+
+- 后端建立唯一六档房型合同，规则保存校验完整性、唯一性和合法范围，并为六档生成互不冲突的稳定优先级；历史规则查询和写入保留房型条件。
+- 预览从房源读取 `properties.type`，只允许清洁规则按精确房型命中；缺房型、未知房型和缺价格生成明确人工复核代码，不采用旧统一单价。
+- 周结算计算快照保存房型；手工/自动生成将上述异常带入批次或任务运行结果，避免页面显示成功但遗漏人员。
+- 网页费用规则抽屉改为紧凑表格，清洁人员直接显示六档房型与单价；旧统一单价只作提示参考，不能自动复制或继续参与计算。周结算页面显示需财务处理的人员与原因。
+- 已有 Phase 3/5 合成集成 fixture 同步为六档规则和明确房型，保持后续获授权的数据库集成测试可运行。
+
+### Validation
+
+- 后端 no-emit TypeScript、Phase 1–5 合同测试和隔离 production build 通过。
+- 网页 no-emit TypeScript、费用规则/Phase 5 focused tests、完整 Vitest（51 files / 233 tests）、lint 和隔离 Next production build 通过；lint 仅有现有非本功能 warning。
+- 固定 Preview 端口 3000/4002 的进程目录、网页 200、backend readiness 200 和无认证 API 401 边界通过。
+- 使用现有登录 Chrome 会话只读确认：费用规则抽屉按“计算方式 / 房型 / 单价”显示六行，最高为 `4房3.5卫`；没有点击保存、没有数据库写入。控制台没有本功能运行错误，仅见浏览器扩展 hydration 属性提示和现有 Ant Design `addonAfter` 弃用警告。
+- 未执行数据库集成或真实生成：本轮没有获授权写固定 Preview 开发数据库；也未执行生产数据、通知、PDF、付款或 scheduler。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlement.ts`
+- `backend/src/lib/personnelSettlementRules.ts`
+- `backend/src/lib/personnelSettlementPreview.ts`
+- `backend/src/lib/personnelSettlementWorkflow.ts`
+- `backend/src/lib/personnelSettlementWeeklyJob.ts`
+- `backend/src/modules/personnel_settlements.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase2.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase3_integration.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase5_integration.ts`
+- `frontend/src/app/finance/settlements/FeeRuleDrawer.tsx`
+- `frontend/src/app/finance/settlements/feeRuleUi.ts`
+- `frontend/src/app/finance/settlements/feeRuleUi.test.ts`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx`
+- `docs/feature-regression-registry.md`
+- `docs/change-release-ledger.md`
+- `docs/execution-records.md`
+
+### Open Issues / Follow-ups
+
+- 财务需要先为每位清洁人员填写并保存全部六档单价；在此之前，该人员的新周结算会进入人工复核，这是有意的 fail-closed 行为。
+- 固定 Preview 开发数据库的真实规则保存、房型任务生成和异常运行记录仍需另行授权写入后再做集成验证；本轮只完成源码、自动化与登录页面只读验证。
+- Commit、push、PR/merge、deployment、production migration/data 和设备/生产验证均未执行，需要后续分别授权。
+
+### Update - 2026-09-11 14:01
+
+- Status: implemented
+- Implementation Result:
+  - 确认 `invalid_abn` 来自后端澳洲 ABN 11 位校验和验证；网页原先只检查位数，因此错误显示过晚且暴露技术码。
+  - 网页新增同口径提交前校验和中文错误映射，并说明系统会自动验证 ABN。
+  - 将两个容易混淆的“生效日期”分别改为“结算资料生效日期”和“费用规则生效日期”，并显示各自影响范围；“修改原因”同步明确为“资料修改原因”。
+- Validation:
+  - frontend no-emit TypeScript passed；focused Vitest 2 files / 9 tests and full Vitest 52 files / 236 tests with coverage thresholds passed；frontend lint passed with unrelated existing warnings。
+  - `npm run check:fast` passed workflow/ledger tests, Preview guard, audits, backend build and backend contracts until the pre-existing Phase 5 release contract looked for a mobile subdirectory that does not exist in the fixed Preview root/sibling-mobile topology；the frontend checks it had not reached were run separately and passed。
+  - 固定 Preview 管理员页面只读验证通过：两类日期名称和说明正确；合成无效 ABN 在本地显示中文错误，随后取消表单，未保存或写数据库。
+- Open Issues / Follow-ups:
+  - 已有不符合校验和的开发测试 ABN 在下一次编辑时仍会被阻止；需要测试人员使用有效 ABN，后端校验不会放宽。
+  - 本次没有执行资料保存、开发/生产数据库写入、commit、push、PR、merge 或部署。
+## 费用结算供应方发票按日期汇总
+
+- Date: 2026-09-11
+- Task: 将费用结算 PDF 改为正式发票三列布局并按日期汇总
+- Status: source implemented and visually regressed in fixed Preview; not released
+
+### Confirmed Plan
+
+- 保留既有 Draft / Tax Invoice / Invoice、双方资料、服务期间及周 Subtotal/GST/Total。
+- 主表只显示 Date、Description、Total；一个完整周按周一至周日最多七行。
+- 同日清洁显示 `Cleaning - 房号 / 房号`，补贴、加班、仓管、上新房、试工、编外或其他工作追加在当天 Description；右侧显示当天所有项目总价。
+- 不改费用计算、GST、数据库、付款、通知、网页/移动端下载入口或历史结算锁定逻辑。
+
+### Implementation Result
+
+- 后端模板新增纯内存日期汇总，同日清洁房号取自已锁定 `calculation_snapshot.property_label`，不读取可变化的当前房源名称；其他类型保留类型标签和申报说明。
+- 逐项数量、单价、房型、税额和来源继续存在 `personnel_settlement_lines` 与 API；PDF 仅改展示密度。
+- PDF 来源哈希加入模板版本，使旧 PDF 不被覆盖，新生成文件使用新布局并继续保持不可变版本历史。
+- 财务调整合并到周日 Description 和当日总额，但仍保持 GST 为 0。
+
+### Validation
+
+- Phase 5 backend contract passed；Backend TypeScript no-emit passed。
+- Phase 1–4 backend contracts and isolated backend production build passed；build output written outside the repository。
+- 使用 20 条虚构清洁/补贴/仓管/加班/上新房/试工/其他行生成真实 PDF，成功汇总为 7 个日期。
+- PDF 为 A4 单页、无 JavaScript、未加密；文本检查确认三列表头、7 行、所有混合类型、周总额 `$1,126.00`，且没有页面外文字。
+- PNG 视觉检查确认表格、周总额与页脚均完整，无裁切。
+- Fixed Preview backend remained ready on port 4002 from the registered root backend directory；Feature Registry passed 25 FRs / 196 mappings and Root ledger audit passed 57/57。
+- Tracked and directly changed untracked source/test whitespace checks passed；no generated build output was added to the repository。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts`
+- `backend/src/lib/personnelSettlementDocuments.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts`
+- `docs/feature-regression-registry.md`
+- `docs/change-release-ledger.md`
+- `docs/execution-records.md`
+
+### Open Issues / Follow-ups
+
+- 已存在的旧格式文档按不可变历史保留；需由既有生成入口创建新版本后，移动端才能看到新布局。
+- 未执行数据库写入、真实人员结算再生成、真机查看/分享、commit、push、PR、merge、deployment 或 production verification。
+
+### Update - 2026-09-11 20:30 Australia/Melbourne
+
+- Status: fixed Preview development data regenerated and cross-client integration passed; not released
+- Implementation Result:
+  - 盘点固定 Preview 开发库的全部 3 笔周结算，仅 1 笔处于允许生成文件的 `awaiting_confirmation`；为该笔新增不可变 `v2`，保留旧 `v1`，两笔 `draft` 未改状态。
+  - 调整 Phase 5 浏览器集成测试，使其与当前 Ant Design 只读周选择器一致；不再用程序直接填写只读输入，也不再要求当前周页面显示 2010 年隔离运行记录。
+  - 固定 Preview 的网页、后端和移动端服务已通过统一启动器恢复至 3000、4002 和 8081。
+- Validation:
+  - Phase 5 contract、backend TypeScript、mobile focused Jest 2/2、mobile TypeScript 均通过。
+  - Phase 5 database/web/API/PDF integration passed：2 个虚拟供应方、GST/非 GST、4 个文档阶段、8 份 PDF、通知、权限、付款费用和自动清理全部验证。
+  - 实际开发 `v2` 与隔离 Tax Invoice 均经 pdfplumber 结构检查和 PNG 视觉检查：A4 单页、三列、无 Qty/Rate、无页面外内容；实际 `v2` 同日两个房源合并为一个 Cleaning 行。
+  - 结尾只读核对：真实开发结算仍为 3 笔，最新文档版本顺序 `[2,1]`；隔离 users、batches、notifications 和 queue 全部为 0。
+- Open Issues / Follow-ups:
+  - 移动端需要关闭当前详情再重新打开（必要时在列表刷新），才能重新请求后端并显示最新 `v2`；尚未执行真机点击查看/分享验证。
+  - 未 commit、push、创建 PR、merge、部署或发布 OTA；生产环境未访问、未写入。
+
+### Update - 2026-09-11 20:37 Australia/Melbourne
+
+- Status: implemented
+- Implementation Result:
+  - 按用户要求仅在 fixed Preview 开发环境删除旧文档版本；未改变正式环境不可变文件历史规则。
+  - 删除 `2026-08-17 至 2026-08-23` 的旧 `awaiting_confirmation v1` 数据库记录及对应本地私有 PDF，保留最新 `v2`。
+- Validation:
+  - 删除前重新通过 `npm run dev:preview:verify-db` 确认 `app=dev`、`database=dev`。
+  - 删除前确认目标数为 1、不是当前 `invoice_media_id`、本地文件名符合安全白名单且文件存在。
+  - 删除后只读核对该结算 `document_count=1`、`versions=[2]`、唯一文档为当前引用，本地目录也只剩 1 个费用结算 PDF。
+  - Metro reload 后移动端本人结算列表、详情和保留 PDF 请求均返回 200。
+- Open Issues / Follow-ups:
+  - 删除的开发 `v1` 不可从当前 Preview 恢复；本次未删除或修改任何生产文件。
+  - 正式环境是否也改为只保留最新文件仍未决定；当前生产级源码规则保持不可变历史。
+
+## 费用结算异议财务闭环
+
+- Date: 2026-09-12
+- Task: 财务或管理人员直接确认原金额或编辑总额，处理人员提出的周结算异议
+- Status: source implemented and database-integrated in fixed Preview; not released
+
+### Confirmed Plan
+
+- “有异议”不再要求财务填写处理结果；财务端只提供“确认原金额”和“编辑金额”两种处理方式。
+- 两种处理都自动记录操作人、处理时间和处理前后金额，并把结算重新发给本人确认“工作量及金额正确”。
+- 编辑金额时只填写调整后的应付总额；财务调整保持 GST 外金额，不重算已经锁定的 GST 明细。
+- 自动生成该确认轮次的新版待确认 PDF，并向结算本人发送新一轮通知；同一轮重试不得重复通知或重复文件。
+- 复用现有结算表、规则快照、审计、文档和通知系统，不新增 migration，不改移动端源码，不触碰生产数据或真实转账。
+
+### Implementation Result
+
+- 后端新增 `resolve_dispute` 状态动作和受 `personnel_settlements.rules.manage` 或 `finance.payout` 保护的处理接口；只有 `disputed` 状态可首次处理。
+- “确认原金额”保留当前总额；“编辑金额”按输入的最终总额计算财务调整，保持原锁定 GST，最终总额不能低于 GST。
+- 处理、金额更新、异议清除、确认轮次快照和审计在同一数据库事务与行锁中完成；完成后状态回到 `awaiting_confirmation`。
+- 初次确认与异议处理后的再次确认共用一个服务端通知/文件发布入口。事件去重键加入确认轮次版本；同一请求重试复用版本，新的异议处理轮次使用新版本。
+- 网页周结算表的异议行显示“处理异议”，弹窗展示人员原始异议、当前总额和两种处理按钮；没有财务处理说明字段。成功后自动刷新列表并提示已重新发起个人确认。
+- 移动端继续使用既有本人结算、PDF 和通知入口，不需要客户端改动即可读取新金额、新文件和新一轮确认状态。
+
+### Validation
+
+- Backend Phase 3 contract passed：状态机、管理/财务权限、确认原金额、编辑总额及 GST 下限覆盖。
+- Backend Phase 3 fixed Preview integration passed：合成异议经财务编辑金额后重新确认，并继续完成公司费用与付款闭环；测试数据精确清理。
+- Backend Phase 5 contract passed：确认轮次事件键、唯一收件人、统一文件/通知发布入口覆盖。
+- Backend Phase 5 fixed Preview database/API/PDF/notification integration passed：GST 人员经历初次确认、提出异议、编辑到 AUD 115.00、重试、再次确认；生成两轮待确认文件且每轮只产生一份本人通知/queue，最终完整完成财务批准和付款。两人共 9 份状态文件、3 轮通知、2 条付款费用，测试清理断言通过。
+- Backend TypeScript no-emit passed；frontend focused Vitest 2 files / 6 tests passed；费用结算相关 ESLint passed。
+- Backend isolated production build passed；frontend full Vitest 52 files / 237 tests and isolated production build passed，费用结算路由成功生成。构建只报告仓库既有跨页面 lint、chart SSR 与 Browserslist warnings。
+- Existing backend notification policy、Phase 1/2/4 settlement contracts and paired mobile notification focused Jest passed。
+- Fixed Preview 开发数据库身份闸门 passed；没有执行 migration、生产数据写入、真实推送或银行调用。
+- Fixed Preview web `3000`、backend `4002` 和 Metro `8081` 健康检查通过；Feature Registry 25 FRs / 197 mappings、Root ledger 58/58 paths、tracked `git diff --check` 与 9 个本候选 untracked 文件的逐项 whitespace check 均通过。隔离构建及集成生成的临时文件已清理。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementWorkflow.ts`
+- `backend/src/modules/personnel_settlements.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase3_integration.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase5_integration.ts`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts`
+- `docs/notification-registry.yaml`
+- `docs/feature-regression-registry.md`
+- `docs/change-release-ledger.md`
+- `docs/execution-records.md`
+
+### Open Issues / Follow-ups
+
+- 当前证据证明源码和固定 Preview 合成闭环通过；尚未在用户当前那条真实开发异议上点击“确认原金额”或“编辑金额”，避免未经明确选择改动其金额和状态。
+- Commit、push、PR/merge、backend deployment、production verification 和移动端真机验证均未执行；需要分别授权和证据。
+
+## 移动端费用结算周提交预览容错修复
+
+- Date: 2026-09-24
+- Task: 移动端费用结算周提交预览容错修复
+- Status: implemented
+
+### Confirmed Plan
+
+- 周提交预览 GET 兼容 React Native 自动附加的受限 `_` 缓存参数。
+- 周提交 POST 保持独立严格 Body Schema，只接受 `week_start`。
+- 配套移动端将预览失败与工作量/结算列表解耦，并提供局部手动重试。
+
+### Implementation Result
+
+- 新增 `myWeeklySubmissionQuerySchema` 和 `myWeeklySubmissionBodySchema`，分别用于预览 GET 与本人提交 POST。
+- GET 继续 strict 校验，仅额外接受受长度/数量限制的 `_`；POST 明确拒绝 `_` 和其他未知字段。
+- 未改变认证、本人范围、金额计算、数据库或结算状态机。
+
+### Validation
+
+- Phase 3 contract passed；覆盖 GET `_`、未知查询字段拒绝和 POST Body 拒绝 `_`。
+- Backend TypeScript no-emit 与隔离生产 emit passed。
+- Feature Registry audit passed：25 FRs / 203 mappings；paired mobile focused/full Jest、TypeScript、lint 与按钮审计 passed。
+- Root ledger audit 已覆盖本任务路径，但整个混合工作区仍因 3 个先前未归属 `backend/dist` 文件为 78/81；tracked diff whitespace check passed。
+- 未调用真实 API、数据库、通知、付款、模拟器、真机或生产环境。
+
+### Files / Areas
+
+- `backend/src/modules/personnel_settlements.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts`
+- `docs/feature-regression-registry.md`
+- `docs/change-release-ledger.md`
+
+### Open Issues / Follow-ups
+
+- 仍需后续获授权后在干净 `origin/Dev` 候选中选择 `root/CRL-20260924-001` 与 `mobile/CRL-20260924-001` 进行提交准备。
+- 未 commit、push、PR、merge、deploy、OTA 或 production/device verification。

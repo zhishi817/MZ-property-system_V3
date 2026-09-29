@@ -1,5 +1,10 @@
 import assert from 'assert'
+import fs from 'fs'
+import path from 'path'
 import { buildCompanyRevenueReport } from '../../src/lib/companyRevenueReport'
+
+const financeRouter = fs.readFileSync(path.resolve(__dirname, '../../src/modules/finance.ts'), 'utf8')
+assert.match(financeRouter, /cleaning_expense_breakdown: canViewExpense \? report\.cleaning_expense_breakdown : \[\]/)
 
 const properties = [
   { id: 'p1', code: 'SH1901', landlord_id: 'l1' },
@@ -249,6 +254,47 @@ function main() {
     assert.equal(result.income_categories.reduce((sum, row) => sum + row.total, 0), result.summary.total_income)
     assert.equal(result.expense_categories.reduce((sum, row) => sum + row.total, 0), result.summary.total_expense)
     assert.equal(result.summary.net_revenue, result.summary.total_income - result.summary.total_expense)
+  }
+
+  {
+    const result = report({
+      companyExpenses: [{
+        id: 'personnel-paid',
+        occurred_at: '2026-06-21',
+        paid_date: '2026-06-21',
+        amount: 175,
+        category: 'operations',
+        status: 'paid',
+        is_auto: true,
+        ref_type: 'personnel_weekly_settlement',
+        ref_id: 'settlement-1',
+        settlement_breakdown: [
+          { component_type: 'cleaning_task', subtotal_cents: 10000, gst_cents: 1000, total_cents: 11000, count: 2 },
+          { component_type: 'subsidy_amount', subtotal_cents: 3500, gst_cents: 0, total_cents: 3500, count: 1 },
+          { component_type: 'trial_task', subtotal_cents: 1000, gst_cents: 0, total_cents: 1000, count: 1 },
+          { component_type: 'trial_hour', subtotal_cents: 2000, gst_cents: 0, total_cents: 2000, count: 2 },
+        ],
+      }, {
+        id: 'manual-cleaning',
+        occurred_at: '2026-06-22',
+        paid_date: '2026-06-22',
+        amount: 25,
+        category: 'cleaning_expense',
+        status: 'paid',
+        is_auto: false,
+      }],
+    })
+    assert.equal(categoryTotal(result, 'expense', 'cleaning_expense'), 200)
+    assert.equal(result.summary.total_expense, 200, '内部拆分不得重复计入总支出')
+    assert.equal(result.expense_rows.find((row) => row.record_id === 'personnel-paid')?.editable, false)
+    assert.deepStrictEqual(
+      result.cleaning_expense_breakdown.map((row) => [row.label, row.total, row.count]),
+      [['清洁任务', 110, 2], ['补贴', 35, 1], ['试工', 30, 3], ['未分类清洁支出', 25, 1]],
+    )
+    assert.equal(
+      result.cleaning_expense_breakdown.reduce((sum, row) => sum + row.total, 0),
+      result.summary.total_expense,
+    )
   }
 
   console.log('OK test_company_revenue_report')
