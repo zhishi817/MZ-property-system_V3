@@ -73,10 +73,10 @@
 - Required validation: `PASS; evidence: final isolated npm run check:full, exact pre-commit gates, both repository committed-range reports and clean-worktree checks passed for their local scope; each single-repository report retained only the declared cross-repository verification gap, addressed by separately auditing the paired Mobile range and exact content SHA.`
 - Shared-hunk review: `PASS`; evidence: committed Root range matches all 73 selected files and 116 non-ledger hunk fingerprints with no unselected file or unexpected hunk.
 - Generated-file review: `PASS`; evidence: committed range contains no generated output, dependency link, cache, secret file or untracked path.
-- Technical state: `committed`
+- Technical state: `pushed`
 - User authorization: `approved-for-push`; evidence: after receiving the exact Root and Mobile content/receipt SHAs and explicit statement that neither branch had been pushed, user instructed “推送” on 2026-09-29. This authorizes non-force push of this exact Root branch/range only; it does not authorize PR, merge, migration or deployment.
 - Independent review: `GO for ledger receipt commit and non-force push`; evidence: independent read-only push review verified the exact base → content commit → current receipt ancestry, unchanged non-ledger fingerprint `4c85059bd95782214caea3d479840defcd08752ec3c64e23db14401bb54c9e71`, 73 selected files / 116 hunks, fresh `origin/Dev`, absent remote branch, user authorization, sensitive/generated-file review and the paired Mobile content SHA/range. No P0/P1 remained; the previously accepted private-PDF orphan P2 remains disclosed.
-- Action conclusion: `GO` for committing this ledger-only authorization receipt and then non-force pushing the unchanged final audited head to `origin/codex/personnel-settlement-batch-20260929`; any changed base, branch, selected CRL, content commit, fingerprint, new remote branch or final gate failure invalidates this conclusion. PR, merge, migration and deployment remain unauthorized.
+- Action conclusion: `GO`; the authorized unchanged candidate was non-force pushed to `origin/codex/personnel-settlement-batch-20260929@54c559518850ed16db5ea3c8524252c014c931d4` at `2026-09-29T16:47:25+10:00`, and immediate `git ls-remote` verification matched the local push head. This ledger-only outcome receipt may be fast-forwarded to the same branch; PR, merge, migration and deployment remain unauthorized.
 ### Risks / Release Notes
 
 - 风险仅限本地治理逻辑；若区间算法错误，测试中的未选择间隙案例和真实组合预提交门禁应阻止提交。
