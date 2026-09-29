@@ -22206,15 +22206,15 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Branch: `codex/personnel-settlement-batch-rebuilt-20260929`
 - Base: `origin/Dev@317b8d667594a0a1e3fb8277652b974aa2d23ef5`; fetched at `2026-09-29T20:06:26+10:00`
 - Candidate patch SHA-256: `a1b30ca9e48e5f06f2db9afeecd5eb854dac58b00dc24d66d48192108906ae35` excluding `docs/change-release-ledger.md`
-- Commit SHA: `not committed`
+- Commit SHA: `59bf0e3d10822b2664fc403888caa3c7a3cb245e`
 - Dependencies: `none`
 - Required validation: `PASS`; evidence: targeted settlement timezone tests passed 7/7 under both TZ=UTC and TZ=Australia/Melbourne; full check passed Root backend contracts, frontend lint/test/build (52 files / 247 tests / 96 pages), and paired Mobile typecheck/lint/test (0 errors / 556 warnings / 62 suites / 367 tests).
 - Shared-hunk review: `PASS`; evidence: three shared final-range hunks were recomputed from the clean `origin/Dev` baseline; 12 prior incremental/original fingerprints remain recorded only as historical evidence.
 - Generated-file review: `PASS`; evidence: all 10 backend/dist build outputs were restored, temporary dependency/Mobile links were removed, and the rebuilt candidate retains only the 73 declared Root paths.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: after being shown that the old Root branch/PR remains intact and the replacement is a clean Root-only candidate requiring new commit-bound push approval, user replied “OK 那继续吧” on 2026-09-29.
 - Independent review: `GO for commit`; evidence: independent read-only reviewer inspected the full 73-file staged diff, recomputed fingerprint `a1b30ca9e48e5f06f2db9afeecd5eb854dac58b00dc24d66d48192108906ae35`, reran the exact pre-commit/ledger/FR/auditor gates, verified 116/116 hunks, remote-ledger prefix preservation, 12 historical-to-3 final fingerprint reconciliation, old-candidate equivalence and secret/generated-file boundaries, and found no P0/P1. Accepted P2s are the host-timezone detail drawer and previously disclosed private-PDF orphan lifecycle risk.
-- Action conclusion: `GO`; this exact independently reviewed candidate is approved only for the local content commit. Push, PR, merge, migration and deployment remain unauthorized.
+- Action conclusion: `GO`; the exact independently reviewed candidate was committed locally as `59bf0e3d10822b2664fc403888caa3c7a3cb245e`. Push, PR, merge, migration and deployment remain unauthorized.
 
 ### Risks / Release Notes
 
