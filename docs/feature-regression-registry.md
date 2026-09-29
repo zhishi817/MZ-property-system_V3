@@ -52,6 +52,178 @@
 
 - 历史日期恢复、订单同步、移动端任务列表、通知、数据库 schema 和生产数据写入。
 
+## FR-028：固定开发测试环境与生产数据库隔离
+
+- **维护责任范围：** root development workflow / backend database guard / web and mobile local startup
+- **最后审查日期：** 2026-09-14
+- **状态：** active
+
+### 业务保护规则
+
+- `MZ-Dev-Preview` 是长期开发与验收工作区，不是发布来源；网页固定监听 3000、后端固定监听 4002、Expo/Metro 固定监听 8081。启动器只能替换来源工作区或 Preview 自己的监听进程，不能终止不相关程序。
+- 开发后端必须同时满足 `APP_ENV=dev`、`DATABASE_ROLE=dev`、非 production `NODE_ENV`，并使用已登记的开发数据库身份指纹。必须存在生产数据库身份对照，当前身份与生产身份相同、缺少对照或身份漂移时一律 fail closed。
+- Preview 本地配置必须关闭邮件同步、通知 worker、清洁同步/回填、提醒、后台清理和 PDF worker，并移除 R2、邮件及第三方外部凭据；页面和 API 测试不得因启动开发环境触发外部同步、通知、邮件、对象存储或生产写入。
+- migration 只能在 Preview 数据库安全检查和真实连接检查通过后，以显式 `--apply` 执行。无 `--apply`、非开发环境、生产身份或未登记身份必须自动拒绝。
+- Web 启动前必须从 `/health/config` 取得 `app_env=dev`、`database_role=dev`，并等待后端 readiness；网页 API 固定指向本地 4002。Mobile 开发进程必须显式使用本地 4002，不继承原移动端可能存在的远程 API 配置。
+- Root 和 Mobile Preview 必须保持 detached，并使用各自 worktree 专用 `core.hooksPath`。Preview 的 `pre-commit` 和 `pre-push` 必须拒绝操作；原始工作区和独立发布候选不得继承该路径。Preview 启动前必须先验证保护仍有效。
+
+### 跨层适用范围
+
+- **Root：** `scripts/dev-preview-db.mjs`、`scripts/dev-preview-git-guard.mjs`、`scripts/dev-preview.mjs`、根 package scripts 和 Preview 本地忽略状态。
+- **Web / backend：** 仅改变本地开发启动、数据库校验和 migration 执行方式；不改变生产部署命令或业务 API。
+- **Mobile：** 仅由 Root Preview 启动器设置本地 API 与 8081；不改变移动端生产配置、EAS channel 或原生构建。
+- **一致性：** 功能验收发生在提交前的固定 Preview；发布候选仍从新获取的 `origin/Dev` 单独建立并按 CRL 精确提取。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 开发/生产身份、登记指纹和外部副作用配置 | `scripts/tests/test_dev_preview_guard.mjs` | 允许独立 dev 身份；拒绝 prod app/role、生产同一身份、缺少生产对照和登记指纹漂移；生成配置移除外部凭据并关闭所有后台 worker | sufficient | `npm run test:dev-preview-guard` |
+| 固定端口、来源工作区进程替换、后端环境/readiness 与本地 API | `scripts/dev-preview.mjs` | 运行时检查 3000/4002/8081 和 `/health/config`；不相关端口进程拒绝终止 | partial | `npm run dev:preview`，再核对 `lsof`、`/health/config`、网页响应和进程 cwd |
+| migration 显式写入闸门与 marker | `scripts/dev-preview-db.mjs` | 无 `--apply` 或无显式 `--file` 自动拒绝；仅允许仓库 migrations 目录内、带显式事务和 marker 的 SQL | sufficient | `npm run test:dev-preview-guard`；业务 migration 另按任务授权执行 |
+| Preview 防误提交/推送 | `scripts/tests/test_dev_preview_guard.mjs` | `scripts/dev-preview-git-guard.mjs` 为 Root/Mobile 配置 worktree 专用 hooks；验证 detached、hook 可执行、路径匹配，且 `pre-commit`/`pre-push` 均返回拒绝 | sufficient | `npm run dev:preview:verify-git-guard`、`npm run test:dev-preview-guard` |
+
+### 验证策略
+
+- **纯代码：** 运行 guard 单测、Root/Mobile typecheck/lint/test/build 和两个仓库各自 ledger audit。
+- **开发环境：** 重新生成脱敏配置，连接验证、启动三端，核对端口 cwd、后端环境和网页/移动端本地 API。
+- **业务写入：** 不属于固定环境基础设施验证；任何业务 migration、模拟数据和账号必须由对应任务单独授权。
+
+### 最后验证
+
+- **CRL：** root/CRL-20260910-003
+- **Commit：** not committed
+- **日期：** 2026-09-10
+
+### 相关 CRL
+
+- 无当前业务功能依赖；已撤回候选只保留在各仓库 Change Release Ledger 的历史清理回执中。
+
+### 非保护范围
+
+- Git commit/push/PR/merge、Render/Vercel 部署、EAS build/OTA、生产 migration、生产数据或真机验收。
+- 任何具体业务页面、API、schema、模拟账号或测试数据。
+
+## FR-029：费用结算资料、规则历史、周结算、供应方文件与财务付款边界
+
+- **维护责任范围：** backend personnel settlement schema/profile/rule/calculation/claim/workflow/private-evidence/document/scheduler/notification API + web finance settlement profile/rule/claim/weekly/document page + paired mobile self-service/document/notification flow
+- **最后审查日期：** 2026-09-29
+- **状态：** active
+
+### 业务保护规则
+
+- “费用结算”是 ABN 合作人员向 Homixa 提供服务的供应方应付域，不写入现有对客应收发票结构；不登记 RCTI 协议版本或接受时间。
+- 费用结算网页按日常操作优先级固定显示“周结算 → 工作量反馈 → 人员与费用规则”，首次进入默认打开周结算；人员搜索和刷新操作只在人员与费用规则页显示。
+- 姓名、ABN、银行资料与 Photo ID 复用现有 `users` 资料，不建立第二套可变主数据。结算档案只保存按生效日期冻结的供应方/税务版本；财务确认已付款时才把当时的银行资料冻结到周结算。付款前的完整收款人、BSB 和账号只对同时具备 `finance.payout` 与 `personnel_settlements.bank.manage` 的人员展示，列表、普通详情和审计不得泄露完整账号。
+- GST 状态必须明确区分 `unconfirmed`、`registered`、`not_registered`；未确认不得默认为未注册，也不得进入自动金额计算。ABN 只将空格/连字符等分隔符归一化后检查 11 位数字，不执行数学校验和，也不宣称完成 ABR、归属或 GST 官方验证；GST 已注册必须填写 11 位 ABN。网页必须在提交前给出中文格式提示，后端仍是最终权威，不能把 `invalid_abn` 技术码直接显示给用户。
+- 网页修改必须具备后端权限、填写不晚于 Melbourne 当日的生效日期和原因，并保存修改人、来源、时间及脱敏前后快照。完整银行资料由 `personnel_settlements.bank.manage` 单独控制；无该权限的管理人员只能看到脱敏值。
+- “结算资料生效日期”和“费用规则生效日期”是两个独立版本边界：前者控制人员、税务、结算开关和银行资料，后者控制计费方式与单价。网页必须使用不同名称并说明各自影响范围，不能仅显示两个相同的“生效日期”。
+- 已 `finance_approved` 或 `paid` 的历史周结算不可被回溯改写；任何可能覆盖已锁定期间的档案或费用规则生效日期必须返回冲突。费用规则页面必须先读取锁定截止日，禁用无效日期并用中文说明最早可选日期；保存后继续显示刚保存版本的生效日，不能重置为当天，也不能把 `rule_effective_date_locked` 技术码直接显示给用户。若所选生效日早于已有后续版本，保存前必须明确展示该历史版本的实际截止日并说明当前版本不会改变；历史卡片可将完整规则复制到当前可写日期，但复制只能填充表单、必须再次保存，且不得删除或覆盖原历史版本。Photo ID 仅是身份合规资料，不能作为工作量证明。
+- 每个人的费用规则必须明确选择 `exclusive_gst` 或 `inclusive_gst`，金额只以 AUD 整数分保存。一个版本可组合岗位所需的多种计算方式；不同生效日生成不重叠的历史版本，同一生效日只允许修正同一版本。普通工作人员不得读取或修改规则管理接口。
+- 人员结算资料详情在具备 `personnel_settlements.rules.manage` 权限时，必须复用现有只读规则历史接口并且只展示其中的当前生效版本，包括生效期间、GST 单价口径、逐项计费方式与金额及备注；没有当前生效版本时显示明确空状态。历史版本只在专门的费用规则抽屉中展示。没有规则管理权限时不得为详情页额外请求或暴露完整单价，继续只显示资料接口已有的当前规则摘要。
+- 清洁费用必须按房源 `properties.type` 精确匹配 `一房一卫`、`两房一卫`、`两房两卫`、`三房两卫`、`三房三卫`、`4房3.5卫` 六档单价；清洁规则保存时六档必须齐全且不得重复。旧的统一清洁单价不参与新周结算；任务缺少/超出支持房型或人员缺少对应房型单价时必须进入财务人工复核，禁止静默回退。房型必须写入计算快照，已发起确认、已批准或已付款的历史结算不得因此回算。
+- 周期固定 Australia/Melbourne 周一至周日，网页核对工作量时的起止时间也必须转换到该业务时区显示，不能随浏览器、服务器或 CI 运行时区漂移。合作方只能提交已经结束的完整周；提交时按 `cleaning_tasks.cleaner_id` 的最终任务安排逐任务汇总，不要求完成状态、完成动作或照片；`cancelled/canceled` 任务必须排除，同一任务只能计一次。检查仍按当地实际提交日去重，仓管/补贴/加班/上新房/试工/编外只接受已确认计入的工作量。缺档案、缺规则、GST 未确认或检查执行人冲突时仍允许本人先提交，但结算必须携带阻断原因，财务不得确认付款；不能猜测金额。
+- `GET /finance/settlements/preview` 始终只读，不创建批次、发票、支出、通知或付款。应用运行时不得自动执行 migration；固定 Preview 开发库 migration 必须经独立明确授权执行。
+- 周结算不再由财务批量生成或发起本人确认；网页不得显示“生成 / 重算所选周”“批量生成与发起记录”或单行“发起确认”。历史 `/weekly/generate`、`/weekly/run` 与单行发起接口返回 410，后台周任务只保留兼容运行记录且不得创建结算或发送确认通知。
+- 工作量反馈只能由本人创建、修改和提交。移动端普通反馈必须先按 `service_date` 读取本人当天主动反馈合同，仓管、加班、补贴、上新房、编外合作和其他费用始终可选；是否已经配置费用规则只能改变采用的计算口径和提示，不能阻止本人先提交。服务端在新建、修改与提交草稿时必须再次核对六类允许项，旧客户端或手工请求不得绕过。清洁、检查、周固定及试工不进入自助反馈入口，历史试工记录只读。多个编外计费项按规则优先级只显示一个业务选项，底层按次/按天/按小时口径由已配置规则锁定；未配置时默认收工作量并进入公司核对。按小时只收开始/结束时间，金额类只收金额，按次类收工作量，上新房另须房源编号。规则已配置且本人 GST 状态明确时，本人可通过只读预估接口看到当天生效单价、含/未含 GST 口径和预计总额；预估必须复用正式结算的整数分与 GST 拆分算法，不能由移动端另算，接口失败或规则未配置不得阻止提交，正式金额仍以公司核对为准。网页公司核对也必须调用同一权威算法，先展示反馈内容、证明材料和预计计入金额，只允许核对当前计费口径需要的工时、数量、天数或直接金额；按规则计费的类型禁止手填金额，确认时服务端必须再次计算并拒绝不可计算的反馈。除上新房照片为选填外，其余反馈提交与确认计入都必须已有稳定 evidence 关联。请合作方补充资料与本次不纳入结算必须填写原因；本人初次提交周工作量后，财务仍可在普通反馈页核对该周 `submitted` 内容，但已确认计入且尚未进入结算明细的反馈会阻止付款，必须通过“退回合作方再次确认”按最新规则重算后才能继续。`awaiting_confirmation/finance_approved/paid` 阶段继续锁定普通确认计入。本人可从单一“工作内容或金额有疑问”入口选择“补充工作或费用”或“现有结算需要核对”；前者必须把 claim 提交和结算转为 `disputed` 放在同一事务，失败时不得清理本地草稿或留下半成功状态；后者仅提交对既有结算的说明。进入 `disputed` 后，费用规则管理人员或财务付款人员必须能查看反馈日期、类型、工作量、金额、说明和证明照片，并直接确认计入或标记本次不纳入；待公司核对、需要补充资料或已确认但未计入的反馈处理完前不得重新发起。确认计入必须在同一事务中按工作日期的生效费用规则与 GST 口径生成结算明细并重算 Subtotal/GST/Total，重复确认不得重复入账；不能把正常补充内容变成人工财务补差。claim 和媒体使用客户端稳定 ID 保证重试幂等；最多 5 张本地草稿，单张服务端上限 10 MB，服务端统一规范化为 JPEG。上传失败保留本地草稿并可重试，只有完整业务提交成功后才清理本地临时文件。
+- 上新房继续复用历史 `new_property_task` 类型标识和报表分类，但计价口径统一为每小时：本人必须提交房源编号与开始/结束时间，服务端保存权威整数分钟且不再写入默认数量；本人预估、公司核对与周结算都按 `分钟 ÷ 60 × 小时单价` 使用同一权威整数分/GST 算法。已锁定结算快照不回算；缺少工时的旧待处理记录不得把历史数量静默当成小时数。
+- 移动端本人工作量列表、周结算列表和周提交预览 GET 必须兼容 React Native `cache: no-store` 自动追加的 `_` 缓存参数；该参数只能作为受长度限制的传输标记忽略，其他未知查询字段仍必须被 strict Schema 拒绝，不能借此放宽人员范围或搜索权限。周提交 POST 必须使用独立严格 Body Schema，不得因 GET 兼容参数而接受 `_`。本人初次提交前必须先取得包含安全行项明细的权威预览；预览返回基于周期、金额、行项和阻断项生成的 `confirmation_token`，提交时必须携带该标识。服务端在同一提交事务中重新计算并校验标识，明细或金额变化时拒绝旧预览，不能在用户核对后静默换成另一份结算内容。
+- 工作量证明属于财务私有媒体。列表/详情不得返回 evidence `storage_key` 或原始对象地址；本人只能通过精确 claim/evidence 关联的认证路由读取自己的证明，网页仅由 `personnel_settlements.profiles.view` 权限读取。开发环境本地回退文件位于非静态私有目录，不经 `/uploads` 暴露；Photo ID 仍不得复用为工作量证明。
+- 本人通过只读预览核对上一完整周并主动提交；初次提交直接进入 `confirmed`（界面显示“待财务核对”）且重复提交幂等，不发送“请确认”通知。财务无问题时只能在银行完成转账后点击“确认已付款”，直接进入 `paid` 并生成清洁支出；付款前必须再次检查有效资料、GST、明细、待处理反馈和提交时的计算阻断。财务发现工作量或金额问题时必须填写退回说明，系统按最新权威规则重算并进入 `awaiting_confirmation`，界面显示“待合作方再次确认”；本人确认后重新进入“待财务核对”。历史 `finance_approved` 仅只读兼容，不恢复中间待付款步骤。
+- 财务退回再次确认前，该人员当周不得存在 `draft/submitted/returned` 反馈，且不得有无法自动计算的来源。退回通知收件人只能是结算行的 `user_id`，Inbox、badge 与 push queue 使用同一个最终收件人和稳定 `event_id`；同一退回版本重试必须复用去重键，后续再次退回必须使用新版本键。初次本人提交不发该通知，角色、可配置群组、额外人员或历史经办人不得扩大收件范围。移动端通知点击必须进入“我 → 费用结算”。
+- 待确认文件只能标记为 `Weekly Settlement Draft` 和 `NOT A TAX INVOICE`。本人确认工作量及金额后，GST 已注册人员生成 `Tax Invoice`；GST 未注册人员生成普通 `Invoice` 且 GST 必须为 0；不生成或记录 RCTI。文件由 Homixa 代表供应方根据冻结周结算记录准备，并按本人确认和付款状态保留不可变历史版本；历史 `finance_approved` 文件继续可读。财务管理端可继续核对历史文件，但本人详情接口只能返回与当前结算状态一致的最新一份；当前状态尚未生成文件时必须返回空列表，禁止回退显示旧状态或同状态旧版本 PDF。
+- 供应方文件必须包含双方名称/ABN、付款方地址、服务期间、状态和周 Subtotal/GST/Total。主表固定为 Date/Description/Total，并按 `service_date` 每天一行：当天 Cleaning 使用锁定快照房号合并，补贴、加班、仓管、上新房、试工、编外、其他和财务调整一并进入当天 Description，右侧金额必须等于当天全部锁定行的总额。逐项工作量、单价、房型、GST 和来源仍完整保存在锁定结算行/API 供财务核对，不在 PDF 主表重复展开；财务调整的 GST 仍必须为 0。模板版本必须参与文档来源哈希，以保留旧文件且让新布局生成不可变新版本。银行账号和对象 `storage_key` 不得进入 PDF 或 API 列表，文件字节只能通过本人或有权限管理人员的认证路由读取。
+- 财务付款闭环只保留一个“确认已付款”操作：仅允许从本人已确认状态进入，历史 `finance_approved` 记录也可直接完成。操作人必须同时具备 `finance.payout` 与 `personnel_settlements.bank.manage`；界面显示服务端结算总额、收款人、BSB 和完整账号，不允许人工改付款金额。确认后在同一数据库事务中把结算直接标记为 `paid`、冻结收款资料，并幂等写入唯一一条已付款 `company_expenses`；不新增中间“待付款”状态，也不调用银行 API。新付款只填写和保存付款日期，不要求或写入银行转账编号；数据库旧字段与历史值仅为兼容保留。相同金额与日期的重复确认必须幂等；人工覆盖过的公司费用不得自动改写，已付款结算不可调整、重新打开或作废。PDF 生成失败只能返回可重试警告，不得把已成功的付款事务误报为失败。
+- 人员周结算生成的公司费用顶层统一归入“清洁支出”，包括清洁、检查、仓管、试工、编外合作、补贴、加班、上新房、固定合作费用和其他调整；历史人员结算即使原分类为 `operations` 也必须在报表中归一化为“清洁支出”。公司营收报表在该顶层合计下保留内部构成，补贴、试工、编外合作等可分开统计；内部拆分之和必须与清洁支出金额一致，不得重复计入总支出。无公司支出查看权限的账号不得取得该内部构成；该自动费用不能从通用公司费用 CRUD 修改或删除。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| additive migration、九张表、GST 三态、资料审计、稳定媒体引用、付款快照、marker 顺序和无 runtime DDL | `backend/scripts/tests/test_personnel_settlement_phase1.ts` | 静态验证 schema owner、路由挂载、资料本人/管理员端点及 readiness | sufficient | `npm run test:personnel-settlement-phase1 --prefix backend` |
+| ABN 仅 11 位格式校验、GST 含税/未税整数分、周周期、清洁最终安排去重/取消排除、六档房型精确匹配/禁用旧统一单价、检查按真实提交日、仓管与上新房按分钟及人工复核 | `backend/scripts/tests/test_personnel_settlement_phase1.ts` | 纯函数与内存 executor 覆盖普通 assigned 安排计费、同任务去重、`cancelled/canceled` 均不计、完成审计不重复计费、六档逐一选价、上新房 120 分钟按 2 小时计价、缺房型告警和旧统一单价不回退 | sufficient | `npm run test:personnel-settlement-phase1 --prefix backend` |
+| 财务菜单精确命名与专用可见权限 | `frontend/src/lib/adminNavigation.test.ts` | 仅具备费用结算菜单权限时出现 `/finance/settlements` | sufficient | `npm run test --prefix frontend -- --run src/lib/adminNavigation.test.ts --coverage.enabled=false` |
+| schema 未初始化时不重复弹 toast、不暴露技术错误 | `frontend/src/app/finance/settlements/settlementPageState.test.ts` | marker 未就绪映射为单一页面内初始化状态；未知错误使用通用安全文案 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/settlementPageState.test.ts --coverage.enabled=false` |
+| 网页 ABN 格式反馈及两类生效日期区分 | `frontend/src/app/finance/settlements/personnelProfileUi.test.ts` | ABN 归一化/11 位长度且无数学校验和、后端格式错误中文映射、结算资料与费用规则日期的独立名称和用途说明 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/personnelProfileUi.test.ts --coverage.enabled=false` |
+| 人员详情当前费用规则展示与权限边界 | `frontend/src/app/finance/settlements/personnelProfileUi.test.ts` | 只有 `canManageRules` 的详情读取既有规则历史端点并筛选 `is_current`；页面只显示当前版本的生效期间、GST 口径和逐项单价，不重复历史版本且不扩大后端规则管理权限；真实页面另验证无当前版本空状态 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/personnelProfileUi.test.ts src/app/finance/settlements/feeRuleUi.test.ts --coverage.enabled=false` |
+| 网页费用结算标签优先级与默认页 | `frontend/src/app/finance/settlements/personnelProfileUi.test.ts` | 首次进入默认打开周结算，标签顺序固定为周结算、工作量反馈、人员与费用规则 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/personnelProfileUi.test.ts --coverage.enabled=false` |
+| 每人规则字段、清洁六档完整性/唯一性/优先级、整数分、重复范围、权限路由、事务锁、生效版本切分及历史锁定边界 | `backend/scripts/tests/test_personnel_settlement_phase2.ts` | 合同测试覆盖六档条件写入、缺档/重复/旧统一单价拒绝；锁定截止日换算下一可用日期、约束只读路由、保存后日期回显、历史复制入口、历史保存确认和日期禁用合同 | sufficient | `npm run test:personnel-settlement-phase2 --prefix backend` |
+| 网页清洁六档表格、AUD 元/分转换、含/未含 GST 口径和历史 Drawer | `frontend/src/app/finance/settlements/feeRuleUi.test.ts` | 六档初始化、缺档/重复校验、房型标签、上新房明确显示“每小时”、非清洁规则唯一性、较早生效日的准确历史区间提示，以及当前版本可写/已锁定时的安全复制目标日期 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/feeRuleUi.test.ts --coverage.enabled=false` |
+| claim 校验、本人/公司核对金额预估、补充内容原子提交、重新核对状态机、财务闭环、权限路由、行锁/事务、公司费用幂等与银行审计脱敏 | `backend/scripts/tests/test_personnel_settlement_phase3.ts` | 纯函数与源码合同覆盖 `$35/小时 × 70 分钟` 在含 GST 注册口径下得到未税 `$37.12`、GST `$3.71`、总额 `$40.83`，公司核对 50 分钟得到未税 `$26.52`、GST `$2.65`、总额 `$29.17`，以及核对弹窗不提供规则型手填金额、确认时服务端重新计算；同时覆盖 claim 提交、重新核对、本人确认后直达已付款、付款金额服务端锁定、只记录付款日期且不写入转账编号、银行权限、已付款清洁支出幂等、历史 `finance_approved` 兼容、作废和非法状态流转 | sufficient | `npm run test:personnel-settlement-phase3 --prefix backend` |
+| 移动端本人列表/周提交预览兼容 `_` 缓存参数且保持提交边界 | `backend/scripts/tests/test_personnel_settlement_phase3.ts` | 实际 Schema 覆盖工作量列表、周结算列表和周提交预览 GET 的 `_` 参数，断言额外查询字段继续失败，并断言周提交 POST Body 拒绝 `_` | sufficient | `npm run test:personnel-settlement-phase3 --prefix backend` |
+| 本人周提交明细与两步核对快照 | `backend/scripts/tests/test_personnel_settlement_phase3.ts` | 权威预览只返回提交所需安全行项，生成 64 位确认标识；金额变化会改变标识，POST 缺少标识时由 strict Schema 拒绝 | sufficient | `npm run test:personnel-settlement-phase3 --prefix backend` |
+| 本人主动反馈类型与上新房照片例外 | `backend/scripts/tests/test_personnel_settlement_phase3.ts` | 无对应费用规则仍返回六类主动反馈；已配置项采用规则口径；清洁/试工继续排除，options 查询保持 strict Schema；上新房要求房源和有效起止时间、保存整数分钟、不写默认数量，并按 150 分钟 × 小时单价预估且不要求 evidence | sufficient | `npm run test:personnel-settlement-phase3 --prefix backend` |
+| 移动端主动反馈、动态字段与本人预估金额 | `mz-cleaning-app-frontend/src/screens/me/PersonnelSettlementScreen.test.tsx` | 未配置费用规则仍显示六类业务选项且无试工；金额/时间/数量字段随类型切换，上新房显示起止时间与“小时 + 分钟”、隐藏工作量且无照片可提交；已配置 `$35/小时`、70 分钟、含 GST 时展示 `$40.83` 和 GST `$3.71` | sufficient | paired mobile `npm run test -- --runInBand src/screens/me/PersonnelSettlementScreen.test.tsx` |
+| 清洁/检查/仓管/混合岗位完整周闭环 | `backend/scripts/tests/test_personnel_settlement_phase3_integration.ts` | 固定 Preview 合成数据覆盖提交、退回、确认计入、拒绝、生成、本人确认、异议、补充内容自动入账、按当前金额重新发起、收款资料预览、只按日期直接已付款且不保存转账编号、唯一清洁支出、重复确认、期间锁定与精确清理 | sufficient | `npm run test:personnel-settlement-phase3:integration --prefix backend`（仅已验证 Preview 开发库） |
+| 异议窗口申报金额、内容、私有照片与财务审核衔接合同 | `backend/scripts/tests/test_personnel_settlement_phase3.ts` | 验证周详情不返回 raw storage key、窗口复用认证 Blob、财务审核权限、有异议锁例外和未处理申报提交门禁 | sufficient | `npm run test:personnel-settlement-phase3 --prefix backend` |
+| 异议期间补充申报的数据库闭环 | `backend/scripts/tests/test_personnel_settlement_phase3_integration.ts` | 固定 Preview 合成数据验证本周申报/evidence 元数据进入详情；批准后按费用规则写入唯一明细，非 GST 的 $250 + $10 自动变为 $260，已注册 GST 的 $220 + $35 自动拆分为 $235 未税 + $23.50 GST，财务补差均保持 $0，重复批准不重复入账 | sufficient | `npm run test:personnel-settlement-phase3:integration --prefix backend`（仅已验证 Preview 开发库） |
+| 网页周选择、时长、状态、权限动作与异议自动汇总提示 | `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` | 周一归一化、上一完整周、AUD 显示、70 分钟统一显示 `1 小时 10 分钟`、UTC/显式偏移时间在 AEST/AEDT 均统一按 Melbourne 显示、管理/财务/银行权限可见性、异议自动计入，以及单一“确认已付款”交互只填写付款日期、不显示转账编号或付款金额编辑 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/settlementWorkflowUi.test.ts --coverage.enabled=false` |
+| 清洁支出顶层分类、内部构成与不重复计费 | `backend/scripts/tests/test_company_revenue_report.ts` | 历史 `operations` 人员结算归一为清洁支出；清洁、补贴、试工分开汇总，试工多种计价口径合并；内部构成之和等于顶层支出，自动费用不可编辑 | sufficient | `npm run test:company-revenue-report --prefix backend` |
+| 本人申报、稳定 ID 与私有证明路由合同 | `backend/scripts/tests/test_personnel_settlement_phase4.ts` | 源码合同覆盖稳定 ID、上传限制、本人/管理读取权限、raw key 隐藏和安全响应 | sufficient | `npm run test:personnel-settlement-phase4 --prefix backend` |
+| 私有证明关联、授权读取与提交闭环 | `backend/scripts/tests/test_personnel_settlement_phase4_integration.ts` | 固定 Preview 隔离数据覆盖申报/媒体幂等、JPEG 规范化、本人读取、他人拒绝、提交后禁止新增证明及精确清理 | sufficient | `npm run test:personnel-settlement-phase4:integration --prefix backend`（仅已验证 Preview 开发库，R2 显式关闭） |
+| 网页证明不接触 raw key、认证 Blob 生命周期 | `frontend/src/app/finance/settlements/claimEvidenceImage.test.ts` | 仅使用权限 API 下载证明，生成临时 object URL，并在替换/卸载时释放；失败显示安全占位 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/claimEvidenceImage.test.ts --coverage.enabled=false` |
+| 周一上一完整周、scheduler 默认关闭、人工/定时入口和通知合同 | `backend/scripts/tests/test_personnel_settlement_phase5.ts` | 纯函数/静态合同覆盖上一完整周、事务锁源码、路由、单收件人和稳定 event ID | sufficient | `npm run test:personnel-settlement-phase5 --prefix backend` |
+| 全局锁、运行记录、待处理申报门禁、精确本人通知和分轮次稳定去重 | `backend/scripts/tests/test_personnel_settlement_phase5_integration.ts` | 固定 Preview 覆盖事务级锁竞争、`partial/succeeded/skipped`、异议金额修改、重新发起、每轮单收件人 Inbox/Queue 稳定 event ID、新版 PDF 和精确清理 | sufficient | `npm run test:personnel-settlement-phase5:integration --prefix backend`（仅已登记 Preview 开发库） |
+| 草稿、GST/非 GST、本人当前文件、按日发票汇总、财务调整和私有下载合同 | `backend/scripts/tests/test_personnel_settlement_phase5.ts` | Tax Invoice/Invoice 名称、本人详情只选当前状态最高版本且不回退旧状态、七日三列表格、同日清洁房号与混合费用合并、当日/周总额、模板版本来源哈希、GST 0 保护、raw key 隐藏和 HTML/PDF 模板 | sufficient | `npm run test:personnel-settlement-phase5 --prefix backend` |
+| 不可变文件历史、认证下载和付款文件集成 | `backend/scripts/tests/test_personnel_settlement_phase5_integration.ts` | 当前最新与管理端历史状态版本、owner/admin 下载、non-owner 404、完整收款资料权限、直接确认已付款、已付款清洁支出和单页 A4 视觉检查 | sufficient | `npm run test:personnel-settlement-phase5:integration --prefix backend`（R2 显式关闭） |
+| 合作方先提交、财务后核对及文件历史合同 | `frontend/src/app/finance/settlements/phase5Ui.test.ts` | 网页移除生成、批量运行与发起确认入口，保留退回再次确认、确认已付款、PDF 入口及鉴权下载合同 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/phase5Ui.test.ts --coverage.enabled=false` |
+| 网页真实周表和运行记录 | `backend/scripts/tests/test_personnel_settlement_phase5_integration.ts` | port 3000 Chromium 显示两名人员、GST 金额、待确认状态与三类 job result，无费用结算请求错误 | sufficient | `npm run test:personnel-settlement-phase5:integration --prefix backend` |
+| 移动端反馈草稿与证明重试 | `mz-cleaning-app-frontend/src/lib/personnelClaimDraft.test.ts` | 用户隔离草稿、上传中断恢复、稳定 ID、5 张上限与成功提交后清理 | sufficient | paired mobile `npm run test -- --runInBand src/lib/personnelClaimDraft.test.ts` |
+| 移动端周金额确认与当前文件读取 | `mz-cleaning-app-frontend/src/screens/me/PersonnelSettlementScreen.test.tsx` | 本人周结算、同状态多版本只显示最新版、旧状态不回退、精确确认文案、认证 PDF 下载和系统分享 | sufficient | paired mobile `npm run test -- --runInBand src/screens/me/PersonnelSettlementScreen.test.tsx` |
+| 移动端费用结算通知展示与跳转动作 | `mz-cleaning-app-frontend/src/lib/personnelSettlementNotification.test.ts` | 通知周期间、确认语义及 `open_personnel_settlement` 动作识别 | sufficient | paired mobile `npm run test -- --runInBand src/lib/personnelSettlementNotification.test.ts` |
+
+### 验证策略
+
+- **本地：** 后端 Phase 1–5 合同（含清洁六档房型计算）、isolated build/PDF render、网页 lint/test/isolated build、Feature Registry 与 ledger audit；固定 Preview 核对页面/API/Metro 可用性。PDF 使用虚构资料并在检查后清理。
+- **非生产数据库：** 固定 Preview 开发库安全闸门、Phase 1/5 migration、marker/11 张费用结算表/现有角色授权、资料/GST/规则历史、Phase 3 周闭环、Phase 4 私有证明及 Phase 5 job/通知/PDF/付款均已用隔离合成数据验证并精确清理；R2、push provider、外部银行和生产服务保持关闭。
+- **跨仓库：** 移动端资料、反馈、本人确认、认证文件客户端及通知动作已完成源码/单元/TypeScript/lint/export；配套 Root 真实 API 已验证本人列表/详情/确认/文件、non-owner 404 与通知数据合同。仍无真实 push 点击、设备 PDF Share、OTA、真机或生产验证。
+
+### 最后验证
+
+- **CRL：** root/CRL-20260910-002, root/CRL-20260910-004, root/CRL-20260911-001, root/CRL-20260911-002, root/CRL-20260911-003, root/CRL-20260911-004, root/CRL-20260911-005, root/CRL-20260911-007, root/CRL-20260911-008, root/CRL-20260912-001, root/CRL-20260912-002, root/CRL-20260912-003, root/CRL-20260912-005, root/CRL-20260913-001, root/CRL-20260913-002, root/CRL-20260913-003, root/CRL-20260914-001, root/CRL-20260914-002, root/CRL-20260914-003, root/CRL-20260914-004, root/CRL-20260925-001, root/CRL-20260926-001, root/CRL-20260929-002, mobile/CRL-20260911-001, mobile/CRL-20260911-002, mobile/CRL-20260911-003, mobile/CRL-20260912-001, mobile/CRL-20260913-001, mobile/CRL-20260913-004, mobile/CRL-20260914-002
+- **Commit：** not committed
+- **日期：** 2026-09-29
+
+### 相关 CRL
+
+- root/CRL-20260910-002：费用结算 Phase 1 后端资料复用、GST 版本、网页资料维护与只读周预览。
+- root/CRL-20260910-004：费用结算 Phase 2 每人自定义费用规则、单价、GST 口径、生效日期与规则历史。
+- root/CRL-20260911-001：费用结算 Phase 3 申报审核、周结算确认、财务批准、公司费用和外部转账登记。
+- root/CRL-20260911-002：费用结算 Phase 4 本人申报/证明 API、私有证明读取和网页安全预览。
+- root/CRL-20260911-003：费用结算 Phase 5 周任务、运行记录、精确通知和供应方 PDF 历史。
+- root/CRL-20260911-004：费用结算 Phase 6 清洁六档房型规则、精确计价和异常人工复核。
+- root/CRL-20260911-005：取消 ABN 数学校验和，网页与后端仅检查归一化后的 11 位数字。
+- root/CRL-20260911-008：本人工作量与周结算列表兼容 React Native `_` 缓存参数，同时保持未知查询字段拒绝。
+- root/CRL-20260912-001：费用结算异议由财务或管理人员确认原金额或编辑总额，并自动生成新版文件和重新发起本人确认。
+- root/CRL-20260912-002：异议窗口展示本人本周申报内容、金额和鉴权证明照片，允许财务/管理直接确认或不计入后完成金额处理。
+- root/CRL-20260912-003：异议中确认补充申报时按生效费用规则与 GST 自动写入结算明细并重算总额，手工改额仅保留给特殊调整。
+- root/CRL-20260913-002：财务由本人已确认直达已付款，新付款只记录日期且不写转账编号；同事务写入已付款清洁支出，并在公司营收报表保留不重复计费的内部构成。
+- root/CRL-20260913-001：本人补充内容 claim 提交与结算转入重新核对改为同一事务，网页和通知改用合作式文案。
+- mobile/CRL-20260910-001：移动端个人资料表复用商业名称、GST 三态与生效日。
+- mobile/CRL-20260911-001：移动端工作量反馈、证明草稿上传和周结算金额确认/异议。
+- mobile/CRL-20260911-002：移动端费用结算 PDF 查看/分享和确认通知跳转。
+- mobile/CRL-20260911-003：移动端个人资料同步取消 ABN 数学校验和，仅保留 11 位格式检查。
+- mobile/CRL-20260913-001：移动端合并周结算问题入口，分为结构化补充内容和纯文字核对两条路径，并保留草稿/证明失败重试边界。
+- root/CRL-20260914-001：费用规则保存后保留所选生效日期，并在网页预先展示/禁用已结算锁定边界及中文错误提示。
+- root/CRL-20260914-002：本人工作反馈金额使用正式结算算法只读预估，网页工时统一显示小时和分钟。
+- root/CRL-20260914-003：网页公司核对工作反馈时自动展示规则金额与 GST 拆分，仅核对对应工作量并在确认时由服务端重新计算。
+- root/CRL-20260914-004：费用结算网页默认进入周结算，并按周结算、工作量反馈、人员与费用规则显示标签。
+- root/CRL-20260922-001：周结算页将批量运行按钮明确命名为“批量生成与发起记录”，并恢复下方“周任务运行记录”标题。
+- root/CRL-20260924-001：周提交预览 GET 兼容受限缓存参数，同时保持周提交 POST 严格参数边界。
+- root/CRL-20260924-002：周提交预览返回安全明细与确认标识，服务端拒绝使用已变化的旧预览提交。
+- root/CRL-20260924-003：上新房反馈改为记录起止时间和整数分钟，同时保留既有按次费用口径与历史记录兼容。
+- root/CRL-20260924-004：上新房在本人预估、公司核对和周结算中统一改为按实际分钟折算小时计价。
+- root/CRL-20260925-001：费用规则较早日期保存时明确历史区间；历史规则可完整复制到当前可写日期，并保留原历史版本。
+- root/CRL-20260926-001：人员结算资料详情为有规则管理权限的账号只展示当前生效费用规则及逐项单价；历史版本仍留在费用规则抽屉，无当前版本时显示空状态。
+- root/CRL-20260929-002：网页财务核对工作量的起止时间固定转换为 Melbourne 业务时区，不再随 CI 或运行机时区偏移。
+- mobile/CRL-20260914-002：移动端在已有生效规则时显示单价、GST 口径和预计金额，预估失败不阻止反馈。
+- mobile/CRL-20260924-003：移动端上新房隐藏工作量输入，改用起止时间和自动时长摘要。
+- mobile/CRL-20260924-005：移动端上新房规则与预计金额统一显示小时单价。
+
+### 非保护范围
+
+- 按具体房源 ID 或其他任务属性的高级覆盖规则、scheduler 部署启用与真实运行、银行 API、对象存储物理 ACL 调整、会计/税务最终审阅、生产迁移/部署与真机验证。
+
 ## FR-026：Property Guide 与已退休 Maintenance 路径不得在运行时修改 schema
 
 - **维护责任范围：** backend Property Guide admin/public/link-sync；已确认无调用者的 Maintenance legacy helper

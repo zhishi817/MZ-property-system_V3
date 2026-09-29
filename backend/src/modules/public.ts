@@ -1065,6 +1065,7 @@ router.post('/company-expense/submit', async (req, res) => {
   if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ message: 'invalid amount' })
   if (!/^\d{4}-\d{2}-\d{2}$/.test(occurred_at)) return res.status(400).json({ message: 'invalid occurred_at' })
   const allowedCats = new Set([
+    'cleaning_expense',
     'office',
     'bedding_fee',
     'office_rent',

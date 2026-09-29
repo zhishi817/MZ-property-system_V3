@@ -264,6 +264,7 @@ type MzappExpenseScope = 'company' | 'property'
 
 const MZAPP_PROPERTY_REGION_ORDER = ['Melbourne', 'Southbank', 'South Melbourne', 'West Melbourne', 'St Kilda', 'Docklands']
 const COMPANY_EXPENSE_CATEGORIES = [
+  { value: 'cleaning_expense', label: '清洁支出' },
   { value: 'office', label: '办公' },
   { value: 'bedding_fee', label: '床品费' },
   { value: 'office_rent', label: '办公室租金' },

@@ -22133,3 +22133,2465 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Existing completion photos remain attached as review evidence. A later completion can reuse or supplement them, but unchanged photos alone no longer trigger automatic resubmission on an ordinary save.
 - Sensitive-information review: source, tests and documentation only; no credentials, database URLs, customer data, generated artifacts or logs are included.
 - Git state: uncommitted; not pushed, no PR, not merged, not deployed, production verification not run.
+## CRL-20260929-003 — 人员结算 Root 候选最终范围重建（root）
+
+- **Repository:** `root`
+- **Status:** rebuilt candidate prepared; not committed
+- **Updated:** 2026-09-29 Australia/Melbourne
+- **Request:** 在不修改发布审计器、不强制覆盖旧分支且保留 PR #366 的前提下，从最新 `origin/Dev` 重建人员结算 Root 最终候选，使同一文件的原始功能与后续 Melbourne 时区修复以最终 PR hunk 接受精确门禁。
+- **Outcome:** 不改变人员结算业务行为；新候选完整保留旧 PR #366 的 Root 产品内容及 Melbourne 时区修复，并增加 AEST/AEDT 回归边界。旧远端分支与 PR #366 保持不变，待新候选通过门禁后再单独申请推送授权。
+
+### Implementation
+
+- Previous behavior: 旧分支先提交人员结算功能，再提交 Melbourne 时区修复；三个共享文件的增量 hunk 在最终 PR diff 中合并，导致 pre-commit 的增量指纹与 release-report 的最终范围指纹无法同时匹配同一 active scope。
+- New behavior: 从 `origin/Dev@317b8d667594a0a1e3fb8277652b974aa2d23ef5` 建立全新干净候选，一次性承载最终非台账内容；12 个旧增量/原始指纹只保留为历史证据，active scope 由三个最终合并指纹接管。
+- Key decision: 不改变 `scripts/audit_change_release_ledger.py`，不改写或 force-push 旧分支，不关闭 PR #366；新候选需要重新通过精确 pre-commit、完整验证、独立审查及提交后 range report。
+
+### Files / Areas
+
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — 最终 Melbourne 时区格式化实现 hunk。
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — 最终时区回归 hunk，补充 AEST/AEDT 边界。
+- `docs/feature-regression-registry.md` — FR-029 最终映射与 Melbourne 夏令时不变量。
+- `docs/change-release-ledger.md` — 最终范围协调、历史指纹和新候选 Release Attempt。
+
+### Impact / Dependencies
+
+- Runtime/API/database/mobile impact: none beyond the already selected personnel-settlement CRLs and `root/CRL-20260929-002`；本 CRL 只协调发布范围及测试证据。
+- Packages/config/migration: none。
+- Old delivery state: Root 旧远端分支 `origin/codex/personnel-settlement-batch-20260929@342905d6fe3186495eb413595e44adacab240bdf` 与 PR #366 保留；Mobile 内容已独立进入 Mobile Dev，不在本候选修改范围。
+- Related units: 本次与原 33 个 Root 人员结算 CRL、`root/CRL-20260929-002` 一起提交；不建立第二套业务实现。
+
+### Validation
+
+- Final staged shape — prepared：72 个非台账文件 / 116 个最终 zero-context hunks；candidate content SHA-256 `a1b30ca9e48e5f06f2db9afeecd5eb854dac58b00dc24d66d48192108906ae35`。
+- `TZ=UTC npm run test --prefix frontend -- --run src/app/finance/settlements/settlementWorkflowUi.test.ts --coverage.enabled=false` — passed：1 file / 7 tests；覆盖 AEST 与 2026-10-04 AEDT 转换后均显示 `17:10–18:00`。
+- `TZ=Australia/Melbourne npm run test --prefix frontend -- --run src/app/finance/settlements/settlementWorkflowUi.test.ts --coverage.enabled=false` — passed：1 file / 7 tests。
+- `npm run check:full` — passed outside the filesystem/network sandbox after the first local-listen test was blocked by `EPERM`：Root workflow/ledger/FR/backend contracts passed；frontend lint 仅既有 warnings、52 files / 247 tests、production build 96 pages；paired Mobile typecheck passed、lint 0 errors / 556 warnings、62 suites / 367 tests passed。
+- Generated-output cleanup — passed：10 个 `backend/dist` 构建输出已恢复，临时 Root/Mobile 依赖链接已移除；最终精确门禁和独立审查待运行。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh `origin/Dev` worktree; exact old-candidate paths were imported and all non-ledger candidate files are explicitly staged.
+
+- `docs/feature-regression-registry.md` — SHA-256: `1d264020429dcc943c20d7a4498d7d4357344f20491ba8fa8fcf704328ece91a`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `89762b3a92b6ff0be491b8dc4ff43119597c2d53a9f7b0bf7a66de523982c7ad`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `86b3a7002377014b9fe4af6777998c2967c20ebff042f05366df4e8768af617a`
+
+### Scope Fingerprint Reconciliation
+
+- Historical original fingerprint from `root/CRL-20260926-001`: `docs/feature-regression-registry.md#8f7dd8d333f1530b8dc39aa2f0b5698997de6e6da060f21592110cc7a9f81676`.
+- Historical original fingerprint from `root/CRL-20260926-001`: `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts#5719b4bd7cb6929871def80b47ff5b7903a8daaffda1f474253e2f3246ac6b72`.
+- Historical original fingerprint from `root/CRL-20260926-001`: `frontend/src/app/finance/settlements/settlementWorkflowUi.ts#6cb5e2c67fcd9ced9ec9c7c7c20272f8ca05e89872458abdc92828fc98b5a24f`.
+- Historical incremental fingerprint from `root/CRL-20260929-002`: `frontend/src/app/finance/settlements/settlementWorkflowUi.ts#0da0a3ec8af92ef577e80f2c724d9e8ef3001f68c507558032d4946ae3c5313f`.
+- Historical incremental fingerprint from `root/CRL-20260929-002`: `frontend/src/app/finance/settlements/settlementWorkflowUi.ts#947102ae2fda1a3e7bf4d4c09e83627e49bea8e55be7728a33dfb61127f00286`.
+- Historical incremental fingerprint from `root/CRL-20260929-002`: `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts#47cf17bbf64cc2d8f750c8a6d2fbcf9c9fc79ef24443440de2588bce00d37f3b`.
+- Historical incremental fingerprint from `root/CRL-20260929-002`: `docs/feature-regression-registry.md#19c08ae19ebf0ab9b7bbc329fcf103702cb6cc8179c4bf1f067b2395516d8f91`.
+- Historical incremental fingerprint from `root/CRL-20260929-002`: `docs/feature-regression-registry.md#273b76a4317c3d826adf802139254892104daa78606e98c13a4de2489447d72c`.
+- Historical incremental fingerprint from `root/CRL-20260929-002`: `docs/feature-regression-registry.md#5c6dc6ff022e84d686f3f3fa617ad393d10a9828281669faac0fea9765d7710c`.
+- Historical incremental fingerprint from `root/CRL-20260929-002`: `docs/feature-regression-registry.md#61cd59b767ac9b73a7c12935848809b5f81fc6afe90e176dfc864066d9188ef7`.
+- Historical incremental fingerprint from `root/CRL-20260929-002`: `docs/feature-regression-registry.md#ce968a2b2f1a1f90f2a44c0b1133858042336415ff913fca58bc98de7988e4f2`.
+- Historical incremental fingerprint from `root/CRL-20260929-002`: `docs/feature-regression-registry.md#f3c9d81b8a736cf42b4d7276033cc240bbfe71890aeb4b8d628c3fd6b2c442b8`.
+- Reconciliation result: above 12 fingerprints are historical evidence only and are not active scope entries; the three final hashes in this CRL are the exact `origin/Dev...candidate` hunks.
+
+### Release Attempts
+
+#### RA-20260929-004
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260929-003`, `CRL-20260929-002`, `CRL-20260929-001`, `CRL-20260910-002`, `CRL-20260910-003`, `CRL-20260910-004`, `CRL-20260911-001`, `CRL-20260911-002`, `CRL-20260911-003`, `CRL-20260911-004`, `CRL-20260911-005`, `CRL-20260911-006`, `CRL-20260911-007`, `CRL-20260911-008`, `CRL-20260911-009`, `CRL-20260912-001`, `CRL-20260912-002`, `CRL-20260912-003`, `CRL-20260912-004`, `CRL-20260912-005`, `CRL-20260913-001`, `CRL-20260913-002`, `CRL-20260913-003`, `CRL-20260914-001`, `CRL-20260914-002`, `CRL-20260914-003`, `CRL-20260914-004`, `CRL-20260922-001`, `CRL-20260922-003`, `CRL-20260924-001`, `CRL-20260924-002`, `CRL-20260924-003`, `CRL-20260924-004`, `CRL-20260925-001`, `CRL-20260926-001`
+- Selected CRL identities: `root/CRL-20260929-003`, `root/CRL-20260929-002`, `root/CRL-20260929-001`, `root/CRL-20260910-002`, `root/CRL-20260910-003`, `root/CRL-20260910-004`, `root/CRL-20260911-001`, `root/CRL-20260911-002`, `root/CRL-20260911-003`, `root/CRL-20260911-004`, `root/CRL-20260911-005`, `root/CRL-20260911-006`, `root/CRL-20260911-007`, `root/CRL-20260911-008`, `root/CRL-20260911-009`, `root/CRL-20260912-001`, `root/CRL-20260912-002`, `root/CRL-20260912-003`, `root/CRL-20260912-004`, `root/CRL-20260912-005`, `root/CRL-20260913-001`, `root/CRL-20260913-002`, `root/CRL-20260913-003`, `root/CRL-20260914-001`, `root/CRL-20260914-002`, `root/CRL-20260914-003`, `root/CRL-20260914-004`, `root/CRL-20260922-001`, `root/CRL-20260922-003`, `root/CRL-20260924-001`, `root/CRL-20260924-002`, `root/CRL-20260924-003`, `root/CRL-20260924-004`, `root/CRL-20260925-001`, `root/CRL-20260926-001`
+- Intended action: `commit`
+- Branch: `codex/personnel-settlement-batch-rebuilt-20260929`
+- Base: `origin/Dev@317b8d667594a0a1e3fb8277652b974aa2d23ef5`; fetched at `2026-09-29T20:06:26+10:00`
+- Candidate patch SHA-256: `a1b30ca9e48e5f06f2db9afeecd5eb854dac58b00dc24d66d48192108906ae35` excluding `docs/change-release-ledger.md`
+- Commit SHA: `59bf0e3d10822b2664fc403888caa3c7a3cb245e`
+- Dependencies: `none`
+- Required validation: `PASS`; evidence: targeted settlement timezone tests passed 7/7 under both TZ=UTC and TZ=Australia/Melbourne; full check passed Root backend contracts, frontend lint/test/build (52 files / 247 tests / 96 pages), and paired Mobile typecheck/lint/test (0 errors / 556 warnings / 62 suites / 367 tests).
+- Shared-hunk review: `PASS`; evidence: three shared final-range hunks were recomputed from the clean `origin/Dev` baseline; 12 prior incremental/original fingerprints remain recorded only as historical evidence.
+- Generated-file review: `PASS`; evidence: all 10 backend/dist build outputs were restored, temporary dependency/Mobile links were removed, and the rebuilt candidate retains only the 73 declared Root paths.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: after being shown that the old Root branch/PR remains intact and the replacement is a clean Root-only candidate requiring new commit-bound push approval, user replied “OK 那继续吧” on 2026-09-29.
+- Independent review: `GO for commit`; evidence: independent read-only reviewer inspected the full 73-file staged diff, recomputed fingerprint `a1b30ca9e48e5f06f2db9afeecd5eb854dac58b00dc24d66d48192108906ae35`, reran the exact pre-commit/ledger/FR/auditor gates, verified 116/116 hunks, remote-ledger prefix preservation, 12 historical-to-3 final fingerprint reconciliation, old-candidate equivalence and secret/generated-file boundaries, and found no P0/P1. Accepted P2s are the host-timezone detail drawer and previously disclosed private-PDF orphan lifecycle risk.
+- Action conclusion: `GO`; the exact independently reviewed candidate was committed locally as `59bf0e3d10822b2664fc403888caa3c7a3cb245e`. Push, PR, merge, migration and deployment remain unauthorized.
+
+#### RA-20260929-005
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260929-003`, `CRL-20260929-002`, `CRL-20260929-001`, `CRL-20260910-002`, `CRL-20260910-003`, `CRL-20260910-004`, `CRL-20260911-001`, `CRL-20260911-002`, `CRL-20260911-003`, `CRL-20260911-004`, `CRL-20260911-005`, `CRL-20260911-006`, `CRL-20260911-007`, `CRL-20260911-008`, `CRL-20260911-009`, `CRL-20260912-001`, `CRL-20260912-002`, `CRL-20260912-003`, `CRL-20260912-004`, `CRL-20260912-005`, `CRL-20260913-001`, `CRL-20260913-002`, `CRL-20260913-003`, `CRL-20260914-001`, `CRL-20260914-002`, `CRL-20260914-003`, `CRL-20260914-004`, `CRL-20260922-001`, `CRL-20260922-003`, `CRL-20260924-001`, `CRL-20260924-002`, `CRL-20260924-003`, `CRL-20260924-004`, `CRL-20260925-001`, `CRL-20260926-001`
+- Selected CRL identities: `root/CRL-20260929-003`, `root/CRL-20260929-002`, `root/CRL-20260929-001`, `root/CRL-20260910-002`, `root/CRL-20260910-003`, `root/CRL-20260910-004`, `root/CRL-20260911-001`, `root/CRL-20260911-002`, `root/CRL-20260911-003`, `root/CRL-20260911-004`, `root/CRL-20260911-005`, `root/CRL-20260911-006`, `root/CRL-20260911-007`, `root/CRL-20260911-008`, `root/CRL-20260911-009`, `root/CRL-20260912-001`, `root/CRL-20260912-002`, `root/CRL-20260912-003`, `root/CRL-20260912-004`, `root/CRL-20260912-005`, `root/CRL-20260913-001`, `root/CRL-20260913-002`, `root/CRL-20260913-003`, `root/CRL-20260914-001`, `root/CRL-20260914-002`, `root/CRL-20260914-003`, `root/CRL-20260914-004`, `root/CRL-20260922-001`, `root/CRL-20260922-003`, `root/CRL-20260924-001`, `root/CRL-20260924-002`, `root/CRL-20260924-003`, `root/CRL-20260924-004`, `root/CRL-20260925-001`, `root/CRL-20260926-001`
+- Intended action: `push`
+- Branch: `codex/personnel-settlement-batch-rebuilt-20260929`
+- Base: `origin/Dev@317b8d667594a0a1e3fb8277652b974aa2d23ef5`; fetched at `2026-09-29T21:14:55+10:00`
+- Candidate patch SHA-256: `a1b30ca9e48e5f06f2db9afeecd5eb854dac58b00dc24d66d48192108906ae35` excluding `docs/change-release-ledger.md`
+- Commit SHA: `59bf0e3d10822b2664fc403888caa3c7a3cb245e`; previously audited local receipt head: `833054f472961d24fad561017b3eedb9167d6b0e`
+- Dependencies: `none`
+- Required validation: `PASS`; evidence: targeted settlement timezone tests passed 7/7 under both TZ=UTC and TZ=Australia/Melbourne; full check passed Root backend contracts, frontend lint/test/build (52 files / 247 tests / 96 pages), and paired Mobile typecheck/lint/test (0 errors / 556 warnings / 62 suites / 367 tests).
+- Shared-hunk review: `PASS`; evidence: committed range contains exactly 73 selected files and 116 matching non-ledger hunks; all three final shared hashes and 12 historical reconciliation hashes remain unchanged.
+- Generated-file review: `PASS`; evidence: exact committed-range audit found no generated files, unselected paths or sensitive-information categories; apart from the current staged ledger-only receipt, there are no unstaged or untracked files.
+- Technical state: `pushed`; evidence: origin accepted `5fc1c87f213370a7b7f4bb052d5c24b3e1c3d418` on `codex/personnel-settlement-batch-rebuilt-20260929` at `2026-09-29T21:21:55+10:00`; local HEAD and upstream matched immediately after the non-force push.
+- User authorization: `approved-for-push`; evidence: after being shown repository `root`, exact audited head `833054f472961d24fad561017b3eedb9167d6b0e`, content commit `59bf0e3d10822b2664fc403888caa3c7a3cb245e`, and branch `codex/personnel-settlement-batch-rebuilt-20260929`, user replied “推送” on 2026-09-29.
+- Independent review: `GO for post-push ledger receipt commit and one conditional fast-forward receipt push`; evidence: independent read-only reviewer verified live origin, local HEAD and upstream all equal `5fc1c87f213370a7b7f4bb052d5c24b3e1c3d418`; the exact 35-CRL selection, base `317b8d667594a0a1e3fb8277652b974aa2d23ef5`, content commit `59bf0e3d10822b2664fc403888caa3c7a3cb245e`, branch and approved-for-push authorization remain unchanged; the committed range still contains 73 selected paths / 116 non-ledger hunks with fingerprint `a1b30ca9e48e5f06f2db9afeecd5eb854dac58b00dc24d66d48192108906ae35`; the staged diff is ledger-only and no new P0/P1/P2, generated-file or sensitive-information issue was found. Existing host-timezone detail display and private-PDF orphan lifecycle P2s remain accepted.
+- Action conclusion: `GO`; the remote content push at `5fc1c87f213370a7b7f4bb052d5c24b3e1c3d418` is verified. This ledger-only remote-evidence receipt may be committed and fast-forward pushed once to the same branch only if the 35-CRL pre-commit gate passes after recording this review, the final clean-worktree release report is GO, the staged/committed change remains ledger-only, and immediate pre-push remote/upstream still equals `5fc1c87f213370a7b7f4bb052d5c24b3e1c3d418`. PR, merge, migration, deployment and production verification remain unauthorized.
+
+### Risks / Release Notes
+
+- Main risk is omission or accidental drift while reconstructing 72 non-ledger files; exact path coverage, candidate fingerprint, 116-hunk equality and post-commit range report must all pass.
+- Rollback: discard this unpushed temporary branch/worktree; old remote branch and PR #366 remain unchanged.
+- Sensitive-information review: PASS — independent scan found only two documented `.invalid` PostgreSQL URLs in tests and no real credential, token, private key, database URL, `.env` or local cache.
+- Accepted P2: `WorkloadClaimsPanel` 详情抽屉仍通过宿主时区的 `formatDateTime` 显示单点起止时间；财务核对弹窗已使用 Melbourne helper，金额计算不受影响。本次不扩大候选，后续由 Web finance settlement 单独修复并增加 UTC 页面回归。
+- Accepted P2: PDF 在事务外上传后若来源并发失效，可能留下未被数据库引用的私有孤儿对象；认证 API 不暴露该对象，后续由 backend media/document lifecycle 处理清理或回收。
+- Git state: rebuilt candidate not committed; not pushed; no new PR; old PR #366 unchanged; not merged; not deployed; production/device verification not run.
+
+## CRL-20260929-002 — 费用结算工作时段固定 Melbourne 时区（root）
+
+- **Repository:** `root`
+- **Status:** committed locally on superseded branch; included in rebuilt candidate, not committed
+- **Updated:** 2026-09-29 Australia/Melbourne
+- **Request:** 修复 PR #366 的 Fast Regression 合并阻断：同一笔工作量起止时间在 GitHub UTC Runner 被显示为 `07:10–08:00`，而业务期望为 Melbourne 时间 `17:10–18:00`。
+- **Outcome:** 网页财务核对工作量的起止时间现在明确转换为 `Australia/Melbourne` 后再显示；结果不再取决于浏览器、服务器或 CI 的本地时区。
+
+### Implementation
+
+- Previous behavior: `formatClaimTimeRange` 直接调用 Day.js 的本地时区格式化；带 `+10:00` 的时间在 Melbourne 机器显示正确，但在 UTC Runner 被转换成前一天/当天的 UTC 时刻，导致回归测试和跨时区页面显示漂移。
+- New behavior: 复用仓库已有的 Day.js `utc` / `timezone` 插件，将开始和结束时间统一转换到 `Australia/Melbourne` 后格式化；空值和无效时间继续返回 `-`。
+- Regression boundary: 同一测试同时覆盖显式 `+10:00` 输入和等价 UTC `Z` 输入，并分别在 `TZ=UTC` 与 `TZ=Australia/Melbourne` 进程环境运行，证明输出不依赖宿主机时区。
+
+### Files / Areas
+
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — 工作量起止时间显式按 Melbourne 业务时区格式化。
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — 增加 UTC 等价输入、空值和无效值回归。
+- `docs/feature-regression-registry.md` — 更新 FR-029 的业务时区不变量、测试映射和 CRL 关系。
+- `docs/change-release-ledger.md` — 记录本修复范围、验证结果和交付边界。
+
+### Impact / Dependencies
+
+- Web only；不改变后端 API、数据库、费用金额、GST、付款状态或移动端逻辑。
+- Packages: none；复用前端现有 Day.js 及已在仓库使用的 `utc` / `timezone` 插件。
+- Production data / external sync / notifications: none；验证只运行本地源码测试、静态审计与构建，没有打开业务页面或发起外部请求。
+- Dependency: 修复已推送 Root PR #366 的 CI 阻断，但本 CRL 当前仍是本地未提交增量；旧 PR head 不包含本修复。
+
+### Validation
+
+- `TZ=UTC npm run test --prefix frontend -- --run src/app/finance/settlements/settlementWorkflowUi.test.ts --coverage.enabled=false` — passed：1 file / 7 tests；原失败场景现在输出 `17:10–18:00`。
+- `TZ=Australia/Melbourne npm run test --prefix frontend -- --run src/app/finance/settlements/settlementWorkflowUi.test.ts --coverage.enabled=false` — passed：1 file / 7 tests。
+- Root Fast Regression 已验证到 `test:phase5-release-contract` 前：Root quality workflow 8/8、ledger auditor 40/40、Dev Preview guard、ledger/FR audit、backend build 和前置后端合同均 passed；因隔离 Root 候选默认没有配套 Mobile 目录，组合命令在读取 Mobile 文件时以 `ENOENT` 中止。
+- 接入干净配套 Mobile 候选后补跑剩余 Fast Regression 项：`test:phase5-release-contract` passed；前端 52 files / 247 tests passed；Mobile TypeScript passed。临时 Mobile 链接随后移除。
+- `npm run lint --prefix frontend` — passed with existing repository warnings；本次两个 TypeScript 文件没有新增 lint error。
+- `npm run build --prefix frontend` — passed：production build、TypeScript 和 96 个静态页面生成完成；仅有既有 lint、Browserslist、localStorage 和图表尺寸警告。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared for independent commit review.
+- **Untracked review:** PASS — 临时配套 Mobile 链接已移除；构建产物不纳入候选。
+
+- Active final-range hunk ownership moved to `root/CRL-20260929-003`; the nine incremental fingerprints remain preserved in that CRL's reconciliation evidence.
+
+### Release Attempts
+
+#### RA-20260929-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260929-002`
+- Selected CRL identities: `root/CRL-20260929-002`
+- Intended action: `commit`
+- Branch: `codex/personnel-settlement-batch-20260929`
+- Base: `342905d6fe3186495eb413595e44adacab240bdf`; fetched remote branch head and incremental base for this repair commit
+- Target base: `origin/Dev@317b8d667594a0a1e3fb8277652b974aa2d23ef5`; fetched at `2026-09-29T17:36:16+10:00` and confirmed unchanged
+- Incremental base: `origin/codex/personnel-settlement-batch-20260929@342905d6fe3186495eb413595e44adacab240bdf`; local HEAD matched after fetch
+- Candidate patch SHA-256: `b4028557efd2108ccfb80b9756122c7b7e3c4b43a4c48a4f59eff91e67958eca` excluding `docs/change-release-ledger.md`
+- Commit SHA: `9f8c2359ee503fe142e2933a18416ee86f4e182b`
+- Dependencies: existing PR #366 Root branch at incremental base; no new backend, mobile, database, package or deployment dependency
+- Required validation: `PASS; evidence: targeted Vitest passed 7/7 under both TZ=UTC and TZ=Australia/Melbourne; frontend full suite passed 52 files / 247 tests; frontend lint and production build passed; Root Fast Regression constituent gates, paired Mobile typecheck, Feature Registry and ledger coverage passed.`
+- Shared-hunk review: `PASS`; evidence: only the new CRL section/FR-029 lines and two settlement workflow UI files are modified on top of the fetched remote branch head.
+- Generated-file review: `PASS; evidence: temporary Mobile link was removed, backend/dist outputs were restored, and no generated or untracked candidate path remains.`
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: after receiving the exact `root/CRL-20260929-002` scope, existing branch/PR boundary and explicit notice that commit and push required authorization, user replied “授权” on 2026-09-29. Push remains pending the exact generated commit SHA and committed-range audit.
+- Independent review: `GO for commit`; evidence: independent read-only reviewer recomputed candidate fingerprint `b4028557efd2108ccfb80b9756122c7b7e3c4b43a4c48a4f59eff91e67958eca`, inspected all 4 staged files / 9 non-ledger hunks, reran the UTC 7/7 regression and pre-commit gate, checked the PR Fast Regression workflow and sensitive/generated-file boundaries, and found no P0/P1/P2 issue. Remaining gaps are post-push GitHub Actions, deferred post-merge Full Regression, browser visual inspection and production/device verification.
+- Action conclusion: `GO`; the exact independently reviewed candidate was committed locally as `9f8c2359ee503fe142e2933a18416ee86f4e182b`. Push, merge, deployment and production verification remain outside this commit verdict.
+
+### Risks / Release Notes
+
+- 时区使用 IANA `Australia/Melbourne`，会自动处理 AEST/AEDT；输入必须继续包含明确偏移或 UTC 标记，当前 API 合同满足该条件。
+- Git state: original repair commits `9f8c2359ee503fe142e2933a18416ee86f4e182b` / `b328c5bd8f38f803ac87d9b7ae9dde169d440027` remain local on the superseded branch; rebuilt candidate not committed or pushed; PR #366 unchanged; not merged; not deployed; production/device verification not run.
+
+## CRL-20260929-001 — 多选新 CRL 的连续台账范围审计（root）
+
+- **Repository:** `root`
+- **Status:** verified in isolated candidate; not committed
+- **Updated:** 2026-09-29 Australia/Melbourne
+- **Request:** 本次一次选择多个尚未提交的费用结算 CRL 时，预提交门禁需要正确识别一个 Git hunk 连续覆盖多个相邻且全部已选择的 CRL，不能把合法的组合候选误判为越界。
+- **Outcome:** 台账行范围验证现在允许同一 hunk 由若干相邻、无空隙的已选择 CRL 区间共同覆盖；只要中间存在一行未选择区域仍会拒绝，未放宽仓库、文件、指纹、敏感信息或 Release Attempt 门禁。
+
+### Implementation
+
+- Previous behavior: `line_range_is_within` 只接受单个 CRL 区间完整包住整个 hunk，因此多个新 CRL 连续写入文件时，即使每个 CRL 都已选择也会被误判为越界。
+- New behavior: 从 hunk 起点开始按已选择区间排序连续推进；相邻区间可以共同覆盖，出现任何未选择间隙立即失败。
+
+### Files / Areas
+
+- `scripts/audit_change_release_ledger.py` — 支持相邻已选择 CRL 区间联合覆盖一个台账 hunk。
+- `scripts/tests/test_audit_change_release_ledger.py` — 覆盖相邻区间通过及存在未选择间隙时继续失败。
+- `docs/change-release-ledger.md` — 记录本治理修复及本次组合提交证据。
+
+### Impact / Dependencies
+
+- 只改变本地提交/发布审计工具，不改变费用结算 API、数据库、网页或移动端运行行为。
+- 不允许跨越未选择 CRL，不改变精确文件列表、hunk 指纹、生成文件、敏感信息或远端谱系检查。
+- Dependencies: none。
+
+### Validation
+
+- `python3 scripts/tests/test_audit_change_release_ledger.py` — passed: 40 tests。
+- 组合候选 `--pre-commit` — passed：73 个显式暂存文件、116 个非台账 hunk 全部与所选 CRL 精确匹配，无未跟踪或越界文件。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+
+- `scripts/audit_change_release_ledger.py` — SHA-256: `3df1d3207a744264554b7c54ec61e2b06191b10abececa935d9cf400ebe3b869`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `4878c24f9e250e7423e0769ce00b9862736579200301ba81c76614adf7049a26`
+### Release Attempts
+
+#### RA-20260929-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260929-001`, `CRL-20260910-002`, `CRL-20260910-003`, `CRL-20260910-004`, `CRL-20260911-001`, `CRL-20260911-002`, `CRL-20260911-003`, `CRL-20260911-004`, `CRL-20260911-005`, `CRL-20260911-006`, `CRL-20260911-007`, `CRL-20260911-008`, `CRL-20260911-009`, `CRL-20260912-001`, `CRL-20260912-002`, `CRL-20260912-003`, `CRL-20260912-004`, `CRL-20260912-005`, `CRL-20260913-001`, `CRL-20260913-002`, `CRL-20260913-003`, `CRL-20260914-001`, `CRL-20260914-002`, `CRL-20260914-003`, `CRL-20260914-004`, `CRL-20260922-001`, `CRL-20260922-003`, `CRL-20260924-001`, `CRL-20260924-002`, `CRL-20260924-003`, `CRL-20260924-004`, `CRL-20260925-001`, `CRL-20260926-001`
+- Selected CRL identities: `root/CRL-20260929-001`, `root/CRL-20260910-002`, `root/CRL-20260910-003`, `root/CRL-20260910-004`, `root/CRL-20260911-001`, `root/CRL-20260911-002`, `root/CRL-20260911-003`, `root/CRL-20260911-004`, `root/CRL-20260911-005`, `root/CRL-20260911-006`, `root/CRL-20260911-007`, `root/CRL-20260911-008`, `root/CRL-20260911-009`, `root/CRL-20260912-001`, `root/CRL-20260912-002`, `root/CRL-20260912-003`, `root/CRL-20260912-004`, `root/CRL-20260912-005`, `root/CRL-20260913-001`, `root/CRL-20260913-002`, `root/CRL-20260913-003`, `root/CRL-20260914-001`, `root/CRL-20260914-002`, `root/CRL-20260914-003`, `root/CRL-20260914-004`, `root/CRL-20260922-001`, `root/CRL-20260922-003`, `root/CRL-20260924-001`, `root/CRL-20260924-002`, `root/CRL-20260924-003`, `root/CRL-20260924-004`, `root/CRL-20260925-001`, `root/CRL-20260926-001`
+- Intended action: `commit`
+- Branch: `codex/personnel-settlement-batch-20260929`
+- Base: `origin/Dev@317b8d667594a0a1e3fb8277652b974aa2d23ef5`; fetched at `2026-09-29T15:49:31+10:00` and confirmed unchanged
+- Candidate patch SHA-256: `4c85059bd95782214caea3d479840defcd08752ec3c64e23db14401bb54c9e71` excluding `docs/change-release-ledger.md`
+- Commit SHA: `821a9e5aadec57589f43a552d7e78b21c0c00fcd`
+- Dependencies: `mobile/CRL-20260929-001@05601c3156b8db63c0908c52ab7a3c46766796ae`
+- Required validation: `PASS; evidence: after resolving independent-review findings, isolated npm run check:full passed: dev-preview guard, 40/40 ledger-auditor tests, 73/73 ledger coverage, feature registry 26 FRs / 207 mappings, backend TypeScript/build/contracts, frontend 52 files / 246 tests plus production build, and paired Mobile typecheck/lint 0 errors / 556 warnings plus 62 suites / 367 tests.`
+- Shared-hunk review: `PASS`; evidence: exact pre-commit gate matched 73 staged files and 116 non-ledger hunk fingerprints to the selected Root CRLs with no untracked or unselected path.
+- Generated-file review: `PASS; evidence: all backend/dist build outputs were restored and excluded after final validation; the temporary paired-Mobile symlink was removed; no dependency links, caches, unrelated generated files or untracked paths remain.`
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: user instructed “先审核提交这些更新” for the enumerated personnel-settlement Root and Mobile units; this necessary adjacent-CRL audit repair is included only to make that exact multi-unit gate enforceable. Push and later stages remain unauthorized.
+- Independent review: `GO for local commit`; evidence: independent read-only rereview recomputed candidate fingerprint `4c85059bd95782214caea3d479840defcd08752ec3c64e23db14401bb54c9e71`, inspected all 73 staged files / 116 non-ledger hunks, reran the targeted Preview, revenue, Phase 3, Phase 5 and ledger-auditor tests, and confirmed the prior four P1 findings plus stale-document P2 were closed. No P0/P1 remained. Accepted non-blocking P2: a rare concurrent source invalidation can leave an unreferenced private PDF object after the database insert and current-document pointer are correctly refused; it is not exposed by the authenticated document API and requires later lifecycle cleanup or orphan collection.
+- Action conclusion: `GO`; the selected and independently reviewed local content commit completed as `821a9e5aadec57589f43a552d7e78b21c0c00fcd`. Push, PR, merge, migration, deployment and production/device verification remain unauthorized.
+
+#### RA-20260929-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260929-001`, `CRL-20260910-002`, `CRL-20260910-003`, `CRL-20260910-004`, `CRL-20260911-001`, `CRL-20260911-002`, `CRL-20260911-003`, `CRL-20260911-004`, `CRL-20260911-005`, `CRL-20260911-006`, `CRL-20260911-007`, `CRL-20260911-008`, `CRL-20260911-009`, `CRL-20260912-001`, `CRL-20260912-002`, `CRL-20260912-003`, `CRL-20260912-004`, `CRL-20260912-005`, `CRL-20260913-001`, `CRL-20260913-002`, `CRL-20260913-003`, `CRL-20260914-001`, `CRL-20260914-002`, `CRL-20260914-003`, `CRL-20260914-004`, `CRL-20260922-001`, `CRL-20260922-003`, `CRL-20260924-001`, `CRL-20260924-002`, `CRL-20260924-003`, `CRL-20260924-004`, `CRL-20260925-001`, `CRL-20260926-001`
+- Selected CRL identities: `root/CRL-20260929-001`, `root/CRL-20260910-002`, `root/CRL-20260910-003`, `root/CRL-20260910-004`, `root/CRL-20260911-001`, `root/CRL-20260911-002`, `root/CRL-20260911-003`, `root/CRL-20260911-004`, `root/CRL-20260911-005`, `root/CRL-20260911-006`, `root/CRL-20260911-007`, `root/CRL-20260911-008`, `root/CRL-20260911-009`, `root/CRL-20260912-001`, `root/CRL-20260912-002`, `root/CRL-20260912-003`, `root/CRL-20260912-004`, `root/CRL-20260912-005`, `root/CRL-20260913-001`, `root/CRL-20260913-002`, `root/CRL-20260913-003`, `root/CRL-20260914-001`, `root/CRL-20260914-002`, `root/CRL-20260914-003`, `root/CRL-20260914-004`, `root/CRL-20260922-001`, `root/CRL-20260922-003`, `root/CRL-20260924-001`, `root/CRL-20260924-002`, `root/CRL-20260924-003`, `root/CRL-20260924-004`, `root/CRL-20260925-001`, `root/CRL-20260926-001`
+- Intended action: `push`
+- Branch: `codex/personnel-settlement-batch-20260929`
+- Base: `origin/Dev@317b8d667594a0a1e3fb8277652b974aa2d23ef5`; fetched at `2026-09-29T16:35:16+10:00` and confirmed unchanged
+- Candidate patch SHA-256: `4c85059bd95782214caea3d479840defcd08752ec3c64e23db14401bb54c9e71` excluding `docs/change-release-ledger.md`
+- Commit SHA: `821a9e5aadec57589f43a552d7e78b21c0c00fcd`
+- Dependencies: `mobile/CRL-20260929-001@05601c3156b8db63c0908c52ab7a3c46766796ae`
+- Required validation: `PASS; evidence: final isolated npm run check:full, exact pre-commit gates, both repository committed-range reports and clean-worktree checks passed for their local scope; each single-repository report retained only the declared cross-repository verification gap, addressed by separately auditing the paired Mobile range and exact content SHA.`
+- Shared-hunk review: `PASS`; evidence: committed Root range matches all 73 selected files and 116 non-ledger hunk fingerprints with no unselected file or unexpected hunk.
+- Generated-file review: `PASS`; evidence: committed range contains no generated output, dependency link, cache, secret file or untracked path.
+- Technical state: `pushed`
+- User authorization: `approved-for-push`; evidence: after receiving the exact Root and Mobile content/receipt SHAs and explicit statement that neither branch had been pushed, user instructed “推送” on 2026-09-29. This authorizes non-force push of this exact Root branch/range only; it does not authorize PR, merge, migration or deployment.
+- Independent review: `GO for ledger receipt commit and non-force push`; evidence: independent read-only push review verified the exact base → content commit → current receipt ancestry, unchanged non-ledger fingerprint `4c85059bd95782214caea3d479840defcd08752ec3c64e23db14401bb54c9e71`, 73 selected files / 116 hunks, fresh `origin/Dev`, absent remote branch, user authorization, sensitive/generated-file review and the paired Mobile content SHA/range. No P0/P1 remained; the previously accepted private-PDF orphan P2 remains disclosed.
+- Action conclusion: `GO`; the authorized unchanged candidate was non-force pushed to `origin/codex/personnel-settlement-batch-20260929@54c559518850ed16db5ea3c8524252c014c931d4` at `2026-09-29T16:47:25+10:00`, and immediate `git ls-remote` verification matched the local push head. This ledger-only outcome receipt may be fast-forwarded to the same branch; PR, merge, migration and deployment remain unauthorized.
+### Risks / Release Notes
+
+- 风险仅限本地治理逻辑；若区间算法错误，测试中的未选择间隙案例和真实组合预提交门禁应阻止提交。
+- Git state: not committed; not pushed; no PR; not merged; not deployed.
+
+## CRL-20260926-001 — 人员详情展示当前费用规则（root）
+
+- **Repository:** `root`
+- **Status:** ready; locally verified in fixed Preview source and browser, not committed
+- **Updated:** 2026-09-26 12:39 AEST
+- **Request:** 人员结算资料详情需要显示费用规则的实际内容，但只显示当前生效版本，不在详情中重复历史版本。
+- **Outcome:** “人员结算资料详情”在账号具备费用规则管理权限时只展示当前生效费用规则，包含生效期间、GST 单价口径、每项计费方式和金额及备注；历史版本继续只在专门的“费用规则”抽屉中展示，没有当前版本时显示明确空状态。
+
+### Implementation
+
+- Previous behavior: 详情抽屉只显示当前费用规则名称；首次扩展后又把当前及全部历史版本都放入详情，造成信息重复并让抽屉过长。
+- New behavior: 点击“详情”时，在读取人员资料后复用既有只读 `/profiles/:userId/rules` 接口，并仅选取 `is_current` 版本；详情抽屉在人员资料下方以一张紧凑卡片展示当前生效规则。接口失败时保留人员详情并显示独立错误提示，没有当前版本时显示空状态；历史版本仍由“费用规则”抽屉负责。
+- Permission boundary: 只有前端已具备 `personnel_settlements.rules.manage` 的账号才请求并展示当前规则完整内容；后端现有规则管理权限保持不变，没有规则权限的详情继续只显示资料接口提供的当前规则摘要。
+
+### Files / Areas
+
+- `frontend/src/app/finance/settlements/page.tsx` — 详情读取既有规则列表、筛选当前版本并展示逐项单价、备注、错误和空状态。
+- `frontend/src/app/finance/settlements/personnelProfileUi.test.ts` — 固化详情只展示当前规则及权限门禁的网页源码合同。
+- `backend/scripts/tests/test_personnel_settlement_phase2.ts` — 扩充 Phase 2 合同，确认详情筛选当前规则并使用既有规则标签、口径和逐项展示逻辑。
+- `docs/feature-regression-registry.md`、`docs/change-release-ledger.md` — 更新 FR-029 和本变更单元。
+
+### Impact / Dependencies
+
+- API: none；复用既有只读 `GET /finance/settlements/profiles/:userId/rules`，未新增或放宽路由权限。
+- Database / migration / config / packages: none。
+- Production data / external sync / notifications: none；浏览器验证仅读取 fixed Preview 开发环境，没有业务写入、结算、同步或通知。
+- Dependency: 延续 `root/CRL-20260925-001` 的费用规则版本边界和 `root/CRL-20260910-004` 的历史版本接口；没有建立第二套当前规则接口。
+
+### Validation
+
+- `npm run test --prefix frontend -- --run src/app/finance/settlements/personnelProfileUi.test.ts src/app/finance/settlements/feeRuleUi.test.ts --coverage.enabled=false` — passed：2 files / 15 tests。
+- `npm run test:personnel-settlement-phase2 --prefix backend` — passed。
+- `./frontend/node_modules/.bin/tsc -p frontend/tsconfig.json --noEmit --incremental false` — passed。
+- Targeted frontend ESLint for `page.tsx` and `personnelProfileUi.test.ts` — passed。`next lint` 因共享 `.next/cache/eslint` 无写权限返回 EPERM，随后直接使用仓库 ESLint 对同两文件检查通过。
+- fixed Preview browser — passed：`cleaner-1` 详情只显示 2026-09-14 起的“当前生效”版本，逐项显示含 GST 口径、清洁六档、仓管及上新房小时单价；2026-09-07、2026-09-01 及更早历史版本均未在详情出现。`admin` 显示“当前没有生效的费用规则”。
+- `npm run check:feature-registry` — passed：25 FRs / 205 mappings；77 个 Mobile mappings 按 Root 审计规则 deferred。首次登记时因单元格合并两个测试路径被审计拒绝，拆分为单一可解析测试路径后复跑通过。
+- `git diff --check` — passed。
+- `npm run build --prefix frontend` — blocked before compilation：prebuild 无权删除 fixed Preview 既有 `.next/server/interception-route-rewrite-manifest.js`，返回 EPERM；未删除或覆盖共享缓存。
+- `python3 scripts/audit_change_release_ledger.py` — blocked at workspace level：78/81 changed files covered；仅 `backend/dist/modules/auth.js`、`landlords.js`、`orders.js` 三个既有生成文件未归属，本 CRL 文件均已覆盖。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+
+- `.gitignore` — SHA-256: `912a3aacba15d036d982938590bb76d594295d033f8902443bc628a028cbb015`
+- `.gitignore` — SHA-256: `af7198223d7cc41b60dce67a5f078623d055cc0c401aa565ed9b7520ded8ae0d`
+- `.gitignore` — SHA-256: `ba53c7ffeccc048f84f1252020402639ff1acc00f34159a2646e0eb7a17743b9`
+- `backend/package.json` — SHA-256: `e9d38ac3e9f661ee3c12722b5575a408b5c95551df446097c210fa8d86ca163e`
+- `backend/scripts/migrations/20260910_personnel_settlement_phase1.sql` — SHA-256: `1821533342b3af8c199cdf8925e8703faa3e5062fe76b1c7eb36c99e8e5bbc88`
+- `backend/scripts/migrations/20260911_personnel_settlement_phase5.sql` — SHA-256: `614ad92f54d3a85d59afa79313dcba22eaf6dcfd3b699ee9815b9e3a6eaac651`
+- `backend/scripts/tests/test_company_revenue_report.ts` — SHA-256: `1d5f44e504e10f9f301913e4f2b0607e0ee2e8cabb404c57bd0e01f0b692a697`
+- `backend/scripts/tests/test_company_revenue_report.ts` — SHA-256: `8e587522b4684eacf32c5c4eef754a3e6a10c77adc9e9e6db14a939093554b05`
+- `backend/scripts/tests/test_company_revenue_report.ts` — SHA-256: `ddcb6828c80c5fe628b35cccf6626d9c245608ae42048ff1a790ac4b170d6f78`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `ffb1203adabca6c6bbfdfad7f1b564ccf85102096d86d6c4e991f735c4a371ae`
+- `backend/scripts/tests/test_personnel_settlement_phase2.ts` — SHA-256: `8fa3a431733b1337f24c573a3dc18ccd1ef3d7ea078cc039d24073b669a2e2e3`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `72660b688bd0ce998be33ac2090058e89ce1e041f1db90753965b7a375f19926`
+- `backend/scripts/tests/test_personnel_settlement_phase3_integration.ts` — SHA-256: `0aa50654b5ab366264479f2aa5d9204c297b32fb41d2592afdfd38f7588f87cf`
+- `backend/scripts/tests/test_personnel_settlement_phase4.ts` — SHA-256: `f7bd451dc6c1692e4d5cced7b441d7ffcda53b3071546f242d4410a2cb723dda`
+- `backend/scripts/tests/test_personnel_settlement_phase4_integration.ts` — SHA-256: `16d3f37869a70b0e2e39564ce14340d8701c7fb929b3d940fd7d703d799a3a65`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — SHA-256: `d89e84ac2a4111ed237f7e5eba8d4e966c42e3eb92a75c69039eb797fd090ce8`
+- `backend/scripts/tests/test_personnel_settlement_phase5_integration.ts` — SHA-256: `fec5ad4751667cc8fad2e43143cfab1797f135c754fb55e9213665b3de8633dc`
+- `backend/src/index.ts` — SHA-256: `13914b8f51b816e2e7ad6c4ed9baea5acf6bbf0d1542242572a903d6e42569f8`
+- `backend/src/index.ts` — SHA-256: `2bdc7eb789ed6bad38d72ef822b6e3e903e3eaf28d6e3edca945a7a712645ebd`
+- `backend/src/index.ts` — SHA-256: `3fb623cef7d29d92b67b5fad057fcfb1cb8f09e0d921ccc5cbdc042068cbf860`
+- `backend/src/index.ts` — SHA-256: `bc13c93575023420512adf7d199129e38bbcf273b57561a03338db34affa442c`
+- `backend/src/index.ts` — SHA-256: `e1957b6f420a8472605b3888a77e5ef384f960de78a19ccd9193c2fe174af57e`
+- `backend/src/index.ts` — SHA-256: `e962eb048e8c2007f6615f1dcc0acf774ded6c6378e3e96cf0c6394c3c930141`
+- `backend/src/index.ts` — SHA-256: `efd620638a6c8d13d178665cfe865a88ac069b5d1b826c0232a6692c261667d2`
+- `backend/src/index.ts` — SHA-256: `f9c5e54f2104906ac5d085042a9e76290dfa8cc19c25a2e279b5377f79285a76`
+- `backend/src/lib/companyRevenueReport.ts` — SHA-256: `0691884824e02faf607f85d3e5bfb9496bbc885890cec4413dbca2744a5438d8`
+- `backend/src/lib/companyRevenueReport.ts` — SHA-256: `003e32e5f4bb9c251cdc84dc16ce4d5feda2d7dafbe72f4299d91827b17c3cdb`
+- `backend/src/lib/companyRevenueReport.ts` — SHA-256: `3e41d35dfbaa5575c491d4c730361104d9f2bf7a95ac9412da149f8eb3feebde`
+- `backend/src/lib/companyRevenueReport.ts` — SHA-256: `2104f87484f38b34fcdeae7477688088805985205c801e14e595bf265b75fe5c`
+- `backend/src/lib/companyRevenueReport.ts` — SHA-256: `63d2de9aa408e4134ab40edae65d57cb24ce1790afcb4a7b8a2f03099d375b3e`
+- `backend/src/lib/companyRevenueReport.ts` — SHA-256: `872bea93a1d13a2d639941c99d4b489e48012cfb7d854b7582419443d3e7e41e`
+- `backend/src/lib/companyRevenueReport.ts` — SHA-256: `8ea5f2b7ced86010b1e2dde11a6639819365ea91b8e6eb12c160adbaba52a1cd`
+- `backend/src/lib/companyRevenueReport.ts` — SHA-256: `9a78c8ee67bf3005cc7f5f4087012bcaf8c5ff8310fc9383ab6ae96dba4a4ca1`
+- `backend/src/lib/companyRevenueReport.ts` — SHA-256: `95b67e149f805c582a9b68e82680f878a1753d9481615a79af2ef5020f080d18`
+- `backend/src/lib/companyRevenueReport.ts` — SHA-256: `cab25fa1036b119ff0bdc2f27d910f28ee77a1e7a61f5056c50e9503a27c198f`
+- `backend/src/lib/companyRevenueReport.ts` — SHA-256: `c81c19e2bb6784b34028b2864fd4e0e963165bbd26067ad3e1c8467c98eac945`
+- `backend/src/lib/companyRevenueReport.ts` — SHA-256: `e7a6c02c6153fc77f1fd333f244b4e13b64650cbee72ac92f2ed7f6776ee96f2`
+- `backend/src/lib/personnelClaimEvidence.ts` — SHA-256: `7ec8fdd038c4cd6a41cd163595aeaeaa653b637bd05160191598de0d5615eab3`
+- `backend/src/lib/personnelSettlement.ts` — SHA-256: `228bd6898ea300c3718dc62078582ead7f0cdaa246a33aee8652a49a342f0160`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `540d1fb40ded469437d0f44c71b221c586100371697d0b8f263cb1ccba2c76c5`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `abab170ea48ccd3737c5442720ebc8dd1397c3cf193d7a2921a14184c5d89e12`
+- `backend/src/lib/personnelSettlementPhase5Schema.ts` — SHA-256: `03271154881c1302d6c2fd4e9ec97332f13de29128e2673e8153c9caf70a68ba`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `87ad89d4221e00c8e5a19b404281f6553d0f41718a11be6856e9455e4bd91e7d`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `35a45db5dd97e7de8b02832ff1780977477222697bfd4d1abba576dd718f6684`
+- `backend/src/lib/personnelSettlementRules.ts` — SHA-256: `8b6e9e141dc2f85d0271e02a52d589b5cb45bf02a00e5b87e6f2a101c30de543`
+- `backend/src/lib/personnelSettlementSchema.ts` — SHA-256: `27bcfa7a7d5984be5357cb17dcf7a0c51f066c710c3e2f52f9c6907f9930e1b6`
+- `backend/src/lib/personnelSettlementWeeklyJob.ts` — SHA-256: `e0a5de71723a861c1826817460a32ec0e281564c1cb9586f27df120927c28216`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `5979430382e65bda375feeb040eb6364fc05ada011d20507f7d30b4e991d8e73`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `8ec4b4a7b9218016a45e37657086c52a75af66c6ad31ac70da822365007cc9e8`
+- `backend/src/modules/crud.ts` — SHA-256: `2ce04ee68eebd97c76761eb9fa8f6ea373194baf1dc62100d2a87d4b0979fdad`
+- `backend/src/modules/crud.ts` — SHA-256: `574d1d7370779ca9cb97af2a61175b0215a4fa478539f3e5014c42f6c080bf19`
+- `backend/src/modules/finance.ts` — SHA-256: `145314b813226ac834fec0e4f6e429e4a54545b34fe84e1c4a262f06c5961510`
+- `backend/src/modules/finance.ts` — SHA-256: `2d25a2396a3b57d912aabdc92ba82853e74f0125a9c998f618859d29d96ede9b`
+- `backend/src/modules/finance.ts` — SHA-256: `3829bc05727e0c1a596e1e659a68708d4f3b6b5479f0c199889fd042d9f857be`
+- `backend/src/modules/finance.ts` — SHA-256: `7b8c32aed04b7c64868f2cba70a170e682a0610e353139234fef716d4c35f78d`
+- `backend/src/modules/mzapp.ts` — SHA-256: `23f6f4c99607d57a6b9dc5a234ea229e569b4d917fce22b1d86cedec9518dbd5`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `17db9d377eb06fffeef64ab43cac2a7072179ae95314a677a71bc580251b5d6b`
+- `backend/src/modules/public.ts` — SHA-256: `452aaa68307336fc1521a500121e7e046d29e280afd93016f9fff35524b7cdd4`
+- `backend/src/modules/rbac.ts` — SHA-256: `90bf6d5ab5dfa406edeac8119c3d2dcab12ea9b41252645f8dce0cf3f4db3063`
+- `backend/src/permissionsCatalog.ts` — SHA-256: `277b3211a7c8c35bd2bef2d31defd0714784bccf04c4adb174862b6674d59dd4`
+- `backend/src/permissionsCatalog.ts` — SHA-256: `a7c54329dc81d756123fcb354d3e49a428a570b3b5459fa13917228ae50e3c8e`
+- `backend/src/services/notificationEvents.ts` — SHA-256: `40b46380a031ae8138f8b4ef752e9d25a0b8a6f3c6ef45986175ebb4f429f078`
+- `backend/src/services/notificationEvents.ts` — SHA-256: `75638b0a0d733f509d828bd9da4f7f8687ba1f6fdc7860bd84666e110ea7ee24`
+- `backend/src/services/notificationEvents.ts` — SHA-256: `9c06101b8068e4409620d15feb82a40759b3c1baffcf60c5677d6124dfb965fb`
+- `backend/src/services/notificationEvents.ts` — SHA-256: `bc32c222ca9b73eb892575e90702b92abadfb702852ec01f237984f2262e23b8`
+- `backend/src/store.ts` — SHA-256: `4c1c490cbb4a79f7a71b1ecda68e67da7a9d02ca77c69648345c607ad7ff1153`
+- `backend/src/store.ts` — SHA-256: `a539f2972d2ef88ef5afa363947d680bba71a6545e056c45d801bf6b378ebe57`
+- `backend/src/store.ts` — SHA-256: `a99811020a2e3bdb375fc01d2bed90d4c34c73a128bcd91171225f857235eb72`
+- `backend/src/store.ts` — SHA-256: `c500d7fd41084f9a7597a16df83cb81ad2b506b14a80df8dcf8ff32cfe4f85f8`
+- `backend/src/store.ts` — SHA-256: `c8b8137fb1c71b37e624cef69481d8f912a6aa2ba830a45a94cea44ac647ba2c`
+- `backend/src/store.ts` — SHA-256: `ed946d1fc3c68ea9583072ea65766de7dea557160472f1fce3dda6ca6c8f692d`
+- `backend/src/store.ts` — SHA-256: `f466479ff65f9d0f21d646cff5e99128fbe7d9aae71d69c7073256d458bb3ab0`
+- `design-qa.md` — SHA-256: `7838479330598d00071eceb45ab4ce0d0007dc7bad641e10874671915d4dd01f`
+- `docs/dev-preview-workflow.md` — SHA-256: `451b713cdfe73e2624d414fbabc60bcf80b9c83d85d48d542a5477f3625e1cd4`
+- `docs/execution-records.md` — SHA-256: `026b2ee11e92c9dd983ef1f247adf1dfcb1364e7fcc10c7e4739d276f153a6b4`
+- `docs/execution-records.md` — SHA-256: `7ae74f0d2e6b1f66872cccec2557dfbe14f556d3e269442bab4abb90e306e1da`
+- `docs/execution-records.md` — SHA-256: `a8f2085bcb04b06cd1e34cf276ce46b608e70e1be13a2ad15a3c73d18b82895e`
+- Shared final-range hunk ownership for `docs/feature-regression-registry.md`, `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` and `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` moved to `root/CRL-20260929-003`; their three original fingerprints remain preserved there as reconciliation evidence.
+- `docs/notification-registry.yaml` — SHA-256: `93b5a06bc3ade5fb5f5f73f944799a72be3c94f408a65039cd686f130fe5b201`
+- `frontend/src/app/finance/company-revenue/page.module.css` — SHA-256: `cb7d7e32129ecb23ca301848909bc347015b627edda34a2207b7b5113b77818b`
+- `frontend/src/app/finance/company-revenue/page.tsx` — SHA-256: `2883e87f497be403826bc834f744a2cd3a8624ad9ef9da0845f396ce664909bd`
+- `frontend/src/app/finance/company-revenue/page.tsx` — SHA-256: `e9e67c3d4411a14cbda33b0fcb183b60751e0c8f0679615af0d1fed6c4857a7c`
+- `frontend/src/app/finance/company-revenue/page.tsx` — SHA-256: `f9dfc459190ab3834f227cb9c94569d3cf6329c00fd0ee38d09a67998871d314`
+- `frontend/src/app/finance/settlements/FeeRuleDrawer.tsx` — SHA-256: `cad814a66f6790c272e8556cf09622359e5020c2f72764c8acd610eaffc75f83`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.module.css` — SHA-256: `6a3e032ba0dc04d78828e3dbf0f0aeb7f6a0981cd132b8884dd61a23573b0c6b`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `50370b79e167ef8af021e47783b19b701d910e5bea7e42523da1f3e94258503f`
+- `frontend/src/app/finance/settlements/WorkloadClaimsPanel.module.css` — SHA-256: `1aa45426502f5cc479c9401b1ebbcd47c924adc2e88b1e7b0e8b97b9e8c7f92a`
+- `frontend/src/app/finance/settlements/WorkloadClaimsPanel.tsx` — SHA-256: `decea738dcd485c87a3ad790e0a18259cb3fdc2d134aaa30c82c2f08785d7d77`
+- `frontend/src/app/finance/settlements/claimEvidenceImage.test.ts` — SHA-256: `2eb5303089b85f494cb0ee0a410560dcb67458a6ba0b061099b13ad3f61b091e`
+- `frontend/src/app/finance/settlements/claimEvidenceImage.ts` — SHA-256: `473ee1047cd5bc5b30688a8eeeba5e4d771c0b22c17a33cc7ad29bf5f3dbab90`
+- `frontend/src/app/finance/settlements/feeRuleUi.test.ts` — SHA-256: `73d2707c6599cd84423f9109fcc01ed3933478fcdbd5075557ed67a8c82d91e0`
+- `frontend/src/app/finance/settlements/feeRuleUi.ts` — SHA-256: `6693a64f4a182e6b60b8a5f50fd3b9c598e75afd29e955e82309114106dac2b7`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `1d2732c16a9c34d47446e00a02ff1fcafd64f9ebbd29d0f0d4f079e0646e3723`
+- `frontend/src/app/finance/settlements/personnelProfileUi.test.ts` — SHA-256: `c3a16d5869d2989c78942d102f52aed85d641c0c647b027165f6b80d931ede73`
+- `frontend/src/app/finance/settlements/personnelProfileUi.ts` — SHA-256: `bf81d027f8b21a23c5d1d788996c7916da1f457c703299f8612097d1fc8762f6`
+- `frontend/src/app/finance/settlements/phase5Ui.test.ts` — SHA-256: `0e2d2919dcd5db74bb7e1a1013fe281627fdb9a7c28af4806496fbf4bfecc875`
+- `frontend/src/app/finance/settlements/settlementPageState.test.ts` — SHA-256: `c479fa0e73692064c787aa72a9b5bc26eda87d85e02566c77d32b68941c1c792`
+- `frontend/src/app/finance/settlements/settlementPageState.ts` — SHA-256: `fbce1195c6351509ad9c0997cb4fb4a2f014f7bb7b45a11195cb929349da8e91`
+- `frontend/src/app/public/company-expense/page.tsx` — SHA-256: `8349c3fe63e0ebe4469a70333c26e301ad60809781a833e4c99772a0125ffa3f`
+- `frontend/src/lib/adminNavigation.test.ts` — SHA-256: `37caba81275171c911699a80086d89b7d39a08959153b4a3bc88a5fb855e39ec`
+- `frontend/src/lib/adminNavigation.ts` — SHA-256: `130c82bd801842c187b918d9dda1c2f1854906d1f1a07d2ad5eb19788a8ba07c`
+- `frontend/src/lib/api.ts` — SHA-256: `5178b6c23156c1188862f7bd795a856e3b67960406bb5f3deba944c0d89a738b`
+- `frontend/src/lib/companyRevenue.ts` — SHA-256: `4da3e3661485ba6b6df25ac8e1619bcf54f98c337245d0fff60f4adba82ec2e9`
+- `frontend/src/lib/companyRevenue.ts` — SHA-256: `7c9d7fb1f618afd2e4ce3cc4dc88636c99cf845b0e5f289ed139ff363a97c166`
+- `frontend/src/lib/companyRevenue.ts` — SHA-256: `c91551c9a355a524630a4cc61c41c2912dd5cecdcd73c220c081cf683b309e13`
+- `package.json` — SHA-256: `419ec042da2f3b7aae239ae082a6fdf4f55ad7992519e7c89a4ab0a57bee5ad2`
+- `package.json` — SHA-256: `a338405206491ecbe59c4e55f96ab411d40cb42f7fbc7e85ea9c89fbc383cdbf`
+- `package.json` — SHA-256: `f6034bc4f43c55de4105a577bd8701297b80cddda36af51b129453d5cb0462c6`
+- `scripts/dev-preview-db.mjs` — SHA-256: `834922d47011a826dfd9262f1ae52d136a0ccc1dfd9520a36a0420dd0394df87`
+- `scripts/dev-preview-git-guard.mjs` — SHA-256: `fcb3d75b90807a9109b29352530ab5c851e4f887f6e6ac970180af1d18cfd9d5`
+- `scripts/dev-preview.mjs` — SHA-256: `37d2fe5ce51a6bed66a7717c542b5deee3cde6ccc2183ef79e9bc69093115030`
+- `scripts/tests/test_dev_preview_guard.mjs` — SHA-256: `5e9cd699a56a2b8476dea81ccde67724b1f10397fd37fc47ebf3d913f4cd2347`
+### Release Attempts
+
+- Combined release attempt is recorded in root/CRL-20260929-001.
+### Risks / Release Notes
+
+- 详情额外执行一次规则列表只读请求，并在前端筛选当前版本；接口异常不会遮蔽人员资料，而是在当前规则区域单独提示。
+- “人员结算资料详情”故意不展示历史版本；需要审阅或复制历史规则时继续使用同一人员行的“费用规则”操作。
+- Rollback: 移除详情当前规则状态、只读请求和规则卡片，恢复原有单一 `Descriptions`；无需数据回滚。
+- Sensitive-information review: 未新增密钥、`.env`、数据库 URL、银行资料值、照片内容或敏感日志；完整规则仍受既有管理权限保护。
+- Fresh base check: `origin/Dev@317b8d667594a0a1e3fb8277652b974aa2d23ef5` fetched 2026-09-26；本地与远端均未占用 `root/CRL-20260926-001`。
+- Git state: uncommitted；not pushed；no PR；not merged；not deployed；production verification not run。
+
+## CRL-20260925-001 — 费用规则历史版本复制与保存防误操作（root）
+
+- **Repository:** `root`
+- **Status:** ready; locally verified in fixed Preview source and targeted Preview development data, not committed
+- **Updated:** 2026-09-25 10:31 AEST
+- **Request:** 修复费用规则历史版本被误当成当前版本的问题；允许将完整历史规则明确复制到当前版本，并避免较早生效日保存后让人误以为已修改当前规则。
+- **Outcome:** 历史卡片新增“复制到当前版本”，只把完整规则和当前可写生效日带入表单，仍需人工点击“保存规则”；直接保存早于后续版本的日期时先明确提示实际历史区间与“当前版本不会改变”。fixed Preview 开发库中 `cleaner-1` 的 2026-09-14 当前版本已通过该流程补入“上新房：每小时 $35”，2026-09-07 历史版本保留不变。
+
+### Implementation
+
+- Previous behavior: 保存 2026-09-07 规则时，系统按版本切分设计创建历史区间，但界面没有说明 2026-09-14 起的当前版本不会改变；历史卡片也没有安全复制入口，容易误以为上方当前版本已经被替换。
+- New behavior: 选择存在后续版本的较早生效日保存时，网页先显示该版本的准确截止日并说明后续版本不变；历史规则卡片可以完整复制名称、GST 口径、备注和全部计费项到当前可写日期，复制只填表且保留历史，必须再次保存才生效。
+- Locked boundary: 复制目标优先使用未被结算锁定的当前版本日期；若当前日期已锁定，则采用后端返回的最早可写日期。后端既有锁定校验仍是最终权威。
+
+### Files / Areas
+
+- `frontend/src/app/finance/settlements/FeeRuleDrawer.tsx` — 历史保存确认、复制入口、复制状态提示和按服务端保存结果回显。
+- `frontend/src/app/finance/settlements/feeRuleUi.ts` — 历史区间提示与安全复制目标日期纯函数。
+- `frontend/src/app/finance/settlements/feeRuleUi.test.ts` — 覆盖历史保存提示、当前版本不提示和锁定边界下的复制日期。
+- `backend/scripts/tests/test_personnel_settlement_phase2.ts` — 扩充网页源码合同，锁定复制入口、历史确认和保存后日期回显。
+- `docs/feature-regression-registry.md`、`docs/change-release-ledger.md` — 登记跨层保护合同与本变更单元。
+
+### Impact / Dependencies
+
+- API / schema / migration / config / packages: none；继续复用既有费用规则历史、约束和保存接口。
+- Preview development data: 仅对固定 Preview 开发库中的 `cleaner-1` 执行一次用户授权的规则保存；当前 2026-09-14 版本由 7 项变为 8 项，新增 `new_property_task` 每小时 AUD 35.00。2026-09-07 至 2026-09-13 的历史版本和更早版本均保留。
+- Production data / external sync: none performed；未访问或修改生产数据库，未触发通知、结算或付款。
+- Dependency: 延续 `root/CRL-20260914-001` 的保存后日期回显和锁定边界，并与 `root/CRL-20260924-004` 的上新房按小时口径一致。
+
+### Validation
+
+- `npm run test:personnel-settlement-phase2 --prefix backend` — passed。
+- `npm test -- --run src/app/finance/settlements/feeRuleUi.test.ts src/app/finance/settlements/personnelProfileUi.test.ts --coverage.enabled=false`（cwd=`frontend`）— passed：2 files / 14 tests。
+- `./frontend/node_modules/.bin/tsc -p frontend/tsconfig.json --noEmit --incremental false` — passed。
+- Targeted frontend ESLint for `FeeRuleDrawer.tsx`、`feeRuleUi.ts`、`feeRuleUi.test.ts` — passed；仅输出 pages-directory configuration notice。
+- fixed Preview UI — passed：历史卡片显示“复制到当前版本”；复制后表单保持 2026-09-14 并带入 8 个计费项；保存成功提示“当前费用规则已保存（2026-09-14 起）”；当前卡片与历史卡片同时显示“上新房：每小时 $35.00”。
+- fixed Preview development DB identity — passed：`npm run dev:preview:verify-db` 确认 `app=dev`、`database=dev`。
+- Post-write read-only verification — passed：`cleaner-1` 当前版本为 2026-09-14 起、`inclusive_gst`、8 项且 `new_property_task=3500` cents；2026-09-07 至 2026-09-13 历史版本仍为 8 项；`locked_through=2026-09-06`。
+- `npm run check:feature-registry` — passed：25 FRs / 204 mappings；77 个 Mobile mappings 按 Root 审计规则 deferred。
+- `git diff --check` — passed。
+- `npm run build --prefix frontend` — blocked before compilation：prebuild 无权删除 fixed Preview 既有 `.next/server/app-paths-manifest.json`，返回 EPERM；未删除或覆盖共享缓存。
+- `python3 scripts/audit_change_release_ledger.py` — blocked at workspace level：78/81 changed files covered；仅 `backend/dist/modules/auth.js`、`landlords.js`、`orders.js` 三个既有生成文件未归属，本 CRL 文件均已覆盖。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. 用户授权实现、本地验证和一次 fixed Preview 开发数据修正；未授权 commit、push、PR、merge、deployment 或生产写入。
+
+### Risks / Release Notes
+
+- 历史复制不会自动保存，避免浏览历史时误改当前规则；管理员仍须核对复制后的生效日期和金额再保存。
+- 同一天保存会按既有接口修正该版本；保存更早日期只修改对应历史区间，确认弹窗会明确告知但不会越过后端锁定边界。
+- Rollback: 恢复历史卡片复制按钮和前端提示逻辑即可；Preview 数据若需回退，必须另行授权并按版本保存接口操作，不能删除历史记录。
+- Sensitive-information review: 未新增密钥、`.env`、数据库 URL、银行资料、照片内容或敏感日志。
+- Fresh base check: `origin/Dev@317b8d667594a0a1e3fb8277652b974aa2d23ef5` fetched 2026-09-25；本地与远端均未占用 `root/CRL-20260925-001`。
+- Git state: uncommitted；not pushed；no PR；not merged；not deployed；production verification not run。
+
+## CRL-20260924-004 — 上新房统一按小时计价（root）
+
+- **Repository:** `root`
+- **Status:** ready; locally verified in fixed Preview source, not committed
+- **Updated:** 2026-09-24 14:35 AEST
+- **Request:** 费用规则中的上新房也应按时间计算，不能继续显示或结算为每个任务。
+- **Outcome:** 上新房保留现有 `new_property_task` 类型标识，但从规则标签、本人预计金额、网页公司核对到周结算全部统一为按实际分钟折算小时计价。
+
+### Implementation
+
+- Previous behavior: 上新房已经收集起止时间和时长，但预计金额与周结算仍固定按 1 次计费，网页核对公式和移动端单价显示“/次”。
+- New behavior: 上新房纳入小时类型；新反馈只保存权威分钟、不再自动写入数量；预计金额、公司核对和周结算统一使用 `分钟 ÷ 60 × 小时单价`，GST 继续复用现有整数分算法。
+- Compatibility: 保留数据库与 API 中的历史标识 `new_property_task`，不新增表、枚举或 migration。已锁定结算快照不回算；缺少时长的旧待处理记录不会把历史数量误当成小时数，而是继续进入人工核对警告。
+
+### Files / Areas
+
+- `backend/src/lib/personnelWorkloadClaims.ts` — 将上新房纳入小时口径，更新 options 文案、预估比例和新反馈数量保存规则。
+- `backend/src/lib/personnelSettlementPreview.ts` — 周结算按核准/提交分钟折算上新房小时数。
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — 内存预览覆盖上新房 120 分钟按 2 小时计价并计入周合计。
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — 覆盖 150 分钟本人预估、无默认数量和网页小时公式合同。
+- `frontend/src/app/finance/settlements/feeRuleUi.ts`、`feeRuleUi.test.ts` — 费用规则显示“上新房：每小时”并锁定回归。
+- `frontend/src/app/finance/settlements/WorkloadClaimsPanel.tsx` — 公司核对金额公式统一显示小时单价乘以分钟数。
+- `docs/feature-regression-registry.md`、`docs/change-release-ledger.md` — 更新跨层保护合同并记录本变更单元。
+
+### Impact / Dependencies
+
+- API: 路径与字段集合不变；上新房 options 的 `calculation_label` 改为“系统按小时计算”，新反馈 `requested_quantity` 为 `null`。
+- Database / migration / config / packages: none。
+- Existing fee values: 生效规则中 `new_property_task` 的金额今后解释为小时单价；管理员需确认既有未锁定规则数值符合小时口径。
+- Dependency: paired `mobile/CRL-20260924-005`；延续 `root/CRL-20260924-003` 与 `mobile/CRL-20260924-003` 的时间录入合同，并覆盖其中“按次计费”的旧决定。
+- Production data / external sync: none performed；未调用业务写接口。
+
+### Validation
+
+- `npm run test:personnel-settlement-phase1 --prefix backend` — passed：上新房 120 分钟按 2 小时进入周结算。
+- `npm run test:personnel-settlement-phase3 --prefix backend` — passed：上新房 150 分钟预估总额、GST、无默认数量与网页小时公式合同。
+- `npm test -- --run src/app/finance/settlements/feeRuleUi.test.ts src/app/finance/settlements/settlementWorkflowUi.test.ts --coverage.enabled=false`（cwd=`frontend`）— passed：2 files / 14 tests。首次从 Root cwd 误启动时测试因相对路径报 ENOENT，改用测试要求的 frontend cwd 后全部通过。
+- `./backend/node_modules/.bin/tsc -p backend/tsconfig.json --noEmit` — passed。
+- Isolated backend TypeScript emit to `/private/tmp` — passed；临时输出已删除，未触碰共享 `backend/dist`。
+- `./frontend/node_modules/.bin/tsc -p frontend/tsconfig.json --noEmit --incremental false` — passed。
+- Targeted frontend ESLint with `--no-cache` — passed；仅输出 pages-directory configuration notice。
+- `npm run build --prefix frontend` — blocked before compilation：prebuild 无权删除 fixed Preview 既有 `.next/server/app-paths-manifest.json`，返回 EPERM；未删除或覆盖共享缓存。
+- `npm run check:feature-registry` — passed：25 FRs / 204 mappings；77 个 Mobile mappings 按 Root 审计规则 deferred。
+- `python3 scripts/audit_change_release_ledger.py` — blocked at workspace level：78/81 changed files covered；仅 `backend/dist/modules/auth.js`、`landlords.js`、`orders.js` 三个既有生成文件未归属，本 CRL 文件均已覆盖。
+- Database-backed integration、真实 API、生产数据验证 — not run；本次不授权数据库写入。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. 用户授权实现与本地验证；未授权 commit、push、PR、merge 或 deployment。
+
+### Risks / Release Notes
+
+- 已生效但尚未锁定的上新房规则金额会改按小时解释，发布前应由业务确认这些数值确为小时单价。
+- 旧的仅数量、无时长且尚未结算的上新房反馈无法可靠换算，不会猜测小时数；需要退回补录时间或人工处理。
+- Rollback: 恢复上新房按次分类、规则标签与客户端单价文案；无数据迁移需要回滚。
+- Sensitive-information review: 未新增密钥、`.env`、数据库 URL、银行资料、照片内容或敏感日志。
+- Fresh base check: `origin/Dev@317b8d667594a0a1e3fb8277652b974aa2d23ef5` fetched 2026-09-24；本地与远端均未占用 `root/CRL-20260924-004`。
+- Git state: uncommitted；not pushed；no PR；not merged；not deployed；production verification not run。
+
+## CRL-20260924-003 — 上新房按时间反馈并保留按次费用口径（root）
+
+- **Repository:** `root`
+- **Status:** ready; locally verified in fixed Preview source, not committed
+- **Updated:** 2026-09-24 14:00 AEST
+- **Request:** 上新房一般记录开始、结束时间和工作时长，不应让合作方填写文本式工作量。
+- **Outcome:** 上新房反馈合同改为收集房源编号和起止时间，服务端保存权威分钟数；财务改为核对工时。既有 `new_property_task` 按次单价、报表分类和历史数量记录保持兼容，不把历史单价静默改成每小时单价。
+
+### Implementation
+
+- Previous behavior: 上新房 options 返回 `quantity`，移动端填写“工作量”，服务端要求大于 0 的数量，网页财务核对也显示数量。
+- New behavior: options 返回 `time_range`；新建/修改上新房反馈必须提供有效起止时间和房源编号，服务端推导整数分钟并默认结算数量为 1。网页财务核对显示提交时段、时长和可调整分钟数。
+- Calculation compatibility: 上新房费用仍按现有每个任务单价乘以 1 计算；历史仅保存数量的已存在记录继续按旧数据读取，未新增组件类型、表或 migration。
+
+### Files / Areas
+
+- `backend/src/lib/personnelWorkloadClaims.ts` — 上新房 time-range 合同、服务端分钟校验、默认单次数量和核对门禁。
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — 覆盖房源/时间必填、150 分钟保存、默认 1 次和既有按次金额。
+- `backend/scripts/tests/test_personnel_settlement_phase3_integration.ts` — 合成上新房反馈改用起止时间。
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts`、`frontend/src/app/finance/settlements/WorkloadClaimsPanel.tsx` — 财务端核对工时，费用公式继续明确按次。
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — 固化上新房财务核对输入模式。
+- `docs/feature-regression-registry.md`、`docs/change-release-ledger.md` — 跨端保护合同和本变更单元。
+
+### Impact / Dependencies
+
+- API: options 中上新房 `input_mode` 从 `quantity` 改为 `time_range`；claim API 路径和字段集合不变。
+- Database / migration / config / packages: none。
+- Historical pricing: `new_property_task` 仍是每任务单价；未改写历史记录或规则。
+- Dependency: paired `mobile/CRL-20260924-003`。
+- Production data / external sync: none performed；未调用业务写接口。
+
+### Validation
+
+- `npm run test:personnel-settlement-phase3 --prefix backend` — passed：phase 3 contract tests。
+- `npm run test --prefix frontend -- --run src/app/finance/settlements/settlementWorkflowUi.test.ts --coverage.enabled=false` — passed：1 file / 6 tests。
+- `./backend/node_modules/.bin/tsc -p backend/tsconfig.json --noEmit` — passed。
+- Isolated backend emit to a temporary directory — passed；临时输出已删除，未触碰共享 `backend/dist`。
+- Targeted frontend ESLint with `--no-cache` — passed；仅输出 pages-directory configuration notice。
+- `./frontend/node_modules/.bin/tsc -p frontend/tsconfig.json --noEmit --incremental false` — passed。
+- Full `next lint` — failed before linting：固定 Preview 的既有 `frontend/.next/cache` 不可写，返回 EPERM；未删除或覆盖共享缓存，目标文件无缓存 ESLint 已通过。
+- `npm run check:feature-registry` — passed：25 FRs / 204 mappings；77 个 Mobile mappings 按 Root 审计规则 deferred。
+- `python3 scripts/audit_change_release_ledger.py` — blocked at workspace level：78/81 changed files covered；仅 `backend/dist/modules/auth.js`、`landlords.js`、`orders.js` 三个既有生成文件未归属，本 CRL 文件均已覆盖。
+- Phase 3 integration test — not run：会写固定 Preview 数据库，本次未执行数据库写测试。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. 用户授权实现与本地验证；未授权 commit、push、PR、merge 或 deployment。
+
+### Risks / Release Notes
+
+- Root 与 Mobile 必须配套交付；旧 Mobile 仍会发送数量，而新 Root 要求上新房时间。
+- 跨午夜工时仍不在本次范围；开始和结束时间必须属于可形成正数时长的顺序。
+- Rollback: 恢复上新房 quantity options、数量校验和网页数量核对；无数据迁移需要回滚。
+- Sensitive-information review: 未新增密钥、`.env`、数据库 URL、银行资料、照片内容或敏感日志。
+- Git state: uncommitted；not pushed；no PR；not merged；not deployed；production verification not run。
+
+## CRL-20260924-002 — 周结算提交前两步核对与预览一致性（root）
+
+- **Repository:** `root`
+- **Status:** ready; locally verified in fixed Preview source, not committed
+- **Updated:** 2026-09-24 13:20 AEST
+- **Request:** 按推荐方案修复合作方看不到周工作明细就能直接提交的问题，改为先核对明细、再确认提交。
+- **Outcome:** 本人周提交预览现在返回逐项安全明细和确认标识；提交接口在事务中按最新数据重新计算，只有与本人刚核对的预览一致才接受，金额或明细变化会要求重新核对。
+
+### Implementation
+
+- Previous behavior: 预览接口只返回税前、GST、总额、项目数和阻断项；提交只需要周期，客户端无法展示权威逐项内容，服务端也无法确认提交对应的是哪一版预览。
+- New behavior: 预览增加日期、类型、来源、说明、工作量、单价与金额等安全行项，并对周期、金额、行项和阻断项生成 SHA-256 `confirmation_token`。初次提交 Body 必须携带标识；服务端在同一事务内重新计算，标识不同返回 `settlement_preview_changed`，不写入结算。
+- Key decisions: 不返回内部档案、规则对象、银行资料或证明存储地址；不改变费用公式、GST 口径、结算状态机、付款或公司支出逻辑。重复提交已完成周期继续按原幂等逻辑返回既有结算。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementWorkflow.ts` — 安全预览行序列化、确认标识、事务内一致性校验及审计快照。
+- `backend/src/modules/personnel_settlements.ts` — 严格周提交 Body 增加 64 位确认标识并传入工作流。
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — 覆盖安全行项、标识稳定性/变化、Body 必填与未知参数拒绝。
+- `docs/feature-regression-registry.md` — FR-029 增加周提交两步核对和预览一致性保护。
+- `docs/change-release-ledger.md` — 本 Root 变更单元。
+
+### Impact / Dependencies
+
+- API: `GET /finance/settlements/my-settlements-preview` additive 返回 `lines` 与 `confirmation_token`；`POST /finance/settlements/my-settlements-submit` 要求 `confirmation_token`。
+- Database / migration / config / packages: none。
+- Dependencies: paired `mobile/CRL-20260924-002`；该移动端使用新明细与确认标识。未配套升级的旧客户端若调用尚未发布的周提交端点，会因缺少确认标识收到 400。
+- Production data / external sync / notifications: none performed；预览仍为只读，初次提交通知语义不变。
+
+### Validation
+
+- `npm run test:personnel-settlement-phase3 --prefix backend` — passed：Phase 3 合同测试通过。
+- `npm run test:personnel-settlement-phase5 --prefix backend` — passed：Phase 5 路由与本人周预览/提交合同测试通过。
+- `npx tsc -p backend/tsconfig.json --noEmit` — passed。
+- `npx tsc -p backend/tsconfig.json --outDir /private/tmp/mz-weekly-review-build.U5dhGx` — passed；临时产物已删除。
+- `npm run build --prefix backend` — not completed：固定 Preview 的 `backend/dist` 写保护返回 EPERM；为避免覆盖共享生成文件，改用上述隔离 emitting build。
+- `npm run check:feature-registry` — passed：25 个 FR、204 个测试映射；77 个 Mobile 映射按独立仓库延后。
+- `python3 scripts/audit_change_release_ledger.py` — blocked by 3 pre-existing generated files: `backend/dist/modules/auth.js`、`landlords.js`、`orders.js`；本 CRL 的当前任务文件均已覆盖，不归属或改写这三个生成文件。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. 用户授权实现与本地验证；未授权 commit、push、PR、merge、deployment 或生产写入。
+
+### Risks / Release Notes
+
+- Root 与 Mobile 必须配套交付；只部署 Root 会让旧移动端周提交 Body 缺少确认标识，只发布 Mobile 则旧 Root 不会提供明细与标识。
+- 真实 Preview 登录账号、数据库提交、模拟器/真机和生产环境未验证；本次没有调用业务写接口。
+- Rollback: 同时撤回预览行/确认标识合同与 paired Mobile 两步页面，恢复原周期 Body；无需数据库回滚。
+- Sensitive-information review: 未新增 token 密钥、`.env`、数据库 URL、账号、银行资料、原始证明地址或敏感日志；`confirmation_token` 是预览内容摘要，不是认证凭据。
+- Git state: uncommitted；not pushed；no PR；not merged；not deployed；production/device verification not run。
+
+## CRL-20260924-001 — 周提交预览缓存参数兼容（root）
+
+- **Repository:** `root`
+- **Status:** ready; locally verified in fixed Preview source, not committed
+- **Updated:** 2026-09-24 12:05 AEST
+- **Request:** 修复移动端打开“费用结算”时提示“参数错误：invalid_weekly_submission_preview”，并保持周提交接口参数边界。
+- **Outcome:** 周提交预览 GET 现在接受 React Native `cache: no-store` 自动附加的受限 `_` 参数；周提交 POST 继续只接受 `week_start`，其他未知字段仍被拒绝。
+
+### Implementation
+
+- Previous behavior: 新增的 `GET /finance/settlements/my-settlements-preview` 复用了只允许 `week_start` 的 strict Schema，导致移动端自动缓存参数 `_` 被判为未知字段并返回 400。
+- New behavior: 预览 GET 使用独立 Query Schema，接受 `week_start` 与受长度/数量限制的 `_`；提交 POST 使用独立 Body Schema，仍只接受 `week_start`。
+- Key decisions: 不使用 passthrough，不放宽人员范围、搜索字段或提交 Body；缓存参数只参与校验，不传入结算服务。
+
+### Files / Areas
+
+- `backend/src/modules/personnel_settlements.ts` — 分离周提交 GET Query 与 POST Body Schema，并仅在预览 GET 兼容 `_`。
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — 覆盖预览 GET 缓存参数、未知字段拒绝和 POST Body 严格边界。
+- `docs/feature-regression-registry.md` — 更新 FR-029 跨层保护规则与测试映射。
+- `docs/execution-records.md` — 记录本次批准方案、实现和验证结果。
+- `docs/change-release-ledger.md` — 本 CRL。
+
+### Impact / Dependencies
+
+- API: `GET /finance/settlements/my-settlements-preview` 新增兼容可选 `_` 查询字段；响应、认证、本人范围和业务计算不变。`POST /finance/settlements/my-settlements-submit` 不变。
+- Database / migration / config / dependencies: none。
+- Paired mobile: `mobile/CRL-20260924-001`。
+- Production writes / notifications / external sync: none；未调用真实提交、通知、付款或数据库写入接口。
+
+### Validation
+
+- `./node_modules/.bin/ts-node --transpile-only scripts/tests/test_personnel_settlement_phase3.ts` in backend — passed。
+- `./node_modules/.bin/tsc --noEmit -p .` in backend — passed。
+- Isolated backend production emit to `/private/tmp/mz-weekly-preview-build.dBpBJD` — passed；未覆盖工作区现有 `backend/dist`。
+- `npm run check:feature-registry` — passed：25 FRs / 203 mappings；77 mobile mappings deferred。
+- Paired mobile focused Jest — passed：1 suite / 14 tests；full Jest passed：62 suites / 365 tests；TypeScript、quiet lint 和 strict button audit passed。
+- `git diff --check` — passed。
+- `python3 scripts/audit_change_release_ledger.py` — 本任务路径均已登记；Root 混合工作区仍被本任务前已有的 `backend/dist/modules/auth.js`、`backend/dist/modules/landlords.js`、`backend/dist/modules/orders.js` 三个未归属生成文件阻塞，覆盖 78/81，未归入本 CRL。
+- Fresh base check — `origin/Dev@317b8d667594a0a1e3fb8277652b974aa2d23ef5` fetched 2026-09-24；本地与远端均未占用 `root/CRL-20260924-001`。
+- Database/API runtime/simulator/device/production — not run；本次纯参数合同修复未调用业务端点。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. 用户只授权实现与本地验证；未授权 commit、push、PR、merge、deployment 或 production/device verification。
+
+### Risks / Release Notes
+
+- 回滚可恢复为单一 Schema，但会重新触发移动端预览 400；当前拆分避免 GET 兼容字段渗入 POST。
+- Sensitive-information review: 未新增或输出 token、`.env`、数据库 URL、账号、银行资料、业务数据或敏感日志。
+- Git state: uncommitted；not pushed；no PR；not merged；not deployed；production/device verification not run。
+
+## CRL-20260922-003 — 合作方先提交、财务后核对的周结算闭环（root）
+
+- **Repository:** `root`
+- **Status:** implemented and locally verified in fixed Preview; not committed
+- **Updated:** 2026-09-22 23:20 AEST
+- **Request:** 纠正周结算先后顺序：合作方先在移动端核实并提交工作量，财务再核对；有问题退回合作方再次确认，无问题完成转账后直接确认已付款，不能由财务先生成。
+- **Outcome:** 新增本人上一完整周只读预览与幂等提交；初次提交直接进入“待财务核对”。网页移除生成、批量运行和单行发起确认入口，新增带原因的“退回再次确认”；财务确认已付款前强制检查资料、GST、结算明细、待处理/未计入反馈和计算阻断。退回会按最新规则重算并只通知该结算本人；历史财务先生成接口返回 410，后台兼容任务不再创建结算或发送确认通知。
+
+### Implementation
+
+- Previous behavior: 财务先生成/重算周结算并发起个人确认；移动端只能等待结算出现后确认，批量任务也会主动生成和通知。
+- New behavior: 合作方对上一完整周执行“预览 → 提交”，服务端按用户和周加锁，写入或复用本人结算并标记 `confirmed`；财务从该状态直接付款或填写原因退回为 `awaiting_confirmation`。合作方再次确认后回到 `confirmed`。
+- Key decisions: 复用既有状态与表结构，不新增 migration；`confirmed` 的业务显示改为“待财务核对”，`awaiting_confirmation` 只用于财务退回后的“待合作方再次确认”，`finance_approved` 仅保留历史兼容。费用规则缺失不阻止本人提交，但阻止付款；财务修正规则后必须退回重算并由本人再次确认。
+- Claim boundary: 本人提交后财务仍可在工作量反馈页核对该周 `submitted` 内容；已批准但尚未进入结算行的反馈会阻止付款，需退回重算后再确认，避免少付或静默改金额。
+- Notification boundary: 初次本人提交不发确认通知；只有财务退回新版本时复用既有本人收件链路，收件人仍严格为结算 `user_id`。若业务状态已提交但草稿文件或通知发布失败，同一退回端点会识别已持久化的 `finance_return` 修订并以稳定 event ID 幂等重试交付，不会再次重算或制造第二轮状态。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementWorkflow.ts` — 本人预览/提交、财务退回重算、付款前完整性闸门和状态转换。
+- `backend/src/lib/personnelWorkloadClaims.ts` — 允许财务核对本人已提交结算周内的待核对反馈，同时保持付款前未计入检查。
+- `backend/src/lib/personnelSettlementWeeklyJob.ts` — 兼容周任务只记录运行，不再生成结算或发通知。
+- `backend/src/modules/personnel_settlements.ts` — 本人预览/提交和财务退回 API；旧财务生成、运行和发起确认 API 返回 410。
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts`、`backend/scripts/tests/test_personnel_settlement_phase5.ts` — 状态、接口、通知和周任务静态合同回归。
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — 财务页面移除生成入口，增加退回再次确认，并保留直接确认已付款。
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` 及对应 tests — 状态文案、操作权限和页面合同。
+- `docs/notification-registry.yaml`、`docs/feature-regression-registry.md`、`docs/execution-records.md` — 通知、跨层回归和执行记录。
+
+### Impact / Dependencies
+
+- API: 新增 `GET /finance/settlements/my-settlements-preview`、`POST /finance/settlements/my-settlements-submit`、`POST /finance/settlements/weekly/:id/return-for-confirmation`；旧 `/weekly/generate`、`/weekly/run`、`/:id/issue-confirmation` 返回 410。
+- Database / migration / dependencies: none；复用现有批次、周结算、明细、审计和通知表。
+- Paired mobile: `mobile/CRL-20260922-001`。
+- Production writes / external sync / transfer: none；本轮未调用真实提交、通知、付款或数据库写入 API。
+
+### Validation
+
+- Backend `./node_modules/.bin/tsc --noEmit -p .` — passed。
+- Backend `./node_modules/.bin/ts-node --transpile-only scripts/tests/test_personnel_settlement_phase3.ts` — passed；包含已进入 `awaiting_confirmation` 的财务退回修订可恢复稳定交付参数、普通初次确认不可误走该重试分支。
+- Backend `./node_modules/.bin/ts-node --transpile-only scripts/tests/test_personnel_settlement_phase5.ts` — passed。
+- Frontend `npx tsc -p tsconfig.json --noEmit --incremental false` — passed。
+- Frontend focused Vitest — passed：2 files / 8 tests。
+- Paired mobile TypeScript and focused Jest — passed：1 suite / 13 tests。
+- Frontend targeted ESLint — passed：0 errors。
+- `npm run build` in `frontend` — passed：Next.js production build and `/finance/settlements` static generation completed；only existing repository warnings were reported。首次普通构建因 sandbox 无权清理 `.next` 返回 EPERM，获批后以相同命令完成。
+- `npm run check:feature-registry` — passed：25 FRs / 203 mappings；77 mobile mappings按跨仓库规则 defer。
+- `git diff --check` — passed。
+- `python3 scripts/audit_change_release_ledger.py` — 本任务路径均已登记；Root 混合工作区仍被本任务前已有的 `backend/dist/modules/auth.js`、`backend/dist/modules/landlords.js`、`backend/dist/modules/orders.js` 三个未归属生成文件阻塞，覆盖 78/81，未归入本 CRL。
+- Fresh base check — `origin/Dev@317b8d667594a0a1e3fb8277652b974aa2d23ef5` fetched 2026-09-22。
+- Database integration, browser UI, simulator/device, push delivery, PDF generation, bank transfer and production — not run。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. 用户只授权实现与本地验证；未授权 commit、push、PR、merge、deployment 或 production/device verification。
+
+### Risks / Release Notes
+
+- 旧数据库中的 `draft`、`awaiting_confirmation`、`disputed` 和 `finance_approved` 记录继续按兼容路径可读；本轮未迁移历史状态。
+- 周任务仍会在启用时写运行记录，但不会生成结算或通知；部署配置是否启用未验证。
+- Sensitive-information review: 未新增或输出 token、`.env`、数据库 URL、银行账号、人员资料或业务日志。
+- Git state: uncommitted；not pushed；no PR；not merged；not deployed；production/device verification not run。
+
+## CRL-20260922-001 — 批量运行按钮文案定位纠正（root）
+
+- **Repository:** `root`
+- **Status:** ready
+- **Updated:** 2026-09-22 13:16 AEST
+- **Request:** 用户指出要修改的是周结算上方“生成并发起确认”按钮，而不是下方运行记录区标题。
+- **Outcome:** 批量操作按钮现在显示“批量生成与发起记录”；下方审计区恢复“周任务运行记录”，两个位置的动作与记录含义不再混淆。
+
+### Implementation
+
+- Previous behavior: 上方按钮仍显示“生成并发起确认”，而目标文案被错误放在下方运行记录区标题。
+- New behavior: 仅交换两处可见文案的定位；按钮改为“批量生成与发起记录”，审计表标题恢复“周任务运行记录”。
+- Key decisions: 保留既有 `runWeekAutomation` 行为、`/finance/settlements/weekly/run` 请求、权限、通知、运行记录数据源和单人结算审计边界；不修改任何业务逻辑。
+
+### Files / Areas
+
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — 纠正批量操作按钮与运行记录区标题文案。
+- `frontend/src/app/finance/settlements/phase5Ui.test.ts` — 精确断言按钮和 Divider 各自应显示的文案，并拒绝旧按钮文案回归。
+- `docs/feature-regression-registry.md` — FR-029 和测试映射改为准确描述按钮与审计区标题。
+- `docs/change-release-ledger.md` — 记录本次可选择的文案纠正单元及验证边界。
+
+### Impact / Dependencies
+
+- API / database / migration / config / package dependencies: none。
+- Data and behavior: unchanged；继续复用既有批量运行接口和运行记录查询，不新增、删除或修改数据。
+- Permissions / notifications / PDF: unchanged。
+- Related units: `root/CRL-20260911-003` 的周批量任务和 `root/CRL-20260914-004` 的费用结算标签优先级；本单元纠正 2026-09-15 Preview-only 未提交文案草稿的目标位置，不复用已与远端发生身份冲突的旧编号。
+
+### Validation
+
+- `npm run test --prefix frontend -- --run src/app/finance/settlements/phase5Ui.test.ts --coverage.enabled=false` — passed：1 file / 2 tests；按钮与审计区文案定位合同通过。
+- `npx tsc -p tsconfig.json --noEmit --incremental false` in `frontend` — passed。
+- `npx eslint src/app/finance/settlements/WeeklySettlementsPanel.tsx src/app/finance/settlements/phase5Ui.test.ts --no-cache` in `frontend` — passed。
+- `npm run build --prefix frontend` — passed：Next.js 生产构建和 `/finance/settlements` 页面生成完成；仅有仓库既有 warnings。
+- Active Preview compile — passed：3000 端口进程 cwd 为 fixed Preview `root/frontend`；开发编译产物 `.next/static/chunks/app/finance/settlements/page.js` 仅包含“批量生成与发起记录”和“周任务运行记录”，不包含旧按钮文案“生成并发起确认”。
+- `git diff --check -- frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx frontend/src/app/finance/settlements/phase5Ui.test.ts docs/feature-regression-registry.md` — passed。
+- `npm run check:feature-registry` — passed：25 个 FR、203 条测试映射，77 条 mobile 映射按跨仓库规则 defer。
+- `python3 scripts/audit_change_release_ledger.py` — 本任务四个路径均已登记，远端 `root/CRL-20260915-001` 已原样保留且旧 Preview 草稿完成受控编号迁移；Root 混合工作区仍被本任务之前已有的 `backend/dist/modules/auth.js`、`backend/dist/modules/landlords.js`、`backend/dist/modules/orders.js` 三个未归属生成文件阻塞，覆盖为 78/81，未将其错误归入本 CRL。
+- Fresh base check — `origin/Dev@317b8d667594a0a1e3fb8277652b974aa2d23ef5` fetched 2026-09-22；本地与远端均未占用 `root/CRL-20260922-001`。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. 用户只授权实现与本地验证；未授权 commit、push、PR、merge 或 deployment。
+
+### Risks / Release Notes
+
+- 本轮是纯文案定位纠正；按钮触发范围和下方记录范围均不变。
+- Rollback: 恢复两处旧文案和测试断言；无数据回滚。
+- Sensitive-information review: 未新增凭据、token、`.env`、数据库 URL、人员资料、银行信息或业务数据输出。
+- Git state: uncommitted；not pushed；no PR；not merged；not deployed；开发编译产物已核对，Chrome 调试连接显示 `Debugger unattached`，因此未完成登录页面的可视化截图验收。
+
+## CRL-20260914-004 — 费用结算网页默认周结算与标签优先级（root）
+
+- **Repository:** `root`
+- **Status:** ready
+- **Updated:** 2026-09-14 Australia/Melbourne
+- **Request:** 调整费用结算网页三个入口的优先级：首先显示周结算，其次工作量反馈，最后人员与费用规则。
+- **Outcome:** 打开费用结算网页时默认进入“周结算”，标签固定按“周结算 → 工作量反馈 → 人员与费用规则”排列；人员搜索和刷新继续只在人员与费用规则页显示。
+
+### Implementation
+
+- Previous behavior: 页面默认打开“人员与费用规则”，标签顺序为人员与费用规则、周结算、工作量反馈，日常结算操作需要额外切换。
+- New behavior: 复用现有三个 Tab 和内容组件，仅把默认 active key 改为 `weekly` 并按业务优先级重排 items；没有复制页面或改变各 Tab 内部流程。
+- Key decisions: 保留现有权限、筛选、搜索、数据读取、Drawer、工作反馈和周结算逻辑；本轮不新增持久化 Tab 记忆或 URL 参数。
+
+### Files / Areas
+
+- `frontend/src/app/finance/settlements/page.tsx` — 默认打开周结算并重排三个标签。
+- `frontend/src/app/finance/settlements/personnelProfileUi.test.ts` — 默认标签和顺序源码合同回归。
+- `docs/feature-regression-registry.md` — FR-029 增加费用结算入口优先级不变量与测试映射。
+- `docs/change-release-ledger.md` — 本可选网页 UI 单元、验证和交付边界。
+
+### Impact / Dependencies
+
+- API / database / migration / config / package dependencies: none。
+- Permissions: unchanged；页面和三个子面板继续使用现有权限边界。
+- Data behavior: unchanged；没有新增请求或写入，切换标签仍由既有组件加载对应数据。
+- Related units: 复用 `root/CRL-20260910-002` 的费用结算页面及后续周结算/工作反馈组件；共享 `page.tsx`、FR-029 和台账文件，选择性发布需按已审阅 hunk提取。
+
+### Validation
+
+- `npm run test --prefix frontend -- --run src/app/finance/settlements/personnelProfileUi.test.ts --coverage.enabled=false` — passed：1 file / 4 tests，覆盖默认 `weekly` 和三个标签顺序。
+- `npx tsc -p tsconfig.json --noEmit --incremental false` in `frontend` — passed。
+- `npx eslint src/app/finance/settlements/page.tsx src/app/finance/settlements/personnelProfileUi.test.ts --no-cache` in `frontend` — passed。
+- `npm run build --prefix frontend` — passed：清理 fixed Preview `.next` 需要已批准的缓存写权限；Next.js production compile、lint、TypeScript 和 BUILD_ID 生成完成，只有仓库既有 warnings。
+- `npm run check:feature-registry` — passed：25 个 FR、203 条测试映射，77 条 mobile 映射按跨仓库规则 defer。
+- `python3 scripts/audit_change_release_ledger.py` — 本任务四个路径均已登记；Root 混合工作区仍被本任务之前已有的 `backend/dist/modules/auth.js`、`backend/dist/modules/landlords.js`、`backend/dist/modules/orders.js` 三个未归属生成文件阻塞，当前覆盖为 78/81，未将其错误归入本 CRL。
+- Fixed Preview live UI — not completed：匿名 in-app browser 只到登录页，已登录 Chrome Preview tab 的调试连接当前不可用；没有代用户重新登录或提交任何数据。源码合同、类型检查和生产构建均已验证。
+- Fresh base check — `origin/Dev@59f3ef6688759c44046d21e1e053578a00ba9d6e` fetched 2026-09-14；远端 ledger 未占用本日 004，分配 `root/CRL-20260914-004`。
+- `git diff --check` — passed。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. 用户只授权实现与本地验证；未授权 commit、push、PR、merge 或 deployment。
+
+### Risks / Release Notes
+
+- 本轮只改变首次进入和标签排列；不会记住上次选择的标签，刷新页面仍回到周结算。
+- Rollback: 把 `activeTab` 恢复为 `profiles` 并恢复原 items 顺序；无数据回滚。
+- Sensitive-information review: 未新增凭据、token、`.env`、数据库 URL、人员资料、银行信息或业务数据输出。
+- Git state: uncommitted；not pushed；no PR；not merged；not deployed；production verification not run。
+
+## CRL-20260914-003 — 网页工作反馈自动金额核对与确认计入弹窗（root）
+
+- **Repository:** `root`
+- **Status:** candidate
+- **Updated:** 2026-09-14 Australia/Melbourne
+- **Request:** 用户选择 Product Design 方案 1：网页工作量反馈详情和“确认计入”必须直接显示按后台费用规则计算的金额，财务不再自行换算工时或手填规则型金额。
+- **Outcome:** 工作反馈详情新增预计计入金额；确认弹窗集中展示提交人、日期、类型、时间、工作量、说明和鉴权证明，并仅显示当前计费口径需要核对的工时、数量、天数或直接金额。系统按工作日期生效规则自动展示公式、税前、GST 和总额，主按钮带入最终金额；50 分钟、含 GST、`$35/小时` 显示税前 `$26.52`、GST `$2.65`、总额 `$29.17`。
+
+### Implementation
+
+- 新增管理端 claim 只读预估路由；服务端根据 claim 本身确定人员、工作日期和计费类型，不接受客户端指定其他人员。
+- 管理端预估与本人预估、正式周结算复用同一整数分/GST 计算器，工时使用分钟有理数，不在网页自行计算。
+- 确认计入事务在写入批准状态前再次调用权威预估；规则计费类型拒绝 `approved_amount_cents` 手工覆盖，缺规则、缺对应计费项、缺生效资料或 GST 未确认都会阻止确认。
+- 直接金额类型仍允许核对本人提交金额；按小时、按天和按次数类型只允许核对对应工作量，并在 180ms 防抖后刷新只读估算。
+- 弹窗按已选方案 1 使用 720px Ant Design 版式；桌面端上移至 24px，保证 958px 高视口仍完整显示底部操作。
+
+### Files / Areas
+
+- `backend/src/lib/personnelWorkloadClaims.ts` — 管理端预估入口、确认前权威重算、规则型手填金额拒绝及审计计算快照。
+- `backend/src/modules/personnel_settlements.ts` — `GET /finance/settlements/claims/:claimId/estimate` 与 strict query schema。
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — 50 分钟精确含税拆分、路由/schema、确认重算和网页合同。
+- `frontend/src/app/finance/settlements/WorkloadClaimsPanel.tsx` — 详情金额、确认弹窗、动态核对字段、证明材料和自动金额交互。
+- `frontend/src/app/finance/settlements/WorkloadClaimsPanel.module.css` — 方案 1 桌面/窄屏布局、间距、金额层级与视口安全位置。
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts`, `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — 类型到核对字段的映射、日期/时间显示及回归。
+- `design-qa.md` — 参考图、固定 Preview 实现截图、交互检查和 P0–P3 视觉结论。
+- `docs/feature-regression-registry.md`, `docs/change-release-ledger.md` — FR-029 保护规则、测试映射和本候选边界。
+
+### Impact / Dependencies
+
+- API: 新增认证只读 `GET /finance/settlements/claims/:claimId/estimate`；需要 `personnel_settlements.profiles.view`，不返回银行资料、规则历史或媒体对象地址。
+- Existing review API: payload 结构不变；规则计费类型今后不接受手填批准金额，并在确认前要求权威金额可计算。
+- Database / migration / package dependencies: none；不修改 schema、历史 claim、周结算或费用规则。
+- Business timing: 普通工作反馈确认后保存批准工作量，金额在整周生成/重算时进入正式周结算；异议内补充反馈仍复用既有同事务即时计入闭环。本轮没有把普通确认改成提前创建周结算行。
+- Shared files: `backend/src/lib/personnelWorkloadClaims.ts`、`backend/src/modules/personnel_settlements.ts`、`WorkloadClaimsPanel.tsx`、`settlementWorkflowUi.ts`、两份治理文档也被既有费用结算 CRL 使用；选择性发布需按已审阅 hunk或把依赖单元一起选择。
+
+### Validation
+
+- `npx tsc -p . --noEmit` in `backend` — passed。
+- `npm run test:personnel-settlement-phase3 --prefix backend` — passed；50 分钟精确得到 `$26.52 + $2.65 = $29.17`，并覆盖管理端路由、strict schema、确认重算和规则型手填金额拒绝合同。
+- `npm run test:personnel-settlement-phase4 --prefix backend` — passed；鉴权证明读取合同保持通过。
+- `npm run test --prefix frontend -- --run src/app/finance/settlements/settlementWorkflowUi.test.ts --coverage.enabled=false` — passed：1 suite / 6 tests。
+- `npx tsc -p tsconfig.json --noEmit --incremental false` in `frontend` — passed。
+- `npx eslint src/app/finance/settlements/WorkloadClaimsPanel.tsx src/app/finance/settlements/settlementWorkflowUi.ts src/app/finance/settlements/settlementWorkflowUi.test.ts --no-cache` in `frontend` — passed。
+- `npm run lint --prefix frontend` — not completed：固定 Preview 既有 `.next/cache/eslint` 为只读，写缓存时报 `EPERM`；目标文件已由无缓存 ESLint 通过。
+- `npm run build --prefix frontend` — not completed：预构建清理固定 Preview 既有只读 `.next` 时 `EPERM`；未删除或覆盖运行中的 Preview 产物。前端 TypeScript 及真实开发页面编译/渲染均已通过。
+- 固定 Preview UI — passed：`/health/config` 确认 dev/development/port 4002；现有已登录网页显示工作反馈、鉴权证明、`$29.17`、税前和 GST；修改 50→60 分钟只读重算为 `$35.00` 后恢复。未点击最终确认。
+- Product Design visual QA — passed：参考弹窗与实现聚焦区域在同一视觉输入中核对；P0/P1/P2 均无，完整底部操作在 1920×958 视口可见。
+- `npm run check:feature-registry` — passed：25 个 FR、202 条测试映射，77 条 mobile 映射按跨仓库规则 defer。
+- `python3 scripts/audit_change_release_ledger.py` — 本任务文件均已登记；Root 混合工作区仍被本任务之前已有的 `backend/dist/modules/auth.js`、`landlords.js`、`orders.js` 三个未登记生成文件阻塞，未将其错误归入本 CRL。
+- `git diff --check` — passed。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. 用户只授权固定 Preview 实现和验证；未授权 commit、push、PR、merge、deployment、生产读取或业务写入。
+
+### Risks / Release Notes
+
+- 页面首次打开或修改工作量时，确认按钮在只读预估完成前保持禁用；慢网络下会短暂显示骨架屏，不会以旧金额提交。
+- 本轮未点击最终“确认并计入”，没有写入开发或生产业务数据。
+- Sensitive-information review: 未新增或输出凭据、token、`.env`、数据库 URL、银行资料或对象存储 key。
+- Git state: uncommitted；not pushed；no PR；not merged；not deployed；production/device verification not run。
+
+## CRL-20260914-001 — 费用规则生效日期回显与历史锁定提示（root）
+
+- **Repository:** `root`
+- **Status:** candidate
+- **Updated:** 2026-09-14 Australia/Melbourne
+- **Request:** 费用规则生效日期保存后必须保持用户选择的日期；再次修改时不能只弹出 `rule_effective_date_locked`，应提前说明历史锁定边界并避免选择必然失败的日期。
+- **Outcome:** 规则 Drawer 保存后回显刚保存版本的生效日期；打开页面时读取已确认/已付款周结算的锁定截止日，禁用截止日及之前日期并显示下一可用日期，后端冲突也转换为同一中文提示。历史结算仍保持不可回溯修改。
+
+### Implementation
+
+- 后端从 `finance_approved` / `paid` 周结算中计算该人员的最大 `week_end`，返回 `locked_through` 和下一天 `earliest_effective_date`；保存仍在事务与人员行锁内重复校验，避免只依赖前端。
+- 新增费用规则管理权限保护的只读约束端点；冲突响应仅附带日期边界，不返回人员、银行或结算明细。
+- Drawer 同时读取规则历史与约束，日期选择器禁用无效日期并显示中文警告；保存成功后以提交的日期选回对应版本，不再无条件重置为当天。
+- 原始技术错误码映射为中文锁定说明；其他错误保持既有处理。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementRules.ts` — 锁定截止日查询、日期约束序列化和保存时服务端复核。
+- `backend/src/modules/personnel_settlements.ts` — 只读规则日期约束端点及冲突约束响应。
+- `backend/scripts/tests/test_personnel_settlement_phase2.ts` — 下一可用日期、路由、日期禁用和保存后回显合同。
+- `frontend/src/app/finance/settlements/FeeRuleDrawer.tsx` — 读取约束、禁用日期、中文警告和保存日期回显。
+- `frontend/src/app/finance/settlements/feeRuleUi.ts`, `frontend/src/app/finance/settlements/feeRuleUi.test.ts` — 锁定判断和中文错误映射。
+- `docs/feature-regression-registry.md`, `docs/change-release-ledger.md` — FR-029 与候选边界。
+
+### Impact / Dependencies
+
+- API: 新增 `GET /finance/settlements/profiles/:userId/rule-constraints`；现有规则保存地址和请求体不变。
+- Database / migration / package dependencies: none；仅读取既有周结算和批次表，不修改 schema 或历史数据。
+- Shared file: `backend/src/modules/personnel_settlements.ts` 和两份治理文档也由 root/CRL-20260914-002 使用，后续选择性发布必须按已审阅 hunk 或合并单元处理。
+- Business dependency: 保留既有历史不可变规则；不得通过本修复将已锁定日期变为可写。
+
+### Validation
+
+- `npx tsc -p . --noEmit` in `backend` — passed。
+- `npm run test:personnel-settlement-phase2 --prefix backend` — passed；覆盖 `2026-09-06` 锁定后最早 `2026-09-07`、无锁定状态和页面合同。
+- `npm run test --prefix frontend -- --run src/app/finance/settlements/feeRuleUi.test.ts src/app/finance/settlements/settlementWorkflowUi.test.ts --coverage.enabled=false` — passed：2 suites / 12 tests，其中费用规则 7 tests。
+- `npm run build --prefix backend` — not completed：固定 Preview 既有 `backend/dist` 为只读，输出时报 `EPERM`；未改动生成文件，已由同 tsconfig 的 `--noEmit` 覆盖类型检查。
+- `npm run lint --prefix frontend` — passed；只有仓库既有 warnings，本次费用规则文件无新增 error。
+- `npm run build --prefix frontend` — passed：Next.js 96/96 静态页面生成完成，`/finance/settlements` 编译及类型检查通过；仅有既有 lint、Browserslist 和静态图表 warnings。
+- `npm run check:feature-registry` — passed：25 个 FR、202 条测试映射，77 条 mobile 映射按跨仓库规则 defer。
+- 固定 Preview 网页只读核对 — passed：cleaner-1 当前规则继续显示 `2026-09-14`、`已含 GST` 和 `$35/小时`；页面显示“锁定至 2026-09-06、最早 2026-09-07”，DOM 核对 `2026-09-06` disabled、`2026-09-07` enabled，未点击保存。
+- `python3 scripts/audit_change_release_ledger.py` — 当前任务文件均已登记，但 Root 混合工作区仍被本任务之前已有的 `backend/dist/modules/auth.js`、`landlords.js`、`orders.js` 三个未登记生成文件阻塞；未将无关文件归入本 CRL。
+- `git diff --check` — passed。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. 用户仅授权本地实现与验证；未授权 commit、push、PR、merge、deployment 或生产写入。
+
+### Risks / Release Notes
+
+- 约束端点与保存端共享同一锁定查询；若未来增加新的不可变结算状态，必须同步扩展两处状态集合并补测试。
+- 本轮没有代用户保存费用规则，没有修改开发或生产业务数据。
+- Sensitive-information review: 未新增凭据、token、`.env`、数据库 URL、银行资料或人员明细输出。
+- Git state: uncommitted；not pushed；no PR；not merged；not deployed；production/device verification not run。
+
+## CRL-20260914-002 — 工作反馈权威金额预估与网页时长统一（root）
+
+- **Repository:** `root`
+- **Status:** candidate
+- **Updated:** 2026-09-14 Australia/Melbourne
+- **Request:** 用户填写按小时等工作反馈时应看到金额；后台已配置如 `$35/hour` 且单价口径已包含 GST，应按该口径计算。网页不能显示 `1.17 小时`，要与移动端统一为 `1 小时 10 分钟`。
+- **Outcome:** 新增本人只读工作反馈预估接口，按工作日期读取生效规则与 GST 资料并复用正式结算整数分算法；`$35/小时 × 70 分钟` 在已注册且含 GST 时返回未税 `$37.12`、GST `$3.71`、总额 `$40.83`。网页列表和详情统一显示中文小时/分钟。
+
+### Implementation
+
+- 预估请求只接受本人、工作日期、已允许的主动反馈类型和当前输入量；后端自行选择该日生效规则、具体计费项及 GST 状态，不向客户端开放任意人员查询。
+- 预估复用 `calculateSettlementLine`、整数分和有理数数量；按小时使用 `duration_minutes / 60`，含 GST 从总额拆分，未含 GST 按正式结算规则另加。
+- 规则缺失、计费项缺失或 GST 未确认时返回不可用原因而非猜测金额；该只读结果不创建 claim、结算行、通知、PDF 或公司支出。
+- 网页工作量列表和详情复用单一 formatter，将 70 分钟显示为 `1 小时 10 分钟`，不再除以 60 显示浮点数。
+
+### Files / Areas
+
+- `backend/src/lib/personnelWorkloadClaims.ts` — 预估输入、权威规则读取和正式结算算法复用。
+- `backend/src/modules/personnel_settlements.ts` — 本人认证只读预估路由和 strict query schema。
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — 70 分钟含 GST 精确金额、查询 schema 和路由合同。
+- `frontend/src/app/finance/settlements/WorkloadClaimsPanel.tsx` — 列表/详情统一可读时长。
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts`, `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — 共享 formatter 与回归。
+- `docs/feature-regression-registry.md`, `docs/change-release-ledger.md` — FR-029 与候选边界。
+
+### Impact / Dependencies
+
+- API: 新增认证 `GET /finance/settlements/my-claim-estimate`；没有新增写端点或修改现有提交 payload。
+- Database / migration / package dependencies: none；只读既有规则、规则项和日期有效人员档案。
+- Paired unit: `mobile/CRL-20260914-002` 消费该接口；Root 可先发布，Mobile 不应先于配套 Root 接口交付。
+- Shared file: `backend/src/modules/personnel_settlements.ts` 和两份治理文档也由 root/CRL-20260914-001 使用，选择性发布需处理共享 hunks。
+
+### Validation
+
+- `npx tsc -p . --noEmit` in `backend` — passed。
+- `npm run test:personnel-settlement-phase3 --prefix backend` — passed；覆盖 `$35/小时 × 70 分钟` 的含 GST 精确拆分与 strict 查询。
+- `npm run test --prefix frontend -- --run src/app/finance/settlements/feeRuleUi.test.ts src/app/finance/settlements/settlementWorkflowUi.test.ts --coverage.enabled=false` — passed：2 suites / 12 tests；覆盖 70、360、40、0 分钟。
+- `npm run build --prefix backend` — not completed：固定 Preview 既有 `backend/dist` 为只读，输出时报 `EPERM`；未改动生成文件，已由同 tsconfig 的 `--noEmit` 覆盖类型检查。
+- `npm run lint --prefix frontend` — passed；只有仓库既有 warnings，本次结算文件无新增 error。
+- `npm run build --prefix frontend` — passed：Next.js 96/96 静态页面生成完成，`/finance/settlements` 编译及类型检查通过；仅有既有 lint、Browserslist 和静态图表 warnings。
+- `npm run check:feature-registry` — passed：25 个 FR、202 条测试映射，77 条 mobile 映射按跨仓库规则 defer。
+- 固定 Preview backend — `/health/config` 确认 `app_env=dev`、`node_env=development`、`database_role=dev`、port `4002`；未登录预估请求返回 `401`，保持认证边界。
+- 固定 Preview iPhone 17 模拟器本人只读预估 — passed：`17:10–18:20` 显示 `1 小时 10 分钟`、`$35.00 / 小时 · 已含 GST`、预计 `$40.83`、其中 GST `$3.71`；未提交反馈，核对后已清空本轮本地测试草稿。
+- `python3 scripts/audit_change_release_ledger.py` — 当前任务文件均已登记，但 Root 混合工作区仍被本任务之前已有的 `backend/dist/modules/auth.js`、`landlords.js`、`orders.js` 三个未登记生成文件阻塞；未将无关文件归入本 CRL。
+- `git diff --check` — passed。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. 用户仅授权本地实现与验证；未授权 commit、push、PR、merge、deployment、业务写入或生产读取。
+
+### Risks / Release Notes
+
+- 预估只用于反馈前提示；公司核对时仍按锁定结算上下文生成正式金额。跨午夜时长继续使用既有无效边界，本轮未扩展。
+- 本轮未调用真实本人预估接口或提交反馈，未写入开发/生产业务数据。
+- Sensitive-information review: 接口不返回银行资料、完整规则历史、他人数据、媒体对象地址、凭据、token、`.env` 或数据库 URL。
+- Git state: uncommitted；not pushed；no PR；not merged；not deployed；production/device verification not run。
+
+## CRL-20260913-003 — 本人主动工作量反馈类型与上新房照片规则（root）
+
+- **Repository:** `root`
+- **Status:** candidate
+- **Updated:** 2026-09-13 Australia/Melbourne
+- **Request:** 移动端工作量反馈不能直接列出所有底层费用类型，不同业务类型应收集对应信息；用户必须能主动反馈，不能因尚未配置费用规则被阻止。试工从该自助入口删除，上新房不要求照片。
+- **Outcome:** 新增本人按工作日期读取主动反馈业务类型的只读接口。仓管、加班、补贴、上新房、编外合作和其他费用始终可选；费用规则只在已配置时决定对应底层计算口径，未配置仍可先提交并交由公司核对。清洁、检查、周固定和试工继续排除；上新房要求房源和工作量，但不强制 evidence。
+
+### Implementation
+
+- `GET /finance/settlements/my-claim-options?service_date=YYYY-MM-DD` 读取当前人员该日期唯一有效的费用规则，但无论是否命中规则都返回六类主动反馈选项；使用 strict query schema，并兼容受限 `_` 传输缓存标记。
+- 服务端把已配置规则转换为对应业务口径；未配置时使用业务默认输入方式：仓管/加班为开始与结束时间，补贴/其他为金额，上新房/编外为数量，并标记“可先反馈，公司核对时确认计算方式”。费率和完整规则不会返回本人端。
+- 清洁、检查与周固定来自系统工作记录，不进入人工反馈；试工仅从新建/修改自助入口移除，既有历史数据、费用规则和结算统计继续兼容。
+- `new_property_task` 仍要求房源编号和大于 0 的工作量，但提交与确认计入时照片可为空。其他工作量反馈继续要求稳定的私有 evidence 关联。
+- 新建、修改与提交草稿都由服务端再次核对六类允许的主动反馈选项；未配置费用规则不再阻止提交，但旧客户端或手工请求仍不能提交试工、清洁、检查、周固定或未知类型。历史记录仍可读取。
+
+### Files / Areas
+
+- `backend/src/lib/personnelWorkloadClaims.ts`
+- `backend/src/modules/personnel_settlements.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase3_integration.ts`
+- `docs/feature-regression-registry.md`
+- `docs/change-release-ledger.md`
+
+### Impact / Dependencies
+
+- API: 新增本人只读 claim options 端点；现有 claim 列表、详情、创建、媒体上传和结算 API 地址不变。
+- Database / migration / dependencies: none；只读取既有费用规则表并复用既有 claim/evidence 表，没有 migration、数据回填或新依赖。
+- Media: 仅改变上新房是否强制有证明；私有上传、归属授权、JPEG 规范化、最多 5 张、失败保留和认证读取链路不变。
+- Related unit: `mobile/CRL-20260913-004` 使用该接口驱动移动端动态表单。
+
+### Validation
+
+- `npm run test:personnel-settlement-phase3 --prefix backend` — passed；覆盖无费用规则仍返回六类主动反馈、编外已配置口径折叠、strict query、服务端试工/系统类型门禁、上新房必填字段和照片例外。
+- `npm run test:personnel-settlement-phase1 --prefix backend`、`test:personnel-settlement-phase2`、`test:personnel-settlement-phase4`、`test:personnel-settlement-phase5` — passed；费用结算 Phase 1/2/4/5 合同回归未受影响。
+- `./node_modules/.bin/tsc -p . --noEmit` in `backend` — passed。
+- `npm run build --prefix backend` — 未完成：固定 Preview 现有 `backend/dist` 为只读，TypeScript 输出时报 `EPERM`；已用同一 tsconfig 的 `--noEmit` 类型检查替代，本轮未改动或删除 `dist`。
+- `npm run check:feature-registry` — passed：25 个 FR、202 条测试映射；77 条 mobile 映射按跨仓库规则 defer。
+- `git diff --check` — passed。
+- 固定 Preview backend port 4002 的 `/health/config` 显示 `app_env=dev`、`database_role=dev`，`/health/ready` 返回 `200`；未登录请求新路由返回 `401`，确认路由存在且保持鉴权。
+- 固定 Preview 开发库只读核对 — `cleaner-1` 当前及上一版本规则均只有六档 `cleaning_task`；修改后该人员仍会得到六类主动反馈选项，并在缺少对应规则的选项中显示公司核对提示。本轮未修改规则或业务数据。
+- Preview database integration — not run；本轮没有用户授权新的合成数据库写入。
+- Authenticated options API — not run；本轮没有复用或输出真实账号 token。独立只读脚本未取得 schema readiness，因此未将其作为运行态通过证据。
+- Ledger audit — 当前任务文件全部已登记；Root 混合工作区仍被三个既有无关 `backend/dist/modules/*.js` 生成文件阻塞，未将其归入本 CRL。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. 用户仅授权实现和本地/固定 Preview 验证；未授权 commit、push、PR、merge、deployment 或生产写入。
+
+### Risks / Release Notes
+
+- 没有当天有效费用规则或规则中只有系统来源项目时，用户仍可主动提交六类反馈；公司确认计入前仍需补齐或核对相应计算规则，系统不得猜测最终金额。
+- 多个编外口径同时配置时使用规则既有优先级最高项；尚未配置时编外默认收集“工作量/次数”，待公司核对计算方式。历史试工 claim 仍可查看与统计，但不能从新版移动端继续修改。
+- Sensitive-information review: 接口不返回费率、银行资料、原始媒体地址、凭据、token、`.env` 或数据库 URL。
+- Git state: uncommitted；not pushed；no PR；not merged；not deployed；production/device verification not run。
+
+## CRL-20260913-002 — 周结算确认已付款与清洁支出闭环（root）
+
+- **Repository:** `root`
+- **Status:** candidate
+- **Updated:** 2026-09-13 16:10 Australia/Melbourne
+- **Request:** 财务确认时应直接看到结算金额、收款人、BSB 和银行账号，并在外部转账完成后一次“确认已付款”；不保留额外的待付款流程。人员结算中的清洁、检查、仓管、试工、编外合作、补贴等全部统一计入公司“清洁支出”，同时保留补贴等内部构成统计。后续确认新付款不需要记录银行转账编号，只记录付款日期。
+- **Outcome:** 固定 Preview 中的网页财务操作已收敛为单一“确认已付款”，表单和付款展示仅保留日期，不再显示或提交转账编号。后端从本人已确认直接进入 `paid`，在同一事务中冻结收款资料并幂等写入一条已付款“清洁支出”。公司营收报表显示清洁支出顶层合计及内部分项，分项不重复计入总支出。
+
+### Implementation
+
+- 新增 `POST /finance/settlements/weekly/:settlementId/confirm-paid`，新网页请求只提交付款日期；兼容旧客户端可携带的转账编号字段但后端忽略且不写入。付款金额始终取服务端已锁定的结算总额，前端不提供金额或转账编号输入框。
+- 付款函数在单一数据库事务中锁定周结算和人员资料，冻结收款资料，写入 `paid` 结算及唯一 `company_expenses`；同样的金额与日期重试为幂等，不同日期重试明确拒绝。数据库旧转账编号字段和已有历史值仅为兼容保留，不执行 migration 或历史数据删除。
+- 历史 `finance_approved` 数据继续可从新端点或旧 `mark-paid` 端点完成；如已有冻结银行快照，即使人员当前账号后续变更，付款仍使用历史快照。旧 `approve` 端点返回 410，不再创建新中间状态。
+- 付款确认要求 `finance.payout` 和 `personnel_settlements.bank.manage` 双权限。完整收款资料只在该受保护的详情/操作中展示；普通响应仍脱敏，审计只记录收款资料完整性而不记录原始账号。
+- PDF 在付款事务成功后生成；文件生成失败只返回警告，避免已付款却向财务显示整体失败。
+- 人员结算公司费用新写入 `cleaning_expense`；报表同时将历史 `operations` 人员结算归一化为“清洁支出”。明细按清洁、检查、仓管、试工、编外合作、补贴等汇总；试工/编外的任务、按天、按小时口径分别归并。手工录入的清洁支出进入“未分类清洁支出”，确保构成合计始终与顶层清洁支出一致。
+- 公司营收接口对新增的清洁支出构成继续执行原有支出查看权限；只有收入权限的响应必须返回空构成，不泄露费用明细。
+- 自动人员结算费用在报表中不可编辑，通用公司费用 CRUD 也拒绝修改或删除，避免结算与公司支出失配。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementWorkflow.ts`
+- `backend/src/modules/personnel_settlements.ts`
+- `backend/src/lib/companyRevenueReport.ts`
+- `backend/src/modules/finance.ts`
+- `backend/src/modules/crud.ts`
+- `backend/src/modules/mzapp.ts`
+- `backend/src/modules/public.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase3_integration.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase5_integration.ts`
+- `backend/scripts/tests/test_company_revenue_report.ts`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.module.css`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts`
+- `frontend/src/lib/companyRevenue.ts`
+- `frontend/src/app/finance/company-revenue/page.tsx`
+- `frontend/src/app/finance/company-revenue/page.module.css`
+- `frontend/src/app/public/company-expense/page.tsx`
+- `docs/feature-regression-registry.md`
+- `docs/change-release-ledger.md`
+
+### Impact / Dependencies
+
+- API: 新增 `confirm-paid`；当前网页只发送付款日期，旧客户端附带的转账编号会被兼容接收但忽略。旧 `approve` 变为 410 兼容提示，旧 `mark-paid` 保留用于历史调用，但同样直接完成付款且校验服务端金额。本人移动端列表/确认/文件 API 不变。
+- Database / migration / dependencies: none；复用现有结算、明细、公司费用、审计及文件表。新付款不写转账编号，既有字段和历史值保留，未新增 migration、数据删除或依赖。
+- Company reporting: 公司支出增加 `cleaning_expense` 选项及报表内部构成字段；顶层总支出口径不变，不会把分项再计一次。
+- External effects: 不调用银行 API；本轮 Preview 测试保持通知 worker、非相关 PDF worker 与 R2 关闭。
+
+### Validation
+
+- `npm run test:personnel-settlement-phase1 --prefix backend` — passed。
+- `npm run test:personnel-settlement-phase2 --prefix backend` — passed。
+- `npm run test:personnel-settlement-phase3 --prefix backend` — passed；确认付款校验只返回付款日期，后端付款函数不读取或写入新转账编号。
+- `npm run test:personnel-settlement-phase4 --prefix backend` — passed。
+- `npm run test:personnel-settlement-phase5 --prefix backend` — passed。
+- `npm run test:company-revenue-report --prefix backend` — passed；覆盖历史分类归一、补贴/试工分项、手工清洁支出归入未分类构成、构成与顶层合计对账、不重复计费和自动费用不可编辑。
+- `node scripts/dev-preview-db.mjs verify --connect` — passed；固定 Preview 安全闸门确认 `app=dev`、`database=dev` 且 schema registry 存在。
+- `npm run test:personnel-settlement-phase3:integration --prefix backend` — passed against enrolled MZ-Dev-Preview development database；清洁/检查/仓管/混合岗位只用付款日期直达已付款，三条新付款的 `payment_reference` 为 `NULL`，模拟的旧 `finance_approved` 历史编号保持不变；唯一已付款清洁支出、重试幂等、银行脱敏/完整权限及历史冻结账号均通过，合成数据已精确清理。
+- `npm run test:personnel-settlement-phase5:integration --prefix backend` — final rerun passed against enrolled MZ-Dev-Preview development database and local 3000/4002；2 份结算、2 条已付款清洁支出、7 份文件、3 条隔离通知及网页/PDF 下载均通过，新付款转账编号均为空，合成数据已精确清理。本轮首次运行因 4002 仍加载旧必填编号契约返回 400；重启该 Preview 后端子进程并重新确认 `app=dev` / `database=dev` 后通过。
+- `./backend/node_modules/.bin/tsc -p backend/tsconfig.json --outDir /private/tmp/mz-settlement-date-only-build-20260913` — passed；隔离输出，未写入仓库 `dist`。
+- `npx vitest run src/app/finance/settlements --coverage.enabled=false` in `frontend` — passed: 6 files / 19 tests；覆盖无转账编号字段及付款日期 `DD/MM/YYYY` 显示。
+- `./node_modules/.bin/tsc -p tsconfig.json --noEmit --incremental false` in `frontend` — passed。
+- `npm run lint` in `frontend` — passed with pre-existing warnings outside this scope。
+- Fixed Preview runtime — 4002 已重新加载本轮源码，`/health/config` 返回 `app_env=dev` / `database_role=dev`；阶段 5 真实 API 与网页测试通过。移动端代码未修改。
+- `npm run check:feature-registry` — passed: 25 FRs / 200 mappings；76 mobile mappings 按既有跨仓边界 deferred。
+- `git diff --check` — passed。
+- `python3 scripts/audit_change_release_ledger.py` — 本任务路径已全部登记；仓库级审计仅被三个先前已存在、与本任务无关的生成文件阻塞：`backend/dist/modules/auth.js`、`backend/dist/modules/landlords.js`、`backend/dist/modules/orders.js`。
+- Frontend production build not run：固定 Preview 正使用 `.next` 和 3000，标准 `prebuild` 会清理当前开发缓存并中断验收；本轮以 lint、TypeScript、定向测试和真实 3000 Chromium 集成替代。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. 用户本次只授权实现与固定 Preview 验证；未授权 commit、push、PR、merge、deployment、OTA 或生产写入。
+
+### Risks / Release Notes
+
+- “确认已付款”不发起银行转账；财务必须先在银行完成付款，再点击确认。
+- 新付款不保存转账编号；现有数据库列和历史记录值保留供兼容，不做破坏性 migration 或历史清理，网页不再展示该字段。
+- 历史 `finance_approved` 状态和文件为兼容保留，新流程不再产生该状态。
+- 人员结算公司费用是结算的受控投影；后续更正必须从结算流程进行，不能直接修改或删除该自动支出。
+- Fixed Preview 包含多个先前未提交的费用结算和其他候选变更；本 CRL 只记录上述精确行为与文件，不认领或清理其他工作。
+- Sensitive-information review: 没有新增凭据、token、`.env`、数据库 URL、真实银行账号或真实人员数据。
+- Git state: uncommitted；not pushed；no PR；not merged；not deployed；production/device verification not run。
+
+## CRL-20260913-001 — 周结算补充内容原子提交与合作式核对文案（root）
+
+- **Repository:** `root`
+- **Status:** candidate
+- **Updated:** 2026-09-13 Australia/Melbourne
+- **Request:** 移动端“提交异议”与“其他金额”应合并为一个问题处理流程；人员与 Homixa 是合作关系，面向用户的描述不应使用上下级式的“申报、审核、批准”。
+- **Outcome:** 后端新增本人“提交补充内容并请求重新核对”的原子端点：工作量 claim 提交和待确认结算转为重新核对状态在同一事务完成。网页财务端与通知改用“反馈、核对、确认计入、需要补充资料”等合作式表达；数据库状态码保持兼容。
+
+### Implementation
+
+- 抽取可在既有数据库事务内复用的 claim 提交函数，保留所有者、状态、证明和幂等校验。
+- 新增本人结算内 claim 提交端点，锁定结算与 claim，校验本人及结算周后在同一事务进入 `disputed`；任一步失败都不留下“claim 已提交但结算未更新”的半成功状态。
+- 网页人员反馈页、周结算页、操作状态及本人通知文案改为合作式语义，不改变权限、计算、GST、PDF 或付款流程。
+
+### Files / Areas
+
+- `backend/src/lib/personnelWorkloadClaims.ts`
+- `backend/src/lib/personnelSettlementWorkflow.ts`
+- `backend/src/modules/personnel_settlements.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts`
+- `frontend/src/app/finance/settlements/page.tsx`
+- `frontend/src/app/finance/settlements/WorkloadClaimsPanel.tsx`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts`
+- `docs/feature-regression-registry.md`
+- `docs/execution-records.md`
+- `docs/change-release-ledger.md`
+
+### Impact / Dependencies
+
+- API: 新增向后兼容的 `POST /finance/settlements/my-settlements/:settlementId/claims/:claimId/submit-for-reconciliation`；既有提交和结算端点不变。
+- Database / migration / dependency: none；复用既有表、状态、事务和审计结构，未执行数据库写入或 migration。
+- Permissions / private media: none changed；新端点仅允许结算所有者提交自己已有证明的 claim。
+- Related unit: `mobile/CRL-20260913-001`。
+
+### Validation
+
+- `npm run test:personnel-settlement-phase3 --prefix backend` — passed。
+- `npm run build --prefix backend` — passed；首次受 Preview `dist` 写权限限制，经已批准权限重跑通过。
+- `npx vitest run src/app/finance/settlements/settlementWorkflowUi.test.ts` in `frontend` — passed: 1 file / 4 tests。
+- `npm run lint --prefix frontend` — passed with pre-existing warnings outside this scope。
+- `./node_modules/.bin/tsc -p tsconfig.json --noEmit --incremental false` in `frontend` — passed。
+- `npm run check:feature-registry` — passed: 25 FRs / 199 mappings；76 mobile mappings 按既有跨仓边界 deferred。
+- Fixed Preview web 3000 只读检查 — “工作量反馈”、“核对”和更新状态文案已热更新；未点击任何会改变结算的操作。
+- Frontend production build not run：固定 Preview 正在使用 `.next` 与 3000 端口，其 `prebuild` 会清理该目录，为避免中断当前验收环境，本轮以 lint、TypeScript、focused test 和实际 HMR 检查替代。
+- `git diff --check` — passed。
+- `python3 scripts/audit_change_release_ledger.py` — current-task paths are recorded；repository-wide audit remains blocked only by three pre-existing unrelated generated files: `backend/dist/modules/auth.js`、`backend/dist/modules/landlords.js`、`backend/dist/modules/orders.js`。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. 用户本次仅授权实现与固定 Preview 验证；未授权 commit、push、PR、merge、deployment 或生产写入。
+
+### Risks / Release Notes
+
+- 本轮没有执行真实 claim/结算提交，原子性由后端专项合同测试覆盖；后续发布前还应在可清理的 Preview 合成数据上跑通一次新端点。
+- Fixed Preview 已包含先前未提交的费用结算工作；本 CRL 不认领或清理其他变更。
+- Sensitive-information review: 没有新增凭据、token、`.env`、数据库 URL、银行明文或真实证明内容。
+- Git state: uncommitted；not pushed；no PR；not merged；not deployed；production/device verification not run。
+
+## CRL-20260912-005 — 本人结算详情只返回当前最新版文件（root）
+
+- **Repository:** `root`
+- **Status:** ready
+- **Updated:** 2026-09-12 22:36 Australia/Melbourne
+- **Request:** 移动端同一周结算同时显示 v3、v2；用户确认按建议修复，当前结算只应显示可用的最新文件，不再把旧版本并列给本人。
+- **Outcome:** 本人周结算详情 API 现在只返回与结算当前状态一致、生成时间/版本最新的一份文件；当前状态没有文件时返回空列表，不回退旧状态文件。数据库中的不可变文件历史和财务管理端历史核对能力继续保留，没有删除 PDF 或审计数据。
+
+### Implementation
+
+- 在文件服务中新增纯函数，先按 `document_stage === settlement.status` 精确筛选，再按 `generated_at` 和 `version` 选出唯一最新版。
+- 仅在 `GET /finance/settlements/my/weekly/:settlementId` 本人详情响应应用筛选；财务/管理详情继续取得完整历史。
+- Phase 5 回归覆盖同状态 v2/v3 仅返回 v3，以及当前状态缺文件时不显示旧状态文件。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementDocuments.ts` — 当前状态最新文件选择器。
+- `backend/src/modules/personnel_settlements.ts` — 本人周详情响应收窄。
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — 最新文件与无旧状态回退回归。
+- `docs/feature-regression-registry.md` — FR-029 本人文件展示保护规则和测试映射。
+- `docs/execution-records.md` — 本次执行记录。
+- `docs/change-release-ledger.md` — 本候选记录。
+
+### Impact / Dependencies
+
+- API: 本人周详情的 `documents` 从历史数组收窄为 0 或 1 个当前文件；下载接口、文件生成和管理端详情不变。
+- Database / migration: none；没有数据库写入、删除或 migration。
+- Notifications / PDF jobs: none；没有生成新文件或通知。
+- Related unit: `mobile/CRL-20260912-001`。
+
+### Validation
+
+- `npm run test:personnel-settlement-phase5 --prefix backend` — passed。
+- `./backend/node_modules/.bin/tsc -p backend/tsconfig.json --noEmit` — passed。
+- `npm run build --prefix backend -- --outDir /private/tmp/mz-settlement-current-doc-build-20260912-2226` — passed；隔离输出未写入仓库。
+- `npm run check:feature-registry` — passed: 25 FRs / 199 mappings；76 mobile mappings按既有跨仓库边界 deferred。
+- 固定 Preview runtime — backend 4002、web 3000、Metro 8081 已启动；模拟器重新连接本地 API 后页面不再报网络错误。当前登录账号返回“暂无周结算单”，因此真实 v3/v2 数据行未能在该账号下做只读视觉复核；选择器与接口合同由定向回归覆盖。
+- `git diff --check` — passed after source、registry、execution record and ledger updates。
+- `python3 scripts/audit_change_release_ledger.py` — current-task paths are recorded；repository-wide audit remains blocked only by three pre-existing unrelated generated files: `backend/dist/modules/auth.js`、`backend/dist/modules/landlords.js`、`backend/dist/modules/orders.js`。本 CRL 未擅自认领这些文件。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. 用户授权源码修复和固定 Preview 测试；未授权 commit、push、PR、merge、deployment 或生产写入。
+
+### Risks / Release Notes
+
+- 历史 PDF 仍保留用于财务审计；若持有旧文件精确 ID 且仍通过既有鉴权，下载接口行为未改变。本次只修复本人详情列表不再暴露旧版本，不执行破坏性历史删除。
+- Fixed Preview 含此前未提交的费用结算工作；本单未认领或清理其他变更。
+- Sensitive-information review: 没有加入凭据、token、`.env`、数据库 URL、银行明文或真实文件内容。
+- Git state: uncommitted；not pushed；no PR；not merged；not deployed；production/device verification not run。
+
+## CRL-20260912-004 — 费用结算异议弹窗信息层级优化（root）
+
+- **Repository:** `root`
+- **Status:** in-progress
+- **Updated:** 2026-09-12 21:40 Australia/Melbourne
+- **Request:** 用户选择 Product Design 方案 1，要求优化网页“处理异议”弹窗的内容层级，让财务更容易核对人员异议、补充申报、证明照片、自动计入金额和最终重新发起金额。
+- **Outcome:** fixed Preview 已按所选方向重排弹窗：顶部集中显示人员、结算周期和当前应付总额；异议原因单独提示；补充申报改为清晰的表格式分区；已计入状态和证明查看更直观；财务默认确认自动汇总金额，只有选择特殊调整时才显示金额输入。现有审核、自动计入和重新发起接口保持不变。
+
+### Implementation
+
+- Previous behavior: 异议 Alert、Descriptions、申报卡片和金额表单连续堆叠，重复标签和字段较多；财务需要在多个区域来回查找申报金额、证明、是否已计入及最终金额。
+- New behavior: 820px 响应式弹窗按“结算摘要 → 异议原因 → 本周补充申报 → 财务处理 → 重新发起金额”排序；桌面使用表格式申报行，小屏自动改为两列或单列；Modal body 在低高度视窗内滚动，底部操作不被内容挤出。
+- Decision behavior: `确认自动汇总金额` 保持默认选中且不显示人工金额输入；`特殊调整总额` 被选中时才显示最终应付总额输入，提交 payload、权限、门禁和事务逻辑没有改变。
+- Evidence behavior: 继续复用既有认证 Blob 和 Ant Design Image viewer；新增显式“查看证明”按钮，并在关闭窗口或切换记录时清理受控预览状态。
+- Design boundary: 采用用户选择的 Product Design 方案 1；未修改后端、数据库、通知、PDF、移动端或生产环境。正式 side-by-side Design QA 因受控浏览器禁止本地 data URL 对比页而保持 blocked，未绕过安全策略。
+
+### Files / Areas
+
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — 重构异议弹窗结构、默认/特殊金额选择和证明查看入口。
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.module.css` — 新增 MZ/Ant Design 一致的桌面布局、低高度滚动和 767/520px 响应式规则。
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — 更新弹窗关键信息层级、自动汇总和重新发起文案合同。
+- `design-qa.md` — 在保留既有年度报表 QA 记录的前提下，追加本弹窗的设计目标、实现截图、交互验证和正式对比阻塞。
+- `docs/change-release-ledger.md` — 本候选记录。
+
+### Impact / Dependencies
+
+- API: none；继续使用既有周详情、申报审核、异议处理和证明读取端点。
+- Database / migration: none；未执行数据库写入或 migration。
+- Permissions: none；操作仍由现有费用规则管理或财务付款权限控制。
+- Notifications / PDF: none；未点击重新发起，未生成通知或文件。
+- Config / environment: none。
+- Dependencies: none；复用 `antd`、`@ant-design/icons` 和现有 CSS Modules。
+- Related units: `root/CRL-20260912-001`、`root/CRL-20260912-002`、`root/CRL-20260912-003`。
+
+### Validation
+
+- `npm run test --prefix frontend -- --run src/app/finance/settlements/settlementWorkflowUi.test.ts --coverage.enabled=false` — passed: 1 file / 4 tests。
+- `npm run lint --prefix frontend` — passed with pre-existing warnings outside this change; no warning points to the modified settlement files. Initial sandbox run could not write the `.next` lint cache and was rerun with approved Preview cache write access.
+- `npm run build --prefix frontend` — passed: Next.js production compile, lint and TypeScript validation completed; repository-wide pre-existing warnings remain.
+- Browser verification on `http://localhost:3000/finance/settlements` — passed for rendering and local interactions: opened the 2026-08-17 to 2026-08-23 disputed record, loaded authenticated evidence, verified automatic/exception radio states and confirmed the manual input is conditional. Final submit was intentionally not clicked.
+- `design-qa.md` — blocked: source and implementation were captured, but the required combined comparison page was rejected by the controlled browser URL security policy.
+- `npm run check:frontend:test` — passed after approved Preview coverage-cache write access: 52 files / 237 tests, overall statements 97.29% and branches 93.61%.
+- `npm run check:feature-registry` — passed: 25 FRs / 199 mappings; 76 mobile mappings deferred by the existing cross-repository boundary.
+- `npm run check:fast` — blocked at its ledger step after the guard and ledger-auditor tests passed: pre-existing `backend/dist/modules/auth.js`, `backend/dist/modules/landlords.js`, and `backend/dist/modules/orders.js` are not covered by any CRL. The command stopped before later checks; these unrelated files were not assigned to this CRL.
+- `python3 scripts/audit_change_release_ledger.py` — blocked with the same three unrelated uncovered backend dist files; all current-task paths are recorded by this CRL.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None yet.
+
+### Risks / Release Notes
+
+- The current fixed Preview contains earlier uncommitted Root feature work. This UI change is recorded separately but has not been extracted into a clean release candidate.
+- Repository-wide ledger coverage remains blocked by three pre-existing backend dist files outside this UI scope; ownership is unattributed and was not guessed.
+- Formal Design QA remains blocked until a permitted combined comparison or explicit user visual approval of the implementation is available.
+- Sensitive-information review: no credentials, tokens, bank details, `.env` content, raw storage keys or customer exports were added. The test record uses existing synthetic `cleaner-1` data and authenticated proof media already present in Preview.
+- Rollback: revert the three settlement frontend file changes and remove this task's appended settlement-modal section from `design-qa.md`; no data rollback is required.
+- Git state: uncommitted; not pushed; no PR; not merged; not deployed; production/device verification not run.
+
+## CRL-20260912-003 — 异议补充申报按费用规则自动计入周结算（root）
+
+- **Repository:** `root`
+- **Status:** ready
+- **Updated:** 2026-09-12 18:58 Australia/Melbourne
+- **Request:** 财务在异议窗口确认清洁人员提交的补贴或其他工作量申报后，系统应自动把计算金额计入本周应付总额，不应再要求财务人工编辑总金额。
+- **Outcome:** fixed Preview 的“确认申报并自动计入”现在会在一个数据库事务中批准申报、按工作日期的生效费用规则与 GST 口径生成正式结算明细，并重算本周 Subtotal、GST 和应付总额。正常补充申报不再成为财务人工补差；人工改总额仅保留为“特殊调整金额”。旧流程中已经批准但尚未计入的记录可点击“计入当前金额”完成补入。
+
+### Implementation
+
+- Atomic claim inclusion: 异议专用审核入口先锁定周结算和申报；确认时检查人员与结算周匹配、证明存在，并复用周结算 Preview 的生效档案、费用规则、含/未含 GST 计算生成 `workload_claim` 明细。申报状态、明细和结算总额任一步失败都会整体回滚。
+- Idempotency and lock boundary: 结算行继续受 `(settlement_id, component_type, source_type, source_id)` 唯一约束；重复确认只返回当前结果，不重复加钱。通用申报审核入口重新把 `disputed` 视为锁定期间，只允许带精确 settlement ID 的异议专用事务通过，避免从“工作量申报”页批准后产生未入账记录。
+- Amount semantics: 自动入账后基于全部锁定明细重新求和，并保留既有 GST 外财务调整；自动申报金额属于正式费用明细，不计入 `finance_adjustment_cents`。规则、档案或 GST 无法计算时返回明确错误，不做前端猜算或静默回退。
+- Web flow: 异议窗口确认成功后直接使用后端返回的新详情刷新当前应付总额、申报“已计入”标记和列表金额。未处理、退回或历史已批准未计入的记录仍阻止重新发起；处理选项改为“确认当前金额”与“特殊调整金额”。
+- Existing media boundary: 本轮不修改照片上传、对象存储、认证读取或 Viewer；仍复用既有 claim/evidence 精确关联和鉴权 Blob，响应不暴露 `storage_key`。
+
+### Files / Areas
+
+- `backend/src/lib/personnelWorkloadClaims.ts` — 抽取事务内审核复用入口；通用审核锁定 disputed 期间，仅允许精确异议事务例外。
+- `backend/src/lib/personnelSettlementWorkflow.ts` — 自动生成申报结算行、重算 Subtotal/GST/Total、保留财务调整、幂等和审计。
+- `backend/src/modules/personnel_settlements.ts` — 新增受管理/财务权限保护的结算内申报审核路由。
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — 自动入账、专用路由、锁边界和网页文案合同。
+- `backend/scripts/tests/test_personnel_settlement_phase3_integration.ts` — 补充申报自动计入、重复确认幂等、零人工补差和重新确认闭环。
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — 自动入账操作、即时金额刷新、历史未入账补入和特殊调整入口。
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — 自动计入与确认当前金额文案回归。
+- `docs/feature-regression-registry.md` — FR-029 自动入账、GST、唯一明细和手工调整边界。
+- `docs/change-release-ledger.md` — 本候选记录。
+
+### Impact / Dependencies
+
+- Database/migration: 无 schema 变化，不需要且未执行 migration；复用现有申报、周结算、结算明细、审计和唯一索引。
+- API: 新增 `POST /finance/settlements/weekly/:settlementId/claims/:claimId/review`；既有通用审核端点在 disputed 周不再允许批准，必须走结算内原子入口。周详情响应结构不变。
+- Calculation: 复用 `buildPersonnelSettlementPreview` 的工作日期有效档案/规则、`exclusive_gst`/`inclusive_gst` 和整数分计算；无前端金额相加。
+- Permissions: 新入口继续要求 `personnel_settlements.rules.manage` 或 `finance.payout`；没有扩大私有照片或银行资料权限。
+- Mobile: 无移动端源码或 API payload 变化；本人后续仍读取重新发起后的新总额与新文件。
+- Related units: `root/CRL-20260911-001`、`root/CRL-20260911-002`、`root/CRL-20260912-001`、`root/CRL-20260912-002`、`mobile/CRL-20260911-001`。
+
+### Validation
+
+- Backend TypeScript no-emit and isolated production compile — passed；构建输出写入任务专用 `/private/tmp` 后已清理，未再次改写 fixed Preview 的 tracked `backend/dist`。
+- `npm run test:personnel-settlement-phase3 --prefix backend` — passed；专用路由、原子审核复用、disputed 通用锁、自动入账审计和网页合同均有断言。
+- `npm run test:personnel-settlement-phase3:integration --prefix backend` — passed against enrolled fixed Preview dev DB；未注册 GST 的合成检查人员 $250 + $10 补贴自动成为 $260；已注册 GST 且未税计价的清洁人员 $220 + $35 申报自动成为 $235 未税 + $23.50 GST = $258.50。两者 `finance_adjustment_cents` 均保持 $0，重复确认仍只有一条申报明细，随后按当前金额重新发起、确认、批准和付款，测试数据精确清理。首次运行仅因旧断言仍期待 $10 人工补差而失败，修正为新业务口径后完整复跑通过。
+- `npm run test:personnel-settlement-phase4 --prefix backend` — passed；私有证明合同未受影响。
+- `npm run test:personnel-settlement-phase5 --prefix backend` — passed；通知和 PDF 合同未受影响。
+- Frontend TypeScript no-emit — passed with incremental output disabled。
+- Frontend focused Vitest — passed: 2 files / 6 tests；自动入账文案、金额确认动作和认证证据 URL 生命周期通过。
+- Frontend focused Next lint — passed with no warnings or errors。
+- Fixed Preview DB identity gate — passed: `app=dev`, `database=dev`, enrolled fingerprint and schema registry present。
+- Fixed Preview runtime health — passed: backend `4002` ready、web `3000` HTTP 200、Metro `8081` HTTP 200，当前源码由既有受管开发进程加载。
+- `npm run check:feature-registry` — passed: 25 FRs / 199 test mappings。
+- Root ledger audit — failed on 3 pre-existing generated build paths: `backend/dist/modules/auth.js`, `backend/dist/modules/landlords.js`, `backend/dist/modules/orders.js`；它们不是本候选源码修改，未擅自归属或还原。
+- `git diff --check` — passed。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. 用户授权 fixed Preview 源码修改和开发库合成测试；未授权 commit、push、PR、merge、deployment、OTA、production write 或替真实人员确认申报。
+
+### Risks / Release Notes
+
+- 自动计价依赖申报工作日期存在唯一生效档案与费用规则；缺档案、GST 未确认、缺对应计费项或歧义规则会整体回滚并要求先修复配置，不会批准后留下未入账记录。
+- 本轮通过隔离合成数据验证，不会自动处理截图中现有的真实开发申报；如该记录已经是“已批准未计入”，更新后的页面会显示“计入当前金额”供财务明确操作。
+- Rollback: 移除结算内审核路由和自动行写入，恢复通用 disputed 审核例外及原手工改额提示；数据库无需 schema 回滚，已产生的审计和结算行属于业务历史，不应静默删除。
+- Sensitive-information review: no secrets、`.env`、token、数据库 URL、真实证明照片、真实银行账号或真实人员资料加入源码、测试或台账。
+- Git state: uncommitted, not pushed, no PR, not merged, not deployed；production、真实付款、设备、OTA 和真机验证未执行。
+
+## CRL-20260912-002 — 费用结算异议申报材料与财务审核衔接（root）
+
+- **Repository:** `root`
+- **Status:** candidate
+- **Updated:** 2026-09-12 00:37 Australia/Melbourne
+- **Request:** “处理异议”窗口必须显示清洁人员在移动端提交的工作内容、申报金额和证明照片，让财务看完材料后确认；不能只显示一段异议说明。
+- **Outcome:** fixed Preview 的异议窗口现在即时打开并加载该人员本周全部非草稿申报，逐项显示工作日期、类型、工作量、申报/确认金额、说明、状态和鉴权照片。费用规则管理人员或财务付款人员可直接确认申报或标记不计入；待审核/退回项处理完前不能提交结算，已确认但尚未计入当前结算明细的补充申报会强制选择“编辑金额”，再按最终总额重新发起本人确认。
+
+### Implementation
+
+- Weekly detail API: 周结算详情按锁定的 `user_id + week_start` 附带非草稿 `related_claims`，证据仅返回 `id/media_id/mime_type/byte_size/original_file_name/created_at`，并标记申报是否已存在于当前锁定结算行；不返回 `storage_key` 或对象地址。
+- Web dispute modal: 点击“处理异议”后弹窗先显示、材料异步加载；复用既有认证证据 Blob helper 和 Ant Design 图片预览，关闭、替换或竞态请求时释放 object URL。每条申报展示日期、类型、金额/规则计价提示、工作量、说明、状态和照片。
+- Review/amount guard: `submitted` 可在弹窗内“确认申报”或“不计入”；仍有 `submitted/returned` 时禁用结算提交。已批准但未写入当前锁定明细的补充申报禁用“确认原金额”，要求财务填写最终应付总额，既有 GST 外财务调整与重新确认流程不变。
+- Permission/state boundary: 工作量审核端点允许 `personnel_settlements.rules.manage` 或 `finance.payout`；只有结算处于 `disputed` 时解除已发起确认后的申报批准锁，`awaiting_confirmation/confirmed/finance_approved/paid` 仍保持锁定。
+- Existing media boundary: 未新增上传、对象存储或公开文件路径；继续使用 claim/evidence 精确关联的登录鉴权图片路由，本人和其他人员的权限隔离不变。
+
+### Files / Areas
+
+- `backend/src/lib/personnelWorkloadClaims.ts` — 本周申报与安全证据元数据聚合；异议状态审核锁例外。
+- `backend/src/lib/personnelSettlementWorkflow.ts` — 周结算详情附带关联申报及是否已计入标记。
+- `backend/src/modules/personnel_settlements.ts` — 财务或规则管理权限的申报审核边界。
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — API、隐私字段、状态锁和网页材料合同。
+- `backend/scripts/tests/test_personnel_settlement_phase3_integration.ts` — 合成补贴、证据、本周详情、有异议审核与改额重新发起。
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — 异议材料、照片预览、申报审核和提交门禁。
+- `frontend/src/app/finance/settlements/WorkloadClaimsPanel.tsx` — 财务付款权限复用既有审核界面。
+- `docs/feature-regression-registry.md` — FR-029 的异议材料、私有媒体和财务审核保护。
+- `docs/change-release-ledger.md` — 本候选记录。
+
+### Impact / Dependencies
+
+- Database/migration: 无 schema 变化，不需要且未执行 migration。
+- API: 既有周详情响应新增 `related_claims`；既有 evidence 下载 URL 和上传 API 不变。审核端点的允许角色增加 `finance.payout`，仍由服务端权限控制。
+- Mobile: 无移动端源码变化；移动端提交格式、草稿重试和照片上传流程不变，额外周详情字段向后兼容。
+- Related units: `root/CRL-20260911-001`、`root/CRL-20260911-002`、`root/CRL-20260912-001`、`mobile/CRL-20260911-001`。
+
+### Validation
+
+- Backend `npm run test:personnel-settlement-phase3` — passed；覆盖关联材料安全字段、网页材料合同、财务审核权限和 disputed 锁例外。
+- Backend `npm run test:personnel-settlement-phase3:integration` — passed against enrolled fixed Preview dev DB；虚构 $10 补贴、证明元数据、异议状态批准、最终金额 $260 和重新确认闭环通过，测试数据精确清理。
+- Backend `npm run test:personnel-settlement-phase4` and `test:personnel-settlement-phase4:integration` — passed；私有证明关联、本人/他人权限和认证读取回归通过，R2 显式关闭且测试数据精确清理。
+- Backend `npm run test:personnel-settlement-phase5` — passed；文件和通知合同保持通过。
+- Backend TypeScript no-emit and production build — passed。
+- Frontend TypeScript no-emit, `npm run lint`, and production build — passed；费用结算页面成功生成；仅有仓库既有跨页面 lint、SSR chart、Browserslist 和 Node deprecation warnings。
+- Fixed Preview DB identity gate — passed: `app=dev`, `database=dev`, enrolled fingerprint and schema registry present。
+- Fixed Preview Phase 5 full integration — first browser assertion failed while old managed launcher was being replaced after build cache cleanup；终止已确认的旧 launcher 并重启后复跑 passed：2 settlements、9 documents、3 notifications、2 paid expenses、网页 Chromium 和精确清理均通过。
+- Fixed Preview runtime — passed: backend `4002` ready、web `3000` ready、Metro `8081` started，均由同一受管 launcher 加载当前源码。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. 用户授权 fixed Preview 源码修改和开发环境测试；未授权 commit、push、PR、merge、deployment、OTA、production write 或真实人员结算操作。
+
+### Risks / Release Notes
+
+- 财务确认申报后仍由财务填写最终应付总额；系统不会在前端猜测复杂工时/数量规则的金额。最终差额沿用既有 GST 外财务调整，具体逐项金额如需由系统自动重算，应作为后续独立规则功能。
+- 当前自动化以虚构人员和合成 evidence 元数据证明数据/状态闭环；没有替用户处理截图中的真实申报或更改真实开发结算金额。
+- Rollback: 移除周详情 `related_claims`、异议窗口材料区和 `finance.payout` 审核扩展，并恢复 `disputed` 的申报批准锁；数据库无需回滚。
+- Sensitive-information review: no secrets、`.env`、token、数据库 URL、真实照片、真实银行账号或真实人员资料加入源码、测试或台账。
+- Git state: uncommitted, not pushed, no PR, not merged, not deployed；production、真实付款、OTA 和真机验证未执行。
+
+## CRL-20260912-001 — 费用结算异议财务确认或改额闭环（root）
+
+- **Repository:** `root`
+- **Status:** candidate
+- **Updated:** 2026-09-12 00:02 Australia/Melbourne
+- **Request:** 人员对周结算提出异议后，财务操作不要求填写处理结果，只需要选择确认原金额，或直接编辑修改应付金额；完成后应重新让本人确认，形成财务闭环。
+- **Outcome:** fixed Preview 网页的异议行新增专用“处理异议”动作，财务或获授权管理人员可确认原金额或填写调整后的应付总额，无财务说明字段。后端在单一事务中记录处理人、时间和前后金额，清除本轮异议并重新进入待个人确认；同时生成新版待确认 PDF，并以新确认轮次只通知结算本人。现有移动端无需改源码即可读取新金额、新文件和新一轮确认状态。
+
+### Implementation
+
+- Previous behavior: 人员提出异议后，网页只提供通用“重新打开”，财务需要先写原因、再调整、再发起确认，页面没有直接闭环；通知事件键只按结算 ID，重新发起可能被上一轮去重。
+- New web behavior: `disputed` 行只对 `personnel_settlements.rules.manage` 或 `finance.payout` 显示“处理异议”。弹窗展示本人异议和当前总额，仅提供“确认原金额”与“编辑金额”；编辑时只输入最终应付总额，提交后自动刷新。
+- New backend behavior: 新增 `POST /finance/settlements/weekly/:settlementId/resolve-dispute` 严格判别请求。状态、金额、规则快照和审计在 `FOR UPDATE` 行锁事务内更新；状态直接回到 `awaiting_confirmation`，不接受也不保存人工处理说明。
+- Amount/GST boundary: 确认原金额保留当前总额；编辑金额使用锁定结算行的基础 Subtotal/GST 计算财务调整，财务调整仍在 GST 外，最终金额不得低于锁定 GST。
+- Document/notification: 初次发起和异议处理后的重新发起共用服务端发布入口。`confirmation_request.revision` 固定同一轮重试，通知 `event_id` 由 settlement + confirmation revision 构成；新一轮生成新版待确认 PDF 和新通知，同轮重试不重复落库。
+- Existing reopen: `reopen` 继续服务于待确认/已确认记录并要求原因，不再承担异议处理；已批准/已付款边界不变。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementWorkflow.ts` — 异议处理状态、金额计算、事务审计、确认轮次和统一文件/通知发布。
+- `backend/src/modules/personnel_settlements.ts` — 财务/管理权限保护的严格异议处理接口。
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — 状态、权限、金额和网页合同回归。
+- `backend/scripts/tests/test_personnel_settlement_phase3_integration.ts` — 编辑金额重新确认与既有付款闭环、Phase 5 外键兼容清理。
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — 分轮次通知去重和统一发布合同。
+- `backend/scripts/tests/test_personnel_settlement_phase5_integration.ts` — 异议改额、同轮重试、新版 PDF、本人通知与最终付款集成。
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — “处理异议”行操作和无说明字段的二选一弹窗。
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — 异议动作权限与状态可见性。
+- `docs/notification-registry.yaml` — 确认轮次事件键、唯一收件人与规范生成入口。
+- `docs/feature-regression-registry.md` — FR-029 异议闭环和分轮次通知保护。
+- `docs/execution-records.md` — 已确认方案、实现结果、验证和未执行边界。
+- `docs/change-release-ledger.md` — 本候选记录。
+
+### Impact / Dependencies
+
+- Database/migration: 无 schema 变化，不需要或未执行 migration；复用现有结算 `rule_snapshot`、审计、文档、通知和公司费用结构。
+- API: 新增一个管理端 POST；既有本人确认/异议、财务批准和付款端点不变。
+- Permissions: 处理异议允许费用规则管理或财务付款权限；后端为最终权限边界，网页同时隐藏无权动作。
+- Mobile: 无移动端源码改动；复用既有本人结算详情、PDF、通知跳转和金额确认。
+- Related units: `root/CRL-20260911-001`、`root/CRL-20260911-003`、`root/CRL-20260911-009`、`mobile/CRL-20260911-001`、`mobile/CRL-20260911-002`。
+
+### Validation
+
+- `npm run test:personnel-settlement-phase3 --prefix backend` — passed；异议状态动作、管理/财务权限、确认原金额、编辑最终总额和 GST 下限。
+- `npm run test:personnel-settlement-phase3:integration --prefix backend` — passed against enrolled fixed Preview dev DB；合成异议改额后重新确认并完成公司费用/付款，测试数据精确清理。
+- `npm run test:personnel-settlement-phase5 --prefix backend` — passed；统一发布入口、确认轮次事件键和单一收件人合同。
+- `npm run test:personnel-settlement-phase5:integration --prefix backend` — passed against enrolled fixed Preview dev DB；两轮待确认文件、同轮重试幂等、3 轮本人通知、9 个状态文件、2 条付款费用和精确清理。
+- Backend TypeScript no-emit — passed。
+- Backend isolated production build — passed with output under `/private/tmp`；fixed Preview tracked `backend/dist` 未改动。
+- Frontend focused Vitest — passed: 2 files / 6 tests；full Vitest passed: 52 files / 237 tests。
+- Frontend direct ESLint — passed for changed settlement files；仅输出 Next pages directory discovery notice。
+- Frontend isolated production build — passed；`/finance/settlements` 成功生成，输出仅含仓库既有跨页面 lint、chart SSR 与 Browserslist warnings。
+- Paired mobile notification focused Jest — passed: 1 suite / 1 test；新增通知字段与既有 `open_personnel_settlement` 跳转兼容。
+- Existing backend notification policy contract and Phase 1/2/4 settlement contracts — passed。
+- Fixed Preview DB identity gate — passed: `app=dev`, `database=dev`, enrolled fingerprint and schema registry present。
+- Fixed Preview runtime health — passed: web `3000` returned 200, backend `4002` readiness returned ready, Metro `8081` returned 200。
+- `npm run check:feature-registry` — passed: 25 FRs / 197 mappings；Root ledger audit — passed: 58/58 changed paths covered against freshly fetched `origin/Dev`。
+- `git diff --check` — passed for tracked files；9 个本候选直接修改的 untracked source/test/registry 文件逐一运行 `git diff --no-index --check /dev/null <file>`，均仅返回预期 difference exit 1 且无 whitespace-error 输出。Isolated build/PDF/screenshot temporary outputs were removed after validation。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. 用户授权 fixed Preview 实现与合成测试；未授权 commit、push、PR、merge、deployment、OTA、production write 或真实银行操作。
+
+### Risks / Release Notes
+
+- 财务编辑的是最终应付总额，系统将差额保存为 GST 外财务调整；若业务希望修改具体工作明细或 GST，本动作不适用，应先按既有重新打开/草稿调整流程处理。
+- 当前自动化证明合成数据闭环；没有替用户处理截图中的真实异议记录，避免未经金额选择改动现有开发数据。
+- Rollback: 移除新路由/动作并恢复原 `reopen` 状态范围；已经生成的新版文档和审计属于历史数据，不应静默删除。
+- Sensitive-information review: no secrets、`.env`、token、数据库 URL、真实银行账号或真实人员资料加入源码、测试或台账；测试使用虚构数据。
+- Git state: uncommitted, not pushed, no PR, not merged, not deployed；production、真实 push、银行、设备和真机验证未执行。
+
+## CRL-20260911-009 — 供应方发票按服务日期汇总（root）
+
+- **Repository:** `root`
+- **Status:** candidate
+- **Updated:** 2026-09-11 19:18 Australia/Melbourne
+- **Request:** 将费用结算 PDF 优化为正式发票布局；每个服务日期只显示一行，不再逐任务展示数量、单价、小计和 GST。清洁内容合并为 `Cleaning - 房号 / 房号`，同日补贴、加班、仓管、上新房、试工、编外或其他工作一并写入 Description，并只显示当日总价。
+- **Outcome:** fixed Preview 后端 PDF 主表已改为 `Date / Description / Total` 三列并按 `service_date` 汇总，完整周最多七行。同日清洁从冻结计算快照读取房号后合并，其他工作保留类型与说明，日金额为当日全部锁定行金额之和；周 Subtotal、GST 和 Total AUD 保持原结算总额。模板版本进入来源哈希，因此已生成的旧文件保持不可变，同一结算下一次生成会建立新版文件而不是复用旧布局。
+
+### Implementation
+
+- Previous behavior: PDF 将每条结算明细分别列为 Date、Description、Qty、Rate、Subtotal、GST、Total；清洁人员每天多个房源时一周可能产生二十多行，移动端查看和分享不便。
+- New behavior: PDF 先在内存中按服务日期排序汇总；清洁房号在当天合并为一个 `Cleaning` 描述，重复房号使用数量标记，补贴/加班/仓管/上新房/试工/编外/其他及财务调整按类型加入同一行；表格右侧仅显示当日总额。
+- Audit boundary: 单条数量、单价、税额、房型和来源仍完整保存在不可变 `personnel_settlement_lines` 与计算快照中，网页/API 财务明细不变；PDF 只是展示层汇总。财务调整继续为 GST 外金额，但在对应周日行内显示。
+- Document history: 来源哈希加入 `daily-summary-invoice-v1` 模板版本。旧文件字节和历史版本不改写；相同结算状态再次生成时会得到新的不可变文档版本。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — 按日汇总函数、混合类型描述、三列表格和单页友好布局。
+- `backend/src/lib/personnelSettlementDocuments.ts` — 从冻结计算快照读取房号、标记财务调整类型，并用模板版本参与来源哈希。
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — 七日混合数据、房号合并、当日总额、三列、HTML 转义和模板版本回归。
+- `docs/feature-regression-registry.md` — FR-029 发票按日汇总和底层逐项审计不变量。
+- `docs/execution-records.md` — 已确认方案、实现结果、验证边界和后续事项。
+- `docs/change-release-ledger.md` — 本候选、依赖、风险和交付状态。
+
+### Impact / Dependencies
+
+- Calculation/GST/status: none；费用规则、逐项计算、GST 口径、确认/异议/批准/付款状态机均不变。
+- API/database/migration: response 和 schema 不变；不执行 migration 或数据库写入。新增查询字段只读取已锁定行内的 `component_type`、`property_id` 和 `calculation_snapshot.property_label`。
+- Mobile/web: 下载、App 内查看和分享入口不变，会自动展示后端新生成的 PDF；本轮不修改移动端或网页源码。
+- Related units: `root/CRL-20260911-003`、`root/CRL-20260911-004`、`root/CRL-20260911-007`、`mobile/CRL-20260911-002`。
+
+### Validation
+
+- `npm run test:personnel-settlement-phase5 --prefix backend` — passed；覆盖 7 个日期、同日四个清洁房号与混合费用描述、当日金额求和、三列表头、HTML 转义、发票种类及模板版本来源哈希合同。
+- Backend Phase 1–4 contract suites — passed；既有资料/GST、规则、周结算状态机、私有证明合同无回归。
+- Backend TypeScript no-emit with incremental disabled — passed。
+- Backend isolated production build — passed with output under `/private/tmp`；未改动 fixed Preview 的 tracked `backend/dist`。
+- Synthetic PDF render — passed with fictional supplier/ABN/rooms/amounts only；A4、1 page、137539 bytes、20 underlying lines aggregated into 7 table rows。
+- PDF structural/text check — passed: no JavaScript、not encrypted、7 daily rows、mixed types and `$1,126.00` weekly total present、0 extracted words outside page bounds。
+- PDF visual inspection — passed: all seven rows, totals and footer visible on one page with no clipping.
+- Fixed Preview backend — passed: port 4002 is listening from `/Users/zhishi/Documents/trae_projects/MZ-Dev-Preview/root/backend` and `/health/ready` returned 200/ready after source reload。
+- `npm run check:feature-registry` — passed: 25 FRs / 196 mappings；Root ledger audit — passed: 57/57 changed paths covered。
+- Diff whitespace checks — passed for the tracked workspace and all three directly changed untracked backend source/test files；`git diff --no-index` used its expected difference exit code with no whitespace-error output。
+- Database-backed document regeneration — not run；本展示层修改不需要数据库写入，且旧文件不可变，真实结算应在用户选择现有受控生成动作时建立新版本。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. 用户授权 fixed Preview 实现与测试；未授权 commit、push、PR、merge、deployment、database write 或 production action。
+
+### Risks / Release Notes
+
+- 极长的自由文本说明仍可能在 Description 单元格内换行，但固定七行和禁止行内分页可显著降低跨页风险；已用常见混合内容验证单页。
+- 已生成的旧格式文档按不可变历史保留；需要看到新布局时必须通过既有受控生成入口创建新版本，不能覆盖旧字节。
+- Rollback: 恢复逐项七列表格与旧来源哈希算法；已生成的新版本文件仍作为历史保留，不删除数据。
+- Sensitive-information review: no secrets、`.env`、token、数据库 URL、真实人员/ABN/银行/房号或发票数据进入源码、测试、PDF 或 ledger；交付预览全部为虚构资料。
+- Git state: uncommitted, not pushed, no PR, not merged, not deployed；数据库、生产和设备验证未执行。
+
+### Update - 2026-09-11 20:30 Australia/Melbourne
+
+- **Scope correction:** 新版 PDF 按模板级功能验证，不再只把单笔旧文档当作全部测试。固定 Preview 开发库共 3 笔周结算；其中 1 笔为 `awaiting_confirmation`、符合文档生成条件，另外 2 笔仍为 `draft`，保持原状态且未生成结算文件。
+- **Development data result:** 对全部符合条件的开发结算执行受控生成，原 `v1` 不可变保留并新增 `v2`；最新文档列表顺序为 `[2, 1]`。未发起确认、未发送通知、未调整金额，也未写生产环境。
+- **Integration coverage:** 修正 Phase 5 浏览器集成测试对 Ant Design 只读周选择器的过期直接输入假设；网页步骤现在验证真实可见的周范围、生成操作和错误响应，虚拟周的运行状态继续由数据库/API断言负责。
+- **Files / Areas:** `backend/scripts/tests/test_personnel_settlement_phase5_integration.ts` — 与当前只读周选择器行为对齐，避免测试因不可编辑输入框或当前周看不到历史虚拟运行记录而误报。
+- **Validation:** Phase 5 contract passed；backend TypeScript no-emit passed；mobile `PersonnelSettlementScreen` focused Jest passed 2/2；mobile TypeScript passed。隔离集成测试最终 passed：2 个虚拟供应方、GST/非 GST、4 个文档阶段、8 份 PDF、2 条通知记录、2 条付款费用、本人下载、跨用户 404、网页无结算接口错误及测试数据自动清理均通过。
+- **PDF inspection:** 实际开发 `v2` 和隔离 Tax Invoice 均为 A4 单页，主表为 `Date / Description / Total`，无 Qty/Rate，内容未越界；真实开发 `v2` 将同日两个清洁房源汇总为一行。7 天及补贴/加班/仓管/其他混合内容由 Phase 5 场景矩阵覆盖。
+- **Runtime:** fixed Preview 后端 `4002` ready、网页 `3000` ready、Metro `8081` running；移动端重新打开结算详情后会先读取 `v2`。隔离测试结束后虚拟 users/batches/notifications/queue 计数均为 0。
+- **Delivery state:** source/test change and development document regeneration only；not committed、not pushed、no PR、not merged、not deployed、no OTA、real-device verification not run。
+
+### Update - 2026-09-11 20:37 Australia/Melbourne
+
+- **Development cleanup request:** 用户明确要求当前优化阶段不保留旧 PDF 版本。本次仅清理 fixed Preview 开发数据，不改变生产文件历史、状态机或正式审计规则。
+- **Deletion result:** 精确识别到 1 个非当前文档：`2026-08-17 至 2026-08-23` 的 `awaiting_confirmation v1`。确认其不被 `invoice_media_id` 引用且本地私有路径符合白名单后，事务删除数据库记录并永久删除对应本地 PDF；当前 `v2` 保留。
+- **Post-delete verification:** 开发库 3 笔结算中只有该周存在文档，文档数量为 1、版本数组为 `[2]`、且唯一文档即当前 `invoice_media_id`；其余两笔 `draft` 仍无文件。本地私有费用结算 PDF 数量为 1。
+- **Client refresh evidence:** Metro 已触发 reload；移动端随后成功请求本人结算、该结算详情及保留的 PDF，接口均返回 200。页面应只剩一条 `v2`。
+- **Feature Registry:** 未修改；FR-029 的生产不可变文件边界保持不变，本次仅是用户明确授权的开发优化数据清理。
+- **Recovery / delivery:** 被删除的开发 `v1` 数据库记录和本地文件无法从当前 Preview 恢复，只能重新生成或从外部备份恢复。Not committed、not pushed、no PR、not merged、not deployed、no OTA；生产未访问。
+
+## CRL-20260911-008 — 移动端费用结算列表兼容缓存参数（root）
+
+- **Repository:** `root`
+- **Status:** ready
+- **Updated:** 2026-09-11 16:32 Australia/Melbourne
+- **Request:** 修复移动端打开“费用结算”时提示“加载失败，参数错误：invalid_claim_query”；按建议同时处理本人工作量反馈和周结算列表。
+- **Outcome:** fixed Preview 后端的本人工作量与周结算列表现在明确接受 React Native `cache: no-store` 自动附加的 `_` 缓存标记，不再因该传输参数返回 400。Schema 仍为 strict，`search` 或其他未知字段不能进入本人接口。
+
+### Implementation
+
+- Previous behavior: 移动端通用 GET 使用 `cache: no-store`，React Native 在实际请求中附加 `_=<timestamp>`；后端本人工作量和周结算路由从 strict 列表 Schema 中只 pick 业务字段，因此将 `_` 判定为未知字段，页面并行加载首先弹出 `invalid_claim_query`。
+- New behavior: 工作量和周结算列表 Schema 增加受长度/数量限制的 `_` 传输字段；两个本人路由复用显式 pick 后的 Schema。缓存标记参与校验但不传给查询服务，人员范围继续只取登录用户。
+- Key decisions: 只允许 `_`，不将 Schema 改为 passthrough；同时修复两个并行加载接口，避免工作量接口恢复后周结算继续失败。移动端请求层和其他业务 API 不修改。
+
+### Files / Areas
+
+- `backend/src/modules/personnel_settlements.ts` — 增加受限缓存参数 Schema，并用于本人工作量/周结算列表。
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — 实际 Schema 回归：`_` 字符串/数组通过，未知字段和本人 `search` 继续拒绝。
+- `docs/feature-regression-registry.md` — FR-029 增加移动端缓存参数兼容不变量、测试映射和 CRL 关系。
+- `docs/change-release-ledger.md` — 本独立修复、验证和发布边界。
+
+### Impact / Dependencies
+
+- API: `GET /finance/settlements/my-claims` 和 `GET /finance/settlements/my-settlements` 新增兼容可选 `_` 查询字段；响应、权限和数据库查询不变。管理端相同基础 Schema 也只接受该受限字段，不接受任意未知参数。
+- Database / migration: none；本轮不写开发或生产数据库。
+- Config / dependencies: none；不改变移动端缓存策略或安装依赖。
+- Related units: `root/CRL-20260911-001`、`root/CRL-20260911-002`、`root/CRL-20260911-003`、`mobile/CRL-20260911-001`。
+
+### Validation
+
+- Root Phase 3 contract — passed: 本人工作量/周结算 Schema 接受 `_` 字符串或数组，并继续拒绝未知字段和本人 `search`。
+- Backend TypeScript no-emit with incremental disabled — passed。
+- Mobile PersonnelSettlementScreen focused Jest — passed: 1 suite / 1 test。
+- Mobile TypeScript — passed；mobile lint passed with 0 errors / 110 existing warnings。
+- Backend build — passed；构建产生的 10 个 tracked `backend/dist` 临时改动已恢复，不纳入候选。
+- Fixed Preview environment — passed: 8081 Metro 持续监听，4002 已确认来自 fixed Preview 且 `app=dev` / `database=dev`。
+- Device endpoint recheck — not verified: iOS 模拟器控制权限未开放，调试网络面板尚未捕获重新进入“费用结算”后的 `my-claims` / `my-settlements` 请求；未提交任何申报或结算动作。
+- Root ledger audit — passed: 57/57 changed paths covered；feature registry audit passed: 25 FRs / 196 mappings。
+- Diff whitespace checks — passed for tracked diff and两个直接修改的 untracked 后端文件；`git diff --no-index` 返回预期差异码且无空白错误输出。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. 用户只授权 fixed Preview 修复和验证；未授权 commit、push、PR、merge、deployment、database write 或 production action。
+
+### Risks / Release Notes
+
+- `_` 只作为缓存传输标记接受并被业务查询忽略；过长值、过多重复值和其他未知参数仍返回查询错误。
+- Rollback: 从两个 Schema 和本人 pick 中移除 `_`，并恢复对应回归断言；无数据回滚。
+- Sensitive-information review: no secrets、token、`.env`、数据库 URL、人员资料或银行资料进入源码、测试或 ledger。
+- Git state: uncommitted, not pushed, no PR, not merged, not deployed；数据库写入、生产验证和设备端点复核未执行。
+
+## CRL-20260911-007 — 清洁费用改按最终任务安排计算（root）
+
+- **Repository:** `root`
+- **Status:** candidate
+- **Updated:** 2026-09-11 15:45 Australia/Melbourne
+- **Request:** 当前清洁任务完成和照片流程不稳定，周结算暂以任务安排为准：当周安排给清洁人员即计算一次清洁费用，不要求完成状态或照片；状态为 `cancelled/canceled` 的任务不得计算。
+- **Outcome:** fixed Preview 源码已将清洁费用候选改为周内 `cleaning_tasks.cleaner_id` 的最终安排。普通 `pending/assigned/in_progress/cleaned` 等非取消状态均可按房型单价计一次，`cancelled/canceled` 均排除，同一任务按任务 ID 去重；清洁完成动作不再产生第二条费用。检查和其他岗位的既有计算来源保持不变。
+
+### Implementation
+
+- Previous behavior: 清洁费依赖 `complete_cleaning`/`fill_supplies` 完成动作及完成后状态；只有部分缺审计的历史完成状态进入人工复核。仅安排、尚未完成的清洁任务不会进入结算。
+- New behavior: 周预览直接读取周内具有 `cleaner_id` 的清洁任务，以生成/重算当时的最终清洁人员、任务日期和房型计算；取消状态在计价前排除。结算行使用明确的 `cleaning_task_assignment` 来源，完成审计只继续服务检查人员的真实提交计算，不再重复生成清洁行。
+- Key decisions: 清洁任务除取消外暂不检查状态、完成动作或照片；同一任务只计一次。草稿重算反映当前安排，发起确认后继续沿用既有不可回算快照与状态锁；人员资料、GST 和费用规则仍是生成门禁。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlement.ts` — 计算版本升级为安排计费版本。
+- `backend/src/lib/personnelSettlementPreview.ts` — 清洁安排候选、任务去重、取消排除和 `cleaning_task_assignment` 结算行。
+- `backend/src/lib/personnelSettlementWorkflow.ts` — 批次错误摘要记录清洁安排和取消排除数量。
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — assigned/pending 计费、同任务去重、两种取消拼写排除和来源快照回归。
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — 更新人员过滤合同，分别保护清洁安排与检查提交查询。
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — 页面说明新清洁口径，并为缺结算资料/GST/规则提供中文阻断原因。
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — 新口径与缺资料提示文案回归。
+- `docs/feature-regression-registry.md` — FR-029 更新为清洁最终安排计费不变量和测试映射。
+- `docs/change-release-ledger.md` — 本独立候选、验证与发布边界。
+
+### Impact / Dependencies
+
+- API: endpoint/payload 不变；Preview/批次摘要新增清洁安排统计，结算行 `source_type` 可为 `cleaning_task_assignment`。
+- Database/migration: none；`source_type` 既有列为 text，不需要 migration。本轮不写开发或生产数据库。
+- Permissions/config/dependencies: none。
+- Related units: `root/CRL-20260910-002`、`root/CRL-20260910-004`、`root/CRL-20260911-001`、`root/CRL-20260911-003`、`root/CRL-20260911-004`、`root/CRL-20260911-006`。
+
+### Validation
+
+- Backend Phase 1 focused contract — passed: assigned/pending 安排、任务去重、两种取消状态排除、清洁来源和既有金额汇总。
+- Backend Phase 2/3/4/5 focused contracts — passed；阶段 3 已更新并重新干净运行，分别保护清洁 `cleaner_id` 安排过滤和检查提交人员过滤。
+- Backend/frontend TypeScript no-emit with incremental disabled — passed。
+- Frontend focused Vitest — passed: 1 file / 4 tests。
+- Frontend full Vitest — passed: 52 files / 237 tests；frontend lint passed with 0 errors，仅有仓库既有 warnings。
+- Fixed Preview development DB identity — passed: registered `app=dev` / `database=dev`；未输出连接信息。
+- Fixed Preview read-only cleaner-1 preview — passed: 2026-09-01 安排被识别为 1 个非取消清洁候选；当前因 `missing_effective_profile` 没有生成金额行，事务为 `READ ONLY` 并已 `ROLLBACK`。
+- `npm run check:fast` — partial pass, then blocked outside this CRL: root quality workflow、ledger range audit、fixed Preview guard、ledger audit、feature registry、backend build 及相关后端合同均通过；既有 `test:phase5-release-contract` 将移动端硬编码为不存在的 `root/mz-cleaning-app-frontend`，而固定 Preview 实际使用同级 `mobile`，因此 `ENOENT` 后停止。该拓扑问题未在本结算口径范围修改。
+- Authenticated browser visual check — not verified: 既有 localhost 会话重新加载后已回到登录页；未登录、未点击生成/重算，也未发生浏览器数据写入。页面说明和中文阻断文案由 focused frontend test 覆盖。
+- Backend build generated files — restored to their pre-test tracked state；没有把 `backend/dist` 产物纳入本候选。
+- Root ledger audit — passed: 57/57 changed paths covered；feature registry audit passed: 25 FRs / 195 mappings。
+- Diff whitespace checks — passed for the tracked diff and all seven directly affected untracked source/test files；清理了结算工作流中的一处既有行尾空格。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. 用户只授权 fixed Preview 源码修改和测试；未授权 commit、push、PR、merge、deployment、数据库写入或 production action。
+
+### Risks / Release Notes
+
+- 除取消外，尚未开始、进行中或未上传照片的已安排任务都会产生清洁费；安排错误必须在生成前修正，草稿可重算。
+- 只有明确写入 `cleaner_id` 的清洁安排参与计算；检查/到店执行人的 `assignee_id` 不会被误计为清洁人员。
+- 既有 cleaner-1 已有六档规则但缺少启用的结算资料；保存有效资料前，即使安排被识别仍会进入阻断提示而不是生成金额。
+- Rollback: 恢复清洁完成动作候选与原计算版本/页面说明；草稿可按旧源码重算，已发起确认后的结算不回算。
+- Sensitive-information review: no secrets、`.env`、token、数据库 URL、真实 ABN、银行资料或证件内容进入源码、测试或 ledger。
+- Git state: uncommitted, not pushed, no PR, not merged, not deployed；数据库、生产和设备验证未执行。
+
+## CRL-20260911-006 — 费用结算周选择器语义优化（root）
+
+- **Repository:** `root`
+- **Status:** candidate
+- **Updated:** 2026-09-11 14:47 Australia/Melbourne
+- **Request:** 优化“周结算”和“工作量申报”的日期显示，明确周结算按完整周而不是单日处理，并说明两个标签的区别。
+- **Outcome:** fixed Preview 网页的“周结算”筛选现在标为“结算周”，周选择器直接显示周一至周日完整范围；“工作量申报”筛选标为“所属周”，同时保留每条申报的具体“工作日期”。生成按钮改为“生成 / 重算所选周”，不再把所选周误写成“本周”。
+
+### Implementation
+
+- Previous behavior: 两个标签都显示无标签的 `YYYY-MM-DD` 日期选择器；虽然前端会归一化到周一并向后端发送 `week_start`，用户容易误以为按单日查询或结算。
+- New behavior: 两处选择器使用 Ant Design week picker，并以 `YYYY-MM-DD 至 YYYY-MM-DD` 显示完整周范围；周结算和申报提示分别说明完整周汇总与逐条工作日期的关系。
+- Key decision: 继续复用既有 `week_start` 查询和周一归一化，不增加单日结算、第二套筛选 API 或业务状态。
+
+### Files / Areas
+
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — “结算周”周选择器、完整范围说明和所选周按钮文案。
+- `frontend/src/app/finance/settlements/WorkloadClaimsPanel.tsx` — “所属周”周选择器及工作日期说明。
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — 统一周一至周日范围格式化。
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — 周范围、周选择器标签、按钮和工作日期列回归。
+- `docs/change-release-ledger.md` — 本独立 UI 候选、验证和发布边界。
+
+### Impact / Dependencies
+
+- API/backend/database/migration: none；查询仍只发送既有 `week_start`，没有数据库写入。
+- Permissions/status/calculation: none；按钮权限、结算金额、确认/批准/付款状态机均未改变。
+- Mobile/config/dependencies: none。
+- Related units: `root/CRL-20260911-001`、`root/CRL-20260911-003`。
+
+### Validation
+
+- Frontend focused Vitest — passed: `settlementWorkflowUi.test.ts` 1 file / 4 tests。
+- Frontend no-emit TypeScript with incremental output disabled — passed。
+- Fixed Preview authenticated browser read-only check — passed: “周结算”显示“结算周”及 `2026-08-31 至 2026-09-06`，“工作量申报”显示“所属周”及相同完整周范围，申报表保留“工作日期”；未点击生成、审核或保存。
+- Browser console — no new feature runtime error；仅见浏览器扩展 hydration 属性和仓库既有 Ant Design deprecation/context warnings。
+- Frontend full Vitest — passed: 52 files / 237 tests。
+- Frontend lint — passed with 0 errors；仅有仓库既有 warnings。
+- `npm run check:fast` — partial pass, then blocked outside this CRL: root quality workflow、ledger range audit、fixed Preview guard、ledger audit、feature registry、backend build 及此前执行的后端合同测试均通过；既有 `test:phase5-release-contract` 将移动端硬编码为不存在的 `root/mz-cleaning-app-frontend`，但固定 Preview 实际采用同级 `mobile`，因此报 `ENOENT` 并停止。该测试拓扑问题未在本 UI 范围修改。
+- Root ledger audit — passed: 57/57 changed paths covered；feature registry audit passed: 25 FRs / 195 mappings。
+- Diff whitespace checks — passed for the tracked diff and all four CRL source/test files；the untracked-file comparisons return the expected diff exit code with no whitespace error output。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. 本次只授权开发 Preview UI 优化与测试；未授权 commit、push、PR、merge、deployment 或 production write。
+
+### Risks / Release Notes
+
+- 周选择器只改善筛选表达，不增加按任意日期范围查询；工作量申报仍按所属周加载，再通过表格“工作日期”查看具体日期。
+- Rollback: 恢复两个 DatePicker 的普通日期显示、旧按钮文案，并移除周范围格式化函数/断言；不涉及数据回滚。
+- Sensitive-information review: no secrets、`.env`、token、数据库 URL、真实人员资料、银行资料或发票内容进入源码、测试或 ledger。
+- Git state: uncommitted, not pushed, no PR, not merged, not deployed；数据库、生产和设备验证未执行。
+
+## CRL-20260911-005 — ABN 仅保留 11 位格式校验（root）
+
+- **Repository:** `root`
+- **Status:** candidate
+- **Updated:** 2026-09-11 14:24 Australia/Melbourne
+- **Request:** 不使用 ABN 数学校验和；费用结算人员资料只检查 ABN 是否为 11 位数字。
+- **Outcome:** fixed Preview 的网页和后端已取消 ABN 数学校验和。网页财务/管理人员与移动端本人复用的后端保存接口现在仅将输入归一化为数字并检查长度为 11 位；11 位号码不会再因为校验和失败而被拦截。GST 状态仍由人员资料明确选择，系统不会把格式检查表述为 ABR、归属或 GST 官方验证。
+
+### Implementation
+
+- Previous behavior: 网页、后端和配套移动端都执行澳洲 ABN 数学校验和，部分 11 位测试号码会被 `invalid_abn` 拒绝。
+- New behavior: 后端只保留归一化后的 11 位数字检查；网页在提交前执行相同长度检查并显示中文说明，长度不足仍返回/显示 `invalid_abn`。
+- Key decision: 11 位格式通过不代表号码真实、属于该人员或已注册 GST；GST 三态仍由人员按实际登记情况选择，当前范围不接入外部 ABR 查询。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementProfiles.ts` — 移除数学校验和，保留 11 位格式门禁。
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — 断言校验和不通过但长度正确的号码可通过资料校验，短号码仍被拒绝。
+- `frontend/src/app/finance/settlements/page.tsx` — 表单提示和校验改为仅 11 位，并明确不做数学或 ABR 验证。
+- `frontend/src/app/finance/settlements/personnelProfileUi.ts`, `frontend/src/app/finance/settlements/personnelProfileUi.test.ts` — 同步长度校验、中文错误映射和回归测试。
+- `docs/feature-regression-registry.md`, `docs/execution-records.md`, `docs/change-release-ledger.md` — 更新跨端业务不变量、执行结果和发布边界。
+
+### Impact / Dependencies
+
+- API: endpoint 和 payload 不变；`invalid_abn` 仅表示归一化后不是 11 位数字。
+- Database / migration: none；没有数据库写入。
+- Config / dependencies: none。
+- Related units: `root/CRL-20260910-002`、`root/CRL-20260911-004`、`mobile/CRL-20260911-003`。
+
+### Validation
+
+- `npm run test:personnel-settlement-phase1 --prefix backend` — passed；包含 11 位非校验和号码可通过、短号码拒绝和资料归一化断言。
+- `npm run test --prefix frontend -- --run src/app/finance/settlements/personnelProfileUi.test.ts --coverage.enabled=false` — passed: 1 file / 3 tests。
+- Backend and frontend no-emit TypeScript with incremental output disabled — passed。
+- `npm run lint --prefix frontend -- --no-cache` — passed with unrelated existing warnings；首次 sandbox 内运行仅因无权写 `.next` ESLint cache 失败，获准以同一无缓存检查重跑后通过。
+- Paired Mobile `npm run check:ci` — passed: TypeScript、lint 0 errors / 110 existing warnings、strict button audit、62 Jest suites / 352 tests and Mobile ledger audit。
+- `npm run check:feature-registry` — passed: 25 FRs / 195 mappings。
+- Fresh `origin/Dev` fetch for Root and Mobile — passed；Root ledger audit passed: 57/57 changed paths covered；Mobile ledger audit passed: 23/23 changed paths covered。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. 本次只授权开发 Preview 源码修改与测试；未授权 commit、push、PR、merge、deployment 或 production write。
+
+### Risks / Release Notes
+
+- 仅 11 位检查会接受不存在、归属不符或 GST 状态不符的号码；财务仍需按业务流程核对人员提供的 ABN/GST 资料。
+- Rollback: 恢复前后端和移动端的 ABN 校验和函数与原提示/测试；不涉及数据回滚。
+- Sensitive-information review: no secrets、`.env`、token、数据库 URL、真实 ABN、银行资料或证件内容进入源码、测试或 ledger。
+- Git state: uncommitted, not pushed, no PR, not merged, not deployed；数据库、生产和设备验证未执行。
+
+## CRL-20260911-004 — 费用结算 Phase 6：清洁六档房型计价（root）
+
+- **Repository:** `root`
+- **Status:** candidate
+- **Updated:** 2026-09-11 Australia/Melbourne
+- **Request:** 修正清洁费用计算方式：不再使用每个清洁任务统一单价，改为按房型分别计价，支持范围到 `4房3.5卫`；每位清洁人员可由网页财务/管理人员配置对应房型单价。
+- **Outcome:** fixed Preview 源码已将清洁费用改为六档房型精确计价：`一房一卫`、`两房一卫`、`两房两卫`、`三房两卫`、`三房三卫`、`4房3.5卫`。规则保存要求六档齐全且唯一；周预览从任务关联房源读取房型，旧统一清洁单价不再回退。缺房型、未知房型或缺对应价格时阻止该人员自动生成并显示财务人工复核原因。网页人员资料现在会在提交前校验澳洲 ABN 并显示中文错误，同时把资料版本与价格版本分别标为“结算资料生效日期”和“费用规则生效日期”。现有数据库结构通过规则明细 `conditions` 复用，无 migration；已锁定历史结算不回算。
+
+### Implementation
+
+- Previous behavior: `cleaning_task` 规则只有一个通用单价，周预览没有读取 `properties.type`，不同房型的完成任务会按同一个价格计算。
+- New behavior: 后端和网页共享固定六档业务合同。清洁规则项在 `conditions.property_type` 保存房型，保存时校验合法范围、完整性和唯一性，并分配稳定且不冲突的优先级。预览查询任务对应的房源类型，只允许精确房型规则命中；规则和周结算历史继续按原有生效日期与快照模型保存。
+- Failure behavior: 旧统一单价、缺失/不支持的房型、缺少该档单价均不得静默参与计算。预览产生可识别 warning；手工/自动生成将对应人员列入 `blocking_issues`/运行异常，网页持续显示待财务处理原因。
+- UI behavior: 费用规则抽屉沿用后台 Drawer/Form/Table 风格，清洁人员直接显示六行“计算方式 / 房型 / 单价”；旧统一单价仅显示迁移提示，不自动复制到六档。人员资料抽屉在前端复核澳洲 ABN 格式和校验和，并把后端 `invalid_abn` 映射为中文说明；资料版本和费用规则版本使用不同的生效日期名称与用途说明。其他人员原有计算方式保持不变。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlement.ts` — 六档房型常量、规则条件类型、精确房型匹配与新版计算版本。
+- `backend/src/lib/personnelSettlementRules.ts` — 六档完整性/唯一性/范围校验、条件历史持久化及稳定优先级。
+- `backend/src/lib/personnelSettlementPreview.ts` — 读取 `properties.type`、逐项快照房型和缺房型/缺单价人工复核。
+- `backend/src/lib/personnelSettlementWorkflow.ts`, `backend/src/lib/personnelSettlementWeeklyJob.ts` — 房型计算快照、手工/自动任务阻断详情与统一计算版本。
+- `backend/src/modules/personnel_settlements.ts` — 费用规则 API 的房型条件 schema。
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts`, `backend/scripts/tests/test_personnel_settlement_phase2.ts` — 六档逐一匹配、旧单价禁用、完整性/重复校验和源码合同。
+- `backend/scripts/tests/test_personnel_settlement_phase3_integration.ts`, `backend/scripts/tests/test_personnel_settlement_phase5_integration.ts` — 合成 fixture 改用六档条件规则与明确房型。
+- `frontend/src/app/finance/settlements/FeeRuleDrawer.tsx`, `frontend/src/app/finance/settlements/feeRuleUi.ts`, `frontend/src/app/finance/settlements/feeRuleUi.test.ts` — 六档表格、费用规则生效日期说明、校验、旧规则提示和 UI 单元测试。
+- `frontend/src/app/finance/settlements/page.tsx`, `frontend/src/app/finance/settlements/personnelProfileUi.ts`, `frontend/src/app/finance/settlements/personnelProfileUi.test.ts` — 结算资料生效日期说明、提交前 ABN 校验、后端错误中文映射及回归测试。
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — 显示房型/单价相关的待财务处理异常。
+- `docs/feature-regression-registry.md`, `docs/execution-records.md`, `docs/change-release-ledger.md` — FR-029、阶段 6 执行结果和候选边界。
+
+### Impact / Dependencies
+
+- Database/migration: no schema or migration change；复用 `personnel_fee_rule_items.conditions` JSONB。既有 Phase 1/5 migration 不变，本轮没有执行开发或生产数据库写入。
+- Data behavior: 尚未锁定的未来清洁周结算要求六档房型规则；既有旧统一清洁规则保留为历史数据但不参与新版计算。已发起确认、已批准或已付款的历史结算不回算。
+- API/UI: 管理规则 payload 增加受控 `conditions.property_type`；返回中的人工复核详情增加人员、来源和错误代码。ABN 后端校验及 API payload 不变，网页只提前执行同一校验并优化中文说明。非清洁计算方式、资料复用、GST、银行脱敏、申报、通知、文件和付款状态机不变。
+- Dependencies: no dependency or lockfile changes；依赖 root Phase 1–5 (`root/CRL-20260910-002`, `root/CRL-20260910-004`, `root/CRL-20260911-001`, `root/CRL-20260911-002`, `root/CRL-20260911-003`)。
+- Base: fixed Preview development workspace after fresh `origin/Dev` fetch；该混合开发工作区不是发布候选，提交前仍须从最新 `origin/Dev` 建立干净发布 worktree 精确提取本 CRL。
+
+### Validation
+
+- backend no-emit TypeScript — passed；Phase 1–5 contract suites — passed。
+- backend isolated production build — passed under `/private/tmp`；未改动 live Preview 的 tracked `dist`。
+- frontend no-emit TypeScript — passed；focused fee-rule/Phase 5 tests 2 files / 8 tests and full Vitest 51 files / 233 tests with coverage thresholds — passed；lint — passed with unrelated existing warnings。
+- frontend isolated production build — passed under `/private/tmp` and included `/finance/settlements`；仅有既有 lint/browserlist/chart static-render warnings。
+- fixed Preview runtime — port 3000/4002 process cwd verified；`/finance/settlements` and `/health/ready` returned 200，protected rule API returned 401 without authentication。
+- fixed Preview authenticated UI read-only check — existing admin session displayed six compact room-type rows through `4房3.5卫`；no Save action and no database write。No feature runtime error；only browser-extension hydration attributes and existing Ant Design `addonAfter` deprecation warning were observed。
+- UI clarification regression — frontend no-emit TypeScript passed；`personnelProfileUi.test.ts` + `feeRuleUi.test.ts` 2 files / 9 tests and full Vitest 52 files / 236 tests with coverage thresholds passed；frontend lint passed with unrelated existing warnings。Existing admin session showed distinct profile/rule effective-date labels and explanations；a synthetic invalid ABN produced the local Chinese checksum error, then the form was cancelled without saving。
+- `npm run check:fast` — partial environment result: root workflow/ledger tests, dev Preview guard, ledger/Registry audits, backend build and backend contract tests through R2 governance passed；the command then stopped in the pre-existing Phase 5 release contract because it hardcodes `root/mz-cleaning-app-frontend`, while fixed Preview keeps Mobile as a sibling workspace. The missing frontend portion was run separately and passed；Mobile is outside this UI-only change。
+- Not run: fixed Preview DB-backed rule save/generation/integration, migration, notification/PDF/payment/scheduler, production data, device/production verification。本轮未授权业务数据库写入，且本功能不需要 migration。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. User authorized Phase 6 implementation and fixed Preview testing only；未授权开发数据库写入、commit、push、PR、merge、deployment、production migration/write 或 OTA。
+
+### Risks / Release Notes
+
+- 2026-09-11 requirement correction: 此 CRL 中后加的 ABN 数学校验和已被 `root/CRL-20260911-005` 取代；当前有效口径是仅检查 11 位数字。
+- 财务未先为某位清洁人员填齐六档单价时，该人员新的周结算会进入人工复核并不生成；这是为防止错付而设计的 fail-closed 行为。
+- `properties.type` 必须严格使用六个受支持值。历史或导入房源若为空、拼写不同或超出 `4房3.5卫`，需要财务先修正房源资料或另行确认扩展房型范围。
+- 当前浏览器只读检查验证了页面结构，不证明真实保存、数据库读取和周任务生成；这些仍需明确授权开发数据库写入后用隔离合成数据验证。
+- 固定 Preview 中已有的历史测试资料可能包含不符合澳洲校验和的 11 位号码；再次编辑时会被前后端共同阻止，需改成真实有效 ABN 或保持该人员不启用费用结算，不能绕过校验。
+- Sensitive-information review: no secrets、`.env`、token、数据库 URL、真实银行资料或真实发票进入源码、测试或 ledger。
+- Git state: uncommitted, not pushed, no PR, not merged, not deployed；development DB write and production/device verification not run。
+
+## CRL-20260911-003 — 费用结算 Phase 5：周自动汇总、确认通知与供应方文件（root）
+
+- **Repository:** `root`
+- **Status:** candidate
+- **Updated:** 2026-09-11 Australia/Melbourne
+- **Request:** 执行费用结算阶段 5：按 Melbourne 周期自动生成上一完整周结算，向每位人员发送待确认通知，按本人确认和财务状态生成对应版本文件，并继续复用阶段 3 的公司费用和线下转账闭环。
+- **Outcome:** 新增默认关闭的周一 00:05 自动任务、数据库全局锁和运行记录；管理员也可从网页手工执行同一任务。发起确认前必须先解决该周全部待处理申报；系统只通知结算本人。待确认时生成明确标注“NOT A TAX INVOICE”的周结算草稿；本人确认后，GST 已注册人员生成 `Tax Invoice`，未注册人员生成 GST 为 0 的普通 `Invoice`，后续财务批准/付款各保留不可变历史版本。Phase 5 migration 已经用户明确授权在固定 Preview 开发库执行，数据库、通知、网页、认证 PDF 和跨端 API 闭环均用合成数据通过并精确清理。
+
+### Implementation
+
+- Previous behavior: Phase 1–4 已支持资料、规则、申报、手工周结算、本人确认、公司费用和线下付款登记，但没有自动周任务、运行审计、本人确认通知或可下载的正式结算文件。
+- New behavior: 周任务只计算上一完整周，使用 PostgreSQL 事务级 advisory lock 防止多实例重复运行，并按周记录 `running/succeeded/partial/failed/skipped`；人工重跑与定时任务共用同一幂等流程。生成批次后逐人发起确认、生成草稿并写入精确收件人的通知。本人/财务状态变化时按冻结档案、规则、行项、调整和公司资料生成私有 PDF；网页和移动端只通过认证下载接口读取，不返回存储 key。
+- Key decisions: scheduler 默认 `PERSONNEL_SETTLEMENT_WEEKLY_ENABLED=false`，migration 和部署配置完成前不会自动执行。文件不使用 RCTI 名称或协议记录；本人确认只表示“工作量及金额正确”。财务调整作为 GST 外独立明细显示；未注册 GST 的结算若出现非零 GST 将拒绝出文档。批准仍幂等投影到 `company_expenses`，付款仍只登记线下转账，不连接银行 API。
+
+### Files / Areas
+
+- `backend/scripts/migrations/20260911_personnel_settlement_phase5.sql` — 文件/任务运行表、约束、索引和 marker；已在已登记固定 Preview 开发库执行，未在生产执行。
+- `backend/src/lib/personnelSettlementPhase5Schema.ts` — 独立 Phase 5 readiness，避免未迁移时破坏 Phase 1–4。
+- `backend/src/lib/personnelSettlementWeeklyJob.ts`, `backend/src/index.ts` — 上一完整周、advisory lock、运行记录、幂等重跑和默认关闭的 Melbourne scheduler。
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts`, `backend/src/lib/personnelSettlementDocuments.ts` — 草稿/Invoice/Tax Invoice A4 PDF、GST 保护、财务调整行、不可变版本和私有存储读取；持久化前锁定结算并重读来源哈希，状态或金额并发变化时拒绝写入过期文档指针。
+- `backend/src/lib/personnelSettlementWorkflow.ts`, `backend/src/modules/personnel_settlements.ts` — 待处理申报门禁、精确本人通知、状态文件生成、管理员运行/历史/文件和本人文件 API。
+- `backend/src/services/notificationEvents.ts`, `docs/notification-registry.yaml` — 费用结算确认事件、固定收件人、Inbox/Queue 一致和稳定去重键。
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts`, `backend/scripts/tests/test_personnel_settlement_phase5_integration.ts`, `backend/package.json` — Phase 5 合同、事务锁、数据库、通知、网页、认证 PDF、GST、权限、付款和精确清理测试。
+- `frontend/src/lib/api.ts`, `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — 网页手工运行、运行历史、文件历史和认证 PDF 打开。
+- `frontend/src/app/finance/settlements/phase5Ui.test.ts` — 网页 Phase 5 操作、运行记录和私有文件读取合同。
+- `frontend/src/app/finance/settlements/claimEvidenceImage.test.ts` — 修正同模块既有测试钩子返回类型，使完整网页 TypeScript 检查可通过。
+- `docs/feature-regression-registry.md`, `docs/execution-records.md`, `docs/change-release-ledger.md` — FR-029、执行记录和候选边界。
+
+### Impact / Dependencies
+
+- Database/migration: 依赖 `20260910_personnel_settlement_phase1`；`20260911_personnel_settlement_phase5` 已在已登记固定 Preview 开发库执行并验证 marker/两张表，生产尚未执行。未迁移环境仍由独立 readiness 让 Phase 1–4 继续可用，并让 Phase 5 网页显示未初始化状态。
+- API: 新增本人/管理文件下载、管理员当前状态文件补生成、手工周任务和运行历史端点；全部复用既有费用结算权限和本人身份边界。
+- Notification: 只向 `personnel_weekly_settlements.user_id` 写入一个稳定 event ID；不允许角色、可配置群组、额外人员或历史经办人扩大收件人。
+- Files/storage: 有 R2 时写私有对象 key，无 R2 的开发环境写非静态私有目录；响应不暴露 key。真实 R2 ACL/缓存尚未验证。
+- Dependencies: no dependency or lockfile changes；`backend/package.json` only adds the guarded integration-test script。依赖 root Phase 1–4 及 paired mobile/CRL-20260911-002。
+- Base: fixed Preview remains based on `origin/Dev@59f3ef6688759c44046d21e1e053578a00ba9d6e`；开发工作区不是发布候选。
+
+### Validation
+
+- backend no-emit TypeScript — passed；Phase 1–5 contract suites — passed；Phase 5 合同覆盖锁后来源哈希变化检测及 `settlement_document_source_changed` 拒绝路径。
+- backend isolated production build — passed under `/private/tmp`；未改动 live Preview 的 tracked `dist`。
+- PDF render — passed with synthetic supplier/buyer/line data：Chromium 生成单页 A4，`pdfinfo` 验证 PDF 1.4、未加密、无 JavaScript；人工视觉确认 Tax Invoice、双方 ABN、GST、负数财务调整和 Melbourne 可读确认时间无裁切。测试文件随后清理。
+- frontend TypeScript — passed；focused 4 files / 10 tests and full Vitest 51 files / 230 tests with coverage thresholds passed；lint passed with unrelated existing warnings；isolated production build completed and included `/finance/settlements`。首次 full test 只因沙箱不能覆盖既有 `coverage` 文件而未启动测试，授权本地写入后原命令通过。
+- paired mobile TypeScript, Phase 5 focused 2 suites / 2 tests and full Jest 62 suites / 352 tests passed；strict button audit passed；lint passed with 0 errors / 110 existing warnings；iOS Expo export passed, 1581 modules。
+- fixed Preview runtime — 3000/4002/8081 listeners verified from exact fixed Preview directories；web、backend readiness and Metro returned 200；new protected run/document routes returned 401 without authentication。development DB identity guard passed (`app=dev`, `database=dev`, enrolled fingerprint, schema registry present)。
+- fixed Preview pre-authorization read-only schema check — before migration authorization, confirmed marker count was 0 and both Phase 5 tables were absent；this established the initial boundary and performed no write。
+- fixed Preview migration — development DB identity guard passed (`app=dev`, `database=dev`, enrolled fingerprint, schema registry present)；`20260911_personnel_settlement_phase5.sql` returned `result=applied`，随后 readiness 验证 marker、`personnel_settlement_documents` 与 `personnel_settlement_job_runs` 均存在。
+- fixed Preview integration — passed with reserved 2010 synthetic week and runtime-only credentials: 2 settlements, 2 exact-recipient Inbox/Queue notifications, pending-claim issue gate, idempotent rerun, `partial/succeeded/skipped` job history, GST `$100 + $10 = $110`, non-GST `$120 + $0 = $120`, transaction-lock contention, authenticated owner PDF, non-owner 404, no-auth 401, finance-only full bank detail, owner/action-response masking, 8 immutable document stages and 2 paid `company_expenses`。All synthetic rows, sessions and local private source PDFs were deleted and zero-count cleanup assertions passed.
+- fixed Preview web — Chromium loaded `/finance/settlements` on port 3000 with the same admin Card/Tabs/Table layout, displayed both synthetic rows and all three job outcomes, and produced no finance-settlement HTTP error or blocking console error；the one excluded Ant Design `addonAfter` deprecation comes from unrelated `landlords/_components/LandlordDocumentsPage.tsx`。
+- final PDF — authenticated paid GST Tax Invoice was one-page A4, unencrypted, JavaScript-free and visually free of clipping；supplier/buyer, both ABNs, service period, line, GST, total and paid reference were visible. Test PDF uses generated synthetic values only.
+- current regression — backend no-emit TypeScript, Phase 1–5 contracts and isolated `/private/tmp` build passed；frontend TypeScript, 3 files / 7 focused tests and lint passed with unrelated existing warnings；paired mobile TypeScript, full Jest 62 suites / 352 tests and strict button audit passed。
+- Integration fixes found by testing: the standalone test process now performs Phase 1 readiness warmup；session-level advisory locking did not exclude a second run through the pooled development connection, so the Phase 5 job now holds `pg_try_advisory_xact_lock` inside an explicit transaction. Browser-only login/date/action locator timing was corrected without changing business behavior.
+- Not run: R2 physical ACL/cache, real push delivery, simulator/physical device PDF Share, production migration/data, scheduler deployment configuration, commit/push/PR/merge/deployment/OTA。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. User authorized Stage 5 implementation, fixed Preview development migration and synthetic integration writes with cleanup only；未授权 commit、push、PR、merge、scheduler deployment configuration、production migration/write、production deployment 或 OTA。
+
+### Risks / Release Notes
+
+- 固定 Preview 已证明数据库任务、Inbox/Queue、文件历史和网页真实读取；仍不证明生产连接池、真实 push provider、R2 或设备 Share。
+- 启用任何非 Preview scheduler 前必须先在目标环境执行并验证 marker，再明确设置部署配置；默认关闭避免代码先部署时误运行。
+- `invoice_companies` 的默认公司记录是付款方法定资料来源；上线前需要财务确认该记录确为 Homixa 的正确 legal name、ABN 和地址。
+- Sensitive-information review: no secrets、`.env`、token、数据库 URL、真实人员/银行资料、真实发票或对象 key 进入源码、测试或 ledger；PDF 使用虚构数据并已清理。
+- Git state: uncommitted, not pushed, no PR, not merged；Phase 5 migration only applied to fixed Preview development DB；scheduler not enabled, not deployed, production/device verification not run。
+
+## CRL-20260911-002 — 费用结算 Phase 4：移动端反馈、私有证明与个人确认（root）
+
+- **Repository:** `root`
+- **Status:** candidate
+- **Updated:** 2026-09-11 Australia/Melbourne
+- **Request:** 执行费用结算阶段 4：为移动端本人工作量反馈、照片/截图证明、本人周结算查看与金额确认提供后端能力，并让网页财务/管理人员在申报审核时安全查看证明；继续复用阶段 1–3 的人员资料、规则和周结算模型。
+- **Outcome:** 新增本人申报稳定请求 ID、私有证明上传/读取和网页认证预览；配套移动端可提交补贴、加班、上新房、仓管时长、试工、编外及自定义工作量，在上传失败后保留草稿并重试，提交成功后清理临时文件。个人周结算页可查看金额明细，并以“工作量及金额正确”确认或填写原因提出异议。
+
+### Implementation
+
+- Previous behavior: Phase 3 已有工作量申报审核和周结算状态机 API，但移动端没有本人入口，证明只存在数据库引用模型，没有受控上传/读取生命周期；网页申报详情只能显示证明名称，不能安全预览。
+- New behavior: 本人使用稳定 claim/media ID 幂等创建申报与上传证明；服务端校验大小、规范化 JPEG、保存精确 claim/evidence 关联并分别执行本人和网页权限校验。移动端草稿按当前用户隔离，失败或中断时保持可重试，只有服务端提交成功后删除本地文件；网页通过 Bearer 认证获取 Blob 并及时释放 object URL。
+- Key decisions: 工作量证明按财务私有媒体处理，不复用 Photo ID，不返回 `storage_key`/R2 URL。单次申报移动端最多 5 张，服务端单张上限 10 MB；开发环境对象存储关闭时仅写入非静态私有目录并仍通过认证 API 读取。本阶段不改变既有九张表，因此没有 migration。
+
+### Files / Areas
+
+- `.gitignore` — 忽略后端仅供开发环境使用的私有本地证明目录。
+- `backend/src/lib/personnelWorkloadClaims.ts` — 稳定请求 ID、创建幂等和草稿可执行动作。
+- `backend/src/lib/personnelClaimEvidence.ts` — 图片验证/JPEG 规范化、私有持久化、精确关联、本人/管理权限读取和安全序列化。
+- `backend/src/modules/personnel_settlements.ts` — 本人证明上传/读取和网页证明读取路由、10 MB 内存上传限制及安全错误映射。
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — 更新证明安全读取合同文案。
+- `backend/scripts/tests/test_personnel_settlement_phase4.ts`, `backend/scripts/tests/test_personnel_settlement_phase4_integration.ts`, `backend/package.json` — Phase 4 合同、开发库集成及测试命令。
+- `frontend/src/app/finance/settlements/WorkloadClaimsPanel.tsx` — 申报详情内的认证证明预览和失败占位。
+- `frontend/src/app/finance/settlements/claimEvidenceImage.ts`, `frontend/src/app/finance/settlements/claimEvidenceImage.test.ts` — 认证 Blob 获取及 object URL 生命周期回归。
+- `docs/feature-regression-registry.md`, `docs/change-release-ledger.md` — FR-029 Phase 4 不变量、覆盖证据和候选状态。
+
+### Impact / Dependencies
+
+- Database/migration: 复用 root/CRL-20260910-002 的 `personnel_workload_claims` / `personnel_workload_evidence`；本阶段没有新增或执行 migration。
+- API: 新增 `POST /finance/settlements/my-claims/:claimId/evidence`、本人证明读取和具有 `personnel_settlements.profiles.view` 权限的网页证明读取；既有申报与周结算 API 保持兼容。
+- Media/security: 列表与详情不暴露对象 key；开发本地文件不在静态 `/uploads` 下。R2 配置存在时仍复用既有对象上传能力，但本阶段未修改或验证存储桶物理 ACL。
+- Dependencies: no package changes；依赖 root Phase 1–3 和 paired mobile/CRL-20260911-001。
+- Base: fixed Preview remains based on `origin/Dev@59f3ef6688759c44046d21e1e053578a00ba9d6e`；开发工作区不是发布候选。
+
+### Validation
+
+- backend no-emit TypeScript — passed。
+- `npm run test:personnel-settlement-phase1 --prefix backend`, Phase 2, Phase 3 and Phase 4 contract suites — passed。
+- `npm run test:personnel-settlement-phase4:integration --prefix backend` — passed against guarded Preview dev database with synthetic IDs：claim/media idempotence、owner read、non-owner denial、JPEG normalization、submit lock and exact cleanup；R2 explicitly disabled, no external storage call。
+- `npm run build --prefix backend` — passed；生成的已跟踪 `backend/dist` 漂移随后精确恢复，未进入候选。
+- frontend TypeScript — passed；focused evidence/page tests passed；full Vitest passed 50 files / 228 tests with coverage thresholds。
+- `npm run lint --prefix frontend` — passed with existing unrelated warnings only。
+- isolated frontend production build — passed in `/private/tmp`：96 routes including `/finance/settlements`；临时副本随后删除，不影响 live Preview。
+- fixed Preview runtime availability — passed after managed restart：3000/4002/8081 分别由固定 Preview frontend/backend/mobile cwd 监听；开发数据库身份/登记指纹校验通过；`/health/ready`、`/finance/settlements` 和 iOS Metro bundle 均返回 200（bundle 12,943,247 bytes）。本人/网页证明读取在未认证时均返回 401。authenticated real-data row visual verification, real device and production were not run。
+- `npm run check:feature-registry` — passed: 25 FRs / 187 test mappings / 75 deferred mobile mappings；fresh `origin/Dev` 后 ledger audit passed 43/43 changed Root paths；`git diff --check` passed。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. User authorized Stage 4 implementation and fixed Preview testing only；未授权 commit、push、PR、merge、production migration、deployment、OTA 或真机/生产验证。
+
+### Risks / Release Notes
+
+- 对象存储物理 ACL、生产 CDN/缓存和真实已撤权用户读取未验证；当前只证明应用层不暴露 raw key，并由精确关联和权限路由 fail closed。
+- 移动端首次选择图片依赖 Expo ImagePicker 的平台权限；源码、Jest、Expo export 与 Metro bundle 已验证，但未在真实相机/相册和真机文件系统执行。
+- 周日自动生成、通知、正式供应方发票/PDF 与银行 API 属于后续阶段，不在本候选内。
+- Sensitive-information review: no secrets、`.env`、token、数据库 URL、真实人员资料、完整银行账号、真实证明图片或对象 key 进入源码、测试或 ledger；合成数据已清理。
+- Git state: uncommitted, not pushed, no PR, not merged, no production migration/deployment, production/device verification not run。
+
+## CRL-20260911-001 — 费用结算 Phase 3：申报审核、周确认与财务付款闭环（root）
+
+- **Repository:** `root`
+- **Status:** candidate
+- **Updated:** 2026-09-11 Australia/Melbourne
+- **Request:** 执行阶段 3：实现工作量申报提交/退回/批准/拒绝，手工生成完整周结算，发起个人工作量及金额确认、异议与调整，财务批准后写入公司费用，并登记外部银行转账；网页端继续沿用现有后台 UI，并由财务或授权管理人员按权限操作。
+- **Outcome:** “费用结算”主卡片新增“周结算”和“工作量申报”两个标签。工作人员可通过本人 API 管理申报并确认或质疑自己的周金额；管理人员可审核申报、生成/重算草稿、发起确认、处理异议和调整；`finance.payout` 用户可批准结算、幂等写入公司费用、登记外部转账或在付款前作废。所有状态写入有事务/行锁保护，银行快照按权限脱敏，完整审计不记录银行账号。
+
+### Implementation
+
+- Previous behavior: Phase 1/2 只有人员资料、费用规则历史和只读周预览；没有可写申报审核、周结算状态机、个人确认、公司费用投影或付款登记。真实 PostgreSQL 生成路径还存在历史任务查询的未使用空参数，调用生成时会报参数类型无法推断。
+- New behavior: 新增本人申报 CRUD/提交、管理审核、本人结算确认/异议，以及管理/财务周结算工作流 API；网页用现有 Card/Tabs/Table/`TableRowActions`/右侧 Drawer 展示三块业务，按 `personnel_settlements.rules.manage` 与 `finance.payout` 隐藏不可用动作。
+- Key decisions: 仅允许生成已结束的 Melbourne 周一至周日；申报提交与批准都要求已有 evidence 关联，但 Phase 3 不新增上传/查看媒体入口。草稿才可重算或调整，调整金额不另计 GST；个人确认后才可财务批准。批准时冻结收款账户并用 `(ref_type, ref_id)` 幂等写入 `company_expenses`；已人工覆盖或已付款的公司费用不会被自动改写/作废。银行付款只登记外部转账事实，不连接银行 API。
+- Runtime fixes found by testing: 修正真实 PostgreSQL 历史任务查询的参数编号；修正网页周选择控件依赖未加载 Day.js 插件导致的运行时异常；用已有 Day.js 核心日期比较替代。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlement.ts` — Melbourne 当日与任意工作日所属周一工具。
+- `backend/src/lib/personnelSettlementPreview.ts` — 修正真实 PostgreSQL 历史任务查询参数编号，保留预览只读语义。
+- `backend/src/lib/personnelWorkloadClaims.ts` — 本人申报校验/保存/提交、evidence 门槛、管理审核、结算期间锁定与脱敏详情。
+- `backend/src/lib/personnelSettlementWorkflow.ts` — 周生成、状态机、确认/异议、调整/重开、财务批准、公司费用、外部转账、作废、幂等和审计。
+- `backend/src/modules/personnel_settlements.ts` — Phase 3 本人、管理和财务 API；既有权限边界内新增严格请求 schema。
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — Phase 3 纯函数、状态机、路由、事务、脱敏和网页合同回归。
+- `backend/scripts/tests/test_personnel_settlement_phase3_integration.ts` — 受 Preview 环境变量保护的四岗位合成数据闭环与精确清理。
+- `backend/package.json` — Phase 3 合同与 Preview 集成测试命令。
+- `frontend/src/app/finance/settlements/page.tsx` — 在既有费用结算 Card 内接入三标签，并修正 Tabs 新版属性。
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — 完整周筛选、生成/重算、结算表格、详情/审计 Drawer 及权限化操作表单。
+- `frontend/src/app/finance/settlements/WorkloadClaimsPanel.tsx` — 工作量申报筛选、详情 Drawer 与批准/退回/拒绝表单。
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts`, `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — 状态/类型标签、周日期、AUD 显示和动作权限映射。
+- `docs/feature-regression-registry.md`, `docs/change-release-ledger.md` — 扩展 FR-029 与记录 Phase 3 候选、边界和证据。
+
+### Impact / Dependencies
+
+- API: 新增 `/finance/settlements/my-claims*`、`/claims*`、`/my-settlements*`、`/weekly*` 写入/查询端点；本人端点只访问当前用户，管理写入使用 `personnel_settlements.rules.manage`，财务批准/付款/作废使用 `finance.payout`。
+- Database/migration: 复用 root/CRL-20260910-002 已建立的 9 张费用结算表、现有 `audit_logs`、`company_expenses` 和唯一索引；Phase 3 没有新增或执行 migration。
+- External effects: 不调用通知、邮件、R2 上传、PDF、银行、清洁同步或生产服务；Preview 外部 worker 保持 disabled。
+- Dependencies: 依赖 root/CRL-20260910-002 的 schema/人员资料/GST/权限和 root/CRL-20260910-004 的费用规则；移动端表单与照片/金额确认页面属于后续阶段。
+- Base: freshly fetched `origin/Dev@59f3ef6688759c44046d21e1e053578a00ba9d6e` at 2026-09-11 01:07 AEST；实现和验证仅在固定 MZ-Dev-Preview，未准备发布候选。
+
+### Validation
+
+- backend `./node_modules/.bin/tsc -p . --noEmit` — passed after implementation and runtime fixes。
+- backend `npm run build` — passed；本轮生成的已跟踪 `backend/dist` 漂移随后按任务开始状态精确恢复，不属于候选。
+- `npm run test:personnel-settlement-phase1 && npm run test:personnel-settlement-phase2 && npm run test:personnel-settlement-phase3` in backend — passed；Phase 1–3 合同均通过。
+- focused frontend Vitest — passed: 3 files / 8 tests，覆盖资料错误状态、费用规则和 Phase 3 周/权限 UI。
+- frontend `./node_modules/.bin/tsc --noEmit --incremental false` — passed。
+- frontend `npm run lint` — passed；费用结算文件无 warning/error，输出仅含仓库既有其他页面 warnings。
+- frontend `npm run build` — passed；`/finance/settlements` 为 96 个成功生成路由之一，输出仅含仓库既有 Browserslist、hook、image、localStorage 与 chart warnings。
+- `npm run dev:preview:verify-db` — passed: app=dev, database=dev, enrolled fingerprint matched, schema registry present。
+- first Preview integration attempt — failed safely before generation due真实 PostgreSQL无法推断历史任务查询未使用参数 `$3`；测试 `finally` 执行精确清理。查询参数修正并加回归后重跑。
+- `npm run test:personnel-settlement-phase3:integration` — passed in enrolled Preview dev DB：cleaner 2 个清洁任务、inspector 同日检查去重并经历异议/重开/调整、warehouse 工时退回后重提批准、mixed 清洁+加班；另覆盖拒绝、evidence 门槛、期间锁定、4 条公司费用、重复批准/付款幂等、银行脱敏和已付款公司费用作废锁定。
+- integration cleanup read-only verification — passed: synthetic users=0, claims=0, reserved batches=0, linked expenses=0。
+- Fixed Preview browser regression — passed after runtime fix：3000 页面显示与其他财务页面一致的“费用结算”Card，三个标签可切换；周结算筛选/生成按钮/表头和申报筛选/表头可见，相应列表 API 均返回 200。仅剩一个来自仓库其他组件的 Ant Design `Input addonAfter` deprecation warning；费用结算运行时异常为 0。
+- temporary browser account cleanup — passed: 临时合成管理员、角色关联和 sessions 已删除，remaining=0。
+- `git diff --check` — passed before ledger update；最终检查见本条后续审计。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. User authorized Phase 3 implementation and fixed Preview testing only；未授权 commit、push、PR、merge、production migration、deployment、OTA 或真机/生产验证。
+
+### Risks / Release Notes
+
+- Phase 3 已提供移动端可调用的本人申报与确认 API，但实际移动端页面、照片上传/私有查看、正式供应方发票/PDF、周日自动生成和通知仍未实现。
+- 财务调整当前定义为 GST 之外的加减项；若业务需要“调整额也含 GST/另加 GST”，必须在发布前另行确认税务口径并新增版本化规则，不应直接改历史结算。
+- 浏览器回归时开发库默认所选周无业务数据，因此真实行级金额和状态闭环由服务/API 集成测试覆盖；实际带数据的表格行、详情 Drawer 和各操作 Modal 尚未做人工视觉逐项验收。
+- Sensitive-information review: no secrets、`.env`、token、真实密码、数据库 URL、真实完整银行资料、R2 key 或测试日志进入源码/ledger；合成账号、evidence 引用和业务数据均已清理，本地 Playwright 临时目录已删除。
+- Git state: uncommitted, not pushed, no PR, not merged, no production migration/deployment, production/device verification not run。
+
+## CRL-20260910-004 — 费用结算 Phase 2：每人费用规则与历史版本（root）
+
+- **Repository:** `root`
+- **Status:** candidate
+- **Updated:** 2026-09-10 Australia/Melbourne
+- **Request:** 在阶段 1 的“费用结算”人员列表继续实现阶段 2：财务或获授权管理人员可为每个人自定义计算方式、单价、GST 单价口径和生效日期，并查看规则历史。
+- **Outcome:** 人员列表增加“费用规则”操作和右侧规则抽屉；一个人员的一个规则版本可组合清洁按任务、检查按天、仓管按小时、试工/编外按任务/天/小时、每周固定、补贴、加班、上新房和自定义数量等计算方式。规则金额以 AUD 整数分保存，GST 单价必须明确选择含税或未税；新生效日自动结束旧版本，同日再次保存只修正当天版本，历史期间保持可计算且不重叠。
+
+### Implementation
+
+- Previous behavior: Phase 1 已建立 `personnel_fee_rules` / `personnel_fee_rule_items` 和只读周预览读取能力，但没有规则管理 API 或网页编辑入口，财务无法为人员配置实际单价，也无法查看日期版本。
+- New behavior: 新增规则输入验证、权限保护的历史读取/保存 API 和事务化版本切分；网页复用现有费用结算页面和 `TableRowActions`，在 Drawer 内维护规则名称、生效日期、GST 单价口径、多条计算方式/单价、备注及只读历史。
+- Key decisions: 每个生效版本至少一条、最多 50 条规则项；同一版本不允许重复的计算范围；已 `finance_approved` / `paid` 的结算期间禁止回溯改规则。不同生效日生成新版本，同一生效日视为未结算前的当天修正。阶段 2 不创建周批次、发票、付款、通知或工作量反馈。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementRules.ts` — 规则输入验证、整数分边界、版本历史读取、事务化新增/同日修正和锁定期间保护。
+- `backend/src/modules/personnel_settlements.ts` — `GET/POST /finance/settlements/profiles/:userId/rules`，统一使用 `personnel_settlements.rules.manage`。
+- `backend/scripts/tests/test_personnel_settlement_phase2.ts`, `backend/package.json` — Phase 2 合同与验证命令。
+- `frontend/src/app/finance/settlements/page.tsx` — 人员行“费用规则”操作及规则 Drawer 接入。
+- `frontend/src/app/finance/settlements/FeeRuleDrawer.tsx` — 每人规则表单、含/未含 GST 解释、多计算方式和历史版本。
+- `frontend/src/app/finance/settlements/feeRuleUi.ts`, `frontend/src/app/finance/settlements/feeRuleUi.test.ts` — 计算方式标签、默认岗位方式及 AUD 元/分转换回归。
+- `docs/feature-regression-registry.md`, `docs/change-release-ledger.md` — FR-029 保护规则、测试映射和候选证据。
+
+### Impact / Dependencies
+
+- Database/migration: 复用已由 root/CRL-20260910-002 建立的两张费用规则表；本阶段没有新增或执行 migration。
+- API: 新增规则历史读取和规则版本保存两个端点；普通工作人员无规则管理权限，finance/admin/offline manager 等既有授权岗位复用 Phase 1 权限种子。
+- Calculation: 不改变 Phase 1 的金额公式；规则保存结果直接被既有只读周预览按服务日期选择。
+- Dependencies: no package changes；依赖 root/CRL-20260910-002 schema、权限和人员资料页。
+- Base: freshly fetched `origin/Dev@59f3ef6688759c44046d21e1e053578a00ba9d6e`；实现和测试只在固定 MZ-Dev-Preview，未准备发布候选。
+
+### Validation
+
+- `node -r ts-node/register/transpile-only scripts/tests/test_personnel_settlement_phase2.ts` — passed：规则字段/日期/整数分/重复范围、权限路由、事务锁和版本切分合同。
+- backend `npm run build` — passed；仅用于构建验证，生成的已跟踪 `backend/dist` 漂移随后精确恢复，未进入候选。
+- focused frontend Vitest — passed: 2 files / 5 tests，含元/分转换、岗位默认方式和既有页面错误状态。
+- frontend `tsc --noEmit --incremental false` — passed。
+- targeted frontend `next lint` — passed: no warnings or errors for settlement page/rule files。
+- isolated frontend production build — passed in a `/private/tmp` copy so the live Preview `.next` was not disturbed: compile/type/static generation completed，`/finance/settlements` included among 96 routes；输出仅含仓库既有 Browserslist、hook、image、localStorage 和 chart 警告，临时副本已删除。
+- Fixed Preview API integration — passed with isolated `dev-preview-*` users: 第一版包含两种计算方式；网页建立第二生效版本后，历史返回 2 个不重叠期间；同日修正保持同一 rule id 和 2 个总版本；人员列表显示当前规则；普通 cleaner 读取管理接口返回 403。
+- Fixed Preview browser regression — passed: 财务账号搜索测试人员、打开规则 Drawer、看到既有历史、选择含 GST、修改多项单价并保存；页面同时显示“当前生效”和“历史版本”，无相关 console/page error。
+- Test-data cleanup — passed: 隔离测试人员、会话、资料审计、规则项、规则及人员记录均按精确 ID 清理；没有修改既有开发人员资料。
+- `npm run check:feature-registry` — passed: 25 FRs / 179 test mappings / 73 deferred mobile mappings。
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/audit_change_release_ledger.py` — passed: 30/30 changed Root paths covered against freshly fetched `origin/Dev`。
+- `git diff --check` — passed。
+- Final fixed Preview availability — 3000/4002/8081 listeners present；`GET http://localhost:3000/finance/settlements` and backend `/health/ready` both returned 200 after all tests。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. User authorized Phase 1/2 implementation and fixed Preview testing only；commit、push、PR、merge、production migration、deployment 均未授权。
+
+### Risks / Release Notes
+
+- 当前网页只维护全局人员规则项，不提供按指定房源或任务类型的高级覆盖编辑；后端模型保留该范围字段，后续如确有业务需要可在不建立第二套规则系统的前提下扩展 UI。
+- 同一生效日保存会覆盖该日尚未锁定的规则版本；不同生效日才形成新的历史版本。财务批准或付款后，相关期间会拒绝改写。
+- Phase 2 不证明周日自动生成、工作量反馈审批、人员金额确认、供应方发票、财务付款或生产税务结果。
+- Sensitive-information review: no secrets、`.env`、token、数据库 URL、真实人员资料或完整银行账号进入源码、测试或 ledger。
+- Git state: uncommitted, not pushed, no PR, not merged, no production migration/deployment, production/device verification not run。
+
+## CRL-20260910-003 — 固定开发测试环境与数据库安全门（root）
+
+- **Repository:** `root`
+- **Status:** ready
+- **Updated:** 2026-09-11 Australia/Melbourne
+- **Request:** 建立长期 `MZ-Dev-Preview`，让网页 3000、后端 4002 和移动端开发端口固定提供当前开发功能；使用独立开发数据库并在 migration 前自动拒绝生产身份；测试发生在提交之前，发布候选继续独立整理。
+- **Outcome:** 固定 Root/Mobile Preview 工作区、3000/4002/8081 端口、开发数据库登记与生产身份拒绝、外部副作用隔离、通用 migration 闸门、Git 防误提交/推送和启动手册均已建立。环境不预装任何业务候选，也不作为发布来源。
+
+### Implementation
+
+- Previous behavior: 3000/4002 可能由原始脏工作区启动；后端本地 env 虽标记 dev，但缺少 Preview 专用身份登记、migration 显式闸门和默认关闭外部副作用的一体化入口；移动端本地 env 可能指向远程 API。
+- New behavior: 固定 Preview 从 `origin/Dev` detached Root/Mobile 基线运行。`prepare` 生成被忽略的本地配置并登记开发/生产数据库身份指纹，移除外部凭据与连接配置（包括 Redis、Airbnb IMAP、Webhook 和 Vercel bypass），关闭后台 worker，并安装两个 Preview worktree 专用 Git hooks；`pre-commit`、`pre-push` 和启动前验证均 fail closed。数据库 `verify` 与显式 `migrate --file ... --apply` 共用身份校验；启动器只替换受管工作区端口并固定本地 API。
+- Key decisions: 固定 Preview 只提供通用开发测试基础设施；Git 保护写入 worktree 专用配置，不能影响原始工作区或未来独立发布候选。业务候选需在用户明确指定后精确同步，不能写死在启动、migration 或测试账号入口中；发布候选仍从新获取的 `origin/Dev` 独立建立。
+
+### Files / Areas
+
+- `scripts/dev-preview-db.mjs` — Preview env 生成、开发/生产数据库身份指纹、连接验证、按 marker 幂等检查和通用受控 migration。
+- `scripts/dev-preview-git-guard.mjs` — 为 Root/Mobile 安装和验证 Preview 专用 `pre-commit`/`pre-push`，要求 detached 并拒绝从测试工作区提交或推送。
+- `scripts/dev-preview.mjs` — 3000/4002/8081 受管端口、后端环境/readiness、本地 Web/Mobile API 启动。
+- `scripts/tests/test_dev_preview_guard.mjs` — 生产身份拒绝、指纹漂移、外部副作用配置和 Git hook 生成回归。
+- `package.json` — Preview Git guard 安装/验证、prepare/verify/migrate/start/test 命令和质量门接线。
+- `.gitignore` — 忽略 `.dev-preview/` 本地状态；既有 frontend/backend env 忽略保持。
+- `docs/dev-preview-workflow.md` — 固定路径、数据库闸门、启动、测试与发布候选边界。
+- `docs/feature-regression-registry.md` — FR-028 固定开发环境保护规则。
+- `docs/change-release-ledger.md` — 固定环境的修改范围、验证和未发布状态。
+
+### Impact / Dependencies
+
+- Application API / schema: 不改变业务 API；开发库仅保留当前 `origin/Dev` 基线 schema，已清除本次越界加入的费用结算数据、权限、marker 和九张专项表。
+- Config / environment: Preview 生成本地忽略配置；保留开发数据库和应用认证所需值，移除外部服务凭据并强制关闭后台 worker。Root/Mobile Git common config 仅启用 `extensions.worktreeConfig`，`core.hooksPath` 只写入两个 Preview 的 `config.worktree`；原始工作区没有该配置。
+- Dependencies: no package changes and no business-feature dependency.
+- Release boundary: fixed Preview is detached and uncommitted; any future release must use a separate clean `origin/Dev` candidate.
+
+### Validation
+
+- `npm run test:dev-preview-guard` — passed: dev/prod identity、登记指纹、R2/SMTP/Airbnb IMAP/Redis/Webhook/Vercel bypass 外部凭据与连接剥离、worker 关闭和业务 migration 去耦均受保护。
+- `npm run dev:preview:install-git-guard` — passed: Root/Mobile 均安装 worktree 专用 hooks，commit/push 显示 blocked。
+- `npm run dev:preview:verify-git-guard` — passed: 两个 Preview 均为 detached，`pre-commit` 和 `pre-push` 共四次调用均返回 status 1 及专用拒绝标记；原始 Root/Mobile `Dev` 工作区的 worktree `core.hooksPath` 均为空。
+- `npm run dev:preview:verify-db` — passed: `app=dev`、`database=dev`、已登记指纹匹配、schema registry present；未输出数据库地址或名称。
+- migration 负向闸门 — passed: 缺少 `--apply` 时拒绝；仅有 `--apply` 而没有显式 `--file` 时仍拒绝，均未执行 SQL。
+- development database cleanup verification — passed: 费用结算专项表、权限、marker、模拟用户、房源和任务均为 0；生产数据库未连接或写入。
+- `npm run test:root-quality-workflow-contract` — passed: 8 tests。
+- `npm run build --prefix backend` — passed；生成的 `backend/dist` 漂移已在验证后清理。
+- `npm run lint --prefix frontend` — passed with existing warnings only。
+- `npm run test --prefix frontend` — passed: 46 files / 217 tests，coverage 97.29% statements。
+- `npm run build --prefix frontend` — passed: 95 routes；既有 Browserslist、hook、image 和 chart 警告未在本任务修改。
+- `npm run dev:preview:all` — passed runtime verification: 4002/3000/8081 分别来自固定 backend/frontend/mobile cwd；后端 readiness 完成且所有配置的外部 workers 为 disabled。验证后服务已停止。
+- 费用结算网页和 API 路径 — both returned 404，确认通用 Preview 不包含该候选。
+- 2026-09-10 selected-feature runtime update — 用户重新选择 root/CRL-20260910-002 与 mobile/CRL-20260910-001 后，固定 Preview 已加载两包候选；3000/4002/8081 的监听 cwd 分别核对为固定 frontend/backend/mobile，外部 worker 继续保持 disabled。
+- Preview frontend lifecycle observation — 并行检查期间 3000 曾失去监听，受管 web session 重启后恢复；当前 `GET /finance/settlements` 返回 200。该现象记录为开发环境 P2，未归因于费用结算业务逻辑。
+- `npm run check:feature-registry` — passed: 24 FRs / 173 mappings / 73 deferred mobile mappings。
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/audit_change_release_ledger.py` — passed: 9/9 changed Root paths covered against fetched `origin/Dev`。
+- `git diff --check` — passed。
+- 2026-09-11 Git guard receipt — `npm run test:dev-preview-guard` passed；`npm run check:feature-registry` passed with 25 FRs / 197 mappings / 76 deferred mobile mappings；freshly fetched `origin/Dev` 后 Root ledger audit passed 58/58，Mobile ledger audit passed 25/25；targeted `git diff --check` passed。应用 typecheck/lint/test/build 未重复运行，因为本次没有修改 Web、backend 或 Mobile 应用源码。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+### Release Attempts
+
+- None. User authorized development environment execution and testing only; commit/push/PR/merge/deployment/OTA were not authorized.
+
+### Risks / Release Notes
+
+- No business feature is included or validated by this infrastructure unit.
+- Git hooks 用于防止误操作而不是权限安全边界；有意删除 hook 或绕过 Git hook 仍可能规避。启动命令会在保护缺失时 fail closed，恢复方式为重新运行 `npm run dev:preview:install-git-guard`。
+- Rollback: stop Preview processes and remove the two Preview worktrees after preserving any separately authorized source changes.
+- Sensitive-information review: local env files remain ignored and are never printed or recorded; external service secrets are removed from Preview runtime configuration.
+- Git state: uncommitted, not pushed, no PR, not merged, not deployed, no OTA/build, device/production verification not run.
+
+## CRL-20260910-002 — 费用结算 Phase 1：人员资料复用、GST 版本与周预览（root）
+
+- **Repository:** `root`
+- **Status:** candidate
+- **Updated:** 2026-09-10 Australia/Melbourne
+- **Request:** 在网页端财务管理新增准确命名为“费用结算”的子菜单，建立 ABN 合作人员的费用规则/周结算基础模型和只读预览；复用移动端个人信息中的姓名、ABN、银行与 Photo ID，并允许财务或授权管理人员在网页按权限手动修改。GST 必须支持已注册、未注册和未确认，不登记 RCTI 协议信息。
+- **Outcome:** 新增独立费用结算 schema、计算内核和只读周预览；同一共享服务把本人移动端或网页授权修改写回现有 `users`，同时生成按生效日期保存的供应方/税务档案及脱敏审计。网页“费用结算”提供人员列表、详情和右侧编辑抽屉；财务可管理完整银行资料，普通获授权管理人员只能维护非银行字段。固定 Preview 页面已改为与现有财务页一致的主卡片结构；schema 未初始化时只显示一个可理解的页面内状态，不再重复弹出技术错误。经用户明确授权后，固定 Preview 开发库已完成 migration，页面现可读取人员列表并打开详情/编辑抽屉。
+
+### Implementation
+
+- Previous behavior: 现有个人资料只有可变姓名、ABN、银行与证件字段；没有 GST 三态、生效版本、费用规则、周结算基础表、人员资料财务页面或专用权限。现有发票中心属于公司对客应收，不能表达合作人员向 Homixa 提供服务的供应方发票。
+- New behavior: additive migration 建立人员档案/审计、费用规则/规则项、周批次/人员结算/明细和工作量反馈/凭证九张表；金额以整数分计算，按 Australia/Melbourne 周一至周日从真实动作审计和已批准反馈生成只读预览。资料更新复用 `users`，GST 与供应方信息按生效日版本化；网页列表始终脱敏银行信息，详情和修改由独立银行权限控制。网页首屏等待客户端权限挂载，避免服务端与客户端权限结果不同造成 hydration 报错；初次列表请求失败写入单一页面状态，不调用全局 toast。
+- Key decisions: 未确认 GST 不等于未注册且不得自动计算；网页修改必须提供不晚于 Melbourne 当日的生效日期和原因；已财务批准/已付款期间拒绝回溯覆盖；Photo ID 只显示上传状态且不作为工作量凭证。阶段 1 不执行定时汇总、人员确认、正式发票或付款；migration 不允许由应用运行时自动执行。
+
+### Files / Areas
+
+- `backend/scripts/migrations/20260910_personnel_settlement_phase1.sql` — additive schema、角色权限种子和 migration marker。
+- `backend/src/lib/personnelSettlement.ts`, `backend/src/lib/personnelSettlementPreview.ts` — 周期、GST/规则金额、工作量候选和只读预览。
+- `backend/src/lib/personnelSettlementProfiles.ts`, `backend/src/lib/personnelSettlementSchema.ts` — 资料验证/版本/审计/脱敏及 schema readiness。
+- `backend/src/modules/personnel_settlements.ts`, `backend/src/index.ts` — 本人资料、网页资料和只读预览 API，专用路由挂载。
+- `backend/src/permissionsCatalog.ts`, `backend/src/store.ts`, `backend/src/modules/rbac.ts` — 费用结算查看/修改/银行/规则权限与默认岗位授权。
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts`, `backend/package.json` — 费用结算合同回归与命令。
+- `frontend/src/app/finance/settlements/page.tsx` — 与现有财务页一致的主卡片、人员列表、单一加载状态、详情和编辑 Drawer。
+- `frontend/src/app/finance/settlements/settlementPageState.ts`, `frontend/src/app/finance/settlements/settlementPageState.test.ts` — schema 未就绪/一般请求失败的安全文案映射及回归测试，禁止向页面暴露技术错误字符串。
+- `frontend/src/lib/adminNavigation.ts`, `frontend/src/lib/adminNavigation.test.ts` — “费用结算”菜单、权限树和导航回归。
+- `docs/feature-regression-registry.md`, `docs/change-release-ledger.md` — FR-029 与候选证据。
+
+### Impact / Dependencies
+
+- Database: additive migration 已于 2026-09-10 经用户明确授权后仅应用到已登记的固定 `MZ-Dev-Preview` 开发数据库；marker、9/9 张表和当前已有角色权限已只读验证，生产数据库未连接或写入。正式部署仍必须先在目标环境单独授权、运行并验证 marker，再部署后端/网页。
+- API: 新增 `GET/PATCH /finance/settlements/my-profile`、`GET/PATCH /finance/settlements/profiles...`、`GET /finance/settlements/preview`。
+- Permissions: 新增 `personnel_settlements.profiles.view/manage`、`personnel_settlements.bank.manage`、`personnel_settlements.rules.manage` 和菜单可见权限；管理员绕过，财务默认拥有全部，cleaning/offline manager 默认不拥有完整银行权限。
+- Dependencies: no package dependency changes. Related mobile unit: mobile/CRL-20260910-001；两者在跨仓库非生产集成验证前均不可视为可发布组合。
+- Base: freshly fetched `origin/Dev@59f3ef6688759c44046d21e1e053578a00ba9d6e` in isolated detached worktree.
+
+### Validation
+
+- `npm run test:personnel-settlement-phase1 --prefix backend` — passed.
+- backend/frontend TypeScript no-emit — passed.
+- `npm run build --prefix backend` — passed; generated `backend/dist` drift was removed from the candidate after validation.
+- `npm run test --prefix frontend -- --run src/lib/adminNavigation.test.ts --coverage.enabled=false` — passed: 1 file / 3 tests.
+- `npm run lint --prefix frontend` — passed with existing repository warnings only; no remaining warning is reported for the new settlement page.
+- `npm run build --prefix frontend` — passed: production compile, type validation and `/finance/settlements` static generation completed; existing Browserslist/Recharts warnings remain.
+- Fixed Preview UI refinement: `npm run test -- --run src/app/finance/settlements/settlementPageState.test.ts --coverage.enabled=false` — passed: 1 file / 2 tests；`./node_modules/.bin/tsc --noEmit --incremental false` — passed；定向 `next lint` — passed with no warnings or errors。
+- Fixed Preview browser regression before migration at `http://localhost:3000/finance/settlements` — passed for the pre-schema state: one `费用结算` card title, zero global message notices, one schema-readiness status and no raw `personnel_settlement_schema_not_ready`. Post-migration evidence below supersedes the earlier 503 state.
+- Production build was not rerun after this UI-only refinement to avoid interrupting the active fixed Preview dev server; the earlier candidate build above predates this refinement.
+- `npm run check:feature-registry` — passed: 24 FRs / 173 mappings / 73 deferred mobile mappings.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/audit_change_release_ledger.py` — passed: 17/17 changed root paths covered against freshly fetched `origin/Dev`.
+- `git diff --check` — passed.
+- focused mobile evidence belongs only to mobile/CRL-20260910-001 and is not root release evidence.
+- Development migration was explicitly authorized and applied；人员资料保存、结算业务写入、生产数据库、部署及生产验证仍未运行且未获授权。
+- Fixed Preview sync — passed: 17 个 root 费用结算候选路径叠加到 root/CRL-20260910-003 通用 Preview 基础设施；共享 `backend/src/index.ts` 仅合并路由、warmup 与 Preview 安全日志，两套行为均保留。
+- `npm run dev:preview:verify-db` — passed: `app=dev`、`database=dev`、登记指纹匹配、schema registry present；没有输出数据库地址或名称。
+- `npm run dev:preview:migrate -- --file=backend/scripts/migrations/20260910_personnel_settlement_phase1.sql --apply` — passed after the user explicitly authorized this exact file and the enrolled fixed Preview development database；result=`applied`，未输出数据库地址或凭据。
+- `npm run test:dev-preview-guard` — passed。
+- `npm run test:personnel-settlement-phase1 --prefix backend` — passed。
+- backend/frontend TypeScript no-emit in fixed Preview — passed。
+- fixed Preview focused frontend Vitest — passed: 1 file / 3 tests。
+- `npm run lint --prefix frontend` — passed with existing unrelated warnings only。
+- post-migration read-only database verification — passed inside `BEGIN READ ONLY` / `ROLLBACK`: marker present and 9/9 tables present；当前开发库 `admin`/`finance_staff` 各有 5 项权限、`offline_manager` 有 4 项非银行权限；`cleaning_manager` 角色在该库不存在，故其种子授权未产生记录且尚未验证。9 张专项业务表全部为 0 行，migration 未生成模拟人员、规则、批次、结算、反馈或凭证数据。
+- authenticated Chrome regression — passed for the Phase 1 read-only/admin-entry scope: admin 可见 10 条开发库人员列表；详情抽屉打开并显示 12 个资料标签；编辑抽屉打开并显示 11 个表单项和保存按钮。测试只打开后取消，没有修改或保存任何人员资料。
+- browser console — page-scoped hydration mismatch and edit Drawer `useForm` mount warning were resolved；migration 后 fresh reload、详情和编辑入口复测均无相关 console warning/error，页面无 toast，schema-not-ready 状态不再出现。
+- fixed Preview `npm run check:feature-registry` — passed after the UI/error-state regression mapping update: 25 FRs / 177 test mappings / 73 deferred mobile mappings。
+- fixed Preview `PYTHONDONTWRITEBYTECODE=1 python3 scripts/audit_change_release_ledger.py` — passed after the UI/error-state files and evidence update: 25/25 changed Root paths covered。
+- Authorized Phase 1 write integration in fixed Preview — passed with three isolated `dev-preview-*` users: mobile-self profile roundtrip、人员列表、财务完整银行详情、offline manager 脱敏详情、无银行权限修改返回 403、网页实际保存和成功提示均符合预期。
+- GST/date history verification — passed: `registered` 版本自 2026-09-03 至 2026-09-09，网页新 `not_registered` 版本自 2026-09-10 生效；两条审计来源分别为 `mobile_self` / `web_admin`，审计 JSON 不包含完整 BSB 或账号。
+- Cross-repository mobile evidence — paired Mobile focused Jest passed after adding direct save assertion；结算资料字段实际提交到共享 `/finance/settlements/my-profile`，普通昵称/电话继续提交原 `/users/me`。
+- Phase 1 test-data cleanup — passed: 三个隔离测试人员及会话、档案和审计按精确 ID 删除，未修改既有开发人员资料。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** PASS — fresh origin/Dev worktree; every candidate path was reviewed and staged explicitly; no untracked candidate files remain.
+
+### Release Attempts
+
+### Risks / Release Notes
+
+- 2026-09-10 cleanup receipt: 用户将本次范围收窄为通用固定开发测试环境并明确要求清除费用结算专项实现。该候选已从 `MZ-Dev-Preview` Root/Mobile 工作区移除；开发库清理前确认专项表中不存在非 `dev-preview-` 数据，随后在单一事务内删除模拟账号/房源/任务、专项权限、migration marker 和九张专项表。此 CRL 仅保留历史追踪，不再代表当前 Preview 候选。
+- 2026-09-10 resync receipt: 用户随后明确选择 root/CRL-20260910-002 与 mobile/CRL-20260910-001，同意重新同步到固定 Preview 并启动开发测试；本条恢复为当前 Preview 候选，但仍未获得 commit、push、PR、merge 或 deployment 授权。
+- 2026-09-10 development migration receipt: 用户明确授权“在固定 MZ-Dev-Preview 已登记的开发数据库执行 `20260910_personnel_settlement_phase1.sql` migration”；安全闸门先确认 `app=dev`、`database=dev`、登记指纹匹配且不同于生产身份，随后单事务执行成功。该授权不涵盖生产 migration、人员资料保存、业务数据写入、commit、push、PR、merge 或 deployment。
+- Role verification gap: 固定 Preview 开发库当前没有 `cleaning_manager` 角色，因此 migration 对该角色的条件式权限种子无法产生或验证；在创建该角色或进入正式环境前必须重新核对默认授权路径。
+- 用户表仍是当前可编辑主数据；已生成周结算在后续阶段必须保存供应方/税务和付款目标快照，不能在展示时回读当前资料。
+- Phase 1 页面只维护人员结算资料并显示当前规则摘要，不提供费用规则编辑、自动汇总、确认、发票或付款按钮。
+- Rollback: application source can be reverted as one root CRL; additive schema should be retained after migration rather than destructively dropped. Before migration, application routes fail closed with controlled schema-not-ready response.
+- Sensitive-information review: no secrets, `.env`, credentials, tokens, database URLs, production data or full bank details are recorded in audit/ledger; bank data exists only in protected API response for authorized users.
+- Git state: synced and running in fixed Preview；development migration applied and read-only browser integration passed；uncommitted, not pushed, no PR, not merged, not deployed, no production migration or production verification.

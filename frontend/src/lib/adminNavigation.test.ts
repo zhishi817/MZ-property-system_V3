@@ -28,3 +28,20 @@ describe('CMS navigation consolidation', () => {
     ])
   })
 })
+
+describe('personnel settlement navigation', () => {
+  it('adds the exact 费用结算 submenu behind its dedicated permission', () => {
+    const permissions = new Set([
+      'menu.finance',
+      'menu.finance.personnel_settlements.visible',
+    ])
+    const sidebar = buildSidebarNavigation(ADMIN_NAVIGATION, (code) => permissions.has(code))
+    const finance = sidebar.find((item) => item.id === 'finance')
+    const settlement = finance?.children?.find((item) => item.id === 'finance-personnel-settlements')
+
+    expect(settlement).toEqual(expect.objectContaining({
+      label: '费用结算',
+      href: '/finance/settlements',
+    }))
+  })
+})
