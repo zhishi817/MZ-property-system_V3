@@ -370,6 +370,12 @@ class ReleaseReportFixture:
 
 
 class ReleaseReportTests(unittest.TestCase):
+    def test_adjacent_selected_crl_ranges_cover_one_combined_ledger_hunk(self) -> None:
+        self.assertTrue(AUDITOR.line_range_is_within(3, 18, [(3, 10), (11, 20)]))
+
+    def test_unselected_gap_still_blocks_one_combined_ledger_hunk(self) -> None:
+        self.assertFalse(AUDITOR.line_range_is_within(3, 18, [(3, 10), (12, 20)]))
+
     def test_pre_commit_gate_accepts_initial_historical_receipt_candidate(self) -> None:
         fixture = ReleaseReportFixture(self)
         fixture.stage_historical_receipt_candidate()

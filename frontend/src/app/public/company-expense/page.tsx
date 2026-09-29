@@ -28,6 +28,7 @@ export default function PublicCompanyExpensePage() {
   }, [])
 
   const categoryOptions = useMemo(() => ([
+    { value: 'cleaning_expense', label: '清洁支出' },
     { value: 'office', label: '办公' },
     { value: 'bedding_fee', label: '床品费' },
     { value: 'office_rent', label: '办公室租金' },

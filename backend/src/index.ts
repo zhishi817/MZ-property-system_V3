@@ -15,6 +15,7 @@ import { router as keysRouter } from './modules/keys'
 import { router as ordersRouter } from './modules/orders'
 import { router as inventoryRouter, warmupInventoryModule } from './modules/inventory'
 import { router as financeRouter } from './modules/finance'
+import { router as personnelSettlementsRouter } from './modules/personnel_settlements'
 import { router as cleaningRouter } from './modules/cleaning'
 import { router as configRouter } from './modules/config'
 import cleaningAppRouter from './modules/cleaning_app'
@@ -58,6 +59,8 @@ import { bootstrapCleaningSyncSchemaV2 } from './services/cleaningSync'
 import { warmupR5RequestSchema, warmupR5TaskRuntimeSchema } from './lib/r5RequestSchema'
 import { warmupMaintenanceRuntimeSchema } from './lib/maintenanceRuntimeSchema'
 import { warmupPropertyGuideRuntimeSchema } from './lib/propertyGuideRuntimeSchema'
+import { warmupPersonnelSettlementSchema } from './lib/personnelSettlementSchema'
+import { runPersonnelSettlementWeeklyJob } from './lib/personnelSettlementWeeklyJob'
  
  
 // 环境保险锁（Render 上用 RENDER_ENV=dev/prod 显式区分，避免误判）
@@ -424,6 +427,7 @@ app.use('/properties', propertiesRouter)
 app.use('/keys', keysRouter)
 app.use('/orders', ordersRouter)
 app.use('/inventory', inventoryRouter)
+app.use('/finance/settlements', personnelSettlementsRouter)
 app.use('/finance', financeRouter)
 app.use('/crud', crudRouter)
 app.use('/recurring', recurringRouter)
@@ -486,16 +490,22 @@ app.use((err: any, _req: express.Request, res: express.Response, next: express.N
 
 const port = process.env.PORT_OVERRIDE ? Number(process.env.PORT_OVERRIDE) : (process.env.PORT ? Number(process.env.PORT) : 4001)
 function onServerListening() {
+  const isMZDevPreview = process.env.MZ_DEV_PREVIEW === '1'
+  const databaseRole = String(process.env.DATABASE_ROLE || 'unknown')
   console.log(`Server listening on port ${port}`)
   console.log(`[DataSources] pg=${hasPg}`)
-  try {
-    const url = process.env.DATABASE_URL || ''
-    if (url) {
-      const u = new URL(url)
-      const db = (u.pathname || '').replace(/^\//,'')
-      console.log(`[PG] host=${u.hostname} db=${db}`)
-    }
-  } catch {}
+  if (isMZDevPreview) {
+    console.log(`[PG] environment=MZ-Dev-Preview role=${databaseRole} identity=[redacted]`)
+  } else {
+    try {
+      const url = process.env.DATABASE_URL || ''
+      if (url) {
+        const u = new URL(url)
+        const db = (u.pathname || '').replace(/^\//,'')
+        console.log(`[PG] host=${u.hostname} db=${db}`)
+      }
+    } catch {}
+  }
   try {
     const defaultEnabled = false
     const enabled = String(process.env.EMAIL_SYNC_SCHEDULE_ENABLED || (defaultEnabled ? 'true' : 'false')).toLowerCase() === 'true'
@@ -602,7 +612,9 @@ function onServerListening() {
   } catch {}
   ;(async () => {
     try {
-      if (hasPg) {
+      if (isMZDevPreview) {
+        console.log(`[DBInfo] environment=MZ-Dev-Preview role=${databaseRole} identity=[redacted]`)
+      } else if (hasPg) {
         const r1 = await pgPool!.query('SELECT current_database() AS db, current_schema AS schema')
         const r2 = await pgPool!.query('SHOW search_path')
         const r3 = await pgPool!.query('SELECT current_schemas(true) AS schemas')
@@ -987,6 +999,33 @@ function onServerListening() {
       console.error(`[day-end-handover-reminder][schedule] init error message=${String(e?.message || '')}`)
     }
   })()
+
+  ;(async () => {
+    try {
+      const enabled = String(process.env.PERSONNEL_SETTLEMENT_WEEKLY_ENABLED || 'false').trim().toLowerCase() === 'true'
+      if (!enabled) {
+        console.log('[personnel-settlement-weekly][schedule] disabled')
+        return
+      }
+      if (!hasPg || !pgPool) {
+        console.log('[personnel-settlement-weekly][schedule] skipped_reason=pg_false')
+        return
+      }
+      const expr = String(process.env.PERSONNEL_SETTLEMENT_WEEKLY_CRON || '5 0 * * 1').trim()
+      const task = cron.schedule(expr, async () => {
+        try {
+          const result = await runPersonnelSettlementWeeklyJob({ triggerSource: 'scheduled' })
+          console.log(`[personnel-settlement-weekly][schedule] status=${String(result?.status || '')} generated=${Number(result?.generated_count || 0)} issued=${Number(result?.issued_count || 0)} skipped=${Number(result?.skipped_count || 0)}`)
+        } catch (error: any) {
+          console.error(`[personnel-settlement-weekly][schedule] error=${String(error?.message || 'failed')}`)
+        }
+      }, { scheduled: true, timezone: 'Australia/Melbourne' })
+      task.start()
+      console.log(`[personnel-settlement-weekly][schedule] enabled cron=${expr} tz=Australia/Melbourne`)
+    } catch (error: any) {
+      console.error(`[personnel-settlement-weekly][schedule] init_error=${String(error?.message || 'failed')}`)
+    }
+  })()
 }
   app.get('/health/login', async (_req, res) => {
     const started = Date.now()
@@ -1032,6 +1071,7 @@ async function runStartupWarmups() {
     { name: 'r5_task_runtime_schema', run: warmupR5TaskRuntimeSchema },
     { name: 'maintenance_runtime_schema', run: warmupMaintenanceRuntimeSchema },
     { name: 'property_guide_runtime_schema', run: warmupPropertyGuideRuntimeSchema },
+    { name: 'personnel_settlement_schema', run: warmupPersonnelSettlementSchema },
     { name: 'auth', run: warmupAuthModule },
     { name: 'cleaning_sync_schema', run: bootstrapCleaningSyncSchemaV2 },
     { name: 'mzapp', run: warmupMzappModule },

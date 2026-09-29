@@ -2529,6 +2529,10 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
         } catch {}
         toUpdate = cleaned
       } else if (resource === 'company_expenses') {
+        const settlementGenerated = before
+          && before.is_auto === true
+          && String(before.ref_type || '') === 'personnel_weekly_settlement'
+        if (settlementGenerated) return res.status(403).json({ message: 'auto_generated_expense_readonly' })
         const allow = ['occurred_at','amount','currency','category','category_detail','expense_name','note','invoice_url','fixed_expense_id','month_key','due_date','paid_date','status']
         const cleaned: any = {}
         for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
@@ -2820,6 +2824,9 @@ router.delete('/:resource/:id', requireResourcePerm('delete'), async (req, res) 
         before = rows[0] || null
       } catch {}
       if (resource === 'property_expenses' && before && before.is_auto === true && ['maintenance', 'deep_cleaning', 'daily_necessities'].includes(String(before.ref_type || ''))) {
+        return res.status(403).json({ message: 'auto_generated_expense_readonly' })
+      }
+      if (resource === 'company_expenses' && before && before.is_auto === true && String(before.ref_type || '') === 'personnel_weekly_settlement') {
         return res.status(403).json({ message: 'auto_generated_expense_readonly' })
       }
       if (resource === 'recurring_payments') {

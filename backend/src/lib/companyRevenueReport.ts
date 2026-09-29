@@ -47,6 +47,20 @@ export type CompanyRevenueRow = {
   delete_source?: string | null
   status?: string | null
   calculation?: string | null
+  expense_breakdown?: CompanyExpenseBreakdownItem[]
+}
+
+export type CompanyExpenseBreakdownItem = {
+  component_type: string
+  label: string
+  subtotal: number
+  gst: number
+  total: number
+  count: number
+}
+
+export type CompanyExpenseBreakdownSummary = CompanyExpenseBreakdownItem & {
+  percentage: number
 }
 
 export type CompanyRevenueCategorySummary = {
@@ -74,6 +88,7 @@ export type CompanyRevenueReport = {
   }
   income_categories: CompanyRevenueCategorySummary[]
   expense_categories: CompanyRevenueCategorySummary[]
+  cleaning_expense_breakdown: CompanyExpenseBreakdownSummary[]
   income_rows: CompanyRevenueRow[]
   expense_rows: CompanyRevenueRow[]
   warnings: CompanyRevenueWarning[]
@@ -99,6 +114,7 @@ export const COMPANY_INCOME_CATEGORY_LABELS: Record<string, string> = {
 }
 
 export const COMPANY_EXPENSE_CATEGORY_LABELS: Record<string, string> = {
+  cleaning_expense: '清洁支出',
   office: '办公',
   bedding_fee: '床品费',
   office_rent: '办公室租金',
@@ -113,6 +129,28 @@ export const COMPANY_EXPENSE_CATEGORY_LABELS: Record<string, string> = {
   tax: '税费',
   service: '服务采购',
   other: '其他',
+}
+
+const PERSONNEL_EXPENSE_COMPONENT_LABELS: Record<string, string> = {
+  cleaning_task: '清洁任务',
+  inspection_day: '检查工作',
+  warehouse_hour: '仓管工作',
+  trial: '试工',
+  external: '编外合作',
+  weekly_fixed: '固定合作费用',
+  subsidy_amount: '补贴',
+  overtime_hour: '加班',
+  new_property_task: '上新房',
+  custom_amount: '其他费用',
+  finance_adjustment: '财务调整',
+  unclassified: '未分类清洁支出',
+}
+
+function normalizedPersonnelExpenseComponent(value: any): string {
+  const componentType = String(value || 'unclassified')
+  if (['trial_task', 'trial_day', 'trial_hour'].includes(componentType)) return 'trial'
+  if (['external_task', 'external_day', 'external_hour'].includes(componentType)) return 'external'
+  return componentType
 }
 
 const INCOME_CATEGORY_ORDER = ['mgmt_fee', 'cleaning_fee', 'cancel_fee', 'late_checkout', 'other']
@@ -157,6 +195,52 @@ function normalizedIncomeCategory(value: any): string {
 function normalizedExpenseCategory(value: any): string {
   const category = String(value || '').trim().toLowerCase()
   return COMPANY_EXPENSE_CATEGORY_LABELS[category] ? category : 'other'
+}
+
+function normalizedExpenseBreakdown(row: any): CompanyExpenseBreakdownItem[] {
+  if (String(row?.ref_type || '') !== 'personnel_weekly_settlement') {
+    if (normalizedExpenseCategory(row?.category) !== 'cleaning_expense') return []
+    const total = round2(row?.amount)
+    return total === 0 ? [] : [{
+      component_type: 'unclassified',
+      label: PERSONNEL_EXPENSE_COMPONENT_LABELS.unclassified,
+      subtotal: total,
+      gst: 0,
+      total,
+      count: 1,
+    }]
+  }
+  const grouped = new Map<string, CompanyExpenseBreakdownItem>()
+  for (const item of Array.isArray(row?.settlement_breakdown) ? row.settlement_breakdown : []) {
+    const componentType = normalizedPersonnelExpenseComponent(item?.component_type)
+    const current = grouped.get(componentType) || {
+      component_type: componentType,
+      label: PERSONNEL_EXPENSE_COMPONENT_LABELS[componentType] || componentType,
+      subtotal: 0,
+      gst: 0,
+      total: 0,
+      count: 0,
+    }
+    current.subtotal = round2(current.subtotal + Number(item?.subtotal_cents || 0) / 100)
+    current.gst = round2(current.gst + Number(item?.gst_cents || 0) / 100)
+    current.total = round2(current.total + Number(item?.total_cents || 0) / 100)
+    current.count += Math.max(0, Number(item?.count || 0))
+    grouped.set(componentType, current)
+  }
+  const items = Array.from(grouped.values())
+  const breakdownTotal = round2(items.reduce((sum: number, item: CompanyExpenseBreakdownItem) => sum + item.total, 0))
+  const residual = round2(Number(row?.amount || 0) - breakdownTotal)
+  if (Math.abs(residual) >= 0.01) {
+    items.push({
+      component_type: 'unclassified',
+      label: PERSONNEL_EXPENSE_COMPONENT_LABELS.unclassified,
+      subtotal: residual,
+      gst: 0,
+      total: residual,
+      count: 0,
+    })
+  }
+  return items
 }
 
 function activeOrder(order: any): boolean {
@@ -402,10 +486,15 @@ export function buildCompanyRevenueReport(input: ReportInput): CompanyRevenueRep
     const voided = String(row?.status || '').trim().toLowerCase() === 'void'
     const effective = !deleted && !voided
     if (!effective && !input.includeDeleted) continue
-    const category = normalizedExpenseCategory(row?.category)
+    const refType = String(row?.ref_type || '').trim()
+    const category = refType === 'personnel_weekly_settlement'
+      ? 'cleaning_expense'
+      : normalizedExpenseCategory(row?.category)
     const property = properties.get(String(row?.property_id || ''))
     const baseLabel = COMPANY_EXPENSE_CATEGORY_LABELS[category]
     const detail = category === 'other' ? String(row?.category_detail || '').trim() : ''
+    const expenseBreakdown = normalizedExpenseBreakdown(row)
+    const settlementGenerated = Boolean(row?.is_auto) && refType === 'personnel_weekly_settlement'
     expenseRows.push({
       id: `expense:${String(row?.id || '')}`,
       record_id: String(row?.id || '') || null,
@@ -421,9 +510,9 @@ export function buildCompanyRevenueReport(input: ReportInput): CompanyRevenueRep
       source_label: String(row?.source_title || row?.generated_from || (row?.is_auto ? '自动支出' : '公司支出')),
       description: String(row?.source_summary || row?.expense_name || row?.category_detail || '') || null,
       note: String(row?.note || '') || null,
-      editable: effective,
+      editable: effective && !settlementGenerated,
       is_effective: effective,
-      ref_type: String(row?.ref_type || '') || null,
+      ref_type: refType || null,
       ref_id: String(row?.ref_id || '') || null,
       expense_name: String(row?.expense_name || '') || null,
       category_detail: String(row?.category_detail || '') || null,
@@ -434,6 +523,7 @@ export function buildCompanyRevenueReport(input: ReportInput): CompanyRevenueRep
       deleted_by: String(row?.deleted_by || '') || null,
       delete_source: String(row?.delete_source || '') || null,
       status: String(row?.status || '') || null,
+      expense_breakdown: expenseBreakdown,
     })
   }
 
@@ -441,6 +531,32 @@ export function buildCompanyRevenueReport(input: ReportInput): CompanyRevenueRep
   expenseRows.sort((a, b) => b.occurred_at.localeCompare(a.occurred_at) || b.amount - a.amount)
   const incomeCategories = buildCategorySummary(incomeRows, COMPANY_INCOME_CATEGORY_LABELS, INCOME_CATEGORY_ORDER)
   const expenseCategories = buildCategorySummary(expenseRows, COMPANY_EXPENSE_CATEGORY_LABELS)
+  const cleaningBreakdownMap = new Map<string, CompanyExpenseBreakdownItem>()
+  for (const row of expenseRows) {
+    if (!row.is_effective || row.category !== 'cleaning_expense') continue
+    for (const item of row.expense_breakdown || []) {
+      const current = cleaningBreakdownMap.get(item.component_type) || {
+        component_type: item.component_type,
+        label: item.label,
+        subtotal: 0,
+        gst: 0,
+        total: 0,
+        count: 0,
+      }
+      current.subtotal = round2(current.subtotal + item.subtotal)
+      current.gst = round2(current.gst + item.gst)
+      current.total = round2(current.total + item.total)
+      current.count += item.count
+      cleaningBreakdownMap.set(item.component_type, current)
+    }
+  }
+  const cleaningBreakdownTotal = round2(Array.from(cleaningBreakdownMap.values()).reduce((sum, item) => sum + item.total, 0))
+  const cleaningExpenseBreakdown = Array.from(cleaningBreakdownMap.values())
+    .map((item) => ({
+      ...item,
+      percentage: cleaningBreakdownTotal > 0 ? round2((item.total / cleaningBreakdownTotal) * 100) : 0,
+    }))
+    .sort((a, b) => b.total - a.total || a.label.localeCompare(b.label))
   const totalIncome = round2(incomeRows.filter((row) => row.is_effective).reduce((sum, row) => sum + row.amount, 0))
   const totalExpense = round2(expenseRows.filter((row) => row.is_effective).reduce((sum, row) => sum + row.amount, 0))
   const netRevenue = round2(totalIncome - totalExpense)
@@ -455,6 +571,7 @@ export function buildCompanyRevenueReport(input: ReportInput): CompanyRevenueRep
     },
     income_categories: incomeCategories,
     expense_categories: expenseCategories,
+    cleaning_expense_breakdown: cleaningExpenseBreakdown,
     income_rows: incomeRows,
     expense_rows: expenseRows,
     warnings,

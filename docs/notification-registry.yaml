@@ -1,0 +1,35 @@
+schema_version: 1
+
+metadata:
+  title: MZ personnel settlement notification registry
+  status: active_contract
+  coverage: personnel_settlement
+  note: This file records the personnel settlement notification used when finance returns a revised settlement to its owner.
+
+global_contract:
+  notification_writer: backend/src/services/notificationEvents.ts#emitNotificationEvent
+  recipient_authority: Backend resolves the exact settlement owner before Inbox and Queue writes.
+  delivery_contract: Inbox, badge and push use the same stored user_id and event_id; clients do not recalculate recipients.
+
+policies:
+  - id: NTF-PERSONNEL-001
+    business_event: personnel_settlement_revision_confirmation_requested
+    policy_key: personnel_settlement_revision_confirmation_requested
+    domain: finance_personnel_settlement
+    policy_owner: finance
+    status: confirmed
+    business_canonical_generator: backend/src/lib/personnelSettlementWorkflow.ts#publishPersonnelSettlementConfirmationRequest
+    notification_writer: backend/src/services/notificationEvents.ts#emitNotificationEvent
+    source_event_types: [PERSONNEL_SETTLEMENT_CONFIRMATION_REQUESTED]
+    recipient_contract:
+      template_key: system_contract
+      required: [personnel_weekly_settlements.user_id]
+      excluded: [roles, configurable_groups, extra_users, previous_assignees]
+      resolve_at: finance_return_time
+      mobile_client_recipient_authorization: none
+    channels: { inbox: true, badge: unread_user_notifications, push: queued }
+    navigation: { action: open_personnel_settlement, target: Me.PersonnelSettlement }
+    dedupe:
+      event_id: personnel-settlement-confirmation-requested:{settlement_id}:{confirmation_revision}
+      storage_unique: [user_id, event_id]
+      revision_contract: One stable revision per finance return; retries reuse it, while a later returned revision creates a new revision. Initial partner submission does not emit this notification.

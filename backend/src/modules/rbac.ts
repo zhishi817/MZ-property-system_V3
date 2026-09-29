@@ -570,6 +570,7 @@ router.post('/role-permissions', requirePerm('rbac.manage'), requireR5TaskRuntim
     'menu.finance.orders.visible': ['order'],
     'menu.finance.company_overview.visible': ['finance_transactions','order','properties','property_expenses'],
     'menu.finance.company_revenue.visible': ['company_incomes','company_expenses'],
+    'menu.finance.personnel_settlements.visible': ['personnel_settlements'],
     'menu.cms.visible': ['cms_pages'],
     'menu.cms.company.visible': ['cms_pages'],
     'menu.cms.public_resources.visible': ['cms_pages'],
