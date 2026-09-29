@@ -47,17 +47,17 @@
 - Selected CRL identities: `root/CRL-20260929-001`, `root/CRL-20260910-002`, `root/CRL-20260910-003`, `root/CRL-20260910-004`, `root/CRL-20260911-001`, `root/CRL-20260911-002`, `root/CRL-20260911-003`, `root/CRL-20260911-004`, `root/CRL-20260911-005`, `root/CRL-20260911-006`, `root/CRL-20260911-007`, `root/CRL-20260911-008`, `root/CRL-20260911-009`, `root/CRL-20260912-001`, `root/CRL-20260912-002`, `root/CRL-20260912-003`, `root/CRL-20260912-004`, `root/CRL-20260912-005`, `root/CRL-20260913-001`, `root/CRL-20260913-002`, `root/CRL-20260913-003`, `root/CRL-20260914-001`, `root/CRL-20260914-002`, `root/CRL-20260914-003`, `root/CRL-20260914-004`, `root/CRL-20260922-001`, `root/CRL-20260922-003`, `root/CRL-20260924-001`, `root/CRL-20260924-002`, `root/CRL-20260924-003`, `root/CRL-20260924-004`, `root/CRL-20260925-001`, `root/CRL-20260926-001`
 - Intended action: `commit`
 - Branch: `codex/personnel-settlement-batch-20260929`
-- Base: `origin/Dev@317b8d667594a0a1e3fb8277652b974aa2d23ef5`; fetched and confirmed unchanged at `2026-09-29T15:49:31+10:00`
+- Base: `origin/Dev@317b8d667594a0a1e3fb8277652b974aa2d23ef5`; fetched at `2026-09-29T15:49:31+10:00` and confirmed unchanged
 - Candidate patch SHA-256: `4c85059bd95782214caea3d479840defcd08752ec3c64e23db14401bb54c9e71` excluding `docs/change-release-ledger.md`
-- Commit SHA: not committed
-- Dependencies: coordinated Mobile Release Attempt `mobile/RA-20260929-001` on `codex/personnel-settlement-batch-20260929`; its exact content commit SHA is pending. Root API and migrations must be deployed before any Mobile OTA/build delivery, while this Root source commit remains independently safe to create first.
+- Commit SHA: `821a9e5aadec57589f43a552d7e78b21c0c00fcd`
+- Dependencies: `mobile/CRL-20260929-001@05601c3156b8db63c0908c52ab7a3c46766796ae`
 - Required validation: `PASS; evidence: after resolving independent-review findings, isolated npm run check:full passed: dev-preview guard, 40/40 ledger-auditor tests, 73/73 ledger coverage, feature registry 26 FRs / 207 mappings, backend TypeScript/build/contracts, frontend 52 files / 246 tests plus production build, and paired Mobile typecheck/lint 0 errors / 556 warnings plus 62 suites / 367 tests.`
 - Shared-hunk review: `PASS`; evidence: exact pre-commit gate matched 73 staged files and 116 non-ledger hunk fingerprints to the selected Root CRLs with no untracked or unselected path.
 - Generated-file review: `PASS; evidence: all backend/dist build outputs were restored and excluded after final validation; the temporary paired-Mobile symlink was removed; no dependency links, caches, unrelated generated files or untracked paths remain.`
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user instructed “先审核提交这些更新” for the enumerated personnel-settlement Root and Mobile units; this necessary adjacent-CRL audit repair is included only to make that exact multi-unit gate enforceable. Push and later stages remain unauthorized.
 - Independent review: `GO for local commit`; evidence: independent read-only rereview recomputed candidate fingerprint `4c85059bd95782214caea3d479840defcd08752ec3c64e23db14401bb54c9e71`, inspected all 73 staged files / 116 non-ledger hunks, reran the targeted Preview, revenue, Phase 3, Phase 5 and ledger-auditor tests, and confirmed the prior four P1 findings plus stale-document P2 were closed. No P0/P1 remained. Accepted non-blocking P2: a rare concurrent source invalidation can leave an unreferenced private PDF object after the database insert and current-document pointer are correctly refused; it is not exposed by the authenticated document API and requires later lifecycle cleanup or orphan collection.
-- Action conclusion: `GO` for this selected local commit only; exact staged-scope gate, validation and independent rereview passed. Push, PR, merge, migration, deployment and production/device verification remain unauthorized.
+- Action conclusion: `GO`; the selected and independently reviewed local content commit completed as `821a9e5aadec57589f43a552d7e78b21c0c00fcd`. Push, PR, merge, migration, deployment and production/device verification remain unauthorized.
 ### Risks / Release Notes
 
 - 风险仅限本地治理逻辑；若区间算法错误，测试中的未选择间隙案例和真实组合预提交门禁应阻止提交。
