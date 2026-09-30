@@ -200,9 +200,9 @@
 - Repository: `root`
 - Selected CRLs: `CRL-20260930-003`, `CRL-20260930-004`, `CRL-20260930-005`
 - Selected CRL identities: `root/CRL-20260930-003`, `root/CRL-20260930-004`, `root/CRL-20260930-005`
-- Intended action: `commit`
+- Intended action: `push`
 - Branch: `codex/settlement-finance-guards-20260930`
-- Base: `origin/Dev@91adcf456a5eeea2443b01515a919e0922b78387`; fetched at `2026-09-30T12:26:16Z`
+- Base: `origin/Dev@91adcf456a5eeea2443b01515a919e0922b78387`; fetched at `2026-09-30T13:09:57Z`
 - Candidate patch SHA-256: `50249759f9d8ba43c837891ada46f578b6c65cb22d49a1ead8d5ba30ebbf6654` excluding `docs/change-release-ledger.md`
 - Commit SHA: `99362e924e04fef4879e9028c7a3c2b1fef8772e`
 - Dependencies: `none`
@@ -210,9 +210,9 @@
 - Shared-hunk review: `PASS`; evidence: 144 zero-context non-ledger hunks are explicitly fingerprinted across the three selected CRLs, including shared settlement backend/web/Registry paths; no unselected release unit is staged.
 - Generated-file review: `PASS`; evidence: generated `backend/dist` drift was restored, `.next` remains ignored, and the staged candidate has no untracked files, `.env`, credential, token, database URL or local-cache path.
 - Technical state: `committed`
-- User authorization: `selected-for-commit`; evidence: user instructed “提交三个” immediately after the three exact CRL IDs and the no-push boundary were stated.
-- Independent review: `GO for commit`; evidence: independent read-only reviewer freshly confirmed `origin/Dev@91adcf456a5eeea2443b01515a919e0922b78387`, the matching local HEAD/merge-base, all 29 staged paths / 144 non-ledger hunks, and candidate fingerprint `50249759f9d8ba43c837891ada46f578b6c65cb22d49a1ead8d5ba30ebbf6654`; the reviewer found no P0/P1, unselected path, generated-file, sensitive-information or production-write issue. One non-blocking P2 remains: `FeeRuleDrawer` derives GST visibility from the current personnel row while backend rule calculation resolves the profile at the selected effective date, so a historical/current GST-status mismatch can make the UI hide or show `price_basis` incorrectly; this requires a separate effective-date-aware UI/API change and cross-version regression test.
-- Action conclusion: `GO`; the exact reviewed candidate was committed locally as `99362e924e04fef4879e9028c7a3c2b1fef8772e` after the final pre-commit gate passed. This ledger-only outcome receipt may be committed locally; push, PR, merge, migration, deployment and production/device verification remain unauthorized.
+- User authorization: `approved-for-push`; evidence: after receiving repository `root`, exact content commit `99362e924e04fef4879e9028c7a3c2b1fef8772e`, current audited head `da6aeb52f33ca0482ed3a57291a6eacd23e9236f`, branch `codex/settlement-finance-guards-20260930`, and the explicit no-push status, user instructed “推送” on 2026-09-30. This authorizes a non-force push of the unchanged three-CRL range plus necessary ledger-only authorization/review/outcome receipts to this branch; it does not authorize PR, merge, migration or deployment.
+- Independent review: `GO for push authorization receipt, one non-force initial push, and one conditional post-push ledger receipt fast-forward`; evidence: independent read-only reviewer verified live `origin/Dev@91adcf456a5eeea2443b01515a919e0922b78387`, absent same-name remote branch, branch/base/ancestry, content commit `99362e924e04fef4879e9028c7a3c2b1fef8772e` inside the current committed range, unchanged 29 selected paths / 144 non-ledger hunks and fingerprint `50249759f9d8ba43c837891ada46f578b6c65cb22d49a1ead8d5ba30ebbf6654`; the staged diff is ledger-only and no P0/P1, generated-file, sensitive-information, unselected-path or production-write issue was found. The accepted effective-date/current-GST-status P2 remains non-blocking because backend canonicalization preserves the calculation boundary.
+- Action conclusion: `GO`; this ledger-only push-authorization/review receipt may be committed if the exact pre-commit gate passes, then the resulting clean audited head may be non-force pushed once if immediate live checks still show the recorded Dev base and absent remote branch. After successful remote SHA verification, one ledger-only pushed-state outcome receipt may be committed and non-force fast-forward pushed to the same branch only if its pre-commit gate, clean range report and remote fast-forward check pass. PR, merge, migration, deployment and production/device verification remain unauthorized.
 
 ### Risks / Release Notes
 
