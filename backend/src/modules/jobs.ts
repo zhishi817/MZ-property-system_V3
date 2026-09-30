@@ -495,6 +495,23 @@ function normalizePropertyIndexKey(s: string): string {
   return x.trim().toLowerCase()
 }
 
+export type AirbnbOrderMailKind = 'confirmed' | 'altered' | 'cancelled'
+
+export function classifyAirbnbOrderSubject(subject: string): AirbnbOrderMailKind | null {
+  const text = normalizeText(subject)
+  if (!text) return null
+  if (/reservation (cancelled|canceled)/i.test(text) || /(?:订单|预订)(?:已取消|已被取消)/.test(text)) return 'cancelled'
+  if (/reservation altered/i.test(text) || /(?:订单|预订)(?:已更改|已修改|已变更)/.test(text)) return 'altered'
+  if (/(?:reservation confirmed|new booking confirmed)/i.test(text) || /(?:订单|预订)已确认/.test(text)) return 'confirmed'
+  return null
+}
+
+export const NOT_WHITELISTED_EMAIL_AUDIT = Object.freeze({
+  status: 'skipped',
+  reason: 'not_matched',
+  error_code: 'not_whitelisted',
+})
+
 export function extractFieldsFromHtml(html: string, headerDate: Date): {
   confirmation_code?: string
   guest_name?: string
@@ -541,8 +558,15 @@ export function extractFieldsFromHtml(html: string, headerDate: Date): {
   }
   const codeCandidates = pickCodeCandidates().sort((a, b) => scoreCode(b) - scoreCode(a))
   confirmation_code = codeCandidates[0]
-  const m2 = /New booking confirmed!\s*(.*?)\s+arrives/i.exec(bodyText)
-  if (m2) guest_name = normalizeText(m2[1])
+  const guestPatterns = [
+    /New booking confirmed!\s*(.*?)\s+arrives/i,
+    /新预订已确认[！!]?\s*(.*?)\s*将于/,
+    /订单已确认[！!]?\s*[-–—]?\s*(.*?)\s*将于/,
+  ]
+  for (const pattern of guestPatterns) {
+    const match = pattern.exec(bodyText)
+    if (match?.[1]) { guest_name = normalizeText(match[1]); break }
+  }
   function badHeading(t: string): boolean {
     const s = t.toLowerCase()
     if (!s) return true
@@ -559,6 +583,7 @@ export function extractFieldsFromHtml(html: string, headerDate: Date): {
     x = x.replace(/^(?:entire\s+(?:home(?:\/apt)?|apt|rental\s+unit|condo|apartment|place)|(?:private|shared|hotel)\s+room)\s*[·•\-|–—]?\s*/i, '')
     // remove trailing room-type suffix (sometimes concatenated without separator)
     x = x.replace(/\s*(?:[·•\-|–—]?\s*)?(?:entire\s+(?:home(?:\/apt)?|apt|rental\s+unit|condo|apartment|place)|(?:private|shared|hotel)\s+room)\s*$/i, '')
+    x = x.replace(/\s*(?:[·•\-|–—]?\s*)?(?:整套房子\/公寓|整套房源|整套公寓|独立房间|合住房间|酒店房间)\s*$/, '')
     // remove any mid-string lone separators at ends
     x = x.replace(/^[·•\-|–—\s]+/, '').replace(/[·•\-|–—\s]+$/,'')
     return normalizeText(x)
@@ -596,9 +621,15 @@ export function extractFieldsFromHtml(html: string, headerDate: Date): {
   if (listing_name) listing_name = cleanListingName(listing_name)
   type DateCandidate = { date: string; raw: string; yearInferred: boolean }
   const dayRe = /\b(Sun|Mon|Tue|Wed|Thu|Fri|Sat|Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday),?\s*(\d{1,2})\s+([A-Za-z]{3,9})(?:,?\s+(\d{4}))?/i
-  const mx = /([0-9]+)\s+nights?\s+room\s+fee/i.exec(bodyText)
+  const mx = /([0-9]+)\s+nights?\s+room\s+fee/i.exec(bodyText) || /(?:[x×]\s*)?([0-9]+)\s*晚(?:房费)?/.exec(bodyText)
   if (mx) nights = Number(mx[1])
   function parseDateText(text: string): DateCandidate | undefined {
+    const chinese = /(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日/.exec(text)
+    if (chinese) {
+      const parsed = inferAirbnbEmailDate(headerDate, Number(chinese[2]), Number(chinese[3]), chinese[1] ? Number(chinese[1]) : undefined)
+      if (!parsed.date) return undefined
+      return { date: parsed.date, raw: normalizeText(chinese[0] || ''), yearInferred: parsed.yearInferred }
+    }
     const m = dayRe.exec(text)
     if (!m) return undefined
     const day = Number(m[2])
@@ -609,7 +640,7 @@ export function extractFieldsFromHtml(html: string, headerDate: Date): {
     return { date: parsed.date, raw: normalizeText(m[0] || ''), yearInferred: parsed.yearInferred }
   }
   function labelPattern(kind: 'checkin' | 'checkout'): string {
-    return kind === 'checkin' ? 'check\\s*[-–—]?\\s*in' : 'check\\s*[-–—]?\\s*out'
+    return kind === 'checkin' ? '(?:check\\s*[-–—]?\\s*in|入住)' : '(?:check\\s*[-–—]?\\s*out|退房)'
   }
   function dateAfterLabel(text: string, kind: 'checkin' | 'checkout'): DateCandidate | undefined {
     const label = labelPattern(kind)
@@ -699,8 +730,8 @@ export function extractFieldsFromHtml(html: string, headerDate: Date): {
     const v = Number(String(m[1]).replace(/[,]/g, ''))
     return isNaN(v) ? undefined : v
   }
-  price = parseAmountAfter('You earn')
-  cleaning_fee = parseAmountAfter('Cleaning fee') || 0
+  price = parseAmountAfter('You earn') ?? parseAmountAfter('你的收入为')
+  cleaning_fee = parseAmountAfter('Cleaning fee') ?? parseAmountAfter('清洁费') ?? 0
   const probe = { code_candidates: codeCandidates, listing_name_raw: listing_name, dates: { checkin_text: raw_checkin_text, checkout_text: raw_checkout_text }, amount: { price, cleaning_fee } }
   return { confirmation_code, guest_name, listing_name, checkin, checkout, nights, price, cleaning_fee, raw_checkin_text, raw_checkout_text, year_inferred, probe }
 }
@@ -744,13 +775,11 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
   const fields = extractFieldsFromHtml(html, headerDate)
   const isAirbnb = /airbnb\.com/i.test(from)
   const subj = subject || ''
-  const isReservationConfirmed = /reservation confirmed/i.test(subj)
-  const isNewBookingConfirmed = /new booking confirmed/i.test(subj)
-  const isReservationAltered = /reservation altered/i.test(subj)
-  const isReservationCancelled = /reservation (cancelled|canceled)/i.test(subj)
+  const orderMailKind = classifyAirbnbOrderSubject(subj)
+  const isReservationCancelled = orderMailKind === 'cancelled'
   const isCancelViaSubject = /\bcancel\s+reservation\b/i.test(subj)
   const isCancelViaBody = /\bcancel\s+reservation\b/i.test(String((parsed.text || '') + ' ' + (parsed.html || '')))
-  const isOrderMail = isReservationConfirmed || isNewBookingConfirmed || isReservationAltered || isReservationCancelled || isCancelViaSubject
+  const isOrderMail = !!orderMailKind || isCancelViaSubject
   if (!isAirbnb || !isOrderMail) {
     return { matched: false, inserted: false, skipped_duplicate: false, failed: false, reason: 'not_whitelisted', last_uid: Number(msg.uid || 0) }
   }
@@ -2585,10 +2614,20 @@ export async function runEmailSyncJob(opts: EmailSyncOptions = {}): Promise<any>
                 const notWhitelisted = String((r as any)?.reason || '') === 'not_whitelisted'
                 if (notWhitelisted) {
                   try {
-                    if (itemId) {
-                      await dbq(dbClient).query('UPDATE email_sync_items SET status=$4::text, reason=$5::text WHERE account=$1::text AND run_id::text=$2::text AND uid=$3::bigint', [acc.user, runIdKeyStr, uid, 'skipped', 'not_whitelisted'])
-                    }
-                  } catch {}
+                    const audit = NOT_WHITELISTED_EMAIL_AUDIT
+                    const skippedUpdate = await dbq(dbClient).query(
+                      'UPDATE email_sync_items SET status=$4::text, reason=$5::text, error_code=$6::text WHERE account=$1::text AND run_id::text=$2::text AND uid=$3::bigint',
+                      [acc.user, runIdKeyStr, uid, audit.status, audit.reason, audit.error_code],
+                    )
+                    if (Number(skippedUpdate?.rowCount || 0) !== 1) throw new Error(`not_whitelisted_item_update_count=${Number(skippedUpdate?.rowCount || 0)}`)
+                    skippedReasons.not_whitelisted = (skippedReasons.not_whitelisted || 0) + 1
+                  } catch (e: any) {
+                    stats.failed++
+                    hadFailure = true
+                    if (!failureCode) failureCode = 'not_whitelisted_item_update_failed'
+                    if (!failureMessage) failureMessage = String(e?.message || '')
+                    console.error(JSON.stringify({ tag: 'not_whitelisted_item_update_failed', uid, run_id: runIdKeyStr, account: acc.user, code: String(e?.code || ''), message: String(e?.message || '') }))
+                  }
                   continue
                 }
                 try {
@@ -2635,12 +2674,17 @@ export async function runEmailSyncJob(opts: EmailSyncOptions = {}): Promise<any>
                   if (itemId) {
                     const parsePreview = `cc=${String((r as any)?.sample?.confirmation_code || '')} ln=${String((r as any)?.sample?.listing_name || '')} ci=${String((r as any)?.sample?.checkin || '')} co=${String((r as any)?.sample?.checkout || '')}`
                   const subj2 = String(env?.subject || '')
-                  const subjectOk = /(Reservation confirmed|New booking confirmed|Reservation altered|Reservation (cancelled|canceled))/i.test(subj2)
+                  const subjectKind = classifyAirbnbOrderSubject(subj2)
+                  const subjectOk = !!subjectKind
                     const senderOk = /airbnb\.com/i.test(String(env?.from?.text || ''))
                     const foundConf = !!((r as any)?.sample?.confirmation_code || (r as any)?.confirmation_code)
                     const foundDates = !!(((r as any)?.sample?.checkin) && ((r as any)?.sample?.checkout))
                     const foundListing = !!((r as any)?.sample?.listing_name || (r as any)?.listing_name)
-                    const template = subjectOk ? (String(env?.subject||'').toLowerCase().includes('new booking confirmed') ? 'new_booking_confirmed' : 'reservation_confirmed') : 'unknown'
+                    const template = !subjectKind
+                      ? 'unknown'
+                      : (/new booking confirmed/i.test(subj2)
+                        ? 'new_booking_confirmed'
+                        : (/(?:订单|预订)已确认/.test(subj2) ? 'localized_booking_confirmed' : `reservation_${subjectKind}`))
                   const parseProbeBase = { subject_ok: subjectOk, sender_ok: senderOk, found_conf_code: foundConf, found_dates: foundDates, found_listing: foundListing, template }
                   const fieldsProbe = (r as any)?.sample?.probe || (r as any)?.probe || null
                   const parseProbe = Object.assign({}, parseProbeBase, (typeof fieldsProbe === 'object' && fieldsProbe) ? { fields_probe: fieldsProbe } : {})
@@ -2732,7 +2776,7 @@ export async function runEmailSyncJob(opts: EmailSyncOptions = {}): Promise<any>
                       }
                     } catch {}
                     const subj3 = String(env?.subject || '')
-                    const subjectOk = /(Reservation confirmed|New booking confirmed|Reservation altered|Reservation (cancelled|canceled))/i.test(subj3)
+                    const subjectOk = !!classifyAirbnbOrderSubject(subj3)
                     const foundConf = !!((String(fields2.confirmation_code || '')).match(/\b[A-Z0-9]{8,10}\b/))
                     const foundDates = !!(fields2.checkin && fields2.checkout)
                     const isCandidateStrict = !!(subjectOk && foundConf && foundDates)
