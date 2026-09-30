@@ -89,10 +89,10 @@
 - Selected CRL identities: `root/CRL-20260930-001`
 - Intended action: `commit`
 - Branch: `codex/airbnb-localized-email-sync`
-- Base: `origin/Dev@91adcf456a5eeea2443b01515a919e0922b78387`; fetched again without SHA change at `2026-09-30T17:06:40+10:00`
+- Base: `origin/Dev@91adcf456a5eeea2443b01515a919e0922b78387`; fetched at `2026-09-30T17:06:40+10:00`
 - Candidate patch SHA-256: `a4208960a13657a71680e4ea3bad305b970fd036ea97b16ad58c869ae232a788` excluding `docs/change-release-ledger.md`
 - Commit SHA: `bfd3ce63e022a81a4115515c6bf40efd84bdfcf4` (candidate content commit)
-- Dependencies: none outside the fetched base; the base already includes the related FR-014 date-parser units.
+- Dependencies: none
 - Required validation: `PASS`; evidence: targeted localized/English date tests, TypeScript, Registry/ledger checks and final database-disabled `npm run check:full` passed across root/backend/frontend and a clean mobile baseline.
 - Shared-hunk review: `PASS`; evidence: the isolated worktree started clean at the recorded base and all 28 non-ledger staged hunks map only to this CRL's five non-ledger paths.
 - Generated-file review: `PASS`; evidence: tracked `backend/dist`, temporary dependency links and the temporary mobile worktree were removed; candidate status contains only the six selected source/test/documentation paths.
