@@ -115,12 +115,12 @@
 - Required validation: `PASS`; evidence: prior targeted and full candidate validation, independent commit review, current-worktree audits and exact committed-range report passed with unchanged source content.
 - Shared-hunk review: `PASS`; evidence: the exact committed range contains only this CRL's six selected paths and 28 non-ledger hunk fingerprints.
 - Generated-file review: `PASS`; evidence: the exact range contains no generated output, dependency links, local caches, sensitive paths or untracked files.
-- Technical state: `committed`
-- Remote branch: not pushed
+- Technical state: `pushed`
+- Remote branch: initial normal non-force push verified as `origin/codex/airbnb-localized-email-sync@94dcf646efc2e3f2686a80bd477234bd4ec92aa4`; `git ls-remote --heads` matched the pushed local HEAD. This ledger-only outcome receipt will be fast-forwarded on the same authorized branch without changing candidate content.
 - Remote preflight: `PASS`; evidence: fresh `origin/Dev` still equals the recorded base and `refs/heads/codex/airbnb-localized-email-sync` was absent at `2026-09-30T17:26:37+10:00`.
 - User authorization: `approved-for-push`; evidence: after receiving root branch `codex/airbnb-localized-email-sync`, candidate content commit `bfd3ce63e022a81a4115515c6bf40efd84bdfcf4` and audited receipt head `fd3f1e40c8f978e81ae18cfad505efe89cd5858f`, the user instructed “推送” on 2026-09-30. This authorizes only a normal non-force push of this unchanged CRL/base/content/branch range; PR, merge, deployment and production replay remain unauthorized.
 - Independent review: `GO for ledger-only push receipt and non-force push`; evidence: independent read-only reviewer inspected AGENTS/release instructions, RA-20260930-001/002, complete staged ledger diff and exact `base...fd3f1e40c8f978e81ae18cfad505efe89cd5858f` range; independently recomputed unchanged content fingerprint `a4208960a13657a71680e4ea3bad305b970fd036ea97b16ad58c869ae232a788`, verified base/content/receipt ancestry, fresh `Dev`, absent target branch, authorization, generated/sensitive scope, and found no P0/P1. Accepted non-blocking P2: the CRL summary status/Git-state prose retains older commit-preparation wording; RA-20260930-001/002 remains the authoritative lifecycle evidence and the ledger-only receipt gate limits this commit to Release Attempt lines.
-- Action conclusion: `GO`; blockers: none. Commit this ledger-only authorization/review receipt, require a clean exact-range `GO` for its final HEAD, recheck the remote branch remains absent, then perform only the authorized normal non-force branch push. PR, merge, deployment and production replay remain unauthorized.
+- Action conclusion: `GO`; blockers: none. The authorized unchanged candidate was pushed normally without force to the target branch and the remote SHA matched the audited local HEAD. Commit and fast-forward this ledger-only outcome receipt on the same branch; PR, merge, deployment and production replay remain unauthorized and were not performed.
 
 ### Risks / Release Notes
 
