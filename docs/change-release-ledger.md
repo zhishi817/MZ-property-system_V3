@@ -204,15 +204,15 @@
 - Branch: `codex/settlement-finance-guards-20260930`
 - Base: `origin/Dev@91adcf456a5eeea2443b01515a919e0922b78387`; fetched at `2026-09-30T12:26:16Z`
 - Candidate patch SHA-256: `50249759f9d8ba43c837891ada46f578b6c65cb22d49a1ead8d5ba30ebbf6654` excluding `docs/change-release-ledger.md`
-- Commit SHA: not committed
+- Commit SHA: `99362e924e04fef4879e9028c7a3c2b1fef8772e`
 - Dependencies: none beyond the three selected units travelling together.
 - Required validation: `PASS` for the selected Root scope; evidence: Phase 1/2/3/5 and duplicate-claim targeted tests passed, backend build passed, frontend lint/build passed, focused frontend tests passed 25/25 and full frontend tests passed 250/250, Feature Registry and current-worktree ledger audits passed. `check:fast` did not complete only because this isolated Root worktree has no independent Mobile checkout; Mobile is outside this release scope and was not typechecked in this attempt.
 - Shared-hunk review: `PASS`; evidence: 144 zero-context non-ledger hunks are explicitly fingerprinted across the three selected CRLs, including shared settlement backend/web/Registry paths; no unselected release unit is staged.
 - Generated-file review: `PASS`; evidence: generated `backend/dist` drift was restored, `.next` remains ignored, and the staged candidate has no untracked files, `.env`, credential, token, database URL or local-cache path.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user instructed “提交三个” immediately after the three exact CRL IDs and the no-push boundary were stated.
 - Independent review: `GO for commit`; evidence: independent read-only reviewer freshly confirmed `origin/Dev@91adcf456a5eeea2443b01515a919e0922b78387`, the matching local HEAD/merge-base, all 29 staged paths / 144 non-ledger hunks, and candidate fingerprint `50249759f9d8ba43c837891ada46f578b6c65cb22d49a1ead8d5ba30ebbf6654`; the reviewer found no P0/P1, unselected path, generated-file, sensitive-information or production-write issue. One non-blocking P2 remains: `FeeRuleDrawer` derives GST visibility from the current personnel row while backend rule calculation resolves the profile at the selected effective date, so a historical/current GST-status mismatch can make the UI hide or show `price_basis` incorrectly; this requires a separate effective-date-aware UI/API change and cross-version regression test.
-- Action conclusion: `GO`; the exact reviewed candidate may be committed locally after the final pre-commit gate passes. Push, PR, merge, migration, deployment and production/device verification remain unauthorized.
+- Action conclusion: `GO`; the exact reviewed candidate was committed locally as `99362e924e04fef4879e9028c7a3c2b1fef8772e` after the final pre-commit gate passed. This ledger-only outcome receipt may be committed locally; push, PR, merge, migration, deployment and production/device verification remain unauthorized.
 
 ### Risks / Release Notes
 
