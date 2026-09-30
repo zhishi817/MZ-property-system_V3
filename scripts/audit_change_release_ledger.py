@@ -677,7 +677,16 @@ def line_range_is_within(
     if count == 0:
         return True
     end = start + count - 1
-    return any(start >= allowed_start and end <= allowed_end for allowed_start, allowed_end in allowed_ranges)
+    cursor = start
+    for allowed_start, allowed_end in sorted(allowed_ranges):
+        if allowed_end < cursor:
+            continue
+        if allowed_start > cursor:
+            return False
+        cursor = allowed_end + 1
+        if cursor > end:
+            return True
+    return False
 
 
 def staged_ledger_scope_issues(root: Path, selected_ids: frozenset[str]) -> list[str]:

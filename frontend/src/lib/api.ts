@@ -248,6 +248,12 @@ export async function getJSON<T>(path: string, options?: RequestJSONOptions): Pr
   return res.json() as Promise<T>
 }
 
+export async function getBlob(path: string, options?: RequestJSONOptions): Promise<Blob> {
+  const res = await fetchWithDevAuthRecovery(path, { cache: 'no-store', headers: authHeaders() }, options)
+  if (!res.ok) await parseErrorResponse(res)
+  return res.blob()
+}
+
 export async function postJSON<T>(path: string, body: any, options?: RequestJSONOptions): Promise<T> {
   const res = await fetchWithDevAuthRecovery(path, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) }, options)
   if (!res.ok) await parseErrorResponse(res)
