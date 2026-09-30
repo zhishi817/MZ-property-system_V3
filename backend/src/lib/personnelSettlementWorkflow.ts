@@ -13,6 +13,10 @@ import { ensurePersonnelSettlementDocument, listPersonnelSettlementDocuments } f
 import { isPersonnelSettlementPhase5SchemaReady } from './personnelSettlementPhase5Schema'
 import { emitNotificationEvent } from '../services/notificationEvents'
 import {
+  normalizePersonnelPaymentMethod,
+  personnelPaymentMethodRequiresBankDetails,
+} from './personnelSettlementPayment'
+import {
   listPersonnelClaimsWithEvidence,
   reviewPersonnelClaimInTransaction,
   submitPersonnelClaimInTransaction,
@@ -219,11 +223,14 @@ async function insertPersonnelSettlementLine(client: Queryable, settlementId: st
 
 function sanitizePaymentSnapshot(snapshot: unknown, includeBankDetails: boolean) {
   const value = parseJsonObject(snapshot)
-  if (includeBankDetails) return value
+  const paymentMethod = normalizePersonnelPaymentMethod(value.payment_method)
+  if (includeBankDetails) return { ...value, payment_method: paymentMethod }
   const accountNumber = cleanText(value.bank_account_number).replace(/\D/g, '')
   const bsb = cleanText(value.bank_bsb).replace(/\D/g, '')
   return {
-    bank_details_complete: Boolean(value.bank_account_name && bsb && accountNumber),
+    payment_method: paymentMethod,
+    bank_details_complete: !personnelPaymentMethodRequiresBankDetails(paymentMethod)
+      || Boolean(value.bank_account_name && bsb && accountNumber),
     bank_account_name: value.bank_account_name ? '已登记' : null,
     bank_bsb_masked: bsb ? `•••-${bsb.slice(-3)}` : null,
     bank_account_masked: accountNumber ? `•••• ${accountNumber.slice(-4)}` : null,
@@ -396,14 +403,26 @@ export async function getPersonnelWeeklySettlement(input: {
     [input.settlementId],
   )
   const settlement = serializeSettlement(row, !!input.includeBankDetails)
-  const paymentDestinationPreview = input.includeBankDetails
-    ? (settlement.payment_destination_snapshot || (await executor.query(
+  const frozenPaymentMethod = normalizePersonnelPaymentMethod(
+    parseJsonObject(settlement.payment_destination_snapshot).payment_method
+    || parseJsonObject(settlement.profile_snapshot).payment_method,
+  )
+  let paymentDestinationPreview: Record<string, unknown> | null = null
+  if (input.includeBankDetails) {
+    if (settlement.payment_destination_snapshot) {
+      paymentDestinationPreview = settlement.payment_destination_snapshot
+    } else if (personnelPaymentMethodRequiresBankDetails(frozenPaymentMethod)) {
+      const bank = (await executor.query(
         `SELECT bank_account_name, bank_bsb, bank_account_number
            FROM users
           WHERE id::text=$1`,
         [row.user_id],
-      )).rows?.[0] || null)
-    : null
+      )).rows?.[0] || {}
+      paymentDestinationPreview = { payment_method: frozenPaymentMethod, ...bank }
+    } else {
+      paymentDestinationPreview = { payment_method: frozenPaymentMethod }
+    }
+  }
   const phase5SchemaReady = await isPersonnelSettlementPhase5SchemaReady(executor)
   const documents = phase5SchemaReady
     ? await listPersonnelSettlementDocuments(input.settlementId, executor)
@@ -531,6 +550,7 @@ export async function generatePersonnelSettlementWeek(input: {
         supplier_business_name: profile.supplier_business_name,
         abn: profile.abn,
         gst_status: profile.gst_status,
+        payment_method: normalizePersonnelPaymentMethod(profile.payment_method),
         invoice_document_type: profile.invoice_document_type,
         currency: profile.currency,
         effective_from: profile.effective_from,
@@ -652,7 +672,11 @@ async function loadSettlementForUpdate(client: Queryable, settlementId: string) 
 
 async function assertSettlementReadyForConfirmation(client: Queryable, current: any, settlementId: string) {
   const profile = parseJsonObject(current.profile_snapshot)
-  if (!cleanText(profile.supplier_legal_name) || !cleanText(profile.abn)) throw new Error('settlement_supplier_profile_incomplete')
+  const supplierAbn = cleanText(profile.abn).replace(/\D/g, '')
+  if (!cleanText(profile.supplier_legal_name)) throw new Error('settlement_supplier_profile_incomplete')
+  if (profile.gst_status === 'registered' && supplierAbn.length !== 11) {
+    throw new Error('settlement_supplier_profile_incomplete')
+  }
   if (profile.gst_status === 'unconfirmed') throw new Error('settlement_gst_unconfirmed')
   const lineCount = await client.query('SELECT COUNT(*)::int AS count FROM personnel_settlement_lines WHERE settlement_id=$1', [settlementId])
   if (Number(lineCount.rows?.[0]?.count || 0) < 1) throw new Error('settlement_lines_required')
@@ -697,6 +721,7 @@ function buildProfileSnapshot(profile: any, userId: string) {
     supplier_business_name: cleanText(profile?.supplier_business_name) || null,
     abn: cleanText(profile?.abn) || null,
     gst_status: cleanText(profile?.gst_status) || 'unconfirmed',
+    payment_method: normalizePersonnelPaymentMethod(profile?.payment_method),
     invoice_document_type: cleanText(profile?.invoice_document_type) || null,
     currency: cleanText(profile?.currency) || 'AUD',
     effective_from: cleanText(profile?.effective_from) || null,
@@ -1490,21 +1515,25 @@ export async function confirmPersonnelSettlementPaid(input: {
     if (input.expectedPaymentAmountCents != null && input.expectedPaymentAmountCents !== totalCents) {
       throw new Error('payment_amount_mismatch')
     }
-    const bankResult = await client.query(
-      `SELECT bank_account_name, bank_bsb, bank_account_number
-         FROM users WHERE id::text=$1 FOR UPDATE`,
-      [current.user_id],
-    )
+    const profile = parseJsonObject(current.profile_snapshot)
+    const paymentMethod = normalizePersonnelPaymentMethod(profile.payment_method)
     const existingPaymentDestination = parseJsonObject(current.payment_destination_snapshot)
-    const frozenBankComplete = cleanText(existingPaymentDestination.bank_account_name)
-      && cleanText(existingPaymentDestination.bank_bsb)
-      && cleanText(existingPaymentDestination.bank_account_number)
-    const bank = frozenBankComplete ? existingPaymentDestination : bankResult.rows?.[0]
-    if (!cleanText(bank?.bank_account_name) || !cleanText(bank?.bank_bsb) || !cleanText(bank?.bank_account_number)) {
-      throw new Error('settlement_bank_details_incomplete')
+    let bank: Record<string, unknown> = {}
+    if (personnelPaymentMethodRequiresBankDetails(paymentMethod)) {
+      const bankResult = await client.query(
+        `SELECT bank_account_name, bank_bsb, bank_account_number
+           FROM users WHERE id::text=$1 FOR UPDATE`,
+        [current.user_id],
+      )
+      const frozenBankComplete = cleanText(existingPaymentDestination.bank_account_name)
+        && cleanText(existingPaymentDestination.bank_bsb)
+        && cleanText(existingPaymentDestination.bank_account_number)
+      bank = frozenBankComplete ? existingPaymentDestination : bankResult.rows?.[0]
+      if (!cleanText(bank?.bank_account_name) || !cleanText(bank?.bank_bsb) || !cleanText(bank?.bank_account_number)) {
+        throw new Error('settlement_bank_details_incomplete')
+      }
     }
     const expenseId = cleanText(current.company_expense_id) || randomUUID()
-    const profile = parseJsonObject(current.profile_snapshot)
     const supplierName = cleanText(profile.supplier_business_name) || cleanText(profile.supplier_legal_name) || String(current.user_id)
     const amount = (totalCents / 100).toFixed(2)
     const expenseResult = await client.query(
@@ -1532,9 +1561,12 @@ export async function confirmPersonnelSettlementPaid(input: {
     )
     if (!expenseResult.rowCount) throw new Error('company_expense_manual_override')
     const snapshot = {
-      bank_account_name: cleanText(bank.bank_account_name),
-      bank_bsb: cleanText(bank.bank_bsb),
-      bank_account_number: cleanText(bank.bank_account_number),
+      payment_method: paymentMethod,
+      ...(personnelPaymentMethodRequiresBankDetails(paymentMethod) ? {
+        bank_account_name: cleanText(bank.bank_account_name),
+        bank_bsb: cleanText(bank.bank_bsb),
+        bank_account_number: cleanText(bank.bank_account_number),
+      } : {}),
       captured_at: new Date().toISOString(),
       payment_amount_cents: totalCents,
       payment_date: payment.payment_date,

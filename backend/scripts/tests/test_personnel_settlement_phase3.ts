@@ -11,6 +11,10 @@ import {
   validatePersonnelSettlementPayment,
 } from '../../src/lib/personnelSettlementWorkflow'
 import {
+  normalizePersonnelPaymentMethod,
+  personnelPaymentMethodRequiresBankDetails,
+} from '../../src/lib/personnelSettlementPayment'
+import {
   buildPersonnelClaimOptions,
   calculatePersonnelClaimEstimate,
   personnelClaimOptionAllowsClaim,
@@ -333,6 +337,8 @@ assert.deepStrictEqual(validatePersonnelSettlementPayment({
 assert.throws(() => validatePersonnelSettlementPayment({
   payment_date: '2026-02-30',
 }), /invalid_payment_date/)
+assert.strictEqual(normalizePersonnelPaymentMethod(null), 'bank_transfer')
+assert.strictEqual(personnelPaymentMethodRequiresBankDetails('cash'), false)
 
 assert.match(router, /router\.post\('\/my-claims\/:claimId\/submit'/)
 assert.match(router, /router\.get\('\/my-claim-options'/)
@@ -353,6 +359,8 @@ assert.match(workflow, /'cleaning_expense','personnel_settlement'/)
 assert.match(workflow, /SET status='paid', finance_reviewed_by=/)
 assert.match(workflow, /company_expenses\.manual_override/)
 assert.match(workflow, /frozenBankComplete \? existingPaymentDestination : bankResult\.rows/)
+assert.match(workflow, /personnelPaymentMethodRequiresBankDetails\(paymentMethod\)/)
+assert.match(workflow, /payment_method: paymentMethod/)
 assert.match(workflow, /company_expense_paid_lock/)
 const confirmPaidFlow = workflow.slice(workflow.indexOf('export async function confirmPersonnelSettlementPaid'))
 assert.doesNotMatch(confirmPaidFlow, /input\.payment_reference|payment_reference=\$/)
@@ -360,6 +368,8 @@ assert.match(crudRouter, /resource === 'company_expenses'[\s\S]*ref_type \|\| ''
 assert.match(claims, /personnelClaimRequiresEvidence\(current\.claim_type\)[\s\S]*claim_evidence_required/)
 assert.match(claims, /manual_amount_not_allowed_for_claim_type/)
 assert.match(claims, /reviewPersonnelClaimInTransaction[\s\S]*estimatePersonnelClaimForReview[\s\S]*calculation_preview/)
+assert.match(claims, /reviewPersonnelClaimInTransaction[\s\S]*assertNoApprovedPersonnelClaimDuplicate\(current, client\)/)
+assert.match(router, /duplicate_approved_claim/)
 assert.match(claims, /createPersonnelClaim[\s\S]*assertPersonnelSelfServiceClaimAllowed/)
 assert.match(claims, /updatePersonnelClaim[\s\S]*assertPersonnelSelfServiceClaimAllowed/)
 assert.match(claims, /submitPersonnelClaimInTransaction[\s\S]*assertPersonnelSelfServiceClaimAllowed/)
@@ -397,7 +407,8 @@ assert.match(page, /label: '周结算'/)
 assert.match(page, /label: '工作量反馈'/)
 assert.match(weeklyPanel, /确认已付款/)
 assert.match(weeklyPanel, /本次付款金额/)
-assert.match(weeklyPanel, /请先在银行完成转账/)
+assert.match(weeklyPanel, /请先完成\$\{PERSONNEL_PAYMENT_METHOD_LABELS\[paymentMethod\]\}/)
+assert.match(weeklyPanel, /结算账面金额仍以 AUD 记录/)
 assert.doesNotMatch(weeklyPanel, /银行转账编号|转账编号|payment_reference/)
 assert.doesNotMatch(weeklyPanel, /付款金额（AUD）/)
 assert.match(weeklyPanel, /确认并重新发起/)
@@ -411,6 +422,8 @@ assert.match(claimsPanel, /证明照片仅通过登录鉴权接口显示/)
 assert.match(claimsPanel, /系统自动计算/)
 assert.match(claimsPanel, /确认计入金额/)
 assert.match(claimsPanel, /确认并计入/)
+assert.match(claimsPanel, /已有内容完全相同的反馈确认计入/)
+assert.match(weeklyPanel, /已有内容完全相同的反馈确认计入/)
 assert.doesNotMatch(claimsPanel, /直接确认金额（AUD，可选）/)
 assert.ok(claimsPanel.includes("if (mode === 'time_range') return `${rate}/小时 × ${values.approved_duration_minutes || 0}分钟 ÷ 60`"))
 assert.doesNotMatch(claimsPanel, /new_property_task'\) return `\$\{rate\}\/次/)

@@ -18,6 +18,7 @@ import {
   feeRuleEffectiveDateLockMessage,
   feeRuleHistoricalSaveWarning,
   feeRuleItemsValidationError,
+  feeRulePriceBasisForGstStatus,
   feeRuleSaveErrorMessage,
   isFeeRuleEffectiveDateLocked,
   type CleaningPropertyType,
@@ -70,6 +71,7 @@ export default function FeeRuleDrawer(props: {
   userId: string | null
   personName: string
   personType: string
+  gstStatus: 'unconfirmed' | 'registered' | 'not_registered'
   onClose: () => void
   onSaved: () => void | Promise<void>
 }) {
@@ -118,11 +120,11 @@ export default function FeeRuleDrawer(props: {
     form.setFieldsValue({
       name: rule?.name || `${props.personName} 费用规则`,
       effective_date: dayjs(effectiveDate || rule?.effective_from || undefined),
-      price_basis: rule?.price_basis || 'exclusive_gst',
+      price_basis: feeRulePriceBasisForGstStatus(props.gstStatus, rule?.price_basis || 'exclusive_gst'),
       notes: rule?.notes || '',
       items: formItems,
     })
-  }, [form, props.personName, props.personType])
+  }, [form, props.gstStatus, props.personName, props.personType])
 
   const resetForm = useCallback((rules: FeeRule[], preferredEffectiveDate?: string) => {
     const current = (preferredEffectiveDate
@@ -163,7 +165,7 @@ export default function FeeRuleDrawer(props: {
       const saved = await postJSON<FeeRule>(`/finance/settlements/profiles/${encodeURIComponent(props.userId)}/rules`, {
         name: values.name.trim(),
         effective_date: values.effective_date.format('YYYY-MM-DD'),
-        price_basis: values.price_basis,
+        price_basis: feeRulePriceBasisForGstStatus(props.gstStatus, values.price_basis),
         notes: values.notes?.trim() || null,
         items: values.items.map((item, index) => {
           if (!item.component_type) throw new Error('invalid_rule_component_type')
@@ -242,7 +244,9 @@ export default function FeeRuleDrawer(props: {
         showIcon
         type="info"
         message="每人可配置一个规则版本，版本内可组合多种计算方式。修改生效日期会保留旧版本；同一天再次保存会修正当天版本。"
-        description="清洁必须按 6 种房型分别填写单价。未含 GST：已注册 GST 的人员会在单价上另加 10%；已含 GST：系统从总额中拆分 GST。"
+        description={props.gstStatus === 'not_registered'
+          ? '清洁必须按 6 种房型分别填写单价。该人员未注册 GST，单价直接作为应付金额，GST 固定为 $0。'
+          : '清洁必须按 6 种房型分别填写单价。未含 GST：已注册 GST 的人员会在单价上另加 10%；已含 GST：系统从总额中拆分 GST。'}
         style={{ marginBottom: 16 }}
       />
       {legacyFlatRateCents != null ? (
@@ -287,7 +291,13 @@ export default function FeeRuleDrawer(props: {
               disabledDate={(value) => isFeeRuleEffectiveDateLocked(value.format('YYYY-MM-DD'), effectiveDateConstraints)}
               style={{ width: '100%' }}
             /></Form.Item>
-            <Form.Item label="单价口径" name="price_basis" rules={[{ required: true, message: '请选择单价口径' }]} style={{ flex: 2 }}><Select options={Object.entries(PRICE_BASIS_LABELS).map(([value, label]) => ({ value, label }))} /></Form.Item>
+            {props.gstStatus === 'not_registered' ? (
+              <Form.Item label="单价口径" style={{ flex: 2 }}>
+                <Input disabled value="不适用（未注册 GST，GST 为 $0）" />
+              </Form.Item>
+            ) : (
+              <Form.Item label="单价口径" name="price_basis" rules={[{ required: true, message: '请选择单价口径' }]} style={{ flex: 2 }}><Select options={Object.entries(PRICE_BASIS_LABELS).map(([value, label]) => ({ value, label }))} /></Form.Item>
+            )}
           </Space>
           {effectiveDateConstraints?.locked_through ? (
             <Alert

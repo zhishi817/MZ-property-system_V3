@@ -1,6 +1,11 @@
 import { randomUUID } from 'crypto'
 import { pgPool, pgRunInTransaction } from '../dbAdapter'
 import { assertPersonnelSettlementSchemaReady } from './personnelSettlementSchema'
+import {
+  isPersonnelPaymentMethod,
+  normalizePersonnelPaymentMethod,
+  type PersonnelPaymentMethod,
+} from './personnelSettlementPayment'
 
 export type PersonnelGstStatus = 'unconfirmed' | 'registered' | 'not_registered'
 export type PersonnelType = 'cleaner' | 'inspector' | 'warehouse' | 'trial' | 'external' | 'mixed'
@@ -12,6 +17,7 @@ export type PersonnelProfilePatch = {
   supplier_business_name?: string | null
   personal_abn?: string | null
   gst_status?: PersonnelGstStatus
+  payment_method?: PersonnelPaymentMethod
   bank_account_name?: string | null
   bank_bsb?: string | null
   bank_account_number?: string | null
@@ -99,6 +105,7 @@ function safeAuditSnapshot(value: any) {
     personal_abn: value?.abn || value?.personal_abn || null,
     gst_status: value?.gst_status || 'unconfirmed',
     gst_effective_from: value?.gst_effective_from || null,
+    payment_method: normalizePersonnelPaymentMethod(value?.payment_method),
     bank_account_name: value?.bank_account_name || null,
     bank_details_complete: !!(
       cleanText(value?.bank_account_name)
@@ -133,6 +140,9 @@ export function validatePersonnelProfilePatch(input: {
   const accountNumber = input.patch.bank_account_number === undefined
     ? undefined
     : normalizeBankAccountNumber(input.patch.bank_account_number) || null
+  const paymentMethod = input.patch.payment_method === undefined
+    ? undefined
+    : input.patch.payment_method
 
   if (legalName && legalName.length > 120) throw new Error('legal_name_too_long')
   if (businessName && businessName.length > 160) throw new Error('supplier_business_name_too_long')
@@ -140,12 +150,16 @@ export function validatePersonnelProfilePatch(input: {
   if (bankAccountName && bankAccountName.length > 120) throw new Error('bank_account_name_too_long')
   if (bsb && bsb.length !== 6) throw new Error('invalid_bsb')
   if (accountNumber && !/^\d{4,12}$/.test(accountNumber)) throw new Error('invalid_bank_account_number')
+  if (paymentMethod !== undefined && !isPersonnelPaymentMethod(paymentMethod)) {
+    throw new Error('invalid_payment_method')
+  }
 
   return {
     ...input.patch,
     legal_name: legalName,
     supplier_business_name: businessName,
     personal_abn: abn,
+    payment_method: paymentMethod,
     bank_account_name: bankAccountName,
     bank_bsb: bsb,
     bank_account_number: accountNumber,
@@ -168,6 +182,7 @@ function profileResponse(row: any, includeBankDetails: boolean) {
     personal_abn: row.abn || row.personal_abn || null,
     gst_status: row.gst_status || 'unconfirmed',
     gst_effective_from: row.gst_effective_from || null,
+    payment_method: normalizePersonnelPaymentMethod(row.payment_method),
     effective_from: row.effective_from || null,
     effective_to: row.effective_to || null,
     settlement_enabled: !!row.settlement_enabled,
@@ -192,7 +207,7 @@ const PROFILE_SELECT = `
          u.photo_id_url,
          p.id AS profile_id, p.effective_from::text, p.effective_to::text,
          p.settlement_enabled, p.person_type, p.supplier_legal_name,
-         p.supplier_business_name, p.abn, p.gst_status,
+         p.supplier_business_name, p.abn, p.gst_status, p.payment_method,
          p.gst_effective_from::text, p.updated_at::text,
          r.name AS fee_rule_name, r.price_basis AS fee_rule_price_basis,
          r.effective_from::text AS fee_rule_effective_from
@@ -308,6 +323,7 @@ export async function savePersonnelSettlementProfile(input: {
       gst_effective_from: (patch.gst_status || current?.gst_status || 'unconfirmed') === 'unconfirmed'
         ? null
         : input.effectiveDate,
+      payment_method: patch.payment_method || normalizePersonnelPaymentMethod(current?.payment_method),
       bank_account_name: patch.bank_account_name === undefined
         ? nullableText(user.bank_account_name)
         : patch.bank_account_name,
@@ -319,7 +335,6 @@ export async function savePersonnelSettlementProfile(input: {
 
     if (merged.abn && !isValidAustralianAbn(merged.abn)) throw new Error('invalid_abn')
     if (merged.settlement_enabled && !merged.supplier_legal_name) throw new Error('legal_name_required')
-    if (merged.settlement_enabled && !merged.abn) throw new Error('abn_required')
     if (merged.gst_status === 'registered' && !merged.abn) throw new Error('abn_required_for_gst')
 
     const before = safeAuditSnapshot({ ...current, ...user })
@@ -346,12 +361,12 @@ export async function savePersonnelSettlementProfile(input: {
         `UPDATE personnel_settlement_profiles
             SET settlement_enabled=$1, person_type=$2, supplier_legal_name=$3,
                 supplier_business_name=$4, abn=$5, gst_status=$6,
-                gst_effective_from=$7::date, updated_by=$8, updated_at=now()
-          WHERE id=$9`,
+                gst_effective_from=$7::date, payment_method=$8, updated_by=$9, updated_at=now()
+          WHERE id=$10`,
         [
           merged.settlement_enabled, merged.person_type, merged.supplier_legal_name,
           merged.supplier_business_name, merged.abn, merged.gst_status,
-          merged.gst_effective_from, input.actorUserId, profileId,
+          merged.gst_effective_from, merged.payment_method, input.actorUserId, profileId,
         ],
       )
     } else {
@@ -367,14 +382,14 @@ export async function savePersonnelSettlementProfile(input: {
         `INSERT INTO personnel_settlement_profiles (
            id, user_id, effective_from, effective_to, settlement_enabled, person_type,
            supplier_legal_name, supplier_business_name, abn, gst_status,
-           gst_effective_from, created_by, updated_by
-         ) VALUES ($1,$2,$3::date,$4::date,$5,$6,$7,$8,$9,$10,$11::date,$12,$12)`,
+           gst_effective_from, payment_method, created_by, updated_by
+         ) VALUES ($1,$2,$3::date,$4::date,$5,$6,$7,$8,$9,$10,$11::date,$12,$13,$13)`,
         [
           profileId, input.userId, input.effectiveDate,
           next ? addDateOnlyDays(String(next.effective_from), -1) : null,
           merged.settlement_enabled, merged.person_type, merged.supplier_legal_name,
           merged.supplier_business_name, merged.abn, merged.gst_status,
-          merged.gst_effective_from, input.actorUserId,
+          merged.gst_effective_from, merged.payment_method, input.actorUserId,
         ],
       )
     }

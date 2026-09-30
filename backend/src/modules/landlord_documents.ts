@@ -8,7 +8,12 @@ import { requireAnyPerm } from '../auth'
 import { addAudit } from '../store'
 import { hasPg, pgPool, pgRunInTransaction } from '../dbAdapter'
 import { ensureManagementFeeRulesTable, syncLandlordCachedManagementFeeRate } from '../lib/managementFeeRules'
-import { generateLandlordDocumentPdf, type LandlordDocumentType } from '../lib/landlordDocumentPdf'
+import {
+  AGENCY_AUTHORITY_COMPANY_ADDRESS,
+  AGENCY_AUTHORITY_TEMPLATE_VERSION,
+  generateLandlordDocumentPdf,
+  type LandlordDocumentType,
+} from '../lib/landlordDocumentPdf'
 
 export const router = Router()
 export const publicRouter = Router()
@@ -22,7 +27,6 @@ const VIEW_PERMS = ['landlord.manage', 'landlords.view', 'landlords.write']
 const WRITE_PERMS = ['landlord.manage']
 const TYPES = ['agency_authority', 'property_service_agreement'] as const
 const STATUSES = ['draft', 'sent_for_signature', 'signed', 'archived'] as const
-const AGENCY_AUTHORITY_TEMPLATE_VERSION = 'authorisation-detail-v7-page-filled-2026-05-18'
 const SERVICE_AGREEMENT_TEMPLATE_VERSION = 'service-agreement-v6-2026-07-07'
 const SERVICE_VARIANTS = ['management_standard', 'management_sale', 'leased_to_mz', 'leased_direct_to_mz'] as const
 const ATTACHMENT_CATEGORIES = ['agency_contract', 'condition_report'] as const
@@ -356,6 +360,7 @@ function buildBlankTemplateFields(type: LandlordDocumentType, variant?: ServiceA
       property_address: '',
       termination_notice_days: '60',
       repair_approval_limit: '300',
+      mz_company_address: AGENCY_AUTHORITY_COMPANY_ADDRESS,
       mz_agent_name: 'Ming Xue',
       mz_contact_phone: '0434 782 499',
       mz_contact_email: 'info@mzproperty.com.au',
@@ -464,7 +469,11 @@ function parseFields(raw: any): Record<string, any> {
 function withDocumentTemplateVersion(type: any, fields: Record<string, any>) {
   const base = ensureMzSignedFields(fields)
   if (type === 'agency_authority') {
-    return { ...base, agency_authority_template_version: AGENCY_AUTHORITY_TEMPLATE_VERSION }
+    return {
+      ...base,
+      mz_company_address: AGENCY_AUTHORITY_COMPANY_ADDRESS,
+      agency_authority_template_version: AGENCY_AUTHORITY_TEMPLATE_VERSION,
+    }
   }
   const next = type === 'property_service_agreement' ? applyServiceAgreementVariantDefaults(base) : base
   if (type === 'property_service_agreement' && !isLeasedToMzVariant(next)) {

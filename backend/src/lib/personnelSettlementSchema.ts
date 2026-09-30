@@ -1,6 +1,6 @@
 import { hasPg, pgPool } from '../dbAdapter'
 
-export const PERSONNEL_SETTLEMENT_SCHEMA_MIGRATION = '20260910_personnel_settlement_phase1'
+export const PERSONNEL_SETTLEMENT_SCHEMA_MIGRATION = '20260930_personnel_settlement_payment_method'
 
 type SchemaStatus = 'pending' | 'ready' | 'not_ready'
 type SqlClient = { query: (sql: string, params?: any[]) => Promise<any> }
@@ -45,7 +45,7 @@ export async function assertPersonnelSettlementTablesReady(client: SqlClient) {
   assertPersonnelSettlementSchemaReady()
   try {
     await client.query(
-      `SELECT p.id, pa.id, r.id, i.id, c.id, e.id, b.id, s.id, l.id
+      `SELECT p.id, p.payment_method, pa.id, r.id, i.id, c.id, e.id, b.id, s.id, l.id
          FROM personnel_settlement_profiles p
          LEFT JOIN personnel_settlement_profile_audits pa ON false
          LEFT JOIN personnel_fee_rules r ON false

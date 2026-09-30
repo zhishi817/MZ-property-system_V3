@@ -7,9 +7,26 @@ export function isValidAustralianAbn(value: unknown) {
   return /^\d{11}$/.test(digits)
 }
 
+export const PERSONNEL_PAYMENT_METHOD_LABELS = {
+  bank_transfer: '银行转账',
+  cash: '现金支付',
+  foreign_currency: '外币支付',
+  other: '其他支付方式',
+} as const
+
+export type PersonnelPaymentMethod = keyof typeof PERSONNEL_PAYMENT_METHOD_LABELS
+
+export function normalizePersonnelPaymentMethod(value: unknown): PersonnelPaymentMethod {
+  const normalized = String(value ?? '').trim() as PersonnelPaymentMethod
+  return normalized in PERSONNEL_PAYMENT_METHOD_LABELS ? normalized : 'bank_transfer'
+}
+
+export function personnelPaymentMethodRequiresBankDetails(value: unknown) {
+  return normalizePersonnelPaymentMethod(value) === 'bank_transfer'
+}
+
 const PROFILE_SAVE_ERROR_LABELS: Record<string, string> = {
   invalid_abn: 'ABN 必须为 11 位数字，请核对后再保存。',
-  abn_required: '启用费用结算前，请填写 11 位 ABN。',
   abn_required_for_gst: '选择“已注册 GST”前，请填写 11 位 ABN。',
   effective_date_in_future: '结算资料生效日期不能晚于今天。',
   change_reason_required: '请填写资料修改原因。',
