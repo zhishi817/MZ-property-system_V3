@@ -43,6 +43,13 @@ function cleanText(value: unknown) {
   return String(value ?? '').trim()
 }
 
+export function canonicalizePersonnelFeeRulePriceBasis(
+  gstStatus: unknown,
+  priceBasis: SettlementPriceBasis,
+): SettlementPriceBasis {
+  return cleanText(gstStatus) === 'not_registered' ? 'exclusive_gst' : priceBasis
+}
+
 function nullableText(value: unknown) {
   const normalized = cleanText(value)
   return normalized || null
@@ -223,10 +230,28 @@ export async function savePersonnelFeeRule(input: {
 }) {
   assertPersonnelSettlementSchemaReady()
   if (!pgPool) throw new Error('pg_required')
-  const rule = validatePersonnelFeeRuleInput(input.rule)
+  const validatedRule = validatePersonnelFeeRuleInput(input.rule)
   const ruleId = await pgRunInTransaction(async (client) => {
     const user = await client.query('SELECT id FROM users WHERE id::text=$1 FOR UPDATE', [input.userId])
     if (!user.rowCount) throw new Error('user_not_found')
+
+    const profileResult = await client.query(
+      `SELECT gst_status
+         FROM personnel_settlement_profiles
+        WHERE user_id=$1
+          AND effective_from <= $2::date
+          AND (effective_to IS NULL OR effective_to >= $2::date)
+        ORDER BY effective_from DESC, updated_at DESC
+        LIMIT 1`,
+      [input.userId, validatedRule.effective_date],
+    )
+    const rule = {
+      ...validatedRule,
+      price_basis: canonicalizePersonnelFeeRulePriceBasis(
+        profileResult.rows?.[0]?.gst_status,
+        validatedRule.price_basis,
+      ),
+    }
 
     const locked = await client.query(RULE_EFFECTIVE_DATE_LOCK_SELECT, [input.userId, ['finance_approved', 'paid']])
     const constraint = buildPersonnelFeeRuleEffectiveDateConstraint(locked.rows?.[0]?.locked_through)

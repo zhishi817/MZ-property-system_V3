@@ -1,5 +1,5 @@
 export const PERSONNEL_SETTLEMENT_TIMEZONE = 'Australia/Melbourne'
-export const PERSONNEL_SETTLEMENT_CALCULATION_VERSION = 'phase6-room-type-assignment-v2'
+export const PERSONNEL_SETTLEMENT_CALCULATION_VERSION = 'phase7-checkout-cleaning-v1'
 
 export const CLEANING_PROPERTY_TYPES = [
   '一房一卫',

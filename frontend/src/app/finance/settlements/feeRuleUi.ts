@@ -40,6 +40,19 @@ export const PRICE_BASIS_LABELS = {
 
 export type FeePriceBasis = keyof typeof PRICE_BASIS_LABELS
 
+export function feeRulePriceBasisForGstStatus(
+  gstStatus: unknown,
+  priceBasis: FeePriceBasis = 'exclusive_gst',
+): FeePriceBasis {
+  return gstStatus === 'not_registered' ? 'exclusive_gst' : priceBasis
+}
+
+export function feeRulePriceBasisLabel(gstStatus: unknown, priceBasis: FeePriceBasis) {
+  return gstStatus === 'not_registered'
+    ? '不适用（未注册 GST，GST 为 $0）'
+    : PRICE_BASIS_LABELS[priceBasis]
+}
+
 export type FeeRuleEffectiveDateConstraint = {
   locked_through: string | null
   earliest_effective_date: string | null
