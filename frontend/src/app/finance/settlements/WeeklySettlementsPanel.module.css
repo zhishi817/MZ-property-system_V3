@@ -1,0 +1,364 @@
+.disputeModal :global(.ant-modal-title) {
+  font-size: 18px;
+  line-height: 28px;
+}
+
+.disputeModal :global(.ant-modal-footer) {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.paymentModal :global(.ant-modal-title) {
+  font-size: 18px;
+  line-height: 28px;
+}
+
+.paymentModal :global(.ant-modal-footer) {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.paymentSummary {
+  margin-bottom: 16px;
+}
+
+.paymentAmountBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 14px;
+  padding: 16px 18px;
+  border: 1px solid #bae0ff;
+  border-radius: 8px;
+  background: #e6f4ff;
+}
+
+.paymentAmountValue {
+  color: #0052d9;
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 36px;
+}
+
+.disputeTitleTag {
+  margin-inline-end: 0;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.disputeSummary {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(260px, 1.5fr) minmax(160px, 0.8fr);
+  gap: 0;
+  margin-bottom: 16px;
+  padding: 16px 18px;
+  border-radius: 8px;
+  background: #f5f7fa;
+}
+
+.summaryItem {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 18px;
+  border-right: 1px solid #e5e7eb;
+}
+
+.summaryItem:first-child {
+  padding-left: 0;
+}
+
+.summaryItem:last-child {
+  padding-right: 0;
+  border-right: 0;
+}
+
+.summaryAmount {
+  align-items: flex-end;
+  text-align: right;
+}
+
+.summaryAmountValue {
+  color: #0052d9;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 32px;
+}
+
+.disputeReason {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+  padding: 11px 14px;
+  border: 1px solid #ffccc7;
+  border-radius: 8px;
+  background: #fff2f0;
+}
+
+.disputeReason > :global(.anticon) {
+  color: #ff4d4f;
+}
+
+.sectionHeading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 18px 0 12px;
+}
+
+.sectionHeading :global(.ant-typography) {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.sectionHeading > span {
+  height: 1px;
+  flex: 1;
+  background: #f0f0f0;
+}
+
+.claimsSection {
+  display: flex;
+  margin-bottom: 18px;
+}
+
+.claimList {
+  overflow: hidden;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.claimGridHeader,
+.claimRow {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) minmax(90px, 0.65fr) minmax(110px, 0.9fr) 126px minmax(120px, 0.9fr);
+  column-gap: 14px;
+}
+
+.claimGridHeader {
+  padding: 10px 14px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f5f7fa;
+  color: #667085;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.claimRow {
+  align-items: start;
+  padding: 14px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.claimRow:last-child {
+  border-bottom: 0;
+}
+
+.claimIdentity,
+.claimCell {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.claimAmount {
+  font-size: 16px;
+}
+
+.claimSecondary {
+  font-size: 12px;
+}
+
+.evidenceItem {
+  display: flex;
+  width: 112px;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.evidenceItem :global(.ant-btn-link) {
+  height: auto;
+  padding: 4px 0 0;
+}
+
+.evidencePlaceholder {
+  display: grid;
+  width: 112px;
+  height: 76px;
+  place-items: center;
+  border-radius: 6px;
+  background: #f5f5f5;
+  color: #8c8c8c;
+  font-size: 12px;
+}
+
+.includedStatus {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: #389e0d;
+  font-weight: 600;
+  line-height: 22px;
+}
+
+.includedStatus > :global(.anticon) {
+  margin-top: 3px;
+}
+
+.claimActions {
+  grid-column: 1 / -1;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.decisionGroup {
+  display: flex;
+}
+
+.decisionGroup :global(.ant-radio-button-wrapper) {
+  min-width: 170px;
+  text-align: center;
+}
+
+.reissueSummary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 14px 18px;
+  border: 1px solid #bae0ff;
+  border-radius: 8px;
+  background: #e6f4ff;
+}
+
+.reissueSummary > div:first-child,
+.reissueAmount {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.reissueAmount {
+  min-width: 128px;
+  align-items: flex-end;
+  padding-left: 18px;
+  border-left: 1px solid #91caff;
+  text-align: right;
+}
+
+.reissueAmount :global(.ant-typography):last-child {
+  color: #0052d9;
+  font-size: 24px;
+  line-height: 32px;
+}
+
+.reissueHint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: #667085;
+  font-size: 13px;
+}
+
+@media (max-width: 767px) {
+  .disputeModal {
+    max-width: calc(100vw - 24px);
+    margin: 12px auto;
+  }
+
+  .disputeSummary {
+    grid-template-columns: 1fr;
+    padding: 14px;
+  }
+
+  .summaryItem,
+  .summaryItem:first-child,
+  .summaryItem:last-child {
+    padding: 10px 0;
+    border-right: 0;
+    border-bottom: 1px solid #e5e7eb;
+  }
+
+  .summaryItem:first-child {
+    padding-top: 0;
+  }
+
+  .summaryItem:last-child {
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+
+  .summaryAmount {
+    align-items: flex-start;
+    text-align: left;
+  }
+
+  .claimGridHeader {
+    display: none;
+  }
+
+  .claimRow {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    row-gap: 14px;
+  }
+
+  .claimIdentity,
+  .claimActions {
+    grid-column: 1 / -1;
+  }
+
+  .claimCell::before {
+    content: attr(data-label);
+    color: #667085;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .decisionGroup {
+    width: 100%;
+  }
+
+  .decisionGroup :global(.ant-radio-button-wrapper) {
+    min-width: 0;
+    flex: 1;
+    padding-inline: 10px;
+  }
+
+  .reissueSummary {
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 520px) {
+  .claimRow {
+    grid-template-columns: 1fr;
+  }
+
+  .claimIdentity,
+  .claimActions {
+    grid-column: auto;
+  }
+
+  .reissueSummary {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .reissueAmount {
+    width: 100%;
+    align-items: flex-start;
+    padding-top: 10px;
+    padding-left: 0;
+    border-top: 1px solid #91caff;
+    border-left: 0;
+    text-align: left;
+  }
+}

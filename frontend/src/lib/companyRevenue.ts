@@ -37,6 +37,20 @@ export type CompanyRevenueRow = {
   delete_source?: string | null
   status?: string | null
   calculation?: string | null
+  expense_breakdown?: CompanyExpenseBreakdownItem[]
+}
+
+export type CompanyExpenseBreakdownItem = {
+  component_type: string
+  label: string
+  subtotal: number
+  gst: number
+  total: number
+  count: number
+}
+
+export type CompanyExpenseBreakdownSummary = CompanyExpenseBreakdownItem & {
+  percentage: number
 }
 
 export type CompanyRevenueReport = {
@@ -54,6 +68,7 @@ export type CompanyRevenueReport = {
   }
   income_categories: CompanyRevenueCategorySummary[]
   expense_categories: CompanyRevenueCategorySummary[]
+  cleaning_expense_breakdown: CompanyExpenseBreakdownSummary[]
   income_rows: CompanyRevenueRow[]
   expense_rows: CompanyRevenueRow[]
   warnings: Array<{
@@ -73,6 +88,7 @@ export const COMPANY_INCOME_CATEGORY_OPTIONS = [
 ]
 
 export const COMPANY_EXPENSE_CATEGORY_OPTIONS = [
+  { value: 'cleaning_expense', label: '清洁支出' },
   { value: 'office', label: '办公' },
   { value: 'bedding_fee', label: '床品费' },
   { value: 'office_rent', label: '办公室租金' },

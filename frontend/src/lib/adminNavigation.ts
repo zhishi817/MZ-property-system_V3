@@ -467,6 +467,19 @@ export const ADMIN_NAVIGATION: AdminNavNode[] = [
         ],
       },
       {
+        id: 'finance-personnel-settlements',
+        label: '费用结算',
+        href: '/finance/settlements',
+        visibleWhenAny: ['menu.finance.personnel_settlements.visible'],
+        rbacKey: 'menu.finance.personnel_settlements.visible',
+        actionPerms: [
+          'personnel_settlements.profiles.view',
+          'personnel_settlements.profiles.manage',
+          'personnel_settlements.bank.manage',
+          'personnel_settlements.rules.manage',
+        ],
+      },
+      {
         id: 'finance-invoices',
         label: '发票中心',
         href: '/finance/invoices',

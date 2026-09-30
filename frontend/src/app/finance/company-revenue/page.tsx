@@ -103,6 +103,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   cancel_fee: '#f6b73c',
   late_checkout: '#3d8bfd',
   other: '#9aa4b2',
+  cleaning_expense: '#ef5b5b',
   office: '#ff8a3d',
   bedding_fee: '#f7b731',
   office_rent: '#f04444',
@@ -786,6 +787,28 @@ export default function CompanyRevenuePage() {
                 />
               </div>
             </Card>
+            {report?.capabilities.can_view_expense && (report.cleaning_expense_breakdown || []).length ? (
+              <Card className={styles.cleaningBreakdownCard} title="清洁支出明细" loading={loading}>
+                <Table
+                  rowKey="component_type"
+                  size="small"
+                  pagination={false}
+                  dataSource={report.cleaning_expense_breakdown}
+                  columns={[
+                    { title: '费用内容', dataIndex: 'label' },
+                    { title: '数量', dataIndex: 'count', width: 90, align: 'right' },
+                    { title: '税前金额', dataIndex: 'subtotal', width: 130, align: 'right', render: (value) => `$${formatAmount(value)}` },
+                    { title: 'GST', dataIndex: 'gst', width: 120, align: 'right', render: (value) => `$${formatAmount(value)}` },
+                    { title: '总金额', dataIndex: 'total', width: 130, align: 'right', render: (value) => <strong>${formatAmount(value)}</strong> },
+                    { title: '占清洁支出', dataIndex: 'percentage', width: 130, align: 'right', render: (value) => `${Number(value || 0).toFixed(1)}%` },
+                  ]}
+                  scroll={{ x: 760 }}
+                />
+                <Typography.Paragraph type="secondary" className={styles.cleaningBreakdownHint}>
+                  清洁、检查、仓管、试工、编外合作和补贴等均归入“清洁支出”；本表只拆分内部构成，不会重复计入总支出。
+                </Typography.Paragraph>
+              </Card>
+            ) : null}
           </>
         ) : (
           <Card className={styles.detailsCard} loading={loading}>
@@ -955,6 +978,26 @@ export default function CompanyRevenuePage() {
                 </Descriptions.Item>
               ) : null}
             </Descriptions>
+
+            {detailRow.kind === 'expense' && (detailRow.expense_breakdown || []).length ? (
+              <>
+                <Divider orientation="left">清洁支出内部明细</Divider>
+                <Table
+                  rowKey="component_type"
+                  size="small"
+                  pagination={false}
+                  dataSource={detailRow.expense_breakdown}
+                  columns={[
+                    { title: '费用内容', dataIndex: 'label' },
+                    { title: '数量', dataIndex: 'count', width: 74, align: 'right' },
+                    { title: '税前', dataIndex: 'subtotal', width: 104, align: 'right', render: (value) => `$${formatAmount(value)}` },
+                    { title: 'GST', dataIndex: 'gst', width: 96, align: 'right', render: (value) => `$${formatAmount(value)}` },
+                    { title: '总额', dataIndex: 'total', width: 110, align: 'right', render: (value) => <strong>${formatAmount(value)}</strong> },
+                  ]}
+                  scroll={{ x: 560 }}
+                />
+              </>
+            ) : null}
 
             {detailRow.kind === 'expense' && receiptDetail ? (
               <>

@@ -210,11 +210,81 @@ router.get('/company-revenue/report', requireAnyPerm(companyRevenueViewPerms), a
     const orders = normalizeOrdersForMonthSegments(ordersResult.rows || [])
     const incomes = Array.isArray(incomesResult.rows) ? incomesResult.rows : []
     const expenses = Array.isArray(expensesResult.rows) ? expensesResult.rows : []
+    const personnelSettlementIds = Array.from(new Set<string>(expenses
+      .filter((row: any) => String(row?.ref_type || '') === 'personnel_weekly_settlement')
+      .map((row: any) => String(row?.ref_id || '').trim())
+      .filter(Boolean)))
+    const settlementBreakdownResult = personnelSettlementIds.length
+      ? await pgPool.query(
+          `SELECT line.settlement_id, line.component_type,
+                  COUNT(*)::int AS count,
+                  COALESCE(SUM(line.subtotal_cents),0)::text AS subtotal_cents,
+                  COALESCE(SUM(line.gst_cents),0)::text AS gst_cents,
+                  COALESCE(SUM(line.total_cents),0)::text AS total_cents,
+                  settlement.subtotal_cents::text AS settlement_subtotal_cents,
+                  settlement.gst_cents::text AS settlement_gst_cents,
+                  settlement.total_cents::text AS settlement_total_cents
+             FROM personnel_settlement_lines line
+             JOIN personnel_weekly_settlements settlement ON settlement.id=line.settlement_id
+            WHERE line.settlement_id=ANY($1::text[])
+            GROUP BY line.settlement_id, line.component_type,
+                     settlement.subtotal_cents, settlement.gst_cents, settlement.total_cents`,
+          [personnelSettlementIds],
+        ).catch(() => ({ rows: [] } as any))
+      : { rows: [] }
+    const settlementBreakdownById = new Map<string, Array<Record<string, unknown>>>()
+    const settlementTotalsById = new Map<string, { subtotal: number; gst: number; total: number }>()
+    for (const row of settlementBreakdownResult.rows || []) {
+      const settlementId = String(row.settlement_id || '')
+      const items = settlementBreakdownById.get(settlementId) || []
+      items.push({
+        component_type: String(row.component_type || ''),
+        count: Number(row.count || 0),
+        subtotal_cents: Number(row.subtotal_cents || 0),
+        gst_cents: Number(row.gst_cents || 0),
+        total_cents: Number(row.total_cents || 0),
+      })
+      settlementBreakdownById.set(settlementId, items)
+      settlementTotalsById.set(settlementId, {
+        subtotal: Number(row.settlement_subtotal_cents || 0),
+        gst: Number(row.settlement_gst_cents || 0),
+        total: Number(row.settlement_total_cents || 0),
+      })
+    }
+    for (const [settlementId, totals] of settlementTotalsById.entries()) {
+      const items = settlementBreakdownById.get(settlementId) || []
+      const lineTotals = items.reduce<{ subtotal: number; gst: number; total: number }>((sum, item: any) => ({
+        subtotal: sum.subtotal + Number(item.subtotal_cents || 0),
+        gst: sum.gst + Number(item.gst_cents || 0),
+        total: sum.total + Number(item.total_cents || 0),
+      }), { subtotal: 0, gst: 0, total: 0 })
+      const adjustment = {
+        subtotal: totals.subtotal - lineTotals.subtotal,
+        gst: totals.gst - lineTotals.gst,
+        total: totals.total - lineTotals.total,
+      }
+      if (adjustment.subtotal || adjustment.gst || adjustment.total) {
+        items.push({
+          component_type: 'finance_adjustment',
+          count: 1,
+          subtotal_cents: adjustment.subtotal,
+          gst_cents: adjustment.gst,
+          total_cents: adjustment.total,
+        })
+      }
+      settlementBreakdownById.set(settlementId, items)
+    }
+    const expensesWithBreakdown = expenses.map((row: any) => ({
+      ...row,
+      settlement_breakdown: String(row?.ref_type || '') === 'personnel_weekly_settlement'
+        ? (settlementBreakdownById.get(String(row?.ref_id || '')) || [])
+        : undefined,
+    }))
     const orderIds = orders.map((order: any) => String(order?.id || '')).filter(Boolean)
     const propertyIds = Array.from(new Set([
       ...orders.map((order: any) => String(order?.property_id || '')),
       ...incomes.map((row: any) => String(row?.property_id || '')),
-      ...expenses.map((row: any) => String(row?.property_id || '')),
+      ...expensesWithBreakdown.map((row: any) => String(row?.property_id || '')),
     ].filter(Boolean)))
 
     const [deductionsResult, propertiesResult] = await Promise.all([
@@ -272,7 +342,7 @@ router.get('/company-revenue/report', requireAnyPerm(companyRevenueViewPerms), a
       landlords,
       managementFeeRulesByLandlord,
       companyIncomes: incomes,
-      companyExpenses: expenses,
+      companyExpenses: expensesWithBreakdown,
       includeDeleted,
     })
 
@@ -291,6 +361,7 @@ router.get('/company-revenue/report', requireAnyPerm(companyRevenueViewPerms), a
       },
       income_categories: canViewIncome ? report.income_categories : [],
       expense_categories: canViewExpense ? report.expense_categories : [],
+      cleaning_expense_breakdown: canViewExpense ? report.cleaning_expense_breakdown : [],
       income_rows: canViewIncome ? report.income_rows : [],
       expense_rows: canViewExpense ? report.expense_rows : [],
       warnings: canViewIncome ? report.warnings : [],
