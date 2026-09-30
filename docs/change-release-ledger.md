@@ -205,7 +205,7 @@
 - Base: `origin/Dev@91adcf456a5eeea2443b01515a919e0922b78387`; fetched at `2026-09-30T12:26:16Z`
 - Candidate patch SHA-256: `50249759f9d8ba43c837891ada46f578b6c65cb22d49a1ead8d5ba30ebbf6654` excluding `docs/change-release-ledger.md`
 - Commit SHA: `99362e924e04fef4879e9028c7a3c2b1fef8772e`
-- Dependencies: none beyond the three selected units travelling together.
+- Dependencies: `none`
 - Required validation: `PASS` for the selected Root scope; evidence: Phase 1/2/3/5 and duplicate-claim targeted tests passed, backend build passed, frontend lint/build passed, focused frontend tests passed 25/25 and full frontend tests passed 250/250, Feature Registry and current-worktree ledger audits passed. `check:fast` did not complete only because this isolated Root worktree has no independent Mobile checkout; Mobile is outside this release scope and was not typechecked in this attempt.
 - Shared-hunk review: `PASS`; evidence: 144 zero-context non-ledger hunks are explicitly fingerprinted across the three selected CRLs, including shared settlement backend/web/Registry paths; no unselected release unit is staged.
 - Generated-file review: `PASS`; evidence: generated `backend/dist` drift was restored, `.next` remains ignored, and the staged candidate has no untracked files, `.env`, credential, token, database URL or local-cache path.
