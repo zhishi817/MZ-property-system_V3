@@ -2,8 +2,11 @@ import fs from 'fs'
 import path from 'path'
 import { describe, expect, it } from 'vitest'
 import {
+  PERSONNEL_PAYMENT_METHOD_LABELS,
   isValidAustralianAbn,
+  normalizePersonnelPaymentMethod,
   normalizeAustralianAbn,
+  personnelPaymentMethodRequiresBankDetails,
   personnelProfileSaveErrorMessage,
 } from './personnelProfileUi'
 
@@ -22,12 +25,21 @@ describe('personnel settlement profile UI', () => {
     expect(personnelProfileSaveErrorMessage(new Error('unexpected_error'))).toBe('unexpected_error')
   })
 
+  it('uses bank transfer for historical profiles and only requires bank details for that method', () => {
+    expect(normalizePersonnelPaymentMethod(undefined)).toBe('bank_transfer')
+    expect(PERSONNEL_PAYMENT_METHOD_LABELS.cash).toBe('现金支付')
+    expect(PERSONNEL_PAYMENT_METHOD_LABELS.foreign_currency).toBe('外币支付')
+    expect(PERSONNEL_PAYMENT_METHOD_LABELS.other).toBe('其他支付方式')
+    expect(personnelPaymentMethodRequiresBankDetails('bank_transfer')).toBe(true)
+    expect(personnelPaymentMethodRequiresBankDetails('cash')).toBe(false)
+  })
+
   it('distinguishes profile and fee-rule effective dates in the drawers', () => {
     const profilePage = fs.readFileSync(path.resolve(process.cwd(), 'src/app/finance/settlements/page.tsx'), 'utf8')
     const feeRuleDrawer = fs.readFileSync(path.resolve(process.cwd(), 'src/app/finance/settlements/FeeRuleDrawer.tsx'), 'utf8')
 
     expect(profilePage).toContain('label="结算资料生效日期"')
-    expect(profilePage).toContain('控制本页姓名、ABN、GST、人员类型、结算开关及银行资料从哪一天开始生效。')
+    expect(profilePage).toContain('控制本页姓名、ABN、GST、人员类型、付款方式、结算开关及银行资料从哪一天开始生效。')
     expect(feeRuleDrawer).toContain('label="费用规则生效日期"')
     expect(feeRuleDrawer).toContain('控制本页计费方式和单价从哪一天开始用于结算。')
   })
@@ -42,8 +54,20 @@ describe('personnel settlement profile UI', () => {
     expect(profilePage).toContain('当前生效')
     expect(profilePage).not.toContain('detailRuleHistory.map')
     expect(profilePage).toContain('生效期间：')
-    expect(profilePage).toContain('PRICE_BASIS_LABELS[detailCurrentRule.price_basis]')
+    expect(profilePage).toContain('feeRulePriceBasisLabel(selected.gst_status, detailCurrentRule.price_basis)')
     expect(profilePage).toContain('feeRuleItemLabel(item)')
+  })
+
+  it('keeps ABN and GST optional while enforcing registered-GST ABN and conditional bank fields', () => {
+    const profilePage = fs.readFileSync(path.resolve(process.cwd(), 'src/app/finance/settlements/page.tsx'), 'utf8')
+
+    expect(profilePage).toContain('GST 状态（可选）')
+    expect(profilePage).toContain('allowClear placeholder="可留空（未确认）"')
+    expect(profilePage).not.toContain("{ required: true, message: '请输入 ABN' }")
+    expect(profilePage).toContain("form.getFieldValue('gst_status') === 'registered'")
+    expect(profilePage).toContain('PERSONNEL_PAYMENT_METHOD_LABELS')
+    expect(profilePage).toContain('personnelPaymentMethodRequiresBankDetails(watchedPaymentMethod)')
+    expect(profilePage).toContain('原有银行资料会保留')
   })
 
   it('opens weekly settlements first and keeps the workflow tabs in priority order', () => {

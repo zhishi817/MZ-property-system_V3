@@ -19,13 +19,22 @@ import {
   listPersonnelSettlementProfiles,
   validatePersonnelProfilePatch,
 } from '../../src/lib/personnelSettlementProfiles'
+import {
+  normalizePersonnelPaymentMethod,
+  personnelPaymentMethodRequiresBankDetails,
+} from '../../src/lib/personnelSettlementPayment'
 
 const backendRoot = path.resolve(__dirname, '../..')
 const migration = fs.readFileSync(
   path.join(backendRoot, 'scripts/migrations/20260910_personnel_settlement_phase1.sql'),
   'utf8',
 )
+const paymentMethodMigration = fs.readFileSync(
+  path.join(backendRoot, 'scripts/migrations/20260930_personnel_settlement_payment_method.sql'),
+  'utf8',
+)
 const readiness = fs.readFileSync(path.join(backendRoot, 'src/lib/personnelSettlementSchema.ts'), 'utf8')
+const profilesSource = fs.readFileSync(path.join(backendRoot, 'src/lib/personnelSettlementProfiles.ts'), 'utf8')
 const router = fs.readFileSync(path.join(backendRoot, 'src/modules/personnel_settlements.ts'), 'utf8')
 const indexSource = fs.readFileSync(path.join(backendRoot, 'src/index.ts'), 'utf8')
 
@@ -51,6 +60,16 @@ assert.ok(
   'migration marker must be written after all owned DDL',
 )
 assert.match(migration, /COMMIT;\s*$/)
+assert.match(paymentMethodMigration, /^BEGIN;/)
+assert.match(paymentMethodMigration, /ADD COLUMN IF NOT EXISTS payment_method text NOT NULL DEFAULT 'bank_transfer'/)
+assert.match(paymentMethodMigration, /payment_method IN \('bank_transfer', 'cash', 'foreign_currency', 'other'\)/)
+assert.ok(
+  paymentMethodMigration.indexOf("VALUES ('20260930_personnel_settlement_payment_method')")
+    > paymentMethodMigration.indexOf('ADD CONSTRAINT personnel_settlement_profiles_payment_method_check'),
+  'payment-method marker must be written after its owned DDL',
+)
+assert.match(paymentMethodMigration, /COMMIT;\s*$/)
+assert.match(readiness, /20260930_personnel_settlement_payment_method/)
 assert.match(readiness, /SELECT 1 FROM schema_migrations WHERE version=\$1 LIMIT 1/)
 assert.doesNotMatch(readiness, /CREATE TABLE|ALTER TABLE|CREATE INDEX/i)
 assert.match(router, /router\.get\(\s*'\/preview'/)
@@ -64,6 +83,8 @@ const selfFieldsSource = router.slice(
 )
 assert.doesNotMatch(selfFieldsSource, /settlement_enabled|person_type/)
 assert.match(indexSource, /app\.use\('\/finance\/settlements', personnelSettlementsRouter\)/)
+assert.doesNotMatch(profilesSource, /settlement_enabled && !merged\.abn/)
+assert.match(profilesSource, /merged\.gst_status === 'registered' && !merged\.abn/)
 assert.ok(
   indexSource.indexOf("app.use('/finance/settlements', personnelSettlementsRouter)")
     < indexSource.indexOf("app.use('/finance', financeRouter)"),
@@ -80,6 +101,10 @@ assert.throws(() => buildSettlementPeriod('2026-02-30'), /week_start_must_be_mon
 assert.strictEqual(isValidAustralianAbn('53 004 085 616'), true)
 assert.strictEqual(isValidAustralianAbn('53 004 085 617'), true)
 assert.strictEqual(isValidAustralianAbn('1234'), false)
+assert.strictEqual(normalizePersonnelPaymentMethod(undefined), 'bank_transfer')
+assert.strictEqual(normalizePersonnelPaymentMethod('cash'), 'cash')
+assert.strictEqual(personnelPaymentMethodRequiresBankDetails('bank_transfer'), true)
+assert.strictEqual(personnelPaymentMethodRequiresBankDetails('foreign_currency'), false)
 assert.strictEqual(validatePersonnelProfilePatch({
   effectiveDate: '2026-09-10',
   source: 'mobile_self',
@@ -222,11 +247,13 @@ const previewAudits = [
   { ...baseAudit, audit_id: 'audit-conflict-cleaner', task_id: 'inspection-conflict', user_id: 'cleaner-1', performed_by_name: 'Cleaner One', action: 'submit_inspection', status_after: 'inspected' },
 ]
 const cleaningAssignments = [
-  { task_id: 'task-assigned', user_id: 'cleaner-1', user_name: 'Cleaner One', service_date: '2026-09-08', task_status: 'assigned', property_id: 'property-1', property_label: 'P-1', property_type: '一房一卫', task_type: 'checkout_cleaning' },
-  { task_id: 'task-assigned', user_id: 'cleaner-1', user_name: 'Cleaner One', service_date: '2026-09-08', task_status: 'assigned', property_id: 'property-1', property_label: 'P-1', property_type: '一房一卫', task_type: 'checkout_cleaning' },
-  { task_id: 'task-cancelled', user_id: 'cleaner-1', user_name: 'Cleaner One', service_date: '2026-09-09', task_status: 'cancelled', property_id: 'property-1', property_label: 'P-1', property_type: '一房一卫', task_type: 'checkout_cleaning' },
-  { task_id: 'task-canceled', user_id: 'cleaner-1', user_name: 'Cleaner One', service_date: '2026-09-09', task_status: 'canceled', property_id: 'property-1', property_label: 'P-1', property_type: '一房一卫', task_type: 'checkout_cleaning' },
-  { task_id: 'task-unknown-type', user_id: 'cleaner-1', user_name: 'Cleaner One', service_date: '2026-09-10', task_status: 'pending', property_id: 'property-unknown', property_label: 'P-X', property_type: null, task_type: 'checkout_cleaning' },
+  { task_id: 'task-assigned', user_id: 'cleaner-1', user_name: 'Cleaner One', service_date: '2026-09-08', task_status: 'assigned', property_id: 'property-1', property_label: 'P-1', property_type: '一房一卫', task_type: 'checkout_clean' },
+  { task_id: 'task-assigned', user_id: 'cleaner-1', user_name: 'Cleaner One', service_date: '2026-09-08', task_status: 'assigned', property_id: 'property-1', property_label: 'P-1', property_type: '一房一卫', task_type: 'checkout_clean' },
+  { task_id: 'task-checkin-pair', user_id: 'cleaner-1', user_name: 'Cleaner One', service_date: '2026-09-08', task_status: 'assigned', property_id: 'property-1', property_label: 'P-1', property_type: '一房一卫', task_type: 'checkin_clean' },
+  { task_id: 'task-stayover', user_id: 'cleaner-1', user_name: 'Cleaner One', service_date: '2026-09-08', task_status: 'assigned', property_id: 'property-1', property_label: 'P-1', property_type: '一房一卫', task_type: 'stayover_clean' },
+  { task_id: 'task-cancelled', user_id: 'cleaner-1', user_name: 'Cleaner One', service_date: '2026-09-09', task_status: 'cancelled', property_id: 'property-1', property_label: 'P-1', property_type: '一房一卫', task_type: 'checkout_clean' },
+  { task_id: 'task-canceled', user_id: 'cleaner-1', user_name: 'Cleaner One', service_date: '2026-09-09', task_status: 'canceled', property_id: 'property-1', property_label: 'P-1', property_type: '一房一卫', task_type: 'checkout_clean' },
+  { task_id: 'task-unknown-type', user_id: 'cleaner-1', user_name: 'Cleaner One', service_date: '2026-09-10', task_status: 'pending', property_id: 'property-unknown', property_label: 'P-X', property_type: null, task_type: 'checkout_clean' },
 ]
 const claims = [
   { id: 'claim-warehouse', submitter_user_id: 'warehouse-1', service_date: '2026-09-09', claim_type: 'warehouse_hour', property_id: null, cleaning_task_id: null, duration_minutes: 90, approved_duration_minutes: null, requested_quantity: null, approved_quantity: null, approved_amount_cents: null, note: 'Warehouse shift' },
@@ -249,7 +276,7 @@ async function main() {
   const profileRow = {
     user_id: 'cleaner-1', username: 'cleaner', display_name: 'Cleaner One', role: 'cleaner',
     legal_name: 'Cleaner One', personal_abn: '53004085616', photo_id_url: 'private-key',
-    bank_account_name: 'Cleaner One', bank_bsb: '123456', bank_account_number: '12345678',
+    payment_method: 'cash', bank_account_name: 'Cleaner One', bank_bsb: '123456', bank_account_number: '12345678',
     settlement_enabled: true, person_type: 'cleaner', supplier_legal_name: 'Cleaner One',
     supplier_business_name: null, abn: '53004085616', gst_status: 'registered',
     gst_effective_from: '2026-09-01', effective_from: '2026-09-01', effective_to: null,
@@ -257,6 +284,7 @@ async function main() {
   }
   const profileExecutor = { async query() { return { rows: [profileRow] } } }
   const list = await listPersonnelSettlementProfiles({ includeBankDetails: false }, profileExecutor)
+  assert.strictEqual(list[0].payment_method, 'cash')
   assert.strictEqual(list[0].bank_account_number, null)
   assert.strictEqual(list[0].bank_account_masked, '•••• 5678')
   const detail = await getPersonnelSettlementProfile({ userId: 'cleaner-1', includeBankDetails: true }, profileExecutor)
@@ -268,9 +296,10 @@ async function main() {
   assert.strictEqual(preview.source_summary.eligible_deduplicated_candidates, 2)
   assert.strictEqual(preview.source_summary.excluded_auxiliary_candidates, 1)
   assert.strictEqual(preview.source_summary.conflicting_tasks_requiring_manual_review, 1)
-  assert.strictEqual(preview.source_summary.cleaning_assignment_candidates, 4)
+  assert.strictEqual(preview.source_summary.cleaning_assignment_candidates, 6)
   assert.strictEqual(preview.source_summary.non_cancelled_cleaning_assignments, 2)
   assert.strictEqual(preview.source_summary.excluded_cancelled_cleaning_assignments, 2)
+  assert.strictEqual(preview.source_summary.excluded_non_checkout_cleaning_assignments, 2)
   assert.strictEqual(preview.source_summary.approved_claims, 3)
   assert.strictEqual(preview.source_summary.legacy_tasks_requiring_manual_review, 0)
 
@@ -284,6 +313,7 @@ async function main() {
   assert.strictEqual(cleaner?.lines.find((line) => line.component_type === 'cleaning_task')?.source_type, 'cleaning_task_assignment')
   assert.strictEqual(cleaner?.lines.find((line) => line.component_type === 'cleaning_task')?.source_audit_id, null)
   assert.ok(cleaner?.lines.every((line) => line.source_id !== 'task-cancelled' && line.source_id !== 'task-canceled'))
+  assert.ok(cleaner?.lines.every((line) => line.source_id !== 'task-checkin-pair' && line.source_id !== 'task-stayover'))
   const newPropertyLine = cleaner?.lines.find((line) => line.component_type === 'new_property_task')
   assert.deepStrictEqual(
     newPropertyLine && {

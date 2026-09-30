@@ -3,6 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import {
   buildPersonnelFeeRuleEffectiveDateConstraint,
+  canonicalizePersonnelFeeRulePriceBasis,
   validatePersonnelFeeRuleInput,
 } from '../../src/lib/personnelSettlementRules'
 import { CLEANING_PROPERTY_TYPES } from '../../src/lib/personnelSettlement'
@@ -79,6 +80,8 @@ assert.deepStrictEqual(buildPersonnelFeeRuleEffectiveDateConstraint(null), {
   locked_through: null,
   earliest_effective_date: null,
 })
+assert.strictEqual(canonicalizePersonnelFeeRulePriceBasis('registered', 'inclusive_gst'), 'inclusive_gst')
+assert.strictEqual(canonicalizePersonnelFeeRulePriceBasis('not_registered', 'inclusive_gst'), 'exclusive_gst')
 
 assert.match(router, /router\.get\('\/profiles\/:userId\/rules'/)
 assert.match(router, /router\.post\('\/profiles\/:userId\/rules'/)
@@ -97,7 +100,7 @@ assert.match(page, /label: '费用规则'/)
 assert.match(page, /mode === 'detail' && canManageRules/)
 assert.match(page, /rules\.find\(\(rule\) => rule\.is_current\)/)
 assert.match(page, /当前费用规则/)
-assert.match(page, /PRICE_BASIS_LABELS\[detailCurrentRule\.price_basis\]/)
+assert.match(page, /feeRulePriceBasisLabel\(selected\.gst_status, detailCurrentRule\.price_basis\)/)
 assert.match(page, /feeRuleItemLabel\(item\)/)
 assert.match(drawer, /规则历史/)
 assert.match(drawer, /补齐清洁房型/)
@@ -107,6 +110,9 @@ assert.match(drawer, /复制到当前版本/)
 assert.match(drawer, /确认保存为历史版本/)
 assert.match(drawer, /历史费用规则已保存/)
 assert.match(drawer, /feeRuleCopyTargetEffectiveDate/)
+assert.match(drawer, /props\.gstStatus === 'not_registered'/)
+assert.match(drawer, /不适用（未注册 GST，GST 为 \$0）/)
+assert.match(service, /canonicalizePersonnelFeeRulePriceBasis/)
 assert.match(ui, /未含 GST（注册 GST 后另加 10%）/)
 assert.match(ui, /已含 GST（系统从总额中拆分 GST）/)
 assert.match(ui, /新规则最早可从/)

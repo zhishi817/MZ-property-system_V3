@@ -150,7 +150,10 @@ async function loadDocumentSource(settlementId: string, executor: Queryable) {
     abn: cleanText(profile.abn).replace(/\D/g, ''),
     gst_registered: cleanText(profile.gst_status) === 'registered',
   }
-  if (!supplier.legal_name || supplier.abn.length !== 11) throw new Error('settlement_supplier_profile_incomplete')
+  if (!supplier.legal_name) throw new Error('settlement_supplier_profile_incomplete')
+  if (supplier.gst_registered && supplier.abn.length !== 11) {
+    throw new Error('settlement_supplier_profile_incomplete')
+  }
   if (cleanText(profile.gst_status) === 'unconfirmed') throw new Error('settlement_gst_unconfirmed')
   if (!supplier.gst_registered && Number(settlement.gst_cents || 0) !== 0) {
     throw new Error('settlement_gst_amount_invalid')

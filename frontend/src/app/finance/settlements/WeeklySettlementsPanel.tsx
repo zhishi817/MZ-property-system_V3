@@ -47,6 +47,11 @@ import {
   loadPersonnelClaimEvidenceObjectUrl,
   releasePersonnelClaimEvidenceObjectUrls,
 } from './claimEvidenceImage'
+import {
+  PERSONNEL_PAYMENT_METHOD_LABELS,
+  normalizePersonnelPaymentMethod,
+  personnelPaymentMethodRequiresBankDetails,
+} from './personnelProfileUi'
 import styles from './WeeklySettlementsPanel.module.css'
 
 type ClaimEvidence = {
@@ -160,7 +165,7 @@ const ACTION_TITLES: Record<SettlementAction, string> = {
 const ERROR_LABELS: Record<string, string> = {
   settlement_week_not_finished: '只能生成已经结束的完整周结算。',
   settlement_batch_locked: '本周结算已经提交或进入后续状态，不能整周重算。',
-  settlement_supplier_profile_incomplete: '合作方姓名或 ABN 不完整，不能退回再次确认或付款。',
+  settlement_supplier_profile_incomplete: '合作方法定姓名不完整，或已注册 GST 但缺少有效 ABN，不能退回再次确认或付款。',
   settlement_gst_unconfirmed: 'GST 状态尚未确认，不能退回再次确认或付款。',
   settlement_bank_details_incomplete: '银行资料不完整，不能确认付款。',
   settlement_approval_step_removed: '财务确认步骤已取消，请直接使用“确认已付款”。',
@@ -186,6 +191,7 @@ const ERROR_LABELS: Record<string, string> = {
   claim_not_reviewable: '这条反馈已处理，请刷新后重试。',
   claim_period_locked: '该合作方本周结算已进入确认或付款阶段，不能再核对补充内容。',
   claim_evidence_required: '反馈缺少证明材料，不能确认计入。',
+  duplicate_approved_claim: '已有内容完全相同的反馈确认计入；如为两笔不同工作，请先退回并补充可区分的时间或说明。',
   settlement_claim_calculation_failed: '这条反馈暂时无法按生效费用规则计算，请检查合作方资料、GST 状态和对应计费项目。',
 }
 
@@ -563,6 +569,7 @@ export default function WeeklySettlementsPanel() {
   const paymentSettlement = actionState?.action === 'confirm_paid' ? actionState.settlement : null
   const paymentDestination = paymentSettlement?.payment_destination_preview || paymentSettlement?.payment_destination_snapshot || {}
   const paymentProfile = paymentSettlement?.profile_snapshot || {}
+  const paymentMethod = normalizePersonnelPaymentMethod(paymentDestination.payment_method || paymentProfile.payment_method)
   const partnerName = String(
     paymentProfile.supplier_business_name
     || paymentProfile.supplier_legal_name
@@ -572,13 +579,14 @@ export default function WeeklySettlementsPanel() {
   const paymentAccountName = String(paymentDestination.bank_account_name || '')
   const paymentBsb = String(paymentDestination.bank_bsb || '')
   const paymentAccountNumber = String(paymentDestination.bank_account_number || '')
-  const paymentDetailsComplete = Boolean(paymentAccountName && paymentBsb && paymentAccountNumber)
+  const paymentDetailsComplete = !personnelPaymentMethodRequiresBankDetails(paymentMethod)
+    || Boolean(paymentAccountName && paymentBsb && paymentAccountNumber)
 
   return <>
     <Alert
       type="info"
       showIcon
-      message="合作方先在移动端提交上一完整周的工作量；财务在这里核对。无问题时完成银行转账后直接确认已付款；有问题时退回合作方再次确认。"
+      message="合作方先在移动端提交上一完整周的工作量；财务在这里核对。无问题时按人员资料中的付款方式完成付款并确认；有问题时退回合作方再次确认。"
       style={{ marginBottom: 12 }}
     />
     <Space wrap style={{ marginBottom: 12 }}>
@@ -643,11 +651,20 @@ export default function WeeklySettlementsPanel() {
               ? detail.payment_destination_snapshot.payment_date
               : detail.paid_at,
           )}</Descriptions.Item>
+          <Descriptions.Item label="付款方式">{PERSONNEL_PAYMENT_METHOD_LABELS[normalizePersonnelPaymentMethod(
+            detail.payment_destination_snapshot?.payment_method || detail.profile_snapshot?.payment_method,
+          )]}</Descriptions.Item>
           <Descriptions.Item label="重新核对说明" span={2}>{detail.dispute_note || '-'}</Descriptions.Item>
           <Descriptions.Item label="收款账户" span={2}>
-            {detail.payment_destination_snapshot
-              ? Object.entries(detail.payment_destination_snapshot).map(([key, value]) => `${key}: ${String(value ?? '-')}`).join('；')
-              : '-'}
+            {personnelPaymentMethodRequiresBankDetails(
+              detail.payment_destination_snapshot?.payment_method || detail.profile_snapshot?.payment_method,
+            )
+              ? [
+                  detail.payment_destination_snapshot?.bank_account_name,
+                  detail.payment_destination_snapshot?.bank_bsb || detail.payment_destination_snapshot?.bank_bsb_masked,
+                  detail.payment_destination_snapshot?.bank_account_number || detail.payment_destination_snapshot?.bank_account_masked,
+                ].filter(Boolean).join(' · ') || '-'
+              : '不适用'}
           </Descriptions.Item>
         </Descriptions>
         <Divider orientation="left">结算文件</Divider>
@@ -854,16 +871,19 @@ export default function WeeklySettlementsPanel() {
           <Descriptions bordered size="small" column={2}>
             <Descriptions.Item label="合作方">{partnerName}</Descriptions.Item>
             <Descriptions.Item label="结算周期">{paymentSettlement?.week_start} 至 {paymentSettlement?.week_end}</Descriptions.Item>
-            <Descriptions.Item label="收款人">{paymentAccountName || '未登记'}</Descriptions.Item>
-            <Descriptions.Item label="BSB">{paymentBsb || '未登记'}</Descriptions.Item>
-            <Descriptions.Item label="银行账号" span={2}>
-              {paymentAccountNumber
-                ? <Typography.Text copyable={{ text: paymentAccountNumber }}>{paymentAccountNumber}</Typography.Text>
-                : '未登记'}
-            </Descriptions.Item>
+            <Descriptions.Item label="付款方式">{PERSONNEL_PAYMENT_METHOD_LABELS[paymentMethod]}</Descriptions.Item>
+            {personnelPaymentMethodRequiresBankDetails(paymentMethod) ? <>
+              <Descriptions.Item label="收款人">{paymentAccountName || '未登记'}</Descriptions.Item>
+              <Descriptions.Item label="BSB">{paymentBsb || '未登记'}</Descriptions.Item>
+              <Descriptions.Item label="银行账号" span={2}>
+                {paymentAccountNumber
+                  ? <Typography.Text copyable={{ text: paymentAccountNumber }}>{paymentAccountNumber}</Typography.Text>
+                  : '未登记'}
+              </Descriptions.Item>
+            </> : <Descriptions.Item label="付款说明" span={2}>结算账面金额仍以 AUD 记录；请在线下完成该付款方式后再确认。</Descriptions.Item>}
           </Descriptions>
         </div>
-        {!paymentDetailsComplete && !actionDetailLoading ? <Alert
+        {personnelPaymentMethodRequiresBankDetails(paymentMethod) && !paymentDetailsComplete && !actionDetailLoading ? <Alert
           showIcon
           type="error"
           message="收款账户资料不完整"
@@ -873,8 +893,8 @@ export default function WeeklySettlementsPanel() {
         <Alert
           showIcon
           type="warning"
-          message="请先在银行完成转账"
-          description="点击“确认已付款”只登记已经完成的付款，不会发起银行转账。确认后结算与公司支出将锁定为已付款。"
+          message={`请先完成${PERSONNEL_PAYMENT_METHOD_LABELS[paymentMethod]}`}
+          description="点击“确认已付款”只登记已经完成的付款，不会发起实际支付。确认后结算与公司支出将锁定为已付款。"
           style={{ marginBottom: 16 }}
         />
       </Spin> : null}

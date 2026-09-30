@@ -11,6 +11,8 @@ import {
   feeRuleEffectiveDateLockMessage,
   feeRuleHistoricalSaveWarning,
   feeRuleItemsValidationError,
+  feeRulePriceBasisForGstStatus,
+  feeRulePriceBasisLabel,
   feeRuleSaveErrorMessage,
   isFeeRuleEffectiveDateLocked,
 } from './feeRuleUi'
@@ -51,6 +53,12 @@ describe('feeRuleUi', () => {
 
   it('labels new-property work as an hourly calculation method', () => {
     expect(FEE_COMPONENT_LABELS.new_property_task).toBe('上新房：每小时')
+  })
+
+  it('removes the GST price-basis choice for non-registered personnel', () => {
+    expect(feeRulePriceBasisForGstStatus('registered', 'inclusive_gst')).toBe('inclusive_gst')
+    expect(feeRulePriceBasisForGstStatus('not_registered', 'inclusive_gst')).toBe('exclusive_gst')
+    expect(feeRulePriceBasisLabel('not_registered', 'inclusive_gst')).toContain('不适用')
   })
 
   it('keeps non-cleaning calculation methods unique', () => {

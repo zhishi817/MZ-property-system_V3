@@ -232,7 +232,7 @@ export function renderPersonnelSettlementDocumentHtml(input: PersonnelSettlement
   <div class="top"><div><h1>${escapeHtml(title)}</h1><div class="status">${escapeHtml(statusLabel)}</div>${draft ? '<div class="draft">待本人确认 · NOT A TAX INVOICE</div>' : ''}</div>
   <div class="invoice-no"><strong>${draft ? 'Settlement reference' : 'Invoice number'}</strong><br>${escapeHtml(input.invoiceNumber || `DRAFT-${input.weekEnd}`)}<br><strong>Issue date</strong><br>${escapeHtml(input.issueDate)}</div></div>
   <div class="parties">
-    <div class="party"><h2>Supplier / 服务提供方</h2><div class="name">${escapeHtml(supplierName)}</div><div>${escapeHtml(input.supplier.legal_name)}</div><div>ABN ${escapeHtml(input.supplier.abn)}</div><div>GST: ${input.supplier.gst_registered ? 'Registered' : 'Not registered'}</div></div>
+    <div class="party"><h2>Supplier / 服务提供方</h2><div class="name">${escapeHtml(supplierName)}</div><div>${escapeHtml(input.supplier.legal_name)}</div>${input.supplier.abn ? `<div>ABN ${escapeHtml(input.supplier.abn)}</div>` : ''}<div>GST: ${input.supplier.gst_registered ? 'Registered' : 'Not registered'}</div></div>
     <div class="party"><h2>Bill to / 付款方</h2><div class="name">${escapeHtml(input.buyer.trading_name || input.buyer.legal_name)}</div><div>${escapeHtml(input.buyer.legal_name)}</div><div>ABN ${escapeHtml(input.buyer.abn)}</div><div>${escapeHtml(input.buyer.address)}</div></div>
   </div>
   <div><strong>Service period:</strong> ${escapeHtml(input.weekStart)} to ${escapeHtml(input.weekEnd)}</div>

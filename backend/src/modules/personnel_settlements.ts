@@ -15,6 +15,7 @@ import {
   assertPersonnelSettlementSchemaReady,
   PersonnelSettlementSchemaNotReady,
 } from '../lib/personnelSettlementSchema'
+import { PERSONNEL_PAYMENT_METHODS } from '../lib/personnelSettlementPayment'
 import { PersonnelSettlementPhase5SchemaNotReady } from '../lib/personnelSettlementPhase5Schema'
 import {
   ensurePersonnelSettlementDocument,
@@ -89,6 +90,7 @@ const profilePatchFields = {
   ...selfProfilePatchFields,
   settlement_enabled: z.boolean().optional(),
   person_type: z.enum(['cleaner', 'inspector', 'warehouse', 'trial', 'external', 'mixed']).optional(),
+  payment_method: z.enum(PERSONNEL_PAYMENT_METHODS).optional(),
 }
 const selfProfilePatchSchema = z.object({
   effective_date: z.string().trim().regex(DATE_ONLY),
@@ -245,6 +247,7 @@ function errorStatus(error: any) {
     || code === 'company_expense_manual_override'
     || code === 'company_expense_paid_lock'
     || code === 'claim_request_conflict'
+    || code === 'duplicate_approved_claim'
     || code === 'claim_evidence_media_conflict'
     || code === 'settlement_claims_pending'
   ) return 409

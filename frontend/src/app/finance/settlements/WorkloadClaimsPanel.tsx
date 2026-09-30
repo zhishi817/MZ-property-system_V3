@@ -124,6 +124,7 @@ function errorMessage(error: any) {
     claim_not_reviewable: '这条反馈已处理，请刷新列表。',
     claim_period_locked: '该合作方本周结算已进入确认或付款阶段；只有处于“待重新核对”时才能继续核对。',
     claim_evidence_required: '反馈缺少证明材料，不能确认计入。',
+    duplicate_approved_claim: '已有内容完全相同的反馈确认计入；如为两笔不同工作，请先退回并补充可区分的时间或说明。',
     approved_duration_or_amount_required: '请确认有效工时。',
     approved_amount_or_quantity_required: '请确认金额或数量。',
     manual_amount_not_allowed_for_claim_type: '该费用按规则自动计算，不能直接填写金额。',
