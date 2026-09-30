@@ -1,5 +1,135 @@
 # Change Release Ledger
 
+## CRL-20260930-001 — Airbnb 中文订单邮件同步与非订单审计闭环（root）
+
+- **Repository:** `root`
+- **Status:** verified for selected local commit (full local gate and independent review passed; not committed)
+- **Updated:** 2026-09-30 Australia/Melbourne
+- **Request:** 修复晚上收到的 Airbnb 中文确认邮件未同步到订单管理的问题，并在已提供生产数据库连接的前提下先定位根因、再按建议准备安全修复。
+- **Outcome:** Airbnb 中文已确认/已更改/已取消主题进入既有订单同步链路；中文正文可提取订单必要字段。非订单邮件使用数据库约束允许的审计值，审计写入失败不再被静默忽略。
+
+### Implementation
+
+- Previous behavior: 订单主题白名单和正文解析主要识别英文模板。中文确认邮件被判定为 `not_whitelisted`；同步项又尝试写入数据库约束不接受的同名 reason，异常被吞掉，因此游标继续推进、运行显示成功，但该邮件长期停留在 `scanned` 且没有订单。
+- New behavior: 统一的 Airbnb 主题分类器同时识别英文和中文确认、变更、取消主题，并复用于订单处理和解析审计；中文正文支持客人、房源、入住/退房日期、住晚、清洁费和收入解析，继续复用既有日期区间、房源匹配、幂等和订单写入规则。
+- Audit behavior: 非订单邮件写入 `status=skipped`、`reason=not_matched`、`error_code=not_whitelisted`；要求精确更新一行，失败时递增失败计数并记录结构化错误，使同步运行可见地失败。
+- Key decisions: 不新增表、迁移、依赖或第二套导入器；不在本单元执行生产补扫、补单、游标修改、部署或历史数据修复。
+
+### Files / Areas
+
+- `backend/src/modules/jobs.ts` — modified: 中英文主题分类、中文正文解析和非订单审计失败闭环。
+- `backend/scripts/tests/test_airbnb_localized_email.ts` — added: 无数据库、无网络的中文模板与审计契约回归。
+- `backend/package.json` — modified: 新增目标回归命令。
+- `package.json` — modified: 将目标回归接入 backend/full 和 fast 质量门禁。
+- `docs/feature-regression-registry.md` — modified: 扩展 FR-014 的本地化模板和审计保护。
+- `docs/change-release-ledger.md` — modified: 本 CRL、精确候选范围与 Release Attempt 记录。
+
+### Impact / Dependencies
+
+- API / schema / migration / dependencies / configuration: none. 复用现有 IMAP 同步、数据库表、房源索引、订单幂等键和清洁同步队列。
+- Runtime: 仅改变来自 Airbnb 域的已识别订单主题和非订单审计；实际订单写入仍须通过既有必要字段、日期一致性、房源匹配和重复检查。
+- Existing missed mail: 源码提交或部署不会自动恢复已推进游标的历史邮件；精确补扫/补单必须在部署后另行获得生产写入授权。
+- Related regression units already in base: `root/CRL-20260816-001` and `root/CRL-20260820-001`.
+- Excluded: web/mobile UI、数据库 DDL、生产订单写入、外部同步、部署、OTA 和设备验证。
+
+### Validation
+
+- `npm run test:airbnb-localized-email --prefix backend` — passed after the final classifier tightening; covers Chinese/English subject classification, cancellation false-positive rejection, localized field extraction, year inference and allowed non-order audit values.
+- `npm run test:email-year-rule --prefix backend` and `./backend/node_modules/.bin/tsc --noEmit -p backend/tsconfig.json` — passed. The existing English cross-year/date-card behavior remains green and backend TypeScript emits no errors.
+- `npm run check:feature-registry`, `python3 scripts/audit_change_release_ledger.py`, `npm run test:root-quality-workflow-contract`, `npm run test:ledger-range-audit` and scoped `git diff --check` — passed before staging.
+- `npm run check:fast` — root quality, ledger-range, preview guard, ledger/Registry audits, backend build and contract tests, localized target test, phase-5 source contract and frontend tests (52 files / 247 tests) passed. The command initially stopped only because the first temporary clean-mobile setup reused an incomplete local `node_modules`; this was an environment setup failure, not a candidate test failure.
+- `npm ci` in a temporary clean mobile `origin/Dev@8c4df378665e05b1de9179cd3fa760ba0439ff13` worktree — passed after explicit authorization; no mobile source or lockfile changed. NPM reported 37 existing dependency advisories (2 low, 19 moderate, 15 high, 1 critical); no audit fix or dependency upgrade was performed.
+- Final `npm run check:full` — passed with process-local database variables blank: root ledger/Registry, complete backend build/test chain, frontend lint (existing warnings only), frontend tests (52 files / 247 tests), frontend production build, clean mobile typecheck/lint (existing warnings only), and mobile tests (62 suites / 367 tests). Jest reported an existing forced-worker-exit warning after all suites passed.
+- Build-generated tracked `backend/dist` differences and temporary dependency/mobile links were removed after validation; they are not candidate files.
+- Read-only diagnosis/preflight completed before candidate preparation: the localized message was scanned but not inserted, and the bounded same-template sample parsed complete order fields with unique property matches, consistent stay intervals and no existing order/raw/staging duplicates. No cursor or production data was changed.
+- Production replay, deployed API, scheduler and order-management UI verification — not run and not authorized.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none after removal of temporary dependency/mobile links and generated build output.
+- Base: `origin/Dev@91adcf456a5eeea2443b01515a919e0922b78387`; fetched again without SHA change at `2026-09-30T17:06:40+10:00`.
+- Scope: only the six files listed in this CRL, staged from the clean fetched base; `docs/change-release-ledger.md` is excluded from the candidate content fingerprint.
+- `backend/package.json` — SHA-256: `ee90e63b196072547df1750997f7871249769ca61978271decd09fafc7cbe915`
+- `backend/scripts/tests/test_airbnb_localized_email.ts` — SHA-256: `591babf1c07834535e81127b97723119c85d8d9d564d640837661f7edb02bdde`
+- `backend/src/modules/jobs.ts` — SHA-256: `06874ac7c8418ce40813f0f69503d0723b632721b332f53572d22ce8e40938e6`
+- `backend/src/modules/jobs.ts` — SHA-256: `1890d0c56c02a0e042131d3abaf3715e7c3e5a81e296d8b82feb3c08fc9c9711`
+- `backend/src/modules/jobs.ts` — SHA-256: `77a5d4abbf5e11cc99e36293dc02c72bbc75cb2c81e84ba22f315bbce4fc4afe`
+- `backend/src/modules/jobs.ts` — SHA-256: `84e95f034a13a635976e0c78c2fb439e50e29608640ef34d21bbaae5ecc19252`
+- `backend/src/modules/jobs.ts` — SHA-256: `8df95ee937dee7cb4b4d642e36c3449c3f8c2baa1925846d4df9e18ebe9c992f`
+- `backend/src/modules/jobs.ts` — SHA-256: `9cd02a0877747c6d72d14ceeea982384e2f74f3f13af19865c15023d6a240224`
+- `backend/src/modules/jobs.ts` — SHA-256: `a32eff6fe1a3c743552b5bc46e24555aa934b1d50cb7ee63b9dc9b1eb95cfc38`
+- `backend/src/modules/jobs.ts` — SHA-256: `ad3ae9936c61e94f062ee476861a39b358bf33942035988e4be249bc0f15822b`
+- `backend/src/modules/jobs.ts` — SHA-256: `b12c023071a51177c746b63794122619984bf979726f7e67d89d78df6278c1dc`
+- `backend/src/modules/jobs.ts` — SHA-256: `b5f44a1fd5d0a77ee0609f5dd83c836b8d386a0aeae3a1820a81e42d905c4168`
+- `backend/src/modules/jobs.ts` — SHA-256: `baa6708f11bafd0c00b8bc506a8cff4a7c6e3af49720aa1d27dca9cb82f86c41`
+- `backend/src/modules/jobs.ts` — SHA-256: `c4b13d5b35c9465b658b553e33bdac784aab0453dc3b0298a440d4e55c35bd43`
+- `backend/src/modules/jobs.ts` — SHA-256: `ef4ededc0c7914f0eedfcadbd31425540962b909f065b680f2c302ae903505c8`
+- `docs/feature-regression-registry.md` — SHA-256: `1d527f0823ecc4e591c232115e6c336e872e68e7a43c7b3b729990e880bc22da`
+- `docs/feature-regression-registry.md` — SHA-256: `240f1c9e2a4525a3f42b78e083881efcd5b9c38c731885e2d88d513201ebfac0`
+- `docs/feature-regression-registry.md` — SHA-256: `5ac99d2ad10056f079da40d845e16201283b7c3cf375eae20f20dd60b0fa92d6`
+- `docs/feature-regression-registry.md` — SHA-256: `6f97cf772244eb90c46ab5c9492823245de726dc03597637c411203fc8ca1793`
+- `docs/feature-regression-registry.md` — SHA-256: `8cc16fac95f66c5f168be6f808891ad08e8012086f15d43e8d808a12cb7f617d`
+- `docs/feature-regression-registry.md` — SHA-256: `924f69da46c0f3b93f457ae73c6f9a41386ceab9173921f7d7d3d11adf56bdd5`
+- `docs/feature-regression-registry.md` — SHA-256: `b30a3eb5c248abf4e5e2086e3d21f5ac586fbcb2c0aea671e0013cb11cfb7736`
+- `docs/feature-regression-registry.md` — SHA-256: `da97b00b0424856c58d836265d027d42946f44722cdb4e86ae71bb348f82ef75`
+- `docs/feature-regression-registry.md` — SHA-256: `e694d40e2de46a51f4878b172af1092a6debcb59c1f8f4f05e31ac1bb1b11052`
+- `docs/feature-regression-registry.md` — SHA-256: `ed14db1aea23c97c524d1db1887250b5221461f4346dccf7c65741bd3c819885`
+- `docs/feature-regression-registry.md` — SHA-256: `fe1fd9b376111a10af10524b3bf6287b79d40415b0773b0aead8b2a8cbba22a5`
+- `package.json` — SHA-256: `7311160c0eea7ad020c2c55809aa48e1462348b1ace658728486c558702921dd`
+- `package.json` — SHA-256: `ae707a55e0f31bead4848aee80e3a82d832d47ced06f7585f9b86f310734e349`
+
+### Release Attempts
+
+#### RA-20260930-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260930-001`
+- Selected CRL identities: `root/CRL-20260930-001`
+- Intended action: `commit`
+- Branch: `codex/airbnb-localized-email-sync`
+- Base: `origin/Dev@91adcf456a5eeea2443b01515a919e0922b78387`; fetched at `2026-09-30T17:06:40+10:00`
+- Candidate patch SHA-256: `a4208960a13657a71680e4ea3bad305b970fd036ea97b16ad58c869ae232a788` excluding `docs/change-release-ledger.md`
+- Commit SHA: `bfd3ce63e022a81a4115515c6bf40efd84bdfcf4` (candidate content commit)
+- Dependencies: none
+- Required validation: `PASS`; evidence: targeted localized/English date tests, TypeScript, Registry/ledger checks and final database-disabled `npm run check:full` passed across root/backend/frontend and a clean mobile baseline.
+- Shared-hunk review: `PASS`; evidence: the isolated worktree started clean at the recorded base and all 28 non-ledger staged hunks map only to this CRL's five non-ledger paths.
+- Generated-file review: `PASS`; evidence: tracked `backend/dist`, temporary dependency links and the temporary mobile worktree were removed; candidate status contains only the six selected source/test/documentation paths.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: after diagnosis and the proposed clean-candidate scope, the user replied “授权”. Push, PR, merge, deployment and production replay are not authorized.
+- Independent review: `GO for commit`; evidence: independent read-only reviewer inspected AGENTS/release instructions, ledger/FR-014, complete staged diff and Actions wiring; independently recomputed candidate fingerprint `a4208960a13657a71680e4ea3bad305b970fd036ea97b16ad58c869ae232a788`; confirmed six selected files / 28 non-ledger hunks, no P0/P1/P2, unselected file, generated output, production-write or secret risk. The reviewer retained real IMAP/database/deployed scheduler/order UI and production replay as explicit post-commit gaps.
+- Action conclusion: `GO` for the selected local commit only; the independently reviewed candidate was committed as `bfd3ce63e022a81a4115515c6bf40efd84bdfcf4`. Push, PR, merge, deployment and production replay remain unauthorized.
+
+#### RA-20260930-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20260930-001`
+- Selected CRL identities: `root/CRL-20260930-001`
+- Intended action: `push`
+- Branch: `codex/airbnb-localized-email-sync`
+- Base: `origin/Dev@91adcf456a5eeea2443b01515a919e0922b78387`; fetched at `2026-09-30T17:26:37+10:00`
+- Candidate patch SHA-256: `a4208960a13657a71680e4ea3bad305b970fd036ea97b16ad58c869ae232a788` excluding `docs/change-release-ledger.md`
+- Commit SHA: `bfd3ce63e022a81a4115515c6bf40efd84bdfcf4` (candidate content commit); current audited receipt head before this staged push-attempt record is `fd3f1e40c8f978e81ae18cfad505efe89cd5858f`.
+- Dependencies: none
+- Required validation: `PASS`; evidence: prior targeted and full candidate validation, independent commit review, current-worktree audits and exact committed-range report passed with unchanged source content.
+- Shared-hunk review: `PASS`; evidence: the exact committed range contains only this CRL's six selected paths and 28 non-ledger hunk fingerprints.
+- Generated-file review: `PASS`; evidence: the exact range contains no generated output, dependency links, local caches, sensitive paths or untracked files.
+- Technical state: `pushed`
+- Remote branch: initial normal non-force push verified as `origin/codex/airbnb-localized-email-sync@94dcf646efc2e3f2686a80bd477234bd4ec92aa4`; `git ls-remote --heads` matched the pushed local HEAD. This ledger-only outcome receipt will be fast-forwarded on the same authorized branch without changing candidate content.
+- Remote preflight: `PASS`; evidence: fresh `origin/Dev` still equals the recorded base and `refs/heads/codex/airbnb-localized-email-sync` was absent at `2026-09-30T17:26:37+10:00`.
+- User authorization: `approved-for-push`; evidence: after receiving root branch `codex/airbnb-localized-email-sync`, candidate content commit `bfd3ce63e022a81a4115515c6bf40efd84bdfcf4` and audited receipt head `fd3f1e40c8f978e81ae18cfad505efe89cd5858f`, the user instructed “推送” on 2026-09-30. This authorizes only a normal non-force push of this unchanged CRL/base/content/branch range; PR, merge, deployment and production replay remain unauthorized.
+- Independent review: `GO for ledger-only push receipt and non-force push`; evidence: independent read-only reviewer inspected AGENTS/release instructions, RA-20260930-001/002, complete staged ledger diff and exact `base...fd3f1e40c8f978e81ae18cfad505efe89cd5858f` range; independently recomputed unchanged content fingerprint `a4208960a13657a71680e4ea3bad305b970fd036ea97b16ad58c869ae232a788`, verified base/content/receipt ancestry, fresh `Dev`, absent target branch, authorization, generated/sensitive scope, and found no P0/P1. Accepted non-blocking P2: the CRL summary status/Git-state prose retains older commit-preparation wording; RA-20260930-001/002 remains the authoritative lifecycle evidence and the ledger-only receipt gate limits this commit to Release Attempt lines.
+- Action conclusion: `GO`; blockers: none. The authorized unchanged candidate was pushed normally without force to the target branch and the remote SHA matched the audited local HEAD. Commit and fast-forward this ledger-only outcome receipt on the same branch; PR, merge, deployment and production replay remain unauthorized and were not performed.
+
+### Risks / Release Notes
+
+- Risk: language-specific upstream template changes can still produce missing fields; existing fail-closed field/date/property checks must remain authoritative.
+- Dependency risk: the clean mobile baseline's existing lockfile audit reports 37 advisories, including one critical advisory. This CRL changes no dependency and deliberately does not apply broad audit fixes.
+- Rollback: revert this source/test/Registry/ledger unit. No schema or production-data rollback is required because this release attempt performs no production write.
+- Sensitive-information review: no credentials, database URLs, tokens, cookies, customer identifiers, message bodies, production logs or local caches are included.
+- Git state: isolated branch candidate, not committed and not pushed; PR not created; not merged; not deployed; production replay and UI verification not run.
+
 ## CRL-20260915-001 — 任务中心延期检查日期防清空（root）
 
 - **Repository:** `root`

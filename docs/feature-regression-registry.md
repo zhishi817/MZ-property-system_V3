@@ -1448,10 +1448,10 @@
 
 - 历史生产数据回填、R2 对象物理删除，以及 R2 ACL/公开读取策略；已关闭维修的修正不改变金额、扣款方式、审核结论或费用的人工覆盖值。
 
-## FR-014：Airbnb 邮件订单缺失年份的跨年日期解析
+## FR-014：Airbnb 邮件订单本地化模板与跨年日期解析
 
 - **维护责任范围：** backend / web
-- **最后审查日期：** 2026-08-16
+- **最后审查日期：** 2026-09-30
 - **状态：** active
 
 ### 业务保护规则
@@ -1461,13 +1461,16 @@
 - 解析前必须校验日历日期；无效日期不得被 JavaScript 自动归一化为另一月份或年份。
 - 无年份且成功解析的日期必须保留原始文本并写入 `year_inferred=true`，使后续审计可区分推断和显式日期。
 - Airbnb 已确认/已变更订单邮件必须优先从实际订单日期卡片提取入住和退房；页面中较早出现但不含日期的 `Check-in details` 等说明文字不得阻断后续真实日期字段的解析。
+- Airbnb 中文 `订单已确认` / `新预订已确认`、已更改和已取消主题必须与英文模板进入同一订单分类链路；不得因收件箱语言设置而被当作非订单邮件跳过。
+- 中文订单正文必须解析客人名、房源名、入住/退房日期、住晚、清洁费和收入；中文房型后缀不得污染既有房源名匹配。
 - 入住和退房必须从全部候选中组成唯一、合法且与已解析住晚一致的区间；重复同日期标签可去重，缺日期、日期倒置、住晚冲突或多组冲突候选不得写入 `confirmed` 订单。
 - 上述日期不完整或冲突时，导入记录必须以稳定错误码（如 `CHECKIN_DATE_NOT_FOUND`）失败并保留解析审计；不得创建订单或投递清洁同步任务。
+- 真正的非订单邮件必须落为数据库约束允许的 `status=skipped`、`reason=not_matched`，并以 `error_code=not_whitelisted` 保留诊断；审计更新失败必须使本次同步显式失败，不能静默停留在 `scanned`。
 - 对已入库的高置信历史记录，修复只能在固定候选数、住晚一致性、任务锁定和目标日期冲突预检均通过后执行；修复不得直接更新 `cleaning_tasks`，必须投递既有清洁同步队列。
 
 ### 跨层适用范围
 
-- **后端：** Airbnb 邮件解析、订单写入字段、受控订单年份修复脚本和清洁同步队列。
+- **后端：** Airbnb 邮件主题分类、英文/中文正文解析、同步项审计、订单写入字段、受控订单年份修复脚本和清洁同步队列。
 - **客户端：** 管理端订单页继续显示服务端存储日期，不自行补年份或覆盖服务器值。
 - **入口：** 邮件同步导入、历史订单受控修复、订单管理列表和详情。
 - **一致性：** 入住、退房和 nights 必须保持同一住宿区间；任务日期由现有同步 worker 从订单重新投影。
@@ -1476,30 +1479,33 @@
 
 | 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
 |---|---|---|---|---|
+| 中文订单主题、正文和非订单审计 | `backend/scripts/tests/test_airbnb_localized_email.ts` | 中文已确认/已更改/已取消主题，英文兼容，非订单拒绝；中文客人、房源后缀、跨年日期、住晚、金额和允许的审计三元组 | sufficient | `npm run test:airbnb-localized-email --prefix backend`（由 root `check:fast` / `check:backend` / `check:full` 执行） |
 | 缺失年份的年界、同日、事故日期、墨尔本日界、闰日、无效日期、显式年份和日期卡片 | `backend/scripts/test_email_year_rule.ts` | 12 月到 1 月、1 月到 12 月、8 月确认次年 2 月、UTC 与 Australia/Melbourne 日界不同、闰年 2 月 29 日、4 月 31 日拒绝、显式年份优先；`Check-in details` 在前、真实入住/退房日期卡、重复标签、缺入住/退房和住晚冲突 | sufficient | `npm run test:email-year-rule --prefix backend` |
 | 遗留年份推断调用点 | `backend/scripts/test_infer_year.ts` | 年初、年末和同年未来日期都按下一次出现日期解析 | partial | `./backend/node_modules/.bin/ts-node --transpile-only backend/scripts/test_infer_year.ts` |
 | 历史订单修复前置安全 | `backend/scripts/repair_airbnb_email_year_rollover.ts` | 默认只读；固定候选数；住晚、已锁任务、目标日期冲突和 apply 双重确认 | partial | `./backend/node_modules/.bin/ts-node --transpile-only backend/scripts/repair_airbnb_email_year_rollover.ts` |
 
 ### 验证策略
 
-- **代码验证：** 执行日期规则/日期卡片回归、后端 TypeScript no-emit 编译、Registry/ledger audit 和 diff 检查。
+- **代码验证：** 执行中文模板、日期规则/日期卡片回归、后端 TypeScript no-emit 编译、Registry/ledger audit 和 diff 检查。
+- **中文模板生产预检：** 仅用只读 IMAP 和只读数据库查询验证目标邮件及同模板小范围样本可完整解析、房源可唯一匹配、日期/住晚一致且无重复订单；预检不得写订单、推进游标或输出客户信息。
 - **生产预检：** 只读重跑严格候选查询，确认候选数、住晚、任务锁定和日期冲突均符合已批准的固定值；不得输出客户信息或数据库连接信息。
 - **生产修复：** 只在代码已部署且另行批准的精确写入操作中，使用 `--apply --expected-count=<approved-count> --acknowledge-cleaning-jobs` 与环境确认；随后确认同步队列完成和订单/任务日期一致。
 
 ### 最后验证
 
-- **CRL：** CRL-20260820-001
+- **CRL：** CRL-20260930-001
 - **Commit：** not committed
-- **日期：** 2026-08-20
+- **日期：** 2026-09-30
 
 ### 相关 CRL
 
 - CRL-20260816-001：Airbnb 邮件订单缺失年份跨年解析与受控修复（root）
 - CRL-20260820-001：Airbnb 邮件日期卡片漏解析与失败闭环（root）
+- CRL-20260930-001：Airbnb 中文订单邮件同步与非订单审计闭环（root）
 
 ### 非保护范围
 
-- 带显式年份的第三方订单、非 Airbnb 邮件来源、前端自行猜测日期、批量重建全部清洁任务，以及未通过高置信预检的历史订单。
+- 带显式年份的第三方订单、非 Airbnb 邮件来源、前端自行猜测日期、批量重建全部清洁任务、生产邮件补扫/补单，以及未通过高置信预检的历史订单。
 
 ## FR-016：报销凭证认证媒体读取
 
