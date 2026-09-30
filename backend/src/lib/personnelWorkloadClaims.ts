@@ -151,6 +151,104 @@ function cleanText(value: unknown) {
   return String(value ?? '').trim()
 }
 
+type PersonnelClaimDuplicateCandidate = {
+  id?: unknown
+  submitter_user_id?: unknown
+  service_date?: unknown
+  claim_type?: unknown
+  property_id?: unknown
+  cleaning_task_id?: unknown
+  started_at?: unknown
+  ended_at?: unknown
+  duration_minutes?: unknown
+  requested_quantity?: unknown
+  requested_amount_cents?: unknown
+  note?: unknown
+}
+
+function nullableCleanText(value: unknown) {
+  return cleanText(value) || null
+}
+
+function duplicateDateOnly(value: unknown) {
+  if (value instanceof Date && Number.isFinite(value.getTime())) return value.toISOString().slice(0, 10)
+  const normalized = cleanText(value)
+  const match = normalized.match(/^\d{4}-\d{2}-\d{2}/)
+  return match?.[0] || normalized
+}
+
+function duplicateTimestamp(value: unknown) {
+  if (value === undefined || value === null || value === '') return null
+  const parsed = value instanceof Date ? value : new Date(String(value))
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : cleanText(value)
+}
+
+function duplicateNumber(value: unknown) {
+  if (value === undefined || value === null || value === '') return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? String(parsed) : cleanText(value)
+}
+
+export function personnelClaimBusinessDuplicateKey(input: PersonnelClaimDuplicateCandidate) {
+  return JSON.stringify([
+    cleanText(input.submitter_user_id),
+    duplicateDateOnly(input.service_date),
+    cleanText(input.claim_type),
+    nullableCleanText(input.property_id),
+    nullableCleanText(input.cleaning_task_id),
+    duplicateTimestamp(input.started_at),
+    duplicateTimestamp(input.ended_at),
+    duplicateNumber(input.duration_minutes),
+    duplicateNumber(input.requested_quantity),
+    duplicateNumber(input.requested_amount_cents),
+    cleanText(input.note),
+  ])
+}
+
+export async function assertNoApprovedPersonnelClaimDuplicate(
+  current: PersonnelClaimDuplicateCandidate,
+  executor: Queryable,
+) {
+  const duplicateKey = personnelClaimBusinessDuplicateKey(current)
+  await executor.query(
+    'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+    [duplicateKey],
+  )
+  const duplicate = await executor.query(
+    `SELECT id
+       FROM personnel_workload_claims
+      WHERE id <> $1
+        AND status = 'approved'
+        AND submitter_user_id = $2
+        AND service_date = $3::date
+        AND claim_type = $4
+        AND NULLIF(TRIM(property_id), '') IS NOT DISTINCT FROM $5::text
+        AND NULLIF(TRIM(cleaning_task_id), '') IS NOT DISTINCT FROM $6::text
+        AND started_at IS NOT DISTINCT FROM $7::timestamptz
+        AND ended_at IS NOT DISTINCT FROM $8::timestamptz
+        AND duration_minutes IS NOT DISTINCT FROM $9::integer
+        AND requested_quantity IS NOT DISTINCT FROM $10::numeric
+        AND requested_amount_cents IS NOT DISTINCT FROM $11::integer
+        AND TRIM(note) = $12
+      LIMIT 1`,
+    [
+      cleanText(current.id),
+      cleanText(current.submitter_user_id),
+      duplicateDateOnly(current.service_date),
+      cleanText(current.claim_type),
+      nullableCleanText(current.property_id),
+      nullableCleanText(current.cleaning_task_id),
+      duplicateTimestamp(current.started_at),
+      duplicateTimestamp(current.ended_at),
+      duplicateNumber(current.duration_minutes),
+      duplicateNumber(current.requested_quantity),
+      duplicateNumber(current.requested_amount_cents),
+      cleanText(current.note),
+    ],
+  )
+  if (duplicate.rows?.length) throw new Error('duplicate_approved_claim')
+}
+
 function parseJsonObject(value: unknown): Record<string, any> {
   if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, any>
   if (typeof value === 'string') {
@@ -868,6 +966,7 @@ export async function reviewPersonnelClaimInTransaction(input: {
 
   let calculationPreview: Awaited<ReturnType<typeof estimatePersonnelClaimForReview>> | null = null
   if (review.action === 'approve') {
+    await assertNoApprovedPersonnelClaimDuplicate(current, client)
     calculationPreview = await estimatePersonnelClaimForReview({
       claimId: input.claimId,
       durationMinutes: approvedDuration,

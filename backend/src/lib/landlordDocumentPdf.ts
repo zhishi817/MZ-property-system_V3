@@ -4,6 +4,9 @@ import path from 'path'
 
 export type LandlordDocumentType = 'agency_authority' | 'property_service_agreement'
 
+export const AGENCY_AUTHORITY_COMPANY_ADDRESS = '130 Gladstone Street, South Melbourne, VIC 3205'
+export const AGENCY_AUTHORITY_TEMPLATE_VERSION = 'authorisation-detail-v8-office-address-2026-09-30'
+
 export type LandlordDocumentPdfInput = {
   type: LandlordDocumentType
   documentNo?: string
@@ -327,7 +330,7 @@ function renderAgencyAuthority(input: LandlordDocumentPdfInput) {
             <h2>2. Agent Details</h2>
             <table class="pair-table">
               ${pairRow('Name/s', 'MZ Property Pty Ltd', 'Agent Name', agentName)}
-              ${pairRow('Address', 'G03 /87 Gladstone St, South Melbourne, VIC 3205', 'ABN', '42 657 925 365')}
+              ${pairRow('Address', AGENCY_AUTHORITY_COMPANY_ADDRESS, 'ABN', '42 657 925 365')}
               ${pairRow('Contact Number', mzPhone, 'Email', mzEmail)}
             </table>
 

@@ -88,7 +88,8 @@ type SavedMzSignature = {
 }
 
 const MZ_SIGNATURE_STORAGE_KEY = 'landlord_documents_mz_signature_v1'
-const AGENCY_AUTHORITY_TEMPLATE_VERSION = 'authorisation-detail-v7-page-filled-2026-05-18'
+const AGENCY_AUTHORITY_COMPANY_ADDRESS = '130 Gladstone Street, South Melbourne, VIC 3205'
+const AGENCY_AUTHORITY_TEMPLATE_VERSION = 'authorisation-detail-v8-office-address-2026-09-30'
 const SERVICE_AGREEMENT_TEMPLATE_VERSION = 'service-agreement-v6-2026-07-07'
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const ATTACHMENT_ACCEPT = '.pdf,.doc,.docx,.jpg,.jpeg,.png'
@@ -438,7 +439,9 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
       parking_details: '1 car space',
       maximum_guests: '',
       mz_company_name: 'MZ Property Pty Ltd',
-      mz_company_address: 'G03/87 Gladstone St, South Melbourne VIC 3205',
+      mz_company_address: type === 'agency_authority'
+        ? AGENCY_AUTHORITY_COMPANY_ADDRESS
+        : 'G03/87 Gladstone St, South Melbourne VIC 3205',
       mz_company_abn: '42 657 925 365',
       mz_agent_name: 'Ming Xue',
       mz_contact_phone: type === 'agency_authority' ? '0434 782 499' : '+61 430907988',

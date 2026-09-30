@@ -111,6 +111,14 @@ const ordinaryInvoice = renderPersonnelSettlementDocumentHtml({
 })
 assert(ordinaryInvoice.includes('<h1>Invoice</h1>'))
 assert(!ordinaryInvoice.includes('<h1>Tax Invoice</h1>'))
+const ordinaryInvoiceWithoutAbn = renderPersonnelSettlementDocumentHtml({
+  ...base,
+  documentKind: 'invoice',
+  supplier: { ...base.supplier, abn: '', gst_registered: false },
+  totals: { subtotal_cents: 20000, gst_cents: 0, total_cents: 20000 },
+})
+assert(ordinaryInvoiceWithoutAbn.includes('<h1>Invoice</h1>'))
+assert(!ordinaryInvoiceWithoutAbn.includes('<div>ABN </div>'))
 
 const draft = renderPersonnelSettlementDocumentHtml({ ...base, documentStage: 'awaiting_confirmation', documentKind: 'settlement_draft', invoiceNumber: null })
 assert(draft.includes('<h1>Weekly Settlement Draft</h1>'))
@@ -172,6 +180,7 @@ assert(routes.includes("'/weekly/:settlementId/return-for-confirmation'"))
 
 const documentSource = read('src/lib/personnelSettlementDocuments.ts')
 assert(documentSource.includes("throw new Error('settlement_gst_amount_invalid')"))
+assert(documentSource.includes('supplier.gst_registered && supplier.abn.length !== 11'))
 assert(documentSource.includes('appendPersonnelSettlementFinanceAdjustment'))
 assert(documentSource.includes("calculation_snapshot->>'property_label'"))
 assert(documentSource.includes('template_version: PERSONNEL_SETTLEMENT_DOCUMENT_TEMPLATE_VERSION'))

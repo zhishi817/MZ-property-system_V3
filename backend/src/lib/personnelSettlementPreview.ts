@@ -28,6 +28,7 @@ type ProfileRow = {
   supplier_business_name: string | null
   abn: string | null
   gst_status: 'unconfirmed' | 'registered' | 'not_registered'
+  payment_method: 'bank_transfer' | 'cash' | 'foreign_currency' | 'other'
   invoice_document_type: string
   currency: string
 }
@@ -200,7 +201,7 @@ export async function buildPersonnelSettlementPreview(input: {
     executor.query(
       `SELECT p.id, p.user_id, p.effective_from::text, p.effective_to::text,
               p.person_type, p.supplier_legal_name, p.supplier_business_name,
-              p.abn, p.gst_status, p.invoice_document_type, p.currency,
+              p.abn, p.gst_status, p.payment_method, p.invoice_document_type, p.currency,
               COALESCE(
                 NULLIF(TRIM(u.display_name), ''),
                 NULLIF(TRIM(u.username), ''),
@@ -427,7 +428,13 @@ export async function buildPersonnelSettlementPreview(input: {
   }
   let cancelledCleaningAssignments = 0
   let nonCancelledCleaningAssignments = 0
+  let excludedNonCheckoutCleaningAssignments = 0
   for (const assignment of uniqueCleaningAssignments.values()) {
+    const taskType = cleanText(assignment.task_type).toLowerCase()
+    if (taskType !== 'checkout_clean') {
+      excludedNonCheckoutCleaningAssignments += 1
+      continue
+    }
     const status = cleanText(assignment.task_status).toLowerCase()
     if (status === 'cancelled' || status === 'canceled') {
       cancelledCleaningAssignments += 1
@@ -617,6 +624,7 @@ export async function buildPersonnelSettlementPreview(input: {
       cleaning_assignment_candidates: uniqueCleaningAssignments.size,
       non_cancelled_cleaning_assignments: nonCancelledCleaningAssignments,
       excluded_cancelled_cleaning_assignments: cancelledCleaningAssignments,
+      excluded_non_checkout_cleaning_assignments: excludedNonCheckoutCleaningAssignments,
       approved_claims: claims.length,
       legacy_tasks_requiring_manual_review: 0,
     },
