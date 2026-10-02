@@ -52,15 +52,15 @@
 - Branch: `codex/personnel-settlement-fixes-20261002`
 - Base: `local incremental base@41a219f0a195519b233f0bae6c75d2ca4dc065a7`; `origin/Dev@f7af678d4d85f46b817ec47e54d4796b0dfb3bb2` fetched at `2026-10-02T15:57:32+1000`
 - Candidate patch SHA-256: `16ea39e0c9fb58349d148c96b878ff19e1cfb82e4ac4708f3d9d0d8c0e8e1d75`
-- Commit SHA: `not committed`
+- Commit SHA: `6da7d035a30c4d499396560a67ebc4ce908f3a70`
 - Dependencies: none
 - Required validation: `PASS`; evidence: auditor regression suite passed 41/41 and performs Git-only fixture checks without application, API or database writes.
 - Shared-hunk review: `not applicable`; evidence: all three candidate files belong only to this governance CRL.
 - Generated-file review: `PASS`; evidence: no cache, dependency, build output or generated file is selected.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user explicitly authorized the proposed root/CRL-20261002-003 governance repair after the push gate blocker was reported.
 - Independent review: `GO`; evidence: independent read-only review matched the exact 3-file staged scope and candidate fingerprint, found no P0/P1/P2, and independently passed 41/41 auditor tests, the pre-commit gate, ledger coverage and diff check.
-- Action conclusion: `GO`; evidence: the exact reviewed candidate may be committed locally; this does not authorize push, PR, merge or deployment.
+- Action conclusion: `GO`; evidence: the exact reviewed candidate was committed locally as `6da7d035a30c4d499396560a67ebc4ce908f3a70`; push, PR, merge and deployment remain unauthorized.
 
 ### Risks / Release Notes
 
