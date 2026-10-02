@@ -101,15 +101,15 @@
 - Branch: `codex/personnel-settlement-fixes-20261002`
 - Base: `origin/Dev@f7af678d4d85f46b817ec47e54d4796b0dfb3bb2`; fetched at `2026-10-02T10:53:07+1000`
 - Candidate patch SHA-256: `cd58aa8aa5764e0562cd220fed8eea37687ffbd9daf0d7b5950efc9a32d568d1`
-- Commit SHA: `not committed`
+- Commit SHA: `b4c147980170ae004ba14d7e1f7a8fad25841a5f`
 - Dependencies: `mobile/CRL-20261002-001`
 - Required validation: `PASS`; evidence: Phase 1/2/3 and claim-dedup contracts, backend/frontend TypeScript, 6 suites/32 web tests, target lint, frontend production build, feature registry and ledger coverage passed.
 - Shared-hunk review: `PASS`; evidence: shared Phase 1 and FR-029 hunks were merged from the two selected Root CRLs only.
 - Generated-file review: `PASS`; evidence: no tracked build outputs, caches or dependency links are staged.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user explicitly selected root/CRL-20261002-001 and root/CRL-20261002-002 for commit.
 - Independent review: `GO for commit`; evidence: independent read-only re-review recomputed fingerprint `cd58aa8aa5764e0562cd220fed8eea37687ffbd9daf0d7b5950efc9a32d568d1`, inspected all 14 staged files / 62 non-ledger hunks, independently reran the exact gate and sensitive/generated-file review, and confirmed the prior date-forward P1 is closed with server, HTTP 409, UI and regression guards. No P0/P1 remains. Accepted non-blocking P2: standard Actions do not yet wire the personnel Phase/claim-dedup scripts, and the profile-merge transaction lacks a real PostgreSQL rollback integration test.
-- Action conclusion: `GO`; the exact reviewed candidate may be committed locally. Push, PR, merge, deployment and production/device verification remain unauthorized.
+- Action conclusion: `GO`; the exact reviewed candidate was committed locally as `b4c147980170ae004ba14d7e1f7a8fad25841a5f`. Push, PR, merge, deployment and production/device verification remain unauthorized.
 
 ### Git / Delivery State
 
@@ -210,15 +210,15 @@
 - Branch: `codex/personnel-settlement-fixes-20261002`
 - Base: `origin/Dev@f7af678d4d85f46b817ec47e54d4796b0dfb3bb2`; fetched at `2026-10-02T10:53:07+1000`
 - Candidate patch SHA-256: `cd58aa8aa5764e0562cd220fed8eea37687ffbd9daf0d7b5950efc9a32d568d1`
-- Commit SHA: `not committed`
+- Commit SHA: `b4c147980170ae004ba14d7e1f7a8fad25841a5f`
 - Dependencies: `mobile/CRL-20261002-001`
 - Required validation: `PASS`; evidence: Phase 1/2/3 and claim-dedup contracts, backend/frontend TypeScript, 6 suites/32 web tests, target lint, frontend production build, feature registry and ledger coverage passed.
 - Shared-hunk review: `PASS`; evidence: shared Phase 1 and FR-029 hunks were merged from the two selected Root CRLs only.
 - Generated-file review: `PASS`; evidence: no tracked build outputs, caches or dependency links are staged.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user explicitly selected root/CRL-20261002-001 and root/CRL-20261002-002 for commit.
 - Independent review: `GO for commit`; evidence: independent read-only re-review recomputed fingerprint `cd58aa8aa5764e0562cd220fed8eea37687ffbd9daf0d7b5950efc9a32d568d1`, inspected all 14 staged files / 62 non-ledger hunks, independently reran the exact gate and sensitive/generated-file review, and confirmed the prior date-forward P1 is closed with server, HTTP 409, UI and regression guards. No P0/P1 remains. Accepted non-blocking P2: standard Actions do not yet wire the personnel Phase/claim-dedup scripts, and the profile-merge transaction lacks a real PostgreSQL rollback integration test.
-- Action conclusion: `GO`; the exact reviewed candidate may be committed locally. Push, PR, merge, deployment and production/device verification remain unauthorized.
+- Action conclusion: `GO`; the exact reviewed candidate was committed locally as `b4c147980170ae004ba14d7e1f7a8fad25841a5f`. Push, PR, merge, deployment and production/device verification remain unauthorized.
 
 ### Risks / Release Notes
 
