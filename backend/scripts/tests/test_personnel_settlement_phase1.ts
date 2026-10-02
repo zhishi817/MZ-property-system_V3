@@ -17,6 +17,7 @@ import {
   isValidAustralianAbn,
   getPersonnelSettlementProfile,
   listPersonnelSettlementProfiles,
+  planPersonnelCurrentProfileEdit,
   validatePersonnelProfilePatch,
 } from '../../src/lib/personnelSettlementProfiles'
 import {
@@ -126,6 +127,60 @@ assert.throws(() => validatePersonnelProfilePatch({
   patch: {},
 }), /effective_date_in_future/)
 
+assert.deepStrictEqual(planPersonnelCurrentProfileEdit({
+  profiles: [
+    { id: 'profile-sep-1', effective_from: '2026-09-01', effective_to: '2026-09-29' },
+    { id: 'profile-sep-30', effective_from: '2026-09-30', effective_to: null },
+  ],
+  currentEffectiveDate: '2026-09-30',
+  requestedEffectiveDate: '2026-09-01',
+  today: '2026-10-02',
+}), {
+  sourceProfileId: 'profile-sep-30',
+  targetProfileId: 'profile-sep-1',
+  absorbedProfileIds: ['profile-sep-30'],
+  previousProfileId: null,
+  targetEffectiveFrom: '2026-09-01',
+  targetEffectiveTo: null,
+})
+assert.deepStrictEqual(planPersonnelCurrentProfileEdit({
+  profiles: [
+    { id: 'profile-aug', effective_from: '2026-08-01', effective_to: '2026-09-29' },
+    { id: 'profile-sep-30', effective_from: '2026-09-30', effective_to: null },
+  ],
+  currentEffectiveDate: '2026-09-30',
+  requestedEffectiveDate: '2026-09-01',
+  today: '2026-10-02',
+}), {
+  sourceProfileId: 'profile-sep-30',
+  targetProfileId: 'profile-sep-30',
+  absorbedProfileIds: [],
+  previousProfileId: 'profile-aug',
+  targetEffectiveFrom: '2026-09-01',
+  targetEffectiveTo: null,
+})
+assert.throws(() => planPersonnelCurrentProfileEdit({
+  profiles: [
+    { id: 'profile-sep-1', effective_from: '2026-09-01', effective_to: '2026-09-29' },
+    { id: 'profile-sep-30', effective_from: '2026-09-30', effective_to: null },
+  ],
+  currentEffectiveDate: '2026-09-01',
+  requestedEffectiveDate: '2026-09-01',
+  today: '2026-10-02',
+}), /profile_version_stale/)
+assert.throws(() => planPersonnelCurrentProfileEdit({
+  profiles: [
+    { id: 'profile-sep-30', effective_from: '2026-09-30', effective_to: null },
+  ],
+  currentEffectiveDate: '2026-09-30',
+  requestedEffectiveDate: '2026-10-01',
+  today: '2026-10-02',
+}), /profile_effective_date_forward_move_not_allowed/)
+assert.match(profilesSource, /if \(currentEditPlan \|\| !next\)/)
+assert.match(profilesSource, /SET profile_id=\$1/)
+assert.match(profilesSource, /DELETE FROM personnel_settlement_profiles/)
+assert.match(router, /current_effective_date: z\.string\(\)\.trim\(\)\.regex\(DATE_ONLY\)\.optional\(\)/)
+
 assert.deepStrictEqual(calculateSettlementLine({
   quantity_numerator: 1,
   quantity_denominator: 1,
@@ -230,6 +285,11 @@ const profiles = [
     person_type: 'warehouse', supplier_legal_name: 'Warehouse One', supplier_business_name: null, abn: '10000000003',
     gst_status: 'not_registered', invoice_document_type: 'supplier_invoice', currency: 'AUD',
   },
+  {
+    id: 'profile-subsidy-only', user_id: 'subsidy-only', user_name: 'Subsidy Only', effective_from: '2026-01-01', effective_to: null,
+    person_type: 'cleaner', supplier_legal_name: 'Subsidy Only', supplier_business_name: null, abn: '10000000004',
+    gst_status: 'registered', invoice_document_type: 'supplier_invoice', currency: 'AUD',
+  },
 ]
 const ruleRows = [
   { rule_id: 'rule-cleaner', user_id: 'cleaner-1', rule_name: 'Cleaner fee', effective_from: '2026-01-01', effective_to: null, price_basis: 'exclusive_gst', currency: 'AUD', item_id: 'cleaner-default', component_type: 'cleaning_task', property_id: null, task_type: null, conditions: { property_type: '一房一卫' }, priority: 0, rate_cents: '8000' },
@@ -259,6 +319,7 @@ const claims = [
   { id: 'claim-warehouse', submitter_user_id: 'warehouse-1', service_date: '2026-09-09', claim_type: 'warehouse_hour', property_id: null, cleaning_task_id: null, duration_minutes: 90, approved_duration_minutes: null, requested_quantity: null, approved_quantity: null, approved_amount_cents: null, note: 'Warehouse shift' },
   { id: 'claim-subsidy', submitter_user_id: 'cleaner-1', service_date: '2026-09-09', claim_type: 'subsidy_amount', property_id: null, cleaning_task_id: null, duration_minutes: null, approved_duration_minutes: null, requested_quantity: null, approved_quantity: null, approved_amount_cents: '1500', note: 'Travel subsidy' },
   { id: 'claim-new-property', submitter_user_id: 'cleaner-1', service_date: '2026-09-10', claim_type: 'new_property_task', property_id: 'property-1', cleaning_task_id: null, duration_minutes: 120, approved_duration_minutes: null, requested_quantity: null, approved_quantity: null, approved_amount_cents: null, note: 'New property setup' },
+  { id: 'claim-direct-without-rule', submitter_user_id: 'subsidy-only', service_date: '2026-09-11', claim_type: 'subsidy_amount', property_id: null, cleaning_task_id: null, duration_minutes: null, approved_duration_minutes: null, requested_quantity: null, approved_quantity: null, approved_amount_cents: '1368', note: 'Approved reimbursement' },
 ]
 
 const fakeExecutor = {
@@ -300,15 +361,17 @@ async function main() {
   assert.strictEqual(preview.source_summary.non_cancelled_cleaning_assignments, 2)
   assert.strictEqual(preview.source_summary.excluded_cancelled_cleaning_assignments, 2)
   assert.strictEqual(preview.source_summary.excluded_non_checkout_cleaning_assignments, 2)
-  assert.strictEqual(preview.source_summary.approved_claims, 3)
+  assert.strictEqual(preview.source_summary.approved_claims, 4)
   assert.strictEqual(preview.source_summary.legacy_tasks_requiring_manual_review, 0)
 
   const cleaner = preview.people.find((person) => person.user_id === 'cleaner-1')
   const inspector = preview.people.find((person) => person.user_id === 'inspector-1')
   const warehouse = preview.people.find((person) => person.user_id === 'warehouse-1')
+  const subsidyOnly = preview.people.find((person) => person.user_id === 'subsidy-only')
   assert.ok(cleaner)
   assert.ok(inspector)
   assert.ok(warehouse)
+  assert.ok(subsidyOnly)
   assert.strictEqual(cleaner?.lines.filter((line) => line.component_type === 'cleaning_task').length, 1)
   assert.strictEqual(cleaner?.lines.find((line) => line.component_type === 'cleaning_task')?.source_type, 'cleaning_task_assignment')
   assert.strictEqual(cleaner?.lines.find((line) => line.component_type === 'cleaning_task')?.source_audit_id, null)
@@ -325,11 +388,15 @@ async function main() {
     },
     { quantity_numerator: 120, quantity_denominator: 60, subtotal_cents: 7_000, gst_cents: 700, total_cents: 7_700 },
   )
-  assert.deepStrictEqual(cleaner?.totals, { subtotal_cents: 18_500, gst_cents: 1_850, total_cents: 20_350 })
+  assert.deepStrictEqual(cleaner?.totals, { subtotal_cents: 18_364, gst_cents: 1_836, total_cents: 20_200 })
   assert.strictEqual(inspector?.lines.length, 1, 'multiple inspections on one Melbourne day pay one day rate')
   assert.deepStrictEqual(inspector?.totals, { subtotal_cents: 25_000, gst_cents: 0, total_cents: 25_000 })
   assert.deepStrictEqual(warehouse?.totals, { subtotal_cents: 9_500, gst_cents: 0, total_cents: 9_500 })
-  assert.deepStrictEqual(preview.totals, { subtotal_cents: 53_000, gst_cents: 1_850, total_cents: 54_850 })
+  assert.deepStrictEqual(subsidyOnly?.totals, { subtotal_cents: 1_244, gst_cents: 124, total_cents: 1_368 })
+  assert.strictEqual(subsidyOnly?.lines[0]?.rule_id, null)
+  assert.strictEqual(subsidyOnly?.lines[0]?.rule_item_id, null)
+  assert.ok(!subsidyOnly?.warnings.some((warning) => warning.reason === 'missing_effective_rule'))
+  assert.deepStrictEqual(preview.totals, { subtotal_cents: 54_108, gst_cents: 1_960, total_cents: 56_068 })
   assert.strictEqual(preview.manual_review.legacy_tasks_without_performer_audit.length, 0)
   assert.ok(preview.manual_review.warnings.some((warning) => warning.reason === 'multiple_performers_for_task'))
   assert.ok(preview.manual_review.warnings.some((warning) => warning.reason === 'missing_or_unsupported_property_type'))

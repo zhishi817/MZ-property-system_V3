@@ -94,8 +94,8 @@ type ClaimEstimate = {
 } | {
   available: true
   reason: null
-  rule_id: string
-  rule_name: string
+  rule_id: string | null
+  rule_name: string | null
   effective_from: string
   price_basis: 'exclusive_gst' | 'inclusive_gst'
   unit_rate_cents: number
@@ -600,7 +600,9 @@ export default function WorkloadClaimsPanel() {
             name="approved_amount"
             rules={[{ required: true, type: 'number', min: 0, message: '请确认金额' }]}
           ><InputNumber min={0} precision={2} prefix="$" style={{ width: '100%' }} /></Form.Item> : null}
-          <div className={styles.fieldHelp}>修改工作量后，系统将按工作日期生效的费用规则自动重新计算金额。</div>
+          <div className={styles.fieldHelp}>{reviewMode === 'amount'
+            ? '核对金额是本次最终计入总额；财务可调整金额，并决定计入、退回或不纳入。'
+            : '修改工作量后，系统将按工作日期生效的费用规则自动重新计算金额。'}</div>
 
           {reviewEstimateLoading ? <div className={styles.estimateState}><Skeleton active paragraph={{ rows: 2 }} /></div> : null}
           {!reviewEstimateLoading && reviewEstimateError

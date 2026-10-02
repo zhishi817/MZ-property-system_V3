@@ -98,6 +98,7 @@ const selfProfilePatchSchema = z.object({
 }).strict()
 const adminProfilePatchSchema = z.object({
   effective_date: z.string().trim().regex(DATE_ONLY),
+  current_effective_date: z.string().trim().regex(DATE_ONLY).optional(),
   reason: z.string().trim().min(1).max(500),
   ...profilePatchFields,
 }).strict()
@@ -236,6 +237,8 @@ function errorStatus(error: any) {
   if (['user_not_found', 'claim_not_found', 'settlement_not_found', 'settlement_document_not_found'].includes(code)) return 404
   if (
     code === 'profile_effective_date_locked'
+    || code === 'profile_effective_date_forward_move_not_allowed'
+    || code === 'profile_version_stale'
     || code === 'rule_effective_date_locked'
     || code === 'claim_not_editable'
     || code === 'claim_not_submittable'
@@ -388,13 +391,14 @@ router.patch('/profiles/:userId', requirePerm('personnel_settlements.profiles.ma
   }
   try {
     const actorUserId = String((req as any).user?.sub || '').trim()
-    const { effective_date, reason, ...patch } = parsed.data
+    const { effective_date, current_effective_date, reason, ...patch } = parsed.data
     return res.json(await savePersonnelSettlementProfile({
       userId,
       actorUserId,
       source: 'web_admin',
       reason,
       effectiveDate: effective_date,
+      currentEffectiveDate: current_effective_date,
       patch: patch as PersonnelProfilePatch,
     }))
   } catch (error: any) {

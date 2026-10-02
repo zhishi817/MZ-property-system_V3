@@ -25,6 +25,21 @@ export type PersonnelProfilePatch = {
 
 type Queryable = { query: (sql: string, params?: any[]) => Promise<any> }
 
+type PersonnelProfileVersion = {
+  id: string
+  effective_from: string
+  effective_to?: string | null
+}
+
+export type PersonnelCurrentProfileEditPlan = {
+  sourceProfileId: string
+  targetProfileId: string
+  absorbedProfileIds: string[]
+  previousProfileId: string | null
+  targetEffectiveFrom: string
+  targetEffectiveTo: string | null
+}
+
 function cleanText(value: unknown) {
   return String(value ?? '').trim()
 }
@@ -73,6 +88,60 @@ function melbourneDateToday(now = new Date()) {
   }).formatToParts(now)
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
   return `${values.year}-${values.month}-${values.day}`
+}
+
+export function planPersonnelCurrentProfileEdit(input: {
+  profiles: PersonnelProfileVersion[]
+  currentEffectiveDate: string
+  requestedEffectiveDate: string
+  today?: string
+}): PersonnelCurrentProfileEditPlan {
+  const today = input.today || melbourneDateToday()
+  if (!isDateOnly(input.currentEffectiveDate) || !isDateOnly(input.requestedEffectiveDate) || !isDateOnly(today)) {
+    throw new Error('invalid_effective_date')
+  }
+  const profiles = [...input.profiles].sort((a, b) => String(a.effective_from).localeCompare(String(b.effective_from)))
+  const source = profiles.find((row) => String(row.effective_from) === input.currentEffectiveDate) || null
+  if (
+    !source
+    || String(source.effective_from) > today
+    || (!!source.effective_to && String(source.effective_to) < today)
+  ) {
+    throw new Error('profile_version_stale')
+  }
+
+  const requested = input.requestedEffectiveDate
+  const sourceStart = String(source.effective_from)
+  if (requested > sourceStart) {
+    throw new Error('profile_effective_date_forward_move_not_allowed')
+  }
+  const exactRequested = profiles.find((row) => row.id !== source.id && String(row.effective_from) === requested) || null
+  const target = requested < sourceStart && exactRequested ? exactRequested : source
+  const absorbedProfileIds = requested < sourceStart
+    ? profiles
+      .filter((row) => (
+        row.id !== target.id
+        && String(row.effective_from) >= requested
+        && String(row.effective_from) <= sourceStart
+      ))
+      .map((row) => row.id)
+    : []
+  const previous = [...profiles]
+    .reverse()
+    .find((row) => (
+      row.id !== target.id
+      && !absorbedProfileIds.includes(row.id)
+      && String(row.effective_from) < requested
+    )) || null
+
+  return {
+    sourceProfileId: source.id,
+    targetProfileId: target.id,
+    absorbedProfileIds,
+    previousProfileId: previous?.id || null,
+    targetEffectiveFrom: requested,
+    targetEffectiveTo: source.effective_to ? String(source.effective_to) : null,
+  }
 }
 
 function defaultPersonnelType(role: unknown): PersonnelType {
@@ -265,6 +334,7 @@ export async function savePersonnelSettlementProfile(input: {
   source: 'mobile_self' | 'web_admin'
   reason?: string | null
   effectiveDate: string
+  currentEffectiveDate?: string | null
   patch: PersonnelProfilePatch
 }) {
   assertPersonnelSettlementSchemaReady()
@@ -300,11 +370,20 @@ export async function savePersonnelSettlementProfile(input: {
       [input.userId],
     )
     const profiles = profilesResult.rows || []
+    const currentEditPlan = input.currentEffectiveDate
+      ? planPersonnelCurrentProfileEdit({
+        profiles,
+        currentEffectiveDate: input.currentEffectiveDate,
+        requestedEffectiveDate: input.effectiveDate,
+      })
+      : null
     const exact = profiles.find((row: any) => String(row.effective_from) === input.effectiveDate) || null
-    const current = exact || [...profiles].reverse().find((row: any) => (
-      String(row.effective_from) <= input.effectiveDate
-      && (!row.effective_to || String(row.effective_to) >= input.effectiveDate)
-    )) || null
+    const current = currentEditPlan
+      ? profiles.find((row: any) => row.id === currentEditPlan.sourceProfileId) || null
+      : exact || [...profiles].reverse().find((row: any) => (
+        String(row.effective_from) <= input.effectiveDate
+        && (!row.effective_to || String(row.effective_to) >= input.effectiveDate)
+      )) || null
     const next = profiles.find((row: any) => String(row.effective_from) > input.effectiveDate) || null
 
     const merged = {
@@ -338,7 +417,7 @@ export async function savePersonnelSettlementProfile(input: {
     if (merged.gst_status === 'registered' && !merged.abn) throw new Error('abn_required_for_gst')
 
     const before = safeAuditSnapshot({ ...current, ...user })
-    if (!next) {
+    if (currentEditPlan || !next) {
       await client.query(
         `UPDATE users
             SET legal_name=$1, personal_abn=$2, bank_account_name=$3,
@@ -355,8 +434,45 @@ export async function savePersonnelSettlementProfile(input: {
       )
     }
 
-    let profileId = exact?.id || randomUUID()
-    if (exact) {
+    const profileId = currentEditPlan?.targetProfileId || exact?.id || randomUUID()
+    if (currentEditPlan) {
+      if (currentEditPlan.absorbedProfileIds.length) {
+        await client.query(
+          `UPDATE personnel_settlement_profile_audits
+              SET profile_id=$1
+            WHERE profile_id = ANY($2::text[])`,
+          [profileId, currentEditPlan.absorbedProfileIds],
+        )
+        await client.query(
+          `DELETE FROM personnel_settlement_profiles
+            WHERE id = ANY($1::text[])`,
+          [currentEditPlan.absorbedProfileIds],
+        )
+      }
+      if (currentEditPlan.previousProfileId) {
+        await client.query(
+          `UPDATE personnel_settlement_profiles
+              SET effective_to=$1::date - 1, updated_by=$2, updated_at=now()
+            WHERE id=$3`,
+          [input.effectiveDate, input.actorUserId, currentEditPlan.previousProfileId],
+        )
+      }
+      await client.query(
+        `UPDATE personnel_settlement_profiles
+            SET effective_from=$1::date, effective_to=$2::date,
+                settlement_enabled=$3, person_type=$4, supplier_legal_name=$5,
+                supplier_business_name=$6, abn=$7, gst_status=$8,
+                gst_effective_from=$9::date, payment_method=$10,
+                updated_by=$11, updated_at=now()
+          WHERE id=$12`,
+        [
+          currentEditPlan.targetEffectiveFrom, currentEditPlan.targetEffectiveTo,
+          merged.settlement_enabled, merged.person_type, merged.supplier_legal_name,
+          merged.supplier_business_name, merged.abn, merged.gst_status,
+          merged.gst_effective_from, merged.payment_method, input.actorUserId, profileId,
+        ],
+      )
+    } else if (exact) {
       await client.query(
         `UPDATE personnel_settlement_profiles
             SET settlement_enabled=$1, person_type=$2, supplier_legal_name=$3,

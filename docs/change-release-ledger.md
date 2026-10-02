@@ -1,5 +1,367 @@
 # Change Release Ledger
 
+## CRL-20261002-003 — 发布尝试字段解析边界修复
+
+- **Repository:** `root`
+- **Status:** locally validated; selected for commit
+- **Updated:** 2026-10-02 Australia/Melbourne
+- **Request:** 修复发布审计器把 Release Attempt 后续的 CRL 汇总字段继续解析为同一次尝试字段，导致正确的 Base、Commit SHA 和授权证据被覆盖并阻止精确范围审计的问题。
+- **Outcome:** 每个 `#### RA-*` 只读取到下一次 Release Attempt 或下一个 `###` 小节；后续“Git / Delivery State”等汇总字段不再覆盖权威 RA，精确审计结果不再依赖 CRL 遍历顺序。
+
+### Implementation
+
+- Previous behavior: `parse_attempts` 和 `release_attempt_block` 只以同级 RA 或整个 CRL 结尾作为边界；RA 后出现 `### Git / Delivery State` 时，其中重复的 Base、Commit SHA 会覆盖已记录的权威字段。
+- New behavior: 两个解析入口都选择“下一 RA、下一 `###` 小节、CRL 结尾”三者中最早的位置作为边界。
+- Key decisions: 只收紧 Markdown 解析边界，不修改 CRL 身份、hunk 规则、授权模型、应用代码或生产行为；回归测试同时断言字段值和原始 RA block 均排除后续汇总小节。
+
+### Files / Areas
+
+- `scripts/audit_change_release_ledger.py` — 收紧 Release Attempt 字段和原始区块的结束边界。
+- `scripts/tests/test_audit_change_release_ledger.py` — 增加 RA 后跟 CRL 汇总字段时不被覆盖的回归。
+- `docs/change-release-ledger.md` — 记录本治理修复和提交证据。
+
+### Impact / Dependencies
+
+- Application/API/role/database/production: none；不调用任何业务 API，不读写数据库，不触发通知、任务、同步或部署。
+- CI/config/dependencies: 无依赖或工作流改动；现有审计命令会自动使用修复后的解析器。
+- Dependencies: none；本单元位于当前临时分支已有本地提交之后，但解析修复本身不依赖费用结算业务实现。
+- Related units: `root/CRL-20261002-001`, `root/CRL-20261002-002`, `mobile/CRL-20261002-002`。
+
+### Validation
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_audit_change_release_ledger.py` — passed：41/41 tests；覆盖合格 CRL、未跟踪路径阻断、hunk 范围不匹配、ledger-only receipt 与 exact range 验证。
+- Feature Registry: not modified；本次只改变发布台账工具，不改变业务不变量。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none; incremental candidate is isolated on the existing temporary release branch after the previously reviewed local receipt head.
+- `scripts/audit_change_release_ledger.py` — SHA-256: `7c6e8dc479fadd97b20a1621db8ae29e8a0e2096e97c59a032196c8b7a2cd199`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `c01c3557ef635039b926fd97899d5ba5e2b10c007836c0843e04c22e7b9fe45c`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `4d3b05736cfcdb97646b1cd7a6fc3b05a2c0f27d007e20963a35b123e45a2ef7`
+
+### Release Attempts
+
+#### RA-20261002-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261002-003`
+- Selected CRL identities: `root/CRL-20261002-003`
+- Intended action: `commit`
+- Branch: `codex/personnel-settlement-fixes-20261002`
+- Base: `local incremental base@41a219f0a195519b233f0bae6c75d2ca4dc065a7`; `origin/Dev@f7af678d4d85f46b817ec47e54d4796b0dfb3bb2` fetched at `2026-10-02T15:57:32+1000`
+- Candidate patch SHA-256: `16ea39e0c9fb58349d148c96b878ff19e1cfb82e4ac4708f3d9d0d8c0e8e1d75`
+- Commit SHA: `6da7d035a30c4d499396560a67ebc4ce908f3a70`
+- Dependencies: none
+- Required validation: `PASS`; evidence: auditor regression suite passed 41/41 and performs Git-only fixture checks without application, API or database writes.
+- Shared-hunk review: `not applicable`; evidence: all three candidate files belong only to this governance CRL.
+- Generated-file review: `PASS`; evidence: no cache, dependency, build output or generated file is selected.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: user explicitly authorized the proposed root/CRL-20261002-003 governance repair after the push gate blocker was reported.
+- Independent review: `GO`; evidence: independent read-only review matched the exact 3-file staged scope and candidate fingerprint, found no P0/P1/P2, and independently passed 41/41 auditor tests, the pre-commit gate, ledger coverage and diff check.
+- Action conclusion: `GO`; evidence: the exact reviewed candidate was committed locally as `6da7d035a30c4d499396560a67ebc4ce908f3a70`; push, PR, merge and deployment remain unauthorized.
+
+#### RA-20261002-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261002-001`, `CRL-20261002-002`, `CRL-20261002-003`
+- Selected CRL identities: `root/CRL-20261002-001`, `root/CRL-20261002-002`, `root/CRL-20261002-003`
+- Intended action: `push`
+- Branch: `codex/personnel-settlement-fixes-20261002`
+- Remote branch/SHA: initial verified push `origin/codex/personnel-settlement-fixes-20261002@8ba440729d3864eafd102cce7e42ddde80576f1d`; this ledger-only pushed-state receipt will be re-audited before a separate second push.
+- Base: `origin/Dev@f7af678d4d85f46b817ec47e54d4796b0dfb3bb2`; fetched at `2026-10-02T16:55:32+1000`
+- Candidate patch SHA-256: `a89665c46aaf979f4cc1dff33abab6f0316c8d61889ca9320be6d6d4e14ccf0b`
+- Commit SHA: `6da7d035a30c4d499396560a67ebc4ce908f3a70`
+- Dependencies: none
+- Paired release scope: `mobile/CRL-20261002-001@8ce10fff673a44bf8cc5aa9b88613af9b476b963`, `mobile/CRL-20261002-002@9741a187976663d594fe7f1734adacb8e1443a31`; the two repository branch pushes are order-independent, while merge/deployment/OTA remain separately gated.
+- Required validation: `PASS`; evidence: the selected business tests, TypeScript, web tests/build, feature registry, 41/41 auditor regression suite, pre-commit gates and ledger coverage passed; Root and Mobile remain separate branch pushes and no deployment or OTA is included.
+- Shared-hunk review: `PASS`; evidence: the three selected Root CRLs jointly declare every non-ledger hunk in the exact range and the independent read-only push review verified that ownership.
+- Generated-file review: `PASS`; evidence: no tracked build output, cache, dependency directory or generated artifact is selected.
+- Technical state: `pushed`
+- User authorization: `approved-for-push`; evidence: after the exact final Root and Mobile branch heads were reported, the user explicitly instructed “推送”, then confirmed authorization for the required ledger-only push-evidence commits and the new final branch heads they create.
+- Independent review: `GO`; evidence: independent read-only push review verified the exact three-CRL Root range, base, branch, content commit, full-range fingerprint, 16 files / 65 non-ledger hunks, authorization, sensitive/generated-file boundaries and found no P0/P1; two recorded P2s are non-blocking.
+- Action conclusion: `GO`; evidence: the clean final pre-push range report passed every gate, the non-force initial push succeeded, and `git ls-remote` matched `origin/codex/personnel-settlement-fixes-20261002@8ba440729d3864eafd102cce7e42ddde80576f1d`; this ledger-only pushed-state receipt must pass the same audit before its second push.
+
+
+### Risks / Release Notes
+
+- Risk: parser boundary changes affect release evidence extraction only; malformed attempts placed outside `### Release Attempts` remain outside the documented contract.
+- Sensitive-information review: no secrets, credentials, database URLs, environment files or production logs are recorded.
+- Rollback: revert this governance commit; no application or data rollback is required.
+- Git state: not committed, not pushed, no PR, not merged, not deployed.
+
+## CRL-20261002-001 — 通用补贴直填金额并由财务决定是否计入（root）
+
+- **Repository:** `root`
+- **Status:** verified in combined isolated candidate; selected for commit
+- **Updated:** 2026-10-02 Australia/Melbourne
+- **Request:** 合作方不需要看到停车费、油费、高温补贴、雨补等预设类别，也不应为了自填金额的补贴先配置费用规则；只填写具体补贴内容、金额和证明，由财务核对金额并决定计入、退回补充或本次不纳入。
+- **Outcome:** 新建合同只保留仓管、加班、通用补贴、上新房和编外合作五类；`subsidy_amount` 改为与费用规则无关的直接金额流程，填写及财务核对金额均作为最终总额；已注册 GST 从总额内拆分，未注册 GST 的税额为 0。历史 `custom_amount` 继续按同一直接金额逻辑可审核，但只作为兼容类型保留且不能新建。财务批准后的直接金额可以在没有费用规则/规则项时进入周结算，快照保留空规则 ID。
+
+### Implementation
+
+- 主动反馈合同移除新的“其他费用”选项；补贴没有规则项时仍标记为可计算，历史已有 `custom_amount` 草稿/退回记录可继续修改提交；按时、按次、按天类型继续要求日期有效的费用规则。
+- 本人预估与网页财务审核对直接金额只读取工作日期有效的结算资料和 GST 状态，不再读取或伪造费用规则；GST 未确认继续返回不可计算。
+- 周结算预览先识别财务已批准的直接金额，按最终含税总额计算并跳过规则选择；结算规则快照过滤空规则 ID。
+- 网页金额审核提示改为“最终计入总额”，明确财务可调整金额并决定计入、退回或不纳入。
+
+### Files / Areas
+
+- `backend/src/lib/personnelWorkloadClaims.ts` — 直接金额 options、预估与审核计算脱离费用规则。
+- `backend/src/lib/personnelSettlementPreview.ts` — 已批准补贴/历史其他金额无规则进入周结算并使用空规则 ID。
+- `backend/src/lib/personnelSettlementWorkflow.ts` — 规则快照排除空规则 ID。
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — 覆盖无规则人员的补贴结算及 GST 拆分。
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — 覆盖补贴 options 与注册/未注册 GST 的直接金额计算。
+- `frontend/src/app/finance/settlements/WorkloadClaimsPanel.tsx` — 金额审核提示及可空规则类型。
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — 固化直接金额审核文案与决策边界。
+- `docs/feature-regression-registry.md` — 登记通用补贴及历史类型兼容不变量。
+- `docs/change-release-ledger.md` — 本 CRL。
+
+### Impact / Dependencies
+
+- 无数据库结构变更、migration、生产写入、部署或付款动作。
+- 已锁定历史周结算不回算；只有后续预估、审核和重新生成的结算采用新口径。
+- 配套移动端为 `mobile/CRL-20261002-001`；两仓需要一起发布才能同时获得新入口和后端无规则计算能力。
+- 风险：直接金额的 GST 语义固定为“填写金额即最终总额”，不能再套用人员费用规则的未税单价口径。
+
+### Validation
+
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_personnel_settlement_phase1.ts`（`backend`）— passed：无费用规则的通用补贴可按最终总额进入结算，并正确拆分注册 GST。
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_personnel_settlement_phase3.ts`（`backend`）— passed：新建合同只返回 5 类且排除 `custom_amount`，通用补贴在注册/未注册 GST 下均无需费用规则。
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_personnel_claim_dedup.ts`（`backend`）— passed。
+- `./node_modules/.bin/tsc -p . --noEmit` 与输出到候选外目录的隔离编译（`backend`）— passed；未写入 tracked `backend/dist`。
+- `./node_modules/.bin/tsc --noEmit`（`frontend`）— passed。
+- `npm test -- --runInBand src/app/finance/settlements/settlementWorkflowUi.test.ts`（`frontend`）— passed：7/7 tests。
+- 目标前端 ESLint — passed：0 errors / 0 warnings。
+- `npm run build`（`frontend`）— passed；只有仓库既有构建警告。
+- `npm run check:feature-registry` — passed：26 个 FR、212 条测试映射、77 个 mobile deferred。
+- `python3 scripts/audit_change_release_ledger.py` — passed：14/14 changed files recorded；`git diff --check` — passed。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none; combined candidate is based on freshly fetched `origin/Dev`.
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `b4cc6b8576c34a7eef73558c7b59f5c70fd138d1cf1524d7d3d6f2a9c9cb4560`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `077b21e47a41c5e64785b8c79ece58980350942a5e39b666681f127886635c73`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `d963e14822581451c236d8beb22ddad3aafcdb28853075779bc54efa996e78d3`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `ae64a92c58db8254085b554f318859dd5315d48ee9ce5acf722a39aa9c67c858`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `97ca3e011438681d9b6cb820ed3c79bafe45d53b2792fc1f9125564d35daaf40`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `6ea00b34606191828bcb29c77443655e8d5f6adbb22915491bc82ed7d57c04b0`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `8f24b4ce1c92b5b05d2b979a3271829452a4f93766c7ad3a4313373f52383acd`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `0fad782cf9b9f76ecdce4fcc35749f0170f01aa486d52355e932c5dca5f7efb4`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `3243a57346b01c9ce3ca731e141fa1f880bd4bbfb9edd0bafb0ca2acbbb91f2b`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `3e8a2d3c3aefbf9c3cdb98649187fc5307bed0cb5ad86f43a3baf4fcb0b9b20a`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `f2f991cde52a24dff73d1d352884360607387487eb759a5a518188810b857184`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `001e324c59df62f8c8b679fa462c83982531d4f01d2ed1c5dbd24bee39e2e091`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `8f5d5c9a869fc310ee9bbe4082ff94bf8c71c7cda9b7d0aca72db4bb75f5a461`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `da822a291e25840ec26d4f5da628a15759b935bfa7ee9abdc3bf7275a988aa1d`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `e241c2ebf7dc38bd2a3922da857f857c4e07d154922bdee0cbdea0d18d65d34f`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `0b4021041bf7708dd54c114ac2387a2c98a587ac133bb0ce88655e9ebccc613a`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `053b16d280b65f62e61994084949184a2819f12dcec77ca4d170494381fb3b01`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `0f33e499ad28c9ec01202c51eadb67b2355ca026fb36768b3ceab39abf7b2f35`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `46680de4214d4a0249e116e1b1de682d21d5dec1b1557c85df79c6c2d49c5ab3`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `85e3bdc08bb2a354122c9dbdfc444c62046d33695e18dd466f112036b6aa8f78`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `95e58f46c4148676e6ca279bbcda146a7846f33104496765f65d88e52d7157c2`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `b67e0e4d2c4d101118e2c003e1c8e3d8736bb1ba34533dc066c3b7051b2bfcad`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `c40c47431c4e689e62b2d5adf50cdc3ef966d980779c60ad3d4a5815a8ea02fb`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `ca57f1eeb88f8154adcbbc7b96a6185a653f257b1131987d79f9c60b4a3f2f28`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `da01d28298a35f49c33a187419cd7255388f3b2daf9f56872ac55cf21bf3ea67`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `e6c8d82689880fe296b3485fe77f5029260dd759b802cb6cbfdba14e06b40da7`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `f42774fcdbad465bfe0d27a5bd4147fc92473048d98e4109d8cc0db618654263`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `fca073cb0c13284e8eb4055e3e94d8d57bc465126b2464e56b84a6a2b3cf0c73`
+- `docs/feature-regression-registry.md` — SHA-256: `3bbbc511e5b27b2b60501b616e615eb86dd1e6d07246d806835217b765e8b49b`
+- `docs/feature-regression-registry.md` — SHA-256: `640b886ff8b55f9b326bf39e11fa2df0c7fe5ea91858a78c394c7c1ca935dd8b`
+- `docs/feature-regression-registry.md` — SHA-256: `72fbf9f1c11228eb6a5faca95a0a6023a0c7d2f69c297030cd50508676daec24`
+- `docs/feature-regression-registry.md` — SHA-256: `858b92605d80a6993bdda423a39507d0d52ba6c4f7e18ba1e8ac333fbed22a0f`
+- `docs/feature-regression-registry.md` — SHA-256: `a9912b070dd14eb2767c67d53091a4a43aeddccb42e880aed9c783c0999204d9`
+- `docs/feature-regression-registry.md` — SHA-256: `e249331b4a544b3452a653f379081d8c197090501f552707ea28b2780480fa7d`
+- `frontend/src/app/finance/settlements/WorkloadClaimsPanel.tsx` — SHA-256: `3fa5b13ddcbb329512fff9d87a759cb2b98fa38ea2a2750fecce6fccdd6e77d8`
+- `frontend/src/app/finance/settlements/WorkloadClaimsPanel.tsx` — SHA-256: `6ab4d76bf688079b201dccf17d54d52d816dfa42481ea0123e3fcc5e8eacbe73`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `b0949f5ad4c9f57a38935088f667a537d1bad037134d699b187cbeb2c0f9a4d6`
+
+### Release Attempts
+
+#### RA-20261002-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261002-001`, `CRL-20261002-002`
+- Selected CRL identities: `root/CRL-20261002-001`, `root/CRL-20261002-002`
+- Intended action: `commit`
+- Branch: `codex/personnel-settlement-fixes-20261002`
+- Base: `origin/Dev@f7af678d4d85f46b817ec47e54d4796b0dfb3bb2`; fetched at `2026-10-02T10:53:07+1000`
+- Candidate patch SHA-256: `cd58aa8aa5764e0562cd220fed8eea37687ffbd9daf0d7b5950efc9a32d568d1`
+- Commit SHA: `b4c147980170ae004ba14d7e1f7a8fad25841a5f`
+- Dependencies: `mobile/CRL-20261002-001`
+- Required validation: `PASS`; evidence: Phase 1/2/3 and claim-dedup contracts, backend/frontend TypeScript, 6 suites/32 web tests, target lint, frontend production build, feature registry and ledger coverage passed.
+- Shared-hunk review: `PASS`; evidence: shared Phase 1 and FR-029 hunks were merged from the two selected Root CRLs only.
+- Generated-file review: `PASS`; evidence: no tracked build outputs, caches or dependency links are staged.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: user explicitly selected root/CRL-20261002-001 and root/CRL-20261002-002 for commit.
+- Independent review: `GO for commit`; evidence: independent read-only re-review recomputed fingerprint `cd58aa8aa5764e0562cd220fed8eea37687ffbd9daf0d7b5950efc9a32d568d1`, inspected all 14 staged files / 62 non-ledger hunks, independently reran the exact gate and sensitive/generated-file review, and confirmed the prior date-forward P1 is closed with server, HTTP 409, UI and regression guards. No P0/P1 remains. Accepted non-blocking P2: standard Actions do not yet wire the personnel Phase/claim-dedup scripts, and the profile-merge transaction lacks a real PostgreSQL rollback integration test.
+- Action conclusion: `GO`; the exact reviewed candidate was committed locally as `b4c147980170ae004ba14d7e1f7a8fad25841a5f`. Push, PR, merge, deployment and production/device verification remain unauthorized.
+
+#### RA-20261002-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261002-001`, `CRL-20261002-002`, `CRL-20261002-003`
+- Selected CRL identities: `root/CRL-20261002-001`, `root/CRL-20261002-002`, `root/CRL-20261002-003`
+- Intended action: `push`
+- Branch: `codex/personnel-settlement-fixes-20261002`
+- Remote branch/SHA: initial verified push `origin/codex/personnel-settlement-fixes-20261002@8ba440729d3864eafd102cce7e42ddde80576f1d`; this ledger-only pushed-state receipt will be re-audited before a separate second push.
+- Base: `origin/Dev@f7af678d4d85f46b817ec47e54d4796b0dfb3bb2`; fetched at `2026-10-02T16:55:32+1000`
+- Candidate patch SHA-256: `a89665c46aaf979f4cc1dff33abab6f0316c8d61889ca9320be6d6d4e14ccf0b`
+- Commit SHA: `6da7d035a30c4d499396560a67ebc4ce908f3a70`
+- Dependencies: none
+- Paired release scope: `mobile/CRL-20261002-001@8ce10fff673a44bf8cc5aa9b88613af9b476b963`, `mobile/CRL-20261002-002@9741a187976663d594fe7f1734adacb8e1443a31`; the two repository branch pushes are order-independent, while merge/deployment/OTA remain separately gated.
+- Required validation: `PASS`; evidence: the selected business tests, TypeScript, web tests/build, feature registry, 41/41 auditor regression suite, pre-commit gates and ledger coverage passed; Root and Mobile remain separate branch pushes and no deployment or OTA is included.
+- Shared-hunk review: `PASS`; evidence: the three selected Root CRLs jointly declare every non-ledger hunk in the exact range and the independent read-only push review verified that ownership.
+- Generated-file review: `PASS`; evidence: no tracked build output, cache, dependency directory or generated artifact is selected.
+- Technical state: `pushed`
+- User authorization: `approved-for-push`; evidence: after the exact final Root and Mobile branch heads were reported, the user explicitly instructed “推送”, then confirmed authorization for the required ledger-only push-evidence commits and the new final branch heads they create.
+- Independent review: `GO`; evidence: independent read-only push review verified the exact three-CRL Root range, base, branch, content commit, full-range fingerprint, 16 files / 65 non-ledger hunks, authorization, sensitive/generated-file boundaries and found no P0/P1; two recorded P2s are non-blocking.
+- Action conclusion: `GO`; evidence: the clean final pre-push range report passed every gate, the non-force initial push succeeded, and `git ls-remote` matched `origin/codex/personnel-settlement-fixes-20261002@8ba440729d3864eafd102cce7e42ddde80576f1d`; this ledger-only pushed-state receipt must pass the same audit before its second push.
+
+
+### Git / Delivery State
+
+- Branch: `codex/personnel-settlement-fixes-20261002`
+- Base: `origin/Dev@f7af678d4d85f46b817ec47e54d4796b0dfb3bb2`
+- Local content commit: pending receipt
+- Remote branch/SHA: not pushed
+- PR / merge: not created / not merged
+- Deployment: not deployed
+- Production verification: not run
+
+## CRL-20261002-002 — 当前人员结算资料保存与生效日期移动修复
+
+- **Repository:** `root`
+- **Status:** ready and locally validated in isolated candidate; selected for commit
+- **Updated:** 2026-10-02 Australia/Melbourne
+- **Request:** 修复网页“编辑人员结算资料”中姓名、ABN/GST、付款方式、银行资料和结算资料生效日期看似保存成功但重新打开仍不变化的问题；当前版本应能从 2026-09-30 正确改为 2026-09-01，银行资料必须真实保存。
+- **Outcome:** 管理网页编辑时回显当前资料版本原生效日并携带原版本边界。后端将该请求解释为修改当前生效版本；当前版本日期只允许保持或向前移动，禁止向后推迟以免改变已经归属当前版本的历史区间。向前移动起始日时，在同一事务中吸收未被已批准/已付款结算锁定的重叠档案、保留审计记录并返回新的当前版本。显式提交的银行资料同步写入唯一 `users` 主资料，不再因存在后续档案而静默跳过。
+
+### Implementation
+
+- Previous behavior: 编辑抽屉把生效日重置为当天；选择早于当前版本的日期会只更新/新增历史档案，后续当前版本继续覆盖显示。后端只有在不存在后续档案时才更新 `users`，所以历史日期保存中的银行资料被丢弃，但网页仍提示保存成功。
+- New behavior: 网页默认使用详情返回的 `effective_from`，提交 `current_effective_date` 作为并发/版本边界，并禁用晚于原起始日的日期；保存成功提示后端实际返回的当前生效日。后端纯函数校验原版本仍是当天当前版本、拒绝把当前版本向后推迟，规划目标档案、被吸收档案和前一档案截止日，再在事务中移动边界、重挂审计外键、合并重叠版本并更新主资料。
+- Key decisions: 银行账户继续复用 `users`，属于立即生效的唯一主资料，不增加一套按日期版本化的银行表；当前版本只允许保持或向前移动，未来日期必须通过新版本语义实现，不能借当前版本编辑绕过已付款区间保护；档案版本移动继续受既有 `finance_approved/paid` 周结算锁保护。旧网页未发送 `current_effective_date` 时继续兼容原新增版本语义，避免后端先部署导致请求失败。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementProfiles.ts` — 当前版本编辑规划、重叠档案合并、审计保留及银行主资料保存。
+- `backend/src/modules/personnel_settlements.ts` — 管理员资料 payload 增加兼容的原版本边界并将过期版本映射为 409。
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — 覆盖 Summer 同形的 9 月 30 日向 9 月 1 日移动、无同日起始档案、过期版本拒绝、当前版本向后推迟拒绝及 SQL 合同。
+- `frontend/src/app/finance/settlements/page.tsx` — 回显原生效日、提交版本边界、准确成功提示及银行资料即时生效说明。
+- `frontend/src/app/finance/settlements/personnelProfileUi.ts` — 过期版本中文刷新提示。
+- `frontend/src/app/finance/settlements/personnelProfileUi.test.ts` — 固化日期回显、payload、说明、成功结果及错误文案。
+- `docs/feature-regression-registry.md` — 扩充 FR-029 当前资料编辑和银行主资料不变量。
+- `docs/change-release-ledger.md` — 本 CRL。
+
+### Impact / Dependencies
+
+- API: 管理员 `PATCH /finance/settlements/profiles/:userId` 新增可选 `current_effective_date`；旧客户端保持兼容，新网页使用该字段修改当前版本。
+- Database / migration: 无 schema 或 migration；复用现有档案、审计和 `users` 字段。用户后续主动保存时才在既有事务中合并重叠档案，不自动改写生产数据。
+- Permissions: 继续要求 `personnel_settlements.profiles.manage`；银行字段继续额外要求 `personnel_settlements.bank.manage`。
+- External sync / notification / payment: none。
+- Dependencies: `mobile/CRL-20261002-001`；本次与 `root/CRL-20261002-001` 在同一 Root 候选提交，行为相互独立。
+
+### Validation
+
+- `npm run test:personnel-settlement-phase1 --prefix backend` — passed。
+- `npm run test:personnel-settlement-phase2 --prefix backend` — passed。
+- `npm run test:personnel-settlement-phase3 --prefix backend` — passed。
+- `npm run test --prefix frontend -- --run src/app/finance/settlements/personnelProfileUi.test.ts --coverage.enabled=false` — passed：8/8 tests。
+- `npm run test --prefix frontend -- --run src/app/finance/settlements --coverage.enabled=false` — passed：6 suites / 32 tests。
+- `./node_modules/.bin/tsc -p tsconfig.json --noEmit`（backend）与 `./node_modules/.bin/tsc -p tsconfig.json --noEmit --incremental false`（frontend）— passed。
+- backend 隔离编译输出到 `/private/tmp/mz-personnel-profile-current-edit-backend-dist` — passed；未修改 tracked `backend/dist`。
+- 目标前端 `next lint` — passed：0 warnings / 0 errors。
+- `npm run build`（frontend）— passed：生产编译、类型检查和 96 个路由生成完成；只有仓库既有 Browserslist、lint、localStorage 与 chart build warnings。
+- `npm run check:feature-registry` — passed：26 个 FR、211 条测试映射、77 个 mobile deferred。
+- `python3 scripts/audit_change_release_ledger.py` — passed：8/8 changed files recorded；`git diff --check` — passed。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none; combined candidate is based on freshly fetched `origin/Dev`.
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `0a7d95aede535db36342ba69e404d558baf5ed917352c61bd60a40e4cc3924fc`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `406b204745fb255f3bfc26a393659e934a381c4309fa6d1d6519b1adbc71066f`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `5bc3e14ca9384929233293e2630a20dda9007bab8ad8119240db2bbc3160eeba`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `4a5d5a391e6a594d275ad48e8ecf351f2ee962c3488115e30736177b32e87fab`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `371d968a9879f5aa6b1a79001ca6ef17bbe7478646ef6caa8bf070fd3d33539e`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `24334d9398a17b89ff8f53137123a25e55944c527a16701de66b7aba1ccd514f`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `3a2922d5df9a708f327db0d3194ffab6d648fbe26ef3cbcb288dfffa7c46c6a2`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `7548f67c2e643e9a577cb983cda03983adb8e783cfa13c1f88f407ba9cd3be91`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `315687bdfc0b58543a6ab24e0ac981fdfd203e6c8866dc17f2ce2e39bfccf8f0`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `6120ff5cb2b16b9d165b54ea36acc5f4fe00952900325666fb87577ea54ba4e6`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `e191d993ee79ef7605635c240d1bb96c415396c5a108c3fa7b1022e0b6ad3e7e`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `957581564639595f23646ad2efbb3a8434951610a3c8e88c2fbb0e73f8aef02b`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `ff5f679a953f4981e428d5b06ea7a81fa38f05444b937bd127f688e347f704a2`
+- `docs/feature-regression-registry.md` — SHA-256: `27b97c5b2f62f04afd270085f488849b9acc7accb853d39cda4f4fb93a923629`
+- `docs/feature-regression-registry.md` — SHA-256: `22dfdf1874af0d29dee9251026c70ee6d3c2750067ea8a5974cd8b461573fa90`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `0e9bdd95cbbf7fea192ee3712ad0ba646a2b1fb8288775bf1499d90d11f1d489`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `5f03d09c2cfef15368548be3c64b7fa3aa5b93d1daacdad92568758bf8feabbc`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `64cfdf68e289eaf0bb91192ec2af37e10b337a1e3032b0c9991ef266328fb9d6`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `7495a48efd823bc99819e0c62e8e370c0347f98070c152ea1fd65c43f41c981c`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `d7231d5e26da6c15896c245301d66520eb566d0fbda55d89d1e907595ba21a0b`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `9a02bdbbcd4836f5ba05d4966dc6bd1808f990e344e65984720952be3c10f756`
+- `frontend/src/app/finance/settlements/personnelProfileUi.test.ts` — SHA-256: `0ef924c8333a315d5abd75c54d27b3898f2bc4562247f53121b9ba9e320c77bc`
+- `frontend/src/app/finance/settlements/personnelProfileUi.test.ts` — SHA-256: `7412ee2ea057e4db3652f12bcbfd03a71eeff961d32aae028f5337fbac0235bf`
+- `frontend/src/app/finance/settlements/personnelProfileUi.test.ts` — SHA-256: `7414be67f9cdc01adf4fdcb895ac7b5a61b4d67f09d4eb1c3bc40375620d292b`
+- `frontend/src/app/finance/settlements/personnelProfileUi.ts` — SHA-256: `3d6dc379d14be9350e28ae41d41072bd85aacf05faf209c867ca5027eb8184e1`
+
+### Release Attempts
+
+#### RA-20261002-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261002-001`, `CRL-20261002-002`
+- Selected CRL identities: `root/CRL-20261002-001`, `root/CRL-20261002-002`
+- Intended action: `commit`
+- Branch: `codex/personnel-settlement-fixes-20261002`
+- Base: `origin/Dev@f7af678d4d85f46b817ec47e54d4796b0dfb3bb2`; fetched at `2026-10-02T10:53:07+1000`
+- Candidate patch SHA-256: `cd58aa8aa5764e0562cd220fed8eea37687ffbd9daf0d7b5950efc9a32d568d1`
+- Commit SHA: `b4c147980170ae004ba14d7e1f7a8fad25841a5f`
+- Dependencies: `mobile/CRL-20261002-001`
+- Required validation: `PASS`; evidence: Phase 1/2/3 and claim-dedup contracts, backend/frontend TypeScript, 6 suites/32 web tests, target lint, frontend production build, feature registry and ledger coverage passed.
+- Shared-hunk review: `PASS`; evidence: shared Phase 1 and FR-029 hunks were merged from the two selected Root CRLs only.
+- Generated-file review: `PASS`; evidence: no tracked build outputs, caches or dependency links are staged.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: user explicitly selected root/CRL-20261002-001 and root/CRL-20261002-002 for commit.
+- Independent review: `GO for commit`; evidence: independent read-only re-review recomputed fingerprint `cd58aa8aa5764e0562cd220fed8eea37687ffbd9daf0d7b5950efc9a32d568d1`, inspected all 14 staged files / 62 non-ledger hunks, independently reran the exact gate and sensitive/generated-file review, and confirmed the prior date-forward P1 is closed with server, HTTP 409, UI and regression guards. No P0/P1 remains. Accepted non-blocking P2: standard Actions do not yet wire the personnel Phase/claim-dedup scripts, and the profile-merge transaction lacks a real PostgreSQL rollback integration test.
+- Action conclusion: `GO`; the exact reviewed candidate was committed locally as `b4c147980170ae004ba14d7e1f7a8fad25841a5f`. Push, PR, merge, deployment and production/device verification remain unauthorized.
+
+#### RA-20261002-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261002-001`, `CRL-20261002-002`, `CRL-20261002-003`
+- Selected CRL identities: `root/CRL-20261002-001`, `root/CRL-20261002-002`, `root/CRL-20261002-003`
+- Intended action: `push`
+- Branch: `codex/personnel-settlement-fixes-20261002`
+- Remote branch/SHA: initial verified push `origin/codex/personnel-settlement-fixes-20261002@8ba440729d3864eafd102cce7e42ddde80576f1d`; this ledger-only pushed-state receipt will be re-audited before a separate second push.
+- Base: `origin/Dev@f7af678d4d85f46b817ec47e54d4796b0dfb3bb2`; fetched at `2026-10-02T16:55:32+1000`
+- Candidate patch SHA-256: `a89665c46aaf979f4cc1dff33abab6f0316c8d61889ca9320be6d6d4e14ccf0b`
+- Commit SHA: `6da7d035a30c4d499396560a67ebc4ce908f3a70`
+- Dependencies: none
+- Paired release scope: `mobile/CRL-20261002-001@8ce10fff673a44bf8cc5aa9b88613af9b476b963`, `mobile/CRL-20261002-002@9741a187976663d594fe7f1734adacb8e1443a31`; the two repository branch pushes are order-independent, while merge/deployment/OTA remain separately gated.
+- Required validation: `PASS`; evidence: the selected business tests, TypeScript, web tests/build, feature registry, 41/41 auditor regression suite, pre-commit gates and ledger coverage passed; Root and Mobile remain separate branch pushes and no deployment or OTA is included.
+- Shared-hunk review: `PASS`; evidence: the three selected Root CRLs jointly declare every non-ledger hunk in the exact range and the independent read-only push review verified that ownership.
+- Generated-file review: `PASS`; evidence: no tracked build output, cache, dependency directory or generated artifact is selected.
+- Technical state: `pushed`
+- User authorization: `approved-for-push`; evidence: after the exact final Root and Mobile branch heads were reported, the user explicitly instructed “推送”, then confirmed authorization for the required ledger-only push-evidence commits and the new final branch heads they create.
+- Independent review: `GO`; evidence: independent read-only push review verified the exact three-CRL Root range, base, branch, content commit, full-range fingerprint, 16 files / 65 non-ledger hunks, authorization, sensitive/generated-file boundaries and found no P0/P1; two recorded P2s are non-blocking.
+- Action conclusion: `GO`; evidence: the clean final pre-push range report passed every gate, the non-force initial push succeeded, and `git ls-remote` matched `origin/codex/personnel-settlement-fixes-20261002@8ba440729d3864eafd102cce7e42ddde80576f1d`; this ledger-only pushed-state receipt must pass the same audit before its second push.
+
+
+### Risks / Release Notes
+
+- 向前移动当前版本会合并选定起始日至原当前起始日之间的未锁定档案；审计记录保留并重挂到合并后的当前档案。已批准/已付款期间继续拒绝修改。
+- Sensitive-information review: 不记录生产银行值、数据库 URL、Token、Cookie、密码或环境文件；生产诊断结果仅以布尔完整性和日期范围作为实现依据。
+- Rollback: 回退本 CRL 的 API 字段、事务分支和网页 payload；无需数据库 schema 回滚。已经由用户保存并合并的资料属于显式业务操作，代码回滚不会自动反向拆分。
+- Git state: combined Root candidate; not committed, not pushed, no PR, not merged, not deployed, production/device verification not run.
+
 ## CRL-20260930-006 — 授权协议办公室地址更新
 
 - **Status:** candidate（干净 release candidate 的回归与构建通过；等待 staged gate 和独立审查）
