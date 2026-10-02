@@ -4,6 +4,7 @@ import sharp from 'sharp'
 import { CLEANING_IMAGE_FORMAT_ERROR, normalizeCleaningImageUpload } from '../../src/lib/cleaningMediaImage'
 import {
   canViewRecordedDayEndMedia,
+  hasRecordedCleaningMediaSourceTaskMismatch,
   isExclusiveDayEndHandoverMedia,
   selectExclusiveRecordedCleaningMedia,
   selectUniqueRecordedCleaningMediaRow,
@@ -14,7 +15,14 @@ import { canViewMzappPropertyFeedback } from '../../src/modules/mzapp'
 async function main() {
   const route = fs.readFileSync(require.resolve('../../src/modules/cleaning_app'), 'utf8')
   assert.match(route, /FROM cleaning_task_media ctm[\s\S]*JOIN cleaning_tasks ct/, 'media proxy must bind a requested object to a recorded task media row')
+  assert.match(route, /ctm\.uploader_id::text AS uploader_id/, 'media proxy must load persisted uploader ownership for task-media authorization')
+  assert.doesNotMatch(route, /\(\$2::text = '' OR ctm\.task_id::text = \$2::text\)/, 'caller task context must not hide recorded task-media associations from collision detection')
   assert.match(route, /FROM cleaning_consumable_usages u[\s\S]*JOIN cleaning_tasks ct/, 'media proxy must also resolve recorded consumable photo references')
+  assert.doesNotMatch(route, /\(\$2::text = '' OR ct\.id::text = \$2::text\)/, 'caller task context must not hide recorded consumable associations from collision detection')
+  assert.match(route, /hasRecordedCleaningMediaSourceTaskMismatch\(matchingMediaRows, sourceTaskId\)/, 'source_task_id must be validated after all recorded task associations are loaded')
+  const sourceMismatchGuardIndex = route.indexOf('if (hasRecordedCleaningMediaSourceTaskMismatch(matchingMediaRows, sourceTaskId))')
+  const alternateSourceFallbackIndex = route.indexOf('const feedbackMediaRows =', sourceMismatchGuardIndex)
+  assert.ok(sourceMismatchGuardIndex >= 0 && alternateSourceFallbackIndex > sourceMismatchGuardIndex, 'wrong source_task_id must fail closed before guest or feedback authorization fallback')
   assert.match(route, /FROM guest_luggage_notices/, 'media proxy must resolve a temporary-notice photo through its saved notice record')
   assert.match(route, /guest_luggage_id/, 'temporary-notice media must require an exact notice context')
   assert.match(route, /hasGuestLuggageSourceConflict/, 'a temporary-notice key that collides with another recorded source must fail closed')
@@ -49,7 +57,16 @@ async function main() {
   assert.match(route, /selectUniqueRecordedCleaningMediaRow/, 'media proxy must use the single-task and single-type authorization selector')
   assert.match(route, /living_room_photo_urls: livingRoomPhotoUrls/, 'consumables response must expose the compatible plural living-photo field')
   assert.match(route, /living_room_photo_url: livingRoomPhotoUrls\[0\] \|\| null/, 'legacy living-photo field must remain the first plural item')
+  assert.match(route, /INSERT INTO cleaning_task_media \(id, task_id, type, url, captured_at, lat, lng, uploader_id\)/, 'direct task media inserts must persist uploader ownership')
+  assert.match(route, /uploader_id: String\(user\?\.sub \|\| ''\)\.trim\(\) \|\| null/, 'object-based task media inserts must persist uploader ownership')
+  assert.match(route, /type LIKE 'consumable_item_photo:%'/, 'replacement consumable submissions must clear prior uploader-owned item-photo records')
+  assert.match(route, /type: `consumable_item_photo:\$\{String\(it\.item_id\)\}`,[\s\S]*?uploader_id: String\(user\?\.sub \|\| ''\)\.trim\(\) \|\| null/, 'consumable item photos must persist an exact uploader-owned task-media record')
+  assert.match(route, /recordedTaskMediaKeys[\s\S]*?return !recordedTaskMediaKeys\.has\(storedKey\)/, 'media authorization must prefer uploader-owned task-media rows over legacy consumable usage fallbacks')
   const ordinary = { id: 'task-a', type: 'consumable_item_photo', url: 'cleaning/a.jpg' }
+  assert.equal(hasRecordedCleaningMediaSourceTaskMismatch([ordinary], ''), false, 'missing optional task context keeps existing exact-source collision checks')
+  assert.equal(hasRecordedCleaningMediaSourceTaskMismatch([ordinary], 'task-a'), false, 'matching task context may proceed to source-specific authorization')
+  assert.equal(hasRecordedCleaningMediaSourceTaskMismatch([ordinary], 'task-b'), true, 'wrong task context must deny even if another source records the same key')
+  assert.equal(hasRecordedCleaningMediaSourceTaskMismatch([], 'task-b'), true, 'supplied task context without any matching task association must not fall through to another source')
   assert.equal(selectUniqueRecordedCleaningMediaRow([ordinary]), ordinary)
   assert.equal(selectUniqueRecordedCleaningMediaRow([ordinary, { ...ordinary, type: 'inspection_photo' }]), null, 'one key recorded under two types must fail closed')
   assert.equal(selectUniqueRecordedCleaningMediaRow([ordinary, { ...ordinary, id: 'task-b' }]), null, 'one key recorded under two tasks must fail closed')

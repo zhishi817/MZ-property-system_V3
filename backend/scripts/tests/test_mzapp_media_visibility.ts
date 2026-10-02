@@ -52,6 +52,26 @@ async function main() {
     'unassigned inspector cannot read another task inspection image by object key',
   )
   assert.equal(
+    await canViewMzappRecordedCleaningMedia(
+      { sub: 'uploader-1', role: 'cleaner', roles: ['cleaner'] },
+      { ...row, uploader_id: 'uploader-1' },
+      'uploader-1',
+      'inspection_living',
+    ),
+    true,
+    'the authenticated uploader can read their own recorded task media even when not assigned to the task',
+  )
+  assert.equal(
+    await canViewMzappRecordedCleaningMedia(
+      { sub: 'outsider-1', role: 'cleaner', roles: ['cleaner'] },
+      { ...row, uploader_id: 'uploader-1' },
+      'outsider-1',
+      'inspection_living',
+    ),
+    false,
+    'an unrelated user cannot inherit uploader access',
+  )
+  assert.equal(
     await canViewMzappRecordedCleaningMedia({ sub: 'cleaner-1', role: 'cleaner', roles: ['cleaner'] }, row, 'cleaner-1', 'completion_living'),
     true,
     'assigned cleaner can read the task completion image',
