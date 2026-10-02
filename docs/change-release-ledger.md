@@ -69,6 +69,7 @@
 - Selected CRL identities: `root/CRL-20261002-001`, `root/CRL-20261002-002`, `root/CRL-20261002-003`
 - Intended action: `push`
 - Branch: `codex/personnel-settlement-fixes-20261002`
+- Remote branch/SHA: initial verified push `origin/codex/personnel-settlement-fixes-20261002@8ba440729d3864eafd102cce7e42ddde80576f1d`; this ledger-only pushed-state receipt will be re-audited before a separate second push.
 - Base: `origin/Dev@f7af678d4d85f46b817ec47e54d4796b0dfb3bb2`; fetched at `2026-10-02T16:55:32+1000`
 - Candidate patch SHA-256: `a89665c46aaf979f4cc1dff33abab6f0316c8d61889ca9320be6d6d4e14ccf0b`
 - Commit SHA: `6da7d035a30c4d499396560a67ebc4ce908f3a70`
@@ -77,10 +78,10 @@
 - Required validation: `PASS`; evidence: the selected business tests, TypeScript, web tests/build, feature registry, 41/41 auditor regression suite, pre-commit gates and ledger coverage passed; Root and Mobile remain separate branch pushes and no deployment or OTA is included.
 - Shared-hunk review: `PASS`; evidence: the three selected Root CRLs jointly declare every non-ledger hunk in the exact range and the independent read-only push review verified that ownership.
 - Generated-file review: `PASS`; evidence: no tracked build output, cache, dependency directory or generated artifact is selected.
-- Technical state: `committed`
+- Technical state: `pushed`
 - User authorization: `approved-for-push`; evidence: after the exact final Root and Mobile branch heads were reported, the user explicitly instructed “推送”, then confirmed authorization for the required ledger-only push-evidence commits and the new final branch heads they create.
 - Independent review: `GO`; evidence: independent read-only push review verified the exact three-CRL Root range, base, branch, content commit, full-range fingerprint, 16 files / 65 non-ledger hunks, authorization, sensitive/generated-file boundaries and found no P0/P1; two recorded P2s are non-blocking.
-- Action conclusion: `GO`; evidence: the clean exact `f7af678d4d85f46b817ec47e54d4796b0dfb3bb2...73a50e62c2e7089a28076e6f2c8f59ac77029b70` release report passed every gate; the same report must pass again after this ledger-only conclusion receipt.
+- Action conclusion: `GO`; evidence: the clean final pre-push range report passed every gate, the non-force initial push succeeded, and `git ls-remote` matched `origin/codex/personnel-settlement-fixes-20261002@8ba440729d3864eafd102cce7e42ddde80576f1d`; this ledger-only pushed-state receipt must pass the same audit before its second push.
 
 
 ### Risks / Release Notes
@@ -208,6 +209,7 @@
 - Selected CRL identities: `root/CRL-20261002-001`, `root/CRL-20261002-002`, `root/CRL-20261002-003`
 - Intended action: `push`
 - Branch: `codex/personnel-settlement-fixes-20261002`
+- Remote branch/SHA: initial verified push `origin/codex/personnel-settlement-fixes-20261002@8ba440729d3864eafd102cce7e42ddde80576f1d`; this ledger-only pushed-state receipt will be re-audited before a separate second push.
 - Base: `origin/Dev@f7af678d4d85f46b817ec47e54d4796b0dfb3bb2`; fetched at `2026-10-02T16:55:32+1000`
 - Candidate patch SHA-256: `a89665c46aaf979f4cc1dff33abab6f0316c8d61889ca9320be6d6d4e14ccf0b`
 - Commit SHA: `6da7d035a30c4d499396560a67ebc4ce908f3a70`
@@ -216,10 +218,10 @@
 - Required validation: `PASS`; evidence: the selected business tests, TypeScript, web tests/build, feature registry, 41/41 auditor regression suite, pre-commit gates and ledger coverage passed; Root and Mobile remain separate branch pushes and no deployment or OTA is included.
 - Shared-hunk review: `PASS`; evidence: the three selected Root CRLs jointly declare every non-ledger hunk in the exact range and the independent read-only push review verified that ownership.
 - Generated-file review: `PASS`; evidence: no tracked build output, cache, dependency directory or generated artifact is selected.
-- Technical state: `committed`
+- Technical state: `pushed`
 - User authorization: `approved-for-push`; evidence: after the exact final Root and Mobile branch heads were reported, the user explicitly instructed “推送”, then confirmed authorization for the required ledger-only push-evidence commits and the new final branch heads they create.
 - Independent review: `GO`; evidence: independent read-only push review verified the exact three-CRL Root range, base, branch, content commit, full-range fingerprint, 16 files / 65 non-ledger hunks, authorization, sensitive/generated-file boundaries and found no P0/P1; two recorded P2s are non-blocking.
-- Action conclusion: `GO`; evidence: the clean exact `f7af678d4d85f46b817ec47e54d4796b0dfb3bb2...73a50e62c2e7089a28076e6f2c8f59ac77029b70` release report passed every gate; the same report must pass again after this ledger-only conclusion receipt.
+- Action conclusion: `GO`; evidence: the clean final pre-push range report passed every gate, the non-force initial push succeeded, and `git ls-remote` matched `origin/codex/personnel-settlement-fixes-20261002@8ba440729d3864eafd102cce7e42ddde80576f1d`; this ledger-only pushed-state receipt must pass the same audit before its second push.
 
 
 ### Git / Delivery State
@@ -338,6 +340,7 @@
 - Selected CRL identities: `root/CRL-20261002-001`, `root/CRL-20261002-002`, `root/CRL-20261002-003`
 - Intended action: `push`
 - Branch: `codex/personnel-settlement-fixes-20261002`
+- Remote branch/SHA: initial verified push `origin/codex/personnel-settlement-fixes-20261002@8ba440729d3864eafd102cce7e42ddde80576f1d`; this ledger-only pushed-state receipt will be re-audited before a separate second push.
 - Base: `origin/Dev@f7af678d4d85f46b817ec47e54d4796b0dfb3bb2`; fetched at `2026-10-02T16:55:32+1000`
 - Candidate patch SHA-256: `a89665c46aaf979f4cc1dff33abab6f0316c8d61889ca9320be6d6d4e14ccf0b`
 - Commit SHA: `6da7d035a30c4d499396560a67ebc4ce908f3a70`
@@ -346,10 +349,10 @@
 - Required validation: `PASS`; evidence: the selected business tests, TypeScript, web tests/build, feature registry, 41/41 auditor regression suite, pre-commit gates and ledger coverage passed; Root and Mobile remain separate branch pushes and no deployment or OTA is included.
 - Shared-hunk review: `PASS`; evidence: the three selected Root CRLs jointly declare every non-ledger hunk in the exact range and the independent read-only push review verified that ownership.
 - Generated-file review: `PASS`; evidence: no tracked build output, cache, dependency directory or generated artifact is selected.
-- Technical state: `committed`
+- Technical state: `pushed`
 - User authorization: `approved-for-push`; evidence: after the exact final Root and Mobile branch heads were reported, the user explicitly instructed “推送”, then confirmed authorization for the required ledger-only push-evidence commits and the new final branch heads they create.
 - Independent review: `GO`; evidence: independent read-only push review verified the exact three-CRL Root range, base, branch, content commit, full-range fingerprint, 16 files / 65 non-ledger hunks, authorization, sensitive/generated-file boundaries and found no P0/P1; two recorded P2s are non-blocking.
-- Action conclusion: `GO`; evidence: the clean exact `f7af678d4d85f46b817ec47e54d4796b0dfb3bb2...73a50e62c2e7089a28076e6f2c8f59ac77029b70` release report passed every gate; the same report must pass again after this ledger-only conclusion receipt.
+- Action conclusion: `GO`; evidence: the clean final pre-push range report passed every gate, the non-force initial push succeeded, and `git ls-remote` matched `origin/codex/personnel-settlement-fixes-20261002@8ba440729d3864eafd102cce7e42ddde80576f1d`; this ledger-only pushed-state receipt must pass the same audit before its second push.
 
 
 ### Risks / Release Notes
