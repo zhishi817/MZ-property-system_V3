@@ -67,11 +67,11 @@ export type PersonnelClaimReviewEstimateInput = {
 }
 
 export type PersonnelClaimEstimateRule = {
-  ruleId: string
-  ruleName: string
+  ruleId: string | null
+  ruleName: string | null
   effectiveFrom: string
   priceBasis: SettlementPriceBasis
-  unitRateCents: number
+  unitRateCents: number | null
   gstStatus: 'unconfirmed' | 'registered' | 'not_registered'
 }
 
@@ -102,7 +102,7 @@ const SELF_SERVICE_OPTION_BY_CLAIM_TYPE: Partial<Record<PersonnelClaimType, Pers
   },
   subsidy_amount: {
     business_type: 'subsidy', claim_type: 'subsidy_amount', label: '补贴',
-    calculation_label: '按核对后的金额计算', input_mode: 'amount', evidence_required: true, property_required: false,
+    calculation_label: '按填写金额提交，公司核对后决定是否计入', input_mode: 'amount', evidence_required: true, property_required: false,
     rule_configured: true,
   },
   new_property_task: {
@@ -127,13 +127,13 @@ const SELF_SERVICE_OPTION_BY_CLAIM_TYPE: Partial<Record<PersonnelClaimType, Pers
   },
   custom_amount: {
     business_type: 'custom', claim_type: 'custom_amount', label: '其他费用',
-    calculation_label: '按核对后的金额计算', input_mode: 'amount', evidence_required: true, property_required: false,
+    calculation_label: '按填写金额提交，公司核对后决定是否计入', input_mode: 'amount', evidence_required: true, property_required: false,
     rule_configured: true,
   },
 }
 
 const SELF_SERVICE_BUSINESS_TYPE_ORDER: PersonnelClaimBusinessType[] = [
-  'warehouse', 'overtime', 'subsidy', 'new_property', 'external', 'custom',
+  'warehouse', 'overtime', 'subsidy', 'new_property', 'external',
 ]
 
 const SELF_SERVICE_FALLBACK_OPTION_BY_BUSINESS_TYPE: Record<PersonnelClaimBusinessType, PersonnelClaimOption> = {
@@ -332,8 +332,12 @@ export function buildPersonnelClaimOptions(
   return SELF_SERVICE_BUSINESS_TYPE_ORDER.map((businessType) => {
     const configured = configuredByBusinessType.get(businessType)
     if (configured) return configured
+    const fallback = SELF_SERVICE_FALLBACK_OPTION_BY_BUSINESS_TYPE[businessType]
+    if (DIRECT_AMOUNT_TYPES.has(fallback.claim_type)) {
+      return { ...fallback, rule_configured: true }
+    }
     return {
-      ...SELF_SERVICE_FALLBACK_OPTION_BY_BUSINESS_TYPE[businessType],
+      ...fallback,
       calculation_label: UNCONFIGURED_CLAIM_CALCULATION_LABEL,
       rule_configured: false,
     }
@@ -449,6 +453,36 @@ export async function estimatePersonnelClaim(input: {
     throw new Error('claim_type_not_available')
   }
 
+  if (DIRECT_AMOUNT_TYPES.has(claimType)) {
+    const profileResult = await executor.query(
+      `SELECT effective_from::text, gst_status
+         FROM personnel_settlement_profiles
+        WHERE user_id=$1
+          AND effective_from <= $2::date
+          AND (effective_to IS NULL OR effective_to >= $2::date)
+        ORDER BY effective_from DESC, updated_at DESC, id
+        LIMIT 1`,
+      [input.userId, serviceDate],
+    )
+    const profile = profileResult.rows?.[0]
+    if (!['unconfirmed', 'registered', 'not_registered'].includes(cleanText(profile?.gst_status))) {
+      return { available: false as const, reason: 'missing_effective_profile' as const }
+    }
+    return calculatePersonnelClaimEstimate({
+      ...input.estimate,
+      serviceDate,
+      claimType,
+      rule: {
+        ruleId: null,
+        ruleName: null,
+        effectiveFrom: String(profile.effective_from || ''),
+        priceBasis: 'inclusive_gst',
+        unitRateCents: null,
+        gstStatus: profile.gst_status,
+      },
+    })
+  }
+
   const result = await executor.query(
     `WITH selected_rule AS (
        SELECT id, name, effective_from::text, price_basis
@@ -536,7 +570,9 @@ async function assertPersonnelSelfServiceClaimAllowed(input: {
   userId: string
   serviceDate: string
   claimType: PersonnelClaimType
+  allowHistoricalCustomAmount?: boolean
 }, executor: Queryable) {
+  if (input.claimType === 'custom_amount' && input.allowHistoricalCustomAmount) return
   const available = await listPersonnelClaimOptions({
     userId: input.userId,
     serviceDate: input.serviceDate,
@@ -815,6 +851,7 @@ export async function updatePersonnelClaim(input: {
       userId: input.userId,
       serviceDate: claim.service_date,
       claimType: claim.claim_type,
+      allowHistoricalCustomAmount: current.claim_type === 'custom_amount' && claim.claim_type === 'custom_amount',
     }, client)
     const updated = await client.query(
       `UPDATE personnel_workload_claims
@@ -863,6 +900,7 @@ export async function submitPersonnelClaimInTransaction(
     userId: input.userId,
     serviceDate: String(current.service_date || '').slice(0, 10),
     claimType: current.claim_type as PersonnelClaimType,
+    allowHistoricalCustomAmount: current.claim_type === 'custom_amount',
   }, client)
   const evidence = await client.query(
     'SELECT COUNT(*)::int AS count FROM personnel_workload_claim_evidence WHERE claim_id=$1',

@@ -23,6 +23,8 @@ describe('personnel settlement profile UI', () => {
     expect(personnelProfileSaveErrorMessage({ code: 'invalid_abn' })).toContain('11 位数字')
     expect(personnelProfileSaveErrorMessage({ code: 'invalid_abn' })).not.toContain('校验和')
     expect(personnelProfileSaveErrorMessage(new Error('unexpected_error'))).toBe('unexpected_error')
+    expect(personnelProfileSaveErrorMessage({ code: 'profile_version_stale' })).toContain('刷新列表')
+    expect(personnelProfileSaveErrorMessage({ code: 'profile_effective_date_forward_move_not_allowed' })).toContain('只能保持不变或向前调整')
   })
 
   it('uses bank transfer for historical profiles and only requires bank details for that method', () => {
@@ -39,9 +41,20 @@ describe('personnel settlement profile UI', () => {
     const feeRuleDrawer = fs.readFileSync(path.resolve(process.cwd(), 'src/app/finance/settlements/FeeRuleDrawer.tsx'), 'utf8')
 
     expect(profilePage).toContain('label="结算资料生效日期"')
-    expect(profilePage).toContain('控制本页姓名、ABN、GST、人员类型、付款方式、结算开关及银行资料从哪一天开始生效。')
+    expect(profilePage).toContain('控制供应方/税务资料、人员类型、付款方式和结算开关从哪一天开始生效；银行资料不按日期建立历史版本。')
     expect(feeRuleDrawer).toContain('label="费用规则生效日期"')
     expect(feeRuleDrawer).toContain('控制本页计费方式和单价从哪一天开始用于结算。')
+  })
+
+  it('edits the loaded current profile version and sends its version boundary to the backend', () => {
+    const profilePage = fs.readFileSync(path.resolve(process.cwd(), 'src/app/finance/settlements/page.tsx'), 'utf8')
+
+    expect(profilePage).toContain('effective_date: detail.effective_from ? dayjs(detail.effective_from) : dayjs()')
+    expect(profilePage).toContain('if (selected.effective_from) payload.current_effective_date = selected.effective_from')
+    expect(profilePage).toContain('这里修改当前生效版本')
+    expect(profilePage).toContain('银行资料保存到人员主资料并立即生效')
+    expect(profilePage).toContain('当前生效日期为 ${saved.effective_from')
+    expect(profilePage).toContain("date.isAfter(dayjs(selected.effective_from), 'day')")
   })
 
   it('shows only the current fee rule in the profile detail drawer without widening rule permissions', () => {

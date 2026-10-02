@@ -535,7 +535,9 @@ export async function generatePersonnelSettlementWeek(input: {
       generatedUserIds.add(userId)
       const existing: any = existingByUser.get(userId)
       const settlementId = existing?.id || randomUUID()
-      const appliedRuleIds = Array.from(new Set((person.lines || []).map((line: any) => String(line.rule_id))))
+      const appliedRuleIds = Array.from(new Set(
+        (person.lines || []).map((line: any) => cleanText(line.rule_id)).filter(Boolean),
+      ))
       const ruleSnapshot = {
         calculation_version: preview.calculation_version,
         source_cutoff_at: sourceCutoffAt,

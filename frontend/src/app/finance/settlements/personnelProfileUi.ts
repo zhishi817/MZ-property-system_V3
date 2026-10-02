@@ -31,6 +31,8 @@ const PROFILE_SAVE_ERROR_LABELS: Record<string, string> = {
   effective_date_in_future: '结算资料生效日期不能晚于今天。',
   change_reason_required: '请填写资料修改原因。',
   profile_effective_date_locked: '这个日期会影响已批准或已付款的历史结算，请选择更晚的结算资料生效日期。',
+  profile_effective_date_forward_move_not_allowed: '当前版本的生效日期只能保持不变或向前调整；需要未来生效时请另建新版本。',
+  profile_version_stale: '当前资料版本已经发生变化，请关闭编辑窗口、刷新列表后重试。',
 }
 
 export function personnelProfileSaveErrorMessage(error: any) {
