@@ -100,6 +100,26 @@
 - Independent review: `GO for local commit`; evidence: independent read-only review recomputed fingerprint `abd545fcc9971a901cd549284fe5c9d6d4e37b90f499120a13f0a6ab610c3555`, independently passed the exact pre-commit gate for 24 staged files / 172 non-ledger hunks with no missing, unexpected, untracked or unselected content, and confirmed the prior source-task P1 is closed because all task/usage associations are loaded before the supplied `source_task_id` is validated and a mismatch is rejected before day-end/guest/feedback fallback. The reviewer reran both media suites and Feature Registry, inspected diff/secret/generated-file boundaries, and found no P0/P1/P2.
 - Action conclusion: `GO`; the exact reviewed candidate was committed locally as `73c76339c1f714fa957220dfa78bb6be14d6503a`. Push, PR, merge, migration, deployment and production/device verification remain unauthorized and were not performed.
 
+#### RA-20261002-annual-income-media-push
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261002-004`, `CRL-20261002-005`, `CRL-20261002-006`
+- Selected CRL identities: `root/CRL-20261002-004`, `root/CRL-20261002-005`, `root/CRL-20261002-006`
+- Intended action: `push`
+- Branch: `codex/annual-income-media-20261002-v2`
+- Base: `origin/Dev@455b5e3237e18ce52d734a24bbd9bb91b0ae4961`; fetched at `2026-10-02T11:27:36Z`
+- Candidate patch SHA-256: `abd545fcc9971a901cd549284fe5c9d6d4e37b90f499120a13f0a6ab610c3555` excluding `docs/change-release-ledger.md`
+- Commit SHA: `73c76339c1f714fa957220dfa78bb6be14d6503a`
+- Dependencies: `none`
+- Required validation: `PASS`; evidence: the exact content commit retains the refreshed-base annual, recurring-income, media, backend/frontend type, focused frontend test, lint/build, Feature Registry and diff-check evidence recorded by `RA-20261002-annual-income-media-recommit`
+- Shared-hunk review: `PASS`; evidence: the committed range contains only the three selected CRLs and preserves the fetched `origin/Dev` content in shared files
+- Generated-file review: `PASS`; evidence: clean worktree, no generated/cache/env file selected, and no configured sensitive category detected
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after receiving branch `codex/annual-income-media-20261002-v2`, content commit `73c76339c1f714fa957220dfa78bb6be14d6503a` and audit head `d0b29d8e6d6df310e91071b5849d7c6d6b4a6f76`, the user explicitly replied `推送`
+- Remote preflight: `PASS`; evidence: refreshed `origin/Dev` remains `455b5e3237e18ce52d734a24bbd9bb91b0ae4961` and `refs/heads/codex/annual-income-media-20261002-v2` is absent before the initial push
+- Independent review: `GO for push authorization receipt and conditional non-force push`; evidence: independent read-only review verified the exact ancestry `455b5e3 -> 73c7633 -> d0b29d8`, recomputed unchanged fingerprint `abd545fcc9971a901cd549284fe5c9d6d4e37b90f499120a13f0a6ab610c3555`, confirmed 24 selected files / 172 non-ledger hunks with no generated, sensitive or unselected content, and independently confirmed live `origin/Dev` remains `455b5e3237e18ce52d734a24bbd9bb91b0ae4961` while the target remote branch is absent. No P0/P1 was found. Accepted non-blocking P2: the three CRL top-level Status/Git-state summaries retain candidate wording, while the Release Attempt is the authoritative lifecycle evidence and this receipt remains ledger-only.
+- Action conclusion: `GO`; this exact authorization/review receipt may be committed. After it passes its ledger-only gate, a clean exact range report and an immediate unchanged remote preflight permit one ordinary non-force initial push. If the initial remote SHA matches exactly, only the same attempt's technical state, remote SHA/time and action evidence may be committed and fast-forward pushed once after its own ledger-only gate and clean exact range audit. PR, merge, migration, deployment and production/device verification remain unauthorized.
+
 ### Risks / Release Notes
 
 - 仅精确记录的上传者获得新增权限；错误或缺失的历史 `uploader_id` 不会被推断，相关旧照片仍可能需要原角色权限。
