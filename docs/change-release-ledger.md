@@ -75,12 +75,12 @@
 - Dependencies: none
 - Paired release scope: `mobile/CRL-20261002-001@8ce10fff673a44bf8cc5aa9b88613af9b476b963`, `mobile/CRL-20261002-002@9741a187976663d594fe7f1734adacb8e1443a31`; the two repository branch pushes are order-independent, while merge/deployment/OTA remain separately gated.
 - Required validation: `PASS`; evidence: the selected business tests, TypeScript, web tests/build, feature registry, 41/41 auditor regression suite, pre-commit gates and ledger coverage passed; Root and Mobile remain separate branch pushes and no deployment or OTA is included.
-- Shared-hunk review: `PASS`; evidence: the three selected Root CRLs jointly declare every non-ledger hunk in the exact range; complete-range independent review is pending.
+- Shared-hunk review: `PASS`; evidence: the three selected Root CRLs jointly declare every non-ledger hunk in the exact range and the independent read-only push review verified that ownership.
 - Generated-file review: `PASS`; evidence: no tracked build output, cache, dependency directory or generated artifact is selected.
 - Technical state: `committed`
 - User authorization: `approved-for-push`; evidence: after the exact final Root and Mobile branch heads were reported, the user explicitly instructed “推送”, then confirmed authorization for the required ledger-only push-evidence commits and the new final branch heads they create.
 - Independent review: `GO`; evidence: independent read-only push review verified the exact three-CRL Root range, base, branch, content commit, full-range fingerprint, 16 files / 65 non-ledger hunks, authorization, sensitive/generated-file boundaries and found no P0/P1; two recorded P2s are non-blocking.
-- Action conclusion: `NOT VERIFIED`; blockers: clean committed-range audit of the ledger receipt is still pending.
+- Action conclusion: `GO`; evidence: the clean exact `f7af678d4d85f46b817ec47e54d4796b0dfb3bb2...73a50e62c2e7089a28076e6f2c8f59ac77029b70` release report passed every gate; the same report must pass again after this ledger-only conclusion receipt.
 
 
 ### Risks / Release Notes
@@ -214,12 +214,12 @@
 - Dependencies: none
 - Paired release scope: `mobile/CRL-20261002-001@8ce10fff673a44bf8cc5aa9b88613af9b476b963`, `mobile/CRL-20261002-002@9741a187976663d594fe7f1734adacb8e1443a31`; the two repository branch pushes are order-independent, while merge/deployment/OTA remain separately gated.
 - Required validation: `PASS`; evidence: the selected business tests, TypeScript, web tests/build, feature registry, 41/41 auditor regression suite, pre-commit gates and ledger coverage passed; Root and Mobile remain separate branch pushes and no deployment or OTA is included.
-- Shared-hunk review: `PASS`; evidence: the three selected Root CRLs jointly declare every non-ledger hunk in the exact range; complete-range independent review is pending.
+- Shared-hunk review: `PASS`; evidence: the three selected Root CRLs jointly declare every non-ledger hunk in the exact range and the independent read-only push review verified that ownership.
 - Generated-file review: `PASS`; evidence: no tracked build output, cache, dependency directory or generated artifact is selected.
 - Technical state: `committed`
 - User authorization: `approved-for-push`; evidence: after the exact final Root and Mobile branch heads were reported, the user explicitly instructed “推送”, then confirmed authorization for the required ledger-only push-evidence commits and the new final branch heads they create.
 - Independent review: `GO`; evidence: independent read-only push review verified the exact three-CRL Root range, base, branch, content commit, full-range fingerprint, 16 files / 65 non-ledger hunks, authorization, sensitive/generated-file boundaries and found no P0/P1; two recorded P2s are non-blocking.
-- Action conclusion: `NOT VERIFIED`; blockers: clean committed-range audit of the ledger receipt is still pending.
+- Action conclusion: `GO`; evidence: the clean exact `f7af678d4d85f46b817ec47e54d4796b0dfb3bb2...73a50e62c2e7089a28076e6f2c8f59ac77029b70` release report passed every gate; the same report must pass again after this ledger-only conclusion receipt.
 
 
 ### Git / Delivery State
@@ -344,12 +344,12 @@
 - Dependencies: none
 - Paired release scope: `mobile/CRL-20261002-001@8ce10fff673a44bf8cc5aa9b88613af9b476b963`, `mobile/CRL-20261002-002@9741a187976663d594fe7f1734adacb8e1443a31`; the two repository branch pushes are order-independent, while merge/deployment/OTA remain separately gated.
 - Required validation: `PASS`; evidence: the selected business tests, TypeScript, web tests/build, feature registry, 41/41 auditor regression suite, pre-commit gates and ledger coverage passed; Root and Mobile remain separate branch pushes and no deployment or OTA is included.
-- Shared-hunk review: `PASS`; evidence: the three selected Root CRLs jointly declare every non-ledger hunk in the exact range; complete-range independent review is pending.
+- Shared-hunk review: `PASS`; evidence: the three selected Root CRLs jointly declare every non-ledger hunk in the exact range and the independent read-only push review verified that ownership.
 - Generated-file review: `PASS`; evidence: no tracked build output, cache, dependency directory or generated artifact is selected.
 - Technical state: `committed`
 - User authorization: `approved-for-push`; evidence: after the exact final Root and Mobile branch heads were reported, the user explicitly instructed “推送”, then confirmed authorization for the required ledger-only push-evidence commits and the new final branch heads they create.
 - Independent review: `GO`; evidence: independent read-only push review verified the exact three-CRL Root range, base, branch, content commit, full-range fingerprint, 16 files / 65 non-ledger hunks, authorization, sensitive/generated-file boundaries and found no P0/P1; two recorded P2s are non-blocking.
-- Action conclusion: `NOT VERIFIED`; blockers: clean committed-range audit of the ledger receipt is still pending.
+- Action conclusion: `GO`; evidence: the clean exact `f7af678d4d85f46b817ec47e54d4796b0dfb3bb2...73a50e62c2e7089a28076e6f2c8f59ac77029b70` release report passed every gate; the same report must pass again after this ledger-only conclusion receipt.
 
 
 ### Risks / Release Notes
