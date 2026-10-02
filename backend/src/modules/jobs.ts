@@ -4,6 +4,7 @@ import { requirePerm, allowCronTokenOrPerm } from '../auth'
 import { hasPg, pgPool, pgSelect, pgInsertOnConflictDoNothing, pgInsert, pgRunInTransaction, pgRunWithAdvisoryLock } from '../dbAdapter'
 import { v4 as uuid } from 'uuid'
 import { PoolClient } from 'pg'
+import { deriveFixedCleaningAmounts } from '../lib/orderCleaningFee'
 
 type JobMode = 'incremental' | 'backfill'
 let zeroAmountAirbnbBackfillRunning = false
@@ -473,15 +474,17 @@ function getAccounts(): Array<{ user: string; pass: string; folder: string }> {
   return list
 }
 
-async function loadPropertyIndex(): Promise<Record<string, string>> {
-  const byName: Record<string, string> = {}
+type EmailPropertyIndexEntry = { id: string; type: string | null }
+
+async function loadPropertyIndex(): Promise<Record<string, EmailPropertyIndexEntry>> {
+  const byName: Record<string, EmailPropertyIndexEntry> = {}
   try {
     if (hasPg) {
-      const rowsRaw: any = await pgSelect('properties', 'id,airbnb_listing_name')
+      const rowsRaw: any = await pgSelect('properties', 'id,type,airbnb_listing_name')
       const rows: any[] = Array.isArray(rowsRaw) ? rowsRaw : []
       rows.forEach((p: any) => {
         const nm = normalizePropertyIndexKey(String(p.airbnb_listing_name || ''))
-        if (nm) byName[nm] = String(p.id)
+        if (nm) byName[nm] = { id: String(p.id), type: p.type == null ? null : String(p.type) }
       })
     }
   } catch {}
@@ -760,7 +763,7 @@ export function validateAirbnbStayDates(checkin?: string | null, checkout?: stri
   return { nights }
 }
 
-async function processMessage(acc: { user: string; pass: string; folder: string }, msg: any, propIndex: Record<string, string>, dryRun: boolean, sourceTag: string) {
+export async function processMessage(acc: { user: string; pass: string; folder: string }, msg: any, propIndex: Record<string, EmailPropertyIndexEntry>, dryRun: boolean, sourceTag: string) {
   const mailparser = require('mailparser')
   let parsed: any
   try { parsed = await mailparser.simpleParser(msg.source) } catch { return { matched: false, inserted: false, skipped_duplicate: false, failed: false, reason: 'parse_error', last_uid: Number(msg.uid || 0) } }
@@ -797,9 +800,9 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
       checkout: fields.checkout,
       nights: fields.nights,
       price: fields.price,
-      cleaning_fee: fields.cleaning_fee,
-      net_income: Number(((fields.price || 0) - (fields.cleaning_fee || 0)).toFixed?.(2) || ((fields.price || 0) - (fields.cleaning_fee || 0))),
-      avg_nightly_price: (fields.nights && fields.nights > 0) ? Number((((fields.price || 0) - (fields.cleaning_fee || 0)) / fields.nights).toFixed(2)) : 0,
+      cleaning_fee: null,
+      net_income: null,
+      avg_nightly_price: null,
       property_match: false,
       property_id: undefined,
     }
@@ -844,9 +847,27 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
     }
     return { matched: true, inserted: false, skipped_duplicate: false, failed: true, reason: 'db_unavailable', last_uid: Number(msg.uid || 0) }
   }
-  const ln = String(fields.listing_name || '').replace(/[“”]/g, '"').replace(/[‘’]/g, "'").trim().toLowerCase()
-  const pid = ln ? propIndex[ln] : undefined
-  if (!pid) {
+  if (!dryRun && hasPg) {
+    try {
+      const dup: any[] = await pgSelect('orders', 'id', { confirmation_code: cc }) as any[] || []
+      if (Array.isArray(dup) && dup[0]) {
+        console.log(JSON.stringify({ tag: 'orders_write_done', action: 'duplicate_check', upserted: false, duplicate: true, order_id: dup[0].id }))
+        try {
+          const { pgRunInTransaction } = require('../dbAdapter')
+          const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs')
+          await pgRunInTransaction(async (client: any) => {
+            await enqueueCleaningSyncJobTx(client, { order_id: String(dup[0].id), action: 'updated', payload_snapshot: { id: String(dup[0].id) } })
+          })
+        } catch {}
+        try { if (pgPool) { await pgPool.query("UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2::text) WHERE uid=$1", [Number(msg.uid || 0), String(dup[0].id || '')]) } } catch {}
+        return { matched: true, inserted: false, updated: false, skipped_duplicate: true, failed: false, order_id: dup[0].id, last_uid: Number(msg.uid || 0) }
+      }
+    } catch {}
+  }
+  const ln = normalizePropertyIndexKey(String(fields.listing_name || ''))
+  const property = ln ? propIndex[ln] : undefined
+  const pid = property?.id
+  if (!property || !pid) {
     if (!dryRun && hasPg) {
       try { await pgInsert('order_import_staging', { id: uuid(), channel: 'airbnb_email', raw_row: { message_id: String(parsed.messageId || ''), subject, from, html_snippet: (html || '').slice(0, 2000), listing_name: fields.listing_name }, reason: 'unmatched_property', status: 'unmatched' }) } catch {}
     }
@@ -858,9 +879,9 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
       checkout: fields.checkout,
       nights: fields.nights,
       price: fields.price,
-      cleaning_fee: fields.cleaning_fee,
-      net_income: Number(((fields.price || 0) - (fields.cleaning_fee || 0)).toFixed?.(2) || ((fields.price || 0) - (fields.cleaning_fee || 0))),
-      avg_nightly_price: (fields.nights && fields.nights > 0) ? Number((((fields.price || 0) - (fields.cleaning_fee || 0)) / fields.nights).toFixed(2)) : 0,
+      cleaning_fee: null,
+      net_income: null,
+      avg_nightly_price: null,
       property_match: false,
       property_id: undefined,
     }
@@ -878,7 +899,7 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
       checkout: co,
       nights: fields.nights,
       price: fields.price,
-      cleaning_fee: fields.cleaning_fee,
+      cleaning_fee: null,
       property_match: true,
       property_id: pid,
       probe: fields.probe,
@@ -886,49 +907,44 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
     return { matched: true, inserted: false, skipped_duplicate: false, failed: true, reason: dateValidation.reason, sample, last_uid: Number(msg.uid || 0) }
   }
   const nights = fields.nights && fields.nights > 0 ? fields.nights : dateValidation.nights
-  const price = round2(fields.price || 0) || 0
-  const cleaning = round2(fields.cleaning_fee || 0) || 0
-  const net = round2(price - cleaning) || 0
-  const avg = nights && nights > 0 ? (round2(net / nights) || 0) : 0
+  const price = round2(fields.price)
+  if (price == null || price <= 0) {
+    if (!dryRun && hasPg) {
+      try { await pgInsert('order_import_staging', { id: uuid(), channel: 'airbnb_email', raw_row: { message_id: String(parsed.messageId || ''), subject, from, html_snippet: (html || '').slice(0, 2000), listing_name: fields.listing_name, property_id: pid, property_type: property.type }, reason: 'missing_or_invalid_price', status: 'unmatched' }) } catch {}
+    }
+    const sample = { confirmation_code: cc, guest_name: fields.guest_name, listing_name: fields.listing_name, checkin: ci, checkout: co, nights, price: null, cleaning_fee: null, net_income: null, avg_nightly_price: null, property_match: true, property_id: pid }
+    return { matched: false, inserted: false, skipped_duplicate: false, failed: true, reason: 'missing_or_invalid_price', sample, last_uid: Number(msg.uid || 0) }
+  }
+  const fixedAmounts = deriveFixedCleaningAmounts(price, property.type, nights)
+  if (!fixedAmounts) {
+    if (!dryRun && hasPg) {
+      try { await pgInsert('order_import_staging', { id: uuid(), channel: 'airbnb_email', raw_row: { message_id: String(parsed.messageId || ''), subject, from, html_snippet: (html || '').slice(0, 2000), listing_name: fields.listing_name, property_id: pid, property_type: property.type }, reason: 'unrecognized_property_type', status: 'unmatched' }) } catch {}
+    }
+    const sample = {
+      confirmation_code: cc,
+      guest_name: fields.guest_name,
+      listing_name: fields.listing_name,
+      checkin: ci,
+      checkout: co,
+      nights,
+      price,
+      cleaning_fee: null,
+      net_income: null,
+      avg_nightly_price: null,
+      property_match: true,
+      property_id: pid,
+    }
+    return { matched: false, inserted: false, skipped_duplicate: false, failed: true, reason: 'unrecognized_property_type', sample, last_uid: Number(msg.uid || 0) }
+  }
+  const cleaning = fixedAmounts.cleaningFeeAud
+  const net = fixedAmounts.finalAmountAud
+  const avg = fixedAmounts.averageNightlyAmountAud
   const idempotency_key = `airbnb_email:${cc}`
   if (dryRun) {
     const sample = { confirmation_code: cc, guest_name: fields.guest_name, listing_name: fields.listing_name, checkin: ci, checkout: co, nights, price, cleaning_fee: cleaning, net_income: net, avg_nightly_price: avg, property_match: !!pid, property_id: pid }
     return { matched: true, inserted: false, skipped_duplicate: false, failed: false, sample, last_uid: Number(msg.uid || 0) }
   }
   if (hasPg) {
-    try {
-      const dup: any[] = await pgSelect('orders', 'id,price,cleaning_fee,net_income,avg_nightly_price,nights', { source: sourceTag, confirmation_code: cc, property_id: pid }) as any[] || []
-      if (Array.isArray(dup) && dup[0]) {
-        const existing = dup[0] as any
-        const hasParsedAmount = Number(price || 0) > 0 || Number(cleaning || 0) > 0 || Number(net || 0) > 0
-        const existingMissingAmount = Number(existing.price || 0) <= 0 && Number(existing.cleaning_fee || 0) <= 0 && Number(existing.net_income || 0) <= 0
-        let amountUpdated = false
-        if (hasParsedAmount && existingMissingAmount && pgPool) {
-          try {
-            const amountUpd = await pgPool.query(
-              `UPDATE orders
-               SET price=$2, cleaning_fee=$3, net_income=$4, avg_nightly_price=$5, nights=$6
-               WHERE id=$1`,
-              [String(existing.id), price, cleaning, net, avg, nights || null]
-            )
-            amountUpdated = Number(amountUpd?.rowCount || 0) > 0
-            console.log(JSON.stringify({ tag: 'orders_amount_backfill_done', order_id: String(existing.id), confirmation_code: cc, price, cleaning_fee: cleaning, net_income: net, rowCount: Number(amountUpd?.rowCount || 0) }))
-          } catch (e: any) {
-            console.error(JSON.stringify({ tag: 'db_write_failed', table: 'orders', action: 'amount_backfill', order_id: String(existing.id), code: String((e as any)?.code || ''), message: String(e?.message || '') }))
-          }
-        }
-        console.log(JSON.stringify({ tag: 'orders_write_done', action: 'duplicate_check', upserted: false, duplicate: true, order_id: dup[0].id }))
-        try {
-          const { pgRunInTransaction } = require('../dbAdapter')
-          const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs')
-          await pgRunInTransaction(async (client: any) => {
-            await enqueueCleaningSyncJobTx(client, { order_id: String(dup[0].id), action: 'updated', payload_snapshot: { id: String(dup[0].id) } })
-          })
-        } catch {}
-        try { if (pgPool) { await pgPool.query("UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2::text) WHERE uid=$1", [Number(msg.uid || 0), String(dup[0].id || '')]) } } catch {}
-        return { matched: true, inserted: false, updated: amountUpdated, skipped_duplicate: !amountUpdated, failed: false, order_id: dup[0].id, last_uid: Number(msg.uid || 0) }
-      }
-    } catch {}
     const payload: any = { id: uuid(), source: sourceTag, external_id: cc, property_id: pid, guest_name: fields.guest_name, checkin: ci, checkout: co, price, cleaning_fee: cleaning, net_income: net, avg_nightly_price: avg, nights, currency: 'AUD', status: 'confirmed', confirmation_code: cc, idempotency_key, payment_currency: 'AUD', payment_received: false, email_header_at: headerDate?.toISOString?.() ? new Date(headerDate as Date) : undefined, year_inferred: !!fields.year_inferred, raw_checkin_text: fields.raw_checkin_text, raw_checkout_text: fields.raw_checkout_text }
     try {
       safeDbLog('orders','upsert', payload, { conflict: ['idempotency_key'] })
@@ -2186,6 +2202,13 @@ router.post('/email-orders-raw/resolve', requirePerm('order.manage'), async (req
     if (uid) { const rs = await client.query('SELECT * FROM email_orders_raw WHERE uid=$1 ORDER BY created_at DESC LIMIT 1', [uid]); row = rs?.rows?.[0] }
     if (!row && message_id) { const rs2 = await client.query('SELECT * FROM email_orders_raw WHERE message_id=$1 ORDER BY created_at DESC LIMIT 1', [message_id]); row = rs2?.rows?.[0] }
     if (!row) { client.release(); return res.status(404).json({ message: 'raw_not_found' }) }
+    if (row.confirmation_code) {
+      const dup = await client.query('SELECT id, property_id FROM orders WHERE confirmation_code=$1 LIMIT 1', [row.confirmation_code])
+      if (dup?.rows?.[0]) { client.release(); return res.status(409).json({ message: 'duplicate', existing_id: String(dup.rows[0].id || ''), existing_property_id: String(dup.rows[0].property_id || '') }) }
+    }
+    const propertyResult = await client.query('SELECT id, type FROM properties WHERE id=$1 LIMIT 1', [property_id])
+    const property = propertyResult?.rows?.[0]
+    if (!property) { client.release(); return res.status(404).json({ message: 'property_not_found' }) }
     function dayOnly(v: any): string | undefined {
       try { const d = new Date(v); if (!isNaN(d.getTime())) return d.toISOString().slice(0,10) } catch {}
       const s = String(v || '')
@@ -2196,19 +2219,16 @@ router.post('/email-orders-raw/resolve', requirePerm('order.manage'), async (req
     const co = row.checkout ? dayOnly(row.checkout) : undefined
     let nights = 0
     try { const a = row.checkin ? new Date(row.checkin) : null; const b = row.checkout ? new Date(row.checkout) : null; if (a && b) { const ms = b.getTime() - a.getTime(); nights = ms > 0 ? Math.round(ms / (1000*60*60*24)) : 0 } } catch {}
-    const price = Number(row.price || 0)
-    const cleaning = Number(row.cleaning_fee || 0)
-    const net = Number((price - cleaning).toFixed(2))
-    const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
+    const price = Number(row.price)
+    if (!Number.isFinite(price) || price <= 0) { client.release(); return res.status(422).json({ message: 'order_amount_requires_manual_review' }) }
+    const fixedAmounts = deriveFixedCleaningAmounts(price, property.type, nights)
+    if (!fixedAmounts) { client.release(); return res.status(422).json({ message: 'property_type_requires_manual_review' }) }
+    const cleaning = fixedAmounts.cleaningFeeAud
+    const net = fixedAmounts.finalAmountAud
+    const avg = fixedAmounts.averageNightlyAmountAud
     const payload: any = { id: uuid(), source: 'airbnb_email', property_id, guest_name: row.guest_name || null, checkin: ci, checkout: co, price, cleaning_fee: cleaning, net_income: net, avg_nightly_price: avg, nights, currency: 'AUD', status: 'confirmed', confirmation_code: row.confirmation_code || null, idempotency_key: `airbnb_email:${String(row.confirmation_code || '')}`, email_header_at: row.email_header_at || row.header_date || null }
     try {
       await client.query('BEGIN')
-      if (payload.confirmation_code) {
-        const dup = await client.query('SELECT id, property_id FROM orders WHERE confirmation_code=$1 LIMIT 1', [payload.confirmation_code])
-        if (dup?.rows?.[0]) { await client.query('ROLLBACK'); client.release(); return res.status(409).json({ message: 'duplicate', existing_id: String(dup.rows[0].id || ''), existing_property_id: String(dup.rows[0].property_id || '') }) }
-      }
-      const propCheck = await client.query('SELECT id FROM properties WHERE id=$1 LIMIT 1', [property_id])
-      if (!propCheck?.rows?.[0]) { await client.query('ROLLBACK'); client.release(); return res.status(404).json({ message: 'property_not_found' }) }
       const ins = await client.query('INSERT INTO orders (id, source, external_id, property_id, guest_name, checkin, checkout, price, cleaning_fee, net_income, avg_nightly_price, nights, currency, status, confirmation_code, idempotency_key, payment_currency, payment_received, email_header_at, year_inferred, raw_checkin_text, raw_checkout_text) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING id', [payload.id, 'airbnb_email', payload.confirmation_code, property_id, payload.guest_name, payload.checkin, payload.checkout, payload.price, payload.cleaning_fee, payload.net_income, payload.avg_nightly_price, payload.nights, 'AUD', 'confirmed', payload.confirmation_code, payload.idempotency_key, 'AUD', false, payload.email_header_at, false, null, null])
       const newId = String(ins?.rows?.[0]?.id || '')
       await client.query(`UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2::text) WHERE (($1::bigint IS NOT NULL AND uid=$1::bigint) OR ($3::text IS NOT NULL AND message_id=$3::text))`, [uid ?? null, newId || null, message_id ?? null])
@@ -2330,23 +2350,27 @@ router.post('/email-orders-raw/resolve-bulk', requirePerm('order.manage'), async
           if (uid) { const rs = await client.query('SELECT * FROM email_orders_raw WHERE uid=$1 ORDER BY created_at DESC LIMIT 1', [uid]); row = rs?.rows?.[0] }
           if (!row && mid) { const rs2 = await client.query('SELECT * FROM email_orders_raw WHERE message_id=$1 ORDER BY created_at DESC LIMIT 1', [mid]); row = rs2?.rows?.[0] }
           if (!row) { results.push({ ok: false, error: 'raw_not_found', uid, message_id: mid, property_id: pid }); failed++; continue }
+        if (row.confirmation_code) {
+          const dup = await client.query('SELECT id, property_id FROM orders WHERE confirmation_code=$1 LIMIT 1', [row.confirmation_code])
+          if (dup?.rows?.[0]) { results.push({ ok: false, error: 'duplicate', uid, message_id: mid, property_id: pid }); duplicate++; continue }
+        }
+        const propertyResult = await client.query('SELECT id, type FROM properties WHERE id=$1 LIMIT 1', [pid])
+        const property = propertyResult?.rows?.[0]
+        if (!property) { results.push({ ok: false, error: 'property_not_found', uid, message_id: mid, property_id: pid }); failed++; continue }
         const ci = row.checkin ? dayOnly(row.checkin) : undefined
         const co = row.checkout ? dayOnly(row.checkout) : undefined
         let nights = 0
         try { const a = row.checkin ? new Date(row.checkin) : null; const b = row.checkout ? new Date(row.checkout) : null; if (a && b) { const ms = b.getTime() - a.getTime(); nights = ms > 0 ? Math.round(ms / (1000*60*60*24)) : 0 } } catch {}
-        const price = Number(row.price || 0)
-        const cleaning = Number(row.cleaning_fee || 0)
-        const net = Number((price - cleaning).toFixed(2))
-        const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
+        const price = Number(row.price)
+        if (!Number.isFinite(price) || price <= 0) { results.push({ ok: false, error: 'order_amount_requires_manual_review', uid, message_id: mid, property_id: pid }); failed++; continue }
+        const fixedAmounts = deriveFixedCleaningAmounts(price, property.type, nights)
+        if (!fixedAmounts) { results.push({ ok: false, error: 'property_type_requires_manual_review', uid, message_id: mid, property_id: pid }); failed++; continue }
+        const cleaning = fixedAmounts.cleaningFeeAud
+        const net = fixedAmounts.finalAmountAud
+        const avg = fixedAmounts.averageNightlyAmountAud
         const payload: any = { id: uuid(), source: 'airbnb_email', property_id: pid, guest_name: row.guest_name || null, checkin: ci, checkout: co, price, cleaning_fee: cleaning, net_income: net, avg_nightly_price: avg, nights, currency: 'AUD', status: 'confirmed', confirmation_code: row.confirmation_code || null, idempotency_key: `airbnb_email:${String(row.confirmation_code || '')}`, email_header_at: row.email_header_at || row.header_date || null }
         try {
           await client.query('BEGIN')
-          if (payload.confirmation_code) {
-            const dup = await client.query('SELECT id, property_id FROM orders WHERE confirmation_code=$1 LIMIT 1', [payload.confirmation_code])
-            if (dup?.rows?.[0]) { await client.query('ROLLBACK'); release(); results.push({ ok: false, error: 'duplicate', uid, message_id: mid, property_id: pid }); duplicate++; continue }
-          }
-          const propCheck = await client.query('SELECT id FROM properties WHERE id=$1 LIMIT 1', [pid])
-          if (!propCheck?.rows?.[0]) { await client.query('ROLLBACK'); release(); results.push({ ok: false, error: 'property_not_found', uid, message_id: mid, property_id: pid }); failed++; continue }
           const ins = await client.query('INSERT INTO orders (id, source, external_id, property_id, guest_name, checkin, checkout, price, cleaning_fee, net_income, avg_nightly_price, nights, currency, status, confirmation_code, idempotency_key, payment_currency, payment_received, email_header_at, year_inferred, raw_checkin_text, raw_checkout_text) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING id', [payload.id, 'airbnb_email', payload.confirmation_code, pid, payload.guest_name, payload.checkin, payload.checkout, payload.price, payload.cleaning_fee, payload.net_income, payload.avg_nightly_price, payload.nights, 'AUD', 'confirmed', payload.confirmation_code, payload.idempotency_key, 'AUD', false, payload.email_header_at, false, null, null])
           const newId = String(ins?.rows?.[0]?.id || '')
           await client.query(`UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2::text) WHERE (($1::bigint IS NOT NULL AND uid=$1::bigint) OR ($3::text IS NOT NULL AND message_id=$3::text))`, [uid ?? null, newId || null, mid ?? null])

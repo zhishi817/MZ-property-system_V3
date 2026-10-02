@@ -1,5 +1,144 @@
 # Change Release Ledger
 
+## CRL-20261002-007 — Airbnb 订单按房源房型使用固定清洁费
+
+- **Status:** verified（本地回归、精确 staged gate 与最终独立审查均为 GO；等待执行已授权的本地提交）
+- **Repository:** `root`
+- **Updated:** 2026-10-02 21:40 Australia/Melbourne
+- **Request:** 先修改后台订单读取规则，不再使用邮件中的清洁费；按房源资料固定收费：studio 85、一房 90、两房一卫 125、两房两卫 135、三房不区分卫生间 220、当前唯一四房三点五卫 280。最终金额按邮件收入金额减固定清洁费计算；无法识别房型时转人工。用户已要求先提交规则修复，历史订单迁移随后分步核验和分批修改。
+- **Outcome:** Airbnb 自动导入和原始邮件人工解析统一按房源 `type` 计算清洁费、最终金额和平均晚价；邮件清洁费只保留在原始解析审计中。无法映射房型时明确停止建单并转人工，不回退到邮件金额。
+
+### Implementation
+
+- Previous behavior: 自动导入与单笔/批量人工解析直接使用邮件解析出的 `cleaning_fee`，并用该值计算 `net_income` 和 `avg_nightly_price`；这会使邮件金额偏差进入订单最终金额。
+- New behavior: 自动同步先仅按 Airbnb 确认码跨来源标签/房源归属判重；非重复订单再加载房源 `id` 与 `type` 并由所有新订单入口复用同一固定费率函数，从邮件收入 `price` 中扣除固定清洁费得到 `net_income`。未知房型返回 `unrecognized_property_type` 或 `property_type_requires_manual_review`，不创建订单；既有订单不执行零金额自动补写。
+- Key decisions: 复用既有房源资料、订单字段与导入链路，不增加配置系统或数据库字段。三房不按卫生间细分；四房仅接受当前确认的四房三点五卫。取消邮件处理逻辑不改。为落实“历史订单后续分批处理”，重复订单只跳过而不补写金额；历史订单读取、筛选、核验和修改不在本提交中执行。
+- Controlled ID receipt: 开始时基于陈旧本地 ledger 暂记 `root/CRL-20261002-004`；2026-10-02 21:40 Australia/Melbourne 刷新 `origin/Dev` 后确认该身份已被固定收入变更占用，因此本业务单元迁移为当时远端未占用的 `root/CRL-20261002-007`。编号迁移不扩大用户已选择的业务范围或发布动作。
+
+### Files / Areas
+
+- `backend/src/lib/orderCleaningFee.ts` — 新增：房源房型到固定清洁费及最终金额的唯一计算规则。
+- `backend/src/modules/jobs.ts` — 修改：自动邮件导入和单笔/批量人工解析统一使用固定清洁费；未知房型转人工。
+- `backend/scripts/tests/test_order_fixed_cleaning_fee.ts` — 新增：费率映射、邮件费率不生效、缺失金额、重复订单顺序、单笔/批量人工解析和未知房型保护回归。
+- `backend/package.json` — 修改：登记固定清洁费契约测试命令。
+- `package.json` — 修改：把固定清洁费契约接入 root `check:fast`、`check:backend` 和其下游 `check:full`。
+- `docs/feature-regression-registry.md` — 修改：FR-014 增加固定清洁费不变量、测试映射和历史迁移边界。
+- `docs/change-release-ledger.md` — 修改：记录本变更、受控编号迁移和本次提交尝试。
+
+### Impact / Dependencies
+
+- API / behavior: 新导入 Airbnb 订单的 `cleaning_fee`、`net_income`、`avg_nightly_price` 可能与邮件列出的清洁费不同；未知房型不再自动建单。
+- Database / migration: 无 schema 变更；本提交不读取或修改生产历史订单，不包含数据迁移。
+- Config / dependencies: 无新增环境变量、依赖或平行配置系统。
+- Related units: FR-014；基线已包含 `root/CRL-20260930-001` 的中文邮件和日期卡片解析，当前修改保留该链路。
+- Risks: 房源 `type` 值若未落在已确认映射中会转人工；这是刻意的安全门槛。实际生产房型覆盖率、历史订单范围与金额修改需在后续获批的只读核验和分批写入中确认。
+- Excluded: 2026-09-01 相关历史订单筛选、已取消/退款订单判断、历史金额批量修改、生产数据库读写、部署和线上验证。
+
+### Validation
+
+- `npm run test:order-fixed-cleaning-fee --prefix backend` — passed：全部费率、邮件清洁费不生效、缺失收入转人工、自动导入仅按确认码跨 source/房源优先判重，以及单笔/批量人工解析的重复与缺失金额行为。
+- `npm run test:airbnb-localized-email --prefix backend` — passed。
+- `npm run test:email-year-rule --prefix backend` — passed。
+- `./node_modules/.bin/tsc -p tsconfig.json --noEmit`（在 `backend`）— passed。
+- `npm run build --prefix backend` — passed；首次在受限 worktree 中仅因 `dist` 写权限失败，获准写入后同一命令通过，构建产生的无关 `dist` 变化已精确还原并排除。
+- `npm run test:root-quality-workflow-contract` — passed：8 tests；确认新增契约仍符合 root 质量工作流结构。
+- `npm run check:backend` — passed：完整 backend build 和全部后端契约；首次运行仅因干净 root worktree 缺少独立 Mobile checkout 的只读 phase5 文件而在最后一项中止，临时链接现有 Mobile checkout 后完整重跑通过，链接和 build 产物均已移除。
+- `npm run check:feature-registry` — passed：28 FRs / 219 mappings / 77 deferred mobile mappings。
+- `python3 scripts/audit_change_release_ledger.py` — passed：7 changed files / 7 recorded files。
+- `git diff --check` — passed。
+- Final independent Codex review — `GO`：最终指纹 `1a6fd74d972b2d5f8d5fb2e2eb83806c9bb053d76ff6b5ecc40b928e2a5412bd`；7 files / 33 non-ledger hunks；P0/P1/P2 均无，前两轮所有 P1 已关闭。GO 仅适用于当前本地 commit，不授权 push 或后续发布动作。
+- 未运行生产邮件同步或数据库核验；测试必须保持本地且不触发外部同步和生产写入。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** passed；修正后仅有本 CRL 登记的 7 个 staged 文件，无未归属 untracked 文件；临时 backend/Mobile 依赖链接与 build 产物已移除。
+- `backend/package.json` — SHA-256: `1bc0f81a5726ca62fde471c28da3320e8be7aebeb1ec0b62de3f7c9577cd18ad`
+- `backend/scripts/tests/test_order_fixed_cleaning_fee.ts` — SHA-256: `16d9e33e5760a081c16b78c00dac369cdb00ba363259c8092b71601d5ed331d2`
+- `backend/src/lib/orderCleaningFee.ts` — SHA-256: `84fe03b44e87cd972649eec0f80598af8048c9b317ac173735d1c9d56be029fc`
+- `backend/src/modules/jobs.ts` — SHA-256: `04262305149e9d2c4249a45df6ee88e9d9268b78de38b3a29778cbcd4526b0b1`
+- `backend/src/modules/jobs.ts` — SHA-256: `13785989064bdecc59a2c54cec438c19327faf7f380294ccb34edc4d274b2566`
+- `backend/src/modules/jobs.ts` — SHA-256: `262e48e5d213916bb22899bc040d9b09894f4fdef3130801c0c6d343e44100a1`
+- `backend/src/modules/jobs.ts` — SHA-256: `2e3bd88abb05e8f0b49c84ed7fef135d97ec48363268d713d932d0581d471206`
+- `backend/src/modules/jobs.ts` — SHA-256: `2fc557e708048e65513c6a07527a98996a1b6d639d449b5a01c2df52a72b2be8`
+- `backend/src/modules/jobs.ts` — SHA-256: `3acc2565675a3113b2da63c4ffcced99405f88d5d98060bbdb79836989258176`
+- `backend/src/modules/jobs.ts` — SHA-256: `57448f102296cb73463b1cb054566c8304df6a7b013358bbc41938ed0d9bbd89`
+- `backend/src/modules/jobs.ts` — SHA-256: `718daa8e07ac1a40d068e9451af3b93166ff82bbcdac37ad0574e2dd7278be4c`
+- `backend/src/modules/jobs.ts` — SHA-256: `720985139067a3420fc9a52e4e2b900425d787763274b4b4d9f28456c945f87c`
+- `backend/src/modules/jobs.ts` — SHA-256: `a47ca87a50c533ead69a27b1d5873289f34613a57e4e4b68886fafc51b0bffee`
+- `backend/src/modules/jobs.ts` — SHA-256: `ae08bb366d83b296d78af17535459e7f92bd42dcf24b3a52ad71b87299d0cde4`
+- `backend/src/modules/jobs.ts` — SHA-256: `07ba4ff7202d807f953672adcdfd5aea4c17b7e2008b011b7fbfb0f2ade7b92a`
+- `backend/src/modules/jobs.ts` — SHA-256: `c07313c527e6198b0115dc32698ab7be8feaf653d2fe8e3df52c90d98d35df4d`
+- `backend/src/modules/jobs.ts` — SHA-256: `966284cae4c9fd62d5dfc8e457136ed0ed6c2f60d892fab1752d7276a4469127`
+- `backend/src/modules/jobs.ts` — SHA-256: `c9658ee9fbc7472be4d2d5d1713db5920e672f1563d44617c60e0f54acce475a`
+- `backend/src/modules/jobs.ts` — SHA-256: `d78ac58ca883b3137b07d5ffd7c0993e759971cf2342ba1f6112a7a8870a87c6`
+- `backend/src/modules/jobs.ts` — SHA-256: `f7c329534d84b6442e2d430fcd51403ca517f000eb30154f19a2cdfca7564b4f`
+- `docs/feature-regression-registry.md` — SHA-256: `6239a7c7a5a747c3e202f3ba59b0b63ca96aa0c68381d443062604ff7c8b16db`
+- `docs/feature-regression-registry.md` — SHA-256: `0b15a3812a474e1c6c7b7b34724652da583469cb80510664af62c7564f5ed5b2`
+- `docs/feature-regression-registry.md` — SHA-256: `b5ca56418366931abe488095a33136c4c2a9e2bd27c15548205f5ae27c3641a9`
+- `docs/feature-regression-registry.md` — SHA-256: `24d4bde5c8e6d8ac0b5647ed77568f8511d38c04cbe51b58ea4b438b5b7e7d2b`
+- `docs/feature-regression-registry.md` — SHA-256: `4eb2ad2271875f410bfcdce5c57d6cce8ddffa20fc113755a6359520550d439b`
+- `docs/feature-regression-registry.md` — SHA-256: `63ab834fe804bbec140f126a637357ed40fae89290ae521afb0a40c6b9f0a387`
+- `docs/feature-regression-registry.md` — SHA-256: `676a88aa5ae6bc9311021ef3acd267f34855f20d11657b4a49110e2b07c6f51d`
+- `docs/feature-regression-registry.md` — SHA-256: `a5509feb0b252bfcd9c0bbea4e22eef60a2c2d9c17522d9bd2e848c2992b583a`
+- `docs/feature-regression-registry.md` — SHA-256: `addbcb1243284b3ccb66ecf580c2d4407321c6dce06edded15d81c9c2eb266fc`
+- `docs/feature-regression-registry.md` — SHA-256: `f58f4efa025bfb1173b992c4ad43e03a6a3ed4128fc14338d4c1e3c84f7a7103`
+- `docs/feature-regression-registry.md` — SHA-256: `fe4cbfb55d60c68008c20d2e4db79b51fe364dc0a1a0c98e5cb71f753a87250f`
+- `package.json` — SHA-256: `cd8bb4a21a8a55d30c274b7db13958b141abe9c6d92e2695a40207a02da95ffd`
+- `package.json` — SHA-256: `d8cbe59ec0b8226fbc37fd839841246c0044e749327e30f2d607915a88d9a9ae`
+
+### Release Attempts
+
+#### RA-20261002-order-fixed-cleaning-fee-commit
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261002-007`
+- Selected CRL identities: `root/CRL-20261002-007`
+- Intended action: `commit`
+- Branch: `codex/order-fixed-cleaning-fee-20261002`
+- Base ref / SHA: `origin/Dev` / `d32c170f807f7601f5cf09433ab7036aa0c25eab`
+- Base: `origin/Dev@d32c170f807f7601f5cf09433ab7036aa0c25eab`; fetched at `2026-10-02T21:40:45+10:00`
+- Base fetch evidence: `git fetch origin Dev` succeeded at 2026-10-02 21:40:45 +1000；clean managed worktree started exactly from that SHA.
+- Candidate patch SHA-256: `1a6fd74d972b2d5f8d5fb2e2eb83806c9bb053d76ff6b5ecc40b928e2a5412bd`（final corrected staged diff excluding `docs/change-release-ledger.md`；earlier fingerprints invalidated by review fixes）
+- Candidate content commit SHA: `3a07b2805affee42e2feaaf19281fe9644ff9c39`
+- Commit SHA: `3a07b2805affee42e2feaaf19281fe9644ff9c39`
+- Dependencies: `none`
+- Required validation: `PASS`; evidence: fixed-cleaning behavior suite, localized-email and date regressions, backend TypeScript/build, root quality workflow contract, complete `check:backend`, Feature Registry, ledger coverage and diff checks passed on the final source; temporary dependency links and build outputs were removed.
+- Shared-hunk review: `PASS`; evidence: the clean candidate started exactly from the refreshed base, every shared-file hunk was included in the final independent review and 33-hunk gate, and the exact range contains no unselected content.
+- Generated-file review: `PASS`; evidence: no generated, cache, env, dependency link or sensitive file is present in the committed range.
+- Required validation / review: first two independent reviews' blockers corrected；final full backend quality chain passed；exact staged scope and pre-commit gate are `GO`；third independent review is `GO` with no P0/P1/P2 findings.
+- Independent review: `GO for local commit`; evidence: final independent read-only review recomputed fingerprint `1a6fd74d972b2d5f8d5fb2e2eb83806c9bb053d76ff6b5ecc40b928e2a5412bd`, inspected 7 files / 33 non-ledger hunks, confirmed the prior missing-price, duplicate-order and quality-wiring P1 findings were closed, and found no P0/P1/P2, generated, sensitive, unselected or production-write risk. This review does not authorize push.
+- Technical state: `committed`
+- Authorization: `selected-for-commit`
+- User authorization: `selected-for-commit`; evidence: user explicitly said “先提交这个修复吧” for this fixed-cleaning-fee business unit; no push, PR, merge, migration, deployment or production-write authorization was given.
+- User authorization evidence: user said “先提交这个修复吧”；this authorizes staging and commit of this fixed-cleaning-fee unit only, not push, PR, merge, migration, deployment, production write, or production verification. The collision-driven identity migration from `root/CRL-20261002-004` to `root/CRL-20261002-007` preserves the same selected business unit.
+- Action conclusion (`commit`): `GO` — achieved by local content commit `3a07b2805affee42e2feaaf19281fe9644ff9c39` on `codex/order-fixed-cleaning-fee-20261002`.
+- Action conclusion: `GO`; the exact reviewed candidate was committed locally as `3a07b2805affee42e2feaaf19281fe9644ff9c39`. Push and later lifecycle actions remain unauthorized and were not performed.
+- Remote / PR / deployment evidence: not pushed；PR not created；not merged；not deployed；production verification not run.
+
+#### RA-20261002-order-fixed-cleaning-fee-push
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261002-007`
+- Selected CRL identities: `root/CRL-20261002-007`
+- Intended action: `push`
+- Branch: `codex/order-fixed-cleaning-fee-20261002`
+- Base: `origin/Dev@d32c170f807f7601f5cf09433ab7036aa0c25eab`; fetched at `2026-10-02T22:34:41+10:00`
+- Candidate patch SHA-256: `1a6fd74d972b2d5f8d5fb2e2eb83806c9bb053d76ff6b5ecc40b928e2a5412bd` excluding `docs/change-release-ledger.md`
+- Commit SHA: `3a07b2805affee42e2feaaf19281fe9644ff9c39`; current audited authorization-receipt head before this record is `f3e646e34ac4289747b837e182999ddc00c6302c`
+- Dependencies: `none`
+- Required validation: `PASS`; evidence: the fixed-cleaning suite, localized-email and date regressions, backend TypeScript/build, full `check:backend`, Feature Registry, ledger coverage, diff check, exact pre-commit gate and committed-range report passed on the unchanged source candidate.
+- Shared-hunk review: `PASS`; evidence: the exact committed range contains only `root/CRL-20261002-007`, with 7 selected files / 33 non-ledger hunks and no unselected content.
+- Generated-file review: `PASS`; evidence: the clean range contains no generated output, cache, environment file, dependency link or configured sensitive category.
+- Technical state: `pushed`; evidence: origin accepted the normal non-force initial push at `b7ae6318f4a6eec5bf6aba66e4839f263bf9ac44`.
+- User authorization: `approved-for-push`; evidence: after receiving repository `root`, CRL `root/CRL-20261002-007`, content commit `3a07b2805affee42e2feaaf19281fe9644ff9c39`, audited head `f3e646e34ac4289747b837e182999ddc00c6302c` and branch `codex/order-fixed-cleaning-fee-20261002`, the user explicitly instructed “推送”. This authorizes a normal non-force push of the unchanged selected range plus the necessary ledger-only authorization/review/outcome receipts to this branch; it does not authorize PR, merge, migration, deployment or production writes.
+- Remote preflight: `PASS`; evidence: refreshed `origin/Dev` remains `d32c170f807f7601f5cf09433ab7036aa0c25eab` and `refs/heads/codex/order-fixed-cleaning-fee-20261002` was absent at `2026-10-02T22:34:41+10:00`.
+- Remote result: `PASS`; evidence: `git ls-remote --heads` matched `origin/codex/order-fixed-cleaning-fee-20261002@b7ae6318f4a6eec5bf6aba66e4839f263bf9ac44` at `2026-10-02T22:41:23+10:00` after the ordinary non-force initial push.
+- Independent review: `GO for controlled push`; evidence: independent read-only push review verified the exact ancestry `d32c170f -> 3a07b280 -> 1b345bf -> f3e646e`, unchanged non-ledger fingerprint `1a6fd74d972b2d5f8d5fb2e2eb83806c9bb053d76ff6b5ecc40b928e2a5412bd`, 7 selected files / 33 non-ledger hunks, ledger-only staged authorization receipt, clean generated/sensitive boundaries, fresh `origin/Dev`, absent target remote branch and approved-for-push authorization. No P0/P1 was found. The sole P2 is accepted as non-blocking: the top-level Status retains stale commit wording while this exact Release Attempt remains the authoritative lifecycle evidence, because the ledger-only gate permits attempt receipts only. The GO permits this ledger-only review receipt, one normal non-force initial push after a clean exact range report and unchanged remote preflight, and one conditional ledger-only pushed-state receipt fast-forward.
+- Action conclusion: `GO`; the ordinary non-force initial push succeeded and the remote SHA was independently verified as `b7ae6318f4a6eec5bf6aba66e4839f263bf9ac44`. This ledger-only pushed-state outcome receipt may be committed and fast-forward pushed once if its ledger-only gate and clean exact range report pass and the remote still equals the verified initial SHA immediately before that push. PR, merge, migration, deployment and production writes remain unauthorized.
+- Remote / PR / deployment evidence: branch initially pushed at `b7ae6318f4a6eec5bf6aba66e4839f263bf9ac44`；PR not created；not merged；not deployed；production verification not run.
+
 ## CRL-20261002-005 — 移动端上传照片按上传者本人授权查看
 
 - **Status:** candidate（本地实现与回归通过；等待精确 staged gate 和独立审查）
