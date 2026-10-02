@@ -21,7 +21,7 @@ const resourceNames: Record<string, string> = {
   company_incomes: '公司收入',
   property_expenses: '房源支出',
   property_incomes: '房源收入',
-  recurring_payments: '固定支出',
+  recurring_payments: '固定收支',
   cms_pages: 'CMS 页面',
   payouts: '房东结算',
   company_payouts: '公司结算',

@@ -105,6 +105,8 @@ describe('settlement workflow UI', () => {
     expect(claimsPanel).toContain("{ title: '工作日期', dataIndex: 'service_date'")
     expect(claimsPanel).toContain('系统自动计算')
     expect(claimsPanel).toContain('确认计入金额')
+    expect(claimsPanel).toContain('核对金额是本次最终计入总额')
+    expect(claimsPanel).toContain('财务可调整金额，并决定计入、退回或不纳入')
     expect(claimsPanel).toContain('确认并计入')
     expect(claimsPanel).not.toContain('直接确认金额（AUD，可选）')
   })

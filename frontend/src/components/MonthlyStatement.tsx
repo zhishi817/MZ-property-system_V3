@@ -284,14 +284,15 @@ export default forwardRef<HTMLDivElement, {
     return shouldIncludeIncomeTxInPropertyOtherIncome(t, orderById)
   })
   const otherIncome = otherIncomeTx.reduce((s,x)=> s + Number(x.amount || 0), 0)
-  const mapIncomeCatLabel = (c?: string) => {
-    const v = String(c || '')
+  const mapIncomeCatLabel = (tx: Tx) => {
+    const v = String(tx.category || '')
     if (v === 'late_checkout') return showChinese ? '晚退房费' : 'Late checkout fee'
     if (v === 'cancel_fee') return showChinese ? '取消费' : 'Cancellation fee'
+    if (v === 'other' && String(tx.category_detail || '').trim()) return String(tx.category_detail || '').trim()
     return v || '-'
   }
   const otherIncomeDescFmt = formatStatementDesc({
-    items: Array.from(new Set(otherIncomeTx.map(t => mapIncomeCatLabel(t.category)))).filter(Boolean) as any,
+    items: Array.from(new Set(otherIncomeTx.map(t => mapIncomeCatLabel(t)))).filter(Boolean) as any,
     lang: showChinese ? 'zh' : 'en',
   })
   const totalIncome = rentIncome + otherIncome

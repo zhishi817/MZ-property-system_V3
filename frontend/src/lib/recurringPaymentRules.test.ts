@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { isAutoPaidInRent, isConsumablesRecurring, isRentDeduction, shouldEnsureRecurringSnapshot } from './recurringPaymentRules'
+import { isAutoPaidInRent, isConsumablesRecurring, isRecurringIncome, isRentDeduction, shouldEnsureRecurringSnapshot } from './recurringPaymentRules'
 
 describe('recurringPaymentRules', () => {
+  it('defaults legacy rows to expense and detects fixed income rows', () => {
+    expect(isRecurringIncome({})).toBe(false)
+    expect(isRecurringIncome({ cashflow_type: 'expense' })).toBe(false)
+    expect(isRecurringIncome({ cashflow_type: 'income' })).toBe(true)
+  })
+
   it('detects consumables by category or report_category', () => {
     expect(isConsumablesRecurring({ category: '消耗品费' })).toBe(true)
     expect(isConsumablesRecurring({ report_category: 'consumables' })).toBe(true)

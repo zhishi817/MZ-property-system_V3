@@ -191,7 +191,7 @@ export default function PersonnelSettlementsPage() {
           payment_method: detail.payment_method || 'bank_transfer',
           person_type: detail.person_type,
           settlement_enabled: detail.settlement_enabled,
-          effective_date: dayjs(),
+          effective_date: detail.effective_from ? dayjs(detail.effective_from) : dayjs(),
           reason: '',
           ...(canManageBank ? {
             bank_account_name: detail.bank_account_name || '',
@@ -221,13 +221,14 @@ export default function PersonnelSettlementsPage() {
         effective_date: values.effective_date.format('YYYY-MM-DD'),
         reason: values.reason.trim(),
       }
+      if (selected.effective_from) payload.current_effective_date = selected.effective_from
       if (canManageBank) {
         payload.bank_account_name = values.bank_account_name?.trim() || null
         payload.bank_bsb = values.bank_bsb?.trim() || null
         payload.bank_account_number = values.bank_account_number?.trim() || null
       }
-      await patchJSON(`/finance/settlements/profiles/${encodeURIComponent(selected.user_id)}`, payload, { authSensitive: true })
-      message.success('人员结算资料已保存')
+      const saved = await patchJSON<PersonnelProfile>(`/finance/settlements/profiles/${encodeURIComponent(selected.user_id)}`, payload, { authSensitive: true })
+      message.success(`人员结算资料已保存，当前生效日期为 ${saved.effective_from || values.effective_date.format('YYYY-MM-DD')}`)
       setDrawerMode(null)
       setSelected(null)
       form.resetFields()
@@ -404,6 +405,13 @@ export default function PersonnelSettlementsPage() {
         footer={<div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}><Button disabled={saving} onClick={() => { setDrawerMode(null); setSelected(null); form.resetFields() }}>取消</Button><Button type="primary" loading={saving} onClick={() => void save()}>保存</Button></div>}
       >
         <Form form={form} layout="vertical">
+          <Alert
+            showIcon
+            type="info"
+            message="这里修改当前生效版本"
+            description="调整生效日期会移动当前版本的起始日，并合并尚未被已批准或已付款结算锁定的重叠版本；银行资料保存到人员主资料并立即生效。"
+            style={{ marginBottom: 16 }}
+          />
           <Form.Item label="法定姓名" name="legal_name" rules={[{ required: true, message: '请输入法定姓名' }]}><Input maxLength={120} /></Form.Item>
           <Form.Item label="商业/Trading Name（可选）" name="supplier_business_name"><Input maxLength={160} /></Form.Item>
           <Form.Item
@@ -435,9 +443,16 @@ export default function PersonnelSettlementsPage() {
           <Form.Item
             label="结算资料生效日期"
             name="effective_date"
-            extra="控制本页姓名、ABN、GST、人员类型、付款方式、结算开关及银行资料从哪一天开始生效。"
+            extra="控制供应方/税务资料、人员类型、付款方式和结算开关从哪一天开始生效；银行资料不按日期建立历史版本。"
             rules={[{ required: true, message: '请选择结算资料生效日期' }]}
-          ><DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" disabledDate={(date) => date.isAfter(dayjs(), 'day')} /></Form.Item>
+          ><DatePicker
+            style={{ width: '100%' }}
+            format="YYYY-MM-DD"
+            disabledDate={(date) => (
+              date.isAfter(dayjs(), 'day')
+              || (!!selected?.effective_from && date.isAfter(dayjs(selected.effective_from), 'day'))
+            )}
+          /></Form.Item>
           <Form.Item label="资料修改原因" name="reason" rules={[{ required: true, whitespace: true, message: '请填写资料修改原因' }]}><Input.TextArea maxLength={500} showCount rows={3} /></Form.Item>
         </Form>
       </Drawer>

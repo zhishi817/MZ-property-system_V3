@@ -106,11 +106,51 @@ function dueMonthKeysBetween(start: string, end: string, freqMonths: number): st
 const RECURRING_SNAPSHOT_CONFLICT_WHERE = `fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> ''`
 const TEMPLATE_KIND_FIXED_EXPENSE = 'fixed_expense'
 const TEMPLATE_KIND_PROPERTY_PAYABLE = 'property_payable'
+const CASHFLOW_TYPE_EXPENSE = 'expense'
+const CASHFLOW_TYPE_INCOME = 'income'
 const PROPERTY_PAYABLE_MENU_PERM = 'menu.finance.property_payables.visible'
 // 31 is deliberately clamped by computeDueISO, so every billing month uses its
 // real last calendar day (including February), rather than a synthetic "30th".
 export const PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH = 31
 const PROPERTY_PAYABLE_ALLOWED_FREQUENCY_MONTHS = [1, 2, 3, 6, 12] as const
+
+export function isRecurringIncomeTemplate(row: any): boolean {
+  return String(row?.cashflow_type || CASHFLOW_TYPE_EXPENSE) === CASHFLOW_TYPE_INCOME
+}
+
+export function buildRecurringIncomeReferenceId(templateId: unknown, monthKey: unknown): string {
+  return `${String(templateId || '').trim()}:${String(monthKey || '').trim()}`
+}
+
+export function buildRecurringIncomeTransactionPayload(input: {
+  id: string
+  payment: any
+  monthKey: string
+  occurredAt: string
+  status: 'received' | 'unreceived'
+  receivedAt?: string | null
+}) {
+  const paymentId = String(input.payment?.id || '').trim()
+  const description = String(input.payment?.category_detail || input.payment?.vendor || '固定收入').trim() || '固定收入'
+  return {
+    id: input.id,
+    kind: 'income' as const,
+    amount: round2(Number(input.payment?.amount || 0)),
+    currency: 'AUD',
+    ref_type: 'recurring_income',
+    ref_id: buildRecurringIncomeReferenceId(paymentId, input.monthKey),
+    occurred_at: input.occurredAt,
+    note: 'Recurring income',
+    category: 'other',
+    category_detail: description,
+    property_id: String(input.payment?.property_id || '').trim() || null,
+    recurring_payment_id: paymentId,
+    month_key: input.monthKey,
+    due_date: input.occurredAt,
+    received_at: input.receivedAt || null,
+    status: input.status,
+  }
+}
 
 export function normalizePropertyPayableFrequencyMonths(value: any): number {
   const n = Number(value || 1)
@@ -399,6 +439,54 @@ async function upsertRecurringSnapshotTx(client: any, table: 'property_expenses'
   return res.rows?.[0] || null
 }
 
+async function upsertRecurringIncomeTx(
+  client: any,
+  payment: any,
+  monthKey: string,
+  status: 'received' | 'unreceived' = 'unreceived',
+  receivedAt?: string | null,
+) {
+  const dueDay = Number(payment?.due_day_of_month || 1)
+  const occurredAt = computeDueISO(monthKey, dueDay)
+  const payload = buildRecurringIncomeTransactionPayload({
+    id: require('uuid').v4(),
+    payment,
+    monthKey,
+    occurredAt,
+    status,
+    receivedAt,
+  })
+  const columns = Object.keys(payload)
+  const values = columns.map((column) => (payload as any)[column])
+  const placeholders = columns.map((_, index) => `$${index + 1}`).join(', ')
+  const result = await client.query(
+    `INSERT INTO finance_transactions (${columns.map((column) => `"${column}"`).join(', ')})
+     VALUES (${placeholders})
+     ON CONFLICT (recurring_payment_id, month_key)
+     DO UPDATE SET
+       amount = EXCLUDED.amount,
+       occurred_at = EXCLUDED.occurred_at,
+       due_date = EXCLUDED.due_date,
+       category = EXCLUDED.category,
+       category_detail = EXCLUDED.category_detail,
+       note = EXCLUDED.note,
+       property_id = EXCLUDED.property_id,
+       ref_type = EXCLUDED.ref_type,
+       ref_id = EXCLUDED.ref_id,
+       status = CASE
+         WHEN finance_transactions.status = 'received' AND EXCLUDED.status <> 'received' THEN finance_transactions.status
+         ELSE EXCLUDED.status
+       END,
+       received_at = CASE
+         WHEN finance_transactions.received_at IS NOT NULL AND EXCLUDED.received_at IS NULL THEN finance_transactions.received_at
+         ELSE COALESCE(EXCLUDED.received_at, finance_transactions.received_at)
+       END
+     RETURNING *, (xmax = 0) AS inserted`,
+    values,
+  )
+  return result.rows?.[0] || null
+}
+
 async function getPropertyPayableSnapshotTx(client: any, fixedExpenseId: string, monthKey: string): Promise<PropertyPayableSnapshotRow | null> {
   const res = await client.query(
     `SELECT *
@@ -518,7 +606,6 @@ async function ensureSchemasOnce() {
     try { await pgPool.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS bill_period_start_month_offset integer DEFAULT 0;') } catch {}
     try { await pgPool.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS bill_period_end_day_of_month integer;') } catch {}
     try { await pgPool.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS bill_period_end_month_offset integer DEFAULT 0;') } catch {}
-
     try { await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS fixed_expense_id text;') } catch {}
     try { await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS month_key text;') } catch {}
     try { await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS due_date date;') } catch {}
@@ -575,6 +662,7 @@ const paymentTypeEnum = z.enum(['bank_account', 'bpay', 'payid', 'rent_deduction
 const monthKeySchema = z.string().regex(/^\d{4}-\d{2}$/, 'invalid month_key')
 const amountModeEnum = z.enum(['fixed', 'percent_of_property_total_income'])
 const incomeBaseEnum = z.enum(['total_income'])
+const cashflowTypeEnum = z.enum([CASHFLOW_TYPE_EXPENSE, CASHFLOW_TYPE_INCOME])
 const optionalDayOfMonthSchema = z.preprocess((value) => isBlankOptionalDayOfMonth(value) ? undefined : value, z.coerce.number().optional())
 const createPaymentSchema = z.object({
   id: z.string().min(8),
@@ -610,6 +698,7 @@ const createPaymentSchema = z.object({
   rate_percent: z.coerce.number().optional(),
   income_base: incomeBaseEnum.optional(),
   initial_mark: z.enum(['paid', 'unpaid']).optional().default('unpaid'),
+  cashflow_type: cashflowTypeEnum.optional().default(CASHFLOW_TYPE_EXPENSE),
 })
 const resumeSchema = z.object({ month_key: monthKeySchema.optional() })
 const markPaidSchema = z.object({ month_key: monthKeySchema, paid_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'invalid paid_date') })
@@ -1342,7 +1431,7 @@ router.get('/payments/month-snapshots', requireAnyPerm(['recurring_payments.view
   if (!/^\d{4}-\d{2}$/.test(monthKey)) return res.status(400).json({ message: 'invalid month_key' })
   try {
     await ensureSchemasOnce()
-    const [propertyRows, companyRows] = await Promise.all([
+    const [propertyRows, companyRows, incomeRows] = await Promise.all([
       pgPool!.query(
         `SELECT id,
                 fixed_expense_id,
@@ -1381,8 +1470,31 @@ router.get('/payments/month-snapshots', requireAnyPerm(['recurring_payments.view
           ORDER BY due_date ASC NULLS LAST, paid_date DESC NULLS LAST`,
         [monthKey]
       ),
+      pgPool!.query(
+        `SELECT id,
+                recurring_payment_id AS fixed_expense_id,
+                month_key,
+                due_date,
+                received_at AS paid_date,
+                status,
+                property_id,
+                category,
+                category_detail,
+                amount,
+                'finance_transactions' AS expense_resource
+           FROM finance_transactions
+          WHERE kind = 'income'
+            AND ref_type = 'recurring_income'
+            AND month_key = $1
+            AND recurring_payment_id IS NOT NULL
+          ORDER BY due_date ASC NULLS LAST, received_at DESC NULLS LAST`,
+        [monthKey]
+      ).catch((error: any) => {
+        if (String(error?.code || '') === '42703') return { rows: [] as any[] }
+        throw error
+      }),
     ])
-    return res.json([...(propertyRows.rows || []), ...(companyRows.rows || [])])
+    return res.json([...(propertyRows.rows || []), ...(companyRows.rows || []), ...(incomeRows.rows || [])])
   } catch (e: any) {
     const msg = String(e?.message || 'failed to load recurring snapshots')
     if (/timeout exceeded when trying to connect/i.test(msg)) return res.status(503).json({ message: msg })
@@ -1409,6 +1521,21 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
   ;(payment as any).created_by = actorId
   ;(payment as any).updated_by = actorId
   normalizePropertyPayableTemplatePayload(payment as any)
+  const recurringIncome = isRecurringIncomeTemplate(payment)
+  if (recurringIncome) {
+    ;(payment as any).scope = 'property'
+    ;(payment as any).template_kind = TEMPLATE_KIND_FIXED_EXPENSE
+    ;(payment as any).amount_mode = 'fixed'
+    ;(payment as any).category = 'other'
+    ;(payment as any).report_category = null
+    ;(payment as any).property_ids = undefined
+    ;(payment as any).rate_percent = undefined
+    ;(payment as any).income_base = undefined
+    const amount = Number((payment as any).amount)
+    if (!String((payment as any).property_id || '').trim()) return res.status(400).json({ message: 'property_id required' })
+    if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ message: 'amount must be greater than zero' })
+    if (!String((payment as any).category_detail || (payment as any).vendor || '').trim()) return res.status(400).json({ message: 'income description required' })
+  }
   if (String((payment as any).template_kind || '') === TEMPLATE_KIND_PROPERTY_PAYABLE && !(await canAccessPropertyPayables(req))) {
     return res.status(403).json({ message: 'forbidden' })
   }
@@ -1429,7 +1556,7 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
     }
     ;(payment as any).bill_expected_day_of_month = normalizeOptionalDayOfMonth((payment as any).bill_expected_day_of_month)
   }
-  if (mode === 'percent_of_property_total_income') {
+  if (!recurringIncome && mode === 'percent_of_property_total_income') {
     if (payment.scope === 'property') return res.status(400).json({ message: 'referral fee must be company scoped' })
     const pids = normalizePropertyIds((payment as any).property_ids)
     const single = String(payment.property_id || '').trim()
@@ -1464,10 +1591,19 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
 
       const scope = String(payment.scope || 'company')
       const table = scope === 'property' ? 'property_expenses' : 'company_expenses'
-      const existingRes = await client.query(
-        `SELECT id, month_key, status, due_date, paid_date FROM ${table} WHERE fixed_expense_id = $1 AND month_key >= $2 AND month_key <= $3`,
-        [payment.id, startMonth, currentMonth]
-      )
+      const existingRes = recurringIncome
+        ? await client.query(
+            `SELECT id, month_key, status, due_date, received_at AS paid_date
+               FROM finance_transactions
+              WHERE recurring_payment_id = $1
+                AND month_key >= $2
+                AND month_key <= $3`,
+            [payment.id, startMonth, currentMonth]
+          )
+        : await client.query(
+            `SELECT id, month_key, status, due_date, paid_date FROM ${table} WHERE fixed_expense_id = $1 AND month_key >= $2 AND month_key <= $3`,
+            [payment.id, startMonth, currentMonth]
+          )
       const byMonth: Record<string, any> = {}
       for (const r of Array.isArray(existingRes.rows) ? existingRes.rows : []) {
         const mk = String((r as any).month_key || '')
@@ -1482,7 +1618,9 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
         const dueISO = payment.payment_type === 'rent_deduction' ? `${mk}-01` : computeDueISO(mk, dueDay)
         const row = byMonth[mk]
         if (!row) {
-          const rowUp = isPropertyPayableTemplate(payment)
+          const rowUp = recurringIncome
+            ? await upsertRecurringIncomeTx(client, payment, mk, 'unreceived', null)
+            : isPropertyPayableTemplate(payment)
             ? await ensurePropertyPayableSnapshotTx(client, payment, mk, actorId)
             : await upsertRecurringSnapshotTx(client, table as any, {
                 fixedExpenseId: payment.id,
@@ -1497,7 +1635,7 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
                 propertyId: scope === 'property' ? (payment.property_id || null) : null,
               })
           if (rowUp?.inserted) inserted++
-        } else if (!isPropertyPayableTemplate(payment) && String((row as any).status || '') !== 'paid') {
+        } else if (!recurringIncome && !isPropertyPayableTemplate(payment) && String((row as any).status || '') !== 'paid') {
           const nextPaid = toISODate((row as any).paid_date) || toISODate((row as any).due_date) || dueISO
           const nextDue = toISODate((row as any).due_date) || dueISO
           await client.query(`UPDATE ${table} SET status='paid', paid_date=$1, due_date=$2 WHERE id=$3`, [nextPaid, nextDue, String((row as any).id)])
@@ -1511,7 +1649,9 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
         const row = byMonth[mk]
         const wantPaid = !isPropertyPayableTemplate(payment) && initial_mark === 'paid'
         if (!row) {
-          const rowUp = isPropertyPayableTemplate(payment)
+          const rowUp = recurringIncome
+            ? await upsertRecurringIncomeTx(client, payment, mk, wantPaid ? 'received' : 'unreceived', wantPaid ? dueISO : null)
+            : isPropertyPayableTemplate(payment)
             ? await ensurePropertyPayableSnapshotTx(client, payment, mk, actorId)
             : await upsertRecurringSnapshotTx(client, table as any, {
                 fixedExpenseId: payment.id,
@@ -1569,6 +1709,24 @@ router.post('/payments/:id/pause', requireAnyPerm(['recurring_payments.write', '
       if (isPropertyPayableTemplate(before) && !(await canAccessPropertyPayables(req))) return { forbidden: true }
       const afterRes = await client.query(`UPDATE recurring_payments SET status='paused', updated_at = now() WHERE id = $1 RETURNING *`, [id])
       const after = afterRes.rows?.[0] || null
+      if (isRecurringIncomeTemplate(before)) {
+        const deleted = await client.query(
+          `DELETE FROM finance_transactions
+            WHERE recurring_payment_id = $1
+              AND (
+                month_key > $2
+                OR (month_key = $2 AND COALESCE(status, 'unreceived') <> 'received')
+              )
+          RETURNING id`,
+          [id, currentMonthKey],
+        )
+        return {
+          before,
+          after,
+          cleared_recurring_incomes: Number(deleted.rowCount || 0),
+          from_month_key: currentMonthKey,
+        }
+      }
       const guard = `(generated_from = 'recurring_payments' OR (coalesce(generated_from,'') = '' AND coalesce(note,'') ILIKE 'Fixed payment%'))`
       const d1 = await client.query(
         `DELETE FROM company_expenses
@@ -1631,7 +1789,7 @@ router.post('/payments/:id/pause', requireAnyPerm(['recurring_payments.write', '
     if ((result as any)?.notFound) return res.status(404).json({ message: 'not found' })
     if ((result as any)?.forbidden) return res.status(403).json({ message: 'forbidden' })
     addAudit('RecurringPayment', String(id), 'pause', (result as any).before, (result as any).after, (req as any).user?.sub)
-    return res.json({ ok: true, paused: true, cleared_company_expenses: (result as any).cleared_company_expenses || 0, cleared_property_expenses: (result as any).cleared_property_expenses || 0, from_month_key: (result as any).from_month_key || null })
+    return res.json({ ok: true, paused: true, cleared_company_expenses: (result as any).cleared_company_expenses || 0, cleared_property_expenses: (result as any).cleared_property_expenses || 0, cleared_recurring_incomes: (result as any).cleared_recurring_incomes || 0, from_month_key: (result as any).from_month_key || null })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'pause failed' })
   }
@@ -1668,7 +1826,9 @@ router.post('/payments/:id/resume', requireAnyPerm(['recurring_payments.write', 
         : Number((after as any).frequency_months || (before as any).frequency_months || 1)
       const isDue = startMonth ? isDueMonthKey(startMonth, monthKey, freq) : true
       if (!isDue) return { before, after, month_key: monthKey, ensured: false }
-      if (isPropertyPayableTemplate(after)) {
+      if (isRecurringIncomeTemplate(after)) {
+        await upsertRecurringIncomeTx(client, after, monthKey, 'unreceived', null)
+      } else if (isPropertyPayableTemplate(after)) {
         await ensurePropertyPayableSnapshotTx(client, after, monthKey, recurringActorId(req))
       } else {
         const dueISO = after.payment_type === 'rent_deduction' ? `${monthKey}-01` : computeDueISO(monthKey, dueDay)
@@ -1769,6 +1929,10 @@ router.post('/payments/:id/ensure-snapshot', requireAnyPerm(['recurring_payments
         : Number((payment as any).frequency_months || 1)
       const isDue = startMonth ? isDueMonthKey(startMonth, monthKey, freq) : true
       if (!isDue) return { ensured: false, month_key: monthKey }
+      if (isRecurringIncomeTemplate(payment)) {
+        const rowUp = await upsertRecurringIncomeTx(client, payment, monthKey, 'unreceived', null)
+        return { ensured: !!rowUp?.id, inserted: rowUp?.inserted ? 1 : 0, updated: rowUp?.inserted ? 0 : 1, month_key: monthKey }
+      }
       if (isPropertyPayableTemplate(payment)) {
         const rowUp = await ensurePropertyPayableSnapshotTx(client, payment, monthKey, recurringActorId(req))
         return { ensured: !!rowUp?.id, inserted: rowUp?.inserted ? 1 : 0, updated: rowUp?.inserted ? 0 : 1, month_key: monthKey }
@@ -1878,6 +2042,33 @@ router.post('/payments/:id/mark-paid', requireAnyPerm(['recurring_payments.write
       const payRes = await client.query('SELECT * FROM recurring_payments WHERE id = $1', [id])
       const payment = payRes.rows?.[0] || null
       if (!payment) return { notFound: true }
+      if (isRecurringIncomeTemplate(payment)) {
+        const incomeRow = await upsertRecurringIncomeTx(client, payment, monthKey, 'received', paidDate)
+        if (!incomeRow?.id) return { failed: true }
+        const rawFreq = Number(payment.frequency_months || 1)
+        const freq = Number.isFinite(rawFreq) ? Math.max(1, Math.min(24, rawFreq)) : 1
+        const nextMonthKey = indexToMonthKey(monthKeyToIndex(monthKey) + freq)
+        const nextDueISO = computeDueISO(nextMonthKey, Number(payment.due_day_of_month || 1))
+        const templateUpd = await client.query(
+          `UPDATE recurring_payments
+              SET last_paid_date = $1,
+                  next_due_date = $2,
+                  status = 'active',
+                  updated_at = now()
+            WHERE id = $3
+            RETURNING *`,
+          [paidDate, nextDueISO, id],
+        )
+        addAudit('finance_transactions', String(incomeRow.id), 'mark_received', null, incomeRow, actorId || undefined)
+        return {
+          ok: true,
+          expense_id: String(incomeRow.id),
+          transaction_id: String(incomeRow.id),
+          month_key: monthKey,
+          row: incomeRow,
+          template: templateUpd.rows?.[0] || null,
+        }
+      }
       if (isPropertyPayableTemplate(payment)) {
         if (!(await canAccessPropertyPayables(req))) return { forbidden: true }
         const ensured = await ensurePropertyPayableSnapshotTx(client, payment, monthKey, actorId)
@@ -1969,6 +2160,20 @@ router.post('/payments/:id/unmark-paid', requireAnyPerm(['recurring_payments.wri
       const payRes = await client.query('SELECT * FROM recurring_payments WHERE id = $1', [id])
       const payment = payRes.rows?.[0] || null
       if (!payment) return { notFound: true }
+      if (isRecurringIncomeTemplate(payment)) {
+        const incomeRow = await upsertRecurringIncomeTx(client, payment, monthKey, 'unreceived', null)
+        if (!incomeRow?.id) return { failed: true }
+        const updated = await client.query(
+          `UPDATE finance_transactions
+              SET status = 'unreceived', received_at = NULL
+            WHERE id = $1
+            RETURNING *`,
+          [String(incomeRow.id)],
+        )
+        const after = updated.rows?.[0] || incomeRow
+        addAudit('finance_transactions', String(incomeRow.id), 'unmark_received', incomeRow, after, actorId || undefined)
+        return { ok: true, expense_id: String(incomeRow.id), transaction_id: String(incomeRow.id), month_key: monthKey, row: after }
+      }
       if (isPropertyPayableTemplate(payment)) {
         if (!(await canAccessPropertyPayables(req))) return { forbidden: true }
         const ensured = await ensurePropertyPayableSnapshotTx(client, payment, monthKey, actorId)
@@ -2057,6 +2262,28 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
       })()
       const nextRateRaw = (Object.prototype.hasOwnProperty.call(payload, 'rate_percent') ? payload.rate_percent : (before as any).rate_percent)
       const nextRate = Number(nextRateRaw)
+      let recurringIncomeDueMonths: string[] | null = null
+      if (isRecurringIncomeTemplate(before)) {
+        const nextPropertyId = String((Object.prototype.hasOwnProperty.call(payload, 'property_id') ? payload.property_id : (before as any).property_id) || '').trim()
+        const nextAmount = Number(Object.prototype.hasOwnProperty.call(payload, 'amount') ? payload.amount : (before as any).amount)
+        const nextDescription = String((Object.prototype.hasOwnProperty.call(payload, 'category_detail') ? payload.category_detail : (before as any).category_detail) || (Object.prototype.hasOwnProperty.call(payload, 'vendor') ? payload.vendor : (before as any).vendor) || '').trim()
+        if (!nextPropertyId) return { invalid: 'property_id required' }
+        if (!Number.isFinite(nextAmount) || nextAmount <= 0) return { invalid: 'amount must be greater than zero' }
+        if (!nextDescription) return { invalid: 'income description required' }
+        if (nextMode !== 'fixed') return { invalid: 'recurring income must use fixed amount' }
+        payload.scope = 'property'
+        payload.template_kind = TEMPLATE_KIND_FIXED_EXPENSE
+        payload.amount_mode = 'fixed'
+        payload.category = 'other'
+        payload.report_category = null
+        const prospectiveIncome = { ...before, ...payload }
+        const prospectiveStartMonth = String((prospectiveIncome as any).start_month_key || '')
+        const prospectiveFrequency = Number((prospectiveIncome as any).frequency_months || 1)
+        recurringIncomeDueMonths = prospectiveStartMonth && String((prospectiveIncome as any).status || 'active') !== 'paused'
+          ? dueMonthKeysBetween(prospectiveStartMonth, currentMonth, prospectiveFrequency)
+          : []
+        if (recurringIncomeDueMonths.length > 240) return { invalid: '起始月份过早，历史月份过多（最多 240 个月）' }
+      }
       if (nextTemplateKind === TEMPLATE_KIND_PROPERTY_PAYABLE) {
         payload.scope = 'property'
         payload.template_kind = TEMPLATE_KIND_PROPERTY_PAYABLE
@@ -2090,6 +2317,30 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
       const sql = `UPDATE recurring_payments SET ${sets.length ? sets.join(', ') + ', ' : ''}updated_at = now() WHERE id = $${keys.length + 1} RETURNING *`
       const updRes = await client.query(sql, [...values, id])
       const updated = (updRes.rows?.[0]) || before
+      if (isRecurringIncomeTemplate(updated)) {
+        const dueMonths = recurringIncomeDueMonths || []
+        const existingIncome = await client.query(
+          `SELECT id, month_key, status
+             FROM finance_transactions
+            WHERE recurring_payment_id = $1`,
+          [id],
+        )
+        const byMonth = new Map<string, any>((existingIncome.rows || []).map((row: any) => [String(row.month_key || ''), row]))
+        let syncedCount = 0
+        for (const dueMonth of dueMonths) {
+          if (String(byMonth.get(dueMonth)?.status || '') === 'received') continue
+          const row = await upsertRecurringIncomeTx(client, updated, dueMonth, 'unreceived', null)
+          if (row?.id) syncedCount += 1
+        }
+        const dueMonthSet = new Set(dueMonths)
+        for (const row of (existingIncome.rows || [])) {
+          const existingMonth = String(row?.month_key || '')
+          if (existingMonth < currentMonth || String(row?.status || '') === 'received' || dueMonthSet.has(existingMonth)) continue
+          await client.query('DELETE FROM finance_transactions WHERE id = $1', [String(row.id)])
+        }
+        addAudit('RecurringPayment', String(id), 'update-and-sync', before, updated, (req as any).user?.sub)
+        return { updated, rowCount: syncedCount, autoMarked: 0 }
+      }
       const propertyPayable = isPropertyPayableTemplate(updated)
       const scope = String(updated.scope || before.scope || 'company')
       const table = scope === 'property' ? 'property_expenses' : 'company_expenses'

@@ -105,7 +105,7 @@ const configuredClaimOptions = buildPersonnelClaimOptions([
   { component_type: 'subsidy_amount' },
 ])
 assert.deepStrictEqual(configuredClaimOptions.map((option) => option.business_type), [
-  'warehouse', 'overtime', 'subsidy', 'new_property', 'external', 'custom',
+  'warehouse', 'overtime', 'subsidy', 'new_property', 'external',
 ])
 assert.deepStrictEqual(configuredClaimOptions.find((option) => option.business_type === 'external'), {
   business_type: 'external', claim_type: 'external_hour', label: '编外合作',
@@ -123,11 +123,67 @@ assert.strictEqual(configuredClaimOptions.some((option) => option.claim_type.sta
 assert.strictEqual(personnelClaimRequiresEvidence('new_property_task'), false)
 assert.strictEqual(personnelClaimRequiresEvidence('subsidy_amount'), true)
 const selfServiceOptions = buildPersonnelClaimOptions([])
-assert.strictEqual(selfServiceOptions.length, 6)
-assert.strictEqual(selfServiceOptions.every((option) => option.rule_configured === false), true)
+assert.strictEqual(selfServiceOptions.length, 5)
+assert.strictEqual(selfServiceOptions.find((option) => option.claim_type === 'subsidy_amount')?.rule_configured, true)
+assert.strictEqual(selfServiceOptions.some((option) => option.claim_type === 'custom_amount'), false)
+assert.strictEqual(selfServiceOptions.find((option) => option.claim_type === 'warehouse_hour')?.rule_configured, false)
 assert.strictEqual(personnelClaimOptionAllowsClaim(selfServiceOptions, 'new_property_task'), true)
 assert.strictEqual(personnelClaimOptionAllowsClaim(selfServiceOptions, 'subsidy_amount'), true)
+assert.strictEqual(personnelClaimOptionAllowsClaim(selfServiceOptions, 'custom_amount'), false)
 assert.strictEqual(personnelClaimOptionAllowsClaim(selfServiceOptions, 'trial_task'), false)
+
+assert.deepStrictEqual(calculatePersonnelClaimEstimate({
+  serviceDate: '2026-09-09',
+  claimType: 'subsidy_amount',
+  requestedAmountCents: 1368,
+  rule: {
+    ruleId: null, ruleName: null, effectiveFrom: '2026-09-01',
+    priceBasis: 'inclusive_gst', unitRateCents: null, gstStatus: 'registered',
+  },
+}), {
+  available: true,
+  reason: null,
+  rule_id: null,
+  rule_name: null,
+  effective_from: '2026-09-01',
+  price_basis: 'inclusive_gst',
+  unit_rate_cents: 1368,
+  gst_status: 'registered',
+  quantity_numerator: 1,
+  quantity_denominator: 1,
+  subtotal_cents: 1244,
+  gst_cents: 124,
+  total_cents: 1368,
+})
+assert.deepStrictEqual(calculatePersonnelClaimEstimate({
+  serviceDate: '2026-09-09',
+  claimType: 'custom_amount',
+  requestedAmountCents: 1368,
+  rule: {
+    ruleId: null, ruleName: null, effectiveFrom: '2026-09-01',
+    priceBasis: 'inclusive_gst', unitRateCents: null, gstStatus: 'not_registered',
+  },
+}), {
+  available: true,
+  reason: null,
+  rule_id: null,
+  rule_name: null,
+  effective_from: '2026-09-01',
+  price_basis: 'inclusive_gst',
+  unit_rate_cents: 1368,
+  gst_status: 'not_registered',
+  quantity_numerator: 1,
+  quantity_denominator: 1,
+  subtotal_cents: 1368,
+  gst_cents: 0,
+  total_cents: 1368,
+})
+const estimatePersonnelClaimSource = claims.slice(claims.indexOf('export async function estimatePersonnelClaim('))
+assert.ok(
+  estimatePersonnelClaimSource.indexOf('if (DIRECT_AMOUNT_TYPES.has(claimType))')
+    < estimatePersonnelClaimSource.indexOf('WITH selected_rule AS'),
+  'direct amount estimates must use the effective profile before any fee-rule lookup',
+)
 
 assert.deepStrictEqual(calculatePersonnelClaimEstimate({
   serviceDate: '2026-09-09',

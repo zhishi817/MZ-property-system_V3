@@ -276,6 +276,11 @@ async function run() {
       property_id text REFERENCES properties(id) ON DELETE SET NULL,
       invoice_url text,
       category_detail text,
+      recurring_payment_id text,
+      month_key text,
+      due_date date,
+      received_at date,
+      status text,
       created_at timestamptz DEFAULT now()
     );`,
     `CREATE INDEX IF NOT EXISTS idx_finance_transactions_date ON finance_transactions(occurred_at);`,
@@ -283,6 +288,8 @@ async function run() {
     `CREATE INDEX IF NOT EXISTS idx_finance_transactions_property ON finance_transactions(property_id);`
     ,
     `CREATE UNIQUE INDEX IF NOT EXISTS uniq_fin_tx_cancel_fee_per_order ON finance_transactions(ref_type, ref_id, category) WHERE category = 'cancel_fee';`
+    ,
+    `CREATE UNIQUE INDEX IF NOT EXISTS uniq_finance_transactions_recurring_income_month ON finance_transactions(recurring_payment_id, month_key);`
     ,
     `CREATE TABLE IF NOT EXISTS company_expenses (
       id text PRIMARY KEY,
@@ -661,6 +668,18 @@ async function run() {
     `CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions(user_id) WHERE revoked = false;`
     ,
     `ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS category_detail text;`,
+    `ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS cashflow_type text NOT NULL DEFAULT 'expense';`,
+    `CREATE TABLE IF NOT EXISTS property_annual_report_delivery_status (
+      id text PRIMARY KEY,
+      property_id text NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+      fiscal_year integer NOT NULL,
+      sent_to_owner boolean NOT NULL DEFAULT false,
+      sent_at timestamptz,
+      sent_by text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_annual_report_delivery_status_property_fy ON property_annual_report_delivery_status(property_id, fiscal_year);`,
     `CREATE TABLE IF NOT EXISTS cleaning_sync_retry_jobs (
       id text PRIMARY KEY,
       order_id text NOT NULL,

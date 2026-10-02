@@ -105,8 +105,8 @@ type PreviewLine = SettlementLineAmounts & {
   price_basis: SettlementPriceBasis
   profile_id: string
   gst_registered: boolean
-  rule_id: string
-  rule_item_id: string
+  rule_id: string | null
+  rule_item_id: string | null
 }
 
 type PersonPreview = {
@@ -124,6 +124,7 @@ function cleanText(value: unknown) {
 }
 
 const CLEANING_PROPERTY_TYPE_SET = new Set<string>(CLEANING_PROPERTY_TYPES)
+const DIRECT_AMOUNT_COMPONENT_TYPE_SET = new Set<SettlementComponentType>(['subsidy_amount', 'custom_amount'])
 
 function dateContains(row: { effective_from: string; effective_to: string | null }, date: string) {
   return row.effective_from <= date && (!row.effective_to || row.effective_to >= date)
@@ -352,6 +353,41 @@ export async function buildPersonnelSettlementPreview(input: {
       warn(inputLine.user_id, profile.user_name, inputLine.source_type, inputLine.source_id, 'gst_status_unconfirmed')
       return
     }
+    const propertyType = cleanText(inputLine.property_type)
+    if (
+      inputLine.approved_amount_cents != null
+      && DIRECT_AMOUNT_COMPONENT_TYPE_SET.has(inputLine.component_type)
+    ) {
+      const amounts = calculateSettlementLine({
+        quantity_numerator: 1,
+        quantity_denominator: 1,
+        unit_rate_cents: inputLine.approved_amount_cents,
+        price_basis: 'inclusive_gst',
+        gst_registered: profile.gst_status === 'registered',
+      })
+      const person = people.get(inputLine.user_id) || newPerson(inputLine.user_id, profile.user_name)
+      person.user_name = profile.user_name
+      person.profile = profile
+      person.lines.push({
+        ...inputLine,
+        source_audit_id: inputLine.source_audit_id || null,
+        property_id: inputLine.property_id || null,
+        property_label: inputLine.property_label || null,
+        property_type: propertyType || null,
+        task_type: inputLine.task_type || null,
+        quantity_numerator: 1,
+        quantity_denominator: 1,
+        unit_rate_cents: inputLine.approved_amount_cents,
+        price_basis: 'inclusive_gst',
+        profile_id: profile.id,
+        gst_registered: profile.gst_status === 'registered',
+        rule_id: null,
+        rule_item_id: null,
+        ...amounts,
+      })
+      people.set(inputLine.user_id, person)
+      return
+    }
     const userRules = rulesByUser.get(inputLine.user_id) || []
     const rule = selectUniqueEffective(userRules, inputLine.service_date)
     if (!rule) {
@@ -361,7 +397,6 @@ export async function buildPersonnelSettlementPreview(input: {
           : 'missing_effective_rule')
       return
     }
-    const propertyType = cleanText(inputLine.property_type)
     if (inputLine.component_type === 'cleaning_task' && !CLEANING_PROPERTY_TYPE_SET.has(propertyType)) {
       warn(inputLine.user_id, profile.user_name, inputLine.source_type, inputLine.source_id, 'missing_or_unsupported_property_type')
       return

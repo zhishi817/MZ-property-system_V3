@@ -26,13 +26,14 @@ import { EditOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import FiscalYearStatement from '../../../../components/FiscalYearStatement'
 import TableRowActions from '../../../../components/TableRowActions'
-import { deleteJSON, getJSON, putJSON } from '../../../../lib/api'
+import { deleteJSON, getJSON, patchJSON, putJSON } from '../../../../lib/api'
 import { hasPerm } from '../../../../lib/auth'
 import {
   ANNUAL_REPORT_LANGUAGE_OPTIONS,
   ANNUAL_REPORT_LINE_LABELS,
   SUPPORTED_ANNUAL_REPORT_FISCAL_YEARS,
   annualReportHasIssues,
+  canMarkAnnualReportSent,
   canDownloadAnnualReport,
   formatAnnualReportFilename,
   formatAnnualReportMoney,
@@ -52,8 +53,12 @@ type AnnualReportSummary = {
   complete_month_count: number
   missing_month_count: number
   warning_count: number
+  sent_to_owner: boolean
+  sent_at: string | null
+  sent_by: string | null
 }
 type AnnualReportSummaryResponse = { fiscal_year: number; reports: AnnualReportSummary[] }
+type AnnualReportDeliveryStatus = Pick<AnnualReportSummary, 'sent_to_owner' | 'sent_at' | 'sent_by'> & { property_id: string; fiscal_year: number }
 type ReportStatusFilter = 'all' | AnnualReportSummaryStatus
 type WorkspaceTab = 'overview' | 'months' | 'preview'
 
@@ -155,6 +160,7 @@ export default function AnnualReportPage() {
   const [reportLoadError, setReportLoadError] = useState<string | null>(null)
   const [savingManualMonths, setSavingManualMonths] = useState(false)
   const [deletingMonthKey, setDeletingMonthKey] = useState<string | null>(null)
+  const [deliveryUpdatingKey, setDeliveryUpdatingKey] = useState<string | null>(null)
   const [exporting, setExporting] = useState(false)
   const [report, setReport] = useState<AnnualPropertyReport | null>(null)
   const [draftByMonth, setDraftByMonth] = useState<Record<string, ManualDraft>>({})
@@ -382,6 +388,42 @@ export default function AnnualReportPage() {
     } finally {
       setDeletingMonthKey(null)
     }
+  }
+
+  const updateDeliveryStatus = async (summary: AnnualReportSummary) => {
+    const key = `${summary.property.id}:${fiscalYear}`
+    setDeliveryUpdatingKey(key)
+    try {
+      const delivery = await patchJSON<AnnualReportDeliveryStatus>(`/finance/annual-report/delivery-status/${encodeURIComponent(summary.property.id)}`, {
+        fiscal_year: fiscalYear,
+        sent_to_owner: !summary.sent_to_owner,
+      })
+      setReportSummaries((current) => current.map((item) => item.property.id === summary.property.id ? {
+        ...item,
+        sent_to_owner: delivery.sent_to_owner,
+        sent_at: delivery.sent_at,
+        sent_by: delivery.sent_by,
+      } : item))
+      message.success(delivery.sent_to_owner ? '已标记为已发送' : '已恢复为未发送')
+    } catch (error: any) {
+      const text = String(error?.message || '')
+      message.error(text.includes('annual_report_incomplete') ? '年度报告尚未完整，不能标记为已发送' : (text || '更新发送状态失败'))
+      throw error
+    } finally {
+      setDeliveryUpdatingKey(null)
+    }
+  }
+
+  const confirmDeliveryStatus = (summary: AnnualReportSummary) => {
+    modal.confirm({
+      title: summary.sent_to_owner ? '确认恢复为未发送？' : '确认已将报告发送给房东？',
+      content: summary.sent_to_owner
+        ? '此操作只修改发送标记。'
+        : '此操作只记录发送状态，不会自动发送邮件。',
+      okText: '确认',
+      cancelText: '取消',
+      onOk: () => updateDeliveryStatus(summary),
+    })
   }
 
   const confirmDeleteManualMonth = (monthKey: string) => {
@@ -676,19 +718,27 @@ export default function AnnualReportPage() {
               {
                 title: '操作',
                 key: 'actions',
-                width: 130,
+                width: 260,
                 fixed: 'right' as const,
                 render: (_: unknown, summary: AnnualReportSummary) => (
                   <div onClick={(event) => event.stopPropagation()}>
                     <TableRowActions actions={[
                       { key: 'detail', label: '详情', onClick: () => selectReport(summary, 'overview') },
                       { key: 'edit', label: '编辑', onClick: () => openEditor(summary), hidden: !canEditAnnualReport || summary.report_status === 'unavailable' },
+                      {
+                        key: 'delivery-status',
+                        label: summary.sent_to_owner ? '已发送' : '未发送',
+                        onClick: () => confirmDeliveryStatus(summary),
+                        hidden: !canEditAnnualReport,
+                        disabled: !summary.sent_to_owner && !canMarkAnnualReportSent(summary.report_status),
+                        loading: deliveryUpdatingKey === `${summary.property.id}:${fiscalYear}`,
+                      },
                     ]} />
                   </div>
                 ),
               },
             ]}
-            scroll={{ x: 440, y: 'calc(100vh - 370px)' }}
+            scroll={{ x: 570, y: 'calc(100vh - 370px)' }}
           />
         </Card>
 

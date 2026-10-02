@@ -1,7 +1,12 @@
 export type RecurringLike = {
+  cashflow_type?: string
   category?: string
   report_category?: string
   payment_type?: string
+}
+
+export function isRecurringIncome(r: RecurringLike): boolean {
+  return String(r?.cashflow_type || 'expense') === 'income'
 }
 
 export type RecurringSnapshotState = {

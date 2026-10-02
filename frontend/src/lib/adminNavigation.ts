@@ -443,7 +443,7 @@ export const ADMIN_NAVIGATION: AdminNavNode[] = [
       },
       {
         id: 'finance-recurring',
-        label: '固定支出',
+        label: '固定收支',
         href: '/finance/recurring',
         visibleWhenAny: ['menu.finance.recurring.visible'],
         rbacKey: 'menu.finance.recurring.visible',
