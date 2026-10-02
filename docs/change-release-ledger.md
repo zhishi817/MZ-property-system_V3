@@ -98,18 +98,23 @@
 - Intended action: `commit`
 - Branch: `codex/order-fixed-cleaning-fee-20261002`
 - Base ref / SHA: `origin/Dev` / `d32c170f807f7601f5cf09433ab7036aa0c25eab`
-- Base: `d32c170f807f7601f5cf09433ab7036aa0c25eab`
+- Base: `origin/Dev@d32c170f807f7601f5cf09433ab7036aa0c25eab`; fetched at `2026-10-02T21:40:45+10:00`
 - Base fetch evidence: `git fetch origin Dev` succeeded at 2026-10-02 21:40:45 +1000；clean managed worktree started exactly from that SHA.
 - Candidate patch SHA-256: `1a6fd74d972b2d5f8d5fb2e2eb83806c9bb053d76ff6b5ecc40b928e2a5412bd`（final corrected staged diff excluding `docs/change-release-ledger.md`；earlier fingerprints invalidated by review fixes）
 - Candidate content commit SHA: `3a07b2805affee42e2feaaf19281fe9644ff9c39`
 - Commit SHA: `3a07b2805affee42e2feaaf19281fe9644ff9c39`
-- Dependencies: FR-014 and `root/CRL-20260930-001` are already present in the recorded base; no external dependency or migration.
+- Dependencies: `none`
+- Required validation: `PASS`; evidence: fixed-cleaning behavior suite, localized-email and date regressions, backend TypeScript/build, root quality workflow contract, complete `check:backend`, Feature Registry, ledger coverage and diff checks passed on the final source; temporary dependency links and build outputs were removed.
+- Shared-hunk review: `PASS`; evidence: the clean candidate started exactly from the refreshed base, every shared-file hunk was included in the final independent review and 33-hunk gate, and the exact range contains no unselected content.
+- Generated-file review: `PASS`; evidence: no generated, cache, env, dependency link or sensitive file is present in the committed range.
 - Required validation / review: first two independent reviews' blockers corrected；final full backend quality chain passed；exact staged scope and pre-commit gate are `GO`；third independent review is `GO` with no P0/P1/P2 findings.
 - Independent review: `GO for local commit`; evidence: final independent read-only review recomputed fingerprint `1a6fd74d972b2d5f8d5fb2e2eb83806c9bb053d76ff6b5ecc40b928e2a5412bd`, inspected 7 files / 33 non-ledger hunks, confirmed the prior missing-price, duplicate-order and quality-wiring P1 findings were closed, and found no P0/P1/P2, generated, sensitive, unselected or production-write risk. This review does not authorize push.
 - Technical state: `committed`
 - Authorization: `selected-for-commit`
+- User authorization: `selected-for-commit`; evidence: user explicitly said “先提交这个修复吧” for this fixed-cleaning-fee business unit; no push, PR, merge, migration, deployment or production-write authorization was given.
 - User authorization evidence: user said “先提交这个修复吧”；this authorizes staging and commit of this fixed-cleaning-fee unit only, not push, PR, merge, migration, deployment, production write, or production verification. The collision-driven identity migration from `root/CRL-20261002-004` to `root/CRL-20261002-007` preserves the same selected business unit.
 - Action conclusion (`commit`): `GO` — achieved by local content commit `3a07b2805affee42e2feaaf19281fe9644ff9c39` on `codex/order-fixed-cleaning-fee-20261002`.
+- Action conclusion: `GO`; the exact reviewed candidate was committed locally as `3a07b2805affee42e2feaaf19281fe9644ff9c39`. Push and later lifecycle actions remain unauthorized and were not performed.
 - Remote / PR / deployment evidence: not pushed；PR not created；not merged；not deployed；production verification not run.
 
 ## CRL-20261002-005 — 移动端上传照片按上传者本人授权查看
