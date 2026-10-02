@@ -1408,6 +1408,8 @@ export function canViewMzappLockboxVideo(user: any) {
 export async function canViewMzappRecordedCleaningMedia(user: any, row: any, userId: string, mediaType: unknown) {
   const type = String(mediaType || '').trim()
   if (!type) return false
+  const uid = String(userId || '').trim()
+  if (uid && String(row?.uploader_id || '').trim() === uid) return true
   if (type.startsWith('inspection_')) return canViewMzappInspectionMedia(user, row, userId)
   if (type === 'lockbox_video') {
     if (!canViewMzappLockboxVideo(user)) return false

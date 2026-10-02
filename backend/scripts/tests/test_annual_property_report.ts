@@ -155,6 +155,9 @@ function main() {
       complete_month_count: 0,
       missing_month_count: 12,
       warning_count: 12,
+      sent_to_owner: false,
+      sent_at: null,
+      sent_by: null,
     })
   }
 
@@ -163,13 +166,19 @@ function main() {
     const financeRouter = fs.readFileSync(path.join(backendRoot, 'src/modules/finance.ts'), 'utf8')
     const annualReportSource = fs.readFileSync(path.join(backendRoot, 'src/lib/annualPropertyReport.ts'), 'utf8')
     assert.match(financeRouter, /router\.get\('\/annual-report\/summaries'[\s\S]*?listAnnualPropertyReportSummaries\(fiscalYear\)/)
+    assert.match(financeRouter, /router\.patch\('\/annual-report\/delivery-status\/:propertyId'[\s\S]*?requirePerm\('finance\.payout'\)/)
+    assert.match(financeRouter, /report\.report_status !== 'complete'[\s\S]*?annual_report_incomplete/)
     const batchSummarySource = annualReportSource.slice(
       annualReportSource.indexOf('async function loadAnnualPropertyReportSummariesFromPg'),
       annualReportSource.indexOf('export async function listAnnualPropertyReportSummaries')
     )
     assert.match(batchSummarySource, /property_id = ANY\(\$1::text\[\]\)/)
+    assert.match(batchSummarySource, /FROM property_annual_report_delivery_status/)
+    assert.match(batchSummarySource, /error\?\.code \|\| ''\) === '42P01'/)
     assert.match(batchSummarySource, /buildAnnualPropertyReport\(/)
     assert.doesNotMatch(batchSummarySource, /loadAnnualPropertyReport\(/)
+    const deliveryMigration = fs.readFileSync(path.join(backendRoot, 'scripts/migrations/20260922_property_annual_report_delivery_status.sql'), 'utf8')
+    assert.match(deliveryMigration, /INSERT INTO schema_migrations/)
   }
 }
 

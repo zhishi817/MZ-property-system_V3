@@ -43,6 +43,7 @@
     "test:offline-task-assignment-patch": "ts-node-dev --transpile-only scripts/tests/test_offline_task_assignment_patch_contract.ts",
     "test:app-notification-policies": "ts-node-dev --transpile-only scripts/tests/test_app_notification_policies.ts",
     "test:mzapp-media-visibility": "ts-node-dev --transpile-only scripts/tests/test_mzapp_media_visibility.ts",
+    "test:recurring-fixed-income": "ts-node-dev --transpile-only scripts/tests/test_recurring_fixed_income.ts",
     "test:expense-receipt-media-contract": "ts-node-dev --transpile-only scripts/tests/test_mzapp_expense_receipt_media_contract.ts",
     "test:pdf-jobs-runtime": "ts-node-dev --transpile-only scripts/tests/test_pdf_jobs_runtime_contract.ts",
     "test:pdf-render-service-auth": "ts-node-dev --transpile-only scripts/tests/test_pdf_render_service_auth.ts",

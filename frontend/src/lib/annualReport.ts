@@ -128,6 +128,10 @@ export function annualReportHasIssues(report: AnnualPropertyReport | null | unde
   return report.report_status !== 'complete' || report.warnings.length > 0 || report.months.some((month) => !month.is_complete)
 }
 
+export function canMarkAnnualReportSent(status: AnnualReportSummaryStatus) {
+  return status === 'complete'
+}
+
 export function formatAnnualReportSummaryStatus(status: AnnualReportSummaryStatus, language: AnnualReportLanguage) {
   const labels = {
     complete: { en: 'Complete', bilingual: 'Complete 完整' },

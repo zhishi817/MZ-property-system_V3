@@ -32,6 +32,7 @@ import {
   listAnnualPropertyReportSummaries,
   listAnnualReportManualRows,
   loadAnnualPropertyReport,
+  setAnnualReportDeliveryStatus,
   upsertAnnualReportManualMonth,
   type AnnualReportLines,
 } from '../lib/annualPropertyReport'
@@ -2621,6 +2622,10 @@ const annualReportManualPayloadSchema = z.object({
   bodycorp: annualReportNullableAmountSchema,
   other_expense: annualReportNullableAmountSchema,
 })
+const annualReportDeliveryPayloadSchema = z.object({
+  fiscal_year: annualReportFiscalYearSchema,
+  sent_to_owner: z.boolean(),
+})
 
 router.get('/annual-report/summaries', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
   try {
@@ -2649,6 +2654,37 @@ router.get('/annual-report', requireAnyPerm(['finance.payout', 'finance.tx.write
     const msg = String(e?.message || '')
     if (msg === 'property_not_found') return res.status(404).json({ message: 'property_not_found' })
     return res.status(500).json({ message: msg || 'annual report failed' })
+  }
+})
+
+router.patch('/annual-report/delivery-status/:propertyId', requirePerm('finance.payout'), async (req, res) => {
+  try {
+    const propertyId = String(req.params.propertyId || '').trim()
+    if (!propertyId) return res.status(400).json({ message: 'missing property_id' })
+    const parsed = annualReportDeliveryPayloadSchema.safeParse(req.body || {})
+    if (!parsed.success) return res.status(400).json({ message: 'invalid delivery status payload' })
+    const fiscalYear = Number(parsed.data.fiscal_year)
+    if (!isSupportedAnnualReportFiscalYear(fiscalYear)) return res.status(400).json({ message: 'unsupported fiscal year' })
+    if (parsed.data.sent_to_owner) {
+      const report = await loadAnnualPropertyReport(propertyId, fiscalYear)
+      if (report.report_status !== 'complete') {
+        return res.status(409).json({ message: 'annual_report_incomplete' })
+      }
+    }
+    const actor = String((req as any)?.user?.sub || (req as any)?.user?.username || '').trim() || null
+    const row = await setAnnualReportDeliveryStatus({
+      property_id: propertyId,
+      fiscal_year: fiscalYear,
+      sent_to_owner: parsed.data.sent_to_owner,
+      actor_id: actor,
+    })
+    try { addAudit('PropertyAnnualReportDeliveryStatus', `${propertyId}:FY${fiscalYear}`, 'set', null, row, actor || undefined) } catch {}
+    return res.json(row)
+  } catch (e: any) {
+    const msg = String(e?.message || '')
+    if (msg === 'property_not_found') return res.status(404).json({ message: msg })
+    if (String(e?.code || '') === '42P01') return res.status(503).json({ message: 'annual_report_delivery_migration_required' })
+    return res.status(500).json({ message: msg || 'update annual report delivery status failed' })
   }
 })
 

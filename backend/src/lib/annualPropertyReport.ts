@@ -123,6 +123,18 @@ export type AnnualPropertyReportSummary = {
   complete_month_count: number
   missing_month_count: number
   warning_count: number
+  sent_to_owner: boolean
+  sent_at: string | null
+  sent_by: string | null
+}
+
+export type AnnualReportDeliveryStatus = {
+  property_id: string
+  fiscal_year: number
+  sent_to_owner: boolean
+  sent_at: string | null
+  sent_by: string | null
+  updated_at: string | null
 }
 
 export type AnnualReportManualMonthRow = {
@@ -814,7 +826,11 @@ export async function loadAnnualPropertyReport(propertyId: string, fiscalYear: n
   })
 }
 
-export function summarizeAnnualPropertyReport(report: AnnualPropertyReport, region?: string | null): AnnualPropertyReportSummary {
+export function summarizeAnnualPropertyReport(
+  report: AnnualPropertyReport,
+  region?: string | null,
+  delivery?: Partial<AnnualReportDeliveryStatus> | null,
+): AnnualPropertyReportSummary {
   return {
     property: {
       id: report.property.id,
@@ -826,6 +842,9 @@ export function summarizeAnnualPropertyReport(report: AnnualPropertyReport, regi
     complete_month_count: report.totals.complete_month_count,
     missing_month_count: report.totals.missing_month_count,
     warning_count: report.warnings.length,
+    sent_to_owner: delivery?.sent_to_owner === true,
+    sent_at: delivery?.sent_at ? String(delivery.sent_at) : null,
+    sent_by: delivery?.sent_by ? String(delivery.sent_by) : null,
   }
 }
 
@@ -866,6 +885,9 @@ function unavailableAnnualPropertyReportSummary(property: any, fiscalYear: numbe
     complete_month_count: 0,
     missing_month_count: listAnnualReportMonthKeys(fiscalYear).length,
     warning_count: 0,
+    sent_to_owner: false,
+    sent_at: null,
+    sent_by: null,
   }
 }
 
@@ -887,7 +909,7 @@ async function loadAnnualPropertyReportSummariesFromPg(fiscalYear: number): Prom
       .map((property: any) => String(property?.landlord_id || '').trim())
       .filter(Boolean)
 
-    const [manualRowsResult, ordersResult, incomeResult, recurringResult, expenseResult, landlordsResult] = await Promise.all([
+    const [manualRowsResult, ordersResult, incomeResult, recurringResult, expenseResult, landlordsResult, deliveryResult] = await Promise.all([
       pgPool!.query(
         `SELECT *
            FROM property_annual_report_manual_months
@@ -941,7 +963,31 @@ async function loadAnnualPropertyReportSummariesFromPg(fiscalYear: number): Prom
              OR COALESCE(property_ids, ARRAY[]::text[]) && $2::text[]`,
         [directLandlordIds, propertyIds]
       ),
+      pgPool!.query(
+        `SELECT property_id, fiscal_year, sent_to_owner, sent_at, sent_by, updated_at
+           FROM property_annual_report_delivery_status
+          WHERE property_id = ANY($1::text[])
+            AND fiscal_year = $2`,
+        [propertyIds, fiscalYear]
+      ).catch((error: any) => {
+        if (String(error?.code || '') === '42P01') return { rows: [] as any[] }
+        throw error
+      }),
     ])
+
+    const deliveryByPropertyId = new Map<string, AnnualReportDeliveryStatus>()
+    for (const row of (deliveryResult.rows || [])) {
+      const propertyId = String(row?.property_id || '').trim()
+      if (!propertyId) continue
+      deliveryByPropertyId.set(propertyId, {
+        property_id: propertyId,
+        fiscal_year: Number(row?.fiscal_year || fiscalYear),
+        sent_to_owner: row?.sent_to_owner === true,
+        sent_at: row?.sent_at ? String(row.sent_at) : null,
+        sent_by: row?.sent_by ? String(row.sent_by) : null,
+        updated_at: row?.updated_at ? String(row.updated_at) : null,
+      })
+    }
 
     const manualRowsByProperty = new Map<string, AnnualReportManualMonthRow[]>()
     for (const row of (manualRowsResult.rows || [])) {
@@ -1049,7 +1095,7 @@ async function loadAnnualPropertyReportSummariesFromPg(fiscalYear: number): Prom
         systemMonths: systemMonthsByProperty.get(propertyId) || createEmptySystemMonths(fiscalYear),
         managementFeeRules: ownerCurrent?.id ? (managementFeeRulesByLandlordId[ownerCurrent.id] || []) : [],
       })
-      return summarizeAnnualPropertyReport(report, property?.region)
+      return summarizeAnnualPropertyReport(report, property?.region, deliveryByPropertyId.get(propertyId) || null)
     })
   } catch {
     return properties.map((property: any) => unavailableAnnualPropertyReportSummary(property, fiscalYear))
@@ -1078,6 +1124,44 @@ export async function listAnnualPropertyReportSummaries(fiscalYear: number): Pro
 export async function listAnnualReportManualRows(propertyId: string, fiscalYear: number) {
   if (!isSupportedAnnualReportFiscalYear(fiscalYear)) throw new Error('unsupported fiscal year')
   return loadManualRows(propertyId, fiscalYear)
+}
+
+export async function setAnnualReportDeliveryStatus(input: {
+  property_id: string
+  fiscal_year: number
+  sent_to_owner: boolean
+  actor_id?: string | null
+}): Promise<AnnualReportDeliveryStatus> {
+  const propertyId = String(input.property_id || '').trim()
+  const fiscalYear = Number(input.fiscal_year || 0)
+  const actorId = String(input.actor_id || '').trim() || null
+  if (!propertyId) throw new Error('property_id_required')
+  if (!isSupportedAnnualReportFiscalYear(fiscalYear)) throw new Error('unsupported fiscal year')
+  if (!hasPg || !pgPool) throw new Error('pg_required')
+  const result = await pgPool.query(
+    `INSERT INTO property_annual_report_delivery_status (
+        id, property_id, fiscal_year, sent_to_owner, sent_at, sent_by, created_at, updated_at
+      ) VALUES (
+        $1, $2, $3, $4, CASE WHEN $4 THEN now() ELSE NULL END, CASE WHEN $4 THEN $5 ELSE NULL END, now(), now()
+      )
+      ON CONFLICT (property_id, fiscal_year)
+      DO UPDATE SET
+        sent_to_owner = EXCLUDED.sent_to_owner,
+        sent_at = CASE WHEN EXCLUDED.sent_to_owner THEN now() ELSE NULL END,
+        sent_by = CASE WHEN EXCLUDED.sent_to_owner THEN EXCLUDED.sent_by ELSE NULL END,
+        updated_at = now()
+      RETURNING property_id, fiscal_year, sent_to_owner, sent_at, sent_by, updated_at`,
+    [uuidv4(), propertyId, fiscalYear, input.sent_to_owner === true, actorId]
+  )
+  const row = result.rows?.[0]
+  return {
+    property_id: String(row?.property_id || propertyId),
+    fiscal_year: Number(row?.fiscal_year || fiscalYear),
+    sent_to_owner: row?.sent_to_owner === true,
+    sent_at: row?.sent_at ? String(row.sent_at) : null,
+    sent_by: row?.sent_by ? String(row.sent_by) : null,
+    updated_at: row?.updated_at ? String(row.updated_at) : null,
+  }
 }
 
 export async function upsertAnnualReportManualMonth(input: {

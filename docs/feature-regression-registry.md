@@ -7,6 +7,96 @@
 - 测试映射必须说明保护点和测试场景；只登记测试文件名不算覆盖证据。
 - `sufficient` 表示当前测试覆盖该保护点；`partial` 表示已有测试但仍有缺口；`not-wired` 表示测试存在但尚未进入对应质量检查；`missing` 表示尚无测试。
 
+## FR-032：固定收入月度应计与月报其他收入
+
+- **维护责任范围：** backend / web
+- **最后审查日期：** 2026-10-02
+- **状态：** active
+
+### 业务保护规则
+
+- 固定收入必须绑定一个真实房源、使用固定金额和明确收入说明；方向创建后不可从收入改成支出或反向切换。
+- 到期月份按模板生成唯一 `finance_transactions` 收入行，`kind=income`、`category=other`、`ref_type=recurring_income`；同一模板和月份不得重复入账。
+- 月报按应计月份把固定收入计入对应房源的“其他收入”，不以是否已收款决定是否进入该月报；已收/未收只表示收款状态。
+- 暂停只清除当前/未来未收记录，历史及已收记录保留；编辑仅同步未收记录，不覆盖已收状态和收款日期。
+
+### 跨层适用范围
+
+- **后端：** 复用 `recurring_payments`，以 `cashflow_type` 区分收支；收入月度实例复用 `finance_transactions`，不新增平行报表系统。
+- **Web：** `/finance/recurring` 更名为“固定收支”，支持固定收入新增、查看、编辑、暂停、恢复及已收/未收操作。
+- **报表：** 现有月报/年度报告的 `finance_transactions.kind='income'` 聚合继续作为“其他收入”事实来源。
+- **数据库：** 显式迁移增加模板方向和收入实例的月份、到期、收款状态字段及唯一索引。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 固定收入身份、唯一引用与月报归类 | `backend/scripts/tests/test_recurring_fixed_income.ts` | 校验收入 payload、唯一模板月份引用、收入实例 upsert、已收/未收动作及年度/月报其他收入聚合契约 | sufficient | `npm run test:recurring-fixed-income --prefix backend` |
+| Web 收支方向兼容 | `frontend/src/lib/recurringPaymentRules.test.ts` | 旧模板默认支出，`cashflow_type=income` 才作为固定收入 | sufficient | `npm run test --prefix frontend -- --coverage.enabled=false src/lib/recurringPaymentRules.test.ts` |
+
+### 验证策略
+
+- 运行后端固定收入契约测试、前端规则测试、前后端 TypeScript no-emit、前端 lint 与注册表审计。
+- 数据库迁移、真实月报生成及管理员浏览器交互需在确认的非生产环境另行验证；本次不连接或写入生产数据库。
+
+### 最后验证
+
+- **CRL：** root/CRL-20261002-004
+- **Commit：** not committed
+- **日期：** 2026-10-02
+
+### 相关 CRL
+
+- root/CRL-20261002-004：固定支出扩展为固定收支并接入月报其他收入。
+
+### 非保护范围
+
+- 实际银行到账对账、自动开票、邮件通知、历史收入回填、生产迁移/部署和财务口径重构。
+
+## FR-031：年度报告房东发送状态
+
+- **维护责任范围：** backend / web
+- **最后审查日期：** 2026-10-02
+- **状态：** active
+
+### 业务保护规则
+
+- 每个房源和财年只有一条发送状态；“已发送”是人工确认标记，不自动发送邮件。
+- 只有年度报告十二个月均完整时才可标记为已发送；恢复为未发送随时允许，并清空发送时间与操作人。
+- 年度报告列表读取保持只读；发送状态缺表时列表兼容显示未发送，写入明确返回迁移未就绪，不在 GET 中建表。
+
+### 跨层适用范围
+
+- **后端：** 年度报告批量摘要附加发送状态，独立 PATCH 更新并写审计；显式迁移保存房源、财年、状态、时间和操作人。
+- **Web：** 年度报告列表操作列显示“已发送/未发送”，确认后只切换标记；未完成报告禁止标记已发送。
+- **入口：** `/finance/performance/annual` 的年度报告记录列表。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 摘要状态、缺表兼容、写权限与完整性门槛 | `backend/scripts/tests/test_annual_property_report.ts` | 校验默认未发送、批量读取投影、PATCH 权限和未完整报告阻断 | sufficient | `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_annual_property_report.ts`（在 `backend`） |
+| Web 按钮可用性 | `frontend/src/lib/annualReport.test.ts` | 仅完整报告可从未发送切换为已发送 | sufficient | `npm run test --prefix frontend -- --coverage.enabled=false src/lib/annualReport.test.ts` |
+
+### 验证策略
+
+- 运行年度报告后端契约、前端规则测试、前后端 TypeScript no-emit、前端 lint 与注册表审计。
+- 数据库迁移、管理员浏览器点击和真实房东发送流程需另行验证；本功能不代表邮件已经发送。
+
+### 最后验证
+
+- **CRL：** root/CRL-20261002-006
+- **Commit：** not committed
+- **日期：** 2026-10-02
+
+### 相关 CRL
+
+- root/CRL-20261002-006：年度报告房东发送状态标记。
+
+### 非保护范围
+
+- 邮件生成/投递、退信追踪、发送附件归档、自动提醒、生产迁移/部署和历史发送状态回填。
+
 ## FR-027：任务中心延期检查日期不得因保存安排消失
 
 - **维护责任范围：** backend Task Center 保存；web 任务安排页
@@ -1105,10 +1195,11 @@
 - 线下任务说明照片的新写入必须保存服务端返回的 `r2://<namespace>/mzapp/...` 稳定引用；认证读取必须先精确匹配 `work_tasks.photo_urls` 和 `work_task_id`，再校验 manager/view-all、assignee 或 manual participant。历史 `.r2.dev/mzapp/...` 或当前配置 public base 下的安全 HTTPS 对象只能在已记录同一任务时由服务端认证代理读取；未知主机、查询/片段、认证信息、端口、路径穿越和未关联引用一律拒绝。
 - 认证读取的 401/403 与 404 必须分别显示权限不足与照片不可用，均不得重试；只有网络、超时或 5xx 可显示重试。终态响应不得继续使用缓存副本。
 - 移动端缩略图读取失败不得只显示空白占位：必须保留并显示经认证代理分类后的 403/404 原因，网络、超时或 5xx 必须提供明确的重试入口；这只说明客户端边界，实际服务端根因仍须由受控请求追踪确认。
+- 清洁、检查、钥匙和补货照片在业务保存时必须记录当前认证用户的 `uploader_id`；认证代理在精确匹配照片引用及可选 `source_task_id` 后，允许该记录的准确上传人或既有任务角色/能力读取。没有记录上传人不会自动补权，错任务、未关联、歧义或其他用户仍失败关闭。
 
 ### 跨层适用范围
 
-- **后端：** 媒体类型、任务 ID 聚合、业务保存结果和重复提交兼容。
+- **后端：** 媒体类型、任务 ID 聚合、认证上传人持久化、精确任务上下文、业务保存结果和重复提交兼容。
 - **客户端：** 上传状态、独立队列、失败步骤、重试入口、本地保留和清理。
 - **入口：** 任务详情、检查面板、补品页、通知/恢复后重试。
 - **一致性：** 本地“已保存”不能代替服务端业务保存确认。
@@ -1136,6 +1227,8 @@
 | 线下任务历史 public-base 读取 | `backend/scripts/tests/test_mzapp_task_photo_reference.ts` | 当前引用规范化；当前 public base 历史 URL 的安全 key、未知主机和路径穿越边界 | sufficient | `ts-node-dev --transpile-only scripts/tests/test_mzapp_task_photo_reference.ts`（在 backend） |
 | 线下任务照片代理授权 | `backend/scripts/tests/test_mzapp_media_visibility.ts` | manager、assignee、participant 与 outsider 的读取边界 | sufficient | `npm run test:mzapp-media-visibility --prefix backend` |
 | 线下任务照片精确关联 | `backend/scripts/tests/test_cleaning_media_image.ts` | `photo_urls` 当前任务关联、历史 URL 认证读取和缺失对象终态 | sufficient | `npm run test:cleaning-media-image --prefix backend` |
+| 清洁任务照片上传人授权 | `backend/scripts/tests/test_mzapp_media_visibility.ts` | 代理精确匹配来源任务并允许准确上传人读取，其他用户仍拒绝 | sufficient | `npm run test:mzapp-media-visibility --prefix backend` |
+| 清洁任务照片上传人持久化 | `backend/scripts/tests/test_cleaning_media_image.ts` | 所有 cleaning-app 媒体保存路径记录认证上传人，代理读取记录的上传人和来源任务 | sufficient | `npm run test:cleaning-media-image --prefix backend` |
 | 线下任务历史 URL 客户端认证构造 | `mz-cleaning-app-frontend/src/lib/cleaningMedia.test.ts` | 仅显式 offline task context 且含 `work_task_id` 的历史 HTTPS 引用走认证代理 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/cleaningMedia.test.ts` |
 | 线下任务历史 URL 缩略图与预览 | `mz-cleaning-app-frontend/src/components/CleaningMediaPreview.test.tsx` | 缩略图和预览复用同一代理和任务上下文 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/components/CleaningMediaPreview.test.tsx` |
 | 线下任务历史 URL 页面上下文 | `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` | 顶部任务照片的缩略图与预览显式进入 offline 认证读取 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tasks/TaskDetailScreen.test.tsx` |
@@ -1155,9 +1248,9 @@
 
 ### 最后验证
 
-- **CRL：** CRL-20260811-009
-- **Commit：** not yet
-- **日期：** 2026-08-12
+- **CRL：** root/CRL-20261002-005
+- **Commit：** not committed
+- **日期：** 2026-10-02
 
 ### 相关 CRL
 
@@ -1173,6 +1266,7 @@
 - CRL-20260726-006：第五阶段跨层回归与发布前写入闸门
 - CRL-20260728-001：移动端房号确认、遥控器合拍与检查后清洁问题追加
 - CRL-20260811-009：线下任务历史公共基址照片认证读取（root/mobile pair）
+- root/CRL-20261002-005：移动端任务照片上传人精确读取权限。
 
 ### 非保护范围
 

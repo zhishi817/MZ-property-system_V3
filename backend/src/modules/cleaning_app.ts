@@ -862,9 +862,9 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), require
         await pgRunInTransaction(async (client) => {
           await client.query(`DELETE FROM cleaning_task_media WHERE task_id::text = $1::text AND type = 'key_photo'`, [String(id)])
           await client.query(
-            `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, lat, lng)
-             VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-            [require('uuid').v4(), id, 'key_photo', parsed.data.media_url, parsed.data.captured_at || now, parsed.data.lat ?? null, parsed.data.lng ?? null],
+            `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, lat, lng, uploader_id)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+            [require('uuid').v4(), id, 'key_photo', parsed.data.media_url, parsed.data.captured_at || now, parsed.data.lat ?? null, parsed.data.lng ?? null, String(user?.sub || '').trim() || null],
           )
         })
         const patchExisting = buildKeyPhotoUploadTaskPatch({
@@ -924,6 +924,7 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), require
         captured_at: parsed.data.captured_at || now,
         lat: parsed.data.lat,
         lng: parsed.data.lng,
+        uploader_id: String(user?.sub || '').trim() || null,
       }
       try { await pgInsert('cleaning_task_media', media as any) } catch {}
       const eventPatch = buildKeyPhotoUploadEventPatch({
@@ -1071,7 +1072,7 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
       const issue = { id: require('uuid').v4(), task_id: id, title: parsed.data.title, detail: parsed.data.detail || null, severity: parsed.data.severity || null }
       await pgInsert('cleaning_issues', issue as any)
       if (parsed.data.media_url) {
-        const media = { id: require('uuid').v4(), task_id: id, type: 'issue_photo', url: parsed.data.media_url, captured_at: new Date().toISOString() }
+        const media = { id: require('uuid').v4(), task_id: id, type: 'issue_photo', url: parsed.data.media_url, captured_at: new Date().toISOString(), uploader_id: String(user?.sub || '').trim() || null }
         try { await pgInsert('cleaning_task_media', media as any) } catch {}
       }
       await emitWorkTaskEvent({
@@ -1268,7 +1269,12 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
         const livingRoomPhotoUrls = normalizeStoredPhotoUrls(parsed.data.living_room_photo_urls, parsed.data.living_room_photo_url)
 
         await client.query(`DELETE FROM cleaning_consumable_usages WHERE task_id=$1`, [String(id)])
-        await client.query(`DELETE FROM cleaning_task_media WHERE task_id::text=$1::text AND type='consumable_living_room_photo'`, [String(id)])
+        await client.query(
+          `DELETE FROM cleaning_task_media
+            WHERE task_id::text=$1::text
+              AND (type='consumable_living_room_photo' OR type LIKE 'consumable_item_photo:%')`,
+          [String(id)],
+        )
 
         for (const it of parsed.data.items) {
           const meta: any = byId.get(String(it.item_id)) || null
@@ -1286,6 +1292,16 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
             item_label: meta ? String(meta.label || '') : null,
           }
           await pgInsert('cleaning_consumable_usages', row as any, client)
+          for (const photoUrl of photoUrls) {
+            await pgInsert('cleaning_task_media', {
+              id: require('uuid').v4(),
+              task_id: String(id),
+              type: `consumable_item_photo:${String(it.item_id)}`,
+              url: photoUrl,
+              captured_at: new Date().toISOString(),
+              uploader_id: String(user?.sub || '').trim() || null,
+            } as any, client)
+          }
         }
         const restockItemsPayload = parsed.data.items
           .filter((it) => String(it.status || '').trim().toLowerCase() === 'low')
@@ -1310,6 +1326,7 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
             type: 'consumable_living_room_photo',
             url: livingRoomPhotoUrl,
             captured_at: new Date().toISOString(),
+            uploader_id: String(user?.sub || '').trim() || null,
           } as any, client)
         }
         const needsRestock = parsed.data.items.some((i) => i.status === 'low')
@@ -1501,7 +1518,7 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
     if (hasPg) {
       if (!await canPerformCleaningTaskAction(user, String(id), ['upload_access_video'])) return res.status(403).json({ message: 'forbidden' })
       const now = new Date().toISOString()
-      const media = { id: require('uuid').v4(), task_id: id, type: 'lockbox_video', url: parsed.data.media_url, captured_at: parsed.data.captured_at || now, lat: parsed.data.lat, lng: parsed.data.lng }
+      const media = { id: require('uuid').v4(), task_id: id, type: 'lockbox_video', url: parsed.data.media_url, captured_at: parsed.data.captured_at || now, lat: parsed.data.lat, lng: parsed.data.lng, uploader_id: String(user?.sub || '').trim() || null }
       await pgInsert('cleaning_task_media', media as any)
       const actionActor = actorAndPerformerFromRequest(user, parsed.data)
       const actionResult = await applyCleaningTaskActionTransition({
@@ -1704,9 +1721,9 @@ router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspec
             const cap = String(it.captured_at || '').trim()
             const capturedAt = cap ? new Date(cap) : new Date()
             await client.query(
-              `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at)
-               VALUES ($1,$2,$3,$4,$5,$6)`,
-              [uuid.v4(), id, type, String(it.url), it.note == null ? null : String(it.note || ''), capturedAt.toISOString()],
+              `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at, uploader_id)
+               VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+              [uuid.v4(), id, type, String(it.url), it.note == null ? null : String(it.note || ''), capturedAt.toISOString(), String(user?.sub || '').trim() || null],
             )
           }
         }
@@ -1803,9 +1820,9 @@ router.post('/tasks/:id/inspection-issue-photos', requireAnyPerm(['cleaning_app.
       for (const item of parsed.data.items) {
         const capturedAt = String(item.captured_at || '').trim() ? new Date(String(item.captured_at)).toISOString() : new Date().toISOString()
         await client.query(
-          `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at)
-           VALUES ($1,$2,'inspection_unclean',$3,$4,$5)`,
-          [uuid.v4(), String(id), String(item.url), item.note == null ? null : String(item.note || ''), capturedAt],
+          `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at, uploader_id)
+           VALUES ($1,$2,'inspection_unclean',$3,$4,$5,$6)`,
+          [uuid.v4(), String(id), String(item.url), item.note == null ? null : String(item.note || ''), capturedAt, String(user?.sub || '').trim() || null],
         )
       }
       const responseBody = { ok: true, appended: parsed.data.items.length }
@@ -1969,9 +1986,9 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
           const cap = String(it.captured_at || '').trim()
           const capturedAt = cap ? new Date(cap) : new Date()
           await client.query(
-            `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at)
-             VALUES ($1,$2,$3,$4,$5,$6)`,
-            [uuid.v4(), id, type, String(it.url), it.note == null ? null : String(it.note || ''), capturedAt.toISOString()],
+            `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at, uploader_id)
+             VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+            [uuid.v4(), id, type, String(it.url), it.note == null ? null : String(it.note || ''), capturedAt.toISOString(), String(user?.sub || '').trim() || null],
           )
         }
         const actionActor = actorAndPerformerFromRequest(user, parsed.data)
@@ -2065,9 +2082,9 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
       const transactionResult = await pgRunInTransaction(async (client) => {
         await client.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type='lockbox_video'`, [id])
         await client.query(
-          `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, lat, lng)
-           VALUES ($1,$2,'lockbox_video',$3,$4,$5,$6)`,
-          [uuid.v4(), id, String(parsed.data.media_url), String(parsed.data.captured_at || now), parsed.data.lat ?? null, parsed.data.lng ?? null],
+          `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, lat, lng, uploader_id)
+           VALUES ($1,$2,'lockbox_video',$3,$4,$5,$6,$7)`,
+          [uuid.v4(), id, String(parsed.data.media_url), String(parsed.data.captured_at || now), parsed.data.lat ?? null, parsed.data.lng ?? null, String(user?.sub || '').trim() || null],
         )
         const actionResult = await applyCleaningTaskActionTransition({
           taskId: String(id),
@@ -2438,9 +2455,9 @@ router.post('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.fi
         const urlsToPersist = it.status === 'unavailable' ? ['no_photo'] : (proofUrls.length ? proofUrls : ['no_photo'])
         for (const url of urlsToPersist) {
           await pgPool.query(
-            `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at)
-             VALUES ($1,$2,$3,$4,$5,now())`,
-            [uuid.v4(), id, `restock_proof:${it.item_id}`, url, JSON.stringify(meta)],
+            `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at, uploader_id)
+             VALUES ($1,$2,$3,$4,$5,now(),$6)`,
+            [uuid.v4(), id, `restock_proof:${it.item_id}`, url, JSON.stringify(meta), String(user?.sub || '').trim() || null],
           )
         }
       }
@@ -3006,6 +3023,14 @@ export function selectUniqueRecordedCleaningMediaRow(rows: any[]) {
   const matchedTaskIds = new Set(matchedRows.map((row: any) => String(row?.id || '').trim()).filter(Boolean))
   const matchedMediaTypes = new Set(matchedRows.map((row: any) => String(row?.type || '').trim()).filter(Boolean))
   return matchedTaskIds.size === 1 && matchedMediaTypes.size === 1 ? matchedRows[0] || null : null
+}
+
+export function hasRecordedCleaningMediaSourceTaskMismatch(rows: any[], sourceTaskId: unknown) {
+  const requestedTaskId = String(sourceTaskId || '').trim()
+  if (!requestedTaskId) return false
+  return !(Array.isArray(rows) ? rows : []).some((row: any) => (
+    String(row?.source_task_id || row?.id || '').trim() === requestedTaskId
+  ))
 }
 
 export function selectUniqueRecordedDayEndMediaRow(rows: any[]) {
@@ -3596,6 +3621,8 @@ router.get(
         ? await pgPool.query(
           `SELECT ctm.type,
                   ctm.url,
+                  ctm.task_id::text AS source_task_id,
+                  ctm.uploader_id::text AS uploader_id,
                   ct.id,
                   ct.cleaner_id,
                   ct.inspector_id,
@@ -3616,12 +3643,14 @@ router.get(
                   u.photo_urls
              FROM cleaning_consumable_usages u
              JOIN cleaning_tasks ct ON ct.id::text = u.task_id::text
-            WHERE COALESCE(u.photo_url, '') = ANY($1::text[])
-               OR EXISTS (
-                 SELECT 1
-                   FROM unnest($1::text[]) AS reference(value)
-                  WHERE position(reference.value IN COALESCE(u.photo_urls::text, '')) > 0
-               )`,
+            WHERE (
+              COALESCE(u.photo_url, '') = ANY($1::text[])
+              OR EXISTS (
+                SELECT 1
+                  FROM unnest($1::text[]) AS reference(value)
+                 WHERE position(reference.value IN COALESCE(u.photo_urls::text, '')) > 0
+              )
+            )`,
           [mediaReferences],
         )
         : { rows: [] }
@@ -3647,15 +3676,23 @@ router.get(
         : { rows: [] }
       const user = (req as any).user || {}
       const userId = String(user.sub || '').trim()
+      const recordedTaskMediaKeys = new Set((mediaRows?.rows || []).map((row: any) => (
+        r2KeyFromUrl(String(row?.url || '').trim()) || String(row?.url || '').trim()
+      )).filter(Boolean))
       const usageMediaRows = (usageRows?.rows || []).flatMap((row: any) => normalizeStoredPhotoUrls(row.photo_urls, row.photo_url)
         .map((url) => ({
           id: row.id,
+          source_task_id: row.id,
           cleaner_id: row.cleaner_id,
           inspector_id: row.inspector_id,
           assignee_id: row.assignee_id,
           type: 'consumable_item_photo',
           url,
         })))
+        .filter((row: any) => {
+          const storedKey = r2KeyFromUrl(String(row?.url || '').trim()) || String(row?.url || '').trim()
+          return !recordedTaskMediaKeys.has(storedKey)
+        })
       const matchingGuestLuggageRows = (guestLuggageRows?.rows || []).filter((row: any) => (
         normalizeStoredPhotoUrls(row.photo_urls).some((url) => (r2KeyFromUrl(url) || url) === key)
       ))
@@ -3664,6 +3701,9 @@ router.get(
         const storedKey = r2KeyFromUrl(String(row?.url || '').trim()) || String(row?.url || '').trim()
         return storedKey === key
       })
+      if (hasRecordedCleaningMediaSourceTaskMismatch(matchingMediaRows, sourceTaskId)) {
+        return res.status(403).json({ message: 'forbidden_media' })
+      }
       const matchingDayEndRows = (dayEndRows?.rows || []).filter((row: any) => {
         const storedKey = r2KeyFromUrl(String(row?.url || '').trim()) || String(row?.url || '').trim()
         return storedKey === key

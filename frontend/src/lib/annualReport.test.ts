@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   ANNUAL_REPORT_ROUTE,
   annualReportHasIssues,
+  canMarkAnnualReportSent,
   canDownloadAnnualReport,
   formatAnnualReportMonthStatus,
   formatAnnualReportWarningMessage,
@@ -98,6 +99,12 @@ describe('annualReport helpers', () => {
   it('surfaces missing months and draft status', () => {
     expect(annualReportHasIssues(report)).toBe(true)
     expect(getAnnualReportMissingMonths(report)).toEqual(['2026-03'])
+  })
+
+  it('only allows complete annual reports to be marked as sent', () => {
+    expect(canMarkAnnualReportSent('complete')).toBe(true)
+    expect(canMarkAnnualReportSent('draft_incomplete')).toBe(false)
+    expect(canMarkAnnualReportSent('unavailable')).toBe(false)
   })
 
   it('keeps system months read-only while manual months stay editable', () => {

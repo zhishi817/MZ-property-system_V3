@@ -8,11 +8,11 @@ import { useEffect, useRef, useState } from 'react'
 import { API_BASE, getJSON, authHeaders } from '../../../lib/api'
 import { sortActivePropertiesByRegionThenCode } from '../../../lib/properties'
 import { isDueForMonth, shouldIncludeForMonth } from '../../../lib/recurringStartMonth'
-import { isAutoPaidInRent, shouldEnsureRecurringSnapshot } from '../../../lib/recurringPaymentRules'
+import { isAutoPaidInRent, isRecurringIncome } from '../../../lib/recurringPaymentRules'
 import AuditTrail from '../../../components/AuditTrail'
 
-type Recurring = { id: string; property_id?: string; property_ids?: string[]; scope?: 'company'|'property'; vendor?: string; category?: string; amount?: number; due_day_of_month?: number; frequency_months?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; payment_type?: 'bank_account'|'bpay'|'payid'|'rent_deduction'|'cash'; bpay_code?: string; pay_mobile_number?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses'; fixed_expense_id?: string; report_category?: string; start_month_key?: string; template_kind?: string; bill_account_no?: string; note?: string; is_paid?: boolean; is_due_month?: boolean; created_at?: string }
-type ExpenseRow = { id: string; fixed_expense_id?: string; month_key?: string; due_date?: string; paid_date?: string; status?: string; property_id?: string; category?: string; amount?: number }
+type Recurring = { id: string; cashflow_type?: 'expense'|'income'; property_id?: string; property_ids?: string[]; scope?: 'company'|'property'; vendor?: string; category?: string; category_detail?: string; amount?: number; amount_mode?: 'fixed'|'percent_of_property_total_income'; due_day_of_month?: number; frequency_months?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; payment_type?: 'bank_account'|'bpay'|'payid'|'rent_deduction'|'cash'; bpay_code?: string; pay_mobile_number?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses'|'finance_transactions'; fixed_expense_id?: string; report_category?: string; start_month_key?: string; template_kind?: string; bill_account_no?: string; note?: string; is_paid?: boolean; is_due_month?: boolean; created_at?: string }
+type ExpenseRow = { id: string; fixed_expense_id?: string; month_key?: string; due_date?: string; paid_date?: string; status?: string; property_id?: string; category?: string; category_detail?: string; amount?: number; expense_resource?: 'company_expenses'|'property_expenses'|'finance_transactions' }
 type Property = { id: string; code?: string; address?: string; region?: string; archived?: boolean | null }
 type RecurringPageState = { monthKey?: string; searchText?: string; tablePage?: number; tablePageSize?: number }
 
@@ -145,8 +145,8 @@ export default function RecurringPage() {
   }
   function betterExpense(a: ExpenseRow | undefined, b: ExpenseRow): ExpenseRow {
     if (!a) return b
-    const aPaid = String(a.status || '') === 'paid'
-    const bPaid = String(b.status || '') === 'paid'
+    const aPaid = ['paid', 'received'].includes(String(a.status || ''))
+    const bPaid = ['paid', 'received'].includes(String(b.status || ''))
     if (aPaid !== bPaid) return bPaid ? b : a
     const ap = toISODate(a.paid_date)
     const bp = toISODate(b.paid_date)
@@ -180,10 +180,11 @@ export default function RecurringPage() {
   function getLabel(p?: string) { const x = properties.find(pp=>pp.id===p); return x?.code || x?.address || '公司' }
   function statusTag(r: Recurring & { is_paid?: boolean }) {
     const today = nowAU()
+    const income = isRecurringIncome(r)
     if ((r.status||'')==='paused') return <Tag color="default">暂停</Tag>
     if ((r as any).is_due_month === false) return <Tag color="default">非到期</Tag>
     if (isAutoPaidInRent(r)) return <Tag color="green">已付款</Tag>
-    if (r.is_paid) return <Tag color="green">已付款</Tag>
+    if (r.is_paid) return <Tag color="green">{income ? '已收款' : '已付款'}</Tag>
     const nd = parseAU(r.next_due_date)
     if (nd && nd.isSame(today, 'day')) return <Tag color="gold">今天到期</Tag>
     if (nd && today.isAfter(nd, 'day')) {
@@ -195,13 +196,14 @@ export default function RecurringPage() {
       const remind = Number((r.remind_days_before ?? 3))
       if (days > 0 && days <= remind) return <Tag color="orange">即将到期 {days} 天</Tag>
     }
-    return <Tag color="blue">待付款</Tag>
+    return <Tag color="blue">{income ? '待收款' : '待付款'}</Tag>
   }
 
   const columns = [
+    { title:'收支类型', dataIndex:'cashflow_type', render:(_:string, r:Recurring)=> isRecurringIncome(r) ? <Tag color="green">固定收入</Tag> : <Tag color="blue">固定支出</Tag> },
     { title:'对象', dataIndex:'property_id', render:(v:string, r:any)=> (r.scope==='company' || !v) ? '公司' : getLabel(v) },
-    { title:'支出事项', dataIndex:'vendor' },
-    { title:'支出类别', dataIndex:'category', render:(v:string)=> v==='other' ? '其他' : v },
+    { title:'收支事项', dataIndex:'vendor' },
+    { title:'收支类别', dataIndex:'category', render:(v:string, r:Recurring)=> isRecurringIncome(r) ? '其他收入' : (v==='other' ? '其他支出' : v) },
     { title:'金额', dataIndex:'amount', render:(v:number)=> v!=null?`$${Number(v).toFixed(2)}`:'-' },
     { title:'到期日', key:'due', render:(_:any,r:any)=> {
       if ((r as Recurring).payment_type === 'rent_deduction') return '-'
@@ -213,12 +215,13 @@ export default function RecurringPage() {
     } },
     { title:'提醒', dataIndex:'remind_days_before', render:(v:number)=> v!=null?`${v}天`:'-' },
     { title:'状态', key:'st', render:(_:any,r:any)=> statusTag(r) },
-    { title:'上次付款', key:'paid', render:(_:any,r:any)=> fmt(r.last_paid_date || r.paid_date) },
+    { title:'上次收/付款', key:'paid', render:(_:any,r:any)=> fmt(r.last_paid_date || r.paid_date) },
     { title:'下次到期', key:'next', render:(_:any,r:any)=> {
       if ((r as Recurring).payment_type === 'rent_deduction') return '-'
       return fmt(nextDueISOForRow(r))
     } },
     { title:'付款账户', key:'acct', width: 280, render:(_:any,r:Recurring & any)=> {
+      if (isRecurringIncome(r)) return '-'
       const type = r.payment_type
       const accountName = r.pay_account_name || r.account_name
       const bsb = r.pay_bsb || r.bsb
@@ -245,7 +248,11 @@ export default function RecurringPage() {
         </div>
       )
     } },
-    { title:'操作', key:'ops', render:(_:any,r:Recurring)=> (
+    { title:'操作', key:'ops', render:(_:any,r:Recurring)=> {
+      const income = isRecurringIncome(r)
+      const paidLabel = income ? '已收' : '已付'
+      const unpaidLabel = income ? '未收' : '未付'
+      return (
       <Space>
         <Button onClick={()=>{ setViewing(r); setViewOpen(true) }}>查看</Button>
         <Button onClick={()=>{ const sm = (r as any).start_month_key ? dayjs.tz(`${String((r as any).start_month_key)}-01`, 'YYYY-MM-DD', 'Australia/Melbourne') : nowAU().startOf('month'); const pids = normalizeIds((r as any).property_ids); const pids2 = pids.length ? pids : (r.property_id ? [r.property_id] : []); setEditing(r); setOpen(true); form.setFieldsValue({ ...r, property_ids: pids2, start_month: sm, frequency_months: r.frequency_months ?? 1 }) }}>编辑</Button>
@@ -253,7 +260,7 @@ export default function RecurringPage() {
           <>
             <Button disabled>已停用</Button>
             <Popconfirm
-              title="确认恢复该固定支出？恢复后将按规则重新生成本月/未来记录。"
+              title="确认恢复该固定收支？恢复后将按规则重新生成本月/未来记录。"
               okText="恢复"
               cancelText="取消"
               onConfirm={async()=>{
@@ -283,14 +290,14 @@ export default function RecurringPage() {
           <>
             {((r.payment_type === 'rent_deduction') || (r as any).is_due_month === false) ? null : (r.is_paid ? (
               <Popconfirm
-                title="确认取消已付并标记为未付？"
+                title={`确认取消${paidLabel}并标记为${unpaidLabel}？`}
                 okText="确认"
                 cancelText="取消"
                 onConfirm={()=>{
                   modal.confirm({
-                    title: '再次确认取消已付？',
-                    content: '此操作会影响当月房源营收与报表。',
-                    okText: '确认取消已付',
+                    title: `再次确认取消${paidLabel}？`,
+                    content: income ? '此操作只会把该笔固定收入改为未收，不改变当月应计收入。' : '此操作会影响当月房源营收与报表。',
+                    okText: `确认取消${paidLabel}`,
                     cancelText: '返回',
                     onOk: async () => {
                       const id = String(r.id)
@@ -301,8 +308,8 @@ export default function RecurringPage() {
                       const prevExpenses = (expenses||[]).filter(e => String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId)
                       setRowMutating(s => ({ ...s, [id]: 'unpay' }))
                       const msgKey = `unpay-${id}-${monthKey}`
-                      message.open({ type:'loading', content:'正在切换为未付…', key: msgKey, duration: 0 })
-                      setExpenses(prev => prev.map(e => (String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId) ? ({ ...e, status:'unpaid', paid_date: null } as any) : e))
+                      message.open({ type:'loading', content:`正在切换为${unpaidLabel}…`, key: msgKey, duration: 0 })
+                      setExpenses(prev => prev.map(e => (String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId) ? ({ ...e, status: income ? 'unreceived' : 'unpaid', paid_date: null } as any) : e))
                       try {
                         const resp = await fetch(`${API_BASE}/recurring/payments/${id}/unmark-paid`, {
                           method: 'POST',
@@ -317,7 +324,7 @@ export default function RecurringPage() {
                         if (keepId) {
                           setExpenses(prev => prev.map(e => (String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId) ? ({ ...e, id: keepId } as any) : e))
                         }
-                        message.open({ type:'success', content:'已切换为未付', key: msgKey })
+                        message.open({ type:'success', content:`已切换为${unpaidLabel}`, key: msgKey })
                         void refreshMonth()
                       } catch (e:any) {
                         setExpenses(prev => {
@@ -332,7 +339,7 @@ export default function RecurringPage() {
                   })
                 }}
               >
-                <Button loading={rowMutating[String(r.id)]==='unpay'} disabled={!!rowMutating[String(r.id)]}>取消已付</Button>
+                <Button loading={rowMutating[String(r.id)]==='unpay'} disabled={!!rowMutating[String(r.id)]}>取消{paidLabel}</Button>
               </Popconfirm>
             ) : (
               <Button type="primary" loading={rowMutating[String(r.id)]==='pay'} disabled={!!rowMutating[String(r.id)]} onClick={async ()=>{
@@ -349,7 +356,7 @@ export default function RecurringPage() {
               const prevTpl = (list||[]).find(x => String(x.id)===id)
               setRowMutating(s => ({ ...s, [id]: 'pay' }))
               const msgKey = `pay-${id}-${monthKey}`
-              message.open({ type:'loading', content:'正在标记已付…', key: msgKey, duration: 0 })
+              message.open({ type:'loading', content:`正在标记${paidLabel}…`, key: msgKey, duration: 0 })
               setExpenses(prev => {
                 const rest = prev.filter(e => !(String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId))
                 const optimistic: ExpenseRow = {
@@ -358,7 +365,7 @@ export default function RecurringPage() {
                   month_key: monthKey,
                   due_date: dueISO,
                   paid_date: todayISO,
-                  status: 'paid',
+                  status: income ? 'received' : 'paid',
                   property_id: r.property_id,
                   category: r.category,
                   amount: Number(r.amount || 0),
@@ -384,7 +391,7 @@ export default function RecurringPage() {
                   setList(prev => prev.map(x => String(x.id)===id ? ({ ...x, ...(data.template as any) } as any) : x))
                 }
 
-                message.open({ type:'success', content:'已标记为已付', key: msgKey })
+                message.open({ type:'success', content:`已标记为${paidLabel}`, key: msgKey })
                 void refreshMonth()
               } catch (e:any) {
                 setExpenses(prev => {
@@ -396,10 +403,10 @@ export default function RecurringPage() {
               } finally {
                 setRowMutating(s => ({ ...s, [id]: undefined }))
               }
-            }}>已付</Button>
+            }}>{paidLabel}</Button>
             ))}
             <Popconfirm
-              title="确认停用该固定支出？停用后不再生成新记录，历史支出保留不受影响。"
+              title="确认停用该固定收支？停用后不再生成新记录，历史记录保留不受影响。"
               okText="停用"
               cancelText="取消"
               onConfirm={async()=>{
@@ -427,7 +434,7 @@ export default function RecurringPage() {
           </>
         )}
       </Space>
-    ) }
+    ) } }
   ]
 
   const m = month || nowAU()
@@ -540,9 +547,10 @@ export default function RecurringPage() {
       const amount = (is_due_month && e) ? Number(e.amount || 0) : Number(t.amount || 0)
       const category = (is_due_month && e) ? String(e.category || t.category || '') : t.category
       const paused = String((t as any).status || '') === 'paused'
+      const income = isRecurringIncome(t)
       const autoPaidInRent = !paused && isAutoPaidInRent({ ...t, category } as any)
       const next_due_date = (!is_due_month || autoPaidInRent) ? undefined : (e ? e.due_date : dueForSelectedMonth(t))
-      const is_paid = paused ? false : (!is_due_month ? true : (autoPaidInRent ? true : (e ? String(e.status||'')==='paid' : false)))
+      const is_paid = paused ? false : (!is_due_month ? true : (autoPaidInRent ? true : (e ? String(e.status||'') === (income ? 'received' : 'paid') : false)))
       return { ...t, amount, next_due_date, is_paid, is_due_month, status: (t.status||''), category }
     })
     .sort((a,b)=>{
@@ -585,13 +593,15 @@ export default function RecurringPage() {
     if (tablePage > maxPage) setTablePage(maxPage)
   },[allRows.length, pageLoading, tablePage, tablePageSize])
   const activeRows = allRows.filter(r => String((r as any).status || '') !== 'paused' && (r as any).is_due_month !== false)
-  const paidAmount = activeRows.filter(r=>r.is_paid).reduce((s,r)=> s + Number(r.amount || 0), 0)
-  const unpaidAmount = activeRows.filter(r=>!r.is_paid).reduce((s,r)=> s + Number(r.amount || 0), 0)
-  const paidCount = activeRows.filter(r=>r.is_paid).length
-  const unpaidCount = activeRows.filter(r=>!r.is_paid).length
+  const activeExpenses = activeRows.filter(r => !isRecurringIncome(r))
+  const activeIncome = activeRows.filter(r => isRecurringIncome(r))
+  const paidExpenseAmount = activeExpenses.filter(r=>r.is_paid).reduce((s,r)=> s + Number(r.amount || 0), 0)
+  const unpaidExpenseAmount = activeExpenses.filter(r=>!r.is_paid).reduce((s,r)=> s + Number(r.amount || 0), 0)
+  const receivedIncomeAmount = activeIncome.filter(r=>r.is_paid).reduce((s,r)=> s + Number(r.amount || 0), 0)
+  const unreceivedIncomeAmount = activeIncome.filter(r=>!r.is_paid).reduce((s,r)=> s + Number(r.amount || 0), 0)
   const overdueCount = activeRows.filter(r => { const nd = parseAU(r.next_due_date); return !r.is_paid && nd && nowAU().isAfter(nd, 'day') }).length
   const soonCount = activeRows.filter(r => { const nd = parseAU(r.next_due_date); const remind = Number((r.remind_days_before ?? 3)); const t = nowAU(); return !r.is_paid && nd && t.isBefore(nd, 'day') && nd.startOf('day').diff(t.startOf('day'), 'day') > 0 && nd.startOf('day').diff(t.startOf('day'), 'day') <= remind }).length
-  useEffect(()=>{ if (soonCount>0) { message.warning(`本月有${soonCount}条固定支出即将到期`) } },[monthKey, soonCount])
+  useEffect(()=>{ if (soonCount>0) { message.warning(`本月有${soonCount}条固定收支即将到期`) } },[monthKey, soonCount])
 
   useEffect(()=>{
     (async()=>{
@@ -614,12 +624,9 @@ export default function RecurringPage() {
             return isDueForMonth(startKey || undefined, monthKey, Number((t as any).frequency_months || 1))
           })
           .filter((t) => {
-            const snapshot = expByFixed[String(t.id)]
-            return shouldEnsureRecurringSnapshot({
-              amount_mode: (t as any).amount_mode,
-              has_snapshot: !!snapshot,
-              snapshot_status: snapshot?.status,
-            })
+            const mode = String((t as any).amount_mode || 'fixed')
+            const hasRow = !!expByFixed[String(t.id)]
+            return (isRecurringIncome(t) || mode === 'percent_of_property_total_income') && !hasRow
           })
         const limit = Math.max(1, Math.min(2, Number((window as any).__ensureSnapConcurrency || 1)))
         let idx = 0
@@ -658,14 +665,27 @@ export default function RecurringPage() {
     setSaving(true)
     const v = await form.validateFields()
     const startMonthKey = v.start_month ? dayjs(v.start_month).format('YYYY-MM') : undefined
-    const isReferral = String(v.amount_mode || 'fixed') === 'percent_of_property_total_income'
+    const income = String(v.cashflow_type || 'expense') === 'income'
+    const isReferral = !income && String(v.amount_mode || 'fixed') === 'percent_of_property_total_income'
     const payload: any = {
       ...v,
       start_month_key: startMonthKey,
-      report_category: (v.scope==='property' ? (v.report_category || defaultReportCategoryByName(v.category)) : undefined),
+      report_category: (!income && v.scope==='property' ? (v.report_category || defaultReportCategoryByName(v.category)) : undefined),
       frequency_months: v.frequency_months!=null ? Number(v.frequency_months) : undefined,
     }
-    if (isReferral) {
+    if (income) {
+      payload.cashflow_type = 'income'
+      payload.scope = 'property'
+      payload.amount_mode = 'fixed'
+      payload.amount = v.amount!=null ? Number(v.amount) : undefined
+      payload.category = 'other'
+      payload.category_detail = String(v.category_detail || v.vendor || '').trim()
+      payload.report_category = undefined
+      payload.property_ids = undefined
+      payload.rate_percent = undefined
+      payload.income_base = undefined
+      payload.payment_type = 'cash'
+    } else if (isReferral) {
       const pids = normalizeIds(v.property_ids)
       payload.property_ids = pids
       payload.property_id = (pids.length === 1) ? pids[0] : undefined
@@ -711,16 +731,16 @@ export default function RecurringPage() {
   // removed normalization side-effect; display uses selected-month computation
 
   return (
-    <Card title="固定支出" extra={<Space><DatePicker picker="month" value={month} onChange={(v)=>{ setMonth(v || dayjs()); setTablePage(1) }} /><Input allowClear placeholder="按房号搜索" value={searchText} onChange={(e)=>{ setSearchText(e.target.value); setTablePage(1) }} style={{ width: 220 }} /><Button type="primary" onClick={()=>{ setEditing(null); form.resetFields(); form.setFieldsValue({ start_month: nowAU().startOf('month'), initial_mark: 'unpaid', frequency_months: 1, status: 'active', payment_type: 'bank_account', amount_mode: 'fixed' }); setOpen(true) }}>新增固定支出</Button></Space>}>
+    <Card title="固定收支" extra={<Space><DatePicker picker="month" value={month} onChange={(v)=>{ setMonth(v || dayjs()); setTablePage(1) }} /><Input allowClear placeholder="按房号搜索" value={searchText} onChange={(e)=>{ setSearchText(e.target.value); setTablePage(1) }} style={{ width: 220 }} /><Button type="primary" onClick={()=>{ setEditing(null); form.resetFields(); form.setFieldsValue({ cashflow_type: 'expense', start_month: nowAU().startOf('month'), initial_mark: 'unpaid', frequency_months: 1, status: 'active', payment_type: 'bank_account', amount_mode: 'fixed' }); setOpen(true) }}>新增固定收支</Button></Space>}>
       <div className="stats-grid">
-        <Card loading={pageLoading}><Statistic title="本月未付总额" value={unpaidAmount} prefix="$" precision={2} /></Card>
-        <Card loading={pageLoading}><Statistic title="本月已付总额" value={paidAmount} prefix="$" precision={2} /></Card>
-        <Card loading={pageLoading}><Statistic title="已付/未付数量" value={`${paidCount} / ${unpaidCount}`} /></Card>
+        <Card loading={pageLoading}><Statistic title="本月未付支出" value={unpaidExpenseAmount} prefix="$" precision={2} /></Card>
+        <Card loading={pageLoading}><Statistic title="本月已付支出" value={paidExpenseAmount} prefix="$" precision={2} /></Card>
+        <Card loading={pageLoading}><Statistic title="本月未收收入" value={unreceivedIncomeAmount} prefix="$" precision={2} /></Card>
+        <Card loading={pageLoading}><Statistic title="本月已收收入" value={receivedIncomeAmount} prefix="$" precision={2} /></Card>
         <Card loading={pageLoading}><Statistic title="逾期条数" value={overdueCount} valueStyle={{ color: overdueCount>0? 'red' : undefined }} /></Card>
-        <Card loading={pageLoading}><Statistic title="即将到期条数" value={soonCount} valueStyle={{ color: soonCount>0? 'orange' : undefined }} /></Card>
       </div>
-      <Card title="固定支出" size="small" style={{ marginTop: 8 }} loading={pageLoading}>
-        <div style={{ margin:'8px 0', color:'#888' }}>修改将从本月起生效，历史或已支付记录不会变化。</div>
+      <Card title="固定收支" size="small" style={{ marginTop: 8 }} loading={pageLoading}>
+        <div style={{ margin:'8px 0', color:'#888' }}>固定收入按应计月份进入月报“其他收入”；修改从本月起生效，历史已收/已付记录不会变化。</div>
         <Table rowKey={(r)=>r.id} columns={columns as any} dataSource={allRows} loading={pageLoading} pagination={{ current: tablePage, pageSize: tablePageSize, showSizeChanger: true, pageSizeOptions: [10,20,50,100], onChange: (page, size) => { setTablePage(page); setTablePageSize(size || DEFAULT_TABLE_PAGE_SIZE) }, onShowSizeChange: (page, size) => { setTablePage(page); setTablePageSize(size || DEFAULT_TABLE_PAGE_SIZE) } }} scroll={{ x: 'max-content' }}
           rowClassName={(r)=>{
             const today = nowAU()
@@ -738,10 +758,10 @@ export default function RecurringPage() {
             return ''
           }}
         />
-        {(!pageLoading && allRows.filter(r=>!r.is_paid).length === 0) ? <div style={{ margin:'8px 0', color:'#888' }}>本月无未支付固定支出</div> : null}
+        {(!pageLoading && allRows.filter(r=>!r.is_paid).length === 0) ? <div style={{ margin:'8px 0', color:'#888' }}>本月无待处理固定收支</div> : null}
       </Card>
       
-      <Drawer open={open} onClose={()=>setOpen(false)} title={editing? '编辑固定支出':'新增固定支出'} width={720} footer={
+      <Drawer open={open} onClose={()=>setOpen(false)} title={editing? '编辑固定收支':'新增固定收支'} width={720} footer={
         <div style={{ textAlign: 'right' }}>
           <Space>
             <Button onClick={()=>setOpen(false)}>取消</Button>
@@ -751,25 +771,41 @@ export default function RecurringPage() {
       }>
         <Form form={form} layout="vertical">
           <Divider orientation="left">基本信息</Divider>
+          <Form.Item name="cashflow_type" label="收支类型" initialValue="expense" rules={[{ required: true }]}>
+            <Select disabled={!!editing} options={[{ value:'expense', label:'固定支出' }, { value:'income', label:'固定收入' }]} />
+          </Form.Item>
           <Row gutter={16}>
             <Col span={12}>
-              <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.amount_mode!==cur.amount_mode}>
+              <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.amount_mode!==cur.amount_mode || prev.cashflow_type!==cur.cashflow_type}>
                 {()=> (
                   <Form.Item name="scope" label="对象" initialValue="company">
-                    <Select disabled={form.getFieldValue('amount_mode')==='percent_of_property_total_income'} options={[{value:'company',label:'公司'},{value:'property',label:'房源'}]} />
+                    <Select disabled={form.getFieldValue('cashflow_type')==='income' || form.getFieldValue('amount_mode')==='percent_of_property_total_income'} options={[{value:'company',label:'公司'},{value:'property',label:'房源'}]} />
                   </Form.Item>
                 )}
               </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item name="amount_mode" label="计费方式" initialValue="fixed">
-                <Select options={[
-                  { value: 'fixed', label: '固定金额' },
-                  { value: 'percent_of_property_total_income', label: 'Referral（按上月房源总租金比例）' },
-                ]} />
+              <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.cashflow_type!==cur.cashflow_type}>
+                {()=> (
+                  <Form.Item name="amount_mode" label="计费方式" initialValue="fixed">
+                    <Select disabled={form.getFieldValue('cashflow_type')==='income'} options={[
+                      { value: 'fixed', label: '固定金额' },
+                      { value: 'percent_of_property_total_income', label: 'Referral（按上月房源总租金比例）' },
+                    ]} />
+                  </Form.Item>
+                )}
               </Form.Item>
             </Col>
           </Row>
+
+          <Form.Item noStyle shouldUpdate={(prev,cur)=> prev.cashflow_type!==cur.cashflow_type}>
+            {()=> {
+              if (form.getFieldValue('cashflow_type') === 'income') {
+                form.setFieldsValue({ scope:'property', amount_mode:'fixed', category:'other', report_category:undefined, payment_type:'cash' })
+              }
+              return null
+            }}
+          </Form.Item>
 
           <Form.Item noStyle shouldUpdate={(prev,cur)=> prev.amount_mode!==cur.amount_mode}>
             {()=> {
@@ -782,11 +818,12 @@ export default function RecurringPage() {
           </Form.Item>
 
           <Row gutter={16}>
-            <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.scope!==cur.scope || prev.amount_mode!==cur.amount_mode}>
+            <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.scope!==cur.scope || prev.amount_mode!==cur.amount_mode || prev.cashflow_type!==cur.cashflow_type}>
               {()=> {
                 const sc = form.getFieldValue('scope')
                 const am = form.getFieldValue('amount_mode')
-                const needProperty = sc === 'property' || am === 'percent_of_property_total_income'
+                const income = form.getFieldValue('cashflow_type') === 'income'
+                const needProperty = income || sc === 'property' || am === 'percent_of_property_total_income'
                 if (!needProperty) return <Col span={12}><div style={{ height: 62 }} /></Col>
                 if (am === 'percent_of_property_total_income') {
                   return (
@@ -833,27 +870,31 @@ export default function RecurringPage() {
 
           <Row gutter={16}>
             <Col span={12}>
-              <Form.Item name="vendor" label="支出事项" rules={[{ required: true }]}><Input /></Form.Item>
+              <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.cashflow_type!==cur.cashflow_type}>
+                {()=> <Form.Item name="vendor" label={form.getFieldValue('cashflow_type')==='income' ? '收入事项' : '支出事项'} rules={[{ required: true }]}><Input placeholder={form.getFieldValue('cashflow_type')==='income' ? '例如：仓库租赁收入' : undefined} /></Form.Item>}
+              </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item name="category" label="支出类别" rules={[{ required: true }]}><Select options={[
-                {value:'房源租金',label:'房源租金'},
-                {value:'公司仓库租金',label:'公司仓库租金'},
-                {value:'公司办公室租金',label:'公司办公室租金'},
-                {value:'车位租金',label:'车位租金'},
-                {value:'密码盒',label:'密码盒'},
-                {value:'消耗品费',label:'消耗品费'},
-                {value:'车贷',label:'车贷'},
-                {value:'other',label:'其他'}
-              ]} /></Form.Item>
+              <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.cashflow_type!==cur.cashflow_type}>
+                {()=> <Form.Item name="category" label={form.getFieldValue('cashflow_type')==='income' ? '收入类别' : '支出类别'} rules={[{ required: true }]}><Select disabled={form.getFieldValue('cashflow_type')==='income'} options={[
+                  {value:'房源租金',label:'房源租金'},
+                  {value:'公司仓库租金',label:'公司仓库租金'},
+                  {value:'公司办公室租金',label:'公司办公室租金'},
+                  {value:'车位租金',label:'车位租金'},
+                  {value:'密码盒',label:'密码盒'},
+                  {value:'消耗品费',label:'消耗品费'},
+                  {value:'车贷',label:'车贷'},
+                  {value:'other',label:form.getFieldValue('cashflow_type')==='income' ? '其他收入' : '其他支出'}
+                ]} /></Form.Item>}
+              </Form.Item>
             </Col>
           </Row>
           
-          <Form.Item noStyle shouldUpdate={(prev,cur)=> prev.category!==cur.category || prev.scope!==cur.scope}>
+          <Form.Item noStyle shouldUpdate={(prev,cur)=> prev.category!==cur.category || prev.scope!==cur.scope || prev.cashflow_type!==cur.cashflow_type}>
             {()=> {
               const cat = form.getFieldValue('category')
               const sc = form.getFieldValue('scope')
-              if (sc==='property' && cat==='消耗品费') {
+              if (form.getFieldValue('cashflow_type')!=='income' && sc==='property' && cat==='消耗品费') {
                 form.setFieldsValue({ vendor: 'Consumable fee', report_category: 'consumables', payment_type: 'rent_deduction', initial_mark: 'paid', due_day_of_month: undefined })
               }
               return null
@@ -861,8 +902,8 @@ export default function RecurringPage() {
           </Form.Item>
 
           <Row gutter={16}>
-            <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.scope!==cur.scope || prev.category!==cur.category}>
-              {()=> (form.getFieldValue('scope')==='property' ? (
+            <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.scope!==cur.scope || prev.category!==cur.category || prev.cashflow_type!==cur.cashflow_type}>
+              {()=> (form.getFieldValue('cashflow_type')!=='income' && form.getFieldValue('scope')==='property' ? (
                 <Col span={12}>
                   <Form.Item name="report_category" label="营收报表归类" rules={[{ required: true }]} initialValue={defaultReportCategoryByName(form.getFieldValue('category'))}>
                     <Select options={[
@@ -880,10 +921,10 @@ export default function RecurringPage() {
                 </Col>
               ) : null)}
             </Form.Item>
-            <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.category!==cur.category}>
+            <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.category!==cur.category || prev.cashflow_type!==cur.cashflow_type}>
               {()=> (form.getFieldValue('category')==='other' ? (
                 <Col span={12}>
-                  <Form.Item name="category_detail" label="类别描述" rules={[{ required: true }]}> 
+                  <Form.Item name="category_detail" label={form.getFieldValue('cashflow_type')==='income' ? '收入说明' : '类别描述'} rules={[{ required: true }]}>
                     <Input />
                   </Form.Item>
                 </Col>
@@ -891,7 +932,7 @@ export default function RecurringPage() {
             </Form.Item>
           </Row>
 
-          <Divider orientation="left">支付与周期</Divider>
+          <Divider orientation="left">金额与周期</Divider>
           <Row gutter={16}>
             <Col span={12}>
               <Form.Item
@@ -902,15 +943,16 @@ export default function RecurringPage() {
                 <DatePicker picker="month" style={{ width: '100%' }} />
               </Form.Item>
             </Col>
-            <Form.Item noStyle shouldUpdate={(prev, cur) => prev.start_month !== cur.start_month}>
+            <Form.Item noStyle shouldUpdate={(prev, cur) => prev.start_month !== cur.start_month || prev.cashflow_type!==cur.cashflow_type}>
               {() => {
                 const sm = form.getFieldValue('start_month')
                 const mk = sm ? dayjs(sm).format('YYYY-MM') : ''
                 const isFuture = !!mk && mk > currentMonthKey
+                const income = form.getFieldValue('cashflow_type') === 'income'
                 return (
                   <Col span={12}>
                     <div style={{ height: 62, display: 'flex', alignItems: 'flex-end', paddingBottom: 4, color: isFuture ? '#fa8c16' : '#888' }}>
-                      {isFuture ? '起始月份为未来月：不会自动标记历史月份，新增后状态固定为待支付' : '起始月份之前不生成记录；若起始月份在过去，历史月份将自动标记为已支付'}
+                      {isFuture ? `起始月份为未来月：新增后状态固定为${income ? '待收' : '待支付'}` : `起始月份之前不生成记录；过去月份将按${income ? '未收' : '已支付'}记录生成`}
                     </div>
                   </Col>
                 )
@@ -925,7 +967,7 @@ export default function RecurringPage() {
                 </Col>
               ) : (
                 <Col span={12}>
-                  <Form.Item name="amount" label="金额"><InputNumber min={0} step={1} style={{ width:'100%' }} /></Form.Item>
+                  <Form.Item name="amount" label="金额" rules={[{ required:true, message:'请输入金额' }, { type:'number', min:0.01, message:'金额必须大于 0' }]}><InputNumber min={0.01} step={1} style={{ width:'100%' }} /></Form.Item>
                 </Col>
               ))}
             </Form.Item>
@@ -942,9 +984,9 @@ export default function RecurringPage() {
               ))}
             </Form.Item>
             <Col span={12}>
-              <Form.Item name="frequency_months" label="支付频率" initialValue={1}><Select options={[
-                { value: 1, label: '每月一付' },
-                { value: 3, label: '每三月一付' },
+              <Form.Item name="frequency_months" label="收支频率" initialValue={1}><Select options={[
+                { value: 1, label: '每月一次' },
+                { value: 3, label: '每三月一次' },
               ]} /></Form.Item>
             </Col>
             <Col span={12}>
@@ -952,15 +994,16 @@ export default function RecurringPage() {
             </Col>
             {editing ? null : (
               <Col span={12}>
-                <Form.Item noStyle shouldUpdate={(prev, cur) => prev.start_month !== cur.start_month}>
+                <Form.Item noStyle shouldUpdate={(prev, cur) => prev.start_month !== cur.start_month || prev.cashflow_type!==cur.cashflow_type}>
                   {() => {
                     const sm = form.getFieldValue('start_month')
                     const mk = sm ? dayjs(sm).format('YYYY-MM') : ''
                     const isFuture = !!mk && mk > currentMonthKey
+                    const income = form.getFieldValue('cashflow_type') === 'income'
                     if (isFuture) form.setFieldsValue({ initial_mark: 'unpaid' })
                     return (
                       <Form.Item name="initial_mark" label="新增后状态" initialValue="unpaid">
-                        <Select disabled={isFuture} options={[{ value: 'unpaid', label: '待支付' }, { value: 'paid', label: '已支付' }]} />
+                        <Select disabled={isFuture} options={[{ value: 'unpaid', label: income ? '待收' : '待支付' }, { value: 'paid', label: income ? '已收' : '已支付' }]} />
                       </Form.Item>
                     )
                   }}
@@ -969,54 +1012,46 @@ export default function RecurringPage() {
             )}
           </Row>
 
-          <Divider orientation="left">付款详情</Divider>
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item name="payment_type" label="付款类型" initialValue="bank_account">
-                <Select options={[{value:'bank_account',label:'Bank account'},{value:'bpay',label:'Bpay'},{value:'payid',label:'PayID'},{value:'cash',label:'现金'},{value:'rent_deduction',label:'租金扣除'}]} />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="pay_account_name" label="收款方"><Input /></Form.Item>
-            </Col>
-          </Row>
-          
-          <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.payment_type!==cur.payment_type}>
+          <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.cashflow_type!==cur.cashflow_type || prev.payment_type!==cur.payment_type}>
             {()=> {
+              if (form.getFieldValue('cashflow_type') === 'income') return null
               const pt = form.getFieldValue('payment_type')
-              if (pt === 'bank_account') {
-                return (
+              return (
+                <>
+                  <Divider orientation="left">付款详情</Divider>
                   <Row gutter={16}>
+                    <Col span={12}>
+                      <Form.Item name="payment_type" label="付款类型" initialValue="bank_account">
+                        <Select options={[{value:'bank_account',label:'Bank account'},{value:'bpay',label:'Bpay'},{value:'payid',label:'PayID'},{value:'cash',label:'现金'},{value:'rent_deduction',label:'租金扣除'}]} />
+                      </Form.Item>
+                    </Col>
+                    <Col span={12}>
+                      <Form.Item name="pay_account_name" label="收款方"><Input /></Form.Item>
+                    </Col>
+                  </Row>
+                  {pt === 'bank_account' ? <Row gutter={16}>
                     <Col span={8}><Form.Item name="pay_bsb" label="BSB"><Input /></Form.Item></Col>
                     <Col span={10}><Form.Item name="pay_account_number" label="账户"><Input /></Form.Item></Col>
                     <Col span={6}><Form.Item name="pay_ref" label="Reference"><Input /></Form.Item></Col>
-                  </Row>
-                )
-              }
-              if (pt === 'bpay') {
-                return (
-                  <Row gutter={16}>
+                  </Row> : null}
+                  {pt === 'bpay' ? <Row gutter={16}>
                     <Col span={12}><Form.Item name="bpay_code" label="Bpay code"><Input /></Form.Item></Col>
                     <Col span={12}><Form.Item name="pay_ref" label="Ref"><Input /></Form.Item></Col>
-                  </Row>
-                )
-              }
-              if (pt === 'payid') {
-                return (
-                  <Row gutter={16}>
+                  </Row> : null}
+                  {pt === 'payid' ? <Row gutter={16}>
                     <Col span={12}><Form.Item name="pay_mobile_number" label="Mobile number"><Input /></Form.Item></Col>
-                  </Row>
-                )
-              }
-              return null
+                  </Row> : null}
+                </>
+              )
             }}
           </Form.Item>
         </Form>
       </Drawer>
-      <Drawer open={viewOpen} onClose={()=>{ setViewOpen(false); setViewing(null) }} title="查看固定支出" width={640}>
+      <Drawer open={viewOpen} onClose={()=>{ setViewOpen(false); setViewing(null) }} title="查看固定收支" width={640}>
         {viewing ? (
           <>
             <Descriptions bordered size="small" column={1} style={{ marginTop: 8 }}>
+              <Descriptions.Item label="收支类型">{isRecurringIncome(viewing) ? '固定收入' : '固定支出'}</Descriptions.Item>
               <Descriptions.Item label="对象">{(viewing.scope==='company' || !viewing.property_id) ? '公司' : getLabel(viewing.property_id)}</Descriptions.Item>
             {String((viewing as any).amount_mode || '') === 'percent_of_property_total_income' ? (
               <Descriptions.Item label="关联房源">{(() => {
@@ -1033,23 +1068,25 @@ export default function RecurringPage() {
                 return Number.isFinite(n) ? String(n) : '-'
               })()}</Descriptions.Item>
             ) : null}
-            <Descriptions.Item label="支出事项">{viewing.vendor || '-'}</Descriptions.Item>
-            <Descriptions.Item label="支出类别">{viewing.category==='other' ? '其他' : (viewing.category || '-')}</Descriptions.Item>
-            <Descriptions.Item label="类别描述">{(viewing as any).category_detail || '-'}</Descriptions.Item>
-            <Descriptions.Item label="营收报表归类">{(() => { const m: Record<string,string> = { parking_fee:'车位费', electricity:'电费', water:'水费', gas:'气费', internet:'网费', consumables:'消耗品费', body_corp:'物业费', council:'市政费', other:'其他支出' }; const v = String(viewing.report_category||''); return m[v] || (v || '-') })()}</Descriptions.Item>
+            <Descriptions.Item label={isRecurringIncome(viewing) ? '收入事项' : '支出事项'}>{viewing.vendor || '-'}</Descriptions.Item>
+            <Descriptions.Item label={isRecurringIncome(viewing) ? '收入类别' : '支出类别'}>{isRecurringIncome(viewing) ? '其他收入' : (viewing.category==='other' ? '其他支出' : (viewing.category || '-'))}</Descriptions.Item>
+            <Descriptions.Item label={isRecurringIncome(viewing) ? '收入说明' : '类别描述'}>{(viewing as any).category_detail || '-'}</Descriptions.Item>
+            {!isRecurringIncome(viewing) ? <Descriptions.Item label="营收报表归类">{(() => { const m: Record<string,string> = { parking_fee:'车位费', electricity:'电费', water:'水费', gas:'气费', internet:'网费', consumables:'消耗品费', body_corp:'物业费', council:'市政费', other:'其他支出' }; const v = String(viewing.report_category||''); return m[v] || (v || '-') })()}</Descriptions.Item> : null}
             <Descriptions.Item label="金额">{viewing.amount!=null?`$${Number(viewing.amount).toFixed(2)}`:'-'}</Descriptions.Item>
             <Descriptions.Item label="每月到期日">{dueForSelectedMonth(viewing) || '-'}</Descriptions.Item>
             <Descriptions.Item label="提醒">{viewing.remind_days_before!=null?`${viewing.remind_days_before}天`:'-'}</Descriptions.Item>
-            <Descriptions.Item label="支付频率">{viewing.frequency_months ? `${viewing.frequency_months}月/次` : '每月一付'}</Descriptions.Item>
+            <Descriptions.Item label="收支频率">{viewing.frequency_months ? `${viewing.frequency_months}月/次` : '每月一次'}</Descriptions.Item>
             <Descriptions.Item label="状态">{viewing.status || '-'}</Descriptions.Item>
-            <Descriptions.Item label="上次付款">{fmt(viewing.last_paid_date)}</Descriptions.Item>
+            <Descriptions.Item label={isRecurringIncome(viewing) ? '上次收款' : '上次付款'}>{fmt(viewing.last_paid_date)}</Descriptions.Item>
             <Descriptions.Item label="下次到期">{fmt(dueForSelectedMonth(viewing))}</Descriptions.Item>
-            <Descriptions.Item label="付款类型">{viewing.payment_type==='bank_account'?'Bank account': viewing.payment_type==='bpay'?'Bpay': viewing.payment_type==='payid'?'PayID': viewing.payment_type==='cash'?'现金': viewing.payment_type==='rent_deduction'?'租金扣除':'-'}</Descriptions.Item>
-            <Descriptions.Item label="收款方">{viewing.pay_account_name || '-'}</Descriptions.Item>
-            <Descriptions.Item label="BSB / Acc">{(viewing.pay_bsb||viewing.pay_account_number) ? `BSB: ${viewing.pay_bsb||'-'} | Acc: ${viewing.pay_account_number||'-'}` : '-'}</Descriptions.Item>
-            <Descriptions.Item label="Bpay">{(viewing.bpay_code||viewing.pay_ref) ? `Code: ${viewing.bpay_code||'-'} | Ref: ${viewing.pay_ref||'-'}` : '-'}</Descriptions.Item>
-            <Descriptions.Item label="Bank Ref">{viewing.payment_type==='bank_account' && viewing.pay_ref ? viewing.pay_ref : '-'}</Descriptions.Item>
-            <Descriptions.Item label="Mobile">{viewing.pay_mobile_number || '-'}</Descriptions.Item>
+            {!isRecurringIncome(viewing) ? <>
+              <Descriptions.Item label="付款类型">{viewing.payment_type==='bank_account'?'Bank account': viewing.payment_type==='bpay'?'Bpay': viewing.payment_type==='payid'?'PayID': viewing.payment_type==='cash'?'现金': viewing.payment_type==='rent_deduction'?'租金扣除':'-'}</Descriptions.Item>
+              <Descriptions.Item label="收款方">{viewing.pay_account_name || '-'}</Descriptions.Item>
+              <Descriptions.Item label="BSB / Acc">{(viewing.pay_bsb||viewing.pay_account_number) ? `BSB: ${viewing.pay_bsb||'-'} | Acc: ${viewing.pay_account_number||'-'}` : '-'}</Descriptions.Item>
+              <Descriptions.Item label="Bpay">{(viewing.bpay_code||viewing.pay_ref) ? `Code: ${viewing.bpay_code||'-'} | Ref: ${viewing.pay_ref||'-'}` : '-'}</Descriptions.Item>
+              <Descriptions.Item label="Bank Ref">{viewing.payment_type==='bank_account' && viewing.pay_ref ? viewing.pay_ref : '-'}</Descriptions.Item>
+              <Descriptions.Item label="Mobile">{viewing.pay_mobile_number || '-'}</Descriptions.Item>
+            </> : null}
             </Descriptions>
             <Divider orientation="left">操作记录</Divider>
             <AuditTrail refs={[
