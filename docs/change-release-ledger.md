@@ -1,5 +1,74 @@
 # Change Release Ledger
 
+## CRL-20261002-003 — 发布尝试字段解析边界修复
+
+- **Repository:** `root`
+- **Status:** locally validated; selected for commit
+- **Updated:** 2026-10-02 Australia/Melbourne
+- **Request:** 修复发布审计器把 Release Attempt 后续的 CRL 汇总字段继续解析为同一次尝试字段，导致正确的 Base、Commit SHA 和授权证据被覆盖并阻止精确范围审计的问题。
+- **Outcome:** 每个 `#### RA-*` 只读取到下一次 Release Attempt 或下一个 `###` 小节；后续“Git / Delivery State”等汇总字段不再覆盖权威 RA，精确审计结果不再依赖 CRL 遍历顺序。
+
+### Implementation
+
+- Previous behavior: `parse_attempts` 和 `release_attempt_block` 只以同级 RA 或整个 CRL 结尾作为边界；RA 后出现 `### Git / Delivery State` 时，其中重复的 Base、Commit SHA 会覆盖已记录的权威字段。
+- New behavior: 两个解析入口都选择“下一 RA、下一 `###` 小节、CRL 结尾”三者中最早的位置作为边界。
+- Key decisions: 只收紧 Markdown 解析边界，不修改 CRL 身份、hunk 规则、授权模型、应用代码或生产行为；回归测试同时断言字段值和原始 RA block 均排除后续汇总小节。
+
+### Files / Areas
+
+- `scripts/audit_change_release_ledger.py` — 收紧 Release Attempt 字段和原始区块的结束边界。
+- `scripts/tests/test_audit_change_release_ledger.py` — 增加 RA 后跟 CRL 汇总字段时不被覆盖的回归。
+- `docs/change-release-ledger.md` — 记录本治理修复和提交证据。
+
+### Impact / Dependencies
+
+- Application/API/role/database/production: none；不调用任何业务 API，不读写数据库，不触发通知、任务、同步或部署。
+- CI/config/dependencies: 无依赖或工作流改动；现有审计命令会自动使用修复后的解析器。
+- Dependencies: none；本单元位于当前临时分支已有本地提交之后，但解析修复本身不依赖费用结算业务实现。
+- Related units: `root/CRL-20261002-001`, `root/CRL-20261002-002`, `mobile/CRL-20261002-002`。
+
+### Validation
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_audit_change_release_ledger.py` — passed：41/41 tests；覆盖合格 CRL、未跟踪路径阻断、hunk 范围不匹配、ledger-only receipt 与 exact range 验证。
+- Feature Registry: not modified；本次只改变发布台账工具，不改变业务不变量。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none; incremental candidate is isolated on the existing temporary release branch after the previously reviewed local receipt head.
+- `scripts/audit_change_release_ledger.py` — SHA-256: `7c6e8dc479fadd97b20a1621db8ae29e8a0e2096e97c59a032196c8b7a2cd199`
+- `scripts/audit_change_release_ledger.py` — SHA-256: `c01c3557ef635039b926fd97899d5ba5e2b10c007836c0843e04c22e7b9fe45c`
+- `scripts/tests/test_audit_change_release_ledger.py` — SHA-256: `4d3b05736cfcdb97646b1cd7a6fc3b05a2c0f27d007e20963a35b123e45a2ef7`
+
+### Release Attempts
+
+#### RA-20261002-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261002-003`
+- Selected CRL identities: `root/CRL-20261002-003`
+- Intended action: `commit`
+- Branch: `codex/personnel-settlement-fixes-20261002`
+- Base: `local incremental base@41a219f0a195519b233f0bae6c75d2ca4dc065a7`; `origin/Dev@f7af678d4d85f46b817ec47e54d4796b0dfb3bb2` fetched at `2026-10-02T15:57:32+1000`
+- Candidate patch SHA-256: `16ea39e0c9fb58349d148c96b878ff19e1cfb82e4ac4708f3d9d0d8c0e8e1d75`
+- Commit SHA: `not committed`
+- Dependencies: none
+- Required validation: `PASS`; evidence: auditor regression suite passed 41/41 and performs Git-only fixture checks without application, API or database writes.
+- Shared-hunk review: `not applicable`; evidence: all three candidate files belong only to this governance CRL.
+- Generated-file review: `PASS`; evidence: no cache, dependency, build output or generated file is selected.
+- Technical state: `verified`
+- User authorization: `selected-for-commit`; evidence: user explicitly authorized the proposed root/CRL-20261002-003 governance repair after the push gate blocker was reported.
+- Independent review: `GO`; evidence: independent read-only review matched the exact 3-file staged scope and candidate fingerprint, found no P0/P1/P2, and independently passed 41/41 auditor tests, the pre-commit gate, ledger coverage and diff check.
+- Action conclusion: `GO`; evidence: the exact reviewed candidate may be committed locally; this does not authorize push, PR, merge or deployment.
+
+### Risks / Release Notes
+
+- Risk: parser boundary changes affect release evidence extraction only; malformed attempts placed outside `### Release Attempts` remain outside the documented contract.
+- Sensitive-information review: no secrets, credentials, database URLs, environment files or production logs are recorded.
+- Rollback: revert this governance commit; no application or data rollback is required.
+- Git state: not committed, not pushed, no PR, not merged, not deployed.
+
 ## CRL-20261002-001 — 通用补贴直填金额并由财务决定是否计入（root）
 
 - **Repository:** `root`

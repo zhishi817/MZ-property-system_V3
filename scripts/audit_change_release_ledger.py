@@ -266,7 +266,12 @@ def parse_attempts(section: CrlSection) -> list[ReleaseAttempt]:
     for position, start in enumerate(starts):
         heading = ATTEMPT_HEADING.match(section.lines[start])
         assert heading is not None
-        end = starts[position + 1] if position + 1 < len(starts) else len(section.lines)
+        next_attempt = starts[position + 1] if position + 1 < len(starts) else len(section.lines)
+        next_subsection = next(
+            (index for index in range(start + 1, len(section.lines)) if section.lines[index].startswith("### ")),
+            len(section.lines),
+        )
+        end = min(next_attempt, next_subsection)
         fields: dict[str, str] = {}
         for line in section.lines[start + 1 : end]:
             match = FIELD_LINE.match(line)
@@ -298,7 +303,12 @@ def release_attempt_block(section: CrlSection, identifier: str) -> tuple[str, ..
         assert heading is not None
         if heading.group(1) != identifier:
             continue
-        end = starts[position + 1] if position + 1 < len(starts) else len(section.lines)
+        next_attempt = starts[position + 1] if position + 1 < len(starts) else len(section.lines)
+        next_subsection = next(
+            (index for index in range(start + 1, len(section.lines)) if section.lines[index].startswith("### ")),
+            len(section.lines),
+        )
+        end = min(next_attempt, next_subsection)
         return section.lines[start:end]
     return None
 

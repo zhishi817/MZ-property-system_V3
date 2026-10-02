@@ -370,6 +370,31 @@ class ReleaseReportFixture:
 
 
 class ReleaseReportTests(unittest.TestCase):
+    def test_release_attempt_stops_before_following_level_three_section(self) -> None:
+        section = AUDITOR.CrlSection(
+            identifier="CRL-20261002-999",
+            lines=(
+                "## CRL-20261002-999 — Fixture",
+                "### Release Attempts",
+                "#### RA-20261002-999",
+                "- Selected CRLs: `CRL-20261002-999`",
+                "- Selected CRL identities: `root/CRL-20261002-999`",
+                "- Base: `origin/Dev@1111111111111111111111111111111111111111`; fetched at `fixture-time`",
+                "- Commit SHA: `2222222222222222222222222222222222222222`",
+                "### Git / Delivery State",
+                "- Base: `origin/Dev@1111111111111111111111111111111111111111`",
+                "- Commit SHA: not committed",
+            ),
+            files=frozenset(),
+            validation_lines=(),
+        )
+
+        attempt = AUDITOR.parse_attempts(section)[0]
+
+        self.assertIn("fetched at", AUDITOR.field_value(attempt, "Base"))
+        self.assertEqual("`2222222222222222222222222222222222222222`", AUDITOR.field_value(attempt, "Commit SHA"))
+        self.assertNotIn("### Git / Delivery State", AUDITOR.release_attempt_block(section, attempt.identifier))
+
     def test_adjacent_selected_crl_ranges_cover_one_combined_ledger_hunk(self) -> None:
         self.assertTrue(AUDITOR.line_range_is_within(3, 18, [(3, 10), (11, 20)]))
 
