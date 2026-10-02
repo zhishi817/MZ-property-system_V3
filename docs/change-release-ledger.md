@@ -90,15 +90,15 @@
 - Branch: `codex/annual-income-media-20261002-v2`
 - Base: `origin/Dev@455b5e3237e18ce52d734a24bbd9bb91b0ae4961`; fetched at `2026-10-02T11:11:38Z`
 - Candidate patch SHA-256: `abd545fcc9971a901cd549284fe5c9d6d4e37b90f499120a13f0a6ab610c3555` excluding `docs/change-release-ledger.md`
-- Commit SHA: not committed
+- Commit SHA: `73c76339c1f714fa957220dfa78bb6be14d6503a`
 - Dependencies: `none`
 - Required validation: `PASS`; evidence: on refreshed `origin/Dev`, annual, recurring-income and both media contract suites passed; after the independent-review source-task finding was fixed, both media suites, backend type check and diff check passed again; frontend type check, focused frontend tests (2 files / 14 tests), frontend lint/build (96 routes) and Feature Registry (28 FRs / 218 mappings / 77 deferred mobile mappings) also passed
 - Shared-hunk review: `PASS`; evidence: the prior reviewed business patch applied cleanly onto fresh `origin/Dev@455b5e3237e18ce52d734a24bbd9bb91b0ae4961`; shared `backend/package.json`, `backend/scripts/init_db.ts` and Feature Registry changes retain the newly merged settlement content and add only the three selected units
 - Generated-file review: `PASS`; evidence: temporary dependency symlinks and build outputs are absent; no generated, cache, env or sensitive file is selected
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: after merging PR #374, user explicitly instructed to refresh and resubmit the same three business units; no push authorization was given
 - Independent review: `GO for local commit`; evidence: independent read-only review recomputed fingerprint `abd545fcc9971a901cd549284fe5c9d6d4e37b90f499120a13f0a6ab610c3555`, independently passed the exact pre-commit gate for 24 staged files / 172 non-ledger hunks with no missing, unexpected, untracked or unselected content, and confirmed the prior source-task P1 is closed because all task/usage associations are loaded before the supplied `source_task_id` is validated and a mismatch is rejected before day-end/guest/feedback fallback. The reviewer reran both media suites and Feature Registry, inspected diff/secret/generated-file boundaries, and found no P0/P1/P2.
-- Action conclusion: `GO for local commit`; the exact reviewed candidate may be committed under the user's existing commit-only authorization. Push, PR, merge, migration, deployment and production/device verification are not authorized.
+- Action conclusion: `GO`; the exact reviewed candidate was committed locally as `73c76339c1f714fa957220dfa78bb6be14d6503a`. Push, PR, merge, migration, deployment and production/device verification remain unauthorized and were not performed.
 
 ### Risks / Release Notes
 
