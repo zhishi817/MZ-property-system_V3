@@ -117,6 +117,27 @@
 - Action conclusion: `GO`; the exact reviewed candidate was committed locally as `3a07b2805affee42e2feaaf19281fe9644ff9c39`. Push and later lifecycle actions remain unauthorized and were not performed.
 - Remote / PR / deployment evidence: not pushed；PR not created；not merged；not deployed；production verification not run.
 
+#### RA-20261002-order-fixed-cleaning-fee-push
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261002-007`
+- Selected CRL identities: `root/CRL-20261002-007`
+- Intended action: `push`
+- Branch: `codex/order-fixed-cleaning-fee-20261002`
+- Base: `origin/Dev@d32c170f807f7601f5cf09433ab7036aa0c25eab`; fetched at `2026-10-02T22:34:41+10:00`
+- Candidate patch SHA-256: `1a6fd74d972b2d5f8d5fb2e2eb83806c9bb053d76ff6b5ecc40b928e2a5412bd` excluding `docs/change-release-ledger.md`
+- Commit SHA: `3a07b2805affee42e2feaaf19281fe9644ff9c39`; current audited authorization-receipt head before this record is `f3e646e34ac4289747b837e182999ddc00c6302c`
+- Dependencies: `none`
+- Required validation: `PASS`; evidence: the fixed-cleaning suite, localized-email and date regressions, backend TypeScript/build, full `check:backend`, Feature Registry, ledger coverage, diff check, exact pre-commit gate and committed-range report passed on the unchanged source candidate.
+- Shared-hunk review: `PASS`; evidence: the exact committed range contains only `root/CRL-20261002-007`, with 7 selected files / 33 non-ledger hunks and no unselected content.
+- Generated-file review: `PASS`; evidence: the clean range contains no generated output, cache, environment file, dependency link or configured sensitive category.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after receiving repository `root`, CRL `root/CRL-20261002-007`, content commit `3a07b2805affee42e2feaaf19281fe9644ff9c39`, audited head `f3e646e34ac4289747b837e182999ddc00c6302c` and branch `codex/order-fixed-cleaning-fee-20261002`, the user explicitly instructed “推送”. This authorizes a normal non-force push of the unchanged selected range plus the necessary ledger-only authorization/review/outcome receipts to this branch; it does not authorize PR, merge, migration, deployment or production writes.
+- Remote preflight: `PASS`; evidence: refreshed `origin/Dev` remains `d32c170f807f7601f5cf09433ab7036aa0c25eab` and `refs/heads/codex/order-fixed-cleaning-fee-20261002` was absent at `2026-10-02T22:34:41+10:00`.
+- Independent review: `GO for controlled push`; evidence: independent read-only push review verified the exact ancestry `d32c170f -> 3a07b280 -> 1b345bf -> f3e646e`, unchanged non-ledger fingerprint `1a6fd74d972b2d5f8d5fb2e2eb83806c9bb053d76ff6b5ecc40b928e2a5412bd`, 7 selected files / 33 non-ledger hunks, ledger-only staged authorization receipt, clean generated/sensitive boundaries, fresh `origin/Dev`, absent target remote branch and approved-for-push authorization. No P0/P1 was found. The sole P2 is accepted as non-blocking: the top-level Status retains stale commit wording while this exact Release Attempt remains the authoritative lifecycle evidence, because the ledger-only gate permits attempt receipts only. The GO permits this ledger-only review receipt, one normal non-force initial push after a clean exact range report and unchanged remote preflight, and one conditional ledger-only pushed-state receipt fast-forward.
+- Action conclusion: `GO`; the exact unchanged selected range may be pushed once by normal non-force initial push after this ledger-only receipt is committed, the worktree is clean, the exact release report returns GO, `origin/Dev` remains the recorded base and the target remote branch remains absent. After verifying the remote SHA, one ledger-only pushed-state outcome receipt may be committed and fast-forward pushed if its own gate/report pass and the remote still equals the initial push SHA. PR, merge, migration, deployment and production writes remain unauthorized.
+- Remote / PR / deployment evidence: not pushed；PR not created；not merged；not deployed；production verification not run.
+
 ## CRL-20261002-005 — 移动端上传照片按上传者本人授权查看
 
 - **Status:** candidate（本地实现与回归通过；等待精确 staged gate 和独立审查）
