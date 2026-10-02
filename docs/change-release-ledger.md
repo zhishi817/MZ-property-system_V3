@@ -62,6 +62,27 @@
 - Independent review: `GO`; evidence: independent read-only review matched the exact 3-file staged scope and candidate fingerprint, found no P0/P1/P2, and independently passed 41/41 auditor tests, the pre-commit gate, ledger coverage and diff check.
 - Action conclusion: `GO`; evidence: the exact reviewed candidate was committed locally as `6da7d035a30c4d499396560a67ebc4ce908f3a70`; push, PR, merge and deployment remain unauthorized.
 
+#### RA-20261002-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261002-001`, `CRL-20261002-002`, `CRL-20261002-003`
+- Selected CRL identities: `root/CRL-20261002-001`, `root/CRL-20261002-002`, `root/CRL-20261002-003`
+- Intended action: `push`
+- Branch: `codex/personnel-settlement-fixes-20261002`
+- Base: `origin/Dev@f7af678d4d85f46b817ec47e54d4796b0dfb3bb2`; fetched at `2026-10-02T16:55:32+1000`
+- Candidate patch SHA-256: `a89665c46aaf979f4cc1dff33abab6f0316c8d61889ca9320be6d6d4e14ccf0b`
+- Commit SHA: `6da7d035a30c4d499396560a67ebc4ce908f3a70`
+- Dependencies: none
+- Paired release scope: `mobile/CRL-20261002-001@8ce10fff673a44bf8cc5aa9b88613af9b476b963`, `mobile/CRL-20261002-002@9741a187976663d594fe7f1734adacb8e1443a31`; the two repository branch pushes are order-independent, while merge/deployment/OTA remain separately gated.
+- Required validation: `PASS`; evidence: the selected business tests, TypeScript, web tests/build, feature registry, 41/41 auditor regression suite, pre-commit gates and ledger coverage passed; Root and Mobile remain separate branch pushes and no deployment or OTA is included.
+- Shared-hunk review: `PASS`; evidence: the three selected Root CRLs jointly declare every non-ledger hunk in the exact range; complete-range independent review is pending.
+- Generated-file review: `PASS`; evidence: no tracked build output, cache, dependency directory or generated artifact is selected.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after the exact final Root and Mobile branch heads were reported, the user explicitly instructed “推送”, then confirmed authorization for the required ledger-only push-evidence commits and the new final branch heads they create.
+- Independent review: `GO`; evidence: independent read-only push review verified the exact three-CRL Root range, base, branch, content commit, full-range fingerprint, 16 files / 65 non-ledger hunks, authorization, sensitive/generated-file boundaries and found no P0/P1; two recorded P2s are non-blocking.
+- Action conclusion: `NOT VERIFIED`; blockers: clean committed-range audit of the ledger receipt is still pending.
+
+
 ### Risks / Release Notes
 
 - Risk: parser boundary changes affect release evidence extraction only; malformed attempts placed outside `### Release Attempts` remain outside the documented contract.
@@ -180,6 +201,27 @@
 - Independent review: `GO for commit`; evidence: independent read-only re-review recomputed fingerprint `cd58aa8aa5764e0562cd220fed8eea37687ffbd9daf0d7b5950efc9a32d568d1`, inspected all 14 staged files / 62 non-ledger hunks, independently reran the exact gate and sensitive/generated-file review, and confirmed the prior date-forward P1 is closed with server, HTTP 409, UI and regression guards. No P0/P1 remains. Accepted non-blocking P2: standard Actions do not yet wire the personnel Phase/claim-dedup scripts, and the profile-merge transaction lacks a real PostgreSQL rollback integration test.
 - Action conclusion: `GO`; the exact reviewed candidate was committed locally as `b4c147980170ae004ba14d7e1f7a8fad25841a5f`. Push, PR, merge, deployment and production/device verification remain unauthorized.
 
+#### RA-20261002-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261002-001`, `CRL-20261002-002`, `CRL-20261002-003`
+- Selected CRL identities: `root/CRL-20261002-001`, `root/CRL-20261002-002`, `root/CRL-20261002-003`
+- Intended action: `push`
+- Branch: `codex/personnel-settlement-fixes-20261002`
+- Base: `origin/Dev@f7af678d4d85f46b817ec47e54d4796b0dfb3bb2`; fetched at `2026-10-02T16:55:32+1000`
+- Candidate patch SHA-256: `a89665c46aaf979f4cc1dff33abab6f0316c8d61889ca9320be6d6d4e14ccf0b`
+- Commit SHA: `6da7d035a30c4d499396560a67ebc4ce908f3a70`
+- Dependencies: none
+- Paired release scope: `mobile/CRL-20261002-001@8ce10fff673a44bf8cc5aa9b88613af9b476b963`, `mobile/CRL-20261002-002@9741a187976663d594fe7f1734adacb8e1443a31`; the two repository branch pushes are order-independent, while merge/deployment/OTA remain separately gated.
+- Required validation: `PASS`; evidence: the selected business tests, TypeScript, web tests/build, feature registry, 41/41 auditor regression suite, pre-commit gates and ledger coverage passed; Root and Mobile remain separate branch pushes and no deployment or OTA is included.
+- Shared-hunk review: `PASS`; evidence: the three selected Root CRLs jointly declare every non-ledger hunk in the exact range; complete-range independent review is pending.
+- Generated-file review: `PASS`; evidence: no tracked build output, cache, dependency directory or generated artifact is selected.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after the exact final Root and Mobile branch heads were reported, the user explicitly instructed “推送”, then confirmed authorization for the required ledger-only push-evidence commits and the new final branch heads they create.
+- Independent review: `GO`; evidence: independent read-only push review verified the exact three-CRL Root range, base, branch, content commit, full-range fingerprint, 16 files / 65 non-ledger hunks, authorization, sensitive/generated-file boundaries and found no P0/P1; two recorded P2s are non-blocking.
+- Action conclusion: `NOT VERIFIED`; blockers: clean committed-range audit of the ledger receipt is still pending.
+
+
 ### Git / Delivery State
 
 - Branch: `codex/personnel-settlement-fixes-20261002`
@@ -288,6 +330,27 @@
 - User authorization: `selected-for-commit`; evidence: user explicitly selected root/CRL-20261002-001 and root/CRL-20261002-002 for commit.
 - Independent review: `GO for commit`; evidence: independent read-only re-review recomputed fingerprint `cd58aa8aa5764e0562cd220fed8eea37687ffbd9daf0d7b5950efc9a32d568d1`, inspected all 14 staged files / 62 non-ledger hunks, independently reran the exact gate and sensitive/generated-file review, and confirmed the prior date-forward P1 is closed with server, HTTP 409, UI and regression guards. No P0/P1 remains. Accepted non-blocking P2: standard Actions do not yet wire the personnel Phase/claim-dedup scripts, and the profile-merge transaction lacks a real PostgreSQL rollback integration test.
 - Action conclusion: `GO`; the exact reviewed candidate was committed locally as `b4c147980170ae004ba14d7e1f7a8fad25841a5f`. Push, PR, merge, deployment and production/device verification remain unauthorized.
+
+#### RA-20261002-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261002-001`, `CRL-20261002-002`, `CRL-20261002-003`
+- Selected CRL identities: `root/CRL-20261002-001`, `root/CRL-20261002-002`, `root/CRL-20261002-003`
+- Intended action: `push`
+- Branch: `codex/personnel-settlement-fixes-20261002`
+- Base: `origin/Dev@f7af678d4d85f46b817ec47e54d4796b0dfb3bb2`; fetched at `2026-10-02T16:55:32+1000`
+- Candidate patch SHA-256: `a89665c46aaf979f4cc1dff33abab6f0316c8d61889ca9320be6d6d4e14ccf0b`
+- Commit SHA: `6da7d035a30c4d499396560a67ebc4ce908f3a70`
+- Dependencies: none
+- Paired release scope: `mobile/CRL-20261002-001@8ce10fff673a44bf8cc5aa9b88613af9b476b963`, `mobile/CRL-20261002-002@9741a187976663d594fe7f1734adacb8e1443a31`; the two repository branch pushes are order-independent, while merge/deployment/OTA remain separately gated.
+- Required validation: `PASS`; evidence: the selected business tests, TypeScript, web tests/build, feature registry, 41/41 auditor regression suite, pre-commit gates and ledger coverage passed; Root and Mobile remain separate branch pushes and no deployment or OTA is included.
+- Shared-hunk review: `PASS`; evidence: the three selected Root CRLs jointly declare every non-ledger hunk in the exact range; complete-range independent review is pending.
+- Generated-file review: `PASS`; evidence: no tracked build output, cache, dependency directory or generated artifact is selected.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after the exact final Root and Mobile branch heads were reported, the user explicitly instructed “推送”, then confirmed authorization for the required ledger-only push-evidence commits and the new final branch heads they create.
+- Independent review: `GO`; evidence: independent read-only push review verified the exact three-CRL Root range, base, branch, content commit, full-range fingerprint, 16 files / 65 non-ledger hunks, authorization, sensitive/generated-file boundaries and found no P0/P1; two recorded P2s are non-blocking.
+- Action conclusion: `NOT VERIFIED`; blockers: clean committed-range audit of the ledger receipt is still pending.
+
 
 ### Risks / Release Notes
 
