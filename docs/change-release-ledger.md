@@ -26391,16 +26391,18 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Branch: `codex/workload-evidence-media-20261003`
 - Base: `origin/Dev@d202dff46fa809d94181e035556e3f42003a1732`; fetched at `2026-10-03T20:09:14+10:00`
 - Candidate patch SHA-256: `9d414cd79df3582877f659334bf33cfb338c15f7374a556e935382525d6688ea`（excluding `docs/change-release-ledger.md`；supersedes prior candidates after closing all independent-review P1/P2 findings and removing the unrelated FR-032 date hunk）
-- Commit SHA: not committed
-- Dependencies: none；基线已包含 `root/CRL-20261003-001`
+- Candidate content commit SHA: `9001933b3cee3ddf423dd42f295d74d94605f040`
+- Commit SHA: `9001933b3cee3ddf423dd42f295d74d94605f040`
+- Dependencies: none
 - Required validation: `PASS`; evidence: latest-base targeted backend/frontend tests, both TypeScript checks, isolated backend emit, frontend lint/build, root quality contract, Feature Registry, ledger coverage and diff check passed；历史跨仓库 phase4 夹具保持单独 `NOT VERIFIED`，不掩盖也不伪造。
 - Shared-hunk review: `PASS`; evidence: exact candidate 仅窄幅扩展共享 `mzappTaskPhotoReference` 的结构解析/身份可用性辅助函数，既有 current-reference 行为保持不变且共享 reference 回归通过；FR-029 与 root quality command 仅登记/接入同一目标合同。
 - Generated-file review: `PASS`; evidence: 首次审查发现 ignored `frontend/.next/` 与 `frontend/tsconfig.tsbuildinfo` 后，以项目 `clean:next:full` 和精确删除完成清理；修正后复跑产生的临时 backend emit、`tsconfig.tsbuildinfo` 与两个依赖 symlink 也再次移除；`git status --ignored --short` 只剩登记的 13 个 tracked 候选路径。
 - Sensitive-information review: `PASS`; evidence: staged candidate 不含 `.env`、credential、token、cookie、private key、database URL、生产对象 key 实例、媒体字节或敏感日志。
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user explicitly instructed “先提交吧” immediately after receiving the exact scope `root/CRL-20261003-002` and uncommitted lifecycle state. This does not authorize push, PR, merge, deployment or production writes.
-- Independent review: final `GO for local commit`；独立复算 fingerprint `9d414cd79df3582877f659334bf33cfb338c15f7374a556e935382525d6688ea`，确认 13 staged files / 45 non-ledger hunks、无 unstaged/untracked/ignored/unselected/missing 内容，FR-032 未被修改、FR-029 日期正确，存储身份/namespace/对象/服务分流与非存储 503 文案均正确，P0/P1/P2 为 0。此前两项 P1、两项 P2 与误改 FR-032 的 scope 问题均已关闭。GO 仅允许当前精确候选的本地 commit，不授权 push。
-- Action conclusion: `GO`; exact staged gate and final independent fingerprint review both passed for this local commit only。
+- Independent review: `GO for local commit`; evidence: 独立复算 fingerprint `9d414cd79df3582877f659334bf33cfb338c15f7374a556e935382525d6688ea`，确认 13 staged files / 45 non-ledger hunks、无 unstaged/untracked/ignored/unselected/missing 内容，FR-032 未被修改、FR-029 日期正确，存储身份/namespace/对象/服务分流与非存储 503 文案均正确，P0/P1/P2 为 0。此前两项 P1、两项 P2 与误改 FR-032 的 scope 问题均已关闭。GO 仅允许当前精确候选的本地 commit，不授权 push。
+- Action conclusion: `GO`; exact reviewed candidate was committed locally as `9001933b3cee3ddf423dd42f295d74d94605f040`；push、PR、merge、deployment and production writes remain unauthorized。
+- Remote / PR / deployment evidence: not pushed；PR not created；not merged；not deployed；production DB/R2/object recovery/authenticated runtime/device verification not run。
 
 ### Git / Release State
 
