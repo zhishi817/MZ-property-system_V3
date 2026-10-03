@@ -118,12 +118,12 @@
 - Shared-hunk review: `PASS`; evidence: exact committed range contains only this CRL's backend authorization, tests and governance hunks; shared task, feedback, day-end and temporary-notice media branches were explicitly regressed.
 - Generated-file review: `PASS`; evidence: no generated file, dependency link, cache or untracked file is present in the clean release worktree.
 - Sensitive-information review: `PASS`; evidence: exact committed range contains no `.env`, credential, token, database URL, private key, cookie or sensitive log material.
-- Technical state: `committed`
+- Technical state: `pushed`
 - User authorization: `approved-for-push`; evidence: after receiving repository `root`, CRL `root/CRL-20261003-001`, branch `codex/task-photo-visibility-20261003`, content commit `5d78d0bbd1efefc0bff1038e06d1c7b3c157d71c`, and the explicit statement that PR/merge/deployment remained separate, the user explicitly instructed “推送”.
 - Remote preflight: `PASS`; evidence: fresh fetch at `2026-10-03T17:51:23+10:00` confirmed `origin/Dev` remains `60faf6aac925855528de78e0a2385530f2f235d2`; `git ls-remote --heads origin refs/heads/codex/task-photo-visibility-20261003` returned no branch.
 - Independent review: `GO for controlled push`; evidence: independent read-only review verified live `origin/Dev@60faf6aac925855528de78e0a2385530f2f235d2`, ancestry `60faf6a -> 5d78d0b -> 647ce7e`, the unchanged non-ledger fingerprint `597278803917e7666cfde90104768d969108557cb44c92ea870cc2582011f1ff`, 6 registered files, the ledger-only authorization receipt, absent remote target branch, and no P0/P1/P2, generated, sensitive, untracked or unselected content. The GO permits this ledger-only review receipt, one explicit-refspec normal non-force initial push after a clean exact range report and unchanged remote preflight, and one conditional ledger-only pushed-state receipt fast-forward.
-- Action conclusion: `GO`; the exact committed candidate may be pushed only to `refs/heads/codex/task-photo-visibility-20261003` after the ledger-only gate, exact range report and remote preflight pass. PR, merge, deployment and production/R2/device actions remain unauthorized.
-- Remote / PR / deployment evidence: not pushed；PR not created；not merged；not deployed；production/R2/device verification not run.
+- Action conclusion: `GO`; the exact committed candidate and authorization receipt were pushed by explicit refspec with a normal non-force new-branch update, and the remote SHA was verified before preparing this ledger-only result receipt. PR, merge, deployment and production/R2/device actions remain unauthorized.
+- Remote / PR / deployment evidence: pushed at `2026-10-03T17:56:16+10:00` to `origin/codex/task-photo-visibility-20261003@ec0702dd1c961a37aaa1ccf592d6fb063f80652b` by explicit refspec and normal non-force push；remote SHA verified by `git ls-remote`；PR not created；not merged；not deployed；production/R2/device verification not run.
 
 ## CRL-20261002-007 — Airbnb 订单按房源房型使用固定清洁费
 
