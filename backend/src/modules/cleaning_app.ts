@@ -3033,6 +3033,13 @@ export function hasRecordedCleaningMediaSourceTaskMismatch(rows: any[], sourceTa
   ))
 }
 
+export function canUseUniqueFeedbackMediaForMismatchedTaskContext(taskRows: any[], feedbackRows: any[]) {
+  const matchedTaskRows = Array.isArray(taskRows) ? taskRows : []
+  const matchedFeedbackRows = Array.isArray(feedbackRows) ? feedbackRows : []
+  if (matchedFeedbackRows.length !== 1) return false
+  return matchedTaskRows.length === 0 || !!selectUniqueRecordedCleaningMediaRow(matchedTaskRows)
+}
+
 export function selectUniqueRecordedDayEndMediaRow(rows: any[]) {
   const matchedRows = Array.isArray(rows) ? rows : []
   const matchedUserIds = new Set(matchedRows.map((row: any) => String(row?.user_id || '').trim()).filter(Boolean))
@@ -3701,9 +3708,6 @@ router.get(
         const storedKey = r2KeyFromUrl(String(row?.url || '').trim()) || String(row?.url || '').trim()
         return storedKey === key
       })
-      if (hasRecordedCleaningMediaSourceTaskMismatch(matchingMediaRows, sourceTaskId)) {
-        return res.status(403).json({ message: 'forbidden_media' })
-      }
       const matchingDayEndRows = (dayEndRows?.rows || []).filter((row: any) => {
         const storedKey = r2KeyFromUrl(String(row?.url || '').trim()) || String(row?.url || '').trim()
         return storedKey === key
@@ -3713,16 +3717,28 @@ router.get(
       const recordedMedia = hasTaskOrDayEndMedia && matchingGuestLuggageRows.length === 0
         ? taskOrDayEndMedia
         : null
-      // A temporary-notice association must never hide another private-media source.
-      // It needs a feedback/external-maintenance lookup for collision detection.  Without
-      // a notice, retain the established fail-closed task/day-end boundary: even an
-      // ambiguous task/day-end association must not fall through to feedback access.
-      const feedbackMediaRows = !!guestLuggageMediaRow || (!hasTaskOrDayEndMedia && !hasGuestLuggageContext)
-        ? await findPropertyFeedbackMediaRows(pgPool, key)
-        : []
+      const hasTaskContextMismatch = hasRecordedCleaningMediaSourceTaskMismatch(matchingMediaRows, sourceTaskId)
+      // Property feedback is property-scoped history. The task carried by the current
+      // screen is viewer context, not necessarily the task that originally uploaded a
+      // historical feedback photo. Resolve feedback for a feedback-only key or a task
+      // context mismatch, while preserving the established task/day-end fast path and
+      // keeping notice/day-end/ambiguous collisions fail-closed.
+      const feedbackMediaRows = hasGuestLuggageContext
+        ? guestLuggageMediaRow
+          ? await findPropertyFeedbackMediaRows(pgPool, key)
+          : []
+        : !hasTaskOrDayEndMedia || (matchingMediaRows.length > 0 && hasTaskContextMismatch)
+          ? await findPropertyFeedbackMediaRows(pgPool, key)
+          : []
       const hasGuestLuggageSourceConflict = matchingGuestLuggageRows.length > 0
         && (hasTaskOrDayEndMedia || feedbackMediaRows.length > 0)
       const feedbackMediaRow = feedbackMediaRows.length === 1 ? feedbackMediaRows[0] : null
+      const hasRecordedSourceConflict = hasTaskOrDayEndMedia && !taskOrDayEndMedia
+      const hasDayEndFeedbackSourceConflict = matchingDayEndRows.length > 0 && feedbackMediaRows.length > 0
+      if (hasTaskContextMismatch
+        && !canUseUniqueFeedbackMediaForMismatchedTaskContext(matchingMediaRows, feedbackMediaRows)) {
+        return res.status(403).json({ message: 'forbidden_media' })
+      }
       const maintenanceWorkTaskResult = feedbackMediaRow?.feedback_source_type === 'property_maintenance' && workTaskId
         ? await pgPool.query(
           `SELECT id::text AS id, assignee_id::text AS assignee_id
@@ -3740,23 +3756,42 @@ router.get(
         roleNamesOfUser(user).some((role) => ['admin', 'offline_manager', 'customer_service'].includes(role))
         || String(maintenanceWorkTask.assignee_id || '').trim() === userId
       )
+      const feedbackViewerTaskResult = feedbackMediaRow && sourceTaskId
+        ? await pgPool.query(
+          `SELECT id,
+                  cleaner_id,
+                  inspector_id,
+                  assignee_id
+             FROM cleaning_tasks
+            WHERE id::text = $1::text
+            LIMIT 1`,
+          [String(sourceTaskId).trim()],
+        )
+        : null
+      const feedbackViewerTask = feedbackViewerTaskResult?.rows?.[0] || null
+      const canViewFeedbackTaskContext = !sourceTaskId || (
+        !!feedbackViewerTask
+        && await canViewMzappRecordedCleaningMedia(user, feedbackViewerTask, userId, 'feedback_viewer_context')
+      )
+      const canViewFeedbackMedia = feedbackMediaRow && canViewFeedbackTaskContext
+        ? String(feedbackMediaRow.feedback_source_type || '') === 'external_maintenance_orders'
+          ? canViewExternalMaintenanceCompletionMedia(user, feedbackMediaRow, userId)
+          : canViewMaintenanceWorkTask || await canViewMzappPropertyFeedback(user, feedbackMediaRow, userId)
+        : false
       const canView = hasGuestLuggageContext
         ? !hasGuestLuggageSourceConflict
           && !!guestLuggageMediaRow
           && await canViewMzappGuestLuggageNoticeMedia(user, guestLuggageMediaRow, userId)
-        : hasGuestLuggageSourceConflict
+        : hasGuestLuggageSourceConflict || hasRecordedSourceConflict || hasDayEndFeedbackSourceConflict
           ? false
           : recordedMedia?.source === 'task'
           ? await canViewMzappRecordedCleaningMedia(user, recordedMedia.row, userId, recordedMedia.row.type)
+            || canViewFeedbackMedia
           : recordedMedia?.source === 'day_end'
             ? canViewRecordedDayEndMedia(user, recordedMedia.row, userId)
             : guestLuggageMediaRow
               ? await canViewMzappGuestLuggageNoticeMedia(user, guestLuggageMediaRow, userId)
-              : feedbackMediaRow
-                ? String(feedbackMediaRow.feedback_source_type || '') === 'external_maintenance_orders'
-                  ? canViewExternalMaintenanceCompletionMedia(user, feedbackMediaRow, userId)
-                  : canViewMaintenanceWorkTask || await canViewMzappPropertyFeedback(user, feedbackMediaRow, userId)
-                : false
+              : canViewFeedbackMedia
       if (!canView) {
         return res.status(403).json({ message: 'forbidden_media' })
       }

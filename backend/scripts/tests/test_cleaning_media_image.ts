@@ -3,6 +3,7 @@ import fs from 'fs'
 import sharp from 'sharp'
 import { CLEANING_IMAGE_FORMAT_ERROR, normalizeCleaningImageUpload } from '../../src/lib/cleaningMediaImage'
 import {
+  canUseUniqueFeedbackMediaForMismatchedTaskContext,
   canViewRecordedDayEndMedia,
   hasRecordedCleaningMediaSourceTaskMismatch,
   isExclusiveDayEndHandoverMedia,
@@ -19,14 +20,18 @@ async function main() {
   assert.doesNotMatch(route, /\(\$2::text = '' OR ctm\.task_id::text = \$2::text\)/, 'caller task context must not hide recorded task-media associations from collision detection')
   assert.match(route, /FROM cleaning_consumable_usages u[\s\S]*JOIN cleaning_tasks ct/, 'media proxy must also resolve recorded consumable photo references')
   assert.doesNotMatch(route, /\(\$2::text = '' OR ct\.id::text = \$2::text\)/, 'caller task context must not hide recorded consumable associations from collision detection')
-  assert.match(route, /hasRecordedCleaningMediaSourceTaskMismatch\(matchingMediaRows, sourceTaskId\)/, 'source_task_id must be validated after all recorded task associations are loaded')
-  const sourceMismatchGuardIndex = route.indexOf('if (hasRecordedCleaningMediaSourceTaskMismatch(matchingMediaRows, sourceTaskId))')
-  const alternateSourceFallbackIndex = route.indexOf('const feedbackMediaRows =', sourceMismatchGuardIndex)
-  assert.ok(sourceMismatchGuardIndex >= 0 && alternateSourceFallbackIndex > sourceMismatchGuardIndex, 'wrong source_task_id must fail closed before guest or feedback authorization fallback')
+  assert.match(route, /const hasTaskContextMismatch = hasRecordedCleaningMediaSourceTaskMismatch\(matchingMediaRows, sourceTaskId\)/, 'source_task_id must be validated after all recorded task associations are loaded')
+  const matchingMediaRowsIndex = route.indexOf('const matchingMediaRows =')
+  const sourceMismatchGuardIndex = route.indexOf('if (hasTaskContextMismatch', matchingMediaRowsIndex)
+  const exactFeedbackLookupIndex = route.lastIndexOf('const feedbackMediaRows =', sourceMismatchGuardIndex)
+  assert.ok(exactFeedbackLookupIndex >= 0 && sourceMismatchGuardIndex > exactFeedbackLookupIndex, 'the proxy must resolve an exact feedback association before deciding whether the current screen task is a mismatch')
+  assert.match(route, /canUseUniqueFeedbackMediaForMismatchedTaskContext\(matchingMediaRows, feedbackMediaRows\)/, 'a mismatched screen task may proceed only through one unambiguous feedback record')
+  assert.match(route, /const feedbackViewerTaskResult = feedbackMediaRow && sourceTaskId[\s\S]*FROM cleaning_tasks[\s\S]*WHERE id::text = \$1::text/, 'a supplied feedback viewer task must resolve one real task before granting historical feedback access')
+  assert.match(route, /canViewMzappRecordedCleaningMedia\(user, feedbackViewerTask, userId, 'feedback_viewer_context'\)/, 'the current task carried by the feedback screen must be visible to the authenticated user')
   assert.match(route, /FROM guest_luggage_notices/, 'media proxy must resolve a temporary-notice photo through its saved notice record')
   assert.match(route, /guest_luggage_id/, 'temporary-notice media must require an exact notice context')
   assert.match(route, /hasGuestLuggageSourceConflict/, 'a temporary-notice key that collides with another recorded source must fail closed')
-  assert.match(route, /const feedbackMediaRows = !!guestLuggageMediaRow \|\| \(!hasTaskOrDayEndMedia && !hasGuestLuggageContext\)\s*\? await findPropertyFeedbackMediaRows\(pgPool, key\)/, 'only a valid temporary-notice association may retain feedback collision detection; a supplied but wrong notice id must fail closed before generic access')
+  assert.match(route, /!hasTaskOrDayEndMedia \|\| \(matchingMediaRows\.length > 0 && hasTaskContextMismatch\)\s*\? await findPropertyFeedbackMediaRows\(pgPool, key\)/, 'feedback-only keys and mismatched historical task contexts must resolve exact feedback history without slowing the ordinary task/day-end path')
   assert.match(route, /hasTaskOrDayEndMedia \|\| feedbackMediaRows\.length > 0/, 'a temporary-notice key colliding with task, day-end, feedback, or external-maintenance media must fail closed')
   assert.match(route, /const canView = hasGuestLuggageContext\s*\?\s*!hasGuestLuggageSourceConflict/, 'a supplied temporary-notice id must be authorized only through its exact notice association')
   assert.match(route, /FROM cleaning_day_end_media/, 'media proxy must resolve recorded day-end handover photos')
@@ -67,6 +72,11 @@ async function main() {
   assert.equal(hasRecordedCleaningMediaSourceTaskMismatch([ordinary], 'task-a'), false, 'matching task context may proceed to source-specific authorization')
   assert.equal(hasRecordedCleaningMediaSourceTaskMismatch([ordinary], 'task-b'), true, 'wrong task context must deny even if another source records the same key')
   assert.equal(hasRecordedCleaningMediaSourceTaskMismatch([], 'task-b'), true, 'supplied task context without any matching task association must not fall through to another source')
+  assert.equal(canUseUniqueFeedbackMediaForMismatchedTaskContext([ordinary], [{ id: 'feedback-a' }]), true, 'one exact task association and one exact feedback record may use feedback authorization')
+  assert.equal(canUseUniqueFeedbackMediaForMismatchedTaskContext([], [{ id: 'feedback-a' }]), true, 'feedback-only history may use the current visible task as viewer context')
+  assert.equal(canUseUniqueFeedbackMediaForMismatchedTaskContext([ordinary], []), false, 'a wrong task context without feedback remains denied')
+  assert.equal(canUseUniqueFeedbackMediaForMismatchedTaskContext([ordinary], [{ id: 'feedback-a' }, { id: 'feedback-b' }]), false, 'ambiguous feedback records remain denied')
+  assert.equal(canUseUniqueFeedbackMediaForMismatchedTaskContext([ordinary, { ...ordinary, id: 'task-b' }], [{ id: 'feedback-a' }]), false, 'ambiguous task ownership cannot fall through to feedback authorization')
   assert.equal(selectUniqueRecordedCleaningMediaRow([ordinary]), ordinary)
   assert.equal(selectUniqueRecordedCleaningMediaRow([ordinary, { ...ordinary, type: 'inspection_photo' }]), null, 'one key recorded under two types must fail closed')
   assert.equal(selectUniqueRecordedCleaningMediaRow([ordinary, { ...ordinary, id: 'task-b' }]), null, 'one key recorded under two tasks must fail closed')

@@ -1410,7 +1410,6 @@ export async function canViewMzappRecordedCleaningMedia(user: any, row: any, use
   if (!type) return false
   const uid = String(userId || '').trim()
   if (uid && String(row?.uploader_id || '').trim() === uid) return true
-  if (type.startsWith('inspection_')) return canViewMzappInspectionMedia(user, row, userId)
   if (type === 'lockbox_video') {
     if (!canViewMzappLockboxVideo(user)) return false
     if (canViewAll(user)) return true
@@ -1420,11 +1419,7 @@ export async function canViewMzappRecordedCleaningMedia(user: any, row: any, use
     if (userId && taskUserIds.includes(userId)) return true
     return userHasManualWorkTaskAction(user, userId, 'cleaning_tasks', String(row?.id || '').trim(), 'upload_access_video')
   }
-  if (type === 'inspection_consumables_confirmed' || type.startsWith('restock_proof:')) {
-    return canViewMzappRestockProof(user, row, userId)
-  }
-  if (await canViewMzappTaskConsumables(user, row, userId)) return true
-  return userHasManualWorkTaskAction(user, userId, 'cleaning_tasks', String(row?.id || '').trim(), 'complete_cleaning')
+  return canViewFormPhotoTaskRows(user, [row], userId)
 }
 
 export async function canViewMzappOfflineWorkTaskMedia(user: any, row: any, userId: string) {
