@@ -26404,6 +26404,30 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Action conclusion: `GO`; exact reviewed candidate was committed locally as `9001933b3cee3ddf423dd42f295d74d94605f040`；push、PR、merge、deployment and production writes remain unauthorized。
 - Remote / PR / deployment evidence: not pushed；PR not created；not merged；not deployed；production DB/R2/object recovery/authenticated runtime/device verification not run。
 
+#### RA-20261003-workload-evidence-push
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261003-002`
+- Selected CRL identities: `root/CRL-20261003-002`
+- Intended action: `push`
+- Branch: `codex/workload-evidence-media-20261003`
+- Base ref / SHA: `origin/Dev` / `d202dff46fa809d94181e035556e3f42003a1732`
+- Base: `origin/Dev@d202dff46fa809d94181e035556e3f42003a1732`; freshly fetched at `2026-10-03T20:41:42+10:00`
+- Candidate patch SHA-256: `9d414cd79df3582877f659334bf33cfb338c15f7374a556e935382525d6688ea`（excluding `docs/change-release-ledger.md`）
+- Candidate content commit SHA: `9001933b3cee3ddf423dd42f295d74d94605f040`
+- Commit SHA: `9001933b3cee3ddf423dd42f295d74d94605f040`
+- Dependencies: none
+- Required validation: `PASS`; evidence: exact committed candidate is unchanged from the final independently reviewed local-commit candidate；targeted backend/frontend tests, both TypeScript checks, isolated backend emit, frontend lint/build, root quality contract, Feature Registry, ledger coverage and diff checks passed。
+- Shared-hunk review: `PASS`; evidence: exact range contains only `root/CRL-20261003-002` implementation, tests and governance hunks；shared reference helper has an explicit regression and existing behavior remains unchanged。
+- Generated-file review: `PASS`; evidence: clean release worktree has no generated, untracked or ignored files。
+- Sensitive-information review: `PASS`; evidence: exact committed range contains no `.env`, credentials, token, cookie, private key, database URL, production object key instance, media bytes or sensitive logs。
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after receiving repository `root`, CRL `root/CRL-20261003-002`, branch `codex/workload-evidence-media-20261003`, content commit `9001933b3cee3ddf423dd42f295d74d94605f040`, ledger receipt HEAD `387a12f4b6d9dfbbfcd169bc161b56b01cd2b7c7`, and the explicit statement that PR/merge/deployment remain separate, the user explicitly instructed “推送”。
+- Remote preflight: `PASS`; evidence: fresh fetch at `2026-10-03T20:41:42+10:00` confirmed `origin/Dev` remains `d202dff46fa809d94181e035556e3f42003a1732`; `git ls-remote --heads origin refs/heads/codex/workload-evidence-media-20261003` returned no branch；local worktree is clean before this ledger-only authorization receipt。
+- Independent review: `GO for controlled push`; evidence: independent read-only review verified live `origin/Dev@d202dff46fa809d94181e035556e3f42003a1732`, ancestry `base -> 9001933b3cee3ddf423dd42f295d74d94605f040 -> 387a12f4b6d9dfbbfcd169bc161b56b01cd2b7c7`, unchanged fingerprint `9d414cd79df3582877f659334bf33cfb338c15f7374a556e935382525d6688ea`, 13 selected files / 45 non-ledger hunks, staged push RA only, absent target remote branch, and no P0/P1/P2, generated, sensitive, ignored, untracked or unselected content。GO permits only the same-RA review receipt, a clean exact-range report, unchanged live remote preflight, and one explicit-refspec normal non-force initial push；it does not authorize PR/merge/deploy or production writes。
+- Action conclusion: `GO`; after the ledger-only review receipt is committed, the exact range report and unchanged live remote preflight must pass before one explicit-refspec normal non-force initial push。
+- Remote / PR / deployment evidence: not pushed；PR not created；not merged；not deployed；production DB/R2/object recovery/authenticated runtime/device verification not run。
+
 ### Git / Release State
 
 - Media phase evidence: `CODE_FIXED / LOCAL_REGRESSION_PASSED / FUNCTION_VERIFICATION_BLOCKED`；runtime function verification remains blocked without an authorized R2/authenticated environment。
