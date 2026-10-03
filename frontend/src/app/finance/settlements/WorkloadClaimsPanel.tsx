@@ -41,6 +41,7 @@ import {
 } from './settlementWorkflowUi'
 import {
   loadPersonnelClaimEvidenceObjectUrl,
+  personnelClaimEvidenceFailureMessage,
   releasePersonnelClaimEvidenceObjectUrls,
 } from './claimEvidenceImage'
 import styles from './WorkloadClaimsPanel.module.css'
@@ -143,16 +144,16 @@ function estimateUnavailableMessage(reason: string | undefined) {
 async function loadEvidenceMaps(claim: WorkloadClaim) {
   const loaded = await Promise.all((claim.evidence || []).map(async (item) => {
     try {
-      return [item.id, await loadPersonnelClaimEvidenceObjectUrl(claim.id, item.id)] as const
-    } catch {
-      return [item.id, null] as const
+      return [item.id, await loadPersonnelClaimEvidenceObjectUrl(claim.id, item.id), null] as const
+    } catch (error) {
+      return [item.id, null, personnelClaimEvidenceFailureMessage(error)] as const
     }
   }))
   const urls: Record<string, string> = {}
-  const failures: Record<string, boolean> = {}
-  for (const [id, url] of loaded) {
+  const failures: Record<string, string> = {}
+  for (const [id, url, failure] of loaded) {
     if (url) urls[id] = url
-    else failures[id] = true
+    else failures[id] = failure || '照片读取失败，请稍后重试'
   }
   return { urls, failures }
 }
@@ -185,9 +186,9 @@ export default function WorkloadClaimsPanel() {
   const [reviewEstimateError, setReviewEstimateError] = useState('')
   const [reviewEstimateLoading, setReviewEstimateLoading] = useState(false)
   const [evidenceUrls, setEvidenceUrls] = useState<Record<string, string>>({})
-  const [evidenceFailures, setEvidenceFailures] = useState<Record<string, boolean>>({})
+  const [evidenceFailures, setEvidenceFailures] = useState<Record<string, string>>({})
   const [reviewEvidenceUrls, setReviewEvidenceUrls] = useState<Record<string, string>>({})
-  const [reviewEvidenceFailures, setReviewEvidenceFailures] = useState<Record<string, boolean>>({})
+  const [reviewEvidenceFailures, setReviewEvidenceFailures] = useState<Record<string, string>>({})
   const evidenceUrlsRef = useRef<Record<string, string>>({})
   const reviewEvidenceUrlsRef = useRef<Record<string, string>>({})
   const canReview = hasPerm('personnel_settlements.rules.manage') || hasPerm('finance.payout')
@@ -505,7 +506,7 @@ export default function WorkloadClaimsPanel() {
               {evidenceUrls[item.id]
                 ? <Image src={evidenceUrls[item.id]} alt="工作量证明" width={140} height={105} style={{ objectFit: 'cover', borderRadius: 6 }} />
                 : <div style={{ width: 140, height: 105, display: 'grid', placeItems: 'center', background: '#f5f5f5', color: '#999', borderRadius: 6 }}>
-                  {evidenceFailures[item.id] ? '照片读取失败' : '照片加载中'}
+                  {evidenceFailures[item.id] || '照片加载中'}
                 </div>}
               <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 4 }} ellipsis={{ tooltip: item.original_file_name || item.media_id || item.id }}>
                 {item.original_file_name || item.media_id || item.id}
@@ -568,7 +569,7 @@ export default function WorkloadClaimsPanel() {
                       style={{ objectFit: 'cover', borderRadius: 6 }}
                     />
                     : <div className={styles.evidencePlaceholder} key={item.id}>
-                      {reviewEvidenceFailures[item.id] ? '照片读取失败' : '照片加载中'}
+                      {reviewEvidenceFailures[item.id] || '照片加载中'}
                     </div>)
                   : <span>未关联证明材料</span>}
             </div>

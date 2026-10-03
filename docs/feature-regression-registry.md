@@ -197,7 +197,7 @@
 ## FR-029：费用结算资料、规则历史、周结算、供应方文件与财务付款边界
 
 - **维护责任范围：** backend personnel settlement schema/profile/rule/calculation/claim/workflow/private-evidence/document/scheduler/notification API + web finance settlement profile/rule/claim/weekly/document page + paired mobile self-service/document/notification flow
-- **最后审查日期：** 2026-10-02
+- **最后审查日期：** 2026-10-03
 - **状态：** active
 
 ### 业务保护规则
@@ -220,7 +220,7 @@
 - 自 `root/CRL-20261002-001` 起，上一条中的“其他费用始终可选”“六类允许项”及金额类依赖费用规则的旧描述由本条覆盖：服务端新建合同只返回仓管、加班、通用补贴、上新房、编外合作五类，移动端不得再显示新的“其他费用”入口；通用补贴不列举停车费、油费、雨补等具体项目，本人必须填写补贴内容、最终总额和证明，财务可调整金额并决定确认计入、退回补充或本次不纳入。`subsidy_amount` 以及只为历史记录兼容保留的 `custom_amount` 均不需要费用规则或规则项；只需要工作日期有效的结算资料和明确 GST 状态。填写/核对金额视为最终含税总额：已注册 GST 从总额内拆分，未注册 GST 的税额为 0，GST 未确认仍不可自动计算。周结算直接使用财务核对后的金额并保留空 `rule_id/rule_item_id`，不得因缺费用规则阻断；历史 `custom_amount` 仍可查看、修改待补充记录并由财务审核，但创建新记录必须拒绝该类型。
 - 上新房继续复用历史 `new_property_task` 类型标识和报表分类，但计价口径统一为每小时：本人必须提交房源编号与开始/结束时间，服务端保存权威整数分钟且不再写入默认数量；本人预估、公司核对与周结算都按 `分钟 ÷ 60 × 小时单价` 使用同一权威整数分/GST 算法。已锁定结算快照不回算；缺少工时的旧待处理记录不得把历史数量静默当成小时数。
 - 移动端本人工作量列表、周结算列表和周提交预览 GET 必须兼容 React Native `cache: no-store` 自动追加的 `_` 缓存参数；该参数只能作为受长度限制的传输标记忽略，其他未知查询字段仍必须被 strict Schema 拒绝，不能借此放宽人员范围或搜索权限。周提交 POST 必须使用独立严格 Body Schema，不得因 GET 兼容参数而接受 `_`。本人初次提交前必须先取得包含安全行项明细的权威预览；预览返回基于周期、金额、行项和阻断项生成的 `confirmation_token`，提交时必须携带该标识。服务端在同一提交事务中重新计算并校验标识，明细或金额变化时拒绝旧预览，不能在用户核对后静默换成另一份结算内容。
-- 工作量证明属于财务私有媒体。列表/详情不得返回 evidence `storage_key` 或原始对象地址；本人只能通过精确 claim/evidence 关联的认证路由读取自己的证明，网页仅由 `personnel_settlements.profiles.view` 权限读取。开发环境本地回退文件位于非静态私有目录，不经 `/uploads` 暴露；Photo ID 仍不得复用为工作量证明。
+- 工作量证明属于财务私有媒体。列表/详情不得返回 evidence `storage_key` 或原始对象地址；本人只能通过精确 claim/evidence 关联的认证路由读取自己的证明，网页仅由 `personnel_settlements.profiles.view` 权限读取。新的 R2 关联必须保存 `r2://<storage-namespace>/mzapp/personnel-claims/...` 稳定引用并在上传后通过既有 HEAD 大小/类型校验，历史已记录的 `mzapp/personnel-claims/...` 裸 key 继续只读兼容；错误命名空间或不支持的引用失败关闭。已授权对象不存在返回 404，存储配置、凭据或读取服务不可用返回 503，网页必须分别显示无权限、文件不存在和存储暂不可用，不能全部压成“照片读取失败”。开发环境本地回退文件位于非静态私有目录，不经 `/uploads` 暴露；Photo ID 仍不得复用为工作量证明。
 - 本人通过只读预览核对上一完整周并主动提交；初次提交直接进入 `confirmed`（界面显示“待财务核对”）且重复提交幂等，不发送“请确认”通知。财务无问题时只能在线下按冻结的付款方式完成支付后点击“确认已付款”，直接进入 `paid` 并生成清洁支出；付款前必须再次检查有效资料、GST、明细、待处理反馈和提交时的计算阻断。财务发现工作量或金额问题时必须填写退回说明，系统按最新权威规则重算并进入 `awaiting_confirmation`，界面显示“待合作方再次确认”；本人确认后重新进入“待财务核对”。历史 `finance_approved` 仅只读兼容，不恢复中间待付款步骤。
 - 财务退回再次确认前，该人员当周不得存在 `draft/submitted/returned` 反馈，且不得有无法自动计算的来源。退回通知收件人只能是结算行的 `user_id`，Inbox、badge 与 push queue 使用同一个最终收件人和稳定 `event_id`；同一退回版本重试必须复用去重键，后续再次退回必须使用新版本键。初次本人提交不发该通知，角色、可配置群组、额外人员或历史经办人不得扩大收件范围。移动端通知点击必须进入“我 → 费用结算”。
 - 待确认文件只能标记为 `Weekly Settlement Draft` 和 `NOT A TAX INVOICE`。本人确认工作量及金额后，GST 已注册人员生成 `Tax Invoice`；GST 未注册人员生成普通 `Invoice` 且 GST 必须为 0；不生成或记录 RCTI。文件由 Homixa 代表供应方根据冻结周结算记录准备，并按本人确认和付款状态保留不可变历史版本；历史 `finance_approved` 文件继续可读。财务管理端可继续核对历史文件，但本人详情接口只能返回与当前结算状态一致的最新一份；当前状态尚未生成文件时必须返回空列表，禁止回退显示旧状态或同状态旧版本 PDF。
@@ -256,8 +256,9 @@
 | 网页周选择、时长、状态、权限动作与异议自动汇总提示 | `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` | 周一归一化、上一完整周、AUD 显示、70 分钟统一显示 `1 小时 10 分钟`、UTC/显式偏移时间在 AEST/AEDT 均统一按 Melbourne 显示、管理/财务/银行权限可见性、异议自动计入，以及单一“确认已付款”交互只填写付款日期、不显示转账编号或付款金额编辑 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/settlementWorkflowUi.test.ts --coverage.enabled=false` |
 | 清洁支出顶层分类、内部构成与不重复计费 | `backend/scripts/tests/test_company_revenue_report.ts` | 历史 `operations` 人员结算归一为清洁支出；清洁、补贴、试工分开汇总，试工多种计价口径合并；内部构成之和等于顶层支出，自动费用不可编辑 | sufficient | `npm run test:company-revenue-report --prefix backend` |
 | 本人申报、稳定 ID 与私有证明路由合同 | `backend/scripts/tests/test_personnel_settlement_phase4.ts` | 源码合同覆盖稳定 ID、上传限制、本人/管理读取权限、raw key 隐藏和安全响应 | sufficient | `npm run test:personnel-settlement-phase4 --prefix backend` |
+| 工作量证明存储身份与读取失败分流 | `backend/scripts/tests/test_personnel_claim_evidence_storage.ts` | 新 R2 命名空间引用、旧裸 key 兼容、错误命名空间拒绝、上传 HEAD 校验，以及对象不存在与存储不可用分流 | sufficient | `npm run test:personnel-claim-evidence-storage --prefix backend` |
 | 私有证明关联、授权读取与提交闭环 | `backend/scripts/tests/test_personnel_settlement_phase4_integration.ts` | 固定 Preview 隔离数据覆盖申报/媒体幂等、JPEG 规范化、本人读取、他人拒绝、提交后禁止新增证明及精确清理 | sufficient | `npm run test:personnel-settlement-phase4:integration --prefix backend`（仅已验证 Preview 开发库，R2 显式关闭） |
-| 网页证明不接触 raw key、认证 Blob 生命周期 | `frontend/src/app/finance/settlements/claimEvidenceImage.test.ts` | 仅使用权限 API 下载证明，生成临时 object URL，并在替换/卸载时释放；失败显示安全占位 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/claimEvidenceImage.test.ts --coverage.enabled=false` |
+| 网页证明不接触 raw key、认证 Blob 生命周期与错误原因 | `frontend/src/app/finance/settlements/claimEvidenceImage.test.ts` | 仅使用权限 API 下载证明，生成临时 object URL，并在替换/卸载时释放；401/403/404/503、空响应和其他读取失败显示各自安全文案 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/claimEvidenceImage.test.ts --coverage.enabled=false` |
 | 周一上一完整周、scheduler 默认关闭、人工/定时入口和通知合同 | `backend/scripts/tests/test_personnel_settlement_phase5.ts` | 纯函数/静态合同覆盖上一完整周、事务锁源码、路由、单收件人和稳定 event ID | sufficient | `npm run test:personnel-settlement-phase5 --prefix backend` |
 | 全局锁、运行记录、待处理申报门禁、精确本人通知和分轮次稳定去重 | `backend/scripts/tests/test_personnel_settlement_phase5_integration.ts` | 固定 Preview 覆盖事务级锁竞争、`partial/succeeded/skipped`、异议金额修改、重新发起、每轮单收件人 Inbox/Queue 稳定 event ID、新版 PDF 和精确清理 | sufficient | `npm run test:personnel-settlement-phase5:integration --prefix backend`（仅已登记 Preview 开发库） |
 | 草稿、GST/非 GST、可选供应方 ABN、本人当前文件、按日发票汇总、财务调整和私有下载合同 | `backend/scripts/tests/test_personnel_settlement_phase5.ts` | Tax Invoice/Invoice 名称、已注册 GST 必须有 ABN、未注册 GST 可无 ABN且 GST 为 0、本人详情只选当前状态最高版本、七日三列表格、同日混合费用、周总额、模板来源哈希、raw key 隐藏和 HTML/PDF 模板 | sufficient | `npm run test:personnel-settlement-phase5 --prefix backend` |
@@ -276,14 +277,15 @@
 
 ### 最后验证
 
-- **CRL：** root/CRL-20261002-001, root/CRL-20261002-002
+- **CRL：** root/CRL-20261002-001, root/CRL-20261002-002, root/CRL-20261003-002
 - **Commit：** not committed
-- **日期：** 2026-10-02
+- **日期：** 2026-10-03
 
 ### 相关 CRL
 
 - root/CRL-20261002-001：通用补贴改为直接填写最终总额，财务决定是否计入且无需费用规则。
 - root/CRL-20261002-002：当前人员结算资料修改回显原生效日，向前移动时合并未锁定重叠版本，并确保银行主资料真实保存。
+- root/CRL-20261003-002：工作量证明采用稳定存储命名空间，并区分权限、对象缺失与存储不可用。
 - root/CRL-20260910-002：费用结算 Phase 1 后端资料复用、GST 版本、网页资料维护与只读周预览。
 - root/CRL-20260910-004：费用结算 Phase 2 每人自定义费用规则、单价、GST 口径、生效日期与规则历史。
 - root/CRL-20260911-001：费用结算 Phase 3 申报审核、周结算确认、财务批准、公司费用和外部转账登记。
