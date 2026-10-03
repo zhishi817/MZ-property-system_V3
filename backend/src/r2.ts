@@ -168,16 +168,34 @@ async function streamToBuffer(body: any): Promise<Buffer> {
 }
 
 export async function r2GetObjectByKey(key: string): Promise<{ body: Buffer; contentType: string; cacheControl?: string; etag?: string } | null> {
+  const result = await r2GetObjectByKeyDetailed(key)
+  return result.status === 'ok' ? result.object : null
+}
+
+export type R2ObjectReadResult =
+  | { status: 'ok'; object: { body: Buffer; contentType: string; cacheControl?: string; etag?: string } }
+  | { status: 'not_found' }
+  | { status: 'unavailable' }
+
+export function classifyR2ObjectReadError(error: any): 'not_found' | 'unavailable' {
+  const name = String(error?.name || error?.Code || error?.code || '').trim().toLowerCase()
+  const status = Number(error?.$metadata?.httpStatusCode || error?.statusCode || error?.status || 0)
+  if (name === 'nosuchbucket' || name === 'accessdenied' || name === 'invalidaccesskeyid' || name === 'signaturedoesnotmatch') return 'unavailable'
+  if (name === 'nosuchkey' || name === 'notfound' || status === 404) return 'not_found'
+  return 'unavailable'
+}
+
+export async function r2GetObjectByKeyDetailed(key: string): Promise<R2ObjectReadResult> {
+  if (!hasR2 || !r2) return { status: 'unavailable' }
   try {
-    if (!hasR2 || !r2) return null
     const resp: any = await r2.send(new GetObjectCommand({ Bucket: bucket, Key: key }))
     const body = await streamToBuffer(resp?.Body)
     const contentType = String(resp?.ContentType || 'application/octet-stream')
     const cacheControl = resp?.CacheControl ? String(resp.CacheControl) : undefined
     const etag = resp?.ETag ? String(resp.ETag).replace(/"/g, '') : undefined
-    return { body, contentType, cacheControl, etag }
-  } catch {
-    return null
+    return { status: 'ok', object: { body, contentType, cacheControl, etag } }
+  } catch (error: any) {
+    return { status: classifyR2ObjectReadError(error) }
   }
 }
 

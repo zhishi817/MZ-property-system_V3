@@ -26256,3 +26256,180 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Rollback: application source can be reverted as one root CRL; additive schema should be retained after migration rather than destructively dropped. Before migration, application routes fail closed with controlled schema-not-ready response.
 - Sensitive-information review: no secrets, `.env`, credentials, tokens, database URLs, production data or full bank details are recorded in audit/ledger; bank data exists only in protected API response for authorized users.
 - Git state: synced and running in fixed Preview；development migration applied and read-only browser integration passed；uncommitted, not pushed, no PR, not merged, not deployed, no production migration or production verification.
+## CRL-20261003-002 — 工作量证明稳定存储引用与读取故障分流
+
+- **Status:** verified（用户已选择本地提交；最终精确 staged gate 与独立复审均为 GO）
+- **Repository:** `root`
+- **Updated:** 2026-10-03 20:37 Australia/Melbourne
+- **Request:** 根治网页端“确认工作量并计入”弹窗内证明照片读取失败：判断影响范围，避免对象不存在、存储配置/权限故障和页面权限问题全部显示为同一个“照片读取失败”。
+- **Outcome:** 新工作量证明使用带服务端存储命名空间的稳定引用，读取继续兼容历史裸 key；对象不存在、存储身份/服务不可用与真实引用不匹配不再互相伪装。Web 的工作量反馈和周结算核对入口分别显示登录失效、无权限、文件不存在、存储暂不可用、空照片或其他读取失败。
+
+### Media Incident Diagnosis
+
+- Surface: `/finance/settlements` 的工作量反馈详情、核对弹窗及周结算异议证明。
+- Business media source / classification: `personnel_workload_claim_evidence`；财务私有工作量证明。
+- Business owner record / persisted association: `PASS`（只读生产行级证据确认 Summer / 2026-09-27 的 claim/evidence、上传者、byte size 与 `storage_key` 已关联）。
+- Storage identity/object: `NOT CHECKED`（本地 R2 凭据无权读取生产 bucket；本地 bucket 与生产 bucket 不同，不能以本地结果推断生产对象缺失）。
+- Authenticated read context: `PASS`（owner 与 finance 均使用精确 claim/evidence 路由）；authorization/API response: `NOT CHECKED`（未取得该次生产请求的精确 HTTP 状态/响应码）。
+- Domain adapter: `PASS`（Web 只经认证 Blob loader 读取，不接触 raw key）；renderer/viewer: `FAIL`（所有非 2xx 和 Blob 失败被压成同一个布尔值与“照片读取失败”）。
+- First proven broken boundary: 后端存储读取把所有 R2 异常压成 `null`/404，Web 再把所有失败压成单一布尔状态；生产 Summer 对象本身的首个物理故障边界仍未证明。
+- Root-cause classification / confidence: `code`（故障分类丢失，high）；现有生产对象故障为 `not yet proven`。
+- Dependency classification: 工作量证明读取/展示为 `domain-specific`；`backend/src/r2.ts` 仅增加详细读取结果并让原 `r2GetObjectByKey` 保持原有兼容语义。
+- Legacy compatibility: 既有 `mzapp/personnel-claims/...` 裸 key 继续读取；新引用仅接受当前服务器命名空间；错误命名空间、路径穿越和其他来源失败关闭。
+- Production/data/object-store repair required: `unknown`；Summer 原图恢复需要独立生产恢复操作和明确授权。
+- Explicit exclusions: 生产数据库/R2 写入或恢复、schema/migration、权限放宽、清洁媒体代理、Mobile 代码、部署、PR/merge、设备和生产功能验证。
+
+### Implementation
+
+- Previous behavior: 工作量证明在 R2 中只记录无命名空间的裸 key；通用 R2 getter 将 `NoSuchKey`、bucket 错配、AccessDenied、凭据/网络故障全部返回 `null`，路由统一变成 404；Web 再把 401/403/404/5xx、空响应和网络错误统一显示为“照片读取失败”。
+- New behavior: 新上传复用现有 R2 `PUT` 后 `HEAD` 大小/类型校验，并在上传前先验证可生成 `r2://<storage-namespace>/mzapp/personnel-claims/...` 稳定引用，验证成功后才允许写业务关联。读取先独立解析 namespaced reference；当前 bucket/namespace 身份缺失或无效时明确返回不可用，不再误落为引用无效/403；当前身份有效但 namespace 不匹配仍失败关闭。对象读取继续区分 `not_found` 与 `unavailable`；`NoSuchBucket`、AccessDenied、无效凭据及其他读取故障均为不可用，只有对象缺失为 404。Web 保留精确状态并在两个结算入口显示安全中文原因。
+- Key decisions: 不增加数据库字段或 migration；复用现有 server-owned namespace/legacy-key 解析，不建立第二套存储协议；不改变本人/财务授权条件；不把当前生产对象的未知状态误报为已恢复。
+
+### Files / Areas
+
+- `backend/src/r2.ts` — 增加详细读取结果和错误分类；旧 getter 外部语义保持兼容。
+- `backend/src/lib/mzappTaskPhotoReference.ts` — 增加不依赖当前配置的 namespaced reference 结构解析与当前存储身份可用性判断；既有 current-reference 行为不变。
+- `backend/src/lib/personnelClaimEvidence.ts` — 新上传保存稳定 namespaced reference；旧裸 key 兼容；R2/本地文件缺失与存储不可用分流。
+- `backend/src/modules/personnel_settlements.ts` — 工作量证明存储不可用返回安全 503 code，其他 5xx 继续隐藏内部错误。
+- `backend/scripts/tests/test_personnel_claim_evidence_storage.ts` — 新增命名空间、legacy、缺失凭据/缺失或无效当前 namespace、真实 namespace mismatch、错误分类、HEAD 验证与安全响应合同。
+- `backend/package.json` — 登记目标存储合同测试。
+- `frontend/src/app/finance/settlements/claimEvidenceImage.ts` — 保留认证 Blob 生命周期并增加 401/403/404/503/空响应分类。
+- `frontend/src/app/finance/settlements/claimEvidenceImage.test.ts` — 增加五种 HTTP 状态与空响应文案回归。
+- `frontend/src/app/finance/settlements/WorkloadClaimsPanel.tsx` — 工作量详情/核对弹窗显示具体安全原因。
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — 周结算异议证明显示同一分类原因。
+- `docs/feature-regression-registry.md` — FR-029 固化稳定引用、legacy 边界和 403/404/503 不变量。
+- `package.json` — 将新合同接入 `check:backend` 与 `check:fast`。
+- `docs/change-release-ledger.md` — 本 CRL、诊断、验证、精确提交范围和 Release Attempt。
+
+### Impact / Dependencies
+
+- API: URL 与成功图片响应不变；存储不可用从误报 404 改为 503 `claim_evidence_storage_unavailable`；前端按状态显示不同原因。
+- Database / migration: 无 schema/migration；同一 `storage_key` text 字段接收 namespaced 新引用并兼容历史裸 key。
+- Object storage / permissions: 不改变 bucket、ACL、R2 配置或 owner/finance 权限；没有执行生产对象读写；复用既有上传后 HEAD 完整性校验。
+- Related units: FR-029；复用并窄幅扩展 `backend/src/lib/mzappTaskPhotoReference.ts` 的服务端命名空间协议，现有 reference 创建/解析合同回归通过，不改变线下任务照片行为。最新基线已包含 `root/CRL-20261003-001`，本候选不修改其代码路径。
+- Governance reference risk: 最新 `origin/Dev` 未包含本地未跟踪的 `mz-mobile-photo-feature-rules` 文件，故没有把该未发布 Skill 整体带入候选；等价私有媒体合同已写入已跟踪的 FR-029。
+- Risks: Summer 记录仍可能是对象缺失、bucket/key 错配或生产凭据/服务故障；只有部署后取得精确 403/404/503 才能继续收敛。未配置 `R2_STORAGE_NAMESPACE` 时由既有 bucket hash 生成，换 bucket 前必须显式固定 namespace 或迁移引用。
+- Rollback: 回滚本提交即可恢复旧读取/显示行为；已由新版本写入的 namespaced reference 需要保留本提交或在获批的数据迁移中转换，不能盲目回滚运行版本后继续创建新 evidence。
+- Sensitive-information review: 候选不包含 `.env`、凭据、token、对象 key 实例、生产 URL、日志或媒体字节。
+
+### Validation
+
+- `npm run test:personnel-claim-evidence-storage --prefix backend` — passed（修正后重跑）：稳定 namespaced reference、legacy 裸 key、缺失 R2 凭据、缺失/无效当前 namespace、真实 namespace mismatch、路径穿越、`NoSuchKey`/`NoSuchBucket`/`AccessDenied`/网络异常分类，以及上传后 `HEAD` 大小/类型校验合同均通过。
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_mzapp_task_photo_reference.ts`（backend）— passed：共享任务照片 reference 创建、current key、legacy URL 与 variants 合同未回归。
+- `npm run test --prefix frontend -- --run src/app/finance/settlements/claimEvidenceImage.test.ts --coverage.enabled=false` — passed（P2 修正后重跑）：1 file / 9 tests，覆盖 401、403、存储专用 503、其他 503、404、500、空响应及 Blob 生命周期。
+- `./node_modules/.bin/tsc -p tsconfig.json --noEmit`（backend）— passed。
+- `./node_modules/.bin/tsc -p tsconfig.json --noEmit`（frontend）— passed。
+- `./node_modules/.bin/tsc -p tsconfig.json --outDir /private/tmp/mz-workload-evidence-20261003-release-backend-dist`（backend 隔离输出）— passed；临时输出随后移除。
+- `npm run lint`（frontend）— passed with existing repository warnings and no errors。
+- `npm run build`（frontend）— passed；构建只有既有 lint、Browserslist 和图表尺寸告警；首次普通 clean 仍保留 ignored `.next` 骨架和 `tsconfig.tsbuildinfo`，独立审查发现后已通过项目 `clean:next:full` 与精确删除清空。
+- `npm run test:root-quality-workflow-contract` — passed：8 tests。
+- `npm run check:feature-registry` — passed：28 FRs / 222 test mappings / 77 deferred mobile mappings。
+- `python3 scripts/audit_change_release_ledger.py` — passed：13 changed files / 13 recorded files。
+- `git diff --check` — passed。
+- `npm run test:personnel-settlement-phase4 --prefix backend` — `NOT VERIFIED`：该历史脚本硬编码外部 Mobile 源码路径，现有 Preview Mobile 又不包含旧文案断言；本候选不修改或伪造该跨仓库夹具。
+- Production database/R2 write, object recovery, deploy, authenticated runtime, device and production verification: not run。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** passed；修正后 `git status --ignored --short` 复核 clean release worktree 没有 untracked/ignored 生成物、临时依赖链接或缓存，只显示本 CRL 的 13 个 staged tracked 候选路径。
+- `backend/package.json` — SHA-256: `8d946f72eda9de196e79fd298f8c1c810093e1eac97e1af5def06092b11bcef4`
+- `backend/scripts/tests/test_personnel_claim_evidence_storage.ts` — SHA-256: `f201d8489a4e1affaaa239629d585daa9c0ac9468c03b745b4ee667e78e805d4`
+- `backend/src/lib/mzappTaskPhotoReference.ts` — SHA-256: `a9cd120866031ef70538a06f3b5c2a645202ae426b54a32d54e36120fc0117fd`
+- `backend/src/lib/mzappTaskPhotoReference.ts` — SHA-256: `ac65055fec83e0bcca6457cdf891e2323003ac099eb50c7724f231ab0e512875`
+- `backend/src/lib/mzappTaskPhotoReference.ts` — SHA-256: `afebe4d1040946cbd7350efbf5f2a15fce5391d0edbece762c6172bb129d3b09`
+- `backend/src/lib/personnelClaimEvidence.ts` — SHA-256: `3193037ec436e986b7456b187ec5e122f238915b83aef95fb56f1a5b575662b6`
+- `backend/src/lib/personnelClaimEvidence.ts` — SHA-256: `84eeb3b87bc4871bf6c3507b41d6fb021a12a5fd75d26a3384ab62028ef81c2b`
+- `backend/src/lib/personnelClaimEvidence.ts` — SHA-256: `98a49fe8b509b15bd133fbb473696bb1b2085b77379ba1f4803006afdbdac4ed`
+- `backend/src/lib/personnelClaimEvidence.ts` — SHA-256: `abb7be3dd65e83cebf75a187a527925e27951967b3abc5d8de70872bcb02aeea`
+- `backend/src/lib/personnelClaimEvidence.ts` — SHA-256: `becd45c3f11663a157bbbf04a2a911fd4e3ab1add135a2cf58e727b05517f369`
+- `backend/src/lib/personnelClaimEvidence.ts` — SHA-256: `f39d46e9b7c8563873fe004438404247a18febaeaa57004a560822b27c698a64`
+- `backend/src/lib/personnelClaimEvidence.ts` — SHA-256: `fe5f48cc900337db0cd1b9033478e1ac1d6277bb06e32ec8c83cc8c6d1b6338f`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `00bbdc0bfba6d678ffd1136b7e90722d396aefa8e4298bc376b90b0cef2b9d58`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `f72a161c16c2c3f9b4df9d50473b6070e8f2f623b01e7bf59b640ef87ab51ffa`
+- `backend/src/r2.ts` — SHA-256: `2b2c7de84be4c5095ee5fb1ced6cdb8a0e463d3f4fc380fe1f5f05b3a7f46abb`
+- `backend/src/r2.ts` — SHA-256: `50606ce319d0a9f7305b8fb649d63681a1b23d4bff19eafa95b7c2bfe865a244`
+- `backend/src/r2.ts` — SHA-256: `e483c2eabec50553deacf09362366b1191690566d6f5092ba92c90e5352114db`
+- `docs/feature-regression-registry.md` — SHA-256: `18326901b1a9fdd28e09c9d8cdc705f6b7c78fed87c1f19815d051777b469453`
+- `docs/feature-regression-registry.md` — SHA-256: `30cd0717300a34302ea826406b7d301d42184ad22b1dadc3f80b783c48c674cf`
+- `docs/feature-regression-registry.md` — SHA-256: `4a69f70c7169039d4b84a27be71533c691e04ded9c084afe8dadcaf76bf4a4e2`
+- `docs/feature-regression-registry.md` — SHA-256: `7c1a5edd92dae5b231952eb6f06e72480665590ec02e4b9ee4a8ad61f967d41e`
+- `docs/feature-regression-registry.md` — SHA-256: `89edb0b389642fc0c35f1e1fd49c0481af1a685bf0ce2ba8f8876f1042f243ce`
+- `docs/feature-regression-registry.md` — SHA-256: `b3959d018fd2e85fd879d1fc2e5ca7a311dc9090a5acc87af548e1ed2621c57c`
+- `docs/feature-regression-registry.md` — SHA-256: `1ddcbcdf55998e2b7e080514a5d25b31cc44260e44fdb75bee6c2b2957431dad`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `0cff9f62a41058680a2e0deb6f5401f8390d71ac1cfc2b83876c692adeaef29c`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `0d2aee1d4b03ebf17ae015926af02d957529bba610e3c333630e4ffec2ddc92f`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `459faadc6e0fafe6492bba8c8101a2f2c97d7be8e5d5b55ef5c958e602ff5725`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `56bb878ae0858f76e995a2ad24716725e9dec6f33c7eaf001406020e6a0e01f2`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `bdcc9df46adc9c77827e5e69d91b826015acb69d1336ff9120208bd2d4614bd0`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `c8c7102998c338017ef99b89a35417c9775aa0e85048bd8473b9701bed514d5a`
+- `frontend/src/app/finance/settlements/WorkloadClaimsPanel.tsx` — SHA-256: `1b06de455801f89a7b2600043686ff6bfbd455123182366cf54eb18676c53633`
+- `frontend/src/app/finance/settlements/WorkloadClaimsPanel.tsx` — SHA-256: `4f4d3fc97d4c0a1b3c2b0c03d6779f037ce2981e592f5b1a6acc3802f1a26086`
+- `frontend/src/app/finance/settlements/WorkloadClaimsPanel.tsx` — SHA-256: `594226684777c64e230c3a7a959ad186bdcf6fe9071f345490f1b2872ce1bc61`
+- `frontend/src/app/finance/settlements/WorkloadClaimsPanel.tsx` — SHA-256: `862f07c9c8b0d7dc6cf0850345ecfc36f693240d68aa15c4d42e645482ae55dd`
+- `frontend/src/app/finance/settlements/WorkloadClaimsPanel.tsx` — SHA-256: `b04d0c0316abbbcc8bfdef6add0b18725cd041e37c9f486005815ad69259dcf4`
+- `frontend/src/app/finance/settlements/WorkloadClaimsPanel.tsx` — SHA-256: `b626751677737bdaed3b23a6fd64483558b7e4ba755ff6c6c4fff46a97774a3a`
+- `frontend/src/app/finance/settlements/WorkloadClaimsPanel.tsx` — SHA-256: `f749a3bb657bb9193f15c6b59301c91bfdcf87440353a251cfd3817784fe88fd`
+- `frontend/src/app/finance/settlements/WorkloadClaimsPanel.tsx` — SHA-256: `fbb2e82855c667e41d322d18a7142a7eb1441f6e529113b5f3d4c8f951e43c56`
+- `frontend/src/app/finance/settlements/claimEvidenceImage.test.ts` — SHA-256: `58ef97d3db41c7a6c0b85161ca760bc08774568bd2f3a8b5bc58d65657b0e31f`
+- `frontend/src/app/finance/settlements/claimEvidenceImage.test.ts` — SHA-256: `9768b2cd21b49dcb796004781a26366f19050151b86f018156c6116d5a75cadd`
+- `frontend/src/app/finance/settlements/claimEvidenceImage.ts` — SHA-256: `1c56a5acea1ffe12ef9392aed1c2356a68cb3b63ba47b16700a3de9e1b90c7c7`
+- `frontend/src/app/finance/settlements/claimEvidenceImage.ts` — SHA-256: `671154bd1fd4a13e1198468e91332a3a87edaa289d3267eeb681f78edf32ff36`
+- `frontend/src/app/finance/settlements/claimEvidenceImage.ts` — SHA-256: `c246b49f4dfb9b277b1414fa30f502f7ecd907e9d8f897c92d72e12f6c00d321`
+- `package.json` — SHA-256: `60f5139a7a53477b8e898563d3dddfd9817a9ee99bc7def16ff0b3e748bf74ca`
+- `package.json` — SHA-256: `9fdb2fcfbce88d9397c7d98e6582167ef7b46667d973c38283869ba8ada5ac2f`
+
+### Release Attempts
+
+#### RA-20261003-workload-evidence-commit
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261003-002`
+- Selected CRL identities: `root/CRL-20261003-002`
+- Intended action: `commit`
+- Branch: `codex/workload-evidence-media-20261003`
+- Base: `origin/Dev@d202dff46fa809d94181e035556e3f42003a1732`; fetched at `2026-10-03T20:09:14+10:00`
+- Candidate patch SHA-256: `9d414cd79df3582877f659334bf33cfb338c15f7374a556e935382525d6688ea`（excluding `docs/change-release-ledger.md`；supersedes prior candidates after closing all independent-review P1/P2 findings and removing the unrelated FR-032 date hunk）
+- Candidate content commit SHA: `9001933b3cee3ddf423dd42f295d74d94605f040`
+- Commit SHA: `9001933b3cee3ddf423dd42f295d74d94605f040`
+- Dependencies: none
+- Required validation: `PASS`; evidence: latest-base targeted backend/frontend tests, both TypeScript checks, isolated backend emit, frontend lint/build, root quality contract, Feature Registry, ledger coverage and diff check passed；历史跨仓库 phase4 夹具保持单独 `NOT VERIFIED`，不掩盖也不伪造。
+- Shared-hunk review: `PASS`; evidence: exact candidate 仅窄幅扩展共享 `mzappTaskPhotoReference` 的结构解析/身份可用性辅助函数，既有 current-reference 行为保持不变且共享 reference 回归通过；FR-029 与 root quality command 仅登记/接入同一目标合同。
+- Generated-file review: `PASS`; evidence: 首次审查发现 ignored `frontend/.next/` 与 `frontend/tsconfig.tsbuildinfo` 后，以项目 `clean:next:full` 和精确删除完成清理；修正后复跑产生的临时 backend emit、`tsconfig.tsbuildinfo` 与两个依赖 symlink 也再次移除；`git status --ignored --short` 只剩登记的 13 个 tracked 候选路径。
+- Sensitive-information review: `PASS`; evidence: staged candidate 不含 `.env`、credential、token、cookie、private key、database URL、生产对象 key 实例、媒体字节或敏感日志。
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: user explicitly instructed “先提交吧” immediately after receiving the exact scope `root/CRL-20261003-002` and uncommitted lifecycle state. This does not authorize push, PR, merge, deployment or production writes.
+- Independent review: `GO for local commit`; evidence: 独立复算 fingerprint `9d414cd79df3582877f659334bf33cfb338c15f7374a556e935382525d6688ea`，确认 13 staged files / 45 non-ledger hunks、无 unstaged/untracked/ignored/unselected/missing 内容，FR-032 未被修改、FR-029 日期正确，存储身份/namespace/对象/服务分流与非存储 503 文案均正确，P0/P1/P2 为 0。此前两项 P1、两项 P2 与误改 FR-032 的 scope 问题均已关闭。GO 仅允许当前精确候选的本地 commit，不授权 push。
+- Action conclusion: `GO`; exact reviewed candidate was committed locally as `9001933b3cee3ddf423dd42f295d74d94605f040`；push、PR、merge、deployment and production writes remain unauthorized。
+- Remote / PR / deployment evidence: not pushed；PR not created；not merged；not deployed；production DB/R2/object recovery/authenticated runtime/device verification not run。
+
+#### RA-20261003-workload-evidence-push
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261003-002`
+- Selected CRL identities: `root/CRL-20261003-002`
+- Intended action: `push`
+- Branch: `codex/workload-evidence-media-20261003`
+- Base ref / SHA: `origin/Dev` / `d202dff46fa809d94181e035556e3f42003a1732`
+- Base: `origin/Dev@d202dff46fa809d94181e035556e3f42003a1732`; freshly fetched at `2026-10-03T20:41:42+10:00`
+- Candidate patch SHA-256: `9d414cd79df3582877f659334bf33cfb338c15f7374a556e935382525d6688ea`（excluding `docs/change-release-ledger.md`）
+- Candidate content commit SHA: `9001933b3cee3ddf423dd42f295d74d94605f040`
+- Commit SHA: `9001933b3cee3ddf423dd42f295d74d94605f040`
+- Dependencies: none
+- Required validation: `PASS`; evidence: exact committed candidate is unchanged from the final independently reviewed local-commit candidate；targeted backend/frontend tests, both TypeScript checks, isolated backend emit, frontend lint/build, root quality contract, Feature Registry, ledger coverage and diff checks passed。
+- Shared-hunk review: `PASS`; evidence: exact range contains only `root/CRL-20261003-002` implementation, tests and governance hunks；shared reference helper has an explicit regression and existing behavior remains unchanged。
+- Generated-file review: `PASS`; evidence: clean release worktree has no generated, untracked or ignored files。
+- Sensitive-information review: `PASS`; evidence: exact committed range contains no `.env`, credentials, token, cookie, private key, database URL, production object key instance, media bytes or sensitive logs。
+- Technical state: `pushed`
+- User authorization: `approved-for-push`; evidence: after receiving repository `root`, CRL `root/CRL-20261003-002`, branch `codex/workload-evidence-media-20261003`, content commit `9001933b3cee3ddf423dd42f295d74d94605f040`, ledger receipt HEAD `387a12f4b6d9dfbbfcd169bc161b56b01cd2b7c7`, and the explicit statement that PR/merge/deployment remain separate, the user explicitly instructed “推送”。
+- Remote preflight: `PASS`; evidence: fresh fetch at `2026-10-03T20:41:42+10:00` confirmed `origin/Dev` remains `d202dff46fa809d94181e035556e3f42003a1732`; `git ls-remote --heads origin refs/heads/codex/workload-evidence-media-20261003` returned no branch；local worktree is clean before this ledger-only authorization receipt。
+- Independent review: `GO for controlled push`; evidence: independent read-only review verified live `origin/Dev@d202dff46fa809d94181e035556e3f42003a1732`, ancestry `base -> 9001933b3cee3ddf423dd42f295d74d94605f040 -> 387a12f4b6d9dfbbfcd169bc161b56b01cd2b7c7`, unchanged fingerprint `9d414cd79df3582877f659334bf33cfb338c15f7374a556e935382525d6688ea`, 13 selected files / 45 non-ledger hunks, staged push RA only, absent target remote branch, and no P0/P1/P2, generated, sensitive, ignored, untracked or unselected content。GO permits only the same-RA review receipt, a clean exact-range report, unchanged live remote preflight, and one explicit-refspec normal non-force initial push；it does not authorize PR/merge/deploy or production writes。
+- Action conclusion: `GO`; the exact committed candidate and authorization receipt were pushed by explicit refspec with a normal non-force new-branch update, and the remote SHA was verified；PR、merge、deployment and production writes remain unauthorized。
+- Remote / PR / deployment evidence: initial push completed at `2026-10-03T20:46:25+10:00` to `origin/codex/workload-evidence-media-20261003@4bfb48631ec762aa0bb9a31939e6038bc57c113b` by explicit refspec and normal non-force push；remote SHA verified by `git ls-remote`；this ledger-only result receipt is pending review/commit/fast-forward；PR not created；not merged；not deployed；production DB/R2/object recovery/authenticated runtime/device verification not run。
+
+### Git / Release State
+
+- Media phase evidence: `CODE_FIXED / LOCAL_REGRESSION_PASSED / FUNCTION_VERIFICATION_BLOCKED`；runtime function verification remains blocked without an authorized R2/authenticated environment。
+- Base: freshly fetched `origin/Dev@d202dff46fa809d94181e035556e3f42003a1732`；clean release worktree `/private/tmp/mz-workload-evidence-20261003-release`。
+- Commit SHA: not committed；remote: not pushed；PR/merge: not created/not merged；deployment/object recovery: not performed；device/production verification: not run。

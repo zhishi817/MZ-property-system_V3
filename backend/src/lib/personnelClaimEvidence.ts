@@ -3,8 +3,15 @@ import fs from 'fs'
 import path from 'path'
 import { hasPg, pgPool, pgRunInTransaction } from '../dbAdapter'
 import { CLEANING_IMAGE_FORMAT_ERROR, normalizeCleaningImageUpload } from './cleaningMediaImage'
+import {
+  createMzappTaskPhotoRemoteReference,
+  currentMzappTaskPhotoKeyFromReference,
+  hasCurrentMzappTaskPhotoStorageNamespace,
+  normalizeMzappTaskPhotoKey,
+  parseMzappTaskPhotoRemoteReference,
+} from './mzappTaskPhotoReference'
 import { assertPersonnelSettlementSchemaReady } from './personnelSettlementSchema'
-import { hasR2, r2GetObjectByKey, r2Upload } from '../r2'
+import { hasR2, r2GetObjectByKeyDetailed, r2Upload } from '../r2'
 
 type Queryable = { query: (sql: string, params?: any[]) => Promise<any> }
 
@@ -13,6 +20,7 @@ export const PERSONNEL_CLAIM_EVIDENCE_MAX_BYTES = 10 * 1024 * 1024
 const SAFE_MEDIA_ID = /^[a-zA-Z0-9_-]{8,120}$/
 const SAFE_LOCAL_NAME = /^personnel-claim-[a-zA-Z0-9_-]+\.jpg$/
 const LOCAL_PRIVATE_PREFIX = 'local-private:personnel-claims/'
+const R2_EVIDENCE_PREFIX = 'mzapp/personnel-claims/'
 
 function cleanText(value: unknown) {
   return String(value ?? '').trim()
@@ -31,7 +39,13 @@ export function validatePersonnelClaimEvidenceMediaId(value: unknown) {
 }
 
 export function personnelClaimEvidenceStorageKey(input: { userId: string; claimId: string; mediaId: string }) {
-  return `mzapp/personnel-claims/${safeSegment(input.userId, 'user_id')}/${safeSegment(input.claimId, 'claim_id')}/${validatePersonnelClaimEvidenceMediaId(input.mediaId)}.jpg`
+  return `${R2_EVIDENCE_PREFIX}${safeSegment(input.userId, 'user_id')}/${safeSegment(input.claimId, 'claim_id')}/${validatePersonnelClaimEvidenceMediaId(input.mediaId)}.jpg`
+}
+
+export function personnelClaimEvidenceR2KeyFromReference(value: unknown) {
+  const reference = cleanText(value)
+  const key = currentMzappTaskPhotoKeyFromReference(reference) || normalizeMzappTaskPhotoKey(reference)
+  return key?.startsWith(R2_EVIDENCE_PREFIX) ? key : null
 }
 
 export function serializePersonnelClaimEvidence(row: any) {
@@ -76,8 +90,14 @@ async function persistEvidenceBytes(input: {
 }) {
   if (hasR2) {
     const key = personnelClaimEvidenceStorageKey(input)
-    await r2Upload(key, input.contentType, input.body)
-    return key
+    const reference = createMzappTaskPhotoRemoteReference(key)
+    if (!reference) throw new Error('claim_evidence_storage_unavailable')
+    try {
+      await r2Upload(key, input.contentType, input.body)
+    } catch {
+      throw new Error('claim_evidence_storage_unavailable')
+    }
+    return reference
   }
   const fileName = localEvidenceName(input)
   const uploadDir = path.resolve(process.cwd(), 'private-uploads', 'personnel-claims')
@@ -192,9 +212,17 @@ export async function getPersonnelClaimEvidence(input: {
 
 export async function readPersonnelClaimEvidenceBytes(row: any) {
   const reference = cleanText(row?.storage_key)
-  if (reference.startsWith('mzapp/personnel-claims/')) {
-    if (!hasR2) throw new Error('media_storage_unavailable')
-    return await r2GetObjectByKey(reference)
+  const remoteReference = parseMzappTaskPhotoRemoteReference(reference)
+  if (remoteReference && !hasCurrentMzappTaskPhotoStorageNamespace()) {
+    throw new Error('claim_evidence_storage_unavailable')
+  }
+  const r2Key = personnelClaimEvidenceR2KeyFromReference(reference)
+  if (r2Key) {
+    if (!hasR2) throw new Error('claim_evidence_storage_unavailable')
+    const result = await r2GetObjectByKeyDetailed(r2Key)
+    if (result.status === 'not_found') return null
+    if (result.status === 'unavailable') throw new Error('claim_evidence_storage_unavailable')
+    return result.object
   }
   if (reference.startsWith(LOCAL_PRIVATE_PREFIX)) {
     const fileName = reference.slice(LOCAL_PRIVATE_PREFIX.length)
@@ -203,8 +231,9 @@ export async function readPersonnelClaimEvidenceBytes(row: any) {
     try {
       const body = await fs.promises.readFile(filePath)
       return body.length ? { body, contentType: 'image/jpeg' } : null
-    } catch {
-      return null
+    } catch (error: any) {
+      if (String(error?.code || '') === 'ENOENT') return null
+      throw new Error('claim_evidence_storage_unavailable')
     }
   }
   throw new Error('invalid_claim_evidence_reference')
