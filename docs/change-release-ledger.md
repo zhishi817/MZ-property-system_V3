@@ -1,5 +1,104 @@
 # Change Release Ledger
 
+## CRL-20261003-001 — 任务参与者照片可见性与问题反馈历史任务上下文修复
+
+- **Status:** verified（用户已选择本地提交；最终精确 staged gate 与独立复审均为 GO）
+- **Repository:** `root`
+- **Updated:** 2026-10-03 17:48 Australia/Melbourne
+- **Request:** 修复合并后移动端“问题反馈”照片全部显示无权限的问题，并落实“分配到任务、能看到任务的用户应能查看任务照片；看不到任务的用户不能查看照片”的权限规则。
+- **Outcome:** 除挂钥匙视频继续保留专用角色边界外，任务照片统一按现有任务可见参与者授权；房源问题反馈历史中的当前任务 ID 仅作为查看上下文，唯一有效的问题反馈照片不再因原上传任务不同而被提前 403。
+
+### Implementation
+
+- Previous behavior: 移动端问题反馈页会把当前可见任务 ID 带给同房源全部历史反馈照片；共享媒体代理在解析问题反馈记录前先要求该 ID 等于照片原上传任务，导致历史照片批量返回 `forbidden_media`。同时检查、补货等照片仍按照片类型拆分能力，不能保证所有已分配且可见任务参与者都能读取同一任务照片。
+- New behavior: 共享代理先解析精确的问题反馈业务记录；当前任务与历史上传任务不一致时，仅在问题反馈记录唯一、任务媒体关联不歧义且当前任务本身对请求用户可见时进入问题反馈授权。任务照片（挂钥匙视频除外）复用现有 `canViewFormPhotoTaskRows`，统一允许 manager/view-all、cleaner、inspector、assignee 和有效手工参与者读取。
+- Safety boundary: 当前查看任务不可见、无唯一问题反馈记录、任务关联歧义、问题反馈关联歧义、日终照片与问题反馈跨来源冲突、临时行李通知跨来源冲突、未参与任务且无管理权限的用户继续失败关闭；挂钥匙视频的检查/管理角色规则不变。
+- Incident evidence: 截图终态为 403 权限占位而非 404；源码追踪确认首个破损边界是客户端当前任务查看上下文与后端“原上传任务必须完全一致”校验之间的语义冲突。未访问生产数据库、R2 或外部同步，未修改对象数据。
+
+### Files / Areas
+
+- `backend/src/modules/cleaning_app.ts` — 修改：问题反馈精确关联先于可选任务上下文拒绝；保留任务、日终和临时通知歧义/冲突拒绝。
+- `backend/src/modules/mzapp.ts` — 修改：非视频任务照片统一复用任务可见参与者规则；挂钥匙视频专用规则不变。
+- `backend/scripts/tests/test_cleaning_media_image.ts` — 修改：历史任务上下文、唯一问题反馈关联和歧义拒绝回归。
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — 修改：cleaner、inspector、assignee 跨照片类型读取与 outsider 拒绝回归。
+- `docs/feature-regression-registry.md` — 修改：FR-005 登记统一任务照片可见性和问题反馈历史上下文不变量。
+- `.codex/skills/mz-mobile-photo-feature-rules/references/media-contract.md` — 本地治理资料更新：记录新的授权合同；该未跟踪工作区资料不在本 release candidate 中。
+- `.codex/skills/mz-mobile-photo-feature-rules/references/surface-map-and-tests.md` — 本地治理资料更新：记录受影响表面与回归重点；该未跟踪工作区资料不在本 release candidate 中。
+- `docs/change-release-ledger.md` — 修改：记录本修复、验证、风险和 Git 生命周期状态。
+
+### Impact / Dependencies
+
+- API / behavior: 现有 URL、请求参数和响应结构不变；符合任务可见参与者或唯一问题反馈记录授权的请求由 403 变为可读取照片。
+- Database / migration: 无 schema 变更、无数据迁移、无历史对象回填。
+- Object storage / config / dependencies: 不改变 R2 ACL、对象 key、环境变量或依赖；授权仍在读取字节前完成。
+- Shared dependency: 修改共享 `/cleaning-app/media/image` 和任务媒体授权函数；已覆盖任务媒体、问题反馈、日终与临时行李的冲突边界，线下任务专用分支保持不变。
+- Risks: 本地源码测试不能证明线上部署、真实 R2 对象或真机行为；部署后仍需用受派 cleaner/inspector/assignee 与未分配账号分别验证。
+- Excluded: Mobile 仓库代码、对象迁移、生产数据库/R2 写入、部署、OTA、主分支合并和真机/生产验证。
+
+### Validation
+
+- `npm run test:cleaning-media-image --prefix backend`（通过现有依赖执行）— passed：唯一反馈关联允许历史任务查看上下文；无记录、任务/反馈歧义、日终和临时通知边界保持拒绝。
+- `npm run test:mzapp-media-visibility --prefix backend`（通过现有依赖执行）— passed：cleaner、inspector、assignee 的任务照片可见性和 outsider/挂钥匙视频边界通过。
+- `npm run test:guest-luggage-media-contract --prefix backend` — passed（本地随机端口获准）：临时行李精确通知 ID 与跨来源冲突边界未回归。
+- `npm run test:cleaning-media-reference --prefix backend` — passed：媒体引用规范化与私有引用边界未回归。
+- `./backend/node_modules/.bin/tsc -p backend/tsconfig.json --noEmit` — passed（隔离工作树临时链接现有依赖，随后移除）。
+- `npm run build --prefix backend` — passed；构建产生的 10 个既有 tracked `backend/dist` 变化已精确还原，未纳入候选。
+- `npm run check:feature-registry` — passed：28 FRs / 221 test mappings / 77 deferred mobile mappings。
+- `python3 scripts/audit_change_release_ledger.py` — passed：6 changed files / 6 recorded files。
+- `git diff --check` — passed。
+- Final independent Codex review — `GO for local commit`：最终指纹 `597278803917e7666cfde90104768d969108557cb44c92ea870cc2582011f1ff`；6 staged files / 21 non-ledger hunks；P0/P1/P2 均无，首次复审指出的 FR-005 最后验证 P2 已关闭。GO 仅适用于本地 commit，不授权 push、PR、merge 或部署。
+- 生产/R2/真机验证未运行。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** passed；独立 clean worktree 中没有 untracked 文件、依赖链接、缓存或生成物。
+- `backend/scripts/tests/test_cleaning_media_image.ts` — SHA-256: `073dd8b58561cf391d9cd4e456ac310e0959868d75aba9c4e352ed8743393fe5`
+- `backend/scripts/tests/test_cleaning_media_image.ts` — SHA-256: `7d3d697872e3ad1fe0351bc2206d41d351e1ceeeafadd276e5931640b564e6c0`
+- `backend/scripts/tests/test_cleaning_media_image.ts` — SHA-256: `b708aa81046f9a7e57d611cf493e7ee56bb1e0bec993915982a810c700e960ca`
+- `backend/scripts/tests/test_cleaning_media_image.ts` — SHA-256: `f5db82112e488803649bda98de2f893ceba74722b9a12cfcb83b9aec8d50a32e`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `c63023de220ce8f137bdf5675769fea9dc8f58b06b1efef3a13fa9256ab4af0d`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `0c03c7ecda5f80d5c4a2400d6a8f96b2b8913ba8e1ca5d96d436c39586b65d8c`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `0e3a293fe80340a3ed2f0009d3ca6cc77bab21a80f45f02dd3f3e45d07dcb65d`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `123f895300089a17cfe63ebffe4cbf7e099ba6e4d787c6bba22347b47b68cd39`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `70159dcb9c6928070e3690f3ee05dc319db397f2c33ac25da3d0e3fb47eba506`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `849c0f09e9a4f7d21ef92133deb5d67aab4280e0a915e6aab392e655213b6d7e`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `a00b756c6c4fa1517e15b9989a5f2e40188cc7d60e5217a46c8ef7c1a5671c32`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `b11d80dfe55c15cb507e9220cbb3fb7b95d0abbc2484c7ec2c771be267ce4a4d`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `c0872a4984ef36f7ebe4febee0f577d8dc5451da539cd464b251ed9a95cfd67b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `cc71d0bc15948e5dfcbc1d61f6e3abe2d03878d4acc49aefb699d10fdb8ace29`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d31064aca93d3c97e0f19e907ff04b0781176272d7df941e5676b7151a0fd885`
+- `docs/feature-regression-registry.md` — SHA-256: `1b913310ce22888389a4ba7300a3ff00a4a044666187a7c8394051da1e630e1b`
+- `docs/feature-regression-registry.md` — SHA-256: `5d7655c704b4086290c85c74bda5b514a15ede1f2dcd89a0baceb145041ec106`
+- `docs/feature-regression-registry.md` — SHA-256: `6d1bd1510cef049dd262e1b6e54c0536d1ef9d4aa230d9a53c375383330559af`
+- `docs/feature-regression-registry.md` — SHA-256: `7b2f21555697c242cf1a2edeb4698f29b57ea34430909138364205029e7fbaea`
+- `docs/feature-regression-registry.md` — SHA-256: `c0f9b0437e0e4362b7d38b52f1e8dd47f46e221c499e79e28a2813734cb5edf3`
+- `docs/feature-regression-registry.md` — SHA-256: `f13955ca02159282258e65347345de8072cb57d474dfd97e7ae6e9d5595d7319`
+
+### Release Attempts
+
+#### RA-20261003-task-photo-visibility-commit
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261003-001`
+- Selected CRL identities: `root/CRL-20261003-001`
+- Intended action: `commit`
+- Branch: `codex/task-photo-visibility-20261003`
+- Base ref / SHA: `origin/Dev` / `60faf6aac925855528de78e0a2385530f2f235d2`
+- Base: `origin/Dev@60faf6aac925855528de78e0a2385530f2f235d2`; fetched at `2026-10-03T17:37:58+10:00`
+- Candidate patch SHA-256: `597278803917e7666cfde90104768d969108557cb44c92ea870cc2582011f1ff`（excluding `docs/change-release-ledger.md`；supersedes the pre-review fingerprint after correcting FR-005 latest-verification governance metadata）
+- Commit SHA: not committed
+- Dependencies: none
+- Required validation: `PASS`; evidence: two targeted media authorization tests, guest-luggage contract, media-reference contract, backend TypeScript/build, Feature Registry, ledger coverage and diff check passed; no production/R2/device write was performed.
+- Shared-hunk review: `PASS`; evidence: clean candidate contains only this CRL's backend authorization, tests and governance hunks; shared `/cleaning-app/media/image` branches for task, feedback, day-end and temporary notice were explicitly regressed.
+- Generated-file review: `PASS`; evidence: final build passed and all 10 tracked `backend/dist` outputs were restored; no generated file, dependency link, cache or untracked file remains.
+- Sensitive-information review: `PASS`; evidence: candidate diff contains no `.env`, credential, token, database URL, private key, cookie or sensitive log material.
+- Technical state: `verified`
+- User authorization: `selected-for-commit`; evidence: user explicitly instructed “提交” immediately after receiving the exact scope `root/CRL-20261003-001`, branch and lifecycle state. This does not authorize push, PR, merge, deployment or production writes.
+- Independent review: `GO for local commit`; evidence: final independent read-only review recomputed fingerprint `597278803917e7666cfde90104768d969108557cb44c92ea870cc2582011f1ff`, verified 6 staged files / 21 non-ledger hunks, reran pre-commit gate, Feature Registry and cached diff check, confirmed the prior FR-005 receipt P2 was closed, and found no P0/P1/P2, generated, sensitive, untracked or unselected content. This review does not authorize push.
+- Action conclusion: `GO`; the exact verified candidate is commit-ready for `root/CRL-20261003-001`. Push, PR, merge, deployment and production writes remain unauthorized.
+
 ## CRL-20261002-007 — Airbnb 订单按房源房型使用固定清洁费
 
 - **Status:** verified（本地回归、精确 staged gate 与最终独立审查均为 GO；等待执行已授权的本地提交）
