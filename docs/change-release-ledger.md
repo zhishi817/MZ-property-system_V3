@@ -88,16 +88,18 @@
 - Base ref / SHA: `origin/Dev` / `60faf6aac925855528de78e0a2385530f2f235d2`
 - Base: `origin/Dev@60faf6aac925855528de78e0a2385530f2f235d2`; fetched at `2026-10-03T17:37:58+10:00`
 - Candidate patch SHA-256: `597278803917e7666cfde90104768d969108557cb44c92ea870cc2582011f1ff`（excluding `docs/change-release-ledger.md`；supersedes the pre-review fingerprint after correcting FR-005 latest-verification governance metadata）
-- Commit SHA: not committed
+- Candidate content commit SHA: `5d78d0bbd1efefc0bff1038e06d1c7b3c157d71c`
+- Commit SHA: `5d78d0bbd1efefc0bff1038e06d1c7b3c157d71c`
 - Dependencies: none
 - Required validation: `PASS`; evidence: two targeted media authorization tests, guest-luggage contract, media-reference contract, backend TypeScript/build, Feature Registry, ledger coverage and diff check passed; no production/R2/device write was performed.
 - Shared-hunk review: `PASS`; evidence: clean candidate contains only this CRL's backend authorization, tests and governance hunks; shared `/cleaning-app/media/image` branches for task, feedback, day-end and temporary notice were explicitly regressed.
 - Generated-file review: `PASS`; evidence: final build passed and all 10 tracked `backend/dist` outputs were restored; no generated file, dependency link, cache or untracked file remains.
 - Sensitive-information review: `PASS`; evidence: candidate diff contains no `.env`, credential, token, database URL, private key, cookie or sensitive log material.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user explicitly instructed “提交” immediately after receiving the exact scope `root/CRL-20261003-001`, branch and lifecycle state. This does not authorize push, PR, merge, deployment or production writes.
 - Independent review: `GO for local commit`; evidence: final independent read-only review recomputed fingerprint `597278803917e7666cfde90104768d969108557cb44c92ea870cc2582011f1ff`, verified 6 staged files / 21 non-ledger hunks, reran pre-commit gate, Feature Registry and cached diff check, confirmed the prior FR-005 receipt P2 was closed, and found no P0/P1/P2, generated, sensitive, untracked or unselected content. This review does not authorize push.
-- Action conclusion: `GO`; the exact verified candidate is commit-ready for `root/CRL-20261003-001`. Push, PR, merge, deployment and production writes remain unauthorized.
+- Action conclusion: `GO`; the exact reviewed candidate was committed locally as `5d78d0bbd1efefc0bff1038e06d1c7b3c157d71c`. Push, PR, merge, deployment and production writes remain unauthorized.
+- Remote / PR / deployment evidence: not pushed；PR not created；not merged；not deployed；production/R2/device verification not run.
 
 ## CRL-20261002-007 — Airbnb 订单按房源房型使用固定清洁费
 
