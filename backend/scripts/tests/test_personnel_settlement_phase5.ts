@@ -11,6 +11,8 @@ import {
 import { previousCompletedPersonnelSettlementWeek } from '../../src/lib/personnelSettlementWeeklyJob'
 import {
   appendPersonnelSettlementFinanceAdjustment,
+  personnelSettlementDocumentAllowsEmptyLines,
+  personnelSettlementDocumentPaymentDestination,
   personnelSettlementDocumentSourceHash,
   selectCurrentPersonnelSettlementDocuments,
   serializePersonnelSettlementDocument,
@@ -32,6 +34,35 @@ assert.equal(adjustedLines.length, 1)
 assert.equal(adjustedLines[0].subtotal_cents, -1500)
 assert.equal(adjustedLines[0].gst_cents, 0)
 assert(adjustedLines[0].description.includes('Approved correction'))
+assert.equal(personnelSettlementDocumentAllowsEmptyLines({ subtotal_cents: 0, gst_cents: 0, total_cents: 0 }), true)
+assert.equal(personnelSettlementDocumentAllowsEmptyLines({ subtotal_cents: 1, gst_cents: 0, total_cents: 1 }), false)
+
+assert.equal(
+  personnelSettlementDocumentPaymentDestination('confirmed', { payment_method: 'bank_transfer' }, {
+    payment_method: 'bank_transfer', bank_account_name: 'Synthetic Cleaner', bank_bsb: '123456', bank_account_number: '987654321',
+  }),
+  null,
+)
+assert.deepEqual(
+  personnelSettlementDocumentPaymentDestination('paid', { payment_method: 'bank_transfer' }, {
+    payment_method: 'bank_transfer', bank_account_name: 'Synthetic Cleaner', bank_bsb: '123456', bank_account_number: '987654321',
+  }),
+  {
+    payment_method: 'bank_transfer', recorded: true, bank_account_name: 'Synthetic Cleaner',
+    bank_bsb: '123456', bank_account_last4: '4321',
+  },
+)
+assert.deepEqual(
+  personnelSettlementDocumentPaymentDestination('paid', { payment_method: 'cash' }, { payment_method: 'cash' }),
+  { payment_method: 'cash', recorded: true },
+)
+assert.deepEqual(
+  personnelSettlementDocumentPaymentDestination('paid', { payment_method: 'bank_transfer' }, {}),
+  {
+    payment_method: 'bank_transfer', recorded: false, bank_account_name: null,
+    bank_bsb: null, bank_account_last4: null,
+  },
+)
 
 const base: PersonnelSettlementDocumentInput = {
   documentStage: 'confirmed',
@@ -59,6 +90,63 @@ assert(taxInvoice.includes('<th>Date</th><th>Description</th><th class="num">Tot
 assert(!taxInvoice.includes('<th class="num">Qty</th>'))
 assert(!taxInvoice.includes('<th class="num">Rate</th>'))
 assert(!taxInvoice.includes('bank_account'))
+assert(!taxInvoice.includes('Payment details / 付款信息'))
+
+const paidBankInvoice = renderPersonnelSettlementDocumentHtml({
+  ...base,
+  documentStage: 'paid',
+  paidAt: '2026-09-15T01:00:00.000Z',
+  paymentDestination: {
+    payment_method: 'bank_transfer',
+    recorded: true,
+    bank_account_name: 'Cleaner Settlement Account',
+    bank_bsb: '123456',
+    bank_account_last4: '4321',
+  },
+})
+assert(paidBankInvoice.includes('Payment details / 付款信息'))
+assert(paidBankInvoice.includes('Bank transfer / 银行转账'))
+assert(paidBankInvoice.includes('Cleaner Settlement Account'))
+assert(paidBankInvoice.includes('123-456'))
+assert(paidBankInvoice.includes('Ending 4321 / 尾号 4321'))
+assert(!paidBankInvoice.includes('987654321'))
+
+const paidCashInvoice = renderPersonnelSettlementDocumentHtml({
+  ...base,
+  documentStage: 'paid',
+  paidAt: '2026-09-15T01:00:00.000Z',
+  paymentDestination: { payment_method: 'cash', recorded: true },
+})
+assert(paidCashInvoice.includes('Cash / 现金支付'))
+assert(!paidCashInvoice.includes('Account / 银行账号'))
+
+const paidLegacyInvoice = renderPersonnelSettlementDocumentHtml({
+  ...base,
+  documentStage: 'paid',
+  paidAt: '2026-09-15T01:00:00.000Z',
+  paymentDestination: { payment_method: 'bank_transfer', recorded: false },
+})
+assert(paidLegacyInvoice.includes('Not recorded / 未记录'))
+assert.notEqual(
+  personnelSettlementDocumentSourceHash({
+    ...base,
+    documentStage: 'paid',
+    paidAt: '2026-09-15T01:00:00.000Z',
+    paymentDestination: { payment_method: 'bank_transfer', recorded: false },
+  }),
+  personnelSettlementDocumentSourceHash({
+    ...base,
+    documentStage: 'paid',
+    paidAt: '2026-09-15T01:00:00.000Z',
+    paymentDestination: {
+      payment_method: 'bank_transfer',
+      recorded: true,
+      bank_account_name: 'Cleaner Settlement Account',
+      bank_bsb: '123456',
+      bank_account_last4: '4321',
+    },
+  }),
+)
 
 const dailyLines: PersonnelSettlementDocumentInput['lines'] = []
 const addLine = (
@@ -123,6 +211,16 @@ assert(!ordinaryInvoiceWithoutAbn.includes('<div>ABN </div>'))
 const draft = renderPersonnelSettlementDocumentHtml({ ...base, documentStage: 'awaiting_confirmation', documentKind: 'settlement_draft', invoiceNumber: null })
 assert(draft.includes('<h1>Weekly Settlement Draft</h1>'))
 assert(draft.includes('NOT A TAX INVOICE'))
+const zeroValueDraft = renderPersonnelSettlementDocumentHtml({
+  ...base,
+  documentStage: 'awaiting_confirmation',
+  documentKind: 'settlement_draft',
+  invoiceNumber: null,
+  lines: [],
+  totals: { subtotal_cents: 0, gst_cents: 0, total_cents: 0 },
+})
+assert(zeroValueDraft.includes('No payable items / 本周无应付项目'))
+assert(zeroValueDraft.includes('$0.00'))
 
 const serialized = serializePersonnelSettlementDocument({
   id: 'document-1', settlement_id: 'settlement-1', document_stage: 'confirmed', document_kind: 'tax_invoice',
@@ -186,7 +284,7 @@ assert(documentSource.includes("calculation_snapshot->>'property_label'"))
 assert(documentSource.includes('template_version: PERSONNEL_SETTLEMENT_DOCUMENT_TEMPLATE_VERSION'))
 assert(documentSource.includes("throw new Error('settlement_document_source_changed')"))
 assert(documentSource.indexOf('const lockedSource = await loadDocumentSource') > documentSource.indexOf('FOR UPDATE'))
-assert.equal(PERSONNEL_SETTLEMENT_DOCUMENT_TEMPLATE_VERSION, 'daily-summary-invoice-v1')
+assert.equal(PERSONNEL_SETTLEMENT_DOCUMENT_TEMPLATE_VERSION, 'daily-summary-invoice-v2-payment-destination')
 
 const notificationRegistry = read('../docs/notification-registry.yaml')
 assert(notificationRegistry.includes('business_event: personnel_settlement_revision_confirmation_requested'))

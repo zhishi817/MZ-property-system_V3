@@ -495,6 +495,14 @@ async function verifyApiAndComplete(runtimePassword: string, generation: Awaited
     assert.ok(cleanText((adminBeforePayment.body as any).payment_destination_preview.bank_account_name))
     assert.ok(cleanText((adminBeforePayment.body as any).payment_destination_preview.bank_bsb))
     assert.ok(cleanText((adminBeforePayment.body as any).payment_destination_preview.bank_account_number))
+    const approved = await apiRequest(
+      `/finance/settlements/weekly/${settlement.id}/approve`,
+      { method: 'POST', body: JSON.stringify({}) },
+      adminToken,
+    )
+    assert.strictEqual(approved.response.status, 200)
+    assert.strictEqual((approved.body as any).status, 'finance_approved')
+    assert.ok(cleanText((approved.body as any).finance_reviewed_at))
     const paid = await apiRequest(
       `/finance/settlements/weekly/${settlement.id}/confirm-paid`,
       {

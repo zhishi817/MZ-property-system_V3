@@ -1,5 +1,488 @@
 # Change Release Ledger
 
+## CRL-20261005-003 — 已付款结算 PDF 显示冻结付款去向
+
+- **Status:** selected release candidate；fresh `origin/Dev` candidate validation in progress
+- **Repository:** `root`
+- **Updated:** 2026-10-06 Australia/Melbourne
+- **Request:** 已付款的合作方周结算 PDF 不能只显示 `Paid`，需要明确记录款项采用哪种付款方式以及付到哪个收款账户。
+- **Outcome:** `paid` 文件新增双语付款信息区。银行转账显示确认付款时冻结的账户名、格式化 BSB 和账号尾号 4 位；现金、外币和其他方式只显示付款方式。未付款文件不显示付款去向；历史已付款记录缺少冻结快照时明确显示“未记录”，且不会读取人员当前银行卡伪造历史。
+
+### Implementation
+
+- Previous behavior: 已付款文件只显示付款时间，不能从文件判断付款方式或收款账户。
+- New behavior: 仅在 `paid` 状态读取付款事务已冻结的 `payment_destination_snapshot`，转换为不含完整账号的模板输入后渲染；银行转账只保留账户名、BSB 和尾号 4 位，其他付款方式不渲染银行字段。
+- Key decisions: 不新增表、字段或付款操作；不从人员当前资料回填历史；完整账号不进入模板输入、HTML 或 PDF。模板升级后通过现有重新生成操作产生新的不可变文件版本，不覆盖旧文件。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — 已付款文件付款信息区、付款方式标签和银行账号尾号。
+- `backend/src/lib/personnelSettlementDocuments.ts` — 从冻结快照构造 PDF 安全付款去向。
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — paid-only、银行/现金/缺快照和完整账号不泄露回归。
+- `docs/feature-regression-registry.md` — FR-029 付款文件追溯和隐私保护规则。
+- `docs/change-release-ledger.md` — 本 CRL 与发布尝试证据。
+
+### Impact / Dependencies
+
+- API / database: API 响应结构不变；无 schema 或 migration。复用 `personnel_weekly_settlements.payment_destination_snapshot`。
+- Privacy: 完整账号、原始快照字段和 `storage_key` 不进入 PDF 或列表；下载继续使用既有认证路由。
+- Existing files: 旧 PDF 字节保持不变；要显示付款去向必须显式重新生成当前状态的新版本。
+- Related units: `root/CRL-20260930-005` 提供付款方式与冻结付款目标；本单元可与 `root/CRL-20261003-003` 同批发布但不依赖其运行时逻辑。
+
+### Validation
+
+- Source candidate：Phase 5 contract、backend TypeScript、隔离 build、虚构资料 PDF 视觉检查、Feature Registry 和 ledger coverage 已通过。
+- Fresh release candidate：Phase 1/3/5 contracts、backend TypeScript/build、frontend 9 targeted tests、TypeScript、target/full lint、Next build、Feature Registry 29 FRs / 227 mappings、ledger coverage、`git diff --check` 均通过；数据库 integration 未运行。
+- Production/manual paid-file regeneration：not run。
+
+- Post-review repair validation: zero-value weekly settlements now produce an explicit `$0.00` document instead of committing state then failing PDF generation; empty partner-submission objects no longer expose an invalid return action; FR-031/FR-032 remote text was restored. All targeted and full non-database checks above passed after these repairs.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none; candidate is isolated in a clean release worktree based on freshly fetched `origin/Dev`.
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `12f42e19ed9ef08fa816b63f3d74d8e60b6bdd839fbcfdec8e03c3fcf28f3114`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `3255dede57d2247bf33b1b367ac40bcde9ff2ad7bd1128f01fd65925d395927b`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `7629e9b1fa90b5c746822d58b68400eb951316455bf838bf1540127aa50f4106`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `80a02ceac8e7586f7862f7433c04efde2b7e9cce344dfe685a9b1d2aacba68d4`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `8657406cf0b5cb41f3c8d91b3d6a33aefd4717a5af9c573b9912ca54114964cc`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `8c2d1184c0075c6a3e673d4bd5e5c67e905b5fdb36eccf365ec02eb15cd4ec21`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `01d1c1b3e0418aec58d42379f1bc10b802653ba2c9de5d7fdcc23be6433e7cf7`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `1618ddf7565e3d4abbff29ac8a7d9155836f4258c11bf232d7f2393c2761df60`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `27897b9de5916166db90391bbbc7db9ef53788ebe1e2fe2eafd40512d175639b`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `4bc4a7be436a814ae322e486229c7f1dd58a10552b7dc1d3a03d3195c11ad6c0`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `52fb34a9b9607236409c25a3e539a4d81c41422f04f15c822d7e56a3a18a886c`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `71915f3e39da25d1fae6b588d82f0a6ddc03eb4f60b27e3c0edd745139ad02bf`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `94c4753d955fb7e1244e05108f4e256d6169c9a9a68252b691ec6d2bd4cd0064`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `9b34922e9ee327f187f2842754a207f10f2b4f71877b3bee4ddd5feb612f69be`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `ae9389fd1ab380c262862643dc22e3f462547407b1847ebde74a28e45fc60013`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `c676f50c5c72f65a7031c6f5abdd01f51f091378d589aa21b83009c2add56510`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `d074dbe329066fef122fb4173982e6a05932eefa41f8aa79647c14658b93339f`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `ecbf02841059027e54f5e138023cb58a7c508e779316dcb771b1f9b627f40502`
+- `backend/scripts/tests/test_personnel_settlement_phase3_integration.ts` — SHA-256: `0878ecbb982f7a0c3511c1342d83496f21c4503a9f229ad207fe80291b569f45`
+- `backend/scripts/tests/test_personnel_settlement_phase3_integration.ts` — SHA-256: `3ba5c722bbb929a17ae39571cda2adc501c84ff1d04392c4ee552ee0335a682c`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — SHA-256: `0fb6a26e700e26245775007df651880456a7ffd7471926098767f6dbe1ef8b66`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — SHA-256: `95ee8a13bda50c2ff054cb10bb8bb8403d8968547fc971e26ac3cdeed20698f1`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — SHA-256: `e7c486c2390fef603c1b7851e18057866ad5de6138ea27904fce00006049d4d4`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — SHA-256: `f19df9c82f19255d5aab98830ed59679b257309591b049bdb1358ef85ade0fef`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — SHA-256: `ff027f16545c0c791c5a23028104f018819735520cf764851b496f8d5f78d67d`
+- `backend/scripts/tests/test_personnel_settlement_phase5_integration.ts` — SHA-256: `ab8f62b554dd97e859805e4ca04c8667576a0ae358a054f996fd341f63628fa0`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `06a4d0f84aeb57f4a7b6522ab134ec4881c2fbac869c4b05ea5f62c33378c6fe`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `1feb91f74c50e2f04eb34e9f60ab7c47f56288174d414f558b31ce0a92e928e1`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `2ad1e723a9c46613f28c5b8b1de68b8fd4edd47ed07cc3d77266cd1aa3c31b41`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `34eea7a16c424cdcfebbcb0e4b83f9bcfd9b08dba6c86adc00855d5ce08be0aa`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `4941731b8db58087021bc112e3191e8d1fc8cd4ad34150f25eb6fc5b04ead1b2`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `54a621f2b5c865c6e2809dfaacd4ee12592ab453b75a80ee6a6debab9d75f8c2`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `993cc9ff2959a6d2606448b9ee5c62b3277ea65c9517456cface81d1c5e01b00`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `a5cc35b658ca266fa84bfc22d081a1ba02672261ffcd1c354544498518015aa3`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `fdc05d6f7bb8d0587d1a220f562a8273dc5d613fe5ea11b99652c9b9425bb64c`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `018821c4464bc2d9a3f87199bc58b0fd1e8f55d9216ed8d9177f35d8c50c4490`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `0438aafa6b620670c835ade60924235f5d9e34ec37cd7f4803d9d6732e414d79`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `1a765a4ac2fe0d3414eba711131856a67e90861d195697b819254909a2f6f99c`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `4262ce46fdd30462a44700b3cd7fe7d480cee0cdb56fc3d3356b67c6657edb70`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `670033c902fd4be03949e6663cb807e70e874b616fb191c8af2b96e603df27c7`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `a7cae7187a67ea5a07663405a2c25bf8ef2476d13525a55e274eb906a1376381`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `b503db2a69fb3f8bbb2663a227ecc4b07a6407d0897df094635d34d52d44663a`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `0ef9c9f2b42b63f5f34ce1e17b2038079c972ae52a3eb465beb64c352c1d159e`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `20bfc2bac14d3a8582e3b722bcaa2e63b8a6acac2d60e9192ceab0b6414dd838`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `2ea5e39c755865236de358d02f5286cbef94e2bcb5aefc0fb53742cc44466619`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `363e12d3b494460d74c62a50b9e482478ef99f645ca139543be1b68a59eff948`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `5af94963eaa3de135cb5fdd33478d20e3ccd4ca8209b0bc89e9ba5057c69e374`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `6f616516865406a8e48cb9b3416d1e97e183145be58541c2ab7ba164d770391f`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `8b6cc47af84e45e7c7bea5847ade0ed025ff73748b44528a13badc15fb6b83f5`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `a46434d6c94ce4c227802bb73d31692d349b9644298e5d1c00ffa211bacf9dc2`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `b36fcbe25cb283d52d2eda1b8b2ec0134f743956e3edf3a63bf78c03a60e2b34`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `db0bed7ca3d6bcec8ce6a821a3ff229603de98591e3262a3dac0c742320333e6`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `f2e9d12e2eecd8b8aa2ad9aeeb4ef6a4f6cbd8e67a8fd51e59712cf88a0f4eb6`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `fb91bbb80b854d673d8bbf7f88b2a0abb573de8b1afc9662f72b1b7a4ca93b09`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `02d31d244d46cbc9f1d4a7e25bbde85e6489eb81429c1318181aa6e6247b1842`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `0d37f1b9e8b308ef3d612d1318ec7965ae9dcae082b6f0264cb09158dee025ff`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `157659a7b3a81c558435627a656d5e3babb3d71d51aaf826a160c903f14a7de0`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `1b9edbdb6f3503372a62003bd14112566a3f504e93a1677916e293623ac838f4`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `3706e61f4887493017571db30c5fa341d245c9d8b5d047ba1ff03247cd020521`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `54946ec4c073e23fc09d3b623ff764bbac7ef545858936cbdb243088a927f72a`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `635bca7e91420d99ca6c9ed249033b7637060516e2ff2fbe0b5545f524ea8e30`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `6562877e44972e717e410eb4259b76a0f002cccc91354537c9c9d2ed8326570c`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `69ec1a26c2a238c3402c74386c9bd7971e88cb0e38b924d79a2c75ed3b3e622f`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `7464a570a0e5eca80e47e816b976b5845a150ec9742078711f3af92db3d33eca`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `7865a9ea62ca2eeaa1a6e6df75191405acfe660e85900013db82cec401b64b70`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `7d62cd7a10a22f9b2ad68448d91559c735ba333fd72001aa6b70c9e97945f088`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `809887cb38463225558a8d433e4c07345da1697853d72104ebf93d90e3a354e6`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `84aa697601704b9b298b55f1ecbc9973a4172670f5aec3453a38d9d9a3f63c2d`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `8f9f19a7da506ece361d46e11d10cca36c5f4904462a6d133184d3999a23cb05`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `9ee0be5ded75bcb71ae3ee9574103bbf6e750b8ce22e4fae3c7d4d388de24b2e`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `adfcf566856a938e38692d358512fa1220ec59beb87cb3d11a39ba4253ae0943`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `be7ff38855727277ee5254f56c9042b19168fe3a59799e92b752f388d55e33ef`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `c37227d7fb577494086e46bdf43a3d65c96d8005a4e921eedb4d4b6058fd3831`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `c5e6bdbe5cd510c00ae976c43ffbb869dc7e8efde9c1c2f1dae5b3c4c02e704f`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `cd89fff4ad0a8f3e1265fb8e1aca79f0cd442cd5bc464882e6d0128f5068eae6`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `d51a8ec4a51b8636ece31eea355a8c69b104f71f2c886db5fa5f7750710828fc`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `d8c221ecc0d833e1e777c872a61335dcf7e23a1814077b7a4071638f75a09b87`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `da22b0167e616de581a01a48d0df706b2d15b3059ba43e3b50301b646587d9ed`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `eb491b4c18f5e70d6b618893307dce245660c43e1118745b7c8528a9e1a534aa`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `f0e9e1ce36864c468bb7ec14f132ae9dea5b449c26b44d827fa88b6c1a08851e`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `f28e377bdecbdd4e15ee082d65dfaebc2f95accbfa3615c386aed658ad2f6ce2`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `4d95f676bf1db8caa6b2495b86924ef774da43f61301fc4ab7873c5ac31da44c`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `63bd2b42a00d3970f411051c1cf79cb2b62774dc76ebde164a31e92b25663f22`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `ac7cee45b1eb1e412822afdf029676fe86b67783087ea411d6b97ebe69027b37`
+- `docs/feature-regression-registry.md` — SHA-256: `18e7cc8a52925f6668b879d3ddc5dcd60cb3e85c63223153b95b1cc85c5291ca`
+- `docs/feature-regression-registry.md` — SHA-256: `1cbe87cfe6efbd52711475a0af7ae123b33b0f503ba80c6f8f74066a50f1ac93`
+- `docs/feature-regression-registry.md` — SHA-256: `258006bab9747f37f322c6941afc8f5f6e6515220fbef76e3e9a24b222fa6e5e`
+- `docs/feature-regression-registry.md` — SHA-256: `2d09cb69979ee2b6097fffca434c3793a289aaff4e5f8cdbe8ee1a907f710ade`
+- `docs/feature-regression-registry.md` — SHA-256: `304c58062e274b58d88801a23a51aa644d60e43a39b06e966c54b8adcce60155`
+- `docs/feature-regression-registry.md` — SHA-256: `4f24b01bdb706b1a3276f7754fdbe8836aa873926ab4603c893c88b0c8b924dd`
+- `docs/feature-regression-registry.md` — SHA-256: `613c8bcc2ceb6ecd6f257e5a7585930aaf5bc4345263bcc2a40230a8546a9296`
+- `docs/feature-regression-registry.md` — SHA-256: `682e07fa47336de079f8a538244702d2411dc6c49a3c18e265e9d6ef55f93593`
+- `docs/feature-regression-registry.md` — SHA-256: `6f9ca9347b9567f1447046d3b1b90f6b0b9db92e389b31f555b9fcbe8af8979c`
+- `docs/feature-regression-registry.md` — SHA-256: `9951de85f5712928798f28aa68e829ea92be9c75497e41425acbbb3b371a27e0`
+- `docs/feature-regression-registry.md` — SHA-256: `a57e62e8c85e6ebd86a93ed66f6f8a4fca3b0e497ecc7fa2c3039b3f0457047f`
+- `docs/feature-regression-registry.md` — SHA-256: `b3ad20aa52863a960db89a5b221c67200a2ead00dd424eaa46dae1cef8675a6f`
+- `docs/feature-regression-registry.md` — SHA-256: `bdfba0c6a79a6626c4782d2356e2465c7f3723a9469c5e733c44725b50908a62`
+- `docs/feature-regression-registry.md` — SHA-256: `bf2cc611eeea8ac61305fcf22a26c8a6b620fe5149d02d9a72e1265c36eed649`
+- `docs/feature-regression-registry.md` — SHA-256: `deb3018504b2a5defc90c5f3aa5a15ab3ecc0b3cdbac6b24cd40c370b00bbe4f`
+- `docs/feature-regression-registry.md` — SHA-256: `ef0e0c439caccff35268aa35f2662535d6e0b6bc850267b02e6f607d39ddffe9`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `097a5d095e87f2a2544140d0ba530e3be4d35cddf2a7a5112e4d5c6137431bc4`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `0d7641d615e07cf997348ab035352b178097915fe6aa141f6583d922b820f590`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `17a08173945a50b942720622e9593fd1e61a747074783e40f3d7e136255952b8`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `1ff2e9dd3d22d3840e062fd42c6d993adf7144957b9e7bfb1454524cb86ae06e`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `2c573ba04db14494ce47910386dd2728a8cf447a18d382c34000a840d41a5678`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `305b2a45001f4fd4d47355868f97325274ea8270c74f2f41be813d4a1fac70b5`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `3674d80b2915d73cc3db20e58abb2c395a4c280ba49a64d650c3dfe74c437d1a`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `4aa11dc6e77bbc1e02f8c2e5d0fe1c52599270caf9cd051461e68b314f1c6e33`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `6666cb9ef29e5c0de225f88ddfeaa6d333ce1a25daad9061b530f7c6cd40449e`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `71583dd1bb0b844309f09040d288fa6e7efc6839c3db05657049b79d49207335`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `71958f68cb1aa541e3c84ebeb8db89c9af5ed3319c43c166d2a7ebc33e3062f3`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `75cba0e97f2cad259aaa0e4c9a8b3d4d9a83df7022f72b8ba971d13c39506d54`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `82e1735f54ec23d248e9bcf67995c1e046cb450a933059aa1969c9a29c587504`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `8afe12db9fe23a2c3ebf1cb49d68218665d25f9e2a14061da7d447ff495671f6`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `901e7686061a2da494fa68b3c848ce3bf5eacd9dedb18267d4ad67417cfbfcd2`
+- `frontend/src/app/finance/settlements/phase5Ui.test.ts` — SHA-256: `17955053e8ff158214719d679014b7695a80275a04dd9377fdfc10db61cdd8b3`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `0e14c0773e4bf0cf19774f3aec6e07bfc2c2981c557378d17f12b8af2073425b`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `1b736a58835b2558ede9bce658ac857ae6c38cbebafa3681149bbfeaf6c79831`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `2763c58264aefe10598033383a2c535903c2bad143cef43af9b6da091433d292`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `57313cf046dbe7e1a0b1ed4c655a3c34e11449fd9f30b229f522ab88019439e0`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `704074587ed0b816a66b1faac3757eb29163741fe3571619ff652e63170dacf7`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `c5ed66197bb54831befb131ea5a8cb30feb04a0a85e2620c08908dc335d8032b`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `eabda62e2cd74f4f085cba2df2ad7e7f8239d666807be271152b0b69dfad1a5b`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `033ab2ed32f526ad6928ebc0bcf402568f7b325d27df3c27393eff112338b6e3`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `6a820a41c72f55c8ce34bc073b302a81ff0b2cec06b402e7ab2d388111e240f3`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `6f70bdbf4e2c6733da2ea1d5dfe055a8a7819505ee1088f46bc99fdd074d56dd`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `9398655ea377b2fa3282bda65138e01720a6cf08c964a7a965a7ea0c732f8399`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `949d7ef543f6bbc6fbd3f378ab96d59464037d2d328146ea23d9d4f6fc4ac297`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `966a2ee8cb9a60aac84c3bc23325271d869707e9889354936e9eef9871b507d8`
+
+### Release Attempts
+
+#### RA-20261006-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261003-003`, `CRL-20261005-003`
+- Selected CRL identities: `root/CRL-20261003-003`, `root/CRL-20261005-003`
+- Intended action: `commit`
+- Branch: `codex/settlement-workflow-paid-pdf-20261005`
+- Base: `origin/Dev@1675fd7a7d81f0db959934435e1d8cc5c7ac9783`; fetched at `2026-10-06T00:05:46+1100`
+- Candidate patch SHA-256: `5d85cc7c36a4a4d9d1f4a22f4916f6242b68a2bcd19b261f40d3e4294cc3a936`
+- Commit SHA: not committed
+- Dependencies: paired mobile flow `mobile/CRL-20261003-001`; PDF unit has no release dependency
+- Required validation: `PASS`; evidence: Root backend Phase 1/3/5 contracts、TypeScript/build、frontend 9 targeted tests、TypeScript、target/full lint、96/96 page Next build、Feature Registry 与 ledger coverage 均通过
+- Shared-hunk review: `PASS`; evidence: both selected Root CRLs own the shared FR-029 and Phase 5 test updates; latest Dev media-storage rules were retained during hunk-level reconciliation
+- Generated-file review: `PASS`; evidence: backend build 产生的 10 个 tracked `dist` 差异已精确反向清理；候选无未跟踪文件、依赖目录、缓存或构建产物
+- Technical state: `candidate`
+- User authorization: `selected-for-commit`; evidence: user explicitly requested “OK 把这三个提交推送” for the three listed CRLs; push authorization must be renewed after exact commit SHA exists
+- Independent review: `NO-GO`; evidence: reviewer found the zero-value settlement document failure, empty partner-submission object mismatch, and unrelated FR-031/FR-032 date drift
+- Action conclusion: `BLOCKED`; blockers: reviewer findings required source and regression-test changes
+
+#### RA-20261006-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261003-003`, `CRL-20261005-003`
+- Selected CRL identities: `root/CRL-20261003-003`, `root/CRL-20261005-003`
+- Intended action: `commit`
+- Branch: `codex/settlement-workflow-paid-pdf-20261005`
+- Base: `origin/Dev@1675fd7a7d81f0db959934435e1d8cc5c7ac9783`; fetched at `2026-10-06T00:05:46+1100`
+- Candidate patch SHA-256: `eb75e871acf9d6bcb787d8c916dc05a83097c3e0bee897c8838c2b00deb4ca9f`
+- Commit SHA: not committed
+- Dependencies: paired `mobile/CRL-20261003-001` candidate for the partner-side submission UI; no runtime dependency for the paid-PDF-only behavior
+- Required validation: `PASS`; evidence: Phase 1/3/5 contracts, backend TypeScript/build, frontend targeted 10/10 tests, frontend TypeScript/lint/Next build, Feature Registry audit, ledger coverage and diff check passed; database-writing integration tests were intentionally not run
+- Shared-hunk review: `PASS`; evidence: FR-031/FR-032 review dates were restored exactly to fresh `origin/Dev`; selected settlement hunks retain the latest Dev registry and media-storage protections
+- Generated-file review: `FAIL`; evidence: independent review found ignored backend/frontend build output, caches and temporary dependency symlinks still present in the release worktree even though none were staged
+- Technical state: `candidate`
+- User authorization: `selected-for-commit`; evidence: user explicitly selected these three canonical CRLs for commit; push authorization must be renewed after exact commit SHAs exist
+- Independent review: `NO-GO`; evidence: source findings were resolved, but ignored generated output/cache and temporary dependency symlinks contradicted the recorded clean-candidate evidence; reviewer also identified the malformed Selected CRLs labels
+- Action conclusion: `BLOCKED`; blockers: clean release-worktree evidence and ledger metadata required correction
+
+#### RA-20261006-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261003-003`, `CRL-20261005-003`
+- Selected CRL identities: `root/CRL-20261003-003`, `root/CRL-20261005-003`
+- Intended action: `commit`
+- Branch: `codex/settlement-workflow-paid-pdf-20261005`
+- Base: `origin/Dev@1675fd7a7d81f0db959934435e1d8cc5c7ac9783`; fetched at `2026-10-06T00:05:46+1100`
+- Candidate patch SHA-256: `eb75e871acf9d6bcb787d8c916dc05a83097c3e0bee897c8838c2b00deb4ca9f`
+- Commit SHA: not committed
+- Dependencies: paired `mobile/CRL-20261003-001` candidate for the partner-side submission UI; no runtime dependency for the paid-PDF-only behavior
+- Required validation: `PASS`; evidence: Phase 1/3/5 contracts, backend TypeScript/build, frontend targeted 10/10 tests, frontend TypeScript/lint/Next build, Feature Registry audit, ledger coverage and diff check passed; database-writing integration tests were intentionally not run
+- Shared-hunk review: `PASS`; evidence: FR-031/FR-032 review dates match fresh `origin/Dev`; selected settlement hunks retain the latest Dev registry and media-storage protections
+- Generated-file review: `PASS`; evidence: exact ignored backend build outputs, frontend `.next`/coverage/tsbuildinfo, Python cache and temporary dependency symlinks were removed; `git status --ignored --short` reports only the 16 selected staged files
+- Technical state: `candidate`
+- User authorization: `selected-for-commit`; evidence: user explicitly selected these three canonical CRLs for commit; push authorization must be renewed after exact commit SHAs exist
+- Independent review: `GO`; evidence: narrow independent re-review verified the exact fingerprint, clean ignored/untracked state, corrected CRL labels, 16-file / 129-hunk gate and retained validation evidence with no P0/P1 findings; Phase 1/3/5 not being wired into standard CI remains a non-blocking P2 follow-up
+- Action conclusion: `GO`; evidence: exact staged candidate is approved for the commit action only
+
+### Risks / Release Notes
+
+- Historical paid records without a frozen destination remain explicitly “未记录”; current bank data must never be substituted.
+- No production API, database write, deployment, PDF regeneration or external payment action is included.
+- Git state: fresh uncommitted candidate; not pushed, no PR, not merged, not deployed.
+
+## CRL-20261003-003 — 合作方整周总额一次确认、财务差异退回与作废重提
+
+- **Status:** selected release candidate；fresh `origin/Dev` candidate validation in progress
+- **Repository:** `root`
+- **Updated:** 2026-10-06 Australia/Melbourne
+- **Request:** 合作方一次性提交基础工作量、补贴和周结算前确认完整总额；财务审核无差异时不要求合作方再次确认，但网页必须先形成“财务已核对／待付款”，再由财务在线下付款后独立确认已付款；只有核定差异才重算并退回合作方确认。
+- **Outcome:** 初次周提交把仍为 `submitted` 的反馈按合作方请求值纳入冻结明细和总额。财务逐条审核后比较提交快照与核定快照：完全一致时先“确认已核对”进入 `finance_approved`，随后才可“确认已付款”；任何项目、工时、数量、金额或总额差异都会阻止核对和付款，并只允许“重算并退回确认”。异常作废保留审计历史但允许本人按同一周重新核对和提交。
+
+### Implementation
+
+- Previous behavior: 初次周提交只汇总 `approved` 反馈，待审核补贴不在合作方确认总额内；流程也曾把 `confirmed` 直接暴露为可付款，无法区分尚待核对与已核对待付款。
+- New behavior: 预览和提交事务读取 `approved + submitted` 反馈并冻结总额；财务详情按 approved-only 权威预览重建核定快照。逐项和总额完全一致且无待处理/阻断项时，批准端点原子执行 `confirmed → finance_approved` 并记录核对人、时间与快照；付款端点只接受 `finance_approved`。
+- Workflow/UI: “待财务核对”只显示“确认已核对”；确认后显示“财务已核对／待付款”和“确认已付款”。差异时展示前后金额并要求原因后重算退回；普通行不再显示“重新打开”。作废周重新映射为可提交预览并复用同周唯一记录重建明细。
+- Key decisions: 不新增状态、表或 migration；复用既有 `finance_approved`、`finance_reviewed_by/at`。一致性比较覆盖来源、日期、计费数量、单价和金额，不只比较最终总额。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementPreview.ts` — 初次预览纳入 `submitted` 反馈请求值。
+- `backend/src/lib/personnelSettlementWorkflow.ts` — 冻结总额、财务差异、核对/付款门禁、历史草稿与作废重提。
+- `backend/src/modules/personnel_settlements.ts` — 确认已核对端点及差异 409。
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — 待审核补贴和 GST 拆分。
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — 核对、付款、差异门禁和作废重提合同。
+- `backend/scripts/tests/test_personnel_settlement_phase3_integration.ts` — 实际状态流与核对身份保留。
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — 结算文件和付款合同共享回归。
+- `backend/scripts/tests/test_personnel_settlement_phase5_integration.ts` — API 必须先核对再付款。
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — 差异对比、核对弹窗、分段动作与作废提示。
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — `finance_approved` 状态与动作门禁。
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — 网页动作和差异文案回归。
+- `frontend/src/app/finance/settlements/phase5Ui.test.ts` — 财务入口合同回归。
+- `docs/feature-regression-registry.md` — FR-029 完整总额、核对/付款分段和差异退回规则。
+- `docs/change-release-ledger.md` — 本 CRL 与发布尝试证据。
+
+### Impact / Dependencies
+
+- API: 预览和首次冻结金额包含待审核反馈；管理详情返回财务对比；批准端点恢复核对写入；付款只接受 `finance_approved`；作废周本人预览返回可重提状态。
+- Database / migration: 无 schema 变更、无 migration；未读取或修改生产数据。
+- Paired mobile: 依赖 `mobile/CRL-20261003-001` 展示完整总额和作废重提入口；两仓应配套发布。
+- Risk: 财务必须处理全部反馈并显式核对后才能付款；行项变化即使总额相同也会要求合作方再次确认，这是审计保护。
+
+### Validation
+
+- Source candidate：Phase 1/3/5 contracts、backend/frontend TypeScript、targeted tests、lint、build、Feature Registry 和 ledger coverage 已通过。
+- Fresh release candidate：Phase 1/3/5 contracts、backend TypeScript/build、frontend 9 targeted tests、TypeScript、target/full lint、Next build、Feature Registry、ledger coverage 和 `git diff --check` 均通过；数据库 integration tests 因会写开发数据库而未运行。
+
+- Post-review repair validation: zero-value weekly settlements now produce an explicit `$0.00` document instead of committing state then failing PDF generation; empty partner-submission objects no longer expose an invalid return action; FR-031/FR-032 remote text was restored. All targeted and full non-database checks above passed after these repairs.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none; candidate is isolated in a clean release worktree based on freshly fetched `origin/Dev`.
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `12f42e19ed9ef08fa816b63f3d74d8e60b6bdd839fbcfdec8e03c3fcf28f3114`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `3255dede57d2247bf33b1b367ac40bcde9ff2ad7bd1128f01fd65925d395927b`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `7629e9b1fa90b5c746822d58b68400eb951316455bf838bf1540127aa50f4106`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `80a02ceac8e7586f7862f7433c04efde2b7e9cce344dfe685a9b1d2aacba68d4`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `8657406cf0b5cb41f3c8d91b3d6a33aefd4717a5af9c573b9912ca54114964cc`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `8c2d1184c0075c6a3e673d4bd5e5c67e905b5fdb36eccf365ec02eb15cd4ec21`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `01d1c1b3e0418aec58d42379f1bc10b802653ba2c9de5d7fdcc23be6433e7cf7`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `1618ddf7565e3d4abbff29ac8a7d9155836f4258c11bf232d7f2393c2761df60`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `27897b9de5916166db90391bbbc7db9ef53788ebe1e2fe2eafd40512d175639b`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `4bc4a7be436a814ae322e486229c7f1dd58a10552b7dc1d3a03d3195c11ad6c0`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `52fb34a9b9607236409c25a3e539a4d81c41422f04f15c822d7e56a3a18a886c`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `71915f3e39da25d1fae6b588d82f0a6ddc03eb4f60b27e3c0edd745139ad02bf`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `94c4753d955fb7e1244e05108f4e256d6169c9a9a68252b691ec6d2bd4cd0064`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `9b34922e9ee327f187f2842754a207f10f2b4f71877b3bee4ddd5feb612f69be`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `ae9389fd1ab380c262862643dc22e3f462547407b1847ebde74a28e45fc60013`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `c676f50c5c72f65a7031c6f5abdd01f51f091378d589aa21b83009c2add56510`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `d074dbe329066fef122fb4173982e6a05932eefa41f8aa79647c14658b93339f`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `ecbf02841059027e54f5e138023cb58a7c508e779316dcb771b1f9b627f40502`
+- `backend/scripts/tests/test_personnel_settlement_phase3_integration.ts` — SHA-256: `0878ecbb982f7a0c3511c1342d83496f21c4503a9f229ad207fe80291b569f45`
+- `backend/scripts/tests/test_personnel_settlement_phase3_integration.ts` — SHA-256: `3ba5c722bbb929a17ae39571cda2adc501c84ff1d04392c4ee552ee0335a682c`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — SHA-256: `0fb6a26e700e26245775007df651880456a7ffd7471926098767f6dbe1ef8b66`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — SHA-256: `95ee8a13bda50c2ff054cb10bb8bb8403d8968547fc971e26ac3cdeed20698f1`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — SHA-256: `e7c486c2390fef603c1b7851e18057866ad5de6138ea27904fce00006049d4d4`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — SHA-256: `f19df9c82f19255d5aab98830ed59679b257309591b049bdb1358ef85ade0fef`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — SHA-256: `ff027f16545c0c791c5a23028104f018819735520cf764851b496f8d5f78d67d`
+- `backend/scripts/tests/test_personnel_settlement_phase5_integration.ts` — SHA-256: `ab8f62b554dd97e859805e4ca04c8667576a0ae358a054f996fd341f63628fa0`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `06a4d0f84aeb57f4a7b6522ab134ec4881c2fbac869c4b05ea5f62c33378c6fe`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `1feb91f74c50e2f04eb34e9f60ab7c47f56288174d414f558b31ce0a92e928e1`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `2ad1e723a9c46613f28c5b8b1de68b8fd4edd47ed07cc3d77266cd1aa3c31b41`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `34eea7a16c424cdcfebbcb0e4b83f9bcfd9b08dba6c86adc00855d5ce08be0aa`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `4941731b8db58087021bc112e3191e8d1fc8cd4ad34150f25eb6fc5b04ead1b2`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `54a621f2b5c865c6e2809dfaacd4ee12592ab453b75a80ee6a6debab9d75f8c2`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `993cc9ff2959a6d2606448b9ee5c62b3277ea65c9517456cface81d1c5e01b00`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `a5cc35b658ca266fa84bfc22d081a1ba02672261ffcd1c354544498518015aa3`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `fdc05d6f7bb8d0587d1a220f562a8273dc5d613fe5ea11b99652c9b9425bb64c`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `018821c4464bc2d9a3f87199bc58b0fd1e8f55d9216ed8d9177f35d8c50c4490`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `0438aafa6b620670c835ade60924235f5d9e34ec37cd7f4803d9d6732e414d79`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `1a765a4ac2fe0d3414eba711131856a67e90861d195697b819254909a2f6f99c`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `4262ce46fdd30462a44700b3cd7fe7d480cee0cdb56fc3d3356b67c6657edb70`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `670033c902fd4be03949e6663cb807e70e874b616fb191c8af2b96e603df27c7`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `a7cae7187a67ea5a07663405a2c25bf8ef2476d13525a55e274eb906a1376381`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `b503db2a69fb3f8bbb2663a227ecc4b07a6407d0897df094635d34d52d44663a`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `0ef9c9f2b42b63f5f34ce1e17b2038079c972ae52a3eb465beb64c352c1d159e`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `20bfc2bac14d3a8582e3b722bcaa2e63b8a6acac2d60e9192ceab0b6414dd838`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `2ea5e39c755865236de358d02f5286cbef94e2bcb5aefc0fb53742cc44466619`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `363e12d3b494460d74c62a50b9e482478ef99f645ca139543be1b68a59eff948`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `5af94963eaa3de135cb5fdd33478d20e3ccd4ca8209b0bc89e9ba5057c69e374`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `6f616516865406a8e48cb9b3416d1e97e183145be58541c2ab7ba164d770391f`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `8b6cc47af84e45e7c7bea5847ade0ed025ff73748b44528a13badc15fb6b83f5`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `a46434d6c94ce4c227802bb73d31692d349b9644298e5d1c00ffa211bacf9dc2`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `b36fcbe25cb283d52d2eda1b8b2ec0134f743956e3edf3a63bf78c03a60e2b34`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `db0bed7ca3d6bcec8ce6a821a3ff229603de98591e3262a3dac0c742320333e6`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `f2e9d12e2eecd8b8aa2ad9aeeb4ef6a4f6cbd8e67a8fd51e59712cf88a0f4eb6`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `fb91bbb80b854d673d8bbf7f88b2a0abb573de8b1afc9662f72b1b7a4ca93b09`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `02d31d244d46cbc9f1d4a7e25bbde85e6489eb81429c1318181aa6e6247b1842`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `0d37f1b9e8b308ef3d612d1318ec7965ae9dcae082b6f0264cb09158dee025ff`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `157659a7b3a81c558435627a656d5e3babb3d71d51aaf826a160c903f14a7de0`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `1b9edbdb6f3503372a62003bd14112566a3f504e93a1677916e293623ac838f4`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `3706e61f4887493017571db30c5fa341d245c9d8b5d047ba1ff03247cd020521`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `54946ec4c073e23fc09d3b623ff764bbac7ef545858936cbdb243088a927f72a`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `635bca7e91420d99ca6c9ed249033b7637060516e2ff2fbe0b5545f524ea8e30`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `6562877e44972e717e410eb4259b76a0f002cccc91354537c9c9d2ed8326570c`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `69ec1a26c2a238c3402c74386c9bd7971e88cb0e38b924d79a2c75ed3b3e622f`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `7464a570a0e5eca80e47e816b976b5845a150ec9742078711f3af92db3d33eca`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `7865a9ea62ca2eeaa1a6e6df75191405acfe660e85900013db82cec401b64b70`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `7d62cd7a10a22f9b2ad68448d91559c735ba333fd72001aa6b70c9e97945f088`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `809887cb38463225558a8d433e4c07345da1697853d72104ebf93d90e3a354e6`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `84aa697601704b9b298b55f1ecbc9973a4172670f5aec3453a38d9d9a3f63c2d`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `8f9f19a7da506ece361d46e11d10cca36c5f4904462a6d133184d3999a23cb05`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `9ee0be5ded75bcb71ae3ee9574103bbf6e750b8ce22e4fae3c7d4d388de24b2e`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `adfcf566856a938e38692d358512fa1220ec59beb87cb3d11a39ba4253ae0943`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `be7ff38855727277ee5254f56c9042b19168fe3a59799e92b752f388d55e33ef`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `c37227d7fb577494086e46bdf43a3d65c96d8005a4e921eedb4d4b6058fd3831`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `c5e6bdbe5cd510c00ae976c43ffbb869dc7e8efde9c1c2f1dae5b3c4c02e704f`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `cd89fff4ad0a8f3e1265fb8e1aca79f0cd442cd5bc464882e6d0128f5068eae6`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `d51a8ec4a51b8636ece31eea355a8c69b104f71f2c886db5fa5f7750710828fc`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `d8c221ecc0d833e1e777c872a61335dcf7e23a1814077b7a4071638f75a09b87`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `da22b0167e616de581a01a48d0df706b2d15b3059ba43e3b50301b646587d9ed`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `eb491b4c18f5e70d6b618893307dce245660c43e1118745b7c8528a9e1a534aa`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `f0e9e1ce36864c468bb7ec14f132ae9dea5b449c26b44d827fa88b6c1a08851e`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `f28e377bdecbdd4e15ee082d65dfaebc2f95accbfa3615c386aed658ad2f6ce2`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `4d95f676bf1db8caa6b2495b86924ef774da43f61301fc4ab7873c5ac31da44c`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `63bd2b42a00d3970f411051c1cf79cb2b62774dc76ebde164a31e92b25663f22`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `ac7cee45b1eb1e412822afdf029676fe86b67783087ea411d6b97ebe69027b37`
+- `docs/feature-regression-registry.md` — SHA-256: `18e7cc8a52925f6668b879d3ddc5dcd60cb3e85c63223153b95b1cc85c5291ca`
+- `docs/feature-regression-registry.md` — SHA-256: `1cbe87cfe6efbd52711475a0af7ae123b33b0f503ba80c6f8f74066a50f1ac93`
+- `docs/feature-regression-registry.md` — SHA-256: `258006bab9747f37f322c6941afc8f5f6e6515220fbef76e3e9a24b222fa6e5e`
+- `docs/feature-regression-registry.md` — SHA-256: `2d09cb69979ee2b6097fffca434c3793a289aaff4e5f8cdbe8ee1a907f710ade`
+- `docs/feature-regression-registry.md` — SHA-256: `304c58062e274b58d88801a23a51aa644d60e43a39b06e966c54b8adcce60155`
+- `docs/feature-regression-registry.md` — SHA-256: `4f24b01bdb706b1a3276f7754fdbe8836aa873926ab4603c893c88b0c8b924dd`
+- `docs/feature-regression-registry.md` — SHA-256: `613c8bcc2ceb6ecd6f257e5a7585930aaf5bc4345263bcc2a40230a8546a9296`
+- `docs/feature-regression-registry.md` — SHA-256: `682e07fa47336de079f8a538244702d2411dc6c49a3c18e265e9d6ef55f93593`
+- `docs/feature-regression-registry.md` — SHA-256: `6f9ca9347b9567f1447046d3b1b90f6b0b9db92e389b31f555b9fcbe8af8979c`
+- `docs/feature-regression-registry.md` — SHA-256: `9951de85f5712928798f28aa68e829ea92be9c75497e41425acbbb3b371a27e0`
+- `docs/feature-regression-registry.md` — SHA-256: `a57e62e8c85e6ebd86a93ed66f6f8a4fca3b0e497ecc7fa2c3039b3f0457047f`
+- `docs/feature-regression-registry.md` — SHA-256: `b3ad20aa52863a960db89a5b221c67200a2ead00dd424eaa46dae1cef8675a6f`
+- `docs/feature-regression-registry.md` — SHA-256: `bdfba0c6a79a6626c4782d2356e2465c7f3723a9469c5e733c44725b50908a62`
+- `docs/feature-regression-registry.md` — SHA-256: `bf2cc611eeea8ac61305fcf22a26c8a6b620fe5149d02d9a72e1265c36eed649`
+- `docs/feature-regression-registry.md` — SHA-256: `deb3018504b2a5defc90c5f3aa5a15ab3ecc0b3cdbac6b24cd40c370b00bbe4f`
+- `docs/feature-regression-registry.md` — SHA-256: `ef0e0c439caccff35268aa35f2662535d6e0b6bc850267b02e6f607d39ddffe9`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `097a5d095e87f2a2544140d0ba530e3be4d35cddf2a7a5112e4d5c6137431bc4`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `0d7641d615e07cf997348ab035352b178097915fe6aa141f6583d922b820f590`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `17a08173945a50b942720622e9593fd1e61a747074783e40f3d7e136255952b8`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `1ff2e9dd3d22d3840e062fd42c6d993adf7144957b9e7bfb1454524cb86ae06e`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `2c573ba04db14494ce47910386dd2728a8cf447a18d382c34000a840d41a5678`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `305b2a45001f4fd4d47355868f97325274ea8270c74f2f41be813d4a1fac70b5`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `3674d80b2915d73cc3db20e58abb2c395a4c280ba49a64d650c3dfe74c437d1a`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `4aa11dc6e77bbc1e02f8c2e5d0fe1c52599270caf9cd051461e68b314f1c6e33`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `6666cb9ef29e5c0de225f88ddfeaa6d333ce1a25daad9061b530f7c6cd40449e`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `71583dd1bb0b844309f09040d288fa6e7efc6839c3db05657049b79d49207335`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `71958f68cb1aa541e3c84ebeb8db89c9af5ed3319c43c166d2a7ebc33e3062f3`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `75cba0e97f2cad259aaa0e4c9a8b3d4d9a83df7022f72b8ba971d13c39506d54`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `82e1735f54ec23d248e9bcf67995c1e046cb450a933059aa1969c9a29c587504`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `8afe12db9fe23a2c3ebf1cb49d68218665d25f9e2a14061da7d447ff495671f6`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `901e7686061a2da494fa68b3c848ce3bf5eacd9dedb18267d4ad67417cfbfcd2`
+- `frontend/src/app/finance/settlements/phase5Ui.test.ts` — SHA-256: `17955053e8ff158214719d679014b7695a80275a04dd9377fdfc10db61cdd8b3`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `0e14c0773e4bf0cf19774f3aec6e07bfc2c2981c557378d17f12b8af2073425b`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `1b736a58835b2558ede9bce658ac857ae6c38cbebafa3681149bbfeaf6c79831`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `2763c58264aefe10598033383a2c535903c2bad143cef43af9b6da091433d292`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `57313cf046dbe7e1a0b1ed4c655a3c34e11449fd9f30b229f522ab88019439e0`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `704074587ed0b816a66b1faac3757eb29163741fe3571619ff652e63170dacf7`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `c5ed66197bb54831befb131ea5a8cb30feb04a0a85e2620c08908dc335d8032b`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `eabda62e2cd74f4f085cba2df2ad7e7f8239d666807be271152b0b69dfad1a5b`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `033ab2ed32f526ad6928ebc0bcf402568f7b325d27df3c27393eff112338b6e3`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `6a820a41c72f55c8ce34bc073b302a81ff0b2cec06b402e7ab2d388111e240f3`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `6f70bdbf4e2c6733da2ea1d5dfe055a8a7819505ee1088f46bc99fdd074d56dd`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `9398655ea377b2fa3282bda65138e01720a6cf08c964a7a965a7ea0c732f8399`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `949d7ef543f6bbc6fbd3f378ab96d59464037d2d328146ea23d9d4f6fc4ac297`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `966a2ee8cb9a60aac84c3bc23325271d869707e9889354936e9eef9871b507d8`
+
+### Release Attempts
+
+#### RA-20261006-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261003-003`, `CRL-20261005-003`
+- Selected CRL identities: `root/CRL-20261003-003`, `root/CRL-20261005-003`
+- Intended action: `commit`
+- Branch: `codex/settlement-workflow-paid-pdf-20261005`
+- Base: `origin/Dev@1675fd7a7d81f0db959934435e1d8cc5c7ac9783`; fetched at `2026-10-06T00:05:46+1100`
+- Candidate patch SHA-256: `5d85cc7c36a4a4d9d1f4a22f4916f6242b68a2bcd19b261f40d3e4294cc3a936`
+- Commit SHA: not committed
+- Dependencies: paired `mobile/CRL-20261003-001` release candidate
+- Required validation: `PASS`; evidence: Root backend Phase 1/3/5 contracts、TypeScript/build、frontend 9 targeted tests、TypeScript、target/full lint、96/96 page Next build、Feature Registry 与 ledger coverage 均通过
+- Shared-hunk review: `PASS`; evidence: both selected Root CRLs jointly own shared Phase 5 and FR-029 hunks; latest Dev media-storage protection was retained
+- Generated-file review: `PASS`; evidence: backend build 产生的 tracked `dist` 差异已精确清理；候选无未跟踪文件、依赖目录、缓存或构建产物
+- Technical state: `candidate`
+- User authorization: `selected-for-commit`; evidence: user explicitly requested “OK 把这三个提交推送” for the three listed CRLs; push authorization must be renewed after exact commit SHA exists
+- Independent review: `NO-GO`; evidence: reviewer found the zero-value settlement document failure, empty partner-submission object mismatch, and unrelated FR-031/FR-032 date drift
+- Action conclusion: `BLOCKED`; blockers: reviewer findings required source and regression-test changes
+
+#### RA-20261006-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261003-003`, `CRL-20261005-003`
+- Selected CRL identities: `root/CRL-20261003-003`, `root/CRL-20261005-003`
+- Intended action: `commit`
+- Branch: `codex/settlement-workflow-paid-pdf-20261005`
+- Base: `origin/Dev@1675fd7a7d81f0db959934435e1d8cc5c7ac9783`; fetched at `2026-10-06T00:05:46+1100`
+- Candidate patch SHA-256: `eb75e871acf9d6bcb787d8c916dc05a83097c3e0bee897c8838c2b00deb4ca9f`
+- Commit SHA: not committed
+- Dependencies: paired `mobile/CRL-20261003-001` candidate for the partner-side submission UI; no runtime dependency for the paid-PDF-only behavior
+- Required validation: `PASS`; evidence: Phase 1/3/5 contracts, backend TypeScript/build, frontend targeted 10/10 tests, frontend TypeScript/lint/Next build, Feature Registry audit, ledger coverage and diff check passed; database-writing integration tests were intentionally not run
+- Shared-hunk review: `PASS`; evidence: FR-031/FR-032 review dates were restored exactly to fresh `origin/Dev`; selected settlement hunks retain the latest Dev registry and media-storage protections
+- Generated-file review: `FAIL`; evidence: independent review found ignored backend/frontend build output, caches and temporary dependency symlinks still present in the release worktree even though none were staged
+- Technical state: `candidate`
+- User authorization: `selected-for-commit`; evidence: user explicitly selected these three canonical CRLs for commit; push authorization must be renewed after exact commit SHAs exist
+- Independent review: `NO-GO`; evidence: source findings were resolved, but ignored generated output/cache and temporary dependency symlinks contradicted the recorded clean-candidate evidence; reviewer also identified the malformed Selected CRLs labels
+- Action conclusion: `BLOCKED`; blockers: clean release-worktree evidence and ledger metadata required correction
+
+#### RA-20261006-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261003-003`, `CRL-20261005-003`
+- Selected CRL identities: `root/CRL-20261003-003`, `root/CRL-20261005-003`
+- Intended action: `commit`
+- Branch: `codex/settlement-workflow-paid-pdf-20261005`
+- Base: `origin/Dev@1675fd7a7d81f0db959934435e1d8cc5c7ac9783`; fetched at `2026-10-06T00:05:46+1100`
+- Candidate patch SHA-256: `eb75e871acf9d6bcb787d8c916dc05a83097c3e0bee897c8838c2b00deb4ca9f`
+- Commit SHA: not committed
+- Dependencies: paired `mobile/CRL-20261003-001` candidate for the partner-side submission UI; no runtime dependency for the paid-PDF-only behavior
+- Required validation: `PASS`; evidence: Phase 1/3/5 contracts, backend TypeScript/build, frontend targeted 10/10 tests, frontend TypeScript/lint/Next build, Feature Registry audit, ledger coverage and diff check passed; database-writing integration tests were intentionally not run
+- Shared-hunk review: `PASS`; evidence: FR-031/FR-032 review dates match fresh `origin/Dev`; selected settlement hunks retain the latest Dev registry and media-storage protections
+- Generated-file review: `PASS`; evidence: exact ignored backend build outputs, frontend `.next`/coverage/tsbuildinfo, Python cache and temporary dependency symlinks were removed; `git status --ignored --short` reports only the 16 selected staged files
+- Technical state: `candidate`
+- User authorization: `selected-for-commit`; evidence: user explicitly selected these three canonical CRLs for commit; push authorization must be renewed after exact commit SHAs exist
+- Independent review: `GO`; evidence: narrow independent re-review verified the exact fingerprint, clean ignored/untracked state, corrected CRL labels, 16-file / 129-hunk gate and retained validation evidence with no P0/P1 findings; Phase 1/3/5 not being wired into standard CI remains a non-blocking P2 follow-up
+- Action conclusion: `GO`; evidence: exact staged candidate is approved for the commit action only
+
+### Risks / Release Notes
+
+- No production write, notification, external sync, deployment or migration is included.
+- Rollback is a code revert before any later deployment; no data rollback is required by this candidate.
+- Git state: fresh uncommitted candidate; not pushed, no PR, not merged, backend not deployed, production not verified.
+
 ## CRL-20261004-002 — 清洁开始超时诊断扫描默认关闭
 
 - **Status:** verified candidate（隔离工作树与固定 Preview 均通过目标核验；已获本 CRL 提交授权；尚未提交）
