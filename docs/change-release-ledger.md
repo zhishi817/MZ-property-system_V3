@@ -75,16 +75,39 @@
 - Base ref / SHA: `origin/Dev` / `8f9e2be95a696209de3180f4f51a58da79f516f6`
 - Base: `origin/Dev@8f9e2be95a696209de3180f4f51a58da79f516f6`; fetched at `2026-10-05T00:35:00Z`
 - Candidate patch SHA-256: `bb2abc6aee3d9f39ce77fdb7787611701889ec4590930f8f8676dba430b7274b`（excluding `docs/change-release-ledger.md`；supersedes the first-review candidate after restoring exact legacy config parsing and adding the PostgreSQL-unavailable regression）
-- Commit SHA: not committed
+- Candidate content commit SHA: `f89d0d03d715921d2720ac2df282bd2fe4a38a69`
+- Commit SHA: `f89d0d03d715921d2720ac2df282bd2fe4a38a69`
 - Dependencies: none
 - Required validation: `PASS` for the selected Root backend scope；evidence: target/default-off contract, cleaning rules/sync v2, backend TypeScript/build, all backend checks before the unrelated cross-repository Phase 5 fixture, frontend lint/52 files 260 tests/build, Feature Registry deferred-mobile mode, CRL audit and diff check passed. `check:full` remains NOT VERIFIED because current paired Mobile `origin/Dev` lacks pre-existing Root-registry test paths; no Mobile file is selected or changed by this CRL.
 - Shared-hunk review: `PASS`；evidence: all 8 candidate paths were created or changed only for root/CRL-20261004-002 in a clean origin/Dev worktree; shared startup/package/governance files were reviewed at hunk level and other schedulers remain unchanged.
 - Generated-file review: `PASS`；evidence: backend/frontend build outputs, caches and temporary dependency/mobile links were removed from the candidate; no generated path is selected.
 - Sensitive-information review: `PASS`；evidence: candidate contains no `.env`, credentials, token, database URL, private key, cookie or production log material.
-- Technical state: `candidate`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`；evidence: user explicitly instructed “先提交推送root/CRL-20261004-002”; push remains a separate post-commit range gate.
 - Independent review: `GO for commit`；evidence: fresh independent read-only review recomputed fingerprint `bb2abc6aee3d9f39ce77fdb7787611701889ec4590930f8f8676dba430b7274b`, inspected all 8 staged files / 9 non-ledger hunks, independently reran the pre-commit gate and target test, verified the first-review authorization/config-parsing findings are closed, and found no P0/P1. Accepted P2s: fixed Preview still has the first-review source/test version, and paired Mobile `origin/Dev` prevents a complete `check:full`; neither changes the isolated Root candidate.
-- Action conclusion: `GO` for the exact local commit only；push, PR, merge and deployment remain separate actions.
+- Action conclusion: `GO`；the exact reviewed candidate was committed locally as `f89d0d03d715921d2720ac2df282bd2fe4a38a69`. Push, PR, merge and deployment remain separate actions.
+
+#### RA-20261005-cleaning-timeout-push
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261004-002`
+- Selected CRL identities: `root/CRL-20261004-002`
+- Intended action: `push`
+- Branch: `codex/cleaning-timeout-default-off-20261004`
+- Base ref / SHA: `origin/Dev` / `8f9e2be95a696209de3180f4f51a58da79f516f6`
+- Base: `origin/Dev@8f9e2be95a696209de3180f4f51a58da79f516f6`; fetched at `2026-10-05T00:35:00Z`
+- Candidate patch SHA-256: `bb2abc6aee3d9f39ce77fdb7787611701889ec4590930f8f8676dba430b7274b`（excluding `docs/change-release-ledger.md`）
+- Candidate content commit SHA: `f89d0d03d715921d2720ac2df282bd2fe4a38a69`
+- Commit SHA: `f89d0d03d715921d2720ac2df282bd2fe4a38a69`
+- Dependencies: none
+- Required validation: `PASS` for the selected Root backend scope；evidence: unchanged exact content commit retains the target/default-off, legacy-config, PostgreSQL-unavailable, adjacent cleaning, TypeScript/build, frontend and governance evidence from the commit attempt. Paired-Mobile `check:full` remains an unrelated P2 gap.
+- Shared-hunk review: `PASS`；evidence: exact `origin/Dev...f89d0d03` range contains only the selected CRL's reviewed Root hunks; other schedulers remain unchanged.
+- Generated-file review: `PASS`；evidence: exact content range contains no generated paths; local build outputs, caches and temporary links were excluded and removed.
+- Sensitive-information review: `PASS`；evidence: exact content range contains no configured sensitive file or credential pattern.
+- Technical state: `committed`
+- User authorization: `approved-for-push`；evidence: after receiving repository `root`, exact commit `f89d0d03d715921d2720ac2df282bd2fe4a38a69`, branch `codex/cleaning-timeout-default-off-20261004`, normal non-force boundary and the explicit exclusion of PR/merge/deploy, the user replied “推送”. Authorization includes the necessary pure-ledger receipts only.
+- Independent review: `GO for this ledger-only authorization/review receipt, one conditional normal non-force initial push, and one conditional post-push ledger-only outcome receipt fast-forward`；evidence: independent read-only review verified the exact post-SHA authorization, base → content commit ancestry, unchanged fingerprint `bb2abc6aee3d9f39ce77fdb7787611701889ec4590930f8f8676dba430b7274b`, 8 selected files / 9 non-ledger hunks, ledger-only staged scope, generated/sensitive boundaries, fresh `origin/Dev` and absent target remote branch. No P0/P1 was found. Accepted non-blocking P2s: paired-Mobile baseline files prevent complete `check:full`, and fixed Preview retains the first-review source/test version. The initial push is allowed only after a clean exact range report GO and unchanged remote preflight; the single outcome receipt is allowed only after verifying the initial remote SHA and may update only remote SHA/time, technical state and action evidence.
+- Action conclusion: `GO`；commit this exact ledger-only authorization/review receipt, then perform one explicit-refspec normal non-force initial push only if its clean range report and immediate remote preflight pass. PR, merge, deployment and production changes remain unauthorized.
 
 ## CRL-20261003-001 — 任务参与者照片可见性与问题反馈历史任务上下文修复
 
