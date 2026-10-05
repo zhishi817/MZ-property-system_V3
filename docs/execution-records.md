@@ -1,5 +1,44 @@
 # Execution Records
 
+## 清洁开始超时扫描默认关闭
+
+- Date: 2026-10-04
+- Task: 停止无业务作用的 15 分钟清洁开始超时诊断扫描持续唤醒生产数据库
+- Status: implemented and locally verified in isolated Root worktree and fixed Preview; not released
+
+### Confirmed Plan
+
+- 只处理已核实的 `cleaning_tasks` 超时日志扫描，不改 Mobile SSE、通知 worker、清洁同步、重试、backfill 或其他生产任务。
+- 把扫描改为独立开关控制且默认关闭；关闭时不得注册 cron、启动任务或查询数据库。
+- 保留显式重新启用能力和原有 cron/阈值语义，不修改生产环境变量、数据库、服务或部署。
+
+### Implementation Result
+
+- 新增独立调度模块和 `CLEANING_START_TIMEOUT_ENABLED`，只有该值、`FEATURE_CLEANING_APP` 与 PostgreSQL 可用性门禁同时通过才注册扫描。
+- 启动入口移除原先随清洁功能自动注册的内联任务；默认路径在调度注册前返回，因此不会发出原有当日清洁任务 SQL。
+- 新增契约测试并接入 Root `check:backend` 与 `check:fast`，同时静态保护其他后台调度入口仍存在。
+
+### Validation
+
+- 新调度契约、清洁规则、清洁同步 v2 测试均通过。
+- 后端 TypeScript no-emit 与输出到 `/tmp` 的隔离构建通过；未在候选工作树保留依赖链接或生成物。
+- 固定 Preview 已先备份目标文件再合入窄范围源码/测试/治理记录；目标测试、TypeScript no-emit 与 Feature Registry 审计通过。
+- 未连接生产数据库、未触发真实 cron、未改生产配置、未部署。
+
+### Files / Areas
+
+- `backend/src/services/cleaningStartTimeoutSchedule.ts`
+- `backend/src/index.ts`
+- `backend/scripts/tests/test_cleaning_start_timeout_schedule.ts`
+- `backend/package.json`
+- `package.json`
+- `docs/feature-regression-registry.md`
+
+### Open Issues / Follow-ups
+
+- 代码只有在后端发布后才会改变生产行为；发布后需只读确认该 15 分钟 SQL/唤醒消失，同时避免把其他来源误判为本任务。
+- 未 commit、push、PR、merge、deploy，也未修改 Render/Neon 或 Mobile。
+
 ## 合作方先提交、财务后核对的周结算闭环
 
 - Date: 2026-09-22

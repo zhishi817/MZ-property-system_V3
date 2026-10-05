@@ -45,6 +45,7 @@ import {
 } from './settlementWorkflowUi'
 import {
   loadPersonnelClaimEvidenceObjectUrl,
+  personnelClaimEvidenceFailureMessage,
   releasePersonnelClaimEvidenceObjectUrls,
 } from './claimEvidenceImage'
 import {
@@ -235,7 +236,7 @@ export default function WeeklySettlementsPanel() {
   const [claimReviewBusy, setClaimReviewBusy] = useState<string | null>(null)
   const [actionEvidencePreviewId, setActionEvidencePreviewId] = useState<string | null>(null)
   const [actionEvidenceUrls, setActionEvidenceUrls] = useState<Record<string, string>>({})
-  const [actionEvidenceFailures, setActionEvidenceFailures] = useState<Record<string, boolean>>({})
+  const [actionEvidenceFailures, setActionEvidenceFailures] = useState<Record<string, string>>({})
   const actionEvidenceUrlsRef = useRef<Record<string, string>>({})
   const actionRequestRef = useRef(0)
   const [documentBusy, setDocumentBusy] = useState<string | null>(null)
@@ -293,9 +294,9 @@ export default function WeeklySettlementsPanel() {
     const loaded = await Promise.all((nextDetail.related_claims || []).flatMap((claim) =>
       (claim.evidence || []).map(async (item) => {
         try {
-          return [item.id, await loadPersonnelClaimEvidenceObjectUrl(claim.id, item.id)] as const
-        } catch {
-          return [item.id, null] as const
+          return [item.id, await loadPersonnelClaimEvidenceObjectUrl(claim.id, item.id), null] as const
+        } catch (error) {
+          return [item.id, null, personnelClaimEvidenceFailureMessage(error)] as const
         }
       }),
     ))
@@ -308,10 +309,10 @@ export default function WeeklySettlementsPanel() {
       return
     }
     const nextUrls: Record<string, string> = {}
-    const nextFailures: Record<string, boolean> = {}
-    for (const [id, url] of loaded) {
+    const nextFailures: Record<string, string> = {}
+    for (const [id, url, failure] of loaded) {
       if (url) nextUrls[id] = url
-      else nextFailures[id] = true
+      else nextFailures[id] = failure || '照片读取失败，请稍后重试'
     }
     replaceActionEvidenceUrls(nextUrls)
     setActionEvidenceFailures(nextFailures)
@@ -827,7 +828,7 @@ export default function WeeklySettlementsPanel() {
                             <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => setActionEvidencePreviewId(item.id)}>查看证明</Button>
                           </>
                         : <div className={styles.evidencePlaceholder}>
-                            {actionEvidenceFailures[item.id] ? '照片读取失败' : '照片加载中'}
+                            {actionEvidenceFailures[item.id] || '照片加载中'}
                           </div>}
                     </div>)}
                   </Space> : <Typography.Text type="secondary">未关联证明材料</Typography.Text>}

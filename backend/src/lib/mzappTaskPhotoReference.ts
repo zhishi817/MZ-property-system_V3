@@ -54,14 +54,24 @@ export function createMzappTaskPhotoRemoteReference(key: unknown) {
   return `r2://${namespace}/${normalizedKey}`
 }
 
-function isCurrentMzappTaskPhotoRemoteReference(value: unknown) {
+export function parseMzappTaskPhotoRemoteReference(value: unknown) {
   const raw = cleanText(value)
   const match = /^r2:\/\/([a-z0-9][a-z0-9._-]{0,119})\/(mzapp\/.*)$/i.exec(raw)
   if (!match) return null
-  const namespace = currentStorageNamespace()
   const key = normalizeMzappTaskPhotoKey(match[2])
-  if (!namespace || !key || match[1].toLowerCase() !== namespace) return null
-  return `r2://${namespace}/${key}`
+  return key ? { namespace: match[1].toLowerCase(), key } : null
+}
+
+export function hasCurrentMzappTaskPhotoStorageNamespace() {
+  return Boolean(currentStorageNamespace())
+}
+
+function isCurrentMzappTaskPhotoRemoteReference(value: unknown) {
+  const parsed = parseMzappTaskPhotoRemoteReference(value)
+  if (!parsed) return null
+  const namespace = currentStorageNamespace()
+  if (!namespace || parsed.namespace !== namespace) return null
+  return `r2://${namespace}/${parsed.key}`
 }
 
 export function currentMzappTaskPhotoKeyFromReference(value: unknown) {

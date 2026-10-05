@@ -47,6 +47,16 @@ async function main() {
     'assigned inspector can read a recorded inspection image',
   )
   assert.equal(
+    await canViewMzappRecordedCleaningMedia({ sub: 'cleaner-1', role: 'cleaner', roles: ['cleaner'] }, row, 'cleaner-1', 'inspection_living'),
+    true,
+    'an assigned cleaner can read inspection photos for the task they can see',
+  )
+  assert.equal(
+    await canViewMzappRecordedCleaningMedia({ sub: 'assignee-1', role: 'cleaner', roles: ['cleaner'] }, row, 'assignee-1', 'restock_proof:item-a'),
+    true,
+    'an assigned task executor can read restock photos for the task they can see',
+  )
+  assert.equal(
     await canViewMzappRecordedCleaningMedia({ sub: 'outsider-1', role: 'cleaning_inspector', roles: ['cleaning_inspector'] }, row, 'outsider-1', 'inspection_living'),
     false,
     'unassigned inspector cannot read another task inspection image by object key',

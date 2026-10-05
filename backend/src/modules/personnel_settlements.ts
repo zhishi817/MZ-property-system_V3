@@ -257,7 +257,7 @@ function errorStatus(error: any) {
   if (code === 'claim_evidence_file_too_large') return 413
   if (code === 'image_format_unsupported' || error?.code === CLEANING_IMAGE_FORMAT_ERROR) return 415
   if (code === 'invalid_claim_evidence_reference') return 403
-  if (code === 'media_storage_unavailable') return 503
+  if (code === 'media_storage_unavailable' || code === 'claim_evidence_storage_unavailable') return 503
   if (code === 'pg_required') return 400
   if (
     code.startsWith('invalid_')
@@ -305,7 +305,10 @@ function sendProfileError(res: any, error: any) {
       error_name: String(error?.name || 'Error'),
     })
   }
-  const payload: any = { code: status >= 500 ? 'personnel_settlement_profile_failed' : code }
+  const safeServerCode = code === 'claim_evidence_storage_unavailable'
+    ? code
+    : 'personnel_settlement_profile_failed'
+  const payload: any = { code: status >= 500 ? safeServerCode : code }
   if (code === 'rule_effective_date_locked' && error?.constraints) payload.constraints = error.constraints
   return res.status(status).json(payload)
 }
