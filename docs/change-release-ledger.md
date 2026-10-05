@@ -248,12 +248,12 @@
 - Generated-file review: `PASS`; evidence: clean release worktree contains no generated, ignored, untracked, dependency-link or cache path
 - Sensitive-information review: `PASS`; evidence: exact committed range contains no `.env`, credential, token, cookie, private key, database URL or sensitive log
 - Cross-repository dependency verification: paired Mobile exact range `origin/Dev@a026b2ed6b1a2771550ca81ce3e1f5deda66b9ba...cb0aae63f6549209ae4ff73964491f506b9a68b5` resolves candidate content commit `d66b0aff376c62f40e42649307eab1307fdd89bb` and unchanged fingerprint `6ee847e1e2e7a4e527b8871d5bbf26497309877664ffff112564b943a178236e`
-- Technical state: `committed`
+- Technical state: `pushed`
 - User authorization: `approved-for-push`; evidence: after receiving the exact Root branch/HEAD `codex/settlement-workflow-paid-pdf-20261005@63827df23d4de9e00754969620d0a68e5764d305`, Mobile branch/HEAD `codex/settlement-workflow-mobile-20261005@cb0aae63f6549209ae4ff73964491f506b9a68b5`, and the explicit separation from PR/merge/deployment/OTA, the user instructed “推送” on 2026-10-06; this authorizes only normal non-force push of these exact selected candidates and their ledger-only release receipts
 - Remote preflight: `PASS`; evidence: fresh fetch confirmed `origin/Dev` unchanged and `git ls-remote --heads origin refs/heads/codex/settlement-workflow-paid-pdf-20261005` returned no branch
 - Independent review: `GO for ledger-only review receipt commit and controlled push`; evidence: independent read-only push review verified live Root base/HEAD/content ancestry, unchanged fingerprint `eb75e871acf9d6bcb787d8c916dc05a83097c3e0bee897c8838c2b00deb4ca9f`, 16 selected paths / 129 non-ledger hunks, the paired Mobile exact range and fingerprint, absent remote target branch, clean generated/sensitive boundary and approved authorization; P0/P1 are zero, with the previously accepted Phase 1/3/5 standard-CI coverage gap retained as non-blocking P2
-- Action conclusion: `GO`; evidence: permits only this same ledger-only review receipt commit, final exact-range audit with the paired cross-repository evidence as the only explained tool limitation, unchanged remote preflight, and one explicit-refspec normal non-force push; PR, merge, deployment and production writes remain unauthorized
-- Remote / PR / deployment evidence: not pushed; PR not created; not merged; not deployed; production/device verification not run
+- Action conclusion: `GO`; evidence: exact reviewed candidate was pushed by explicit refspec with a normal non-force new-branch update, and immediate remote verification matched local HEAD; this ledger-only outcome receipt may be fast-forwarded to the same branch; PR, merge, deployment and production writes remain unauthorized
+- Remote / PR / deployment evidence: initial push completed at `2026-10-06T01:41:07+1100` to `origin/codex/settlement-workflow-paid-pdf-20261005@be980034acf6fc58083e9d8d176b07153c65090d`; `git ls-remote` matched local HEAD; PR not created; not merged; not deployed; production/device verification not run
 
 ### Risks / Release Notes
 
@@ -518,12 +518,12 @@
 - Generated-file review: `PASS`; evidence: clean release worktree contains no generated, ignored, untracked, dependency-link or cache path
 - Sensitive-information review: `PASS`; evidence: exact committed range contains no `.env`, credential, token, cookie, private key, database URL or sensitive log
 - Cross-repository dependency verification: paired Mobile exact range `origin/Dev@a026b2ed6b1a2771550ca81ce3e1f5deda66b9ba...cb0aae63f6549209ae4ff73964491f506b9a68b5` resolves candidate content commit `d66b0aff376c62f40e42649307eab1307fdd89bb` and unchanged fingerprint `6ee847e1e2e7a4e527b8871d5bbf26497309877664ffff112564b943a178236e`
-- Technical state: `committed`
+- Technical state: `pushed`
 - User authorization: `approved-for-push`; evidence: after receiving the exact Root branch/HEAD `codex/settlement-workflow-paid-pdf-20261005@63827df23d4de9e00754969620d0a68e5764d305`, Mobile branch/HEAD `codex/settlement-workflow-mobile-20261005@cb0aae63f6549209ae4ff73964491f506b9a68b5`, and the explicit separation from PR/merge/deployment/OTA, the user instructed “推送” on 2026-10-06; this authorizes only normal non-force push of these exact selected candidates and their ledger-only release receipts
 - Remote preflight: `PASS`; evidence: fresh fetch confirmed `origin/Dev` unchanged and `git ls-remote --heads origin refs/heads/codex/settlement-workflow-paid-pdf-20261005` returned no branch
 - Independent review: `GO for ledger-only review receipt commit and controlled push`; evidence: independent read-only push review verified live Root base/HEAD/content ancestry, unchanged fingerprint `eb75e871acf9d6bcb787d8c916dc05a83097c3e0bee897c8838c2b00deb4ca9f`, 16 selected paths / 129 non-ledger hunks, the paired Mobile exact range and fingerprint, absent remote target branch, clean generated/sensitive boundary and approved authorization; P0/P1 are zero, with the previously accepted Phase 1/3/5 standard-CI coverage gap retained as non-blocking P2
-- Action conclusion: `GO`; evidence: permits only this same ledger-only review receipt commit, final exact-range audit with the paired cross-repository evidence as the only explained tool limitation, unchanged remote preflight, and one explicit-refspec normal non-force push; PR, merge, deployment and production writes remain unauthorized
-- Remote / PR / deployment evidence: not pushed; PR not created; not merged; not deployed; production/device verification not run
+- Action conclusion: `GO`; evidence: exact reviewed candidate was pushed by explicit refspec with a normal non-force new-branch update, and immediate remote verification matched local HEAD; this ledger-only outcome receipt may be fast-forwarded to the same branch; PR, merge, deployment and production writes remain unauthorized
+- Remote / PR / deployment evidence: initial push completed at `2026-10-06T01:41:07+1100` to `origin/codex/settlement-workflow-paid-pdf-20261005@be980034acf6fc58083e9d8d176b07153c65090d`; `git ls-remote` matched local HEAD; PR not created; not merged; not deployed; production/device verification not run
 
 ### Risks / Release Notes
 
