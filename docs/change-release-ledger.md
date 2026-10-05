@@ -231,6 +231,30 @@
 - Independent review: `GO`; evidence: narrow independent re-review verified the exact fingerprint, clean ignored/untracked state, corrected CRL labels, 16-file / 129-hunk gate and retained validation evidence with no P0/P1 findings; Phase 1/3/5 not being wired into standard CI remains a non-blocking P2 follow-up
 - Action conclusion: `GO`; evidence: exact staged candidate is approved for the commit action only
 
+#### RA-20261006-004
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261003-003`, `CRL-20261005-003`
+- Selected CRL identities: `root/CRL-20261003-003`, `root/CRL-20261005-003`
+- Intended action: `push`
+- Branch: `codex/settlement-workflow-paid-pdf-20261005`
+- Base: `origin/Dev@1675fd7a7d81f0db959934435e1d8cc5c7ac9783`; freshly fetched at `2026-10-06T01:23:53+1100` and confirmed unchanged
+- Candidate patch SHA-256: `eb75e871acf9d6bcb787d8c916dc05a83097c3e0bee897c8838c2b00deb4ca9f` excluding `docs/change-release-ledger.md`
+- Candidate content commit SHA: `8d9ec5d2e651a92e00e78d7bb81dbcc24c53d592`
+- Commit SHA: `8d9ec5d2e651a92e00e78d7bb81dbcc24c53d592`
+- Dependencies: `mobile/CRL-20261003-001@d66b0aff376c62f40e42649307eab1307fdd89bb`
+- Required validation: `PASS`; evidence: committed Root range retains the reviewed Phase 1/3/5 contracts, backend TypeScript/build, frontend targeted 10/10 tests, frontend TypeScript/lint/Next build, Feature Registry audit, ledger coverage and diff check; database-writing integration tests were intentionally not run
+- Shared-hunk review: `PASS`; evidence: exact committed Root range contains only the two selected CRLs and their jointly owned settlement workflow/test/registry hunks; FR-031/FR-032 and latest Dev media-storage protections remain unchanged
+- Generated-file review: `PASS`; evidence: clean release worktree contains no generated, ignored, untracked, dependency-link or cache path
+- Sensitive-information review: `PASS`; evidence: exact committed range contains no `.env`, credential, token, cookie, private key, database URL or sensitive log
+- Cross-repository dependency verification: paired Mobile exact range `origin/Dev@a026b2ed6b1a2771550ca81ce3e1f5deda66b9ba...cb0aae63f6549209ae4ff73964491f506b9a68b5` resolves candidate content commit `d66b0aff376c62f40e42649307eab1307fdd89bb` and unchanged fingerprint `6ee847e1e2e7a4e527b8871d5bbf26497309877664ffff112564b943a178236e`
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after receiving the exact Root branch/HEAD `codex/settlement-workflow-paid-pdf-20261005@63827df23d4de9e00754969620d0a68e5764d305`, Mobile branch/HEAD `codex/settlement-workflow-mobile-20261005@cb0aae63f6549209ae4ff73964491f506b9a68b5`, and the explicit separation from PR/merge/deployment/OTA, the user instructed “推送” on 2026-10-06; this authorizes only normal non-force push of these exact selected candidates and their ledger-only release receipts
+- Remote preflight: `PASS`; evidence: fresh fetch confirmed `origin/Dev` unchanged and `git ls-remote --heads origin refs/heads/codex/settlement-workflow-paid-pdf-20261005` returned no branch
+- Independent review: `GO for ledger-only review receipt commit and controlled push`; evidence: independent read-only push review verified live Root base/HEAD/content ancestry, unchanged fingerprint `eb75e871acf9d6bcb787d8c916dc05a83097c3e0bee897c8838c2b00deb4ca9f`, 16 selected paths / 129 non-ledger hunks, the paired Mobile exact range and fingerprint, absent remote target branch, clean generated/sensitive boundary and approved authorization; P0/P1 are zero, with the previously accepted Phase 1/3/5 standard-CI coverage gap retained as non-blocking P2
+- Action conclusion: `GO`; evidence: permits only this same ledger-only review receipt commit, final exact-range audit with the paired cross-repository evidence as the only explained tool limitation, unchanged remote preflight, and one explicit-refspec normal non-force push; PR, merge, deployment and production writes remain unauthorized
+- Remote / PR / deployment evidence: not pushed; PR not created; not merged; not deployed; production/device verification not run
+
 ### Risks / Release Notes
 
 - Historical paid records without a frozen destination remain explicitly “未记录”; current bank data must never be substituted.
@@ -476,6 +500,30 @@
 - User authorization: `selected-for-commit`; evidence: user explicitly selected these three canonical CRLs for commit; push authorization must be renewed after exact commit SHAs exist
 - Independent review: `GO`; evidence: narrow independent re-review verified the exact fingerprint, clean ignored/untracked state, corrected CRL labels, 16-file / 129-hunk gate and retained validation evidence with no P0/P1 findings; Phase 1/3/5 not being wired into standard CI remains a non-blocking P2 follow-up
 - Action conclusion: `GO`; evidence: exact staged candidate is approved for the commit action only
+
+#### RA-20261006-004
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261003-003`, `CRL-20261005-003`
+- Selected CRL identities: `root/CRL-20261003-003`, `root/CRL-20261005-003`
+- Intended action: `push`
+- Branch: `codex/settlement-workflow-paid-pdf-20261005`
+- Base: `origin/Dev@1675fd7a7d81f0db959934435e1d8cc5c7ac9783`; freshly fetched at `2026-10-06T01:23:53+1100` and confirmed unchanged
+- Candidate patch SHA-256: `eb75e871acf9d6bcb787d8c916dc05a83097c3e0bee897c8838c2b00deb4ca9f` excluding `docs/change-release-ledger.md`
+- Candidate content commit SHA: `8d9ec5d2e651a92e00e78d7bb81dbcc24c53d592`
+- Commit SHA: `8d9ec5d2e651a92e00e78d7bb81dbcc24c53d592`
+- Dependencies: `mobile/CRL-20261003-001@d66b0aff376c62f40e42649307eab1307fdd89bb`
+- Required validation: `PASS`; evidence: committed Root range retains the reviewed Phase 1/3/5 contracts, backend TypeScript/build, frontend targeted 10/10 tests, frontend TypeScript/lint/Next build, Feature Registry audit, ledger coverage and diff check; database-writing integration tests were intentionally not run
+- Shared-hunk review: `PASS`; evidence: exact committed Root range contains only the two selected CRLs and their jointly owned settlement workflow/test/registry hunks; FR-031/FR-032 and latest Dev media-storage protections remain unchanged
+- Generated-file review: `PASS`; evidence: clean release worktree contains no generated, ignored, untracked, dependency-link or cache path
+- Sensitive-information review: `PASS`; evidence: exact committed range contains no `.env`, credential, token, cookie, private key, database URL or sensitive log
+- Cross-repository dependency verification: paired Mobile exact range `origin/Dev@a026b2ed6b1a2771550ca81ce3e1f5deda66b9ba...cb0aae63f6549209ae4ff73964491f506b9a68b5` resolves candidate content commit `d66b0aff376c62f40e42649307eab1307fdd89bb` and unchanged fingerprint `6ee847e1e2e7a4e527b8871d5bbf26497309877664ffff112564b943a178236e`
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after receiving the exact Root branch/HEAD `codex/settlement-workflow-paid-pdf-20261005@63827df23d4de9e00754969620d0a68e5764d305`, Mobile branch/HEAD `codex/settlement-workflow-mobile-20261005@cb0aae63f6549209ae4ff73964491f506b9a68b5`, and the explicit separation from PR/merge/deployment/OTA, the user instructed “推送” on 2026-10-06; this authorizes only normal non-force push of these exact selected candidates and their ledger-only release receipts
+- Remote preflight: `PASS`; evidence: fresh fetch confirmed `origin/Dev` unchanged and `git ls-remote --heads origin refs/heads/codex/settlement-workflow-paid-pdf-20261005` returned no branch
+- Independent review: `GO for ledger-only review receipt commit and controlled push`; evidence: independent read-only push review verified live Root base/HEAD/content ancestry, unchanged fingerprint `eb75e871acf9d6bcb787d8c916dc05a83097c3e0bee897c8838c2b00deb4ca9f`, 16 selected paths / 129 non-ledger hunks, the paired Mobile exact range and fingerprint, absent remote target branch, clean generated/sensitive boundary and approved authorization; P0/P1 are zero, with the previously accepted Phase 1/3/5 standard-CI coverage gap retained as non-blocking P2
+- Action conclusion: `GO`; evidence: permits only this same ledger-only review receipt commit, final exact-range audit with the paired cross-repository evidence as the only explained tool limitation, unchanged remote preflight, and one explicit-refspec normal non-force push; PR, merge, deployment and production writes remain unauthorized
+- Remote / PR / deployment evidence: not pushed; PR not created; not merged; not deployed; production/device verification not run
 
 ### Risks / Release Notes
 
