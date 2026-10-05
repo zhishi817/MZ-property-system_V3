@@ -1,5 +1,114 @@
 # Change Release Ledger
 
+## CRL-20261004-002 — 清洁开始超时诊断扫描默认关闭
+
+- **Status:** verified candidate（隔离工作树与固定 Preview 均通过目标核验；已获本 CRL 提交授权；尚未提交）
+- **Repository:** `root`
+- **Updated:** 2026-10-05 00:48 UTC
+- **Request:** 停止没有业务作用的 15 分钟清洁开始超时检查持续唤醒生产数据库；只改这一项，不扩大到 Mobile SSE 或其他后台任务。
+- **Outcome:** 原先随 `FEATURE_CLEANING_APP=true` 自动注册的清洁超时日志扫描改为独立显式开启且默认关闭；关闭路径不注册 cron、不启动任务、不查询数据库。
+
+### Implementation
+
+- Previous behavior: 后端监听成功后，只要清洁功能开启且 PostgreSQL 可用，就按默认 `*/15 * * * *` 查询当天全部 `scheduled` 清洁任务；超过阈值时只写日志，没有通知、状态更新或用户界面消费。
+- New behavior: 新增 `CLEANING_START_TIMEOUT_ENABLED` 独立门禁。该值未配置或不为 `true` 时立即返回；只有该值与 `FEATURE_CLEANING_APP` 都为 `true` 且 PostgreSQL 可用时，才注册原有 cron 和日志扫描。
+- Safety boundary: 通知 worker、清洁同步、同步重试、快速 backfill 与其他后台任务保持原状；不改查询内容、阈值/cron 配置或显式启用后的诊断语义。
+- Production boundary: 本候选未修改 Render 环境变量、Neon 数据、运行中服务或部署；生产仍运行已部署代码，直到另行授权发布。
+
+### Files / Areas
+
+- `backend/src/services/cleaningStartTimeoutSchedule.ts` — 新增：独立解析门禁并注册清洁超时扫描；默认关闭路径在任何调度或查询前返回。
+- `backend/src/index.ts` — 修改：用独立调度模块替换内联 15 分钟扫描。
+- `backend/scripts/tests/test_cleaning_start_timeout_schedule.ts` — 新增：默认/显式关闭零注册零查询、显式开启、无启动即查与相邻任务保护。
+- `backend/package.json` — 修改：登记目标测试命令。
+- `package.json` — 修改：把目标测试接入 `check:backend` 和 `check:fast`。
+- `docs/feature-regression-registry.md` — 修改：新增 FR-034 默认关闭和相邻调度隔离不变量。
+- `docs/execution-records.md` — 修改：记录已确认范围、实施结果和未发布边界。
+- `docs/change-release-ledger.md` — 修改：记录本变更和验证证据。
+
+### Impact / Dependencies
+
+- API / user behavior: 无 API、响应、UI 或 Mobile 行为变化；只停止默认后台诊断扫描。
+- Database / migration: 无 schema 或数据变更。发布后默认不再由该任务每 15 分钟查询 `cleaning_tasks`。
+- Config / dependencies: 新增可选开关 `CLEANING_START_TIMEOUT_ENABLED`，默认 false；无新增依赖。
+- Risks: 若生产显式把新开关设为 true，扫描会恢复；停止该纯日志扫描会失去对应逾时日志，但不会关闭实际清洁任务处理、通知或同步。
+- Excluded: Mobile SSE、其他 worker/cron、Render/Neon 配置、生产数据库访问、服务启停、固定 Preview Git 动作、PR、merge 和部署。当前候选只进入 commit 闸门；feature-branch push 在精确 commit SHA 产生后单独核验和登记。
+
+### Validation
+
+- `npm run test:cleaning-start-timeout-schedule --prefix backend` — passed：开关缺失/false 时零调度零查询；显式开启保留 cron/阈值且注册时不立即查询；相邻后台调度标记仍存在。
+- `npm run test:cleaning-rules --prefix backend` — passed。
+- `npm run test:cleaning-sync-v2 --prefix backend` — passed。
+- `./backend/node_modules/.bin/tsc -p backend/tsconfig.json --noEmit` — passed（隔离工作树临时链接现有依赖，随后移除）。
+- `./backend/node_modules/.bin/tsc -p backend/tsconfig.json --outDir /tmp/mz-cleaning-timeout-build.w6JHdH` — passed；输出位于 `/tmp`，候选工作树没有构建产物。
+- 固定 Preview 窄范围同步后，目标测试与后端 TypeScript no-emit 均 passed；同步前的 6 个既有文件已备份到 `/tmp/mz-preview-cleaning-timeout-backup.aG8GOJ`，未覆盖同时进行的闲置停机与其他开发改动。
+- `npm run check:backend` — selected Root backend scope passed through build、目标/相邻清洁测试及其余后端合同；最后一个跨仓库 Phase 5 合同因隔离 Root 候选未包含 Mobile checkout 而停止，不是本 CRL 断言失败。
+- `npm run check:frontend` — passed：lint 仅既有 warnings、52 files / 260 tests、production build 均通过。
+- `npm run check:full` — not passed：使用最新 paired Mobile `origin/Dev@a026b2ed6b1a2771550ca81ce3e1f5deda66b9ba` 时，Feature Registry 因该远端基线缺少 Root 已登记的既有 Mobile 测试文件而失败；本 CRL 不修改 Mobile 或跨仓库注册记录，未用未提交 Mobile 内容掩盖缺口。
+- Feature Registry（Mobile 未检出时按既有 deferred 规则）、CRL 覆盖审计、质量工作流合同与 `git diff --check` — passed。
+- 未执行生产数据库、真实 cron、Render/Neon 配置或生产发布验证。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** passed；候选来自独立 `origin/Dev` 工作树，没有未跟踪文件、依赖链接、缓存或构建生成物。
+- `backend/package.json` — SHA-256: `15480e4e09665310b5582a79745096e3e1da7501b7bb7956f8e4d49d9fc06b02`
+- `backend/scripts/tests/test_cleaning_start_timeout_schedule.ts` — SHA-256: `14740e9f488e48ac1216b8a14c93b057d870d156b3cb556528ae5e705d00ccde`
+- `backend/src/index.ts` — SHA-256: `27a225002ee4bef7060f5cb3be75abccfce951475bf2e6e10df88b67df211c55`
+- `backend/src/index.ts` — SHA-256: `a6ec9662a4dd6413db558a068905c8120ea850661a30e560f41ddb5a172c7d04`
+- `backend/src/services/cleaningStartTimeoutSchedule.ts` — SHA-256: `44b774f3b015098e714d432a0b881ef6a3c0daed45e0d685bed75fc6de87dd14`
+- `docs/execution-records.md` — SHA-256: `1cfbfc577462a2ad82960d0f132a7282eb156c5754b27a818d06d8da3624fa5b`
+- `docs/feature-regression-registry.md` — SHA-256: `7e68128a0d27556f997468bdf0fca8d006f5b25c7816a981c18f32833ac20f20`
+- `package.json` — SHA-256: `6b93ff686d6e2f86a0b6d2b8bfa1974e405104bf7160043f573eac8d0b34d52d`
+- `package.json` — SHA-256: `a0e21644b222a83ee6fce9a42d2f6c03e0be10c71e2fbee900395725385466cf`
+
+### Release Attempts
+
+#### RA-20261005-cleaning-timeout-commit
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261004-002`
+- Selected CRL identities: `root/CRL-20261004-002`
+- Intended action: `commit`
+- Branch: `codex/cleaning-timeout-default-off-20261004`
+- Base ref / SHA: `origin/Dev` / `8f9e2be95a696209de3180f4f51a58da79f516f6`
+- Base: `origin/Dev@8f9e2be95a696209de3180f4f51a58da79f516f6`; fetched at `2026-10-05T00:35:00Z`
+- Candidate patch SHA-256: `bb2abc6aee3d9f39ce77fdb7787611701889ec4590930f8f8676dba430b7274b`（excluding `docs/change-release-ledger.md`；supersedes the first-review candidate after restoring exact legacy config parsing and adding the PostgreSQL-unavailable regression）
+- Candidate content commit SHA: `f89d0d03d715921d2720ac2df282bd2fe4a38a69`
+- Commit SHA: `f89d0d03d715921d2720ac2df282bd2fe4a38a69`
+- Dependencies: none
+- Required validation: `PASS` for the selected Root backend scope；evidence: target/default-off contract, cleaning rules/sync v2, backend TypeScript/build, all backend checks before the unrelated cross-repository Phase 5 fixture, frontend lint/52 files 260 tests/build, Feature Registry deferred-mobile mode, CRL audit and diff check passed. `check:full` remains NOT VERIFIED because current paired Mobile `origin/Dev` lacks pre-existing Root-registry test paths; no Mobile file is selected or changed by this CRL.
+- Shared-hunk review: `PASS`；evidence: all 8 candidate paths were created or changed only for root/CRL-20261004-002 in a clean origin/Dev worktree; shared startup/package/governance files were reviewed at hunk level and other schedulers remain unchanged.
+- Generated-file review: `PASS`；evidence: backend/frontend build outputs, caches and temporary dependency/mobile links were removed from the candidate; no generated path is selected.
+- Sensitive-information review: `PASS`；evidence: candidate contains no `.env`, credentials, token, database URL, private key, cookie or production log material.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`；evidence: user explicitly instructed “先提交推送root/CRL-20261004-002”; push remains a separate post-commit range gate.
+- Independent review: `GO for commit`；evidence: fresh independent read-only review recomputed fingerprint `bb2abc6aee3d9f39ce77fdb7787611701889ec4590930f8f8676dba430b7274b`, inspected all 8 staged files / 9 non-ledger hunks, independently reran the pre-commit gate and target test, verified the first-review authorization/config-parsing findings are closed, and found no P0/P1. Accepted P2s: fixed Preview still has the first-review source/test version, and paired Mobile `origin/Dev` prevents a complete `check:full`; neither changes the isolated Root candidate.
+- Action conclusion: `GO`；the exact reviewed candidate was committed locally as `f89d0d03d715921d2720ac2df282bd2fe4a38a69`. Push, PR, merge and deployment remain separate actions.
+
+#### RA-20261005-cleaning-timeout-push
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261004-002`
+- Selected CRL identities: `root/CRL-20261004-002`
+- Intended action: `push`
+- Branch: `codex/cleaning-timeout-default-off-20261004`
+- Base ref / SHA: `origin/Dev` / `8f9e2be95a696209de3180f4f51a58da79f516f6`
+- Base: `origin/Dev@8f9e2be95a696209de3180f4f51a58da79f516f6`; fetched at `2026-10-05T00:35:00Z`
+- Candidate patch SHA-256: `bb2abc6aee3d9f39ce77fdb7787611701889ec4590930f8f8676dba430b7274b`（excluding `docs/change-release-ledger.md`）
+- Candidate content commit SHA: `f89d0d03d715921d2720ac2df282bd2fe4a38a69`
+- Commit SHA: `f89d0d03d715921d2720ac2df282bd2fe4a38a69`
+- Dependencies: none
+- Required validation: `PASS` for the selected Root backend scope；evidence: unchanged exact content commit retains the target/default-off, legacy-config, PostgreSQL-unavailable, adjacent cleaning, TypeScript/build, frontend and governance evidence from the commit attempt. Paired-Mobile `check:full` remains an unrelated P2 gap.
+- Shared-hunk review: `PASS`；evidence: exact `origin/Dev...f89d0d03` range contains only the selected CRL's reviewed Root hunks; other schedulers remain unchanged.
+- Generated-file review: `PASS`；evidence: exact content range contains no generated paths; local build outputs, caches and temporary links were excluded and removed.
+- Sensitive-information review: `PASS`；evidence: exact content range contains no configured sensitive file or credential pattern.
+- Technical state: `pushed`
+- User authorization: `approved-for-push`；evidence: after receiving repository `root`, exact commit `f89d0d03d715921d2720ac2df282bd2fe4a38a69`, branch `codex/cleaning-timeout-default-off-20261004`, normal non-force boundary and the explicit exclusion of PR/merge/deploy, the user replied “推送”. Authorization includes the necessary pure-ledger receipts only.
+- Independent review: `GO for this ledger-only authorization/review receipt, one conditional normal non-force initial push, and one conditional post-push ledger-only outcome receipt fast-forward`；evidence: independent read-only review verified the exact post-SHA authorization, base → content commit ancestry, unchanged fingerprint `bb2abc6aee3d9f39ce77fdb7787611701889ec4590930f8f8676dba430b7274b`, 8 selected files / 9 non-ledger hunks, ledger-only staged scope, generated/sensitive boundaries, fresh `origin/Dev` and absent target remote branch. No P0/P1 was found. Accepted non-blocking P2s: paired-Mobile baseline files prevent complete `check:full`, and fixed Preview retains the first-review source/test version. The initial push is allowed only after a clean exact range report GO and unchanged remote preflight; the single outcome receipt is allowed only after verifying the initial remote SHA and may update only remote SHA/time, technical state and action evidence.
+- Action conclusion: `GO`；the explicit-refspec normal non-force initial push succeeded at `2026-10-05T01:09:44Z`, and `git ls-remote` matched `origin/codex/cleaning-timeout-default-off-20261004@fae15a578264747caa1b84e225a99ec27c0eeaca`. The GitHub Actions read-only API returned zero workflow runs for that SHA, consistent with the repository workflow filters not matching this feature-branch push; this records “not triggered”, not “CI passed”. Commit and normal-fast-forward this exact ledger-only outcome receipt once if its ledger-only gate, clean exact range report and immediate expected-head preflight pass. PR, merge, deployment and production changes remain unauthorized.
+
 ## CRL-20261003-001 — 任务参与者照片可见性与问题反馈历史任务上下文修复
 
 - **Status:** verified（用户已选择本地提交；最终精确 staged gate 与独立复审均为 GO）

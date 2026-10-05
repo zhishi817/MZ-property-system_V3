@@ -55,6 +55,7 @@ import publicAdminRouter from './modules/public_admin'
 import { r2Status } from './r2'
 import { getPlaywrightDiagnostics } from './lib/playwright'
 import { runNotificationQueueCleanup, runNotificationQueueRecoveryOnce, startNotificationQueueWorker } from './services/notificationQueueWorker'
+import { registerCleaningStartTimeoutSchedule } from './services/cleaningStartTimeoutSchedule'
 import { bootstrapCleaningSyncSchemaV2 } from './services/cleaningSync'
 import { warmupR5RequestSchema, warmupR5TaskRuntimeSchema } from './lib/r5RequestSchema'
 import { warmupMaintenanceRuntimeSchema } from './lib/maintenanceRuntimeSchema'
@@ -624,35 +625,17 @@ function onServerListening() {
   console.log(`[DBInfo] query failed message=${String(e?.message || '')}`)
   }
   })()
-  ;(async () => {
-    try {
-      const enableCleaning = String(process.env.FEATURE_CLEANING_APP || 'false').toLowerCase() === 'true'
-      if (enableCleaning && hasPg) {
-        const expr = String(process.env.CLEANING_START_TIMEOUT_CRON || '*/15 * * * *')
-        const threshMin = Number(process.env.CLEANING_START_TIMEOUT_MINUTES || 60)
-        const task = cron.schedule(expr, async () => {
-          try {
-            const sql = `select id, assignee_id, scheduled_at, key_photo_uploaded_at from cleaning_tasks where date=now()::date and status='scheduled'`
-            const rs = await pgPool!.query(sql)
-            for (const r of (rs?.rows || [])) {
-              const sch = r.scheduled_at ? new Date(r.scheduled_at) : null
-              const hasKeyPhoto = !!r.key_photo_uploaded_at
-              if (!sch || hasKeyPhoto) continue
-              const diff = Date.now() - sch.getTime()
-              if (diff > threshMin * 60 * 1000) {
-                console.log(`[cleaning-timeout] task=${r.id} assignee=${r.assignee_id} overdue_minutes=${Math.round(diff/60000)}`)
-              }
-            }
-          } catch (e: any) {
-            console.error(`[cleaning-timeout] error message=${String(e?.message || '')}`)
-          }
-        }, { scheduled: true })
-        task.start()
-      }
-    } catch (e: any) {
-      console.error(`[cleaning-timeout] init error message=${String(e?.message || '')}`)
-    }
-  })()
+  try {
+    registerCleaningStartTimeoutSchedule({
+      env: process.env,
+      hasPg,
+      pgPool,
+      schedule: cron.schedule.bind(cron),
+      logger: console,
+    })
+  } catch (e: any) {
+    console.error(`[cleaning-timeout] init error message=${String(e?.message || '')}`)
+  }
   ;(async () => {
     try {
       const fastEnabled = String(process.env.CLEANING_BACKFILL_FAST_ENABLED || 'false').toLowerCase() === 'true'

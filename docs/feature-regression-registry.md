@@ -7,6 +7,49 @@
 - 测试映射必须说明保护点和测试场景；只登记测试文件名不算覆盖证据。
 - `sufficient` 表示当前测试覆盖该保护点；`partial` 表示已有测试但仍有缺口；`not-wired` 表示测试存在但尚未进入对应质量检查；`missing` 表示尚无测试。
 
+## FR-034：清洁开始超时诊断扫描必须显式启用
+
+- **维护责任范围：** backend
+- **最后审查日期：** 2026-10-04
+- **状态：** active
+
+### 业务保护规则
+
+- `CLEANING_START_TIMEOUT_ENABLED` 未配置或不为 `true` 时，即使 `FEATURE_CLEANING_APP=true`，后端也不得注册清洁开始超时 cron、启动任务或查询 `cleaning_tasks`。
+- 只有独立开关与清洁功能开关都显式为 `true` 且 PostgreSQL 可用时，才允许按 `CLEANING_START_TIMEOUT_CRON` 注册扫描；注册本身不得立即执行数据库查询。
+- 显式重新启用时保留原有阈值和日志诊断语义；通知 worker、清洁同步、重试与 backfill 的注册不得随该开关一起关闭。
+
+### 跨层适用范围
+
+- **后端启动：** `onServerListening` 只通过独立调度模块注册该诊断扫描。
+- **配置：** 新增可选 `CLEANING_START_TIMEOUT_ENABLED`；默认关闭，不要求修改数据库或部署平台才能保持关闭语义。
+- **数据库：** 关闭状态不得发出该任务原有的当日 `scheduled` 清洁任务查询；本规则不改变其他合法后台任务的数据库访问。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 默认关闭、显式开启与相邻调度隔离 | `backend/scripts/tests/test_cleaning_start_timeout_schedule.ts` | 覆盖开关缺失/false 时零注册零查询、清洁功能二次门禁、显式开启后仅 cron 回调查询一次，以及其他后台调度入口仍存在 | sufficient | `npm run test:cleaning-start-timeout-schedule --prefix backend` |
+
+### 验证策略
+
+- 运行独立调度契约、清洁规则与清洁同步相邻回归、后端 TypeScript no-emit/隔离输出构建、Feature Registry 与 CRL 审计。
+- 不连接生产数据库，不触发真实 cron，不修改 Render/Neon 配置；生产停止唤醒要在后端发布后由只读平台日志或 Neon 指标确认。
+
+### 最后验证
+
+- **CRL：** root/CRL-20261004-002
+- **Commit：** not committed
+- **日期：** 2026-10-04
+
+### 相关 CRL
+
+- root/CRL-20261004-002：把每 15 分钟清洁开始超时日志扫描改为独立显式开启、默认关闭。
+
+### 非保护范围
+
+- Mobile SSE、其他后台 worker/cron、Render 健康检查、Neon 连接池、生产发布与生产配置。
+
 ## FR-032：固定收入月度应计与月报其他收入
 
 - **维护责任范围：** backend / web
