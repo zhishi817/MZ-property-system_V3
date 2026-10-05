@@ -221,12 +221,12 @@
 - Branch: `codex/settlement-workflow-paid-pdf-20261005`
 - Base: `origin/Dev@1675fd7a7d81f0db959934435e1d8cc5c7ac9783`; fetched at `2026-10-06T00:05:46+1100`
 - Candidate patch SHA-256: `eb75e871acf9d6bcb787d8c916dc05a83097c3e0bee897c8838c2b00deb4ca9f`
-- Commit SHA: not committed
+- Commit SHA: `8d9ec5d2e651a92e00e78d7bb81dbcc24c53d592`
 - Dependencies: paired `mobile/CRL-20261003-001` candidate for the partner-side submission UI; no runtime dependency for the paid-PDF-only behavior
 - Required validation: `PASS`; evidence: Phase 1/3/5 contracts, backend TypeScript/build, frontend targeted 10/10 tests, frontend TypeScript/lint/Next build, Feature Registry audit, ledger coverage and diff check passed; database-writing integration tests were intentionally not run
 - Shared-hunk review: `PASS`; evidence: FR-031/FR-032 review dates match fresh `origin/Dev`; selected settlement hunks retain the latest Dev registry and media-storage protections
 - Generated-file review: `PASS`; evidence: exact ignored backend build outputs, frontend `.next`/coverage/tsbuildinfo, Python cache and temporary dependency symlinks were removed; `git status --ignored --short` reports only the 16 selected staged files
-- Technical state: `candidate`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user explicitly selected these three canonical CRLs for commit; push authorization must be renewed after exact commit SHAs exist
 - Independent review: `GO`; evidence: narrow independent re-review verified the exact fingerprint, clean ignored/untracked state, corrected CRL labels, 16-file / 129-hunk gate and retained validation evidence with no P0/P1 findings; Phase 1/3/5 not being wired into standard CI remains a non-blocking P2 follow-up
 - Action conclusion: `GO`; evidence: exact staged candidate is approved for the commit action only
@@ -467,12 +467,12 @@
 - Branch: `codex/settlement-workflow-paid-pdf-20261005`
 - Base: `origin/Dev@1675fd7a7d81f0db959934435e1d8cc5c7ac9783`; fetched at `2026-10-06T00:05:46+1100`
 - Candidate patch SHA-256: `eb75e871acf9d6bcb787d8c916dc05a83097c3e0bee897c8838c2b00deb4ca9f`
-- Commit SHA: not committed
+- Commit SHA: `8d9ec5d2e651a92e00e78d7bb81dbcc24c53d592`
 - Dependencies: paired `mobile/CRL-20261003-001` candidate for the partner-side submission UI; no runtime dependency for the paid-PDF-only behavior
 - Required validation: `PASS`; evidence: Phase 1/3/5 contracts, backend TypeScript/build, frontend targeted 10/10 tests, frontend TypeScript/lint/Next build, Feature Registry audit, ledger coverage and diff check passed; database-writing integration tests were intentionally not run
 - Shared-hunk review: `PASS`; evidence: FR-031/FR-032 review dates match fresh `origin/Dev`; selected settlement hunks retain the latest Dev registry and media-storage protections
 - Generated-file review: `PASS`; evidence: exact ignored backend build outputs, frontend `.next`/coverage/tsbuildinfo, Python cache and temporary dependency symlinks were removed; `git status --ignored --short` reports only the 16 selected staged files
-- Technical state: `candidate`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user explicitly selected these three canonical CRLs for commit; push authorization must be renewed after exact commit SHAs exist
 - Independent review: `GO`; evidence: narrow independent re-review verified the exact fingerprint, clean ignored/untracked state, corrected CRL labels, 16-file / 129-hunk gate and retained validation evidence with no P0/P1 findings; Phase 1/3/5 not being wired into standard CI remains a non-blocking P2 follow-up
 - Action conclusion: `GO`; evidence: exact staged candidate is approved for the commit action only
