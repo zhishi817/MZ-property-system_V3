@@ -40,6 +40,7 @@ export type PersonnelSettlementAction =
   | 'dispute'
   | 'resolve_dispute'
   | 'return_for_confirmation'
+  | 'approve'
   | 'adjust'
   | 'reopen'
   | 'confirm_paid'
@@ -53,10 +54,11 @@ const ACTION_ALLOWED_STATUSES: Record<PersonnelSettlementAction, PersonnelSettle
   confirm: ['awaiting_confirmation'],
   dispute: ['awaiting_confirmation'],
   resolve_dispute: ['disputed'],
-  return_for_confirmation: ['confirmed'],
+  return_for_confirmation: ['draft', 'confirmed'],
+  approve: ['confirmed'],
   adjust: ['draft'],
   reopen: ['awaiting_confirmation', 'confirmed'],
-  confirm_paid: ['confirmed', 'finance_approved'],
+  confirm_paid: ['finance_approved'],
   void: ['draft', 'awaiting_confirmation', 'confirmed', 'disputed', 'finance_approved'],
 }
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/
@@ -274,8 +276,8 @@ async function refreshBatchStatus(client: Queryable, batchId: string, actorUserI
   let status = 'draft'
   if (counts.get('draft')) status = 'draft'
   else if (counts.get('awaiting_confirmation')) status = 'open_confirmation'
-  else if (counts.get('confirmed') || counts.get('disputed')) status = 'under_finance_review'
-  else if (total > 0 && (counts.get('finance_approved') || 0) + (counts.get('paid') || 0) === total) status = 'finalized'
+  else if (counts.get('confirmed') || counts.get('disputed') || counts.get('finance_approved')) status = 'under_finance_review'
+  else if (total > 0 && (counts.get('paid') || 0) === total) status = 'finalized'
   await client.query(
     `UPDATE personnel_settlement_batches
         SET status=$1,
@@ -437,6 +439,15 @@ export async function getPersonnelWeeklySettlement(input: {
       .filter((line: any) => line.source_type === 'workload_claim')
       .map((line: any) => String(line.source_id || '')),
   )
+  const ruleSnapshot = parseJsonObject(settlement.rule_snapshot)
+  const hasPartnerSubmission = Object.keys(parseJsonObject(ruleSnapshot.partner_submission)).length > 0
+  const financeReviewComparison = !input.requestingUserId
+    && (
+      String(settlement.status) === 'confirmed'
+      || (String(settlement.status) === 'draft' && hasPartnerSubmission)
+    )
+    ? await getPersonnelSettlementFinanceReviewComparison(executor, row, input.settlementId)
+    : null
   return {
     ...settlement,
     payment_destination_preview: paymentDestinationPreview,
@@ -449,6 +460,7 @@ export async function getPersonnelWeeklySettlement(input: {
       ...claim,
       included_in_settlement: includedClaimIds.has(String(claim.id)),
     })),
+    finance_review_comparison: financeReviewComparison,
     phase5_schema_ready: phase5SchemaReady,
   }
 }
@@ -674,6 +686,9 @@ async function loadSettlementForUpdate(client: Queryable, settlementId: string) 
 
 async function assertSettlementReadyForConfirmation(client: Queryable, current: any, settlementId: string) {
   const profile = parseJsonObject(current.profile_snapshot)
+  const ruleSnapshot = parseJsonObject(current.rule_snapshot)
+  const submission = parseJsonObject(ruleSnapshot.partner_submission)
+  const financeReturn = parseJsonObject(ruleSnapshot.finance_return)
   const supplierAbn = cleanText(profile.abn).replace(/\D/g, '')
   if (!cleanText(profile.supplier_legal_name)) throw new Error('settlement_supplier_profile_incomplete')
   if (profile.gst_status === 'registered' && supplierAbn.length !== 11) {
@@ -681,7 +696,12 @@ async function assertSettlementReadyForConfirmation(client: Queryable, current: 
   }
   if (profile.gst_status === 'unconfirmed') throw new Error('settlement_gst_unconfirmed')
   const lineCount = await client.query('SELECT COUNT(*)::int AS count FROM personnel_settlement_lines WHERE settlement_id=$1', [settlementId])
-  if (Number(lineCount.rows?.[0]?.count || 0) < 1) throw new Error('settlement_lines_required')
+  const hasFinanceReturnedZeroSettlement = Number(current.total_cents || 0) === 0
+    && Object.keys(submission).length > 0
+    && Object.keys(financeReturn).length > 0
+  if (Number(lineCount.rows?.[0]?.count || 0) < 1 && !hasFinanceReturnedZeroSettlement) {
+    throw new Error('settlement_lines_required')
+  }
   const unresolvedClaims = await client.query(
     `SELECT COUNT(*)::int AS count
        FROM personnel_workload_claims
@@ -707,11 +727,16 @@ async function assertSettlementReadyForConfirmation(client: Queryable, current: 
     [current.user_id, current.week_start, current.week_end, settlementId],
   )
   if (Number(approvedUnincludedClaims.rows?.[0]?.count || 0) > 0) throw new Error('settlement_claims_pending')
-  const ruleSnapshot = parseJsonObject(current.rule_snapshot)
-  const submission = parseJsonObject(ruleSnapshot.partner_submission)
   if (Array.isArray(submission.blocking_issues) && submission.blocking_issues.length > 0) {
     throw new Error('settlement_calculation_blocked')
   }
+  let comparison: PersonnelSettlementFinanceReviewComparison | null = null
+  if (String(current.status) === 'confirmed') {
+    comparison = await getPersonnelSettlementFinanceReviewComparison(client, current, settlementId)
+    if (comparison.blocking_issues.length > 0) throw new Error('settlement_calculation_blocked')
+    if (comparison.changed) throw new Error('settlement_finance_review_changed')
+  }
+  return comparison
 }
 
 function buildProfileSnapshot(profile: any, userId: string) {
@@ -767,7 +792,12 @@ export function buildPersonnelSettlementSubmissionSnapshot(input: {
   weekEnd: string
   person: any
 }) {
-  const lines = (Array.isArray(input.person?.lines) ? input.person.lines : []).map(serializeSubmissionPreviewLine)
+  const lines = (Array.isArray(input.person?.lines) ? input.person.lines : [])
+    .map(serializeSubmissionPreviewLine)
+    .sort((
+      left: ReturnType<typeof serializeSubmissionPreviewLine>,
+      right: ReturnType<typeof serializeSubmissionPreviewLine>,
+    ) => left.service_date.localeCompare(right.service_date) || left.id.localeCompare(right.id))
   const totals = input.person?.totals || {}
   const snapshot = {
     week_start: cleanText(input.weekStart),
@@ -785,6 +815,103 @@ export function buildPersonnelSettlementSubmissionSnapshot(input: {
   }
 }
 
+export type PersonnelSettlementFinanceReviewComparison = {
+  unresolved_claim_count: number
+  changed: boolean
+  can_pay_without_reconfirmation: boolean
+  partner_line_count: number
+  reviewed_line_count: number
+  partner_subtotal_cents: number
+  partner_gst_cents: number
+  partner_total_cents: number
+  reviewed_subtotal_cents: number
+  reviewed_gst_cents: number
+  reviewed_total_cents: number
+  difference_cents: number
+  blocking_issues: Array<{ source_type: string; source_id: string; code: string }>
+}
+
+export function comparePersonnelSettlementFinanceReview(input: {
+  unresolvedClaimCount: number
+  partnerSnapshot: ReturnType<typeof buildPersonnelSettlementSubmissionSnapshot>
+  reviewedSnapshot: ReturnType<typeof buildPersonnelSettlementSubmissionSnapshot>
+}): PersonnelSettlementFinanceReviewComparison {
+  const unresolvedClaimCount = Math.max(0, Math.trunc(Number(input.unresolvedClaimCount || 0)))
+  const changed = input.partnerSnapshot.confirmation_token !== input.reviewedSnapshot.confirmation_token
+  const blockingIssues = input.reviewedSnapshot.blocking_issues
+  return {
+    unresolved_claim_count: unresolvedClaimCount,
+    changed,
+    can_pay_without_reconfirmation: unresolvedClaimCount === 0 && !changed && blockingIssues.length === 0,
+    partner_line_count: input.partnerSnapshot.line_count,
+    reviewed_line_count: input.reviewedSnapshot.line_count,
+    partner_subtotal_cents: input.partnerSnapshot.subtotal_cents,
+    partner_gst_cents: input.partnerSnapshot.gst_cents,
+    partner_total_cents: input.partnerSnapshot.total_cents,
+    reviewed_subtotal_cents: input.reviewedSnapshot.subtotal_cents,
+    reviewed_gst_cents: input.reviewedSnapshot.gst_cents,
+    reviewed_total_cents: input.reviewedSnapshot.total_cents,
+    difference_cents: input.reviewedSnapshot.total_cents - input.partnerSnapshot.total_cents,
+    blocking_issues: blockingIssues,
+  }
+}
+
+async function getPersonnelSettlementFinanceReviewComparison(
+  client: Queryable,
+  current: any,
+  settlementId: string,
+): Promise<PersonnelSettlementFinanceReviewComparison> {
+  const [unresolvedResult, lineResult, preview] = await Promise.all([
+    client.query(
+      `SELECT COUNT(*)::int AS count
+         FROM personnel_workload_claims
+        WHERE submitter_user_id=$1
+          AND service_date BETWEEN $2::date AND $3::date
+          AND status IN ('draft','submitted','returned')`,
+      [current.user_id, current.week_start, current.week_end],
+    ),
+    client.query(
+      `SELECT component_type, service_date::text, source_type, source_id,
+              description, quantity_numerator, quantity_denominator,
+              unit_rate_cents, subtotal_cents, gst_cents, total_cents, price_basis
+         FROM personnel_settlement_lines
+        WHERE settlement_id=$1
+        ORDER BY service_date, source_id, component_type`,
+      [settlementId],
+    ),
+    buildPersonnelSettlementPreview({
+      week_start: cleanText(current.week_start),
+      user_ids: [cleanText(current.user_id)],
+    }, client),
+  ])
+  const reviewedPerson = (preview.people || []).find(
+    (item: any) => cleanText(item.user_id) === cleanText(current.user_id),
+  )
+  const partnerSnapshot = buildPersonnelSettlementSubmissionSnapshot({
+    weekStart: cleanText(current.week_start),
+    weekEnd: cleanText(current.week_end),
+    person: {
+      lines: lineResult.rows || [],
+      totals: {
+        subtotal_cents: Number(current.subtotal_cents || 0),
+        gst_cents: Number(current.gst_cents || 0),
+        total_cents: Number(current.total_cents || 0),
+      },
+      warnings: [],
+    },
+  })
+  const reviewedSnapshot = buildPersonnelSettlementSubmissionSnapshot({
+    weekStart: cleanText(current.week_start),
+    weekEnd: cleanText(current.week_end),
+    person: reviewedPerson,
+  })
+  return comparePersonnelSettlementFinanceReview({
+    unresolvedClaimCount: Number(unresolvedResult.rows?.[0]?.count || 0),
+    partnerSnapshot,
+    reviewedSnapshot,
+  })
+}
+
 export async function getPersonnelSettlementSubmissionPreview(input: {
   weekStart: string
   userId: string
@@ -796,6 +923,7 @@ export async function getPersonnelSettlementSubmissionPreview(input: {
   const preview = await buildPersonnelSettlementPreview({
     week_start: period.week_start,
     user_ids: [input.userId],
+    include_submitted_claims: true,
   })
   const person = (preview.people || []).find((item: any) => cleanText(item.user_id) === cleanText(input.userId))
   const existing = (await listPersonnelWeeklySettlements({
@@ -809,9 +937,16 @@ export async function getPersonnelSettlementSubmissionPreview(input: {
   })
   return {
     ...snapshot,
-    status: existing?.status || 'not_submitted',
+    status: personnelSettlementSubmissionStatus(existing?.status),
     settlement: existing,
   }
+}
+
+export function personnelSettlementSubmissionStatus(existingStatus: unknown): PersonnelSettlementStatus | 'not_submitted' {
+  const status = cleanText(existingStatus)
+  if (!status || status === 'void') return 'not_submitted'
+  if (!SETTLEMENT_STATUSES.has(status as PersonnelSettlementStatus)) throw new Error('invalid_settlement_status')
+  return status as PersonnelSettlementStatus
 }
 
 export async function submitPersonnelSettlementWeek(input: {
@@ -845,6 +980,7 @@ export async function submitPersonnelSettlementWeek(input: {
       [batch.id, input.userId],
     )
     const existing = existingResult.rows?.[0]
+    const resubmittingVoidedSettlement = String(existing?.status || '') === 'void'
     if (existing && ['confirmed', 'paid', 'finance_approved'].includes(String(existing.status))) return String(existing.id)
     if (existing && String(existing.status) === 'awaiting_confirmation') {
       const updated = await client.query(
@@ -864,6 +1000,7 @@ export async function submitPersonnelSettlementWeek(input: {
     const preview = await buildPersonnelSettlementPreview({
       week_start: period.week_start,
       user_ids: [input.userId],
+      include_submitted_claims: true,
     }, client)
     const person = (preview.people || []).find((item: any) => cleanText(item.user_id) === cleanText(input.userId))
     const submissionSnapshot = buildPersonnelSettlementSubmissionSnapshot({
@@ -877,6 +1014,7 @@ export async function submitPersonnelSettlementWeek(input: {
     const profile = person?.profile || person?.effective_profiles?.[0] || null
     const lines = Array.isArray(person?.lines) ? person.lines : []
     const blockingIssues = submissionBlockingIssues(person)
+    if (blockingIssues.length) throw new Error('settlement_calculation_blocked')
     const now = new Date().toISOString()
     const ruleSnapshot = {
       calculation_version: preview.calculation_version,
@@ -887,6 +1025,10 @@ export async function submitPersonnelSettlementWeek(input: {
         submitted_at: now,
         blocking_issues: blockingIssues,
         confirmation_token: submissionSnapshot.confirmation_token,
+        line_count: submissionSnapshot.line_count,
+        subtotal_cents: submissionSnapshot.subtotal_cents,
+        gst_cents: submissionSnapshot.gst_cents,
+        total_cents: submissionSnapshot.total_cents,
       },
     }
     const totals = person?.totals || { subtotal_cents: 0, gst_cents: 0, total_cents: 0 }
@@ -899,7 +1041,12 @@ export async function submitPersonnelSettlementWeek(input: {
                 subtotal_cents=$3, gst_cents=$4, total_cents=$5,
                 status='confirmed', workload_amount_confirmed_at=now(),
                 workload_amount_confirmation_note='合作方已提交本周工作量',
-                disputed_at=NULL, dispute_note=NULL, updated_at=now()
+                disputed_at=NULL, dispute_note=NULL,
+                finance_reviewed_by=NULL, finance_reviewed_at=NULL,
+                supplier_invoice_number=NULL, invoice_media_id=NULL, invoice_generated_at=NULL,
+                company_expense_id=NULL, paid_by=NULL, paid_at=NULL,
+                payment_reference=NULL, payment_destination_snapshot=NULL,
+                updated_at=now()
           WHERE id=$6`,
         [JSON.stringify(buildProfileSnapshot(profile, input.userId)), JSON.stringify(ruleSnapshot), totals.subtotal_cents, totals.gst_cents, totals.total_cents, id],
       )
@@ -915,7 +1062,7 @@ export async function submitPersonnelSettlementWeek(input: {
     }
     for (const line of lines) await insertPersonnelSettlementLine(client, id, line)
     const saved = await loadSettlementForUpdate(client, id)
-    await insertAudit(client, 'personnel_weekly_settlement', id, existing ? 'partner_resubmit' : 'partner_submit', input.userId, existing ? settlementAuditSummary(existing) : null, {
+    await insertAudit(client, 'personnel_weekly_settlement', id, resubmittingVoidedSettlement ? 'partner_resubmit_after_void' : existing ? 'partner_resubmit' : 'partner_submit', input.userId, existing ? settlementAuditSummary(existing) : null, {
       ...settlementAuditSummary(saved),
       blocking_issues: blockingIssues,
     })
@@ -980,6 +1127,17 @@ export async function returnPersonnelSettlementForConfirmation(input: {
     const deliveryRetry = getPersonnelSettlementReturnDeliveryRetry(current)
     if (deliveryRetry) return deliveryRetry
     assertPersonnelSettlementTransition('return_for_confirmation', current.status)
+    const currentRuleSnapshot = parseJsonObject(current.rule_snapshot)
+    if (
+      String(current.status) === 'draft'
+      && Object.keys(parseJsonObject(currentRuleSnapshot.partner_submission)).length === 0
+    ) {
+      throw new Error('settlement_partner_submission_required')
+    }
+    const financeReviewComparison = await getPersonnelSettlementFinanceReviewComparison(client, current, input.settlementId)
+    if (financeReviewComparison.unresolved_claim_count > 0) throw new Error('settlement_claims_pending')
+    if (financeReviewComparison.blocking_issues.length > 0) throw new Error('settlement_calculation_blocked')
+    if (!financeReviewComparison.changed) throw new Error('settlement_finance_review_unchanged')
     const preview = await buildPersonnelSettlementPreview({
       week_start: cleanText(current.week_start),
       user_ids: [cleanText(current.user_id)],
@@ -988,10 +1146,12 @@ export async function returnPersonnelSettlementForConfirmation(input: {
     const blockingIssues = submissionBlockingIssues(person)
     if (blockingIssues.length) throw new Error('settlement_calculation_blocked')
     const lines = Array.isArray(person?.lines) ? person.lines : []
-    if (!lines.length) throw new Error('settlement_lines_required')
-    const profile = person?.profile || person?.effective_profiles?.[0] || null
+    if (!lines.length && financeReviewComparison.reviewed_total_cents !== 0) {
+      throw new Error('settlement_lines_required')
+    }
+    const profile = person?.profile || person?.effective_profiles?.[0] || parseJsonObject(current.profile_snapshot)
     const confirmationRevision = new Date().toISOString()
-    const ruleSnapshot = parseJsonObject(current.rule_snapshot)
+    const ruleSnapshot = currentRuleSnapshot
     ruleSnapshot.calculation_version = preview.calculation_version
     ruleSnapshot.source_cutoff_at = confirmationRevision
     ruleSnapshot.applied_rule_ids = Array.from(new Set(lines.map((line: any) => cleanText(line.rule_id)).filter(Boolean)))
@@ -1010,6 +1170,7 @@ export async function returnPersonnelSettlementForConfirmation(input: {
       revision: confirmationRevision,
       round: 'finance_return',
     }
+    ruleSnapshot.finance_adjustment = null
     await client.query('DELETE FROM personnel_settlement_lines WHERE settlement_id=$1', [input.settlementId])
     for (const line of lines) await insertPersonnelSettlementLine(client, input.settlementId, line)
     const totals = person?.totals || { subtotal_cents: 0, gst_cents: 0, total_cents: 0 }
@@ -1490,6 +1651,44 @@ export function validatePersonnelSettlementPayment(input: {
   return { payment_date: paymentDate }
 }
 
+export async function approvePersonnelSettlementFinanceReview(input: {
+  settlementId: string
+  actorUserId: string
+}) {
+  assertPersonnelSettlementSchemaReady()
+  if (!pgPool) throw new Error('pg_required')
+  await pgRunInTransaction(async (client) => {
+    const current = await loadSettlementForUpdate(client, input.settlementId)
+    if (String(current.status) === 'finance_approved') return
+    assertPersonnelSettlementTransition('approve', current.status)
+    const comparison = await assertSettlementReadyForConfirmation(client, current, input.settlementId)
+    if (!comparison?.can_pay_without_reconfirmation) throw new Error('settlement_finance_review_changed')
+    const updated = await client.query(
+      `UPDATE personnel_weekly_settlements
+          SET status='finance_approved', finance_reviewed_by=$1,
+              finance_reviewed_at=now(), updated_at=now()
+        WHERE id=$2
+        RETURNING *`,
+      [input.actorUserId, input.settlementId],
+    )
+    await insertAudit(client, 'personnel_weekly_settlement', input.settlementId, 'approve', input.actorUserId, settlementAuditSummary(current), {
+      ...settlementAuditSummary(updated.rows[0]),
+      finance_review_comparison: comparison,
+    })
+    await refreshBatchStatus(client, current.batch_id, input.actorUserId)
+  })
+  let documentWarning: string | null = null
+  if (await isPersonnelSettlementPhase5SchemaReady(pgPool)) {
+    try {
+      await ensurePersonnelSettlementDocument({ settlementId: input.settlementId, actorUserId: input.actorUserId })
+    } catch {
+      documentWarning = 'settlement_document_generation_failed'
+    }
+  }
+  const settlement = await getPersonnelWeeklySettlement({ settlementId: input.settlementId })
+  return documentWarning ? { ...settlement, document_warning: documentWarning } : settlement
+}
+
 export async function confirmPersonnelSettlementPaid(input: {
   settlementId: string
   actorUserId: string
@@ -1575,7 +1774,8 @@ export async function confirmPersonnelSettlementPaid(input: {
     }
     const updated = await client.query(
       `UPDATE personnel_weekly_settlements
-          SET status='paid', finance_reviewed_by=$1, finance_reviewed_at=now(),
+          SET status='paid', finance_reviewed_by=COALESCE(finance_reviewed_by,$1),
+              finance_reviewed_at=COALESCE(finance_reviewed_at,now()),
               paid_by=$1, paid_at=($2::date::timestamp AT TIME ZONE 'Australia/Melbourne'),
               payment_destination_snapshot=$3::jsonb,
               company_expense_id=$4, updated_at=now()

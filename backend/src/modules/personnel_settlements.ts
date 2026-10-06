@@ -55,6 +55,7 @@ import {
 import { CLEANING_IMAGE_FORMAT_ERROR } from '../lib/cleaningMediaImage'
 import {
   adjustPersonnelSettlement,
+  approvePersonnelSettlementFinanceReview,
   confirmPersonnelSettlementPaid,
   getPersonnelSettlementSubmissionPreview,
   getPersonnelWeeklySettlement,
@@ -253,6 +254,8 @@ function errorStatus(error: any) {
     || code === 'duplicate_approved_claim'
     || code === 'claim_evidence_media_conflict'
     || code === 'settlement_claims_pending'
+    || code === 'settlement_finance_review_changed'
+    || code === 'settlement_finance_review_unchanged'
   ) return 409
   if (code === 'claim_evidence_file_too_large') return 413
   if (code === 'image_format_unsupported' || error?.code === CLEANING_IMAGE_FORMAT_ERROR) return 415
@@ -939,7 +942,14 @@ router.post(
 )
 
 router.post('/weekly/:settlementId/approve', requirePerm('finance.payout'), async (req, res) => {
-  return res.status(410).json({ code: 'settlement_approval_step_removed' })
+  try {
+    return res.json(await approvePersonnelSettlementFinanceReview({
+      settlementId: String(req.params.settlementId || ''),
+      actorUserId: String((req as any).user?.sub || ''),
+    }))
+  } catch (error: any) {
+    return sendProfileError(res, error)
+  }
 })
 
 router.post(

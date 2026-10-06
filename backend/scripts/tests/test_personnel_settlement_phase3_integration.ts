@@ -13,6 +13,7 @@ import {
 } from '../../src/lib/personnelWorkloadClaims'
 import {
   adjustPersonnelSettlement,
+  approvePersonnelSettlementFinanceReview,
   confirmPersonnelSettlementPaid,
   generatePersonnelSettlementWeek,
   getPersonnelWeeklySettlement,
@@ -410,6 +411,21 @@ async function main() {
       if (userId !== users.inspector) {
         await respondPersonnelSettlement({ settlementId: settlement.id, userId, action: 'confirm', note: 'Workload and amount correct' })
       }
+    }
+
+    await expectReject(() => confirmPersonnelSettlementPaid({
+      settlementId: byUser.get(users.cleaner)!.id,
+      actorUserId: ACTOR_ID,
+      payment: { payment_date: '2026-09-11' },
+    }), /settlement_transition_invalid/)
+    for (const settlement of byUser.values()) {
+      const approved: any = await approvePersonnelSettlementFinanceReview({
+        settlementId: settlement.id,
+        actorUserId: ACTOR_ID,
+      })
+      assert.strictEqual(approved.status, 'finance_approved')
+      assert.strictEqual(approved.finance_reviewed_by, ACTOR_ID)
+      assert.ok(approved.finance_reviewed_at)
     }
 
     const beforePayment: any = await getPersonnelWeeklySettlement({ settlementId: byUser.get(users.cleaner)!.id, includeBankDetails: true })

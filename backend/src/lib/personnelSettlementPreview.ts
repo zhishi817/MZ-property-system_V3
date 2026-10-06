@@ -63,6 +63,7 @@ type Rule = {
 
 type ClaimRow = {
   id: string
+  status: 'submitted' | 'approved'
   submitter_user_id: string
   service_date: string
   claim_type: SettlementComponentType
@@ -72,6 +73,7 @@ type ClaimRow = {
   approved_duration_minutes: number | null
   requested_quantity: string | number | null
   approved_quantity: string | number | null
+  requested_amount_cents: string | number | null
   approved_amount_cents: string | number | null
   note: string | null
 }
@@ -191,6 +193,7 @@ function newPerson(userId: string, userName?: string | null): PersonPreview {
 export async function buildPersonnelSettlementPreview(input: {
   week_start: string
   user_ids?: string[]
+  include_submitted_claims?: boolean
 }, executor: Queryable | null = pgPool) {
   if (!executor) throw new Error('pg_required')
   const period = buildSettlementPeriod(input.week_start)
@@ -262,15 +265,16 @@ export async function buildPersonnelSettlementPreview(input: {
       [...params, ['submit_inspection']],
     ),
     executor.query(
-      `SELECT id, submitter_user_id, service_date::text, claim_type, property_id,
+      `SELECT id, status, submitter_user_id, service_date::text, claim_type, property_id,
               cleaning_task_id, duration_minutes, approved_duration_minutes,
-              requested_quantity, approved_quantity, approved_amount_cents, note
+              requested_quantity, approved_quantity,
+              requested_amount_cents, approved_amount_cents, note
          FROM personnel_workload_claims
-        WHERE status = 'approved'
+        WHERE status = ANY($4::text[])
           AND service_date BETWEEN $1::date AND $2::date
           AND ($3::text[] IS NULL OR submitter_user_id = ANY($3::text[]))
         ORDER BY service_date, id`,
-      params,
+      [...params, input.include_submitted_claims ? ['approved', 'submitted'] : ['approved']],
     ),
     executor.query(
       `SELECT t.id::text AS task_id,
@@ -585,16 +589,24 @@ export async function buildPersonnelSettlementPreview(input: {
   }
 
   for (const claim of claims) {
-    const approvedAmount = claim.approved_amount_cents == null
+    const useSubmittedValues = claim.status === 'submitted'
+    const selectedAmount = useSubmittedValues ? claim.requested_amount_cents : claim.approved_amount_cents
+    const approvedAmount = selectedAmount == null
       ? null
-      : toSafeNonNegativeInteger(claim.approved_amount_cents, 'approved_amount_cents')
+      : toSafeNonNegativeInteger(selectedAmount, useSubmittedValues ? 'requested_amount_cents' : 'approved_amount_cents')
     let ratio: { numerator: number; denominator: number } | null = null
     if (approvedAmount == null) {
       if (claim.claim_type.endsWith('_hour') || claim.claim_type === 'new_property_task') {
-        const minutes = claim.approved_duration_minutes ?? claim.duration_minutes
+        const minutes = useSubmittedValues
+          ? claim.duration_minutes
+          : claim.approved_duration_minutes ?? claim.duration_minutes
         if (minutes != null) ratio = { numerator: toSafeNonNegativeInteger(minutes, 'duration_minutes'), denominator: 60 }
       } else {
-        ratio = decimalQuantityToRatio(claim.approved_quantity ?? claim.requested_quantity ?? '1')
+        ratio = decimalQuantityToRatio(
+          useSubmittedValues
+            ? claim.requested_quantity ?? '1'
+            : claim.approved_quantity ?? claim.requested_quantity ?? '1',
+        )
       }
     }
     if (approvedAmount == null && !ratio) {
@@ -660,7 +672,8 @@ export async function buildPersonnelSettlementPreview(input: {
       non_cancelled_cleaning_assignments: nonCancelledCleaningAssignments,
       excluded_cancelled_cleaning_assignments: cancelledCleaningAssignments,
       excluded_non_checkout_cleaning_assignments: excludedNonCheckoutCleaningAssignments,
-      approved_claims: claims.length,
+      approved_claims: claims.filter((claim) => !claim.status || claim.status === 'approved').length,
+      submitted_claims: claims.filter((claim) => claim.status === 'submitted').length,
       legacy_tasks_requiring_manual_review: 0,
     },
     excluded_candidates: excludedCandidates,
