@@ -482,7 +482,7 @@
 ## FR-024：订单取消记录位置、更新失败原因与详情日历定位
 
 - **维护责任范围：** backend / web
-- **最后审查日期：** 2026-09-05
+- **最后审查日期：** 2026-10-08
 - **状态：** active
 
 ### 业务保护规则
@@ -490,7 +490,9 @@
 - 订单取消只能改变订单状态及既有金额/任务投影语义；不得覆盖首次邮件时间、入住日期或退房日期。订单列表按邮件时间排序时，取消前后相对位置必须一致；相同或缺失邮件时间时必须由创建时间和订单 ID 形成确定性顺序。
 - 订单日历是记录视图，不是财务收入筛选：取消订单必须以红色状态保留原入住区间，即使该订单不计入收入；取消不能令订单从日历消失或移动到其他日期。
 - `PATCH /orders/:id` 的可预见失败必须返回安全、可读的 `message`、稳定 `code` 与（适用时）`field_errors`。不得把数据库原始错误、SQL 或连接细节返回到网页；系统错误只返回操作编号供服务端追查。
+- 订单状态从非取消切换为取消时，授权必须读取用户全部有效角色与数据库权限的并集，不得只看主角色名称或静态角色种子。`order.write` 只授权普通订单编辑；取消还必须具备 `order.cancel`，结算期锁定时还必须同时具备 `order.cancel.override`。
 - `/orders` 编辑抽屉必须把字段错误显示在相应输入项，并向用户说明权限、结算期锁定、订单不存在、确认码重复、日期不合法或网络连接失败等原因。
+- `/orders` 编辑抽屉的“已取消”选项必须按实际有效 `order.cancel` 权限控制；缺权时禁用并说明原因，只有覆盖权限缺失时提示锁定期边界。已经取消的订单仍可在 `order.write` 范围内编辑其他字段，不得因当前缺少取消权限而被前端整体锁死。
 - 订单详情的“查看日历”必须仅使用当前订单的房源 ID 和入住月份定位日历，关闭详情抽屉；不得通过确认码进行模糊匹配或改变订单数据。
 
 ### 跨层适用范围
@@ -505,24 +507,27 @@
 | 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
 |---|---|---|---|---|
 | PATCH 字段校验、日期错误的具体错误结构，以及取消后首次邮件时间保持不变 | `backend/scripts/tests/test_order_update_error_contract.ts` | 内存订单经真实 PATCH 请求验证 `ORDER_VALIDATION_FAILED`、字段错误、`INVALID_STAY_DATE` 和取消后的 `email_header_at` 不变 | sufficient | `./node_modules/.bin/ts-node --transpile-only scripts/tests/test_order_update_error_contract.ts`（在 `backend`） |
+| 多角色取消权限、普通编辑边界与锁定期覆盖权限 | `backend/scripts/tests/test_order_cancel_permission_contract.ts` | 自定义主角色加客服次角色可使用有效权限并集取消；仅 `order.write` 仍可普通编辑但取消返回 `ORDER_CANCEL_FORBIDDEN` 且记录不变；锁定期要求 `order.cancel` 与 `order.cancel.override` 同时有效 | sufficient | `npm run test:order-cancel-permission --prefix backend`（由 root `check:fast` / `check:backend` / `check:full` 执行） |
 | 取消前后列表位置与同值排序稳定 | `frontend/src/lib/orderSort.test.ts` | 取消仅修改状态时排序不变；相同邮件时间以创建时间/ID 稳定排序 | sufficient | `npm run test --prefix frontend -- --coverage.enabled=false src/lib/orderSort.test.ts` |
+| 编辑抽屉取消选项与有效权限一致 | `frontend/src/lib/orderPermissions.test.ts` | 缺少取消权限时禁用并解释；只有基础取消权限时提示锁定期边界；已有双权限或订单本来已取消时保持正确可用性 | sufficient | `npm run test --prefix frontend -- --coverage.enabled=false --cache=false src/lib/orderPermissions.test.ts` |
 | 日历保留取消记录、详情直接跳转 | `frontend/src/app/orders/page.tsx` | 生产构建覆盖页面编译；管理员浏览器回归需确认红色取消条、正确房号/月和详情抽屉关闭 | partial | `npm run build --prefix frontend`，另行管理员手工回归 |
 
 ### 验证策略
 
-- **后端：** 运行订单 PATCH 契约和 TypeScript no-emit 检查；不连接生产数据库。
-- **Web：** 运行排序单测、lint 与生产构建；发布前以管理员账号确认取消单仍在原日期显示、错误提示/字段提示可读，以及详情“查看日历”定位正确。
+- **后端：** 运行订单 PATCH 与取消权限契约和 TypeScript no-emit 检查；测试只使用内存 store 与本机回环 HTTP，不连接生产数据库。
+- **Web：** 运行取消权限/排序单测、lint 与生产构建；发布前以具备次角色授权的测试账号和仅编辑账号确认取消选项、锁定期错误、已取消订单普通编辑，再以管理员账号确认取消单仍在原日期显示、错误提示/字段提示可读，以及详情“查看日历”定位正确。
 - **生产数据：** 不做历史订单回填、取消重放、邮件同步或数据库写入。
 
 ### 最后验证
 
-- **CRL：** root/CRL-20260905-001
+- **CRL：** root/CRL-20261008-001
 - **Commit：** not committed
-- **日期：** 2026-09-05
+- **日期：** 2026-10-08
 
 ### 相关 CRL
 
 - root/CRL-20260905-001：订单取消位置稳定、更新失败原因与详情日历直达
+- root/CRL-20261008-001：订单取消权限改用有效多角色并集并对齐网页控件
 
 ### 非保护范围
 
@@ -937,7 +942,7 @@
 ## FR-002：自动任务与手动任务合并及字段继承
 
 - **维护责任范围：** backend / web / mobile
-- **最后审查日期：** 2026-08-25
+- **最后审查日期：** 2026-10-07
 - **状态：** active
 
 ### 业务保护规则
@@ -954,6 +959,7 @@
 - 纯入住现场执行任务的检查完成依赖真实执行人 `assignee_id`；任务中心后端计数与网页本地草稿必须把该字段视为已安排，普通清洁任务仍以 `inspector_id` 为检查人。拖入或拖出检查人员行后，刷新不得把任务留在旧人员行。
 - 普通清洁卡已安排检查时，在清洁人员名称下展示“检查：姓名”；纯入住现场执行不把执行人重复显示为普通检查人。
 - 任务中心“未安排”提示对普通退房/清洁任务必须以清洁人员为准；仅分配检查人员时仍必须显示为未安排，检查人员不能代替清洁人员。纯入住现场执行仍以执行人判断。
+- 网页任务中心必须直接读取并合并真实 `checked_out_at`；未开始的相关任务卡显示“已退房”，但不得改写底层 `status`，也不得覆盖进行中、待检查、已清洁或完成等更高优先级流程状态。
 
 ### 跨层适用范围
 
@@ -975,6 +981,7 @@
 | 入住/纯入住旧密码的历史字段兼容 | `backend/scripts/tests/test_cleaning_sync_v2.ts` | `task_type` 缺失时同订单回填；纯入住优先取上一笔退房 `old_code`、退房历史缺字段时回退上一笔入住 `new_code`、两类来源失效均清空自动值、无来源保持空白、手工锁定不覆盖，统一展示保留纯入住旧密码 | partial | `npx ts-node-dev --transpile-only backend/scripts/tests/test_cleaning_sync_v2.ts` |
 | Web 合并卡展示 | `frontend/src/lib/cleaningDailyMerge.test.ts` | 每日清洁合并和来源展示；后一个入住订单的晚数优先并显示“待住 X晚” | partial | `npm run test --prefix frontend -- src/lib/cleaningDailyMerge.test.ts` |
 | Web 任务中心字段展示与未安排统计 | `frontend/src/app/task-center/taskCenterDisplay.test.ts` | 合并任务标题、状态和字段；退房入住卡显示“已住 X晚”和“待住 X晚”；纯入住拖入或拖出检查人员行时保留/清空 `assignee_id`，普通任务仍写 `inspector_id`；只有检查人员的普通清洁任务仍计入未安排 | partial | `npm run test --prefix frontend -- --coverage.enabled=false src/app/task-center/taskCenterDisplay.test.ts` |
+| Web 任务中心真实退房状态投影 | `backend/scripts/tests/test_web_task_capabilities.ts` | 离线内存任务中心把真实 `checked_out_at` 从退房子任务合并到周转卡并显示“已退房”，同时保留 canonical `assigned`；`in_progress` 仍显示“进行中”，无退房标记仍显示“已分配” | sufficient | `DATABASE_URL='' ./backend/node_modules/.bin/ts-node-dev --transpile-only backend/scripts/tests/test_web_task_capabilities.ts` |
 | 任务中心待确认检查计数 | `backend/scripts/tests/test_task_center_inspection_readiness.ts` | 已分派纯入住现场执行任务不计入待确认检查；未分派纯入住与无检查人的普通清洁仍计入 | sufficient | `./backend/node_modules/.bin/ts-node-dev --transpile-only backend/scripts/tests/test_task_center_inspection_readiness.ts` |
 | 移动端周转展示 | `mz-cleaning-app-frontend/src/lib/turnoverDisplay.test.ts` | 合并卡周转和检查显示 | partial | `npm run test --prefix mz-cleaning-app-frontend -- src/lib/turnoverDisplay.test.ts` |
 | 移动端检查任务退房状态展示与流程优先级 | `mz-cleaning-app-frontend/src/lib/taskVisualTheme.test.ts` | 未开始检查任务显示“已退房”；合并任务有清洁进行中时显示“进行中”，清洁完成且检查未完成时显示“待检查” | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand src/lib/taskVisualTheme.test.ts` |
@@ -988,9 +995,9 @@
 
 ### 最后验证
 
-- **CRL：** root/CRL-20260825-002
+- **CRL：** root/CRL-20261007-001
 - **Commit：** not committed
-- **日期：** 2026-08-25
+- **日期：** 2026-10-07
 
 ### 相关 CRL
 
@@ -1010,6 +1017,7 @@
 - CRL-20260806-001：纯入住任务继承上一段有效旧密码
 - root/CRL-20260820-004：历史订单入住任务受控队列范围保护
 - root/CRL-20260825-002：任务中心检查分派与维修详情展示
+- root/CRL-20261007-001：网页任务中心沿用真实退房标记显示“已退房”，并保留流程状态优先级。
 
 ### 非保护范围
 
@@ -1538,7 +1546,7 @@
 ## FR-010：维修完工投影与房源反馈私有图片读取
 
 - **维护责任范围：** backend / web / mobile
-- **最后审查日期：** 2026-09-04
+- **最后审查日期：** 2026-10-07
 - **状态：** active
 
 ### 业务保护规则
@@ -1548,6 +1556,7 @@
 - 对历史 `pending_review` 且无分派人员的内部维修，管理员选择审核关闭或填写扣款方式触发自动审核时，网页必须显示实际维修人员并随 `review_approved` 原子提交。
 - `completed_at` 是房东支付维修自动费用的会计入账日期；通用 `property_maintenance` 编辑不得写入，必须由 `manager_complete`、内部 `review_approved` 或已关闭内部记录的 `correct_completion` 专用管理动作受权限和审计约束地写入。已关闭记录的网页管理者可直接编辑完成信息，页面代为提交固定审计原因；API 调用仍必须带原因。`correct_completion` 锁定源记录，并和自动费用同步置于同一事务；关联自动费用已被人工覆盖时必须以 `409 maintenance_auto_expense_manual_override` 拒绝，不能部分保存日期或照片。历史待审核记录在审核关闭时填写的日期必须原子保存后再生成费用。
 - 已关闭记录的实际完成日期、实际维修人员、维修后照片和维修备注对拥有既有管理权限的用户可直接编辑；每次保存自动生成修正事件并保留前后值。维修后照片仍至少保留一张，普通报修字段、金额和扣款方式不得与该修正在同一次保存混合提交。网页必须比较打开记录时的规范化普通字段值和当前表单值，不能用表单初始化后的 touched 状态误拦截仅修改完成日期的修正。
+- 移动端房源反馈中，真实 `assignee_id` 对应的维修执行人、拥有 `property_maintenance.workflow.manage` 的维修管理员、admin/offline manager 可在未关闭且未取消记录上补充维修后照片和说明；创建人不因报修者身份获得完工证据权限，非分派用户不得写入。这类普通 PATCH 不得赋值 `status`、`review_status` 或 `completed_at`；已关闭记录仅限维修管理权限/admin 走带原因、审计事件和幂等键的 `correct_completion` 修正。
 - 网页维修详情与编辑抽屉必须复用同一套维修后照片解析：当权威 `completion_photo_urls` 为空数组或空 JSON、历史 `repair_photo_urls` 仍有照片时，两处都显示该历史照片，不能因空数组真值而隐藏已保存照片。
 - 维修列表/详情读取、费用编辑、创建、完成、审核关闭、MZapp `work_tasks` 与维修 `property-feedbacks` 读取/排序、task-center 维修投影/分派、维修分享链接和维修 PDF 生成/排队及自动费用写入路径不得执行 `CREATE`、`ALTER` 或索引 DDL；相关维修、`work_tasks`、`maintenance_share_links` 结构和历史 `photo_urls` 兼容转换只由受控迁移 `20260903_maintenance_runtime_schema` 完成。每个上述请求路径都先只读核对 migration marker，缺标记时返回 `503 maintenance_runtime_schema_not_ready`，不能仅依赖启动预热；路由本地 catch 必须保留该 503，不能误转为通用 500，也不能吞掉断言后继续查询或写入。独立的清洁/检查、task-center layout、`public_access` 与 `pdf_jobs` schema 保持各自契约，不得扩大 maintenance marker 的含义。
 - 已保存的内部维修完工图片只能从未删除的真实房源维修记录精确匹配；外部维修完工图片只允许管理角色或当前被分配的 `maintenance_staff` 读取。
@@ -1583,6 +1592,9 @@
 | 维修源状态与前照片类型 | `backend/scripts/tests/test_maintenance_workflow_actions.ts` | `text[]` 前照片绑定和待审核状态不回退 | sufficient | `npm run test:maintenance-workflow-actions --prefix backend` |
 | 维修详情缓存前照片回填 | `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` | 旧详情缓存只刷新一次并显示前照片 | sufficient | `npm run test -- --runInBand --no-cache src/screens/tasks/TaskDetailScreen.test.tsx`（在 mobile） |
 | 任务中心维修详情可读摘要 | `frontend/src/app/task-center/taskCenterDisplay.test.ts` | 历史 `details` 的 `content`、`description` 等 JSON 字段被规范为可读报修内容；图片仍由现有认证媒体组件读取 | partial | `npm run test --prefix frontend -- --coverage.enabled=false src/app/task-center/taskCenterDisplay.test.ts` |
+| 维修后补录角色/状态权限 | `backend/scripts/tests/test_mzapp_media_visibility.ts` | 覆盖真实执行人、维修管理权限、admin、非关联用户和 assigned/pending-review/closed/cancelled capability 矩阵 | sufficient | `DATABASE_URL='' ./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_mzapp_media_visibility.ts` |
+| 维修后补录字段与工作流隔离 | `backend/scripts/tests/test_property_feedback_access_contract.ts` | 校验完工字段白名单、事务锁、拒绝码，以及普通 PATCH 不赋值状态/复核/完成时间 | sufficient | `DATABASE_URL='' ./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_property_feedback_access_contract.ts` |
+| 移动端补录与关闭后修正交互 | `mz-cleaning-app-frontend/src/screens/tasks/FeedbackFormScreen.test.tsx` | 初始展示、payload 隔离、失败重试不重传、取消、保存重开、幂等修正和并发锁 | sufficient | `npm run test -- --runInBand --no-cache src/screens/tasks/FeedbackFormScreen.test.tsx`（在 mobile） |
 
 ### 验证策略
 
@@ -1592,9 +1604,9 @@
 
 ### 最后验证
 
-- **CRL：** root/CRL-20260903-008, root/CRL-20260903-009, root/CRL-20260904-002, root/CRL-20260904-003
+- **CRL：** root/CRL-20260903-008, root/CRL-20260903-009, root/CRL-20260904-002, root/CRL-20260904-003, root/CRL-20261007-002
 - **Commit：** not committed
-- **日期：** 2026-09-04
+- **日期：** 2026-10-07
 
 ### 相关 CRL
 
@@ -1605,6 +1617,7 @@
 - root/CRL-20260817-002、mobile/CRL-20260817-002：历史深清私有媒体前缀兼容与认证读取。
 - root/CRL-20260825-002：任务中心检查分派与维修详情展示。
 - root/CRL-20260904-002：维修审核退回待分派并解除旧分派。
+- root/CRL-20261007-002：移动端维修记录补录维修后图文的执行人/管理员权限、无状态修改普通 PATCH 与关闭后专用修正边界。
 
 ### 非保护范围
 
