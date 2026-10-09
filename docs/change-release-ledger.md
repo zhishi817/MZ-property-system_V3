@@ -1,5 +1,302 @@
 # Change Release Ledger
 
+## CRL-20261008-001 — 订单取消权限按有效多角色并集判定
+
+- **Status:** integrated release candidate validated and independently reviewed；ready for local commit；not pushed / not deployed
+- **Repository:** `root`
+- **Updated:** 2026-10-09 14:06 AEDT (Australia/Melbourne)
+- **Request:** 修复订单管理保存取消状态时只按主角色静态权限判定的问题，并使网页取消控件与后端实际权限边界一致；不得修改生产权限、订单或其他生产数据。
+- **Outcome:** 取消状态改为读取用户全部有效角色与数据库权限并集。普通取消要求 `order.cancel`；结算期锁定时还要求 `order.cancel.override`；`order.write` 继续只授权普通订单编辑。网页按相同权限键禁用或提示取消选项，已取消订单的其他编辑不受影响。
+
+### Implementation
+
+- Previous behavior: `PATCH /orders/:id` 入口通过有效 `order.write`，但取消分支随后只把主角色名称交给静态 `roleHasPermission`；自定义主角色即使通过次角色拥有有效取消权限，仍会收到 403。网页仅检查 `order.write`，仍会向缺少取消权限的用户展示可选取消状态。
+- New behavior: 后端复用异步有效权限查询覆盖主角色、次角色与数据库角色配置；锁定期采用基础取消加覆盖权限的叠加判定。网页从当前会话权限快照计算取消选项状态，并在提交前保护相同转换。
+- Key decisions: 不改角色、权限配置、数据库 schema、订单数据或取消业务投影；不把 `order.cancel.override` 解释为可绕过基础 `order.cancel`；只限制“非取消到取消”的新状态转换。
+
+### Files / Areas
+
+- `backend/src/modules/orders.ts` — 取消状态转换改用用户有效权限并集，锁定期要求双权限。
+- `backend/scripts/tests/test_order_cancel_permission_contract.ts` — 内存 store 和本机回环 HTTP 的多角色、拒绝、不变性与锁定期权限契约。
+- `backend/package.json` — 新增目标权限契约命令。
+- `frontend/src/lib/orderPermissions.ts` — 编辑抽屉取消选项的纯权限状态计算。
+- `frontend/src/lib/orderPermissions.test.ts` — 缺权、覆盖权限和既有取消状态回归。
+- `frontend/src/app/orders/page.tsx` — 取消选项禁用、边界说明和提交前保护。
+- `package.json` — 把后端权限契约接入 `check:fast` 与 `check:backend`。
+- `docs/feature-regression-registry.md` — 更新 FR-024 多角色取消权限跨层保护规则和测试映射。
+- `docs/change-release-ledger.md` — 本 CRL、验证范围与发布状态。
+
+### Impact / Dependencies
+
+- API / database: 路由、请求体和响应结构不变；无 schema、migration、seed 或生产数据更改。
+- Authorization: `order.write` 仍是 PATCH 入口权限；新取消转换另需 `order.cancel`，锁定期另需 `order.cancel.override`。有效权限来源与现有 `requirePerm` 保持一致。
+- Session/cache: 不改变会话和五分钟权限缓存实现；现有权限刷新语义保持不变。
+- Related units: `root/CRL-20260905-001` / FR-024 定义既有取消位置、错误和日历契约；本单元仅修复授权判定与网页控件。
+
+### Validation
+
+- `npm run test:order-cancel-permission --prefix backend`：PASS；内存 store + 本机回环 HTTP，不连接数据库。
+- `./node_modules/.bin/ts-node --transpile-only scripts/tests/test_order_update_error_contract.ts`（在 `backend`）：PASS。
+- `npm run test --prefix frontend -- --coverage.enabled=false --cache=false src/lib/orderPermissions.test.ts src/lib/orderSort.test.ts`：PASS（2 files / 6 tests）。
+- Backend/frontend TypeScript no-emit：PASS；frontend production build：PASS。
+- Frontend full lint：PASS with repository-existing warnings；本改动未新增 lint error。
+- Root quality workflow contract：PASS（8 tests）；Feature Registry audit：PASS（29 FRs / 229 mappings）；ledger coverage：PASS（9/9）；`git diff --check`：PASS。
+- `npm run check:fast`：PASS in a fresh `/tmp` Root candidate paired with clean Mobile `origin/Dev@a026b2ed6b1a2771550ca81ce3e1f5deda66b9ba`；包括 backend build / wired contracts、frontend 53 files / 265 tests（97.29% statements）和 Mobile typecheck。首次尝试暴露配套 Mobile 检出缺失及本机 Mobile 依赖未安装 `react-native-webview`；最终候选只在临时目录通过 lockfile + 本机 npm cache 执行离线 `npm ci --ignore-scripts`，未修改候选或两个原工作区。
+- `npm run check:full`：PASS in a separate fresh `/tmp` Root candidate with the same clean paired Mobile commit；backend full wired suite、frontend lint / 53 files / 265 tests / production build、Mobile typecheck / lint / 62 suites / 370 tests 均完成。Frontend/Mobile lint 只有仓库既有 warnings；Mobile Jest 报告 worker forced-exit teardown warning，但 62/62 suites、370/370 tests 通过。
+- MZ-Dev-Preview real E2E：PASS（2026-10-08 14:57:53Z–14:59:37Z）；运行时报告 `app=dev`、`database_role=dev`，登记数据库指纹前 12 位 `e61bca6b3f18`，并通过与生产数据库身份不相同的 fail-closed 比较。外部通知、邮件、清洁同步、PDF 与其他后台 worker 均禁用。
+- DEV E2E 使用唯一前缀临时创建 4 个角色、3 个用户、1 个房东、1 个房源、3 个订单和 1 个已批准结算：有效权限接口确认多角色并集；普通编辑仍成功；缺 `order.cancel` 返回 `ORDER_CANCEL_FORBIDDEN`，缺 `order.cancel.override` 的锁定期取消返回 `PAYOUT_LOCKED`，两项拒绝均保持订单、审计、清洁队列及财务记录不变；真实订单页确认缺权禁用说明、锁定期边界提示，以及多角色普通/锁定取消均返回 200 并落库。
+- DEV cleanup：服务停止后按精确 fixture ID 删除；roles、role_permissions、users、user_roles、sessions、landlords、properties、orders、payouts、audit_logs、finance_transactions、company_incomes、cleaning_sync_jobs、cleaning_sync_retry_jobs、cleaning_tasks、order_internal_deductions 共 16 类表逐项复核为 0。失败的浏览器 harness 尝试也分别以只读事务复核对应唯一前缀总残留 0。
+- Production database/write API/browser mutation：not run；生产始终只读，未修改权限、订单或其他生产数据。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none；两个新增测试和一个前端纯函数文件已按本 CRL 显式暂存；验证缓存、私密环境文件与依赖软链接均已移除。
+- `backend/package.json` — SHA-256: `2535e4560c88b4f09bf995987107eded7915e2186c24acbf3c9f7a7bd4ac2b44`
+- `backend/scripts/tests/test_order_cancel_permission_contract.ts` — SHA-256: `107e2cc90738a66bf0d480f490cd06ae582704af10ca8698ca8cf4ac9f1941e2`
+- `backend/src/modules/orders.ts` — SHA-256: `11c23b92743b387debe15844c60936862a760412f89b517bb13bdc6f59a2593b`
+- `backend/src/modules/orders.ts` — SHA-256: `1253a1934df3e49d5ae9c7f0f5aa6521152b1b269257c979e443ad6c3312692a`
+- `backend/src/modules/orders.ts` — SHA-256: `3979e83b344c9ed4c2b6f6e3da9c3e9a31cf2a517f62e6fa40594ead62c50bfb`
+- `backend/src/modules/orders.ts` — SHA-256: `af0c3c1c3abcd3ff9c51f4a3ad4f2336a30d01fc46b4e71132eec84eb33cefdf`
+- `docs/feature-regression-registry.md` — SHA-256: `314c51b213a4ccb21a5674a951f90198b7aa3303afbd4483b0d2bf564b610ad4`
+- `docs/feature-regression-registry.md` — SHA-256: `3303afdfdff033fa8e19f139e3d87acda41c43ce3e5376dfe6460e352f90fe05`
+- `docs/feature-regression-registry.md` — SHA-256: `8698983b2d780dee214e75181dc0e3fc40a2db015de688f4dd7d0713e1e4f76f`
+- `docs/feature-regression-registry.md` — SHA-256: `9c4ab641e0e791616278890b76168e31af871af06446e4d7ea7b7491b8bc82b7`
+- `docs/feature-regression-registry.md` — SHA-256: `bfca9a36b3f487ad2719ffcfbe7f150fa59deff1593fa03af6984be9b5b4d18b`
+- `docs/feature-regression-registry.md` — SHA-256: `d4f4eb8a8dfcb69a324e2a8b5a1eca5e0cd227ebf54c0e06df8b93d028c175be`
+- `docs/feature-regression-registry.md` — SHA-256: `ea78caaf05f35e7a60223029868e5339c77268bfc8438eaad06814798d839655`
+- `docs/feature-regression-registry.md` — SHA-256: `f4f3682784f953da04304b380537f9b222efd80693de75c4690b8469ef6d02f8`
+- `docs/feature-regression-registry.md` — SHA-256: `fdea844e1592a309ba6ce5c7bd62aca23b9e517bd25d99e1f1be33bae9ee3828`
+- `frontend/src/app/orders/page.tsx` — SHA-256: `05ec2928ae7603dc84102808160bfc272e1dafbfb765c4486e102adc98ae4f1c`
+- `frontend/src/app/orders/page.tsx` — SHA-256: `68f6b4af73d422206f2b0e592a0b1f88d18bf8f4be309fe95bb5c0380b90da9f`
+- `frontend/src/app/orders/page.tsx` — SHA-256: `84eb4fa3db395719165cd2425c72a5a67c02d2ad63894782e44216f65bafdc7d`
+- `frontend/src/app/orders/page.tsx` — SHA-256: `e0f1d7cfd3f5fbb74cdb0e361eefe45b9773563450f86f8bc6558369171a2adf`
+- `frontend/src/lib/orderPermissions.test.ts` — SHA-256: `1e260085eb63a74810761ed8bd8999ade2cd901d0b5c53449f9189e39d459973`
+- `frontend/src/lib/orderPermissions.ts` — SHA-256: `b01d53741729b33ff6b3cf7accf73de14cbbab13501256fa7054555b889ec775`
+- `package.json` — SHA-256: `4d96c81ce7f4f7b1d09e7dd0f7a462abe87a66a1d4ec008fdf61946b4f1255ff`
+- `package.json` — SHA-256: `888a8aded260eb86bcd90cf1920741dbae522d43af969c89b7391a7d6e04f6c9`
+
+### Release Attempts
+
+#### RA-20261009-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261008-001`
+- Selected CRL identities: `root/CRL-20261008-001`
+- Intended action: `push`
+- Branch: `codex/order-cancel-permission-20261008`
+- Base: `origin/Dev@4c5b57b57301824fea4115b7632aab0f6d58d530`; fetched at `2026-10-09T02:05:04Z` from GitHub
+- Candidate patch SHA-256: `19873ada2c774635f30ceb942aeb50867787cf914415a3778bbd95920709d637`
+- Commit SHA: `c4f2d0dccc1ae421ea186d99ad14e901e7fc4682`
+- Dependencies: none
+- Required validation: PASS；targeted backend/frontend contracts、TypeScript、build、lint、`check:fast`、`check:full`、Feature Registry、ledger coverage、DEV real E2E 均已通过，详见本 CRL Validation。
+- Shared-hunk review: PASS；共享 package scripts、FR-024 与 ledger 仅包含本发布单元的精确 hunk。
+- Generated-file review: PASS；候选无 `.env`、缓存、构建产物、依赖目录或临时 DEV fixture。
+- Technical state: `committed`
+- User authorization: `approved-for-push`；evidence: 用户要求“继续提交，先把这个上线”，并明确授权提交、推送和草稿 PR。
+- Independent review: `GO for local commit`；evidence: 独立只读审查重新计算并匹配候选非 ledger 指纹 `19873ada2c774635f30ceb942aeb50867787cf914415a3778bbd95920709d637`，检查全部 9 个暂存文件 / 23 个非 ledger hunks，独立通过 pre-commit gate 与 `git diff --cached --check`，并确认无 P0/P1、敏感信息、生成物、未选中或未跟踪内容。接受一个不阻断 P2：疑似重复订单弹窗对 override-only 自定义角色仍会展示取消按钮，但新后端会返回 `ORDER_CANCEL_FORBIDDEN`；该组合不影响本案同时具备基础与 override 权限的用户，后续由 Web 订单管理统一双权限控件条件。
+- Action conclusion: `GO`；exact reviewed candidate was committed locally as `c4f2d0dccc1ae421ea186d99ad14e901e7fc4682`。Push 仍需 commit 后精确范围审计、独立 push gate 与成功的 GitHub 远端刷新；PR、merge、deployment 与生产写入不在本结论内。
+
+#### RA-20261009-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261007-001`, `CRL-20261007-002`, `CRL-20261008-001`
+- Selected CRL identities: `root/CRL-20261007-001`, `root/CRL-20261007-002`, `root/CRL-20261008-001`
+- Intended action: `commit`
+- Branch: `codex/mz015-mz018-mz020-dev-20261009`
+- Base: `origin/Dev@4c5b57b57301824fea4115b7632aab0f6d58d530`; fetched at `2026-10-09T02:32:31Z` and confirmed unchanged at `2026-10-09T02:37:41Z` from GitHub
+- Candidate patch SHA-256: `4984f21059c547cfcea77de4d58e4a6e54b22c0dbd5289e135f1014ba6b0bf93` excluding `docs/change-release-ledger.md`
+- Commit SHA: not committed
+- Dependencies: paired `mobile/CRL-20261007-001` in branch `codex/mz018-mobile-dev-20261009`; exact commit SHA pending the paired Mobile commit
+- Required validation: `PASS`; evidence: MZ-015 Web task capability, MZ-018 media visibility/property-feedback access, and MZ-020 order-cancel contracts passed with `DATABASE_URL=''`; post-review complete `npm run check:full` passed backend build and wired contracts, frontend lint / 53 files / 265 tests / production build, and paired Mobile typecheck / lint (0 errors / 588 warnings) / 62 suites / 379 tests. Feature Registry audit passed at 29 FRs / 233 mappings and `git diff --check` passed.
+- Shared-hunk review: `PASS`; evidence: 15 staged files / 77 non-ledger hunks are covered by the three selected CRLs; MZ-020 retains its previously reviewed source hunks and the MZ-015/MZ-018 scopes assign the remaining hunks without overlap, including the empty-maintenance-PATCH permission guard and separate authority-photo projection added after independent review.
+- Generated-file review: `PASS`; evidence: tracked backend build drift was restored; ignored backend/frontend outputs and all dependency/pairing symlinks were removed; no untracked file remains.
+- Sensitive-information review: `PASS`; evidence: candidate contains no `.env`, credentials, tokens, cookies, private keys, database URL, production logs/data or supplied image bytes.
+- Technical state: `candidate`
+- User authorization: `selected-for-commit`; evidence: delegated user instruction explicitly selected one Root batch containing MZ-015, MZ-018 Root and MZ-020 and authorized commit, normal non-force push and Draft PR while excluding merge, deployment, OTA and production writes.
+- Independent review: `GO for commit`; evidence: final independent read-only review matched fingerprint `4984f21059c547cfcea77de4d58e4a6e54b22c0dbd5289e135f1014ba6b0bf93`, pre-commit 15 files / 77 hunks and diff check, confirmed the empty-PATCH and authoritative-plus-supplement photo-gate repairs, and found no P0/P1. The recorded MZ-020 duplicate-order override-only UI mismatch remains a non-blocking P2 with safe backend denial.
+- Action conclusion: `GO`; exact staged candidate is approved for local commit only. Push, PR, merge, deployment, OTA and production writes are not implied by this review conclusion.
+
+### Risks / Release Notes
+
+- Risk: 前端无法预判具体订单是否属于已锁定结算期，因此只有基础取消权限时会允许选择并显示边界说明；最终锁定判定仍由后端执行并返回稳定错误。
+- Accepted P2: 疑似重复订单弹窗的既有取消按钮只检查 `order.cancel.override`；override-only 角色会看到按钮但后端因缺少 `order.cancel` 安全拒绝。该 UI/后端不一致不影响本案目标用户，后续应复用统一的双权限状态函数并补前端回归。
+- Deployment gate: `render.yaml` 对生产服务启用 `autoDeploy`；生产后端启动会执行现有 schema warmup（`CREATE TABLE` / `ALTER TABLE` / `CREATE INDEX IF NOT EXISTS`），通知 worker 默认 run-on-start 并可能更新队列及发送通知。合并或部署前必须取得单独的生产数据库写入确认；本次 push/草稿 PR 不触发该确认范围。
+- Rollback: 合并前删除远端临时分支即可；合并后若运行时回归，回滚该提交并重新部署。权限或数据库配置无需回滚，因为本单元不修改它们。
+- Sensitive-information review: PASS；源码、测试与台账未加入密码、Token、Cookie、数据库 URL、生产用户标识、订单内容或生产日志。
+- Git state: integrated isolated branch `codex/mz015-mz018-mz020-dev-20261009` based on freshly fetched GitHub `origin/Dev@4c5b57b57301824fea4115b7632aab0f6d58d530`；exact candidate not committed, pushed, merged or deployed。
+
+## CRL-20261007-002 — 移动端维修记录补录维修后图文的后端权限与保存契约
+
+- **Status:** integrated release candidate validated and independently reviewed；ready for local commit；not pushed / not deployed
+- **Repository:** `root`
+- **Updated:** 2026-10-09 14:06 AEDT (Australia/Melbourne)
+- **Request:** MZ-018 移动端编辑维修记录缺少维修后照片和说明补充入口。执行人、维修管理员和管理员可补录；已完成记录仅允许维修管理员/管理员走现有受审计修正流程，补照不得改变工作流状态。
+- **Outcome:** `property-feedbacks` 返回独立的完工内容编辑/关闭后修正 capability、单独的权威 `completion_photo_urls`，并把真实 `closed` 工作流状态纳入历史已完成列表。普通维修内容 PATCH 可保存补录的维修后照片与说明，但仅限真实 `assignee_id`、维修管理权限或 admin/offline manager；空 PATCH 直接拒绝，且不写 `status`/`review_status`/`completed_at`。待复核的照片门槛检查权威完工图与补录图的并集，删除最后一张补录图时不会误拒绝仍有权威图的记录。已关闭记录的普通 PATCH 被拒绝，必须继续使用 `correct_completion`。
+
+### Implementation
+
+- Previous behavior: API schema 虽认识 `note` 和 `repair_photo_urls`，但维修编辑白名单拒绝这两个字段；权限只有通用的管理员/创建人内容编辑，无法区分报修内容和完工证据。
+- New behavior: capability 显式区分 `can_edit_content`、`can_edit_completion_content` 和 `can_correct_completion`。服务端在事务中锁定源维修记录、重新校验房源可见性与真实分派，且将普通报修字段与完工字段分开授权。
+- Key decisions: 创建人不因创建记录自动获得完工证据权限；待复核照片有效性以既有权威完工图与下一版补录图的并集判定；已关闭修正不新建状态、权限或路由；不增加 migration。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — 维修完工内容 capability、权威完工图单独投影、空 PATCH 门禁、字段白名单、事务锁和分权保存。
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — 执行人、维修管理权限、admin、非关联用户，以及 assigned/pending-review/closed/cancelled 状态 capability 矩阵。
+- `backend/scripts/tests/test_property_feedback_access_contract.ts` — 完工字段白名单、锁行、拒绝码、`closed` 已完成投影与普通 PATCH 不改工作流状态合同。
+- `docs/feature-regression-registry.md` — FR-010 补充移动端补录与权限边界。
+- `docs/change-release-ledger.md` — 本 CRL 与本地验证状态。
+
+### Impact / Dependencies
+
+- API: `GET /mzapp/property-feedbacks` 增加可选 capability 字段并单独返回既有权威 `completion_photo_urls`；`PATCH /mzapp/property-feedbacks/maintenance/:id` 新允许 `note`/`repair_photo_urls`，空 payload 返回稳定 400，其他 URL 不变。
+- Workflow: 已关闭记录依赖既有 `POST /maintenance/workflow/internal/:id/correct_completion` 的原因、审计和幂等保护。
+- Database / migration: none；本轮未连接或写入生产数据库。
+- Paired unit: `mobile/CRL-20261007-001`。
+
+### Validation
+
+- `DATABASE_URL='' ./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_mzapp_media_visibility.ts` — passed：capability 角色/状态矩阵和既有私有媒体合同通过。
+- `DATABASE_URL='' ./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_property_feedback_access_contract.ts` — passed：字段白名单、锁行、错误边界和无状态赋值通过。
+- Independent-review repair validation：空 maintenance PATCH 在事务、审计字段更新和费用摘要刷新前返回 `feedback_content_fields_required`；目标合同、媒体 capability 矩阵及 backend TypeScript no-emit 均重新通过。
+- Cross-repository review repair validation：待复核照片门槛使用 `completion_photo_urls` 与下一版 `repair_photo_urls` 并集；目标 access contract 和 backend TypeScript no-emit 通过，最终 `check:full` 再次通过。
+- Post-review complete regression：`DATABASE_URL='' npm run check:full` 通过 backend 构建/完整合同、frontend 53 files / 265 tests / production build，以及配对 Mobile 62 suites / 379 tests（lint 0 errors / 588 warnings）。
+- `./node_modules/.bin/tsc -p tsconfig.json --noEmit`（backend）— passed。
+- `python3 scripts/audit_feature_regression_registry.py` — passed：29 FRs / 231 test mappings / 78 deferred mobile mappings。
+- `python3 scripts/audit_change_release_ledger.py` — passed：8 changed files / 8 recorded files。
+- `git diff --check` — passed。
+- Production database/API, authenticated runtime, migration, notification, external sync and deployment: not run。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none；候选来自最新 `origin/Dev` 的隔离干净工作区；测试依赖软链接、frontend 构建/覆盖率缓存与 backend 编译产物已清理，未跟踪文件为零。
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `1794b93db2ef874446f022013379106d52bd8c76bf1cedac86d4415570acc55c`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `2a9e8fde2dcadc415a827e7c0fc59fa0064c5258aef8d9e3d413372407feec0b`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `58d428a244e1fd8df56542ee340787cb926133bd6eff81a5fe341b1692a308ee`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `7a725b4c941ade27906713768217849af0a3aeb33c0dfa28a3fbfe2d5a133166`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `8d48566c4ae3addb3c5424e2f4ad2e7558f73e9abc9daa169f0aad6c80166cff`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `dc48ff00d2ca68a8feff02c789e81cbf752f576cee3b5fbf30fa111933174c48`
+- `backend/scripts/tests/test_property_feedback_access_contract.ts` — SHA-256: `72c73c20d2e80d4be69624e957a2badc3f4f2388644b07aae37ea05a82dfe904`
+- `backend/scripts/tests/test_property_feedback_access_contract.ts` — SHA-256: `cbe71a8d191f7ac96452cfce5ae8c9845fce1a643810f071a3bc978be9996ee0`
+- `backend/src/modules/mzapp.ts` — SHA-256: `05c59fe1c3382501bccddcada44b7ae648ebf036473948b62e4d84338045339a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `206fd3c2305b33da1b2c1cb04f615e4ee4c6f37d88bec24261b67fad4e4090e8`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2bfe25e5df3c6e75fe726aae1035200ac71584232c41b0f279580e645d601924`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2cb0d02d925dcb6593c76fefb803119af65201f70e132f668e89efd7465246ab`
+- `backend/src/modules/mzapp.ts` — SHA-256: `3417fe17abca968be1617e0c69d3b983705c272e3588346a27191d9d0e97ffe0`
+- `backend/src/modules/mzapp.ts` — SHA-256: `0f82d204ab34c3ba79b0f11c60f2869350ed9c7fe20e6d376a6cadb6b1ce667b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `204db920f538f6acf5fb7ebdf5851762629cc0efd87b80a89981fa53fa7e2799`
+- `backend/src/modules/mzapp.ts` — SHA-256: `28e0ab7a79b9ca8a3f7d9dffd23faf98d4f8d5e4e0f1e29f7eef53b0dda5e74c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2a59d8387b82bcc6b88a2d3b5a40cd0e06f9e7e7a1fe193d831895d8e31939bf`
+- `backend/src/modules/mzapp.ts` — SHA-256: `51d11c5cd728bb797b73909f241fe1dda8a3e1410326a7c10f55cd648a866517`
+- `backend/src/modules/mzapp.ts` — SHA-256: `52c5f3d22db83d8c28ea555c7cbaab41e1e17cd1181482d5bb21359fd59644c0`
+- `backend/src/modules/mzapp.ts` — SHA-256: `583ddd7756b51c29f8c186f656a086f75318ff5aeab774cea4d18bf4445ed8a2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `720f8bf1233f22eaecd02467f1b1de69bb291d947da326bb3e01a70d8b9bae9c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `95600f46c22bba92a17bdd8f17f5a2ab99b0c3180319be0697c23b17eb955c06`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d1f17737cfd3e014e1c1d03d5be2724a3f09d5f69a9503e851cef7d3bd0ea475`
+- `backend/src/modules/mzapp.ts` — SHA-256: `dc2c812843a972ce3d3b5995dbcaf0e4c2b3e2eee3d1a202144ab8175ac3d1ae`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e9a866862d7fb9efe88fa7d7a57112ec9c54165f29f8941f73006aa06207c47e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `bef1ef96dcb7e2ccf4c94dfbaeb256d7a006ebb71331eafb6b6e8f4299c6d8d2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d23b39d885cc5014aa744f0065e202c878fa367461b1994cdcea25652a638198`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d599406fc4cc4419f786fcf3ebc1b2fe9ca23a6d725e4d92d738f1c4760bc795`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d6d4d5e8ec570cfa903173373c332affffdaa2db055f09c17d3a767fc484b0da`
+- `docs/feature-regression-registry.md` — SHA-256: `4ea559e381a70857e6c63cd173304965b271b5e3c91efbeba6b4fd6bfb79a929`
+- `docs/feature-regression-registry.md` — SHA-256: `58d455d289e9e380968e961ffc8d78601951491361e900a2f120a962ed9ac0ab`
+- `docs/feature-regression-registry.md` — SHA-256: `80c9625e2f2148f6bd80c45a72aa4cb64b20d2ed1a356efae7f836ffe196ce0f`
+- `docs/feature-regression-registry.md` — SHA-256: `8e6edaa4217d7ce36ab0c8a98644844e5f5d31632ca87cd7a6b720f302fe4f0d`
+- `docs/feature-regression-registry.md` — SHA-256: `a18256b05bd750684aff7ac60f2db19c8fea263d5c40d79b91c117f7fbfb462d`
+- `docs/feature-regression-registry.md` — SHA-256: `bc825b550374f14ba6ca0a45bbd2a07a87cf8ddfbae3b72651853ccad23f1fc7`
+
+### Release Attempts
+
+- Shared batch attempt is recorded under `root/CRL-20261008-001` as `RA-20261009-002` and selects this canonical CRL together with MZ-015 and MZ-020.
+
+### Risks / Release Notes
+
+- Risk: 尚未在授权的非生产 PostgreSQL 与真实账号上做路由级集成验证；本轮以纯函数权限矩阵、源码合同和 TypeScript 检查作为本地证据。
+- Rollback: 回退本 CRL 的非 ledger 代码即可；无数据回滚或 migration。
+- Sensitive-information review: 不含凭据、token、生产数据、图片字节或数据库 URL。
+- Git state: integrated isolated branch `codex/mz015-mz018-mz020-dev-20261009` at freshly fetched `origin/Dev@4c5b57b57301824fea4115b7632aab0f6d58d530`；not committed, pushed, merged or deployed；production and real-account verification not run。
+
+## CRL-20261007-001 — 网页任务中心排班卡同步显示已退房
+
+- **Status:** integrated release candidate validated and independently reviewed；ready for local commit；not pushed / not deployed
+- **Repository:** `root`
+- **Updated:** 2026-10-09 14:06 AEDT (Australia/Melbourne)
+- **Request:** 线下经理在网页任务中心排班时，已标记退房的相关任务卡片需要同步显示“已退房”；必须复用真实退房状态，不另造状态或按日期推断。
+- **Outcome:** 任务中心读取现有 `cleaning_tasks.checked_out_at` 并在单卡、延期卡和退房/入住合并卡中保留该事实。未开始的相关卡片显示“已退房”，底层 canonical `status` 不变；进行中、待检查、已清洁和完成等流程状态继续优先。
+
+### Implementation
+
+- Previous behavior: 退房入口已经写入并同步真实 `checked_out_at`，但 `/task-center/day` 查询和卡片合并没有携带该字段，网页只能按 `assigned` 等流程状态显示“已分配”。
+- New behavior: 任务中心查询、内存路径、延期合并和周转合并都透传真实 `checked_out_at`；统一 Web display capability 仅对 `pending/todo/unassigned/assigned` 的清洁任务投影“已退房”。
+- Key decisions: 不新增数据库状态、字段、migration 或日期推断；不把 `status` 改成 `checked_out`；不覆盖任务已经开始后的流程状态。
+
+### Files / Areas
+
+- `backend/src/modules/task_center.ts` — modified: 读取并在单卡、延期卡、周转合并卡中保留 `checked_out_at`，供现有网页卡片 `display_state` 使用。
+- `backend/src/lib/webTaskCapabilities.ts` — modified: 未开始且有真实退房标记的清洁任务显示“已退房”，流程状态优先级保持不变。
+- `backend/scripts/tests/test_web_task_capabilities.ts` — modified: 覆盖单条 capability 和离线任务中心整链路的退房标记合并、canonical 状态保留及进行中优先级。
+- `docs/feature-regression-registry.md` — modified: FR-002 登记网页任务中心真实退房标记不变量与测试映射。
+- `docs/change-release-ledger.md` — modified: 本 CRL 和本地验证状态。
+
+### Impact / Dependencies
+
+- API: 现有 `GET /task-center/day` URL、权限和写操作不变；清洁任务行增加既有 `checked_out_at` 事实，并据此生成 `display_state.status_label`。
+- Database / migration: none；只读取既有 `cleaning_tasks.checked_out_at`，未连接或写入生产数据库。
+- Config / environment: none。
+- Dependencies: none；复用既有退房入口对相关任务传播 `checked_out_at` 的能力。
+- Related units: FR-002；root/CRL-20260725-016（退房标记传播到关联任务）、root/CRL-20260725-017（流程状态优先于退房标记）。
+
+### Validation
+
+- `DATABASE_URL='' ./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_web_task_capabilities.ts`（backend）— passed：真实退房标记合并到周转卡并显示“已退房”；canonical `assigned` 保留；`in_progress` 仍显示“进行中”；无标记仍显示“已分配”。
+- `./node_modules/.bin/tsc -p tsconfig.json --noEmit`（backend）— passed。
+- `npm run test --prefix frontend -- --coverage.enabled=false --no-cache src/app/task-center/taskCenterDisplay.test.ts` — passed：9/9，现有任务中心卡片展示与状态消费回归未受影响。
+- `npm run check:feature-registry`（等价直接执行 `python3 scripts/audit_feature_regression_registry.py`）— passed：29 FRs / 228 test mappings / 77 deferred mobile mappings。
+- `python3 scripts/audit_change_release_ledger.py` — passed：5 changed files / 5 recorded files，Coverage PASS，远端 CRL 谱系核对通过。
+- `git diff --check` — passed。
+- Browser interaction, authenticated runtime, production database/API, deployment and production verification: not run。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none；候选来自最新 `origin/Dev` 的隔离干净工作区；测试依赖软链接、frontend 构建/覆盖率缓存与 backend 编译产物已清理，未跟踪文件为零。
+- `backend/scripts/tests/test_web_task_capabilities.ts` — SHA-256: `27e134beb4b662dc9b247e861c1d30341f5177558e9a0d9e2dbcf4f51b96d30a`
+- `backend/scripts/tests/test_web_task_capabilities.ts` — SHA-256: `475d2f7d61c746f4a51f7d1f692d59a91c396adbead6dfef5f5d92dbafaf4597`
+- `backend/scripts/tests/test_web_task_capabilities.ts` — SHA-256: `97badf69cd043677b421b86bd5b99cc36d7d6c4be850c45aee0520265556b301`
+- `backend/scripts/tests/test_web_task_capabilities.ts` — SHA-256: `a517ae5a0c6038230a675177a436b56470fd6076dd89bacf6b5a16af4b096bf1`
+- `backend/src/lib/webTaskCapabilities.ts` — SHA-256: `a0920ac1b3a8987070664a817059e7c06d64305fb3e90b569034cd8d70dd4dd0`
+- `backend/src/modules/task_center.ts` — SHA-256: `35e9577e30558c6dc451a579d02c870e97603481887940f1969815c90a7019ef`
+- `backend/src/modules/task_center.ts` — SHA-256: `410f2ecb9e96a0149747a1071d607af51cf8b0fe127a2d80a24dc5106e7aea33`
+- `backend/src/modules/task_center.ts` — SHA-256: `560a8b035adae47d98f67860636b6e99f5c19821c8f8e42b2235cf5e2e2929bb`
+- `backend/src/modules/task_center.ts` — SHA-256: `6583356a7c8a65a48012eb4afae1a9fba313a9b5176223932657ed3fb1b5db6a`
+- `backend/src/modules/task_center.ts` — SHA-256: `9824ba5bed6e11bb38b1111eb544c90a941b7d5f14d09ed020bac4b30682fdf4`
+- `backend/src/modules/task_center.ts` — SHA-256: `c0f15136a3f37debc50bdfb8d2e769475cd9d4d6149b13e7d6805c4ee7b1cfa6`
+- `backend/src/modules/task_center.ts` — SHA-256: `e926ce4c29bcaffe8d50c92d5864be59a3aa5da59a28e14195ce8bf4258f53c7`
+- `backend/src/modules/task_center.ts` — SHA-256: `fd2644088c976b4a4bd3aa911bdeb7b435747a4ee0f80232fbcecc1913cdb417`
+- `docs/feature-regression-registry.md` — SHA-256: `1efb0a833f41a87c8b81b5a7610f1615922141d6ab2c4a74f114a737f4e67c06`
+- `docs/feature-regression-registry.md` — SHA-256: `3262ff19eed747007a329d6b2ebd6e5fda2c5822591b2c6b5c9042aeea8bf380`
+- `docs/feature-regression-registry.md` — SHA-256: `3a3d69061634d761ab38f8bf6b292aa04ed1cf2b3df2b24e119dde5d43cf6763`
+- `docs/feature-regression-registry.md` — SHA-256: `7d304de499a43b48755c8efbfae352e644dbbe87f35c1942d078746150d28636`
+- `docs/feature-regression-registry.md` — SHA-256: `ae5edbf0849b318c2db2a3890a1f6a89e02987b064398055f2b77cc50c9273de`
+- `docs/feature-regression-registry.md` — SHA-256: `c85880a2a8b01d10b07804d9c06d4d698141bbe6dfce930e95cb077fab192c2b`
+
+### Release Attempts
+
+- Shared batch attempt is recorded under `root/CRL-20261008-001` as `RA-20261009-002` and selects this canonical CRL together with MZ-018 and MZ-020.
+
+### Risks / Release Notes
+
+- Risk: PostgreSQL `/task-center/day` 的真实数据读取未在数据库集成环境运行；本轮以离线内存整链路、纯 capability 回归和 TypeScript 检查验证，需在获批的非生产环境另做页面刷新验证。
+- Rollback: 回退本 CRL 的非 ledger 代码即可恢复原展示；不涉及数据回滚。
+- Sensitive-information review: 变更不含 `.env`、凭据、token、cookie、private key、database URL、生产日志或真实任务数据。
+- Git state: integrated isolated branch `codex/mz015-mz018-mz020-dev-20261009` at freshly fetched `origin/Dev@4c5b57b57301824fea4115b7632aab0f6d58d530`；not committed, pushed, merged or deployed；production and real Web validation not run。
+
 ## CRL-20261005-003 — 已付款结算 PDF 显示冻结付款去向
 
 - **Status:** selected release candidate；fresh `origin/Dev` candidate validation in progress

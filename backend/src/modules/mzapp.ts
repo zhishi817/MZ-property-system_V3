@@ -7956,7 +7956,7 @@ async function notifyPropertyFeedbackCreated(params: {
 function mapWorkStatus(raw: any): 'open' | 'in_progress' | 'resolved' | 'cancelled' {
   const s = String(raw ?? '').trim().toLowerCase()
   if (s === 'in_progress') return 'in_progress'
-  if (s === 'pending_review' || s === 'review_pending' || s === 'awaiting_review' || s === 'completed' || s === 'done' || s === 'ready') return 'resolved'
+  if (s === 'pending_review' || s === 'review_pending' || s === 'awaiting_review' || s === 'completed' || s === 'done' || s === 'ready' || s === 'closed') return 'resolved'
   if (s === 'canceled' || s === 'cancelled') return 'cancelled'
   return 'open'
 }
@@ -7965,9 +7965,9 @@ function feedbackStatusWhereSql(alias: string, want: string[]) {
   const wants = new Set((want || []).map((s) => String(s || '').trim()).filter(Boolean))
   if (!wants.size) wants.add('open')
   const clauses: string[] = []
-  if (wants.has('open')) clauses.push(`(${alias}.status IS NULL OR lower(${alias}.status) NOT IN ('in_progress','pending_review','review_pending','awaiting_review','completed','done','ready','canceled','cancelled'))`)
+  if (wants.has('open')) clauses.push(`(${alias}.status IS NULL OR lower(${alias}.status) NOT IN ('in_progress','pending_review','review_pending','awaiting_review','completed','done','ready','closed','canceled','cancelled'))`)
   if (wants.has('in_progress')) clauses.push(`lower(COALESCE(${alias}.status, '')) = 'in_progress'`)
-  if (wants.has('resolved')) clauses.push(`lower(COALESCE(${alias}.status, '')) IN ('pending_review','review_pending','awaiting_review','completed','done','ready')`)
+  if (wants.has('resolved')) clauses.push(`lower(COALESCE(${alias}.status, '')) IN ('pending_review','review_pending','awaiting_review','completed','done','ready','closed')`)
   if (wants.has('cancelled')) clauses.push(`lower(COALESCE(${alias}.status, '')) IN ('canceled','cancelled')`)
   return clauses.length ? `(${clauses.join(' OR ')})` : 'true'
 }
@@ -8442,6 +8442,9 @@ router.get('/property-feedbacks', async (req, res) => {
     }
     const scopedPropertyId = String(property.id || '').trim()
     assertMaintenanceRuntimeSchemaReady()
+    const canManageMaintenanceWorkflow = isPropertyFeedbackManager(user)
+      || await userHasAnyPerm(user, [MAINTENANCE_WORKFLOW_MANAGE_PERMISSION])
+    const feedbackCapabilityContext = { canManageMaintenanceWorkflow }
     const unresolvedMaintSql = feedbackStatusWhereSql('m', want)
     const unresolvedDeepSql = feedbackStatusWhereSql('d', want)
     const settle = async (label: string, loader: () => Promise<any[]>) => {
@@ -8466,7 +8469,7 @@ router.get('/property-feedbacks', async (req, res) => {
             LIMIT $2`,
           [scopedPropertyId, limit],
         )
-        return (r?.rows || []).map((row: any) => propertyFeedbackResponseFromRow('maintenance', row, user))
+        return (r?.rows || []).map((row: any) => propertyFeedbackResponseFromRow('maintenance', row, user, feedbackCapabilityContext))
       }),
       settle('deep_cleaning', async () => {
         try {
@@ -8482,7 +8485,7 @@ router.get('/property-feedbacks', async (req, res) => {
             LIMIT $2`,
           [scopedPropertyId, limit],
         )
-        return (r?.rows || []).map((row: any) => propertyFeedbackResponseFromRow('deep_cleaning', row, user))
+        return (r?.rows || []).map((row: any) => propertyFeedbackResponseFromRow('deep_cleaning', row, user, feedbackCapabilityContext))
       }),
       settle('daily_necessities', async () => {
         try {
@@ -8499,7 +8502,7 @@ router.get('/property-feedbacks', async (req, res) => {
             LIMIT $3`,
           params,
         )
-        return (r?.rows || []).map((row: any) => propertyFeedbackResponseFromRow('daily_necessities', row, user))
+        return (r?.rows || []).map((row: any) => propertyFeedbackResponseFromRow('daily_necessities', row, user, feedbackCapabilityContext))
       }),
     ])
     const out = [
@@ -8962,16 +8965,33 @@ async function loadAnyPropertyFeedbackRow(kind: PropertyFeedbackRecordKind, id: 
   return r.rows?.[0] || null
 }
 
-export function propertyFeedbackCapabilities(user: any, kind: PropertyFeedbackRecordKind, row: any) {
+type PropertyFeedbackCapabilityContext = {
+  canManageMaintenanceWorkflow?: boolean
+}
+
+export function propertyFeedbackCapabilities(
+  user: any,
+  kind: PropertyFeedbackRecordKind,
+  row: any,
+  context: PropertyFeedbackCapabilityContext = {},
+) {
   const actorUserId = String(user?.sub || '').trim()
   const creatorUserId = String(row?.created_by_user_id || '').trim()
   const isManager = isPropertyFeedbackManager(user)
+  const isMaintenanceManager = kind === 'maintenance' && (isManager || !!context.canManageMaintenanceWorkflow)
+  const isAssignedExecutor = kind === 'maintenance'
+    && Boolean(actorUserId && actorUserId === String(row?.assignee_id || '').trim())
   const canDeleteMaintenance = isMaintenanceFeedbackDeleteManager(user)
   const isCreator = Boolean(actorUserId && creatorUserId && actorUserId === creatorUserId)
   const maintenanceStatus = normalizeMaintenanceWorkflowStatus(row?.status, row?.review_status)
   const maintenancePendingAssignment = kind !== 'maintenance' || maintenanceStatus === 'pending_assignment'
   return {
-    can_edit_content: isManager || isCreator,
+    can_edit_content: kind === 'maintenance' && maintenanceStatus === 'closed' ? false : isManager || isCreator,
+    can_edit_completion_content: kind === 'maintenance'
+      && maintenanceStatus !== 'closed'
+      && maintenanceStatus !== 'cancelled'
+      && (isMaintenanceManager || isAssignedExecutor),
+    can_correct_completion: kind === 'maintenance' && maintenanceStatus === 'closed' && isMaintenanceManager,
     can_delete: kind === 'maintenance'
       ? (maintenanceStatus !== 'cancelled' && (canDeleteMaintenance || (isCreator && maintenancePendingAssignment)))
       : (isManager || isCreator),
@@ -8998,9 +9018,14 @@ class PropertyFeedbackMutationError extends Error {
   }
 }
 
-function propertyFeedbackResponseFromRow(kind: PropertyFeedbackRecordKind, row: any, user?: any) {
+function propertyFeedbackResponseFromRow(
+  kind: PropertyFeedbackRecordKind,
+  row: any,
+  user?: any,
+  capabilityContext: PropertyFeedbackCapabilityContext = {},
+) {
   if (!row) return null
-  const capabilities = user ? propertyFeedbackCapabilities(user, kind, row) : undefined
+  const capabilities = user ? propertyFeedbackCapabilities(user, kind, row, capabilityContext) : undefined
   if (kind === 'maintenance') {
     const summary = summarizeProjectItems('maintenance', row.project_items, row)
     return {
@@ -9015,6 +9040,7 @@ function propertyFeedbackResponseFromRow(kind: PropertyFeedbackRecordKind, row: 
       detail: String(row.details || ''),
       invoice_description_en: row.invoice_description_en ? String(row.invoice_description_en) : null,
       media_urls: summary.photo_urls,
+      completion_photo_urls: normalizeUrlArray(row.completion_photo_urls),
       repair_photo_urls: summary.repair_photo_urls,
       repair_notes: row.repair_notes ? String(row.repair_notes) : null,
       created_by_name: row.submitter_name || null,
@@ -9369,7 +9395,7 @@ router.post('/property-feedbacks/:kind/:id/move', async (req, res) => {
 
 function hasOnlyPropertyFeedbackContentFields(kind: PropertyFeedbackRecordKind, payload: Record<string, unknown>) {
   const allowed = kind === 'maintenance'
-    ? new Set(['area', 'category', 'detail', 'media_urls'])
+    ? new Set(['area', 'category', 'detail', 'note', 'media_urls', 'repair_photo_urls'])
     : kind === 'deep_cleaning'
       ? new Set(['areas', 'detail', 'media_urls'])
       : new Set(['item_name', 'quantity', 'note', 'media_urls'])
@@ -9386,88 +9412,103 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
   const parsed = feedbackPatchSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (!hasOnlyPropertyFeedbackContentFields(kind, parsed.data)) return res.status(400).json({ code: 'feedback_content_fields_only' })
+  if (kind === 'maintenance' && !Object.keys(parsed.data).length) {
+    return res.status(400).json({ code: 'feedback_content_fields_required' })
+  }
   try {
+    if (kind === 'maintenance') {
+      await ensurePropertyMaintenanceColumns()
+      const beforeType = await getColumnType('property_maintenance', 'photo_urls')
+      const afterType = await getColumnType('property_maintenance', 'repair_photo_urls')
+      const beforeExpr = beforeType === 'text[]' ? '$5::text[]' : '$5::jsonb'
+      const afterExpr = afterType === 'text[]' ? '$7::text[]' : '$7::jsonb'
+      const canManageMaintenanceWorkflow = isPropertyFeedbackManager(user)
+        || await userHasAnyPerm(user, [MAINTENANCE_WORKFLOW_MANAGE_PERMISSION])
+      const capabilityContext = { canManageMaintenanceWorkflow }
+      const ordinaryContentFields = ['area', 'category', 'detail', 'media_urls']
+      const completionContentFields = ['note', 'repair_photo_urls']
+      const wantsOrdinaryContent = ordinaryContentFields.some((key) => Object.prototype.hasOwnProperty.call(parsed.data, key))
+      const wantsCompletionContent = completionContentFields.some((key) => Object.prototype.hasOwnProperty.call(parsed.data, key))
+      const updateResult = await pgRunInTransaction(async (client: any) => {
+        const row = await loadPropertyFeedbackRow('maintenance', id, client, true)
+        if (!row) throw new PropertyFeedbackMutationError(404, 'property_feedback_not_found')
+        if (!await canAccessPropertyFeedbackRow(client, user, row)) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
+        const capabilities = propertyFeedbackCapabilities(user, 'maintenance', row, capabilityContext)
+        if (wantsOrdinaryContent && !capabilities.can_edit_content) {
+          throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
+        }
+        if (wantsCompletionContent && !capabilities.can_edit_completion_content) {
+          if (capabilities.can_correct_completion) {
+            throw new PropertyFeedbackMutationError(409, 'maintenance_completion_edit_requires_workflow')
+          }
+          throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback_completion')
+        }
+        const nextArea = parsed.data.area !== undefined ? String(parsed.data.area || '').trim() : String(row.area || '').trim()
+        const nextCategory = parsed.data.category !== undefined ? String(parsed.data.category || '').trim() : String(row.category_detail || '').trim()
+        const nextDetail = parsed.data.detail !== undefined ? String(parsed.data.detail || '').trim() : String(row.details || '').trim()
+        const nextNote = parsed.data.note !== undefined ? String(parsed.data.note || '').trim() : String(row.repair_notes || '').trim()
+        const nextInvoiceDescriptionEn = String(row.invoice_description_en || '').trim()
+        const nextMedia = parsed.data.media_urls !== undefined ? normalizeUrlArray(parsed.data.media_urls) : normalizeUrlArray(row.photo_urls)
+        const nextRepairMedia = parsed.data.repair_photo_urls !== undefined ? normalizeUrlArray(parsed.data.repair_photo_urls) : normalizeUrlArray(row.repair_photo_urls)
+        const nextCompletionEvidenceMedia = Array.from(new Set([
+          ...normalizeUrlArray(row.completion_photo_urls),
+          ...nextRepairMedia,
+        ]))
+        const workflowStatus = normalizeMaintenanceWorkflowStatus(row.status, row.review_status)
+        if (wantsCompletionContent && workflowStatus === 'pending_review' && !nextCompletionEvidenceMedia.length) {
+          throw new PropertyFeedbackMutationError(422, 'maintenance_completion_photo_required')
+        }
+        if (!nextArea || !nextDetail) throw new PropertyFeedbackMutationError(400, 'missing_maintenance_fields')
+        const updated = await client.query(
+          `UPDATE property_maintenance
+              SET area = $2,
+                  category_detail = $3,
+                  details = $4,
+                  photo_urls = ${beforeExpr},
+                  repair_notes = $6,
+                  repair_photo_urls = ${afterExpr},
+                  invoice_description_en = $8,
+                  updated_by_user_id = $9,
+                  updated_at = now()
+            WHERE id = $1
+              AND deleted_at IS NULL
+            RETURNING *`,
+          [
+            id,
+            nextArea,
+            nextCategory || null,
+            nextDetail,
+            beforeType === 'text[]' ? nextMedia : JSON.stringify(nextMedia),
+            nextNote || null,
+            afterType === 'text[]' ? nextRepairMedia : JSON.stringify(nextRepairMedia),
+            nextInvoiceDescriptionEn || null,
+            String(user?.sub || '').trim() || null,
+          ],
+        )
+        const updatedRow = updated?.rows?.[0] || null
+        if (!updatedRow) throw new PropertyFeedbackMutationError(404, 'property_feedback_not_found')
+        return {
+          row: propertyFeedbackResponseFromRow('maintenance', updatedRow, user, capabilityContext),
+          sourceSummary: {
+            id,
+            details: nextDetail,
+            repair_notes: nextNote || null,
+            invoice_description_en: nextInvoiceDescriptionEn || null,
+          },
+        }
+      })
+      if (!updateResult) throw new Error('property_feedback_update_unavailable')
+      await refreshAutoExpenseSourceSummary('maintenance', {
+        ...updateResult.sourceSummary,
+      })
+      return res.json({ ok: true, row: updateResult.row })
+    }
     await pgRunInTransaction(async (client: any) => {
       const row = await loadAnyPropertyFeedbackRow(kind, id, client)
       if (!row) throw new PropertyFeedbackMutationError(404, 'property_feedback_not_found')
       if (!await canAccessPropertyFeedbackRow(client, user, row)) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
       if (!canMutatePropertyFeedbackContent(user, kind, row)) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
     })
-    if (kind === 'maintenance') {
-      await ensurePropertyMaintenanceColumns()
-      const row = await loadPropertyFeedbackRow('maintenance', id)
-      if (!row) return res.status(404).json({ message: 'not found' })
-      const nextArea = parsed.data.area !== undefined ? String(parsed.data.area || '').trim() : String(row.area || '').trim()
-      const nextCategory = parsed.data.category !== undefined ? String(parsed.data.category || '').trim() : String(row.category_detail || '').trim()
-      const nextDetail = parsed.data.detail !== undefined ? String(parsed.data.detail || '').trim() : String(row.details || '').trim()
-      const nextNote = parsed.data.note !== undefined ? String(parsed.data.note || '').trim() : String(row.repair_notes || '').trim()
-      const nextInvoiceDescriptionEn = parsed.data.invoice_description_en !== undefined ? String(parsed.data.invoice_description_en || '').trim() : String(row.invoice_description_en || '').trim()
-      const nextMedia = parsed.data.media_urls !== undefined ? normalizeUrlArray(parsed.data.media_urls) : normalizeUrlArray(row.photo_urls)
-      const nextRepairMedia = parsed.data.repair_photo_urls !== undefined ? normalizeUrlArray(parsed.data.repair_photo_urls) : normalizeUrlArray(row.repair_photo_urls)
-      const nextStatus = String(row.status || '').trim() || 'pending'
-      const nextReviewStatus = row.review_status ? String(row.review_status) : null
-      const nextCompletedAt = row.completed_at || null
-      if (!nextArea || !nextDetail) return res.status(400).json({ message: 'missing maintenance fields' })
-      const beforeType = await getColumnType('property_maintenance', 'photo_urls')
-      const afterType = await getColumnType('property_maintenance', 'repair_photo_urls')
-      const beforeExpr = beforeType === 'text[]' ? '$5::text[]' : '$5::jsonb'
-      const afterExpr = afterType === 'text[]' ? '$7::text[]' : '$7::jsonb'
-      await pgPool.query(
-        `UPDATE property_maintenance
-            SET area = $2,
-                category_detail = $3,
-                details = $4,
-                photo_urls = ${beforeExpr},
-                repair_notes = $6,
-                repair_photo_urls = ${afterExpr},
-                invoice_description_en = $8,
-                status = $9,
-                review_status = $10,
-                completed_at = $11,
-                updated_at = now()
-          WHERE id = $1`,
-        [
-          id,
-          nextArea,
-          nextCategory || null,
-          nextDetail,
-          beforeType === 'text[]' ? nextMedia : JSON.stringify(nextMedia),
-          nextNote || null,
-          afterType === 'text[]' ? nextRepairMedia : JSON.stringify(nextRepairMedia),
-          nextInvoiceDescriptionEn || null,
-          nextStatus,
-          nextReviewStatus,
-          nextCompletedAt,
-        ],
-      )
-      await refreshAutoExpenseSourceSummary('maintenance', {
-        id,
-        details: nextDetail,
-        repair_notes: nextNote || null,
-        invoice_description_en: nextInvoiceDescriptionEn || null,
-      })
-      return res.json({
-        ok: true,
-        row: {
-          id,
-          property_id: row.property_id ? String(row.property_id) : null,
-          kind: 'maintenance',
-          area: nextArea,
-          category: null,
-          detail: nextDetail,
-          invoice_description_en: nextInvoiceDescriptionEn || null,
-          note: nextNote || null,
-          repair_notes: nextNote || null,
-          media_urls: nextMedia,
-          repair_photo_urls: nextRepairMedia,
-          created_by_name: row.submitter_name ? String(row.submitter_name) : null,
-          created_at: row.submitted_at || row.created_at || null,
-          status: mapWorkStatus(nextStatus),
-          review_status: nextReviewStatus,
-          completed_at: nextCompletedAt,
-        },
-      })
-    }
     if (kind === 'deep_cleaning') {
       await ensurePropertyDeepCleaningColumns()
       const existing = await pgPool.query(`SELECT * FROM property_deep_cleaning WHERE id = $1 LIMIT 1`, [id])

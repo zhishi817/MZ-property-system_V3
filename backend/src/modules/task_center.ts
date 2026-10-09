@@ -57,6 +57,7 @@ type BoardTask = {
   property_code: string | null
   property_region: string | null
   status: string
+  checked_out_at?: string | null
   urgency?: string | null
   title: string
   detail: string
@@ -1063,6 +1064,7 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
         title: first.title,
         detail: '待检查',
         status: mergedStatus(deferreds.map((x) => x.status)),
+        checked_out_at: deferreds.find((x) => text(x.checked_out_at))?.checked_out_at || null,
         assignee_id: assigneeId,
         cleaner_id: cleanerId,
         inspector_id: inspectorId,
@@ -1143,6 +1145,7 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
         title: mergedSummary.title,
         detail: [mergedSummary.detail, nightsText].filter(Boolean).join('，'),
         status: turnoverPlan.status,
+        checked_out_at: all.find((x) => text(x.checked_out_at))?.checked_out_at || null,
         assignee_id: turnoverPlan.assigneeId,
         cleaner_id: turnoverPlan.cleanerId,
         inspector_id: turnoverPlan.inspectorId,
@@ -1222,6 +1225,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
          t.task_type,
          COALESCE(t.task_date, t.date)::text AS task_date,
          t.status,
+         t.checked_out_at,
          t.assignee_id,
          t.cleaner_id,
          t.inspector_id,
@@ -1368,6 +1372,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
           property_code: row.property_code ? String(row.property_code) : null,
           property_region: row.property_region ? String(row.property_region) : null,
           status: text(row.status) || 'pending',
+          checked_out_at: row.checked_out_at ? String(row.checked_out_at) : null,
           title: sum.title,
           detail: sum.detail || label,
           task_date: d,
@@ -1453,6 +1458,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
           property_code: row.property_code ? String(row.property_code) : null,
           property_region: row.property_region ? String(row.property_region) : null,
           status: text(row.status) || 'pending',
+          checked_out_at: row.checked_out_at ? String(row.checked_out_at) : null,
           title: sum.title,
           detail: sum.detail,
           task_date: projectionDate,
@@ -1518,6 +1524,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
         property_code: prop?.code ? String(prop.code) : null,
         property_region: prop?.region ? String(prop.region) : null,
         status: text(row.status) || 'pending',
+        checked_out_at: row.checked_out_at ? String(row.checked_out_at) : null,
         title: sum.title,
         detail: sum.detail,
         task_date: taskDate || date,
@@ -1986,7 +1993,7 @@ function appendWebCapabilitiesToRows(rows: BoardRow[], canManageSchedule: boolea
   }))
 }
 
-async function buildTaskCenterDay(date: string, includeOverdue: boolean, includeUnscheduled: boolean, includeFuture: boolean, canManageSchedule = false) {
+export async function buildTaskCenterDay(date: string, includeOverdue: boolean, includeUnscheduled: boolean, includeFuture: boolean, canManageSchedule = false) {
   const [cleaningTasks, workTasks, taskFlags, rowMetas, itemLayouts] = await Promise.all([
     loadCleaningTasks(date, false, false),
     loadWorkTasks(date, includeOverdue, includeUnscheduled, includeFuture),

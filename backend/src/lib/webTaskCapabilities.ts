@@ -195,7 +195,12 @@ function displayScopeFor(semantics: WebTaskExecutionSemantics): WebTaskDisplaySc
 export function buildWebTaskCapabilityPayload(task: Record<string, any>, context: WebTaskCapabilityContext): WebTaskCapabilityPayload {
   const source = sourceOf(task)
   const status = normalizeStatus(task.status)
-  const meta = statusMeta(status)
+  const baseMeta = statusMeta(status)
+  const meta = source === 'cleaning'
+    && cleanText(task.checked_out_at)
+    && ['pending', 'todo', 'unassigned', 'assigned'].includes(status)
+    ? { ...baseMeta, status_label: '已退房', status_tone: 'info' as const }
+    : baseMeta
   const taskType = taskTypeOf(task)
   const inspectionMode = normalizeInspectionMode(task.inspection_mode)
   const inspectionScope = normalizeInspectionScope(task.inspection_scope)
