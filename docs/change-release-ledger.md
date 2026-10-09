@@ -107,16 +107,38 @@
 - Branch: `codex/mz015-mz018-mz020-dev-20261009`
 - Base: `origin/Dev@4c5b57b57301824fea4115b7632aab0f6d58d530`; fetched at `2026-10-09T02:32:31Z` and confirmed unchanged at `2026-10-09T02:37:41Z` from GitHub
 - Candidate patch SHA-256: `4984f21059c547cfcea77de4d58e4a6e54b22c0dbd5289e135f1014ba6b0bf93` excluding `docs/change-release-ledger.md`
-- Commit SHA: not committed
-- Dependencies: paired `mobile/CRL-20261007-001` in branch `codex/mz018-mobile-dev-20261009`; exact commit SHA pending the paired Mobile commit
+- Commit SHA: `eb67d181952fe2b00b5d0eb98ca0399b8104f664`
+- Dependencies: `mobile/CRL-20261007-001@2a476ea4426ab05c40d42f3fc0ee2c859da5cd2b`
 - Required validation: `PASS`; evidence: MZ-015 Web task capability, MZ-018 media visibility/property-feedback access, and MZ-020 order-cancel contracts passed with `DATABASE_URL=''`; post-review complete `npm run check:full` passed backend build and wired contracts, frontend lint / 53 files / 265 tests / production build, and paired Mobile typecheck / lint (0 errors / 588 warnings) / 62 suites / 379 tests. Feature Registry audit passed at 29 FRs / 233 mappings and `git diff --check` passed.
 - Shared-hunk review: `PASS`; evidence: 15 staged files / 77 non-ledger hunks are covered by the three selected CRLs; MZ-020 retains its previously reviewed source hunks and the MZ-015/MZ-018 scopes assign the remaining hunks without overlap, including the empty-maintenance-PATCH permission guard and separate authority-photo projection added after independent review.
 - Generated-file review: `PASS`; evidence: tracked backend build drift was restored; ignored backend/frontend outputs and all dependency/pairing symlinks were removed; no untracked file remains.
 - Sensitive-information review: `PASS`; evidence: candidate contains no `.env`, credentials, tokens, cookies, private keys, database URL, production logs/data or supplied image bytes.
-- Technical state: `candidate`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: delegated user instruction explicitly selected one Root batch containing MZ-015, MZ-018 Root and MZ-020 and authorized commit, normal non-force push and Draft PR while excluding merge, deployment, OTA and production writes.
 - Independent review: `GO for commit`; evidence: final independent read-only review matched fingerprint `4984f21059c547cfcea77de4d58e4a6e54b22c0dbd5289e135f1014ba6b0bf93`, pre-commit 15 files / 77 hunks and diff check, confirmed the empty-PATCH and authoritative-plus-supplement photo-gate repairs, and found no P0/P1. The recorded MZ-020 duplicate-order override-only UI mismatch remains a non-blocking P2 with safe backend denial.
-- Action conclusion: `GO`; exact staged candidate is approved for local commit only. Push, PR, merge, deployment, OTA and production writes are not implied by this review conclusion.
+- Action conclusion: `GO`; exact reviewed candidate was committed locally as `eb67d181952fe2b00b5d0eb98ca0399b8104f664`. Push is evaluated separately below; merge, deployment, OTA and production writes remain excluded.
+
+#### RA-20261009-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261007-001`, `CRL-20261007-002`, `CRL-20261008-001`
+- Selected CRL identities: `root/CRL-20261007-001`, `root/CRL-20261007-002`, `root/CRL-20261008-001`
+- Intended action: `push`
+- Branch: `codex/mz015-mz018-mz020-dev-20261009`
+- Base: `origin/Dev@4c5b57b57301824fea4115b7632aab0f6d58d530`; fetched at `2026-10-09T02:32:31Z` and confirmed unchanged at `2026-10-09T02:37:41Z` from GitHub
+- Candidate patch SHA-256: `4984f21059c547cfcea77de4d58e4a6e54b22c0dbd5289e135f1014ba6b0bf93` excluding `docs/change-release-ledger.md`
+- Candidate content commit SHA: `eb67d181952fe2b00b5d0eb98ca0399b8104f664`
+- Commit SHA: `eb67d181952fe2b00b5d0eb98ca0399b8104f664`
+- Dependencies: `mobile/CRL-20261007-001@2a476ea4426ab05c40d42f3fc0ee2c859da5cd2b`
+- Required validation: `PASS`; evidence: final `DATABASE_URL='' npm run check:full` passed backend build/contracts, frontend 53 files / 265 tests / production build, and paired Mobile typecheck / lint 0 errors / 588 warnings / 62 suites / 379 tests.
+- Shared-hunk review: `PASS`; evidence: exact committed range contains 15 selected files / 77 non-ledger hunks across the three selected CRLs.
+- Generated-file review: `PASS`; evidence: generated outputs, caches and dependency/pairing symlinks were removed before commit; committed range contains none.
+- Sensitive-information review: `PASS`; evidence: exact committed range contains no configured sensitive category, credentials, private media bytes or production data.
+- Cross-repository dependency verification: `PASS`; evidence: `mobile/CRL-20261007-001@2a476ea4426ab05c40d42f3fc0ee2c859da5cd2b` resolves on the paired branch, directly descends from its recorded Mobile Dev base, and retains fingerprint `7a33f163f8de0cb7bb1e0326adf326125db31ba8b196513d7b41009c8a91eb8e`.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: delegated user instruction explicitly authorized normal non-force push and Draft PR for this exact Root batch while excluding merge, deployment, OTA and production writes.
+- Independent review: `GO for ledger-only receipt commit and conditional controlled push`; evidence: independent read-only push gate verified exact base/content ancestry, 15 files / 77 hunks, fingerprint, receipt-only staged scope, paired Mobile commit, clean generated/sensitive boundaries, fresh unchanged Dev and absent target branch; no P0/P1, with the recorded MZ-020 P2 accepted.
+- Action conclusion: `GO`; commit this ledger-only receipt, then require a clean exact release report and one final live remote-boundary check before explicit-refspec normal non-force push. Merge, deployment, OTA and production writes remain excluded.
 
 ### Risks / Release Notes
 
