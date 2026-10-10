@@ -537,16 +537,16 @@
 - Branch: `codex/mz010-mz011-mz021-integration-20261010`
 - Base: `origin/Dev@e9e32847c49782a34163267681174c57db3a8952`; fetched at `2026-10-10T06:51:42Z` from GitHub
 - Candidate patch SHA-256: `b82511faa430f363d05e89b74762849910ff6b25d797a8ed560667a3e34a1869` excluding `docs/change-release-ledger.md`
-- Commit SHA: `not committed`
+- Commit SHA: `94fc510992aff5bd8bc0c514cff91bc9313647e1`
 - Dependencies: none
 - Required validation: `PASS`; evidence: Root targeted MZ-003 idempotency/immutable-media contract passed; fresh isolated paired `npm run check:full` passed backend build/contracts, frontend lint / 53 files / 268 tests / production build, and Mobile typecheck / lint 0 errors / 593 warnings / 67 suites / 400 tests. Root ledger/Feature Registry and both diff checks passed.
 - Shared-hunk review: `PASS`; evidence: shared package, API/module, task-center and Feature Registry hunks are intentionally recorded in every relevant selected CRL and audited as one exact union; MZ-003 is integrated with MZ-010/MZ-011/MZ-021 without MZ-022/MZ-023.
 - Generated-file review: `PASS`; evidence: tracked backend build output drift was restored; candidate contains no generated build output, cache or dependency directory.
 - Sensitive-information review: `PASS`; evidence: candidate contains no `.env`, credentials, tokens, cookies, private keys, database URL or production data.
-- Technical state: `candidate`
+- Technical state: `committed`
 - User authorization: `approved-for-push`; evidence: delegated instruction explicitly authorized separate Root/Mobile commits, normal pushes and paired Draft PRs, while forbidding merge, auto-merge, main push, deployment, OTA and production writes.
 - Independent review: `GO`; evidence: independent read-only review at `2026-10-10T07:32:46Z` verified the exact 34-path / 167-non-ledger-hunk candidate, base/HEAD/index boundary, `b82511faa430f363d05e89b74762849910ff6b25d797a8ed560667a3e34a1869` fingerprint, clean diff checks, no P0/P1, no MZ-022/MZ-023 source changes, and no generated or sensitive paths.
-- Action conclusion: `GO`; the exact candidate may be committed locally. Push and Draft PR remain separately gated actions; merge, main push, deployment, migration and production writes remain excluded.
+- Action conclusion: `GO`; exact content commit `94fc510992aff5bd8bc0c514cff91bc9313647e1` was created locally after the pre-commit audit passed. Push and Draft PR remain separately gated actions; merge, main push, deployment, migration and production writes remain excluded.
 
 ## CRL-20261008-001 — 订单取消权限按有效多角色并集判定
 
