@@ -846,6 +846,21 @@ const fixed: Record<string, Omit<PermissionMeta, 'code'>> = {
       '误设置会带来客诉与运营风险',
     ],
   },
+  'order.guest_ready_notification.manage': {
+    displayName: '订单：记录已通知可入住（高）',
+    riskLevel: 'high',
+    purpose: '允许为当前入住订单记录或撤销“已通知客人可入住”状态；该权限本身不发送任何消息。',
+    scenarios: [
+      '房屋已可入住后，客服记录已通过外部渠道通知客人',
+      '客服或管理员撤销误标并保留审计记录',
+    ],
+    denyImpact: [
+      '无法记录或撤销客人可入住通知状态',
+    ],
+    privacyRisk: [
+      '误标会造成客服交接错误，因此必须绑定本次入住订单并保留操作人和时间',
+    ],
+  },
   'cleaning_app.calendar.view.all': {
     displayName: '清洁 App：查看全部日历（中）',
     riskLevel: 'medium',

@@ -4,6 +4,7 @@ import type { Metadata } from 'next'
 import { AntdRegistry } from '../components/AntdRegistry'
 import { ClientThemeProvider } from '../components/ClientThemeProvider'
 import { AdminLayout } from '../components/AdminLayout'
+import { DevPreviewActivityReporter } from '../components/DevPreviewActivityReporter'
 
 export const metadata: Metadata = {
   title: 'MZ Property System',
@@ -14,6 +15,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="zh-CN">
       <body>
+        <DevPreviewActivityReporter />
         <AntdRegistry>
           <ClientThemeProvider>
             <AdminLayout>{children}</AdminLayout>

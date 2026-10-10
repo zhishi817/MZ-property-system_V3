@@ -7,6 +7,7 @@ import {
   HeadObjectCommand,
   ListObjectsV2Command,
 } from '@aws-sdk/client-s3'
+import { ensureImmutableMediaStored, sha256Hex } from './lib/immutableMediaUpload'
 
 const endpoint = process.env.R2_ENDPOINT || ''
 const accessKeyId = process.env.R2_ACCESS_KEY_ID || ''
@@ -110,6 +111,77 @@ export async function r2Upload(key: string, contentType: string, body: Buffer) {
     : pb
   const base = cleaned || `${endpoint.replace(/\/$/, '')}/${bucket}`
   return `${base}/${key}`
+}
+
+export async function r2UploadImmutable(
+  key: string,
+  contentType: string,
+  body: Buffer,
+  fingerprint: string,
+): Promise<{ url: string; reused: boolean }> {
+  if (!hasR2 || !r2) throw new Error('R2 not configured')
+  if (!Buffer.isBuffer(body) || body.length <= 0) {
+    throw Object.assign(new Error('empty upload body'), { code: 'R2_UPLOAD_VERIFY_FAILED' })
+  }
+  const expected = {
+    fingerprint: String(fingerprint || '').trim(),
+    bodySha256: sha256Hex(body),
+    size: body.length,
+    contentType: normalizedContentType(contentType),
+  }
+  const result = await ensureImmutableMediaStored({
+    expected,
+    maxAttempts: r2UploadMaxAttempts(),
+    create: async () => {
+      const ac = new AbortController()
+      const timer = setTimeout(() => {
+        try { ac.abort() } catch {}
+      }, r2UploadTimeoutMs())
+      try {
+        await r2.send(new PutObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          Body: body,
+          ContentType: contentType,
+          Metadata: { 'mz-content-fingerprint': expected.fingerprint },
+          IfNoneMatch: '*',
+        }), { abortSignal: ac.signal } as any)
+      } finally {
+        clearTimeout(timer)
+      }
+    },
+    inspect: async () => {
+      let head: any
+      try {
+        head = await r2.send(new HeadObjectCommand({ Bucket: bucket, Key: key }))
+      } catch (error: any) {
+        return classifyR2ObjectReadError(error) === 'not_found'
+          ? { status: 'missing' as const }
+          : { status: 'unavailable' as const }
+      }
+      const storedFingerprint = String(head?.Metadata?.['mz-content-fingerprint'] || '').trim()
+      let bodySha256: string | null = null
+      // Objects created before immutable metadata was introduced are compared
+      // byte-for-byte, so rollout does not overwrite existing media.
+      if (!storedFingerprint) {
+        const legacy = await r2GetObjectByKeyDetailed(key)
+        if (legacy.status !== 'ok') {
+          return legacy.status === 'not_found'
+            ? { status: 'missing' as const }
+            : { status: 'unavailable' as const }
+        }
+        bodySha256 = sha256Hex(legacy.object.body)
+      }
+      return {
+        status: 'exists' as const,
+        fingerprint: storedFingerprint || null,
+        bodySha256,
+        size: Number(head?.ContentLength || 0),
+        contentType: String(head?.ContentType || ''),
+      }
+    },
+  })
+  return { url: `${computePublicBase()}/${key}`, reused: result.reused }
 }
 
 export function r2Status() {

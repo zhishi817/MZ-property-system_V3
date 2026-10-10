@@ -31,12 +31,15 @@ import {
   cleaningNightsDisplayLabels,
   cleaningTaskFlowLabelText,
   deferredInspectionConflictPresentation,
+  guestReadyNotificationPresentation,
   hasTaskCenterRequiredExecutor,
   isDeferredInspectionDisplayTask,
   maintenanceDetailContentText,
   resolveTaskCenterColumns,
   taskCenterBoardInspectionDueDate,
+  taskCenterDailyGroupCounts,
   taskCenterInspectionAssignmentPatch,
+  visibleTaskCenterPropertyFollowups,
 } from './taskCenterDisplay'
 import styles from '../cleaning/cleaningSchedule.module.scss'
 
@@ -101,6 +104,27 @@ type TaskManagementAction = {
   intent?: 'assignment' | 'inspection' | 'status' | 'schedule' | 'participants'
 }
 
+type GuestReadyNotification = {
+  order_id: string
+  status: 'not_notified' | 'notified'
+  notified_at: string | null
+  notified_by_user_id: string | null
+  notified_by_name: string | null
+  version: number
+  eligible: boolean
+  disabled_reason?: 'property_not_ready' | 'no_checkin_order' | 'checkin_order_changed' | null
+}
+
+type GuestReadyNotificationAction = {
+  id: 'record_guest_ready_notified' | 'revoke_guest_ready_notified'
+  label: string
+  placement: 'primary'
+  enabled: boolean
+  disabled_reason?: string
+  source_type: 'orders'
+  source_id: string
+}
+
 type TaskCenterTask = {
   item_key: string
   task_source: 'cleaning' | 'work'
@@ -116,6 +140,7 @@ type TaskCenterTask = {
   property_code: string | null
   property_region: string | null
   status: string
+  execution_list_visible?: boolean
   urgency?: string | null
   title: string
   detail: string
@@ -194,6 +219,10 @@ type TaskCenterTask = {
   inspection_mode_action?: 'set' | null
   display_state?: TaskDisplayState | null
   management_actions?: TaskManagementAction[] | null
+  daily_stats_group?: 'turnover' | 'offline' | null
+  daily_stats_key?: string | null
+  guest_ready_notification?: GuestReadyNotification | null
+  available_actions?: GuestReadyNotificationAction[] | null
 }
 
 type PropertyMaintenanceDetail = {
@@ -888,6 +917,7 @@ export default function TaskCenterPage() {
   const [viewerRole, setViewerRole] = useState<string | null>(null)
   const [boardDirty, setBoardDirty] = useState(false)
   const [boardSaving, setBoardSaving] = useState(false)
+  const [guestReadySaving, setGuestReadySaving] = useState(false)
   const boardDirtyRef = useRef(false)
   const boardWrapRef = useRef<HTMLDivElement | null>(null)
   const loadDayRequestRef = useRef(0)
@@ -1005,6 +1035,50 @@ export default function TaskCenterPage() {
     }
   }, [dateStr, setBoardDraftDirty])
 
+  const patchGuestReadyNotification = useCallback((orderId: string, notification: GuestReadyNotification, actions: GuestReadyNotificationAction[]) => {
+    const patchTask = (task: TaskCenterTask): TaskCenterTask => String(task.order_id_checkin || '') === orderId
+      ? { ...task, guest_ready_notification: notification, available_actions: actions }
+      : task
+    setDayData((current) => current ? {
+      ...current,
+      rows: current.rows.map((row) => ({
+        ...row,
+        subrows: row.subrows.map((subrow) => ({ ...subrow, tasks: subrow.tasks.map(patchTask) })),
+      })),
+      property_followups: (current.property_followups || []).map(patchTask),
+    } : current)
+    setDetailTask((current) => current ? patchTask(current) : current)
+  }, [])
+
+  const changeGuestReadyNotification = useCallback(async (action: GuestReadyNotificationAction) => {
+    const task = detailTask
+    const notification = task?.guest_ready_notification
+    if (!task || !notification || !action.enabled || guestReadySaving) return
+    const operationId = globalThis.crypto?.randomUUID?.() || `guest-ready-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    setGuestReadySaving(true)
+    try {
+      const receipt = await postJSON<{
+        guest_ready_notification: GuestReadyNotification
+        available_actions: GuestReadyNotificationAction[]
+      }>('/mzapp/guest-ready-notifications', {
+        order_id: notification.order_id,
+        action: action.id === 'revoke_guest_ready_notified' ? 'revoke' : 'mark',
+        operation_id: operationId,
+        expected_version: notification.version,
+      })
+      patchGuestReadyNotification(
+        notification.order_id,
+        receipt.guest_ready_notification,
+        Array.isArray(receipt.available_actions) ? receipt.available_actions : [],
+      )
+      message.success(action.id === 'revoke_guest_ready_notified' ? '已撤销“已通知客人”记录' : '已记录“已通知客人”')
+    } catch (error: any) {
+      message.error(String(error?.message || '保存通知状态失败；未修改当前显示'))
+    } finally {
+      setGuestReadySaving(false)
+    }
+  }, [detailTask, guestReadySaving, patchGuestReadyNotification])
+
   useEffect(() => {
     loadStaff().catch(() => {})
     loadProps().catch(() => {})
@@ -1061,7 +1135,10 @@ export default function TaskCenterPage() {
   }, [activeMaintenanceStaff, activeStaff])
 
   const allRows = useMemo(() => dayData?.rows || [], [dayData?.rows])
-  const propertyFollowups = useMemo(() => dayData?.property_followups || [], [dayData?.property_followups])
+  const propertyFollowups = useMemo(
+    () => visibleTaskCenterPropertyFollowups(dayData?.property_followups || []),
+    [dayData?.property_followups],
+  )
 
   const filterQuery = useMemo(() => filterText.trim().toLowerCase(), [filterText])
   const filteringActive = filterQuery.length > 0
@@ -1099,7 +1176,7 @@ export default function TaskCenterPage() {
       subrow: TaskCenterSubrow
       label: string
     }> = []
-    for (const row of filteredRows) {
+    for (const row of allRows) {
       for (const subrow of row.subrows) {
         for (const task of subrow.tasks) {
           if (task.task_source === 'cleaning') {
@@ -1121,9 +1198,24 @@ export default function TaskCenterPage() {
       }
     }
     return items
-  }, [filteredRows])
+  }, [allRows])
 
   const allBoardTasks = useMemo(() => allRows.flatMap((row) => row.subrows.flatMap((subrow) => subrow.tasks)), [allRows])
+  const dailyGroupCounts = useMemo(
+    () => taskCenterDailyGroupCounts([...allBoardTasks, ...propertyFollowups]),
+    [allBoardTasks, propertyFollowups],
+  )
+  const searchResultCount = useMemo(() => {
+    if (!filteringActive) return null
+    const keys = new Set<string>()
+    for (const row of filteredRows) {
+      for (const subrow of row.subrows) {
+        for (const task of subrow.tasks) keys.add(String(task.item_key || task.task_id))
+      }
+    }
+    for (const task of filteredPropertyFollowups) keys.add(String(task.item_key || task.task_id))
+    return keys.size
+  }, [filteredPropertyFollowups, filteredRows, filteringActive])
   const deferredCheckinConflictCount = useMemo(
     () => allBoardTasks.filter((task) => task.deferred_checkin_conflict).length,
     [allBoardTasks],
@@ -2177,18 +2269,22 @@ export default function TaskCenterPage() {
     const conflictCount = taskDisplayConflictCount(task)
     const deferredCheckinConflict = deferredInspectionConflictPresentation(task)
     const deferredCheckinConflictText = deferredCheckinConflict?.detail || ''
-    const primaryMetaItems = taskCardPrimaryMetaItems({
-      statusLabel: statusMeta.label,
-      displayBadges,
-      inspectionModeTag,
-      inspectionScopeTag,
-      workTaskKindTag,
-      syncTag,
-      temporarilySkipped: task.temporarily_skipped,
-      deferredCheckinConflict,
-      supersededCount,
-      conflictCount,
-    })
+    const guestReadyMeta = guestReadyNotificationPresentation(task)
+    const primaryMetaItems = [
+      ...taskCardPrimaryMetaItems({
+        statusLabel: statusMeta.label,
+        displayBadges,
+        inspectionModeTag,
+        inspectionScopeTag,
+        workTaskKindTag,
+        syncTag,
+        temporarilySkipped: task.temporarily_skipped,
+        deferredCheckinConflict,
+        supersededCount,
+        conflictCount,
+      }),
+      ...(guestReadyMeta ? [{ key: 'guest-ready-notification', label: guestReadyMeta.label, tone: guestReadyMeta.tone }] : []),
+    ]
     const footerNote = deferredCheckinConflictText
       || compactDetailText
       || (conflictCount > 0 ? '请先核对订单' : '')
@@ -2525,6 +2621,8 @@ export default function TaskCenterPage() {
   const detailIsPasswordOnly = detailTask ? taskSemanticBool(detailTask, 'is_password_only', isPasswordOnlyCheckinTask({ ...detailTask, inspection_scope: detailDraft?.inspection_scope || detailTask.inspection_scope })) : false
   const detailUsesExecutorAssignment = detailIsPureCheckin || detailIsPasswordOnly
   const detailSupersededCount = detailTask ? supersededCleaningTaskIds(detailTask).length : 0
+  const detailGuestReadyPresentation = detailTask ? guestReadyNotificationPresentation(detailTask) : null
+  const detailGuestReadyAction = detailTask?.available_actions?.find((action) => action.id === 'record_guest_ready_notified' || action.id === 'revoke_guest_ready_notified') || null
 
   return (
     <div className={styles.page}>
@@ -2568,6 +2666,20 @@ export default function TaskCenterPage() {
               className={styles.taskCenterFilterInput}
             />
             <div className={styles.taskCenterSummaryStats}>
+              <span className={styles.taskCenterSummaryPill}>
+                <strong>入住＋退房</strong>
+                <em>{dailyGroupCounts.turnover} 个</em>
+              </span>
+              <span className={styles.taskCenterSummaryPill}>
+                <strong>线下任务</strong>
+                <em>{dailyGroupCounts.offline} 个</em>
+              </span>
+              {searchResultCount != null ? (
+                <span className={styles.taskCenterSummaryPill}>
+                  <strong>搜索结果</strong>
+                  <em>{searchResultCount} 个</em>
+                </span>
+              ) : null}
               <span className={styles.taskCenterSummaryPill}>
                 <strong title={UNASSIGNED_VISIBLE_SUMMARY_TITLE}>未安排</strong>
                 <em>{visibleUnassignedTasks.length} 个</em>
@@ -2633,7 +2745,7 @@ export default function TaskCenterPage() {
             <div className={styles.propertyFollowupHeader}>
               <div>
                 <div className={styles.propertyFollowupTitle}>退房日房源待办</div>
-                <div className={styles.propertyFollowupSubtitle}>维修、深度清洁和日用品更换；当天不安排人员时，过日后自动顺延至下一次退房。</div>
+                <div className={styles.propertyFollowupSubtitle}>维修、深度清洁和日用品更换；仅显示已安排执行人且安排在所选日期的执行任务。</div>
               </div>
               <span className={`${styles.inlineSemanticPill} ${semanticToneClass('normal')}`}>{filteredPropertyFollowups.length} 项</span>
             </div>
@@ -2851,9 +2963,31 @@ export default function TaskCenterPage() {
                     {detailTask.temporarily_skipped ? <span className={`${styles.taskDetailChip} ${semanticToneClass('pending')}`}>暂不安排</span> : null}
                     {detailSupersededCount > 0 ? <span className={`${styles.taskDetailChip} ${semanticToneClass('info')}`}>已合并{detailSupersededCount}条手动补位</span> : null}
                   </div>
-                </div>
+              </div>
               <div className={styles.taskDetailHeroSummary}>{detailHeroSummary(detailTask) || '暂无详情'}</div>
             </div>
+            {detailGuestReadyPresentation ? (
+              <div className={`${styles.taskDetailHint} ${semanticToneClass(detailGuestReadyPresentation.tone)}`}>
+                <div className={styles.taskDetailHintRow}>
+                  <span>{detailGuestReadyPresentation.label}</span>
+                  {detailGuestReadyAction ? (
+                    <Button
+                      size="small"
+                      type={detailGuestReadyAction.id === 'record_guest_ready_notified' ? 'primary' : 'default'}
+                      disabled={!detailGuestReadyAction.enabled || guestReadySaving}
+                      loading={guestReadySaving}
+                      title={detailGuestReadyAction.disabled_reason || undefined}
+                      onClick={() => changeGuestReadyNotification(detailGuestReadyAction).catch(() => {})}
+                    >
+                      {detailGuestReadyAction.label}
+                    </Button>
+                  ) : null}
+                </div>
+                <div className={styles.taskDetailHintCopy}>
+                  {detailGuestReadyPresentation.detail || '仅记录客服已通过外部渠道通知；本操作不会发送短信、邮件或平台消息。'}
+                </div>
+              </div>
+            ) : null}
             {detailTask.task_source === 'cleaning' ? (
               <>
                 <div className={styles.taskDetailGrid}>
