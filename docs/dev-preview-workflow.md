@@ -67,6 +67,14 @@ npm run dev:preview
 npm run dev:preview:all
 ```
 
+实体手机在同一 Wi-Fi 验收时使用：
+
+```bash
+npm run dev:preview:all:lan
+```
+
+LAN 入口会为 Expo manifest 和 Mobile API 同时选择当前 Mac 唯一的私网 IPv4。若存在多个候选网卡则拒绝猜测，可临时设置 `MZ_DEV_PREVIEW_LAN_HOST=<Mac 私网 IPv4>` 后重试；启动器不会修改防火墙、路由器或打开公网 tunnel。
+
 仅启动移动端 Metro：
 
 ```bash
@@ -74,6 +82,15 @@ npm run dev:preview:mobile
 ```
 
 启动器只会停止来源工作区或 MZ-Dev-Preview 自己占用的 3000/4002/8081 监听进程；若端口属于其他程序则拒绝终止。后端通过 `/health/config` 确认 `app_env=dev`、`database_role=dev`，并在 readiness 通过后才启动网页。
+
+## 五分钟无使用自动停止
+
+- `dev:preview`、`dev:preview:all` 和 `dev:preview:all:lan` 默认连续 300 秒无真实使用后，优雅停止本次启动器拥有的 backend、Web 与 Metro 进程组；再次执行原命令即可恢复。
+- Web 的点击、按键、窗口重新聚焦，Mobile 的触摸和回到前台，以及有效的 POST/PUT/PATCH/DELETE 业务请求都会重置活动时间。在途业务请求存在时不会停止。
+- 健康检查、GET 轮询、SSE、Metro/HMR、静态资源和显式后台请求不会续期。活动状态只写入被忽略的 `.dev-preview/runtime-activity.json`，启动器读取本地文件，不轮询数据库。
+- 活动上报只在 Preview 启动器注入的公开 DEV 开关存在时启用；生产、EAS/TestFlight 和普通开发启动不启用。
+- `dev:preview:mobile` 没有 backend 活动协调器，因此保持手动停止，避免把无法辨别的手机活动误判成空闲。手机验收使用 `dev:preview:all:lan`。
+- 标准 Preview 启动固定使用 300 秒空闲阈值，不接受继承环境中的静默覆盖。仅加速本地生命周期测试可同时设置 `MZ_DEV_PREVIEW_ALLOW_IDLE_TIMEOUT_OVERRIDE=1` 与 `MZ_DEV_PREVIEW_IDLE_TIMEOUT_SECONDS=<seconds>`。
 
 ## 功能同步边界
 

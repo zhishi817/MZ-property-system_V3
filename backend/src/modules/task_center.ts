@@ -14,6 +14,15 @@ import {
   resolveBoardInspectionDueDate,
 } from '../lib/cleaningInspection'
 import { buildCleaningTurnoverDisplay } from '../lib/cleaningTurnoverDisplay'
+import { projectDailyTaskStats, type DailyTaskStatsGroup } from '../lib/dailyTaskExecutionStats'
+import {
+  GUEST_READY_NOTIFICATION_PERMISSION,
+  buildGuestReadyNotificationProjection,
+  guestReadyNotificationAction,
+  loadGuestReadyNotificationOrderStates,
+  type GuestReadyNotificationAction,
+  type GuestReadyNotificationProjection,
+} from '../lib/guestReadyNotification'
 import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
 import { emitNotificationEvent } from '../services/notificationEvents'
 import { buildWebTaskCapabilityPayload, type WebTaskDisplayState, type WebTaskManagementAction } from '../lib/webTaskCapabilities'
@@ -25,6 +34,7 @@ import { assertMaintenanceRuntimeSchemaReady, MaintenanceRuntimeSchemaNotReady }
 import { normalizeMaintenanceWorkflowStatus } from '../lib/maintenanceWorkflow'
 import { insertMaintenanceWorkflowEvent, upsertMaintenanceWorkTask } from '../lib/maintenanceWorkflowStore'
 import { requireR5TaskRuntimeSchema } from '../lib/r5RequestSchema'
+import { projectDailyTaskExecution, projectVisibleDailyTasks } from '../lib/dailyTaskExecutionVisibility'
 
 export const router = Router()
 
@@ -58,6 +68,9 @@ type BoardTask = {
   property_region: string | null
   status: string
   checked_out_at?: string | null
+  source_workflow_status?: string | null
+  execution_list_visible?: boolean
+  scheduled_date?: string | null
   urgency?: string | null
   title: string
   detail: string
@@ -112,6 +125,11 @@ type BoardTask = {
   skip_bucket?: string | null
   display_state?: WebTaskDisplayState
   management_actions?: WebTaskManagementAction[]
+  daily_stats_group?: DailyTaskStatsGroup | null
+  daily_stats_key?: string | null
+  property_ready_for_guest_notification?: boolean
+  guest_ready_notification?: GuestReadyNotificationProjection | null
+  available_actions?: GuestReadyNotificationAction[]
 }
 
 type BoardSubrow = {
@@ -616,6 +634,12 @@ function workTaskDisplayText(row: any): { title: string; detail: string } {
 
 function mapWorkTaskRowToBoardTask(row: any, date: string): BoardTask {
   const display = workTaskDisplayText(row)
+  const maintenanceSourceStatus = text(row.maintenance_source_status)
+  const maintenanceSourceReviewStatus = text(row.maintenance_source_review_status)
+  const sourceWorkflowStatus = text(row.source_type) === 'property_maintenance'
+    && (maintenanceSourceStatus || maintenanceSourceReviewStatus)
+    ? normalizeMaintenanceWorkflowStatus(maintenanceSourceStatus, maintenanceSourceReviewStatus)
+    : (row.source_workflow_status ? String(row.source_workflow_status) : null)
   return {
     item_key: `work:${String(row.id)}`,
     task_source: 'work' as const,
@@ -628,10 +652,12 @@ function mapWorkTaskRowToBoardTask(row: any, date: string): BoardTask {
     property_code: row.property_code ? String(row.property_code) : null,
     property_region: row.property_region ? String(row.property_region) : null,
     status: normStatus(row.status),
+    source_workflow_status: sourceWorkflowStatus,
     urgency: lower(row.task_kind) === 'offline' ? null : normUrgency(row.urgency),
     title: display.title,
     detail: display.detail,
     summary: row.summary != null ? String(row.summary || '') : null,
+    scheduled_date: row.scheduled_date ? String(row.scheduled_date).slice(0, 10) : null,
     task_date: row.scheduled_date ? String(row.scheduled_date).slice(0, 10) : date,
     assignee_id: row.assignee_id ? String(row.assignee_id) : null,
     cleaner_id: null,
@@ -705,7 +731,8 @@ async function syncPropertyFollowupWorkTasks() {
              COALESCE(m.created_at, m.submitted_at, now()) AS created_at
         FROM property_maintenance m
         LEFT JOIN properties p ON p.id::text = m.property_id::text OR upper(p.code::text) = upper(m.property_id::text)
-       WHERE lower(COALESCE(m.status::text, 'pending')) NOT IN ('review_pending','completed','done','ready','canceled','cancelled')`)
+       WHERE lower(COALESCE(m.status::text, 'pending')) NOT IN ('pending_review','review_pending','awaiting_review','completed','done','ready','canceled','cancelled','closed')
+         AND lower(COALESCE(m.review_status::text, 'pending')) NOT IN ('approved','closed')`)
   }
   if (available.has_deep_cleaning) {
     activeParts.push(`
@@ -722,7 +749,7 @@ async function syncPropertyFollowupWorkTasks() {
              COALESCE(d.created_at, d.submitted_at, now()) AS created_at
         FROM property_deep_cleaning d
         LEFT JOIN properties p ON p.id::text = d.property_id::text OR upper(p.code::text) = upper(d.property_id::text)
-       WHERE lower(COALESCE(d.status::text, 'pending')) NOT IN ('review_pending','completed','done','ready','canceled','cancelled')`)
+       WHERE lower(COALESCE(d.status::text, 'pending')) NOT IN ('pending_review','review_pending','awaiting_review','completed','done','ready','canceled','cancelled','closed')`)
   }
   if (available.has_daily_necessities) {
     activeParts.push(`
@@ -747,6 +774,11 @@ async function syncPropertyFollowupWorkTasks() {
     `WITH active AS (${activeSql})
      DELETE FROM work_tasks w
       WHERE w.source_type = ANY($1::text[])
+        AND NOT (
+          w.source_type = 'property_daily_necessities'
+          AND lower(COALESCE(w.status, '')) IN ('done', 'completed')
+          AND w.scheduled_date IS NOT NULL
+        )
         AND NOT EXISTS (
           SELECT 1 FROM active a
            WHERE a.source_type = w.source_type
@@ -1179,6 +1211,7 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
         display_conflicts: turnoverDisplay.conflicts,
         turnover_display: turnoverDisplay,
         can_configure_inspection: true,
+        property_ready_for_guest_notification: all.some((task) => lower(task.status) === 'ready' || task.property_ready_for_guest_notification === true),
       })
       const rest = items.filter((x) => lower(x.task_kind) !== 'checkin_clean' && lower(x.task_kind) !== 'checkout_clean')
       out.push(...rest.map((task) => lower(task.task_kind) === 'checkin_clean' ? { ...task, sort_index: checkinExecutionSortIndex(task) } : task))
@@ -1363,6 +1396,8 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
           task_source: 'cleaning',
           task_id: String(row.id),
           task_ids: sourceIds,
+          source_type: 'cleaning_tasks',
+          source_id: sourceId,
           active_source_ids: sourceIds,
           superseded_source_ids: supersededSourceIds,
           all_related_source_ids: Array.from(new Set([...sourceIds, ...supersededSourceIds])),
@@ -1410,6 +1445,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
           conflict_checkin_time: row.conflict_checkin_time ? String(row.conflict_checkin_time) : null,
           deferred_inspection_view: false,
           can_configure_inspection: rawType === 'checkout_clean' || rawType === 'checkin_clean',
+          property_ready_for_guest_notification: lower(row.status) === 'ready',
           turnover_display: buildCleaningTurnoverDisplay({
             propertyId: row.property_id,
             taskDate: d,
@@ -1449,6 +1485,8 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
           task_source: 'cleaning',
           task_id: `${String(row.id)}::deferred_inspection:${projectionDate}`,
           task_ids: sourceIds,
+          source_type: 'cleaning_tasks',
+          source_id: sourceId,
           active_source_ids: sourceIds,
           superseded_source_ids: supersededSourceIds,
           all_related_source_ids: Array.from(new Set([...sourceIds, ...supersededSourceIds])),
@@ -1519,6 +1557,8 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
         task_source: 'cleaning',
         task_id: String(row.id),
         task_ids: [String(row.id)],
+        source_type: 'cleaning_tasks',
+        source_id: String(row.id),
         task_kind: text(row.task_type) || 'cleaning_task',
         property_id: row.property_id ? String(row.property_id) : null,
         property_code: prop?.code ? String(prop.code) : null,
@@ -1534,6 +1574,8 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
         sort_index_cleaner: row.sort_index_cleaner == null ? null : Number(row.sort_index_cleaner),
         sort_index_inspector: row.sort_index_inspector == null ? null : Number(row.sort_index_inspector),
         order_id: row.order_id ? String(row.order_id) : null,
+        order_id_checkout: lower(row.task_type) === 'checkout_clean' && row.order_id ? String(row.order_id) : null,
+        order_id_checkin: lower(row.task_type) === 'checkin_clean' && row.order_id ? String(row.order_id) : null,
         order_code: order?.confirmation_code ? String(order.confirmation_code) : null,
         checkin_sync_status: lower(row.task_type) === 'checkin_clean' ? (row.order_id ? 'synced' : 'pending') : null,
         scheduled_at: row.scheduled_at ? String(row.scheduled_at) : null,
@@ -1552,6 +1594,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
         inspection_due_date: inspectionDueDate,
         deferred_inspection_view: false,
         can_configure_inspection: lower(row.task_type) === 'checkout_clean' || lower(row.task_type) === 'checkin_clean',
+        property_ready_for_guest_notification: lower(row.status) === 'ready',
       })
     }
   }
@@ -1562,9 +1605,9 @@ async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnsch
   if (hasPg && pgPool) {
     await assertTaskCenterMaintenanceSchemaReady()
     await backfillOfflineTasksToWorkTasks(date, includeOverdue, includeFuture)
-    const doneSet = ['done', 'completed', 'cancelled', 'canceled']
+    const terminalSet = ['cancelled', 'canceled', 'closed']
     const where: string[] = []
-    const vals: any[] = [date, doneSet, WORK_TASK_VISIBILITY_START]
+    const vals: any[] = [date, terminalSet, WORK_TASK_VISIBILITY_START]
     where.push(`w.scheduled_date = $1::date`)
     if (includeOverdue) where.push(`(w.scheduled_date IS NOT NULL AND w.scheduled_date < $1::date)`)
     if (includeUnscheduled) where.push(`(w.scheduled_date IS NULL)`)
@@ -1573,11 +1616,16 @@ async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnsch
       SELECT
         w.*,
         COALESCE(p_id.code::text, p_code.code::text) AS property_code,
-        COALESCE(p_id.region::text, p_code.region::text) AS property_region
+        COALESCE(p_id.region::text, p_code.region::text) AS property_region,
+        pm.status AS maintenance_source_status,
+        pm.review_status AS maintenance_source_review_status
       FROM work_tasks w
       LEFT JOIN properties p_id ON (p_id.id::text) = (w.property_id::text)
       LEFT JOIN properties p_code ON upper(p_code.code) = upper(w.property_id::text)
-      WHERE w.status <> ALL($2::text[])
+      LEFT JOIN property_maintenance pm
+        ON w.source_type = 'property_maintenance'
+       AND pm.id::text = w.source_id::text
+      WHERE lower(COALESCE(w.status, '')) <> ALL($2::text[])
         AND COALESCE(w.created_at::date, w.scheduled_date, $1::date) >= $3::date
         AND NOT (w.source_type = ANY($4::text[]) AND w.scheduled_date IS NULL)
         AND (${where.join(' OR ')})
@@ -1588,15 +1636,13 @@ async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnsch
     vals.push(PROPERTY_FOLLOWUP_SOURCE_TYPES)
     const r = await pgPool.query(sql, vals)
     const workTasks = (r?.rows || []).map((row: any) => mapWorkTaskRowToBoardTask(row, date))
-    return workTasks
+    return projectVisibleDailyTasks(workTasks)
   }
   const rows = (((db as any).workTasks || []) as any[]).slice()
   const workTasks = rows
     .filter((row: any) => {
       const created = dayOnly(row.created_at || row.updated_at || row.scheduled_date)
       if (created && created < WORK_TASK_VISIBILITY_START) return false
-      const status = normStatus(row.status)
-      if (status === 'done' || status === 'cancelled') return false
       const scheduled = dayOnly(row.scheduled_date)
       if (scheduled === date) return true
       if (includeOverdue && scheduled && scheduled < date) return true
@@ -1623,6 +1669,7 @@ async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnsch
         detail: display.detail,
         summary: row.summary != null ? String(row.summary || '') : null,
         task_date: dayOnly(row.scheduled_date) || date,
+        scheduled_date: dayOnly(row.scheduled_date) || null,
         assignee_id: row.assignee_id ? String(row.assignee_id) : null,
         cleaner_id: null,
         inspector_id: null,
@@ -1631,8 +1678,6 @@ async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnsch
     })
   const offlineTasks = (((db as any).cleaningOfflineTasks || []) as any[])
     .filter((row: any) => {
-      const status = normStatus(row.status)
-      if (status === 'done' || status === 'cancelled') return false
       const scheduled = dayOnly(row.date)
       if (scheduled === date) return true
       if (includeOverdue && scheduled && scheduled < date) return true
@@ -1653,7 +1698,7 @@ async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnsch
       assignee_id: row.assignee_id || null,
       status: row.status,
     }, date))
-  return dedupeBoardTasks([...workTasks, ...offlineTasks])
+  return projectVisibleDailyTasks(dedupeBoardTasks([...workTasks, ...offlineTasks]))
 }
 
 async function loadTaskFlags(date: string) {
@@ -1993,7 +2038,14 @@ function appendWebCapabilitiesToRows(rows: BoardRow[], canManageSchedule: boolea
   }))
 }
 
-export async function buildTaskCenterDay(date: string, includeOverdue: boolean, includeUnscheduled: boolean, includeFuture: boolean, canManageSchedule = false) {
+export async function buildTaskCenterDay(
+  date: string,
+  includeOverdue: boolean,
+  includeUnscheduled: boolean,
+  includeFuture: boolean,
+  canManageSchedule = false,
+  canManageGuestReadyNotification = false,
+) {
   const [cleaningTasks, workTasks, taskFlags, rowMetas, itemLayouts] = await Promise.all([
     loadCleaningTasks(date, false, false),
     loadWorkTasks(date, includeOverdue, includeUnscheduled, includeFuture),
@@ -2001,9 +2053,40 @@ export async function buildTaskCenterDay(date: string, includeOverdue: boolean, 
     loadBoardRows(date, 'board'),
     loadBoardItems(date, 'board'),
   ])
-  const propertyFollowups = workTasks.filter(isPropertyFollowupTask)
-  const regularWorkTasks = workTasks.filter((task) => !isPropertyFollowupTask(task))
-  const allTasks = [...cleaningTasks, ...regularWorkTasks]
+  const visibleCleaningTasks = projectVisibleDailyTasks(cleaningTasks)
+  const guestReadyStatesByOrder = hasPg && pgPool
+    ? await loadGuestReadyNotificationOrderStates(pgPool, visibleCleaningTasks.map((task) => task.order_id_checkin))
+    : new Map<string, any>()
+  const projectedCleaningTasks = visibleCleaningTasks.map((task) => {
+    const orderIdCheckin = text(task.order_id_checkin)
+    const state = orderIdCheckin ? guestReadyStatesByOrder.get(orderIdCheckin) : null
+    const guestReadyNotification = orderIdCheckin
+      ? buildGuestReadyNotificationProjection({
+          orderId: orderIdCheckin,
+          notifiedAt: state?.notified_at,
+          notifiedByUserId: state?.notified_by_user_id,
+          notifiedByName: state?.notified_by_name,
+          version: state?.version,
+          propertyReady: task.property_ready_for_guest_notification === true || lower(task.status) === 'ready',
+          currentCheckin: !!state,
+        })
+      : null
+    const guestAction = guestReadyNotificationAction(guestReadyNotification, canManageGuestReadyNotification)
+    return {
+      ...task,
+      ...projectDailyTaskStats(task),
+      ...(guestReadyNotification ? { guest_ready_notification: guestReadyNotification } : {}),
+      ...(guestAction ? { available_actions: [guestAction] } : {}),
+    }
+  })
+  const projectedWorkTasks = workTasks.map((task) => ({
+    ...task,
+    ...projectDailyTaskExecution(task),
+    ...projectDailyTaskStats(task),
+  }))
+  const propertyFollowups = projectedWorkTasks.filter(isPropertyFollowupTask)
+  const regularWorkTasks = projectedWorkTasks.filter((task) => !isPropertyFollowupTask(task))
+  const allTasks = [...projectedCleaningTasks, ...regularWorkTasks]
   const board = buildRows({
     date,
     tasks: allTasks.map((task) => ({ ...task })),
@@ -2038,6 +2121,11 @@ export async function buildTaskCenterDay(date: string, includeOverdue: boolean, 
 	      sort_index: task.sort_index ?? null,
 	      display_state: task.display_state,
       management_actions: task.management_actions,
+      execution_list_visible: task.execution_list_visible,
+      daily_stats_group: task.daily_stats_group,
+      daily_stats_key: task.daily_stats_key,
+      guest_ready_notification: task.guest_ready_notification || null,
+      available_actions: task.available_actions || [],
     })),
     property_followups: propertyFollowupsWithCapabilities,
     rows,
@@ -2180,11 +2268,25 @@ router.get('/day', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 
       return res.json({ date, pool: [], groups: {}, tasks: [], property_followups: [], rows: [], region_rows: [], final_group_rows: [], deferred_rows: [], entry_readiness: { ready_for_final_grouping: true, unresolved_primary_count: 0, pending_inspection_count: 0, skipped_count: 0 } })
     }
     await syncPropertyFollowupWorkTasks()
-    const canManageSchedule = await userHasAnyPerm((req as any).user || {}, ['cleaning.task.assign', 'cleaning.schedule.manage'])
-    const payload = await buildTaskCenterDay(date, includeOverdue, includeUnscheduled, includeFuture, canManageSchedule)
+    const user = (req as any).user || {}
+    const [canManageSchedule, canManageGuestReadyNotification] = await Promise.all([
+      userHasAnyPerm(user, ['cleaning.task.assign', 'cleaning.schedule.manage']),
+      userHasAnyPerm(user, [GUEST_READY_NOTIFICATION_PERMISSION]),
+    ])
+    const payload = await buildTaskCenterDay(
+      date,
+      includeOverdue,
+      includeUnscheduled,
+      includeFuture,
+      canManageSchedule,
+      canManageGuestReadyNotification,
+    )
     return res.json(payload)
   } catch (e: any) {
     if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
+    if (['42P01', '42703'].includes(String(e?.code || ''))) {
+      return res.status(503).json({ code: 'guest_ready_notification_schema_not_ready' })
+    }
     return res.status(500).json({ message: e?.message || 'task_center_day_failed' })
   }
 })

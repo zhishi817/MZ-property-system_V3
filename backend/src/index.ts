@@ -62,6 +62,7 @@ import { warmupMaintenanceRuntimeSchema } from './lib/maintenanceRuntimeSchema'
 import { warmupPropertyGuideRuntimeSchema } from './lib/propertyGuideRuntimeSchema'
 import { warmupPersonnelSettlementSchema } from './lib/personnelSettlementSchema'
 import { runPersonnelSettlementWeeklyJob } from './lib/personnelSettlementWeeklyJob'
+import { DevPreviewActivityTracker } from './lib/devPreviewActivity'
  
  
 // 环境保险锁（Render 上用 RENDER_ENV=dev/prod 显式区分，避免误判）
@@ -198,6 +199,14 @@ app.options('*', cors(corsOpts))
 const jsonLimit = String(process.env.JSON_BODY_LIMIT || '25mb')
 app.use(express.json({ limit: jsonLimit }))
 app.use(express.urlencoded({ extended: true, limit: jsonLimit }))
+const devPreviewActivity = new DevPreviewActivityTracker(process.env)
+if (devPreviewActivity.enabled) {
+  app.post('/health/dev-preview-activity', (_req, res) => {
+    devPreviewActivity.mark('client_interaction')
+    res.status(204).end()
+  })
+}
+app.use(devPreviewActivity.middleware)
 morgan.token('url', (req: any) => {
   const raw = String(req?.originalUrl || req?.url || '')
   return raw.replace(/([?&](?:access_token|token)=)[^&\s]*/gi, '$1[REDACTED]')

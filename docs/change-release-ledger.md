@@ -1,5 +1,576 @@
 # Change Release Ledger
 
+## CRL-20261010-001 — 日常任务执行列表权威可见性（root）
+
+- **Status:** four-CRL staged candidate validated；final independent commit review pending；not committed, not pushed, not released
+- **Repository:** `root`
+- **Updated:** 2026-10-10 UTC
+- **Request:** 将 MZ-021 的最新执行列表口径整合到新 Dev 候选：审核中、已关闭和未分配任务不得进入日常执行列表，同时保留周转任务、已完成普通线下任务及独立审核/历史入口。
+- **Outcome:** Root API 先以单一权威投影决定执行可见性，显式保留来源工作流状态和类型别名并 fail-closed；Web 只渲染该投影允许的房源跟进任务。MZ-010 的统计层只消费这份权威结果，不重新定义可见性。
+
+### Implementation
+
+- 新增共享 `dailyTaskExecutionVisibility`，统一审核状态、来源类型、分派人与完成别名规则。
+- `mzapp` 与 task center 在服务端过滤；Web display helper 再做防御性过滤，避免旧缓存或异常 payload 绕过。
+- 维修来源保留原始 `source_workflow_status`，防止规范化状态覆盖审核事实。
+
+### Files / Areas
+
+- `backend/package.json` — 接入权威可见性契约测试。
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — Root 状态/类型/分派/fail-closed 矩阵。
+- `backend/scripts/tests/test_task_center_daily_projection.ts` — Web cleaning 真实映射、周转分组和未分配过滤。
+- `backend/src/lib/dailyTaskExecutionVisibility.ts` — 单一权威投影。
+- `backend/src/modules/mzapp.ts` — Mobile API 执行列表投影。
+- `backend/src/modules/task_center.ts` — Web task center 权威投影与来源状态保留。
+- `frontend/src/app/task-center/page.tsx` — 只渲染已授权执行项。
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — Web 防御性显示规则。
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — Web 审核/关闭/未分配回归。
+- `docs/feature-regression-registry.md` — FR-035。
+- `docs/change-release-ledger.md` — 本候选身份与边界。
+
+### Impact / Dependencies
+
+- 配套 `mobile/CRL-20261010-001`；两端应一起验证和选择。
+- 无 schema、migration 或生产数据更改；不删除来源审核/历史记录，只改变日常执行投影。
+
+### Validation
+
+- Root visibility/statistics/guest-ready/dev-activity focused contracts：PASS；Web task-center display 12/12：PASS；backend/frontend TypeScript：PASS。
+- Post-review fresh `/tmp` paired `npm run check:full`：PASS；backend build and full wired contracts、frontend lint / 53 files / 268 tests / production build、Mobile typecheck / lint 0 errors / 67 suites / 399 tests 均通过。
+- Ledger coverage 29/29、Feature Registry 32 FR / 241 mappings、`git diff --check`：PASS。
+- Independent review：GO for local commit candidate；确认 cleaning 三种映射均保留来源身份、task center 在统计/组装前先做权威投影，且无剩余 P0/P1。
+- Database/API service/device/deploy：not run；完整检查明确清空数据库 URL 并关闭 workers，只使用测试内本机回环 mock HTTP。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none；隔离候选无未跟踪文件、依赖目录、缓存、构建产物、环境文件或密钥。
+- **Shared-hunk note:** 共享文件的精确 hunk 会在相关已选 CRL 中重复登记；四个 CRL 作为同一原子候选审查，审计按并集精确匹配。
+- `backend/package.json` — SHA-256: `2e2b30bd5fed4771346763c3c9e2985a8b3df7832b79eae6232f7d7a09568c25`
+- `backend/package.json` — SHA-256: `8850c99197ea6b517c67c722cf8f51ab6d386d64429565eabeb1097d4478a2d1`
+- `backend/package.json` — SHA-256: `dc129550bceb8be3308dbb502ec26f1812e258b8cdd4e435995a21b7a8e64073`
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — SHA-256: `4c7a7c45d51080c14e347352e4b8ac359090f8bce16cef13a6c74b9f4f912785`
+- `backend/scripts/tests/test_task_center_daily_projection.ts` — SHA-256: `0ee14abc351c6aae475321424e18604bcaca25c93ac2751476c13cac741da708`
+- `backend/src/lib/dailyTaskExecutionVisibility.ts` — SHA-256: `ca866afda155f347fbcf8a235b0464c6de8c50eb7c580975862dfff79e71d843`
+- `backend/src/modules/mzapp.ts` — SHA-256: `0f46beb8272b0a3292ac1a2ec53d6294f2aa3e47180d6c690e4e0ab4ed5f1a60`
+- `backend/src/modules/mzapp.ts` — SHA-256: `1181b8193667fcf76e381cbb5ab6763faab46c5cb00ec8bb2c11299dbc07d8a2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `122df75377ee7b3b9140628c610843842d4893fc719997743d3626472c936eba`
+- `backend/src/modules/mzapp.ts` — SHA-256: `13998a8bd52a5133d39a15586b0c7bf0600edda82f8d55d85b6c61c89aa48861`
+- `backend/src/modules/mzapp.ts` — SHA-256: `220a9037ce27d8926fc33f8c762f3775f303f376852012960079548242dcdd2c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `25a517c3e9a435c61301dd936cf35bda1b9320dba257b99e8f6f7805af2e7ca7`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2d48e32e84c8b260d7ddce6e0b698a87956de6638d7abb576c26610be4de8022`
+- `backend/src/modules/mzapp.ts` — SHA-256: `36f8d936dd4a25795a370bc414739297ac87724233ba6cc6d479f5b9869d4b4c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `40cfd611f1b2c1f3188c552e3bc81bc378069a6fe4265db64b22eddf7d2b7a23`
+- `backend/src/modules/mzapp.ts` — SHA-256: `45eae83fb927a3808a5a480b91be46cb45b5f60ca72d583e0704794f39827534`
+- `backend/src/modules/mzapp.ts` — SHA-256: `46bdc85f30a3c1b0472b155b92abca89808b676a8a9d56595baecc0f1fbc74fa`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5003e5715f5962141f7f4cf14f3170558dba3897d337cf50788d2ca755444a79`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5cfbabf633f9cf46b003e38375c5d92d5435380857876eeff65bbd7c7aa1dafb`
+- `backend/src/modules/mzapp.ts` — SHA-256: `68ab5b78d3a1f67d3aea730c170432109263e59227f9fda7ff2fe225b5723d78`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7586152f5bd32f430cbf7a756b6e7401f0a3fc01b8210e29ee76804c1b50a003`
+- `backend/src/modules/mzapp.ts` — SHA-256: `79a85798bc7621f9d8941478fe253af71c554f82a587d1a439e7c817fa7a5b66`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7e2d03b2e617524f3ed1b34ce6e729c387a1ce1e0d3900874f69ae4c51cac7e2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `803e49c879c1b89fef19b88f521c368451079bc273c64ae818101caed754e53b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `898cb8248c99eaa06b96f5f390520bea54a2067065c31d061421ab26ec2bddf4`
+- `backend/src/modules/mzapp.ts` — SHA-256: `a77325e1aaa43e32dec5f66b9f5797907f998aa01e76302a7d13ddb5d547152a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `c7f62639fcd8979a8ae5d688703ddaf54c83b30e8f184a6ee13d51158761449f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d371cf132067c580324ba2b6e19029aa9b0bac5015a8435f25f8b376fac63ca6`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d8d7343c65f83373f7eee52c11159467e91ad4500d490f5c57a36ae29af86f32`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e67850556cc09157802d3bbbdcda13f76fc25b1c53e0e76fb6c448dbc655619a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `eebc5fe499faea9df674012694a7e00fbc9637afbc35c20dd612640da443c1c9`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f02948df320c4699b415590a544838098f943f0d6508c4886f20b1a16e30815b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f74038af885f2bf5a2ccd2827b3d3da92bd7b46302df42f90a84cb9c8900fdc2`
+- `backend/src/modules/task_center.ts` — SHA-256: `119b1853db7e19056b3e8613e1cc55269b8e463f41871ed72c991e46ce4d32c8`
+- `backend/src/modules/task_center.ts` — SHA-256: `256a001bd0b97a0963b68243d6f94276bbd6db7101d15ee660fe1da162323638`
+- `backend/src/modules/task_center.ts` — SHA-256: `27ecf98746ee0a8a6b58987b4f493a07bc7aed155b090c144eaa1d82e38c38e1`
+- `backend/src/modules/task_center.ts` — SHA-256: `3d95a9e5461a9964aa9d8123e82447a59b34479c961a8a8d9a11596187c6f7e7`
+- `backend/src/modules/task_center.ts` — SHA-256: `3e9a9899b2fedabeba2982d5b3c703ae47993c45a4fa9a8b7831a728f8208127`
+- `backend/src/modules/task_center.ts` — SHA-256: `54fd69a7a1eb2b0e73f41edadb7573bac2bf6c05e98265c161cf61885dd93e9b`
+- `backend/src/modules/task_center.ts` — SHA-256: `62809b5af311b459c7817629bedf01c8902d82acd53ed1a0311548eb854d63c8`
+- `backend/src/modules/task_center.ts` — SHA-256: `62fdf4d3e70f1a9090a2c40f69e06dba91ab61f54db9dd93bc0445a5853f9aec`
+- `backend/src/modules/task_center.ts` — SHA-256: `73263aa1010b37290654f0884ac710209e1eac63a6db36d3de54be62cfb2fe06`
+- `backend/src/modules/task_center.ts` — SHA-256: `83c3dc5cf1ea3e9f1b69e78895fdf60f1c37712372a3c81e9b768acfda966f39`
+- `backend/src/modules/task_center.ts` — SHA-256: `872547c039c7543c0bf2b63287e1303799a879b7b8e0681cdc3ff8a7f7ea8c5a`
+- `backend/src/modules/task_center.ts` — SHA-256: `88b8c579d869ab18a32a8aab1d836cf76f71116a6ae682b5da50c25d20d3b013`
+- `backend/src/modules/task_center.ts` — SHA-256: `8b909ce1d6da5062c8c44af35ba23ce9a761508752704a9309e96aec1cd2a4bb`
+- `backend/src/modules/task_center.ts` — SHA-256: `8fb759ada3bc138229629d13e0387ee33b3aec6add501ff252f3fa153e0a33a0`
+- `backend/src/modules/task_center.ts` — SHA-256: `9b4db6ec97404aad671cc4af9b7d2c77935ba8aec9aee6d00df2d95fb1e4e1d7`
+- `backend/src/modules/task_center.ts` — SHA-256: `9f07f79fe13d04cc9a9fa22853ffb4beab7dc701588e76bc16608a5d36b3e42a`
+- `backend/src/modules/task_center.ts` — SHA-256: `b084dc5f88adba14e29ecd39c6f9de14486b5bdf6dd92b23cfd0a8f5bab17112`
+- `backend/src/modules/task_center.ts` — SHA-256: `b303d6aca70773837e7b8857911233a0c22acbad374f2bec9758ebe628312471`
+- `backend/src/modules/task_center.ts` — SHA-256: `c04c7fce62cf5e72ef2ab002ba29f6b1bb45754e7a7d63849e91912101c6d35d`
+- `backend/src/modules/task_center.ts` — SHA-256: `c8f61f76300937785e4581bbb0fcd35370a91759736ed423a00318741ec8e7a7`
+- `backend/src/modules/task_center.ts` — SHA-256: `cdbb35bb13bbc8a508ee97ab2c3f978a8cb7eecd51076e75e6ecb592daeac0de`
+- `backend/src/modules/task_center.ts` — SHA-256: `d7fc512cc00a889b6aba07b3e6be0602841d82a7b5e85824d1fb83d51c4f5542`
+- `backend/src/modules/task_center.ts` — SHA-256: `d8cebc214abd7d0ca4e0d07b05ceda8b1704dffaf7b70fe2ab03d73f45e0d0b5`
+- `backend/src/modules/task_center.ts` — SHA-256: `e31f5f7503bf736c2f9bf5b21b41983f63e3abdbe20cb695031b41ef530a2c61`
+- `backend/src/modules/task_center.ts` — SHA-256: `e40d4660f36e866be1c1067172f290e396c9c281c10556b4a4c49479c8ecf5b1`
+- `backend/src/modules/task_center.ts` — SHA-256: `e8a39f3a9863db0794e353d5ba01c88348a569c9ef20e7495adbca0d6f1d326e`
+- `backend/src/modules/task_center.ts` — SHA-256: `ed813a19d6a30ae80a0eb73d939542043cd12da35dfcc95e200a18c9de52f747`
+- `backend/src/modules/task_center.ts` — SHA-256: `f25b14af00a95ee7516875708a5f48298d7c2a02936305ff0ceabd6db0f13f7a`
+- `backend/src/modules/task_center.ts` — SHA-256: `f49dd688b1d8ecfae62716b96106cd492405a0822b5f7996e44df13872055ad7`
+- `backend/src/modules/task_center.ts` — SHA-256: `f8e74aef0f184cfc0a87b480d853e3bcf4bc063c28f13c443d210f94e76503a7`
+- `backend/src/modules/task_center.ts` — SHA-256: `f990c56c0f34ff2658dad63914661007483a067d3cb90f607de6aab03cb4fb5f`
+- `docs/feature-regression-registry.md` — SHA-256: `20c9990d47cfab7d1006973a23ee08a1b886d9000b619d25db43103a5aa48314`
+- `docs/feature-regression-registry.md` — SHA-256: `4284cdc5ee126b70130721db3af47a4704ecea6a970e66024608dfd1564e0dee`
+- `docs/feature-regression-registry.md` — SHA-256: `616c06c088f086ac84b37148e3b08009b3b640ff085531b4ea636bd2cd992280`
+- `docs/feature-regression-registry.md` — SHA-256: `c414d63411947579ccd52a37700e81b96eba839a90064494e93f0b018beee0fb`
+- `docs/feature-regression-registry.md` — SHA-256: `d60b5eeb01c6afcba9277f864b9a8e12583264bd9af79952501af53f058f9cab`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `0557303660cb2ac5b83997a179a6380b66d25295a3f09ddf870dee8f3637c07c`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `25826535491b72603b4fccf8ad49e6da97c3067758b5661b57690f75674ae287`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `2e93aa25c4f707feb51f8b94e690fa5cc7a32d2306c029fba9aafe380c9740b5`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `4545827d179cf652fa1082d5c309e6ff5e1545c6336fbbf6f3294bc0f2d07710`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `4638186dce81113e44292b068e20f578e398c8730b572b74b00f850a588612d1`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `5b866275a33500dd32f66bf24fce7f8f5365e283d5c661c3d18196c9148ab8ea`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `5de4b90190605274ed9b0bd0bc404768cc5043f9da6b5563092b96017eff567c`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `623f0326044bf88bd9b27061c1e7924d00648bcb6c4d490420ddfedc3d6656e0`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `6da26468207faa19103858e03201cf2de4f83c6bf0b8948fc5343c8b89f0927b`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `7eaa62eaa9b590de9354d0cb856d137cd8ed1574a987d5e466a16d6070624269`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `8225fd8f1cce464a59ea4467b588e61b49ae46e70cc7089f9fccdb05e45d6358`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `85b71bfdf51e567bfb2b4135e4a05ab7a3f2f9580715e1384db6396c6a17ec5d`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `9c6d99161ad299bccae3a401367147d4a0268d7dc54fd847c45e2fcce85a4efd`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `b9008b36c9757533ecef72b9f7cfde6e00ed073e71ee02c81c939d758eccacb0`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `dac121eab39bfbd281f67a26c87327d5a017f792ef23accbed9e8043c394eccb`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `ee336ee33747ffd4633520df6c7875672cc390c6bccd80443c7ac31ffc22aca4`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `ef184c9ac41d1bf99ec4bbc5517db5bb47fc049389aa3c1532768bbc991b8608`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `fc252d8e6949c79ea2775776c8910ed3372cdeee749e9a6ba0dff93471801dd7`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `09cdbd8f32e19884a37f8614009b2d7b0819dbea4ce5b1bdaef6c5a7cbc8cbba`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `9f693ad0687d90c0530210c5cba9b188c8e9f4b0d90617bd9970dbc2f2a8b597`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `afa36dc950120d00ce5ec8564e991324209185396177f179e8326791c3d9352f`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `bf86fe6f449605f500c1778131f938e1fa6c5d8edf92dd72352c927a007f7026`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `d2d8e7ecae6d2ea568b2749dd82c9659da58fe42e8442e0e198cc614ed082699`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `eba4b7d0ecf59a2d774a0379bb2ec551ed4ec9ba875dded981abed45be28767d`
+
+### Release Attempts
+
+### Risks / Release Notes
+
+- Git state：fresh `origin/Dev@e9e32847c49782a34163267681174c57db3a8952` local candidate；not staged or committed。
+- 本地契约不能代替真实账号和设备验收；发布与生产验证需另行授权。
+
+## CRL-20261010-002 — 每日任务分组与客人已通知状态（root）
+
+- **Status:** four-CRL staged candidate validated；final independent commit review pending；not committed, not pushed, not released
+- **Repository:** `root`
+- **Updated:** 2026-10-10 UTC
+- **Request:** 整合 MZ-010：入住与退房按房源/日期合并计数，线下任务独立计数；为当前入住订单记录可撤销的“已通知客人”状态，不发送任何消息。
+- **Outcome:** 统计键只在 CRL-20261010-001 的权威可见任务上生成；周转按房源/日期去重、线下按任务计数。客人通知状态绑定当前 check-in 订单，使用独立权限、版本和审计，并提供 Web/Mobile 所需投影与动作。
+
+### Implementation
+
+- 新增日统计投影、订单通知状态读取/mark/revoke 和显式数据库迁移。
+- mark 只允许房源已经完成待客准备且仍指向当前 check-in 订单；revoke 保留审计并可在准备状态变化后撤销。
+- Web task center 展示两组计数和通知状态；不接入短信、邮件、push 或第三方消息通道。
+
+### Files / Areas
+
+- `backend/package.json` — 接入统计和通知契约。
+- `backend/scripts/migrations/20261004_order_guest_ready_notification.sql` — 显式 schema/权限迁移；本轮未执行。
+- `backend/scripts/tests/test_daily_task_execution_stats.ts` — 可见性先行、周转去重与线下计数。
+- `backend/scripts/tests/test_guest_ready_notification.ts` — mark/revoke、幂等、冲突、权限与审计契约。
+- `backend/src/lib/dailyTaskExecutionStats.ts` — 分组键投影。
+- `backend/src/lib/guestReadyNotification.ts` — 通知状态业务规则。
+- `backend/src/lib/workTaskActions.ts` — 通知动作合并。
+- `backend/src/modules/mzapp.ts` — Mobile API 统计与通知路由/投影。
+- `backend/src/modules/task_center.ts` — Web 统计、通知能力和路由。
+- `backend/src/permissionsCatalog.ts` — 独立通知记录权限。
+- `backend/src/store.ts` — 通知状态持久化契约。
+- `frontend/src/app/task-center/page.tsx` — Web 计数及 mark/revoke 交互。
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — Web 统计和通知展示 helper。
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — Web 展示回归。
+- `package.json` — 根质量检查接入。
+
+### Impact / Dependencies
+
+- 配套 `mobile/CRL-20261010-002`，并依赖 root/mobile CRL-20261010-001 的执行可见性口径。
+- 新 migration 只登记未执行；本轮不连接数据库、不改角色权限或订单、不发送通知。
+
+### Validation
+
+- Root 统计、guest-ready、MZ-021 authority 契约：PASS；Web display 12/12：PASS；Root/Mobile 类型检查：PASS。
+- Post-review paired complete quality chain：PASS；Root backend/frontend build、全套契约和 Mobile 67 suites / 399 tests 均通过；lint 仅仓库既有 warnings、0 errors。
+- Independent review：GO for local commit candidate；确认统计只消费权威可见任务，guest-ready 权限态变更由 Mobile 走 unsafe-event 全量刷新，不共享收件人相关 actions patch。
+- Ledger/Feature Registry/whitespace audits：PASS。
+- Migration/DEV route/device/user acceptance/deploy：not run；本轮未连接或写入数据库。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none；隔离候选无未跟踪文件、依赖目录、缓存、构建产物、环境文件或密钥。
+- **Shared-hunk note:** 共享文件的精确 hunk 会在相关已选 CRL 中重复登记；四个 CRL 作为同一原子候选审查，审计按并集精确匹配。
+- `backend/package.json` — SHA-256: `2e2b30bd5fed4771346763c3c9e2985a8b3df7832b79eae6232f7d7a09568c25`
+- `backend/package.json` — SHA-256: `8850c99197ea6b517c67c722cf8f51ab6d386d64429565eabeb1097d4478a2d1`
+- `backend/package.json` — SHA-256: `dc129550bceb8be3308dbb502ec26f1812e258b8cdd4e435995a21b7a8e64073`
+- `backend/scripts/migrations/20261004_order_guest_ready_notification.sql` — SHA-256: `0922af3c8219f6e1229fc9fd00faedb15b1d4da28c6ad6d6a3dc0256e339f558`
+- `backend/scripts/tests/test_daily_task_execution_stats.ts` — SHA-256: `34e555e85d204919eae078708650c591b8fca0750acceac13e039cc996dd2a19`
+- `backend/scripts/tests/test_guest_ready_notification.ts` — SHA-256: `d9de44fb58a4d6e01afe94fa1c55f797d9f097b081b7d286c25e3688d4d954e8`
+- `backend/src/lib/dailyTaskExecutionStats.ts` — SHA-256: `e6e042344f787dd283aa9d5799f4007623401b86d96cda8a073a7b90ae2dd9ef`
+- `backend/src/lib/guestReadyNotification.ts` — SHA-256: `91fd16cdf4f4473f2db977d7534eaeacb8f55e2649038f9d87eec86fe629f8d6`
+- `backend/src/lib/workTaskActions.ts` — SHA-256: `6ba90316738e717fc945c8bd5a0ab4566f1a4bd35821abd708ccdb17c8a4a7b3`
+- `backend/src/lib/workTaskActions.ts` — SHA-256: `8596774b88160655ebac002d7e4a791c7f151a3fa1de498a20dbb24d52b0c67e`
+- `backend/src/lib/workTaskActions.ts` — SHA-256: `ac38e1052d887cf87e5bd222bc4ceeb9442b69badfa758618988ece388d7524f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `0f46beb8272b0a3292ac1a2ec53d6294f2aa3e47180d6c690e4e0ab4ed5f1a60`
+- `backend/src/modules/mzapp.ts` — SHA-256: `1181b8193667fcf76e381cbb5ab6763faab46c5cb00ec8bb2c11299dbc07d8a2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `122df75377ee7b3b9140628c610843842d4893fc719997743d3626472c936eba`
+- `backend/src/modules/mzapp.ts` — SHA-256: `13998a8bd52a5133d39a15586b0c7bf0600edda82f8d55d85b6c61c89aa48861`
+- `backend/src/modules/mzapp.ts` — SHA-256: `220a9037ce27d8926fc33f8c762f3775f303f376852012960079548242dcdd2c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `25a517c3e9a435c61301dd936cf35bda1b9320dba257b99e8f6f7805af2e7ca7`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2d48e32e84c8b260d7ddce6e0b698a87956de6638d7abb576c26610be4de8022`
+- `backend/src/modules/mzapp.ts` — SHA-256: `36f8d936dd4a25795a370bc414739297ac87724233ba6cc6d479f5b9869d4b4c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `40cfd611f1b2c1f3188c552e3bc81bc378069a6fe4265db64b22eddf7d2b7a23`
+- `backend/src/modules/mzapp.ts` — SHA-256: `45eae83fb927a3808a5a480b91be46cb45b5f60ca72d583e0704794f39827534`
+- `backend/src/modules/mzapp.ts` — SHA-256: `46bdc85f30a3c1b0472b155b92abca89808b676a8a9d56595baecc0f1fbc74fa`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5003e5715f5962141f7f4cf14f3170558dba3897d337cf50788d2ca755444a79`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5cfbabf633f9cf46b003e38375c5d92d5435380857876eeff65bbd7c7aa1dafb`
+- `backend/src/modules/mzapp.ts` — SHA-256: `68ab5b78d3a1f67d3aea730c170432109263e59227f9fda7ff2fe225b5723d78`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7586152f5bd32f430cbf7a756b6e7401f0a3fc01b8210e29ee76804c1b50a003`
+- `backend/src/modules/mzapp.ts` — SHA-256: `79a85798bc7621f9d8941478fe253af71c554f82a587d1a439e7c817fa7a5b66`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7e2d03b2e617524f3ed1b34ce6e729c387a1ce1e0d3900874f69ae4c51cac7e2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `803e49c879c1b89fef19b88f521c368451079bc273c64ae818101caed754e53b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `898cb8248c99eaa06b96f5f390520bea54a2067065c31d061421ab26ec2bddf4`
+- `backend/src/modules/mzapp.ts` — SHA-256: `a77325e1aaa43e32dec5f66b9f5797907f998aa01e76302a7d13ddb5d547152a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `c7f62639fcd8979a8ae5d688703ddaf54c83b30e8f184a6ee13d51158761449f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d371cf132067c580324ba2b6e19029aa9b0bac5015a8435f25f8b376fac63ca6`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d8d7343c65f83373f7eee52c11159467e91ad4500d490f5c57a36ae29af86f32`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e67850556cc09157802d3bbbdcda13f76fc25b1c53e0e76fb6c448dbc655619a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `eebc5fe499faea9df674012694a7e00fbc9637afbc35c20dd612640da443c1c9`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f02948df320c4699b415590a544838098f943f0d6508c4886f20b1a16e30815b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f74038af885f2bf5a2ccd2827b3d3da92bd7b46302df42f90a84cb9c8900fdc2`
+- `backend/src/modules/task_center.ts` — SHA-256: `119b1853db7e19056b3e8613e1cc55269b8e463f41871ed72c991e46ce4d32c8`
+- `backend/src/modules/task_center.ts` — SHA-256: `256a001bd0b97a0963b68243d6f94276bbd6db7101d15ee660fe1da162323638`
+- `backend/src/modules/task_center.ts` — SHA-256: `27ecf98746ee0a8a6b58987b4f493a07bc7aed155b090c144eaa1d82e38c38e1`
+- `backend/src/modules/task_center.ts` — SHA-256: `3d95a9e5461a9964aa9d8123e82447a59b34479c961a8a8d9a11596187c6f7e7`
+- `backend/src/modules/task_center.ts` — SHA-256: `3e9a9899b2fedabeba2982d5b3c703ae47993c45a4fa9a8b7831a728f8208127`
+- `backend/src/modules/task_center.ts` — SHA-256: `54fd69a7a1eb2b0e73f41edadb7573bac2bf6c05e98265c161cf61885dd93e9b`
+- `backend/src/modules/task_center.ts` — SHA-256: `62809b5af311b459c7817629bedf01c8902d82acd53ed1a0311548eb854d63c8`
+- `backend/src/modules/task_center.ts` — SHA-256: `62fdf4d3e70f1a9090a2c40f69e06dba91ab61f54db9dd93bc0445a5853f9aec`
+- `backend/src/modules/task_center.ts` — SHA-256: `73263aa1010b37290654f0884ac710209e1eac63a6db36d3de54be62cfb2fe06`
+- `backend/src/modules/task_center.ts` — SHA-256: `83c3dc5cf1ea3e9f1b69e78895fdf60f1c37712372a3c81e9b768acfda966f39`
+- `backend/src/modules/task_center.ts` — SHA-256: `872547c039c7543c0bf2b63287e1303799a879b7b8e0681cdc3ff8a7f7ea8c5a`
+- `backend/src/modules/task_center.ts` — SHA-256: `88b8c579d869ab18a32a8aab1d836cf76f71116a6ae682b5da50c25d20d3b013`
+- `backend/src/modules/task_center.ts` — SHA-256: `8b909ce1d6da5062c8c44af35ba23ce9a761508752704a9309e96aec1cd2a4bb`
+- `backend/src/modules/task_center.ts` — SHA-256: `8fb759ada3bc138229629d13e0387ee33b3aec6add501ff252f3fa153e0a33a0`
+- `backend/src/modules/task_center.ts` — SHA-256: `9b4db6ec97404aad671cc4af9b7d2c77935ba8aec9aee6d00df2d95fb1e4e1d7`
+- `backend/src/modules/task_center.ts` — SHA-256: `9f07f79fe13d04cc9a9fa22853ffb4beab7dc701588e76bc16608a5d36b3e42a`
+- `backend/src/modules/task_center.ts` — SHA-256: `b084dc5f88adba14e29ecd39c6f9de14486b5bdf6dd92b23cfd0a8f5bab17112`
+- `backend/src/modules/task_center.ts` — SHA-256: `b303d6aca70773837e7b8857911233a0c22acbad374f2bec9758ebe628312471`
+- `backend/src/modules/task_center.ts` — SHA-256: `c04c7fce62cf5e72ef2ab002ba29f6b1bb45754e7a7d63849e91912101c6d35d`
+- `backend/src/modules/task_center.ts` — SHA-256: `c8f61f76300937785e4581bbb0fcd35370a91759736ed423a00318741ec8e7a7`
+- `backend/src/modules/task_center.ts` — SHA-256: `cdbb35bb13bbc8a508ee97ab2c3f978a8cb7eecd51076e75e6ecb592daeac0de`
+- `backend/src/modules/task_center.ts` — SHA-256: `d7fc512cc00a889b6aba07b3e6be0602841d82a7b5e85824d1fb83d51c4f5542`
+- `backend/src/modules/task_center.ts` — SHA-256: `d8cebc214abd7d0ca4e0d07b05ceda8b1704dffaf7b70fe2ab03d73f45e0d0b5`
+- `backend/src/modules/task_center.ts` — SHA-256: `e31f5f7503bf736c2f9bf5b21b41983f63e3abdbe20cb695031b41ef530a2c61`
+- `backend/src/modules/task_center.ts` — SHA-256: `e40d4660f36e866be1c1067172f290e396c9c281c10556b4a4c49479c8ecf5b1`
+- `backend/src/modules/task_center.ts` — SHA-256: `e8a39f3a9863db0794e353d5ba01c88348a569c9ef20e7495adbca0d6f1d326e`
+- `backend/src/modules/task_center.ts` — SHA-256: `ed813a19d6a30ae80a0eb73d939542043cd12da35dfcc95e200a18c9de52f747`
+- `backend/src/modules/task_center.ts` — SHA-256: `f25b14af00a95ee7516875708a5f48298d7c2a02936305ff0ceabd6db0f13f7a`
+- `backend/src/modules/task_center.ts` — SHA-256: `f49dd688b1d8ecfae62716b96106cd492405a0822b5f7996e44df13872055ad7`
+- `backend/src/modules/task_center.ts` — SHA-256: `f8e74aef0f184cfc0a87b480d853e3bcf4bc063c28f13c443d210f94e76503a7`
+- `backend/src/modules/task_center.ts` — SHA-256: `f990c56c0f34ff2658dad63914661007483a067d3cb90f607de6aab03cb4fb5f`
+- `backend/src/permissionsCatalog.ts` — SHA-256: `89ace6dbb2de8bd2b79420ee1c9d7aa992c18f9c1ef3febe47c09ec395555e7e`
+- `backend/src/store.ts` — SHA-256: `38183b95a8504722d9cb25839f98bd02363a47c58d67d3d84222a9aeebaf956f`
+- `backend/src/store.ts` — SHA-256: `7a69f0da3d080f7d85247a57f3f824c215c436e5ea21c7012907c34fcef64a04`
+- `backend/src/store.ts` — SHA-256: `85eb9280beb994f19295ec495c7b0f1664ab228fe819f1bc75655c010bacd54d`
+- `backend/src/store.ts` — SHA-256: `a9d2d7a45579bdfce999dbf62d12a01c0348c885b5326f9858426a8541908c8d`
+- `docs/feature-regression-registry.md` — SHA-256: `20c9990d47cfab7d1006973a23ee08a1b886d9000b619d25db43103a5aa48314`
+- `docs/feature-regression-registry.md` — SHA-256: `4284cdc5ee126b70130721db3af47a4704ecea6a970e66024608dfd1564e0dee`
+- `docs/feature-regression-registry.md` — SHA-256: `616c06c088f086ac84b37148e3b08009b3b640ff085531b4ea636bd2cd992280`
+- `docs/feature-regression-registry.md` — SHA-256: `c414d63411947579ccd52a37700e81b96eba839a90064494e93f0b018beee0fb`
+- `docs/feature-regression-registry.md` — SHA-256: `d60b5eeb01c6afcba9277f864b9a8e12583264bd9af79952501af53f058f9cab`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `0557303660cb2ac5b83997a179a6380b66d25295a3f09ddf870dee8f3637c07c`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `25826535491b72603b4fccf8ad49e6da97c3067758b5661b57690f75674ae287`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `2e93aa25c4f707feb51f8b94e690fa5cc7a32d2306c029fba9aafe380c9740b5`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `4545827d179cf652fa1082d5c309e6ff5e1545c6336fbbf6f3294bc0f2d07710`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `4638186dce81113e44292b068e20f578e398c8730b572b74b00f850a588612d1`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `5b866275a33500dd32f66bf24fce7f8f5365e283d5c661c3d18196c9148ab8ea`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `5de4b90190605274ed9b0bd0bc404768cc5043f9da6b5563092b96017eff567c`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `623f0326044bf88bd9b27061c1e7924d00648bcb6c4d490420ddfedc3d6656e0`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `6da26468207faa19103858e03201cf2de4f83c6bf0b8948fc5343c8b89f0927b`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `7eaa62eaa9b590de9354d0cb856d137cd8ed1574a987d5e466a16d6070624269`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `8225fd8f1cce464a59ea4467b588e61b49ae46e70cc7089f9fccdb05e45d6358`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `85b71bfdf51e567bfb2b4135e4a05ab7a3f2f9580715e1384db6396c6a17ec5d`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `9c6d99161ad299bccae3a401367147d4a0268d7dc54fd847c45e2fcce85a4efd`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `b9008b36c9757533ecef72b9f7cfde6e00ed073e71ee02c81c939d758eccacb0`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `dac121eab39bfbd281f67a26c87327d5a017f792ef23accbed9e8043c394eccb`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `ee336ee33747ffd4633520df6c7875672cc390c6bccd80443c7ac31ffc22aca4`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `ef184c9ac41d1bf99ec4bbc5517db5bb47fc049389aa3c1532768bbc991b8608`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `fc252d8e6949c79ea2775776c8910ed3372cdeee749e9a6ba0dff93471801dd7`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `09cdbd8f32e19884a37f8614009b2d7b0819dbea4ce5b1bdaef6c5a7cbc8cbba`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `9f693ad0687d90c0530210c5cba9b188c8e9f4b0d90617bd9970dbc2f2a8b597`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `afa36dc950120d00ce5ec8564e991324209185396177f179e8326791c3d9352f`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `bf86fe6f449605f500c1778131f938e1fa6c5d8edf92dd72352c927a007f7026`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `d2d8e7ecae6d2ea568b2749dd82c9659da58fe42e8442e0e198cc614ed082699`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `eba4b7d0ecf59a2d774a0379bb2ec551ed4ec9ba875dded981abed45be28767d`
+- `package.json` — SHA-256: `3b1a40a352e52e98168fc4521e13fb7e2d5bb10ea81bb8a71dffc8d3f6422c89`
+- `package.json` — SHA-256: `a4d1c9879992b37de2ed7a83952a96cb9c6eef54f1d20b30a0acf3601963e6c5`
+- `package.json` — SHA-256: `ac07067db0920a22789e2bcdb6b861ed5fe91e700ed6d78a9f5dbe4e5b7f39e5`
+- `package.json` — SHA-256: `cc5bd9cf9db4031f4a7254bf81f6e40a57379e0e9786a80493b621f12895583c`
+
+### Release Attempts
+
+### Risks / Release Notes
+
+- Git state：与 CRL-20261010-001 同一未提交候选。
+- 真实数据库迁移与端到端权限验收仍是发布前门禁；源码存在不代表 schema 已就绪。
+
+## CRL-20261010-003 — 开发 Preview 五分钟空闲自动停止（root）
+
+- **Status:** four-CRL staged candidate validated；final independent commit review pending；not committed, not pushed, not released
+- **Repository:** `root`
+- **Updated:** 2026-10-10 UTC
+- **Request:** 整合 MZ-011：仅固定开发 Preview 在连续 300 秒无真实用户活动时自动停止；Web、后端和可选 Metro 作为同一会话管理，移动端单独运行不误停。
+- **Outcome:** Preview 控制器聚合浏览器交互、后端有意义请求和 Mobile 交互心跳；健康检查、SSE/HMR 等噪声不续期。只有显式 dev Preview 标记下启用，生产/TestFlight/OTA 行为不变。
+
+### Implementation
+
+- 新增空闲控制器和后端活动追踪，Web/Mobile 仅在 dev Preview 环境报告交互。
+- `dev:preview` 管理 backend+Web，`dev:preview:all` 另含 Metro；300 秒超时统一停止受管进程。
+- 禁止活动报告端点触发业务写入或依赖数据库。
+
+### Files / Areas
+
+- `backend/package.json` — 活动追踪契约命令。
+- `backend/scripts/tests/test_dev_preview_activity.ts` — 请求分类和 dev 门禁。
+- `backend/src/index.ts` — Preview 活动入口。
+- `backend/src/lib/devPreviewActivity.ts` — 后端活动判定。
+- `docs/dev-preview-workflow.md` — 本地使用和边界。
+- `frontend/src/app/layout.tsx` — Web reporter 装配。
+- `frontend/src/components/DevPreviewActivityReporter.tsx` — 用户交互报告。
+- `package.json` — Preview/all/lan 和质量检查命令。
+- `scripts/dev-preview-idle.mjs` — 300 秒会话控制器。
+- `scripts/dev-preview.mjs` — Web/backend/Metro 统一生命周期。
+- `scripts/tests/test_dev_preview_idle.mjs` — 空闲与噪声契约。
+
+### Impact / Dependencies
+
+- 配套 `mobile/CRL-20261010-003` 提供 Mobile dev Preview 心跳；无数据库、API 业务 schema 或生产运行时依赖。
+- 本轮不启动 Preview 或任何服务，只运行隔离的控制器/分类测试。
+
+### Validation
+
+- `npm run test:dev-preview-idle`：PASS；虚拟时钟覆盖 300 秒判定、active requests/真实活动续期及 LAN 地址选择。统一子进程停止经过源码审查，真实终端进程树未运行。
+- Backend dev activity classifier、frontend/backend types、paired full quality chain：PASS。
+- Independent review：GO for local commit candidate；Mobile 非 Preview 环境不包装、不订阅、不发请求；未发现剩余 P0/P1。
+- Preview manual E2E/device/production：not run；未启动 Preview、Metro 或应用服务。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none；隔离候选无未跟踪文件、依赖目录、缓存、构建产物、环境文件或密钥。
+- **Shared-hunk note:** 共享文件的精确 hunk 会在相关已选 CRL 中重复登记；四个 CRL 作为同一原子候选审查，审计按并集精确匹配。
+- `backend/package.json` — SHA-256: `2e2b30bd5fed4771346763c3c9e2985a8b3df7832b79eae6232f7d7a09568c25`
+- `backend/package.json` — SHA-256: `8850c99197ea6b517c67c722cf8f51ab6d386d64429565eabeb1097d4478a2d1`
+- `backend/package.json` — SHA-256: `dc129550bceb8be3308dbb502ec26f1812e258b8cdd4e435995a21b7a8e64073`
+- `backend/scripts/tests/test_dev_preview_activity.ts` — SHA-256: `fdc36246d3198a6e0f147bec3761b5399e2d5c78b25af631b9fceafd3ba97b50`
+- `backend/src/index.ts` — SHA-256: `7be97d8d2c9b7265e4371f681b6168ea2201c61735df2ce7f4058b2e6adfa6ee`
+- `backend/src/index.ts` — SHA-256: `cc54bb607954e3d85ca1f07dd7f0e56c456636bff326ae8acee8f12e2ef601f3`
+- `backend/src/lib/devPreviewActivity.ts` — SHA-256: `24c5cfabe6d41bee86c40bba86e6adad1781d4fd59ace2e39bd273736d4a0375`
+- `docs/dev-preview-workflow.md` — SHA-256: `2cba3fb22ec26357456bac2810e9663060921091ab3157afa28e3b05198579d6`
+- `docs/dev-preview-workflow.md` — SHA-256: `2d21b03b9d3bc187f296d08b63973d8135677391c83e166ab9589c7ccf12b198`
+- `docs/feature-regression-registry.md` — SHA-256: `20c9990d47cfab7d1006973a23ee08a1b886d9000b619d25db43103a5aa48314`
+- `docs/feature-regression-registry.md` — SHA-256: `4284cdc5ee126b70130721db3af47a4704ecea6a970e66024608dfd1564e0dee`
+- `docs/feature-regression-registry.md` — SHA-256: `616c06c088f086ac84b37148e3b08009b3b640ff085531b4ea636bd2cd992280`
+- `docs/feature-regression-registry.md` — SHA-256: `c414d63411947579ccd52a37700e81b96eba839a90064494e93f0b018beee0fb`
+- `docs/feature-regression-registry.md` — SHA-256: `d60b5eeb01c6afcba9277f864b9a8e12583264bd9af79952501af53f058f9cab`
+- `frontend/src/app/layout.tsx` — SHA-256: `6deaa14e0f5160fe17f50a2e36da4c1224502119e43bcd940be1b8d691663407`
+- `frontend/src/app/layout.tsx` — SHA-256: `a43e4ef387df4f038420b33bf86a94939fc816502ed9b537e75620e813cc4947`
+- `frontend/src/components/DevPreviewActivityReporter.tsx` — SHA-256: `5754966542672645569fb9fba4d7dcd7e5a9e8050ffe3cfb7c03d1e2df3a26ba`
+- `package.json` — SHA-256: `3b1a40a352e52e98168fc4521e13fb7e2d5bb10ea81bb8a71dffc8d3f6422c89`
+- `package.json` — SHA-256: `a4d1c9879992b37de2ed7a83952a96cb9c6eef54f1d20b30a0acf3601963e6c5`
+- `package.json` — SHA-256: `ac07067db0920a22789e2bcdb6b861ed5fe91e700ed6d78a9f5dbe4e5b7f39e5`
+- `package.json` — SHA-256: `cc5bd9cf9db4031f4a7254bf81f6e40a57379e0e9786a80493b621f12895583c`
+- `scripts/dev-preview-idle.mjs` — SHA-256: `4b4a7511b20dc88841c181fe425e61bb3379f0a01aa522130168280432d484db`
+- `scripts/dev-preview.mjs` — SHA-256: `09f3a5e3539dc4dbb48362e2a0136ac9958f8dee3b9184358378069e51411eb1`
+- `scripts/dev-preview.mjs` — SHA-256: `0f624e6a8937f09a45bd55611022051a6b90f1a8b2a714c98bff94ed3aa58207`
+- `scripts/dev-preview.mjs` — SHA-256: `1001e207dbf184160d3d82d2423bf7669e39cbc9aa1508051075e6837ef968af`
+- `scripts/dev-preview.mjs` — SHA-256: `1fb20f166aa92357f903ec6fbfac1e2c995ba0d7070fa42b69ea0e82adb6b3d2`
+- `scripts/dev-preview.mjs` — SHA-256: `234c463f694b93fd8053fa996b2709b4ab0a50d5b6137b001207be735d561f00`
+- `scripts/dev-preview.mjs` — SHA-256: `2cad67a8bf97447bf29ee3f9ae843281376ed16d4d9c3bf192a5fe8ff10230d5`
+- `scripts/dev-preview.mjs` — SHA-256: `45a4a08422c0716396d235db3f51abc040c7086e88d17d7a25ca745c4295d094`
+- `scripts/dev-preview.mjs` — SHA-256: `477b2a170169a868b2acafd18cf1110ab41b4b7ab662c81654c9df2f8b1b5288`
+- `scripts/dev-preview.mjs` — SHA-256: `58457aa4f0b25934bbed980088b73eacb6739c5a7c5add795a3d96edbda42351`
+- `scripts/dev-preview.mjs` — SHA-256: `76d73ef2e4854303f6cfb51a659205615d84f43d91fd4a0df58c572b17dc8673`
+- `scripts/dev-preview.mjs` — SHA-256: `7ecb0e7dcbb0833b6250723ad9a8d503316b211c98b3f074b6495f4286264077`
+- `scripts/dev-preview.mjs` — SHA-256: `92564021f7c8d38a79a6b6958cdf86e3c5977bf6bac3b52c8f9b8ef9df345e84`
+- `scripts/dev-preview.mjs` — SHA-256: `ab32125ac407bf3af6d769e75894da5b746bb99e3e348b1028140eaa264e1245`
+- `scripts/dev-preview.mjs` — SHA-256: `ac0fb8d8d68915c9814a9baa7d60cd06ead09edc44ed506995d9e3127ce1a1d3`
+- `scripts/dev-preview.mjs` — SHA-256: `b20ede840e0c23b00b7690cffd5613ea05b5c8bf957d246b75089b829a085275`
+- `scripts/dev-preview.mjs` — SHA-256: `b92ff5d5a61e81c100e6710b665c9e4808263359a057131dfd97772af1f48b41`
+- `scripts/dev-preview.mjs` — SHA-256: `bc23d150130327b0b11dba189daa85c97626430eb00ea086ada05c9b3759ce91`
+- `scripts/dev-preview.mjs` — SHA-256: `c181036dd9762b45e881c113b1f2b0887d45e11001ea2abcdb84daccd171ea4b`
+- `scripts/dev-preview.mjs` — SHA-256: `c53665229657efca891b3aa717ebf260a2457d196118c29d042ae8fecddcc615`
+- `scripts/dev-preview.mjs` — SHA-256: `c79691bce14bea4cb4c6f6441fe1e30fe005e49c74110376991928ed8b85c23d`
+- `scripts/dev-preview.mjs` — SHA-256: `db7d941f2a4c5ef79e8a4e898cee00041c9e367fe690e78c73fe7555cac5fd27`
+- `scripts/dev-preview.mjs` — SHA-256: `e6329e6d570939fd6dfe07a3652c1cc0e80c2b52cdce4835f0e45e397e518648`
+- `scripts/dev-preview.mjs` — SHA-256: `eb4ba22a621059c9009dbc9402783b5139090ae68e7ab083c81b5cde8ff2ae09`
+- `scripts/dev-preview.mjs` — SHA-256: `fb12a83ea2ea2d06e1dd75e8be8ea9754a87e761529abc75cb91191a237bd1b1`
+- `scripts/dev-preview.mjs` — SHA-256: `fba2532523bfc6c7bffe07a2e902075fb6955ea8c95c720a0a489c3cdd7617fc`
+- `scripts/tests/test_dev_preview_idle.mjs` — SHA-256: `942c477b8a03805c230ec37ec855804545e899cc6f00149fb7e229e3d589e882`
+
+### Release Attempts
+
+### Risks / Release Notes
+
+- Git state：与前两项同一未提交候选；无 commit/push/PR/deploy。
+- 进程管理的真实终端行为仍需后续获批的本地 Preview 人工验收。
+
+## CRL-20261009-001 — 清洁媒体重复上传与挂钥匙重复挂载幂等修复
+
+- **Repository:** `root`
+- **Status:** integrated in four-CRL staged candidate；targeted and full paired validation passed；final independent commit review pending；not committed / not pushed / not deployed
+- **Updated:** 2026-10-09 UTC
+- **Request:** 修复已由 Render 日志证实的同一 `media_id` 重复上传，覆盖并发、网络中断后重试、部分成功和 App 重启；不得改变水印，不得把不同照片当作同一媒体，不操作生产数据库、队列、部署或通知。
+- **Outcome:** 稳定清洁媒体 key 改为条件创建和内容指纹校验；同内容重试复用既有对象，首次写入后响应丢失可通过 HEAD 校验恢复，不同内容复用同一 ID 返回 409 且不覆盖。普通检查与自完成两条挂钥匙业务路由以现有 receipt 表和任务行锁实现同一 operation 的事务重放，避免重复媒体行、状态流转、广播和通知。
+
+### Implementation
+
+- Previous behavior: `media_id` 只决定固定 R2 key，但每次请求仍执行无条件 `PutObject`，弱网重试会把同一对象重新传出并覆盖；MZapp 挂钥匙路由每次重试都会新增媒体行，两条业务路由都会重复执行流转和副作用。
+- New behavior: R2 使用 `If-None-Match: *` 条件创建，保存原始输入与水印/业务上下文指纹；条件冲突或超时后读取 HEAD，已有指纹一致即复用，避免 Sharp/libjpeg 版本变化导致等价重试误冲突。旧对象没有指纹 metadata 时才按最终对象哈希、长度和 MIME 校验，内容不同 fail closed。无 R2 的本机 fallback 使用原子硬链接和字节哈希保持同一语义。
+- Business mount: 客户端传入的 `operation_id` 进入现有 `app_submit_receipts`；任务行在检查 receipt 前 `FOR UPDATE`。相同 operation/相同 payload 返回已保存响应，不再改媒体、状态或发送副作用；相同 operation/不同 URL 返回 409。新 operation 仍可明确替换任务的单一挂钥匙视频。
+- Watermark and authorization: 图片标准化、水印文本、既有上传 permission gate、挂钥匙任务成员资格和完成门槛未修改；指纹包含影响最终媒体的水印与业务输入。
+
+### Files / Areas
+
+- `backend/src/lib/immutableMediaUpload.ts` — 指纹、条件创建编排、冲突类型和本机原子 fallback。
+- `backend/src/r2.ts` — R2 条件创建、HEAD/旧对象字节校验与响应丢失恢复。
+- `backend/src/modules/cleaning_app.ts` — 稳定媒体上传接入和自完成挂钥匙 receipt。
+- `backend/src/modules/mzapp.ts` — 普通检查挂钥匙单媒体替换和 receipt。
+- `backend/scripts/tests/test_immutable_media_upload_contract.ts` — 并发、断响应、不同内容和本机 fallback 纯契约。
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — 两条挂钥匙路由和媒体冲突源码契约。
+- `backend/package.json` — 目标测试命令。
+- `docs/feature-regression-registry.md` — FR-005 媒体对象与业务挂载不变量。
+- `docs/change-release-ledger.md` — 本 CRL。
+
+### Impact / Dependencies
+
+- API: 稳定媒体首次上传仍为 201；同内容重放返回 200 并带 `reused: true`；同 ID 不同内容返回 `409 CLEANING_MEDIA_IDEMPOTENCY_CONFLICT`。两条 lockbox-video API 新增可选 `operation_id`，旧客户端仍兼容。
+- Database: 复用既有 `app_submit_receipts`，无 schema、migration、seed 或生产数据写入。
+- Storage: 不迁移、不复制、不删除既有 R2 对象；未改 Cloudflare/Render 配置。
+- Delivery: 需与 `mobile/CRL-20261009-001` 配套审查，Root 应先于 Mobile 发布；本轮没有提交、推送、PR、部署、重启或通知。
+
+### Validation
+
+- `node --experimental-strip-types backend/scripts/tests/test_immutable_media_upload_contract.ts` — passed；并发只创建一次、既有对象在 PUT 前直接复用、响应丢失后复用、不同内容冲突、新对象跨编码产物变化仍按源指纹复用、旧对象仍要求最终字节一致、本机并发原子创建/同字节复用/不同字节拒绝。
+- Locked SDK contract — passed：`backend/package-lock.json` 固定 `@aws-sdk/client-s3@3.940.0`，本机 npm cache 中该精确 tarball 的 `PutObjectRequest` 声明 `IfNoneMatch?: string` 并要求 `*`；Cloudflare R2 官方兼容表同时列出 PutObject `If-None-Match` 已实现、S3 API read-after-write 强一致。
+- `git diff --check` — passed（代码与登记更新后复核）。
+- Source contract inspection — passed：稳定上传接入 `r2UploadImmutable`；两条业务路由在事务内执行任务行锁、receipt load/save，并在广播/通知前返回 replay。
+- `python3 scripts/audit_change_release_ledger.py` — passed：9 changed / 9 recorded files。
+- `python3 scripts/audit_feature_regression_registry.py` — passed：29 FRs / 239 mappings；FR-005 的四个 Mobile 测试路径均作为独立映射校验，不再合并在单个路径单元格中。
+- `npm run check:ci` — passed：Root workflow contract 8 tests、ledger range 41 tests、current ledger 10/10（验证时通过只读配套 Mobile 链接计入）、Feature Registry 29 FRs / 239 mappings、backend TypeScript build 与全部 fast contracts、web 53 files / 265 tests（97.29% statements / 93.61% branches / 100% functions / 97.29% lines）及配套 Mobile typecheck 全部通过。
+- `NEXT_TELEMETRY_DISABLED=1 npm run check:full` — passed：backend 完整合同、Root ledger/Feature Registry、web lint/tests/production build、配套 Mobile typecheck/lint/Jest 全部完成；Mobile lint 0 errors / 590 warnings，Jest 62 suites / 380 tests。Jest 仍报告既有 VirtualizedList `act(...)` 警告和 worker forced-exit teardown 提示，但命令退出 0。
+- Dependency setup — exact lock hashes matched the existing local dependency sources; validation used APFS copy-on-write copies only, without `npm install`, package-lock changes, network fetch or source-tree dependency modification. Temporary copies and pairing link were removed after validation。
+- Production database/API/R2/Render write、migration、queue、notification、load test、restart/deploy：not run。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none；隔离候选无未跟踪文件、依赖目录、缓存、构建产物、环境文件或密钥。
+- **Shared-hunk note:** 共享文件的精确 hunk 会在相关已选 CRL 中重复登记；四个 CRL 作为同一原子候选审查，审计按并集精确匹配。
+- `backend/package.json` — SHA-256: `2e2b30bd5fed4771346763c3c9e2985a8b3df7832b79eae6232f7d7a09568c25`
+- `backend/package.json` — SHA-256: `8850c99197ea6b517c67c722cf8f51ab6d386d64429565eabeb1097d4478a2d1`
+- `backend/package.json` — SHA-256: `dc129550bceb8be3308dbb502ec26f1812e258b8cdd4e435995a21b7a8e64073`
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — SHA-256: `90a1ab389de9352ff16b72aca8dc56611f5914d448044451a12b092be02bbcd0`
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — SHA-256: `bf9e1b2e93ea3b63a29db65f4dc12b7d1a5beb85a17ac2dfd540fd2f0071844a`
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — SHA-256: `fa2bb91cbaf01e0c74b4085ae0246e1f879c9371dcf188b521012c83b9b022ab`
+- `backend/scripts/tests/test_immutable_media_upload_contract.ts` — SHA-256: `3638400d6fd603d41a425d5c2427f230c22b97b9dc64a3bc47e74646c2d2c44e`
+- `backend/src/lib/immutableMediaUpload.ts` — SHA-256: `780e22e6320fe4d1da9d3d1ad6a0ae1a649d96e2ad5c82664ec0ddc194779d4b`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `1764255baea44d75ace3a58aa2addd8bc6a500377256c92670d62638935efd10`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `29f9335601416d515280379c6198ecad3749d96db7291fb77455cb049412c3c4`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `2e3555099110f0ef0c9b474c47b74cf108fa9aa63f84421830815e86f7935db6`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `5f9ff6198c0ee3f14fca9947fe36686f0645b0288cf23fc60f61837a2d60b41a`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `7497753fde8b59be1eea4fed9cd30c209389187c3ee56a50d2c84ee5f76b34c2`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `7d21e6365ff95f8a648c840fda50911ca2605b06a5fc6fb908a32db04800005f`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `8742a3c9c12d63e8bbc4cffbf0753d5a88cab1841eeede9e7b089009f68a5cdf`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `a4a6f8d87681027f437b034fd70059b1a015172a6c39608244000eeac56be02e`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `ac6f3165f181e56a1a065cfb62bbb640d9e0fda6742290d50dc012baf4577232`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `b7e98641885bdfc7ffabc293832ceecbb564eee2b9223bc0db421f1211516f10`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `be329b6df5f2fe6292452ba29cb001ec7c2f4de5616b16a20365db068fcd76e4`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `ddab26d45158228940bcea5f45c8b31a1d9a75329eb7a943c3a7bc418517f626`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `e6c50febc5123e786fe3dd2bd4d580404323fc6ff4ebcec62996f1f5cbdc9adb`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `f9058ee8e6519bc83e2cfb109fd8f386bf80b31dcf7e94e769aaca995cc3c8b8`
+- `backend/src/modules/mzapp.ts` — SHA-256: `0f46beb8272b0a3292ac1a2ec53d6294f2aa3e47180d6c690e4e0ab4ed5f1a60`
+- `backend/src/modules/mzapp.ts` — SHA-256: `1181b8193667fcf76e381cbb5ab6763faab46c5cb00ec8bb2c11299dbc07d8a2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `122df75377ee7b3b9140628c610843842d4893fc719997743d3626472c936eba`
+- `backend/src/modules/mzapp.ts` — SHA-256: `13998a8bd52a5133d39a15586b0c7bf0600edda82f8d55d85b6c61c89aa48861`
+- `backend/src/modules/mzapp.ts` — SHA-256: `220a9037ce27d8926fc33f8c762f3775f303f376852012960079548242dcdd2c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `25a517c3e9a435c61301dd936cf35bda1b9320dba257b99e8f6f7805af2e7ca7`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2d48e32e84c8b260d7ddce6e0b698a87956de6638d7abb576c26610be4de8022`
+- `backend/src/modules/mzapp.ts` — SHA-256: `36f8d936dd4a25795a370bc414739297ac87724233ba6cc6d479f5b9869d4b4c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `40cfd611f1b2c1f3188c552e3bc81bc378069a6fe4265db64b22eddf7d2b7a23`
+- `backend/src/modules/mzapp.ts` — SHA-256: `45eae83fb927a3808a5a480b91be46cb45b5f60ca72d583e0704794f39827534`
+- `backend/src/modules/mzapp.ts` — SHA-256: `46bdc85f30a3c1b0472b155b92abca89808b676a8a9d56595baecc0f1fbc74fa`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5003e5715f5962141f7f4cf14f3170558dba3897d337cf50788d2ca755444a79`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5cfbabf633f9cf46b003e38375c5d92d5435380857876eeff65bbd7c7aa1dafb`
+- `backend/src/modules/mzapp.ts` — SHA-256: `68ab5b78d3a1f67d3aea730c170432109263e59227f9fda7ff2fe225b5723d78`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7586152f5bd32f430cbf7a756b6e7401f0a3fc01b8210e29ee76804c1b50a003`
+- `backend/src/modules/mzapp.ts` — SHA-256: `79a85798bc7621f9d8941478fe253af71c554f82a587d1a439e7c817fa7a5b66`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7e2d03b2e617524f3ed1b34ce6e729c387a1ce1e0d3900874f69ae4c51cac7e2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `803e49c879c1b89fef19b88f521c368451079bc273c64ae818101caed754e53b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `898cb8248c99eaa06b96f5f390520bea54a2067065c31d061421ab26ec2bddf4`
+- `backend/src/modules/mzapp.ts` — SHA-256: `a77325e1aaa43e32dec5f66b9f5797907f998aa01e76302a7d13ddb5d547152a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `c7f62639fcd8979a8ae5d688703ddaf54c83b30e8f184a6ee13d51158761449f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d371cf132067c580324ba2b6e19029aa9b0bac5015a8435f25f8b376fac63ca6`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d8d7343c65f83373f7eee52c11159467e91ad4500d490f5c57a36ae29af86f32`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e67850556cc09157802d3bbbdcda13f76fc25b1c53e0e76fb6c448dbc655619a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `eebc5fe499faea9df674012694a7e00fbc9637afbc35c20dd612640da443c1c9`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f02948df320c4699b415590a544838098f943f0d6508c4886f20b1a16e30815b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f74038af885f2bf5a2ccd2827b3d3da92bd7b46302df42f90a84cb9c8900fdc2`
+- `backend/src/r2.ts` — SHA-256: `2ab1e5bc212b2e5a63dc6a5c0caf7c03f3e550d02d2cd9bedbca6b6d4215583a`
+- `backend/src/r2.ts` — SHA-256: `2d332c1deec020660536d26bf51a6460f574fb40e9bdc5a9b1e0ce07d02392ba`
+- `docs/feature-regression-registry.md` — SHA-256: `20c9990d47cfab7d1006973a23ee08a1b886d9000b619d25db43103a5aa48314`
+- `docs/feature-regression-registry.md` — SHA-256: `4284cdc5ee126b70130721db3af47a4704ecea6a970e66024608dfd1564e0dee`
+- `docs/feature-regression-registry.md` — SHA-256: `616c06c088f086ac84b37148e3b08009b3b640ff085531b4ea636bd2cd992280`
+- `docs/feature-regression-registry.md` — SHA-256: `c414d63411947579ccd52a37700e81b96eba839a90064494e93f0b018beee0fb`
+- `docs/feature-regression-registry.md` — SHA-256: `d60b5eeb01c6afcba9277f864b9a8e12583264bd9af79952501af53f058f9cab`
+
+### Release Attempts
+
+#### RA-20261010-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261009-001`, `CRL-20261010-001`, `CRL-20261010-002`, `CRL-20261010-003`
+- Selected CRL identities: `root/CRL-20261009-001`, `root/CRL-20261010-001`, `root/CRL-20261010-002`, `root/CRL-20261010-003`
+- Intended action: `commit`
+- Branch: `codex/mz010-mz011-mz021-integration-20261010`
+- Base: `origin/Dev@e9e32847c49782a34163267681174c57db3a8952`; fetched at `2026-10-10T06:51:42Z` from GitHub
+- Candidate patch SHA-256: `b82511faa430f363d05e89b74762849910ff6b25d797a8ed560667a3e34a1869` excluding `docs/change-release-ledger.md`
+- Commit SHA: `94fc510992aff5bd8bc0c514cff91bc9313647e1`
+- Dependencies: none
+- Required validation: `PASS`; evidence: Root targeted MZ-003 idempotency/immutable-media contract passed; fresh isolated paired `npm run check:full` passed backend build/contracts, frontend lint / 53 files / 268 tests / production build, and Mobile typecheck / lint 0 errors / 593 warnings / 67 suites / 400 tests. Root ledger/Feature Registry and both diff checks passed.
+- Shared-hunk review: `PASS`; evidence: shared package, API/module, task-center and Feature Registry hunks are intentionally recorded in every relevant selected CRL and audited as one exact union; MZ-003 is integrated with MZ-010/MZ-011/MZ-021 without MZ-022/MZ-023.
+- Generated-file review: `PASS`; evidence: tracked backend build output drift was restored; candidate contains no generated build output, cache or dependency directory.
+- Sensitive-information review: `PASS`; evidence: candidate contains no `.env`, credentials, tokens, cookies, private keys, database URL or production data.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: delegated instruction explicitly authorized separate Root/Mobile commits, normal pushes and paired Draft PRs, while forbidding merge, auto-merge, main push, deployment, OTA and production writes.
+- Independent review: `GO`; evidence: independent read-only review at `2026-10-10T07:32:46Z` verified the exact 34-path / 167-non-ledger-hunk candidate, base/HEAD/index boundary, `b82511faa430f363d05e89b74762849910ff6b25d797a8ed560667a3e34a1869` fingerprint, clean diff checks, no P0/P1, no MZ-022/MZ-023 source changes, and no generated or sensitive paths.
+- Action conclusion: `GO`; exact content commit `94fc510992aff5bd8bc0c514cff91bc9313647e1` was created locally after the pre-commit audit passed. Push and Draft PR remain separately gated actions; merge, main push, deployment, migration and production writes remain excluded.
+
+#### RA-20261010-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261009-001`, `CRL-20261010-001`, `CRL-20261010-002`, `CRL-20261010-003`
+- Selected CRL identities: `root/CRL-20261009-001`, `root/CRL-20261010-001`, `root/CRL-20261010-002`, `root/CRL-20261010-003`
+- Intended action: `push`
+- Branch: `codex/mz010-mz011-mz021-integration-20261010`
+- Remote branch: `origin/codex/mz010-mz011-mz021-integration-20261010@7302bc1f3d2c2033c15c795329b894a33b368cbe`; initial normal non-force push and immediate SHA verification completed before this outcome receipt.
+- Base: `origin/Dev@e9e32847c49782a34163267681174c57db3a8952`; fetched at `2026-10-10T07:36:34Z` and confirmed unchanged by live fetch.
+- Candidate patch SHA-256: `b82511faa430f363d05e89b74762849910ff6b25d797a8ed560667a3e34a1869` excluding `docs/change-release-ledger.md`
+- Commit SHA: `94fc510992aff5bd8bc0c514cff91bc9313647e1`
+- Dependencies: `mobile/CRL-20261009-001@a880e0203ed436697f4589317b049fdf8d16fd4f`; `mobile/CRL-20261010-001@a880e0203ed436697f4589317b049fdf8d16fd4f`; `mobile/CRL-20261010-002@a880e0203ed436697f4589317b049fdf8d16fd4f`; `mobile/CRL-20261010-003@a880e0203ed436697f4589317b049fdf8d16fd4f`
+- Required validation: `PASS`; evidence: targeted MZ-003 contracts and fresh paired `npm run check:full` passed; content pre-commit and ledger-only receipt gates passed; Root full chain included backend build/contracts, frontend lint / 53 files / 268 tests / production build and Mobile 67 suites / 400 tests.
+- Shared-hunk review: `PASS`; evidence: 167 exact non-ledger hunks match the selected four-CRL union with no MZ-022/MZ-023 source changes.
+- Generated-file review: `PASS`; evidence: exact range contains no generated build output, cache or dependency directory.
+- Sensitive-information review: `PASS`; evidence: exact range contains no configured sensitive categories.
+- Cross-repository dependency verification: `PASS`; evidence: paired Mobile range `c3a6bf43d5a6178bf7f8a8117e104563599e1ceb...2bc6f7ed01f52b495811c20ab646eb8ec9b460b1` contains content commit `a880e0203ed436697f4589317b049fdf8d16fd4f`, binds the four canonical Mobile CRLs, and retains fingerprint `2589f8c5914548ad61773f3f518f43eae8085475bba3dede96459139b2397745`.
+- PR / CI evidence: Draft PR `https://github.com/zhishi817/MZ-property-system_V3/pull/384` is open, unmerged and targets `Dev`; `Root Quality Gate` run `38035479590` / `#255` completed successfully for head `7302bc1f3d2c2033c15c795329b894a33b368cbe`.
+- Technical state: `pushed`
+- User authorization: `approved-for-push`; evidence: delegated instruction explicitly authorized the separate Root normal push and paired Draft PR while forbidding merge, auto-merge, main push, deployment, OTA and production writes.
+- Independent review: `GO for ledger-only review receipt commit and conditional controlled push`; evidence: independent read-only push review verified exact base/content/HEAD ancestry, unchanged 34-path / 167-hunk fingerprint, receipt-only staged scope, four-CRL paired dependency ranges/content commits/fingerprints, clean diff/generated/sensitive boundaries, and recorded live unchanged-Dev/absent-target evidence; no P0/P1.
+- Action conclusion: `GO`; the authorized Root branch push succeeded, remote SHA matched local head, Draft PR #384 was created, and its first quality run completed successfully. This ledger-only outcome receipt may be fast-forwarded to the same branch. PR remains Draft/open/unmerged; main push, merge, deployment, migration, OTA and production writes remain excluded.
+
 ## CRL-20261008-001 — 订单取消权限按有效多角色并集判定
 
 - **Status:** integrated release candidate validated and independently reviewed；ready for local commit；not pushed / not deployed

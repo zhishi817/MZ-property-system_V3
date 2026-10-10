@@ -442,6 +442,7 @@ if (db.roles.length === 0) {
     { code: 'order.cancel' },
     { code: 'order.cancel.override' },
     { code: 'order.confirm_payment' },
+    { code: 'order.guest_ready_notification.manage' },
     { code: 'keyset.manage' },
     { code: 'key.flow' },
     { code: 'cleaning.view' },
@@ -553,7 +554,7 @@ if (db.roles.length === 0) {
   // 管理员：所有权限
   grant(adminId, db.permissions.map(p => p.code))
   // 客服：房源可写、订单查看/编辑、查看清洁安排、可管理订单（允许创建）、允许录入公司/房源支出
-  grant(csId, ['property.write','order.view','order.write','order.manage','order.deduction.manage','order.cancel','cleaning.view','finance.tx.write','invoice.view','invoice.draft.create','onboarding.manage','onboarding.read','cms_pages.view','cms_pages.write','menu.dashboard','menu.properties','menu.finance','menu.finance.invoices.visible','menu.cleaning','menu.cleaning.overview.visible','menu.cleaning.task_center.visible','menu.cleaning.daily.visible','menu.cms','menu.cms.customer_service_manual.visible','menu.onboarding','menu.guest_site','menu.guest_site.settings.visible','menu.guest_site.properties.visible','menu.guest_site.inquiries.visible','guest_site_settings.view','guest_site_settings.write','guest_site_properties.view','guest_site_properties.write','guest_site_inquiries.view','guest_site_inquiries.write','cleaning_app.calendar.view.all','cleaning_app.sse.subscribe','cleaning_app.issues.report','cleaning_app.media.upload','cleaning_app.expense.company.submit','cleaning_app.expense.company.view.self','cleaning_app.expense.company.edit.self','cleaning_app.expense.company.delete.self','cleaning_app.expense.property.submit','cleaning_app.expense.property.view.self','cleaning_app.expense.property.edit.self','cleaning_app.expense.property.delete.self'])
+  grant(csId, ['property.write','order.view','order.write','order.manage','order.deduction.manage','order.cancel','order.guest_ready_notification.manage','cleaning.view','finance.tx.write','invoice.view','invoice.draft.create','onboarding.manage','onboarding.read','cms_pages.view','cms_pages.write','menu.dashboard','menu.properties','menu.finance','menu.finance.invoices.visible','menu.cleaning','menu.cleaning.overview.visible','menu.cleaning.task_center.visible','menu.cleaning.daily.visible','menu.cms','menu.cms.customer_service_manual.visible','menu.onboarding','menu.guest_site','menu.guest_site.settings.visible','menu.guest_site.properties.visible','menu.guest_site.inquiries.visible','guest_site_settings.view','guest_site_settings.write','guest_site_properties.view','guest_site_properties.write','guest_site_inquiries.view','guest_site_inquiries.write','cleaning_app.calendar.view.all','cleaning_app.sse.subscribe','cleaning_app.issues.report','cleaning_app.media.upload','cleaning_app.expense.company.submit','cleaning_app.expense.company.view.self','cleaning_app.expense.company.edit.self','cleaning_app.expense.company.delete.self','cleaning_app.expense.property.submit','cleaning_app.expense.property.view.self','cleaning_app.expense.property.edit.self','cleaning_app.expense.property.delete.self'])
   // 线下运营：可在 App 管理页进入任务详情、提交房源问题反馈并上传证据
   grant(offlineMgrId, ['menu.dashboard','menu.cleaning','menu.cleaning.overview.visible','menu.cleaning.task_center.visible','menu.cleaning.daily.visible','cleaning.view','cleaning_app.sse.subscribe','cleaning_app.issues.report','cleaning_app.media.upload','menu.finance','menu.finance.personnel_settlements.visible','personnel_settlements.profiles.view','personnel_settlements.profiles.manage','personnel_settlements.rules.manage'])
   // 清洁/检查管理员：清洁排班与任务分配（仅查看房源，无写权限）
@@ -595,7 +596,7 @@ if (db.roles.length === 0) {
 
 const defaultPerms = [
   'property.view','property.write',
-  'order.view','order.create','order.write','order.sync','order.manage','order.confirm_payment',
+  'order.view','order.create','order.write','order.sync','order.manage','order.confirm_payment','order.guest_ready_notification.manage',
   'keyset.manage','key.flow',
   'cleaning.view','cleaning.schedule.manage','cleaning.task.assign',
   'finance.payout','finance.tx.write',
@@ -655,6 +656,10 @@ if (adminRole) {
       db.rolePermissions.push({ role_id: adminRole.id, permission_code: code })
     }
   })
+}
+const customerServiceRole = db.roles.find(r => r.name === 'customer_service')
+if (customerServiceRole && !db.rolePermissions.find(rp => rp.role_id === customerServiceRole.id && rp.permission_code === 'order.guest_ready_notification.manage')) {
+  db.rolePermissions.push({ role_id: customerServiceRole.id, permission_code: 'order.guest_ready_notification.manage' })
 }
 
 // granular CRUD resource permissions
