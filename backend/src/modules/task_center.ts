@@ -34,7 +34,21 @@ import { assertMaintenanceRuntimeSchemaReady, MaintenanceRuntimeSchemaNotReady }
 import { normalizeMaintenanceWorkflowStatus } from '../lib/maintenanceWorkflow'
 import { insertMaintenanceWorkflowEvent, upsertMaintenanceWorkTask } from '../lib/maintenanceWorkflowStore'
 import { requireR5TaskRuntimeSchema } from '../lib/r5RequestSchema'
-import { projectDailyTaskExecution, projectVisibleDailyTasks } from '../lib/dailyTaskExecutionVisibility'
+import {
+  projectDailyTaskExecution,
+  projectTaskCenterManageableWorkTasks,
+  projectVisibleDailyTasks,
+} from '../lib/dailyTaskExecutionVisibility'
+import {
+  PROPERTY_FOLLOWUP_SOURCE_TYPES,
+  canonicalizePropertyFollowupAssignmentForSave,
+  isActivePropertyFollowupSource,
+  isPropertyFollowupSourceType,
+  parsePropertyFollowupTaskId,
+  propertyFollowupTaskId,
+  resolvePropertyFollowupAssignment,
+  type PropertyFollowupSourceType,
+} from '../lib/propertyFollowupPolicy'
 
 export const router = Router()
 
@@ -50,7 +64,6 @@ const DEFERRED_INSPECTION_ROW_TITLE = '延期检查'
 const COMPLETED_ROW_KEY = 'group:completed'
 const COMPLETED_ROW_TITLE = '已完成'
 const WORK_TASK_VISIBILITY_START = '2026-06-01'
-const PROPERTY_FOLLOWUP_SOURCE_TYPES = ['property_maintenance', 'property_deep_cleaning', 'property_daily_necessities'] as const
 
 type BoardTask = {
   item_key: string
@@ -130,6 +143,11 @@ type BoardTask = {
   property_ready_for_guest_notification?: boolean
   guest_ready_notification?: GuestReadyNotificationProjection | null
   available_actions?: GuestReadyNotificationAction[]
+}
+
+type PropertyFollowupCandidate = BoardTask & {
+  __work_title: string
+  __work_summary: string | null
 }
 
 type BoardSubrow = {
@@ -606,10 +624,6 @@ function isGeneratedWorkNo(v: any): boolean {
   return /^(R|DC)-\d{8}-[a-z0-9]+$/i.test(text(v))
 }
 
-function isPropertyFollowupTask(task: Pick<BoardTask, 'source_type'>) {
-  return PROPERTY_FOLLOWUP_SOURCE_TYPES.includes(text(task.source_type) as typeof PROPERTY_FOLLOWUP_SOURCE_TYPES[number])
-}
-
 function workTaskDisplayText(row: any): { title: string; detail: string } {
   const region = text(row?.property_region)
   const propertyCode = text(row?.property_code) || text(row?.property_id)
@@ -681,11 +695,11 @@ function dedupeBoardTasks(tasks: BoardTask[]): BoardTask[] {
   return out
 }
 
-async function assertTaskCenterMaintenanceSchemaReady() {
-  if (!hasPg || !pgPool) return
+async function assertTaskCenterMaintenanceSchemaReady(executor: any = pgPool) {
+  if (!hasPg || !executor) return
   assertMaintenanceRuntimeSchemaReady()
   try {
-    await assertMaintenanceWorkflowSchemaReady(pgPool)
+    await assertMaintenanceWorkflowSchemaReady(executor)
   } catch {
     throw new MaintenanceRuntimeSchemaNotReady()
   }
@@ -697,62 +711,65 @@ function sendMaintenanceRuntimeSchemaNotReady(res: any, error: unknown) {
   return true
 }
 
-async function syncPropertyFollowupWorkTasks() {
-  if (!hasPg || !pgPool) return
-  await assertTaskCenterMaintenanceSchemaReady()
-  const tableResult = await pgPool.query(
+async function loadPropertyFollowupCandidates(date: string, executor: any = pgPool): Promise<PropertyFollowupCandidate[]> {
+  if (hasPg && executor) {
+    await assertTaskCenterMaintenanceSchemaReady(executor)
+    const tableResult = await executor.query(
     `SELECT
        to_regclass('public.property_maintenance') IS NOT NULL AS has_maintenance,
        to_regclass('public.property_deep_cleaning') IS NOT NULL AS has_deep_cleaning,
        to_regclass('public.property_daily_necessities') IS NOT NULL AS has_daily_necessities`,
-  )
-  const available = tableResult.rows?.[0] || {}
-  const activeParts: string[] = []
-  if (available.has_maintenance) {
-    activeParts.push(`
+    )
+    const available = tableResult.rows?.[0] || {}
+    const activeParts: string[] = []
+    if (available.has_maintenance) {
+      activeParts.push(`
       SELECT 'property_maintenance'::text AS source_type,
              m.id::text AS source_id,
              'maintenance'::text AS task_kind,
              COALESCE(p.id::text, m.property_id::text) AS property_id,
              COALESCE(NULLIF(m.work_no::text, ''), '维修任务') AS title,
              NULLIF(COALESCE(m.details::text, ''), '') AS summary,
-             'medium'::text AS urgency,
+             COALESCE(NULLIF(lower(m.urgency::text), ''), 'medium') AS urgency,
              NULLIF(BTRIM(m.assignee_id::text), '') AS source_assignee_id,
              m.eta::date AS source_scheduled_date,
              CASE
-               WHEN lower(COALESCE(m.status::text, '')) = 'closed'
-                 OR lower(COALESCE(m.review_status::text, '')) IN ('approved', 'closed') THEN 'done'
-               WHEN lower(COALESCE(m.status::text, '')) IN ('cancelled', 'canceled') THEN 'cancelled'
-               WHEN lower(COALESCE(m.status::text, '')) IN ('pending_review', 'review_pending', 'awaiting_review', 'completed', 'done', 'ready') THEN 'pending_review'
                WHEN lower(COALESCE(m.status::text, '')) IN ('in_progress', 'repairing', 'started') THEN 'in_progress'
-               WHEN lower(COALESCE(m.status::text, '')) = 'assigned' THEN 'assigned'
+               WHEN NULLIF(BTRIM(m.assignee_id::text), '') IS NOT NULL THEN 'assigned'
                ELSE 'todo'
              END AS source_task_status,
              COALESCE(m.created_at, m.submitted_at, now()) AS created_at
         FROM property_maintenance m
         LEFT JOIN properties p ON p.id::text = m.property_id::text OR upper(p.code::text) = upper(m.property_id::text)
        WHERE lower(COALESCE(m.status::text, 'pending')) NOT IN ('pending_review','review_pending','awaiting_review','completed','done','ready','canceled','cancelled','closed')
-         AND lower(COALESCE(m.review_status::text, 'pending')) NOT IN ('approved','closed')`)
-  }
-  if (available.has_deep_cleaning) {
-    activeParts.push(`
+         AND lower(COALESCE(m.review_status::text, 'pending')) NOT IN ('pending_review','review_pending','awaiting_review','approved','closed','completed','done','ready')
+         AND m.deleted_at IS NULL`)
+    }
+    if (available.has_deep_cleaning) {
+      activeParts.push(`
       SELECT 'property_deep_cleaning'::text AS source_type,
              d.id::text AS source_id,
              'deep_cleaning'::text AS task_kind,
              COALESCE(p.id::text, d.property_id::text) AS property_id,
              COALESCE(NULLIF(d.work_no::text, ''), '深度清洁') AS title,
              NULLIF(COALESCE(d.project_desc::text, d.details::text, ''), '') AS summary,
-             'medium'::text AS urgency,
-             NULL::text AS source_assignee_id,
-             NULL::date AS source_scheduled_date,
-             NULL::text AS source_task_status,
+             COALESCE(NULLIF(lower(d.urgency::text), ''), 'medium') AS urgency,
+             NULLIF(BTRIM(d.assignee_id::text), '') AS source_assignee_id,
+             d.eta::date AS source_scheduled_date,
+             CASE
+               WHEN lower(COALESCE(d.status::text, '')) IN ('in_progress', 'repairing', 'started') THEN 'in_progress'
+               WHEN NULLIF(BTRIM(d.assignee_id::text), '') IS NOT NULL THEN 'assigned'
+               ELSE 'todo'
+             END AS source_task_status,
              COALESCE(d.created_at, d.submitted_at, now()) AS created_at
         FROM property_deep_cleaning d
         LEFT JOIN properties p ON p.id::text = d.property_id::text OR upper(p.code::text) = upper(d.property_id::text)
-       WHERE lower(COALESCE(d.status::text, 'pending')) NOT IN ('pending_review','review_pending','awaiting_review','completed','done','ready','canceled','cancelled','closed')`)
-  }
-  if (available.has_daily_necessities) {
-    activeParts.push(`
+       WHERE lower(COALESCE(d.status::text, 'pending')) NOT IN ('pending_review','review_pending','awaiting_review','completed','done','ready','canceled','cancelled','closed')
+         AND lower(COALESCE(d.review_status::text, 'pending')) NOT IN ('pending_review','review_pending','awaiting_review','approved','closed','completed','done','ready')
+         AND d.deleted_at IS NULL`)
+    }
+    if (available.has_daily_necessities) {
+      activeParts.push(`
       SELECT 'property_daily_necessities'::text AS source_type,
              n.id::text AS source_id,
              'daily_necessities'::text AS task_kind,
@@ -766,150 +783,396 @@ async function syncPropertyFollowupWorkTasks() {
              COALESCE(n.created_at, n.submitted_at, now()) AS created_at
         FROM property_daily_necessities n
         LEFT JOIN properties p ON p.id::text = n.property_id::text OR upper(p.code::text) = upper(n.property_id::text)
-       WHERE lower(COALESCE(n.status::text, 'need_replace')) = 'need_replace'`)
-  }
-  if (!activeParts.length) return
-  const activeSql = activeParts.join('\nUNION ALL\n')
-  await pgPool.query(
-    `WITH active AS (${activeSql})
-     DELETE FROM work_tasks w
-      WHERE w.source_type = ANY($1::text[])
-        AND NOT (
-          w.source_type = 'property_daily_necessities'
-          AND lower(COALESCE(w.status, '')) IN ('done', 'completed')
-          AND w.scheduled_date IS NOT NULL
-        )
-        AND NOT EXISTS (
-          SELECT 1 FROM active a
-           WHERE a.source_type = w.source_type
-             AND a.source_id = w.source_id
-        )`,
-    [PROPERTY_FOLLOWUP_SOURCE_TYPES],
-  )
-  await pgPool.query(
-    `WITH active AS (${activeSql}),
-     checkout_dates AS (
+       WHERE lower(COALESCE(n.status::text, 'need_replace')) = 'need_replace'
+         AND n.deleted_at IS NULL`)
+    }
+    if (!activeParts.length) return []
+    const activeSql = activeParts.join('\nUNION ALL\n')
+    const result = await executor.query(
+      `WITH active AS (${activeSql}),
+     checkout_properties AS (
        SELECT COALESCE(task_property.id::text, t.property_id::text) AS property_id,
-              MIN(COALESCE(t.task_date, t.date)::date) AS next_checkout_date
+              COALESCE(t.task_date, t.date)::date AS checkout_date
          FROM cleaning_tasks t
          LEFT JOIN properties task_property
            ON task_property.id::text = t.property_id::text
            OR upper(task_property.code::text) = upper(t.property_id::text)
          LEFT JOIN orders o ON o.id::text = t.order_id::text
         WHERE lower(COALESCE(t.task_type::text, '')) = 'checkout_clean'
-          AND COALESCE(t.task_date, t.date)::date >= timezone('Australia/Melbourne', now())::date
+          AND COALESCE(t.task_date, t.date)::date = $1::date
           AND ${activeCleaningTaskWhereSql('t')}
           AND ${validCleaningTaskOrderWhereSql('t', 'o')}
-        GROUP BY COALESCE(task_property.id::text, t.property_id::text)
+        GROUP BY COALESCE(task_property.id::text, t.property_id::text), COALESCE(t.task_date, t.date)::date
      ),
      projected AS (
-       SELECT a.*, checkout.next_checkout_date
+       SELECT a.*,
+              w.id::text AS existing_work_id,
+              CASE
+                WHEN a.source_type = 'property_maintenance' THEN a.source_assignee_id
+                WHEN a.source_type = 'property_deep_cleaning'
+                  THEN CASE
+                    WHEN w.id IS NOT NULL THEN NULLIF(BTRIM(w.assignee_id::text), '')
+                    ELSE a.source_assignee_id
+                  END
+                ELSE NULLIF(BTRIM(w.assignee_id::text), '')
+              END AS assignee_id,
+              CASE
+                WHEN a.source_type = 'property_maintenance' THEN a.source_task_status
+                WHEN a.source_type = 'property_deep_cleaning'
+                  THEN CASE
+                    WHEN a.source_task_status = 'in_progress' THEN 'in_progress'
+                    WHEN CASE
+                      WHEN w.id IS NOT NULL THEN NULLIF(BTRIM(w.assignee_id::text), '')
+                      ELSE a.source_assignee_id
+                    END IS NOT NULL THEN 'assigned'
+                    ELSE 'todo'
+                  END
+                WHEN NULLIF(BTRIM(w.assignee_id::text), '') IS NOT NULL THEN 'assigned'
+                ELSE 'todo'
+              END AS task_status,
+              COALESCE(
+                a.source_scheduled_date,
+                CASE
+                  WHEN a.source_type = 'property_maintenance'
+                    AND a.source_assignee_id IS NOT NULL THEN w.scheduled_date
+                  WHEN a.source_type = 'property_deep_cleaning'
+                    AND w.id IS NOT NULL
+                    AND NULLIF(BTRIM(w.assignee_id::text), '') IS NOT NULL THEN w.scheduled_date
+                  WHEN a.source_type = 'property_deep_cleaning'
+                    AND w.id IS NULL
+                    AND a.source_assignee_id IS NOT NULL THEN w.scheduled_date
+                  WHEN a.source_type = 'property_daily_necessities'
+                    AND NULLIF(BTRIM(w.assignee_id::text), '') IS NOT NULL THEN w.scheduled_date
+                  ELSE NULL
+                END,
+                checkout.checkout_date
+              ) AS scheduled_date,
+              COALESCE(p.code::text, a.property_id) AS property_code,
+              p.region::text AS property_region,
+              w.sort_index
          FROM active a
-         LEFT JOIN checkout_dates checkout ON checkout.property_id = a.property_id
+         LEFT JOIN checkout_properties checkout ON checkout.property_id = a.property_id
+         LEFT JOIN work_tasks w ON w.source_type = a.source_type AND w.source_id = a.source_id
+         LEFT JOIN properties p ON p.id::text = a.property_id::text OR upper(p.code::text) = upper(a.property_id::text)
      )
-     INSERT INTO work_tasks(
+     SELECT * FROM projected
+      WHERE scheduled_date = $1::date
+      ORDER BY property_region ASC NULLS LAST, property_code ASC NULLS LAST, source_type ASC, source_id ASC`,
+      [date],
+    )
+    return (result.rows || []).map((row: any) => {
+      const taskId = propertyFollowupTaskId(row.source_type as PropertyFollowupSourceType, row.source_id)
+      const mapped = mapWorkTaskRowToBoardTask({
+        ...row,
+        id: taskId,
+        status: row.task_status,
+      }, date)
+      return {
+        ...mapped,
+        __work_title: String(row.title || ''),
+        __work_summary: row.summary == null ? null : String(row.summary || ''),
+      }
+    })
+  }
+
+  const sourceRows: Array<{ sourceType: PropertyFollowupSourceType; row: any }> = [
+    ...((((db as any).propertyMaintenance || []) as any[]).map((row) => ({ sourceType: 'property_maintenance' as const, row }))),
+    ...((((db as any).propertyDeepCleaning || []) as any[]).map((row) => ({ sourceType: 'property_deep_cleaning' as const, row }))),
+    ...((((db as any).propertyDailyNecessities || []) as any[]).map((row) => ({ sourceType: 'property_daily_necessities' as const, row }))),
+  ]
+  const properties = (((db as any).properties || []) as any[])
+  const workTasks = (((db as any).workTasks || []) as any[])
+  const cleaningTasks = (((db as any).cleaningTasks || []) as any[])
+  const out: PropertyFollowupCandidate[] = []
+  for (const { sourceType, row } of sourceRows) {
+    if (!isActivePropertyFollowupSource({
+      sourceType,
+      status: row.status,
+      reviewStatus: row.review_status,
+      deletedAt: row.deleted_at,
+    })) continue
+    const sourceId = text(row.id)
+    if (!sourceId) continue
+    const property = properties.find((item) => text(item.id) === text(row.property_id) || lower(item.code) === lower(row.property_id || row.property_code)) || null
+    const propertyId = text(property?.id || row.property_id)
+    const existing = workTasks.find((item) => text(item.source_type) === sourceType && text(item.source_id) === sourceId) || null
+    const hasCheckout = cleaningTasks.some((item) => lower(item.task_type) === 'checkout_clean'
+      && dayOnly(item.task_date || item.date) === date
+      && (text(item.property_id) === propertyId || lower(item.property_id) === lower(property?.code)))
+    const sourceAssigneeId = sourceType === 'property_daily_necessities' ? '' : text(row.assignee_id)
+    const existingAssigneeId = text(existing?.assignee_id)
+    const assignmentState = resolvePropertyFollowupAssignment({
+      sourceType,
+      sourceAssigneeId,
+      sourceStatus: row.status,
+      workAssigneeId: existingAssigneeId,
+      workProjectionExists: !!existing,
+    })
+    const scheduledDate = dayOnly(row.eta)
+      || (assignmentState.assigneeId ? dayOnly(existing?.scheduled_date) : '')
+      || (hasCheckout ? date : '')
+    if (scheduledDate !== date) continue
+    const assigneeId = assignmentState.assigneeId
+    const taskKind = sourceType === 'property_maintenance'
+      ? 'maintenance'
+      : sourceType === 'property_deep_cleaning' ? 'deep_cleaning' : 'daily_necessities'
+    const rawTitle = sourceType === 'property_daily_necessities'
+      ? text(row.item_name) || '日用品更换'
+      : text(row.work_no) || (sourceType === 'property_maintenance' ? '维修任务' : '深度清洁')
+    const rawSummary = sourceType === 'property_daily_necessities'
+      ? [text(row.note), Number(row.quantity || 0) > 0 ? `数量 ${Number(row.quantity)}` : ''].filter(Boolean).join('，')
+      : text(sourceType === 'property_maintenance' ? row.details : (row.project_desc || row.details))
+    const taskStatus = assignmentState.status
+    const mapped = mapWorkTaskRowToBoardTask({
+      id: propertyFollowupTaskId(sourceType, sourceId),
+      task_kind: taskKind,
+      source_type: sourceType,
+      source_id: sourceId,
+      property_id: propertyId || null,
+      property_code: property?.code || row.property_code || null,
+      property_region: property?.region || null,
+      status: taskStatus,
+      urgency: row.urgency || 'medium',
+      title: rawTitle,
+      summary: rawSummary || null,
+      scheduled_date: scheduledDate,
+      assignee_id: assigneeId,
+      sort_index: existing?.sort_index ?? null,
+    }, date)
+    out.push({ ...mapped, __work_title: rawTitle, __work_summary: rawSummary || null })
+  }
+  return out
+}
+
+async function lockActivePropertyFollowupSources(
+  executor: any,
+  requested: Array<{ sourceType: PropertyFollowupSourceType; sourceId: string }>,
+) {
+  for (const sourceType of PROPERTY_FOLLOWUP_SOURCE_TYPES) {
+    const sourceIds = Array.from(new Set(requested
+      .filter((item) => item.sourceType === sourceType)
+      .map((item) => item.sourceId))).sort((a, b) => a.localeCompare(b))
+    if (!sourceIds.length) continue
+    const tableName = sourceType === 'property_maintenance'
+      ? 'property_maintenance'
+      : sourceType === 'property_deep_cleaning'
+        ? 'property_deep_cleaning'
+        : 'property_daily_necessities'
+    const reviewStatusColumn = sourceType === 'property_daily_necessities'
+      ? 'NULL::text AS review_status'
+      : 'review_status::text AS review_status'
+    const result = await executor.query(
+      `SELECT id::text AS id, status::text AS status, ${reviewStatusColumn}, deleted_at
+         FROM ${tableName}
+        WHERE id::text = ANY($1::text[])
+        ORDER BY id::text
+        FOR UPDATE`,
+      [sourceIds],
+    )
+    const rowsById = new Map((result.rows || []).map((row: any) => [String(row.id), row]))
+    const unavailable = sourceIds.some((sourceId) => {
+      const row: any = rowsById.get(sourceId)
+      return !row || !isActivePropertyFollowupSource({
+        sourceType,
+        status: row.status,
+        reviewStatus: row.review_status,
+        deletedAt: row.deleted_at,
+      })
+    })
+    if (unavailable) throw new Error('property_followup_not_available')
+  }
+}
+
+export async function materializePropertyFollowupAssignments(
+  executor: any,
+  date: string,
+  assignments: Array<{ task_id: string }>,
+  updatedBy: string,
+) {
+  const requested = assignments
+    .map((assignment) => parsePropertyFollowupTaskId(assignment.task_id))
+    .filter((item): item is NonNullable<ReturnType<typeof parsePropertyFollowupTaskId>> => !!item)
+  if (!requested.length) return
+  const requestedIds = new Set(requested.map((item) => propertyFollowupTaskId(item.sourceType, item.sourceId)))
+  // Lock first, then rebuild candidates. The row lock keeps a concurrent
+  // completed/closed/replaced transition from invalidating this save between
+  // validation and materialization.
+  await lockActivePropertyFollowupSources(executor, requested)
+  const candidates = await loadPropertyFollowupCandidates(date, executor)
+  const selected = candidates.filter((candidate) => requestedIds.has(candidate.task_id))
+  if (selected.length !== requestedIds.size) throw new Error('property_followup_not_available')
+  const rows = selected.map((candidate) => ({
+    id: candidate.task_id,
+    task_kind: candidate.task_kind,
+    source_type: candidate.source_type,
+    source_id: candidate.source_id,
+    property_id: candidate.property_id,
+    title: candidate.__work_title,
+    summary: candidate.__work_summary,
+    scheduled_date: candidate.scheduled_date || candidate.task_date,
+    assignee_id: candidate.assignee_id,
+    status: candidate.status,
+    urgency: candidate.urgency || 'medium',
+  }))
+  await executor.query(
+    `INSERT INTO work_tasks(
        id, task_kind, source_type, source_id, property_id, title, summary,
-       scheduled_date, assignee_id, status, urgency, created_at, updated_at
+       scheduled_date, assignee_id, status, urgency, updated_by, created_at, updated_at
      )
-     SELECT p.source_type || ':' || p.source_id,
-            p.task_kind,
-            p.source_type,
-            p.source_id,
-            p.property_id,
-            p.title,
-            p.summary,
-            COALESCE(p.source_scheduled_date, p.next_checkout_date),
-            p.source_assignee_id,
-            CASE
-              WHEN p.source_type = 'property_maintenance' THEN p.source_task_status
-              WHEN p.source_assignee_id IS NULL THEN 'todo'
-              ELSE 'assigned'
-            END,
-            CASE WHEN p.urgency IN ('low','medium','high','urgent') THEN p.urgency ELSE 'medium' END,
-            p.created_at,
-            now()
-       FROM projected p
-     ON CONFLICT (source_type, source_id) DO UPDATE SET
-       task_kind = EXCLUDED.task_kind,
-       property_id = EXCLUDED.property_id,
-       title = EXCLUDED.title,
-       summary = EXCLUDED.summary,
-       scheduled_date = CASE
-         WHEN work_tasks.source_type = 'property_maintenance' THEN EXCLUDED.scheduled_date
-         WHEN work_tasks.assignee_id IS NULL OR work_tasks.scheduled_date IS NULL THEN EXCLUDED.scheduled_date
-         ELSE work_tasks.scheduled_date
-       END,
-       assignee_id = CASE
-         WHEN work_tasks.source_type = 'property_maintenance' THEN EXCLUDED.assignee_id
-         ELSE COALESCE(work_tasks.assignee_id, EXCLUDED.assignee_id)
-       END,
-       status = CASE
-         WHEN work_tasks.source_type = 'property_maintenance' THEN EXCLUDED.status
-         WHEN lower(COALESCE(work_tasks.status, 'todo')) IN ('todo','assigned')
-           THEN CASE WHEN COALESCE(work_tasks.assignee_id, EXCLUDED.assignee_id) IS NULL THEN 'todo' ELSE 'assigned' END
-         ELSE work_tasks.status
-       END,
-       urgency = EXCLUDED.urgency,
-       updated_at = CASE
-         WHEN work_tasks.task_kind IS DISTINCT FROM EXCLUDED.task_kind
-           OR work_tasks.property_id IS DISTINCT FROM EXCLUDED.property_id
-           OR work_tasks.title IS DISTINCT FROM EXCLUDED.title
-           OR work_tasks.summary IS DISTINCT FROM EXCLUDED.summary
-           OR (work_tasks.source_type = 'property_maintenance' AND (
-             work_tasks.scheduled_date IS DISTINCT FROM EXCLUDED.scheduled_date
-             OR work_tasks.assignee_id IS DISTINCT FROM EXCLUDED.assignee_id
-             OR work_tasks.status IS DISTINCT FROM EXCLUDED.status
-           ))
-           OR ((work_tasks.assignee_id IS NULL OR work_tasks.scheduled_date IS NULL) AND work_tasks.scheduled_date IS DISTINCT FROM EXCLUDED.scheduled_date)
-           OR (work_tasks.assignee_id IS NULL AND EXCLUDED.assignee_id IS NOT NULL)
-         THEN now()
-         ELSE work_tasks.updated_at
-       END`,
+     SELECT x.id, x.task_kind, x.source_type, x.source_id, x.property_id, x.title, x.summary,
+            x.scheduled_date::date, x.assignee_id, x.status,
+            CASE WHEN x.urgency IN ('low','medium','high','urgent') THEN x.urgency ELSE 'medium' END,
+            $2, now(), now()
+       FROM jsonb_to_recordset($1::jsonb) AS x(
+         id text,
+         task_kind text,
+         source_type text,
+         source_id text,
+         property_id text,
+         title text,
+         summary text,
+         scheduled_date text,
+         assignee_id text,
+         status text,
+         urgency text
+       )
+     ON CONFLICT (source_type, source_id) DO NOTHING`,
+    [JSON.stringify(rows), updatedBy || null],
   )
 }
 
-async function hasCleaningOfflineTasksTable() {
-  if (!hasPg || !pgPool) return false
-  const result = await pgPool.query(`SELECT to_regclass('public.cleaning_offline_tasks') AS table_name`)
+function legacyOfflineSourceId(taskId: unknown) {
+  const value = String(taskId ?? '').trim()
+  const prefix = 'cleaning_offline_tasks:'
+  return value.startsWith(prefix) && value.length > prefix.length ? value.slice(prefix.length) : null
+}
+
+export async function materializeLegacyOfflineAssignments(
+  executor: any,
+  date: string,
+  assignments: Array<{ task_id: string }>,
+  updatedBy: string,
+) {
+  const requestedTaskIds = Array.from(new Set(assignments
+    .map((assignment) => String(assignment.task_id || '').trim())
+    .filter((taskId) => legacyOfflineSourceId(taskId))))
+    .sort((a, b) => a.localeCompare(b))
+  if (!requestedTaskIds.length) return
+  if (!await hasCleaningOfflineTasksTable(executor)) throw new Error('offline_task_not_available')
+  const sourceIds = requestedTaskIds.map((taskId) => legacyOfflineSourceId(taskId) as string)
+  const sourceResult = await executor.query(
+    `SELECT id::text AS id, status::text AS status, date::date AS scheduled_date
+       FROM cleaning_offline_tasks
+      WHERE id::text = ANY($1::text[])
+      ORDER BY id::text
+      FOR UPDATE`,
+    [sourceIds],
+  )
+  const lockedSources = new Map((sourceResult.rows || []).map((row: any) => [String(row.id), row]))
+  const assignmentsBySourceId = new Map(assignments
+    .map((assignment) => [legacyOfflineSourceId(assignment.task_id), assignment] as const)
+    .filter((item): item is [string, { task_id: string }] => !!item[0]))
+  const invalidSource = sourceIds.some((sourceId) => {
+    const source: any = lockedSources.get(sourceId)
+    if (!source || dayOnly(source.scheduled_date) !== date) return true
+    const status = lower(source.status)
+    if (['cancelled', 'canceled', 'closed'].includes(status)) return true
+    const assignment: any = assignmentsBySourceId.get(sourceId)
+    return ['done', 'completed', 'ready'].includes(status)
+      && !!String(assignment?.assignee_assignment_action || '').trim()
+  })
+  if (invalidSource) throw new Error('offline_task_not_available')
+  const existingResult = await executor.query(
+    'SELECT id::text AS id, source_type, source_id::text AS source_id FROM work_tasks WHERE id::text = ANY($1::text[])',
+    [requestedTaskIds],
+  )
+  const existingIds = new Set<string>()
+  for (const row of existingResult.rows || []) {
+    const taskId = String(row.id)
+    if (String(row.source_type || '') !== 'cleaning_offline_tasks'
+      || String(row.source_id || '') !== legacyOfflineSourceId(taskId)) {
+      throw new Error('offline_task_not_available')
+    }
+    existingIds.add(taskId)
+  }
+  const missingTaskIds = requestedTaskIds.filter((taskId) => !existingIds.has(taskId))
+  if (!missingTaskIds.length) return
+  const missingSourceIds = missingTaskIds.map((taskId) => legacyOfflineSourceId(taskId) as string)
+  await executor.query(
+    `INSERT INTO work_tasks(
+       id, task_kind, source_type, source_id, property_id, title, summary,
+       scheduled_date, assignee_id, status, updated_by, created_at, updated_at
+     )
+     SELECT 'cleaning_offline_tasks:' || t.id::text,
+            'offline', 'cleaning_offline_tasks', t.id::text, t.property_id,
+            COALESCE(t.title, ''), NULLIF(COALESCE(t.content, ''), ''), t.date::date,
+            NULLIF(BTRIM(t.assignee_id::text), ''),
+            CASE
+              WHEN lower(COALESCE(t.status, 'todo')) IN ('done','completed','ready') THEN 'done'
+              WHEN NULLIF(BTRIM(t.assignee_id::text), '') IS NOT NULL THEN 'assigned'
+              ELSE 'todo'
+            END,
+            $2, COALESCE(t.created_at, t.updated_at, now()), COALESCE(t.updated_at, t.created_at, now())
+       FROM cleaning_offline_tasks t
+      WHERE t.id::text = ANY($1::text[])
+     ON CONFLICT (source_type, source_id) DO NOTHING`,
+    [missingSourceIds, updatedBy || null],
+  )
+}
+
+async function hasCleaningOfflineTasksTable(executor: any = pgPool) {
+  if (!hasPg || !executor) return false
+  const result = await executor.query(`SELECT to_regclass('public.cleaning_offline_tasks') AS table_name`)
   return !!result?.rows?.[0]?.table_name
 }
 
-async function backfillOfflineTasksToWorkTasks(date: string, includeOverdue: boolean, includeFuture: boolean) {
+async function hasTaskCenterTable(tableName: 'task_center_task_flags' | 'task_center_board_items' | 'task_center_board_rows') {
   if (!hasPg || !pgPool) return false
-  if (!(await hasCleaningOfflineTasksTable())) return false
-  // Legacy status is used only to bootstrap a missing canonical work task.
-  const where: string[] = [`t.date::date = $1::date`]
-  if (includeOverdue) where.push(`t.date::date < $1::date`)
-  if (includeFuture) where.push(`t.date::date > $1::date`)
-  await pgPool.query(
-    `INSERT INTO work_tasks(
-       id, task_kind, source_type, source_id, property_id,
-       title, summary, scheduled_date, assignee_id, status,
-       created_at, updated_at
-     )
-     SELECT
-       ('cleaning_offline_tasks:' || t.id::text) AS id,
-       'offline' AS task_kind,
-       'cleaning_offline_tasks' AS source_type,
-       t.id::text AS source_id,
-       t.property_id,
-       COALESCE(t.title, '') AS title,
-       NULLIF(COALESCE(t.content, ''), '') AS summary,
-       t.date::date AS scheduled_date,
-       t.assignee_id,
-       CASE
-         WHEN lower(COALESCE(t.status, 'todo')) = 'done' THEN 'done'
-         WHEN NULLIF(COALESCE(t.assignee_id, ''), '') IS NOT NULL THEN 'assigned'
-         ELSE 'todo'
-       END AS status,
-       COALESCE(t.created_at, t.updated_at, now()) AS created_at,
-       COALESCE(t.updated_at, t.created_at, now()) AS updated_at
-     FROM cleaning_offline_tasks t
-     WHERE ${where.join(' OR ')}
-     ON CONFLICT (source_type, source_id) DO NOTHING`,
-    [date],
+  const result = await pgPool.query('SELECT to_regclass($1) AS table_name', [`public.${tableName}`])
+  return !!result?.rows?.[0]?.table_name
+}
+
+export async function lockAndValidateTaskCenterAssignmentUsers(
+  executor: any,
+  assignedUserIds: string[],
+  maintenanceAssignedUserIds: string[],
+) {
+  const staffIds = Array.from(new Set([...assignedUserIds, ...maintenanceAssignedUserIds]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)))
+    .sort((a, b) => a.localeCompare(b))
+  if (!staffIds.length) return
+  const userResult = await executor.query(
+    `SELECT id::text AS id, role
+       FROM users
+      WHERE id::text = ANY($1::text[])
+      ORDER BY id::text
+      FOR UPDATE`,
+    [staffIds],
   )
-  return true
+  const roleResult = await executor.query(
+    `SELECT user_id::text AS user_id, role_name
+       FROM user_roles
+      WHERE user_id::text = ANY($1::text[])
+      ORDER BY user_id::text, role_name
+      FOR SHARE`,
+    [staffIds],
+  )
+  const roleNamesById = new Map<string, string[]>()
+  for (const row of userResult.rows || []) {
+    roleNamesById.set(String(row.id), [String(row.role || '')])
+  }
+  for (const row of roleResult.rows || []) {
+    const id = String(row.user_id)
+    const roles = roleNamesById.get(id)
+    if (roles) roles.push(String(row.role_name || ''))
+  }
+  if (maintenanceAssignedUserIds.some((id) => !roleNamesById.has(String(id)))) {
+    throw new Error('maintenance_assignee_not_found')
+  }
+  if (assignedUserIds.some((id) => !isTaskExecutorEligibleRoleNames(roleNamesById.get(String(id)) || []))) {
+    throw new Error('task_assignee_invalid')
+  }
 }
 
 async function ensureTaskCenterTables() {
@@ -1240,9 +1503,6 @@ function taskDateInScope(taskDate: string | null, date: string, includeOverdue: 
 
 async function loadCleaningTasks(date: string, includeOverdue: boolean, includeFuture: boolean): Promise<BoardTask[]> {
   if (hasPg && pgPool) {
-    await ensureCleaningSchemaV2()
-    await ensureCleaningInspectionScopeColumn()
-    await ensureCleaningSortColumns()
     const dateScopes = [`((COALESCE(t.task_date, t.date)::date) = ($1::date))`]
     if (includeOverdue) dateScopes.push(`((COALESCE(t.task_date, t.date)::date) < ($1::date))`)
     if (includeFuture) dateScopes.push(`((COALESCE(t.task_date, t.date)::date) > ($1::date))`)
@@ -1604,7 +1864,6 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
 async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnscheduled: boolean, includeFuture: boolean): Promise<BoardTask[]> {
   if (hasPg && pgPool) {
     await assertTaskCenterMaintenanceSchemaReady()
-    await backfillOfflineTasksToWorkTasks(date, includeOverdue, includeFuture)
     const terminalSet = ['cancelled', 'canceled', 'closed']
     const where: string[] = []
     const vals: any[] = [date, terminalSet, WORK_TASK_VISIBILITY_START]
@@ -1617,17 +1876,14 @@ async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnsch
         w.*,
         COALESCE(p_id.code::text, p_code.code::text) AS property_code,
         COALESCE(p_id.region::text, p_code.region::text) AS property_region,
-        pm.status AS maintenance_source_status,
-        pm.review_status AS maintenance_source_review_status
+        NULL::text AS maintenance_source_status,
+        NULL::text AS maintenance_source_review_status
       FROM work_tasks w
       LEFT JOIN properties p_id ON (p_id.id::text) = (w.property_id::text)
       LEFT JOIN properties p_code ON upper(p_code.code) = upper(w.property_id::text)
-      LEFT JOIN property_maintenance pm
-        ON w.source_type = 'property_maintenance'
-       AND pm.id::text = w.source_id::text
       WHERE lower(COALESCE(w.status, '')) <> ALL($2::text[])
         AND COALESCE(w.created_at::date, w.scheduled_date, $1::date) >= $3::date
-        AND NOT (w.source_type = ANY($4::text[]) AND w.scheduled_date IS NULL)
+        AND NOT (w.source_type = ANY($4::text[]))
         AND (${where.join(' OR ')})
       ORDER BY COALESCE(w.scheduled_date, $1::date) ASC,
                CASE WHEN lower(COALESCE(w.task_kind, '')) = 'offline' THEN NULL ELSE w.urgency END DESC NULLS LAST,
@@ -1636,11 +1892,44 @@ async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnsch
     vals.push(PROPERTY_FOLLOWUP_SOURCE_TYPES)
     const r = await pgPool.query(sql, vals)
     const workTasks = (r?.rows || []).map((row: any) => mapWorkTaskRowToBoardTask(row, date))
-    return projectVisibleDailyTasks(workTasks)
+    const legacyOfflineTasks: BoardTask[] = []
+    if (await hasCleaningOfflineTasksTable()) {
+      const offlineDateScopes = [`t.date::date = $1::date`]
+      if (includeOverdue) offlineDateScopes.push(`t.date::date < $1::date`)
+      if (includeFuture) offlineDateScopes.push(`t.date::date > $1::date`)
+      const offlineResult = await pgPool.query(
+        `SELECT t.*,
+                COALESCE(p_id.code::text, p_code.code::text) AS property_code,
+                COALESCE(p_id.region::text, p_code.region::text) AS property_region
+           FROM cleaning_offline_tasks t
+           LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+           LEFT JOIN properties p_code ON upper(p_code.code::text) = upper(t.property_id::text)
+          WHERE (${offlineDateScopes.join(' OR ')})`,
+        [date],
+      )
+      for (const row of offlineResult.rows || []) {
+        legacyOfflineTasks.push(mapWorkTaskRowToBoardTask({
+          id: `cleaning_offline_tasks:${String(row.id)}`,
+          task_kind: 'offline',
+          source_type: 'cleaning_offline_tasks',
+          source_id: String(row.id),
+          property_id: row.property_id || null,
+          property_code: row.property_code || null,
+          property_region: row.property_region || null,
+          title: row.title,
+          summary: row.content,
+          scheduled_date: row.date,
+          assignee_id: row.assignee_id || null,
+          status: row.status,
+        }, date))
+      }
+    }
+    return projectTaskCenterManageableWorkTasks(dedupeBoardTasks([...workTasks, ...legacyOfflineTasks]))
   }
   const rows = (((db as any).workTasks || []) as any[]).slice()
   const workTasks = rows
     .filter((row: any) => {
+      if (isPropertyFollowupSourceType(row.source_type)) return false
       const created = dayOnly(row.created_at || row.updated_at || row.scheduled_date)
       if (created && created < WORK_TASK_VISIBILITY_START) return false
       const scheduled = dayOnly(row.scheduled_date)
@@ -1698,14 +1987,14 @@ async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnsch
       assignee_id: row.assignee_id || null,
       status: row.status,
     }, date))
-  return projectVisibleDailyTasks(dedupeBoardTasks([...workTasks, ...offlineTasks]))
+  return projectTaskCenterManageableWorkTasks(dedupeBoardTasks([...workTasks, ...offlineTasks]))
 }
 
 async function loadTaskFlags(date: string) {
   const keyOf = (taskSource: TaskSource, taskId: string) => `${date}|${taskSource}|${taskId}`
   const out = new Map<string, TaskFlag>()
   if (hasPg && pgPool) {
-    await ensureTaskCenterTables()
+    if (!await hasTaskCenterTable('task_center_task_flags')) return out
     const r = await pgPool.query(
       `SELECT task_source, task_id, temporarily_skipped, skip_reason, bucket
        FROM task_center_task_flags
@@ -1738,7 +2027,7 @@ async function loadBoardRows(date: string, mode: BoardMode) {
   const boardMode = normalizeBoardMode(mode)
   const out = new Map<string, BoardRowMeta>()
   if (hasPg && pgPool) {
-    await ensureTaskCenterTables()
+    if (!await hasTaskCenterTable('task_center_board_rows')) return out
     const r = await pgPool.query(
       `SELECT row_key, board_mode, row_type, row_title, row_order, assignments, lane_order
        FROM task_center_board_rows
@@ -1770,7 +2059,7 @@ async function loadBoardItems(date: string, mode: BoardMode) {
   const boardMode = normalizeBoardMode(mode)
   const out = new Map<string, BoardItemLayout>()
   if (hasPg && pgPool) {
-    await ensureTaskCenterTables()
+    if (!await hasTaskCenterTable('task_center_board_items')) return out
     const r = await pgPool.query(
       `SELECT task_source, task_id, row_key, lane_key, item_order
        FROM task_center_board_items
@@ -2038,6 +2327,11 @@ function appendWebCapabilitiesToRows(rows: BoardRow[], canManageSchedule: boolea
   }))
 }
 
+function publicPropertyFollowupTask(task: PropertyFollowupCandidate): BoardTask {
+  const { __work_title: _workTitle, __work_summary: _workSummary, ...publicTask } = task
+  return publicTask
+}
+
 export async function buildTaskCenterDay(
   date: string,
   includeOverdue: boolean,
@@ -2045,10 +2339,12 @@ export async function buildTaskCenterDay(
   includeFuture: boolean,
   canManageSchedule = false,
   canManageGuestReadyNotification = false,
+  canAssignTask = canManageSchedule,
 ) {
-  const [cleaningTasks, workTasks, taskFlags, rowMetas, itemLayouts] = await Promise.all([
+  const [cleaningTasks, workTasks, propertyFollowupCandidates, taskFlags, rowMetas, itemLayouts] = await Promise.all([
     loadCleaningTasks(date, false, false),
     loadWorkTasks(date, includeOverdue, includeUnscheduled, includeFuture),
+    loadPropertyFollowupCandidates(date),
     loadTaskFlags(date),
     loadBoardRows(date, 'board'),
     loadBoardItems(date, 'board'),
@@ -2082,10 +2378,14 @@ export async function buildTaskCenterDay(
   const projectedWorkTasks = workTasks.map((task) => ({
     ...task,
     ...projectDailyTaskExecution(task),
+    ...projectDailyTaskStats(task, { includeTaskCenterManagementOnlyOffline: true }),
+  }))
+  const propertyFollowups = propertyFollowupCandidates.map((task) => ({
+    ...task,
+    ...projectDailyTaskExecution(task),
     ...projectDailyTaskStats(task),
   }))
-  const propertyFollowups = projectedWorkTasks.filter(isPropertyFollowupTask)
-  const regularWorkTasks = projectedWorkTasks.filter((task) => !isPropertyFollowupTask(task))
+  const regularWorkTasks = projectedWorkTasks
   const allTasks = [...projectedCleaningTasks, ...regularWorkTasks]
   const board = buildRows({
     date,
@@ -2099,7 +2399,12 @@ export async function buildTaskCenterDay(
   const deferredRows = rows.filter((row) => row.row_type === 'deferred')
   const allBoardTasks = rows.flatMap((row) => row.subrows.flatMap((subrow) => subrow.tasks))
   const regularWorkTasksWithCapabilities = regularWorkTasks.map((task) => appendWebCapabilitiesToBoardTask(task, canManageSchedule))
-  const propertyFollowupsWithCapabilities = propertyFollowups.map((task) => appendWebCapabilitiesToBoardTask(task, canManageSchedule))
+  const propertyFollowupsWithCapabilities = canAssignTask
+    ? propertyFollowups.map((task) => appendWebCapabilitiesToBoardTask(
+        publicPropertyFollowupTask(task),
+        canAssignTask,
+      ))
+    : []
   return {
     date,
     pool: [],
@@ -2267,12 +2572,13 @@ router.get('/day', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 
     if (!hasPg && !Array.isArray((db as any).cleaningTasks)) {
       return res.json({ date, pool: [], groups: {}, tasks: [], property_followups: [], rows: [], region_rows: [], final_group_rows: [], deferred_rows: [], entry_readiness: { ready_for_final_grouping: true, unresolved_primary_count: 0, pending_inspection_count: 0, skipped_count: 0 } })
     }
-    await syncPropertyFollowupWorkTasks()
     const user = (req as any).user || {}
-    const [canManageSchedule, canManageGuestReadyNotification] = await Promise.all([
-      userHasAnyPerm(user, ['cleaning.task.assign', 'cleaning.schedule.manage']),
+    const [canAssignTask, canManageLayout, canManageGuestReadyNotification] = await Promise.all([
+      userHasAnyPerm(user, ['cleaning.task.assign']),
+      userHasAnyPerm(user, ['cleaning.schedule.manage']),
       userHasAnyPerm(user, [GUEST_READY_NOTIFICATION_PERMISSION]),
     ])
+    const canManageSchedule = canAssignTask || canManageLayout
     const payload = await buildTaskCenterDay(
       date,
       includeOverdue,
@@ -2280,6 +2586,7 @@ router.get('/day', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 
       includeFuture,
       canManageSchedule,
       canManageGuestReadyNotification,
+      canAssignTask,
     )
     return res.json(payload)
   } catch (e: any) {
@@ -2341,6 +2648,12 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
       maintenanceWorkAssignmentIds = new Set((sourceResult.rows || [])
         .filter((row: any) => String(row.source_type || '') === 'property_maintenance')
         .map((row: any) => String(row.id)))
+      for (const assignment of payload.work_assignments) {
+        const parsedTaskId = parsePropertyFollowupTaskId(assignment.task_id)
+        if (parsedTaskId?.sourceType === 'property_maintenance') {
+          maintenanceWorkAssignmentIds.add(String(assignment.task_id))
+        }
+      }
     } catch (e: any) {
       if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
       return res.status(500).json({ message: e?.message || 'task_center_save_board_failed' })
@@ -2441,6 +2754,14 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
       const cleaningAssignmentById = new Map<string, any>(payload.cleaning_assignments.map((item: any) => [String(item.task_id), item]))
       try {
         await client.query('BEGIN')
+        await lockAndValidateTaskCenterAssignmentUsers(client, assignedUserIds, maintenanceAssignedUserIds)
+        await materializePropertyFollowupAssignments(
+          client,
+          payload.date,
+          payload.work_assignments,
+          updatedBy,
+        )
+        await materializeLegacyOfflineAssignments(client, payload.date, payload.work_assignments, updatedBy)
         if (payload.cleaning_assignments.length) {
           const beforeResult = await client.query(
             `SELECT id::text AS id,
@@ -2456,8 +2777,9 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
                     status
              FROM cleaning_tasks
              WHERE id::text = ANY($1::text[])
+             ORDER BY id::text
              FOR UPDATE`,
-            [payload.cleaning_assignments.map((item) => item.task_id)],
+            [payload.cleaning_assignments.map((item) => item.task_id).sort((a, b) => a.localeCompare(b))],
           )
           const beforeById = new Map<string, any>((beforeResult.rows || []).map((row: any) => [String(row.id), row]))
           for (const assignment of payload.cleaning_assignments) {
@@ -2494,13 +2816,15 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
                     urgency
              FROM work_tasks
              WHERE id::text = ANY($1::text[])
+             ORDER BY id::text
              FOR UPDATE`,
-            [payload.work_assignments.map((item) => item.task_id)],
+            [payload.work_assignments.map((item) => item.task_id).sort((a, b) => a.localeCompare(b))],
           )
           const beforeById = new Map<string, any>((beforeResult.rows || []).map((row: any) => [String(row.id), row]))
           for (const assignment of payload.work_assignments) {
             delete (assignment as any).status
             const before = beforeById.get(String(assignment.task_id))
+            Object.assign(assignment, canonicalizePropertyFollowupAssignmentForSave(assignment, before))
             if (String(before?.source_type || '') === 'property_maintenance') {
               maintenanceWorkAssignments.push({ assignment, before })
               const diff = buildWorkSaveDiff(before, assignment)
@@ -3182,6 +3506,62 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
           })
         }
       }
+    const memoryPropertyAssignmentIds = new Set(payload.work_assignments
+      .map((item) => parsePropertyFollowupTaskId(item.task_id))
+      .filter((item): item is NonNullable<ReturnType<typeof parsePropertyFollowupTaskId>> => !!item)
+      .map((item) => propertyFollowupTaskId(item.sourceType, item.sourceId)))
+    if (memoryPropertyAssignmentIds.size) {
+      const candidates = await loadPropertyFollowupCandidates(payload.date)
+      const selected = candidates.filter((candidate) => memoryPropertyAssignmentIds.has(candidate.task_id))
+      if (selected.length !== memoryPropertyAssignmentIds.size) throw new Error('property_followup_not_available')
+      const memoryWorkTasks = (((db as any).workTasks || []) as any[])
+      for (const candidate of selected) {
+        if (memoryWorkTasks.some((task) => String(task.id) === candidate.task_id)) continue
+        memoryWorkTasks.push({
+          id: candidate.task_id,
+          task_kind: candidate.task_kind,
+          source_type: candidate.source_type,
+          source_id: candidate.source_id,
+          property_id: candidate.property_id,
+          title: candidate.__work_title,
+          summary: candidate.__work_summary,
+          scheduled_date: candidate.scheduled_date || candidate.task_date,
+          assignee_id: candidate.assignee_id,
+          status: candidate.status,
+          urgency: candidate.urgency || 'medium',
+        })
+      }
+    }
+    const memoryWorkTasks = (((db as any).workTasks || []) as any[])
+    const memoryOfflineTasks = (((db as any).cleaningOfflineTasks || []) as any[])
+    for (const assignment of payload.work_assignments) {
+      const taskId = String(assignment.task_id || '').trim()
+      const sourceId = legacyOfflineSourceId(taskId)
+      if (!sourceId || memoryWorkTasks.some((task) => String(task.id) === taskId)) continue
+      const source = memoryOfflineTasks.find((task) => String(task.id) === sourceId)
+      const sourceStatus = lower(source?.status)
+      const assignmentActionValue = String((assignment as any).assignee_assignment_action || '').trim()
+      if (!source
+        || dayOnly(source.date) !== payload.date
+        || ['cancelled', 'canceled', 'closed'].includes(sourceStatus)
+        || (['done', 'completed', 'ready'].includes(sourceStatus) && !!assignmentActionValue)) {
+        throw new Error('offline_task_not_available')
+      }
+      memoryWorkTasks.push({
+        id: taskId,
+        task_kind: 'offline',
+        source_type: 'cleaning_offline_tasks',
+        source_id: sourceId,
+        property_id: source.property_id || null,
+        title: source.title || '',
+        summary: source.content || null,
+        scheduled_date: dayOnly(source.date),
+        assignee_id: source.assignee_id || null,
+        status: ['done', 'completed', 'ready'].includes(lower(source.status))
+          ? 'done'
+          : source.assignee_id ? 'assigned' : 'todo',
+      })
+    }
     const workById = new Map(payload.work_assignments.map((item) => [item.task_id, item]))
       for (const task of (((db as any).workTasks || []) as any[])) {
         const assignment = workById.get(String(task.id))
@@ -3231,6 +3611,18 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
     }
     if (e?.message === 'inspection_mode_change_confirmation_required') {
       return res.status(400).json({ message: '请在任务详情中明确修改延期检查安排', code: 'inspection_mode_change_confirmation_required' })
+    }
+    if (e?.message === 'property_followup_not_available') {
+      return res.status(409).json({ message: '房源待办已变化，请刷新后重试', code: 'property_followup_not_available' })
+    }
+    if (e?.message === 'offline_task_not_available') {
+      return res.status(409).json({ message: '线下任务已变化，请刷新后重试', code: 'offline_task_not_available' })
+    }
+    if (e?.message === 'maintenance_assignee_not_found') {
+      return res.status(400).json({ message: '维修执行人员不存在', code: 'maintenance_assignee_not_found' })
+    }
+    if (e?.message === 'task_assignee_invalid') {
+      return res.status(400).json({ message: '无效的任务执行人员', code: 'task_assignee_invalid' })
     }
     return res.status(500).json({ message: e?.message || 'task_center_save_board_failed' })
   }

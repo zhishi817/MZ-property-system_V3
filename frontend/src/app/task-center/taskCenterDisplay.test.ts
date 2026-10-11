@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cleaningNightsDisplayLabels, cleaningTaskFlowLabelText, deferredInspectionConflictPresentation, guestReadyNotificationPresentation, hasTaskCenterRequiredExecutor, isDeferredInspectionDisplayTask, maintenanceDetailContentText, resolveTaskCenterColumns, taskCenterBoardInspectionDueDate, taskCenterDailyGroupCounts, taskCenterInspectionAssignmentPatch, visibleTaskCenterPropertyFollowups } from './taskCenterDisplay'
+import { cleaningNightsDisplayLabels, cleaningTaskFlowLabelText, deferredInspectionConflictPresentation, guestReadyNotificationPresentation, hasTaskCenterRequiredExecutor, isDeferredInspectionDisplayTask, maintenanceDetailContentText, resolveTaskCenterColumns, taskCenterBoardInspectionDueDate, taskCenterDailyGroupCounts, taskCenterInspectionAssignmentPatch } from './taskCenterDisplay'
 
 describe('taskCenterDisplay', () => {
   it('treats deferred inspection tasks as inspection-oriented display', () => {
@@ -156,15 +156,6 @@ describe('taskCenterDisplay', () => {
     })).toBe(true)
   })
 
-  it('fails closed when the server has not marked a property follow-up as an execution-list item', () => {
-    const tasks = [
-      { title: '已安排维修', execution_list_visible: true },
-      { title: '待审核维修', execution_list_visible: false },
-      { title: '旧服务未投影任务' },
-    ]
-    expect(visibleTaskCenterPropertyFollowups(tasks).map((task) => task.title)).toEqual(['已安排维修'])
-  })
-
   it('shows structured maintenance content as readable text instead of raw JSON', () => {
     expect(maintenanceDetailContentText('{"content":"衣柜门脱轨"}')).toBe('衣柜门脱轨')
     expect(maintenanceDetailContentText('{"description":"水龙头漏水"}')).toBe('水龙头漏水')
@@ -175,9 +166,23 @@ describe('taskCenterDisplay', () => {
     expect(taskCenterDailyGroupCounts([
       { execution_list_visible: true, daily_stats_group: 'turnover', daily_stats_key: 'turnover:2026-10-04:p1' },
       { execution_list_visible: true, daily_stats_group: 'turnover', daily_stats_key: 'turnover:2026-10-04:p1' },
-      { execution_list_visible: true, daily_stats_group: 'offline', daily_stats_key: 'offline:2026-10-04:w1' },
+      ...Array.from({ length: 6 }, (_, index) => ({
+        execution_list_visible: true,
+        daily_stats_group: 'inspection' as const,
+        daily_stats_key: `inspection:2026-10-04:p${index + 1}`,
+      })),
+      ...Array.from({ length: 3 }, (_, index) => ({
+        execution_list_visible: true,
+        daily_stats_group: 'offline' as const,
+        daily_stats_key: `offline:2026-10-12:assigned-${index + 1}`,
+      })),
+      ...Array.from({ length: 7 }, (_, index) => ({
+        execution_list_visible: false,
+        daily_stats_group: 'offline' as const,
+        daily_stats_key: `offline:2026-10-12:unassigned-${index + 1}`,
+      })),
       { execution_list_visible: false, daily_stats_group: null, daily_stats_key: null },
-    ])).toEqual({ turnover: 1, offline: 1 })
+    ])).toEqual({ turnover: 1, inspection: 6, offline: 10 })
   })
 
   it('presents guest-ready notification state without implying a message was sent by the app', () => {

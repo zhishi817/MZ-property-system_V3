@@ -1,5 +1,238 @@
 # Change Release Ledger
 
+## CRL-20261011-006 — MZ-030 任务中心计数与房源待办恢复（root）
+
+- **Status:** exact staged candidate verified and independent review GO；commit-ready；not committed, pushed, merged, deployed, or synced to Preview
+- **Repository:** `root`
+- **Updated:** 2026-10-11 12:53 UTC
+- **Request:** 修复 Web 任务中心把延期检查计入“线下任务”，以及原生线下任务和同日维修、日用品、深度清洁未分配候选被 Mobile 执行列表规则隐藏的问题；同时保证 `GET /task-center/day` 为零写读取，保留 MZ-021 普通已完成线下任务，并只在明确保存安排时创建真实可分配任务。
+- **Outcome:** 延期检查使用独立“检查任务”统计；Web 管理区显示并统计所选日全部有效原生线下任务（生产形状回归为 10/12 共 10 条、10/13 共 8 条，其中 15 条未分配仍可安排），同时从有效源记录按所选日期只读投影房源待办；Mobile/日常执行列表继续只显示已分配的非周转执行项。
+
+### Implementation
+
+- Previous behavior: 所有非周转可见任务默认计入线下，导致延期检查污染计数；房源待办在服务端和 Web 又经过日常执行可见性筛选，未分配候选在安排前消失。
+- New behavior: 延期检查按房源/日期进入独立检查组，房源待办不计入线下；Web 管理候选保留已排期但尚未分配的原生 offline，并直接从维修、深清、日用品源表和所选日退房事实做只读投影，隐藏所有待审核别名、关闭/取消、软删除及已完成维修/深清；只有 `cleaning.task.assign` 用户可读取这些可分派候选。
+- Projection freshness: Web 原生 offline 的管理可见性和计数不再依赖 Mobile 执行可见性；房源待办只在权威执行人仍存在时继承既有 work 日期，否则使用源 `eta` 或所选日退房日期，并重新从源状态推导状态，避免陈旧日期/`assigned` 状态回流。
+- GET safety: 删除请求时房源待办同步、旧线下任务回填、清洁列补齐及看板表自动创建；旧 `cleaning_offline_tasks` 改为只读合并；可选 task-center 布局表缺失时只读降级为空布局；精确 `GET /task-center/day`（大小写/尾斜线等价）不触发全局 session `last_seen_at` 心跳。
+- Explicit assignment: 候选使用稳定 `source_type:source_id` 真实 ID；只有用户提交 `save-board` 后才在同一事务中锁定并复验源记录、按需创建 `work_tasks`，随后沿用现有分派流程。深清在已有 Web 投影后以 `work_tasks` 为分派权威（含显式取消），维修仍以源工作流为权威；legacy 线下任务同样只在明确保存时锁定、复验并物化。
+- Concurrency / diff closure: 同类批量源行、清洁任务和工作任务统一按稳定 ID 排序后加锁；执行人用户行与角色行在保存事务内锁定并复验；维修 diff 先回填服务端 canonical 标题/摘要/紧急度，避免把展示字段误报为内容变化。
+
+### Files / Areas
+
+- `backend/package.json` — 新增 MZ-030 策略与 GET 零写契约脚本。
+- `backend/scripts/tests/test_daily_task_execution_stats.ts` — 6 个延期检查 / 2 个真实线下及房源待办不计入线下回归。
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — 更新 Web 管理投影与 Mobile 执行投影隔离契约。
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts` — 更新维修源权威与 GET 不同步投影的契约。
+- `backend/scripts/tests/test_maintenance_workflow_schema_contract.ts` — 更新只读房源投影与无 DDL 的 schema 契约。
+- `backend/scripts/tests/test_property_followup_materialization.ts` — 稳定锁序、事务内用户/角色复验、竞态关闭/软删除/改期及 legacy 线下显式物化回归。
+- `backend/scripts/tests/test_property_followup_policy.ts` — 待审核别名、终态、完成态、软删除、稳定 ID、深清分派权威与维修 canonical diff 策略矩阵。
+- `backend/scripts/tests/test_task_center_daily_projection.ts` — 10/12 原生 offline 10 条（3 已分配 / 7 未分配）、10/13 原生 offline 8 条（全未分配）、未分配三类候选、陈旧日期/状态、两条软删除深清、权限矩阵、深清刷新持久性及普通已完成线下任务回归。
+- `backend/scripts/tests/test_task_center_day_read_only.ts` — PostgreSQL 路径记录所有语句并拒绝 DML/DDL，同时覆盖 auth 心跳豁免与缺表降级。
+- `backend/src/auth.ts` — 精确 task-center day GET 禁止可选 session 心跳写入。
+- `backend/src/lib/dailyTaskExecutionStats.ts` — 新增 inspection 分组并排除房源管理候选。
+- `backend/src/lib/dailyTaskExecutionVisibility.ts` — 保持 Mobile 未分配隐藏规则，同时为 Web 分派面单独保留有效、已排期、未分配的原生 offline。
+- `backend/src/lib/propertyFollowupPolicy.ts` — Web 房源待办有效性、软删除、稳定 ID 与 source/work 分派权威策略。
+- `backend/src/modules/task_center.ts` — 只读候选/旧线下投影、权限收敛、GET 去副作用、缺表降级及显式保存时事务物化。
+- `frontend/src/app/task-center/page.tsx` — Web 管理候选不再复用执行列表过滤，展示检查计数和新口径说明。
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — 三组计数 helper。
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — 检查 6 / 线下 2 显示回归。
+- `package.json` — 将新契约接入根质量链。
+- `docs/change-release-ledger.md` — 本 release unit。
+
+### Impact / Dependencies
+
+- API: `GET /task-center/day` 的 `daily_stats_group` 新增 `inspection`；对 `cleaning.task.assign` 用户，`property_followups` 现在包含服务端已验证但尚未分配的同日管理候选；view-only 与 schedule.manage-only 用户不返回该管理数据。
+- Database / migration: none；不新增或修改 schema，不需迁移、回填或重算。
+- Data writes: GET 全路径零写（含鉴权心跳豁免）；现有 `POST /task-center/save-board` 在明确安排动作中可按需插入对应 `work_tasks`，属于既有用户写入边界。仅持续请求该 GET 不会刷新 session 活跃时间，用户只停留于此页面且无其他请求时仍按既有 idle timeout 过期。
+- Config / environment: none。
+- Dependencies: 依赖 `root/CRL-20261010-001` 的 Mobile/日常执行可见性继续保持；不修改 Mobile 代码。
+- Related units: MZ-030；`root/CRL-20261010-001`、`root/CRL-20261010-002`。
+
+### Validation
+
+- `npm run check:backend` — passed（完整 root quality + backend build/contract 链）；最终 phase5 contract 通过临时只读链接现有 Mobile 源执行，链接随即删除；随后清除了构建生成的 tracked `backend/dist` 差异。
+- Backend targeted visibility/stats/day projection/property policy/materialization/GET read-only/maintenance/offline assignment tests and backend `tsc --noEmit` — passed；只使用本地 fixture/fake PostgreSQL executor。
+- Production-shape follow-up targeted tests — backend visibility/stats/day projection PASS；确认 Web 管理列表/统计为 10/8、15 条未分配可安排，而 `execution_list_visible` 仍仅为 3/0；维修/深清陈旧 work 日期和 `assigned` 状态不回流、两条软删除深清不回流；backend TypeScript PASS；frontend task-center 11/11 与 TypeScript PASS（关闭测试 coverage/cache 写入）。
+- Final candidate gates — `npm run check:backend` PASS（仅本机回环 fixture，临时只读 Mobile 源链接随即删除，tracked `backend/dist` 已恢复）；frontend lint PASS with existing warnings、53 files / 267 tests PASS（`--cache=false`）、production build PASS。
+- Frontend full suite — 53 files / 267 tests passed（`--cache=false`）；task-center focused 11/11 passed；lint passed with existing warnings only；production build passed。
+- `git diff --check` — passed。
+- Final regression — `npm run check:backend` full chain PASS；frontend TypeScript and focused 11/11 PASS；current-worktree ledger audit 18/18 and `git diff --check` PASS。
+- Final independent re-review — GO，P0=0 / P1=0 / P2=0；七个 MZ-030 backend target contracts、backend/frontend TypeScript、frontend focused 11/11、ledger audit 与 diff-check 均独立通过；确认此前三个 P2 全部关闭且无新增问题。
+- Exact release review for commit — GO，P0=0 / P1=0 / P2=0；`RA-20261011-006`、19 staged files、116 non-ledger hunks、candidate fingerprint `10118ac46c56b0fbbd4a45743f4b952fa8df5ede068e7e0b2a8b6c625a1ed091`；reviewer independently passed 8 focused backend contracts、双端 TypeScript、frontend 11/11、ledger tests 41/41、pre-commit gate 与双 diff-check。
+- Production API/database/browser mutation/Preview sync/deploy — not run。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none；19 staged files exactly match root/CRL-20261011-006；no dependency, cache, build, environment, credential, screenshot, symlink, or generated dist artifacts。
+- `backend/package.json` — SHA-256: `1dee9ed148ac839ec0d44c96a0faa6632ccbf5382c8c184acb96cad82a51837e`
+- `backend/scripts/tests/test_daily_task_execution_stats.ts` — SHA-256: `7a1a55037592a9e6134e6fde9a0ae209b247a2d7142d1322c32548bfabae7d5c`
+- `backend/scripts/tests/test_daily_task_execution_stats.ts` — SHA-256: `b85ff1d71cc09a726f4fa0e246021c6c9b5076f93fa000b931299e1a9ec02db6`
+- `backend/scripts/tests/test_daily_task_execution_stats.ts` — SHA-256: `cad9bab588fd23ec5c85971d834d80b76b5d60f7f66b8180bd0a9e3a581948c0`
+- `backend/scripts/tests/test_daily_task_execution_stats.ts` — SHA-256: `de17ac0cec295ef58eec3737d6d0077475d5862aefd93ffbf5ac244f612c8550`
+- `backend/scripts/tests/test_daily_task_execution_stats.ts` — SHA-256: `f1d8d40b46827c8d9f0b7428c92719a4cd0c701584fc07878fa485b3dde34be4`
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — SHA-256: `145022240f805c4c4c5b92123556914b4720ed3106955442ef3c64d7dd5dc64c`
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — SHA-256: `33cbbc9888fbe3fe5874e8ad3626473c25e6aad35c35b67a7f6df06e4b0b7d6a`
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — SHA-256: `507854f68061845d7202ed211fc4ab924052daec66dba54fca8494763c94af52`
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — SHA-256: `7cddc15f64d821c5f15d2ed7101538e98110f9cf1a7a0941ef9f6e3ce3bf314a`
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — SHA-256: `aaf1f401c12b4dbd0b5a80f12d40a9e25077d244d3b7e92d48fe5bcf0bdf1159`
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts` — SHA-256: `1923e8ce8e35f6e213ce70a0c4485815df6f5a865b9835bb32c8cac1fa8c9b43`
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts` — SHA-256: `b1ffccb45ca8f5feb0700cb29e51d69f5990343e3d510fb83a97150d5799789d`
+- `backend/scripts/tests/test_maintenance_workflow_schema_contract.ts` — SHA-256: `030e61b6bc7a8513951a6e910596d0573897ac3dcc17fd2fd3ce61fa278f025c`
+- `backend/scripts/tests/test_maintenance_workflow_schema_contract.ts` — SHA-256: `04ac3d577129fa7e9c7f12ff6ffc4d1d24834fcf641101f7346927cc04f2cf1b`
+- `backend/scripts/tests/test_maintenance_workflow_schema_contract.ts` — SHA-256: `d1d0b961e07e8500176acf4a4b10e4166620f143564c6c27f00dd1a2a2167a15`
+- `backend/scripts/tests/test_maintenance_workflow_schema_contract.ts` — SHA-256: `e3775913ca2d472bfacbb0a745dad73ac84dbb87255ecb0647b9282e56e7c7e3`
+- `backend/scripts/tests/test_maintenance_workflow_schema_contract.ts` — SHA-256: `e50542c7910e99c2a41cb22331995f47a345fe09285e68224a3535af43143d64`
+- `backend/scripts/tests/test_property_followup_materialization.ts` — SHA-256: `096d58de94ef19128ed2fa6bc51e95aa0e323f87009dbc9753b8c0e9285a0caa`
+- `backend/scripts/tests/test_property_followup_policy.ts` — SHA-256: `bd80edaffab69587c856a504dbe9c416032e4b174affacfc4dc4bef65c81fc92`
+- `backend/scripts/tests/test_task_center_daily_projection.ts` — SHA-256: `0574884a9e3735c58a2b545600a34e4d406357714449c21e63fb138e25200dc1`
+- `backend/scripts/tests/test_task_center_daily_projection.ts` — SHA-256: `1c7c50fc166da60cc09026bc11b362750165eafbdc5c10e3658489835b9c2458`
+- `backend/scripts/tests/test_task_center_daily_projection.ts` — SHA-256: `2eecc62c68050be1020ec8492e37c8fdef89cb21e6a91aa63c8098d8f6980b42`
+- `backend/scripts/tests/test_task_center_daily_projection.ts` — SHA-256: `4a07588986dca9cfbe9e7b92dfe8ff2f19ab17921de57559d72d8891a7fa79e1`
+- `backend/scripts/tests/test_task_center_daily_projection.ts` — SHA-256: `ba363df83cbc2c793cb18ec072db3446a0180a118f08025b2fa8a83fb1511904`
+- `backend/scripts/tests/test_task_center_daily_projection.ts` — SHA-256: `e60100bd5522546bdb2d66c5e68f5d97addb403de9d703ef4e1b7f9c47c71f22`
+- `backend/scripts/tests/test_task_center_day_read_only.ts` — SHA-256: `c0af15f7bd26ae32748b315ae87ff73cc23656f49f23a5981b5a332302b56436`
+- `backend/src/auth.ts` — SHA-256: `0b775962f77940d85b6f7d4fc50b194d933e4ed43ce371d1aca5f886d2921a4d`
+- `backend/src/auth.ts` — SHA-256: `cdf7fc42809875918b8f8f89fb755ba9162fd551e562a3325c05ff1647db7916`
+- `backend/src/lib/dailyTaskExecutionStats.ts` — SHA-256: `23ebebb1ca84f1d302963c728d865390799ced6a463ff4b2f9c54c448401e41f`
+- `backend/src/lib/dailyTaskExecutionStats.ts` — SHA-256: `2b67296e960125f2cf0969ce09ad877f308f256131ed0388b0a5575d52c58ed5`
+- `backend/src/lib/dailyTaskExecutionStats.ts` — SHA-256: `396890e8e170fef948f2ed5eef05e6623e801c574e2f2f0f82c2a46d6e1dadbc`
+- `backend/src/lib/dailyTaskExecutionStats.ts` — SHA-256: `410590bdb3dc563a882d78d558b45de20fcbadebf8e7fabea6d9f2357ae257ad`
+- `backend/src/lib/dailyTaskExecutionStats.ts` — SHA-256: `6b691ee2d7b51af97d46ba155bddc644322f97baaae541f2879df97ff07d69fb`
+- `backend/src/lib/dailyTaskExecutionStats.ts` — SHA-256: `6ccbd5c419fbcdeb4b8d0377dbdbd313abc6bf2c3da4279a8b31f07f12d460ee`
+- `backend/src/lib/dailyTaskExecutionStats.ts` — SHA-256: `9b91e0894cbcc31b13edccc3387d6682d570c084031d3ca14f261283b2ee2896`
+- `backend/src/lib/dailyTaskExecutionStats.ts` — SHA-256: `c69d0ab7e08158057ee4176386f6ccc563e364194dfd9fd18d7217acab836b40`
+- `backend/src/lib/dailyTaskExecutionVisibility.ts` — SHA-256: `cdc9e2e399a005a00685aa715269e015b8ad13c8e8886a9d5651513a664979f5`
+- `backend/src/lib/propertyFollowupPolicy.ts` — SHA-256: `c133bfaab2228ce5f6e3708fc1947d2f350256fa9eddadeb0ddb05ca1aeeb230`
+- `backend/src/modules/task_center.ts` — SHA-256: `01ff378ac820bb2a19e5dc8f635ba9fcc5c62c06eb09e7f17a4060de45247b37`
+- `backend/src/modules/task_center.ts` — SHA-256: `02e54963d1aeaf4d59a0a1c6509184c5bd7b0da8dc25df728b74cd24a7959c0f`
+- `backend/src/modules/task_center.ts` — SHA-256: `06f5bdff99b02017bbac1d672f46029e2a3e547e3dfe02155cdcf3088c04bf26`
+- `backend/src/modules/task_center.ts` — SHA-256: `07b2c24cdbc5251f6d422129a3e2d18c43425178ecdc65d48cbd2c0cfda2fc1c`
+- `backend/src/modules/task_center.ts` — SHA-256: `0b35e6cd35a95541ac2386d0bd37867c7b6f44f9702ca9185be27201fb20b7a6`
+- `backend/src/modules/task_center.ts` — SHA-256: `0ef9a8de9895a74ab8f03ce6e94df76e648aa11752d158d018f7b9a1c1b2d7cb`
+- `backend/src/modules/task_center.ts` — SHA-256: `0fe174e58eee1df964f11072082098c69731e23ca02fa01cb772ee2617d82bef`
+- `backend/src/modules/task_center.ts` — SHA-256: `133d527620e4f11240a7d6a4ea5a5eab2eb83e1da8a222990f3d3d7532f5eeb2`
+- `backend/src/modules/task_center.ts` — SHA-256: `13d3474fc52279861dfcf7c0896a45f14b5f722b25b21af684dde182fb1511b2`
+- `backend/src/modules/task_center.ts` — SHA-256: `14305745e33cd72dc86bd5cf1526232fb1497f5b4b95db5e028b36dc2bdf6922`
+- `backend/src/modules/task_center.ts` — SHA-256: `15a134b5700605e68ca9e2a44a4b9f1267fde55a2bc9d04248d0925996c20880`
+- `backend/src/modules/task_center.ts` — SHA-256: `18f9b8cde4ed44c355f994e73ba9c89cc0e2db8aef6855d55fb9fb835dfab836`
+- `backend/src/modules/task_center.ts` — SHA-256: `25d1e0138d28a3416f353e149b68eb71856a3468ea83752e9d84d517a7d532c0`
+- `backend/src/modules/task_center.ts` — SHA-256: `2a022e846c878a0b4d3c81438129d59a8cfcdbf0cdf8435befb1a9518a21e631`
+- `backend/src/modules/task_center.ts` — SHA-256: `2a0f9fd3af5db663380a8306b463e65992e28ddd6b4dbadc9700758765fb915b`
+- `backend/src/modules/task_center.ts` — SHA-256: `2c1e4cc24e2dfc8966f95c047504f440e6ea608fa738fd2c4581732c8198dcd2`
+- `backend/src/modules/task_center.ts` — SHA-256: `32072ba56e28e17a09fdc2328027b3b38db9d6e2092c41f45c2dab58b54a109c`
+- `backend/src/modules/task_center.ts` — SHA-256: `320bcc2e462a8e479bf1f891ba85d83cb0944d7989ab50701640a2ad1462acac`
+- `backend/src/modules/task_center.ts` — SHA-256: `33795fe3e11ab482a790b2253099eb19facea25b90094a79b5681f8158c6d0b8`
+- `backend/src/modules/task_center.ts` — SHA-256: `3b1939f3412389b5c047aa3ce0a91cf8f74dbde3c96ab8a2f594dfe98f214dec`
+- `backend/src/modules/task_center.ts` — SHA-256: `3d8783b624f9728143977b97bb4b7bdb0df36a327f4a63632751152579dc9d68`
+- `backend/src/modules/task_center.ts` — SHA-256: `410579cff87198eabbf35f907e9e59db5391bdbc51d611beb0c76f1fedad15f8`
+- `backend/src/modules/task_center.ts` — SHA-256: `4c4a3d4657d878eaaf1a3bd6b917443361a99108ea0ebb9b3ba3a4b460c6660a`
+- `backend/src/modules/task_center.ts` — SHA-256: `56ad11267d03134ce9fe93706dca17f9354048f74366fac7ded58f1d7605ae0b`
+- `backend/src/modules/task_center.ts` — SHA-256: `5a47c92ee142457a4a02b9d2c1b3146551eddbf3736571cfb200b88c9d3439e8`
+- `backend/src/modules/task_center.ts` — SHA-256: `5bd6b0ce59ce28040a05c57825e52513fff8343890073b19f4448450e6480cae`
+- `backend/src/modules/task_center.ts` — SHA-256: `69445561e0ab1c2ff5a92636dbd66e0eba92192c4a3bf92b8fcd8194302662e5`
+- `backend/src/modules/task_center.ts` — SHA-256: `6de759c969fed8edc7b2fa0417d416b07a8dea1add5701ba7b439edd72be8862`
+- `backend/src/modules/task_center.ts` — SHA-256: `6df71f528ebe2f6165546a3487a87cfa62aed56de4002e47fc0d273f8c60dba2`
+- `backend/src/modules/task_center.ts` — SHA-256: `725ac20d2a35df5a5b58795bb9bdefeb6d406c03d24291004f251cc6ef3e7384`
+- `backend/src/modules/task_center.ts` — SHA-256: `7397c12bbedeb1201ffadf8d6992322f5a15b9432892dcf44bba74e84e3882a1`
+- `backend/src/modules/task_center.ts` — SHA-256: `7a77fb853fcf7db7d79e0e572b28245189311c0fc02c93764b0609a0d1601b82`
+- `backend/src/modules/task_center.ts` — SHA-256: `7dada61b4e9ce235068d83405278a71f1ef0af179f99dc10ce127fa6f2896d08`
+- `backend/src/modules/task_center.ts` — SHA-256: `87331f075b8de13335a6ba9c867e97ff5370a43b3be8aee714500a26bf698cf1`
+- `backend/src/modules/task_center.ts` — SHA-256: `87759538e48e78aec78c0daa8892f5f2dd10b929498c4739510104786f1c36ab`
+- `backend/src/modules/task_center.ts` — SHA-256: `9020bb652d1ca11f13cdea628135c8901292b5ec9ddbd48904c170bee6f17f89`
+- `backend/src/modules/task_center.ts` — SHA-256: `903a5d333f239e438a98c6407927cce147e278eb2ade72493eae0c6b2a041a40`
+- `backend/src/modules/task_center.ts` — SHA-256: `9771a4354b80246ff62ae40ade141a8c8371da58633aa8a18f1ecf312d6a3359`
+- `backend/src/modules/task_center.ts` — SHA-256: `99ae4a185c6c2f4f3354704f26685f6107f2125739f7a62d157ba200ed9e813c`
+- `backend/src/modules/task_center.ts` — SHA-256: `9e82c43c5d34f40310cc9ae59d59549ecd65bda5192f80917c9c591b69aebbce`
+- `backend/src/modules/task_center.ts` — SHA-256: `a4f26b6ed5544e02084651094f3e7878bd0d9ebf025aaf1074da1bd9ec2c8281`
+- `backend/src/modules/task_center.ts` — SHA-256: `a56420ee26dbcd9bda638b66c8560358c898772504ad9b193d93c67b9ace9d11`
+- `backend/src/modules/task_center.ts` — SHA-256: `a64062bdc44e99ca5a1ede6275dee403044e8ba23b9444c704e0f53539f68e7b`
+- `backend/src/modules/task_center.ts` — SHA-256: `a746133522238050d14ae9409d7a89c1d76e7dab6a3dd839d841f2df3f808a3b`
+- `backend/src/modules/task_center.ts` — SHA-256: `acba5249625d060d874cda5839bd370662f2302f41ed079c071f542d538ed44c`
+- `backend/src/modules/task_center.ts` — SHA-256: `ae8bb47d755ced73fed69f21e464a9a5109817fb980f00b6e09afc79367f13d8`
+- `backend/src/modules/task_center.ts` — SHA-256: `aff96593ef59d6ede4e508a41d583a17fd51d85d563c75c756f0185ee363a22a`
+- `backend/src/modules/task_center.ts` — SHA-256: `b605dd0f20311698259a5f11106206f61ea2c236db5e4e7de35e623d1eb90efa`
+- `backend/src/modules/task_center.ts` — SHA-256: `b66fe6262a4a3191d41c05df4300edfa7fd8938d8e81951ea23399d53f178479`
+- `backend/src/modules/task_center.ts` — SHA-256: `bf342a670c2c9f12aa345f033f1b347386da1f7c6c9908746b4e58f1076dfc50`
+- `backend/src/modules/task_center.ts` — SHA-256: `c5a8cc4ae8dc3fd11da05db9ecb7a50e2149bfa5190f2c0bca1d6a5889f0c391`
+- `backend/src/modules/task_center.ts` — SHA-256: `c697d839f064a70039aa78c9bd3a3a4e06825e56fe7773420966433b76909edb`
+- `backend/src/modules/task_center.ts` — SHA-256: `d0dbf0732f6a6339058595a964ee2d163cdd9ada00bc578aaf6011e238d7ca5a`
+- `backend/src/modules/task_center.ts` — SHA-256: `d6e33ae8b1ceb2062d45185f678a74b971990362ec1fe6e815d5a4b4ddfce95a`
+- `backend/src/modules/task_center.ts` — SHA-256: `dbff30614dea6d3b09e67bfe3d8730cf616d4e2b4da8fba4ce142f96a3e8e337`
+- `backend/src/modules/task_center.ts` — SHA-256: `dc67bfef3980aa4c40c3e6ff71079a06118e856beafb1a7f02cb90319a45c7bb`
+- `backend/src/modules/task_center.ts` — SHA-256: `e07fdb8f9a6e42ca5658d0388b12a5a19090ce1a3ace6ca382e84e30c3dcdb73`
+- `backend/src/modules/task_center.ts` — SHA-256: `e373139f92ca2d2a4c37e04d5eecef08bba980562f5ec07b133f155829aedc64`
+- `backend/src/modules/task_center.ts` — SHA-256: `f189e54bb4d79465eb3d88df108ec9ac3c9c0eb99a9cfaba99f6243912c77990`
+- `backend/src/modules/task_center.ts` — SHA-256: `f2f8735ab487ec20037596984a74ddc1c7bbbdcf8d5bd28b59beffded681695d`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `11f74882a043820910c89db477ba982f4c8f092a61230d70906d6a7e11e1ef5e`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `61841a3453e99c7fd2a0c7dc286f8323bddba369546b486f7dba719146a1ad4d`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `9b8a8a6ab128224825d018856f3f889e782d4222a0fe05544f067276694133d8`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `d30d9758a701d942f77c8ff90b4541828754f7c45248e643feb12543d8b71e6f`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `e22a5fc865e6b6602f4a0d30d877fa3a0fcd2b20c1500e132020889cfd8c90db`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `1d3aa95c6b06f414fc25d6bfa99191ad9c33b53fdd40e1500aea8ae2a602c5a5`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `2f867a260c97b468f5be6b1434722b7ec3630feacfaf625bb81d6d4b12cbbce7`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `41238a36b6b0c2db3f4cdc67b43651396565eafb76bd53ec538ab7488be50e64`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `dbf9660f507da33bb84985d7093cd03e5e292f6fa12c9d2bce1947b966f02466`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `064f997008c9c2a07b89ad1be773e458def4a5a5ecef259185d9c1f3a44d4992`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `410feea8f0a24db96903e8459c97517bfcae138eaed4559d29e2fc28a9858250`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `80e6bfa0d7ebb8072d094372e95f653bab6f6a6d6857b13227063695097b3639`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `8ea5cf1fb94ac77939a8b78afeb461fa7c30426ca3b3e6735f629400222efbe0`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `9473e5b57f35490374c4aa1595f861191adf963bca417e388c1c580a028a3b32`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `b4669999c0ed21f177954a21f1b1bf430540294c208fbbd9d346ca10e8057117`
+- `package.json` — SHA-256: `33e51bb094ab35d2946fd07d9e426759e1fb4100d52fdb92cb238142a1dd0cf9`
+- `package.json` — SHA-256: `596a38bcfb73fb82814709ba39ebdf88af491533c178c0a951dbdf81a458394f`
+
+### Release Attempts
+
+#### RA-20261011-006
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261011-006`
+- Selected CRL identities: `root/CRL-20261011-006`
+- Intended action: `commit`
+- Branch: `codex/mz030-task-center-offline-management-20261011`
+- Base: `origin/Dev@47385b366b7ed104a3e8946dd104fcbbec8014f2`; fetched at `2026-10-11 12:48:45 UTC`
+- Candidate patch SHA-256: `10118ac46c56b0fbbd4a45743f4b952fa8df5ede068e7e0b2a8b6c625a1ed091` excluding `docs/change-release-ledger.md`
+- Commit SHA: `dad553a4aa05853cfe83070f4bbb94e32541610b`
+- Dependencies: none
+- Required validation: PASS；evidence: full backend chain, frontend lint / 53 files 267 tests / build, focused backend/frontend contracts and TypeScript all passed
+- Shared-hunk review: PASS；evidence: fresh candidate from exact origin/Dev base, staged diff contains only this selected MZ-030 unit; overlapping historical file paths have new exact hunk fingerprints below
+- Generated-file review: PASS；evidence: temporary Mobile symlink removed, tracked backend/dist restored, no generated or cache paths staged
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: user requested “修好了先提交推送” for the MZ-030 isolated candidate
+- Independent review: `GO`; evidence: exact staged candidate review P0=0 / P1=0 / P2=0, no open questions; GO applies only to commit
+- Action conclusion: `GO`; blockers: none for commit
+
+#### RA-20261011-007
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261011-006`
+- Selected CRL identities: `root/CRL-20261011-006`
+- Intended action: `push`
+- Branch: `codex/mz030-task-center-offline-management-20261011`
+- Remote branch: initial normal non-force push verified `origin/codex/mz030-task-center-offline-management-20261011@5625e9b6d8119019422fe67a1822a46cb4777f6d`; this outcome receipt may be fast-forwarded to the same branch
+- Base: `origin/Dev@47385b366b7ed104a3e8946dd104fcbbec8014f2`; fetched at `2026-10-11 12:48:45 UTC`
+- Candidate patch SHA-256: `10118ac46c56b0fbbd4a45743f4b952fa8df5ede068e7e0b2a8b6c625a1ed091` excluding `docs/change-release-ledger.md`
+- Commit SHA: `dad553a4aa05853cfe83070f4bbb94e32541610b`
+- Dependencies: none
+- Required validation: PASS；evidence: full backend chain, frontend lint / 53 files 267 tests / build, focused backend/frontend contracts and TypeScript all passed; clean-HEAD exact release report at `5625e9b6d8119019422fe67a1822a46cb4777f6d` passed all gates with 19 selected files / 116 non-ledger hunks and no generated or sensitive files
+- Shared-hunk review: PASS；evidence: exact committed non-ledger fingerprint matches the independently reviewed staged candidate
+- Generated-file review: PASS；evidence: exact range contains no generated, dependency, cache, environment, screenshot, symlink, or dist paths
+- Technical state: `pushed`
+- User authorization: `approved-for-push`; evidence: user explicitly requested “修好了先提交推送” for the selected root MZ-030 isolated candidate and no candidate scope, branch, base, or content commit changed after review
+- Independent review: `GO`; evidence: third independent read-only review verified the exact committed non-ledger range, unchanged `10118ac46c56b0fbbd4a45743f4b952fa8df5ede068e7e0b2a8b6c625a1ed091` fingerprint, generated/sensitive boundaries, and explicit push authorization; the historical MZ-021 behavior is already contained in the immutable base and is documented under Impact / Dependencies rather than declared as a separate release dependency; P0=0 / P1=0 / P2=0
+- Action conclusion: `GO`; the authorized normal push succeeded after a fresh fetch confirmed unchanged `origin/Dev`, the previously absent remote branch was created, and immediate SHA verification matched local HEAD. Draft PR / CI are not part of this push authorization and remain uncreated; merge, Dev/main push, deployment, Preview sync, migration, queue work, and production writes remain excluded
+
+### Risks / Release Notes
+
+- Candidate base: detached `origin/Dev@47385b366b7ed104a3e8946dd104fcbbec8014f2` from a fresh isolated clone. A later `git fetch origin Dev` retry on 2026-10-11 22:49 UTC could not resolve GitHub in the sandbox, so remote freshness beyond the clone is not yet re-verified.
+- Rollback: revert this CRL's backend/frontend projection and policy changes; no data rollback or migration reversal is required.
+- Session note: 为兑现此端点的端到端零写契约，canonical/大小写等价的 task-center day GET 不刷新 session heartbeat；鉴权与 idle-timeout 校验本身保持不变。
+- Closed review findings: 批量 `FOR UPDATE` 现按稳定 ID 排序；执行人用户/角色在事务内锁定并复验；维修保存 diff 使用服务端 canonical 文本。三项原 P2 均已进入本 CRL 的实现与回归范围。
+- Sensitive-information review: no credentials, cookies, database URLs, user records, screenshots, or production payloads added to repository files.
+- Shared Preview and the separate settlement-fix process were not modified or stopped.
+
 ## CRL-20261010-001 — 日常任务执行列表权威可见性（root）
 
 - **Status:** four-CRL staged candidate validated；final independent commit review pending；not committed, not pushed, not released
