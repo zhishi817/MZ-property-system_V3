@@ -388,7 +388,7 @@ export async function auth(req: Request, res: Response, next: NextFunction) {
           if (now - last > idleMs) return res.status(401).json({ message: 'session idle timeout' })
           try {
             const lastTouch = sessionLastSeenUpdateAt.get(String(sid)) || 0
-            if (now - lastTouch >= SESSION_TOUCH_INTERVAL_MS) {
+            if (shouldTouchSessionForRequest(req.method, req.originalUrl || req.path) && now - lastTouch >= SESSION_TOUCH_INTERVAL_MS) {
               const { pgPool } = require('./dbAdapter')
               if (pgPool) await pgPool.query('UPDATE sessions SET last_seen_at=now() WHERE id=$1', [sid])
               sessionLastSeenUpdateAt.set(String(sid), now)
@@ -408,6 +408,15 @@ export async function auth(req: Request, res: Response, next: NextFunction) {
     } catch {}
   }
   next()
+}
+
+export function shouldTouchSessionForRequest(method: unknown, requestPath: unknown) {
+  const normalizedMethod = String(method || '').trim().toUpperCase()
+  const normalizedPath = (String(requestPath || '').split('?')[0].replace(/\/+$/, '') || '/').toLowerCase()
+  // MZ-030: this diagnostic/scheduling projection has an explicit zero-write
+  // GET contract. Authentication still verifies the session; only its optional
+  // activity heartbeat is suppressed for this exact endpoint.
+  return !(normalizedMethod === 'GET' && normalizedPath === '/task-center/day')
 }
 
 export async function warmupAuthModule() {

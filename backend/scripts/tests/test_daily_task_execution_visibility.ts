@@ -5,6 +5,7 @@ import {
   DAILY_TASK_MANAGER_ROLES,
   dailyTaskExecutionVisibility,
   isDailyTaskManagerRoleNames,
+  projectTaskCenterManageableWorkTasks,
   projectVisibleDailyTasks,
 } from '../../src/lib/dailyTaskExecutionVisibility'
 
@@ -26,6 +27,7 @@ const cases = [
   { id: 'offline-ready', source_type: 'cleaning_offline_tasks', task_kind: 'offline', status: 'ready', scheduled_date: scheduled, assignee_id: 'staff-3' },
   { id: 'offline-assigned', source_type: 'cleaning_offline_tasks', task_kind: 'offline', status: 'assigned', scheduled_date: scheduled, assignee_id: 'staff-3' },
   { id: 'offline-progress', source_type: 'cleaning_offline_tasks', task_kind: 'offline', status: 'in_progress', scheduled_date: scheduled, assignee_id: 'staff-3' },
+  { id: 'offline-unassigned', source_type: 'work_tasks', task_kind: 'offline', status: 'todo', scheduled_date: scheduled, assignee_id: null },
   { id: 'offline-cancelled', source_type: 'cleaning_offline_tasks', task_kind: 'offline', status: 'cancelled', scheduled_date: scheduled, assignee_id: 'staff-3' },
   { id: 'offline-canceled-alias', source_type: 'cleaning_offline_tasks', task_kind: 'offline', status: 'canceled', scheduled_date: scheduled, assignee_id: 'staff-3' },
   { id: 'offline-unscheduled', source_type: 'cleaning_offline_tasks', task_kind: 'offline', status: 'assigned', scheduled_date: null, task_date: scheduled, date: scheduled, assignee_id: 'staff-3' },
@@ -69,6 +71,15 @@ assert.deepEqual(dailyTaskExecutionVisibility(caseById('external-maintenance-clo
 assert.deepEqual(dailyTaskExecutionVisibility(caseById('deep-cleaning-completed-review-alias')), { visible: false, reason: 'review_only' })
 assert.deepEqual(dailyTaskExecutionVisibility(caseById('daily-necessities-unassigned')), { visible: false, reason: 'unassigned' })
 assert.deepEqual(dailyTaskExecutionVisibility(caseById('offline-unscheduled')), { visible: false, reason: 'unscheduled' })
+assert.deepEqual(dailyTaskExecutionVisibility(caseById('offline-unassigned')), { visible: false, reason: 'unassigned' })
+assert.deepEqual(
+  projectTaskCenterManageableWorkTasks(cases).filter((task) => task.id === 'offline-unassigned').map((task) => ({
+    id: task.id,
+    execution_list_visible: task.execution_list_visible,
+  })),
+  [{ id: 'offline-unassigned', execution_list_visible: false }],
+  'Web assignment surface includes unassigned native offline tasks without changing Mobile execution visibility',
+)
 
 const backendRoot = path.resolve(__dirname, '../..')
 const mzapp = fs.readFileSync(path.join(backendRoot, 'src/modules/mzapp.ts'), 'utf8')
@@ -79,16 +90,15 @@ const deepCleaningRecordsPage = fs.readFileSync(path.join(backendRoot, '../front
 
 assert.match(mzapp, /projectVisibleDailyTasks\(out\)/, 'mobile API must apply the shared server projection before action payloads')
 assert.match(mzapp, /source_workflow_status: maintenanceSourceWorkflowStatus/, 'maintenance source workflow must survive the closed-to-done work-task mapping')
-assert.match(taskCenter, /projectVisibleDailyTasks\(dedupeBoardTasks/, 'web work-task loader must apply the same shared projection')
-assert.match(taskCenter, /pm\.status AS maintenance_source_status/, 'web projection must read authoritative maintenance workflow status')
+assert.match(taskCenter, /projectTaskCenterManageableWorkTasks\(dedupeBoardTasks/, 'Web work-task loader must preserve assignment candidates while reusing shared execution semantics')
+assert.match(taskCenter, /FROM property_maintenance m[\s\S]*?m\.status::text/, 'web management projection must read authoritative maintenance workflow status')
 assert.match(taskCenter, /scheduled_date: row\.scheduled_date \? String\(row\.scheduled_date\)\.slice\(0, 10\) : null/, 'web projection must preserve an explicit unscheduled value instead of fabricating execution eligibility from task_date')
-assert.match(taskCenter, /pending_review','review_pending','awaiting_review'.*'closed'/s, 'property follow-up sync must remove review and closed projections without deleting source records')
-assert.match(
-  taskCenter,
-  /w\.source_type = 'property_daily_necessities'[\s\S]*?lower\(COALESCE\(w\.status, ''\)\) IN \('done', 'completed'\)[\s\S]*?w\.scheduled_date IS NOT NULL/,
-  'daily-necessities sync must preserve an existing scheduled completion while still excluding replaced sources from active upserts',
-)
-assert.match(taskCenterPage, /visibleTaskCenterPropertyFollowups/, 'web UI must fail closed instead of rendering property follow-ups directly')
+assert.match(taskCenter, /pending_review','review_pending','awaiting_review','completed','done','ready','canceled','cancelled','closed'/, 'property follow-up projection must hide review, completed and terminal sources without deleting source records')
+assert.match(taskCenter, /AND m\.deleted_at IS NULL/, 'soft-deleted maintenance sources must not re-enter the Web projection')
+assert.match(taskCenter, /AND d\.deleted_at IS NULL/, 'soft-deleted deep-cleaning sources must not re-enter the Web projection')
+assert.match(taskCenter, /a\.source_type = 'property_deep_cleaning'[\s\S]*?w\.id IS NOT NULL[\s\S]*?NULLIF\(BTRIM\(w\.assignee_id::text\), ''\) IS NOT NULL THEN w\.scheduled_date/, 'an unassigned deep-cleaning projection cannot lend its stale work date to a new checkout day')
+assert.doesNotMatch(taskCenter, /syncPropertyFollowupWorkTasks/, 'GET must not synchronize property follow-ups into work_tasks')
+assert.match(taskCenterPage, /dayData\?\.property_followups \|\| \[\]/, 'Web management must render server-authorized candidates without reusing Mobile execution-list visibility')
 assert.match(maintenanceRecordsPage, /maintenance/i, 'maintenance review/history entry must remain available')
 assert.match(deepCleaningRecordsPage, /deep|深清/i, 'deep-cleaning review/history entry must remain available')
 

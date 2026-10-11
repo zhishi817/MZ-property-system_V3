@@ -15,7 +15,7 @@ type TaskCenterDisplayTask = {
   checkout_task_date?: string | null
   checkout_task_dates?: string[]
   execution_list_visible?: boolean
-  daily_stats_group?: 'turnover' | 'offline' | null
+  daily_stats_group?: 'turnover' | 'inspection' | 'offline' | null
   daily_stats_key?: string | null
   guest_ready_notification?: {
     status?: 'not_notified' | 'notified'
@@ -169,10 +169,6 @@ export function hasTaskCenterRequiredExecutor(task: TaskCenterDisplayTask) {
   return Boolean(String(task.cleaner_id || task.assignee_id || '').trim())
 }
 
-export function visibleTaskCenterPropertyFollowups<T extends TaskCenterDisplayTask>(tasks: T[]) {
-  return tasks.filter((task) => task.execution_list_visible === true)
-}
-
 export function maintenanceDetailContentText(value: unknown) {
   const raw = String(value || '').trim()
   if (!raw) return ''
@@ -194,16 +190,16 @@ export function maintenanceDetailContentText(value: unknown) {
 export function taskCenterDailyGroupCounts(tasks: TaskCenterDisplayTask[]) {
   const keys = {
     turnover: new Set<string>(),
+    inspection: new Set<string>(),
     offline: new Set<string>(),
   }
   for (const task of Array.isArray(tasks) ? tasks : []) {
-    if (task.execution_list_visible !== true) continue
     const group = task.daily_stats_group
     const key = String(task.daily_stats_key || '').trim()
-    if (!key || (group !== 'turnover' && group !== 'offline')) continue
+    if (!key || (group !== 'turnover' && group !== 'inspection' && group !== 'offline')) continue
     keys[group].add(key)
   }
-  return { turnover: keys.turnover.size, offline: keys.offline.size }
+  return { turnover: keys.turnover.size, inspection: keys.inspection.size, offline: keys.offline.size }
 }
 
 export function guestReadyNotificationPresentation(task: TaskCenterDisplayTask) {

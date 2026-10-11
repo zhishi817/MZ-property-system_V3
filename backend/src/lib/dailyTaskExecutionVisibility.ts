@@ -101,6 +101,23 @@ export function projectDailyTaskExecution<T extends DailyTaskExecutionCandidate>
   }
 }
 
+/**
+ * The Web task center is also an assignment surface. A scheduled, active
+ * offline task must remain visible there before an executor is assigned, while
+ * the Mobile execution list continues to hide it until assignment.
+ */
+export function isTaskCenterManagementOnlyOfflineTask(task: DailyTaskExecutionCandidate) {
+  return normalized(task.task_kind) === 'offline'
+    && !PROPERTY_FOLLOWUP_SOURCES.has(normalized(task.source_type))
+    && dailyTaskExecutionVisibility(task).reason === 'unassigned'
+}
+
+export function projectTaskCenterManageableWorkTasks<T extends DailyTaskExecutionCandidate>(tasks: T[]) {
+  return tasks
+    .map(projectDailyTaskExecution)
+    .filter((task) => task.execution_list_visible || isTaskCenterManagementOnlyOfflineTask(task))
+}
+
 export function projectVisibleDailyTasks<T extends DailyTaskExecutionCandidate>(tasks: T[]) {
   return tasks
     .map(projectDailyTaskExecution)
