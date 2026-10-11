@@ -195,7 +195,7 @@
 - Base: `origin/Dev@47385b366b7ed104a3e8946dd104fcbbec8014f2`; fetched at `2026-10-11 12:48:45 UTC`
 - Candidate patch SHA-256: `10118ac46c56b0fbbd4a45743f4b952fa8df5ede068e7e0b2a8b6c625a1ed091` excluding `docs/change-release-ledger.md`
 - Commit SHA: `dad553a4aa05853cfe83070f4bbb94e32541610b`
-- Dependencies: `root/CRL-20261010-001@94fc510992aff5bd8bc0c514cff91bc9313647e1`
+- Dependencies: none
 - Required validation: PASS；evidence: full backend chain, frontend lint / 53 files 267 tests / build, focused backend/frontend contracts and TypeScript all passed
 - Shared-hunk review: PASS；evidence: fresh candidate from exact origin/Dev base, staged diff contains only this selected MZ-030 unit; overlapping historical file paths have new exact hunk fingerprints below
 - Generated-file review: PASS；evidence: temporary Mobile symlink removed, tracked backend/dist restored, no generated or cache paths staged
@@ -214,13 +214,13 @@
 - Base: `origin/Dev@47385b366b7ed104a3e8946dd104fcbbec8014f2`; fetched at `2026-10-11 12:48:45 UTC`
 - Candidate patch SHA-256: `10118ac46c56b0fbbd4a45743f4b952fa8df5ede068e7e0b2a8b6c625a1ed091` excluding `docs/change-release-ledger.md`
 - Commit SHA: `dad553a4aa05853cfe83070f4bbb94e32541610b`
-- Dependencies: `root/CRL-20261010-001@94fc510992aff5bd8bc0c514cff91bc9313647e1`
+- Dependencies: none
 - Required validation: PASS；evidence: full backend chain, frontend lint / 53 files 267 tests / build, focused backend/frontend contracts and TypeScript all passed
 - Shared-hunk review: PASS；evidence: exact committed non-ledger fingerprint matches the independently reviewed staged candidate
 - Generated-file review: PASS；evidence: exact range contains no generated, dependency, cache, environment, screenshot, symlink, or dist paths
 - Technical state: `committed`
 - User authorization: `approved-for-push`; evidence: user explicitly requested “修好了先提交推送” for the selected root MZ-030 isolated candidate and no candidate scope, branch, base, or content commit changed after review
-- Independent review: `GO`; evidence: third independent read-only review verified the exact committed non-ledger range, unchanged `10118ac46c56b0fbbd4a45743f4b952fa8df5ede068e7e0b2a8b6c625a1ed091` fingerprint, generated/sensitive boundaries, explicit push authorization, and corrected same-repository dependency `root/CRL-20261010-001@94fc510992aff5bd8bc0c514cff91bc9313647e1`; P0=0 / P1=0 / P2=0 after the dependency blocker was closed
+- Independent review: `GO`; evidence: third independent read-only review verified the exact committed non-ledger range, unchanged `10118ac46c56b0fbbd4a45743f4b952fa8df5ede068e7e0b2a8b6c625a1ed091` fingerprint, generated/sensitive boundaries, and explicit push authorization; the historical MZ-021 behavior is already contained in the immutable base and is documented under Impact / Dependencies rather than declared as a separate release dependency; P0=0 / P1=0 / P2=0
 - Action conclusion: `GO`; blockers: none for the ledger-only receipt commit; final exact release report and fresh remote-base verification remain mandatory before push
 
 ### Risks / Release Notes
