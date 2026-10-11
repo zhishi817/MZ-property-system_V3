@@ -19,6 +19,7 @@ export type SettlementStatus =
 export type SettlementAction =
   | 'resolve_dispute'
   | 'return_for_confirmation'
+  | 'approve'
   | 'adjust'
   | 'reopen'
   | 'confirm_paid'
@@ -32,7 +33,7 @@ export const SETTLEMENT_STATUS_META: Record<SettlementStatus, { label: string; c
   awaiting_confirmation: { label: '待合作方再次确认', color: 'warning' },
   confirmed: { label: '待财务核对', color: 'processing' },
   disputed: { label: '待重新核对', color: 'error' },
-  finance_approved: { label: '财务已确认（历史）', color: 'purple' },
+  finance_approved: { label: '财务已核对／待付款', color: 'purple' },
   paid: { label: '已付款', color: 'green' },
   void: { label: '已作废', color: 'default' },
 }
@@ -84,10 +85,11 @@ export function getClaimReviewInputMode(claimType: string): ClaimReviewInputMode
 
 const MANAGEMENT_ACTION_STATUSES: Record<SettlementAction, SettlementStatus[]> = {
   resolve_dispute: ['disputed'],
-  return_for_confirmation: ['confirmed'],
+  return_for_confirmation: ['draft', 'confirmed'],
+  approve: ['confirmed'],
   adjust: ['draft'],
   reopen: ['awaiting_confirmation', 'confirmed'],
-  confirm_paid: ['confirmed', 'finance_approved'],
+  confirm_paid: ['finance_approved'],
   void: ['draft', 'awaiting_confirmation', 'confirmed', 'disputed', 'finance_approved'],
 }
 
@@ -100,7 +102,10 @@ export function canUseSettlementAction(
     return status === 'disputed' && (permissions.canManage || permissions.canPayout)
   }
   if (action === 'return_for_confirmation') {
-    return status === 'confirmed' && (permissions.canManage || permissions.canPayout)
+    return ['draft', 'confirmed'].includes(status) && (permissions.canManage || permissions.canPayout)
+  }
+  if (action === 'approve') {
+    return status === 'confirmed' && permissions.canPayout
   }
   const permission = action === 'confirm_paid'
     ? permissions.canPayout && permissions.canBank
@@ -108,6 +113,17 @@ export function canUseSettlementAction(
       ? permissions.canPayout
     : permissions.canManage
   return permission && MANAGEMENT_ACTION_STATUSES[action].includes(status)
+}
+
+export function settlementHasPartnerSubmission(ruleSnapshot: unknown) {
+  if (!ruleSnapshot || typeof ruleSnapshot !== 'object' || Array.isArray(ruleSnapshot)) return false
+  const submission = (ruleSnapshot as { partner_submission?: unknown }).partner_submission
+  return Boolean(
+    submission
+    && typeof submission === 'object'
+    && !Array.isArray(submission)
+    && Object.keys(submission).length > 0,
+  )
 }
 
 export function formatMoney(cents: number | null | undefined) {

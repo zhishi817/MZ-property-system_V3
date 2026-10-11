@@ -1,7 +1,9 @@
+import type { PersonnelPaymentMethod } from './personnelSettlementPayment'
+
 export type PersonnelSettlementDocumentStage = 'awaiting_confirmation' | 'confirmed' | 'finance_approved' | 'paid'
 export type PersonnelSettlementDocumentKind = 'settlement_draft' | 'tax_invoice' | 'invoice'
 
-export const PERSONNEL_SETTLEMENT_DOCUMENT_TEMPLATE_VERSION = 'daily-summary-invoice-v1'
+export const PERSONNEL_SETTLEMENT_DOCUMENT_TEMPLATE_VERSION = 'daily-summary-invoice-v2-payment-destination'
 
 export type PersonnelSettlementDocumentInput = {
   documentStage: PersonnelSettlementDocumentStage
@@ -30,6 +32,13 @@ export type PersonnelSettlementDocumentInput = {
   confirmedAt?: string | null
   paidAt?: string | null
   paymentReference?: string | null
+  paymentDestination?: {
+    payment_method: PersonnelPaymentMethod
+    recorded: boolean
+    bank_account_name?: string | null
+    bank_bsb?: string | null
+    bank_account_last4?: string | null
+  } | null
 }
 
 function escapeHtml(value: unknown) {
@@ -176,6 +185,39 @@ function timestamp(value: string) {
   }).format(parsed)
 }
 
+const PAYMENT_METHOD_LABELS: Record<PersonnelPaymentMethod, string> = {
+  bank_transfer: 'Bank transfer / 银行转账',
+  cash: 'Cash / 现金支付',
+  foreign_currency: 'Foreign currency / 外币支付',
+  other: 'Other / 其他支付方式',
+}
+
+function formatBsb(value: unknown) {
+  const digits = cleanText(value).replace(/\D/g, '')
+  return digits.length === 6 ? `${digits.slice(0, 3)}-${digits.slice(3)}` : cleanText(value)
+}
+
+function renderPaymentDestination(input: PersonnelSettlementDocumentInput) {
+  if (input.documentStage !== 'paid') return ''
+  const destination = input.paymentDestination
+  const method = destination?.payment_method || 'bank_transfer'
+  const rows = [`<div><span>Payment method / 付款方式</span><strong>${escapeHtml(PAYMENT_METHOD_LABELS[method])}</strong></div>`]
+  if (method === 'bank_transfer') {
+    if (destination?.recorded && destination.bank_account_name && destination.bank_bsb && destination.bank_account_last4) {
+      rows.push(
+        `<div><span>Paid to / 收款账户名</span><strong>${escapeHtml(destination.bank_account_name)}</strong></div>`,
+        `<div><span>BSB</span><strong>${escapeHtml(formatBsb(destination.bank_bsb))}</strong></div>`,
+        `<div><span>Account / 银行账号</span><strong>Ending ${escapeHtml(destination.bank_account_last4)} / 尾号 ${escapeHtml(destination.bank_account_last4)}</strong></div>`,
+      )
+    } else {
+      rows.push('<div><span>Paid to / 付款去向</span><strong>Not recorded / 未记录</strong></div>')
+    }
+  } else if (!destination?.recorded) {
+    rows.push('<div><span>Payment record / 付款记录</span><strong>Destination not recorded / 付款去向未记录</strong></div>')
+  }
+  return `<section class="payment-details"><h2>Payment details / 付款信息</h2>${rows.join('')}</section>`
+}
+
 export function resolvePersonnelSettlementDocumentKind(gstRegistered: boolean, stage: PersonnelSettlementDocumentStage): PersonnelSettlementDocumentKind {
   if (stage === 'awaiting_confirmation') return 'settlement_draft'
   return gstRegistered ? 'tax_invoice' : 'invoice'
@@ -191,14 +233,20 @@ export function renderPersonnelSettlementDocumentHtml(input: PersonnelSettlement
     paid: 'Paid',
   } as const)[input.documentStage]
   const dailySummaries = summarizePersonnelSettlementDocumentLines(input.lines)
-  const rows = dailySummaries.map((line) => `
+  const rows = dailySummaries.length ? dailySummaries.map((line) => `
     <tr>
       <td>${escapeHtml(line.service_date)}</td>
       <td>${escapeHtml(line.description)}</td>
       <td class="num">${escapeHtml(money(line.total_cents))}</td>
-    </tr>`).join('')
+    </tr>`).join('') : `
+    <tr>
+      <td>${escapeHtml(input.weekEnd)}</td>
+      <td>No payable items / 本周无应付项目</td>
+      <td class="num">${escapeHtml(money(0))}</td>
+    </tr>`
   const supplierName = input.supplier.business_name || input.supplier.legal_name
   const confirmation = input.confirmedAt ? `Confirmed: ${escapeHtml(timestamp(input.confirmedAt))}` : 'Confirmation pending'
+  const paymentDestination = renderPaymentDestination(input)
   const payment = input.documentStage === 'paid'
     ? `<div class="payment">Paid: ${escapeHtml(input.paidAt ? timestamp(input.paidAt) : '')}${input.paymentReference ? ` · Reference: ${escapeHtml(input.paymentReference)}` : ''}</div>`
     : ''
@@ -226,6 +274,10 @@ export function renderPersonnelSettlementDocumentHtml(input: PersonnelSettlement
   .totals { width:310px; margin:18px 0 0 auto; }
   .total-row { display:flex; justify-content:space-between; padding:6px 0; }
   .grand { border-top:2px solid #172033; margin-top:4px; padding-top:9px; font-size:17px; font-weight:800; }
+  .payment-details { margin-top:20px; border:1px solid #bbd4c2; border-radius:8px; background:#f5fbf7; padding:12px 14px; break-inside:avoid; page-break-inside:avoid; }
+  .payment-details h2 { margin:0 0 8px; color:#166534; font-size:13px; }
+  .payment-details > div { display:grid; grid-template-columns:180px 1fr; gap:12px; padding:3px 0; }
+  .payment-details span { color:#64748b; }
   .foot { margin-top:28px; border-top:1px solid #d9dee8; padding-top:12px; color:#475569; line-height:1.6; }
   .payment { margin-top:8px; color:#166534; font-weight:700; }
 </style></head><body>
@@ -238,6 +290,7 @@ export function renderPersonnelSettlementDocumentHtml(input: PersonnelSettlement
   <div><strong>Service period:</strong> ${escapeHtml(input.weekStart)} to ${escapeHtml(input.weekEnd)}</div>
   <table><thead><tr><th>Date</th><th>Description</th><th class="num">Total</th></tr></thead><tbody>${rows}</tbody></table>
   <div class="totals"><div class="total-row"><span>Subtotal</span><span>${escapeHtml(money(input.totals.subtotal_cents))}</span></div><div class="total-row"><span>GST</span><span>${escapeHtml(money(input.totals.gst_cents))}</span></div><div class="total-row grand"><span>Total ${escapeHtml(input.currency)}</span><span>${escapeHtml(money(input.totals.total_cents))}</span></div></div>
+  ${paymentDestination}
   <div class="foot">${confirmation}<br>This document was prepared by Homixa on behalf of the supplier from the locked weekly settlement record.${draft ? '<br>It is a review draft only and cannot be used as a tax invoice.' : ''}${payment}</div>
 </body></html>`
 }

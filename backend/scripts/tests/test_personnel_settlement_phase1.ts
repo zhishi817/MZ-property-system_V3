@@ -316,18 +316,26 @@ const cleaningAssignments = [
   { task_id: 'task-unknown-type', user_id: 'cleaner-1', user_name: 'Cleaner One', service_date: '2026-09-10', task_status: 'pending', property_id: 'property-unknown', property_label: 'P-X', property_type: null, task_type: 'checkout_clean' },
 ]
 const claims = [
-  { id: 'claim-warehouse', submitter_user_id: 'warehouse-1', service_date: '2026-09-09', claim_type: 'warehouse_hour', property_id: null, cleaning_task_id: null, duration_minutes: 90, approved_duration_minutes: null, requested_quantity: null, approved_quantity: null, approved_amount_cents: null, note: 'Warehouse shift' },
-  { id: 'claim-subsidy', submitter_user_id: 'cleaner-1', service_date: '2026-09-09', claim_type: 'subsidy_amount', property_id: null, cleaning_task_id: null, duration_minutes: null, approved_duration_minutes: null, requested_quantity: null, approved_quantity: null, approved_amount_cents: '1500', note: 'Travel subsidy' },
-  { id: 'claim-new-property', submitter_user_id: 'cleaner-1', service_date: '2026-09-10', claim_type: 'new_property_task', property_id: 'property-1', cleaning_task_id: null, duration_minutes: 120, approved_duration_minutes: null, requested_quantity: null, approved_quantity: null, approved_amount_cents: null, note: 'New property setup' },
-  { id: 'claim-direct-without-rule', submitter_user_id: 'subsidy-only', service_date: '2026-09-11', claim_type: 'subsidy_amount', property_id: null, cleaning_task_id: null, duration_minutes: null, approved_duration_minutes: null, requested_quantity: null, approved_quantity: null, approved_amount_cents: '1368', note: 'Approved reimbursement' },
+  { id: 'claim-warehouse', status: 'approved', submitter_user_id: 'warehouse-1', service_date: '2026-09-09', claim_type: 'warehouse_hour', property_id: null, cleaning_task_id: null, duration_minutes: 90, approved_duration_minutes: null, requested_quantity: null, approved_quantity: null, requested_amount_cents: null, approved_amount_cents: null, note: 'Warehouse shift' },
+  { id: 'claim-subsidy', status: 'approved', submitter_user_id: 'cleaner-1', service_date: '2026-09-09', claim_type: 'subsidy_amount', property_id: null, cleaning_task_id: null, duration_minutes: null, approved_duration_minutes: null, requested_quantity: null, approved_quantity: null, requested_amount_cents: '1500', approved_amount_cents: '1500', note: 'Travel subsidy' },
+  { id: 'claim-new-property', status: 'approved', submitter_user_id: 'cleaner-1', service_date: '2026-09-10', claim_type: 'new_property_task', property_id: 'property-1', cleaning_task_id: null, duration_minutes: 120, approved_duration_minutes: null, requested_quantity: null, approved_quantity: null, requested_amount_cents: null, approved_amount_cents: null, note: 'New property setup' },
+  { id: 'claim-direct-without-rule', status: 'approved', submitter_user_id: 'subsidy-only', service_date: '2026-09-11', claim_type: 'subsidy_amount', property_id: null, cleaning_task_id: null, duration_minutes: null, approved_duration_minutes: null, requested_quantity: null, approved_quantity: null, requested_amount_cents: '1368', approved_amount_cents: '1368', note: 'Approved reimbursement' },
 ]
+const submittedSubsidyClaim = {
+  id: 'claim-submitted-subsidy', status: 'submitted', submitter_user_id: 'cleaner-1',
+  service_date: '2026-09-11', claim_type: 'subsidy_amount', property_id: null, cleaning_task_id: null,
+  duration_minutes: null, approved_duration_minutes: null, requested_quantity: null, approved_quantity: null,
+  requested_amount_cents: '1368', approved_amount_cents: null, note: 'Parking reimbursement',
+}
 
 const fakeExecutor = {
-  async query(sql: string) {
+  async query(sql: string, params?: any[]) {
     if (sql.includes('FROM personnel_settlement_profiles')) return { rows: profiles }
     if (sql.includes('FROM personnel_fee_rules')) return { rows: ruleRows }
     if (sql.includes('FROM work_task_action_audits a') && sql.includes('JOIN cleaning_tasks t')) return { rows: previewAudits }
-    if (sql.includes('FROM personnel_workload_claims')) return { rows: claims }
+    if (sql.includes('FROM personnel_workload_claims')) {
+      return { rows: Array.isArray(params?.[3]) && params[3].includes('submitted') ? [...claims, submittedSubsidyClaim] : claims }
+    }
     if (sql.includes('FROM cleaning_tasks t')) return { rows: cleaningAssignments }
     throw new Error(`unexpected query: ${sql.slice(0, 80)}`)
   },
@@ -362,6 +370,7 @@ async function main() {
   assert.strictEqual(preview.source_summary.excluded_cancelled_cleaning_assignments, 2)
   assert.strictEqual(preview.source_summary.excluded_non_checkout_cleaning_assignments, 2)
   assert.strictEqual(preview.source_summary.approved_claims, 4)
+  assert.strictEqual(preview.source_summary.submitted_claims, 0)
   assert.strictEqual(preview.source_summary.legacy_tasks_requiring_manual_review, 0)
 
   const cleaner = preview.people.find((person) => person.user_id === 'cleaner-1')
@@ -401,6 +410,23 @@ async function main() {
   assert.ok(preview.manual_review.warnings.some((warning) => warning.reason === 'multiple_performers_for_task'))
   assert.ok(preview.manual_review.warnings.some((warning) => warning.reason === 'missing_or_unsupported_property_type'))
   assert.ok(preview.excluded_candidates.every((candidate) => !('metadata' in candidate)))
+
+  const submissionPreview = await buildPersonnelSettlementPreview({
+    week_start: '2026-09-07',
+    user_ids: ['cleaner-1'],
+    include_submitted_claims: true,
+  }, fakeExecutor)
+  assert.strictEqual(submissionPreview.source_summary.submitted_claims, 1)
+  const submittedLine = submissionPreview.people.find((person) => person.user_id === 'cleaner-1')?.lines
+    .find((line) => line.source_id === submittedSubsidyClaim.id)
+  assert.deepStrictEqual(
+    submittedLine && {
+      subtotal_cents: submittedLine.subtotal_cents,
+      gst_cents: submittedLine.gst_cents,
+      total_cents: submittedLine.total_cents,
+    },
+    { subtotal_cents: 1_244, gst_cents: 124, total_cents: 1_368 },
+  )
 
   console.log('personnel settlement phase 1 contract tests passed')
 }

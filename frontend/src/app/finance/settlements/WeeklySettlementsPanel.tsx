@@ -40,6 +40,7 @@ import {
   formatSettlementWeekRange,
   mondayForDate,
   previousCompletedWeekStart,
+  settlementHasPartnerSubmission,
   type SettlementAction,
   type SettlementStatus,
 } from './settlementWorkflowUi'
@@ -142,6 +143,21 @@ type WeeklySettlement = {
   audits?: SettlementAudit[]
   documents?: SettlementDocument[]
   related_claims?: RelatedClaim[]
+  finance_review_comparison?: {
+    unresolved_claim_count: number
+    changed: boolean
+    can_pay_without_reconfirmation: boolean
+    partner_line_count: number
+    reviewed_line_count: number
+    partner_subtotal_cents: number
+    partner_gst_cents: number
+    partner_total_cents: number
+    reviewed_subtotal_cents: number
+    reviewed_gst_cents: number
+    reviewed_total_cents: number
+    difference_cents: number
+    blocking_issues: Array<{ source_type: string; source_id: string; code: string }>
+  } | null
   phase5_schema_ready?: boolean
 }
 
@@ -156,11 +172,12 @@ type ActionValues = {
 
 const ACTION_TITLES: Record<SettlementAction, string> = {
   resolve_dispute: '重新核对',
-  return_for_confirmation: '退回合作方再次确认',
+  return_for_confirmation: '重算并退回合作方确认',
+  approve: '确认已核对',
   adjust: '调整结算金额',
   reopen: '重新打开为草稿',
   confirm_paid: '确认已付款',
-  void: '作废本周结算',
+  void: '作废并允许合作方重新提交',
 }
 
 const ERROR_LABELS: Record<string, string> = {
@@ -169,8 +186,7 @@ const ERROR_LABELS: Record<string, string> = {
   settlement_supplier_profile_incomplete: '合作方法定姓名不完整，或已注册 GST 但缺少有效 ABN，不能退回再次确认或付款。',
   settlement_gst_unconfirmed: 'GST 状态尚未确认，不能退回再次确认或付款。',
   settlement_bank_details_incomplete: '银行资料不完整，不能确认付款。',
-  settlement_approval_step_removed: '财务确认步骤已取消，请直接使用“确认已付款”。',
-  settlement_document_generation_failed: '付款已经登记，但最终结算 PDF 生成失败，请稍后在详情中重新生成。',
+  settlement_document_generation_failed: '结算状态已经更新，但当前状态 PDF 生成失败，请稍后在详情中重新生成。',
   settlement_transition_invalid: '当前状态不允许执行这个操作，请刷新后重试。',
   invalid_settlement_dispute_resolution: '请选择核对方式，并检查调整后的应付总额。',
   invalid_final_total_cents: '调整后的应付总额无效。',
@@ -180,6 +196,9 @@ const ERROR_LABELS: Record<string, string> = {
   payment_amount_mismatch: '转账金额必须与结算总额完全一致。',
   personnel_settlement_phase5_schema_not_ready: '阶段 5 数据库尚未启用，自动任务和 PDF 暂不可用。',
   settlement_claims_pending: '该合作方本周仍有草稿、待公司核对、需要补充资料或尚未计入的工作量反馈，暂不能退回再次确认或付款。',
+  settlement_finance_review_changed: '财务核定结果与合作方提交内容存在差异，请重算并退回合作方再次确认后再付款。',
+  settlement_finance_review_unchanged: '财务核定结果与合作方提交内容完全一致，无需退回，请直接完成付款。',
+  settlement_partner_submission_required: '这不是合作方提交形成的草稿，不能使用重算退回操作。',
   settlement_calculation_blocked: '本周仍有无法自动计算的工作量，请先补齐费用规则、GST 或人员资料。',
   settlement_buyer_profile_incomplete: 'Homixa 开票资料不完整，请先维护默认公司名称、ABN 和地址。',
   missing_or_unsupported_property_type: '清洁任务对应的房源没有登记可用房型。',
@@ -336,7 +355,7 @@ export default function WeeklySettlementsPanel() {
     })
     setActionState({ action, settlement })
     const requestId = actionRequestRef.current
-    if (action === 'confirm_paid') {
+    if (action === 'approve' || action === 'confirm_paid' || action === 'return_for_confirmation') {
       setActionDetailLoading(true)
       try {
         const nextDetail = await getJSON<WeeklySettlement>(
@@ -543,11 +562,17 @@ export default function WeeklySettlementsPanel() {
       render: (_, row) => <TableRowActions actions={[
         { key: 'detail', label: '详情', onClick: () => { void openDetail(row) } },
         { key: 'resolve-dispute', label: '重新核对', hidden: !canUseSettlementAction(row.status, 'resolve_dispute', permissions), onClick: () => { void openAction('resolve_dispute', row) } },
-        { key: 'return', label: '退回再次确认', hidden: !canUseSettlementAction(row.status, 'return_for_confirmation', permissions), onClick: () => { void openAction('return_for_confirmation', row) } },
+        {
+          key: 'return',
+          label: '重算并退回确认',
+          hidden: !canUseSettlementAction(row.status, 'return_for_confirmation', permissions)
+            || (row.status === 'draft' && !settlementHasPartnerSubmission(row.rule_snapshot)),
+          onClick: () => { void openAction('return_for_confirmation', row) },
+        },
         { key: 'adjust', label: '调整', hidden: !canUseSettlementAction(row.status, 'adjust', permissions), onClick: () => { void openAction('adjust', row) } },
-        { key: 'reopen', label: '重新打开', hidden: !canUseSettlementAction(row.status, 'reopen', permissions), onClick: () => { void openAction('reopen', row) } },
+        { key: 'approve', label: '确认已核对', hidden: !canUseSettlementAction(row.status, 'approve', permissions), onClick: () => { void openAction('approve', row) } },
         { key: 'confirm-paid', label: '确认已付款', hidden: !canUseSettlementAction(row.status, 'confirm_paid', permissions), onClick: () => { void openAction('confirm_paid', row) } },
-        { key: 'void', label: '作废', danger: true, hidden: !canUseSettlementAction(row.status, 'void', permissions), onClick: () => { void openAction('void', row) } },
+        { key: 'void', label: '作废并允许重提', danger: true, hidden: !canUseSettlementAction(row.status, 'void', permissions), onClick: () => { void openAction('void', row) } },
       ]} />,
     },
   ]
@@ -568,6 +593,21 @@ export default function WeeklySettlementsPanel() {
   const approvedUnincludedClaims = disputeClaims.filter((claim) => claim.status === 'approved' && !claim.included_in_settlement)
   const claimsBlockingResolution = [...unresolvedDisputeClaims, ...approvedUnincludedClaims]
   const paymentSettlement = actionState?.action === 'confirm_paid' ? actionState.settlement : null
+  const financeReviewComparison = actionState?.settlement.finance_review_comparison || null
+  const returnForConfirmationBlocked = actionState?.action === 'return_for_confirmation'
+    && (
+      actionDetailLoading
+      || !financeReviewComparison
+      || financeReviewComparison.unresolved_claim_count > 0
+      || financeReviewComparison.blocking_issues.length > 0
+      || !financeReviewComparison.changed
+    )
+  const financeApprovalBlocked = actionState?.action === 'approve'
+    && (
+      actionDetailLoading
+      || !financeReviewComparison
+      || !financeReviewComparison.can_pay_without_reconfirmation
+    )
   const paymentDestination = paymentSettlement?.payment_destination_preview || paymentSettlement?.payment_destination_snapshot || {}
   const paymentProfile = paymentSettlement?.profile_snapshot || {}
   const paymentMethod = normalizePersonnelPaymentMethod(paymentDestination.payment_method || paymentProfile.payment_method)
@@ -718,6 +758,8 @@ export default function WeeklySettlementsPanel() {
         : actionState ? ACTION_TITLES[actionState.action] : ''}
       okText={actionState?.action === 'resolve_dispute'
         ? '确认并重新发起'
+        : actionState?.action === 'approve'
+          ? '确认已核对'
         : actionState?.action === 'confirm_paid'
           ? '确认已付款'
         : '确认'}
@@ -736,18 +778,56 @@ export default function WeeklySettlementsPanel() {
         danger: actionState?.action === 'void',
         disabled: (actionState?.action === 'resolve_dispute'
           && (actionDetailLoading || !!claimReviewBusy || claimsBlockingResolution.length > 0))
-          || (actionState?.action === 'confirm_paid' && (actionDetailLoading || !paymentDetailsComplete)),
+          || returnForConfirmationBlocked
+          || financeApprovalBlocked
+          || (actionState?.action === 'confirm_paid'
+            && (actionDetailLoading || !paymentDetailsComplete)),
       }}
       onCancel={() => { if (!actionSaving && !claimReviewBusy) closeAction() }}
       onOk={() => void submitAction()}
     >
-      {actionState?.action === 'return_for_confirmation' ? <Alert
-        showIcon
-        type="warning"
-        message="系统会按最新费用规则重新计算，并退回合作方再次确认。"
-        description="如仍存在缺失费用规则、GST 未确认或待核对的工作量反馈，本次退回会被阻止。"
-        style={{ marginBottom: 16 }}
-      /> : null}
+      {actionState && ['approve', 'return_for_confirmation'].includes(actionState.action) ? <Spin spinning={actionDetailLoading} tip="正在核对合作方提交与财务结果">
+        {financeReviewComparison ? <>
+          <Descriptions bordered size="small" column={2} style={{ marginBottom: 16 }}>
+            <Descriptions.Item label="合作方确认项目">{financeReviewComparison.partner_line_count} 项</Descriptions.Item>
+            <Descriptions.Item label="财务核定项目">{financeReviewComparison.reviewed_line_count} 项</Descriptions.Item>
+            <Descriptions.Item label="合作方确认总额">{formatMoney(financeReviewComparison.partner_total_cents)}</Descriptions.Item>
+            <Descriptions.Item label="财务核定总额">{formatMoney(financeReviewComparison.reviewed_total_cents)}</Descriptions.Item>
+            <Descriptions.Item label="金额差异" span={2}>
+              <Typography.Text type={financeReviewComparison.difference_cents === 0 ? undefined : 'danger'} strong>
+                {financeReviewComparison.difference_cents >= 0 ? '+' : ''}{formatMoney(financeReviewComparison.difference_cents)}
+              </Typography.Text>
+            </Descriptions.Item>
+          </Descriptions>
+          {financeReviewComparison.unresolved_claim_count > 0 ? <Alert
+            showIcon
+            type="warning"
+            message={`仍有 ${financeReviewComparison.unresolved_claim_count} 条反馈未完成财务审核`}
+            description="请先完成全部反馈核对，再确认核对完成或退回合作方确认。"
+            style={{ marginBottom: 16 }}
+          /> : financeReviewComparison.blocking_issues.length > 0 ? <Alert
+            showIcon
+            type="error"
+            message="财务核定金额仍无法完整计算"
+            description="请先补齐费用规则、GST 或人员结算资料。"
+            style={{ marginBottom: 16 }}
+          /> : financeReviewComparison.changed ? <Alert
+            showIcon
+            type="warning"
+            message="财务核定结果与合作方确认内容不同"
+            description="确认后系统会按核定结果重建结算，并只在本次有差异时退回合作方再次确认。"
+            style={{ marginBottom: 16 }}
+          /> : <Alert
+            showIcon
+            type="success"
+            message="财务核定结果与合作方确认完全一致"
+            description={actionState.action === 'approve'
+              ? '确认后状态将变为“财务已核对／待付款”，请在线下完成付款后再使用“确认已付款”。'
+              : '无需退回合作方再次确认，请关闭本操作并使用“确认已核对”。'}
+            style={{ marginBottom: 16 }}
+          />}
+        </> : null}
+      </Spin> : null}
       {actionState?.action === 'resolve_dispute' ? <>
         <div className={styles.disputeSummary}>
           <div className={styles.summaryItem}>
@@ -899,7 +979,13 @@ export default function WeeklySettlementsPanel() {
           style={{ marginBottom: 16 }}
         />
       </Spin> : null}
-      {actionState?.action === 'void' ? <Alert showIcon type="error" message="作废会同步作废尚未付款的公司费用；已经付款的结算不能作废。" style={{ marginBottom: 16 }} /> : null}
+      {actionState?.action === 'void' ? <Alert
+        showIcon
+        type="error"
+        message="作废后，合作方可以在移动端重新提交这一周"
+        description="尚未付款的公司费用会同步作废；本次结算保留为审计历史。合作方重新核对完整工作量和总额并提交后，财务再按新结果处理。已经付款的结算不能作废。"
+        style={{ marginBottom: 16 }}
+      /> : null}
       {actionState?.action ? <Form form={form} layout="vertical">
         {actionState.action === 'resolve_dispute' ? <>
           <div className={styles.sectionHeading}>

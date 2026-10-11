@@ -4,6 +4,7 @@ import path from 'path'
 import { pgPool, pgRunInTransaction } from '../dbAdapter'
 import { hasR2, r2GetObjectByKey, r2Upload } from '../r2'
 import { getMelbourneDate } from './personnelSettlement'
+import { normalizePersonnelPaymentMethod, personnelPaymentMethodRequiresBankDetails } from './personnelSettlementPayment'
 import {
   PERSONNEL_SETTLEMENT_DOCUMENT_TEMPLATE_VERSION,
   renderPersonnelSettlementDocumentHtml,
@@ -76,6 +77,39 @@ export function appendPersonnelSettlementFinanceAdjustment(
       total_cents: amountCents,
     },
   ]
+}
+
+export function personnelSettlementDocumentAllowsEmptyLines(totals: {
+  subtotal_cents?: unknown
+  gst_cents?: unknown
+  total_cents?: unknown
+}) {
+  return [totals.subtotal_cents, totals.gst_cents, totals.total_cents]
+    .every((value) => Number(value || 0) === 0)
+}
+
+export function personnelSettlementDocumentPaymentDestination(
+  stage: PersonnelSettlementDocumentStage,
+  profileSnapshot: unknown,
+  paymentDestinationSnapshot: unknown,
+): PersonnelSettlementDocumentInput['paymentDestination'] {
+  if (stage !== 'paid') return null
+  const profile = jsonObject(profileSnapshot)
+  const frozen = jsonObject(paymentDestinationSnapshot)
+  const paymentMethod = normalizePersonnelPaymentMethod(frozen.payment_method || profile.payment_method)
+  const accountNumber = cleanText(frozen.bank_account_number).replace(/\D/g, '')
+  const requiresBank = personnelPaymentMethodRequiresBankDetails(paymentMethod)
+  return {
+    payment_method: paymentMethod,
+    recorded: requiresBank
+      ? Boolean(cleanText(frozen.bank_account_name) && cleanText(frozen.bank_bsb) && accountNumber)
+      : Boolean(cleanText(frozen.payment_method)),
+    ...(requiresBank ? {
+      bank_account_name: cleanText(frozen.bank_account_name) || null,
+      bank_bsb: cleanText(frozen.bank_bsb) || null,
+      bank_account_last4: accountNumber ? accountNumber.slice(-4) : null,
+    } : {}),
+  }
 }
 
 export function serializePersonnelSettlementDocument(row: any) {
@@ -188,10 +222,14 @@ async function loadDocumentSource(settlementId: string, executor: Queryable) {
       ORDER BY service_date, created_at, id`,
     [settlementId],
   )
-  if (!linesResult.rowCount) throw new Error('settlement_lines_required')
   const invoiceNumber = stage === 'awaiting_confirmation'
     ? null
     : cleanText(settlement.supplier_invoice_number) || buildInvoiceNumber(settlement)
+  const paymentDestination = personnelSettlementDocumentPaymentDestination(
+    stage,
+    profile,
+    settlement.payment_destination_snapshot,
+  )
   const baseLines: PersonnelSettlementDocumentInput['lines'] = (linesResult.rows || []).map((line: any) => ({
     service_date: cleanText(line.service_date),
     component_type: cleanText(line.component_type) || null,
@@ -205,6 +243,14 @@ async function loadDocumentSource(settlementId: string, executor: Queryable) {
     gst_cents: Number(line.gst_cents || 0),
     total_cents: Number(line.total_cents || 0),
   }))
+  const documentLines = appendPersonnelSettlementFinanceAdjustment(
+    baseLines,
+    settlement.rule_snapshot,
+    cleanText(settlement.week_end),
+  )
+  if (!documentLines.length && !personnelSettlementDocumentAllowsEmptyLines(settlement)) {
+    throw new Error('settlement_lines_required')
+  }
   const input: PersonnelSettlementDocumentInput = {
     documentStage: stage,
     documentKind: resolvePersonnelSettlementDocumentKind(supplier.gst_registered, stage),
@@ -215,7 +261,7 @@ async function loadDocumentSource(settlementId: string, executor: Queryable) {
     currency: 'AUD',
     supplier,
     buyer,
-    lines: appendPersonnelSettlementFinanceAdjustment(baseLines, settlement.rule_snapshot, cleanText(settlement.week_end)),
+    lines: documentLines,
     totals: {
       subtotal_cents: Number(settlement.subtotal_cents || 0),
       gst_cents: Number(settlement.gst_cents || 0),
@@ -224,6 +270,7 @@ async function loadDocumentSource(settlementId: string, executor: Queryable) {
     confirmedAt: settlement.workload_amount_confirmed_at ? String(settlement.workload_amount_confirmed_at) : null,
     paidAt: settlement.paid_at ? String(settlement.paid_at) : null,
     paymentReference: cleanText(settlement.payment_reference) || null,
+    paymentDestination,
   }
   return { settlement, input }
 }

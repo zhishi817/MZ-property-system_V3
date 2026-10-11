@@ -12,6 +12,7 @@ import {
   getClaimReviewInputMode,
   mondayForDate,
   previousCompletedWeekStart,
+  settlementHasPartnerSubmission,
 } from './settlementWorkflowUi'
 
 describe('settlement workflow UI', () => {
@@ -28,15 +29,28 @@ describe('settlement workflow UI', () => {
     const financeWithoutBank = { canManage: false, canPayout: true, canBank: false }
     expect(canUseSettlementAction('confirmed', 'return_for_confirmation', manager)).toBe(true)
     expect(canUseSettlementAction('confirmed', 'return_for_confirmation', finance)).toBe(true)
+    expect(canUseSettlementAction('draft', 'return_for_confirmation', manager)).toBe(true)
+    expect(canUseSettlementAction('confirmed', 'approve', manager)).toBe(false)
+    expect(canUseSettlementAction('confirmed', 'approve', finance)).toBe(true)
+    expect(canUseSettlementAction('confirmed', 'approve', financeWithoutBank)).toBe(true)
     expect(canUseSettlementAction('confirmed', 'confirm_paid', manager)).toBe(false)
-    expect(canUseSettlementAction('confirmed', 'confirm_paid', finance)).toBe(true)
+    expect(canUseSettlementAction('confirmed', 'confirm_paid', finance)).toBe(false)
     expect(canUseSettlementAction('confirmed', 'confirm_paid', financeWithoutBank)).toBe(false)
+    expect(canUseSettlementAction('finance_approved', 'approve', finance)).toBe(false)
     expect(canUseSettlementAction('finance_approved', 'confirm_paid', finance)).toBe(true)
     expect(canUseSettlementAction('disputed', 'resolve_dispute', manager)).toBe(true)
     expect(canUseSettlementAction('disputed', 'resolve_dispute', finance)).toBe(true)
     expect(canUseSettlementAction('disputed', 'resolve_dispute', { canManage: false, canPayout: false, canBank: false })).toBe(false)
     expect(canUseSettlementAction('disputed', 'reopen', manager)).toBe(false)
     expect(canUseSettlementAction('paid', 'void', finance)).toBe(false)
+  })
+
+  it('requires a non-empty partner submission snapshot before return-for-confirmation is offered', () => {
+    expect(settlementHasPartnerSubmission(null)).toBe(false)
+    expect(settlementHasPartnerSubmission({})).toBe(false)
+    expect(settlementHasPartnerSubmission({ partner_submission: {} })).toBe(false)
+    expect(settlementHasPartnerSubmission({ partner_submission: [] })).toBe(false)
+    expect(settlementHasPartnerSubmission({ partner_submission: { submitted_at: '2026-10-05T04:07:00Z' } })).toBe(true)
   })
 
   it('formats integer cents as AUD', () => {
@@ -87,9 +101,16 @@ describe('settlement workflow UI', () => {
     expect(weeklyPanel).toContain('确认并自动计入')
     expect(weeklyPanel).toContain('反馈已确认并自动计入')
     expect(weeklyPanel).toContain('确认并重新发起')
+    expect(weeklyPanel).toContain('确认已核对')
+    expect(weeklyPanel).toContain('财务已核对／待付款')
     expect(weeklyPanel).toContain('确认已付款')
-    expect(weeklyPanel).toContain('退回合作方再次确认')
-    expect(weeklyPanel).toContain('退回再次确认')
+    expect(weeklyPanel).toContain('重算并退回合作方确认')
+    expect(weeklyPanel).toContain('重算并退回确认')
+    expect(weeklyPanel).toContain('财务核定结果与合作方确认完全一致')
+    expect(weeklyPanel.indexOf("key: 'approve'")).toBeLessThan(weeklyPanel.indexOf("key: 'confirm-paid'"))
+    expect(weeklyPanel).toContain("label: '作废并允许重提'")
+    expect(weeklyPanel).toContain('作废后，合作方可以在移动端重新提交这一周')
+    expect(weeklyPanel).not.toContain("{ key: 'reopen'")
     expect(weeklyPanel).toContain('请先完成${PERSONNEL_PAYMENT_METHOD_LABELS[paymentMethod]}')
     expect(weeklyPanel).toContain('结算账面金额仍以 AUD 记录')
     expect(weeklyPanel).toContain('personnelPaymentMethodRequiresBankDetails(paymentMethod)')

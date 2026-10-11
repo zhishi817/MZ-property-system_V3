@@ -10,6 +10,7 @@ import dayGridPlugin from '@fullcalendar/daygrid'
 import interactionPlugin from '@fullcalendar/interaction'
 import { API_BASE, getJSON, authHeaders } from '../../lib/api'
 import { sortOrders } from '../../lib/orderSort'
+import { orderCancellationPermissionState } from '../../lib/orderPermissions'
 import { monthSegments, getMonthSegmentsForProperty, calcOrderMonthAmounts, toDayStr } from '../../lib/orders'
 import { sortActivePropertiesByRegionThenCode } from '../../lib/properties'
 import { hasPerm } from '../../lib/auth'
@@ -111,6 +112,11 @@ export default function OrdersPage() {
     const s = String(raw || '').trim().toLowerCase()
     return s.includes('cancel')
   }
+  const editCancelPermission = orderCancellationPermissionState({
+    currentStatus: current?.status,
+    hasCancelPermission: hasPerm('order.cancel'),
+    hasCancelOverridePermission: hasPerm('order.cancel.override'),
+  })
   function getLateCheckoutAmount(v: any): number {
     return roundMoney(v?.late_checkout ? 20 : Number(v?.late_checkout_fee || 0))
   }
@@ -1140,6 +1146,10 @@ export default function OrdersPage() {
 
   async function submitEdit() {
     const v = await editForm.validateFields()
+    if (!isCanceledStatus(current?.status) && isCanceledStatus(v.status) && !editCancelPermission.canSelectCancelled) {
+      message.error(editCancelPermission.disabledReason || '没有取消订单的权限')
+      return
+    }
     const nights = v.checkin && v.checkout ? Math.max(0, dayjs(v.checkout).diff(dayjs(v.checkin), 'day')) : 0
     const isBooking = String(v.source || '').toLowerCase().includes('book')
     const totalPaymentRaw = isBooking ? Number(v.total_payment_raw ?? 0) : null
@@ -2216,8 +2226,16 @@ export default function OrdersPage() {
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item name="status" label="状态" initialValue="confirmed"> 
-                <Select options={[{ value: 'confirmed', label: '已确认' }, { value: 'canceled', label: '已取消' }]} />
+              <Form.Item
+                name="status"
+                label="状态"
+                initialValue="confirmed"
+                extra={editCancelPermission.disabledReason || editCancelPermission.guidance || undefined}
+              >
+                <Select options={[
+                  { value: 'confirmed', label: '已确认' },
+                  { value: 'canceled', label: '已取消', disabled: !editCancelPermission.canSelectCancelled },
+                ]} />
               </Form.Item>
             </Col>
             <Col span={8}>

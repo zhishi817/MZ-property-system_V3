@@ -1,5 +1,1426 @@
 # Change Release Ledger
 
+## CRL-20261010-001 — 日常任务执行列表权威可见性（root）
+
+- **Status:** four-CRL staged candidate validated；final independent commit review pending；not committed, not pushed, not released
+- **Repository:** `root`
+- **Updated:** 2026-10-10 UTC
+- **Request:** 将 MZ-021 的最新执行列表口径整合到新 Dev 候选：审核中、已关闭和未分配任务不得进入日常执行列表，同时保留周转任务、已完成普通线下任务及独立审核/历史入口。
+- **Outcome:** Root API 先以单一权威投影决定执行可见性，显式保留来源工作流状态和类型别名并 fail-closed；Web 只渲染该投影允许的房源跟进任务。MZ-010 的统计层只消费这份权威结果，不重新定义可见性。
+
+### Implementation
+
+- 新增共享 `dailyTaskExecutionVisibility`，统一审核状态、来源类型、分派人与完成别名规则。
+- `mzapp` 与 task center 在服务端过滤；Web display helper 再做防御性过滤，避免旧缓存或异常 payload 绕过。
+- 维修来源保留原始 `source_workflow_status`，防止规范化状态覆盖审核事实。
+
+### Files / Areas
+
+- `backend/package.json` — 接入权威可见性契约测试。
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — Root 状态/类型/分派/fail-closed 矩阵。
+- `backend/scripts/tests/test_task_center_daily_projection.ts` — Web cleaning 真实映射、周转分组和未分配过滤。
+- `backend/src/lib/dailyTaskExecutionVisibility.ts` — 单一权威投影。
+- `backend/src/modules/mzapp.ts` — Mobile API 执行列表投影。
+- `backend/src/modules/task_center.ts` — Web task center 权威投影与来源状态保留。
+- `frontend/src/app/task-center/page.tsx` — 只渲染已授权执行项。
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — Web 防御性显示规则。
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — Web 审核/关闭/未分配回归。
+- `docs/feature-regression-registry.md` — FR-035。
+- `docs/change-release-ledger.md` — 本候选身份与边界。
+
+### Impact / Dependencies
+
+- 配套 `mobile/CRL-20261010-001`；两端应一起验证和选择。
+- 无 schema、migration 或生产数据更改；不删除来源审核/历史记录，只改变日常执行投影。
+
+### Validation
+
+- Root visibility/statistics/guest-ready/dev-activity focused contracts：PASS；Web task-center display 12/12：PASS；backend/frontend TypeScript：PASS。
+- Post-review fresh `/tmp` paired `npm run check:full`：PASS；backend build and full wired contracts、frontend lint / 53 files / 268 tests / production build、Mobile typecheck / lint 0 errors / 67 suites / 399 tests 均通过。
+- Ledger coverage 29/29、Feature Registry 32 FR / 241 mappings、`git diff --check`：PASS。
+- Independent review：GO for local commit candidate；确认 cleaning 三种映射均保留来源身份、task center 在统计/组装前先做权威投影，且无剩余 P0/P1。
+- Database/API service/device/deploy：not run；完整检查明确清空数据库 URL 并关闭 workers，只使用测试内本机回环 mock HTTP。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none；隔离候选无未跟踪文件、依赖目录、缓存、构建产物、环境文件或密钥。
+- **Shared-hunk note:** 共享文件的精确 hunk 会在相关已选 CRL 中重复登记；四个 CRL 作为同一原子候选审查，审计按并集精确匹配。
+- `backend/package.json` — SHA-256: `2e2b30bd5fed4771346763c3c9e2985a8b3df7832b79eae6232f7d7a09568c25`
+- `backend/package.json` — SHA-256: `8850c99197ea6b517c67c722cf8f51ab6d386d64429565eabeb1097d4478a2d1`
+- `backend/package.json` — SHA-256: `dc129550bceb8be3308dbb502ec26f1812e258b8cdd4e435995a21b7a8e64073`
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — SHA-256: `4c7a7c45d51080c14e347352e4b8ac359090f8bce16cef13a6c74b9f4f912785`
+- `backend/scripts/tests/test_task_center_daily_projection.ts` — SHA-256: `0ee14abc351c6aae475321424e18604bcaca25c93ac2751476c13cac741da708`
+- `backend/src/lib/dailyTaskExecutionVisibility.ts` — SHA-256: `ca866afda155f347fbcf8a235b0464c6de8c50eb7c580975862dfff79e71d843`
+- `backend/src/modules/mzapp.ts` — SHA-256: `0f46beb8272b0a3292ac1a2ec53d6294f2aa3e47180d6c690e4e0ab4ed5f1a60`
+- `backend/src/modules/mzapp.ts` — SHA-256: `1181b8193667fcf76e381cbb5ab6763faab46c5cb00ec8bb2c11299dbc07d8a2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `122df75377ee7b3b9140628c610843842d4893fc719997743d3626472c936eba`
+- `backend/src/modules/mzapp.ts` — SHA-256: `13998a8bd52a5133d39a15586b0c7bf0600edda82f8d55d85b6c61c89aa48861`
+- `backend/src/modules/mzapp.ts` — SHA-256: `220a9037ce27d8926fc33f8c762f3775f303f376852012960079548242dcdd2c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `25a517c3e9a435c61301dd936cf35bda1b9320dba257b99e8f6f7805af2e7ca7`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2d48e32e84c8b260d7ddce6e0b698a87956de6638d7abb576c26610be4de8022`
+- `backend/src/modules/mzapp.ts` — SHA-256: `36f8d936dd4a25795a370bc414739297ac87724233ba6cc6d479f5b9869d4b4c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `40cfd611f1b2c1f3188c552e3bc81bc378069a6fe4265db64b22eddf7d2b7a23`
+- `backend/src/modules/mzapp.ts` — SHA-256: `45eae83fb927a3808a5a480b91be46cb45b5f60ca72d583e0704794f39827534`
+- `backend/src/modules/mzapp.ts` — SHA-256: `46bdc85f30a3c1b0472b155b92abca89808b676a8a9d56595baecc0f1fbc74fa`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5003e5715f5962141f7f4cf14f3170558dba3897d337cf50788d2ca755444a79`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5cfbabf633f9cf46b003e38375c5d92d5435380857876eeff65bbd7c7aa1dafb`
+- `backend/src/modules/mzapp.ts` — SHA-256: `68ab5b78d3a1f67d3aea730c170432109263e59227f9fda7ff2fe225b5723d78`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7586152f5bd32f430cbf7a756b6e7401f0a3fc01b8210e29ee76804c1b50a003`
+- `backend/src/modules/mzapp.ts` — SHA-256: `79a85798bc7621f9d8941478fe253af71c554f82a587d1a439e7c817fa7a5b66`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7e2d03b2e617524f3ed1b34ce6e729c387a1ce1e0d3900874f69ae4c51cac7e2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `803e49c879c1b89fef19b88f521c368451079bc273c64ae818101caed754e53b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `898cb8248c99eaa06b96f5f390520bea54a2067065c31d061421ab26ec2bddf4`
+- `backend/src/modules/mzapp.ts` — SHA-256: `a77325e1aaa43e32dec5f66b9f5797907f998aa01e76302a7d13ddb5d547152a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `c7f62639fcd8979a8ae5d688703ddaf54c83b30e8f184a6ee13d51158761449f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d371cf132067c580324ba2b6e19029aa9b0bac5015a8435f25f8b376fac63ca6`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d8d7343c65f83373f7eee52c11159467e91ad4500d490f5c57a36ae29af86f32`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e67850556cc09157802d3bbbdcda13f76fc25b1c53e0e76fb6c448dbc655619a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `eebc5fe499faea9df674012694a7e00fbc9637afbc35c20dd612640da443c1c9`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f02948df320c4699b415590a544838098f943f0d6508c4886f20b1a16e30815b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f74038af885f2bf5a2ccd2827b3d3da92bd7b46302df42f90a84cb9c8900fdc2`
+- `backend/src/modules/task_center.ts` — SHA-256: `119b1853db7e19056b3e8613e1cc55269b8e463f41871ed72c991e46ce4d32c8`
+- `backend/src/modules/task_center.ts` — SHA-256: `256a001bd0b97a0963b68243d6f94276bbd6db7101d15ee660fe1da162323638`
+- `backend/src/modules/task_center.ts` — SHA-256: `27ecf98746ee0a8a6b58987b4f493a07bc7aed155b090c144eaa1d82e38c38e1`
+- `backend/src/modules/task_center.ts` — SHA-256: `3d95a9e5461a9964aa9d8123e82447a59b34479c961a8a8d9a11596187c6f7e7`
+- `backend/src/modules/task_center.ts` — SHA-256: `3e9a9899b2fedabeba2982d5b3c703ae47993c45a4fa9a8b7831a728f8208127`
+- `backend/src/modules/task_center.ts` — SHA-256: `54fd69a7a1eb2b0e73f41edadb7573bac2bf6c05e98265c161cf61885dd93e9b`
+- `backend/src/modules/task_center.ts` — SHA-256: `62809b5af311b459c7817629bedf01c8902d82acd53ed1a0311548eb854d63c8`
+- `backend/src/modules/task_center.ts` — SHA-256: `62fdf4d3e70f1a9090a2c40f69e06dba91ab61f54db9dd93bc0445a5853f9aec`
+- `backend/src/modules/task_center.ts` — SHA-256: `73263aa1010b37290654f0884ac710209e1eac63a6db36d3de54be62cfb2fe06`
+- `backend/src/modules/task_center.ts` — SHA-256: `83c3dc5cf1ea3e9f1b69e78895fdf60f1c37712372a3c81e9b768acfda966f39`
+- `backend/src/modules/task_center.ts` — SHA-256: `872547c039c7543c0bf2b63287e1303799a879b7b8e0681cdc3ff8a7f7ea8c5a`
+- `backend/src/modules/task_center.ts` — SHA-256: `88b8c579d869ab18a32a8aab1d836cf76f71116a6ae682b5da50c25d20d3b013`
+- `backend/src/modules/task_center.ts` — SHA-256: `8b909ce1d6da5062c8c44af35ba23ce9a761508752704a9309e96aec1cd2a4bb`
+- `backend/src/modules/task_center.ts` — SHA-256: `8fb759ada3bc138229629d13e0387ee33b3aec6add501ff252f3fa153e0a33a0`
+- `backend/src/modules/task_center.ts` — SHA-256: `9b4db6ec97404aad671cc4af9b7d2c77935ba8aec9aee6d00df2d95fb1e4e1d7`
+- `backend/src/modules/task_center.ts` — SHA-256: `9f07f79fe13d04cc9a9fa22853ffb4beab7dc701588e76bc16608a5d36b3e42a`
+- `backend/src/modules/task_center.ts` — SHA-256: `b084dc5f88adba14e29ecd39c6f9de14486b5bdf6dd92b23cfd0a8f5bab17112`
+- `backend/src/modules/task_center.ts` — SHA-256: `b303d6aca70773837e7b8857911233a0c22acbad374f2bec9758ebe628312471`
+- `backend/src/modules/task_center.ts` — SHA-256: `c04c7fce62cf5e72ef2ab002ba29f6b1bb45754e7a7d63849e91912101c6d35d`
+- `backend/src/modules/task_center.ts` — SHA-256: `c8f61f76300937785e4581bbb0fcd35370a91759736ed423a00318741ec8e7a7`
+- `backend/src/modules/task_center.ts` — SHA-256: `cdbb35bb13bbc8a508ee97ab2c3f978a8cb7eecd51076e75e6ecb592daeac0de`
+- `backend/src/modules/task_center.ts` — SHA-256: `d7fc512cc00a889b6aba07b3e6be0602841d82a7b5e85824d1fb83d51c4f5542`
+- `backend/src/modules/task_center.ts` — SHA-256: `d8cebc214abd7d0ca4e0d07b05ceda8b1704dffaf7b70fe2ab03d73f45e0d0b5`
+- `backend/src/modules/task_center.ts` — SHA-256: `e31f5f7503bf736c2f9bf5b21b41983f63e3abdbe20cb695031b41ef530a2c61`
+- `backend/src/modules/task_center.ts` — SHA-256: `e40d4660f36e866be1c1067172f290e396c9c281c10556b4a4c49479c8ecf5b1`
+- `backend/src/modules/task_center.ts` — SHA-256: `e8a39f3a9863db0794e353d5ba01c88348a569c9ef20e7495adbca0d6f1d326e`
+- `backend/src/modules/task_center.ts` — SHA-256: `ed813a19d6a30ae80a0eb73d939542043cd12da35dfcc95e200a18c9de52f747`
+- `backend/src/modules/task_center.ts` — SHA-256: `f25b14af00a95ee7516875708a5f48298d7c2a02936305ff0ceabd6db0f13f7a`
+- `backend/src/modules/task_center.ts` — SHA-256: `f49dd688b1d8ecfae62716b96106cd492405a0822b5f7996e44df13872055ad7`
+- `backend/src/modules/task_center.ts` — SHA-256: `f8e74aef0f184cfc0a87b480d853e3bcf4bc063c28f13c443d210f94e76503a7`
+- `backend/src/modules/task_center.ts` — SHA-256: `f990c56c0f34ff2658dad63914661007483a067d3cb90f607de6aab03cb4fb5f`
+- `docs/feature-regression-registry.md` — SHA-256: `20c9990d47cfab7d1006973a23ee08a1b886d9000b619d25db43103a5aa48314`
+- `docs/feature-regression-registry.md` — SHA-256: `4284cdc5ee126b70130721db3af47a4704ecea6a970e66024608dfd1564e0dee`
+- `docs/feature-regression-registry.md` — SHA-256: `616c06c088f086ac84b37148e3b08009b3b640ff085531b4ea636bd2cd992280`
+- `docs/feature-regression-registry.md` — SHA-256: `c414d63411947579ccd52a37700e81b96eba839a90064494e93f0b018beee0fb`
+- `docs/feature-regression-registry.md` — SHA-256: `d60b5eeb01c6afcba9277f864b9a8e12583264bd9af79952501af53f058f9cab`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `0557303660cb2ac5b83997a179a6380b66d25295a3f09ddf870dee8f3637c07c`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `25826535491b72603b4fccf8ad49e6da97c3067758b5661b57690f75674ae287`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `2e93aa25c4f707feb51f8b94e690fa5cc7a32d2306c029fba9aafe380c9740b5`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `4545827d179cf652fa1082d5c309e6ff5e1545c6336fbbf6f3294bc0f2d07710`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `4638186dce81113e44292b068e20f578e398c8730b572b74b00f850a588612d1`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `5b866275a33500dd32f66bf24fce7f8f5365e283d5c661c3d18196c9148ab8ea`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `5de4b90190605274ed9b0bd0bc404768cc5043f9da6b5563092b96017eff567c`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `623f0326044bf88bd9b27061c1e7924d00648bcb6c4d490420ddfedc3d6656e0`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `6da26468207faa19103858e03201cf2de4f83c6bf0b8948fc5343c8b89f0927b`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `7eaa62eaa9b590de9354d0cb856d137cd8ed1574a987d5e466a16d6070624269`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `8225fd8f1cce464a59ea4467b588e61b49ae46e70cc7089f9fccdb05e45d6358`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `85b71bfdf51e567bfb2b4135e4a05ab7a3f2f9580715e1384db6396c6a17ec5d`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `9c6d99161ad299bccae3a401367147d4a0268d7dc54fd847c45e2fcce85a4efd`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `b9008b36c9757533ecef72b9f7cfde6e00ed073e71ee02c81c939d758eccacb0`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `dac121eab39bfbd281f67a26c87327d5a017f792ef23accbed9e8043c394eccb`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `ee336ee33747ffd4633520df6c7875672cc390c6bccd80443c7ac31ffc22aca4`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `ef184c9ac41d1bf99ec4bbc5517db5bb47fc049389aa3c1532768bbc991b8608`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `fc252d8e6949c79ea2775776c8910ed3372cdeee749e9a6ba0dff93471801dd7`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `09cdbd8f32e19884a37f8614009b2d7b0819dbea4ce5b1bdaef6c5a7cbc8cbba`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `9f693ad0687d90c0530210c5cba9b188c8e9f4b0d90617bd9970dbc2f2a8b597`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `afa36dc950120d00ce5ec8564e991324209185396177f179e8326791c3d9352f`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `bf86fe6f449605f500c1778131f938e1fa6c5d8edf92dd72352c927a007f7026`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `d2d8e7ecae6d2ea568b2749dd82c9659da58fe42e8442e0e198cc614ed082699`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `eba4b7d0ecf59a2d774a0379bb2ec551ed4ec9ba875dded981abed45be28767d`
+
+### Release Attempts
+
+### Risks / Release Notes
+
+- Git state：fresh `origin/Dev@e9e32847c49782a34163267681174c57db3a8952` local candidate；not staged or committed。
+- 本地契约不能代替真实账号和设备验收；发布与生产验证需另行授权。
+
+## CRL-20261010-002 — 每日任务分组与客人已通知状态（root）
+
+- **Status:** four-CRL staged candidate validated；final independent commit review pending；not committed, not pushed, not released
+- **Repository:** `root`
+- **Updated:** 2026-10-10 UTC
+- **Request:** 整合 MZ-010：入住与退房按房源/日期合并计数，线下任务独立计数；为当前入住订单记录可撤销的“已通知客人”状态，不发送任何消息。
+- **Outcome:** 统计键只在 CRL-20261010-001 的权威可见任务上生成；周转按房源/日期去重、线下按任务计数。客人通知状态绑定当前 check-in 订单，使用独立权限、版本和审计，并提供 Web/Mobile 所需投影与动作。
+
+### Implementation
+
+- 新增日统计投影、订单通知状态读取/mark/revoke 和显式数据库迁移。
+- mark 只允许房源已经完成待客准备且仍指向当前 check-in 订单；revoke 保留审计并可在准备状态变化后撤销。
+- Web task center 展示两组计数和通知状态；不接入短信、邮件、push 或第三方消息通道。
+
+### Files / Areas
+
+- `backend/package.json` — 接入统计和通知契约。
+- `backend/scripts/migrations/20261004_order_guest_ready_notification.sql` — 显式 schema/权限迁移；本轮未执行。
+- `backend/scripts/tests/test_daily_task_execution_stats.ts` — 可见性先行、周转去重与线下计数。
+- `backend/scripts/tests/test_guest_ready_notification.ts` — mark/revoke、幂等、冲突、权限与审计契约。
+- `backend/src/lib/dailyTaskExecutionStats.ts` — 分组键投影。
+- `backend/src/lib/guestReadyNotification.ts` — 通知状态业务规则。
+- `backend/src/lib/workTaskActions.ts` — 通知动作合并。
+- `backend/src/modules/mzapp.ts` — Mobile API 统计与通知路由/投影。
+- `backend/src/modules/task_center.ts` — Web 统计、通知能力和路由。
+- `backend/src/permissionsCatalog.ts` — 独立通知记录权限。
+- `backend/src/store.ts` — 通知状态持久化契约。
+- `frontend/src/app/task-center/page.tsx` — Web 计数及 mark/revoke 交互。
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — Web 统计和通知展示 helper。
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — Web 展示回归。
+- `package.json` — 根质量检查接入。
+
+### Impact / Dependencies
+
+- 配套 `mobile/CRL-20261010-002`，并依赖 root/mobile CRL-20261010-001 的执行可见性口径。
+- 新 migration 只登记未执行；本轮不连接数据库、不改角色权限或订单、不发送通知。
+
+### Validation
+
+- Root 统计、guest-ready、MZ-021 authority 契约：PASS；Web display 12/12：PASS；Root/Mobile 类型检查：PASS。
+- Post-review paired complete quality chain：PASS；Root backend/frontend build、全套契约和 Mobile 67 suites / 399 tests 均通过；lint 仅仓库既有 warnings、0 errors。
+- Independent review：GO for local commit candidate；确认统计只消费权威可见任务，guest-ready 权限态变更由 Mobile 走 unsafe-event 全量刷新，不共享收件人相关 actions patch。
+- Ledger/Feature Registry/whitespace audits：PASS。
+- Migration/DEV route/device/user acceptance/deploy：not run；本轮未连接或写入数据库。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none；隔离候选无未跟踪文件、依赖目录、缓存、构建产物、环境文件或密钥。
+- **Shared-hunk note:** 共享文件的精确 hunk 会在相关已选 CRL 中重复登记；四个 CRL 作为同一原子候选审查，审计按并集精确匹配。
+- `backend/package.json` — SHA-256: `2e2b30bd5fed4771346763c3c9e2985a8b3df7832b79eae6232f7d7a09568c25`
+- `backend/package.json` — SHA-256: `8850c99197ea6b517c67c722cf8f51ab6d386d64429565eabeb1097d4478a2d1`
+- `backend/package.json` — SHA-256: `dc129550bceb8be3308dbb502ec26f1812e258b8cdd4e435995a21b7a8e64073`
+- `backend/scripts/migrations/20261004_order_guest_ready_notification.sql` — SHA-256: `0922af3c8219f6e1229fc9fd00faedb15b1d4da28c6ad6d6a3dc0256e339f558`
+- `backend/scripts/tests/test_daily_task_execution_stats.ts` — SHA-256: `34e555e85d204919eae078708650c591b8fca0750acceac13e039cc996dd2a19`
+- `backend/scripts/tests/test_guest_ready_notification.ts` — SHA-256: `d9de44fb58a4d6e01afe94fa1c55f797d9f097b081b7d286c25e3688d4d954e8`
+- `backend/src/lib/dailyTaskExecutionStats.ts` — SHA-256: `e6e042344f787dd283aa9d5799f4007623401b86d96cda8a073a7b90ae2dd9ef`
+- `backend/src/lib/guestReadyNotification.ts` — SHA-256: `91fd16cdf4f4473f2db977d7534eaeacb8f55e2649038f9d87eec86fe629f8d6`
+- `backend/src/lib/workTaskActions.ts` — SHA-256: `6ba90316738e717fc945c8bd5a0ab4566f1a4bd35821abd708ccdb17c8a4a7b3`
+- `backend/src/lib/workTaskActions.ts` — SHA-256: `8596774b88160655ebac002d7e4a791c7f151a3fa1de498a20dbb24d52b0c67e`
+- `backend/src/lib/workTaskActions.ts` — SHA-256: `ac38e1052d887cf87e5bd222bc4ceeb9442b69badfa758618988ece388d7524f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `0f46beb8272b0a3292ac1a2ec53d6294f2aa3e47180d6c690e4e0ab4ed5f1a60`
+- `backend/src/modules/mzapp.ts` — SHA-256: `1181b8193667fcf76e381cbb5ab6763faab46c5cb00ec8bb2c11299dbc07d8a2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `122df75377ee7b3b9140628c610843842d4893fc719997743d3626472c936eba`
+- `backend/src/modules/mzapp.ts` — SHA-256: `13998a8bd52a5133d39a15586b0c7bf0600edda82f8d55d85b6c61c89aa48861`
+- `backend/src/modules/mzapp.ts` — SHA-256: `220a9037ce27d8926fc33f8c762f3775f303f376852012960079548242dcdd2c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `25a517c3e9a435c61301dd936cf35bda1b9320dba257b99e8f6f7805af2e7ca7`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2d48e32e84c8b260d7ddce6e0b698a87956de6638d7abb576c26610be4de8022`
+- `backend/src/modules/mzapp.ts` — SHA-256: `36f8d936dd4a25795a370bc414739297ac87724233ba6cc6d479f5b9869d4b4c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `40cfd611f1b2c1f3188c552e3bc81bc378069a6fe4265db64b22eddf7d2b7a23`
+- `backend/src/modules/mzapp.ts` — SHA-256: `45eae83fb927a3808a5a480b91be46cb45b5f60ca72d583e0704794f39827534`
+- `backend/src/modules/mzapp.ts` — SHA-256: `46bdc85f30a3c1b0472b155b92abca89808b676a8a9d56595baecc0f1fbc74fa`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5003e5715f5962141f7f4cf14f3170558dba3897d337cf50788d2ca755444a79`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5cfbabf633f9cf46b003e38375c5d92d5435380857876eeff65bbd7c7aa1dafb`
+- `backend/src/modules/mzapp.ts` — SHA-256: `68ab5b78d3a1f67d3aea730c170432109263e59227f9fda7ff2fe225b5723d78`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7586152f5bd32f430cbf7a756b6e7401f0a3fc01b8210e29ee76804c1b50a003`
+- `backend/src/modules/mzapp.ts` — SHA-256: `79a85798bc7621f9d8941478fe253af71c554f82a587d1a439e7c817fa7a5b66`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7e2d03b2e617524f3ed1b34ce6e729c387a1ce1e0d3900874f69ae4c51cac7e2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `803e49c879c1b89fef19b88f521c368451079bc273c64ae818101caed754e53b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `898cb8248c99eaa06b96f5f390520bea54a2067065c31d061421ab26ec2bddf4`
+- `backend/src/modules/mzapp.ts` — SHA-256: `a77325e1aaa43e32dec5f66b9f5797907f998aa01e76302a7d13ddb5d547152a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `c7f62639fcd8979a8ae5d688703ddaf54c83b30e8f184a6ee13d51158761449f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d371cf132067c580324ba2b6e19029aa9b0bac5015a8435f25f8b376fac63ca6`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d8d7343c65f83373f7eee52c11159467e91ad4500d490f5c57a36ae29af86f32`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e67850556cc09157802d3bbbdcda13f76fc25b1c53e0e76fb6c448dbc655619a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `eebc5fe499faea9df674012694a7e00fbc9637afbc35c20dd612640da443c1c9`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f02948df320c4699b415590a544838098f943f0d6508c4886f20b1a16e30815b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f74038af885f2bf5a2ccd2827b3d3da92bd7b46302df42f90a84cb9c8900fdc2`
+- `backend/src/modules/task_center.ts` — SHA-256: `119b1853db7e19056b3e8613e1cc55269b8e463f41871ed72c991e46ce4d32c8`
+- `backend/src/modules/task_center.ts` — SHA-256: `256a001bd0b97a0963b68243d6f94276bbd6db7101d15ee660fe1da162323638`
+- `backend/src/modules/task_center.ts` — SHA-256: `27ecf98746ee0a8a6b58987b4f493a07bc7aed155b090c144eaa1d82e38c38e1`
+- `backend/src/modules/task_center.ts` — SHA-256: `3d95a9e5461a9964aa9d8123e82447a59b34479c961a8a8d9a11596187c6f7e7`
+- `backend/src/modules/task_center.ts` — SHA-256: `3e9a9899b2fedabeba2982d5b3c703ae47993c45a4fa9a8b7831a728f8208127`
+- `backend/src/modules/task_center.ts` — SHA-256: `54fd69a7a1eb2b0e73f41edadb7573bac2bf6c05e98265c161cf61885dd93e9b`
+- `backend/src/modules/task_center.ts` — SHA-256: `62809b5af311b459c7817629bedf01c8902d82acd53ed1a0311548eb854d63c8`
+- `backend/src/modules/task_center.ts` — SHA-256: `62fdf4d3e70f1a9090a2c40f69e06dba91ab61f54db9dd93bc0445a5853f9aec`
+- `backend/src/modules/task_center.ts` — SHA-256: `73263aa1010b37290654f0884ac710209e1eac63a6db36d3de54be62cfb2fe06`
+- `backend/src/modules/task_center.ts` — SHA-256: `83c3dc5cf1ea3e9f1b69e78895fdf60f1c37712372a3c81e9b768acfda966f39`
+- `backend/src/modules/task_center.ts` — SHA-256: `872547c039c7543c0bf2b63287e1303799a879b7b8e0681cdc3ff8a7f7ea8c5a`
+- `backend/src/modules/task_center.ts` — SHA-256: `88b8c579d869ab18a32a8aab1d836cf76f71116a6ae682b5da50c25d20d3b013`
+- `backend/src/modules/task_center.ts` — SHA-256: `8b909ce1d6da5062c8c44af35ba23ce9a761508752704a9309e96aec1cd2a4bb`
+- `backend/src/modules/task_center.ts` — SHA-256: `8fb759ada3bc138229629d13e0387ee33b3aec6add501ff252f3fa153e0a33a0`
+- `backend/src/modules/task_center.ts` — SHA-256: `9b4db6ec97404aad671cc4af9b7d2c77935ba8aec9aee6d00df2d95fb1e4e1d7`
+- `backend/src/modules/task_center.ts` — SHA-256: `9f07f79fe13d04cc9a9fa22853ffb4beab7dc701588e76bc16608a5d36b3e42a`
+- `backend/src/modules/task_center.ts` — SHA-256: `b084dc5f88adba14e29ecd39c6f9de14486b5bdf6dd92b23cfd0a8f5bab17112`
+- `backend/src/modules/task_center.ts` — SHA-256: `b303d6aca70773837e7b8857911233a0c22acbad374f2bec9758ebe628312471`
+- `backend/src/modules/task_center.ts` — SHA-256: `c04c7fce62cf5e72ef2ab002ba29f6b1bb45754e7a7d63849e91912101c6d35d`
+- `backend/src/modules/task_center.ts` — SHA-256: `c8f61f76300937785e4581bbb0fcd35370a91759736ed423a00318741ec8e7a7`
+- `backend/src/modules/task_center.ts` — SHA-256: `cdbb35bb13bbc8a508ee97ab2c3f978a8cb7eecd51076e75e6ecb592daeac0de`
+- `backend/src/modules/task_center.ts` — SHA-256: `d7fc512cc00a889b6aba07b3e6be0602841d82a7b5e85824d1fb83d51c4f5542`
+- `backend/src/modules/task_center.ts` — SHA-256: `d8cebc214abd7d0ca4e0d07b05ceda8b1704dffaf7b70fe2ab03d73f45e0d0b5`
+- `backend/src/modules/task_center.ts` — SHA-256: `e31f5f7503bf736c2f9bf5b21b41983f63e3abdbe20cb695031b41ef530a2c61`
+- `backend/src/modules/task_center.ts` — SHA-256: `e40d4660f36e866be1c1067172f290e396c9c281c10556b4a4c49479c8ecf5b1`
+- `backend/src/modules/task_center.ts` — SHA-256: `e8a39f3a9863db0794e353d5ba01c88348a569c9ef20e7495adbca0d6f1d326e`
+- `backend/src/modules/task_center.ts` — SHA-256: `ed813a19d6a30ae80a0eb73d939542043cd12da35dfcc95e200a18c9de52f747`
+- `backend/src/modules/task_center.ts` — SHA-256: `f25b14af00a95ee7516875708a5f48298d7c2a02936305ff0ceabd6db0f13f7a`
+- `backend/src/modules/task_center.ts` — SHA-256: `f49dd688b1d8ecfae62716b96106cd492405a0822b5f7996e44df13872055ad7`
+- `backend/src/modules/task_center.ts` — SHA-256: `f8e74aef0f184cfc0a87b480d853e3bcf4bc063c28f13c443d210f94e76503a7`
+- `backend/src/modules/task_center.ts` — SHA-256: `f990c56c0f34ff2658dad63914661007483a067d3cb90f607de6aab03cb4fb5f`
+- `backend/src/permissionsCatalog.ts` — SHA-256: `89ace6dbb2de8bd2b79420ee1c9d7aa992c18f9c1ef3febe47c09ec395555e7e`
+- `backend/src/store.ts` — SHA-256: `38183b95a8504722d9cb25839f98bd02363a47c58d67d3d84222a9aeebaf956f`
+- `backend/src/store.ts` — SHA-256: `7a69f0da3d080f7d85247a57f3f824c215c436e5ea21c7012907c34fcef64a04`
+- `backend/src/store.ts` — SHA-256: `85eb9280beb994f19295ec495c7b0f1664ab228fe819f1bc75655c010bacd54d`
+- `backend/src/store.ts` — SHA-256: `a9d2d7a45579bdfce999dbf62d12a01c0348c885b5326f9858426a8541908c8d`
+- `docs/feature-regression-registry.md` — SHA-256: `20c9990d47cfab7d1006973a23ee08a1b886d9000b619d25db43103a5aa48314`
+- `docs/feature-regression-registry.md` — SHA-256: `4284cdc5ee126b70130721db3af47a4704ecea6a970e66024608dfd1564e0dee`
+- `docs/feature-regression-registry.md` — SHA-256: `616c06c088f086ac84b37148e3b08009b3b640ff085531b4ea636bd2cd992280`
+- `docs/feature-regression-registry.md` — SHA-256: `c414d63411947579ccd52a37700e81b96eba839a90064494e93f0b018beee0fb`
+- `docs/feature-regression-registry.md` — SHA-256: `d60b5eeb01c6afcba9277f864b9a8e12583264bd9af79952501af53f058f9cab`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `0557303660cb2ac5b83997a179a6380b66d25295a3f09ddf870dee8f3637c07c`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `25826535491b72603b4fccf8ad49e6da97c3067758b5661b57690f75674ae287`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `2e93aa25c4f707feb51f8b94e690fa5cc7a32d2306c029fba9aafe380c9740b5`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `4545827d179cf652fa1082d5c309e6ff5e1545c6336fbbf6f3294bc0f2d07710`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `4638186dce81113e44292b068e20f578e398c8730b572b74b00f850a588612d1`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `5b866275a33500dd32f66bf24fce7f8f5365e283d5c661c3d18196c9148ab8ea`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `5de4b90190605274ed9b0bd0bc404768cc5043f9da6b5563092b96017eff567c`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `623f0326044bf88bd9b27061c1e7924d00648bcb6c4d490420ddfedc3d6656e0`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `6da26468207faa19103858e03201cf2de4f83c6bf0b8948fc5343c8b89f0927b`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `7eaa62eaa9b590de9354d0cb856d137cd8ed1574a987d5e466a16d6070624269`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `8225fd8f1cce464a59ea4467b588e61b49ae46e70cc7089f9fccdb05e45d6358`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `85b71bfdf51e567bfb2b4135e4a05ab7a3f2f9580715e1384db6396c6a17ec5d`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `9c6d99161ad299bccae3a401367147d4a0268d7dc54fd847c45e2fcce85a4efd`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `b9008b36c9757533ecef72b9f7cfde6e00ed073e71ee02c81c939d758eccacb0`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `dac121eab39bfbd281f67a26c87327d5a017f792ef23accbed9e8043c394eccb`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `ee336ee33747ffd4633520df6c7875672cc390c6bccd80443c7ac31ffc22aca4`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `ef184c9ac41d1bf99ec4bbc5517db5bb47fc049389aa3c1532768bbc991b8608`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `fc252d8e6949c79ea2775776c8910ed3372cdeee749e9a6ba0dff93471801dd7`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `09cdbd8f32e19884a37f8614009b2d7b0819dbea4ce5b1bdaef6c5a7cbc8cbba`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `9f693ad0687d90c0530210c5cba9b188c8e9f4b0d90617bd9970dbc2f2a8b597`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `afa36dc950120d00ce5ec8564e991324209185396177f179e8326791c3d9352f`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `bf86fe6f449605f500c1778131f938e1fa6c5d8edf92dd72352c927a007f7026`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `d2d8e7ecae6d2ea568b2749dd82c9659da58fe42e8442e0e198cc614ed082699`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `eba4b7d0ecf59a2d774a0379bb2ec551ed4ec9ba875dded981abed45be28767d`
+- `package.json` — SHA-256: `3b1a40a352e52e98168fc4521e13fb7e2d5bb10ea81bb8a71dffc8d3f6422c89`
+- `package.json` — SHA-256: `a4d1c9879992b37de2ed7a83952a96cb9c6eef54f1d20b30a0acf3601963e6c5`
+- `package.json` — SHA-256: `ac07067db0920a22789e2bcdb6b861ed5fe91e700ed6d78a9f5dbe4e5b7f39e5`
+- `package.json` — SHA-256: `cc5bd9cf9db4031f4a7254bf81f6e40a57379e0e9786a80493b621f12895583c`
+
+### Release Attempts
+
+### Risks / Release Notes
+
+- Git state：与 CRL-20261010-001 同一未提交候选。
+- 真实数据库迁移与端到端权限验收仍是发布前门禁；源码存在不代表 schema 已就绪。
+
+## CRL-20261010-003 — 开发 Preview 五分钟空闲自动停止（root）
+
+- **Status:** four-CRL staged candidate validated；final independent commit review pending；not committed, not pushed, not released
+- **Repository:** `root`
+- **Updated:** 2026-10-10 UTC
+- **Request:** 整合 MZ-011：仅固定开发 Preview 在连续 300 秒无真实用户活动时自动停止；Web、后端和可选 Metro 作为同一会话管理，移动端单独运行不误停。
+- **Outcome:** Preview 控制器聚合浏览器交互、后端有意义请求和 Mobile 交互心跳；健康检查、SSE/HMR 等噪声不续期。只有显式 dev Preview 标记下启用，生产/TestFlight/OTA 行为不变。
+
+### Implementation
+
+- 新增空闲控制器和后端活动追踪，Web/Mobile 仅在 dev Preview 环境报告交互。
+- `dev:preview` 管理 backend+Web，`dev:preview:all` 另含 Metro；300 秒超时统一停止受管进程。
+- 禁止活动报告端点触发业务写入或依赖数据库。
+
+### Files / Areas
+
+- `backend/package.json` — 活动追踪契约命令。
+- `backend/scripts/tests/test_dev_preview_activity.ts` — 请求分类和 dev 门禁。
+- `backend/src/index.ts` — Preview 活动入口。
+- `backend/src/lib/devPreviewActivity.ts` — 后端活动判定。
+- `docs/dev-preview-workflow.md` — 本地使用和边界。
+- `frontend/src/app/layout.tsx` — Web reporter 装配。
+- `frontend/src/components/DevPreviewActivityReporter.tsx` — 用户交互报告。
+- `package.json` — Preview/all/lan 和质量检查命令。
+- `scripts/dev-preview-idle.mjs` — 300 秒会话控制器。
+- `scripts/dev-preview.mjs` — Web/backend/Metro 统一生命周期。
+- `scripts/tests/test_dev_preview_idle.mjs` — 空闲与噪声契约。
+
+### Impact / Dependencies
+
+- 配套 `mobile/CRL-20261010-003` 提供 Mobile dev Preview 心跳；无数据库、API 业务 schema 或生产运行时依赖。
+- 本轮不启动 Preview 或任何服务，只运行隔离的控制器/分类测试。
+
+### Validation
+
+- `npm run test:dev-preview-idle`：PASS；虚拟时钟覆盖 300 秒判定、active requests/真实活动续期及 LAN 地址选择。统一子进程停止经过源码审查，真实终端进程树未运行。
+- Backend dev activity classifier、frontend/backend types、paired full quality chain：PASS。
+- Independent review：GO for local commit candidate；Mobile 非 Preview 环境不包装、不订阅、不发请求；未发现剩余 P0/P1。
+- Preview manual E2E/device/production：not run；未启动 Preview、Metro 或应用服务。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none；隔离候选无未跟踪文件、依赖目录、缓存、构建产物、环境文件或密钥。
+- **Shared-hunk note:** 共享文件的精确 hunk 会在相关已选 CRL 中重复登记；四个 CRL 作为同一原子候选审查，审计按并集精确匹配。
+- `backend/package.json` — SHA-256: `2e2b30bd5fed4771346763c3c9e2985a8b3df7832b79eae6232f7d7a09568c25`
+- `backend/package.json` — SHA-256: `8850c99197ea6b517c67c722cf8f51ab6d386d64429565eabeb1097d4478a2d1`
+- `backend/package.json` — SHA-256: `dc129550bceb8be3308dbb502ec26f1812e258b8cdd4e435995a21b7a8e64073`
+- `backend/scripts/tests/test_dev_preview_activity.ts` — SHA-256: `fdc36246d3198a6e0f147bec3761b5399e2d5c78b25af631b9fceafd3ba97b50`
+- `backend/src/index.ts` — SHA-256: `7be97d8d2c9b7265e4371f681b6168ea2201c61735df2ce7f4058b2e6adfa6ee`
+- `backend/src/index.ts` — SHA-256: `cc54bb607954e3d85ca1f07dd7f0e56c456636bff326ae8acee8f12e2ef601f3`
+- `backend/src/lib/devPreviewActivity.ts` — SHA-256: `24c5cfabe6d41bee86c40bba86e6adad1781d4fd59ace2e39bd273736d4a0375`
+- `docs/dev-preview-workflow.md` — SHA-256: `2cba3fb22ec26357456bac2810e9663060921091ab3157afa28e3b05198579d6`
+- `docs/dev-preview-workflow.md` — SHA-256: `2d21b03b9d3bc187f296d08b63973d8135677391c83e166ab9589c7ccf12b198`
+- `docs/feature-regression-registry.md` — SHA-256: `20c9990d47cfab7d1006973a23ee08a1b886d9000b619d25db43103a5aa48314`
+- `docs/feature-regression-registry.md` — SHA-256: `4284cdc5ee126b70130721db3af47a4704ecea6a970e66024608dfd1564e0dee`
+- `docs/feature-regression-registry.md` — SHA-256: `616c06c088f086ac84b37148e3b08009b3b640ff085531b4ea636bd2cd992280`
+- `docs/feature-regression-registry.md` — SHA-256: `c414d63411947579ccd52a37700e81b96eba839a90064494e93f0b018beee0fb`
+- `docs/feature-regression-registry.md` — SHA-256: `d60b5eeb01c6afcba9277f864b9a8e12583264bd9af79952501af53f058f9cab`
+- `frontend/src/app/layout.tsx` — SHA-256: `6deaa14e0f5160fe17f50a2e36da4c1224502119e43bcd940be1b8d691663407`
+- `frontend/src/app/layout.tsx` — SHA-256: `a43e4ef387df4f038420b33bf86a94939fc816502ed9b537e75620e813cc4947`
+- `frontend/src/components/DevPreviewActivityReporter.tsx` — SHA-256: `5754966542672645569fb9fba4d7dcd7e5a9e8050ffe3cfb7c03d1e2df3a26ba`
+- `package.json` — SHA-256: `3b1a40a352e52e98168fc4521e13fb7e2d5bb10ea81bb8a71dffc8d3f6422c89`
+- `package.json` — SHA-256: `a4d1c9879992b37de2ed7a83952a96cb9c6eef54f1d20b30a0acf3601963e6c5`
+- `package.json` — SHA-256: `ac07067db0920a22789e2bcdb6b861ed5fe91e700ed6d78a9f5dbe4e5b7f39e5`
+- `package.json` — SHA-256: `cc5bd9cf9db4031f4a7254bf81f6e40a57379e0e9786a80493b621f12895583c`
+- `scripts/dev-preview-idle.mjs` — SHA-256: `4b4a7511b20dc88841c181fe425e61bb3379f0a01aa522130168280432d484db`
+- `scripts/dev-preview.mjs` — SHA-256: `09f3a5e3539dc4dbb48362e2a0136ac9958f8dee3b9184358378069e51411eb1`
+- `scripts/dev-preview.mjs` — SHA-256: `0f624e6a8937f09a45bd55611022051a6b90f1a8b2a714c98bff94ed3aa58207`
+- `scripts/dev-preview.mjs` — SHA-256: `1001e207dbf184160d3d82d2423bf7669e39cbc9aa1508051075e6837ef968af`
+- `scripts/dev-preview.mjs` — SHA-256: `1fb20f166aa92357f903ec6fbfac1e2c995ba0d7070fa42b69ea0e82adb6b3d2`
+- `scripts/dev-preview.mjs` — SHA-256: `234c463f694b93fd8053fa996b2709b4ab0a50d5b6137b001207be735d561f00`
+- `scripts/dev-preview.mjs` — SHA-256: `2cad67a8bf97447bf29ee3f9ae843281376ed16d4d9c3bf192a5fe8ff10230d5`
+- `scripts/dev-preview.mjs` — SHA-256: `45a4a08422c0716396d235db3f51abc040c7086e88d17d7a25ca745c4295d094`
+- `scripts/dev-preview.mjs` — SHA-256: `477b2a170169a868b2acafd18cf1110ab41b4b7ab662c81654c9df2f8b1b5288`
+- `scripts/dev-preview.mjs` — SHA-256: `58457aa4f0b25934bbed980088b73eacb6739c5a7c5add795a3d96edbda42351`
+- `scripts/dev-preview.mjs` — SHA-256: `76d73ef2e4854303f6cfb51a659205615d84f43d91fd4a0df58c572b17dc8673`
+- `scripts/dev-preview.mjs` — SHA-256: `7ecb0e7dcbb0833b6250723ad9a8d503316b211c98b3f074b6495f4286264077`
+- `scripts/dev-preview.mjs` — SHA-256: `92564021f7c8d38a79a6b6958cdf86e3c5977bf6bac3b52c8f9b8ef9df345e84`
+- `scripts/dev-preview.mjs` — SHA-256: `ab32125ac407bf3af6d769e75894da5b746bb99e3e348b1028140eaa264e1245`
+- `scripts/dev-preview.mjs` — SHA-256: `ac0fb8d8d68915c9814a9baa7d60cd06ead09edc44ed506995d9e3127ce1a1d3`
+- `scripts/dev-preview.mjs` — SHA-256: `b20ede840e0c23b00b7690cffd5613ea05b5c8bf957d246b75089b829a085275`
+- `scripts/dev-preview.mjs` — SHA-256: `b92ff5d5a61e81c100e6710b665c9e4808263359a057131dfd97772af1f48b41`
+- `scripts/dev-preview.mjs` — SHA-256: `bc23d150130327b0b11dba189daa85c97626430eb00ea086ada05c9b3759ce91`
+- `scripts/dev-preview.mjs` — SHA-256: `c181036dd9762b45e881c113b1f2b0887d45e11001ea2abcdb84daccd171ea4b`
+- `scripts/dev-preview.mjs` — SHA-256: `c53665229657efca891b3aa717ebf260a2457d196118c29d042ae8fecddcc615`
+- `scripts/dev-preview.mjs` — SHA-256: `c79691bce14bea4cb4c6f6441fe1e30fe005e49c74110376991928ed8b85c23d`
+- `scripts/dev-preview.mjs` — SHA-256: `db7d941f2a4c5ef79e8a4e898cee00041c9e367fe690e78c73fe7555cac5fd27`
+- `scripts/dev-preview.mjs` — SHA-256: `e6329e6d570939fd6dfe07a3652c1cc0e80c2b52cdce4835f0e45e397e518648`
+- `scripts/dev-preview.mjs` — SHA-256: `eb4ba22a621059c9009dbc9402783b5139090ae68e7ab083c81b5cde8ff2ae09`
+- `scripts/dev-preview.mjs` — SHA-256: `fb12a83ea2ea2d06e1dd75e8be8ea9754a87e761529abc75cb91191a237bd1b1`
+- `scripts/dev-preview.mjs` — SHA-256: `fba2532523bfc6c7bffe07a2e902075fb6955ea8c95c720a0a489c3cdd7617fc`
+- `scripts/tests/test_dev_preview_idle.mjs` — SHA-256: `942c477b8a03805c230ec37ec855804545e899cc6f00149fb7e229e3d589e882`
+
+### Release Attempts
+
+### Risks / Release Notes
+
+- Git state：与前两项同一未提交候选；无 commit/push/PR/deploy。
+- 进程管理的真实终端行为仍需后续获批的本地 Preview 人工验收。
+
+## CRL-20261009-001 — 清洁媒体重复上传与挂钥匙重复挂载幂等修复
+
+- **Repository:** `root`
+- **Status:** integrated in four-CRL staged candidate；targeted and full paired validation passed；final independent commit review pending；not committed / not pushed / not deployed
+- **Updated:** 2026-10-09 UTC
+- **Request:** 修复已由 Render 日志证实的同一 `media_id` 重复上传，覆盖并发、网络中断后重试、部分成功和 App 重启；不得改变水印，不得把不同照片当作同一媒体，不操作生产数据库、队列、部署或通知。
+- **Outcome:** 稳定清洁媒体 key 改为条件创建和内容指纹校验；同内容重试复用既有对象，首次写入后响应丢失可通过 HEAD 校验恢复，不同内容复用同一 ID 返回 409 且不覆盖。普通检查与自完成两条挂钥匙业务路由以现有 receipt 表和任务行锁实现同一 operation 的事务重放，避免重复媒体行、状态流转、广播和通知。
+
+### Implementation
+
+- Previous behavior: `media_id` 只决定固定 R2 key，但每次请求仍执行无条件 `PutObject`，弱网重试会把同一对象重新传出并覆盖；MZapp 挂钥匙路由每次重试都会新增媒体行，两条业务路由都会重复执行流转和副作用。
+- New behavior: R2 使用 `If-None-Match: *` 条件创建，保存原始输入与水印/业务上下文指纹；条件冲突或超时后读取 HEAD，已有指纹一致即复用，避免 Sharp/libjpeg 版本变化导致等价重试误冲突。旧对象没有指纹 metadata 时才按最终对象哈希、长度和 MIME 校验，内容不同 fail closed。无 R2 的本机 fallback 使用原子硬链接和字节哈希保持同一语义。
+- Business mount: 客户端传入的 `operation_id` 进入现有 `app_submit_receipts`；任务行在检查 receipt 前 `FOR UPDATE`。相同 operation/相同 payload 返回已保存响应，不再改媒体、状态或发送副作用；相同 operation/不同 URL 返回 409。新 operation 仍可明确替换任务的单一挂钥匙视频。
+- Watermark and authorization: 图片标准化、水印文本、既有上传 permission gate、挂钥匙任务成员资格和完成门槛未修改；指纹包含影响最终媒体的水印与业务输入。
+
+### Files / Areas
+
+- `backend/src/lib/immutableMediaUpload.ts` — 指纹、条件创建编排、冲突类型和本机原子 fallback。
+- `backend/src/r2.ts` — R2 条件创建、HEAD/旧对象字节校验与响应丢失恢复。
+- `backend/src/modules/cleaning_app.ts` — 稳定媒体上传接入和自完成挂钥匙 receipt。
+- `backend/src/modules/mzapp.ts` — 普通检查挂钥匙单媒体替换和 receipt。
+- `backend/scripts/tests/test_immutable_media_upload_contract.ts` — 并发、断响应、不同内容和本机 fallback 纯契约。
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — 两条挂钥匙路由和媒体冲突源码契约。
+- `backend/package.json` — 目标测试命令。
+- `docs/feature-regression-registry.md` — FR-005 媒体对象与业务挂载不变量。
+- `docs/change-release-ledger.md` — 本 CRL。
+
+### Impact / Dependencies
+
+- API: 稳定媒体首次上传仍为 201；同内容重放返回 200 并带 `reused: true`；同 ID 不同内容返回 `409 CLEANING_MEDIA_IDEMPOTENCY_CONFLICT`。两条 lockbox-video API 新增可选 `operation_id`，旧客户端仍兼容。
+- Database: 复用既有 `app_submit_receipts`，无 schema、migration、seed 或生产数据写入。
+- Storage: 不迁移、不复制、不删除既有 R2 对象；未改 Cloudflare/Render 配置。
+- Delivery: 需与 `mobile/CRL-20261009-001` 配套审查，Root 应先于 Mobile 发布；本轮没有提交、推送、PR、部署、重启或通知。
+
+### Validation
+
+- `node --experimental-strip-types backend/scripts/tests/test_immutable_media_upload_contract.ts` — passed；并发只创建一次、既有对象在 PUT 前直接复用、响应丢失后复用、不同内容冲突、新对象跨编码产物变化仍按源指纹复用、旧对象仍要求最终字节一致、本机并发原子创建/同字节复用/不同字节拒绝。
+- Locked SDK contract — passed：`backend/package-lock.json` 固定 `@aws-sdk/client-s3@3.940.0`，本机 npm cache 中该精确 tarball 的 `PutObjectRequest` 声明 `IfNoneMatch?: string` 并要求 `*`；Cloudflare R2 官方兼容表同时列出 PutObject `If-None-Match` 已实现、S3 API read-after-write 强一致。
+- `git diff --check` — passed（代码与登记更新后复核）。
+- Source contract inspection — passed：稳定上传接入 `r2UploadImmutable`；两条业务路由在事务内执行任务行锁、receipt load/save，并在广播/通知前返回 replay。
+- `python3 scripts/audit_change_release_ledger.py` — passed：9 changed / 9 recorded files。
+- `python3 scripts/audit_feature_regression_registry.py` — passed：29 FRs / 239 mappings；FR-005 的四个 Mobile 测试路径均作为独立映射校验，不再合并在单个路径单元格中。
+- `npm run check:ci` — passed：Root workflow contract 8 tests、ledger range 41 tests、current ledger 10/10（验证时通过只读配套 Mobile 链接计入）、Feature Registry 29 FRs / 239 mappings、backend TypeScript build 与全部 fast contracts、web 53 files / 265 tests（97.29% statements / 93.61% branches / 100% functions / 97.29% lines）及配套 Mobile typecheck 全部通过。
+- `NEXT_TELEMETRY_DISABLED=1 npm run check:full` — passed：backend 完整合同、Root ledger/Feature Registry、web lint/tests/production build、配套 Mobile typecheck/lint/Jest 全部完成；Mobile lint 0 errors / 590 warnings，Jest 62 suites / 380 tests。Jest 仍报告既有 VirtualizedList `act(...)` 警告和 worker forced-exit teardown 提示，但命令退出 0。
+- Dependency setup — exact lock hashes matched the existing local dependency sources; validation used APFS copy-on-write copies only, without `npm install`, package-lock changes, network fetch or source-tree dependency modification. Temporary copies and pairing link were removed after validation。
+- Production database/API/R2/Render write、migration、queue、notification、load test、restart/deploy：not run。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none；隔离候选无未跟踪文件、依赖目录、缓存、构建产物、环境文件或密钥。
+- **Shared-hunk note:** 共享文件的精确 hunk 会在相关已选 CRL 中重复登记；四个 CRL 作为同一原子候选审查，审计按并集精确匹配。
+- `backend/package.json` — SHA-256: `2e2b30bd5fed4771346763c3c9e2985a8b3df7832b79eae6232f7d7a09568c25`
+- `backend/package.json` — SHA-256: `8850c99197ea6b517c67c722cf8f51ab6d386d64429565eabeb1097d4478a2d1`
+- `backend/package.json` — SHA-256: `dc129550bceb8be3308dbb502ec26f1812e258b8cdd4e435995a21b7a8e64073`
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — SHA-256: `90a1ab389de9352ff16b72aca8dc56611f5914d448044451a12b092be02bbcd0`
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — SHA-256: `bf9e1b2e93ea3b63a29db65f4dc12b7d1a5beb85a17ac2dfd540fd2f0071844a`
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — SHA-256: `fa2bb91cbaf01e0c74b4085ae0246e1f879c9371dcf188b521012c83b9b022ab`
+- `backend/scripts/tests/test_immutable_media_upload_contract.ts` — SHA-256: `3638400d6fd603d41a425d5c2427f230c22b97b9dc64a3bc47e74646c2d2c44e`
+- `backend/src/lib/immutableMediaUpload.ts` — SHA-256: `780e22e6320fe4d1da9d3d1ad6a0ae1a649d96e2ad5c82664ec0ddc194779d4b`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `1764255baea44d75ace3a58aa2addd8bc6a500377256c92670d62638935efd10`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `29f9335601416d515280379c6198ecad3749d96db7291fb77455cb049412c3c4`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `2e3555099110f0ef0c9b474c47b74cf108fa9aa63f84421830815e86f7935db6`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `5f9ff6198c0ee3f14fca9947fe36686f0645b0288cf23fc60f61837a2d60b41a`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `7497753fde8b59be1eea4fed9cd30c209389187c3ee56a50d2c84ee5f76b34c2`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `7d21e6365ff95f8a648c840fda50911ca2605b06a5fc6fb908a32db04800005f`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `8742a3c9c12d63e8bbc4cffbf0753d5a88cab1841eeede9e7b089009f68a5cdf`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `a4a6f8d87681027f437b034fd70059b1a015172a6c39608244000eeac56be02e`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `ac6f3165f181e56a1a065cfb62bbb640d9e0fda6742290d50dc012baf4577232`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `b7e98641885bdfc7ffabc293832ceecbb564eee2b9223bc0db421f1211516f10`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `be329b6df5f2fe6292452ba29cb001ec7c2f4de5616b16a20365db068fcd76e4`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `ddab26d45158228940bcea5f45c8b31a1d9a75329eb7a943c3a7bc418517f626`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `e6c50febc5123e786fe3dd2bd4d580404323fc6ff4ebcec62996f1f5cbdc9adb`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `f9058ee8e6519bc83e2cfb109fd8f386bf80b31dcf7e94e769aaca995cc3c8b8`
+- `backend/src/modules/mzapp.ts` — SHA-256: `0f46beb8272b0a3292ac1a2ec53d6294f2aa3e47180d6c690e4e0ab4ed5f1a60`
+- `backend/src/modules/mzapp.ts` — SHA-256: `1181b8193667fcf76e381cbb5ab6763faab46c5cb00ec8bb2c11299dbc07d8a2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `122df75377ee7b3b9140628c610843842d4893fc719997743d3626472c936eba`
+- `backend/src/modules/mzapp.ts` — SHA-256: `13998a8bd52a5133d39a15586b0c7bf0600edda82f8d55d85b6c61c89aa48861`
+- `backend/src/modules/mzapp.ts` — SHA-256: `220a9037ce27d8926fc33f8c762f3775f303f376852012960079548242dcdd2c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `25a517c3e9a435c61301dd936cf35bda1b9320dba257b99e8f6f7805af2e7ca7`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2d48e32e84c8b260d7ddce6e0b698a87956de6638d7abb576c26610be4de8022`
+- `backend/src/modules/mzapp.ts` — SHA-256: `36f8d936dd4a25795a370bc414739297ac87724233ba6cc6d479f5b9869d4b4c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `40cfd611f1b2c1f3188c552e3bc81bc378069a6fe4265db64b22eddf7d2b7a23`
+- `backend/src/modules/mzapp.ts` — SHA-256: `45eae83fb927a3808a5a480b91be46cb45b5f60ca72d583e0704794f39827534`
+- `backend/src/modules/mzapp.ts` — SHA-256: `46bdc85f30a3c1b0472b155b92abca89808b676a8a9d56595baecc0f1fbc74fa`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5003e5715f5962141f7f4cf14f3170558dba3897d337cf50788d2ca755444a79`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5cfbabf633f9cf46b003e38375c5d92d5435380857876eeff65bbd7c7aa1dafb`
+- `backend/src/modules/mzapp.ts` — SHA-256: `68ab5b78d3a1f67d3aea730c170432109263e59227f9fda7ff2fe225b5723d78`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7586152f5bd32f430cbf7a756b6e7401f0a3fc01b8210e29ee76804c1b50a003`
+- `backend/src/modules/mzapp.ts` — SHA-256: `79a85798bc7621f9d8941478fe253af71c554f82a587d1a439e7c817fa7a5b66`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7e2d03b2e617524f3ed1b34ce6e729c387a1ce1e0d3900874f69ae4c51cac7e2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `803e49c879c1b89fef19b88f521c368451079bc273c64ae818101caed754e53b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `898cb8248c99eaa06b96f5f390520bea54a2067065c31d061421ab26ec2bddf4`
+- `backend/src/modules/mzapp.ts` — SHA-256: `a77325e1aaa43e32dec5f66b9f5797907f998aa01e76302a7d13ddb5d547152a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `c7f62639fcd8979a8ae5d688703ddaf54c83b30e8f184a6ee13d51158761449f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d371cf132067c580324ba2b6e19029aa9b0bac5015a8435f25f8b376fac63ca6`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d8d7343c65f83373f7eee52c11159467e91ad4500d490f5c57a36ae29af86f32`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e67850556cc09157802d3bbbdcda13f76fc25b1c53e0e76fb6c448dbc655619a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `eebc5fe499faea9df674012694a7e00fbc9637afbc35c20dd612640da443c1c9`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f02948df320c4699b415590a544838098f943f0d6508c4886f20b1a16e30815b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f74038af885f2bf5a2ccd2827b3d3da92bd7b46302df42f90a84cb9c8900fdc2`
+- `backend/src/r2.ts` — SHA-256: `2ab1e5bc212b2e5a63dc6a5c0caf7c03f3e550d02d2cd9bedbca6b6d4215583a`
+- `backend/src/r2.ts` — SHA-256: `2d332c1deec020660536d26bf51a6460f574fb40e9bdc5a9b1e0ce07d02392ba`
+- `docs/feature-regression-registry.md` — SHA-256: `20c9990d47cfab7d1006973a23ee08a1b886d9000b619d25db43103a5aa48314`
+- `docs/feature-regression-registry.md` — SHA-256: `4284cdc5ee126b70130721db3af47a4704ecea6a970e66024608dfd1564e0dee`
+- `docs/feature-regression-registry.md` — SHA-256: `616c06c088f086ac84b37148e3b08009b3b640ff085531b4ea636bd2cd992280`
+- `docs/feature-regression-registry.md` — SHA-256: `c414d63411947579ccd52a37700e81b96eba839a90064494e93f0b018beee0fb`
+- `docs/feature-regression-registry.md` — SHA-256: `d60b5eeb01c6afcba9277f864b9a8e12583264bd9af79952501af53f058f9cab`
+
+### Release Attempts
+
+#### RA-20261010-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261009-001`, `CRL-20261010-001`, `CRL-20261010-002`, `CRL-20261010-003`
+- Selected CRL identities: `root/CRL-20261009-001`, `root/CRL-20261010-001`, `root/CRL-20261010-002`, `root/CRL-20261010-003`
+- Intended action: `commit`
+- Branch: `codex/mz010-mz011-mz021-integration-20261010`
+- Base: `origin/Dev@e9e32847c49782a34163267681174c57db3a8952`; fetched at `2026-10-10T06:51:42Z` from GitHub
+- Candidate patch SHA-256: `b82511faa430f363d05e89b74762849910ff6b25d797a8ed560667a3e34a1869` excluding `docs/change-release-ledger.md`
+- Commit SHA: `94fc510992aff5bd8bc0c514cff91bc9313647e1`
+- Dependencies: none
+- Required validation: `PASS`; evidence: Root targeted MZ-003 idempotency/immutable-media contract passed; fresh isolated paired `npm run check:full` passed backend build/contracts, frontend lint / 53 files / 268 tests / production build, and Mobile typecheck / lint 0 errors / 593 warnings / 67 suites / 400 tests. Root ledger/Feature Registry and both diff checks passed.
+- Shared-hunk review: `PASS`; evidence: shared package, API/module, task-center and Feature Registry hunks are intentionally recorded in every relevant selected CRL and audited as one exact union; MZ-003 is integrated with MZ-010/MZ-011/MZ-021 without MZ-022/MZ-023.
+- Generated-file review: `PASS`; evidence: tracked backend build output drift was restored; candidate contains no generated build output, cache or dependency directory.
+- Sensitive-information review: `PASS`; evidence: candidate contains no `.env`, credentials, tokens, cookies, private keys, database URL or production data.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: delegated instruction explicitly authorized separate Root/Mobile commits, normal pushes and paired Draft PRs, while forbidding merge, auto-merge, main push, deployment, OTA and production writes.
+- Independent review: `GO`; evidence: independent read-only review at `2026-10-10T07:32:46Z` verified the exact 34-path / 167-non-ledger-hunk candidate, base/HEAD/index boundary, `b82511faa430f363d05e89b74762849910ff6b25d797a8ed560667a3e34a1869` fingerprint, clean diff checks, no P0/P1, no MZ-022/MZ-023 source changes, and no generated or sensitive paths.
+- Action conclusion: `GO`; exact content commit `94fc510992aff5bd8bc0c514cff91bc9313647e1` was created locally after the pre-commit audit passed. Push and Draft PR remain separately gated actions; merge, main push, deployment, migration and production writes remain excluded.
+
+#### RA-20261010-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261009-001`, `CRL-20261010-001`, `CRL-20261010-002`, `CRL-20261010-003`
+- Selected CRL identities: `root/CRL-20261009-001`, `root/CRL-20261010-001`, `root/CRL-20261010-002`, `root/CRL-20261010-003`
+- Intended action: `push`
+- Branch: `codex/mz010-mz011-mz021-integration-20261010`
+- Remote branch: `origin/codex/mz010-mz011-mz021-integration-20261010@7302bc1f3d2c2033c15c795329b894a33b368cbe`; initial normal non-force push and immediate SHA verification completed before this outcome receipt.
+- Base: `origin/Dev@e9e32847c49782a34163267681174c57db3a8952`; fetched at `2026-10-10T07:36:34Z` and confirmed unchanged by live fetch.
+- Candidate patch SHA-256: `b82511faa430f363d05e89b74762849910ff6b25d797a8ed560667a3e34a1869` excluding `docs/change-release-ledger.md`
+- Commit SHA: `94fc510992aff5bd8bc0c514cff91bc9313647e1`
+- Dependencies: `mobile/CRL-20261009-001@a880e0203ed436697f4589317b049fdf8d16fd4f`; `mobile/CRL-20261010-001@a880e0203ed436697f4589317b049fdf8d16fd4f`; `mobile/CRL-20261010-002@a880e0203ed436697f4589317b049fdf8d16fd4f`; `mobile/CRL-20261010-003@a880e0203ed436697f4589317b049fdf8d16fd4f`
+- Required validation: `PASS`; evidence: targeted MZ-003 contracts and fresh paired `npm run check:full` passed; content pre-commit and ledger-only receipt gates passed; Root full chain included backend build/contracts, frontend lint / 53 files / 268 tests / production build and Mobile 67 suites / 400 tests.
+- Shared-hunk review: `PASS`; evidence: 167 exact non-ledger hunks match the selected four-CRL union with no MZ-022/MZ-023 source changes.
+- Generated-file review: `PASS`; evidence: exact range contains no generated build output, cache or dependency directory.
+- Sensitive-information review: `PASS`; evidence: exact range contains no configured sensitive categories.
+- Cross-repository dependency verification: `PASS`; evidence: paired Mobile range `c3a6bf43d5a6178bf7f8a8117e104563599e1ceb...2bc6f7ed01f52b495811c20ab646eb8ec9b460b1` contains content commit `a880e0203ed436697f4589317b049fdf8d16fd4f`, binds the four canonical Mobile CRLs, and retains fingerprint `2589f8c5914548ad61773f3f518f43eae8085475bba3dede96459139b2397745`.
+- PR / CI evidence: Draft PR `https://github.com/zhishi817/MZ-property-system_V3/pull/384` is open, unmerged and targets `Dev`; `Root Quality Gate` run `38035479590` / `#255` completed successfully for head `7302bc1f3d2c2033c15c795329b894a33b368cbe`.
+- Technical state: `pushed`
+- User authorization: `approved-for-push`; evidence: delegated instruction explicitly authorized the separate Root normal push and paired Draft PR while forbidding merge, auto-merge, main push, deployment, OTA and production writes.
+- Independent review: `GO for ledger-only review receipt commit and conditional controlled push`; evidence: independent read-only push review verified exact base/content/HEAD ancestry, unchanged 34-path / 167-hunk fingerprint, receipt-only staged scope, four-CRL paired dependency ranges/content commits/fingerprints, clean diff/generated/sensitive boundaries, and recorded live unchanged-Dev/absent-target evidence; no P0/P1.
+- Action conclusion: `GO`; the authorized Root branch push succeeded, remote SHA matched local head, Draft PR #384 was created, and its first quality run completed successfully. This ledger-only outcome receipt may be fast-forwarded to the same branch. PR remains Draft/open/unmerged; main push, merge, deployment, migration, OTA and production writes remain excluded.
+
+## CRL-20261008-001 — 订单取消权限按有效多角色并集判定
+
+- **Status:** integrated release candidate validated and independently reviewed；ready for local commit；not pushed / not deployed
+- **Repository:** `root`
+- **Updated:** 2026-10-09 14:06 AEDT (Australia/Melbourne)
+- **Request:** 修复订单管理保存取消状态时只按主角色静态权限判定的问题，并使网页取消控件与后端实际权限边界一致；不得修改生产权限、订单或其他生产数据。
+- **Outcome:** 取消状态改为读取用户全部有效角色与数据库权限并集。普通取消要求 `order.cancel`；结算期锁定时还要求 `order.cancel.override`；`order.write` 继续只授权普通订单编辑。网页按相同权限键禁用或提示取消选项，已取消订单的其他编辑不受影响。
+
+### Implementation
+
+- Previous behavior: `PATCH /orders/:id` 入口通过有效 `order.write`，但取消分支随后只把主角色名称交给静态 `roleHasPermission`；自定义主角色即使通过次角色拥有有效取消权限，仍会收到 403。网页仅检查 `order.write`，仍会向缺少取消权限的用户展示可选取消状态。
+- New behavior: 后端复用异步有效权限查询覆盖主角色、次角色与数据库角色配置；锁定期采用基础取消加覆盖权限的叠加判定。网页从当前会话权限快照计算取消选项状态，并在提交前保护相同转换。
+- Key decisions: 不改角色、权限配置、数据库 schema、订单数据或取消业务投影；不把 `order.cancel.override` 解释为可绕过基础 `order.cancel`；只限制“非取消到取消”的新状态转换。
+
+### Files / Areas
+
+- `backend/src/modules/orders.ts` — 取消状态转换改用用户有效权限并集，锁定期要求双权限。
+- `backend/scripts/tests/test_order_cancel_permission_contract.ts` — 内存 store 和本机回环 HTTP 的多角色、拒绝、不变性与锁定期权限契约。
+- `backend/package.json` — 新增目标权限契约命令。
+- `frontend/src/lib/orderPermissions.ts` — 编辑抽屉取消选项的纯权限状态计算。
+- `frontend/src/lib/orderPermissions.test.ts` — 缺权、覆盖权限和既有取消状态回归。
+- `frontend/src/app/orders/page.tsx` — 取消选项禁用、边界说明和提交前保护。
+- `package.json` — 把后端权限契约接入 `check:fast` 与 `check:backend`。
+- `docs/feature-regression-registry.md` — 更新 FR-024 多角色取消权限跨层保护规则和测试映射。
+- `docs/change-release-ledger.md` — 本 CRL、验证范围与发布状态。
+
+### Impact / Dependencies
+
+- API / database: 路由、请求体和响应结构不变；无 schema、migration、seed 或生产数据更改。
+- Authorization: `order.write` 仍是 PATCH 入口权限；新取消转换另需 `order.cancel`，锁定期另需 `order.cancel.override`。有效权限来源与现有 `requirePerm` 保持一致。
+- Session/cache: 不改变会话和五分钟权限缓存实现；现有权限刷新语义保持不变。
+- Related units: `root/CRL-20260905-001` / FR-024 定义既有取消位置、错误和日历契约；本单元仅修复授权判定与网页控件。
+
+### Validation
+
+- `npm run test:order-cancel-permission --prefix backend`：PASS；内存 store + 本机回环 HTTP，不连接数据库。
+- `./node_modules/.bin/ts-node --transpile-only scripts/tests/test_order_update_error_contract.ts`（在 `backend`）：PASS。
+- `npm run test --prefix frontend -- --coverage.enabled=false --cache=false src/lib/orderPermissions.test.ts src/lib/orderSort.test.ts`：PASS（2 files / 6 tests）。
+- Backend/frontend TypeScript no-emit：PASS；frontend production build：PASS。
+- Frontend full lint：PASS with repository-existing warnings；本改动未新增 lint error。
+- Root quality workflow contract：PASS（8 tests）；Feature Registry audit：PASS（29 FRs / 229 mappings）；ledger coverage：PASS（9/9）；`git diff --check`：PASS。
+- `npm run check:fast`：PASS in a fresh `/tmp` Root candidate paired with clean Mobile `origin/Dev@a026b2ed6b1a2771550ca81ce3e1f5deda66b9ba`；包括 backend build / wired contracts、frontend 53 files / 265 tests（97.29% statements）和 Mobile typecheck。首次尝试暴露配套 Mobile 检出缺失及本机 Mobile 依赖未安装 `react-native-webview`；最终候选只在临时目录通过 lockfile + 本机 npm cache 执行离线 `npm ci --ignore-scripts`，未修改候选或两个原工作区。
+- `npm run check:full`：PASS in a separate fresh `/tmp` Root candidate with the same clean paired Mobile commit；backend full wired suite、frontend lint / 53 files / 265 tests / production build、Mobile typecheck / lint / 62 suites / 370 tests 均完成。Frontend/Mobile lint 只有仓库既有 warnings；Mobile Jest 报告 worker forced-exit teardown warning，但 62/62 suites、370/370 tests 通过。
+- MZ-Dev-Preview real E2E：PASS（2026-10-08 14:57:53Z–14:59:37Z）；运行时报告 `app=dev`、`database_role=dev`，登记数据库指纹前 12 位 `e61bca6b3f18`，并通过与生产数据库身份不相同的 fail-closed 比较。外部通知、邮件、清洁同步、PDF 与其他后台 worker 均禁用。
+- DEV E2E 使用唯一前缀临时创建 4 个角色、3 个用户、1 个房东、1 个房源、3 个订单和 1 个已批准结算：有效权限接口确认多角色并集；普通编辑仍成功；缺 `order.cancel` 返回 `ORDER_CANCEL_FORBIDDEN`，缺 `order.cancel.override` 的锁定期取消返回 `PAYOUT_LOCKED`，两项拒绝均保持订单、审计、清洁队列及财务记录不变；真实订单页确认缺权禁用说明、锁定期边界提示，以及多角色普通/锁定取消均返回 200 并落库。
+- DEV cleanup：服务停止后按精确 fixture ID 删除；roles、role_permissions、users、user_roles、sessions、landlords、properties、orders、payouts、audit_logs、finance_transactions、company_incomes、cleaning_sync_jobs、cleaning_sync_retry_jobs、cleaning_tasks、order_internal_deductions 共 16 类表逐项复核为 0。失败的浏览器 harness 尝试也分别以只读事务复核对应唯一前缀总残留 0。
+- Production database/write API/browser mutation：not run；生产始终只读，未修改权限、订单或其他生产数据。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none；两个新增测试和一个前端纯函数文件已按本 CRL 显式暂存；验证缓存、私密环境文件与依赖软链接均已移除。
+- `backend/package.json` — SHA-256: `2535e4560c88b4f09bf995987107eded7915e2186c24acbf3c9f7a7bd4ac2b44`
+- `backend/scripts/tests/test_order_cancel_permission_contract.ts` — SHA-256: `107e2cc90738a66bf0d480f490cd06ae582704af10ca8698ca8cf4ac9f1941e2`
+- `backend/src/modules/orders.ts` — SHA-256: `11c23b92743b387debe15844c60936862a760412f89b517bb13bdc6f59a2593b`
+- `backend/src/modules/orders.ts` — SHA-256: `1253a1934df3e49d5ae9c7f0f5aa6521152b1b269257c979e443ad6c3312692a`
+- `backend/src/modules/orders.ts` — SHA-256: `3979e83b344c9ed4c2b6f6e3da9c3e9a31cf2a517f62e6fa40594ead62c50bfb`
+- `backend/src/modules/orders.ts` — SHA-256: `af0c3c1c3abcd3ff9c51f4a3ad4f2336a30d01fc46b4e71132eec84eb33cefdf`
+- `docs/feature-regression-registry.md` — SHA-256: `314c51b213a4ccb21a5674a951f90198b7aa3303afbd4483b0d2bf564b610ad4`
+- `docs/feature-regression-registry.md` — SHA-256: `3303afdfdff033fa8e19f139e3d87acda41c43ce3e5376dfe6460e352f90fe05`
+- `docs/feature-regression-registry.md` — SHA-256: `8698983b2d780dee214e75181dc0e3fc40a2db015de688f4dd7d0713e1e4f76f`
+- `docs/feature-regression-registry.md` — SHA-256: `9c4ab641e0e791616278890b76168e31af871af06446e4d7ea7b7491b8bc82b7`
+- `docs/feature-regression-registry.md` — SHA-256: `bfca9a36b3f487ad2719ffcfbe7f150fa59deff1593fa03af6984be9b5b4d18b`
+- `docs/feature-regression-registry.md` — SHA-256: `d4f4eb8a8dfcb69a324e2a8b5a1eca5e0cd227ebf54c0e06df8b93d028c175be`
+- `docs/feature-regression-registry.md` — SHA-256: `ea78caaf05f35e7a60223029868e5339c77268bfc8438eaad06814798d839655`
+- `docs/feature-regression-registry.md` — SHA-256: `f4f3682784f953da04304b380537f9b222efd80693de75c4690b8469ef6d02f8`
+- `docs/feature-regression-registry.md` — SHA-256: `fdea844e1592a309ba6ce5c7bd62aca23b9e517bd25d99e1f1be33bae9ee3828`
+- `frontend/src/app/orders/page.tsx` — SHA-256: `05ec2928ae7603dc84102808160bfc272e1dafbfb765c4486e102adc98ae4f1c`
+- `frontend/src/app/orders/page.tsx` — SHA-256: `68f6b4af73d422206f2b0e592a0b1f88d18bf8f4be309fe95bb5c0380b90da9f`
+- `frontend/src/app/orders/page.tsx` — SHA-256: `84eb4fa3db395719165cd2425c72a5a67c02d2ad63894782e44216f65bafdc7d`
+- `frontend/src/app/orders/page.tsx` — SHA-256: `e0f1d7cfd3f5fbb74cdb0e361eefe45b9773563450f86f8bc6558369171a2adf`
+- `frontend/src/lib/orderPermissions.test.ts` — SHA-256: `1e260085eb63a74810761ed8bd8999ade2cd901d0b5c53449f9189e39d459973`
+- `frontend/src/lib/orderPermissions.ts` — SHA-256: `b01d53741729b33ff6b3cf7accf73de14cbbab13501256fa7054555b889ec775`
+- `package.json` — SHA-256: `4d96c81ce7f4f7b1d09e7dd0f7a462abe87a66a1d4ec008fdf61946b4f1255ff`
+- `package.json` — SHA-256: `888a8aded260eb86bcd90cf1920741dbae522d43af969c89b7391a7d6e04f6c9`
+
+### Release Attempts
+
+#### RA-20261009-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261008-001`
+- Selected CRL identities: `root/CRL-20261008-001`
+- Intended action: `push`
+- Branch: `codex/order-cancel-permission-20261008`
+- Base: `origin/Dev@4c5b57b57301824fea4115b7632aab0f6d58d530`; fetched at `2026-10-09T02:05:04Z` from GitHub
+- Candidate patch SHA-256: `19873ada2c774635f30ceb942aeb50867787cf914415a3778bbd95920709d637`
+- Commit SHA: `c4f2d0dccc1ae421ea186d99ad14e901e7fc4682`
+- Dependencies: none
+- Required validation: PASS；targeted backend/frontend contracts、TypeScript、build、lint、`check:fast`、`check:full`、Feature Registry、ledger coverage、DEV real E2E 均已通过，详见本 CRL Validation。
+- Shared-hunk review: PASS；共享 package scripts、FR-024 与 ledger 仅包含本发布单元的精确 hunk。
+- Generated-file review: PASS；候选无 `.env`、缓存、构建产物、依赖目录或临时 DEV fixture。
+- Technical state: `committed`
+- User authorization: `approved-for-push`；evidence: 用户要求“继续提交，先把这个上线”，并明确授权提交、推送和草稿 PR。
+- Independent review: `GO for local commit`；evidence: 独立只读审查重新计算并匹配候选非 ledger 指纹 `19873ada2c774635f30ceb942aeb50867787cf914415a3778bbd95920709d637`，检查全部 9 个暂存文件 / 23 个非 ledger hunks，独立通过 pre-commit gate 与 `git diff --cached --check`，并确认无 P0/P1、敏感信息、生成物、未选中或未跟踪内容。接受一个不阻断 P2：疑似重复订单弹窗对 override-only 自定义角色仍会展示取消按钮，但新后端会返回 `ORDER_CANCEL_FORBIDDEN`；该组合不影响本案同时具备基础与 override 权限的用户，后续由 Web 订单管理统一双权限控件条件。
+- Action conclusion: `GO`；exact reviewed candidate was committed locally as `c4f2d0dccc1ae421ea186d99ad14e901e7fc4682`。Push 仍需 commit 后精确范围审计、独立 push gate 与成功的 GitHub 远端刷新；PR、merge、deployment 与生产写入不在本结论内。
+
+#### RA-20261009-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261007-001`, `CRL-20261007-002`, `CRL-20261008-001`
+- Selected CRL identities: `root/CRL-20261007-001`, `root/CRL-20261007-002`, `root/CRL-20261008-001`
+- Intended action: `commit`
+- Branch: `codex/mz015-mz018-mz020-dev-20261009`
+- Base: `origin/Dev@4c5b57b57301824fea4115b7632aab0f6d58d530`; fetched at `2026-10-09T02:32:31Z` and confirmed unchanged at `2026-10-09T02:37:41Z` from GitHub
+- Candidate patch SHA-256: `4984f21059c547cfcea77de4d58e4a6e54b22c0dbd5289e135f1014ba6b0bf93` excluding `docs/change-release-ledger.md`
+- Commit SHA: `eb67d181952fe2b00b5d0eb98ca0399b8104f664`
+- Dependencies: `mobile/CRL-20261007-001@2a476ea4426ab05c40d42f3fc0ee2c859da5cd2b`
+- Required validation: `PASS`; evidence: MZ-015 Web task capability, MZ-018 media visibility/property-feedback access, and MZ-020 order-cancel contracts passed with `DATABASE_URL=''`; post-review complete `npm run check:full` passed backend build and wired contracts, frontend lint / 53 files / 265 tests / production build, and paired Mobile typecheck / lint (0 errors / 588 warnings) / 62 suites / 379 tests. Feature Registry audit passed at 29 FRs / 233 mappings and `git diff --check` passed.
+- Shared-hunk review: `PASS`; evidence: 15 staged files / 77 non-ledger hunks are covered by the three selected CRLs; MZ-020 retains its previously reviewed source hunks and the MZ-015/MZ-018 scopes assign the remaining hunks without overlap, including the empty-maintenance-PATCH permission guard and separate authority-photo projection added after independent review.
+- Generated-file review: `PASS`; evidence: tracked backend build drift was restored; ignored backend/frontend outputs and all dependency/pairing symlinks were removed; no untracked file remains.
+- Sensitive-information review: `PASS`; evidence: candidate contains no `.env`, credentials, tokens, cookies, private keys, database URL, production logs/data or supplied image bytes.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: delegated user instruction explicitly selected one Root batch containing MZ-015, MZ-018 Root and MZ-020 and authorized commit, normal non-force push and Draft PR while excluding merge, deployment, OTA and production writes.
+- Independent review: `GO for commit`; evidence: final independent read-only review matched fingerprint `4984f21059c547cfcea77de4d58e4a6e54b22c0dbd5289e135f1014ba6b0bf93`, pre-commit 15 files / 77 hunks and diff check, confirmed the empty-PATCH and authoritative-plus-supplement photo-gate repairs, and found no P0/P1. The recorded MZ-020 duplicate-order override-only UI mismatch remains a non-blocking P2 with safe backend denial.
+- Action conclusion: `GO`; exact reviewed candidate was committed locally as `eb67d181952fe2b00b5d0eb98ca0399b8104f664`. Push is evaluated separately below; merge, deployment, OTA and production writes remain excluded.
+
+#### RA-20261009-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261007-001`, `CRL-20261007-002`, `CRL-20261008-001`
+- Selected CRL identities: `root/CRL-20261007-001`, `root/CRL-20261007-002`, `root/CRL-20261008-001`
+- Intended action: `push`
+- Branch: `codex/mz015-mz018-mz020-dev-20261009`
+- Base: `origin/Dev@4c5b57b57301824fea4115b7632aab0f6d58d530`; fetched at `2026-10-09T02:32:31Z` and confirmed unchanged at `2026-10-09T02:37:41Z` from GitHub
+- Candidate patch SHA-256: `4984f21059c547cfcea77de4d58e4a6e54b22c0dbd5289e135f1014ba6b0bf93` excluding `docs/change-release-ledger.md`
+- Candidate content commit SHA: `eb67d181952fe2b00b5d0eb98ca0399b8104f664`
+- Commit SHA: `eb67d181952fe2b00b5d0eb98ca0399b8104f664`
+- Dependencies: `mobile/CRL-20261007-001@2a476ea4426ab05c40d42f3fc0ee2c859da5cd2b`
+- Required validation: `PASS`; evidence: final `DATABASE_URL='' npm run check:full` passed backend build/contracts, frontend 53 files / 265 tests / production build, and paired Mobile typecheck / lint 0 errors / 588 warnings / 62 suites / 379 tests.
+- Shared-hunk review: `PASS`; evidence: exact committed range contains 15 selected files / 77 non-ledger hunks across the three selected CRLs.
+- Generated-file review: `PASS`; evidence: generated outputs, caches and dependency/pairing symlinks were removed before commit; committed range contains none.
+- Sensitive-information review: `PASS`; evidence: exact committed range contains no configured sensitive category, credentials, private media bytes or production data.
+- Cross-repository dependency verification: `PASS`; evidence: `mobile/CRL-20261007-001@2a476ea4426ab05c40d42f3fc0ee2c859da5cd2b` resolves on the paired branch, directly descends from its recorded Mobile Dev base, and retains fingerprint `7a33f163f8de0cb7bb1e0326adf326125db31ba8b196513d7b41009c8a91eb8e`.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: delegated user instruction explicitly authorized normal non-force push and Draft PR for this exact Root batch while excluding merge, deployment, OTA and production writes.
+- Independent review: `GO for ledger-only receipt commit and conditional controlled push`; evidence: independent read-only push gate verified exact base/content ancestry, 15 files / 77 hunks, fingerprint, receipt-only staged scope, paired Mobile commit, clean generated/sensitive boundaries, fresh unchanged Dev and absent target branch; no P0/P1, with the recorded MZ-020 P2 accepted.
+- Action conclusion: `GO`; commit this ledger-only receipt, then require a clean exact release report and one final live remote-boundary check before explicit-refspec normal non-force push. Merge, deployment, OTA and production writes remain excluded.
+
+### Risks / Release Notes
+
+- Risk: 前端无法预判具体订单是否属于已锁定结算期，因此只有基础取消权限时会允许选择并显示边界说明；最终锁定判定仍由后端执行并返回稳定错误。
+- Accepted P2: 疑似重复订单弹窗的既有取消按钮只检查 `order.cancel.override`；override-only 角色会看到按钮但后端因缺少 `order.cancel` 安全拒绝。该 UI/后端不一致不影响本案目标用户，后续应复用统一的双权限状态函数并补前端回归。
+- Deployment gate: `render.yaml` 对生产服务启用 `autoDeploy`；生产后端启动会执行现有 schema warmup（`CREATE TABLE` / `ALTER TABLE` / `CREATE INDEX IF NOT EXISTS`），通知 worker 默认 run-on-start 并可能更新队列及发送通知。合并或部署前必须取得单独的生产数据库写入确认；本次 push/草稿 PR 不触发该确认范围。
+- Rollback: 合并前删除远端临时分支即可；合并后若运行时回归，回滚该提交并重新部署。权限或数据库配置无需回滚，因为本单元不修改它们。
+- Sensitive-information review: PASS；源码、测试与台账未加入密码、Token、Cookie、数据库 URL、生产用户标识、订单内容或生产日志。
+- Git state: integrated isolated branch `codex/mz015-mz018-mz020-dev-20261009` based on freshly fetched GitHub `origin/Dev@4c5b57b57301824fea4115b7632aab0f6d58d530`；exact candidate not committed, pushed, merged or deployed。
+
+## CRL-20261007-002 — 移动端维修记录补录维修后图文的后端权限与保存契约
+
+- **Status:** integrated release candidate validated and independently reviewed；ready for local commit；not pushed / not deployed
+- **Repository:** `root`
+- **Updated:** 2026-10-09 14:06 AEDT (Australia/Melbourne)
+- **Request:** MZ-018 移动端编辑维修记录缺少维修后照片和说明补充入口。执行人、维修管理员和管理员可补录；已完成记录仅允许维修管理员/管理员走现有受审计修正流程，补照不得改变工作流状态。
+- **Outcome:** `property-feedbacks` 返回独立的完工内容编辑/关闭后修正 capability、单独的权威 `completion_photo_urls`，并把真实 `closed` 工作流状态纳入历史已完成列表。普通维修内容 PATCH 可保存补录的维修后照片与说明，但仅限真实 `assignee_id`、维修管理权限或 admin/offline manager；空 PATCH 直接拒绝，且不写 `status`/`review_status`/`completed_at`。待复核的照片门槛检查权威完工图与补录图的并集，删除最后一张补录图时不会误拒绝仍有权威图的记录。已关闭记录的普通 PATCH 被拒绝，必须继续使用 `correct_completion`。
+
+### Implementation
+
+- Previous behavior: API schema 虽认识 `note` 和 `repair_photo_urls`，但维修编辑白名单拒绝这两个字段；权限只有通用的管理员/创建人内容编辑，无法区分报修内容和完工证据。
+- New behavior: capability 显式区分 `can_edit_content`、`can_edit_completion_content` 和 `can_correct_completion`。服务端在事务中锁定源维修记录、重新校验房源可见性与真实分派，且将普通报修字段与完工字段分开授权。
+- Key decisions: 创建人不因创建记录自动获得完工证据权限；待复核照片有效性以既有权威完工图与下一版补录图的并集判定；已关闭修正不新建状态、权限或路由；不增加 migration。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — 维修完工内容 capability、权威完工图单独投影、空 PATCH 门禁、字段白名单、事务锁和分权保存。
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — 执行人、维修管理权限、admin、非关联用户，以及 assigned/pending-review/closed/cancelled 状态 capability 矩阵。
+- `backend/scripts/tests/test_property_feedback_access_contract.ts` — 完工字段白名单、锁行、拒绝码、`closed` 已完成投影与普通 PATCH 不改工作流状态合同。
+- `docs/feature-regression-registry.md` — FR-010 补充移动端补录与权限边界。
+- `docs/change-release-ledger.md` — 本 CRL 与本地验证状态。
+
+### Impact / Dependencies
+
+- API: `GET /mzapp/property-feedbacks` 增加可选 capability 字段并单独返回既有权威 `completion_photo_urls`；`PATCH /mzapp/property-feedbacks/maintenance/:id` 新允许 `note`/`repair_photo_urls`，空 payload 返回稳定 400，其他 URL 不变。
+- Workflow: 已关闭记录依赖既有 `POST /maintenance/workflow/internal/:id/correct_completion` 的原因、审计和幂等保护。
+- Database / migration: none；本轮未连接或写入生产数据库。
+- Paired unit: `mobile/CRL-20261007-001`。
+
+### Validation
+
+- `DATABASE_URL='' ./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_mzapp_media_visibility.ts` — passed：capability 角色/状态矩阵和既有私有媒体合同通过。
+- `DATABASE_URL='' ./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_property_feedback_access_contract.ts` — passed：字段白名单、锁行、错误边界和无状态赋值通过。
+- Independent-review repair validation：空 maintenance PATCH 在事务、审计字段更新和费用摘要刷新前返回 `feedback_content_fields_required`；目标合同、媒体 capability 矩阵及 backend TypeScript no-emit 均重新通过。
+- Cross-repository review repair validation：待复核照片门槛使用 `completion_photo_urls` 与下一版 `repair_photo_urls` 并集；目标 access contract 和 backend TypeScript no-emit 通过，最终 `check:full` 再次通过。
+- Post-review complete regression：`DATABASE_URL='' npm run check:full` 通过 backend 构建/完整合同、frontend 53 files / 265 tests / production build，以及配对 Mobile 62 suites / 379 tests（lint 0 errors / 588 warnings）。
+- `./node_modules/.bin/tsc -p tsconfig.json --noEmit`（backend）— passed。
+- `python3 scripts/audit_feature_regression_registry.py` — passed：29 FRs / 231 test mappings / 78 deferred mobile mappings。
+- `python3 scripts/audit_change_release_ledger.py` — passed：8 changed files / 8 recorded files。
+- `git diff --check` — passed。
+- Production database/API, authenticated runtime, migration, notification, external sync and deployment: not run。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none；候选来自最新 `origin/Dev` 的隔离干净工作区；测试依赖软链接、frontend 构建/覆盖率缓存与 backend 编译产物已清理，未跟踪文件为零。
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `1794b93db2ef874446f022013379106d52bd8c76bf1cedac86d4415570acc55c`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `2a9e8fde2dcadc415a827e7c0fc59fa0064c5258aef8d9e3d413372407feec0b`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `58d428a244e1fd8df56542ee340787cb926133bd6eff81a5fe341b1692a308ee`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `7a725b4c941ade27906713768217849af0a3aeb33c0dfa28a3fbfe2d5a133166`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `8d48566c4ae3addb3c5424e2f4ad2e7558f73e9abc9daa169f0aad6c80166cff`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `dc48ff00d2ca68a8feff02c789e81cbf752f576cee3b5fbf30fa111933174c48`
+- `backend/scripts/tests/test_property_feedback_access_contract.ts` — SHA-256: `72c73c20d2e80d4be69624e957a2badc3f4f2388644b07aae37ea05a82dfe904`
+- `backend/scripts/tests/test_property_feedback_access_contract.ts` — SHA-256: `cbe71a8d191f7ac96452cfce5ae8c9845fce1a643810f071a3bc978be9996ee0`
+- `backend/src/modules/mzapp.ts` — SHA-256: `05c59fe1c3382501bccddcada44b7ae648ebf036473948b62e4d84338045339a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `206fd3c2305b33da1b2c1cb04f615e4ee4c6f37d88bec24261b67fad4e4090e8`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2bfe25e5df3c6e75fe726aae1035200ac71584232c41b0f279580e645d601924`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2cb0d02d925dcb6593c76fefb803119af65201f70e132f668e89efd7465246ab`
+- `backend/src/modules/mzapp.ts` — SHA-256: `3417fe17abca968be1617e0c69d3b983705c272e3588346a27191d9d0e97ffe0`
+- `backend/src/modules/mzapp.ts` — SHA-256: `0f82d204ab34c3ba79b0f11c60f2869350ed9c7fe20e6d376a6cadb6b1ce667b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `204db920f538f6acf5fb7ebdf5851762629cc0efd87b80a89981fa53fa7e2799`
+- `backend/src/modules/mzapp.ts` — SHA-256: `28e0ab7a79b9ca8a3f7d9dffd23faf98d4f8d5e4e0f1e29f7eef53b0dda5e74c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2a59d8387b82bcc6b88a2d3b5a40cd0e06f9e7e7a1fe193d831895d8e31939bf`
+- `backend/src/modules/mzapp.ts` — SHA-256: `51d11c5cd728bb797b73909f241fe1dda8a3e1410326a7c10f55cd648a866517`
+- `backend/src/modules/mzapp.ts` — SHA-256: `52c5f3d22db83d8c28ea555c7cbaab41e1e17cd1181482d5bb21359fd59644c0`
+- `backend/src/modules/mzapp.ts` — SHA-256: `583ddd7756b51c29f8c186f656a086f75318ff5aeab774cea4d18bf4445ed8a2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `720f8bf1233f22eaecd02467f1b1de69bb291d947da326bb3e01a70d8b9bae9c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `95600f46c22bba92a17bdd8f17f5a2ab99b0c3180319be0697c23b17eb955c06`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d1f17737cfd3e014e1c1d03d5be2724a3f09d5f69a9503e851cef7d3bd0ea475`
+- `backend/src/modules/mzapp.ts` — SHA-256: `dc2c812843a972ce3d3b5995dbcaf0e4c2b3e2eee3d1a202144ab8175ac3d1ae`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e9a866862d7fb9efe88fa7d7a57112ec9c54165f29f8941f73006aa06207c47e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `bef1ef96dcb7e2ccf4c94dfbaeb256d7a006ebb71331eafb6b6e8f4299c6d8d2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d23b39d885cc5014aa744f0065e202c878fa367461b1994cdcea25652a638198`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d599406fc4cc4419f786fcf3ebc1b2fe9ca23a6d725e4d92d738f1c4760bc795`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d6d4d5e8ec570cfa903173373c332affffdaa2db055f09c17d3a767fc484b0da`
+- `docs/feature-regression-registry.md` — SHA-256: `4ea559e381a70857e6c63cd173304965b271b5e3c91efbeba6b4fd6bfb79a929`
+- `docs/feature-regression-registry.md` — SHA-256: `58d455d289e9e380968e961ffc8d78601951491361e900a2f120a962ed9ac0ab`
+- `docs/feature-regression-registry.md` — SHA-256: `80c9625e2f2148f6bd80c45a72aa4cb64b20d2ed1a356efae7f836ffe196ce0f`
+- `docs/feature-regression-registry.md` — SHA-256: `8e6edaa4217d7ce36ab0c8a98644844e5f5d31632ca87cd7a6b720f302fe4f0d`
+- `docs/feature-regression-registry.md` — SHA-256: `a18256b05bd750684aff7ac60f2db19c8fea263d5c40d79b91c117f7fbfb462d`
+- `docs/feature-regression-registry.md` — SHA-256: `bc825b550374f14ba6ca0a45bbd2a07a87cf8ddfbae3b72651853ccad23f1fc7`
+
+### Release Attempts
+
+- Shared batch attempt is recorded under `root/CRL-20261008-001` as `RA-20261009-002` and selects this canonical CRL together with MZ-015 and MZ-020.
+
+### Risks / Release Notes
+
+- Risk: 尚未在授权的非生产 PostgreSQL 与真实账号上做路由级集成验证；本轮以纯函数权限矩阵、源码合同和 TypeScript 检查作为本地证据。
+- Rollback: 回退本 CRL 的非 ledger 代码即可；无数据回滚或 migration。
+- Sensitive-information review: 不含凭据、token、生产数据、图片字节或数据库 URL。
+- Git state: integrated isolated branch `codex/mz015-mz018-mz020-dev-20261009` at freshly fetched `origin/Dev@4c5b57b57301824fea4115b7632aab0f6d58d530`；not committed, pushed, merged or deployed；production and real-account verification not run。
+
+## CRL-20261007-001 — 网页任务中心排班卡同步显示已退房
+
+- **Status:** integrated release candidate validated and independently reviewed；ready for local commit；not pushed / not deployed
+- **Repository:** `root`
+- **Updated:** 2026-10-09 14:06 AEDT (Australia/Melbourne)
+- **Request:** 线下经理在网页任务中心排班时，已标记退房的相关任务卡片需要同步显示“已退房”；必须复用真实退房状态，不另造状态或按日期推断。
+- **Outcome:** 任务中心读取现有 `cleaning_tasks.checked_out_at` 并在单卡、延期卡和退房/入住合并卡中保留该事实。未开始的相关卡片显示“已退房”，底层 canonical `status` 不变；进行中、待检查、已清洁和完成等流程状态继续优先。
+
+### Implementation
+
+- Previous behavior: 退房入口已经写入并同步真实 `checked_out_at`，但 `/task-center/day` 查询和卡片合并没有携带该字段，网页只能按 `assigned` 等流程状态显示“已分配”。
+- New behavior: 任务中心查询、内存路径、延期合并和周转合并都透传真实 `checked_out_at`；统一 Web display capability 仅对 `pending/todo/unassigned/assigned` 的清洁任务投影“已退房”。
+- Key decisions: 不新增数据库状态、字段、migration 或日期推断；不把 `status` 改成 `checked_out`；不覆盖任务已经开始后的流程状态。
+
+### Files / Areas
+
+- `backend/src/modules/task_center.ts` — modified: 读取并在单卡、延期卡、周转合并卡中保留 `checked_out_at`，供现有网页卡片 `display_state` 使用。
+- `backend/src/lib/webTaskCapabilities.ts` — modified: 未开始且有真实退房标记的清洁任务显示“已退房”，流程状态优先级保持不变。
+- `backend/scripts/tests/test_web_task_capabilities.ts` — modified: 覆盖单条 capability 和离线任务中心整链路的退房标记合并、canonical 状态保留及进行中优先级。
+- `docs/feature-regression-registry.md` — modified: FR-002 登记网页任务中心真实退房标记不变量与测试映射。
+- `docs/change-release-ledger.md` — modified: 本 CRL 和本地验证状态。
+
+### Impact / Dependencies
+
+- API: 现有 `GET /task-center/day` URL、权限和写操作不变；清洁任务行增加既有 `checked_out_at` 事实，并据此生成 `display_state.status_label`。
+- Database / migration: none；只读取既有 `cleaning_tasks.checked_out_at`，未连接或写入生产数据库。
+- Config / environment: none。
+- Dependencies: none；复用既有退房入口对相关任务传播 `checked_out_at` 的能力。
+- Related units: FR-002；root/CRL-20260725-016（退房标记传播到关联任务）、root/CRL-20260725-017（流程状态优先于退房标记）。
+
+### Validation
+
+- `DATABASE_URL='' ./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_web_task_capabilities.ts`（backend）— passed：真实退房标记合并到周转卡并显示“已退房”；canonical `assigned` 保留；`in_progress` 仍显示“进行中”；无标记仍显示“已分配”。
+- `./node_modules/.bin/tsc -p tsconfig.json --noEmit`（backend）— passed。
+- `npm run test --prefix frontend -- --coverage.enabled=false --no-cache src/app/task-center/taskCenterDisplay.test.ts` — passed：9/9，现有任务中心卡片展示与状态消费回归未受影响。
+- `npm run check:feature-registry`（等价直接执行 `python3 scripts/audit_feature_regression_registry.py`）— passed：29 FRs / 228 test mappings / 77 deferred mobile mappings。
+- `python3 scripts/audit_change_release_ledger.py` — passed：5 changed files / 5 recorded files，Coverage PASS，远端 CRL 谱系核对通过。
+- `git diff --check` — passed。
+- Browser interaction, authenticated runtime, production database/API, deployment and production verification: not run。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none；候选来自最新 `origin/Dev` 的隔离干净工作区；测试依赖软链接、frontend 构建/覆盖率缓存与 backend 编译产物已清理，未跟踪文件为零。
+- `backend/scripts/tests/test_web_task_capabilities.ts` — SHA-256: `27e134beb4b662dc9b247e861c1d30341f5177558e9a0d9e2dbcf4f51b96d30a`
+- `backend/scripts/tests/test_web_task_capabilities.ts` — SHA-256: `475d2f7d61c746f4a51f7d1f692d59a91c396adbead6dfef5f5d92dbafaf4597`
+- `backend/scripts/tests/test_web_task_capabilities.ts` — SHA-256: `97badf69cd043677b421b86bd5b99cc36d7d6c4be850c45aee0520265556b301`
+- `backend/scripts/tests/test_web_task_capabilities.ts` — SHA-256: `a517ae5a0c6038230a675177a436b56470fd6076dd89bacf6b5a16af4b096bf1`
+- `backend/src/lib/webTaskCapabilities.ts` — SHA-256: `a0920ac1b3a8987070664a817059e7c06d64305fb3e90b569034cd8d70dd4dd0`
+- `backend/src/modules/task_center.ts` — SHA-256: `35e9577e30558c6dc451a579d02c870e97603481887940f1969815c90a7019ef`
+- `backend/src/modules/task_center.ts` — SHA-256: `410f2ecb9e96a0149747a1071d607af51cf8b0fe127a2d80a24dc5106e7aea33`
+- `backend/src/modules/task_center.ts` — SHA-256: `560a8b035adae47d98f67860636b6e99f5c19821c8f8e42b2235cf5e2e2929bb`
+- `backend/src/modules/task_center.ts` — SHA-256: `6583356a7c8a65a48012eb4afae1a9fba313a9b5176223932657ed3fb1b5db6a`
+- `backend/src/modules/task_center.ts` — SHA-256: `9824ba5bed6e11bb38b1111eb544c90a941b7d5f14d09ed020bac4b30682fdf4`
+- `backend/src/modules/task_center.ts` — SHA-256: `c0f15136a3f37debc50bdfb8d2e769475cd9d4d6149b13e7d6805c4ee7b1cfa6`
+- `backend/src/modules/task_center.ts` — SHA-256: `e926ce4c29bcaffe8d50c92d5864be59a3aa5da59a28e14195ce8bf4258f53c7`
+- `backend/src/modules/task_center.ts` — SHA-256: `fd2644088c976b4a4bd3aa911bdeb7b435747a4ee0f80232fbcecc1913cdb417`
+- `docs/feature-regression-registry.md` — SHA-256: `1efb0a833f41a87c8b81b5a7610f1615922141d6ab2c4a74f114a737f4e67c06`
+- `docs/feature-regression-registry.md` — SHA-256: `3262ff19eed747007a329d6b2ebd6e5fda2c5822591b2c6b5c9042aeea8bf380`
+- `docs/feature-regression-registry.md` — SHA-256: `3a3d69061634d761ab38f8bf6b292aa04ed1cf2b3df2b24e119dde5d43cf6763`
+- `docs/feature-regression-registry.md` — SHA-256: `7d304de499a43b48755c8efbfae352e644dbbe87f35c1942d078746150d28636`
+- `docs/feature-regression-registry.md` — SHA-256: `ae5edbf0849b318c2db2a3890a1f6a89e02987b064398055f2b77cc50c9273de`
+- `docs/feature-regression-registry.md` — SHA-256: `c85880a2a8b01d10b07804d9c06d4d698141bbe6dfce930e95cb077fab192c2b`
+
+### Release Attempts
+
+- Shared batch attempt is recorded under `root/CRL-20261008-001` as `RA-20261009-002` and selects this canonical CRL together with MZ-018 and MZ-020.
+
+### Risks / Release Notes
+
+- Risk: PostgreSQL `/task-center/day` 的真实数据读取未在数据库集成环境运行；本轮以离线内存整链路、纯 capability 回归和 TypeScript 检查验证，需在获批的非生产环境另做页面刷新验证。
+- Rollback: 回退本 CRL 的非 ledger 代码即可恢复原展示；不涉及数据回滚。
+- Sensitive-information review: 变更不含 `.env`、凭据、token、cookie、private key、database URL、生产日志或真实任务数据。
+- Git state: integrated isolated branch `codex/mz015-mz018-mz020-dev-20261009` at freshly fetched `origin/Dev@4c5b57b57301824fea4115b7632aab0f6d58d530`；not committed, pushed, merged or deployed；production and real Web validation not run。
+
+## CRL-20261005-003 — 已付款结算 PDF 显示冻结付款去向
+
+- **Status:** selected release candidate；fresh `origin/Dev` candidate validation in progress
+- **Repository:** `root`
+- **Updated:** 2026-10-06 Australia/Melbourne
+- **Request:** 已付款的合作方周结算 PDF 不能只显示 `Paid`，需要明确记录款项采用哪种付款方式以及付到哪个收款账户。
+- **Outcome:** `paid` 文件新增双语付款信息区。银行转账显示确认付款时冻结的账户名、格式化 BSB 和账号尾号 4 位；现金、外币和其他方式只显示付款方式。未付款文件不显示付款去向；历史已付款记录缺少冻结快照时明确显示“未记录”，且不会读取人员当前银行卡伪造历史。
+
+### Implementation
+
+- Previous behavior: 已付款文件只显示付款时间，不能从文件判断付款方式或收款账户。
+- New behavior: 仅在 `paid` 状态读取付款事务已冻结的 `payment_destination_snapshot`，转换为不含完整账号的模板输入后渲染；银行转账只保留账户名、BSB 和尾号 4 位，其他付款方式不渲染银行字段。
+- Key decisions: 不新增表、字段或付款操作；不从人员当前资料回填历史；完整账号不进入模板输入、HTML 或 PDF。模板升级后通过现有重新生成操作产生新的不可变文件版本，不覆盖旧文件。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — 已付款文件付款信息区、付款方式标签和银行账号尾号。
+- `backend/src/lib/personnelSettlementDocuments.ts` — 从冻结快照构造 PDF 安全付款去向。
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — paid-only、银行/现金/缺快照和完整账号不泄露回归。
+- `docs/feature-regression-registry.md` — FR-029 付款文件追溯和隐私保护规则。
+- `docs/change-release-ledger.md` — 本 CRL 与发布尝试证据。
+
+### Impact / Dependencies
+
+- API / database: API 响应结构不变；无 schema 或 migration。复用 `personnel_weekly_settlements.payment_destination_snapshot`。
+- Privacy: 完整账号、原始快照字段和 `storage_key` 不进入 PDF 或列表；下载继续使用既有认证路由。
+- Existing files: 旧 PDF 字节保持不变；要显示付款去向必须显式重新生成当前状态的新版本。
+- Related units: `root/CRL-20260930-005` 提供付款方式与冻结付款目标；本单元可与 `root/CRL-20261003-003` 同批发布但不依赖其运行时逻辑。
+
+### Validation
+
+- Source candidate：Phase 5 contract、backend TypeScript、隔离 build、虚构资料 PDF 视觉检查、Feature Registry 和 ledger coverage 已通过。
+- Fresh release candidate：Phase 1/3/5 contracts、backend TypeScript/build、frontend 9 targeted tests、TypeScript、target/full lint、Next build、Feature Registry 29 FRs / 227 mappings、ledger coverage、`git diff --check` 均通过；数据库 integration 未运行。
+- Production/manual paid-file regeneration：not run。
+
+- Post-review repair validation: zero-value weekly settlements now produce an explicit `$0.00` document instead of committing state then failing PDF generation; empty partner-submission objects no longer expose an invalid return action; FR-031/FR-032 remote text was restored. All targeted and full non-database checks above passed after these repairs.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none; candidate is isolated in a clean release worktree based on freshly fetched `origin/Dev`.
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `12f42e19ed9ef08fa816b63f3d74d8e60b6bdd839fbcfdec8e03c3fcf28f3114`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `3255dede57d2247bf33b1b367ac40bcde9ff2ad7bd1128f01fd65925d395927b`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `7629e9b1fa90b5c746822d58b68400eb951316455bf838bf1540127aa50f4106`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `80a02ceac8e7586f7862f7433c04efde2b7e9cce344dfe685a9b1d2aacba68d4`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `8657406cf0b5cb41f3c8d91b3d6a33aefd4717a5af9c573b9912ca54114964cc`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `8c2d1184c0075c6a3e673d4bd5e5c67e905b5fdb36eccf365ec02eb15cd4ec21`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `01d1c1b3e0418aec58d42379f1bc10b802653ba2c9de5d7fdcc23be6433e7cf7`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `1618ddf7565e3d4abbff29ac8a7d9155836f4258c11bf232d7f2393c2761df60`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `27897b9de5916166db90391bbbc7db9ef53788ebe1e2fe2eafd40512d175639b`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `4bc4a7be436a814ae322e486229c7f1dd58a10552b7dc1d3a03d3195c11ad6c0`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `52fb34a9b9607236409c25a3e539a4d81c41422f04f15c822d7e56a3a18a886c`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `71915f3e39da25d1fae6b588d82f0a6ddc03eb4f60b27e3c0edd745139ad02bf`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `94c4753d955fb7e1244e05108f4e256d6169c9a9a68252b691ec6d2bd4cd0064`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `9b34922e9ee327f187f2842754a207f10f2b4f71877b3bee4ddd5feb612f69be`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `ae9389fd1ab380c262862643dc22e3f462547407b1847ebde74a28e45fc60013`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `c676f50c5c72f65a7031c6f5abdd01f51f091378d589aa21b83009c2add56510`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `d074dbe329066fef122fb4173982e6a05932eefa41f8aa79647c14658b93339f`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `ecbf02841059027e54f5e138023cb58a7c508e779316dcb771b1f9b627f40502`
+- `backend/scripts/tests/test_personnel_settlement_phase3_integration.ts` — SHA-256: `0878ecbb982f7a0c3511c1342d83496f21c4503a9f229ad207fe80291b569f45`
+- `backend/scripts/tests/test_personnel_settlement_phase3_integration.ts` — SHA-256: `3ba5c722bbb929a17ae39571cda2adc501c84ff1d04392c4ee552ee0335a682c`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — SHA-256: `0fb6a26e700e26245775007df651880456a7ffd7471926098767f6dbe1ef8b66`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — SHA-256: `95ee8a13bda50c2ff054cb10bb8bb8403d8968547fc971e26ac3cdeed20698f1`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — SHA-256: `e7c486c2390fef603c1b7851e18057866ad5de6138ea27904fce00006049d4d4`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — SHA-256: `f19df9c82f19255d5aab98830ed59679b257309591b049bdb1358ef85ade0fef`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — SHA-256: `ff027f16545c0c791c5a23028104f018819735520cf764851b496f8d5f78d67d`
+- `backend/scripts/tests/test_personnel_settlement_phase5_integration.ts` — SHA-256: `ab8f62b554dd97e859805e4ca04c8667576a0ae358a054f996fd341f63628fa0`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `06a4d0f84aeb57f4a7b6522ab134ec4881c2fbac869c4b05ea5f62c33378c6fe`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `1feb91f74c50e2f04eb34e9f60ab7c47f56288174d414f558b31ce0a92e928e1`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `2ad1e723a9c46613f28c5b8b1de68b8fd4edd47ed07cc3d77266cd1aa3c31b41`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `34eea7a16c424cdcfebbcb0e4b83f9bcfd9b08dba6c86adc00855d5ce08be0aa`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `4941731b8db58087021bc112e3191e8d1fc8cd4ad34150f25eb6fc5b04ead1b2`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `54a621f2b5c865c6e2809dfaacd4ee12592ab453b75a80ee6a6debab9d75f8c2`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `993cc9ff2959a6d2606448b9ee5c62b3277ea65c9517456cface81d1c5e01b00`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `a5cc35b658ca266fa84bfc22d081a1ba02672261ffcd1c354544498518015aa3`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `fdc05d6f7bb8d0587d1a220f562a8273dc5d613fe5ea11b99652c9b9425bb64c`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `018821c4464bc2d9a3f87199bc58b0fd1e8f55d9216ed8d9177f35d8c50c4490`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `0438aafa6b620670c835ade60924235f5d9e34ec37cd7f4803d9d6732e414d79`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `1a765a4ac2fe0d3414eba711131856a67e90861d195697b819254909a2f6f99c`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `4262ce46fdd30462a44700b3cd7fe7d480cee0cdb56fc3d3356b67c6657edb70`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `670033c902fd4be03949e6663cb807e70e874b616fb191c8af2b96e603df27c7`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `a7cae7187a67ea5a07663405a2c25bf8ef2476d13525a55e274eb906a1376381`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `b503db2a69fb3f8bbb2663a227ecc4b07a6407d0897df094635d34d52d44663a`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `0ef9c9f2b42b63f5f34ce1e17b2038079c972ae52a3eb465beb64c352c1d159e`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `20bfc2bac14d3a8582e3b722bcaa2e63b8a6acac2d60e9192ceab0b6414dd838`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `2ea5e39c755865236de358d02f5286cbef94e2bcb5aefc0fb53742cc44466619`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `363e12d3b494460d74c62a50b9e482478ef99f645ca139543be1b68a59eff948`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `5af94963eaa3de135cb5fdd33478d20e3ccd4ca8209b0bc89e9ba5057c69e374`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `6f616516865406a8e48cb9b3416d1e97e183145be58541c2ab7ba164d770391f`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `8b6cc47af84e45e7c7bea5847ade0ed025ff73748b44528a13badc15fb6b83f5`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `a46434d6c94ce4c227802bb73d31692d349b9644298e5d1c00ffa211bacf9dc2`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `b36fcbe25cb283d52d2eda1b8b2ec0134f743956e3edf3a63bf78c03a60e2b34`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `db0bed7ca3d6bcec8ce6a821a3ff229603de98591e3262a3dac0c742320333e6`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `f2e9d12e2eecd8b8aa2ad9aeeb4ef6a4f6cbd8e67a8fd51e59712cf88a0f4eb6`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `fb91bbb80b854d673d8bbf7f88b2a0abb573de8b1afc9662f72b1b7a4ca93b09`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `02d31d244d46cbc9f1d4a7e25bbde85e6489eb81429c1318181aa6e6247b1842`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `0d37f1b9e8b308ef3d612d1318ec7965ae9dcae082b6f0264cb09158dee025ff`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `157659a7b3a81c558435627a656d5e3babb3d71d51aaf826a160c903f14a7de0`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `1b9edbdb6f3503372a62003bd14112566a3f504e93a1677916e293623ac838f4`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `3706e61f4887493017571db30c5fa341d245c9d8b5d047ba1ff03247cd020521`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `54946ec4c073e23fc09d3b623ff764bbac7ef545858936cbdb243088a927f72a`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `635bca7e91420d99ca6c9ed249033b7637060516e2ff2fbe0b5545f524ea8e30`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `6562877e44972e717e410eb4259b76a0f002cccc91354537c9c9d2ed8326570c`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `69ec1a26c2a238c3402c74386c9bd7971e88cb0e38b924d79a2c75ed3b3e622f`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `7464a570a0e5eca80e47e816b976b5845a150ec9742078711f3af92db3d33eca`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `7865a9ea62ca2eeaa1a6e6df75191405acfe660e85900013db82cec401b64b70`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `7d62cd7a10a22f9b2ad68448d91559c735ba333fd72001aa6b70c9e97945f088`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `809887cb38463225558a8d433e4c07345da1697853d72104ebf93d90e3a354e6`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `84aa697601704b9b298b55f1ecbc9973a4172670f5aec3453a38d9d9a3f63c2d`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `8f9f19a7da506ece361d46e11d10cca36c5f4904462a6d133184d3999a23cb05`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `9ee0be5ded75bcb71ae3ee9574103bbf6e750b8ce22e4fae3c7d4d388de24b2e`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `adfcf566856a938e38692d358512fa1220ec59beb87cb3d11a39ba4253ae0943`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `be7ff38855727277ee5254f56c9042b19168fe3a59799e92b752f388d55e33ef`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `c37227d7fb577494086e46bdf43a3d65c96d8005a4e921eedb4d4b6058fd3831`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `c5e6bdbe5cd510c00ae976c43ffbb869dc7e8efde9c1c2f1dae5b3c4c02e704f`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `cd89fff4ad0a8f3e1265fb8e1aca79f0cd442cd5bc464882e6d0128f5068eae6`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `d51a8ec4a51b8636ece31eea355a8c69b104f71f2c886db5fa5f7750710828fc`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `d8c221ecc0d833e1e777c872a61335dcf7e23a1814077b7a4071638f75a09b87`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `da22b0167e616de581a01a48d0df706b2d15b3059ba43e3b50301b646587d9ed`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `eb491b4c18f5e70d6b618893307dce245660c43e1118745b7c8528a9e1a534aa`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `f0e9e1ce36864c468bb7ec14f132ae9dea5b449c26b44d827fa88b6c1a08851e`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `f28e377bdecbdd4e15ee082d65dfaebc2f95accbfa3615c386aed658ad2f6ce2`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `4d95f676bf1db8caa6b2495b86924ef774da43f61301fc4ab7873c5ac31da44c`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `63bd2b42a00d3970f411051c1cf79cb2b62774dc76ebde164a31e92b25663f22`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `ac7cee45b1eb1e412822afdf029676fe86b67783087ea411d6b97ebe69027b37`
+- `docs/feature-regression-registry.md` — SHA-256: `18e7cc8a52925f6668b879d3ddc5dcd60cb3e85c63223153b95b1cc85c5291ca`
+- `docs/feature-regression-registry.md` — SHA-256: `1cbe87cfe6efbd52711475a0af7ae123b33b0f503ba80c6f8f74066a50f1ac93`
+- `docs/feature-regression-registry.md` — SHA-256: `258006bab9747f37f322c6941afc8f5f6e6515220fbef76e3e9a24b222fa6e5e`
+- `docs/feature-regression-registry.md` — SHA-256: `2d09cb69979ee2b6097fffca434c3793a289aaff4e5f8cdbe8ee1a907f710ade`
+- `docs/feature-regression-registry.md` — SHA-256: `304c58062e274b58d88801a23a51aa644d60e43a39b06e966c54b8adcce60155`
+- `docs/feature-regression-registry.md` — SHA-256: `4f24b01bdb706b1a3276f7754fdbe8836aa873926ab4603c893c88b0c8b924dd`
+- `docs/feature-regression-registry.md` — SHA-256: `613c8bcc2ceb6ecd6f257e5a7585930aaf5bc4345263bcc2a40230a8546a9296`
+- `docs/feature-regression-registry.md` — SHA-256: `682e07fa47336de079f8a538244702d2411dc6c49a3c18e265e9d6ef55f93593`
+- `docs/feature-regression-registry.md` — SHA-256: `6f9ca9347b9567f1447046d3b1b90f6b0b9db92e389b31f555b9fcbe8af8979c`
+- `docs/feature-regression-registry.md` — SHA-256: `9951de85f5712928798f28aa68e829ea92be9c75497e41425acbbb3b371a27e0`
+- `docs/feature-regression-registry.md` — SHA-256: `a57e62e8c85e6ebd86a93ed66f6f8a4fca3b0e497ecc7fa2c3039b3f0457047f`
+- `docs/feature-regression-registry.md` — SHA-256: `b3ad20aa52863a960db89a5b221c67200a2ead00dd424eaa46dae1cef8675a6f`
+- `docs/feature-regression-registry.md` — SHA-256: `bdfba0c6a79a6626c4782d2356e2465c7f3723a9469c5e733c44725b50908a62`
+- `docs/feature-regression-registry.md` — SHA-256: `bf2cc611eeea8ac61305fcf22a26c8a6b620fe5149d02d9a72e1265c36eed649`
+- `docs/feature-regression-registry.md` — SHA-256: `deb3018504b2a5defc90c5f3aa5a15ab3ecc0b3cdbac6b24cd40c370b00bbe4f`
+- `docs/feature-regression-registry.md` — SHA-256: `ef0e0c439caccff35268aa35f2662535d6e0b6bc850267b02e6f607d39ddffe9`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `097a5d095e87f2a2544140d0ba530e3be4d35cddf2a7a5112e4d5c6137431bc4`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `0d7641d615e07cf997348ab035352b178097915fe6aa141f6583d922b820f590`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `17a08173945a50b942720622e9593fd1e61a747074783e40f3d7e136255952b8`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `1ff2e9dd3d22d3840e062fd42c6d993adf7144957b9e7bfb1454524cb86ae06e`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `2c573ba04db14494ce47910386dd2728a8cf447a18d382c34000a840d41a5678`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `305b2a45001f4fd4d47355868f97325274ea8270c74f2f41be813d4a1fac70b5`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `3674d80b2915d73cc3db20e58abb2c395a4c280ba49a64d650c3dfe74c437d1a`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `4aa11dc6e77bbc1e02f8c2e5d0fe1c52599270caf9cd051461e68b314f1c6e33`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `6666cb9ef29e5c0de225f88ddfeaa6d333ce1a25daad9061b530f7c6cd40449e`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `71583dd1bb0b844309f09040d288fa6e7efc6839c3db05657049b79d49207335`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `71958f68cb1aa541e3c84ebeb8db89c9af5ed3319c43c166d2a7ebc33e3062f3`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `75cba0e97f2cad259aaa0e4c9a8b3d4d9a83df7022f72b8ba971d13c39506d54`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `82e1735f54ec23d248e9bcf67995c1e046cb450a933059aa1969c9a29c587504`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `8afe12db9fe23a2c3ebf1cb49d68218665d25f9e2a14061da7d447ff495671f6`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `901e7686061a2da494fa68b3c848ce3bf5eacd9dedb18267d4ad67417cfbfcd2`
+- `frontend/src/app/finance/settlements/phase5Ui.test.ts` — SHA-256: `17955053e8ff158214719d679014b7695a80275a04dd9377fdfc10db61cdd8b3`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `0e14c0773e4bf0cf19774f3aec6e07bfc2c2981c557378d17f12b8af2073425b`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `1b736a58835b2558ede9bce658ac857ae6c38cbebafa3681149bbfeaf6c79831`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `2763c58264aefe10598033383a2c535903c2bad143cef43af9b6da091433d292`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `57313cf046dbe7e1a0b1ed4c655a3c34e11449fd9f30b229f522ab88019439e0`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `704074587ed0b816a66b1faac3757eb29163741fe3571619ff652e63170dacf7`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `c5ed66197bb54831befb131ea5a8cb30feb04a0a85e2620c08908dc335d8032b`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `eabda62e2cd74f4f085cba2df2ad7e7f8239d666807be271152b0b69dfad1a5b`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `033ab2ed32f526ad6928ebc0bcf402568f7b325d27df3c27393eff112338b6e3`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `6a820a41c72f55c8ce34bc073b302a81ff0b2cec06b402e7ab2d388111e240f3`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `6f70bdbf4e2c6733da2ea1d5dfe055a8a7819505ee1088f46bc99fdd074d56dd`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `9398655ea377b2fa3282bda65138e01720a6cf08c964a7a965a7ea0c732f8399`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `949d7ef543f6bbc6fbd3f378ab96d59464037d2d328146ea23d9d4f6fc4ac297`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `966a2ee8cb9a60aac84c3bc23325271d869707e9889354936e9eef9871b507d8`
+
+### Release Attempts
+
+#### RA-20261006-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261003-003`, `CRL-20261005-003`
+- Selected CRL identities: `root/CRL-20261003-003`, `root/CRL-20261005-003`
+- Intended action: `commit`
+- Branch: `codex/settlement-workflow-paid-pdf-20261005`
+- Base: `origin/Dev@1675fd7a7d81f0db959934435e1d8cc5c7ac9783`; fetched at `2026-10-06T00:05:46+1100`
+- Candidate patch SHA-256: `5d85cc7c36a4a4d9d1f4a22f4916f6242b68a2bcd19b261f40d3e4294cc3a936`
+- Commit SHA: not committed
+- Dependencies: paired mobile flow `mobile/CRL-20261003-001`; PDF unit has no release dependency
+- Required validation: `PASS`; evidence: Root backend Phase 1/3/5 contracts、TypeScript/build、frontend 9 targeted tests、TypeScript、target/full lint、96/96 page Next build、Feature Registry 与 ledger coverage 均通过
+- Shared-hunk review: `PASS`; evidence: both selected Root CRLs own the shared FR-029 and Phase 5 test updates; latest Dev media-storage rules were retained during hunk-level reconciliation
+- Generated-file review: `PASS`; evidence: backend build 产生的 10 个 tracked `dist` 差异已精确反向清理；候选无未跟踪文件、依赖目录、缓存或构建产物
+- Technical state: `candidate`
+- User authorization: `selected-for-commit`; evidence: user explicitly requested “OK 把这三个提交推送” for the three listed CRLs; push authorization must be renewed after exact commit SHA exists
+- Independent review: `NO-GO`; evidence: reviewer found the zero-value settlement document failure, empty partner-submission object mismatch, and unrelated FR-031/FR-032 date drift
+- Action conclusion: `BLOCKED`; blockers: reviewer findings required source and regression-test changes
+
+#### RA-20261006-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261003-003`, `CRL-20261005-003`
+- Selected CRL identities: `root/CRL-20261003-003`, `root/CRL-20261005-003`
+- Intended action: `commit`
+- Branch: `codex/settlement-workflow-paid-pdf-20261005`
+- Base: `origin/Dev@1675fd7a7d81f0db959934435e1d8cc5c7ac9783`; fetched at `2026-10-06T00:05:46+1100`
+- Candidate patch SHA-256: `eb75e871acf9d6bcb787d8c916dc05a83097c3e0bee897c8838c2b00deb4ca9f`
+- Commit SHA: not committed
+- Dependencies: paired `mobile/CRL-20261003-001` candidate for the partner-side submission UI; no runtime dependency for the paid-PDF-only behavior
+- Required validation: `PASS`; evidence: Phase 1/3/5 contracts, backend TypeScript/build, frontend targeted 10/10 tests, frontend TypeScript/lint/Next build, Feature Registry audit, ledger coverage and diff check passed; database-writing integration tests were intentionally not run
+- Shared-hunk review: `PASS`; evidence: FR-031/FR-032 review dates were restored exactly to fresh `origin/Dev`; selected settlement hunks retain the latest Dev registry and media-storage protections
+- Generated-file review: `FAIL`; evidence: independent review found ignored backend/frontend build output, caches and temporary dependency symlinks still present in the release worktree even though none were staged
+- Technical state: `candidate`
+- User authorization: `selected-for-commit`; evidence: user explicitly selected these three canonical CRLs for commit; push authorization must be renewed after exact commit SHAs exist
+- Independent review: `NO-GO`; evidence: source findings were resolved, but ignored generated output/cache and temporary dependency symlinks contradicted the recorded clean-candidate evidence; reviewer also identified the malformed Selected CRLs labels
+- Action conclusion: `BLOCKED`; blockers: clean release-worktree evidence and ledger metadata required correction
+
+#### RA-20261006-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261003-003`, `CRL-20261005-003`
+- Selected CRL identities: `root/CRL-20261003-003`, `root/CRL-20261005-003`
+- Intended action: `commit`
+- Branch: `codex/settlement-workflow-paid-pdf-20261005`
+- Base: `origin/Dev@1675fd7a7d81f0db959934435e1d8cc5c7ac9783`; fetched at `2026-10-06T00:05:46+1100`
+- Candidate patch SHA-256: `eb75e871acf9d6bcb787d8c916dc05a83097c3e0bee897c8838c2b00deb4ca9f`
+- Commit SHA: `8d9ec5d2e651a92e00e78d7bb81dbcc24c53d592`
+- Dependencies: `mobile/CRL-20261003-001@d66b0aff376c62f40e42649307eab1307fdd89bb`
+- Required validation: `PASS`; evidence: Phase 1/3/5 contracts, backend TypeScript/build, frontend targeted 10/10 tests, frontend TypeScript/lint/Next build, Feature Registry audit, ledger coverage and diff check passed; database-writing integration tests were intentionally not run
+- Shared-hunk review: `PASS`; evidence: FR-031/FR-032 review dates match fresh `origin/Dev`; selected settlement hunks retain the latest Dev registry and media-storage protections
+- Generated-file review: `PASS`; evidence: exact ignored backend build outputs, frontend `.next`/coverage/tsbuildinfo, Python cache and temporary dependency symlinks were removed; `git status --ignored --short` reports only the 16 selected staged files
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: user explicitly selected these three canonical CRLs for commit; push authorization must be renewed after exact commit SHAs exist
+- Independent review: `GO`; evidence: narrow independent re-review verified the exact fingerprint, clean ignored/untracked state, corrected CRL labels, 16-file / 129-hunk gate and retained validation evidence with no P0/P1 findings; Phase 1/3/5 not being wired into standard CI remains a non-blocking P2 follow-up
+- Action conclusion: `GO`; evidence: exact staged candidate is approved for the commit action only
+
+#### RA-20261006-004
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261003-003`, `CRL-20261005-003`
+- Selected CRL identities: `root/CRL-20261003-003`, `root/CRL-20261005-003`
+- Intended action: `push`
+- Branch: `codex/settlement-workflow-paid-pdf-20261005`
+- Base: `origin/Dev@1675fd7a7d81f0db959934435e1d8cc5c7ac9783`; freshly fetched at `2026-10-06T01:23:53+1100` and confirmed unchanged
+- Candidate patch SHA-256: `eb75e871acf9d6bcb787d8c916dc05a83097c3e0bee897c8838c2b00deb4ca9f` excluding `docs/change-release-ledger.md`
+- Candidate content commit SHA: `8d9ec5d2e651a92e00e78d7bb81dbcc24c53d592`
+- Commit SHA: `8d9ec5d2e651a92e00e78d7bb81dbcc24c53d592`
+- Dependencies: `mobile/CRL-20261003-001@d66b0aff376c62f40e42649307eab1307fdd89bb`
+- Required validation: `PASS`; evidence: committed Root range retains the reviewed Phase 1/3/5 contracts, backend TypeScript/build, frontend targeted 10/10 tests, frontend TypeScript/lint/Next build, Feature Registry audit, ledger coverage and diff check; database-writing integration tests were intentionally not run
+- Shared-hunk review: `PASS`; evidence: exact committed Root range contains only the two selected CRLs and their jointly owned settlement workflow/test/registry hunks; FR-031/FR-032 and latest Dev media-storage protections remain unchanged
+- Generated-file review: `PASS`; evidence: clean release worktree contains no generated, ignored, untracked, dependency-link or cache path
+- Sensitive-information review: `PASS`; evidence: exact committed range contains no `.env`, credential, token, cookie, private key, database URL or sensitive log
+- Cross-repository dependency verification: paired Mobile exact range `origin/Dev@a026b2ed6b1a2771550ca81ce3e1f5deda66b9ba...cb0aae63f6549209ae4ff73964491f506b9a68b5` resolves candidate content commit `d66b0aff376c62f40e42649307eab1307fdd89bb` and unchanged fingerprint `6ee847e1e2e7a4e527b8871d5bbf26497309877664ffff112564b943a178236e`
+- Technical state: `pushed`
+- User authorization: `approved-for-push`; evidence: after receiving the exact Root branch/HEAD `codex/settlement-workflow-paid-pdf-20261005@63827df23d4de9e00754969620d0a68e5764d305`, Mobile branch/HEAD `codex/settlement-workflow-mobile-20261005@cb0aae63f6549209ae4ff73964491f506b9a68b5`, and the explicit separation from PR/merge/deployment/OTA, the user instructed “推送” on 2026-10-06; this authorizes only normal non-force push of these exact selected candidates and their ledger-only release receipts
+- Remote preflight: `PASS`; evidence: fresh fetch confirmed `origin/Dev` unchanged and `git ls-remote --heads origin refs/heads/codex/settlement-workflow-paid-pdf-20261005` returned no branch
+- Independent review: `GO for ledger-only review receipt commit and controlled push`; evidence: independent read-only push review verified live Root base/HEAD/content ancestry, unchanged fingerprint `eb75e871acf9d6bcb787d8c916dc05a83097c3e0bee897c8838c2b00deb4ca9f`, 16 selected paths / 129 non-ledger hunks, the paired Mobile exact range and fingerprint, absent remote target branch, clean generated/sensitive boundary and approved authorization; P0/P1 are zero, with the previously accepted Phase 1/3/5 standard-CI coverage gap retained as non-blocking P2
+- Action conclusion: `GO`; evidence: exact reviewed candidate was pushed by explicit refspec with a normal non-force new-branch update, and immediate remote verification matched local HEAD; this ledger-only outcome receipt may be fast-forwarded to the same branch; PR, merge, deployment and production writes remain unauthorized
+- Remote / PR / deployment evidence: initial push completed at `2026-10-06T01:41:07+1100` to `origin/codex/settlement-workflow-paid-pdf-20261005@be980034acf6fc58083e9d8d176b07153c65090d`; `git ls-remote` matched local HEAD; PR not created; not merged; not deployed; production/device verification not run
+
+### Risks / Release Notes
+
+- Historical paid records without a frozen destination remain explicitly “未记录”; current bank data must never be substituted.
+- No production API, database write, deployment, PDF regeneration or external payment action is included.
+- Git state: fresh uncommitted candidate; not pushed, no PR, not merged, not deployed.
+
+## CRL-20261003-003 — 合作方整周总额一次确认、财务差异退回与作废重提
+
+- **Status:** selected release candidate；fresh `origin/Dev` candidate validation in progress
+- **Repository:** `root`
+- **Updated:** 2026-10-06 Australia/Melbourne
+- **Request:** 合作方一次性提交基础工作量、补贴和周结算前确认完整总额；财务审核无差异时不要求合作方再次确认，但网页必须先形成“财务已核对／待付款”，再由财务在线下付款后独立确认已付款；只有核定差异才重算并退回合作方确认。
+- **Outcome:** 初次周提交把仍为 `submitted` 的反馈按合作方请求值纳入冻结明细和总额。财务逐条审核后比较提交快照与核定快照：完全一致时先“确认已核对”进入 `finance_approved`，随后才可“确认已付款”；任何项目、工时、数量、金额或总额差异都会阻止核对和付款，并只允许“重算并退回确认”。异常作废保留审计历史但允许本人按同一周重新核对和提交。
+
+### Implementation
+
+- Previous behavior: 初次周提交只汇总 `approved` 反馈，待审核补贴不在合作方确认总额内；流程也曾把 `confirmed` 直接暴露为可付款，无法区分尚待核对与已核对待付款。
+- New behavior: 预览和提交事务读取 `approved + submitted` 反馈并冻结总额；财务详情按 approved-only 权威预览重建核定快照。逐项和总额完全一致且无待处理/阻断项时，批准端点原子执行 `confirmed → finance_approved` 并记录核对人、时间与快照；付款端点只接受 `finance_approved`。
+- Workflow/UI: “待财务核对”只显示“确认已核对”；确认后显示“财务已核对／待付款”和“确认已付款”。差异时展示前后金额并要求原因后重算退回；普通行不再显示“重新打开”。作废周重新映射为可提交预览并复用同周唯一记录重建明细。
+- Key decisions: 不新增状态、表或 migration；复用既有 `finance_approved`、`finance_reviewed_by/at`。一致性比较覆盖来源、日期、计费数量、单价和金额，不只比较最终总额。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementPreview.ts` — 初次预览纳入 `submitted` 反馈请求值。
+- `backend/src/lib/personnelSettlementWorkflow.ts` — 冻结总额、财务差异、核对/付款门禁、历史草稿与作废重提。
+- `backend/src/modules/personnel_settlements.ts` — 确认已核对端点及差异 409。
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — 待审核补贴和 GST 拆分。
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — 核对、付款、差异门禁和作废重提合同。
+- `backend/scripts/tests/test_personnel_settlement_phase3_integration.ts` — 实际状态流与核对身份保留。
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — 结算文件和付款合同共享回归。
+- `backend/scripts/tests/test_personnel_settlement_phase5_integration.ts` — API 必须先核对再付款。
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — 差异对比、核对弹窗、分段动作与作废提示。
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — `finance_approved` 状态与动作门禁。
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — 网页动作和差异文案回归。
+- `frontend/src/app/finance/settlements/phase5Ui.test.ts` — 财务入口合同回归。
+- `docs/feature-regression-registry.md` — FR-029 完整总额、核对/付款分段和差异退回规则。
+- `docs/change-release-ledger.md` — 本 CRL 与发布尝试证据。
+
+### Impact / Dependencies
+
+- API: 预览和首次冻结金额包含待审核反馈；管理详情返回财务对比；批准端点恢复核对写入；付款只接受 `finance_approved`；作废周本人预览返回可重提状态。
+- Database / migration: 无 schema 变更、无 migration；未读取或修改生产数据。
+- Paired mobile: 依赖 `mobile/CRL-20261003-001` 展示完整总额和作废重提入口；两仓应配套发布。
+- Risk: 财务必须处理全部反馈并显式核对后才能付款；行项变化即使总额相同也会要求合作方再次确认，这是审计保护。
+
+### Validation
+
+- Source candidate：Phase 1/3/5 contracts、backend/frontend TypeScript、targeted tests、lint、build、Feature Registry 和 ledger coverage 已通过。
+- Fresh release candidate：Phase 1/3/5 contracts、backend TypeScript/build、frontend 9 targeted tests、TypeScript、target/full lint、Next build、Feature Registry、ledger coverage 和 `git diff --check` 均通过；数据库 integration tests 因会写开发数据库而未运行。
+
+- Post-review repair validation: zero-value weekly settlements now produce an explicit `$0.00` document instead of committing state then failing PDF generation; empty partner-submission objects no longer expose an invalid return action; FR-031/FR-032 remote text was restored. All targeted and full non-database checks above passed after these repairs.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none; candidate is isolated in a clean release worktree based on freshly fetched `origin/Dev`.
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `12f42e19ed9ef08fa816b63f3d74d8e60b6bdd839fbcfdec8e03c3fcf28f3114`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `3255dede57d2247bf33b1b367ac40bcde9ff2ad7bd1128f01fd65925d395927b`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `7629e9b1fa90b5c746822d58b68400eb951316455bf838bf1540127aa50f4106`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `80a02ceac8e7586f7862f7433c04efde2b7e9cce344dfe685a9b1d2aacba68d4`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `8657406cf0b5cb41f3c8d91b3d6a33aefd4717a5af9c573b9912ca54114964cc`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `8c2d1184c0075c6a3e673d4bd5e5c67e905b5fdb36eccf365ec02eb15cd4ec21`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `01d1c1b3e0418aec58d42379f1bc10b802653ba2c9de5d7fdcc23be6433e7cf7`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `1618ddf7565e3d4abbff29ac8a7d9155836f4258c11bf232d7f2393c2761df60`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `27897b9de5916166db90391bbbc7db9ef53788ebe1e2fe2eafd40512d175639b`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `4bc4a7be436a814ae322e486229c7f1dd58a10552b7dc1d3a03d3195c11ad6c0`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `52fb34a9b9607236409c25a3e539a4d81c41422f04f15c822d7e56a3a18a886c`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `71915f3e39da25d1fae6b588d82f0a6ddc03eb4f60b27e3c0edd745139ad02bf`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `94c4753d955fb7e1244e05108f4e256d6169c9a9a68252b691ec6d2bd4cd0064`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `9b34922e9ee327f187f2842754a207f10f2b4f71877b3bee4ddd5feb612f69be`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `ae9389fd1ab380c262862643dc22e3f462547407b1847ebde74a28e45fc60013`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `c676f50c5c72f65a7031c6f5abdd01f51f091378d589aa21b83009c2add56510`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `d074dbe329066fef122fb4173982e6a05932eefa41f8aa79647c14658b93339f`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `ecbf02841059027e54f5e138023cb58a7c508e779316dcb771b1f9b627f40502`
+- `backend/scripts/tests/test_personnel_settlement_phase3_integration.ts` — SHA-256: `0878ecbb982f7a0c3511c1342d83496f21c4503a9f229ad207fe80291b569f45`
+- `backend/scripts/tests/test_personnel_settlement_phase3_integration.ts` — SHA-256: `3ba5c722bbb929a17ae39571cda2adc501c84ff1d04392c4ee552ee0335a682c`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — SHA-256: `0fb6a26e700e26245775007df651880456a7ffd7471926098767f6dbe1ef8b66`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — SHA-256: `95ee8a13bda50c2ff054cb10bb8bb8403d8968547fc971e26ac3cdeed20698f1`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — SHA-256: `e7c486c2390fef603c1b7851e18057866ad5de6138ea27904fce00006049d4d4`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — SHA-256: `f19df9c82f19255d5aab98830ed59679b257309591b049bdb1358ef85ade0fef`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — SHA-256: `ff027f16545c0c791c5a23028104f018819735520cf764851b496f8d5f78d67d`
+- `backend/scripts/tests/test_personnel_settlement_phase5_integration.ts` — SHA-256: `ab8f62b554dd97e859805e4ca04c8667576a0ae358a054f996fd341f63628fa0`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `06a4d0f84aeb57f4a7b6522ab134ec4881c2fbac869c4b05ea5f62c33378c6fe`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `1feb91f74c50e2f04eb34e9f60ab7c47f56288174d414f558b31ce0a92e928e1`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `2ad1e723a9c46613f28c5b8b1de68b8fd4edd47ed07cc3d77266cd1aa3c31b41`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `34eea7a16c424cdcfebbcb0e4b83f9bcfd9b08dba6c86adc00855d5ce08be0aa`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `4941731b8db58087021bc112e3191e8d1fc8cd4ad34150f25eb6fc5b04ead1b2`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `54a621f2b5c865c6e2809dfaacd4ee12592ab453b75a80ee6a6debab9d75f8c2`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `993cc9ff2959a6d2606448b9ee5c62b3277ea65c9517456cface81d1c5e01b00`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `a5cc35b658ca266fa84bfc22d081a1ba02672261ffcd1c354544498518015aa3`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `fdc05d6f7bb8d0587d1a220f562a8273dc5d613fe5ea11b99652c9b9425bb64c`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `018821c4464bc2d9a3f87199bc58b0fd1e8f55d9216ed8d9177f35d8c50c4490`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `0438aafa6b620670c835ade60924235f5d9e34ec37cd7f4803d9d6732e414d79`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `1a765a4ac2fe0d3414eba711131856a67e90861d195697b819254909a2f6f99c`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `4262ce46fdd30462a44700b3cd7fe7d480cee0cdb56fc3d3356b67c6657edb70`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `670033c902fd4be03949e6663cb807e70e874b616fb191c8af2b96e603df27c7`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `a7cae7187a67ea5a07663405a2c25bf8ef2476d13525a55e274eb906a1376381`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `b503db2a69fb3f8bbb2663a227ecc4b07a6407d0897df094635d34d52d44663a`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `0ef9c9f2b42b63f5f34ce1e17b2038079c972ae52a3eb465beb64c352c1d159e`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `20bfc2bac14d3a8582e3b722bcaa2e63b8a6acac2d60e9192ceab0b6414dd838`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `2ea5e39c755865236de358d02f5286cbef94e2bcb5aefc0fb53742cc44466619`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `363e12d3b494460d74c62a50b9e482478ef99f645ca139543be1b68a59eff948`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `5af94963eaa3de135cb5fdd33478d20e3ccd4ca8209b0bc89e9ba5057c69e374`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `6f616516865406a8e48cb9b3416d1e97e183145be58541c2ab7ba164d770391f`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `8b6cc47af84e45e7c7bea5847ade0ed025ff73748b44528a13badc15fb6b83f5`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `a46434d6c94ce4c227802bb73d31692d349b9644298e5d1c00ffa211bacf9dc2`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `b36fcbe25cb283d52d2eda1b8b2ec0134f743956e3edf3a63bf78c03a60e2b34`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `db0bed7ca3d6bcec8ce6a821a3ff229603de98591e3262a3dac0c742320333e6`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `f2e9d12e2eecd8b8aa2ad9aeeb4ef6a4f6cbd8e67a8fd51e59712cf88a0f4eb6`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `fb91bbb80b854d673d8bbf7f88b2a0abb573de8b1afc9662f72b1b7a4ca93b09`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `02d31d244d46cbc9f1d4a7e25bbde85e6489eb81429c1318181aa6e6247b1842`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `0d37f1b9e8b308ef3d612d1318ec7965ae9dcae082b6f0264cb09158dee025ff`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `157659a7b3a81c558435627a656d5e3babb3d71d51aaf826a160c903f14a7de0`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `1b9edbdb6f3503372a62003bd14112566a3f504e93a1677916e293623ac838f4`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `3706e61f4887493017571db30c5fa341d245c9d8b5d047ba1ff03247cd020521`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `54946ec4c073e23fc09d3b623ff764bbac7ef545858936cbdb243088a927f72a`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `635bca7e91420d99ca6c9ed249033b7637060516e2ff2fbe0b5545f524ea8e30`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `6562877e44972e717e410eb4259b76a0f002cccc91354537c9c9d2ed8326570c`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `69ec1a26c2a238c3402c74386c9bd7971e88cb0e38b924d79a2c75ed3b3e622f`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `7464a570a0e5eca80e47e816b976b5845a150ec9742078711f3af92db3d33eca`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `7865a9ea62ca2eeaa1a6e6df75191405acfe660e85900013db82cec401b64b70`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `7d62cd7a10a22f9b2ad68448d91559c735ba333fd72001aa6b70c9e97945f088`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `809887cb38463225558a8d433e4c07345da1697853d72104ebf93d90e3a354e6`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `84aa697601704b9b298b55f1ecbc9973a4172670f5aec3453a38d9d9a3f63c2d`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `8f9f19a7da506ece361d46e11d10cca36c5f4904462a6d133184d3999a23cb05`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `9ee0be5ded75bcb71ae3ee9574103bbf6e750b8ce22e4fae3c7d4d388de24b2e`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `adfcf566856a938e38692d358512fa1220ec59beb87cb3d11a39ba4253ae0943`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `be7ff38855727277ee5254f56c9042b19168fe3a59799e92b752f388d55e33ef`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `c37227d7fb577494086e46bdf43a3d65c96d8005a4e921eedb4d4b6058fd3831`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `c5e6bdbe5cd510c00ae976c43ffbb869dc7e8efde9c1c2f1dae5b3c4c02e704f`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `cd89fff4ad0a8f3e1265fb8e1aca79f0cd442cd5bc464882e6d0128f5068eae6`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `d51a8ec4a51b8636ece31eea355a8c69b104f71f2c886db5fa5f7750710828fc`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `d8c221ecc0d833e1e777c872a61335dcf7e23a1814077b7a4071638f75a09b87`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `da22b0167e616de581a01a48d0df706b2d15b3059ba43e3b50301b646587d9ed`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `eb491b4c18f5e70d6b618893307dce245660c43e1118745b7c8528a9e1a534aa`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `f0e9e1ce36864c468bb7ec14f132ae9dea5b449c26b44d827fa88b6c1a08851e`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `f28e377bdecbdd4e15ee082d65dfaebc2f95accbfa3615c386aed658ad2f6ce2`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `4d95f676bf1db8caa6b2495b86924ef774da43f61301fc4ab7873c5ac31da44c`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `63bd2b42a00d3970f411051c1cf79cb2b62774dc76ebde164a31e92b25663f22`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `ac7cee45b1eb1e412822afdf029676fe86b67783087ea411d6b97ebe69027b37`
+- `docs/feature-regression-registry.md` — SHA-256: `18e7cc8a52925f6668b879d3ddc5dcd60cb3e85c63223153b95b1cc85c5291ca`
+- `docs/feature-regression-registry.md` — SHA-256: `1cbe87cfe6efbd52711475a0af7ae123b33b0f503ba80c6f8f74066a50f1ac93`
+- `docs/feature-regression-registry.md` — SHA-256: `258006bab9747f37f322c6941afc8f5f6e6515220fbef76e3e9a24b222fa6e5e`
+- `docs/feature-regression-registry.md` — SHA-256: `2d09cb69979ee2b6097fffca434c3793a289aaff4e5f8cdbe8ee1a907f710ade`
+- `docs/feature-regression-registry.md` — SHA-256: `304c58062e274b58d88801a23a51aa644d60e43a39b06e966c54b8adcce60155`
+- `docs/feature-regression-registry.md` — SHA-256: `4f24b01bdb706b1a3276f7754fdbe8836aa873926ab4603c893c88b0c8b924dd`
+- `docs/feature-regression-registry.md` — SHA-256: `613c8bcc2ceb6ecd6f257e5a7585930aaf5bc4345263bcc2a40230a8546a9296`
+- `docs/feature-regression-registry.md` — SHA-256: `682e07fa47336de079f8a538244702d2411dc6c49a3c18e265e9d6ef55f93593`
+- `docs/feature-regression-registry.md` — SHA-256: `6f9ca9347b9567f1447046d3b1b90f6b0b9db92e389b31f555b9fcbe8af8979c`
+- `docs/feature-regression-registry.md` — SHA-256: `9951de85f5712928798f28aa68e829ea92be9c75497e41425acbbb3b371a27e0`
+- `docs/feature-regression-registry.md` — SHA-256: `a57e62e8c85e6ebd86a93ed66f6f8a4fca3b0e497ecc7fa2c3039b3f0457047f`
+- `docs/feature-regression-registry.md` — SHA-256: `b3ad20aa52863a960db89a5b221c67200a2ead00dd424eaa46dae1cef8675a6f`
+- `docs/feature-regression-registry.md` — SHA-256: `bdfba0c6a79a6626c4782d2356e2465c7f3723a9469c5e733c44725b50908a62`
+- `docs/feature-regression-registry.md` — SHA-256: `bf2cc611eeea8ac61305fcf22a26c8a6b620fe5149d02d9a72e1265c36eed649`
+- `docs/feature-regression-registry.md` — SHA-256: `deb3018504b2a5defc90c5f3aa5a15ab3ecc0b3cdbac6b24cd40c370b00bbe4f`
+- `docs/feature-regression-registry.md` — SHA-256: `ef0e0c439caccff35268aa35f2662535d6e0b6bc850267b02e6f607d39ddffe9`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `097a5d095e87f2a2544140d0ba530e3be4d35cddf2a7a5112e4d5c6137431bc4`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `0d7641d615e07cf997348ab035352b178097915fe6aa141f6583d922b820f590`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `17a08173945a50b942720622e9593fd1e61a747074783e40f3d7e136255952b8`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `1ff2e9dd3d22d3840e062fd42c6d993adf7144957b9e7bfb1454524cb86ae06e`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `2c573ba04db14494ce47910386dd2728a8cf447a18d382c34000a840d41a5678`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `305b2a45001f4fd4d47355868f97325274ea8270c74f2f41be813d4a1fac70b5`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `3674d80b2915d73cc3db20e58abb2c395a4c280ba49a64d650c3dfe74c437d1a`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `4aa11dc6e77bbc1e02f8c2e5d0fe1c52599270caf9cd051461e68b314f1c6e33`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `6666cb9ef29e5c0de225f88ddfeaa6d333ce1a25daad9061b530f7c6cd40449e`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `71583dd1bb0b844309f09040d288fa6e7efc6839c3db05657049b79d49207335`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `71958f68cb1aa541e3c84ebeb8db89c9af5ed3319c43c166d2a7ebc33e3062f3`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `75cba0e97f2cad259aaa0e4c9a8b3d4d9a83df7022f72b8ba971d13c39506d54`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `82e1735f54ec23d248e9bcf67995c1e046cb450a933059aa1969c9a29c587504`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `8afe12db9fe23a2c3ebf1cb49d68218665d25f9e2a14061da7d447ff495671f6`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `901e7686061a2da494fa68b3c848ce3bf5eacd9dedb18267d4ad67417cfbfcd2`
+- `frontend/src/app/finance/settlements/phase5Ui.test.ts` — SHA-256: `17955053e8ff158214719d679014b7695a80275a04dd9377fdfc10db61cdd8b3`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `0e14c0773e4bf0cf19774f3aec6e07bfc2c2981c557378d17f12b8af2073425b`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `1b736a58835b2558ede9bce658ac857ae6c38cbebafa3681149bbfeaf6c79831`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `2763c58264aefe10598033383a2c535903c2bad143cef43af9b6da091433d292`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `57313cf046dbe7e1a0b1ed4c655a3c34e11449fd9f30b229f522ab88019439e0`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `704074587ed0b816a66b1faac3757eb29163741fe3571619ff652e63170dacf7`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `c5ed66197bb54831befb131ea5a8cb30feb04a0a85e2620c08908dc335d8032b`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` — SHA-256: `eabda62e2cd74f4f085cba2df2ad7e7f8239d666807be271152b0b69dfad1a5b`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `033ab2ed32f526ad6928ebc0bcf402568f7b325d27df3c27393eff112338b6e3`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `6a820a41c72f55c8ce34bc073b302a81ff0b2cec06b402e7ab2d388111e240f3`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `6f70bdbf4e2c6733da2ea1d5dfe055a8a7819505ee1088f46bc99fdd074d56dd`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `9398655ea377b2fa3282bda65138e01720a6cf08c964a7a965a7ea0c732f8399`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `949d7ef543f6bbc6fbd3f378ab96d59464037d2d328146ea23d9d4f6fc4ac297`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.ts` — SHA-256: `966a2ee8cb9a60aac84c3bc23325271d869707e9889354936e9eef9871b507d8`
+
+### Release Attempts
+
+#### RA-20261006-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261003-003`, `CRL-20261005-003`
+- Selected CRL identities: `root/CRL-20261003-003`, `root/CRL-20261005-003`
+- Intended action: `commit`
+- Branch: `codex/settlement-workflow-paid-pdf-20261005`
+- Base: `origin/Dev@1675fd7a7d81f0db959934435e1d8cc5c7ac9783`; fetched at `2026-10-06T00:05:46+1100`
+- Candidate patch SHA-256: `5d85cc7c36a4a4d9d1f4a22f4916f6242b68a2bcd19b261f40d3e4294cc3a936`
+- Commit SHA: not committed
+- Dependencies: paired `mobile/CRL-20261003-001` release candidate
+- Required validation: `PASS`; evidence: Root backend Phase 1/3/5 contracts、TypeScript/build、frontend 9 targeted tests、TypeScript、target/full lint、96/96 page Next build、Feature Registry 与 ledger coverage 均通过
+- Shared-hunk review: `PASS`; evidence: both selected Root CRLs jointly own shared Phase 5 and FR-029 hunks; latest Dev media-storage protection was retained
+- Generated-file review: `PASS`; evidence: backend build 产生的 tracked `dist` 差异已精确清理；候选无未跟踪文件、依赖目录、缓存或构建产物
+- Technical state: `candidate`
+- User authorization: `selected-for-commit`; evidence: user explicitly requested “OK 把这三个提交推送” for the three listed CRLs; push authorization must be renewed after exact commit SHA exists
+- Independent review: `NO-GO`; evidence: reviewer found the zero-value settlement document failure, empty partner-submission object mismatch, and unrelated FR-031/FR-032 date drift
+- Action conclusion: `BLOCKED`; blockers: reviewer findings required source and regression-test changes
+
+#### RA-20261006-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261003-003`, `CRL-20261005-003`
+- Selected CRL identities: `root/CRL-20261003-003`, `root/CRL-20261005-003`
+- Intended action: `commit`
+- Branch: `codex/settlement-workflow-paid-pdf-20261005`
+- Base: `origin/Dev@1675fd7a7d81f0db959934435e1d8cc5c7ac9783`; fetched at `2026-10-06T00:05:46+1100`
+- Candidate patch SHA-256: `eb75e871acf9d6bcb787d8c916dc05a83097c3e0bee897c8838c2b00deb4ca9f`
+- Commit SHA: not committed
+- Dependencies: paired `mobile/CRL-20261003-001` candidate for the partner-side submission UI; no runtime dependency for the paid-PDF-only behavior
+- Required validation: `PASS`; evidence: Phase 1/3/5 contracts, backend TypeScript/build, frontend targeted 10/10 tests, frontend TypeScript/lint/Next build, Feature Registry audit, ledger coverage and diff check passed; database-writing integration tests were intentionally not run
+- Shared-hunk review: `PASS`; evidence: FR-031/FR-032 review dates were restored exactly to fresh `origin/Dev`; selected settlement hunks retain the latest Dev registry and media-storage protections
+- Generated-file review: `FAIL`; evidence: independent review found ignored backend/frontend build output, caches and temporary dependency symlinks still present in the release worktree even though none were staged
+- Technical state: `candidate`
+- User authorization: `selected-for-commit`; evidence: user explicitly selected these three canonical CRLs for commit; push authorization must be renewed after exact commit SHAs exist
+- Independent review: `NO-GO`; evidence: source findings were resolved, but ignored generated output/cache and temporary dependency symlinks contradicted the recorded clean-candidate evidence; reviewer also identified the malformed Selected CRLs labels
+- Action conclusion: `BLOCKED`; blockers: clean release-worktree evidence and ledger metadata required correction
+
+#### RA-20261006-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261003-003`, `CRL-20261005-003`
+- Selected CRL identities: `root/CRL-20261003-003`, `root/CRL-20261005-003`
+- Intended action: `commit`
+- Branch: `codex/settlement-workflow-paid-pdf-20261005`
+- Base: `origin/Dev@1675fd7a7d81f0db959934435e1d8cc5c7ac9783`; fetched at `2026-10-06T00:05:46+1100`
+- Candidate patch SHA-256: `eb75e871acf9d6bcb787d8c916dc05a83097c3e0bee897c8838c2b00deb4ca9f`
+- Commit SHA: `8d9ec5d2e651a92e00e78d7bb81dbcc24c53d592`
+- Dependencies: `mobile/CRL-20261003-001@d66b0aff376c62f40e42649307eab1307fdd89bb`
+- Required validation: `PASS`; evidence: Phase 1/3/5 contracts, backend TypeScript/build, frontend targeted 10/10 tests, frontend TypeScript/lint/Next build, Feature Registry audit, ledger coverage and diff check passed; database-writing integration tests were intentionally not run
+- Shared-hunk review: `PASS`; evidence: FR-031/FR-032 review dates match fresh `origin/Dev`; selected settlement hunks retain the latest Dev registry and media-storage protections
+- Generated-file review: `PASS`; evidence: exact ignored backend build outputs, frontend `.next`/coverage/tsbuildinfo, Python cache and temporary dependency symlinks were removed; `git status --ignored --short` reports only the 16 selected staged files
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: user explicitly selected these three canonical CRLs for commit; push authorization must be renewed after exact commit SHAs exist
+- Independent review: `GO`; evidence: narrow independent re-review verified the exact fingerprint, clean ignored/untracked state, corrected CRL labels, 16-file / 129-hunk gate and retained validation evidence with no P0/P1 findings; Phase 1/3/5 not being wired into standard CI remains a non-blocking P2 follow-up
+- Action conclusion: `GO`; evidence: exact staged candidate is approved for the commit action only
+
+#### RA-20261006-004
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261003-003`, `CRL-20261005-003`
+- Selected CRL identities: `root/CRL-20261003-003`, `root/CRL-20261005-003`
+- Intended action: `push`
+- Branch: `codex/settlement-workflow-paid-pdf-20261005`
+- Base: `origin/Dev@1675fd7a7d81f0db959934435e1d8cc5c7ac9783`; freshly fetched at `2026-10-06T01:23:53+1100` and confirmed unchanged
+- Candidate patch SHA-256: `eb75e871acf9d6bcb787d8c916dc05a83097c3e0bee897c8838c2b00deb4ca9f` excluding `docs/change-release-ledger.md`
+- Candidate content commit SHA: `8d9ec5d2e651a92e00e78d7bb81dbcc24c53d592`
+- Commit SHA: `8d9ec5d2e651a92e00e78d7bb81dbcc24c53d592`
+- Dependencies: `mobile/CRL-20261003-001@d66b0aff376c62f40e42649307eab1307fdd89bb`
+- Required validation: `PASS`; evidence: committed Root range retains the reviewed Phase 1/3/5 contracts, backend TypeScript/build, frontend targeted 10/10 tests, frontend TypeScript/lint/Next build, Feature Registry audit, ledger coverage and diff check; database-writing integration tests were intentionally not run
+- Shared-hunk review: `PASS`; evidence: exact committed Root range contains only the two selected CRLs and their jointly owned settlement workflow/test/registry hunks; FR-031/FR-032 and latest Dev media-storage protections remain unchanged
+- Generated-file review: `PASS`; evidence: clean release worktree contains no generated, ignored, untracked, dependency-link or cache path
+- Sensitive-information review: `PASS`; evidence: exact committed range contains no `.env`, credential, token, cookie, private key, database URL or sensitive log
+- Cross-repository dependency verification: paired Mobile exact range `origin/Dev@a026b2ed6b1a2771550ca81ce3e1f5deda66b9ba...cb0aae63f6549209ae4ff73964491f506b9a68b5` resolves candidate content commit `d66b0aff376c62f40e42649307eab1307fdd89bb` and unchanged fingerprint `6ee847e1e2e7a4e527b8871d5bbf26497309877664ffff112564b943a178236e`
+- Technical state: `pushed`
+- User authorization: `approved-for-push`; evidence: after receiving the exact Root branch/HEAD `codex/settlement-workflow-paid-pdf-20261005@63827df23d4de9e00754969620d0a68e5764d305`, Mobile branch/HEAD `codex/settlement-workflow-mobile-20261005@cb0aae63f6549209ae4ff73964491f506b9a68b5`, and the explicit separation from PR/merge/deployment/OTA, the user instructed “推送” on 2026-10-06; this authorizes only normal non-force push of these exact selected candidates and their ledger-only release receipts
+- Remote preflight: `PASS`; evidence: fresh fetch confirmed `origin/Dev` unchanged and `git ls-remote --heads origin refs/heads/codex/settlement-workflow-paid-pdf-20261005` returned no branch
+- Independent review: `GO for ledger-only review receipt commit and controlled push`; evidence: independent read-only push review verified live Root base/HEAD/content ancestry, unchanged fingerprint `eb75e871acf9d6bcb787d8c916dc05a83097c3e0bee897c8838c2b00deb4ca9f`, 16 selected paths / 129 non-ledger hunks, the paired Mobile exact range and fingerprint, absent remote target branch, clean generated/sensitive boundary and approved authorization; P0/P1 are zero, with the previously accepted Phase 1/3/5 standard-CI coverage gap retained as non-blocking P2
+- Action conclusion: `GO`; evidence: exact reviewed candidate was pushed by explicit refspec with a normal non-force new-branch update, and immediate remote verification matched local HEAD; this ledger-only outcome receipt may be fast-forwarded to the same branch; PR, merge, deployment and production writes remain unauthorized
+- Remote / PR / deployment evidence: initial push completed at `2026-10-06T01:41:07+1100` to `origin/codex/settlement-workflow-paid-pdf-20261005@be980034acf6fc58083e9d8d176b07153c65090d`; `git ls-remote` matched local HEAD; PR not created; not merged; not deployed; production/device verification not run
+
+### Risks / Release Notes
+
+- No production write, notification, external sync, deployment or migration is included.
+- Rollback is a code revert before any later deployment; no data rollback is required by this candidate.
+- Git state: fresh uncommitted candidate; not pushed, no PR, not merged, backend not deployed, production not verified.
+
 ## CRL-20261004-002 — 清洁开始超时诊断扫描默认关闭
 
 - **Status:** verified candidate（隔离工作树与固定 Preview 均通过目标核验；已获本 CRL 提交授权；尚未提交）

@@ -1,4 +1,5 @@
 import { isKeyOrPasswordActionSemantics } from './cleaningInspection'
+import { GUEST_READY_NOTIFICATION_PERMISSION, guestReadyNotificationAction } from './guestReadyNotification'
 
 export type WorkTaskActionId =
   | 'upload_key_photo'
@@ -9,6 +10,8 @@ export type WorkTaskActionId =
   | 'append_completion_photo'
   | 'report_issue'
   | 'mark_guest_checkout'
+  | 'record_guest_ready_notified'
+  | 'revoke_guest_ready_notified'
 
 export type WorkTaskActionTarget =
   | 'TaskDetail'
@@ -587,6 +590,12 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
       intent: 'completion',
     })
   }
+
+  const guestReadyAction = guestReadyNotificationAction(
+    task?.guest_ready_notification || null,
+    hasPermission(permissions, GUEST_READY_NOTIFICATION_PERMISSION),
+  )
+  if (guestReadyAction) addAction(guestReadyAction)
 
   return {
     capabilities: {

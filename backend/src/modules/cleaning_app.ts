@@ -4,7 +4,7 @@ import { listPermissionCodesForUser, requirePerm, requireAnyPerm } from '../auth
 import { hasPg, pgRunInTransaction, pgUpdate, pgInsert } from '../dbAdapter'
 import multer from 'multer'
 import path from 'path'
-import { hasR2, r2GetObjectByKey, r2KeyFromUrl, r2Upload } from '../r2'
+import { hasR2, r2GetObjectByKey, r2KeyFromUrl, r2Upload, r2UploadImmutable } from '../r2'
 import { broadcastCleaningEvent } from './events'
 import { roleHasPermission } from '../store'
 import sharp from 'sharp'
@@ -33,6 +33,7 @@ import type { WorkTaskActionId } from '../lib/workTaskActions'
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
 import { canViewMzappGuestLuggageNoticeMedia, canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia } from './mzapp'
 import { assertR5TaskRuntimeSchemaReady, requireR5RequestSchema, requireR5TaskRuntimeSchema } from '../lib/r5RequestSchema'
+import { buildCleaningMediaUploadFingerprint, CLEANING_MEDIA_IDEMPOTENCY_CONFLICT, storeLocalImmutableMedia } from '../lib/immutableMediaUpload'
 
 export const router = Router()
 
@@ -2055,7 +2056,14 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
   }
 })
 
-const lockboxVideoSchema = z.object({ media_url: z.string().min(1), captured_at: z.string().optional(), lat: z.number().optional(), lng: z.number().optional(), ...actionAuditBodySchema })
+const lockboxVideoSchema = z.object({
+  media_url: z.string().min(1),
+  operation_id: z.string().trim().min(1).max(IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH).optional(),
+  captured_at: z.string().optional(),
+  lat: z.number().optional(),
+  lng: z.number().optional(),
+  ...actionAuditBodySchema,
+})
 router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish'), requireR5RequestSchema, requireR5TaskRuntimeSchema, async (req, res) => {
   const user = (req as any).user
   const { id } = req.params
@@ -2079,7 +2087,24 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
       const uuid = require('uuid')
       const now = new Date().toISOString()
       const actionActor = actorAndPerformerFromRequest(user, parsed.data)
+      const operationId = String(parsed.data.operation_id || '').trim()
+      const payloadHash = buildIdempotencyPayloadHash({
+        media_url: parsed.data.media_url,
+        captured_at: parsed.data.captured_at || null,
+        lat: parsed.data.lat ?? null,
+        lng: parsed.data.lng ?? null,
+      })
       const transactionResult = await pgRunInTransaction(async (client) => {
+        await client.query(`SELECT id FROM cleaning_tasks WHERE id::text=$1::text FOR UPDATE`, [String(id)])
+        if (operationId) {
+          const receipt = await loadIdempotentStepReceipt(client, {
+            scopeType: 'cleaning_task_lockbox_video', scopeId: String(id), submitId: operationId, stepKey: 'lockbox_video',
+          })
+          if (receipt) {
+            if (String(receipt.payload_hash || '') !== payloadHash) return { kind: 'conflict' as const }
+            return { kind: 'replay' as const, responseBody: receipt.response_json }
+          }
+        }
         await client.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type='lockbox_video'`, [id])
         await client.query(
           `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, lat, lng, uploader_id)
@@ -2101,8 +2126,17 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
            RETURNING *`,
           [String(id), now],
         )
-        return { actionResult, up: upResult?.rows?.[0] || null }
+        const up = upResult?.rows?.[0] || null
+        const responseBody = { ...(up || { id, lockbox_video_uploaded_at: now }), action_result: actionResult }
+        if (operationId) {
+          await saveIdempotentStepReceipt(client, {
+            scopeType: 'cleaning_task_lockbox_video', scopeId: String(id), submitId: operationId, stepKey: 'lockbox_video',
+          }, payloadHash, responseBody)
+        }
+        return { kind: 'committed' as const, actionResult, up, responseBody }
       })
+      if (transactionResult?.kind === 'conflict') return res.status(409).json({ message: 'idempotency_conflict', operation_id: operationId })
+      if (transactionResult?.kind === 'replay') return res.status(200).json(transactionResult.responseBody)
       const actionResult = transactionResult?.actionResult || null
       const up = transactionResult?.up || null
       await emitWorkTaskEvent({
@@ -2142,7 +2176,7 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
           )
         }
       } catch {}
-      return res.status(201).json({ ...(up || { id, lockbox_video_uploaded_at: now }), action_result: actionResult })
+      return res.status(201).json(transactionResult?.responseBody || { ...(up || { id, lockbox_video_uploaded_at: now }), action_result: actionResult })
     }
     return res.status(201).json({ ok: true })
   } catch (e: any) {
@@ -3872,9 +3906,25 @@ router.post(
     )
 
     if (hasR2 && (req.file as any).buffer) {
+      const originalBuffer: Buffer = (req.file as any).buffer
+      const uploadFingerprint = mediaId
+        ? buildCleaningMediaUploadFingerprint({
+            body: originalBuffer,
+            taskId,
+            mediaId,
+            purpose,
+            watermark: wantWatermark,
+            watermarkText,
+            propertyCode,
+            capturedAt,
+            submitter,
+            contentType: req.file.mimetype,
+            originalName: req.file.originalname,
+          })
+        : ''
       uploadStage = 'normalize_image'
       const normalized = await normalizeCleaningImageUpload({
-        buffer: (req.file as any).buffer,
+        buffer: originalBuffer,
         contentType: req.file.mimetype,
         originalName: req.file.originalname,
       })
@@ -3925,9 +3975,11 @@ router.post(
         : `cleaning/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
       const mime = normalized.normalized || (isImage && wantWatermark && lines.length) ? 'image/jpeg' : (req.file.mimetype || 'application/octet-stream')
       uploadStage = 'upload_r2'
-      const url = await r2Upload(key, mime, buf)
-      console.log(`[cleaning-upload] event=stored request_id=${uploadRequestId} task_id=${stableUploadKeySegment(taskId, 'unscoped')} media_id=${stableUploadKeySegment(mediaId, 'unscoped')} stage=upload_r2`)
-      return res.status(201).json({ key, url, upload_request_id: uploadRequestId })
+      const stored = mediaId
+        ? await r2UploadImmutable(key, mime, buf, uploadFingerprint)
+        : { url: await r2Upload(key, mime, buf), reused: false }
+      console.log(`[cleaning-upload] event=${stored.reused ? 'reused' : 'stored'} request_id=${uploadRequestId} task_id=${stableUploadKeySegment(taskId, 'unscoped')} media_id=${stableUploadKeySegment(mediaId, 'unscoped')} stage=upload_r2`)
+      return res.status(stored.reused ? 200 : 201).json({ key, url: stored.url, reused: stored.reused, upload_request_id: uploadRequestId })
     }
     const filePath = (req.file as any).path ? String((req.file as any).path) : ''
     if (filePath && isImage && wantWatermark && lines.length) {
@@ -3968,15 +4020,27 @@ router.post(
         }
       } catch {}
     }
-    const url = `/uploads/${req.file.filename}`
-    console.log(`[cleaning-upload] event=stored request_id=${uploadRequestId} task_id=${stableUploadKeySegment(taskId, 'unscoped')} media_id=${stableUploadKeySegment(mediaId, 'unscoped')} stage=local_upload`)
-    return res.status(201).json({ url, upload_request_id: uploadRequestId })
+    let localFilename = req.file.filename
+    let reused = false
+    if (mediaId && filePath) {
+      localFilename = `cleaning-media-${stableUploadKeySegment(taskId, 'unscoped')}-${stableUploadKeySegment(mediaId, 'media')}.upload`
+      const localResult = await storeLocalImmutableMedia(filePath, path.join(process.cwd(), 'uploads', localFilename))
+      reused = localResult.reused
+    }
+    const url = `/uploads/${localFilename}`
+    console.log(`[cleaning-upload] event=${reused ? 'reused' : 'stored'} request_id=${uploadRequestId} task_id=${stableUploadKeySegment(taskId, 'unscoped')} media_id=${stableUploadKeySegment(mediaId, 'unscoped')} stage=local_upload`)
+    return res.status(reused ? 200 : 201).json({ url, reused, upload_request_id: uploadRequestId })
   } catch (e: any) {
-    const errorCode = e?.code === CLEANING_IMAGE_FORMAT_ERROR ? CLEANING_IMAGE_FORMAT_ERROR : 'CLEANING_MEDIA_UPLOAD_FAILED'
+    const errorCode = e?.code === CLEANING_IMAGE_FORMAT_ERROR
+      ? CLEANING_IMAGE_FORMAT_ERROR
+      : e?.code === CLEANING_MEDIA_IDEMPOTENCY_CONFLICT
+        ? CLEANING_MEDIA_IDEMPOTENCY_CONFLICT
+        : 'CLEANING_MEDIA_UPLOAD_FAILED'
     console.error(
       `[cleaning-upload] event=failed request_id=${uploadRequestId} task_id=${stableUploadKeySegment(taskId, 'unscoped')} media_id=${stableUploadKeySegment(mediaId, 'unscoped')} purpose=${stableUploadKeySegment(purpose, 'unspecified')} stage=${uploadStage} error_code=${errorCode}`,
     )
     if (e?.code === CLEANING_IMAGE_FORMAT_ERROR) return res.status(415).json({ code: CLEANING_IMAGE_FORMAT_ERROR, message: 'image_format_unsupported', upload_request_id: uploadRequestId })
+    if (e?.code === CLEANING_MEDIA_IDEMPOTENCY_CONFLICT) return res.status(409).json({ code: CLEANING_MEDIA_IDEMPOTENCY_CONFLICT, message: 'media_id_conflict', upload_request_id: uploadRequestId })
     return res.status(500).json({ code: errorCode, message: 'media_upload_failed', upload_request_id: uploadRequestId })
   }
 })

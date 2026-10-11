@@ -9,7 +9,7 @@ function badgeIds(payload: ReturnType<typeof buildWebTaskCapabilityPayload>) {
   return payload.display_state.badges.map((badge) => badge.id)
 }
 
-function main() {
+async function main() {
   const managerContext = { canManageSchedule: true }
   const viewOnlyContext = { canManageSchedule: false }
 
@@ -52,6 +52,32 @@ function main() {
   assert.equal(checkinSiteExecution.editable_fields.inspector_id.enabled, false)
   assert.equal(actionById(checkinSiteExecution, 'assign_executor')?.enabled, true)
   assert.equal(actionById(checkinSiteExecution, 'assign_inspector')?.enabled, false)
+
+  const checkedOutAssigned = buildWebTaskCapabilityPayload({
+    task_source: 'cleaning',
+    task_kind: 'turnover',
+    status: 'assigned',
+    checked_out_at: '2026-10-07T01:02:03.000Z',
+  }, managerContext)
+  assert.equal(checkedOutAssigned.display_state.status_key, 'assigned', 'checked-out display must not invent a persisted task status')
+  assert.equal(checkedOutAssigned.display_state.status_label, '已退房')
+  assert.equal(checkedOutAssigned.display_state.status_tone, 'info')
+
+  const checkedOutInProgress = buildWebTaskCapabilityPayload({
+    task_source: 'cleaning',
+    task_kind: 'turnover',
+    status: 'in_progress',
+    checked_out_at: '2026-10-07T01:02:03.000Z',
+  }, managerContext)
+  assert.equal(checkedOutInProgress.display_state.status_label, '进行中', 'workflow progress must stay higher priority than checkout display')
+
+  const assignedWithoutCheckout = buildWebTaskCapabilityPayload({
+    task_source: 'cleaning',
+    task_kind: 'turnover',
+    status: 'assigned',
+    checked_out_at: null,
+  }, managerContext)
+  assert.equal(assignedWithoutCheckout.display_state.status_label, '已分配')
 
   const keysHung = buildWebTaskCapabilityPayload({
     task_source: 'cleaning',
@@ -111,7 +137,70 @@ function main() {
   assert.equal(actionById(offline, 'save_participants')?.enabled, false)
   assert.equal(actionById(offline, 'save_participants')?.disabled_reason, 'not_applicable')
 
+  process.env.DATABASE_URL = ''
+  const [{ buildTaskCenterDay }, { db }] = await Promise.all([
+    import('../../src/modules/task_center'),
+    import('../../src/store'),
+  ])
+  const memoryDb = db as any
+  const original = {
+    cleaningTasks: memoryDb.cleaningTasks,
+    properties: memoryDb.properties,
+    orders: memoryDb.orders,
+    workTasks: memoryDb.workTasks,
+    cleaningOfflineTasks: memoryDb.cleaningOfflineTasks,
+  }
+  try {
+    memoryDb.cleaningTasks = [
+      {
+        id: 'checked-out-checkout',
+        property_id: 'checked-out-property',
+        task_type: 'checkout_clean',
+        task_date: '2026-10-07',
+        status: 'assigned',
+        checked_out_at: '2026-10-07T01:02:03.000Z',
+      },
+      {
+        id: 'checked-out-checkin',
+        property_id: 'checked-out-property',
+        task_type: 'checkin_clean',
+        task_date: '2026-10-07',
+        status: 'assigned',
+      },
+      {
+        id: 'checked-out-progress',
+        property_id: 'checked-out-progress-property',
+        task_type: 'checkout_clean',
+        task_date: '2026-10-07',
+        status: 'in_progress',
+        checked_out_at: '2026-10-07T01:02:03.000Z',
+      },
+    ]
+    memoryDb.properties = [
+      { id: 'checked-out-property', code: 'MZ015', region: 'TEST' },
+      { id: 'checked-out-progress-property', code: 'MZ015-PROGRESS', region: 'TEST' },
+    ]
+    memoryDb.orders = []
+    memoryDb.workTasks = []
+    memoryDb.cleaningOfflineTasks = []
+    const day = await buildTaskCenterDay('2026-10-07', false, true, false, true)
+    const boardTasks = day.rows.flatMap((row: any) => row.subrows.flatMap((subrow: any) => subrow.tasks))
+    const checkedOutTurnover = boardTasks.find((task: any) => task.property_id === 'checked-out-property')
+    assert.ok(checkedOutTurnover, 'task-center should keep the checked-out turnover card')
+    assert.equal(checkedOutTurnover.checked_out_at, '2026-10-07T01:02:03.000Z')
+    assert.equal(checkedOutTurnover.status, 'assigned', 'task-center must preserve the canonical workflow status')
+    assert.equal(checkedOutTurnover.display_state?.status_key, 'assigned')
+    assert.equal(checkedOutTurnover.display_state?.status_label, '已退房')
+    const inProgress = boardTasks.find((task: any) => task.property_id === 'checked-out-progress-property')
+    assert.equal(inProgress?.display_state?.status_label, '进行中')
+  } finally {
+    Object.assign(memoryDb, original)
+  }
+
   process.stdout.write('test_web_task_capabilities: ok\n')
 }
 
-main()
+main().catch((error) => {
+  console.error(error)
+  process.exitCode = 1
+})

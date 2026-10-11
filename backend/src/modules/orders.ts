@@ -2,7 +2,7 @@ import { Router, text } from 'express'
 import { db, Order, addAudit } from '../store'
 import { broadcastOrdersUpdated } from './events'
 import { z } from 'zod'
-import { requirePerm, requireAnyPerm } from '../auth'
+import { requirePerm, requireAnyPerm, userHasAnyPerm } from '../auth'
 // Supabase removed
 import { hasPg, pgPool, pgSelect, pgInsert, pgUpdate, pgDelete, pgRunInTransaction } from '../dbAdapter'
 import { v4 as uuid } from 'uuid'
@@ -52,6 +52,13 @@ function visibleNetIncomeForOrder(o: any, deductionTotal: number): number {
   if (!include) return 0
   const net = Number(o?.net_income || 0)
   return Math.max(0, Number((net - Number(deductionTotal || 0)).toFixed(2)))
+}
+
+export async function hasOrderCancelPermission(user: any, locked: boolean): Promise<boolean> {
+  const canCancel = await userHasAnyPerm(user, ['order.cancel'])
+  if (!canCancel) return false
+  if (!locked) return true
+  return userHasAnyPerm(user, ['order.cancel.override'])
 }
 
 function normalizePropertyId(raw: any): string | undefined {
@@ -860,14 +867,12 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
     (updated as any).count_in_income = true
   }
   if (!isCanceledStatus(prevStatus) && isCanceledStatus(nextStatus)) {
-    const role = String(((req as any).user?.role) || '')
+    if (!await hasOrderCancelPermission((req as any).user, false)) {
+      return res.status(403).json({ message: '没有取消订单的权限', code: 'ORDER_CANCEL_FORBIDDEN' })
+    }
     const locked = await isOrderMonthLocked(prevRow)
-    if (!locked) {
-      const { roleHasPermission } = require('../store')
-      if (!roleHasPermission(role, 'order.cancel')) return res.status(403).json({ message: '没有取消订单的权限', code: 'ORDER_CANCEL_FORBIDDEN' })
-    } else {
-      const { roleHasPermission } = require('../store')
-      if (!roleHasPermission(role, 'order.cancel.override')) return res.status(403).json({ message: '该订单所属结算期已锁定，需要取消覆盖权限', code: 'PAYOUT_LOCKED' })
+    if (locked && !await hasOrderCancelPermission((req as any).user, true)) {
+      return res.status(403).json({ message: '该订单所属结算期已锁定，需要取消覆盖权限', code: 'PAYOUT_LOCKED' })
     }
   }
   const changedCore = (
