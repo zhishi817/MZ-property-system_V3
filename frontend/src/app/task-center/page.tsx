@@ -39,7 +39,6 @@ import {
   taskCenterBoardInspectionDueDate,
   taskCenterDailyGroupCounts,
   taskCenterInspectionAssignmentPatch,
-  visibleTaskCenterPropertyFollowups,
 } from './taskCenterDisplay'
 import styles from '../cleaning/cleaningSchedule.module.scss'
 
@@ -219,7 +218,7 @@ type TaskCenterTask = {
   inspection_mode_action?: 'set' | null
   display_state?: TaskDisplayState | null
   management_actions?: TaskManagementAction[] | null
-  daily_stats_group?: 'turnover' | 'offline' | null
+  daily_stats_group?: 'turnover' | 'inspection' | 'offline' | null
   daily_stats_key?: string | null
   guest_ready_notification?: GuestReadyNotification | null
   available_actions?: GuestReadyNotificationAction[] | null
@@ -1135,10 +1134,7 @@ export default function TaskCenterPage() {
   }, [activeMaintenanceStaff, activeStaff])
 
   const allRows = useMemo(() => dayData?.rows || [], [dayData?.rows])
-  const propertyFollowups = useMemo(
-    () => visibleTaskCenterPropertyFollowups(dayData?.property_followups || []),
-    [dayData?.property_followups],
-  )
+  const propertyFollowups = useMemo(() => dayData?.property_followups || [], [dayData?.property_followups])
 
   const filterQuery = useMemo(() => filterText.trim().toLowerCase(), [filterText])
   const filteringActive = filterQuery.length > 0
@@ -2671,6 +2667,10 @@ export default function TaskCenterPage() {
                 <em>{dailyGroupCounts.turnover} 个</em>
               </span>
               <span className={styles.taskCenterSummaryPill}>
+                <strong>检查任务</strong>
+                <em>{dailyGroupCounts.inspection} 个</em>
+              </span>
+              <span className={styles.taskCenterSummaryPill}>
                 <strong>线下任务</strong>
                 <em>{dailyGroupCounts.offline} 个</em>
               </span>
@@ -2745,7 +2745,7 @@ export default function TaskCenterPage() {
             <div className={styles.propertyFollowupHeader}>
               <div>
                 <div className={styles.propertyFollowupTitle}>退房日房源待办</div>
-                <div className={styles.propertyFollowupSubtitle}>维修、深度清洁和日用品更换；仅显示已安排执行人且安排在所选日期的执行任务。</div>
+                <div className={styles.propertyFollowupSubtitle}>维修、深度清洁和日用品更换；显示安排在所选日期的有效待办，未分配项目也可在这里安排执行人。</div>
               </div>
               <span className={`${styles.inlineSemanticPill} ${semanticToneClass('normal')}`}>{filteredPropertyFollowups.length} 项</span>
             </div>

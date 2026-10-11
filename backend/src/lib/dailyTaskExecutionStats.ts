@@ -1,10 +1,12 @@
 import {
   dailyTaskExecutionVisibility,
+  isTaskCenterManagementOnlyOfflineTask,
   isTurnoverDailyExecutionTask,
   type DailyTaskExecutionCandidate,
 } from './dailyTaskExecutionVisibility'
+import { isPropertyFollowupSourceType } from './propertyFollowupPolicy'
 
-export type DailyTaskStatsGroup = 'turnover' | 'offline'
+export type DailyTaskStatsGroup = 'turnover' | 'inspection' | 'offline'
 
 export type DailyTaskStatsProjection = {
   daily_stats_group: DailyTaskStatsGroup | null
@@ -42,13 +44,25 @@ function offlineIdentity(task: DailyTaskStatsCandidate) {
   return sourceId ? `${sourceType}:${sourceId}` : ''
 }
 
+function isInspectionTask(task: DailyTaskStatsCandidate) {
+  if (text(task.source_type).toLowerCase() !== 'cleaning_tasks') return false
+  const kinds = [task.task_kind, task.task_type].map((value) => text(value).toLowerCase())
+  return kinds.some((value) => value === 'inspection' || value === 'deferred_inspection')
+}
+
 /**
  * Adds count/dedupe metadata without redefining execution visibility.
  * MZ-021 remains the only authority for review, terminal, scheduling,
  * assignment and source-workflow semantics.
  */
-export function projectDailyTaskStats(task: DailyTaskStatsCandidate): DailyTaskStatsProjection {
-  if (!dailyTaskExecutionVisibility(task).visible) {
+export function projectDailyTaskStats(
+  task: DailyTaskStatsCandidate,
+  options: { includeTaskCenterManagementOnlyOffline?: boolean } = {},
+): DailyTaskStatsProjection {
+  const executionVisible = dailyTaskExecutionVisibility(task).visible
+  const managementOnlyOffline = options.includeTaskCenterManagementOnlyOffline === true
+    && isTaskCenterManagementOnlyOfflineTask(task)
+  if (!executionVisible && !managementOnlyOffline) {
     return { daily_stats_group: null, daily_stats_key: null }
   }
   const date = taskDate(task)
@@ -58,6 +72,16 @@ export function projectDailyTaskStats(task: DailyTaskStatsCandidate): DailyTaskS
       daily_stats_group: date && propertyKey ? 'turnover' : null,
       daily_stats_key: date && propertyKey ? `turnover:${date}:${propertyKey}` : null,
     }
+  }
+  if (isInspectionTask(task)) {
+    const propertyKey = turnoverPropertyKey(task)
+    return {
+      daily_stats_group: date && propertyKey ? 'inspection' : null,
+      daily_stats_key: date && propertyKey ? `inspection:${date}:${propertyKey}` : null,
+    }
+  }
+  if (isPropertyFollowupSourceType(task.source_type)) {
+    return { daily_stats_group: null, daily_stats_key: null }
   }
   const identity = offlineIdentity(task)
   return {
@@ -69,6 +93,7 @@ export function projectDailyTaskStats(task: DailyTaskStatsCandidate): DailyTaskS
 export function countDailyTaskGroups(tasks: DailyTaskStatsCandidate[]) {
   const keys = {
     turnover: new Set<string>(),
+    inspection: new Set<string>(),
     offline: new Set<string>(),
   }
   for (const task of Array.isArray(tasks) ? tasks : []) {
@@ -77,5 +102,5 @@ export function countDailyTaskGroups(tasks: DailyTaskStatsCandidate[]) {
       keys[projected.daily_stats_group].add(projected.daily_stats_key)
     }
   }
-  return { turnover: keys.turnover.size, offline: keys.offline.size }
+  return { turnover: keys.turnover.size, inspection: keys.inspection.size, offline: keys.offline.size }
 }

@@ -150,23 +150,25 @@ assert.doesNotMatch(crud, /ensurePropertyMaintenanceSchema|ensureWorkTasksSchema
 assert.doesNotMatch(crud, /CREATE TABLE IF NOT EXISTS property_maintenance|ALTER TABLE property_maintenance|DROP COLUMN photo_urls/)
 
 const taskCenterReadiness = taskCenter.slice(
-  taskCenter.indexOf('async function assertTaskCenterMaintenanceSchemaReady()'),
-  taskCenter.indexOf('async function syncPropertyFollowupWorkTasks()'),
+  taskCenter.indexOf('async function assertTaskCenterMaintenanceSchemaReady('),
+  taskCenter.indexOf('async function loadPropertyFollowupCandidates('),
 )
 assert.match(taskCenterReadiness, /assertMaintenanceRuntimeSchemaReady\(\)/)
-assert.match(taskCenterReadiness, /assertMaintenanceWorkflowSchemaReady\(pgPool\)/)
+assert.match(taskCenterReadiness, /assertMaintenanceWorkflowSchemaReady\(executor\)/)
 assert.doesNotMatch(taskCenterReadiness, /\b(?:CREATE|ALTER|DROP)\s+(?:TABLE|INDEX)/i)
 assert.doesNotMatch(taskCenter, /ensureWorkTasksTable|ensureMaintenanceWorkflowFoundation/)
-const taskCenterSync = taskCenter.slice(
-  taskCenter.indexOf('async function syncPropertyFollowupWorkTasks()'),
-  taskCenter.indexOf('async function hasCleaningOfflineTasksTable()'),
+const taskCenterPropertyProjection = taskCenter.slice(
+  taskCenter.indexOf('async function loadPropertyFollowupCandidates('),
+  taskCenter.indexOf('async function lockActivePropertyFollowupSources('),
 )
-assert.match(taskCenterSync, /assertTaskCenterMaintenanceSchemaReady\(\)[\s\S]*DELETE FROM work_tasks/)
+assert.match(taskCenterPropertyProjection, /assertTaskCenterMaintenanceSchemaReady\(executor\)[\s\S]*SELECT \* FROM projected/)
+assert.doesNotMatch(taskCenterPropertyProjection, /\b(?:INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE)\b/i)
 const taskCenterDay = taskCenter.slice(
   taskCenter.indexOf("router.get('/day'"),
   taskCenter.indexOf("router.post('/save-board'"),
 )
-assert.match(taskCenterDay, /syncPropertyFollowupWorkTasks\(\)/)
+assert.doesNotMatch(taskCenterDay, /syncPropertyFollowupWorkTasks|backfillOfflineTasksToWorkTasks|ensureCleaningSchemaV2|ensureTaskCenterTables/)
+assert.match(taskCenterDay, /buildTaskCenterDay\(/)
 assert.match(taskCenterDay, /sendMaintenanceRuntimeSchemaNotReady\(res, e\)/)
 const taskCenterSaveBoard = taskCenter.slice(
   taskCenter.indexOf("router.post('/save-board'"),
