@@ -7,6 +7,119 @@
 - 测试映射必须说明保护点和测试场景；只登记测试文件名不算覆盖证据。
 - `sufficient` 表示当前测试覆盖该保护点；`partial` 表示已有测试但仍有缺口；`not-wired` 表示测试存在但尚未进入对应质量检查；`missing` 表示尚无测试。
 
+## FR-037：开发 Preview 五分钟无真实活动自动停止
+
+- **维护责任范围：** backend / web / local tooling
+- **最后审查日期：** 2026-10-10
+- **状态：** active
+
+### 业务保护规则
+
+- 只有显式 dev Preview 会话启用 300 秒空闲停止；生产、TestFlight、OTA 和普通 Mobile 单独运行不得启用。
+- 浏览器/Mobile 真实交互和有意义的后端业务请求续期；health、SSE、HMR、静态轮询与活动报告自身不得续期。
+- 同一 Preview 会话统一停止它启动的 Web、backend 和可选 Metro，不访问数据库或发送通知。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 300 秒空闲、噪声排除与 dev 门禁 | `scripts/tests/test_dev_preview_idle.mjs` | 虚拟时钟覆盖真实活动续期、噪声不续期、受管进程停止和非 Preview 禁用 | sufficient | `npm run test:dev-preview-idle` |
+| 后端请求活动分类 | `backend/scripts/tests/test_dev_preview_activity.ts` | 业务写请求续期，health/SSE/活动端点和非 dev 环境不续期 | sufficient | `npm run test:dev-preview-activity --prefix backend` |
+
+### 验证策略
+
+- 运行隔离控制器测试、后端分类契约、前后端类型/构建及完整质量检查；不启动服务或连接数据库。
+
+### 最后验证
+
+- **CRL：** root/CRL-20261010-003
+- **Commit：** not committed
+- **日期：** 2026-10-10
+
+### 相关 CRL
+
+- root/CRL-20261010-003：整合 MZ-011 的统一 Preview 生命周期与空闲停止。
+
+### 非保护范围
+
+- 真实终端进程树、浏览器/真机人工验收、部署平台和生产运行时。
+
+## FR-036：日常任务统计与当前入住客人通知记录
+
+- **维护责任范围：** backend / web / paired mobile
+- **最后审查日期：** 2026-10-10
+- **状态：** active
+
+### 业务保护规则
+
+- 每日统计只能消费 FR-035 已授权的执行任务；入住与退房按房源/业务日期合并一次，线下任务独立计数。
+- “已通知客人”只记录当前 check-in 订单的人工事实，不发送消息；mark 要求房源已完成待客准备，revoke 可撤销并保留审计、版本和幂等语义。
+- 通知记录使用独立权限，不能由通用任务编辑权限隐式获得。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 权威可见性先行和分组去重 | `backend/scripts/tests/test_daily_task_execution_stats.ts` | 审核/未分配任务不计数、同房源周转去重、线下独立计数 | sufficient | `npm run test:daily-task-execution-stats --prefix backend` |
+| 通知状态、权限、幂等和审计 | `backend/scripts/tests/test_guest_ready_notification.ts` | 当前订单 mark/revoke、准备门禁、冲突、版本和审计 | sufficient | `npm run test:guest-ready-notification --prefix backend` |
+| Web 统计与通知展示 | `frontend/src/app/task-center/taskCenterDisplay.test.ts` | 两组计数、通知标签和授权动作 | sufficient | `npm run test --prefix frontend -- --coverage.enabled=false src/app/task-center/taskCenterDisplay.test.ts` |
+
+### 验证策略
+
+- 运行纯契约、前后端类型/构建和完整质量检查；迁移与真实路由需在获批非生产环境单独验证。
+
+### 最后验证
+
+- **CRL：** root/CRL-20261010-002
+- **Commit：** not committed
+- **日期：** 2026-10-10
+
+### 相关 CRL
+
+- root/CRL-20261010-002：整合 MZ-010 的分组统计和通知记录。
+
+### 非保护范围
+
+- 真实消息发送、生产 migration、真实订单/账号写入、设备或浏览器人工验收。
+
+## FR-035：日常任务执行列表权威可见性
+
+- **维护责任范围：** backend / web / paired mobile
+- **最后审查日期：** 2026-10-10
+- **状态：** active
+
+### 业务保护规则
+
+- 日常执行列表必须排除审核中、已关闭和未分配任务；来源审核事实优先于规范化的通用状态。
+- 维修、深清、日用品等类型别名必须采用同一 fail-closed 规则；普通已完成线下任务和合法周转任务继续可见。
+- 审核和历史记录不删除，只从执行列表移除；客户端不得自行放宽服务端投影。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| Root 权威状态/类型/分派矩阵 | `backend/scripts/tests/test_daily_task_execution_visibility.ts` | 审核中、关闭、未分配、别名、合法完成和显式投影覆盖 | sufficient | `npm run test:daily-task-execution-visibility --prefix backend` |
+| Web cleaning 真实映射与过滤 | `backend/scripts/tests/test_task_center_daily_projection.ts` | 无执行人周转保留并按房源/日期计一次，非周转未分配任务从 board 移除 | sufficient | `npm run test:task-center-daily-projection --prefix backend` |
+| Web 防御性显示 | `frontend/src/app/task-center/taskCenterDisplay.test.ts` | 房源跟进审核/关闭隐藏且合法执行项保留 | sufficient | `npm run test --prefix frontend -- --coverage.enabled=false src/app/task-center/taskCenterDisplay.test.ts` |
+
+### 验证策略
+
+- 运行 Root/Mobile 权威矩阵、类型检查、Web 测试和完整质量检查；真实账号/API/设备另行验收。
+
+### 最后验证
+
+- **CRL：** root/CRL-20261010-001
+- **Commit：** not committed
+- **日期：** 2026-10-10
+
+### 相关 CRL
+
+- root/CRL-20261010-001：整合 MZ-021 的权威执行可见性。
+
+### 非保护范围
+
+- 审核队列、历史记录存储、任务删除、生产数据修复和部署。
+
 ## FR-034：清洁开始超时诊断扫描必须显式启用
 
 - **维护责任范围：** backend
@@ -1236,7 +1349,7 @@
 ## FR-005：离线媒体上传、业务提交与本地清理
 
 - **维护责任范围：** backend / mobile
-- **最后审查日期：** 2026-10-03
+- **最后审查日期：** 2026-10-09
 - **状态：** active
 
 ### 业务保护规则
@@ -1248,6 +1361,8 @@
 - 媒体类型、任务 ID 和提交动作必须保持正确关联，不能只凭本地预览判断业务保存成功。
 - 补品页面入队后不得再走第二套直传/直提交逻辑；队列是唯一执行者，持久化草稿是唯一提交进度事实来源。
 - 草稿、队列项、提交和每张媒体都必须有稳定 ID；每张媒体必须记录 `local_uri`、`remote_url`、上传状态和稳定错误码。
+- 所有可跨网络失败或 App 重启恢复的清洁媒体队列，必须以持久化队列项生成稳定 `task_id + media_id`，并上传已持久化的固定字节，不得在每次重试时重新压缩生成新内容。服务端对稳定 key 只能条件创建：相同指纹复用既有对象，首次存储成功但响应丢失时由对象校验恢复；同一 ID 对应不同原始内容、水印或业务上下文必须返回冲突，禁止覆盖或静默吞掉新照片。
+- 挂钥匙视频的对象上传与任务挂载是两个独立幂等步骤。客户端必须把同一持久化队列 ID 同时作为媒体 ID 和业务 `operation_id`；两条业务路由必须锁定任务、在同一事务内检查/保存 receipt，并在重放时跳过媒体行替换、状态流转、广播和通知。新的 operation ID 可替换单一挂钥匙视频，但同一 operation ID 改 URL 必须冲突。
 - 每张照片上传成功后，必须先完成草稿整快照写入和读回校验，再尝试删除本地文件；删除失败只能进入清理任务，不能使业务提交失败。
 - 业务提交成功后才清理整份草稿；网络/5xx 使用退避和上限，400/401/403、本地文件丢失进入明确阻断状态。
 - 同一队列项不可并发执行；已上传媒体和业务提交超时重试不得重新上传已确认的照片。
@@ -1271,6 +1386,12 @@
 | 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
 |---|---|---|---|---|
 | 视频队列独立重试和不重复上传 | `mz-cleaning-app-frontend/src/lib/inspectionMediaQueue.test.ts` | 业务保存失败、上传中断、超时重试 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- src/lib/inspectionMediaQueue.test.ts` |
+| 稳定媒体对象的并发、断响应与冲突 | `backend/scripts/tests/test_immutable_media_upload_contract.ts` | 同 key 并发只创建一次、存储成功后响应丢失复用、不同内容同 ID 返回冲突、本机 fallback 同字节复用；经 idempotency contract 接入 fast CI | partial | `npm run test:immutable-media-upload --prefix backend` |
+| 挂钥匙视频业务挂载幂等 | `backend/scripts/tests/test_idempotency_submit_id_contract.ts` | cleaning-app 与 mzapp 两条路由共享 receipt scope、任务行锁、单视频替换、冲突与重放跳过副作用 | partial | `npm run test:idempotency-submit-id-contract --prefix backend` |
+| App 重启后的稳定媒体与业务操作 ID | `mz-cleaning-app-frontend/src/lib/inspectionMediaQueue.test.ts` | 重启后的 `uploading` 视频沿用同一 media/operation ID，业务保存重试不重复上传 | sufficient | `npm run test -- --runInBand --no-cache src/lib/inspectionMediaQueue.test.ts`（在 mobile） |
+| 日终照片队列稳定 ID | `mz-cleaning-app-frontend/src/lib/dayEndHandoverQueue.test.ts` | 日终队列携带稳定 task/media ID 且不重复压缩 | sufficient | `npm run test -- --runInBand --no-cache src/lib/dayEndHandoverQueue.test.ts`（在 mobile） |
+| 钥匙照片队列稳定 ID | `mz-cleaning-app-frontend/src/lib/keyUploadQueue.test.ts` | 钥匙队列携带稳定 task/media ID 且不重复压缩 | sufficient | `npm run test -- --runInBand --no-cache src/lib/keyUploadQueue.test.ts`（在 mobile） |
+| 检查与补货照片队列稳定 ID | `mz-cleaning-app-frontend/src/lib/inspectionPanelSubmitQueue.test.ts` | 检查/补货队列携带稳定 task/media ID 且不重复压缩 | sufficient | `npm run test -- --runInBand --no-cache src/lib/inspectionPanelSubmitQueue.test.ts`（在 mobile） |
 | 检查提交队列分步失败和本地保留 | `mz-cleaning-app-frontend/src/lib/inspectionPanelSubmitQueue.test.ts` | 缺照片、部分成功、重试、缩略图失败、相同 action 绑定不重复触发刷新 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- src/lib/inspectionPanelSubmitQueue.test.ts` |
 | 检查成功后的问题照片追加断点 | `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.test.tsx` | 相册选图、上传后业务保存失败保留草稿，重试只调用追加保存而不重复上传 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/screens/tasks/InspectionPanelScreen.test.tsx` |
 | 补品提交队列和部分上传 | `mz-cleaning-app-frontend/src/lib/cleaningConsumablesSubmitQueue.test.ts` | 弱网入队、逐张断点、只重试失败照片、补货凭证先上传再批量写入 restock proof、业务提交超时不重复上传、连续入队去重、并发 worker、400/401/403 阻断、本地文件丢失、5xx 退避、稳定 ID 跨存储读取 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- src/lib/cleaningConsumablesSubmitQueue.test.ts` |
@@ -1332,6 +1453,7 @@
 - CRL-20260811-009：线下任务历史公共基址照片认证读取（root/mobile pair）
 - root/CRL-20261002-005：移动端任务照片上传人精确读取权限。
 - root/CRL-20261003-001：任务参与者统一照片可见性与问题反馈历史任务上下文修复。
+- root/CRL-20261009-001 与 mobile/CRL-20261009-001：稳定媒体条件创建、挂钥匙业务 receipt 与持久化队列 ID 配套修复。
 
 ### 非保护范围
 

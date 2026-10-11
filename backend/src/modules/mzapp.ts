@@ -8,7 +8,7 @@ import crypto from 'crypto'
 import sharp from 'sharp'
 import fs from 'fs'
 import { canonicalizeMzappTaskPhotoReference, createMzappTaskPhotoRemoteReference } from '../lib/mzappTaskPhotoReference'
-import { listPermissionCodesForUser, userHasAnyPerm } from '../auth'
+import { listPermissionCodesForUser, requirePerm, userHasAnyPerm } from '../auth'
 import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
 import { emitNotificationEvent, ensureNotificationStorage } from '../services/notificationEvents'
 import {
@@ -30,6 +30,15 @@ import {
 } from '../lib/cleaningInspection'
 import { deepCleaningSourceSummary, maintenanceSourceSummary } from '../lib/autoExpenseSourceSummary'
 import { buildCleaningTurnoverDisplay, mergeCleaningTurnoverDisplays } from '../lib/cleaningTurnoverDisplay'
+import { projectDailyTaskStats } from '../lib/dailyTaskExecutionStats'
+import {
+  GUEST_READY_NOTIFICATION_PERMISSION,
+  GuestReadyNotificationConflict,
+  buildGuestReadyNotificationProjection,
+  guestReadyNotificationAction,
+  loadGuestReadyNotificationOrderStates,
+  planGuestReadyNotificationMutation,
+} from '../lib/guestReadyNotification'
 import { CLEANING_IMAGE_FORMAT_ERROR, isImageUploadCandidate, normalizeCleaningImageUpload } from '../lib/cleaningMediaImage'
 import { isCleaningMediaKey } from '../lib/cleaningMediaReference'
 import { assertMaintenanceWorkflowSchemaReady, MaintenanceWorkflowSchemaNotReady } from '../lib/maintenanceWorkflowSchema'
@@ -41,6 +50,7 @@ import {
   upsertMaintenanceWorkTask,
 } from '../lib/maintenanceWorkflowStore'
 import { buildWorkTaskActionPayload, type WorkTaskActionId, type WorkTaskParticipant } from '../lib/workTaskActions'
+import { isDailyTaskManagerRoleNames, projectVisibleDailyTasks } from '../lib/dailyTaskExecutionVisibility'
 import {
   buildIdempotencyPayloadHash,
   assertIdempotentStepReceiptsReady,
@@ -197,7 +207,7 @@ function hasRole(user: any, roleName: string) {
 }
 
 function canViewAll(user: any) {
-  return hasRole(user, 'admin') || hasRole(user, 'offline_manager') || hasRole(user, 'customer_service')
+  return isDailyTaskManagerRoleNames(roleNamesOf(user))
 }
 
 function maintenanceWorkflowForWorkTask(task: any, user: any, canManageWorkflow: boolean) {
@@ -239,11 +249,6 @@ function inclusiveDateRangeDays(dateFrom: string, dateTo: string): number | null
   const toMs = dateOnlyToUtcMs(dateTo)
   if (fromMs == null || toMs == null || toMs < fromMs) return null
   return Math.floor((toMs - fromMs) / DAY_MS) + 1
-}
-
-function isPropertyFollowupSourceType(sourceType: any) {
-  const value = String(sourceType || '').trim()
-  return PROPERTY_FOLLOWUP_SOURCE_TYPES.includes(value as typeof PROPERTY_FOLLOWUP_SOURCE_TYPES[number])
 }
 
 function normalizeStoredPhotoUrls(raw: any, fallback?: any) {
@@ -2424,8 +2429,10 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
   const userId = String(user.sub || '')
   const id = String(req.params.id || '').trim()
   const mediaUrl = String(req.body?.media_url || '').trim()
+  const operationId = String(req.body?.operation_id || '').trim()
   if (!id) return res.status(400).json({ message: 'missing id' })
   if (!mediaUrl) return res.status(400).json({ message: 'missing media_url' })
+  if (operationId.length > IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH) return res.status(400).json({ message: 'invalid operation_id' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
     const r0 = await pgPool.query(
@@ -2450,9 +2457,21 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
     if (!isR5RequestSchemaReady()) return res.status(503).json({ code: 'r5_request_schema_not_ready' })
     if (!isR5TaskRuntimeSchemaReady()) return res.status(503).json({ code: 'r5_task_runtime_schema_not_ready' })
     const uuid = require('uuid')
-    const mediaId = uuid.v4()
     const actionActor = actorAndPerformerFromRequest(user, req.body || {})
+    const payloadHash = buildIdempotencyPayloadHash({ media_url: mediaUrl })
     const transactionResult = await pgRunInTransaction(async (client) => {
+      await client.query(`SELECT id FROM cleaning_tasks WHERE id::text=$1::text FOR UPDATE`, [id])
+      if (operationId) {
+        const receipt = await loadIdempotentStepReceipt(client, {
+          scopeType: 'cleaning_task_lockbox_video', scopeId: id, submitId: operationId, stepKey: 'lockbox_video',
+        })
+        if (receipt) {
+          if (String(receipt.payload_hash || '') !== payloadHash) return { kind: 'conflict' as const }
+          return { kind: 'replay' as const, responseBody: receipt.response_json }
+        }
+      }
+      const mediaId = uuid.v4()
+      await client.query(`DELETE FROM cleaning_task_media WHERE task_id::text=$1::text AND type='lockbox_video'`, [id])
       await client.query(
         `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, uploader_id)
          VALUES ($1,$2,'lockbox_video',$3,now(),$4)`,
@@ -2475,9 +2494,18 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
          WHERE id = $1`,
         [id],
       )
-      return { actionResult }
+      const responseBody = { ok: true, action_result: actionResult }
+      if (operationId) {
+        await saveIdempotentStepReceipt(client, {
+          scopeType: 'cleaning_task_lockbox_video', scopeId: id, submitId: operationId, stepKey: 'lockbox_video',
+        }, payloadHash, responseBody)
+      }
+      return { kind: 'committed' as const, actionResult, mediaId, responseBody }
     })
+    if (transactionResult?.kind === 'conflict') return res.status(409).json({ message: 'idempotency_conflict', operation_id: operationId })
+    if (transactionResult?.kind === 'replay') return res.status(200).json(transactionResult.responseBody)
     const actionResult = transactionResult?.actionResult || null
+    const mediaId = transactionResult?.mediaId || null
     try {
       const { broadcastCleaningEvent } = require('./events')
       broadcastCleaningEvent({ event: 'lockbox_video_uploaded', task_id: id })
@@ -2516,7 +2544,7 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
         )
       }
     } catch {}
-    return res.status(201).json({ ok: true, action_result: actionResult })
+    return res.status(201).json(transactionResult?.responseBody || { ok: true, action_result: actionResult })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'lockbox_video_failed' })
   }
@@ -6294,8 +6322,12 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         const completionPhotoUrls = normalizeWorkTaskPhotoUrls(x.completion_photo_urls)
         const maintenanceSourceStatus = String(x.maintenance_source_status || '').trim()
         const maintenanceSourceReviewStatus = String(x.maintenance_source_review_status || '').trim()
-        const maintenanceProjectionStatus = String(x.source_type || '') === 'property_maintenance'
+        const hasMaintenanceSourceWorkflow = String(x.source_type || '') === 'property_maintenance'
           && (maintenanceSourceStatus || maintenanceSourceReviewStatus)
+        const maintenanceSourceWorkflowStatus = hasMaintenanceSourceWorkflow
+          ? normalizeMaintenanceWorkflowStatus(maintenanceSourceStatus, maintenanceSourceReviewStatus)
+          : null
+        const maintenanceProjectionStatus = hasMaintenanceSourceWorkflow
           ? maintenanceWorkTaskStatus(normalizeMaintenanceWorkflowStatus(maintenanceSourceStatus, maintenanceSourceReviewStatus))
           : null
         out.push({
@@ -6315,6 +6347,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           assignee_name: x.assignee_name ? String(x.assignee_name) : null,
           cleaner_name: x.assignee_name ? String(x.assignee_name) : null,
           status: maintenanceProjectionStatus ?? effectiveWorkTaskStatus(x.status, x.assignee_id),
+          source_workflow_status: maintenanceSourceWorkflowStatus,
           execution_role: 'work',
           execution_semantics: 'work_task',
           urgency: String(x.task_kind || '').toLowerCase() === 'offline' ? null : normUrgency(x.urgency),
@@ -7231,6 +7264,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               ? (p.b?.order_id ? String(p.b.order_id) : null)
               : (p.kind === 'checkin' && p.a?.order_id ? String(p.a.order_id) : null)
                 || (p.kind === 'checkout' && nextCheckinsForCheckout[0]?.order_id ? String(nextCheckinsForCheckout[0].order_id) : null))
+          const propertyReadyForGuestNotification = rows.some((x) => String(x?.raw_status || x?.status || '').trim().toLowerCase() === 'ready')
           const singleOrderId = p.kind === 'turnover' ? null : (p.a?.order_id ? String(p.a.order_id) : null)
           const checkoutKeysOut = checkoutKeys != null && Number.isFinite(checkoutKeys) ? Math.max(1, Math.min(2, Math.trunc(checkoutKeys))) : null
           const checkinKeysOut = checkinKeys != null && Number.isFinite(checkinKeys) ? Math.max(1, Math.min(2, Math.trunc(checkinKeys))) : null
@@ -7261,6 +7295,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             order_id: singleOrderId,
             order_id_checkout: checkoutOrderId,
             order_id_checkin: checkinOrderId,
+            property_ready_for_guest_notification: propertyReadyForGuestNotification,
             property_id: propId,
             title: prop?.code || (propId ? String(propId) : primarySourceId),
             summary: summary || null,
@@ -7564,6 +7599,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         const sortIndexInspector = minPositiveNumber(arr.map((x) => x.sort_index_inspector))
         const sortIndex = minPositiveNumber([sortIndexCleaner, sortIndexInspector, ...arr.map((x) => x.sort_index)])
         const cleaningSubmissionReady = arr.length > 0 && arr.every((x) => x.cleaning_submission_ready === true)
+        const propertyReadyForGuestNotification = arr.some((x) => x.property_ready_for_guest_notification === true || String(x?.status || '').trim().toLowerCase() === 'ready')
 
         merged.push({
           ...preferred,
@@ -7611,6 +7647,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           order_id: null,
           order_id_checkin: orderIdCheckin || null,
           order_id_checkout: orderIdCheckout || null,
+          property_ready_for_guest_notification: propertyReadyForGuestNotification,
           inspection_mode: inspectionMode,
           inspection_scope: inspectionScope,
           inspection_due_date: inspectionDueDate,
@@ -7641,21 +7678,10 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
     }
     markWorkTasksStep('cleaning_pool')
 
-    const hasMobileAssignee = (task: any) => {
-      const source = String(task?.source_type || '').trim()
-      if (source !== 'cleaning_tasks') return !!String(task?.assignee_id || '').trim()
-      const kind = String(task?.task_kind || '').trim().toLowerCase()
-      if (kind === 'inspection') return !!String(task?.inspector_id || task?.assignee_id || '').trim()
-      if (kind === 'cleaning') return !!String(task?.cleaner_id || task?.assignee_id || '').trim()
-      return !!String(task?.cleaner_id || task?.inspector_id || task?.assignee_id || '').trim()
-    }
-    const visibleOut = out.filter((task) => {
-      if (!managerCanSeeAllTaskPool) return hasMobileAssignee(task)
-      const source = String(task?.source_type || '').trim()
-      if (source === 'cleaning_tasks') return true
-      if (isPropertyFollowupSourceType(source)) return hasMobileAssignee(task)
-      return true
-    })
+    const visibleOut = projectVisibleDailyTasks(out).map((task) => ({
+      ...task,
+      ...projectDailyTaskStats(task),
+    }))
 
     visibleOut.sort((a, b) => {
       const ad = String(a.scheduled_date || '')
@@ -7682,11 +7708,33 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
     })
     markWorkTasksStep('filter_sort')
 
+    const guestReadyStatesByOrder = await loadGuestReadyNotificationOrderStates(
+      pgPool,
+      visibleOut.map((task) => task?.order_id_checkin),
+    )
+    markWorkTasksStep('guest_ready_notification')
+
     const manualParticipantsByRef = await loadManualWorkTaskParticipantsByRef(visibleOut)
     markWorkTasksStep('manual_participants')
     const canManageMaintenanceWorkflow = await userHasAnyPerm(user, [MAINTENANCE_WORKFLOW_MANAGE_PERMISSION])
     const responseOut = visibleOut.map((task) => {
-      const taskWithParticipants = attachWorkTaskParticipants(task, manualParticipantsByRef)
+      const orderIdCheckin = String(task?.order_id_checkin || '').trim()
+      const guestReadyState = orderIdCheckin ? guestReadyStatesByOrder.get(orderIdCheckin) : null
+      const guestReadyNotification = orderIdCheckin
+        ? buildGuestReadyNotificationProjection({
+            orderId: orderIdCheckin,
+            notifiedAt: guestReadyState?.notified_at,
+            notifiedByUserId: guestReadyState?.notified_by_user_id,
+            notifiedByName: guestReadyState?.notified_by_name,
+            version: guestReadyState?.version,
+            propertyReady: task?.property_ready_for_guest_notification === true,
+            currentCheckin: !!guestReadyState,
+          })
+        : null
+      const taskWithParticipants = attachWorkTaskParticipants({
+        ...task,
+        ...(guestReadyNotification ? { guest_ready_notification: guestReadyNotification } : {}),
+      }, manualParticipantsByRef)
       const mergedChildren = Array.isArray((task as any).__merged_children) ? (task as any).__merged_children : []
       const payload = buildWorkTaskActionPayload(taskWithParticipants, actionContext)
       if (mergedChildren.length) {
@@ -7722,7 +7770,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           participant_sources: Array.from(participantSources).sort(),
         }
       }
-      const { __merged_children, ...cleanTask } = taskWithParticipants as any
+      const { __merged_children, property_ready_for_guest_notification, ...cleanTask } = taskWithParticipants as any
       const maintenanceWorkflow = maintenanceWorkflowForWorkTask(taskWithParticipants, user, canManageMaintenanceWorkflow)
       return {
         ...cleanTask,
@@ -7740,7 +7788,285 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
     setWorkTasksTimingHeaders()
     logSlowWorkTasks('error')
     if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
+    if (['42P01', '42703'].includes(String(e?.code || ''))) {
+      return res.status(503).json({ code: 'guest_ready_notification_schema_not_ready', message: '通知状态功能尚未完成数据库准备' })
+    }
     return res.status(500).json({ message: e?.message || 'mzapp_work_tasks_failed' })
+  }
+})
+
+const guestReadyNotificationMutationSchema = z.object({
+  order_id: z.string().trim().min(1).max(160),
+  action: z.enum(['mark', 'revoke']),
+  operation_id: z.string().trim().min(8).max(160),
+  expected_version: z.number().int().min(0),
+}).strict()
+
+function guestReadyNotificationErrorMessage(code: string) {
+  if (code === 'GUEST_READY_ORDER_NOT_FOUND') return '本次入住订单不存在，请刷新任务后重试'
+  if (code === 'GUEST_READY_NO_CHECKIN_ORDER') return '当前没有可用的本次入住订单，请刷新任务后重试'
+  if (code === 'GUEST_READY_CHECKIN_ORDER_CHANGED') return '入住订单已变化，请刷新任务后重试'
+  if (code === 'GUEST_READY_NOTIFICATION_CHANGED') return '通知状态已被其他人更新，请刷新后重试'
+  if (code === 'GUEST_READY_PROPERTY_NOT_READY') return '房屋尚未设为可入住，不能记录已通知客人'
+  return '客人通知状态保存失败，请刷新后重试'
+}
+
+router.post('/guest-ready-notifications', requirePerm(GUEST_READY_NOTIFICATION_PERMISSION), async (req, res) => {
+  const parsed = guestReadyNotificationMutationSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json({ code: 'GUEST_READY_INVALID_REQUEST', message: '通知状态请求无效，请刷新后重试' })
+  const user = (req as any).user
+  const actorUserId = String(user?.sub || '').trim()
+  if (!actorUserId) return res.status(401).json({ message: 'unauthorized' })
+  if (!hasPg || !pgPool) return res.status(503).json({ code: 'guest_ready_notification_storage_unavailable', message: '通知状态服务暂不可用，请稍后重试' })
+
+  const receiptFromEvent = (existing: any) => {
+    const projection = buildGuestReadyNotificationProjection({
+      orderId: existing.order_id_snapshot,
+      notifiedAt: existing.resulting_notified_at,
+      notifiedByUserId: existing.resulting_notified_by,
+      notifiedByName: existing.metadata?.resulting_notified_by_name,
+      version: existing.resulting_version,
+      propertyReady: existing.metadata?.property_ready === true,
+      currentCheckin: true,
+    })
+    const nextAction = guestReadyNotificationAction(projection, true)
+    return {
+      ok: true,
+      operation_id: parsed.data.operation_id,
+      changed: existing.changed === true,
+      idempotent_replay: true,
+      guest_ready_notification: projection,
+      available_actions: nextAction ? [nextAction] : [],
+      task_id: String(existing.checkin_task_id || '').trim() || null,
+    }
+  }
+
+  try {
+    const result = await pgRunInTransaction(async (client: any) => {
+      const existingResult = await client.query(
+        `SELECT *
+           FROM order_guest_ready_notification_events
+          WHERE order_id_snapshot = $1::text
+            AND operation_id = $2::text
+          LIMIT 1`,
+        [parsed.data.order_id, parsed.data.operation_id],
+      )
+      const existing = existingResult?.rows?.[0]
+      if (existing) return receiptFromEvent(existing)
+
+      const orderResult = await client.query(
+        `SELECT id::text AS id,
+                guest_ready_notified_at,
+                guest_ready_notified_by::text AS guest_ready_notified_by,
+                COALESCE(guest_ready_notification_version, 0) AS guest_ready_notification_version
+           FROM orders
+          WHERE id::text = $1::text
+          FOR UPDATE`,
+        [parsed.data.order_id],
+      )
+      const order = orderResult?.rows?.[0]
+      if (!order) throw new GuestReadyNotificationConflict('GUEST_READY_ORDER_NOT_FOUND')
+
+      // A same-operation retry can race before the first transaction appends
+      // its event. The order lock serializes both writers; re-read afterwards
+      // so the waiter returns the original receipt instead of a false version
+      // conflict or unique-index error.
+      const racedExistingResult = await client.query(
+        `SELECT *
+           FROM order_guest_ready_notification_events
+          WHERE order_id_snapshot = $1::text
+            AND operation_id = $2::text
+          LIMIT 1`,
+        [parsed.data.order_id, parsed.data.operation_id],
+      )
+      const racedExisting = racedExistingResult?.rows?.[0]
+      if (racedExisting) return receiptFromEvent(racedExisting)
+
+      const checkinResult = await client.query(
+        `SELECT t.id::text AS task_id,
+                COALESCE(t.task_date, t.date)::text AS task_date,
+                COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS property_id
+           FROM cleaning_tasks t
+           JOIN orders checkin_order ON checkin_order.id::text = t.order_id::text
+           LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+           LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+          WHERE t.order_id::text = $1::text
+            AND lower(COALESCE(t.task_type, t.type, '')) = 'checkin_clean'
+            AND ${activeCleaningTaskWhereSql('t')}
+            AND ${validCleaningTaskOrderWhereSql('t', 'checkin_order')}
+          ORDER BY t.updated_at DESC NULLS LAST, t.id
+          LIMIT 2`,
+        [parsed.data.order_id],
+      )
+      if ((checkinResult?.rows || []).length === 0) {
+        throw new GuestReadyNotificationConflict('GUEST_READY_NO_CHECKIN_ORDER')
+      }
+      if ((checkinResult?.rows || []).length > 1) {
+        throw new GuestReadyNotificationConflict('GUEST_READY_CHECKIN_ORDER_CHANGED')
+      }
+      const checkinTask = checkinResult.rows[0]
+
+      const competingCheckin = await client.query(
+        `SELECT other.id::text AS id
+           FROM cleaning_tasks other
+           JOIN orders other_order ON other_order.id::text = other.order_id::text
+           LEFT JOIN properties other_p_id ON other_p_id.id::text = other.property_id::text
+           LEFT JOIN properties other_p_code ON upper(other_p_code.code) = upper(other.property_id::text)
+          WHERE lower(COALESCE(other.task_type, other.type, '')) = 'checkin_clean'
+            AND COALESCE(other.task_date, other.date)::date = $1::date
+            AND COALESCE(other_p_id.id::text, other_p_code.id::text, other.property_id::text) = $2::text
+            AND other.order_id::text <> $3::text
+            AND ${activeCleaningTaskWhereSql('other')}
+            AND ${validCleaningTaskOrderWhereSql('other', 'other_order')}
+          LIMIT 1`,
+        [String(checkinTask.task_date || '').slice(0, 10), String(checkinTask.property_id || ''), parsed.data.order_id],
+      )
+      if (competingCheckin?.rowCount) {
+        throw new GuestReadyNotificationConflict('GUEST_READY_CHECKIN_ORDER_CHANGED')
+      }
+
+      const readyResult = await client.query(
+        `SELECT ready_task.id::text AS id
+           FROM cleaning_tasks ready_task
+           LEFT JOIN orders ready_order ON ready_order.id::text = ready_task.order_id::text
+           LEFT JOIN properties ready_p_id ON ready_p_id.id::text = ready_task.property_id::text
+           LEFT JOIN properties ready_p_code ON upper(ready_p_code.code) = upper(ready_task.property_id::text)
+          WHERE COALESCE(ready_task.task_date, ready_task.date)::date = $1::date
+            AND COALESCE(ready_p_id.id::text, ready_p_code.id::text, ready_task.property_id::text) = $2::text
+            AND lower(COALESCE(ready_task.status, '')) = 'ready'
+            AND ${activeCleaningTaskWhereSql('ready_task')}
+            AND ${validCleaningTaskOrderWhereSql('ready_task', 'ready_order')}
+          LIMIT 1`,
+        [String(checkinTask.task_date || '').slice(0, 10), String(checkinTask.property_id || '')],
+      )
+      const propertyReady = !!readyResult?.rowCount
+      const currentVersion = Number(order.guest_ready_notification_version || 0)
+      const plan = planGuestReadyNotificationMutation({
+        action: parsed.data.action,
+        expectedVersion: parsed.data.expected_version,
+        currentVersion,
+        notifiedAt: order.guest_ready_notified_at,
+        notifiedByUserId: order.guest_ready_notified_by,
+        propertyReady,
+        currentCheckin: true,
+      })
+
+      let resultingOrder = order
+      if (plan.changed) {
+        const updated = await client.query(
+          `UPDATE orders
+              SET guest_ready_notified_at = CASE WHEN $2::boolean THEN now() ELSE NULL END,
+                  guest_ready_notified_by = CASE WHEN $2::boolean THEN $3::text ELSE NULL END,
+                  guest_ready_notification_version = $4::integer
+            WHERE id::text = $1::text
+            RETURNING id::text AS id,
+                      guest_ready_notified_at,
+                      guest_ready_notified_by::text AS guest_ready_notified_by,
+                      guest_ready_notification_version`,
+          [parsed.data.order_id, plan.wantsNotified, actorUserId, plan.nextVersion],
+        )
+        resultingOrder = updated.rows[0]
+      }
+
+      const actorName = String(user?.display_name || user?.username || user?.email || actorUserId).trim() || actorUserId
+      await client.query(
+        `INSERT INTO order_guest_ready_notification_events (
+           id, order_id, order_id_snapshot, action, changed, actor_user_id,
+           operation_id, expected_version, previous_notified_at, previous_notified_by,
+           resulting_notified_at, resulting_notified_by, resulting_version,
+           property_id, checkin_task_id, task_date, metadata
+         ) VALUES (
+           $1, $2, $2, $3, $4, $5,
+           $6, $7, $8, $9,
+           $10, $11, $12,
+           $13, $14, $15::date, $16::jsonb
+         )`,
+        [
+          crypto.randomUUID(),
+          parsed.data.order_id,
+          parsed.data.action,
+          plan.changed,
+          actorUserId,
+          parsed.data.operation_id,
+          parsed.data.expected_version,
+          order.guest_ready_notified_at || null,
+          order.guest_ready_notified_by || null,
+          resultingOrder.guest_ready_notified_at || null,
+          resultingOrder.guest_ready_notified_by || null,
+          plan.nextVersion,
+          String(checkinTask.property_id || '') || null,
+          String(checkinTask.task_id || '') || null,
+          String(checkinTask.task_date || '').slice(0, 10) || null,
+          JSON.stringify({
+            source: 'mzapp',
+            no_message_sent: true,
+            property_ready: propertyReady,
+            resulting_notified_by_name: plan.wantsNotified ? actorName : null,
+          }),
+        ],
+      )
+
+      const projection = buildGuestReadyNotificationProjection({
+        orderId: parsed.data.order_id,
+        notifiedAt: resultingOrder.guest_ready_notified_at,
+        notifiedByUserId: resultingOrder.guest_ready_notified_by,
+        notifiedByName: plan.wantsNotified ? actorName : null,
+        version: plan.nextVersion,
+        propertyReady,
+        currentCheckin: true,
+      })
+      const nextAction = guestReadyNotificationAction(projection, true)
+      return {
+        ok: true,
+        operation_id: parsed.data.operation_id,
+        changed: plan.changed,
+        idempotent_replay: false,
+        guest_ready_notification: projection,
+        available_actions: nextAction ? [nextAction] : [],
+        task_id: String(checkinTask.task_id || '').trim() || null,
+      }
+    })
+
+    if (!result) return res.status(503).json({ code: 'guest_ready_notification_storage_unavailable', message: '通知状态服务暂不可用，请稍后重试' })
+    if (result.changed && result.task_id) {
+      try {
+        const taskResult = await pgPool.query(
+          `SELECT id::text AS id, assignee_id, cleaner_id, inspector_id
+             FROM cleaning_tasks
+            WHERE id::text = $1::text
+            LIMIT 1`,
+          [result.task_id],
+        )
+        const taskRow = taskResult?.rows?.[0]
+        if (taskRow) {
+          await emitWorkTaskEvent({
+            taskId: `cleaning_task:${result.task_id}`,
+            sourceType: 'cleaning_tasks',
+            sourceRefIds: [result.task_id],
+            eventType: 'TASK_UPDATED',
+            changeScope: 'list',
+            changedFields: ['guest_ready_notification', 'available_actions'],
+            // available_actions is recipient-permission-specific, so it must not
+            // be copied from the actor into a shared event patch. Mobile keeps
+            // guest_ready_notification outside SAFE_PATCH_FIELDS and refetches
+            // the recipient-specific projection for this event.
+            patch: { guest_ready_notification: result.guest_ready_notification },
+            causedByUserId: actorUserId,
+            visibilityHints: buildCleaningTaskVisibilityHints(taskRow),
+          })
+        }
+      } catch {}
+    }
+    return res.json(result)
+  } catch (error: any) {
+    if (error instanceof GuestReadyNotificationConflict) {
+      const status = error.code === 'GUEST_READY_ORDER_NOT_FOUND' ? 404 : 409
+      return res.status(status).json({ code: error.code, message: guestReadyNotificationErrorMessage(error.code) })
+    }
+    if (['42P01', '42703'].includes(String(error?.code || ''))) {
+      return res.status(503).json({ code: 'guest_ready_notification_schema_not_ready', message: '通知状态功能尚未完成数据库准备' })
+    }
+    return res.status(500).json({ code: 'guest_ready_notification_failed', message: '客人通知状态保存失败，请稍后重试' })
   }
 })
 

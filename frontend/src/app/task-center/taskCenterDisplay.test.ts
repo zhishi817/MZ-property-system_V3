@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cleaningNightsDisplayLabels, cleaningTaskFlowLabelText, deferredInspectionConflictPresentation, hasTaskCenterRequiredExecutor, isDeferredInspectionDisplayTask, maintenanceDetailContentText, resolveTaskCenterColumns, taskCenterBoardInspectionDueDate, taskCenterInspectionAssignmentPatch } from './taskCenterDisplay'
+import { cleaningNightsDisplayLabels, cleaningTaskFlowLabelText, deferredInspectionConflictPresentation, guestReadyNotificationPresentation, hasTaskCenterRequiredExecutor, isDeferredInspectionDisplayTask, maintenanceDetailContentText, resolveTaskCenterColumns, taskCenterBoardInspectionDueDate, taskCenterDailyGroupCounts, taskCenterInspectionAssignmentPatch, visibleTaskCenterPropertyFollowups } from './taskCenterDisplay'
 
 describe('taskCenterDisplay', () => {
   it('treats deferred inspection tasks as inspection-oriented display', () => {
@@ -156,9 +156,46 @@ describe('taskCenterDisplay', () => {
     })).toBe(true)
   })
 
+  it('fails closed when the server has not marked a property follow-up as an execution-list item', () => {
+    const tasks = [
+      { title: '已安排维修', execution_list_visible: true },
+      { title: '待审核维修', execution_list_visible: false },
+      { title: '旧服务未投影任务' },
+    ]
+    expect(visibleTaskCenterPropertyFollowups(tasks).map((task) => task.title)).toEqual(['已安排维修'])
+  })
+
   it('shows structured maintenance content as readable text instead of raw JSON', () => {
     expect(maintenanceDetailContentText('{"content":"衣柜门脱轨"}')).toBe('衣柜门脱轨')
     expect(maintenanceDetailContentText('{"description":"水龙头漏水"}')).toBe('水龙头漏水')
     expect(maintenanceDetailContentText('衣柜门脱轨')).toBe('衣柜门脱轨')
+  })
+
+  it('counts authorized daily groups independently from search and dedupes turnover cards', () => {
+    expect(taskCenterDailyGroupCounts([
+      { execution_list_visible: true, daily_stats_group: 'turnover', daily_stats_key: 'turnover:2026-10-04:p1' },
+      { execution_list_visible: true, daily_stats_group: 'turnover', daily_stats_key: 'turnover:2026-10-04:p1' },
+      { execution_list_visible: true, daily_stats_group: 'offline', daily_stats_key: 'offline:2026-10-04:w1' },
+      { execution_list_visible: false, daily_stats_group: null, daily_stats_key: null },
+    ])).toEqual({ turnover: 1, offline: 1 })
+  })
+
+  it('presents guest-ready notification state without implying a message was sent by the app', () => {
+    expect(guestReadyNotificationPresentation({ guest_ready_notification: { status: 'not_notified' } })).toEqual({
+      label: '客人未通知',
+      tone: 'pending',
+      detail: '',
+    })
+    expect(guestReadyNotificationPresentation({
+      guest_ready_notification: {
+        status: 'notified',
+        notified_at: '2026-10-04T01:02:03.000Z',
+        notified_by_name: '客服 A',
+      },
+    })).toEqual({
+      label: '已通知客人',
+      tone: 'success',
+      detail: '客服 A · 2026-10-04T01:02:03.000Z',
+    })
   })
 })

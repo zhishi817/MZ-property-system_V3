@@ -54,6 +54,8 @@ async function main() {
   assert.doesNotMatch(consumablesRoute, /CREATE TABLE|ALTER TABLE/, 'consumables request path must not perform schema checks')
   assert.match(cleaningAppSource, /export async function warmupCleaningAppModule/, 'consumables schema must have a startup warmup')
   assert.match(cleaningAppSource, /media_id[\s\S]*cleaning\/media\//, 'cleaning media upload must derive a stable R2 key from media_id')
+  assert.match(cleaningAppSource, /mediaId[\s\S]*r2UploadImmutable\(key, mime, buf, uploadFingerprint\)/, 'stable media uploads must use conditional immutable storage')
+  assert.match(cleaningAppSource, /CLEANING_MEDIA_IDEMPOTENCY_CONFLICT[\s\S]*res\.status\(409\)/, 'a reused media id with different content must return 409')
   assert.match(cleaningAppSource, /const completionPhotosSchema[\s\S]*?submit_id: z\.string\(\)\.trim\(\)\.min\(1\)\.max\(IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH\)/, 'completion photos must accept the shared submit id limit')
   assert.match(cleaningAppSource, /const completionPhotosSchema[\s\S]*?remote_tv[\s\S]*?remote_ac/, 'completion photos API must accept TV and optional AC remote areas')
   assert.match(cleaningAppSource, /scopeType: 'cleaning_task_completion_photos'/, 'completion photos must use a dedicated idempotency scope')
@@ -98,6 +100,12 @@ async function main() {
   assert.match(selfCompleteLockboxRoute, /const selfCompleteLockbox = effectiveInspectionMode\(taskRow\) === 'self_complete'/, 'self-complete lockbox must identify its mode from the task')
   assert.match(selfCompleteLockboxRoute, /self_complete_lockbox: selfCompleteLockbox/, 'self-complete lockbox must mark the shared transition explicitly')
   assert.match(selfCompleteLockboxRoute, /pgRunInTransaction\(async \(client\)/, 'self-complete lockbox media and transition must share one transaction')
+  assert.match(cleaningAppSource, /const lockboxVideoSchema = z\.object\([\s\S]*?operation_id: z\.string\(\)\.trim\(\)\.min\(1\)\.max\(IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH\)/, 'self-complete lockbox must accept a stable operation id')
+  assert.match(selfCompleteLockboxRoute, /FOR UPDATE/, 'self-complete lockbox must serialize retries on the task')
+  assert.match(selfCompleteLockboxRoute, /scopeType: 'cleaning_task_lockbox_video'/, 'self-complete lockbox must use the shared lockbox receipt scope')
+  assert.match(selfCompleteLockboxRoute, /loadIdempotentStepReceipt\(client/, 'self-complete lockbox must check the receipt inside the transaction')
+  assert.match(selfCompleteLockboxRoute, /saveIdempotentStepReceipt\(client/, 'self-complete lockbox must save the receipt inside the transaction')
+  assert.ok(selfCompleteLockboxRoute.indexOf("kind === 'replay'") < selfCompleteLockboxRoute.indexOf('emitWorkTaskEvent'), 'self-complete replay must skip transition side effects')
 
   const mzappLockboxRoute = mzappSource.match(/router\.post\('\/cleaning-tasks\/:id\/lockbox-video'[\s\S]*?async function handleDeleteMzappLockboxVideo/)?.[0] || ''
   assert.ok(mzappLockboxRoute, 'MZapp lockbox route must remain discoverable')
@@ -109,6 +117,12 @@ async function main() {
   )
   assert.match(mzappLockboxRoute, /self_complete_lockbox: selfCompleteLockbox/, 'MZapp must mark the shared transition explicitly')
   assert.match(mzappLockboxRoute, /pgRunInTransaction\(async \(client\)/, 'MZapp lockbox media and transition must share one transaction')
+  assert.match(mzappLockboxRoute, /FOR UPDATE/, 'MZapp lockbox must serialize retries on the task')
+  assert.match(mzappLockboxRoute, /scopeType: 'cleaning_task_lockbox_video'/, 'MZapp lockbox must use the shared lockbox receipt scope')
+  assert.match(mzappLockboxRoute, /loadIdempotentStepReceipt\(client/, 'MZapp lockbox must check the receipt inside the transaction')
+  assert.match(mzappLockboxRoute, /saveIdempotentStepReceipt\(client/, 'MZapp lockbox must save the receipt inside the transaction')
+  assert.ok(mzappLockboxRoute.indexOf("DELETE FROM cleaning_task_media") < mzappLockboxRoute.indexOf("VALUES ($1,$2,'lockbox_video'"), 'MZapp must replace the single lockbox media row rather than accumulating duplicates')
+  assert.ok(mzappLockboxRoute.indexOf("kind === 'replay'") < mzappLockboxRoute.indexOf('broadcastCleaningEvent'), 'MZapp replay must skip notifications and broadcasts')
 
   process.stdout.write('test_idempotency_submit_id_contract: ok\n')
 }
