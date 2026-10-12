@@ -546,14 +546,15 @@
 - Branch: `codex/mz010-mz012-mz028-mz029-mz031-release-20261012`.
 - Base: `origin/Dev@4d55e3d72a474d1e6ad03a0d4260d4c4271a3b09`; fetched at 2026-10-12 UTC.
 - Candidate patch SHA-256: `28846e05ad7492dd8f68d9bec07b8ca573df577a75c6b8e52eca8cf446bf2156` excluding `docs/change-release-ledger.md`.
-- Commit SHA: not committed.
+- Commit SHA: `05541c7c5e0b403b9fbca13bb597575e6597f2a3`.
 - Dependencies: `none`.
 - Required validation: PASS; targeted Root contracts and Web tests passed, and the paired full gate passed Root backend/frontend build and tests plus Mobile typecheck/lint/all tests without production credentials, integrations, migration, queue, deployment, or production writes.
 - Shared-hunk review: PASS; exact 36-file / 488-non-ledger-hunk staged union matches the four selected CRLs and preserves the integrated MZ-030 behavior.
 - Generated-file review: PASS; no generated files selected.
-- Technical state: verified.
+- Technical state: committed.
 - User authorization: approved-for-push; user explicitly selected MZ-010/MZ-012/MZ-028/MZ-029/MZ-031 together and authorized candidate commits, release-candidate pushes, and draft PRs, but not merge/deploy/OTA/migration/production writes.
 - Independent review: GO for the exact staged commit candidate; independent read-only review matched candidate fingerprint `28846e05ad7492dd8f68d9bec07b8ca573df577a75c6b8e52eca8cf446bf2156`, found P0=0 / P1=0 / P2=0, verified the failure-audit transaction boundary and stable guest-ready retry key, and confirmed no generated, binary, secret, migration-execution, production-write, deploy, or unselected content.
+- Action conclusion: GO for the local content commit; exact commit `05541c7c5e0b403b9fbca13bb597575e6597f2a3` was created after the pre-commit gate. Push and Draft PR remain separately gated; merge, deployment, OTA, migration, queue work, and production writes remain excluded.
 - Remote evidence: not run.
 
 ### Risks / Release Notes
