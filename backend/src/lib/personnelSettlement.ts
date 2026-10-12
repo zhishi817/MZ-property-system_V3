@@ -1,5 +1,5 @@
 export const PERSONNEL_SETTLEMENT_TIMEZONE = 'Australia/Melbourne'
-export const PERSONNEL_SETTLEMENT_CALCULATION_VERSION = 'phase7-checkout-cleaning-v1'
+export const PERSONNEL_SETTLEMENT_CALCULATION_VERSION = 'phase8-mz031-execution-ledger-v1'
 
 export const CLEANING_PROPERTY_TYPES = [
   '一房一卫',
@@ -214,14 +214,25 @@ export function classifyWorkloadAudit(candidate: WorkloadAuditCandidate): Candid
   const metadataStep = cleanText(metadata.step).toLowerCase()
   const metadataRoute = cleanText(metadata.route).toLowerCase()
 
-  if (taskStatus === 'cancelled' || taskStatus === 'canceled') {
-    return { eligibility: 'excluded', component_type: null, reason: 'task_cancelled' }
-  }
+  // These routes record auxiliary evidence only and are never payable
+  // executions, even if the underlying task is cancelled later.
   if (metadataStep === 'completion_photos_saved') {
     return { eligibility: 'excluded', component_type: null, reason: 'completion_photo_only' }
   }
   if (metadataRoute === 'mzapp.cleaning_tasks.restock_proof') {
     return { eligibility: 'excluded', component_type: null, reason: 'restock_proof_only' }
+  }
+
+  const hasFrozenExecution = cleanText(metadata.execution_record_version) === 'mz031-v1'
+  const frozenStatusBefore = cleanText(metadata.status_before_snapshot).toLowerCase()
+  if (hasFrozenExecution && (frozenStatusBefore === 'cancelled' || frozenStatusBefore === 'canceled')) {
+    return { eligibility: 'manual_review', component_type: null, reason: 'execution_recorded_after_task_cancelled' }
+  }
+  if (!hasFrozenExecution && (taskStatus === 'cancelled' || taskStatus === 'canceled')) {
+    // The task may have been cancelled after a legitimate historical execution.
+    // Without the immutable MZ-031 snapshot we cannot auto-pay it, but silently
+    // excluding the audit would erase recoverable performer/date/task evidence.
+    return { eligibility: 'manual_review', component_type: null, reason: 'legacy_execution_task_later_cancelled' }
   }
   if (action === 'fill_supplies' || action === 'complete_cleaning') {
     if (!DONE_CLEANING_STATUSES.has(statusAfter)) {
@@ -230,7 +241,9 @@ export function classifyWorkloadAudit(candidate: WorkloadAuditCandidate): Candid
     return { eligibility: 'eligible', component_type: 'cleaning_task', reason: 'audited_cleaning_completion' }
   }
   if (action === 'submit_inspection') {
-    if (!DONE_INSPECTION_STATUSES.has(statusAfter) && metadata.guest_arrival_skip !== true) {
+    const inspectionSubmitted = metadata.inspection_submission_complete === true
+      || metadata.guest_arrival_skip === true
+    if (!DONE_INSPECTION_STATUSES.has(statusAfter) && !inspectionSubmitted) {
       return { eligibility: 'manual_review', component_type: null, reason: 'inspection_action_without_submission_status' }
     }
     return { eligibility: 'eligible', component_type: 'inspection_day', reason: 'audited_inspection_submission' }

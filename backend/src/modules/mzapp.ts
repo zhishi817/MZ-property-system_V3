@@ -20,6 +20,7 @@ import {
   cleaningTaskExecutionSemantics,
   deferredProjectionDate,
   effectiveInspectionMode,
+  isCleaningTaskInspectionSubmitParticipant,
   isCheckinKeyHandoverTask,
   isCleaningExecutionTask,
   isInspectionFinishedStatus,
@@ -35,7 +36,11 @@ import {
   GUEST_READY_NOTIFICATION_PERMISSION,
   GuestReadyNotificationConflict,
   buildGuestReadyNotificationProjection,
+  buildGuestReadyOutsideKeyProjection,
   guestReadyNotificationAction,
+  guestReadyOutsideKeyAction,
+  isGuestReadyNotificationCustomerServiceRole,
+  isGuestReadyNotificationRequirementBindingCurrent,
   loadGuestReadyNotificationOrderStates,
   planGuestReadyNotificationMutation,
 } from '../lib/guestReadyNotification'
@@ -67,6 +72,7 @@ import {
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
 import { activeCleaningTaskWhereSql, syncCheckoutOldCodeFromCheckinNewCode, validCleaningTaskOrderWhereSql } from '../services/cleaningSync'
 import { assertR5TaskRuntimeSchemaReady, isR5RequestSchemaReady, isR5TaskRuntimeSchemaReady, requireR5TaskRuntimeSchema } from '../lib/r5RequestSchema'
+import { reconcileDeferredInspectionCheckinReplacement } from '../services/deferredInspectionCheckinConflict'
 
 export const router = Router()
 
@@ -1337,8 +1343,15 @@ function canBasePerformWorkTaskAction(actionId: WorkTaskActionId, permissions: s
   return false
 }
 
-async function userHasManualWorkTaskAction(user: any, userId: string, sourceType: string, sourceId: string, actionId: WorkTaskActionId) {
-  if (!hasPg || !pgPool) return false
+async function userHasManualWorkTaskAction(
+  user: any,
+  userId: string,
+  sourceType: string,
+  sourceId: string,
+  actionId: WorkTaskActionId,
+  executor: { query: (sql: string, params?: any[]) => Promise<any> } | null = pgPool,
+) {
+  if (!hasPg || !executor) return false
   const uid = String(userId || '').trim()
   const st = String(sourceType || '').trim()
   const sid = String(sourceId || '').trim()
@@ -1346,13 +1359,14 @@ async function userHasManualWorkTaskAction(user: any, userId: string, sourceType
   const permissions = await listPermissionCodesForUser(user)
   if (!canBasePerformWorkTaskAction(actionId, permissions)) return false
   assertR5TaskRuntimeSchemaReady()
-  const r = await pgPool.query(
+  const r = await executor.query(
     `SELECT action_ids
        FROM work_task_participants
       WHERE source_type = $1
         AND source_id = $2
         AND user_id = $3
-        AND source_relation = 'manual'`,
+        AND source_relation = 'manual'
+      FOR SHARE`,
     [st, sid, uid],
   )
   return (r?.rows || []).some((row: any) => {
@@ -1361,38 +1375,61 @@ async function userHasManualWorkTaskAction(user: any, userId: string, sourceType
   })
 }
 
-async function canManageMzappLockboxVideo(user: any, row: any, userId: string) {
+async function canManageMzappLockboxVideo(
+  user: any,
+  row: any,
+  userId: string,
+  executor: { query: (sql: string, params?: any[]) => Promise<any> } | null = pgPool,
+) {
   if (canManageMzappLockboxVideoLegacy(user, row, userId)) return true
-  return userHasManualWorkTaskAction(user, userId, 'cleaning_tasks', String(row?.id || '').trim(), 'upload_access_video')
+  return userHasManualWorkTaskAction(user, userId, 'cleaning_tasks', String(row?.id || '').trim(), 'upload_access_video', executor)
 }
 
-async function canSubmitMzappSelfCompleteLockboxVideo(user: any, row: any, userId: string) {
+async function canSubmitMzappSelfCompleteLockboxVideo(
+  user: any,
+  row: any,
+  userId: string,
+  executor: { query: (sql: string, params?: any[]) => Promise<any> } | null = pgPool,
+) {
   if (effectiveInspectionMode(row) !== 'self_complete') return false
   const cleanerId = String(row?.cleaner_id || '').trim()
   const assigneeId = String(row?.assignee_id || '').trim()
   if (userId && (cleanerId === userId || assigneeId === userId)) return true
-  return userHasManualWorkTaskAction(user, userId, 'cleaning_tasks', String(row?.id || '').trim(), 'upload_access_video')
+  return userHasManualWorkTaskAction(user, userId, 'cleaning_tasks', String(row?.id || '').trim(), 'upload_access_video', executor)
 }
 
-async function canSubmitMzappInspection(user: any, row: any, userId: string) {
-  const inspectorId = String(row?.inspector_id || '').trim()
-  const assigneeId = String(row?.assignee_id || '').trim()
-  if (userId && (inspectorId === userId || assigneeId === userId)) return true
-  return userHasManualWorkTaskAction(user, userId, 'cleaning_tasks', String(row?.id || '').trim(), 'submit_inspection')
+async function canSubmitMzappInspection(
+  user: any,
+  row: any,
+  userId: string,
+  executor: { query: (sql: string, params?: any[]) => Promise<any> } | null = pgPool,
+) {
+  if (isCleaningTaskInspectionSubmitParticipant(row, userId)) return true
+  return userHasManualWorkTaskAction(user, userId, 'cleaning_tasks', String(row?.id || '').trim(), 'submit_inspection', executor)
 }
 
-async function canSubmitMzappSelfCompleteRestock(user: any, row: any, userId: string) {
+async function canSubmitMzappSelfCompleteRestock(
+  user: any,
+  row: any,
+  userId: string,
+  executor: { query: (sql: string, params?: any[]) => Promise<any> } | null = pgPool,
+) {
   if (effectiveInspectionMode(row) !== 'self_complete') return false
   const cleanerId = String(row?.cleaner_id || '').trim()
   const assigneeId = String(row?.assignee_id || '').trim()
   if (userId && (cleanerId === userId || assigneeId === userId)) return true
-  if (await userHasManualWorkTaskAction(user, userId, 'cleaning_tasks', String(row?.id || '').trim(), 'fill_supplies')) return true
-  return userHasManualWorkTaskAction(user, userId, 'cleaning_tasks', String(row?.id || '').trim(), 'complete_cleaning')
+  if (await userHasManualWorkTaskAction(user, userId, 'cleaning_tasks', String(row?.id || '').trim(), 'fill_supplies', executor)) return true
+  return userHasManualWorkTaskAction(user, userId, 'cleaning_tasks', String(row?.id || '').trim(), 'complete_cleaning', executor)
 }
 
-async function canSubmitMzappRestockProof(user: any, row: any, userId: string) {
-  if (await canSubmitMzappInspection(user, row, userId)) return true
-  return canSubmitMzappSelfCompleteRestock(user, row, userId)
+async function canSubmitMzappRestockProof(
+  user: any,
+  row: any,
+  userId: string,
+  executor: { query: (sql: string, params?: any[]) => Promise<any> } | null = pgPool,
+) {
+  if (await canSubmitMzappInspection(user, row, userId, executor)) return true
+  return canSubmitMzappSelfCompleteRestock(user, row, userId, executor)
 }
 
 async function canViewMzappRestockProof(user: any, row: any, userId: string) {
@@ -2435,32 +2472,53 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
   if (operationId.length > IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH) return res.status(400).json({ message: 'invalid operation_id' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
-    const r0 = await pgPool.query(
-      `SELECT id,
-              inspector_id,
-              cleaner_id,
-              assignee_id,
+    const preflightResult = await pgPool.query(
+      `SELECT id::text AS id,
+              inspector_id::text AS inspector_id,
+              cleaner_id::text AS cleaner_id,
+              assignee_id::text AS assignee_id,
               task_type,
               inspection_mode,
               inspection_scope,
               property_id::text AS property_id
-       FROM cleaning_tasks
-       WHERE id=$1
-       LIMIT 1`,
+         FROM cleaning_tasks
+        WHERE id::text=$1::text
+        LIMIT 1`,
       [id],
     )
-    const row = r0?.rows?.[0] || null
-    if (!row) return res.status(404).json({ message: 'not found' })
-    const propertyId = row.property_id ? String(row.property_id) : ''
-    const selfCompleteLockbox = await canSubmitMzappSelfCompleteLockboxVideo(user, row, userId)
-    if (!selfCompleteLockbox && !await canManageMzappLockboxVideo(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
+    const preflightTask = preflightResult?.rows?.[0] || null
+    if (!preflightTask) return res.status(404).json({ message: 'not found' })
+    const preflightSelfComplete = await canSubmitMzappSelfCompleteLockboxVideo(user, preflightTask, userId)
+    if (!preflightSelfComplete && !await canManageMzappLockboxVideo(user, preflightTask, userId)) {
+      return res.status(403).json({ message: 'forbidden' })
+    }
     if (!isR5RequestSchemaReady()) return res.status(503).json({ code: 'r5_request_schema_not_ready' })
     if (!isR5TaskRuntimeSchemaReady()) return res.status(503).json({ code: 'r5_task_runtime_schema_not_ready' })
     const uuid = require('uuid')
     const actionActor = actorAndPerformerFromRequest(user, req.body || {})
     const payloadHash = buildIdempotencyPayloadHash({ media_url: mediaUrl })
     const transactionResult = await pgRunInTransaction(async (client) => {
-      await client.query(`SELECT id FROM cleaning_tasks WHERE id::text=$1::text FOR UPDATE`, [id])
+      const lockedResult = await client.query(
+        `SELECT id::text AS id, status,
+                inspector_id::text AS inspector_id,
+                cleaner_id::text AS cleaner_id,
+                assignee_id::text AS assignee_id,
+                task_type,
+                inspection_mode,
+                inspection_scope,
+                inspection_due_date::text AS inspection_due_date,
+                property_id::text AS property_id
+           FROM cleaning_tasks
+          WHERE id::text=$1::text
+          FOR UPDATE`,
+        [id],
+      )
+      const lockedTask = lockedResult?.rows?.[0] || null
+      if (!lockedTask) return { kind: 'missing' as const }
+      const selfCompleteLockbox = await canSubmitMzappSelfCompleteLockboxVideo(user, lockedTask, userId, client)
+      if (!selfCompleteLockbox && !await canManageMzappLockboxVideo(user, lockedTask, userId, client)) {
+        return { kind: 'forbidden' as const }
+      }
       if (operationId) {
         const receipt = await loadIdempotentStepReceipt(client, {
           scopeType: 'cleaning_task_lockbox_video', scopeId: id, submitId: operationId, stepKey: 'lockbox_video',
@@ -2500,12 +2558,21 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
           scopeType: 'cleaning_task_lockbox_video', scopeId: id, submitId: operationId, stepKey: 'lockbox_video',
         }, payloadHash, responseBody)
       }
-      return { kind: 'committed' as const, actionResult, mediaId, responseBody }
+      return {
+        kind: 'committed' as const,
+        actionResult,
+        mediaId,
+        propertyId: String(lockedTask.property_id || '').trim(),
+        responseBody,
+      }
     })
+    if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'not found' })
+    if (transactionResult.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
     if (transactionResult?.kind === 'conflict') return res.status(409).json({ message: 'idempotency_conflict', operation_id: operationId })
     if (transactionResult?.kind === 'replay') return res.status(200).json(transactionResult.responseBody)
     const actionResult = transactionResult?.actionResult || null
     const mediaId = transactionResult?.mediaId || null
+    const propertyId = transactionResult?.propertyId || ''
     try {
       const { broadcastCleaningEvent } = require('./events')
       broadcastCleaningEvent({ event: 'lockbox_video_uploaded', task_id: id })
@@ -2546,6 +2613,7 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
     } catch {}
     return res.status(201).json(transactionResult?.responseBody || { ok: true, action_result: actionResult })
   } catch (e: any) {
+    if (String(e?.message || '') === 'task_is_cancelled') return res.status(409).json({ message: 'task is cancelled' })
     return res.status(500).json({ message: e?.message || 'lockbox_video_failed' })
   }
 })
@@ -2558,62 +2626,86 @@ async function handleDeleteMzappLockboxVideo(req: any, res: any) {
   if (!id) return res.status(400).json({ message: 'missing id' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
-    const r0 = await pgPool.query(
+    const preflightResult = await pgPool.query(
       `SELECT id::text AS id,
-              status,
               inspector_id::text AS inspector_id,
               cleaner_id::text AS cleaner_id,
               assignee_id::text AS assignee_id,
               task_type,
+              inspection_mode,
               inspection_scope,
               property_id::text AS property_id
-       FROM cleaning_tasks
-       WHERE id=$1
-       LIMIT 1`,
+         FROM cleaning_tasks
+        WHERE id::text=$1::text
+        LIMIT 1`,
       [id],
     )
-    const row = r0?.rows?.[0] || null
-    if (!row) return res.status(404).json({ message: 'not found' })
-    if (!await canManageMzappLockboxVideo(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
+    const preflightTask = preflightResult?.rows?.[0] || null
+    if (!preflightTask) return res.status(404).json({ message: 'not found' })
+    if (!await canManageMzappLockboxVideo(user, preflightTask, userId)) {
+      return res.status(403).json({ message: 'forbidden' })
+    }
     if (!isR5RequestSchemaReady()) return res.status(503).json({ code: 'r5_request_schema_not_ready' })
     if (!isR5TaskRuntimeSchemaReady()) return res.status(503).json({ code: 'r5_task_runtime_schema_not_ready' })
-
-    const needsRestockResult = await pgPool.query(
-      `SELECT 1
-       FROM cleaning_consumable_usages
-       WHERE task_id::text = $1::text
-         AND (need_restock = true OR COALESCE(status, '') = 'low')
-       LIMIT 1`,
-      [id],
-    )
-    const nextStatus = isInspectionFinishedStatus(row.status)
-      ? (needsRestockResult?.rowCount ? 'restock_pending' : 'cleaned')
-      : (String(row.status || '').trim() || null)
-
-    await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id::text=$1::text AND type='lockbox_video'`, [id])
-    const up = await pgPool.query(
-      `UPDATE cleaning_tasks
-       SET status = COALESCE($2::text, status),
-           lockbox_video_uploaded_at = NULL,
-           updated_at = now()
-       WHERE id::text = $1::text
-       RETURNING id::text AS id, status, inspector_id, cleaner_id, assignee_id, property_id`,
-      [id, nextStatus],
-    )
-    const updated = up?.rows?.[0] || { ...row, status: nextStatus }
-    const patch: any = { lockbox_video_uploaded_at: null, lockbox_video_url: null }
-    if (nextStatus) patch.status = nextStatus
-    await emitWorkTaskEvent({
-      taskId: `cleaning_task:${id}`,
-      sourceType: 'cleaning_tasks',
-      sourceRefIds: [id],
-      eventType: 'TASK_UPDATED',
-      changeScope: 'list',
-      changedFields: Object.keys(patch),
-      patch,
-      causedByUserId: userId,
-      visibilityHints: buildCleaningTaskVisibilityHints(updated),
+    const deletion = await pgRunInTransaction(async (client) => {
+      const locked = await client.query(
+        `SELECT id::text AS id, status,
+                inspector_id::text AS inspector_id,
+                cleaner_id::text AS cleaner_id,
+                assignee_id::text AS assignee_id,
+                task_type,
+                inspection_mode,
+                inspection_scope,
+                inspection_due_date::text AS inspection_due_date,
+                property_id::text AS property_id
+           FROM cleaning_tasks
+          WHERE id::text=$1::text
+          FOR UPDATE`,
+        [id],
+      )
+      const row = locked?.rows?.[0] || null
+      if (!row) return { kind: 'missing' as const }
+      if (!await canManageMzappLockboxVideo(user, row, userId, client)) return { kind: 'forbidden' as const }
+      const needsRestockResult = await client.query(
+        `SELECT 1
+           FROM cleaning_consumable_usages
+          WHERE task_id::text = $1::text
+            AND (need_restock = true OR COALESCE(status, '') = 'low')
+          LIMIT 1`,
+        [id],
+      )
+      const nextStatus = isInspectionFinishedStatus(row.status)
+        ? (needsRestockResult?.rowCount ? 'restock_pending' : 'cleaned')
+        : (String(row.status || '').trim() || null)
+      await client.query(`DELETE FROM cleaning_task_media WHERE task_id::text=$1::text AND type='lockbox_video'`, [id])
+      const up = await client.query(
+        `UPDATE cleaning_tasks
+            SET status = COALESCE($2::text, status),
+                lockbox_video_uploaded_at = NULL,
+                updated_at = now()
+          WHERE id::text = $1::text
+          RETURNING id::text AS id, status, inspector_id, cleaner_id, assignee_id, property_id`,
+        [id, nextStatus],
+      )
+      const updated = up?.rows?.[0] || { ...row, status: nextStatus }
+      const patch: any = { lockbox_video_uploaded_at: null, lockbox_video_url: null }
+      if (nextStatus) patch.status = nextStatus
+      await emitWorkTaskEvent({
+        taskId: `cleaning_task:${id}`,
+        sourceType: 'cleaning_tasks',
+        sourceRefIds: [id],
+        eventType: 'TASK_UPDATED',
+        changeScope: 'list',
+        changedFields: Object.keys(patch),
+        patch,
+        causedByUserId: userId,
+        visibilityHints: buildCleaningTaskVisibilityHints(updated),
+      }, client)
+      return { kind: 'committed' as const, nextStatus }
     })
+    if (!deletion || deletion.kind === 'missing') return res.status(404).json({ message: 'not found' })
+    if (deletion.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
+    const nextStatus = deletion.nextStatus
     try {
       const { broadcastCleaningEvent } = require('./events')
       broadcastCleaningEvent({ event: 'lockbox_video_deleted', task_id: id })
@@ -2638,6 +2730,8 @@ const inspectionPhotosSchema = z
       }),
     ),
     guest_arrival_confirmed: z.boolean().optional(),
+    submit_id: z.string().trim().min(1).max(IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH).optional(),
+    step_key: z.string().trim().min(1).max(120).optional(),
     ...actionAuditBodySchema,
   })
   .strict()
@@ -2669,7 +2763,13 @@ router.get('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
   if (!id) return res.status(400).json({ message: 'missing id' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
-    const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
+    const r0 = await pgPool.query(
+      `SELECT id, inspector_id, cleaner_id, assignee_id, task_type, inspection_mode, inspection_scope, status
+         FROM cleaning_tasks
+        WHERE id=$1
+        LIMIT 1`,
+      [id],
+    )
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
     if (!await canViewMzappInspectionMedia(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
@@ -2781,11 +2881,11 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
   if (!parsed.data.items.length && !guestArrivalConfirmed) return res.status(400).json({ message: 'inspection_photos_required' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
-    const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
-    const row = r0?.rows?.[0] || null
-    if (!row) return res.status(404).json({ message: 'not found' })
-    if (!await canSubmitMzappInspection(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
+    const submitId = String(parsed.data.submit_id || '').trim()
+    const stepKey = String(parsed.data.step_key || '').trim()
+    const payloadHash = buildIdempotencyPayloadHash(parsed.data)
     if (!isR5TaskRuntimeSchemaReady()) return res.status(503).json({ code: 'r5_task_runtime_schema_not_ready' })
+    if (submitId && stepKey) await assertIdempotentStepReceiptsReady(pgPool)
     const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, bathroom: 3, balcony: 3, shower_drain: 1, unclean: 12 }
     const byArea = new Map<string, number>()
     for (const it of parsed.data.items) {
@@ -2794,38 +2894,96 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
       const lim = limits[a] ?? 1
       if ((byArea.get(a) || 0) > lim) return res.status(400).json({ message: '超出数量限制', area: a, limit: lim })
     }
-
-    if (parsed.data.items.length) await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'inspection_%'`, [id])
-    const uuid = require('uuid')
-    for (const it of parsed.data.items) {
-      const type = `inspection_${it.area}`
-      const cap = String(it.captured_at || '').trim()
-      const capturedAt = cap ? new Date(cap) : new Date()
-      await pgPool.query(
-        `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at, uploader_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-        [uuid.v4(), id, type, String(it.url), it.note == null ? null : String(it.note || ''), capturedAt.toISOString(), userId],
+    const transactionResult = await pgRunInTransaction(async (client) => {
+      const lockedTask = await client.query(
+        `SELECT id::text AS id,
+                inspector_id::text AS inspector_id,
+                cleaner_id::text AS cleaner_id,
+                assignee_id::text AS assignee_id,
+                task_type,
+                inspection_mode,
+                inspection_scope,
+                status
+           FROM cleaning_tasks
+          WHERE id::text = $1::text
+          FOR UPDATE`,
+        [id],
       )
-    }
-    const actionActor = actorAndPerformerFromRequest(user, parsed.data)
-    const actionResult = await applyCleaningTaskActionTransition({
-      taskId: String(id),
-      actionId: 'submit_inspection',
-      actorUserId: actionActor.actorUserId,
-      performedByUserId: actionActor.performedByUserId,
+      const lockedTaskRow = lockedTask?.rows?.[0] || null
+      if (!lockedTaskRow) return { kind: 'missing' as const }
+      if (!await canSubmitMzappInspection(user, lockedTaskRow, userId, client)) return { kind: 'forbidden' as const }
+
+      if (submitId && stepKey) {
+        const receipt = await loadIdempotentStepReceipt(client, {
+          scopeType: 'cleaning_task_inspection_photos',
+          scopeId: id,
+          submitId,
+          stepKey,
+        })
+        if (receipt) {
+          if (String(receipt.payload_hash || '') !== payloadHash) return { kind: 'conflict' as const }
+          return { kind: 'replay' as const, responseBody: receipt.response_json || { ok: true } }
+        }
+      }
+
+      if (parsed.data.items.length) {
+        await client.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'inspection_%'`, [id])
+        const uuid = require('uuid')
+        for (const it of parsed.data.items) {
+          const type = `inspection_${it.area}`
+          const cap = String(it.captured_at || '').trim()
+          const capturedAt = cap ? new Date(cap) : new Date()
+          await client.query(
+            `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at, uploader_id)
+             VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+            [uuid.v4(), id, type, String(it.url), it.note == null ? null : String(it.note || ''), capturedAt.toISOString(), userId],
+          )
+        }
+      }
+      const actionActor = actorAndPerformerFromRequest(user, parsed.data)
+      const actionResult = await applyCleaningTaskActionTransition({
+        taskId: id,
+        actionId: 'submit_inspection',
+        actorUserId: actionActor.actorUserId,
+        performedByUserId: actionActor.performedByUserId,
         performedByName: actionActor.performedByName,
         metadata: {
           route: 'mzapp.cleaning_tasks.inspection_photos',
           item_count: parsed.data.items.length,
           ...(guestArrivalConfirmed ? { guest_arrival_skip: true } : {}),
         },
-    }, pgPool)
+      }, client)
+      if (actionResult.audit) {
+        await reconcileDeferredInspectionCheckinReplacement({
+          taskIds: [id],
+          actorUserId: actionActor.actorUserId,
+          pgClient: client,
+        })
+      }
+      const responseBody = { ok: true, action_result: actionResult }
+      if (submitId && stepKey) {
+        await saveIdempotentStepReceipt(client, {
+          scopeType: 'cleaning_task_inspection_photos',
+          scopeId: id,
+          submitId,
+          stepKey,
+        }, payloadHash, responseBody)
+      }
+      return { kind: 'committed' as const, responseBody }
+    })
+    if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'not found' })
+    if (transactionResult.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
+    if (transactionResult.kind === 'conflict') {
+      return res.status(409).json({ message: 'idempotency_conflict', submit_id: submitId, step_key: stepKey })
+    }
+    if (transactionResult.kind === 'replay') return res.status(200).json(transactionResult.responseBody)
     try {
       const { broadcastCleaningEvent } = require('./events')
       broadcastCleaningEvent({ event: 'inspection_photos_saved', task_id: id })
     } catch {}
-    return res.status(201).json({ ok: true, action_result: actionResult })
+    return res.status(201).json(transactionResult.responseBody)
   } catch (e: any) {
+    if (String(e?.message || '') === 'task_is_cancelled') return res.status(409).json({ message: 'task is cancelled' })
     return res.status(500).json({ message: e?.message || 'inspection_photos_failed' })
   }
 })
@@ -2963,21 +3121,29 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
     const submitId = String(parsed.data.submit_id || '').trim()
     const stepKey = String(parsed.data.step_key || '').trim()
     const payloadHash = buildIdempotencyPayloadHash(parsed.data)
-    const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id, inspection_mode, task_type FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
-    const row = r0?.rows?.[0] || null
-    if (!row) return res.status(404).json({ message: 'not found' })
-    const selfCompleteRestock = stepKey === 'self_complete_restock'
-      && await canSubmitMzappSelfCompleteRestock(user, row, userId)
-    if (!selfCompleteRestock && !await canSubmitMzappInspection(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
+    const preflightResult = await pgPool.query(
+      `SELECT id::text AS id,
+              inspector_id::text AS inspector_id,
+              cleaner_id::text AS cleaner_id,
+              assignee_id::text AS assignee_id,
+              task_type,
+              inspection_mode,
+              inspection_scope,
+              property_id::text AS property_id
+         FROM cleaning_tasks
+        WHERE id::text=$1::text
+        LIMIT 1`,
+      [id],
+    )
+    const preflightTask = preflightResult?.rows?.[0] || null
+    if (!preflightTask) return res.status(404).json({ message: 'not found' })
+    const preflightSelfComplete = stepKey === 'self_complete_restock'
+      && await canSubmitMzappSelfCompleteRestock(user, preflightTask, userId)
+    if (!preflightSelfComplete && !await canSubmitMzappInspection(user, preflightTask, userId)) {
+      return res.status(403).json({ message: 'forbidden' })
+    }
     if (!isR5RequestSchemaReady()) return res.status(503).json({ code: 'r5_request_schema_not_ready' })
     if (!isR5TaskRuntimeSchemaReady()) return res.status(503).json({ code: 'r5_task_runtime_schema_not_ready' })
-    if (selfCompleteRestock) {
-      const consumables = await pgPool.query(
-        `SELECT 1 FROM cleaning_consumable_usages WHERE task_id::text=$1::text LIMIT 1`,
-        [id],
-      )
-      if (!consumables?.rowCount) return res.status(409).json({ message: '请先完成消耗品补充' })
-    }
 
     const uniq = new Set<string>()
     for (const it of parsed.data.items) {
@@ -2996,68 +3162,133 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
     }
     if (submitId && stepKey) {
       await assertIdempotentStepReceiptsReady(pgPool)
-      const receipt = await loadIdempotentStepReceipt(pgPool, {
-        scopeType: 'cleaning_task_restock_proof',
-        scopeId: String(id),
-        submitId,
-        stepKey,
-      })
-      if (receipt) {
-        if (String(receipt.payload_hash || '') !== payloadHash) {
-          return res.status(409).json({ message: 'idempotency_conflict', submit_id: submitId, step_key: stepKey })
-        }
-        return res.status(200).json(receipt.response_json || { ok: true })
-      }
     }
 
-    await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND (type LIKE 'restock_proof:%' OR type='inspection_consumables_confirmed')`, [id])
     const uuid = require('uuid')
     const batchId = uuid.v4()
-    for (const it of parsed.data.items) {
-      const meta = {
-        label: it.label == null ? null : String(it.label || ''),
-        status: it.status,
-        qty: it.qty == null ? null : Number(it.qty),
-        note: it.note == null ? null : String(it.note || ''),
+    const actionActor = actorAndPerformerFromRequest(user, parsed.data)
+    const transactionResult = await pgRunInTransaction(async (client) => {
+      const lockedResult = await client.query(
+        `SELECT id::text AS id,
+                COALESCE(status, '') AS status,
+                inspector_id::text AS inspector_id,
+                cleaner_id::text AS cleaner_id,
+                assignee_id::text AS assignee_id,
+                task_type,
+                inspection_mode,
+                inspection_scope,
+                inspection_due_date::text AS inspection_due_date,
+                property_id::text AS property_id
+           FROM cleaning_tasks
+          WHERE id::text=$1::text
+          FOR UPDATE`,
+        [id],
+      )
+      const lockedTask = lockedResult?.rows?.[0] || null
+      if (!lockedTask) return { kind: 'missing' as const }
+      const selfCompleteRestock = stepKey === 'self_complete_restock'
+        && await canSubmitMzappSelfCompleteRestock(user, lockedTask, userId, client)
+      if (!selfCompleteRestock && !await canSubmitMzappInspection(user, lockedTask, userId, client)) {
+        return { kind: 'forbidden' as const }
       }
-      const proofUrls = normalizeStoredPhotoUrls(it.proof_urls, it.proof_url)
-      const urlsToPersist = it.status === 'restocked'
-        ? (proofUrls.length ? proofUrls : ['no_photo'])
-        : ['no_photo']
-      for (const url of urlsToPersist) {
-        await pgPool.query(
+      if (selfCompleteRestock) {
+        const consumables = await client.query(
+          `SELECT 1 FROM cleaning_consumable_usages WHERE task_id::text=$1::text LIMIT 1`,
+          [id],
+        )
+        if (!consumables?.rowCount) return { kind: 'missing_consumables' as const }
+      }
+      if (submitId && stepKey) {
+        const receipt = await loadIdempotentStepReceipt(client, {
+          scopeType: 'cleaning_task_restock_proof',
+          scopeId: String(id),
+          submitId,
+          stepKey,
+        })
+        if (receipt) {
+          if (String(receipt.payload_hash || '') !== payloadHash) return { kind: 'conflict' as const }
+          return { kind: 'replay' as const, responseBody: receipt.response_json || { ok: true } }
+        }
+      }
+
+      await client.query(
+        `DELETE FROM cleaning_task_media
+          WHERE task_id=$1
+            AND (type LIKE 'restock_proof:%' OR type='inspection_consumables_confirmed')`,
+        [id],
+      )
+      for (const it of parsed.data.items) {
+        const meta = {
+          label: it.label == null ? null : String(it.label || ''),
+          status: it.status,
+          qty: it.qty == null ? null : Number(it.qty),
+          note: it.note == null ? null : String(it.note || ''),
+        }
+        const proofUrls = normalizeStoredPhotoUrls(it.proof_urls, it.proof_url)
+        const urlsToPersist = it.status === 'restocked'
+          ? (proofUrls.length ? proofUrls : ['no_photo'])
+          : ['no_photo']
+        for (const url of urlsToPersist) {
+          await client.query(
+            `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at, uploader_id)
+             VALUES ($1,$2,$3,$4,$5,now(),$6)`,
+            [uuid.v4(), id, `restock_proof:${it.item_id}`, url, JSON.stringify(meta), userId],
+          )
+        }
+      }
+      if (confirmedSufficient) {
+        await client.query(
           `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at, uploader_id)
-           VALUES ($1,$2,$3,$4,$5,now(),$6)`,
-          [uuid.v4(), id, `restock_proof:${it.item_id}`, url, JSON.stringify(meta), userId],
+           VALUES ($1,$2,'inspection_consumables_confirmed',$3,$4,now(),$5)`,
+          [uuid.v4(), id, 'confirmed', JSON.stringify({ confirmed_sufficient: true }), userId],
         )
       }
+      const statusBefore = String(lockedTask.status || '').trim()
+      const actionAudit = await recordWorkTaskActionAudit({
+        sourceType: 'cleaning_tasks',
+        sourceId: String(id),
+        performedAsAction: selfCompleteRestock ? 'fill_supplies' : 'submit_inspection',
+        actorUserId: actionActor.actorUserId,
+        performedByUserId: actionActor.performedByUserId,
+        performedByName: actionActor.performedByName,
+        statusBefore,
+        statusAfter: statusBefore,
+        metadata: {
+          route: 'mzapp.cleaning_tasks.restock_proof',
+          self_complete_restock: selfCompleteRestock,
+          item_count: parsed.data.items.length,
+          confirmed_sufficient: confirmedSufficient,
+        },
+      }, client)
+      const responseBody = {
+        ok: true,
+        action_result: {
+          status_before: statusBefore || null,
+          status_after: statusBefore || null,
+          audit: actionAudit,
+        },
+      }
+      if (submitId && stepKey) {
+        await saveIdempotentStepReceipt(client, {
+          scopeType: 'cleaning_task_restock_proof',
+          scopeId: String(id),
+          submitId,
+          stepKey,
+        }, payloadHash, responseBody)
+      }
+      return {
+        kind: 'committed' as const,
+        propertyId: String(lockedTask.property_id || '').trim(),
+        responseBody,
+      }
+    })
+    if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'not found' })
+    if (transactionResult.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
+    if (transactionResult.kind === 'missing_consumables') return res.status(409).json({ message: '请先完成消耗品补充' })
+    if (transactionResult.kind === 'conflict') {
+      return res.status(409).json({ message: 'idempotency_conflict', submit_id: submitId, step_key: stepKey })
     }
-    if (confirmedSufficient) {
-      await pgPool.query(
-        `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at, uploader_id)
-         VALUES ($1,$2,'inspection_consumables_confirmed',$3,$4,now(),$5)`,
-        [uuid.v4(), id, 'confirmed', JSON.stringify({ confirmed_sufficient: true }), userId],
-      )
-    }
-    const actionActor = actorAndPerformerFromRequest(user, parsed.data)
-    const statusRes = await pgPool.query(`SELECT COALESCE(status, '') AS status FROM cleaning_tasks WHERE id::text=$1::text LIMIT 1`, [String(id)])
-    const statusBefore = String(statusRes?.rows?.[0]?.status || '').trim()
-    const actionAudit = await recordWorkTaskActionAudit({
-      sourceType: 'cleaning_tasks',
-      sourceId: String(id),
-      performedAsAction: selfCompleteRestock ? 'fill_supplies' : 'submit_inspection',
-      actorUserId: actionActor.actorUserId,
-      performedByUserId: actionActor.performedByUserId,
-      performedByName: actionActor.performedByName,
-      statusBefore,
-      statusAfter: statusBefore,
-      metadata: {
-        route: 'mzapp.cleaning_tasks.restock_proof',
-        self_complete_restock: selfCompleteRestock,
-        item_count: parsed.data.items.length,
-        confirmed_sufficient: confirmedSufficient,
-      },
-    }, pgPool)
+    if (transactionResult.kind === 'replay') return res.status(200).json(transactionResult.responseBody)
     try {
       const { broadcastCleaningEvent } = require('./events')
       broadcastCleaningEvent({ event: restockActionKind, task_id: id })
@@ -3065,11 +3296,7 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
     try {
       const { emitNotificationEvent } = require('../services/notificationEvents')
       const operationId = require('uuid').v4()
-      let propertyId = ''
-      try {
-        const r2 = await pgPool.query(`SELECT property_id::text AS property_id FROM cleaning_tasks WHERE id::text=$1::text LIMIT 1`, [String(id)])
-        propertyId = String(r2?.rows?.[0]?.property_id || '').trim()
-      } catch {}
+      const propertyId = transactionResult.propertyId
       if (propertyId) {
         await emitNotificationEvent(
           {
@@ -3088,16 +3315,7 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
         )
       }
     } catch {}
-    const responseBody = { ok: true, action_result: { status_before: statusBefore || null, status_after: statusBefore || null, audit: actionAudit } }
-    if (submitId && stepKey) {
-      await saveIdempotentStepReceipt(pgPool, {
-        scopeType: 'cleaning_task_restock_proof',
-        scopeId: String(id),
-        submitId,
-        stepKey,
-      }, payloadHash, responseBody)
-    }
-    return res.status(201).json(responseBody)
+    return res.status(201).json(transactionResult.responseBody)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'restock_proof_failed' })
   }
@@ -6244,6 +6462,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
     permissions: await listPermissionCodesForUser(user),
     canViewAll: allowAll,
   }
+  const canViewGuestReadyNotification = isGuestReadyNotificationCustomerServiceRole(user?.role)
   markWorkTasksStep('permissions')
 
   try {
@@ -7708,10 +7927,12 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
     })
     markWorkTasksStep('filter_sort')
 
-    const guestReadyStatesByOrder = await loadGuestReadyNotificationOrderStates(
-      pgPool,
-      visibleOut.map((task) => task?.order_id_checkin),
-    )
+    const guestReadyStatesByOrder = canViewGuestReadyNotification
+      ? await loadGuestReadyNotificationOrderStates(
+          pgPool,
+          visibleOut.map((task) => task?.order_id_checkin),
+        )
+      : new Map<string, any>()
     markWorkTasksStep('guest_ready_notification')
 
     const manualParticipantsByRef = await loadManualWorkTaskParticipantsByRef(visibleOut)
@@ -7720,7 +7941,25 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
     const responseOut = visibleOut.map((task) => {
       const orderIdCheckin = String(task?.order_id_checkin || '').trim()
       const guestReadyState = orderIdCheckin ? guestReadyStatesByOrder.get(orderIdCheckin) : null
-      const guestReadyNotification = orderIdCheckin
+      const currentCheckin = guestReadyState?.current_checkin_count === 1
+      const notificationBindingCurrent = isGuestReadyNotificationRequirementBindingCurrent({
+        notifiedCheckinTaskId: guestReadyState?.notified_checkin_task_id,
+        notifiedRequirementVersion: guestReadyState?.notified_requirement_version,
+        currentCheckinTaskId: guestReadyState?.current_checkin_task_id,
+        currentRequirementVersion: guestReadyState?.current_requirement_version,
+      })
+      const guestReadyOutsideKey = canViewGuestReadyNotification && orderIdCheckin
+        ? buildGuestReadyOutsideKeyProjection({
+            orderId: orderIdCheckin,
+            required: guestReadyState?.outside_key_required,
+            registeredAt: guestReadyState?.outside_key_registered_at,
+            registeredByUserId: guestReadyState?.outside_key_registered_by_user_id,
+            registeredByName: guestReadyState?.outside_key_registered_by_name,
+            version: guestReadyState?.version,
+            currentCheckin,
+          })
+        : null
+      const guestReadyNotification = canViewGuestReadyNotification && orderIdCheckin
         ? buildGuestReadyNotificationProjection({
             orderId: orderIdCheckin,
             notifiedAt: guestReadyState?.notified_at,
@@ -7728,12 +7967,16 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             notifiedByName: guestReadyState?.notified_by_name,
             version: guestReadyState?.version,
             propertyReady: task?.property_ready_for_guest_notification === true,
-            currentCheckin: !!guestReadyState,
+            currentCheckin,
+            automaticEarlyArrival: task?.is_early_checkin === true,
+            outsideKeyRequired: guestReadyOutsideKey?.required === true,
+            notificationBindingCurrent,
           })
         : null
       const taskWithParticipants = attachWorkTaskParticipants({
         ...task,
         ...(guestReadyNotification ? { guest_ready_notification: guestReadyNotification } : {}),
+        ...(guestReadyOutsideKey ? { guest_ready_outside_key: guestReadyOutsideKey } : {}),
       }, manualParticipantsByRef)
       const mergedChildren = Array.isArray((task as any).__merged_children) ? (task as any).__merged_children : []
       const payload = buildWorkTaskActionPayload(taskWithParticipants, actionContext)
@@ -7797,7 +8040,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
 
 const guestReadyNotificationMutationSchema = z.object({
   order_id: z.string().trim().min(1).max(160),
-  action: z.enum(['mark', 'revoke']),
+  action: z.enum(['mark', 'revoke', 'register_outside_key', 'cancel_outside_key']),
   operation_id: z.string().trim().min(8).max(160),
   expected_version: z.number().int().min(0),
 }).strict()
@@ -7807,6 +8050,7 @@ function guestReadyNotificationErrorMessage(code: string) {
   if (code === 'GUEST_READY_NO_CHECKIN_ORDER') return '当前没有可用的本次入住订单，请刷新任务后重试'
   if (code === 'GUEST_READY_CHECKIN_ORDER_CHANGED') return '入住订单已变化，请刷新任务后重试'
   if (code === 'GUEST_READY_NOTIFICATION_CHANGED') return '通知状态已被其他人更新，请刷新后重试'
+  if (code === 'GUEST_READY_NOTIFICATION_NOT_REQUIRED') return '当前入住时间不是早入住，无需记录客人通知状态'
   if (code === 'GUEST_READY_PROPERTY_NOT_READY') return '房屋尚未设为可入住，不能记录已通知客人'
   return '客人通知状态保存失败，请刷新后重试'
 }
@@ -7817,27 +8061,133 @@ router.post('/guest-ready-notifications', requirePerm(GUEST_READY_NOTIFICATION_P
   const user = (req as any).user
   const actorUserId = String(user?.sub || '').trim()
   if (!actorUserId) return res.status(401).json({ message: 'unauthorized' })
+  if (!isGuestReadyNotificationCustomerServiceRole(user?.role)) {
+    return res.status(403).json({ code: 'GUEST_READY_ROLE_FORBIDDEN', message: '仅当前客服角色可记录客人通知状态' })
+  }
   if (!hasPg || !pgPool) return res.status(503).json({ code: 'guest_ready_notification_storage_unavailable', message: '通知状态服务暂不可用，请稍后重试' })
 
-  const receiptFromEvent = (existing: any) => {
+  const receiptFromEvent = async (client: any, existing: any) => {
+    const currentOrderResult = await client.query(
+      `SELECT o.id::text AS id,
+              o.guest_ready_notified_at,
+              o.guest_ready_notified_by::text AS guest_ready_notified_by,
+              o.guest_ready_notified_checkin_task_id::text AS guest_ready_notified_checkin_task_id,
+              o.guest_ready_notified_requirement_version,
+              COALESCE(NULLIF(TRIM(notified_user.display_name), ''), NULLIF(TRIM(notified_user.username), ''), NULLIF(TRIM(notified_user.email), ''), o.guest_ready_notified_by::text) AS notified_by_name,
+              COALESCE(o.guest_ready_outside_key_required, false) AS guest_ready_outside_key_required,
+              o.guest_ready_outside_key_registered_at,
+              o.guest_ready_outside_key_registered_by::text AS guest_ready_outside_key_registered_by,
+              COALESCE(NULLIF(TRIM(outside_user.display_name), ''), NULLIF(TRIM(outside_user.username), ''), NULLIF(TRIM(outside_user.email), ''), o.guest_ready_outside_key_registered_by::text) AS outside_key_registered_by_name,
+              COALESCE(o.guest_ready_notification_version, 0) AS guest_ready_notification_version
+         FROM orders o
+         LEFT JOIN users notified_user ON notified_user.id::text = o.guest_ready_notified_by::text
+         LEFT JOIN users outside_user ON outside_user.id::text = o.guest_ready_outside_key_registered_by::text
+        WHERE o.id::text = $1::text
+        LIMIT 1
+        FOR SHARE OF o`,
+      [existing.order_id_snapshot],
+    )
+    const currentOrder = currentOrderResult?.rows?.[0]
+    const currentCheckinResult = await client.query(
+      `SELECT t.id::text AS task_id,
+              COALESCE(t.task_date, t.date)::text AS task_date,
+              t.checkin_time,
+              COALESCE(t.guest_ready_checkin_requirement_version, 0) AS guest_ready_checkin_requirement_version,
+              COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS property_id
+         FROM cleaning_tasks t
+         JOIN orders checkin_order ON checkin_order.id::text = t.order_id::text
+         LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+         LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+        WHERE t.order_id::text = $1::text
+          AND lower(COALESCE(t.task_type, t.type, '')) = 'checkin_clean'
+          AND ${activeCleaningTaskWhereSql('t')}
+          AND ${validCleaningTaskOrderWhereSql('t', 'checkin_order')}
+        ORDER BY t.updated_at DESC NULLS LAST, t.id
+        LIMIT 2
+        FOR SHARE OF t`,
+      [existing.order_id_snapshot],
+    )
+    let currentCheckin = (currentCheckinResult?.rows || []).length === 1
+    const checkinTask = currentCheckin ? currentCheckinResult.rows[0] : null
+    if (checkinTask) {
+      const competingCheckinResult = await client.query(
+        `SELECT other.id::text AS id
+           FROM cleaning_tasks other
+           JOIN orders other_order ON other_order.id::text = other.order_id::text
+           LEFT JOIN properties other_p_id ON other_p_id.id::text = other.property_id::text
+           LEFT JOIN properties other_p_code ON upper(other_p_code.code) = upper(other.property_id::text)
+          WHERE lower(COALESCE(other.task_type, other.type, '')) = 'checkin_clean'
+            AND COALESCE(other.task_date, other.date)::date = $1::date
+            AND COALESCE(other_p_id.id::text, other_p_code.id::text, other.property_id::text) = $2::text
+            AND other.order_id::text <> $3::text
+            AND ${activeCleaningTaskWhereSql('other')}
+            AND ${validCleaningTaskOrderWhereSql('other', 'other_order')}
+          LIMIT 1`,
+        [String(checkinTask.task_date || '').slice(0, 10), String(checkinTask.property_id || ''), existing.order_id_snapshot],
+      )
+      if (competingCheckinResult?.rowCount) currentCheckin = false
+    }
+    const automaticEarlyArrival = checkinTask
+      ? buildCleaningTurnoverDisplay({
+          checkinTask: { taskType: 'checkin_clean', checkinTime: checkinTask.checkin_time },
+        }).is_early_checkin
+      : false
+    let propertyReady = false
+    if (checkinTask) {
+      const readyResult = await client.query(
+        `SELECT ready_task.id::text AS id
+           FROM cleaning_tasks ready_task
+           LEFT JOIN orders ready_order ON ready_order.id::text = ready_task.order_id::text
+           LEFT JOIN properties ready_p_id ON ready_p_id.id::text = ready_task.property_id::text
+           LEFT JOIN properties ready_p_code ON upper(ready_p_code.code) = upper(ready_task.property_id::text)
+          WHERE COALESCE(ready_task.task_date, ready_task.date)::date = $1::date
+            AND COALESCE(ready_p_id.id::text, ready_p_code.id::text, ready_task.property_id::text) = $2::text
+            AND lower(COALESCE(ready_task.status, '')) = 'ready'
+            AND ${activeCleaningTaskWhereSql('ready_task')}
+            AND ${validCleaningTaskOrderWhereSql('ready_task', 'ready_order')}
+          LIMIT 1`,
+        [String(checkinTask.task_date || '').slice(0, 10), String(checkinTask.property_id || '')],
+      )
+      propertyReady = !!readyResult?.rowCount
+    }
+    const outsideKeyProjection = buildGuestReadyOutsideKeyProjection({
+      orderId: currentOrder?.id,
+      required: currentOrder?.guest_ready_outside_key_required,
+      registeredAt: currentOrder?.guest_ready_outside_key_registered_at,
+      registeredByUserId: currentOrder?.guest_ready_outside_key_registered_by,
+      registeredByName: currentOrder?.outside_key_registered_by_name,
+      version: currentOrder?.guest_ready_notification_version,
+      currentCheckin: currentCheckin && !!currentOrder,
+    })
+    const notificationBindingCurrent = isGuestReadyNotificationRequirementBindingCurrent({
+      notifiedCheckinTaskId: currentOrder?.guest_ready_notified_checkin_task_id,
+      notifiedRequirementVersion: currentOrder?.guest_ready_notified_requirement_version,
+      currentCheckinTaskId: checkinTask?.task_id,
+      currentRequirementVersion: checkinTask?.guest_ready_checkin_requirement_version,
+    })
     const projection = buildGuestReadyNotificationProjection({
-      orderId: existing.order_id_snapshot,
-      notifiedAt: existing.resulting_notified_at,
-      notifiedByUserId: existing.resulting_notified_by,
-      notifiedByName: existing.metadata?.resulting_notified_by_name,
-      version: existing.resulting_version,
-      propertyReady: existing.metadata?.property_ready === true,
-      currentCheckin: true,
+      orderId: currentOrder?.id,
+      notifiedAt: currentOrder?.guest_ready_notified_at,
+      notifiedByUserId: currentOrder?.guest_ready_notified_by,
+      notifiedByName: currentOrder?.notified_by_name,
+      version: currentOrder?.guest_ready_notification_version,
+      propertyReady,
+      currentCheckin: currentCheckin && !!currentOrder,
+      automaticEarlyArrival,
+      outsideKeyRequired: outsideKeyProjection?.required === true,
+      notificationBindingCurrent,
     })
     const nextAction = guestReadyNotificationAction(projection, true)
+    const outsideKeyAction = guestReadyOutsideKeyAction(outsideKeyProjection, true)
     return {
       ok: true,
       operation_id: parsed.data.operation_id,
       changed: existing.changed === true,
       idempotent_replay: true,
       guest_ready_notification: projection,
-      available_actions: nextAction ? [nextAction] : [],
-      task_id: String(existing.checkin_task_id || '').trim() || null,
+      guest_ready_outside_key: outsideKeyProjection,
+      available_actions: [nextAction, outsideKeyAction].filter(Boolean),
+      task_id: String(checkinTask?.task_id || existing.checkin_task_id || '').trim() || null,
     }
   }
 
@@ -7852,12 +8202,25 @@ router.post('/guest-ready-notifications', requirePerm(GUEST_READY_NOTIFICATION_P
         [parsed.data.order_id, parsed.data.operation_id],
       )
       const existing = existingResult?.rows?.[0]
-      if (existing) return receiptFromEvent(existing)
+      if (existing) return receiptFromEvent(client, existing)
 
       const orderResult = await client.query(
         `SELECT id::text AS id,
                 guest_ready_notified_at,
                 guest_ready_notified_by::text AS guest_ready_notified_by,
+                guest_ready_notified_checkin_task_id::text AS guest_ready_notified_checkin_task_id,
+                guest_ready_notified_requirement_version,
+                (SELECT COALESCE(NULLIF(TRIM(notified_user.display_name), ''), NULLIF(TRIM(notified_user.username), ''), NULLIF(TRIM(notified_user.email), ''), guest_ready_notified_by::text)
+                   FROM users notified_user
+                  WHERE notified_user.id::text = guest_ready_notified_by::text
+                  LIMIT 1) AS notified_by_name,
+                COALESCE(guest_ready_outside_key_required, false) AS guest_ready_outside_key_required,
+                guest_ready_outside_key_registered_at,
+                guest_ready_outside_key_registered_by::text AS guest_ready_outside_key_registered_by,
+                (SELECT COALESCE(NULLIF(TRIM(outside_user.display_name), ''), NULLIF(TRIM(outside_user.username), ''), NULLIF(TRIM(outside_user.email), ''), guest_ready_outside_key_registered_by::text)
+                   FROM users outside_user
+                  WHERE outside_user.id::text = guest_ready_outside_key_registered_by::text
+                  LIMIT 1) AS outside_key_registered_by_name,
                 COALESCE(guest_ready_notification_version, 0) AS guest_ready_notification_version
            FROM orders
           WHERE id::text = $1::text
@@ -7880,11 +8243,13 @@ router.post('/guest-ready-notifications', requirePerm(GUEST_READY_NOTIFICATION_P
         [parsed.data.order_id, parsed.data.operation_id],
       )
       const racedExisting = racedExistingResult?.rows?.[0]
-      if (racedExisting) return receiptFromEvent(racedExisting)
+      if (racedExisting) return receiptFromEvent(client, racedExisting)
 
       const checkinResult = await client.query(
         `SELECT t.id::text AS task_id,
                 COALESCE(t.task_date, t.date)::text AS task_date,
+                t.checkin_time,
+                COALESCE(t.guest_ready_checkin_requirement_version, 0) AS guest_ready_checkin_requirement_version,
                 COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS property_id
            FROM cleaning_tasks t
            JOIN orders checkin_order ON checkin_order.id::text = t.order_id::text
@@ -7895,7 +8260,8 @@ router.post('/guest-ready-notifications', requirePerm(GUEST_READY_NOTIFICATION_P
             AND ${activeCleaningTaskWhereSql('t')}
             AND ${validCleaningTaskOrderWhereSql('t', 'checkin_order')}
           ORDER BY t.updated_at DESC NULLS LAST, t.id
-          LIMIT 2`,
+          LIMIT 2
+          FOR UPDATE OF t`,
         [parsed.data.order_id],
       )
       if ((checkinResult?.rows || []).length === 0) {
@@ -7940,7 +8306,19 @@ router.post('/guest-ready-notifications', requirePerm(GUEST_READY_NOTIFICATION_P
         [String(checkinTask.task_date || '').slice(0, 10), String(checkinTask.property_id || '')],
       )
       const propertyReady = !!readyResult?.rowCount
+      const automaticEarlyArrival = buildCleaningTurnoverDisplay({
+        checkinTask: {
+          taskType: 'checkin_clean',
+          checkinTime: checkinTask.checkin_time,
+        },
+      }).is_early_checkin
       const currentVersion = Number(order.guest_ready_notification_version || 0)
+      const notificationBindingCurrent = isGuestReadyNotificationRequirementBindingCurrent({
+        notifiedCheckinTaskId: order.guest_ready_notified_checkin_task_id,
+        notifiedRequirementVersion: order.guest_ready_notified_requirement_version,
+        currentCheckinTaskId: checkinTask.task_id,
+        currentRequirementVersion: checkinTask.guest_ready_checkin_requirement_version,
+      })
       const plan = planGuestReadyNotificationMutation({
         action: parsed.data.action,
         expectedVersion: parsed.data.expected_version,
@@ -7949,26 +8327,82 @@ router.post('/guest-ready-notifications', requirePerm(GUEST_READY_NOTIFICATION_P
         notifiedByUserId: order.guest_ready_notified_by,
         propertyReady,
         currentCheckin: true,
+        automaticEarlyArrival,
+        outsideKeyRequired: order.guest_ready_outside_key_required === true,
+        notificationBindingCurrent,
       })
 
       let resultingOrder = order
       if (plan.changed) {
         const updated = await client.query(
           `UPDATE orders
-              SET guest_ready_notified_at = CASE WHEN $2::boolean THEN now() ELSE NULL END,
-                  guest_ready_notified_by = CASE WHEN $2::boolean THEN $3::text ELSE NULL END,
-                  guest_ready_notification_version = $4::integer
+              SET guest_ready_notified_at = CASE
+                    WHEN $2::boolean = false THEN NULL
+                    WHEN $6::boolean THEN now()
+                    ELSE guest_ready_notified_at
+                  END,
+                  guest_ready_notified_by = CASE
+                    WHEN $2::boolean = false THEN NULL
+                    WHEN $6::boolean THEN $3::text
+                    ELSE guest_ready_notified_by
+                  END,
+                  guest_ready_notified_checkin_task_id = CASE
+                    WHEN $2::boolean = false THEN NULL
+                    WHEN $6::boolean THEN $7::text
+                    ELSE guest_ready_notified_checkin_task_id
+                  END,
+                  guest_ready_notified_requirement_version = CASE
+                    WHEN $2::boolean = false THEN NULL
+                    WHEN $6::boolean THEN $8::bigint
+                    ELSE guest_ready_notified_requirement_version
+                  END,
+                  guest_ready_notification_version = $4::integer,
+                  guest_ready_outside_key_required = $5::boolean,
+                  guest_ready_outside_key_registered_at = CASE
+                    WHEN $5::boolean = false THEN NULL
+                    WHEN guest_ready_outside_key_required = false THEN now()
+                    ELSE guest_ready_outside_key_registered_at
+                  END,
+                  guest_ready_outside_key_registered_by = CASE
+                    WHEN $5::boolean = false THEN NULL
+                    WHEN guest_ready_outside_key_required = false THEN $3::text
+                    ELSE guest_ready_outside_key_registered_by
+                  END
             WHERE id::text = $1::text
             RETURNING id::text AS id,
                       guest_ready_notified_at,
                       guest_ready_notified_by::text AS guest_ready_notified_by,
+                      guest_ready_notified_checkin_task_id::text AS guest_ready_notified_checkin_task_id,
+                      guest_ready_notified_requirement_version,
+                      guest_ready_outside_key_required,
+                      guest_ready_outside_key_registered_at,
+                      guest_ready_outside_key_registered_by::text AS guest_ready_outside_key_registered_by,
                       guest_ready_notification_version`,
-          [parsed.data.order_id, plan.wantsNotified, actorUserId, plan.nextVersion],
+          [
+            parsed.data.order_id,
+            plan.wantsNotified,
+            actorUserId,
+            plan.nextVersion,
+            plan.nextOutsideKeyRequired,
+            plan.notificationChanged,
+            String(checkinTask.task_id || ''),
+            Number(checkinTask.guest_ready_checkin_requirement_version || 0),
+          ],
         )
         resultingOrder = updated.rows[0]
       }
 
       const actorName = String(user?.display_name || user?.username || user?.email || actorUserId).trim() || actorUserId
+      const resultingNotifiedByName = plan.wantsNotified
+        ? (plan.notificationChanged
+            ? actorName
+            : String(order.notified_by_name || order.guest_ready_notified_by || '').trim() || null)
+        : null
+      const outsideKeyRegisteredByName = plan.nextOutsideKeyRequired
+        ? (order.guest_ready_outside_key_required === true
+            ? String(order.outside_key_registered_by_name || order.guest_ready_outside_key_registered_by || '').trim() || null
+            : actorName)
+        : null
       await client.query(
         `INSERT INTO order_guest_ready_notification_events (
            id, order_id, order_id_snapshot, action, changed, actor_user_id,
@@ -8001,34 +8435,68 @@ router.post('/guest-ready-notifications', requirePerm(GUEST_READY_NOTIFICATION_P
             source: 'mzapp',
             no_message_sent: true,
             property_ready: propertyReady,
-            resulting_notified_by_name: plan.wantsNotified ? actorName : null,
+            notification_required: plan.notificationRequired,
+            automatic_early_arrival: automaticEarlyArrival,
+            previous_outside_key_required: order.guest_ready_outside_key_required === true,
+            resulting_outside_key_required: plan.nextOutsideKeyRequired,
+            notification_binding_current_before: notificationBindingCurrent,
+            previous_notified_checkin_task_id: order.guest_ready_notified_checkin_task_id || null,
+            previous_notified_requirement_version: order.guest_ready_notified_requirement_version == null
+              ? null
+              : Number(order.guest_ready_notified_requirement_version),
+            resulting_notified_checkin_task_id: resultingOrder.guest_ready_notified_checkin_task_id || null,
+            resulting_notified_requirement_version: resultingOrder.guest_ready_notified_requirement_version == null
+              ? null
+              : Number(resultingOrder.guest_ready_notified_requirement_version),
+            current_checkin_requirement_version: Number(checkinTask.guest_ready_checkin_requirement_version || 0),
+            resulting_notified_by_name: resultingNotifiedByName,
+            resulting_outside_key_registered_by_name: outsideKeyRegisteredByName,
           }),
         ],
       )
 
+      const outsideKeyProjection = buildGuestReadyOutsideKeyProjection({
+        orderId: parsed.data.order_id,
+        required: resultingOrder.guest_ready_outside_key_required,
+        registeredAt: resultingOrder.guest_ready_outside_key_registered_at,
+        registeredByUserId: resultingOrder.guest_ready_outside_key_registered_by,
+        registeredByName: outsideKeyRegisteredByName,
+        version: plan.nextVersion,
+        currentCheckin: true,
+      })
       const projection = buildGuestReadyNotificationProjection({
         orderId: parsed.data.order_id,
         notifiedAt: resultingOrder.guest_ready_notified_at,
         notifiedByUserId: resultingOrder.guest_ready_notified_by,
-        notifiedByName: plan.wantsNotified ? actorName : null,
+        notifiedByName: resultingNotifiedByName,
         version: plan.nextVersion,
         propertyReady,
         currentCheckin: true,
+        automaticEarlyArrival,
+        outsideKeyRequired: outsideKeyProjection?.required === true,
+        notificationBindingCurrent: isGuestReadyNotificationRequirementBindingCurrent({
+          notifiedCheckinTaskId: resultingOrder.guest_ready_notified_checkin_task_id,
+          notifiedRequirementVersion: resultingOrder.guest_ready_notified_requirement_version,
+          currentCheckinTaskId: checkinTask.task_id,
+          currentRequirementVersion: checkinTask.guest_ready_checkin_requirement_version,
+        }),
       })
       const nextAction = guestReadyNotificationAction(projection, true)
+      const outsideKeyAction = guestReadyOutsideKeyAction(outsideKeyProjection, true)
       return {
         ok: true,
         operation_id: parsed.data.operation_id,
         changed: plan.changed,
         idempotent_replay: false,
         guest_ready_notification: projection,
-        available_actions: nextAction ? [nextAction] : [],
+        guest_ready_outside_key: outsideKeyProjection,
+        available_actions: [nextAction, outsideKeyAction].filter(Boolean),
         task_id: String(checkinTask.task_id || '').trim() || null,
       }
     })
 
     if (!result) return res.status(503).json({ code: 'guest_ready_notification_storage_unavailable', message: '通知状态服务暂不可用，请稍后重试' })
-    if (result.changed && result.task_id) {
+    if (result.changed && !result.idempotent_replay && result.task_id) {
       try {
         const taskResult = await pgPool.query(
           `SELECT id::text AS id, assignee_id, cleaner_id, inspector_id
@@ -8045,12 +8513,10 @@ router.post('/guest-ready-notifications', requirePerm(GUEST_READY_NOTIFICATION_P
             sourceRefIds: [result.task_id],
             eventType: 'TASK_UPDATED',
             changeScope: 'list',
-            changedFields: ['guest_ready_notification', 'available_actions'],
-            // available_actions is recipient-permission-specific, so it must not
-            // be copied from the actor into a shared event patch. Mobile keeps
-            // guest_ready_notification outside SAFE_PATCH_FIELDS and refetches
-            // the recipient-specific projection for this event.
-            patch: { guest_ready_notification: result.guest_ready_notification },
+            changedFields: ['guest_ready_notification', 'guest_ready_outside_key', 'available_actions'],
+            // Guest notification state and available actions are scoped to the
+            // recipient's active role, so shared events only trigger a refetch.
+            patch: {},
             causedByUserId: actorUserId,
             visibilityHints: buildCleaningTaskVisibilityHints(taskRow),
           })

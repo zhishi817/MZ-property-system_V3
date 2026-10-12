@@ -96,8 +96,8 @@ async function main() {
 
   const selfCompleteLockboxRoute = cleaningAppSource.match(/router\.post\('\/tasks\/:id\/lockbox-video'[\s\S]*?async function handleDeleteLockboxVideo/)?.[0] || ''
   assert.ok(selfCompleteLockboxRoute, 'self-complete lockbox route must remain discoverable')
-  assert.match(selfCompleteLockboxRoute, /canPerformCleaningTaskAction\(user, String\(id\), \['upload_access_video'\]\)/, 'self-complete lockbox must authorize the video action, not inspection submission')
-  assert.match(selfCompleteLockboxRoute, /const selfCompleteLockbox = effectiveInspectionMode\(taskRow\) === 'self_complete'/, 'self-complete lockbox must identify its mode from the task')
+  assert.match(selfCompleteLockboxRoute, /canPerformCleaningTaskActionForRow\(user, lockedTask, \['upload_access_video'\], client\)/, 'self-complete lockbox must authorize the latest locked row for the video action')
+  assert.match(selfCompleteLockboxRoute, /const selfCompleteLockbox = effectiveInspectionMode\(lockedTask\) === 'self_complete'/, 'self-complete lockbox must identify its mode from the locked task')
   assert.match(selfCompleteLockboxRoute, /self_complete_lockbox: selfCompleteLockbox/, 'self-complete lockbox must mark the shared transition explicitly')
   assert.match(selfCompleteLockboxRoute, /pgRunInTransaction\(async \(client\)/, 'self-complete lockbox media and transition must share one transaction')
   assert.match(cleaningAppSource, /const lockboxVideoSchema = z\.object\([\s\S]*?operation_id: z\.string\(\)\.trim\(\)\.min\(1\)\.max\(IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH\)/, 'self-complete lockbox must accept a stable operation id')
@@ -109,7 +109,8 @@ async function main() {
 
   const mzappLockboxRoute = mzappSource.match(/router\.post\('\/cleaning-tasks\/:id\/lockbox-video'[\s\S]*?async function handleDeleteMzappLockboxVideo/)?.[0] || ''
   assert.ok(mzappLockboxRoute, 'MZapp lockbox route must remain discoverable')
-  assert.match(mzappLockboxRoute, /const selfCompleteLockbox = await canSubmitMzappSelfCompleteLockboxVideo\(user, row, userId\)/, 'MZapp must recognize self-complete lockbox uploads')
+  assert.match(mzappLockboxRoute, /const selfCompleteLockbox = await canSubmitMzappSelfCompleteLockboxVideo\(user, lockedTask, userId, client\)/, 'MZapp must recognize self-complete lockbox uploads from the latest locked row')
+  assert.match(mzappLockboxRoute, /canManageMzappLockboxVideo\(user, lockedTask, userId, client\)/, 'MZapp must authorize the latest locked row before writing media')
   assert.doesNotMatch(mzappLockboxRoute, /assertCleaningSubmissionReady|CLEANING_SUBMISSION_REQUIRED/, 'inspection lockbox evidence must not wait for cleaner evidence')
   assert.ok(
     mzappLockboxRoute.indexOf("VALUES ($1,$2,'lockbox_video'") < mzappLockboxRoute.indexOf('applyCleaningTaskActionTransition'),

@@ -8,6 +8,7 @@ import {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 describe('personnel claim evidence image', () => {
@@ -17,7 +18,10 @@ describe('personnel claim evidence image', () => {
     expect(path).not.toContain('mzapp/personnel-claims')
   })
 
-  it('creates and releases a private temporary object URL', async () => {
+  it('uses only the bearer token as a request header, keeps browser no-store mode, and releases the private object URL', async () => {
+    vi.stubGlobal('window', {})
+    vi.stubGlobal('localStorage', { getItem: vi.fn((key: string) => key === 'token' ? 'local-test-token' : null) })
+    vi.stubGlobal('sessionStorage', { getItem: vi.fn(() => null) })
     const create = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:claim-proof')
     const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
     const fetcher = vi.fn(async () => new Response(new Blob(['proof'], { type: 'image/jpeg' }), {
@@ -26,10 +30,32 @@ describe('personnel claim evidence image', () => {
     })) as any
     const objectUrl = await loadPersonnelClaimEvidenceObjectUrl('claim-1', 'evidence-1', fetcher)
     expect(objectUrl).toBe('blob:claim-proof')
-    expect(fetcher).toHaveBeenCalledWith(expect.stringContaining('/claims/claim-1/evidence/evidence-1/image'), expect.objectContaining({ cache: 'no-store' }))
+    expect(fetcher).toHaveBeenCalledWith(
+      expect.stringContaining('/claims/claim-1/evidence/evidence-1/image'),
+      {
+        method: 'GET',
+        cache: 'no-store',
+        headers: { Authorization: 'Bearer local-test-token' },
+      },
+    )
     expect(create).toHaveBeenCalledOnce()
     releasePersonnelClaimEvidenceObjectUrls({ proof: objectUrl, public: 'https://example.test/image.jpg' })
     expect(revoke).toHaveBeenCalledWith('blob:claim-proof')
+  })
+
+  it('allows a failed read to be retried without reusing a failed response', async () => {
+    const create = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:claim-proof-retry')
+    const fetcher = vi.fn()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce(new Response(new Blob(['proof'], { type: 'image/jpeg' }), {
+        status: 200,
+        headers: { 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, no-store' },
+      })) as any
+
+    await expect(loadPersonnelClaimEvidenceObjectUrl('claim-1', 'evidence-1', fetcher)).rejects.toThrow('Failed to fetch')
+    await expect(loadPersonnelClaimEvidenceObjectUrl('claim-1', 'evidence-1', fetcher)).resolves.toBe('blob:claim-proof-retry')
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    expect(create).toHaveBeenCalledOnce()
   })
 
   it.each([

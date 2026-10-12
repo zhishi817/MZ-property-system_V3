@@ -3,7 +3,7 @@ import type { PersonnelPaymentMethod } from './personnelSettlementPayment'
 export type PersonnelSettlementDocumentStage = 'awaiting_confirmation' | 'confirmed' | 'finance_approved' | 'paid'
 export type PersonnelSettlementDocumentKind = 'settlement_draft' | 'tax_invoice' | 'invoice'
 
-export const PERSONNEL_SETTLEMENT_DOCUMENT_TEMPLATE_VERSION = 'daily-summary-invoice-v2-payment-destination'
+export const PERSONNEL_SETTLEMENT_DOCUMENT_TEMPLATE_VERSION = 'daily-summary-invoice-v3-execution-breakdown'
 
 export type PersonnelSettlementDocumentInput = {
   documentStage: PersonnelSettlementDocumentStage

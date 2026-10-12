@@ -31,6 +31,7 @@ import {
   cleaningNightsDisplayLabels,
   cleaningTaskFlowLabelText,
   deferredInspectionConflictPresentation,
+  guestReadyOperationId,
   guestReadyNotificationPresentation,
   hasTaskCenterRequiredExecutor,
   isDeferredInspectionDisplayTask,
@@ -110,14 +111,26 @@ type GuestReadyNotification = {
   notified_by_user_id: string | null
   notified_by_name: string | null
   version: number
+  requirement_reasons: Array<'early_arrival' | 'outside_key'>
+  automatic_early_arrival: boolean
+  outside_key_required: boolean
   eligible: boolean
   disabled_reason?: 'property_not_ready' | 'no_checkin_order' | 'checkin_order_changed' | null
 }
 
-type GuestReadyNotificationAction = {
-  id: 'record_guest_ready_notified' | 'revoke_guest_ready_notified'
+type GuestReadyOutsideKey = {
+  order_id: string
+  required: boolean
+  registered_at: string | null
+  registered_by_user_id: string | null
+  registered_by_name: string | null
+  version: number
+}
+
+type GuestReadyAction = {
+  id: 'record_guest_ready_notified' | 'revoke_guest_ready_notified' | 'register_guest_ready_outside_key' | 'cancel_guest_ready_outside_key'
   label: string
-  placement: 'primary'
+  placement: 'primary' | 'more'
   enabled: boolean
   disabled_reason?: string
   source_type: 'orders'
@@ -221,7 +234,8 @@ type TaskCenterTask = {
   daily_stats_group?: 'turnover' | 'inspection' | 'offline' | null
   daily_stats_key?: string | null
   guest_ready_notification?: GuestReadyNotification | null
-  available_actions?: GuestReadyNotificationAction[] | null
+  guest_ready_outside_key?: GuestReadyOutsideKey | null
+  available_actions?: GuestReadyAction[] | null
 }
 
 type PropertyMaintenanceDetail = {
@@ -1034,9 +1048,9 @@ export default function TaskCenterPage() {
     }
   }, [dateStr, setBoardDraftDirty])
 
-  const patchGuestReadyNotification = useCallback((orderId: string, notification: GuestReadyNotification, actions: GuestReadyNotificationAction[]) => {
+  const patchGuestReadyNotification = useCallback((orderId: string, notification: GuestReadyNotification | null, outsideKey: GuestReadyOutsideKey | null, actions: GuestReadyAction[]) => {
     const patchTask = (task: TaskCenterTask): TaskCenterTask => String(task.order_id_checkin || '') === orderId
-      ? { ...task, guest_ready_notification: notification, available_actions: actions }
+      ? { ...task, guest_ready_notification: notification, guest_ready_outside_key: outsideKey, available_actions: actions }
       : task
     setDayData((current) => current ? {
       ...current,
@@ -1049,34 +1063,54 @@ export default function TaskCenterPage() {
     setDetailTask((current) => current ? patchTask(current) : current)
   }, [])
 
-  const changeGuestReadyNotification = useCallback(async (action: GuestReadyNotificationAction) => {
+  const changeGuestReadyNotification = useCallback(async (action: GuestReadyAction) => {
+    if (viewerRole !== 'customer_service') return
     const task = detailTask
     const notification = task?.guest_ready_notification
-    if (!task || !notification || !action.enabled || guestReadySaving) return
-    const operationId = globalThis.crypto?.randomUUID?.() || `guest-ready-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const outsideKey = task?.guest_ready_outside_key
+    const orderId = String(notification?.order_id || outsideKey?.order_id || action.source_id || '').trim()
+    const expectedVersion = notification?.version ?? outsideKey?.version
+    if (!task || !orderId || expectedVersion == null || !action.enabled || guestReadySaving) return
+    const mutationAction = action.id === 'revoke_guest_ready_notified'
+      ? 'revoke'
+      : action.id === 'register_guest_ready_outside_key'
+        ? 'register_outside_key'
+        : action.id === 'cancel_guest_ready_outside_key'
+          ? 'cancel_outside_key'
+          : 'mark'
+    const operationId = guestReadyOperationId({ orderId, action: mutationAction, expectedVersion })
+    if (!operationId) return
     setGuestReadySaving(true)
     try {
       const receipt = await postJSON<{
-        guest_ready_notification: GuestReadyNotification
-        available_actions: GuestReadyNotificationAction[]
+        guest_ready_notification: GuestReadyNotification | null
+        guest_ready_outside_key: GuestReadyOutsideKey | null
+        available_actions: GuestReadyAction[]
       }>('/mzapp/guest-ready-notifications', {
-        order_id: notification.order_id,
-        action: action.id === 'revoke_guest_ready_notified' ? 'revoke' : 'mark',
+        order_id: orderId,
+        action: mutationAction,
         operation_id: operationId,
-        expected_version: notification.version,
+        expected_version: expectedVersion,
       })
       patchGuestReadyNotification(
-        notification.order_id,
+        orderId,
         receipt.guest_ready_notification,
+        receipt.guest_ready_outside_key,
         Array.isArray(receipt.available_actions) ? receipt.available_actions : [],
       )
-      message.success(action.id === 'revoke_guest_ready_notified' ? '已撤销“已通知客人”记录' : '已记录“已通知客人”')
+      message.success(action.id === 'revoke_guest_ready_notified'
+        ? '已撤销“已通知客人”记录'
+        : action.id === 'register_guest_ready_outside_key'
+          ? '已登记“钥匙外挂”'
+          : action.id === 'cancel_guest_ready_outside_key'
+            ? '已取消“钥匙外挂”'
+            : '已记录“已通知客人”')
     } catch (error: any) {
       message.error(String(error?.message || '保存通知状态失败；未修改当前显示'))
     } finally {
       setGuestReadySaving(false)
     }
-  }, [detailTask, guestReadySaving, patchGuestReadyNotification])
+  }, [detailTask, guestReadySaving, patchGuestReadyNotification, viewerRole])
 
   useEffect(() => {
     loadStaff().catch(() => {})
@@ -2265,7 +2299,7 @@ export default function TaskCenterPage() {
     const conflictCount = taskDisplayConflictCount(task)
     const deferredCheckinConflict = deferredInspectionConflictPresentation(task)
     const deferredCheckinConflictText = deferredCheckinConflict?.detail || ''
-    const guestReadyMeta = guestReadyNotificationPresentation(task)
+    const guestReadyMeta = guestReadyNotificationPresentation(task, viewerRole)
     const primaryMetaItems = [
       ...taskCardPrimaryMetaItems({
         statusLabel: statusMeta.label,
@@ -2364,7 +2398,7 @@ export default function TaskCenterPage() {
         {dragOverKey === dragKey ? <div className={styles.taskCenterDropMarker} /> : null}
       </div>
     )
-  }, [boardSaving, canSeeCheckinSyncTag, cardStyleForTask, dragOverKey, dragPayloadForTask, filteringActive, openTaskDetail, staffById, stripeColorForTask, textColorForTask])
+  }, [boardSaving, canSeeCheckinSyncTag, cardStyleForTask, dragOverKey, dragPayloadForTask, filteringActive, openTaskDetail, staffById, stripeColorForTask, textColorForTask, viewerRole])
 
   const displayRows = useMemo(() => {
     const output: TaskCenterDisplayRow[] = []
@@ -2617,8 +2651,13 @@ export default function TaskCenterPage() {
   const detailIsPasswordOnly = detailTask ? taskSemanticBool(detailTask, 'is_password_only', isPasswordOnlyCheckinTask({ ...detailTask, inspection_scope: detailDraft?.inspection_scope || detailTask.inspection_scope })) : false
   const detailUsesExecutorAssignment = detailIsPureCheckin || detailIsPasswordOnly
   const detailSupersededCount = detailTask ? supersededCleaningTaskIds(detailTask).length : 0
-  const detailGuestReadyPresentation = detailTask ? guestReadyNotificationPresentation(detailTask) : null
-  const detailGuestReadyAction = detailTask?.available_actions?.find((action) => action.id === 'record_guest_ready_notified' || action.id === 'revoke_guest_ready_notified') || null
+  const detailGuestReadyPresentation = detailTask ? guestReadyNotificationPresentation(detailTask, viewerRole) : null
+  const detailGuestReadyAction = viewerRole === 'customer_service'
+    ? detailTask?.available_actions?.find((action) => action.id === 'record_guest_ready_notified' || action.id === 'revoke_guest_ready_notified') || null
+    : null
+  const detailOutsideKeyAction = viewerRole === 'customer_service'
+    ? detailTask?.available_actions?.find((action) => action.id === 'register_guest_ready_outside_key' || action.id === 'cancel_guest_ready_outside_key') || null
+    : null
 
   return (
     <div className={styles.page}>
@@ -2988,6 +3027,23 @@ export default function TaskCenterPage() {
                 </div>
               </div>
             ) : null}
+            {detailOutsideKeyAction ? (
+              <div className={`${styles.taskDetailHint} ${semanticToneClass(detailTask.guest_ready_outside_key?.required ? 'info' : 'neutral')}`}>
+                <div className={styles.taskDetailHintRow}>
+                  <span>{detailTask.guest_ready_outside_key?.required ? '已登记钥匙外挂' : '钥匙外挂'}</span>
+                  <Button
+                    size="small"
+                    type={detailOutsideKeyAction.id === 'register_guest_ready_outside_key' ? 'primary' : 'default'}
+                    disabled={!detailOutsideKeyAction.enabled || guestReadySaving}
+                    loading={guestReadySaving}
+                    onClick={() => changeGuestReadyNotification(detailOutsideKeyAction).catch(() => {})}
+                  >
+                    {detailOutsideKeyAction.label}
+                  </Button>
+                </div>
+                <div className={styles.taskDetailHintCopy}>仅由客服明确登记；不会根据客人备注或入住时间之外的文本自动识别。</div>
+              </div>
+            ) : null}
             {detailTask.task_source === 'cleaning' ? (
               <>
                 <div className={styles.taskDetailGrid}>
@@ -3078,7 +3134,7 @@ export default function TaskCenterPage() {
                 {(detailDraft.inspection_mode === 'deferred' || detailTask.deferred_inspection_view) ? (
                   <div className={`${styles.taskDetailHint} ${semanticToneClass('pending')}`}>
                     <div className={styles.taskDetailHintRow}>
-                      <span>任务已结束</span>
+                      <span>管理关闭（不代表检查完成）</span>
 	                      <Switch
 	                        checked={detailDraft.task_completed}
 	                        disabled={!detailTaskCompletedGate.enabled}
@@ -3097,7 +3153,7 @@ export default function TaskCenterPage() {
                         })}
                       />
                     </div>
-                    <div className={styles.taskDetailHintCopy}>打开后保存安排，这个延期检查会标记为已完成并从待检查列表移出。</div>
+                    <div className={styles.taskDetailHintCopy}>仅用于关闭不再执行的安排并移出待检查列表；不会生成检查完成记录、不会计入检查结算。实际检查必须由检查人员提交检查结果。</div>
                   </div>
                 ) : null}
 	                {detailIsPureCheckin ? (

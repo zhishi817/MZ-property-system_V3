@@ -18,10 +18,16 @@ import { projectDailyTaskStats, type DailyTaskStatsGroup } from '../lib/dailyTas
 import {
   GUEST_READY_NOTIFICATION_PERMISSION,
   buildGuestReadyNotificationProjection,
+  buildGuestReadyOutsideKeyProjection,
   guestReadyNotificationAction,
+  guestReadyOutsideKeyAction,
+  isGuestReadyNotificationCustomerServiceRole,
+  isGuestReadyNotificationRequirementBindingCurrent,
   loadGuestReadyNotificationOrderStates,
   type GuestReadyNotificationAction,
   type GuestReadyNotificationProjection,
+  type GuestReadyOutsideKeyAction,
+  type GuestReadyOutsideKeyProjection,
 } from '../lib/guestReadyNotification'
 import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
 import { emitNotificationEvent } from '../services/notificationEvents'
@@ -142,7 +148,8 @@ type BoardTask = {
   daily_stats_key?: string | null
   property_ready_for_guest_notification?: boolean
   guest_ready_notification?: GuestReadyNotificationProjection | null
-  available_actions?: GuestReadyNotificationAction[]
+  guest_ready_outside_key?: GuestReadyOutsideKeyProjection | null
+  available_actions?: Array<GuestReadyNotificationAction | GuestReadyOutsideKeyAction>
 }
 
 type PropertyFollowupCandidate = BoardTask & {
@@ -197,6 +204,12 @@ type TaskSaveDiff = {
   pushChanges: string[]
   pushRecipientUserIds: string[]
   priority?: 'high' | 'medium' | 'low'
+  arrangementRevision?: {
+    version: 'mz031-v1'
+    reasons: string[]
+    before: Record<string, any>
+    after: Record<string, any>
+  }
 }
 
 type CleaningNotificationGroup = {
@@ -476,12 +489,47 @@ function buildCleaningSaveDiff(before: any, assignment: any): TaskSaveDiff | nul
   }
 
   if (!changedFields.length) return null
+  const statusAction = assignmentStatusAction(assignment?.status_action)
+  const reasons = uniqTextList([
+    ...(statusAction === 'set_completed' ? ['management_closed'] : []),
+    ...(statusAction === 'clear_completed' ? ['management_reopened'] : []),
+    ...(statusAction === 'set_keys_hung' ? ['keys_hung_confirmed'] : []),
+    ...(statusAction === 'clear_keys_hung' ? ['keys_hung_reopened'] : []),
+    ...(oldInspectionDueDate !== nextInspectionDueDate ? ['inspection_due_date_changed'] : []),
+    ...(oldInspectionMode !== nextInspectionMode ? ['inspection_mode_changed'] : []),
+    ...(oldInspectionScope !== nextInspectionScope ? ['inspection_scope_changed'] : []),
+    ...(oldCleaner !== nextCleaner || oldAssignee !== nextAssignee || oldInspector !== nextInspector ? ['assignment_changed'] : []),
+  ])
   return {
     taskId,
     changedFields: uniqTextList(changedFields),
     pushChanges: uniqTextList(pushChanges),
     pushRecipientUserIds: uniqTextList(recipients),
     priority: pushChanges.includes('status') ? 'medium' : undefined,
+    arrangementRevision: {
+      version: 'mz031-v1',
+      reasons,
+      before: {
+        scheduled_service_date: dayText(before.task_date ?? before.date),
+        cleaner_id: oldCleaner,
+        assignee_id: oldAssignee,
+        inspector_id: oldInspector,
+        inspection_mode: oldInspectionMode,
+        inspection_scope: oldInspectionScope,
+        inspection_due_date: oldInspectionDueDate,
+        status: oldStatus,
+      },
+      after: {
+        scheduled_service_date: dayText(before.task_date ?? before.date),
+        cleaner_id: nextCleaner,
+        assignee_id: nextAssignee,
+        inspector_id: nextInspector,
+        inspection_mode: nextInspectionMode,
+        inspection_scope: nextInspectionScope,
+        inspection_due_date: nextInspectionDueDate,
+        status: nextStatus || oldStatus,
+      },
+    },
   }
 }
 
@@ -2350,13 +2398,31 @@ export async function buildTaskCenterDay(
     loadBoardItems(date, 'board'),
   ])
   const visibleCleaningTasks = projectVisibleDailyTasks(cleaningTasks)
-  const guestReadyStatesByOrder = hasPg && pgPool
+  const guestReadyStatesByOrder = canManageGuestReadyNotification && hasPg && pgPool
     ? await loadGuestReadyNotificationOrderStates(pgPool, visibleCleaningTasks.map((task) => task.order_id_checkin))
     : new Map<string, any>()
   const projectedCleaningTasks = visibleCleaningTasks.map((task) => {
     const orderIdCheckin = text(task.order_id_checkin)
     const state = orderIdCheckin ? guestReadyStatesByOrder.get(orderIdCheckin) : null
-    const guestReadyNotification = orderIdCheckin
+    const currentCheckin = state?.current_checkin_count === 1
+    const notificationBindingCurrent = isGuestReadyNotificationRequirementBindingCurrent({
+      notifiedCheckinTaskId: state?.notified_checkin_task_id,
+      notifiedRequirementVersion: state?.notified_requirement_version,
+      currentCheckinTaskId: state?.current_checkin_task_id,
+      currentRequirementVersion: state?.current_requirement_version,
+    })
+    const guestReadyOutsideKey = canManageGuestReadyNotification && orderIdCheckin
+      ? buildGuestReadyOutsideKeyProjection({
+          orderId: orderIdCheckin,
+          required: state?.outside_key_required,
+          registeredAt: state?.outside_key_registered_at,
+          registeredByUserId: state?.outside_key_registered_by_user_id,
+          registeredByName: state?.outside_key_registered_by_name,
+          version: state?.version,
+          currentCheckin,
+        })
+      : null
+    const guestReadyNotification = canManageGuestReadyNotification && orderIdCheckin
       ? buildGuestReadyNotificationProjection({
           orderId: orderIdCheckin,
           notifiedAt: state?.notified_at,
@@ -2364,15 +2430,23 @@ export async function buildTaskCenterDay(
           notifiedByName: state?.notified_by_name,
           version: state?.version,
           propertyReady: task.property_ready_for_guest_notification === true || lower(task.status) === 'ready',
-          currentCheckin: !!state,
+          currentCheckin,
+          automaticEarlyArrival: task.is_early_checkin === true,
+          outsideKeyRequired: guestReadyOutsideKey?.required === true,
+          notificationBindingCurrent,
         })
       : null
     const guestAction = guestReadyNotificationAction(guestReadyNotification, canManageGuestReadyNotification)
+    const outsideKeyAction = guestReadyOutsideKeyAction(guestReadyOutsideKey, canManageGuestReadyNotification)
+    const guestReadyActions = [guestAction, outsideKeyAction].filter(
+      (action): action is GuestReadyNotificationAction | GuestReadyOutsideKeyAction => !!action,
+    )
     return {
       ...task,
       ...projectDailyTaskStats(task),
       ...(guestReadyNotification ? { guest_ready_notification: guestReadyNotification } : {}),
-      ...(guestAction ? { available_actions: [guestAction] } : {}),
+      ...(guestReadyOutsideKey ? { guest_ready_outside_key: guestReadyOutsideKey } : {}),
+      ...(guestReadyActions.length ? { available_actions: guestReadyActions } : {}),
     }
   })
   const projectedWorkTasks = workTasks.map((task) => ({
@@ -2573,12 +2647,14 @@ router.get('/day', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 
       return res.json({ date, pool: [], groups: {}, tasks: [], property_followups: [], rows: [], region_rows: [], final_group_rows: [], deferred_rows: [], entry_readiness: { ready_for_final_grouping: true, unresolved_primary_count: 0, pending_inspection_count: 0, skipped_count: 0 } })
     }
     const user = (req as any).user || {}
-    const [canAssignTask, canManageLayout, canManageGuestReadyNotification] = await Promise.all([
+    const [canAssignTask, canManageLayout, hasGuestReadyNotificationPermission] = await Promise.all([
       userHasAnyPerm(user, ['cleaning.task.assign']),
       userHasAnyPerm(user, ['cleaning.schedule.manage']),
       userHasAnyPerm(user, [GUEST_READY_NOTIFICATION_PERMISSION]),
     ])
     const canManageSchedule = canAssignTask || canManageLayout
+    const canManageGuestReadyNotification = isGuestReadyNotificationCustomerServiceRole(user?.role)
+      && hasGuestReadyNotificationPermission
     const payload = await buildTaskCenterDay(
       date,
       includeOverdue,
@@ -3290,6 +3366,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
               inspection_due_date: task.inspection_due_date ?? null,
               status: task.status,
             },
+            payload: diff.arrangementRevision ? { arrangement_revision: diff.arrangementRevision } : undefined,
             causedByUserId: String(user.sub || '').trim() || null,
             visibilityHints: buildCleaningTaskVisibilityHints(task),
           })

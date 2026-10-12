@@ -284,7 +284,7 @@ assert(documentSource.includes("calculation_snapshot->>'property_label'"))
 assert(documentSource.includes('template_version: PERSONNEL_SETTLEMENT_DOCUMENT_TEMPLATE_VERSION'))
 assert(documentSource.includes("throw new Error('settlement_document_source_changed')"))
 assert(documentSource.indexOf('const lockedSource = await loadDocumentSource') > documentSource.indexOf('FOR UPDATE'))
-assert.equal(PERSONNEL_SETTLEMENT_DOCUMENT_TEMPLATE_VERSION, 'daily-summary-invoice-v2-payment-destination')
+assert.equal(PERSONNEL_SETTLEMENT_DOCUMENT_TEMPLATE_VERSION, 'daily-summary-invoice-v3-execution-breakdown')
 
 const notificationRegistry = read('../docs/notification-registry.yaml')
 assert(notificationRegistry.includes('business_event: personnel_settlement_revision_confirmation_requested'))

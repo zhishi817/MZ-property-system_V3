@@ -81,6 +81,26 @@ type RelatedClaim = {
   evidence?: ClaimEvidence[]
 }
 
+type SettlementWorkItem = {
+  execution_key?: string
+  audit_id?: string | null
+  task_id?: string
+  component_type?: string
+  service_date?: string | null
+  performed_at?: string | null
+  performed_by_name?: string | null
+  property_label?: string | null
+  scheduled_service_date?: string | null
+  current_scheduled_service_date?: string | null
+  inspection_due_date?: string | null
+  inspection_mode?: string | null
+  evidence_count?: number
+  status?: string
+  status_reason?: string
+  included_in_amount?: boolean
+  requires_manual_review?: boolean
+}
+
 type SettlementLine = {
   id: string
   component_type: string
@@ -93,6 +113,50 @@ type SettlementLine = {
   gst_cents: number
   total_cents: number
   evidence_count: number
+  calculation_snapshot?: {
+    executed_property_count?: number
+    executed_task_count?: number
+    work_items?: SettlementWorkItem[]
+  } | null
+}
+
+function settlementLineWorkItems(line: SettlementLine) {
+  return Array.isArray(line.calculation_snapshot?.work_items)
+    ? line.calculation_snapshot.work_items
+    : []
+}
+
+const WORK_STATUS_META: Record<string, { label: string; color: string }> = {
+  completed: { label: '已完成', color: 'success' },
+  rescheduled: { label: '改期/跨日', color: 'processing' },
+  incomplete: { label: '未完成', color: 'warning' },
+  management_closed: { label: '管理关闭', color: 'default' },
+  legacy_completed_unverified: { label: '历史完成待核实', color: 'error' },
+  cancelled: { label: '已取消', color: 'default' },
+}
+
+function workReasonLabel(reason: unknown) {
+  const value = String(reason || '').trim()
+  if (value === 'completed_with_execution_audit') return '真实执行审计已确认'
+  if (value === 'completed_on_different_service_date') return '实际完成日在原安排日之外'
+  if (value === 'rescheduled_after_plan') return '原安排日后已改期，原任务不自动计费'
+  if (value === 'reassigned_after_plan') return '原安排后已更换执行人，原执行人不自动计费'
+  if (value === 'arrangement_changed_after_plan') return '安排已变更，需按真实执行结果结算'
+  if (value === 'inspection_plan_changed_after_plan') return '检查计划或延期日期已变更，原安排不自动计费'
+  if (value === 'executed_by_different_performer') return '任务由其他执行人完成，原执行人不计费'
+  if (value === 'deferred_replaced_by_completed_checkin') return '延期检查已由实际完成的入住检查替代，不重复计费'
+  if (value === 'management_closed_without_execution') return '仅关闭管理流程，不代表真实执行完成，不计费'
+  if (value === 'legacy_completed_status_without_execution_audit') return '历史任务为完成态，但缺少执行审计'
+  if (value === 'legacy_settlement_amount_preserved_without_execution_audit') return '保留历史结算金额，执行事实待核实'
+  if (value === 'legacy_execution_audit_without_mz031_snapshot') return '历史执行审计存在，缺少新版冻结快照'
+  if (value === 'execution_recorded_after_task_cancelled') return '任务取消后仍记录到执行，需要人工核实'
+  if (value === 'legacy_execution_task_later_cancelled') return '历史执行后任务被取消，需要人工核实'
+  if (value === 'cleaning_action_without_done_status') return '已记录清洁执行，但任务状态未完成，需要人工核实'
+  if (value === 'inspection_action_without_submission_status') return '已记录检查执行，但提交状态不完整，需要人工核实'
+  if (value === 'task_cancelled_without_payment') return '任务取消，不计入金额'
+  if (value.startsWith('task_cancelled_after:')) return '任务在原安排后取消，不计入金额'
+  if (value.startsWith('task_not_completed:')) return `任务状态 ${value.split(':')[1] || 'unknown'}，尚无完成审计`
+  return value || '-'
 }
 
 type SettlementAudit = {
@@ -116,6 +180,15 @@ type SettlementDocument = {
   file_name: string
 }
 
+type PendingPricingItem = {
+  source_type: string
+  source_id: string
+  code: string
+  service_date?: string | null
+  component_type?: string | null
+  description?: string | null
+}
+
 type WeeklySettlement = {
   id: string
   user_id: string
@@ -128,6 +201,9 @@ type WeeklySettlement = {
   total_cents: number
   line_count: number
   evidence_count: number
+  calculation_status?: 'complete' | 'partial'
+  pending_pricing_count?: number
+  pending_pricing_items?: PendingPricingItem[]
   workload_amount_confirmed_at: string | null
   dispute_note: string | null
   finance_reviewed_at: string | null
@@ -140,6 +216,7 @@ type WeeklySettlement = {
   base_totals?: { subtotal_cents: number; gst_cents: number; total_cents: number }
   finance_adjustment_cents?: number
   lines?: SettlementLine[]
+  work_checklist?: SettlementWorkItem[]
   audits?: SettlementAudit[]
   documents?: SettlementDocument[]
   related_claims?: RelatedClaim[]
@@ -213,6 +290,10 @@ const ERROR_LABELS: Record<string, string> = {
   claim_evidence_required: '反馈缺少证明材料，不能确认计入。',
   duplicate_approved_claim: '已有内容完全相同的反馈确认计入；如为两笔不同工作，请先退回并补充可区分的时间或说明。',
   settlement_claim_calculation_failed: '这条反馈暂时无法按生效费用规则计算，请检查合作方资料、GST 状态和对应计费项目。',
+}
+
+function pricingIssueLabel(code: string) {
+  return ERROR_LABELS[code] || code || '待补充计价资料'
 }
 
 function errorMessage(error: any) {
@@ -532,10 +613,24 @@ export default function WeeklySettlementsPanel() {
     { title: '人员', dataIndex: 'user_name', fixed: 'left', width: 170 },
     { title: '周期', key: 'week', width: 190, render: (_, row) => `${row.week_start} 至 ${row.week_end}` },
     { title: '状态', dataIndex: 'status', width: 120, render: statusTag },
+    {
+      title: '计价',
+      dataIndex: 'calculation_status',
+      width: 105,
+      render: (value, row) => value === 'partial' || Number(row.pending_pricing_count || 0) > 0
+        ? <Tag color="warning">待计价 {Number(row.pending_pricing_count || 0)} 项</Tag>
+        : <Tag color="success">完整</Tag>,
+    },
     { title: '明细', dataIndex: 'line_count', width: 80, align: 'right' },
     { title: '未税金额', dataIndex: 'subtotal_cents', width: 120, align: 'right', render: formatMoney },
     { title: 'GST', dataIndex: 'gst_cents', width: 105, align: 'right', render: formatMoney },
-    { title: '应付总额', dataIndex: 'total_cents', width: 125, align: 'right', render: (value) => <strong>{formatMoney(value)}</strong> },
+    {
+      title: '金额', dataIndex: 'total_cents', width: 125, align: 'right',
+      render: (value, row) => <Space direction="vertical" size={0} align="end">
+        <strong>{formatMoney(value)}</strong>
+        <Typography.Text type="secondary">{row.calculation_status === 'partial' || Number(row.pending_pricing_count || 0) > 0 ? '已计小计' : '应付总额'}</Typography.Text>
+      </Space>,
+    },
     {
       title: '合作方提交',
       key: 'confirmation',
@@ -581,6 +676,17 @@ export default function WeeklySettlementsPanel() {
     { title: '日期', dataIndex: 'service_date', width: 105 },
     { title: '项目', dataIndex: 'component_type', width: 115, render: (value) => COMPONENT_TYPE_LABELS[value] || value },
     { title: '说明', dataIndex: 'description', ellipsis: true, render: (value) => value || '-' },
+    {
+      title: '已完成房源',
+      key: 'executed-properties',
+      width: 210,
+      render: (_, row) => {
+        const items = settlementLineWorkItems(row)
+        if (!items.length) return '-'
+        const labels = Array.from(new Set(items.map((item) => String(item.property_label || item.task_id || '').trim()).filter(Boolean)))
+        return `${labels.length} 套 · ${labels.join('、')}`
+      },
+    },
     { title: '数量', key: 'quantity', width: 90, align: 'right', render: (_, row) => `${row.quantity_numerator}/${row.quantity_denominator}` },
     { title: '单价', dataIndex: 'unit_rate_cents', width: 105, align: 'right', render: formatMoney },
     { title: 'GST', dataIndex: 'gst_cents', width: 95, align: 'right', render: formatMoney },
@@ -677,6 +783,13 @@ export default function WeeklySettlementsPanel() {
       footer={<div style={{ textAlign: 'right' }}><Button onClick={() => setDetail(null)}>关闭</Button></div>}
     >
       {detail ? <>
+        {detail.calculation_status === 'partial' || Number(detail.pending_pricing_count || 0) > 0 ? <Alert
+          type="warning"
+          showIcon
+          message={`本周仍有 ${Number(detail.pending_pricing_count || 0)} 项待计价`}
+          description="当前金额只是已计小计，待费用规则、GST 或结算资料补齐后，必须重算并退回合作方重新确认完整总额；不能直接财务核准或付款。"
+          style={{ marginBottom: 12 }}
+        /> : null}
         <Descriptions bordered size="small" column={2}>
           <Descriptions.Item label="人员">{detail.user_name}</Descriptions.Item>
           <Descriptions.Item label="状态">{statusTag(detail.status)}</Descriptions.Item>
@@ -685,7 +798,7 @@ export default function WeeklySettlementsPanel() {
           <Descriptions.Item label="基础未税金额">{formatMoney(detail.base_totals?.subtotal_cents)}</Descriptions.Item>
           <Descriptions.Item label="财务调整">{formatMoney(detail.finance_adjustment_cents)}</Descriptions.Item>
           <Descriptions.Item label="GST">{formatMoney(detail.gst_cents)}</Descriptions.Item>
-          <Descriptions.Item label="应付总额"><strong>{formatMoney(detail.total_cents)}</strong></Descriptions.Item>
+          <Descriptions.Item label={detail.calculation_status === 'partial' || Number(detail.pending_pricing_count || 0) > 0 ? '已计小计' : '应付总额'}><strong>{formatMoney(detail.total_cents)}</strong></Descriptions.Item>
           <Descriptions.Item label="公司费用编号">{detail.company_expense_id || '-'}</Descriptions.Item>
           <Descriptions.Item label="付款日期">{formatDateOnly(
             typeof detail.payment_destination_snapshot?.payment_date === 'string'
@@ -708,6 +821,21 @@ export default function WeeklySettlementsPanel() {
               : '不适用'}
           </Descriptions.Item>
         </Descriptions>
+        {detail.pending_pricing_items?.length ? <>
+          <Divider orientation="left">待计价项目</Divider>
+          <Table<PendingPricingItem>
+            rowKey={(row) => `${row.source_type}:${row.source_id}:${row.code}`}
+            size="small"
+            pagination={false}
+            dataSource={detail.pending_pricing_items}
+            columns={[
+              { title: '日期', dataIndex: 'service_date', width: 110, render: (value) => value || '-' },
+              { title: '项目', dataIndex: 'component_type', width: 130, render: (value) => COMPONENT_TYPE_LABELS[value] || value || '-' },
+              { title: '说明', dataIndex: 'description', render: (value) => value || '-' },
+              { title: '待补资料', dataIndex: 'code', width: 230, render: pricingIssueLabel },
+            ]}
+          />
+        </> : null}
         <Divider orientation="left">结算文件</Divider>
         {detail.phase5_schema_ready === false ? <Alert type="warning" showIcon message="阶段 5 数据库尚未启用，暂未生成 PDF。" /> : <>
           {canManage && ['awaiting_confirmation', 'confirmed', 'finance_approved', 'paid'].includes(detail.status) ? <Button loading={documentBusy === 'generate'} onClick={() => void generateCurrentDocument()} style={{ marginBottom: 10 }}>生成当前状态文件</Button> : null}
@@ -726,6 +854,42 @@ export default function WeeklySettlementsPanel() {
             ]}
           />
         </>}
+        <Divider orientation="left">本周房源工作清单</Divider>
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 10 }}
+          message="工作清单同时保留已完成、未完成、改期和历史待核实房源；“已计入金额”表示本期真实执行，或为兼容历史已冻结结算而保留的原金额。"
+        />
+        <Table<SettlementWorkItem>
+          rowKey={(item, index) => String(item.execution_key || item.audit_id || item.task_id || index)}
+          size="small"
+          pagination={false}
+          dataSource={detail.work_checklist || []}
+          locale={{ emptyText: '当前结算没有可恢复的房源工作清单' }}
+          columns={[
+            { title: '房号', dataIndex: 'property_label', width: 140, render: (value: unknown) => String(value || '-') },
+            { title: '原安排日', dataIndex: 'scheduled_service_date', width: 110, render: (value: unknown) => String(value || '-') },
+            { title: '当前安排日', dataIndex: 'current_scheduled_service_date', width: 110, render: (value: unknown) => String(value || '-') },
+            { title: '实际工作日', dataIndex: 'service_date', width: 110, render: (value: unknown) => String(value || '-') },
+            { title: '执行人', dataIndex: 'performed_by_name', width: 130, render: (value: unknown) => String(value || '-') },
+            { title: '延期检查日', dataIndex: 'inspection_due_date', width: 110, render: (value: unknown) => String(value || '-') },
+            {
+              title: '状态', dataIndex: 'status', width: 135,
+              render: (value: unknown) => {
+                const meta = WORK_STATUS_META[String(value || '')] || { label: String(value || '未知'), color: 'default' }
+                return <Tag color={meta.color}>{meta.label}</Tag>
+              },
+            },
+            { title: '原因', dataIndex: 'status_reason', width: 230, render: workReasonLabel },
+            {
+              title: '结算', dataIndex: 'included_in_amount', width: 105,
+              render: (value: unknown) => value === true ? <Tag color="success">已计入金额</Tag> : <Tag>未计费</Tag>,
+            },
+            { title: '证据', dataIndex: 'evidence_count', width: 80, render: (value: unknown) => `${Number(value || 0)} 项` },
+          ]}
+          scroll={{ x: 1270 }}
+        />
         <Divider orientation="left">费用明细</Divider>
         <Table<SettlementLine>
           rowKey="id"
@@ -733,7 +897,28 @@ export default function WeeklySettlementsPanel() {
           pagination={false}
           dataSource={detail.lines || []}
           columns={lineColumns}
-          scroll={{ x: 850 }}
+          scroll={{ x: 1080 }}
+          expandable={{
+            rowExpandable: (line) => settlementLineWorkItems(line).length > 0,
+            expandedRowRender: (line) => (
+              <Table
+                rowKey={(item) => String(item.execution_key || item.audit_id || item.task_id)}
+                size="small"
+                pagination={false}
+                dataSource={settlementLineWorkItems(line)}
+                columns={[
+                  { title: '房号', dataIndex: 'property_label', width: 140, render: (value: unknown) => String(value || '-') },
+                  { title: '实际工作日', dataIndex: 'service_date', width: 110 },
+                  { title: '执行人', dataIndex: 'performed_by_name', width: 130, render: (value: unknown) => String(value || '-') },
+                  { title: '原安排日', dataIndex: 'scheduled_service_date', width: 110, render: (value: unknown) => String(value || '-') },
+                  { title: '延期检查日', dataIndex: 'inspection_due_date', width: 110, render: (value: unknown) => String(value || '-') },
+                  { title: '状态', dataIndex: 'status', width: 95, render: () => <Tag color="success">已完成</Tag> },
+                  { title: '证据', dataIndex: 'evidence_count', width: 85, render: (value: unknown) => `${Number(value || 0)} 项` },
+                ]}
+                scroll={{ x: 880 }}
+              />
+            ),
+          }}
         />
         <Divider orientation="left">操作记录</Divider>
         <Table<SettlementAudit>
