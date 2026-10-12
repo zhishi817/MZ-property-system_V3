@@ -1,5 +1,5 @@
 import { isKeyOrPasswordActionSemantics } from './cleaningInspection'
-import { GUEST_READY_NOTIFICATION_PERMISSION, guestReadyNotificationAction } from './guestReadyNotification'
+import { GUEST_READY_NOTIFICATION_PERMISSION, guestReadyNotificationAction, guestReadyOutsideKeyAction } from './guestReadyNotification'
 
 export type WorkTaskActionId =
   | 'upload_key_photo'
@@ -12,6 +12,8 @@ export type WorkTaskActionId =
   | 'mark_guest_checkout'
   | 'record_guest_ready_notified'
   | 'revoke_guest_ready_notified'
+  | 'register_guest_ready_outside_key'
+  | 'cancel_guest_ready_outside_key'
 
 export type WorkTaskActionTarget =
   | 'TaskDetail'
@@ -258,7 +260,7 @@ export function buildWebTaskManagementPayload(input: WebTaskManagementInput, con
       make({ id: 'set_inspection_mode', label: '设置检查安排', placement: 'drawer', intent: 'inspection', applicable: input.canConfigureInspection }),
       make({ id: 'set_inspection_scope', label: '设置检查执行方式', placement: 'drawer', intent: 'inspection', applicable: input.pureCheckin }),
       make({ id: 'set_keys_hung', label: '标记已挂钥匙', placement: 'drawer', intent: 'status', applicable: input.pureCheckin }),
-      make({ id: 'set_task_completed', label: '标记任务已结束', placement: 'drawer', intent: 'status', applicable: input.deferredInspection || input.inspectionMode === 'deferred' }),
+      make({ id: 'set_task_completed', label: '管理关闭（不代表检查完成）', placement: 'drawer', intent: 'status', applicable: input.deferredInspection || input.inspectionMode === 'deferred' }),
       make({ id: 'save_participants', label: '保存协作者授权', placement: 'drawer', intent: 'participants' }),
       make({ id: 'add_checkout', label: '新增退房任务', placement: 'drawer', intent: 'schedule' }),
       make({ id: 'add_checkin', label: '新增入住任务', placement: 'drawer', intent: 'schedule' }),
@@ -596,6 +598,11 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
     hasPermission(permissions, GUEST_READY_NOTIFICATION_PERMISSION),
   )
   if (guestReadyAction) addAction(guestReadyAction)
+  const guestReadyOutsideKeyRequirementAction = guestReadyOutsideKeyAction(
+    task?.guest_ready_outside_key || null,
+    hasPermission(permissions, GUEST_READY_NOTIFICATION_PERMISSION),
+  )
+  if (guestReadyOutsideKeyRequirementAction) addAction(guestReadyOutsideKeyRequirementAction)
 
   return {
     capabilities: {

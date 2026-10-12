@@ -11,6 +11,7 @@ export type WorkTaskActionAuditInput = {
   performedByName?: string | null
   statusBefore?: string | null
   statusAfter?: string | null
+  performedAt?: string | null
   metadata?: Record<string, any> | null
 }
 
@@ -54,6 +55,137 @@ const INSPECTION_PHOTO_MEDIA_TYPES = [
   'inspection_shower_drain',
   'inspection_unclean',
 ]
+
+const PAYABLE_EXECUTION_ACTIONS = new Set<WorkTaskActionId>([
+  'fill_supplies',
+  'complete_cleaning',
+  'submit_inspection',
+])
+
+function melbourneDate(value: string) {
+  const date = new Date(value)
+  if (!Number.isFinite(date.getTime())) return ''
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Australia/Melbourne',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date)
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  return `${byType.year}-${byType.month}-${byType.day}`
+}
+
+function executionKind(actionId: WorkTaskActionId) {
+  return actionId === 'submit_inspection' ? 'inspection' : 'cleaning'
+}
+
+/**
+ * Freeze the business facts used by settlement before later schedule/status edits
+ * can change their meaning. This deliberately lives in the existing immutable
+ * action-audit metadata so MZ-031 needs no schema or historical write-back.
+ */
+export async function buildWorkExecutionSnapshot(input: {
+  taskId: string
+  actionId: WorkTaskActionId
+  performedAt: string
+  performedByUserId: string | null
+  performedByName: string | null
+  statusBefore: string | null
+  statusAfter: string | null
+  inspectionSubmissionComplete?: boolean
+  finalizationPending?: boolean
+}, executor: Queryable): Promise<Record<string, any>> {
+  if (!PAYABLE_EXECUTION_ACTIONS.has(input.actionId)) return {}
+  const kind = executionKind(input.actionId)
+  let task: any = null
+  let evidence: any[] = []
+  try {
+    const taskResult = await executor.query(
+      `SELECT t.id::text AS task_id,
+              t.property_id::text AS property_id,
+              COALESCE(NULLIF(TRIM(p.code), ''), NULLIF(TRIM(p.address), ''), t.property_id::text) AS property_label,
+              NULLIF(TRIM(p.type), '') AS property_type,
+              COALESCE(NULLIF(TRIM(t.task_type), ''), NULLIF(TRIM(t.type), '')) AS task_type,
+              COALESCE(t.task_date, t.date)::text AS scheduled_service_date,
+              t.inspection_due_date::text AS inspection_due_date,
+              t.inspection_mode,
+              t.inspection_scope,
+              t.assignee_id::text AS assignee_id,
+              t.cleaner_id::text AS cleaner_id,
+              t.inspector_id::text AS inspector_id
+         FROM cleaning_tasks t
+         LEFT JOIN properties p ON p.id::text = t.property_id::text OR upper(p.code::text) = upper(t.property_id::text)
+        WHERE t.id::text = $1::text
+        LIMIT 1`,
+      [input.taskId],
+    )
+    task = taskResult?.rows?.[0] || null
+  } catch {
+    task = null
+  }
+  try {
+    const mediaTypes = kind === 'inspection'
+      ? INSPECTION_PHOTO_MEDIA_TYPES
+      : ['consumable_living_room_photo', 'completion_photo', 'key_photo']
+    const mediaResult = await executor.query(
+      `SELECT id::text AS media_id, type, url, note, captured_at::text, created_at::text
+         FROM cleaning_task_media
+        WHERE task_id::text = $1::text
+          AND (
+            type = ANY($2::text[])
+            OR ($3::boolean = true AND type LIKE 'completion_%')
+          )
+          AND COALESCE(TRIM(url), '') <> ''
+        ORDER BY captured_at NULLS LAST, created_at, id`,
+      [input.taskId, mediaTypes, kind === 'cleaning'],
+    )
+    evidence = (mediaResult?.rows || []).map((row: any) => ({
+      media_id: cleanText(row.media_id) || null,
+      type: cleanText(row.type) || null,
+      reference_hash: cleanText(row.url)
+        ? crypto.createHash('sha256').update(cleanText(row.url)).digest('hex')
+        : null,
+      note: cleanText(row.note) || null,
+      captured_at: cleanText(row.captured_at || row.created_at) || null,
+    }))
+  } catch {
+    evidence = []
+  }
+  const serviceDate = melbourneDate(input.performedAt)
+  return {
+    execution_record_version: 'mz031-v1',
+    execution_key: `${kind}:${input.taskId}`,
+    execution_kind: kind,
+    execution_state: input.finalizationPending === true ? 'submitted' : 'completed',
+    actual_service_date: serviceDate || null,
+    performed_at: input.performedAt,
+    performed_by_user_id: input.performedByUserId,
+    performed_by_name: input.performedByName,
+    status_before_snapshot: input.statusBefore,
+    status_after_snapshot: input.statusAfter,
+    inspection_submission_complete: input.inspectionSubmissionComplete === true,
+    task_snapshot: {
+      task_id: input.taskId,
+      task_type: cleanText(task?.task_type) || null,
+      scheduled_service_date: cleanText(task?.scheduled_service_date).slice(0, 10) || null,
+      inspection_due_date: cleanText(task?.inspection_due_date).slice(0, 10) || null,
+      inspection_mode: cleanText(task?.inspection_mode) || null,
+      inspection_scope: cleanText(task?.inspection_scope) || null,
+    },
+    property_snapshot: {
+      property_id: cleanText(task?.property_id) || null,
+      property_label: cleanText(task?.property_label) || null,
+      property_type: cleanText(task?.property_type) || null,
+    },
+    assignment_snapshot: {
+      assignee_id: cleanText(task?.assignee_id) || null,
+      cleaner_id: cleanText(task?.cleaner_id) || null,
+      inspector_id: cleanText(task?.inspector_id) || null,
+    },
+    evidence_snapshot: evidence,
+    evidence_count: evidence.length,
+  }
+}
 
 export async function getCleaningSubmissionState(taskId: string, executor: Queryable | null = pgPool): Promise<CleaningSubmissionState> {
   const id = cleanText(taskId)
@@ -260,9 +392,12 @@ export async function resolvePerformedByName(userId: string, fallback?: string |
 
 export function actorAndPerformerFromRequest(user: any, body: any) {
   const actorUserId = cleanText(user?.sub)
-  const performedByUserId = cleanText(body?.performed_by_user_id) || actorUserId
-  const performedByName = cleanText(body?.performed_by_name) || null
-  return { actorUserId, performedByUserId, performedByName }
+  // Field clients still send these legacy keys, but a field action must never
+  // be able to redirect settlement credit or forge a display name.  A future
+  // managed on-behalf-of flow needs its own permission and server-side target
+  // validation; ordinary task endpoints always credit the authenticated actor.
+  void body
+  return { actorUserId, performedByUserId: actorUserId, performedByName: null }
 }
 
 export async function recordWorkTaskActionAudit(input: WorkTaskActionAuditInput, executor: Queryable | null = pgPool) {
@@ -274,7 +409,7 @@ export async function recordWorkTaskActionAudit(input: WorkTaskActionAuditInput,
   if (!sourceType || !sourceId || !input.performedAsAction) return null
   const performedByName = await resolvePerformedByName(performedByUserId || '', input.performedByName, executor)
   const id = crypto.randomUUID()
-  const performedAt = new Date().toISOString()
+  const performedAt = cleanText(input.performedAt) || new Date().toISOString()
   await executor.query(
     `INSERT INTO work_task_action_audits (
        id,
@@ -331,12 +466,16 @@ export async function applyCleaningTaskActionTransition(input: CleaningTaskTrans
             finished_at
        FROM cleaning_tasks
       WHERE id::text = $1::text
-      LIMIT 1`,
+      LIMIT 1
+      FOR UPDATE`,
     [taskId],
   )
   const row = r?.rows?.[0] || null
   if (!row) return { status_before: null, status_after: null, audit: null }
   const statusBefore = cleanText(row.status)
+  if (lower(statusBefore) === 'cancelled' || lower(statusBefore) === 'canceled') {
+    throw new Error('task_is_cancelled')
+  }
   const taskType = lower(row.task_type)
   const requiresInspectionPhotos = lower(row.inspection_scope) !== 'password_only'
   const isCheckinInspectAndHang = taskType === 'checkin_clean' && requiresInspectionPhotos
@@ -417,17 +556,33 @@ export async function applyCleaningTaskActionTransition(input: CleaningTaskTrans
       values,
     )
   }
+  const performedAt = new Date().toISOString()
+  const performedByUserId = cleanText(input.performedByUserId) || cleanText(input.actorUserId) || null
+  const performedByName = await resolvePerformedByName(performedByUserId || '', input.performedByName, executor)
+  const executionSnapshot = await buildWorkExecutionSnapshot({
+    taskId,
+    actionId: input.actionId,
+    performedAt,
+    performedByUserId,
+    performedByName,
+    statusBefore: statusBefore || null,
+    statusAfter: statusAfter || null,
+    inspectionSubmissionComplete: input.actionId === 'submit_inspection' && inspectionPhotosSaved,
+    finalizationPending,
+  }, executor)
   const audit = await recordWorkTaskActionAudit({
     sourceType: 'cleaning_tasks',
     sourceId: taskId,
     performedAsAction: input.actionId,
     actorUserId: input.actorUserId,
-    performedByUserId: input.performedByUserId,
-    performedByName: input.performedByName,
+    performedByUserId,
+    performedByName,
     statusBefore,
     statusAfter,
+    performedAt,
     metadata: {
       ...(input.metadata || {}),
+      ...executionSnapshot,
       ...(recoveredStatus ? { key_photo_status_recovered_from: recoveredStatus } : {}),
       ...(finalizationPending ? { finalization_pending: true, missing_requirements: missingRequirements } : {}),
     },

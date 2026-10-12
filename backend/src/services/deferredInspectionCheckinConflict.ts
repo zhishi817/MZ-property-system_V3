@@ -1,5 +1,5 @@
 import { hasPg, pgPool } from '../dbAdapter'
-import { buildCleaningTaskVisibilityHints, emitWorkTaskEvent } from './workTaskEvents'
+import { buildCleaningTaskVisibilityHints, buildMz031CleaningArrangementRevision, emitWorkTaskEvent } from './workTaskEvents'
 import { emitNotificationEvent } from './notificationEvents'
 
 const TERMINAL_DEFERRED_INSPECTION_STATUSES = new Set([
@@ -29,6 +29,7 @@ export type DeferredInspectionCheckinConflictInput = {
   order_id?: string | null
   order_status?: string | null
   checkin_time?: string | null
+  inspection_completed_at?: string | null
 }
 
 export type DeferredInspectionCheckinConflict = {
@@ -110,6 +111,10 @@ function isInspectionBearingCheckin(task: DeferredInspectionCheckinConflictInput
   return isActiveCheckin(task) && lower(task.inspection_scope) !== 'password_only'
 }
 
+function isCompletedInspectionBearingCheckin(task: DeferredInspectionCheckinConflictInput) {
+  return isInspectionBearingCheckin(task) && !!text(task.inspection_completed_at)
+}
+
 function isWithinDeferredReplacementWindow(
   deferred: DeferredInspectionCheckinConflictInput,
   checkin: DeferredInspectionCheckinConflictInput,
@@ -146,7 +151,7 @@ function compareDeferredForReplacement(left: DeferredInspectionCheckinConflictIn
  */
 export function findDeferredInspectionCheckinReplacements(rows: DeferredInspectionCheckinConflictInput[]): DeferredInspectionCheckinReplacement[] {
   const deferredTasks = (rows || []).filter(isOpenDeferredInspection)
-  const checkins = (rows || []).filter(isInspectionBearingCheckin).sort(compareCheckins)
+  const checkins = (rows || []).filter(isCompletedInspectionBearingCheckin).sort(compareCheckins)
   const claimedDeferredTaskIds = new Set<string>()
   const replacements: DeferredInspectionCheckinReplacement[] = []
 
@@ -266,7 +271,7 @@ function isAutomaticallyReplacedDeferredInspection(task: DeferredInspectionCheck
 }
 
 function replacementWindowForStoredTask(deferred: DeferredInspectionCheckinConflictInput, checkin: DeferredInspectionCheckinConflictInput) {
-  if (!isInspectionBearingCheckin(checkin)) return false
+  if (!isCompletedInspectionBearingCheckin(checkin)) return false
   if (text(deferred.property_id) !== text(checkin.property_id)) return false
   if (!dayOnly(deferred.inspection_replaced_original_due_date)) return false
   return isWithinDeferredReplacementWindow({
@@ -358,7 +363,26 @@ async function loadReconciliationRows(params: {
        t.inspection_replaced_original_due_date::text AS inspection_replaced_original_due_date,
        t.order_id::text AS order_id,
        o.status::text AS order_status,
-       t.checkin_time
+       t.checkin_time,
+       (
+         SELECT MIN(a.performed_at)::text
+           FROM work_task_action_audits a
+          WHERE a.source_type='cleaning_tasks'
+            AND a.source_id::text=t.id::text
+            AND a.performed_as_action='submit_inspection'
+            AND COALESCE(a.metadata->>'route', '') <> 'mzapp.cleaning_tasks.restock_proof'
+            AND (
+              COALESCE(a.metadata->>'inspection_submission_complete','false')='true'
+              OR COALESCE(a.metadata->>'guest_arrival_skip','false')='true'
+              OR (
+                COALESCE(a.metadata->>'route', '') IN (
+                  'cleaning_app.tasks.inspection_photos',
+                  'mzapp.cleaning_tasks.inspection_photos'
+                )
+                AND lower(COALESCE(a.status_after,'')) IN ('inspected','to_hang_keys','keys_hung','ready','completed','done')
+              )
+            )
+       ) AS inspection_completed_at
      FROM cleaning_tasks t
      LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
      LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
@@ -383,6 +407,12 @@ async function emitReplacementWorkTaskEvent(params: {
     'inspection_replaced_by_checkin_task_id',
     'inspection_replaced_original_due_date',
   ]
+  const explicitReason = params.action === 'auto_completed'
+    ? 'deferred_replaced_by_completed_checkin'
+    : params.action === 'restored'
+    ? 'deferred_replacement_restored'
+    : 'deferred_replacement_relinked'
+  const arrangementRevision = buildMz031CleaningArrangementRevision(params.before, params.after, [explicitReason])
   await emitWorkTaskEvent({
     taskId: `cleaning_task:${String(params.after.id)}`,
     sourceType: 'cleaning_tasks',
@@ -397,6 +427,7 @@ async function emitReplacementWorkTaskEvent(params: {
       inspection_replaced_original_due_date: params.after.inspection_replaced_original_due_date,
       inspection_replacement_action: params.action,
     },
+    payload: arrangementRevision ? { arrangement_revision: arrangementRevision } : undefined,
     causedByUserId: params.actorUserId || null,
     visibilityHints: buildCleaningTaskVisibilityHints(params.after),
   }, params.client)
@@ -458,9 +489,11 @@ async function updateAutomaticallyReplacedDeferredInspection(params: {
 }
 
 /**
- * Completes a deferred inspection only when a same-property check-in inspection
- * falls from the checkout day through the deferred due day. It also restores the
- * original deferred inspection if that replacing check-in later becomes invalid.
+ * Completes a deferred inspection only after a same-property check-in has an
+ * audited inspection submission inside the replacement window. Merely creating,
+ * assigning or starting a check-in task never closes the deferred inspection.
+ * It also restores the original deferred inspection if that replacing execution
+ * later becomes invalid.
  */
 export async function reconcileDeferredInspectionCheckinReplacement(params: {
   taskIds?: string[]

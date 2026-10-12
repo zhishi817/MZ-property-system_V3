@@ -67,6 +67,65 @@ export type EmitWorkTaskEventInput = {
   visibilityHints?: Record<string, any> | null
 }
 
+function arrangementText(value: unknown) {
+  const text = String(value ?? '').trim()
+  return text || null
+}
+
+function arrangementDay(value: unknown) {
+  const match = /^(\d{4}-\d{2}-\d{2})/.exec(String(value ?? '').trim())
+  return match?.[1] || null
+}
+
+/**
+ * Append-only MZ-031 schedule/assignee snapshot shared by every cleaning-task
+ * mutation path.  Status-only management actions deliberately return null:
+ * they are not reschedules and must not hide the original planned row.
+ */
+export function buildMz031CleaningArrangementRevision(before: any, after: any, additionalReasons: string[] = []) {
+  if (!before || !after) return null
+  const beforeSnapshot = {
+    scheduled_service_date: arrangementDay(before.task_date ?? before.date),
+    cleaner_id: arrangementText(before.cleaner_id),
+    assignee_id: arrangementText(before.assignee_id),
+    inspector_id: arrangementText(before.inspector_id),
+    inspection_mode: arrangementText(before.inspection_mode),
+    inspection_scope: arrangementText(before.inspection_scope),
+    inspection_due_date: arrangementDay(before.inspection_due_date),
+    status: arrangementText(before.status),
+  }
+  const afterSnapshot = {
+    scheduled_service_date: arrangementDay(after.task_date ?? after.date),
+    cleaner_id: arrangementText(after.cleaner_id),
+    assignee_id: arrangementText(after.assignee_id),
+    inspector_id: arrangementText(after.inspector_id),
+    inspection_mode: arrangementText(after.inspection_mode),
+    inspection_scope: arrangementText(after.inspection_scope),
+    inspection_due_date: arrangementDay(after.inspection_due_date),
+    status: arrangementText(after.status),
+  }
+  const scheduleChanged = beforeSnapshot.scheduled_service_date !== afterSnapshot.scheduled_service_date
+  const assignmentChanged = beforeSnapshot.cleaner_id !== afterSnapshot.cleaner_id
+    || beforeSnapshot.assignee_id !== afterSnapshot.assignee_id
+    || beforeSnapshot.inspector_id !== afterSnapshot.inspector_id
+  const inspectionPlanChanged = beforeSnapshot.inspection_mode !== afterSnapshot.inspection_mode
+    || beforeSnapshot.inspection_scope !== afterSnapshot.inspection_scope
+    || beforeSnapshot.inspection_due_date !== afterSnapshot.inspection_due_date
+  const explicitReasons = Array.from(new Set(additionalReasons.map(arrangementText).filter(Boolean))) as string[]
+  if (!scheduleChanged && !assignmentChanged && !inspectionPlanChanged && explicitReasons.length === 0) return null
+  return {
+    version: 'mz031-v1',
+    reasons: [
+      ...(scheduleChanged ? ['scheduled_service_date_changed'] : []),
+      ...(assignmentChanged ? ['assignment_changed'] : []),
+      ...(inspectionPlanChanged ? ['inspection_plan_changed'] : []),
+      ...explicitReasons,
+    ],
+    before: beforeSnapshot,
+    after: afterSnapshot,
+  }
+}
+
 type SSEClient = {
   req: Request
   res: Response

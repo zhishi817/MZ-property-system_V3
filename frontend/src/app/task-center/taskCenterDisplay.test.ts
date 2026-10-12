@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { cleaningNightsDisplayLabels, cleaningTaskFlowLabelText, deferredInspectionConflictPresentation, guestReadyNotificationPresentation, hasTaskCenterRequiredExecutor, isDeferredInspectionDisplayTask, maintenanceDetailContentText, resolveTaskCenterColumns, taskCenterBoardInspectionDueDate, taskCenterDailyGroupCounts, taskCenterInspectionAssignmentPatch } from './taskCenterDisplay'
+import { cleaningNightsDisplayLabels, cleaningTaskFlowLabelText, deferredInspectionConflictPresentation, guestReadyNotificationPresentation, guestReadyOperationId, hasTaskCenterRequiredExecutor, isDeferredInspectionDisplayTask, maintenanceDetailContentText, resolveTaskCenterColumns, taskCenterBoardInspectionDueDate, taskCenterDailyGroupCounts, taskCenterInspectionAssignmentPatch } from './taskCenterDisplay'
 
 describe('taskCenterDisplay', () => {
+  it('reuses the guest-ready operation id for the same authoritative version', () => {
+    expect(guestReadyOperationId({ orderId: 'order-1', action: 'mark', expectedVersion: 4 }))
+      .toBe('guest-ready:mark:4:order-1')
+    expect(guestReadyOperationId({ orderId: 'order-1', action: 'mark', expectedVersion: 5 }))
+      .toBe('guest-ready:mark:5:order-1')
+    expect(guestReadyOperationId({ orderId: '', action: 'mark', expectedVersion: 4 })).toBeNull()
+  })
+
   it('treats deferred inspection tasks as inspection-oriented display', () => {
     expect(isDeferredInspectionDisplayTask({
       task_source: 'cleaning',
@@ -186,7 +194,7 @@ describe('taskCenterDisplay', () => {
   })
 
   it('presents guest-ready notification state without implying a message was sent by the app', () => {
-    expect(guestReadyNotificationPresentation({ guest_ready_notification: { status: 'not_notified' } })).toEqual({
+    expect(guestReadyNotificationPresentation({ guest_ready_notification: { status: 'not_notified' } }, 'customer_service')).toEqual({
       label: '客人未通知',
       tone: 'pending',
       detail: '',
@@ -197,10 +205,13 @@ describe('taskCenterDisplay', () => {
         notified_at: '2026-10-04T01:02:03.000Z',
         notified_by_name: '客服 A',
       },
-    })).toEqual({
+    }, 'customer_service')).toEqual({
       label: '已通知客人',
       tone: 'success',
       detail: '客服 A · 2026-10-04T01:02:03.000Z',
     })
+    for (const role of ['admin', 'offline_manager', 'cleaner', 'cleaning_inspector']) {
+      expect(guestReadyNotificationPresentation({ guest_ready_notification: { status: 'not_notified' } }, role)).toBeNull()
+    }
   })
 })

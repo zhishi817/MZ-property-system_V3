@@ -3,7 +3,7 @@ import { readFileSync } from 'fs'
 import { resolve } from 'path'
 import { v4 as uuid } from 'uuid'
 import { pgPool } from '../../src/dbAdapter'
-import { ensureCleaningSchemaV2, syncCheckinOldCodeFromPreviousStay, syncCheckoutOldCodeFromCheckinNewCode, syncOrderToCleaningTasks, backfillCleaningTasks } from '../../src/services/cleaningSync'
+import { ensureCleaningSchemaV2, guestReadyCheckinIdentityChangedFields, syncCheckinOldCodeFromPreviousStay, syncCheckoutOldCodeFromCheckinNewCode, syncOrderToCleaningTasks, backfillCleaningTasks } from '../../src/services/cleaningSync'
 import { cleaningSyncJobScope, enqueueCleaningSyncJobTx } from '../../src/services/cleaningSyncJobs'
 import { __test_dispatchCleaningSyncJob, __test_syncOrderOptionsForJob, __test_syncScopeForJob } from '../../src/services/cleaningSyncJobsWorker'
 import { db } from '../../src/store'
@@ -123,6 +123,23 @@ async function assertScopedQueueIdentity() {
 }
 
 async function main() {
+  assert.deepEqual(
+    guestReadyCheckinIdentityChangedFields(
+      { task_type: 'checkin_clean', checkin_time: '2pm', task_date: '2026-10-11', property_id: 'P1', status: 'pending', execution_state: 'active' },
+      { task_type: 'checkin_clean', checkin_time: '3pm', task_date: '2026-10-12', property_id: 'P2', status: 'cancelled', execution_state: 'cancelled' },
+    ),
+    ['checkin_time', 'status', 'execution_state', 'task_date', 'property_id'],
+    'sync must identify every changed check-in field that invalidates the guest-ready generation',
+  )
+  assert.deepEqual(
+    guestReadyCheckinIdentityChangedFields(
+      { task_type: 'checkout_clean', task_date: '2026-10-11' },
+      { task_type: 'checkout_clean', task_date: '2026-10-12' },
+    ),
+    [],
+    'checkout-only sync changes are unrelated to guest-ready authority',
+  )
+
   const o1 = uuid()
   const o2 = uuid()
   const o3 = uuid()

@@ -132,8 +132,9 @@ const claimTypeSchema = z.enum([
   'external_task', 'external_day', 'external_hour',
   'subsidy_amount', 'overtime_hour', 'new_property_task', 'custom_amount',
 ])
-const claimInputSchema = z.object({
+export const claimInputSchema = z.object({
   client_request_id: z.string().trim().regex(/^[a-zA-Z0-9_-]{8,120}$/).optional().nullable(),
+  expected_updated_at: z.string().trim().datetime({ offset: true }).optional().nullable(),
   service_date: z.string().trim().regex(DATE_ONLY),
   claim_type: claimTypeSchema,
   property_id: z.string().trim().max(120).optional().nullable(),
@@ -251,6 +252,8 @@ function errorStatus(error: any) {
     || code === 'company_expense_manual_override'
     || code === 'company_expense_paid_lock'
     || code === 'claim_request_conflict'
+    || code === 'claim_edit_conflict'
+    || code === 'claim_edit_revision_required'
     || code === 'duplicate_approved_claim'
     || code === 'claim_evidence_media_conflict'
     || code === 'settlement_claims_pending'

@@ -46,6 +46,17 @@ function uniqueText(values: Array<string | null | undefined>) {
   return Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)))
 }
 
+export function guestReadyOperationId(params: {
+  orderId: unknown
+  action: 'mark' | 'revoke' | 'register_outside_key' | 'cancel_outside_key'
+  expectedVersion: unknown
+}) {
+  const orderId = String(params.orderId ?? '').trim()
+  const expectedVersion = Number(params.expectedVersion)
+  if (!orderId || !Number.isSafeInteger(expectedVersion) || expectedVersion < 0) return null
+  return `guest-ready:${params.action}:${expectedVersion}:${orderId}`
+}
+
 function formatCheckoutDate(raw: string) {
   const text = String(raw || '').trim()
   const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/)
@@ -202,7 +213,8 @@ export function taskCenterDailyGroupCounts(tasks: TaskCenterDisplayTask[]) {
   return { turnover: keys.turnover.size, inspection: keys.inspection.size, offline: keys.offline.size }
 }
 
-export function guestReadyNotificationPresentation(task: TaskCenterDisplayTask) {
+export function guestReadyNotificationPresentation(task: TaskCenterDisplayTask, viewerRole?: string | null) {
+  if (String(viewerRole || '').trim().toLowerCase() !== 'customer_service') return null
   const notification = task.guest_ready_notification
   if (!notification) return null
   if (notification.status !== 'notified') {

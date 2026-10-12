@@ -161,6 +161,7 @@ export function effectiveInspectionMode(task: {
   inspection_mode?: any
   inspection_scope?: any
   status?: any
+  cleaner_id?: any
   inspector_id?: any
 }): InspectionMode {
   const explicit = normalizeInspectionMode(task?.inspection_mode)
@@ -181,6 +182,33 @@ export function effectiveInspectionMode(task: {
   }
   if (String(task?.inspector_id || '').trim()) return 'same_day'
   return 'pending_decision'
+}
+
+/**
+ * Legacy participant fallback for the submit_inspection business action.
+ * Manual work-task grants are evaluated separately by the route.
+ */
+export function isCleaningTaskInspectionSubmitParticipant(task: {
+  task_type?: any
+  type?: any
+  inspection_mode?: any
+  inspection_scope?: any
+  status?: any
+  inspector_id?: any
+  assignee_id?: any
+}, userId: any): boolean {
+  const uid = String(userId || '').trim()
+  if (!uid) return false
+  const mode = effectiveInspectionMode(task)
+  const scope = normalizeInspectionScope(task?.inspection_scope)
+  const kind = cleaningInspectionTaskKind(task?.task_type ?? task?.type)
+  if (scope === 'password_only') return false
+  if (mode !== 'same_day' && mode !== 'deferred') return false
+  const inspectorId = String(task?.inspector_id || '').trim()
+  const assigneeId = String(task?.assignee_id || '').trim()
+  if (kind === 'checkin') return inspectorId === uid || assigneeId === uid
+  if (kind === 'checkout') return inspectorId ? inspectorId === uid : assigneeId === uid
+  return !!inspectorId && inspectorId === uid
 }
 
 export function deferredProjectionDate(params: {
