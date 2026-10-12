@@ -1,4 +1,6 @@
 import assert from 'assert'
+import fs from 'fs'
+import path from 'path'
 import {
   deferredInspectionCheckinConflictEventId,
   findDeferredInspectionCheckinReplacements,
@@ -6,8 +8,34 @@ import {
   isDeferredInspectionCheckinConflictRelevantChange,
 } from '../../src/services/deferredInspectionCheckinConflict'
 import { getAppNotificationPolicyCatalogMeta } from '../../src/services/appNotificationPolicies'
+import { buildMz031CleaningArrangementRevision } from '../../src/services/workTaskEvents'
 
 function run() {
+  const source = fs.readFileSync(path.resolve(__dirname, '../../src/services/deferredInspectionCheckinConflict.ts'), 'utf8')
+  const inspectionAuditQuery = source.slice(source.indexOf('SELECT MIN(a.performed_at)'), source.indexOf('AS inspection_completed_at'))
+  assert.doesNotMatch(inspectionAuditQuery, /item_count/)
+  assert.match(inspectionAuditQuery, /<> 'mzapp\.cleaning_tasks\.restock_proof'/)
+  assert.match(inspectionAuditQuery, /cleaning_app\.tasks\.inspection_photos/)
+  assert.match(inspectionAuditQuery, /mzapp\.cleaning_tasks\.inspection_photos/)
+  assert.strictEqual(buildMz031CleaningArrangementRevision(
+    { task_date: '2026-08-01', cleaner_id: 'cleaner-1', status: 'assigned' },
+    { task_date: '2026-08-01', cleaner_id: 'cleaner-1', status: 'completed' },
+  ), null, 'management close is not an arrangement revision')
+  assert.deepStrictEqual(buildMz031CleaningArrangementRevision(
+    { task_date: '2026-08-01', cleaner_id: 'cleaner-1', status: 'assigned' },
+    { task_date: '2026-08-03', cleaner_id: 'cleaner-2', status: 'assigned' },
+  )?.reasons, ['scheduled_service_date_changed', 'assignment_changed'])
+  assert.deepStrictEqual(buildMz031CleaningArrangementRevision(
+    { task_date: '2026-08-01', cleaner_id: 'cleaner-1', inspection_mode: 'deferred', inspection_due_date: '2026-08-02' },
+    { task_date: '2026-08-01', cleaner_id: 'cleaner-1', inspection_mode: 'deferred', inspection_due_date: '2026-08-04' },
+  )?.reasons, ['inspection_plan_changed'])
+  assert.deepStrictEqual(buildMz031CleaningArrangementRevision(
+    { task_date: '2026-08-01', inspector_id: 'inspector-1', inspection_mode: 'deferred', inspection_due_date: '2026-08-02' },
+    { task_date: '2026-08-01', inspector_id: 'inspector-1', inspection_mode: 'checked_done', inspection_due_date: null },
+    ['deferred_replaced_by_completed_checkin'],
+  )?.reasons, ['inspection_plan_changed', 'deferred_replaced_by_completed_checkin'])
+  assert.match(source, /buildMz031CleaningArrangementRevision\(params\.before, params\.after, \[explicitReason\]\)/)
+  assert.match(source, /payload: arrangementRevision \? \{ arrangement_revision: arrangementRevision \} : undefined/)
   const conflicts = findDeferredInspectionCheckinConflicts([
     {
       id: 'deferred-a',
@@ -35,6 +63,7 @@ function run() {
       task_type: 'checkin_clean',
       task_date: '2026-08-05',
       inspection_scope: 'inspect_and_hang',
+      inspection_completed_at: '2026-08-01T05:00:00.000Z',
       status: 'pending',
       execution_state: 'active',
     },
@@ -79,6 +108,7 @@ function run() {
       task_type: 'checkin_clean',
       task_date: '2026-08-01',
       inspection_scope: 'inspect_and_hang',
+      inspection_completed_at: '2026-08-01T05:00:00.000Z',
       status: 'pending',
       execution_state: 'active',
     },
@@ -103,6 +133,27 @@ function run() {
     deferredDate: '2026-08-01',
     dueDate: '2026-08-02',
   }])
+
+  const notYetInspected = findDeferredInspectionCheckinReplacements([
+    {
+      id: 'deferred-awaiting-checkin-inspection',
+      property_id: 'property-a',
+      task_type: 'checkout_clean',
+      task_date: '2026-08-01',
+      inspection_mode: 'deferred',
+      inspection_due_date: '2026-08-02',
+      status: 'pending',
+    },
+    {
+      id: 'checkin-created-only',
+      property_id: 'property-a',
+      task_type: 'checkin_clean',
+      task_date: '2026-08-02',
+      inspection_scope: 'inspect_and_hang',
+      status: 'assigned',
+    },
+  ])
+  assert.deepStrictEqual(notYetInspected, [], 'a check-in assignment is not proof that inspection work finished')
 
   const passwordOnlyReplacements = findDeferredInspectionCheckinReplacements([
     {

@@ -1,9 +1,9 @@
-import { hasPg, pgPool } from '../dbAdapter'
+import { hasPg, pgPool, pgRunInTransaction } from '../dbAdapter'
 import { db } from '../store'
 import { createHash } from 'crypto'
 import { v4 as uuid } from 'uuid'
 import { defaultInspectionModeForTaskType } from '../lib/cleaningInspection'
-import { buildCleaningTaskVisibilityHints, emitWorkTaskEvent } from './workTaskEvents'
+import { buildCleaningTaskVisibilityHints, buildMz031CleaningArrangementRevision, emitWorkTaskEvent } from './workTaskEvents'
 import { emitDeferredInspectionCheckinConflictAlerts, reconcileDeferredInspectionCheckinReplacement } from './deferredInspectionCheckinConflict'
 
 export type CleaningSyncAction =
@@ -49,6 +49,66 @@ const NON_SUPERSEDABLE_MANUAL_STATUSES = new Set([
 
 const DEFAULT_CHECKOUT_TIME = '10am'
 const DEFAULT_CHECKIN_TIME = '3pm'
+
+const GUEST_READY_CHECKIN_IDENTITY_FIELDS = [
+  'checkin_time',
+  'order_id',
+  'task_type',
+  'type',
+  'status',
+  'execution_state',
+  'task_date',
+  'date',
+  'property_id',
+] as const
+
+function comparableTaskField(value: any) {
+  if (value instanceof Date) return value.toISOString()
+  return value == null ? null : String(value)
+}
+
+function cleaningTaskKind(row: any) {
+  return String(row?.task_type ?? row?.type ?? '').trim().toLowerCase()
+}
+
+export function guestReadyCheckinIdentityChangedFields(before: any, after: any) {
+  if (cleaningTaskKind(before) !== CHECKIN_TASK_TYPE && cleaningTaskKind(after) !== CHECKIN_TASK_TYPE) return []
+  return GUEST_READY_CHECKIN_IDENTITY_FIELDS.filter((field) => (
+    comparableTaskField(before?.[field]) !== comparableTaskField(after?.[field])
+  ))
+}
+
+async function emitGuestReadyCheckinAuthorityEvent(params: {
+  before: any
+  after: any
+  eventType: 'TASK_CREATED' | 'TASK_UPDATED' | 'TASK_REMOVED'
+  client?: any
+}) {
+  const changedIdentityFields = guestReadyCheckinIdentityChangedFields(params.before, params.after)
+  if (!changedIdentityFields.length) return
+  const task = params.after || params.before
+  const taskId = String(task?.id || '').trim()
+  if (!taskId) return
+  await emitWorkTaskEvent({
+    taskId: `cleaning_task:${taskId}`,
+    sourceType: 'cleaning_tasks',
+    sourceRefIds: [taskId],
+    eventType: params.eventType,
+    changeScope: params.eventType === 'TASK_UPDATED' ? 'list' : 'membership',
+    changedFields: Array.from(new Set([
+      ...changedIdentityFields,
+      'order_id_checkin',
+      'guest_ready_notification',
+      'guest_ready_outside_key',
+      'available_actions',
+    ])),
+    // These projections are current-role-specific. The event is only an
+    // invalidation signal; every recipient must refetch its own projection.
+    patch: {},
+    causedByUserId: null,
+    visibilityHints: buildCleaningTaskVisibilityHints(task),
+  }, params.client)
+}
 
 export function activeCleaningTaskWhereSql(alias = 't'): string {
   const a = alias ? `${alias}.` : ''
@@ -214,7 +274,12 @@ async function loadOrder(orderId: string, client?: any): Promise<any | null> {
   return db.orders.find((o: any) => String(o.id) === String(orderId)) || null
 }
 
-async function loadTaskByOrder(orderId: string, taskType: string, client?: any): Promise<any | null> {
+async function loadTaskByOrder(
+  orderId: string,
+  taskType: string,
+  client?: any,
+  opts?: { forUpdate?: boolean },
+): Promise<any | null> {
   if (hasPg && (client || pgPool)) {
     await ensureCleaningSchemaV2()
     const exec = client || pgPool!
@@ -231,7 +296,8 @@ async function loadTaskByOrder(orderId: string, taskType: string, client?: any):
            ELSE 1
          END,
          updated_at DESC NULLS LAST
-       LIMIT 1`,
+       LIMIT 1
+       ${opts?.forUpdate ? 'FOR UPDATE' : ''}`,
       [String(orderId), String(taskType).toLowerCase()]
     )
     return r?.rows?.[0] || null
@@ -614,19 +680,35 @@ async function supersedeTemporaryManualTasksForOrder(params: {
           meta: { reason: 'manual_placeholder_supersede_inherit', source_task_id: String(manual.id || ''), changed_fields: merge.changedFields },
           client: exec,
         })
-        try {
-          await emitWorkTaskEvent({
-            taskId: `cleaning_task:${String(official.id)}`,
-            sourceType: 'cleaning_tasks',
-            sourceRefIds: [String(official.id)],
-            eventType: 'TASK_UPDATED',
-            changeScope: merge.changedFields.some((field) => field === 'checkin_time' || field === 'checkout_time') ? 'list' : 'detail',
-            changedFields: merge.changedFields,
-            patch: Object.fromEntries(merge.changedFields.map((field) => [field, (afterOfficial as any)?.[field] ?? (merge.patch as any)[field]])),
-            causedByUserId: null,
-            visibilityHints: buildCleaningTaskVisibilityHints(afterOfficial || official),
-          }, exec)
-        } catch {}
+        const guestReadyIdentityChangedFields = guestReadyCheckinIdentityChangedFields(beforeOfficial, afterOfficial || official)
+        const eventInput = {
+          taskId: `cleaning_task:${String(official.id)}`,
+          sourceType: 'cleaning_tasks',
+          sourceRefIds: [String(official.id)],
+          eventType: 'TASK_UPDATED' as const,
+          changeScope: merge.changedFields.some((field) => field === 'checkin_time' || field === 'checkout_time') ? 'list' as const : 'detail' as const,
+          changedFields: guestReadyIdentityChangedFields.length
+            ? Array.from(new Set([
+                ...merge.changedFields,
+                'order_id_checkin',
+                'guest_ready_notification',
+                'guest_ready_outside_key',
+                'available_actions',
+              ]))
+            : merge.changedFields,
+          patch: guestReadyIdentityChangedFields.length
+            ? {}
+            : Object.fromEntries(merge.changedFields.map((field) => [field, (afterOfficial as any)?.[field] ?? (merge.patch as any)[field]])),
+          causedByUserId: null,
+          visibilityHints: buildCleaningTaskVisibilityHints(afterOfficial || official),
+        }
+        if (guestReadyIdentityChangedFields.length) {
+          // Qualification changes and their invalidation event must share the
+          // caller's transaction; an event failure rolls the task write back.
+          await emitWorkTaskEvent(eventInput, exec)
+        } else {
+          try { await emitWorkTaskEvent(eventInput, exec) } catch {}
+        }
       }
       const patch = {
         execution_state: SUPERSEDED_EXECUTION_STATE,
@@ -970,12 +1052,16 @@ async function syncOneTask(params: {
   conflictRetry?: boolean
 }) {
   const { jobId, orderId, deleted, client, taskType, date, statusLower, propertyId, derivedCode, keysRequired, protectExisting = false, createOnly = false, conflictRetry = true } = params
-  const beforeTask = await loadTaskByOrder(orderId, taskType, client)
+  // The sync decision and its write must observe one serialized task row.
+  // Otherwise a concurrent manual arrangement can commit after this read and
+  // be overwritten (or misreported as a sync-originated arrangement change).
+  const beforeTask = await loadTaskByOrder(orderId, taskType, client, { forUpdate: true })
 
   if (deleted || !date) {
     if (beforeTask) {
       const after = await updateTaskById(String(beforeTask.id), { status: 'cancelled', execution_state: CANCELLED_EXECUTION_STATE }, client)
       await logCleaningSync({ jobId, orderId, taskId: beforeTask.id, action: 'cancelled', before: beforeTask, after, meta: { deleted, date, taskType }, client })
+      await emitGuestReadyCheckinAuthorityEvent({ before: beforeTask, after, eventType: 'TASK_REMOVED', client })
       return { action: 'cancelled' as const }
     }
     await logCleaningSync({ jobId, orderId, taskId: null, action: 'no_change', before: null, after: null, meta: { deleted, date, taskType }, client })
@@ -1027,6 +1113,7 @@ async function syncOneTask(params: {
       return { action: protectExisting ? ('skipped_protected' as const) : ('failed' as const) }
     }
     await logCleaningSync({ jobId, orderId, taskId: after?.id, action: 'created', before: null, after, meta: { fingerprint, taskType }, client })
+    await emitGuestReadyCheckinAuthorityEvent({ before: null, after, eventType: 'TASK_CREATED', client })
     return { action: 'created' as const }
   }
 
@@ -1089,16 +1176,66 @@ async function syncOneTask(params: {
   }
   const after = await updateTaskById(String(beforeTask.id), patch, client)
   await logCleaningSync({ jobId, orderId, taskId: beforeTask.id, action: 'updated', before: beforeTask, after, meta: { fingerprint, propChanged, taskType }, client })
+  await emitGuestReadyCheckinAuthorityEvent({ before: beforeTask, after, eventType: 'TASK_UPDATED', client })
+  const arrangementRevision = buildMz031CleaningArrangementRevision(beforeTask, after)
+  if (arrangementRevision) {
+    const exec = client || pgPool
+    if (exec) {
+      await emitWorkTaskEvent({
+        taskId: `cleaning_task:${String(beforeTask.id)}`,
+        sourceType: 'cleaning_tasks',
+        sourceRefIds: [String(beforeTask.id)],
+        eventType: 'TASK_ASSIGNMENT_CHANGED',
+        changeScope: 'membership',
+        changedFields: [
+          ...(arrangementRevision.before.scheduled_service_date !== arrangementRevision.after.scheduled_service_date ? ['task_date', 'date'] : []),
+          ...(arrangementRevision.before.cleaner_id !== arrangementRevision.after.cleaner_id ? ['cleaner_id'] : []),
+          ...(arrangementRevision.before.assignee_id !== arrangementRevision.after.assignee_id ? ['assignee_id'] : []),
+          ...(arrangementRevision.before.inspector_id !== arrangementRevision.after.inspector_id ? ['inspector_id'] : []),
+          ...(arrangementRevision.before.inspection_mode !== arrangementRevision.after.inspection_mode ? ['inspection_mode'] : []),
+          ...(arrangementRevision.before.inspection_scope !== arrangementRevision.after.inspection_scope ? ['inspection_scope'] : []),
+          ...(arrangementRevision.before.inspection_due_date !== arrangementRevision.after.inspection_due_date ? ['inspection_due_date'] : []),
+        ],
+        patch: {},
+        payload: { arrangement_revision: arrangementRevision },
+        causedByUserId: null,
+        visibilityHints: buildCleaningTaskVisibilityHints(after || beforeTask),
+      }, exec)
+    }
+  }
   return { action: 'updated' as const }
 }
 
-export async function syncOrderToCleaningTasks(orderId: string, opts?: SyncOrderToCleaningTasksOpts) {
+export async function syncOrderToCleaningTasks(
+  orderId: string,
+  opts?: SyncOrderToCleaningTasksOpts,
+): Promise<{ action: CleaningSyncAction } | null> {
   const id = String(orderId || '').trim()
-  const client = opts?.client
   const deleted = !!opts?.deleted
   const jobId = opts?.jobId ? String(opts.jobId) : null
   const scope: CleaningSyncScope = opts?.scope === 'checkin_only' ? 'checkin_only' : 'full'
   const startedAt = Date.now()
+  if (hasPg && pgPool && !opts?.client) {
+    try {
+      return await pgRunInTransaction((client) => syncOrderToCleaningTasks(id, { ...(opts || {}), client }))
+    } catch (error: any) {
+      // The business transaction is already rolled back. Persist the failure
+      // audit separately so the rollback does not erase the diagnostic row.
+      try {
+        await logCleaningSync({
+          jobId,
+          orderId: id,
+          taskId: null,
+          action: 'failed',
+          before: null,
+          after: null,
+          meta: { message: String(error?.message || 'sync_failed'), duration_ms: Date.now() - startedAt },
+        })
+      } catch {}
+      throw error
+    }
+  }
+  const client = opts?.client
   try {
     await ensureCleaningSchemaV2()
     const keysRequiredFallback: 1 | 2 = 1

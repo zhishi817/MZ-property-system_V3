@@ -62,7 +62,7 @@ export async function loadPersonnelClaimEvidenceObjectUrl(
   const response = await fetcher(personnelClaimEvidenceImagePath(claimId, evidenceId), {
     method: 'GET',
     cache: 'no-store',
-    headers: { ...authHeaders(), 'Cache-Control': 'no-store', Pragma: 'no-cache' },
+    headers: authHeaders(),
   })
   if (!response.ok) {
     const code = await readResponseCode(response)

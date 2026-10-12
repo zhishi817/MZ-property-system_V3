@@ -18,6 +18,7 @@ import {
 } from './personnelSettlementPayment'
 import {
   listPersonnelClaimsWithEvidence,
+  lockPersonnelSettlementWeeks,
   reviewPersonnelClaimInTransaction,
   submitPersonnelClaimInTransaction,
   type PersonnelClaimReviewInput,
@@ -91,6 +92,39 @@ function parseJsonObject(value: unknown): Record<string, any> {
     } catch {}
   }
   return {}
+}
+
+export function historicalFrozenSettlementRequiresVerification(row: any) {
+  if (!row || cleanText(row.status) === 'void') return false
+  const ruleSnapshot = parseJsonObject(row.rule_snapshot)
+  const checklist = Array.isArray(ruleSnapshot.work_checklist) ? ruleSnapshot.work_checklist : []
+  const hasLegacyChecklist = checklist.some((item: any) => {
+    const component = cleanText(item?.component_type)
+    if (component !== 'cleaning_task' && component !== 'inspection_day') return false
+    return cleanText(item?.status) === 'legacy_completed_unverified'
+      || (item?.included_in_amount === true && !cleanText(item?.audit_id))
+  })
+  const hasFrozenValue = Number(row.line_count || 0) > 0
+    || row.has_lines === true
+    || Number(row.subtotal_cents || 0) !== 0
+    || Number(row.gst_cents || 0) !== 0
+    || Number(row.total_cents || 0) !== 0
+  const calculationVersion = cleanText(ruleSnapshot.calculation_version)
+  return hasFrozenValue && (calculationVersion !== PERSONNEL_SETTLEMENT_CALCULATION_VERSION || hasLegacyChecklist)
+}
+
+export function shouldUseFrozenSettlementSubmission(existing: any, livePerson: any) {
+  if (!existing || cleanText(existing.status) === 'void') return false
+  const hasLiveLegacyPendingVerification = (livePerson?.work_checklist || []).some(
+    (item: any) => cleanText(item?.status) === 'legacy_completed_unverified',
+  )
+  const hasFrozenValue = Number(existing.line_count || 0) > 0
+    || existing.has_lines === true
+    || Number(existing.subtotal_cents || 0) !== 0
+    || Number(existing.gst_cents || 0) !== 0
+    || Number(existing.total_cents || 0) !== 0
+  return historicalFrozenSettlementRequiresVerification(existing)
+    || (hasFrozenValue && hasLiveLegacyPendingVerification)
 }
 
 export function getPersonnelSettlementReturnDeliveryRetry(row: any) {
@@ -217,6 +251,11 @@ async function insertPersonnelSettlementLine(client: Queryable, settlementId: st
         rule_item_id: line.rule_item_id,
         property_label: line.property_label,
         property_type: line.property_type,
+        work_items: Array.isArray(line.work_items) ? line.work_items : [],
+        executed_property_count: Array.isArray(line.work_items)
+          ? new Set(line.work_items.map((item: any) => cleanText(item?.property_id || item?.property_label || item?.task_id))).size
+          : 0,
+        executed_task_count: Array.isArray(line.work_items) ? line.work_items.length : 0,
       }),
     ],
   )
@@ -243,12 +282,18 @@ function sanitizePaymentSnapshot(snapshot: unknown, includeBankDetails: boolean)
 
 function serializeSettlement(row: any, includeBankDetails = false) {
   const ruleSnapshot = parseJsonObject(row.rule_snapshot)
+  const partnerSubmission = parseJsonObject(ruleSnapshot.partner_submission)
   const disputeResolution = parseJsonObject(ruleSnapshot.dispute_resolution)
   return {
     ...row,
     ...moneyFields(row),
     line_count: Number(row.line_count || 0),
     evidence_count: Number(row.evidence_count || 0),
+    calculation_status: cleanText(partnerSubmission.calculation_status) === 'partial' ? 'partial' : 'complete',
+    pending_pricing_count: Number(partnerSubmission.pending_pricing_count || 0),
+    pending_pricing_items: Array.isArray(partnerSubmission.pending_pricing_items)
+      ? partnerSubmission.pending_pricing_items
+      : [],
     finance_adjustment_cents: Number(ruleSnapshot.finance_adjustment?.amount_cents || 0),
     dispute_resolution: Object.keys(disputeResolution).length ? {
       decision: cleanText(disputeResolution.decision) || null,
@@ -452,6 +497,7 @@ export async function getPersonnelWeeklySettlement(input: {
     ...settlement,
     payment_destination_preview: paymentDestinationPreview,
     lines,
+    work_checklist: frozenSettlementWorkChecklist(settlement.rule_snapshot, lines),
     base_totals: lineTotals,
     finance_adjustment_cents: settlement.subtotal_cents - lineTotals.subtotal_cents,
     audits: auditsResult.rows || [],
@@ -497,6 +543,9 @@ export async function generatePersonnelSettlementWeek(input: {
     const eligiblePeople = (preview.people || []).filter((person: any) => (
       person.profile && person.lines?.length > 0 && !blockedUserIds.has(String(person.user_id))
     ))
+    const previewByUser = new Map(
+      (preview.people || []).map((person: any) => [String(person.user_id), person]),
+    )
     const sourceCutoffAt = new Date().toISOString()
     const batchId = randomUUID()
     await client.query(
@@ -534,11 +583,16 @@ export async function generatePersonnelSettlementWeek(input: {
     if (locked.rowCount) throw new Error('settlement_batch_locked')
 
     const existingResult = await client.query(
-      'SELECT * FROM personnel_weekly_settlements WHERE batch_id=$1 FOR UPDATE',
+      `SELECT settlement.*,
+              EXISTS (SELECT 1 FROM personnel_settlement_lines line WHERE line.settlement_id=settlement.id) AS has_lines
+         FROM personnel_weekly_settlements settlement
+        WHERE settlement.batch_id=$1
+        FOR UPDATE`,
       [batch.id],
     )
     const existingByUser = new Map((existingResult.rows || []).map((row: any) => [String(row.user_id), row]))
     const generatedUserIds = new Set<string>()
+    const preservedLegacyDraftUserIds = new Set<string>()
 
     for (const person of eligiblePeople) {
       const userId = String(person.user_id)
@@ -546,6 +600,10 @@ export async function generatePersonnelSettlementWeek(input: {
       if (!profile) continue
       generatedUserIds.add(userId)
       const existing: any = existingByUser.get(userId)
+      if (String(existing?.status || '') === 'draft' && historicalFrozenSettlementRequiresVerification(existing)) {
+        preservedLegacyDraftUserIds.add(userId)
+        continue
+      }
       const settlementId = existing?.id || randomUUID()
       const appliedRuleIds = Array.from(new Set(
         (person.lines || []).map((line: any) => cleanText(line.rule_id)).filter(Boolean),
@@ -554,6 +612,7 @@ export async function generatePersonnelSettlementWeek(input: {
         calculation_version: preview.calculation_version,
         source_cutoff_at: sourceCutoffAt,
         applied_rule_ids: appliedRuleIds,
+        work_checklist: settlementWorkChecklist(person),
         finance_adjustment: null,
       }
       const profileSnapshot = {
@@ -615,6 +674,22 @@ export async function generatePersonnelSettlementWeek(input: {
 
     for (const existing of existingResult.rows || []) {
       if (generatedUserIds.has(String(existing.user_id)) || String(existing.status) === 'void') continue
+      const existingUserId = String(existing.user_id)
+      if (requestedUserIds.length && !requestedUserIds.includes(existingUserId)) continue
+      const previewPerson: any = previewByUser.get(existingUserId)
+      const hasLegacyPendingVerification = (previewPerson?.work_checklist || []).some(
+        (item: any) => cleanText(item?.status) === 'legacy_completed_unverified',
+      )
+      if (
+        String(existing.status) === 'draft'
+        && (hasLegacyPendingVerification || historicalFrozenSettlementRequiresVerification(existing))
+      ) {
+        // Never erase a previously calculated historical amount merely because
+        // the old completion predates MZ-031 execution snapshots.  The detail
+        // fallback renders the frozen lines as pending verification.
+        preservedLegacyDraftUserIds.add(existingUserId)
+        continue
+      }
       await client.query('DELETE FROM personnel_settlement_lines WHERE settlement_id=$1', [existing.id])
       const voided = await client.query(
         `UPDATE personnel_weekly_settlements
@@ -643,6 +718,7 @@ export async function generatePersonnelSettlementWeek(input: {
       [sourceCutoffAt, preview.calculation_version, input.actorUserId, JSON.stringify({
         source_summary: preview.source_summary,
         blocked_user_ids: Array.from(blockedUserIds),
+        preserved_legacy_draft_user_ids: Array.from(preservedLegacyDraftUserIds),
         blocking_issues: blockingIssues,
       }), batch.id],
     )
@@ -654,12 +730,14 @@ export async function generatePersonnelSettlementWeek(input: {
       source_cutoff_at: sourceCutoffAt,
       generated_count: eligiblePeople.length,
       blocked_user_ids: Array.from(blockedUserIds),
+      preserved_legacy_draft_user_ids: Array.from(preservedLegacyDraftUserIds),
       blocking_issues: blockingIssues,
     })
     return {
       batch_id: String(batch.id),
       generated_count: eligiblePeople.length,
       blocked_user_ids: Array.from(blockedUserIds),
+      preserved_legacy_draft_user_ids: Array.from(preservedLegacyDraftUserIds),
       blocking_issues: blockingIssues,
     }
   })
@@ -682,6 +760,20 @@ async function loadSettlementForUpdate(client: Queryable, settlementId: string) 
   const row = result.rows?.[0]
   if (!row) throw new Error('settlement_not_found')
   return row
+}
+
+async function lockPersonnelSettlementWeekBeforeRows(client: Queryable, settlementId: string) {
+  const result = await client.query(
+    `SELECT batch.week_start::text
+       FROM personnel_weekly_settlements settlement
+       JOIN personnel_settlement_batches batch ON batch.id=settlement.batch_id
+      WHERE settlement.id=$1`,
+    [settlementId],
+  )
+  const weekStart = cleanText(result.rows?.[0]?.week_start)
+  if (!weekStart) throw new Error('settlement_not_found')
+  await lockPersonnelSettlementWeeks(client, [weekStart])
+  return weekStart
 }
 
 async function assertSettlementReadyForConfirmation(client: Queryable, current: any, settlementId: string) {
@@ -727,7 +819,11 @@ async function assertSettlementReadyForConfirmation(client: Queryable, current: 
     [current.user_id, current.week_start, current.week_end, settlementId],
   )
   if (Number(approvedUnincludedClaims.rows?.[0]?.count || 0) > 0) throw new Error('settlement_claims_pending')
-  if (Array.isArray(submission.blocking_issues) && submission.blocking_issues.length > 0) {
+  if (
+    String(current.status) !== 'confirmed'
+    && Array.isArray(submission.blocking_issues)
+    && submission.blocking_issues.length > 0
+  ) {
     throw new Error('settlement_calculation_blocked')
   }
   let comparison: PersonnelSettlementFinanceReviewComparison | null = null
@@ -764,6 +860,39 @@ function submissionBlockingIssues(person: any) {
   }))
 }
 
+function submissionPendingPricingItems(person: any) {
+  const bySource = new Map<string, {
+    id: string
+    source_type: string
+    source_id: string
+    component_type: string
+    service_date: string
+    description: string
+    code: string
+  }>()
+  for (const warning of person?.warnings || []) {
+    const sourceType = cleanText(warning.source_type)
+    const sourceId = cleanText(warning.source_id)
+    const componentType = cleanText(warning.component_type)
+    const serviceDate = cleanText(warning.service_date)
+    if (!sourceType || !sourceId || !componentType || !serviceDate) continue
+    const id = `${sourceType}:${sourceId}:${componentType}`
+    if (bySource.has(id)) continue
+    bySource.set(id, {
+      id,
+      source_type: sourceType,
+      source_id: sourceId,
+      component_type: componentType,
+      service_date: serviceDate,
+      description: cleanText(warning.description) || componentType,
+      code: cleanText(warning.reason) || 'manual_review_required',
+    })
+  }
+  return Array.from(bySource.values()).sort(
+    (left, right) => left.service_date.localeCompare(right.service_date) || left.id.localeCompare(right.id),
+  )
+}
+
 function serializeSubmissionPreviewLine(line: any, index: number) {
   const sourceType = cleanText(line?.source_type)
   const sourceId = cleanText(line?.source_id)
@@ -787,6 +916,83 @@ function serializeSubmissionPreviewLine(line: any, index: number) {
   }
 }
 
+function serializeSettlementWorkChecklistItem(item: any, index: number) {
+  const taskId = cleanText(item?.task_id)
+  const componentType = cleanText(item?.component_type) || 'cleaning_task'
+  const executionKey = cleanText(item?.execution_key) || `${componentType}:${taskId || index}`
+  return {
+    execution_key: executionKey,
+    audit_id: cleanText(item?.audit_id) || null,
+    task_id: taskId || executionKey,
+    component_type: componentType,
+    service_date: cleanText(item?.service_date).slice(0, 10) || null,
+    performed_at: cleanText(item?.performed_at) || null,
+    performed_by_user_id: cleanText(item?.performed_by_user_id) || null,
+    performed_by_name: cleanText(item?.performed_by_name) || null,
+    property_id: cleanText(item?.property_id) || null,
+    property_label: cleanText(item?.property_label) || null,
+    property_type: cleanText(item?.property_type) || null,
+    task_type: cleanText(item?.task_type) || null,
+    scheduled_service_date: cleanText(item?.scheduled_service_date).slice(0, 10) || null,
+    current_scheduled_service_date: cleanText(item?.current_scheduled_service_date).slice(0, 10) || null,
+    inspection_due_date: cleanText(item?.inspection_due_date).slice(0, 10) || null,
+    inspection_mode: cleanText(item?.inspection_mode) || null,
+    evidence_count: Math.max(0, Number(item?.evidence_count || 0)),
+    status: cleanText(item?.status) || 'incomplete',
+    status_reason: cleanText(item?.status_reason) || 'status_unknown',
+    included_in_amount: item?.included_in_amount === true,
+    requires_manual_review: item?.requires_manual_review === true,
+  }
+}
+
+function settlementWorkChecklist(person: any) {
+  return (Array.isArray(person?.work_checklist) ? person.work_checklist : [])
+    .map(serializeSettlementWorkChecklistItem)
+    .sort((left: any, right: any) => (
+      cleanText(left.scheduled_service_date || left.service_date).localeCompare(cleanText(right.scheduled_service_date || right.service_date))
+      || cleanText(left.property_label || left.task_id).localeCompare(cleanText(right.property_label || right.task_id))
+      || left.execution_key.localeCompare(right.execution_key)
+    ))
+}
+
+function frozenSettlementWorkChecklist(ruleSnapshotValue: unknown, lines: any[]) {
+  const ruleSnapshot = parseJsonObject(ruleSnapshotValue)
+  if (Array.isArray(ruleSnapshot.work_checklist) && ruleSnapshot.work_checklist.length > 0) {
+    return ruleSnapshot.work_checklist.map(serializeSettlementWorkChecklistItem)
+  }
+  const snapshotItems = lines.flatMap((line: any) => {
+    const calculation = parseJsonObject(line?.calculation_snapshot)
+    return Array.isArray(calculation.work_items) ? calculation.work_items : []
+  })
+  if (snapshotItems.length > 0) return snapshotItems.map(serializeSettlementWorkChecklistItem)
+  return lines.flatMap((line: any, index: number) => {
+    const componentType = cleanText(line?.component_type)
+    if (componentType !== 'cleaning_task' && componentType !== 'inspection_day') return []
+    const calculation = parseJsonObject(line?.calculation_snapshot)
+    const hasExecutionAudit = cleanText(line?.source_type) === 'work_task_action_audit'
+      && !!cleanText(line?.source_audit_id)
+    return [serializeSettlementWorkChecklistItem({
+      execution_key: `${componentType}:${cleanText(line?.source_id) || cleanText(line?.id) || index}`,
+      audit_id: hasExecutionAudit ? line.source_audit_id : null,
+      task_id: cleanText(line?.source_id) || cleanText(line?.id),
+      component_type: componentType,
+      service_date: hasExecutionAudit ? line?.service_date : null,
+      scheduled_service_date: line?.service_date,
+      property_id: line?.property_id,
+      property_label: calculation.property_label,
+      property_type: calculation.property_type,
+      task_type: line?.task_type,
+      evidence_count: line?.evidence_count,
+      status: hasExecutionAudit ? 'completed' : 'legacy_completed_unverified',
+      status_reason: hasExecutionAudit
+        ? 'legacy_execution_audit_without_mz031_snapshot'
+        : 'legacy_settlement_amount_preserved_without_execution_audit',
+      included_in_amount: true,
+      requires_manual_review: !hasExecutionAudit,
+    }, index)]
+  })
+}
+
 export function buildPersonnelSettlementSubmissionSnapshot(input: {
   weekStart: string
   weekEnd: string
@@ -799,6 +1005,7 @@ export function buildPersonnelSettlementSubmissionSnapshot(input: {
       right: ReturnType<typeof serializeSubmissionPreviewLine>,
     ) => left.service_date.localeCompare(right.service_date) || left.id.localeCompare(right.id))
   const totals = input.person?.totals || {}
+  const pendingPricingItems = submissionPendingPricingItems(input.person)
   const snapshot = {
     week_start: cleanText(input.weekStart),
     week_end: cleanText(input.weekEnd),
@@ -807,12 +1014,45 @@ export function buildPersonnelSettlementSubmissionSnapshot(input: {
     total_cents: Number(totals.total_cents || 0),
     line_count: lines.length,
     lines,
+    work_checklist: settlementWorkChecklist(input.person),
     blocking_issues: submissionBlockingIssues(input.person),
+    calculation_status: pendingPricingItems.length ? 'partial' as const : 'complete' as const,
+    pending_pricing_count: pendingPricingItems.length,
+    pending_pricing_items: pendingPricingItems,
   }
   return {
     ...snapshot,
     confirmation_token: createHash('sha256').update(JSON.stringify(snapshot)).digest('hex'),
   }
+}
+
+export function buildFrozenPersonnelSettlementSubmissionSnapshot(input: {
+  weekStart: string
+  weekEnd: string
+  userId: string
+  detail: any
+}) {
+  const detail = input.detail || {}
+  return buildPersonnelSettlementSubmissionSnapshot({
+    weekStart: input.weekStart,
+    weekEnd: input.weekEnd,
+    person: {
+      user_id: input.userId,
+      user_name: cleanText(detail?.profile_snapshot?.supplier_business_name)
+        || cleanText(detail?.profile_snapshot?.supplier_legal_name)
+        || input.userId,
+      profile: detail.profile_snapshot,
+      effective_profiles: [],
+      lines: detail.lines || [],
+      work_checklist: detail.work_checklist || [],
+      totals: {
+        subtotal_cents: Number(detail.subtotal_cents || 0),
+        gst_cents: Number(detail.gst_cents || 0),
+        total_cents: Number(detail.total_cents || 0),
+      },
+      warnings: [],
+    },
+  })
 }
 
 export type PersonnelSettlementFinanceReviewComparison = {
@@ -892,6 +1132,9 @@ async function getPersonnelSettlementFinanceReviewComparison(
     weekEnd: cleanText(current.week_end),
     person: {
       lines: lineResult.rows || [],
+      work_checklist: Array.isArray(parseJsonObject(current.rule_snapshot).work_checklist)
+        ? parseJsonObject(current.rule_snapshot).work_checklist
+        : [],
       totals: {
         subtotal_cents: Number(current.subtotal_cents || 0),
         gst_cents: Number(current.gst_cents || 0),
@@ -920,23 +1163,54 @@ export async function getPersonnelSettlementSubmissionPreview(input: {
   if (!pgPool) throw new Error('pg_required')
   const period = buildSettlementPeriod(input.weekStart)
   if (period.week_end >= getMelbourneDate()) throw new Error('settlement_week_not_finished')
-  const preview = await buildPersonnelSettlementPreview({
-    week_start: period.week_start,
-    user_ids: [input.userId],
-    include_submitted_claims: true,
-  })
-  const person = (preview.people || []).find((item: any) => cleanText(item.user_id) === cleanText(input.userId))
   const existing = (await listPersonnelWeeklySettlements({
     weekStart: period.week_start,
     userId: input.userId,
   }))[0] || null
-  const snapshot = buildPersonnelSettlementSubmissionSnapshot({
-    weekStart: period.week_start,
-    weekEnd: period.week_end,
-    person,
-  })
+  const existingStatus = cleanText(existing?.status)
+  const independentlyFrozen = !!existing?.id
+    && existingStatus !== 'void'
+    && (
+      existingStatus === 'awaiting_confirmation'
+      || historicalFrozenSettlementRequiresVerification(existing)
+    )
+  let person: any = null
+  let existingDetail = independentlyFrozen
+    ? await getPersonnelWeeklySettlement({ settlementId: String(existing.id), requestingUserId: input.userId })
+    : null
+  if (independentlyFrozen && !existingDetail) throw new Error('settlement_not_found')
+  if (!existingDetail) {
+    const preview = await buildPersonnelSettlementPreview({
+      week_start: period.week_start,
+      user_ids: [input.userId],
+      include_submitted_claims: true,
+    })
+    person = (preview.people || []).find((item: any) => cleanText(item.user_id) === cleanText(input.userId))
+    if (existing?.id && existingStatus !== 'void' && shouldUseFrozenSettlementSubmission(existing, person)) {
+      existingDetail = await getPersonnelWeeklySettlement({
+        settlementId: String(existing.id),
+        requestingUserId: input.userId,
+      })
+      if (!existingDetail) throw new Error('settlement_not_found')
+    }
+  }
+  const snapshot = existingDetail
+    ? buildFrozenPersonnelSettlementSubmissionSnapshot({
+        weekStart: period.week_start,
+        weekEnd: period.week_end,
+        userId: input.userId,
+        detail: existingDetail,
+      })
+    : buildPersonnelSettlementSubmissionSnapshot({
+        weekStart: period.week_start,
+        weekEnd: period.week_end,
+        person,
+      })
   return {
     ...snapshot,
+    amount_state: existingDetail
+      ? (existingStatus === 'awaiting_confirmation' ? 'frozen_awaiting_confirmation' : 'historical_frozen_pending_verification')
+      : 'current_calculation',
     status: personnelSettlementSubmissionStatus(existing?.status),
     settlement: existing,
   }
@@ -976,13 +1250,31 @@ export async function submitPersonnelSettlementWeek(input: {
     const batch = batchResult.rows?.[0]
     if (!batch) throw new Error('settlement_batch_create_failed')
     const existingResult = await client.query(
-      'SELECT * FROM personnel_weekly_settlements WHERE batch_id=$1 AND user_id=$2 FOR UPDATE',
+      `SELECT settlement.*,
+              EXISTS (SELECT 1 FROM personnel_settlement_lines line WHERE line.settlement_id=settlement.id) AS has_lines
+         FROM personnel_weekly_settlements settlement
+        WHERE settlement.batch_id=$1 AND settlement.user_id=$2
+        FOR UPDATE`,
       [batch.id, input.userId],
     )
     const existing = existingResult.rows?.[0]
     const resubmittingVoidedSettlement = String(existing?.status || '') === 'void'
     if (existing && ['confirmed', 'paid', 'finance_approved'].includes(String(existing.status))) return String(existing.id)
     if (existing && String(existing.status) === 'awaiting_confirmation') {
+      const frozenDetail = await getPersonnelWeeklySettlement({
+        settlementId: String(existing.id),
+        requestingUserId: input.userId,
+      }, client)
+      if (!frozenDetail) throw new Error('settlement_not_found')
+      const frozenSnapshot = buildFrozenPersonnelSettlementSubmissionSnapshot({
+        weekStart: period.week_start,
+        weekEnd: period.week_end,
+        userId: input.userId,
+        detail: frozenDetail,
+      })
+      if (frozenSnapshot.confirmation_token !== cleanText(input.confirmationToken)) {
+        throw new Error('settlement_preview_changed')
+      }
       const updated = await client.query(
         `UPDATE personnel_weekly_settlements
             SET status='confirmed', workload_amount_confirmed_at=now(),
@@ -997,12 +1289,72 @@ export async function submitPersonnelSettlementWeek(input: {
     }
     if (existing && String(existing.status) === 'disputed') throw new Error('settlement_transition_invalid')
 
+    const unfinishedClaims = await client.query(
+      `SELECT COUNT(*)::int AS count
+         FROM personnel_workload_claims
+        WHERE submitter_user_id=$1
+          AND service_date BETWEEN $2::date AND $3::date
+          AND status IN ('draft','returned')`,
+      [input.userId, period.week_start, period.week_end],
+    )
+    if (Number(unfinishedClaims.rows?.[0]?.count || 0) > 0) throw new Error('settlement_claims_pending')
+
     const preview = await buildPersonnelSettlementPreview({
       week_start: period.week_start,
       user_ids: [input.userId],
       include_submitted_claims: true,
     }, client)
     const person = (preview.people || []).find((item: any) => cleanText(item.user_id) === cleanText(input.userId))
+
+    if (existing && shouldUseFrozenSettlementSubmission(existing, person)) {
+      const frozenDetail = await getPersonnelWeeklySettlement({
+        settlementId: String(existing.id),
+        requestingUserId: input.userId,
+      }, client)
+      if (!frozenDetail) throw new Error('settlement_not_found')
+      const frozenSnapshot = buildFrozenPersonnelSettlementSubmissionSnapshot({
+        weekStart: period.week_start,
+        weekEnd: period.week_end,
+        userId: input.userId,
+        detail: frozenDetail,
+      })
+      if (frozenSnapshot.confirmation_token !== cleanText(input.confirmationToken)) {
+        throw new Error('settlement_preview_changed')
+      }
+      const now = new Date().toISOString()
+      const existingRuleSnapshot = parseJsonObject(existing.rule_snapshot)
+      existingRuleSnapshot.historical_frozen_pending_verification = true
+      existingRuleSnapshot.partner_submission = {
+        submitted_at: now,
+        blocking_issues: [],
+        confirmation_token: frozenSnapshot.confirmation_token,
+        line_count: frozenSnapshot.line_count,
+        subtotal_cents: frozenSnapshot.subtotal_cents,
+        gst_cents: frozenSnapshot.gst_cents,
+        total_cents: frozenSnapshot.total_cents,
+      }
+      const updated = await client.query(
+        `UPDATE personnel_weekly_settlements
+            SET rule_snapshot=$1::jsonb, status='confirmed', workload_amount_confirmed_at=now(),
+                workload_amount_confirmation_note='合作方已确认历史冻结金额（待核实）',
+                disputed_at=NULL, dispute_note=NULL, updated_at=now()
+          WHERE id=$2
+          RETURNING *`,
+        [JSON.stringify(existingRuleSnapshot), existing.id],
+      )
+      await insertAudit(
+        client,
+        'personnel_weekly_settlement',
+        existing.id,
+        'partner_confirm_historical_frozen',
+        input.userId,
+        settlementAuditSummary(existing),
+        { ...settlementAuditSummary(updated.rows[0]), historical_frozen_pending_verification: true },
+      )
+      await refreshBatchStatus(client, batch.id, input.userId)
+      return String(existing.id)
+    }
+
     const submissionSnapshot = buildPersonnelSettlementSubmissionSnapshot({
       weekStart: period.week_start,
       weekEnd: period.week_end,
@@ -1014,16 +1366,19 @@ export async function submitPersonnelSettlementWeek(input: {
     const profile = person?.profile || person?.effective_profiles?.[0] || null
     const lines = Array.isArray(person?.lines) ? person.lines : []
     const blockingIssues = submissionBlockingIssues(person)
-    if (blockingIssues.length) throw new Error('settlement_calculation_blocked')
     const now = new Date().toISOString()
     const ruleSnapshot = {
       calculation_version: preview.calculation_version,
       source_cutoff_at: now,
       applied_rule_ids: Array.from(new Set(lines.map((line: any) => cleanText(line.rule_id)).filter(Boolean))),
+      work_checklist: settlementWorkChecklist(person),
       finance_adjustment: null,
       partner_submission: {
         submitted_at: now,
         blocking_issues: blockingIssues,
+        calculation_status: submissionSnapshot.calculation_status,
+        pending_pricing_count: submissionSnapshot.pending_pricing_count,
+        pending_pricing_items: submissionSnapshot.pending_pricing_items,
         confirmation_token: submissionSnapshot.confirmation_token,
         line_count: submissionSnapshot.line_count,
         subtotal_cents: submissionSnapshot.subtotal_cents,
@@ -1155,9 +1510,13 @@ export async function returnPersonnelSettlementForConfirmation(input: {
     ruleSnapshot.calculation_version = preview.calculation_version
     ruleSnapshot.source_cutoff_at = confirmationRevision
     ruleSnapshot.applied_rule_ids = Array.from(new Set(lines.map((line: any) => cleanText(line.rule_id)).filter(Boolean)))
+    ruleSnapshot.work_checklist = settlementWorkChecklist(person)
     ruleSnapshot.partner_submission = {
       ...parseJsonObject(ruleSnapshot.partner_submission),
       blocking_issues: [],
+      calculation_status: 'complete',
+      pending_pricing_count: 0,
+      pending_pricing_items: [],
     }
     ruleSnapshot.finance_return = {
       reason,
@@ -1312,6 +1671,7 @@ export async function submitPersonnelSettlementClaimForReconciliation(input: {
   if (!pgPool) throw new Error('pg_required')
   const note = requireReason(input.note, 'settlement_dispute_reason_required')
   await pgRunInTransaction(async (client) => {
+    await lockPersonnelSettlementWeekBeforeRows(client, input.settlementId)
     const current = await loadSettlementForUpdate(client, input.settlementId)
     if (cleanText(current.user_id) !== cleanText(input.userId)) throw new Error('settlement_not_found')
     if (!['awaiting_confirmation', 'disputed'].includes(String(current.status))) {
@@ -1361,6 +1721,7 @@ export async function reviewPersonnelSettlementDisputeClaim(input: {
   assertPersonnelSettlementSchemaReady()
   if (!pgPool) throw new Error('pg_required')
   await pgRunInTransaction(async (client) => {
+    await lockPersonnelSettlementWeekBeforeRows(client, input.settlementId)
     const current = await loadSettlementForUpdate(client, input.settlementId)
     if (String(current.status) !== 'disputed') throw new Error('settlement_transition_invalid')
 

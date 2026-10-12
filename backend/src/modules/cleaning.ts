@@ -6,7 +6,7 @@ import { hasPg, pgPool, pgRunInTransaction } from '../dbAdapter'
 import { activeCleaningTaskWhereSql, backfillCleaningTasks, ensureCleaningSchemaV2, isCancelledCleaningTaskStatus, syncCheckoutOldCodeFromCheckinNewCode, syncOrderToCleaningTasks, validCleaningTaskOrderWhereSql } from '../services/cleaningSync'
 import { v4 as uuid } from 'uuid'
 import { emitNotificationEvent } from '../services/notificationEvents'
-import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
+import { buildCleaningTaskVisibilityHints, buildMz031CleaningArrangementRevision, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
 import { defaultInspectionModeForTaskType, deferredProjectionDate, effectiveInspectionMode, normalizeInspectionMode, normalizeInspectionScope } from '../lib/cleaningInspection'
 import { buildWebTaskCapabilityPayload } from '../lib/webTaskCapabilities'
 import { assignedStatusFromAssignees, isCheckinSiteExecutionTask } from '../lib/cleaningAssignmentStatus'
@@ -1119,6 +1119,20 @@ const cleaningTaskStatusSchema = z.enum([
   'keys_hung',
 ])
 
+const MZ031_MANAGEMENT_CLOSED_STATUSES = new Set(['done', 'completed', 'ready'])
+const MZ031_CANCELLED_STATUSES = new Set(['cancelled', 'canceled'])
+
+function mz031ManagementStatusArrangementReasons(before: any, after: any, statusWasExplicitlyPatched: boolean) {
+  if (!statusWasExplicitlyPatched) return []
+  const beforeStatus = String(before?.status || '').trim().toLowerCase()
+  const afterStatus = String(after?.status || '').trim().toLowerCase()
+  const beforeClosed = MZ031_MANAGEMENT_CLOSED_STATUSES.has(beforeStatus)
+  const afterClosed = MZ031_MANAGEMENT_CLOSED_STATUSES.has(afterStatus)
+  if (!beforeClosed && afterClosed) return ['management_closed']
+  if (beforeClosed && !afterClosed && !MZ031_CANCELLED_STATUSES.has(afterStatus)) return ['management_reopened']
+  return []
+}
+
 const patchTaskSchema = z.object({
   property_id: z.string().nullable().optional(),
   task_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -1258,25 +1272,27 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRun
       patch.updated_at = new Date().toISOString()
 
       const keys = Object.keys(patch).filter((k) => patch[k] !== undefined)
-      const set = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ')
-      const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]))
-      const sql = `UPDATE cleaning_tasks SET ${set} WHERE id = $${keys.length + 1} RETURNING *`
-      const r1 = await pgPool.query(sql, [...values, String(id)])
-      const updated = r1?.rows?.[0] || before
-      if (
-        parsed.data.new_code !== undefined &&
-        String(updated?.order_id || '').trim() &&
-        String(updated?.task_type || updated?.type || '').trim().toLowerCase() === 'checkin_clean'
-      ) {
-        await syncCheckoutOldCodeFromCheckinNewCode({ orderId: String(updated.order_id) })
-      }
-      if (parsed.data.keys_required !== undefined) {
-        const orderId = String(updated?.order_id || '').trim()
-        const nextK0 = updated?.keys_required == null ? null : Number(updated.keys_required)
-        const nextK = Number.isFinite(nextK0 as any) ? Math.max(1, Math.min(2, Math.trunc(nextK0 as any))) : null
-        if (orderId && nextK != null) {
-          try {
-            await pgPool.query(
+      const transactionResult = await pgRunInTransaction(async (client) => {
+        const locked = await client.query('SELECT * FROM cleaning_tasks WHERE id = $1 LIMIT 1 FOR UPDATE', [String(id)])
+        const lockedBefore = locked?.rows?.[0] || before
+        const set = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ')
+        const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]))
+        const sql = `UPDATE cleaning_tasks SET ${set} WHERE id = $${keys.length + 1} RETURNING *`
+        const r1 = await client.query(sql, [...values, String(id)])
+        const updated = r1?.rows?.[0] || lockedBefore
+        if (
+          parsed.data.new_code !== undefined &&
+          String(updated?.order_id || '').trim() &&
+          String(updated?.task_type || updated?.type || '').trim().toLowerCase() === 'checkin_clean'
+        ) {
+          await syncCheckoutOldCodeFromCheckinNewCode({ orderId: String(updated.order_id), client })
+        }
+        if (parsed.data.keys_required !== undefined) {
+          const orderId = String(updated?.order_id || '').trim()
+          const nextK0 = updated?.keys_required == null ? null : Number(updated.keys_required)
+          const nextK = Number.isFinite(nextK0 as any) ? Math.max(1, Math.min(2, Math.trunc(nextK0 as any))) : null
+          if (orderId && nextK != null) {
+            await client.query(
               `UPDATE cleaning_tasks
                SET keys_required = $1, updated_at = now()
                WHERE order_id::text = $2::text
@@ -1284,19 +1300,16 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRun
                  AND COALESCE(keys_required, 1) <> $1`,
               [nextK, orderId],
             )
-          } catch {}
+          }
         }
-      }
-      const actualChangedFields = actualCleaningTaskChangedFields(before, updated, keys)
-      if (actualChangedFields.length && isDeferredInspectionCheckinConflictRelevantChange(actualChangedFields)) {
-        await reconcileDeferredInspectionCheckinReplacement({
-          taskIds: [String(id)],
-          actorUserId: String((req as any)?.user?.sub || '').trim() || null,
-        })
-      }
-      try {
+        const actualChangedFields = actualCleaningTaskChangedFields(lockedBefore, updated, keys)
         if (actualChangedFields.length) {
           const workPatch = buildCleaningTaskWorkPatch(updated, actualChangedFields)
+          const arrangementRevision = buildMz031CleaningArrangementRevision(
+            lockedBefore,
+            updated,
+            mz031ManagementStatusArrangementReasons(lockedBefore, updated, parsed.data.status !== undefined),
+          )
           await emitWorkTaskEvent({
             taskId: `cleaning_task:${String(id)}`,
             sourceType: 'cleaning_tasks',
@@ -1305,17 +1318,27 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRun
             changeScope: workPatch.changedFields.some((field) => field === 'checkout_time' || field === 'checkin_time' || field === 'start_time' || field === 'end_time' || field === 'summary') ? 'list' : 'detail',
             changedFields: workPatch.changedFields,
             patch: workPatch.patch,
+            payload: arrangementRevision ? { arrangement_revision: arrangementRevision } : undefined,
             causedByUserId: String((req as any)?.user?.sub || '').trim() || null,
             visibilityHints: buildCleaningTaskVisibilityHints(updated),
-          })
-          if (isDeferredInspectionCheckinConflictRelevantChange(actualChangedFields)) {
-            enqueueNotification(() => emitDeferredInspectionCheckinConflictAlerts({
-              taskIds: [String(id)],
-              actorUserId: String((req as any)?.user?.sub || '').trim() || null,
-            }))
-          }
+          }, client)
         }
-      } catch {}
+        return { updated, actualChangedFields }
+      })
+      if (!transactionResult) throw new Error('pg not available')
+      const { updated, actualChangedFields } = transactionResult
+      if (actualChangedFields.length && isDeferredInspectionCheckinConflictRelevantChange(actualChangedFields)) {
+        await reconcileDeferredInspectionCheckinReplacement({
+          taskIds: [String(id)],
+          actorUserId: String((req as any)?.user?.sub || '').trim() || null,
+        })
+      }
+      if (actualChangedFields.length && isDeferredInspectionCheckinConflictRelevantChange(actualChangedFields)) {
+        enqueueNotification(() => emitDeferredInspectionCheckinConflictAlerts({
+          taskIds: [String(id)],
+          actorUserId: String((req as any)?.user?.sub || '').trim() || null,
+        }))
+      }
       try {
         const { changes, lines } = buildCleaningTaskUpdateNoticeDetails(before, updated)
         const propertyId = String(updated.property_id || '').trim()
@@ -1897,7 +1920,8 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), requireR5T
       const r = await (async () => {
         if (hasPg && pgPool) {
           await ensureCleaningSchemaV2()
-          const r0 = await pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
+          return pgRunInTransaction(async (client) => {
+          const r0 = await client.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1 FOR UPDATE', [id])
           const before = r0?.rows?.[0] || null
           if (!before) return null
           const patch: any = { ...basePatch }
@@ -1940,17 +1964,22 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), requireR5T
           const set = keys.map((k, i) => `"${k}"=$${i + 1}`).join(', ')
           const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]))
           const sql = `UPDATE cleaning_tasks SET ${set} WHERE id=$${keys.length + 1} RETURNING *`
-          const r1 = await pgPool.query(sql, [...values, id])
+          const r1 = await client.query(sql, [...values, id])
           const after = r1?.rows?.[0] || before
           if (
             basePatch.new_code !== undefined &&
             String(after?.order_id || '').trim() &&
             String(after?.task_type || after?.type || '').trim().toLowerCase() === 'checkin_clean'
           ) {
-            await syncCheckoutOldCodeFromCheckinNewCode({ orderId: String(after.order_id) })
+            await syncCheckoutOldCodeFromCheckinNewCode({ orderId: String(after.order_id), client })
           }
           const changedFields = Object.keys(patch || {}).filter((key) => patch[key] !== undefined)
           const assignmentChanged = ['assignee_id', 'cleaner_id', 'inspector_id'].some((key) => changedFields.includes(key))
+          const arrangementRevision = buildMz031CleaningArrangementRevision(
+            before,
+            after,
+            mz031ManagementStatusArrangementReasons(before, after, basePatch.status !== undefined),
+          )
           await emitWorkTaskEvent({
             taskId: `cleaning_task:${String(id)}`,
             sourceType: 'cleaning_tasks',
@@ -1959,10 +1988,12 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), requireR5T
             changeScope: assignmentChanged ? 'membership' : (String(after?.status || '').trim().toLowerCase() === 'cancelled' ? 'membership' : 'list'),
             changedFields,
             patch: Object.fromEntries(changedFields.map((field) => [field, (after as any)?.[field]])),
+            payload: arrangementRevision ? { arrangement_revision: arrangementRevision } : undefined,
             causedByUserId: String((req as any)?.user?.sub || '').trim() || null,
             visibilityHints: buildCleaningTaskVisibilityHints(after || before),
-          })
+          }, client)
           return after
+          })
         }
         const task = (db.cleaningTasks as any[]).find((t: any) => String(t.id) === String(id))
         if (!task) return null

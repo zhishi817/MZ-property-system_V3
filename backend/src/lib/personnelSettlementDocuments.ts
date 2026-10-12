@@ -214,6 +214,7 @@ async function loadDocumentSource(settlementId: string, executor: Queryable) {
   const linesResult = await executor.query(
     `SELECT service_date::text, component_type, property_id::text,
             NULLIF(TRIM(calculation_snapshot->>'property_label'), '') AS property_label,
+            calculation_snapshot,
             COALESCE(NULLIF(TRIM(description),''), component_type) AS description,
             quantity_numerator, quantity_denominator, unit_rate_cents,
             subtotal_cents, gst_cents, total_cents
@@ -235,7 +236,16 @@ async function loadDocumentSource(settlementId: string, executor: Queryable) {
     component_type: cleanText(line.component_type) || null,
     property_id: cleanText(line.property_id) || null,
     property_label: cleanText(line.property_label) || null,
-    description: cleanText(line.description),
+    description: (() => {
+      const calculation = jsonObject(line.calculation_snapshot)
+      const workItems = Array.isArray(calculation.work_items) ? calculation.work_items : []
+      const labels = Array.from(new Set(workItems
+        .map((item: any) => cleanText(item?.property_label || item?.task_id))
+        .filter(Boolean)))
+      return labels.length && cleanText(line.component_type) === 'inspection_day'
+        ? `${cleanText(line.description)} · ${labels.join(' / ')}`
+        : cleanText(line.description)
+    })(),
     quantity_numerator: Number(line.quantity_numerator || 0),
     quantity_denominator: Number(line.quantity_denominator || 1),
     unit_rate_cents: Number(line.unit_rate_cents || 0),

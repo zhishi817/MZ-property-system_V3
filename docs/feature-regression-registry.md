@@ -47,22 +47,32 @@
 ## FR-036：日常任务统计与当前入住客人通知记录
 
 - **维护责任范围：** backend / web / paired mobile
-- **最后审查日期：** 2026-10-10
+- **最后审查日期：** 2026-10-11
 - **状态：** active
+- **候选发布门禁：** 自动早入住/结构化钥匙外挂/当前客服角色候选已增加资格代际修复，Root/Web/Mobile 完整质量门槛通过；最终独立复审 GO，P0/P1/P2 均无未解决项。数据库 migration 仍未执行且需另行授权，本地候选未发布。
 
 ### 业务保护规则
 
 - 每日统计只能消费 FR-035 已授权的执行任务；入住与退房按房源/业务日期合并一次，线下任务独立计数。
-- “已通知客人”只记录当前 check-in 订单的人工事实，不发送消息；mark 要求房源已完成待客准备，revoke 可撤销并保留审计、版本和幂等语义。
-- 通知记录使用独立权限，不能由通用任务编辑权限隐式获得。
+- “已通知客人”自动适用于当前 check-in 入住时间严格早于标准 15:00 的订单；必须复用 `buildCleaningTurnoverDisplay()` 的 canonical `is_early_checkin`，不得另写时间规则。
+- 结构化“钥匙外挂”由当前客服明确登记/取消，不从自由文本、订单备注或钥匙套数推断；自动早入住或钥匙外挂任一成立即需要通知，两者并存时取消一项不得移除另一项资格。
+- 15:00 和晚于 15:00 不产生自动资格。通知 marker 必须绑定当前 check-in task ID 与单调资格代际；入住时间或当前入住身份实际变化后旧 marker 只保留为历史审计，不能在同一订单再次变早时重现。仍有钥匙外挂时要求继续存在，但新代际必须重新确认通知；取消最后一个钥匙外挂条件会清理当前 marker。
+- Mobile/Web 读取与写接口必须同样排除同房源、同日期的其他订单竞争 check-in；存在竞争时 projection 和动作 fail-closed，不能先显示旧“已通知”再等提交冲突。
+- 标签、状态和动作只提供给当前生效角色 `customer_service`；admin、offline manager、cleaner、inspector 以及仅附带客服角色但当前已切换到其他角色的账号都不得看到或操作。
+- 共享实时刷新事件不得携带客服专属通知 projection；只用变更字段触发按当前角色重新拉取，避免向非客服泄漏状态、人员、时间、订单或版本。
+- 后台订单同步 create/update/cancel 改变 check-in 资格身份时，任务写入与空 payload 失效事件必须同事务提交；Mobile 对带 guest-ready 权威字段的 list 或 membership 事件先强制完整刷新，再处理一般成员变化。
+- mark/revoke/register/cancel 必须共用当前订单校验、审计、单调版本和幂等语义；幂等重放返回当前资格而不是历史资格。mark 必须重新核对至少一个通知条件仍成立且房源已完成待客准备。记录事实不发送消息，独立权限不能由通用任务编辑权限隐式获得。
 
 ### 测试映射
 
 | 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
 |---|---|---|---|---|
 | 权威可见性先行和分组去重 | `backend/scripts/tests/test_daily_task_execution_stats.ts` | 审核/未分配任务不计数、同房源周转去重、线下独立计数 | sufficient | `npm run test:daily-task-execution-stats --prefix backend` |
-| 通知状态、权限、幂等和审计 | `backend/scripts/tests/test_guest_ready_notification.ts` | 当前订单 mark/revoke、准备门禁、冲突、版本和审计 | sufficient | `npm run test:guest-ready-notification --prefix backend` |
-| Web 统计与通知展示 | `frontend/src/app/task-center/taskCenterDisplay.test.ts` | 两组计数、通知标签和授权动作 | sufficient | `npm run test --prefix frontend -- --coverage.enabled=false src/app/task-center/taskCenterDisplay.test.ts` |
+| 通知状态、角色、自动早入住、钥匙外挂、资格代际、幂等和审计 | `backend/scripts/tests/test_guest_ready_notification.ts` | `<15:00` 自动资格、15:00/晚入住、早→普通→早失效、外挂保留、trigger 写入口、绑定行锁、登记/取消、当前客服、当前订单/冲突、准备门禁、版本、migration 与审计 contract | sufficient | `npm run test:guest-ready-notification --prefix backend` |
+| 后台同步资格字段差异 | `backend/scripts/tests/test_cleaning_sync_v2.ts` | check-in 资格字段差异与非 check-out 误触发 | sufficient | `npm run test:cleaning-sync-v2 --prefix backend` |
+| 后台同步实时失效 contract | `backend/scripts/tests/test_guest_ready_notification.ts` | create/update/cancel 空 payload 事件、无 client 原子事务和跨订单 read projection fail-closed | sufficient | `npm run test:guest-ready-notification --prefix backend` |
+| Web 统计与通知展示 | `frontend/src/app/task-center/taskCenterDisplay.test.ts` | 两组计数与通知标签角色隔离 | sufficient | `npm run test --prefix frontend -- --coverage.enabled=false src/app/task-center/taskCenterDisplay.test.ts` |
+| Web 钥匙外挂合同 | `backend/scripts/tests/test_guest_ready_notification.ts` | task-center projection/action 与 Web 提交当前角色门禁 | sufficient | `npm run test:guest-ready-notification --prefix backend` |
 
 ### 验证策略
 
@@ -70,17 +80,18 @@
 
 ### 最后验证
 
-- **CRL：** root/CRL-20261010-002
+- **CRL：** root/CRL-20261011-001
 - **Commit：** not committed
-- **日期：** 2026-10-10
+- **日期：** 2026-10-11
 
 ### 相关 CRL
 
 - root/CRL-20261010-002：整合 MZ-010 的分组统计和通知记录。
+- root/CRL-20261011-001：收窄通知标签/动作到当前客服，保留 canonical 自动早入住并新增结构化钥匙外挂登记/取消。
 
 ### 非保护范围
 
-- 真实消息发送、生产 migration、真实订单/账号写入、设备或浏览器人工验收。
+- 自由文本自动分类、历史审计记录删除、真实消息发送、migration/真实订单/账号写入、设备或浏览器人工验收。
 
 ## FR-035：日常任务执行列表权威可见性
 
@@ -353,7 +364,7 @@
 ## FR-029：费用结算资料、规则历史、周结算、供应方文件与财务付款边界
 
 - **维护责任范围：** backend personnel settlement schema/profile/rule/calculation/claim/workflow/private-evidence/document/scheduler/notification API + web finance settlement profile/rule/claim/weekly/document page + paired mobile self-service/document/notification flow
-- **最后审查日期：** 2026-10-05
+- **最后审查日期：** 2026-10-11
 - **状态：** active
 
 ### 业务保护规则
@@ -376,7 +387,9 @@
 - 自 `root/CRL-20261002-001` 起，上一条中的“其他费用始终可选”“六类允许项”及金额类依赖费用规则的旧描述由本条覆盖：服务端新建合同只返回仓管、加班、通用补贴、上新房、编外合作五类，移动端不得再显示新的“其他费用”入口；通用补贴不列举停车费、油费、雨补等具体项目，本人必须填写补贴内容、最终总额和证明，财务可调整金额并决定确认计入、退回补充或本次不纳入。`subsidy_amount` 以及只为历史记录兼容保留的 `custom_amount` 均不需要费用规则或规则项；只需要工作日期有效的结算资料和明确 GST 状态。填写/核对金额视为最终含税总额：已注册 GST 从总额内拆分，未注册 GST 的税额为 0，GST 未确认仍不可自动计算。周结算直接使用财务核对后的金额并保留空 `rule_id/rule_item_id`，不得因缺费用规则阻断；历史 `custom_amount` 仍可查看、修改待补充记录并由财务审核，但创建新记录必须拒绝该类型。
 - 上新房继续复用历史 `new_property_task` 类型标识和报表分类，但计价口径统一为每小时：本人必须提交房源编号与开始/结束时间，服务端保存权威整数分钟且不再写入默认数量；本人预估、公司核对与周结算都按 `分钟 ÷ 60 × 小时单价` 使用同一权威整数分/GST 算法。已锁定结算快照不回算；缺少工时的旧待处理记录不得把历史数量静默当成小时数。
 - 移动端本人工作量列表、周结算列表和周提交预览 GET 必须兼容 React Native `cache: no-store` 自动追加的 `_` 缓存参数；该参数只能作为受长度限制的传输标记忽略，其他未知查询字段仍必须被 strict Schema 拒绝，不能借此放宽人员范围或搜索权限。周提交 POST 必须使用独立严格 Body Schema，不得因 GET 兼容参数而接受 `_`。本人初次提交前必须先取得包含基础工作、已审核反馈和仍待财务审核反馈的安全行项明细与完整总额；待审核反馈采用本人请求值并明确标识为已经进入本次确认总额。预览返回基于周期、金额、行项和阻断项生成的 `confirmation_token`，提交时必须携带该标识；存在无法自动计算的来源时不得进入总额确认。服务端在同一提交事务中重新计算并校验标识，明细或金额变化时拒绝旧预览，不能在用户核对后静默换成另一份结算内容。
-- 工作量证明属于财务私有媒体。列表/详情不得返回 evidence `storage_key` 或原始对象地址；本人只能通过精确 claim/evidence 关联的认证路由读取自己的证明，网页仅由 `personnel_settlements.profiles.view` 权限读取。新的 R2 关联必须保存 `r2://<storage-namespace>/mzapp/personnel-claims/...` 稳定引用并在上传后通过既有 HEAD 大小/类型校验，历史已记录的 `mzapp/personnel-claims/...` 裸 key 继续只读兼容；错误命名空间或不支持的引用失败关闭。已授权对象不存在返回 404，存储配置、凭据或读取服务不可用返回 503，网页必须分别显示无权限、文件不存在和存储暂不可用，不能全部压成“照片读取失败”。开发环境本地回退文件位于非静态私有目录，不经 `/uploads` 暴露；Photo ID 仍不得复用为工作量证明。
+- 自 `root/CRL-20261011-003` 起，上一条“存在无法自动计算的来源时不得进入总额确认”的旧边界由本条覆盖：仓管、加班、通用补贴、上新房和编外合作五类本人反馈都必须进入周提交口径。可计价项目继续冻结 Subtotal/GST/Total；缺费用规则、缺有效资料、GST 未确认等项目必须连同工作日期、类型、说明和具体原因冻结为 `pending_pricing_items`，明确标记“待计价”，不得静默遗漏或按 `$0` 合并。本人可以先提交工作明细与已计小计，但财务不能核准或付款；资料/单价补齐且逐条核对后，财务必须按新快照重算并退回本人重新确认完整总额。周内仍有 `draft/returned` 反馈时初次周提交继续阻断，避免未完成草稿被误当作已包含。
+- `submitted` 反馈现在允许本人修正，状态仍保持 `submitted` 并要求携带读取到的 RFC3339 `updated_at` 版本；相同内容的丢响应重试必须幂等，版本已变化且内容不同必须冲突，不得覆盖另一设备的新内容。工作日期变化时原周和目标周都要按 Australia/Melbourne 周一至周日重新判定，并以固定顺序取得与周提交相同的周级事务锁；受影响的 `draft/awaiting_confirmation/confirmed/disputed` 未付款结算必须保留审计后作废并允许本人重新提交，`finance_approved/paid` 任一相关周必须拒绝修改。已确认/已付款金额、付款状态、PDF 和公司费用不得被回溯改写。
+- 工作量证明属于财务私有媒体。列表/详情不得返回 evidence `storage_key` 或原始对象地址；本人只能通过精确 claim/evidence 关联的认证路由读取自己的证明，网页仅由 `personnel_settlements.profiles.view` 权限读取。网页跨源图片 GET 只发送既有 bearer `Authorization`，不得自行添加会超出现有 CORS allow-list 的 `Cache-Control` 或 `Pragma` 请求头；浏览器继续使用 `cache: no-store`，服务端响应继续使用 `private, no-store`，不得以修复读取为由放宽鉴权或公开存储。新的 R2 关联必须保存 `r2://<storage-namespace>/mzapp/personnel-claims/...` 稳定引用并在上传后通过既有 HEAD 大小/类型校验，历史已记录的 `mzapp/personnel-claims/...` 裸 key 继续只读兼容；错误命名空间或不支持的引用失败关闭。已授权对象不存在返回 404，存储配置、凭据或读取服务不可用返回 503，网页必须分别显示无权限、文件不存在和存储暂不可用，不能全部压成“照片读取失败”。开发环境本地回退文件位于非静态私有目录，不经 `/uploads` 暴露；Photo ID 仍不得复用为工作量证明。
 - 本人通过只读预览一次性核对上一完整周的基础工作、已提交反馈、Subtotal、GST 与应付总额并主动提交；初次提交直接进入 `confirmed`（界面显示“待财务核对”）且重复提交幂等，不发送“请确认”通知。财务必须先完成所有反馈核对；若核定后的冻结项目和总额与合作方提交快照完全一致，则无需合作方再次确认，但必须由具备 `finance.payout` 的人员点击“确认已核对”，进入 `finance_approved`（界面显示“财务已核对／待付款”）并冻结核对人和核对时间；只有该状态才可在线下完成付款后点击“确认已付款”，进入 `paid` 并生成清洁支出。若任一反馈被调整或不纳入，服务端必须阻止核对完成和付款，网页展示合作方提交值、财务核定值和差额，财务填写原因后使用“重算并退回确认”进入 `awaiting_confirmation`；本人确认新金额后重新进入“待财务核对”。普通流程不得再显示“重新打开”；仅对已有合作方提交快照的历史草稿保留同一重算退回恢复能力。作废只用于异常结算且必须明确为“作废并允许合作方重新提交”：作废记录和审计保留，尚未付款的公司费用同步作废；本人预览把该周重新视为 `not_submitted`，重新提交时复用同一周唯一结算记录、重建权威明细和金额并清空旧财务/付款状态，不能留下只有“详情”而无法继续的终态。
 - 财务退回再次确认前，该人员当周不得存在 `draft/submitted/returned` 反馈，且不得有无法自动计算的来源。退回通知收件人只能是结算行的 `user_id`，Inbox、badge 与 push queue 使用同一个最终收件人和稳定 `event_id`；同一退回版本重试必须复用去重键，后续再次退回必须使用新版本键。初次本人提交不发该通知，角色、可配置群组、额外人员或历史经办人不得扩大收件范围。移动端通知点击必须进入“我 → 费用结算”。
 - 待确认文件只能标记为 `Weekly Settlement Draft` 和 `NOT A TAX INVOICE`。本人确认工作量及金额后，GST 已注册人员生成 `Tax Invoice`；GST 未注册人员生成普通 `Invoice` 且 GST 必须为 0；不生成或记录 RCTI。文件由 Homixa 代表供应方根据冻结周结算记录准备，并按本人确认和付款状态保留不可变历史版本；历史 `finance_approved` 文件继续可读。财务管理端可继续核对历史文件，但本人详情接口只能返回与当前结算状态一致的最新一份；当前状态尚未生成文件时必须返回空列表，禁止回退显示旧状态或同状态旧版本 PDF。
@@ -403,6 +416,8 @@
 | 不同请求 ID 的相同工作量反馈不得重复批准 | `backend/scripts/tests/test_personnel_settlement_claim_dedup.ts` | 相同业务字段生成相同指纹并在事务 advisory lock 后拒绝已批准重复项；不同起止时间生成不同指纹并保持可分别确认 | sufficient | `npm run test:personnel-settlement-claim-dedup --prefix backend` |
 | 移动端本人列表/周提交预览兼容 `_` 缓存参数且保持提交边界 | `backend/scripts/tests/test_personnel_settlement_phase3.ts` | 实际 Schema 覆盖工作量列表、周结算列表和周提交预览 GET 的 `_` 参数，断言额外查询字段继续失败，并断言周提交 POST Body 拒绝 `_` | sufficient | `npm run test:personnel-settlement-phase3 --prefix backend` |
 | 本人周提交待审核反馈金额 | `backend/scripts/tests/test_personnel_settlement_phase1.ts` | 权威预览把 `submitted` 反馈按请求工时、数量或最终金额计入完整总额；`$13.68` 补贴按 GST 拆分进入冻结快照并保留待审核来源计数 | sufficient | `npm run test:personnel-settlement-phase1 --prefix backend` |
+| 五类反馈、日期归周与待计价保留 | `backend/scripts/tests/test_personnel_settlement_phase1.ts` | 内存 executor 覆盖仓管/加班/补贴/上新房/编外五类同周计价，固定 `2026-09-28` 与 `2026-10-03` 均归 `2026-09-28–2026-10-04`；缺规则、缺档案、GST 未确认保留日期/类型/说明/原因且形成 partial 快照；Phase 3 同步固定 partial 快照与付款门禁 | sufficient | `npm run test:personnel-settlement-phase1 --prefix backend`；`npm run test:personnel-settlement-phase3 --prefix backend` |
+| 待核对反馈修正、并发和已付款保护 | `backend/scripts/tests/test_personnel_settlement_phase3.ts` | 纯决策与源码合同覆盖 `submitted` 可编辑、版本必填、陈旧版本冲突、丢响应相同内容幂等、跨周失效审计、`finance_approved/paid` 拒绝修改、草稿/退回反馈阻断周提交及待计价不可直接付款 | sufficient | `npm run test:personnel-settlement-phase3 --prefix backend` |
 | 本人周提交两步核对快照与财务差异 | `backend/scripts/tests/test_personnel_settlement_phase3.ts` | 生成 64 位确认标识，无法完整计算或缺少标识时拒绝提交；财务核定快照相同时只能先确认已核对，项目或金额变化必须重算退回确认，未进入 `finance_approved` 不得确认已付款 | sufficient | `npm run test:personnel-settlement-phase3 --prefix backend` |
 | 作废周重新提交状态与资料清理 | `backend/scripts/tests/test_personnel_settlement_phase3.ts` | `void` 周重新返回可提交预览；本人重新提交时重建同周明细、清理旧财务/付款字段并写专用审计动作 | sufficient | `npm run test:personnel-settlement-phase3 --prefix backend` |
 | 网页作废后续说明 | `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts` | 作废动作明确为“作废并允许重提”，并告知财务合作方随后可在移动端重新提交 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/settlementWorkflowUi.test.ts --coverage.enabled=false` |
@@ -417,7 +432,7 @@
 | 本人申报、稳定 ID 与私有证明路由合同 | `backend/scripts/tests/test_personnel_settlement_phase4.ts` | 源码合同覆盖稳定 ID、上传限制、本人/管理读取权限、raw key 隐藏和安全响应 | sufficient | `npm run test:personnel-settlement-phase4 --prefix backend` |
 | 工作量证明存储身份与读取失败分流 | `backend/scripts/tests/test_personnel_claim_evidence_storage.ts` | 新 R2 命名空间引用、旧裸 key 兼容、错误命名空间拒绝、上传 HEAD 校验，以及对象不存在与存储不可用分流 | sufficient | `npm run test:personnel-claim-evidence-storage --prefix backend` |
 | 私有证明关联、授权读取与提交闭环 | `backend/scripts/tests/test_personnel_settlement_phase4_integration.ts` | 固定 Preview 隔离数据覆盖申报/媒体幂等、JPEG 规范化、本人读取、他人拒绝、提交后禁止新增证明及精确清理 | sufficient | `npm run test:personnel-settlement-phase4:integration --prefix backend`（仅已验证 Preview 开发库，R2 显式关闭） |
-| 网页证明不接触 raw key、认证 Blob 生命周期与错误原因 | `frontend/src/app/finance/settlements/claimEvidenceImage.test.ts` | 仅使用权限 API 下载证明，生成临时 object URL，并在替换/卸载时释放；401/403/404/503、空响应和其他读取失败显示各自安全文案 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/claimEvidenceImage.test.ts --coverage.enabled=false` |
+| 网页证明鉴权 CORS、无缓存、Blob 生命周期与错误原因 | `frontend/src/app/finance/settlements/claimEvidenceImage.test.ts` | 仅使用权限 API 和 bearer `Authorization` 下载证明，不发送 `Cache-Control`/`Pragma` 请求头；保留浏览器 `cache: no-store`，生成并释放临时 object URL，支持失败后重试；401/403/404/503、空响应和其他读取失败显示各自安全文案 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/claimEvidenceImage.test.ts --coverage.enabled=false --cache=false` |
 | 周一上一完整周、scheduler 默认关闭、人工/定时入口和通知合同 | `backend/scripts/tests/test_personnel_settlement_phase5.ts` | 纯函数/静态合同覆盖上一完整周、事务锁源码、路由、单收件人和稳定 event ID | sufficient | `npm run test:personnel-settlement-phase5 --prefix backend` |
 | 全局锁、运行记录、待处理申报门禁、精确本人通知和分轮次稳定去重 | `backend/scripts/tests/test_personnel_settlement_phase5_integration.ts` | 固定 Preview 覆盖事务级锁竞争、`partial/succeeded/skipped`、异议金额修改、重新发起、每轮单收件人 Inbox/Queue 稳定 event ID、新版 PDF 和精确清理 | sufficient | `npm run test:personnel-settlement-phase5:integration --prefix backend`（仅已登记 Preview 开发库） |
 | 草稿、GST/非 GST、可选供应方 ABN、本人当前文件、按日发票汇总、财务调整、付款去向和私有下载合同 | `backend/scripts/tests/test_personnel_settlement_phase5.ts` | Tax Invoice/Invoice 名称、已注册 GST 必须有 ABN、未注册 GST 可无 ABN且 GST 为 0、本人详情只选当前状态最高版本、七日三列表格、同日混合费用、周总额、模板来源哈希；只有 paid 文件按冻结快照显示付款方式，银行仅显示账户名/BSB/尾号 4 位，非银行不显示账户，缺快照不读取当前资料；raw key 与完整账号隐藏 | sufficient | `npm run test:personnel-settlement-phase5 --prefix backend` |
@@ -437,12 +452,13 @@
 
 ### 最后验证
 
-- **CRL：** root/CRL-20261002-001, root/CRL-20261002-002, root/CRL-20261003-002, root/CRL-20261003-003, root/CRL-20261005-003
+- **CRL：** root/CRL-20261002-001, root/CRL-20261002-002, root/CRL-20261003-002, root/CRL-20261003-003, root/CRL-20261005-003, root/CRL-20261011-002, root/CRL-20261011-003
 - **Commit：** not committed
-- **日期：** 2026-10-05
+- **日期：** 2026-10-11
 
 ### 相关 CRL
 
+- root/CRL-20261011-002：移除网页工作量证明 GET 中多余的 `Cache-Control`/`Pragma` 请求头，保留 bearer 鉴权、浏览器 no-store 与服务端私有 no-store 响应语义。
 - root/CRL-20261005-003：已付款结算 PDF 使用冻结付款快照显示付款方式；银行转账显示账户名、BSB 与账号尾号 4 位，不泄露完整账号。
 - root/CRL-20261002-001：通用补贴改为直接填写最终总额，财务决定是否计入且无需费用规则。
 - root/CRL-20261002-002：当前人员结算资料修改回显原生效日，向前移动时合并未锁定重叠版本，并确保银行主资料真实保存。

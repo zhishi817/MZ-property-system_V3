@@ -23,4 +23,16 @@ describe('personnel settlement phase 5 web contract', () => {
     expect(api).toContain('export async function getBlob')
     expect(panel).not.toContain('storage_key')
   })
+
+  it('shows execution, incomplete, moved, and legacy-preserved settlement states', () => {
+    expect(panel).toContain("completed: { label: '已完成'")
+    expect(panel).toContain("incomplete: { label: '未完成'")
+    expect(panel).toContain("rescheduled: { label: '改期/跨日'")
+    expect(panel).toContain("management_closed: { label: '管理关闭'")
+    expect(panel).toContain("legacy_completed_unverified: { label: '历史完成待核实'")
+    expect(panel).toContain('本周房源工作清单')
+    expect(panel).toContain('为兼容历史已冻结结算而保留的原金额')
+    expect(panel).toContain('已计入金额')
+    expect(panel).toContain('不计费')
+  })
 })

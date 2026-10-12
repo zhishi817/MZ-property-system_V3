@@ -1,5 +1,723 @@
 # Change Release Ledger
 
+## CRL-20261011-001 — MZ-010 客人已通知权限与任务闭环（root）
+
+- **Status:** validated and independently reviewed clean Dev release candidate; not committed, pushed, merged, deployed, or migrated
+- **Repository:** `root`
+- **Updated:** 2026-10-12 UTC
+- **Request:** 将“客人已通知”限制为当前客服角色且具备专用权限的操作者，同时保留任务中心分派能力，并补齐订单范围外钥匙位置的 schema 候选。
+- **Outcome:** Root 以当前角色和权限双重门禁控制通知动作，任务同步保留管理分派能力；新 migration 只作为代码候选提交，本发布尝试禁止执行。
+
+### Implementation
+
+- 将客人已通知动作的授权与任务分派授权分离，当前客服角色且具备专用权限时才可操作。
+- 保留清洁同步、通知事件、幂等工作任务动作和任务中心展示的既有闭环。
+- 新增订单范围外钥匙位置 migration 文件，但本候选不运行 migration、不回填或重算数据。
+
+### Files / Areas
+
+- `backend/scripts/migrations/20261011_order_guest_ready_outside_key.sql`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts`
+- `backend/scripts/tests/test_guest_ready_notification.ts`
+- `backend/src/lib/guestReadyNotification.ts`
+- `backend/src/lib/workTaskActions.ts`
+- `backend/src/modules/mzapp.ts`
+- `backend/src/modules/task_center.ts`
+- `backend/src/services/cleaningSync.ts`
+- `docs/feature-regression-registry.md`
+- `frontend/src/app/task-center/page.tsx`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts`
+- `frontend/src/app/task-center/taskCenterDisplay.ts`
+- `docs/change-release-ledger.md`
+
+### Impact / Dependencies
+
+- Root API and Web task-center only; migration is committed but expressly not executed.
+- No production API call, queue operation, migration, backfill, recomputation, deployment, or data write is part of this attempt.
+- Paired Mobile behavior is tracked separately as `mobile/CRL-20261011-002`.
+
+### Validation
+
+- Root TypeScript build, guest-ready notification, cleaning sync, and targeted Web tests: PASS.
+- Full paired `npm run check:full`: PASS; Root backend build/contracts, frontend lint (warnings only, 0 errors), 53 suites / 270 tests and production build, plus Mobile typecheck, lint (warnings only, 0 errors), 67 suites / 420 tests all passed. Independent review: GO; P0=0 / P1=0 / P2=0 after closing the transaction-audit and retry-idempotency findings.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** no untracked files; selected migration is staged and ignored dependency paths are outside the candidate.
+- `backend/src/services/cleaningSync.ts` — SHA-256: `216adc922c833bffe61222a2b7c63a3e5def2e2bbd97b07cd77ce2bd0afc0fd1`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `a72a8b692a8c4757f548a9a16a7881f318b04feb34e4922c7b64bf0ea4820ba4`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `04fa3369a19d6120b918d50425718c1b37304ecc93d932578861c5fdc6b91609`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `34fb0e9520b75dfd3ad4dedc37d3a826ed9758dcf1b0d4704a721e79d0269cd9`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `3837b61adc50d78507ac616de06186d660ccf1a942be165bc870b8166b1b01db`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `3ecf2357d1cab08065b163634d7fd803a7671429a1604da1e05688a3cc1c5939`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `4ced45b7f39170792e94da1a3935740fdb12a93de51624b26138bb93d93827af`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `4e1152b09e58ad30f7a1f5886ae1668d501f9159b8f42c10ff0e8458213b47ec`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `59667b1eea3e76b5b20376291bf952d16c49565e135582121ddc5ee3d6fc6865`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `6588b3530a586dc5754809b60bb514f9e7b37c85bb735306b42f308f65ca1743`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `697df9f046b476b4a89a84c228d2630b558d38050852db75c289b4c159557f5d`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `6ddf3707569fdc5942aee20e3e987713b625efc237e186e0513f3b815cba11bf`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `6df5c68d9d9578be8c78cae5ccdccc0175f01db1a2448aa2640a2aef3028fd22`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `6eac5ccc147ec3f6fe032eb6137a709820327816533f7d11334e4947de5b7cc6`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `7296917cd531dbc59e0e67355627fba22feaefbe35849bb29443385690c8ad9e`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `9422243094d0dc49cfad7ce1c6d924cc88d0f64b82f6ad526d02025d244f12ad`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `97a2992d6e095dc5d79801493f0167b13140745cd709b0cd3532ef919edd2e20`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `b6d144a8b43f5e643ad95b1e8c2cece007b1e89f4d4ba1e578ae584e0c00a619`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `c1b5b288b460b5ccd43a9b399129cbe66e0009f0f87f757d2ae66401752c8d92`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `daf86ed41f79a8346f53896f28ba5d39fd36ba5c5b6c80ed6f3cd8868c3a583a`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `e5e6cb8cfd134ccfb82c82b05e4d638f56704ef266463311ac029b83015fd76b`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `f41674db7c541516ae7feb1340a4ae437720b9344e7caf76794fd8f26d442768`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `f46564d56d72e253662786c6001cec7082b6ed3888ee3992f52bf582dae7e36f`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `fde02ea20afb074a726b8a400a76554f99d101e60b76f1a0983d07985fd760be`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `2a6140417ac49dfe355398920b838cc3a4cf18ce2fe0c963308d13567aa667a4`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `5719c19053e1f76e7fb79b3736ad51cfb765443dd0c87e514559c71a647fa3ad`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `959d7ce401b6f1eb223f9b74a38b00d8a23553d9a12cda9e94a04237da73bfe6`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `ebad5a54f20a879a55ba87d010ab3e224b9a6156ce6c30a9401dc18a35f03abd`
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — SHA-256: `ffb45f7d94acfee3397f1955a63a68c415fcaf94c8e80135160da82c462ddc43`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `3c23afeb894cbf8f28540a5f0ab1257dcd43e382e9bd97109a1e690f2ef0bf60`
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — SHA-256: `b00ff7842ad948ab5bdc68534b513413ac9c526ade45bba343be14914c6c97a8`
+- `backend/scripts/migrations/20261011_order_guest_ready_outside_key.sql` — SHA-256: `aef33448a5f6d9d0d4abff8582c4ab1adef22412da13bc8b2e276f14c49e6d35`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `9becb1d26f2a1321b86f2edba38790a146b32aea2e69646e0d7a5a166cd671e6`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `dae2931f8d4503ab85e8d74a5fa8b7af336475b289db6c0ceafb3959438b757a`
+- `backend/scripts/tests/test_cleaning_task_transition_guard.ts` — SHA-256: `0827e659f3d760a78981e676872004bae8e9c426346770e30bac41f6c479a129`
+- `backend/scripts/tests/test_cleaning_task_transition_guard.ts` — SHA-256: `08cbce11c0e42fa81a5701112397aef5038eafafcec1783b1d8ae12d111ef076`
+- `backend/scripts/tests/test_cleaning_task_transition_guard.ts` — SHA-256: `1c4a250cfa29490847dc4eb3178dd9ea9288c07b71b26b535acd637c27843367`
+- `backend/scripts/tests/test_cleaning_task_transition_guard.ts` — SHA-256: `26cb960e6b07f66af156f6fe42cd010c6d30a65dbdb56ce55f60a24ff351cab2`
+- `backend/scripts/tests/test_cleaning_task_transition_guard.ts` — SHA-256: `69ba23f88aa630a224c312a4a5a2822fe13c05e665c4bc2050cee1f7a4d727e5`
+- `backend/scripts/tests/test_cleaning_task_transition_guard.ts` — SHA-256: `6c425e7730f51e6281f1b4abd87c942c40ad33f718a7e685d588742b3db41a88`
+- `backend/scripts/tests/test_cleaning_task_transition_guard.ts` — SHA-256: `9f5a9cc415b4a2b394d3a44158743c87c1061b4d4b9ea9ff1bb2102bbc2342a7`
+- `backend/scripts/tests/test_cleaning_task_transition_guard.ts` — SHA-256: `ba071c078dda4ea0c6566c5fb2699e758ef401038ab79c1ad1d0bfba83abef7a`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `23e5f98136259f0f3ccebfa0b1f229c25c5360a1895b397d1ba6fb6307ef16f6`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `76fb79c1696f84d1fefba44bc7c9bce24946e91d3ea8eb96b1ffa7cd164f9e32`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `b41e945177080c987359d0330367ac47782002c99f3a4c7da87b0cf692f4b602`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `f26052abdb87ec5ef505b227aee3e89c9b6b4e0e3cd46d8a27e0bf58a9ebf577`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `fc4ab2a3d9e5bdaf1e1837b084a84924dc042e3d0e519cec1c7da2dafeb8512c`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `ff58cbbbf041a6113fe20b865aec66afc3ef49c04cfdd4be794322eb95edf4bb`
+- `backend/scripts/tests/test_guest_ready_notification.ts` — SHA-256: `00e928b279db66a08be756f16bcd91e9c79bef04af206867e513d6dcbbe21092`
+- `backend/scripts/tests/test_guest_ready_notification.ts` — SHA-256: `1018135bd651224f9aaa0b6caab5bb515425b7b714587e7c5f1aa2f08d499974`
+- `backend/scripts/tests/test_guest_ready_notification.ts` — SHA-256: `31ce0245ff8229f31939f2e70499ad43df1119b79ca0cc3c265519f8c56ba02d`
+- `backend/scripts/tests/test_guest_ready_notification.ts` — SHA-256: `43b6d72ff4391dfb8261621969fd00d0912214c520075cdbd69a94723463b7bb`
+- `backend/scripts/tests/test_guest_ready_notification.ts` — SHA-256: `47c60a25f6acc11dff657ed244c647b185ee0a563b902ec43f3bf88711b63ff9`
+- `backend/scripts/tests/test_guest_ready_notification.ts` — SHA-256: `48c6e2bad1341d0a9df849a04cb1c1c7a1287ebc45d953ce833480e769fd0bd6`
+- `backend/scripts/tests/test_guest_ready_notification.ts` — SHA-256: `4aacce79705d47fca927c46af4c59d5401eb877f737f7b7e0c1ba661ded8c389`
+- `backend/scripts/tests/test_guest_ready_notification.ts` — SHA-256: `67b5f3ee1cce29a0f3ae81dc77069c10e9e48f32a10963b9cfba0157a32484db`
+- `backend/scripts/tests/test_guest_ready_notification.ts` — SHA-256: `7224b2ac0dc3b0bddcba5d222b320555ca32590f1f6fa7b3c35054c5cc772bcb`
+- `backend/scripts/tests/test_guest_ready_notification.ts` — SHA-256: `724f20b222092108b88f5324fe4d3545ce18740fc2b541abd3fa5c3b50f8b851`
+- `backend/scripts/tests/test_guest_ready_notification.ts` — SHA-256: `78e8119424e2ca3dd70590e756a46d197923563d96130120bb8efa7406a6ccaf`
+- `backend/scripts/tests/test_guest_ready_notification.ts` — SHA-256: `a2782b80e9ed7188a55b717f5d8a968d0cb68a0eed77039936561ce138ea1aeb`
+- `backend/scripts/tests/test_guest_ready_notification.ts` — SHA-256: `92f9850d1477cb4a5d31f125b326e1ad4bec45897fe27d4e3994864bdfdb2ec0`
+- `backend/scripts/tests/test_guest_ready_notification.ts` — SHA-256: `d66dc89f87bbec360230ba0e16d82ba489954e6e37b8afbfbbc27165cf11bd68`
+- `backend/scripts/tests/test_guest_ready_notification.ts` — SHA-256: `da843d9f59f7e48d211806d9a58b13d32d78f274f7e0fea6d75f2fe6d81b7c11`
+- `backend/scripts/tests/test_guest_ready_notification.ts` — SHA-256: `e524879a4866301ad4549c4a66274b92f1f9184908042fe661ecd3ecb2711d47`
+- `backend/scripts/tests/test_guest_ready_notification.ts` — SHA-256: `e6961d2018492ee00a9937fb23a6dffddd45613f1bd8f6b7707eaecac8a3ddb9`
+- `backend/scripts/tests/test_guest_ready_notification.ts` — SHA-256: `f49930490ce3662bf9ce6d6be8830f2d3c47684a6adb188ab42e2c6cc042f17a`
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — SHA-256: `0a6c4b7667e3a6e9f0f3f2bc3be837b767e094827fe81f49f61609637e6ecf17`
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — SHA-256: `3a63f3b4c35d782b1c193702b44093d44f1f8391ad88b9a18f5970a29e32177f`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `01b110b1e9052f21ce2073c1dd769b82fd67630d588adedac64740e20377b173`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `168d683f90c12bf67ad32a60ac5baed4419ba3562668bf832f09ef564aaea1c3`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `2b34d1c0e5de6cb68efeba1be55233d608ff4bc98d7c0a27f513469920bb6961`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `2d6db5a6e268a140d34e5e9648bf8081fe18ab5c7976fcb947905c9de51c674c`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `39958699fcb6fe42a156a31817f8ba5ed7832ed72e8aba0e11d32e5d3a489f92`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `47d5bd44d6f377145fe492ef0ef4bc57c246080097a6f01e232cffe854fb59d0`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `4c00bffd496ad68c720d77748f2101d2477fa6d63c99fa25689f7b8bc05df3f2`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `5674869b24a65ae1e271c4ef6d60c8bf5778929f7dbc33af466ba937760df916`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `5ec99270155e3132f35bf17b20245e31e33e520ff41cf2a2c6110ee41fc59450`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `7374ceab3813786140a3e05638c9d4d01e2845e189c260446b7454a7ac7244ce`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `7fdd00648952e054a258132feb1d2eaf08ecdd4c190b0ac74b687ea1c004444c`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `8ace9436e07e320e11aaf9f9ebb7d1ba6716a9af7ee5a819a6472ffba1352cd6`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `8de090cc792147166090bbf23c2710a69a131372560430d307a01f8457b5b772`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `9c40631f3cb0a99f3cee8d94a1ae0aa7232c56959e963e2662d8d453603f837d`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `c877f9bf54dbfb0fa6e7a57407758d9219f29dc8e8120f07d961df05c98ff1cf`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `d3594a6a338c045f13a53fd259095d6fb9e5db5c0b55fe8d516412b9eb12f464`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `f50b43816e52422086cb5ed5c3fc54ff280d48f3a2c36822044b7d885e7aef63`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `fc4e1d74afcb202e214a02d4eaefd173192ce561c3f91f33c6644b2e204620b9`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `016ce970ffb2f089937869a97d450a40b22de1b9b027d4ee7644e21235dc492b`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `209d9e0d01cb4bbc043427bb17ca27f40ef309199fb53e527d3c07bcfc8c5be9`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `35a722efa0d3356f77f9a2c80f12109ed99d605c42ec56af9c8d26eee668d5b1`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `6f939c53a2a62f28291504adc6b2656213d34ca669d83464f0498f59bcef022d`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `7866616c130bc66291396b6b532779d80478b194b39182a1d9cd5c8f2072b5cd`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `7c0ccdb970fce88093b2669847bfb797c5509024f6802cacb291f16324387258`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `7e4f6cf0cf664197de4ea9c0287ce2732f3e6d44ee56f4149d2df816da9d5e99`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `7e8dde92ca5446aa0e081ebb1453b6d136acbf7de5b6fca3f96448674c1aa276`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `817742d50817412c14b67f3dadd2c9c46c633ede7bab794708259c4ed81832b4`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `82ce3dc40900d947e0852341ff9a873ae0f66f23aba8bb3dfa527ae69bf7192c`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `9627b2e31e38294ef02d7a500795e87b83e3d8fcb27e36eb5447f23d7d21e867`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `9b75da7546e7ac896d40468392eabac417b01b9b4a2737a9e30a419f1843f6ac`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `a24d55e84485748160f853342c5e04f6e2e7adc5b3265e915a3427fffdca3b54`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `acb4891f2e8233000e0f23f89bfa246121b7cc69f74f78591cd901a68d9ecd6e`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `b4714ce9b7d104e647e225e0129eba155e63519959738779fb33d721336f41b7`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `baf8d921e8c6a1f31c845a0958d9b41e47db03de39ee5caf6f84adc1dae0d0d5`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `c993aa4a2cbf8471edf4cbc1ca512d0e609fad4c45ecc180be921a7e83bdea1c`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `cb60e07921870bfc80352bf1b705aec37f455849892031cadd5489d3ce464344`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `cf79035b60550bb20efaa6d3611ead5bf2a6dd71172608160aaf49d4b85affcd`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `f7786416ff3204fd9f175aa48d7e62de161adbae8238e78acdd8d11609139410`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `ff2acf10d489d0be571f7bafc72737995b3676b2a35b5ceea7a16d7d3497dcaa`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts` — SHA-256: `645bed07a1ce25b373ba3d4a1a082e983b9a0f2a885e99c3adb83769f8fbc761`
+- `backend/src/lib/cleaningInspection.ts` — SHA-256: `103b103f7199d17bad5baaa3081b0eaaaca22ab086f07eb47f65ba3370d9f5bc`
+- `backend/src/lib/cleaningInspection.ts` — SHA-256: `c20b84af33eb8ce5f4988a3295ef666be6ac5091b83b240fcf89cef4d999d6b2`
+- `backend/src/lib/guestReadyNotification.ts` — SHA-256: `1647ae9c659edc9f3ebb908669302d53b172e9b9fcf5db4af37fd2ac6e928466`
+- `backend/src/lib/guestReadyNotification.ts` — SHA-256: `1a20e3c458e76dffb44d777fe557461b6ee2eda8638d6b495b040672c59e64bd`
+- `backend/src/lib/guestReadyNotification.ts` — SHA-256: `29012611a8e138811f4ddc17278a1b516d4d573c812bdb2377715fb10c03c346`
+- `backend/src/lib/guestReadyNotification.ts` — SHA-256: `2d9d738b5c4dbd7916eb22d4f6385ec46d158e43096156a2791d7be82bdb87d2`
+- `backend/src/lib/guestReadyNotification.ts` — SHA-256: `2e3fefa6540553f2af7cd7c342a3c08bbf84887b556940ce3dcbc3cfdfcd2061`
+- `backend/src/lib/guestReadyNotification.ts` — SHA-256: `48c39547786433bd42f58e25290beaf54dc9df56a2f473b9ffcf9198ca9ebbc9`
+- `backend/src/lib/guestReadyNotification.ts` — SHA-256: `49531b6173e6fe32a6c1cddc35166cd5c83c55b536ec352cc8ce4b9829d70496`
+- `backend/src/lib/guestReadyNotification.ts` — SHA-256: `4f4262b9d08ff918262948c75efb61bbaefc5dcb6986fa8f28e646aa45395baa`
+- `backend/src/lib/guestReadyNotification.ts` — SHA-256: `51a3d8b09cb6518019e6c3335fe529551b69ccda3b8543f2fc6171e187bc6f2f`
+- `backend/src/lib/guestReadyNotification.ts` — SHA-256: `62d55a3658a3bfac9dab815402bc63fbb57c880ada100b508048c8d0fef4860c`
+- `backend/src/lib/guestReadyNotification.ts` — SHA-256: `81329b666210f4a81c6e806cddb6b0f750ee57e130698378b4c115fcf54d02de`
+- `backend/src/lib/guestReadyNotification.ts` — SHA-256: `957da13dd8932173c8eabd7063cbc3597209538100177345f7cc480a27fb5ded`
+- `backend/src/lib/guestReadyNotification.ts` — SHA-256: `b2bc91e23895097450303520ca02ac49ef6680c03494a7cadbb19c944d30f9a4`
+- `backend/src/lib/guestReadyNotification.ts` — SHA-256: `cca106b44a5d3a94218ea1fc3dd4557b6ce49bfce02fd0f317e9e05ebdaf5e0b`
+- `backend/src/lib/guestReadyNotification.ts` — SHA-256: `d28a4498befa95658345bf7c52cb8259e74a733d106f95abc0ed5d005a04bba7`
+- `backend/src/lib/guestReadyNotification.ts` — SHA-256: `deeb288d5b1b93f13f98d14b8c80cecdddad15fede9a12dd69f6545c200d7724`
+- `backend/src/lib/guestReadyNotification.ts` — SHA-256: `e173ca6c4514e7052e1f2e10ea863f75dd5c60198b9accb8ff10f6fa5715d638`
+- `backend/src/lib/guestReadyNotification.ts` — SHA-256: `e7804bf0b989d5632efac3a8e238879d28063417aad2ff080e77bffc69a5ae9b`
+- `backend/src/lib/guestReadyNotification.ts` — SHA-256: `f195d78ec86b3742b7fa184160e052593cc9b520accbe85bf33289d0e4dc553d`
+- `backend/src/lib/guestReadyNotification.ts` — SHA-256: `f6aa3594cc34c096c439057777415678c9cd85362c94446d49df8694f101ea18`
+- `backend/src/lib/guestReadyNotification.ts` — SHA-256: `fcd006cf7d4841111e3f56d522ff024fbf3df92c6e0afa9ad09978d82f1bacad`
+- `backend/src/lib/personnelSettlement.ts` — SHA-256: `6fc6f17dbe932df7976238323abd6068c7b2d10d218cb08102ef4e1da5a59df6`
+- `backend/src/lib/personnelSettlement.ts` — SHA-256: `717e6311a2fed352f9025934c9ca0d969146b3d04ac5e55e4015e7ad578fb972`
+- `backend/src/lib/personnelSettlement.ts` — SHA-256: `7c1f5647078fcda01871d3205f97b5fe53ac76593777584251f044201392167a`
+- `backend/src/lib/personnelSettlement.ts` — SHA-256: `b50aedce2710ac7e446c64b790437d788548ef682750b108d09fa40eaeb2abc3`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts` — SHA-256: `7be200f2e09e53ec1c3c5edf5dd326498def6262e9c0728cd6bb90f6db847b19`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `0c9b4516afffdba772ab569c7fbe6b58155e2196135aa4833f4fd0486606bcab`
+- `backend/src/lib/personnelSettlementDocuments.ts` — SHA-256: `12e2407795f94e9eb1286498ab7c162ac8a4f48b7fdc92d74cae7c24aeab7b51`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `00214def561c54e7b71d5de11d58ca3f9cca5371862bf989d88f47885ef6c734`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `01e38afa00d769527d9bfd91ad15eaaea3524daaab6da530a984f85d8625eedc`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `07d57b8dbbc3d4d65d54a0ade70b62eb43c4948c498be5bcfbcf0beea59a9da7`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `194e02ac4fa577ff6b786d2b139b3ea23214aebbfe6d26e59a69c13b18658204`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `236037fd48136358929091cce943c9c9de732470cfbc4c2d4dad5da4508b3786`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `236bfb7956e5c8c01604e4da2f35531b166c3dab8ba8733c08fdea0d8ee6062d`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `246e082158e2eefbad26ad06fbd352c591c8d045ccbd52426ee73c0496337fd1`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `24e47b4a0852000f724f42f1ef56d7cbc4f0046c0cf8db51dbb5fec6750f4612`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `29a324776ebecdd231ac47c50c52a4c6dc31600e81f633261108e7ba6b69f17a`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `2ac2489557a99fdb69df1ba4407f2c3add24084bafe05e195fea182c7d08b2ed`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `487c5917a4274545418b5b2e16233439db18e8071413a824bfa082765a792af6`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `558082889a228a12fbcd91cc3f29fa3eab09c47256a2b86f16d0ae6f01fc1a3c`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `56780c6320bf5c12982ad1076bbcc39ebb683f0e73afeba390ee7e0de8b53f90`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `5e99fb69da30e69b103f8facb52f83761a80565c404ca533db29ade75ede6638`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `5eb34d57c1397a39da748d79e8ba2a9e3fed41953cb8248197d75171cce6e6c2`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `5f52edf4cd65912d18c641ab881b119371149cba92b83c3363cac1a469922571`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `682b711de2edd73f91c98f71eb697051ff8e82ea94da799324bddb8b1f1152e3`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `6851b0d5220254260d41f96eaa9f2d7bb2fee3c9a773e34bae4ff7c69acfd419`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `6b413bc2041ed4d55f0272eef63234c6b40c0ec618a91988efa1a2a506ee3587`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `75555ac3f5cf570bc83bafed038abec327a9e1f64c79890c5a579d5815014008`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `7acfa48a4933ede8efbfff00bac4f5e99dabbea3528a60113edc6ad7305c0ae7`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `7af1cdafd8415351f08a0a0950ecb0d3020d06a466885bfb5ba8dc52236aea2f`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `7dc6b721d8239116f14db9df311eb616ad77a539c119459992e1ab6157427bff`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `8adbd71734c795a049128872a620c53244dd86536211e743b5457a5756d67385`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `8c2bd751ea4b4e253ca8892088f20f5e29be0b08b2b285f7b7df334d70880283`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `8daf6520ee2cd4e93c0efba4cccd6e783e54b828410b06d10956b366c355e119`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `93fec02b8504c2d7a6872eccb232259a13965cd6629dceba5299fa6a917c707d`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `95cff630cedf6919ccb4648d54fc3a2b2a70f6fdf9df3119e5bc85bf2aef5c78`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `9795ec535550d7808bfd0c403756fd3aeb8757d4204a746cfd9d210bae5c5fc2`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `98d01c9d945433c4c721fa8ebf5cda4904f88bea87028c4ce9c6246f6c35bf23`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `9b63d66bb15951e13e628f7a27051c24ff4cca2f11193450a31f5c4d02e6af5f`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `abd669e94e097a56b44f1e696572e2748e78038d854b97fdcd9e1fc9912413b5`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `b0cd9b229a242622674bc8bf4e47d268c4cc0d68498dbd1778c046b129b7f2fe`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `b37f8707df995cbbd917d04fb03334aa0b6fc80df4df7e9157e275b1d1f8dfdb`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `b4b631df8602a206b6bef14119fd293f983f6420500bb5efeb40bcda0336d6cd`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `b56d26ea904948d94989ec26dae07b718181444ac4040b3355784e594fb86218`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `cb454ad159f340fcd598c28449fc3a7b40928f2ca67a43dd728535b7db3a5f6b`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `cbdc6ed174303f6922d23d602b5247568b88ded367783ac6a052a7cfd87de2a1`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `cff14dffb6b4f9d038e62f42ceb5da4dc46dae640ca61232daa3ef2694a1a615`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `d883e9b5727735caafc0da98ec3894ba78118cc463fb4c90b8bc4b39ede82dff`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `d8bd90e90ca9f0c33136162176c567075443c07d54979ee884e373072aab2e6c`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `ddaecf2d30fb41abd0c90a41c96e0df52e943493ec98a0ec7b304dbb03bac103`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `e03038d85eedceeefc7350f50293f388b7058901dcac645e13884bb391a5898d`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `e072e286d110d3d65200d316244376c6824da922fcdaa8d25154b907ddae9613`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `ec1d6165f2b194f942b0623ffa60116bc6ef8abd3ca39a01fcaae5caaa9556bb`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `ee03a60f7e81436466de785eeded748eec95ade0ce4655601aae663865a0f8fd`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `f18f3c1e4fac07a99f32558a8bc4103ff55749f759cec441828225fbccd932d9`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `f325b94df2dc662f954c72bdb6c00d5aa8733b01a5e420f685af193ecb7c8078`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `f37706def46c45ba7d8ac3dfda5ba86c70706d354c7b84fc4d3c76874dad15fb`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `fd1b350338acc20170ae521f704a6c8127e6ce6606cd2c2272f4c4bbfb3b08b9`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `ff71c2dcbbbcef81fff6930b1119e61e4d0356de4d0ceed348b1f8a2ce40f64a`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `0128e1b398b276c654853137d45e2977d0b429a75fdcfeb843e4137bb38e6751`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `0c29c01a30c2899fd176b5035b7b724ce45dd86ce9ec4dad6aeadccc89112661`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `0d179fcac80f6463bc53eb9083cc1ab6d859791b8cd2388fe57eca06bb431cec`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `0d70948183d804a6dff4b2cad375cf2678574c4d35832559196710d8471c4b28`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `0ee12492c5a5f919e3cc234e94f3d95a8f0e7c3ceb7354475545dee086a3a3af`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `14903fc4f478103c44a317488309c9b73f7ea1eb1a9eaaf93d89527e193b46fa`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `1c86b76fab492a1df54ebb8cc396a0e81726b73f0bbdcbca889767abcb871b10`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `1d15b867059e19cae9924516048871acebbc0afa870151afcfdff9ac23263a4e`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `1f19ce9ff026472823ff48d58311be265879e21200528a5a33b8c63ed0e406b0`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `298cba4b62c81d278bdeb4e25ad6dd31e310cb6e8e4ff2833f42841f872b3eb7`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `2ed7d9d5476b10e963901470259e378484fea518edd554d9e91e3ae1e99309b8`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `449dca035e8b51e305f1cedadcc6d6c17956aa50d9f5a6c4605469e1eb49a759`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `4974afec8cea2713f7ad9c9d7de36a3ff79a663c312932f453aab2ce33503b84`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `5112a462c6d3c0d77b82c34bfdc3d3f1db868f345aa2e7fbcb43270683db0969`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `5459d6dd0ff4ac46038183e038308e3aed5f206324a55dc400880b53890fc85a`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `63d8b98e8c2d8e626d48ceea11ac530901f728a95be94be31d8f5dd243860208`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `6b346ff87cb9a5978814291fd7697d79277f106ad0c94eb98c121bf1632b1da9`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `6c5d2f6ebd6621632aa5c820ffba480134f20a9e5c8fc9b866aa816cba41bad3`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `6f743625def34a3c1b5bf4e364214ffae80de726f7f3b5315d518486dba32b56`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `6fe56f8606f7deaed7fac19b33e7ba1302f29ad60bc0c72ed0f936a30617a9db`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `72b4074f06fef3222277b21a69313eca35282ac3fe7b498ba1e5377546a8fe14`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `7e5d3e181634796aa6b2546656421cde7b7921be38f69a5fa63716da17404885`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `834b5b62c3ae372ee479f160a119c5677a058be68c3f7e3900d80b6064a21fcc`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `857c51528d2d0bf71449edb8880e3c27b3f52cf2907782bb85cdfc3eebc50108`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `942fa7cb3a9de39156a1ea8015920d1bd2dca74032df5b100086af7120c0e56d`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `9950941657fa6bfd765aa87459ab150c99dee47c7255131651ff84a904fee8dc`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `a0fe49644bca47260baf14fe938118d9a93e3e5a0d43d3064b4a7b23476c157d`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `a4265093ef6e455f0150bef93c3f4b103810eddd00a22424a264231ec5fc44d1`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `a54093932f524f234a281e90c132d1c8f33aef11aca16f84f3640cf50e755e55`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `a7ace4064a76fa917e40dbd89ecf137f5152fdd0aee45922465a80063ca5b2e7`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `b84b80d99fe451b78bd06a6c401ef8d0d13715ede6d0b537b381efbf6bbc7870`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `c31ca04138f15e20dc2798b6838ab371d23ffdabaf9f21e1cd56fe180680e2fb`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `c3d259aee0d52cfa6d11d033323811574f731ebe5f5446566e56fbc188316c46`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `c7d4881c615ab83c1be60473679ffbb62155490a485efa1c12e26d4ee88098f0`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `cb6bfc5365e78fb43c9537839abee1da21c747702089292767cf646467d18906`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `db7b8fe5e74e380e06a7b3a1aded7e64db6fba1c12c3f765d4642849f3eedfb3`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `fb69a247ff6dd0869ba545831e499ca9a22656a1f2588fe137f5313dcdd98eeb`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `fbacf7f7a3b74275ab5bbab7383344dae27dddff4d3ec830bd2ea73698ef5dd2`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `05a458ea29d48ba014a823ccd81b46689b22d6ff71a313634256699573511da0`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `1fa7c3fa4d30f1738f72df4358efc318d3fd44c218c75a7b8e79478a5fa97e42`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `2529ab598307522ae5f7f5abcc4586fa4cd355d9a1631144e942f5e3120b93d2`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `2bb121eaeb7a6bbae8da098c59111939a5b9383d103d08df50d0be2271c26a8a`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `338e1f23e6cab684d553f012714dab2346159268aff2f45795a967cb0c2f0870`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `4d226c587c2246e195e04b959dfa191e24872f515ee15d059a02856d4b917731`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `53a911cde93fd73ff9e1896329ba161e7cdf4390eacf32497d4efba7a054ffc5`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `61c733adf5774784dcd0c09ce8c0a31c3bae36d009106297ad3ccc792588a1c2`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `6821042915d765987a989e0512ff5715af18b1a4a2906f0ed163d89138e68a60`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `b54e52573f3981c5d3be28f8dc628eaa605f938ecaaf693a7945f99083d56881`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `bc060061cb64afef278a10c6fbe2e8fb99423e0eb7e390973bfdaa29562c7352`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `c3136d4e4b64b5352ee95c20d043ad61351fa09664dc0ba5a3f0fde5f590536a`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `da1a1f0b2783602a0e03d5e9c911ced4dc364f117801c87f5e523c923f652149`
+- `backend/src/lib/personnelWorkloadClaims.ts` — SHA-256: `db2394849b5e2cbb8640d23f74d4cce2850b6ff86dc8a3ac38742bda7ab02643`
+- `backend/src/lib/workTaskActionAudit.ts` — SHA-256: `0344bae7a402a008b7152e3abeb352e3b5b50373e928166e32452472289f8d33`
+- `backend/src/lib/workTaskActionAudit.ts` — SHA-256: `06885a2029cca6626eb539f5465b629d5023b84e63359db731224e462dfe8522`
+- `backend/src/lib/workTaskActionAudit.ts` — SHA-256: `0c754b782eb64857e39df911ae28d2499046c35a1e5bdeec567201de2b5a2e58`
+- `backend/src/lib/workTaskActionAudit.ts` — SHA-256: `2987d6464eaf106f2c318a0fcefba488a83c39b35d21fc9fedaec145640fec64`
+- `backend/src/lib/workTaskActionAudit.ts` — SHA-256: `37b6288a5716af4e859ef597dfcdb8295b51dd3e3b106409f78bff9882bdceda`
+- `backend/src/lib/workTaskActionAudit.ts` — SHA-256: `783bbae1c6db946718c3b06e304bcbf30bb24ded18f5338ff23e07be9008d425`
+- `backend/src/lib/workTaskActionAudit.ts` — SHA-256: `84eb5d7e01a4242350c2c20578982f7060a5d7491c2c3fccd0444a17444d95c4`
+- `backend/src/lib/workTaskActionAudit.ts` — SHA-256: `ab028ae03d6c755578f2e5fa0632d076ea7f8a86ef1fc4266c8347f32b1b32df`
+- `backend/src/lib/workTaskActionAudit.ts` — SHA-256: `b1666f1bfdf731cd7cbcf6c7f0371ada7211d8efb69ea16e0d86fde7c19252fc`
+- `backend/src/lib/workTaskActionAudit.ts` — SHA-256: `d3c58fd9deedc3c36a24e8af814fa01016665d3ff632c50cd12b1b709250b9fb`
+- `backend/src/lib/workTaskActions.ts` — SHA-256: `3ebb58d90597c7eb617986a1117493a8d75377d3ca71dc2fec499bccee5493c4`
+- `backend/src/lib/workTaskActions.ts` — SHA-256: `8badf849dcd00e161ca027b9b0271e0889098b06fe0ca038aded8c2c9aa824ab`
+- `backend/src/lib/workTaskActions.ts` — SHA-256: `9be865a771b81e6d25a85056048488b76130850a4e10da8b42455758387668b4`
+- `backend/src/lib/workTaskActions.ts` — SHA-256: `d5953483542fb404b5c140729e1ce42436936f896be80a3316273e8c3f95ded4`
+- `backend/src/modules/cleaning.ts` — SHA-256: `05fa4a438485658ad60b7ff809faeb86b2a47cd032436be7df663124fa2f6da3`
+- `backend/src/modules/cleaning.ts` — SHA-256: `26a5b44f0cae54a7e808a27f5c990fcdd3b5df117cde41f76752bcc3e5b51024`
+- `backend/src/modules/cleaning.ts` — SHA-256: `2a58f67a04acbaaf033036dd9060db578c0556a55eaf8ddcbdcaff8aaed55e46`
+- `backend/src/modules/cleaning.ts` — SHA-256: `4e99e9a2dd345e5e782baaaf1b2cff16674b82e89f611ed4bd8ec3776b956942`
+- `backend/src/modules/cleaning.ts` — SHA-256: `67bb7f67bdda22530340fd78ac69e0b5d511be8c17091a48cb4ae4429e609a12`
+- `backend/src/modules/cleaning.ts` — SHA-256: `6d947fee76e94a439be7dbdc6e993cadd0e6b75d0d719d68a9e9d01ecc68ffe4`
+- `backend/src/modules/cleaning.ts` — SHA-256: `8278e5aa6a203be6bef43b665ac5e28f33d7d392726303faf6ce570689464cd4`
+- `backend/src/modules/cleaning.ts` — SHA-256: `87abc52d01916b0c3af786076191d7dd2855553ecf6d8182c387eb07e242cc8c`
+- `backend/src/modules/cleaning.ts` — SHA-256: `a27cde3c571a305a607a1572f068bf8318e57b45882e0c75176d9e6958c393ad`
+- `backend/src/modules/cleaning.ts` — SHA-256: `a9774c0f5b78adb8ee8094c3838aa5832e659e4acd9aa6f48342ddba8991f0fa`
+- `backend/src/modules/cleaning.ts` — SHA-256: `ab1160f15e826ae7192787d95ef23c8bf9197a83a9c19b60c8474914a518d0d9`
+- `backend/src/modules/cleaning.ts` — SHA-256: `aff1b545aae706e4ba7e481227b0a1651303865f4a0e24327fb011931a6777db`
+- `backend/src/modules/cleaning.ts` — SHA-256: `b32ea7f3750fc0c264ec82ef2fe2a60f9202db0252a05a5d4a0a8b2c33b10399`
+- `backend/src/modules/cleaning.ts` — SHA-256: `c31414d341ec66c89ec112698bd274fc3a9bd483a205f138b01307f523db8072`
+- `backend/src/modules/cleaning.ts` — SHA-256: `c9c22f502b18a1d4c57fa8429992d0f7befd125ce4c0257176ff716feb1544ad`
+- `backend/src/modules/cleaning.ts` — SHA-256: `fe89b3cad4a76139fe1b89e63c9ab1da958d96e0874e2620d44566838fd3e78f`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `0ea8f5da67e1f3e1b0d0e95e2aea2ca5680d58a21497411e0617fcc0adb6abc3`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `0ec77c6b7c545982296dca3ef0d2b7a43dd498498b9ad341f5125829659d4492`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `183c3bc4b1cdf090abfde526b0d102d997fc93e76b8f9e9974fb0f7f66c897cb`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `1a036c311f59dcd1b8393f49bb039f95b0d1d9c2f61a1a147da14d457c7fb236`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `1bf6f083604b20dc292adf22c3176c01e9147c9a7be8e2cbac1043d1a9112fbc`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `1c519cd409ccfa3ffbba3ee0ac2b115a84ce1ea2eecbdd6f81f1210f9443f824`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `1e60ff4c6843fd5225469690ce5d97134ac4ae455e6fe003cebb5eb7378099f7`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `2194e6b782b57d248af8885031e29ad5af8396f542e795e228dac0f3a692ae9c`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `2249151c33ad2f139e6abe39cc3e7bf40091f281882c1814aed85d7fe0074259`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `2a9a472004126a68563e8d80560362b1c3b536254d7e564d9062bbc5a22b77b2`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `2bf5bc0021fd4ecfc5d9d42748a31062b0779360d5888acf5fb427fb6db72d92`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `346221e025bb276667502c0881029336f29ef30ab43604085cd1b77a16b3d805`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `394a4c07952c51ae9b7ae9a1f0d1b18d55ef3825b653e735fd89f46fe72c4191`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `399ece798efd86169c79f9d9febbc7a809017c173d7bcc9679374e05bccb4757`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `3d7dc48f4bc159b9b50aab2388d24655a5dd546dba97a0a88780e747ebf365ce`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `41224e559b59623d75dd1fd1a8f99020392be898579c693664e404ad3cfd71dc`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `4802a7b3db5a3c536c0b410b8f3161509e13f387f8e8adec56f7e52dca1497b1`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `4b1be674edc11a32f804d4950868b11628ebafc323b3567869191a9a1a1eb874`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `4f58ad0a6a53c45ca4fdf534ca2e00444dc7f96e54b9c0d0288b1f5efc057716`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `4f740cf7a43ff2b16fe4404d8f6c9e710db426fbf4f8dae023005141425c52ff`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `537b1e81a4f32a1554f5d28ad0dc984c996d74680b0d928461153a0e07715a31`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `5892dce4666db3128f3cc871ddfd49bbb5b25e1043230e7037a20b08df9b35cb`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `58e5578999daa519c26da71d4b174e8eaa416e0cf03e25f8927e89c3d8bebb0c`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `5e5af5b039ff77e312e386fb21e8a43475add661667b81241c8793678a2ad3f4`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `65ed3418ada6aff000b113b433836754d325d9f56104f7122d58c35805015dcf`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `67594c06f92b89422059cfa5826ae0e32ee7ad3d4916393473b04624932da88e`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `6be208f46bda70701e4baab10abe92c8e84c4aec03c7ecea1bdee8c2a49be2e4`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `6c70f0fbb9c9d5c5c4ef2339bce36aaa48d9ed56d8917e57f4084110308c7ad8`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `7808b742152189dddf5d08de588ef48be93300beade82c77ccfc34db3d89e512`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `7cb55d500fb6ea1e5a6dba6ab02f5eeea257af950c709ef00c669dc102e19b6b`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `821a588fd51413b1d3c2bcd2c8cd74a64dedae972afb9d664ce7bcfd0dac2573`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `82411e8a7cc4edd170b95f357973c0d60dcdddeb8a305be9972ce01b0c1e29af`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `86e059f746e206fb68b4aca633b14a9eb4098552cf8c857177659cb3376bdc64`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `8cd196b18a73269b30f444351dcc08e1d2865fd9e2e1cb13bbd006f560b6648a`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `93d46d81e57b831d9caf9d3d43e8e71cb6701217c4eeb5a3e82a070dad90cc8f`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `947e0edf2f027cafc1d03dbd20c037e48d441677584f029726c21998de4af2d0`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `98ab7a2b30a0e26190e3c0659f9b9c1d81d6ae327a113f9b4a2db45ae3fc28e0`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `9bcc3c736db2ec58fda89834e881f87ed1dbb02984f05dce31c2f3f29eef4e71`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `9cff17e1be55773a1887f213b82a4d7a37457ee8808016a98b065c485edbde8b`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `a79c059bcab98d5f3e46e9307dd38268859035ef6da7707ebeee11ec0ff59159`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `aa402c5fd11afef11c33989a74d57fcce206c25a7a2d03f9a1ab47b3a82f48bf`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `aab100aa2ef49e654624fa4cf2c63bfef9111724243b73c33097d383095e5a44`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `ac60f709478ceece5ab21bcffc18ab65de88ae930f730a455e90ccfbec9503d9`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `ad6d80dcbb6b71188a57819a29a4a46b32927177f2f575b02720776a0dfd1b98`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `b75706f5c70cacca80a25979b7f291f47e510cc6091f38c7099a1cffadbc1368`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `be61dec42fa04a2ef58b98f1d1fbb0c2c73edcc5660a4e03346f7a6ecdd1ed12`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `be8562469b8be1db55056ea35e66f4053c7a3d8797e0fe1b73056f453fcdf640`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `bf3a852bef56aab8f011156caa5438d3931f5acc4514542b992794947483496c`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `c5902f5febdce1769391790983a3400b57fd959aa11a9ae8624f06227fe2acd0`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `c6088474d28798e59db32a45806256a65a2e4429ed7faa46c44e48a500a4d23b`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `ca649d6a33563b73dceb669ceed5134447f802d56c94ec97eb9e67b5ecb85f92`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `cb3473772a979cd74891cd0c97e6f925e76ddf6319d0cb8632c60eef8df56496`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `d324b03490c7177c7b65215550da0a7d124b98a1f00d2f73aa70733bb9bdd234`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `d8ed43b98af12e9904223cb7566b0a69aa4d00b7c219e72aa799441bbf16b97e`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `d9f51cbe097e10cd0d93b9a316dc848f5708f9021c9cc8c324c9c5a33fdc2c3e`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `dff296792175b4b9fb321548bef00754e15ad2b860fc45ad8f38831b4836f4df`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `e7919a3663e66f0c441b6d1fa942f3a6f225a0199564955f54c1e92b5d77770a`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `f1494de2f504cf8473722c0db3cbf7a17e27031e1e5996137e4424f9ec207451`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `f32b1d09c1363ea42b8c6f1ab78b97d2466986e9a8f6c91273889dd88a7a1cef`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `fb272f28f07c60e4f947581dadd802f21c4b42505daf4e13af7bfd8d17acd1d8`
+- `backend/src/modules/mzapp.ts` — SHA-256: `02a2f770e5b02200b8a16023014ebaa2e9cd731d2f18ae74e84545273f3ffc75`
+- `backend/src/modules/mzapp.ts` — SHA-256: `07acc9096783581cec9f5d1addf9abf9f1d99132894cff2cc2471f2f5ab4ae2b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `0dd569002c8907f85c181867d1007d9d184cd09fd03e613ac6f5288c77d0a72f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `0dfb0cb020400170fa1d64b1f1aaa4b8b7b45453e3ab978c126327ee705a441a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `1885c099ac6565062df2e8c4577a7a68201a3c82b93113aa67bfddc0d87d91a6`
+- `backend/src/modules/mzapp.ts` — SHA-256: `1ba1320dc251310e43b61c285aef0bca16114cd05211180da1cb146d4967cf04`
+- `backend/src/modules/mzapp.ts` — SHA-256: `1f502e5dc5ecafe335098caeb628f1b64fbbcb0c3590e0022f040da23f5958be`
+- `backend/src/modules/mzapp.ts` — SHA-256: `20dfd74795c8fb1f063ce4768e519d116eed3bef26eb87fd254724de8196a138`
+- `backend/src/modules/mzapp.ts` — SHA-256: `220aee84c33b5e0adfe9048b3df28c5a828031cc91f4753237a4769cc4ddfe89`
+- `backend/src/modules/mzapp.ts` — SHA-256: `23f866ddce3c3565a8b2eb00ddbf65473e824b53440182756aa7a4c8ec72011d`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2e1a7c6c2dcd82713df3b6ef8499bf2e87d1840d6df1be210eabbceb60ca4469`
+- `backend/src/modules/mzapp.ts` — SHA-256: `330384e3b4276de881f987578c156b5cb50741f3d4b9e3e1b492cd413309f4da`
+- `backend/src/modules/mzapp.ts` — SHA-256: `33fe4ae53d33425f1007aa24692e62e9f1679ed58fa74280d9166c49a3756a35`
+- `backend/src/modules/mzapp.ts` — SHA-256: `35fe229aa79f5c69119c580754cfe06f05cc2b7c0215d2b316441440e8c6723f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `3e94426a4065125333cd968d94b82816c01830ad7b6941efad826a8fa28e396b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `41b80f28a825f276de5add7e6549d91cb3efe823f7e57e85dcc7b9d3d849b6f6`
+- `backend/src/modules/mzapp.ts` — SHA-256: `43aa483e5b7cd5f5945117bd022b7433e80ff20dac235f10a92b4c136a990934`
+- `backend/src/modules/mzapp.ts` — SHA-256: `4926a4965d37b67215570ecd3f32afb83dbd02e2329f0509f0a4eecd0f92cc8e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `4a0a4b35764f485bd760e8d7c9ff21d4df46893d2b63e5d7937c2ac04422b37c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `4f934c9b9aa77ac4721da273dad2433433a1b34e91fbbe5c4b2f3e12446f101b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `4fb78ea11dc5076757369996459c4db9a32f3fa4c3d3fab05befc8954dfc3b1a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5279e9e6a9c6c7d6b3053b0c2cf278d4ac73f3a030c4845dea76da57185bf081`
+- `backend/src/modules/mzapp.ts` — SHA-256: `58c17591ef0c8199f2f3d6bb8cf7c1efaa9cb4294718722d488fdf3237b6923c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5e7444cdcabaa14af617bc392088fb424757e35605337798027c75955d7934cd`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5f22cb5f691ab3e0973433b43fba06b5a9177f8894bd54f0cac82e0a38151c35`
+- `backend/src/modules/mzapp.ts` — SHA-256: `62ab5771f615c3e5166838573c08817b36eb96438dbe05d9ff463d1bb93a3489`
+- `backend/src/modules/mzapp.ts` — SHA-256: `63668250574dfd98d48dec881e50f9ce43385f18c76d3b13168679d6e823f8e7`
+- `backend/src/modules/mzapp.ts` — SHA-256: `647b92dc6db48a9502d5f9fbadd511235afc8209cdcf943c1b0bed7938282632`
+- `backend/src/modules/mzapp.ts` — SHA-256: `660be7e94ca1dc00ddca0131b654aaafc1c6362d03e43dcf3f45f7cc1208b42c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `6949f74d9e19e32b0e377be0b41f1ef7b63cb9d461e86e97b3beb356d87fc060`
+- `backend/src/modules/mzapp.ts` — SHA-256: `69840e5a349791decc63c32c1580ef0b5395b41ed59536c499880bb6926e16ba`
+- `backend/src/modules/mzapp.ts` — SHA-256: `69d07be21fd2196905001e0e1751750ee3d692e8f2f80dc5fa04a37c1672bc18`
+- `backend/src/modules/mzapp.ts` — SHA-256: `6e6fbd38f7d661afdf132c359e19a92ea928877750c3d317e641908d9e7eafdf`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7085bb866ab6603c11aee47333b4cfc7c7bfca963b42c8f6247f44301abf5284`
+- `backend/src/modules/mzapp.ts` — SHA-256: `70d66f15c164373f16edf37a6849747b104e71f22a52bd4004bf1094f573fcbd`
+- `backend/src/modules/mzapp.ts` — SHA-256: `74128db5f3944288a6d3778f59e92c4f42bd458518582a0ce7088d12dbcedd13`
+- `backend/src/modules/mzapp.ts` — SHA-256: `76aa548982e74c3b48235046439feeca17ca9028093c67cf96f655e23b47297e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7e724b766821e6e23a27b717c5ea413ec28f835c97660b7a1393951acb1d180e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7e9da955008569175d3fd7032ad3c2b1da5cd810ffa7c21d18140969234edb12`
+- `backend/src/modules/mzapp.ts` — SHA-256: `801c7991a949ca07ac98add911a87137a7d166d8bd9795d9f1e290ff69b3e48c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `80b961e2be589162413c8e45d08789bf95faf4e4cc4a6341b04f54cc1cdbca6f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `8508ea67feeae21165edb6490238fba40dff26ef15bc2aee632a1b21da1ba5d3`
+- `backend/src/modules/mzapp.ts` — SHA-256: `85db6a954f563a4b386579ac4d05bcfa738131ed215482f8e73c358e905db686`
+- `backend/src/modules/mzapp.ts` — SHA-256: `890257899d8da247f19e31fa147115eeb9105f5abb7292852ae8d867ebc6eb89`
+- `backend/src/modules/mzapp.ts` — SHA-256: `8ef53e0a95b47c466e662d6ba0398cf1c0a4f49f14bc5c608311f0f160acdf2b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `902a25298df7035f3f7b63281ea67e4e313d843cb217ec8bda350560b51b5595`
+- `backend/src/modules/mzapp.ts` — SHA-256: `92d7d1163ac9fa5e84ca079dac91a60728b4ebf8f0317b4c115bf3f53d2054c8`
+- `backend/src/modules/mzapp.ts` — SHA-256: `93b26a9e3da3bee51824d494d2b2f9d957bd0b9fee4a3e03afafdf1b245b2853`
+- `backend/src/modules/mzapp.ts` — SHA-256: `9873c7696b9f7ee346235c4b7672286ff0def776f923ba2e65312d87c9c40bee`
+- `backend/src/modules/mzapp.ts` — SHA-256: `9e3af2736e072e80e9c68794104bb3077c171e6c04fd141f97abcc9ae29bd0cf`
+- `backend/src/modules/mzapp.ts` — SHA-256: `a1cbdb8964bb8a709e1a1653f20705bebc2fd15da8e5addb50d76079ef7ed117`
+- `backend/src/modules/mzapp.ts` — SHA-256: `a2704eea924947bef3936805f244d91d929c4e72b55b16ac75eac71e3c5f262f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `a444094f51a036151396a4b297ede4ac510e23dfbfee28709f45ee268fc8b9f5`
+- `backend/src/modules/mzapp.ts` — SHA-256: `a7e51b708be2f807c82f35de81369bd8a3176cba651da918d448f0e90512740d`
+- `backend/src/modules/mzapp.ts` — SHA-256: `a80cc4bda6078309290b1efa829aebda7098a92e8fcee5524c739af1399db486`
+- `backend/src/modules/mzapp.ts` — SHA-256: `aa17cfef78cc3f703588456de3af208a1d8803a32168fcc8b597a6adac2c622f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ac1fe21e5c4c6aebe1aaceecaf679f2c86443370a6cf7b48059c18d2fa39a850`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ad9ac27896b0ea2ec405a0985c0a1d6d426969a0c696e49d6f9e6cb9e5544f19`
+- `backend/src/modules/mzapp.ts` — SHA-256: `b6e30988c7aa9dd3f072c2df29a607b5f667020bbfecadbe69e19a9c75d05fc1`
+- `backend/src/modules/mzapp.ts` — SHA-256: `b816a1dbf7597ef5fc27913b6d908204ea2b7c31f916e34408c18509f5544b9f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ba50d2ae8f54aec74f2a55f7da5d1bc3d5d775ac6058d92f7aa75bc5b27f4aaa`
+- `backend/src/modules/mzapp.ts` — SHA-256: `bff5b775f7495992f286057c22a9ca72cfd23a40de015c5669ae7b65ada9592b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `c12ebabcaa29b38e27128f87bd29f7d3d63f53a0dfc4363223158e1cbdc2fb3b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `c19ee587d5930cd6cd028ac7a0f97ddf0e98cf5b8ff2fde0ce4dedcf631f330f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `c3e2b7a8255582f947c1a2747440029aa672e097be9152a7240d573eada6cab1`
+- `backend/src/modules/mzapp.ts` — SHA-256: `c51f7c9faee7a44babfc2b52ec4fe14e43e1f7a0f248b3b5591ce6f137b1c3ae`
+- `backend/src/modules/mzapp.ts` — SHA-256: `c9cac3804907b9eb29a9fa560834e9d2c128611587de5d3f72d95eab8046758a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `caebd8cbf198c489f334c489100203662fa179608f0b163443fe0b46a478c6fc`
+- `backend/src/modules/mzapp.ts` — SHA-256: `cb5cdde93db868e5beda2da11d4de24843860a2512fe4479281aa137262d8894`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d1f0f4b57611515841e9e0a1839da79f2f68b83f9c9b17a968aa64d27f31dab4`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d62c39244c5edbdcadbe93ad84286f178dce0985e315a32db04e5fcaf14a4f0b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d959a01b628952aa361bd36f9d0eaca48a4cf4798fdebc301e14bb99d5fdeaee`
+- `backend/src/modules/mzapp.ts` — SHA-256: `dd27db3ba4f43baba11ed8223870fa02949b9ccec542ea81aff851f1d7e84c4d`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e20a592cf3d939345afbc89372fa52f240902201ebadbc2593a94108e5e7f728`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ed5f7477296ad76318769b16b043caa8a4f46b906e1b0535c4f49c764980b019`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ee2721c949660c739ea3e0a07c80c9d60fef6605ccfb5f146f3bdd326127069c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f00c85ad09e26e4fe2e09d16dd3dac30367c420f1fcd4807d277961d6974c3af`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f1ef8487ee95ff88d5789fdf6737c859ed224ff84819f71b6970d677ffc5a609`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f216953457ccb88bab08cb3cc43be492afe7045a88df9ce5304b99b1453a8681`
+- `backend/src/modules/mzapp.ts` — SHA-256: `fa8b48d2108ae2bafa4983bcec3d1fb90149384fb53d62758a80a137661db363`
+- `backend/src/modules/mzapp.ts` — SHA-256: `fd28091494373077bab2a1e9d69575bb8b11b2b69979a01de329dd4f04590479`
+- `backend/src/modules/mzapp.ts` — SHA-256: `fe1aee3adba0cb9aa08a0ee2c0b378149ffbe05142bcecb083055c2e3b91060d`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ff4a0a1a26a6f3e5d868f230f9f43970fc50e4fa5eec50064d43f1871e8972e1`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `709c02398d9e89200feb9fbdcd4d5bfe06a759a880f75f6802c51f2c2482e689`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `aa31c4585a47216bf824618d7d9525f6c07a3f479177f137e911d6effbebbddd`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `b263b32a741e0484855b32a3614dd2002d595d42fe60fd4585e0295fa9ec4113`
+- `backend/src/modules/task_center.ts` — SHA-256: `0d9806aea1e5bb9b0830043f4161aba8c372652172596c0202a6dc82a44fdbf0`
+- `backend/src/modules/task_center.ts` — SHA-256: `173400228bc959c84fedfd8a997bc9d527a3e6809932a088a4420bdf96edc776`
+- `backend/src/modules/task_center.ts` — SHA-256: `27c2da80081e4f440cf4037f5d3a79c0c9b9cd71586c760fe8b0e7c108142223`
+- `backend/src/modules/task_center.ts` — SHA-256: `3384f44046db09c11a4130f3d783f949ae21c1ac07467de4a557087f2add808e`
+- `backend/src/modules/task_center.ts` — SHA-256: `360337e32429850b728e3c14282798c7d477c147a59f45fbcf14603734db6fb6`
+- `backend/src/modules/task_center.ts` — SHA-256: `3c5534c7b96c3e6cd9036f98a20c3f56ac6f8b3a9f935ec71534908112af3f0d`
+- `backend/src/modules/task_center.ts` — SHA-256: `5475eba5c170a3f4fedd9965fa59c8db91a542478b663e7983ee56d1707368f7`
+- `backend/src/modules/task_center.ts` — SHA-256: `664226451ef255d452a00146567bddd588efd1b7a45aaab6776bacda689b6880`
+- `backend/src/modules/task_center.ts` — SHA-256: `83c98c9f25c62af7e340b97a090df18cfcb7666369f11cda777304a1f7bd072c`
+- `backend/src/modules/task_center.ts` — SHA-256: `896270b335405a429ab94ca57e08ca1bcea35b41a7905a2614984d3ac880a143`
+- `backend/src/modules/task_center.ts` — SHA-256: `8efb814ca7666aec52631aff4064d58afee9674384a4e2780b7ff3f6ff2cba6f`
+- `backend/src/modules/task_center.ts` — SHA-256: `ade0ae1cba61ae574220f341f31cd46d8f1609e50b237aa56691a7e04c4840ff`
+- `backend/src/modules/task_center.ts` — SHA-256: `c946689539a7dffd7adb1e102621d8978cb2942b9d0e29f72f9fa4881238743f`
+- `backend/src/modules/task_center.ts` — SHA-256: `fc5e58c7a3e99583ed37196af65e80ea0ff5d0895414b34c55f6bf0377e2d244`
+- `backend/src/modules/task_center.ts` — SHA-256: `fda3f7bb848a8b73727505ee34337d27f2342d53304a2c8b44e09198a9ca653f`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `0d56234f7e8c1eb8c132d0e2aefe49ee44ee9e3bfd8d993908f75ae3f49775c6`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `1730fbf3ae1d82f6a8ac702cea3e2a8f07b2a54ccd58153db47ac8998a3b2afc`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `18692f7980ae9b0ff51939d88ec8e718d8d5cded7da4a5f1ead9f7f94a1010f9`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `3d0ee0a64030d95f8659ed26577d4c6f344895cfa2af4fbc4f189f180aa34001`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `4015b503a9e8a3801a3479e55bcfa4af5066d93589de719b7819865d8813fee9`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `454f1d492b26d7ad2405f47c0bf307a1cd3061362d9ffc2c166a679e4e939a6d`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `5d6286e02266ab44facf87bb014ad484ad54a923edb2ab5232949bd4aac2b67f`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `72bc51d391089c2c5f7a67e63bd10d034d4c46db766df7204ba91a9cacb7b798`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `7624214516677f73ae012c10961f034fc767ce9bbe1fbf9755f6c59b8550e755`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `b242ac0c1eb5d7bc7236b9f5f0ab288e1d850b245decccb51b0198c924b9311a`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `b9ae17c91994ff8b61f663d3f04067222ca9274da5519bf9a36e6f5c6ff21a06`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `4f143e22427441500d0184b098bb779e3c3148cca349d6c442fd14bf58ea92c0`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `5afacefb7151fd35e753340545e098dabf9f7b1f7ad2c5497a43e6c99587ab96`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `5fe57ce5d01e7c6c7d9f8b4763b7a7aa3df65c35adf8517d79aad3b655e20848`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `627129973dfc091b1d8efc6c01fe0e99bac866cdecd0daec72a458de634e6ba7`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `7c3f4299094a7f64e0f5ef24a9a55dbf75b3ed88fe6fe2aae4c3e5ce94e4f685`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `acf60e0c31aa07ad59c2c36403bee758a257df610212dd19e12ff0708e43a7a2`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `b240c12eec66e79814c3d6c2993b186e02c6f63d1df07662b3b5b225871d22da`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `f7834ba77eb623e268afa8831773c43a44f44b66ae8bebb4d6347cf1d0da9456`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `f859e697d85bbb894288c362b4952550c0350bb8b0f4ed8e68c7b23d91fcf94a`
+- `backend/src/services/workTaskEvents.ts` — SHA-256: `70cb52ac2420d03a7ced23fb6788612d720d76d65cdddd6435b979f174129fe9`
+- `docs/feature-regression-registry.md` — SHA-256: `08c944c72f8ff203a4f6a3b024226a7ea952843318da5aa264ea94c8d8bec120`
+- `docs/feature-regression-registry.md` — SHA-256: `0c9a5cba20a06fa84dfb775535e6882141ddf8f57ba9e262531476c4752ce2a5`
+- `docs/feature-regression-registry.md` — SHA-256: `263da8dc38b5ef2daca293448c261bf285a8f9326f882cbfa848dd950a7a23ea`
+- `docs/feature-regression-registry.md` — SHA-256: `298f8dadae6a4dc066290af9695863286a75a0d1e88cf2fea53194e4ccfe63e4`
+- `docs/feature-regression-registry.md` — SHA-256: `42135ee76c8c9fdaf149b3a52f763d3ea98713671385529fbd7cfaf19509a20f`
+- `docs/feature-regression-registry.md` — SHA-256: `52c7963a90e3c1724a3322f3b1be31a64cc6d1554a71c0bd4f5f34c4e0873c34`
+- `docs/feature-regression-registry.md` — SHA-256: `548a84835c52cca7e5bcc3ee2edc8a4b96c7b0deabcfa128ecf3351cb38a8820`
+- `docs/feature-regression-registry.md` — SHA-256: `5cb6318f2cb1bce585d5253803b38a4fe2c72df61fc2810f6b252c51ba3d7f1d`
+- `docs/feature-regression-registry.md` — SHA-256: `6a0ca065dbe1595efe43b4f0cda828ca5a34ff41a9f23bba9d46abd9f56fa126`
+- `docs/feature-regression-registry.md` — SHA-256: `8629352f6147caa92a5d10caa791d78ee45d98171a189243118ad8283827afa7`
+- `docs/feature-regression-registry.md` — SHA-256: `91f1efd99f75eb39aba7886c58cb9e1c1f77d942d2e685e1bfb8bcd511ae7ceb`
+- `docs/feature-regression-registry.md` — SHA-256: `94ca331edbfa5945271db5d18cbab5f2d428f033f5c800fd62723a3d6cbd21c7`
+- `docs/feature-regression-registry.md` — SHA-256: `9c4e125f6d433ecb6ee040eacc68015902d792ab3d5de95f9a9bfaa0d1a46bbe`
+- `docs/feature-regression-registry.md` — SHA-256: `a5a4c56321dbfd398f5b2277ea2a4d61ce83f48e47dc5cbc2e20100bcfd84250`
+- `docs/feature-regression-registry.md` — SHA-256: `bce7039cd5188dd3e7bbbcc5907c8ebd755c68142083fd3b25f1042ee7513c3b`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `0feaccca3734d0d850ec6f727d3849d3f3cfd5cd17f316bac7e66b3620f458c3`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `23612281a6d21b5b8c19f2437d9a68605bd5a207277e01522169a84d611aa1f3`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `36967eeaabfe9c0fbfd52dd48cef2cc05d98077943c9f5a835db5fcac867fccf`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `41e36c4d58acbc3adbf0ab5b4470d1d1bd265998aa82f534c379b13fc89377f8`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `530b3ec7828f4599f51b0524dfd530eebe86e61a1b2ff624bd08608344c63f72`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `53b0273e7f6f466638542e5491858cf45a0b720ff9223782606f4380c137429f`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `7f994d5a877b1a8304cca54ec1a90ee8cb510be94b0824d7b5423c735636f7a4`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `8454d550a4bc8504fcc912f2dbb416eb8f8b156bb591bf710e6a37253882289c`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `9ddbf1df5ea27975214e0d885b108f80d0cb60abf7cf9c100d1a070b6135e7b9`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `b1d2ed79b361cd018fffcf35e098e0227c91fd89adb027043ad51bd47009cba6`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `c5a72e525c3a85b4b58fd33d97b4f88f69f71c0df9c4ddc6efc609ea7fee2b1c`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `db5f2e9446c33ae3e9aa3e562dbcdb57c878b268d70c8d720a9c1ceeb2b8dae2`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `f0be753ec4a236b5a6c4438e7b7808ea5fafdefd32cd754b40f0517fe45f9f64`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx` — SHA-256: `f64c83c6ada8ebf51c24ea48051c541179bdd1046cd9c3c8dbdedb20768a6599`
+- `frontend/src/app/finance/settlements/claimEvidenceImage.test.ts` — SHA-256: `305b75451c75f69be371f1914155f3a2a81e8fb0a6f5c30748100e6cd9617d67`
+- `frontend/src/app/finance/settlements/claimEvidenceImage.test.ts` — SHA-256: `8c1e9cbf120c4c4012b7a9cf3504ed89baed9cd0ecff84ea97b0f6057bf8ae66`
+- `frontend/src/app/finance/settlements/claimEvidenceImage.test.ts` — SHA-256: `8e9c14b917a795c679c61522708bed28d854d0b9701c3df76e237d909c893b27`
+- `frontend/src/app/finance/settlements/claimEvidenceImage.test.ts` — SHA-256: `93d879f75e93c780815d4a7cf87efa02b2de8dc77286cc8dba56a791923ecb06`
+- `frontend/src/app/finance/settlements/claimEvidenceImage.ts` — SHA-256: `4c30a08f2b910810240b431ea3cead6eb9b241195265747f2adc34f64371fc7b`
+- `frontend/src/app/finance/settlements/phase5Ui.test.ts` — SHA-256: `3adce52531b910723382323bcb9d576bd7a663729b15ede06f00267803a74570`
+
+### Release Attempts
+
+#### RA-20261012-001
+
+- Repository: `root`.
+- Selected CRLs: `CRL-20261011-001`, `CRL-20261011-002`, `CRL-20261011-003`, `CRL-20261011-007`.
+- Selected CRL identities: `root/CRL-20261011-001`, `root/CRL-20261011-002`, `root/CRL-20261011-003`, `root/CRL-20261011-007`.
+- Intended action: `push`.
+- Branch: `codex/mz010-mz012-mz028-mz029-mz031-release-20261012`.
+- Base: `origin/Dev@4d55e3d72a474d1e6ad03a0d4260d4c4271a3b09`; fetched at 2026-10-12 UTC.
+- Candidate patch SHA-256: `28846e05ad7492dd8f68d9bec07b8ca573df577a75c6b8e52eca8cf446bf2156` excluding `docs/change-release-ledger.md`.
+- Commit SHA: not committed.
+- Dependencies: `none`.
+- Required validation: PASS; targeted Root contracts and Web tests passed, and the paired full gate passed Root backend/frontend build and tests plus Mobile typecheck/lint/all tests without production credentials, integrations, migration, queue, deployment, or production writes.
+- Shared-hunk review: PASS; exact 36-file / 488-non-ledger-hunk staged union matches the four selected CRLs and preserves the integrated MZ-030 behavior.
+- Generated-file review: PASS; no generated files selected.
+- Technical state: verified.
+- User authorization: approved-for-push; user explicitly selected MZ-010/MZ-012/MZ-028/MZ-029/MZ-031 together and authorized candidate commits, release-candidate pushes, and draft PRs, but not merge/deploy/OTA/migration/production writes.
+- Independent review: GO for the exact staged commit candidate; independent read-only review matched candidate fingerprint `28846e05ad7492dd8f68d9bec07b8ca573df577a75c6b8e52eca8cf446bf2156`, found P0=0 / P1=0 / P2=0, verified the failure-audit transaction boundary and stable guest-ready retry key, and confirmed no generated, binary, secret, migration-execution, production-write, deploy, or unselected content.
+- Remote evidence: not run.
+
+### Risks / Release Notes
+
+- The SQL migration must remain unapplied until a separate production migration authorization exists.
+- Rollback is code-only for this attempt because no migration or data write is executed.
+- Sensitive-information review: no credentials, environment values, private media, or production records are selected.
+
+## CRL-20261011-002 — MZ-012 结算凭证图片跨域只读展示（root）
+
+- **Status:** validated and independently reviewed clean Dev release candidate; not committed, pushed, merged, or deployed
+- **Repository:** `root`
+- **Updated:** 2026-10-12 UTC
+- **Request:** 修复 Web 财务结算凭证图片因额外请求头触发跨域预检而无法加载的问题。
+- **Outcome:** 凭证图片请求只保留既有 Bearer 授权，不再附加会触发无必要预检的自定义头；不改变上传、删除、结算或存储数据。
+
+### Implementation
+
+- 统一构造财务结算凭证图片的只读 URL/headers，保持授权并移除多余跨域头。
+- 增加图片请求合同测试和 Feature Regression 约束。
+
+### Files / Areas
+
+- `docs/feature-regression-registry.md`
+- `frontend/src/app/finance/settlements/claimEvidenceImage.test.ts`
+- `frontend/src/app/finance/settlements/claimEvidenceImage.ts`
+- `docs/change-release-ledger.md`
+
+### Impact / Dependencies
+
+- Web 只读图片展示；不修改对象存储内容、签名 URL、数据库、API 写入或权限模型。
+- Paired Mobile display work is tracked by `mobile/CRL-20261011-003` and `mobile/CRL-20261011-006`.
+
+### Validation
+
+- Targeted Vitest: PASS.
+- Full paired gate: PASS; Root production build and 53 suites / 270 tests plus Mobile 67 suites / 420 tests passed. Independent review: GO; P0=0 / P1=0 / P2=0 for the exact paired candidate.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** no CRL-specific untracked files.
+
+### Release Attempts
+
+### Risks / Release Notes
+
+- Browser acceptance remains a post-PR preview check; no real settlement record is mutated.
+- Rollback is limited to the helper, tests, and registry entries.
+
+## CRL-20261011-003 — MZ-028/MZ-029 待核对反馈修正与待计价保留（root）
+
+- **Status:** validated and independently reviewed clean Dev release candidate; not committed, pushed, merged, or deployed
+- **Repository:** `root`
+- **Updated:** 2026-10-12 UTC
+- **Request:** 允许合作方安全修正待核对反馈，并确保缺规则或资料的工作以待计价项目保留而非静默按零元遗漏。
+- **Outcome:** submitted 反馈以版本门禁安全编辑，相关未付款周快照失效后可重新核对；缺规则/GST/资料的工作进入明确的 pending-pricing 清单，财务核准和付款仍受阻。
+
+### Implementation
+
+- 规范版本时间戳、编辑冲突和同内容幂等重试，并按固定周锁顺序处理跨周修改。
+- 周预览保留五类反馈的待计价事实，不把未知金额折算为零；网页财务端明确显示 partial、待计价和重新确认。
+
+### Files / Areas
+
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts`
+- `backend/src/lib/personnelSettlementPreview.ts`
+- `backend/src/lib/personnelSettlementWorkflow.ts`
+- `backend/src/lib/personnelWorkloadClaims.ts`
+- `backend/src/modules/personnel_settlements.ts`
+- `docs/feature-regression-registry.md`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx`
+- `docs/change-release-ledger.md`
+
+### Impact / Dependencies
+
+- Root settlement API and Web finance UI; no schema migration or historical data rewrite.
+- Paired Mobile UI/edit isolation is tracked by `mobile/CRL-20261011-004` and `mobile/CRL-20261012-002`.
+
+### Validation
+
+- Personnel settlement Phase 1/3 and Root build: PASS.
+- Full paired gate: PASS; Root build/contracts/frontend 53 suites / 270 tests and Mobile typecheck/lint/67 suites / 420 tests passed. Independent review: GO; P0=0 / P1=0 / P2=0 for the exact paired candidate.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** no CRL-specific untracked files.
+
+### Release Attempts
+
+### Risks / Release Notes
+
+- Financial approval/payment gates remain server authoritative; no production records are touched in validation.
+- Rollback is code-only.
+
+## CRL-20261011-007 — MZ-031 结算房源工作清单与执行事实（root）
+
+- **Status:** validated and independently reviewed clean Dev release candidate; not committed, pushed, merged, or deployed
+- **Repository:** `root`
+- **Updated:** 2026-10-12 UTC
+- **Request:** 在结算预览和冻结快照中提供真实完成房源、实际工作日、执行人、原安排日、延期检查日、证据数，以及未完成/改期/管理关闭/历史待核实状态。
+- **Outcome:** Root 只从执行审计和服务端事实生成不可变 work checklist；历史冻结金额保持不被自动重算为零，缺执行证据的项目进入人工核实语义。
+
+### Implementation
+
+- 清洁完成、检查、用品等动作写入可审计工作事件，结算预览按执行事实汇总完成与非完成清单。
+- 冻结结算文档和 API 暴露工作清单与金额来源状态；共享任务动作保持幂等和服务日期边界。
+- Web 结算和任务中心仅展示服务端事实，不自行补造完成记录。
+
+### Files / Areas
+
+- `backend/scripts/tests/test_cleaning_task_transition_guard.ts`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts`
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase5.ts`
+- `backend/src/lib/cleaningInspection.ts`
+- `backend/src/lib/personnelSettlement.ts`
+- `backend/src/lib/personnelSettlementDocumentTemplate.ts`
+- `backend/src/lib/personnelSettlementDocuments.ts`
+- `backend/src/lib/personnelSettlementPreview.ts`
+- `backend/src/lib/personnelSettlementWorkflow.ts`
+- `backend/src/lib/workTaskActionAudit.ts`
+- `backend/src/lib/workTaskActions.ts`
+- `backend/src/modules/cleaning.ts`
+- `backend/src/modules/cleaning_app.ts`
+- `backend/src/modules/mzapp.ts`
+- `backend/src/modules/task_center.ts`
+- `backend/src/services/cleaningSync.ts`
+- `backend/src/services/deferredInspectionCheckinConflict.ts`
+- `backend/src/services/workTaskEvents.ts`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx`
+- `frontend/src/app/finance/settlements/phase5Ui.test.ts`
+- `frontend/src/app/task-center/page.tsx`
+- `docs/change-release-ledger.md`
+
+### Impact / Dependencies
+
+- Root API/Web only; no migration, backfill, settlement recalculation, queue run, or production write.
+- Paired Mobile consumer is `mobile/CRL-20261012-003` (renumbered to avoid the existing immutable Mobile CRL identity).
+
+### Validation
+
+- Root build, cleaning transition/sync, personnel settlement Phase 1/3/5, and targeted Web tests: PASS.
+- Full paired gate: PASS; Root build/contracts/frontend 53 suites / 270 tests and Mobile typecheck/lint/67 suites / 420 tests passed. Independent review: GO; P0=0 / P1=0 / P2=0 for the exact paired candidate.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** no CRL-specific untracked files.
+
+### Release Attempts
+
+### Risks / Release Notes
+
+- Historical execution state remains explicitly unverified when no audit exists; it is never inferred as completed or zero-priced.
+- Rollback is code-only; sensitive-information review found no credentials or real production records.
+
 ## CRL-20261011-006 — MZ-030 任务中心计数与房源待办恢复（root）
 
 - **Status:** exact staged candidate verified and independent review GO；commit-ready；not committed, pushed, merged, deployed, or synced to Preview

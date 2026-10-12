@@ -4,12 +4,15 @@ import path from 'path'
 import { getMelbourneDate, getSettlementWeekStart } from '../../src/lib/personnelSettlement'
 import {
   assertPersonnelSettlementTransition,
+  buildFrozenPersonnelSettlementSubmissionSnapshot,
   buildPersonnelSettlementSubmissionSnapshot,
   calculatePersonnelSettlementDisputeResolution,
   comparePersonnelSettlementFinanceReview,
   getPersonnelSettlementReturnDeliveryRetry,
   getPersonnelSettlementAvailableActions,
+  historicalFrozenSettlementRequiresVerification,
   personnelSettlementSubmissionStatus,
+  shouldUseFrozenSettlementSubmission,
   validatePersonnelSettlementPayment,
 } from '../../src/lib/personnelSettlementWorkflow'
 import {
@@ -19,13 +22,20 @@ import {
 import {
   buildPersonnelClaimOptions,
   calculatePersonnelClaimEstimate,
+  assertPersonnelClaimSettlementStatusesEditable,
+  getPersonnelClaimAvailableActions,
+  planPersonnelSubmittedClaimEditRevision,
+  personnelClaimSettlementStatusShouldInvalidate,
+  personnelSettlementWeekLockOrder,
   personnelClaimOptionAllowsClaim,
   personnelClaimRequiresEvidence,
+  serializePersonnelClaim,
   validatePersonnelClaimInput,
   validatePersonnelClaimReviewInput,
 } from '../../src/lib/personnelWorkloadClaims'
 import {
   claimReviewEstimateQuerySchema,
+  claimInputSchema,
   myClaimEstimateQuerySchema,
   myClaimOptionsQuerySchema,
   myClaimListQuerySchema,
@@ -40,14 +50,65 @@ const claims = fs.readFileSync(path.join(backendRoot, 'src/lib/personnelWorkload
 const preview = fs.readFileSync(path.join(backendRoot, 'src/lib/personnelSettlementPreview.ts'), 'utf8')
 const router = fs.readFileSync(path.join(backendRoot, 'src/modules/personnel_settlements.ts'), 'utf8')
 const crudRouter = fs.readFileSync(path.join(backendRoot, 'src/modules/crud.ts'), 'utf8')
+const taskCenter = fs.readFileSync(path.join(backendRoot, 'src/modules/task_center.ts'), 'utf8')
+const cleaningRouter = fs.readFileSync(path.join(backendRoot, 'src/modules/cleaning.ts'), 'utf8')
+const cleaningAppRouter = fs.readFileSync(path.join(backendRoot, 'src/modules/cleaning_app.ts'), 'utf8')
+const mzappRouter = fs.readFileSync(path.join(backendRoot, 'src/modules/mzapp.ts'), 'utf8')
+const cleaningSync = fs.readFileSync(path.join(backendRoot, 'src/services/cleaningSync.ts'), 'utf8')
+const cleaningInspection = fs.readFileSync(path.join(backendRoot, 'src/lib/cleaningInspection.ts'), 'utf8')
+const actionAudit = fs.readFileSync(path.join(backendRoot, 'src/lib/workTaskActionAudit.ts'), 'utf8')
 const weeklyPanel = fs.readFileSync(path.resolve(backendRoot, '../frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx'), 'utf8')
 const claimsPanel = fs.readFileSync(path.resolve(backendRoot, '../frontend/src/app/finance/settlements/WorkloadClaimsPanel.tsx'), 'utf8')
 const page = fs.readFileSync(path.resolve(backendRoot, '../frontend/src/app/finance/settlements/page.tsx'), 'utf8')
 
 assert.strictEqual(getSettlementWeekStart('2026-09-06'), '2026-08-31')
 assert.strictEqual(getSettlementWeekStart('2026-09-07'), '2026-09-07')
+assert.strictEqual(getSettlementWeekStart('2026-09-28'), '2026-09-28')
+assert.strictEqual(getSettlementWeekStart('2026-10-03'), '2026-09-28')
 assert.throws(() => getSettlementWeekStart('2026-02-30'), /invalid_service_date/)
 assert.strictEqual(getMelbourneDate(new Date('2026-09-10T14:30:00Z')), '2026-09-11')
+assert.strictEqual(historicalFrozenSettlementRequiresVerification({
+  status: 'draft',
+  line_count: 1,
+  total_cents: 8800,
+  rule_snapshot: { calculation_version: 'phase7-legacy' },
+}), true)
+assert.strictEqual(historicalFrozenSettlementRequiresVerification({
+  status: 'draft',
+  line_count: 1,
+  total_cents: 8800,
+  rule_snapshot: { calculation_version: 'phase8-mz031-execution-ledger-v1', work_checklist: [{ component_type: 'cleaning_task', included_in_amount: true, audit_id: null }] },
+}), true)
+assert.strictEqual(historicalFrozenSettlementRequiresVerification({
+  status: 'draft',
+  line_count: 1,
+  total_cents: 8800,
+  rule_snapshot: { calculation_version: 'phase8-mz031-execution-ledger-v1', work_checklist: [{ component_type: 'cleaning_task', included_in_amount: true, audit_id: 'audit-1' }] },
+}), false)
+const currentVersionFrozenDraft = {
+  status: 'draft',
+  line_count: 1,
+  total_cents: 8800,
+  rule_snapshot: {
+    calculation_version: 'phase8-mz031-execution-ledger-v1',
+    work_checklist: [{ component_type: 'cleaning_task', included_in_amount: true, audit_id: 'audit-1' }],
+  },
+}
+assert.strictEqual(shouldUseFrozenSettlementSubmission(currentVersionFrozenDraft, {
+  work_checklist: [{ status: 'legacy_completed_unverified' }],
+}), true)
+assert.strictEqual(shouldUseFrozenSettlementSubmission(currentVersionFrozenDraft, {
+  work_checklist: [{ status: 'completed' }],
+}), false)
+assert.strictEqual(shouldUseFrozenSettlementSubmission({ ...currentVersionFrozenDraft, status: 'void' }, {
+  work_checklist: [{ status: 'legacy_completed_unverified' }],
+}), false)
+assert.strictEqual(shouldUseFrozenSettlementSubmission({
+  status: 'draft', line_count: 0, subtotal_cents: 0, gst_cents: 0, total_cents: 0,
+  rule_snapshot: { calculation_version: 'phase8-mz031-execution-ledger-v1' },
+}, {
+  work_checklist: [{ status: 'legacy_completed_unverified' }],
+}), false)
 
 const hourlyClaim = validatePersonnelClaimInput({
   service_date: '2026-09-09',
@@ -57,6 +118,64 @@ const hourlyClaim = validatePersonnelClaimInput({
   note: 'Warehouse shift',
 }, new Date('2026-09-10T00:00:00Z'))
 assert.strictEqual(hourlyClaim.duration_minutes, 90)
+assert.strictEqual(validatePersonnelClaimInput({
+  expected_updated_at: '2026-10-04T01:02:03.000Z',
+  service_date: '2026-10-03',
+  claim_type: 'overtime_hour',
+  duration_minutes: 120,
+  note: '9/28 week overtime',
+}, new Date('2026-10-11T00:00:00Z')).service_date, '2026-10-03')
+const serializedSubmittedClaim = serializePersonnelClaim({
+  id: 'claim-submitted', service_date: '2026-10-03', claim_type: 'overtime_hour',
+  duration_minutes: 120, note: '9/28 week overtime', status: 'submitted', evidence_count: 1,
+  updated_at: '2026-10-04 01:02:03.123+00',
+})
+assert.strictEqual(serializedSubmittedClaim.updated_at, '2026-10-04T01:02:03.123Z')
+assert.strictEqual(claimInputSchema.safeParse({
+  service_date: serializedSubmittedClaim.service_date,
+  claim_type: serializedSubmittedClaim.claim_type,
+  duration_minutes: serializedSubmittedClaim.duration_minutes,
+  note: serializedSubmittedClaim.note,
+  expected_updated_at: serializedSubmittedClaim.updated_at,
+}).success, true, 'serialized API revision must satisfy the PATCH request schema')
+assert.deepStrictEqual(getPersonnelClaimAvailableActions('draft'), ['edit', 'submit'])
+assert.deepStrictEqual(getPersonnelClaimAvailableActions('returned'), ['edit', 'submit'])
+assert.deepStrictEqual(getPersonnelClaimAvailableActions('submitted'), ['edit'])
+assert.deepStrictEqual(getPersonnelClaimAvailableActions('approved'), [])
+assert.strictEqual(planPersonnelSubmittedClaimEditRevision({
+  expectedUpdatedAt: '2026-10-04T01:02:03.000Z',
+  currentUpdatedAt: '2026-10-04T01:02:03.000Z',
+  editableFieldsMatch: false,
+}), 'apply')
+assert.strictEqual(planPersonnelSubmittedClaimEditRevision({
+  expectedUpdatedAt: '2026-10-04T01:02:03.000Z',
+  currentUpdatedAt: '2026-10-05T01:02:03.000Z',
+  editableFieldsMatch: true,
+}), 'noop', 'lost-response retry is idempotent even with the prior revision')
+assert.throws(() => planPersonnelSubmittedClaimEditRevision({
+  expectedUpdatedAt: null,
+  currentUpdatedAt: '2026-10-04T01:02:03.000Z',
+  editableFieldsMatch: false,
+}), /claim_edit_revision_required/)
+assert.throws(() => planPersonnelSubmittedClaimEditRevision({
+  expectedUpdatedAt: '2026-10-04T01:02:03.000Z',
+  currentUpdatedAt: '2026-10-05T01:02:03.000Z',
+  editableFieldsMatch: false,
+}), /claim_edit_conflict/)
+assert.doesNotThrow(() => assertPersonnelClaimSettlementStatusesEditable(['confirmed', 'awaiting_confirmation', 'void']))
+assert.throws(() => assertPersonnelClaimSettlementStatusesEditable(['confirmed', 'finance_approved']), /claim_period_locked/)
+assert.throws(() => assertPersonnelClaimSettlementStatusesEditable(['paid']), /claim_period_locked/)
+assert.strictEqual(personnelClaimSettlementStatusShouldInvalidate('draft'), true)
+assert.strictEqual(personnelClaimSettlementStatusShouldInvalidate('awaiting_confirmation'), true)
+assert.strictEqual(personnelClaimSettlementStatusShouldInvalidate('confirmed'), true)
+assert.strictEqual(personnelClaimSettlementStatusShouldInvalidate('disputed'), true)
+assert.strictEqual(personnelClaimSettlementStatusShouldInvalidate('void'), false)
+assert.strictEqual(personnelClaimSettlementStatusShouldInvalidate('paid'), false)
+assert.deepStrictEqual(
+  personnelSettlementWeekLockOrder(['2026-09-28', '2026-09-21', '2026-09-28']),
+  ['2026-09-21', '2026-09-28'],
+  'cross-week claim edits must take the shared weekly locks once in stable order',
+)
 assert.throws(() => validatePersonnelClaimInput({
   service_date: '2026-09-09',
   claim_type: 'overtime_hour',
@@ -300,6 +419,14 @@ assert.deepStrictEqual(claimReviewEstimateQuerySchema.parse({
   duration_minutes: '50',
 }), { duration_minutes: 50 })
 assert.strictEqual(myClaimListQuerySchema.safeParse({ unexpected: 'value' }).success, false)
+assert.strictEqual(claimInputSchema.safeParse({
+  expected_updated_at: '2026-10-04T01:02:03.000Z',
+  service_date: '2026-10-03', claim_type: 'overtime_hour', duration_minutes: 120, note: 'Overtime',
+}).success, true)
+assert.strictEqual(claimInputSchema.safeParse({
+  expected_updated_at: 'not-a-timestamp',
+  service_date: '2026-10-03', claim_type: 'overtime_hour', duration_minutes: 120, note: 'Overtime',
+}).success, false)
 assert.strictEqual(myWeeklyListQuerySchema.safeParse({ search: 'not-allowed-for-self' }).success, false)
 assert.strictEqual(myWeeklySubmissionQuerySchema.safeParse({
   week_start: '2026-09-07',
@@ -324,6 +451,12 @@ const submissionSnapshot = buildPersonnelSettlementSubmissionSnapshot({
       subtotal_cents: 3182, gst_cents: 318, total_cents: 3500,
       price_basis: 'inclusive_gst',
     }],
+    work_checklist: [{
+      execution_key: 'cleaning:task-delayed', task_id: 'task-delayed', component_type: 'cleaning_task',
+      property_label: 'DELAY01', scheduled_service_date: '2026-09-10', service_date: null,
+      status: 'incomplete', status_reason: 'task_not_completed:assigned', included_in_amount: false,
+      requires_manual_review: false, evidence_count: 0,
+    }],
     warnings: [],
   },
 })
@@ -335,6 +468,47 @@ assert.deepStrictEqual(submissionSnapshot.lines, [{
   unit_rate_cents: 3500, subtotal_cents: 3182, gst_cents: 318, total_cents: 3500,
   price_basis: 'inclusive_gst', evidence_count: 0,
 }])
+assert.deepStrictEqual(submissionSnapshot.work_checklist, [{
+  execution_key: 'cleaning:task-delayed', audit_id: null, task_id: 'task-delayed', component_type: 'cleaning_task',
+  service_date: null, performed_at: null, performed_by_user_id: null, performed_by_name: null,
+  property_id: null, property_label: 'DELAY01', property_type: null, task_type: null,
+  scheduled_service_date: '2026-09-10', current_scheduled_service_date: null,
+  inspection_due_date: null, inspection_mode: null,
+  evidence_count: 0, status: 'incomplete', status_reason: 'task_not_completed:assigned',
+  included_in_amount: false, requires_manual_review: false,
+}])
+assert.notStrictEqual(buildPersonnelSettlementSubmissionSnapshot({
+  weekStart: '2026-09-07',
+  weekEnd: '2026-09-13',
+  person: {
+    totals: { subtotal_cents: 3182, gst_cents: 318, total_cents: 3500 },
+    lines: submissionSnapshot.lines,
+    work_checklist: submissionSnapshot.work_checklist.map((item) => ({ ...item, status: 'cancelled' })),
+    warnings: [],
+  },
+}).confirmation_token, submissionSnapshot.confirmation_token)
+const frozenSubmissionSnapshot = buildFrozenPersonnelSettlementSubmissionSnapshot({
+  weekStart: '2026-09-07',
+  weekEnd: '2026-09-13',
+  userId: 'cleaner-1',
+  detail: {
+    lines: submissionSnapshot.lines,
+    work_checklist: submissionSnapshot.work_checklist,
+    subtotal_cents: 3182,
+    gst_cents: 318,
+    total_cents: 3500,
+  },
+})
+assert.strictEqual(frozenSubmissionSnapshot.confirmation_token, submissionSnapshot.confirmation_token)
+for (const changedDetail of [
+  { lines: submissionSnapshot.lines.map((line) => ({ ...line, total_cents: 3501 })), work_checklist: submissionSnapshot.work_checklist, subtotal_cents: 3182, gst_cents: 318, total_cents: 3500 },
+  { lines: submissionSnapshot.lines, work_checklist: submissionSnapshot.work_checklist.map((item) => ({ ...item, status_reason: 'changed' })), subtotal_cents: 3182, gst_cents: 318, total_cents: 3500 },
+  { lines: submissionSnapshot.lines, work_checklist: submissionSnapshot.work_checklist, subtotal_cents: 3182, gst_cents: 318, total_cents: 3501 },
+]) {
+  assert.notStrictEqual(buildFrozenPersonnelSettlementSubmissionSnapshot({
+    weekStart: '2026-09-07', weekEnd: '2026-09-13', userId: 'cleaner-1', detail: changedDetail,
+  }).confirmation_token, frozenSubmissionSnapshot.confirmation_token)
+}
 assert.notStrictEqual(buildPersonnelSettlementSubmissionSnapshot({
   weekStart: '2026-09-07',
   weekEnd: '2026-09-13',
@@ -344,6 +518,30 @@ assert.notStrictEqual(buildPersonnelSettlementSubmissionSnapshot({
     warnings: [],
   },
 }).confirmation_token, submissionSnapshot.confirmation_token)
+const partialSubmissionSnapshot = buildPersonnelSettlementSubmissionSnapshot({
+  weekStart: '2026-09-28',
+  weekEnd: '2026-10-04',
+  person: {
+    totals: { subtotal_cents: 0, gst_cents: 0, total_cents: 0 },
+    lines: [],
+    warnings: [{
+      source_type: 'workload_claim', source_id: 'claim-overtime', reason: 'missing_rule_item',
+      service_date: '2026-09-28', component_type: 'overtime_hour', description: 'Overtime · 2 hours',
+    }],
+  },
+})
+assert.strictEqual(partialSubmissionSnapshot.calculation_status, 'partial')
+assert.strictEqual(partialSubmissionSnapshot.pending_pricing_count, 1)
+assert.deepStrictEqual(partialSubmissionSnapshot.pending_pricing_items, [{
+  id: 'workload_claim:claim-overtime:overtime_hour',
+  source_type: 'workload_claim', source_id: 'claim-overtime', component_type: 'overtime_hour',
+  service_date: '2026-09-28', description: 'Overtime · 2 hours', code: 'missing_rule_item',
+}])
+assert.deepStrictEqual(comparePersonnelSettlementFinanceReview({
+  unresolvedClaimCount: 0,
+  partnerSnapshot: partialSubmissionSnapshot,
+  reviewedSnapshot: partialSubmissionSnapshot,
+}).can_pay_without_reconfirmation, false)
 assert.deepStrictEqual(comparePersonnelSettlementFinanceReview({
   unresolvedClaimCount: 0,
   partnerSnapshot: submissionSnapshot,
@@ -483,27 +681,217 @@ assert.match(claims, /reviewPersonnelClaimInTransaction[\s\S]*assertNoApprovedPe
 assert.match(router, /duplicate_approved_claim/)
 assert.match(claims, /createPersonnelClaim[\s\S]*assertPersonnelSelfServiceClaimAllowed/)
 assert.match(claims, /updatePersonnelClaim[\s\S]*assertPersonnelSelfServiceClaimAllowed/)
+assert.match(claims, /\['draft', 'returned', 'submitted'\]\.includes\(currentStatus\)/)
+assert.match(claims, /claim_edit_revision_required/)
+assert.match(claims, /claim_edit_conflict/)
+assert.match(claims, /planPersonnelSubmittedClaimEditRevision/)
+assert.match(claims, /assertPersonnelClaimSettlementStatusesEditable/)
+assert.match(claims, /invalidate_for_submitted_claim_edit/)
+assert.match(claims, /originalWeekStart[\s\S]*targetWeekStart/)
+const updateClaimFlow = claims.slice(claims.indexOf('export async function updatePersonnelClaim('))
+const editWeekLockStart = updateClaimFlow.indexOf('await lockPersonnelSettlementWeeks')
+const editClaimRowLockStart = updateClaimFlow.indexOf('FOR UPDATE')
+const editSettlementInvalidationStart = updateClaimFlow.indexOf('invalidatePersonnelSettlementsForSubmittedClaimEdit')
+assert.ok(
+  editWeekLockStart >= 0
+  && editWeekLockStart < editClaimRowLockStart
+  && editClaimRowLockStart < editSettlementInvalidationStart,
+  'claim edits must acquire the shared weekly lock before claim-row locking and settlement invalidation',
+)
+assert.match(claims, /pg_advisory_xact_lock\(hashtext\('personnel-settlement-week'\), hashtext\(\$1\)\)/)
 assert.match(claims, /submitPersonnelClaimInTransaction[\s\S]*assertPersonnelSelfServiceClaimAllowed/)
-const assignmentQuery = preview.slice(preview.indexOf('SELECT t.id::text AS task_id'), preview.indexOf('const profiles ='))
-assert.match(assignmentQuery, /t\.cleaner_id::text = ANY\(\$3::text\[\]\)/)
-assert.match(assignmentQuery, /NULLIF\(TRIM\(t\.cleaner_id::text\), ''\) IS NOT NULL/)
+const plannedQuery = preview.slice(preview.indexOf('WITH planned AS'), preview.indexOf('const profiles ='))
+const assignmentQuery = plannedQuery.slice(0, plannedQuery.indexOf("'inspection_day'::text AS component_type"))
+assert.match(assignmentQuery, /COALESCE\(t\.cleaner_id::text, t\.assignee_id::text\) = ANY\(\$3::text\[\]\)/)
+assert.match(assignmentQuery, /NULLIF\(TRIM\(COALESCE\(t\.cleaner_id::text, t\.assignee_id::text\)\), ''\) IS NOT NULL/)
+assert.match(assignmentQuery, /LEFT JOIN users u ON u\.id::text = COALESCE\(t\.cleaner_id::text, t\.assignee_id::text\)/)
 assert.doesNotMatch(assignmentQuery, /complete_cleaning|fill_supplies/)
 assert.match(preview, /status = ANY\(\$4::text\[\]\)/)
 assert.match(workflow, /include_submitted_claims: true/)
+assert.match(workflow, /status IN \('draft','returned'\)/)
+assert.match(workflow, /pending_pricing_items/)
+assert.match(workflow, /calculation_status/)
 assert.match(workflow, /settlement_finance_review_changed/)
 assert.match(workflow, /settlement_finance_review_unchanged/)
 assert.match(workflow, /hasFinanceReturnedZeroSettlement/)
 assert.match(workflow, /settlement_partner_submission_required/)
 assert.match(workflow, /resubmittingVoidedSettlement \? 'partner_resubmit_after_void'/)
 assert.match(workflow, /company_expense_id=NULL, paid_by=NULL, paid_at=NULL/)
-const inspectionQuery = preview.slice(preview.indexOf('SELECT a.id AS audit_id'), preview.indexOf('FROM personnel_workload_claims'))
-assert.match(inspectionQuery, /a\.performed_by_user_id = ANY\(\$3::text\[\]\)/)
-assert.match(inspectionQuery, /\[\.\.\.params, \['submit_inspection'\]\]/)
+const inspectionQuery = preview.slice(preview.indexOf('WITH scoped_tasks AS'), preview.indexOf('FROM personnel_workload_claims'))
+assert.doesNotMatch(inspectionQuery, /a\.performed_by_user_id = ANY\(\$1::text\[\]\)/)
+assert.match(inspectionQuery, /WITH scoped_tasks AS/)
+assert.match(inspectionQuery, /a\.source_id::text IN \(SELECT task_id FROM scoped_tasks\)/)
+assert.match(inspectionQuery, /COALESCE\(t\.cleaner_id::text, t\.assignee_id::text\) = ANY\(\$3::text\[\]\)/)
+assert.match(inspectionQuery, /\[period\.week_start, period\.week_end, userFilter, \['submit_inspection', 'fill_supplies', 'complete_cleaning'\]\]/)
+assert.match(inspectionQuery, /BETWEEN \$1::date AND \$2::date/)
+assert.match(preview, /FROM work_task_events e/)
+assert.match(preview, /rescheduled_after_plan/)
+assert.match(preview, /plan_priority DESC, plan_order DESC/)
+assert.match(preview, /management_reopened/)
+assert.match(plannedQuery, /'cleaning_task'::text AS component_type,[\s\S]*latest\.payload#[\s\S]*management_closed_without_execution/)
+assert.match(plannedQuery, /'cleaning_task'::text AS component_type,[\s\S]*management_reopened[\s\S]*THEN 2 ELSE 0 END AS plan_priority/)
+assert.match(plannedQuery, /lower\(COALESCE\(t\.inspection_mode, ''\)\) IN \('same_day', 'deferred'\)/)
+assert.match(plannedQuery, /before,inspection_mode}[\s\S]*IN \('same_day', 'deferred'\)/)
+assert.match(plannedQuery, /NOT \(e\.payload#>'\{arrangement_revision,reasons\}' @> '\["management_closed"\]'::jsonb\)/)
+assert.match(plannedQuery, /e\.sequence_no = \([\s\S]*boundary\.payload#[\s\S]*management_reopened[\s\S]*ORDER BY boundary\.sequence_no DESC/)
+assert.doesNotMatch(plannedQuery, /lower\(COALESCE\(t\.inspection_mode, ''\)\) IN \([^)]*self_complete|checked_done/)
+const taskCenterSave = taskCenter.slice(taskCenter.indexOf("router.post('/save-board'"), taskCenter.indexOf("router.post('/save-board'") + 100_000)
+assert.match(taskCenterSave, /for \(const eventInput of eventInputs\) \{[\s\S]*await emitWorkTaskEvent\(eventInput, client\)[\s\S]*await client\.query\('COMMIT'\)/)
+assert.doesNotMatch(taskCenterSave, /Promise\.allSettled\(eventInputs/)
+const singleCleaningPatch = cleaningRouter.slice(cleaningRouter.indexOf("router.patch('/tasks/:id'"), cleaningRouter.indexOf("const bulkDeleteSchema"))
+assert.match(singleCleaningPatch, /pgRunInTransaction\(async \(client\)/)
+assert.match(singleCleaningPatch, /emitWorkTaskEvent\([\s\S]*\}, client\)/)
+assert.match(singleCleaningPatch, /mz031ManagementStatusArrangementReasons\(lockedBefore, updated, parsed\.data\.status !== undefined\)/)
+const bulkCleaningPatch = cleaningRouter.slice(cleaningRouter.indexOf("router.post('/tasks/bulk-patch'"), cleaningRouter.indexOf('const bulkIdsSchema'))
+assert.match(bulkCleaningPatch, /return pgRunInTransaction\(async \(client\)/)
+assert.match(bulkCleaningPatch, /emitWorkTaskEvent\([\s\S]*\}, client\)/)
+assert.match(bulkCleaningPatch, /mz031ManagementStatusArrangementReasons\(before, after, basePatch\.status !== undefined\)/)
+assert.match(cleaningRouter, /if \(!beforeClosed && afterClosed\) return \['management_closed'\]/)
+assert.match(cleaningRouter, /if \(beforeClosed && !afterClosed && !MZ031_CANCELLED_STATUSES\.has\(afterStatus\)\) return \['management_reopened'\]/)
+assert.match(cleaningSync, /!opts\?\.client[\s\S]*pgRunInTransaction\(\(client\) => syncOrderToCleaningTasks/)
+assert.match(cleaningSync, /loadTaskByOrder\(orderId, taskType, client, \{ forUpdate: true \}\)/)
+assert.match(cleaningSync, /opts\?\.forUpdate \? 'FOR UPDATE' : ''/)
+assert.match(cleaningInspection, /mode !== 'same_day' && mode !== 'deferred'/)
+assert.match(cleaningInspection, /if \(scope === 'password_only'\) return false/)
+assert.match(cleaningInspection, /if \(kind === 'checkin'\) return inspectorId === uid \|\| assigneeId === uid/)
+assert.match(cleaningInspection, /if \(kind === 'checkout'\) return inspectorId \? inspectorId === uid : assigneeId === uid/)
+const selfCompleteRoute = cleaningAppRouter.slice(cleaningAppRouter.indexOf("router.post('/tasks/:id/self-complete'"), cleaningAppRouter.indexOf('const restockProofSchema'))
+assert.match(selfCompleteRoute, /pgRunInTransaction\(async \(client\)/)
+assert.match(selfCompleteRoute, /applyCleaningTaskActionTransition\([\s\S]*\}, client\)/)
+assert.match(selfCompleteRoute, /SELECT \* FROM cleaning_tasks WHERE id::text=\$1::text LIMIT 1/)
+assert.doesNotMatch(selfCompleteRoute, /patch\.status\s*=/)
+assert.match(selfCompleteRoute, /canPerformCleaningTaskActionForRow\(user, lockedTask, \['complete_cleaning'\], client\)/)
+assert.ok(selfCompleteRoute.indexOf('canPerformCleaningTaskActionForRow') < selfCompleteRoute.indexOf('applyCleaningTaskActionTransition'))
+assert.match(selfCompleteRoute, /SELECT type FROM cleaning_task_media WHERE task_id::text=\$1::text AND type LIKE 'completion_%'/)
+assert.match(selfCompleteRoute, /SELECT need_restock, status FROM cleaning_consumable_usages WHERE task_id::text=\$1::text/)
+assert.ok(selfCompleteRoute.indexOf("FOR UPDATE") < selfCompleteRoute.indexOf("type LIKE 'completion_%'"))
+assert.ok(selfCompleteRoute.indexOf("type LIKE 'completion_%'") < selfCompleteRoute.indexOf('applyCleaningTaskActionTransition'))
+const startRoute = cleaningAppRouter.slice(
+  cleaningAppRouter.indexOf("router.post('/tasks/:id/start'"),
+  cleaningAppRouter.indexOf('async function handleDeleteKeyPhoto'),
+)
+assert.match(startRoute, /pgRunInTransaction\(async \(client\)/)
+assert.match(startRoute, /FOR UPDATE OF t/)
+assert.match(startRoute, /canPerformCleaningTaskActionForRow\(user, before, \['upload_key_photo'\], client\)/)
+assert.match(startRoute, /applyCleaningTaskActionTransition\([\s\S]*\}, client\)/)
+assert.match(startRoute, /emitWorkTaskEvent\([\s\S]*\}, client\)/)
+const consumablesRoute = cleaningAppRouter.slice(
+  cleaningAppRouter.indexOf("router.post('/tasks/:id/consumables'"),
+  cleaningAppRouter.indexOf("router.patch('/tasks/:id/restock'"),
+)
+assert.match(consumablesRoute, /canPerformCleaningTaskActionForRow\(user, task, \['fill_supplies'\], client\)/)
+assert.ok(consumablesRoute.indexOf('canPerformCleaningTaskActionForRow') < consumablesRoute.indexOf('DELETE FROM cleaning_consumable_usages'))
+const inspectionPhotoRoute = cleaningAppRouter.slice(
+  cleaningAppRouter.indexOf("router.post('/tasks/:id/inspection-photos'"),
+  cleaningAppRouter.indexOf("router.post('/tasks/:id/inspection-issue-photos'"),
+)
+assert.match(inspectionPhotoRoute, /SELECT id::text AS id,[\s\S]*inspector_id::text AS inspector_id[\s\S]*FOR UPDATE/)
+assert.match(inspectionPhotoRoute, /canPerformCleaningTaskActionForRow\(user, lockedTaskRow, \['submit_inspection'\], client\)/)
+assert.ok(inspectionPhotoRoute.indexOf('canPerformCleaningTaskActionForRow') < inspectionPhotoRoute.indexOf('DELETE FROM cleaning_task_media'))
+const completionPhotoRoute = cleaningAppRouter.slice(
+  cleaningAppRouter.indexOf("router.post('/tasks/:id/completion-photos'"),
+  cleaningAppRouter.indexOf('const lockboxVideoSchema'),
+)
+assert.match(completionPhotoRoute, /canPerformCleaningTaskActionForRow\(user, task, \['upload_access_video', 'complete_cleaning'\], client\)/)
+assert.ok(completionPhotoRoute.indexOf('canPerformCleaningTaskActionForRow') < completionPhotoRoute.indexOf('DELETE FROM cleaning_task_media'))
+const inspectionCompleteRoute = cleaningAppRouter.slice(
+  cleaningAppRouter.indexOf("router.post('/tasks/:id/inspection-complete'"),
+  cleaningAppRouter.indexOf('function canViewDayEndForAllUsers'),
+)
+assert.match(inspectionCompleteRoute, /pgRunInTransaction\(async \(client\)/)
+assert.match(inspectionCompleteRoute, /canPerformCleaningTaskActionForRow\(user, task, \['upload_access_video'\], client\)/)
+assert.ok(inspectionCompleteRoute.indexOf('canPerformCleaningTaskActionForRow') < inspectionCompleteRoute.indexOf('INSERT INTO cleaning_task_media'))
+const mzappInspectionPhotoRoute = mzappRouter.slice(
+  mzappRouter.indexOf("router.post('/cleaning-tasks/:id/inspection-photos'"),
+  mzappRouter.indexOf("router.get('/cleaning-tasks/:id/completion-photos'"),
+)
+assert.match(mzappInspectionPhotoRoute, /canSubmitMzappInspection\(user, lockedTaskRow, userId, client\)/)
+assert.match(mzappInspectionPhotoRoute, /task_type,[\s\S]*inspection_mode,[\s\S]*inspection_scope/)
+assert.ok(mzappInspectionPhotoRoute.indexOf('canSubmitMzappInspection') < mzappInspectionPhotoRoute.indexOf('DELETE FROM cleaning_task_media'))
+const mzappInspectionAuthorization = mzappRouter.slice(
+  mzappRouter.indexOf('async function canSubmitMzappInspection'),
+  mzappRouter.indexOf('async function canSubmitMzappSelfCompleteRestock'),
+)
+assert.match(mzappInspectionAuthorization, /isCleaningTaskInspectionSubmitParticipant\(row, userId\)/)
+assert.match(mzappInspectionAuthorization, /userHasManualWorkTaskAction[\s\S]*'submit_inspection'/)
+const cleaningAppLegacyAuthorization = cleaningAppRouter.slice(
+  cleaningAppRouter.indexOf('function legacyCleaningTaskActionAllowed'),
+  cleaningAppRouter.indexOf('async function canPerformCleaningTaskAction'),
+)
+assert.match(cleaningAppLegacyAuthorization, /isCleaningTaskInspectionSubmitParticipant\(row, uid\)/)
+const mzappLockboxRoute = mzappRouter.slice(
+  mzappRouter.indexOf("router.post('/cleaning-tasks/:id/lockbox-video'"),
+  mzappRouter.indexOf('async function handleDeleteMzappLockboxVideo'),
+)
+assert.match(mzappLockboxRoute, /SELECT id::text AS id, status,[\s\S]*FOR UPDATE/)
+assert.match(mzappLockboxRoute, /canSubmitMzappSelfCompleteLockboxVideo\(user, lockedTask, userId, client\)/)
+assert.match(mzappLockboxRoute, /canManageMzappLockboxVideo\(user, lockedTask, userId, client\)/)
+assert.ok(mzappLockboxRoute.indexOf('canManageMzappLockboxVideo') < mzappLockboxRoute.indexOf('DELETE FROM cleaning_task_media'))
+const cleaningAppLockboxRoute = cleaningAppRouter.slice(
+  cleaningAppRouter.indexOf("router.post('/tasks/:id/lockbox-video'"),
+  cleaningAppRouter.indexOf('async function handleDeleteLockboxVideo'),
+)
+assert.match(cleaningAppLockboxRoute, /task_is_cancelled[\s\S]*res\.status\(409\)/)
+const mzappRestockProofRoute = mzappRouter.slice(
+  mzappRouter.indexOf("router.post('/cleaning-tasks/:id/restock-proof'"),
+  mzappRouter.indexOf('async function expandGuestCheckoutTaskIds'),
+)
+assert.match(mzappRestockProofRoute, /pgRunInTransaction\(async \(client\)/)
+assert.match(mzappRestockProofRoute, /FOR UPDATE/)
+assert.match(mzappRestockProofRoute, /canSubmitMzappSelfCompleteRestock\(user, lockedTask, userId, client\)/)
+assert.match(mzappRestockProofRoute, /canSubmitMzappInspection\(user, lockedTask, userId, client\)/)
+assert.match(mzappRestockProofRoute, /loadIdempotentStepReceipt\(client/)
+assert.match(mzappRestockProofRoute, /recordWorkTaskActionAudit\([\s\S]*\}, client\)/)
+assert.match(mzappRestockProofRoute, /saveIdempotentStepReceipt\(client/)
+assert.ok(mzappRestockProofRoute.indexOf('canSubmitMzappInspection') < mzappRestockProofRoute.indexOf('DELETE FROM cleaning_task_media'))
+assert.match(actionAudit, /type LIKE 'completion_%'/)
+assert.match(workflow, /preservedLegacyDraftUserIds/)
+assert.match(workflow, /historical_frozen_pending_verification/)
+assert.match(workflow, /historicalFrozenSettlementRequiresVerification\(existing\)/)
+assert.match(workflow, /partner_confirm_historical_frozen/)
+assert.match(workflow, /合作方已确认历史冻结金额（待核实）/)
+const frozenSubmissionBranch = workflow.slice(
+  workflow.indexOf('if (existing && shouldUseFrozenSettlementSubmission(existing, person))'),
+  workflow.indexOf('const submissionSnapshot = buildPersonnelSettlementSubmissionSnapshot', workflow.indexOf('if (existing && shouldUseFrozenSettlementSubmission(existing, person))')),
+)
+assert.match(frozenSubmissionBranch, /getPersonnelWeeklySettlement/)
+assert.match(frozenSubmissionBranch, /confirmation_token/)
+assert.doesNotMatch(frozenSubmissionBranch, /DELETE FROM personnel_settlement_lines/)
+assert.match(workflow, /lines: detail\.lines \|\| \[\]/)
+assert.match(workflow, /work_checklist: detail\.work_checklist \|\| \[\]/)
+assert.match(workflow, /existingStatus === 'awaiting_confirmation'/)
+assert.match(workflow, /shouldUseFrozenSettlementSubmission\(existing, person\)/)
+assert.match(workflow, /frozen_awaiting_confirmation/)
+const submissionPreviewFlow = workflow.slice(
+  workflow.indexOf('export async function getPersonnelSettlementSubmissionPreview'),
+  workflow.indexOf('export function personnelSettlementSubmissionStatus'),
+)
+assert.ok(submissionPreviewFlow.indexOf('listPersonnelWeeklySettlements') < submissionPreviewFlow.indexOf('buildPersonnelSettlementPreview'))
+assert.match(submissionPreviewFlow, /historicalFrozenSettlementRequiresVerification\(existing\)/)
+assert.ok(submissionPreviewFlow.indexOf('independentlyFrozen') < submissionPreviewFlow.indexOf('buildPersonnelSettlementPreview'))
+const awaitingConfirmationBranch = workflow.slice(
+  workflow.indexOf("if (existing && String(existing.status) === 'awaiting_confirmation')"),
+  workflow.indexOf("if (existing && String(existing.status) === 'disputed')"),
+)
+assert.match(awaitingConfirmationBranch, /getPersonnelWeeklySettlement/)
+assert.match(awaitingConfirmationBranch, /buildFrozenPersonnelSettlementSubmissionSnapshot/)
+assert.match(awaitingConfirmationBranch, /settlement_preview_changed/)
+assert.ok(awaitingConfirmationBranch.indexOf('settlement_preview_changed') < awaitingConfirmationBranch.indexOf('UPDATE personnel_weekly_settlements'))
 assert.doesNotMatch(claims.slice(claims.indexOf('const CLAIM_SELECT'), claims.indexOf('export async function listPersonnelClaims')), /storage_key/)
 const relatedClaimsQuery = claims.slice(claims.indexOf('export async function listPersonnelClaimsWithEvidence'), claims.indexOf('export async function getPersonnelClaim'))
 assert.match(relatedClaimsQuery, /media_id, mime_type, byte_size, original_file_name/)
 assert.doesNotMatch(relatedClaimsQuery, /storage_key/)
 assert.match(workflow, /related_claims: relatedClaims\.map/)
+for (const reasonCode of [
+  'executed_by_different_performer',
+  'deferred_replaced_by_completed_checkin',
+  'execution_recorded_after_task_cancelled',
+  'legacy_execution_task_later_cancelled',
+  'cleaning_action_without_done_status',
+  'inspection_action_without_submission_status',
+]) {
+  assert.ok(weeklyPanel.includes(reasonCode), `weekly settlement UI should translate ${reasonCode}`)
+}
 const reviewHelperStart = claims.indexOf('export async function reviewPersonnelClaimInTransaction')
 const reviewLockStart = claims.indexOf('const locked = await client.query', reviewHelperStart)
 const reviewEvidenceStart = claims.indexOf('const evidence = await client.query', reviewLockStart)
@@ -518,6 +906,22 @@ assert.match(reconciliationFlow, /pgRunInTransaction/)
 assert.match(reconciliationFlow, /submitPersonnelClaimInTransaction/)
 assert.match(reconciliationFlow, /status='disputed'/)
 assert.match(reconciliationFlow, /settlement_claim_period_mismatch/)
+assert.ok(
+  reconciliationFlow.indexOf('await lockPersonnelSettlementWeekBeforeRows') >= 0
+  && reconciliationFlow.indexOf('await lockPersonnelSettlementWeekBeforeRows') < reconciliationFlow.indexOf('await loadSettlementForUpdate')
+  && reconciliationFlow.indexOf('await loadSettlementForUpdate') < reconciliationFlow.indexOf('submitPersonnelClaimInTransaction'),
+  'claim reconciliation must acquire the shared weekly lock before settlement-row and claim-row locks',
+)
+const disputeReviewFlow = workflow.slice(
+  workflow.indexOf('export async function reviewPersonnelSettlementDisputeClaim'),
+  workflow.indexOf('export async function resolvePersonnelSettlementDispute'),
+)
+assert.ok(
+  disputeReviewFlow.indexOf('await lockPersonnelSettlementWeekBeforeRows') >= 0
+  && disputeReviewFlow.indexOf('await lockPersonnelSettlementWeekBeforeRows') < disputeReviewFlow.indexOf('await loadSettlementForUpdate')
+  && disputeReviewFlow.indexOf('await loadSettlementForUpdate') < disputeReviewFlow.indexOf('reviewPersonnelClaimInTransaction'),
+  'claim dispute review must acquire the shared weekly lock before settlement-row and claim-row locks',
+)
 assert.match(workflow, /include_approved_claim/)
 assert.match(workflow, /settlement_claim_calculation_failed/)
 const auditSummary = workflow.slice(workflow.indexOf('function settlementAuditSummary'), workflow.indexOf('async function insertAudit'))
@@ -539,6 +943,8 @@ assert.match(weeklyPanel, /确认并自动计入/)
 assert.match(weeklyPanel, /计入当前金额/)
 assert.match(weeklyPanel, /反馈已确认并自动计入/)
 assert.match(weeklyPanel, /证明照片/)
+assert.match(weeklyPanel, /待计价项目/)
+assert.match(weeklyPanel, /不能直接财务核准或付款/)
 assert.match(weeklyPanel, /loadPersonnelClaimEvidenceObjectUrl/)
 assert.match(claimsPanel, /证明照片仅通过登录鉴权接口显示/)
 assert.match(claimsPanel, /系统自动计算/)

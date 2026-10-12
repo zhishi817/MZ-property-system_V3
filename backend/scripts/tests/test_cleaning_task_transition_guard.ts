@@ -15,10 +15,38 @@ function makeExecutor(
   lockboxVideoSaved = false,
 ) {
   const queries: string[] = []
+  const insertedAudits: any[] = []
   return {
     queries,
+    insertedAudits,
     query: async (sql: string, params: any[] = []) => {
       queries.push(sql)
+      if (sql.includes('SELECT t.id::text AS task_id')) {
+        return { rows: [{
+          task_id: 'task-guard',
+          property_id: 'property-1',
+          property_label: 'FG1003',
+          property_type: '一房一卫',
+          task_type: task.task_type || 'checkout_clean',
+          scheduled_service_date: '2026-09-08',
+          inspection_due_date: '2026-09-10',
+          inspection_mode: task.inspection_mode || 'deferred',
+          inspection_scope: task.inspection_scope,
+          assignee_id: 'inspector-1',
+          cleaner_id: 'cleaner-1',
+          inspector_id: 'inspector-1',
+        }] }
+      }
+      if (sql.includes('SELECT id::text AS media_id')) {
+        return { rows: inspectionMediaRows.map((row, index) => row?.media_id ? row : {
+          media_id: `inspection-photo-${index + 1}`,
+          type: 'inspection_bedroom',
+          url: `private-media-reference-${index + 1}`,
+          note: null,
+          captured_at: '2026-09-10T01:00:00.000Z',
+          created_at: '2026-09-10T01:00:00.000Z',
+        }) }
+      }
       if (sql.includes('FROM cleaning_tasks t')) {
         return { rows: params[2] === true || guestArrivalSkipAudit || inspectionMediaRows.length ? [{ ok: 1 }] : [] }
       }
@@ -43,6 +71,10 @@ function makeExecutor(
         }
       }
       if (sql.includes('FROM users')) return { rows: [] }
+      if (sql.includes('INSERT INTO work_task_action_audits')) {
+        insertedAudits.push(JSON.parse(String(params[10] || '{}')))
+        return { rows: [], rowCount: 1 }
+      }
       return { rows: [], rowCount: 1 }
     },
   }
@@ -50,8 +82,23 @@ function makeExecutor(
 
 async function main() {
   process.env.DATABASE_URL = 'postgres://unit-test'
-  const { applyCleaningTaskActionTransition } = require('../../src/lib/workTaskActionAudit') as typeof import('../../src/lib/workTaskActionAudit')
+  const { actorAndPerformerFromRequest, applyCleaningTaskActionTransition } = require('../../src/lib/workTaskActionAudit') as typeof import('../../src/lib/workTaskActionAudit')
+  assert.deepStrictEqual(
+    actorAndPerformerFromRequest(
+      { sub: 'actor-1' },
+      { performed_by_user_id: 'forged-user', performed_by_name: 'Forged Name' },
+    ),
+    { actorUserId: 'actor-1', performedByUserId: 'actor-1', performedByName: null },
+  )
   const task: FakeTask = { status: 'to_inspect', inspection_scope: 'inspect_and_hang', task_type: 'checkout_clean' }
+  const cancelledTask = makeExecutor({ ...task, status: 'cancelled' }, [{ ok: 1 }])
+  await assert.rejects(() => applyCleaningTaskActionTransition({
+    taskId: 'task-guard',
+    actionId: 'submit_inspection',
+    actorUserId: 'inspector-1',
+  }, cancelledTask as any), /task_is_cancelled/)
+  assert.equal(cancelledTask.insertedAudits.length, 0)
+  assert.equal(cancelledTask.queries.some((sql) => sql.includes('UPDATE cleaning_tasks')), false)
   const noPhotos = makeExecutor(task, [])
   const blocked = await applyCleaningTaskActionTransition({
     taskId: 'task-guard',
@@ -91,6 +138,16 @@ async function main() {
   assert.equal(inspectionSaved.status_after, 'to_inspect')
   assert.equal(inspectionSaved.finalization_pending, true)
   assert.deepEqual(inspectionSaved.missing_requirements, ['cleaning_consumables', 'cleaning_property_photo'])
+  assert.equal(inspectionBeforeCleaner.insertedAudits.length, 1)
+  assert.deepEqual(inspectionBeforeCleaner.insertedAudits[0].property_snapshot, {
+    property_id: 'property-1', property_label: 'FG1003', property_type: '一房一卫',
+  })
+  assert.equal(inspectionBeforeCleaner.insertedAudits[0].execution_key, 'inspection:task-guard')
+  assert.equal(inspectionBeforeCleaner.insertedAudits[0].inspection_submission_complete, true)
+  assert.equal(inspectionBeforeCleaner.insertedAudits[0].task_snapshot.scheduled_service_date, '2026-09-08')
+  assert.equal(inspectionBeforeCleaner.insertedAudits[0].evidence_count, 1)
+  assert.match(inspectionBeforeCleaner.insertedAudits[0].evidence_snapshot[0].reference_hash, /^[a-f0-9]{64}$/)
+  assert.equal('reference' in inspectionBeforeCleaner.insertedAudits[0].evidence_snapshot[0], false)
 
   const videoBeforeCleaner = makeExecutor(task, [{ ok: 1 }], false, false, true)
   const videoSavedBeforeCleaner = await applyCleaningTaskActionTransition({
@@ -110,6 +167,21 @@ async function main() {
   }, cleanerFinishesLast as any)
   assert.equal(finalized.status_after, 'keys_hung')
   assert.equal(finalized.finalization_pending, false)
+
+  const cleaningEvidence = makeExecutor(task, [
+    { media_id: 'completion-toilet', type: 'completion_toilet', url: 'private-completion-toilet', note: null, captured_at: null, created_at: '2026-09-10T02:00:00.000Z' },
+    { media_id: 'completion-kitchen', type: 'completion_kitchen', url: 'private-completion-kitchen', note: null, captured_at: null, created_at: '2026-09-10T02:01:00.000Z' },
+  ])
+  await applyCleaningTaskActionTransition({
+    taskId: 'task-guard',
+    actionId: 'complete_cleaning',
+    actorUserId: 'cleaner-1',
+  }, cleaningEvidence as any)
+  assert.equal(cleaningEvidence.insertedAudits[0].evidence_count, 2)
+  assert.deepEqual(cleaningEvidence.insertedAudits[0].evidence_snapshot.map((item: any) => item.type), ['completion_toilet', 'completion_kitchen'])
+  assert.ok(cleaningEvidence.insertedAudits[0].evidence_snapshot.every((item: any) => /^[a-f0-9]{64}$/.test(item.reference_hash)))
+  assert.ok(cleaningEvidence.insertedAudits[0].evidence_snapshot.every((item: any) => !('url' in item)))
+  assert.ok(cleaningEvidence.queries.some((sql) => sql.includes("type LIKE 'completion_%'")))
 
   const selfCompleteVideo = makeExecutor(task, [], false, false)
   const selfCompleteVideoSaved = await applyCleaningTaskActionTransition({

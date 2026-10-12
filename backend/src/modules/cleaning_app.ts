@@ -11,7 +11,7 @@ import sharp from 'sharp'
 import fs from 'fs'
 import { emitNotificationEvent } from '../services/notificationEvents'
 import { buildCleaningTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
-import { effectiveInspectionMode, isInspectionFinishedStatus } from '../lib/cleaningInspection'
+import { effectiveInspectionMode, isCleaningTaskInspectionSubmitParticipant, isInspectionFinishedStatus } from '../lib/cleaningInspection'
 import { CLEANING_IMAGE_FORMAT_ERROR, encodeCleaningImageToJpeg, isImageUploadCandidate, normalizeCleaningImageUpload } from '../lib/cleaningMediaImage'
 import { isCleaningMediaKey } from '../lib/cleaningMediaReference'
 import { currentOfflineTaskPhotoKeyFromReference, currentMzappTaskPhotoKeyFromReference, isLegacyMzappTaskPhotoPublicUrl, offlineTaskPhotoReferenceVariants, normalizeMzappTaskPhotoKey } from '../lib/mzappTaskPhotoReference'
@@ -34,6 +34,7 @@ import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
 import { canViewMzappGuestLuggageNoticeMedia, canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia } from './mzapp'
 import { assertR5TaskRuntimeSchemaReady, requireR5RequestSchema, requireR5TaskRuntimeSchema } from '../lib/r5RequestSchema'
 import { buildCleaningMediaUploadFingerprint, CLEANING_MEDIA_IDEMPOTENCY_CONFLICT, storeLocalImmutableMedia } from '../lib/immutableMediaUpload'
+import { reconcileDeferredInspectionCheckinReplacement } from '../services/deferredInspectionCheckinConflict'
 
 export const router = Router()
 
@@ -759,11 +760,10 @@ function legacyCleaningTaskActionAllowed(row: any, userId: string, actionId: Wor
   const uid = String(userId || '').trim()
   if (!uid) return false
   const cleanerId = String(row?.cleaner_id || row?.assignee_id || '').trim()
-  const inspectorId = String(row?.inspector_id || row?.assignee_id || '').trim()
   const assigneeId = String(row?.assignee_id || '').trim()
   const inspectionMode = effectiveInspectionMode(row)
   const isCleaningParticipant = cleanerId === uid || assigneeId === uid
-  const isInspectionParticipant = inspectorId === uid || assigneeId === uid
+  const isInspectionParticipant = isCleaningTaskInspectionSubmitParticipant(row, uid)
   if (actionId === 'upload_key_photo') return isCleaningParticipant
   if (actionId === 'fill_supplies' || actionId === 'complete_cleaning') return isCleaningParticipant
   if (actionId === 'submit_inspection') return isInspectionParticipant
@@ -779,9 +779,6 @@ async function canPerformCleaningTaskAction(user: any, taskId: string, actionIds
   const userId = String(user?.sub || '').trim()
   const id = String(taskId || '').trim()
   if (!userId || !id || !actionIds.length) return false
-  const permissions = await listPermissionCodesForUser(user)
-  const allowedBaseActions = actionIds.filter((actionId) => canBasePerformWorkTaskAction(actionId, permissions))
-  if (!allowedBaseActions.length) return false
   const taskRes = await pgPool.query(
     `SELECT id::text AS id,
             status,
@@ -799,15 +796,31 @@ async function canPerformCleaningTaskAction(user: any, taskId: string, actionIds
   )
   const row = taskRes?.rows?.[0] || null
   if (!row) return false
+  return canPerformCleaningTaskActionForRow(user, row, actionIds, pgPool)
+}
+
+async function canPerformCleaningTaskActionForRow(
+  user: any,
+  row: any,
+  actionIds: WorkTaskActionId[],
+  executor: { query: (sql: string, params?: any[]) => Promise<any> },
+) {
+  const userId = String(user?.sub || '').trim()
+  const id = String(row?.id || '').trim()
+  if (!userId || !id || !actionIds.length) return false
+  const permissions = await listPermissionCodesForUser(user)
+  const allowedBaseActions = actionIds.filter((actionId) => canBasePerformWorkTaskAction(actionId, permissions))
+  if (!allowedBaseActions.length) return false
   if (allowedBaseActions.some((actionId) => legacyCleaningTaskActionAllowed(row, userId, actionId))) return true
   assertR5TaskRuntimeSchemaReady()
-  const grants = await pgPool.query(
+  const grants = await executor.query(
     `SELECT action_ids
        FROM work_task_participants
       WHERE source_type = 'cleaning_tasks'
         AND source_id = $1
         AND user_id = $2
-        AND source_relation = 'manual'`,
+        AND source_relation = 'manual'
+      FOR SHARE`,
     [id, userId],
   )
   return (grants?.rows || []).some((grant: any) => {
@@ -827,48 +840,44 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), require
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
       const now = new Date().toISOString()
-      const beforeRes = await pgPool.query(
-        `SELECT t.*,
-                (
-                  SELECT m.url
-                  FROM cleaning_task_media m
-                  WHERE m.task_id::text = t.id::text
-                    AND m.type = 'key_photo'
-                  ORDER BY m.created_at DESC NULLS LAST, m.captured_at DESC NULLS LAST, m.id DESC
-                  LIMIT 1
-                ) AS current_key_photo_url
-         FROM cleaning_tasks t
-         WHERE t.id::text = $1::text
-         LIMIT 1`,
-        [String(id)],
-      )
-      const before = beforeRes?.rows?.[0] || null
-      if (!before) return res.status(404).json({ message: 'task not found' })
-      if (!await canPerformCleaningTaskAction(user, String(id), ['upload_key_photo'])) return res.status(403).json({ message: 'forbidden' })
       const actionActor = actorAndPerformerFromRequest(user, parsed.data)
-      const alreadyHasKeyPhoto = !!String(before.current_key_photo_url || '').trim() || !!before.key_photo_uploaded_at
-      if (alreadyHasKeyPhoto) {
+      const transactionResult = await pgRunInTransaction(async (client) => {
+        const beforeRes = await client.query(
+          `SELECT t.*,
+                  (
+                    SELECT m.url
+                    FROM cleaning_task_media m
+                    WHERE m.task_id::text = t.id::text
+                      AND m.type = 'key_photo'
+                    ORDER BY m.created_at DESC NULLS LAST, m.captured_at DESC NULLS LAST, m.id DESC
+                    LIMIT 1
+                  ) AS current_key_photo_url
+             FROM cleaning_tasks t
+            WHERE t.id::text = $1::text
+            FOR UPDATE OF t`,
+          [String(id)],
+        )
+        const before = beforeRes?.rows?.[0] || null
+        if (!before) return { kind: 'missing' as const }
+        if (!await canPerformCleaningTaskActionForRow(user, before, ['upload_key_photo'], client)) {
+          return { kind: 'forbidden' as const }
+        }
+        const alreadyHasKeyPhoto = !!String(before.current_key_photo_url || '').trim() || !!before.key_photo_uploaded_at
         const actionResult = await applyCleaningTaskActionTransition({
           taskId: String(id),
           actionId: 'upload_key_photo',
           actorUserId: actionActor.actorUserId,
           performedByUserId: actionActor.performedByUserId,
           performedByName: actionActor.performedByName,
-          metadata: { route: 'cleaning_app.tasks.start', already_recorded: true },
-        }, pgPool)
-        // Re-upload replaces only the key media row.  The previous branch
-        // returned early without saving the new key, while the task event
-        // could still advertise it to mobile clients.  Keep all other
-        // cleaning/consumable media untouched.
-        await pgRunInTransaction(async (client) => {
-          await client.query(`DELETE FROM cleaning_task_media WHERE task_id::text = $1::text AND type = 'key_photo'`, [String(id)])
-          await client.query(
-            `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, lat, lng, uploader_id)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-            [require('uuid').v4(), id, 'key_photo', parsed.data.media_url, parsed.data.captured_at || now, parsed.data.lat ?? null, parsed.data.lng ?? null, String(user?.sub || '').trim() || null],
-          )
-        })
-        const patchExisting = buildKeyPhotoUploadTaskPatch({
+          metadata: { route: 'cleaning_app.tasks.start', ...(alreadyHasKeyPhoto ? { already_recorded: true } : {}) },
+        }, client)
+        await client.query(`DELETE FROM cleaning_task_media WHERE task_id::text = $1::text AND type = 'key_photo'`, [String(id)])
+        await client.query(
+          `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, lat, lng, uploader_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [require('uuid').v4(), id, 'key_photo', parsed.data.media_url, parsed.data.captured_at || now, parsed.data.lat ?? null, parsed.data.lng ?? null, String(user?.sub || '').trim() || null],
+        )
+        const patch = buildKeyPhotoUploadTaskPatch({
           statusBefore: before.status,
           statusAfter: actionResult?.status_after,
           startedAt: before.started_at,
@@ -877,7 +886,7 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), require
           lat: parsed.data.lat,
           lng: parsed.data.lng,
         })
-        const upExisting = Object.keys(patchExisting).length ? await pgUpdate('cleaning_tasks', id, patchExisting) : before
+        const up = Object.keys(patch).length ? await pgUpdate('cleaning_tasks', id, patch, client) : before
         const eventPatch = buildKeyPhotoUploadEventPatch({
           statusBefore: before.status,
           statusAfter: actionResult?.status_after,
@@ -893,58 +902,17 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), require
             changedFields: Object.keys(eventPatch),
             patch: eventPatch,
             causedByUserId: String(user?.sub || '').trim() || null,
-            visibilityHints: buildCleaningTaskVisibilityHints(upExisting || patchExisting),
-          })
-          try { broadcastCleaningEvent({ event: 'started', task_id: id }) } catch {}
+            visibilityHints: buildCleaningTaskVisibilityHints(up || patch),
+          }, client)
         }
-        return res.json(upExisting || before)
+        return { kind: 'committed' as const, up, patch, eventPatch }
+      })
+      if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'task not found' })
+      if (transactionResult.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
+      const { up, patch, eventPatch } = transactionResult
+      if (Object.keys(eventPatch).length) {
+        try { broadcastCleaningEvent({ event: 'started', task_id: id }) } catch {}
       }
-      const actionResult = await applyCleaningTaskActionTransition({
-        taskId: String(id),
-        actionId: 'upload_key_photo',
-        actorUserId: actionActor.actorUserId,
-        performedByUserId: actionActor.performedByUserId,
-        performedByName: actionActor.performedByName,
-        metadata: { route: 'cleaning_app.tasks.start' },
-      }, pgPool)
-      const patch = buildKeyPhotoUploadTaskPatch({
-        statusBefore: before.status,
-        statusAfter: actionResult?.status_after,
-        startedAt: before.started_at,
-        keyPhotoUploadedAt: before.key_photo_uploaded_at,
-        now,
-        lat: parsed.data.lat,
-        lng: parsed.data.lng,
-      })
-      const up = await pgUpdate('cleaning_tasks', id, patch)
-      const media = {
-        id: require('uuid').v4(),
-        task_id: id,
-        type: 'key_photo',
-        url: parsed.data.media_url,
-        captured_at: parsed.data.captured_at || now,
-        lat: parsed.data.lat,
-        lng: parsed.data.lng,
-        uploader_id: String(user?.sub || '').trim() || null,
-      }
-      try { await pgInsert('cleaning_task_media', media as any) } catch {}
-      const eventPatch = buildKeyPhotoUploadEventPatch({
-        statusBefore: before.status,
-        statusAfter: actionResult?.status_after,
-        keyPhotoUrl: parsed.data.media_url,
-      })
-      await emitWorkTaskEvent({
-        taskId: `cleaning_task:${String(id)}`,
-        sourceType: 'cleaning_tasks',
-        sourceRefIds: [String(id)],
-        eventType: 'TASK_UPDATED',
-        changeScope: 'list',
-        changedFields: Object.keys(eventPatch),
-        patch: eventPatch,
-        causedByUserId: String(user?.sub || '').trim() || null,
-        visibilityHints: buildCleaningTaskVisibilityHints(up || patch),
-      })
-      try { broadcastCleaningEvent({ event: 'started', task_id: id }) } catch {}
       try {
         const operationId = require('uuid').v4()
         const propertyId = String((up as any)?.property_id || '').trim()
@@ -990,6 +958,7 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), require
     }
     return res.json({ id, status: 'in_progress' })
   } catch (e: any) {
+    if (String(e?.message || '') === 'task_is_cancelled') return res.status(409).json({ message: 'task is cancelled' })
     return res.status(500).json({ message: e?.message || 'error' })
   }
 })
@@ -1004,30 +973,44 @@ async function handleDeleteKeyPhoto(req: any, res: any) {
     const userId = String(user?.sub || '').trim()
     if (!userId) return res.status(401).json({ message: 'unauthorized' })
 
-    const r = await pgPool.query(
-      `SELECT COALESCE(cleaner_id, assignee_id)::text AS cleaner_id
-          , property_id::text AS property_id
-       FROM cleaning_tasks
-       WHERE id::text = $1::text`,
-      [String(id || '').trim()],
-    )
-    const cleanerId = String(r?.rows?.[0]?.cleaner_id || '').trim()
-    const propertyId = String(r?.rows?.[0]?.property_id || '').trim()
-    if (!await canPerformCleaningTaskAction(user, String(id), ['upload_key_photo'])) return res.status(403).json({ message: 'forbidden' })
-
-    await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id::text = $1::text AND type = 'key_photo'`, [String(id || '').trim()])
-    await pgPool.query(`UPDATE cleaning_tasks SET key_photo_uploaded_at = NULL WHERE id::text = $1::text`, [String(id || '').trim()])
-    await emitWorkTaskEvent({
-      taskId: `cleaning_task:${String(id)}`,
-      sourceType: 'cleaning_tasks',
-      sourceRefIds: [String(id)],
-      eventType: 'TASK_DETAIL_ASSET_CHANGED',
-      changeScope: 'detail',
-      changedFields: ['key_photo_uploaded_at', 'key_photo_url'],
-      patch: { key_photo_uploaded_at: null, key_photo_url: null },
-      causedByUserId: userId,
-      visibilityHints: buildCleaningTaskVisibilityHints({ cleaner_id: cleanerId, property_id: propertyId }),
+    const deletion = await pgRunInTransaction(async (client) => {
+      const locked = await client.query(
+        `SELECT id::text AS id, status, property_id::text AS property_id,
+                cleaner_id::text AS cleaner_id,
+                inspector_id::text AS inspector_id,
+                assignee_id::text AS assignee_id,
+                task_type,
+                inspection_mode,
+                inspection_scope,
+                inspection_due_date::text AS inspection_due_date
+           FROM cleaning_tasks
+          WHERE id::text = $1::text
+          FOR UPDATE`,
+        [String(id || '').trim()],
+      )
+      const task = locked?.rows?.[0] || null
+      if (!task) return { kind: 'missing' as const }
+      if (!await canPerformCleaningTaskActionForRow(user, task, ['upload_key_photo'], client)) {
+        return { kind: 'forbidden' as const }
+      }
+      await client.query(`DELETE FROM cleaning_task_media WHERE task_id::text = $1::text AND type = 'key_photo'`, [String(id || '').trim()])
+      await client.query(`UPDATE cleaning_tasks SET key_photo_uploaded_at = NULL WHERE id::text = $1::text`, [String(id || '').trim()])
+      await emitWorkTaskEvent({
+        taskId: `cleaning_task:${String(id)}`,
+        sourceType: 'cleaning_tasks',
+        sourceRefIds: [String(id)],
+        eventType: 'TASK_DETAIL_ASSET_CHANGED',
+        changeScope: 'detail',
+        changedFields: ['key_photo_uploaded_at', 'key_photo_url'],
+        patch: { key_photo_uploaded_at: null, key_photo_url: null },
+        causedByUserId: userId,
+        visibilityHints: buildCleaningTaskVisibilityHints(task),
+      }, client)
+      return { kind: 'committed' as const, propertyId: String(task.property_id || '').trim() }
     })
+    if (!deletion || deletion.kind === 'missing') return res.status(404).json({ message: 'task not found' })
+    if (deletion.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
+    const propertyId = deletion.propertyId
 
     try { broadcastCleaningEvent({ event: 'key_photo_deleted', task_id: id }) } catch {}
     try {
@@ -1220,9 +1203,8 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
       const missing = activeItems.map((x: any) => String(x.id)).filter((x: string) => !submittedIds.has(x))
       if (missing.length) return res.status(400).json({ message: '缺少必填项', missing })
 
-      const taskRow = await pgPool.query(`SELECT id, status, property_id::text AS property_id, finished_at FROM cleaning_tasks WHERE id=$1 LIMIT 1`, [String(id)])
+      const taskRow = await pgPool.query(`SELECT id FROM cleaning_tasks WHERE id=$1 LIMIT 1`, [String(id)])
       if (!taskRow?.rows?.[0]) return res.status(404).json({ message: 'task not found' })
-      if (!await canPerformCleaningTaskAction(user, String(id), ['fill_supplies'])) return res.status(403).json({ message: 'forbidden' })
       const submitId = String(parsed.data.submit_id || '').trim()
       const stepKey = 'consumables_submit'
       const payloadHash = buildIdempotencyPayloadHash(parsed.data)
@@ -1241,14 +1223,24 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
 
       const transactionResult = await pgRunInTransaction(async (client) => {
         const lockedTaskRow = await client.query(
-          `SELECT id, status, property_id::text AS property_id, finished_at
+          `SELECT id::text AS id, status, property_id::text AS property_id, finished_at,
+                  cleaner_id::text AS cleaner_id,
+                  inspector_id::text AS inspector_id,
+                  assignee_id::text AS assignee_id,
+                  task_type,
+                  inspection_mode,
+                  inspection_scope,
+                  inspection_due_date::text AS inspection_due_date
              FROM cleaning_tasks
-            WHERE id=$1
+            WHERE id::text=$1::text
             FOR UPDATE`,
           [String(id)],
         )
         const task = lockedTaskRow?.rows?.[0]
         if (!task) return { kind: 'missing' as const }
+        if (!await canPerformCleaningTaskActionForRow(user, task, ['fill_supplies'], client)) {
+          return { kind: 'forbidden' as const }
+        }
 
         if (submitId) {
           const receipt = await loadIdempotentStepReceipt(client, {
@@ -1374,6 +1366,7 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
         }
       })
       if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'task not found' })
+      if (transactionResult.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
       if (transactionResult.kind === 'conflict') {
         return res.status(409).json({ message: 'idempotency_conflict', submit_id: submitId, step_key: stepKey })
       }
@@ -1454,6 +1447,7 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
     }
     return res.json({ id, status: 'cleaned' })
   } catch (e: any) {
+    if (String(e?.message || '') === 'task_is_cancelled') return res.status(409).json({ message: 'task is cancelled' })
     return res.status(500).json({ message: e?.message || 'error' })
   }
 })
@@ -1517,31 +1511,58 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
     if (hasPg) {
-      if (!await canPerformCleaningTaskAction(user, String(id), ['upload_access_video'])) return res.status(403).json({ message: 'forbidden' })
       const now = new Date().toISOString()
-      const media = { id: require('uuid').v4(), task_id: id, type: 'lockbox_video', url: parsed.data.media_url, captured_at: parsed.data.captured_at || now, lat: parsed.data.lat, lng: parsed.data.lng, uploader_id: String(user?.sub || '').trim() || null }
-      await pgInsert('cleaning_task_media', media as any)
       const actionActor = actorAndPerformerFromRequest(user, parsed.data)
-      const actionResult = await applyCleaningTaskActionTransition({
-        taskId: String(id),
-        actionId: 'upload_access_video',
-        actorUserId: actionActor.actorUserId,
-        performedByUserId: actionActor.performedByUserId,
-        performedByName: actionActor.performedByName,
-        metadata: { route: 'cleaning_app.tasks.inspection_complete' },
-      }, require('../dbAdapter').pgPool)
-      const up = await pgUpdate('cleaning_tasks', id, { lockbox_video_uploaded_at: now } as any)
-      await emitWorkTaskEvent({
-        taskId: `cleaning_task:${String(id)}`,
-        sourceType: 'cleaning_tasks',
-        sourceRefIds: [String(id)],
-        eventType: 'TASK_UPDATED',
-        changeScope: 'list',
-        changedFields: ['status', 'lockbox_video_uploaded_at', 'lockbox_video_url'],
-        patch: { status: actionResult?.status_after || (up as any)?.status || null, lockbox_video_uploaded_at: now },
-        causedByUserId: String(user?.sub || '').trim() || null,
-        visibilityHints: buildCleaningTaskVisibilityHints(up || { id, status: actionResult?.status_after || null, lockbox_video_uploaded_at: now }),
+      const transactionResult = await pgRunInTransaction(async (client) => {
+        const locked = await client.query(
+          `SELECT id::text AS id, status,
+                  cleaner_id::text AS cleaner_id,
+                  inspector_id::text AS inspector_id,
+                  assignee_id::text AS assignee_id,
+                  task_type,
+                  inspection_mode,
+                  inspection_scope,
+                  inspection_due_date::text AS inspection_due_date
+             FROM cleaning_tasks
+            WHERE id::text = $1::text
+            FOR UPDATE`,
+          [String(id)],
+        )
+        const task = locked?.rows?.[0] || null
+        if (!task) return { kind: 'missing' as const }
+        if (!await canPerformCleaningTaskActionForRow(user, task, ['upload_access_video'], client)) {
+          return { kind: 'forbidden' as const }
+        }
+        await client.query(
+          `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, lat, lng, uploader_id)
+           VALUES ($1,$2,'lockbox_video',$3,$4,$5,$6,$7)`,
+          [require('uuid').v4(), id, parsed.data.media_url, parsed.data.captured_at || now, parsed.data.lat ?? null, parsed.data.lng ?? null, String(user?.sub || '').trim() || null],
+        )
+        const actionResult = await applyCleaningTaskActionTransition({
+          taskId: String(id),
+          actionId: 'upload_access_video',
+          actorUserId: actionActor.actorUserId,
+          performedByUserId: actionActor.performedByUserId,
+          performedByName: actionActor.performedByName,
+          metadata: { route: 'cleaning_app.tasks.inspection_complete' },
+        }, client)
+        const up = await pgUpdate('cleaning_tasks', id, { lockbox_video_uploaded_at: now } as any, client)
+        await emitWorkTaskEvent({
+          taskId: `cleaning_task:${String(id)}`,
+          sourceType: 'cleaning_tasks',
+          sourceRefIds: [String(id)],
+          eventType: 'TASK_UPDATED',
+          changeScope: 'list',
+          changedFields: ['status', 'lockbox_video_uploaded_at', 'lockbox_video_url'],
+          patch: { status: actionResult?.status_after || (up as any)?.status || null, lockbox_video_uploaded_at: now },
+          causedByUserId: String(user?.sub || '').trim() || null,
+          visibilityHints: buildCleaningTaskVisibilityHints(up || task),
+        }, client)
+        return { kind: 'committed' as const, actionResult, up }
       })
+      if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'task not found' })
+      if (transactionResult.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
+      const { actionResult, up } = transactionResult
       try { broadcastCleaningEvent({ event: 'lockbox_video_uploaded', task_id: id }) } catch {}
       try {
         const operationId = require('uuid').v4()
@@ -1580,6 +1601,7 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
     }
     return res.json({ id, status: 'keys_hung', finalization_pending: true, missing_requirements: ['inspection_photos'] })
   } catch (e: any) {
+    if (String(e?.message || '') === 'task_is_cancelled') return res.status(409).json({ message: 'task is cancelled' })
     return res.status(500).json({ message: e?.message || 'error' })
   }
 })
@@ -1687,17 +1709,28 @@ router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspec
     if (hasPg) {
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
-      if (!await canPerformCleaningTaskAction(user, String(id), ['submit_inspection'])) return res.status(403).json({ message: 'forbidden' })
       if (submitId && stepKey) await assertIdempotentStepReceiptsReady(pgPool)
       const transactionResult = await pgRunInTransaction(async (client) => {
         const lockedTask = await client.query(
-          `SELECT id::text AS id
+          `SELECT id::text AS id,
+                  status,
+                  cleaner_id::text AS cleaner_id,
+                  inspector_id::text AS inspector_id,
+                  assignee_id::text AS assignee_id,
+                  task_type,
+                  inspection_mode,
+                  inspection_scope,
+                  inspection_due_date::text AS inspection_due_date
              FROM cleaning_tasks
             WHERE id::text = $1::text
             FOR UPDATE`,
           [String(id)],
         )
-        if (!lockedTask?.rows?.[0]) return { kind: 'missing' as const }
+        const lockedTaskRow = lockedTask?.rows?.[0] || null
+        if (!lockedTaskRow) return { kind: 'missing' as const }
+        if (!await canPerformCleaningTaskActionForRow(user, lockedTaskRow, ['submit_inspection'], client)) {
+          return { kind: 'forbidden' as const }
+        }
 
         if (submitId && stepKey) {
           const receipt = await loadIdempotentStepReceipt(client, {
@@ -1741,6 +1774,13 @@ router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspec
             ...(guestArrivalConfirmed ? { guest_arrival_skip: true } : {}),
           },
         }, client)
+        if (actionResult.audit) {
+          await reconcileDeferredInspectionCheckinReplacement({
+            taskIds: [String(id)],
+            actorUserId: actionActor.actorUserId,
+            pgClient: client,
+          })
+        }
         const responseBody = { ok: true, action_result: actionResult }
         if (submitId && stepKey) {
           await saveIdempotentStepReceipt(client, {
@@ -1753,6 +1793,7 @@ router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspec
         return { kind: 'committed' as const, responseBody }
       })
       if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'task not found' })
+      if (transactionResult.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
       if (transactionResult.kind === 'conflict') {
         return res.status(409).json({ message: 'idempotency_conflict', submit_id: submitId, step_key: stepKey })
       }
@@ -1762,6 +1803,7 @@ router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspec
     }
     return res.status(201).json({ ok: true })
   } catch (e: any) {
+    if (String(e?.message || '') === 'task_is_cancelled') return res.status(409).json({ message: 'task is cancelled' })
     return res.status(500).json({ message: e?.message || 'error' })
   }
 })
@@ -1778,7 +1820,6 @@ router.post('/tasks/:id/inspection-issue-photos', requireAnyPerm(['cleaning_app.
     if (!hasPg) return res.status(201).json({ ok: true })
     const { pgPool } = require('../dbAdapter')
     if (!pgPool) return res.status(500).json({ message: 'pg not available' })
-    if (!await canPerformCleaningTaskAction(user, String(id), ['submit_inspection', 'report_issue'])) return res.status(403).json({ message: 'forbidden' })
     await assertIdempotentStepReceiptsReady(pgPool)
 
     const submitId = String(parsed.data.submit_id || '').trim()
@@ -1786,7 +1827,14 @@ router.post('/tasks/:id/inspection-issue-photos', requireAnyPerm(['cleaning_app.
     const payloadHash = buildIdempotencyPayloadHash(parsed.data)
     const transactionResult = await pgRunInTransaction(async (client) => {
       const lockedTask = await client.query(
-        `SELECT id::text AS id, COALESCE(status, '') AS status
+        `SELECT id::text AS id, COALESCE(status, '') AS status,
+                cleaner_id::text AS cleaner_id,
+                inspector_id::text AS inspector_id,
+                assignee_id::text AS assignee_id,
+                task_type,
+                inspection_mode,
+                inspection_scope,
+                inspection_due_date::text AS inspection_due_date
            FROM cleaning_tasks
           WHERE id::text = $1::text
           FOR UPDATE`,
@@ -1794,6 +1842,9 @@ router.post('/tasks/:id/inspection-issue-photos', requireAnyPerm(['cleaning_app.
       )
       const taskRow = lockedTask?.rows?.[0] || null
       if (!taskRow) return { kind: 'missing' as const }
+      if (!await canPerformCleaningTaskActionForRow(user, taskRow, ['submit_inspection', 'report_issue'], client)) {
+        return { kind: 'forbidden' as const }
+      }
       if (!isInspectionFinishedStatus(String(taskRow.status || ''))) return { kind: 'inspection_not_submitted' as const }
 
       const receipt = await loadIdempotentStepReceipt(client, {
@@ -1836,6 +1887,7 @@ router.post('/tasks/:id/inspection-issue-photos', requireAnyPerm(['cleaning_app.
       return { kind: 'committed' as const, responseBody }
     })
     if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'task not found' })
+    if (transactionResult.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
     if (transactionResult.kind === 'inspection_not_submitted') return res.status(409).json({ message: 'inspection_not_submitted' })
     if (transactionResult.kind === 'limit') return res.status(400).json({ message: '超出数量限制', area: 'unclean', limit: Math.max(0, transactionResult.limit) })
     if (transactionResult.kind === 'conflict') return res.status(409).json({ message: 'idempotency_conflict', submit_id: submitId, step_key: stepKey })
@@ -1952,13 +2004,19 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
     if (hasPg) {
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
-      if (!await canPerformCleaningTaskAction(user, String(id), ['upload_access_video', 'complete_cleaning'])) return res.status(403).json({ message: 'forbidden' })
       if (submitId && stepKey) await assertIdempotentStepReceiptsReady(pgPool)
       const uuid = require('uuid')
       const batchId = uuid.v4()
       const transactionResult = await pgRunInTransaction(async (client) => {
         const lockedTask = await client.query(
-          `SELECT id::text AS id, COALESCE(status, '') AS status
+          `SELECT id::text AS id, COALESCE(status, '') AS status,
+                  cleaner_id::text AS cleaner_id,
+                  inspector_id::text AS inspector_id,
+                  assignee_id::text AS assignee_id,
+                  task_type,
+                  inspection_mode,
+                  inspection_scope,
+                  inspection_due_date::text AS inspection_due_date
              FROM cleaning_tasks
             WHERE id::text=$1::text
             FOR UPDATE`,
@@ -1966,6 +2024,9 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
         )
         const task = lockedTask?.rows?.[0]
         if (!task) return { kind: 'missing' as const }
+        if (!await canPerformCleaningTaskActionForRow(user, task, ['upload_access_video', 'complete_cleaning'], client)) {
+          return { kind: 'forbidden' as const }
+        }
         const statusBefore = String(task.status || '').trim()
 
         if (submitId && stepKey) {
@@ -2020,6 +2081,7 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
         return { kind: 'committed' as const, responseBody }
       })
       if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'task not found' })
+      if (transactionResult.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
       if (transactionResult.kind === 'conflict') return res.status(409).json({ message: 'idempotency_conflict', submit_id: submitId, step_key: stepKey })
       if (transactionResult.kind === 'replay') return res.status(200).json(transactionResult.responseBody)
       try { broadcastCleaningEvent({ event: 'completion_photos_saved', task_id: id }) } catch {}
@@ -2073,17 +2135,6 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
     if (hasPg) {
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
-      if (!await canPerformCleaningTaskAction(user, String(id), ['upload_access_video'])) return res.status(403).json({ message: 'forbidden' })
-      const taskResult = await pgPool.query(
-        `SELECT id::text AS id, task_type, inspection_mode
-           FROM cleaning_tasks
-          WHERE id::text = $1::text
-          LIMIT 1`,
-        [String(id)],
-      )
-      const taskRow = taskResult?.rows?.[0] || null
-      if (!taskRow) return res.status(404).json({ message: 'task not found' })
-      const selfCompleteLockbox = effectiveInspectionMode(taskRow) === 'self_complete'
       const uuid = require('uuid')
       const now = new Date().toISOString()
       const actionActor = actorAndPerformerFromRequest(user, parsed.data)
@@ -2095,7 +2146,26 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
         lng: parsed.data.lng ?? null,
       })
       const transactionResult = await pgRunInTransaction(async (client) => {
-        await client.query(`SELECT id FROM cleaning_tasks WHERE id::text=$1::text FOR UPDATE`, [String(id)])
+        const lockedResult = await client.query(
+          `SELECT id::text AS id, status,
+                  cleaner_id::text AS cleaner_id,
+                  inspector_id::text AS inspector_id,
+                  assignee_id::text AS assignee_id,
+                  task_type,
+                  inspection_mode,
+                  inspection_scope,
+                  inspection_due_date::text AS inspection_due_date
+             FROM cleaning_tasks
+            WHERE id::text=$1::text
+            FOR UPDATE`,
+          [String(id)],
+        )
+        const lockedTask = lockedResult?.rows?.[0] || null
+        if (!lockedTask) return { kind: 'missing' as const }
+        if (!await canPerformCleaningTaskActionForRow(user, lockedTask, ['upload_access_video'], client)) {
+          return { kind: 'forbidden' as const }
+        }
+        const selfCompleteLockbox = effectiveInspectionMode(lockedTask) === 'self_complete'
         if (operationId) {
           const receipt = await loadIdempotentStepReceipt(client, {
             scopeType: 'cleaning_task_lockbox_video', scopeId: String(id), submitId: operationId, stepKey: 'lockbox_video',
@@ -2135,6 +2205,8 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
         }
         return { kind: 'committed' as const, actionResult, up, responseBody }
       })
+      if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'task not found' })
+      if (transactionResult.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
       if (transactionResult?.kind === 'conflict') return res.status(409).json({ message: 'idempotency_conflict', operation_id: operationId })
       if (transactionResult?.kind === 'replay') return res.status(200).json(transactionResult.responseBody)
       const actionResult = transactionResult?.actionResult || null
@@ -2180,6 +2252,7 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
     }
     return res.status(201).json({ ok: true })
   } catch (e: any) {
+    if (String(e?.message || '') === 'task_is_cancelled') return res.status(409).json({ message: 'task is cancelled' })
     return res.status(500).json({ message: e?.message || 'error' })
   }
 })
@@ -2196,62 +2269,64 @@ async function handleDeleteLockboxVideo(req: any, res: any) {
     const userId = String(user?.sub || '').trim()
     if (!userId) return res.status(401).json({ message: 'unauthorized' })
 
-    const r = await pgPool.query(
-      `SELECT id::text AS id,
-              status,
-              COALESCE(cleaner_id, assignee_id)::text AS cleaner_id,
-              inspector_id::text AS inspector_id,
-              assignee_id::text AS assignee_id,
-              property_id::text AS property_id
-       FROM cleaning_tasks
-       WHERE id::text = $1::text
-       LIMIT 1`,
-      [taskId],
-    )
-    const row = r?.rows?.[0] || null
-    if (!row) return res.status(404).json({ message: 'not found' })
-
     const roleName = String(user?.role || user?.roles?.[0] || '').trim()
     const canViewAll = await hasPerm(roleName, 'cleaning_app.calendar.view.all')
-    const allowedUserIds = [row.cleaner_id, row.inspector_id, row.assignee_id].map((v) => String(v || '').trim()).filter(Boolean)
-    if (!canViewAll && !allowedUserIds.includes(userId)) return res.status(403).json({ message: 'forbidden' })
-
-    const needsRestockResult = await pgPool.query(
-      `SELECT 1
-       FROM cleaning_consumable_usages
-       WHERE task_id::text = $1::text
-         AND (need_restock = true OR COALESCE(status, '') = 'low')
-       LIMIT 1`,
-      [taskId],
-    )
-    const nextStatus = isInspectionFinishedStatus(row.status)
-      ? (needsRestockResult?.rowCount ? 'restock_pending' : 'cleaned')
-      : (String(row.status || '').trim() || null)
-
-    await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id::text = $1::text AND type = 'lockbox_video'`, [taskId])
-    const up = await pgPool.query(
-      `UPDATE cleaning_tasks
-       SET status = COALESCE($2::text, status),
-           lockbox_video_uploaded_at = NULL,
-           updated_at = now()
-       WHERE id::text = $1::text
-       RETURNING id::text AS id, status, cleaner_id, inspector_id, assignee_id, property_id`,
-      [taskId, nextStatus],
-    )
-    const updated = up?.rows?.[0] || { ...row, status: nextStatus }
-    const patch: any = { lockbox_video_uploaded_at: null, lockbox_video_url: null }
-    if (nextStatus) patch.status = nextStatus
-    await emitWorkTaskEvent({
-      taskId: `cleaning_task:${taskId}`,
-      sourceType: 'cleaning_tasks',
-      sourceRefIds: [taskId],
-      eventType: 'TASK_UPDATED',
-      changeScope: 'list',
-      changedFields: Object.keys(patch),
-      patch,
-      causedByUserId: userId,
-      visibilityHints: buildCleaningTaskVisibilityHints(updated),
+    const deletion = await pgRunInTransaction(async (client) => {
+      const locked = await client.query(
+        `SELECT id::text AS id, status,
+                cleaner_id::text AS cleaner_id,
+                inspector_id::text AS inspector_id,
+                assignee_id::text AS assignee_id,
+                property_id::text AS property_id
+           FROM cleaning_tasks
+          WHERE id::text = $1::text
+          FOR UPDATE`,
+        [taskId],
+      )
+      const row = locked?.rows?.[0] || null
+      if (!row) return { kind: 'missing' as const }
+      const allowedUserIds = [row.cleaner_id, row.inspector_id, row.assignee_id].map((v) => String(v || '').trim()).filter(Boolean)
+      if (!canViewAll && !allowedUserIds.includes(userId)) return { kind: 'forbidden' as const }
+      const needsRestockResult = await client.query(
+        `SELECT 1
+           FROM cleaning_consumable_usages
+          WHERE task_id::text = $1::text
+            AND (need_restock = true OR COALESCE(status, '') = 'low')
+          LIMIT 1`,
+        [taskId],
+      )
+      const nextStatus = isInspectionFinishedStatus(row.status)
+        ? (needsRestockResult?.rowCount ? 'restock_pending' : 'cleaned')
+        : (String(row.status || '').trim() || null)
+      await client.query(`DELETE FROM cleaning_task_media WHERE task_id::text = $1::text AND type = 'lockbox_video'`, [taskId])
+      const up = await client.query(
+        `UPDATE cleaning_tasks
+            SET status = COALESCE($2::text, status),
+                lockbox_video_uploaded_at = NULL,
+                updated_at = now()
+          WHERE id::text = $1::text
+          RETURNING id::text AS id, status, cleaner_id, inspector_id, assignee_id, property_id`,
+        [taskId, nextStatus],
+      )
+      const updated = up?.rows?.[0] || { ...row, status: nextStatus }
+      const patch: any = { lockbox_video_uploaded_at: null, lockbox_video_url: null }
+      if (nextStatus) patch.status = nextStatus
+      await emitWorkTaskEvent({
+        taskId: `cleaning_task:${taskId}`,
+        sourceType: 'cleaning_tasks',
+        sourceRefIds: [taskId],
+        eventType: 'TASK_UPDATED',
+        changeScope: 'list',
+        changedFields: Object.keys(patch),
+        patch,
+        causedByUserId: userId,
+        visibilityHints: buildCleaningTaskVisibilityHints(updated),
+      }, client)
+      return { kind: 'committed' as const, nextStatus }
     })
+    if (!deletion || deletion.kind === 'missing') return res.status(404).json({ message: 'not found' })
+    if (deletion.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
+    const nextStatus = deletion.nextStatus
 
     try { broadcastCleaningEvent({ event: 'lockbox_video_deleted', task_id: taskId }) } catch {}
     return res.json({ ok: true, status: nextStatus, lockbox_video_uploaded_at: null, lockbox_video_url: null })
@@ -2273,120 +2348,123 @@ router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish')
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
 
-      const rTask = await pgPool.query(
-        `SELECT id::text AS id, COALESCE(status,'') AS status, finished_at, lockbox_video_uploaded_at, LOWER(COALESCE(task_type, '')) AS task_type,
-                inspection_mode, inspection_due_date::text AS inspection_due_date, inspector_id
-         FROM cleaning_tasks
-         WHERE id::text=$1
-         LIMIT 1`,
-        [String(id)],
-      )
-      const task = rTask?.rows?.[0] || null
-      if (!task) return res.status(404).json({ message: 'task not found' })
-      if (!await canPerformCleaningTaskAction(user, String(id), ['complete_cleaning'])) return res.status(403).json({ message: 'forbidden' })
-      const st0 = String(task.status || '').trim().toLowerCase()
-      const taskType = String(task.task_type || '').trim().toLowerCase()
-      const isStayoverTask = taskType === 'stayover_clean'
-      const inspectionMode = effectiveInspectionMode(task)
-      if (st0 === 'cancelled' || st0 === 'canceled') return res.status(400).json({ message: 'task is cancelled' })
-      if (!isStayoverTask && inspectionMode !== 'self_complete') {
-        return res.status(400).json({ message: '待经理确认检查安排，当前任务不能直接自完成' })
-      }
-
-      if (!isStayoverTask) {
-        const rLock = await pgPool.query(
-          `SELECT 1 FROM cleaning_task_media WHERE task_id=$1 AND type='lockbox_video' LIMIT 1`,
-          [String(id)],
-        )
-        const hasLock = !!rLock?.rowCount || !!task.lockbox_video_uploaded_at
-        if (!hasLock) return res.status(400).json({ message: '缺少挂钥匙视频' })
-      }
-
-      const rComp = await pgPool.query(
-        `SELECT type FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'completion_%'`,
-        [String(id)],
-      )
-      const got = new Set<string>()
-      for (const row of rComp?.rows || []) {
-        const type = String(row.type || '')
-        const a = type.startsWith('completion_') ? type.slice('completion_'.length) : type
-        if (a) got.add(a)
-      }
-      const missingAreas = REQUIRED_COMPLETION_PHOTO_AREAS.filter((a) => !got.has(a) && !(a === 'remote_tv' && (got.has('remote_controls') || got.has('remote_ac'))))
-      const completionPhotoException = normalizedSelfCompletePhotoException(parsed.data.completion_photo_exception, missingAreas)
-      if (missingAreas.length && !completionPhotoException) {
-        return res.status(400).json({ message: '房间完成照片未齐', missing_areas: missingAreas })
-      }
-
-      let needsRestock = false
-      if (!isStayoverTask) {
-        const rConsum = await pgPool.query(`SELECT 1 FROM cleaning_consumable_usages WHERE task_id=$1 LIMIT 1`, [String(id)])
-        const hasConsum = !!rConsum?.rowCount
-        if (!hasConsum) return res.status(400).json({ message: '请先完成消耗品补充' })
-
-        const rNeed = await pgPool.query(
-          `SELECT 1
-           FROM cleaning_consumable_usages
-           WHERE task_id=$1 AND (need_restock = true OR COALESCE(status,'') = 'low')
-           LIMIT 1`,
-          [String(id)],
-        )
-        needsRestock = !!rNeed?.rowCount
-      }
-
       const actionActor = actorAndPerformerFromRequest(user, parsed.data)
-      const actionResult = await applyCleaningTaskActionTransition({
-        taskId: String(id),
-        actionId: 'complete_cleaning',
-        actorUserId: actionActor.actorUserId,
-        performedByUserId: actionActor.performedByUserId,
-        performedByName: actionActor.performedByName,
-        needsRestock,
-        isStayover: isStayoverTask,
-        metadata: {
-          route: 'cleaning_app.tasks.self_complete',
-          needs_restock: needsRestock,
-          is_stayover: isStayoverTask,
-          ...(completionPhotoException ? { completion_photo_exception: completionPhotoException } : {}),
-        },
-      }, pgPool)
       const now = new Date().toISOString()
-      const patch: any = {}
-      if (st0 !== 'restocked' && st0 !== 'ready') patch.status = isStayoverTask ? 'cleaned' : (needsRestock ? 'restock_pending' : 'cleaned')
-      if (!task.finished_at) patch.finished_at = now
-      if (Object.keys(patch).length) {
-        const up = await pgUpdate('cleaning_tasks', id, patch)
-        try {
-          const { recordCleaningTaskStandardLinenUsage } = require('./inventory')
-          await recordCleaningTaskStandardLinenUsage({
-            cleaningTaskId: String(id),
-            actorId: String(user?.sub || '').trim() || null,
-          })
-        } catch {}
-        try { broadcastCleaningEvent({ event: 'self_completed', task_id: id }) } catch {}
-        try {
-          const operationId = require('uuid').v4()
-          const propertyId = String((up as any)?.property_id || '').trim()
-          if (propertyId) {
-            await emitNotificationEvent(
-              {
-                type: 'CLEANING_COMPLETED',
-                policyKey: 'cleaning_completed',
-                entity: 'cleaning_task',
-                entityId: String(id),
-                propertyId,
-                updatedAt: now,
-                title: isStayoverTask ? '入住中清洁已完成' : '任务已完成',
-                body: isStayoverTask ? '清洁员已完成入住中清洁' : '清洁员已标记任务完成',
-                data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'self_completed', task_id: id },
-                actorUserId: String(user?.sub || ''),
-              },
-              { operationId },
-            )
+      const transactionResult = await pgRunInTransaction(async (client) => {
+        const lockedResult = await client.query(
+          `SELECT id::text AS id, COALESCE(status,'') AS status, finished_at, property_id,
+                  lockbox_video_uploaded_at,
+                  cleaner_id::text AS cleaner_id,
+                  inspector_id::text AS inspector_id,
+                  assignee_id::text AS assignee_id,
+                  task_type,
+                  inspection_mode,
+                  inspection_scope,
+                  inspection_due_date::text AS inspection_due_date
+             FROM cleaning_tasks
+            WHERE id::text=$1
+            LIMIT 1
+            FOR UPDATE`,
+          [String(id)],
+        )
+        const lockedTask = lockedResult?.rows?.[0] || null
+        if (!lockedTask) return { kind: 'missing' as const }
+        if (!await canPerformCleaningTaskActionForRow(user, lockedTask, ['complete_cleaning'], client)) {
+          return { kind: 'forbidden' as const }
+        }
+        const lockedStatus = String(lockedTask.status || '').trim().toLowerCase()
+        if (lockedStatus === 'cancelled' || lockedStatus === 'canceled') throw new Error('task is cancelled')
+        const lockedTaskType = String(lockedTask.task_type || '').trim().toLowerCase()
+        const lockedIsStayoverTask = lockedTaskType === 'stayover_clean'
+        if (!lockedIsStayoverTask && effectiveInspectionMode(lockedTask) !== 'self_complete') {
+          return { kind: 'invalid_mode' as const }
+        }
+        if (!lockedIsStayoverTask) {
+          const lockboxMedia = await client.query(
+            `SELECT 1 FROM cleaning_task_media WHERE task_id::text=$1::text AND type='lockbox_video' LIMIT 1`,
+            [String(id)],
+          )
+          if (!lockboxMedia?.rowCount && !lockedTask.lockbox_video_uploaded_at) {
+            return { kind: 'missing_lockbox_video' as const }
           }
-        } catch {}
-        return res.json({ ...(up || { id, ...patch }), action_result: actionResult, ...(completionPhotoException ? { completion_photo_exception: completionPhotoException } : {}) })
+        }
+
+        const completionMedia = await client.query(
+          `SELECT type FROM cleaning_task_media WHERE task_id::text=$1::text AND type LIKE 'completion_%'`,
+          [String(id)],
+        )
+        const completedAreas = new Set<string>()
+        for (const row of completionMedia?.rows || []) {
+          const type = String(row.type || '')
+          const area = type.startsWith('completion_') ? type.slice('completion_'.length) : type
+          if (area) completedAreas.add(area)
+        }
+        const missingAreas = REQUIRED_COMPLETION_PHOTO_AREAS.filter(
+          (area) => !completedAreas.has(area)
+            && !(area === 'remote_tv' && (completedAreas.has('remote_controls') || completedAreas.has('remote_ac'))),
+        )
+        const completionPhotoException = normalizedSelfCompletePhotoException(parsed.data.completion_photo_exception, missingAreas)
+        if (missingAreas.length && !completionPhotoException) {
+          return { kind: 'missing_completion_photos' as const, missingAreas }
+        }
+
+        let needsRestock = false
+        if (!lockedIsStayoverTask) {
+          const consumables = await client.query(
+            `SELECT need_restock, status FROM cleaning_consumable_usages WHERE task_id::text=$1::text`,
+            [String(id)],
+          )
+          if (!consumables?.rowCount) return { kind: 'missing_consumables' as const }
+          needsRestock = (consumables.rows || []).some(
+            (row: any) => row.need_restock === true || String(row.status || '').trim().toLowerCase() === 'low',
+          )
+        }
+        const actionResult = await applyCleaningTaskActionTransition({
+          taskId: String(id),
+          actionId: 'complete_cleaning',
+          actorUserId: actionActor.actorUserId,
+          performedByUserId: actionActor.performedByUserId,
+          performedByName: actionActor.performedByName,
+          needsRestock,
+          isStayover: lockedIsStayoverTask,
+          metadata: {
+            route: 'cleaning_app.tasks.self_complete',
+            needs_restock: needsRestock,
+            is_stayover: lockedIsStayoverTask,
+            ...(completionPhotoException ? { completion_photo_exception: completionPhotoException } : {}),
+          },
+        }, client)
+        // applyCleaningTaskActionTransition owns the status/finished_at state
+        // machine.  Re-read its committed result instead of applying a second,
+        // stale-status patch that could downgrade a terminal retry.
+        const updatedResult = await client.query(
+          `SELECT * FROM cleaning_tasks WHERE id::text=$1::text LIMIT 1`,
+          [String(id)],
+        )
+        const updated = updatedResult?.rows?.[0] || lockedTask
+        return {
+          kind: 'committed' as const,
+          actionResult,
+          updated,
+          isStayoverTask: lockedIsStayoverTask,
+          completionPhotoException,
+        }
+      })
+      if (!transactionResult) throw new Error('pg not available')
+      if (transactionResult.kind === 'missing') return res.status(404).json({ message: 'task not found' })
+      if (transactionResult.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
+      if (transactionResult.kind === 'invalid_mode') return res.status(409).json({ message: '待经理确认检查安排，当前任务不能直接自完成' })
+      if (transactionResult.kind === 'missing_lockbox_video') return res.status(400).json({ message: '缺少挂钥匙视频' })
+      if (transactionResult.kind === 'missing_completion_photos') {
+        return res.status(400).json({ message: '房间完成照片未齐', missing_areas: transactionResult.missingAreas })
       }
+      if (transactionResult.kind === 'missing_consumables') return res.status(400).json({ message: '请先完成消耗品补充' })
+      const {
+        actionResult,
+        updated,
+        isStayoverTask: committedStayoverTask,
+        completionPhotoException,
+      } = transactionResult
       try {
         const { recordCleaningTaskStandardLinenUsage } = require('./inventory')
         await recordCleaningTaskStandardLinenUsage({
@@ -2394,10 +2472,35 @@ router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish')
           actorId: String(user?.sub || '').trim() || null,
         })
       } catch {}
-      return res.json({ ok: true, id: String(id), action_result: actionResult, ...(completionPhotoException ? { completion_photo_exception: completionPhotoException } : {}) })
+      try { broadcastCleaningEvent({ event: 'self_completed', task_id: id }) } catch {}
+      try {
+        const operationId = require('uuid').v4()
+        const propertyId = String((updated as any)?.property_id || '').trim()
+        if (propertyId) {
+          await emitNotificationEvent(
+            {
+              type: 'CLEANING_COMPLETED',
+              policyKey: 'cleaning_completed',
+              entity: 'cleaning_task',
+              entityId: String(id),
+              propertyId,
+              updatedAt: now,
+              title: committedStayoverTask ? '入住中清洁已完成' : '任务已完成',
+              body: committedStayoverTask ? '清洁员已完成入住中清洁' : '清洁员已标记任务完成',
+              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'self_completed', task_id: id },
+              actorUserId: String(user?.sub || ''),
+            },
+            { operationId },
+          )
+        }
+      } catch {}
+      return res.json({ ...(updated || { id }), action_result: actionResult, ...(completionPhotoException ? { completion_photo_exception: completionPhotoException } : {}) })
     }
     return res.json({ ok: true, id: String(id) })
   } catch (e: any) {
+    if (['task_is_cancelled', 'task is cancelled'].includes(String(e?.message || ''))) {
+      return res.status(409).json({ message: 'task is cancelled' })
+    }
     return res.status(500).json({ message: e?.message || 'error' })
   }
 })

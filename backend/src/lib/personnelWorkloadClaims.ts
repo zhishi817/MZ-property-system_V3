@@ -31,6 +31,7 @@ export type PersonnelClaimOption = {
 
 export type PersonnelClaimInput = {
   client_request_id?: string | null
+  expected_updated_at?: string | null
   service_date: string
   claim_type: PersonnelClaimType
   property_id?: string | null
@@ -313,7 +314,10 @@ export function validatePersonnelClaimClientRequestId(value: unknown) {
 }
 
 export function getPersonnelClaimAvailableActions(status: string) {
-  return ['draft', 'returned'].includes(cleanText(status)) ? ['edit', 'submit'] : []
+  const normalized = cleanText(status)
+  if (['draft', 'returned'].includes(normalized)) return ['edit', 'submit']
+  if (normalized === 'submitted') return ['edit']
+  return []
 }
 
 export function personnelClaimRequiresEvidence(claimType: unknown) {
@@ -636,6 +640,7 @@ export function validatePersonnelClaimInput(input: PersonnelClaimInput, now = ne
 
   return {
     client_request_id: validatePersonnelClaimClientRequestId(input.client_request_id),
+    expected_updated_at: optionalTimestamp(input.expected_updated_at, 'claim_expected_updated_at'),
     service_date: serviceDate,
     claim_type: claimType,
     property_id: nullableText(input.property_id, 120),
@@ -663,9 +668,15 @@ export function validatePersonnelClaimReviewInput(input: PersonnelClaimReviewInp
   }
 }
 
-function serializeClaim(row: any) {
+export function serializePersonnelClaim(row: any) {
   return {
     ...row,
+    started_at: duplicateTimestamp(row.started_at),
+    ended_at: duplicateTimestamp(row.ended_at),
+    submitted_at: duplicateTimestamp(row.submitted_at),
+    reviewed_at: duplicateTimestamp(row.reviewed_at),
+    created_at: duplicateTimestamp(row.created_at),
+    updated_at: duplicateTimestamp(row.updated_at),
     duration_minutes: row.duration_minutes == null ? null : Number(row.duration_minutes),
     approved_duration_minutes: row.approved_duration_minutes == null ? null : Number(row.approved_duration_minutes),
     requested_quantity: row.requested_quantity == null ? null : String(row.requested_quantity),
@@ -720,7 +731,7 @@ export async function listPersonnelClaims(input: {
      LIMIT 500`,
     params,
   )
-  return (result.rows || []).map(serializeClaim)
+  return (result.rows || []).map(serializePersonnelClaim)
 }
 
 export async function listPersonnelClaimsWithEvidence(input: {
@@ -780,7 +791,7 @@ export async function getPersonnelClaim(input: {
       ORDER BY created_at, id`,
     [input.claimId],
   )
-  return { ...serializeClaim(row), evidence: evidence.rows || [] }
+  return { ...serializePersonnelClaim(row), evidence: evidence.rows || [] }
 }
 
 export async function createPersonnelClaim(input: {
@@ -829,6 +840,149 @@ export async function createPersonnelClaim(input: {
   return getPersonnelClaim({ claimId, requestingUserId: input.userId })
 }
 
+function personnelClaimEditableFieldsMatch(current: any, claim: ReturnType<typeof validatePersonnelClaimInput>) {
+  return duplicateDateOnly(current.service_date) === claim.service_date
+    && cleanText(current.claim_type) === claim.claim_type
+    && nullableCleanText(current.property_id) === claim.property_id
+    && nullableCleanText(current.cleaning_task_id) === claim.cleaning_task_id
+    && duplicateTimestamp(current.started_at) === claim.started_at
+    && duplicateTimestamp(current.ended_at) === claim.ended_at
+    && duplicateNumber(current.duration_minutes) === duplicateNumber(claim.duration_minutes)
+    && duplicateNumber(current.requested_quantity) === duplicateNumber(claim.requested_quantity)
+    && duplicateNumber(current.requested_amount_cents) === duplicateNumber(claim.requested_amount_cents)
+    && cleanText(current.note) === claim.note
+}
+
+export function planPersonnelSubmittedClaimEditRevision(input: {
+  expectedUpdatedAt: string | null | undefined
+  currentUpdatedAt: string | null | undefined
+  editableFieldsMatch: boolean
+}) {
+  const expected = duplicateTimestamp(input.expectedUpdatedAt)
+  if (!expected) throw new Error('claim_edit_revision_required')
+  if (input.editableFieldsMatch) return 'noop' as const
+  if (duplicateTimestamp(input.currentUpdatedAt) !== expected) throw new Error('claim_edit_conflict')
+  return 'apply' as const
+}
+
+export function assertPersonnelClaimSettlementStatusesEditable(statuses: readonly string[]) {
+  if (statuses.some((status) => ['finance_approved', 'paid'].includes(cleanText(status)))) {
+    throw new Error('claim_period_locked')
+  }
+}
+
+export function personnelClaimSettlementStatusShouldInvalidate(status: unknown) {
+  return ['draft', 'awaiting_confirmation', 'confirmed', 'disputed'].includes(cleanText(status))
+}
+
+async function refreshPersonnelSettlementBatchAfterClaimEdit(
+  client: Queryable,
+  batchId: string,
+  actorUserId: string,
+) {
+  const statusRows = await client.query(
+    `SELECT status, COUNT(*)::int AS count
+       FROM personnel_weekly_settlements
+      WHERE batch_id=$1 AND status <> 'void'
+      GROUP BY status`,
+    [batchId],
+  )
+  const counts = new Map<string, number>((statusRows.rows || []).map((row: any) => [String(row.status), Number(row.count || 0)]))
+  const total = Array.from(counts.values()).reduce((sum, count) => sum + count, 0)
+  let status = 'draft'
+  if (counts.get('draft')) status = 'draft'
+  else if (counts.get('awaiting_confirmation')) status = 'open_confirmation'
+  else if (counts.get('confirmed') || counts.get('disputed') || counts.get('finance_approved')) status = 'under_finance_review'
+  else if (total > 0 && (counts.get('paid') || 0) === total) status = 'finalized'
+  await client.query(
+    `UPDATE personnel_settlement_batches
+        SET status=$1,
+            finalized_by=CASE WHEN $1='finalized' THEN COALESCE(finalized_by,$2) ELSE NULL END,
+            finalized_at=CASE WHEN $1='finalized' THEN COALESCE(finalized_at,now()) ELSE NULL END
+      WHERE id=$3`,
+    [status, actorUserId, batchId],
+  )
+}
+
+async function invalidatePersonnelSettlementsForSubmittedClaimEdit(input: {
+  client: Queryable
+  userId: string
+  claimId: string
+  originalWeekStart: string
+  targetWeekStart: string
+}) {
+  const weekStarts = Array.from(new Set([input.originalWeekStart, input.targetWeekStart]))
+  const settlements = await input.client.query(
+    `SELECT settlement.*, batch.week_start::text, batch.week_end::text
+       FROM personnel_weekly_settlements settlement
+       JOIN personnel_settlement_batches batch ON batch.id=settlement.batch_id
+      WHERE settlement.user_id=$1
+        AND batch.week_start=ANY($2::date[])
+        AND settlement.status <> 'void'
+      ORDER BY batch.week_start, settlement.id
+      FOR UPDATE OF settlement`,
+    [input.userId, weekStarts],
+  )
+  assertPersonnelClaimSettlementStatusesEditable((settlements.rows || []).map((current: any) => current.status))
+  const editedAt = new Date().toISOString()
+  for (const current of settlements.rows || []) {
+    const status = cleanText(current.status)
+    if (!personnelClaimSettlementStatusShouldInvalidate(status)) continue
+    const ruleSnapshot = parseJsonObject(current.rule_snapshot)
+    ruleSnapshot.claim_edit_invalidation = {
+      claim_id: input.claimId,
+      edited_at: editedAt,
+      original_week_start: input.originalWeekStart,
+      target_week_start: input.targetWeekStart,
+    }
+    const updated = await input.client.query(
+      `UPDATE personnel_weekly_settlements
+          SET status='void', rule_snapshot=$1::jsonb,
+              workload_amount_confirmed_at=NULL, workload_amount_confirmation_note=NULL,
+              disputed_at=NULL, dispute_note='工作量反馈已修改，请重新核对并提交',
+              finance_reviewed_by=NULL, finance_reviewed_at=NULL, updated_at=$2::timestamptz
+        WHERE id=$3
+        RETURNING *`,
+      [JSON.stringify(ruleSnapshot), editedAt, current.id],
+    )
+    await insertAudit(
+      input.client,
+      'personnel_weekly_settlement',
+      String(current.id),
+      'invalidate_for_submitted_claim_edit',
+      input.userId,
+      { id: String(current.id), status, week_start: current.week_start, week_end: current.week_end },
+      {
+        id: String(current.id),
+        status: String(updated.rows?.[0]?.status || 'void'),
+        week_start: current.week_start,
+        week_end: current.week_end,
+        claim_id: input.claimId,
+        target_week_start: input.targetWeekStart,
+      },
+    )
+    await refreshPersonnelSettlementBatchAfterClaimEdit(input.client, String(current.batch_id), input.userId)
+  }
+}
+
+export function personnelSettlementWeekLockOrder(weekStarts: readonly string[]) {
+  return Array.from(new Set(weekStarts.map((value) => getSettlementWeekStart(value)))).sort()
+}
+
+export async function lockPersonnelSettlementWeeks(
+  client: Queryable,
+  weekStarts: readonly string[],
+) {
+  const orderedWeekStarts = personnelSettlementWeekLockOrder(weekStarts)
+  for (const weekStart of orderedWeekStarts) {
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtext('personnel-settlement-week'), hashtext($1))",
+      [weekStart],
+    )
+  }
+  return orderedWeekStarts
+}
+
 export async function updatePersonnelClaim(input: {
   userId: string
   claimId: string
@@ -838,6 +992,21 @@ export async function updatePersonnelClaim(input: {
   if (!pgPool) throw new Error('pg_required')
   const claim = validatePersonnelClaimInput(input.claim)
   await pgRunInTransaction(async (client) => {
+    const lookupResult = await client.query(
+      `SELECT service_date::text, status
+         FROM personnel_workload_claims
+        WHERE id=$1 AND submitter_user_id=$2`,
+      [input.claimId, input.userId],
+    )
+    const lookup = lookupResult.rows?.[0]
+    if (!lookup) throw new Error('claim_not_found')
+    const lookupOriginalWeekStart = getSettlementWeekStart(String(lookup.service_date).slice(0, 10))
+    const targetWeekStart = getSettlementWeekStart(claim.service_date)
+    // Every edit takes the shared weekly locks before any claim/settlement row lock.
+    // Reconciliation paths use the same entry lock, so their later row-lock order
+    // cannot form a claim-row <-> settlement-row deadlock with this transaction.
+    await lockPersonnelSettlementWeeks(client, [lookupOriginalWeekStart, targetWeekStart])
+
     const currentResult = await client.query(
       `SELECT * FROM personnel_workload_claims
         WHERE id=$1 AND submitter_user_id=$2
@@ -846,19 +1015,49 @@ export async function updatePersonnelClaim(input: {
     )
     const current = currentResult.rows?.[0]
     if (!current) throw new Error('claim_not_found')
-    if (!['draft', 'returned'].includes(String(current.status))) throw new Error('claim_not_editable')
+    const currentStatus = String(current.status)
+    if (!['draft', 'returned', 'submitted'].includes(currentStatus)) throw new Error('claim_not_editable')
+    if (currentStatus === 'submitted') {
+      const editPlan = planPersonnelSubmittedClaimEditRevision({
+        expectedUpdatedAt: claim.expected_updated_at,
+        currentUpdatedAt: current.updated_at,
+        editableFieldsMatch: personnelClaimEditableFieldsMatch(current, claim),
+      })
+      // A repeated request whose desired fields are already stored is a safe no-op,
+      // including when the caller still has the pre-update revision after losing a response.
+      if (editPlan === 'noop') return
+    }
+    const originalWeekStart = getSettlementWeekStart(String(current.service_date).slice(0, 10))
     await assertPersonnelSelfServiceClaimAllowed({
       userId: input.userId,
       serviceDate: claim.service_date,
       claimType: claim.claim_type,
       allowHistoricalCustomAmount: current.claim_type === 'custom_amount' && claim.claim_type === 'custom_amount',
     }, client)
+    if (currentStatus === 'submitted' && personnelClaimRequiresEvidence(claim.claim_type)) {
+      const evidence = await client.query(
+        'SELECT COUNT(*)::int AS count FROM personnel_workload_claim_evidence WHERE claim_id=$1',
+        [input.claimId],
+      )
+      if (Number(evidence.rows?.[0]?.count || 0) < 1) throw new Error('claim_evidence_required')
+    }
+    if (currentStatus === 'submitted') {
+      await invalidatePersonnelSettlementsForSubmittedClaimEdit({
+        client,
+        userId: input.userId,
+        claimId: input.claimId,
+        originalWeekStart,
+        targetWeekStart,
+      })
+    }
     const updated = await client.query(
       `UPDATE personnel_workload_claims
           SET service_date=$1::date, claim_type=$2, property_id=$3, cleaning_task_id=$4,
               started_at=$5::timestamptz, ended_at=$6::timestamptz, duration_minutes=$7,
               requested_quantity=$8::numeric, requested_amount_cents=$9, note=$10,
-              status='draft', submitted_at=NULL, reviewed_by=NULL, reviewed_at=NULL,
+              status=CASE WHEN status='submitted' THEN 'submitted' ELSE 'draft' END,
+              submitted_at=CASE WHEN status='submitted' THEN submitted_at ELSE NULL END,
+              reviewed_by=NULL, reviewed_at=NULL,
               review_note=NULL, approved_duration_minutes=NULL, approved_quantity=NULL,
               approved_amount_cents=NULL, updated_at=now()
         WHERE id=$11
@@ -873,10 +1072,14 @@ export async function updatePersonnelClaim(input: {
       client,
       'personnel_workload_claim',
       input.claimId,
-      'update_draft',
+      currentStatus === 'submitted' ? 'edit_submitted' : 'update_draft',
       input.userId,
       claimSummary(current),
-      claimSummary(updated.rows[0]),
+      {
+        ...claimSummary(updated.rows[0]),
+        original_week_start: originalWeekStart,
+        target_week_start: targetWeekStart,
+      },
     )
   })
   return getPersonnelClaim({ claimId: input.claimId, requestingUserId: input.userId })
