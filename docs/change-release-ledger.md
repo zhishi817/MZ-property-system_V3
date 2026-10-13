@@ -118,6 +118,26 @@
 - Independent review: `GO for the narrow CI metadata repair and full v2 content commit`; evidence: the failed Root job identified one malformed multi-path registry cell, the repair follows the repository's existing one-path-per-row contract, every referenced Mobile test file exists, and no business logic, migration or production boundary changed.
 - Action conclusion: `GO` for the complete v2 content commit only. Push requires an exact commit-bound report and receipt; merge, deployment and migrations remain `BLOCKED`.
 
+#### RA-20261014-004
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261013-001`, `CRL-20261013-003`, `CRL-20261013-005`
+- Selected CRL identities: `root/CRL-20261013-001`, `root/CRL-20261013-003`, `root/CRL-20261013-005`
+- Intended action: `push` exact superseding v2 feature branch and open a replacement Draft PR to `Dev`; no merge, deployment or migration
+- Branch: `codex/mz032-034-release-20261014-v2`
+- Base: `origin/Dev@9570a7c3066d5f3b08026fa3a391d23d19b97505`; fetched at `2026-10-14 02:42 Australia/Melbourne`
+- Candidate patch SHA-256: `64349c3bccd7cb77e53c40e499cbabdaff1888cb67f9c94990fffa45029cfaf2` excluding `docs/change-release-ledger.md`
+- Commit SHA: `c58fea2ffdf67189a69c6d7360d476fd78d3ee45`
+- Dependencies: `mobile/CRL-20261013-002@501d455f99fea5e3cf668a541a73a45ba82e0c3a`; `mobile/CRL-20261013-004@501d455f99fea5e3cf668a541a73a45ba82e0c3a`; `mobile/CRL-20261013-006@501d455f99fea5e3cf668a541a73a45ba82e0c3a`
+- Cross-repository dependency verification: `PASS`; evidence: paired Mobile exact report audited `7ba1d4329b07024ed653d6bcc60e0d172098bee8...2ce35e6e59e7faac92ca08758078274883e00e57`, contains content commit `501d455f99fea5e3cf668a541a73a45ba82e0c3a`, and retained candidate fingerprint `b2340d322079bc0edf66d866b3f432bacbc79b62841dd36d2387c6d69925767d`; its only non-local result is the symmetric designed cross-repository evidence gap.
+- Required validation: `PASS`; evidence: complete Root v2 pre-commit gate passed 29 paths / 238 non-ledger hunks; paired feature-registry audit passed 32 FRs / 257 mappings; all prior integrated business-code tests remain byte-identical and passed.
+- Shared-hunk review: `PASS`; evidence: business-code hunks remain byte-identical to the final reviewed Root candidate, and the superseding content commit changes only FR-035 mapping syntax beyond that candidate.
+- Generated-file review: `PASS`; evidence: exact commit contains no generated, cache, dependency-link, environment or secret file.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: delegated scope explicitly authorizes safe same-scope CI fixes and retry, including normal feature push and Draft PR, while forbidding merge, deployment, migrations and OTA.
+- Independent review: `GO for normal non-force v2 feature push`; evidence: exact content commit is based on unchanged `origin/Dev`, preserves all reviewed business hunks, fixes only the proven registry row-format defect, and passed the complete local pre-commit and paired registry gates.
+- Action conclusion: `GO` for one normal non-force push of this exact v2 branch and a replacement Draft PR only. Production merge/deploy/migrations remain `BLOCKED` by the three historical cross-inspector conflicts.
+
 ### Risks / Release Notes
 
 - Risk: 真实账号/生产数据未验证；角色与来源矩阵只以代码合同和本地夹具验证。回滚为撤销本 CRL 列出的源文件和 FR/ledger 变更。
