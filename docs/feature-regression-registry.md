@@ -96,20 +96,28 @@
 ## FR-035：日常任务执行列表权威可见性
 
 - **维护责任范围：** backend / web / paired mobile
-- **最后审查日期：** 2026-10-10
+- **最后审查日期：** 2026-10-13
 - **状态：** active
 
 ### 业务保护规则
 
-- 日常执行列表必须排除审核中、已关闭和未分配任务；来源审核事实优先于规范化的通用状态。
-- 维修、深清、日用品等类型别名必须采用同一 fail-closed 规则；普通已完成线下任务和合法周转任务继续可见。
+- 日常执行列表必须排除审核中和已关闭任务；来源审核事实优先于规范化的通用状态。
+- 普通线下任务按 `task_kind=offline` 与权威 `source_type` 分类，不按标题猜测。admin、offline_manager、customer_service 的 `all` 视图必须按所选日期显示普通线下任务的未指派、已指派、未完成和已完成状态；过去、当天和未来日期采用同一规则。
+- 合作执行角色只能取得分配给本人或本人作为手工参与者的任务，客户端不得通过 `view=all` 或通用日历权限扩大范围。
+- 维修、深清、日用品等房源跟进类型必须采用另一套 assignment-first/fail-closed 规则：未指派不进入 Mobile，指派后管理角色可见，合作方仍只看本人任务。Web 的可维护房源候选池不得混入普通线下任务。
+- 普通已完成线下任务和合法周转任务继续可见；列表与按日计数必须消费同一个可见性投影。
 - 审核和历史记录不删除，只从执行列表移除；客户端不得自行放宽服务端投影。
 
 ### 测试映射
 
 | 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
 |---|---|---|---|---|
-| Root 权威状态/类型/分派矩阵 | `backend/scripts/tests/test_daily_task_execution_visibility.ts` | 审核中、关闭、未分配、别名、合法完成和显式投影覆盖 | sufficient | `npm run test:daily-task-execution-visibility --prefix backend` |
+| Root 权威状态/类型/分派/角色/日期矩阵 | `backend/scripts/tests/test_daily_task_execution_visibility.ts` | 三个管理角色、合作方 self 范围、普通线下与房源跟进分类、过去/当天/未来的未指派/已指派/未完成/已完成、严格 `view=all` 角色门禁 | sufficient | `npm run test:daily-task-execution-visibility --prefix backend` |
+| Root 列表与按日计数一致 | `backend/scripts/tests/test_daily_task_execution_stats.ts` | 管理视图的普通未指派线下任务同时进入列表与 offline 计数；房源跟进不混入线下计数 | sufficient | `npm run test:daily-task-execution-stats --prefix backend` |
+| Mobile 权威投影与日期刷新 | `mz-cleaning-app-frontend/src/lib/dailyTaskExecutionVisibility.test.ts` | 三个管理角色严格门禁、管理 all 视图显示普通未指派线下任务、合作方 fail-closed 与日期/状态矩阵 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/dailyTaskExecutionVisibility.test.ts` |
+| Mobile 列表与计数投影一致 | `mz-cleaning-app-frontend/src/lib/dailyTaskPresentation.test.ts` | 管理 all 列表与按日计数共享同一可见性边界 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/dailyTaskPresentation.test.ts` |
+| Mobile 管理角色边界 | `mz-cleaning-app-frontend/src/lib/roles.test.ts` | 完整任务视图仅限三个明确管理角色 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/roles.test.ts` |
+| Mobile 增量同步与日期刷新 | `mz-cleaning-app-frontend/src/lib/workTasksStore.test.ts` | 重复刷新不累加、日期桶切换不串数据，SSE/本地 patch 保持相同投影 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/workTasksStore.test.ts` |
 | Web cleaning 真实映射与过滤 | `backend/scripts/tests/test_task_center_daily_projection.ts` | 无执行人周转保留并按房源/日期计一次，非周转未分配任务从 board 移除 | sufficient | `npm run test:task-center-daily-projection --prefix backend` |
 | Web 防御性显示 | `frontend/src/app/task-center/taskCenterDisplay.test.ts` | 房源跟进审核/关闭隐藏且合法执行项保留 | sufficient | `npm run test --prefix frontend -- --coverage.enabled=false src/app/task-center/taskCenterDisplay.test.ts` |
 
@@ -119,13 +127,14 @@
 
 ### 最后验证
 
-- **CRL：** root/CRL-20261010-001
+- **CRL：** root/CRL-20261013-005 / mobile/CRL-20261013-006
 - **Commit：** not committed
-- **日期：** 2026-10-10
+- **日期：** 2026-10-13
 
 ### 相关 CRL
 
 - root/CRL-20261010-001：整合 MZ-021 的权威执行可见性。
+- root/CRL-20261013-005 / mobile/CRL-20261013-006：MZ-033 按角色与所选日期恢复普通线下任务全状态，同时保留房源跟进 assignment-first 边界。
 
 ### 非保护范围
 
