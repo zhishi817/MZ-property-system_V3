@@ -40,6 +40,7 @@ import { assertMaintenanceRuntimeSchemaReady, MaintenanceRuntimeSchemaNotReady }
 import { normalizeMaintenanceWorkflowStatus } from '../lib/maintenanceWorkflow'
 import { insertMaintenanceWorkflowEvent, upsertMaintenanceWorkTask } from '../lib/maintenanceWorkflowStore'
 import { requireR5TaskRuntimeSchema } from '../lib/r5RequestSchema'
+import { inspectionAssignmentConflictPayload } from '../lib/inspectionAssignmentConflict'
 import {
   projectDailyTaskExecution,
   projectTaskCenterManageableWorkTasks,
@@ -511,6 +512,7 @@ function buildCleaningSaveDiff(before: any, assignment: any): TaskSaveDiff | nul
       reasons,
       before: {
         scheduled_service_date: dayText(before.task_date ?? before.date),
+        property_id: nullableText(before.property_id),
         cleaner_id: oldCleaner,
         assignee_id: oldAssignee,
         inspector_id: oldInspector,
@@ -521,6 +523,7 @@ function buildCleaningSaveDiff(before: any, assignment: any): TaskSaveDiff | nul
       },
       after: {
         scheduled_service_date: dayText(before.task_date ?? before.date),
+        property_id: nullableText(before.property_id),
         cleaner_id: nextCleaner,
         assignee_id: nextAssignee,
         inspector_id: nextInspector,
@@ -2991,6 +2994,10 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
                    status_action text,
                    status text
                  )
+               ), inspection_management_boundaries AS MATERIALIZED (
+                 SELECT
+                   set_config('mz.inspection_management_closed_task_ids', $2, true) AS closed_setting,
+                   set_config('mz.inspection_management_reopened_task_ids', $3, true) AS reopened_setting
                ), resolved AS (
                  SELECT
                    task.id AS existing_task_id,
@@ -3038,6 +3045,9 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
                    ) AS is_checkin_site_execution
                  FROM cleaning_tasks AS task
                  JOIN input ON task.id::text = input.task_id
+                 CROSS JOIN inspection_management_boundaries AS boundaries
+                 WHERE boundaries.closed_setting IS NOT NULL
+                   AND boundaries.reopened_setting IS NOT NULL
                ), computed AS (
                  SELECT
                    resolved.*,
@@ -3105,7 +3115,15 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
                    OR task.status IS DISTINCT FROM computed.next_status
                  )
                RETURNING task.*`,
-            [JSON.stringify(payload.cleaning_assignments)],
+            [
+              JSON.stringify(payload.cleaning_assignments),
+              JSON.stringify(payload.cleaning_assignments
+                .filter((assignment) => assignmentStatusAction((assignment as any).status_action) === 'set_completed')
+                .map((assignment) => String(assignment.task_id))),
+              JSON.stringify(payload.cleaning_assignments
+                .filter((assignment) => assignmentStatusAction((assignment as any).status_action) === 'clear_completed')
+                .map((assignment) => String(assignment.task_id))),
+            ],
           )
           changedCleaningTasks = result.rows || []
         }
@@ -3683,6 +3701,8 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
     return res.json({ ok: true, rows: rowMap.size, items: payload.items.length })
   } catch (e: any) {
     if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
+    const inspectionConflict = inspectionAssignmentConflictPayload(e)
+    if (inspectionConflict) return res.status(409).json(inspectionConflict)
     if (e?.message === 'inspection_due_date_required') {
       return res.status(400).json({ message: '延期检查必须选择检查日期', code: 'inspection_due_date_required' })
     }

@@ -553,6 +553,22 @@ function main() {
   })
   assert.equal(actionById(cleanerRecoveryPayload, 'fill_supplies')?.enabled, true)
 
+  const cleanerRecoveryAfterLockboxPayload = buildWorkTaskActionPayload({
+    ...cleaningTask,
+    id: 'w-cleaner-recovery-after-early-lockbox',
+    status: 'keys_hung',
+    cleaning_submission_ready: false,
+  }, {
+    userId: 'cleaner-1',
+    roleNames: ['cleaner'],
+    permissions: allExecPerms,
+    canViewAll: false,
+  })
+  assert.equal(actionById(cleanerRecoveryAfterLockboxPayload, 'fill_supplies')?.enabled, true)
+  assert.equal(actionById(cleanerRecoveryAfterLockboxPayload, 'fill_supplies')?.disabled_reason, undefined)
+  assert(mzappSource.includes("roleKind === 'cleaner' && !cleaningSubmissionReady"), 'cleaner projection must ignore inspection completion while cleaning is unsubmitted')
+  assert(mzappSource.includes('cleaning_submission_ready: cleaningSubmissionReady'), 'role-specific task projection must expose cleaning submission authority')
+
   const inspectedPayload = buildWorkTaskActionPayload({
     id: 'w-inspected-waiting-video',
     source_type: 'cleaning_tasks',
