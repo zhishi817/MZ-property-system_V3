@@ -40,6 +40,8 @@
     "test:maintenance-workflow-actions": "ts-node-dev --transpile-only scripts/tests/test_maintenance_workflow_actions.ts",
     "test:maintenance-auto-expense": "ts-node-dev --transpile-only scripts/tests/test_maintenance_auto_expense.ts",
     "test:personnel-settlement-phase1": "ts-node-dev --transpile-only scripts/tests/test_personnel_settlement_phase1.ts",
+    "test:personnel-settlement-mz034": "ts-node-dev --transpile-only scripts/tests/test_personnel_settlement_mz034.ts",
+    "test:personnel-settlement-mz034:sql": "node -r ts-node/register/transpile-only scripts/tests/test_personnel_settlement_mz034_sql_integration.ts",
     "test:personnel-settlement-phase2": "ts-node-dev --transpile-only scripts/tests/test_personnel_settlement_phase2.ts",
     "test:personnel-settlement-phase3": "ts-node-dev --transpile-only scripts/tests/test_personnel_settlement_phase3.ts",
     "test:personnel-settlement-claim-dedup": "ts-node-dev --transpile-only scripts/tests/test_personnel_settlement_claim_dedup.ts",

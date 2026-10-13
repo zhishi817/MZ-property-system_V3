@@ -67,6 +67,16 @@ function main() {
     daily_stats_group: 'offline',
     daily_stats_key: 'offline:2026-10-04:manual_work_task:offline-unassigned',
   }, 'Web assignment statistics include a scheduled active offline task before assignment')
+  assert.deepEqual(projectDailyTaskStats({
+    ...offlineBase,
+    id: 'offline-unassigned',
+    source_id: 'offline-unassigned',
+    assignee_id: null,
+    status: 'todo',
+  }, { includeManagerUnassignedOffline: true }), {
+    daily_stats_group: 'offline',
+    daily_stats_key: 'offline:2026-10-04:manual_work_task:offline-unassigned',
+  }, 'Mobile manager statistics count the same unassigned ordinary offline task shown in the list')
   const deferredInspections = Array.from({ length: 6 }, (_, index) => ({
     id: `inspection-${index + 1}`,
     source_id: `inspection-${index + 1}`,

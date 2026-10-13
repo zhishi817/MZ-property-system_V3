@@ -6454,7 +6454,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const userId = String(user.sub || '')
 
-  const allowAll = view === 'all' && await canViewAllWorkTasks(user)
+  // The mobile all-task execution view is role-authoritative. A standalone
+  // permission must not broaden partner visibility beyond their own tasks.
+  const allowAll = view === 'all' && canViewAll(user)
   const canViewLockboxVideo = canViewMzappLockboxVideo(user)
   const actionContext = {
     userId,
@@ -7376,6 +7378,8 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             }
           }
           const raw = String(p.a.raw_status ?? '').trim().toLowerCase()
+          const cleaningSubmissionReady = p.ids.length > 0
+            && p.ids.every((sourceId) => cleaningSubmissionReadyByTaskId.get(String(sourceId)) === true)
           const relatedCheckoutRaw = String(relatedCheckoutsForCheckin[0]?.status ?? '').trim().toLowerCase()
           const relatedCheckoutProgress = relatedCheckoutRaw === 'in_progress' || relatedCheckoutRaw === 'cleaning'
             ? 'in_progress'
@@ -7383,7 +7387,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               ? 'to_inspect'
               : ''
           const isDoneLike = raw === 'cleaned' || raw === 'restock_pending' || raw === 'restocked' || raw === 'ready' || raw === 'inspected'
-          const isSelfCompleteFinalized = requireSelfComplete && isDoneLike && completionPhotosSatisfied
+          const isSelfCompleteFinalized = requireSelfComplete && cleaningSubmissionReady && isDoneLike && completionPhotosSatisfied
           const nightsFor = (x: any) => {
             const n0 =
               x?.nights_override != null
@@ -7433,6 +7437,12 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               : (
                   isSelfCompleteFinalized
                     ? 'done'
+                    : roleKind === 'cleaner' && !cleaningSubmissionReady
+                    ? (!String(assigneeId || '').trim()
+                        ? 'todo'
+                        : (raw === 'in_progress' || raw === 'cleaning' || keyPhotoUrl)
+                          ? 'in_progress'
+                          : 'assigned')
                     : raw === 'keys_hung'
                     ? 'keys_hung'
                     : lockboxVideoUrl
@@ -7556,6 +7566,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             lockbox_video_url: canViewLockboxVideo ? lockboxVideoUrl : null,
             restock_items: restockItems,
             completion_photos_ok: completionPhotosOk,
+            cleaning_submission_ready: cleaningSubmissionReady,
             ...(completionPhotoException ? { completion_photo_exception: completionPhotoException } : {}),
             stayed_nights: stayedAndRemaining.stayed,
             remaining_nights: stayedAndRemaining.remaining,
@@ -7897,9 +7908,13 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
     }
     markWorkTasksStep('cleaning_pool')
 
-    const visibleOut = projectVisibleDailyTasks(out).map((task) => ({
+    const visibleOut = projectVisibleDailyTasks(out, {
+      includeManagerUnassignedOffline: managerCanSeeAllTaskPool,
+    }).map((task) => ({
       ...task,
-      ...projectDailyTaskStats(task),
+      ...projectDailyTaskStats(task, {
+        includeManagerUnassignedOffline: managerCanSeeAllTaskPool,
+      }),
     }))
 
     visibleOut.sort((a, b) => {

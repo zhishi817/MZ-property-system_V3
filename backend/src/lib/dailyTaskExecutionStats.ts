@@ -57,9 +57,14 @@ function isInspectionTask(task: DailyTaskStatsCandidate) {
  */
 export function projectDailyTaskStats(
   task: DailyTaskStatsCandidate,
-  options: { includeTaskCenterManagementOnlyOffline?: boolean } = {},
+  options: {
+    includeTaskCenterManagementOnlyOffline?: boolean
+    includeManagerUnassignedOffline?: boolean
+  } = {},
 ): DailyTaskStatsProjection {
-  const executionVisible = dailyTaskExecutionVisibility(task).visible
+  const executionVisible = dailyTaskExecutionVisibility(task, {
+    includeManagerUnassignedOffline: options.includeManagerUnassignedOffline,
+  }).visible
   const managementOnlyOffline = options.includeTaskCenterManagementOnlyOffline === true
     && isTaskCenterManagementOnlyOfflineTask(task)
   if (!executionVisible && !managementOnlyOffline) {

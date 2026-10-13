@@ -15,6 +15,7 @@ import { shouldIgnoreNightsOverrideForAutoCheckinTask } from '../lib/cleaningTas
 import { isTaskExecutorEligibleRoleNames } from '../services/taskExecutorEligibility'
 import { emitDeferredInspectionCheckinConflictAlerts, isDeferredInspectionCheckinConflictRelevantChange, reconcileDeferredInspectionCheckinReplacement } from '../services/deferredInspectionCheckinConflict'
 import { requireR5TaskRuntimeSchema } from '../lib/r5RequestSchema'
+import { inspectionAssignmentConflictPayload } from '../lib/inspectionAssignmentConflict'
 
 export const router = Router()
 
@@ -1500,6 +1501,8 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRun
     } catch {}
     return res.json(task)
   } catch (e: any) {
+    const conflict = inspectionAssignmentConflictPayload(e)
+    if (conflict) return res.status(409).json(conflict)
     return res.status(500).json({ message: e?.message || 'update_failed' })
   }
 })
@@ -1708,6 +1711,8 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
     if (createdRows.length === 1) return res.json(createdRows[0])
     return res.json({ ok: true, created: createdRows.length })
   } catch (e: any) {
+    const conflict = inspectionAssignmentConflictPayload(e)
+    if (conflict) return res.status(409).json(conflict)
     return res.status(500).json({ message: e?.message || 'create_failed' })
   }
 })
@@ -2061,6 +2066,8 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), requireR5T
     }
     return res.json({ ok: true, updated: updated.length })
   } catch (e: any) {
+    const conflict = inspectionAssignmentConflictPayload(e)
+    if (conflict) return res.status(409).json(conflict)
     return res.status(500).json({ message: e?.message || 'bulk_patch_failed' })
   }
 })

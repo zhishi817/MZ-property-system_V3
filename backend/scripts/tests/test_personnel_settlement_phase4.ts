@@ -28,7 +28,7 @@ assert.equal(
 )
 assert.deepEqual(getPersonnelClaimAvailableActions('draft'), ['edit', 'submit'])
 assert.deepEqual(getPersonnelClaimAvailableActions('returned'), ['edit', 'submit'])
-assert.deepEqual(getPersonnelClaimAvailableActions('submitted'), [])
+assert.deepEqual(getPersonnelClaimAvailableActions('submitted'), ['edit'])
 
 const validated = validatePersonnelClaimInput({
   client_request_id: 'claim_abc12345',

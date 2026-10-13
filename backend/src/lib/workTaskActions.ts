@@ -394,12 +394,14 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
   const isPendingInspectionDecision = isCleaningTask && !isStayoverTask && inspectionMode === 'pending_decision'
   const isSelfCompleteEligible = isCleaningTask && isSelfCompleteMode(task) && (isCheckoutTask || isStayoverTask)
   const isDirectCompleteEligible = isCleaningTask && (isSelfCompleteEligible || isStayoverTask)
-  const isCleaningSubmitted = isCleaningTask && isCleaningWorkSubmitted(status)
   const hasCleaningSubmissionSignal = typeof task?.cleaning_submission_ready === 'boolean'
   const cleaningSubmissionReady = hasCleaningSubmissionSignal
     ? task.cleaning_submission_ready === true
     : isCleaningWorkSubmitted(task?.cleaning_status || task?.status)
-  const isCompleted = isTerminalStatus(status) || (isPasswordOnly && status === 'inspected')
+  const isCleaningSubmitted = isCleaningTask && cleaningSubmissionReady
+  const isCompleted = isCleaningTask && hasCleaningSubmissionSignal
+    ? cleaningSubmissionReady || status === 'cancelled' || status === 'canceled'
+    : isTerminalStatus(status) || (isPasswordOnly && status === 'inspected')
   const hasSelfCompletePhotoException = task?.completion_photo_exception === true
     || Array.isArray(task?.completion_photo_exception?.items)
   const hasSelfCompleteFinalPhotoState = task?.completion_photos_ok === true || hasSelfCompletePhotoException

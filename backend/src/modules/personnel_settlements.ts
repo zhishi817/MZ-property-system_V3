@@ -55,11 +55,13 @@ import {
 import { CLEANING_IMAGE_FORMAT_ERROR } from '../lib/cleaningMediaImage'
 import {
   adjustPersonnelSettlement,
+  applyPersonnelSettlementPostPaymentAdjustment,
   approvePersonnelSettlementFinanceReview,
   confirmPersonnelSettlementPaid,
   getPersonnelSettlementSubmissionPreview,
   getPersonnelWeeklySettlement,
   listPersonnelWeeklySettlements,
+  recordPersonnelSettlementPostPaymentAdjustment,
   reopenPersonnelSettlement,
   reviewPersonnelSettlementDisputeClaim,
   resolvePersonnelSettlementDispute,
@@ -203,6 +205,9 @@ export const myWeeklySubmissionBodySchema = z.object({
 }).strict()
 const settlementNoteSchema = z.object({ note: z.string().trim().max(1000).optional().nullable() }).strict()
 const settlementReasonSchema = z.object({ reason: z.string().trim().min(1).max(1000) }).strict()
+const settlementApplyPostPaymentAdjustmentSchema = z.object({
+  adjustment_id: z.string().trim().min(1).max(120),
+}).strict()
 const settlementAdjustmentSchema = z.object({
   adjustment_cents: z.number().int().min(-100_000_000).max(100_000_000),
   reason: z.string().trim().min(1).max(1000),
@@ -236,7 +241,8 @@ function parseUserIds(value: string | string[] | undefined) {
 
 function errorStatus(error: any) {
   const code = String(error?.message || '')
-  if (['user_not_found', 'claim_not_found', 'settlement_not_found', 'settlement_document_not_found'].includes(code)) return 404
+  if (['user_not_found', 'claim_not_found', 'settlement_not_found', 'settlement_document_not_found', 'settlement_post_payment_adjustment_not_found'].includes(code)) return 404
+  if (code === 'settlement_finance_permission_required') return 403
   if (
     code === 'profile_effective_date_locked'
     || code === 'profile_effective_date_forward_move_not_allowed'
@@ -259,11 +265,24 @@ function errorStatus(error: any) {
     || code === 'settlement_claims_pending'
     || code === 'settlement_finance_review_changed'
     || code === 'settlement_finance_review_unchanged'
+    || code === 'settlement_post_payment_adjustment_paid_only'
+    || code === 'settlement_post_payment_adjustment_unresolved'
+    || code === 'settlement_post_payment_adjustment_changed'
+    || code === 'settlement_post_payment_adjustment_state_invalid'
+    || code === 'settlement_post_payment_adjustment_tax_breakdown_unavailable'
+    || code === 'settlement_post_payment_adjustment_tax_breakdown_invalid'
+    || code === 'settlement_carry_target_finance_locked'
+    || code === 'settlement_carry_target_state_requires_decision'
+    || code === 'settlement_carry_target_manual_adjustment_requires_decision'
+    || code === 'settlement_carry_target_tax_treatment_requires_decision'
+    || code === 'settlement_carry_target_calculation_blocked'
+    || code === 'settlement_carry_adjustment_exceeds_target_total'
+    || code === 'settlement_concurrent_change_retry'
   ) return 409
   if (code === 'claim_evidence_file_too_large') return 413
   if (code === 'image_format_unsupported' || error?.code === CLEANING_IMAGE_FORMAT_ERROR) return 415
   if (code === 'invalid_claim_evidence_reference') return 403
-  if (code === 'media_storage_unavailable' || code === 'claim_evidence_storage_unavailable') return 503
+  if (code === 'media_storage_unavailable' || code === 'claim_evidence_storage_unavailable' || code === 'personnel_settlement_carry_schema_not_ready') return 503
   if (code === 'pg_required') return 400
   if (
     code.startsWith('invalid_')
@@ -303,8 +322,13 @@ function sendProfileError(res: any, error: any) {
   if (error instanceof PersonnelSettlementSchemaNotReady || error instanceof PersonnelSettlementPhase5SchemaNotReady) {
     return res.status(503).json({ code: String(error.message) })
   }
-  const code = String(error?.message || 'personnel_settlement_profile_failed')
-  const status = errorStatus(error)
+  const databaseCode = String(error?.code || '')
+  const code = databaseCode === '40001' || databaseCode === '40P01'
+    ? 'settlement_concurrent_change_retry'
+    : String(error?.message || 'personnel_settlement_profile_failed')
+  const status = databaseCode === '40001' || databaseCode === '40P01'
+    ? 409
+    : errorStatus(error)
   if (status >= 500) {
     console.error('[personnel-settlements] profile request failed', {
       code: 'personnel_settlement_profile_failed',
@@ -914,10 +938,12 @@ router.post(
     const parsed = settlementReasonSchema.safeParse(req.body || {})
     if (!parsed.success) return res.status(400).json({ code: 'invalid_settlement_return', details: parsed.error.format() })
     try {
+      const actorCanReturnFinanceApproved = await userHasAnyPerm((req as any).user, ['finance.payout'])
       return res.json(await returnPersonnelSettlementForConfirmation({
         settlementId: String(req.params.settlementId || ''),
         actorUserId: String((req as any).user?.sub || ''),
         reason: parsed.data.reason,
+        actorCanReturnFinanceApproved,
       }))
     } catch (error: any) {
       return sendProfileError(res, error)
@@ -985,6 +1011,34 @@ router.post('/weekly/:settlementId/mark-paid', requirePerm('finance.payout'), re
         payment_date: parsed.data.payment_date,
       },
       expectedPaymentAmountCents: parsed.data.payment_amount_cents,
+    }))
+  } catch (error: any) {
+    return sendProfileError(res, error)
+  }
+})
+
+router.post('/weekly/:settlementId/record-post-payment-adjustment', requirePerm('finance.payout'), async (req, res) => {
+  const parsed = settlementReasonSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json({ code: 'invalid_settlement_post_payment_adjustment', details: parsed.error.format() })
+  try {
+    return res.json(await recordPersonnelSettlementPostPaymentAdjustment({
+      settlementId: String(req.params.settlementId || ''),
+      actorUserId: String((req as any).user?.sub || ''),
+      reason: parsed.data.reason,
+    }))
+  } catch (error: any) {
+    return sendProfileError(res, error)
+  }
+})
+
+router.post('/weekly/:settlementId/apply-post-payment-adjustment', requirePerm('finance.payout'), async (req, res) => {
+  const parsed = settlementApplyPostPaymentAdjustmentSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json({ code: 'invalid_settlement_post_payment_adjustment_apply', details: parsed.error.format() })
+  try {
+    return res.json(await applyPersonnelSettlementPostPaymentAdjustment({
+      settlementId: String(req.params.settlementId || ''),
+      adjustmentId: parsed.data.adjustment_id,
+      actorUserId: String((req as any).user?.sub || ''),
     }))
   } catch (error: any) {
     return sendProfileError(res, error)

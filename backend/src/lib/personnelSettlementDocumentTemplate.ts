@@ -69,6 +69,7 @@ const COMPONENT_LABELS: Record<string, string> = {
   new_property_task: 'New property setup',
   custom_amount: 'Other',
   finance_adjustment: 'Adjustment',
+  post_payment_adjustment: 'Paid settlement adjustment',
 }
 
 type PersonnelSettlementDocumentLine = PersonnelSettlementDocumentInput['lines'][number]
