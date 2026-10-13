@@ -133,10 +133,12 @@
 - Required validation: `PASS`; evidence: complete Root v2 pre-commit gate passed 29 paths / 238 non-ledger hunks; paired feature-registry audit passed 32 FRs / 257 mappings; all prior integrated business-code tests remain byte-identical and passed.
 - Shared-hunk review: `PASS`; evidence: business-code hunks remain byte-identical to the final reviewed Root candidate, and the superseding content commit changes only FR-035 mapping syntax beyond that candidate.
 - Generated-file review: `PASS`; evidence: exact commit contains no generated, cache, dependency-link, environment or secret file.
-- Technical state: `committed`
+- Remote branch: initial normal non-force push verified by GitHub PR head at `origin/codex/mz032-034-release-20261014-v2@9de68293a2a5ffe57f5cd6a57a9a5f47f3f2ab18`; this outcome receipt may be fast-forwarded to the same branch.
+- Draft PR / CI evidence: replacement Draft PR `https://github.com/zhishi817/MZ-property-system_V3/pull/391` is open, unmerged, marked Draft, and targets `Dev`; its created head is `9de68293a2a5ffe57f5cd6a57a9a5f47f3f2ab18`. Draft PR #390 is explicitly marked superseded/do-not-merge. Final receipt-head CI is pending.
+- Technical state: `pushed`
 - User authorization: `approved-for-push`; evidence: delegated scope explicitly authorizes safe same-scope CI fixes and retry, including normal feature push and Draft PR, while forbidding merge, deployment, migrations and OTA.
 - Independent review: `GO for normal non-force v2 feature push`; evidence: exact content commit is based on unchanged `origin/Dev`, preserves all reviewed business hunks, fixes only the proven registry row-format defect, and passed the complete local pre-commit and paired registry gates.
-- Action conclusion: `GO` for one normal non-force push of this exact v2 branch and a replacement Draft PR only. Production merge/deploy/migrations remain `BLOCKED` by the three historical cross-inspector conflicts.
+- Action conclusion: `GO`; the authorized normal non-force v2 feature push succeeded and replacement Draft PR #391 was created. This ledger-only outcome receipt may be fast-forwarded to the same branch; PR remains Draft/open/unmerged. Production merge/deploy/migrations remain `BLOCKED` by the three historical cross-inspector conflicts.
 
 ### Risks / Release Notes
 
