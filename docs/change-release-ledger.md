@@ -91,10 +91,12 @@
 - Required validation: `PASS`; evidence: final integrated worktree passed settlement Phase 1/2/3/MZ-034/Phase 5/claim-dedup, work-task-actions, daily visibility/stats, task-center read-only, cleaning transition guard, backend TypeScript, ledger/range and feature-registry audits
 - Shared-hunk review: `PASS`; evidence: combined `backend/src/modules/mzapp.ts` differs from each frozen source only by the other candidate's reviewed non-overlapping hunks
 - Generated-file review: `PASS`; evidence: no generated, cache, dependency-link, environment or secret file is staged
-- Technical state: `committed`
+- Remote branch: initial normal non-force push verified by GitHub PR head at `origin/codex/mz032-034-release-20261014@2d3a124aec8a9fccb0e6e9d04472d88a196c7d34`; this outcome receipt may be fast-forwarded to the same branch.
+- Draft PR / CI evidence: Draft PR `https://github.com/zhishi817/MZ-property-system_V3/pull/390` is open, unmerged, marked Draft, and targets `Dev`; its created head is `2d3a124aec8a9fccb0e6e9d04472d88a196c7d34`. Final receipt-head CI is still pending.
+- Technical state: `pushed`
 - User authorization: `approved-for-push`; evidence: user authorized the exact MZ032/033/034 joint scope and parent freeze explicitly limited the current action to safe commit, feature push and Draft PR
 - Independent review: `GO for non-force feature push`; evidence: MZ034 exact review at `2026-10-13T15:09:03Z` returned P0/P1/P2=0; MZ032 and MZ033 independent reviews were GO, frozen subset fingerprints remained exact after integration, and the paired exact reports verified every local gate.
-- Action conclusion: `GO` for a non-force push of this exact feature branch and a Draft PR only. Production merge/deploy/migrations remain `BLOCKED` by the three historical cross-inspector conflicts.
+- Action conclusion: `GO`; the authorized normal non-force feature push succeeded and Draft PR #390 was created. This ledger-only outcome receipt may be fast-forwarded to the same branch; PR remains Draft/open/unmerged. Production merge/deploy/migrations remain `BLOCKED` by the three historical cross-inspector conflicts.
 
 ### Risks / Release Notes
 
