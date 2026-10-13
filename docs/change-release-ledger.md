@@ -86,7 +86,7 @@
 - Base: `origin/Dev@9570a7c3066d5f3b08026fa3a391d23d19b97505`; fetched at `2026-10-14 02:14 Australia/Melbourne`
 - Candidate patch SHA-256: `cb22da0907e84741d488cad6a54ba5448eb4cc8bc351ae9f07ee5cfeb406ddab` excluding `docs/change-release-ledger.md`
 - Commit SHA: `58eabe03a721fe1b3dc85da604ea60bd710d2ecd`; audit head is emitted by the release report
-- Dependencies: paired `mobile/CRL-20261013-002`, `mobile/CRL-20261013-004`, `mobile/CRL-20261013-006`
+- Dependencies: `mobile/CRL-20261013-002@501d455f99fea5e3cf668a541a73a45ba82e0c3a`; `mobile/CRL-20261013-004@501d455f99fea5e3cf668a541a73a45ba82e0c3a`; `mobile/CRL-20261013-006@501d455f99fea5e3cf668a541a73a45ba82e0c3a`
 - Required validation: `PASS`; evidence: final integrated worktree passed settlement Phase 1/2/3/MZ-034/Phase 5/claim-dedup, work-task-actions, daily visibility/stats, task-center read-only, cleaning transition guard, backend TypeScript, ledger/range and feature-registry audits
 - Shared-hunk review: `PASS`; evidence: combined `backend/src/modules/mzapp.ts` differs from each frozen source only by the other candidate's reviewed non-overlapping hunks
 - Generated-file review: `PASS`; evidence: no generated, cache, dependency-link, environment or secret file is staged
