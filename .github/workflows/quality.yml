@@ -237,9 +237,60 @@ jobs:
         if: env.RUN_FULL == 'true'
         run: npm run check:full
 
+  mz034_sql:
+    name: MZ-034 Isolated PostgreSQL Integration
+    needs: risk
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RUN_MZ034_SQL: ${{ needs.risk.outputs.ledger_only != 'true' }}
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: mz034_ci
+          POSTGRES_USER: mz034_ci
+          POSTGRES_PASSWORD: mz034_ci_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mz034_ci -d mz034_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: MZ-034 SQL integration not required for a ledger-only pull request
+        if: env.RUN_MZ034_SQL != 'true'
+        run: echo 'Ledger-only pull request; MZ-034 SQL integration has no code surface to inspect.'
+
+      - name: Checkout
+        if: env.RUN_MZ034_SQL == 'true'
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        if: env.RUN_MZ034_SQL == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        if: env.RUN_MZ034_SQL == 'true'
+        run: npm ci --prefix backend
+
+      - name: Run MZ-034 SQL integration against ephemeral PostgreSQL
+        if: env.RUN_MZ034_SQL == 'true'
+        env:
+          MZ034_SQL_INTEGRATION_DATABASE_URL: postgres://mz034_ci:mz034_ci_only@127.0.0.1:5432/mz034_ci
+          MZ034_SQL_INTEGRATION_WRITE: "1"
+          MZ034_SQL_INTEGRATION_CONFIRM_EPHEMERAL: "1"
+        run: npm run test:personnel-settlement-mz034:sql --prefix backend
+
   check:
     name: Root Quality Check
-    needs: [risk, ledger, registry, fast, full]
+    needs: [risk, ledger, registry, fast, full, mz034_sql]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -253,15 +304,16 @@ jobs:
           REGISTRY_RESULT: ${{ needs.registry.result }}
           FAST_RESULT: ${{ needs.fast.result }}
           FULL_RESULT: ${{ needs.full.result }}
+          MZ034_SQL_RESULT: ${{ needs.mz034_sql.result }}
         run: |
           failed=0
-          for result in "$RISK_RESULT" "$LEDGER_RESULT" "$REGISTRY_RESULT" "$FAST_RESULT" "$FULL_RESULT"; do
+          for result in "$RISK_RESULT" "$LEDGER_RESULT" "$REGISTRY_RESULT" "$FAST_RESULT" "$FULL_RESULT" "$MZ034_SQL_RESULT"; do
             if [[ "$result" != 'success' ]]; then
               failed=1
             fi
           done
           if [[ "$failed" -ne 0 ]]; then
-            echo "Quality layer failed: risk=$RISK_RESULT ledger=$LEDGER_RESULT registry=$REGISTRY_RESULT fast=$FAST_RESULT full=$FULL_RESULT" >&2
+            echo "Quality layer failed: risk=$RISK_RESULT ledger=$LEDGER_RESULT registry=$REGISTRY_RESULT fast=$FAST_RESULT full=$FULL_RESULT mz034_sql=$MZ034_SQL_RESULT" >&2
             exit 1
           fi
           echo 'All required quality layers completed successfully.'

@@ -5,6 +5,7 @@ import {
   DAILY_TASK_MANAGER_ROLES,
   dailyTaskExecutionVisibility,
   isDailyTaskManagerRoleNames,
+  isOrdinaryOfflineDailyTask,
   projectTaskCenterManageableWorkTasks,
   projectVisibleDailyTasks,
 } from '../../src/lib/dailyTaskExecutionVisibility'
@@ -17,6 +18,8 @@ const cases = [
   { id: 'maintenance-review-pending-alias', source_type: 'property_maintenance', status: 'review_pending', scheduled_date: scheduled, assignee_id: 'staff-1' },
   { id: 'maintenance-closed-mapped-done', source_type: 'property_maintenance', status: 'done', source_workflow_status: 'closed', scheduled_date: scheduled, assignee_id: 'staff-1' },
   { id: 'external-maintenance-assigned', source_type: 'external_maintenance_orders', status: 'assigned', scheduled_date: scheduled, assignee_id: 'staff-1' },
+  { id: 'external-maintenance-unassigned', source_type: 'external_maintenance_orders', task_kind: 'maintenance', status: 'todo', scheduled_date: scheduled, assignee_id: null },
+  { id: 'external-maintenance-unassigned-mislabeled', source_type: 'external_maintenance_orders', task_kind: 'offline', status: 'todo', scheduled_date: scheduled, assignee_id: null },
   { id: 'external-maintenance-closed-mapped-done', source_type: 'external_maintenance_orders', status: 'done', scheduled_date: scheduled, assignee_id: 'staff-1' },
   { id: 'deep-cleaning-review', source_type: 'property_deep_cleaning', status: 'pending_review', scheduled_date: scheduled, assignee_id: 'staff-2' },
   { id: 'deep-cleaning-awaiting-review-alias', source_type: 'property_deep_cleaning', status: 'awaiting_review', scheduled_date: scheduled, assignee_id: 'staff-2' },
@@ -28,6 +31,7 @@ const cases = [
   { id: 'offline-assigned', source_type: 'cleaning_offline_tasks', task_kind: 'offline', status: 'assigned', scheduled_date: scheduled, assignee_id: 'staff-3' },
   { id: 'offline-progress', source_type: 'cleaning_offline_tasks', task_kind: 'offline', status: 'in_progress', scheduled_date: scheduled, assignee_id: 'staff-3' },
   { id: 'offline-unassigned', source_type: 'work_tasks', task_kind: 'offline', status: 'todo', scheduled_date: scheduled, assignee_id: null },
+  { id: 'offline-unassigned-source', source_type: 'cleaning_offline_tasks', task_kind: 'offline', task_type: 'company', status: 'todo', scheduled_date: scheduled, assignee_id: null },
   { id: 'offline-cancelled', source_type: 'cleaning_offline_tasks', task_kind: 'offline', status: 'cancelled', scheduled_date: scheduled, assignee_id: 'staff-3' },
   { id: 'offline-canceled-alias', source_type: 'cleaning_offline_tasks', task_kind: 'offline', status: 'canceled', scheduled_date: scheduled, assignee_id: 'staff-3' },
   { id: 'offline-unscheduled', source_type: 'cleaning_offline_tasks', task_kind: 'offline', status: 'assigned', scheduled_date: null, task_date: scheduled, date: scheduled, assignee_id: 'staff-3' },
@@ -37,7 +41,7 @@ const cases = [
   { id: 'stayover-unassigned', source_type: 'cleaning_tasks', task_type: 'stayover_clean', task_kind: 'cleaning', status: 'assigned', scheduled_date: scheduled, assignee_id: null },
 ]
 
-const expectedVisible = [
+const expectedPartnerVisible = [
   'maintenance-assigned',
   'maintenance-progress',
   'external-maintenance-assigned',
@@ -53,11 +57,21 @@ const expectedVisible = [
 for (const role of DAILY_TASK_MANAGER_ROLES) {
   assert.equal(isDailyTaskManagerRoleNames([role]), true, `${role} must use the authorized all-task projection`)
   assert.deepEqual(
-    projectVisibleDailyTasks(cases).map((task) => task.id),
-    expectedVisible,
+    projectVisibleDailyTasks(cases, { includeManagerUnassignedOffline: true }).map((task) => task.id),
+    [
+      ...expectedPartnerVisible.slice(0, 8),
+      'offline-unassigned',
+      'offline-unassigned-source',
+      ...expectedPartnerVisible.slice(8),
+    ],
     `${role} must receive the same daily execution semantics`,
   )
 }
+assert.deepEqual(
+  projectVisibleDailyTasks(cases).map((task) => task.id),
+  expectedPartnerVisible,
+  'partner projection includes assigned-to-self candidates only and excludes unassigned tasks',
+)
 assert.equal(isDailyTaskManagerRoleNames(['cleaner']), false)
 assert.equal(isDailyTaskManagerRoleNames(['ADMIN']), false, 'role matching must preserve the existing exact-name authorization boundary')
 const caseById = (id: string) => {
@@ -72,6 +86,51 @@ assert.deepEqual(dailyTaskExecutionVisibility(caseById('deep-cleaning-completed-
 assert.deepEqual(dailyTaskExecutionVisibility(caseById('daily-necessities-unassigned')), { visible: false, reason: 'unassigned' })
 assert.deepEqual(dailyTaskExecutionVisibility(caseById('offline-unscheduled')), { visible: false, reason: 'unscheduled' })
 assert.deepEqual(dailyTaskExecutionVisibility(caseById('offline-unassigned')), { visible: false, reason: 'unassigned' })
+assert.equal(isOrdinaryOfflineDailyTask(caseById('offline-unassigned-source')), true)
+assert.deepEqual(
+  dailyTaskExecutionVisibility(caseById('offline-unassigned-source'), { includeManagerUnassignedOffline: true }),
+  { visible: true, reason: 'visible' },
+)
+assert.deepEqual(
+  projectVisibleDailyTasks(cases, { includeManagerUnassignedOffline: true })
+    .filter((task) => task.id.startsWith('offline-unassigned'))
+    .map((task) => task.id),
+  ['offline-unassigned', 'offline-unassigned-source'],
+  'manager all view includes ordinary unassigned offline tasks from both canonical source projections',
+)
+assert.deepEqual(
+  projectVisibleDailyTasks(cases)
+    .filter((task) => task.id.startsWith('offline-unassigned'))
+    .map((task) => task.id),
+  [],
+  'partner/self projection continues to exclude every unassigned offline task',
+)
+assert.equal(
+  dailyTaskExecutionVisibility(caseById('daily-necessities-unassigned'), { includeManagerUnassignedOffline: true }).visible,
+  false,
+  'property follow-up categories remain assignment-first even for managers',
+)
+assert.equal(
+  dailyTaskExecutionVisibility(caseById('external-maintenance-unassigned'), { includeManagerUnassignedOffline: true }).visible,
+  false,
+  'external maintenance remains assignment-first because its business task kind is maintenance, not ordinary offline',
+)
+assert.equal(
+  dailyTaskExecutionVisibility(caseById('external-maintenance-unassigned-mislabeled'), { includeManagerUnassignedOffline: true }).visible,
+  false,
+  'external maintenance source remains assignment-first even if a stale projection mislabels the task kind',
+)
+const dateStatusMatrix = ['2026-10-08', '2026-10-09', '2026-10-10'].flatMap((date) => ([
+  { id: `${date}:unassigned`, source_type: 'cleaning_offline_tasks', task_kind: 'offline', status: 'todo', scheduled_date: date, assignee_id: null },
+  { id: `${date}:assigned`, source_type: 'cleaning_offline_tasks', task_kind: 'offline', status: 'assigned', scheduled_date: date, assignee_id: 'staff-1' },
+  { id: `${date}:in-progress`, source_type: 'cleaning_offline_tasks', task_kind: 'offline', status: 'in_progress', scheduled_date: date, assignee_id: 'staff-1' },
+  { id: `${date}:done`, source_type: 'cleaning_offline_tasks', task_kind: 'offline', status: 'done', scheduled_date: date, assignee_id: 'staff-1' },
+]))
+assert.equal(
+  projectVisibleDailyTasks(dateStatusMatrix, { includeManagerUnassignedOffline: true }).length,
+  12,
+  'past, current and future dates retain unassigned, assigned, incomplete and completed ordinary offline tasks',
+)
 assert.deepEqual(
   projectTaskCenterManageableWorkTasks(cases).filter((task) => task.id === 'offline-unassigned').map((task) => ({
     id: task.id,
@@ -88,7 +147,9 @@ const taskCenterPage = fs.readFileSync(path.join(backendRoot, '../frontend/src/a
 const maintenanceRecordsPage = fs.readFileSync(path.join(backendRoot, '../frontend/src/app/maintenance/records/page.tsx'), 'utf8')
 const deepCleaningRecordsPage = fs.readFileSync(path.join(backendRoot, '../frontend/src/app/deep-cleaning/records/page.tsx'), 'utf8')
 
-assert.match(mzapp, /projectVisibleDailyTasks\(out\)/, 'mobile API must apply the shared server projection before action payloads')
+assert.match(mzapp, /projectVisibleDailyTasks\(out,/, 'mobile API must apply the shared server projection before action payloads')
+assert.match(mzapp, /const allowAll = view === 'all' && canViewAll\(user\)/, 'only the three business manager roles may request the all-task execution projection')
+assert.match(mzapp, /includeManagerUnassignedOffline: managerCanSeeAllTaskPool/, 'manager list and count projections must share the ordinary unassigned offline policy')
 assert.match(mzapp, /source_workflow_status: maintenanceSourceWorkflowStatus/, 'maintenance source workflow must survive the closed-to-done work-task mapping')
 assert.match(taskCenter, /projectTaskCenterManageableWorkTasks\(dedupeBoardTasks/, 'Web work-task loader must preserve assignment candidates while reusing shared execution semantics')
 assert.match(taskCenter, /FROM property_maintenance m[\s\S]*?m\.status::text/, 'web management projection must read authoritative maintenance workflow status')
