@@ -81,19 +81,20 @@
 - Repository: `root`
 - Selected CRLs: `CRL-20261013-001`, `CRL-20261013-003`, `CRL-20261013-005`
 - Selected CRL identities: `root/CRL-20261013-001`, `root/CRL-20261013-003`, `root/CRL-20261013-005`
-- Intended action: `commit`, then authorized feature-branch push and Draft PR to `Dev`; no merge, deployment or migration
+- Intended action: `push` exact feature branch and open a Draft PR to `Dev`; no merge, deployment or migration
 - Branch: `codex/mz032-034-release-20261014`
 - Base: `origin/Dev@9570a7c3066d5f3b08026fa3a391d23d19b97505`; fetched at `2026-10-14 02:14 Australia/Melbourne`
 - Candidate patch SHA-256: `cb22da0907e84741d488cad6a54ba5448eb4cc8bc351ae9f07ee5cfeb406ddab` excluding `docs/change-release-ledger.md`
 - Commit SHA: `58eabe03a721fe1b3dc85da604ea60bd710d2ecd`; audit head is emitted by the release report
 - Dependencies: `mobile/CRL-20261013-002@501d455f99fea5e3cf668a541a73a45ba82e0c3a`; `mobile/CRL-20261013-004@501d455f99fea5e3cf668a541a73a45ba82e0c3a`; `mobile/CRL-20261013-006@501d455f99fea5e3cf668a541a73a45ba82e0c3a`
+- Cross-repository dependency verification: `PASS`; evidence: paired Mobile exact report audited `7ba1d4329b07024ed653d6bcc60e0d172098bee8...bf4adb23b21f3b91dfaf72743a57e0417c77b5da`, contains content commit `501d455f99fea5e3cf668a541a73a45ba82e0c3a`, and retained candidate fingerprint `b2340d322079bc0edf66d866b3f432bacbc79b62841dd36d2387c6d69925767d`; its only non-local result is the symmetric designed cross-repository evidence gap.
 - Required validation: `PASS`; evidence: final integrated worktree passed settlement Phase 1/2/3/MZ-034/Phase 5/claim-dedup, work-task-actions, daily visibility/stats, task-center read-only, cleaning transition guard, backend TypeScript, ledger/range and feature-registry audits
 - Shared-hunk review: `PASS`; evidence: combined `backend/src/modules/mzapp.ts` differs from each frozen source only by the other candidate's reviewed non-overlapping hunks
 - Generated-file review: `PASS`; evidence: no generated, cache, dependency-link, environment or secret file is staged
 - Technical state: `committed`
 - User authorization: `approved-for-push`; evidence: user authorized the exact MZ032/033/034 joint scope and parent freeze explicitly limited the current action to safe commit, feature push and Draft PR
-- Independent review: `GO`; evidence: MZ034 exact review at `2026-10-13T15:09:03Z` returned P0/P1/P2=0; MZ032 and MZ033 independent reviews were GO, and frozen subset fingerprints remained exact after integration
-- Action conclusion: content commit `GO`; push remains contingent on the exact committed-range report. Production merge/deploy/migrations remain `BLOCKED` by the three historical cross-inspector conflicts.
+- Independent review: `GO for non-force feature push`; evidence: MZ034 exact review at `2026-10-13T15:09:03Z` returned P0/P1/P2=0; MZ032 and MZ033 independent reviews were GO, frozen subset fingerprints remained exact after integration, and the paired exact reports verified every local gate.
+- Action conclusion: `GO` for a non-force push of this exact feature branch and a Draft PR only. Production merge/deploy/migrations remain `BLOCKED` by the three historical cross-inspector conflicts.
 
 ### Risks / Release Notes
 
