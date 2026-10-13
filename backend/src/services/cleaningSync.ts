@@ -1189,6 +1189,7 @@ async function syncOneTask(params: {
         changeScope: 'membership',
         changedFields: [
           ...(arrangementRevision.before.scheduled_service_date !== arrangementRevision.after.scheduled_service_date ? ['task_date', 'date'] : []),
+          ...(arrangementRevision.before.property_id !== arrangementRevision.after.property_id ? ['property_id'] : []),
           ...(arrangementRevision.before.cleaner_id !== arrangementRevision.after.cleaner_id ? ['cleaner_id'] : []),
           ...(arrangementRevision.before.assignee_id !== arrangementRevision.after.assignee_id ? ['assignee_id'] : []),
           ...(arrangementRevision.before.inspector_id !== arrangementRevision.after.inspector_id ? ['inspector_id'] : []),

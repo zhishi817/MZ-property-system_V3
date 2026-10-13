@@ -14,6 +14,7 @@ import {
   type SettlementRuleItem,
   type WorkloadAuditCandidate,
 } from './personnelSettlement'
+import { activeCleaningTaskWhereSql, validCleaningTaskOrderWhereSql } from '../services/cleaningSync'
 
 type Queryable = { query: (sql: string, params?: any[]) => Promise<any> }
 
@@ -95,10 +96,82 @@ type CleaningAssignmentCandidate = {
   task_type: string | null
 }
 
+type CleaningPaymentAssignment = {
+  task_id: string
+  business_key: string
+  duplicate_count: string | number | null
+  user_id: string
+  user_name: string | null
+  service_date: string
+  scheduled_service_date: string
+  actual_service_date: string | null
+  actual_audit_id: string | null
+  actual_performed_at: string | null
+  actual_metadata: Record<string, unknown> | null
+  property_id: string | null
+  property_label: string | null
+  property_type: string | null
+  task_type: string | null
+  inspection_due_date: string | null
+  inspection_mode: string | null
+}
+
+type InspectionPaymentAssignment = {
+  task_id: string
+  inspection_key: string
+  user_id: string | null
+  user_name: string | null
+  service_date: string
+  scheduled_service_date: string | null
+  property_id: string | null
+  property_label: string | null
+  property_type: string | null
+  task_type: string | null
+  inspection_due_date: string | null
+  inspection_mode: string | null
+  assignment_source: 'current' | 'preserved_auto_change'
+  property_snapshot_missing: boolean
+  is_payable: boolean
+  submission_count: string | number | null
+  latest_audit_id: string | null
+  latest_performed_at: string | null
+  latest_metadata: Record<string, unknown> | null
+}
+
+type CarryAdjustmentRow = {
+  id: string
+  source_settlement_id: string
+  source_adjustment_id: string
+  user_id: string
+  source_week_start: string
+  source_week_end: string
+  target_week_start: string
+  target_week_end: string
+  recorded_subtotal_difference_cents: string | number
+  recorded_gst_difference_cents: string | number
+  recorded_total_difference_cents: string | number
+  previously_applied_subtotal_cents: string | number
+  previously_applied_gst_cents: string | number
+  previously_applied_total_cents: string | number
+  applied_subtotal_cents: string | number
+  applied_gst_cents: string | number
+  applied_total_cents: string | number
+  reason: string
+  applied_by: string
+  applied_at: string
+}
+
+type SettlementAuditCandidate = WorkloadAuditCandidate & {
+  current_assignee_user_id?: string | null
+  task_execution_state?: string | null
+  task_order_id?: string | null
+  order_status?: string | null
+}
+
 type PreviewLine = SettlementLineAmounts & {
   component_type: SettlementComponentType
   service_date: string
-  source_type: 'cleaning_task_assignment' | 'work_task_action_audit' | 'workload_claim' | 'weekly_rule'
+  source_type: 'cleaning_task_assignment' | 'inspection_task_assignment' | 'work_task_action_audit' | 'workload_claim' | 'weekly_rule' | 'post_payment_adjustment'
   source_id: string
   source_audit_id: string | null
   property_id: string | null
@@ -115,6 +188,23 @@ type PreviewLine = SettlementLineAmounts & {
   rule_id: string | null
   rule_item_id: string | null
   work_items: SettlementWorkItem[]
+  carry_adjustment?: {
+    source_settlement_id: string
+    source_adjustment_id: string
+    source_week_start: string
+    source_week_end: string
+    recorded_subtotal_difference_cents: number
+    recorded_gst_difference_cents: number
+    recorded_total_difference_cents: number
+    previously_applied_subtotal_cents: number
+    previously_applied_gst_cents: number
+    previously_applied_total_cents: number
+    applied_subtotal_cents: number
+    applied_gst_cents: number
+    applied_total_cents: number
+    applied_by: string
+    applied_at: string
+  }
 }
 
 export type SettlementWorkItem = {
@@ -136,7 +226,7 @@ export type SettlementWorkItem = {
   inspection_mode: string | null
   evidence_count: number
   evidence: Array<Record<string, unknown>>
-  status: 'completed' | 'rescheduled' | 'incomplete' | 'management_closed' | 'legacy_completed_unverified' | 'cancelled'
+  status: 'completed' | 'payable' | 'expected' | 'rescheduled' | 'incomplete' | 'management_closed' | 'legacy_completed_unverified' | 'cancelled'
   status_reason: string
   included_in_amount: boolean
   requires_manual_review: boolean
@@ -157,6 +247,10 @@ type PersonPreview = {
     service_date?: string
     component_type?: SettlementComponentType
     description?: string
+    task_id?: string
+    property_id?: string | null
+    property_label?: string | null
+    work_items?: SettlementWorkItem[]
   }>
 }
 
@@ -213,13 +307,79 @@ function candidateWorkItem(candidate: WorkloadAuditCandidate, component: 'cleani
   }
 }
 
-const LEGACY_COMPLETED_CLEANING_STATUSES = new Set([
-  'cleaned', 'restock_pending', 'restocked', 'to_inspect', 'to_hang_keys',
-  'keys_hung', 'inspected', 'ready', 'completed', 'done',
-])
-const LEGACY_COMPLETED_INSPECTION_STATUSES = new Set([
-  'inspected', 'to_hang_keys', 'keys_hung', 'ready', 'completed', 'done',
-])
+function cleaningPaymentWorkItem(assignment: CleaningPaymentAssignment): SettlementWorkItem {
+  const metadata = jsonObject(assignment.actual_metadata)
+  const evidence = Array.isArray(metadata.evidence_snapshot)
+    ? metadata.evidence_snapshot.filter((item: unknown) => item && typeof item === 'object') as Array<Record<string, unknown>>
+    : []
+  const hasActualExecution = !!cleanText(assignment.actual_audit_id)
+  return {
+    execution_key: `cleaning:${assignment.task_id}`,
+    audit_id: hasActualExecution ? assignment.actual_audit_id : null,
+    task_id: assignment.task_id,
+    component_type: 'cleaning_task',
+    service_date: assignment.service_date,
+    performed_at: hasActualExecution ? assignment.actual_performed_at : null,
+    performed_by_user_id: hasActualExecution ? assignment.user_id : null,
+    performed_by_name: hasActualExecution ? assignment.user_name : null,
+    property_id: assignment.property_id,
+    property_label: assignment.property_label,
+    property_type: assignment.property_type,
+    task_type: assignment.task_type,
+    scheduled_service_date: assignment.scheduled_service_date,
+    current_scheduled_service_date: assignment.scheduled_service_date,
+    inspection_due_date: cleanText(assignment.inspection_due_date).slice(0, 10) || null,
+    inspection_mode: cleanText(assignment.inspection_mode) || null,
+    evidence_count: Number.isSafeInteger(Number(metadata.evidence_count))
+      ? Math.max(0, Number(metadata.evidence_count))
+      : evidence.length,
+    evidence,
+    // Settlement eligibility is assignment-based.  Do not manufacture a
+    // completed workflow state when the cleaner never submitted completion.
+    status: hasActualExecution ? 'completed' : 'incomplete',
+    status_reason: hasActualExecution
+      ? 'active_assignment_with_execution_date'
+      : 'active_assignment_without_execution_record',
+    included_in_amount: true,
+    requires_manual_review: false,
+  }
+}
+
+function inspectionPaymentWorkItem(assignment: InspectionPaymentAssignment): SettlementWorkItem {
+  const metadata = jsonObject(assignment.latest_metadata)
+  const evidence = Array.isArray(metadata.evidence_snapshot)
+    ? metadata.evidence_snapshot.filter((item: unknown) => item && typeof item === 'object') as Array<Record<string, unknown>>
+    : []
+  const submissionCount = Math.max(0, Number(assignment.submission_count || 0))
+  return {
+    execution_key: assignment.inspection_key || `inspection:${assignment.task_id}`,
+    audit_id: cleanText(assignment.latest_audit_id) || null,
+    task_id: assignment.task_id,
+    component_type: 'inspection_day',
+    service_date: assignment.service_date,
+    performed_at: cleanText(assignment.latest_performed_at) || null,
+    performed_by_user_id: submissionCount > 0 ? assignment.user_id : null,
+    performed_by_name: submissionCount > 0 ? assignment.user_name : null,
+    property_id: assignment.property_id,
+    property_label: assignment.property_label,
+    property_type: assignment.property_type,
+    task_type: assignment.task_type,
+    scheduled_service_date: assignment.scheduled_service_date,
+    current_scheduled_service_date: assignment.service_date,
+    inspection_due_date: assignment.inspection_due_date,
+    inspection_mode: assignment.inspection_mode,
+    evidence_count: Number.isSafeInteger(Number(metadata.evidence_count))
+      ? Math.max(0, Number(metadata.evidence_count))
+      : evidence.length,
+    evidence,
+    status: assignment.is_payable ? 'payable' : 'expected',
+    status_reason: assignment.is_payable
+      ? 'effective_inspection_assignment_after_day_end'
+      : 'effective_inspection_assignment_expected',
+    included_in_amount: assignment.is_payable,
+    requires_manual_review: false,
+  }
+}
 
 const CLEANING_PROPERTY_TYPE_SET = new Set<string>(CLEANING_PROPERTY_TYPES)
 const DIRECT_AMOUNT_COMPONENT_TYPE_SET = new Set<SettlementComponentType>(['subsidy_amount', 'custom_amount'])
@@ -231,6 +391,14 @@ function dateContains(row: { effective_from: string; effective_to: string | null
 function toSafeNonNegativeInteger(value: unknown, field: string) {
   const parsed = Number(value)
   if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`${field}_invalid`)
+  return parsed
+}
+
+function toSafeSignedInteger(value: unknown, field: string) {
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed < -100_000_000 || parsed > 100_000_000) {
+    throw new Error(`${field}_invalid`)
+  }
   return parsed
 }
 
@@ -298,7 +466,7 @@ export async function buildPersonnelSettlementPreview(input: {
   const userFilter = userIds.length ? userIds : null
   const params = [period.week_start, period.week_end, userFilter]
 
-  const [profileResult, ruleResult, auditResult, claimResult, cleaningAssignmentResult] = await Promise.all([
+  const [profileResult, ruleResult, auditResult, claimResult, cleaningAssignmentResult, cleaningPaymentResult] = await Promise.all([
     executor.query(
       `SELECT p.id, p.user_id, p.effective_from::text, p.effective_to::text,
               p.person_type, p.supplier_legal_name, p.supplier_business_name,
@@ -359,13 +527,7 @@ export async function buildPersonnelSettlementPreview(input: {
                   ELSE COALESCE(t.task_date, t.date)
                 END) BETWEEN $1::date AND $2::date
             AND lower(COALESCE(t.inspection_mode, '')) IN ('same_day', 'deferred')
-            AND ($3::text[] IS NULL OR (CASE
-              WHEN lower(COALESCE(t.task_type, t.type, '')) = 'checkin_clean'
-                THEN COALESCE(t.inspector_id::text, t.assignee_id::text)
-              WHEN lower(COALESCE(t.inspection_mode, '')) = 'self_complete'
-                THEN COALESCE(t.inspector_id::text, t.cleaner_id::text, t.assignee_id::text)
-              ELSE t.inspector_id::text
-            END) = ANY($3::text[]))
+            AND ($3::text[] IS NULL OR t.inspector_id::text = ANY($3::text[]))
          UNION
          SELECT replace(e.task_id, 'cleaning_task:', '') AS task_id
            FROM work_task_events e
@@ -396,9 +558,14 @@ export async function buildPersonnelSettlementPreview(input: {
                 NULLIF(TRIM(a.metadata->'task_snapshot'->>'task_type'), ''),
                 NULLIF(TRIM(t.task_type), ''), NULLIF(TRIM(t.type), '')
               ) AS task_type,
-              t.status AS task_status, a.status_after, a.metadata
+              t.status AS task_status, t.execution_state AS task_execution_state,
+              t.order_id::text AS task_order_id,
+              o.status AS order_status,
+              t.inspector_id::text AS current_assignee_user_id,
+              a.status_after, a.metadata
          FROM work_task_action_audits a
          LEFT JOIN cleaning_tasks t ON t.id::text = a.source_id::text
+         LEFT JOIN orders o ON o.id::text = t.order_id::text
          LEFT JOIN properties p ON p.id::text = COALESCE(
            NULLIF(TRIM(a.metadata->'property_snapshot'->>'property_id'), ''),
            t.property_id::text
@@ -408,7 +575,7 @@ export async function buildPersonnelSettlementPreview(input: {
           AND NULLIF(TRIM(a.performed_by_user_id), '') IS NOT NULL
           AND a.source_id::text IN (SELECT task_id FROM scoped_tasks)
         ORDER BY a.performed_at, a.id`,
-      [period.week_start, period.week_end, userFilter, ['submit_inspection', 'fill_supplies', 'complete_cleaning']],
+      [period.week_start, period.week_end, userFilter, ['fill_supplies', 'complete_cleaning']],
     ),
     executor.query(
       `SELECT id, status, submitter_user_id, service_date::text, claim_type, property_id,
@@ -508,23 +675,11 @@ export async function buildPersonnelSettlementPreview(input: {
                 t.inspection_due_date::text AS inspection_due_date,
                 t.inspection_mode,
                 t.status AS task_status,
-                (CASE
-                  WHEN lower(COALESCE(t.task_type, t.type, '')) = 'checkin_clean'
-                    THEN COALESCE(t.inspector_id::text, t.assignee_id::text)
-                  WHEN lower(COALESCE(t.inspection_mode, '')) = 'self_complete'
-                    THEN COALESCE(t.inspector_id::text, t.cleaner_id::text, t.assignee_id::text)
-                  ELSE t.inspector_id::text
-                END) AS user_id,
+                t.inspector_id::text AS user_id,
                 COALESCE(
                   NULLIF(TRIM(u.display_name), ''), NULLIF(TRIM(u.username), ''),
                   NULLIF(TRIM(u.legal_name), ''),
-                  (CASE
-                    WHEN lower(COALESCE(t.task_type, t.type, '')) = 'checkin_clean'
-                      THEN COALESCE(t.inspector_id::text, t.assignee_id::text)
-                    WHEN lower(COALESCE(t.inspection_mode, '')) = 'self_complete'
-                      THEN COALESCE(t.inspector_id::text, t.cleaner_id::text, t.assignee_id::text)
-                    ELSE t.inspector_id::text
-                  END)
+                  t.inspector_id::text
                 ) AS user_name,
                 t.property_id, COALESCE(NULLIF(TRIM(p.code), ''), NULLIF(TRIM(p.address), ''), t.property_id) AS property_label,
                 NULLIF(TRIM(p.type), '') AS property_type,
@@ -544,13 +699,7 @@ export async function buildPersonnelSettlementPreview(input: {
                 0::bigint AS plan_order
            FROM cleaning_tasks t
            LEFT JOIN properties p ON p.id::text = t.property_id::text
-           LEFT JOIN users u ON u.id::text = (CASE
-             WHEN lower(COALESCE(t.task_type, t.type, '')) = 'checkin_clean'
-               THEN COALESCE(t.inspector_id::text, t.assignee_id::text)
-             WHEN lower(COALESCE(t.inspection_mode, '')) = 'self_complete'
-               THEN COALESCE(t.inspector_id::text, t.cleaner_id::text, t.assignee_id::text)
-             ELSE t.inspector_id::text
-           END)
+           LEFT JOIN users u ON u.id::text = t.inspector_id::text
           WHERE (CASE
                   WHEN lower(COALESCE(t.inspection_mode, '')) = 'deferred' AND t.inspection_due_date IS NOT NULL
                     THEN t.inspection_due_date
@@ -559,20 +708,8 @@ export async function buildPersonnelSettlementPreview(input: {
             AND lower(COALESCE(t.task_type, t.type, '')) IN ('checkout_clean', 'checkin_clean')
             AND lower(COALESCE(t.inspection_mode, '')) IN ('same_day', 'deferred')
             AND lower(COALESCE(t.inspection_scope, 'inspect_and_hang')) <> 'password_only'
-            AND (CASE
-              WHEN lower(COALESCE(t.task_type, t.type, '')) = 'checkin_clean'
-                THEN COALESCE(t.inspector_id::text, t.assignee_id::text)
-              WHEN lower(COALESCE(t.inspection_mode, '')) = 'self_complete'
-                THEN COALESCE(t.inspector_id::text, t.cleaner_id::text, t.assignee_id::text)
-              ELSE t.inspector_id::text
-            END) IS NOT NULL
-            AND ($3::text[] IS NULL OR (CASE
-              WHEN lower(COALESCE(t.task_type, t.type, '')) = 'checkin_clean'
-                THEN COALESCE(t.inspector_id::text, t.assignee_id::text)
-              WHEN lower(COALESCE(t.inspection_mode, '')) = 'self_complete'
-                THEN COALESCE(t.inspector_id::text, t.cleaner_id::text, t.assignee_id::text)
-              ELSE t.inspector_id::text
-            END) = ANY($3::text[]))
+            AND t.inspector_id IS NOT NULL
+            AND ($3::text[] IS NULL OR t.inspector_id::text = ANY($3::text[]))
          UNION ALL
          SELECT t.id::text AS task_id,
                 'cleaning_task'::text AS component_type,
@@ -606,14 +743,18 @@ export async function buildPersonnelSettlementPreview(input: {
                     NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,assignee_id}'), '')
                   )
                 ) AS user_name,
-                t.property_id, COALESCE(NULLIF(TRIM(p.code), ''), NULLIF(TRIM(p.address), ''), t.property_id) AS property_label,
+                NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,property_id}'), '') AS property_id,
+                COALESCE(
+                  NULLIF(TRIM(p.code), ''), NULLIF(TRIM(p.address), ''),
+                  NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,property_id}'), '')
+                ) AS property_label,
                 NULLIF(TRIM(p.type), '') AS property_type,
                 COALESCE(NULLIF(TRIM(t.task_type), ''), NULLIF(TRIM(t.type), '')) AS task_type,
                 1 AS plan_priority,
                 e.sequence_no AS plan_order
            FROM work_task_events e
            JOIN cleaning_tasks t ON e.task_id = 'cleaning_task:' || t.id::text
-           LEFT JOIN properties p ON p.id::text = t.property_id::text
+           LEFT JOIN properties p ON p.id::text = NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,property_id}'), '')
            LEFT JOIN users u ON u.id::text = COALESCE(
              NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,cleaner_id}'), ''),
              NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,assignee_id}'), '')
@@ -629,6 +770,8 @@ export async function buildPersonnelSettlementPreview(input: {
                 NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,cleaner_id}'), ''),
                 NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,assignee_id}'), '')
               )
+              OR NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,property_id}'), '')
+                IS DISTINCT FROM NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,property_id}'), '')
             )
             AND lower(COALESCE(t.task_type, t.type, '')) = 'checkout_clean'
             AND NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,scheduled_service_date}'), '')::date BETWEEN $1::date AND $2::date
@@ -670,67 +813,29 @@ export async function buildPersonnelSettlementPreview(input: {
                       THEN NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,inspection_due_date}'), '')
                     ELSE NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,scheduled_service_date}'), '')
                   END) THEN 'rescheduled_after_plan'
-                  WHEN (CASE
-                    WHEN lower(COALESCE(t.task_type, t.type, '')) = 'checkin_clean' THEN COALESCE(
-                      NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), ''),
-                      NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,assignee_id}'), '')
-                    )
-                    WHEN lower(COALESCE(NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_mode}'), ''), '')) = 'self_complete' THEN COALESCE(
-                      NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), ''),
-                      NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,cleaner_id}'), ''),
-                      NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,assignee_id}'), '')
-                    )
-                    ELSE NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), '')
-                  END) IS DISTINCT FROM (CASE
-                    WHEN lower(COALESCE(t.task_type, t.type, '')) = 'checkin_clean' THEN COALESCE(
-                      NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,inspector_id}'), ''),
-                      NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,assignee_id}'), '')
-                    )
-                    WHEN lower(COALESCE(NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,inspection_mode}'), ''), '')) = 'self_complete' THEN COALESCE(
-                      NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,inspector_id}'), ''),
-                      NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,cleaner_id}'), ''),
-                      NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,assignee_id}'), '')
-                    )
-                    ELSE NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,inspector_id}'), '')
-                  END) THEN 'reassigned_after_plan'
+                  WHEN NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), '')
+                    IS DISTINCT FROM NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,inspector_id}'), '')
+                    THEN 'reassigned_after_plan'
                   ELSE 'inspection_plan_changed_after_plan'
                 END AS arrangement_reason,
                 NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_due_date}'), '')::date::text AS inspection_due_date,
                 NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_mode}'), '') AS inspection_mode,
                 t.status AS task_status,
-                (CASE
-                  WHEN lower(COALESCE(t.task_type, t.type, '')) = 'checkin_clean' THEN COALESCE(
-                    NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), ''),
-                    NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,assignee_id}'), '')
-                  )
-                  WHEN lower(COALESCE(NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_mode}'), ''), '')) = 'self_complete' THEN COALESCE(
-                    NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), ''),
-                    NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,cleaner_id}'), ''),
-                    NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,assignee_id}'), '')
-                  )
-                  ELSE NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), '')
-                END) AS user_id,
+                NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), '') AS user_id,
                 COALESCE(NULLIF(TRIM(u.display_name), ''), NULLIF(TRIM(u.username), ''), NULLIF(TRIM(u.legal_name), ''), u.id::text) AS user_name,
-                t.property_id, COALESCE(NULLIF(TRIM(p.code), ''), NULLIF(TRIM(p.address), ''), t.property_id) AS property_label,
+                NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,property_id}'), '') AS property_id,
+                COALESCE(
+                  NULLIF(TRIM(p.code), ''), NULLIF(TRIM(p.address), ''),
+                  NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,property_id}'), '')
+                ) AS property_label,
                 NULLIF(TRIM(p.type), '') AS property_type,
                 COALESCE(NULLIF(TRIM(t.task_type), ''), NULLIF(TRIM(t.type), '')) AS task_type,
                 1 AS plan_priority,
                 e.sequence_no AS plan_order
            FROM work_task_events e
            JOIN cleaning_tasks t ON e.task_id = 'cleaning_task:' || t.id::text
-           LEFT JOIN properties p ON p.id::text = t.property_id::text
-           LEFT JOIN users u ON u.id::text = (CASE
-             WHEN lower(COALESCE(t.task_type, t.type, '')) = 'checkin_clean' THEN COALESCE(
-               NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), ''),
-               NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,assignee_id}'), '')
-             )
-             WHEN lower(COALESCE(NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_mode}'), ''), '')) = 'self_complete' THEN COALESCE(
-               NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), ''),
-               NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,cleaner_id}'), ''),
-               NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,assignee_id}'), '')
-             )
-             ELSE NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), '')
-           END)
+           LEFT JOIN properties p ON p.id::text = NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,property_id}'), '')
+           LEFT JOIN users u ON u.id::text = NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), '')
           WHERE e.payload#>>'{arrangement_revision,version}' = 'mz031-v1'
             AND lower(COALESCE(t.task_type, t.type, '')) IN ('checkout_clean', 'checkin_clean')
             AND lower(COALESCE(NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_mode}'), ''), '')) IN ('same_day', 'deferred')
@@ -779,23 +884,14 @@ export async function buildPersonnelSettlementPreview(input: {
                   THEN NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,inspection_due_date}'), '')
                 ELSE NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,scheduled_service_date}'), '')
               END)
-              OR (CASE
-                WHEN lower(COALESCE(t.task_type, t.type, '')) = 'checkin_clean' THEN COALESCE(
-                  NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), ''),
-                  NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,assignee_id}'), '')
-                )
-                ELSE NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), '')
-              END) IS DISTINCT FROM (CASE
-                WHEN lower(COALESCE(t.task_type, t.type, '')) = 'checkin_clean' THEN COALESCE(
-                  NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,inspector_id}'), ''),
-                  NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,assignee_id}'), '')
-                )
-                ELSE NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,inspector_id}'), '')
-              END)
+              OR NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), '')
+                IS DISTINCT FROM NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,inspector_id}'), '')
               OR NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_mode}'), '')
                 IS DISTINCT FROM NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,inspection_mode}'), '')
               OR NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_scope}'), '')
                 IS DISTINCT FROM NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,inspection_scope}'), '')
+              OR NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,property_id}'), '')
+                IS DISTINCT FROM NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,property_id}'), '')
             )
             AND (CASE
               WHEN lower(COALESCE(NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_mode}'), ''), '')) = 'deferred'
@@ -803,30 +899,9 @@ export async function buildPersonnelSettlementPreview(input: {
                 THEN NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_due_date}'), '')::date
               ELSE NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,scheduled_service_date}'), '')::date
             END) BETWEEN $1::date AND $2::date
-            AND (CASE
-              WHEN lower(COALESCE(t.task_type, t.type, '')) = 'checkin_clean' THEN COALESCE(
-                NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), ''),
-                NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,assignee_id}'), '')
-              )
-              WHEN lower(COALESCE(NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_mode}'), ''), '')) = 'self_complete' THEN COALESCE(
-                NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), ''),
-                NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,cleaner_id}'), ''),
-                NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,assignee_id}'), '')
-              )
-              ELSE NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), '')
-            END) IS NOT NULL
-            AND ($3::text[] IS NULL OR (CASE
-              WHEN lower(COALESCE(t.task_type, t.type, '')) = 'checkin_clean' THEN COALESCE(
-                NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), ''),
-                NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,assignee_id}'), '')
-              )
-              WHEN lower(COALESCE(NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_mode}'), ''), '')) = 'self_complete' THEN COALESCE(
-                NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), ''),
-                NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,cleaner_id}'), ''),
-                NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,assignee_id}'), '')
-              )
-              ELSE NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), '')
-            END) = ANY($3::text[]))
+            AND NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), '') IS NOT NULL
+            AND ($3::text[] IS NULL
+              OR NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), '') = ANY($3::text[]))
        )
        SELECT DISTINCT ON (task_id, component_type, user_id, service_date)
               task_id, component_type, service_date, current_service_date, arrangement_reason,
@@ -836,14 +911,359 @@ export async function buildPersonnelSettlementPreview(input: {
         ORDER BY task_id, component_type, user_id, service_date, plan_priority DESC, plan_order DESC`,
       params,
     ),
+    executor.query(
+      `WITH payment_candidates AS (
+         SELECT t.id::text AS task_id,
+                CASE
+                  WHEN t.order_id IS NOT NULL THEN 'checkout-order:' || t.order_id::text
+                  WHEN t.property_id IS NOT NULL AND identity.original_scheduled_service_date IS NOT NULL
+                    THEN 'checkout-property-date:' || t.property_id::text || ':' || identity.original_scheduled_service_date
+                  ELSE 'checkout-task:' || t.id::text
+                END AS business_key,
+                COALESCE(t.cleaner_id::text, t.assignee_id::text) AS user_id,
+                COALESCE(
+                  NULLIF(TRIM(u.display_name), ''), NULLIF(TRIM(u.username), ''),
+                  NULLIF(TRIM(u.legal_name), ''),
+                  COALESCE(t.cleaner_id::text, t.assignee_id::text)
+                ) AS user_name,
+                COALESCE(t.task_date, t.date)::text AS scheduled_service_date,
+                actual.actual_service_date::text AS actual_service_date,
+                actual.audit_id::text AS actual_audit_id,
+                actual.performed_at::text AS actual_performed_at,
+                actual.metadata AS actual_metadata,
+                t.property_id::text AS property_id,
+                COALESCE(NULLIF(TRIM(p.code), ''), NULLIF(TRIM(p.address), ''), t.property_id::text) AS property_label,
+                NULLIF(TRIM(p.type), '') AS property_type,
+                COALESCE(NULLIF(TRIM(t.task_type), ''), NULLIF(TRIM(t.type), '')) AS task_type,
+                t.inspection_due_date::text AS inspection_due_date,
+                t.inspection_mode,
+                t.updated_at
+           FROM cleaning_tasks t
+           LEFT JOIN orders o ON o.id::text = t.order_id::text
+           LEFT JOIN LATERAL (
+             SELECT COALESCE(
+               (
+                 SELECT NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,scheduled_service_date}'), '')::date::text
+                   FROM work_task_events e
+                  WHERE e.task_id = 'cleaning_task:' || t.id::text
+                    AND e.payload#>>'{arrangement_revision,version}' = 'mz031-v1'
+                    AND NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,scheduled_service_date}'), '') IS NOT NULL
+                  ORDER BY e.sequence_no, e.id
+                  LIMIT 1
+               ),
+               COALESCE(t.task_date, t.date)::text
+             ) AS original_scheduled_service_date
+           ) identity ON true
+           LEFT JOIN properties p ON p.id::text = t.property_id::text
+           LEFT JOIN users u ON u.id::text = COALESCE(t.cleaner_id::text, t.assignee_id::text)
+           LEFT JOIN LATERAL (
+             SELECT a.id AS audit_id,
+                    a.performed_at,
+                    a.metadata,
+                    COALESCE(
+                      NULLIF(TRIM(a.metadata->>'actual_service_date'), '')::date,
+                      (a.performed_at AT TIME ZONE 'Australia/Melbourne')::date
+                    ) AS actual_service_date
+               FROM work_task_action_audits a
+              WHERE a.source_type = 'cleaning_tasks'
+                AND a.source_id::text = t.id::text
+                AND a.performed_by_user_id = COALESCE(t.cleaner_id::text, t.assignee_id::text)
+                AND a.performed_as_action = ANY($4::text[])
+                AND lower(COALESCE(a.status_after, '')) IN (
+                  'cleaned', 'restock_pending', 'restocked', 'to_inspect', 'to_hang_keys',
+                  'keys_hung', 'inspected', 'ready', 'completed', 'done'
+                )
+                AND lower(COALESCE(a.metadata->>'route', '')) <> 'mzapp.cleaning_tasks.restock_proof'
+                AND lower(COALESCE(a.metadata->>'step', '')) <> 'completion_photos_saved'
+                AND NOT (
+                  COALESCE(a.metadata->>'execution_record_version', '') = 'mz031-v1'
+                  AND lower(COALESCE(a.metadata->>'status_before_snapshot', '')) IN ('cancelled', 'canceled')
+                )
+              ORDER BY COALESCE(
+                NULLIF(TRIM(a.metadata->>'actual_service_date'), '')::date,
+                (a.performed_at AT TIME ZONE 'Australia/Melbourne')::date
+              ), a.performed_at, a.id
+              LIMIT 1
+           ) actual ON true
+          WHERE lower(COALESCE(t.task_type, t.type, '')) = 'checkout_clean'
+            AND NULLIF(TRIM(COALESCE(t.cleaner_id::text, t.assignee_id::text)), '') IS NOT NULL
+            AND ${activeCleaningTaskWhereSql('t')}
+            AND ${validCleaningTaskOrderWhereSql('t', 'o')}
+       ), ranked AS (
+         SELECT payment_candidates.*,
+                ROW_NUMBER() OVER (
+                  PARTITION BY business_key
+                  ORDER BY updated_at DESC NULLS LAST, task_id DESC
+                ) AS canonical_rank,
+                COUNT(*) OVER (PARTITION BY business_key) AS duplicate_count
+           FROM payment_candidates
+       ), canonical AS (
+         SELECT *
+           FROM ranked
+          WHERE canonical_rank = 1
+       ), payable AS (
+         SELECT canonical.task_id, canonical.business_key, canonical.duplicate_count,
+                canonical.user_id, canonical.user_name,
+                COALESCE(evidence.actual_service_date, canonical.scheduled_service_date) AS service_date,
+                canonical.scheduled_service_date,
+                evidence.actual_service_date, evidence.actual_audit_id,
+                evidence.actual_performed_at, evidence.actual_metadata,
+                canonical.property_id, canonical.property_label, canonical.property_type,
+                canonical.task_type, canonical.inspection_due_date, canonical.inspection_mode
+           FROM canonical
+           LEFT JOIN LATERAL (
+             SELECT sibling.actual_service_date, sibling.actual_audit_id,
+                    sibling.actual_performed_at, sibling.actual_metadata
+               FROM payment_candidates sibling
+              WHERE sibling.business_key = canonical.business_key
+                AND sibling.user_id = canonical.user_id
+                AND sibling.actual_audit_id IS NOT NULL
+              ORDER BY sibling.actual_service_date, sibling.actual_performed_at, sibling.actual_audit_id
+              LIMIT 1
+           ) evidence ON true
+       )
+       SELECT task_id, business_key, duplicate_count, user_id, user_name,
+              service_date, scheduled_service_date, actual_service_date,
+              actual_audit_id, actual_performed_at, actual_metadata,
+              property_id, property_label, property_type, task_type,
+              inspection_due_date, inspection_mode
+         FROM payable
+        WHERE service_date::date BETWEEN $1::date AND $2::date
+          AND ($3::text[] IS NULL OR user_id = ANY($3::text[]))
+        ORDER BY service_date, business_key, user_id`,
+      [period.week_start, period.week_end, userFilter, ['fill_supplies', 'complete_cleaning']],
+    ),
   ])
+
+  // Inspection settlement is owned by the effective manager arrangement, not
+  // by an upload/audit event.  The task id is the stable inspection identity.
+  // A source-system date refresh after a Melbourne day has ended retains the
+  // before-snapshot unless a later explicit manager revision supersedes it.
+  const inspectionPaymentResult = await executor.query(
+    `WITH current_inspection_assignments AS (
+       SELECT t.id::text AS task_id,
+              'inspection:' || t.id::text AS inspection_key,
+              t.inspector_id::text AS user_id,
+              (CASE
+                WHEN lower(COALESCE(t.inspection_mode, '')) = 'deferred' AND t.inspection_due_date IS NOT NULL
+                  THEN t.inspection_due_date
+                ELSE COALESCE(t.task_date, t.date)
+              END) AS service_date,
+              COALESCE(t.task_date, t.date) AS scheduled_service_date,
+              t.property_id::text AS property_id,
+              COALESCE(NULLIF(TRIM(t.task_type), ''), NULLIF(TRIM(t.type), '')) AS task_type,
+              t.inspection_due_date,
+              lower(COALESCE(t.inspection_mode, '')) AS inspection_mode,
+              'current'::text AS assignment_source,
+              t.property_id IS NULL AS property_snapshot_missing
+         FROM cleaning_tasks t
+         LEFT JOIN orders o ON o.id::text = t.order_id::text
+        WHERE lower(COALESCE(t.inspection_mode, '')) IN ('same_day', 'deferred')
+          AND lower(COALESCE(t.inspection_scope, 'inspect_and_hang')) <> 'password_only'
+          AND ${activeCleaningTaskWhereSql('t')}
+          AND ${validCleaningTaskOrderWhereSql('t', 'o')}
+          AND NOT EXISTS (
+            SELECT 1
+              FROM LATERAL (
+                SELECT latest.payload#>'{arrangement_revision,reasons}' @> '["management_closed"]'::jsonb AS is_closed
+                  FROM work_task_events latest
+                 WHERE latest.task_id = 'cleaning_task:' || t.id::text
+                   AND latest.payload#>>'{arrangement_revision,version}' = 'mz031-v1'
+                   AND (
+                     latest.payload#>'{arrangement_revision,reasons}' @> '["management_closed"]'::jsonb
+                     OR latest.payload#>'{arrangement_revision,reasons}' @> '["management_reopened"]'::jsonb
+                   )
+                 ORDER BY latest.sequence_no DESC
+                 LIMIT 1
+              ) latest_boundary
+             WHERE latest_boundary.is_closed
+          )
+     ), preserved_auto_changes AS (
+       SELECT DISTINCT ON (t.id)
+              t.id::text AS task_id,
+              'inspection:' || t.id::text AS inspection_key,
+              NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), '') AS user_id,
+              (CASE
+                WHEN lower(COALESCE(e.payload#>>'{arrangement_revision,before,inspection_mode}', '')) = 'deferred'
+                  AND NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_due_date}'), '') IS NOT NULL
+                  THEN NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_due_date}'), '')::date
+                ELSE NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,scheduled_service_date}'), '')::date
+              END) AS service_date,
+              NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,scheduled_service_date}'), '')::date AS scheduled_service_date,
+              COALESCE(
+                NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,property_id}'), ''),
+                legacy_sync_snapshot.before_property_id
+              ) AS property_id,
+              COALESCE(NULLIF(TRIM(t.task_type), ''), NULLIF(TRIM(t.type), '')) AS task_type,
+              NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_due_date}'), '')::date AS inspection_due_date,
+              lower(COALESCE(e.payload#>>'{arrangement_revision,before,inspection_mode}', '')) AS inspection_mode,
+              'preserved_auto_change'::text AS assignment_source,
+              COALESCE(
+                NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,property_id}'), ''),
+                legacy_sync_snapshot.before_property_id
+              ) IS NULL AS property_snapshot_missing
+         FROM work_task_events e
+         JOIN cleaning_tasks t ON e.task_id = 'cleaning_task:' || t.id::text
+         LEFT JOIN orders o ON o.id::text = t.order_id::text
+         LEFT JOIN LATERAL (
+           SELECT NULLIF(TRIM(log.before->>'property_id'), '') AS before_property_id
+             FROM cleaning_sync_logs log
+            WHERE log.task_id::text = t.id::text
+              AND log.action = 'updated'
+              AND log.created_at BETWEEN e.occurred_at - interval '5 minutes' AND e.occurred_at + interval '5 minutes'
+              AND NULLIF(LEFT(TRIM(COALESCE(log.before->>'task_date', log.before->>'date', '')), 10), '')
+                    IS NOT DISTINCT FROM NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,scheduled_service_date}'), '')
+              AND NULLIF(LEFT(TRIM(COALESCE(log.after->>'task_date', log.after->>'date', '')), 10), '')
+                    IS NOT DISTINCT FROM NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,scheduled_service_date}'), '')
+              AND NULLIF(TRIM(log.before->>'inspector_id'), '')
+                    IS NOT DISTINCT FROM NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), '')
+              AND NULLIF(TRIM(log.after->>'inspector_id'), '')
+                    IS NOT DISTINCT FROM NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,inspector_id}'), '')
+              AND NULLIF(TRIM(log.after->>'property_id'), '') IS NOT DISTINCT FROM t.property_id::text
+            ORDER BY ABS(EXTRACT(EPOCH FROM (log.created_at - e.occurred_at))), log.created_at DESC
+            LIMIT 1
+         ) legacy_sync_snapshot
+           ON NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,property_id}'), '') IS NULL
+        WHERE e.payload#>>'{arrangement_revision,version}' = 'mz031-v1'
+          AND e.caused_by_user_id IS NULL
+          AND lower(COALESCE(e.payload#>>'{arrangement_revision,before,inspection_mode}', '')) IN ('same_day', 'deferred')
+          AND lower(COALESCE(e.payload#>>'{arrangement_revision,before,inspection_scope}', 'inspect_and_hang')) <> 'password_only'
+          AND (CASE
+                WHEN lower(COALESCE(e.payload#>>'{arrangement_revision,before,inspection_mode}', '')) = 'deferred'
+                  AND NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_due_date}'), '') IS NOT NULL
+                  THEN NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_due_date}'), '')::date
+                ELSE NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,scheduled_service_date}'), '')::date
+              END) < (e.occurred_at AT TIME ZONE 'Australia/Melbourne')::date
+          AND (CASE
+                WHEN lower(COALESCE(e.payload#>>'{arrangement_revision,before,inspection_mode}', '')) = 'deferred'
+                  AND NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_due_date}'), '') IS NOT NULL
+                  THEN NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_due_date}'), '')::date
+                ELSE NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,scheduled_service_date}'), '')::date
+              END) < (now() AT TIME ZONE 'Australia/Melbourne')::date
+          AND (
+            NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,scheduled_service_date}'), '')
+              IS DISTINCT FROM NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,scheduled_service_date}'), '')
+            OR NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_due_date}'), '')
+              IS DISTINCT FROM NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,inspection_due_date}'), '')
+            OR NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_mode}'), '')
+              IS DISTINCT FROM NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,inspection_mode}'), '')
+            OR NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_scope}'), '')
+              IS DISTINCT FROM NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,inspection_scope}'), '')
+            OR NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,property_id}'), '')
+              IS DISTINCT FROM NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,property_id}'), '')
+            OR NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), '')
+              IS DISTINCT FROM NULLIF(TRIM(e.payload#>>'{arrangement_revision,after,inspector_id}'), '')
+          )
+          AND ${activeCleaningTaskWhereSql('t')}
+          AND ${validCleaningTaskOrderWhereSql('t', 'o')}
+          AND NOT EXISTS (
+            SELECT 1
+              FROM work_task_events manager_revision
+             WHERE manager_revision.task_id = e.task_id
+               AND manager_revision.sequence_no > e.sequence_no
+               AND manager_revision.payload#>>'{arrangement_revision,version}' = 'mz031-v1'
+               AND manager_revision.caused_by_user_id IS NOT NULL
+          )
+        ORDER BY t.id, e.sequence_no
+     ), effective_inspection_assignments AS (
+       SELECT preserved.* FROM preserved_auto_changes preserved
+       UNION ALL
+       SELECT current.*
+         FROM current_inspection_assignments current
+        WHERE NOT EXISTS (
+          SELECT 1 FROM preserved_auto_changes preserved WHERE preserved.task_id = current.task_id
+        )
+     )
+     SELECT effective.task_id, effective.inspection_key, effective.user_id,
+            COALESCE(
+              NULLIF(TRIM(u.display_name), ''), NULLIF(TRIM(u.username), ''),
+              NULLIF(TRIM(u.legal_name), ''), effective.user_id
+            ) AS user_name,
+            effective.service_date::text AS service_date,
+            effective.scheduled_service_date::text AS scheduled_service_date,
+            effective.property_id,
+            COALESCE(NULLIF(TRIM(p.code), ''), NULLIF(TRIM(p.address), ''), effective.property_id) AS property_label,
+            NULLIF(TRIM(p.type), '') AS property_type,
+            effective.task_type,
+            effective.inspection_due_date::text AS inspection_due_date,
+            effective.inspection_mode, effective.assignment_source,
+            effective.property_snapshot_missing,
+            effective.service_date < (now() AT TIME ZONE 'Australia/Melbourne')::date AS is_payable,
+            COALESCE(submissions.submission_count, 0) AS submission_count,
+            latest_submission.latest_audit_id, latest_submission.latest_performed_at,
+            latest_submission.latest_metadata
+       FROM effective_inspection_assignments effective
+       LEFT JOIN users u ON u.id::text = effective.user_id
+       LEFT JOIN properties p ON p.id::text = effective.property_id
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*)::text AS submission_count
+           FROM work_task_action_audits a
+          WHERE a.source_type = 'cleaning_tasks'
+            AND a.source_id::text = effective.task_id
+            AND a.performed_as_action = 'submit_inspection'
+            AND a.performed_by_user_id = effective.user_id
+            AND lower(COALESCE(a.metadata->>'step', '')) <> 'inspection_photos_saved'
+       ) submissions ON true
+       LEFT JOIN LATERAL (
+         SELECT a.id::text AS latest_audit_id, a.performed_at::text AS latest_performed_at,
+                a.metadata AS latest_metadata
+           FROM work_task_action_audits a
+          WHERE a.source_type = 'cleaning_tasks'
+            AND a.source_id::text = effective.task_id
+            AND a.performed_as_action = 'submit_inspection'
+            AND a.performed_by_user_id = effective.user_id
+            AND lower(COALESCE(a.metadata->>'step', '')) <> 'inspection_photos_saved'
+          ORDER BY a.performed_at DESC, a.id DESC
+          LIMIT 1
+       ) latest_submission ON true
+      WHERE effective.service_date BETWEEN $1::date AND $2::date
+        AND (
+          $3::text[] IS NULL
+          OR effective.user_id = ANY($3::text[])
+          OR EXISTS (
+            SELECT 1
+              FROM effective_inspection_assignments requested
+             WHERE requested.property_id = effective.property_id
+               AND requested.service_date = effective.service_date
+               AND requested.user_id = ANY($3::text[])
+          )
+        )
+      ORDER BY effective.service_date, effective.property_id, effective.task_id`,
+    params,
+  )
+
+  const carryAdjustmentResult = await executor.query(
+    `SELECT id, source_settlement_id, source_adjustment_id, user_id,
+            source_week_start::text, source_week_end::text,
+            target_week_start::text, target_week_end::text,
+            recorded_subtotal_difference_cents, recorded_gst_difference_cents,
+            recorded_total_difference_cents,
+            previously_applied_subtotal_cents, previously_applied_gst_cents,
+            previously_applied_total_cents,
+            applied_subtotal_cents, applied_gst_cents, applied_total_cents,
+            reason, applied_by, applied_at::text
+       FROM personnel_settlement_carry_adjustments
+      WHERE target_week_start=$1::date
+        AND target_week_end=$2::date
+        AND status IN ('scheduled','included_in_target')
+        AND ($3::text[] IS NULL OR user_id = ANY($3::text[]))
+      ORDER BY applied_at, id`,
+    params,
+  )
 
   const profiles = (profileResult.rows || []) as ProfileRow[]
   const rules = groupRules((ruleResult.rows || []) as RuleRow[])
-  const candidates = (auditResult.rows || []) as WorkloadAuditCandidate[]
+  const candidates = (auditResult.rows || []) as SettlementAuditCandidate[]
   const claims = (claimResult.rows || []) as ClaimRow[]
   const cleaningAssignments = (cleaningAssignmentResult.rows || []) as CleaningAssignmentCandidate[]
+  const cleaningPaymentAssignments = (cleaningPaymentResult.rows || []) as CleaningPaymentAssignment[]
+  const inspectionPaymentAssignments = (inspectionPaymentResult.rows || []) as InspectionPaymentAssignment[]
+  const carryAdjustments = (carryAdjustmentResult.rows || []) as CarryAdjustmentRow[]
   const people = new Map<string, PersonPreview>()
+  const unassignedInspectionWarnings: Array<PersonPreview['warnings'][number] & {
+    user_id: string
+    user_name: string
+  }> = []
 
   const profilesByUser = new Map<string, ProfileRow[]>()
   for (const profile of profiles) {
@@ -865,7 +1285,15 @@ export async function buildPersonnelSettlementPreview(input: {
     sourceType: string,
     sourceId: string,
     reason: string,
-    detail?: { service_date?: string; component_type?: SettlementComponentType; description?: string },
+    detail?: {
+      service_date?: string
+      component_type?: SettlementComponentType
+      description?: string
+      task_id?: string
+      property_id?: string | null
+      property_label?: string | null
+      work_items?: SettlementWorkItem[]
+    },
   ) => {
     const person = people.get(userId) || newPerson(userId, userName)
     person.warnings.push({ source_type: sourceType, source_id: sourceId, reason, ...detail })
@@ -900,6 +1328,14 @@ export async function buildPersonnelSettlementPreview(input: {
         service_date: inputLine.service_date,
         component_type: inputLine.component_type,
         description: inputLine.description,
+        ...(inputLine.work_items?.[0]?.task_id ? { task_id: inputLine.work_items[0].task_id } : {}),
+        ...(inputLine.property_id || inputLine.work_items?.[0]?.property_id ? {
+          property_id: inputLine.property_id || inputLine.work_items?.[0]?.property_id || null,
+        } : {}),
+        ...(inputLine.property_label || inputLine.work_items?.[0]?.property_label ? {
+          property_label: inputLine.property_label || inputLine.work_items?.[0]?.property_label || null,
+        } : {}),
+        ...(inputLine.work_items?.length ? { work_items: inputLine.work_items } : {}),
       },
     )
     const userProfiles = profilesByUser.get(inputLine.user_id) || []
@@ -1023,6 +1459,15 @@ export async function buildPersonnelSettlementPreview(input: {
       uniqueCleaningAssignments.set(assignmentKey, assignment)
     }
   }
+  const uniqueCleaningPaymentAssignments = new Map<string, CleaningPaymentAssignment>()
+  for (const assignment of cleaningPaymentAssignments) {
+    const businessKey = cleanText(assignment.business_key) || `checkout-task:${assignment.task_id}`
+    if (!uniqueCleaningPaymentAssignments.has(businessKey)) {
+      uniqueCleaningPaymentAssignments.set(businessKey, assignment)
+    }
+  }
+  const deduplicatedCleaningPaymentAssignments = Array.from(uniqueCleaningPaymentAssignments.values())
+    .reduce((count, assignment) => count + Math.max(0, Number(assignment.duplicate_count || 1) - 1), 0)
   let cancelledCleaningAssignments = 0
   let nonCancelledCleaningAssignments = 0
   let excludedNonCheckoutCleaningAssignments = 0
@@ -1042,7 +1487,7 @@ export async function buildPersonnelSettlementPreview(input: {
   }
 
   const inPeriod = (serviceDate: string) => serviceDate >= period.week_start && serviceDate <= period.week_end
-  const isRequestedUser = (userId: string) => !userFilter || userFilter.includes(userId)
+  const isRequestedUser = (userId: string | null) => !userFilter || (!!userId && userFilter.includes(userId))
   const eligibleCandidates: Array<{
     candidate: WorkloadAuditCandidate
     component: 'cleaning_task' | 'inspection_day'
@@ -1060,8 +1505,14 @@ export async function buildPersonnelSettlementPreview(input: {
     component: 'cleaning_task' | 'inspection_day'
     reason: string
   }> = []
+  const eligibleCleaningPerformersByTask = new Map<string, Set<string>>()
   for (const candidate of candidates) {
+    const candidateAction = cleanText(candidate.action).toLowerCase()
+    // Inspection uploads are evidence only. They must never create, move,
+    // revive, or conflict with a manager-owned settlement assignment.
+    if (candidateAction === 'submit_inspection') continue
     const decision = classifyWorkloadAudit(candidate)
+    const isCleaningAudit = candidateAction === 'fill_supplies' || candidateAction === 'complete_cleaning'
     if (decision.eligibility === 'excluded') {
       if (isRequestedUser(candidate.user_id)) {
         excludedCandidates.push({
@@ -1072,6 +1523,17 @@ export async function buildPersonnelSettlementPreview(input: {
           service_date: candidate.service_date,
           reason: decision.reason,
         })
+      }
+      continue
+    }
+    // Cleaning payment and execution evidence are resolved exclusively by the
+    // current effective assignment query. Historical cleaner audits must not
+    // create performer conflicts or manual-review blocks after reassignment.
+    if (isCleaningAudit) {
+      if (decision.eligibility === 'eligible') {
+        const performers = eligibleCleaningPerformersByTask.get(candidate.task_id) || new Set<string>()
+        performers.add(candidate.user_id)
+        eligibleCleaningPerformersByTask.set(candidate.task_id, performers)
       }
       continue
     }
@@ -1096,9 +1558,36 @@ export async function buildPersonnelSettlementPreview(input: {
       }
       continue
     }
-    if (decision.component_type === 'inspection_day' || decision.component_type === 'cleaning_task') {
-      eligibleCandidates.push({ candidate, component: decision.component_type })
+    if (decision.component_type !== 'inspection_day' && decision.component_type !== 'cleaning_task') continue
+    if (decision.component_type === 'inspection_day' && Object.prototype.hasOwnProperty.call(candidate, 'current_assignee_user_id')) {
+      const currentAssignee = cleanText(candidate.current_assignee_user_id)
+      const taskStatus = cleanText(candidate.task_status).toLowerCase()
+      const executionState = cleanText(candidate.task_execution_state).toLowerCase()
+      const taskOrderId = cleanText(candidate.task_order_id)
+      const orderStatus = cleanText(candidate.order_status).toLowerCase()
+      const currentOwnershipInvalid = !currentAssignee
+        || currentAssignee !== candidate.user_id
+        || taskStatus === 'cancelled'
+        || taskStatus === 'canceled'
+        || (!!executionState && executionState !== 'active')
+        || (!!taskOrderId && !orderStatus)
+        || orderStatus === 'invalid'
+        || orderStatus.includes('cancel')
+      if (currentOwnershipInvalid) {
+        if (isRequestedUser(candidate.user_id) && inPeriod(candidate.service_date)) {
+          excludedCandidates.push({
+            audit_id: candidate.audit_id,
+            task_id: candidate.task_id,
+            user_id: candidate.user_id,
+            action: candidate.action,
+            service_date: candidate.service_date,
+            reason: 'inspection_assignment_no_longer_effective',
+          })
+        }
+        continue
+      }
     }
+    eligibleCandidates.push({ candidate, component: decision.component_type })
   }
 
   const performersByTask = new Map<string, Set<string>>()
@@ -1171,6 +1660,183 @@ export async function buildPersonnelSettlementPreview(input: {
     keys.add(key)
     checklistKeysByUser.set(userId, keys)
   }
+
+  const uniqueInspectionPaymentAssignments = new Map<string, InspectionPaymentAssignment>()
+  for (const assignment of inspectionPaymentAssignments) {
+    const key = cleanText(assignment.inspection_key) || `inspection:${assignment.task_id}`
+    if (!uniqueInspectionPaymentAssignments.has(key)) uniqueInspectionPaymentAssignments.set(key, assignment)
+  }
+  const inspectionAssignmentsByPropertyDate = new Map<string, InspectionPaymentAssignment[]>()
+  for (const assignment of uniqueInspectionPaymentAssignments.values()) {
+    if (assignment.property_snapshot_missing) continue
+    const propertyKey = cleanText(assignment.property_id) || `task:${assignment.task_id}`
+    const key = `${propertyKey}:${assignment.service_date}`
+    const existing = inspectionAssignmentsByPropertyDate.get(key) || []
+    existing.push(assignment)
+    inspectionAssignmentsByPropertyDate.set(key, existing)
+  }
+  const conflictingInspectionKeys = new Set<string>()
+  for (const assignments of inspectionAssignmentsByPropertyDate.values()) {
+    const inspectors = new Set(assignments.map((assignment) => cleanText(assignment.user_id)).filter(Boolean))
+    if (inspectors.size <= 1) continue
+    for (const assignment of assignments) {
+      if (cleanText(assignment.user_id)) conflictingInspectionKeys.add(assignment.inspection_key)
+    }
+  }
+  const inspectionDays = new Map<string, {
+    user_id: string
+    user_name: string | null
+    service_date: string
+    work_items: SettlementWorkItem[]
+  }>()
+  for (const assignment of uniqueInspectionPaymentAssignments.values()) {
+    if (!inPeriod(assignment.service_date)) continue
+    const inspectorId = cleanText(assignment.user_id)
+    const propertyKey = cleanText(assignment.property_id) || `task:${assignment.task_id}`
+    const groupKey = `${propertyKey}:${assignment.service_date}`
+    const propertyDateAssignments = inspectionAssignmentsByPropertyDate.get(groupKey) || []
+    const groupHasExplicitInspector = propertyDateAssignments.some((row) => !!cleanText(row.user_id))
+    if (!inspectorId) {
+      // A check-in executor-only row is expected beside an explicitly assigned
+      // checkout inspector. It neither conflicts nor receives inspection pay.
+      if (groupHasExplicitInspector) continue
+      const pendingWorkItem: SettlementWorkItem = {
+        ...inspectionPaymentWorkItem(assignment),
+        status: 'incomplete',
+        status_reason: 'inspection_inspector_missing',
+        included_in_amount: false,
+        requires_manual_review: true,
+      }
+      unassignedInspectionWarnings.push({
+        user_id: '',
+        user_name: 'Unassigned inspector',
+        source_type: 'inspection_task_assignment',
+        source_id: assignment.inspection_key,
+        reason: 'inspection_inspector_missing',
+        service_date: assignment.service_date,
+        component_type: 'inspection_day',
+        description: `Inspection pending assignment · ${assignment.property_label || assignment.property_id || assignment.task_id}`,
+        task_id: assignment.task_id,
+        property_id: assignment.property_id,
+        property_label: assignment.property_label,
+        work_items: [pendingWorkItem],
+      })
+      continue
+    }
+    if (!isRequestedUser(inspectorId)) continue
+    const assigned = { ...assignment, user_id: inspectorId }
+    const baseWorkItem = inspectionPaymentWorkItem(assigned)
+    if (assigned.property_snapshot_missing) {
+      const missingPropertyReason = assigned.assignment_source === 'current'
+        ? 'inspection_property_missing'
+        : 'historical_property_snapshot_missing'
+      const missingPropertyWorkItem: SettlementWorkItem = {
+        ...baseWorkItem,
+        status: 'incomplete',
+        status_reason: missingPropertyReason,
+        included_in_amount: false,
+        requires_manual_review: true,
+      }
+      addChecklistItem(inspectorId, assigned.user_name, missingPropertyWorkItem)
+      warn(
+        inspectorId,
+        assigned.user_name,
+        'inspection_task_assignment',
+        assigned.inspection_key,
+        missingPropertyReason,
+        {
+          service_date: assigned.service_date,
+          component_type: 'inspection_day',
+          description: `Inspection assignment · ${assigned.task_id}`,
+          task_id: assigned.task_id,
+          work_items: [missingPropertyWorkItem],
+        },
+      )
+      continue
+    }
+    if (conflictingInspectionKeys.has(assigned.inspection_key)) {
+      const conflictWorkItem: SettlementWorkItem = {
+        ...baseWorkItem,
+        status: 'incomplete',
+        status_reason: 'inspection_assignment_conflict_for_property_date',
+        included_in_amount: false,
+        requires_manual_review: true,
+      }
+      addChecklistItem(inspectorId, assigned.user_name, conflictWorkItem)
+      warn(
+        inspectorId,
+        assigned.user_name,
+        'inspection_task_assignment',
+        assigned.inspection_key,
+        'inspection_assignment_conflict_for_property_date',
+        {
+          service_date: assigned.service_date,
+          component_type: 'inspection_day',
+          description: `Inspection assignment conflict · ${assigned.property_label || assigned.property_id || assigned.task_id}`,
+          task_id: assigned.task_id,
+          property_id: assigned.property_id,
+          property_label: assigned.property_label,
+          work_items: [conflictWorkItem],
+        },
+      )
+      continue
+    }
+    addChecklistItem(inspectorId, assigned.user_name, baseWorkItem)
+    if (!assigned.is_payable) continue
+    const dayKey = `${inspectorId}:${assigned.service_date}`
+    const day = inspectionDays.get(dayKey) || {
+      user_id: inspectorId,
+      user_name: assigned.user_name,
+      service_date: assigned.service_date,
+      work_items: [],
+    }
+    day.work_items.push(baseWorkItem)
+    inspectionDays.set(dayKey, day)
+  }
+  for (const day of inspectionDays.values()) {
+    const propertyCount = new Set(day.work_items.map((item) => item.property_id || item.property_label || item.task_id)).size
+    appendLine({
+      user_id: day.user_id,
+      user_name: day.user_name,
+      component_type: 'inspection_day',
+      service_date: day.service_date,
+      source_type: 'inspection_task_assignment',
+      source_id: `inspection-day:${day.service_date}`,
+      description: `Inspection day · ${propertyCount} property(ies) · ${day.work_items.length} task(s)`,
+      quantity_numerator: 1,
+      quantity_denominator: 1,
+      work_items: day.work_items,
+    })
+  }
+
+  for (const assignment of uniqueCleaningPaymentAssignments.values()) {
+    if (!isRequestedUser(assignment.user_id) || !inPeriod(assignment.service_date)) continue
+    const workItem = cleaningPaymentWorkItem(assignment)
+    addChecklistItem(assignment.user_id, assignment.user_name, workItem)
+    appendLine({
+      user_id: assignment.user_id,
+      user_name: assignment.user_name,
+      component_type: 'cleaning_task',
+      service_date: assignment.service_date,
+      source_type: 'cleaning_task_assignment',
+      source_id: assignment.business_key,
+      source_audit_id: assignment.actual_audit_id,
+      property_id: assignment.property_id,
+      property_label: assignment.property_label,
+      property_type: assignment.property_type,
+      task_type: assignment.task_type,
+      description: assignment.property_label
+        ? `Cleaning · ${assignment.property_label} · ${assignment.property_type || '房型未登记'}`
+        : `Cleaning task · ${assignment.property_type || '房型未登记'}`,
+      quantity_numerator: 1,
+      quantity_denominator: 1,
+      work_items: [workItem],
+    })
+  }
+  const payableCleaningAssignmentByTaskId = new Map<string, CleaningPaymentAssignment>()
+  for (const assignment of uniqueCleaningPaymentAssignments.values()) {
+    payableCleaningAssignmentByTaskId.set(assignment.task_id, assignment)
+  }
   const legacyTasksWithoutPerformerAudit: Array<{
     task_id: string
     component_type: 'cleaning_task' | 'inspection_day'
@@ -1185,7 +1851,108 @@ export async function buildPersonnelSettlementPreview(input: {
   for (const assignment of uniqueCleaningAssignments.values()) {
     const component = assignment.component_type || 'cleaning_task'
     if (component === 'cleaning_task' && cleanText(assignment.task_type).toLowerCase() !== 'checkout_clean') continue
+    if (component === 'inspection_day') {
+      const effective = uniqueInspectionPaymentAssignments.get(`inspection:${assignment.task_id}`)
+      if (effective
+        && effective.user_id === assignment.user_id
+        && effective.service_date === assignment.service_date) {
+        // The authoritative assignment-owned checklist item was added above.
+        continue
+      }
+      if (effective) {
+        addChecklistItem(assignment.user_id, assignment.user_name, {
+          execution_key: `inspection-history:${assignment.task_id}:${assignment.service_date}:${assignment.user_id}`,
+          audit_id: null,
+          task_id: assignment.task_id,
+          component_type: 'inspection_day',
+          service_date: null,
+          performed_at: null,
+          performed_by_user_id: null,
+          performed_by_name: null,
+          property_id: assignment.property_id,
+          property_label: assignment.property_label,
+          property_type: assignment.property_type,
+          task_type: assignment.task_type,
+          scheduled_service_date: assignment.service_date,
+          current_scheduled_service_date: effective.service_date,
+          inspection_due_date: cleanText(assignment.inspection_due_date).slice(0, 10) || null,
+          inspection_mode: cleanText(assignment.inspection_mode) || null,
+          evidence_count: 0,
+          evidence: [],
+          status: 'rescheduled',
+          status_reason: cleanText(assignment.arrangement_reason) || 'inspection_assignment_superseded',
+          included_in_amount: false,
+          requires_manual_review: false,
+        })
+        continue
+      }
+    }
     const executionKey = `${component === 'cleaning_task' ? 'cleaning' : 'inspection'}:${assignment.task_id}`
+    const payableCleaningAssignment = component === 'cleaning_task'
+      ? payableCleaningAssignmentByTaskId.get(assignment.task_id)
+      : null
+    if (payableCleaningAssignment) {
+      if (payableCleaningAssignment.user_id === assignment.user_id) {
+        // The assignment-owned checklist item was already added above. Raw
+        // shared statuses such as keys_hung must not reclassify it as legacy.
+        continue
+      }
+      addChecklistItem(assignment.user_id, assignment.user_name, {
+        execution_key: executionKey,
+        audit_id: null,
+        task_id: assignment.task_id,
+        component_type: 'cleaning_task',
+        service_date: null,
+        performed_at: null,
+        performed_by_user_id: null,
+        performed_by_name: null,
+        property_id: assignment.property_id,
+        property_label: assignment.property_label,
+        property_type: assignment.property_type,
+        task_type: assignment.task_type,
+        scheduled_service_date: assignment.service_date,
+        current_scheduled_service_date: payableCleaningAssignment.scheduled_service_date,
+        inspection_due_date: cleanText(assignment.inspection_due_date).slice(0, 10) || null,
+        inspection_mode: cleanText(assignment.inspection_mode) || null,
+        evidence_count: 0,
+        evidence: [],
+        status: 'rescheduled',
+        status_reason: cleanText(assignment.arrangement_reason) || 'cleaning_assignment_no_longer_effective',
+        included_in_amount: false,
+        requires_manual_review: false,
+      })
+      continue
+    }
+    const historicalCleaningPerformers = component === 'cleaning_task'
+      ? eligibleCleaningPerformersByTask.get(assignment.task_id)
+      : null
+    if (historicalCleaningPerformers?.size && !historicalCleaningPerformers.has(assignment.user_id)) {
+      addChecklistItem(assignment.user_id, assignment.user_name, {
+        execution_key: executionKey,
+        audit_id: null,
+        task_id: assignment.task_id,
+        component_type: 'cleaning_task',
+        service_date: null,
+        performed_at: null,
+        performed_by_user_id: null,
+        performed_by_name: null,
+        property_id: assignment.property_id,
+        property_label: assignment.property_label,
+        property_type: assignment.property_type,
+        task_type: assignment.task_type,
+        scheduled_service_date: assignment.service_date,
+        current_scheduled_service_date: cleanText(assignment.current_service_date).slice(0, 10) || assignment.service_date,
+        inspection_due_date: cleanText(assignment.inspection_due_date).slice(0, 10) || null,
+        inspection_mode: cleanText(assignment.inspection_mode) || null,
+        evidence_count: 0,
+        evidence: [],
+        status: 'rescheduled',
+        status_reason: cleanText(assignment.arrangement_reason) || 'executed_by_different_performer',
+        included_in_amount: false,
+        requires_manual_review: false,
+      })
+      continue
+    }
     const executed = dedupedEligible.get(executionKey)
     if (executed?.component === component && executed.candidate.user_id !== assignment.user_id) {
       const arrangementReason = cleanText(assignment.arrangement_reason) || 'executed_by_different_performer'
@@ -1243,9 +2010,10 @@ export async function buildPersonnelSettlementPreview(input: {
     const taskStatus = cleanText(assignment.task_status).toLowerCase()
     const arrangementReason = cleanText(assignment.arrangement_reason)
     const managementClosed = arrangementReason === 'management_closed_without_execution'
-    const legacyCompleted = component === 'cleaning_task'
-      ? LEGACY_COMPLETED_CLEANING_STATUSES.has(taskStatus)
-      : LEGACY_COMPLETED_INSPECTION_STATUSES.has(taskStatus)
+    // A shared/raw cleaning terminal status is not payment or completion
+    // authority in MZ-032. Active assignments are handled by the payment query;
+    // all other cleaning plan rows remain non-blocking checklist context.
+    const legacyCompleted = false
     const cancelled = taskStatus === 'cancelled' || taskStatus === 'canceled'
     const status: SettlementWorkItem['status'] = cancelled
       ? 'cancelled'
@@ -1300,7 +2068,7 @@ export async function buildPersonnelSettlementPreview(input: {
       warn(
         assignment.user_id,
         assignment.user_name,
-        component === 'cleaning_task' ? 'cleaning_task_assignment' : 'inspection_task_assignment',
+        'inspection_task_assignment',
         assignment.task_id,
         'legacy_completed_without_execution_audit',
       )
@@ -1322,64 +2090,6 @@ export async function buildPersonnelSettlementPreview(input: {
     if (!isRequestedUser(candidate.user_id)) continue
     if (!inPeriod(candidate.service_date)) continue
     addChecklistItem(candidate.user_id, candidate.performed_by_name, candidateWorkItem(candidate, component))
-  }
-
-  const inspectionDays = new Map<string, {
-    user_id: string
-    user_name: string | null
-    service_date: string
-    work_items: SettlementWorkItem[]
-  }>()
-  for (const { candidate, component } of dedupedEligible.values()) {
-    if (!isRequestedUser(candidate.user_id)) continue
-    if (!inPeriod(candidate.service_date)) continue
-    const workItem = candidateWorkItem(candidate, component)
-    if (component === 'cleaning_task') {
-      appendLine({
-        user_id: candidate.user_id,
-        user_name: candidate.performed_by_name,
-        component_type: 'cleaning_task',
-        service_date: candidate.service_date,
-        source_type: 'work_task_action_audit',
-        source_id: workItem.execution_key,
-        source_audit_id: candidate.audit_id,
-        property_id: candidate.property_id,
-        property_label: candidate.property_label,
-        property_type: candidate.property_type,
-        task_type: candidate.task_type,
-        description: candidate.property_label
-          ? `Cleaning · ${candidate.property_label} · ${candidate.property_type || '房型未登记'}`
-          : `Cleaning task · ${candidate.property_type || '房型未登记'}`,
-        quantity_numerator: 1,
-        quantity_denominator: 1,
-        work_items: [workItem],
-      })
-      continue
-    }
-    const key = `${candidate.user_id}:${candidate.service_date}`
-    const day = inspectionDays.get(key) || {
-      user_id: candidate.user_id,
-      user_name: candidate.performed_by_name,
-      service_date: candidate.service_date,
-      work_items: [],
-    }
-    day.work_items.push(workItem)
-    inspectionDays.set(key, day)
-  }
-  for (const day of inspectionDays.values()) {
-    const propertyCount = new Set(day.work_items.map((item) => item.property_id || item.property_label || item.task_id)).size
-    appendLine({
-      user_id: day.user_id,
-      user_name: day.user_name,
-      component_type: 'inspection_day',
-      service_date: day.service_date,
-      source_type: 'work_task_action_audit',
-      source_id: `inspection-day:${day.service_date}`,
-      description: `Inspection day · ${propertyCount} property(ies) · ${day.work_items.length} task(s)`,
-      quantity_numerator: 1,
-      quantity_denominator: 1,
-      work_items: day.work_items,
-    })
   }
 
   for (const claim of claims) {
@@ -1428,6 +2138,108 @@ export async function buildPersonnelSettlementPreview(input: {
     })
   }
 
+  for (const carry of carryAdjustments) {
+    const subtotalCents = toSafeSignedInteger(carry.applied_subtotal_cents, 'carry_adjustment_subtotal_cents')
+    const gstCents = toSafeSignedInteger(carry.applied_gst_cents, 'carry_adjustment_gst_cents')
+    const totalCents = toSafeSignedInteger(carry.applied_total_cents, 'carry_adjustment_total_cents')
+    if (subtotalCents + gstCents !== totalCents) throw new Error('carry_adjustment_tax_breakdown_invalid')
+    if (subtotalCents === 0 && gstCents === 0) continue
+    const userProfiles = profilesByUser.get(carry.user_id) || []
+    const profile = selectUniqueEffective(userProfiles, period.week_end)
+    if (!profile) {
+      warn(
+        carry.user_id,
+        null,
+        'post_payment_adjustment',
+        carry.id,
+        userProfiles.filter((row) => dateContains(row, period.week_end)).length > 1
+          ? 'ambiguous_effective_profile'
+          : 'missing_effective_profile',
+        {
+          service_date: period.week_start,
+          component_type: 'post_payment_adjustment',
+          description: `Paid settlement adjustment from ${carry.source_week_start} to ${carry.source_week_end}`,
+        },
+      )
+      continue
+    }
+    if (profile.gst_status === 'unconfirmed') {
+      warn(
+        carry.user_id,
+        profile.user_name,
+        'post_payment_adjustment',
+        carry.id,
+        'gst_status_unconfirmed',
+        {
+          service_date: period.week_start,
+          component_type: 'post_payment_adjustment',
+          description: `Paid settlement adjustment from ${carry.source_week_start} to ${carry.source_week_end}`,
+        },
+      )
+      continue
+    }
+    if (gstCents !== 0 && profile.gst_status !== 'registered') {
+      warn(
+        carry.user_id,
+        profile.user_name,
+        'post_payment_adjustment',
+        carry.id,
+        'post_payment_adjustment_tax_treatment_requires_decision',
+        {
+          service_date: period.week_start,
+          component_type: 'post_payment_adjustment',
+          description: `Paid settlement adjustment from ${carry.source_week_start} to ${carry.source_week_end}`,
+        },
+      )
+      continue
+    }
+    const person = people.get(carry.user_id) || newPerson(carry.user_id, profile.user_name)
+    person.user_name = profile.user_name
+    person.profile = profile
+    person.lines.push({
+      component_type: 'post_payment_adjustment',
+      service_date: period.week_start,
+      source_type: 'post_payment_adjustment',
+      source_id: carry.id,
+      source_audit_id: null,
+      property_id: null,
+      property_label: null,
+      property_type: null,
+      task_type: null,
+      description: `${totalCents > 0 ? 'Paid settlement supplement' : totalCents < 0 ? 'Paid settlement offset' : 'Paid settlement tax reclassification'} · ${carry.source_week_start} to ${carry.source_week_end}`,
+      quantity_numerator: 1,
+      quantity_denominator: 1,
+      unit_rate_cents: totalCents,
+      subtotal_cents: subtotalCents,
+      gst_cents: gstCents,
+      total_cents: totalCents,
+      price_basis: 'inclusive_gst',
+      profile_id: profile.id,
+      gst_registered: profile.gst_status === 'registered',
+      rule_id: null,
+      rule_item_id: null,
+      work_items: [],
+      carry_adjustment: {
+        source_settlement_id: carry.source_settlement_id,
+        source_adjustment_id: carry.source_adjustment_id,
+        source_week_start: carry.source_week_start,
+        source_week_end: carry.source_week_end,
+        recorded_subtotal_difference_cents: toSafeSignedInteger(carry.recorded_subtotal_difference_cents, 'carry_recorded_subtotal_difference_cents'),
+        recorded_gst_difference_cents: toSafeSignedInteger(carry.recorded_gst_difference_cents, 'carry_recorded_gst_difference_cents'),
+        recorded_total_difference_cents: toSafeSignedInteger(carry.recorded_total_difference_cents, 'carry_recorded_total_difference_cents'),
+        previously_applied_subtotal_cents: toSafeSignedInteger(carry.previously_applied_subtotal_cents, 'carry_previously_applied_subtotal_cents'),
+        previously_applied_gst_cents: toSafeSignedInteger(carry.previously_applied_gst_cents, 'carry_previously_applied_gst_cents'),
+        previously_applied_total_cents: toSafeSignedInteger(carry.previously_applied_total_cents, 'carry_previously_applied_total_cents'),
+        applied_subtotal_cents: subtotalCents,
+        applied_gst_cents: gstCents,
+        applied_total_cents: totalCents,
+        applied_by: cleanText(carry.applied_by),
+        applied_at: cleanText(carry.applied_at),
+      },
+    })
+    people.set(carry.user_id, person)
+  }
+
   for (const [userId, userProfiles] of profilesByUser.entries()) {
     const profile = selectUniqueEffective(userProfiles, period.week_end)
     const userRules = rulesByUser.get(userId) || []
@@ -1463,6 +2275,19 @@ export async function buildPersonnelSettlementPreview(input: {
       || a.execution_key.localeCompare(b.execution_key)
     ))
     person.totals = aggregateSettlementAmounts(person.lines)
+    if (person.totals.subtotal_cents < 0 || person.totals.gst_cents < 0 || person.totals.total_cents < 0) {
+      const carryLine = person.lines.find((line) => line.component_type === 'post_payment_adjustment')
+      if (carryLine) {
+        person.warnings.push({
+          source_type: carryLine.source_type,
+          source_id: carryLine.source_id,
+          reason: 'post_payment_adjustment_exceeds_target_total',
+          service_date: carryLine.service_date,
+          component_type: carryLine.component_type,
+          description: carryLine.description,
+        })
+      }
+    }
     if (!person.profile) {
       person.profile = selectUniqueEffective(profilesByUser.get(person.user_id) || [], period.week_end)
     }
@@ -1480,13 +2305,25 @@ export async function buildPersonnelSettlementPreview(input: {
       audited_candidates: candidates.filter((candidate) => isRequestedUser(candidate.user_id) && inPeriod(candidate.service_date)).length,
       eligible_deduplicated_candidates: Array.from(dedupedEligible.values())
         .filter((entry) => isRequestedUser(entry.candidate.user_id) && inPeriod(entry.candidate.service_date)).length,
-      executed_cleaning_tasks: peopleResult.flatMap((person) => person.lines)
-        .filter((line) => line.component_type === 'cleaning_task' && line.source_type === 'work_task_action_audit').length,
+      executed_cleaning_tasks: Array.from(uniqueCleaningPaymentAssignments.values())
+        .filter((assignment) => isRequestedUser(assignment.user_id)
+          && inPeriod(assignment.service_date)
+          && !!cleanText(assignment.actual_audit_id)).length,
+      payable_cleaning_assignments: peopleResult.flatMap((person) => person.lines)
+        .filter((line) => line.component_type === 'cleaning_task' && line.source_type === 'cleaning_task_assignment').length,
+      deduplicated_cleaning_assignments: deduplicatedCleaningPaymentAssignments,
       executed_inspection_tasks: peopleResult.flatMap((person) => person.lines)
         .filter((line) => line.component_type === 'inspection_day')
         .reduce((count, line) => count + line.work_items.length, 0),
       excluded_auxiliary_candidates: excludedCandidates.length,
-      conflicting_tasks_requiring_manual_review: requestedConflictingTaskKeys.size,
+      conflicting_tasks_requiring_manual_review: requestedConflictingTaskKeys.size
+        + conflictingInspectionKeys.size
+        + unassignedInspectionWarnings.length,
+      effective_inspection_assignments: Array.from(uniqueInspectionPaymentAssignments.values())
+        .filter((assignment) => !!cleanText(assignment.user_id)).length,
+      unassigned_inspection_assignments: unassignedInspectionWarnings.length,
+      expected_inspection_assignments: Array.from(uniqueInspectionPaymentAssignments.values())
+        .filter((assignment) => !!cleanText(assignment.user_id) && !assignment.is_payable).length,
       cleaning_assignment_candidates: uniqueCleaningAssignments.size,
       non_cancelled_cleaning_assignments: nonCancelledCleaningAssignments,
       excluded_cancelled_cleaning_assignments: cancelledCleaningAssignments,
@@ -1501,11 +2338,14 @@ export async function buildPersonnelSettlementPreview(input: {
     excluded_candidates: excludedCandidates,
     manual_review: {
       legacy_tasks_without_performer_audit: legacyTasksWithoutPerformerAudit,
-      warnings: peopleResult.flatMap((person) => person.warnings.map((warning) => ({
-        user_id: person.user_id,
-        user_name: person.user_name,
-        ...warning,
-      }))),
+      warnings: [
+        ...peopleResult.flatMap((person) => person.warnings.map((warning) => ({
+          user_id: person.user_id,
+          user_name: person.user_name,
+          ...warning,
+        }))),
+        ...unassignedInspectionWarnings,
+      ],
     },
   }
 }

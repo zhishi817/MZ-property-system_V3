@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'crypto'
 import { pgPool, pgRunInTransaction } from '../dbAdapter'
 import {
+  addSettlementDays,
   buildSettlementPeriod,
   getMelbourneDate,
   getSettlementWeekStart,
@@ -45,21 +46,28 @@ export type PersonnelSettlementAction =
   | 'adjust'
   | 'reopen'
   | 'confirm_paid'
+  | 'record_post_payment_adjustment'
+  | 'apply_post_payment_adjustment'
   | 'void'
 
 const SETTLEMENT_STATUSES = new Set<PersonnelSettlementStatus>([
   'draft', 'awaiting_confirmation', 'confirmed', 'disputed', 'finance_approved', 'paid', 'void',
+])
+const FROZEN_SUBMISSION_STATUSES = new Set<PersonnelSettlementStatus>([
+  'awaiting_confirmation', 'confirmed', 'finance_approved', 'paid',
 ])
 const ACTION_ALLOWED_STATUSES: Record<PersonnelSettlementAction, PersonnelSettlementStatus[]> = {
   issue_confirmation: ['draft'],
   confirm: ['awaiting_confirmation'],
   dispute: ['awaiting_confirmation'],
   resolve_dispute: ['disputed'],
-  return_for_confirmation: ['draft', 'confirmed'],
+  return_for_confirmation: ['draft', 'confirmed', 'finance_approved'],
   approve: ['confirmed'],
   adjust: ['draft'],
   reopen: ['awaiting_confirmation', 'confirmed'],
   confirm_paid: ['finance_approved'],
+  record_post_payment_adjustment: ['paid'],
+  apply_post_payment_adjustment: ['paid'],
   void: ['draft', 'awaiting_confirmation', 'confirmed', 'disputed', 'finance_approved'],
 }
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/
@@ -73,6 +81,35 @@ function requireReason(value: unknown, code = 'settlement_action_reason_required
   if (!reason) throw new Error(code)
   if (reason.length > 1000) throw new Error('settlement_action_reason_too_long')
   return reason
+}
+
+const SERIALIZABLE_SETTLEMENT_RETRY_CODES = new Set(['40001', '40P01'])
+
+export async function retryPersonnelSettlementSerializableTransaction<T>(
+  runTransaction: () => Promise<T>,
+  maxAttempts = 3,
+): Promise<T> {
+  let lastError: unknown
+  const boundedAttempts = Math.max(1, Math.min(3, Math.trunc(maxAttempts)))
+  for (let attempt = 1; attempt <= boundedAttempts; attempt += 1) {
+    try {
+      return await runTransaction()
+    } catch (error: any) {
+      lastError = error
+      if (!SERIALIZABLE_SETTLEMENT_RETRY_CODES.has(String(error?.code || '')) || attempt === boundedAttempts) throw error
+    }
+  }
+  throw lastError
+}
+
+async function runSerializableSettlementTransaction<T>(cb: (client: any) => Promise<T>): Promise<T> {
+  return retryPersonnelSettlementSerializableTransaction(async () => {
+    const result = await pgRunInTransaction(async (client) => {
+      await client.query('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE')
+      return cb(client)
+    })
+    return result as T
+  })
 }
 
 function safeInteger(value: unknown, field: string, options?: { min?: number; max?: number }) {
@@ -98,23 +135,27 @@ export function historicalFrozenSettlementRequiresVerification(row: any) {
   if (!row || cleanText(row.status) === 'void') return false
   const ruleSnapshot = parseJsonObject(row.rule_snapshot)
   const checklist = Array.isArray(ruleSnapshot.work_checklist) ? ruleSnapshot.work_checklist : []
+  const calculationVersion = cleanText(ruleSnapshot.calculation_version)
   const hasLegacyChecklist = checklist.some((item: any) => {
     const component = cleanText(item?.component_type)
     if (component !== 'cleaning_task' && component !== 'inspection_day') return false
     return cleanText(item?.status) === 'legacy_completed_unverified'
-      || (item?.included_in_amount === true && !cleanText(item?.audit_id))
+      || (calculationVersion !== PERSONNEL_SETTLEMENT_CALCULATION_VERSION
+        && item?.included_in_amount === true
+        && !cleanText(item?.audit_id))
   })
   const hasFrozenValue = Number(row.line_count || 0) > 0
     || row.has_lines === true
     || Number(row.subtotal_cents || 0) !== 0
     || Number(row.gst_cents || 0) !== 0
     || Number(row.total_cents || 0) !== 0
-  const calculationVersion = cleanText(ruleSnapshot.calculation_version)
   return hasFrozenValue && (calculationVersion !== PERSONNEL_SETTLEMENT_CALCULATION_VERSION || hasLegacyChecklist)
 }
 
 export function shouldUseFrozenSettlementSubmission(existing: any, livePerson: any) {
-  if (!existing || cleanText(existing.status) === 'void') return false
+  const existingStatus = cleanText(existing?.status) as PersonnelSettlementStatus
+  if (!existing || existingStatus === 'void') return false
+  if (FROZEN_SUBMISSION_STATUSES.has(existingStatus)) return true
   const hasLiveLegacyPendingVerification = (livePerson?.work_checklist || []).some(
     (item: any) => cleanText(item?.status) === 'legacy_completed_unverified',
   )
@@ -136,6 +177,25 @@ export function getPersonnelSettlementReturnDeliveryRetry(row: any) {
   if (cleanText(confirmationRequest.round) !== 'finance_return' || !confirmationRevision || !cleanText(financeReturn.returned_at)) {
     return null
   }
+  return {
+    userId: cleanText(row?.user_id),
+    weekStart: cleanText(row?.week_start),
+    weekEnd: cleanText(row?.week_end),
+    confirmationRevision,
+  }
+}
+
+export function getPersonnelSettlementCarryDeliveryRetry(row: any, carryAdjustmentId: string) {
+  if (cleanText(row?.status) !== 'awaiting_confirmation') return null
+  const ruleSnapshot = parseJsonObject(row?.rule_snapshot)
+  const carryChange = parseJsonObject(ruleSnapshot.carry_adjustment_change)
+  const confirmationRequest = parseJsonObject(ruleSnapshot.confirmation_request)
+  const confirmationRevision = cleanText(confirmationRequest.revision)
+  if (
+    cleanText(carryChange.carry_adjustment_id) !== cleanText(carryAdjustmentId)
+    || cleanText(confirmationRequest.round) !== 'post_payment_adjustment'
+    || !confirmationRevision
+  ) return null
   return {
     userId: cleanText(row?.user_id),
     weekStart: cleanText(row?.week_start),
@@ -256,10 +316,28 @@ async function insertPersonnelSettlementLine(client: Queryable, settlementId: st
           ? new Set(line.work_items.map((item: any) => cleanText(item?.property_id || item?.property_label || item?.task_id))).size
           : 0,
         executed_task_count: Array.isArray(line.work_items) ? line.work_items.length : 0,
+        ...(line.carry_adjustment ? { carry_adjustment: line.carry_adjustment } : {}),
       }),
     ],
   )
   return inserted.rows?.[0]?.id ? String(inserted.rows[0].id) : null
+}
+
+async function linkPersonnelSettlementCarryAdjustments(
+  client: Queryable,
+  settlementId: string,
+  userId: string,
+  weekStart: string,
+  weekEnd: string,
+) {
+  await client.query(
+    `UPDATE personnel_settlement_carry_adjustments
+        SET target_settlement_id=$1, status='included_in_target', updated_at=now()
+      WHERE user_id=$2 AND target_week_start=$3::date AND target_week_end=$4::date
+        AND status IN ('scheduled','included_in_target')
+        AND (target_settlement_id IS NULL OR target_settlement_id=$1)`,
+    [settlementId, userId, weekStart, weekEnd],
+  )
 }
 
 function sanitizePaymentSnapshot(snapshot: unknown, includeBankDetails: boolean) {
@@ -276,6 +354,8 @@ function sanitizePaymentSnapshot(snapshot: unknown, includeBankDetails: boolean)
     bank_bsb_masked: bsb ? `•••-${bsb.slice(-3)}` : null,
     bank_account_masked: accountNumber ? `•••• ${accountNumber.slice(-4)}` : null,
     payment_amount_cents: value.payment_amount_cents == null ? null : Number(value.payment_amount_cents),
+    payment_subtotal_cents: value.payment_subtotal_cents == null ? null : Number(value.payment_subtotal_cents),
+    payment_gst_cents: value.payment_gst_cents == null ? null : Number(value.payment_gst_cents),
     payment_date: value.payment_date || null,
   }
 }
@@ -479,6 +559,22 @@ export async function getPersonnelWeeklySettlement(input: {
     weekStart: String(row.week_start),
     excludeDrafts: true,
   }, executor)
+  const carryRowsResult = await executor.query(
+    `SELECT id, source_adjustment_id, target_settlement_id,
+            target_week_start::text, target_week_end::text,
+            applied_subtotal_cents, applied_gst_cents, applied_total_cents,
+            status, applied_by, applied_at::text
+       FROM personnel_settlement_carry_adjustments
+      WHERE source_settlement_id=$1
+      ORDER BY applied_at, id`,
+    [input.settlementId],
+  )
+  const carryRows: any[] = carryRowsResult.rows || []
+  const appliedCarry = carryRows.reduce<PersonnelSettlementAdjustmentAmounts>((sum, item: any) => ({
+    subtotal_cents: sum.subtotal_cents + Number(item.applied_subtotal_cents || 0),
+    gst_cents: sum.gst_cents + Number(item.applied_gst_cents || 0),
+    total_cents: sum.total_cents + Number(item.applied_total_cents || 0),
+  }), { subtotal_cents: 0, gst_cents: 0, total_cents: 0 })
   const includedClaimIds = new Set(
     lines
       .filter((line: any) => line.source_type === 'workload_claim')
@@ -489,6 +585,8 @@ export async function getPersonnelWeeklySettlement(input: {
   const financeReviewComparison = !input.requestingUserId
     && (
       String(settlement.status) === 'confirmed'
+      || String(settlement.status) === 'finance_approved'
+      || String(settlement.status) === 'paid'
       || (String(settlement.status) === 'draft' && hasPartnerSubmission)
     )
     ? await getPersonnelSettlementFinanceReviewComparison(executor, row, input.settlementId)
@@ -506,6 +604,34 @@ export async function getPersonnelWeeklySettlement(input: {
       ...claim,
       included_in_settlement: includedClaimIds.has(String(claim.id)),
     })),
+    post_review_adjustments: Array.isArray(ruleSnapshot.post_review_adjustments)
+      ? ruleSnapshot.post_review_adjustments.map((item: any) => {
+          const carry = carryRows.find((row: any) => cleanText(row.source_adjustment_id) === cleanText(item?.id))
+          return {
+            ...item,
+            pending_applied_subtotal_cents: cleanText(item?.status) === 'recorded_pending_finance_action'
+              ? Number(item?.difference_subtotal_cents || 0) - appliedCarry.subtotal_cents
+              : 0,
+            pending_applied_gst_cents: cleanText(item?.status) === 'recorded_pending_finance_action'
+              ? Number(item?.difference_gst_cents || 0) - appliedCarry.gst_cents
+              : 0,
+            pending_applied_delta_cents: cleanText(item?.status) === 'recorded_pending_finance_action'
+              ? Number(item?.difference_cents || 0) - appliedCarry.total_cents
+              : 0,
+            ...(carry ? {
+              carry_adjustment_id: cleanText(carry.id),
+              target_settlement_id: cleanText(carry.target_settlement_id) || null,
+              target_week_start: cleanText(carry.target_week_start),
+              target_week_end: cleanText(carry.target_week_end),
+              applied_subtotal_cents: Number(carry.applied_subtotal_cents || 0),
+              applied_gst_cents: Number(carry.applied_gst_cents || 0),
+              applied_delta_cents: Number(carry.applied_total_cents || 0),
+              applied_by: cleanText(carry.applied_by),
+              applied_at: cleanText(carry.applied_at),
+            } : {}),
+          }
+        })
+      : [],
     finance_review_comparison: financeReviewComparison,
     phase5_schema_ready: phase5SchemaReady,
   }
@@ -661,6 +787,13 @@ export async function generatePersonnelSettlementWeek(input: {
       for (const line of person.lines || []) {
         await insertPersonnelSettlementLine(client, settlementId, line)
       }
+      await linkPersonnelSettlementCarryAdjustments(
+        client,
+        settlementId,
+        userId,
+        period.week_start,
+        period.week_end,
+      )
       await insertAudit(
         client,
         'personnel_weekly_settlement',
@@ -827,7 +960,7 @@ async function assertSettlementReadyForConfirmation(client: Queryable, current: 
     throw new Error('settlement_calculation_blocked')
   }
   let comparison: PersonnelSettlementFinanceReviewComparison | null = null
-  if (String(current.status) === 'confirmed') {
+  if (['confirmed', 'finance_approved'].includes(String(current.status))) {
     comparison = await getPersonnelSettlementFinanceReviewComparison(client, current, settlementId)
     if (comparison.blocking_issues.length > 0) throw new Error('settlement_calculation_blocked')
     if (comparison.changed) throw new Error('settlement_finance_review_changed')
@@ -869,6 +1002,10 @@ function submissionPendingPricingItems(person: any) {
     service_date: string
     description: string
     code: string
+    task_id?: string
+    property_id?: string
+    property_label?: string
+    work_items?: any[]
   }>()
   for (const warning of person?.warnings || []) {
     const sourceType = cleanText(warning.source_type)
@@ -886,6 +1023,12 @@ function submissionPendingPricingItems(person: any) {
       service_date: serviceDate,
       description: cleanText(warning.description) || componentType,
       code: cleanText(warning.reason) || 'manual_review_required',
+      ...(cleanText(warning.task_id) ? { task_id: cleanText(warning.task_id) } : {}),
+      ...(cleanText(warning.property_id) ? { property_id: cleanText(warning.property_id) } : {}),
+      ...(cleanText(warning.property_label) ? { property_label: cleanText(warning.property_label) } : {}),
+      ...(Array.isArray(warning.work_items) && warning.work_items.length ? {
+        work_items: warning.work_items.map(serializeSettlementWorkChecklistItem),
+      } : {}),
     })
   }
   return Array.from(bySource.values()).sort(
@@ -897,6 +1040,15 @@ function serializeSubmissionPreviewLine(line: any, index: number) {
   const sourceType = cleanText(line?.source_type)
   const sourceId = cleanText(line?.source_id)
   const componentType = cleanText(line?.component_type)
+  const workItems = (Array.isArray(line?.work_items) ? line.work_items : [])
+    .map(serializeSettlementWorkChecklistItem)
+  const storedCalculation = parseJsonObject(line?.calculation_snapshot)
+  const carryAdjustment = parseJsonObject(
+    Object.keys(parseJsonObject(line?.carry_adjustment)).length
+      ? line.carry_adjustment
+      : storedCalculation.carry_adjustment,
+  )
+  const hasCarryAdjustment = Object.keys(carryAdjustment).length > 0
   return {
     id: [sourceType, sourceId, componentType].filter(Boolean).join(':')
       || `preview:${index}:${cleanText(line?.service_date)}:${componentType || 'line'}`,
@@ -904,6 +1056,10 @@ function serializeSubmissionPreviewLine(line: any, index: number) {
     service_date: cleanText(line?.service_date),
     source_type: sourceType || null,
     source_id: sourceId || null,
+    ...(workItems.length ? {
+      property_id: cleanText(line?.property_id) || null,
+      task_type: cleanText(line?.task_type) || null,
+    } : {}),
     description: cleanText(line?.description) || null,
     quantity_numerator: Number(line?.quantity_numerator || 0),
     quantity_denominator: Number(line?.quantity_denominator || 1),
@@ -913,6 +1069,18 @@ function serializeSubmissionPreviewLine(line: any, index: number) {
     total_cents: Number(line?.total_cents || 0),
     price_basis: cleanText(line?.price_basis) || null,
     evidence_count: Number(line?.evidence_count || 0),
+    ...(workItems.length || hasCarryAdjustment ? { calculation_snapshot: {
+      ...(workItems.length ? {
+        property_label: cleanText(line?.property_label) || null,
+        property_type: cleanText(line?.property_type) || null,
+        work_items: workItems,
+        executed_property_count: new Set(workItems.map((item: any) => (
+          cleanText(item.property_id || item.property_label || item.task_id)
+        ))).size,
+        executed_task_count: workItems.length,
+      } : {}),
+      ...(hasCarryAdjustment ? { carry_adjustment: carryAdjustment } : {}),
+    } } : {}),
   }
 }
 
@@ -1026,6 +1194,18 @@ export function buildPersonnelSettlementSubmissionSnapshot(input: {
   }
 }
 
+export function hydrateStoredPersonnelSettlementLineForSubmission(line: any) {
+  const calculation = parseJsonObject(line?.calculation_snapshot)
+  const carryAdjustment = parseJsonObject(calculation.carry_adjustment)
+  return {
+    ...line,
+    property_label: cleanText(calculation.property_label) || null,
+    property_type: cleanText(calculation.property_type) || null,
+    work_items: Array.isArray(calculation.work_items) ? calculation.work_items : [],
+    ...(Object.keys(carryAdjustment).length ? { carry_adjustment: carryAdjustment } : {}),
+  }
+}
+
 export function buildFrozenPersonnelSettlementSubmissionSnapshot(input: {
   weekStart: string
   weekEnd: string
@@ -1068,7 +1248,209 @@ export type PersonnelSettlementFinanceReviewComparison = {
   reviewed_gst_cents: number
   reviewed_total_cents: number
   difference_cents: number
+  partner_snapshot_token: string
+  reviewed_snapshot_token: string
   blocking_issues: Array<{ source_type: string; source_id: string; code: string }>
+}
+
+export type PersonnelSettlementPostPaymentAdjustment = {
+  id: string
+  status: 'recorded_pending_finance_action' | 'scheduled_for_next_week' | 'superseded'
+  recorded_at: string
+  recorded_by: string
+  reason: string
+  original_paid_subtotal_cents: number
+  original_paid_gst_cents: number
+  original_paid_total_cents: number
+  current_reviewed_subtotal_cents: number
+  current_reviewed_gst_cents: number
+  current_reviewed_total_cents: number
+  difference_subtotal_cents: number
+  difference_gst_cents: number
+  difference_cents: number
+  original_snapshot_token: string
+  current_snapshot_token: string
+  payment_date: string | null
+  carry_adjustment_id?: string
+  target_settlement_id?: string | null
+  target_week_start?: string
+  target_week_end?: string
+  applied_subtotal_cents?: number
+  applied_gst_cents?: number
+  applied_delta_cents?: number
+  applied_by?: string
+  applied_at?: string
+}
+
+export type PersonnelSettlementAdjustmentAmounts = {
+  subtotal_cents: number
+  gst_cents: number
+  total_cents: number
+}
+
+export type PersonnelSettlementCarryAdjustmentPlan = {
+  recorded_difference: PersonnelSettlementAdjustmentAmounts
+  previously_applied: PersonnelSettlementAdjustmentAmounts
+  applied_delta: PersonnelSettlementAdjustmentAmounts
+  target_week_start: string
+  target_week_end: string
+  already_applied: boolean
+}
+
+export function getPersonnelSettlementNoDeltaCarryRetry(input: {
+  sourceSettlementId: string
+  sourceWeekStart: string
+  sourceWeekEnd: string
+  adjustment: Partial<PersonnelSettlementPostPaymentAdjustment> | null | undefined
+}) {
+  const adjustment = input.adjustment
+  if (cleanText(adjustment?.status) !== 'scheduled_for_next_week') return null
+  if (
+    Number(adjustment?.applied_subtotal_cents) !== 0
+    || Number(adjustment?.applied_gst_cents) !== 0
+    || Number(adjustment?.applied_delta_cents) !== 0
+  ) return null
+
+  const sourcePeriod = buildSettlementPeriod(input.sourceWeekStart)
+  if (sourcePeriod.week_end !== cleanText(input.sourceWeekEnd)) return null
+  const expectedTargetWeekStart = addSettlementDays(sourcePeriod.week_start, 7)
+  const expectedTargetWeekEnd = addSettlementDays(expectedTargetWeekStart, 6)
+  if (
+    cleanText(adjustment?.target_week_start) !== expectedTargetWeekStart
+    || cleanText(adjustment?.target_week_end) !== expectedTargetWeekEnd
+  ) return null
+
+  return {
+    sourceSettlementId: cleanText(input.sourceSettlementId),
+    carryAdjustmentId: cleanText(adjustment?.carry_adjustment_id) || null,
+    targetSettlementId: cleanText(adjustment?.target_settlement_id) || null,
+    targetWeekStart: expectedTargetWeekStart,
+    targetWeekEnd: expectedTargetWeekEnd,
+    appliedSubtotalCents: 0,
+    appliedGstCents: 0,
+    appliedDeltaCents: 0,
+    idempotent: true,
+    confirmationRequest: null,
+  }
+}
+
+export function planPersonnelSettlementCarryAdjustment(input: {
+  sourceWeekStart: string
+  sourceWeekEnd: string
+  recordedDifference: PersonnelSettlementAdjustmentAmounts
+  priorAppliedDeltas: PersonnelSettlementAdjustmentAmounts[]
+}): PersonnelSettlementCarryAdjustmentPlan {
+  const sourcePeriod = buildSettlementPeriod(input.sourceWeekStart)
+  if (sourcePeriod.week_end !== cleanText(input.sourceWeekEnd)) throw new Error('settlement_carry_source_period_invalid')
+  const signed = (value: unknown, field: string) => safeInteger(
+    value,
+    field,
+    { min: -100_000_000, max: 100_000_000 },
+  )
+  const recordedDifference = {
+    subtotal_cents: signed(input.recordedDifference.subtotal_cents, 'recorded_subtotal_difference_cents'),
+    gst_cents: signed(input.recordedDifference.gst_cents, 'recorded_gst_difference_cents'),
+    total_cents: signed(input.recordedDifference.total_cents, 'recorded_total_difference_cents'),
+  }
+  if (recordedDifference.subtotal_cents + recordedDifference.gst_cents !== recordedDifference.total_cents) {
+    throw new Error('settlement_post_payment_adjustment_tax_breakdown_invalid')
+  }
+  const previouslyApplied = input.priorAppliedDeltas.reduce<PersonnelSettlementAdjustmentAmounts>((sum, value) => ({
+    subtotal_cents: sum.subtotal_cents + signed(value.subtotal_cents, 'prior_applied_subtotal_cents'),
+    gst_cents: sum.gst_cents + signed(value.gst_cents, 'prior_applied_gst_cents'),
+    total_cents: sum.total_cents + signed(value.total_cents, 'prior_applied_total_cents'),
+  }), { subtotal_cents: 0, gst_cents: 0, total_cents: 0 })
+  if (previouslyApplied.subtotal_cents + previouslyApplied.gst_cents !== previouslyApplied.total_cents) {
+    throw new Error('settlement_post_payment_adjustment_tax_breakdown_invalid')
+  }
+  const appliedDelta = {
+    subtotal_cents: signed(
+      recordedDifference.subtotal_cents - previouslyApplied.subtotal_cents,
+      'applied_subtotal_cents',
+    ),
+    gst_cents: signed(
+      recordedDifference.gst_cents - previouslyApplied.gst_cents,
+      'applied_gst_cents',
+    ),
+    total_cents: signed(
+      recordedDifference.total_cents - previouslyApplied.total_cents,
+      'applied_total_cents',
+    ),
+  }
+  if (appliedDelta.subtotal_cents + appliedDelta.gst_cents !== appliedDelta.total_cents) {
+    throw new Error('settlement_post_payment_adjustment_tax_breakdown_invalid')
+  }
+  const targetWeekStart = addSettlementDays(sourcePeriod.week_start, 7)
+  return {
+    recorded_difference: recordedDifference,
+    previously_applied: previouslyApplied,
+    applied_delta: appliedDelta,
+    target_week_start: targetWeekStart,
+    target_week_end: addSettlementDays(targetWeekStart, 6),
+    already_applied: appliedDelta.subtotal_cents === 0 && appliedDelta.gst_cents === 0,
+  }
+}
+
+export function buildPersonnelSettlementPostPaymentAdjustment(input: {
+  id: string
+  actorUserId: string
+  reason: string
+  recordedAt: string
+  current: any
+  comparison: PersonnelSettlementFinanceReviewComparison
+}): PersonnelSettlementPostPaymentAdjustment {
+  const reason = requireReason(input.reason, 'settlement_post_payment_adjustment_reason_required')
+  if (cleanText(input.current?.status) !== 'paid') throw new Error('settlement_post_payment_adjustment_paid_only')
+  if (input.comparison.unresolved_claim_count > 0 || input.comparison.blocking_issues.length > 0) {
+    throw new Error('settlement_post_payment_adjustment_unresolved')
+  }
+  const paymentSnapshot = parseJsonObject(input.current?.payment_destination_snapshot)
+  const sourceSettlementSubtotalCents = safeInteger(input.current?.subtotal_cents, 'original_paid_subtotal_cents')
+  const sourceSettlementGstCents = safeInteger(input.current?.gst_cents, 'original_paid_gst_cents')
+  const originalPaidSubtotalCents = safeInteger(
+    paymentSnapshot.payment_subtotal_cents ?? sourceSettlementSubtotalCents,
+    'original_paid_subtotal_cents',
+  )
+  const originalPaidGstCents = safeInteger(
+    paymentSnapshot.payment_gst_cents ?? sourceSettlementGstCents,
+    'original_paid_gst_cents',
+  )
+  const originalSettlementTotalCents = safeInteger(input.current?.total_cents, 'original_paid_total_cents')
+  const originalPaidTotalCents = safeInteger(
+    paymentSnapshot.payment_amount_cents ?? input.current?.total_cents,
+    'original_paid_total_cents',
+  )
+  const currentReviewedSubtotalCents = safeInteger(input.comparison.reviewed_subtotal_cents, 'current_reviewed_subtotal_cents')
+  const currentReviewedGstCents = safeInteger(input.comparison.reviewed_gst_cents, 'current_reviewed_gst_cents')
+  const currentReviewedTotalCents = safeInteger(input.comparison.reviewed_total_cents, 'current_reviewed_total_cents')
+  if (
+    originalPaidSubtotalCents + originalPaidGstCents !== originalSettlementTotalCents
+    || originalPaidSubtotalCents !== sourceSettlementSubtotalCents
+    || originalPaidGstCents !== sourceSettlementGstCents
+    || originalPaidTotalCents !== originalSettlementTotalCents
+    || currentReviewedSubtotalCents + currentReviewedGstCents !== currentReviewedTotalCents
+  ) {
+    throw new Error('settlement_post_payment_adjustment_tax_breakdown_unavailable')
+  }
+  return {
+    id: cleanText(input.id),
+    status: 'recorded_pending_finance_action',
+    recorded_at: cleanText(input.recordedAt),
+    recorded_by: cleanText(input.actorUserId),
+    reason,
+    original_paid_subtotal_cents: originalPaidSubtotalCents,
+    original_paid_gst_cents: originalPaidGstCents,
+    original_paid_total_cents: originalPaidTotalCents,
+    current_reviewed_subtotal_cents: currentReviewedSubtotalCents,
+    current_reviewed_gst_cents: currentReviewedGstCents,
+    current_reviewed_total_cents: currentReviewedTotalCents,
+    difference_subtotal_cents: currentReviewedSubtotalCents - originalPaidSubtotalCents,
+    difference_gst_cents: currentReviewedGstCents - originalPaidGstCents,
+    difference_cents: currentReviewedTotalCents - originalPaidTotalCents,
+    original_snapshot_token: input.comparison.partner_snapshot_token,
+    current_snapshot_token: input.comparison.reviewed_snapshot_token,
+    payment_date: cleanText(paymentSnapshot.payment_date) || null,
+  }
 }
 
 export function comparePersonnelSettlementFinanceReview(input: {
@@ -1092,6 +1474,8 @@ export function comparePersonnelSettlementFinanceReview(input: {
     reviewed_gst_cents: input.reviewedSnapshot.gst_cents,
     reviewed_total_cents: input.reviewedSnapshot.total_cents,
     difference_cents: input.reviewedSnapshot.total_cents - input.partnerSnapshot.total_cents,
+    partner_snapshot_token: input.partnerSnapshot.confirmation_token,
+    reviewed_snapshot_token: input.reviewedSnapshot.confirmation_token,
     blocking_issues: blockingIssues,
   }
 }
@@ -1112,8 +1496,9 @@ async function getPersonnelSettlementFinanceReviewComparison(
     ),
     client.query(
       `SELECT component_type, service_date::text, source_type, source_id,
-              description, quantity_numerator, quantity_denominator,
-              unit_rate_cents, subtotal_cents, gst_cents, total_cents, price_basis
+              source_audit_id, property_id, task_type, description,
+              quantity_numerator, quantity_denominator, unit_rate_cents,
+              subtotal_cents, gst_cents, total_cents, price_basis, calculation_snapshot
          FROM personnel_settlement_lines
         WHERE settlement_id=$1
         ORDER BY service_date, source_id, component_type`,
@@ -1131,7 +1516,7 @@ async function getPersonnelSettlementFinanceReviewComparison(
     weekStart: cleanText(current.week_start),
     weekEnd: cleanText(current.week_end),
     person: {
-      lines: lineResult.rows || [],
+      lines: (lineResult.rows || []).map(hydrateStoredPersonnelSettlementLineForSubmission),
       work_checklist: Array.isArray(parseJsonObject(current.rule_snapshot).work_checklist)
         ? parseJsonObject(current.rule_snapshot).work_checklist
         : [],
@@ -1146,7 +1531,15 @@ async function getPersonnelSettlementFinanceReviewComparison(
   const reviewedSnapshot = buildPersonnelSettlementSubmissionSnapshot({
     weekStart: cleanText(current.week_start),
     weekEnd: cleanText(current.week_end),
-    person: reviewedPerson,
+    person: reviewedPerson || {
+      lines: [],
+      totals: { subtotal_cents: 0, gst_cents: 0, total_cents: 0 },
+      warnings: [{
+        source_type: 'personnel_weekly_settlement',
+        source_id: settlementId,
+        reason: 'missing_effective_profile',
+      }],
+    },
   })
   return comparePersonnelSettlementFinanceReview({
     unresolvedClaimCount: Number(unresolvedResult.rows?.[0]?.count || 0),
@@ -1171,7 +1564,7 @@ export async function getPersonnelSettlementSubmissionPreview(input: {
   const independentlyFrozen = !!existing?.id
     && existingStatus !== 'void'
     && (
-      existingStatus === 'awaiting_confirmation'
+      FROZEN_SUBMISSION_STATUSES.has(existingStatus as PersonnelSettlementStatus)
       || historicalFrozenSettlementRequiresVerification(existing)
     )
   let person: any = null
@@ -1209,7 +1602,11 @@ export async function getPersonnelSettlementSubmissionPreview(input: {
   return {
     ...snapshot,
     amount_state: existingDetail
-      ? (existingStatus === 'awaiting_confirmation' ? 'frozen_awaiting_confirmation' : 'historical_frozen_pending_verification')
+      ? (existingStatus === 'awaiting_confirmation'
+          ? 'frozen_awaiting_confirmation'
+          : historicalFrozenSettlementRequiresVerification(existing)
+            ? 'historical_frozen_pending_verification'
+            : 'frozen_existing_settlement')
       : 'current_calculation',
     status: personnelSettlementSubmissionStatus(existing?.status),
     settlement: existing,
@@ -1416,6 +1813,7 @@ export async function submitPersonnelSettlementWeek(input: {
       )
     }
     for (const line of lines) await insertPersonnelSettlementLine(client, id, line)
+    await linkPersonnelSettlementCarryAdjustments(client, id, input.userId, period.week_start, period.week_end)
     const saved = await loadSettlementForUpdate(client, id)
     await insertAudit(client, 'personnel_weekly_settlement', id, resubmittingVoidedSettlement ? 'partner_resubmit_after_void' : existing ? 'partner_resubmit' : 'partner_submit', input.userId, existing ? settlementAuditSummary(existing) : null, {
       ...settlementAuditSummary(saved),
@@ -1473,6 +1871,7 @@ export async function returnPersonnelSettlementForConfirmation(input: {
   settlementId: string
   actorUserId: string
   reason: string
+  actorCanReturnFinanceApproved?: boolean
 }) {
   assertPersonnelSettlementSchemaReady()
   if (!pgPool) throw new Error('pg_required')
@@ -1481,6 +1880,9 @@ export async function returnPersonnelSettlementForConfirmation(input: {
     const current = await loadSettlementForUpdate(client, input.settlementId)
     const deliveryRetry = getPersonnelSettlementReturnDeliveryRetry(current)
     if (deliveryRetry) return deliveryRetry
+    if (String(current.status) === 'finance_approved' && input.actorCanReturnFinanceApproved !== true) {
+      throw new Error('settlement_finance_permission_required')
+    }
     assertPersonnelSettlementTransition('return_for_confirmation', current.status)
     const currentRuleSnapshot = parseJsonObject(current.rule_snapshot)
     if (
@@ -1539,7 +1941,8 @@ export async function returnPersonnelSettlementForConfirmation(input: {
               subtotal_cents=$3, gst_cents=$4, total_cents=$5,
               status='awaiting_confirmation', workload_amount_confirmed_at=NULL,
               workload_amount_confirmation_note=NULL, disputed_at=NULL,
-              dispute_note=$6, updated_at=$7::timestamptz
+              dispute_note=$6, finance_reviewed_by=NULL, finance_reviewed_at=NULL,
+              updated_at=$7::timestamptz
         WHERE id=$8
         RETURNING *`,
       [
@@ -2061,7 +2464,10 @@ export async function confirmPersonnelSettlementPaid(input: {
   assertPersonnelSettlementSchemaReady()
   if (!pgPool) throw new Error('pg_required')
   const payment = validatePersonnelSettlementPayment(input.payment)
-  await pgRunInTransaction(async (client) => {
+  await runSerializableSettlementTransaction(async (client) => {
+    // A payment decision must compare all live settlement sources against one
+    // consistent database snapshot. Concurrent source changes serialize after
+    // this payment and are handled by the post-payment adjustment workflow.
     const current = await loadSettlementForUpdate(client, input.settlementId)
     const totalCents = safeInteger(current.total_cents, 'total_cents')
     if (String(current.status) === 'paid') {
@@ -2130,6 +2536,8 @@ export async function confirmPersonnelSettlementPaid(input: {
         bank_account_number: cleanText(bank.bank_account_number),
       } : {}),
       captured_at: new Date().toISOString(),
+      payment_subtotal_cents: Number(current.subtotal_cents || 0),
+      payment_gst_cents: Number(current.gst_cents || 0),
       payment_amount_cents: totalCents,
       payment_date: payment.payment_date,
     }
@@ -2163,6 +2571,485 @@ export async function confirmPersonnelSettlementPaid(input: {
   }
   const settlement = await getPersonnelWeeklySettlement({ settlementId: input.settlementId })
   return documentWarning ? { ...settlement, document_warning: documentWarning } : settlement
+}
+
+export async function recordPersonnelSettlementPostPaymentAdjustment(input: {
+  settlementId: string
+  actorUserId: string
+  reason: string
+}) {
+  assertPersonnelSettlementSchemaReady()
+  if (!pgPool) throw new Error('pg_required')
+  const reason = requireReason(input.reason, 'settlement_post_payment_adjustment_reason_required')
+  await runSerializableSettlementTransaction(async (client) => {
+    const current = await loadSettlementForUpdate(client, input.settlementId)
+    assertPersonnelSettlementTransition('record_post_payment_adjustment', current.status)
+    const comparison = await getPersonnelSettlementFinanceReviewComparison(client, current, input.settlementId)
+    const recordedAt = new Date().toISOString()
+    const adjustment = buildPersonnelSettlementPostPaymentAdjustment({
+      id: randomUUID(),
+      actorUserId: input.actorUserId,
+      reason,
+      recordedAt,
+      current,
+      comparison,
+    })
+    const ruleSnapshot = parseJsonObject(current.rule_snapshot)
+    const existing = Array.isArray(ruleSnapshot.post_review_adjustments)
+      ? ruleSnapshot.post_review_adjustments.map((item: any) => ({ ...parseJsonObject(item) }))
+      : []
+    const latest = existing[existing.length - 1]
+    if (
+      Number(latest?.original_paid_subtotal_cents) === adjustment.original_paid_subtotal_cents
+      && Number(latest?.original_paid_gst_cents) === adjustment.original_paid_gst_cents
+      && Number(latest?.original_paid_total_cents) === adjustment.original_paid_total_cents
+      && Number(latest?.current_reviewed_subtotal_cents) === adjustment.current_reviewed_subtotal_cents
+      && Number(latest?.current_reviewed_gst_cents) === adjustment.current_reviewed_gst_cents
+      && Number(latest?.current_reviewed_total_cents) === adjustment.current_reviewed_total_cents
+      && Number(latest?.difference_subtotal_cents) === adjustment.difference_subtotal_cents
+      && Number(latest?.difference_gst_cents) === adjustment.difference_gst_cents
+      && Number(latest?.difference_cents) === adjustment.difference_cents
+      && cleanText(latest?.current_snapshot_token) === adjustment.current_snapshot_token
+      && cleanText(latest?.recorded_by) === adjustment.recorded_by
+      && cleanText(latest?.reason) === adjustment.reason
+    ) return
+    const priorAppliedResult = await client.query(
+      `SELECT COALESCE(SUM(applied_subtotal_cents),0)::text AS subtotal_cents,
+              COALESCE(SUM(applied_gst_cents),0)::text AS gst_cents,
+              COALESCE(SUM(applied_total_cents),0)::text AS total_cents
+         FROM personnel_settlement_carry_adjustments
+        WHERE source_settlement_id=$1`,
+      [input.settlementId],
+    )
+    const priorApplied = priorAppliedResult.rows?.[0] || {}
+    const hasPendingAdjustment = existing.some(
+      (item: any) => cleanText(item.status) === 'recorded_pending_finance_action',
+    )
+    if (
+      !comparison.changed
+      && !hasPendingAdjustment
+      && Number(priorApplied.subtotal_cents || 0) === 0
+      && Number(priorApplied.gst_cents || 0) === 0
+      && Number(priorApplied.total_cents || 0) === 0
+    ) throw new Error('settlement_finance_review_unchanged')
+    const supersededAt = recordedAt
+    const superseded = existing.map((item: any) => (
+      cleanText(item.status) === 'recorded_pending_finance_action'
+        ? { ...item, status: 'superseded', superseded_by: adjustment.id, superseded_at: supersededAt }
+        : item
+    ))
+    ruleSnapshot.post_review_adjustments = [...superseded, adjustment]
+    await client.query(
+      `UPDATE personnel_weekly_settlements
+          SET rule_snapshot=$1::jsonb, updated_at=now()
+        WHERE id=$2`,
+      [JSON.stringify(ruleSnapshot), input.settlementId],
+    )
+    await insertAudit(
+      client,
+      'personnel_weekly_settlement',
+      input.settlementId,
+      'record_post_payment_adjustment',
+      input.actorUserId,
+      settlementAuditSummary(current),
+      {
+        ...settlementAuditSummary(current),
+        post_payment_adjustment: adjustment,
+        historical_amounts_unchanged: true,
+      },
+    )
+  })
+  return getPersonnelWeeklySettlement({ settlementId: input.settlementId })
+}
+
+export async function applyPersonnelSettlementPostPaymentAdjustment(input: {
+  settlementId: string
+  adjustmentId: string
+  actorUserId: string
+}) {
+  assertPersonnelSettlementSchemaReady()
+  if (!pgPool) throw new Error('pg_required')
+  const adjustmentId = cleanText(input.adjustmentId)
+  if (!adjustmentId) throw new Error('settlement_post_payment_adjustment_id_required')
+  const applied = await runSerializableSettlementTransaction(async (client) => {
+    const carrySchema = await client.query(
+      `SELECT to_regclass('public.personnel_settlement_carry_adjustments')::text AS table_name`,
+    )
+    if (!cleanText(carrySchema.rows?.[0]?.table_name)) {
+      throw new Error('personnel_settlement_carry_schema_not_ready')
+    }
+    const current = await loadSettlementForUpdate(client, input.settlementId)
+    assertPersonnelSettlementTransition('apply_post_payment_adjustment', current.status)
+    const ruleSnapshot = parseJsonObject(current.rule_snapshot)
+    const adjustments = Array.isArray(ruleSnapshot.post_review_adjustments)
+      ? ruleSnapshot.post_review_adjustments.map((item: any) => ({ ...parseJsonObject(item) }))
+      : []
+    const adjustmentIndex = adjustments.findIndex((item: any) => cleanText(item.id) === adjustmentId)
+    if (adjustmentIndex < 0) throw new Error('settlement_post_payment_adjustment_not_found')
+    const selected = adjustments[adjustmentIndex]
+
+    const existingCarry = await client.query(
+      `SELECT id, target_settlement_id, target_week_start::text, target_week_end::text,
+              applied_subtotal_cents, applied_gst_cents, applied_total_cents, status
+         FROM personnel_settlement_carry_adjustments
+        WHERE source_settlement_id=$1 AND source_adjustment_id=$2
+        FOR UPDATE`,
+      [input.settlementId, adjustmentId],
+    )
+    if (existingCarry.rowCount) {
+      const row = existingCarry.rows[0]
+      const targetSettlementId = cleanText(row.target_settlement_id) || null
+      let confirmationRequest: null | {
+        settlementId: string
+        actorUserId: string
+        userId: string
+        weekStart: string
+        weekEnd: string
+        confirmationRevision: string
+        isDisputeResolution: boolean
+      } = null
+      if (targetSettlementId) {
+        const targetDeliveryResult = await client.query(
+          `SELECT settlement.*, batch.week_start::text, batch.week_end::text
+             FROM personnel_weekly_settlements settlement
+             JOIN personnel_settlement_batches batch ON batch.id=settlement.batch_id
+            WHERE settlement.id=$1
+            FOR UPDATE OF settlement`,
+          [targetSettlementId],
+        )
+        const retry = getPersonnelSettlementCarryDeliveryRetry(
+          targetDeliveryResult.rows?.[0],
+          cleanText(row.id),
+        )
+        if (retry) {
+          confirmationRequest = {
+            settlementId: targetSettlementId,
+            actorUserId: input.actorUserId,
+            ...retry,
+            isDisputeResolution: true,
+          }
+        }
+      }
+      return {
+        sourceSettlementId: input.settlementId,
+        carryAdjustmentId: cleanText(row.id),
+        targetSettlementId,
+        targetWeekStart: cleanText(row.target_week_start),
+        targetWeekEnd: cleanText(row.target_week_end),
+        appliedSubtotalCents: Number(row.applied_subtotal_cents || 0),
+        appliedGstCents: Number(row.applied_gst_cents || 0),
+        appliedDeltaCents: Number(row.applied_total_cents || 0),
+        idempotent: true,
+        confirmationRequest,
+      }
+    }
+    const noDeltaRetry = getPersonnelSettlementNoDeltaCarryRetry({
+      sourceSettlementId: input.settlementId,
+      sourceWeekStart: cleanText(current.week_start),
+      sourceWeekEnd: cleanText(current.week_end),
+      adjustment: selected,
+    })
+    if (noDeltaRetry) return noDeltaRetry
+    if (cleanText(selected.status) !== 'recorded_pending_finance_action') {
+      throw new Error('settlement_post_payment_adjustment_state_invalid')
+    }
+
+    const comparison = await getPersonnelSettlementFinanceReviewComparison(client, current, input.settlementId)
+    if (comparison.unresolved_claim_count > 0 || comparison.blocking_issues.length > 0) {
+      throw new Error('settlement_post_payment_adjustment_unresolved')
+    }
+    if (
+      cleanText(selected.current_snapshot_token) !== comparison.reviewed_snapshot_token
+      || Number(selected.difference_subtotal_cents) !== (
+        comparison.reviewed_subtotal_cents - Number(selected.original_paid_subtotal_cents)
+      )
+      || Number(selected.difference_gst_cents) !== (
+        comparison.reviewed_gst_cents - Number(selected.original_paid_gst_cents)
+      )
+      || Number(selected.difference_cents) !== comparison.difference_cents
+    ) {
+      throw new Error('settlement_post_payment_adjustment_changed')
+    }
+
+    const priorResult = await client.query(
+      `SELECT id, target_settlement_id, target_week_start::text, target_week_end::text,
+              applied_subtotal_cents, applied_gst_cents, applied_total_cents, status
+         FROM personnel_settlement_carry_adjustments
+        WHERE source_settlement_id=$1
+        ORDER BY applied_at, id
+        FOR UPDATE`,
+      [input.settlementId],
+    )
+    const plan = planPersonnelSettlementCarryAdjustment({
+      sourceWeekStart: cleanText(current.week_start),
+      sourceWeekEnd: cleanText(current.week_end),
+      recordedDifference: {
+        subtotal_cents: Number(selected.difference_subtotal_cents),
+        gst_cents: Number(selected.difference_gst_cents),
+        total_cents: Number(selected.difference_cents),
+      },
+      priorAppliedDeltas: (priorResult.rows || []).map((row: any) => ({
+        subtotal_cents: Number(row.applied_subtotal_cents || 0),
+        gst_cents: Number(row.applied_gst_cents || 0),
+        total_cents: Number(row.applied_total_cents || 0),
+      })),
+    })
+    await lockPersonnelSettlementWeeks(client, [plan.target_week_start])
+
+    const targetResult = await client.query(
+      `SELECT settlement.*, batch.week_start::text, batch.week_end::text
+         FROM personnel_settlement_batches batch
+         JOIN personnel_weekly_settlements settlement ON settlement.batch_id=batch.id
+        WHERE batch.week_start=$1::date AND batch.week_end=$2::date
+          AND settlement.user_id=$3
+        FOR UPDATE OF settlement`,
+      [plan.target_week_start, plan.target_week_end, current.user_id],
+    )
+    const target = targetResult.rows?.[0] || null
+    const targetStatus = cleanText(target?.status)
+    if (['finance_approved', 'paid'].includes(targetStatus)) {
+      throw new Error('settlement_carry_target_finance_locked')
+    }
+    if (target && !['draft', 'awaiting_confirmation', 'confirmed'].includes(targetStatus)) {
+      throw new Error('settlement_carry_target_state_requires_decision')
+    }
+    const targetRuleSnapshot = parseJsonObject(target?.rule_snapshot)
+    if (Number(parseJsonObject(targetRuleSnapshot.finance_adjustment).amount_cents || 0) !== 0) {
+      throw new Error('settlement_carry_target_manual_adjustment_requires_decision')
+    }
+    if (!plan.already_applied && plan.applied_delta.gst_cents !== 0) {
+      const targetProfileResult = await client.query(
+        `SELECT id, gst_status
+           FROM personnel_settlement_profiles
+          WHERE user_id=$1
+            AND settlement_enabled=true
+            AND effective_from <= $2::date
+            AND (effective_to IS NULL OR effective_to >= $2::date)
+          ORDER BY effective_from, id
+          FOR SHARE`,
+        [current.user_id, plan.target_week_end],
+      )
+      if (
+        Number(targetProfileResult.rowCount || 0) !== 1
+        || cleanText(targetProfileResult.rows?.[0]?.gst_status) !== 'registered'
+      ) {
+        throw new Error('settlement_carry_target_tax_treatment_requires_decision')
+      }
+    }
+
+    const appliedAt = new Date().toISOString()
+    const existingApplied = priorResult.rows?.[priorResult.rows.length - 1] || null
+    if (plan.already_applied) {
+      adjustments[adjustmentIndex] = {
+        ...selected,
+        status: 'scheduled_for_next_week',
+        carry_adjustment_id: cleanText(existingApplied?.id) || null,
+        target_settlement_id: cleanText(existingApplied?.target_settlement_id) || null,
+        target_week_start: plan.target_week_start,
+        target_week_end: plan.target_week_end,
+        applied_subtotal_cents: 0,
+        applied_gst_cents: 0,
+        applied_delta_cents: 0,
+        applied_by: input.actorUserId,
+        applied_at: appliedAt,
+      }
+      ruleSnapshot.post_review_adjustments = adjustments
+      await client.query(
+        `UPDATE personnel_weekly_settlements
+            SET rule_snapshot=$1::jsonb, updated_at=now()
+          WHERE id=$2`,
+        [JSON.stringify(ruleSnapshot), input.settlementId],
+      )
+      await insertAudit(client, 'personnel_weekly_settlement', input.settlementId, 'apply_post_payment_adjustment_noop', input.actorUserId, settlementAuditSummary(current), {
+        ...settlementAuditSummary(current),
+        adjustment_id: adjustmentId,
+        recorded_difference: plan.recorded_difference,
+        previously_applied: plan.previously_applied,
+        applied_delta: plan.applied_delta,
+      })
+      return {
+        sourceSettlementId: input.settlementId,
+        carryAdjustmentId: cleanText(existingApplied?.id) || null,
+        targetSettlementId: cleanText(existingApplied?.target_settlement_id) || null,
+        targetWeekStart: plan.target_week_start,
+        targetWeekEnd: plan.target_week_end,
+        appliedSubtotalCents: 0,
+        appliedGstCents: 0,
+        appliedDeltaCents: 0,
+        idempotent: true,
+        confirmationRequest: null,
+      }
+    }
+
+    const carryAdjustmentId = randomUUID()
+    await client.query(
+      `INSERT INTO personnel_settlement_carry_adjustments (
+         id, source_settlement_id, source_adjustment_id, target_settlement_id,
+         user_id, source_week_start, source_week_end, target_week_start, target_week_end,
+         recorded_subtotal_difference_cents, recorded_gst_difference_cents, recorded_total_difference_cents,
+         previously_applied_subtotal_cents, previously_applied_gst_cents, previously_applied_total_cents,
+         applied_subtotal_cents, applied_gst_cents, applied_total_cents,
+         status, reason, source_snapshot, applied_by, applied_at
+       ) VALUES ($1,$2,$3,$4,$5,$6::date,$7::date,$8::date,$9::date,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21::jsonb,$22,$23::timestamptz)`,
+      [
+        carryAdjustmentId, input.settlementId, adjustmentId, target?.id || null,
+        current.user_id, current.week_start, current.week_end, plan.target_week_start, plan.target_week_end,
+        plan.recorded_difference.subtotal_cents, plan.recorded_difference.gst_cents, plan.recorded_difference.total_cents,
+        plan.previously_applied.subtotal_cents, plan.previously_applied.gst_cents, plan.previously_applied.total_cents,
+        plan.applied_delta.subtotal_cents, plan.applied_delta.gst_cents, plan.applied_delta.total_cents,
+        target ? 'included_in_target' : 'scheduled', cleanText(selected.reason),
+        JSON.stringify({
+          original_paid_subtotal_cents: Number(selected.original_paid_subtotal_cents || 0),
+          original_paid_gst_cents: Number(selected.original_paid_gst_cents || 0),
+          original_paid_total_cents: Number(selected.original_paid_total_cents || 0),
+          current_reviewed_subtotal_cents: Number(selected.current_reviewed_subtotal_cents || 0),
+          current_reviewed_gst_cents: Number(selected.current_reviewed_gst_cents || 0),
+          current_reviewed_total_cents: Number(selected.current_reviewed_total_cents || 0),
+          original_snapshot_token: cleanText(selected.original_snapshot_token),
+          current_snapshot_token: cleanText(selected.current_snapshot_token),
+          payment_date: cleanText(selected.payment_date) || null,
+          gst_treatment: 'derived_from_source_settlement_difference',
+        }),
+        input.actorUserId, appliedAt,
+      ],
+    )
+
+    let confirmationRequest: null | {
+      settlementId: string
+      actorUserId: string
+      userId: string
+      weekStart: string
+      weekEnd: string
+      confirmationRevision: string
+      isDisputeResolution: boolean
+    } = null
+    if (target) {
+      const preview = await buildPersonnelSettlementPreview({
+        week_start: plan.target_week_start,
+        user_ids: [cleanText(current.user_id)],
+      }, client)
+      const person = (preview.people || []).find((item: any) => cleanText(item.user_id) === cleanText(current.user_id))
+      const blockingIssues = submissionBlockingIssues(person)
+      if (blockingIssues.length) throw new Error('settlement_carry_target_calculation_blocked')
+      const lines = Array.isArray(person?.lines) ? person.lines : []
+      const totals = person?.totals || { subtotal_cents: 0, gst_cents: 0, total_cents: 0 }
+      if (totals.subtotal_cents < 0 || totals.gst_cents < 0 || totals.total_cents < 0) {
+        throw new Error('settlement_carry_adjustment_exceeds_target_total')
+      }
+      const profile = person?.profile || person?.effective_profiles?.[0]
+      if (!profile) throw new Error('settlement_carry_target_calculation_blocked')
+      const revision = new Date().toISOString()
+      targetRuleSnapshot.calculation_version = preview.calculation_version
+      targetRuleSnapshot.source_cutoff_at = revision
+      targetRuleSnapshot.applied_rule_ids = Array.from(new Set(lines.map((line: any) => cleanText(line.rule_id)).filter(Boolean)))
+      targetRuleSnapshot.work_checklist = settlementWorkChecklist(person)
+      targetRuleSnapshot.carry_adjustments = lines
+        .filter((line: any) => line.component_type === 'post_payment_adjustment')
+        .map((line: any) => line.carry_adjustment)
+      targetRuleSnapshot.carry_adjustment_change = {
+        source_settlement_id: input.settlementId,
+        source_adjustment_id: adjustmentId,
+        carry_adjustment_id: carryAdjustmentId,
+        applied_delta: plan.applied_delta,
+        changed_by: input.actorUserId,
+        changed_at: revision,
+      }
+      if (targetStatus !== 'draft') {
+        targetRuleSnapshot.confirmation_request = { revision, round: 'post_payment_adjustment' }
+      }
+      await client.query('DELETE FROM personnel_settlement_lines WHERE settlement_id=$1', [target.id])
+      for (const line of lines) await insertPersonnelSettlementLine(client, target.id, line)
+      const updatedTarget = await client.query(
+        `UPDATE personnel_weekly_settlements
+            SET profile_snapshot=$1::jsonb, rule_snapshot=$2::jsonb,
+                subtotal_cents=$3, gst_cents=$4, total_cents=$5,
+                status=$6, workload_amount_confirmed_at=CASE WHEN $6='draft' THEN workload_amount_confirmed_at ELSE NULL END,
+                workload_amount_confirmation_note=CASE WHEN $6='draft' THEN workload_amount_confirmation_note ELSE NULL END,
+                finance_reviewed_by=NULL, finance_reviewed_at=NULL, updated_at=$7::timestamptz
+          WHERE id=$8
+          RETURNING *`,
+        [
+          JSON.stringify(buildProfileSnapshot(profile, cleanText(current.user_id))),
+          JSON.stringify(targetRuleSnapshot), totals.subtotal_cents, totals.gst_cents, totals.total_cents,
+          targetStatus === 'draft' ? 'draft' : 'awaiting_confirmation', revision, target.id,
+        ],
+      )
+      if (targetStatus !== 'draft') {
+        await assertSettlementReadyForConfirmation(client, updatedTarget.rows[0], target.id)
+      }
+      await insertAudit(client, 'personnel_weekly_settlement', target.id, 'include_post_payment_adjustment', input.actorUserId, settlementAuditSummary(target), {
+        ...settlementAuditSummary(updatedTarget.rows[0]),
+        source_settlement_id: input.settlementId,
+        source_adjustment_id: adjustmentId,
+        carry_adjustment_id: carryAdjustmentId,
+        applied_delta: plan.applied_delta,
+      })
+      await refreshBatchStatus(client, target.batch_id, input.actorUserId)
+      if (targetStatus !== 'draft') {
+        confirmationRequest = {
+          settlementId: cleanText(target.id),
+          actorUserId: input.actorUserId,
+          userId: cleanText(current.user_id),
+          weekStart: plan.target_week_start,
+          weekEnd: plan.target_week_end,
+          confirmationRevision: revision,
+          isDisputeResolution: true,
+        }
+      }
+    }
+
+    adjustments[adjustmentIndex] = {
+      ...selected,
+      status: 'scheduled_for_next_week',
+      carry_adjustment_id: carryAdjustmentId,
+      target_settlement_id: target?.id || null,
+      target_week_start: plan.target_week_start,
+      target_week_end: plan.target_week_end,
+      applied_subtotal_cents: plan.applied_delta.subtotal_cents,
+      applied_gst_cents: plan.applied_delta.gst_cents,
+      applied_delta_cents: plan.applied_delta.total_cents,
+      applied_by: input.actorUserId,
+      applied_at: appliedAt,
+    }
+    ruleSnapshot.post_review_adjustments = adjustments
+    await client.query(
+      `UPDATE personnel_weekly_settlements
+          SET rule_snapshot=$1::jsonb, updated_at=now()
+        WHERE id=$2`,
+      [JSON.stringify(ruleSnapshot), input.settlementId],
+    )
+    await insertAudit(client, 'personnel_weekly_settlement', input.settlementId, 'apply_post_payment_adjustment', input.actorUserId, settlementAuditSummary(current), {
+      ...settlementAuditSummary(current),
+      adjustment_id: adjustmentId,
+      carry_adjustment_id: carryAdjustmentId,
+      target_settlement_id: target?.id || null,
+      target_week_start: plan.target_week_start,
+      target_week_end: plan.target_week_end,
+      recorded_difference: plan.recorded_difference,
+      previously_applied: plan.previously_applied,
+      applied_delta: plan.applied_delta,
+      source_paid_amounts_unchanged: true,
+    })
+    return {
+      sourceSettlementId: input.settlementId,
+      carryAdjustmentId,
+      targetSettlementId: target?.id || null,
+      targetWeekStart: plan.target_week_start,
+      targetWeekEnd: plan.target_week_end,
+      appliedSubtotalCents: plan.applied_delta.subtotal_cents,
+      appliedGstCents: plan.applied_delta.gst_cents,
+      appliedDeltaCents: plan.applied_delta.total_cents,
+      idempotent: false,
+      confirmationRequest,
+    }
+  })
+  if (applied?.confirmationRequest) {
+    await publishPersonnelSettlementConfirmationRequest(applied.confirmationRequest)
+  }
+  return {
+    ...applied,
+    source_settlement: await getPersonnelWeeklySettlement({ settlementId: input.settlementId }),
+  }
 }
 
 export async function voidPersonnelSettlement(input: {
