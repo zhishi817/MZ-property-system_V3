@@ -29263,16 +29263,37 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Branch: `codex/mz032-034-release-20261014-v4`
 - Base: `origin/Dev@9570a7c3066d5f3b08026fa3a391d23d19b97505`; fetched at `2026-10-14T04:18:17+11:00`
 - Candidate patch SHA-256: `2307288062b95c944f8d03d39d7b3fb30b1bf06769d8ec6b085e446567d25f2a` excluding `docs/change-release-ledger.md`
-- Commit SHA: not committed
+- Commit SHA: `3f0060849d3cc3430e0fefd3edbd9ac6b7ba15e4`
 - Dependencies: none
 - Required validation: `PASS` for commit; evidence: exact final non-ledger blobs match the tested v3 corrective content, targeted corrective validation passed, and the real PostgreSQL job is an explicit post-push merge blocker.
 - Shared-hunk review: `PASS`; evidence: this aggregation owns the exact final cumulative hunks in one clean `origin/Dev` range.
 - Generated-file review: `PASS`; evidence: no untracked/ignored generated artifact is present.
 - Sensitive-information review: `PASS`; evidence: no secret, credential, production URL/data, binary, or cache is selected.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: delegated user instruction explicitly selects MZ032/033/034 and authorizes same-scope safe fixes, commit, push and retry.
 - Independent review: `GO for commit`; evidence: P0/P1/P2 = 0; 32 staged non-ledger blobs are byte-identical to corrective content `0faf0c4fa4516ff0141bb01ff3b67fc3e4b20275`, 262/262 hunks and candidate SHA match, workflow contract is 9/9, shared `mzapp.ts` is unchanged from the reviewed tree, migrations keep their recorded hashes, and no unrelated/generated/sensitive/production-write expansion was found.
-- Action conclusion: `GO`; exact pre-commit, whitespace, scope, blob-identity and independent candidate reviews pass for this clean v4 commit. Real PostgreSQL exact-head CI remains mandatory after push and before any merge/release.
+- Action conclusion: `GO`; exact pre-commit, whitespace, scope, blob-identity and independent candidate reviews passed, and the clean v4 content was committed as `3f0060849d3cc3430e0fefd3edbd9ac6b7ba15e4`. Real PostgreSQL exact-head CI remains mandatory after push and before any merge/release.
+
+#### RA-20261014-012
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261014-004`
+- Selected CRL identities: `root/CRL-20261014-004`
+- Intended action: `push`
+- Branch: `codex/mz032-034-release-20261014-v4`
+- Target: `Dev`
+- Base: `origin/Dev@9570a7c3066d5f3b08026fa3a391d23d19b97505`; fetched at `2026-10-14T04:18:17+11:00`
+- Candidate patch SHA-256: `2307288062b95c944f8d03d39d7b3fb30b1bf06769d8ec6b085e446567d25f2a` excluding `docs/change-release-ledger.md`
+- Commit SHA: `3f0060849d3cc3430e0fefd3edbd9ac6b7ba15e4` (candidate content commit; this ledger-only push receipt follows)
+- Dependencies: `mobile/CRL-20261013-002@2ce35e6e59e7faac92ca08758078274883e00e57`; `mobile/CRL-20261013-004@2ce35e6e59e7faac92ca08758078274883e00e57`; `mobile/CRL-20261013-006@2ce35e6e59e7faac92ca08758078274883e00e57`
+- Required validation: `PASS` for receipt commit; evidence: exact pre-commit ledger gate passed 262/262 non-ledger hunks, candidate blob identity and independent review passed, and the committed candidate differs from the fresh Dev base only by the selected CRL.
+- Shared-hunk review: `PASS`; evidence: unchanged from the committed clean-range candidate.
+- Generated-file review: `PASS`; evidence: no generated, untracked, ignored runtime artifact, cache or binary is selected.
+- Sensitive-information review: `PASS`; evidence: no secret, credential, production URL/data or environment file is selected.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: delegated user instruction explicitly authorizes committing and pushing the final joint MZ032/033/034 release after review and validation.
+- Independent review: `GO for push-receipt commit`; evidence: P0/P1/P2 = 0; reviewer verified exact base and ancestry, content commit, branch and target, candidate fingerprint and 33-file range, ledger-only staged scope inside CRL-004 Release Attempts, three exact Mobile dependency references, authorization boundary, and absence of unrelated/generated/sensitive/production-write content.
+- Action conclusion: `GO`; the ledger-only push receipt may be committed, then the clean exact committed-range release report must pass before normal non-force push. Real PostgreSQL exact-head CI remains a merge/release blocker rather than a push blocker.
 
 ### Risks / Release Notes
 
