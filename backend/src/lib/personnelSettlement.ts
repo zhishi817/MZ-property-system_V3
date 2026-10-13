@@ -1,5 +1,5 @@
 export const PERSONNEL_SETTLEMENT_TIMEZONE = 'Australia/Melbourne'
-export const PERSONNEL_SETTLEMENT_CALCULATION_VERSION = 'phase8-mz031-execution-ledger-v1'
+export const PERSONNEL_SETTLEMENT_CALCULATION_VERSION = 'phase11-mz034-next-week-paid-adjustment-tax-breakdown-v2'
 
 export const CLEANING_PROPERTY_TYPES = [
   '一房一卫',
@@ -29,6 +29,7 @@ export type SettlementComponentType =
   | 'overtime_hour'
   | 'new_property_task'
   | 'custom_amount'
+  | 'post_payment_adjustment'
 
 export type SettlementRuleItem = {
   id: string

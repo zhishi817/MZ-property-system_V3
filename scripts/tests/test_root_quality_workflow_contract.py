@@ -33,7 +33,7 @@ class RootQualityWorkflowContractTests(unittest.TestCase):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         check = job_section(workflow, "check")
         self.assertIn("name: Root Quality Check", check)
-        self.assertIn("needs: [risk, ledger, registry, fast, full]", check)
+        self.assertIn("needs: [risk, ledger, registry, fast, full, mz034_sql]", check)
         self.assertIn("if: ${{ always() }}", check)
         self.assertNotIn("npm run check:backend", workflow)
         self.assertNotIn("npm run check:frontend", workflow)
@@ -42,7 +42,7 @@ class RootQualityWorkflowContractTests(unittest.TestCase):
     def test_code_events_run_fast_and_pull_requests_defer_full_until_integration(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         fast = job_section(workflow, "fast", "full")
-        full = job_section(workflow, "full", "check")
+        full = job_section(workflow, "full", "mz034_sql")
         self.assertIn("RUN_FAST: ${{ needs.risk.outputs.ledger_only != 'true' }}", fast)
         self.assertIn("Fast regression not required for a ledger-only pull request", fast)
         self.assertNotIn(
@@ -53,6 +53,18 @@ class RootQualityWorkflowContractTests(unittest.TestCase):
         self.assertIn("RUN_FULL: ${{ github.event_name != 'pull_request' }}", full)
         self.assertIn("Full regression deferred until integration", full)
         self.assertEqual(1, full.count("npm run check:full"))
+
+    def test_mz034_sql_uses_only_an_ephemeral_postgres_service(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        sql = job_section(workflow, "mz034_sql", "check")
+        self.assertIn("needs: risk", sql)
+        self.assertIn("image: postgres:16-alpine", sql)
+        self.assertIn("POSTGRES_DB: mz034_ci", sql)
+        self.assertIn("RUN_MZ034_SQL: ${{ needs.risk.outputs.ledger_only != 'true' }}", sql)
+        self.assertIn("MZ034_SQL_INTEGRATION_WRITE: \"1\"", sql)
+        self.assertIn("MZ034_SQL_INTEGRATION_CONFIRM_EPHEMERAL: \"1\"", sql)
+        self.assertIn("npm run test:personnel-settlement-mz034:sql --prefix backend", sql)
+        self.assertNotIn("${{ secrets.", sql)
 
     def test_ledger_only_pull_request_keeps_checks_without_installing_dependencies(self) -> None:
         classified = subprocess.run(
@@ -68,9 +80,12 @@ class RootQualityWorkflowContractTests(unittest.TestCase):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         registry = job_section(workflow, "registry", "fast")
         fast = job_section(workflow, "fast", "full")
+        sql = job_section(workflow, "mz034_sql", "check")
         self.assertIn("ledger_only", registry)
         self.assertIn("Registry audit not required for a ledger-only pull request", registry)
         self.assertIn("ledger_only", fast)
+        self.assertIn("MZ-034 SQL integration not required for a ledger-only pull request", sql)
+        self.assertIn("if: env.RUN_MZ034_SQL == 'true'\n        run: npm ci --prefix backend", sql)
 
     def test_code_change_is_not_classified_as_ledger_only(self) -> None:
         classified = subprocess.run(

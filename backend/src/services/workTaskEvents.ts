@@ -86,6 +86,7 @@ export function buildMz031CleaningArrangementRevision(before: any, after: any, a
   if (!before || !after) return null
   const beforeSnapshot = {
     scheduled_service_date: arrangementDay(before.task_date ?? before.date),
+    property_id: arrangementText(before.property_id),
     cleaner_id: arrangementText(before.cleaner_id),
     assignee_id: arrangementText(before.assignee_id),
     inspector_id: arrangementText(before.inspector_id),
@@ -96,6 +97,7 @@ export function buildMz031CleaningArrangementRevision(before: any, after: any, a
   }
   const afterSnapshot = {
     scheduled_service_date: arrangementDay(after.task_date ?? after.date),
+    property_id: arrangementText(after.property_id),
     cleaner_id: arrangementText(after.cleaner_id),
     assignee_id: arrangementText(after.assignee_id),
     inspector_id: arrangementText(after.inspector_id),
@@ -105,6 +107,7 @@ export function buildMz031CleaningArrangementRevision(before: any, after: any, a
     status: arrangementText(after.status),
   }
   const scheduleChanged = beforeSnapshot.scheduled_service_date !== afterSnapshot.scheduled_service_date
+  const propertyChanged = beforeSnapshot.property_id !== afterSnapshot.property_id
   const assignmentChanged = beforeSnapshot.cleaner_id !== afterSnapshot.cleaner_id
     || beforeSnapshot.assignee_id !== afterSnapshot.assignee_id
     || beforeSnapshot.inspector_id !== afterSnapshot.inspector_id
@@ -112,11 +115,12 @@ export function buildMz031CleaningArrangementRevision(before: any, after: any, a
     || beforeSnapshot.inspection_scope !== afterSnapshot.inspection_scope
     || beforeSnapshot.inspection_due_date !== afterSnapshot.inspection_due_date
   const explicitReasons = Array.from(new Set(additionalReasons.map(arrangementText).filter(Boolean))) as string[]
-  if (!scheduleChanged && !assignmentChanged && !inspectionPlanChanged && explicitReasons.length === 0) return null
+  if (!scheduleChanged && !propertyChanged && !assignmentChanged && !inspectionPlanChanged && explicitReasons.length === 0) return null
   return {
     version: 'mz031-v1',
     reasons: [
       ...(scheduleChanged ? ['scheduled_service_date_changed'] : []),
+      ...(propertyChanged ? ['property_changed'] : []),
       ...(assignmentChanged ? ['assignment_changed'] : []),
       ...(inspectionPlanChanged ? ['inspection_plan_changed'] : []),
       ...explicitReasons,

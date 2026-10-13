@@ -71,7 +71,8 @@ assert.ok(
   'payment-method marker must be written after its owned DDL',
 )
 assert.match(paymentMethodMigration, /COMMIT;\s*$/)
-assert.match(readiness, /20260930_personnel_settlement_payment_method/)
+assert.match(readiness, /20261013_personnel_settlement_carry_adjustments/)
+assert.match(readiness, /personnel_settlement_carry_adjustments carry/)
 assert.match(readiness, /SELECT 1 FROM schema_migrations WHERE version=\$1 LIMIT 1/)
 assert.doesNotMatch(readiness, /CREATE TABLE|ALTER TABLE|CREATE INDEX/i)
 assert.match(router, /router\.get\(\s*'\/preview'/)
@@ -452,6 +453,32 @@ const cleaningAssignments = [
   { task_id: 'inspection-cancelled', component_type: 'inspection_day', user_id: 'inspector-1', user_name: 'Inspector One', service_date: '2026-09-12', current_service_date: '2026-09-12', arrangement_reason: 'rescheduled_after_plan', task_status: 'cancelled', property_id: 'property-7', property_label: 'P-7', property_type: '一房一卫', task_type: 'checkout_clean', inspection_mode: 'same_day' },
   { task_id: 'task-management-closed', component_type: 'inspection_day', user_id: 'inspector-1', user_name: 'Inspector One', service_date: '2026-09-13', current_service_date: '2026-09-13', arrangement_reason: 'management_closed_without_execution', task_status: 'completed', property_id: 'property-closed', property_label: 'P-CLOSED', property_type: '一房一卫', task_type: 'checkout_clean', inspection_mode: 'deferred', inspection_due_date: '2026-09-13' },
 ]
+const cleaningPaymentAssignments = [{
+  task_id: 'task-assigned', business_key: 'checkout-order:order-1', duplicate_count: 1,
+  user_id: 'cleaner-1', user_name: 'Cleaner One', service_date: '2026-09-08', scheduled_service_date: '2026-09-08',
+  actual_service_date: '2026-09-08', actual_audit_id: 'audit-clean', actual_performed_at: '2026-09-08T01:00:00Z',
+  actual_metadata: {
+    evidence_snapshot: [{ media_id: 'clean-photo-1', type: 'completion_photo' }], evidence_count: 1,
+  },
+  property_id: 'property-1', property_label: 'P-1', property_type: '一房一卫', task_type: 'checkout_clean',
+  inspection_due_date: null, inspection_mode: 'same_day',
+}]
+const inspectionPaymentAssignments = [
+  {
+    task_id: 'inspection-1', inspection_key: 'inspection:inspection-1', user_id: 'inspector-1', user_name: 'Inspector One',
+    service_date: '2026-09-10', scheduled_service_date: '2026-09-08', property_id: 'property-2', property_label: 'P-2',
+    property_type: '一房一卫', task_type: 'checkout_clean', inspection_due_date: '2026-09-10', inspection_mode: 'deferred',
+    assignment_source: 'current', is_payable: true, submission_count: 1, latest_audit_id: 'audit-i1',
+    latest_performed_at: '2026-09-10T01:00:00Z', latest_metadata: previewAudits[2].metadata,
+  },
+  {
+    task_id: 'inspection-2', inspection_key: 'inspection:inspection-2', user_id: 'inspector-1', user_name: 'Inspector One',
+    service_date: '2026-09-10', scheduled_service_date: '2026-09-08', property_id: 'property-3', property_label: 'P-3',
+    property_type: '一房一卫', task_type: 'checkout_clean', inspection_due_date: '2026-09-10', inspection_mode: 'deferred',
+    assignment_source: 'current', is_payable: true, submission_count: 1, latest_audit_id: 'audit-i2',
+    latest_performed_at: '2026-09-10T02:00:00Z', latest_metadata: previewAudits[3].metadata,
+  },
+]
 const claims = [
   { id: 'claim-warehouse', status: 'approved', submitter_user_id: 'warehouse-1', service_date: '2026-09-09', claim_type: 'warehouse_hour', property_id: null, cleaning_task_id: null, duration_minutes: 90, approved_duration_minutes: null, requested_quantity: null, approved_quantity: null, requested_amount_cents: null, approved_amount_cents: null, note: 'Warehouse shift' },
   { id: 'claim-subsidy', status: 'approved', submitter_user_id: 'cleaner-1', service_date: '2026-09-09', claim_type: 'subsidy_amount', property_id: null, cleaning_task_id: null, duration_minutes: null, approved_duration_minutes: null, requested_quantity: null, approved_quantity: null, requested_amount_cents: '1500', approved_amount_cents: '1500', note: 'Travel subsidy' },
@@ -469,10 +496,13 @@ const fakeExecutor = {
   async query(sql: string, params?: any[]) {
     if (sql.includes('FROM personnel_settlement_profiles')) return { rows: profiles }
     if (sql.includes('FROM personnel_fee_rules')) return { rows: ruleRows }
+    if (sql.includes('WITH current_inspection_assignments AS')) return { rows: inspectionPaymentAssignments }
+    if (sql.includes('FROM personnel_settlement_carry_adjustments')) return { rows: [] }
     if (sql.includes('FROM work_task_action_audits a') && sql.includes('JOIN cleaning_tasks t')) return { rows: previewAudits }
     if (sql.includes('FROM personnel_workload_claims')) {
       return { rows: Array.isArray(params?.[3]) && params[3].includes('submitted') ? [...claims, submittedSubsidyClaim] : claims }
     }
+    if (sql.includes('WITH payment_candidates AS')) return { rows: cleaningPaymentAssignments }
     if (sql.includes('FROM cleaning_tasks t')) return { rows: cleaningAssignments }
     throw new Error(`unexpected query: ${sql.slice(0, 80)}`)
   },
@@ -499,9 +529,9 @@ async function main() {
   const preview = await buildPersonnelSettlementPreview({ week_start: '2026-09-07' }, fakeExecutor)
   assert.strictEqual(preview.mode, 'read_only_preview')
   assert.strictEqual(preview.source_summary.audited_candidates, 8)
-  assert.strictEqual(preview.source_summary.eligible_deduplicated_candidates, 3)
-  assert.strictEqual(preview.source_summary.excluded_auxiliary_candidates, 2)
-  assert.strictEqual(preview.source_summary.conflicting_tasks_requiring_manual_review, 1)
+  assert.strictEqual(preview.source_summary.eligible_deduplicated_candidates, 0)
+  assert.strictEqual(preview.source_summary.excluded_auxiliary_candidates, 0)
+  assert.strictEqual(preview.source_summary.conflicting_tasks_requiring_manual_review, 0)
   assert.strictEqual(preview.source_summary.cleaning_assignment_candidates, 15)
   assert.strictEqual(preview.source_summary.non_cancelled_cleaning_assignments, 5)
   assert.strictEqual(preview.source_summary.excluded_cancelled_cleaning_assignments, 2)
@@ -509,9 +539,11 @@ async function main() {
   assert.strictEqual(preview.source_summary.approved_claims, 4)
   assert.strictEqual(preview.source_summary.submitted_claims, 0)
   assert.strictEqual(preview.source_summary.planned_work_items, 14)
-  assert.strictEqual(preview.source_summary.incomplete_or_rescheduled_work_items, 7)
-  assert.strictEqual(preview.source_summary.legacy_tasks_requiring_manual_review, 1)
+  assert.strictEqual(preview.source_summary.incomplete_or_rescheduled_work_items, 9)
+  assert.strictEqual(preview.source_summary.legacy_tasks_requiring_manual_review, 0)
   assert.strictEqual(preview.source_summary.executed_cleaning_tasks, 1)
+  assert.strictEqual(preview.source_summary.payable_cleaning_assignments, 1)
+  assert.strictEqual(preview.source_summary.deduplicated_cleaning_assignments, 0)
   assert.strictEqual(preview.source_summary.executed_inspection_tasks, 2)
 
   const cleaner = preview.people.find((person) => person.user_id === 'cleaner-1')
@@ -523,9 +555,9 @@ async function main() {
   assert.ok(warehouse)
   assert.ok(subsidyOnly)
   assert.strictEqual(cleaner?.lines.filter((line) => line.component_type === 'cleaning_task').length, 1)
-  assert.strictEqual(cleaner?.lines.find((line) => line.component_type === 'cleaning_task')?.source_type, 'work_task_action_audit')
+  assert.strictEqual(cleaner?.lines.find((line) => line.component_type === 'cleaning_task')?.source_type, 'cleaning_task_assignment')
   assert.strictEqual(cleaner?.lines.find((line) => line.component_type === 'cleaning_task')?.source_audit_id, 'audit-clean')
-  assert.strictEqual(cleaner?.work_checklist.find((item) => item.task_id === 'task-assigned')?.status_reason, 'completed_with_execution_audit')
+  assert.strictEqual(cleaner?.work_checklist.find((item) => item.task_id === 'task-assigned')?.status_reason, 'active_assignment_with_execution_date')
   assert.deepStrictEqual(
     cleaner?.lines.find((line) => line.component_type === 'cleaning_task')?.work_items.map((item) => ({
       execution_key: item.execution_key,
@@ -543,11 +575,11 @@ async function main() {
       reason: item.status_reason,
     })),
     [
-      { task_id: 'task-assigned', status: 'completed', included_in_amount: true, reason: 'completed_with_execution_audit' },
-      { task_id: 'task-cancelled', status: 'legacy_completed_unverified', included_in_amount: false, reason: 'legacy_execution_task_later_cancelled' },
+      { task_id: 'task-assigned', status: 'completed', included_in_amount: true, reason: 'active_assignment_with_execution_date' },
       { task_id: 'task-canceled', status: 'cancelled', included_in_amount: false, reason: 'task_cancelled_without_payment' },
+      { task_id: 'task-cancelled', status: 'cancelled', included_in_amount: false, reason: 'task_cancelled_without_payment' },
       { task_id: 'task-unknown-type', status: 'incomplete', included_in_amount: false, reason: 'task_not_completed:pending' },
-      { task_id: 'task-legacy-complete', status: 'legacy_completed_unverified', included_in_amount: false, reason: 'legacy_completed_status_without_execution_audit' },
+      { task_id: 'task-legacy-complete', status: 'incomplete', included_in_amount: false, reason: 'task_not_completed:done' },
       { task_id: 'task-rescheduled', status: 'rescheduled', included_in_amount: false, reason: 'rescheduled_after_plan' },
       { task_id: 'task-management-closed', status: 'management_closed', included_in_amount: false, reason: 'management_closed_without_execution' },
     ],
@@ -568,9 +600,9 @@ async function main() {
   )
   assert.deepStrictEqual(cleaner?.totals, { subtotal_cents: 18_364, gst_cents: 1_836, total_cents: 20_200 })
   assert.strictEqual(inspector?.lines.length, 1, 'multiple inspections on one Melbourne day pay one day rate')
-  assert.strictEqual(inspector?.lines[0]?.service_date, '2026-09-10', 'inspection pay day follows actual submission day')
-  assert.strictEqual(inspector?.work_checklist.find((item) => item.task_id === 'inspection-1')?.status_reason, 'completed_with_execution_audit')
-  assert.strictEqual(inspector?.work_checklist.find((item) => item.task_id === 'inspection-1')?.current_scheduled_service_date, '2026-09-15')
+  assert.strictEqual(inspector?.lines[0]?.service_date, '2026-09-10', 'inspection pay day follows the effective manager arrangement')
+  assert.strictEqual(inspector?.work_checklist.find((item) => item.task_id === 'inspection-1')?.status_reason, 'effective_inspection_assignment_after_day_end')
+  assert.strictEqual(inspector?.work_checklist.find((item) => item.task_id === 'inspection-1')?.current_scheduled_service_date, '2026-09-10')
   assert.deepStrictEqual(inspector?.lines[0]?.work_items.map((item) => item.property_label), ['P-2', 'P-3'])
   assert.deepStrictEqual(inspector?.lines[0]?.work_items.map((item) => item.scheduled_service_date), ['2026-09-08', '2026-09-08'])
   assert.deepStrictEqual(
@@ -581,8 +613,8 @@ async function main() {
       reason: item.status_reason,
     })),
     [
-      { task_id: 'inspection-1', status: 'completed', included_in_amount: true, reason: 'completed_with_execution_audit' },
-      { task_id: 'inspection-2', status: 'completed', included_in_amount: true, reason: 'completed_with_execution_audit' },
+      { task_id: 'inspection-1', status: 'payable', included_in_amount: true, reason: 'effective_inspection_assignment_after_day_end' },
+      { task_id: 'inspection-2', status: 'payable', included_in_amount: true, reason: 'effective_inspection_assignment_after_day_end' },
       { task_id: 'inspection-planned', status: 'incomplete', included_in_amount: false, reason: 'task_not_completed:assigned' },
       { task_id: 'inspection-rescheduled', status: 'rescheduled', included_in_amount: false, reason: 'rescheduled_after_plan' },
       { task_id: 'inspection-reassigned', status: 'rescheduled', included_in_amount: false, reason: 'reassigned_after_plan' },
@@ -597,23 +629,12 @@ async function main() {
   assert.strictEqual(subsidyOnly?.lines[0]?.rule_item_id, null)
   assert.ok(!subsidyOnly?.warnings.some((warning) => warning.reason === 'missing_effective_rule'))
   assert.deepStrictEqual(preview.totals, { subtotal_cents: 54_108, gst_cents: 1_960, total_cents: 56_068 })
-  assert.strictEqual(preview.manual_review.legacy_tasks_without_performer_audit.length, 1)
+  assert.strictEqual(preview.manual_review.legacy_tasks_without_performer_audit.length, 0)
   assert.ok(!preview.manual_review.warnings.some((warning) => warning.source_id === 'task-management-closed'))
-  assert.deepStrictEqual(preview.manual_review.legacy_tasks_without_performer_audit[0], {
-    task_id: 'task-legacy-complete',
-    component_type: 'cleaning_task',
-    user_id: 'cleaner-1',
-    user_name: 'Cleaner One',
-    service_date: '2026-09-11',
-    property_id: 'property-legacy',
-    property_label: 'P-LEGACY',
-    task_status: 'done',
-    reason: 'legacy_completed_status_without_execution_audit',
-  })
-  assert.ok(preview.manual_review.warnings.some((warning) => warning.reason === 'multiple_performers_for_task'))
+  assert.ok(!preview.manual_review.warnings.some((warning) => warning.reason === 'multiple_performers_for_task'))
   assert.ok(!preview.manual_review.warnings.some((warning) => warning.source_id === 'task-unknown-type'))
   assert.ok(preview.excluded_candidates.every((candidate) => !('metadata' in candidate)))
-  assert.ok(preview.excluded_candidates.some((candidate) => (
+  assert.ok(!preview.excluded_candidates.some((candidate) => (
     candidate.audit_id === 'audit-clean-duplicate' && candidate.reason === 'duplicate_execution_already_counted'
   )))
 
@@ -662,6 +683,7 @@ async function main() {
       if (sql.includes('FROM personnel_fee_rules')) return { rows: allTypesRules }
       if (sql.includes('FROM work_task_action_audits a')) return { rows: [] }
       if (sql.includes('FROM personnel_workload_claims')) return { rows: allClaimTypes }
+      if (sql.includes('FROM personnel_settlement_carry_adjustments')) return { rows: [] }
       if (sql.includes('FROM cleaning_tasks t')) return { rows: [] }
       throw new Error(`unexpected all-types query: ${sql.slice(0, 80)}`)
     },
@@ -685,6 +707,7 @@ async function main() {
       if (sql.includes('FROM personnel_fee_rules')) return { rows: allTypesRules.filter((row) => row.component_type !== 'overtime_hour') }
       if (sql.includes('FROM work_task_action_audits a')) return { rows: [] }
       if (sql.includes('FROM personnel_workload_claims')) return { rows: [allClaimTypes[1]] }
+      if (sql.includes('FROM personnel_settlement_carry_adjustments')) return { rows: [] }
       if (sql.includes('FROM cleaning_tasks t')) return { rows: [] }
       throw new Error(`unexpected missing-rate query: ${sql.slice(0, 80)}`)
     },
@@ -703,6 +726,7 @@ async function main() {
       if (sql.includes('FROM personnel_fee_rules')) return { rows: allTypesRules }
       if (sql.includes('FROM work_task_action_audits a')) return { rows: [] }
       if (sql.includes('FROM personnel_workload_claims')) return { rows: [allClaimTypes[2]] }
+      if (sql.includes('FROM personnel_settlement_carry_adjustments')) return { rows: [] }
       if (sql.includes('FROM cleaning_tasks t')) return { rows: [] }
       throw new Error(`unexpected unconfirmed-gst query: ${sql.slice(0, 80)}`)
     },
@@ -719,6 +743,7 @@ async function main() {
       if (sql.includes('FROM personnel_fee_rules')) return { rows: allTypesRules }
       if (sql.includes('FROM work_task_action_audits a')) return { rows: [] }
       if (sql.includes('FROM personnel_workload_claims')) return { rows: [allClaimTypes[1]] }
+      if (sql.includes('FROM personnel_settlement_carry_adjustments')) return { rows: [] }
       if (sql.includes('FROM cleaning_tasks t')) return { rows: [] }
       throw new Error(`unexpected missing-profile query: ${sql.slice(0, 80)}`)
     },
@@ -729,10 +754,133 @@ async function main() {
   assert.strictEqual(missingProfilePreview.people[0]?.warnings[0]?.reason, 'missing_effective_profile')
   assert.strictEqual(missingProfilePreview.people[0]?.warnings[0]?.component_type, 'overtime_hour')
 
+  const mz032Profiles = [
+    { ...profiles[0], id: 'profile-mz032-cleaner-1', gst_status: 'not_registered', abn: null },
+    { ...profiles[0], id: 'profile-mz032-cleaner-2', user_id: 'cleaner-2', user_name: 'Cleaner Two', supplier_legal_name: 'Cleaner Two', gst_status: 'not_registered', abn: null },
+    { ...profiles[1], id: 'profile-mz032-inspector' },
+  ]
+  const mz032Rules = [
+    { rule_id: 'rule-mz032-cleaner-1', user_id: 'cleaner-1', rule_name: 'Cleaner fee', effective_from: '2026-01-01', effective_to: null, price_basis: 'inclusive_gst', currency: 'AUD', item_id: 'cleaner-one-room', component_type: 'cleaning_task', property_id: null, task_type: null, conditions: { property_type: '一房一卫' }, priority: 0, rate_cents: '7000' },
+    { rule_id: 'rule-mz032-cleaner-2', user_id: 'cleaner-2', rule_name: 'Cleaner fee', effective_from: '2026-01-01', effective_to: null, price_basis: 'inclusive_gst', currency: 'AUD', item_id: 'cleaner-two-room', component_type: 'cleaning_task', property_id: null, task_type: null, conditions: { property_type: '一房一卫' }, priority: 0, rate_cents: '7000' },
+    { rule_id: 'rule-mz032-inspector', user_id: 'inspector-1', rule_name: 'Inspector day', effective_from: '2026-01-01', effective_to: null, price_basis: 'inclusive_gst', currency: 'AUD', item_id: 'inspector-day', component_type: 'inspection_day', property_id: null, task_type: null, conditions: null, priority: 0, rate_cents: '25000' },
+  ]
+  const paymentAssignment = (patch: Record<string, unknown>) => ({
+    task_id: 'assigned-no-audit', business_key: 'checkout-order:assigned-no-audit', duplicate_count: 1,
+    user_id: 'cleaner-1', user_name: 'Cleaner One', service_date: '2026-09-08', scheduled_service_date: '2026-09-08',
+    actual_service_date: null, actual_audit_id: null, actual_performed_at: null, actual_metadata: null,
+    property_id: 'property-mz032', property_label: 'MZ032', property_type: '一房一卫', task_type: 'checkout_clean',
+    inspection_due_date: null, inspection_mode: 'same_day',
+    ...patch,
+  })
+  const mz032Payments = [
+    paymentAssignment({ property_id: 'property-mq3915', property_label: 'MQ3915' }),
+    paymentAssignment({
+      task_id: 'assigned-with-actual', business_key: 'checkout-order:assigned-with-actual',
+      service_date: '2026-09-09', scheduled_service_date: '2026-09-08', actual_service_date: '2026-09-09',
+      actual_audit_id: 'audit-assigned-with-actual', actual_performed_at: '2026-09-09T01:00:00Z', actual_metadata: {},
+      property_id: 'property-msq4101w', property_label: 'MSQ4101W',
+    }),
+    paymentAssignment({ task_id: 'duplicate-new', business_key: 'checkout-order:duplicate', duplicate_count: 2, service_date: '2026-09-10', scheduled_service_date: '2026-09-10', property_id: 'property-duplicate', property_label: 'DUPLICATE' }),
+    paymentAssignment({ task_id: 'duplicate-old', business_key: 'checkout-order:duplicate', duplicate_count: 2, service_date: '2026-09-10', scheduled_service_date: '2026-09-10', property_id: 'property-duplicate', property_label: 'DUPLICATE' }),
+    paymentAssignment({ task_id: 'deferred-inspection-cleaning', business_key: 'checkout-order:deferred', service_date: '2026-09-10', scheduled_service_date: '2026-09-10', inspection_due_date: '2026-09-11', inspection_mode: 'deferred', property_id: 'property-deferred', property_label: 'MSQ4404E' }),
+    paymentAssignment({ task_id: 'reassigned-current', business_key: 'checkout-order:reassigned', user_id: 'cleaner-2', user_name: 'Cleaner Two', service_date: '2026-09-12', scheduled_service_date: '2026-09-12', property_id: 'property-reassigned', property_label: 'REASSIGNED' }),
+    paymentAssignment({
+      task_id: 'moved-across-week', business_key: 'checkout-order:moved-across-week', service_date: '2026-09-14', scheduled_service_date: '2026-09-13',
+      actual_service_date: '2026-09-14', actual_audit_id: 'audit-moved-across-week', actual_performed_at: '2026-09-14T01:00:00Z', actual_metadata: {},
+      property_id: 'property-moved', property_label: 'MOVED',
+    }),
+  ]
+  const mz032InspectionAudit = {
+    ...previewAudits[2], audit_id: 'audit-deferred-inspection', task_id: 'deferred-inspection-cleaning',
+    performed_at: '2026-09-11T01:00:00Z', service_date: '2026-09-11', property_id: 'property-deferred', property_label: 'DEFERRED',
+    current_assignee_user_id: 'inspector-1', task_execution_state: 'active', order_status: 'confirmed',
+    metadata: {
+      execution_record_version: 'mz031-v1', execution_key: 'inspection:deferred-inspection-cleaning', actual_service_date: '2026-09-11',
+      inspection_submission_complete: true, task_snapshot: { scheduled_service_date: '2026-09-10', inspection_due_date: '2026-09-11', inspection_mode: 'deferred' },
+    },
+  }
+  const mz032ExcludedInspectionAudits = [
+    { ...mz032InspectionAudit, audit_id: 'audit-inspection-reassigned', task_id: 'inspection-reassigned-away', current_assignee_user_id: 'inspector-2' },
+    { ...mz032InspectionAudit, audit_id: 'audit-inspection-cancelled', task_id: 'inspection-cancelled', task_status: 'cancelled', current_assignee_user_id: 'inspector-1' },
+    { ...mz032InspectionAudit, audit_id: 'audit-inspection-deleted', task_id: 'inspection-deleted', task_status: null, current_assignee_user_id: null, task_execution_state: null, order_status: null },
+  ]
+  const mz032ReassignedCleaningAudits = [
+    { ...baseAudit, audit_id: 'audit-reassigned-old-cleaner', task_id: 'reassigned-current', user_id: 'cleaner-1', performed_by_name: 'Cleaner One' },
+    { ...baseAudit, audit_id: 'audit-reassigned-current-cleaner', task_id: 'reassigned-current', user_id: 'cleaner-2', performed_by_name: 'Cleaner Two' },
+  ]
+  const mz032Planned = [
+    { task_id: 'assigned-no-audit', component_type: 'cleaning_task', user_id: 'cleaner-1', user_name: 'Cleaner One', service_date: '2026-09-08', current_service_date: '2026-09-08', task_status: 'keys_hung', property_id: 'property-mq3915', property_label: 'MQ3915', property_type: '一房一卫', task_type: 'checkout_clean' },
+    { task_id: 'duplicate-old', component_type: 'cleaning_task', user_id: 'cleaner-1', user_name: 'Cleaner One', service_date: '2026-09-10', current_service_date: '2026-09-10', task_status: 'keys_hung', property_id: 'property-duplicate', property_label: 'DUPLICATE', property_type: '一房一卫', task_type: 'checkout_clean' },
+    { task_id: 'cancelled-assignment', component_type: 'cleaning_task', user_id: 'cleaner-1', user_name: 'Cleaner One', service_date: '2026-09-11', current_service_date: '2026-09-11', task_status: 'cancelled', property_id: 'property-cancelled', property_label: 'CANCELLED', property_type: '一房一卫', task_type: 'checkout_clean' },
+    { task_id: 'reassigned-current', component_type: 'cleaning_task', user_id: 'cleaner-1', user_name: 'Cleaner One', service_date: '2026-09-12', current_service_date: '2026-09-12', arrangement_reason: 'reassigned_after_plan', task_status: 'assigned', property_id: 'property-reassigned', property_label: 'REASSIGNED', property_type: '一房一卫', task_type: 'checkout_clean' },
+    { task_id: 'reassigned-current', component_type: 'cleaning_task', user_id: 'cleaner-2', user_name: 'Cleaner Two', service_date: '2026-09-12', current_service_date: '2026-09-12', task_status: 'assigned', property_id: 'property-reassigned', property_label: 'REASSIGNED', property_type: '一房一卫', task_type: 'checkout_clean' },
+    { task_id: 'deferred-inspection-cleaning', component_type: 'inspection_day', user_id: 'inspector-1', user_name: 'Inspector One', service_date: '2026-09-11', current_service_date: '2026-09-11', task_status: 'assigned', property_id: 'property-deferred', property_label: 'DEFERRED', property_type: '一房一卫', task_type: 'checkout_clean', inspection_mode: 'deferred', inspection_due_date: '2026-09-11' },
+  ]
+  const mz032Executor = {
+    async query(sql: string, params?: any[]) {
+      if (sql.includes('FROM personnel_settlement_profiles')) return { rows: mz032Profiles }
+      if (sql.includes('FROM personnel_fee_rules')) return { rows: mz032Rules }
+      if (sql.includes('WITH current_inspection_assignments AS')) return { rows: [{
+        task_id: 'deferred-inspection-cleaning', inspection_key: 'inspection:deferred-inspection-cleaning',
+        user_id: 'inspector-1', user_name: 'Inspector One', service_date: '2026-09-11', scheduled_service_date: '2026-09-10',
+        property_id: 'property-deferred', property_label: 'DEFERRED', property_type: '一房一卫', task_type: 'checkout_clean',
+        inspection_due_date: '2026-09-11', inspection_mode: 'deferred', assignment_source: 'current', is_payable: true,
+        submission_count: 1, latest_audit_id: 'audit-deferred-inspection', latest_performed_at: '2026-09-11T01:00:00Z',
+        latest_metadata: mz032InspectionAudit.metadata,
+      }] }
+      if (sql.includes('WITH payment_candidates AS')) return { rows: mz032Payments }
+      if (sql.includes('FROM work_task_action_audits a') && sql.includes('JOIN cleaning_tasks t')) return { rows: [mz032InspectionAudit, ...mz032ExcludedInspectionAudits, ...mz032ReassignedCleaningAudits] }
+      if (sql.includes('FROM personnel_workload_claims')) return { rows: [] }
+      if (sql.includes('FROM personnel_settlement_carry_adjustments')) return { rows: [] }
+      if (sql.includes('FROM cleaning_tasks t')) return { rows: params?.[0] === '2026-09-07' ? mz032Planned : [] }
+      throw new Error(`unexpected mz032 query: ${sql.slice(0, 80)}`)
+    },
+  }
+  const mz032Preview = await buildPersonnelSettlementPreview({ week_start: '2026-09-07' }, mz032Executor)
+  const mz032CleanerOne = mz032Preview.people.find((person) => person.user_id === 'cleaner-1')
+  const mz032CleanerTwo = mz032Preview.people.find((person) => person.user_id === 'cleaner-2')
+  const mz032Inspector = mz032Preview.people.find((person) => person.user_id === 'inspector-1')
+  assert.strictEqual(mz032CleanerOne?.lines.filter((line) => line.component_type === 'cleaning_task').length, 4)
+  assert.deepStrictEqual(mz032CleanerOne?.totals, { subtotal_cents: 28_000, gst_cents: 0, total_cents: 28_000 })
+  assert.deepStrictEqual(mz032CleanerTwo?.totals, { subtotal_cents: 7_000, gst_cents: 0, total_cents: 7_000 })
+  assert.deepStrictEqual(mz032Inspector?.totals, { subtotal_cents: 25_000, gst_cents: 0, total_cents: 25_000 })
+  assert.strictEqual(mz032CleanerOne?.lines.find((line) => line.source_id === 'checkout-order:assigned-no-audit')?.service_date, '2026-09-08')
+  assert.strictEqual(mz032CleanerOne?.lines.find((line) => line.source_id === 'checkout-order:assigned-with-actual')?.service_date, '2026-09-09')
+  assert.strictEqual(mz032CleanerOne?.lines.find((line) => line.source_id === 'checkout-order:deferred')?.service_date, '2026-09-10', 'inspection deferral must not move cleaning pay')
+  const summerRooms = new Set(['MQ3915', 'MSQ4101W', 'MSQ4404E'])
+  const summerLines = (mz032CleanerOne?.lines || []).filter((line) => summerRooms.has(String(line.property_label || '')))
+  assert.strictEqual(summerLines.length, 3)
+  assert.strictEqual(summerLines.reduce((sum, line) => sum + line.total_cents, 0), 21_000)
+  assert.strictEqual(8 - 1 + summerLines.length, 10, 'the prior eight-room week already contained MSQ4404E')
+  assert.strictEqual(54_000 - 7_000 + summerLines.reduce((sum, line) => sum + line.total_cents, 0), 68_000)
+  assert.strictEqual(mz032Inspector?.lines[0]?.service_date, '2026-09-11', 'inspection follows the effective manager-arranged date')
+  assert.strictEqual(mz032Inspector?.lines[0]?.work_items.length, 1, 'cancelled, deleted, and reassigned upload events must not enter the day fee')
+  assert.strictEqual(mz032Preview.excluded_candidates.filter((candidate) => candidate.reason === 'inspection_assignment_no_longer_effective').length, 0)
+  assert.strictEqual(mz032CleanerOne?.lines.filter((line) => line.source_id === 'checkout-order:duplicate').length, 1)
+  assert.strictEqual(mz032Preview.source_summary.deduplicated_cleaning_assignments, 1)
+  assert.strictEqual(mz032CleanerOne?.lines.some((line) => line.source_id.includes('cancelled') || line.source_id.includes('deleted')), false)
+  assert.strictEqual(mz032CleanerOne?.lines.some((line) => line.source_id === 'checkout-order:reassigned'), false)
+  assert.strictEqual(mz032CleanerTwo?.lines.some((line) => line.source_id === 'checkout-order:reassigned'), true)
+  assert.strictEqual(mz032Preview.manual_review.warnings.some((warning) => warning.reason === 'legacy_completed_without_execution_audit'), false)
+  assert.strictEqual(mz032Preview.manual_review.warnings.some((warning) => warning.reason === 'multiple_performers_for_task'), false)
+  assert.deepStrictEqual(mz032CleanerOne?.work_checklist.find((item) => item.task_id === 'assigned-no-audit') && {
+    status: mz032CleanerOne.work_checklist.find((item) => item.task_id === 'assigned-no-audit')?.status,
+    reason: mz032CleanerOne.work_checklist.find((item) => item.task_id === 'assigned-no-audit')?.status_reason,
+    included: mz032CleanerOne.work_checklist.find((item) => item.task_id === 'assigned-no-audit')?.included_in_amount,
+    audit_id: mz032CleanerOne.work_checklist.find((item) => item.task_id === 'assigned-no-audit')?.audit_id,
+  }, { status: 'incomplete', reason: 'active_assignment_without_execution_record', included: true, audit_id: null })
+
+  const nextWeekPreview = await buildPersonnelSettlementPreview({ week_start: '2026-09-14' }, mz032Executor)
+  const nextWeekCleaningLines = nextWeekPreview.people.flatMap((person) => person.lines).filter((line) => line.component_type === 'cleaning_task')
+  assert.deepStrictEqual(nextWeekCleaningLines.map((line) => ({ source_id: line.source_id, service_date: line.service_date })), [
+    { source_id: 'checkout-order:moved-across-week', service_date: '2026-09-14' },
+  ])
+
   const privacyExecutor = {
     async query(sql: string) {
       if (sql.includes('FROM personnel_settlement_profiles')) return { rows: [{ ...profiles[0], id: 'profile-old', user_id: 'cleaner-old', user_name: 'Cleaner Old' }] }
       if (sql.includes('FROM personnel_fee_rules')) return { rows: [] }
+      if (sql.includes('WITH current_inspection_assignments AS')) return { rows: [] }
       if (sql.includes('FROM work_task_action_audits a') && sql.includes('JOIN cleaning_tasks t')) {
         assert.match(
           sql,
@@ -742,6 +890,8 @@ async function main() {
         return { rows: [previewAudits[0]] }
       }
       if (sql.includes('FROM personnel_workload_claims')) return { rows: [] }
+      if (sql.includes('FROM personnel_settlement_carry_adjustments')) return { rows: [] }
+      if (sql.includes('WITH payment_candidates AS')) return { rows: [] }
       if (sql.includes('FROM cleaning_tasks t')) return { rows: [{
         task_id: 'task-assigned', component_type: 'cleaning_task', user_id: 'cleaner-old', user_name: 'Cleaner Old',
         service_date: '2026-09-08', current_service_date: '2026-09-08', arrangement_reason: null,
