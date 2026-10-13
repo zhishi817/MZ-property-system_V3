@@ -20,10 +20,15 @@ export type DailyTaskExecutionVisibility = {
   reason: 'visible' | 'review_only' | 'terminal' | 'unscheduled' | 'unassigned'
 }
 
+export type DailyTaskExecutionVisibilityOptions = {
+  includeManagerUnassignedOffline?: boolean
+}
+
 const REVIEW_ONLY_STATUSES = new Set(['pending_review', 'review_pending', 'awaiting_review'])
 const TERMINAL_STATUSES = new Set(['cancelled', 'canceled', 'closed'])
-const PROPERTY_FOLLOWUP_SOURCES = new Set([
+const ASSIGNMENT_FIRST_SOURCES = new Set([
   'property_maintenance',
+  'external_maintenance_orders',
   'property_deep_cleaning',
   'property_daily_necessities',
 ])
@@ -75,7 +80,15 @@ export function hasDailyTaskExecutor(task: DailyTaskExecutionCandidate) {
   return hasValue(task.assignee_id) || hasValue(task.cleaner_id) || hasValue(task.inspector_id)
 }
 
-export function dailyTaskExecutionVisibility(task: DailyTaskExecutionCandidate): DailyTaskExecutionVisibility {
+export function isOrdinaryOfflineDailyTask(task: DailyTaskExecutionCandidate) {
+  return normalized(task.task_kind) === 'offline'
+    && !ASSIGNMENT_FIRST_SOURCES.has(normalized(task.source_type))
+}
+
+export function dailyTaskExecutionVisibility(
+  task: DailyTaskExecutionCandidate,
+  options: DailyTaskExecutionVisibilityOptions = {},
+): DailyTaskExecutionVisibility {
   const source = normalized(task.source_type)
   const workflowStatus = sourceWorkflowStatus(task)
 
@@ -84,11 +97,14 @@ export function dailyTaskExecutionVisibility(task: DailyTaskExecutionCandidate):
   if (REVIEW_COMPLETION_ALIAS_SOURCES.has(source) && MAINTENANCE_REVIEW_ALIASES.has(workflowStatus)) {
     return { visible: false, reason: 'review_only' }
   }
-  if (PROPERTY_FOLLOWUP_SOURCES.has(source) && workflowStatus === 'pending_assignment') {
+  if (ASSIGNMENT_FIRST_SOURCES.has(source) && workflowStatus === 'pending_assignment') {
     return { visible: false, reason: 'unassigned' }
   }
   if (!scheduledDate(task)) return { visible: false, reason: 'unscheduled' }
   if (!isTurnoverDailyExecutionTask(task) && !hasDailyTaskExecutor(task)) {
+    if (options.includeManagerUnassignedOffline === true && isOrdinaryOfflineDailyTask(task)) {
+      return { visible: true, reason: 'visible' }
+    }
     return { visible: false, reason: 'unassigned' }
   }
   return { visible: true, reason: 'visible' }
@@ -107,8 +123,7 @@ export function projectDailyTaskExecution<T extends DailyTaskExecutionCandidate>
  * the Mobile execution list continues to hide it until assignment.
  */
 export function isTaskCenterManagementOnlyOfflineTask(task: DailyTaskExecutionCandidate) {
-  return normalized(task.task_kind) === 'offline'
-    && !PROPERTY_FOLLOWUP_SOURCES.has(normalized(task.source_type))
+  return isOrdinaryOfflineDailyTask(task)
     && dailyTaskExecutionVisibility(task).reason === 'unassigned'
 }
 
@@ -118,8 +133,14 @@ export function projectTaskCenterManageableWorkTasks<T extends DailyTaskExecutio
     .filter((task) => task.execution_list_visible || isTaskCenterManagementOnlyOfflineTask(task))
 }
 
-export function projectVisibleDailyTasks<T extends DailyTaskExecutionCandidate>(tasks: T[]) {
+export function projectVisibleDailyTasks<T extends DailyTaskExecutionCandidate>(
+  tasks: T[],
+  options: DailyTaskExecutionVisibilityOptions = {},
+) {
   return tasks
-    .map(projectDailyTaskExecution)
+    .map((task) => ({
+      ...task,
+      execution_list_visible: dailyTaskExecutionVisibility(task, options).visible,
+    }))
     .filter((task) => task.execution_list_visible)
 }

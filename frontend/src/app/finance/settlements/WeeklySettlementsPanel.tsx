@@ -189,6 +189,38 @@ type PendingPricingItem = {
   description?: string | null
 }
 
+type PostReviewAdjustment = {
+  id: string
+  status: 'recorded_pending_finance_action' | 'scheduled_for_next_week' | 'superseded'
+  recorded_at: string
+  recorded_by: string
+  reason: string
+  original_paid_subtotal_cents: number
+  original_paid_gst_cents: number
+  original_paid_total_cents: number
+  current_reviewed_subtotal_cents: number
+  current_reviewed_gst_cents: number
+  current_reviewed_total_cents: number
+  difference_subtotal_cents: number
+  difference_gst_cents: number
+  difference_cents: number
+  original_snapshot_token: string
+  current_snapshot_token: string
+  payment_date: string | null
+  carry_adjustment_id?: string | null
+  target_settlement_id?: string | null
+  target_week_start?: string | null
+  target_week_end?: string | null
+  applied_subtotal_cents?: number | null
+  applied_gst_cents?: number | null
+  applied_delta_cents?: number | null
+  applied_by?: string | null
+  applied_at?: string | null
+  pending_applied_subtotal_cents?: number | null
+  pending_applied_gst_cents?: number | null
+  pending_applied_delta_cents?: number | null
+}
+
 type WeeklySettlement = {
   id: string
   user_id: string
@@ -220,6 +252,7 @@ type WeeklySettlement = {
   audits?: SettlementAudit[]
   documents?: SettlementDocument[]
   related_claims?: RelatedClaim[]
+  post_review_adjustments?: PostReviewAdjustment[]
   finance_review_comparison?: {
     unresolved_claim_count: number
     changed: boolean
@@ -233,12 +266,14 @@ type WeeklySettlement = {
     reviewed_gst_cents: number
     reviewed_total_cents: number
     difference_cents: number
+    partner_snapshot_token: string
+    reviewed_snapshot_token: string
     blocking_issues: Array<{ source_type: string; source_id: string; code: string }>
   } | null
   phase5_schema_ready?: boolean
 }
 
-type ActionState = { action: SettlementAction; settlement: WeeklySettlement } | null
+type ActionState = { action: SettlementAction; settlement: WeeklySettlement; adjustment?: PostReviewAdjustment } | null
 type ActionValues = {
   reason?: string
   adjustment_amount?: number
@@ -254,6 +289,8 @@ const ACTION_TITLES: Record<SettlementAction, string> = {
   adjust: '调整结算金额',
   reopen: '重新打开为草稿',
   confirm_paid: '确认已付款',
+  record_post_payment_adjustment: '记录付款后差额',
+  apply_post_payment_adjustment: '确认计入下一周',
   void: '作废并允许合作方重新提交',
 }
 
@@ -275,6 +312,22 @@ const ERROR_LABELS: Record<string, string> = {
   settlement_claims_pending: '该合作方本周仍有草稿、待公司核对、需要补充资料或尚未计入的工作量反馈，暂不能退回再次确认或付款。',
   settlement_finance_review_changed: '财务核定结果与合作方提交内容存在差异，请重算并退回合作方再次确认后再付款。',
   settlement_finance_review_unchanged: '财务核定结果与合作方提交内容完全一致，无需退回，请直接完成付款。',
+  settlement_post_payment_adjustment_paid_only: '只有已付款结算可以记录付款后差额。',
+  settlement_post_payment_adjustment_unresolved: '实时金额仍有待处理项目，暂时无法形成可信的付款后差额记录。',
+  settlement_post_payment_adjustment_changed: '差额依据已变化，请重新记录最新净差额后再确认。',
+  settlement_post_payment_adjustment_state_invalid: '这条差额已处理、已被较新记录替代或状态已变化，请刷新。',
+  settlement_post_payment_adjustment_tax_breakdown_unavailable: '原付款或当前核定缺少可信的税前／GST／含税拆分，不能自动计入下一周。',
+  settlement_post_payment_adjustment_tax_breakdown_invalid: '税前差额、GST 差额与含税差额无法对平，请刷新后重新核对。',
+  settlement_carry_target_finance_locked: '原周的下一周已财务核对或付款，系统不会改写其快照。请先决定是退回该周重新确认，还是单独处理差额。',
+  settlement_carry_target_state_requires_decision: '下一周结算正在争议或已作废，不能自动加入差额；请先处理该周状态。',
+  settlement_carry_target_manual_adjustment_requires_decision: '下一周已有特殊财务调整，不能自动合并差额。',
+  settlement_carry_target_tax_treatment_requires_decision: '这笔差额含 GST，但下一周的 GST 身份不支持自动合并。系统未写入差额，请交由财务／税务负责人决定凭证与处理方式。',
+  settlement_carry_target_calculation_blocked: '下一周仍有待计价或资料问题，差额未计入。',
+  post_payment_adjustment_tax_treatment_requires_decision: '付款后差额的 GST 与本周 GST 身份不一致，需财务／税务负责人决定处理方式。',
+  settlement_carry_adjustment_exceeds_target_total: '抵扣额超过下一周可结算金额，请选择允许的后续处理方式。',
+  personnel_settlement_carry_schema_not_ready: '下一周差额功能的数据库迁移尚未启用。',
+  settlement_finance_permission_required: '财务已核准的结算只能由财务人员退回重新确认。',
+  settlement_concurrent_change_retry: '结算依据刚刚发生变化，请刷新后重试。',
   settlement_partner_submission_required: '这不是合作方提交形成的草稿，不能使用重算退回操作。',
   settlement_calculation_blocked: '本周仍有无法自动计算的工作量，请先补齐费用规则、GST 或人员资料。',
   settlement_buyer_profile_incomplete: 'Homixa 开票资料不完整，请先维护默认公司名称、ABN 和地址。',
@@ -315,6 +368,8 @@ function actionEndpoint(action: SettlementAction) {
   if (action === 'resolve_dispute') return 'resolve-dispute'
   if (action === 'return_for_confirmation') return 'return-for-confirmation'
   if (action === 'confirm_paid') return 'confirm-paid'
+  if (action === 'record_post_payment_adjustment') return 'record-post-payment-adjustment'
+  if (action === 'apply_post_payment_adjustment') return 'apply-post-payment-adjustment'
   return action
 }
 
@@ -422,7 +477,7 @@ export default function WeeklySettlementsPanel() {
     form.setFieldValue('final_total_amount', Number(nextDetail.total_cents || 0) / 100)
   }
 
-  async function openAction(action: SettlementAction, settlement: WeeklySettlement) {
+  async function openAction(action: SettlementAction, settlement: WeeklySettlement, adjustment?: PostReviewAdjustment) {
     actionRequestRef.current += 1
     replaceActionEvidenceUrls({})
     setActionEvidenceFailures({})
@@ -434,9 +489,9 @@ export default function WeeklySettlementsPanel() {
       dispute_decision: 'keep_amount',
       final_total_amount: Number(settlement.total_cents || 0) / 100,
     })
-    setActionState({ action, settlement })
+    setActionState({ action, settlement, adjustment })
     const requestId = actionRequestRef.current
-    if (action === 'approve' || action === 'confirm_paid' || action === 'return_for_confirmation') {
+    if (action === 'approve' || action === 'confirm_paid' || action === 'return_for_confirmation' || action === 'record_post_payment_adjustment' || action === 'apply_post_payment_adjustment') {
       setActionDetailLoading(true)
       try {
         const nextDetail = await getJSON<WeeklySettlement>(
@@ -444,7 +499,19 @@ export default function WeeklySettlementsPanel() {
           { authSensitive: true },
         )
         if (requestId === actionRequestRef.current) {
-          setActionState({ action, settlement: nextDetail })
+          const refreshedAdjustment = adjustment
+            ? nextDetail.post_review_adjustments?.find((item) => item.id === adjustment.id)
+            : undefined
+          if (action === 'apply_post_payment_adjustment' && adjustment && !refreshedAdjustment) {
+            message.error(ERROR_LABELS.settlement_post_payment_adjustment_state_invalid)
+            closeAction()
+            return
+          }
+          setActionState({
+            action,
+            settlement: nextDetail,
+            adjustment: refreshedAdjustment,
+          })
         }
       } catch (error: any) {
         if (requestId === actionRequestRef.current) {
@@ -579,8 +646,10 @@ export default function WeeklySettlementsPanel() {
             final_total_cents: Math.round(Number(values.final_total_amount || 0) * 100),
           }
         : { decision: 'keep_amount' }
-    } else if (action === 'return_for_confirmation' || action === 'reopen' || action === 'void') {
+    } else if (action === 'return_for_confirmation' || action === 'reopen' || action === 'void' || action === 'record_post_payment_adjustment') {
       payload = { reason: values.reason?.trim() }
+    } else if (action === 'apply_post_payment_adjustment') {
+      payload = { adjustment_id: actionState.adjustment?.id }
     } else if (action === 'confirm_paid') {
       payload = {
         payment_date: values.payment_date?.format('YYYY-MM-DD'),
@@ -588,7 +657,7 @@ export default function WeeklySettlementsPanel() {
     }
     setActionSaving(true)
     try {
-      const updated = await postJSON<WeeklySettlement & { document_warning?: string | null }>(
+      const updated = await postJSON<{ document_warning?: string | null }>(
         `/finance/settlements/weekly/${encodeURIComponent(settlement.id)}/${actionEndpoint(action)}`,
         payload,
         { authSensitive: true },
@@ -667,6 +736,7 @@ export default function WeeklySettlementsPanel() {
         { key: 'adjust', label: '调整', hidden: !canUseSettlementAction(row.status, 'adjust', permissions), onClick: () => { void openAction('adjust', row) } },
         { key: 'approve', label: '确认已核对', hidden: !canUseSettlementAction(row.status, 'approve', permissions), onClick: () => { void openAction('approve', row) } },
         { key: 'confirm-paid', label: '确认已付款', hidden: !canUseSettlementAction(row.status, 'confirm_paid', permissions), onClick: () => { void openAction('confirm_paid', row) } },
+        { key: 'record-post-payment-adjustment', label: '记录付款后差额', hidden: !canUseSettlementAction(row.status, 'record_post_payment_adjustment', permissions), onClick: () => { void openAction('record_post_payment_adjustment', row) } },
         { key: 'void', label: '作废并允许重提', danger: true, hidden: !canUseSettlementAction(row.status, 'void', permissions), onClick: () => { void openAction('void', row) } },
       ]} />,
     },
@@ -714,6 +784,37 @@ export default function WeeklySettlementsPanel() {
       || !financeReviewComparison
       || !financeReviewComparison.can_pay_without_reconfirmation
     )
+  const paymentChangeBlocked = actionState?.action === 'confirm_paid'
+    && (
+      actionDetailLoading
+      || !financeReviewComparison
+      || !financeReviewComparison.can_pay_without_reconfirmation
+    )
+  const postPaymentAdjustmentHistory = actionState?.settlement.post_review_adjustments || []
+  const hasPendingPostPaymentAdjustment = postPaymentAdjustmentHistory.some(
+    (item) => item.status === 'recorded_pending_finance_action',
+  )
+  const appliedPostPaymentSubtotalCents = postPaymentAdjustmentHistory.reduce(
+    (sum, item) => sum + Number(item.applied_subtotal_cents || 0),
+    0,
+  )
+  const appliedPostPaymentGstCents = postPaymentAdjustmentHistory.reduce(
+    (sum, item) => sum + Number(item.applied_gst_cents || 0),
+    0,
+  )
+  const canRecordPostPaymentCorrectionToZero = hasPendingPostPaymentAdjustment
+    || appliedPostPaymentSubtotalCents !== 0
+    || appliedPostPaymentGstCents !== 0
+  const postPaymentAdjustmentBlocked = actionState?.action === 'record_post_payment_adjustment'
+    && (
+      actionDetailLoading
+      || !financeReviewComparison
+      || (!financeReviewComparison.changed && !canRecordPostPaymentCorrectionToZero)
+      || financeReviewComparison.unresolved_claim_count > 0
+      || financeReviewComparison.blocking_issues.length > 0
+    )
+  const applyPostPaymentAdjustmentBlocked = actionState?.action === 'apply_post_payment_adjustment'
+    && (actionDetailLoading || actionState.adjustment?.status !== 'recorded_pending_finance_action')
   const paymentDestination = paymentSettlement?.payment_destination_preview || paymentSettlement?.payment_destination_snapshot || {}
   const paymentProfile = paymentSettlement?.profile_snapshot || {}
   const paymentMethod = normalizePersonnelPaymentMethod(paymentDestination.payment_method || paymentProfile.payment_method)
@@ -790,6 +891,28 @@ export default function WeeklySettlementsPanel() {
           description="当前金额只是已计小计，待费用规则、GST 或结算资料补齐后，必须重算并退回合作方重新确认完整总额；不能直接财务核准或付款。"
           style={{ marginBottom: 12 }}
         /> : null}
+        {detail.status === 'finance_approved' && detail.finance_review_comparison && !detail.finance_review_comparison.can_pay_without_reconfirmation ? <Alert
+          type="error"
+          showIcon
+          message="财务核准后结算依据已变化，已阻止付款"
+          description={`已核准金额 ${formatMoney(detail.finance_review_comparison.partner_total_cents)}，当前核定金额 ${formatMoney(detail.finance_review_comparison.reviewed_total_cents)}。请重算并退回合作方再次确认。`}
+          action={canUseSettlementAction(detail.status, 'return_for_confirmation', permissions)
+            ? <Button danger size="small" onClick={() => void openAction('return_for_confirmation', detail)}>重算并退回确认</Button>
+            : undefined}
+          style={{ marginBottom: 12 }}
+        /> : null}
+        {detail.status === 'paid' && detail.finance_review_comparison?.changed ? <Alert
+          type="warning"
+          showIcon
+          message="付款后发现结算依据变化，原付款记录保持不变"
+          description={detail.finance_review_comparison.blocking_issues.length > 0 || detail.finance_review_comparison.unresolved_claim_count > 0
+            ? '当前仍有待处理项目，暂时不能形成可信差额；请先补齐资料。'
+            : `原付款金额 ${formatMoney(detail.finance_review_comparison.partner_total_cents)}，当前核定金额 ${formatMoney(detail.finance_review_comparison.reviewed_total_cents)}，差额 ${detail.finance_review_comparison.difference_cents >= 0 ? '+' : ''}${formatMoney(detail.finance_review_comparison.difference_cents)}。先记录净差额，再由财务确认计入原周的下一周。`}
+          action={canUseSettlementAction(detail.status, 'record_post_payment_adjustment', permissions)
+            ? <Button size="small" onClick={() => void openAction('record_post_payment_adjustment', detail)}>记录差额</Button>
+            : undefined}
+          style={{ marginBottom: 12 }}
+        /> : null}
         <Descriptions bordered size="small" column={2}>
           <Descriptions.Item label="人员">{detail.user_name}</Descriptions.Item>
           <Descriptions.Item label="状态">{statusTag(detail.status)}</Descriptions.Item>
@@ -821,6 +944,30 @@ export default function WeeklySettlementsPanel() {
               : '不适用'}
           </Descriptions.Item>
         </Descriptions>
+        {detail.post_review_adjustments?.length ? <>
+          <Divider orientation="left">付款后差额记录</Divider>
+          <Table<PostReviewAdjustment>
+            rowKey="id"
+            size="small"
+            pagination={false}
+            dataSource={detail.post_review_adjustments}
+            columns={[
+              { title: '记录时间', dataIndex: 'recorded_at', width: 165, render: formatDateTime },
+              { title: '原付款', key: 'original', width: 150, align: 'right', render: (_, row) => <Space direction="vertical" size={0} align="end"><strong>{formatMoney(row.original_paid_total_cents)}</strong><Typography.Text type="secondary">税前 {formatMoney(row.original_paid_subtotal_cents)} · GST {formatMoney(row.original_paid_gst_cents)}</Typography.Text></Space> },
+              { title: '当前核定', key: 'reviewed', width: 150, align: 'right', render: (_, row) => <Space direction="vertical" size={0} align="end"><strong>{formatMoney(row.current_reviewed_total_cents)}</strong><Typography.Text type="secondary">税前 {formatMoney(row.current_reviewed_subtotal_cents)} · GST {formatMoney(row.current_reviewed_gst_cents)}</Typography.Text></Space> },
+              { title: '差额', key: 'difference', width: 150, align: 'right', render: (_, row) => <Space direction="vertical" size={0} align="end"><strong>{formatMoney(row.difference_cents)}</strong><Typography.Text type="secondary">税前 {formatMoney(row.difference_subtotal_cents)} · GST {formatMoney(row.difference_gst_cents)}</Typography.Text></Space> },
+              { title: '说明', dataIndex: 'reason' },
+              { title: '状态', dataIndex: 'status', width: 210, render: (_, row) => row.status === 'scheduled_for_next_week'
+                ? <Tag color="success">已计入 {row.target_week_start} 至 {row.target_week_end}</Tag>
+                : row.status === 'superseded' ? <Tag>已被较新记录替代</Tag> : <Tag color="warning">待确认计入下一周</Tag> },
+              { title: '本次补发／抵扣', key: 'applied', width: 155, align: 'right', render: (_, row) => row.status === 'scheduled_for_next_week' ? <Space direction="vertical" size={0} align="end"><strong>{formatMoney(row.applied_delta_cents)}</strong><Typography.Text type="secondary">税前 {formatMoney(row.applied_subtotal_cents)} · GST {formatMoney(row.applied_gst_cents)}</Typography.Text></Space> : '-' },
+              { title: '操作', key: 'action', width: 130, render: (_, row) => row.status === 'recorded_pending_finance_action'
+                && canUseSettlementAction(detail.status, 'apply_post_payment_adjustment', permissions)
+                ? <Button size="small" onClick={() => void openAction('apply_post_payment_adjustment', detail, row)}>确认计入下一周</Button>
+                : '-' },
+            ]}
+          />
+        </> : null}
         {detail.pending_pricing_items?.length ? <>
           <Divider orientation="left">待计价项目</Divider>
           <Table<PendingPricingItem>
@@ -947,6 +1094,8 @@ export default function WeeklySettlementsPanel() {
           ? '确认已核对'
         : actionState?.action === 'confirm_paid'
           ? '确认已付款'
+        : actionState?.action === 'apply_post_payment_adjustment'
+          ? '确认计入下一周'
         : '确认'}
       cancelText="取消"
       confirmLoading={actionSaving}
@@ -965,13 +1114,16 @@ export default function WeeklySettlementsPanel() {
           && (actionDetailLoading || !!claimReviewBusy || claimsBlockingResolution.length > 0))
           || returnForConfirmationBlocked
           || financeApprovalBlocked
+          || paymentChangeBlocked
+          || postPaymentAdjustmentBlocked
+          || applyPostPaymentAdjustmentBlocked
           || (actionState?.action === 'confirm_paid'
             && (actionDetailLoading || !paymentDetailsComplete)),
       }}
       onCancel={() => { if (!actionSaving && !claimReviewBusy) closeAction() }}
       onOk={() => void submitAction()}
     >
-      {actionState && ['approve', 'return_for_confirmation'].includes(actionState.action) ? <Spin spinning={actionDetailLoading} tip="正在核对合作方提交与财务结果">
+      {actionState && ['approve', 'return_for_confirmation', 'record_post_payment_adjustment'].includes(actionState.action) ? <Spin spinning={actionDetailLoading} tip="正在核对合作方提交与财务结果">
         {financeReviewComparison ? <>
           <Descriptions bordered size="small" column={2} style={{ marginBottom: 16 }}>
             <Descriptions.Item label="合作方确认项目">{financeReviewComparison.partner_line_count} 项</Descriptions.Item>
@@ -999,8 +1151,18 @@ export default function WeeklySettlementsPanel() {
           /> : financeReviewComparison.changed ? <Alert
             showIcon
             type="warning"
-            message="财务核定结果与合作方确认内容不同"
-            description="确认后系统会按核定结果重建结算，并只在本次有差异时退回合作方再次确认。"
+            message={actionState.action === 'record_post_payment_adjustment'
+              ? '实时金额与已付款金额不同'
+              : '财务核定结果与合作方确认内容不同'}
+            description={actionState.action === 'record_post_payment_adjustment'
+              ? '确认后只记录原付款金额、当前核定金额和差额；不会改写原结算、原付款或公司费用，也不会自动发起补付或追收。'
+              : '确认后系统会按核定结果重建结算，并只在本次有差异时退回合作方再次确认。'}
+            style={{ marginBottom: 16 }}
+          /> : actionState.action === 'record_post_payment_adjustment' && canRecordPostPaymentCorrectionToZero ? <Alert
+            showIcon
+            type="warning"
+            message="实时核定已回到原付款金额"
+            description="仍有待确认或已计入的历史差额。可记录本次归零结果：尚未确认的旧记录会被替代，已计入的部分会按税前／GST 分量生成反向增量；原付款记录不变。"
             style={{ marginBottom: 16 }}
           /> : <Alert
             showIcon
@@ -1008,10 +1170,40 @@ export default function WeeklySettlementsPanel() {
             message="财务核定结果与合作方确认完全一致"
             description={actionState.action === 'approve'
               ? '确认后状态将变为“财务已核对／待付款”，请在线下完成付款后再使用“确认已付款”。'
-              : '无需退回合作方再次确认，请关闭本操作并使用“确认已核对”。'}
+              : actionState.action === 'record_post_payment_adjustment'
+                ? '当前实时金额与已付款金额一致，无需记录差额。'
+                : '无需退回合作方再次确认，请关闭本操作并使用“确认已核对”。'}
             style={{ marginBottom: 16 }}
           />}
         </> : null}
+      </Spin> : null}
+      {actionState?.action === 'apply_post_payment_adjustment' ? <Spin spinning={actionDetailLoading} tip="正在核对差额和目标周">
+        <Alert
+          showIcon
+          type="info"
+          message="原已付账单保持不变"
+          description="系统分别使用已记录的税前、GST 与含税净差额，逐项扣除以前已计入的部分后，把本次增量作为独立补发／抵扣明细放入原周的下一周。不会按目标周人员状态重新算税；三项不能对平时会阻断。如下一周已财务核对或付款，也会阻断而不会改写快照。"
+          style={{ marginBottom: 16 }}
+        />
+        <Descriptions bordered size="small" column={2} style={{ marginBottom: 16 }}>
+          <Descriptions.Item label="原账单">{actionState.settlement.week_start} 至 {actionState.settlement.week_end}</Descriptions.Item>
+          <Descriptions.Item label="目标下一周">
+            {dayjs(actionState.settlement.week_start).add(7, 'day').format('YYYY-MM-DD')} 至 {dayjs(actionState.settlement.week_start).add(13, 'day').format('YYYY-MM-DD')}
+          </Descriptions.Item>
+          <Descriptions.Item label="已记录含税净差额">{formatMoney(actionState.adjustment?.difference_cents)}</Descriptions.Item>
+          <Descriptions.Item label="本次含税补发／抵扣">
+            <Typography.Text strong type={Number(actionState.adjustment?.pending_applied_delta_cents || 0) < 0 ? 'danger' : 'success'}>
+              {formatMoney(actionState.adjustment?.pending_applied_delta_cents)}
+            </Typography.Text>
+          </Descriptions.Item>
+          <Descriptions.Item label="已记录税前／GST">
+            {formatMoney(actionState.adjustment?.difference_subtotal_cents)} / {formatMoney(actionState.adjustment?.difference_gst_cents)}
+          </Descriptions.Item>
+          <Descriptions.Item label="本次税前／GST">
+            {formatMoney(actionState.adjustment?.pending_applied_subtotal_cents)} / {formatMoney(actionState.adjustment?.pending_applied_gst_cents)}
+          </Descriptions.Item>
+          <Descriptions.Item label="说明" span={2}>{actionState.adjustment?.reason || '-'}</Descriptions.Item>
+        </Descriptions>
       </Spin> : null}
       {actionState?.action === 'resolve_dispute' ? <>
         <div className={styles.disputeSummary}>
@@ -1126,6 +1318,15 @@ export default function WeeklySettlementsPanel() {
         </Spin>
       </> : null}
       {actionState?.action === 'confirm_paid' ? <Spin spinning={actionDetailLoading} tip="正在读取收款账户">
+        {financeReviewComparison && !financeReviewComparison.can_pay_without_reconfirmation ? <Alert
+          showIcon
+          type="error"
+          message="财务核准后结算依据已变化，当前禁止确认付款"
+          description={financeReviewComparison.blocking_issues.length > 0 || financeReviewComparison.unresolved_claim_count > 0
+            ? '请先补齐待处理项目，再使用“重算并退回确认”。'
+            : `已核准金额 ${formatMoney(financeReviewComparison.partner_total_cents)}，当前核定金额 ${formatMoney(financeReviewComparison.reviewed_total_cents)}，请先重算并退回合作方确认。`}
+          style={{ marginBottom: 16 }}
+        /> : null}
         <div className={styles.paymentSummary}>
           <div className={styles.paymentAmountBlock}>
             <Typography.Text type="secondary">本次付款金额</Typography.Text>
@@ -1206,6 +1407,7 @@ export default function WeeklySettlementsPanel() {
         </> : null}
         {actionState.action === 'adjust' ? <Form.Item label="调整金额（AUD，可为负数）" name="adjustment_amount" rules={[{ required: true, message: '请输入调整金额' }]}><InputNumber precision={2} min={-1_000_000} max={1_000_000} style={{ width: '100%' }} /></Form.Item> : null}
         {actionState.action === 'return_for_confirmation' ? <Form.Item label="退回说明" name="reason" rules={[{ required: true, whitespace: true, message: '请填写需要合作方再次确认的原因' }]}><Input.TextArea maxLength={1000} showCount rows={3} placeholder="请写明需要核对的日期、工作内容或金额" /></Form.Item> : null}
+        {actionState.action === 'record_post_payment_adjustment' ? <Form.Item label="差额说明" name="reason" rules={[{ required: true, whitespace: true, message: '请填写付款后差额的原因或待处理说明' }]}><Input.TextArea maxLength={1000} showCount rows={3} placeholder="例如：经理在付款后更正了 10/10 的检查安排；后续补付或追收需另行审批" /></Form.Item> : null}
         {actionState.action === 'adjust' || actionState.action === 'reopen' || actionState.action === 'void' ? <Form.Item label="原因" name="reason" rules={[{ required: true, whitespace: true, message: '请填写原因' }]}><Input.TextArea maxLength={1000} showCount rows={3} /></Form.Item> : null}
         {actionState.action === 'confirm_paid' ? <>
           <Form.Item label="付款日期" name="payment_date" rules={[{ required: true, message: '请选择付款日期' }]}><DatePicker style={{ width: '100%' }} format="DD/MM/YYYY" disabledDate={(value) => value.isAfter(dayjs(), 'day')} /></Form.Item>

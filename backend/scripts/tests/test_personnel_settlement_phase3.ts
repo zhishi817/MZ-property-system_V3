@@ -1,17 +1,22 @@
 import assert from 'assert'
 import fs from 'fs'
 import path from 'path'
-import { getMelbourneDate, getSettlementWeekStart } from '../../src/lib/personnelSettlement'
+import { getMelbourneDate, getSettlementWeekStart, PERSONNEL_SETTLEMENT_CALCULATION_VERSION } from '../../src/lib/personnelSettlement'
 import {
   assertPersonnelSettlementTransition,
+  buildPersonnelSettlementPostPaymentAdjustment,
   buildFrozenPersonnelSettlementSubmissionSnapshot,
   buildPersonnelSettlementSubmissionSnapshot,
   calculatePersonnelSettlementDisputeResolution,
   comparePersonnelSettlementFinanceReview,
+  getPersonnelSettlementCarryDeliveryRetry,
+  getPersonnelSettlementNoDeltaCarryRetry,
   getPersonnelSettlementReturnDeliveryRetry,
   getPersonnelSettlementAvailableActions,
   historicalFrozenSettlementRequiresVerification,
   personnelSettlementSubmissionStatus,
+  planPersonnelSettlementCarryAdjustment,
+  retryPersonnelSettlementSerializableTransaction,
   shouldUseFrozenSettlementSubmission,
   validatePersonnelSettlementPayment,
 } from '../../src/lib/personnelSettlementWorkflow'
@@ -51,6 +56,10 @@ const preview = fs.readFileSync(path.join(backendRoot, 'src/lib/personnelSettlem
 const router = fs.readFileSync(path.join(backendRoot, 'src/modules/personnel_settlements.ts'), 'utf8')
 const crudRouter = fs.readFileSync(path.join(backendRoot, 'src/modules/crud.ts'), 'utf8')
 const taskCenter = fs.readFileSync(path.join(backendRoot, 'src/modules/task_center.ts'), 'utf8')
+const carryMigration = fs.readFileSync(
+  path.join(backendRoot, 'scripts/migrations/20261013_personnel_settlement_carry_adjustments.sql'),
+  'utf8',
+)
 const cleaningRouter = fs.readFileSync(path.join(backendRoot, 'src/modules/cleaning.ts'), 'utf8')
 const cleaningAppRouter = fs.readFileSync(path.join(backendRoot, 'src/modules/cleaning_app.ts'), 'utf8')
 const mzappRouter = fs.readFileSync(path.join(backendRoot, 'src/modules/mzapp.ts'), 'utf8')
@@ -77,20 +86,20 @@ assert.strictEqual(historicalFrozenSettlementRequiresVerification({
   status: 'draft',
   line_count: 1,
   total_cents: 8800,
-  rule_snapshot: { calculation_version: 'phase8-mz031-execution-ledger-v1', work_checklist: [{ component_type: 'cleaning_task', included_in_amount: true, audit_id: null }] },
-}), true)
+  rule_snapshot: { calculation_version: PERSONNEL_SETTLEMENT_CALCULATION_VERSION, work_checklist: [{ component_type: 'cleaning_task', status: 'incomplete', included_in_amount: true, audit_id: null }] },
+}), false)
 assert.strictEqual(historicalFrozenSettlementRequiresVerification({
   status: 'draft',
   line_count: 1,
   total_cents: 8800,
-  rule_snapshot: { calculation_version: 'phase8-mz031-execution-ledger-v1', work_checklist: [{ component_type: 'cleaning_task', included_in_amount: true, audit_id: 'audit-1' }] },
+  rule_snapshot: { calculation_version: PERSONNEL_SETTLEMENT_CALCULATION_VERSION, work_checklist: [{ component_type: 'cleaning_task', included_in_amount: true, audit_id: 'audit-1' }] },
 }), false)
 const currentVersionFrozenDraft = {
   status: 'draft',
   line_count: 1,
   total_cents: 8800,
   rule_snapshot: {
-    calculation_version: 'phase8-mz031-execution-ledger-v1',
+    calculation_version: PERSONNEL_SETTLEMENT_CALCULATION_VERSION,
     work_checklist: [{ component_type: 'cleaning_task', included_in_amount: true, audit_id: 'audit-1' }],
   },
 }
@@ -105,10 +114,26 @@ assert.strictEqual(shouldUseFrozenSettlementSubmission({ ...currentVersionFrozen
 }), false)
 assert.strictEqual(shouldUseFrozenSettlementSubmission({
   status: 'draft', line_count: 0, subtotal_cents: 0, gst_cents: 0, total_cents: 0,
-  rule_snapshot: { calculation_version: 'phase8-mz031-execution-ledger-v1' },
+  rule_snapshot: { calculation_version: PERSONNEL_SETTLEMENT_CALCULATION_VERSION },
 }, {
   work_checklist: [{ status: 'legacy_completed_unverified' }],
 }), false)
+assert.strictEqual(shouldUseFrozenSettlementSubmission({
+  status: 'paid', line_count: 1, subtotal_cents: 7000, gst_cents: 0, total_cents: 7000,
+  rule_snapshot: { calculation_version: 'phase8-mz031-execution-ledger-v1' },
+}, {
+  work_checklist: [{ component_type: 'cleaning_task', included_in_amount: true, audit_id: null }],
+}), true, 'paid historical values remain frozen across the assignment-based calculation upgrade')
+for (const status of ['confirmed', 'finance_approved', 'paid']) {
+  assert.strictEqual(shouldUseFrozenSettlementSubmission({
+    ...currentVersionFrozenDraft,
+    status,
+  }, { work_checklist: [{ status: 'completed' }] }), true, `${status} values remain frozen within the current calculation version`)
+}
+assert.strictEqual(shouldUseFrozenSettlementSubmission({
+  ...currentVersionFrozenDraft,
+  status: 'draft',
+}, { work_checklist: [{ status: 'completed' }] }), false, 'an explicitly reopened draft must return to the live calculation path')
 
 const hourlyClaim = validatePersonnelClaimInput({
   service_date: '2026-09-09',
@@ -559,6 +584,8 @@ assert.deepStrictEqual(comparePersonnelSettlementFinanceReview({
   reviewed_gst_cents: 318,
   reviewed_total_cents: 3500,
   difference_cents: 0,
+  partner_snapshot_token: submissionSnapshot.confirmation_token,
+  reviewed_snapshot_token: submissionSnapshot.confirmation_token,
   blocking_issues: [],
 })
 const reducedReviewSnapshot = buildPersonnelSettlementSubmissionSnapshot({
@@ -583,8 +610,193 @@ assert.deepStrictEqual(comparePersonnelSettlementFinanceReview({
   reviewed_gst_cents: 0,
   reviewed_total_cents: 0,
   difference_cents: -3500,
+  partner_snapshot_token: submissionSnapshot.confirmation_token,
+  reviewed_snapshot_token: reducedReviewSnapshot.confirmation_token,
   blocking_issues: [],
 })
+const postPaymentComparison = comparePersonnelSettlementFinanceReview({
+  unresolvedClaimCount: 0,
+  partnerSnapshot: submissionSnapshot,
+  reviewedSnapshot: reducedReviewSnapshot,
+})
+assert.deepStrictEqual(buildPersonnelSettlementPostPaymentAdjustment({
+  id: 'adjustment-1',
+  actorUserId: 'finance-1',
+  reason: '付款后经理更正检查安排',
+  recordedAt: '2026-09-16T01:02:03.000Z',
+  current: {
+    status: 'paid',
+    subtotal_cents: 3182,
+    gst_cents: 318,
+    total_cents: 3500,
+    payment_destination_snapshot: { payment_amount_cents: 3500, payment_date: '2026-09-15' },
+  },
+  comparison: postPaymentComparison,
+}), {
+  id: 'adjustment-1',
+  status: 'recorded_pending_finance_action',
+  recorded_at: '2026-09-16T01:02:03.000Z',
+  recorded_by: 'finance-1',
+  reason: '付款后经理更正检查安排',
+  original_paid_subtotal_cents: 3182,
+  original_paid_gst_cents: 318,
+  original_paid_total_cents: 3500,
+  current_reviewed_subtotal_cents: 0,
+  current_reviewed_gst_cents: 0,
+  current_reviewed_total_cents: 0,
+  difference_subtotal_cents: -3182,
+  difference_gst_cents: -318,
+  difference_cents: -3500,
+  original_snapshot_token: submissionSnapshot.confirmation_token,
+  current_snapshot_token: reducedReviewSnapshot.confirmation_token,
+  payment_date: '2026-09-15',
+})
+assert.throws(() => buildPersonnelSettlementPostPaymentAdjustment({
+  id: 'adjustment-2', actorUserId: 'finance-1', reason: 'x', recordedAt: '2026-09-16T01:02:03.000Z',
+  current: { status: 'finance_approved', subtotal_cents: 3182, gst_cents: 318, total_cents: 3500 }, comparison: postPaymentComparison,
+}), /settlement_post_payment_adjustment_paid_only/)
+const taxStatusChangedAdjustment = buildPersonnelSettlementPostPaymentAdjustment({
+  id: 'adjustment-tax-status', actorUserId: 'finance-1', reason: '税务状态更正', recordedAt: '2026-09-16T01:02:03.000Z',
+  current: {
+    status: 'paid', subtotal_cents: 10000, gst_cents: 1000, total_cents: 11000,
+    payment_destination_snapshot: { payment_amount_cents: 11000, payment_date: '2026-09-15' },
+  },
+  comparison: {
+    ...postPaymentComparison,
+    changed: true,
+    partner_subtotal_cents: 10000,
+    partner_gst_cents: 1000,
+    partner_total_cents: 11000,
+    reviewed_subtotal_cents: 11000,
+    reviewed_gst_cents: 0,
+    reviewed_total_cents: 11000,
+    difference_cents: 0,
+  },
+})
+assert.deepStrictEqual({
+  difference_subtotal_cents: taxStatusChangedAdjustment.difference_subtotal_cents,
+  difference_gst_cents: taxStatusChangedAdjustment.difference_gst_cents,
+  difference_cents: taxStatusChangedAdjustment.difference_cents,
+}, { difference_subtotal_cents: 1000, difference_gst_cents: -1000, difference_cents: 0 })
+assert.throws(() => buildPersonnelSettlementPostPaymentAdjustment({
+  id: 'adjustment-tax-missing', actorUserId: 'finance-1', reason: '税额缺失', recordedAt: '2026-09-16T01:02:03.000Z',
+  current: {
+    status: 'paid', subtotal_cents: 10000, gst_cents: 0, total_cents: 11000,
+    payment_destination_snapshot: { payment_amount_cents: 11000, payment_date: '2026-09-15' },
+  },
+  comparison: postPaymentComparison,
+}), /settlement_post_payment_adjustment_tax_breakdown_unavailable/)
+assert.deepStrictEqual(planPersonnelSettlementCarryAdjustment({
+  sourceWeekStart: '2026-10-05',
+  sourceWeekEnd: '2026-10-11',
+  recordedDifference: { subtotal_cents: 2000, gst_cents: 200, total_cents: 2200 },
+  priorAppliedDeltas: [],
+}), {
+  recorded_difference: { subtotal_cents: 2000, gst_cents: 200, total_cents: 2200 },
+  previously_applied: { subtotal_cents: 0, gst_cents: 0, total_cents: 0 },
+  applied_delta: { subtotal_cents: 2000, gst_cents: 200, total_cents: 2200 },
+  target_week_start: '2026-10-12',
+  target_week_end: '2026-10-18',
+  already_applied: false,
+})
+assert.deepStrictEqual(planPersonnelSettlementCarryAdjustment({
+  sourceWeekStart: '2026-10-05',
+  sourceWeekEnd: '2026-10-11',
+  recordedDifference: { subtotal_cents: -3182, gst_cents: -318, total_cents: -3500 },
+  priorAppliedDeltas: [{ subtotal_cents: -1818, gst_cents: -182, total_cents: -2000 }],
+}), {
+  recorded_difference: { subtotal_cents: -3182, gst_cents: -318, total_cents: -3500 },
+  previously_applied: { subtotal_cents: -1818, gst_cents: -182, total_cents: -2000 },
+  applied_delta: { subtotal_cents: -1364, gst_cents: -136, total_cents: -1500 },
+  target_week_start: '2026-10-12',
+  target_week_end: '2026-10-18',
+  already_applied: false,
+})
+assert.strictEqual(planPersonnelSettlementCarryAdjustment({
+  sourceWeekStart: '2026-10-05',
+  sourceWeekEnd: '2026-10-11',
+  recordedDifference: { subtotal_cents: 2273, gst_cents: 227, total_cents: 2500 },
+  priorAppliedDeltas: [
+    { subtotal_cents: 909, gst_cents: 91, total_cents: 1000 },
+    { subtotal_cents: 1364, gst_cents: 136, total_cents: 1500 },
+  ],
+}).already_applied, true)
+assert.deepStrictEqual(getPersonnelSettlementNoDeltaCarryRetry({
+  sourceSettlementId: 'paid-week',
+  sourceWeekStart: '2026-10-05',
+  sourceWeekEnd: '2026-10-11',
+  adjustment: {
+    status: 'scheduled_for_next_week',
+    carry_adjustment_id: 'prior-carry',
+    target_settlement_id: 'next-week',
+    target_week_start: '2026-10-12',
+    target_week_end: '2026-10-18',
+    applied_subtotal_cents: 0,
+    applied_gst_cents: 0,
+    applied_delta_cents: 0,
+  },
+}), {
+  sourceSettlementId: 'paid-week',
+  carryAdjustmentId: 'prior-carry',
+  targetSettlementId: 'next-week',
+  targetWeekStart: '2026-10-12',
+  targetWeekEnd: '2026-10-18',
+  appliedSubtotalCents: 0,
+  appliedGstCents: 0,
+  appliedDeltaCents: 0,
+  idempotent: true,
+  confirmationRequest: null,
+})
+assert.strictEqual(getPersonnelSettlementNoDeltaCarryRetry({
+  sourceSettlementId: 'paid-week',
+  sourceWeekStart: '2026-10-05',
+  sourceWeekEnd: '2026-10-11',
+  adjustment: {
+    status: 'scheduled_for_next_week',
+    target_week_start: '2026-10-12',
+    target_week_end: '2026-10-18',
+    applied_subtotal_cents: 100,
+    applied_gst_cents: 0,
+    applied_delta_cents: 100,
+  },
+}), null, 'non-zero scheduled adjustments must still require their persisted carry row')
+assert.strictEqual(getPersonnelSettlementNoDeltaCarryRetry({
+  sourceSettlementId: 'paid-week',
+  sourceWeekStart: '2026-10-05',
+  sourceWeekEnd: '2026-10-11',
+  adjustment: {
+    status: 'scheduled_for_next_week',
+    target_week_start: '2026-10-19',
+    target_week_end: '2026-10-25',
+    applied_subtotal_cents: 0,
+    applied_gst_cents: 0,
+    applied_delta_cents: 0,
+  },
+}), null, 'no-delta retry must remain fixed to the exact adjacent week')
+assert.deepStrictEqual(planPersonnelSettlementCarryAdjustment({
+  sourceWeekStart: '2026-10-05',
+  sourceWeekEnd: '2026-10-11',
+  recordedDifference: { subtotal_cents: 1000, gst_cents: -1000, total_cents: 0 },
+  priorAppliedDeltas: [],
+}).applied_delta, { subtotal_cents: 1000, gst_cents: -1000, total_cents: 0 })
+assert.deepStrictEqual(planPersonnelSettlementCarryAdjustment({
+  sourceWeekStart: '2026-10-05',
+  sourceWeekEnd: '2026-10-11',
+  recordedDifference: { subtotal_cents: 0, gst_cents: 0, total_cents: 0 },
+  priorAppliedDeltas: [{ subtotal_cents: 2000, gst_cents: 200, total_cents: 2200 }],
+}).applied_delta, { subtotal_cents: -2000, gst_cents: -200, total_cents: -2200 })
+assert.throws(() => planPersonnelSettlementCarryAdjustment({
+  sourceWeekStart: '2026-10-05',
+  sourceWeekEnd: '2026-10-12',
+  recordedDifference: { subtotal_cents: 100, gst_cents: 0, total_cents: 100 },
+  priorAppliedDeltas: [],
+}), /settlement_carry_source_period_invalid/)
+assert.throws(() => planPersonnelSettlementCarryAdjustment({
+  sourceWeekStart: '2026-10-05',
+  sourceWeekEnd: '2026-10-11',
+  recordedDifference: { subtotal_cents: 100, gst_cents: 10, total_cents: 100 },
+  priorAppliedDeltas: [],
+}), /settlement_post_payment_adjustment_tax_breakdown_invalid/)
 assert.strictEqual(myClaimOptionsQuerySchema.safeParse({ service_date: '2026-09-09', search: 'not-allowed' }).success, false)
 assert.strictEqual(claimReviewEstimateQuerySchema.safeParse({ user_id: 'another-person' }).success, false)
 
@@ -592,8 +804,28 @@ assert.deepStrictEqual(getPersonnelSettlementAvailableActions('draft'), ['issue_
 assert.deepStrictEqual(getPersonnelSettlementAvailableActions('awaiting_confirmation'), ['confirm', 'dispute', 'reopen', 'void'])
 assert.deepStrictEqual(getPersonnelSettlementAvailableActions('confirmed'), ['return_for_confirmation', 'approve', 'reopen', 'void'])
 assert.deepStrictEqual(getPersonnelSettlementAvailableActions('disputed'), ['resolve_dispute', 'void'])
-assert.deepStrictEqual(getPersonnelSettlementAvailableActions('finance_approved'), ['confirm_paid', 'void'])
-assert.deepStrictEqual(getPersonnelSettlementAvailableActions('paid'), [])
+assert.deepStrictEqual(getPersonnelSettlementAvailableActions('finance_approved'), ['return_for_confirmation', 'confirm_paid', 'void'])
+assert.deepStrictEqual(getPersonnelSettlementAvailableActions('paid'), ['record_post_payment_adjustment', 'apply_post_payment_adjustment'])
+const returnForConfirmationFlow = workflow.slice(
+  workflow.indexOf('export async function returnPersonnelSettlementForConfirmation'),
+  workflow.indexOf('export async function issuePersonnelSettlementConfirmation'),
+)
+assert.match(returnForConfirmationFlow, /buildPersonnelSettlementPreview/)
+assert.match(returnForConfirmationFlow, /if \(!financeReviewComparison\.changed\) throw new Error\('settlement_finance_review_unchanged'\)/)
+assert.match(returnForConfirmationFlow, /ruleSnapshot\.source_cutoff_at = confirmationRevision/)
+assert.match(returnForConfirmationFlow, /DELETE FROM personnel_settlement_lines/)
+assert.match(returnForConfirmationFlow, /insertPersonnelSettlementLine/)
+assert.match(returnForConfirmationFlow, /status='awaiting_confirmation'/)
+assert.match(returnForConfirmationFlow, /finance_reviewed_by=NULL, finance_reviewed_at=NULL/)
+assert.match(returnForConfirmationFlow, /status\) === 'finance_approved' && input\.actorCanReturnFinanceApproved !== true/)
+assert.doesNotMatch(returnForConfirmationFlow, /buildFrozenPersonnelSettlementSubmissionSnapshot/)
+const reopenSettlementFlow = workflow.slice(
+  workflow.indexOf('export async function reopenPersonnelSettlement'),
+  workflow.indexOf('export function validatePersonnelSettlementPayment'),
+)
+assert.match(reopenSettlementFlow, /assertPersonnelSettlementTransition\('reopen', current\.status\)/)
+assert.match(reopenSettlementFlow, /SET status='draft'/)
+assert.match(reopenSettlementFlow, /workload_amount_confirmed_at=NULL/)
 assert.strictEqual(personnelSettlementSubmissionStatus(null), 'not_submitted')
 assert.strictEqual(personnelSettlementSubmissionStatus('void'), 'not_submitted')
 assert.strictEqual(personnelSettlementSubmissionStatus('confirmed'), 'confirmed')
@@ -602,6 +834,7 @@ assert.doesNotThrow(() => assertPersonnelSettlementTransition('approve', 'confir
 assert.throws(() => assertPersonnelSettlementTransition('confirm_paid', 'confirmed'), /settlement_transition_invalid/)
 assert.doesNotThrow(() => assertPersonnelSettlementTransition('return_for_confirmation', 'confirmed'))
 assert.doesNotThrow(() => assertPersonnelSettlementTransition('return_for_confirmation', 'draft'))
+assert.doesNotThrow(() => assertPersonnelSettlementTransition('return_for_confirmation', 'finance_approved'))
 assert.deepStrictEqual(getPersonnelSettlementReturnDeliveryRetry({
   status: 'awaiting_confirmation',
   user_id: 'cleaner-1',
@@ -621,7 +854,33 @@ assert.strictEqual(getPersonnelSettlementReturnDeliveryRetry({
   status: 'awaiting_confirmation',
   rule_snapshot: { confirmation_request: { revision: '2026-09-15T01:00:00.000Z', round: 'initial' } },
 }), null)
+assert.deepStrictEqual(getPersonnelSettlementCarryDeliveryRetry({
+  status: 'awaiting_confirmation',
+  user_id: 'cleaner-1',
+  week_start: '2026-09-14',
+  week_end: '2026-09-20',
+  rule_snapshot: {
+    carry_adjustment_change: { carry_adjustment_id: 'carry-1' },
+    confirmation_request: { revision: '2026-09-16T01:00:00.000Z', round: 'post_payment_adjustment' },
+  },
+}, 'carry-1'), {
+  userId: 'cleaner-1',
+  weekStart: '2026-09-14',
+  weekEnd: '2026-09-20',
+  confirmationRevision: '2026-09-16T01:00:00.000Z',
+})
+assert.strictEqual(getPersonnelSettlementCarryDeliveryRetry({
+  status: 'awaiting_confirmation',
+  rule_snapshot: {
+    carry_adjustment_change: { carry_adjustment_id: 'carry-newer' },
+    confirmation_request: { revision: '2026-09-16T01:00:00.000Z', round: 'post_payment_adjustment' },
+  },
+}, 'carry-1'), null)
 assert.doesNotThrow(() => assertPersonnelSettlementTransition('confirm_paid', 'finance_approved'))
+assert.doesNotThrow(() => assertPersonnelSettlementTransition('record_post_payment_adjustment', 'paid'))
+assert.doesNotThrow(() => assertPersonnelSettlementTransition('apply_post_payment_adjustment', 'paid'))
+assert.throws(() => assertPersonnelSettlementTransition('record_post_payment_adjustment', 'finance_approved'), /settlement_transition_invalid/)
+assert.throws(() => assertPersonnelSettlementTransition('apply_post_payment_adjustment', 'finance_approved'), /settlement_transition_invalid/)
 assert.throws(() => assertPersonnelSettlementTransition('confirm_paid', 'draft'), /settlement_transition_invalid/)
 assert.throws(() => assertPersonnelSettlementTransition('reopen', 'disputed'), /settlement_transition_invalid/)
 assert.deepStrictEqual(calculatePersonnelSettlementDisputeResolution({
@@ -655,6 +914,11 @@ assert.match(router, /router\.post\('\/weekly\/generate', requirePerm\('personne
 assert.match(router, /'\/weekly\/:settlementId\/confirm-paid',[\s\S]*requirePerm\('finance\.payout'\),[\s\S]*requirePerm\('personnel_settlements\.bank\.manage'\)/)
 assert.match(router, /payment_reference: z\.string\(\)\.trim\(\)\.max\(120\)\.optional\(\)\.nullable\(\)/)
 assert.match(router, /router\.post\('\/weekly\/:settlementId\/approve', requirePerm\('finance\.payout'\)/)
+assert.match(router, /router\.post\('\/weekly\/:settlementId\/record-post-payment-adjustment', requirePerm\('finance\.payout'\)/)
+assert.match(router, /router\.post\('\/weekly\/:settlementId\/apply-post-payment-adjustment', requirePerm\('finance\.payout'\)/)
+assert.match(router, /actorCanReturnFinanceApproved = await userHasAnyPerm[\s\S]*\['finance\.payout'\]/)
+assert.match(router, /code === 'settlement_finance_permission_required'\) return 403/)
+assert.match(router, /databaseCode === '40001' \|\| databaseCode === '40P01'[\s\S]*\? 409/)
 assert.match(router, /approvePersonnelSettlementFinanceReview/)
 assert.doesNotMatch(router, /settlement_approval_step_removed/)
 assert.match(router, /'\/weekly\/:settlementId\/resolve-dispute',[\s\S]*requireAnyPerm\(\['personnel_settlements\.rules\.manage', 'finance\.payout'\]\)/)
@@ -673,6 +937,65 @@ assert.match(workflow, /payment_method: paymentMethod/)
 assert.match(workflow, /company_expense_paid_lock/)
 const confirmPaidFlow = workflow.slice(workflow.indexOf('export async function confirmPersonnelSettlementPaid'))
 assert.doesNotMatch(confirmPaidFlow, /input\.payment_reference|payment_reference=\$/)
+assert.match(confirmPaidFlow, /assertSettlementReadyForConfirmation\(client, current, input\.settlementId\)/)
+assert.match(confirmPaidFlow, /payment_subtotal_cents:[\s\S]*payment_gst_cents:[\s\S]*payment_amount_cents:/)
+assert.match(workflow, /retryPersonnelSettlementSerializableTransaction<[\s\S]*Math\.min\(3,[\s\S]*SERIALIZABLE_SETTLEMENT_RETRY_CODES/)
+assert.match(workflow, /runSerializableSettlementTransaction<[\s\S]*SET TRANSACTION ISOLATION LEVEL SERIALIZABLE/)
+assert.match(confirmPaidFlow, /runSerializableSettlementTransaction[\s\S]*loadSettlementForUpdate/)
+const postPaymentAdjustmentFlow = workflow.slice(
+  workflow.indexOf('export async function recordPersonnelSettlementPostPaymentAdjustment'),
+  workflow.indexOf('export async function voidPersonnelSettlement'),
+)
+assert.match(postPaymentAdjustmentFlow, /assertPersonnelSettlementTransition\('record_post_payment_adjustment', current\.status\)/)
+assert.match(postPaymentAdjustmentFlow, /'record_post_payment_adjustment'/)
+assert.match(postPaymentAdjustmentFlow, /historical_amounts_unchanged: true/)
+assert.match(postPaymentAdjustmentFlow, /runSerializableSettlementTransaction[\s\S]*loadSettlementForUpdate/)
+assert.match(postPaymentAdjustmentFlow, /latest\?\.recorded_by[\s\S]*latest\?\.reason/)
+assert.match(postPaymentAdjustmentFlow, /status: 'superseded'/)
+assert.match(postPaymentAdjustmentFlow, /SUM\(applied_subtotal_cents\)[\s\S]*SUM\(applied_gst_cents\)[\s\S]*SUM\(applied_total_cents\)/)
+assert.match(postPaymentAdjustmentFlow, /hasPendingAdjustment[\s\S]*!comparison\.changed[\s\S]*!hasPendingAdjustment/)
+const postPaymentSettlementUpdate = postPaymentAdjustmentFlow.slice(
+  postPaymentAdjustmentFlow.indexOf('UPDATE personnel_weekly_settlements'),
+  postPaymentAdjustmentFlow.indexOf('[JSON.stringify(ruleSnapshot)'),
+)
+assert.match(postPaymentSettlementUpdate, /SET rule_snapshot=\$1::jsonb, updated_at=now\(\)/)
+assert.doesNotMatch(postPaymentSettlementUpdate, /subtotal_cents|gst_cents|total_cents|payment_destination_snapshot|company_expense_id/)
+assert.doesNotMatch(postPaymentAdjustmentFlow, /UPDATE company_expenses/)
+const applyPostPaymentAdjustmentFlow = workflow.slice(
+  workflow.indexOf('export async function applyPersonnelSettlementPostPaymentAdjustment'),
+  workflow.indexOf('export async function voidPersonnelSettlement'),
+)
+assert.match(applyPostPaymentAdjustmentFlow, /assertPersonnelSettlementTransition\('apply_post_payment_adjustment', current\.status\)/)
+assert.match(applyPostPaymentAdjustmentFlow, /settlement_carry_target_finance_locked/)
+assert.match(applyPostPaymentAdjustmentFlow, /settlement_carry_target_tax_treatment_requires_decision/)
+assert.match(applyPostPaymentAdjustmentFlow, /personnel_settlement_profiles[\s\S]*settlement_enabled=true[\s\S]*FOR SHARE/)
+assert.match(applyPostPaymentAdjustmentFlow, /getPersonnelSettlementCarryDeliveryRetry[\s\S]*confirmationRequest/)
+assert.match(applyPostPaymentAdjustmentFlow, /getPersonnelSettlementNoDeltaCarryRetry[\s\S]*if \(noDeltaRetry\) return noDeltaRetry/)
+assert.match(applyPostPaymentAdjustmentFlow, /assertSettlementReadyForConfirmation\(client, updatedTarget\.rows\[0\], target\.id\)/)
+assert.match(applyPostPaymentAdjustmentFlow, /\['finance_approved', 'paid'\]/)
+assert.match(applyPostPaymentAdjustmentFlow, /planPersonnelSettlementCarryAdjustment/)
+assert.match(applyPostPaymentAdjustmentFlow, /source_paid_amounts_unchanged: true/)
+assert.match(applyPostPaymentAdjustmentFlow, /status: 'scheduled_for_next_week'/)
+assert.match(applyPostPaymentAdjustmentFlow, /current_snapshot_token[\s\S]*reviewed_snapshot_token/)
+assert.match(applyPostPaymentAdjustmentFlow, /DELETE FROM personnel_settlement_lines[\s\S]*insertPersonnelSettlementLine/)
+assert.match(applyPostPaymentAdjustmentFlow, /status=\$6[\s\S]*'awaiting_confirmation'/)
+assert.doesNotMatch(applyPostPaymentAdjustmentFlow, /UPDATE company_expenses/)
+assert.match(carryMigration, /^BEGIN;/)
+assert.match(carryMigration, /UNIQUE \(source_settlement_id, source_adjustment_id\)/)
+assert.match(carryMigration, /applied_subtotal_cents[\s\S]*recorded_subtotal_difference_cents - previously_applied_subtotal_cents/)
+assert.match(carryMigration, /applied_gst_cents[\s\S]*recorded_gst_difference_cents - previously_applied_gst_cents/)
+assert.match(carryMigration, /applied_total_cents[\s\S]*recorded_total_difference_cents - previously_applied_total_cents/)
+assert.match(carryMigration, /target_week_start = source_week_start \+ 7/)
+assert.match(carryMigration, /component_type = 'post_payment_adjustment'[\s\S]*total_cents = subtotal_cents \+ gst_cents/)
+assert.match(carryMigration, /unit_rate_cents = total_cents/)
+assert.match(carryMigration, /source_type = 'post_payment_adjustment'/)
+assert.match(carryMigration, /INSERT INTO schema_migrations \(version\)[\s\S]*20261013_personnel_settlement_carry_adjustments/)
+assert.match(carryMigration, /COMMIT;\s*$/)
+assert.match(weeklyPanel, /canRecordPostPaymentCorrectionToZero/)
+assert.match(weeklyPanel, /实时核定已回到原付款金额/)
+assert.match(weeklyPanel, /已记录税前／GST/)
+assert.doesNotMatch(weeklyPanel, /find\(\(item\) => item\.id === adjustment\.id\) \|\| adjustment/)
+assert.match(weeklyPanel, /apply_post_payment_adjustment[\s\S]*!refreshedAdjustment[\s\S]*closeAction\(\)/)
 assert.match(crudRouter, /resource === 'company_expenses'[\s\S]*ref_type \|\| ''\) === 'personnel_weekly_settlement'[\s\S]*auto_generated_expense_readonly/)
 assert.match(claims, /personnelClaimRequiresEvidence\(current\.claim_type\)[\s\S]*claim_evidence_required/)
 assert.match(claims, /manual_amount_not_allowed_for_claim_type/)
@@ -706,6 +1029,27 @@ assert.match(assignmentQuery, /COALESCE\(t\.cleaner_id::text, t\.assignee_id::te
 assert.match(assignmentQuery, /NULLIF\(TRIM\(COALESCE\(t\.cleaner_id::text, t\.assignee_id::text\)\), ''\) IS NOT NULL/)
 assert.match(assignmentQuery, /LEFT JOIN users u ON u\.id::text = COALESCE\(t\.cleaner_id::text, t\.assignee_id::text\)/)
 assert.doesNotMatch(assignmentQuery, /complete_cleaning|fill_supplies/)
+const paymentQuery = preview.slice(preview.indexOf('WITH payment_candidates AS'), preview.indexOf('const profiles ='))
+assert.match(paymentQuery, /activeCleaningTaskWhereSql\('t'\)/)
+assert.match(paymentQuery, /validCleaningTaskOrderWhereSql\('t', 'o'\)/)
+assert.match(paymentQuery, /arrangement_revision,before,scheduled_service_date[\s\S]*ORDER BY e\.sequence_no, e\.id[\s\S]*original_scheduled_service_date/)
+assert.match(paymentQuery, /checkout-property-date:[\s\S]*identity\.original_scheduled_service_date/)
+assert.match(paymentQuery, /a\.performed_by_user_id = COALESCE\(t\.cleaner_id::text, t\.assignee_id::text\)/)
+assert.match(paymentQuery, /lower\(COALESCE\(a\.status_after, ''\)\) IN/)
+assert.match(paymentQuery, /status_before_snapshot[\s\S]*IN \('cancelled', 'canceled'\)/)
+assert.match(paymentQuery, /ORDER BY COALESCE\([\s\S]*actual_service_date[\s\S]*a\.performed_at, a\.id/)
+assert.match(paymentQuery, /PARTITION BY business_key/)
+assert.match(paymentQuery, /canonical_rank = 1[\s\S]*sibling\.business_key = canonical\.business_key/)
+assert.match(paymentQuery, /sibling\.user_id = canonical\.user_id[\s\S]*sibling\.actual_audit_id IS NOT NULL/)
+assert.match(paymentQuery, /COALESCE\(evidence\.actual_service_date, canonical\.scheduled_service_date\) AS service_date/)
+assert.match(paymentQuery, /FROM payable[\s\S]*service_date::date BETWEEN \$1::date AND \$2::date/)
+assert.doesNotMatch(paymentQuery, /COALESCE\([^)]*inspection_due_date[^)]*\) AS service_date/)
+assert.match(preview, /source_type: 'cleaning_task_assignment'/)
+assert.match(preview, /active_assignment_without_execution_record/)
+assert.match(preview, /inspection_assignment_no_longer_effective/)
+assert.match(preview, /t\.inspector_id::text AS user_id/)
+assert.doesNotMatch(preview, /COALESCE\(t\.inspector_id::text, t\.cleaner_id::text, t\.assignee_id::text\)/)
+assert.doesNotMatch(preview, /COALESCE\(t\.inspector_id::text, t\.assignee_id::text\)/)
 assert.match(preview, /status = ANY\(\$4::text\[\]\)/)
 assert.match(workflow, /include_submitted_claims: true/)
 assert.match(workflow, /status IN \('draft','returned'\)/)
@@ -713,6 +1057,8 @@ assert.match(workflow, /pending_pricing_items/)
 assert.match(workflow, /calculation_status/)
 assert.match(workflow, /settlement_finance_review_changed/)
 assert.match(workflow, /settlement_finance_review_unchanged/)
+assert.match(workflow, /\['confirmed', 'finance_approved'\]\.includes\(String\(current\.status\)\)/)
+assert.match(workflow, /person: reviewedPerson \|\| \{[\s\S]*reason: 'missing_effective_profile'/)
 assert.match(workflow, /hasFinanceReturnedZeroSettlement/)
 assert.match(workflow, /settlement_partner_submission_required/)
 assert.match(workflow, /resubmittingVoidedSettlement \? 'partner_resubmit_after_void'/)
@@ -722,7 +1068,12 @@ assert.doesNotMatch(inspectionQuery, /a\.performed_by_user_id = ANY\(\$1::text\[
 assert.match(inspectionQuery, /WITH scoped_tasks AS/)
 assert.match(inspectionQuery, /a\.source_id::text IN \(SELECT task_id FROM scoped_tasks\)/)
 assert.match(inspectionQuery, /COALESCE\(t\.cleaner_id::text, t\.assignee_id::text\) = ANY\(\$3::text\[\]\)/)
-assert.match(inspectionQuery, /\[period\.week_start, period\.week_end, userFilter, \['submit_inspection', 'fill_supplies', 'complete_cleaning'\]\]/)
+assert.match(inspectionQuery, /\[period\.week_start, period\.week_end, userFilter, \['fill_supplies', 'complete_cleaning'\]\]/)
+assert.doesNotMatch(inspectionQuery, /\['submit_inspection', 'fill_supplies'/)
+assert.match(preview, /WITH current_inspection_assignments AS/)
+assert.match(preview, /'inspection:' \|\| t\.id::text AS inspection_key/)
+assert.match(preview, /effective\.service_date < \(now\(\) AT TIME ZONE 'Australia\/Melbourne'\)::date AS is_payable/)
+assert.match(preview, /assignment_source/)
 assert.match(inspectionQuery, /BETWEEN \$1::date AND \$2::date/)
 assert.match(preview, /FROM work_task_events e/)
 assert.match(preview, /rescheduled_after_plan/)
@@ -736,8 +1087,7 @@ assert.match(plannedQuery, /NOT \(e\.payload#>'\{arrangement_revision,reasons\}'
 assert.match(plannedQuery, /e\.sequence_no = \([\s\S]*boundary\.payload#[\s\S]*management_reopened[\s\S]*ORDER BY boundary\.sequence_no DESC/)
 assert.doesNotMatch(plannedQuery, /lower\(COALESCE\(t\.inspection_mode, ''\)\) IN \([^)]*self_complete|checked_done/)
 const taskCenterSave = taskCenter.slice(taskCenter.indexOf("router.post('/save-board'"), taskCenter.indexOf("router.post('/save-board'") + 100_000)
-assert.match(taskCenterSave, /for \(const eventInput of eventInputs\) \{[\s\S]*await emitWorkTaskEvent\(eventInput, client\)[\s\S]*await client\.query\('COMMIT'\)/)
-assert.doesNotMatch(taskCenterSave, /Promise\.allSettled\(eventInputs/)
+assert.match(taskCenterSave, /await client\.query\('COMMIT'\)[\s\S]*Promise\.allSettled\(eventInputs\.map\(\(eventInput\) => emitWorkTaskEvent\(eventInput\)\)\)/)
 const singleCleaningPatch = cleaningRouter.slice(cleaningRouter.indexOf("router.patch('/tasks/:id'"), cleaningRouter.indexOf("const bulkDeleteSchema"))
 assert.match(singleCleaningPatch, /pgRunInTransaction\(async \(client\)/)
 assert.match(singleCleaningPatch, /emitWorkTaskEvent\([\s\S]*\}, client\)/)
@@ -862,6 +1212,7 @@ assert.match(workflow, /work_checklist: detail\.work_checklist \|\| \[\]/)
 assert.match(workflow, /existingStatus === 'awaiting_confirmation'/)
 assert.match(workflow, /shouldUseFrozenSettlementSubmission\(existing, person\)/)
 assert.match(workflow, /frozen_awaiting_confirmation/)
+assert.match(workflow, /frozen_existing_settlement/)
 const submissionPreviewFlow = workflow.slice(
   workflow.indexOf('export async function getPersonnelSettlementSubmissionPreview'),
   workflow.indexOf('export function personnelSettlementSubmissionStatus'),
@@ -956,4 +1307,36 @@ assert.doesNotMatch(claimsPanel, /直接确认金额（AUD，可选）/)
 assert.ok(claimsPanel.includes("if (mode === 'time_range') return `${rate}/小时 × ${values.approved_duration_minutes || 0}分钟 ÷ 60`"))
 assert.doesNotMatch(claimsPanel, /new_property_task'\) return `\$\{rate\}\/次/)
 
-console.log('personnel settlement phase3 contract tests passed')
+async function runAsyncContracts() {
+  let serializationAttempts = 0
+  const result = await retryPersonnelSettlementSerializableTransaction(async () => {
+    serializationAttempts += 1
+    if (serializationAttempts < 3) {
+      const error: any = new Error('serialization conflict')
+      error.code = '40001'
+      throw error
+    }
+    return 'settled'
+  })
+  assert.strictEqual(result, 'settled')
+  assert.strictEqual(serializationAttempts, 3)
+
+  let nonRetryableAttempts = 0
+  await assert.rejects(
+    retryPersonnelSettlementSerializableTransaction(async () => {
+      nonRetryableAttempts += 1
+      const error: any = new Error('validation failed')
+      error.code = '23514'
+      throw error
+    }),
+    /validation failed/,
+  )
+  assert.strictEqual(nonRetryableAttempts, 1)
+}
+
+runAsyncContracts()
+  .then(() => console.log('personnel settlement phase3 contract tests passed'))
+  .catch((error) => {
+    console.error(error)
+    process.exitCode = 1
+  })

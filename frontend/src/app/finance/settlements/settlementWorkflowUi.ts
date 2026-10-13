@@ -23,6 +23,8 @@ export type SettlementAction =
   | 'adjust'
   | 'reopen'
   | 'confirm_paid'
+  | 'record_post_payment_adjustment'
+  | 'apply_post_payment_adjustment'
   | 'void'
 
 export type ClaimStatus = 'draft' | 'submitted' | 'approved' | 'returned' | 'rejected'
@@ -58,6 +60,7 @@ export const CLAIM_TYPE_LABELS: Record<string, string> = {
   overtime_hour: '加班',
   new_property_task: '上新房',
   custom_amount: '其他金额',
+  post_payment_adjustment: '付款后补发／抵扣',
 }
 
 export const COMPONENT_TYPE_LABELS: Record<string, string> = {
@@ -85,11 +88,13 @@ export function getClaimReviewInputMode(claimType: string): ClaimReviewInputMode
 
 const MANAGEMENT_ACTION_STATUSES: Record<SettlementAction, SettlementStatus[]> = {
   resolve_dispute: ['disputed'],
-  return_for_confirmation: ['draft', 'confirmed'],
+  return_for_confirmation: ['draft', 'confirmed', 'finance_approved'],
   approve: ['confirmed'],
   adjust: ['draft'],
   reopen: ['awaiting_confirmation', 'confirmed'],
   confirm_paid: ['finance_approved'],
+  record_post_payment_adjustment: ['paid'],
+  apply_post_payment_adjustment: ['paid'],
   void: ['draft', 'awaiting_confirmation', 'confirmed', 'disputed', 'finance_approved'],
 }
 
@@ -102,6 +107,7 @@ export function canUseSettlementAction(
     return status === 'disputed' && (permissions.canManage || permissions.canPayout)
   }
   if (action === 'return_for_confirmation') {
+    if (status === 'finance_approved') return permissions.canPayout
     return ['draft', 'confirmed'].includes(status) && (permissions.canManage || permissions.canPayout)
   }
   if (action === 'approve') {
@@ -109,6 +115,8 @@ export function canUseSettlementAction(
   }
   const permission = action === 'confirm_paid'
     ? permissions.canPayout && permissions.canBank
+    : action === 'record_post_payment_adjustment' || action === 'apply_post_payment_adjustment'
+      ? permissions.canPayout
     : action === 'void'
       ? permissions.canPayout
     : permissions.canManage
