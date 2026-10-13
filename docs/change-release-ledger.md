@@ -348,15 +348,34 @@
 - Branch: `codex/mz032-034-release-20261014-v3`
 - Base: `origin/Dev@9570a7c3066d5f3b08026fa3a391d23d19b97505`; fetched at `2026-10-14 04:01:35 +1100`
 - Candidate patch SHA-256: `c7a67bdc32ca12a2d19d3327b23aacff22f1eb31a175aa9090b884f71fcee9aa` excluding `docs/change-release-ledger.md`
-- Commit SHA: `not committed`; exact post-commit range audit and SQL CI are pending
+- Commit SHA: `84115863b2bfd505e0020abdba39c1cd2ea60f52`; exact local `origin/Dev...commit` range reproduces the reviewed path set and candidate patch SHA
 - Dependencies: none
 - Required validation: `PASS for commit`; evidence: complete Root/Mobile local gates, exact v3 262/262 hunk gate and byte-for-byte full-range independent review pass. SQL integration remains mandatory after push and before merge/release
 - Shared-hunk review: `PASS`; evidence: shared final paths are the mechanically identical reviewed v2 final tree, including preserved MZ-033 `mzapp.ts` hunks and explicit-inspector MZ-034 repair
 - Generated-file review: `PASS`; evidence: no dependency, cache, environment, credential, binary, dist or other generated path is staged
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: current delegated user instruction explicitly selects the MZ032/033/034 joint release and authorizes necessary safe integration/fix commits
 - Independent review: `GO for commit`; evidence: exact 33-file staged candidate, 262/262 hunks, non-ledger SHA-256 `c7a67bdc32ca12a2d19d3327b23aacff22f1eb31a175aa9090b884f71fcee9aa`, blob identity, workflow/fixture safety and authorization boundary independently verified; P0/P1/P2 = 0
-- Action conclusion: `GO` for the selected commit only. SQL CI blocks merge/release but runs only after push
+- Action conclusion: `GO`; the selected final integration commit was created locally as `84115863b2bfd505e0020abdba39c1cd2ea60f52`. SQL CI blocks merge/release but runs only after push
+
+#### RA-20261014-008
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261014-002`
+- Selected CRL identities: `root/CRL-20261014-002`
+- Intended action: `push` the exact final v3 branch by explicit normal non-force refspec and open its Draft PR to `Dev`; no merge, deployment, migration or OTA in this action
+- Branch: `codex/mz032-034-release-20261014-v3`
+- Base: `origin/Dev@9570a7c3066d5f3b08026fa3a391d23d19b97505`; fetched at `2026-10-14 04:11:30 +1100`; the target remote branch was absent
+- Candidate patch SHA-256: `c7a67bdc32ca12a2d19d3327b23aacff22f1eb31a175aa9090b884f71fcee9aa` excluding `docs/change-release-ledger.md`
+- Commit SHA: `84115863b2bfd505e0020abdba39c1cd2ea60f52`; the later ledger-only audit head must retain this content commit as an ancestor
+- Dependencies: none
+- Required validation: `PASS for push`; evidence: final Root/Mobile local gates, exact 262/262 hunk gate, byte-for-byte final-range review and post-commit patch hash pass. The isolated PostgreSQL CI can run only after push and remains a hard blocker for merge/release
+- Shared-hunk review: `PASS`; evidence: exact final shared blobs were independently matched to the already-tested v2 content and the complete clean-range fingerprints now belong to this single integration CRL
+- Generated-file review: `PASS`; evidence: no dependency, cache, environment, credential, binary, dist or other generated path is in the exact range
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: current delegated user instruction explicitly assigns Git commit/push for the selected MZ032/033/034 joint release and authorizes same-scope safety fixes/retry; CRL, base, branch and reviewed content commit are now exact
+- Independent review: `GO`; evidence: exact v3 33-file candidate, 262/262 hunks, patch SHA, 32-path blob identity, workflow/fixture safety and authorization boundary independently verified; P0/P1/P2 = 0
+- Action conclusion: `GO` for one explicit-refspec normal non-force new-branch push after committing this ledger-only receipt and passing the exact release report. Merge, deployment, production migrations and OTA remain blocked pending final-SHA CI and later safety gates
 
 ### Risks / Release Notes
 
