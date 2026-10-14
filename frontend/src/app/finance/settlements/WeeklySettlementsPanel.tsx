@@ -153,6 +153,7 @@ function workReasonLabel(reason: unknown) {
   if (value === 'legacy_execution_task_later_cancelled') return '历史执行后任务被取消，需要人工核实'
   if (value === 'cleaning_action_without_done_status') return '已记录清洁执行，但任务状态未完成，需要人工核实'
   if (value === 'inspection_action_without_submission_status') return '已记录检查执行，但提交状态不完整，需要人工核实'
+  if (value === 'inspection_scope_invalid_for_task') return '检查执行方式异常，请公司核对'
   if (value === 'task_cancelled_without_payment') return '任务取消，不计入金额'
   if (value.startsWith('task_cancelled_after:')) return '任务在原安排后取消，不计入金额'
   if (value.startsWith('task_not_completed:')) return `任务状态 ${value.split(':')[1] || 'unknown'}，尚无完成审计`
@@ -338,6 +339,7 @@ const ERROR_LABELS: Record<string, string> = {
   gst_status_unconfirmed: '该人员在任务日期的 GST 状态尚未确认。',
   missing_effective_rule: '该人员在任务日期没有生效的费用规则。',
   ambiguous_effective_rule: '该人员在任务日期存在重叠的费用规则版本。',
+  inspection_scope_invalid_for_task: '检查执行方式异常，请公司核对。',
   claim_not_reviewable: '这条反馈已处理，请刷新后重试。',
   claim_period_locked: '该合作方本周结算已进入确认或付款阶段，不能再核对补充内容。',
   claim_evidence_required: '反馈缺少证明材料，不能确认计入。',
