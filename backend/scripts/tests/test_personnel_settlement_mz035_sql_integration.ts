@@ -366,10 +366,10 @@ async function main() {
       first.manual_review.warnings.map((warning) => ({
         task: String(warning.task_id || ''),
         reason: warning.reason,
-      })).sort((a, b) => a.task.localeCompare(b.task)),
+      })).sort((a, b) => (a.task < b.task ? -1 : a.task > b.task ? 1 : 0)),
       [
-        { task: 'invalid-current', reason: 'inspection_scope_invalid_for_task' },
         { task: 'invalid-checkout-password', reason: 'inspection_scope_invalid_for_task' },
+        { task: 'invalid-current', reason: 'inspection_scope_invalid_for_task' },
         { task: 'missing-inspector', reason: 'inspection_inspector_missing' },
         { task: 'preserved-invalid', reason: 'inspection_scope_invalid_for_task' },
       ],
