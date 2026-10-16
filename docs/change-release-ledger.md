@@ -29462,6 +29462,28 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Independent review: `GO for commit`; evidence: independent read-only review found P0/P1 = 0 and one bookkeeping-only P2, verified the exact base/main refs, 2-path staged scope, candidate fingerprint, ledger GO, no secret/generated/production-write expansion, and zero-conflict merge simulation. This GO does not authorize push, PR, merge, deployment, database/API, Mobile or OTA action.
 - Action conclusion: `GO` for the documentation-only content commit; blockers: none for commit. Push still requires an exact committed-range report and a separate push review/receipt; GitHub CI remains the Draft PR merge gate.
 
+#### RA-20261016-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-001`
+- Selected CRL identities: `root/CRL-20261016-001`
+- Intended action: `push`
+- Branch: `codex/mz035-sync-main-into-dev-20261016`
+- Target: `Dev`
+- Base: `origin/Dev@5f90637aae1a90b4602cc11566869d41b2e86054`; fetched at `2026-10-16T07:04:58Z`, with a fresh remote preflight still required immediately before push.
+- Merge dependency: committed as `fbef88bff11325b2226ee103bb8f19e98423d151`, with parents `c188731f43030592a7b13d1c5a9a268d6401deb0` and `origin/main@eeaf4bb5433ab4833f98e64de6aea8da9dcd92be`.
+- Candidate patch SHA-256: `67fff56ae6f9967da3649ff38c4b1460acaa95fa6397880b5b2fefa77b4fafdd` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `c188731f43030592a7b13d1c5a9a268d6401deb0`.
+- Dependencies: `none`.
+- Required validation: `PASS` for push after the exact committed-range report; local evidence remains the same as RA-20261016-001, including 53 files / 270 Web tests and all Root Fast steps through the excluded Mobile Phase 5 boundary. GitHub Fast Regression remains mandatory and will be tracked to terminal state on the Draft PR.
+- Shared-hunk review: `PASS`; evidence: `origin/Dev...fbef88bff11325b2226ee103bb8f19e98423d151` contains only the selected ledger and synchronization evidence paths, while the ordinary merge preserves the exact main parent and its existing receipt.
+- Generated-file review: `PASS`; evidence: the committed range contains no generated, ignored, dependency, cache, binary or build-output path.
+- Sensitive-information review: `PASS`; evidence: the committed range contains only release-governance text and no credential, token, environment value, private payload, database URL or production record.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after the exact PR397 behind-state and protected-branch obstacle were explained, user replied `OK 允许` at `2026-10-16T07:03:21Z` to preparing and pushing this synchronization branch and creating a Draft PR; merge remains user-only.
+- Independent review: `GO for ledger-only receipt commit and conditional controlled push`; evidence: independent read-only review verified exact `origin/Dev@5f90637aae1a90b4602cc11566869d41b2e86054...fbef88bff11325b2226ee103bb8f19e98423d151` ancestry, candidate content commit `c188731f43030592a7b13d1c5a9a268d6401deb0`, exact merge parents `c188731f43030592a7b13d1c5a9a268d6401deb0` and `origin/main@eeaf4bb5433ab4833f98e64de6aea8da9dcd92be`, unchanged non-ledger fingerprint `67fff56ae6f9967da3649ff38c4b1460acaa95fa6397880b5b2fefa77b4fafdd`, two-document committed range, ledger-only staged receipt, dependency boundary, authorization boundary, and absence of unrelated, generated, sensitive, runtime, production-write, Mobile, website, deployment or OTA content; P0/P1/P2 = 0.
+- Action conclusion: `GO`; the ledger-only receipt may be committed, then push may proceed only if the clean exact committed-range release report passes, a fresh remote preflight confirms both protected refs unchanged and no duplicate remote branch/PR exists, and the update remains an ordinary non-force new-branch push. Draft PR creation is authorized; merge, auto-merge, deployment, database/API, Mobile and OTA actions are not.
+
 ### Risks / Release Notes
 
 - Ordinary merge is a functional requirement of this synchronization: squash or rebase of the Draft sync PR would lose the `main` parent ancestry and would not reliably clear PR `#397`'s behind state.
