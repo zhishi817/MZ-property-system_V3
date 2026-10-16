@@ -29616,17 +29616,17 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Selected CRL identities: `root/CRL-20261016-002`
 - Intended action: `push`
 - Branch: `codex/mz045-airbnb-date-parser-20261016`
-- Base: `origin/Dev@391bb17ba809a63d7e1b5768336242908f613292`; fetched at `2026-10-16T12:23:10Z`; fresh remote preflight remains required immediately before push.
+- Base: `origin/Dev@391bb17ba809a63d7e1b5768336242908f613292`; fetched at `2026-10-16T12:34:32Z`; a final remote preflight remains required immediately before push.
 - Candidate patch SHA-256: `5ff1dc0ffd04f21447f8a1dc68e8bf2cd3ff9cfe41f97d9ced446bb16ff01d16` excluding `docs/change-release-ledger.md`.
 - Commit SHA: `1928d7fc103a5bc1dcdb680cde58a0690397476c`.
-- Dependencies: none; canonical Mobile `origin/Dev@93292c130ae94250e498ad672c8ad9dd188a5d9d` remains validation-only and outside the release range.
-- Required validation: `NOT VERIFIED`; evidence: local complete backend and governance checks passed, but the exact committed-range release report is pending this ledger receipt commit.
+- Dependencies: `none`.
+- Required validation: `PASS for this ledger authorization-status receipt commit`; evidence: complete `check:backend`, targeted English/Chinese Airbnb regressions, ledger 5/5, Registry 32 FR / 257 mappings, workflow 9/9, typecheck and diff checks passed; the preliminary exact committed-range report for `391bb17ba809a63d7e1b5768336242908f613292...22df2d9d65298ca5061f4c6dc555b619c0131633` passed repository, ancestry, base-freshness, CRL identity, five-file/23-hunk coverage, fingerprint, generated-file and sensitive-information checks. A final clean exact-range report remains mandatory after this receipt is committed and before any separately authorized push.
 - Shared-hunk review: `PASS`; evidence: the committed content range contains only `root/CRL-20261016-002` paths and no MZ-044 or unselected unit.
 - Generated-file review: `PASS`; evidence: content commit contains no generated, ignored, dependency, cache or build-output path.
 - Technical state: `committed`
-- User authorization: `approved-for-push`; evidence: the user explicitly selected this Airbnb candidate and replied `先提交推送创建PR`; this attempt binds that authorization to repository `root`, branch `codex/mz045-airbnb-date-parser-20261016`, selected identity `root/CRL-20261016-002`, and content commit `1928d7fc103a5bc1dcdb680cde58a0690397476c`. Merge remains user-only.
-- Independent review: `GO for ledger-only receipt commit`; evidence: an independent read-only review verified that the staged diff contains only `docs/change-release-ledger.md`, only this CRL's RA-004/RA-005 receipt fields, the exact content commit/base/branch/fingerprint, and no historical RA, other CRL, code, generated output or sensitive data; P0/P1/P2 = 0. This is not push review: exact committed-range push review remains `NOT VERIFIED` pending the release report.
-- Action conclusion: `NOT VERIFIED`; blockers: commit the ledger-only receipt, pass the exact `base...head` release report, obtain independent GO for push, and confirm the remote base/branch preflight.
+- User authorization: `selected-for-commit`; evidence: the user's earlier `先提交推送创建PR` selected and authorized committing this Airbnb candidate, but repository policy requires a new explicit push approval after the exact final receipt HEAD exists. No `approved-for-push` evidence is claimed for the not-yet-created final head; merge remains user-only.
+- Independent review: `GO for this accurate ledger-only authorization-status receipt commit; NO-GO for push`; evidence: independent read-only push review verified the exact content range, five files / 23 hunks, fingerprint, branch/base, validations, absent remote branch, and no MZ-044, generated, sensitive or production-write scope; P0 = 0, P1 = 1, P2 = 0. The P1 is the missing explicit user approval of repository `root`, branch `codex/mz045-airbnb-date-parser-20261016`, and the exact final receipt HEAD after this commit.
+- Action conclusion: `NOT VERIFIED`; blockers: commit this accurate authorization-status receipt, obtain explicit user push approval for repository `root`, branch `codex/mz045-airbnb-date-parser-20261016`, and the resulting exact final HEAD, then rerun the clean exact-range report, independent push review if required by any changed identity, and immediate remote base/branch preflight. No push or PR action is authorized yet.
 
 ### Risks / Release Notes
 
