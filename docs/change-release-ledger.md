@@ -29484,6 +29484,29 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Independent review: `GO for ledger-only receipt commit and conditional controlled push`; evidence: independent read-only review verified exact `origin/Dev@5f90637aae1a90b4602cc11566869d41b2e86054...fbef88bff11325b2226ee103bb8f19e98423d151` ancestry, candidate content commit `c188731f43030592a7b13d1c5a9a268d6401deb0`, exact merge parents `c188731f43030592a7b13d1c5a9a268d6401deb0` and `origin/main@eeaf4bb5433ab4833f98e64de6aea8da9dcd92be`, unchanged non-ledger fingerprint `67fff56ae6f9967da3649ff38c4b1460acaa95fa6397880b5b2fefa77b4fafdd`, two-document committed range, ledger-only staged receipt, dependency boundary, authorization boundary, and absence of unrelated, generated, sensitive, runtime, production-write, Mobile, website, deployment or OTA content; P0/P1/P2 = 0.
 - Action conclusion: `GO`; the ledger-only receipt may be committed, then push may proceed only if the clean exact committed-range release report passes, a fresh remote preflight confirms both protected refs unchanged and no duplicate remote branch/PR exists, and the update remains an ordinary non-force new-branch push. Draft PR creation is authorized; merge, auto-merge, deployment, database/API, Mobile and OTA actions are not.
 
+#### RA-20261016-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-001`
+- Selected CRL identities: `root/CRL-20261016-001`
+- Intended action: `push`
+- Branch: `codex/mz035-sync-main-into-dev-20261016`
+- Target: `Dev`
+- Base: `origin/Dev@5f90637aae1a90b4602cc11566869d41b2e86054`; fresh fetched at `2026-10-16T07:49:35Z` and still the Draft PR base.
+- Merge dependency: `fbef88bff11325b2226ee103bb8f19e98423d151`, with exact parents `c188731f43030592a7b13d1c5a9a268d6401deb0` and `origin/main@eeaf4bb5433ab4833f98e64de6aea8da9dcd92be`.
+- Candidate patch SHA-256: `67fff56ae6f9967da3649ff38c4b1460acaa95fa6397880b5b2fefa77b4fafdd` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `c188731f43030592a7b13d1c5a9a268d6401deb0`.
+- Dependencies: `none`.
+- Required validation: `PASS`; clean exact committed-range report for base `5f90637aae1a90b4602cc11566869d41b2e86054` through pushed head `6da6d1dc8aaa40cc11ba1de42b59b481fe964535` concluded GO; GitHub Actions run `38868596937` completed with `success` for Root Quality Check, Fast Regression, Full Regression, MZ-034/035 Isolated PostgreSQL Integration, Regression Registry Audit, Change Ledger Audit and Risk Classification; Vercel Preview Comments also completed with `success`.
+- Remote / PR evidence: normal non-force initial push created `origin/codex/mz035-sync-main-into-dev-20261016@6da6d1dc8aaa40cc11ba1de42b59b481fe964535`, immediately verified by `git ls-remote`; Draft PR `#398` is open at `https://github.com/zhishi817/MZ-property-system_V3/pull/398`, targets `Dev`, has exact head `6da6d1dc8aaa40cc11ba1de42b59b481fe964535`, is mergeable/clean, and has `auto_merge: null`.
+- Shared-hunk review: `PASS`; evidence: the committed range contains only the selected ledger and synchronization evidence paths, while the ordinary merge preserves the exact main parent and its existing receipt.
+- Generated-file review: `PASS`; evidence: the committed range contains no generated, ignored, dependency, cache, binary or build-output path.
+- Sensitive-information review: `PASS`; evidence: the committed range contains only release-governance text and no credential, token, environment value, private payload, database URL or production record.
+- Technical state: `pushed`
+- User authorization: `approved-for-push`; evidence: the user's `OK 允许` at `2026-10-16T07:03:21Z` authorizes the synchronization branch push and Draft PR only; final merge remains user-only.
+- Independent review: `GO for ledger-only post-push outcome receipt commit and one conditional normal fast-forward push`; evidence: independent read-only review live-verified protected refs `Dev@5f90637aae1a90b4602cc11566869d41b2e86054` and `main@eeaf4bb5433ab4833f98e64de6aea8da9dcd92be`, remote synchronization branch `6da6d1dc8aaa40cc11ba1de42b59b481fe964535`, Draft PR `#398` open against `Dev` with exact head `6da6d1dc8aaa40cc11ba1de42b59b481fe964535`, mergeable/clean and `auto_merge: null`, and GitHub Actions run `38868596937` plus all eight check-runs completed successfully. The exact committed range remains two documentation paths with unchanged non-ledger fingerprint `67fff56ae6f9967da3649ff38c4b1460acaa95fa6397880b5b2fefa77b4fafdd`; staged scope is only the 23-line RA-20261016-003 outcome receipt with no unrelated, generated, sensitive, runtime, production-write, Mobile, website, deployment or OTA expansion. P0/P1 = 0; two accepted non-blocking P2 historical top-level status summaries remain unchanged because the mandatory ledger-only receipt gate permits staged changes only inside Release Attempts, and RA-20261016-003 is the authoritative current outcome.
+- Action conclusion: `GO`; this ledger-only outcome receipt may be committed and fast-forward pushed once to the existing synchronization branch only if the pre-commit gate and clean exact-range report pass and immediate remote checks confirm the branch remains at `6da6d1dc8aaa40cc11ba1de42b59b481fe964535` with protected refs unchanged. Merge, auto-merge, deployment, database/API, Mobile and OTA actions remain prohibited.
+
 ### Risks / Release Notes
 
 - Ordinary merge is a functional requirement of this synchronization: squash or rebase of the Draft sync PR would lose the `main` parent ancestry and would not reliably clear PR `#397`'s behind state.
