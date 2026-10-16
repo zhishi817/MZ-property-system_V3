@@ -79,7 +79,8 @@ const assignment = (patch: Record<string, unknown> = {}) => ({
   task_id: 'inspection-1', inspection_key: 'inspection:inspection-1', user_id: 'flora', user_name: 'Flora',
   service_date: '2026-10-05', scheduled_service_date: '2026-10-05', property_id: 'property-1', property_label: '831606',
   property_type: '一房一卫', task_type: 'checkout_clean', inspection_due_date: null, inspection_mode: 'same_day',
-  assignment_source: 'current', property_snapshot_missing: false, is_payable: true, submission_count: 0, latest_audit_id: null,
+  assignment_source: 'current', inspection_scope_state: 'billable', inspection_scope_issue: null,
+  property_snapshot_missing: false, is_payable: true, submission_count: 0, latest_audit_id: null,
   latest_performed_at: null, latest_metadata: null,
   ...patch,
 })
@@ -107,6 +108,11 @@ async function previewOf(input: {
         assert.match(sql, /arrangement_revision,before,property_id/)
         assert.match(sql, /FROM cleaning_sync_logs log/)
         assert.match(sql, /property_snapshot_missing/)
+        assert.match(sql, /inspection_scope_state/)
+        assert.match(sql, /IN \('checkout_clean', 'checkout_cleaning', 'checkin_clean'\)/)
+        assert.match(sql, /inspection_scope_invalid_for_task/)
+        assert.doesNotMatch(sql, /inspection_scope_missing_for_checkin/)
+        assert.doesNotMatch(sql, /created_at\s*[<>]=?\s*['\"]2026-09-02/)
         return { rows: input.assignments }
       }
       if (sql.includes('FROM personnel_settlement_carry_adjustments')) return { rows: input.carryAdjustments ?? [] }
@@ -177,6 +183,7 @@ async function main() {
         task_type: 'checkin_clean',
         user_id: null,
         user_name: null,
+        inspection_scope_state: 'billable',
       }),
     ],
     profiles: [profile('mia'), profile('elise')],
@@ -186,6 +193,98 @@ async function main() {
   assert.strictEqual(pairedExecutorOnlyCheckin.people.find((person) => person.user_id === 'mia')?.lines[0].work_items.length, 1)
   assert.strictEqual(pairedExecutorOnlyCheckin.people.find((person) => person.user_id === 'elise')?.lines.length, 0)
   assert.strictEqual(pairedExecutorOnlyCheckin.manual_review.warnings.length, 0)
+
+  const pairedSameInspector = await previewOf({
+    assignments: [
+      assignment({ user_id: 'mia', user_name: 'Mia' }),
+      assignment({
+        task_id: 'checkin-same-inspector',
+        inspection_key: 'inspection:checkin-same-inspector',
+        task_type: 'checkin_clean',
+        user_id: 'mia',
+        user_name: 'Mia',
+        inspection_scope_state: 'legacy_default',
+      }),
+    ],
+    profiles: [profile('mia')],
+    rules: [rule('mia')],
+  })
+  assert.deepStrictEqual(
+    pairedSameInspector.people.find((person) => person.user_id === 'mia')?.lines[0].work_items.map((item) => item.task_id),
+    ['inspection-1'],
+    'a same-inspector companion check-in must not inflate the room task count',
+  )
+
+  const pairedDifferentInspectors = await previewOf({
+    assignments: [
+      assignment({ user_id: 'mia', user_name: 'Mia' }),
+      assignment({
+        task_id: 'checkin-different-inspector',
+        inspection_key: 'inspection:checkin-different-inspector',
+        task_type: 'checkin_clean',
+        user_id: 'elise',
+        user_name: 'Elise',
+        inspection_scope_state: 'legacy_default',
+      }),
+    ],
+    profiles: [profile('mia'), profile('elise')],
+    rules: [rule('mia'), rule('elise')],
+  })
+  assert.strictEqual(pairedDifferentInspectors.people.flatMap((person) => person.lines).length, 0)
+  assert.strictEqual(
+    pairedDifferentInspectors.manual_review.warnings.filter(
+      (warning) => warning.reason === 'inspection_assignment_conflict_for_property_date',
+    ).length,
+    2,
+    'a different check-in inspector must remain a visible conflict',
+  )
+
+  const deferredDifferentServiceDate = await previewOf({
+    assignments: [
+      assignment({ user_id: 'mia', user_name: 'Mia' }),
+      assignment({
+        task_id: 'checkin-deferred-next-day',
+        inspection_key: 'inspection:checkin-deferred-next-day',
+        task_type: 'checkin_clean',
+        user_id: 'mia',
+        user_name: 'Mia',
+        service_date: '2026-10-06',
+        inspection_mode: 'deferred',
+        inspection_due_date: '2026-10-06',
+        inspection_scope_state: 'legacy_default',
+      }),
+    ],
+    profiles: [profile('mia')],
+    rules: [rule('mia')],
+  })
+  assert.deepStrictEqual(
+    deferredDifferentServiceDate.people.find((person) => person.user_id === 'mia')?.lines.map((line) => ({
+      date: line.service_date,
+      tasks: line.work_items.map((item) => item.task_id),
+    })),
+    [
+      { date: '2026-10-05', tasks: ['inspection-1'] },
+      { date: '2026-10-06', tasks: ['checkin-deferred-next-day'] },
+    ],
+    'different effective service dates must never be paired or suppressed',
+  )
+
+  const explicitInspectorInvalidScope = await previewOf({
+    assignments: [assignment({
+      task_id: 'invalid-scope',
+      inspection_key: 'inspection:invalid-scope',
+      inspection_scope_state: 'requires_review',
+      inspection_scope_issue: 'inspection_scope_invalid_for_task',
+    })],
+  })
+  assert.strictEqual(explicitInspectorInvalidScope.people[0].lines.length, 0)
+  assert.strictEqual(explicitInspectorInvalidScope.people[0].work_checklist[0].included_in_amount, false)
+  assert.strictEqual(explicitInspectorInvalidScope.people[0].warnings[0].reason, 'inspection_scope_invalid_for_task')
+
+  const historicalDefault = await previewOf({
+    assignments: [assignment({ inspection_scope_state: 'legacy_default' })],
+  })
+  assert.strictEqual(historicalDefault.people[0].lines.length, 1, 'a classified NULL legacy default remains billable')
 
   const unassignedStandalone = await previewOf({
     assignments: [assignment({ user_id: null, user_name: null })],

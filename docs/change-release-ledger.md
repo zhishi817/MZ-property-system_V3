@@ -29323,3 +29323,314 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Release risk remains gated by exact-head real PostgreSQL CI, fresh production read-only preflight, backend health, and OTA compatibility/fingerprint checks.
 - No production write, merge, deployment, migration, OTA, or device verification has run from this candidate.
 - Git state: clean v4 content is staged but not committed/pushed; PR not created; not merged/deployed.
+
+## CRL-20261014-005 — MZ-035 完善检查类型异常防护与仅执行任务计费边界
+
+- Status: implemented; selected for isolated CI test PR, not selected for merge or release
+- Repository: `root`
+- Board item: `MZ-035` (id `35`, revision `1`)
+- Updated: 2026-10-14 UTC
+
+### Request
+
+- Preserve the released MZ-034 behavior while tightening inspection settlement classification: explicit `password_only` execution must never generate inspection work items, properties, or day pay.
+- Keep legitimate historical NULL defaults billable, but route unknown non-empty scope values that cannot be safely interpreted to manual review instead of auto-billing or silently paying zero.
+- Add focused real-PostgreSQL regression coverage for execution-only tasks, mixed valid inspection and execution, historical defaults and anomalies, paired rows, date changes, manager overrides, cancellation and reactivation.
+- Improve finance UI explanations for invalid-scope manual-review items without changing the existing task-option wording.
+- User authorization permits local commit, same-name Mobile/Root test-branch push, draft PRs to `Dev`, and isolated CI repair/retry within this CRL. It does not authorize production writes, migrations, merge, deployment, historical recomputation, or OTA publication.
+
+### Implementation
+
+- Previous behavior: live and preserved-assignment SQL treated every scope except `password_only` as inspection-billable by applying the released `inspect_and_hang` fallback; genuinely unknown non-empty values could therefore enter inspection pay automatically.
+- New behavior: settlement explicitly classifies billable inspection, compatible NULL/blank legacy defaults, execution-only check-ins, and invalid non-empty anomaly states before aggregation.
+- NULL/blank remains the released `inspect_and_hang` compatibility default for both check-in and checkout. It does not by itself create pay: settlement still requires an active/effective task and order, explicit `inspector_id`, effective profile and fee rule, payable service date, and no ownership conflict. Standalone assignee-only rows remain `inspection_inspector_missing`; `assignee_id` is never an inspector fallback. Upload/photo state is evidence only, not a pay prerequisite.
+- Pair suppression is deliberately narrow: assignments must share property and effective inspection service date, there must be exactly one checkout with an explicit inspector, and the otherwise billable check-in must have no inspector or the same inspector. A different explicit inspector remains a two-sided conflict; a deferred check-in on another effective date remains a separate day.
+- Explicit `password_only` check-ins are excluded as execution work. Unknown non-empty values and checkout `password_only` are held for review. No creation-date, upload-state, assignee, or role inference is used.
+- Production-source evidence: exact main `eeaf4bb` applies `COALESCE(scope,'inspect_and_hang')` in current and preserved settlement SQL. Automatic sync omits `inspection_scope`; manual creation accepts/stores NULL; shared backend/frontend normalizers introduced on 2026-06-24 map every non-`password_only` value, including NULL, to `inspect_and_hang` and display “检查后挂钥匙”. API write schemas accept only the two enum values.
+- Frozen/paid settlement snapshots are not rewritten. This candidate changes live preview/generation inputs and explanatory UI only.
+
+### Read-only Production Evidence
+
+- All production audit queries ran inside explicit read-only transactions with bounded timeouts and final `ROLLBACK`; no DML/DDL, migration, backfill, recomputation, or mutation ran.
+- A detailed snapshot found 2,638 active/relevant NULL-scope check-ins after a one-row live drift from an earlier 2,639 read: 2,620 automatic and 18 manual. This is an impact population, not a review backlog, confirmed-work population, or payment population.
+- 2,143 had no same-property/same-task-date active checkout and 495 had exactly one. Paired checkout scope was 53 explicit inspect and 442 legacy NULL; check-in had an explicit inspector on 361 rows, including 335 paired to the same checkout inspector and 26 unpaired. Four rows had a submit audit and none had `is_inspected=true`; upload state is not a payment prerequisite.
+- For 2026-10-12..18, 25 task rows represent 25 property-days, 23 properties, and 2 inspector-days. Twenty-three rows had no task inspector. These are not “25 paid rooms”; every payable day still passes the normal ownership/profile/rule/date/conflict gates.
+- The entire current structured `personnel_settlement_lines` table contained 41 rows and zero `inspection_day` rows. This does not prove all historical, external, legacy, or manual payments were correct.
+
+### Files / Areas
+
+- `.github/workflows/quality.yml`
+- `backend/package.json`
+- `backend/src/lib/personnelSettlementPreview.ts`
+- `backend/scripts/tests/test_personnel_settlement_mz034.ts`
+- `backend/scripts/tests/test_personnel_settlement_mz035_sql_integration.ts`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts`
+- `docs/change-release-ledger.md`
+
+### Impact / Dependencies
+
+- User-visible behavior: execution-only password tasks stay out of inspection pay; legal NULL defaults preserve released behavior; genuinely invalid non-empty scope values appear as excluded pending/manual-review items.
+- API/schema: no schema migration and no production data operation. Existing warning structures receive the invalid-scope reason.
+- Dependency: paired `mobile/CRL-20261014-002` must use the same test branch name so Root CI checks the matching Mobile source.
+- Related released predecessor: `root/CRL-20261014-004` remains unchanged.
+
+### Validation
+
+- PASS — backend settlement contract, including NULL compatibility, assignee-only exclusion, same-inspector companion suppression, different-inspector conflict, and different-effective-date separation.
+- PASS — backend TypeScript `--noEmit` and dedicated MZ-035 SQL-test strict TypeScript compile.
+- PASS — finance workflow UI: 1 Vitest suite / 8 tests.
+- PASS — change-ledger coverage audit: 8 changed paths / 8 recorded paths.
+- ADDED / CI REQUIRED — the guarded MZ-035 test invokes actual `buildPersonnelSettlementPreview` SQL against an isolated PostgreSQL schema and rolls back. It covers current/preserved NULL with explicit inspector and zero uploads, assignee-only exclusion, password-only exclusion, invalid non-empty values, paired same/different/unassigned inspector behavior, deferred dates, automatic historical preservation, later manager override, cancellation and reactivation.
+
+### Selected Commit / Push Scope
+
+- Exact scope: the eight paths listed above, rebuilt from fresh `origin/Dev@9b3108be5fc5cf9d2d86545be4a6e1a91f35f325` on branch `codex/mz035-inspection-scope-guard-ci`.
+- Authorization: user replied “允许” to the explicit request for the paired Mobile/Root test-branch commits, draft PRs to `Dev`, and isolated PostgreSQL CI.
+- Excluded: merge, deployment, production database access/write, migration, backfill, historical recomputation, release, and OTA.
+
+### Risks / Release Notes
+
+- Real PostgreSQL execution remains mandatory before this candidate can be considered tested. The integration script requires explicit isolated-test environment flags and must never target production.
+- No option label is changed. No production data, credentials, URLs, environment files, generated artifacts, or dependency versions are included.
+## CRL-20261016-001 — MZ-035 Dev/main 祖先同步与发布回执回流
+
+- **Status:** verified; synchronization merge committed, exact-range push review pending
+- **Repository:** `root`
+- **Updated:** 2026-10-16 07:09 UTC
+- **Request:** 解除 PR `#397`（`Dev` → `main`）因 head 分支受保护而无法直接执行 Update branch 的同步阻碍；从最新 `Dev` 建立临时分支，把最新 `main` 以普通 merge 纳入，保留两侧完整祖先与台账，只通过目标 `Dev` 的 Draft PR 交付，最终合并由用户手动执行。
+- **Outcome:** 候选先在 `origin/Dev@5f90637aae1a90b4602cc11566869d41b2e86054` 上固化同步证据，再以普通 merge 纳入 `origin/main@eeaf4bb5433ab4833f98e64de6aea8da9dcd92be`；main 的净内容仅为 `root/CRL-20261014-004` 中 23 行既有发布回执，候选不改变业务逻辑、工作流、分支保护、依赖或运行时。
+
+### Implementation
+
+- Previous behavior: `Dev` 与 `main` 从共同祖先 `9b3108be5fc5cf9d2d86545be4a6e1a91f35f325` 分叉；`Dev` 独有 3 个 MZ-035 提交，`main` 独有 12 个历史提升/合并提交。PR `#397` 的 head 为受保护的 `Dev`，因此 GitHub Update branch 不能直接改写该分支。
+- New behavior: 临时分支 `codex/mz035-sync-main-into-dev-20261016` 从最新 Dev 建立，先提交可审计的同步证据，再以非 squash、非 rebase 的普通 merge 纳入 main；最终候选保留 main 父提交与两侧历史，随后只通过 Draft PR 回到 `Dev`。
+- Key decisions: 不修改 PR `#397`、`Dev`、`main`、分支保护或业务源码；不执行生产 API、数据库、迁移、部署或 OTA；同步 PR 最终必须使用普通 merge，不能 squash/rebase，否则无法把 main 祖先关系带回 Dev。
+
+### Files / Areas
+
+- `docs/change-release-ledger.md` — 记录本次祖先同步候选；后续 merge 原样回流 main 上 `root/CRL-20261014-004` 的 23 行发布回执。
+- `docs/mz035-dev-main-sync-20261016.md` — 固化本次同步的精确 refs、完整祖先要求、验证命令和明确排除边界。
+
+### Impact / Dependencies
+
+- API / business logic / database / migration / config / dependencies: none.
+- Production data / external sync / notifications / deployment / OTA: none; all are explicitly excluded.
+- Dependencies: `origin/Dev@5f90637aae1a90b4602cc11566869d41b2e86054`, `origin/main@eeaf4bb5433ab4833f98e64de6aea8da9dcd92be`, existing `root/CRL-20261014-004`, and MZ-035 `root/CRL-20261014-005` already contained by Dev.
+- Target: Draft PR into `Dev`; PR `#397` remains open and unmodified. After CI and review, the user must ordinary-merge this synchronization PR before re-evaluating PR `#397`.
+
+### Validation
+
+- Fresh ref and ancestry check — passed: `Dev=5f90637`, `main=eeaf4bb`, merge base `9b3108b`, `git rev-list --left-right --count origin/Dev...origin/main` = `3 12`.
+- Net-content check — passed: `git diff origin/Dev...origin/main` changes only `docs/change-release-ledger.md` with 23 insertions.
+- Merge preflight — passed: an isolated `git merge --no-ff --no-commit origin/main` completed automatically with no conflicts; before this CRL was prepared, its staged non-ledger patch was empty.
+- `python3 -B scripts/audit_change_release_ledger.py` — passed: 2 changed files / 2 recorded paths; fresh `origin/Dev` lineage preserved.
+- `python3 -B scripts/audit_change_release_ledger.py --pre-commit --repo root --crl CRL-20261016-001` — passed: 2 staged files / 1 exact non-ledger hunk, no untracked, unselected, unexpected or missing path/hunk.
+- `npm run check:fast` Root portion — passed through workflow contract 9/9, ledger auditor 41/41, Preview guards, ledger/registry audits, backend TypeScript build and every Root backend contract through `test:personnel-claim-evidence-storage`; the final Phase 5 contract was not runnable locally because it requires a sibling `mz-cleaning-app-frontend` source tree and this task is explicitly forbidden from touching Mobile worktrees. Complete Fast Regression remains mandatory in GitHub CI, whose workflow supplies the cross-repository checkout.
+- `npm run test --prefix frontend -- --no-cache` — passed: 53 files / 270 tests; cache disabled to keep the dependency donor read-only.
+- Independent commit review — passed: `GO for commit`, P0/P1 = 0; one bookkeeping-only P2 required refreshing this RA with the completed gate/review evidence before commit. The reviewer independently rechecked the exact refs, staged diff, fingerprint, ledger gates, sensitive patterns, and a true-merge-base simulation with zero conflicts that retained both this CRL and main's `RA-20261014-013`.
+- Committed-range audit and GitHub CI — pending before the corresponding push/merge conclusions.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared; synchronization evidence only.
+- **Untracked review:** none; the candidate started in a clean worktree from freshly fetched `origin/Dev`.
+- `docs/mz035-dev-main-sync-20261016.md` — SHA-256: `1477026832d22134ff2200d68439f703102a9938ec52da308633fba54fdf0f6c`
+
+### Release Attempts
+
+#### RA-20261016-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-001`
+- Selected CRL identities: `root/CRL-20261016-001`
+- Intended action: `commit`
+- Branch: `codex/mz035-sync-main-into-dev-20261016`
+- Target: `Dev`
+- Base: `origin/Dev@5f90637aae1a90b4602cc11566869d41b2e86054`; fetched at `2026-10-16T07:04:58Z`.
+- Merge dependency: `origin/main@eeaf4bb5433ab4833f98e64de6aea8da9dcd92be`; merge base `9b3108be5fc5cf9d2d86545be4a6e1a91f35f325`.
+- Candidate patch SHA-256: `67fff56ae6f9967da3649ff38c4b1460acaa95fa6397880b5b2fefa77b4fafdd` excluding `docs/change-release-ledger.md`.
+- Commit SHA: not committed.
+- Dependencies: existing main receipt in `root/CRL-20261014-004`; no runtime or cross-repository dependency.
+- Required validation: `PASS` for the documentation-only commit; evidence: exact ledger coverage/pre-commit gates passed, workflow/auditor/Preview/registry/backend build and Root backend contracts passed through the cross-repository Phase 5 boundary, and Web tests passed 53 files / 270 tests. Local complete `check:fast` remains `NOT VERIFIED` only because its final contract requires the excluded Mobile source tree; GitHub Fast Regression is a mandatory PR merge gate.
+- Shared-hunk review: `PASS`; evidence: the evidence document is new and exclusively owned by this CRL; the planned automatic merge preserves the exact main-only receipt.
+- Generated-file review: `PASS`; evidence: no generated, untracked, ignored, binary, dependency or cache path is present.
+- Sensitive-information review: `PASS`; evidence: the candidate contains only release-governance text and no credential, token, environment value, private payload, database URL or production record.
+- Technical state: `verified`
+- User authorization: `selected-for-commit`; evidence: after the exact PR397 behind-state and protected-branch obstacle were explained, user replied `OK 允许` at `2026-10-16T07:03:21Z` to preparing and pushing this synchronization branch and creating a Draft PR; merge remains user-only.
+- Independent review: `GO for commit`; evidence: independent read-only review found P0/P1 = 0 and one bookkeeping-only P2, verified the exact base/main refs, 2-path staged scope, candidate fingerprint, ledger GO, no secret/generated/production-write expansion, and zero-conflict merge simulation. This GO does not authorize push, PR, merge, deployment, database/API, Mobile or OTA action.
+- Action conclusion: `GO` for the documentation-only content commit; blockers: none for commit. Push still requires an exact committed-range report and a separate push review/receipt; GitHub CI remains the Draft PR merge gate.
+
+#### RA-20261016-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-001`
+- Selected CRL identities: `root/CRL-20261016-001`
+- Intended action: `push`
+- Branch: `codex/mz035-sync-main-into-dev-20261016`
+- Target: `Dev`
+- Base: `origin/Dev@5f90637aae1a90b4602cc11566869d41b2e86054`; fetched at `2026-10-16T07:04:58Z`, with a fresh remote preflight still required immediately before push.
+- Merge dependency: committed as `fbef88bff11325b2226ee103bb8f19e98423d151`, with parents `c188731f43030592a7b13d1c5a9a268d6401deb0` and `origin/main@eeaf4bb5433ab4833f98e64de6aea8da9dcd92be`.
+- Candidate patch SHA-256: `67fff56ae6f9967da3649ff38c4b1460acaa95fa6397880b5b2fefa77b4fafdd` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `c188731f43030592a7b13d1c5a9a268d6401deb0`.
+- Dependencies: `none`.
+- Required validation: `PASS` for push after the exact committed-range report; local evidence remains the same as RA-20261016-001, including 53 files / 270 Web tests and all Root Fast steps through the excluded Mobile Phase 5 boundary. GitHub Fast Regression remains mandatory and will be tracked to terminal state on the Draft PR.
+- Shared-hunk review: `PASS`; evidence: `origin/Dev...fbef88bff11325b2226ee103bb8f19e98423d151` contains only the selected ledger and synchronization evidence paths, while the ordinary merge preserves the exact main parent and its existing receipt.
+- Generated-file review: `PASS`; evidence: the committed range contains no generated, ignored, dependency, cache, binary or build-output path.
+- Sensitive-information review: `PASS`; evidence: the committed range contains only release-governance text and no credential, token, environment value, private payload, database URL or production record.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after the exact PR397 behind-state and protected-branch obstacle were explained, user replied `OK 允许` at `2026-10-16T07:03:21Z` to preparing and pushing this synchronization branch and creating a Draft PR; merge remains user-only.
+- Independent review: `GO for ledger-only receipt commit and conditional controlled push`; evidence: independent read-only review verified exact `origin/Dev@5f90637aae1a90b4602cc11566869d41b2e86054...fbef88bff11325b2226ee103bb8f19e98423d151` ancestry, candidate content commit `c188731f43030592a7b13d1c5a9a268d6401deb0`, exact merge parents `c188731f43030592a7b13d1c5a9a268d6401deb0` and `origin/main@eeaf4bb5433ab4833f98e64de6aea8da9dcd92be`, unchanged non-ledger fingerprint `67fff56ae6f9967da3649ff38c4b1460acaa95fa6397880b5b2fefa77b4fafdd`, two-document committed range, ledger-only staged receipt, dependency boundary, authorization boundary, and absence of unrelated, generated, sensitive, runtime, production-write, Mobile, website, deployment or OTA content; P0/P1/P2 = 0.
+- Action conclusion: `GO`; the ledger-only receipt may be committed, then push may proceed only if the clean exact committed-range release report passes, a fresh remote preflight confirms both protected refs unchanged and no duplicate remote branch/PR exists, and the update remains an ordinary non-force new-branch push. Draft PR creation is authorized; merge, auto-merge, deployment, database/API, Mobile and OTA actions are not.
+
+#### RA-20261016-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-001`
+- Selected CRL identities: `root/CRL-20261016-001`
+- Intended action: `push`
+- Branch: `codex/mz035-sync-main-into-dev-20261016`
+- Target: `Dev`
+- Base: `origin/Dev@5f90637aae1a90b4602cc11566869d41b2e86054`; fresh fetched at `2026-10-16T07:49:35Z` and still the Draft PR base.
+- Merge dependency: `fbef88bff11325b2226ee103bb8f19e98423d151`, with exact parents `c188731f43030592a7b13d1c5a9a268d6401deb0` and `origin/main@eeaf4bb5433ab4833f98e64de6aea8da9dcd92be`.
+- Candidate patch SHA-256: `67fff56ae6f9967da3649ff38c4b1460acaa95fa6397880b5b2fefa77b4fafdd` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `c188731f43030592a7b13d1c5a9a268d6401deb0`.
+- Dependencies: `none`.
+- Required validation: `PASS`; clean exact committed-range report for base `5f90637aae1a90b4602cc11566869d41b2e86054` through pushed head `6da6d1dc8aaa40cc11ba1de42b59b481fe964535` concluded GO; GitHub Actions run `38868596937` completed with `success` for Root Quality Check, Fast Regression, Full Regression, MZ-034/035 Isolated PostgreSQL Integration, Regression Registry Audit, Change Ledger Audit and Risk Classification; Vercel Preview Comments also completed with `success`.
+- Remote / PR evidence: normal non-force initial push created `origin/codex/mz035-sync-main-into-dev-20261016@6da6d1dc8aaa40cc11ba1de42b59b481fe964535`, immediately verified by `git ls-remote`; Draft PR `#398` is open at `https://github.com/zhishi817/MZ-property-system_V3/pull/398`, targets `Dev`, has exact head `6da6d1dc8aaa40cc11ba1de42b59b481fe964535`, is mergeable/clean, and has `auto_merge: null`.
+- Shared-hunk review: `PASS`; evidence: the committed range contains only the selected ledger and synchronization evidence paths, while the ordinary merge preserves the exact main parent and its existing receipt.
+- Generated-file review: `PASS`; evidence: the committed range contains no generated, ignored, dependency, cache, binary or build-output path.
+- Sensitive-information review: `PASS`; evidence: the committed range contains only release-governance text and no credential, token, environment value, private payload, database URL or production record.
+- Technical state: `pushed`
+- User authorization: `approved-for-push`; evidence: the user's `OK 允许` at `2026-10-16T07:03:21Z` authorizes the synchronization branch push and Draft PR only; final merge remains user-only.
+- Independent review: `GO for ledger-only post-push outcome receipt commit and one conditional normal fast-forward push`; evidence: independent read-only review live-verified protected refs `Dev@5f90637aae1a90b4602cc11566869d41b2e86054` and `main@eeaf4bb5433ab4833f98e64de6aea8da9dcd92be`, remote synchronization branch `6da6d1dc8aaa40cc11ba1de42b59b481fe964535`, Draft PR `#398` open against `Dev` with exact head `6da6d1dc8aaa40cc11ba1de42b59b481fe964535`, mergeable/clean and `auto_merge: null`, and GitHub Actions run `38868596937` plus all eight check-runs completed successfully. The exact committed range remains two documentation paths with unchanged non-ledger fingerprint `67fff56ae6f9967da3649ff38c4b1460acaa95fa6397880b5b2fefa77b4fafdd`; staged scope is only the 23-line RA-20261016-003 outcome receipt with no unrelated, generated, sensitive, runtime, production-write, Mobile, website, deployment or OTA expansion. P0/P1 = 0; two accepted non-blocking P2 historical top-level status summaries remain unchanged because the mandatory ledger-only receipt gate permits staged changes only inside Release Attempts, and RA-20261016-003 is the authoritative current outcome.
+- Action conclusion: `GO`; this ledger-only outcome receipt may be committed and fast-forward pushed once to the existing synchronization branch only if the pre-commit gate and clean exact-range report pass and immediate remote checks confirm the branch remains at `6da6d1dc8aaa40cc11ba1de42b59b481fe964535` with protected refs unchanged. Merge, auto-merge, deployment, database/API, Mobile and OTA actions remain prohibited.
+
+### Risks / Release Notes
+
+- Ordinary merge is a functional requirement of this synchronization: squash or rebase of the Draft sync PR would lose the `main` parent ancestry and would not reliably clear PR `#397`'s behind state.
+- Rollback before user merge: close the unmerged Draft PR and delete the temporary branch; `Dev`, `main` and PR `#397` remain unchanged.
+- No production database/API, migration, deployment, preview, Mobile worktree, Mobile build/OTA or independent website candidate is touched.
+- Git state: synchronization evidence committed as `c188731f43030592a7b13d1c5a9a268d6401deb0`; main ancestry merged locally with exact second parent `origin/main@eeaf4bb5433ab4833f98e64de6aea8da9dcd92be`; not pushed; Draft PR not created; not merged into `Dev`; not deployed; production/device verification not run.
+## CRL-20261016-002 — Airbnb 英文日期顺序兼容与失败列表纯查询（root）
+
+- **Status:** exact refreshed-Dev staged candidate validated and independently reviewed GO for commit; not committed, pushed, merged, deployed, replayed, backfilled, or applied to production data
+- **Repository:** `root`
+- **Updated:** 2026-10-16 UTC
+- **Request:** 修复 Airbnb 新英文邮件模板把月份放在日期前时无法取得入住/退房的问题，保留原有英文 day-month、中文日期、显式年份、跨年推断与住晚一致性；增加脱敏 HTML/纯文本回归，并移除失败邮件列表 GET 的隐式数据库写入。
+- **Outcome:** parser candidate now accepts both English date orders, joins text-node boundaries for cross-tag dates, uses sanitized plain text as a date-only fallback when HTML is absent or has no usable date, and keeps the existing unique-pair/nights fail-closed validation. The failure-list GET now issues only its SELECT query; it no longer auto-resolves raw rows as a side effect of reading the list.
+
+### Implementation
+
+- Add a second explicit English grammar for `weekday month day[, year]` while retaining the existing `weekday day month[, year]` and Chinese date path through the same calendar validator and Melbourne year inference.
+- Normalize DOM text by joining text nodes with boundaries so inline tags cannot concatenate month/day tokens; permit boundary whitespace in Chinese date/label tokens; use escaped line-wrapped plain text as the body only when HTML is absent and otherwise include it as a supplemental date source without overriding structured HTML candidates.
+- Always include plain-text candidates of the same kind in dedupe/conflict detection even when HTML supplied that endpoint, preventing a missing-nights message from silently synthesizing check-in from HTML and checkout from a conflicting text part.
+- When both English orders occur in the same label window, select the earliest regex match in document order rather than preferring one grammar; duplicate dates still dedupe and conflicting pairs still fail closed.
+- Pass the parsed plain-text body at both mail parsing call sites without changing their write/dry-run decisions.
+- Remove the `UPDATE email_orders_raw ... FROM orders` statement from `GET /email-orders-raw/failures`; no replacement mutation, replay, repair, or reconciliation action is introduced. Existing unresolved rows can remain visible until an explicit workflow resolves them.
+- Extend sanitized offline regression coverage for month-first HTML, mixed English order in one container, cross-tag English/Chinese tokens, repeated date blocks, plain text with absent or placeholder HTML, cross-source conflict without nights, explicit year, missing-year cross-year inference, nights consistency, legacy day-first behavior, and a static no-write contract for the failure-list GET.
+- Promote the existing targeted date parser test into Root `check:fast`, `check:backend`, and therefore `check:full`.
+
+### Files / Areas
+
+- `backend/src/modules/jobs.ts`
+- `backend/scripts/test_email_year_rule.ts`
+- `package.json`
+- `docs/feature-regression-registry.md`
+- `docs/change-release-ledger.md`
+
+### Impact / Dependencies
+
+- Root backend email parser, raw-failure list route, offline tests, and release-governance documentation only.
+- Base: freshly fetched `origin/Dev@391bb17ba809a63d7e1b5768336242908f613292`; implementation is isolated on branch `codex/mz045-airbnb-date-parser-20261016` in worktree `mz-airbnb-date-fix`.
+- Related historical evidence: `root/CRL-20260820-001` (date-card fail-closed parsing), `root/CRL-20260930-001` (localized Chinese parsing), and `root/CRL-20260816-001` (year inference). This is a new independent identity and does not reuse the cancelled email-task identity.
+- No schema, dependency, migration, queue, external service, frontend, Mobile, or production-data change. No IMAP connection, message read-state change, production API action, replay, reparsing write, manual insert, repair, or historical backfill is included.
+
+### Validation
+
+- `npm run test:email-year-rule --prefix backend` — PASS, including legacy day-first cases plus sanitized month-first HTML, cross-tag nodes, repeated blocks, plain text, explicit/missing years, cross-year inference, nights consistency, stable missing-date errors, and the failure-list GET no-write source contract.
+- `npm run test:airbnb-localized-email --prefix backend` — PASS; Chinese subject/body/date behavior remains green.
+- `npm run build --prefix backend` — PASS. Tracked `backend/dist` files rewritten by the build were restored to the clean base and are excluded from the candidate; ignored build outputs and installed dependencies remain outside git status.
+- Root workflow contract — PASS (9/9); feature regression registry audit — PASS (32 FRs / 257 mappings); change release ledger audit — PASS (5 changed files / 5 recorded paths); `git diff --check` — PASS.
+- `env -u DATABASE_URL -u DATABASE_URL_PROD -u NEON_DATABASE_URL -u NEON_DATABASE_URL_PROD -u PGHOST -u PGPORT -u PGDATABASE -u PGUSER -u PGPASSWORD npm run check:backend` — PASS for the complete Root backend chain, including the final Phase 5 cross-repository contract. The first sandboxed attempt hit only the expected local-loopback `EPERM`; the controlled local-listener rerun passed.
+- Phase 5 used a temporary read-only archive of canonical Mobile `origin/Dev@93292c130ae94250e498ad672c8ad9dd188a5d9d`, freshly verified against remote `Dev`, at the exact sibling path expected by the static contract. The contract only read seven source files and performed assertions; it did not start a service or access environment/database/network at runtime. The temporary symlink and `/tmp` snapshot were removed afterwards, no Mobile file was modified, and build-rewritten tracked `backend/dist` files were restored to the clean base.
+- Independent read-only review — `GO for candidate handoff`, P0/P1/P2 = 0. The reviewer verified the final five-file unstaged scope, both parser call sites, dual English order, Chinese/cross-tag behavior, placeholder plain-text fallback, cross-source conflict fail-closed behavior, failure-list GET pure SELECT, test/ledger/registry/workflow results, and absence of sensitive or generated candidate content. The subsequent Phase 5/full-backend validation changed only this ledger receipt; the reviewed non-ledger candidate fingerprint remains `5ff1dc0ffd04f21447f8a1dc68e8bf2cd3ff9cfe41f97d9ced446bb16ff01d16`.
+- Two earlier review rounds found and closed: Chinese text-node boundary spacing plus English regex position ordering, then HTML/plain same-kind conflict detection without nights. The final review independently reproduced each closure.
+- Production verification is intentionally excluded; all fixtures are synthetic and sanitized.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared; exact five-file staged candidate from refreshed `origin/Dev`.
+- **Untracked review:** none; ignored `backend/node_modules` and build outputs are validation-only and not part of the candidate. No generated fixture, raw email, credential, environment file, or production record is included.
+- `backend/scripts/test_email_year_rule.ts` — SHA-256: `ee66fc3a82cc209fc885ea6238eebd044ee8eb8be1e5ae6e33529818fa37a14a`
+- `backend/scripts/test_email_year_rule.ts` — SHA-256: `fbaf53e0362d43d980cf804a2843a5f826702b9ffcad5713e2b4a82a1c0d7585`
+- `backend/src/modules/jobs.ts` — SHA-256: `0b5874de9972a3cf55561ffb614eb111deb1816a89817ee04a0f255094db5ee1`
+- `backend/src/modules/jobs.ts` — SHA-256: `103b9cc3125eea094fb29230bd0462a322bd8a9cbe57fbdbe6bcc04d7ebc9188`
+- `backend/src/modules/jobs.ts` — SHA-256: `1b9263099d208f747304061267f01e274795d76560c0abff455337f784d9dc90`
+- `backend/src/modules/jobs.ts` — SHA-256: `3adde271956b5e243f0cd37c80d9e36e83585545335163eda2a2312d7d575d90`
+- `backend/src/modules/jobs.ts` — SHA-256: `3dd71672c2ae925f8a346e69b844168501ac035a43b05003f4badabb7c45adf8`
+- `backend/src/modules/jobs.ts` — SHA-256: `3e22cc0f734d1cf61722ab1328fe0b31e88eb6226511e5303b8980a8f6a60053`
+- `backend/src/modules/jobs.ts` — SHA-256: `460e4bd05421bef7fa877e6eb8cb635dbae40349a2ecc8a8a1e492b4234cdcb3`
+- `backend/src/modules/jobs.ts` — SHA-256: `6a7a46bcf8da5dcf1d680bb14e730b1c5d46201e02315ae31e304f1e561a0301`
+- `backend/src/modules/jobs.ts` — SHA-256: `705d346b44cb716a8485a544cc1f7b6a22f909ce97b55833d49476321e157645`
+- `backend/src/modules/jobs.ts` — SHA-256: `94cdfa3953d61b7c471a30d64ae78a59fc17b02ab1242bc44385bf0d08ecaadc`
+- `backend/src/modules/jobs.ts` — SHA-256: `9a0667c5ada1cae6a5f1955aa2cdbe00a9493bf8adfea83879ad5b335c837e2f`
+- `backend/src/modules/jobs.ts` — SHA-256: `bf92bbcb068b29313ea42adfc872c208d4a45ed99e20dec93623794cb1c77270`
+- `backend/src/modules/jobs.ts` — SHA-256: `dfda7208b7ee569b244339d02df8a36deaa13790465b7f0dcf57925aadf5b3ff`
+- `backend/src/modules/jobs.ts` — SHA-256: `e20768bbc8ea121a96677780e95e830f12a4913346a8c1f04f4cf8b5367d34de`
+- `backend/src/modules/jobs.ts` — SHA-256: `e24c7f7c3c94c86463918dcbb616dbe5c60628c716c5a022f766158816767129`
+- `backend/src/modules/jobs.ts` — SHA-256: `e3492c498e4f9ddbe2affbe09215b4751daf568034f6e67b694fb49126b4c801`
+- `backend/src/modules/jobs.ts` — SHA-256: `fc971e85ac3f7b8483f43f68bbcedd2d4de51cab6e9aaea5093afcc85ccdf5b8`
+- `docs/feature-regression-registry.md` — SHA-256: `22d3f73cdb92a500f076fce6b1915b6c68f8327945ba338fc83b2de1df5e2f2e`
+- `docs/feature-regression-registry.md` — SHA-256: `fdefda16ffaf3ab0967514716885f0c0ea1c96ca860496936cf196246810d23e`
+- `package.json` — SHA-256: `73f96ebbe0cb510c8625884993270b3f9e12662f3d93c41a304bb2f4062d01ec`
+- `package.json` — SHA-256: `cd2eb64e4e2c8bc777b8778d2b342c53437d2455094fbc8d2b2e35a1ed2d5af8`
+
+### Release Attempts
+
+#### RA-20261016-004
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-002`
+- Selected CRL identities: `root/CRL-20261016-002`
+- Intended action: `commit`
+- Branch: `codex/mz045-airbnb-date-parser-20261016`
+- Base: `origin/Dev@391bb17ba809a63d7e1b5768336242908f613292`; fetched at `2026-10-16T12:23:10Z` and unchanged from candidate HEAD before branch creation.
+- Candidate patch SHA-256: `5ff1dc0ffd04f21447f8a1dc68e8bf2cd3ff9cfe41f97d9ced446bb16ff01d16` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `1928d7fc103a5bc1dcdb680cde58a0690397476c`.
+- Dependencies: none; canonical Mobile `origin/Dev@93292c130ae94250e498ad672c8ad9dd188a5d9d` was a read-only Phase 5 validation fixture and is not part of this release.
+- Required validation: `PASS`; evidence: complete `check:backend` passed with database connection variables removed, including targeted English/Chinese Airbnb regressions and Phase 5; ledger 5/5, Registry 32 FR / 257 mappings, workflow 9/9, typecheck and diff checks passed.
+- Shared-hunk review: `PASS`; evidence: the four non-ledger paths and this CRL's ledger hunks belong exclusively to `root/CRL-20261016-002`; no MZ-044 or other release unit is present.
+- Generated-file review: `PASS`; evidence: tracked build outputs were restored, ignored dependency/build paths are excluded, and ordinary untracked files are absent.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: after being asked for permission to submit, push and create a PR for MZ-045, the user replied `先提交推送创建PR`; merge remains user-only.
+- Independent review: `GO for commit`; evidence: an independent read-only staged review verified the exact RA/CRL/base/branch, five staged files, 23 matching hunk fingerprints, unchanged non-ledger candidate fingerprint, complete validation evidence, GET pure-query behavior, and absence of MZ-044, generated, sensitive, production-write, Mobile-content or unselected scope; P0/P1/P2 = 0. This GO does not authorize push, PR, merge, deployment, database/API, IMAP replay, backfill or OTA.
+- Action conclusion: `GO`; the exact reviewed five-file candidate was committed as `1928d7fc103a5bc1dcdb680cde58a0690397476c`. No push, PR, merge or deployment occurred in this attempt.
+
+#### RA-20261016-005
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-002`
+- Selected CRL identities: `root/CRL-20261016-002`
+- Intended action: `push`
+- Branch: `codex/mz045-airbnb-date-parser-20261016`
+- Base: `origin/Dev@391bb17ba809a63d7e1b5768336242908f613292`; fetched at `2026-10-16T12:34:32Z`; a final remote preflight remains required immediately before push.
+- Candidate patch SHA-256: `5ff1dc0ffd04f21447f8a1dc68e8bf2cd3ff9cfe41f97d9ced446bb16ff01d16` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `1928d7fc103a5bc1dcdb680cde58a0690397476c`.
+- Dependencies: `none`.
+- Required validation: `PASS for this ledger authorization-status receipt commit`; evidence: complete `check:backend`, targeted English/Chinese Airbnb regressions, ledger 5/5, Registry 32 FR / 257 mappings, workflow 9/9, typecheck and diff checks passed; the preliminary exact committed-range report for `391bb17ba809a63d7e1b5768336242908f613292...22df2d9d65298ca5061f4c6dc555b619c0131633` passed repository, ancestry, base-freshness, CRL identity, five-file/23-hunk coverage, fingerprint, generated-file and sensitive-information checks. A final clean exact-range report remains mandatory after this receipt is committed and before any separately authorized push.
+- Shared-hunk review: `PASS`; evidence: the committed content range contains only `root/CRL-20261016-002` paths and no MZ-044 or unselected unit.
+- Generated-file review: `PASS`; evidence: content commit contains no generated, ignored, dependency, cache or build-output path.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: the user's earlier `先提交推送创建PR` selected and authorized committing this Airbnb candidate, but repository policy requires a new explicit push approval after the exact final receipt HEAD exists. No `approved-for-push` evidence is claimed for the not-yet-created final head; merge remains user-only.
+- Independent review: `GO for this accurate ledger-only authorization-status receipt commit; NO-GO for push`; evidence: independent read-only push review verified the exact content range, five files / 23 hunks, fingerprint, branch/base, validations, absent remote branch, and no MZ-044, generated, sensitive or production-write scope; P0 = 0, P1 = 1, P2 = 0. The P1 is the missing explicit user approval of repository `root`, branch `codex/mz045-airbnb-date-parser-20261016`, and the exact final receipt HEAD after this commit.
+- Action conclusion: `NOT VERIFIED`; blockers: commit this accurate authorization-status receipt, obtain explicit user push approval for repository `root`, branch `codex/mz045-airbnb-date-parser-20261016`, and the resulting exact final HEAD, then rerun the clean exact-range report, independent push review if required by any changed identity, and immediate remote base/branch preflight. No push or PR action is authorized yet.
+
+### Risks / Release Notes
+
+- Month/day grammar remains anchored to an English weekday and a recognized month name, reducing accidental matches elsewhere in the email.
+- Plain text is HTML-escaped before Cheerio parsing when HTML is absent. When HTML exists, plain-text dates supplement but never overwrite structured candidates: duplicate dates dedupe, same-kind differences enter pair conflict detection, and conflicting date pairs remain fail-closed.
+- Removing GET-side reconciliation can leave rows visible that were previously hidden on read; this is the deliberate pure-query behavior, not an automatic data repair. Any future explicit reconciliation endpoint/job requires a separate business decision and authorization.
+- Rollback is code-only: restore the prior parser call/signature and GET implementation. No data rollback is required because this attempt performs no runtime or production action.

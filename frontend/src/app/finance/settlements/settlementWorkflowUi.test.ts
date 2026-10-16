@@ -97,6 +97,8 @@ describe('settlement workflow UI', () => {
     expect(weeklyPanel).not.toContain('批量生成与发起记录')
     expect(weeklyPanel).toContain('合作方先在移动端提交上一完整周的工作量')
     expect(weeklyPanel).toContain("missing_effective_profile: '该人员在任务日期没有已启用的结算资料。'")
+    expect(weeklyPanel).toContain("inspection_scope_invalid_for_task: '检查执行方式异常，请公司核对。'")
+    expect(weeklyPanel).toContain("if (value === 'inspection_scope_invalid_for_task') return '检查执行方式异常，请公司核对'")
     expect(weeklyPanel).toContain("label: '重新核对'")
     expect(weeklyPanel).toContain('重新核对结算')
     expect(weeklyPanel).toContain('本周补充内容')

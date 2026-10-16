@@ -130,6 +130,8 @@ type InspectionPaymentAssignment = {
   inspection_due_date: string | null
   inspection_mode: string | null
   assignment_source: 'current' | 'preserved_auto_change'
+  inspection_scope_state: 'billable' | 'legacy_default' | 'requires_review'
+  inspection_scope_issue: 'inspection_scope_invalid_for_task' | null
   property_snapshot_missing: boolean
   is_payable: boolean
   submission_count: string | number | null
@@ -1055,11 +1057,32 @@ export async function buildPersonnelSettlementPreview(input: {
               t.inspection_due_date,
               lower(COALESCE(t.inspection_mode, '')) AS inspection_mode,
               'current'::text AS assignment_source,
+              (CASE
+                WHEN lower(COALESCE(NULLIF(TRIM(t.inspection_scope), ''), '')) = 'inspect_and_hang'
+                  THEN 'billable'
+                WHEN NULLIF(TRIM(t.inspection_scope), '') IS NULL
+                  AND lower(COALESCE(NULLIF(TRIM(t.task_type), ''), NULLIF(TRIM(t.type), ''), ''))
+                    IN ('checkout_clean', 'checkout_cleaning', 'checkin_clean')
+                  THEN 'legacy_default'
+                ELSE 'requires_review'
+              END)::text AS inspection_scope_state,
+              (CASE
+                WHEN NULLIF(TRIM(t.inspection_scope), '') IS NULL
+                  AND lower(COALESCE(NULLIF(TRIM(t.task_type), ''), NULLIF(TRIM(t.type), ''), ''))
+                    IN ('checkout_clean', 'checkout_cleaning', 'checkin_clean')
+                  THEN NULL
+                WHEN lower(COALESCE(NULLIF(TRIM(t.inspection_scope), ''), '')) <> 'inspect_and_hang'
+                  THEN 'inspection_scope_invalid_for_task'
+                ELSE NULL
+              END)::text AS inspection_scope_issue,
               t.property_id IS NULL AS property_snapshot_missing
          FROM cleaning_tasks t
          LEFT JOIN orders o ON o.id::text = t.order_id::text
         WHERE lower(COALESCE(t.inspection_mode, '')) IN ('same_day', 'deferred')
-          AND lower(COALESCE(t.inspection_scope, 'inspect_and_hang')) <> 'password_only'
+          AND NOT (
+            lower(COALESCE(NULLIF(TRIM(t.task_type), ''), NULLIF(TRIM(t.type), ''), '')) = 'checkin_clean'
+            AND lower(COALESCE(NULLIF(TRIM(t.inspection_scope), ''), '')) = 'password_only'
+          )
           AND ${activeCleaningTaskWhereSql('t')}
           AND ${validCleaningTaskOrderWhereSql('t', 'o')}
           AND NOT EXISTS (
@@ -1098,6 +1121,24 @@ export async function buildPersonnelSettlementPreview(input: {
               NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_due_date}'), '')::date AS inspection_due_date,
               lower(COALESCE(e.payload#>>'{arrangement_revision,before,inspection_mode}', '')) AS inspection_mode,
               'preserved_auto_change'::text AS assignment_source,
+              (CASE
+                WHEN lower(COALESCE(NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_scope}'), ''), '')) = 'inspect_and_hang'
+                  THEN 'billable'
+                WHEN NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_scope}'), '') IS NULL
+                  AND lower(COALESCE(NULLIF(TRIM(t.task_type), ''), NULLIF(TRIM(t.type), ''), ''))
+                    IN ('checkout_clean', 'checkout_cleaning', 'checkin_clean')
+                  THEN 'legacy_default'
+                ELSE 'requires_review'
+              END)::text AS inspection_scope_state,
+              (CASE
+                WHEN NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_scope}'), '') IS NULL
+                  AND lower(COALESCE(NULLIF(TRIM(t.task_type), ''), NULLIF(TRIM(t.type), ''), ''))
+                    IN ('checkout_clean', 'checkout_cleaning', 'checkin_clean')
+                  THEN NULL
+                WHEN lower(COALESCE(NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_scope}'), ''), '')) <> 'inspect_and_hang'
+                  THEN 'inspection_scope_invalid_for_task'
+                ELSE NULL
+              END)::text AS inspection_scope_issue,
               COALESCE(
                 NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,property_id}'), ''),
                 legacy_sync_snapshot.before_property_id
@@ -1127,7 +1168,10 @@ export async function buildPersonnelSettlementPreview(input: {
         WHERE e.payload#>>'{arrangement_revision,version}' = 'mz031-v1'
           AND e.caused_by_user_id IS NULL
           AND lower(COALESCE(e.payload#>>'{arrangement_revision,before,inspection_mode}', '')) IN ('same_day', 'deferred')
-          AND lower(COALESCE(e.payload#>>'{arrangement_revision,before,inspection_scope}', 'inspect_and_hang')) <> 'password_only'
+          AND NOT (
+            lower(COALESCE(NULLIF(TRIM(t.task_type), ''), NULLIF(TRIM(t.type), ''), '')) = 'checkin_clean'
+            AND lower(COALESCE(NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_scope}'), ''), '')) = 'password_only'
+          )
           AND (CASE
                 WHEN lower(COALESCE(e.payload#>>'{arrangement_revision,before,inspection_mode}', '')) = 'deferred'
                   AND NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_due_date}'), '') IS NOT NULL
@@ -1187,6 +1231,7 @@ export async function buildPersonnelSettlementPreview(input: {
             effective.task_type,
             effective.inspection_due_date::text AS inspection_due_date,
             effective.inspection_mode, effective.assignment_source,
+            effective.inspection_scope_state, effective.inspection_scope_issue,
             effective.property_snapshot_missing,
             effective.service_date < (now() AT TIME ZONE 'Australia/Melbourne')::date AS is_payable,
             COALESCE(submissions.submission_count, '0'::text) AS submission_count,
@@ -1668,6 +1713,7 @@ export async function buildPersonnelSettlementPreview(input: {
   }
   const inspectionAssignmentsByPropertyDate = new Map<string, InspectionPaymentAssignment[]>()
   for (const assignment of uniqueInspectionPaymentAssignments.values()) {
+    if (assignment.inspection_scope_state === 'requires_review') continue
     if (assignment.property_snapshot_missing) continue
     const propertyKey = cleanText(assignment.property_id) || `task:${assignment.task_id}`
     const key = `${propertyKey}:${assignment.service_date}`
@@ -1676,11 +1722,27 @@ export async function buildPersonnelSettlementPreview(input: {
     inspectionAssignmentsByPropertyDate.set(key, existing)
   }
   const conflictingInspectionKeys = new Set<string>()
+  const suppressedCompanionInspectionKeys = new Set<string>()
   for (const assignments of inspectionAssignmentsByPropertyDate.values()) {
     const inspectors = new Set(assignments.map((assignment) => cleanText(assignment.user_id)).filter(Boolean))
-    if (inspectors.size <= 1) continue
+    if (inspectors.size > 1) {
+      for (const assignment of assignments) {
+        if (cleanText(assignment.user_id)) conflictingInspectionKeys.add(assignment.inspection_key)
+      }
+    }
+    const checkoutAssignments = assignments.filter((assignment) => {
+      const taskType = cleanText(assignment.task_type).toLowerCase()
+      return taskType === 'checkout_clean' || taskType === 'checkout_cleaning'
+    })
+    if (checkoutAssignments.length !== 1) continue
+    const checkoutInspectorId = cleanText(checkoutAssignments[0].user_id)
+    if (!checkoutInspectorId) continue
     for (const assignment of assignments) {
-      if (cleanText(assignment.user_id)) conflictingInspectionKeys.add(assignment.inspection_key)
+      if (cleanText(assignment.task_type).toLowerCase() !== 'checkin_clean') continue
+      const checkinInspectorId = cleanText(assignment.user_id)
+      if (!checkinInspectorId || checkinInspectorId === checkoutInspectorId) {
+        suppressedCompanionInspectionKeys.add(assignment.inspection_key)
+      }
     }
   }
   const inspectionDays = new Map<string, {
@@ -1691,15 +1753,50 @@ export async function buildPersonnelSettlementPreview(input: {
   }>()
   for (const assignment of uniqueInspectionPaymentAssignments.values()) {
     if (!inPeriod(assignment.service_date)) continue
+    if (suppressedCompanionInspectionKeys.has(assignment.inspection_key)) continue
     const inspectorId = cleanText(assignment.user_id)
-    const propertyKey = cleanText(assignment.property_id) || `task:${assignment.task_id}`
-    const groupKey = `${propertyKey}:${assignment.service_date}`
-    const propertyDateAssignments = inspectionAssignmentsByPropertyDate.get(groupKey) || []
-    const groupHasExplicitInspector = propertyDateAssignments.some((row) => !!cleanText(row.user_id))
+    if (assignment.inspection_scope_state === 'requires_review') {
+      const scopeReason = assignment.inspection_scope_issue || 'inspection_scope_invalid_for_task'
+      const scopeWorkItem: SettlementWorkItem = {
+        ...inspectionPaymentWorkItem(assignment),
+        status: 'incomplete',
+        status_reason: scopeReason,
+        included_in_amount: false,
+        requires_manual_review: true,
+      }
+      const warningDetail = {
+        service_date: assignment.service_date,
+        component_type: 'inspection_day' as const,
+        description: `Inspection scope pending review · ${assignment.property_label || assignment.property_id || assignment.task_id}`,
+        task_id: assignment.task_id,
+        property_id: assignment.property_id,
+        property_label: assignment.property_label,
+        work_items: [scopeWorkItem],
+      }
+      if (!inspectorId) {
+        unassignedInspectionWarnings.push({
+          user_id: '',
+          user_name: 'Unassigned inspector',
+          source_type: 'inspection_task_assignment',
+          source_id: assignment.inspection_key,
+          reason: scopeReason,
+          ...warningDetail,
+        })
+        continue
+      }
+      if (!isRequestedUser(inspectorId)) continue
+      addChecklistItem(inspectorId, assignment.user_name, scopeWorkItem)
+      warn(
+        inspectorId,
+        assignment.user_name,
+        'inspection_task_assignment',
+        assignment.inspection_key,
+        scopeReason,
+        warningDetail,
+      )
+      continue
+    }
     if (!inspectorId) {
-      // A check-in executor-only row is expected beside an explicitly assigned
-      // checkout inspector. It neither conflicts nor receives inspection pay.
-      if (groupHasExplicitInspector) continue
       const pendingWorkItem: SettlementWorkItem = {
         ...inspectionPaymentWorkItem(assignment),
         status: 'incomplete',
