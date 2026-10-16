@@ -1783,6 +1783,8 @@
 - 解析前必须校验日历日期；无效日期不得被 JavaScript 自动归一化为另一月份或年份。
 - 无年份且成功解析的日期必须保留原始文本并写入 `year_inferred=true`，使后续审计可区分推断和显式日期。
 - Airbnb 已确认/已变更订单邮件必须优先从实际订单日期卡片提取入住和退房；页面中较早出现但不含日期的 `Check-in details` 等说明文字不得阻断后续真实日期字段的解析。
+- 英文 Airbnb 日期必须同时支持 `weekday day month` 与 `weekday month day` 两种顺序，并在 HTML 内联标签拆分日期或邮件仅有纯文本正文时保持同一显式年份、跨年推断和住晚一致性规则。
+- 失败邮件列表 GET 必须是纯查询；读取列表不得隐式修改 raw 邮件状态或写入已解决订单标记，状态推进必须由显式写入流程承担。
 - Airbnb 中文 `订单已确认` / `新预订已确认`、已更改和已取消主题必须与英文模板进入同一订单分类链路；不得因收件箱语言设置而被当作非订单邮件跳过。
 - 中文订单正文必须解析客人名、房源名、入住/退房日期、住晚、邮件原始清洁费和收入；邮件原始清洁费仅作为解析审计，不得直接写入订单业务金额。中文房型后缀不得污染既有房源名匹配。
 - 新导入订单的业务清洁费必须按房源资料中的房型固定计算：studio 85、一房 90、两房一卫 125、两房两卫 135、三房不区分卫生间 220、当前唯一四房三点五卫 280（AUD）。最终金额必须等于邮件收入金额减固定清洁费，并据此计算平均晚价。
@@ -1807,7 +1809,7 @@
 |---|---|---|---|---|
 | 中文订单主题、正文和非订单审计 | `backend/scripts/tests/test_airbnb_localized_email.ts` | 中文已确认/已更改/已取消主题，英文兼容，非订单拒绝；中文客人、房源后缀、跨年日期、住晚、金额和允许的审计三元组 | sufficient | `npm run test:airbnb-localized-email --prefix backend`（由 root `check:fast` / `check:backend` / `check:full` 执行） |
 | 固定清洁费、缺失金额转人工与历史订单不自动改金额 | `backend/scripts/tests/test_order_fixed_cleaning_fee.ts` | 覆盖全部已确认房型费率；邮件即使写入不同清洁费也按房源房型重算最终金额；未知房型和缺失收入不建单；自动导入仅按确认码跨 source/房源优先判重；单笔/批量人工解析也在房型/金额校验前跳过重复订单；不执行零金额补写 | sufficient | `npm run test:order-fixed-cleaning-fee --prefix backend`（由 root `check:fast` / `check:backend` / `check:full` 执行） |
-| 缺失年份的年界、同日、事故日期、墨尔本日界、闰日、无效日期、显式年份和日期卡片 | `backend/scripts/test_email_year_rule.ts` | 12 月到 1 月、1 月到 12 月、8 月确认次年 2 月、UTC 与 Australia/Melbourne 日界不同、闰年 2 月 29 日、4 月 31 日拒绝、显式年份优先；`Check-in details` 在前、真实入住/退房日期卡、重复标签、缺入住/退房和住晚冲突 | sufficient | `npm run test:email-year-rule --prefix backend` |
+| 缺失年份的年界、双英文日期顺序、HTML/纯文本正文、显式年份、日期卡片与失败列表只读性 | `backend/scripts/test_email_year_rule.ts` | 12 月到 1 月、1 月到 12 月、8 月确认次年 2 月、UTC 与 Australia/Melbourne 日界不同、闰年 2 月 29 日、4 月 31 日拒绝；day-month / month-day、跨标签、重复日期块、纯文本、跨年与住晚一致性；`Check-in details` 在前、缺入住/退房、住晚冲突；失败列表 GET 源码契约禁止写语句 | sufficient | `npm run test:email-year-rule --prefix backend`（由 root `check:fast` / `check:backend` / `check:full` 执行） |
 | 遗留年份推断调用点 | `backend/scripts/test_infer_year.ts` | 年初、年末和同年未来日期都按下一次出现日期解析 | partial | `./backend/node_modules/.bin/ts-node --transpile-only backend/scripts/test_infer_year.ts` |
 | 历史订单修复前置安全 | `backend/scripts/repair_airbnb_email_year_rollover.ts` | 默认只读；固定候选数；住晚、已锁任务、目标日期冲突和 apply 双重确认 | partial | `./backend/node_modules/.bin/ts-node --transpile-only backend/scripts/repair_airbnb_email_year_rollover.ts` |
 

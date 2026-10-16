@@ -515,7 +515,7 @@ export const NOT_WHITELISTED_EMAIL_AUDIT = Object.freeze({
   error_code: 'not_whitelisted',
 })
 
-export function extractFieldsFromHtml(html: string, headerDate: Date): {
+export function extractFieldsFromHtml(html: string, headerDate: Date, plainText: string = ''): {
   confirmation_code?: string
   guest_name?: string
   listing_name?: string
@@ -530,8 +530,28 @@ export function extractFieldsFromHtml(html: string, headerDate: Date): {
   probe?: any
 } {
   const cheerio = require('cheerio')
-  const $ = cheerio.load(html || '')
-  const bodyText = normalizeText(($('body').text() || ''))
+  const escapedPlainText = String(plainText || '')
+    .split(/\r?\n/)
+    .map(line => `<div>${line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')}</div>`)
+    .join('')
+  const $ = cheerio.load(html || (escapedPlainText ? `<html><body>${escapedPlainText}</body></html>` : ''))
+  function normalizedElementText(input: any): string {
+    const parts: string[] = []
+    const visit = (node: any) => {
+      if (!node) return
+      if (node.type === 'text') {
+        parts.push(String(node.data || ''))
+        return
+      }
+      ;(node.children || []).forEach(visit)
+    }
+    const nodes = input && typeof input.toArray === 'function' ? input.toArray() : [input]
+    nodes.forEach(visit)
+    return normalizeText(parts.join(' '))
+  }
+  const bodyText = normalizeText($('body').text() || '')
+  const dateBodyText = normalizedElementText($('body'))
+  const plainDateText = normalizeText(String(plainText || ''))
   let confirmation_code: string | undefined
   let guest_name: string | undefined
   let listing_name: string | undefined
@@ -623,27 +643,36 @@ export function extractFieldsFromHtml(html: string, headerDate: Date): {
   }
   if (listing_name) listing_name = cleanListingName(listing_name)
   type DateCandidate = { date: string; raw: string; yearInferred: boolean }
-  const dayRe = /\b(Sun|Mon|Tue|Wed|Thu|Fri|Sat|Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday),?\s*(\d{1,2})\s+([A-Za-z]{3,9})(?:,?\s+(\d{4}))?/i
-  const mx = /([0-9]+)\s+nights?\s+room\s+fee/i.exec(bodyText) || /(?:[x×]\s*)?([0-9]+)\s*晚(?:房费)?/.exec(bodyText)
+  const weekdayPattern = '(Sun|Mon|Tue|Wed|Thu|Fri|Sat|Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)'
+  const dayFirstDateRe = new RegExp(`\\b${weekdayPattern},?\\s*(\\d{1,2})\\s+([A-Za-z]{3,9})(?:,?\\s+(\\d{4}))?`, 'i')
+  const monthFirstDateRe = new RegExp(`\\b${weekdayPattern},?\\s+([A-Za-z]{3,9})\\s+(\\d{1,2})(?:,?\\s+(\\d{4}))?`, 'i')
+  const mx = /([0-9]+)\s+nights?\s+room\s+fee/i.exec(dateBodyText)
+    || /(?:[x×]\s*)?([0-9]+)\s*晚(?:房费)?/.exec(dateBodyText)
+    || /([0-9]+)\s+nights?\s+room\s+fee/i.exec(plainDateText)
+    || /(?:[x×]\s*)?([0-9]+)\s*晚(?:房费)?/.exec(plainDateText)
   if (mx) nights = Number(mx[1])
   function parseDateText(text: string): DateCandidate | undefined {
-    const chinese = /(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日/.exec(text)
+    const chinese = /(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日/.exec(text)
     if (chinese) {
       const parsed = inferAirbnbEmailDate(headerDate, Number(chinese[2]), Number(chinese[3]), chinese[1] ? Number(chinese[1]) : undefined)
       if (!parsed.date) return undefined
       return { date: parsed.date, raw: normalizeText(chinese[0] || ''), yearInferred: parsed.yearInferred }
     }
-    const m = dayRe.exec(text)
+    const dayFirst = dayFirstDateRe.exec(text)
+    const monthFirst = monthFirstDateRe.exec(text)
+    const useDayFirst = !!dayFirst && (!monthFirst || dayFirst.index <= monthFirst.index)
+    const m = useDayFirst ? dayFirst : monthFirst
     if (!m) return undefined
-    const day = Number(m[2])
-    const mon = parseMonthStr(m[3] || '') || 0
+    const day = Number(useDayFirst ? m[2] : m[3])
+    const mon = parseMonthStr(useDayFirst ? (m[3] || '') : (m[2] || '')) || 0
+    const explicitYear = m[4]
     if (!mon || !day) return undefined
-    const parsed = inferAirbnbEmailDate(headerDate, mon, day, m[4] ? Number(m[4]) : undefined)
+    const parsed = inferAirbnbEmailDate(headerDate, mon, day, explicitYear ? Number(explicitYear) : undefined)
     if (!parsed.date) return undefined
     return { date: parsed.date, raw: normalizeText(m[0] || ''), yearInferred: parsed.yearInferred }
   }
   function labelPattern(kind: 'checkin' | 'checkout'): string {
-    return kind === 'checkin' ? '(?:check\\s*[-–—]?\\s*in|入住)' : '(?:check\\s*[-–—]?\\s*out|退房)'
+    return kind === 'checkin' ? '(?:check\\s*[-–—]?\\s*in|入\\s*住)' : '(?:check\\s*[-–—]?\\s*out|退\\s*房)'
   }
   function dateAfterLabel(text: string, kind: 'checkin' | 'checkout'): DateCandidate | undefined {
     const label = labelPattern(kind)
@@ -665,19 +694,20 @@ export function extractFieldsFromHtml(html: string, headerDate: Date): {
     const candidates: DateCandidate[] = []
     const labelRe = new RegExp(labelPattern(kind), 'i')
     $('td, th, p, div, span, section').each((_i: number, el: any) => {
-      const text = normalizeText($(el).text() || '')
+      const text = normalizedElementText(el)
       if (!text || text.length > 260 || !labelRe.test(text)) return
       const candidate = dateAfterLabel(text, kind)
       if (candidate) candidates.push(candidate)
     })
     return dedupeDateCandidates(candidates)
   }
-  function collectTextDateCandidates(kind: 'checkin' | 'checkout'): DateCandidate[] {
+  function collectTextDateCandidates(kind: 'checkin' | 'checkout', sourceText: string): DateCandidate[] {
     const candidates: DateCandidate[] = []
+    if (!sourceText) return candidates
     const labelRe = new RegExp(labelPattern(kind), 'gi')
     let match: RegExpExecArray | null
-    while ((match = labelRe.exec(bodyText))) {
-      const candidate = dateAfterLabel(bodyText.slice(match.index, match.index + 180), kind)
+    while ((match = labelRe.exec(sourceText))) {
+      const candidate = dateAfterLabel(sourceText.slice(match.index, match.index + 180), kind)
       if (candidate) candidates.push(candidate)
     }
     return dedupeDateCandidates(candidates)
@@ -692,15 +722,27 @@ export function extractFieldsFromHtml(html: string, headerDate: Date): {
     }))
     return pairs.size === 1 ? Array.from(pairs.values())[0] : {}
   }
-  let checkinCandidates = collectStructuredDateCandidates('checkin')
-  let checkoutCandidates = collectStructuredDateCandidates('checkout')
-  if (!checkinCandidates.length) checkinCandidates = collectTextDateCandidates('checkin')
-  if (!checkoutCandidates.length) checkoutCandidates = collectTextDateCandidates('checkout')
+  const structuredCheckinCandidates = collectStructuredDateCandidates('checkin')
+  const structuredCheckoutCandidates = collectStructuredDateCandidates('checkout')
+  let checkinCandidates = dedupeDateCandidates([
+    ...structuredCheckinCandidates,
+    ...collectTextDateCandidates('checkin', plainDateText),
+  ])
+  let checkoutCandidates = dedupeDateCandidates([
+    ...structuredCheckoutCandidates,
+    ...collectTextDateCandidates('checkout', plainDateText),
+  ])
+  if (!structuredCheckinCandidates.length) {
+    checkinCandidates = dedupeDateCandidates([...checkinCandidates, ...collectTextDateCandidates('checkin', dateBodyText)])
+  }
+  if (!structuredCheckoutCandidates.length) {
+    checkoutCandidates = dedupeDateCandidates([...checkoutCandidates, ...collectTextDateCandidates('checkout', dateBodyText)])
+  }
   // Fallback: older templates sometimes use ordered date headings without labels.
   if (!checkinCandidates.length || !checkoutCandidates.length) {
     const headingDates: DateCandidate[] = []
     $('p.heading2, h2.heading2, .heading2').each((_i: number, el: any) => {
-      const candidate = parseDateText(normalizeText($(el).text() || ''))
+      const candidate = parseDateText(normalizedElementText(el))
       if (candidate) headingDates.push(candidate)
     })
     const uniqueHeadings = dedupeDateCandidates(headingDates)
@@ -775,7 +817,7 @@ export async function processMessage(acc: { user: string; pass: string; folder: 
     if (!dryRun && hasPg) { try { await pgInsert('order_import_staging', { id: uuid(), channel: 'airbnb_email', raw_row: { message_id: String(parsed.messageId || ''), subject, from, html_snippet: (html || '').slice(0, 2000) }, reason: 'missing_header_date', status: 'unmatched' }) } catch {} }
     return { matched: false, inserted: false, skipped_duplicate: false, failed: false, reason: 'no_dates', last_uid: Number(msg.uid || 0) }
   }
-  const fields = extractFieldsFromHtml(html, headerDate)
+  const fields = extractFieldsFromHtml(html, headerDate, String(parsed.text || ''))
   const isAirbnb = /airbnb\.com/i.test(from)
   const subj = subject || ''
   const orderMailKind = classifyAirbnbOrderSubject(subj)
@@ -2136,19 +2178,6 @@ router.get('/email-orders-raw/failures', requirePerm('order.manage'), async (req
     if (!hasPg) return res.json([])
     const sinceDays = Number(((req.query || {}) as any).since_days || 14)
     const limit = Math.min(500, Number(((req.query || {}) as any).limit || 200))
-    try {
-      await pgPool!.query(`
-        UPDATE email_orders_raw r
-        SET status='resolved',
-            extra = COALESCE(r.extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', o.id::text)
-        FROM orders o
-        WHERE o.confirmation_code IS NOT NULL
-          AND r.confirmation_code = o.confirmation_code
-          AND r.created_at >= now() - ($1 || ':days')::interval
-          AND COALESCE(r.status,'') IN ('failed','unmatched_property','parsed')
-          AND COALESCE(r.extra->>'resolved_order_id','') = ''
-      `, [String(sinceDays)])
-    } catch {}
     const q = await pgPool!.query(`
       SELECT r.uid, r.message_id, r.subject, r.sender, r.header_date, r.confirmation_code, r.guest_name, r.listing_name, r.checkin, r.checkout, r.price, r.cleaning_fee, r.status,
         COALESCE(r.extra->>'reason', NULL) AS reason
@@ -2786,7 +2815,7 @@ export async function runEmailSyncJob(opts: EmailSyncOptions = {}): Promise<any>
                     const headerDate2 = (p2?.date ? new Date(p2.date as any) : ((m as any)?.internalDate ? new Date((m as any).internalDate) : null))
                     const messageId2 = String(((m as any)?.envelope?.messageId) || '')
                     const envelope = (m as any)?.envelope || null
-                    const fields2 = extractFieldsFromHtml(String(p2?.html || ''), headerDate2 || new Date())
+                    const fields2 = extractFieldsFromHtml(String(p2?.html || ''), headerDate2 || new Date(), String(p2?.text || ''))
                     const src = (m as any)?.source
                     const bodyLen = Buffer.isBuffer(src) ? src.length : (typeof src === 'string' ? src.length : 0)
                     const htmlLen = String(p2?.html || '').length
