@@ -29599,15 +29599,34 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Branch: `codex/mz045-airbnb-date-parser-20261016`
 - Base: `origin/Dev@391bb17ba809a63d7e1b5768336242908f613292`; fetched at `2026-10-16T12:23:10Z` and unchanged from candidate HEAD before branch creation.
 - Candidate patch SHA-256: `5ff1dc0ffd04f21447f8a1dc68e8bf2cd3ff9cfe41f97d9ced446bb16ff01d16` excluding `docs/change-release-ledger.md`.
-- Commit SHA: not committed.
+- Commit SHA: `1928d7fc103a5bc1dcdb680cde58a0690397476c`.
 - Dependencies: none; canonical Mobile `origin/Dev@93292c130ae94250e498ad672c8ad9dd188a5d9d` was a read-only Phase 5 validation fixture and is not part of this release.
 - Required validation: `PASS`; evidence: complete `check:backend` passed with database connection variables removed, including targeted English/Chinese Airbnb regressions and Phase 5; ledger 5/5, Registry 32 FR / 257 mappings, workflow 9/9, typecheck and diff checks passed.
 - Shared-hunk review: `PASS`; evidence: the four non-ledger paths and this CRL's ledger hunks belong exclusively to `root/CRL-20261016-002`; no MZ-044 or other release unit is present.
 - Generated-file review: `PASS`; evidence: tracked build outputs were restored, ignored dependency/build paths are excluded, and ordinary untracked files are absent.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: after being asked for permission to submit, push and create a PR for MZ-045, the user replied `先提交推送创建PR`; merge remains user-only.
 - Independent review: `GO for commit`; evidence: an independent read-only staged review verified the exact RA/CRL/base/branch, five staged files, 23 matching hunk fingerprints, unchanged non-ledger candidate fingerprint, complete validation evidence, GET pure-query behavior, and absence of MZ-044, generated, sensitive, production-write, Mobile-content or unselected scope; P0/P1/P2 = 0. This GO does not authorize push, PR, merge, deployment, database/API, IMAP replay, backfill or OTA.
-- Action conclusion: `GO`; blockers: none for the exact reviewed commit. Any non-ledger, base, branch, scope or candidate fingerprint change invalidates this conclusion.
+- Action conclusion: `GO`; the exact reviewed five-file candidate was committed as `1928d7fc103a5bc1dcdb680cde58a0690397476c`. No push, PR, merge or deployment occurred in this attempt.
+
+#### RA-20261016-005
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-002`
+- Selected CRL identities: `root/CRL-20261016-002`
+- Intended action: `push`
+- Branch: `codex/mz045-airbnb-date-parser-20261016`
+- Base: `origin/Dev@391bb17ba809a63d7e1b5768336242908f613292`; fetched at `2026-10-16T12:23:10Z`; fresh remote preflight remains required immediately before push.
+- Candidate patch SHA-256: `5ff1dc0ffd04f21447f8a1dc68e8bf2cd3ff9cfe41f97d9ced446bb16ff01d16` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `1928d7fc103a5bc1dcdb680cde58a0690397476c`.
+- Dependencies: none; canonical Mobile `origin/Dev@93292c130ae94250e498ad672c8ad9dd188a5d9d` remains validation-only and outside the release range.
+- Required validation: `NOT VERIFIED`; evidence: local complete backend and governance checks passed, but the exact committed-range release report is pending this ledger receipt commit.
+- Shared-hunk review: `PASS`; evidence: the committed content range contains only `root/CRL-20261016-002` paths and no MZ-044 or unselected unit.
+- Generated-file review: `PASS`; evidence: content commit contains no generated, ignored, dependency, cache or build-output path.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: the user explicitly selected this Airbnb candidate and replied `先提交推送创建PR`; this attempt binds that authorization to repository `root`, branch `codex/mz045-airbnb-date-parser-20261016`, selected identity `root/CRL-20261016-002`, and content commit `1928d7fc103a5bc1dcdb680cde58a0690397476c`. Merge remains user-only.
+- Independent review: `GO for ledger-only receipt commit`; evidence: an independent read-only review verified that the staged diff contains only `docs/change-release-ledger.md`, only this CRL's RA-004/RA-005 receipt fields, the exact content commit/base/branch/fingerprint, and no historical RA, other CRL, code, generated output or sensitive data; P0/P1/P2 = 0. This is not push review: exact committed-range push review remains `NOT VERIFIED` pending the release report.
+- Action conclusion: `NOT VERIFIED`; blockers: commit the ledger-only receipt, pass the exact `base...head` release report, obtain independent GO for push, and confirm the remote base/branch preflight.
 
 ### Risks / Release Notes
 
