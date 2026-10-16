@@ -29295,6 +29295,29 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Independent review: `GO for push-receipt commit`; evidence: P0/P1/P2 = 0; reviewer verified exact base and ancestry, content commit, branch and target, candidate fingerprint and 33-file range, ledger-only staged scope inside CRL-004 Release Attempts, three exact Mobile dependency references, authorization boundary, and absence of unrelated/generated/sensitive/production-write content.
 - Action conclusion: `GO`; the ledger-only push receipt may be committed, then the clean exact committed-range release report must pass before normal non-force push. Real PostgreSQL exact-head CI remains a merge/release blocker rather than a push blocker.
 
+#### RA-20261014-013
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261014-004`
+- Selected CRL identities: `root/CRL-20261014-004`
+- Intended action: promote the exact reviewed Root tree from PR `#394` to protected `main`, then verify production deployment health before Mobile OTA publication.
+- Branch: `codex/mz032-034-main-release-20261014`.
+- Target: `main`.
+- Base: `origin/main@e625117a3cd3ae6c311a45dfe01a5af50a5c7229`.
+- Candidate patch SHA-256: `2307288062b95c944f8d03d39d7b3fb30b1bf06769d8ec6b085e446567d25f2a` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `cfa509c5a2838c68ddb9988276e715f17a033c98` (exact pre-receipt main-promotion head; this ledger-only receipt follows).
+- Candidate head before this ledger-only receipt: `cfa509c5a2838c68ddb9988276e715f17a033c98`; candidate tree `44d3dbe964211d5e596190ce820c4338a9499d01`, byte-identical to reviewed Root candidate `703584c2009a6dc4ce3e6106e5a3af23022d2f9d`.
+- Required validation: `PASS` for the exact pre-receipt head; workflow-dispatch run `38443403927` completed Risk Classification, Change Ledger Audit, Regression Registry Audit, Fast Regression, Full Regression, the isolated MZ-034 PostgreSQL integration, and aggregate `Root Quality Check` successfully. Vercel preview for PR `#394` is `Ready`.
+- Database dependency: `PASS`; the two authorized production migrations were committed independently with lock/statement timeouts, their exact SHA-256 values remained `d68f167ebb02e71e6e934d0fee06b7ba936bc3dc0e4b979610892cc6ede28d1e` and `318d195079320d6384465258e1b9fc0fcd35522d52cb8aac1be3630374c31a06`, and read-only postflight found both markers, zero explicit-inspector conflicts, three enabled initially-deferred constraint triggers, zero carry rows, and validated carry/amount constraints.
+- Protection handling: the repository's workflow intentionally listens to `pull_request` only for `Dev`, while `main` requires the stable `Root Quality Check` context; no protection rule or workflow is relaxed. This ledger-only receipt will use a temporary same-head `Dev` PR solely to obtain the standard required check on the exact final commit, after which PR `#394` may merge normally.
+- Shared-hunk review: `PASS`; this receipt changes only this release-attempt record and does not alter application, workflow, migration, schema, or test code.
+- Generated-file review: `PASS`; no generated, untracked, ignored runtime artifact, cache, binary, or dependency file is selected.
+- Sensitive-information review: `PASS`; no secret, credential, production payload, private media, signed URL, or environment file is recorded.
+- Technical state: `committed`; exact business candidate and authorized migrations validated, with this final ledger-only protected-check receipt pending commit/push.
+- User authorization: `approved`; the delegated user instruction explicitly authorizes the MZ-032/033/034 commit, push, protected-branch merge, production deployment, the two exact migrations, and the gated iOS TestFlight OTA.
+- Independent review: `GO`; the final Root business tree inherits the exact P0/P1/P2=0 review, matches reviewed candidate tree `44d3dbe964211d5e596190ce820c4338a9499d01`, and the only staged delta is this CRL-004 release-attempt receipt with no runtime or production-write expansion.
+- Action conclusion: `GO` for the ledger-only receipt commit and protected-check carrier; production deploy/health and OTA remain blocked until the final main merge succeeds.
+
 ### Risks / Release Notes
 
 - Release risk remains gated by exact-head real PostgreSQL CI, fresh production read-only preflight, backend health, and OTA compatibility/fingerprint checks.
@@ -29372,7 +29395,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - No option label is changed. No production data, credentials, URLs, environment files, generated artifacts, or dependency versions are included.
 ## CRL-20261016-001 — MZ-035 Dev/main 祖先同步与发布回执回流
 
-- **Status:** verified; commit review GO, synchronization merge and push pending
+- **Status:** verified; synchronization merge committed, exact-range push review pending
 - **Repository:** `root`
 - **Updated:** 2026-10-16 07:09 UTC
 - **Request:** 解除 PR `#397`（`Dev` → `main`）因 head 分支受保护而无法直接执行 Update branch 的同步阻碍；从最新 `Dev` 建立临时分支，把最新 `main` 以普通 merge 纳入，保留两侧完整祖先与台账，只通过目标 `Dev` 的 Draft PR 交付，最终合并由用户手动执行。
@@ -29444,4 +29467,4 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Ordinary merge is a functional requirement of this synchronization: squash or rebase of the Draft sync PR would lose the `main` parent ancestry and would not reliably clear PR `#397`'s behind state.
 - Rollback before user merge: close the unmerged Draft PR and delete the temporary branch; `Dev`, `main` and PR `#397` remain unchanged.
 - No production database/API, migration, deployment, preview, Mobile worktree, Mobile build/OTA or independent website candidate is touched.
-- Git state: synchronization-evidence candidate not committed; main merge pending; not pushed; Draft PR not created; not merged; not deployed; production/device verification not run.
+- Git state: synchronization evidence committed as `c188731f43030592a7b13d1c5a9a268d6401deb0`; main ancestry merged locally with exact second parent `origin/main@eeaf4bb5433ab4833f98e64de6aea8da9dcd92be`; not pushed; Draft PR not created; not merged into `Dev`; not deployed; production/device verification not run.
