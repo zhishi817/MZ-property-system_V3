@@ -29300,3 +29300,73 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Release risk remains gated by exact-head real PostgreSQL CI, fresh production read-only preflight, backend health, and OTA compatibility/fingerprint checks.
 - No production write, merge, deployment, migration, OTA, or device verification has run from this candidate.
 - Git state: clean v4 content is staged but not committed/pushed; PR not created; not merged/deployed.
+
+## CRL-20261014-005 — MZ-035 完善检查类型异常防护与仅执行任务计费边界
+
+- Status: implemented; selected for isolated CI test PR, not selected for merge or release
+- Repository: `root`
+- Board item: `MZ-035` (id `35`, revision `1`)
+- Updated: 2026-10-14 UTC
+
+### Request
+
+- Preserve the released MZ-034 behavior while tightening inspection settlement classification: explicit `password_only` execution must never generate inspection work items, properties, or day pay.
+- Keep legitimate historical NULL defaults billable, but route unknown non-empty scope values that cannot be safely interpreted to manual review instead of auto-billing or silently paying zero.
+- Add focused real-PostgreSQL regression coverage for execution-only tasks, mixed valid inspection and execution, historical defaults and anomalies, paired rows, date changes, manager overrides, cancellation and reactivation.
+- Improve finance UI explanations for invalid-scope manual-review items without changing the existing task-option wording.
+- User authorization permits local commit, same-name Mobile/Root test-branch push, draft PRs to `Dev`, and isolated CI repair/retry within this CRL. It does not authorize production writes, migrations, merge, deployment, historical recomputation, or OTA publication.
+
+### Implementation
+
+- Previous behavior: live and preserved-assignment SQL treated every scope except `password_only` as inspection-billable by applying the released `inspect_and_hang` fallback; genuinely unknown non-empty values could therefore enter inspection pay automatically.
+- New behavior: settlement explicitly classifies billable inspection, compatible NULL/blank legacy defaults, execution-only check-ins, and invalid non-empty anomaly states before aggregation.
+- NULL/blank remains the released `inspect_and_hang` compatibility default for both check-in and checkout. It does not by itself create pay: settlement still requires an active/effective task and order, explicit `inspector_id`, effective profile and fee rule, payable service date, and no ownership conflict. Standalone assignee-only rows remain `inspection_inspector_missing`; `assignee_id` is never an inspector fallback. Upload/photo state is evidence only, not a pay prerequisite.
+- Pair suppression is deliberately narrow: assignments must share property and effective inspection service date, there must be exactly one checkout with an explicit inspector, and the otherwise billable check-in must have no inspector or the same inspector. A different explicit inspector remains a two-sided conflict; a deferred check-in on another effective date remains a separate day.
+- Explicit `password_only` check-ins are excluded as execution work. Unknown non-empty values and checkout `password_only` are held for review. No creation-date, upload-state, assignee, or role inference is used.
+- Production-source evidence: exact main `eeaf4bb` applies `COALESCE(scope,'inspect_and_hang')` in current and preserved settlement SQL. Automatic sync omits `inspection_scope`; manual creation accepts/stores NULL; shared backend/frontend normalizers introduced on 2026-06-24 map every non-`password_only` value, including NULL, to `inspect_and_hang` and display “检查后挂钥匙”. API write schemas accept only the two enum values.
+- Frozen/paid settlement snapshots are not rewritten. This candidate changes live preview/generation inputs and explanatory UI only.
+
+### Read-only Production Evidence
+
+- All production audit queries ran inside explicit read-only transactions with bounded timeouts and final `ROLLBACK`; no DML/DDL, migration, backfill, recomputation, or mutation ran.
+- A detailed snapshot found 2,638 active/relevant NULL-scope check-ins after a one-row live drift from an earlier 2,639 read: 2,620 automatic and 18 manual. This is an impact population, not a review backlog, confirmed-work population, or payment population.
+- 2,143 had no same-property/same-task-date active checkout and 495 had exactly one. Paired checkout scope was 53 explicit inspect and 442 legacy NULL; check-in had an explicit inspector on 361 rows, including 335 paired to the same checkout inspector and 26 unpaired. Four rows had a submit audit and none had `is_inspected=true`; upload state is not a payment prerequisite.
+- For 2026-10-12..18, 25 task rows represent 25 property-days, 23 properties, and 2 inspector-days. Twenty-three rows had no task inspector. These are not “25 paid rooms”; every payable day still passes the normal ownership/profile/rule/date/conflict gates.
+- The entire current structured `personnel_settlement_lines` table contained 41 rows and zero `inspection_day` rows. This does not prove all historical, external, legacy, or manual payments were correct.
+
+### Files / Areas
+
+- `.github/workflows/quality.yml`
+- `backend/package.json`
+- `backend/src/lib/personnelSettlementPreview.ts`
+- `backend/scripts/tests/test_personnel_settlement_mz034.ts`
+- `backend/scripts/tests/test_personnel_settlement_mz035_sql_integration.ts`
+- `frontend/src/app/finance/settlements/WeeklySettlementsPanel.tsx`
+- `frontend/src/app/finance/settlements/settlementWorkflowUi.test.ts`
+- `docs/change-release-ledger.md`
+
+### Impact / Dependencies
+
+- User-visible behavior: execution-only password tasks stay out of inspection pay; legal NULL defaults preserve released behavior; genuinely invalid non-empty scope values appear as excluded pending/manual-review items.
+- API/schema: no schema migration and no production data operation. Existing warning structures receive the invalid-scope reason.
+- Dependency: paired `mobile/CRL-20261014-002` must use the same test branch name so Root CI checks the matching Mobile source.
+- Related released predecessor: `root/CRL-20261014-004` remains unchanged.
+
+### Validation
+
+- PASS — backend settlement contract, including NULL compatibility, assignee-only exclusion, same-inspector companion suppression, different-inspector conflict, and different-effective-date separation.
+- PASS — backend TypeScript `--noEmit` and dedicated MZ-035 SQL-test strict TypeScript compile.
+- PASS — finance workflow UI: 1 Vitest suite / 8 tests.
+- PASS — change-ledger coverage audit: 8 changed paths / 8 recorded paths.
+- ADDED / CI REQUIRED — the guarded MZ-035 test invokes actual `buildPersonnelSettlementPreview` SQL against an isolated PostgreSQL schema and rolls back. It covers current/preserved NULL with explicit inspector and zero uploads, assignee-only exclusion, password-only exclusion, invalid non-empty values, paired same/different/unassigned inspector behavior, deferred dates, automatic historical preservation, later manager override, cancellation and reactivation.
+
+### Selected Commit / Push Scope
+
+- Exact scope: the eight paths listed above, rebuilt from fresh `origin/Dev@9b3108be5fc5cf9d2d86545be4a6e1a91f35f325` on branch `codex/mz035-inspection-scope-guard-ci`.
+- Authorization: user replied “允许” to the explicit request for the paired Mobile/Root test-branch commits, draft PRs to `Dev`, and isolated PostgreSQL CI.
+- Excluded: merge, deployment, production database access/write, migration, backfill, historical recomputation, release, and OTA.
+
+### Risks / Release Notes
+
+- Real PostgreSQL execution remains mandatory before this candidate can be considered tested. The integration script requires explicit isolated-test environment flags and must never target production.
+- No option label is changed. No production data, credentials, URLs, environment files, generated artifacts, or dependency versions are included.

@@ -238,7 +238,7 @@ jobs:
         run: npm run check:full
 
   mz034_sql:
-    name: MZ-034 Isolated PostgreSQL Integration
+    name: MZ-034/035 Isolated PostgreSQL Integration
     needs: risk
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -287,6 +287,14 @@ jobs:
           MZ034_SQL_INTEGRATION_WRITE: "1"
           MZ034_SQL_INTEGRATION_CONFIRM_EPHEMERAL: "1"
         run: npm run test:personnel-settlement-mz034:sql --prefix backend
+
+      - name: Run MZ-035 SQL integration against ephemeral PostgreSQL
+        if: env.RUN_MZ034_SQL == 'true'
+        env:
+          MZ035_SQL_INTEGRATION_DATABASE_URL: postgres://mz034_ci:mz034_ci_only@127.0.0.1:5432/mz034_ci
+          MZ035_SQL_INTEGRATION_WRITE: "1"
+          MZ035_SQL_INTEGRATION_CONFIRM_EPHEMERAL: "1"
+        run: npm run test:personnel-settlement-mz035:sql --prefix backend
 
   check:
     name: Root Quality Check
