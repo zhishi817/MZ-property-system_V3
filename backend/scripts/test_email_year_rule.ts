@@ -1,3 +1,5 @@
+import fs from 'fs'
+import path from 'path'
 import { extractFieldsFromHtml, inferAirbnbEmailDate, validateAirbnbStayDates } from '../src/modules/jobs'
 
 function htmlWithMonths(ciMon: string, coMon: string, ciDay: number = 2, coDay: number = 5) {
@@ -85,5 +87,97 @@ assertEqual(validateAirbnbStayDates(missingCheckout.checkin, missingCheckout.che
 
 const conflictingDates = extractFieldsFromHtml(cardHtml.replace('1 night room fee', '2 nights room fee'), cardHeaderDate)
 assertEqual(validateAirbnbStayDates(conflictingDates.checkin, conflictingDates.checkout, conflictingDates.nights).reason, 'CHECKIN_CHECKOUT_NIGHTS_MISMATCH', 'date and night conflicts fail closed')
+
+// 脱敏后的真实新模板形态：英文月份在日期前，日期节点可能被内联标签拆开，并重复出现同一日期卡。
+const sanitizedMonthFirstHtml = `
+<html><body>
+  <div>Check-in details</div>
+  <section class="date-card">
+    <div><span>Check-in</span><span>Sun,</span><span>Jan</span><span>24,</span><span>2027</span></div>
+    <div><span>Checkout</span><span>Thu,</span><span>Jan</span><span>28,</span><span>2027</span></div>
+  </section>
+  <section class="date-card-copy">
+    <div>Check-in Sun, Jan 24, 2027</div>
+    <div>Checkout Thu, Jan 28, 2027</div>
+  </section>
+  <p>4 nights room fee</p>
+</body></html>`
+const sanitizedMonthFirst = extractFieldsFromHtml(sanitizedMonthFirstHtml, new Date('2026-10-14T01:00:00Z'))
+assertEqual(sanitizedMonthFirst.checkin, '2027-01-24', 'month-first cross-tag HTML checkin is parsed')
+assertEqual(sanitizedMonthFirst.checkout, '2027-01-28', 'month-first cross-tag HTML checkout is parsed')
+assertEqual(sanitizedMonthFirst.nights, 4, 'month-first HTML night count remains consistent')
+assertEqual(sanitizedMonthFirst.raw_checkin_text, 'Sun, Jan 24, 2027', 'month-first HTML retains normalized raw checkin text')
+assertEqual(sanitizedMonthFirst.raw_checkout_text, 'Thu, Jan 28, 2027', 'month-first HTML retains normalized raw checkout text')
+assertEqual(sanitizedMonthFirst.year_inferred, false, 'month-first explicit year remains authoritative')
+assertEqual(validateAirbnbStayDates(sanitizedMonthFirst.checkin, sanitizedMonthFirst.checkout, sanitizedMonthFirst.nights).reason, undefined, 'month-first HTML interval passes nights validation')
+
+const mixedOrderHtml = `
+<html><body><section>
+  <div>Check-in Sun, Jan 24, 2027</div>
+  <div>Checkout Thu, 28 Jan, 2027</div>
+  <p>4 nights room fee</p>
+</section></body></html>`
+const mixedOrderResult = extractFieldsFromHtml(mixedOrderHtml, new Date('2026-10-14T01:00:00Z'))
+assertEqual(mixedOrderResult.checkin, '2027-01-24', 'mixed-order parent selects the first date after the checkin label')
+assertEqual(mixedOrderResult.checkout, '2027-01-28', 'mixed-order parent selects the first date after the checkout label')
+assertEqual(validateAirbnbStayDates(mixedOrderResult.checkin, mixedOrderResult.checkout, mixedOrderResult.nights).reason, undefined, 'mixed English date orders retain a unique valid interval')
+
+const crossTagChineseHtml = `
+<html><body>
+  <div><span>入</span><span>住</span><strong>2027年</strong><strong>2月</strong><strong>11日</strong></div>
+  <div><span>退</span><span>房</span><strong>2027年</strong><strong>2月</strong><strong>14日</strong></div>
+  <p>3晚房费</p>
+</body></html>`
+const crossTagChinese = extractFieldsFromHtml(crossTagChineseHtml, new Date('2026-10-14T01:00:00Z'))
+assertEqual(crossTagChinese.checkin, '2027-02-11', 'cross-tag Chinese checkin remains supported')
+assertEqual(crossTagChinese.checkout, '2027-02-14', 'cross-tag Chinese checkout remains supported')
+assertEqual(crossTagChinese.nights, 3, 'cross-tag Chinese night count remains supported')
+assertEqual(crossTagChinese.year_inferred, false, 'cross-tag Chinese explicit year remains authoritative')
+
+const sanitizedPlainText = `
+Check-in Sun, Jan 24, 2027
+Checkout Thu, Jan 28, 2027
+4 nights room fee
+`
+const plainTextResult = extractFieldsFromHtml('', new Date('2026-10-14T01:00:00Z'), sanitizedPlainText)
+assertEqual(plainTextResult.checkin, '2027-01-24', 'plain-text month-first checkin is parsed')
+assertEqual(plainTextResult.checkout, '2027-01-28', 'plain-text month-first checkout is parsed')
+assertEqual(plainTextResult.nights, 4, 'plain-text month-first night count is parsed')
+assertEqual(validateAirbnbStayDates(plainTextResult.checkin, plainTextResult.checkout, plainTextResult.nights).reason, undefined, 'plain-text interval passes nights validation')
+
+const placeholderHtmlResult = extractFieldsFromHtml(
+  '<html><body><div>Email content is available in the text part.</div></body></html>',
+  new Date('2026-10-14T01:00:00Z'),
+  sanitizedPlainText,
+)
+assertEqual(placeholderHtmlResult.checkin, '2027-01-24', 'plain-text dates fill a non-date placeholder HTML body')
+assertEqual(placeholderHtmlResult.checkout, '2027-01-28', 'plain-text checkout fills a non-date placeholder HTML body')
+assertEqual(validateAirbnbStayDates(placeholderHtmlResult.checkin, placeholderHtmlResult.checkout, placeholderHtmlResult.nights).reason, undefined, 'placeholder HTML plus plain-text interval passes nights validation')
+
+const conflictingBodySources = extractFieldsFromHtml(
+  '<html><body><div>Check-in Mon, Jan 25, 2027</div></body></html>',
+  new Date('2026-10-14T01:00:00Z'),
+  'Check-in Sun, Jan 24, 2027\nCheckout Thu, Jan 28, 2027',
+)
+assertEqual(conflictingBodySources.checkin, undefined, 'conflicting HTML and plain-text checkin candidates fail closed')
+assertEqual(validateAirbnbStayDates(conflictingBodySources.checkin, conflictingBodySources.checkout, conflictingBodySources.nights).reason, 'CHECKIN_DATE_NOT_FOUND', 'cross-source conflict cannot silently synthesize a stay without nights')
+
+const inferredMonthFirstPlainText = `
+Check-in Sun, Jan 3
+Checkout Wed, Jan 6
+3 nights room fee
+`
+const inferredMonthFirst = extractFieldsFromHtml('', new Date('2026-12-20T01:00:00Z'), inferredMonthFirstPlainText)
+assertEqual(inferredMonthFirst.checkin, '2027-01-03', 'month-first plain-text checkin crosses into the next year')
+assertEqual(inferredMonthFirst.checkout, '2027-01-06', 'month-first plain-text checkout crosses into the next year')
+assertEqual(inferredMonthFirst.year_inferred, true, 'month-first missing year retains inference audit flag')
+
+const jobsSource = fs.readFileSync(path.resolve(__dirname, '../src/modules/jobs.ts'), 'utf8')
+const failuresGetStart = jobsSource.indexOf("router.get('/email-orders-raw/failures'")
+const failuresGetEnd = jobsSource.indexOf("router.post('/email-orders-raw/", failuresGetStart)
+assertEqual(failuresGetStart >= 0, true, 'failure-list GET route exists')
+assertEqual(failuresGetEnd > failuresGetStart, true, 'failure-list GET route boundary exists')
+const failuresGetRoute = jobsSource.slice(failuresGetStart, failuresGetEnd)
+assertEqual(/\b(?:INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE)\b/i.test(failuresGetRoute), false, 'failure-list GET route is a pure query without implicit writes')
 
 console.log('all tests passed')

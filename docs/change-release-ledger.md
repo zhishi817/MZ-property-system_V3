@@ -29513,3 +29513,124 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Rollback before user merge: close the unmerged Draft PR and delete the temporary branch; `Dev`, `main` and PR `#397` remain unchanged.
 - No production database/API, migration, deployment, preview, Mobile worktree, Mobile build/OTA or independent website candidate is touched.
 - Git state: synchronization evidence committed as `c188731f43030592a7b13d1c5a9a268d6401deb0`; main ancestry merged locally with exact second parent `origin/main@eeaf4bb5433ab4833f98e64de6aea8da9dcd92be`; not pushed; Draft PR not created; not merged into `Dev`; not deployed; production/device verification not run.
+## CRL-20261016-002 — Airbnb 英文日期顺序兼容与失败列表纯查询（root）
+
+- **Status:** exact refreshed-Dev staged candidate validated and independently reviewed GO for commit; not committed, pushed, merged, deployed, replayed, backfilled, or applied to production data
+- **Repository:** `root`
+- **Updated:** 2026-10-16 UTC
+- **Request:** 修复 Airbnb 新英文邮件模板把月份放在日期前时无法取得入住/退房的问题，保留原有英文 day-month、中文日期、显式年份、跨年推断与住晚一致性；增加脱敏 HTML/纯文本回归，并移除失败邮件列表 GET 的隐式数据库写入。
+- **Outcome:** parser candidate now accepts both English date orders, joins text-node boundaries for cross-tag dates, uses sanitized plain text as a date-only fallback when HTML is absent or has no usable date, and keeps the existing unique-pair/nights fail-closed validation. The failure-list GET now issues only its SELECT query; it no longer auto-resolves raw rows as a side effect of reading the list.
+
+### Implementation
+
+- Add a second explicit English grammar for `weekday month day[, year]` while retaining the existing `weekday day month[, year]` and Chinese date path through the same calendar validator and Melbourne year inference.
+- Normalize DOM text by joining text nodes with boundaries so inline tags cannot concatenate month/day tokens; permit boundary whitespace in Chinese date/label tokens; use escaped line-wrapped plain text as the body only when HTML is absent and otherwise include it as a supplemental date source without overriding structured HTML candidates.
+- Always include plain-text candidates of the same kind in dedupe/conflict detection even when HTML supplied that endpoint, preventing a missing-nights message from silently synthesizing check-in from HTML and checkout from a conflicting text part.
+- When both English orders occur in the same label window, select the earliest regex match in document order rather than preferring one grammar; duplicate dates still dedupe and conflicting pairs still fail closed.
+- Pass the parsed plain-text body at both mail parsing call sites without changing their write/dry-run decisions.
+- Remove the `UPDATE email_orders_raw ... FROM orders` statement from `GET /email-orders-raw/failures`; no replacement mutation, replay, repair, or reconciliation action is introduced. Existing unresolved rows can remain visible until an explicit workflow resolves them.
+- Extend sanitized offline regression coverage for month-first HTML, mixed English order in one container, cross-tag English/Chinese tokens, repeated date blocks, plain text with absent or placeholder HTML, cross-source conflict without nights, explicit year, missing-year cross-year inference, nights consistency, legacy day-first behavior, and a static no-write contract for the failure-list GET.
+- Promote the existing targeted date parser test into Root `check:fast`, `check:backend`, and therefore `check:full`.
+
+### Files / Areas
+
+- `backend/src/modules/jobs.ts`
+- `backend/scripts/test_email_year_rule.ts`
+- `package.json`
+- `docs/feature-regression-registry.md`
+- `docs/change-release-ledger.md`
+
+### Impact / Dependencies
+
+- Root backend email parser, raw-failure list route, offline tests, and release-governance documentation only.
+- Base: freshly fetched `origin/Dev@391bb17ba809a63d7e1b5768336242908f613292`; implementation is isolated on branch `codex/mz045-airbnb-date-parser-20261016` in worktree `mz-airbnb-date-fix`.
+- Related historical evidence: `root/CRL-20260820-001` (date-card fail-closed parsing), `root/CRL-20260930-001` (localized Chinese parsing), and `root/CRL-20260816-001` (year inference). This is a new independent identity and does not reuse the cancelled email-task identity.
+- No schema, dependency, migration, queue, external service, frontend, Mobile, or production-data change. No IMAP connection, message read-state change, production API action, replay, reparsing write, manual insert, repair, or historical backfill is included.
+
+### Validation
+
+- `npm run test:email-year-rule --prefix backend` — PASS, including legacy day-first cases plus sanitized month-first HTML, cross-tag nodes, repeated blocks, plain text, explicit/missing years, cross-year inference, nights consistency, stable missing-date errors, and the failure-list GET no-write source contract.
+- `npm run test:airbnb-localized-email --prefix backend` — PASS; Chinese subject/body/date behavior remains green.
+- `npm run build --prefix backend` — PASS. Tracked `backend/dist` files rewritten by the build were restored to the clean base and are excluded from the candidate; ignored build outputs and installed dependencies remain outside git status.
+- Root workflow contract — PASS (9/9); feature regression registry audit — PASS (32 FRs / 257 mappings); change release ledger audit — PASS (5 changed files / 5 recorded paths); `git diff --check` — PASS.
+- `env -u DATABASE_URL -u DATABASE_URL_PROD -u NEON_DATABASE_URL -u NEON_DATABASE_URL_PROD -u PGHOST -u PGPORT -u PGDATABASE -u PGUSER -u PGPASSWORD npm run check:backend` — PASS for the complete Root backend chain, including the final Phase 5 cross-repository contract. The first sandboxed attempt hit only the expected local-loopback `EPERM`; the controlled local-listener rerun passed.
+- Phase 5 used a temporary read-only archive of canonical Mobile `origin/Dev@93292c130ae94250e498ad672c8ad9dd188a5d9d`, freshly verified against remote `Dev`, at the exact sibling path expected by the static contract. The contract only read seven source files and performed assertions; it did not start a service or access environment/database/network at runtime. The temporary symlink and `/tmp` snapshot were removed afterwards, no Mobile file was modified, and build-rewritten tracked `backend/dist` files were restored to the clean base.
+- Independent read-only review — `GO for candidate handoff`, P0/P1/P2 = 0. The reviewer verified the final five-file unstaged scope, both parser call sites, dual English order, Chinese/cross-tag behavior, placeholder plain-text fallback, cross-source conflict fail-closed behavior, failure-list GET pure SELECT, test/ledger/registry/workflow results, and absence of sensitive or generated candidate content. The subsequent Phase 5/full-backend validation changed only this ledger receipt; the reviewed non-ledger candidate fingerprint remains `5ff1dc0ffd04f21447f8a1dc68e8bf2cd3ff9cfe41f97d9ced446bb16ff01d16`.
+- Two earlier review rounds found and closed: Chinese text-node boundary spacing plus English regex position ordering, then HTML/plain same-kind conflict detection without nights. The final review independently reproduced each closure.
+- Production verification is intentionally excluded; all fixtures are synthetic and sanitized.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared; exact five-file staged candidate from refreshed `origin/Dev`.
+- **Untracked review:** none; ignored `backend/node_modules` and build outputs are validation-only and not part of the candidate. No generated fixture, raw email, credential, environment file, or production record is included.
+- `backend/scripts/test_email_year_rule.ts` — SHA-256: `ee66fc3a82cc209fc885ea6238eebd044ee8eb8be1e5ae6e33529818fa37a14a`
+- `backend/scripts/test_email_year_rule.ts` — SHA-256: `fbaf53e0362d43d980cf804a2843a5f826702b9ffcad5713e2b4a82a1c0d7585`
+- `backend/src/modules/jobs.ts` — SHA-256: `0b5874de9972a3cf55561ffb614eb111deb1816a89817ee04a0f255094db5ee1`
+- `backend/src/modules/jobs.ts` — SHA-256: `103b9cc3125eea094fb29230bd0462a322bd8a9cbe57fbdbe6bcc04d7ebc9188`
+- `backend/src/modules/jobs.ts` — SHA-256: `1b9263099d208f747304061267f01e274795d76560c0abff455337f784d9dc90`
+- `backend/src/modules/jobs.ts` — SHA-256: `3adde271956b5e243f0cd37c80d9e36e83585545335163eda2a2312d7d575d90`
+- `backend/src/modules/jobs.ts` — SHA-256: `3dd71672c2ae925f8a346e69b844168501ac035a43b05003f4badabb7c45adf8`
+- `backend/src/modules/jobs.ts` — SHA-256: `3e22cc0f734d1cf61722ab1328fe0b31e88eb6226511e5303b8980a8f6a60053`
+- `backend/src/modules/jobs.ts` — SHA-256: `460e4bd05421bef7fa877e6eb8cb635dbae40349a2ecc8a8a1e492b4234cdcb3`
+- `backend/src/modules/jobs.ts` — SHA-256: `6a7a46bcf8da5dcf1d680bb14e730b1c5d46201e02315ae31e304f1e561a0301`
+- `backend/src/modules/jobs.ts` — SHA-256: `705d346b44cb716a8485a544cc1f7b6a22f909ce97b55833d49476321e157645`
+- `backend/src/modules/jobs.ts` — SHA-256: `94cdfa3953d61b7c471a30d64ae78a59fc17b02ab1242bc44385bf0d08ecaadc`
+- `backend/src/modules/jobs.ts` — SHA-256: `9a0667c5ada1cae6a5f1955aa2cdbe00a9493bf8adfea83879ad5b335c837e2f`
+- `backend/src/modules/jobs.ts` — SHA-256: `bf92bbcb068b29313ea42adfc872c208d4a45ed99e20dec93623794cb1c77270`
+- `backend/src/modules/jobs.ts` — SHA-256: `dfda7208b7ee569b244339d02df8a36deaa13790465b7f0dcf57925aadf5b3ff`
+- `backend/src/modules/jobs.ts` — SHA-256: `e20768bbc8ea121a96677780e95e830f12a4913346a8c1f04f4cf8b5367d34de`
+- `backend/src/modules/jobs.ts` — SHA-256: `e24c7f7c3c94c86463918dcbb616dbe5c60628c716c5a022f766158816767129`
+- `backend/src/modules/jobs.ts` — SHA-256: `e3492c498e4f9ddbe2affbe09215b4751daf568034f6e67b694fb49126b4c801`
+- `backend/src/modules/jobs.ts` — SHA-256: `fc971e85ac3f7b8483f43f68bbcedd2d4de51cab6e9aaea5093afcc85ccdf5b8`
+- `docs/feature-regression-registry.md` — SHA-256: `22d3f73cdb92a500f076fce6b1915b6c68f8327945ba338fc83b2de1df5e2f2e`
+- `docs/feature-regression-registry.md` — SHA-256: `fdefda16ffaf3ab0967514716885f0c0ea1c96ca860496936cf196246810d23e`
+- `package.json` — SHA-256: `73f96ebbe0cb510c8625884993270b3f9e12662f3d93c41a304bb2f4062d01ec`
+- `package.json` — SHA-256: `cd2eb64e4e2c8bc777b8778d2b342c53437d2455094fbc8d2b2e35a1ed2d5af8`
+
+### Release Attempts
+
+#### RA-20261016-004
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-002`
+- Selected CRL identities: `root/CRL-20261016-002`
+- Intended action: `commit`
+- Branch: `codex/mz045-airbnb-date-parser-20261016`
+- Base: `origin/Dev@391bb17ba809a63d7e1b5768336242908f613292`; fetched at `2026-10-16T12:23:10Z` and unchanged from candidate HEAD before branch creation.
+- Candidate patch SHA-256: `5ff1dc0ffd04f21447f8a1dc68e8bf2cd3ff9cfe41f97d9ced446bb16ff01d16` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `1928d7fc103a5bc1dcdb680cde58a0690397476c`.
+- Dependencies: none; canonical Mobile `origin/Dev@93292c130ae94250e498ad672c8ad9dd188a5d9d` was a read-only Phase 5 validation fixture and is not part of this release.
+- Required validation: `PASS`; evidence: complete `check:backend` passed with database connection variables removed, including targeted English/Chinese Airbnb regressions and Phase 5; ledger 5/5, Registry 32 FR / 257 mappings, workflow 9/9, typecheck and diff checks passed.
+- Shared-hunk review: `PASS`; evidence: the four non-ledger paths and this CRL's ledger hunks belong exclusively to `root/CRL-20261016-002`; no MZ-044 or other release unit is present.
+- Generated-file review: `PASS`; evidence: tracked build outputs were restored, ignored dependency/build paths are excluded, and ordinary untracked files are absent.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: after being asked for permission to submit, push and create a PR for MZ-045, the user replied `先提交推送创建PR`; merge remains user-only.
+- Independent review: `GO for commit`; evidence: an independent read-only staged review verified the exact RA/CRL/base/branch, five staged files, 23 matching hunk fingerprints, unchanged non-ledger candidate fingerprint, complete validation evidence, GET pure-query behavior, and absence of MZ-044, generated, sensitive, production-write, Mobile-content or unselected scope; P0/P1/P2 = 0. This GO does not authorize push, PR, merge, deployment, database/API, IMAP replay, backfill or OTA.
+- Action conclusion: `GO`; the exact reviewed five-file candidate was committed as `1928d7fc103a5bc1dcdb680cde58a0690397476c`. No push, PR, merge or deployment occurred in this attempt.
+
+#### RA-20261016-005
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-002`
+- Selected CRL identities: `root/CRL-20261016-002`
+- Intended action: `push`
+- Branch: `codex/mz045-airbnb-date-parser-20261016`
+- Base: `origin/Dev@391bb17ba809a63d7e1b5768336242908f613292`; fetched at `2026-10-16T12:34:32Z`; a final remote preflight remains required immediately before push.
+- Candidate patch SHA-256: `5ff1dc0ffd04f21447f8a1dc68e8bf2cd3ff9cfe41f97d9ced446bb16ff01d16` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `1928d7fc103a5bc1dcdb680cde58a0690397476c`.
+- Dependencies: `none`.
+- Required validation: `PASS for this ledger authorization-status receipt commit`; evidence: complete `check:backend`, targeted English/Chinese Airbnb regressions, ledger 5/5, Registry 32 FR / 257 mappings, workflow 9/9, typecheck and diff checks passed; the preliminary exact committed-range report for `391bb17ba809a63d7e1b5768336242908f613292...22df2d9d65298ca5061f4c6dc555b619c0131633` passed repository, ancestry, base-freshness, CRL identity, five-file/23-hunk coverage, fingerprint, generated-file and sensitive-information checks. A final clean exact-range report remains mandatory after this receipt is committed and before any separately authorized push.
+- Shared-hunk review: `PASS`; evidence: the committed content range contains only `root/CRL-20261016-002` paths and no MZ-044 or unselected unit.
+- Generated-file review: `PASS`; evidence: content commit contains no generated, ignored, dependency, cache or build-output path.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: the user's earlier `先提交推送创建PR` selected and authorized committing this Airbnb candidate, but repository policy requires a new explicit push approval after the exact final receipt HEAD exists. No `approved-for-push` evidence is claimed for the not-yet-created final head; merge remains user-only.
+- Independent review: `GO for this accurate ledger-only authorization-status receipt commit; NO-GO for push`; evidence: independent read-only push review verified the exact content range, five files / 23 hunks, fingerprint, branch/base, validations, absent remote branch, and no MZ-044, generated, sensitive or production-write scope; P0 = 0, P1 = 1, P2 = 0. The P1 is the missing explicit user approval of repository `root`, branch `codex/mz045-airbnb-date-parser-20261016`, and the exact final receipt HEAD after this commit.
+- Action conclusion: `NOT VERIFIED`; blockers: commit this accurate authorization-status receipt, obtain explicit user push approval for repository `root`, branch `codex/mz045-airbnb-date-parser-20261016`, and the resulting exact final HEAD, then rerun the clean exact-range report, independent push review if required by any changed identity, and immediate remote base/branch preflight. No push or PR action is authorized yet.
+
+### Risks / Release Notes
+
+- Month/day grammar remains anchored to an English weekday and a recognized month name, reducing accidental matches elsewhere in the email.
+- Plain text is HTML-escaped before Cheerio parsing when HTML is absent. When HTML exists, plain-text dates supplement but never overwrite structured candidates: duplicate dates dedupe, same-kind differences enter pair conflict detection, and conflicting date pairs remain fail-closed.
+- Removing GET-side reconciliation can leave rows visible that were previously hidden on read; this is the deliberate pure-query behavior, not an automatic data repair. Any future explicit reconciliation endpoint/job requires a separate business decision and authorization.
+- Rollback is code-only: restore the prior parser call/signature and GET implementation. No data rollback is required because this attempt performs no runtime or production action.
