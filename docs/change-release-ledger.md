@@ -29370,3 +29370,78 @@ Shared cross-thread record of repository changes and selectable release units. D
 
 - Real PostgreSQL execution remains mandatory before this candidate can be considered tested. The integration script requires explicit isolated-test environment flags and must never target production.
 - No option label is changed. No production data, credentials, URLs, environment files, generated artifacts, or dependency versions are included.
+## CRL-20261016-001 — MZ-035 Dev/main 祖先同步与发布回执回流
+
+- **Status:** verified; commit review GO, synchronization merge and push pending
+- **Repository:** `root`
+- **Updated:** 2026-10-16 07:09 UTC
+- **Request:** 解除 PR `#397`（`Dev` → `main`）因 head 分支受保护而无法直接执行 Update branch 的同步阻碍；从最新 `Dev` 建立临时分支，把最新 `main` 以普通 merge 纳入，保留两侧完整祖先与台账，只通过目标 `Dev` 的 Draft PR 交付，最终合并由用户手动执行。
+- **Outcome:** 候选先在 `origin/Dev@5f90637aae1a90b4602cc11566869d41b2e86054` 上固化同步证据，再以普通 merge 纳入 `origin/main@eeaf4bb5433ab4833f98e64de6aea8da9dcd92be`；main 的净内容仅为 `root/CRL-20261014-004` 中 23 行既有发布回执，候选不改变业务逻辑、工作流、分支保护、依赖或运行时。
+
+### Implementation
+
+- Previous behavior: `Dev` 与 `main` 从共同祖先 `9b3108be5fc5cf9d2d86545be4a6e1a91f35f325` 分叉；`Dev` 独有 3 个 MZ-035 提交，`main` 独有 12 个历史提升/合并提交。PR `#397` 的 head 为受保护的 `Dev`，因此 GitHub Update branch 不能直接改写该分支。
+- New behavior: 临时分支 `codex/mz035-sync-main-into-dev-20261016` 从最新 Dev 建立，先提交可审计的同步证据，再以非 squash、非 rebase 的普通 merge 纳入 main；最终候选保留 main 父提交与两侧历史，随后只通过 Draft PR 回到 `Dev`。
+- Key decisions: 不修改 PR `#397`、`Dev`、`main`、分支保护或业务源码；不执行生产 API、数据库、迁移、部署或 OTA；同步 PR 最终必须使用普通 merge，不能 squash/rebase，否则无法把 main 祖先关系带回 Dev。
+
+### Files / Areas
+
+- `docs/change-release-ledger.md` — 记录本次祖先同步候选；后续 merge 原样回流 main 上 `root/CRL-20261014-004` 的 23 行发布回执。
+- `docs/mz035-dev-main-sync-20261016.md` — 固化本次同步的精确 refs、完整祖先要求、验证命令和明确排除边界。
+
+### Impact / Dependencies
+
+- API / business logic / database / migration / config / dependencies: none.
+- Production data / external sync / notifications / deployment / OTA: none; all are explicitly excluded.
+- Dependencies: `origin/Dev@5f90637aae1a90b4602cc11566869d41b2e86054`, `origin/main@eeaf4bb5433ab4833f98e64de6aea8da9dcd92be`, existing `root/CRL-20261014-004`, and MZ-035 `root/CRL-20261014-005` already contained by Dev.
+- Target: Draft PR into `Dev`; PR `#397` remains open and unmodified. After CI and review, the user must ordinary-merge this synchronization PR before re-evaluating PR `#397`.
+
+### Validation
+
+- Fresh ref and ancestry check — passed: `Dev=5f90637`, `main=eeaf4bb`, merge base `9b3108b`, `git rev-list --left-right --count origin/Dev...origin/main` = `3 12`.
+- Net-content check — passed: `git diff origin/Dev...origin/main` changes only `docs/change-release-ledger.md` with 23 insertions.
+- Merge preflight — passed: an isolated `git merge --no-ff --no-commit origin/main` completed automatically with no conflicts; before this CRL was prepared, its staged non-ledger patch was empty.
+- `python3 -B scripts/audit_change_release_ledger.py` — passed: 2 changed files / 2 recorded paths; fresh `origin/Dev` lineage preserved.
+- `python3 -B scripts/audit_change_release_ledger.py --pre-commit --repo root --crl CRL-20261016-001` — passed: 2 staged files / 1 exact non-ledger hunk, no untracked, unselected, unexpected or missing path/hunk.
+- `npm run check:fast` Root portion — passed through workflow contract 9/9, ledger auditor 41/41, Preview guards, ledger/registry audits, backend TypeScript build and every Root backend contract through `test:personnel-claim-evidence-storage`; the final Phase 5 contract was not runnable locally because it requires a sibling `mz-cleaning-app-frontend` source tree and this task is explicitly forbidden from touching Mobile worktrees. Complete Fast Regression remains mandatory in GitHub CI, whose workflow supplies the cross-repository checkout.
+- `npm run test --prefix frontend -- --no-cache` — passed: 53 files / 270 tests; cache disabled to keep the dependency donor read-only.
+- Independent commit review — passed: `GO for commit`, P0/P1 = 0; one bookkeeping-only P2 required refreshing this RA with the completed gate/review evidence before commit. The reviewer independently rechecked the exact refs, staged diff, fingerprint, ledger gates, sensitive patterns, and a true-merge-base simulation with zero conflicts that retained both this CRL and main's `RA-20261014-013`.
+- Committed-range audit and GitHub CI — pending before the corresponding push/merge conclusions.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared; synchronization evidence only.
+- **Untracked review:** none; the candidate started in a clean worktree from freshly fetched `origin/Dev`.
+- `docs/mz035-dev-main-sync-20261016.md` — SHA-256: `1477026832d22134ff2200d68439f703102a9938ec52da308633fba54fdf0f6c`
+
+### Release Attempts
+
+#### RA-20261016-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-001`
+- Selected CRL identities: `root/CRL-20261016-001`
+- Intended action: `commit`
+- Branch: `codex/mz035-sync-main-into-dev-20261016`
+- Target: `Dev`
+- Base: `origin/Dev@5f90637aae1a90b4602cc11566869d41b2e86054`; fetched at `2026-10-16T07:04:58Z`.
+- Merge dependency: `origin/main@eeaf4bb5433ab4833f98e64de6aea8da9dcd92be`; merge base `9b3108be5fc5cf9d2d86545be4a6e1a91f35f325`.
+- Candidate patch SHA-256: `67fff56ae6f9967da3649ff38c4b1460acaa95fa6397880b5b2fefa77b4fafdd` excluding `docs/change-release-ledger.md`.
+- Commit SHA: not committed.
+- Dependencies: existing main receipt in `root/CRL-20261014-004`; no runtime or cross-repository dependency.
+- Required validation: `PASS` for the documentation-only commit; evidence: exact ledger coverage/pre-commit gates passed, workflow/auditor/Preview/registry/backend build and Root backend contracts passed through the cross-repository Phase 5 boundary, and Web tests passed 53 files / 270 tests. Local complete `check:fast` remains `NOT VERIFIED` only because its final contract requires the excluded Mobile source tree; GitHub Fast Regression is a mandatory PR merge gate.
+- Shared-hunk review: `PASS`; evidence: the evidence document is new and exclusively owned by this CRL; the planned automatic merge preserves the exact main-only receipt.
+- Generated-file review: `PASS`; evidence: no generated, untracked, ignored, binary, dependency or cache path is present.
+- Sensitive-information review: `PASS`; evidence: the candidate contains only release-governance text and no credential, token, environment value, private payload, database URL or production record.
+- Technical state: `verified`
+- User authorization: `selected-for-commit`; evidence: after the exact PR397 behind-state and protected-branch obstacle were explained, user replied `OK 允许` at `2026-10-16T07:03:21Z` to preparing and pushing this synchronization branch and creating a Draft PR; merge remains user-only.
+- Independent review: `GO for commit`; evidence: independent read-only review found P0/P1 = 0 and one bookkeeping-only P2, verified the exact base/main refs, 2-path staged scope, candidate fingerprint, ledger GO, no secret/generated/production-write expansion, and zero-conflict merge simulation. This GO does not authorize push, PR, merge, deployment, database/API, Mobile or OTA action.
+- Action conclusion: `GO` for the documentation-only content commit; blockers: none for commit. Push still requires an exact committed-range report and a separate push review/receipt; GitHub CI remains the Draft PR merge gate.
+
+### Risks / Release Notes
+
+- Ordinary merge is a functional requirement of this synchronization: squash or rebase of the Draft sync PR would lose the `main` parent ancestry and would not reliably clear PR `#397`'s behind state.
+- Rollback before user merge: close the unmerged Draft PR and delete the temporary branch; `Dev`, `main` and PR `#397` remain unchanged.
+- No production database/API, migration, deployment, preview, Mobile worktree, Mobile build/OTA or independent website candidate is touched.
+- Git state: synchronization-evidence candidate not committed; main merge pending; not pushed; Draft PR not created; not merged; not deployed; production/device verification not run.
