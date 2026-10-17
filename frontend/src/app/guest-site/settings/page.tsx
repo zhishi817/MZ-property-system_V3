@@ -5,6 +5,7 @@ import type { UploadFile } from 'antd/es/upload/interface'
 import { useEffect, useState } from 'react'
 import { API_BASE, authHeaders, getJSON, putJSON } from '../../../lib/api'
 import type { GuestSiteConfig } from '../../../lib/guestSite'
+import StayPolicyManager from './StayPolicyManager'
 
 export default function Page() {
   const [form] = Form.useForm<GuestSiteConfig>()
@@ -62,6 +63,7 @@ export default function Page() {
   }))
 
   return (
+    <>
     <Card
       title="预定网站设置"
       extra={
@@ -227,5 +229,7 @@ export default function Page() {
         </Card>
       </Form>
     </Card>
+    <StayPolicyManager />
+    </>
   )
 }

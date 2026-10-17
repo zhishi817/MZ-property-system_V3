@@ -1,16 +1,14 @@
-import BookingLayout from './BookingLayout'
-import HomeClient from './HomeClient'
-import { loadGuestSiteConfig, loadGuestSiteProperties } from '../lib/serverApi'
+import HomePage from './home/HomePage'
+import { homepageManagedCountSourceEnabled, homepageSearchFromQuery, mzYearsInBusiness, sanitizeHomepageBusinessStats } from '../lib/homepage'
+import { loadHomepageContent, loadHomepagePropertyFeed } from '../lib/homepageServer'
+import { loadGuestSiteStats } from '../lib/serverApi'
 
-export default async function Page() {
-  const [initialConfig, initialProperties] = await Promise.all([
-    loadGuestSiteConfig('en').catch(() => null),
-    loadGuestSiteProperties('en', true).catch(() => []),
+export default async function Page({ searchParams }: { searchParams?: Record<string, string | string[] | undefined> }) {
+  const useManagedCountSource = homepageManagedCountSourceEnabled()
+  const [initialContent, initialFeed, rawStats] = await Promise.all([
+    loadHomepageContent(),
+    loadHomepagePropertyFeed(),
+    useManagedCountSource ? loadGuestSiteStats().catch(() => null) : Promise.resolve(null),
   ])
-
-  return (
-    <BookingLayout>
-      <HomeClient initialConfig={initialConfig} initialProperties={initialProperties} />
-    </BookingLayout>
-  )
+  return <HomePage initialContent={initialContent} initialFeed={initialFeed} initialSearch={homepageSearchFromQuery(searchParams)} initialYearsInBusiness={mzYearsInBusiness()} initialBusinessStats={sanitizeHomepageBusinessStats(rawStats)} />
 }

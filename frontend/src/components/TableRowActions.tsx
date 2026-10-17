@@ -11,6 +11,7 @@ export type TableRowAction = {
   disabled?: boolean
   hidden?: boolean
   loading?: boolean
+  dataAttributes?: Record<string, string | number | boolean>
 }
 
 type TableRowActionsProps = {
@@ -31,6 +32,7 @@ export default function TableRowActions({ actions }: TableRowActionsProps) {
           disabled={action.disabled}
           loading={action.loading}
           onClick={action.onClick}
+          {...(action.dataAttributes || {})}
         >
           {action.label}
         </Button>

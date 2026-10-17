@@ -7,6 +7,57 @@
 - 测试映射必须说明保护点和测试场景；只登记测试文件名不算覆盖证据。
 - `sufficient` 表示当前测试覆盖该保护点；`partial` 表示已有测试但仍有缺口；`not-wired` 表示测试存在但尚未进入对应质量检查；`missing` 表示尚无测试。
 
+## FR-038：MZ 直订官网展示候选与诚实搜索边界
+
+- **维护责任范围：** booking frontend / backend guest site / web admin / local preview tooling
+- **最后审查日期：** 2026-10-14
+- **状态：** active
+
+### 业务保护规则
+
+- 首页、Our Story、Contact、公开房源列表和公开详情必须共享同一品牌导航与公开字段白名单；草稿、归档、内部 code、真实地址、内部备注、渠道名称及精确坐标不得进入匿名页面。
+- 首页搜索仅验证并传递 `area/checkin/checkout/guests` 到真实 `/properties` 列表。列表可按公开区域和人数筛选并保留 URL/Back/Forward 状态，但日期只作为计划条件传到详情，不得声称已经查询 Hostex 实时空房、锁房或价格。
+- 首页搜索 CTA 和结果页必须明确区分“浏览匹配房源”与“检查实时可订性”；在 Hostex 未接入时不得显示伪价格、伪库存或可订承诺。
+- 房源详情只允许公开 GET；日期冲突结果仍需人工确认。页面不得创建询单、订单、付款或确认记录；评价、价格和政策缺失时必须显示诚实空状态。
+- 首页留言和 `/contact` 物业管理咨询必须复用 `POST /public/guest-site/contact-messages`、稳定 submission ID、十分钟去重、数据库失败关闭及后台 `guest_site_inquiries` 权限；只有返回持久化记录 ID 才显示成功。mock 不能冒充真实 DEV 持久化。
+- 本地 guest-site 预览只允许登记且与生产指纹不同的 `MZ-Dev-Preview`，只绑定 loopback、只读 startup warmup、关闭同步/通知/邮件/结算/PDF worker，并在五分钟没有真实浏览器活动后停止。任何身份不明、缺少生产对照或 schema 未就绪状态必须 fail closed。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 首页搜索进入真实列表并保留四项参数，不再进入详情占位 | `booking-frontend/tests/homepage-contracts.test.cjs` | 源码契约覆盖真实列表路径、四项参数和诚实 CTA/说明 | sufficient | `npm run test:homepage --prefix booking-frontend` |
+| 首页搜索在 390px 浏览器中的落地、刷新与返回恢复 | `booking-frontend/tests/homepage-browser-qa.cjs` | 校验错误、Docklands/日期/3 人参数、列表落地、刷新和返回恢复 | partial | `npm run test:browser:homepage --prefix booking-frontend`; Mac Chrome 当前运行验收另记 CRL |
+| 列表公开白名单和组合筛选纯函数 | `booking-frontend/tests/property-listing.test.mjs` | 区域/人数组合、空态和公开字段归一化 | sufficient | `npm run test:properties --prefix booking-frontend` |
+| 列表零 availability/业务写入与 URL 契约 | `booking-frontend/tests/properties-listing-contracts.test.cjs` | 源码保护公开 GET、查询串与无业务写入 | sufficient | `npm run test:properties --prefix booking-frontend` |
+| 列表 desktop/mobile、重置、Retry、Back/Forward 和详情往返 | `booking-frontend/tests/properties-listing-browser-qa.cjs` | fixture 浏览器覆盖筛选状态、错误恢复和详情返回 | sufficient | `npm run test:browser:properties --prefix booking-frontend` |
+| 详情公开 GET、相册/地图/日期/规则交互及无订单/付款路径 | `booking-frontend/tests/property-detail-contracts.test.cjs` | 源码契约保护公开读接口、无写入和地图 suburb-centre reference | sufficient | `npm run test:property-detail --prefix booking-frontend` |
+| 详情五宽浏览器流程 | `booking-frontend/tests/property-detail-browser-qa.cjs` | fixture/只读 DEV 浏览器覆盖相册、地图、日期与错误恢复 | partial | `npm run test:browser:property-detail --prefix booking-frontend`; Mac Chrome 当前运行验收另记 CRL |
+| Contact 持久化、去重、失败关闭和后台权限 | `backend/scripts/tests/test_guest_site_contact_messages.ts` | adapter 契约覆盖稳定 submission ID、去重、数据库失败与权限 | sufficient | `npm run test:guest-site-contact-messages --prefix backend` |
+| Contact 七字段表单防重、重试与输入保留 | `booking-frontend/tests/contact-design-browser-qa.cjs` | 五宽 mock 覆盖校验、防重、失败保留与重试；真实 DEV + 登录后台 E2E 仍需单独证据 | partial | `npm run test:browser:contact-design --prefix booking-frontend` |
+| guest-site 服务 fail-closed、loopback 与活动会话停止 | `scripts/tests/test_dev_guest_site_services.mjs` | 预览身份检查、活动 token/origin、端口归属、停止与连接释放 | sufficient | `npm run test:dev-guest-site-services` |
+| 登记 DEV 身份、worker 关闭和生产指纹隔离 | `scripts/tests/test_dev_preview_guard.mjs` | 预览环境净化、生产对照与危险 worker 门禁 | sufficient | `npm run test:dev-preview-guard` |
+
+### 验证策略
+
+- 先在最新 `origin/Dev` 的独立候选中完成源码/契约/typecheck/build，再运行不接数据库的 fixture 浏览器矩阵。
+- 只有候选自身的 DEV 身份守卫和只读连接验证通过后，才允许启动 3004/3006/4012；不得执行 migration、同步、回放、重算或生产写入。
+- 当前运行截图必须来自用户 Mac 指定浏览器并逐张检查；物理 iPhone/Safari、Hostex、支付、部署和旧 Wix 切换不属于本规则的完成证据。
+
+### 最后验证
+
+- **CRL：** root/CRL-20261014-006
+- **Commit：** not committed
+- **日期：** 2026-10-14
+
+### 相关 CRL
+
+- root/CRL-20261014-006：从冻结共享工作树精确恢复展示官网到最新 Dev 基线，并修正首页搜索漏斗。
+
+### 非保护范围
+
+- Hostex 实时空房/价格/评价、下单、支付、确认、法务正文、生产 migration、部署/DNS/Wix 切换及真实设备验证。
+
 ## FR-037：开发 Preview 五分钟无真实活动自动停止
 
 - **维护责任范围：** backend / web / local tooling

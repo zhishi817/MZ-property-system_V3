@@ -239,9 +239,11 @@ export async function warmupInvoicesModule() {
   await ensureInvoiceTables()
 }
 
-void ensureInvoiceTables().catch((e: any) => {
-  try { console.error(`[invoices][schema] warmup_failed message=${String(e?.message || '')}`) } catch {}
-})
+if (process.env.MZ_DEV_PREVIEW_DISABLE_RUNTIME_DDL !== '1') {
+  void ensureInvoiceTables().catch((e: any) => {
+    try { console.error(`[invoices][schema] warmup_failed message=${String(e?.message || '')}`) } catch {}
+  })
+}
  
 function nowIso() {
   return new Date().toISOString()
