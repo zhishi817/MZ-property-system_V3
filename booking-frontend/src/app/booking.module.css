@@ -1,5 +1,6 @@
 .page {
   min-height: 100vh;
+  padding-top: 80px;
   background: #f7f3ee;
   color: #171411;
 }
@@ -10,90 +11,6 @@
   padding: 0 20px;
 }
 
-.header {
-  position: sticky;
-  top: 0;
-  z-index: 30;
-  background: rgba(252, 249, 243, 0.95);
-  border-bottom: 1px solid rgba(23, 20, 17, 0.08);
-  backdrop-filter: blur(14px);
-}
-
-.headerInner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  min-height: 78px;
-}
-
-.brand {
-  display: inline-flex;
-  align-items: center;
-  text-decoration: none;
-  color: inherit;
-}
-
-.logoImage {
-  height: 42px;
-  width: auto;
-  object-fit: contain;
-}
-
-.nav {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.navLink {
-  color: #171411;
-  text-decoration: none;
-  font-weight: 700;
-  padding: 10px 14px;
-  border-radius: 999px;
-}
-
-.navIcon {
-  width: 48px;
-  height: 48px;
-  border-radius: 999px;
-  border: 0;
-  background: #f0ede8;
-  color: #171411;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  padding: 0;
-}
-
-.navIconGlyph {
-  width: 20px;
-  display: inline-grid;
-  gap: 4px;
-}
-
-.navIconGlyph span {
-  display: block;
-  width: 20px;
-  height: 2.5px;
-  border-radius: 999px;
-  background: #171411;
-}
-
-.overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  background: rgba(16, 12, 10, 0.58);
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding: 90px 20px 20px;
-}
-
 .modalCard {
   width: min(100%, 780px);
   min-height: 360px;
@@ -102,49 +19,6 @@
   padding: 30px 30px 24px;
   position: relative;
   box-shadow: 0 30px 80px rgba(0, 0, 0, 0.18);
-}
-
-.menuPanel {
-  width: min(100%, 260px);
-  background: #fffdf8;
-  border-radius: 18px;
-  overflow: hidden;
-  border: 1px solid rgba(23, 20, 17, 0.08);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.14);
-  margin-left: auto;
-}
-
-.menuItem {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  justify-content: space-between;
-  padding: 15px 18px;
-  font-size: 16px;
-  line-height: 1.2;
-  color: #171411;
-  text-decoration: none;
-  border: 0;
-  border-bottom: 1px solid rgba(23, 20, 17, 0.08);
-  background: #fffdf8;
-  font-weight: 600;
-  cursor: pointer;
-  text-align: left;
-}
-
-.menuItem:first-child {
-  border-top-left-radius: 18px;
-  border-top-right-radius: 18px;
-}
-
-.menuItem:last-child {
-  border-bottom: 0;
-  border-bottom-left-radius: 18px;
-  border-bottom-right-radius: 18px;
-}
-
-.menuItem:hover {
-  background: #f6f0e8;
 }
 
 .overlayClose {
@@ -1584,20 +1458,19 @@
   }
 }
 
+@media (max-width: 1100px) {
+  .page {
+    padding-top: 72px;
+  }
+}
+
+@media (max-width: 820px) {
+  .page {
+    padding-top: 68px;
+  }
+}
+
 @media (max-width: 720px) {
-  .headerInner {
-    padding: 10px 0;
-    min-height: 72px;
-  }
-
-  .nav {
-    gap: 8px;
-  }
-
-  .navLink {
-    display: none;
-  }
-
   .modalCard {
     padding: 26px 20px 22px;
     min-height: auto;
@@ -1605,10 +1478,6 @@
 
   .languageGrid {
     grid-template-columns: 1fr;
-  }
-
-  .menuPanel {
-    width: 100%;
   }
 
   .heroInner,

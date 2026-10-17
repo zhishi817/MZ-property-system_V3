@@ -26,11 +26,10 @@ export function resolveAssetUrl(value: string) {
   if (!raw) return ''
   if (/^(https?:)?\/\//i.test(raw) || raw.startsWith('data:') || raw.startsWith('blob:')) return raw
   if (raw.startsWith('/')) {
+    if (raw.startsWith('/homepage/')) return raw
     const origin = apiOrigin()
     if (origin) return `${origin}${raw}`
-    if (typeof window !== 'undefined' && /^(localhost|127\.0\.0\.1)$/i.test(window.location.hostname)) {
-      return `http://localhost:4002${raw}`
-    }
+    if (API_BASE.startsWith('/') && API_BASE !== '/') return `${API_BASE}${raw}`
     return raw
   }
   return raw

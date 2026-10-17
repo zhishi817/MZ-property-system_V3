@@ -277,9 +277,11 @@ function ensureWarehouseKeyTablesOnce() {
   return warehouseKeyTablesInitPromise
 }
 
-void ensureWarehouseKeyTablesOnce().catch((e) => {
-  console.warn('[warehouse-key] table initialization failed:', e?.message || e)
-})
+if (process.env.MZ_DEV_PREVIEW_DISABLE_RUNTIME_DDL !== '1') {
+  void ensureWarehouseKeyTablesOnce().catch((e) => {
+    console.warn('[warehouse-key] table initialization failed:', e?.message || e)
+  })
+}
 
 function normalizeWarehouseKeyCode(raw: any) {
   const value = String(raw || '').trim().toLowerCase()

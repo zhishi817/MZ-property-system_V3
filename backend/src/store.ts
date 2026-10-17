@@ -519,6 +519,7 @@ if (db.roles.length === 0) {
     { code: 'guest_site_properties.write' },
     { code: 'guest_site_inquiries.view' },
     { code: 'guest_site_inquiries.write' },
+    { code: 'guest_site_policies.publish' },
     { code: 'cleaning_app.tasks.view.self' },
     { code: 'cleaning_app.tasks.start' },
     { code: 'cleaning_app.tasks.finish' },

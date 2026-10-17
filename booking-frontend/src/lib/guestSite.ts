@@ -19,14 +19,34 @@ export type GuestSiteConfig = {
   faq_items: GuestSiteFaqItem[]
 }
 
+export type GuestSitePublicAmenity = {
+  key: string
+  category: string
+  label: string
+  icon: string
+}
+
+export type GuestSiteStayService = {
+  key: 'early_checkin' | 'late_checkout' | 'baggage_dropoff'
+  enabled: boolean
+  title: string
+  headline: string
+  description: string
+  fee_amount: number | null
+  fee_currency: string
+  until_time: string
+  requires_advance_request: boolean
+  manual_confirmation: boolean
+  guaranteed: boolean
+  grants_room_access: boolean
+  payment_timing: string
+}
+
 export type GuestSiteProperty = {
   id: string
-  code: string
-  address: string
   type: string
   capacity: number
   public_capacity_override?: number | null
-  region: string
   public_region_label: string
   hero_title: string
   short_description: string
@@ -35,6 +55,7 @@ export type GuestSiteProperty = {
   gallery_urls: string[]
   feature_tags: string[]
   amenities: string[]
+  amenity_items?: GuestSitePublicAmenity[]
   house_rules: string[]
   sort_order: number
   is_published: boolean
@@ -43,15 +64,10 @@ export type GuestSiteProperty = {
   bed_count?: number
   checkin_time?: string
   checkout_time?: string
-  location_note?: string
+  cancellation_policy?: string
+  stay_services?: GuestSiteStayService[]
   price_label?: string
   booking_highlights?: string[]
-  building_name?: string
-  building_facilities?: string[]
-  bed_config?: string
-  notes?: string
-  airbnb_listing_name?: string
-  booking_listing_name?: string
 }
 
 export type GuestSiteAvailability = {

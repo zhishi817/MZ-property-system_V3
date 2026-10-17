@@ -1,23 +1,23 @@
 import { Suspense } from 'react'
-import BookingLayout from '../../BookingLayout'
 import PropertyDetailClient from './PropertyDetailClient'
-import { loadGuestSiteProperty } from '../../../lib/serverApi'
+import { loadGuestSiteConfig, loadGuestSiteProperty } from '../../../lib/serverApi'
+import { SiteCopyProvider } from '../../siteContext'
 
 export default async function Page({
   params,
-  searchParams,
 }: {
   params: { id: string }
-  searchParams?: Record<string, string | string[] | undefined>
 }) {
-  const preview = String(searchParams?.preview || '') === '1'
-  const initialProperty = await loadGuestSiteProperty(params.id, 'en', preview).catch(() => null)
+  const [initialProperty, initialConfig] = await Promise.all([
+    loadGuestSiteProperty(params.id, 'en').catch(() => null),
+    loadGuestSiteConfig('en').catch(() => null),
+  ])
 
   return (
-    <BookingLayout>
+    <SiteCopyProvider>
       <Suspense fallback={null}>
-        <PropertyDetailClient propertyId={params.id} initialProperty={initialProperty} />
+        <PropertyDetailClient propertyId={params.id} initialProperty={initialProperty} initialConfig={initialConfig} />
       </Suspense>
-    </BookingLayout>
+    </SiteCopyProvider>
   )
 }

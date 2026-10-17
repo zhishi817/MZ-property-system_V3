@@ -29634,3 +29634,624 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Plain text is HTML-escaped before Cheerio parsing when HTML is absent. When HTML exists, plain-text dates supplement but never overwrite structured candidates: duplicate dates dedupe, same-kind differences enter pair conflict detection, and conflicting date pairs remain fail-closed.
 - Removing GET-side reconciliation can leave rows visible that were previously hidden on read; this is the deliberate pure-query behavior, not an automatic data repair. Any future explicit reconciliation endpoint/job requires a separate business decision and authorization.
 - Rollback is code-only: restore the prior parser call/signature and GET implementation. No data rollback is required because this attempt performs no runtime or production action.
+## CRL-20261014-006 — MZ 直订官网展示候选恢复与搜索漏斗收尾
+
+- **Status:** in-progress
+- **Repository:** `root`
+- **Updated:** 2026-10-17 UTC
+- **Request:** 从官网冻结共享工作树中精确整理首页、Our Story、公开房源列表/详情、Contact、必要 guest-site 后端和管理 CMS 到最新 `origin/Dev` 的独立本地候选；修正首页搜索进入真实 `/properties`，验证桌面/手机流程与表单边界。禁止 Hostex、下单支付、生产写入、migration、部署、旧 Wix 切换、commit 或 push。
+- **Outcome:** 已在 `origin/Dev@8e7a63e8e05f7366f93a96da36c3eaa50e3d8592` 的独立 release worktree 整理官网范围；首页搜索携带区域、日期和人数进入真实房源列表，CTA 不声称实时查房。源码、类型、构建、后端契约、预览安全守卫和 Mac Chrome 响应式流程已通过；联系表单会在 migration marker 缺失时 fail closed，并增加十分钟限流；locale 缓存缺失保留只读翻译能力。图片/字体改为受审计的 textual data wrappers，合计由约 10.9 MB 降至约 2.47 MB，源照片元数据被移除并补入 OFL 许可证。后台正常认证会话仍待用户登录；未执行 migration、生产/DEV 数据写入或真实表单提交。
+
+### Implementation
+
+- Previous behavior: 新版官网只存在于落后 Dev 且混有其他任务的共享脏工作树；首页合法搜索进入 `/property-details` 占位页，按钮文案为 “Check availability”，与未接 Hostex 的实际能力不一致。
+- New behavior: 独立候选基于 freshly fetched Dev，官网/API/CMS/预览范围由验证过的三方补丁和独占文件恢复。首页合法搜索进入 `/properties?area&checkin&checkout&guests`，列表复用既有公开 feed 和 URL 状态；页面继续明确 live Hostex availability/pricing 未连接。
+- Key decisions: 不整文件覆盖最新 Dev 的共享 registry/layout/package；只保留 guest-site 独占改动和经人工合并的必要共享 hunk。原共享工作树只读保留。真实 DEV 仅在候选的 fail-closed 身份守卫通过后使用；不执行任何 migration、同步、回放或生产动作。
+- Controlled ID migration: 官网候选最初在本地误记为 `root/CRL-20261014-005`；活动任务索引和全本机 worktree ledger 扫描确认该身份已属于 MZ-035，MZ-035 CI worktree 跟踪远端候选 `6ea64a28dce94ad44fbb295a6a9c5590e50d0d47`。最新 `origin/Dev@9b3108be5fc5cf9d2d86545be4a6e1a91f35f325` 尚只含当日 Root 004，但未合并的活动候选同样占用身份；全扫描未发现 Root 006，因此本官网单元在任何 stage、commit、push、PR、merge 或 deployment 前受控迁移为 `root/CRL-20261014-006`。MZ-035 ledger 未修改。
+- Preview repair: 首次真实启动发现 `backend/.env.local` 会覆盖受管 preview 的 `PORT_OVERRIDE=4012` 并回退到 4002；`backend/src/index.ts` 现仅在 `MZ_DEV_PREVIEW=1` 时保留启动器已经审计的安全环境，普通运行仍维持既有 dotenv 覆盖语义。对应生命周期契约和 backend typecheck 已通过，第二次启动在 3004/3006/4012/4013 全部就绪。
+- Responsive closeout: Our Story 标题的换行节点补入可读空格，浏览器断言同步为 “Built one property at a time.”；导航夹具从已移除的 `/#contact` 更新为现行 `/contact`。详情 768px 初始失败经盒模型复现确认是预期 hover 缩放后的图片几何框，按钮本体严格位于网格且 `overflow:hidden`，并非视觉越界；夹具改为验证按钮边界和裁切保护，不削弱既有 hover 效果。
+
+### Files / Areas
+
+- `booking-frontend/` — 官网首页、共享导航、Our Story、Contact、公开房源列表/详情、只读适配、资产和针对性测试；不含缓存、构建产物或旧截图证据。
+- `backend/src/modules/guest_site.ts`, `backend/src/lib/guestSitePropertyDisplay.ts`, `backend/src/lib/guestSiteSchema.ts`, `backend/src/lib/guestSiteStayPolicy.ts`, `backend/src/lib/guestSiteStayPolicyStore.ts` — guest-site 公开/CMS DTO、留言、展示字段、readiness 和入住规则。
+- `backend/src/index.ts`, `backend/src/permissionsCatalog.ts`, `backend/src/store.ts`, `backend/package.json` — 只读 guest-site warmup、发布权限元数据和针对性测试命令的共享 hunk。
+- `backend/scripts/migrations/20261001_guest_site_contact_messages.sql`, `backend/scripts/migrations/20261001_guest_site_public_content_schema.sql`, `backend/scripts/migrations/20261002_guest_site_amenity_selections.sql`, `backend/scripts/migrations/20261002_guest_site_amenity_templates.sql`, `backend/scripts/migrations/20261003_guest_site_stay_policies.sql` — 历史 DEV schema 文件，仅作为候选部署依赖；本任务不执行。
+- `backend/scripts/tests/test_guest_site_contact_messages.ts`, `backend/scripts/tests/test_guest_site_property_merchandising.ts`, `backend/scripts/tests/test_guest_site_stay_policies.ts` — guest-site adapter、权限、白名单和事务契约。
+- `frontend/src/app/guest-site/`, `frontend/src/components/GuestSitePolicyContentEditor.tsx`, `frontend/src/components/GuestSitePolicyPreviewDrawer.tsx`, `frontend/src/components/PreviewActivity.tsx`, `frontend/src/lib/guestSite.ts`, `frontend/src/lib/guestSitePropertyEditor.ts`, `frontend/src/lib/guestSitePropertyEditor.test.ts`, `frontend/src/lib/guestSitePropertyPreview.ts`, `frontend/src/lib/guestSiteStayPolicy.ts` — 后台留言、房源展示、规则 CMS、共享预览与类型。
+- `frontend/src/app/layout.tsx`, `frontend/src/components/TableRowActions.tsx`, `frontend/src/lib/adminNavigation.ts`, `frontend/package.json`, `frontend/scripts/guest-site-properties-browser-qa.cjs`, `frontend/scripts/guest-site-stay-policy-browser-qa.cjs` — 管理端入口、共享动作和 fixture 浏览器测试的精确共享 hunk。
+- `scripts/dev-guest-site-services.mjs`, `scripts/tests/test_dev_guest_site_services.mjs`, `scripts/dev-booking-frontend.mjs`, `scripts/dev-preview-db.mjs`, `package.json`, `Start MZ Preview.command`, `Stop MZ Preview.command`, `MZ Preview Status.command`, `docs/dev-guest-site-preview.md` — loopback、已登记 DEV、worker-off、五分钟空闲停止的受控预览入口。
+- `docs/feature-regression-registry.md` — FR-038 搜索、公开数据、表单和预览安全边界。
+- `docs/change-release-ledger.md` — 本记录。
+
+- `backend/package.json`
+- `backend/scripts/migrations/20261001_guest_site_contact_messages.sql`
+- `backend/scripts/migrations/20261001_guest_site_public_content_schema.sql`
+- `backend/scripts/migrations/20261002_guest_site_amenity_selections.sql`
+- `backend/scripts/migrations/20261002_guest_site_amenity_templates.sql`
+- `backend/scripts/migrations/20261003_guest_site_stay_policies.sql`
+- `backend/scripts/tests/test_guest_site_contact_messages.ts`
+- `backend/scripts/tests/test_guest_site_property_merchandising.ts`
+- `backend/scripts/tests/test_guest_site_stay_policies.ts`
+- `backend/src/index.ts`
+- `backend/src/lib/guestSitePropertyDisplay.ts`
+- `backend/src/lib/guestSiteSchema.ts`
+- `backend/src/lib/guestSiteStayPolicy.ts`
+- `backend/src/lib/guestSiteStayPolicyStore.ts`
+- `backend/src/modules/cleaning_app.ts`
+- `backend/src/modules/guest_site.ts`
+- `backend/src/modules/invoices.ts`
+- `backend/src/permissionsCatalog.ts`
+- `backend/src/store.ts`
+- `booking-frontend/.eslintrc.json`
+- `booking-frontend/.gitignore`
+- `booking-frontend/next.config.js`
+- `booking-frontend/package.json`
+- `booking-frontend/public/homepage/OFL.txt`
+- `booking-frontend/public/homepage/contact.svg`
+- `booking-frontend/public/homepage/icon-arrow-left.svg`
+- `booking-frontend/public/homepage/icon-arrow-right.svg`
+- `booking-frontend/public/homepage/icon-chat.svg`
+- `booking-frontend/public/homepage/icon-close.svg`
+- `booking-frontend/public/homepage/icon-home.svg`
+- `booking-frontend/public/homepage/icon-menu.svg`
+- `booking-frontend/public/homepage/icon-pause.svg`
+- `booking-frontend/public/homepage/icon-play.svg`
+- `booking-frontend/public/homepage/icon-sparkles.svg`
+- `booking-frontend/public/homepage/icon-star.svg`
+- `booking-frontend/public/homepage/icon-support.svg`
+- `booking-frontend/public/homepage/icon-users.svg`
+- `booking-frontend/public/homepage/mz-mark-v2.svg`
+- `booking-frontend/public/homepage/property-docklands.svg`
+- `booking-frontend/public/homepage/property-melbourne-web.svg`
+- `booking-frontend/public/homepage/property-st-kilda.svg`
+- `booking-frontend/public/homepage/qualities.svg`
+- `booking-frontend/public/homepage/story.svg`
+- `booking-frontend/public/homepage/testimonial.svg`
+- `booking-frontend/public/our-story/attention-to-detail.svg`
+- `booking-frontend/public/our-story/beginning-apartment.svg`
+- `booking-frontend/public/our-story/care-preparation.svg`
+- `booking-frontend/public/our-story/growth-balcony.svg`
+- `booking-frontend/src/app/BookingLayout.tsx`
+- `booking-frontend/src/app/HomeClient.tsx`
+- `booking-frontend/src/app/PreviewActivity.tsx`
+- `booking-frontend/src/app/api/homepage/properties/route.ts`
+- `booking-frontend/src/app/api/properties/route.ts`
+- `booking-frontend/src/app/booking.module.css`
+- `booking-frontend/src/app/contact/ContactPage.tsx`
+- `booking-frontend/src/app/contact/contact.module.css`
+- `booking-frontend/src/app/contact/page.tsx`
+- `booking-frontend/src/app/home/AvailabilitySearch.tsx`
+- `booking-frontend/src/app/home/ChatDemo.tsx`
+- `booking-frontend/src/app/home/ContactForm.tsx`
+- `booking-frontend/src/app/home/EnglishDatePicker.tsx`
+- `booking-frontend/src/app/home/EnglishSelect.tsx`
+- `booking-frontend/src/app/home/HomeHeader.module.css`
+- `booking-frontend/src/app/home/HomeHeader.tsx`
+- `booking-frontend/src/app/home/HomePage.tsx`
+- `booking-frontend/src/app/home/PropertyShowcase.tsx`
+- `booking-frontend/src/app/home/SiteFooter.tsx`
+- `booking-frontend/src/app/home/TestimonialCarousel.tsx`
+- `booking-frontend/src/app/home/home.module.css`
+- `booking-frontend/src/app/home/siteNavigation.ts`
+- `booking-frontend/src/app/layout.tsx`
+- `booking-frontend/src/app/mz-fonts.css`
+- `booking-frontend/src/app/our-story/OurStoryPage.tsx`
+- `booking-frontend/src/app/our-story/ourStory.module.css`
+- `booking-frontend/src/app/our-story/page.tsx`
+- `booking-frontend/src/app/page.tsx`
+- `booking-frontend/src/app/properties/PropertiesClient.tsx`
+- `booking-frontend/src/app/properties/PropertyDateField.tsx`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx`
+- `booking-frontend/src/app/properties/[id]/page.tsx`
+- `booking-frontend/src/app/properties/[id]/propertyDetail.module.css`
+- `booking-frontend/src/app/properties/loading.tsx`
+- `booking-frontend/src/app/properties/page.tsx`
+- `booking-frontend/src/app/properties/properties.module.css`
+- `booking-frontend/src/app/property-detail-data/[id]/route.ts`
+- `booking-frontend/src/app/property-details/page.module.css`
+- `booking-frontend/src/app/property-details/page.tsx`
+- `booking-frontend/src/app/property-preview/PropertyPreviewClient.tsx`
+- `booking-frontend/src/app/property-preview/page.tsx`
+- `booking-frontend/src/app/property-preview/propertyPreview.module.css`
+- `booking-frontend/src/lib/amenityPresentation.ts`
+- `booking-frontend/src/lib/api.ts`
+- `booking-frontend/src/lib/carouselMath.ts`
+- `booking-frontend/src/lib/guestSite.ts`
+- `booking-frontend/src/lib/homepage.ts`
+- `booking-frontend/src/lib/homepageServer.ts`
+- `booking-frontend/src/lib/propertyListing.ts`
+- `booking-frontend/src/lib/serverApi.ts`
+- `booking-frontend/tests/amenity-presentation.test.mjs`
+- `booking-frontend/tests/contact-design-browser-qa.cjs`
+- `booking-frontend/tests/homepage-browser-qa.cjs`
+- `booking-frontend/tests/homepage-cms-browser-qa.cjs`
+- `booking-frontend/tests/homepage-contracts.test.cjs`
+- `booking-frontend/tests/navigation-consistency-browser-qa.cjs`
+- `booking-frontend/tests/our-story-browser-qa.cjs`
+- `booking-frontend/tests/properties-listing-browser-qa.cjs`
+- `booking-frontend/tests/properties-listing-contracts.test.cjs`
+- `booking-frontend/tests/property-detail-browser-qa.cjs`
+- `booking-frontend/tests/property-detail-contracts.test.cjs`
+- `booking-frontend/tests/property-listing.test.mjs`
+- `docs/change-release-ledger.md`
+- `docs/dev-guest-site-preview.md`
+- `docs/feature-regression-registry.md`
+- `frontend/package.json`
+- `frontend/scripts/guest-site-properties-browser-qa.cjs`
+- `frontend/scripts/guest-site-stay-policy-browser-qa.cjs`
+- `frontend/src/app/guest-site/inquiries/page.tsx`
+- `frontend/src/app/guest-site/properties/PropertyPolicyDrawer.tsx`
+- `frontend/src/app/guest-site/properties/page.module.css`
+- `frontend/src/app/guest-site/properties/page.tsx`
+- `frontend/src/app/guest-site/settings/StayPolicyManager.tsx`
+- `frontend/src/app/guest-site/settings/page.tsx`
+- `frontend/src/app/layout.tsx`
+- `frontend/src/components/GuestSitePolicyContentEditor.tsx`
+- `frontend/src/components/GuestSitePolicyPreviewDrawer.tsx`
+- `frontend/src/components/PreviewActivity.tsx`
+- `frontend/src/components/TableRowActions.tsx`
+- `frontend/src/lib/adminNavigation.ts`
+- `frontend/src/lib/guestSite.ts`
+- `frontend/src/lib/guestSitePropertyEditor.test.ts`
+- `frontend/src/lib/guestSitePropertyEditor.ts`
+- `frontend/src/lib/guestSitePropertyPreview.ts`
+- `frontend/src/lib/guestSiteStayPolicy.ts`
+- `package.json`
+- `scripts/dev-booking-frontend.mjs`
+- `scripts/dev-guest-site-services.mjs`
+- `scripts/dev-preview-db.mjs`
+- `scripts/tests/test_dev_guest_site_services.mjs`
+
+### Impact / Dependencies
+
+- API: 恢复既有 guest-site public/CMS API；首页搜索只改变站内 GET 导航目标。locale 缓存缺失且配置 OpenAI key 时可调用既有翻译边界，但不写 translation cache；联系表单写接口增加 schema readiness 和十分钟配额保护。
+- Database / migration: 本次不运行且不写任何数据库。候选包含五个历史 migration；contact migration 为 additive，stay-policy migration 会重建 trigger 并为既有房源补 policy-mode 行，因此任何环境执行前必须另行审查和明确授权。
+- Config / environment: 受控本地预览依赖现有 `MZ-Dev-Preview` 登记、与生产不同的指纹和本地私有配置；不记录或提交 `.env`、数据库 URL、token 或 cookie。
+- Dependencies: 无新增 npm 依赖；本地验证复用已有 node_modules。
+- Related units: 恢复源包含未发布的 root/CRL-20261001-001、root/CRL-20261003-002、root/CRL-20261003-003、root/CRL-20261003-005、root/CRL-20261005-002、root/CRL-20261006-002、root/CRL-20261006-003、root/CRL-20261006-004、root/CRL-20261007-003 的官网相关实现；本新 CRL 是最新 Dev 上的独立整合候选，不改写这些历史记录。
+
+### Validation
+
+- Fresh base: passed — read-only GitHub fetch confirmed `origin/Dev@8e7a63e8e05f7366f93a96da36c3eaa50e3d8592` at 2026-10-17 UTC.
+- Source extraction: passed — tracked website patch applied three-way; registry/layout/package conflicts were resolved by retaining latest Dev and reapplying only guest-site scope. Original shared worktree unchanged.
+- Source and contracts: passed — homepage 16/16, properties 10/10, property detail 18/18, backend contact/property-merchandising/stay-policy contracts, admin property editor 13/13, booking/backend/frontend typecheck, booking/frontend production builds and `git diff --check` all passed. The responsive closeout reran booking typecheck, property detail 18/18, full Our Story browser QA, full property-detail browser QA and booking production build successfully. Booking lint/build emitted only the existing `<img>` warnings.
+- Safety and audit: passed — `test:dev-preview-guard`, `test:dev-guest-site-services`, FR registry (33 FRs / 268 mappings) and ledger coverage (144/144 changed paths) passed. Candidate DEV enrollment is `app=dev` / `database=dev`, differs from the production fingerprint, and a read-only connection confirmed the schema registry; no migration ran.
+- Mac Chrome desktop: passed for current-run Home, search validation, Docklands + 20–23 Oct + 3 guests navigation, URL persistence after reload, clear/back/forward, one matching listing, detail return context, five-photo gallery, approximate Docklands map, date/guest carry-through, honest no-live-price/review states, Our Story lazy images, Contact page and empty-form validation. Current-run screenshots were captured and inspected in the user Mac browser.
+- DEV contact persistence/dedupe: passed at API/database layers with historical marked test tag `MZ-WEB-QA-20261014-005` (a data test label created before the CRL collision was discovered, not the current CRL identity); first POST returned 201 / `duplicate=false`, immediate replay returned 200 / `duplicate=true` with the same record ID, and a `BEGIN READ ONLY` lookup confirmed one `status=new` row. The existing DEV row was not rewritten merely to rename the release unit. No email or notification was sent.
+- Authenticated admin visibility: blocked — an existing local admin tab initially rendered the old authenticated settings UI, but after normal navigation the current session resolved to “登录”. No production session/token was copied and no password was requested or written, so normal-auth `/guest-site/inquiries` visibility is not claimed.
+- Responsive current-run evidence: passed — the supported Mac Chrome viewport capability accepted 390×844 but left both existing and new tabs at 1920px, so it is not counted as evidence. The approved headless Chrome path confirms the earlier launch/listen/connect `EPERM` events were ordinary sandbox restrictions rather than an explicit user denial. Contact passed at 390px with all three submission requests intercepted; the properties list and filter drawer passed at 390px; Our Story passed at 320/390/768/1024/1440 plus reduced-motion; property detail passed at 320/390/768/1024/1440 without public mutations. Accepted 390/768/1440 screenshots were opened and inspected under ignored `booking-frontend/test-results/{our-story,property-detail}`.
+- Responsive repair diagnostics: passed — the 768px main gallery button remained exactly within the 390px grid and clipped its child; the reported extra image geometry reproduced only while the intentional `scale(1.025)` hover transform was active. The fixture now asserts grid/button bounds plus `overflow:hidden`. Our Story now exposes the spaced heading text and the full navigation/history/image/overflow suite passes against `/contact`.
+- Preview lifecycle closeout: passed — the initial ordinary sandbox stop hit `kill EPERM`, then an approved outside-sandbox retry closed the managed backend database pool and stopped booking/admin/backend/activity. The responsive repair cycle reused the same managed preview only for browser verification and stopped it again afterward; final status reports all four processes stopped and all listeners absent. No preview service was left running.
+- Release hardening (2026-10-17): passed — contact/schema/translation contracts, property merchandising and stay-policy contracts, backend build, booking 44 contracts, booking lint/typecheck/build and `git diff --cached --check` passed. Mac Google Chrome passed Home at 6 viewports plus reduced motion, Our Story at 5 viewports plus reduced motion, and Contact at 5 viewports with every request intercepted; one Home listbox wait and one Contact keyboard-focus assertion flaked on the first run and passed on immediate full rerun.
+- Asset/privacy review (2026-10-17): passed — 12 source images were re-encoded to metadata-free WebP payloads inside textual SVG wrappers, five fonts to WOFF2 data URLs, total reviewed payload is about 2.47 MB, grep found no retained source author/device/editor metadata, and `OFL.txt` records the Cormorant Garamond and DM Sans license.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none；候选位于独立 release worktree；临时依赖链接、构建输出、浏览器截图、coverage 与 cache 已清理。
+- `backend/package.json` — SHA-256: `1c3c143e361b28c1e9797fccd4567eb31b0e4c0258022ba9d488001d25f6a019`
+- `backend/scripts/migrations/20261001_guest_site_contact_messages.sql` — SHA-256: `a4bc955f6c4cb38107e2fd19e0559485e6a7d44cab346de0e994f729ba39ec49`
+- `backend/scripts/migrations/20261001_guest_site_public_content_schema.sql` — SHA-256: `54f3bfd9f0d485ee6cf57cb2f7d8b337f8a732a259d6e0f19463d71e70c67500`
+- `backend/scripts/migrations/20261002_guest_site_amenity_selections.sql` — SHA-256: `8ec01b79acb289ab5da9d0864619329fdf583903ef9c755b948252d7475fde62`
+- `backend/scripts/migrations/20261002_guest_site_amenity_templates.sql` — SHA-256: `13b9fae64090b07d5a493c80ee91671b02bf1ef94b338d311e3bc4aaa74f91bc`
+- `backend/scripts/migrations/20261003_guest_site_stay_policies.sql` — SHA-256: `208ab4ff9383fc708f21e89c24987770323d6f18fba270f53aa4c47b252f1687`
+- `backend/scripts/tests/test_guest_site_contact_messages.ts` — SHA-256: `bf89015590dd79afe85c76b6b9890b31d4cdee13a874182ed46e0bb1a69340a9`
+- `backend/scripts/tests/test_guest_site_property_merchandising.ts` — SHA-256: `dcca59f9fa5be92eb588800c8ef9d6deabed612043cea29277342db582af0116`
+- `backend/scripts/tests/test_guest_site_stay_policies.ts` — SHA-256: `f583d21173e41bdd1faa51c3610aaf66d7c4dc2c6655706aaff3bbf0f859eae4`
+- `backend/src/index.ts` — SHA-256: `10b54e1d6b374a6fd88566be0bfafa156330ee1e3f24ca584ff16dac1c86b59d`
+- `backend/src/index.ts` — SHA-256: `349e716a8e50efd5c1d783b55f33590956ca93d70143a056832cbe778e56d4bd`
+- `backend/src/index.ts` — SHA-256: `8ff39a86a5806db16aba3e4ef1617d02ad4c7537a7ca977e36ca344dbacd63e5`
+- `backend/src/index.ts` — SHA-256: `c88273efee1a402be1992ad55f3a5e2b84eac49c1d4d4ad1510ca40ec089b86c`
+- `backend/src/index.ts` — SHA-256: `c983c553729a54fbff9dfbbd95cbc5b7f2ae5420c60a93e3ef401fa00e59f4e4`
+- `backend/src/index.ts` — SHA-256: `d5318101ae5d4226dc6cb022730f098fe40325b81a4dcc13ac44762007591d01`
+- `backend/src/index.ts` — SHA-256: `eea3a42cee990f80802f6113546a96fc8dfddafa4722900579f973a683b32816`
+- `backend/src/index.ts` — SHA-256: `f1a1beb1f6e2ba12692c0145e13d6f280f72537c5432109857515d842e6294b2`
+- `backend/src/lib/guestSitePropertyDisplay.ts` — SHA-256: `f107c8713c0fc547a8bb537657acc38aa6ab585878e3962fb18af59493202611`
+- `backend/src/lib/guestSiteSchema.ts` — SHA-256: `f2562212d7f5d7c73e94cfa62877f5e186838b308627e2c227ee13c74136e672`
+- `backend/src/lib/guestSiteStayPolicy.ts` — SHA-256: `b2f716a76a50f94c697ea603ef28b06fa232e4fad0cc9c2c37bce5a7505e037f`
+- `backend/src/lib/guestSiteStayPolicyStore.ts` — SHA-256: `786df323cf0f60c71e0bb9019549ef0d07bcd8a1b814b7a195756a3fe5a7a544`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `a464de943c6a4e85a2b6f7f3f377692fd5634555077f337fa6d9d3c593f55ddf`
+- `backend/src/modules/guest_site.ts` — SHA-256: `005c54616fc3fc5847e724aee15cbd1776cb65835db8bfe0d5419cc896b31b45`
+- `backend/src/modules/guest_site.ts` — SHA-256: `01857382f0f3a54039372edad45579c78418c476bf3696e49790d1ba7d1fb13b`
+- `backend/src/modules/guest_site.ts` — SHA-256: `026d3294cad6aa39931dd9dfe09a64994af9ec38a85ad9cd0e38a864816b35ac`
+- `backend/src/modules/guest_site.ts` — SHA-256: `04462b59e2c94b58397fe3ac5eeac19c5016bacdd324d34f31e2e0f925c49050`
+- `backend/src/modules/guest_site.ts` — SHA-256: `07ca16cf5f7edef92cb40b14927267408a5fb150c5d091611003656f2e9d1d4b`
+- `backend/src/modules/guest_site.ts` — SHA-256: `0d1fbd704a7d526d5ed3078af6a91cae6f24d6ccdff57c67cd2126326ee8e5a6`
+- `backend/src/modules/guest_site.ts` — SHA-256: `0f1fb0ae4a975fa04caca64430cf950dbf0c0823d58da2dfd2baef0180fc98e5`
+- `backend/src/modules/guest_site.ts` — SHA-256: `122f69cb17d85940e38d5f04ab62b1ac2351e2738169c06eed1d88bb45f03c72`
+- `backend/src/modules/guest_site.ts` — SHA-256: `1b65c1f9504f1166016e5aa36830c658675c5f257d7718ac0203e3b30507480f`
+- `backend/src/modules/guest_site.ts` — SHA-256: `1c6b22bf65fbfe4cdfb4fd0c14ea6e73ff8a2ee007177d8bbb5541413845c50f`
+- `backend/src/modules/guest_site.ts` — SHA-256: `1de8ce207fac87077b4c4c8ac07a246f1212132ee987ff460ff204336fe1a082`
+- `backend/src/modules/guest_site.ts` — SHA-256: `1e03071f54fc09f1399611582ea5125ea1385b7158b773e431a730333ec630f8`
+- `backend/src/modules/guest_site.ts` — SHA-256: `1e5632752a55dcb26fed3a3c89e5e8b806dde7b9c8548e7163e017f50b983712`
+- `backend/src/modules/guest_site.ts` — SHA-256: `1ef73aec27d8666f03abad5a2d1dc8179bf6b4188ae1d1c79782d06955d8747f`
+- `backend/src/modules/guest_site.ts` — SHA-256: `1f63dec86736b45bfe79f62b1e3b7594926f1417879b79905c9004fc1469ce39`
+- `backend/src/modules/guest_site.ts` — SHA-256: `2c7315cb70200fd11affba885f87b6bce9de546f10543f2c6c54af6cc2f10d4b`
+- `backend/src/modules/guest_site.ts` — SHA-256: `2f672c1a9bd7e37bf8a3db9dbb93f4a903f9eab5ca01c9b81de53e3d56627f79`
+- `backend/src/modules/guest_site.ts` — SHA-256: `2fb86a2c2a50ee68b04017094f82c86a9965d99f4cd4656d02732ad50689ec26`
+- `backend/src/modules/guest_site.ts` — SHA-256: `3197cc80ce301b482233f542a62e5b86c334d67028a03df894786eda5a39e15a`
+- `backend/src/modules/guest_site.ts` — SHA-256: `35adaec06bda98a04e451940e2fdf9d361c74f3779b81edfd2b7dee0eb9601c1`
+- `backend/src/modules/guest_site.ts` — SHA-256: `3846c1c3e2d5f973139a1f4ed26cd5bd3eed1deababf89f902c19c303349e341`
+- `backend/src/modules/guest_site.ts` — SHA-256: `38ab36ca1698685f44fae0279c8bbc6ae841e5355933f83326821b16a88a7597`
+- `backend/src/modules/guest_site.ts` — SHA-256: `4b959da6d709099c03710fbd13618ba3a44a77b42b6f13dfd690e58225a512fa`
+- `backend/src/modules/guest_site.ts` — SHA-256: `4c4f1a40123f9c47e0cf554d6206f711593bbbe81ae50b270195f0e54b786d25`
+- `backend/src/modules/guest_site.ts` — SHA-256: `4ef3012fd715769180da178e598855bf326c4dbe3e982318c7eeb0f857303228`
+- `backend/src/modules/guest_site.ts` — SHA-256: `50b18dec2ceee20c6f7063a27e5ad4a19faef1d95f78cc143c955b52e1e2a2c7`
+- `backend/src/modules/guest_site.ts` — SHA-256: `51fe478bc081d724c12362e7ce845fee870d93a4fa60893c65bbbfb96690e5db`
+- `backend/src/modules/guest_site.ts` — SHA-256: `52cc8c84b0bed0670b7410fb4107fb4891c6fcbd2274f024b4d74f9d6e1c86a6`
+- `backend/src/modules/guest_site.ts` — SHA-256: `52e717556527205a05a18d7b3a254c58b765bc42de33b604c06344561eef855e`
+- `backend/src/modules/guest_site.ts` — SHA-256: `57ee9cb20f0b61c1a3d44e0e8bfc12636e3b7a2c08b8a574d66dda717616ede9`
+- `backend/src/modules/guest_site.ts` — SHA-256: `59a400cff9c3abdf4562d6d04b3e16687fc5888d2831d27758793eab85fd09a9`
+- `backend/src/modules/guest_site.ts` — SHA-256: `624b0496c672db807bae142fe21726bd4c7fa7d25157858b53aecccc4150c357`
+- `backend/src/modules/guest_site.ts` — SHA-256: `6518aeab811f6b8ce2dcd4cc790c996ba7c3d1687c0e234be2d695fe04b812d9`
+- `backend/src/modules/guest_site.ts` — SHA-256: `6fabcc92cef9941d86a29b2995ba3b05a68c718841b80f10cdc4f42edaf93c85`
+- `backend/src/modules/guest_site.ts` — SHA-256: `6faca2cd1414fb937ee93844e37a05efe9df28d50988f403319a1234f721a8f4`
+- `backend/src/modules/guest_site.ts` — SHA-256: `7083988ab945b5a567e85c535b3fe733418684660361f0e5a6983fefe6379460`
+- `backend/src/modules/guest_site.ts` — SHA-256: `7e47c5003b9810ca79af116e11b4ada2c91e482dc8625fbbdf4837873130aa15`
+- `backend/src/modules/guest_site.ts` — SHA-256: `7e62718f2c7044477f5a63c51c7023b38bb4a917c31ada89bb30fdf39f1742bf`
+- `backend/src/modules/guest_site.ts` — SHA-256: `8e9a2652eb9d9e80d15f2f0338c6e9738075feee05a50b9fd56c58e844e7fc0a`
+- `backend/src/modules/guest_site.ts` — SHA-256: `9b01dc718afd956b26b2f163936bae45687f48adff5f5ed620ce3f5803f81515`
+- `backend/src/modules/guest_site.ts` — SHA-256: `9b3b6f3578e86d99665e25ea4c8ed1983faa320e7adb9279739a184936913566`
+- `backend/src/modules/guest_site.ts` — SHA-256: `9ea20fd16f4a9a9c06e96901bfdd4c26be2816cd155cabf065be06480a730f81`
+- `backend/src/modules/guest_site.ts` — SHA-256: `a4364e6bbb80ecdb8cc7e6657411704c19f0a9177643f76d2c20f4fdc144be5b`
+- `backend/src/modules/guest_site.ts` — SHA-256: `a962a8aa8e5fb85b311c7929f1cbbfdbc1fd66286e76a8dd3a261eab14c67d3c`
+- `backend/src/modules/guest_site.ts` — SHA-256: `a985edf706fdfa3ddba1155c4b42ad497e2c5d45a0ac4dc5f4f5e8e03160a71e`
+- `backend/src/modules/guest_site.ts` — SHA-256: `abaa172e7da68994511c01f5fa408710b250ed62a92b86846a1272a66e50125d`
+- `backend/src/modules/guest_site.ts` — SHA-256: `aea0228b676b97ee9fdea01ec70dd719199ee46b13a139fce8f880a2943f97d4`
+- `backend/src/modules/guest_site.ts` — SHA-256: `bd96acd793dcab18f0db3c20a821336cf75768b74b3d798e951338c222c7f404`
+- `backend/src/modules/guest_site.ts` — SHA-256: `be3fac3a7a10f7b70ec631aad9469f2c79505cce69a3e3f2668f812a9de48a51`
+- `backend/src/modules/guest_site.ts` — SHA-256: `c1c90048eef98c196b10025a92ed0b0583354346476154a78b69004bf2d43640`
+- `backend/src/modules/guest_site.ts` — SHA-256: `c6adcf53bf51a4470eaefb536d6fe378e96ef3145989d0556b0755b1448e678c`
+- `backend/src/modules/guest_site.ts` — SHA-256: `c7fd61bcfce20ca73cda7ce8456e8d06115adce3d4b818395b2b748b6c2ab8e9`
+- `backend/src/modules/guest_site.ts` — SHA-256: `c902b03d048d31721abfeeba3221ef90b9d7197988090b96e20d397218b0c29e`
+- `backend/src/modules/guest_site.ts` — SHA-256: `c9cd4b57b71449447b2d2545fcd9c4be4cc18e3178c1d65a717ab9fbf1fb5571`
+- `backend/src/modules/guest_site.ts` — SHA-256: `ca119eb3da7b43ba62512d8c57b3f49d104b058d124c21885e5a20b4ddc17caf`
+- `backend/src/modules/guest_site.ts` — SHA-256: `d24f6be358719d391c573c550f3084b6c24f9c969e2ca1354a18c797a0260b13`
+- `backend/src/modules/guest_site.ts` — SHA-256: `dccd3ec09d84e127b146bce5b513b3a5eacc0a9d86d5ac962abc957fab00f2ac`
+- `backend/src/modules/guest_site.ts` — SHA-256: `ddfb72ee2bfdfa19b115550c6e06863cfc27a1fc90ce299df0d3a181560ffa03`
+- `backend/src/modules/guest_site.ts` — SHA-256: `e4699deff3d8de7e04490be95e19f04bd63221da2a64851c977deda61bb4f64e`
+- `backend/src/modules/guest_site.ts` — SHA-256: `e51e2875e42281b5b3f7b5d627c12f52c53d6a63a1bd943de61d84b6a34fe805`
+- `backend/src/modules/guest_site.ts` — SHA-256: `ec61d1c93237f75fb7a16062c0d52e063104c3aa1685627980b0da7d42544433`
+- `backend/src/modules/guest_site.ts` — SHA-256: `ed84c44f6b0d41e548696f8270fb4982a6f62d8032235e94ea3eaed1bb5859ea`
+- `backend/src/modules/guest_site.ts` — SHA-256: `ee44b5c89c710697720fc5a2914ac97de9e8260e6e0173ac6ee53f61036b5801`
+- `backend/src/modules/guest_site.ts` — SHA-256: `f07808d102c53f2b9557cb16851045c73b01b51528974323d3b26417936d28a2`
+- `backend/src/modules/guest_site.ts` — SHA-256: `f60a3d308eaf375471fd86314a6b0e504a355e7e9cea24cc7df674601d1551b3`
+- `backend/src/modules/guest_site.ts` — SHA-256: `f74e3be92e1b9cda80eb681e89bc8c1b862c7dd2ed7bba9b7edf1891d6fa4bee`
+- `backend/src/modules/guest_site.ts` — SHA-256: `fff313703ef073f2e15646c6afcce3fca8e10ea4005d5b96f61eaea2c47bb4a5`
+- `backend/src/modules/invoices.ts` — SHA-256: `5783c1a6f31f88409d0bab92391034487c82f681ec7706d05831be5eca539588`
+- `backend/src/permissionsCatalog.ts` — SHA-256: `74416390a785198ebc2c37b63ca41003571cb5ae4e4d7394cbd581ba729438df`
+- `backend/src/store.ts` — SHA-256: `cb4a13f997cc74a3e2becc763c857d64c21dc473140c902d7d40bec1ba1d619c`
+- `booking-frontend/.eslintrc.json` — SHA-256: `5e875893cdfc6813cce574e23ea1849dfaf126782cd5bdcd834f746562f4bbd3`
+- `booking-frontend/.gitignore` — SHA-256: `58ea78f50d203e9e18597dc145369bbcff04d3736bc9f64459ae7d0c22b54d17`
+- `booking-frontend/next.config.js` — SHA-256: `0aedf09bd3b7e1e6c479f167e390705a22c7b38d4887a19b1cbf69262db0b4ea`
+- `booking-frontend/next.config.js` — SHA-256: `212ac0aedaa7cae9a012c61449ba61b4cab6e3339ed2ea52b253a23e7719ec21`
+- `booking-frontend/package.json` — SHA-256: `d58883962fd6e54b5ce80003f6455b7d5d117d89bce7f782cd665445fc98ad83`
+- `booking-frontend/public/homepage/OFL.txt` — SHA-256: `ef466e1d76deff0d5fe6e470dbf080c1fcb4781b49b8a20bf40af754986f9775`
+- `booking-frontend/public/homepage/contact.svg` — SHA-256: `612e296d1bf02930dbde807f6b032039544456917d1b19fd3ab89d40e3c0e53d`
+- `booking-frontend/public/homepage/icon-arrow-left.svg` — SHA-256: `1ffb7ca90de2c17a85da9d8246ee59d6302926a18f3d10ec8108076bc5af19cf`
+- `booking-frontend/public/homepage/icon-arrow-right.svg` — SHA-256: `1ed6961e9b2e7be006510bb65187f2691329393ca3d46b03a771fb7bbd048da1`
+- `booking-frontend/public/homepage/icon-chat.svg` — SHA-256: `591fad024759ce8b6805d8d65ea65df42cf4d43223b29bc90297a79505aa8de9`
+- `booking-frontend/public/homepage/icon-close.svg` — SHA-256: `41c8aad3a82da05aa9e851cca5e246726806757c86c5493fd9f9d57138e7813e`
+- `booking-frontend/public/homepage/icon-home.svg` — SHA-256: `45d5ba6f7dceefe908e801d925ff04a1c85f32bcd9111896bfdbed3baeb91813`
+- `booking-frontend/public/homepage/icon-menu.svg` — SHA-256: `88ece7f9da27f3534aeb7f7e7424c6df327799e0a2809e4259bb8173e0d2b9ed`
+- `booking-frontend/public/homepage/icon-pause.svg` — SHA-256: `3990c922f4c4f0d8037e9c8506b14ebf7f30d3501b3453e951c959dc608a22ee`
+- `booking-frontend/public/homepage/icon-play.svg` — SHA-256: `6851bd386e56dda7313aee929e81fde957333d5ccfc5fed9b9c2731a7a719218`
+- `booking-frontend/public/homepage/icon-sparkles.svg` — SHA-256: `e53f78b56d00ba52788254554ca7058f281c597656ff13f06e99e0acb4ac9a01`
+- `booking-frontend/public/homepage/icon-star.svg` — SHA-256: `50e5ced34e270eab49f96aa6dff04ee68316819597e09e44da577b796de5d8c9`
+- `booking-frontend/public/homepage/icon-support.svg` — SHA-256: `a0b5a488af575f3e6cbf89e6dfb5e74daaedfb947fdfdb67db66d549ad755287`
+- `booking-frontend/public/homepage/icon-users.svg` — SHA-256: `2b604caaf69f1b18073fd4a1bcfa1efafa860b28bdf1e2ca867bd056e819e309`
+- `booking-frontend/public/homepage/mz-mark-v2.svg` — SHA-256: `9a2c35b5298a974b2777f562f21433b34a6e4d838f0644ba91a9e8d10b50468d`
+- `booking-frontend/public/homepage/property-docklands.svg` — SHA-256: `0042dd67fd8dbe53e2fd2bdeff0094bee3356b789487b0949738034db2e5092e`
+- `booking-frontend/public/homepage/property-melbourne-web.svg` — SHA-256: `e75f6fe1e0a84e2976d2a613eb198c8f8fae37525ed9a2f60b6036aa42a19c6f`
+- `booking-frontend/public/homepage/property-st-kilda.svg` — SHA-256: `64e996b1f41e53e0f499920660d0f419f62d07e3bb5b95ce26410066cfb6e612`
+- `booking-frontend/public/homepage/qualities.svg` — SHA-256: `0ffb614079ae64b35fee35f7fea7b9eea29b3fa841e3307373f5f26fbfa0bd0b`
+- `booking-frontend/public/homepage/story.svg` — SHA-256: `917f65e3bde88787deeea56b64536fbbd0a8ce9db56cc9adb364bcd389b16036`
+- `booking-frontend/public/homepage/testimonial.svg` — SHA-256: `94ba55a6a27a6930ceaf7e08a4d76160ee953a16d679d6efba02f72bbb510345`
+- `booking-frontend/public/our-story/attention-to-detail.svg` — SHA-256: `6bcd0c4104ec0270d1188b3935a2237c42ccf4801fb5b8126bc5287783cde2d8`
+- `booking-frontend/public/our-story/beginning-apartment.svg` — SHA-256: `8251f6bbdb9b1c67d41bc6756899b2c9207e235114cad77fd1403760e1ff985d`
+- `booking-frontend/public/our-story/care-preparation.svg` — SHA-256: `95c7ec0529fddc7956dd91ab8b25587ac7e27c796ea7bf12c6c81154a0ab2c49`
+- `booking-frontend/public/our-story/growth-balcony.svg` — SHA-256: `0379bddad678df67b3a2323e073e9dc3a215bb383eed715b793ebfb033e14ab8`
+- `booking-frontend/src/app/BookingLayout.tsx` — SHA-256: `8778aa83dae16a7e61454282e11267693a6ca565cc11ddbdb6dccd38faf28f47`
+- `booking-frontend/src/app/BookingLayout.tsx` — SHA-256: `ad6d10550bd8736ce5ca6fe48bb565c6b0cb4c2a06d164d1e303eef558f75cc2`
+- `booking-frontend/src/app/BookingLayout.tsx` — SHA-256: `c0b34baf4ae5a5f3f458f060dbe1d5f43143d13d2e68a59f19a3b1d97eac3de6`
+- `booking-frontend/src/app/BookingLayout.tsx` — SHA-256: `ca8a834ed75fc14a409342cdac90e15d10498568cbd418fd5d1cf41e8d8e743f`
+- `booking-frontend/src/app/HomeClient.tsx` — SHA-256: `2435ad36c5db4ab0d58c6b5ffef824ff9025c7d9c0d3ef3dfb3ebfe961c5d094`
+- `booking-frontend/src/app/HomeClient.tsx` — SHA-256: `53bc46cc0189f9a3df21c341e351baeb5e66ec118bfc798656acd1ef54c3421e`
+- `booking-frontend/src/app/HomeClient.tsx` — SHA-256: `551592e356bb58ba1f2f3399085999adfac962f90bd7a6eb571d1c64256fcb52`
+- `booking-frontend/src/app/HomeClient.tsx` — SHA-256: `7bb1063a348581c50b719797fb3f5a7f709351f700dcd725f3d4c98792ea1ab3`
+- `booking-frontend/src/app/PreviewActivity.tsx` — SHA-256: `71191c254d279e8293927aa7bbd899dd620b0853aeca8756e5d2101263d4355c`
+- `booking-frontend/src/app/api/homepage/properties/route.ts` — SHA-256: `cb8084ecc8797e3b4eb86c77ed1582fb6ce85f1ccbd9b086d8489dbce0863e15`
+- `booking-frontend/src/app/api/properties/route.ts` — SHA-256: `3d607303b31aba07ac5a49d94b6b3ac7fa97f750772ec7d97498ca94c498453c`
+- `booking-frontend/src/app/booking.module.css` — SHA-256: `1f166b255a1fc883bb4e74d565c2c40e7f989c5f2df83649f69b5aab900e7f9e`
+- `booking-frontend/src/app/booking.module.css` — SHA-256: `4dc26ac60d2e7e8f3d38684a3264b387c00238a1d5359669d09f818a7960d90f`
+- `booking-frontend/src/app/booking.module.css` — SHA-256: `8c0c0ceb57bfe6123d62d3441ae071b02cbeb0111b049128c1b4d6a6fce5c043`
+- `booking-frontend/src/app/booking.module.css` — SHA-256: `ad0fa514acb0759b04cf235371ea7e9e010ad39bedd398c4fc316c6baebd716e`
+- `booking-frontend/src/app/booking.module.css` — SHA-256: `d8e5c64666f9026a3404d7c10929374ab11fa2d2fe96f326967c2af9733bf748`
+- `booking-frontend/src/app/booking.module.css` — SHA-256: `db89750386268000ac3b2abf57db8ef7babbc442b5c833962b93310792c659ae`
+- `booking-frontend/src/app/booking.module.css` — SHA-256: `de23629fd6e1406a7bc54444731621d2697980c143107cfd7b2bf6f27801c793`
+- `booking-frontend/src/app/booking.module.css` — SHA-256: `e9b5049c67dfbfc59fc20aad603da1377af0d6aceb66b768c5eac05c904423cb`
+- `booking-frontend/src/app/booking.module.css` — SHA-256: `edf51b02fc425655b29e3cf89ba1ebbc6db8eff702217694e7717b49f667f7a7`
+- `booking-frontend/src/app/contact/ContactPage.tsx` — SHA-256: `aa121ff751bcca600a720ef1a3f3ea09d8f80c1989a1dc8710edb6133efaf936`
+- `booking-frontend/src/app/contact/contact.module.css` — SHA-256: `bf280e490f13d51d17a367dbd12fc3fee70c13346d46bd78700082010ccad2d9`
+- `booking-frontend/src/app/contact/page.tsx` — SHA-256: `e5df342490cb90f365aaf9a5a5fd35da6a720268340b7d1c20c3275cbc3e20b2`
+- `booking-frontend/src/app/home/AvailabilitySearch.tsx` — SHA-256: `edb7663267d1606a6806415977a6942d6f238c3b041307f70772a580183f8bd7`
+- `booking-frontend/src/app/home/ChatDemo.tsx` — SHA-256: `e6167dd8fa3b0bbbc4689a8e5927a75b926c69a497d398c9f0c4b3ee7f3104f2`
+- `booking-frontend/src/app/home/ContactForm.tsx` — SHA-256: `409a1d31266a53dfe4b71e9ee4a21549dc61de0602b55a1dfa9328307d5d5c1e`
+- `booking-frontend/src/app/home/EnglishDatePicker.tsx` — SHA-256: `0905b0ed8e995683d36fe9314aad421a7f9f9eda0729de6d20e63e8c8f96971c`
+- `booking-frontend/src/app/home/EnglishSelect.tsx` — SHA-256: `a7b575df923997fc30d9c75a55edcecc2e79b7959025a80b8b684b6c8c6074f0`
+- `booking-frontend/src/app/home/HomeHeader.module.css` — SHA-256: `187673feba0e2184b67215e5fa86cb06a13ccc8dcc021a76fb2fb73c5b9e5e58`
+- `booking-frontend/src/app/home/HomeHeader.tsx` — SHA-256: `9c454600d492505319684d364a750fc9092bda38d607140f8a4f9dc57da734ee`
+- `booking-frontend/src/app/home/HomePage.tsx` — SHA-256: `003d84049ed653128d51b3f89e7d569d52f46142d848fa24dcabd1bb2ee133fb`
+- `booking-frontend/src/app/home/PropertyShowcase.tsx` — SHA-256: `395414a02e5f44eacef4a6b2ed91bb763ce174b35736cbe37bd56f2ca562dcfa`
+- `booking-frontend/src/app/home/SiteFooter.tsx` — SHA-256: `65fd315643eca13e137d25feea813e4d07834ae463782124adca545b3d51cdd6`
+- `booking-frontend/src/app/home/TestimonialCarousel.tsx` — SHA-256: `9a67027629381d11a81357f181d4970e3db62c9078788960c74ef511200650a0`
+- `booking-frontend/src/app/home/home.module.css` — SHA-256: `9a8f9bceb8642f0724c9ac2492a7d559b3e8930c444a8bd387213e6f0db3d90d`
+- `booking-frontend/src/app/home/siteNavigation.ts` — SHA-256: `5dd338fc5a6b1f3d23a577662f5ef4dbb55b342c4ccecf38511ed0ed10b6af90`
+- `booking-frontend/src/app/layout.tsx` — SHA-256: `6eb57db518553e043600442967f0517112ab02ab5bd3b12d9ebb98fc40557c28`
+- `booking-frontend/src/app/layout.tsx` — SHA-256: `93ef4d46701f3dddd784878b2711efc49a82690fe13ca459c9770af280fdf5a5`
+- `booking-frontend/src/app/layout.tsx` — SHA-256: `9f832a625c24ff948d6d67cc773cf9186c186856db241cca495084cbbdda642f`
+- `booking-frontend/src/app/layout.tsx` — SHA-256: `dda463426bd6bf65695ccfbf3d6c07d9b7ddc26fd230b0ef809e1e33893fc05b`
+- `booking-frontend/src/app/mz-fonts.css` — SHA-256: `302d5a25c041f6e4c296fdea8c8023694a49a360b6b45eadf51be608900f762f`
+- `booking-frontend/src/app/our-story/OurStoryPage.tsx` — SHA-256: `44eb3be1af769ae1a7f6d09a66dc9a466fdeb49c87961678900ba1521a3f1d20`
+- `booking-frontend/src/app/our-story/ourStory.module.css` — SHA-256: `6d7b277b36aaed248f365f6e9042bf88d68860eb711a5a905125908588ae97e7`
+- `booking-frontend/src/app/our-story/page.tsx` — SHA-256: `ac6f0c5b227ad8a43e8401b39391865c542007a105aef85b0194c0933096cc52`
+- `booking-frontend/src/app/page.tsx` — SHA-256: `32256e2983227edbef54eb16223a1972f974ecb1e1d015483314837826be7dba`
+- `booking-frontend/src/app/page.tsx` — SHA-256: `4370c716590ef3cbe281e4076a6df93619acb7006f676563dbc9027f491ec8a1`
+- `booking-frontend/src/app/page.tsx` — SHA-256: `b9b2aa4da7809e240009c4b09eee8adef9ad0e4cf3434e6828f6eb9cc4dd1876`
+- `booking-frontend/src/app/properties/PropertiesClient.tsx` — SHA-256: `15d3818a4e7f51272b3eb858d3b03aedb79aa7f7c82bd867906152688a49127d`
+- `booking-frontend/src/app/properties/PropertiesClient.tsx` — SHA-256: `168fa6e1212cd99499e33b1a8cb9793e35d15ba54c719c74e3962616c28107d9`
+- `booking-frontend/src/app/properties/PropertiesClient.tsx` — SHA-256: `1a8af1dfd262f88a3ba42bcf0308bdb6adef61694164ef722ff91839c9b2c626`
+- `booking-frontend/src/app/properties/PropertiesClient.tsx` — SHA-256: `29125ba3a0e6fc748ae41617d9e839127c8d20c69f9b3c856de660f060056305`
+- `booking-frontend/src/app/properties/PropertiesClient.tsx` — SHA-256: `4c09577c133850c1dd79e825efe1b6e0eb396af7b7e4ee607e0fba12b4f6344f`
+- `booking-frontend/src/app/properties/PropertiesClient.tsx` — SHA-256: `50b0c84ba97c7ee09800f46f3ab12ee697c05253ce12e0393a756be39066519e`
+- `booking-frontend/src/app/properties/PropertiesClient.tsx` — SHA-256: `bcb1af4c90d73e24704ff70bf2386785f269d3d260e0dbcbbe89e1834135788d`
+- `booking-frontend/src/app/properties/PropertiesClient.tsx` — SHA-256: `f1316e81a9ebf27064d5990bd1bf8043bdf30e523bf9c87413a0cab07fa84014`
+- `booking-frontend/src/app/properties/PropertyDateField.tsx` — SHA-256: `84c49f7efaec2860f898e5c368ab7883921e1a13630f1af8684a0c7a1527e60b`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `04646e028b83cffe0581ac1cd65258e47765028cf33e2056526950c1dd887bf8`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `0a3b4c12e2a62cff7d30b87393def1ec2750d9a19b58ce6ca2bc820a936ed082`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `1015c8d88da94d3f63e2bfede167d54c13d128ed0791785eec8ed646f6a896d3`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `23adb1b15b2acbb7c635beb9a672161122ba704afdae2e8665cca874b0deb4ae`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `29d37569a18e3b742f2ebd98099ee0811b06b341651ce0032bbbae4e060b724c`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `33257ebbc7514b344ccdb6cac95e5c2458ad8a2591ad4e77784e8845e2f70328`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `35081dbbda01a7d0e043bad15e17fdf703ac670c369bad570c09c65b123b14f4`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `39d8e8ffa74843750669d7f111a7dc1b8a29103521f323ba31631ccbd912b09f`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `47a9548f842bce989f709ea7582a1fb275309d1d3ecdfe63dca1e86dd2a41c65`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `4b42ec718cfc06e648b632986643f7dd5ad381ed66c369ecd347929c2f1d98f4`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `52dee8f8c3da626c09ce77a52e60154688b9f2c9ca80bab42852c16842531a12`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `557d544318e1a7e3ed8a583fb04c3dd7da9d46776c59272bab9c19add312ae59`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `5d75d26418461d0c97e15ac374e2ab71048832df45ae06ed16e2415fb8c3a84e`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `5e31b4aa33de14c4ea26c165773319c4d02bda532a1ed87f003f95bb311a5b31`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `609927e4b7de25c1bd2a571376f66bad249540d58745410973c96e66bcfbc67b`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `645fc73ffbe8c21f53c0f752803cae38b0a9dbf938147bb307c31f0fb7804a85`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `6ad95c6ca959862213231b38b44698879aeab8777ccfb8133c09ffd5ad76801e`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `7a231f5c4427ca5ac3f22e5df28437b235f28108b622f7794e5f4e1e4b3e47cc`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `82e86bfae3483dacc21f85a6e2deb46768595da33b235e255bbac002d7d52609`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `84bfb6654b46b43b9336ef01ab3e67bdae96bdc6d039b1b48ffd87dcc982f7b5`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `95d953d8049de851d0de6b5465162d426fe630c7c2b5e92ba9562964aa3ee140`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `967210ab876a582bec9f91131e86519ad45518f9d7a4371773a35dce0c9483f3`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `9ad6fb216989571c24f0f788c8a8a6048c8789ca6c3796f1d7bfc0c9c31b5352`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `9b91c1f6fb2d7fe4289fbf06c6807469178bd79bd7df43187b3c79a034a00f2c`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `a19a15b915d3a9cc3e65c85c7e538ab0f23df913f3230ae74433250fac191dd7`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `a46b313b6aeecab68eb7d748160e1e48bb4a3930a84f17a9c27ee5ca9cd56545`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `a98c5da7a91389769b1698459747758d38480605598e9ec20864a82c73bd792b`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `be33d2880703ce6e8fa1d3292a91915c38be65e40e1ac9e586778c56495af13f`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `bf92e77f7a2cbe9a4e7f84df7d274a2bb9a1569f315695359517ea8357837d11`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `c02dd79f01fdce8635df6bc737cd44eaeae02e7c6a81f2b95fe118702af2928c`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `d0459e91c2456cec4c7a4f7215e6c960e69d9cd2c52c1a85377eb5ca0a431426`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `d39183a78447daf66486115653818f5f0b5f98ab13059d356bba38a3f8fc9ee2`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `d8add65bc829fff4d11c49fa55c908322fb499635f5acf7a5eaadf8e218238fc`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `dc090d0541959f13f1a7f86bfed46ed2cdc5866a1c7190cf2ae716ea9dc5d5dd`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `e085574ed2cf84a7d51ddb8e591287f309aec0494564cd312fcfe5de51f0253c`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `f1a083d1ae9fcebe57539a94fe0b59fec8e7da6f9ec6fae8c22766b40c935d14`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `f4f8dc5545a92f3e0fe8e435658507d4fb515e976259d4d6ce7c18767ee1a557`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `fb4389b054f3f95fdc8f2a7eb61aa807522b7fdb2c52dbddc7525d139fd81eda`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `fcb59a5046429d19b9b65f2057c498255479304116bb9c25cde7d9e4df371ebf`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `fd814d1182fd5fb538bb385f29595015caa6d3107df502430472308bd476abf4`
+- `booking-frontend/src/app/properties/[id]/PropertyDetailClient.tsx` — SHA-256: `ff97a428c0adae0c2d32f49076caa36a9a57f23a9ecefe51604932328226e58a`
+- `booking-frontend/src/app/properties/[id]/page.tsx` — SHA-256: `613b39dc61c4848e2ea8e71684a93d5beafb99ca0462a387417c7922b5456be0`
+- `booking-frontend/src/app/properties/[id]/page.tsx` — SHA-256: `78484cc96029485618f8394f85d30115072ac132dc083654bee46323a5b77d88`
+- `booking-frontend/src/app/properties/[id]/page.tsx` — SHA-256: `87f83ee8ec3fa1b5721a64baa8226fcc05852f0f7db065674a2b917c54d5fa4d`
+- `booking-frontend/src/app/properties/[id]/page.tsx` — SHA-256: `894514246102cdf22bd1434b5bb5b93d35d3f278d0c997d665bf8eb196d4ed3f`
+- `booking-frontend/src/app/properties/[id]/page.tsx` — SHA-256: `97ce1c79abfacca87784ee1a822eb390652f7a1ba5c400c8fa9b9d8db8a2a64f`
+- `booking-frontend/src/app/properties/[id]/page.tsx` — SHA-256: `9c880de8ecdf8f5d2d228a8d859b166893411c5808e0500b423bb885e29bddf8`
+- `booking-frontend/src/app/properties/[id]/page.tsx` — SHA-256: `a1820f5f88d073b9da7fc40e533d6c93054ba2259269fb8d0725904fc1855281`
+- `booking-frontend/src/app/properties/[id]/page.tsx` — SHA-256: `b83b736584d1256ad34ae8b48e5c5eb2fd19e3386a83368508d5525f6d99af8f`
+- `booking-frontend/src/app/properties/[id]/propertyDetail.module.css` — SHA-256: `9f99eadd1004acbd5e874cc8d8cd2e16682e8ae9e96fc97fbac6340022859bfc`
+- `booking-frontend/src/app/properties/loading.tsx` — SHA-256: `55cff5c1a830a5465f9ad76e51e41d40db2bf0a2f7c1653536dd1566186afd66`
+- `booking-frontend/src/app/properties/page.tsx` — SHA-256: `0645e172a2ec5fd18829b8598a0f2b66cad508dae7fe9f0a4ebccbd85b100d2d`
+- `booking-frontend/src/app/properties/page.tsx` — SHA-256: `1be4144368d2fda9171c1a10ea1c6130ffe9bb2329dc2d747f3d61adfb353818`
+- `booking-frontend/src/app/properties/page.tsx` — SHA-256: `1fa04c0975f5eaa9d1e032023d46873e27b60d22f39b3f41e3a152e90e536f2a`
+- `booking-frontend/src/app/properties/page.tsx` — SHA-256: `4f25c879a471fd4830061a0df348f108efdfe81295981b2d52f82cd9c2d6c743`
+- `booking-frontend/src/app/properties/page.tsx` — SHA-256: `9709cac89ff26fb3820c53197b57966318740e5820badf7ca9362449dff093d6`
+- `booking-frontend/src/app/properties/properties.module.css` — SHA-256: `0d9e98e76f3e6ecc7ef1303fdfeb64bc04d008628864f91ca484a85b942d138f`
+- `booking-frontend/src/app/property-detail-data/[id]/route.ts` — SHA-256: `21d518b2188b4ebb528cc0b08f0ae59e8f6946922ac6afb0346d402a7f59656d`
+- `booking-frontend/src/app/property-details/page.module.css` — SHA-256: `3672900b6daba3f20cf2844da4f02b656993e8f501c0aeeeaf168fbb772533c0`
+- `booking-frontend/src/app/property-details/page.tsx` — SHA-256: `0969e5b342bd6deeb8d5f9f399fbf6612b88492ece078800e94c6eab9e0faf57`
+- `booking-frontend/src/app/property-preview/PropertyPreviewClient.tsx` — SHA-256: `b3d3e6cdfb4d5f878e1dc80ca91b8475fe244a4b18a9443ee08b9b3dd0fa20e4`
+- `booking-frontend/src/app/property-preview/page.tsx` — SHA-256: `338f8951a97797ebe41a100fc46f59cca36e55640988bb9ff6b8f7b301e5f6be`
+- `booking-frontend/src/app/property-preview/propertyPreview.module.css` — SHA-256: `26e8c120159cf40eed0946d37805ee037c229ca2edec976c2e8c7574f43359fa`
+- `booking-frontend/src/lib/amenityPresentation.ts` — SHA-256: `a837aa000a5cb687d145fda3b11d30b2c96b34dc4fe7df74b880584f950c9669`
+- `booking-frontend/src/lib/api.ts` — SHA-256: `1a90f0f70313bd60bb36ebff1b4c0bb5f9145c1f27a00f6cad456bf3ccda39c2`
+- `booking-frontend/src/lib/api.ts` — SHA-256: `901102fe8807ad1a3f457819122fb9fbcd655567d3218f67a43ac54883c6138c`
+- `booking-frontend/src/lib/carouselMath.ts` — SHA-256: `94e8d0040823530911171e89a719947193a347c4e657d249f7da89f950606ae8`
+- `booking-frontend/src/lib/guestSite.ts` — SHA-256: `39e059b20e7a810ce4edaf751a9d3abb284790057c38d10611489373a82ee214`
+- `booking-frontend/src/lib/guestSite.ts` — SHA-256: `6d0b05e59c1771b885fae8b668411d46f93866435cadcd081e018a9b64947c0f`
+- `booking-frontend/src/lib/guestSite.ts` — SHA-256: `91aad5bee87bc54e6ed4c36b3e09c42b6af244dcfaf3d44466ddb74d1283d0cc`
+- `booking-frontend/src/lib/guestSite.ts` — SHA-256: `991a07f12693c8cb0ff5e6dd80cf5824fe644f93bb355b5d086489210e608f4e`
+- `booking-frontend/src/lib/guestSite.ts` — SHA-256: `f20b08557a35099f4cc0b532637409624cfefa1bb06b648b56c6d76778c09e2e`
+- `booking-frontend/src/lib/guestSite.ts` — SHA-256: `f451f214f9dde0a17471c301cc14adecdc89611007933b5564fd140f0bc89cc3`
+- `booking-frontend/src/lib/homepage.ts` — SHA-256: `5b76ae09dc4abf6ff2ff77999cf1d0f86b84be06d394b878eaaa89451ce8b2a1`
+- `booking-frontend/src/lib/homepageServer.ts` — SHA-256: `a19e8c5db88d6698e6ac2c428938e0913f985b6e7ae041e59bdc5b02882c535b`
+- `booking-frontend/src/lib/propertyListing.ts` — SHA-256: `cf8acfd0e09fff8abea5c226225cbeaa395048ce962024d5edf17321bab8ad1d`
+- `booking-frontend/src/lib/serverApi.ts` — SHA-256: `0e6847a452cc8a347f810db9de56306b4be6d03729b0282c07fa2ac6764e3712`
+- `booking-frontend/src/lib/serverApi.ts` — SHA-256: `89ff1a7a8768b30c665f1d811d35b15de5bf58a404be7514230de93ff83e44b5`
+- `booking-frontend/src/lib/serverApi.ts` — SHA-256: `af46fb292e585529a9729f259f9947096178afec233f66959c53786d59120291`
+- `booking-frontend/src/lib/serverApi.ts` — SHA-256: `cf25ad0ae0674dd3e29a1d9290dab87a501009391b02defb15b35f877faea7eb`
+- `booking-frontend/src/lib/serverApi.ts` — SHA-256: `d1b3a2f06d7c2122ad4a767b88fe7e6f06044be4ba6ef750ee7591b1ceae1134`
+- `booking-frontend/src/lib/serverApi.ts` — SHA-256: `eec779ee5c72b2c64383fa3d6e52e1c959897f726ac9db4d0c9443bebd5ecdc4`
+- `booking-frontend/tests/amenity-presentation.test.mjs` — SHA-256: `9aa968861bd8d6bdc21fb5ebf7546a6fada1bf974632425342a65fa6cea02e49`
+- `booking-frontend/tests/contact-design-browser-qa.cjs` — SHA-256: `ed1d2e13c5bfed6ac08216b14ad2ab5741a9c62d0bf49659b53dc13352047441`
+- `booking-frontend/tests/homepage-browser-qa.cjs` — SHA-256: `285a62ee91d1b85312cd8223342c64ac411e6607438c3ba96e76e25bf70f683e`
+- `booking-frontend/tests/homepage-cms-browser-qa.cjs` — SHA-256: `274f3bb78758239962bd30c9e29b247a4222e0494f8a92aa1da8ce16293e1c1b`
+- `booking-frontend/tests/homepage-contracts.test.cjs` — SHA-256: `254ff292551478b7a824b0702a57c894bb3f7f9585d3b4f620c0ee1b8e14199c`
+- `booking-frontend/tests/navigation-consistency-browser-qa.cjs` — SHA-256: `1ced80647c1e780c1dbc106e1e9e26f40fdb2d69fb8f1f92db81474b5b13558e`
+- `booking-frontend/tests/our-story-browser-qa.cjs` — SHA-256: `2b2e80bcc8b32a66a02fd150ef9cb2273b0ab65f6fdbec9b3f32986c997c9be5`
+- `booking-frontend/tests/properties-listing-browser-qa.cjs` — SHA-256: `ee2e225c35703d3a8eca2a7962d425ab9dba8719c7136de49bf1907aa9979521`
+- `booking-frontend/tests/properties-listing-contracts.test.cjs` — SHA-256: `2c9b7a50597110f3a2d2991d17b7607548fc023a24c3cef45fb3885820178108`
+- `booking-frontend/tests/property-detail-browser-qa.cjs` — SHA-256: `c2af9af9b6bde8b7974e5ed13ad58ff440938393848a1ffc2f21c9e120e65b49`
+- `booking-frontend/tests/property-detail-contracts.test.cjs` — SHA-256: `c60cb739eb9c3bfd37a07e6b952e18cd07fb57af3715de9080e9cfae7d4d6e42`
+- `booking-frontend/tests/property-listing.test.mjs` — SHA-256: `bdb72cabd4d8a28b2145c5192e9c87d48e912bd8792a8a4b51d94d244383a169`
+- `docs/dev-guest-site-preview.md` — SHA-256: `30c6c9df46ccf1d7be899511d6344128362d2d6e4b000434d685966ab2d8dc6b`
+- `docs/feature-regression-registry.md` — SHA-256: `8056cdccbe91f10e34c1b68023bae45ddb77c48e81de4de95e356c8e65b189de`
+- `frontend/package.json` — SHA-256: `4b0b8f0b39e35ae3bb900004405f4ef6a1e15293dbe9b622178e8f44d9335b26`
+- `frontend/scripts/guest-site-properties-browser-qa.cjs` — SHA-256: `741074ef2eb3d29672777dfe4793d23b339d4c06ba7223b35e3db4dfa90c1ed7`
+- `frontend/scripts/guest-site-stay-policy-browser-qa.cjs` — SHA-256: `02f9947a077a7b2bb79c55f8b2d9411ced8c85d32d4e7f08c434f7759aa03c5a`
+- `frontend/src/app/guest-site/inquiries/page.tsx` — SHA-256: `069a40312f2ed2176a1f2bc3bc866e4878486f05f2766cedbe46a3cb251971f5`
+- `frontend/src/app/guest-site/inquiries/page.tsx` — SHA-256: `2abd2a1471d5257d247ed5a000eec709a5a1c47d0cab20fa6089a1fe21814fa1`
+- `frontend/src/app/guest-site/inquiries/page.tsx` — SHA-256: `2fc5eab6861598936fb5d26cd3debe612fc7c8b80832c0754b69d6c43faa9e19`
+- `frontend/src/app/guest-site/inquiries/page.tsx` — SHA-256: `35838875a957ed364b1a768701712da226414176dff9c2543c782e9e498a29dc`
+- `frontend/src/app/guest-site/inquiries/page.tsx` — SHA-256: `4f856394bf3c5db63a17098674b6a6f3771ef52501315ee32e82346afb73bb01`
+- `frontend/src/app/guest-site/inquiries/page.tsx` — SHA-256: `8ef9516e7b6cfc44dd6f605d1e40a5945a25d1d71e111615e01a152af0fb88ec`
+- `frontend/src/app/guest-site/inquiries/page.tsx` — SHA-256: `9266d100cbf964fcf3ed4c340f1c1a3ffc75c3721161208305c5d9b67d91cd65`
+- `frontend/src/app/guest-site/inquiries/page.tsx` — SHA-256: `ad57d450fc3106d3cb864fc9c3e6c1b7c540d2a0cbdece9c82dad1811e378187`
+- `frontend/src/app/guest-site/inquiries/page.tsx` — SHA-256: `b05a89faed50bae0213827023bb2519222bf253beed486e5c0fd0589b849bf07`
+- `frontend/src/app/guest-site/inquiries/page.tsx` — SHA-256: `b11271a6a9d17779c8b0e654d4b4b5f33f8ec376ef86e13c7c8e8c9fea821de2`
+- `frontend/src/app/guest-site/inquiries/page.tsx` — SHA-256: `b17b396fb7cb7bc89996e449b54a67c245a38cc56913a3eb28b7c0bde6a4841e`
+- `frontend/src/app/guest-site/inquiries/page.tsx` — SHA-256: `b67689ad5d70b5d7f65ccec7f549580e61dbec67ada6c2e4199c2a8325047041`
+- `frontend/src/app/guest-site/inquiries/page.tsx` — SHA-256: `bd59ed065c0bbafecaa6514ac3e52b8a62182300907656f3840a3195af746c9b`
+- `frontend/src/app/guest-site/inquiries/page.tsx` — SHA-256: `c0c904e2e122920bd6c30cb37de9b79cba83420e73e9373dfe5824599bb5b2c3`
+- `frontend/src/app/guest-site/inquiries/page.tsx` — SHA-256: `c1c5ad208364e1df876871f53c1d11a4e748e1e0f5612e96d7a4f3ef2b7fb0b6`
+- `frontend/src/app/guest-site/inquiries/page.tsx` — SHA-256: `ca45e768a5df1bfdc9580b96482f866aa016db5dd4ce33e1a18ab7ff13777852`
+- `frontend/src/app/guest-site/inquiries/page.tsx` — SHA-256: `da364f9077d702d9bb65be537ef302c0ff9573ee87173713d1ec4aa679eb4d41`
+- `frontend/src/app/guest-site/inquiries/page.tsx` — SHA-256: `dce056668eb9461bdf6bda42b8a39d3a5f7e7f4fb64148b62b68cc43de6c41ff`
+- `frontend/src/app/guest-site/inquiries/page.tsx` — SHA-256: `e2fbe2686600a2381fb2771d734982e0b27fef31c0d30a46a70cee95eec6df06`
+- `frontend/src/app/guest-site/inquiries/page.tsx` — SHA-256: `e84da795a0151e949f50bbdda23c6de3875df88bad2aefeb4bef7fd042b6e1a8`
+- `frontend/src/app/guest-site/inquiries/page.tsx` — SHA-256: `f8a750d506098cb85e0d22317f52e4e550989c0fef2a4c5dbff2b36d1057eb97`
+- `frontend/src/app/guest-site/inquiries/page.tsx` — SHA-256: `fa52a0e25fca7409593d7475d1a49a372b6abfdbe25dabe8a370c0eeb7e5ab2e`
+- `frontend/src/app/guest-site/properties/PropertyPolicyDrawer.tsx` — SHA-256: `783b98e77961938d61fc725969ed9f7988b9896f2999340a9f248f256f718f4d`
+- `frontend/src/app/guest-site/properties/page.module.css` — SHA-256: `4495f027e121780c9f7427b7225c49e87a6a5e14c2c545da6623f4d50d210cdd`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `02567655e9dc2cfff713053017417eace6e0f2f82d4cd2fe54fa8e16092177a4`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `072e2b33c7e4e022c9b01e71d46edc5bcd1989d1e288d0ed8957dd34fdf34eeb`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `0d2c31747a7d7b1b5b8ec0232bb446552e4d7d3de706acb73e126cad960ff375`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `0d8a6adbf1ef87d5682042e9e95762e85945139de24977286fbc06973e52a6b8`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `0f12c1cdc28b8f956dc92160b39d1db1405169d89c1c2e08bbde9c1fb4c9bd21`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `1bb126aaaac765d2c89a5832530f31754dda29384d0b5b76bc1c7c6471684a46`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `239483ba8a0722907222412fc60b306a10e4113314340d3d85bd5f2a564e29a0`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `25a6b4f49dab0c0936e9131982217e0d5114f24bd5219c20c1da78ebad4fa06c`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `2fa628592e0b6d402ffd32bbbea0505a709540584eeb9554fd92868528a33919`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `336e76989e1a9a6dbc4c2bba492840e2a4c3ea3059a07b5bff52b5bfae7b3a79`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `3d58d3eaf357a9d30c0af75f458360ad048967e448377ec5a925aba899a8e0aa`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `3dd471cdd54f176a03df7420d930a4e240c36feb8d43de0f6ede70c500538007`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `3ef5fc1c5d4db655f9391fcf6385b99878efcc28c4444c01f3732c446e4f3868`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `45443e1342305b4b05ed70760bdeb5798dc17d6e23c0429adfc7ff6594b6d0d1`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `47a109ce6325cf2cbd1d477328303367e18ba92805f5c7d90292fa9137e5dcb3`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `4ec06b64f7cb7a584e60aa4566f4dd1d6fd40756374561028df59ce2338d1510`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `4ecb783ab9043e1ea1f8bb5a436d250fd2118fdcf3bd0ce66da00924e2f0144c`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `515f7d852e4a4a7ea622764f4f6694d53c099bdf0de20a34e943f9b38844a784`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `573ed36e352d8117db8b3093872b9c992a0e662026cdeba0e69337cb49a41f01`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `581552cd571b304af17baba7b2d3ac2d6787d9fbba8700c543d16f75baf211e4`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `5948c83e177e37c20438376e1392a8f737faab6758397e77c0b79b05f5842eb4`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `62cab65eb83c0b0eb8986418ebbfeda3adde4abd022aed1c9d36810af7315f3c`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `66e8ec512e2173fe69d1a9feea55e01d1db97197b6c0a793c9ab48d2fd347c93`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `693f285a86ef937042b151efcdeb7fe4f284e1a176860518154a339b07e2d0a3`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `8329f16d9d8ef6fdea001e6820b44030346696090716403479925f1a4df90025`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `834a48781f6bbaa4cd692733ab70e9dbd0a009cdbdd1da4caa148e64b98ea39f`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `8ae234b3ebfbd8d5f183e6059689145c8713b86b184d8cc015c1f9ef8bb77a2b`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `a15ed2281f7732335f686697e2ec8938321d6c4172293e6abef711a5e9fe7143`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `a68d1365af49d832fbf039e29e2f677e22727b55f086225be44029621076b67c`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `b00e493c84d9792ef25c2c2c1c5cd62bd409d7d80403db85fd1bd49bbd833dbe`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `b27f5c40069a63e7e25b2ce2a56ef4d7fb29b8194fdc2e75ce68435ff2c585da`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `b341253990eadba3d1f01c462efd1b7adbd531e75850af9c890cb69c8e76208d`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `b5895cdc502ae12128855c6da8c5b17811591379344af588c0e5e0b83a5ae974`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `b9e565a934c3f483623659a64303099e9c72d6c0dfd6d90fd97f5dd280eb2d14`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `beebd13eb765821b945f960d8f094bc2fb20dfe9c8b02e2fc427bb3e0443ae0f`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `c3d16e18394cd3e7b26767cdc8b4c051a7547ca1b1cd56e406c30f8f404bd4bc`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `c5a3d030cb559f68c80b13326e1688c25358637e2233488a778984a1abd08486`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `c77ca997082720ebf9479d0ec076cf2e26b03ac1d174fe2dececc4a81a7d59e0`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `c7c00fac276c2107ae2df9b6f9f34ff1ef7587a562980835410bb62aae096ec6`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `ce68aef2f8639200dbafa19bc6238641fe44c950c120fe10d903ae4687408bb9`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `d00e52993a8f110964b4ec7f6937b146e7e67c6e877c58a5fa712ac31f8ffd72`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `d02c88e9b84bacc271339eb3628918ae22e3ed9c096c7bb74aba4b248ae8c361`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `dc08395e6838051e0117f462138cc72827096fc8f71571d89d989b14a7f5fea6`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `eeb6667deb7fad6d89e24f8353ad612e2ad8942f5bb285495bed08aa0e55c1bc`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `f719e445b71ab5a8501161530802d95f37e032c23f111b6438b54e0aa06bd8bc`
+- `frontend/src/app/guest-site/properties/page.tsx` — SHA-256: `f7e32ec76aa3393a29b619782730f32c37dac942290e818a71053ec40849c02c`
+- `frontend/src/app/guest-site/settings/StayPolicyManager.tsx` — SHA-256: `0a443560bbdccdd80d0c89c39bae0315065669baf9b99c37f13361b90a7e085e`
+- `frontend/src/app/guest-site/settings/page.tsx` — SHA-256: `3de997d655bc09045dae28638b89b6970efc523b4c10dcc62dfe2aad0b9c176f`
+- `frontend/src/app/guest-site/settings/page.tsx` — SHA-256: `c025e8dfb764e3594834f3fa1dd2fa9a5db0176ebccd0c4336ed634915ee499d`
+- `frontend/src/app/guest-site/settings/page.tsx` — SHA-256: `ceec4e84dcf7a48c57d3a416c023bc904f6916531ec38a16bc4e7326d105b340`
+- `frontend/src/app/layout.tsx` — SHA-256: `0e8763b65b93fe4a7c635c7f83923c03edf2a554996d473b6ed2e170cdcf4f7b`
+- `frontend/src/app/layout.tsx` — SHA-256: `a2527077260091d6b7442cf77888c1856881e3fdd00fe037b5deef4be2739ef6`
+- `frontend/src/components/GuestSitePolicyContentEditor.tsx` — SHA-256: `7f9d0b08ed53b7e02af7dd64d491f3cc38d27a021c1d8002013dd7a4480b3452`
+- `frontend/src/components/GuestSitePolicyPreviewDrawer.tsx` — SHA-256: `e0418152f20c622bfc8df682cba88f997dda40031d41c578d5e757a541257c73`
+- `frontend/src/components/PreviewActivity.tsx` — SHA-256: `f15caa40c3d0b0af85f541157289c4a239fed448aac55764173d8218402aeb42`
+- `frontend/src/components/TableRowActions.tsx` — SHA-256: `0199b2e7d85612d6a50f0984a4dc7cce0199d56e963c2e01f11d6b758ae98af6`
+- `frontend/src/components/TableRowActions.tsx` — SHA-256: `3846a6920db7c9df417502a00c82fae3adc4134aef95273ca529539e77f89048`
+- `frontend/src/lib/adminNavigation.ts` — SHA-256: `53ae8f61dcaed70c1364829ea30495acb1c31678f9b033884d09a39abcb834c2`
+- `frontend/src/lib/guestSite.ts` — SHA-256: `1c856ba6d806b30223c7da7347245e8058179c59d38e844701e107efdf2112e4`
+- `frontend/src/lib/guestSite.ts` — SHA-256: `45026cbaf4c1d25d2938853ca139dc6ba2820f6b5bdb91b4fb7e8a5e11b5bff3`
+- `frontend/src/lib/guestSite.ts` — SHA-256: `8f9712ceeaf0d141e820687d13f222916740c97cca5e6db4963c32c4fd258590`
+- `frontend/src/lib/guestSite.ts` — SHA-256: `9187baeafa8a3b4b89fcf48dcc1fdf9fe7edf751e57d4d59e54a1e6337d4c000`
+- `frontend/src/lib/guestSite.ts` — SHA-256: `adff0984c79bec784577bc7d5d83386572e0bcd7f99dcc33aabba3357c609d31`
+- `frontend/src/lib/guestSitePropertyEditor.test.ts` — SHA-256: `d798378b0fac2acee93b4624ba3e5ed9ccb298886902fe1f579885b4c6bf4411`
+- `frontend/src/lib/guestSitePropertyEditor.ts` — SHA-256: `f63608a25db17f6ecf8a084a6c3a968e18c65804694c23352bbf271f2eb3980e`
+- `frontend/src/lib/guestSitePropertyPreview.ts` — SHA-256: `4e2358646d95d5eedae3ae503807ed1ce4a87f9ceb714ec6cff646be4c259408`
+- `frontend/src/lib/guestSiteStayPolicy.ts` — SHA-256: `6875ec1dbe4581dac48a96f44b9e24a7a7b87331efb512c0d881f5b5c9f0c33a`
+- `package.json` — SHA-256: `3922d79a28d111e3c7bb4ca54bf2fb0e925b8deecd1469b49fb13a8be44fe1c0`
+- `package.json` — SHA-256: `f689a4a1b65a6c21506973694f2ef4090c23d1fad48ce69efdcece5326507714`
+- `scripts/dev-booking-frontend.mjs` — SHA-256: `5596ccdde62038db881e3f93827ac5e80e5b2a194f2692c2343a5110603e6334`
+- `scripts/dev-booking-frontend.mjs` — SHA-256: `6c1818282d5ae45886f9f26195ac86abd2b2008b94280f05cc929ae0efd60e25`
+- `scripts/dev-guest-site-services.mjs` — SHA-256: `4316c3b06c2fb79ec86cf5c3ee6bd79a8ba52ef23ed4f6003c7a531f5060d95b`
+- `scripts/dev-preview-db.mjs` — SHA-256: `9fbda5e7c20879fac81bfd0280588a5606df1946bf66f1262b5ebdfb3ea51ace`
+- `scripts/tests/test_dev_guest_site_services.mjs` — SHA-256: `bb94175f6f0bfbdfe62b6cb61ece97355238a8b0869928d9a2061ae166a2fe7b`
+
+### Release Attempts
+
+#### RA-20261017-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261014-006`
+- Selected CRL identities: `root/CRL-20261014-006`
+- Intended action: `commit`
+- Branch: `codex/mz-homepage-display-release-20261017`
+- Base: `origin/Dev@8e7a63e8e05f7366f93a96da36c3eaa50e3d8592`; fetched at `2026-10-17 UTC`
+- Candidate patch SHA-256: `fffa783d5d9b560b85bc8e8e8cd96328dbbe77fc0211b832ebf4f126f129234b`
+- Commit SHA: `not committed`
+- Dependencies: none；五个 additive guest-site migration 文件随代码发布但本次未执行，任何环境的 migration 仍需另行确认。
+- Required validation: `PASS`; evidence: booking 44 contracts, backend guest-site contracts including missing-marker fail-closed, five-way parallel contact quota, translation single-flight/runtime cache and zero DB writes, admin 13 tests, preview guard/lifecycle, booking/backend/admin build + applicable lint/typecheck, FR registry 33/268, and local Mac Google Chrome homepage/story/contact/properties/navigation/detail/CMS suites passed. The final asset rerun covered Home 6 viewports, Story 5 and Contact 5; two initial UI timing/focus flakes passed on immediate full rerun. Root full check passed all Root phases; its paired Mobile parallel Jest run had one timeout after 469/470 passes, and the full Mobile suite then passed serially at 73 suites / 470 tests.
+- Shared-hunk review: `PASS`; evidence: candidate was extracted from the frozen source into a fresh `origin/Dev` worktree with exact staging; package/layout/registry shared files were manually merged and the source worktree was not changed.
+- Generated-file review: `PASS`; evidence: required visual bytes are represented as reviewed textual SVG wrappers containing re-encoded metadata-free WebP and a textual WOFF2 font stylesheet; payload fell from about 10.9 MB to 2.47 MB, OFL license text is included, and old public URLs remain compatible through explicit rewrites. All transient build output, cache, screenshots, coverage, dependency links and the temporary Mobile checkout were removed from the release worktree.
+- Technical state: `verified`
+- User authorization: `selected-for-commit`; evidence: current user instruction explicitly prioritizes this previously implemented website scope and requests commit/push before blog work.
+- Independent review: `GO for commit`; evidence: final independent read-only review matched candidate `fffa783d5d9b560b85bc8e8e8cd96328dbbe77fc0211b832ebf4f126f129234b`, 137 paths / 375 hunks and base/branch, found P0/P1 = 0, verified contact lock order/concurrency/indexes, bounded translation cache/single-flight/rate ceiling, clean generated/sensitive/scope boundaries, and no blog, Hostex-live, payment, deployment workflow, environment or secret expansion. Non-blocking P2: translation ceiling is per process and fetch has no explicit timeout; contact global lock serializes submissions; Safari/real-device, remote CI and migration dry-run remain unverified.
+- Action conclusion: `GO`; blockers: none for the commit action. Push, PR, merge, deployment and migrations remain separate actions.
+
+#### RA-20261017-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261014-006`
+- Selected CRL identities: `root/CRL-20261014-006`
+- Intended action: `push`
+- Branch: `codex/mz-homepage-display-release-20261017`
+- Base: `origin/Dev@8e7a63e8e05f7366f93a96da36c3eaa50e3d8592`; fetched at `2026-10-17 UTC`
+- Candidate patch SHA-256: `fffa783d5d9b560b85bc8e8e8cd96328dbbe77fc0211b832ebf4f126f129234b`
+- Commit SHA: `166323cf6389b9274c048a8ddfbeaedb3c153687`; audit head is the later ledger receipt commit.
+- Dependencies: none
+- Required validation: `PASS`; evidence: exact content commit contains the independently reviewed 137-path / 375-hunk candidate; targeted contracts, lint/typecheck/build, ledger gate and Mac Chrome responsive suites passed as recorded in RA-20261017-001. Exact committed non-ledger range fingerprint matches the reviewed candidate.
+- Shared-hunk review: `PASS`; evidence: exact base-to-content-commit range is 138 paths including this CRL ledger; no uncommitted runtime path remains.
+- Generated-file review: `PASS`; evidence: no untracked/ignored build, dependency, screenshot, cache or Python bytecode remains; reviewed textual assets total about 2.47 MB and include OFL. Five migration files are committed but were not executed; any environment execution requires separate approval.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: the current direct user instruction explicitly prioritizes this completed website, requests commit/push so it can be used first, and delegates an ordinary feature-branch push plus Draft PR; it does not authorize merge, deployment or migration.
+- Independent review: `GO for ledger receipt commit and controlled push/Draft PR`; evidence: fresh independent read-only review verified the exact `Dependencies: none` receipt, base/content range, 137 non-ledger paths / 375 hunks, candidate fingerprint, authorization boundary, clean generated/sensitive state, live `Dev` ref, absent remote feature branch, and no workflow/deployment/migration trigger in range; P0/P1 = 0. Push remains conditional on a clean post-commit release report and immediate remote ref recheck.
+- Action conclusion: `GO`; blockers: none for committing this receipt. After the receipt commit, require exact release-report PASS and live remote base/branch preflight before one ordinary feature-branch push and Draft PR to `Dev`; no merge, deployment, migration or database write.
+
+### Risks / Release Notes
+
+- Hostex 实时空房、价格、评价、订单、支付和确认仍明确不在范围；搜索落地到公开列表不等同实时可订。
+- `/contact` 七字段 payload 的历史真实 DEV 持久化、十分钟去重和只读数据库确认已通过；本次发布复验只使用 mock/intercept，未写 DEV/生产。正常认证后台可见性因本地会话过期仍阻塞，不能把数据库证据替代为 UI E2E。
+- 390/768/1440 公开页面已有本轮 headless Chrome 证据并逐张检查，但这不能冒充用户 Mac Chrome 的真实设备模式：该能力仍未实际缩放。Our Story 标题/导航夹具与详情图库误报已在本地候选修正并复验；后台正常登录后的询盘 UI 仍待用户配合。
+- Terms/Privacy 和 testimonials 保持既有占位/静态披露；未生成法律条款或用户评价。
+- Sensitive-information review: passed for candidate scope；未输出、记录或提交 `.env`、数据库 URL、cookie、token、真实住客或真实询盘正文。唯一 DEV 写入使用 `example.com` 和明确 TEST 标签。
+- Git state: exact 137-path content candidate staged, ledger unstaged pending review; not committed, not pushed, PR not created, not merged, not deployed; production/device verification not run.

@@ -1,4 +1,4 @@
-import type { GuestSiteConfig, GuestSiteProperty } from './guestSite'
+import type { GuestSiteAvailability, GuestSiteConfig, GuestSiteProperty } from './guestSite'
 
 function normalizeBase(raw: string) {
   return String(raw || '').trim().replace(/\/+$/g, '')
@@ -33,19 +33,32 @@ export function loadGuestSiteConfig(locale = 'en') {
   return serverRequest<GuestSiteConfig>(`/public/guest-site/config?locale=${encodeURIComponent(locale)}`)
 }
 
-export function loadGuestSiteProperties(locale = 'en', featuredOnly = false) {
+export function loadGuestSiteProperties(locale = 'en', featuredOnly = false, options?: { forceRefresh?: boolean }) {
   const params = new URLSearchParams()
   params.set('locale', locale)
   if (featuredOnly) params.set('featured', 'true')
-  return serverRequest<GuestSiteProperty[]>(`/public/guest-site/properties?${params.toString()}`)
+  return serverRequest<GuestSiteProperty[]>(
+    `/public/guest-site/properties?${params.toString()}`,
+    options?.forceRefresh ? { noStore: true } : { revalidate: 15 },
+  )
 }
 
-export function loadGuestSiteProperty(propertyId: string, locale = 'en', preview = false) {
+export function loadGuestSiteStats() {
+  return serverRequest<unknown>('/public/guest-site/stats', { revalidate: 300 })
+}
+
+export function loadGuestSiteProperty(propertyId: string, locale = 'en') {
   const params = new URLSearchParams()
   params.set('locale', locale)
-  if (preview) params.set('preview', '1')
   return serverRequest<GuestSiteProperty>(
     `/public/guest-site/properties/${encodeURIComponent(propertyId)}?${params.toString()}`,
-    { noStore: preview },
+  )
+}
+
+export function loadGuestSiteAvailability(propertyId: string, checkin: string, checkout: string) {
+  const params = new URLSearchParams({ checkin, checkout })
+  return serverRequest<GuestSiteAvailability>(
+    `/public/guest-site/properties/${encodeURIComponent(propertyId)}/availability?${params.toString()}`,
+    { noStore: true },
   )
 }
