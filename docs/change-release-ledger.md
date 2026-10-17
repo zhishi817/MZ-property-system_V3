@@ -30228,6 +30228,25 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Independent review: `GO for commit`; evidence: final independent read-only review matched candidate `fffa783d5d9b560b85bc8e8e8cd96328dbbe77fc0211b832ebf4f126f129234b`, 137 paths / 375 hunks and base/branch, found P0/P1 = 0, verified contact lock order/concurrency/indexes, bounded translation cache/single-flight/rate ceiling, clean generated/sensitive/scope boundaries, and no blog, Hostex-live, payment, deployment workflow, environment or secret expansion. Non-blocking P2: translation ceiling is per process and fetch has no explicit timeout; contact global lock serializes submissions; Safari/real-device, remote CI and migration dry-run remain unverified.
 - Action conclusion: `GO`; blockers: none for the commit action. Push, PR, merge, deployment and migrations remain separate actions.
 
+#### RA-20261017-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261014-006`
+- Selected CRL identities: `root/CRL-20261014-006`
+- Intended action: `push`
+- Branch: `codex/mz-homepage-display-release-20261017`
+- Base: `origin/Dev@8e7a63e8e05f7366f93a96da36c3eaa50e3d8592`; fetched at `2026-10-17 UTC`
+- Candidate patch SHA-256: `fffa783d5d9b560b85bc8e8e8cd96328dbbe77fc0211b832ebf4f126f129234b`
+- Commit SHA: `166323cf6389b9274c048a8ddfbeaedb3c153687`; audit head is the later ledger receipt commit.
+- Dependencies: none
+- Required validation: `PASS`; evidence: exact content commit contains the independently reviewed 137-path / 375-hunk candidate; targeted contracts, lint/typecheck/build, ledger gate and Mac Chrome responsive suites passed as recorded in RA-20261017-001. Exact committed non-ledger range fingerprint matches the reviewed candidate.
+- Shared-hunk review: `PASS`; evidence: exact base-to-content-commit range is 138 paths including this CRL ledger; no uncommitted runtime path remains.
+- Generated-file review: `PASS`; evidence: no untracked/ignored build, dependency, screenshot, cache or Python bytecode remains; reviewed textual assets total about 2.47 MB and include OFL. Five migration files are committed but were not executed; any environment execution requires separate approval.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: the current direct user instruction explicitly prioritizes this completed website, requests commit/push so it can be used first, and delegates an ordinary feature-branch push plus Draft PR; it does not authorize merge, deployment or migration.
+- Independent review: `GO for ledger receipt commit and controlled push/Draft PR`; evidence: fresh independent read-only review verified the exact `Dependencies: none` receipt, base/content range, 137 non-ledger paths / 375 hunks, candidate fingerprint, authorization boundary, clean generated/sensitive state, live `Dev` ref, absent remote feature branch, and no workflow/deployment/migration trigger in range; P0/P1 = 0. Push remains conditional on a clean post-commit release report and immediate remote ref recheck.
+- Action conclusion: `GO`; blockers: none for committing this receipt. After the receipt commit, require exact release-report PASS and live remote base/branch preflight before one ordinary feature-branch push and Draft PR to `Dev`; no merge, deployment, migration or database write.
+
 ### Risks / Release Notes
 
 - Hostex 实时空房、价格、评价、订单、支付和确认仍明确不在范围；搜索落地到公开列表不等同实时可订。
