@@ -1,8 +1,9 @@
 import dotenv from 'dotenv'
 import path from 'path'
-dotenv.config({ path: path.resolve(process.cwd(), '.env.local'), override: true })
-dotenv.config({ path: path.resolve(__dirname, '../.env.local'), override: true })
-dotenv.config()
+const preserveManagedPreviewEnvironment = process.env.MZ_DEV_PREVIEW === '1'
+dotenv.config({ path: path.resolve(process.cwd(), '.env.local'), override: !preserveManagedPreviewEnvironment })
+dotenv.config({ path: path.resolve(__dirname, '../.env.local'), override: !preserveManagedPreviewEnvironment })
+dotenv.config({ override: !preserveManagedPreviewEnvironment })
 import express from 'express'
 import cors from 'cors'
 import morgan from 'morgan'
@@ -61,6 +62,7 @@ import { warmupR5RequestSchema, warmupR5TaskRuntimeSchema } from './lib/r5Reques
 import { warmupMaintenanceRuntimeSchema } from './lib/maintenanceRuntimeSchema'
 import { warmupPropertyGuideRuntimeSchema } from './lib/propertyGuideRuntimeSchema'
 import { warmupPersonnelSettlementSchema } from './lib/personnelSettlementSchema'
+import { warmupGuestSiteSchema } from './lib/guestSiteSchema'
 import { runPersonnelSettlementWeeklyJob } from './lib/personnelSettlementWeeklyJob'
 import { DevPreviewActivityTracker } from './lib/devPreviewActivity'
  
@@ -157,6 +159,7 @@ function redactDatabaseHealthText(value: any) {
 }
 const STARTUP_WARMUP_RETRIES = Math.floor(numberEnv('STARTUP_WARMUP_RETRIES', 2, 1))
 const STARTUP_WARMUP_RETRY_DELAY_MS = numberEnv('STARTUP_WARMUP_RETRY_DELAY_MS', 1000, 0)
+const STARTUP_WARMUP_MODE = String(process.env.STARTUP_WARMUP_MODE || 'full').trim().toLowerCase()
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 const app = express()
@@ -280,6 +283,9 @@ app.get('/health/config', (_req, res) => {
     database_role: process.env.DATABASE_ROLE || 'none',
     api_base: process.env.API_BASE || '',
     port: process.env.PORT || '4001',
+    bind_host: process.env.DEV_PREVIEW_BIND_HOST || '',
+    startup_warmup_mode: STARTUP_WARMUP_MODE,
+    runtime_ddl_disabled: process.env.MZ_DEV_PREVIEW_DISABLE_RUNTIME_DDL === '1',
   }
   try {
     const url = process.env.DATABASE_URL || ''
@@ -1058,18 +1064,23 @@ async function runStartupWarmups() {
   startupWarmupState.errors = undefined
   startupWarmupState.steps = []
 
-  const steps: Array<{ name: string; run: () => Promise<void> }> = [
+  const readOnlySteps: Array<{ name: string; run: () => Promise<void> }> = [
     { name: 'r5_request_schema', run: warmupR5RequestSchema },
     { name: 'r5_task_runtime_schema', run: warmupR5TaskRuntimeSchema },
     { name: 'maintenance_runtime_schema', run: warmupMaintenanceRuntimeSchema },
     { name: 'property_guide_runtime_schema', run: warmupPropertyGuideRuntimeSchema },
     { name: 'personnel_settlement_schema', run: warmupPersonnelSettlementSchema },
+    { name: 'guest_site_schema', run: warmupGuestSiteSchema },
+  ]
+  const fullSteps: Array<{ name: string; run: () => Promise<void> }> = [
+    ...readOnlySteps,
     { name: 'auth', run: warmupAuthModule },
     { name: 'cleaning_sync_schema', run: bootstrapCleaningSyncSchemaV2 },
     { name: 'mzapp', run: warmupMzappModule },
     { name: 'inventory', run: warmupInventoryModule },
     { name: 'invoices', run: warmupInvoicesModule },
   ]
+  const steps = STARTUP_WARMUP_MODE === 'readonly' ? readOnlySteps : fullSteps
   const errors: string[] = []
 
   for (const stepDef of steps) {
@@ -1116,7 +1127,10 @@ async function runStartupWarmups() {
 }
 
 async function startServer() {
-  const server = app.listen(port, onServerListening)
+  const bindHost = process.env.MZ_DEV_PREVIEW === '1'
+    ? String(process.env.DEV_PREVIEW_BIND_HOST || '127.0.0.1').trim()
+    : ''
+  const server = bindHost ? app.listen(port, bindHost, onServerListening) : app.listen(port, onServerListening)
   server.on('error', (err: any) => {
     const code = String(err?.code || '')
     if (code === 'EADDRINUSE') {

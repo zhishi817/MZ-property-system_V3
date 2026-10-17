@@ -1,0 +1,1 @@
+.waiting{display:grid;place-content:center;min-height:100svh;padding:2rem;background:#f7f0e6;color:#632525;text-align:center}.waiting h1{font-family:Georgia,serif;font-size:clamp(2rem,6vw,4rem);font-weight:500}.waiting p{max-width:36rem;color:#6b5651}.previewShell{min-height:100svh}

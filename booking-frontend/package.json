@@ -6,7 +6,18 @@
     "dev": "next dev -p 3004",
     "build": "next build",
     "start": "next start -p 3004",
-    "lint": "next lint"
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit --incremental false",
+    "test:homepage": "node --test tests/homepage-contracts.test.cjs",
+    "test:properties": "node --test tests/property-listing.test.mjs tests/properties-listing-contracts.test.cjs",
+    "test:property-detail": "node --test tests/property-detail-contracts.test.cjs tests/amenity-presentation.test.mjs",
+    "test:browser:homepage": "node tests/homepage-browser-qa.cjs",
+    "test:browser:properties": "node tests/properties-listing-browser-qa.cjs",
+    "test:browser:our-story": "node tests/our-story-browser-qa.cjs",
+    "test:browser:contact-design": "node tests/contact-design-browser-qa.cjs",
+    "test:browser:navigation": "node tests/navigation-consistency-browser-qa.cjs",
+    "test:browser:property-detail": "node tests/property-detail-browser-qa.cjs",
+    "test:browser:homepage-cms": "node tests/homepage-cms-browser-qa.cjs"
   },
   "dependencies": {
     "next": "^14.2.11",

@@ -122,9 +122,9 @@ export default function HomeClient({
       resolveAssetUrl(properties.find((item) => item.gallery_urls?.[1])?.gallery_urls?.[1] || properties.find((item) => item.hero_image_url)?.hero_image_url || ''),
     [properties],
   )
-  const regions = useMemo(() => Array.from(new Set(properties.map((item) => item.public_region_label || item.region).filter(Boolean))), [properties])
+  const regions = useMemo(() => Array.from(new Set(properties.map((item) => item.public_region_label).filter(Boolean))), [properties])
   const featuredProperties = useMemo(
-    () => (!activeRegion ? properties : properties.filter((item) => (item.public_region_label || item.region) === activeRegion)).slice(0, 3),
+    () => (!activeRegion ? properties : properties.filter((item) => item.public_region_label === activeRegion)).slice(0, 3),
     [activeRegion, properties],
   )
   const mapUrl = useMemo(() => {
@@ -467,10 +467,9 @@ export default function HomeClient({
                   {property.hero_image_url ? <img className={styles.propertyImage} src={resolveAssetUrl(property.hero_image_url)} alt={property.hero_title} /> : null}
                   <div className={`${styles.propertyBody} ${styles.propertyBodyCompact}`}>
                     <h3 style={{ margin: 0, fontSize: 24, letterSpacing: '-0.04em' }}>{property.hero_title}</h3>
-                    <div className={styles.muted} style={{ marginTop: 6 }}>{property.public_region_label || property.region || 'Melbourne'}</div>
+                    <div className={styles.muted} style={{ marginTop: 6 }}>{property.public_region_label || 'Melbourne'}</div>
                     <div className={styles.propertySpecs}>
                       {property.public_capacity_override || property.capacity} {t.guestsUnit}
-                      {property.bed_config ? ` · ${property.bed_config}` : ''}
                       {property.type ? ` · ${property.type}` : ''}
                     </div>
                     <div className={styles.propertyFoot}>

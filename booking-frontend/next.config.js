@@ -57,7 +57,22 @@ const nextConfig = {
       process.env.VERCEL_GIT_COMMIT_SHA || process.env.COMMIT_REF || process.env.RENDER_GIT_COMMIT || '',
   },
   async rewrites() {
-    if (!isDev) return []
+    const assetRewrites = [
+      { source: '/homepage/brand-source.png', destination: '/mz-logo.png' },
+      { source: '/homepage/mz-mark-v2.png', destination: '/homepage/mz-mark-v2.svg' },
+      { source: '/homepage/contact.jpg', destination: '/homepage/contact.svg' },
+      { source: '/homepage/qualities.jpg', destination: '/homepage/qualities.svg' },
+      { source: '/homepage/story.jpg', destination: '/homepage/story.svg' },
+      { source: '/homepage/testimonial.jpg', destination: '/homepage/testimonial.svg' },
+      { source: '/homepage/property-melbourne-web.jpeg', destination: '/homepage/property-melbourne-web.svg' },
+      { source: '/homepage/property-st-kilda.jpeg', destination: '/homepage/property-st-kilda.svg' },
+      { source: '/homepage/property-docklands.avif', destination: '/homepage/property-docklands.svg' },
+      { source: '/our-story/beginning-apartment.jpg', destination: '/our-story/beginning-apartment.svg' },
+      { source: '/our-story/growth-balcony.jpg', destination: '/our-story/growth-balcony.svg' },
+      { source: '/our-story/care-preparation.jpg', destination: '/our-story/care-preparation.svg' },
+      { source: '/our-story/attention-to-detail.jpg', destination: '/our-story/attention-to-detail.svg' },
+    ]
+    if (!isDev) return assetRewrites
     const normalizeTarget = (raw) => {
       const s = String(raw || '').trim().replace(/\/+$/g, '')
       if (!s) return ''
@@ -74,7 +89,7 @@ const nextConfig = {
     }
     const desired = normalizeTarget(process.env.NEXT_PUBLIC_API_BASE_URL || process.env.NEXT_PUBLIC_API_BASE_DEV || '')
     const destination = desired || 'http://localhost:4002'
-    return [{ source: '/api/:path*', destination: `${destination}/:path*` }]
+    return [...assetRewrites, { source: '/api/:path*', destination: `${destination}/:path*` }]
   },
 }
 

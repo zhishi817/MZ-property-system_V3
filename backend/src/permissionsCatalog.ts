@@ -165,6 +165,21 @@ function menuMeta(code: string): PermissionMeta | null {
 }
 
 const fixed: Record<string, Omit<PermissionMeta, 'code'>> = {
+  'guest_site_policies.publish': {
+    displayName: '客人网站规则：发布（高危）',
+    riskLevel: 'high',
+    purpose: '允许将公司或单房源的规则与入住服务草稿发布到访客网站。',
+    scenarios: [
+      '核对真实房源预览和影响清单后发布单个规则分区',
+      '发布单房源例外并原子切换该分区为例外模式',
+    ],
+    denyImpact: [
+      '仍可在具备相应编辑权限时保存草稿，但不能改变访客网站正在使用的规则版本',
+    ],
+    privacyRisk: [
+      '误发布会改变住客可见的规则、时间或服务承诺，必须与普通编辑权限分离并保留审计',
+    ],
+  },
   'rbac.manage': {
     displayName: '角色权限：管理（高危）',
     riskLevel: 'high',

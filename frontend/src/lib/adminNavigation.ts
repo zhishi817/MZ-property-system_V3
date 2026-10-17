@@ -661,7 +661,7 @@ export const ADMIN_NAVIGATION: AdminNavNode[] = [
       },
       {
         id: 'guest-site-inquiries',
-        label: '询单管理',
+        label: '询单与留言',
         href: '/guest-site/inquiries',
         visibleWhenAny: ['menu.guest_site.inquiries.visible'],
         rbacKey: 'menu.guest_site.inquiries.visible',
