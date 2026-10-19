@@ -1,5 +1,170 @@
 # Change Release Ledger
 
+## CRL-20261016-003 — MZ-044 人员结算资料证件与签证私有展示
+
+- **Status:** implemented and revalidated on fresh origin/Dev; uncommitted; permission migration prepared but not executed
+- **Repository:** `root`
+- **Updated:** 2026-10-19 UTC
+- **Request:** 在 Web「人员与费用规则」结算资料详情中显示当前移动端个人资料的 Photo ID、Visa Grant Number 与签证文件；只有管理员和财务可见，其他角色连上传状态、号码和文件入口都不能收到；文件必须经认证按需私有读取并留审计。本 CRL 不包含 MZ-044 `profile_effective_date_locked` 保存报错修复。
+- **Outcome:** 新增独立高敏权限 `personnel_settlements.profile_documents.view`，默认只授予 admin 与 finance_staff；服务端同时强制有效角色白名单与专用权限，其他角色即使被自定义授予权限也收不到敏感字段、能力标记或文件字节。列表始终不返回证件/签证字段；Web 仅在后端返回权威能力标记时显示当前资料并在点击后读取私有文件；文件响应不返回 R2 key、原始引用、公开 URL 或预签名 URL，每次成功读取在 `audit_logs` 记录目标用户、文件类型与操作者，不记录号码、文件引用或内容。
+
+### Implementation
+
+- Previous behavior: 结算资料详情对所有拥有 `personnel_settlements.profiles.view` 的角色显示 Photo ID 上传状态，但没有 Visa Grant Number、签证文件状态或文件预览；清洁经理和线下经理也继承该查看权限。
+- New behavior: 普通结算资料权限不再携带任何证件/签证字段；只有有效角色包含 admin / finance_staff 且具备独立高敏权限时，详情才返回字段和权威能力标记，私有文件端点才放行。移动端 `/users/me` 与本人文件读取行为保持不变，历史 `personnel_settlement_profiles` 和周结算快照不新增证件字段。
+- File access: `GET /finance/settlements/profiles/:userId/profile-documents/:documentType` 仅接受 `photo_id` / `visa_document`，并且只接受严格匹配目标用户与文件类型的 `mzapp/profile-documents/:userId/:documentType/` 私有路径；App 本人端点继续兼容既有 `mzapp/*` 引用。R2 内容读取成功且审计写入成功后才返回 `private, no-store` 的 inline 响应。
+- Web behavior: 文件只在用户点击「查看」后取回，存入临时 blob URL；弹窗关闭、抽屉关闭、预览替换或组件卸载时撤销 blob URL。图片与 PDF 可内嵌查看，没有显式下载入口。
+- Permission rollout: 新迁移只为现有 admin / finance_staff 角色写入独立权限；清洁经理、线下经理与其他默认角色不获授权。端点另有角色白名单，因此其他角色即使通过自定义授权获得该权限也会被拒绝。迁移仅准备，未经授权未执行。
+
+### Files / Areas
+
+- `backend/package.json`
+- `backend/scripts/migrations/20261016_personnel_profile_documents_view_permission.sql`
+- `backend/scripts/tests/test_personnel_profile_documents_admin_contract.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts`
+- `backend/scripts/tests/test_profile_compliance_document_contract.ts`
+- `backend/src/lib/personnelProfileDocumentAccess.ts`
+- `backend/src/lib/personnelSettlementProfiles.ts`
+- `backend/src/lib/profileDocuments.ts`
+- `backend/src/modules/personnel_settlements.ts`
+- `backend/src/modules/users.ts`
+- `backend/src/permissionsCatalog.ts`
+- `backend/src/store.ts`
+- `frontend/src/app/finance/settlements/page.tsx`
+- `frontend/src/app/finance/settlements/profileDocumentPreview.test.ts`
+- `frontend/src/app/finance/settlements/profileDocumentPreview.ts`
+- `docs/feature-regression-registry.md`
+- `docs/change-release-ledger.md`
+
+### Validation
+
+- `test_personnel_profile_documents_admin_contract.ts` — PASS; verifies dedicated permission/grants, no cleaning/offline default grant, admin/finance_staff role whitelist, custom-role denial even when permission is separately granted, response/capability gating, private endpoint/audit/no-store contract, and Web on-demand-fetch contract.
+- `test_profile_compliance_document_contract.ts` — PASS; verifies the existing self-service contract plus accepted own-path and rejected cross-user/cross-type/non-MZ references using synthetic values only.
+- `test_personnel_settlement_phase1.ts` — PASS; verifies unauthorized profile serialization omits all three sensitive fields and the capability marker, while authorized serialization returns the marker plus synthetic Photo ID status, visa file status and grant number.
+- Backend `./backend/node_modules/.bin/tsc -p backend --noEmit` — PASS on the fresh-base candidate using a temporary read-only dependency donor; no backend `dist` output was emitted.
+- Frontend `npm run lint --prefix frontend` — PASS with exit 0; repository-wide pre-existing warnings remain, with no lint error.
+- Frontend `npm run test --prefix frontend` — PASS; 124/124 suites and 286/286 tests, including three profile-document preview tests.
+- Frontend `npm run build --prefix frontend` — PASS; optimized production build compiled, type-checked and generated 96 static pages.
+- `npm run check:feature-registry` — PASS; 33 FRs / 272 test mappings, with 86 paired-Mobile mappings correctly deferred.
+- `python3 -B scripts/audit_change_release_ledger.py` — PASS; all 17 changed paths are recorded by this CRL.
+- `git diff --check` — PASS.
+- Historical independent read-only review — the earlier display-only candidate on `origin/Dev@391bb17` received GO with P0/P1/P2 = 0. A new independent review of this display-only extraction is required before commit.
+- Production/API/database/file access — not run. Tests use synthetic identifiers and content only; no identity document was downloaded or opened.
+
+### Impact / Dependencies
+
+- Base and lineage: canonical `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`.
+- Runtime dependencies: existing authenticated session/role snapshot, `userHasAnyPerm`, PostgreSQL `users` + `audit_logs`, and configured R2 reader. No new package dependency.
+- Schema/grant dependency: prepared additive permission migration aligns persisted role grants for admin/finance_staff; it has not been executed. Application endpoints still enforce both the effective-role whitelist and permission at runtime.
+- Registry: FR-008 owns the sensitive document watermarks, storage, self-service and Web private-view boundaries; FR-029 and the separate `root/CRL-20261019-001` save unit are not changed by this extraction.
+- Generated-file review: `PASS`; no generated output or dependency cache is part of the 17-path candidate.
+- Sensitive-information review: `PASS`; the candidate contains no credential, token, environment value, production payload, object-key instance, identity number, document bytes or user identity fixture. All tests use synthetic values.
+- Exact candidate scope: 17 paths = 8 backend source/config paths + 3 backend test paths + 1 prepared migration + 3 frontend paths + 2 governance documents.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** `prepared`
+- **Untracked review:** none; the migration, three new backend files/tests and two new frontend files/tests are intentional source candidates, and no dependency link, cache, build output, environment file or generated artifact remains.
+- `backend/package.json` — SHA-256: `8e9378535e87d8fdc185dcca8c5cf2539e17aa5b9ababfd0672b6a2116fde710`
+- `backend/scripts/migrations/20261016_personnel_profile_documents_view_permission.sql` — SHA-256: `8e0cc0daa5a8ebb18307e6af8eb46e5c35410115e77db9f95253755588b0437f`
+- `backend/scripts/tests/test_personnel_profile_documents_admin_contract.ts` — SHA-256: `09ca3d180769a83052dd0b0baf0dbfb3c353a1b62a47233decf8a91fa00e6a56`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `2a521357fe4eb2b61fe19e165cb66977c907c7dcc8b56e53814672a8187a7ed0`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `8c7a6ca05db363342251e794707c3d0ecb75d5151e17a2068ad87d9f3fc5128c`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `973f6d41d47237517c500d9bff389330bea293a19fd157516721a0ea7c2c1f89`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `b946142b7f0d4ca0629e288e5ebf6cc8a305a62927a7bcadd1bc169e3cdb9164`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `cfb49666625da91ca2fddda8e7d94013ec19b8dcc3f22e3ae87a285f335edf96`
+- `backend/scripts/tests/test_profile_compliance_document_contract.ts` — SHA-256: `014b6ea2fa03339e046a18138fc9db5fef8bbe705650198c3173c9ee46ce5fc5`
+- `backend/scripts/tests/test_profile_compliance_document_contract.ts` — SHA-256: `66c0aa2e162dcb82b2807012707c713327bd4c5b7da802334903284c51e5734b`
+- `backend/scripts/tests/test_profile_compliance_document_contract.ts` — SHA-256: `a7c937261d125e2dad58f7f079834f1f114d399253cba7b38b8b9520e340c0dd`
+- `backend/src/lib/personnelProfileDocumentAccess.ts` — SHA-256: `21ebc3443024054e3a1f4a95833acb87e6727ae8afb5bf5857f44753797c47aa`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `0ebb983813281ce69cdfa2cc04b812384bd26d59f5b6467e31364e04ee144747`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `1b56520394c113a896fe085122f108e7fbc7f303feb0b174cc686643c06e8cdc`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `3faf67b642eeceba7985c4750c18e06975943ca6ac6c61db44b4ce63f1ee76c0`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `47b00fb7795afce7096b0df0e1f14e8588ceda23a5f07ec1c5e226ebe2d01280`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `52664539c34ce6db3c77a686446edef075c38d37d20aa0f127069060ff3ad7d0`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `66fffe13f35946d8e1f4893712360cbcb12a52ba3ff46e7ef5c50baf17c7488e`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `70f59a61144ea175df4945fe38c5ae0996179b3f41b1e08b37e2db77809376c0`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `8033f6d14ca87b23fec5a18807f96d16a236b1eeabab44500d1a5fcbd09d05a7`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `b6fa886032aac7512914e198312015f7c08b5c55d4cb5677868de85f7061f2b4`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `c2f0f18ecca698ae96bc69d6a34ff9d41ccfa2d4346c0f58ce5c7dcbe767416e`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `c585c440effbccf454cc98403e661342881d9a021d2e5037162f5409401b80f4`
+- `backend/src/lib/profileDocuments.ts` — SHA-256: `f2e37f6ec54ef92a1a67a0fff11162ab6a0bfebfed02c92d89c8e505f577f076`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `20a0badfc23b8043428b9d5184f3365a2c7aa13a08a3e446cf7743c0d0d4cb48`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `23d68a703bb014d3ae5e9dda8430396ffa2d78a49de6d94dcf87174260e94aa3`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `4febaea3dc9ce780d99df05da0c3d638f1cce7c0d7b65e4564a31787488c780a`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `5e1d94d0ed0c63bf4c699bc5dadd05a3fd5fed759a39afc5fe3b3c7ba9651934`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `6f24e07f7e9e652045e33db1e5d7c8ce0a0d10e7f1d4f176deea3eff2aefa794`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `739fc21a90ff35149dac7a939ae8362cfb402938c7ee15447d093cb0cd0718f0`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `95a2dd085ef58a9bd3740dcfa8847a68c099973ab92747827d70cd14768ba574`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `95f0a5fd29b60d215d9dd60270d79a7a7a13b4952b943072c210ac7ef3f5a3e0`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `9830d610501aa2016a11120054b53d8969ab2978c8c374e17ff0ea7ddc3cc7e1`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `be03c88e4d473889713fd33f63d2bc63c8876e502aa6449137f35d65de95465e`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `f29612f21dc6913cee0b65562af4dbc2c948bf5174b9a3bfda33c0b9319db1cb`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `ff62abfd63bf1ece3f9811bef6101877d600b5adb2a3a90954bd2162b980f2d1`
+- `backend/src/modules/users.ts` — SHA-256: `604fd3b4defecf5bd646b0512689e011a558f44bfbf4fe6de761e9b01e30fd47`
+- `backend/src/modules/users.ts` — SHA-256: `8e3fab4935796f8545e63ec3c11a06f4a9490572f9ebdd8c13c5481f581595cd`
+- `backend/src/modules/users.ts` — SHA-256: `bc91bb86a08616ccb5398336000e781cc2cc4526496a8f9c72c87e36f516fcb4`
+- `backend/src/modules/users.ts` — SHA-256: `cce5f9717387171616fbbb5e0cf9a09a61fbe78b5888cda2b041e6e20e05a0bb`
+- `backend/src/modules/users.ts` — SHA-256: `f4e147f38c4960d3fa32dc43c96342d035bf5dc455fc6e691a0afca1b8e48891`
+- `backend/src/permissionsCatalog.ts` — SHA-256: `f719c450ab3dbcfbc407c0d279480d3ea7c3dcb436d5e934fa4a4aed43ad3643`
+- `backend/src/store.ts` — SHA-256: `619ea318c209a5f3bf3f645331a12480d2f314b2f6df443ce77d8a627552306f`
+- `backend/src/store.ts` — SHA-256: `bc272d87accc556944bb4a47871025a97319d50afee5e566f8364b9dc1fd6672`
+- `backend/src/store.ts` — SHA-256: `c7193f606a6a86191e2737bce565eed37e3b86bdf396924c1f30c3ce8ab3dea4`
+- `docs/feature-regression-registry.md` — SHA-256: `10dd0c985e5120b5aabdbab243db83ba9a8ee2472ac183961166d65c0d43d1a8`
+- `docs/feature-regression-registry.md` — SHA-256: `2ae5e61ec301b44319eb452fefc9eae1e9c3c1771de2ac160c1903a2d9a00bed`
+- `docs/feature-regression-registry.md` — SHA-256: `5891ef3c1fd4e2b078264909035e82cf36c2c4b29a44edbcf7f49c2ee08a3552`
+- `docs/feature-regression-registry.md` — SHA-256: `beae7cabcd4cbe9cebda7e61dcaa0f53bc614530355efca4ee00228d0189b191`
+- `docs/feature-regression-registry.md` — SHA-256: `c94b3faec6f4f5baa29cf139d91cfd6302e93d7f583afd90308813e13bb465ac`
+- `docs/feature-regression-registry.md` — SHA-256: `d412d8077772ca3c376505d7f873cb0ba2ff8e7f2cf13ea46ac1aba140da1e84`
+- `docs/feature-regression-registry.md` — SHA-256: `d56c9408dede8d229c8a8a597d282fbff22bacc1b4ef76d7ff918e3335acdfa2`
+- `docs/feature-regression-registry.md` — SHA-256: `e185aac721c383085a411357a8784c2b85626c08217760e34f3ff2649ecd0c2c`
+- `docs/feature-regression-registry.md` — SHA-256: `e74ffbade1fb98a6fa57e919c5c8e653067800bfd2dffd276a082d8bf126720c`
+- `docs/feature-regression-registry.md` — SHA-256: `ed9fa3f16ffd8d0e938efcfbbfd07f529a2369b1ca0f654c4559ddf2e9a66b5f`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `08567125f2569c2ed71bf177d7f87bf84ebadcc76b410a2fd6ca4bee9405368f`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `0a7c3805cff9628d5cc4ac85acc03e33ab84beb6af2491d40db0808cd1f69ae8`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `266803ab2324c0552da0850ef8a186688bb75d07680691683d07902c4e62a284`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `3903ab3cdbb6133a11f3e76f73584a91caf851e71331a9c4ba477302cdd2d879`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `5545c6c9078059687c7fb7e8c7aacfc9eb37e60d3325280ad089bd540fef075e`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `58aa4ebbce92d88465574992bbd2fdcc81fa80a417001ebc5f604d9945bb3e93`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `7d0231f2e99e91d95c5732aae5f04f290934c2bc2c11ae4b087971f6e80092c2`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `b859678fb4e903ea7cb1b232350a1bffedc30058d1d22eb03f6a68ee51484c6d`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `b91accc6b49107922fec78d25acf507a40de1706c8a0b9a9e9303ef488d38316`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `c3915f844bdfd102172d7d11c2f6c4cb3335dc7ab5354929a12d62855c0d2faf`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `d6944d8b5b41720c35ae6b76a3b6337586c9b0d18850615f4e7cd4cdd252ee25`
+- `frontend/src/app/finance/settlements/profileDocumentPreview.test.ts` — SHA-256: `2c3a40a2a9b2e88edd39531010efa68985049e8d7b4793cc4565bb543e468d2e`
+- `frontend/src/app/finance/settlements/profileDocumentPreview.ts` — SHA-256: `b56fc55c15d7566c96c947e35cb3a25aeb9937ae33624a1ce55d6df2dd89a08b`
+
+### Release Attempts
+
+#### RA-20261019-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-003`
+- Selected CRL identities: `root/CRL-20261016-003`
+- Intended action: `commit`
+- Branch: `codex/mz044-profile-display-20261019`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19 UTC`
+- Candidate patch SHA-256: `136e570a45d88b0e5bf62c8d9ae774f2443ca0c348228a34ed984aa25d458628`
+- Commit SHA: `not committed`
+- Dependencies: prepared additive permission migration is source-only and was not executed; runtime uses existing PostgreSQL, authenticated role snapshot and configured private R2 reader.
+- Required validation: `PASS for source commit`; evidence: three focused backend contracts, backend TypeScript, focused preview tests, frontend lint, Feature Registry, ledger coverage and diff checks passed. No production API/database/file read was performed.
+- Shared-hunk review: `PASS`; evidence: all save-only no-op/advisory-lock hunks and FR-029 save mappings were removed from this display extraction.
+- Generated-file review: `PASS`; evidence: no dependency link, cache, build output, environment file or generated artifact remains.
+- Technical state: `verified`
+- User authorization: `selected-for-commit`; evidence: the current direct instruction selects both existing MZ-044 candidates for isolated task-branch commit/push after overlap reconciliation.
+- Independent review: `GO for source commit`; evidence: fresh staged review matched the fingerprint, 17 paths / 68 non-ledger hunks and branch/base with P0=0, P1=0, P2=0 and one non-blocking registry-wording P3.
+- Action conclusion: `GO` for the source commit; blockers: none for commit. Migration execution, deployment and production file/database access remain separate prohibited actions.
+
+### Risks / Release Notes
+
+- The prepared permission migration must be reviewed and explicitly authorized before execution; it persists and aligns the database role grant. The runtime permission fallback also grants the new permission to the built-in finance role once this code is deployed, so migration non-execution alone must not be treated as a feature-disable switch.
+- Successful file viewing intentionally writes one audit row; failure to write the audit row fails closed and does not return file bytes.
+- Current-data behavior is deliberate: Photo ID, Visa Grant Number and visa file come from `users`; they do not alter date-versioned settlement profiles or historical weekly snapshots.
+- The MZ-044 save fix remains a separate release unit and branch; its no-op/locking hunks are intentionally absent from this display-only extraction.
+- Rollback: revert this CRL's code/test/registry/ledger hunks; do not run or reverse the prepared migration as part of this source push.
+- Git state: uncommitted display-only candidate on `codex/mz044-profile-display-20261019`; no push, PR, migration, production write/read, deployment or release performed.
+
 ## CRL-20261011-001 — MZ-010 客人已通知权限与任务闭环（root）
 
 - **Status:** validated and independently reviewed clean Dev release candidate; not committed, pushed, merged, deployed, or migrated

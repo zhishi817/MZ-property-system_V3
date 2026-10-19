@@ -235,7 +235,11 @@ export function validatePersonnelProfilePatch(input: {
   }
 }
 
-function profileResponse(row: any, includeBankDetails: boolean) {
+function profileResponse(row: any, input: {
+  includeBankDetails: boolean
+  includeProfileDocuments: boolean
+  includeVisaDetails: boolean
+}) {
   const bankComplete = !!(
     cleanText(row?.bank_account_name)
     && normalizeBsb(row?.bank_bsb).length === 6
@@ -256,24 +260,31 @@ function profileResponse(row: any, includeBankDetails: boolean) {
     effective_to: row.effective_to || null,
     settlement_enabled: !!row.settlement_enabled,
     person_type: row.person_type || defaultPersonnelType(row.role),
-    photo_id_uploaded: !!String(row.photo_id_url || '').trim(),
     bank_details_complete: bankComplete,
-    bank_account_name: includeBankDetails ? row.bank_account_name || null : null,
-    bank_bsb: includeBankDetails ? row.bank_bsb || null : null,
-    bank_account_number: includeBankDetails ? row.bank_account_number || null : null,
+    bank_account_name: input.includeBankDetails ? row.bank_account_name || null : null,
+    bank_bsb: input.includeBankDetails ? row.bank_bsb || null : null,
+    bank_account_number: input.includeBankDetails ? row.bank_account_number || null : null,
     bank_bsb_masked: maskBsb(row.bank_bsb),
     bank_account_masked: maskAccount(row.bank_account_number),
     fee_rule_name: row.fee_rule_name || null,
     fee_rule_price_basis: row.fee_rule_price_basis || null,
     fee_rule_effective_from: row.fee_rule_effective_from || null,
     updated_at: row.updated_at || null,
+    ...(input.includeProfileDocuments ? {
+      photo_id_uploaded: !!String(row.photo_id_url || '').trim(),
+    } : {}),
+    ...(input.includeVisaDetails ? {
+      profile_documents_access: true as const,
+      visa_document_uploaded: !!String(row.visa_document_url || '').trim(),
+      visa_grant_number: row.visa_grant_number || null,
+    } : {}),
   }
 }
 
 const PROFILE_SELECT = `
   SELECT u.id AS user_id, u.username, u.display_name, u.role, u.legal_name,
          u.personal_abn, u.bank_account_name, u.bank_bsb, u.bank_account_number,
-         u.photo_id_url,
+         u.photo_id_url, u.visa_document_url, u.visa_grant_number,
          p.id AS profile_id, p.effective_from::text, p.effective_to::text,
          p.settlement_enabled, p.person_type, p.supplier_legal_name,
          p.supplier_business_name, p.abn, p.gst_status, p.payment_method,
@@ -304,6 +315,8 @@ const PROFILE_SELECT = `
 export async function listPersonnelSettlementProfiles(input: {
   search?: string
   includeBankDetails: boolean
+  includeProfileDocuments: boolean
+  includeVisaDetails: boolean
 }, executor: Queryable | null = pgPool) {
   if (!executor) throw new Error('pg_required')
   assertPersonnelSettlementSchemaReady()
@@ -314,24 +327,28 @@ export async function listPersonnelSettlementProfiles(input: {
       ORDER BY COALESCE(NULLIF(TRIM(u.display_name), ''), NULLIF(TRIM(u.username), ''), u.id::text)`,
     [search],
   )
-  return (result.rows || []).map((row: any) => profileResponse(row, input.includeBankDetails))
+  return (result.rows || []).map((row: any) => profileResponse(row, input))
 }
 
 export async function getPersonnelSettlementProfile(input: {
   userId: string
   includeBankDetails: boolean
+  includeProfileDocuments: boolean
+  includeVisaDetails: boolean
 }, executor: Queryable | null = pgPool) {
   if (!executor) throw new Error('pg_required')
   assertPersonnelSettlementSchemaReady()
   const result = await executor.query(`${PROFILE_SELECT} WHERE u.id::text = $1 LIMIT 1`, [input.userId])
   const row = result.rows?.[0]
-  return row ? profileResponse(row, input.includeBankDetails) : null
+  return row ? profileResponse(row, input) : null
 }
 
 export async function savePersonnelSettlementProfile(input: {
   userId: string
   actorUserId: string
   source: 'mobile_self' | 'web_admin'
+  includeProfileDocuments: boolean
+  includeVisaDetails: boolean
   reason?: string | null
   effectiveDate: string
   currentEffectiveDate?: string | null
@@ -525,5 +542,10 @@ export async function savePersonnelSettlementProfile(input: {
     return profileId
   })
   if (!saved) throw new Error('save_failed')
-  return getPersonnelSettlementProfile({ userId: input.userId, includeBankDetails: true })
+  return getPersonnelSettlementProfile({
+    userId: input.userId,
+    includeBankDetails: true,
+    includeProfileDocuments: input.includeProfileDocuments,
+    includeVisaDetails: input.includeVisaDetails,
+  })
 }

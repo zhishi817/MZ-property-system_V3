@@ -453,6 +453,7 @@ if (db.roles.length === 0) {
     { code: 'personnel_settlements.view' },
     { code: 'personnel_settlements.profiles.view' },
     { code: 'personnel_settlements.profiles.manage' },
+    { code: 'personnel_settlements.profile_documents.view' },
     { code: 'personnel_settlements.bank.manage' },
     { code: 'personnel_settlements.rules.manage' },
     { code: 'inventory.view' },
@@ -567,7 +568,7 @@ if (db.roles.length === 0) {
   // 兼容旧角色名：cleaner_inspector
   grant(legacyCleanerInspectorId, ['menu.cleaning','menu.cleaning.overview.visible','menu.cleaning.task_center.visible','menu.cleaning.daily.visible','menu.dashboard','cleaning_app.tasks.view.self','cleaning_app.tasks.start','cleaning_app.tasks.finish','cleaning_app.issues.report','cleaning_app.media.upload'])
   // 财务人员：财务结算与交易录入、房东/房源管理
-  grant(financeId, ['finance.payout','finance.tx.write','personnel_settlements.view','personnel_settlements.profiles.view','personnel_settlements.profiles.manage','personnel_settlements.bank.manage','personnel_settlements.rules.manage','invoice.view','invoice.draft.create','invoice.issue','invoice.send','invoice.void','invoice.payment.record','invoice.company.manage','invoice.type.switch','order.deduction.manage','order.cancel','landlord.manage','property.write','property_maintenance.view','property_deep_cleaning.view','onboarding.manage','onboarding.read','inventory_linen_purchase_orders.view','inventory_linen_purchase_orders.pay','menu.inventory','menu.inventory.linen.visible','menu.inventory.linen.purchase_orders.visible','menu.finance','menu.finance.personnel_settlements.visible','menu.finance.invoices.visible','menu.finance.property_payables.visible','menu.landlords','menu.properties','menu.onboarding','menu.dashboard','cleaning_app.expense.company.submit','cleaning_app.expense.company.view.self','cleaning_app.expense.company.edit.self','cleaning_app.expense.company.delete.self','cleaning_app.expense.property.submit','cleaning_app.expense.property.view.self','cleaning_app.expense.property.edit.self','cleaning_app.expense.property.delete.self'])
+  grant(financeId, ['finance.payout','finance.tx.write','personnel_settlements.view','personnel_settlements.profiles.view','personnel_settlements.profiles.manage','personnel_settlements.profile_documents.view','personnel_settlements.bank.manage','personnel_settlements.rules.manage','invoice.view','invoice.draft.create','invoice.issue','invoice.send','invoice.void','invoice.payment.record','invoice.company.manage','invoice.type.switch','order.deduction.manage','order.cancel','landlord.manage','property.write','property_maintenance.view','property_deep_cleaning.view','onboarding.manage','onboarding.read','inventory_linen_purchase_orders.view','inventory_linen_purchase_orders.pay','menu.inventory','menu.inventory.linen.visible','menu.inventory.linen.purchase_orders.visible','menu.finance','menu.finance.personnel_settlements.visible','menu.finance.invoices.visible','menu.finance.property_payables.visible','menu.landlords','menu.properties','menu.onboarding','menu.dashboard','cleaning_app.expense.company.submit','cleaning_app.expense.company.view.self','cleaning_app.expense.company.edit.self','cleaning_app.expense.company.delete.self','cleaning_app.expense.property.submit','cleaning_app.expense.property.view.self','cleaning_app.expense.property.edit.self','cleaning_app.expense.property.delete.self'])
   // 仓库管理员：仓库与钥匙管理
   grant(inventoryId, [
     'inventory.view','inventory.move','inventory.item.manage','inventory.po.manage',
@@ -601,7 +602,7 @@ const defaultPerms = [
   'keyset.manage','key.flow',
   'cleaning.view','cleaning.schedule.manage','cleaning.task.assign',
   'finance.payout','finance.tx.write',
-  'personnel_settlements.view','personnel_settlements.profiles.view','personnel_settlements.profiles.manage','personnel_settlements.bank.manage','personnel_settlements.rules.manage',
+  'personnel_settlements.view','personnel_settlements.profiles.view','personnel_settlements.profiles.manage','personnel_settlements.profile_documents.view','personnel_settlements.bank.manage','personnel_settlements.rules.manage',
   'order.deduction.manage',
   'property_maintenance.workflow.manage',
   'inventory.view','inventory.move','inventory.item.manage','inventory.po.manage','landlord.manage',

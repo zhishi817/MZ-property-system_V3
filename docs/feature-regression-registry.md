@@ -1638,10 +1638,10 @@
 
 - 任务状态、交接内容、钥匙借还权限或仓库钥匙数据本身的修改。
 
-## FR-008：员工 Photo ID 与签证资料的水印、存储与自助隔离
+## FR-008：员工 Photo ID 与签证资料的水印、存储与私有隔离
 
-- **维护责任范围：** backend / mobile
-- **最后审查日期：** 2026-07-29
+- **维护责任范围：** backend / web / mobile
+- **最后审查日期：** 2026-10-16
 - **状态：** active
 
 ### 业务保护规则
@@ -1651,45 +1651,54 @@
 - Photo ID 与签证图片缩略图可打开只读、等比的全屏大图；大图必须支持 1x–4x 双指捏合缩放与放大后拖动查看局部，并可通过关闭按钮、背景或系统返回关闭。全屏层不得新增下载、替换、删除、上传、保存或权限能力。
 - 签证资料只保留“已上传”存在标记和 Visa Grant Number；既有本地个人资料缓存中的地址或 key 必须归一化为存在标记，不能使资料页崩溃或把字段误写为其他用户的数据。
 - `GET /users/me` 只返回当前用户的 `photo_id_uploaded` / `visa_document_uploaded`，不返回对象 URL 或 storage key；图片字节只能由认证的 `GET /users/me/profile-documents/:type` 读取，响应禁止共享缓存。通讯录和任务列表等非个人资料入口不得返回或展示 Photo ID、签证文件地址、Visa Grant Number。
+- Web 人员结算列表始终不得返回 Photo ID、签证文件存在状态或 Visa Grant Number；人员详情与私有文件字节必须同时满足有效角色包含 `admin` / `finance_staff` 之一和独立权限 `personnel_settlements.profile_documents.view`。其他角色即使被自定义授予该权限，也不得收到字段、能力标记或文件字节。
+- Web 私有读取只接受目标用户和目标类型严格匹配的 `mzapp/profile-documents/<owner>/<type>/...` 引用，必须在返回字节前成功写入不含号码、对象引用或内容的查看审计；对象不存在返回 404、存储不可用返回 503、审计失败关闭读取。响应不得暴露 storage key、原始引用、公开 URL 或预签名 URL。
+- Web 只能在详情响应含后端权威能力标记且用户点击“查看”后认证读取文件；临时 blob URL 必须在预览替换、弹窗/抽屉关闭或组件卸载时撤销，不提供显式下载入口。
 - 服务端仅接受当前用户、对应证件类型的 `mzapp/profile-documents/<owner>/<type>/...` 私有引用；上传必须由服务端分配该 key 并强制匹配水印类型，不能写入任意 URL 或其他用户的对象键。
 - 图片上传成功不等于资料保存成功：上传结果必须通过 `/users/me` 落到当前用户的对应字段；失败时不得把失败的本地预览当成已存档资料。
 
 ### 跨层适用范围
 
-- **后端：** `/mzapp/upload` 的资料水印模式、`users` 字段初始化、自助资料 schema 与 `/users/me` 读写。
+- **后端：** `/mzapp/upload` 的资料水印模式、`users` 字段初始化、自助资料 schema 与 `/users/me` 读写；`/finance/settlements/profiles` 的列表/详情字段裁剪和私有证件读取审计。
+- **Web：** 费用结算“人员与费用规则”详情的权威能力门槛、按需认证读取、图片/PDF 内嵌预览与 blob 生命周期。
 - **客户端：** 个人资料页的图片选择、本地预览水印、远程水印文件预览、Visa Grant Number 编辑和个人资料缓存迁移。
-- **入口：** 移动端“我 → 个人信息 → 编辑资料”。
+- **入口：** 移动端“我 → 个人信息 → 编辑资料”；Web“费用结算 → 人员与费用规则 → 资料详情”。
 - **一致性：** 服务端生成的水印文件是最终存档；本地覆盖层仅用于尚未被服务端处理的即时预览。
 
 ### 测试映射
 
 | 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
 |---|---|---|---|---|
-| 自助字段、私有读取和整版水印模式 | `backend/scripts/tests/test_profile_compliance_document_contract.ts` | 校验 presence flags、认证私有 reader、owner/type key 校验、三个 schema 初始化入口和两种水印模式 | partial | `./node_modules/.bin/ts-node --transpile-only scripts/tests/test_profile_compliance_document_contract.ts` |
+| 自助字段、私有读取和整版水印模式 | `backend/scripts/tests/test_profile_compliance_document_contract.ts` | 校验 presence flags、认证私有 reader、owner/type key 校验、三个 schema 初始化入口和两种水印模式 | sufficient | `npm run test:profile-compliance-document --prefix backend` |
+| Web 角色 + 专用权限双门槛、字段裁剪、严格私有 key 与审计 | `backend/scripts/tests/test_personnel_profile_documents_admin_contract.ts` | admin/finance_staff 有效角色可继续按权限授权；其他角色即使自定义获权仍拒绝；列表/无权详情不含敏感字段或能力标记；授权详情和文件端点固定 owner/type、no-store、先审计后返回 | sufficient | `npm run test:personnel-profile-documents-admin --prefix backend` |
+| Web 详情敏感字段与权威能力标记裁剪 | `backend/scripts/tests/test_personnel_settlement_phase1.ts` | 未授权序列化不含 Photo ID/签证字段或能力标记；授权序列化返回 synthetic presence/grant number 与明确能力标记 | sufficient | `npm run test:personnel-settlement-phase1 --prefix backend` |
+| Web 认证按需读取、错误分流与临时 URL 生命周期 | `frontend/src/app/finance/settlements/profileDocumentPreview.test.ts` | 只使用认证 Blob API；页面只按后端能力标记显示整段资料；安全映射 401/403/404/503/空响应；关闭和替换时释放 object URL | sufficient | `npm run test --prefix frontend -- --coverage.enabled=false src/app/finance/settlements/profileDocumentPreview.test.ts && npm run build --prefix frontend` |
 | 资料页签证字段、水印、上传和缩放大图 | `mz-cleaning-app-frontend/src/screens/me/ProfileEditScreen.test.tsx` | 合规角色可见 Visa Grant Number/签证图片上传；Photo ID 与签证均传入专属水印模式、显示本地整版水印，并可打开/关闭 1x–4x 缩放大图 | partial | `npm run test -- --runInBand --no-cache src/screens/me/ProfileEditScreen.test.tsx` |
 | 本地资料缓存字段持久化 | `mz-cleaning-app-frontend/src/lib/profileStore.test.ts` | 证件 URL/key 只持久化为 `uploaded` 标记，Visa Grant Number 仍可恢复 | partial | `npm run test -- --runInBand --no-cache src/lib/profileStore.test.ts` |
 
 ### 验证策略
 
 - **backend 修改：** 执行资料合约测试和 TypeScript 编译；真实对象存储上传仅在非生产测试账号、无真实证件时单独验证。
+- **Web 修改：** 执行角色/权限合同、资料序列化、按需预览单测、全量 lint/test/build；发布前另以无真实证件的隔离测试账号验证 admin、finance_staff 和获权自定义角色的 200/403 边界。
 - **mobile 修改：** 执行资料页和缓存定向测试、typecheck、lint、按钮规范审计；真机检查本地原图与服务端返回图的整版水印。
 - **安全验证：** 仅核对 `users/me` 自助接口与通讯录选择字段；不得在日志、测试夹具或截图中放入真实证件、签证号或访问令牌。
 - **发布前：** Registry/ledger audit；不执行生产资料写入。
 
 ### 最后验证
 
-- **CRL：** root/CRL-20260819-003; mobile/CRL-20260819-003
-- **Commit：** not yet
-- **日期：** 2026-07-29
+- **CRL：** root/CRL-20261016-003
+- **Commit：** not committed
+- **日期：** 2026-10-16
 
 ### 相关 CRL
 
 - root/CRL-20260819-003：Photo ID/Visa presence-only API、owner/type 私有 key 与认证 reader
 - mobile/CRL-20260819-003：presence-only cache、认证文档显示与专属上传元数据
+- root/CRL-20261016-003：Web 人员结算资料详情的 admin/finance_staff 双门槛、按需私有读取与审计候选
 
 ### 非保护范围
 
-- PDF、OCR、签证有效期识别、自动审批和管理端证件资料浏览。
+- OCR、签证有效期识别、自动审批、批量导出和证件内容变更。
 - 头像上传、银行资料规则、普通个人资料字段和认证权限模型的重构。
 - 历史记录不可变快照、数据归档或新的报表统计。
 

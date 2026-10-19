@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
+import {
+  ownedProfileDocumentStorageKey,
+  readableProfileDocumentStorageKey,
+} from '../../src/lib/profileDocuments'
 
 const backendRoot = path.resolve(__dirname, '../..')
 const read = (relativePath: string) => fs.readFileSync(path.join(backendRoot, relativePath), 'utf8')
 
 const users = read('src/modules/users.ts')
+const profileDocuments = read('src/lib/profileDocuments.ts')
 const r5Migration = read('scripts/migrations/20260902_r5_1_request_schema.sql')
 assert.match(users, /visa_document_url: z\.string\(\)\.trim\(\)\.max\(500\)\.optional\(\)\.nullable\(\)/)
 assert.match(users, /visa_grant_number: z\.string\(\)\.trim\(\)\.max\(120\)\.optional\(\)\.nullable\(\)/)
@@ -21,7 +26,28 @@ assert.match(users, /router\.get\('\/me\/profile-documents\/:documentType'/)
 assert.match(users, /r2GetObjectByKey\(key\)/)
 assert.match(users, /Cache-Control', 'private, no-store, max-age=0'/)
 assert.match(users, /invalid_profile_document_reference/)
-assert.match(users, /ownedProfileDocumentKey\(userId, type\)/)
+assert.match(users, /readableProfileDocumentStorageKey\(storedReference, id, type\)/)
+assert.match(profileDocuments, /ownedProfileDocumentKey\(userId, type\)/)
+assert.match(profileDocuments, /key\.startsWith\('mzapp\/profile-documents\/'\)/)
+assert.match(profileDocuments, /!isOwnedProfileDocumentReference\(value, userId, type\)/)
+assert.equal(
+  readableProfileDocumentStorageKey('mzapp/profile-documents/user-1/photo_id/file.jpg', 'user-1', 'photo_id'),
+  'mzapp/profile-documents/user-1/photo_id/file.jpg',
+)
+assert.equal(
+  readableProfileDocumentStorageKey('mzapp/profile-documents/user-2/photo_id/file.jpg', 'user-1', 'photo_id'),
+  null,
+)
+assert.equal(
+  readableProfileDocumentStorageKey('mzapp/profile-documents/user-1/visa_document/file.jpg', 'user-1', 'photo_id'),
+  null,
+)
+assert.equal(readableProfileDocumentStorageKey('other/private/file.jpg', 'user-1', 'photo_id'), null)
+assert.equal(
+  ownedProfileDocumentStorageKey('mzapp/profile-documents/user-1/photo_id/file.jpg', 'user-1', 'photo_id'),
+  'mzapp/profile-documents/user-1/photo_id/file.jpg',
+)
+assert.equal(ownedProfileDocumentStorageKey('mzapp/legacy/file.jpg', 'user-1', 'photo_id'), null)
 
 const mzapp = read('src/modules/mzapp.ts')
 assert.match(mzapp, /watermarkMode === 'photo_id_full' \|\| watermarkMode === 'profile_document_full'/)

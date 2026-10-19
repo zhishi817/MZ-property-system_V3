@@ -68,6 +68,7 @@
     "test:r5-property-guide-runtime-schema": "ts-node-dev --transpile-only scripts/tests/test_r5_2b_property_guide_schema_contract.ts",
     "test:r5-task-event-concurrency": "ts-node-dev --transpile-only scripts/tests/test_r5_2a_work_task_event_concurrency_integration.ts",
     "test:profile-compliance-document": "ts-node-dev --transpile-only scripts/tests/test_profile_compliance_document_contract.ts",
+    "test:personnel-profile-documents-admin": "ts-node-dev --transpile-only scripts/tests/test_personnel_profile_documents_admin_contract.ts",
     "test:guest-luggage-media-contract": "ts-node-dev --transpile-only scripts/tests/test_guest_luggage_media_contract.ts",
     "test:cleaning-inspection-merge": "ts-node-dev --transpile-only scripts/tests/test_cleaning_inspection_merge.ts",
     "test:guest-luggage-rules": "ts-node-dev --transpile-only scripts/tests/test_guest_luggage_rules.ts",

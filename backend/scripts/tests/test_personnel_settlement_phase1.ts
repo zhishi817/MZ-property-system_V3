@@ -208,7 +208,6 @@ assert.match(profilesSource, /if \(currentEditPlan \|\| !next\)/)
 assert.match(profilesSource, /SET profile_id=\$1/)
 assert.match(profilesSource, /DELETE FROM personnel_settlement_profiles/)
 assert.match(router, /current_effective_date: z\.string\(\)\.trim\(\)\.regex\(DATE_ONLY\)\.optional\(\)/)
-
 assert.deepStrictEqual(calculateSettlementLine({
   quantity_numerator: 1,
   quantity_denominator: 1,
@@ -512,6 +511,7 @@ async function main() {
   const profileRow = {
     user_id: 'cleaner-1', username: 'cleaner', display_name: 'Cleaner One', role: 'cleaner',
     legal_name: 'Cleaner One', personal_abn: '53004085616', photo_id_url: 'private-key',
+    visa_document_url: 'private-visa-key', visa_grant_number: 'SYNTHETIC-GRANT-1',
     payment_method: 'cash', bank_account_name: 'Cleaner One', bank_bsb: '123456', bank_account_number: '12345678',
     settlement_enabled: true, person_type: 'cleaner', supplier_legal_name: 'Cleaner One',
     supplier_business_name: null, abn: '53004085616', gst_status: 'registered',
@@ -519,12 +519,29 @@ async function main() {
     updated_at: '2026-09-10T00:00:00Z', fee_rule_name: null,
   }
   const profileExecutor = { async query() { return { rows: [profileRow] } } }
-  const list = await listPersonnelSettlementProfiles({ includeBankDetails: false }, profileExecutor)
+  const list = await listPersonnelSettlementProfiles({
+    includeBankDetails: false,
+    includeProfileDocuments: false,
+    includeVisaDetails: false,
+  }, profileExecutor)
   assert.strictEqual(list[0].payment_method, 'cash')
   assert.strictEqual(list[0].bank_account_number, null)
   assert.strictEqual(list[0].bank_account_masked, '•••• 5678')
-  const detail = await getPersonnelSettlementProfile({ userId: 'cleaner-1', includeBankDetails: true }, profileExecutor)
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(list[0], 'photo_id_uploaded'), false)
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(list[0], 'visa_document_uploaded'), false)
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(list[0], 'visa_grant_number'), false)
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(list[0], 'profile_documents_access'), false)
+  const detail = await getPersonnelSettlementProfile({
+    userId: 'cleaner-1',
+    includeBankDetails: true,
+    includeProfileDocuments: true,
+    includeVisaDetails: true,
+  }, profileExecutor)
   assert.strictEqual(detail?.bank_account_number, '12345678')
+  assert.strictEqual(detail?.photo_id_uploaded, true)
+  assert.strictEqual(detail?.visa_document_uploaded, true)
+  assert.strictEqual(detail?.visa_grant_number, 'SYNTHETIC-GRANT-1')
+  assert.strictEqual(detail?.profile_documents_access, true)
 
   const preview = await buildPersonnelSettlementPreview({ week_start: '2026-09-07' }, fakeExecutor)
   assert.strictEqual(preview.mode, 'read_only_preview')
