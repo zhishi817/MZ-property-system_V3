@@ -30218,12 +30218,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Branch: `codex/mz-homepage-display-release-20261017`
 - Base: `origin/Dev@8e7a63e8e05f7366f93a96da36c3eaa50e3d8592`; fetched at `2026-10-17 UTC`
 - Candidate patch SHA-256: `fffa783d5d9b560b85bc8e8e8cd96328dbbe77fc0211b832ebf4f126f129234b`
-- Commit SHA: `not committed`
+- Commit SHA: `68d620256d3747c2b1b7a8702253bb0677ded4d5`
 - Dependencies: none；五个 additive guest-site migration 文件随代码发布但本次未执行，任何环境的 migration 仍需另行确认。
 - Required validation: `PASS`; evidence: booking 44 contracts, backend guest-site contracts including missing-marker fail-closed, five-way parallel contact quota, translation single-flight/runtime cache and zero DB writes, admin 13 tests, preview guard/lifecycle, booking/backend/admin build + applicable lint/typecheck, FR registry 33/268, and local Mac Google Chrome homepage/story/contact/properties/navigation/detail/CMS suites passed. The final asset rerun covered Home 6 viewports, Story 5 and Contact 5; two initial UI timing/focus flakes passed on immediate full rerun. Root full check passed all Root phases; its paired Mobile parallel Jest run had one timeout after 469/470 passes, and the full Mobile suite then passed serially at 73 suites / 470 tests.
 - Shared-hunk review: `PASS`; evidence: candidate was extracted from the frozen source into a fresh `origin/Dev` worktree with exact staging; package/layout/registry shared files were manually merged and the source worktree was not changed.
 - Generated-file review: `PASS`; evidence: required visual bytes are represented as reviewed textual SVG wrappers containing re-encoded metadata-free WebP and a textual WOFF2 font stylesheet; payload fell from about 10.9 MB to 2.47 MB, OFL license text is included, and old public URLs remain compatible through explicit rewrites. All transient build output, cache, screenshots, coverage, dependency links and the temporary Mobile checkout were removed from the release worktree.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: current user instruction explicitly prioritizes this previously implemented website scope and requests commit/push before blog work.
 - Independent review: `GO for commit`; evidence: final independent read-only review matched candidate `fffa783d5d9b560b85bc8e8e8cd96328dbbe77fc0211b832ebf4f126f129234b`, 137 paths / 375 hunks and base/branch, found P0/P1 = 0, verified contact lock order/concurrency/indexes, bounded translation cache/single-flight/rate ceiling, clean generated/sensitive/scope boundaries, and no blog, Hostex-live, payment, deployment workflow, environment or secret expansion. Non-blocking P2: translation ceiling is per process and fetch has no explicit timeout; contact global lock serializes submissions; Safari/real-device, remote CI and migration dry-run remain unverified.
 - Action conclusion: `GO`; blockers: none for the commit action. Push, PR, merge, deployment and migrations remain separate actions.
@@ -30366,7 +30366,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Technical state: `verified`
 - User authorization: `selected-for-commit`; evidence: the current direct instruction selects MZ-044 for isolated task-branch commit/push while expressly keeping the legacy bank/ABN policy out of scope.
 - Independent review: `GO for source commit`; evidence: fresh staged review matched the fingerprint, 10 paths / 34 non-ledger hunks and branch/base, with P0=0, P1=0 and two release-only P2 gaps.
-- Action conclusion: `GO` for the source commit; blockers: none for commit. Real PostgreSQL concurrency/payment-chain validation and direct-connection configuration remain mandatory release gates and must not be represented as release readiness.
+- Action conclusion: `GO`; the exact reviewed source candidate was committed as `68d620256d3747c2b1b7a8702253bb0677ded4d5`. Push remains separately gated; real PostgreSQL concurrency/payment-chain validation and direct-connection configuration remain mandatory release gates and must not be represented as release readiness.
 
 ### Risks / Release Notes
 
@@ -30379,4 +30379,4 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Concurrent participating flows serialize before business row locks. A no-op performs no persistent write; a real change reaches the committed `finance_approved` / `paid` check before any update.
 - Rollback: remove the business-state equality helper/early-return branch plus the common user-lock calls/helper and restore generic SERIALIZABLE payment runner usage; no data rollback or migration is required.
 - Sensitive-information review: tests use synthetic names, ABN and bank values only; no production payload, identity document, credential or environment value is included.
-- Git state: exact ten-path candidate staged; not committed, pushed, merged, deployed or production/device verified. No migration, permission change, production API call or database write performed.
+- Git state: exact content candidate committed as `68d620256d3747c2b1b7a8702253bb0677ded4d5`; audit head is supplied by the range report. Not pushed, merged, deployed or production/device verified. No migration, permission change, production API call or database write performed.
