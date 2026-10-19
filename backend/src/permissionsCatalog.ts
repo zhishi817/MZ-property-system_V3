@@ -303,6 +303,14 @@ const fixed: Record<string, Omit<PermissionMeta, 'code'>> = {
     denyImpact: ['只能查看，无法修改人员结算资料'],
     privacyRisk: ['修改会影响后续结算和发票税务口径，必须记录原因与审计'],
   },
+  'personnel_settlements.profile_documents.view': {
+    displayName: '费用结算：查看人员证件与签证资料（高敏）',
+    riskLevel: 'high',
+    purpose: '查看人员当前 Photo ID、签证文件和签证 Grant Number。',
+    scenarios: ['管理员或财务人员在结算资料详情中核对当前身份与签证资料'],
+    denyImpact: ['不会收到证件上传状态、签证号码或文件查看入口'],
+    privacyRisk: ['包含高敏身份资料，只应授予管理员与财务人员；每次文件查看必须留痕'],
+  },
   'personnel_settlements.bank.manage': {
     displayName: '费用结算：管理银行资料（高危）',
     riskLevel: 'high',

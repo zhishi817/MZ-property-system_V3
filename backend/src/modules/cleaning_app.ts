@@ -34,7 +34,10 @@ import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
 import { canViewMzappGuestLuggageNoticeMedia, canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia } from './mzapp'
 import { assertR5TaskRuntimeSchemaReady, requireR5RequestSchema, requireR5TaskRuntimeSchema } from '../lib/r5RequestSchema'
 import { buildCleaningMediaUploadFingerprint, CLEANING_MEDIA_IDEMPOTENCY_CONFLICT, storeLocalImmutableMedia } from '../lib/immutableMediaUpload'
-import { reconcileDeferredInspectionCheckinReplacement } from '../services/deferredInspectionCheckinConflict'
+import {
+  authorizeDeferredInspectionCheckinSubmission,
+  reconcileDeferredInspectionCheckinReplacement,
+} from '../services/deferredInspectionCheckinConflict'
 
 export const router = Router()
 
@@ -1516,24 +1519,28 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
       const now = new Date().toISOString()
       const actionActor = actorAndPerformerFromRequest(user, parsed.data)
       const transactionResult = await pgRunInTransaction(async (client) => {
-        const locked = await client.query(
-          `SELECT id::text AS id, status,
-                  cleaner_id::text AS cleaner_id,
-                  inspector_id::text AS inspector_id,
-                  assignee_id::text AS assignee_id,
-                  task_type,
-                  inspection_mode,
-                  inspection_scope,
-                  inspection_due_date::text AS inspection_due_date
-             FROM cleaning_tasks
-            WHERE id::text = $1::text
-            FOR UPDATE`,
-          [String(id)],
+        const submission = await authorizeDeferredInspectionCheckinSubmission({
+          taskId: String(id),
+          client,
+          canSubmit: (task, executor) => canPerformCleaningTaskActionForRow(user, task, ['upload_access_video'], executor),
+        })
+        if (submission.kind !== 'authorized') return submission
+        const task = submission.task
+        const existingEquivalentVideo = await client.query(
+          `SELECT id::text AS id
+             FROM cleaning_task_media
+            WHERE task_id::text = $1::text
+              AND type = 'lockbox_video'
+              AND url = $2
+            ORDER BY created_at DESC
+            LIMIT 1`,
+          [String(id), parsed.data.media_url],
         )
-        const task = locked?.rows?.[0] || null
-        if (!task) return { kind: 'missing' as const }
-        if (!await canPerformCleaningTaskActionForRow(user, task, ['upload_access_video'], client)) {
-          return { kind: 'forbidden' as const }
+        if (existingEquivalentVideo?.rows?.[0]) {
+          return {
+            kind: 'replay' as const,
+            responseBody: { id: String(id), status: task.status, lockbox_video_uploaded_at: null, replayed: true },
+          }
         }
         await client.query(
           `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, lat, lng, uploader_id)
@@ -1564,6 +1571,10 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
       })
       if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'task not found' })
       if (transactionResult.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
+      if (transactionResult.kind === 'inspection_arrangement_conflict') {
+        return res.status(409).json({ message: transactionResult.guard.reason, ...transactionResult.guard })
+      }
+      if (transactionResult.kind === 'replay') return res.status(200).json(transactionResult.responseBody)
       const { actionResult, up } = transactionResult
       try { broadcastCleaningEvent({ event: 'lockbox_video_uploaded', task_id: id }) } catch {}
       try {
@@ -1713,26 +1724,12 @@ router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspec
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
       if (submitId && stepKey) await assertIdempotentStepReceiptsReady(pgPool)
       const transactionResult = await pgRunInTransaction(async (client) => {
-        const lockedTask = await client.query(
-          `SELECT id::text AS id,
-                  status,
-                  cleaner_id::text AS cleaner_id,
-                  inspector_id::text AS inspector_id,
-                  assignee_id::text AS assignee_id,
-                  task_type,
-                  inspection_mode,
-                  inspection_scope,
-                  inspection_due_date::text AS inspection_due_date
-             FROM cleaning_tasks
-            WHERE id::text = $1::text
-            FOR UPDATE`,
-          [String(id)],
-        )
-        const lockedTaskRow = lockedTask?.rows?.[0] || null
-        if (!lockedTaskRow) return { kind: 'missing' as const }
-        if (!await canPerformCleaningTaskActionForRow(user, lockedTaskRow, ['submit_inspection'], client)) {
-          return { kind: 'forbidden' as const }
-        }
+        const submission = await authorizeDeferredInspectionCheckinSubmission({
+          taskId: String(id),
+          client,
+          canSubmit: (task, executor) => canPerformCleaningTaskActionForRow(user, task, ['submit_inspection'], executor),
+        })
+        if (submission.kind !== 'authorized') return submission
 
         if (submitId && stepKey) {
           const receipt = await loadIdempotentStepReceipt(client, {
@@ -1796,6 +1793,9 @@ router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspec
       })
       if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'task not found' })
       if (transactionResult.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
+      if (transactionResult.kind === 'inspection_arrangement_conflict') {
+        return res.status(409).json({ message: transactionResult.guard.reason, ...transactionResult.guard })
+      }
       if (transactionResult.kind === 'conflict') {
         return res.status(409).json({ message: 'idempotency_conflict', submit_id: submitId, step_key: stepKey })
       }
@@ -2148,25 +2148,13 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
         lng: parsed.data.lng ?? null,
       })
       const transactionResult = await pgRunInTransaction(async (client) => {
-        const lockedResult = await client.query(
-          `SELECT id::text AS id, status,
-                  cleaner_id::text AS cleaner_id,
-                  inspector_id::text AS inspector_id,
-                  assignee_id::text AS assignee_id,
-                  task_type,
-                  inspection_mode,
-                  inspection_scope,
-                  inspection_due_date::text AS inspection_due_date
-             FROM cleaning_tasks
-            WHERE id::text=$1::text
-            FOR UPDATE`,
-          [String(id)],
-        )
-        const lockedTask = lockedResult?.rows?.[0] || null
-        if (!lockedTask) return { kind: 'missing' as const }
-        if (!await canPerformCleaningTaskActionForRow(user, lockedTask, ['upload_access_video'], client)) {
-          return { kind: 'forbidden' as const }
-        }
+        const submission = await authorizeDeferredInspectionCheckinSubmission({
+          taskId: String(id),
+          client,
+          canSubmit: (task, executor) => canPerformCleaningTaskActionForRow(user, task, ['upload_access_video'], executor),
+        })
+        if (submission.kind !== 'authorized') return submission
+        const lockedTask = submission.task
         const selfCompleteLockbox = effectiveInspectionMode(lockedTask) === 'self_complete'
         if (operationId) {
           const receipt = await loadIdempotentStepReceipt(client, {
@@ -2209,6 +2197,9 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
       })
       if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'task not found' })
       if (transactionResult.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
+      if (transactionResult.kind === 'inspection_arrangement_conflict') {
+        return res.status(409).json({ message: transactionResult.guard.reason, ...transactionResult.guard })
+      }
       if (transactionResult?.kind === 'conflict') return res.status(409).json({ message: 'idempotency_conflict', operation_id: operationId })
       if (transactionResult?.kind === 'replay') return res.status(200).json(transactionResult.responseBody)
       const actionResult = transactionResult?.actionResult || null
