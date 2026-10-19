@@ -1,5 +1,77 @@
 # Change Release Ledger
 
+## CRL-20261020-001 — Root PR PostgreSQL 隔离测试夹具补列
+
+- **Status:** exact local CI-fix candidate prepared; not committed, pushed, merged, or deployed
+- **Repository:** `root`
+- **Updated:** 2026-10-20 UTC
+- **Request:** 修复 Root 整合 PR #402 的 `MZ-034/035 Isolated PostgreSQL Integration` CI 失败；不得改变已冻结业务逻辑、执行 migration、连接生产数据库或扩大 MZ-044/MZ-049/MZ-050 范围。
+- **Outcome:** MZ-034 临时 PostgreSQL 测试表将声明 MZ-049 结算查询已使用、仓库 migration 已提供的 `inspection_replaced_by_checkin_task_id` 字段，使隔离测试夹具与运行时 schema 合同一致；不改变运行时代码、API、业务策略或真实数据库。
+
+### Implementation
+
+- Previous behavior: `test_personnel_settlement_mz034_sql_integration.ts` 自建的临时 `cleaning_tasks` 表缺少 `inspection_replaced_by_checkin_task_id`；PR #402 的 MZ-049 结算查询读取该字段时，CI 在运行任何业务断言前以 PostgreSQL `42703` 失败。
+- New behavior: 临时测试表补充同名 `text` 列；既有 fixture insert 不赋值时保持 `NULL`，原有 MZ-034 测试语义不变，同时允许查询解析并继续执行断言。
+- Key decisions: 仅修复测试夹具；不修改查询、migration、生产 schema、字段默认值或业务数据。该字段已由 `20260805_deferred_inspection_checkin_replacement.sql` 定义。
+
+### Files / Areas
+
+- `backend/scripts/tests/test_personnel_settlement_mz034_sql_integration.ts` — modified: 在隔离测试临时 `cleaning_tasks` 表中补充既有 replacement pointer 列。
+- `docs/change-release-ledger.md` — modified: 记录 CI 失败、最小修复边界、验证与发布尝试。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none；只改 CI 进程创建后回滚/销毁的临时测试 schema；不执行仓库 migration。
+- Config / environment: none.
+- Dependencies: requires the already-pushed Root integration content at `dd139c0d8a1b4896585ef757fa800126b4462ffb`.
+- Related units: `root/CRL-20261018-002`（MZ-049）；`root/CRL-20261019-004`（MZ-050）。
+
+### Validation
+
+- PR #402 `MZ-034/035 Isolated PostgreSQL Integration` — failed before this candidate: PostgreSQL `42703`, `column t.inspection_replaced_by_checkin_task_id does not exist`; failing step was MZ-034, while Full Regression, Fast Regression, Registry, Ledger and Risk checks passed.
+- Failure diagnosis — passed: query references the column in `personnelSettlementPreview.ts`; repository migration `20260805_deferred_inspection_checkin_replacement.sql` defines it; only the isolated test's local `CREATE TABLE cleaning_tasks` omitted it.
+- Local PostgreSQL execution — not run: this worktree has no local PostgreSQL/Docker executable or non-production integration URL; after loading the exact-lockfile dependency tree, the guarded command stopped at `MZ034_SQL_INTEGRATION_DATABASE_URL_required` before connecting. The exact GitHub CI job is the required post-push verification after a new SHA is separately approved.
+- Backend TypeScript — passed: `npm --prefix backend run build -- --noEmit` using a temporary ignored link to an existing dependency tree whose `backend/package-lock.json` SHA-256 exactly matched this worktree; the link was removed afterward.
+- Candidate hygiene — passed: exact pre-commit audit GO for two staged files / one non-ledger hunk, current ledger coverage PASS, Feature Registry PASS (34 FRs / 281 mappings / 88 Mobile deferred), and `git diff --cached --check` PASS.
+- Independent read-only review — GO for local commit only: matched the single nullable test-fixture column, hunk `1feeed...`, patch `4e26e7...`, existing migration type and complete query/fixture column contract; P0/P1/P2/P3=0. The review does not authorize push or replace the GitHub ephemeral-PostgreSQL rerun.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** `prepared`
+- **Untracked review:** none.
+- `backend/scripts/tests/test_personnel_settlement_mz034_sql_integration.ts` — SHA-256: `1feeed63556e89566e64e2475ada710ddecaf8e18a4bae65cf571ff398ed244f`
+
+### Release Attempts
+
+#### RA-20261020-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261020-001`
+- Selected CRL identities: `root/CRL-20261020-001`
+- Intended action: `commit`
+- Branch: `codex/mz044-050-root-integration-final-20261019`
+- Base: pushed integration head `dd139c0d8a1b4896585ef757fa800126b4462ffb`; `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b` remains unchanged as fetched at `2026-10-19T21:53Z`.
+- Candidate patch SHA-256: `4e26e7a3cb25a5f5c37e2b18872667f51cd58fb3e79a5832d593fac8b161884c`
+- Commit SHA: not committed.
+- Dependencies: `root/CRL-20261018-002@d972fe7d0ebcd87f108bf1402c8c586f5f485458`.
+- Required validation: `PASS for the exact local test-fixture commit / remote CI NOT VERIFIED`; evidence: exact pre-commit audit, current ledger coverage, Feature Registry, diff check and backend TypeScript passed; static diagnosis ties the one-line fixture repair to the existing migration field. Local PostgreSQL is unavailable, so GitHub's isolated ephemeral-PostgreSQL job must rerun after a separately approved push.
+- Shared-hunk review: `not applicable`; evidence: the test file is not changed by the existing four integrated CRLs relative to the pushed integration head.
+- Generated-file review: `PASS`; evidence: only one tracked TypeScript test source file and this ledger entry are selected; no dependency, cache, environment, build output or credential is included.
+- Technical state: `candidate`.
+- User authorization: `selected-for-commit`; evidence: the user instructed that a CI repair changing the frozen SHA should be reduced to the minimum, assigned a new SHA and returned for confirmation before push.
+- Independent review: `GO for the exact local commit only`; evidence: reviewer matched the two-file scope, one nullable fixture column, hunk `1feeed...`, patch `4e26e7...`, existing migration field type and all query-required fixture columns; P0/P1/P2/P3=0. It found no runtime, API, production-schema, generated-file or sensitive-data change and did not authorize push.
+- Action conclusion: `GO for this exact local content commit only / remote CI NOT VERIFIED`; GitHub ephemeral PostgreSQL rerun remains a post-push merge gate, and the resulting new full SHA requires separate push confirmation.
+
+### Risks / Release Notes
+
+- The change cannot affect production runtime because it only alters a test-local `CREATE TABLE` statement.
+- GitHub's ephemeral PostgreSQL job remains the only available execution proof for this exact SQL fixture; a successful rerun is required before merge.
+- Sensitive-information review: no credential, database URL, production payload or CI log secret is recorded.
+- Rollback: revert the single test-fixture column and its ledger unit.
+- Git state: staged local candidate only; existing PR #402 still points to frozen remote SHA `dd139c0d8a1b4896585ef757fa800126b4462ffb`.
+
 ## CRL-20261019-004 — 同日周转检查范围一致性防护
 
 - **Status:** source committed locally; controlled CRL identity migration from the colliding `root/CRL-20261019-001` to `root/CRL-20261019-004` independently reviewed GO for one local ledger-only commit; two disclosed P2s remain; narrow historical production correction is not a code release; not pushed, merged, or deployed
