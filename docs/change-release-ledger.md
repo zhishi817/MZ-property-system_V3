@@ -156,6 +156,25 @@
 - Independent review: `GO for source commit`; evidence: fresh staged review matched the fingerprint, 17 paths / 68 non-ledger hunks and branch/base with P0=0, P1=0, P2=0 and one non-blocking registry-wording P3.
 - Action conclusion: `GO`; the exact reviewed source candidate was committed as `16dc3be5853d24018b1b341fd4a79d89c7767d8a`. Push remains separately gated; migration execution, deployment and production file/database access remain separate prohibited actions.
 
+#### RA-20261019-004
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-003`
+- Selected CRL identities: `root/CRL-20261016-003`
+- Intended action: `push`
+- Branch: `codex/mz044-profile-display-20261019`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; freshly fetched and rechecked at `2026-10-19 UTC`.
+- Candidate patch SHA-256: `136e570a45d88b0e5bf62c8d9ae774f2443ca0c348228a34ed984aa25d458628`
+- Commit SHA: `16dc3be5853d24018b1b341fd4a79d89c7767d8a`; the audit head will be the later ledger-only receipt commit.
+- Dependencies: none
+- Required validation: `PASS for source range / release NOT VERIFIED`; evidence: the exact committed range report passed at pre-receipt head `945736cc5a387eb80488e9fbb28f776d795e7b4a`. Migration execution and production file/database access were not run and remain outside this action.
+- Shared-hunk review: `PASS`; evidence: the exact display-only range excludes the separate MZ-044 save unit.
+- Generated-file review: `PASS`; evidence: no dependency link, cache, build output, environment file or generated artifact is present.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after repository, branch and pre-receipt exact HEAD `945736cc5a387eb80488e9fbb28f776d795e7b4a` were shown, the user replied `一起推送吧`. This ledger-only receipt changes the final audit HEAD, so repository policy requires refreshed approval of that resulting exact SHA before push.
+- Independent review: `GO for this ledger-only receipt commit; NO-GO for push until refreshed exact-HEAD approval`; evidence: independent read-only push review found P0/P1/P2 = 0 for the disclosed source range, verified branch/base/fingerprint, clean scope, absent live remote target, and no feature-branch production trigger. One accepted registry-wording P3 remains non-blocking.
+- Action conclusion: `NOT VERIFIED`; blockers: commit this ledger-only receipt, run the clean exact committed-range report, obtain explicit approval for repository `root`, branch `codex/mz044-profile-display-20261019`, and the resulting final HEAD, then rerun immediate remote preflight before one ordinary non-force push. No push has occurred.
+
 ### Risks / Release Notes
 
 - The prepared permission migration must be reviewed and explicitly authorized before execution; it persists and aligns the database role grant. The runtime permission fallback also grants the new permission to the built-in finance role once this code is deployed, so migration non-execution alone must not be treated as a feature-disable switch.
