@@ -146,15 +146,15 @@
 - Branch: `codex/mz044-profile-display-20261019`
 - Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19 UTC`
 - Candidate patch SHA-256: `136e570a45d88b0e5bf62c8d9ae774f2443ca0c348228a34ed984aa25d458628`
-- Commit SHA: `not committed`
+- Commit SHA: `16dc3be5853d24018b1b341fd4a79d89c7767d8a`
 - Dependencies: prepared additive permission migration is source-only and was not executed; runtime uses existing PostgreSQL, authenticated role snapshot and configured private R2 reader.
 - Required validation: `PASS for source commit`; evidence: three focused backend contracts, backend TypeScript, focused preview tests, frontend lint, Feature Registry, ledger coverage and diff checks passed. No production API/database/file read was performed.
 - Shared-hunk review: `PASS`; evidence: all save-only no-op/advisory-lock hunks and FR-029 save mappings were removed from this display extraction.
 - Generated-file review: `PASS`; evidence: no dependency link, cache, build output, environment file or generated artifact remains.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: the current direct instruction selects both existing MZ-044 candidates for isolated task-branch commit/push after overlap reconciliation.
 - Independent review: `GO for source commit`; evidence: fresh staged review matched the fingerprint, 17 paths / 68 non-ledger hunks and branch/base with P0=0, P1=0, P2=0 and one non-blocking registry-wording P3.
-- Action conclusion: `GO` for the source commit; blockers: none for commit. Migration execution, deployment and production file/database access remain separate prohibited actions.
+- Action conclusion: `GO`; the exact reviewed source candidate was committed as `16dc3be5853d24018b1b341fd4a79d89c7767d8a`. Push remains separately gated; migration execution, deployment and production file/database access remain separate prohibited actions.
 
 ### Risks / Release Notes
 
@@ -163,7 +163,7 @@
 - Current-data behavior is deliberate: Photo ID, Visa Grant Number and visa file come from `users`; they do not alter date-versioned settlement profiles or historical weekly snapshots.
 - The MZ-044 save fix remains a separate release unit and branch; its no-op/locking hunks are intentionally absent from this display-only extraction.
 - Rollback: revert this CRL's code/test/registry/ledger hunks; do not run or reverse the prepared migration as part of this source push.
-- Git state: uncommitted display-only candidate on `codex/mz044-profile-display-20261019`; no push, PR, migration, production write/read, deployment or release performed.
+- Git state: exact display-only content candidate committed as `16dc3be5853d24018b1b341fd4a79d89c7767d8a` on `codex/mz044-profile-display-20261019`; audit head is supplied by the range report. No push, PR, migration, production write/read, deployment or release performed.
 
 ## CRL-20261011-001 — MZ-010 客人已通知权限与任务闭环（root）
 
