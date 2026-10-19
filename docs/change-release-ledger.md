@@ -64,6 +64,26 @@
 - Independent review: `GO for the exact local commit only`; evidence: reviewer matched the two-file scope, one nullable fixture column, hunk `1feeed...`, patch `4e26e7...`, existing migration field type and all query-required fixture columns; P0/P1/P2/P3=0. It found no runtime, API, production-schema, generated-file or sensitive-data change and did not authorize push.
 - Action conclusion: `GO for this exact local content commit only / remote CI NOT VERIFIED`; GitHub ephemeral PostgreSQL rerun remains a post-push merge gate, and the resulting new full SHA requires separate push confirmation.
 
+#### RA-20261020-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-003`, `CRL-20261018-002`, `CRL-20261019-001`, `CRL-20261019-004`, `CRL-20261020-001`
+- Selected CRL identities: `root/CRL-20261016-003`, `root/CRL-20261018-002`, `root/CRL-20261019-001`, `root/CRL-20261019-004`, `root/CRL-20261020-001`
+- Intended action: `commit`
+- Branch: `codex/mz044-050-root-integration-final-20261019`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched and confirmed unchanged before PR #402 creation at `2026-10-19T21:53Z`.
+- Candidate patch SHA-256: `552014ffdec6f2e7a267af96d3e0e6fd2e2c64e3090d4219490100c09d55330e`
+- Commit SHA: `306f6dcc0214e584e8dbc95eb655fc942b6690f9`
+- Dependencies: `mobile/CRL-20261018-001@b6ea73184c319915053f206a662a75f35af1552e`
+- Cross-repository dependency verification: `PASS for local source compatibility / release NOT VERIFIED`; evidence: the dependency content commit remains an ancestor of frozen Mobile head `ffa55c21ba3f13dbaa468629ece203ba25f2847b`, whose PR #57 quality check passed. Physical-device, real-network, installed-build/channel and native-build acceptance remain pending.
+- Required validation: `PASS for this exact local combined content / remote CI NOT VERIFIED`; evidence: the prior 317-hunk Root integration range retained its exact reviewed content and validations; the additional exclusive hunk only adds the existing nullable replacement-pointer column to the MZ-034 ephemeral test table. Its focused pre-commit gate, ledger coverage, Feature Registry, diff check and backend TypeScript passed. GitHub PR #402 previously passed Full/Fast Regression, Registry, Ledger and Risk checks; its isolated PostgreSQL job failed before business assertions solely on this omitted fixture column and must rerun after a separately approved push.
+- Shared-hunk review: `PASS`; evidence: the earlier 317-hunk ownership and sole shared Phase 1 hunk are unchanged; the new 318th hunk is exclusive to `root/CRL-20261020-001` in a previously unchanged test file.
+- Generated-file review: `PASS`; evidence: the additional committed path is one tracked TypeScript test source; no dependency, cache, build output, environment file, credential, generated artifact, migration execution or production operation is included.
+- Technical state: `committed`; exact CI-fix content commit `306f6dcc0214e584e8dbc95eb655fc942b6690f9`, followed only by this append-only receipt.
+- User authorization: `selected-for-commit`; evidence: the user instructed that a CI repair changing the frozen SHA should be minimized, committed locally and returned with the new SHA for confirmation before any push.
+- Independent review: `GO for the exact local commit only`; evidence: prior integration reviews remain applicable to the unchanged 317 hunks, and a fresh reviewer matched the exclusive one-line fixture hunk `1feeed...`, patch `4e26e7...`, existing migration type and complete query/fixture column contract with P0/P1/P2/P3=0. Neither review authorizes push or merge.
+- Action conclusion: `GO for this exact ledger-only receipt and local freeze / remote CI NOT VERIFIED`; the resulting full SHA requires explicit push confirmation, and GitHub ephemeral PostgreSQL must pass before merge. No push, merge, deployment command, OTA, migration execution or production-data operation is authorized by this attempt.
+
 ### Risks / Release Notes
 
 - The change cannot affect production runtime because it only alters a test-local `CREATE TABLE` statement.
