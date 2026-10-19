@@ -1,8 +1,8 @@
 # Change Release Ledger
 
-## CRL-20261019-001 — 同日周转检查范围一致性防护
+## CRL-20261019-004 — 同日周转检查范围一致性防护
 
-- **Status:** exact staged candidate independently reviewed GO for local source commit with two disclosed P2s; narrow historical production correction is not a code release; not committed, pushed, merged, or deployed
+- **Status:** source committed locally; controlled CRL identity migration from the colliding `root/CRL-20261019-001` to `root/CRL-20261019-004` independently reviewed GO for one local ledger-only commit; two disclosed P2s remain; narrow historical production correction is not a code release; not pushed, merged, or deployed
 - **Repository:** `root`
 - **Updated:** 2026-10-19 UTC
 - **Request:** 修复 Web 任务中心在同房源同日退房+入住卡片中隐藏并回放旧 `password_only` 检查范围的问题；在订单日期变化形成周转时规范化底层任务；由后端拒绝非法周转范围；保留独立入住任务合法的“仅改密码”，并验证 App 角色投影。
@@ -35,7 +35,7 @@
 - Database / migration: 无 schema 变更、无 migration；订单同步事务可能把新形成同日周转的活跃退房/入住任务 `inspection_scope` 规范化为 `inspect_and_hang`，并写 `scope_normalized` 同步审计与既有任务事件。
 - Config / environment: none.
 - Dependencies: none.
-- Related units: `MZ-050`；MZ-049 的延期任务去重修复不覆盖本单元。
+- Related units: `MZ-050`；MZ-049 的延期任务去重修复不覆盖本单元。`root/CRL-20261019-002` 是独立的入住检查范围候选，`root/CRL-20261019-003` 是独立的 MZ-053 候选，均不纳入本单元。
 
 ### Validation
 
@@ -133,16 +133,17 @@
 ### Release Attempts
 
 - 2026-10-19 12:08 AEDT — 用户在最新漂移证据后重新授权生产精确修正；单一 serializable 事务锁定并重验 EQ3401 的 checkout `ddc3b536-6919-4388-991c-30c37911e072` 与 checkin `e4335ecb-9252-4e29-a134-e46a1110d4c1`，仅将两行 `inspection_scope` 从 `password_only` 更新为 `inspect_and_hang`，postflight 断言两行均正确后提交。提交结果为 `updated_rows=2`；checkout 保持 `restock_pending` / Sunjialin / Mia / 2026-10-19，checkin 保持 `assigned` / Mia / 2026-10-19，媒体行数分别 9/0，工作事件行数分别 10/12。未改日期、状态、人员、照片/媒体或工作记录，未启动生产应用。
-- 2026-10-19 12:09 AEDT — 经用户即时确认，工作看板已创建 `MZ-050`，关联 `root/CRL-20261019-001`，Git 阶段记录为未提交。
+- 2026-10-19 12:09 AEDT — 经用户即时确认，工作看板已创建 `MZ-050`，最初误关联 `root/CRL-20261019-001`，Git 阶段记录为未提交。
+- 2026-10-20 AEDT — controlled identity migration: fresh `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b` contains no 2026-10-19 Root unit. The full local Root scan establishes `001` as the formal identity of committed MZ-044 save; older MZ-050 worktree copies retaining `001` are collision evidence to migrate, not separate ownership. The scan also establishes `002` as the independent check-in scope candidate and `003` as the untouched MZ-053 candidate. The next verified unused Root identity is `root/CRL-20261019-004`; MZ-050's ledger/index binding is corrected to `004` without rewriting source commit `223176ee2969679a16b813b9777499cc9ac728da` or changing runtime code.
 
 #### RA-20261019-004
 
 - Repository: `root`
-- Selected CRLs: `CRL-20261019-001`
-- Selected CRL identities: `root/CRL-20261019-001`
+- Selected CRLs: `CRL-20261019-004`
+- Selected CRL identities: `root/CRL-20261019-004`
 - Intended action: `commit`
 - Branch: `codex/mz050-turnover-scope-20261019`
-- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19 UTC`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19T14:24:48Z`
 - Candidate patch SHA-256: `d74d72d79422756e3a0055c474bb57fd1778137c1baf8d782335eb2296e05576`
 - Commit SHA: `223176ee2969679a16b813b9777499cc9ac728da`
 - Dependencies: none.
@@ -154,6 +155,25 @@
 - Independent review: `GO for local source commit only`; exact fingerprint `d74d72d79422756e3a0055c474bb57fd1778137c1baf8d782335eb2296e05576`, 12 paths / 77 non-ledger hunks, branch/base and clean generated/sensitive/scope boundaries verified; P0=0 / P1=0 / P2=2 / P3=0. P2s are the conditional mixed-scope multi-counterpart defensive gap after upstream uniqueness/manual-data anomaly and the unchanged App deferred-window legacy projection edge.
 - Action conclusion: `LOCAL COMMIT COMPLETED`; exact reviewed source commit `223176ee2969679a16b813b9777499cc9ac728da`. No source changes were added for duplicate-scope defense or legacy deferred-window projection because the user authorized organizing the existing candidate, not a new business-policy repair. Push awaits repository-required explicit approval of the final SHA; release and deployment remain separately gated. No further production data action is part of this action.
 
+#### RA-20261020-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261019-004`
+- Selected CRL identities: `root/CRL-20261019-004`
+- Intended action: `commit`
+- Branch: `codex/mz050-turnover-scope-20261019`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19 UTC`
+- Candidate patch SHA-256: `d74d72d79422756e3a0055c474bb57fd1778137c1baf8d782335eb2296e05576`
+- Commit SHA: `223176ee2969679a16b813b9777499cc9ac728da`
+- Dependencies: none.
+- Required validation: `PASS for controlled identity migration under an independently reviewed structural exception / source validation unchanged`; evidence: the exact 12-path source range, 77 non-ledger hunks, focused cleaning inspection/sync contracts, backend TypeScript, frontend 9-test suite, lint, ordinary ledger coverage and diff checks passed. The dedicated `--pre-commit --repo root --crl CRL-20261019-004` gate is structurally `BLOCKED` because HEAD still names the section `001`, so its before-range model cannot treat the heading rename plus canonical attempt rebinding as one selected receipt. Independent review verified that repository identity, canonical target, staged path coverage, untracked review, unexpected hunks and missing hunks all pass and approved this one local controlled migration commit. This append-only Git-history migration edits only `docs/change-release-ledger.md`; real PostgreSQL assignment/concurrency and device/integration acceptance remain pending.
+- Shared-hunk review: `PASS`; evidence: MZ-049, MZ-044, the active `root/CRL-20261019-002` candidate and untouched `root/CRL-20261019-003` MZ-053 candidate are excluded.
+- Generated-file review: `PASS`; evidence: the controlled migration changes only ledger identity/evidence and adds no generated, dependency, cache, environment or runtime file.
+- Technical state: `committed`; source commit `223176ee2969679a16b813b9777499cc9ac728da` remains unchanged and the identity-migration receipt is pending this append-only Git-history commit.
+- User authorization: `selected-for-commit`; evidence: the current direct instruction authorizes correcting the CRL collision through the repository allocation/index process and appending a local commit without rewriting history.
+- Independent review: `GO for one local controlled identity-migration commit only`; evidence: independent read-only review verified the fresh allocation scan, unchanged source commit/fingerprint, 12-path range, ledger-only staged diff, clean working scope and the audit model limitation; P0=0 / P1=0 / P2=2 wording clarifications applied / P3=1 append-only wording clarified. This GO does not authorize push, PR, merge, release, deployment or production action.
+- Action conclusion: `GO for this local controlled identity-migration commit only`; the dedicated pre-commit gate's structural limitation is explicitly accepted by the independent review above. After commit, require a clean exact `origin/Dev...HEAD` release report for `root/CRL-20261019-004`; no push until the user sees and approves that full final SHA. No merge, deployment, release, database/API or production action is included.
+
 ### Risks / Release Notes
 
 - 生产 EQ3401 的精确数据修正已在重新授权后完成，范围严格限定为上述两条任务的 `inspection_scope`；除该两行字段更新外没有其他生产写入。
@@ -162,7 +182,7 @@
 - 风险集中在旧数据容错；并发写入使用房源+日期事务锁并在行锁内重验。发布前仍需在隔离的非生产 PostgreSQL 上运行 `test_task_assignment_canonical.ts`，以验证真实 SQL 投影中检查人员响应的 `active_source_ids` / `source_ids` 包含周转入住任务；真实 PostgreSQL 并发竞争测试也尚未执行。
 - Sensitive-information review: no credentials, tokens, database URLs, guest passwords, or private media references added.
 - Rollback: revert this CRL's code/test hunks；代码候选无 migration。生产两行范围修正符合用户目标，当前不需要数据回滚；任何反向生产更改都需新的明确授权。
-- Git state: exact twelve-path candidate staged on `codex/mz050-turnover-scope-20261019`; not committed or pushed; no merge, deployment or production application start.
+- Git state: source commit `223176ee2969679a16b813b9777499cc9ac728da` and prior receipt `0250b6dc0ff889a896a20c43e3ba11c9193a669a` remain immutable ancestors on `codex/mz050-turnover-scope-20261019`; controlled CRL migration is ledger-only and pending append commit; not pushed; no merge, deployment or production application start.
 
 ## CRL-20261011-001 — MZ-010 客人已通知权限与任务闭环（root）
 
