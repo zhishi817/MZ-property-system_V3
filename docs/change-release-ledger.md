@@ -144,15 +144,15 @@
 - Branch: `codex/mz050-turnover-scope-20261019`
 - Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19 UTC`
 - Candidate patch SHA-256: `d74d72d79422756e3a0055c474bb57fd1778137c1baf8d782335eb2296e05576`
-- Commit SHA: `not committed`
+- Commit SHA: `223176ee2969679a16b813b9777499cc9ac728da`
 - Dependencies: none.
 - Required validation: `PASS for source commit / release integration pending`; evidence: focused cleaning inspection and sync contracts, backend TypeScript, frontend 9-test suite, lint with zero errors, ledger 12/12 and diff checks passed. The guarded real PostgreSQL assignment/concurrency test was not run.
 - Shared-hunk review: `PASS`; evidence: MZ-049 deferred-task changes are excluded from this extraction.
 - Generated-file review: `PASS`; evidence: no dependency link, cache, build output, environment file or generated artifact remains.
-- Technical state: `candidate`
+- Technical state: `committed locally`; source commit `223176ee2969679a16b813b9777499cc9ac728da`, receipt pending in this ledger-only follow-up commit.
 - User authorization: `selected-for-commit`; evidence: the current direct instruction selects MZ-050 for isolated task-branch commit/push. The prior two-row production correction is recorded as historical evidence and is not treated as code release.
 - Independent review: `GO for local source commit only`; exact fingerprint `d74d72d79422756e3a0055c474bb57fd1778137c1baf8d782335eb2296e05576`, 12 paths / 77 non-ledger hunks, branch/base and clean generated/sensitive/scope boundaries verified; P0=0 / P1=0 / P2=2 / P3=0. P2s are the conditional mixed-scope multi-counterpart defensive gap after upstream uniqueness/manual-data anomaly and the unchanged App deferred-window legacy projection edge.
-- Action conclusion: `GO for local source commit only`; no source changes are added for duplicate-scope defense or legacy deferred-window projection because the user authorized organizing the existing candidate, not a new business-policy repair. Push, release and deployment remain separately gated. No further production data action is part of this action.
+- Action conclusion: `LOCAL COMMIT COMPLETED`; exact reviewed source commit `223176ee2969679a16b813b9777499cc9ac728da`. No source changes were added for duplicate-scope defense or legacy deferred-window projection because the user authorized organizing the existing candidate, not a new business-policy repair. Push awaits repository-required explicit approval of the final SHA; release and deployment remain separately gated. No further production data action is part of this action.
 
 ### Risks / Release Notes
 
