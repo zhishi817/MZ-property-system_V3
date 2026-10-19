@@ -163,7 +163,7 @@
 - Selected CRL identities: `root/CRL-20261016-003`
 - Intended action: `push`
 - Branch: `codex/mz044-profile-display-20261019`
-- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; freshly fetched and rechecked at `2026-10-19 UTC`.
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; freshly fetched and rechecked at `2026-10-19T14:24:48Z`.
 - Candidate patch SHA-256: `136e570a45d88b0e5bf62c8d9ae774f2443ca0c348228a34ed984aa25d458628`
 - Commit SHA: `16dc3be5853d24018b1b341fd4a79d89c7767d8a`; the audit head will be the later ledger-only receipt commit.
 - Dependencies: none
