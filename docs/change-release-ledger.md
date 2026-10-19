@@ -1,5 +1,79 @@
 # Change Release Ledger
 
+## CRL-20261020-002 — Root PR MZ-035 PostgreSQL 隔离测试夹具补列
+
+- **Status:** exact local follow-up candidate prepared; not committed, pushed, merged, or deployed
+- **Repository:** `root`
+- **Updated:** 2026-10-20 UTC
+- **Request:** 在 `root/CRL-20261020-001` 使 MZ-034 隔离 PostgreSQL 测试通过后，修复串行执行才暴露的 MZ-035 同类临时表缺列，并全面审查所有隔离 `cleaning_tasks` 建表夹具，避免逐次 CI 才发现下一漏项；不得修改业务代码、削弱断言、跳过测试、连接生产数据库或执行 migration。
+- **Outcome:** MZ-035 临时 PostgreSQL 测试表声明同一既有 nullable replacement pointer 字段；仓库内所有直接 `CREATE TABLE cleaning_tasks` 的隔离测试夹具均已与本批共享结算查询实际读取的 `cleaning_tasks` 字段核对。记录工程教训：共享查询新增 schema 依赖时，必须同步审查全部自建临时表夹具，而不能只修复首个失败测试。
+
+### Implementation
+
+- Previous behavior: PR #402 更新到 `b62eefc...` 后，MZ-034 隔离 PostgreSQL 测试通过；同一 job 随后运行独立 MZ-035 fixture，并因其临时 `cleaning_tasks` 表仍缺 `inspection_replaced_by_checkin_task_id` 以 PostgreSQL `42703` 失败。
+- New behavior: MZ-035 的临时 `cleaning_tasks` 表补充同名 nullable `text` 列；既有 insert 不赋值时保持 `NULL`，不改变原测试数据或断言。
+- Key decisions: 全仓测试搜索确认直接自建 `cleaning_tasks` 的隔离夹具只有 MZ-034 与 MZ-035；两者现在都包含共享结算查询读取的 `id`、订单/房源、任务类型/日期、检查日期/模式/scope、执行状态、人员与 replacement pointer 字段。`inspection_replaced_original_due_date` 未被该查询读取，不为本修复扩大 fixture。业务查询、migration、生产 schema 和断言均不修改。
+
+### Files / Areas
+
+- `backend/scripts/tests/test_personnel_settlement_mz035_sql_integration.ts` — modified: 在隔离测试临时 `cleaning_tasks` 表中补充既有 replacement pointer 列。
+- `docs/change-release-ledger.md` — modified: 记录第二个串行夹具缺口、全量夹具审查、工程教训与发布尝试。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none；只改 CI 临时 schema 声明，不执行仓库 migration，不连接生产数据库。
+- Config / environment: none.
+- Dependencies: `root/CRL-20261020-001@306f6dcc0214e584e8dbc95eb655fc942b6690f9`.
+- Related units: `root/CRL-20261018-002`（MZ-049 共享查询）；`root/CRL-20261020-001`（MZ-034 同类夹具修复）。
+
+### Validation
+
+- PR #402 at `b62eefce9e145870c44ec308d1347ac9a4de59d8` — MZ-034 isolated PostgreSQL step passed; MZ-035 then failed before assertions with PostgreSQL `42703` for `t.inspection_replaced_by_checkin_task_id`.
+- Full isolated-fixture inventory — passed: repository-wide source search found only `test_personnel_settlement_mz034_sql_integration.ts` and `test_personnel_settlement_mz035_sql_integration.ts` directly create temporary `cleaning_tasks` tables; primary schema/init/migration definitions are not isolated test fixtures.
+- Shared-query column review — passed: after this candidate, both isolated fixtures cover every `cleaning_tasks` column read by the inspection-assignment portion of `buildPersonnelSettlementPreview`; no second replacement column is read by that query.
+- Local PostgreSQL execution — not run: no supported local PostgreSQL/Docker executable or non-production integration URL is available. Both exact GitHub ephemeral-PostgreSQL steps must rerun after a separately approved push; no production connection was attempted.
+- Fixture inventory assertion — passed: a read-only Node source check found exactly the MZ-034 and MZ-035 direct test-owned `CREATE TABLE cleaning_tasks` definitions and verified all 16 shared-query-required columns in both.
+- Backend TypeScript — passed: `npm --prefix backend run build -- --noEmit` using a temporary ignored link to an existing dependency tree with the exact matching backend lockfile; the link was removed immediately afterward.
+- Candidate hygiene — passed: exact pre-commit GO for two staged files / one non-ledger hunk, current ledger coverage, Feature Registry (34 FRs / 281 mappings / 88 deferred Mobile mappings), and `git diff --cached --check`.
+- Independent read-only review — GO for local commit only: matched the exclusive one-line fixture hunk and patch, confirmed the only two test-owned `cleaning_tasks` definitions now cover the 15 query-read fields (the 16-column check is a conservative superset), and found P0/P1/P2/P3=0. It did not authorize push or replace the GitHub ephemeral-PostgreSQL rerun.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** `prepared`
+- **Untracked review:** none.
+- `backend/scripts/tests/test_personnel_settlement_mz035_sql_integration.ts` — SHA-256: `f722f083f52bd55d4ab78e9682ad79ad8c4e5919f3ad9fcc3cce995a8f167597`
+
+### Release Attempts
+
+#### RA-20261020-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261020-002`
+- Selected CRL identities: `root/CRL-20261020-002`
+- Intended action: `commit`
+- Branch: `codex/mz044-050-root-integration-final-20261019`
+- Base: pushed PR #402 head `b62eefce9e145870c44ec308d1347ac9a4de59d8`; `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b` remains the reviewed base.
+- Candidate patch SHA-256: `f1aff374b6bb8e3abb79cca0dc7f850fe2ec30f132c96368ffd0840a938ca3fd`
+- Commit SHA: not committed.
+- Dependencies: `root/CRL-20261020-001@306f6dcc0214e584e8dbc95eb655fc942b6690f9`.
+- Required validation: `PASS for the exact local fixture commit / remote CI NOT VERIFIED`; evidence: exact scope/pre-commit, complete two-fixture inventory, 16-column contract check, backend TypeScript, ledger, Feature Registry and diff checks passed. Local PostgreSQL is unavailable, so GitHub's ephemeral MZ-034/MZ-035 job must rerun after separately approved push.
+- Shared-hunk review: `not applicable`; evidence: this previously unchanged MZ-035 integration test file belongs only to this follow-up unit.
+- Generated-file review: `PASS`; evidence: only one tracked TypeScript test source file and this ledger entry are selected.
+- Technical state: `candidate`.
+- User authorization: `selected-for-commit`; evidence: the user directed continuing the locally fixable fixture work through independent review, local commit and frozen full SHA, while withholding push pending final confirmation.
+- Independent review: `GO for the exact local commit only`; evidence: reviewer matched hunk `f722f083...`, patch `f1aff374...`, the complete two-fixture inventory and all 15 shared-query-read fields, with the recorded 16-column assertion as a conservative superset; P0/P1/P2/P3=0 and no runtime, assertion, migration, generated-file or sensitive-data change.
+- Action conclusion: `GO for this exact local content commit only / remote CI NOT VERIFIED`; resulting new full SHA requires separate push confirmation, and the GitHub ephemeral MZ-034/MZ-035 job must pass before merge.
+
+### Risks / Release Notes
+
+- Test-only change; no runtime, API, migration, production schema or data effect.
+- Engineering lesson: whenever a shared SQL query gains a column dependency, review every test-owned temporary table definition in the same change rather than relying on serial CI failures.
+- Sensitive-information review: no credential, database URL, production payload or private log content is recorded.
+- Rollback: revert the single MZ-035 fixture column and this ledger unit.
+- Git state: staged local candidate only; PR #402 remains at remote SHA `b62eefce9e145870c44ec308d1347ac9a4de59d8`.
+
 ## CRL-20261020-001 — Root PR PostgreSQL 隔离测试夹具补列
 
 - **Status:** exact local CI-fix candidate prepared; not committed, pushed, merged, or deployed
