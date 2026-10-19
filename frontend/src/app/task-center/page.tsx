@@ -23,6 +23,7 @@ import {
   taskCenterInspectionModeOptions,
   taskInspectionModeMeta,
   taskInspectionScopeMeta,
+  taskCenterSaveInspectionScope,
   taskStatusMeta,
   taskTimingTone,
 } from '../../lib/cleaningTaskUi'
@@ -613,7 +614,10 @@ function cleaningAssignmentSnapshot(task: TaskCenterTask): CleaningAssignmentSna
     cleaner_id: pureCheckin ? null : (task.cleaner_id || task.assignee_id || null),
     inspector_id: pureCheckin ? null : (task.inspector_id || null),
     inspection_mode: task.inspection_mode || 'pending_decision',
-    inspection_scope: task.inspection_scope || null,
+    inspection_scope: taskCenterSaveInspectionScope({
+      inspectionScope: task.inspection_scope,
+      isTurnover: timing.showCheckout && timing.showCheckin,
+    }),
     inspection_due_date: task.inspection_due_date || null,
     status_action: task.status_action || null,
     status: task.status_action ? task.status : null,
@@ -1524,7 +1528,10 @@ export default function TaskCenterPage() {
       assignee_id: pureCheckin ? (task.assignee_id || task.inspector_id || task.cleaner_id || null) : (task.assignee_id || null),
       inspection_mode: inspectionMode,
       inspection_mode_action: task.inspection_mode_action || null,
-      inspection_scope: normalizeInspectionScope(task.inspection_scope),
+      inspection_scope: taskCenterSaveInspectionScope({
+        inspectionScope: task.inspection_scope,
+        isTurnover: cleaningTimingVisibility(task).showCheckout && cleaningTimingVisibility(task).showCheckin,
+      }),
       inspection_due_date: task.inspection_due_date ? dayjs(task.inspection_due_date) : null,
       keys_hung: isKeysHungStatus(task.status),
       task_completed: isTaskCompletionToggleStatus(task.status),

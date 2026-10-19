@@ -7,6 +7,52 @@
 - 测试映射必须说明保护点和测试场景；只登记测试文件名不算覆盖证据。
 - `sufficient` 表示当前测试覆盖该保护点；`partial` 表示已有测试但仍有缺口；`not-wired` 表示测试存在但尚未进入对应质量检查；`missing` 表示尚无测试。
 
+## FR-039：延期检查在入住变更后的唯一安排、实时归位与结算责任
+
+- **维护责任范围：** backend Task Center / MZ App work tasks / personnel settlement / paired mobile
+- **最后审查日期：** 2026-10-18
+- **状态：** active
+
+### 业务保护规则
+
+- 终态延期检查只在原有效检查日显示；未完成且逾期的延期检查继续进入当前待办，不能把已完成任务滚动夹到后续日期。
+- `inspection_mode`、`inspection_scope`、`inspection_due_date` 或人员变化属于列表成员变化；Mobile 必须绕过冷却立即权威刷新，使任务能跨日、跨周和跨月移入或移出当前范围。
+- 同房源同有效检查日只有一条检查安排。延期检查在原退房日至延期日窗口内遇到 `inspect_and_hang` 入住任务时保留原退房日，检查操作只指向唯一入住任务；`password_only` 始终独立。计划检查人与入住检查/执行人不一致、缺失，或存在多条延期/入住检查任务时必须显式冲突，列表动作与所有实际写入口都不能自动合并、改派或放开提交。
+- 没有显式延期-入住关联的历史逾期检查必须按 canonical source 独立于后来同房源任务；日/周/月查询和管理端/合作方视图都不能仅凭“投影日期 + 房源”混合检查模式、人员、状态或媒体。重开任务保留的历史钥匙照片和挂钥匙视频只作为证据，当前 `assigned` 等未完成状态不得被媒体反向提升为 `in_progress` 或 `keys_hung`；正常同日退房/入住仍按既有 turnover 规则合并。
+- 检查费按有效安排的房源、入住执行日期和计划检查人计入，每日费率与房源去重规则不变，且不依赖照片数量或上传状态。自动替换关联最终入住检查证据，但任一实际提交人或执行指派与计划检查人不同时转人工复核，绝不自动转移检查费。
+- 取消、删除、改派和无效订单不得继续给旧责任人计费；已审核/已付款快照保持不可变。本规则不自动回填或重算历史异常记录。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 终态精确日期、未完成逾期与 source 隔离 | `backend/scripts/tests/test_cleaning_inspection_merge.ts` | 已完成/取消延期不滚入后续范围；MSQ1905E 日/周/月投影保留未完成旧任务但与新任务分组隔离，旧钥匙照片/视频不提升重开状态；FO1602 正常同日退房/入住仍合并，显式关联不被误隔离 | sufficient | `npm run test:cleaning-inspection-merge --prefix backend` |
+| 入住衔接、密码任务独立和执行人冲突 | `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` | 全延期窗口链接、原退房日、密码排除、跨日重复入住与人员不一致冲突、两层合并的全部冲突 source 并集、无关联延期 source 的两层隔离和内部字段清理、自动 replacement/restore/relink 同一 fail-closed 安排、稳定顺序事务锁、原 source 重定向、scope 成员事件及正确 action source contract | sufficient | `npm run test:deferred-inspection-checkin-replacement --prefix backend` |
+| 检查费归属与提交人不一致 | `backend/scripts/tests/test_personnel_settlement_mz034.ts` | 自动替换按入住执行日取证、终态 deferred 不重新吸附后来入住或制造 owner 冲突、UI source 隔离不折叠结算 source/服务日、显式责任人、执行指派冲突、错误提交人先传而计划人后传仍双边警告且不计费 | sufficient | `npm run test:personnel-settlement-mz034 --prefix backend` |
+| 并发重复提交去重 | `backend/scripts/tests/test_idempotency_submit_id_contract.ts` | 行锁、两套检查照片 step receipt、相同提交重放、不同载荷冲突及旧完成入口相同视频语义重放 | sufficient | `npm run test:idempotency-submit-id-contract --prefix backend` |
+| Mobile 跨范围权威归位 | `mz-cleaning-app-frontend/src/lib/workTasksStore.test.ts` | membership 事件绕过冷却并跨月移动到服务端返回日期 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand src/lib/workTasksStore.test.ts` |
+| Mobile 原退房、冲突与历史 source 展示 | `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.test.tsx` | 展示原退房日、计划检查人和入住执行人，并说明不自动转费；管理视图同时保留 MSQ1905E 当前退房/Oscar 与旧延期/Angela，两者均为已分配且不显示已挂钥匙 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand src/screens/tabs/TasksScreen.test.tsx` |
+
+### 验证策略
+
+- 使用合成内存/fixture 数据执行 Root 聚焦契约、后端编译、Mobile 类型检查与 Jest，再运行两个仓的完整质量门和独立只读复核。
+- 不连接生产数据库，不回放订单，不运行 migration，不调用生产写接口；真实账号跨周/月和弱网设备流程需另行验收。
+
+### 最后验证
+
+- **CRL：** root/CRL-20261018-002 / mobile/CRL-20261018-001
+- **Commit：** not committed
+- **日期：** 2026-10-18
+
+### 相关 CRL
+
+- root/CRL-20261011-007、root/CRL-20261014-004：检查安排、历史快照与结算日费率基础。
+- root/CRL-20261018-002 / mobile/CRL-20261018-001：MZ-049 延期检查入住衔接、source 隔离、实时归位和结算责任闭环。
+
+### 非保护范围
+
+- 历史三条异常记录的回填/重算、生产数据修复、数据库 migration、部署/OTA、真实设备和生产账号验收。
+
 ## FR-038：MZ 直订官网展示候选与诚实搜索边界
 
 - **维护责任范围：** booking frontend / backend guest site / web admin / local preview tooling
@@ -424,7 +470,7 @@
 ## FR-029：费用结算资料、规则历史、周结算、供应方文件与财务付款边界
 
 - **维护责任范围：** backend personnel settlement schema/profile/rule/calculation/claim/workflow/private-evidence/document/scheduler/notification API + web finance settlement profile/rule/claim/weekly/document page + paired mobile self-service/document/notification flow
-- **最后审查日期：** 2026-10-11
+- **最后审查日期：** 2026-10-19
 - **状态：** active
 
 ### 业务保护规则
@@ -437,6 +483,8 @@
 - “结算资料生效日期”和“费用规则生效日期”是两个独立版本边界：前者控制供应方/税务资料、人员类型、付款方式与结算开关，后者控制计费方式与单价。银行账户继续以 `users` 为唯一主资料并在有权限的管理员明确保存时立即生效，不伪装成可按日期回溯的档案字段。网页必须使用不同名称并说明各自影响范围，不能仅显示两个相同的“生效日期”。
 - 网页“编辑人员结算资料”只修改打开时读取到的当前生效版本：必须回显该版本原生效日并随保存请求携带原版本边界。当前版本起始日只能保持不变或向前移动，不得向后推迟并改写原起始日至新日期之间已经归属当前版本的历史区间；未来生效的变更必须另建版本。管理员向前移动当前版本起始日时，后端必须在同一事务中合并未被 `finance_approved/paid` 锁定的重叠档案、保留审计记录并返回新的当前版本；不得把修改静默写入仍会被后续版本覆盖的历史区间。版本已被并发替换时必须返回可理解的刷新提示。显式提交的银行资料不得因为存在后续档案而跳过保存。
 - 已 `finance_approved` 或 `paid` 的历史周结算不可被回溯改写；任何可能覆盖已锁定期间的档案或费用规则生效日期必须返回冲突。费用规则页面必须先读取锁定截止日，禁用无效日期并用中文说明最早可选日期；保存后继续显示刚保存版本的生效日，不能重置为当天，也不能把 `rule_effective_date_locked` 技术码直接显示给用户。若所选生效日早于已有后续版本，保存前必须明确展示该历史版本的实际截止日并说明当前版本不会改变；历史卡片可将完整规则复制到当前可写日期，但复制只能填充表单、必须再次保存，且不得删除或覆盖原历史版本。Photo ID 仅是身份合规资料，不能作为工作量证明。
+- 本人移动端重复提交与当前有效结算资料完全一致的供应方、GST、付款方式和银行资料时，后端必须在同一事务内锁定并规范化比较完整业务状态，作为幂等空操作返回现有版本；不得执行历史结算锁查询、用户/档案更新或新增审计。任何真实字段变化或管理员显式移动版本边界仍必须执行既有 `finance_approved/paid` 锁定检查，不能借幂等分支绕过历史保护。
+- 结算资料/费用规则写入，以及结算进入或离开 `finance_approved/paid` 的财务批准、确认付款、财务退回和作废事务，必须先按人员取得同一 advisory lock，再取得 user/profile/rule/settlement 等业务行锁；不得在持有相反顺序业务行锁后再等待人员锁。SERIALIZABLE 付款事务必须在 `BEGIN` 前用同 key 的 session lock 桥接，事务内取得 transaction advisory lock 后立即释放 session lock，避免等待期间提前固定旧快照。该 bridge 只能使用与业务 `DATABASE_URL` 身份严格匹配、显式确认 session-affine 且不含已知 transaction-pooler/proxy 标记的 `DATABASE_DIRECT_URL` 一次性物理连接；不得把 session lock 放在业务 pool 上，成功或任何锁/提交/回滚/解锁不确定路径都必须关闭连接而不能归还池。该门闩不改变业务状态机、权限或历史锁规则。
 - GST 已注册或状态未确认时，每个人的费用规则必须明确选择 `exclusive_gst` 或 `inclusive_gst`；GST 未注册时网页不得提供含税/未税选择，服务端必须把口径固定为 `exclusive_gst` 且 GST 为 0。金额只以 AUD 整数分保存。一个版本可组合岗位所需的多种计算方式；不同生效日生成不重叠的历史版本，同一生效日只允许修正同一版本。普通工作人员不得读取或修改规则管理接口。
 - 人员结算资料详情在具备 `personnel_settlements.rules.manage` 权限时，必须复用现有只读规则历史接口并且只展示其中的当前生效版本，包括生效期间、GST 单价口径、逐项计费方式与金额及备注；没有当前生效版本时显示明确空状态。历史版本只在专门的费用规则抽屉中展示。没有规则管理权限时不得为详情页额外请求或暴露完整单价，继续只显示资料接口已有的当前规则摘要。
 - 清洁费用必须按房源 `properties.type` 精确匹配 `一房一卫`、`两房一卫`、`两房两卫`、`三房两卫`、`三房三卫`、`4房3.5卫` 六档单价；清洁规则保存时六档必须齐全且不得重复。旧的统一清洁单价不参与新周结算；任务缺少/超出支持房型或人员缺少对应房型单价时必须进入财务人工复核，禁止静默回退。房型必须写入计算快照，已发起确认、已批准或已付款的历史结算不得因此回算。
@@ -467,6 +515,10 @@
 | schema 未初始化时不重复弹 toast、不暴露技术错误 | `frontend/src/app/finance/settlements/settlementPageState.test.ts` | marker 未就绪映射为单一页面内初始化状态；未知错误使用通用安全文案 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/settlementPageState.test.ts --coverage.enabled=false` |
 | 网页可选 ABN/GST、付款方式及两类生效日期区分 | `frontend/src/app/finance/settlements/personnelProfileUi.test.ts` | ABN 可留空、已注册 GST 条件式要求 11 位 ABN、GST 可清空为未确认、四种付款方式中文标签、银行资料条件式展示，以及结算资料与费用规则日期的独立名称和用途说明 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/personnelProfileUi.test.ts --coverage.enabled=false` |
 | 当前结算资料版本编辑、日期移动与银行主资料保存 | `backend/scripts/tests/test_personnel_settlement_phase1.ts` | 纯函数覆盖 `2026-09-30` 当前版本向前移动到已有/不存在的 `2026-09-01` 边界、吸收重叠版本、修正前一版本截止日和拒绝过期版本；源码合同固定审计重挂、重叠档案删除、当前编辑时更新 `users` | sufficient | `npm run test:personnel-settlement-phase1 --prefix backend` |
+| 本人资料重复提交幂等与历史结算锁边界 | `backend/scripts/tests/test_personnel_settlement_phase1.ts` | 完整规范化业务状态相同才允许在锁查询前返回；银行账号即使尾号相同但完整号码变化仍视为真实修改；GST 生效日变化不走空操作；源码合同固定空操作位于 `profile_effective_date_locked` 查询之前 | sufficient | `npm run test:personnel-settlement-phase1 --prefix backend` |
+| 资料/规则写入人员门闩顺序 | `backend/scripts/tests/test_personnel_settlement_phase1.ts` | 固定 profile/rule save 均在任何 user/profile/rule 行锁前取得同一人员 advisory lock，同时保留 no-op 与历史锁查询顺序 | sufficient | `npm run test:personnel-settlement-phase1 --prefix backend` |
+| 财务锁状态转换与 SERIALIZABLE bridge | `backend/scripts/tests/test_personnel_settlement_phase3.ts` | 固定批准、付款、退回和作废的 advisory-first 顺序；验证 direct URL/业务库身份匹配、session-affinity 确认、pooler/proxy 拒绝、一次性连接顺序，以及 lock/unlock/commit/rollback 失败后关闭连接 | sufficient | `npm run test:personnel-settlement-phase3 --prefix backend` |
+| 人员资料与财务状态真实并发及死锁回归 | `backend/scripts/tests/test_personnel_settlement_profile_lock_sql_integration.ts` | 隔离 SQL 测试覆盖 save-first、approve-first、SERIALIZABLE 付款快照与交错行锁无死锁；执行前拒绝 `NODE_ENV=production`、未登记测试库指纹、缺生产库身份指纹、测试/生产身份相同及 pooler/proxy 目标 | sufficient | `MZ_PROFILE_LOCK_TEST_DATABASE_URL=<ephemeral non-production DB> MZ_PROFILE_LOCK_TEST_DATABASE_FINGERPRINT=<approved test identity SHA-256> MZ_PROFILE_LOCK_TEST_PRODUCTION_DATABASE_FINGERPRINT=<production identity SHA-256> MZ_PROFILE_LOCK_TEST_WRITE=1 MZ_PROFILE_LOCK_TEST_CONFIRM_EPHEMERAL=1 npm run test:personnel-settlement-profile-lock:sql --prefix backend` |
 | 网页当前资料日期回显、版本边界与保存结果 | `frontend/src/app/finance/settlements/personnelProfileUi.test.ts` | 固定回显当前日期、提交原版本边界、立即生效银行说明、保存后实际当前日期及并发冲突中文提示 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/personnelProfileUi.test.ts --coverage.enabled=false` |
 | 人员详情当前费用规则展示与权限边界 | `frontend/src/app/finance/settlements/personnelProfileUi.test.ts` | 只有 `canManageRules` 的详情读取既有规则历史端点并筛选 `is_current`；页面只显示当前版本的生效期间、GST 口径和逐项单价，不重复历史版本且不扩大后端规则管理权限；真实页面另验证无当前版本空状态 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/personnelProfileUi.test.ts src/app/finance/settlements/feeRuleUi.test.ts --coverage.enabled=false` |
 | 网页费用结算标签优先级与默认页 | `frontend/src/app/finance/settlements/personnelProfileUi.test.ts` | 首次进入默认打开周结算，标签顺序固定为周结算、工作量反馈、人员与费用规则 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/personnelProfileUi.test.ts --coverage.enabled=false` |
@@ -512,12 +564,13 @@
 
 ### 最后验证
 
-- **CRL：** root/CRL-20261002-001, root/CRL-20261002-002, root/CRL-20261003-002, root/CRL-20261003-003, root/CRL-20261005-003, root/CRL-20261011-002, root/CRL-20261011-003
+- **CRL：** root/CRL-20261002-001, root/CRL-20261002-002, root/CRL-20261003-002, root/CRL-20261003-003, root/CRL-20261005-003, root/CRL-20261011-002, root/CRL-20261011-003, root/CRL-20261019-001
 - **Commit：** not committed
-- **日期：** 2026-10-11
+- **日期：** 2026-10-19
 
 ### 相关 CRL
 
+- root/CRL-20261019-001：本人移动端未修改结算字段时，重复提交作为后端幂等空操作返回，不被历史结算锁误拦截；真实结算资料变更继续受锁保护。
 - root/CRL-20261011-002：移除网页工作量证明 GET 中多余的 `Cache-Control`/`Pragma` 请求头，保留 bearer 鉴权、浏览器 no-store 与服务端私有 no-store 响应语义。
 - root/CRL-20261005-003：已付款结算 PDF 使用冻结付款快照显示付款方式；银行转账显示账户名、BSB 与账号尾号 4 位，不泄露完整账号。
 - root/CRL-20261002-001：通用补贴改为直接填写最终总额，财务决定是否计入且无需费用规则。
@@ -1638,10 +1691,10 @@
 
 - 任务状态、交接内容、钥匙借还权限或仓库钥匙数据本身的修改。
 
-## FR-008：员工 Photo ID 与签证资料的水印、存储与自助隔离
+## FR-008：员工 Photo ID 与签证资料的水印、存储与私有隔离
 
-- **维护责任范围：** backend / mobile
-- **最后审查日期：** 2026-07-29
+- **维护责任范围：** backend / web / mobile
+- **最后审查日期：** 2026-10-16
 - **状态：** active
 
 ### 业务保护规则
@@ -1651,45 +1704,54 @@
 - Photo ID 与签证图片缩略图可打开只读、等比的全屏大图；大图必须支持 1x–4x 双指捏合缩放与放大后拖动查看局部，并可通过关闭按钮、背景或系统返回关闭。全屏层不得新增下载、替换、删除、上传、保存或权限能力。
 - 签证资料只保留“已上传”存在标记和 Visa Grant Number；既有本地个人资料缓存中的地址或 key 必须归一化为存在标记，不能使资料页崩溃或把字段误写为其他用户的数据。
 - `GET /users/me` 只返回当前用户的 `photo_id_uploaded` / `visa_document_uploaded`，不返回对象 URL 或 storage key；图片字节只能由认证的 `GET /users/me/profile-documents/:type` 读取，响应禁止共享缓存。通讯录和任务列表等非个人资料入口不得返回或展示 Photo ID、签证文件地址、Visa Grant Number。
+- Web 人员结算列表始终不得返回 Photo ID、签证文件存在状态或 Visa Grant Number；人员详情与私有文件字节必须同时满足有效角色包含 `admin` / `finance_staff` 之一和独立权限 `personnel_settlements.profile_documents.view`。其他角色即使被自定义授予该权限，也不得收到字段、能力标记或文件字节。
+- Web 私有读取只接受目标用户和目标类型严格匹配的 `mzapp/profile-documents/<owner>/<type>/...` 引用，必须在返回字节前成功写入不含号码、对象引用或内容的查看审计；对象不存在返回 404、存储不可用返回 503、审计失败关闭读取。响应不得暴露 storage key、原始引用、公开 URL 或预签名 URL。
+- Web 只能在详情响应含后端权威能力标记且用户点击“查看”后认证读取文件；临时 blob URL 必须在预览替换、弹窗/抽屉关闭或组件卸载时撤销，不提供显式下载入口。
 - 服务端仅接受当前用户、对应证件类型的 `mzapp/profile-documents/<owner>/<type>/...` 私有引用；上传必须由服务端分配该 key 并强制匹配水印类型，不能写入任意 URL 或其他用户的对象键。
 - 图片上传成功不等于资料保存成功：上传结果必须通过 `/users/me` 落到当前用户的对应字段；失败时不得把失败的本地预览当成已存档资料。
 
 ### 跨层适用范围
 
-- **后端：** `/mzapp/upload` 的资料水印模式、`users` 字段初始化、自助资料 schema 与 `/users/me` 读写。
+- **后端：** `/mzapp/upload` 的资料水印模式、`users` 字段初始化、自助资料 schema 与 `/users/me` 读写；`/finance/settlements/profiles` 的列表/详情字段裁剪和私有证件读取审计。
+- **Web：** 费用结算“人员与费用规则”详情的权威能力门槛、按需认证读取、图片/PDF 内嵌预览与 blob 生命周期。
 - **客户端：** 个人资料页的图片选择、本地预览水印、远程水印文件预览、Visa Grant Number 编辑和个人资料缓存迁移。
-- **入口：** 移动端“我 → 个人信息 → 编辑资料”。
+- **入口：** 移动端“我 → 个人信息 → 编辑资料”；Web“费用结算 → 人员与费用规则 → 资料详情”。
 - **一致性：** 服务端生成的水印文件是最终存档；本地覆盖层仅用于尚未被服务端处理的即时预览。
 
 ### 测试映射
 
 | 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
 |---|---|---|---|---|
-| 自助字段、私有读取和整版水印模式 | `backend/scripts/tests/test_profile_compliance_document_contract.ts` | 校验 presence flags、认证私有 reader、owner/type key 校验、三个 schema 初始化入口和两种水印模式 | partial | `./node_modules/.bin/ts-node --transpile-only scripts/tests/test_profile_compliance_document_contract.ts` |
+| 自助字段、私有读取和整版水印模式 | `backend/scripts/tests/test_profile_compliance_document_contract.ts` | 校验 presence flags、认证私有 reader、owner/type key 校验、三个 schema 初始化入口和两种水印模式 | sufficient | `npm run test:profile-compliance-document --prefix backend` |
+| Web 角色 + 专用权限双门槛、字段裁剪、严格私有 key 与审计 | `backend/scripts/tests/test_personnel_profile_documents_admin_contract.ts` | admin/finance_staff 有效角色可继续按权限授权；其他角色即使自定义获权仍拒绝；列表/无权详情不含敏感字段或能力标记；授权详情和文件端点固定 owner/type、no-store、先审计后返回 | sufficient | `npm run test:personnel-profile-documents-admin --prefix backend` |
+| Web 详情敏感字段与权威能力标记裁剪 | `backend/scripts/tests/test_personnel_settlement_phase1.ts` | 未授权序列化不含 Photo ID/签证字段或能力标记；授权序列化返回 synthetic presence/grant number 与明确能力标记 | sufficient | `npm run test:personnel-settlement-phase1 --prefix backend` |
+| Web 认证按需读取、错误分流与临时 URL 生命周期 | `frontend/src/app/finance/settlements/profileDocumentPreview.test.ts` | 只使用认证 Blob API；页面只按后端能力标记显示整段资料；安全映射 401/403/404/503/空响应；关闭和替换时释放 object URL | sufficient | `npm run test --prefix frontend -- --coverage.enabled=false src/app/finance/settlements/profileDocumentPreview.test.ts && npm run build --prefix frontend` |
 | 资料页签证字段、水印、上传和缩放大图 | `mz-cleaning-app-frontend/src/screens/me/ProfileEditScreen.test.tsx` | 合规角色可见 Visa Grant Number/签证图片上传；Photo ID 与签证均传入专属水印模式、显示本地整版水印，并可打开/关闭 1x–4x 缩放大图 | partial | `npm run test -- --runInBand --no-cache src/screens/me/ProfileEditScreen.test.tsx` |
 | 本地资料缓存字段持久化 | `mz-cleaning-app-frontend/src/lib/profileStore.test.ts` | 证件 URL/key 只持久化为 `uploaded` 标记，Visa Grant Number 仍可恢复 | partial | `npm run test -- --runInBand --no-cache src/lib/profileStore.test.ts` |
 
 ### 验证策略
 
 - **backend 修改：** 执行资料合约测试和 TypeScript 编译；真实对象存储上传仅在非生产测试账号、无真实证件时单独验证。
+- **Web 修改：** 执行角色/权限合同、资料序列化、按需预览单测、全量 lint/test/build；发布前另以无真实证件的隔离测试账号验证 admin、finance_staff 和获权自定义角色的 200/403 边界。
 - **mobile 修改：** 执行资料页和缓存定向测试、typecheck、lint、按钮规范审计；真机检查本地原图与服务端返回图的整版水印。
 - **安全验证：** 仅核对 `users/me` 自助接口与通讯录选择字段；不得在日志、测试夹具或截图中放入真实证件、签证号或访问令牌。
 - **发布前：** Registry/ledger audit；不执行生产资料写入。
 
 ### 最后验证
 
-- **CRL：** root/CRL-20260819-003; mobile/CRL-20260819-003
-- **Commit：** not yet
-- **日期：** 2026-07-29
+- **CRL：** root/CRL-20261016-003
+- **Commit：** not committed
+- **日期：** 2026-10-16
 
 ### 相关 CRL
 
 - root/CRL-20260819-003：Photo ID/Visa presence-only API、owner/type 私有 key 与认证 reader
 - mobile/CRL-20260819-003：presence-only cache、认证文档显示与专属上传元数据
+- root/CRL-20261016-003：Web 人员结算资料详情的 admin/finance_staff 双门槛、按需私有读取与审计候选
 
 ### 非保护范围
 
-- PDF、OCR、签证有效期识别、自动审批和管理端证件资料浏览。
+- OCR、签证有效期识别、自动审批、批量导出和证件内容变更。
 - 头像上传、银行资料规则、普通个人资料字段和认证权限模型的重构。
 - 历史记录不可变快照、数据归档或新的报表统计。
 

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'crypto'
+import { Client } from 'pg'
 import { pgPool, pgRunInTransaction } from '../dbAdapter'
 import {
   addSettlementDays,
@@ -24,6 +25,14 @@ import {
   submitPersonnelClaimInTransaction,
   type PersonnelClaimReviewInput,
 } from './personnelWorkloadClaims'
+import {
+  getPersonnelSettlementUserScopeId,
+  lockPersonnelSettlementUserScope,
+  lockPersonnelSettlementUserScopeForSettlement,
+  lockPersonnelSettlementUserSessionScope,
+  requirePersonnelSettlementSessionAffineDatabaseUrl,
+  unlockPersonnelSettlementUserSessionScope,
+} from './personnelSettlementUserLock'
 
 type Queryable = { query: (sql: string, params?: any[]) => Promise<any> }
 
@@ -109,6 +118,86 @@ async function runSerializableSettlementTransaction<T>(cb: (client: any) => Prom
       return cb(client)
     })
     return result as T
+  })
+}
+
+type PersonnelSettlementDirectClient = {
+  connect: () => Promise<void>
+  query: (sql: string, params?: any[]) => Promise<any>
+  end: () => Promise<void>
+}
+
+function createPersonnelSettlementDirectClient(): PersonnelSettlementDirectClient {
+  const connectionString = requirePersonnelSettlementSessionAffineDatabaseUrl()
+  return new Client({
+    connectionString,
+    ssl: { rejectUnauthorized: false },
+    connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 10000),
+    query_timeout: Number(process.env.PG_QUERY_TIMEOUT_MS || 60000),
+    statement_timeout: Number(process.env.PG_STATEMENT_TIMEOUT_MS || 45000),
+    idle_in_transaction_session_timeout: Number(process.env.PG_IDLE_TX_TIMEOUT_MS || 60000),
+    keepAlive: true,
+    keepAliveInitialDelayMillis: Number(process.env.PG_KEEPALIVE_DELAY_MS || 10000),
+    application_name: 'mz-personnel-settlement-payment',
+  })
+}
+
+export async function runSerializableSettlementUserTransaction<T>(
+  userId: string,
+  cb: (client: any) => Promise<T>,
+  options: { createClient?: () => PersonnelSettlementDirectClient } = {},
+): Promise<T> {
+  return retryPersonnelSettlementSerializableTransaction(async () => {
+    const client = (options.createClient || createPersonnelSettlementDirectClient)()
+    let connected = false
+    let sessionLockState: 'none' | 'acquiring' | 'held' | 'releasing' = 'none'
+    let transactionStarted = false
+    let commitAttempted = false
+    try {
+      await client.connect()
+      connected = true
+      // Acquire the session form before BEGIN so a SERIALIZABLE snapshot cannot
+      // be established while an earlier profile/rule transaction is pending.
+      // This is a dedicated, explicitly session-affine physical connection; it
+      // is always destroyed after the attempt and is never returned to a pool.
+      sessionLockState = 'acquiring'
+      await lockPersonnelSettlementUserSessionScope(client, userId)
+      sessionLockState = 'held'
+      await client.query('BEGIN')
+      transactionStarted = true
+      await client.query('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE')
+      await lockPersonnelSettlementUserScope(client, userId)
+      sessionLockState = 'releasing'
+      await unlockPersonnelSettlementUserSessionScope(client, userId)
+      sessionLockState = 'none'
+      const result = await cb(client)
+      commitAttempted = true
+      await client.query('COMMIT')
+      transactionStarted = false
+      return result
+    } catch (error) {
+      // A failed COMMIT has an unknown outcome; do not issue more statements.
+      // For earlier failures, best-effort rollback/unlock is diagnostic only:
+      // the dedicated connection is destroyed below even if either fails.
+      if (connected && transactionStarted && !commitAttempted) {
+        try {
+          await client.query('ROLLBACK')
+          transactionStarted = false
+        } catch {}
+      }
+      if (connected && sessionLockState === 'held' && !transactionStarted && !commitAttempted) {
+        try {
+          await unlockPersonnelSettlementUserSessionScope(client, userId)
+          sessionLockState = 'none'
+        } catch {}
+      }
+      throw error
+    } finally {
+      // Closing the one-shot physical connection releases any session lock even
+      // when acquisition, BEGIN, COMMIT, ROLLBACK or unlock had an uncertain
+      // outcome. This client is deliberately never returned to a pool.
+      try { await client.end() } catch {}
+    }
   })
 }
 
@@ -1877,6 +1966,7 @@ export async function returnPersonnelSettlementForConfirmation(input: {
   if (!pgPool) throw new Error('pg_required')
   const reason = requireReason(input.reason, 'settlement_return_reason_required')
   const returned = await pgRunInTransaction(async (client) => {
+    await lockPersonnelSettlementUserScopeForSettlement(client, input.settlementId)
     const current = await loadSettlementForUpdate(client, input.settlementId)
     const deliveryRetry = getPersonnelSettlementReturnDeliveryRetry(current)
     if (deliveryRetry) return deliveryRetry
@@ -2422,6 +2512,7 @@ export async function approvePersonnelSettlementFinanceReview(input: {
   assertPersonnelSettlementSchemaReady()
   if (!pgPool) throw new Error('pg_required')
   await pgRunInTransaction(async (client) => {
+    await lockPersonnelSettlementUserScopeForSettlement(client, input.settlementId)
     const current = await loadSettlementForUpdate(client, input.settlementId)
     if (String(current.status) === 'finance_approved') return
     assertPersonnelSettlementTransition('approve', current.status)
@@ -2464,11 +2555,13 @@ export async function confirmPersonnelSettlementPaid(input: {
   assertPersonnelSettlementSchemaReady()
   if (!pgPool) throw new Error('pg_required')
   const payment = validatePersonnelSettlementPayment(input.payment)
-  await runSerializableSettlementTransaction(async (client) => {
+  const settlementUserId = await getPersonnelSettlementUserScopeId(pgPool, input.settlementId)
+  await runSerializableSettlementUserTransaction(settlementUserId, async (client) => {
     // A payment decision must compare all live settlement sources against one
-    // consistent database snapshot. Concurrent source changes serialize after
-    // this payment and are handled by the post-payment adjustment workflow.
+    // consistent database snapshot. Profile/rule mutations serialize before
+    // that snapshot; other later changes use the post-payment adjustment flow.
     const current = await loadSettlementForUpdate(client, input.settlementId)
+    if (cleanText(current.user_id) !== settlementUserId) throw new Error('settlement_user_scope_mismatch')
     const totalCents = safeInteger(current.total_cents, 'total_cents')
     if (String(current.status) === 'paid') {
       const snapshot = parseJsonObject(current.payment_destination_snapshot)
@@ -3061,6 +3154,7 @@ export async function voidPersonnelSettlement(input: {
   if (!pgPool) throw new Error('pg_required')
   const reason = requireReason(input.reason)
   await pgRunInTransaction(async (client) => {
+    await lockPersonnelSettlementUserScopeForSettlement(client, input.settlementId)
     const current = await loadSettlementForUpdate(client, input.settlementId)
     if (String(current.status) === 'void') return
     assertPersonnelSettlementTransition('void', current.status)

@@ -1,5 +1,1184 @@
 # Change Release Ledger
 
+## CRL-20261020-003 — MZ-035 延期 Check-in 结算日期自匹配回归修复
+
+- **Status:** source committed locally at `b268805d180ae8d8b5ea5e7f63813e4485a4f6c0`; integrated-scope receipt prepared; not pushed, merged, or deployed
+- **Repository:** `root`
+- **Updated:** 2026-10-20 AEDT
+- **Request:** 在 PR #402 的 MZ-035 隔离 PostgreSQL 测试越过临时表缺列后，继续诊断并修复 `paired-deferred-checkout` / `paired-deferred-checkin` 不同有效日期被错误合并的问题；不得删除或削弱既有计费断言，不新增薪资政策，不连接生产数据库。
+- **Outcome:** 将 MZ-049 的“延期 checkout 可由窗口内 check-in 承接”SQL 匹配严格限制到 checkout parent，防止 deferred check-in 把自身当成承接任务并把有效检查日从 `inspection_due_date` 回写为自身 `task_date`。不同有效日期继续按既有 MZ-035 规则分别形成检查日。
+
+### Implementation
+
+- Previous behavior: `current_inspection_assignments` 的 `checkin_arrangement` LATERAL 子查询只检查 parent 为 deferred，却未检查 parent 任务类型；当 parent 本身是 `checkin_clean` 时，它可匹配自身，令 `effective_inspection_date` 等于自身 `task_date`。MZ-035 的 deferred check-in 因此从 `2026-10-06` 错变为 `2026-10-05`，随后同日 companion suppression 将其移除。
+- New behavior: 仅 `checkout_clean` / `checkout_cleaning` deferred parent 可以进入 check-in 承接匹配。Deferred check-in 自身继续使用既有 `inspection_due_date` 作为有效结算日期；checkout replacement、歧义检测和 MZ-050 scope 规则不变。
+- Key decisions: Dev 与既有 MZ-034/MZ-035 契约均明确不同有效检查日不可配对或抑制；MZ-049 服务层的 replacement 搜索也仅接受 checkout parent。因此该修复是恢复既有业务合同，不需要新的薪资政策判断，也不修改断言。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementPreview.ts` — modified: 为 deferred check-in 承接 LATERAL 查询增加 checkout parent 类型边界。
+- `docs/change-release-ledger.md` — modified: 记录真实 PostgreSQL 断言失败、根因、最小修复、验证和发布边界。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none；只修改只读结算预览查询条件，不执行 migration，不连接或写入生产数据库。
+- Config / environment: none.
+- Dependencies: `root/CRL-20261018-002@e69cfa86ca85ef4c24165aaf21fe69c0d2967c7e`; `root/CRL-20261020-002@25af722e83e8939e14695cd9e0d345b8a9a41617`.
+- Related units: `root/CRL-20261020-001`（MZ-034 fixture）；`root/CRL-20261019-004`（MZ-050 scope 防护，未修改）。
+
+### Validation
+
+- GitHub Actions Root Quality Gate #289 / run `39335515645` at pushed head `a7349313129c28a2ca1fb7d2b6415d554509d8c2` — failed before this candidate: MZ-034 isolated PostgreSQL passed; MZ-035 reached assertion line 462 and returned only the `2026-10-05` checkout instead of the expected separate `2026-10-05` checkout and `2026-10-06` deferred check-in.
+- Dev comparison — passed: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b` uses `inspection_due_date` for deferred tasks and contains the same different-effective-date MZ-035 assertion.
+- MZ-049 boundary comparison — passed: `findDeferredInspectionCheckinReplacements` only treats `checkout_clean` as the deferred parent; the integrated settlement SQL was the inconsistent surface.
+- `npm --prefix backend run test:personnel-settlement-mz034` — passed using a temporary ignored dependency link whose donor lockfile exactly matched; the link was removed.
+- `npm --prefix backend run test:deferred-inspection-checkin-replacement` — passed using the same temporary ignored dependency link; the link was removed.
+- `npm --prefix backend run build -- --noEmit` — passed using the same exact-lockfile dependency donor; no build output was emitted and the link was removed.
+- `git diff --check` — passed.
+- Independent read-only review — GO for local commit only: independently reproduced the deferred check-in self-match, matched the exclusive hunk and patch fingerprints, confirmed there is no second equivalent self-match path, and found P0/P1/P2=0. It does not authorize push or replace the PostgreSQL rerun.
+- Local PostgreSQL execution — not run: no supported local PostgreSQL, Docker or non-production integration URL is available. The exact MZ-035 SQL integration must rerun after a separately approved push of a newly frozen SHA.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** `prepared`
+- **Untracked review:** none.
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `7ce5dfcc11a8e0daf78c6852fe95da20e8755d8965f8bc82a389ca76783f9d53`
+
+### Integrated Range Scope Reconciliation — 2026-10-20
+
+- Exact boundary: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b` → reviewed combined content `b268805d180ae8d8b5ea5e7f63813e4485a4f6c0`; candidate patch SHA-256 `22fdad72096ad1ef06164a96cc182256f2174156bd645e941d7a344d95286465` excludes this ledger.
+- Ownership result: `PASS`; `root/CRL-20261018-002` retains ownership of its 32 `personnelSettlementPreview.ts` integrated hunks, while this CRL intentionally shares the single coalesced hunk `7ce5dfcc...` containing both the existing MZ-049 arrangement query and the reviewed one-line checkout-parent predicate. The total exact non-ledger range remains 40 files / 319 hunks.
+- The one-line insertion changes the zero-context header line numbers of later hunks in the same file. The active scopes therefore remap 23 MZ-049 fingerprints without changing their content or ownership; the sequential MZ-035 hunk `939ae168...` maps into the shared integrated hunk `7ce5dfcc...`.
+- No additional runtime, API, schema, migration, dependency, configuration or business-policy change is introduced by this reconciliation.
+- Historical-to-integrated fingerprint mappings:
+  - `backend/src/lib/personnelSettlementPreview.ts#bc24bcb6f21bcde7b71980774daecfb16562fda2af22867c9e0f9fba84d4acfb` → `backend/src/lib/personnelSettlementPreview.ts#7ce5dfcc11a8e0daf78c6852fe95da20e8755d8965f8bc82a389ca76783f9d53`
+  - `backend/src/lib/personnelSettlementPreview.ts#94a9fe4e55e6d58b348938ef4f4d279b9df548e979aa9af5d35d31e0d6e5ad86` → `backend/src/lib/personnelSettlementPreview.ts#79813c0f7a55bbdd162cb9b30f0190f91e643a1f7840a5c9363c850722ddce2b`
+  - `backend/src/lib/personnelSettlementPreview.ts#bd5bf024572700062a18e386eb5eaf24e77039a66c41d5828fc9f0274f66a11a` → `backend/src/lib/personnelSettlementPreview.ts#5734913c6c6ce889cb6da4553f8a2dd889dbeeea91c17508204f38715ca9a45e`
+  - `backend/src/lib/personnelSettlementPreview.ts#e21d2fd41080e48dcd48a37bbf067d5d379e06b322debf0407991bae3922f1fc` → `backend/src/lib/personnelSettlementPreview.ts#808965f09fcd45f17e2efd602fec72c80621fbbe24cb0d89d3507d135ea14021`
+  - `backend/src/lib/personnelSettlementPreview.ts#ba99ec88c57a57a76483ea07acae062a680baa489680bcac0f3b578d574743c7` → `backend/src/lib/personnelSettlementPreview.ts#aab93fd8ba9ec1f4a8454e41e22fddc2c3c6f417fcf76663bb90ae5cdfc39f6e`
+  - `backend/src/lib/personnelSettlementPreview.ts#cf0f4005e3a89d686969fa15e19a026c4c46e8c063217f0deacbc5857a235c68` → `backend/src/lib/personnelSettlementPreview.ts#bad85faf2b4ea23aa988efbc585ccb7e40d38aaccb91975548c1298de9736de6`
+  - `backend/src/lib/personnelSettlementPreview.ts#25d376d73a4ee4b7914ad26aacc0beeb05d39da56071b205b3512ffd65b57460` → `backend/src/lib/personnelSettlementPreview.ts#71ee1997ce59e5224e7647251d99b5937531777405fe0a7e34e2ca474dd0f427`
+  - `backend/src/lib/personnelSettlementPreview.ts#bc4ee27dae731b2e43b99132f4258324b60e8e8ee342949bba18b8476aa5284d` → `backend/src/lib/personnelSettlementPreview.ts#2cb61fa777a1bf45aa919ecdc288aa7b6a8cddd66ccdd8bfdbcad9f09024a8cf`
+  - `backend/src/lib/personnelSettlementPreview.ts#4bfcd966319700b98ab24ce12c68fbf59f5d5e4dd326b0bcb482e3be31edba8a` → `backend/src/lib/personnelSettlementPreview.ts#a674f2b2d53cf1973aabd9616d5919a785ced2e0965249722b58d126d835a9eb`
+  - `backend/src/lib/personnelSettlementPreview.ts#453a10f0ca9147a8217c1562fc2c06efd045d92a083ab0a11169ac9266defed7` → `backend/src/lib/personnelSettlementPreview.ts#8d2e7b8780fe8118546295630a3e7971be43dbc419d17f932a5f10a98d0df3a9`
+  - `backend/src/lib/personnelSettlementPreview.ts#e5674cf593c9cd27385f878b02c1a1b3385032cc590775dc0a8c2bbaeabd1bfc` → `backend/src/lib/personnelSettlementPreview.ts#269cf7098581fb6d506fe8a7c4a944842f8f1a2b91e1af65d0279d78a6fb2376`
+  - `backend/src/lib/personnelSettlementPreview.ts#d15c509bdda78f298f0e3bdb5f5150a67b36d0a5ad093ed5fff746216a913eba` → `backend/src/lib/personnelSettlementPreview.ts#dc5dc138cf05feb4dcc48c9b2291185ac7a50881a866e8cab6da98154ac8f923`
+  - `backend/src/lib/personnelSettlementPreview.ts#904ba24f86f5597e2b2540a4cd9de7ac4430d97c54d898bf341bc131d5d5bdea` → `backend/src/lib/personnelSettlementPreview.ts#aa73479eaaaac6b959c9a47241187f4ea6ac25e164da5726d66c441049ee7c83`
+  - `backend/src/lib/personnelSettlementPreview.ts#06affecd78a57692ad8aefa4c5fb83a8dbedca9483922bad73b5f82e9f54fb28` → `backend/src/lib/personnelSettlementPreview.ts#b5c8325dd2b97ede906b46f96bbfb62d5e9defdd15253ca757e7b06ac51b6fbe`
+  - `backend/src/lib/personnelSettlementPreview.ts#2ab558f5aaf5dc8717a70927137ecc7e5110804a1023a732d3429799824c18f6` → `backend/src/lib/personnelSettlementPreview.ts#2e2fb86b6c1af0af38ec712799b69ab9d8b6a8ec05d68a1ffbfb22960b768e66`
+  - `backend/src/lib/personnelSettlementPreview.ts#d18c03d50bcf3459e1516130e6f93dd7739b24dae2c64491674abd71b396a3e0` → `backend/src/lib/personnelSettlementPreview.ts#f061297926c08372e6b6a4d4c46b7025c27350096d7484f57c6df56106b7607f`
+  - `backend/src/lib/personnelSettlementPreview.ts#1a8e9e4d4811ce6535ad4acdfdcad0e9e660f444dc9a14ed26faf0af18b85823` → `backend/src/lib/personnelSettlementPreview.ts#d99a0583da3d4d96743fef6da53c868248e6f53b723798d24be6f6a223ba91d4`
+  - `backend/src/lib/personnelSettlementPreview.ts#573afc8d9e40c5093233c6bbc150229c8b3c42bce35fe7dfd46eefa2ebf664ee` → `backend/src/lib/personnelSettlementPreview.ts#bc8123db57fc4487ca5158665660ee0e35ac9612ace74165aee574c76b5fa0c3`
+  - `backend/src/lib/personnelSettlementPreview.ts#f9df55491fa414a817e947f90bf18cf7fb9797c230c80e04f25db4a9f9602ace` → `backend/src/lib/personnelSettlementPreview.ts#3964aa0c4e67e15bd50e3873c0a751dc6c740665d4231651666ca79e8263f1f9`
+  - `backend/src/lib/personnelSettlementPreview.ts#fede63721be645412163c4d28c80909a44d88d2a73f36dcaf7b47cdd81c0e955` → `backend/src/lib/personnelSettlementPreview.ts#3a02e586f33a6528cd03209486336fed89313566d6dedad213531ce5a320de9d`
+  - `backend/src/lib/personnelSettlementPreview.ts#cc6e604e6adec48ec2165f9f5ef15b93babf2e1f750677494e74a447b0129866` → `backend/src/lib/personnelSettlementPreview.ts#36c56d5b022087d598cc8593d8c722b9d01bcb309f31ffaa05d0e3cecb36ad03`
+  - `backend/src/lib/personnelSettlementPreview.ts#99e72f4ad282da9dc4b80bc4fe6a760cc0f37e018fef41160e7d7248604b4a0d` → `backend/src/lib/personnelSettlementPreview.ts#93eccbc920ae5d7f4df2543338102c1291e86b74d661af2d4bf8d6cd58a7aaf4`
+  - `backend/src/lib/personnelSettlementPreview.ts#9abce9a2e781e93f4c0c004b0e7251cfafc27e2cf3142cc5ca9f01ba81b438e3` → `backend/src/lib/personnelSettlementPreview.ts#9fb905c84267b01a52b4a5373bb9acbd961fcffe63eba9e1a8099aa00a5f512e`
+  - sequential `backend/src/lib/personnelSettlementPreview.ts#939ae168a068e7c54707c2541cc0fdaed9771435b512e7942f701f472ca03f1c` → shared integrated `backend/src/lib/personnelSettlementPreview.ts#7ce5dfcc11a8e0daf78c6852fe95da20e8755d8965f8bc82a389ca76783f9d53`
+
+### Release Attempts
+
+#### RA-20261020-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261020-003`
+- Selected CRL identities: `root/CRL-20261020-003`
+- Intended action: `commit`
+- Branch: `codex/mz044-050-root-integration-final-20261019`
+- Base: pushed PR #402 head `a7349313129c28a2ca1fb7d2b6415d554509d8c2`; `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b` remains the PR base.
+- Candidate patch SHA-256: `0e06cff077bcbeb664f9131c13bbcc24419111890490d9a14281429fd64caddb`.
+- Commit SHA: not committed.
+- Dependencies: `root/CRL-20261018-002@e69cfa86ca85ef4c24165aaf21fe69c0d2967c7e`; `root/CRL-20261020-002@25af722e83e8939e14695cd9e0d345b8a9a41617`.
+- Required validation: `PASS for local non-PostgreSQL regression / remote PostgreSQL NOT VERIFIED`; evidence: exact historical comparison, MZ-034 settlement contract, deferred replacement contract, backend TypeScript and diff checks pass. Local PostgreSQL is unavailable.
+- Shared-hunk review: `not applicable`; evidence: one exclusive condition is added inside the MZ-049 settlement query hunk without changing adjacent policy or assertions.
+- Generated-file review: `PASS`; evidence: only one tracked TypeScript source and this ledger entry are candidates.
+- Technical state: `candidate`.
+- User authorization: `selected-for-commit`; evidence: the user directed preparing the minimal local fix, independent review and a new frozen SHA, while requiring separate confirmation before push.
+- Independent review: `GO for the exact local commit only`; evidence: reviewer matched patch `0e06cff0...`, hunk `939ae168...`, the two-file staged scope and the checkout-parent boundary against Dev, MZ-049 service logic, MZ-050 scope behavior and MZ-034/MZ-035 contracts; P0/P1/P2=0, with no other self-match path, generated file, cache, secret, migration, production-write or external-sync risk.
+- Action conclusion: `GO for this exact local content commit only / remote PostgreSQL NOT VERIFIED`; the resulting full SHA requires separate push confirmation, and the GitHub MZ-035 isolated PostgreSQL assertion must pass before merge.
+
+#### RA-20261020-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-003`, `CRL-20261018-002`, `CRL-20261019-001`, `CRL-20261019-004`, `CRL-20261020-001`, `CRL-20261020-002`, `CRL-20261020-003`
+- Selected CRL identities: `root/CRL-20261016-003`, `root/CRL-20261018-002`, `root/CRL-20261019-001`, `root/CRL-20261019-004`, `root/CRL-20261020-001`, `root/CRL-20261020-002`, `root/CRL-20261020-003`
+- Intended action: `commit`
+- Branch: `codex/mz044-050-root-integration-final-20261019`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19T22:46:06Z`, while the remote PR #402 branch remained the previously approved `a7349313129c28a2ca1fb7d2b6415d554509d8c2`.
+- Candidate patch SHA-256: `22fdad72096ad1ef06164a96cc182256f2174156bd645e941d7a344d95286465`
+- Commit SHA: `b268805d180ae8d8b5ea5e7f63813e4485a4f6c0`
+- Dependencies: `mobile/CRL-20261018-001@b6ea73184c319915053f206a662a75f35af1552e`
+- Cross-repository dependency verification: `PASS for local source compatibility / release NOT VERIFIED`; evidence: the reviewed Mobile MZ-048 dependency remains outside this repository, and physical-device, real-network, installed-build/channel and native-build acceptance remain pending.
+- Required validation: `PASS for this exact local combined content / remote PostgreSQL NOT VERIFIED`; evidence: the exact MZ-035 source unit passed MZ-034 settlement regression, deferred replacement regression, backend TypeScript, diff and ledger/registry checks; prior 318-hunk review evidence remains applicable. The exact MZ-035 isolated PostgreSQL assertion cannot run locally and must rerun after a separately approved push.
+- Shared-hunk review: `PASS`; evidence: the exact non-ledger range remains 40 files / 319 hunks; the MZ-035 predicate intentionally coalesces with one MZ-049 settlement-query hunk, is jointly owned by `root/CRL-20261018-002` and `root/CRL-20261020-003`, and the remaining ownership is unchanged.
+- Generated-file review: `PASS`; evidence: no dependency tree, cache, build output, environment file, credential, generated artifact, migration execution or production operation is included.
+- Technical state: `committed`; exact MZ-035 content commit `b268805d180ae8d8b5ea5e7f63813e4485a4f6c0`, followed only by this integrated-scope bookkeeping receipt.
+- User authorization: `selected-for-commit`; evidence: the user directed preparation, independent review and local commit of the minimal same-branch fix, while requiring a new exact SHA for confirmation before push.
+- Independent review: `GO for the exact local source commit only`; evidence: the fresh reviewer reproduced the self-match, matched sequential patch `0e06cff0...` and hunk `939ae168...`, verified the one-line checkout-parent boundary against Dev, MZ-049 service behavior, MZ-050 scope behavior and MZ-034/MZ-035 contracts, found P0/P1/P2=0, and confirmed no second equivalent self-match path. The integrated hunk remap adds no behavior and does not authorize push.
+- Action conclusion: `GO for this exact local ledger freeze / remote PostgreSQL NOT VERIFIED`; the resulting full SHA requires explicit push confirmation, and GitHub's MZ-035 isolated PostgreSQL assertion must pass before merge. No push, merge, deployment command, OTA, migration execution or production-data operation is authorized by this attempt.
+
+### Risks / Release Notes
+
+- This restores the existing “different effective dates remain separate inspection days” contract and narrows replacement lookup to its already documented checkout-parent domain; it does not create a new pay rule.
+- The change affects only settlement preview selection. Real PostgreSQL proof remains unavailable locally and must be obtained from the isolated GitHub job after a newly authorized push.
+- Sensitive-information review: no credential, database URL, production payload or private log content is recorded.
+- Rollback: revert the single parent-task-type predicate and this CRL.
+- Git state: local content commit `b268805d180ae8d8b5ea5e7f63813e4485a4f6c0` on the existing PR branch; remote PR #402 remains at `a7349313129c28a2ca1fb7d2b6415d554509d8c2`; no push, merge, deployment, migration, OTA or production-data operation is included.
+
+## CRL-20261020-002 — Root PR MZ-035 PostgreSQL 隔离测试夹具补列
+
+- **Status:** exact local follow-up candidate prepared; not committed, pushed, merged, or deployed
+- **Repository:** `root`
+- **Updated:** 2026-10-20 UTC
+- **Request:** 在 `root/CRL-20261020-001` 使 MZ-034 隔离 PostgreSQL 测试通过后，修复串行执行才暴露的 MZ-035 同类临时表缺列，并全面审查所有隔离 `cleaning_tasks` 建表夹具，避免逐次 CI 才发现下一漏项；不得修改业务代码、削弱断言、跳过测试、连接生产数据库或执行 migration。
+- **Outcome:** MZ-035 临时 PostgreSQL 测试表声明同一既有 nullable replacement pointer 字段；仓库内所有直接 `CREATE TABLE cleaning_tasks` 的隔离测试夹具均已与本批共享结算查询实际读取的 `cleaning_tasks` 字段核对。记录工程教训：共享查询新增 schema 依赖时，必须同步审查全部自建临时表夹具，而不能只修复首个失败测试。
+
+### Implementation
+
+- Previous behavior: PR #402 更新到 `b62eefc...` 后，MZ-034 隔离 PostgreSQL 测试通过；同一 job 随后运行独立 MZ-035 fixture，并因其临时 `cleaning_tasks` 表仍缺 `inspection_replaced_by_checkin_task_id` 以 PostgreSQL `42703` 失败。
+- New behavior: MZ-035 的临时 `cleaning_tasks` 表补充同名 nullable `text` 列；既有 insert 不赋值时保持 `NULL`，不改变原测试数据或断言。
+- Key decisions: 全仓测试搜索确认直接自建 `cleaning_tasks` 的隔离夹具只有 MZ-034 与 MZ-035；两者现在都包含共享结算查询读取的 `id`、订单/房源、任务类型/日期、检查日期/模式/scope、执行状态、人员与 replacement pointer 字段。`inspection_replaced_original_due_date` 未被该查询读取，不为本修复扩大 fixture。业务查询、migration、生产 schema 和断言均不修改。
+
+### Files / Areas
+
+- `backend/scripts/tests/test_personnel_settlement_mz035_sql_integration.ts` — modified: 在隔离测试临时 `cleaning_tasks` 表中补充既有 replacement pointer 列。
+- `docs/change-release-ledger.md` — modified: 记录第二个串行夹具缺口、全量夹具审查、工程教训与发布尝试。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none；只改 CI 临时 schema 声明，不执行仓库 migration，不连接生产数据库。
+- Config / environment: none.
+- Dependencies: `root/CRL-20261020-001@306f6dcc0214e584e8dbc95eb655fc942b6690f9`.
+- Related units: `root/CRL-20261018-002`（MZ-049 共享查询）；`root/CRL-20261020-001`（MZ-034 同类夹具修复）。
+
+### Validation
+
+- PR #402 at `b62eefce9e145870c44ec308d1347ac9a4de59d8` — MZ-034 isolated PostgreSQL step passed; MZ-035 then failed before assertions with PostgreSQL `42703` for `t.inspection_replaced_by_checkin_task_id`.
+- Full isolated-fixture inventory — passed: repository-wide source search found only `test_personnel_settlement_mz034_sql_integration.ts` and `test_personnel_settlement_mz035_sql_integration.ts` directly create temporary `cleaning_tasks` tables; primary schema/init/migration definitions are not isolated test fixtures.
+- Shared-query column review — passed: after this candidate, both isolated fixtures cover every `cleaning_tasks` column read by the inspection-assignment portion of `buildPersonnelSettlementPreview`; no second replacement column is read by that query.
+- Local PostgreSQL execution — not run: no supported local PostgreSQL/Docker executable or non-production integration URL is available. Both exact GitHub ephemeral-PostgreSQL steps must rerun after a separately approved push; no production connection was attempted.
+- Fixture inventory assertion — passed: a read-only Node source check found exactly the MZ-034 and MZ-035 direct test-owned `CREATE TABLE cleaning_tasks` definitions and verified all 16 shared-query-required columns in both.
+- Backend TypeScript — passed: `npm --prefix backend run build -- --noEmit` using a temporary ignored link to an existing dependency tree with the exact matching backend lockfile; the link was removed immediately afterward.
+- Candidate hygiene — passed: exact pre-commit GO for two staged files / one non-ledger hunk, current ledger coverage, Feature Registry (34 FRs / 281 mappings / 88 deferred Mobile mappings), and `git diff --cached --check`.
+- Independent read-only review — GO for local commit only: matched the exclusive one-line fixture hunk and patch, confirmed the only two test-owned `cleaning_tasks` definitions now cover the 15 query-read fields (the 16-column check is a conservative superset), and found P0/P1/P2/P3=0. It did not authorize push or replace the GitHub ephemeral-PostgreSQL rerun.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** `prepared`
+- **Untracked review:** none.
+- `backend/scripts/tests/test_personnel_settlement_mz035_sql_integration.ts` — SHA-256: `f722f083f52bd55d4ab78e9682ad79ad8c4e5919f3ad9fcc3cce995a8f167597`
+
+### Release Attempts
+
+#### RA-20261020-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261020-002`
+- Selected CRL identities: `root/CRL-20261020-002`
+- Intended action: `commit`
+- Branch: `codex/mz044-050-root-integration-final-20261019`
+- Base: pushed PR #402 head `b62eefce9e145870c44ec308d1347ac9a4de59d8`; `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b` remains the reviewed base.
+- Candidate patch SHA-256: `f1aff374b6bb8e3abb79cca0dc7f850fe2ec30f132c96368ffd0840a938ca3fd`
+- Commit SHA: not committed.
+- Dependencies: `root/CRL-20261020-001@306f6dcc0214e584e8dbc95eb655fc942b6690f9`.
+- Required validation: `PASS for the exact local fixture commit / remote CI NOT VERIFIED`; evidence: exact scope/pre-commit, complete two-fixture inventory, 16-column contract check, backend TypeScript, ledger, Feature Registry and diff checks passed. Local PostgreSQL is unavailable, so GitHub's ephemeral MZ-034/MZ-035 job must rerun after separately approved push.
+- Shared-hunk review: `not applicable`; evidence: this previously unchanged MZ-035 integration test file belongs only to this follow-up unit.
+- Generated-file review: `PASS`; evidence: only one tracked TypeScript test source file and this ledger entry are selected.
+- Technical state: `candidate`.
+- User authorization: `selected-for-commit`; evidence: the user directed continuing the locally fixable fixture work through independent review, local commit and frozen full SHA, while withholding push pending final confirmation.
+- Independent review: `GO for the exact local commit only`; evidence: reviewer matched hunk `f722f083...`, patch `f1aff374...`, the complete two-fixture inventory and all 15 shared-query-read fields, with the recorded 16-column assertion as a conservative superset; P0/P1/P2/P3=0 and no runtime, assertion, migration, generated-file or sensitive-data change.
+- Action conclusion: `GO for this exact local content commit only / remote CI NOT VERIFIED`; resulting new full SHA requires separate push confirmation, and the GitHub ephemeral MZ-034/MZ-035 job must pass before merge.
+
+#### RA-20261020-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-003`, `CRL-20261018-002`, `CRL-20261019-001`, `CRL-20261019-004`, `CRL-20261020-001`, `CRL-20261020-002`
+- Selected CRL identities: `root/CRL-20261016-003`, `root/CRL-20261018-002`, `root/CRL-20261019-001`, `root/CRL-20261019-004`, `root/CRL-20261020-001`, `root/CRL-20261020-002`
+- Intended action: `commit`
+- Branch: `codex/mz044-050-root-integration-final-20261019`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19T22:28:08Z`, while the remote PR branch remained the previously approved `b62eefce9e145870c44ec308d1347ac9a4de59d8`.
+- Candidate patch SHA-256: `41e420f7be67c9c2ea4b0400dc2316a3f4641e2b112a3d0a8020f1388363f746`
+- Commit SHA: `25af722e83e8939e14695cd9e0d345b8a9a41617`
+- Dependencies: `mobile/CRL-20261018-001@b6ea73184c319915053f206a662a75f35af1552e`
+- Cross-repository dependency verification: `PASS for local source compatibility / release NOT VERIFIED`; evidence: the dependency content is the reviewed Mobile MZ-048 source already contained in merged PR #57. Physical-device, real-network, installed-build/channel and native-build acceptance remain pending.
+- Required validation: `PASS for this exact local combined content / remote CI NOT VERIFIED`; evidence: the unchanged reviewed Root integration contributes 317 original hunks, MZ-034 contributes its exclusive 318th fixture hunk, and MZ-035 contributes the exclusive 319th fixture hunk. The MZ-035 exact pre-commit, complete two-fixture inventory, shared-query column review, conservative 16-column assertion, backend TypeScript, ledger, Feature Registry and diff checks passed. Local PostgreSQL is unavailable; GitHub's isolated ephemeral-PostgreSQL job must rerun after a separately approved push.
+- Shared-hunk review: `PASS`; evidence: all prior 318-hunk ownership remains unchanged, and the 319th hunk belongs only to `root/CRL-20261020-002`; the exact non-ledger range contains 40 files and 319 hunks.
+- Generated-file review: `PASS`; evidence: the additional committed path is one tracked TypeScript test source; no dependency, cache, build output, environment file, credential, generated artifact, migration execution or production operation is included.
+- Technical state: `committed`; exact MZ-035 fixture-fix content commit `25af722e83e8939e14695cd9e0d345b8a9a41617`, followed only by this append-only receipt.
+- User authorization: `selected-for-commit`; evidence: the user directed the locally fixable fixture follow-up through independent review, local commit and frozen full SHA, while withholding push pending one final confirmation.
+- Independent review: `GO for the exact local commit only`; evidence: prior integration reviews remain applicable to the unchanged 318 hunks, and a fresh reviewer matched the exclusive one-line MZ-035 fixture hunk `f722f083...`, patch `f1aff374...`, complete two-fixture inventory and all 15 shared-query-read fields with P0/P1/P2/P3=0. The conservative 16-column assertion also passed. No review authorizes push or merge.
+- Action conclusion: `GO for this exact ledger-only receipt and local freeze / remote CI NOT VERIFIED`; the resulting full SHA requires explicit push confirmation, and GitHub ephemeral PostgreSQL must pass before merge. No push, merge, deployment command, OTA, migration execution or production-data operation is authorized by this attempt.
+
+### Risks / Release Notes
+
+- Test-only change; no runtime, API, migration, production schema or data effect.
+- Engineering lesson: whenever a shared SQL query gains a column dependency, review every test-owned temporary table definition in the same change rather than relying on serial CI failures.
+- Sensitive-information review: no credential, database URL, production payload or private log content is recorded.
+- Rollback: revert the single MZ-035 fixture column and this ledger unit.
+- Git state: staged local candidate only; PR #402 remains at remote SHA `b62eefce9e145870c44ec308d1347ac9a4de59d8`.
+
+## CRL-20261020-001 — Root PR PostgreSQL 隔离测试夹具补列
+
+- **Status:** exact local CI-fix candidate prepared; not committed, pushed, merged, or deployed
+- **Repository:** `root`
+- **Updated:** 2026-10-20 UTC
+- **Request:** 修复 Root 整合 PR #402 的 `MZ-034/035 Isolated PostgreSQL Integration` CI 失败；不得改变已冻结业务逻辑、执行 migration、连接生产数据库或扩大 MZ-044/MZ-049/MZ-050 范围。
+- **Outcome:** MZ-034 临时 PostgreSQL 测试表将声明 MZ-049 结算查询已使用、仓库 migration 已提供的 `inspection_replaced_by_checkin_task_id` 字段，使隔离测试夹具与运行时 schema 合同一致；不改变运行时代码、API、业务策略或真实数据库。
+
+### Implementation
+
+- Previous behavior: `test_personnel_settlement_mz034_sql_integration.ts` 自建的临时 `cleaning_tasks` 表缺少 `inspection_replaced_by_checkin_task_id`；PR #402 的 MZ-049 结算查询读取该字段时，CI 在运行任何业务断言前以 PostgreSQL `42703` 失败。
+- New behavior: 临时测试表补充同名 `text` 列；既有 fixture insert 不赋值时保持 `NULL`，原有 MZ-034 测试语义不变，同时允许查询解析并继续执行断言。
+- Key decisions: 仅修复测试夹具；不修改查询、migration、生产 schema、字段默认值或业务数据。该字段已由 `20260805_deferred_inspection_checkin_replacement.sql` 定义。
+
+### Files / Areas
+
+- `backend/scripts/tests/test_personnel_settlement_mz034_sql_integration.ts` — modified: 在隔离测试临时 `cleaning_tasks` 表中补充既有 replacement pointer 列。
+- `docs/change-release-ledger.md` — modified: 记录 CI 失败、最小修复边界、验证与发布尝试。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none；只改 CI 进程创建后回滚/销毁的临时测试 schema；不执行仓库 migration。
+- Config / environment: none.
+- Dependencies: requires the already-pushed Root integration content at `dd139c0d8a1b4896585ef757fa800126b4462ffb`.
+- Related units: `root/CRL-20261018-002`（MZ-049）；`root/CRL-20261019-004`（MZ-050）。
+
+### Validation
+
+- PR #402 `MZ-034/035 Isolated PostgreSQL Integration` — failed before this candidate: PostgreSQL `42703`, `column t.inspection_replaced_by_checkin_task_id does not exist`; failing step was MZ-034, while Full Regression, Fast Regression, Registry, Ledger and Risk checks passed.
+- Failure diagnosis — passed: query references the column in `personnelSettlementPreview.ts`; repository migration `20260805_deferred_inspection_checkin_replacement.sql` defines it; only the isolated test's local `CREATE TABLE cleaning_tasks` omitted it.
+- Local PostgreSQL execution — not run: this worktree has no local PostgreSQL/Docker executable or non-production integration URL; after loading the exact-lockfile dependency tree, the guarded command stopped at `MZ034_SQL_INTEGRATION_DATABASE_URL_required` before connecting. The exact GitHub CI job is the required post-push verification after a new SHA is separately approved.
+- Backend TypeScript — passed: `npm --prefix backend run build -- --noEmit` using a temporary ignored link to an existing dependency tree whose `backend/package-lock.json` SHA-256 exactly matched this worktree; the link was removed afterward.
+- Candidate hygiene — passed: exact pre-commit audit GO for two staged files / one non-ledger hunk, current ledger coverage PASS, Feature Registry PASS (34 FRs / 281 mappings / 88 Mobile deferred), and `git diff --cached --check` PASS.
+- Independent read-only review — GO for local commit only: matched the single nullable test-fixture column, hunk `1feeed...`, patch `4e26e7...`, existing migration type and complete query/fixture column contract; P0/P1/P2/P3=0. The review does not authorize push or replace the GitHub ephemeral-PostgreSQL rerun.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** `prepared`
+- **Untracked review:** none.
+- `backend/scripts/tests/test_personnel_settlement_mz034_sql_integration.ts` — SHA-256: `1feeed63556e89566e64e2475ada710ddecaf8e18a4bae65cf571ff398ed244f`
+
+### Release Attempts
+
+#### RA-20261020-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261020-001`
+- Selected CRL identities: `root/CRL-20261020-001`
+- Intended action: `commit`
+- Branch: `codex/mz044-050-root-integration-final-20261019`
+- Base: pushed integration head `dd139c0d8a1b4896585ef757fa800126b4462ffb`; `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b` remains unchanged as fetched at `2026-10-19T21:53Z`.
+- Candidate patch SHA-256: `4e26e7a3cb25a5f5c37e2b18872667f51cd58fb3e79a5832d593fac8b161884c`
+- Commit SHA: not committed.
+- Dependencies: `root/CRL-20261018-002@d972fe7d0ebcd87f108bf1402c8c586f5f485458`.
+- Required validation: `PASS for the exact local test-fixture commit / remote CI NOT VERIFIED`; evidence: exact pre-commit audit, current ledger coverage, Feature Registry, diff check and backend TypeScript passed; static diagnosis ties the one-line fixture repair to the existing migration field. Local PostgreSQL is unavailable, so GitHub's isolated ephemeral-PostgreSQL job must rerun after a separately approved push.
+- Shared-hunk review: `not applicable`; evidence: the test file is not changed by the existing four integrated CRLs relative to the pushed integration head.
+- Generated-file review: `PASS`; evidence: only one tracked TypeScript test source file and this ledger entry are selected; no dependency, cache, environment, build output or credential is included.
+- Technical state: `candidate`.
+- User authorization: `selected-for-commit`; evidence: the user instructed that a CI repair changing the frozen SHA should be reduced to the minimum, assigned a new SHA and returned for confirmation before push.
+- Independent review: `GO for the exact local commit only`; evidence: reviewer matched the two-file scope, one nullable fixture column, hunk `1feeed...`, patch `4e26e7...`, existing migration field type and all query-required fixture columns; P0/P1/P2/P3=0. It found no runtime, API, production-schema, generated-file or sensitive-data change and did not authorize push.
+- Action conclusion: `GO for this exact local content commit only / remote CI NOT VERIFIED`; GitHub ephemeral PostgreSQL rerun remains a post-push merge gate, and the resulting new full SHA requires separate push confirmation.
+
+#### RA-20261020-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-003`, `CRL-20261018-002`, `CRL-20261019-001`, `CRL-20261019-004`, `CRL-20261020-001`
+- Selected CRL identities: `root/CRL-20261016-003`, `root/CRL-20261018-002`, `root/CRL-20261019-001`, `root/CRL-20261019-004`, `root/CRL-20261020-001`
+- Intended action: `commit`
+- Branch: `codex/mz044-050-root-integration-final-20261019`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched and confirmed unchanged before PR #402 creation at `2026-10-19T21:53Z`.
+- Candidate patch SHA-256: `552014ffdec6f2e7a267af96d3e0e6fd2e2c64e3090d4219490100c09d55330e`
+- Commit SHA: `306f6dcc0214e584e8dbc95eb655fc942b6690f9`
+- Dependencies: `mobile/CRL-20261018-001@b6ea73184c319915053f206a662a75f35af1552e`
+- Cross-repository dependency verification: `PASS for local source compatibility / release NOT VERIFIED`; evidence: the dependency content commit remains an ancestor of frozen Mobile head `ffa55c21ba3f13dbaa468629ece203ba25f2847b`, whose PR #57 quality check passed. Physical-device, real-network, installed-build/channel and native-build acceptance remain pending.
+- Required validation: `PASS for this exact local combined content / remote CI NOT VERIFIED`; evidence: the prior 317-hunk Root integration range retained its exact reviewed content and validations; the additional exclusive hunk only adds the existing nullable replacement-pointer column to the MZ-034 ephemeral test table. Its focused pre-commit gate, ledger coverage, Feature Registry, diff check and backend TypeScript passed. GitHub PR #402 previously passed Full/Fast Regression, Registry, Ledger and Risk checks; its isolated PostgreSQL job failed before business assertions solely on this omitted fixture column and must rerun after a separately approved push.
+- Shared-hunk review: `PASS`; evidence: the earlier 317-hunk ownership and sole shared Phase 1 hunk are unchanged; the new 318th hunk is exclusive to `root/CRL-20261020-001` in a previously unchanged test file.
+- Generated-file review: `PASS`; evidence: the additional committed path is one tracked TypeScript test source; no dependency, cache, build output, environment file, credential, generated artifact, migration execution or production operation is included.
+- Technical state: `committed`; exact CI-fix content commit `306f6dcc0214e584e8dbc95eb655fc942b6690f9`, followed only by this append-only receipt.
+- User authorization: `selected-for-commit`; evidence: the user instructed that a CI repair changing the frozen SHA should be minimized, committed locally and returned with the new SHA for confirmation before any push.
+- Independent review: `GO for the exact local commit only`; evidence: prior integration reviews remain applicable to the unchanged 317 hunks, and a fresh reviewer matched the exclusive one-line fixture hunk `1feeed...`, patch `4e26e7...`, existing migration type and complete query/fixture column contract with P0/P1/P2/P3=0. Neither review authorizes push or merge.
+- Action conclusion: `GO for this exact ledger-only receipt and local freeze / remote CI NOT VERIFIED`; the resulting full SHA requires explicit push confirmation, and GitHub ephemeral PostgreSQL must pass before merge. No push, merge, deployment command, OTA, migration execution or production-data operation is authorized by this attempt.
+
+#### RA-20261020-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-003`, `CRL-20261018-002`, `CRL-20261019-001`, `CRL-20261019-004`, `CRL-20261020-001`
+- Selected CRL identities: `root/CRL-20261016-003`, `root/CRL-20261018-002`, `root/CRL-20261019-001`, `root/CRL-20261019-004`, `root/CRL-20261020-001`
+- Intended action: `commit`
+- Branch: `codex/mz044-050-root-integration-final-20261019`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19T22:05:34Z`, while the remote PR head remained the previously approved `dd139c0d8a1b4896585ef757fa800126b4462ffb`.
+- Candidate patch SHA-256: `552014ffdec6f2e7a267af96d3e0e6fd2e2c64e3090d4219490100c09d55330e`
+- Commit SHA: `306f6dcc0214e584e8dbc95eb655fc942b6690f9`
+- Dependencies: `mobile/CRL-20261018-001@b6ea73184c319915053f206a662a75f35af1552e`
+- Cross-repository dependency verification: `PASS for local source compatibility / release NOT VERIFIED`; evidence: the dependency content remains inside frozen Mobile head `ffa55c21ba3f13dbaa468629ece203ba25f2847b`, and PR #57 quality passed. Device/channel/native-build acceptance remains pending.
+- Required validation: `PASS for the exact local combined content / remote CI NOT VERIFIED`; evidence: the unchanged reviewed Root integration contributes 317 hunks, and the exclusive 318th hunk only aligns the MZ-034 ephemeral test table with an existing nullable migration field. Exact pre-commit, ledger, Feature Registry, diff and backend TypeScript checks passed. PR #402's previous Full/Fast Regression, Registry, Ledger and Risk checks passed; the isolated PostgreSQL job must rerun after a separately approved push.
+- Shared-hunk review: `PASS`; evidence: all prior ownership is unchanged, and the new test-fixture hunk belongs only to `root/CRL-20261020-001`.
+- Generated-file review: `PASS`; evidence: no dependency, cache, build output, environment file, credential, generated artifact, migration execution or production operation is included.
+- Technical state: `committed`; exact CI-fix content commit `306f6dcc0214e584e8dbc95eb655fc942b6690f9`, followed only by append-only receipts.
+- User authorization: `selected-for-commit`; evidence: the user requested a minimal locally committed fix and new full SHA for confirmation before push.
+- Independent review: `GO for the exact local commit only`; evidence: previous integration reviews remain valid, and a fresh review matched hunk `1feeed...`, patch `4e26e7...`, the existing migration type and full query/fixture column contract with P0/P1/P2/P3=0; it did not authorize push or merge.
+- Action conclusion: `GO for this exact dependency/base receipt and local freeze / remote CI NOT VERIFIED`; explicit confirmation is required before pushing a new full SHA, and GitHub ephemeral PostgreSQL must pass before merge.
+
+### Risks / Release Notes
+
+- The change cannot affect production runtime because it only alters a test-local `CREATE TABLE` statement.
+- GitHub's ephemeral PostgreSQL job remains the only available execution proof for this exact SQL fixture; a successful rerun is required before merge.
+- Sensitive-information review: no credential, database URL, production payload or CI log secret is recorded.
+- Rollback: revert the single test-fixture column and its ledger unit.
+- Git state: staged local candidate only; existing PR #402 still points to frozen remote SHA `dd139c0d8a1b4896585ef757fa800126b4462ffb`.
+
+## CRL-20261019-004 — 同日周转检查范围一致性防护
+
+- **Status:** source committed locally; controlled CRL identity migration from the colliding `root/CRL-20261019-001` to `root/CRL-20261019-004` independently reviewed GO for one local ledger-only commit; two disclosed P2s remain; narrow historical production correction is not a code release; not pushed, merged, or deployed
+- **Repository:** `root`
+- **Updated:** 2026-10-19 UTC
+- **Request:** 修复 Web 任务中心在同房源同日退房+入住卡片中隐藏并回放旧 `password_only` 检查范围的问题；在订单日期变化形成周转时规范化底层任务；由后端拒绝非法周转范围；保留独立入住任务合法的“仅改密码”，并验证 App 角色投影。
+- **Outcome:** 同日周转统一投影并保存为 `inspect_and_hang`，订单同步会修正新形成周转的两侧任务，单条/批量/任务中心/手工创建写入口拒绝周转使用 `password_only`，App 对遗留脏值按周转语义投影；独立入住仍可使用 `password_only`。经用户单独授权，生产 EQ3401 的两条目标任务已仅修正 `inspection_scope`；代码候选仍未提交、推送或部署。
+
+### Implementation
+
+- Previous behavior: Web 合并卡片从入住任务继承但隐藏 `password_only`，后续人员或模式保存会把该旧值回写到退房和入住任务；订单日期同步保留旧范围；App 会把带该值的入住侧归为仅密码执行，可能遮蔽清洁人员角色。
+- New behavior: Web 合并与保存、App 投影、订单同步和所有可改范围/房源/日期的后端入口共享“同房源同日退房+入住必须 `inspect_and_hang`”不变量；独立入住不受影响。
+- Key decisions: 不做 migration 或全量回填；只在任务合并、保存、日期同步和 App 读取边界防止或容错非法组合；日期同步仅规范化 `inspection_scope`，不改人员、状态、检查模式或日期。PostgreSQL 写路径按房源+日期取得事务级 advisory lock，并在行锁内重验，封闭并发创建/移动的 TOCTOU 窗口。
+
+### Files / Areas
+
+- `backend/src/lib/cleaningInspection.ts` — modified: 新增周转检测及范围规范化，并在合并计划中显式返回范围。
+- `backend/src/modules/task_center.ts` — modified: Web 合并卡片显式输出范围；保存接口在事务锁内拒绝非法周转范围（含内存测试路径）。
+- `backend/src/modules/cleaning.ts` — modified: 单条、批量与手工创建接口在范围、房源或日期变化时拒绝非法周转范围，并修复内存批量路径遗漏范围赋值。
+- `backend/src/services/cleaningSync.ts` — modified: 订单日期同步形成同日周转后，在同一事务中规范化两侧范围；使用独立 `scope_normalized` 审计动作避免与同 job 的普通 `updated` 唯一键冲突，并统一提供房源+日期事务锁。
+- `backend/src/modules/mzapp.ts` — modified: App 投影将同日周转的入住侧按检查任务而非仅密码执行任务处理。
+- `frontend/src/lib/cleaningTaskUi.ts` — modified: 新增保存前同日周转范围规范化。
+- `frontend/src/app/task-center/page.tsx` — modified: 详情草稿与保存快照不再回放隐藏旧范围。
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — modified: 覆盖合并范围、任务中心/单条/批量/创建后端拒绝、日期移动拒绝、App 纯函数归类及独立入住保留。
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — modified: 覆盖入住日期移动形成周转后同时规范化退房/入住范围，且人员、状态、日期、检查模式不被范围规范化误改；PostgreSQL 路径另断言普通更新与范围规范化审计可并存。
+- `backend/scripts/tests/test_task_assignment_canonical.ts` — modified: App 经理、清洁、检查角色面对遗留脏范围的投影回归，并断言入住任务 ID 进入检查卡；需要非生产测试库执行。
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — integration-only test reconciliation: MZ-049 将延期检查写入前的锁定行与任务级鉴权抽到共享 helper 后，既有阶段三源码合同改为同时断言路由调用、回调顺序和 helper 内的 `FOR UPDATE` / 锁后复鉴权；不改变运行时代码或业务策略。
+- `frontend/src/lib/cleaningTaskUi.test.ts` — modified: 覆盖 Web 保存防回放与独立入住保留。
+- `docs/change-release-ledger.md` — modified: 记录本发布单元。
+
+### Impact / Dependencies
+
+- API: `POST /task-center/save-board`、`PATCH /cleaning/tasks/:id`、`POST /cleaning/tasks/bulk-patch` 与 `POST /cleaning/tasks` 对非法周转 `password_only` 返回 HTTP 400，代码为 `turnover_requires_inspect_and_hang`。
+- Database / migration: 无 schema 变更、无 migration；订单同步事务可能把新形成同日周转的活跃退房/入住任务 `inspection_scope` 规范化为 `inspect_and_hang`，并写 `scope_normalized` 同步审计与既有任务事件。
+- Config / environment: none.
+- Dependencies: none.
+- Related units: `MZ-050`；MZ-049 的延期任务去重修复不覆盖本单元。`root/CRL-20261019-002` 是独立的入住检查范围候选，`root/CRL-20261019-003` 是独立的 MZ-053 候选，均不纳入本单元。
+
+### Validation
+
+- `DATABASE_URL= NODE_ENV=test npm run test:cleaning-inspection-merge --prefix backend` — passed: 合并范围、Web 保存接口拒绝及独立入住保留测试通过。
+- `DATABASE_URL= NODE_ENV=test npm run test:cleaning-sync-v2 --prefix backend` — passed: 内存实际同步路径与日期移动回归通过。
+- `./node_modules/.bin/tsc -p . --noEmit`（`backend`）— passed: TypeScript 编译通过且未生成构建产物。
+- `npx vitest run --cache=false src/lib/cleaningTaskUi.test.ts`（`frontend`）— passed: 1 file / 9 tests。
+- `npm run lint --prefix frontend` — passed with pre-existing warnings and 0 errors.
+- `DATABASE_URL= NODE_ENV=test node -r ts-node/register/transpile-only scripts/tests/test_task_assignment_canonical.ts`（`backend`）— safe skip: 独立工作区未配置非生产 PostgreSQL 测试库；共享纯函数已验证规范化后的周转入住不是仅密码执行，PostgreSQL fixture 保留用于发布前非生产回归。
+- The prior fresh review reported P0=0, P1=1 and P2=1. Reconciliation against the full synchronization path reclassifies its P1 as a conditional defensive P2 rather than a normal-flow source-commit blocker: canonical order sync is constrained by `uniq_cleaning_tasks_order_task_type_v3`, and same-day normalization locks and updates every active checkout/checkin row in the property/date set. A second active opposite-kind row with a different scope therefore requires an already-broken upstream uniqueness invariant, manual/anomalous insertion or pre-existing dirty data; the uniqueness constraint also does not cover property/date/type and `manual_extra` can remain active, so the gap is not claimed closed. The current `LIMIT 1` / memory `.find()` guard is not claimed to repair that abnormal state; whether to add duplicate-scope defensive handling is a separate owner decision and is not implemented in this authorized candidate. The second P2 remains: App legacy-value projection derives turnover only from the current candidate window, so a stale deferred `password_only` check-in can be included by due date while its original-date checkout is outside the window and can be suppressed or misclassified. Fresh independent review of exact unchanged fingerprint `d74d72d79422756e3a0055c474bb57fd1778137c1baf8d782335eb2296e05576` is GO for local source commit, P0=0 / P1=0 / P2=2 / P3=0; it is not release acceptance.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** `prepared`
+- **Untracked review:** none; all twelve selected files are tracked, and temporary validation dependency links were removed.
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `159d636d32a375b9ff4651f2d3bc4c5005c99394c35020db68548e63bb7d0e20`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `2f7264918d5a34565c7fc192c53e160f0e5ab4a383e36c2813aad4bac52fbd21`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `ad63be6bb7f1bbba4ed750149dd7780d328591470afea894082b3f20f9f7e111`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `c6d16eb64f1eeb49b54166eabcbef75dbab3925930383503ec3dc1fe62c39e1e`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `cce8d4ca56b76858bf719cc2c9aa7e942973675d41f367894ec5007d0589e5ab`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `958098ffa2fc9342a4562fb049ab5419ed1f610cb8013cbec72dfe82bc17509f`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `b932c4c92fc79e06744a2a9925762d5bb4dabf76b66990fcb51aedae76b70159`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `86cc54f5f0f8ccd1af398c530e783ed0b032ff1715f2f7e300ec10852487d53d`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `e5b3076d863c0613829b959b1661ba6a3d93d90201cb42e7ea80043de3d9649c`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `ebb711505c4a3eb5233c87d0aca0b1de134c07f520c31a24a87cd23cff7d56bc`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `b7c1dd32022ad4c1972cb82fa7b9c1d1cc5078b611856a504abb5bd2d43782c6`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `d4e9503026375fbb31c69438d147a67cdc28c6f278dcc93b95b5988ea24f4d3d`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `7fc46ad97ed26fd16356a219c720c95f06a901511423dffb38e107d589205067`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `21a91f13c409315d152b18d93a730a9eab55e1ed2cfbec342bfcfab47e62ded0`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `19b12a09cce58c382ed8ba3d5a431700bbafd272a84ae22f26237d8adff58df1`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `43a5e7fb0dd447c1d518a38fede7d53c41a8c3d444d077c433c0cae60942963c`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `4ca61524b7da2f69935c4ee684a85423a97b27eaf7163eb53c010c8152e9ef3f`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `88c421bb2218402d6276f441e69508753fed1a0c042fb2a0c7e765849cf4b547`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `a41f828fba0cc38e1559e2f62cbb7bb86b3c0744add65cdfd49b52d39b063355`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `ca584654eafa384939ab1892330782248a1c2fac5e6601d9da401cfe630fe307`
+- `backend/scripts/tests/test_task_assignment_canonical.ts` — SHA-256: `098fd8850ce46a6208104739d1a13560fc23c4a77c2e1a33d5c4b50326e383ba`
+- `backend/scripts/tests/test_task_assignment_canonical.ts` — SHA-256: `636d57ff0fbd258416f79baf3a69f9fa5f0836f8ba37addcaa81ef76f01a6363`
+- `backend/scripts/tests/test_task_assignment_canonical.ts` — SHA-256: `db771af65135c879c5ecbca185375942eb339474edd21d919bfaa33554e0a2ab`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `b5d119159eba3a5c909a246dcf14488ff89dae73ecb10fa1bee6284bafe396ea`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `0858d3e9d913da94b58e1f8b4fd16a2147b968fe4d3a21f18997c0dd8da15fac`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `c5d998afc66c83940cd1cb5afb7e4fab84994e468f1cd53147c047699cebd32b`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `d67d7d9c0a52ea1e37a79531485948c88315b67c817454c79f949cc479cb7a3f`
+- `backend/src/lib/cleaningInspection.ts` — SHA-256: `a4a81a3b416c1d2844188f6dbe6454b9931d52f13870fe1f6b02d7195bf65cd0`
+- `backend/src/lib/cleaningInspection.ts` — SHA-256: `44e5ca3990db479d7ca38bf549232fae5664d5201e359c706915b518b8802827`
+- `backend/src/lib/cleaningInspection.ts` — SHA-256: `5daf81bf519e58d176d8563cb9fc2879b1fe9025b00c78518808a705dc9a870e`
+- `backend/src/lib/cleaningInspection.ts` — SHA-256: `3609498e5f2e460ec4859b4a00f5a56020c26bbe0d14998dc1de2c91aa3fcfb1`
+- `backend/src/lib/cleaningInspection.ts` — SHA-256: `3e5ec735a8de38e15b77f95e1c014c0a22d5f7c874628a24ea3a0c39d3bf70e5`
+- `backend/src/modules/cleaning.ts` — SHA-256: `15c5b998e9f1ed94c326578ffbb4c94c0af57c48c2fd5559e58f6464715b469e`
+- `backend/src/modules/cleaning.ts` — SHA-256: `2176dabc6e32026b5702fee4f6be0ad887700939a67797923ee907a28dcf535c`
+- `backend/src/modules/cleaning.ts` — SHA-256: `25a770d8da9f875aac166bd4e2bcb90e8b0c6369b49e3d07a369ef2b903d6d4f`
+- `backend/src/modules/cleaning.ts` — SHA-256: `43cf266c29df9ad9fed7be1974ea1eedd959515d5a2df96de482eca978a03f95`
+- `backend/src/modules/cleaning.ts` — SHA-256: `47090c563bc0f835cdba7b649a5f28374c38bbb2a204d6d5978b497cf03a281f`
+- `backend/src/modules/cleaning.ts` — SHA-256: `4a7a4833c58d0ece438d077d823bb4a09723a0a21dfd15afddd5ba419e10313e`
+- `backend/src/modules/cleaning.ts` — SHA-256: `557bcb4733803e5689b942d61d7254e08e3fd5a87cb949d0750d09d9e2dfe8bd`
+- `backend/src/modules/cleaning.ts` — SHA-256: `64bbcd2fe4a46032189e31797df52e86786c415acdc86c550fe44c9e736b2ec8`
+- `backend/src/modules/cleaning.ts` — SHA-256: `72a301a9954039310940ee64cd6e24917b5c961c5391b6a06b1b694af76f75ee`
+- `backend/src/modules/cleaning.ts` — SHA-256: `751d880f0576c7fa15dfaf5dd5af3fa535e7fff89e3952e3bb3ad9e87390221c`
+- `backend/src/modules/cleaning.ts` — SHA-256: `76201b6644b10f9b7fcf3a4f5d5fbd7ee4ccd5df52b199b796c80e989a3de47b`
+- `backend/src/modules/cleaning.ts` — SHA-256: `87c4030d4685359a8f33037a4420cdf018a19ee7aa15c16a52b3971341e1c58f`
+- `backend/src/modules/cleaning.ts` — SHA-256: `936b21d0efe013d7e5b9cbd44a4ffe5de430169c7202f87b3d1a8f7ef775ea43`
+- `backend/src/modules/cleaning.ts` — SHA-256: `bcc718feffc96680ee956bc34cd7e1d050d2809ef62b0ea9b021874c5a5159bf`
+- `backend/src/modules/cleaning.ts` — SHA-256: `c305296260eb418ad891c5f45877d41bf15b1ca6ec805c3db046a2ad875a7053`
+- `backend/src/modules/cleaning.ts` — SHA-256: `f44b90e47ab540c1c8c297ea6c07e65cc1c610e8c324e3a691637b4c36074711`
+- `backend/src/modules/cleaning.ts` — SHA-256: `fafbb4117509e2dec3eaa009e2788fc1acdbbeb60a5261e5c57a828a47167279`
+- `backend/src/modules/mzapp.ts` — SHA-256: `406ed8a6e0915b75d28d5acd177cc59e1b938f4d005cb4ca5d4bc8db13650002`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f0373e1d16a82214a7eb2a0943dc0ab0c6f604ae6bc6d6737bd51dac722487e0`
+- `backend/src/modules/mzapp.ts` — SHA-256: `17fa43b63719ca794621b0350e9278dd8a5d7953737e4231a96480804a324520`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2459b90b5226bcc47a1a248ce05cfd112a25623fdd339c88ef3368842855228d`
+- `backend/src/modules/task_center.ts` — SHA-256: `067f2984d00f20b07d0d9347a5c2b99bb41100f274fb06f0bb947ea188c218db`
+- `backend/src/modules/task_center.ts` — SHA-256: `0f92aa2183b5e2642b5495b07578f2b082c28079ce4f2574c05a96c4dfe0d95b`
+- `backend/src/modules/task_center.ts` — SHA-256: `1bf66a9861499794b63d3188cc15f99cbfbe5471191b4d2b8af35b64b847f255`
+- `backend/src/modules/task_center.ts` — SHA-256: `20fa9eb8cebf627b63222ff843ff58f3bbf0d72838c8feae865f1a420c72e77f`
+- `backend/src/modules/task_center.ts` — SHA-256: `1aaf7fb585eba1b31d7e469e00e68d8ed9d4e06f342e37cb07a6b729a80ff3be`
+- `backend/src/modules/task_center.ts` — SHA-256: `35000078f7943091abd8dafbb058ba0320d0acdb5c986bdadd821a965529c1ce`
+- `backend/src/modules/task_center.ts` — SHA-256: `4512dd586b8bfdef5772b26ddccac0bac72049f1718c007d85f9b5132a99a9cd`
+- `backend/src/modules/task_center.ts` — SHA-256: `572e3fcba11fd62ba317ea15b23094e98b444f1a78f181584031c00a150f2bb4`
+- `backend/src/modules/task_center.ts` — SHA-256: `670d7abdff729a79bebfb91e7e87221ebf04284f4635991010d653f51c3915d5`
+- `backend/src/modules/task_center.ts` — SHA-256: `924de0e2a00c08bde7698ec23d32331c950bacf9e5d90397b783490ba48c972b`
+- `backend/src/modules/task_center.ts` — SHA-256: `9447225be0931132d5c7389e574d358bda6ccc79018a5f8ba44ff970b597e59f`
+- `backend/src/modules/task_center.ts` — SHA-256: `c34cdc0cf0a8ee677056c505aabbe1b43328e0f439dc3610eaaf2436b76103ef`
+- `backend/src/modules/task_center.ts` — SHA-256: `5fc529961cc10f58162c34a21a446c7e9de0d847c07a1672147ad5dfa8a0d14b`
+- `backend/src/modules/task_center.ts` — SHA-256: `dbaa9ab6ed72a2ea0ed6a8b2d71dc5cbfe58e057225fbb604eee4b696459d7aa`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `040c8f4f49ffc4b65d8e4158fdedd27905e55119a7b6f6375ea0ce545422073d`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `42476b494d679ad8b30f2eed1594cf6da748ca7c2aca4acf4527ff056cb3fb8a`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `596d6d619a48a96dc1f6c83a9faa9ec7be06c9b01a222d5a38507409b3022a5e`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `5d69b231435050d3d603a7eecd24b78bcddc133f5ecc2927e4ca36ae176bdb02`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `7a90b539c8231a45c3122a54f38f3ad102ce1abc93b964abde9233695db5bd61`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `aef19aab0c5f4588cafaf1922e82c98089ca7d32839d7f9ee6efd6fbb2439fd9`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `ca2f37b7bf13602b9cd7b9ebd4fecde9a7d48281a2666c96c13c4e6b6794a545`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `cbbd3e54a35909cc928777077947971294b82e7810902a31aa8763e1b2b33a0a`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `2248d860df3609d4c6c2f6630a83b7127669efab55143cc4d027b477a555e764`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `3b72eed2fafb8ed065d1e6f66747eb31fcdbc50395e0a325823d2b0a884f80b7`
+- `frontend/src/app/task-center/page.tsx` — SHA-256: `a9b950ce52e8f4d7960e3b7ca39adabf0d96c9c23c1a7aab48b7f5ec172440fc`
+- `frontend/src/lib/cleaningTaskUi.test.ts` — SHA-256: `264233ad56f833370dee0717103d6cd99fd7e27180bdfe510fb1facc35f360c2`
+- `frontend/src/lib/cleaningTaskUi.test.ts` — SHA-256: `ce2acd446d44ea6136fad9d3c4c8f0fb0de067b5bb0b468f5f8cd427c9b6b1b7`
+- `frontend/src/lib/cleaningTaskUi.ts` — SHA-256: `fca3f2de7361e1d0ea60e816f3d2d42c23bc568a1401cf16dca22e300ae3c8fc`
+
+
+### Integrated Range Scope Reconciliation — 2026-10-20
+
+- Exact boundary: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b` → reviewed combined content `c565bad334766eb9987e18ca222e6b18de4403ff`; candidate patch SHA-256 `55ef110f3f3b1e1b3042933cdab97cfbe6bd1075955c309cc497a3f7ace0e2d8` excludes this ledger.
+- Ownership result: `PASS`; this CRL retains its 81 reviewed sequential-unit hunks, with 29 zero-context fingerprints remapped only where earlier selected units shifted or coalesced final diff headers. The active `Staged Commit Scope` above is the exact combined-range ownership used by the gate; the prior hashes remain below as immutable historical evidence.
+- No runtime, API, schema, migration, dependency, configuration or business-policy change is introduced by this reconciliation.
+- Historical-to-integrated fingerprint mappings:
+  - `backend/scripts/tests/test_cleaning_inspection_merge.ts#48fd37dbe921db5d62d33488dca67c8c929d0a985ca845ce7f875aff07c3cd3e` → `backend/scripts/tests/test_cleaning_inspection_merge.ts#159d636d32a375b9ff4651f2d3bc4c5005c99394c35020db68548e63bb7d0e20`
+  - `backend/scripts/tests/test_cleaning_inspection_merge.ts#b95caa2ada5bca016d29364e8cdd1f324f59b18956f4152ac7b25392fec83dea` → `backend/scripts/tests/test_cleaning_inspection_merge.ts#2f7264918d5a34565c7fc192c53e160f0e5ab4a383e36c2813aad4bac52fbd21`
+  - `backend/scripts/tests/test_cleaning_inspection_merge.ts#199476bb9acc373d6ec258701ad532f6d3d97aefcae25b0871544b85ec08596a` → `backend/scripts/tests/test_cleaning_inspection_merge.ts#ad63be6bb7f1bbba4ed750149dd7780d328591470afea894082b3f20f9f7e111`
+  - `backend/scripts/tests/test_cleaning_inspection_merge.ts#7b4ba732d0436cf9cf823226fab49817653299b0dc90a264ee2b2644f1dfd5be` → `backend/scripts/tests/test_cleaning_inspection_merge.ts#c6d16eb64f1eeb49b54166eabcbef75dbab3925930383503ec3dc1fe62c39e1e`
+  - `backend/scripts/tests/test_cleaning_inspection_merge.ts#c3d4800cdab3e42110d9ccee81ab1c317e69330286e26c3df7de0c421c0312a3` → `backend/scripts/tests/test_cleaning_inspection_merge.ts#cce8d4ca56b76858bf719cc2c9aa7e942973675d41f367894ec5007d0589e5ab`
+  - `backend/scripts/tests/test_cleaning_inspection_merge.ts#d14bc1888afc3ec450e8fa34678338b7b6c340062e1bede27723d2e61d6c56df` → `backend/scripts/tests/test_cleaning_inspection_merge.ts#b932c4c92fc79e06744a2a9925762d5bb4dabf76b66990fcb51aedae76b70159`
+  - `backend/scripts/tests/test_cleaning_inspection_merge.ts#84c3e5257e4380040849b482ce539ea085db2f470b8c0d77d46b81b5cf46c354` → `backend/scripts/tests/test_cleaning_inspection_merge.ts#86cc54f5f0f8ccd1af398c530e783ed0b032ff1715f2f7e300ec10852487d53d`
+  - `backend/scripts/tests/test_cleaning_inspection_merge.ts#cf96a8c845d629face23d1d7b43ee5ef6e1da84c07b082497a422fb2d73b2e7a` → `backend/scripts/tests/test_cleaning_inspection_merge.ts#e5b3076d863c0613829b959b1661ba6a3d93d90201cb42e7ea80043de3d9649c`
+  - `backend/scripts/tests/test_cleaning_inspection_merge.ts#1cf3dc5939a346568ffbdecd39f44e803c63f422e6b99d7043f92e2b9bdf6873` → `backend/scripts/tests/test_cleaning_inspection_merge.ts#ebb711505c4a3eb5233c87d0aca0b1de134c07f520c31a24a87cd23cff7d56bc`
+  - `backend/scripts/tests/test_cleaning_inspection_merge.ts#066682437cab64a1e6d43562771402b03e55fbd20b85f18679669e7e83c84558` → `backend/scripts/tests/test_cleaning_inspection_merge.ts#b7c1dd32022ad4c1972cb82fa7b9c1d1cc5078b611856a504abb5bd2d43782c6`
+  - `backend/scripts/tests/test_cleaning_inspection_merge.ts#d8edf101d125fd087032159d3ec47be13621f11373f404475a6b78dc1ca673eb` → `backend/scripts/tests/test_cleaning_inspection_merge.ts#d4e9503026375fbb31c69438d147a67cdc28c6f278dcc93b95b5988ea24f4d3d`
+  - `backend/scripts/tests/test_cleaning_inspection_merge.ts#cc4fe669b9d2b95b9db1115211f9c52c192284182a16f029a9a433fa0fb1a3d1` → `backend/scripts/tests/test_cleaning_inspection_merge.ts#7fc46ad97ed26fd16356a219c720c95f06a901511423dffb38e107d589205067`
+  - `backend/scripts/tests/test_cleaning_inspection_merge.ts#7340d6d8ee0ed38afc9556bd408adf4adfe68c0d094232056b44c3ca7d616a6a` → `backend/scripts/tests/test_cleaning_inspection_merge.ts#21a91f13c409315d152b18d93a730a9eab55e1ed2cfbec342bfcfab47e62ded0`
+  - `backend/scripts/tests/test_cleaning_inspection_merge.ts#4d6ac55dddd71ab576dcb76eca6e73bcc01884e07a0189e268528014f12f069f` → `backend/scripts/tests/test_cleaning_inspection_merge.ts#19b12a09cce58c382ed8ba3d5a431700bbafd272a84ae22f26237d8adff58df1`
+  - `backend/scripts/tests/test_personnel_settlement_phase3.ts#0ff8ba680a3e31000497bace5ae4869d7f5e5b85adde73d6f37561762beaefdd` → `backend/scripts/tests/test_personnel_settlement_phase3.ts#b5d119159eba3a5c909a246dcf14488ff89dae73ecb10fa1bee6284bafe396ea`
+  - `backend/scripts/tests/test_personnel_settlement_phase3.ts#5919c46c92237082314c4960707b2fb00635a0991a6caecc85dd6bb339a75f5d` → `backend/scripts/tests/test_personnel_settlement_phase3.ts#0858d3e9d913da94b58e1f8b4fd16a2147b968fe4d3a21f18997c0dd8da15fac`
+  - `backend/scripts/tests/test_personnel_settlement_phase3.ts#691c75d71ad2c668c13d9dddc82e42708f306f6f47c8576c428b90c3f3d0486c` → `backend/scripts/tests/test_personnel_settlement_phase3.ts#c5d998afc66c83940cd1cb5afb7e4fab84994e468f1cd53147c047699cebd32b`
+  - `backend/scripts/tests/test_personnel_settlement_phase3.ts#e9c4d2f013c9dac8d71a1dc4b1f93c0b50ab6e9e4f7a54a7017f76eaaffd0a89` → `backend/scripts/tests/test_personnel_settlement_phase3.ts#d67d7d9c0a52ea1e37a79531485948c88315b67c817454c79f949cc479cb7a3f`
+  - `backend/src/lib/cleaningInspection.ts#4645a4e5eecf9fc86ae0ef9300f76820691354762022980950c8b369b12dcaa0` → `backend/src/lib/cleaningInspection.ts#a4a81a3b416c1d2844188f6dbe6454b9931d52f13870fe1f6b02d7195bf65cd0`
+  - `backend/src/lib/cleaningInspection.ts#776a52d71fd4d6239337aba1266afa122e6ccf5a69702603cd9ea3329b4ec012` → `backend/src/lib/cleaningInspection.ts#44e5ca3990db479d7ca38bf549232fae5664d5201e359c706915b518b8802827`
+  - `backend/src/lib/cleaningInspection.ts#b39495e839245ce3b2adc8f032d5acb370dfe81eb309ff92c52f068827fba74d` → `backend/src/lib/cleaningInspection.ts#5daf81bf519e58d176d8563cb9fc2879b1fe9025b00c78518808a705dc9a870e`
+  - `backend/src/lib/cleaningInspection.ts#5d3ea292da93cc4a7cfce8b3af680bf46ef5dcc32fcead2cd847be68b192084e` → `backend/src/lib/cleaningInspection.ts#3609498e5f2e460ec4859b4a00f5a56020c26bbe0d14998dc1de2c91aa3fcfb1`
+  - `backend/src/lib/cleaningInspection.ts#f41da1f9679b8872732addc9c0d73e4aa288af40660d82ecc8152e959f082e7c` → `backend/src/lib/cleaningInspection.ts#3e5ec735a8de38e15b77f95e1c014c0a22d5f7c874628a24ea3a0c39d3bf70e5`
+  - `backend/src/modules/mzapp.ts#cc17c898c5c8d03b17885ec4603e1494c17b5d26a308150aeb216f3a93a50265` → `backend/src/modules/mzapp.ts#406ed8a6e0915b75d28d5acd177cc59e1b938f4d005cb4ca5d4bc8db13650002`
+  - `backend/src/modules/mzapp.ts#6dc3323216540e339d82c6ca2bff2a01a5a7708e9fa361b4066413a96a8fdb75` → `backend/src/modules/mzapp.ts#f0373e1d16a82214a7eb2a0943dc0ab0c6f604ae6bc6d6737bd51dac722487e0`
+  - `backend/src/modules/mzapp.ts#de916efa2ffb2f291e89950e8d17fdb39f3ddaf91ce846696ebd12cd29d0234b` → `backend/src/modules/mzapp.ts#17fa43b63719ca794621b0350e9278dd8a5d7953737e4231a96480804a324520`
+  - `backend/src/modules/mzapp.ts#714be612394d88a70e078cec0a2978f3ec12819cd8d509b50c572adf573ce239` → `backend/src/modules/mzapp.ts#2459b90b5226bcc47a1a248ce05cfd112a25623fdd339c88ef3368842855228d`
+  - `backend/src/modules/task_center.ts#83a6dd5db2ae9934547c294ca38f9712a5249372b48aee2a65ae3b05ea14bb42` → `backend/src/modules/task_center.ts#1aaf7fb585eba1b31d7e469e00e68d8ed9d4e06f342e37cb07a6b729a80ff3be`
+  - `backend/src/modules/task_center.ts#a39e441b826c9903176d71e2af48eafe842132270a65f91d4fb68646420fe093` → `backend/src/modules/task_center.ts#5fc529961cc10f58162c34a21a446c7e9de0d847c07a1672147ad5dfa8a0d14b`
+
+### Release Attempts
+
+- 2026-10-19 12:08 AEDT — 用户在最新漂移证据后重新授权生产精确修正；单一 serializable 事务锁定并重验 EQ3401 的 checkout `ddc3b536-6919-4388-991c-30c37911e072` 与 checkin `e4335ecb-9252-4e29-a134-e46a1110d4c1`，仅将两行 `inspection_scope` 从 `password_only` 更新为 `inspect_and_hang`，postflight 断言两行均正确后提交。提交结果为 `updated_rows=2`；checkout 保持 `restock_pending` / Sunjialin / Mia / 2026-10-19，checkin 保持 `assigned` / Mia / 2026-10-19，媒体行数分别 9/0，工作事件行数分别 10/12。未改日期、状态、人员、照片/媒体或工作记录，未启动生产应用。
+- 2026-10-19 12:09 AEDT — 经用户即时确认，工作看板已创建 `MZ-050`，最初误关联 `root/CRL-20261019-001`，Git 阶段记录为未提交。
+- 2026-10-20 AEDT — controlled identity migration: fresh `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b` contains no 2026-10-19 Root unit. The full local Root scan establishes `001` as the formal identity of committed MZ-044 save; older MZ-050 worktree copies retaining `001` are collision evidence to migrate, not separate ownership. The scan also establishes `002` as the independent check-in scope candidate and `003` as the untouched MZ-053 candidate. The next verified unused Root identity is `root/CRL-20261019-004`; MZ-050's ledger/index binding is corrected to `004` without rewriting source commit `223176ee2969679a16b813b9777499cc9ac728da` or changing runtime code.
+
+#### RA-20261019-004
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261019-004`
+- Selected CRL identities: `root/CRL-20261019-004`
+- Intended action: `commit`
+- Branch: `codex/mz050-turnover-scope-20261019`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19T14:24:48Z`
+- Candidate patch SHA-256: `d74d72d79422756e3a0055c474bb57fd1778137c1baf8d782335eb2296e05576`
+- Commit SHA: `223176ee2969679a16b813b9777499cc9ac728da`
+- Dependencies: none.
+- Required validation: `PASS for source commit / release integration pending`; evidence: focused cleaning inspection and sync contracts, backend TypeScript, frontend 9-test suite, lint with zero errors, ledger 12/12 and diff checks passed. The guarded real PostgreSQL assignment/concurrency test was not run.
+- Shared-hunk review: `PASS`; evidence: MZ-049 deferred-task changes are excluded from this extraction.
+- Generated-file review: `PASS`; evidence: no dependency link, cache, build output, environment file or generated artifact remains.
+- Technical state: `committed locally`; source commit `223176ee2969679a16b813b9777499cc9ac728da`, receipt pending in this ledger-only follow-up commit.
+- User authorization: `selected-for-commit`; evidence: the current direct instruction selects MZ-050 for isolated task-branch commit/push. The prior two-row production correction is recorded as historical evidence and is not treated as code release.
+- Independent review: `GO for local source commit only`; exact fingerprint `d74d72d79422756e3a0055c474bb57fd1778137c1baf8d782335eb2296e05576`, 12 paths / 77 non-ledger hunks, branch/base and clean generated/sensitive/scope boundaries verified; P0=0 / P1=0 / P2=2 / P3=0. P2s are the conditional mixed-scope multi-counterpart defensive gap after upstream uniqueness/manual-data anomaly and the unchanged App deferred-window legacy projection edge.
+- Action conclusion: `LOCAL COMMIT COMPLETED`; exact reviewed source commit `223176ee2969679a16b813b9777499cc9ac728da`. No source changes were added for duplicate-scope defense or legacy deferred-window projection because the user authorized organizing the existing candidate, not a new business-policy repair. Push awaits repository-required explicit approval of the final SHA; release and deployment remain separately gated. No further production data action is part of this action.
+
+#### RA-20261020-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261019-004`
+- Selected CRL identities: `root/CRL-20261019-004`
+- Intended action: `commit`
+- Branch: `codex/mz050-turnover-scope-20261019`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19 UTC`
+- Candidate patch SHA-256: `d74d72d79422756e3a0055c474bb57fd1778137c1baf8d782335eb2296e05576`
+- Commit SHA: `223176ee2969679a16b813b9777499cc9ac728da`
+- Dependencies: none.
+- Required validation: `PASS for controlled identity migration under an independently reviewed structural exception / source validation unchanged`; evidence: the exact 12-path source range, 77 non-ledger hunks, focused cleaning inspection/sync contracts, backend TypeScript, frontend 9-test suite, lint, ordinary ledger coverage and diff checks passed. The dedicated `--pre-commit --repo root --crl CRL-20261019-004` gate is structurally `BLOCKED` because HEAD still names the section `001`, so its before-range model cannot treat the heading rename plus canonical attempt rebinding as one selected receipt. Independent review verified that repository identity, canonical target, staged path coverage, untracked review, unexpected hunks and missing hunks all pass and approved this one local controlled migration commit. This append-only Git-history migration edits only `docs/change-release-ledger.md`; real PostgreSQL assignment/concurrency and device/integration acceptance remain pending.
+- Shared-hunk review: `PASS`; evidence: MZ-049, MZ-044, the active `root/CRL-20261019-002` candidate and untouched `root/CRL-20261019-003` MZ-053 candidate are excluded.
+- Generated-file review: `PASS`; evidence: the controlled migration changes only ledger identity/evidence and adds no generated, dependency, cache, environment or runtime file.
+- Technical state: `committed`; source commit `223176ee2969679a16b813b9777499cc9ac728da` remains unchanged and the identity-migration receipt is pending this append-only Git-history commit.
+- User authorization: `selected-for-commit`; evidence: the current direct instruction authorizes correcting the CRL collision through the repository allocation/index process and appending a local commit without rewriting history.
+- Independent review: `GO for one local controlled identity-migration commit only`; evidence: independent read-only review verified the fresh allocation scan, unchanged source commit/fingerprint, 12-path range, ledger-only staged diff, clean working scope and the audit model limitation; P0=0 / P1=0 / P2=2 wording clarifications applied / P3=1 append-only wording clarified. This GO does not authorize push, PR, merge, release, deployment or production action.
+- Action conclusion: `GO for this local controlled identity-migration commit only`; the dedicated pre-commit gate's structural limitation is explicitly accepted by the independent review above. After commit, require a clean exact `origin/Dev...HEAD` release report for `root/CRL-20261019-004`; no push until the user sees and approves that full final SHA. No merge, deployment, release, database/API or production action is included.
+
+#### RA-20261020-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261019-004`
+- Selected CRL identities: `root/CRL-20261019-004`
+- Intended action: `commit`
+- Branch: `codex/mz044-050-root-integration-20261019`
+- Base: `e69cfa86ca85ef4c24165aaf21fe69c0d2967c7e`, the local integration ancestor containing frozen MZ-044 display/save and MZ-049 candidates on `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; remote state last read 2026-10-19 UTC.
+- Candidate patch SHA-256: `6a661ecbab581b79d9d8eee3f20d958e8f553b69774e129558fa157a65b375e6`
+- Commit SHA: not committed.
+- Dependencies: `root/CRL-20261018-002@e69cfa86ca85ef4c24165aaf21fe69c0d2967c7e`.
+- Required validation: `PASS for this local integration commit / release NOT VERIFIED`; evidence: exact pre-commit gate passed 13 paths / 81 non-ledger hunks; MZ-044 Phase 1/3, MZ-049/MZ-050 focused cleaning/sync/deferred/settlement/idempotency contracts, backend TypeScript, frontend lint with zero errors, frontend 55 files / 287 tests, Root `check:ci`, feature/ledger audits, cross-repository Phase 5 and Mobile typecheck all passed. Real PostgreSQL assignment/concurrency, real-role integration and device acceptance remain pending and were not part of this local test run.
+- Shared-hunk review: `PASS for exact baseline reconciliation`; evidence: Git's ordinary three-way merge applied the frozen MZ-050 source without source conflicts after MZ-049. Twenty-five unchanged logical hunks receive new zero-context fingerprints because MZ-049 added adjacent imports, helpers, tests or line offsets; every old/new mapping below was reconstructed from the frozen `origin/Dev...223176ee2969679a16b813b9777499cc9ac728da` range and the current staged diff in source order. The four additional test-only hunks keep the pre-existing Phase 3 authorization contract effective after MZ-049 moved the relevant SQL and lock-time re-authorization into the shared helper; runtime source is unchanged by this reconciliation.
+- Hunk reconciliation: `backend/scripts/tests/test_cleaning_inspection_merge.ts#c0f203639d72f836c3ef1dfe06d344f5ea78041aad7db65ac6549b932b8f434a -> cf96a8c845d629face23d1d7b43ee5ef6e1da84c07b082497a422fb2d73b2e7a`; `b03a1a86fc69670fa5ce4b2d59342313e73da53995c81d5de1823fee52a4758e -> 84c3e5257e4380040849b482ce539ea085db2f470b8c0d77d46b81b5cf46c354`; `f94e1be8d85d861f9d0bf0aadf6fd7c35b5cd4b23fe6ae1c628649b9367b9b48 -> 7340d6d8ee0ed38afc9556bd408adf4adfe68c0d094232056b44c3ca7d616a6a`; `f548369e15a4351cc0ac65c980d0d70be66dcd01e9a3aae7a22d0057d052cd01 -> cc4fe669b9d2b95b9db1115211f9c52c192284182a16f029a9a433fa0fb1a3d1`; `e3664c8721669db63f84fd4520d2679d17797d63ce23812ad2e34b4d1b8e7af8 -> d8edf101d125fd087032159d3ec47be13621f11373f404475a6b78dc1ca673eb`; `a699cb1f022ae8f1d9a6b7e72213425be687ff2db33963da13a4d3b42f613fa6 -> d14bc1888afc3ec450e8fa34678338b7b6c340062e1bede27723d2e61d6c56df`; `60fa9925790700474cb59630edef426271d3fe2873213a3446844079a3b02e05 -> 199476bb9acc373d6ec258701ad532f6d3d97aefcae25b0871544b85ec08596a`; `69bbd6e9b6b15446537a7c15fc07cac1b621e4c04297bbc34b8165d456e98053 -> 7b4ba732d0436cf9cf823226fab49817653299b0dc90a264ee2b2644f1dfd5be`; `53655babb7211dbf72f2f99ca1a73c5dc57938197258c2c0259b2c8808a746f2 -> 48fd37dbe921db5d62d33488dca67c8c929d0a985ca845ce7f875aff07c3cd3e`; `ce7455d3b4989292671017ab50b2cb37aeb2c11139acd8f9bc949ee09a53550e -> 066682437cab64a1e6d43562771402b03e55fbd20b85f18679669e7e83c84558`; `cb14689946869702ff666090f18526fb50acce7f00d83831ae55dfd708ffe3bb -> 1cf3dc5939a346568ffbdecd39f44e803c63f422e6b99d7043f92e2b9bdf6873`; `fc464bc01d8fefe305ba0d8ec12e3e9a0256a10aa2574169871a971ec2a51641 -> 4d6ac55dddd71ab576dcb76eca6e73bcc01884e07a0189e268528014f12f069f`; `54c7b3fe345c8bdb0ada9e1ca2b6a7cbd8d2e796895c799b1f0b0bc8679fe26c -> b95caa2ada5bca016d29364e8cdd1f324f59b18956f4152ac7b25392fec83dea`; `849cda9988498a8bd009ea4406cc81ed616cd4c0ebcbc89a50162d58c3bd6d13 -> c3d4800cdab3e42110d9ccee81ab1c317e69330286e26c3df7de0c421c0312a3`.
+- Hunk reconciliation: `backend/src/lib/cleaningInspection.ts#2d33e334f9319a1ab31577a098e0657ebec8d209ee73e9b04cf1bac96934e9f6 -> 4645a4e5eecf9fc86ae0ef9300f76820691354762022980950c8b369b12dcaa0`; `bf3ff3f748838be9e6b6b85924d1d726fc4fa256adcbcb729bc22b155794e2d6 -> f41da1f9679b8872732addc9c0d73e4aa288af40660d82ecc8152e959f082e7c`; `3166be58eccb485ed469df5e6f5598a71188523bc2c74415e3f1a833a0f4ea15 -> 776a52d71fd4d6239337aba1266afa122e6ccf5a69702603cd9ea3329b4ec012`; `3ae9bcd1f4db94af61e8c3fbf0b7457969576d2f5489d91cef1d855f381cb6ca -> b39495e839245ce3b2adc8f032d5acb370dfe81eb309ff92c52f068827fba74d`; `a8b8bb7d4c6d337f4d2b774d3a892b3f4283c0852f74853e861ff9dba3c64d1a -> 5d3ea292da93cc4a7cfce8b3af680bf46ef5dcc32fcead2cd847be68b192084e`.
+- Hunk reconciliation: `backend/src/modules/mzapp.ts#2e9ea1640d6ad85b7ee9a9714f009b8db6b9568e7e7c713aa27ab5052510c2f0 -> 6dc3323216540e339d82c6ca2bff2a01a5a7708e9fa361b4066413a96a8fdb75`; `0afe1bc9e9565fa69029337280933fab4a599eb82d550a84f67316735f91941a -> cc17c898c5c8d03b17885ec4603e1494c17b5d26a308150aeb216f3a93a50265`; `94eac76e8ca2160ad8800779e47951f4f1c62e3157bf18d3fa8f3d8fc732f0ba -> 714be612394d88a70e078cec0a2978f3ec12819cd8d509b50c572adf573ce239`; `51714435f4cab6363e8ca350e0f6e5419f69b14768a9f5162a9c99187402e699 -> de916efa2ffb2f291e89950e8d17fdb39f3ddaf91ce846696ebd12cd29d0234b`.
+- Hunk reconciliation: `backend/src/modules/task_center.ts#2a014212df58575cff6f56d798972a476c6db2d6f3c5b913ae107009298cadf2 -> 83a6dd5db2ae9934547c294ca38f9712a5249372b48aee2a65ae3b05ea14bb42`; `c5ea23ff2d6b8a341841e6540e13815522a2fcc80cc640754c4bd1ad0f274ebf -> a39e441b826c9903176d71e2af48eafe842132270a65f91d4fb68646420fe093`.
+- Generated-file review: `PASS`; evidence: the staged range contains only the thirteen tracked source/test/ledger paths and no generated, dependency, cache, build, environment or sensitive path.
+- Technical state: `verified`; local merge is ready for this exact local commit only after the gate and independent review both passed.
+- User authorization: `selected-for-commit`; evidence: the current instruction authorizes local integration/test/freeze while withholding push, PR, remote merge, deployment, OTA and production-data operations.
+- Independent review: `GO for the exact local merge commit only`; evidence: independent read-only review rebuilt all 77 frozen source hunks, verified 52 unchanged fingerprints, all 25 adjacency-only mappings and the four test-only Phase 3 helper-contract hunks, found P0=0 / P1=0 / new P2=0 / P3=1, and this receipt update closes the sole P3 pending wording. Existing MZ-050 P2=2 and MZ-049 release-only P2=3 remain disclosed; this is not release acceptance.
+- Action conclusion: `GO for this exact local merge commit only / release NOT VERIFIED`; commit only after the refreshed pre-commit gate remains GO. Push, PR, merge to `Dev`, deployment, OTA publication, database/API write and all production operations remain excluded.
+
+#### RA-20261020-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-003`, `CRL-20261018-002`, `CRL-20261019-001`, `CRL-20261019-004`
+- Selected CRL identities: `root/CRL-20261016-003`, `root/CRL-20261018-002`, `root/CRL-20261019-001`, `root/CRL-20261019-004`
+- Intended action: `commit`
+- Branch: `codex/mz044-050-root-integration-20261019`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19T14:24:48Z`.
+- Candidate patch SHA-256: `55ef110f3f3b1e1b3042933cdab97cfbe6bd1075955c309cc497a3f7ace0e2d8`
+- Commit SHA: `c565bad334766eb9987e18ca222e6b18de4403ff`
+- Dependencies: `none`.
+- Cross-repository dependency verification: `PASS for the local source contract / release NOT VERIFIED`; evidence: Mobile final local head `ffa55c21ba3f13dbaa468629ece203ba25f2847b` contains exact selected content head `b6ea73184c319915053f206a662a75f35af1552e`; the MZ-049 paired nine-path patch and optional conflict fields passed its exact range audit. Physical-device, real-network and installed-build/channel acceptance remain pending.
+- Required validation: `PASS for the exact local combined content range / release NOT VERIFIED`; evidence: all selected unit pre-commit gates and independent reviews passed; MZ-044 Phase 1/3, MZ-049/MZ-050 focused contracts, backend TypeScript, frontend lint with zero errors, frontend 55 files / 287 tests, Root `check:ci`, feature/ledger audits, cross-repository Phase 5 and Mobile typecheck passed. Real PostgreSQL assignment/concurrency/payment-chain, real-role integration, direct session-affinity configuration and device acceptance remain pending.
+- Shared-hunk review: `PASS`; evidence: ordinary merge commits preserve both MZ-044 display/save units, exact MZ-049 source and the MZ-050 source plus documented 25 baseline fingerprints and four Phase 3 test-only helper-contract hunks. The unapproved legacy `/users/me` bank/ABN policy is unchanged; PR54, MZ-052 and MZ-053 are absent.
+- Generated-file review: `PASS`; evidence: the exact range and clean worktree contain no dependency, cache, build-output, environment or sensitive path. The profile-document permission migration is source-only and was not executed.
+- Technical state: `committed`; exact combined content commit `c565bad334766eb9987e18ca222e6b18de4403ff`, followed only by this append-only receipt.
+- User authorization: `selected-for-commit`; evidence: the user authorized local integration/test/freeze while this round explicitly excludes push, PR, remote merge, deployment, OTA, migration execution and production-data operations.
+- Independent review: `GO for the exact local integrated content only`; evidence: independent reviews matched the MZ-044 display/save, MZ-049 and MZ-050 scopes and reconciliations with P0/P1 = 0; final MZ-050 review found no new P2 and its sole P3 pending wording was closed before the content commit. Existing release-only gaps remain recorded and this is not release acceptance.
+- Action conclusion: `GO for this exact local combined-range receipt commit only / release NOT VERIFIED`; no push, PR, remote merge, deployment, OTA publication, migration execution, database/API write or production interaction is authorized or performed.
+
+#### RA-20261020-004
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-003`, `CRL-20261018-002`, `CRL-20261019-001`, `CRL-20261019-004`
+- Selected CRL identities: `root/CRL-20261016-003`, `root/CRL-20261018-002`, `root/CRL-20261019-001`, `root/CRL-20261019-004`
+- Intended action: `commit`
+- Branch: `codex/mz044-050-root-integration-final-20261019`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19T19:46:48Z` and confirmed unchanged before preparing this clean worktree.
+- Candidate patch SHA-256: `55ef110f3f3b1e1b3042933cdab97cfbe6bd1075955c309cc497a3f7ace0e2d8`
+- Commit SHA: not committed.
+- Dependencies: paired Mobile local source head `b6ea73184c319915053f206a662a75f35af1552e` inside frozen Mobile head `ffa55c21ba3f13dbaa468629ece203ba25f2847b`; no remote or deployment dependency was exercised.
+- Cross-repository dependency verification: `PASS for local source compatibility / release NOT VERIFIED`; evidence: the unchanged Root content patch previously passed the Phase 5 cross-repository contract and Mobile typecheck against the exact paired Mobile content. Physical-device, real-network, installed-build/channel and native-build acceptance remain pending.
+- Required validation: `PASS for this exact clean staged candidate / release NOT VERIFIED`; evidence: exact pre-commit audit passed 39 selected paths / 317 non-ledger hunks with unexpected=0 and missing=0; current-worktree ledger coverage passed 39/39, Feature Registry passed 34 FRs / 281 mappings with 88 Mobile mappings deferred, `git diff --cached --check` passed, and the non-ledger patch is byte-for-byte the previously tested `55ef110f...` content. Prior identical-content validation passed MZ-044 Phase 1/3, MZ-049/MZ-050 focused contracts, backend TypeScript, frontend lint with zero errors, frontend 55 files / 287 tests, Root `check:ci`, cross-repository Phase 5 and Mobile typecheck. Real PostgreSQL, payment-chain, direct session-affinity and device validation remain pending.
+- Shared-hunk review: `PASS`; evidence: the dated integration reconciliation preserves all four sequential scopes (68/34/135/81 hunks), maps only 27/12/42/29 shifted or coalesced fingerprints, and gives the sole two-to-one Phase 1 hunk `dc87c81adda8991709b61249f1090af1f11cc61ad2a85506895e36743d561699` explicit shared MZ-044 display/save ownership. The final selected union is exactly 317 hunks; no CRL history was deleted or rewritten.
+- Generated-file review: `PASS`; evidence: no dependency directory/link, cache, build output, environment file, credential, generated artifact or unselected task path is staged. The profile-document permission migration remains source-only and was not executed.
+- Render deployment review: `PASS for local commit only / remote release NOT AUTHORIZED`; evidence: read-only Render Dashboard inspection found the active Preview Docker service bound to `Dev` with Auto-Deploy `On Commit`, PR Previews `Off` and no pre-deploy command; the active Production Docker service is separately bound to `main` with Auto-Deploy `On Commit` and PR Previews `Off`. Local commit changes neither service. A future merge to `Dev` would deploy Preview and remains outside this attempt; `main` remains prohibited.
+- Technical state: `verified`; exact staged content is ready only for the local commit after independent review is refreshed for this attempt.
+- User authorization: `selected-for-commit`; evidence: the current delegated instruction explicitly authorizes resolving the Root combined audit locally and freezing the final SHA while prohibiting push, PR creation, remote merge, deployment, OTA and production-data changes.
+- Independent review: `GO for the exact local content commit only`; evidence: the independent read-only reviewer verified the current branch/base/index and candidate patch, reconstructed all four sequential scopes and every 27/12/42/29 integration mapping, confirmed the single shared Phase 1 hunk, reran the pre-commit, ledger, Feature Registry and diff checks, and found P0=0 / P1=0 / new P2=0 / new P3=0. Seven previously disclosed release-only P2s remain (MZ-044 save 2, MZ-049 3, MZ-050 2), together with the accepted non-blocking MZ-044 display registry-wording P3=1; this is not push or release acceptance.
+- Action conclusion: `GO for this exact local content commit only / release NOT VERIFIED`; the refreshed pre-commit gate must remain GO immediately before committing. Push, PR, remote merge, deployment, OTA, migration execution, database/API write and all production operations remain excluded.
+
+#### RA-20261020-005
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-003`, `CRL-20261018-002`, `CRL-20261019-001`, `CRL-20261019-004`
+- Selected CRL identities: `root/CRL-20261016-003`, `root/CRL-20261018-002`, `root/CRL-20261019-001`, `root/CRL-20261019-004`
+- Intended action: `commit`
+- Branch: `codex/mz044-050-root-integration-final-20261019`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19T19:46:48Z` and confirmed unchanged before preparing this clean worktree.
+- Candidate patch SHA-256: `55ef110f3f3b1e1b3042933cdab97cfbe6bd1075955c309cc497a3f7ace0e2d8`
+- Commit SHA: `d972fe7d0ebcd87f108bf1402c8c586f5f485458`
+- Dependencies: paired Mobile local source head `b6ea73184c319915053f206a662a75f35af1552e` inside frozen Mobile head `ffa55c21ba3f13dbaa468629ece203ba25f2847b`; no remote or deployment dependency was exercised.
+- Cross-repository dependency verification: `PASS for local source compatibility / release NOT VERIFIED`; evidence: the unchanged Root content patch previously passed the Phase 5 cross-repository contract and Mobile typecheck against the exact paired Mobile content. Physical-device, real-network, installed-build/channel and native-build acceptance remain pending.
+- Required validation: `PASS for this exact committed content / release NOT VERIFIED`; evidence: immediately before commit, the exact pre-commit audit passed 39 selected paths / 317 non-ledger hunks with unexpected=0 and missing=0; current-worktree ledger coverage passed 39/39, Feature Registry passed 34 FRs / 281 mappings with 88 Mobile mappings deferred, `git diff --cached --check` passed, and the committed non-ledger patch is byte-for-byte the previously tested `55ef110f...` content. Prior identical-content validation passed MZ-044 Phase 1/3, MZ-049/MZ-050 focused contracts, backend TypeScript, frontend lint with zero errors, frontend 55 files / 287 tests, Root `check:ci`, cross-repository Phase 5 and Mobile typecheck. Real PostgreSQL assignment/concurrency/payment-chain, real-role integration, direct session-affinity configuration and device validation remain pending.
+- Shared-hunk review: `PASS`; evidence: the dated integration reconciliation preserves all four sequential scopes (68/34/135/81 hunks), maps only 27/12/42/29 shifted or coalesced fingerprints, and gives the sole two-to-one Phase 1 hunk `dc87c81adda8991709b61249f1090af1f11cc61ad2a85506895e36743d561699` explicit shared MZ-044 display/save ownership. The final selected union is exactly 317 hunks; no CRL history was deleted or rewritten.
+- Generated-file review: `PASS`; evidence: no dependency directory/link, cache, build output, environment file, credential, generated artifact or unselected task path is committed. The profile-document permission migration remains source-only and was not executed.
+- Render deployment review: `PASS for local commit only / remote release NOT AUTHORIZED`; evidence: read-only Render Dashboard inspection found the active Preview Docker service bound to `Dev` with Auto-Deploy `On Commit`, PR Previews `Off` and no pre-deploy command; the active Production Docker service is separately bound to `main` with Auto-Deploy `On Commit` and PR Previews `Off`. This local commit changed neither service. A future merge to `Dev` would deploy Preview and remains outside this attempt; `main` remains prohibited.
+- Technical state: `committed`; exact combined content commit `d972fe7d0ebcd87f108bf1402c8c586f5f485458`, followed only by this append-only receipt.
+- User authorization: `selected-for-commit`; evidence: the current delegated instruction explicitly authorizes resolving the Root combined audit locally and freezing the final SHA while prohibiting push, PR creation, remote merge, deployment, OTA and production-data changes.
+- Independent review: `GO for the exact local content commit only`; evidence: independent read-only review verified RA-20261020-004 against branch `codex/mz044-050-root-integration-final-20261019`, base `80763db22c340c6f3df9e5e10924824e0ec7979b`, exact non-ledger fingerprint `55ef110f3f3b1e1b3042933cdab97cfbe6bd1075955c309cc497a3f7ace0e2d8`, 39 staged paths / 317 non-ledger hunks, and byte identity with reviewed content `c565bad334766eb9987e18ca222e6b18de4403ff`. It reconstructed the 68/34/135/81 sequential scopes, verified 27/12/42/29 mappings, the sole shared `dc87c81a...` Phase 1 hunk, complete 317-hunk ownership, four test-only Phase 3 reconciliation hunks, and clean generated/sensitive/production boundaries. Pre-commit, ledger coverage, Feature Registry and diff checks passed with unexpected=0 and missing=0. P0=0 / P1=0 / new P2=0 / new P3=0; inherited release-only P2=7 and the accepted MZ-044 display registry-wording P3=1 remain disclosed. This review did not rerun the unchanged broader test suites and is not release acceptance.
+- Action conclusion: `GO for this exact ledger-only receipt and local freeze / release NOT VERIFIED`; push, PR, remote merge, deployment, OTA, migration execution, database/API write and all production operations remain excluded.
+
+#### RA-20261020-006
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-003`, `CRL-20261018-002`, `CRL-20261019-001`, `CRL-20261019-004`
+- Selected CRL identities: `root/CRL-20261016-003`, `root/CRL-20261018-002`, `root/CRL-20261019-001`, `root/CRL-20261019-004`
+- Intended action: `commit`
+- Branch: `codex/mz044-050-root-integration-final-20261019`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19T19:46:48Z` and confirmed unchanged before preparing this clean worktree.
+- Candidate patch SHA-256: `55ef110f3f3b1e1b3042933cdab97cfbe6bd1075955c309cc497a3f7ace0e2d8`
+- Commit SHA: `d972fe7d0ebcd87f108bf1402c8c586f5f485458`
+- Dependencies: `mobile/CRL-20261018-001@b6ea73184c319915053f206a662a75f35af1552e`
+- Cross-repository dependency verification: `PASS for local source compatibility / release NOT VERIFIED`; evidence: the dependency content commit is an ancestor of frozen Mobile local head `ffa55c21ba3f13dbaa468629ece203ba25f2847b`; the unchanged Root content patch previously passed the Phase 5 cross-repository contract and Mobile typecheck against that exact paired content. Physical-device, real-network, installed-build/channel and native-build acceptance remain pending.
+- Required validation: `PASS for this exact committed content / release NOT VERIFIED`; evidence: immediately before the content commit, exact pre-commit audit passed 39 selected paths / 317 non-ledger hunks with unexpected=0 and missing=0; ledger coverage passed 39/39, Feature Registry passed 34 FRs / 281 mappings with 88 Mobile mappings deferred, `git diff --cached --check` passed, and the committed non-ledger patch is byte-for-byte the previously tested `55ef110f...` content. The first receipt's final range audit passed every content, scope, fingerprint, generated-file and sensitive-data gate and was blocked only because its Mobile dependency was prose rather than the required canonical reference; this append-only receipt corrects only that governance syntax. Prior identical-content validation passed MZ-044 Phase 1/3, MZ-049/MZ-050 focused contracts, backend TypeScript, frontend lint with zero errors, frontend 55 files / 287 tests, Root `check:ci`, cross-repository Phase 5 and Mobile typecheck. Real PostgreSQL assignment/concurrency/payment-chain, real-role integration, direct session-affinity configuration and device validation remain pending.
+- Shared-hunk review: `PASS`; evidence: the dated integration reconciliation preserves all four sequential scopes (68/34/135/81 hunks), maps only 27/12/42/29 shifted or coalesced fingerprints, and gives the sole two-to-one Phase 1 hunk `dc87c81adda8991709b61249f1090af1f11cc61ad2a85506895e36743d561699` explicit shared MZ-044 display/save ownership. The final selected union is exactly 317 hunks; no CRL history was deleted or rewritten.
+- Generated-file review: `PASS`; evidence: no dependency directory/link, cache, build output, environment file, credential, generated artifact or unselected task path is committed. The profile-document permission migration remains source-only and was not executed.
+- Render deployment review: `PASS for local commit only / remote release NOT AUTHORIZED`; evidence: read-only Render Dashboard inspection found the active Preview Docker service bound to `Dev` with Auto-Deploy `On Commit`, PR Previews `Off` and no pre-deploy command; the active Production Docker service is separately bound to `main` with Auto-Deploy `On Commit` and PR Previews `Off`. This local commit changed neither service. A future merge to `Dev` would deploy Preview and remains outside this attempt; `main` remains prohibited.
+- Technical state: `committed`; exact combined content commit `d972fe7d0ebcd87f108bf1402c8c586f5f485458`, followed only by append-only receipts.
+- User authorization: `selected-for-commit`; evidence: the current delegated instruction explicitly authorizes resolving the Root combined audit locally and freezing the final SHA while prohibiting push, PR creation, remote merge, deployment, OTA and production-data changes.
+- Independent review: `GO for the exact local content commit only`; evidence: independent read-only review verified RA-20261020-004 against branch `codex/mz044-050-root-integration-final-20261019`, base `80763db22c340c6f3df9e5e10924824e0ec7979b`, exact non-ledger fingerprint `55ef110f3f3b1e1b3042933cdab97cfbe6bd1075955c309cc497a3f7ace0e2d8`, 39 staged paths / 317 non-ledger hunks, and byte identity with reviewed content `c565bad334766eb9987e18ca222e6b18de4403ff`. It reconstructed the 68/34/135/81 sequential scopes, verified 27/12/42/29 mappings, the sole shared `dc87c81a...` Phase 1 hunk, complete 317-hunk ownership, four test-only Phase 3 reconciliation hunks, and clean generated/sensitive/production boundaries. Pre-commit, ledger coverage, Feature Registry and diff checks passed with unexpected=0 and missing=0. P0=0 / P1=0 / new P2=0 / new P3=0; inherited release-only P2=7 and the accepted MZ-044 display registry-wording P3=1 remain disclosed. This review did not rerun the unchanged broader test suites and is not release acceptance.
+- Action conclusion: `GO for this exact dependency-syntax receipt and local freeze / release NOT VERIFIED`; push, PR, remote merge, deployment, OTA, migration execution, database/API write and all production operations remain excluded.
+
+### Risks / Release Notes
+
+- 生产 EQ3401 的精确数据修正已在重新授权后完成，范围严格限定为上述两条任务的 `inspection_scope`；除该两行字段更新外没有其他生产写入。
+- Conditional defensive gap: if upstream uniqueness has already been broken and multiple active opposite-kind tasks with mixed scopes exist for one property/date, the `LIMIT 1` / memory `.find()` write guard does not prove that it examines the dirty `password_only` row. Canonical order sync and same-day normalization prevent this in normal flow; duplicate anomaly repair or a stricter all-row guard is deferred to a separate approved policy/repair unit.
+- Legacy-window P2: MZ App builds turnover state from the current candidate window. A stale deferred `password_only` check-in selected by due date can lack its original-date checkout in that window, so inspector projection may suppress or misclassify it. This is a legacy dirty-data compatibility edge and remains unmodified.
+- 风险集中在旧数据容错；并发写入使用房源+日期事务锁并在行锁内重验。发布前仍需在隔离的非生产 PostgreSQL 上运行 `test_task_assignment_canonical.ts`，以验证真实 SQL 投影中检查人员响应的 `active_source_ids` / `source_ids` 包含周转入住任务；真实 PostgreSQL 并发竞争测试也尚未执行。
+- Sensitive-information review: no credentials, tokens, database URLs, guest passwords, or private media references added.
+- Rollback: revert this CRL's code/test hunks；代码候选无 migration。生产两行范围修正符合用户目标，当前不需要数据回滚；任何反向生产更改都需新的明确授权。
+- Git state: source commit `223176ee2969679a16b813b9777499cc9ac728da` and prior receipt `0250b6dc0ff889a896a20c43e3ba11c9193a669a` remain immutable ancestors on `codex/mz050-turnover-scope-20261019`; controlled CRL migration is ledger-only and pending append commit; not pushed; no merge, deployment or production application start.
+
+## CRL-20261018-002 — MZ-049 延期检查入住衔接、source 隔离、实时归位与结算责任（root）
+
+- **Status:** exact staged candidate independently reviewed GO for local source commit; release integration pending
+- **Repository:** `root`
+- **Updated:** 2026-10-18 UTC
+- **Request:** 在不写生产数据、不回填历史三条异常记录的前提下，修正终态延期检查滚入后续日期、入住变更后的唯一检查安排和 App 归位，并按显式安排保护检查费归属。
+- **Outcome:** 终态延期只停留在原有效日；未完成旧延期继续可见，但无显式检查关系时按 canonical source 与后来任务隔离，重开后遗留钥匙照片/挂钥匙视频不再覆盖当前状态；延期窗口内的入住检查在责任人一致时链接唯一入住任务，不一致或重复时显式冲突并由所有写入口拒绝；结算按入住执行日沿用计划检查人，任一实际提交人不符时转人工复核。
+
+### Implementation
+
+- Previous behavior: 已完成延期检查会被夹到后续查询起日；未完成旧延期与后来同房源任务被两层“日期 + 房源”去重错误合并，导致旧 Angela/延期/挂钥匙视频覆盖新 Oscar/同日检查/当前状态；检查模式/日期变化仅触发延迟一致性刷新；延期退房卡虽显示同日入住但检查动作仍可能指向原退房任务；自动替换后的提交证据与费用责任缺乏明确关联。
+- New behavior: 终态历史日不再投影，未完成逾期仍保留；无显式延期-入住关系的旧任务在检查人分组与客服/admin 管理合并两层都携带 source 隔离标识，不再吸收后来入住、人员、状态或媒体；重开任务的历史钥匙照片/视频仍可展示为证据，但只有当前生命周期本身处于清洁进行中或挂钥匙及其后状态时才确认 `in_progress` / `keys_hung`；正常同日退房/入住和已有显式关系继续合并。模式、scope、日期和人员变化要求 Mobile 立即权威刷新；服务端按原退房日至延期日的完整窗口生成同房源显式延期-入住安排，保留原退房日、链接唯一入住 action source，并对人员缺失/不一致、多延期或多入住任务 fail-closed；自动 replacement、stored pointer 保留、恢复和重连复用同一无冲突唯一安排；两套 App 的检查照片与挂钥匙/访问视频共五个事务写入口在媒体、审计写入前使用同一全窗口 guard，原延期 source 也会被 409 引导到 canonical 入住任务；其中四个原先可在任务级鉴权前返回冲突元数据的写入口，现在先做目标任务预鉴权、guard 稳定顺序锁定后再按最新锁定行复核任务权限，只有仍获任务权限的调用方才可收到 409；客服、admin、线下经理角色本身不替代任务级权限，也未新增主动通知。两层合并先聚合全部冲突 source，再按 source 禁用并折叠同名动作，确保独立 `password_only` 动作不受子项顺序影响且任何冲突组都不会被遗漏；结算通过替换指针关联执行证据，开放安排使用入住执行日，终态 deferred 不重新吸附后来入住，检查全部提交人，任一提交人或执行指派与计划责任人不符时告警且不自动计费或转费。
+- Key decisions: source 隔离只用于“deferred 且无显式检查关系”，不扩大到普通 turnover 或已有安排；媒体不删除、不改写，只停止用遗留媒体反推重开后的当前状态；`password_only` 不参与检查安排；不新增 schema；沿用既有延期替换字段、检查指派冲突约束、稳定顺序行锁与 step receipt；旧 `inspection-complete` 相同视频请求在事务内语义重放；历史三条异常记录不回填、不重算，已审核/已付款快照不变。
+
+### Files / Areas
+
+- `backend/src/lib/cleaningInspection.ts` — modified: 区分终态历史延期与未完成逾期投影，定义无关联延期 source 隔离和当前状态可确认视频规则，并提供 App/结算共享的终态集合与安全 SQL 条件。
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — modified: 构造显式延期-入住安排、让自动替换/恢复/重连复用唯一无冲突安排、把替换事件标成 membership，并在同名动作折叠前按 source 应用冲突且优先保留独立动作；新增共享的任务预鉴权 + guard + 锁定行复鉴权流程，禁止未获任务权限的调用方取得冲突元数据。
+- `backend/src/modules/mzapp.ts` — modified: 投影原退房日、正确入住 action source 和人员冲突；两层合并传播全部冲突 source 并复用冲突感知动作折叠；无关联延期在检查人/管理两层按 source 隔离，且遗留视频不提升重开状态；内部隔离字段不出 API；检查照片写入口在共享 guard 前后均做任务级鉴权。
+- `backend/src/modules/cleaning_app.ts` — modified: 检查照片、当前访问视频和旧完成三个实际写入口共享事务 guard，并在 guard 前后做任务级鉴权；旧完成入口对相同视频语义重放。
+- `backend/src/modules/task_center.ts` — modified: 检查模式、scope、日期和人员变化发 membership 事件。
+- `backend/src/lib/personnelSettlementPreview.ts` — modified: 关联替换执行任务证据、排除终态 deferred 的新吸附/伪 owner 冲突，并阻止提交人不符时自动转费。
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — modified: 终态精确日、未完成逾期、MSQ1905E 日/周/月 source 隔离与视频状态、FO1602 正常 turnover/显式关联回归。
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — modified: 安排、密码任务、人员冲突、事件/action source 契约、两层多冲突 source、无关联延期的两层隔离/内部字段清理、自动 replacement/restore/relink fail-closed、密码子项在前/冲突子项在后的折叠顺序，以及四个写入口先鉴权后冲突、无权调用方元数据不泄露/无写入、三类已获任务权限管理角色保留冲突结果的回归。
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — modified: 两套检查照片 receipt、旧完成入口重复视频，以及共享鉴权流程仍对最新锁定任务行串行化的契约。
+- `backend/scripts/tests/test_personnel_settlement_mz034.ts` — modified: 替换证据、终态延期 SQL 边界、UI source 隔离不折叠结算 source/服务日与提交人不符人工复核。
+- `docs/feature-regression-registry.md` — modified: 新增 FR-039。
+- `docs/change-release-ledger.md` — modified: 本变更单元。
+
+### Impact / Dependencies
+
+- API: MZ App work-task 响应新增可选 `inspection_original_checkout_date`、`inspection_action_task_id`、`inspection_assignment_conflict`；既有字段保持兼容。
+- Database / migration: none；复用现有替换指针、事件、动作审计、行锁和检查指派冲突约束；未运行 migration。
+- Config / environment: none.
+- Dependencies: mobile/CRL-20261018-001；发布时 Root 应先于或同时配对 Mobile。
+- Related units: root/CRL-20261011-007、root/CRL-20261014-004、mobile/CRL-20261018-001.
+
+### Validation
+
+- `npm run build --prefix backend` — passed: TypeScript build；生成的 `backend/dist` 已恢复到基线且不在候选。
+- `npm run test:cleaning-inspection-merge --prefix backend` — passed（隔离本机监听权限下）。
+- `npm run test:deferred-inspection-checkin-replacement --prefix backend` — passed.
+- `npm run test:personnel-settlement-mz034 --prefix backend` — passed.
+- MZ-049 source-isolation supplement — passed: MSQ1905E day/week/month + stale key/video state, FO1602 turnover preservation, manager two-layer source contract, and settlement source/date preservation.
+- `npm run test:idempotency-submit-id-contract --prefix backend` — passed.
+- Authorization-order supplement — passed at helper/source-contract level: 三个 `cleaning_app` 写入口和一个 `mzapp` 检查照片入口均使用共享任务预鉴权/锁定行复鉴权；无任务权限返回不含 guard 的 forbidden 结果且仅执行一次 SELECT；合成的客服/admin/线下经理标签在 `taskAccess=true` 回调下仍得到带冲突详情的 conflict 结果。该证据不等同于真实角色中间件、真实任务参与人或 PostgreSQL 集成验证；合成查询全部为 SELECT，无媒体、审计或任务写入。
+- `npm run check:backend` — re-run after the authorization repair: every Root build/contract step passed through personnel-claim storage; the final existing Phase 5 cross-repository contract initially reported only the intentionally absent Mobile source link, then passed when the isolated MZ-049 Mobile candidate was linked temporarily. The link and generated `backend/dist` output were removed afterward.
+- `python3 scripts/audit_feature_regression_registry.py` — passed: 34 FRs / 274 mappings.
+- `python3 scripts/audit_change_release_ledger.py` — passed: 12 changed / 12 recorded paths after generated artifacts were removed.
+- Historical review's P1 authorization-order finding has been repaired and revalidated. Fresh independent review of exact candidate `d9f377d7f53e5ace1c4b32010a9e48ed5c057d33bfd88de46f395bafbf5e6be7`（12 paths / 135 non-ledger hunks）is GO for Root source commit only, with P0=0 / P1=0 / P2=3: unlocked initial target/window read before stable row locks；unchanged MZ App lockbox route can still return 409 before its locked re-authorization only in a concurrent-revocation race；management-role evidence is synthetic helper/source-contract coverage rather than real middleware/participant/PostgreSQL integration. Mobile's paired staged review is separately GO for commit only; neither review is release acceptance.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** `prepared`
+- **Untracked review:** none; all twelve selected files are tracked, and generated backend dist files plus temporary dependency/cross-repository links were removed.
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `3a118b67f4b6a7c06d083c3ca8b7fc17e661617fb8b1992a09dc98f5d6478a8e`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `a36d02349b2fdd13d5792e2d2a74a55723180b0d8a518fec0a7233dc4da69349`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `7597a24322a7adac9a07662ce9f884050b05d6ab61cbdfd4f4c807f282fab54c`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `5c07d6c3aac35dde14445dc220327afd2e21eee520ceb4150cc9bf46fdb91b39`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `09d0fd0d3a6a7b83a7daf6704f9a1c5f3def69ea78a9780313d702b1635214b6`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `1d9b1327d1a44f93756e9ab0d717f2712e8bcedefd11f9393376888ccf06df6d`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `357680e208cf9c823701addb176c4b4e6a4f956d5e492f3bcc013545d381e3a6`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `36a482752360f763212651b0e90059b3edeae1b80ba83905ca964c1b41eca710`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `3e87f3e162c582f2f6db51cd23dbd83f6863fbb72b801edd5702c3328b9fa257`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `4298ae30d734d96a6897a2c89ce7e43b0705d368dd4cb5a86c095857643e4057`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `53fd047534f41884c972d7967ed688bdd0d7c7403d94d69403cf955b371cb1c0`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `5544b0190fac91d2d8e312e675b8e766c9c93bf3c5d3f003ddf5abb9b025386d`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `71ea5e57220a1d82d195bee8c5beccf56aa9e0d582216a55c6d65810f5815ca0`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `7ae61e345913cedc3a58f11c9af99d5ad3500cd4abc2580f4de4ac998a754de9`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `7c1a1d898d81341e5c529f7bd964bd3aee6eca524df4a9f12f73263865002a71`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `a200cdc40ae3ab8cd9746e3152de96dc62579b26e8dfa0c505323bd141c6883f`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `d2f9233b89da0d1f7c5d67ac01863fa7e8c8fe20c879f0ef3ce933cfd3f3311d`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `f672369093bf57e75b860ef355cacbabfecd1271c82ce4ae8a411683062a6095`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `fded043334a062433d54cebba9644d495d82a616896521a6d142a2dbb10e9756`
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — SHA-256: `3d6d5b86d5614fd583ce13cdc865f3f448844421a2c57dfc3e07634b4f45f448`
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — SHA-256: `7b57f00ec8e12a5652056948e7a7f877ecbc00be96de19d9a5c65019ea14f797`
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — SHA-256: `a6b06a15c7719416882e5729eb50b99a6d2dafdc961955ca65601c317e646ca8`
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — SHA-256: `bf15bf66466b807611c8b075cc88dcf0867d26e2ca8cfc74727caf8ca9ce720c`
+- `backend/scripts/tests/test_personnel_settlement_mz034.ts` — SHA-256: `1502cb4280537627c3fee90f69b558004876c1f1dfab292eda1bbfe6d5a886f4`
+- `backend/scripts/tests/test_personnel_settlement_mz034.ts` — SHA-256: `1f10c11281eff8c175ade721bcd6e82651065e0a97d51cf9d7c1567ed3b0cf04`
+- `backend/scripts/tests/test_personnel_settlement_mz034.ts` — SHA-256: `1fcf473b935695d0daa7b94797be1c8adf965652a99f6a1a47fe2276d19bd69e`
+- `backend/scripts/tests/test_personnel_settlement_mz034.ts` — SHA-256: `559510f30fae8bf13ce7610f38ba07a685ddd07a47a18ce771d6be2e15e9a744`
+- `backend/scripts/tests/test_personnel_settlement_mz034.ts` — SHA-256: `6335890a987994c53c5602f8c528bfc69c8a8d75002496ad1c18e7bf61981a58`
+- `backend/scripts/tests/test_personnel_settlement_mz034.ts` — SHA-256: `b065895a3615f66cf2425e30ef94e76358b96d1f4595bf9d2c62cddab21fe033`
+- `backend/scripts/tests/test_personnel_settlement_mz034.ts` — SHA-256: `eb4a378ac9198abf4569d0ef87b408747579ba0894f0b2e81e62a02d1567843e`
+- `backend/scripts/tests/test_personnel_settlement_mz034.ts` — SHA-256: `fc0c69435a8cabeab72a2164db093b52967f992f003446c3ee7f7c3e92fc4a9d`
+- `backend/src/lib/cleaningInspection.ts` — SHA-256: `054b08c53ce9ecae77c923c07a559c3cc659682edb471f2e5c1ced5daff40e9c`
+- `backend/src/lib/cleaningInspection.ts` — SHA-256: `eb4dc4ad3822a67a2b0e0d78d7aad5fe32a4a973287fcf0361b07665662146bf`
+- `backend/src/lib/cleaningInspection.ts` — SHA-256: `41fcfc8955f6849f577c64442dcf2a5149b461d9fc1cbdb9592a5c9cd0418c15`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `269cf7098581fb6d506fe8a7c4a944842f8f1a2b91e1af65d0279d78a6fb2376`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `2cb61fa777a1bf45aa919ecdc288aa7b6a8cddd66ccdd8bfdbcad9f09024a8cf`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `2e2fb86b6c1af0af38ec712799b69ab9d8b6a8ec05d68a1ffbfb22960b768e66`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `36c56d5b022087d598cc8593d8c722b9d01bcb309f31ffaa05d0e3cecb36ad03`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `3964aa0c4e67e15bd50e3873c0a751dc6c740665d4231651666ca79e8263f1f9`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `3a02e586f33a6528cd03209486336fed89313566d6dedad213531ce5a320de9d`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `5734913c6c6ce889cb6da4553f8a2dd889dbeeea91c17508204f38715ca9a45e`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `71ee1997ce59e5224e7647251d99b5937531777405fe0a7e34e2ca474dd0f427`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `79813c0f7a55bbdd162cb9b30f0190f91e643a1f7840a5c9363c850722ddce2b`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `7ce5dfcc11a8e0daf78c6852fe95da20e8755d8965f8bc82a389ca76783f9d53`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `808965f09fcd45f17e2efd602fec72c80621fbbe24cb0d89d3507d135ea14021`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `89bbd4bf75728aaf6f428c7f131633004b8851590597aad7a40c290d6dcb3b25`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `8d2e7b8780fe8118546295630a3e7971be43dbc419d17f932a5f10a98d0df3a9`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `9135e36eccf1841cb7ae5fdc146181f8267d137fdc42cab0ae3483654ec0fa7c`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `926cf53d5a8536197762584ae5bbf137e1ae46c3447b13b68f8a0c7f56423c12`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `93eccbc920ae5d7f4df2543338102c1291e86b74d661af2d4bf8d6cd58a7aaf4`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `9fb905c84267b01a52b4a5373bb9acbd961fcffe63eba9e1a8099aa00a5f512e`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `a674f2b2d53cf1973aabd9616d5919a785ced2e0965249722b58d126d835a9eb`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `a7b7452512a653ebb1532817964c843cf3bb70adbc464c12a24a6a7308b20756`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `aa73479eaaaac6b959c9a47241187f4ea6ac25e164da5726d66c441049ee7c83`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `aab93fd8ba9ec1f4a8454e41e22fddc2c3c6f417fcf76663bb90ae5cdfc39f6e`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `aee325b00b73f03ac50adce207933c3199f23b2a650ecd9784fc88309fe8d7b2`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `b5c8325dd2b97ede906b46f96bbfb62d5e9defdd15253ca757e7b06ac51b6fbe`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `bad85faf2b4ea23aa988efbc585ccb7e40d38aaccb91975548c1298de9736de6`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `bc8123db57fc4487ca5158665660ee0e35ac9612ace74165aee574c76b5fa0c3`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `c2c7141bfe0306291083fd4c3eaf3857332a1b5fa78b78600a6de2752ce0508d`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `c3fb7cdee576924e09787f89110f78f41f6e752499ba33a8120d85e6916d9641`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `cf37f69543b4e2d6459a268c45ed42dffbe6617ff9f6b720214be3d4198783f2`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `d99a0583da3d4d96743fef6da53c868248e6f53b723798d24be6f6a223ba91d4`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `dc5dc138cf05feb4dcc48c9b2291185ac7a50881a866e8cab6da98154ac8f923`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `e0f19eeff2e5a1df53422885871cf7a2505bc8cfebaf5bc9da8fa3c2b4f27fd4`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `f061297926c08372e6b6a4d4c46b7025c27350096d7484f57c6df56106b7607f`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `4ee01d15bd1088701b356c0a427532704a8a1c9d5290eeb92add6015e3a9b6ed`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `50a06910533d03fa55b97fd39b685e466a811be6684e087c31c6598e1a3f6d89`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `9a4c6ea18054ed2fa0ac756e807ea27460c023b96b9a57891933e3913c7c575d`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `aa236792bfb29623d902a2ea5c20a1da2c1e6156fd9e332ddbf3fce156137375`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `b154d23c6bebbe58e11ccf85a07d569c6456eed0e895d47112013dd39ebb6836`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `b1db06184b310d2bc3766e70303ca38418bc9cfb7302b8bfb60da9bb8f5d0ddc`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `ebb7d4aa08666f13591c66c79b6c99fe246710f5b8cad570c764dc2da5b93306`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `f1f2f96ff9ff9cf2c1d4079279aa2e4a7105c1b948327198d9fd9832995cac90`
+- `backend/src/modules/mzapp.ts` — SHA-256: `8e68fe4397c244f2dc0e8f1993ff85faa8d952f79c535a8b7a796d898ff4249d`
+- `backend/src/modules/mzapp.ts` — SHA-256: `fb7270f31ed302866c303fd74077fbe5e1aff5a3d9f57113927621ca10fa93cd`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2f619d1317c3f8857f759ad327c2c1b5b061a76bd265878b25acd974dab56905`
+- `backend/src/modules/mzapp.ts` — SHA-256: `eb567125fe0c9ddb8d5f6b9c1b11a1d3e92c2fa183d0b3cea1001f01d36ebe50`
+- `backend/src/modules/mzapp.ts` — SHA-256: `8598ca9d815abfab85c67d610b5c355bf45c3bcda346358946d3edbb2073c27e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `4648cab8e1c9bf2c1e1cd64da24dc04f159ab23aed4e5da2f5019b290d14ea64`
+- `backend/src/modules/mzapp.ts` — SHA-256: `4ce56c47c13bbe50913544113962971459764a75496904cbc4f9f3c829b43b84`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ccb78bc492600336e4b8712f6203ad63a5fcedaa6deecdae91d310a32c89d5f5`
+- `backend/src/modules/mzapp.ts` — SHA-256: `8b1e8fcd60cf44abe3b47ce6cd8165ba59268ad9720bd81221830f582f8625ca`
+- `backend/src/modules/mzapp.ts` — SHA-256: `12ebd3cb4e4849fc3ffbdffc9c20cf3ef75ea06b099759852dd06f76a10136d5`
+- `backend/src/modules/mzapp.ts` — SHA-256: `01ee1cb2c6fde4a63d210b58cf83ffe91240fdffd74ec847180b304dc1c49aaa`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e184f1eb7b172540839da84590ad69fb96d577c445d6c9a7532bdf8296ddfd83`
+- `backend/src/modules/mzapp.ts` — SHA-256: `9b0c0a5349ff38c31ff13d79a57ac4fdfd56e7c14246089ba40be090f0d5f795`
+- `backend/src/modules/mzapp.ts` — SHA-256: `12730a39e264850ed7526e959cbe3c3a7e7e509b486803791092c7dd8c4f3706`
+- `backend/src/modules/mzapp.ts` — SHA-256: `3c2aba085222c262b6be6edd9e6bf8f00a5bc7a813ce4e69763853b4949b6978`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f04a75b93355b617ce3571ee88a7946570403d632a84d9bcd0a7b3292d8320f3`
+- `backend/src/modules/mzapp.ts` — SHA-256: `971391b5014786d083d9fe0dc3c992ec90e6102f021e6c1da4d28d158845ea79`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f608164e0e03d3f67a06c2ccd583ff7b6c8c509539d31932a63a8d8a0e38a636`
+- `backend/src/modules/mzapp.ts` — SHA-256: `82e1bc8551fb003dfa6b3a71a43daac759facd9289a972f48b0814142ac7ca84`
+- `backend/src/modules/mzapp.ts` — SHA-256: `18651aadcd812cb20cc4ffa9b06f9cb878c10c74d81d165262dad0c5872c0bc1`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ad83ef2d6acf7a443dc427efc57d1280ecc7ee9ff5b71fe1ecba73664d4f52df`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7512ffc009f3c15bf083ded24d17600d8a632c22b2f9d492556289d00fcdc513`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7d8ed1b12e9614273604eb55e9d52ec461c46d7cd6c32ea12c271c8c9a3a5ce2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5025f667a7c0a95fd47e3de6cdc16932c00e5653c83bbeabd7c5f4ca045c1f82`
+- `backend/src/modules/mzapp.ts` — SHA-256: `bd4c3cec8639966d03fbf88ca8df4b919cac33a0d29b8e0709b4aa7f78eb3a7b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `6a3df9509a455dd2fb90a488657bc0f1174f92a447726807def59cfd4ce27822`
+- `backend/src/modules/mzapp.ts` — SHA-256: `de8afaa8a87221f6e3c6588b9ccb645c1fd36d1237c74451aca20732d1856504`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5eebc4766a528eacc1e62f2347593a2010f062a4e4606e5dc314002a8969d3f1`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e33c502427969001356515d38fdf57f8fed4493ab7900fdcb8c7792843d9611d`
+- `backend/src/modules/mzapp.ts` — SHA-256: `106c860272b53376b2a1e70d2e51da4be138bb48f528df78070507e4182f5d94`
+- `backend/src/modules/mzapp.ts` — SHA-256: `3bdd2f9104a5bd2ff3216def1ae9e955093a137a20c8ae09569ef38351c7a47a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `8b5b44c9842c73152a0b113294a703a263fc11b19c2abbdaf100db4fdff57ede`
+- `backend/src/modules/mzapp.ts` — SHA-256: `28f3de8d54dd6e6cc3366ebb5da4197a4e9644b58ef39330c8217e1c974c14a9`
+- `backend/src/modules/mzapp.ts` — SHA-256: `949d37b6fd6f005f63a1545586866c83fc5d1beb6dc6b3b1f712c43d3d8f36d5`
+- `backend/src/modules/mzapp.ts` — SHA-256: `fb46e5c8ee9dc05ff8ce0c5442896a3cf3e489861a9f0b1efae44948a6bb895f`
+- `backend/src/modules/task_center.ts` — SHA-256: `f244f09dff0767b935d39d0335476b949d6b90ceaae84d22b2d94ec72bb3f425`
+- `backend/src/modules/task_center.ts` — SHA-256: `e103b19231cc60868ca0776447794d09c1065e89fb89cc96100161ed9b81e60a`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `1152093b07aeede93095be299a66270eafba3a7d6d5bc149ab56fc9dd3cca961`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `27f2c02f09b3897a92c5371c025fc6f51e06dff27d135656a7f7c84c50d88468`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `63069ed112e74a30bfd91f85509b7b2a238ca439b30210781db1720be43c5e23`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `3a7e8316d5558ca4282be52f21f372ffc8d83f99788b5bbdb43b421d8d96b296`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `461e9abc2be310bd5bff8951ec114436b4a52df64faeb8df5377b17ba872587c`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `4c27b53670c4637f68393939072a37152e462cd229fe8102c7d4d3ec8a6c67f9`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `5cc8c4cc76dd069cac56500936710a2a4222916a35ff73fd045d5a4f7f568407`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `95cb8e6ba2d0aaeaf6fa43483e57738dbb4bb1d284f849ea08f2cf33b2d7170f`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `61da3cbc095349561fe46a8c7589a4a3b1036f8d06a79a492d88a3ec8663d8f9`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `9c9ac741c253333a4148b29f39e6badf40bf621c6c3ab59da61206864a3be729`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `c4fb096eeb55cc7d22c572a4f727e8eb8d80cbf1c363af4b92dfb3393cd48fad`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `85fadcdfb9dd1b29abddef9ca15ab6ff57c81897bae708105d873b0967ad2692`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `dcf6a076469b0ec7f6d5df6608210e047938d594b4bc3b4675a6b6cf83fd55e0`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `8b3d1aaff8b20e68ee9ec86cf700820ec5f69046a929b84016a9c079f82df50b`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `8d9fc79a08c998cfe2a883377b75a0132cb8d43d081fb5eccfa4250822b47fb0`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `ed0e38a147e5d3cb5d90f020f0eb01755759563779cd39724cfa220d8beed130`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `9d5692bff01445c589af98ea3750b226cd68ccda8623d7fc27b695229ab7e220`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `b76e4bd5591f178565d08be692dd56cbe032376573d409f774a2a6e591505a0f`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `c90893d4c614b4589fd39c5ce0c4d730c9143772a29fd9c99e5984fa559e8b62`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `cc91315b771e38ae7a8d457c3643283a68603da7c3e4d52ded161173ae365b13`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `d8474f39dcea8ca9983683e14afe3dd4380d525a8acc5bf9e0bb750669ab050d`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `e135303d10a9d1bc3bbfafd836623faeca9ce18e8f9e2bd3e5fd5976f72f95fa`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `fbae48634c7358c5fb36e5eb6075458a7a662e6a7c5d5c72b28aaa7a61cf4716`
+- `docs/feature-regression-registry.md` — SHA-256: `107e21395e44f82d123256ca6640de6e687a972a2944ab190284093ebd1e22a4`
+
+
+### Integrated Range Scope Reconciliation — 2026-10-20
+
+- Exact boundary: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b` → reviewed combined content `c565bad334766eb9987e18ca222e6b18de4403ff`; candidate patch SHA-256 `55ef110f3f3b1e1b3042933cdab97cfbe6bd1075955c309cc497a3f7ace0e2d8` excludes this ledger.
+- Ownership result: `PASS`; this CRL retains its 135 reviewed sequential-unit hunks, with 42 zero-context fingerprints remapped only where earlier selected units shifted or coalesced final diff headers. The active `Staged Commit Scope` above is the exact combined-range ownership used by the gate; the prior hashes remain below as immutable historical evidence.
+- No runtime, API, schema, migration, dependency, configuration or business-policy change is introduced by this reconciliation.
+- Historical-to-integrated fingerprint mappings:
+  - `backend/scripts/tests/test_cleaning_inspection_merge.ts#48401ee3f71154c3dc971d83b3958dc5ef6686f8d9e92831f2bfec086598ef28` → `backend/scripts/tests/test_cleaning_inspection_merge.ts#3a118b67f4b6a7c06d083c3ca8b7fc17e661617fb8b1992a09dc98f5d6478a8e`
+  - `backend/scripts/tests/test_cleaning_inspection_merge.ts#564dff37028fbac1e08712500228ea20cc8100331e40ba427d6fd955ac9e4006` → `backend/scripts/tests/test_cleaning_inspection_merge.ts#a36d02349b2fdd13d5792e2d2a74a55723180b0d8a518fec0a7233dc4da69349`
+  - `backend/scripts/tests/test_cleaning_inspection_merge.ts#6a8b429daa2772eedbab39c7d40d2c59c16228b36365ca28703c0f157119c57d` → `backend/scripts/tests/test_cleaning_inspection_merge.ts#7597a24322a7adac9a07662ce9f884050b05d6ab61cbdfd4f4c807f282fab54c`
+  - `backend/scripts/tests/test_cleaning_inspection_merge.ts#c5cd4c8dedf262c62eeaa45f3dc94e7b71ae3f718f285bc279c0b4c969ec83aa` → `backend/scripts/tests/test_cleaning_inspection_merge.ts#5c07d6c3aac35dde14445dc220327afd2e21eee520ceb4150cc9bf46fdb91b39`
+  - `backend/src/lib/cleaningInspection.ts#35ace4745e06daf657b1a38beed5d3b51ef1680049c7c91af9853882e270d2d2` → `backend/src/lib/cleaningInspection.ts#eb4dc4ad3822a67a2b0e0d78d7aad5fe32a4a973287fcf0361b07665662146bf`
+  - `backend/src/lib/cleaningInspection.ts#6bf08cb149b6f07c4aa6e2349806a0bd26490e655a0791a8ed1df594a1ee07ae` → `backend/src/lib/cleaningInspection.ts#41fcfc8955f6849f577c64442dcf2a5149b461d9fc1cbdb9592a5c9cd0418c15`
+  - `backend/src/modules/mzapp.ts#090389c414599b5ead793543c24ffde020cc2a30b8c30bc936fdeec587c7ff8c` → `backend/src/modules/mzapp.ts#8e68fe4397c244f2dc0e8f1993ff85faa8d952f79c535a8b7a796d898ff4249d`
+  - `backend/src/modules/mzapp.ts#0aeef84681d790d71cc3e9878a7603afef2e733ce9cc25156f8c9fa8013fdd5d` → `backend/src/modules/mzapp.ts#fb7270f31ed302866c303fd74077fbe5e1aff5a3d9f57113927621ca10fa93cd`
+  - `backend/src/modules/mzapp.ts#0b8ef624fcfc21b84d3e970a431a8482ec05b54b8126d05788c844e4cdf22c8b` → `backend/src/modules/mzapp.ts#2f619d1317c3f8857f759ad327c2c1b5b061a76bd265878b25acd974dab56905`
+  - `backend/src/modules/mzapp.ts#14689fc7443515fdb23fbc084a7022052337e11a2cda831e9151e1a90d59c664` → `backend/src/modules/mzapp.ts#eb567125fe0c9ddb8d5f6b9c1b11a1d3e92c2fa183d0b3cea1001f01d36ebe50`
+  - `backend/src/modules/mzapp.ts#184c02358229f1aaa247550041f53d774eee73d5c426c83aea1b4ae853e0cd3f` → `backend/src/modules/mzapp.ts#8598ca9d815abfab85c67d610b5c355bf45c3bcda346358946d3edbb2073c27e`
+  - `backend/src/modules/mzapp.ts#22f919b65c4d13ce9ae14bdd377be5f02de7ffa10d083c050b177b9ceca058c8` → `backend/src/modules/mzapp.ts#4648cab8e1c9bf2c1e1cd64da24dc04f159ab23aed4e5da2f5019b290d14ea64`
+  - `backend/src/modules/mzapp.ts#23a3727004db00110d5b17a8b4e4ab8e85e336c675ba831f18c3797af09b25cf` → `backend/src/modules/mzapp.ts#4ce56c47c13bbe50913544113962971459764a75496904cbc4f9f3c829b43b84`
+  - `backend/src/modules/mzapp.ts#29d9edfd4f25ae19f600c89b2d59948ef1680f82601a873af54c54d06d6e215e` → `backend/src/modules/mzapp.ts#ccb78bc492600336e4b8712f6203ad63a5fcedaa6deecdae91d310a32c89d5f5`
+  - `backend/src/modules/mzapp.ts#2a86494b6dd6a8a8cd58d9592f5ab5f4761ca7f42734d5a8668ffd5e6a3f8a67` → `backend/src/modules/mzapp.ts#8b1e8fcd60cf44abe3b47ce6cd8165ba59268ad9720bd81221830f582f8625ca`
+  - `backend/src/modules/mzapp.ts#3a49f130f1b2621c7c777b33ba670e7d1680f81fec939d9267028105e5484bfc` → `backend/src/modules/mzapp.ts#12ebd3cb4e4849fc3ffbdffc9c20cf3ef75ea06b099759852dd06f76a10136d5`
+  - `backend/src/modules/mzapp.ts#3f444c099aab4bc44c0541286e93afc16aa7464bd9999a349cd9b0ad1d118934` → `backend/src/modules/mzapp.ts#01ee1cb2c6fde4a63d210b58cf83ffe91240fdffd74ec847180b304dc1c49aaa`
+  - `backend/src/modules/mzapp.ts#4038e255cb294edd567945ec6e4d6ee281e8a53a1312bfe50904c8a5b96629d3` → `backend/src/modules/mzapp.ts#e184f1eb7b172540839da84590ad69fb96d577c445d6c9a7532bdf8296ddfd83`
+  - `backend/src/modules/mzapp.ts#420a9149e073955fcb33c1fbc5628ebb5c8c75a56d33518ce261fbdcffbd2f99` → `backend/src/modules/mzapp.ts#9b0c0a5349ff38c31ff13d79a57ac4fdfd56e7c14246089ba40be090f0d5f795`
+  - `backend/src/modules/mzapp.ts#592987afa6861b98015682341be487aefe5e7c4163ad6df7d0b0ae987a9dd520` → `backend/src/modules/mzapp.ts#12730a39e264850ed7526e959cbe3c3a7e7e509b486803791092c7dd8c4f3706`
+  - `backend/src/modules/mzapp.ts#5a3530f4cdf66d54ea13ee4318d349b05e19974ae87b9919efcae5559f71b91e` → `backend/src/modules/mzapp.ts#3c2aba085222c262b6be6edd9e6bf8f00a5bc7a813ce4e69763853b4949b6978`
+  - `backend/src/modules/mzapp.ts#6790f538ceb865ac4b4bb74fd15f14b20295af2e12ea891c14af909f332c5606` → `backend/src/modules/mzapp.ts#f04a75b93355b617ce3571ee88a7946570403d632a84d9bcd0a7b3292d8320f3`
+  - `backend/src/modules/mzapp.ts#69759e4b4b1aabcbc676f0860fdcca82b14c139ef1ab099f6531e429c3766901` → `backend/src/modules/mzapp.ts#971391b5014786d083d9fe0dc3c992ec90e6102f021e6c1da4d28d158845ea79`
+  - `backend/src/modules/mzapp.ts#7dd4dd40a7addb90393eda424302f760fb66daf7f5999e4d3bb4dedecbd5d3b9` → `backend/src/modules/mzapp.ts#f608164e0e03d3f67a06c2ccd583ff7b6c8c509539d31932a63a8d8a0e38a636`
+  - `backend/src/modules/mzapp.ts#8388141814837e13a704a0a2a0d37b3e76b33f7a442298c9c8a1edad84cc9831` → `backend/src/modules/mzapp.ts#18651aadcd812cb20cc4ffa9b06f9cb878c10c74d81d165262dad0c5872c0bc1`
+  - `backend/src/modules/mzapp.ts#966af8138a2bb75b136c2d9baf6acbc7d5af22cde84cc6bf68a888f791c62579` → `backend/src/modules/mzapp.ts#ad83ef2d6acf7a443dc427efc57d1280ecc7ee9ff5b71fe1ecba73664d4f52df`
+  - `backend/src/modules/mzapp.ts#9e84bcf93ca6d01011c2b725168152fa22e86cbf1a48b8bc1953f7da5fdc3a5d` → `backend/src/modules/mzapp.ts#7512ffc009f3c15bf083ded24d17600d8a632c22b2f9d492556289d00fcdc513`
+  - `backend/src/modules/mzapp.ts#a43c152bf5555bc131add7d0d1650cd3e2e3fb4522a04fa989193018d97445f8` → `backend/src/modules/mzapp.ts#7d8ed1b12e9614273604eb55e9d52ec461c46d7cd6c32ea12c271c8c9a3a5ce2`
+  - `backend/src/modules/mzapp.ts#b187ec1cb8a3f1927855a01a5189364ac1b51407d166d0b86a54abd7a3585a42` → `backend/src/modules/mzapp.ts#5025f667a7c0a95fd47e3de6cdc16932c00e5653c83bbeabd7c5f4ca045c1f82`
+  - `backend/src/modules/mzapp.ts#cf9e45c6e6c557c8cb26853d4c6f1c944f57d47bf70960539092a2297d0d2a58` → `backend/src/modules/mzapp.ts#bd4c3cec8639966d03fbf88ca8df4b919cac33a0d29b8e0709b4aa7f78eb3a7b`
+  - `backend/src/modules/mzapp.ts#d27d153fe3803ec9fab274e074df68be1d0931ef637be098a6ce618c9ef991b5` → `backend/src/modules/mzapp.ts#6a3df9509a455dd2fb90a488657bc0f1174f92a447726807def59cfd4ce27822`
+  - `backend/src/modules/mzapp.ts#d46169f8f2d0566ce2ee012098dbc7ec56579cbab9d73e44154483c482c18699` → `backend/src/modules/mzapp.ts#de8afaa8a87221f6e3c6588b9ccb645c1fd36d1237c74451aca20732d1856504`
+  - `backend/src/modules/mzapp.ts#dea1e9d196ca139048cfbf7fd6e1bcfd727adcc07030519bb4b049808a4c94bc` → `backend/src/modules/mzapp.ts#5eebc4766a528eacc1e62f2347593a2010f062a4e4606e5dc314002a8969d3f1`
+  - `backend/src/modules/mzapp.ts#e68eaed81a797d6eda96fa94c811874b48a531149b0d51a2384d509052bd83fa` → `backend/src/modules/mzapp.ts#e33c502427969001356515d38fdf57f8fed4493ab7900fdcb8c7792843d9611d`
+  - `backend/src/modules/mzapp.ts#e8bb66484086cf8a04ddd5ec1e24c0856425e6e8e242bd581b367cb9eb6136fc` → `backend/src/modules/mzapp.ts#106c860272b53376b2a1e70d2e51da4be138bb48f528df78070507e4182f5d94`
+  - `backend/src/modules/mzapp.ts#ef10d9434a421792b9af1e8437d603e6a0168b5e77647476d88e1dc0a7a828a5` → `backend/src/modules/mzapp.ts#3bdd2f9104a5bd2ff3216def1ae9e955093a137a20c8ae09569ef38351c7a47a`
+  - `backend/src/modules/mzapp.ts#f19e03c3d774df7a8b4dd2f0cc74974a6b0b91824afc68838b3b2d8f4612178c` → `backend/src/modules/mzapp.ts#8b5b44c9842c73152a0b113294a703a263fc11b19c2abbdaf100db4fdff57ede`
+  - `backend/src/modules/mzapp.ts#f26344b2645b4f4e2028cd54a7fca001063103cd03dc5f8fd4bf2bc0d6a669e8` → `backend/src/modules/mzapp.ts#28f3de8d54dd6e6cc3366ebb5da4197a4e9644b58ef39330c8217e1c974c14a9`
+  - `backend/src/modules/mzapp.ts#f9f35936c680c4793ee96ca7ce42480c469babd242dccdda442e4d7b9aa2ac9b` → `backend/src/modules/mzapp.ts#949d37b6fd6f005f63a1545586866c83fc5d1beb6dc6b3b1f712c43d3d8f36d5`
+  - `backend/src/modules/mzapp.ts#fc79f9b0d2d11cdb0cabf52943b3349386701bf15750478d82a28b246efe0a68` → `backend/src/modules/mzapp.ts#fb46e5c8ee9dc05ff8ce0c5442896a3cf3e489861a9f0b1efae44948a6bb895f`
+  - `backend/src/modules/task_center.ts#abb7a7d335dab4485ae68d19a21c758aabaa04a078f463e09ae54a56815139c0` → `backend/src/modules/task_center.ts#f244f09dff0767b935d39d0335476b949d6b90ceaae84d22b2d94ec72bb3f425`
+  - `backend/src/modules/task_center.ts#dbceac01450c4f4655bb6d63cba6bc1fc36426e2a839cb7609ff9da2d9e5b181` → `backend/src/modules/task_center.ts#e103b19231cc60868ca0776447794d09c1065e89fb89cc96100161ed9b81e60a`
+
+### Release Attempts
+
+#### RA-20261019-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261018-002`
+- Selected CRL identities: `root/CRL-20261018-002`
+- Intended action: `commit`
+- Branch: `codex/mz049-deferred-inspection-20261019`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19 UTC`
+- Candidate patch SHA-256: `d9f377d7f53e5ace1c4b32010a9e48ed5c057d33bfd88de46f395bafbf5e6be7`
+- Commit SHA: `08c185dda3399ca0630cea39b3359e0aa6ed0549`
+- Dependencies: `mobile/CRL-20261018-001@81755387299a3bfc30b6c92dbf5938182576ffbd`
+- Required validation: `PASS for source commit / release integration pending`; evidence: focused conflict/auth-order, idempotency, immutable-media, cleaning-merge and settlement contracts, full backend TypeScript build, Feature Registry and diff checks passed. The initial cleaning-merge run was blocked only by sandbox loopback-listen policy and passed unchanged with local loopback permission. Real PostgreSQL settlement/concurrency, production orders and real-account UI were not run.
+- Shared-hunk review: `PASS`; evidence: extraction contains only the root half of MZ-049 and its paired governance updates.
+- Generated-file review: `PASS`; evidence: generated backend `dist` output was restored; temporary local dependencies used for validation were moved outside the worktree before commit; no environment file or generated artifact is selected.
+- Technical state: `committed locally`; source commit `08c185dda3399ca0630cea39b3359e0aa6ed0549`, receipt pending in this ledger-only follow-up commit.
+- User authorization: `selected-for-commit`; evidence: the current direct instruction selects MZ-049 for paired isolated task-branch commit/push.
+- Independent review: `GO for local Root source commit only`; exact reviewed candidate `d9f377d7f53e5ace1c4b32010a9e48ed5c057d33bfd88de46f395bafbf5e6be7`, 12 paths / 135 non-ledger hunks, P0=0 / P1=0 / P2=3. P2s are the initial unlocked target/window read, the unchanged MZ App lockbox concurrent-revocation ordering edge, and synthetic rather than real middleware/participant/PostgreSQL role evidence.
+- Action conclusion: `LOCAL COMMIT COMPLETED`; source commit `08c185dda3399ca0630cea39b3359e0aa6ed0549`. Push awaits the repository-required explicit approval of this final SHA; paired integration, release and deployment remain separate gated actions. Production writes, historical backfill, deployment and real PostgreSQL testing remain outside this action.
+
+#### RA-20261019-006
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261018-002`
+- Selected CRL identities: `root/CRL-20261018-002`
+- Intended action: `commit`
+- Branch: `codex/mz044-050-root-integration-20261019`
+- Base: `c6e95b04904164b1e0a9c2dbf1ac871a458db27e`; this local integration base contains both reviewed MZ-044 units on `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`, fetched at `2026-10-19T14:24:48Z`.
+- Candidate patch SHA-256: `267cf8a56b004af284ab72f9d24dff4b7fd812e98dd78b1d87f14b275c8aa5f3` over the exact eleven non-ledger MZ-049 paths relative to the MZ-044 integration base; all 135 stable hunk fingerprints match the frozen standalone candidate fingerprint `d9f377d7f53e5ace1c4b32010a9e48ed5c057d33bfd88de46f395bafbf5e6be7`.
+- Commit SHA: `not committed`.
+- Dependencies: paired `mobile/CRL-20261018-001@b6ea73184c319915053f206a662a75f35af1552e` is frozen on the local Mobile integration branch and must be delivered after or with this Root contract.
+- Cross-repository dependency verification: `PASS for the local source contract / release NOT VERIFIED`; evidence: the paired Mobile integration SHA contains the exact reviewed nine-path MZ-049 patch fingerprint `5753c60d2d521f7be7f40bd5d1746db49fc5f4769c7d3d16e701ece7165ad5b4`, consumes the three optional conflict fields and preserves server-authoritative actions. Final Root SHA, physical-device and real-network acceptance remain pending.
+- Required validation: `PASS for local source integration / release NOT VERIFIED`; evidence: cleaning-inspection merge, deferred check-in replacement, personnel settlement MZ-034, idempotency plus immutable-media contracts, backend TypeScript `--noEmit`, Feature Registry audit and `git diff --check` passed. The cleaning-merge test required only approved local-loopback permission after the sandbox blocked its 127.0.0.1 listener. Real PostgreSQL settlement/concurrency, real-role middleware/participants, production orders and device flows remain unverified.
+- Shared-hunk review: `PASS`; evidence: the MZ-049 source and test hunks apply unchanged after the MZ-044 integration; only the append-only ledger and Feature Registry share governance files, and their sections/mappings are preserved without semantic conflict.
+- Generated-file review: `PASS`; evidence: no generated backend dist, environment, cache or build-output file is staged; the ignored temporary dependency clone was removed before the final exact-stage review.
+- Technical state: `verified`.
+- User authorization: `selected-for-commit`; evidence: the user asked for one Root integration branch containing MZ-044, MZ-049 and MZ-050. This authorizes the local MZ-049 integration commit only; push, PR creation, remote merge, migration, deployment and release remain excluded from this round.
+- Independent review: `GO for local Root MZ-049 source integration`; evidence: the exact non-ledger candidate remains the independently reviewed 12-path / 135-hunk scope with P0=0 / P1=0 and three recorded release-only P2 gaps; the current integration introduces no new source hunk.
+- Action conclusion: `GO for local integration commit / paired release NOT VERIFIED`; commit the exact staged MZ-049 candidate, then integrate MZ-050 and rerun the combined shared-area tests. No push, PR, remote merge, migration, deployment or production interaction is part of this attempt.
+
+### Risks / Release Notes
+
+- Root/Mobile 必须配对验证；旧 Mobile 不显示新增冲突说明，但服务端冲突 action 仍 fail-closed。
+- 真实生产订单、实际账号、跨周/月 UI、弱网和真实 PostgreSQL 结算 SQL 未运行；只使用合成/源码契约证据。
+- P2 / release risk: 提交 guard 的初始 target 读取发生在相关行的稳定顺序锁之前，仍有极窄 TOCTOU 窗口；需在获批非生产 PostgreSQL 并发测试中验证或后续把初始 target 也纳入锁定查询。本次所有实际写入口仍在媒体和审计前执行事务 guard。
+- P2 / defensive edge: 未改动的 MZ App lockbox 写入口先做一次任务鉴权、再运行 guard、最后对锁定行复鉴权；正常无权调用仍在 guard 前返回 403，但若权限恰在两次鉴权之间并发撤销，可能先得到 409 冲突元数据。需用获批非生产 PostgreSQL 的并发撤权场景验证或后续统一迁移到共享流程。
+- P2 / validation limit: 客服、admin、线下经理的证据使用合成角色标签与 `taskAccess` 回调，只证明共享 helper 和四个路由源码契约；尚未覆盖真实角色中间件、真实任务参与人授权和 PostgreSQL 事务集成。
+- Rollback: revert this CRL's source/test/registry hunks together; no data rollback or migration is required.
+- Sensitive-information review: no secrets、凭证、`.env`、生产记录正文或数据库 URL。
+- Git state: exact twelve-path candidate staged; not committed, not pushed, no PR, not merged, not deployed; production writes and historical backfill not run.
+
+## CRL-20261016-003 — MZ-044 人员结算资料证件与签证私有展示
+
+- **Status:** implemented and revalidated on fresh origin/Dev; uncommitted; permission migration prepared but not executed
+- **Repository:** `root`
+- **Updated:** 2026-10-19 UTC
+- **Request:** 在 Web「人员与费用规则」结算资料详情中显示当前移动端个人资料的 Photo ID、Visa Grant Number 与签证文件；只有管理员和财务可见，其他角色连上传状态、号码和文件入口都不能收到；文件必须经认证按需私有读取并留审计。本 CRL 不包含 MZ-044 `profile_effective_date_locked` 保存报错修复。
+- **Outcome:** 新增独立高敏权限 `personnel_settlements.profile_documents.view`，默认只授予 admin 与 finance_staff；服务端同时强制有效角色白名单与专用权限，其他角色即使被自定义授予权限也收不到敏感字段、能力标记或文件字节。列表始终不返回证件/签证字段；Web 仅在后端返回权威能力标记时显示当前资料并在点击后读取私有文件；文件响应不返回 R2 key、原始引用、公开 URL 或预签名 URL，每次成功读取在 `audit_logs` 记录目标用户、文件类型与操作者，不记录号码、文件引用或内容。
+
+### Implementation
+
+- Previous behavior: 结算资料详情对所有拥有 `personnel_settlements.profiles.view` 的角色显示 Photo ID 上传状态，但没有 Visa Grant Number、签证文件状态或文件预览；清洁经理和线下经理也继承该查看权限。
+- New behavior: 普通结算资料权限不再携带任何证件/签证字段；只有有效角色包含 admin / finance_staff 且具备独立高敏权限时，详情才返回字段和权威能力标记，私有文件端点才放行。移动端 `/users/me` 与本人文件读取行为保持不变，历史 `personnel_settlement_profiles` 和周结算快照不新增证件字段。
+- File access: `GET /finance/settlements/profiles/:userId/profile-documents/:documentType` 仅接受 `photo_id` / `visa_document`，并且只接受严格匹配目标用户与文件类型的 `mzapp/profile-documents/:userId/:documentType/` 私有路径；App 本人端点继续兼容既有 `mzapp/*` 引用。R2 内容读取成功且审计写入成功后才返回 `private, no-store` 的 inline 响应。
+- Web behavior: 文件只在用户点击「查看」后取回，存入临时 blob URL；弹窗关闭、抽屉关闭、预览替换或组件卸载时撤销 blob URL。图片与 PDF 可内嵌查看，没有显式下载入口。
+- Permission rollout: 新迁移只为现有 admin / finance_staff 角色写入独立权限；清洁经理、线下经理与其他默认角色不获授权。端点另有角色白名单，因此其他角色即使通过自定义授权获得该权限也会被拒绝。迁移仅准备，未经授权未执行。
+
+### Files / Areas
+
+- `backend/package.json`
+- `backend/scripts/migrations/20261016_personnel_profile_documents_view_permission.sql`
+- `backend/scripts/tests/test_personnel_profile_documents_admin_contract.ts`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts`
+- `backend/scripts/tests/test_profile_compliance_document_contract.ts`
+- `backend/src/lib/personnelProfileDocumentAccess.ts`
+- `backend/src/lib/personnelSettlementProfiles.ts`
+- `backend/src/lib/profileDocuments.ts`
+- `backend/src/modules/personnel_settlements.ts`
+- `backend/src/modules/users.ts`
+- `backend/src/permissionsCatalog.ts`
+- `backend/src/store.ts`
+- `frontend/src/app/finance/settlements/page.tsx`
+- `frontend/src/app/finance/settlements/profileDocumentPreview.test.ts`
+- `frontend/src/app/finance/settlements/profileDocumentPreview.ts`
+- `docs/feature-regression-registry.md`
+- `docs/change-release-ledger.md`
+
+### Validation
+
+- `test_personnel_profile_documents_admin_contract.ts` — PASS; verifies dedicated permission/grants, no cleaning/offline default grant, admin/finance_staff role whitelist, custom-role denial even when permission is separately granted, response/capability gating, private endpoint/audit/no-store contract, and Web on-demand-fetch contract.
+- `test_profile_compliance_document_contract.ts` — PASS; verifies the existing self-service contract plus accepted own-path and rejected cross-user/cross-type/non-MZ references using synthetic values only.
+- `test_personnel_settlement_phase1.ts` — PASS; verifies unauthorized profile serialization omits all three sensitive fields and the capability marker, while authorized serialization returns the marker plus synthetic Photo ID status, visa file status and grant number.
+- Backend `./backend/node_modules/.bin/tsc -p backend --noEmit` — PASS on the fresh-base candidate using a temporary read-only dependency donor; no backend `dist` output was emitted.
+- Frontend `npm run lint --prefix frontend` — PASS with exit 0; repository-wide pre-existing warnings remain, with no lint error.
+- Frontend `npm run test --prefix frontend` — PASS; 124/124 suites and 286/286 tests, including three profile-document preview tests.
+- Frontend `npm run build --prefix frontend` — PASS; optimized production build compiled, type-checked and generated 96 static pages.
+- `npm run check:feature-registry` — PASS; 33 FRs / 272 test mappings, with 86 paired-Mobile mappings correctly deferred.
+- `python3 -B scripts/audit_change_release_ledger.py` — PASS; all 17 changed paths are recorded by this CRL.
+- `git diff --check` — PASS.
+- Historical independent read-only review — the earlier display-only candidate on `origin/Dev@391bb17` received GO with P0/P1/P2 = 0. A new independent review of this display-only extraction is required before commit.
+- Production/API/database/file access — not run. Tests use synthetic identifiers and content only; no identity document was downloaded or opened.
+
+### Impact / Dependencies
+
+- Base and lineage: canonical `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`.
+- Runtime dependencies: existing authenticated session/role snapshot, `userHasAnyPerm`, PostgreSQL `users` + `audit_logs`, and configured R2 reader. No new package dependency.
+- Schema/grant dependency: prepared additive permission migration aligns persisted role grants for admin/finance_staff; it has not been executed. Application endpoints still enforce both the effective-role whitelist and permission at runtime.
+- Registry: FR-008 owns the sensitive document watermarks, storage, self-service and Web private-view boundaries; FR-029 and the separate `root/CRL-20261019-001` save unit are not changed by this extraction.
+- Generated-file review: `PASS`; no generated output or dependency cache is part of the 17-path candidate.
+- Sensitive-information review: `PASS`; the candidate contains no credential, token, environment value, production payload, object-key instance, identity number, document bytes or user identity fixture. All tests use synthetic values.
+- Exact candidate scope: 17 paths = 8 backend source/config paths + 3 backend test paths + 1 prepared migration + 3 frontend paths + 2 governance documents.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** `prepared`
+- **Untracked review:** none; the migration, three new backend files/tests and two new frontend files/tests are intentional source candidates, and no dependency link, cache, build output, environment file or generated artifact remains.
+- `backend/package.json` — SHA-256: `26a88e4e9188b96cc676bb809431456d20dea5f8aa46039cb0d50f4bc67ed486`
+- `backend/scripts/migrations/20261016_personnel_profile_documents_view_permission.sql` — SHA-256: `8e0cc0daa5a8ebb18307e6af8eb46e5c35410115e77db9f95253755588b0437f`
+- `backend/scripts/tests/test_personnel_profile_documents_admin_contract.ts` — SHA-256: `09ca3d180769a83052dd0b0baf0dbfb3c353a1b62a47233decf8a91fa00e6a56`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `5bf89109b0dc1c4830b3710260a5b71d4fefea4659a2af0dd7bfe244a24861c6`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `dc87c81adda8991709b61249f1090af1f11cc61ad2a85506895e36743d561699`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `8cb4319d43cbe8ee679e1e246eee2dfc8edab5093d5b2cbca788a3930a1af298`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `12ef15e79c009dcadba3a774e2b2baf29e658f66ec5d2d89dd0d962b13010579`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `de0be1f355519c3c75d3742a622753103883f8f52c662afd5241f462f8d1f11c`
+- `backend/scripts/tests/test_profile_compliance_document_contract.ts` — SHA-256: `014b6ea2fa03339e046a18138fc9db5fef8bbe705650198c3173c9ee46ce5fc5`
+- `backend/scripts/tests/test_profile_compliance_document_contract.ts` — SHA-256: `66c0aa2e162dcb82b2807012707c713327bd4c5b7da802334903284c51e5734b`
+- `backend/scripts/tests/test_profile_compliance_document_contract.ts` — SHA-256: `a7c937261d125e2dad58f7f079834f1f114d399253cba7b38b8b9520e340c0dd`
+- `backend/src/lib/personnelProfileDocumentAccess.ts` — SHA-256: `21ebc3443024054e3a1f4a95833acb87e6727ae8afb5bf5857f44753797c47aa`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `ddb24ad34a500aba565cc6b9de33ee7311081acaabb209537801d3c6226531a7`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `bc519d223ad015ad6c9c976c0f6d578c269c40e912353a48a1c4fff4472408e3`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `b2ab5f825e532ce5cafea712298b72169a97a790dcc9f66f79885aeddff53f63`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `70ff7cdfcea289c19ce16a0158fa9c5637303f4484a94d0e9f83e6126b3f012d`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `60f081e47c86f13cc6699ab419415d11236d06c7d0e200d2b170f5d8a616bbe5`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `d39b7ea2676fd1ea1c20942b72ccd6fb1f77e186249ccdc034eca56252691c77`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `088674b684491e3d188627b7ffdba07794ccea6b960cc6638ee9152ff55553de`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `db82e7f194ee257121938cd16eda2c2065bd38439e523d5040a029a1ee7d0ca4`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `54d042e9deb4f3a411331b0f6a06d437d1b31dfc37fb529ddb0674eb96201690`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `ca69ed8215d8635b1c525264261d6b77489b3bb797316e4a6fabc2d2beda8210`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `6c9a7621968b96caee9e95e1080c1083554b5859c4323e636b561e3664ab37e5`
+- `backend/src/lib/profileDocuments.ts` — SHA-256: `f2e37f6ec54ef92a1a67a0fff11162ab6a0bfebfed02c92d89c8e505f577f076`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `20a0badfc23b8043428b9d5184f3365a2c7aa13a08a3e446cf7743c0d0d4cb48`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `23d68a703bb014d3ae5e9dda8430396ffa2d78a49de6d94dcf87174260e94aa3`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `4febaea3dc9ce780d99df05da0c3d638f1cce7c0d7b65e4564a31787488c780a`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `5e1d94d0ed0c63bf4c699bc5dadd05a3fd5fed759a39afc5fe3b3c7ba9651934`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `6f24e07f7e9e652045e33db1e5d7c8ce0a0d10e7f1d4f176deea3eff2aefa794`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `739fc21a90ff35149dac7a939ae8362cfb402938c7ee15447d093cb0cd0718f0`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `95a2dd085ef58a9bd3740dcfa8847a68c099973ab92747827d70cd14768ba574`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `95f0a5fd29b60d215d9dd60270d79a7a7a13b4952b943072c210ac7ef3f5a3e0`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `9830d610501aa2016a11120054b53d8969ab2978c8c374e17ff0ea7ddc3cc7e1`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `be03c88e4d473889713fd33f63d2bc63c8876e502aa6449137f35d65de95465e`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `f29612f21dc6913cee0b65562af4dbc2c948bf5174b9a3bfda33c0b9319db1cb`
+- `backend/src/modules/personnel_settlements.ts` — SHA-256: `ff62abfd63bf1ece3f9811bef6101877d600b5adb2a3a90954bd2162b980f2d1`
+- `backend/src/modules/users.ts` — SHA-256: `604fd3b4defecf5bd646b0512689e011a558f44bfbf4fe6de761e9b01e30fd47`
+- `backend/src/modules/users.ts` — SHA-256: `8e3fab4935796f8545e63ec3c11a06f4a9490572f9ebdd8c13c5481f581595cd`
+- `backend/src/modules/users.ts` — SHA-256: `bc91bb86a08616ccb5398336000e781cc2cc4526496a8f9c72c87e36f516fcb4`
+- `backend/src/modules/users.ts` — SHA-256: `cce5f9717387171616fbbb5e0cf9a09a61fbe78b5888cda2b041e6e20e05a0bb`
+- `backend/src/modules/users.ts` — SHA-256: `f4e147f38c4960d3fa32dc43c96342d035bf5dc455fc6e691a0afca1b8e48891`
+- `backend/src/permissionsCatalog.ts` — SHA-256: `f719c450ab3dbcfbc407c0d279480d3ea7c3dcb436d5e934fa4a4aed43ad3643`
+- `backend/src/store.ts` — SHA-256: `619ea318c209a5f3bf3f645331a12480d2f314b2f6df443ce77d8a627552306f`
+- `backend/src/store.ts` — SHA-256: `bc272d87accc556944bb4a47871025a97319d50afee5e566f8364b9dc1fd6672`
+- `backend/src/store.ts` — SHA-256: `c7193f606a6a86191e2737bce565eed37e3b86bdf396924c1f30c3ce8ab3dea4`
+- `docs/feature-regression-registry.md` — SHA-256: `47677d3761d006ff92a5619526d8b1eeb2d08b900cbfc6777a0331c46ea35ba9`
+- `docs/feature-regression-registry.md` — SHA-256: `8f38b46042568a336b5830d97e6a62154c6e0bebacfac1505e03a2f58a9ccd9f`
+- `docs/feature-regression-registry.md` — SHA-256: `0672f230d70d4c8fcdce1bee0f9fd9da979f1c588221ed95e833e0a094017b7d`
+- `docs/feature-regression-registry.md` — SHA-256: `d9b01e30523b763e63a85682179beed884852c392889d23b6e398725d6dd9f99`
+- `docs/feature-regression-registry.md` — SHA-256: `62f1cda842daa4d310a92e6ac089072acfffb97ecddbbee1a4abb83264e8e614`
+- `docs/feature-regression-registry.md` — SHA-256: `39d51dd037dbb8087a979c16a847ba999862c56258512c5a0fd3f6b728f6e7b7`
+- `docs/feature-regression-registry.md` — SHA-256: `9380924fa5c0675aa4dd44584ed4300688ac651fcb82c6afaf487a54531b5301`
+- `docs/feature-regression-registry.md` — SHA-256: `7d65a9631b5c6dc19dc040224bd36c97e300b35e79b9bc8749a57f0864fe302a`
+- `docs/feature-regression-registry.md` — SHA-256: `6390e79015a0afbf0dff1621144607854cc4397756d1a718f8a22775afd8eab2`
+- `docs/feature-regression-registry.md` — SHA-256: `6e6b392777f5813ea1379d7b26269a92e5a7c235ddfd9963001c3398e06135d7`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `08567125f2569c2ed71bf177d7f87bf84ebadcc76b410a2fd6ca4bee9405368f`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `0a7c3805cff9628d5cc4ac85acc03e33ab84beb6af2491d40db0808cd1f69ae8`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `266803ab2324c0552da0850ef8a186688bb75d07680691683d07902c4e62a284`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `3903ab3cdbb6133a11f3e76f73584a91caf851e71331a9c4ba477302cdd2d879`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `5545c6c9078059687c7fb7e8c7aacfc9eb37e60d3325280ad089bd540fef075e`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `58aa4ebbce92d88465574992bbd2fdcc81fa80a417001ebc5f604d9945bb3e93`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `7d0231f2e99e91d95c5732aae5f04f290934c2bc2c11ae4b087971f6e80092c2`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `b859678fb4e903ea7cb1b232350a1bffedc30058d1d22eb03f6a68ee51484c6d`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `b91accc6b49107922fec78d25acf507a40de1706c8a0b9a9e9303ef488d38316`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `c3915f844bdfd102172d7d11c2f6c4cb3335dc7ab5354929a12d62855c0d2faf`
+- `frontend/src/app/finance/settlements/page.tsx` — SHA-256: `d6944d8b5b41720c35ae6b76a3b6337586c9b0d18850615f4e7cd4cdd252ee25`
+- `frontend/src/app/finance/settlements/profileDocumentPreview.test.ts` — SHA-256: `2c3a40a2a9b2e88edd39531010efa68985049e8d7b4793cc4565bb543e468d2e`
+- `frontend/src/app/finance/settlements/profileDocumentPreview.ts` — SHA-256: `b56fc55c15d7566c96c947e35cb3a25aeb9937ae33624a1ce55d6df2dd89a08b`
+
+
+### Integrated Range Scope Reconciliation — 2026-10-20
+
+- Exact boundary: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b` → reviewed combined content `c565bad334766eb9987e18ca222e6b18de4403ff`; candidate patch SHA-256 `55ef110f3f3b1e1b3042933cdab97cfbe6bd1075955c309cc497a3f7ace0e2d8` excludes this ledger.
+- Ownership result: `PASS`; this CRL retains its 68 reviewed sequential-unit hunks, with 27 zero-context fingerprints remapped only where earlier selected units shifted or coalesced final diff headers. The active `Staged Commit Scope` above is the exact combined-range ownership used by the gate; the prior hashes remain below as immutable historical evidence.
+- No runtime, API, schema, migration, dependency, configuration or business-policy change is introduced by this reconciliation.
+- Shared Phase 1 hunk: `backend/scripts/tests/test_personnel_settlement_phase1.ts#dc87c81adda8991709b61249f1090af1f11cc61ad2a85506895e36743d561699` is intentionally owned by both MZ-044 display and save because the final zero-context diff coalesces the display unit's one-line blank deletion with the adjacent save-unit assertion block; selecting all four CRLs counts it once.
+- Historical-to-integrated fingerprint mappings:
+  - `backend/package.json#8e9378535e87d8fdc185dcca8c5cf2539e17aa5b9ababfd0672b6a2116fde710` → `backend/package.json#26a88e4e9188b96cc676bb809431456d20dea5f8aa46039cb0d50f4bc67ed486`
+  - `backend/scripts/tests/test_personnel_settlement_phase1.ts#2a521357fe4eb2b61fe19e165cb66977c907c7dcc8b56e53814672a8187a7ed0` → `backend/scripts/tests/test_personnel_settlement_phase1.ts#5bf89109b0dc1c4830b3710260a5b71d4fefea4659a2af0dd7bfe244a24861c6`
+  - `backend/scripts/tests/test_personnel_settlement_phase1.ts#8c7a6ca05db363342251e794707c3d0ecb75d5151e17a2068ad87d9f3fc5128c` → `backend/scripts/tests/test_personnel_settlement_phase1.ts#dc87c81adda8991709b61249f1090af1f11cc61ad2a85506895e36743d561699`
+  - `backend/scripts/tests/test_personnel_settlement_phase1.ts#973f6d41d47237517c500d9bff389330bea293a19fd157516721a0ea7c2c1f89` → `backend/scripts/tests/test_personnel_settlement_phase1.ts#8cb4319d43cbe8ee679e1e246eee2dfc8edab5093d5b2cbca788a3930a1af298`
+  - `backend/scripts/tests/test_personnel_settlement_phase1.ts#b946142b7f0d4ca0629e288e5ebf6cc8a305a62927a7bcadd1bc169e3cdb9164` → `backend/scripts/tests/test_personnel_settlement_phase1.ts#12ef15e79c009dcadba3a774e2b2baf29e658f66ec5d2d89dd0d962b13010579`
+  - `backend/scripts/tests/test_personnel_settlement_phase1.ts#cfb49666625da91ca2fddda8e7d94013ec19b8dcc3f22e3ae87a285f335edf96` → `backend/scripts/tests/test_personnel_settlement_phase1.ts#de0be1f355519c3c75d3742a622753103883f8f52c662afd5241f462f8d1f11c`
+  - `backend/src/lib/personnelSettlementProfiles.ts#0ebb983813281ce69cdfa2cc04b812384bd26d59f5b6467e31364e04ee144747` → `backend/src/lib/personnelSettlementProfiles.ts#ddb24ad34a500aba565cc6b9de33ee7311081acaabb209537801d3c6226531a7`
+  - `backend/src/lib/personnelSettlementProfiles.ts#1b56520394c113a896fe085122f108e7fbc7f303feb0b174cc686643c06e8cdc` → `backend/src/lib/personnelSettlementProfiles.ts#bc519d223ad015ad6c9c976c0f6d578c269c40e912353a48a1c4fff4472408e3`
+  - `backend/src/lib/personnelSettlementProfiles.ts#3faf67b642eeceba7985c4750c18e06975943ca6ac6c61db44b4ce63f1ee76c0` → `backend/src/lib/personnelSettlementProfiles.ts#b2ab5f825e532ce5cafea712298b72169a97a790dcc9f66f79885aeddff53f63`
+  - `backend/src/lib/personnelSettlementProfiles.ts#47b00fb7795afce7096b0df0e1f14e8588ceda23a5f07ec1c5e226ebe2d01280` → `backend/src/lib/personnelSettlementProfiles.ts#70ff7cdfcea289c19ce16a0158fa9c5637303f4484a94d0e9f83e6126b3f012d`
+  - `backend/src/lib/personnelSettlementProfiles.ts#52664539c34ce6db3c77a686446edef075c38d37d20aa0f127069060ff3ad7d0` → `backend/src/lib/personnelSettlementProfiles.ts#60f081e47c86f13cc6699ab419415d11236d06c7d0e200d2b170f5d8a616bbe5`
+  - `backend/src/lib/personnelSettlementProfiles.ts#66fffe13f35946d8e1f4893712360cbcb12a52ba3ff46e7ef5c50baf17c7488e` → `backend/src/lib/personnelSettlementProfiles.ts#d39b7ea2676fd1ea1c20942b72ccd6fb1f77e186249ccdc034eca56252691c77`
+  - `backend/src/lib/personnelSettlementProfiles.ts#70f59a61144ea175df4945fe38c5ae0996179b3f41b1e08b37e2db77809376c0` → `backend/src/lib/personnelSettlementProfiles.ts#088674b684491e3d188627b7ffdba07794ccea6b960cc6638ee9152ff55553de`
+  - `backend/src/lib/personnelSettlementProfiles.ts#8033f6d14ca87b23fec5a18807f96d16a236b1eeabab44500d1a5fcbd09d05a7` → `backend/src/lib/personnelSettlementProfiles.ts#db82e7f194ee257121938cd16eda2c2065bd38439e523d5040a029a1ee7d0ca4`
+  - `backend/src/lib/personnelSettlementProfiles.ts#b6fa886032aac7512914e198312015f7c08b5c55d4cb5677868de85f7061f2b4` → `backend/src/lib/personnelSettlementProfiles.ts#54d042e9deb4f3a411331b0f6a06d437d1b31dfc37fb529ddb0674eb96201690`
+  - `backend/src/lib/personnelSettlementProfiles.ts#c2f0f18ecca698ae96bc69d6a34ff9d41ccfa2d4346c0f58ce5c7dcbe767416e` → `backend/src/lib/personnelSettlementProfiles.ts#ca69ed8215d8635b1c525264261d6b77489b3bb797316e4a6fabc2d2beda8210`
+  - `backend/src/lib/personnelSettlementProfiles.ts#c585c440effbccf454cc98403e661342881d9a021d2e5037162f5409401b80f4` → `backend/src/lib/personnelSettlementProfiles.ts#6c9a7621968b96caee9e95e1080c1083554b5859c4323e636b561e3664ab37e5`
+  - `docs/feature-regression-registry.md#10dd0c985e5120b5aabdbab243db83ba9a8ee2472ac183961166d65c0d43d1a8` → `docs/feature-regression-registry.md#47677d3761d006ff92a5619526d8b1eeb2d08b900cbfc6777a0331c46ea35ba9`
+  - `docs/feature-regression-registry.md#2ae5e61ec301b44319eb452fefc9eae1e9c3c1771de2ac160c1903a2d9a00bed` → `docs/feature-regression-registry.md#8f38b46042568a336b5830d97e6a62154c6e0bebacfac1505e03a2f58a9ccd9f`
+  - `docs/feature-regression-registry.md#5891ef3c1fd4e2b078264909035e82cf36c2c4b29a44edbcf7f49c2ee08a3552` → `docs/feature-regression-registry.md#0672f230d70d4c8fcdce1bee0f9fd9da979f1c588221ed95e833e0a094017b7d`
+  - `docs/feature-regression-registry.md#beae7cabcd4cbe9cebda7e61dcaa0f53bc614530355efca4ee00228d0189b191` → `docs/feature-regression-registry.md#d9b01e30523b763e63a85682179beed884852c392889d23b6e398725d6dd9f99`
+  - `docs/feature-regression-registry.md#c94b3faec6f4f5baa29cf139d91cfd6302e93d7f583afd90308813e13bb465ac` → `docs/feature-regression-registry.md#62f1cda842daa4d310a92e6ac089072acfffb97ecddbbee1a4abb83264e8e614`
+  - `docs/feature-regression-registry.md#d412d8077772ca3c376505d7f873cb0ba2ff8e7f2cf13ea46ac1aba140da1e84` → `docs/feature-regression-registry.md#39d51dd037dbb8087a979c16a847ba999862c56258512c5a0fd3f6b728f6e7b7`
+  - `docs/feature-regression-registry.md#d56c9408dede8d229c8a8a597d282fbff22bacc1b4ef76d7ff918e3335acdfa2` → `docs/feature-regression-registry.md#9380924fa5c0675aa4dd44584ed4300688ac651fcb82c6afaf487a54531b5301`
+  - `docs/feature-regression-registry.md#e185aac721c383085a411357a8784c2b85626c08217760e34f3ff2649ecd0c2c` → `docs/feature-regression-registry.md#7d65a9631b5c6dc19dc040224bd36c97e300b35e79b9bc8749a57f0864fe302a`
+  - `docs/feature-regression-registry.md#e74ffbade1fb98a6fa57e919c5c8e653067800bfd2dffd276a082d8bf126720c` → `docs/feature-regression-registry.md#6390e79015a0afbf0dff1621144607854cc4397756d1a718f8a22775afd8eab2`
+  - `docs/feature-regression-registry.md#ed9fa3f16ffd8d0e938efcfbbfd07f529a2369b1ca0f654c4559ddf2e9a66b5f` → `docs/feature-regression-registry.md#6e6b392777f5813ea1379d7b26269a92e5a7c235ddfd9963001c3398e06135d7`
+
+### Release Attempts
+
+#### RA-20261019-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-003`
+- Selected CRL identities: `root/CRL-20261016-003`
+- Intended action: `commit`
+- Branch: `codex/mz044-profile-display-20261019`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19 UTC`
+- Candidate patch SHA-256: `136e570a45d88b0e5bf62c8d9ae774f2443ca0c348228a34ed984aa25d458628`
+- Commit SHA: `16dc3be5853d24018b1b341fd4a79d89c7767d8a`
+- Dependencies: none
+- Required validation: `PASS for source commit`; evidence: three focused backend contracts, backend TypeScript, focused preview tests, frontend lint, Feature Registry, ledger coverage and diff checks passed. No production API/database/file read was performed.
+- Shared-hunk review: `PASS`; evidence: all save-only no-op/advisory-lock hunks and FR-029 save mappings were removed from this display extraction.
+- Generated-file review: `PASS`; evidence: no dependency link, cache, build output, environment file or generated artifact remains.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: the current direct instruction selects both existing MZ-044 candidates for isolated task-branch commit/push after overlap reconciliation.
+- Independent review: `GO for source commit`; evidence: fresh staged review matched the fingerprint, 17 paths / 68 non-ledger hunks and branch/base with P0=0, P1=0, P2=0 and one non-blocking registry-wording P3.
+- Action conclusion: `GO`; the exact reviewed source candidate was committed as `16dc3be5853d24018b1b341fd4a79d89c7767d8a`. Push remains separately gated; migration execution, deployment and production file/database access remain separate prohibited actions.
+
+#### RA-20261019-004
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-003`
+- Selected CRL identities: `root/CRL-20261016-003`
+- Intended action: `push`
+- Branch: `codex/mz044-profile-display-20261019`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19T14:24:48Z`.
+- Candidate patch SHA-256: `136e570a45d88b0e5bf62c8d9ae774f2443ca0c348228a34ed984aa25d458628`
+- Commit SHA: `16dc3be5853d24018b1b341fd4a79d89c7767d8a`; the audit head will be the later ledger-only receipt commit.
+- Dependencies: none
+- Required validation: `PASS for source range / release NOT VERIFIED`; evidence: the exact committed range report passed at pre-receipt head `945736cc5a387eb80488e9fbb28f776d795e7b4a`. Migration execution and production file/database access were not run and remain outside this action.
+- Shared-hunk review: `PASS`; evidence: the exact display-only range excludes the separate MZ-044 save unit.
+- Generated-file review: `PASS`; evidence: no dependency link, cache, build output, environment file or generated artifact is present.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after repository, branch and pre-receipt exact HEAD `945736cc5a387eb80488e9fbb28f776d795e7b4a` were shown, the user replied `一起推送吧`. This ledger-only receipt changes the final audit HEAD, so repository policy requires refreshed approval of that resulting exact SHA before push.
+- Independent review: `GO for this ledger-only receipt commit; NO-GO for push until refreshed exact-HEAD approval`; evidence: independent read-only push review found P0/P1/P2 = 0 for the disclosed source range, verified branch/base/fingerprint, clean scope, absent live remote target, and no feature-branch production trigger. One accepted registry-wording P3 remains non-blocking.
+- Action conclusion: `NOT VERIFIED`; blockers: commit this ledger-only receipt, run the clean exact committed-range report, obtain explicit approval for repository `root`, branch `codex/mz044-profile-display-20261019`, and the resulting final HEAD, then rerun immediate remote preflight before one ordinary non-force push. No push has occurred.
+
+### Risks / Release Notes
+
+- The prepared permission migration must be reviewed and explicitly authorized before execution; it persists and aligns the database role grant. The runtime permission fallback also grants the new permission to the built-in finance role once this code is deployed, so migration non-execution alone must not be treated as a feature-disable switch.
+- Successful file viewing intentionally writes one audit row; failure to write the audit row fails closed and does not return file bytes.
+- Current-data behavior is deliberate: Photo ID, Visa Grant Number and visa file come from `users`; they do not alter date-versioned settlement profiles or historical weekly snapshots.
+- The MZ-044 save fix remains a separate release unit and branch; its no-op/locking hunks are intentionally absent from this display-only extraction.
+- Rollback: revert this CRL's code/test/registry/ledger hunks; do not run or reverse the prepared migration as part of this source push.
+- Git state: exact display-only content candidate committed as `16dc3be5853d24018b1b341fd4a79d89c7767d8a` on `codex/mz044-profile-display-20261019`; audit head is supplied by the range report. No push, PR, migration, production write/read, deployment or release performed.
+
 ## CRL-20261011-001 — MZ-010 客人已通知权限与任务闭环（root）
 
 - **Status:** validated and independently reviewed clean Dev release candidate; not committed, pushed, merged, deployed, or migrated
@@ -30255,3 +31434,188 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Terms/Privacy 和 testimonials 保持既有占位/静态披露；未生成法律条款或用户评价。
 - Sensitive-information review: passed for candidate scope；未输出、记录或提交 `.env`、数据库 URL、cookie、token、真实住客或真实询盘正文。唯一 DEV 写入使用 `example.com` 和明确 TEST 标签。
 - Git state: exact 137-path content candidate staged, ledger unstaged pending review; not committed, not pushed, PR not created, not merged, not deployed; production/device verification not run.
+## CRL-20261019-001 — MZ-044 移动端个人资料保存幂等解锁
+
+- **Status:** `candidate / INDEPENDENT SYNTHETIC GO / SQL NOT VERIFIED`; no-op root cause repair, participating-flow inventory and the two prior local P1 repairs pass local static/synthetic regressions and targeted independent review. The direct-client runner now has separate failure injection for `BEGIN`, `SET TRANSACTION`, transaction advisory lock and `client.end()`; an approved isolated PostgreSQL concurrency run remains required, and the legacy `/users/me` policy is explicitly excluded from this round rather than awaited.
+- **Repository:** `root`
+- **Updated:** 2026-10-19 UTC
+- **Request:** 修复移动端编辑个人资料后点击保存被错误返回 `profile_effective_date_locked`；保留真实结算资料变更对已批准/已付款历史周的保护，不通过真实生产保存验证。
+- **Outcome:** `/finance/settlements/my-profile` 的幂等空操作修复通过本地静态/纯逻辑回归，资料/规则写入以及进入或离开财务锁状态的流程也已完整枚举。付款的 SERIALIZABLE bridge 不再复用业务 pool：它只接受与业务库身份匹配、显式确认 session-affine 且不含已知 pooler/proxy 标记的 `DATABASE_DIRECT_URL`，每次使用新的物理连接并在成功或任何不确定失败后关闭，从不归还连接池。当前只证明本地 source/synthetic fixed；Build 28 的最终后端兼容修复尚未获得真实隔离 SQL 或发布 GO。
+
+### Implementation
+
+- Previous behavior: Build 28 个人资料页每次保存都会先向 `/finance/settlements/my-profile` 提交整套结算资料；后端在读取现有版本并判断字段是否变化前，先查询 `finance_approved` / `paid` 周，只要 `week_end >= effective_date` 就返回 `profile_effective_date_locked`，因此未修改结算字段也会阻断后续普通资料保存。
+- New behavior: 保存事务先锁定用户与结算资料版本，按完整未脱敏业务值规范化比较当前状态和请求合并状态；仅在存在当前版本、未显式移动当前版本边界且全部业务字段相同时直接返回现有 profile ID。空操作不更新 `users`、不改档案、不新增审计，也不执行历史周锁查询。
+- Concurrency behavior: profile/rule saves, finance approval, payment confirmation, finance return and void acquire the same per-user transaction advisory lock before any business-row `FOR UPDATE`. Settlement-id entry points resolve the immutable user id without taking a row lock, then enter the common order. A transaction-only SERIALIZABLE variant was rejected because the first in-transaction advisory-lock query can fix an old snapshot while waiting. Payment therefore bridges a session lock to the transaction lock on one validated one-shot direct `pg.Client`; it releases the session lock before live reads, verifies the locked settlement still belongs to the resolved user, and closes the physical connection after every attempt.
+- Protected behavior inside the target endpoint: 任一真实字段变化，包括完整银行账号变化、GST 状态/生效日、ABN、供应方名称、付款方式、人员类型或结算开关变化，仍继续执行既有历史结算锁；Web 管理员显式移动版本边界不会进入空操作。若资料/规则先取得门闩，后续财务批准/付款会读取提交后的 live state；若锁状态转换先完成，后续真实修改会读取已提交的 `finance_approved/paid` 并拒绝。
+- Compatibility decision: Mobile Build 28 与最新 Mobile `origin/Dev` 的资料保存业务代码一致，因此采用 Root 后端兼容修复即可覆盖已发布客户端；本 CRL 不修改 Mobile 源码，不创建 OTA，也不改变请求 schema。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementProfiles.ts` — modified: 完整业务状态规范化比较，并将纯空操作放在历史结算锁查询之前。
+- `backend/src/lib/personnelSettlementRules.ts` — modified: 费用规则写入在 user/rule 行锁前取得同一人员门闩。
+- `backend/src/lib/personnelSettlementWorkflow.ts` — modified: 财务批准、确认付款、财务退回与作废采用统一人员门闩；SERIALIZABLE 付款使用一次性 direct `pg.Client` 完成 session-to-transaction bridge，所有路径调用 `end()`，不再把连接归还业务 pool。
+- `backend/src/lib/personnelSettlementUserLock.ts` — added: 统一人员 transaction/session advisory lock、settlement-to-user 解析，以及 direct URL/session-affinity/source-identity fail-closed 校验；拒绝已知 pooler、PgBouncer、proxy、6543 和 transaction/statement pool-mode 标记。
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — modified: 覆盖规范化相等、未确认 GST fallback、完整银行账号差异、GST 生效日差异、资料/规则 advisory-first 及锁查询顺序合同。
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — modified: 覆盖四种锁状态转换顺序、SERIALIZABLE bridge 顺序、direct/primary 身份匹配、pooler-aware 拒绝，以及 connect/lock/`BEGIN`/`SET TRANSACTION`/transaction advisory lock/unlock/commit/rollback/`client.end()` 独立失败；前三种新增的事务建立失败不得进入合成状态写入回调，`end()` 提交后失败不得重试或重复写入，任何路径均不得调用 `release()` 回池。
+- `backend/scripts/tests/test_personnel_settlement_profile_lock_sql_integration.ts` — added: 强制隔离非生产数据库的 save-first、approve-first、付款快照和死锁交错测试；执行前拒绝 production NODE_ENV、未登记测试指纹、缺生产身份指纹、身份相同或非 session-affine 目标。
+- `backend/package.json` — modified: 增加显式隔离 SQL 并发测试命令。
+- `docs/feature-regression-registry.md` — modified: FR-029 记录本人重复提交幂等、真实变更锁定和跨事务门闩边界。
+- `docs/change-release-ledger.md` — modified: 记录本修复候选、验证与交付边界。
+
+### Impact / Dependencies
+
+- API: `/finance/settlements/my-profile` 请求和响应 schema 不变；仅完全未变化的重复 PATCH 从冲突改为成功返回当前资料。
+- Database / migration: none；不新增/修改 schema 或权限。运行时仅使用 PostgreSQL 既有 advisory lock；空操作明确不写 `users`、`personnel_settlement_profiles` 或 `personnel_settlement_profile_audits`。
+- Config / environment: payment now fails closed unless `DATABASE_DIRECT_URL` is present, its database/username/direct-host identity matches `DATABASE_URL` (allowing only the repository's recognized `-pooler` → direct host normalization), it contains no known pooler/proxy marker, and `PERSONNEL_SETTLEMENT_DIRECT_SESSION_AFFINITY_CONFIRMED=1` explicitly acknowledges the physical-session guarantee. The code never derives or rewrites a direct URL from `DATABASE_URL`. The SQL test additionally requires enrolled test and production database identity SHA-256 values, explicit write/ephemeral confirmations, a non-production database name and non-production `NODE_ENV`.
+- Dependencies: existing `pg.Client`, PostgreSQL advisory locks and existing row/transaction primitives only; no new package, schema, permission or external service. Transaction advisory locks remain on ordinary pooled transactions; only the pre-BEGIN SERIALIZABLE payment bridge uses the validated one-shot direct connection.
+- Release-unit boundary: this save-only candidate explicitly excludes `root/CRL-20261016-003`, its profile-document permission, prepared permission migration, Web UI, private document reader and audit endpoint. The display candidate remains preserved in `/Users/zhishi/Documents/Codex/2026-10-16/task-5/root-mz044-profile-fix-candidate` and is not required for this fix.
+- Base: fresh `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`, fetched 2026-10-19 UTC; branch `codex/mz044-profile-save-fix-20261019`.
+- Candidate patch SHA-256: `ff3b778e3839472ca90441779600ba39abcd3501a6b9c150aa4793fb595c75f0` over the exact nine non-ledger paths / 34 non-ledger hunks; the ledger itself is excluded from the fingerprint. An alternate temporary index contained the nine non-ledger candidate paths while the real index remained empty; the temporary index was removed after fingerprinting.
+
+### Validation
+
+- Focused Phase 1 contract — `PASS`; evidence: `npm --prefix backend run test:personnel-settlement-phase1` using a temporary read-only local dependency link, including canonical formatting equality, full unmasked bank account inequality despite an identical suffix, GST-date inequality, explicit-current-edit exclusion, advisory-first profile/rule ordering, no-op-before-historical-lock ordering and historical-lock-before-write ordering.
+- Focused Phase 3 contract — `PASS`; evidence: `npm --prefix backend run test:personnel-settlement-phase3`, including return/approve/pay/void advisory-first order, settlement-to-user resolution, missing/mismatched settlement rejection, SERIALIZABLE bridge order, direct URL/source identity gates, known pooler/proxy rejection, credential-free database fingerprints with `postgres`/`postgresql` and recognized Neon `-pooler`/6543 normalization, and one-shot connection behavior after connect/lock/`BEGIN`/`SET TRANSACTION`/transaction advisory lock/unlock/commit/rollback/`client.end()` failure. Separate synthetic assertions prove `BEGIN`, isolation-level and transaction-lock failures issue no callback `UPDATE`, `client.end()` failure after `COMMIT` preserves exactly one callback write without retry, and none of these paths calls `release()`.
+- Broader settlement contracts — `PASS`; evidence: MZ-034, Phase 2, Phase 4, Phase 5 and claim-dedup commands all passed. Phase 4 was rerun with a temporary link to the already reviewed Build 28 Mobile checkout because the isolated Root candidate does not permanently contain the paired `../mobile` path; both that link and the dependency link were removed afterward.
+- Backend TypeScript `--noEmit` — `PASS`; evidence: `npm --prefix backend run build -- --noEmit` using the same temporary read-only local dependency link, which was removed immediately afterward.
+- Isolated PostgreSQL concurrency/deadlock integration — `NOT RUN`; `MZ_PROFILE_LOCK_TEST_DATABASE_URL` is not configured in this workspace. Reproducible guarded test is prepared as `npm run test:personnel-settlement-profile-lock:sql --prefix backend`; before any connection it rejects `NODE_ENV=production`, non-direct/pooler targets, database names without a non-production marker, missing/mismatched enrolled test fingerprints, missing production identity fingerprint, identical test/production identity, or absent write/ephemeral confirmations.
+- Feature Registry audit — `PASS`; evidence: 33 FRs, 272 test mappings and 86 deferred mobile mappings.
+- Ledger audit — `PASS`; evidence: ten changed files and ten recorded changed files.
+- Diff / selection hygiene — `PASS`; evidence: `git diff --check` passed, the real index was empty during pre-staging candidate fingerprinting and now contains exactly the ten selected paths; the temporary dependency link and alternate fingerprint index were removed.
+- Independent review — `GO` for the exact updated fingerprint's static/synthetic source-commit scope; P0=0, P1=0, P2=2. The targeted independent reviewer matched `ff3b778e3839472ca90441779600ba39abcd3501a6b9c150aa4793fb595c75f0`, nine non-ledger paths / 34 hunks, branch `codex/mz044-profile-save-fix-20261019`, base/HEAD/`origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b` and ten exact staged paths. It confirmed the legacy `PATCH /users/me` bank/ABN policy is absent from the staged diff and found no runtime scope expansion, production/secret/generated-file or temporary-link risk. Remaining P2s: the guarded SQL integration manually composes the bridge rather than directly invoking `runSerializableSettlementUserTransaction`, and the real direct-connection/session-affinity configuration is not verified; real PostgreSQL snapshot/session/lock-release and complete payment-chain behavior remain `NOT VERIFIED`.
+- Production/API/database verification — not run and not authorized.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** `prepared`
+- **Untracked review:** none; the two intentional new source/test files are staged, and no dependency link, cache, build output, environment file or generated artifact remains.
+- `backend/package.json` — SHA-256: `f398ed561e22d53c64dc0b19d04de1dd155585bd0ab0801aa262e734d2ff85c1`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `3c805648d33b0213be40a19130590ef6e7fbf08a569caddd5c4333fe9e2d9a18`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `455a96339952b56e714d880fae9c785204fb9dcdeb6d870983d1ea340ad45a2a`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `b6e0e66421ff7294057f45eed4f9f77fc4b959c5e47ca1df339d3c17d3633c4f`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `dc87c81adda8991709b61249f1090af1f11cc61ad2a85506895e36743d561699`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `3777c9d91c913a162f3cb07011b0e711c50036ac3be87cded24932ad4d6394e2`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `8203e098f005b163029d2ccb86e5728fc76e2f73640fb59395ab606626b4b178`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `8c215f2f3d5ce84cb38a3394d9b692662fc1e68dbafce4e6e68b1395b2f4f491`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `a7bcd0c0b6bbd4ae7579f25048cf6b80479a5f984d79a3df8ec75667f778f7b8`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `423af6f229d2a4a985c2bd71fab49c8bb3305bd36e1214a09a701204f0e68992`
+- `backend/scripts/tests/test_personnel_settlement_profile_lock_sql_integration.ts` — SHA-256: `4ed61180cc5b796c27e3dc875279f94c9d83e6fedd98a53b7f5cbc830f02dbd9`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `8be5beaba414c2d46950fedc9b240e53a802730ac480abf9880a2f4f0a3c4801`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `edd2fbbfc8bf6e525ae2228912ca5c807f95550ac6f83cc1ecb4f510bfedfe06`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `3eaffc4a1408a6df954b8b32c7e6d487d0ccd8518a669fe8a8b5a64712c2d837`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `f1cde1345e585e8bbe9390d8fdd494413c2599216e55a1d711dbb05ed53cb6de`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `bc063bab78c46845e56deb45cf1ec7daefe324d5ebaab6e5bcea369a31daea75`
+- `backend/src/lib/personnelSettlementRules.ts` — SHA-256: `95df2e2271468a400c2863ab0e4fbe07130889675171a56ce05cec862210af03`
+- `backend/src/lib/personnelSettlementRules.ts` — SHA-256: `b0c751c9cfd7e12cb7b879d6f0f4efe9a61fe3a9c51ecea002c4577bbef90901`
+- `backend/src/lib/personnelSettlementUserLock.ts` — SHA-256: `d9a07656940a2c6ed529b6d27ab6637dea0302d77cdc381035c0a6938902916d`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `0c1163d70c7b4bbba082d4fe7edc08715004326ccebe2c25464a32058e77889f`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `13a902263f16b710ee1f1118351e30bc4c54f42ff376c468f3a097cbc324e965`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `595cc62d1d4dbb88d3585bee3bdd93547bd080e32aa2e18b26ca8899e4ab2f64`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `6bf84d33b2f7c060b1f61ac0da76210ffb0d0ee15ac8e75f885627d45abdba6a`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `7a0f03cdf87be10d818ee0d46ede1fc9e40e811cf169bb1252247638b8081ce3`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `7a7204e811d5d357aff91d07b1f3222b1c0e863287325bb88f23c4a8bea920aa`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `90ff4ade6eecd8b9298678d592fefd496f98da7d1b76cd457b537b20095b2c90`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `cf927fbfd323464933764cd9cf65b6d21cbea0ca23ce9f087ee752adc413928a`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `dacfe1106296658ffe5af6cdd52f391e0ea4dd66adb7f5f08cf34e2636eb5e76`
+- `docs/feature-regression-registry.md` — SHA-256: `eb87fad9bd685582e9873bd63432d4182c87b244133a01ad92067d9103bdbb84`
+- `docs/feature-regression-registry.md` — SHA-256: `7e365f16ffc14fac89e2426961dc6793f582da946b7046fa02405b6ba6523422`
+- `docs/feature-regression-registry.md` — SHA-256: `9b76c887683ddc4a276daeff8139a6214814cc6a6727fb56c0e9f19237958ec9`
+- `docs/feature-regression-registry.md` — SHA-256: `c48df1c3d2f087c031327a5e4153633bd09efe2feef7a29a512e376142fddff7`
+- `docs/feature-regression-registry.md` — SHA-256: `ea7730328c53403a8d9b60dc3e7907f5c9c5141e1904a86d2ca03b025afb6be7`
+- `docs/feature-regression-registry.md` — SHA-256: `c58b51fb07cfcd74a800cb4c0af225498e45d0986744331eeb2a8241397fde10`
+
+
+### Integrated Range Scope Reconciliation — 2026-10-20
+
+- Exact boundary: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b` → reviewed combined content `c565bad334766eb9987e18ca222e6b18de4403ff`; candidate patch SHA-256 `55ef110f3f3b1e1b3042933cdab97cfbe6bd1075955c309cc497a3f7ace0e2d8` excludes this ledger.
+- Ownership result: `PASS`; this CRL retains its 34 reviewed sequential-unit hunks, with 12 zero-context fingerprints remapped only where earlier selected units shifted or coalesced final diff headers. The active `Staged Commit Scope` above is the exact combined-range ownership used by the gate; the prior hashes remain below as immutable historical evidence.
+- No runtime, API, schema, migration, dependency, configuration or business-policy change is introduced by this reconciliation.
+- Shared Phase 1 hunk: `backend/scripts/tests/test_personnel_settlement_phase1.ts#dc87c81adda8991709b61249f1090af1f11cc61ad2a85506895e36743d561699` is intentionally owned by both MZ-044 display and save because the final zero-context diff coalesces the display unit's one-line blank deletion with the adjacent save-unit assertion block; selecting all four CRLs counts it once.
+- Historical-to-integrated fingerprint mappings:
+  - `backend/scripts/tests/test_personnel_settlement_phase1.ts#c7d489c19c97a15e3d01d3006795535d38f9c8fd226a63dce71cc9f2a021c4f2` → `backend/scripts/tests/test_personnel_settlement_phase1.ts#dc87c81adda8991709b61249f1090af1f11cc61ad2a85506895e36743d561699`
+  - `backend/scripts/tests/test_personnel_settlement_phase3.ts#3cd63c62d6eb2f09be0ebe5985176537d5af1a52f241ccc78e64defcd5ce1be7` → `backend/scripts/tests/test_personnel_settlement_phase3.ts#3777c9d91c913a162f3cb07011b0e711c50036ac3be87cded24932ad4d6394e2`
+  - `backend/scripts/tests/test_personnel_settlement_phase3.ts#c05f9ee3bc9fc17501d7e1d333646de944b27a6b9cf1285216b40c241eb6129e` → `backend/scripts/tests/test_personnel_settlement_phase3.ts#423af6f229d2a4a985c2bd71fab49c8bb3305bd36e1214a09a701204f0e68992`
+  - `backend/src/lib/personnelSettlementProfiles.ts#4d35886a5225de69d5875d24219bd938c13c632b5807cff6ddb320a5a022e988` → `backend/src/lib/personnelSettlementProfiles.ts#edd2fbbfc8bf6e525ae2228912ca5c807f95550ac6f83cc1ecb4f510bfedfe06`
+  - `backend/src/lib/personnelSettlementProfiles.ts#f48c38decacd204f7e347650536e2c3138f0c1dab287e905d38cca1415b62586` → `backend/src/lib/personnelSettlementProfiles.ts#3eaffc4a1408a6df954b8b32c7e6d487d0ccd8518a669fe8a8b5a64712c2d837`
+  - `backend/src/lib/personnelSettlementProfiles.ts#f62e479e957298bbd9c36b4aee1e20cfe4a753465864eff375b4b5cfd47199b5` → `backend/src/lib/personnelSettlementProfiles.ts#bc063bab78c46845e56deb45cf1ec7daefe324d5ebaab6e5bcea369a31daea75`
+  - `docs/feature-regression-registry.md#3cc3d8e42d5511e0cef928aba8c8210b9b9d7b93cf27072e4f90a8fef9cfeadb` → `docs/feature-regression-registry.md#eb87fad9bd685582e9873bd63432d4182c87b244133a01ad92067d9103bdbb84`
+  - `docs/feature-regression-registry.md#8cb984c8a142244bf74ad6792b219be10a72f375fa48888479c09953036026aa` → `docs/feature-regression-registry.md#7e365f16ffc14fac89e2426961dc6793f582da946b7046fa02405b6ba6523422`
+  - `docs/feature-regression-registry.md#a49fc9760170a2d360a7463553eb9fdefa4cce4a9d31db30f3198d98650a2dcd` → `docs/feature-regression-registry.md#9b76c887683ddc4a276daeff8139a6214814cc6a6727fb56c0e9f19237958ec9`
+  - `docs/feature-regression-registry.md#ccfd5857323b7de6dc9ec1f373921dbe6175a8a989b0a0e7cbaa353e3109c895` → `docs/feature-regression-registry.md#c48df1c3d2f087c031327a5e4153633bd09efe2feef7a29a512e376142fddff7`
+  - `docs/feature-regression-registry.md#d0bf1a401ded6e81eccd11604286f93a661dbc92ac3a5afd6c096dd627874ea3` → `docs/feature-regression-registry.md#ea7730328c53403a8d9b60dc3e7907f5c9c5141e1904a86d2ca03b025afb6be7`
+  - `docs/feature-regression-registry.md#de78c81cef9bc8f973cff52cad067f8cf872b1c9da5e8ff5c042df3bffff0f6b` → `docs/feature-regression-registry.md#c58b51fb07cfcd74a800cb4c0af225498e45d0986744331eeb2a8241397fde10`
+
+### Release Attempts
+
+#### RA-20261019-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261019-001`
+- Selected CRL identities: `root/CRL-20261019-001`
+- Intended action: `commit`
+- Branch: `codex/mz044-profile-save-fix-20261019`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19 UTC`
+- Candidate patch SHA-256: `ff3b778e3839472ca90441779600ba39abcd3501a6b9c150aa4793fb595c75f0`
+- Commit SHA: `68d620256d3747c2b1b7a8702253bb0677ded4d5`
+- Dependencies: none
+- Required validation: `PASS for source commit / release NOT VERIFIED`; evidence: Phase 1, Phase 3, broader settlement contracts, backend TypeScript, Feature Registry, ledger coverage and diff checks passed. The guarded real PostgreSQL concurrency/deadlock suite was not run because no approved isolated target is configured.
+- Shared-hunk review: `PASS`; evidence: the separate profile-document display unit was removed from this extraction and the legacy `/users/me` bank/ABN policy remains intentionally unchanged.
+- Generated-file review: `PASS`; evidence: no dependency link, cache, build output, environment file or generated artifact remains.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: the current direct instruction selects MZ-044 for isolated task-branch commit/push while expressly keeping the legacy bank/ABN policy out of scope.
+- Independent review: `GO for source commit`; evidence: fresh staged review matched the fingerprint, 10 paths / 34 non-ledger hunks and branch/base, with P0=0, P1=0 and two release-only P2 gaps.
+- Action conclusion: `GO`; the exact reviewed source candidate was committed as `68d620256d3747c2b1b7a8702253bb0677ded4d5`. Push remains separately gated; real PostgreSQL concurrency/payment-chain validation and direct-connection configuration remain mandatory release gates and must not be represented as release readiness.
+
+#### RA-20261019-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261019-001`
+- Selected CRL identities: `root/CRL-20261019-001`
+- Intended action: `push`
+- Branch: `codex/mz044-profile-save-fix-20261019`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19T14:24:48Z`.
+- Candidate patch SHA-256: `ff3b778e3839472ca90441779600ba39abcd3501a6b9c150aa4793fb595c75f0`
+- Commit SHA: `68d620256d3747c2b1b7a8702253bb0677ded4d5`; the audit head will be the later ledger-only receipt commit.
+- Dependencies: none
+- Required validation: `PASS for source range / release NOT VERIFIED`; evidence: the exact committed range report passed at pre-receipt head `133edf0ccf298d7bf4b20d83c7b8d08acc31c7ad`. Real PostgreSQL concurrency/payment-chain validation and direct session-affinity configuration remain pending release gates.
+- Shared-hunk review: `PASS`; evidence: the exact range contains only this CRL and excludes the separate profile-document display unit and the unapproved legacy `/users/me` bank/ABN policy.
+- Generated-file review: `PASS`; evidence: no dependency link, cache, build output, environment file or generated artifact is present.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after repository, branch and pre-receipt exact HEAD `133edf0ccf298d7bf4b20d83c7b8d08acc31c7ad` were shown, the user replied `一起推送吧`. This ledger-only receipt changes the final audit HEAD, so repository policy requires refreshed approval of that resulting exact SHA before push.
+- Independent review: `GO for this ledger-only receipt commit; NO-GO for push until refreshed exact-HEAD approval`; evidence: independent read-only push review found P0/P1 = 0 for the disclosed source range, verified branch/base/fingerprint, clean scope, absent live remote target, and no feature-branch production trigger. The receipt does not authorize PR, merge, deployment, migration, production data access or release.
+- Action conclusion: `NOT VERIFIED`; blockers: commit this ledger-only receipt, run the clean exact committed-range report, obtain explicit approval for repository `root`, branch `codex/mz044-profile-save-fix-20261019`, and the resulting final HEAD, then rerun immediate remote preflight before one ordinary non-force push. No push has occurred.
+
+#### RA-20261019-005
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261019-001`
+- Selected CRL identities: `root/CRL-20261019-001`
+- Intended action: `commit`
+- Branch: `codex/mz044-050-root-integration-20261019`
+- Base: `ba894cd5a486f776fdfae6bf1cd90eb16a1d2624`; this local integration base contains the separately reviewed MZ-044 display unit on `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`, fetched at `2026-10-19T14:24:48Z`.
+- Candidate patch SHA-256: `8cf11e9acaefd045e9855ad0a721b942975310bf36573098e3391b61450baa7d` over the exact nine non-ledger save-unit paths relative to the local display integration base.
+- Commit SHA: `not committed`.
+- Dependencies: `root/CRL-20261016-003` is already contained in the local integration base; the save and display units remain separate CRLs while sharing the profile implementation/test/registry context.
+- Required validation: `PASS for local synthetic integration / release NOT VERIFIED`; evidence: conflict resolution preserves the save-unit Phase 1 assertion alongside the display-unit contracts; focused Phase 1 and Phase 3 contracts, backend TypeScript `--noEmit`, Feature Registry audit and `git diff --check` passed. The guarded real PostgreSQL concurrency/payment-chain test and direct session-affinity configuration remain unverified release gates.
+- Shared-hunk review: `PASS for manual resolution`; evidence: the only textual merge conflict was in the Phase 1 contract and keeps the save-unit no-op/effective-date assertion. The profile implementation auto-merge retains both private-document display fields and save no-op/locking behavior; the unapproved legacy `/users/me` bank/ABN policy is unchanged.
+- Generated-file review: `PASS`; evidence: no dependency, environment, cache, build-output or generated-file content is staged; the ignored temporary dependency clone is not part of the candidate and will be removed after validation.
+- Hunk reconciliation: `backend/scripts/tests/test_personnel_settlement_phase1.ts#dc87c81adda8991709b61249f1090af1f11cc61ad2a85506895e36743d561699 -> c7d489c19c97a15e3d01d3006795535d38f9c8fd226a63dce71cc9f2a021c4f2`; evidence: the save-only assertion now follows the display-unit profile-document contract on the integration base. | `backend/src/lib/personnelSettlementProfiles.ts#d4b8b6fbdd653529d3ec76e86038c82d4921b59d13bbe58b6d45528c938a8340 -> 4d35886a5225de69d5875d24219bd938c13c632b5807cff6ddb320a5a022e988`; evidence: the save-unit type/state hunk is measured against the display-integrated profile shape. | `backend/src/lib/personnelSettlementProfiles.ts#ed76c9d5aeb4e24e981d0b8ac084a62fca3dc57eaeacd0809bca9ead44f230d3 -> f48c38decacd204f7e347650536e2c3138f0c1dab287e905d38cca1415b62586`; evidence: the canonical no-op comparison remains unchanged while the adjacent display-unit fields are present. | `backend/src/lib/personnelSettlementProfiles.ts#fde275604c6259833f6594301d319dba733c2429c167004bcb772c4344ef0808 -> f62e479e957298bbd9c36b4aee1e20cfe4a753465864eff375b4b5cfd47199b5`; evidence: the write-path ordering hunk is remeasured on the display-integrated source without changing lock or persistence semantics.
+- Technical state: `verified`.
+- User authorization: `selected-for-commit`; evidence: the user asked for one Root integration branch that resolves the overlapping candidates. This authorizes the local integration commit only; push, PR creation, remote merge, migration, deployment and release remain excluded from this round.
+- Independent review: `GO for local integration commit`; evidence: the exact staged candidate matched 10 paths / 34 non-ledger hunks, fingerprint `8cf11e9acaefd045e9855ad0a721b942975310bf36573098e3391b61450baa7d`, all four reconciliation mappings, both display/save behaviors and clean migration/sensitive/generated boundaries. P0=0 / P1=0; the remaining two P2 items are release-only PostgreSQL and direct-session-affinity gaps.
+- Action conclusion: `GO for local integration commit / release NOT VERIFIED`; commit the exact staged MZ-044 save-on-display candidate. No production database/API/file access, migration, push, PR, remote merge or deployment is part of this attempt.
+
+### Risks / Release Notes
+
+- Equality uses full canonical bank account data rather than masked suffixes, preventing different accounts with the same last four digits from being treated as unchanged.
+- A no-op intentionally creates no audit row because no persisted state changes. Real profile/rule changes and finance lock-state transitions now share an advisory-first order; the guarded SQL integration remains required before release.
+- Known excluded legacy path: authenticated `PATCH /users/me` still accepts and directly updates legal name, ABN and bank fields without calling `savePersonnelSettlementProfile` or checking `profile_effective_date_locked`. Build 28's normal second request does not send those fields. Per the current instruction, this round neither changes nor waits for that policy; it remains a separately recorded compatibility/security decision before any eventual release.
+- Prior approval race: participating flows and advisory-first order are mapped. The payment bridge is source-fixed to a validated one-shot direct connection; synthetic failure tests cover each connection/transaction boundary and prove no path returns the client to a pool, pre-callback failures perform no synthetic state write, and post-commit `end()` failure does not duplicate the callback. Real two-connection snapshot/deadlock behavior is still `NOT VERIFIED` until the guarded isolated PostgreSQL test runs; runtime configuration must also explicitly confirm session affinity.
+- Environment status: no environment disconnect blocked source inspection, TypeScript or static/pure-logic tests. The missing resource is an explicitly isolated non-production PostgreSQL for destructive temporary-schema concurrency execution; no database URL is configured, and no database call was attempted.
+- Action conclusion: source commit is eligible under the current explicit authorization after the staged independent review; release remains `NOT VERIFIED` until the guarded isolated PostgreSQL concurrency/deadlock test passes on an approved ephemeral target. Minimum release evidence includes stable `pg_backend_pid()` across the direct bridge, profile-first/approve-first/payment-snapshot interleavings, 12-way no-deadlock execution, successful temporary-schema cleanup, and fail-closed payment behavior with missing/invalid direct configuration without creating an expense or marking the settlement paid. This conclusion does not wait for the separately excluded `/users/me` policy.
+- Concurrent participating flows serialize before business row locks. A no-op performs no persistent write; a real change reaches the committed `finance_approved` / `paid` check before any update.
+- Rollback: remove the business-state equality helper/early-return branch plus the common user-lock calls/helper and restore generic SERIALIZABLE payment runner usage; no data rollback or migration is required.
+- Sensitive-information review: tests use synthetic names, ABN and bank values only; no production payload, identity document, credential or environment value is included.
+- Git state: exact content candidate committed as `68d620256d3747c2b1b7a8702253bb0677ded4d5`; audit head is supplied by the range report. Not pushed, merged, deployed or production/device verified. No migration, permission change, production API call or database write performed.

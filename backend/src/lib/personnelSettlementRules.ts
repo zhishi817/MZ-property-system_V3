@@ -7,6 +7,7 @@ import {
   type SettlementPriceBasis,
 } from './personnelSettlement'
 import { assertPersonnelSettlementSchemaReady } from './personnelSettlementSchema'
+import { lockPersonnelSettlementUserScope } from './personnelSettlementUserLock'
 
 type Queryable = { query: (sql: string, params?: any[]) => Promise<any> }
 
@@ -232,6 +233,7 @@ export async function savePersonnelFeeRule(input: {
   if (!pgPool) throw new Error('pg_required')
   const validatedRule = validatePersonnelFeeRuleInput(input.rule)
   const ruleId = await pgRunInTransaction(async (client) => {
+    await lockPersonnelSettlementUserScope(client, input.userId)
     const user = await client.query('SELECT id FROM users WHERE id::text=$1 FOR UPDATE', [input.userId])
     if (!user.rowCount) throw new Error('user_not_found')
 

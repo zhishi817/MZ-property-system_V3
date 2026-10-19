@@ -15,6 +15,7 @@ import {
   type WorkloadAuditCandidate,
 } from './personnelSettlement'
 import { activeCleaningTaskWhereSql, validCleaningTaskOrderWhereSql } from '../services/cleaningSync'
+import { openDeferredInspectionStatusSql } from './cleaningInspection'
 
 type Queryable = { query: (sql: string, params?: any[]) => Promise<any> }
 
@@ -119,6 +120,7 @@ type CleaningPaymentAssignment = {
 type InspectionPaymentAssignment = {
   task_id: string
   inspection_key: string
+  execution_task_id: string
   user_id: string | null
   user_name: string | null
   service_date: string
@@ -133,10 +135,14 @@ type InspectionPaymentAssignment = {
   inspection_scope_state: 'billable' | 'legacy_default' | 'requires_review'
   inspection_scope_issue: 'inspection_scope_invalid_for_task' | null
   property_snapshot_missing: boolean
+  execution_assignment_conflict: boolean
   is_payable: boolean
   submission_count: string | number | null
+  submitter_user_ids: string[] | null
   latest_audit_id: string | null
   latest_performed_at: string | null
+  latest_performed_by_user_id: string | null
+  latest_performed_by_name: string | null
   latest_metadata: Record<string, unknown> | null
 }
 
@@ -360,8 +366,8 @@ function inspectionPaymentWorkItem(assignment: InspectionPaymentAssignment): Set
     component_type: 'inspection_day',
     service_date: assignment.service_date,
     performed_at: cleanText(assignment.latest_performed_at) || null,
-    performed_by_user_id: submissionCount > 0 ? assignment.user_id : null,
-    performed_by_name: submissionCount > 0 ? assignment.user_name : null,
+    performed_by_user_id: submissionCount > 0 ? assignment.latest_performed_by_user_id : null,
+    performed_by_name: submissionCount > 0 ? assignment.latest_performed_by_name : null,
     property_id: assignment.property_id,
     property_label: assignment.property_label,
     property_type: assignment.property_type,
@@ -1045,8 +1051,12 @@ export async function buildPersonnelSettlementPreview(input: {
     `WITH current_inspection_assignments AS (
        SELECT t.id::text AS task_id,
               'inspection:' || t.id::text AS inspection_key,
+              COALESCE(checkin_arrangement.checkin_task_id, t.id::text) AS execution_task_id,
               t.inspector_id::text AS user_id,
               (CASE
+                WHEN lower(COALESCE(t.inspection_mode, '')) = 'deferred'
+                  AND checkin_arrangement.effective_inspection_date IS NOT NULL
+                  THEN checkin_arrangement.effective_inspection_date
                 WHEN lower(COALESCE(t.inspection_mode, '')) = 'deferred' AND t.inspection_due_date IS NOT NULL
                   THEN t.inspection_due_date
                 ELSE COALESCE(t.task_date, t.date)
@@ -1075,9 +1085,66 @@ export async function buildPersonnelSettlementPreview(input: {
                   THEN 'inspection_scope_invalid_for_task'
                 ELSE NULL
               END)::text AS inspection_scope_issue,
-              t.property_id IS NULL AS property_snapshot_missing
+              t.property_id IS NULL AS property_snapshot_missing,
+              COALESCE(
+                checkin_arrangement.execution_assignment_conflict
+                OR arrangement_owners.matching_deferred_count > 1,
+                false
+              ) AS execution_assignment_conflict
          FROM cleaning_tasks t
          LEFT JOIN orders o ON o.id::text = t.order_id::text
+         LEFT JOIN properties task_property_by_id ON task_property_by_id.id::text = t.property_id::text
+         LEFT JOIN properties task_property_by_code ON upper(task_property_by_code.code) = upper(t.property_id::text)
+         LEFT JOIN LATERAL (
+           SELECT
+             (ARRAY_AGG(incoming.id::text ORDER BY COALESCE(incoming.task_date, incoming.date)::date, incoming.id::text))[1] AS checkin_task_id,
+             (ARRAY_AGG(COALESCE(incoming.task_date, incoming.date)::date ORDER BY COALESCE(incoming.task_date, incoming.date)::date, incoming.id::text))[1] AS effective_inspection_date,
+             (
+               COUNT(*) > 1
+               OR BOOL_OR(
+                 t.inspector_id IS NULL
+                 OR (incoming.inspector_id IS NULL AND incoming.assignee_id IS NULL)
+                 OR (incoming.inspector_id IS NOT NULL AND incoming.inspector_id::text <> t.inspector_id::text)
+                 OR (incoming.assignee_id IS NOT NULL AND incoming.assignee_id::text <> t.inspector_id::text)
+                 OR NOT (
+                   incoming.inspector_id::text = t.inspector_id::text
+                   OR incoming.assignee_id::text = t.inspector_id::text
+                 )
+               )
+             ) AS execution_assignment_conflict
+           FROM cleaning_tasks incoming
+           LEFT JOIN orders incoming_order ON incoming_order.id::text = incoming.order_id::text
+           LEFT JOIN properties incoming_property_by_id ON incoming_property_by_id.id::text = incoming.property_id::text
+           LEFT JOIN properties incoming_property_by_code ON upper(incoming_property_by_code.code) = upper(incoming.property_id::text)
+          WHERE lower(COALESCE(t.inspection_mode, '')) = 'deferred'
+            AND t.inspection_due_date IS NOT NULL
+            AND ${openDeferredInspectionStatusSql('t')}
+            AND lower(COALESCE(t.task_type, t.type, '')) IN ('checkout_clean', 'checkout_cleaning')
+            AND lower(COALESCE(incoming.task_type, incoming.type, '')) = 'checkin_clean'
+            AND lower(COALESCE(incoming.inspection_scope, 'inspect_and_hang')) <> 'password_only'
+            AND COALESCE(incoming.task_date, incoming.date)::date BETWEEN COALESCE(t.task_date, t.date)::date AND t.inspection_due_date::date
+            AND COALESCE(incoming_property_by_id.id::text, incoming_property_by_code.id::text, incoming.property_id::text)
+                = COALESCE(task_property_by_id.id::text, task_property_by_code.id::text, t.property_id::text)
+            AND ${activeCleaningTaskWhereSql('incoming')}
+            AND ${validCleaningTaskOrderWhereSql('incoming', 'incoming_order')}
+         ) checkin_arrangement ON true
+         LEFT JOIN LATERAL (
+           SELECT COUNT(*)::int AS matching_deferred_count
+             FROM cleaning_tasks competing_deferred
+             LEFT JOIN orders competing_order ON competing_order.id::text = competing_deferred.order_id::text
+             LEFT JOIN properties competing_property_by_id ON competing_property_by_id.id::text = competing_deferred.property_id::text
+             LEFT JOIN properties competing_property_by_code ON upper(competing_property_by_code.code) = upper(competing_deferred.property_id::text)
+            WHERE checkin_arrangement.checkin_task_id IS NOT NULL
+              AND lower(COALESCE(competing_deferred.task_type, competing_deferred.type, '')) IN ('checkout_clean', 'checkout_cleaning')
+              AND lower(COALESCE(competing_deferred.inspection_mode, '')) = 'deferred'
+              AND competing_deferred.inspection_due_date IS NOT NULL
+              AND ${openDeferredInspectionStatusSql('competing_deferred')}
+              AND checkin_arrangement.effective_inspection_date BETWEEN COALESCE(competing_deferred.task_date, competing_deferred.date)::date AND competing_deferred.inspection_due_date::date
+              AND COALESCE(competing_property_by_id.id::text, competing_property_by_code.id::text, competing_deferred.property_id::text)
+                  = COALESCE(task_property_by_id.id::text, task_property_by_code.id::text, t.property_id::text)
+              AND ${activeCleaningTaskWhereSql('competing_deferred')}
+              AND ${validCleaningTaskOrderWhereSql('competing_deferred', 'competing_order')}
+         ) arrangement_owners ON true
         WHERE lower(COALESCE(t.inspection_mode, '')) IN ('same_day', 'deferred')
           AND NOT (
             lower(COALESCE(NULLIF(TRIM(t.task_type), ''), NULLIF(TRIM(t.type), ''), '')) = 'checkin_clean'
@@ -1105,8 +1172,12 @@ export async function buildPersonnelSettlementPreview(input: {
        SELECT DISTINCT ON (t.id)
               t.id::text AS task_id,
               'inspection:' || t.id::text AS inspection_key,
+              COALESCE(t.inspection_replaced_by_checkin_task_id::text, t.id::text) AS execution_task_id,
               NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), '') AS user_id,
               (CASE
+                WHEN e.payload#>'{arrangement_revision,reasons}' @> '["deferred_replaced_by_completed_checkin"]'::jsonb
+                  AND execution_task.id IS NOT NULL
+                  THEN COALESCE(execution_task.task_date, execution_task.date)::date
                 WHEN lower(COALESCE(e.payload#>>'{arrangement_revision,before,inspection_mode}', '')) = 'deferred'
                   AND NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_due_date}'), '') IS NOT NULL
                   THEN NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_due_date}'), '')::date
@@ -1142,9 +1213,26 @@ export async function buildPersonnelSettlementPreview(input: {
               COALESCE(
                 NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,property_id}'), ''),
                 legacy_sync_snapshot.before_property_id
-              ) IS NULL AS property_snapshot_missing
+              ) IS NULL AS property_snapshot_missing,
+              (
+                execution_task.id IS NOT NULL
+                AND (
+                  NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), '') IS NULL
+                  OR (execution_task.inspector_id IS NULL AND execution_task.assignee_id IS NULL)
+                  OR (
+                    execution_task.inspector_id IS NOT NULL
+                    AND execution_task.inspector_id::text <> NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), '')
+                  )
+                  OR (
+                    execution_task.assignee_id IS NOT NULL
+                    AND execution_task.assignee_id::text <> NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspector_id}'), '')
+                  )
+                )
+              ) AS execution_assignment_conflict
          FROM work_task_events e
          JOIN cleaning_tasks t ON e.task_id = 'cleaning_task:' || t.id::text
+         LEFT JOIN cleaning_tasks execution_task
+           ON execution_task.id::text = t.inspection_replaced_by_checkin_task_id::text
          LEFT JOIN orders o ON o.id::text = t.order_id::text
          LEFT JOIN LATERAL (
            SELECT NULLIF(TRIM(log.before->>'property_id'), '') AS before_property_id
@@ -1166,19 +1254,31 @@ export async function buildPersonnelSettlementPreview(input: {
          ) legacy_sync_snapshot
            ON NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,property_id}'), '') IS NULL
         WHERE e.payload#>>'{arrangement_revision,version}' = 'mz031-v1'
-          AND e.caused_by_user_id IS NULL
+          AND (
+            e.caused_by_user_id IS NULL
+            OR e.payload#>'{arrangement_revision,reasons}' @> '["deferred_replaced_by_completed_checkin"]'::jsonb
+          )
           AND lower(COALESCE(e.payload#>>'{arrangement_revision,before,inspection_mode}', '')) IN ('same_day', 'deferred')
           AND NOT (
             lower(COALESCE(NULLIF(TRIM(t.task_type), ''), NULLIF(TRIM(t.type), ''), '')) = 'checkin_clean'
             AND lower(COALESCE(NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_scope}'), ''), '')) = 'password_only'
           )
+          AND (
+            e.payload#>'{arrangement_revision,reasons}' @> '["deferred_replaced_by_completed_checkin"]'::jsonb
+            OR (CASE
+                  WHEN e.payload#>'{arrangement_revision,reasons}' @> '["deferred_replaced_by_completed_checkin"]'::jsonb
+                    AND execution_task.id IS NOT NULL
+                    THEN COALESCE(execution_task.task_date, execution_task.date)::date
+                  WHEN lower(COALESCE(e.payload#>>'{arrangement_revision,before,inspection_mode}', '')) = 'deferred'
+                    AND NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_due_date}'), '') IS NOT NULL
+                    THEN NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_due_date}'), '')::date
+                  ELSE NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,scheduled_service_date}'), '')::date
+                END) < (e.occurred_at AT TIME ZONE 'Australia/Melbourne')::date
+          )
           AND (CASE
-                WHEN lower(COALESCE(e.payload#>>'{arrangement_revision,before,inspection_mode}', '')) = 'deferred'
-                  AND NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_due_date}'), '') IS NOT NULL
-                  THEN NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_due_date}'), '')::date
-                ELSE NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,scheduled_service_date}'), '')::date
-              END) < (e.occurred_at AT TIME ZONE 'Australia/Melbourne')::date
-          AND (CASE
+                WHEN e.payload#>'{arrangement_revision,reasons}' @> '["deferred_replaced_by_completed_checkin"]'::jsonb
+                  AND execution_task.id IS NOT NULL
+                  THEN COALESCE(execution_task.task_date, execution_task.date)::date
                 WHEN lower(COALESCE(e.payload#>>'{arrangement_revision,before,inspection_mode}', '')) = 'deferred'
                   AND NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_due_date}'), '') IS NOT NULL
                   THEN NULLIF(TRIM(e.payload#>>'{arrangement_revision,before,inspection_due_date}'), '')::date
@@ -1218,7 +1318,7 @@ export async function buildPersonnelSettlementPreview(input: {
           SELECT 1 FROM preserved_auto_changes preserved WHERE preserved.task_id = current.task_id
         )
      )
-     SELECT effective.task_id, effective.inspection_key, effective.user_id,
+     SELECT effective.task_id, effective.inspection_key, effective.execution_task_id, effective.user_id,
             COALESCE(
               NULLIF(TRIM(u.display_name), ''), NULLIF(TRIM(u.username), ''),
               NULLIF(TRIM(u.legal_name), ''), effective.user_id
@@ -1232,39 +1332,50 @@ export async function buildPersonnelSettlementPreview(input: {
             effective.inspection_due_date::text AS inspection_due_date,
             effective.inspection_mode, effective.assignment_source,
             effective.inspection_scope_state, effective.inspection_scope_issue,
-            effective.property_snapshot_missing,
+            effective.property_snapshot_missing, effective.execution_assignment_conflict,
             effective.service_date < (now() AT TIME ZONE 'Australia/Melbourne')::date AS is_payable,
             COALESCE(submissions.submission_count, '0'::text) AS submission_count,
+            COALESCE(submissions.submitter_user_ids, ARRAY[]::text[]) AS submitter_user_ids,
             latest_submission.latest_audit_id, latest_submission.latest_performed_at,
+            latest_submission.latest_performed_by_user_id,
+            COALESCE(
+              NULLIF(TRIM(latest_performer.display_name), ''), NULLIF(TRIM(latest_performer.username), ''),
+              NULLIF(TRIM(latest_performer.legal_name), ''), latest_submission.latest_performed_by_user_id
+            ) AS latest_performed_by_name,
             latest_submission.latest_metadata
        FROM effective_inspection_assignments effective
        LEFT JOIN users u ON u.id::text = effective.user_id
        LEFT JOIN properties p ON p.id::text = effective.property_id
        LEFT JOIN LATERAL (
-         SELECT COUNT(*)::text AS submission_count
+         SELECT COUNT(*)::text AS submission_count,
+                ARRAY_REMOVE(ARRAY_AGG(DISTINCT a.performed_by_user_id::text), NULL) AS submitter_user_ids
            FROM work_task_action_audits a
           WHERE a.source_type = 'cleaning_tasks'
-            AND a.source_id::text = effective.task_id
+            AND a.source_id::text = effective.execution_task_id
             AND a.performed_as_action = 'submit_inspection'
-            AND a.performed_by_user_id = effective.user_id
             AND lower(COALESCE(a.metadata->>'step', '')) <> 'inspection_photos_saved'
+            AND COALESCE(a.metadata->>'route', '') <> 'mzapp.cleaning_tasks.restock_proof'
        ) submissions ON true
        LEFT JOIN LATERAL (
          SELECT a.id::text AS latest_audit_id, a.performed_at::text AS latest_performed_at,
+                a.performed_by_user_id::text AS latest_performed_by_user_id,
                 a.metadata AS latest_metadata
            FROM work_task_action_audits a
           WHERE a.source_type = 'cleaning_tasks'
-            AND a.source_id::text = effective.task_id
+            AND a.source_id::text = effective.execution_task_id
             AND a.performed_as_action = 'submit_inspection'
-            AND a.performed_by_user_id = effective.user_id
             AND lower(COALESCE(a.metadata->>'step', '')) <> 'inspection_photos_saved'
+            AND COALESCE(a.metadata->>'route', '') <> 'mzapp.cleaning_tasks.restock_proof'
           ORDER BY a.performed_at DESC, a.id DESC
           LIMIT 1
        ) latest_submission ON true
+       LEFT JOIN users latest_performer ON latest_performer.id::text = latest_submission.latest_performed_by_user_id
       WHERE effective.service_date BETWEEN $1::date AND $2::date
         AND (
           $3::text[] IS NULL
           OR effective.user_id = ANY($3::text[])
+          OR latest_submission.latest_performed_by_user_id = ANY($3::text[])
+          OR submissions.submitter_user_ids && $3::text[]
           OR EXISTS (
             SELECT 1
               FROM effective_inspection_assignments requested
@@ -1818,6 +1929,81 @@ export async function buildPersonnelSettlementPreview(input: {
         property_label: assignment.property_label,
         work_items: [pendingWorkItem],
       })
+      continue
+    }
+    if (assignment.execution_assignment_conflict) {
+      const conflictWorkItem: SettlementWorkItem = {
+        ...inspectionPaymentWorkItem(assignment),
+        status: 'incomplete',
+        status_reason: 'inspection_execution_assignment_conflict',
+        included_in_amount: false,
+        requires_manual_review: true,
+      }
+      addChecklistItem(inspectorId, assignment.user_name, conflictWorkItem)
+      warn(
+        inspectorId,
+        assignment.user_name,
+        'inspection_task_assignment',
+        assignment.inspection_key,
+        'inspection_execution_assignment_conflict',
+        {
+          service_date: assignment.service_date,
+          component_type: 'inspection_day',
+          description: `Inspection execution assignment conflict · ${assignment.property_label || assignment.property_id || assignment.task_id}`,
+          task_id: assignment.task_id,
+          property_id: assignment.property_id,
+          property_label: assignment.property_label,
+          work_items: [conflictWorkItem],
+        },
+      )
+      continue
+    }
+    const actualSubmitterIds = Array.from(new Set([
+      ...(Array.isArray(assignment.submitter_user_ids) ? assignment.submitter_user_ids : []),
+      assignment.latest_performed_by_user_id,
+    ].map(cleanText).filter(Boolean)))
+    const mismatchedSubmitterIds = actualSubmitterIds.filter((submitterId) => submitterId !== inspectorId)
+    if (mismatchedSubmitterIds.length) {
+      const mismatchWorkItem: SettlementWorkItem = {
+        ...inspectionPaymentWorkItem(assignment),
+        status: 'incomplete',
+        status_reason: 'inspection_submitter_differs_from_planned_owner',
+        included_in_amount: false,
+        requires_manual_review: true,
+      }
+      const warningDetail = {
+        service_date: assignment.service_date,
+        component_type: 'inspection_day' as const,
+        description: `Inspection submitter differs from planned owner · ${assignment.property_label || assignment.property_id || assignment.task_id}`,
+        task_id: assignment.task_id,
+        property_id: assignment.property_id,
+        property_label: assignment.property_label,
+        work_items: [mismatchWorkItem],
+      }
+      if (isRequestedUser(inspectorId)) {
+        addChecklistItem(inspectorId, assignment.user_name, mismatchWorkItem)
+        warn(
+          inspectorId,
+          assignment.user_name,
+          'inspection_task_assignment',
+          assignment.inspection_key,
+          'inspection_submitter_differs_from_planned_owner',
+          warningDetail,
+        )
+      }
+      for (const actualSubmitterId of mismatchedSubmitterIds) {
+        if (!isRequestedUser(actualSubmitterId)) continue
+        warn(
+          actualSubmitterId,
+          actualSubmitterId === cleanText(assignment.latest_performed_by_user_id)
+            ? assignment.latest_performed_by_name
+            : actualSubmitterId,
+          'inspection_task_assignment',
+          assignment.inspection_key,
+          'inspection_submitter_differs_from_planned_owner',
+          warningDetail,
+        )
+      }
       continue
     }
     if (!isRequestedUser(inspectorId)) continue

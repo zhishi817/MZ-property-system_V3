@@ -3,8 +3,15 @@ import { z } from 'zod'
 import { requireAnyPerm, requirePerm } from '../auth'
 import { hasPg, pgSelect, pgUpdate } from '../dbAdapter'
 import { db } from '../store'
-import { hasR2, r2GetObjectByKey, r2KeyFromUrl } from '../r2'
+import { hasR2, r2GetObjectByKey } from '../r2'
 import { requireR5RequestSchema } from '../lib/r5RequestSchema'
+import {
+  PROFILE_DOCUMENT_FIELDS,
+  type ProfileDocumentType,
+  isOwnedProfileDocumentReference,
+  profileDocumentType,
+  readableProfileDocumentStorageKey,
+} from '../lib/profileDocuments'
 import bcrypt from 'bcryptjs'
 
 export const router = Router()
@@ -66,34 +73,6 @@ function buildUserSelect(columns: Set<string>, required: string[], optional: rea
 
 const PROFILE_USER_COLUMNS = ['id', 'username', 'role', 'phone_au', 'display_name', 'avatar_url', 'legal_name', 'bank_account_name', 'bank_bsb', 'bank_account_number', 'personal_abn', 'photo_id_url', 'visa_document_url', 'visa_grant_number'] as const
 const CONTACT_USER_COLUMNS = ['id', 'username', 'role', 'phone_au', 'display_name', 'avatar_url'] as const
-
-const PROFILE_DOCUMENT_FIELDS = {
-  photo_id: 'photo_id_url',
-  visa_document: 'visa_document_url',
-} as const
-
-type ProfileDocumentType = keyof typeof PROFILE_DOCUMENT_FIELDS
-
-function profileDocumentType(value: any): ProfileDocumentType | null {
-  const normalized = String(value || '').trim().toLowerCase()
-  return normalized === 'photo_id' || normalized === 'visa_document' ? normalized : null
-}
-
-function profileDocumentStorageKey(value: any): string | null {
-  const reference = String(value || '').trim()
-  if (!reference) return null
-  if (reference.startsWith('mzapp/')) return reference
-  return r2KeyFromUrl(reference)
-}
-
-function ownedProfileDocumentKey(userId: string, type: ProfileDocumentType) {
-  return `mzapp/profile-documents/${encodeURIComponent(userId)}/${type}/`
-}
-
-function isOwnedProfileDocumentReference(value: any, userId: string, type: ProfileDocumentType) {
-  const key = profileDocumentStorageKey(value)
-  return !!key && key.startsWith(ownedProfileDocumentKey(userId, type))
-}
 
 function canReuseExistingProfileDocumentReference(value: any, currentValue: any) {
   const incoming = String(value || '').trim()
@@ -183,12 +162,8 @@ router.get('/me/profile-documents/:documentType', requireR5RequestSchema, async 
       const row = (db.users || []).find((candidate: any) => String(candidate.id) === id)
       storedReference = (row as any)?.[field]
     }
-    const key = profileDocumentStorageKey(storedReference)
+    const key = readableProfileDocumentStorageKey(storedReference, id, type)
     if (!key) return res.status(404).json({ message: 'not_found' })
-    const isDedicatedKey = key.startsWith('mzapp/profile-documents/')
-    if ((isDedicatedKey && !isOwnedProfileDocumentReference(storedReference, id, type)) || !key.startsWith('mzapp/')) {
-      return res.status(404).json({ message: 'not_found' })
-    }
     const object = await r2GetObjectByKey(key)
     if (!object?.body?.length) return res.status(404).json({ message: 'not_found' })
     res.setHeader('Content-Type', object.contentType || 'application/octet-stream')

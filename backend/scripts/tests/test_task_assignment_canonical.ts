@@ -568,7 +568,7 @@ async function main() {
          id, property_id, task_type, type, task_date, date, status, assignee_id, cleaner_id, inspector_id, source, execution_state, checkout_time, checkin_time, new_code, keys_required, nights_override, inspection_mode, inspection_scope
        ) VALUES
          ($1, $4, 'checkout_clean', 'checkout_clean', $3::date, $3::date, 'assigned', 'cleaner-same-day-open', 'cleaner-same-day-open', 'inspector-same-day-open', 'manual', 'active', '10am', NULL, NULL, 1, 2, 'same_day', 'inspect_and_hang'),
-         ($2, $4, 'checkin_clean', 'checkin_clean', $3::date, $3::date, 'assigned', 'cleaner-same-day-open', 'cleaner-same-day-open', 'inspector-same-day-open', 'manual', 'active', NULL, '3pm', 'OPENIN', 1, 2, 'same_day', 'inspect_and_hang')`,
+         ($2, $4, 'checkin_clean', 'checkin_clean', $3::date, $3::date, 'assigned', 'cleaner-same-day-open', 'cleaner-same-day-open', 'inspector-same-day-open', 'manual', 'active', NULL, '3pm', 'OPENIN', 1, 2, 'same_day', 'password_only')`,
       [sameDayOpenCheckoutId, sameDayOpenCheckinId, TEST_DATE, sameDayOpenPropertyId],
     )
     await pgPool.query(
@@ -642,6 +642,8 @@ async function main() {
     const sameDayOpenTask = sameDayOpenTasks[0]
     assert.equal(sameDayOpenTask.task_type, 'turnover')
     assert.equal(sameDayOpenTask.inspection_scope, null)
+    assert.equal(sameDayOpenTask.cleaner_id, 'cleaner-same-day-open', 'manager turnover projection must retain the checkout cleaner despite stale checkin scope')
+    assert.equal(sameDayOpenTask.inspector_id, 'inspector-same-day-open', 'manager turnover projection must retain the inspector despite stale checkin scope')
     assert.ok(String(sameDayOpenTask.summary || '').includes('入住'), 'same-day turnover summary should still include checkin')
     const sameDayOpenCleanerTasks = await requestJson(
       app,
@@ -672,6 +674,10 @@ async function main() {
     assert.equal(sameDayOpenInspectorPropertyTasks.length, 1, 'real inspector should still see same-day checkin inspection task')
     assert.equal(sameDayOpenInspectorPropertyTasks[0]?.assignee_id, 'inspector-same-day-open')
     assert.notEqual(sameDayOpenInspectorPropertyTasks[0]?.assignee_id, 'cleaner-same-day-open', 'inspection assignment must not be stolen by checkin executor')
+    assert.ok(
+      (sameDayOpenInspectorPropertyTasks[0]?.active_source_ids || sameDayOpenInspectorPropertyTasks[0]?.source_ids || []).includes(sameDayOpenCheckinId),
+      'normalized turnover inspection card must retain the stale-scope checkin source id',
+    )
     const inspectorOnlyTasks = await requestJson(
       app,
       'GET',

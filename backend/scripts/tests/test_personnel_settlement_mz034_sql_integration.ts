@@ -168,7 +168,8 @@ async function main() {
         status text,
         inspector_id text,
         assignee_id text,
-        cleaner_id text
+        cleaner_id text,
+        inspection_replaced_by_checkin_task_id text
       );
       CREATE TABLE work_task_events (
         id text PRIMARY KEY,
