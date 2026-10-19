@@ -30218,12 +30218,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Branch: `codex/mz-homepage-display-release-20261017`
 - Base: `origin/Dev@8e7a63e8e05f7366f93a96da36c3eaa50e3d8592`; fetched at `2026-10-17 UTC`
 - Candidate patch SHA-256: `fffa783d5d9b560b85bc8e8e8cd96328dbbe77fc0211b832ebf4f126f129234b`
-- Commit SHA: `68d620256d3747c2b1b7a8702253bb0677ded4d5`
+- Commit SHA: `not committed`
 - Dependencies: none；五个 additive guest-site migration 文件随代码发布但本次未执行，任何环境的 migration 仍需另行确认。
 - Required validation: `PASS`; evidence: booking 44 contracts, backend guest-site contracts including missing-marker fail-closed, five-way parallel contact quota, translation single-flight/runtime cache and zero DB writes, admin 13 tests, preview guard/lifecycle, booking/backend/admin build + applicable lint/typecheck, FR registry 33/268, and local Mac Google Chrome homepage/story/contact/properties/navigation/detail/CMS suites passed. The final asset rerun covered Home 6 viewports, Story 5 and Contact 5; two initial UI timing/focus flakes passed on immediate full rerun. Root full check passed all Root phases; its paired Mobile parallel Jest run had one timeout after 469/470 passes, and the full Mobile suite then passed serially at 73 suites / 470 tests.
 - Shared-hunk review: `PASS`; evidence: candidate was extracted from the frozen source into a fresh `origin/Dev` worktree with exact staging; package/layout/registry shared files were manually merged and the source worktree was not changed.
 - Generated-file review: `PASS`; evidence: required visual bytes are represented as reviewed textual SVG wrappers containing re-encoded metadata-free WebP and a textual WOFF2 font stylesheet; payload fell from about 10.9 MB to 2.47 MB, OFL license text is included, and old public URLs remain compatible through explicit rewrites. All transient build output, cache, screenshots, coverage, dependency links and the temporary Mobile checkout were removed from the release worktree.
-- Technical state: `committed`
+- Technical state: `verified`
 - User authorization: `selected-for-commit`; evidence: current user instruction explicitly prioritizes this previously implemented website scope and requests commit/push before blog work.
 - Independent review: `GO for commit`; evidence: final independent read-only review matched candidate `fffa783d5d9b560b85bc8e8e8cd96328dbbe77fc0211b832ebf4f126f129234b`, 137 paths / 375 hunks and base/branch, found P0/P1 = 0, verified contact lock order/concurrency/indexes, bounded translation cache/single-flight/rate ceiling, clean generated/sensitive/scope boundaries, and no blog, Hostex-live, payment, deployment workflow, environment or secret expansion. Non-blocking P2: translation ceiling is per process and fetch has no explicit timeout; contact global lock serializes submissions; Safari/real-device, remote CI and migration dry-run remain unverified.
 - Action conclusion: `GO`; blockers: none for the commit action. Push, PR, merge, deployment and migrations remain separate actions.
@@ -30358,12 +30358,12 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Branch: `codex/mz044-profile-save-fix-20261019`
 - Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19 UTC`
 - Candidate patch SHA-256: `ff3b778e3839472ca90441779600ba39abcd3501a6b9c150aa4793fb595c75f0`
-- Commit SHA: `not committed`
-- Dependencies: no schema/package dependency; release configuration still requires a validated direct PostgreSQL URL plus explicit session-affinity confirmation.
+- Commit SHA: `68d620256d3747c2b1b7a8702253bb0677ded4d5`
+- Dependencies: none
 - Required validation: `PASS for source commit / release NOT VERIFIED`; evidence: Phase 1, Phase 3, broader settlement contracts, backend TypeScript, Feature Registry, ledger coverage and diff checks passed. The guarded real PostgreSQL concurrency/deadlock suite was not run because no approved isolated target is configured.
 - Shared-hunk review: `PASS`; evidence: the separate profile-document display unit was removed from this extraction and the legacy `/users/me` bank/ABN policy remains intentionally unchanged.
 - Generated-file review: `PASS`; evidence: no dependency link, cache, build output, environment file or generated artifact remains.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: the current direct instruction selects MZ-044 for isolated task-branch commit/push while expressly keeping the legacy bank/ABN policy out of scope.
 - Independent review: `GO for source commit`; evidence: fresh staged review matched the fingerprint, 10 paths / 34 non-ledger hunks and branch/base, with P0=0, P1=0 and two release-only P2 gaps.
 - Action conclusion: `GO`; the exact reviewed source candidate was committed as `68d620256d3747c2b1b7a8702253bb0677ded4d5`. Push remains separately gated; real PostgreSQL concurrency/payment-chain validation and direct-connection configuration remain mandatory release gates and must not be represented as release readiness.
