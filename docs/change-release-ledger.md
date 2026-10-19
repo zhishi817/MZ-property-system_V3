@@ -1,5 +1,80 @@
 # Change Release Ledger
 
+## CRL-20261020-003 — MZ-035 延期 Check-in 结算日期自匹配回归修复
+
+- **Status:** local candidate prepared; not committed, pushed, merged, or deployed
+- **Repository:** `root`
+- **Updated:** 2026-10-20 AEDT
+- **Request:** 在 PR #402 的 MZ-035 隔离 PostgreSQL 测试越过临时表缺列后，继续诊断并修复 `paired-deferred-checkout` / `paired-deferred-checkin` 不同有效日期被错误合并的问题；不得删除或削弱既有计费断言，不新增薪资政策，不连接生产数据库。
+- **Outcome:** 将 MZ-049 的“延期 checkout 可由窗口内 check-in 承接”SQL 匹配严格限制到 checkout parent，防止 deferred check-in 把自身当成承接任务并把有效检查日从 `inspection_due_date` 回写为自身 `task_date`。不同有效日期继续按既有 MZ-035 规则分别形成检查日。
+
+### Implementation
+
+- Previous behavior: `current_inspection_assignments` 的 `checkin_arrangement` LATERAL 子查询只检查 parent 为 deferred，却未检查 parent 任务类型；当 parent 本身是 `checkin_clean` 时，它可匹配自身，令 `effective_inspection_date` 等于自身 `task_date`。MZ-035 的 deferred check-in 因此从 `2026-10-06` 错变为 `2026-10-05`，随后同日 companion suppression 将其移除。
+- New behavior: 仅 `checkout_clean` / `checkout_cleaning` deferred parent 可以进入 check-in 承接匹配。Deferred check-in 自身继续使用既有 `inspection_due_date` 作为有效结算日期；checkout replacement、歧义检测和 MZ-050 scope 规则不变。
+- Key decisions: Dev 与既有 MZ-034/MZ-035 契约均明确不同有效检查日不可配对或抑制；MZ-049 服务层的 replacement 搜索也仅接受 checkout parent。因此该修复是恢复既有业务合同，不需要新的薪资政策判断，也不修改断言。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementPreview.ts` — modified: 为 deferred check-in 承接 LATERAL 查询增加 checkout parent 类型边界。
+- `docs/change-release-ledger.md` — modified: 记录真实 PostgreSQL 断言失败、根因、最小修复、验证和发布边界。
+
+### Impact / Dependencies
+
+- API: none.
+- Database / migration: none；只修改只读结算预览查询条件，不执行 migration，不连接或写入生产数据库。
+- Config / environment: none.
+- Dependencies: `root/CRL-20261018-002@e69cfa86ca85ef4c24165aaf21fe69c0d2967c7e`; `root/CRL-20261020-002@25af722e83e8939e14695cd9e0d345b8a9a41617`.
+- Related units: `root/CRL-20261020-001`（MZ-034 fixture）；`root/CRL-20261019-004`（MZ-050 scope 防护，未修改）。
+
+### Validation
+
+- GitHub Actions Root Quality Gate #289 / run `39335515645` at pushed head `a7349313129c28a2ca1fb7d2b6415d554509d8c2` — failed before this candidate: MZ-034 isolated PostgreSQL passed; MZ-035 reached assertion line 462 and returned only the `2026-10-05` checkout instead of the expected separate `2026-10-05` checkout and `2026-10-06` deferred check-in.
+- Dev comparison — passed: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b` uses `inspection_due_date` for deferred tasks and contains the same different-effective-date MZ-035 assertion.
+- MZ-049 boundary comparison — passed: `findDeferredInspectionCheckinReplacements` only treats `checkout_clean` as the deferred parent; the integrated settlement SQL was the inconsistent surface.
+- `npm --prefix backend run test:personnel-settlement-mz034` — passed using a temporary ignored dependency link whose donor lockfile exactly matched; the link was removed.
+- `npm --prefix backend run test:deferred-inspection-checkin-replacement` — passed using the same temporary ignored dependency link; the link was removed.
+- `npm --prefix backend run build -- --noEmit` — passed using the same exact-lockfile dependency donor; no build output was emitted and the link was removed.
+- `git diff --check` — passed.
+- Independent read-only review — GO for local commit only: independently reproduced the deferred check-in self-match, matched the exclusive hunk and patch fingerprints, confirmed there is no second equivalent self-match path, and found P0/P1/P2=0. It does not authorize push or replace the PostgreSQL rerun.
+- Local PostgreSQL execution — not run: no supported local PostgreSQL, Docker or non-production integration URL is available. The exact MZ-035 SQL integration must rerun after a separately approved push of a newly frozen SHA.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** `prepared`
+- **Untracked review:** none.
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `939ae168a068e7c54707c2541cc0fdaed9771435b512e7942f701f472ca03f1c`
+
+### Release Attempts
+
+#### RA-20261020-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261020-003`
+- Selected CRL identities: `root/CRL-20261020-003`
+- Intended action: `commit`
+- Branch: `codex/mz044-050-root-integration-final-20261019`
+- Base: pushed PR #402 head `a7349313129c28a2ca1fb7d2b6415d554509d8c2`; `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b` remains the PR base.
+- Candidate patch SHA-256: `0e06cff077bcbeb664f9131c13bbcc24419111890490d9a14281429fd64caddb`.
+- Commit SHA: not committed.
+- Dependencies: `root/CRL-20261018-002@e69cfa86ca85ef4c24165aaf21fe69c0d2967c7e`; `root/CRL-20261020-002@25af722e83e8939e14695cd9e0d345b8a9a41617`.
+- Required validation: `PASS for local non-PostgreSQL regression / remote PostgreSQL NOT VERIFIED`; evidence: exact historical comparison, MZ-034 settlement contract, deferred replacement contract, backend TypeScript and diff checks pass. Local PostgreSQL is unavailable.
+- Shared-hunk review: `not applicable`; evidence: one exclusive condition is added inside the MZ-049 settlement query hunk without changing adjacent policy or assertions.
+- Generated-file review: `PASS`; evidence: only one tracked TypeScript source and this ledger entry are candidates.
+- Technical state: `candidate`.
+- User authorization: `selected-for-commit`; evidence: the user directed preparing the minimal local fix, independent review and a new frozen SHA, while requiring separate confirmation before push.
+- Independent review: `GO for the exact local commit only`; evidence: reviewer matched patch `0e06cff0...`, hunk `939ae168...`, the two-file staged scope and the checkout-parent boundary against Dev, MZ-049 service logic, MZ-050 scope behavior and MZ-034/MZ-035 contracts; P0/P1/P2=0, with no other self-match path, generated file, cache, secret, migration, production-write or external-sync risk.
+- Action conclusion: `GO for this exact local content commit only / remote PostgreSQL NOT VERIFIED`; the resulting full SHA requires separate push confirmation, and the GitHub MZ-035 isolated PostgreSQL assertion must pass before merge.
+
+### Risks / Release Notes
+
+- This restores the existing “different effective dates remain separate inspection days” contract and narrows replacement lookup to its already documented checkout-parent domain; it does not create a new pay rule.
+- The change affects only settlement preview selection. Real PostgreSQL proof remains unavailable locally and must be obtained from the isolated GitHub job after a newly authorized push.
+- Sensitive-information review: no credential, database URL, production payload or private log content is recorded.
+- Rollback: revert the single parent-task-type predicate and this CRL.
+- Git state: uncommitted local candidate on the existing PR branch; no push, merge, deployment, migration, OTA or production-data operation is included.
+
 ## CRL-20261020-002 — Root PR MZ-035 PostgreSQL 隔离测试夹具补列
 
 - **Status:** exact local follow-up candidate prepared; not committed, pushed, merged, or deployed

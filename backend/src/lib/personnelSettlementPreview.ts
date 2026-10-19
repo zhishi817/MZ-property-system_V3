@@ -1119,6 +1119,7 @@ export async function buildPersonnelSettlementPreview(input: {
           WHERE lower(COALESCE(t.inspection_mode, '')) = 'deferred'
             AND t.inspection_due_date IS NOT NULL
             AND ${openDeferredInspectionStatusSql('t')}
+            AND lower(COALESCE(t.task_type, t.type, '')) IN ('checkout_clean', 'checkout_cleaning')
             AND lower(COALESCE(incoming.task_type, incoming.type, '')) = 'checkin_clean'
             AND lower(COALESCE(incoming.inspection_scope, 'inspect_and_hang')) <> 'password_only'
             AND COALESCE(incoming.task_date, incoming.date)::date BETWEEN COALESCE(t.task_date, t.date)::date AND t.inspection_due_date::date
