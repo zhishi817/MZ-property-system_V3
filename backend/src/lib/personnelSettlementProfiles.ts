@@ -6,6 +6,7 @@ import {
   normalizePersonnelPaymentMethod,
   type PersonnelPaymentMethod,
 } from './personnelSettlementPayment'
+import { lockPersonnelSettlementUserScope } from './personnelSettlementUserLock'
 
 export type PersonnelGstStatus = 'unconfirmed' | 'registered' | 'not_registered'
 export type PersonnelType = 'cleaner' | 'inspector' | 'warehouse' | 'trial' | 'external' | 'mixed'
@@ -186,6 +187,27 @@ function safeAuditSnapshot(value: any) {
   }
 }
 
+function personnelProfileBusinessState(value: any) {
+  const gstStatus = value?.gst_status || 'unconfirmed'
+  return {
+    settlement_enabled: !!value?.settlement_enabled,
+    person_type: value?.person_type || defaultPersonnelType(value?.role),
+    supplier_legal_name: nullableText(value?.supplier_legal_name ?? value?.legal_name),
+    supplier_business_name: nullableText(value?.supplier_business_name),
+    abn: normalizeAbn(value?.abn ?? value?.personal_abn) || null,
+    gst_status: gstStatus,
+    gst_effective_from: gstStatus === 'unconfirmed' ? null : nullableText(value?.gst_effective_from),
+    payment_method: normalizePersonnelPaymentMethod(value?.payment_method),
+    bank_account_name: nullableText(value?.bank_account_name),
+    bank_bsb: normalizeBsb(value?.bank_bsb) || null,
+    bank_account_number: normalizeBankAccountNumber(value?.bank_account_number) || null,
+  }
+}
+
+export function isPersonnelProfileBusinessStateEqual(current: any, next: any) {
+  return JSON.stringify(personnelProfileBusinessState(current)) === JSON.stringify(personnelProfileBusinessState(next))
+}
+
 export function validatePersonnelProfilePatch(input: {
   effectiveDate: string
   reason?: string | null
@@ -341,6 +363,7 @@ export async function savePersonnelSettlementProfile(input: {
   if (!pgPool) throw new Error('pg_required')
   const patch = validatePersonnelProfilePatch(input)
   const saved = await pgRunInTransaction(async (client) => {
+    await lockPersonnelSettlementUserScope(client, input.userId)
     const userResult = await client.query(
       `SELECT id, username, display_name, role, legal_name, personal_abn,
               bank_account_name, bank_bsb, bank_account_number, photo_id_url
@@ -349,18 +372,6 @@ export async function savePersonnelSettlementProfile(input: {
     )
     const user = userResult.rows?.[0]
     if (!user) throw new Error('user_not_found')
-
-    const lockedResult = await client.query(
-      `SELECT 1
-         FROM personnel_weekly_settlements settlement
-         JOIN personnel_settlement_batches batch ON batch.id = settlement.batch_id
-        WHERE settlement.user_id=$1
-          AND settlement.status = ANY($2::text[])
-          AND batch.week_end >= $3::date
-        LIMIT 1`,
-      [input.userId, ['finance_approved', 'paid'], input.effectiveDate],
-    )
-    if (lockedResult.rowCount) throw new Error('profile_effective_date_locked')
 
     const profilesResult = await client.query(
       `SELECT * FROM personnel_settlement_profiles
@@ -415,6 +426,26 @@ export async function savePersonnelSettlementProfile(input: {
     if (merged.abn && !isValidAustralianAbn(merged.abn)) throw new Error('invalid_abn')
     if (merged.settlement_enabled && !merged.supplier_legal_name) throw new Error('legal_name_required')
     if (merged.gst_status === 'registered' && !merged.abn) throw new Error('abn_required_for_gst')
+
+    if (
+      !currentEditPlan
+      && current
+      && isPersonnelProfileBusinessStateEqual({ ...user, ...current }, merged)
+    ) {
+      return String(current.id)
+    }
+
+    const lockedResult = await client.query(
+      `SELECT 1
+         FROM personnel_weekly_settlements settlement
+         JOIN personnel_settlement_batches batch ON batch.id = settlement.batch_id
+        WHERE settlement.user_id=$1
+          AND settlement.status = ANY($2::text[])
+          AND batch.week_end >= $3::date
+        LIMIT 1`,
+      [input.userId, ['finance_approved', 'paid'], input.effectiveDate],
+    )
+    if (lockedResult.rowCount) throw new Error('profile_effective_date_locked')
 
     const before = safeAuditSnapshot({ ...current, ...user })
     if (currentEditPlan || !next) {

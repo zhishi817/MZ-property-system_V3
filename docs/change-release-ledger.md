@@ -30255,3 +30255,128 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Terms/Privacy 和 testimonials 保持既有占位/静态披露；未生成法律条款或用户评价。
 - Sensitive-information review: passed for candidate scope；未输出、记录或提交 `.env`、数据库 URL、cookie、token、真实住客或真实询盘正文。唯一 DEV 写入使用 `example.com` 和明确 TEST 标签。
 - Git state: exact 137-path content candidate staged, ledger unstaged pending review; not committed, not pushed, PR not created, not merged, not deployed; production/device verification not run.
+## CRL-20261019-001 — MZ-044 移动端个人资料保存幂等解锁
+
+- **Status:** `candidate / INDEPENDENT SYNTHETIC GO / SQL NOT VERIFIED`; no-op root cause repair, participating-flow inventory and the two prior local P1 repairs pass local static/synthetic regressions and targeted independent review. The direct-client runner now has separate failure injection for `BEGIN`, `SET TRANSACTION`, transaction advisory lock and `client.end()`; an approved isolated PostgreSQL concurrency run remains required, and the legacy `/users/me` policy is explicitly excluded from this round rather than awaited.
+- **Repository:** `root`
+- **Updated:** 2026-10-19 UTC
+- **Request:** 修复移动端编辑个人资料后点击保存被错误返回 `profile_effective_date_locked`；保留真实结算资料变更对已批准/已付款历史周的保护，不通过真实生产保存验证。
+- **Outcome:** `/finance/settlements/my-profile` 的幂等空操作修复通过本地静态/纯逻辑回归，资料/规则写入以及进入或离开财务锁状态的流程也已完整枚举。付款的 SERIALIZABLE bridge 不再复用业务 pool：它只接受与业务库身份匹配、显式确认 session-affine 且不含已知 pooler/proxy 标记的 `DATABASE_DIRECT_URL`，每次使用新的物理连接并在成功或任何不确定失败后关闭，从不归还连接池。当前只证明本地 source/synthetic fixed；Build 28 的最终后端兼容修复尚未获得真实隔离 SQL 或发布 GO。
+
+### Implementation
+
+- Previous behavior: Build 28 个人资料页每次保存都会先向 `/finance/settlements/my-profile` 提交整套结算资料；后端在读取现有版本并判断字段是否变化前，先查询 `finance_approved` / `paid` 周，只要 `week_end >= effective_date` 就返回 `profile_effective_date_locked`，因此未修改结算字段也会阻断后续普通资料保存。
+- New behavior: 保存事务先锁定用户与结算资料版本，按完整未脱敏业务值规范化比较当前状态和请求合并状态；仅在存在当前版本、未显式移动当前版本边界且全部业务字段相同时直接返回现有 profile ID。空操作不更新 `users`、不改档案、不新增审计，也不执行历史周锁查询。
+- Concurrency behavior: profile/rule saves, finance approval, payment confirmation, finance return and void acquire the same per-user transaction advisory lock before any business-row `FOR UPDATE`. Settlement-id entry points resolve the immutable user id without taking a row lock, then enter the common order. A transaction-only SERIALIZABLE variant was rejected because the first in-transaction advisory-lock query can fix an old snapshot while waiting. Payment therefore bridges a session lock to the transaction lock on one validated one-shot direct `pg.Client`; it releases the session lock before live reads, verifies the locked settlement still belongs to the resolved user, and closes the physical connection after every attempt.
+- Protected behavior inside the target endpoint: 任一真实字段变化，包括完整银行账号变化、GST 状态/生效日、ABN、供应方名称、付款方式、人员类型或结算开关变化，仍继续执行既有历史结算锁；Web 管理员显式移动版本边界不会进入空操作。若资料/规则先取得门闩，后续财务批准/付款会读取提交后的 live state；若锁状态转换先完成，后续真实修改会读取已提交的 `finance_approved/paid` 并拒绝。
+- Compatibility decision: Mobile Build 28 与最新 Mobile `origin/Dev` 的资料保存业务代码一致，因此采用 Root 后端兼容修复即可覆盖已发布客户端；本 CRL 不修改 Mobile 源码，不创建 OTA，也不改变请求 schema。
+
+### Files / Areas
+
+- `backend/src/lib/personnelSettlementProfiles.ts` — modified: 完整业务状态规范化比较，并将纯空操作放在历史结算锁查询之前。
+- `backend/src/lib/personnelSettlementRules.ts` — modified: 费用规则写入在 user/rule 行锁前取得同一人员门闩。
+- `backend/src/lib/personnelSettlementWorkflow.ts` — modified: 财务批准、确认付款、财务退回与作废采用统一人员门闩；SERIALIZABLE 付款使用一次性 direct `pg.Client` 完成 session-to-transaction bridge，所有路径调用 `end()`，不再把连接归还业务 pool。
+- `backend/src/lib/personnelSettlementUserLock.ts` — added: 统一人员 transaction/session advisory lock、settlement-to-user 解析，以及 direct URL/session-affinity/source-identity fail-closed 校验；拒绝已知 pooler、PgBouncer、proxy、6543 和 transaction/statement pool-mode 标记。
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — modified: 覆盖规范化相等、未确认 GST fallback、完整银行账号差异、GST 生效日差异、资料/规则 advisory-first 及锁查询顺序合同。
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — modified: 覆盖四种锁状态转换顺序、SERIALIZABLE bridge 顺序、direct/primary 身份匹配、pooler-aware 拒绝，以及 connect/lock/`BEGIN`/`SET TRANSACTION`/transaction advisory lock/unlock/commit/rollback/`client.end()` 独立失败；前三种新增的事务建立失败不得进入合成状态写入回调，`end()` 提交后失败不得重试或重复写入，任何路径均不得调用 `release()` 回池。
+- `backend/scripts/tests/test_personnel_settlement_profile_lock_sql_integration.ts` — added: 强制隔离非生产数据库的 save-first、approve-first、付款快照和死锁交错测试；执行前拒绝 production NODE_ENV、未登记测试指纹、缺生产身份指纹、身份相同或非 session-affine 目标。
+- `backend/package.json` — modified: 增加显式隔离 SQL 并发测试命令。
+- `docs/feature-regression-registry.md` — modified: FR-029 记录本人重复提交幂等、真实变更锁定和跨事务门闩边界。
+- `docs/change-release-ledger.md` — modified: 记录本修复候选、验证与交付边界。
+
+### Impact / Dependencies
+
+- API: `/finance/settlements/my-profile` 请求和响应 schema 不变；仅完全未变化的重复 PATCH 从冲突改为成功返回当前资料。
+- Database / migration: none；不新增/修改 schema 或权限。运行时仅使用 PostgreSQL 既有 advisory lock；空操作明确不写 `users`、`personnel_settlement_profiles` 或 `personnel_settlement_profile_audits`。
+- Config / environment: payment now fails closed unless `DATABASE_DIRECT_URL` is present, its database/username/direct-host identity matches `DATABASE_URL` (allowing only the repository's recognized `-pooler` → direct host normalization), it contains no known pooler/proxy marker, and `PERSONNEL_SETTLEMENT_DIRECT_SESSION_AFFINITY_CONFIRMED=1` explicitly acknowledges the physical-session guarantee. The code never derives or rewrites a direct URL from `DATABASE_URL`. The SQL test additionally requires enrolled test and production database identity SHA-256 values, explicit write/ephemeral confirmations, a non-production database name and non-production `NODE_ENV`.
+- Dependencies: existing `pg.Client`, PostgreSQL advisory locks and existing row/transaction primitives only; no new package, schema, permission or external service. Transaction advisory locks remain on ordinary pooled transactions; only the pre-BEGIN SERIALIZABLE payment bridge uses the validated one-shot direct connection.
+- Release-unit boundary: this save-only candidate explicitly excludes `root/CRL-20261016-003`, its profile-document permission, prepared permission migration, Web UI, private document reader and audit endpoint. The display candidate remains preserved in `/Users/zhishi/Documents/Codex/2026-10-16/task-5/root-mz044-profile-fix-candidate` and is not required for this fix.
+- Base: fresh `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`, fetched 2026-10-19 UTC; branch `codex/mz044-profile-save-fix-20261019`.
+- Candidate patch SHA-256: `ff3b778e3839472ca90441779600ba39abcd3501a6b9c150aa4793fb595c75f0` over the exact nine non-ledger paths / 34 non-ledger hunks; the ledger itself is excluded from the fingerprint. An alternate temporary index contained the nine non-ledger candidate paths while the real index remained empty; the temporary index was removed after fingerprinting.
+
+### Validation
+
+- Focused Phase 1 contract — `PASS`; evidence: `npm --prefix backend run test:personnel-settlement-phase1` using a temporary read-only local dependency link, including canonical formatting equality, full unmasked bank account inequality despite an identical suffix, GST-date inequality, explicit-current-edit exclusion, advisory-first profile/rule ordering, no-op-before-historical-lock ordering and historical-lock-before-write ordering.
+- Focused Phase 3 contract — `PASS`; evidence: `npm --prefix backend run test:personnel-settlement-phase3`, including return/approve/pay/void advisory-first order, settlement-to-user resolution, missing/mismatched settlement rejection, SERIALIZABLE bridge order, direct URL/source identity gates, known pooler/proxy rejection, credential-free database fingerprints with `postgres`/`postgresql` and recognized Neon `-pooler`/6543 normalization, and one-shot connection behavior after connect/lock/`BEGIN`/`SET TRANSACTION`/transaction advisory lock/unlock/commit/rollback/`client.end()` failure. Separate synthetic assertions prove `BEGIN`, isolation-level and transaction-lock failures issue no callback `UPDATE`, `client.end()` failure after `COMMIT` preserves exactly one callback write without retry, and none of these paths calls `release()`.
+- Broader settlement contracts — `PASS`; evidence: MZ-034, Phase 2, Phase 4, Phase 5 and claim-dedup commands all passed. Phase 4 was rerun with a temporary link to the already reviewed Build 28 Mobile checkout because the isolated Root candidate does not permanently contain the paired `../mobile` path; both that link and the dependency link were removed afterward.
+- Backend TypeScript `--noEmit` — `PASS`; evidence: `npm --prefix backend run build -- --noEmit` using the same temporary read-only local dependency link, which was removed immediately afterward.
+- Isolated PostgreSQL concurrency/deadlock integration — `NOT RUN`; `MZ_PROFILE_LOCK_TEST_DATABASE_URL` is not configured in this workspace. Reproducible guarded test is prepared as `npm run test:personnel-settlement-profile-lock:sql --prefix backend`; before any connection it rejects `NODE_ENV=production`, non-direct/pooler targets, database names without a non-production marker, missing/mismatched enrolled test fingerprints, missing production identity fingerprint, identical test/production identity, or absent write/ephemeral confirmations.
+- Feature Registry audit — `PASS`; evidence: 33 FRs, 272 test mappings and 86 deferred mobile mappings.
+- Ledger audit — `PASS`; evidence: ten changed files and ten recorded changed files.
+- Diff / selection hygiene — `PASS`; evidence: `git diff --check` passed, the real index was empty during pre-staging candidate fingerprinting and now contains exactly the ten selected paths; the temporary dependency link and alternate fingerprint index were removed.
+- Independent review — `GO` for the exact updated fingerprint's static/synthetic source-commit scope; P0=0, P1=0, P2=2. The targeted independent reviewer matched `ff3b778e3839472ca90441779600ba39abcd3501a6b9c150aa4793fb595c75f0`, nine non-ledger paths / 34 hunks, branch `codex/mz044-profile-save-fix-20261019`, base/HEAD/`origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b` and ten exact staged paths. It confirmed the legacy `PATCH /users/me` bank/ABN policy is absent from the staged diff and found no runtime scope expansion, production/secret/generated-file or temporary-link risk. Remaining P2s: the guarded SQL integration manually composes the bridge rather than directly invoking `runSerializableSettlementUserTransaction`, and the real direct-connection/session-affinity configuration is not verified; real PostgreSQL snapshot/session/lock-release and complete payment-chain behavior remain `NOT VERIFIED`.
+- Production/API/database verification — not run and not authorized.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** `prepared`
+- **Untracked review:** none; the two intentional new source/test files are staged, and no dependency link, cache, build output, environment file or generated artifact remains.
+- `backend/package.json` — SHA-256: `f398ed561e22d53c64dc0b19d04de1dd155585bd0ab0801aa262e734d2ff85c1`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `3c805648d33b0213be40a19130590ef6e7fbf08a569caddd5c4333fe9e2d9a18`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `455a96339952b56e714d880fae9c785204fb9dcdeb6d870983d1ea340ad45a2a`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `b6e0e66421ff7294057f45eed4f9f77fc4b959c5e47ca1df339d3c17d3633c4f`
+- `backend/scripts/tests/test_personnel_settlement_phase1.ts` — SHA-256: `dc87c81adda8991709b61249f1090af1f11cc61ad2a85506895e36743d561699`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `3cd63c62d6eb2f09be0ebe5985176537d5af1a52f241ccc78e64defcd5ce1be7`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `8203e098f005b163029d2ccb86e5728fc76e2f73640fb59395ab606626b4b178`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `8c215f2f3d5ce84cb38a3394d9b692662fc1e68dbafce4e6e68b1395b2f4f491`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `a7bcd0c0b6bbd4ae7579f25048cf6b80479a5f984d79a3df8ec75667f778f7b8`
+- `backend/scripts/tests/test_personnel_settlement_phase3.ts` — SHA-256: `c05f9ee3bc9fc17501d7e1d333646de944b27a6b9cf1285216b40c241eb6129e`
+- `backend/scripts/tests/test_personnel_settlement_profile_lock_sql_integration.ts` — SHA-256: `4ed61180cc5b796c27e3dc875279f94c9d83e6fedd98a53b7f5cbc830f02dbd9`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `8be5beaba414c2d46950fedc9b240e53a802730ac480abf9880a2f4f0a3c4801`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `d4b8b6fbdd653529d3ec76e86038c82d4921b59d13bbe58b6d45528c938a8340`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `ed76c9d5aeb4e24e981d0b8ac084a62fca3dc57eaeacd0809bca9ead44f230d3`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `f1cde1345e585e8bbe9390d8fdd494413c2599216e55a1d711dbb05ed53cb6de`
+- `backend/src/lib/personnelSettlementProfiles.ts` — SHA-256: `fde275604c6259833f6594301d319dba733c2429c167004bcb772c4344ef0808`
+- `backend/src/lib/personnelSettlementRules.ts` — SHA-256: `95df2e2271468a400c2863ab0e4fbe07130889675171a56ce05cec862210af03`
+- `backend/src/lib/personnelSettlementRules.ts` — SHA-256: `b0c751c9cfd7e12cb7b879d6f0f4efe9a61fe3a9c51ecea002c4577bbef90901`
+- `backend/src/lib/personnelSettlementUserLock.ts` — SHA-256: `d9a07656940a2c6ed529b6d27ab6637dea0302d77cdc381035c0a6938902916d`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `0c1163d70c7b4bbba082d4fe7edc08715004326ccebe2c25464a32058e77889f`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `13a902263f16b710ee1f1118351e30bc4c54f42ff376c468f3a097cbc324e965`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `595cc62d1d4dbb88d3585bee3bdd93547bd080e32aa2e18b26ca8899e4ab2f64`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `6bf84d33b2f7c060b1f61ac0da76210ffb0d0ee15ac8e75f885627d45abdba6a`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `7a0f03cdf87be10d818ee0d46ede1fc9e40e811cf169bb1252247638b8081ce3`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `7a7204e811d5d357aff91d07b1f3222b1c0e863287325bb88f23c4a8bea920aa`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `90ff4ade6eecd8b9298678d592fefd496f98da7d1b76cd457b537b20095b2c90`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `cf927fbfd323464933764cd9cf65b6d21cbea0ca23ce9f087ee752adc413928a`
+- `backend/src/lib/personnelSettlementWorkflow.ts` — SHA-256: `dacfe1106296658ffe5af6cdd52f391e0ea4dd66adb7f5f08cf34e2636eb5e76`
+- `docs/feature-regression-registry.md` — SHA-256: `3cc3d8e42d5511e0cef928aba8c8210b9b9d7b93cf27072e4f90a8fef9cfeadb`
+- `docs/feature-regression-registry.md` — SHA-256: `8cb984c8a142244bf74ad6792b219be10a72f375fa48888479c09953036026aa`
+- `docs/feature-regression-registry.md` — SHA-256: `a49fc9760170a2d360a7463553eb9fdefa4cce4a9d31db30f3198d98650a2dcd`
+- `docs/feature-regression-registry.md` — SHA-256: `ccfd5857323b7de6dc9ec1f373921dbe6175a8a989b0a0e7cbaa353e3109c895`
+- `docs/feature-regression-registry.md` — SHA-256: `d0bf1a401ded6e81eccd11604286f93a661dbc92ac3a5afd6c096dd627874ea3`
+- `docs/feature-regression-registry.md` — SHA-256: `de78c81cef9bc8f973cff52cad067f8cf872b1c9da5e8ff5c042df3bffff0f6b`
+
+### Release Attempts
+
+#### RA-20261019-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261019-001`
+- Selected CRL identities: `root/CRL-20261019-001`
+- Intended action: `commit`
+- Branch: `codex/mz044-profile-save-fix-20261019`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19 UTC`
+- Candidate patch SHA-256: `ff3b778e3839472ca90441779600ba39abcd3501a6b9c150aa4793fb595c75f0`
+- Commit SHA: `not committed`
+- Dependencies: no schema/package dependency; release configuration still requires a validated direct PostgreSQL URL plus explicit session-affinity confirmation.
+- Required validation: `PASS for source commit / release NOT VERIFIED`; evidence: Phase 1, Phase 3, broader settlement contracts, backend TypeScript, Feature Registry, ledger coverage and diff checks passed. The guarded real PostgreSQL concurrency/deadlock suite was not run because no approved isolated target is configured.
+- Shared-hunk review: `PASS`; evidence: the separate profile-document display unit was removed from this extraction and the legacy `/users/me` bank/ABN policy remains intentionally unchanged.
+- Generated-file review: `PASS`; evidence: no dependency link, cache, build output, environment file or generated artifact remains.
+- Technical state: `verified`
+- User authorization: `selected-for-commit`; evidence: the current direct instruction selects MZ-044 for isolated task-branch commit/push while expressly keeping the legacy bank/ABN policy out of scope.
+- Independent review: `GO for source commit`; evidence: fresh staged review matched the fingerprint, 10 paths / 34 non-ledger hunks and branch/base, with P0=0, P1=0 and two release-only P2 gaps.
+- Action conclusion: `GO` for the source commit; blockers: none for commit. Real PostgreSQL concurrency/payment-chain validation and direct-connection configuration remain mandatory release gates and must not be represented as release readiness.
+
+### Risks / Release Notes
+
+- Equality uses full canonical bank account data rather than masked suffixes, preventing different accounts with the same last four digits from being treated as unchanged.
+- A no-op intentionally creates no audit row because no persisted state changes. Real profile/rule changes and finance lock-state transitions now share an advisory-first order; the guarded SQL integration remains required before release.
+- Known excluded legacy path: authenticated `PATCH /users/me` still accepts and directly updates legal name, ABN and bank fields without calling `savePersonnelSettlementProfile` or checking `profile_effective_date_locked`. Build 28's normal second request does not send those fields. Per the current instruction, this round neither changes nor waits for that policy; it remains a separately recorded compatibility/security decision before any eventual release.
+- Prior approval race: participating flows and advisory-first order are mapped. The payment bridge is source-fixed to a validated one-shot direct connection; synthetic failure tests cover each connection/transaction boundary and prove no path returns the client to a pool, pre-callback failures perform no synthetic state write, and post-commit `end()` failure does not duplicate the callback. Real two-connection snapshot/deadlock behavior is still `NOT VERIFIED` until the guarded isolated PostgreSQL test runs; runtime configuration must also explicitly confirm session affinity.
+- Environment status: no environment disconnect blocked source inspection, TypeScript or static/pure-logic tests. The missing resource is an explicitly isolated non-production PostgreSQL for destructive temporary-schema concurrency execution; no database URL is configured, and no database call was attempted.
+- Action conclusion: source commit is eligible under the current explicit authorization after the staged independent review; release remains `NOT VERIFIED` until the guarded isolated PostgreSQL concurrency/deadlock test passes on an approved ephemeral target. Minimum release evidence includes stable `pg_backend_pid()` across the direct bridge, profile-first/approve-first/payment-snapshot interleavings, 12-way no-deadlock execution, successful temporary-schema cleanup, and fail-closed payment behavior with missing/invalid direct configuration without creating an expense or marking the settlement paid. This conclusion does not wait for the separately excluded `/users/me` policy.
+- Concurrent participating flows serialize before business row locks. A no-op performs no persistent write; a real change reaches the committed `finance_approved` / `paid` check before any update.
+- Rollback: remove the business-state equality helper/early-return branch plus the common user-lock calls/helper and restore generic SERIALIZABLE payment runner usage; no data rollback or migration is required.
+- Sensitive-information review: tests use synthetic names, ABN and bank values only; no production payload, identity document, credential or environment value is included.
+- Git state: exact ten-path candidate staged; not committed, pushed, merged, deployed or production/device verified. No migration, permission change, production API call or database write performed.

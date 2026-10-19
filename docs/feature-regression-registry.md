@@ -424,7 +424,7 @@
 ## FR-029：费用结算资料、规则历史、周结算、供应方文件与财务付款边界
 
 - **维护责任范围：** backend personnel settlement schema/profile/rule/calculation/claim/workflow/private-evidence/document/scheduler/notification API + web finance settlement profile/rule/claim/weekly/document page + paired mobile self-service/document/notification flow
-- **最后审查日期：** 2026-10-11
+- **最后审查日期：** 2026-10-19
 - **状态：** active
 
 ### 业务保护规则
@@ -437,6 +437,8 @@
 - “结算资料生效日期”和“费用规则生效日期”是两个独立版本边界：前者控制供应方/税务资料、人员类型、付款方式与结算开关，后者控制计费方式与单价。银行账户继续以 `users` 为唯一主资料并在有权限的管理员明确保存时立即生效，不伪装成可按日期回溯的档案字段。网页必须使用不同名称并说明各自影响范围，不能仅显示两个相同的“生效日期”。
 - 网页“编辑人员结算资料”只修改打开时读取到的当前生效版本：必须回显该版本原生效日并随保存请求携带原版本边界。当前版本起始日只能保持不变或向前移动，不得向后推迟并改写原起始日至新日期之间已经归属当前版本的历史区间；未来生效的变更必须另建版本。管理员向前移动当前版本起始日时，后端必须在同一事务中合并未被 `finance_approved/paid` 锁定的重叠档案、保留审计记录并返回新的当前版本；不得把修改静默写入仍会被后续版本覆盖的历史区间。版本已被并发替换时必须返回可理解的刷新提示。显式提交的银行资料不得因为存在后续档案而跳过保存。
 - 已 `finance_approved` 或 `paid` 的历史周结算不可被回溯改写；任何可能覆盖已锁定期间的档案或费用规则生效日期必须返回冲突。费用规则页面必须先读取锁定截止日，禁用无效日期并用中文说明最早可选日期；保存后继续显示刚保存版本的生效日，不能重置为当天，也不能把 `rule_effective_date_locked` 技术码直接显示给用户。若所选生效日早于已有后续版本，保存前必须明确展示该历史版本的实际截止日并说明当前版本不会改变；历史卡片可将完整规则复制到当前可写日期，但复制只能填充表单、必须再次保存，且不得删除或覆盖原历史版本。Photo ID 仅是身份合规资料，不能作为工作量证明。
+- 本人移动端重复提交与当前有效结算资料完全一致的供应方、GST、付款方式和银行资料时，后端必须在同一事务内锁定并规范化比较完整业务状态，作为幂等空操作返回现有版本；不得执行历史结算锁查询、用户/档案更新或新增审计。任何真实字段变化或管理员显式移动版本边界仍必须执行既有 `finance_approved/paid` 锁定检查，不能借幂等分支绕过历史保护。
+- 结算资料/费用规则写入，以及结算进入或离开 `finance_approved/paid` 的财务批准、确认付款、财务退回和作废事务，必须先按人员取得同一 advisory lock，再取得 user/profile/rule/settlement 等业务行锁；不得在持有相反顺序业务行锁后再等待人员锁。SERIALIZABLE 付款事务必须在 `BEGIN` 前用同 key 的 session lock 桥接，事务内取得 transaction advisory lock 后立即释放 session lock，避免等待期间提前固定旧快照。该 bridge 只能使用与业务 `DATABASE_URL` 身份严格匹配、显式确认 session-affine 且不含已知 transaction-pooler/proxy 标记的 `DATABASE_DIRECT_URL` 一次性物理连接；不得把 session lock 放在业务 pool 上，成功或任何锁/提交/回滚/解锁不确定路径都必须关闭连接而不能归还池。该门闩不改变业务状态机、权限或历史锁规则。
 - GST 已注册或状态未确认时，每个人的费用规则必须明确选择 `exclusive_gst` 或 `inclusive_gst`；GST 未注册时网页不得提供含税/未税选择，服务端必须把口径固定为 `exclusive_gst` 且 GST 为 0。金额只以 AUD 整数分保存。一个版本可组合岗位所需的多种计算方式；不同生效日生成不重叠的历史版本，同一生效日只允许修正同一版本。普通工作人员不得读取或修改规则管理接口。
 - 人员结算资料详情在具备 `personnel_settlements.rules.manage` 权限时，必须复用现有只读规则历史接口并且只展示其中的当前生效版本，包括生效期间、GST 单价口径、逐项计费方式与金额及备注；没有当前生效版本时显示明确空状态。历史版本只在专门的费用规则抽屉中展示。没有规则管理权限时不得为详情页额外请求或暴露完整单价，继续只显示资料接口已有的当前规则摘要。
 - 清洁费用必须按房源 `properties.type` 精确匹配 `一房一卫`、`两房一卫`、`两房两卫`、`三房两卫`、`三房三卫`、`4房3.5卫` 六档单价；清洁规则保存时六档必须齐全且不得重复。旧的统一清洁单价不参与新周结算；任务缺少/超出支持房型或人员缺少对应房型单价时必须进入财务人工复核，禁止静默回退。房型必须写入计算快照，已发起确认、已批准或已付款的历史结算不得因此回算。
@@ -467,6 +469,10 @@
 | schema 未初始化时不重复弹 toast、不暴露技术错误 | `frontend/src/app/finance/settlements/settlementPageState.test.ts` | marker 未就绪映射为单一页面内初始化状态；未知错误使用通用安全文案 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/settlementPageState.test.ts --coverage.enabled=false` |
 | 网页可选 ABN/GST、付款方式及两类生效日期区分 | `frontend/src/app/finance/settlements/personnelProfileUi.test.ts` | ABN 可留空、已注册 GST 条件式要求 11 位 ABN、GST 可清空为未确认、四种付款方式中文标签、银行资料条件式展示，以及结算资料与费用规则日期的独立名称和用途说明 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/personnelProfileUi.test.ts --coverage.enabled=false` |
 | 当前结算资料版本编辑、日期移动与银行主资料保存 | `backend/scripts/tests/test_personnel_settlement_phase1.ts` | 纯函数覆盖 `2026-09-30` 当前版本向前移动到已有/不存在的 `2026-09-01` 边界、吸收重叠版本、修正前一版本截止日和拒绝过期版本；源码合同固定审计重挂、重叠档案删除、当前编辑时更新 `users` | sufficient | `npm run test:personnel-settlement-phase1 --prefix backend` |
+| 本人资料重复提交幂等与历史结算锁边界 | `backend/scripts/tests/test_personnel_settlement_phase1.ts` | 完整规范化业务状态相同才允许在锁查询前返回；银行账号即使尾号相同但完整号码变化仍视为真实修改；GST 生效日变化不走空操作；源码合同固定空操作位于 `profile_effective_date_locked` 查询之前 | sufficient | `npm run test:personnel-settlement-phase1 --prefix backend` |
+| 资料/规则写入人员门闩顺序 | `backend/scripts/tests/test_personnel_settlement_phase1.ts` | 固定 profile/rule save 均在任何 user/profile/rule 行锁前取得同一人员 advisory lock，同时保留 no-op 与历史锁查询顺序 | sufficient | `npm run test:personnel-settlement-phase1 --prefix backend` |
+| 财务锁状态转换与 SERIALIZABLE bridge | `backend/scripts/tests/test_personnel_settlement_phase3.ts` | 固定批准、付款、退回和作废的 advisory-first 顺序；验证 direct URL/业务库身份匹配、session-affinity 确认、pooler/proxy 拒绝、一次性连接顺序，以及 lock/unlock/commit/rollback 失败后关闭连接 | sufficient | `npm run test:personnel-settlement-phase3 --prefix backend` |
+| 人员资料与财务状态真实并发及死锁回归 | `backend/scripts/tests/test_personnel_settlement_profile_lock_sql_integration.ts` | 隔离 SQL 测试覆盖 save-first、approve-first、SERIALIZABLE 付款快照与交错行锁无死锁；执行前拒绝 `NODE_ENV=production`、未登记测试库指纹、缺生产库身份指纹、测试/生产身份相同及 pooler/proxy 目标 | sufficient | `MZ_PROFILE_LOCK_TEST_DATABASE_URL=<ephemeral non-production DB> MZ_PROFILE_LOCK_TEST_DATABASE_FINGERPRINT=<approved test identity SHA-256> MZ_PROFILE_LOCK_TEST_PRODUCTION_DATABASE_FINGERPRINT=<production identity SHA-256> MZ_PROFILE_LOCK_TEST_WRITE=1 MZ_PROFILE_LOCK_TEST_CONFIRM_EPHEMERAL=1 npm run test:personnel-settlement-profile-lock:sql --prefix backend` |
 | 网页当前资料日期回显、版本边界与保存结果 | `frontend/src/app/finance/settlements/personnelProfileUi.test.ts` | 固定回显当前日期、提交原版本边界、立即生效银行说明、保存后实际当前日期及并发冲突中文提示 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/personnelProfileUi.test.ts --coverage.enabled=false` |
 | 人员详情当前费用规则展示与权限边界 | `frontend/src/app/finance/settlements/personnelProfileUi.test.ts` | 只有 `canManageRules` 的详情读取既有规则历史端点并筛选 `is_current`；页面只显示当前版本的生效期间、GST 口径和逐项单价，不重复历史版本且不扩大后端规则管理权限；真实页面另验证无当前版本空状态 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/personnelProfileUi.test.ts src/app/finance/settlements/feeRuleUi.test.ts --coverage.enabled=false` |
 | 网页费用结算标签优先级与默认页 | `frontend/src/app/finance/settlements/personnelProfileUi.test.ts` | 首次进入默认打开周结算，标签顺序固定为周结算、工作量反馈、人员与费用规则 | sufficient | `npm run test --prefix frontend -- --run src/app/finance/settlements/personnelProfileUi.test.ts --coverage.enabled=false` |
@@ -512,12 +518,13 @@
 
 ### 最后验证
 
-- **CRL：** root/CRL-20261002-001, root/CRL-20261002-002, root/CRL-20261003-002, root/CRL-20261003-003, root/CRL-20261005-003, root/CRL-20261011-002, root/CRL-20261011-003
+- **CRL：** root/CRL-20261002-001, root/CRL-20261002-002, root/CRL-20261003-002, root/CRL-20261003-003, root/CRL-20261005-003, root/CRL-20261011-002, root/CRL-20261011-003, root/CRL-20261019-001
 - **Commit：** not committed
-- **日期：** 2026-10-11
+- **日期：** 2026-10-19
 
 ### 相关 CRL
 
+- root/CRL-20261019-001：本人移动端未修改结算字段时，重复提交作为后端幂等空操作返回，不被历史结算锁误拦截；真实结算资料变更继续受锁保护。
 - root/CRL-20261011-002：移除网页工作量证明 GET 中多余的 `Cache-Control`/`Pragma` 请求头，保留 bearer 鉴权、浏览器 no-store 与服务端私有 no-store 响应语义。
 - root/CRL-20261005-003：已付款结算 PDF 使用冻结付款快照显示付款方式；银行转账显示账户名、BSB 与账号尾号 4 位，不泄露完整账号。
 - root/CRL-20261002-001：通用补贴改为直接填写最终总额，财务决定是否计入且无需费用规则。

@@ -17,6 +17,7 @@ import {
   personnelSettlementSubmissionStatus,
   planPersonnelSettlementCarryAdjustment,
   retryPersonnelSettlementSerializableTransaction,
+  runSerializableSettlementUserTransaction,
   shouldUseFrozenSettlementSubmission,
   validatePersonnelSettlementPayment,
 } from '../../src/lib/personnelSettlementWorkflow'
@@ -24,6 +25,15 @@ import {
   normalizePersonnelPaymentMethod,
   personnelPaymentMethodRequiresBankDetails,
 } from '../../src/lib/personnelSettlementPayment'
+import {
+  lockPersonnelSettlementUserScope,
+  lockPersonnelSettlementUserScopeForSettlement,
+  requirePersonnelSettlementSessionAffineDatabaseUrl,
+} from '../../src/lib/personnelSettlementUserLock'
+import {
+  assertSafeEphemeralTarget,
+  personnelSettlementTestDatabaseIdentityFingerprint,
+} from './test_personnel_settlement_profile_lock_sql_integration'
 import {
   buildPersonnelClaimOptions,
   calculatePersonnelClaimEstimate,
@@ -51,6 +61,11 @@ import {
 
 const backendRoot = path.resolve(__dirname, '../..')
 const workflow = fs.readFileSync(path.join(backendRoot, 'src/lib/personnelSettlementWorkflow.ts'), 'utf8')
+const userLock = fs.readFileSync(path.join(backendRoot, 'src/lib/personnelSettlementUserLock.ts'), 'utf8')
+const profileLockSqlIntegration = fs.readFileSync(
+  path.join(backendRoot, 'scripts/tests/test_personnel_settlement_profile_lock_sql_integration.ts'),
+  'utf8',
+)
 const claims = fs.readFileSync(path.join(backendRoot, 'src/lib/personnelWorkloadClaims.ts'), 'utf8')
 const preview = fs.readFileSync(path.join(backendRoot, 'src/lib/personnelSettlementPreview.ts'), 'utf8')
 const router = fs.readFileSync(path.join(backendRoot, 'src/modules/personnel_settlements.ts'), 'utf8')
@@ -941,7 +956,64 @@ assert.match(confirmPaidFlow, /assertSettlementReadyForConfirmation\(client, cur
 assert.match(confirmPaidFlow, /payment_subtotal_cents:[\s\S]*payment_gst_cents:[\s\S]*payment_amount_cents:/)
 assert.match(workflow, /retryPersonnelSettlementSerializableTransaction<[\s\S]*Math\.min\(3,[\s\S]*SERIALIZABLE_SETTLEMENT_RETRY_CODES/)
 assert.match(workflow, /runSerializableSettlementTransaction<[\s\S]*SET TRANSACTION ISOLATION LEVEL SERIALIZABLE/)
-assert.match(confirmPaidFlow, /runSerializableSettlementTransaction[\s\S]*loadSettlementForUpdate/)
+assert.match(confirmPaidFlow, /runSerializableSettlementUserTransaction[\s\S]*loadSettlementForUpdate/)
+assert.match(confirmPaidFlow, /cleanText\(current\.user_id\) !== settlementUserId[\s\S]*settlement_user_scope_mismatch/)
+const lockedStatusTransitionFlows = [
+  ['return_for_confirmation', workflow.slice(
+    workflow.indexOf('export async function returnPersonnelSettlementForConfirmation'),
+    workflow.indexOf('export async function issuePersonnelSettlementConfirmation'),
+  )],
+  ['approve', workflow.slice(
+    workflow.indexOf('export async function approvePersonnelSettlementFinanceReview'),
+    workflow.indexOf('export async function confirmPersonnelSettlementPaid'),
+  )],
+  ['void', workflow.slice(workflow.indexOf('export async function voidPersonnelSettlement'))],
+] as const
+for (const [name, source] of lockedStatusTransitionFlows) {
+  const advisoryLockIndex = source.indexOf('await lockPersonnelSettlementUserScopeForSettlement(client, input.settlementId)')
+  const settlementRowLockIndex = source.indexOf('await loadSettlementForUpdate(client, input.settlementId)')
+  assert.ok(
+    advisoryLockIndex >= 0 && advisoryLockIndex < settlementRowLockIndex,
+    `${name} must acquire the shared per-user advisory lock before the settlement row lock`,
+  )
+}
+assert.ok(
+  confirmPaidFlow.indexOf('await getPersonnelSettlementUserScopeId(pgPool, input.settlementId)') >= 0
+  && confirmPaidFlow.indexOf('await getPersonnelSettlementUserScopeId(pgPool, input.settlementId)') < confirmPaidFlow.indexOf('runSerializableSettlementUserTransaction(settlementUserId'),
+  'confirm_paid must resolve the immutable settlement user before the guarded serializable transaction',
+)
+assert.ok(
+  confirmPaidFlow.indexOf('runSerializableSettlementUserTransaction(settlementUserId') < confirmPaidFlow.indexOf('await loadSettlementForUpdate(client, input.settlementId)'),
+  'confirm_paid must enter the guarded serializable transaction before taking the settlement row lock',
+)
+const serializableUserTransaction = workflow.slice(
+  workflow.indexOf('async function runSerializableSettlementUserTransaction'),
+  workflow.indexOf('function safeInteger'),
+)
+const sessionLockIndex = serializableUserTransaction.indexOf('await lockPersonnelSettlementUserSessionScope(client, userId)')
+const beginIndex = serializableUserTransaction.indexOf("await client.query('BEGIN')")
+const serializableIndex = serializableUserTransaction.indexOf("await client.query('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE')")
+const transactionLockIndex = serializableUserTransaction.indexOf('await lockPersonnelSettlementUserScope(client, userId)')
+const sessionUnlockIndex = serializableUserTransaction.indexOf('await unlockPersonnelSettlementUserSessionScope(client, userId)')
+const callbackIndex = serializableUserTransaction.indexOf('const result = await cb(client)')
+assert.ok(
+  sessionLockIndex >= 0
+  && sessionLockIndex < beginIndex
+  && beginIndex < serializableIndex
+  && serializableIndex < transactionLockIndex
+  && transactionLockIndex < sessionUnlockIndex
+  && sessionUnlockIndex < callbackIndex,
+  'SERIALIZABLE payment must bridge session lock to transaction lock before its snapshot-protected callback',
+)
+assert.match(workflow, /function createPersonnelSettlementDirectClient[\s\S]*requirePersonnelSettlementSessionAffineDatabaseUrl/)
+assert.match(serializableUserTransaction, /await client\.connect\(\)/)
+assert.match(serializableUserTransaction, /await client\.end\(\)/)
+assert.doesNotMatch(serializableUserTransaction, /pgPool\.connect|client\.release\(/)
+assert.match(userLock, /PERSONNEL_SETTLEMENT_DIRECT_SESSION_AFFINITY_CONFIRMED/)
+assert.match(userLock, /TRANSACTION_POOLER_HOST_SEGMENT/)
+assert.match(profileLockSqlIntegration, /NODE_ENV_production/)
+assert.match(profileLockSqlIntegration, /MZ_PROFILE_LOCK_TEST_PRODUCTION_DATABASE_FINGERPRINT_required/)
+assert.match(profileLockSqlIntegration, /MZ_PROFILE_LOCK_TEST_refuses_production_database_identity/)
 const postPaymentAdjustmentFlow = workflow.slice(
   workflow.indexOf('export async function recordPersonnelSettlementPostPaymentAdjustment'),
   workflow.indexOf('export async function voidPersonnelSettlement'),
@@ -1308,6 +1380,237 @@ assert.ok(claimsPanel.includes("if (mode === 'time_range') return `${rate}/小�
 assert.doesNotMatch(claimsPanel, /new_property_task'\) return `\$\{rate\}\/次/)
 
 async function runAsyncContracts() {
+  const syntheticDirectUrl = 'postgresql://synthetic:synthetic@direct-db.example.invalid/mz_profile_ephemeral?sslmode=require'
+  assert.strictEqual(requirePersonnelSettlementSessionAffineDatabaseUrl({
+    DATABASE_DIRECT_URL: syntheticDirectUrl,
+    DATABASE_URL: syntheticDirectUrl,
+    PERSONNEL_SETTLEMENT_DIRECT_SESSION_AFFINITY_CONFIRMED: '1',
+  }), syntheticDirectUrl)
+  assert.throws(
+    () => requirePersonnelSettlementSessionAffineDatabaseUrl({ DATABASE_DIRECT_URL: syntheticDirectUrl, DATABASE_URL: syntheticDirectUrl }),
+    /direct_session_affinity_not_confirmed/,
+  )
+  assert.strictEqual(requirePersonnelSettlementSessionAffineDatabaseUrl({
+    DATABASE_URL: 'postgresql://synthetic:synthetic@direct-db-pooler.example.invalid/mz_profile_ephemeral?sslmode=require',
+    DATABASE_DIRECT_URL: syntheticDirectUrl,
+    PERSONNEL_SETTLEMENT_DIRECT_SESSION_AFFINITY_CONFIRMED: '1',
+  }), syntheticDirectUrl)
+  assert.throws(
+    () => requirePersonnelSettlementSessionAffineDatabaseUrl({
+      DATABASE_URL: syntheticDirectUrl,
+      DATABASE_DIRECT_URL: 'postgresql://synthetic:synthetic@other-db.example.invalid/mz_profile_ephemeral',
+      PERSONNEL_SETTLEMENT_DIRECT_SESSION_AFFINITY_CONFIRMED: '1',
+    }),
+    /direct_database_source_mismatch/,
+  )
+  for (const pooledUrl of [
+    'postgresql://synthetic:synthetic@ep-test-pooler.example.invalid/mz_profile_ephemeral',
+    'postgresql://synthetic:synthetic@pooler.example.invalid:5432/mz_profile_ephemeral',
+    'postgresql://synthetic:synthetic@db.example.invalid:6543/mz_profile_ephemeral',
+    'postgresql://synthetic:synthetic@db.example.invalid/mz_profile_ephemeral?pool_mode=transaction',
+    'postgresql://synthetic:synthetic@proxy.example.invalid/mz_profile_ephemeral',
+  ]) {
+    assert.throws(
+      () => requirePersonnelSettlementSessionAffineDatabaseUrl({
+        DATABASE_DIRECT_URL: pooledUrl,
+        DATABASE_URL: pooledUrl,
+        PERSONNEL_SETTLEMENT_DIRECT_SESSION_AFFINITY_CONFIRMED: '1',
+      }),
+      /not_session_affine/,
+    )
+  }
+
+  const testDatabaseFingerprint = personnelSettlementTestDatabaseIdentityFingerprint(syntheticDirectUrl)
+  assert.strictEqual(
+    personnelSettlementTestDatabaseIdentityFingerprint(
+      'postgres://different-user:different-password@direct-db.example.invalid/mz_profile_ephemeral?sslmode=verify-full',
+    ),
+    testDatabaseFingerprint,
+    'database identity fingerprints must exclude credentials and connection options',
+  )
+  assert.strictEqual(
+    personnelSettlementTestDatabaseIdentityFingerprint(
+      'postgresql://synthetic:synthetic@direct-db-pooler.example.invalid:6543/mz_profile_ephemeral',
+    ),
+    testDatabaseFingerprint,
+    'database identity fingerprints must normalize the recognized Neon pooler host and port',
+  )
+  const safeSqlEnvironment = {
+    NODE_ENV: 'test',
+    MZ_PROFILE_LOCK_TEST_DATABASE_URL: syntheticDirectUrl,
+    MZ_PROFILE_LOCK_TEST_WRITE: '1',
+    MZ_PROFILE_LOCK_TEST_CONFIRM_EPHEMERAL: '1',
+    MZ_PROFILE_LOCK_TEST_DATABASE_FINGERPRINT: testDatabaseFingerprint,
+    MZ_PROFILE_LOCK_TEST_PRODUCTION_DATABASE_FINGERPRINT: 'f'.repeat(64),
+  }
+  assert.strictEqual(assertSafeEphemeralTarget(safeSqlEnvironment).activeFingerprint, testDatabaseFingerprint)
+  assert.throws(
+    () => assertSafeEphemeralTarget({ ...safeSqlEnvironment, NODE_ENV: 'production' }),
+    /refuses_NODE_ENV_production/,
+  )
+  assert.throws(
+    () => assertSafeEphemeralTarget({
+      ...safeSqlEnvironment,
+      MZ_PROFILE_LOCK_TEST_DATABASE_FINGERPRINT: '0'.repeat(64),
+    }),
+    /DATABASE_FINGERPRINT_must_match_target/,
+  )
+  assert.throws(
+    () => assertSafeEphemeralTarget({
+      ...safeSqlEnvironment,
+      MZ_PROFILE_LOCK_TEST_PRODUCTION_DATABASE_FINGERPRINT: '',
+    }),
+    /PRODUCTION_DATABASE_FINGERPRINT_required/,
+  )
+  assert.throws(
+    () => assertSafeEphemeralTarget({
+      ...safeSqlEnvironment,
+      MZ_PROFILE_LOCK_TEST_PRODUCTION_DATABASE_FINGERPRINT: testDatabaseFingerprint,
+    }),
+    /refuses_production_database_identity/,
+  )
+
+  function fakeDirectClient(options: { failConnect?: boolean; failSql?: string; failEnd?: boolean } = {}) {
+    const events: string[] = []
+    const client = {
+      async connect() {
+        events.push('CONNECT')
+        if (options.failConnect) throw new Error('synthetic connect failure')
+      },
+      async query(sql: string) {
+        const normalized = sql.replace(/\s+/g, ' ').trim()
+        events.push(normalized)
+        if (options.failSql && normalized.includes(options.failSql)) {
+          throw new Error(`synthetic ${options.failSql} failure`)
+        }
+        if (normalized.includes('pg_advisory_unlock')) return { rows: [{ unlocked: true }] }
+        return { rows: [] }
+      },
+      async end() {
+        events.push('END')
+        if (options.failEnd) throw new Error('synthetic end failure')
+      },
+      async release() {
+        events.push('RELEASE')
+      },
+    }
+    return { client, events }
+  }
+
+  const successfulDirect = fakeDirectClient()
+  const directResult = await runSerializableSettlementUserTransaction('synthetic-user', async () => {
+    successfulDirect.events.push('CALLBACK')
+    return 'paid'
+  }, { createClient: () => successfulDirect.client })
+  assert.strictEqual(directResult, 'paid')
+  assert.deepStrictEqual(successfulDirect.events, [
+    'CONNECT',
+    "SELECT pg_advisory_lock(hashtext('personnel-settlement-user'), hashtext($1))",
+    'BEGIN',
+    'SET TRANSACTION ISOLATION LEVEL SERIALIZABLE',
+    "SELECT pg_advisory_xact_lock(hashtext('personnel-settlement-user'), hashtext($1))",
+    "SELECT pg_advisory_unlock(hashtext('personnel-settlement-user'), hashtext($1)) AS unlocked",
+    'CALLBACK',
+    'COMMIT',
+    'END',
+  ])
+  assert.ok(!successfulDirect.events.includes('RELEASE'), 'successful direct clients must never be returned to a pool')
+
+  for (const failure of [
+    { failSql: 'BEGIN', message: 'BEGIN' },
+    { failSql: 'SET TRANSACTION ISOLATION LEVEL SERIALIZABLE', message: 'SET TRANSACTION' },
+    { failSql: 'pg_advisory_xact_lock(', message: 'pg_advisory_xact_lock' },
+  ]) {
+    const failedDirect = fakeDirectClient(failure)
+    let stateWrites = 0
+    await assert.rejects(
+      runSerializableSettlementUserTransaction('synthetic-user', async (client) => {
+        stateWrites += 1
+        await client.query("UPDATE synthetic_payment_state SET status='paid'")
+        return 'unexpected-write'
+      }, { createClient: () => failedDirect.client }),
+      new RegExp(failure.message),
+    )
+    assert.strictEqual(stateWrites, 0, `${failure.message} failure must prevent the state-write callback`)
+    assert.ok(
+      !failedDirect.events.some((event) => event.startsWith('UPDATE synthetic_payment_state')),
+      `${failure.message} failure must not issue a synthetic state write`,
+    )
+    assert.strictEqual(failedDirect.events.at(-1), 'END', `${failure.message} failure must destroy the physical connection`)
+    assert.ok(!failedDirect.events.includes('RELEASE'), `${failure.message} failure must never return the client to a pool`)
+  }
+
+  const endFailure = fakeDirectClient({ failEnd: true })
+  let endFailureStateWrites = 0
+  const endFailureResult = await runSerializableSettlementUserTransaction('synthetic-user', async (client) => {
+    endFailureStateWrites += 1
+    await client.query("UPDATE synthetic_payment_state SET status='paid'")
+    return 'paid'
+  }, { createClient: () => endFailure.client })
+  assert.strictEqual(endFailureResult, 'paid', 'end failure after COMMIT must not turn a committed payment into a retry')
+  assert.strictEqual(endFailureStateWrites, 1, 'end failure must not duplicate the state-write callback')
+  assert.strictEqual(
+    endFailure.events.filter((event) => event.startsWith('UPDATE synthetic_payment_state')).length,
+    1,
+    'end failure must preserve exactly one synthetic state write',
+  )
+  assert.ok(endFailure.events.indexOf('COMMIT') < endFailure.events.indexOf('END'), 'end failure must happen after COMMIT')
+  assert.ok(!endFailure.events.includes('RELEASE'), 'end failure must never return the client to a pool')
+
+  for (const failure of [
+    { failConnect: true, failSql: undefined, message: 'connect failure' },
+    { failConnect: false, failSql: 'pg_advisory_lock(', message: 'pg_advisory_lock' },
+    { failConnect: false, failSql: 'pg_advisory_unlock', message: 'pg_advisory_unlock' },
+    { failConnect: false, failSql: 'COMMIT', message: 'COMMIT' },
+  ]) {
+    const failedDirect = fakeDirectClient(failure)
+    await assert.rejects(
+      runSerializableSettlementUserTransaction('synthetic-user', async () => 'unreachable', {
+        createClient: () => failedDirect.client,
+      }),
+      new RegExp(failure.message),
+    )
+    assert.strictEqual(failedDirect.events.at(-1), 'END', `${failure.message} must destroy the physical connection`)
+    assert.ok(!failedDirect.events.includes('RELEASE'), `${failure.message} must never return the client to a pool`)
+  }
+
+  const rollbackFailure = fakeDirectClient({ failSql: 'ROLLBACK' })
+  await assert.rejects(
+    runSerializableSettlementUserTransaction('synthetic-user', async () => {
+      throw new Error('synthetic callback failure')
+    }, { createClient: () => rollbackFailure.client }),
+    /callback failure/,
+  )
+  assert.strictEqual(rollbackFailure.events.at(-1), 'END', 'rollback failure must destroy the physical connection')
+  assert.ok(!rollbackFailure.events.includes('RELEASE'), 'rollback failure must never return the client to a pool')
+
+  const directQueries: Array<{ sql: string; params?: any[] }> = []
+  await lockPersonnelSettlementUserScope({
+    query: async (sql: string, params?: any[]) => {
+      directQueries.push({ sql, params })
+      return { rows: [] }
+    },
+  }, 'synthetic-user')
+  assert.strictEqual(directQueries.length, 1)
+  assert.match(directQueries[0].sql, /pg_advisory_xact_lock/)
+  assert.deepStrictEqual(directQueries[0].params, ['synthetic-user'])
+
+  const settlementQueries: Array<{ sql: string; params?: any[] }> = []
+  const resolvedUserId = await lockPersonnelSettlementUserScopeForSettlement({
+    query: async (sql: string, params?: any[]) => {
+      settlementQueries.push({ sql, params })
+      return settlementQueries.length === 1 ? { rows: [{ user_id: 'synthetic-user' }] } : { rows: [] }
+    },
+  }, 'synthetic-settlement')
+  assert.strictEqual(resolvedUserId, 'synthetic-user')
+  assert.match(settlementQueries[0].sql, /SELECT user_id FROM personnel_weekly_settlements/)
+  assert.match(settlementQueries[1].sql, /pg_advisory_xact_lock/)
+  assert.deepStrictEqual(settlementQueries[1].params, ['synthetic-user'])
+  await assert.rejects(
+    lockPersonnelSettlementUserScopeForSettlement({ query: async () => ({ rows: [] }) }, 'missing-settlement'),
+    /settlement_not_found/,
+  )
+
   let serializationAttempts = 0
   const result = await retryPersonnelSettlementSerializableTransaction(async () => {
     serializationAttempts += 1

@@ -45,6 +45,7 @@
     "test:personnel-settlement-mz035:sql": "node -r ts-node/register/transpile-only scripts/tests/test_personnel_settlement_mz035_sql_integration.ts",
     "test:personnel-settlement-phase2": "ts-node-dev --transpile-only scripts/tests/test_personnel_settlement_phase2.ts",
     "test:personnel-settlement-phase3": "ts-node-dev --transpile-only scripts/tests/test_personnel_settlement_phase3.ts",
+    "test:personnel-settlement-profile-lock:sql": "node -r ts-node/register/transpile-only scripts/tests/test_personnel_settlement_profile_lock_sql_integration.ts",
     "test:personnel-settlement-claim-dedup": "ts-node-dev --transpile-only scripts/tests/test_personnel_settlement_claim_dedup.ts",
     "test:personnel-settlement-phase3:integration": "MZ_PHASE3_INTEGRATION_WRITE=1 DOTENV_CONFIG_PATH=.env.local node -r dotenv/config -r ts-node/register/transpile-only scripts/tests/test_personnel_settlement_phase3_integration.ts",
     "test:personnel-settlement-phase4": "ts-node-dev --transpile-only scripts/tests/test_personnel_settlement_phase4.ts",

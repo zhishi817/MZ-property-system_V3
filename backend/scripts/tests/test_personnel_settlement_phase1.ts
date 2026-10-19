@@ -17,6 +17,7 @@ import { isCleaningTaskInspectionSubmitParticipant } from '../../src/lib/cleanin
 import {
   isValidAustralianAbn,
   getPersonnelSettlementProfile,
+  isPersonnelProfileBusinessStateEqual,
   listPersonnelSettlementProfiles,
   planPersonnelCurrentProfileEdit,
   validatePersonnelProfilePatch,
@@ -37,6 +38,8 @@ const paymentMethodMigration = fs.readFileSync(
 )
 const readiness = fs.readFileSync(path.join(backendRoot, 'src/lib/personnelSettlementSchema.ts'), 'utf8')
 const profilesSource = fs.readFileSync(path.join(backendRoot, 'src/lib/personnelSettlementProfiles.ts'), 'utf8')
+const rulesSource = fs.readFileSync(path.join(backendRoot, 'src/lib/personnelSettlementRules.ts'), 'utf8')
+const userLockSource = fs.readFileSync(path.join(backendRoot, 'src/lib/personnelSettlementUserLock.ts'), 'utf8')
 const router = fs.readFileSync(path.join(backendRoot, 'src/modules/personnel_settlements.ts'), 'utf8')
 const indexSource = fs.readFileSync(path.join(backendRoot, 'src/index.ts'), 'utf8')
 
@@ -155,6 +158,43 @@ assert.throws(() => validatePersonnelProfilePatch({
   patch: {},
 }), /effective_date_in_future/)
 
+const unchangedProfileState = {
+  settlement_enabled: true,
+  person_type: 'cleaner',
+  supplier_legal_name: 'Cleaner One',
+  supplier_business_name: 'Cleaner Trading',
+  abn: '53 004 085 616',
+  gst_status: 'registered',
+  gst_effective_from: '2026-09-10',
+  payment_method: 'bank_transfer',
+  bank_account_name: 'Cleaner One',
+  bank_bsb: '123-456',
+  bank_account_number: '1111-5678',
+}
+assert.strictEqual(isPersonnelProfileBusinessStateEqual(unchangedProfileState, {
+  ...unchangedProfileState,
+  abn: '53004085616',
+  bank_bsb: '123456',
+  bank_account_number: '11115678',
+}), true)
+assert.strictEqual(isPersonnelProfileBusinessStateEqual(unchangedProfileState, {
+  ...unchangedProfileState,
+  bank_account_number: '2222-5678',
+}), false, 'full bank account number changes must not be hidden by identical masked suffixes')
+assert.strictEqual(isPersonnelProfileBusinessStateEqual(unchangedProfileState, {
+  ...unchangedProfileState,
+  gst_effective_from: '2026-09-11',
+}), false)
+assert.strictEqual(isPersonnelProfileBusinessStateEqual({
+  ...unchangedProfileState,
+  gst_status: 'unconfirmed',
+  gst_effective_from: null,
+}, {
+  ...unchangedProfileState,
+  gst_status: 'unconfirmed',
+  gst_effective_from: '2026-10-19',
+}), true, 'unconfirmed GST ignores the client fallback date because no GST effective date is persisted')
+
 assert.deepStrictEqual(planPersonnelCurrentProfileEdit({
   profiles: [
     { id: 'profile-sep-1', effective_from: '2026-09-01', effective_to: '2026-09-29' },
@@ -208,6 +248,42 @@ assert.match(profilesSource, /if \(currentEditPlan \|\| !next\)/)
 assert.match(profilesSource, /SET profile_id=\$1/)
 assert.match(profilesSource, /DELETE FROM personnel_settlement_profiles/)
 assert.match(router, /current_effective_date: z\.string\(\)\.trim\(\)\.regex\(DATE_ONLY\)\.optional\(\)/)
+const saveProfileFlow = profilesSource.slice(profilesSource.indexOf('export async function savePersonnelSettlementProfile'))
+assert.match(saveProfileFlow, /!currentEditPlan[\s\S]*isPersonnelProfileBusinessStateEqual\(\{ \.\.\.user, \.\.\.current \}, merged\)[\s\S]*return String\(current\.id\)/)
+const businessStateHelper = profilesSource.slice(
+  profilesSource.indexOf('function personnelProfileBusinessState'),
+  profilesSource.indexOf('export function validatePersonnelProfilePatch'),
+)
+assert.match(businessStateHelper, /bank_account_number: normalizeBankAccountNumber\(value\?\.bank_account_number\) \|\| null/)
+assert.doesNotMatch(businessStateHelper, /maskBsb|maskAccount/)
+const userRowLockIndex = saveProfileFlow.indexOf('FROM users WHERE id::text=$1 FOR UPDATE')
+const profileRowsLockIndex = saveProfileFlow.indexOf('FROM personnel_settlement_profiles')
+const userScopeLockIndex = saveProfileFlow.indexOf('await lockPersonnelSettlementUserScope(client, input.userId)')
+const noChangeDecisionIndex = saveProfileFlow.indexOf('isPersonnelProfileBusinessStateEqual({ ...user, ...current }, merged)')
+const historicalLockIndex = saveProfileFlow.indexOf('const lockedResult = await client.query')
+const firstPersistentWriteIndex = saveProfileFlow.indexOf('UPDATE users')
+assert.ok(
+  userScopeLockIndex >= 0 && userScopeLockIndex < userRowLockIndex,
+  'profile saves must acquire the shared per-user advisory lock before business row locks',
+)
+assert.ok(userRowLockIndex >= 0 && profileRowsLockIndex > userRowLockIndex, 'user and profile versions must be locked before comparison')
+assert.ok(noChangeDecisionIndex > profileRowsLockIndex, 'no-change comparison must use the locked profile set')
+assert.ok(
+  noChangeDecisionIndex < historicalLockIndex,
+  'unchanged profile submissions must return before the historical settlement lock query',
+)
+assert.ok(
+  historicalLockIndex < firstPersistentWriteIndex,
+  'real profile changes must check committed finance-approved/paid weeks before any persistent update',
+)
+assert.match(userLockSource, /pg_advisory_xact_lock\(hashtext\('personnel-settlement-user'\), hashtext\(\$1\)\)/)
+assert.match(userLockSource, /SELECT user_id FROM personnel_weekly_settlements WHERE id=\$1[\s\S]*lockPersonnelSettlementUserScope\(client, userId\)/)
+const saveRuleFlow = rulesSource.slice(rulesSource.indexOf('export async function savePersonnelFeeRule'))
+assert.ok(
+  saveRuleFlow.indexOf('await lockPersonnelSettlementUserScope(client, input.userId)') >= 0
+  && saveRuleFlow.indexOf('await lockPersonnelSettlementUserScope(client, input.userId)') < saveRuleFlow.indexOf('SELECT id FROM users WHERE id::text=$1 FOR UPDATE'),
+  'fee-rule saves must use the same advisory lock before their user row lock',
+)
 
 assert.deepStrictEqual(calculateSettlementLine({
   quantity_numerator: 1,
