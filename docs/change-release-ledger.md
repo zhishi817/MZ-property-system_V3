@@ -30375,7 +30375,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Selected CRL identities: `root/CRL-20261019-001`
 - Intended action: `push`
 - Branch: `codex/mz044-profile-save-fix-20261019`
-- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; freshly fetched and rechecked at `2026-10-19T14:24:48Z`.
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19T14:24:48Z`.
 - Candidate patch SHA-256: `ff3b778e3839472ca90441779600ba39abcd3501a6b9c150aa4793fb595c75f0`
 - Commit SHA: `68d620256d3747c2b1b7a8702253bb0677ded4d5`; the audit head will be the later ledger-only receipt commit.
 - Dependencies: none
