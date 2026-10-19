@@ -2,7 +2,7 @@
 
 ## CRL-20261020-003 — MZ-035 延期 Check-in 结算日期自匹配回归修复
 
-- **Status:** local candidate prepared; not committed, pushed, merged, or deployed
+- **Status:** source committed locally at `b268805d180ae8d8b5ea5e7f63813e4485a4f6c0`; integrated-scope receipt prepared; not pushed, merged, or deployed
 - **Repository:** `root`
 - **Updated:** 2026-10-20 AEDT
 - **Request:** 在 PR #402 的 MZ-035 隔离 PostgreSQL 测试越过临时表缺列后，继续诊断并修复 `paired-deferred-checkout` / `paired-deferred-checkin` 不同有效日期被错误合并的问题；不得删除或削弱既有计费断言，不新增薪资政策，不连接生产数据库。
@@ -44,7 +44,39 @@
 - **Repository:** `root`
 - **Status:** `prepared`
 - **Untracked review:** none.
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `939ae168a068e7c54707c2541cc0fdaed9771435b512e7942f701f472ca03f1c`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `7ce5dfcc11a8e0daf78c6852fe95da20e8755d8965f8bc82a389ca76783f9d53`
+
+### Integrated Range Scope Reconciliation — 2026-10-20
+
+- Exact boundary: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b` → reviewed combined content `b268805d180ae8d8b5ea5e7f63813e4485a4f6c0`; candidate patch SHA-256 `22fdad72096ad1ef06164a96cc182256f2174156bd645e941d7a344d95286465` excludes this ledger.
+- Ownership result: `PASS`; `root/CRL-20261018-002` retains ownership of its 32 `personnelSettlementPreview.ts` integrated hunks, while this CRL intentionally shares the single coalesced hunk `7ce5dfcc...` containing both the existing MZ-049 arrangement query and the reviewed one-line checkout-parent predicate. The total exact non-ledger range remains 40 files / 319 hunks.
+- The one-line insertion changes the zero-context header line numbers of later hunks in the same file. The active scopes therefore remap 23 MZ-049 fingerprints without changing their content or ownership; the sequential MZ-035 hunk `939ae168...` maps into the shared integrated hunk `7ce5dfcc...`.
+- No additional runtime, API, schema, migration, dependency, configuration or business-policy change is introduced by this reconciliation.
+- Historical-to-integrated fingerprint mappings:
+  - `backend/src/lib/personnelSettlementPreview.ts#bc24bcb6f21bcde7b71980774daecfb16562fda2af22867c9e0f9fba84d4acfb` → `backend/src/lib/personnelSettlementPreview.ts#7ce5dfcc11a8e0daf78c6852fe95da20e8755d8965f8bc82a389ca76783f9d53`
+  - `backend/src/lib/personnelSettlementPreview.ts#94a9fe4e55e6d58b348938ef4f4d279b9df548e979aa9af5d35d31e0d6e5ad86` → `backend/src/lib/personnelSettlementPreview.ts#79813c0f7a55bbdd162cb9b30f0190f91e643a1f7840a5c9363c850722ddce2b`
+  - `backend/src/lib/personnelSettlementPreview.ts#bd5bf024572700062a18e386eb5eaf24e77039a66c41d5828fc9f0274f66a11a` → `backend/src/lib/personnelSettlementPreview.ts#5734913c6c6ce889cb6da4553f8a2dd889dbeeea91c17508204f38715ca9a45e`
+  - `backend/src/lib/personnelSettlementPreview.ts#e21d2fd41080e48dcd48a37bbf067d5d379e06b322debf0407991bae3922f1fc` → `backend/src/lib/personnelSettlementPreview.ts#808965f09fcd45f17e2efd602fec72c80621fbbe24cb0d89d3507d135ea14021`
+  - `backend/src/lib/personnelSettlementPreview.ts#ba99ec88c57a57a76483ea07acae062a680baa489680bcac0f3b578d574743c7` → `backend/src/lib/personnelSettlementPreview.ts#aab93fd8ba9ec1f4a8454e41e22fddc2c3c6f417fcf76663bb90ae5cdfc39f6e`
+  - `backend/src/lib/personnelSettlementPreview.ts#cf0f4005e3a89d686969fa15e19a026c4c46e8c063217f0deacbc5857a235c68` → `backend/src/lib/personnelSettlementPreview.ts#bad85faf2b4ea23aa988efbc585ccb7e40d38aaccb91975548c1298de9736de6`
+  - `backend/src/lib/personnelSettlementPreview.ts#25d376d73a4ee4b7914ad26aacc0beeb05d39da56071b205b3512ffd65b57460` → `backend/src/lib/personnelSettlementPreview.ts#71ee1997ce59e5224e7647251d99b5937531777405fe0a7e34e2ca474dd0f427`
+  - `backend/src/lib/personnelSettlementPreview.ts#bc4ee27dae731b2e43b99132f4258324b60e8e8ee342949bba18b8476aa5284d` → `backend/src/lib/personnelSettlementPreview.ts#2cb61fa777a1bf45aa919ecdc288aa7b6a8cddd66ccdd8bfdbcad9f09024a8cf`
+  - `backend/src/lib/personnelSettlementPreview.ts#4bfcd966319700b98ab24ce12c68fbf59f5d5e4dd326b0bcb482e3be31edba8a` → `backend/src/lib/personnelSettlementPreview.ts#a674f2b2d53cf1973aabd9616d5919a785ced2e0965249722b58d126d835a9eb`
+  - `backend/src/lib/personnelSettlementPreview.ts#453a10f0ca9147a8217c1562fc2c06efd045d92a083ab0a11169ac9266defed7` → `backend/src/lib/personnelSettlementPreview.ts#8d2e7b8780fe8118546295630a3e7971be43dbc419d17f932a5f10a98d0df3a9`
+  - `backend/src/lib/personnelSettlementPreview.ts#e5674cf593c9cd27385f878b02c1a1b3385032cc590775dc0a8c2bbaeabd1bfc` → `backend/src/lib/personnelSettlementPreview.ts#269cf7098581fb6d506fe8a7c4a944842f8f1a2b91e1af65d0279d78a6fb2376`
+  - `backend/src/lib/personnelSettlementPreview.ts#d15c509bdda78f298f0e3bdb5f5150a67b36d0a5ad093ed5fff746216a913eba` → `backend/src/lib/personnelSettlementPreview.ts#dc5dc138cf05feb4dcc48c9b2291185ac7a50881a866e8cab6da98154ac8f923`
+  - `backend/src/lib/personnelSettlementPreview.ts#904ba24f86f5597e2b2540a4cd9de7ac4430d97c54d898bf341bc131d5d5bdea` → `backend/src/lib/personnelSettlementPreview.ts#aa73479eaaaac6b959c9a47241187f4ea6ac25e164da5726d66c441049ee7c83`
+  - `backend/src/lib/personnelSettlementPreview.ts#06affecd78a57692ad8aefa4c5fb83a8dbedca9483922bad73b5f82e9f54fb28` → `backend/src/lib/personnelSettlementPreview.ts#b5c8325dd2b97ede906b46f96bbfb62d5e9defdd15253ca757e7b06ac51b6fbe`
+  - `backend/src/lib/personnelSettlementPreview.ts#2ab558f5aaf5dc8717a70927137ecc7e5110804a1023a732d3429799824c18f6` → `backend/src/lib/personnelSettlementPreview.ts#2e2fb86b6c1af0af38ec712799b69ab9d8b6a8ec05d68a1ffbfb22960b768e66`
+  - `backend/src/lib/personnelSettlementPreview.ts#d18c03d50bcf3459e1516130e6f93dd7739b24dae2c64491674abd71b396a3e0` → `backend/src/lib/personnelSettlementPreview.ts#f061297926c08372e6b6a4d4c46b7025c27350096d7484f57c6df56106b7607f`
+  - `backend/src/lib/personnelSettlementPreview.ts#1a8e9e4d4811ce6535ad4acdfdcad0e9e660f444dc9a14ed26faf0af18b85823` → `backend/src/lib/personnelSettlementPreview.ts#d99a0583da3d4d96743fef6da53c868248e6f53b723798d24be6f6a223ba91d4`
+  - `backend/src/lib/personnelSettlementPreview.ts#573afc8d9e40c5093233c6bbc150229c8b3c42bce35fe7dfd46eefa2ebf664ee` → `backend/src/lib/personnelSettlementPreview.ts#bc8123db57fc4487ca5158665660ee0e35ac9612ace74165aee574c76b5fa0c3`
+  - `backend/src/lib/personnelSettlementPreview.ts#f9df55491fa414a817e947f90bf18cf7fb9797c230c80e04f25db4a9f9602ace` → `backend/src/lib/personnelSettlementPreview.ts#3964aa0c4e67e15bd50e3873c0a751dc6c740665d4231651666ca79e8263f1f9`
+  - `backend/src/lib/personnelSettlementPreview.ts#fede63721be645412163c4d28c80909a44d88d2a73f36dcaf7b47cdd81c0e955` → `backend/src/lib/personnelSettlementPreview.ts#3a02e586f33a6528cd03209486336fed89313566d6dedad213531ce5a320de9d`
+  - `backend/src/lib/personnelSettlementPreview.ts#cc6e604e6adec48ec2165f9f5ef15b93babf2e1f750677494e74a447b0129866` → `backend/src/lib/personnelSettlementPreview.ts#36c56d5b022087d598cc8593d8c722b9d01bcb309f31ffaa05d0e3cecb36ad03`
+  - `backend/src/lib/personnelSettlementPreview.ts#99e72f4ad282da9dc4b80bc4fe6a760cc0f37e018fef41160e7d7248604b4a0d` → `backend/src/lib/personnelSettlementPreview.ts#93eccbc920ae5d7f4df2543338102c1291e86b74d661af2d4bf8d6cd58a7aaf4`
+  - `backend/src/lib/personnelSettlementPreview.ts#9abce9a2e781e93f4c0c004b0e7251cfafc27e2cf3142cc5ca9f01ba81b438e3` → `backend/src/lib/personnelSettlementPreview.ts#9fb905c84267b01a52b4a5373bb9acbd961fcffe63eba9e1a8099aa00a5f512e`
+  - sequential `backend/src/lib/personnelSettlementPreview.ts#939ae168a068e7c54707c2541cc0fdaed9771435b512e7942f701f472ca03f1c` → shared integrated `backend/src/lib/personnelSettlementPreview.ts#7ce5dfcc11a8e0daf78c6852fe95da20e8755d8965f8bc82a389ca76783f9d53`
 
 ### Release Attempts
 
@@ -67,13 +99,33 @@
 - Independent review: `GO for the exact local commit only`; evidence: reviewer matched patch `0e06cff0...`, hunk `939ae168...`, the two-file staged scope and the checkout-parent boundary against Dev, MZ-049 service logic, MZ-050 scope behavior and MZ-034/MZ-035 contracts; P0/P1/P2=0, with no other self-match path, generated file, cache, secret, migration, production-write or external-sync risk.
 - Action conclusion: `GO for this exact local content commit only / remote PostgreSQL NOT VERIFIED`; the resulting full SHA requires separate push confirmation, and the GitHub MZ-035 isolated PostgreSQL assertion must pass before merge.
 
+#### RA-20261020-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-003`, `CRL-20261018-002`, `CRL-20261019-001`, `CRL-20261019-004`, `CRL-20261020-001`, `CRL-20261020-002`, `CRL-20261020-003`
+- Selected CRL identities: `root/CRL-20261016-003`, `root/CRL-20261018-002`, `root/CRL-20261019-001`, `root/CRL-20261019-004`, `root/CRL-20261020-001`, `root/CRL-20261020-002`, `root/CRL-20261020-003`
+- Intended action: `commit`
+- Branch: `codex/mz044-050-root-integration-final-20261019`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19T22:46:06Z`, while the remote PR #402 branch remained the previously approved `a7349313129c28a2ca1fb7d2b6415d554509d8c2`.
+- Candidate patch SHA-256: `22fdad72096ad1ef06164a96cc182256f2174156bd645e941d7a344d95286465`
+- Commit SHA: `b268805d180ae8d8b5ea5e7f63813e4485a4f6c0`
+- Dependencies: `mobile/CRL-20261018-001@b6ea73184c319915053f206a662a75f35af1552e`
+- Cross-repository dependency verification: `PASS for local source compatibility / release NOT VERIFIED`; evidence: the reviewed Mobile MZ-048 dependency remains outside this repository, and physical-device, real-network, installed-build/channel and native-build acceptance remain pending.
+- Required validation: `PASS for this exact local combined content / remote PostgreSQL NOT VERIFIED`; evidence: the exact MZ-035 source unit passed MZ-034 settlement regression, deferred replacement regression, backend TypeScript, diff and ledger/registry checks; prior 318-hunk review evidence remains applicable. The exact MZ-035 isolated PostgreSQL assertion cannot run locally and must rerun after a separately approved push.
+- Shared-hunk review: `PASS`; evidence: the exact non-ledger range remains 40 files / 319 hunks; the MZ-035 predicate intentionally coalesces with one MZ-049 settlement-query hunk, is jointly owned by `root/CRL-20261018-002` and `root/CRL-20261020-003`, and the remaining ownership is unchanged.
+- Generated-file review: `PASS`; evidence: no dependency tree, cache, build output, environment file, credential, generated artifact, migration execution or production operation is included.
+- Technical state: `committed`; exact MZ-035 content commit `b268805d180ae8d8b5ea5e7f63813e4485a4f6c0`, followed only by this integrated-scope bookkeeping receipt.
+- User authorization: `selected-for-commit`; evidence: the user directed preparation, independent review and local commit of the minimal same-branch fix, while requiring a new exact SHA for confirmation before push.
+- Independent review: `GO for the exact local source commit only`; evidence: the fresh reviewer reproduced the self-match, matched sequential patch `0e06cff0...` and hunk `939ae168...`, verified the one-line checkout-parent boundary against Dev, MZ-049 service behavior, MZ-050 scope behavior and MZ-034/MZ-035 contracts, found P0/P1/P2=0, and confirmed no second equivalent self-match path. The integrated hunk remap adds no behavior and does not authorize push.
+- Action conclusion: `GO for this exact local ledger freeze / remote PostgreSQL NOT VERIFIED`; the resulting full SHA requires explicit push confirmation, and GitHub's MZ-035 isolated PostgreSQL assertion must pass before merge. No push, merge, deployment command, OTA, migration execution or production-data operation is authorized by this attempt.
+
 ### Risks / Release Notes
 
 - This restores the existing “different effective dates remain separate inspection days” contract and narrows replacement lookup to its already documented checkout-parent domain; it does not create a new pay rule.
 - The change affects only settlement preview selection. Real PostgreSQL proof remains unavailable locally and must be obtained from the isolated GitHub job after a newly authorized push.
 - Sensitive-information review: no credential, database URL, production payload or private log content is recorded.
 - Rollback: revert the single parent-task-type predicate and this CRL.
-- Git state: uncommitted local candidate on the existing PR branch; no push, merge, deployment, migration, OTA or production-data operation is included.
+- Git state: local content commit `b268805d180ae8d8b5ea5e7f63813e4485a4f6c0` on the existing PR branch; remote PR #402 remains at `a7349313129c28a2ca1fb7d2b6415d554509d8c2`; no push, merge, deployment, migration, OTA or production-data operation is included.
 
 ## CRL-20261020-002 — Root PR MZ-035 PostgreSQL 隔离测试夹具补列
 
@@ -703,38 +755,38 @@
 - `backend/src/lib/cleaningInspection.ts` — SHA-256: `054b08c53ce9ecae77c923c07a559c3cc659682edb471f2e5c1ced5daff40e9c`
 - `backend/src/lib/cleaningInspection.ts` — SHA-256: `eb4dc4ad3822a67a2b0e0d78d7aad5fe32a4a973287fcf0361b07665662146bf`
 - `backend/src/lib/cleaningInspection.ts` — SHA-256: `41fcfc8955f6849f577c64442dcf2a5149b461d9fc1cbdb9592a5c9cd0418c15`
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `06affecd78a57692ad8aefa4c5fb83a8dbedca9483922bad73b5f82e9f54fb28`
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `1a8e9e4d4811ce6535ad4acdfdcad0e9e660f444dc9a14ed26faf0af18b85823`
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `25d376d73a4ee4b7914ad26aacc0beeb05d39da56071b205b3512ffd65b57460`
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `2ab558f5aaf5dc8717a70927137ecc7e5110804a1023a732d3429799824c18f6`
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `453a10f0ca9147a8217c1562fc2c06efd045d92a083ab0a11169ac9266defed7`
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `4bfcd966319700b98ab24ce12c68fbf59f5d5e4dd326b0bcb482e3be31edba8a`
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `573afc8d9e40c5093233c6bbc150229c8b3c42bce35fe7dfd46eefa2ebf664ee`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `269cf7098581fb6d506fe8a7c4a944842f8f1a2b91e1af65d0279d78a6fb2376`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `2cb61fa777a1bf45aa919ecdc288aa7b6a8cddd66ccdd8bfdbcad9f09024a8cf`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `2e2fb86b6c1af0af38ec712799b69ab9d8b6a8ec05d68a1ffbfb22960b768e66`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `36c56d5b022087d598cc8593d8c722b9d01bcb309f31ffaa05d0e3cecb36ad03`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `3964aa0c4e67e15bd50e3873c0a751dc6c740665d4231651666ca79e8263f1f9`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `3a02e586f33a6528cd03209486336fed89313566d6dedad213531ce5a320de9d`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `5734913c6c6ce889cb6da4553f8a2dd889dbeeea91c17508204f38715ca9a45e`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `71ee1997ce59e5224e7647251d99b5937531777405fe0a7e34e2ca474dd0f427`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `79813c0f7a55bbdd162cb9b30f0190f91e643a1f7840a5c9363c850722ddce2b`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `7ce5dfcc11a8e0daf78c6852fe95da20e8755d8965f8bc82a389ca76783f9d53`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `808965f09fcd45f17e2efd602fec72c80621fbbe24cb0d89d3507d135ea14021`
 - `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `89bbd4bf75728aaf6f428c7f131633004b8851590597aad7a40c290d6dcb3b25`
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `904ba24f86f5597e2b2540a4cd9de7ac4430d97c54d898bf341bc131d5d5bdea`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `8d2e7b8780fe8118546295630a3e7971be43dbc419d17f932a5f10a98d0df3a9`
 - `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `9135e36eccf1841cb7ae5fdc146181f8267d137fdc42cab0ae3483654ec0fa7c`
 - `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `926cf53d5a8536197762584ae5bbf137e1ae46c3447b13b68f8a0c7f56423c12`
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `94a9fe4e55e6d58b348938ef4f4d279b9df548e979aa9af5d35d31e0d6e5ad86`
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `99e72f4ad282da9dc4b80bc4fe6a760cc0f37e018fef41160e7d7248604b4a0d`
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `9abce9a2e781e93f4c0c004b0e7251cfafc27e2cf3142cc5ca9f01ba81b438e3`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `93eccbc920ae5d7f4df2543338102c1291e86b74d661af2d4bf8d6cd58a7aaf4`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `9fb905c84267b01a52b4a5373bb9acbd961fcffe63eba9e1a8099aa00a5f512e`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `a674f2b2d53cf1973aabd9616d5919a785ced2e0965249722b58d126d835a9eb`
 - `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `a7b7452512a653ebb1532817964c843cf3bb70adbc464c12a24a6a7308b20756`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `aa73479eaaaac6b959c9a47241187f4ea6ac25e164da5726d66c441049ee7c83`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `aab93fd8ba9ec1f4a8454e41e22fddc2c3c6f417fcf76663bb90ae5cdfc39f6e`
 - `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `aee325b00b73f03ac50adce207933c3199f23b2a650ecd9784fc88309fe8d7b2`
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `ba99ec88c57a57a76483ea07acae062a680baa489680bcac0f3b578d574743c7`
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `bc24bcb6f21bcde7b71980774daecfb16562fda2af22867c9e0f9fba84d4acfb`
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `bc4ee27dae731b2e43b99132f4258324b60e8e8ee342949bba18b8476aa5284d`
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `bd5bf024572700062a18e386eb5eaf24e77039a66c41d5828fc9f0274f66a11a`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `b5c8325dd2b97ede906b46f96bbfb62d5e9defdd15253ca757e7b06ac51b6fbe`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `bad85faf2b4ea23aa988efbc585ccb7e40d38aaccb91975548c1298de9736de6`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `bc8123db57fc4487ca5158665660ee0e35ac9612ace74165aee574c76b5fa0c3`
 - `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `c2c7141bfe0306291083fd4c3eaf3857332a1b5fa78b78600a6de2752ce0508d`
 - `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `c3fb7cdee576924e09787f89110f78f41f6e752499ba33a8120d85e6916d9641`
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `cc6e604e6adec48ec2165f9f5ef15b93babf2e1f750677494e74a447b0129866`
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `cf0f4005e3a89d686969fa15e19a026c4c46e8c063217f0deacbc5857a235c68`
 - `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `cf37f69543b4e2d6459a268c45ed42dffbe6617ff9f6b720214be3d4198783f2`
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `d15c509bdda78f298f0e3bdb5f5150a67b36d0a5ad093ed5fff746216a913eba`
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `d18c03d50bcf3459e1516130e6f93dd7739b24dae2c64491674abd71b396a3e0`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `d99a0583da3d4d96743fef6da53c868248e6f53b723798d24be6f6a223ba91d4`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `dc5dc138cf05feb4dcc48c9b2291185ac7a50881a866e8cab6da98154ac8f923`
 - `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `e0f19eeff2e5a1df53422885871cf7a2505bc8cfebaf5bc9da8fa3c2b4f27fd4`
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `e21d2fd41080e48dcd48a37bbf067d5d379e06b322debf0407991bae3922f1fc`
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `e5674cf593c9cd27385f878b02c1a1b3385032cc590775dc0a8c2bbaeabd1bfc`
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `f9df55491fa414a817e947f90bf18cf7fb9797c230c80e04f25db4a9f9602ace`
-- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `fede63721be645412163c4d28c80909a44d88d2a73f36dcaf7b47cdd81c0e955`
+- `backend/src/lib/personnelSettlementPreview.ts` — SHA-256: `f061297926c08372e6b6a4d4c46b7025c27350096d7484f57c6df56106b7607f`
 - `backend/src/modules/cleaning_app.ts` — SHA-256: `4ee01d15bd1088701b356c0a427532704a8a1c9d5290eeb92add6015e3a9b6ed`
 - `backend/src/modules/cleaning_app.ts` — SHA-256: `50a06910533d03fa55b97fd39b685e466a811be6684e087c31c6598e1a3f6d89`
 - `backend/src/modules/cleaning_app.ts` — SHA-256: `9a4c6ea18054ed2fa0ac756e807ea27460c023b96b9a57891933e3913c7c575d`
