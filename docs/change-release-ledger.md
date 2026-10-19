@@ -84,6 +84,26 @@
 - Independent review: `GO for the exact local commit only`; evidence: prior integration reviews remain applicable to the unchanged 317 hunks, and a fresh reviewer matched the exclusive one-line fixture hunk `1feeed...`, patch `4e26e7...`, existing migration type and complete query/fixture column contract with P0/P1/P2/P3=0. Neither review authorizes push or merge.
 - Action conclusion: `GO for this exact ledger-only receipt and local freeze / remote CI NOT VERIFIED`; the resulting full SHA requires explicit push confirmation, and GitHub ephemeral PostgreSQL must pass before merge. No push, merge, deployment command, OTA, migration execution or production-data operation is authorized by this attempt.
 
+#### RA-20261020-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-003`, `CRL-20261018-002`, `CRL-20261019-001`, `CRL-20261019-004`, `CRL-20261020-001`
+- Selected CRL identities: `root/CRL-20261016-003`, `root/CRL-20261018-002`, `root/CRL-20261019-001`, `root/CRL-20261019-004`, `root/CRL-20261020-001`
+- Intended action: `commit`
+- Branch: `codex/mz044-050-root-integration-final-20261019`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19T22:05:34Z`, while the remote PR head remained the previously approved `dd139c0d8a1b4896585ef757fa800126b4462ffb`.
+- Candidate patch SHA-256: `552014ffdec6f2e7a267af96d3e0e6fd2e2c64e3090d4219490100c09d55330e`
+- Commit SHA: `306f6dcc0214e584e8dbc95eb655fc942b6690f9`
+- Dependencies: `mobile/CRL-20261018-001@b6ea73184c319915053f206a662a75f35af1552e`
+- Cross-repository dependency verification: `PASS for local source compatibility / release NOT VERIFIED`; evidence: the dependency content remains inside frozen Mobile head `ffa55c21ba3f13dbaa468629ece203ba25f2847b`, and PR #57 quality passed. Device/channel/native-build acceptance remains pending.
+- Required validation: `PASS for the exact local combined content / remote CI NOT VERIFIED`; evidence: the unchanged reviewed Root integration contributes 317 hunks, and the exclusive 318th hunk only aligns the MZ-034 ephemeral test table with an existing nullable migration field. Exact pre-commit, ledger, Feature Registry, diff and backend TypeScript checks passed. PR #402's previous Full/Fast Regression, Registry, Ledger and Risk checks passed; the isolated PostgreSQL job must rerun after a separately approved push.
+- Shared-hunk review: `PASS`; evidence: all prior ownership is unchanged, and the new test-fixture hunk belongs only to `root/CRL-20261020-001`.
+- Generated-file review: `PASS`; evidence: no dependency, cache, build output, environment file, credential, generated artifact, migration execution or production operation is included.
+- Technical state: `committed`; exact CI-fix content commit `306f6dcc0214e584e8dbc95eb655fc942b6690f9`, followed only by append-only receipts.
+- User authorization: `selected-for-commit`; evidence: the user requested a minimal locally committed fix and new full SHA for confirmation before push.
+- Independent review: `GO for the exact local commit only`; evidence: previous integration reviews remain valid, and a fresh review matched hunk `1feeed...`, patch `4e26e7...`, the existing migration type and full query/fixture column contract with P0/P1/P2/P3=0; it did not authorize push or merge.
+- Action conclusion: `GO for this exact dependency/base receipt and local freeze / remote CI NOT VERIFIED`; explicit confirmation is required before pushing a new full SHA, and GitHub ephemeral PostgreSQL must pass before merge.
+
 ### Risks / Release Notes
 
 - The change cannot affect production runtime because it only alters a test-local `CREATE TABLE` statement.
