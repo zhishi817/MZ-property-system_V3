@@ -66,6 +66,26 @@
 - Independent review: `GO for the exact local commit only`; evidence: reviewer matched hunk `f722f083...`, patch `f1aff374...`, the complete two-fixture inventory and all 15 shared-query-read fields, with the recorded 16-column assertion as a conservative superset; P0/P1/P2/P3=0 and no runtime, assertion, migration, generated-file or sensitive-data change.
 - Action conclusion: `GO for this exact local content commit only / remote CI NOT VERIFIED`; resulting new full SHA requires separate push confirmation, and the GitHub ephemeral MZ-034/MZ-035 job must pass before merge.
 
+#### RA-20261020-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261016-003`, `CRL-20261018-002`, `CRL-20261019-001`, `CRL-20261019-004`, `CRL-20261020-001`, `CRL-20261020-002`
+- Selected CRL identities: `root/CRL-20261016-003`, `root/CRL-20261018-002`, `root/CRL-20261019-001`, `root/CRL-20261019-004`, `root/CRL-20261020-001`, `root/CRL-20261020-002`
+- Intended action: `commit`
+- Branch: `codex/mz044-050-root-integration-final-20261019`
+- Base: `origin/Dev@80763db22c340c6f3df9e5e10924824e0ec7979b`; fetched at `2026-10-19T22:28:08Z`, while the remote PR branch remained the previously approved `b62eefce9e145870c44ec308d1347ac9a4de59d8`.
+- Candidate patch SHA-256: `41e420f7be67c9c2ea4b0400dc2316a3f4641e2b112a3d0a8020f1388363f746`
+- Commit SHA: `25af722e83e8939e14695cd9e0d345b8a9a41617`
+- Dependencies: `mobile/CRL-20261018-001@b6ea73184c319915053f206a662a75f35af1552e`
+- Cross-repository dependency verification: `PASS for local source compatibility / release NOT VERIFIED`; evidence: the dependency content is the reviewed Mobile MZ-048 source already contained in merged PR #57. Physical-device, real-network, installed-build/channel and native-build acceptance remain pending.
+- Required validation: `PASS for this exact local combined content / remote CI NOT VERIFIED`; evidence: the unchanged reviewed Root integration contributes 317 original hunks, MZ-034 contributes its exclusive 318th fixture hunk, and MZ-035 contributes the exclusive 319th fixture hunk. The MZ-035 exact pre-commit, complete two-fixture inventory, shared-query column review, conservative 16-column assertion, backend TypeScript, ledger, Feature Registry and diff checks passed. Local PostgreSQL is unavailable; GitHub's isolated ephemeral-PostgreSQL job must rerun after a separately approved push.
+- Shared-hunk review: `PASS`; evidence: all prior 318-hunk ownership remains unchanged, and the 319th hunk belongs only to `root/CRL-20261020-002`; the exact non-ledger range contains 40 files and 319 hunks.
+- Generated-file review: `PASS`; evidence: the additional committed path is one tracked TypeScript test source; no dependency, cache, build output, environment file, credential, generated artifact, migration execution or production operation is included.
+- Technical state: `committed`; exact MZ-035 fixture-fix content commit `25af722e83e8939e14695cd9e0d345b8a9a41617`, followed only by this append-only receipt.
+- User authorization: `selected-for-commit`; evidence: the user directed the locally fixable fixture follow-up through independent review, local commit and frozen full SHA, while withholding push pending one final confirmation.
+- Independent review: `GO for the exact local commit only`; evidence: prior integration reviews remain applicable to the unchanged 318 hunks, and a fresh reviewer matched the exclusive one-line MZ-035 fixture hunk `f722f083...`, patch `f1aff374...`, complete two-fixture inventory and all 15 shared-query-read fields with P0/P1/P2/P3=0. The conservative 16-column assertion also passed. No review authorizes push or merge.
+- Action conclusion: `GO for this exact ledger-only receipt and local freeze / remote CI NOT VERIFIED`; the resulting full SHA requires explicit push confirmation, and GitHub ephemeral PostgreSQL must pass before merge. No push, merge, deployment command, OTA, migration execution or production-data operation is authorized by this attempt.
+
 ### Risks / Release Notes
 
 - Test-only change; no runtime, API, migration, production schema or data effect.
