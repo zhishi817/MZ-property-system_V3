@@ -3368,12 +3368,20 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
               group.priority = diff.priority
             }
           }
+          const membershipChanged = diff.changedFields.some((field) => [
+            'cleaner_id',
+            'assignee_id',
+            'inspector_id',
+            'inspection_mode',
+            'inspection_scope',
+            'inspection_due_date',
+          ].includes(field))
           eventInputs.push({
             taskId: `cleaning_task:${taskId}`,
             sourceType: 'cleaning_tasks',
             sourceRefIds: [taskId],
-            eventType: diff.changedFields.some((field) => field === 'cleaner_id' || field === 'assignee_id' || field === 'inspector_id') ? 'TASK_ASSIGNMENT_CHANGED' : 'TASK_UPDATED',
-            changeScope: diff.changedFields.some((field) => field === 'cleaner_id' || field === 'assignee_id' || field === 'inspector_id') ? 'membership' : 'list',
+            eventType: membershipChanged ? 'TASK_ASSIGNMENT_CHANGED' : 'TASK_UPDATED',
+            changeScope: membershipChanged ? 'membership' : 'list',
             changedFields: diff.changedFields,
             patch: {
               cleaner_id: task.cleaner_id ?? null,

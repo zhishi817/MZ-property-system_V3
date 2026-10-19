@@ -3,11 +3,15 @@ import express from 'express'
 import {
   deferredProjectionDate,
   isInspectionModeAllowedForTask,
+  keyPhotoConfirmsCurrentTaskProgress,
+  lockboxVideoConfirmsCurrentTaskState,
   mergeInspectionPlan,
   mergeTurnoverTaskPlan,
   mobileInspectionProjectionDate,
   resolveBoardInspectionDueDate,
   sanitizeInspectionModeForTask,
+  unlinkedDeferredInspectionMergeKey,
+  withInspectionMergeIsolation,
 } from '../../src/lib/cleaningInspection'
 
 function testTurnoverCheckoutAssignmentWinsOverPendingFallback() {
@@ -184,6 +188,116 @@ function testCompletedDeferredInspectionStillProjectsToDueDate() {
   assert.equal(out, '2026-06-21')
 }
 
+function testTerminalDeferredInspectionDoesNotClampIntoLaterRange() {
+  assert.equal(deferredProjectionDate({
+    inspectionMode: 'deferred',
+    inspectionDueDate: '2026-06-21',
+    dateFrom: '2026-06-22',
+    dateTo: '2026-06-28',
+    status: 'completed',
+  }), null)
+  assert.equal(deferredProjectionDate({
+    inspectionMode: 'deferred',
+    inspectionDueDate: '2026-06-21',
+    dateFrom: '2026-06-22',
+    dateTo: '2026-06-28',
+    status: 'cancelled',
+  }), null)
+}
+
+function testIncompleteDeferredInspectionStillClampsAsOverdue() {
+  assert.equal(deferredProjectionDate({
+    inspectionMode: 'deferred',
+    inspectionDueDate: '2026-06-21',
+    dateFrom: '2026-06-22',
+    dateTo: '2026-06-28',
+    status: 'assigned',
+  }), '2026-06-22')
+}
+
+function testMsq1905eReopenedDeferredEvidenceDoesNotContaminateNewTurnover() {
+  const historicalSource = 'msq1905e-deferred-2026-10-11'
+  const historicalIsolation = unlinkedDeferredInspectionMergeKey({
+    sourceId: historicalSource,
+    inspectionMode: 'deferred',
+    hasExplicitInspectionRelation: false,
+  })
+  const currentIsolation = unlinkedDeferredInspectionMergeKey({
+    sourceId: 'msq1905e-checkout-2026-10-19',
+    inspectionMode: 'same_day',
+    hasExplicitInspectionRelation: false,
+  })
+  assert.equal(historicalIsolation, `deferred:${historicalSource}`)
+  assert.equal(currentIsolation, null)
+  assert.equal(lockboxVideoConfirmsCurrentTaskState({
+    status: 'assigned',
+    lockboxVideoUrl: 'https://example.invalid/historical-lockbox.mp4',
+  }), false, 'retained evidence on a reopened task must not restore keys_hung')
+  assert.equal(keyPhotoConfirmsCurrentTaskProgress({
+    status: 'assigned',
+    keyPhotoUrl: 'https://example.invalid/historical-key.jpg',
+  }), false, 'retained key evidence on a reopened task must not override the assigned lifecycle state')
+  assert.equal(keyPhotoConfirmsCurrentTaskProgress({
+    status: 'in_progress',
+    keyPhotoUrl: 'https://example.invalid/current-key.jpg',
+  }), true)
+  assert.equal(lockboxVideoConfirmsCurrentTaskState({
+    status: 'keys_hung',
+    lockboxVideoUrl: 'https://example.invalid/current-lockbox.mp4',
+  }), true)
+
+  const ranges = [
+    { label: 'day', from: '2026-10-19', to: '2026-10-19' },
+    { label: 'week', from: '2026-10-19', to: '2026-10-25' },
+    { label: 'month', from: '2026-10-01', to: '2026-10-31' },
+  ]
+  for (const range of ranges) {
+    const historicalDate = deferredProjectionDate({
+      inspectionMode: 'deferred',
+      inspectionDueDate: '2026-10-13',
+      dateFrom: range.from,
+      dateTo: range.to,
+      status: 'assigned',
+    })
+    assert.ok(historicalDate, `${range.label} keeps the incomplete overdue inspection visible`)
+    const historicalKey = withInspectionMergeIsolation(`${historicalDate}|MSQ1905E`, historicalIsolation)
+    const currentKey = withInspectionMergeIsolation('2026-10-19|MSQ1905E', currentIsolation)
+    assert.notEqual(historicalKey, currentKey, `${range.label} keeps the historical and current canonical sources separate`)
+  }
+}
+
+function testFo1602HistoricalInspectionStaysSeparateFromLegitimateTurnoverMerge() {
+  const historicalIsolation = unlinkedDeferredInspectionMergeKey({
+    sourceId: 'fo1602-deferred-old',
+    inspectionMode: 'deferred',
+    hasExplicitInspectionRelation: false,
+  })
+  const checkoutIsolation = unlinkedDeferredInspectionMergeKey({
+    sourceId: 'fo1602-current-checkout',
+    inspectionMode: 'same_day',
+    hasExplicitInspectionRelation: false,
+  })
+  const checkinIsolation = unlinkedDeferredInspectionMergeKey({
+    sourceId: 'fo1602-current-checkin',
+    inspectionMode: 'same_day',
+    hasExplicitInspectionRelation: false,
+  })
+  assert.notEqual(
+    withInspectionMergeIsolation('2026-10-19|FO1602', historicalIsolation),
+    withInspectionMergeIsolation('2026-10-19|FO1602', checkoutIsolation),
+  )
+  assert.equal(
+    withInspectionMergeIsolation('2026-10-19|FO1602', checkoutIsolation),
+    withInspectionMergeIsolation('2026-10-19|FO1602', checkinIsolation),
+    'ordinary same-day checkout and check-in still share the turnover merge bucket',
+  )
+  assert.equal(unlinkedDeferredInspectionMergeKey({
+    sourceId: 'fo1602-explicitly-linked-deferred',
+    inspectionMode: 'deferred',
+    hasExplicitInspectionRelation: true,
+  }), null, 'a stored canonical inspection relation remains eligible for the intended merge')
+}
+
 function testBoardSavePreservesDeferredDate() {
   const due = resolveBoardInspectionDueDate({
     inspectionMode: 'deferred',
@@ -344,6 +458,10 @@ testTemporaryCheckinDoesNotUnassignScheduledCheckout()
 testTemporaryCheckinDoesNotClearCheckoutInspector()
 testTurnoverKeepsKeysHungFromAnyUnderlyingTask()
 testCompletedDeferredInspectionStillProjectsToDueDate()
+testTerminalDeferredInspectionDoesNotClampIntoLaterRange()
+testIncompleteDeferredInspectionStillClampsAsOverdue()
+testMsq1905eReopenedDeferredEvidenceDoesNotContaminateNewTurnover()
+testFo1602HistoricalInspectionStaysSeparateFromLegitimateTurnoverMerge()
 testBoardSavePreservesDeferredDate()
 testKeysHungSelfCompleteProjectsToOriginalTaskDate()
 testOrdinarySelfCompleteDoesNotCreateInspectorTask()

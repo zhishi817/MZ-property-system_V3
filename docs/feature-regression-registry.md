@@ -7,6 +7,52 @@
 - 测试映射必须说明保护点和测试场景；只登记测试文件名不算覆盖证据。
 - `sufficient` 表示当前测试覆盖该保护点；`partial` 表示已有测试但仍有缺口；`not-wired` 表示测试存在但尚未进入对应质量检查；`missing` 表示尚无测试。
 
+## FR-039：延期检查在入住变更后的唯一安排、实时归位与结算责任
+
+- **维护责任范围：** backend Task Center / MZ App work tasks / personnel settlement / paired mobile
+- **最后审查日期：** 2026-10-18
+- **状态：** active
+
+### 业务保护规则
+
+- 终态延期检查只在原有效检查日显示；未完成且逾期的延期检查继续进入当前待办，不能把已完成任务滚动夹到后续日期。
+- `inspection_mode`、`inspection_scope`、`inspection_due_date` 或人员变化属于列表成员变化；Mobile 必须绕过冷却立即权威刷新，使任务能跨日、跨周和跨月移入或移出当前范围。
+- 同房源同有效检查日只有一条检查安排。延期检查在原退房日至延期日窗口内遇到 `inspect_and_hang` 入住任务时保留原退房日，检查操作只指向唯一入住任务；`password_only` 始终独立。计划检查人与入住检查/执行人不一致、缺失，或存在多条延期/入住检查任务时必须显式冲突，列表动作与所有实际写入口都不能自动合并、改派或放开提交。
+- 没有显式延期-入住关联的历史逾期检查必须按 canonical source 独立于后来同房源任务；日/周/月查询和管理端/合作方视图都不能仅凭“投影日期 + 房源”混合检查模式、人员、状态或媒体。重开任务保留的历史钥匙照片和挂钥匙视频只作为证据，当前 `assigned` 等未完成状态不得被媒体反向提升为 `in_progress` 或 `keys_hung`；正常同日退房/入住仍按既有 turnover 规则合并。
+- 检查费按有效安排的房源、入住执行日期和计划检查人计入，每日费率与房源去重规则不变，且不依赖照片数量或上传状态。自动替换关联最终入住检查证据，但任一实际提交人或执行指派与计划检查人不同时转人工复核，绝不自动转移检查费。
+- 取消、删除、改派和无效订单不得继续给旧责任人计费；已审核/已付款快照保持不可变。本规则不自动回填或重算历史异常记录。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 终态精确日期、未完成逾期与 source 隔离 | `backend/scripts/tests/test_cleaning_inspection_merge.ts` | 已完成/取消延期不滚入后续范围；MSQ1905E 日/周/月投影保留未完成旧任务但与新任务分组隔离，旧钥匙照片/视频不提升重开状态；FO1602 正常同日退房/入住仍合并，显式关联不被误隔离 | sufficient | `npm run test:cleaning-inspection-merge --prefix backend` |
+| 入住衔接、密码任务独立和执行人冲突 | `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` | 全延期窗口链接、原退房日、密码排除、跨日重复入住与人员不一致冲突、两层合并的全部冲突 source 并集、无关联延期 source 的两层隔离和内部字段清理、自动 replacement/restore/relink 同一 fail-closed 安排、稳定顺序事务锁、原 source 重定向、scope 成员事件及正确 action source contract | sufficient | `npm run test:deferred-inspection-checkin-replacement --prefix backend` |
+| 检查费归属与提交人不一致 | `backend/scripts/tests/test_personnel_settlement_mz034.ts` | 自动替换按入住执行日取证、终态 deferred 不重新吸附后来入住或制造 owner 冲突、UI source 隔离不折叠结算 source/服务日、显式责任人、执行指派冲突、错误提交人先传而计划人后传仍双边警告且不计费 | sufficient | `npm run test:personnel-settlement-mz034 --prefix backend` |
+| 并发重复提交去重 | `backend/scripts/tests/test_idempotency_submit_id_contract.ts` | 行锁、两套检查照片 step receipt、相同提交重放、不同载荷冲突及旧完成入口相同视频语义重放 | sufficient | `npm run test:idempotency-submit-id-contract --prefix backend` |
+| Mobile 跨范围权威归位 | `mz-cleaning-app-frontend/src/lib/workTasksStore.test.ts` | membership 事件绕过冷却并跨月移动到服务端返回日期 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand src/lib/workTasksStore.test.ts` |
+| Mobile 原退房、冲突与历史 source 展示 | `mz-cleaning-app-frontend/src/screens/tabs/TasksScreen.test.tsx` | 展示原退房日、计划检查人和入住执行人，并说明不自动转费；管理视图同时保留 MSQ1905E 当前退房/Oscar 与旧延期/Angela，两者均为已分配且不显示已挂钥匙 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand src/screens/tabs/TasksScreen.test.tsx` |
+
+### 验证策略
+
+- 使用合成内存/fixture 数据执行 Root 聚焦契约、后端编译、Mobile 类型检查与 Jest，再运行两个仓的完整质量门和独立只读复核。
+- 不连接生产数据库，不回放订单，不运行 migration，不调用生产写接口；真实账号跨周/月和弱网设备流程需另行验收。
+
+### 最后验证
+
+- **CRL：** root/CRL-20261018-002 / mobile/CRL-20261018-001
+- **Commit：** not committed
+- **日期：** 2026-10-18
+
+### 相关 CRL
+
+- root/CRL-20261011-007、root/CRL-20261014-004：检查安排、历史快照与结算日费率基础。
+- root/CRL-20261018-002 / mobile/CRL-20261018-001：MZ-049 延期检查入住衔接、source 隔离、实时归位和结算责任闭环。
+
+### 非保护范围
+
+- 历史三条异常记录的回填/重算、生产数据修复、数据库 migration、部署/OTA、真实设备和生产账号验收。
+
 ## FR-038：MZ 直订官网展示候选与诚实搜索边界
 
 - **维护责任范围：** booking frontend / backend guest site / web admin / local preview tooling

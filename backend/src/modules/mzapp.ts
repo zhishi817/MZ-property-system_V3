@@ -25,9 +25,13 @@ import {
   isCleaningExecutionTask,
   isInspectionFinishedStatus,
   isKeyOrPasswordActionSemantics,
+  keyPhotoConfirmsCurrentTaskProgress,
+  lockboxVideoConfirmsCurrentTaskState,
   mergeInspectionPlan,
   mobileInspectionProjectionDate,
   projectInspectorTaskStatus,
+  unlinkedDeferredInspectionMergeKey,
+  withInspectionMergeIsolation,
 } from '../lib/cleaningInspection'
 import { deepCleaningSourceSummary, maintenanceSourceSummary } from '../lib/autoExpenseSourceSummary'
 import { buildCleaningTurnoverDisplay, mergeCleaningTurnoverDisplays } from '../lib/cleaningTurnoverDisplay'
@@ -72,7 +76,15 @@ import {
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
 import { activeCleaningTaskWhereSql, syncCheckoutOldCodeFromCheckinNewCode, validCleaningTaskOrderWhereSql } from '../services/cleaningSync'
 import { assertR5TaskRuntimeSchemaReady, isR5RequestSchemaReady, isR5TaskRuntimeSchemaReady, requireR5TaskRuntimeSchema } from '../lib/r5RequestSchema'
-import { reconcileDeferredInspectionCheckinReplacement } from '../services/deferredInspectionCheckinConflict'
+import {
+  authorizeDeferredInspectionCheckinSubmission,
+  buildDeferredInspectionCheckinArrangements,
+  deferredInspectionConflictSourceIds,
+  indexDeferredInspectionCheckinArrangements,
+  loadDeferredInspectionCheckinSubmissionGuard,
+  mergeDeferredInspectionAwareActions,
+  reconcileDeferredInspectionCheckinReplacement,
+} from '../services/deferredInspectionCheckinConflict'
 
 export const router = Router()
 
@@ -2498,6 +2510,10 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
     const actionActor = actorAndPerformerFromRequest(user, req.body || {})
     const payloadHash = buildIdempotencyPayloadHash({ media_url: mediaUrl })
     const transactionResult = await pgRunInTransaction(async (client) => {
+      const inspectionArrangementGuard = await loadDeferredInspectionCheckinSubmissionGuard({ taskId: id, client })
+      if (inspectionArrangementGuard.blocked) {
+        return { kind: 'inspection_arrangement_conflict' as const, guard: inspectionArrangementGuard }
+      }
       const lockedResult = await client.query(
         `SELECT id::text AS id, status,
                 inspector_id::text AS inspector_id,
@@ -2568,6 +2584,9 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
     })
     if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'not found' })
     if (transactionResult.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
+    if (transactionResult.kind === 'inspection_arrangement_conflict') {
+      return res.status(409).json({ message: transactionResult.guard.reason, ...transactionResult.guard })
+    }
     if (transactionResult?.kind === 'conflict') return res.status(409).json({ message: 'idempotency_conflict', operation_id: operationId })
     if (transactionResult?.kind === 'replay') return res.status(200).json(transactionResult.responseBody)
     const actionResult = transactionResult?.actionResult || null
@@ -2895,23 +2914,12 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
       if ((byArea.get(a) || 0) > lim) return res.status(400).json({ message: '超出数量限制', area: a, limit: lim })
     }
     const transactionResult = await pgRunInTransaction(async (client) => {
-      const lockedTask = await client.query(
-        `SELECT id::text AS id,
-                inspector_id::text AS inspector_id,
-                cleaner_id::text AS cleaner_id,
-                assignee_id::text AS assignee_id,
-                task_type,
-                inspection_mode,
-                inspection_scope,
-                status
-           FROM cleaning_tasks
-          WHERE id::text = $1::text
-          FOR UPDATE`,
-        [id],
-      )
-      const lockedTaskRow = lockedTask?.rows?.[0] || null
-      if (!lockedTaskRow) return { kind: 'missing' as const }
-      if (!await canSubmitMzappInspection(user, lockedTaskRow, userId, client)) return { kind: 'forbidden' as const }
+      const submission = await authorizeDeferredInspectionCheckinSubmission({
+        taskId: id,
+        client,
+        canSubmit: (task, executor) => canSubmitMzappInspection(user, task, userId, executor),
+      })
+      if (submission.kind !== 'authorized') return submission
 
       if (submitId && stepKey) {
         const receipt = await loadIdempotentStepReceipt(client, {
@@ -2973,6 +2981,9 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
     })
     if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'not found' })
     if (transactionResult.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
+    if (transactionResult.kind === 'inspection_arrangement_conflict') {
+      return res.status(409).json({ message: transactionResult.guard.reason, ...transactionResult.guard })
+    }
     if (transactionResult.kind === 'conflict') {
       return res.status(409).json({ message: 'idempotency_conflict', submit_id: submitId, step_key: stepKey })
     }
@@ -6670,6 +6681,26 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                     OR lower(COALESCE(t.status, '')) NOT IN ('inspected', 'done', 'completed', 'ready', 'keys_hung', 'cancelled', 'canceled')
                   )
                 )
+                OR (
+                  lower(COALESCE(t.inspection_mode, '')) = 'deferred'
+                  AND t.inspection_due_date IS NOT NULL
+                  AND lower(COALESCE(t.status, '')) NOT IN ('inspected', 'done', 'completed', 'ready', 'keys_hung', 'cancelled', 'canceled')
+                  AND EXISTS (
+                    SELECT 1
+                    FROM cleaning_tasks incoming
+                    LEFT JOIN orders incoming_order ON incoming_order.id::text = incoming.order_id::text
+                    LEFT JOIN properties incoming_property_by_id ON incoming_property_by_id.id::text = incoming.property_id::text
+                    LEFT JOIN properties incoming_property_by_code ON upper(incoming_property_by_code.code) = upper(incoming.property_id::text)
+                    WHERE lower(COALESCE(incoming.task_type, incoming.type, '')) = 'checkin_clean'
+                      AND lower(COALESCE(incoming.inspection_scope, 'inspect_and_hang')) <> 'password_only'
+                      AND COALESCE(incoming.task_date, incoming.date)::date BETWEEN COALESCE(t.task_date, t.date)::date AND t.inspection_due_date::date
+                      AND COALESCE(incoming.task_date, incoming.date)::date BETWEEN $1::date AND $2::date
+                      AND COALESCE(incoming_property_by_id.id::text, incoming_property_by_code.id::text, incoming.property_id::text)
+                          = COALESCE(p_id.id::text, p_code.id::text, t.property_id::text)
+                      AND ${activeCleaningTaskWhereSql('incoming')}
+                      AND ${validCleaningTaskOrderWhereSql('incoming', 'incoming_order')}
+                  )
+                )
               )
               AND ${activeCleaningTaskWhereSql('t')}
               AND ${validCleaningTaskOrderWhereSql('t', 'o')}
@@ -6742,6 +6773,72 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           ORDER BY t.task_date ASC, t.property_code NULLS LAST, t.id`
         const r = await pgPool.query(sql, [dateFrom, dateTo])
         const cleaningRows = r?.rows || []
+        const cleaningRowById = new Map<string, any>(cleaningRows.map((row: any) => [String(row.id || ''), row]))
+        const arrangementPropertyIds = Array.from(new Set(
+          cleaningRows.map((row: any) => String(row.property_id || '').trim()).filter(Boolean),
+        ))
+        const arrangementRowsResult = arrangementPropertyIds.length
+          ? await pgPool.query(
+            `SELECT
+               t.id::text AS id,
+               COALESCE(property_by_id.id::text, property_by_code.id::text, t.property_id::text) AS property_id,
+               COALESCE(t.task_type, t.type, '') AS task_type,
+               t.type,
+               COALESCE(t.task_date, t.date)::text AS task_date,
+               t.status,
+               t.execution_state,
+               t.inspection_mode,
+               t.inspection_scope,
+               t.inspection_due_date::text AS inspection_due_date,
+               t.order_id::text AS order_id,
+               task_order.status::text AS order_status,
+               t.checkin_time,
+               t.inspector_id::text AS inspector_id,
+               t.assignee_id::text AS assignee_id
+             FROM cleaning_tasks t
+             LEFT JOIN properties property_by_id ON property_by_id.id::text = t.property_id::text
+             LEFT JOIN properties property_by_code ON upper(property_by_code.code) = upper(t.property_id::text)
+             LEFT JOIN orders task_order ON task_order.id::text = t.order_id::text
+             WHERE COALESCE(property_by_id.id::text, property_by_code.id::text, t.property_id::text) = ANY($1::text[])
+               AND ${activeCleaningTaskWhereSql('t')}
+               AND ${validCleaningTaskOrderWhereSql('t', 'task_order')}
+               AND (
+                 (
+                   lower(COALESCE(t.task_type, t.type, '')) IN ('checkout_clean', 'checkout_cleaning')
+                   AND lower(COALESCE(t.inspection_mode, '')) = 'deferred'
+                   AND t.inspection_due_date IS NOT NULL
+                   AND lower(COALESCE(t.status, '')) NOT IN ('inspected', 'done', 'completed', 'ready', 'keys_hung', 'cancelled', 'canceled')
+                 )
+                 OR (
+                   lower(COALESCE(t.task_type, t.type, '')) = 'checkin_clean'
+                   AND lower(COALESCE(t.inspection_scope, 'inspect_and_hang')) <> 'password_only'
+                   AND EXISTS (
+                     SELECT 1
+                     FROM cleaning_tasks deferred
+                     LEFT JOIN orders deferred_order ON deferred_order.id::text = deferred.order_id::text
+                     LEFT JOIN properties deferred_property_by_id ON deferred_property_by_id.id::text = deferred.property_id::text
+                     LEFT JOIN properties deferred_property_by_code ON upper(deferred_property_by_code.code) = upper(deferred.property_id::text)
+                     WHERE lower(COALESCE(deferred.task_type, deferred.type, '')) IN ('checkout_clean', 'checkout_cleaning')
+                       AND lower(COALESCE(deferred.inspection_mode, '')) = 'deferred'
+                       AND deferred.inspection_due_date IS NOT NULL
+                       AND lower(COALESCE(deferred.status, '')) NOT IN ('inspected', 'done', 'completed', 'ready', 'keys_hung', 'cancelled', 'canceled')
+                       AND COALESCE(t.task_date, t.date)::date BETWEEN COALESCE(deferred.task_date, deferred.date)::date AND deferred.inspection_due_date::date
+                       AND COALESCE(deferred_property_by_id.id::text, deferred_property_by_code.id::text, deferred.property_id::text)
+                           = COALESCE(property_by_id.id::text, property_by_code.id::text, t.property_id::text)
+                       AND ${activeCleaningTaskWhereSql('deferred')}
+                       AND ${validCleaningTaskOrderWhereSql('deferred', 'deferred_order')}
+                   )
+                 )
+               )
+             ORDER BY COALESCE(t.task_date, t.date)::date, t.id::text`,
+            [arrangementPropertyIds],
+          )
+          : { rows: [] }
+        const deferredInspectionArrangements = buildDeferredInspectionCheckinArrangements(arrangementRowsResult?.rows || [])
+        const arrangementRowById = new Map<string, any>(
+          (arrangementRowsResult?.rows || []).map((row: any) => [String(row.id || ''), row]),
+        )
+        const arrangementsByTaskId = indexDeferredInspectionCheckinArrangements(deferredInspectionArrangements)
         const cleaningGuideLinks = await resolvePropertyPublicGuideLinks(
           cleaningRows.map((row: any) => ({
             propertyId: String(row.property_id || '').trim(),
@@ -7025,7 +7122,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           const raw = String(row.status ?? '').trim().toLowerCase()
           const keyPhotoUrl = String(row.key_photo_url || '').trim()
           const lockboxVideoUrl = String(row.lockbox_video_url || '').trim()
-          if (raw === 'keys_hung' || lockboxVideoUrl) prev.keysHung = true
+          if (raw === 'keys_hung' || lockboxVideoConfirmsCurrentTaskState({ status: raw, lockboxVideoUrl })) prev.keysHung = true
           if (!prev.keyPhotoUrl && keyPhotoUrl) prev.keyPhotoUrl = keyPhotoUrl
           if (!prev.lockboxVideoUrl && lockboxVideoUrl) prev.lockboxVideoUrl = lockboxVideoUrl
           sameDayTurnoverState.set(k, prev)
@@ -7096,7 +7193,21 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             && (executorId === userId || manualExecutionAssigneeId === userId)
             && sameDayTurnover.checkoutCleanerIds.has(userId)
           )
-          const suppressStandaloneCheckin = !!completedSameDayTurnover || suppressStandaloneCheckinForCleanerTurnover
+          const rowInspectionArrangements = arrangementsByTaskId.get(String(row.id || '')) || []
+          const ownedDeferredArrangement = rowInspectionArrangements.find((arrangement) => arrangement.deferred_task_id === String(row.id || '')) || null
+          const linkedDeferredArrangement = rowInspectionArrangements.find((arrangement) => arrangement.deferred_task_id !== String(row.id || '')) || null
+          const suppressLinkedCheckin = !!linkedDeferredArrangement && linkedDeferredArrangement.conflict_reasons.length === 0
+          const suppressStandaloneCheckin = !!completedSameDayTurnover || suppressStandaloneCheckinForCleanerTurnover || suppressLinkedCheckin
+          const deferredArrangement = ownedDeferredArrangement || linkedDeferredArrangement || null
+          const managerMergeIsolationKey = unlinkedDeferredInspectionMergeKey({
+            sourceId: row.id,
+            inspectionMode,
+            hasExplicitInspectionRelation: !!ownedDeferredArrangement,
+          })
+          const lockboxVideoConfirmsCurrentState = lockboxVideoConfirmsCurrentTaskState({
+            status: raw_status,
+            lockboxVideoUrl: row.lockbox_video_url,
+          }) || completedSameDayTurnover?.keysHung === true
 
           const base = {
             __raw_id: String(row.id),
@@ -7108,6 +7219,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             __inspection_scope: inspectionScope,
             __inspection_due_date: inspectionDueDate,
             __deferred_projection_date: deferredDate,
+            __deferred_checkin_arrangement: deferredArrangement,
+            __manager_merge_isolation_key: managerMergeIsolationKey,
+            __lockbox_video_confirms_current_state: lockboxVideoConfirmsCurrentState,
             active_source_ids: [String(row.id)],
             superseded_source_ids: (supersededByReplacementId.get(String(row.id)) || []).map((x: any) => String(x.id || '')).filter(Boolean),
             all_related_source_ids: [
@@ -7185,7 +7299,12 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             executorGroups.set(k, arr)
           }
 
-          const inspectorDisplayDate = mobileInspectionProjectionDate({
+          const arrangementInspectionDate = ownedDeferredArrangement?.effective_inspection_date || null
+          const inspectorDisplayDate = arrangementInspectionDate
+            && arrangementInspectionDate >= dateFrom
+            && arrangementInspectionDate <= dateTo
+            ? arrangementInspectionDate
+            : mobileInspectionProjectionDate({
             inspectionMode,
             inspectionDueDate,
             taskDate,
@@ -7203,7 +7322,10 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             && !isCheckinKeyHandoverTask(row)
             && (allowAll || effectiveInspectionAssigneeId === userId || manualInspectionAssigneeId)
           ) {
-            const k = `${inspectorDisplayDate}|${propId || ''}|${effectiveInspectionAssigneeId || 'unassigned'}`
+            const k = withInspectionMergeIsolation(
+              `${inspectorDisplayDate}|${propId || ''}|${effectiveInspectionAssigneeId || 'unassigned'}`,
+              managerMergeIsolationKey,
+            )
             const arr = inspectorGroups.get(k) || []
             arr.push({ ...base, __date: inspectorDisplayDate, __assignee_inspector: inspectorId || manualInspectionAssigneeId || null, __assignee_executor: checkinSiteExecutorId || null, __is_deferred_projection: inspectionMode === 'deferred' })
             inspectorGroups.set(k, arr)
@@ -7228,7 +7350,63 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           }
 
           const p = pickPrimary()
-          const nextCheckinsForCheckout = p.kind === 'checkout'
+          const managerMergeIsolationKey = firstNonEmpty(...rows.map((row) => row.__manager_merge_isolation_key)) || null
+          const lockboxVideoConfirmsCurrentState = rows.some((row) => row.__lockbox_video_confirms_current_state === true)
+          const deferredCheckinArrangements = rows
+            .map((row) => row.__deferred_checkin_arrangement)
+            .filter(Boolean)
+          const conflictingDeferredCheckinArrangements = deferredCheckinArrangements
+            .filter((arrangement) => arrangement?.conflict_reasons?.length)
+          const deferredCheckinArrangement = conflictingDeferredCheckinArrangements[0]
+            || deferredCheckinArrangements[0]
+            || null
+          const inspectionConflictSourceIds = deferredInspectionConflictSourceIds(
+            conflictingDeferredCheckinArrangements,
+          )
+          const ownsDeferredInspectionArrangement = !!deferredCheckinArrangement
+            && rows.some((row) => String(row.__raw_id) === String(deferredCheckinArrangement.deferred_task_id))
+          const arrangementCheckinRow = deferredCheckinArrangement
+            ? (
+                cleaningRowById.get(String(deferredCheckinArrangement.checkin_task_id || ''))
+                || arrangementRowById.get(String(deferredCheckinArrangement.checkin_task_id || ''))
+              )
+            : null
+          const arrangementHasConflict = !!deferredCheckinArrangement?.conflict_reasons?.length
+          const arrangementConflict = deferredCheckinArrangement && arrangementHasConflict
+            ? {
+                reasons: deferredCheckinArrangement.conflict_reasons,
+                planned_inspector_id: deferredCheckinArrangement.planned_inspector_id,
+                planned_inspector_name: rows.find((row) => String(row.__raw_id) === String(deferredCheckinArrangement.deferred_task_id))?.inspector_name || null,
+                checkin_inspector_id: deferredCheckinArrangement.checkin_inspector_id,
+                checkin_inspector_name: arrangementCheckinRow?.inspector_name || null,
+                checkin_assignee_id: deferredCheckinArrangement.checkin_assignee_id,
+                checkin_assignee_name: arrangementCheckinRow?.assignee_name || null,
+                deferred_task_id: deferredCheckinArrangement.deferred_task_id,
+                checkin_task_id: deferredCheckinArrangement.checkin_task_id,
+                checkin_task_ids: deferredCheckinArrangement.checkin_task_ids,
+              }
+            : null
+          const linkedInspectionActionChild = deferredCheckinArrangement && ownsDeferredInspectionArrangement && !arrangementHasConflict && arrangementCheckinRow
+            ? {
+                id: `cleaning_tasks_inspection:${deferredCheckinArrangement.checkin_task_id}`,
+                task_kind: 'inspection',
+                execution_role: 'inspection',
+                execution_semantics: 'checkin_inspection',
+                source_type: 'cleaning_tasks',
+                source_id: deferredCheckinArrangement.checkin_task_id,
+                source_ids: [deferredCheckinArrangement.checkin_task_id],
+                active_source_ids: [deferredCheckinArrangement.checkin_task_id],
+                property_id: deferredCheckinArrangement.property_id,
+                scheduled_date: deferredCheckinArrangement.effective_inspection_date,
+                task_type: 'checkin_clean',
+                status: mapCleaningTaskStatus(String(arrangementCheckinRow.status || '')),
+                assignee_id: deferredCheckinArrangement.checkin_assignee_id,
+                inspector_id: deferredCheckinArrangement.planned_inspector_id,
+                inspection_mode: 'same_day',
+                inspection_scope: 'inspect_and_hang',
+              }
+            : null
+          const nextCheckinsForCheckout = p.kind === 'checkout' && !managerMergeIsolationKey
             ? (() => {
                 const candidates = cleaningRows
                   .filter((x: any) => String(x?.property_id || '') === String(propId || ''))
@@ -7290,6 +7468,10 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           const checkedOutAt = firstNonEmpty(p.a.checked_out_at, p.b?.checked_out_at, ...rows.map((x) => x.checked_out_at))
           const keyPhotoUrl = firstNonEmpty(p.a.key_photo_url, p.b?.key_photo_url, ...relatedRowsForDisplay.map((x) => x.key_photo_url))
           const lockboxVideoUrl = firstNonEmpty(p.a.lockbox_video_url, p.b?.lockbox_video_url, ...relatedRowsForDisplay.map((x) => x.lockbox_video_url))
+          const keyPhotoConfirmsCurrentProgress = rows.some((row) => keyPhotoConfirmsCurrentTaskProgress({
+            status: row.raw_status,
+            keyPhotoUrl: row.key_photo_url,
+          }))
           const keysRequired = Math.max(
             turnoverDisplay.keys_required_checkout || 0,
             turnoverDisplay.keys_required_checkin || 0,
@@ -7420,7 +7602,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               ? (
                   raw === 'keys_hung'
                     ? 'keys_hung'
-                    : lockboxVideoUrl
+                    : lockboxVideoConfirmsCurrentState
                     ? 'keys_hung'
                     : projectInspectorTaskStatus(raw, inspectionScope) === 'to_hang_keys'
                       ? 'to_hang_keys'
@@ -7428,7 +7610,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                       ? 'done'
                       : (raw === 'cleaned' || raw === 'restock_pending' || raw === 'restocked')
                           ? 'to_inspect'
-                          : (raw === 'in_progress' || keyPhotoUrl)
+                          : (raw === 'in_progress' || keyPhotoConfirmsCurrentProgress)
                             ? 'in_progress'
                             : relatedCheckoutProgress
                               ? relatedCheckoutProgress
@@ -7440,18 +7622,18 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                     : roleKind === 'cleaner' && !cleaningSubmissionReady
                     ? (!String(assigneeId || '').trim()
                         ? 'todo'
-                        : (raw === 'in_progress' || raw === 'cleaning' || keyPhotoUrl)
+                        : (raw === 'in_progress' || raw === 'cleaning' || keyPhotoConfirmsCurrentProgress)
                           ? 'in_progress'
                           : 'assigned')
                     : raw === 'keys_hung'
                     ? 'keys_hung'
-                    : lockboxVideoUrl
+                    : lockboxVideoConfirmsCurrentState
                     ? 'keys_hung'
                     : requireLockboxBeforeDone && isDoneLike && !lockboxVideoUrl
                     ? 'to_hang_keys'
                     : requireSelfComplete && isDoneLike && !completionPhotosOk
                       ? 'to_complete'
-                      : (!String(assigneeId || '').trim() && !isDoneLike && raw !== 'in_progress' && !keyPhotoUrl)
+                      : (!String(assigneeId || '').trim() && !isDoneLike && raw !== 'in_progress' && !keyPhotoConfirmsCurrentProgress)
                         ? 'todo'
                         : (raw === 'cleaned' || raw === 'restock_pending' ? 'done' : p.a.status)
                 )
@@ -7511,6 +7693,10 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           })
 
           return {
+            ...(linkedInspectionActionChild ? { __merged_children: [linkedInspectionActionChild] } : {}),
+            ...(inspectionConflictSourceIds.length ? { __inspection_conflict_source_ids: inspectionConflictSourceIds } : {}),
+            __manager_merge_isolation_key: managerMergeIsolationKey,
+            __lockbox_video_confirms_current_state: lockboxVideoConfirmsCurrentState,
             id: outId,
             task_kind: roleKind === 'cleaner' ? 'cleaning' : (roleKind === 'executor' && !executorInspection ? 'execution' : 'inspection'),
             execution_role: executorInspection ? 'inspection' : executionRole,
@@ -7552,6 +7738,11 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             inspection_mode: inspectionMode,
             inspection_scope: inspectionScope,
             inspection_due_date: inspectionDueDate,
+            inspection_original_checkout_date: deferredCheckinArrangement?.original_checkout_date || null,
+            inspection_action_task_id: deferredCheckinArrangement && !arrangementHasConflict
+              ? deferredCheckinArrangement.checkin_task_id
+              : null,
+            inspection_assignment_conflict: arrangementConflict,
             keys_required: keysRequired,
             keys_required_checkout: checkoutKeysOut,
             keys_required_checkin: checkinKeysOut,
@@ -7616,7 +7807,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           merged.push(it)
           continue
         }
-        const k = `${d}|${propKey}`
+        const k = withInspectionMergeIsolation(`${d}|${propKey}`, it.__manager_merge_isolation_key)
         const arr = byKey.get(k) || []
         arr.push(it)
         byKey.set(k, arr)
@@ -7654,7 +7845,8 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             .map((value) => Math.trunc(value))
           return nums.length ? Math.min(...nums) : null
         }
-        const [d, propKey] = k.split('|')
+        const [d, propKey, ...mergeIdentityParts] = k.split('|')
+        const mergeIdentity = mergeIdentityParts.join('|')
         const mergedTurnoverDisplay = mergeCleaningTurnoverDisplays(arr.map((x) => x.turnover_display))
         const activeSourceIds = Array.from(
           new Set(arr.flatMap((x) => (Array.isArray(x?.active_source_ids) ? x.active_source_ids : (Array.isArray(x?.source_ids) ? x.source_ids : [])))),
@@ -7710,6 +7902,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         const endTime = firstNonEmpty(mergedTurnoverDisplay?.checkin_time, ...arr.map((x) => x.end_time))
         const keyPhotoUrl = firstNonEmpty(...arr.map((x) => x.key_photo_url))
         const lockboxVideoUrl = firstNonEmpty(...arr.map((x) => x.lockbox_video_url))
+        const lockboxVideoConfirmsCurrentState = arr.some((x) => x.__lockbox_video_confirms_current_state === true)
         const oldCode = firstNonEmpty(
           mergedTurnoverDisplay?.old_code,
           ...arr
@@ -7817,7 +8010,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           .filter((value) => String(value || '').trim())
           .sort((a: any, b: any) => rankStatus(a) - rankStatus(b))
         const statusOut =
-          lockboxVideoUrl
+          lockboxVideoConfirmsCurrentState
             ? 'keys_hung'
             : cleaningFinished && inspectionPending
             ? 'to_inspect'
@@ -7831,10 +8024,25 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         const cleaningSubmissionReady = arr.length > 0 && arr.every((x) => x.cleaning_submission_ready === true)
         const propertyReadyForGuestNotification = arr.some((x) => x.property_ready_for_guest_notification === true || String(x?.status || '').trim().toLowerCase() === 'ready')
 
+        const inspectionAssignmentConflicts = arr
+          .map((child) => child?.inspection_assignment_conflict)
+          .filter(Boolean)
+        const inspectionConflictSourceIds = Array.from(new Set([
+          ...arr.flatMap((child) => Array.isArray(child?.__inspection_conflict_source_ids)
+            ? child.__inspection_conflict_source_ids.map((value: unknown) => String(value || '').trim()).filter(Boolean)
+            : []),
+          ...deferredInspectionConflictSourceIds(inspectionAssignmentConflicts),
+        ]))
+
         merged.push({
           ...preferred,
-          __merged_children: arr,
-          id: `cleaning_tasks_merged:${d}:${propKey}`,
+          __manager_merge_isolation_key: mergeIdentity || null,
+          __lockbox_video_confirms_current_state: lockboxVideoConfirmsCurrentState,
+          __merged_children: arr.flatMap((child) => [
+            child,
+            ...(Array.isArray(child?.__merged_children) ? child.__merged_children : []),
+          ]),
+          id: `cleaning_tasks_merged:${d}:${propKey}${mergeIdentity ? `:${encodeURIComponent(mergeIdentity)}` : ''}`,
           start_time: startTime || null,
           end_time: endTime || null,
           task_type: taskTypeOut || preferred?.task_type || null,
@@ -7881,6 +8089,10 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           inspection_mode: inspectionMode,
           inspection_scope: inspectionScope,
           inspection_due_date: inspectionDueDate,
+          inspection_original_checkout_date: firstNonEmpty(...arr.map((x) => x.inspection_original_checkout_date)) || null,
+          inspection_action_task_id: firstNonEmpty(...arr.map((x) => x.inspection_action_task_id)) || null,
+          inspection_assignment_conflict: inspectionAssignmentConflicts[0] || null,
+          ...(inspectionConflictSourceIds.length ? { __inspection_conflict_source_ids: inspectionConflictSourceIds } : {}),
           keys_required: keysRequired,
           keys_required_checkout: checkoutKeysOut,
           keys_required_checkin: checkinKeysOut,
@@ -7995,9 +8207,14 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
       }, manualParticipantsByRef)
       const mergedChildren = Array.isArray((task as any).__merged_children) ? (task as any).__merged_children : []
       const payload = buildWorkTaskActionPayload(taskWithParticipants, actionContext)
+      const blockedInspectionSourceIds = new Set<string>([
+        ...(Array.isArray((task as any).__inspection_conflict_source_ids)
+          ? (task as any).__inspection_conflict_source_ids
+          : []),
+        ...deferredInspectionConflictSourceIds([(task as any).inspection_assignment_conflict]),
+      ].map((value) => String(value || '').trim()).filter(Boolean))
+      const actionGroups = [payload.available_actions || []]
       if (mergedChildren.length) {
-        const actionsById = new Map<string, any>()
-        for (const action of payload.available_actions || []) actionsById.set(String(action.id), action)
         const participantActions = new Set(payload.capabilities.participant_actions || [])
         const participantSources = new Set(payload.capabilities.participant_sources || [])
         for (const child of mergedChildren) {
@@ -8005,22 +8222,8 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           const childPayload = buildWorkTaskActionPayload(childWithParticipants, actionContext)
           for (const id of childPayload.capabilities.participant_actions || []) participantActions.add(id)
           for (const source of childPayload.capabilities.participant_sources || []) participantSources.add(source)
-          for (const action of childPayload.available_actions || []) {
-            const key = String(action.id || '')
-            if (!key) continue
-            const existing = actionsById.get(key)
-            const actionSourceId = String(action.source_id || '').trim()
-            const existingSourceId = String(existing?.source_id || '').trim()
-            if (
-              !existing
-              || (existing.enabled === false && action.enabled !== false)
-              || (action.enabled !== false && actionSourceId && actionSourceId !== existingSourceId)
-            ) {
-              actionsById.set(key, action)
-            }
-          }
+          actionGroups.push(childPayload.available_actions || [])
         }
-        payload.available_actions = Array.from(actionsById.values())
         payload.capabilities = {
           ...payload.capabilities,
           is_task_participant: payload.capabilities.is_task_participant || participantActions.size > 0,
@@ -8028,7 +8231,15 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           participant_sources: Array.from(participantSources).sort(),
         }
       }
-      const { __merged_children, property_ready_for_guest_notification, ...cleanTask } = taskWithParticipants as any
+      payload.available_actions = mergeDeferredInspectionAwareActions(actionGroups, blockedInspectionSourceIds)
+      const {
+        __merged_children,
+        __inspection_conflict_source_ids,
+        __manager_merge_isolation_key,
+        __lockbox_video_confirms_current_state,
+        property_ready_for_guest_notification,
+        ...cleanTask
+      } = taskWithParticipants as any
       const maintenanceWorkflow = maintenanceWorkflowForWorkTask(taskWithParticipants, user, canManageMaintenanceWorkflow)
       return {
         ...cleanTask,

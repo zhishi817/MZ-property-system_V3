@@ -10,6 +10,23 @@ export type TaskExecutionSemantics =
 export type CleaningTaskExecutionSemantics = Exclude<TaskExecutionSemantics, 'work_task'>
 
 const VALID_INSPECTION_MODES = new Set<InspectionMode>(['pending_decision', 'same_day', 'deferred', 'self_complete', 'checked_done'])
+export const TERMINAL_DEFERRED_INSPECTION_STATUSES = [
+  'inspected',
+  'done',
+  'completed',
+  'ready',
+  'keys_hung',
+  'cancelled',
+  'canceled',
+] as const
+const TERMINAL_DEFERRED_INSPECTION_STATUS_SET = new Set<string>(TERMINAL_DEFERRED_INSPECTION_STATUSES)
+const LOCKBOX_VIDEO_CURRENT_STATE_STATUSES = new Set<string>([
+  'keys_hung',
+  'done',
+  'completed',
+  'ready',
+])
+const KEY_PHOTO_CURRENT_PROGRESS_STATUSES = new Set<string>(['in_progress', 'cleaning'])
 const VALID_TASK_EXECUTION_SEMANTICS = new Set<TaskExecutionSemantics>([
   'cleaning_execution',
   'checkin_inspection',
@@ -129,6 +146,59 @@ export function isInspectionFinishedStatus(status: any): boolean {
   return raw === 'inspected' || raw === 'done' || raw === 'completed' || raw === 'ready' || raw === 'keys_hung'
 }
 
+export function isTerminalDeferredInspectionStatus(status: any): boolean {
+  return TERMINAL_DEFERRED_INSPECTION_STATUS_SET.has(String(status || '').trim().toLowerCase())
+}
+
+/**
+ * A lockbox video is retained as evidence when a task is reopened. It may only
+ * confirm a current keys-hung state when the task lifecycle is still at or
+ * beyond that step; the media alone must not advance an assigned task.
+ */
+export function lockboxVideoConfirmsCurrentTaskState(params: {
+  status?: any
+  lockboxVideoUrl?: any
+}): boolean {
+  if (!String(params?.lockboxVideoUrl || '').trim()) return false
+  return LOCKBOX_VIDEO_CURRENT_STATE_STATUSES.has(String(params?.status || '').trim().toLowerCase())
+}
+
+export function keyPhotoConfirmsCurrentTaskProgress(params: {
+  status?: any
+  keyPhotoUrl?: any
+}): boolean {
+  if (!String(params?.keyPhotoUrl || '').trim()) return false
+  return KEY_PHOTO_CURRENT_PROGRESS_STATUSES.has(String(params?.status || '').trim().toLowerCase())
+}
+
+/**
+ * An overdue deferred inspection without a stored checkout/check-in
+ * arrangement is an independent source of work. Keep it out of ordinary
+ * date/property turnover de-duplication so its assignee, state, and evidence
+ * cannot leak into a later booking.
+ */
+export function unlinkedDeferredInspectionMergeKey(params: {
+  sourceId?: any
+  inspectionMode?: any
+  hasExplicitInspectionRelation?: boolean
+}): string | null {
+  if (normalizeInspectionMode(params?.inspectionMode) !== 'deferred') return null
+  if (params?.hasExplicitInspectionRelation === true) return null
+  const sourceId = String(params?.sourceId || '').trim()
+  return sourceId ? `deferred:${sourceId}` : null
+}
+
+export function withInspectionMergeIsolation(baseKey: string, isolationKey?: any): string {
+  const isolated = String(isolationKey || '').trim()
+  return isolated ? `${baseKey}|${isolated}` : baseKey
+}
+
+export function openDeferredInspectionStatusSql(alias: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(alias)) throw new Error('invalid_sql_alias')
+  const terminalStatuses = TERMINAL_DEFERRED_INSPECTION_STATUSES.map((status) => `'${status}'`).join(', ')
+  return `lower(COALESCE(${alias}.status, '')) NOT IN (${terminalStatuses})`
+}
+
 export function projectInspectorTaskStatus(status: any, inspectionScope: any): string {
   const raw = String(status || '').trim().toLowerCase()
   if (raw !== 'inspected') return raw
@@ -225,6 +295,9 @@ export function deferredProjectionDate(params: {
   const to = String(params.dateTo || '').slice(0, 10)
   if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return null
   if (due > to) return null
+  if (due < from && (isInspectionFinishedStatus(params.status) || ['cancelled', 'canceled'].includes(String(params.status || '').trim().toLowerCase()))) {
+    return null
+  }
   return due < from ? from : due
 }
 
