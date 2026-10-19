@@ -15,6 +15,7 @@ import {
   taskCenterInspectionModeOptions,
   taskInspectionModeMeta,
   taskInspectionScopeMeta,
+  taskCenterSaveInspectionScope,
   taskStatusMeta,
   taskTimingTone,
 } from './cleaningTaskUi'
@@ -53,6 +54,21 @@ describe('cleaningTaskUi', () => {
     expect(inspectionScopeLabel(null)).toBe('检查后挂钥匙')
     expect(taskInspectionScopeMeta('password_only')).toEqual({ label: '仅改密码', tone: 'pending' })
     expect(taskInspectionScopeMeta(null)).toEqual({ label: '检查后挂钥匙', tone: 'success' })
+  })
+
+  it('does not replay a hidden password-only scope from any turnover card', () => {
+    expect(taskCenterSaveInspectionScope({
+      inspectionScope: 'inspect_and_hang',
+      isTurnover: true,
+    })).toBe('inspect_and_hang')
+    expect(taskCenterSaveInspectionScope({
+      inspectionScope: 'password_only',
+      isTurnover: true,
+    })).toBe('inspect_and_hang')
+    expect(taskCenterSaveInspectionScope({
+      inspectionScope: 'password_only',
+      isTurnover: false,
+    })).toBe('password_only')
   })
 
   it('filters password-only check-in tasks away from self-complete and checked-done modes', () => {

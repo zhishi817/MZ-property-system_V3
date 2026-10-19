@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { requireAnyPerm, requirePerm, userHasAnyPerm } from '../auth'
 import { addAudit, db } from '../store'
 import { hasPg, pgPool, pgRunInTransaction } from '../dbAdapter'
-import { activeCleaningTaskWhereSql, backfillCleaningTasks, ensureCleaningSchemaV2, isCancelledCleaningTaskStatus, syncCheckoutOldCodeFromCheckinNewCode, syncOrderToCleaningTasks, validCleaningTaskOrderWhereSql } from '../services/cleaningSync'
+import { activeCleaningTaskWhereSql, backfillCleaningTasks, ensureCleaningSchemaV2, isCancelledCleaningTaskStatus, lockCleaningTurnoverKey, syncCheckoutOldCodeFromCheckinNewCode, syncOrderToCleaningTasks, validCleaningTaskOrderWhereSql } from '../services/cleaningSync'
 import { v4 as uuid } from 'uuid'
 import { emitNotificationEvent } from '../services/notificationEvents'
 import { buildCleaningTaskVisibilityHints, buildMz031CleaningArrangementRevision, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
@@ -44,6 +44,74 @@ function auDayStr(d: Date): string {
 function dayOnly(s?: any): string | null {
   const v = String(s || '').slice(0, 10)
   return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null
+}
+
+const TURNOVER_INSPECTION_SCOPE_CONFLICT = 'turnover_requires_inspect_and_hang'
+
+function turnoverInspectionScopeTarget(current: any, patch: any = {}) {
+  const taskKind = String(patch?.task_type ?? current?.task_type ?? current?.type ?? '').trim().toLowerCase()
+  const oppositeKind = taskKind === 'checkout_clean'
+    ? 'checkin_clean'
+    : taskKind === 'checkin_clean'
+      ? 'checkout_clean'
+      : ''
+  const propertyId = String(patch?.property_id ?? current?.property_id ?? '').trim()
+  const taskDate = dayOnly(patch?.task_date ?? patch?.date ?? current?.task_date ?? current?.date)
+  if (!oppositeKind || !propertyId || !taskDate) return null
+  return {
+    oppositeKind,
+    propertyId,
+    taskDate,
+    inspectionScope: normalizeInspectionScope(patch?.inspection_scope ?? current?.inspection_scope),
+  }
+}
+
+async function assertPgTurnoverInspectionScope(client: any, taskId: string, current: any, patch: any = {}) {
+  const target = turnoverInspectionScopeTarget(current, patch)
+  if (!target) return
+  const counterpart = await client.query(
+    `SELECT task.inspection_scope
+     FROM cleaning_tasks AS task
+     WHERE task.id::text <> $1
+       AND task.property_id::text = $2
+       AND COALESCE(task.task_date, task.date)::date = $3::date
+       AND lower(COALESCE(task.task_type, task.type, '')) = $4
+       AND ${activeCleaningTaskWhereSql('task')}
+     LIMIT 1`,
+    [String(taskId), target.propertyId, target.taskDate, target.oppositeKind],
+  )
+  const counterpartScope = counterpart.rows?.[0]?.inspection_scope
+  if (
+    counterpart.rows?.length
+    && (target.inspectionScope === 'password_only' || normalizeInspectionScope(counterpartScope) === 'password_only')
+  ) {
+    throw new Error(TURNOVER_INSPECTION_SCOPE_CONFLICT)
+  }
+}
+
+function assertMemoryTurnoverInspectionScope(taskId: string, current: any, patch: any = {}) {
+  const target = turnoverInspectionScopeTarget(current, patch)
+  if (!target) return
+  const counterpart = (db.cleaningTasks as any[]).find((candidate: any) => (
+    String(candidate.id || '') !== String(taskId)
+    && String(candidate.property_id || '').trim() === target.propertyId
+    && dayOnly(candidate.task_date ?? candidate.date) === target.taskDate
+    && String(candidate.task_type ?? candidate.type ?? '').trim().toLowerCase() === target.oppositeKind
+    && !isCancelledCleaningTaskStatus(candidate.status)
+    && String(candidate.execution_state || 'active').trim().toLowerCase() === 'active'
+  ))
+  if (
+    counterpart
+    && (target.inspectionScope === 'password_only' || normalizeInspectionScope(counterpart.inspection_scope) === 'password_only')
+  ) {
+    throw new Error(TURNOVER_INSPECTION_SCOPE_CONFLICT)
+  }
+}
+
+function sendTurnoverInspectionScopeConflict(res: any, error: any): boolean {
+  if (error?.message !== TURNOVER_INSPECTION_SCOPE_CONFLICT) return false
+  res.status(400).json({ code: TURNOVER_INSPECTION_SCOPE_CONFLICT, message: '同日退房入住任务必须检查后挂钥匙' })
+  return true
 }
 
 function cleanNotificationText(value: any) {
@@ -1274,8 +1342,22 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRun
 
       const keys = Object.keys(patch).filter((k) => patch[k] !== undefined)
       const transactionResult = await pgRunInTransaction(async (client) => {
+        const initialTurnoverTarget = turnoverInspectionScopeTarget(before, patch)
+        if (initialTurnoverTarget) {
+          await lockCleaningTurnoverKey(client, initialTurnoverTarget.propertyId, initialTurnoverTarget.taskDate)
+        }
         const locked = await client.query('SELECT * FROM cleaning_tasks WHERE id = $1 LIMIT 1 FOR UPDATE', [String(id)])
         const lockedBefore = locked?.rows?.[0] || before
+        const lockedTurnoverTarget = turnoverInspectionScopeTarget(lockedBefore, patch)
+        if (
+          lockedTurnoverTarget
+          && (!initialTurnoverTarget
+            || lockedTurnoverTarget.propertyId !== initialTurnoverTarget.propertyId
+            || lockedTurnoverTarget.taskDate !== initialTurnoverTarget.taskDate)
+        ) {
+          await lockCleaningTurnoverKey(client, lockedTurnoverTarget.propertyId, lockedTurnoverTarget.taskDate)
+        }
+        await assertPgTurnoverInspectionScope(client, String(id), lockedBefore, patch)
         const set = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ')
         const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]))
         const sql = `UPDATE cleaning_tasks SET ${set} WHERE id = $${keys.length + 1} RETURNING *`
@@ -1382,6 +1464,7 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRun
     const localPatch: any = { ...parsed.data }
     if (localPatch.guest_special_request === undefined && localPatch.note !== undefined) localPatch.guest_special_request = localPatch.note
     delete localPatch.note
+    assertMemoryTurnoverInspectionScope(String(id), task, localPatch)
     const isCheckinSiteExecution = isCheckinSiteExecutionTask({
       task_type: localPatch.task_type ?? task.task_type,
       inspection_scope: localPatch.inspection_scope ?? task.inspection_scope,
@@ -1501,6 +1584,7 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRun
     } catch {}
     return res.json(task)
   } catch (e: any) {
+    if (sendTurnoverInspectionScopeConflict(res, e)) return
     const conflict = inspectionAssignmentConflictPayload(e)
     if (conflict) return res.status(409).json(conflict)
     return res.status(500).json({ message: e?.message || 'update_failed' })
@@ -1557,6 +1641,9 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
       mode === 'checkin' ? ['checkin_clean'] :
       mode === 'stayover' ? ['stayover_clean'] :
       [String(taskType)]
+    if (types.includes('checkout_clean') && types.includes('checkin_clean') && (parsed.data as any).inspection_scope === 'password_only') {
+      return res.status(400).json({ code: TURNOVER_INSPECTION_SCOPE_CONFLICT, message: '同日退房入住任务必须检查后挂钥匙' })
+    }
 
     const createdRows: any[] = []
     const rawPropertyId = String(parsed.data.property_id || '').trim()
@@ -1587,7 +1674,9 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
       assignee_id: baseAssigneeId,
       cleaner_id: createIsCheckinSiteExecution ? null : (parsed.data.cleaner_id ?? null),
       inspector_id: (parsed.data.inspector_id ?? null),
-      inspection_scope: (parsed.data as any).inspection_scope ?? null,
+      inspection_scope: types.includes('checkout_clean') && types.includes('checkin_clean')
+        ? 'inspect_and_hang'
+        : ((parsed.data as any).inspection_scope ?? null),
       scheduled_at: parsed.data.scheduled_at ?? null,
       old_code: parsed.data.old_code ?? null,
       new_code: parsed.data.new_code ?? null,
@@ -1616,6 +1705,9 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
             inspection_due_date: (parsed.data as any).inspection_due_date ?? null,
           }
           validateAndApplyInspectionPatch({ patch: row, taskType: tt })
+          const turnoverTarget = turnoverInspectionScopeTarget(row)
+          if (turnoverTarget) await lockCleaningTurnoverKey(client, turnoverTarget.propertyId, turnoverTarget.taskDate)
+          await assertPgTurnoverInspectionScope(client, String(row.id), row)
           const keys = Object.keys(row).filter((k) => row[k] !== undefined)
           const cols = keys.map((k) => `"${k}"`).join(', ')
           const args = keys.map((_, i) => `$${i + 1}`).join(', ')
@@ -1705,12 +1797,14 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
         inspection_due_date: (parsed.data as any).inspection_due_date ?? null,
       }
       validateAndApplyInspectionPatch({ patch: row, taskType: tt })
+      assertMemoryTurnoverInspectionScope(String(row.id), row)
       ;(db.cleaningTasks as any[]).push(row)
       createdRows.push(row)
     }
     if (createdRows.length === 1) return res.json(createdRows[0])
     return res.json({ ok: true, created: createdRows.length })
   } catch (e: any) {
+    if (sendTurnoverInspectionScopeConflict(res, e)) return
     const conflict = inspectionAssignmentConflictPayload(e)
     if (conflict) return res.status(409).json(conflict)
     return res.status(500).json({ message: e?.message || 'create_failed' })
@@ -1926,8 +2020,15 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), requireR5T
         if (hasPg && pgPool) {
           await ensureCleaningSchemaV2()
           return pgRunInTransaction(async (client) => {
+          const snapshotResult = await client.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
+          const snapshot = snapshotResult?.rows?.[0] || null
+          if (!snapshot) return null
+          const initialTurnoverTarget = turnoverInspectionScopeTarget(snapshot, basePatch)
+          if (initialTurnoverTarget) {
+            await lockCleaningTurnoverKey(client, initialTurnoverTarget.propertyId, initialTurnoverTarget.taskDate)
+          }
           const r0 = await client.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1 FOR UPDATE', [id])
-          const before = r0?.rows?.[0] || null
+          const before = r0?.rows?.[0] || snapshot
           if (!before) return null
           const patch: any = { ...basePatch }
           const isCheckinSiteExecution = isCheckinSiteExecutionTask({
@@ -1943,6 +2044,16 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), requireR5T
             patch.inspection_replaced_original_due_date = null
           }
           validateAndApplyInspectionPatch({ patch, current: before })
+          const lockedTurnoverTarget = turnoverInspectionScopeTarget(before, patch)
+          if (
+            lockedTurnoverTarget
+            && (!initialTurnoverTarget
+              || lockedTurnoverTarget.propertyId !== initialTurnoverTarget.propertyId
+              || lockedTurnoverTarget.taskDate !== initialTurnoverTarget.taskDate)
+          ) {
+            await lockCleaningTurnoverKey(client, lockedTurnoverTarget.propertyId, lockedTurnoverTarget.taskDate)
+          }
+          await assertPgTurnoverInspectionScope(client, String(id), before, patch)
           {
             const beforeStatus = String(before.status || 'pending')
             const statusAutoEligible = beforeStatus === 'pending' || beforeStatus === 'assigned'
@@ -2011,12 +2122,14 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), requireR5T
           patch.cleaner_id = isCheckinSiteExecution ? null : patch.assignee_id
         }
         validateAndApplyInspectionPatch({ patch, current: task })
+        assertMemoryTurnoverInspectionScope(String(id), task, patch)
         if (patch.property_id !== undefined) task.property_id = patch.property_id
         if (patch.task_date !== undefined) { task.task_date = patch.task_date; task.date = patch.task_date }
         if (patch.status !== undefined) task.status = patch.status
         if (patch.cleaner_id !== undefined) task.cleaner_id = patch.cleaner_id
         if (patch.inspector_id !== undefined) task.inspector_id = patch.inspector_id
         if (patch.assignee_id !== undefined) task.assignee_id = patch.assignee_id
+        if (patch.inspection_scope !== undefined) task.inspection_scope = normalizeInspectionScope(patch.inspection_scope)
         if (patch.inspection_mode !== undefined) task.inspection_mode = patch.inspection_mode
         if (patch.inspection_due_date !== undefined) task.inspection_due_date = patch.inspection_due_date
         if (patch.keys_required !== undefined) task.keys_required = patch.keys_required
@@ -2066,6 +2179,7 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), requireR5T
     }
     return res.json({ ok: true, updated: updated.length })
   } catch (e: any) {
+    if (sendTurnoverInspectionScopeConflict(res, e)) return
     const conflict = inspectionAssignmentConflictPayload(e)
     if (conflict) return res.status(409).json(conflict)
     return res.status(500).json({ message: e?.message || 'bulk_patch_failed' })

@@ -148,6 +148,9 @@ async function main() {
   const o6 = uuid()
   const o7 = uuid()
   const o8 = uuid()
+  const o9 = uuid()
+  const o10 = uuid()
+  const turnoverScopeJobId = uuid()
   const manualCheckin = uuid()
   const manualCheckout = uuid()
   const manualExtraCheckin = uuid()
@@ -184,13 +187,15 @@ async function main() {
     { id: o6, property_id: 'P_TEST_PASSWORD_CHAIN', checkin: '2026-02-01', checkout: '2026-02-03', nights: 2, status: 'confirmed', confirmation_code: `TEST_SYNC_${o6.slice(0, 8)}` },
     { id: o7, property_id: 'P_TEST_PASSWORD_CHAIN', checkin: '2026-02-05', checkout: '2026-02-08', nights: 3, status: 'confirmed', confirmation_code: `TEST_SYNC_${o7.slice(0, 8)}` },
     { id: o8, property_id: 'P_TEST_CHECKIN_SCOPE', checkin: null, checkout: '2026-02-26', nights: 1, status: 'confirmed', confirmation_code: `TEST_SYNC_${o8.slice(0, 8)}` },
+    { id: o9, property_id: 'P_TEST_TURNOVER_SCOPE', checkin: '2026-03-01', checkout: '2026-03-03', nights: 2, status: 'confirmed', confirmation_code: `TEST_SYNC_${o9.slice(0, 8)}` },
+    { id: o10, property_id: 'P_TEST_TURNOVER_SCOPE', checkin: '2026-03-05', checkout: '2026-03-07', nights: 2, status: 'confirmed', confirmation_code: `TEST_SYNC_${o10.slice(0, 8)}` },
   ]
 
   if (pgPool) {
     await ensureCleaningSchemaV2()
-    await pgPool.query('DELETE FROM cleaning_sync_logs WHERE order_id = ANY($1)', [[o1, o2, o3, o4, o5, o6, o7, o8]])
-    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o3, o4, o5, o6, o7, o8], [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress, manualCheckinZeroNights]])
-    await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [[o1, o2, o3, o4, o5, o6, o7, o8]])
+    await pgPool.query('DELETE FROM cleaning_sync_logs WHERE order_id = ANY($1)', [[o1, o2, o3, o4, o5, o6, o7, o8, o9, o10]])
+    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o3, o4, o5, o6, o7, o8, o9, o10], [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress, manualCheckinZeroNights]])
+    await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [[o1, o2, o3, o4, o5, o6, o7, o8, o9, o10]])
     for (const o of orders) {
       await pgPool.query(
         `INSERT INTO orders(id, property_id, checkin, checkout, nights, status, confirmation_code)
@@ -214,6 +219,54 @@ async function main() {
   assert.ok(t1i, 'should create checkin task for confirmed order')
   assert.equal(String(t1i.task_date).slice(0, 10), '2026-02-10')
   assert.equal(t1i.old_code == null ? null : String(t1i.old_code), null, 'a checkin without a prior password source should remain blank')
+
+  await syncOrderToCleaningTasks(o9)
+  await syncOrderToCleaningTasks(o10)
+  if (pgPool) {
+    await pgPool.query(
+      `UPDATE cleaning_tasks
+       SET inspection_scope='password_only', inspection_mode='deferred', inspection_due_date='2026-03-06'::date,
+           status='assigned', assignee_id='TURNOVER-CLEANER', cleaner_id='TURNOVER-CLEANER', inspector_id='TURNOVER-INSPECTOR'
+       WHERE order_id=$1 AND lower(COALESCE(task_type, type, ''))='checkin_clean'`,
+      [o10],
+    )
+    await pgPool.query(`UPDATE orders SET checkin='2026-03-03'::date WHERE id=$1`, [o10])
+  } else {
+    const incomingCheckin = await fetchTaskByType(o10, 'checkin_clean')
+    if (incomingCheckin) Object.assign(incomingCheckin, {
+      inspection_scope: 'password_only',
+      inspection_mode: 'deferred',
+      inspection_due_date: '2026-03-06',
+      status: 'assigned',
+      assignee_id: 'TURNOVER-CLEANER',
+      cleaner_id: 'TURNOVER-CLEANER',
+      inspector_id: 'TURNOVER-INSPECTOR',
+    })
+    const incomingOrder = (db.orders as any[]).find((item: any) => String(item.id) === o10)
+    if (incomingOrder) incomingOrder.checkin = '2026-03-03'
+  }
+  assert.equal(String((await fetchTaskByType(o10, 'checkin_clean'))?.inspection_scope), 'password_only', 'a pure checkin may keep password-only scope')
+  await syncOrderToCleaningTasks(o10, { jobId: turnoverScopeJobId })
+  const normalizedTurnoverCheckin = await fetchTaskByType(o10, 'checkin_clean')
+  assert.equal(String(normalizedTurnoverCheckin?.inspection_scope), 'inspect_and_hang', 'moving a checkin onto an active checkout must normalize the turnover scope')
+  assert.equal(String(normalizedTurnoverCheckin?.task_date).slice(0, 10), '2026-03-03', 'date sync must still move the checkin onto the turnover date')
+  assert.equal(String(normalizedTurnoverCheckin?.inspection_mode), 'deferred', 'scope normalization must not change the inspection mode')
+  assert.equal(String(normalizedTurnoverCheckin?.inspection_due_date).slice(0, 10), '2026-03-06', 'scope normalization must not change the inspection due date')
+  assert.equal(String(normalizedTurnoverCheckin?.status), 'assigned', 'scope normalization must not change status')
+  assert.equal(String(normalizedTurnoverCheckin?.cleaner_id), 'TURNOVER-CLEANER', 'scope normalization must not change cleaner assignment')
+  assert.equal(String(normalizedTurnoverCheckin?.inspector_id), 'TURNOVER-INSPECTOR', 'scope normalization must not change inspector assignment')
+  assert.equal(String((await fetchTaskByType(o9, 'checkout_clean'))?.inspection_scope), 'inspect_and_hang', 'turnover normalization must update the paired checkout too')
+  if (pgPool) {
+    const auditActions = (await pgPool.query(
+      `SELECT action
+       FROM cleaning_sync_logs
+       WHERE job_id=$1 AND task_id=$2
+       ORDER BY created_at, action`,
+      [turnoverScopeJobId, String(normalizedTurnoverCheckin?.id || '')],
+    )).rows.map((row: any) => String(row.action))
+    assert.ok(auditActions.includes('updated'), 'date sync must keep its ordinary task update audit')
+    assert.ok(auditActions.includes('scope_normalized'), 'scope normalization must have a distinct non-colliding audit record')
+  }
 
   await syncOrderToCleaningTasks(o8)
   const o8CheckoutBeforeRepair = await fetchTask(o8)
@@ -594,9 +647,9 @@ async function main() {
   if (pgPool) {
     const countTasks = await pgPool.query(`SELECT COUNT(*)::int AS c FROM cleaning_tasks WHERE order_id = ANY($1)`, [[o1, o2]])
     assert.equal(Number(countTasks?.rows?.[0]?.c || 0), 4, 'backfill twice should not duplicate tasks')
-    await pgPool.query('DELETE FROM cleaning_sync_logs WHERE order_id = ANY($1)', [[o1, o2, o4, o5, o6, o7]])
-    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o4, o5, o6, o7], [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress, manualCheckinZeroNights]])
-    await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [[o1, o2, o4, o5, o6, o7]])
+    await pgPool.query('DELETE FROM cleaning_sync_logs WHERE order_id = ANY($1)', [[o1, o2, o4, o5, o6, o7, o9, o10]])
+    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o4, o5, o6, o7, o9, o10], [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress, manualCheckinZeroNights]])
+    await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [[o1, o2, o4, o5, o6, o7, o9, o10]])
   } else {
     const tasks = (db.cleaningTasks as any[]).filter((t: any) => [o1, o2].includes(String(t.order_id)))
     assert.equal(tasks.length, 4, 'backfill twice should not duplicate tasks')

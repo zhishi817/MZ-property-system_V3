@@ -56,6 +56,22 @@ export function normalizeInspectionScope(value: any): InspectionScope {
   return raw === 'password_only' ? 'password_only' : 'inspect_and_hang'
 }
 
+export function hasCheckoutCheckinTurnover(rows: Array<{ task_type?: any; type?: any }>): boolean {
+  const kinds = new Set((Array.isArray(rows) ? rows : []).map((row) => (
+    cleaningInspectionTaskKind(row?.task_type ?? row?.type)
+  )))
+  return kinds.has('checkout') && kinds.has('checkin')
+}
+
+export function normalizeTurnoverInspectionScope(params: {
+  inspectionScope?: any
+  hasCheckoutCheckinTurnover?: boolean
+}): InspectionScope {
+  return params?.hasCheckoutCheckinTurnover
+    ? 'inspect_and_hang'
+    : normalizeInspectionScope(params?.inspectionScope)
+}
+
 export function normalizeInspectionMode(value: any): InspectionMode | null {
   const raw = String(value || '').trim().toLowerCase()
   if (!raw) return null
@@ -348,6 +364,7 @@ export function mergeTurnoverTaskPlan(
     inspector_id?: any
     status?: any
     inspection_mode?: any
+    inspection_scope?: any
     inspection_due_date?: any
   }>,
 ): {
@@ -356,6 +373,7 @@ export function mergeTurnoverTaskPlan(
   inspectorId: string | null
   status: string
   inspectionMode: InspectionMode
+  inspectionScope: InspectionScope
   inspectionDueDate: string | null
 } {
   const list = Array.isArray(rows) ? rows.filter(Boolean) : []
@@ -369,6 +387,7 @@ export function mergeTurnoverTaskPlan(
   const inspector = matchingId(inspectionRows.length ? inspectionRows : list, (row) => row?.inspector_id)
   const inspectionPlan = mergeInspectionPlan(list)
   const cleanerId = cleaner.matches ? cleaner.value : null
+  const hasTurnover = hasCheckoutCheckinTurnover(list)
 
   return {
     cleanerId,
@@ -376,6 +395,10 @@ export function mergeTurnoverTaskPlan(
     inspectorId: inspector.matches ? inspector.value : null,
     status: mergedTaskStatus(list.map((row) => row?.status)),
     inspectionMode: inspectionPlan.inspectionMode,
+    inspectionScope: normalizeTurnoverInspectionScope({
+      inspectionScope: list.find((row) => cleaningInspectionTaskKind(row?.task_type) === 'checkin')?.inspection_scope,
+      hasCheckoutCheckinTurnover: hasTurnover,
+    }),
     inspectionDueDate: inspectionPlan.inspectionDueDate,
   }
 }

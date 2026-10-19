@@ -27,6 +27,7 @@ import {
   isKeyOrPasswordActionSemantics,
   mergeInspectionPlan,
   mobileInspectionProjectionDate,
+  normalizeTurnoverInspectionScope,
   projectInspectorTaskStatus,
 } from '../lib/cleaningInspection'
 import { deepCleaningSourceSummary, maintenanceSourceSummary } from '../lib/autoExpenseSourceSummary'
@@ -7073,14 +7074,17 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
 
           const effectiveCleanerId = row.cleaner_id ? String(row.cleaner_id) : (row.assignee_id ? String(row.assignee_id) : null)
           const inspectorId = row.inspector_id ? String(row.inspector_id) : null
-          const isCheckinSiteExecution = String(row.task_type || '').trim().toLowerCase() === 'checkin_clean'
-          const inspectionScope = normalizeInspectionScope(row.inspection_scope)
-          const canFallbackInspectorAsExecutor = isCheckinSiteExecution && inspectionScope === 'password_only'
+          const isCheckinTask = String(row.task_type || '').trim().toLowerCase() === 'checkin_clean'
+          const completedSameDayTurnover = isCheckinTask ? completedSameDayTurnoverFor(taskDate, propId) : null
+          const sameDayTurnover = isCheckinTask ? sameDayTurnoverFor(taskDate, propId) : null
+          const inspectionScope = sameDayTurnover
+            ? normalizeTurnoverInspectionScope({ inspectionScope: row.inspection_scope, hasCheckoutCheckinTurnover: true })
+            : normalizeInspectionScope(row.inspection_scope)
+          const isCheckinSiteExecution = isCheckinTask && inspectionScope === 'password_only'
+          const canFallbackInspectorAsExecutor = isCheckinSiteExecution
           const executorId = row.assignee_id
             ? String(row.assignee_id)
             : (canFallbackInspectorAsExecutor && row.inspector_id ? String(row.inspector_id) : null)
-          const completedSameDayTurnover = isCheckinSiteExecution ? completedSameDayTurnoverFor(taskDate, propId) : null
-          const sameDayTurnover = isCheckinSiteExecution ? sameDayTurnoverFor(taskDate, propId) : null
           const checkinSiteExecutorId = isCheckinSiteExecution ? executorId : null
           const orderId = row.order_id ? String(row.order_id) : null
           const orderKeysRequired = row.order_keys_required == null ? null : Number(row.order_keys_required)
@@ -7200,7 +7204,10 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             && (effectiveInspectionAssigneeId || managerCanSeeAllTaskPool)
             && inspectorDisplayDate
             && cleaningType(row.task_type) !== 'stayover'
-            && !isCheckinKeyHandoverTask(row)
+            && !isCheckinKeyHandoverTask({
+              task_type: row.task_type,
+              inspection_scope: inspectionScope,
+            })
             && (allowAll || effectiveInspectionAssigneeId === userId || manualInspectionAssigneeId)
           ) {
             const k = `${inspectorDisplayDate}|${propId || ''}|${effectiveInspectionAssigneeId || 'unassigned'}`

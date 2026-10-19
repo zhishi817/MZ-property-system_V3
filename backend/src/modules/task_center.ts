@@ -4,7 +4,7 @@ import { v4 as uuid } from 'uuid'
 import { requireAnyPerm, requirePerm, userHasAnyPerm } from '../auth'
 import { db } from '../store'
 import { hasPg, pgPool } from '../dbAdapter'
-import { activeCleaningTaskWhereSql, ensureCleaningSchemaV2, validCleaningTaskOrderWhereSql } from '../services/cleaningSync'
+import { activeCleaningTaskWhereSql, ensureCleaningSchemaV2, lockCleaningTurnoverKey, validCleaningTaskOrderWhereSql } from '../services/cleaningSync'
 import {
   defaultInspectionModeForTaskType,
   deferredProjectionDate,
@@ -273,6 +273,49 @@ function normalizeInspectionScope(value: any): 'inspect_and_hang' | 'password_on
   const raw = text(value).toLowerCase()
   if (!raw) return null
   return raw === 'password_only' ? 'password_only' : 'inspect_and_hang'
+}
+
+function cleaningTaskHasTurnoverCounterpart(task: any, tasks: any[]): boolean {
+  const kind = lower(task?.task_type ?? task?.type)
+  if (kind !== 'checkout_clean' && kind !== 'checkin_clean') return false
+  const oppositeKind = kind === 'checkout_clean' ? 'checkin_clean' : 'checkout_clean'
+  const propertyId = text(task?.property_id)
+  const taskDate = dayOnly(task?.task_date ?? task?.date)
+  if (!propertyId || !taskDate) return false
+  return tasks.some((candidate) => (
+    String(candidate?.id || '') !== String(task?.id || '')
+    && text(candidate?.property_id) === propertyId
+    && dayOnly(candidate?.task_date ?? candidate?.date) === taskDate
+    && lower(candidate?.task_type ?? candidate?.type) === oppositeKind
+    && lower(candidate?.execution_state || (['cancelled', 'canceled'].includes(lower(candidate?.status)) ? 'cancelled' : 'active')) === 'active'
+    && !['cancelled', 'canceled'].includes(lower(candidate?.status))
+  ))
+}
+
+async function assertTaskCenterTurnoverInspectionScope(client: any, taskId: string, task: any, inspectionScope: any) {
+  if (normalizeInspectionScope(inspectionScope) !== 'password_only') return
+  const kind = lower(task?.task_type ?? task?.type)
+  const oppositeKind = kind === 'checkout_clean'
+    ? 'checkin_clean'
+    : kind === 'checkin_clean'
+      ? 'checkout_clean'
+      : ''
+  const propertyId = text(task?.property_id)
+  const taskDate = dayOnly(task?.task_date ?? task?.date)
+  if (!oppositeKind || !propertyId || !taskDate) return
+  await lockCleaningTurnoverKey(client, propertyId, taskDate)
+  const counterpart = await client.query(
+    `SELECT 1
+     FROM cleaning_tasks AS task
+     WHERE task.id::text <> $1
+       AND task.property_id::text = $2
+       AND COALESCE(task.task_date, task.date)::date = $3::date
+       AND lower(COALESCE(task.task_type, task.type, '')) = $4
+       AND ${activeCleaningTaskWhereSql('task')}
+     LIMIT 1`,
+    [String(taskId), propertyId, taskDate, oppositeKind],
+  )
+  if (counterpart.rows?.length) throw new Error('turnover_requires_inspect_and_hang')
 }
 const memoryBoardItems = new Map<string, BoardItemLayout>()
 const memoryBoardRows = new Map<string, BoardRowMeta>()
@@ -1448,6 +1491,7 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
         inspector_id: task.inspector_id,
         status: task.status,
         inspection_mode: task.inspection_mode,
+        inspection_scope: task.inspection_scope,
         inspection_due_date: task.inspection_due_date,
       })))
       const autoSync = all.every((x) => x.auto_sync_enabled !== false)
@@ -1506,6 +1550,7 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
         has_key_photo: all.some((x) => !!x.has_key_photo),
         key_photo_uploaded_at: all.find((x) => text(x.key_photo_uploaded_at))?.key_photo_uploaded_at || null,
         inspection_mode: turnoverPlan.inspectionMode,
+        inspection_scope: turnoverPlan.inspectionScope,
         inspection_due_date: turnoverPlan.inspectionDueDate,
         old_code: turnoverDisplay.old_code,
         new_code: turnoverDisplay.new_code,
@@ -2793,23 +2838,52 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
         const invalidId = assignedUserIds.find((id) => !isTaskExecutorEligibleRoleNames(roleNamesById.get(id) || []))
         if (invalidId) return res.status(400).json({ message: '无效的任务执行人员' })
       }
+      const taskTypeById = new Map<string, {
+        task_type: string | null
+        property_id: string | null
+        task_date: string | null
+        inspection_scope: string | null
+        has_turnover_counterpart: boolean
+      }>()
       if (payload.cleaning_assignments.length) {
         const taskTypeResult = await pgPool.query(
-          `SELECT id::text AS id, task_type, inspection_scope
-           FROM cleaning_tasks
-           WHERE id::text = ANY($1::text[])`,
+          `SELECT task.id::text AS id,
+                  task.task_type,
+                  task.property_id::text AS property_id,
+                  COALESCE(task.task_date, task.date)::date::text AS task_date,
+                  task.inspection_scope,
+                  EXISTS (
+                    SELECT 1
+                    FROM cleaning_tasks AS counterpart
+                    WHERE counterpart.id <> task.id
+                      AND counterpart.property_id::text = task.property_id::text
+                      AND COALESCE(counterpart.task_date, counterpart.date)::date = COALESCE(task.task_date, task.date)::date
+                      AND ${activeCleaningTaskWhereSql('counterpart')}
+                      AND (
+                        (lower(COALESCE(task.task_type, task.type, '')) = 'checkout_clean' AND lower(COALESCE(counterpart.task_type, counterpart.type, '')) = 'checkin_clean')
+                        OR
+                        (lower(COALESCE(task.task_type, task.type, '')) = 'checkin_clean' AND lower(COALESCE(counterpart.task_type, counterpart.type, '')) = 'checkout_clean')
+                      )
+                  ) AS has_turnover_counterpart
+           FROM cleaning_tasks AS task
+           WHERE task.id::text = ANY($1::text[])`,
           [payload.cleaning_assignments.map((item) => item.task_id)],
         )
-        const taskTypeById = new Map<string, { task_type: string | null; inspection_scope: string | null }>()
         for (const row of taskTypeResult.rows || []) {
           taskTypeById.set(String(row.id), {
             task_type: row.task_type ? String(row.task_type) : null,
+            property_id: row.property_id ? String(row.property_id) : null,
+            task_date: dayOnly(row.task_date),
             inspection_scope: row.inspection_scope ? String(row.inspection_scope) : null,
+            has_turnover_counterpart: row.has_turnover_counterpart === true,
           })
         }
         for (const assignment of payload.cleaning_assignments) {
           const taskMeta = taskTypeById.get(String(assignment.task_id))
           const nextScope = assignment.inspection_scope ?? taskMeta?.inspection_scope ?? null
+          if (taskMeta?.has_turnover_counterpart && normalizeInspectionScope(nextScope) === 'password_only') {
+            return res.status(400).json({ code: 'turnover_requires_inspect_and_hang', message: '同日退房入住任务必须检查后挂钥匙' })
+          }
           if (isInspectionModeAllowedForTask({
             taskType: taskMeta?.task_type,
             inspectionScope: nextScope,
@@ -2834,6 +2908,15 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
       try {
         await client.query('BEGIN')
         await lockAndValidateTaskCenterAssignmentUsers(client, assignedUserIds, maintenanceAssignedUserIds)
+        const turnoverLockKeys = Array.from(new Set(payload.cleaning_assignments
+          .map((assignment) => taskTypeById.get(String(assignment.task_id)))
+          .filter((task) => !!task?.property_id && !!task?.task_date)
+          .map((task) => `${task!.property_id}|${task!.task_date}`)))
+          .sort()
+        for (const key of turnoverLockKeys) {
+          const separator = key.lastIndexOf('|')
+          await lockCleaningTurnoverKey(client, key.slice(0, separator), key.slice(separator + 1))
+        }
         await materializePropertyFollowupAssignments(
           client,
           payload.date,
@@ -2863,6 +2946,12 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
           const beforeById = new Map<string, any>((beforeResult.rows || []).map((row: any) => [String(row.id), row]))
           for (const assignment of payload.cleaning_assignments) {
             const before = beforeById.get(String(assignment.task_id))
+            await assertTaskCenterTurnoverInspectionScope(
+              client,
+              String(assignment.task_id),
+              before,
+              assignment.inspection_scope ?? before?.inspection_scope ?? null,
+            )
             assignment.inspection_due_date = resolveBoardInspectionDueDate({
               inspectionMode: assignment.inspection_mode,
               requestedDueDate: assignment.inspection_due_date,
@@ -3535,6 +3624,21 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
       .map((task) => [String(task.id), task]))
     for (const assignment of payload.cleaning_assignments) {
       const before = memoryCleaningById.get(String(assignment.task_id)) as any
+      const nextScope = assignment.inspection_scope ?? before?.inspection_scope ?? null
+      if (
+        before
+        && cleaningTaskHasTurnoverCounterpart(before, ((db as any).cleaningTasks || []) as any[])
+        && normalizeInspectionScope(nextScope) === 'password_only'
+      ) {
+        return res.status(400).json({ code: 'turnover_requires_inspect_and_hang', message: '同日退房入住任务必须检查后挂钥匙' })
+      }
+      if (!isInspectionModeAllowedForTask({
+        taskType: before?.task_type ?? before?.type,
+        inspectionScope: nextScope,
+        inspectionMode: assignment.inspection_mode,
+      })) {
+        return res.status(400).json({ message: '仅改密码任务不能设置为自完成或已检查' })
+      }
       assignment.inspection_due_date = resolveBoardInspectionDueDate({
         inspectionMode: assignment.inspection_mode,
         requestedDueDate: assignment.inspection_due_date,
@@ -3708,6 +3812,9 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
     }
     if (e?.message === 'inspection_mode_change_confirmation_required') {
       return res.status(400).json({ message: '请在任务详情中明确修改延期检查安排', code: 'inspection_mode_change_confirmation_required' })
+    }
+    if (e?.message === 'turnover_requires_inspect_and_hang') {
+      return res.status(400).json({ message: '同日退房入住任务必须检查后挂钥匙', code: 'turnover_requires_inspect_and_hang' })
     }
     if (e?.message === 'property_followup_not_available') {
       return res.status(409).json({ message: '房源待办已变化，请刷新后重试', code: 'property_followup_not_available' })
