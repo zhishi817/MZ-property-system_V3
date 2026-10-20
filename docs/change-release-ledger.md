@@ -55,15 +55,15 @@
 - Branch: `codex/mz053-unified-display`
 - Base: `origin/Dev@5bbeeb594026adca4fa71ad263be936e5eda8f2c`; fetched at `2026-10-20 14:02 UTC`
 - Candidate patch SHA-256: `5058422343c03fbf41ec97c8559bf54cefa7c6fe47b3446b6c8f4d88e324add5`
-- Commit SHA: `not committed`; the audit head will be emitted only after the local content commit exists
-- Dependencies: none; paired Mobile display presentation `mobile/CRL-20261020-004` is selected separately for local commit
-- Required validation: `PASS for local commit candidate`; evidence: focused Web task-capability regression, backend TypeScript, current ledger coverage and diff checks passed; production/API/database verification was not run
+- Commit SHA: `acb4145720a4f6cb7cc1c08eb453ee90cf9637e4`; exact reviewed MZ053 content commit; the final audit head is the later ledger-only freeze receipt commit
+- Dependencies: none
+- Required validation: `PASS for local content commit / release NOT VERIFIED`; evidence: focused Web task-capability regression, backend TypeScript, current ledger coverage and diff checks passed; post-commit `origin/Dev...acb4145720a4f6cb7cc1c08eb453ee90cf9637e4` non-ledger fingerprint exactly matches `5058422343c03fbf41ec97c8559bf54cefa7c6fe47b3446b6c8f4d88e324add5`; production/API/database verification was not run
 - Shared-hunk review: `PASS`; evidence: both staged non-ledger hunks belong to this CRL, with no unselected or unexpected path
 - Generated-file review: `PASS`; evidence: no generated, dependency, migration, cache or build artifact is selected
-- Technical state: `verified`
+- Technical state: `committed`; exact content commit `acb4145720a4f6cb7cc1c08eb453ee90cf9637e4`, followed only by this ledger-only freeze receipt
 - User authorization: `selected-for-commit`; evidence: after Root and Mobile candidates and the no-push/no-OTA boundary were stated, the user replied `可以`
 - Independent review: `GO for this exact local commit candidate`; evidence: final read-only review found P0/P1/P2/P3 = 0 and confirmed presentation-only behavior, unchanged writes/permissions/deferred queues/statistics and no sensitive or release behavior
-- Action conclusion: `GO for local commit only`; blockers: push, PR, merge, deployment, database/API writes and production actions are not authorized
+- Action conclusion: `LOCAL CONTENT COMMIT COMPLETED / push NOT AUTHORIZED`; this ledger-only freeze receipt may be committed under the same bookkeeping authorization, but push, PR, merge, deployment, database/API writes and production actions require separate approval and evidence
 
 ### Risks / Release Notes
 
