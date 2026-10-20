@@ -1,16 +1,7 @@
 import { hasPg, pgPool } from '../dbAdapter'
+import { isTerminalDeferredInspectionStatus } from '../lib/cleaningInspection'
 import { buildCleaningTaskVisibilityHints, buildMz031CleaningArrangementRevision, emitWorkTaskEvent } from './workTaskEvents'
 import { emitNotificationEvent } from './notificationEvents'
-
-const TERMINAL_DEFERRED_INSPECTION_STATUSES = new Set([
-  'inspected',
-  'done',
-  'completed',
-  'ready',
-  'keys_hung',
-  'cancelled',
-  'canceled',
-])
 
 export type DeferredInspectionCheckinConflictInput = {
   id?: string | null
@@ -30,6 +21,8 @@ export type DeferredInspectionCheckinConflictInput = {
   order_status?: string | null
   checkin_time?: string | null
   inspection_completed_at?: string | null
+  inspector_id?: string | null
+  assignee_id?: string | null
 }
 
 export type DeferredInspectionCheckinConflict = {
@@ -53,6 +46,33 @@ export type DeferredInspectionCheckinReplacementResult = {
   changed_task_ids: string[]
 }
 
+export type DeferredInspectionCheckinArrangement = {
+  deferred_task_id: string
+  checkin_task_id: string
+  checkin_task_ids: string[]
+  property_id: string
+  original_checkout_date: string
+  effective_inspection_date: string
+  planned_inspector_id: string | null
+  checkin_inspector_id: string | null
+  checkin_assignee_id: string | null
+  conflict_reasons: string[]
+}
+
+export type DeferredInspectionActionLike = {
+  id?: unknown
+  source_id?: unknown
+  enabled?: boolean
+  disabled_reason?: unknown
+  [key: string]: unknown
+}
+
+export type DeferredInspectionConflictSourceLike = {
+  deferred_task_id?: unknown
+  checkin_task_id?: unknown
+  checkin_task_ids?: unknown
+}
+
 function text(value: any) {
   return String(value || '').trim()
 }
@@ -64,6 +84,76 @@ function lower(value: any) {
 function dayOnly(value: any): string | null {
   const match = /^(\d{4}-\d{2}-\d{2})/.exec(text(value))
   return match ? match[1] : null
+}
+
+/**
+ * Applies arrangement conflicts before collapsing same-id actions from merged
+ * task cards.  An independent action (notably password_only key work) always
+ * wins over an action blocked by a deferred/check-in inspection conflict,
+ * regardless of child order.
+ */
+export function mergeDeferredInspectionAwareActions<T extends DeferredInspectionActionLike>(
+  actionGroups: T[][],
+  blockedSourceIds: Iterable<string> = [],
+): T[] {
+  const blockedSources = new Set(Array.from(blockedSourceIds, (value) => text(value)).filter(Boolean))
+  const actionsById = new Map<string, { action: T; blocked: boolean }>()
+
+  for (const actions of actionGroups || []) {
+    for (const rawAction of actions || []) {
+      const key = text(rawAction?.id)
+      if (!key) continue
+      const sourceId = text(rawAction?.source_id)
+      const blocked = (
+        (key === 'submit_inspection' || key === 'upload_access_video')
+        && blockedSources.has(sourceId)
+      )
+      const action = blocked
+        ? { ...rawAction, enabled: false, disabled_reason: 'inspection_arrangement_conflict' } as T
+        : rawAction
+      const existing = actionsById.get(key)
+      if (!existing) {
+        actionsById.set(key, { action, blocked })
+        continue
+      }
+
+      const actionEnabled = action.enabled !== false
+      const existingEnabled = existing.action.enabled !== false
+      const existingSourceId = text(existing.action.source_id)
+      if (
+        (existing.blocked && !blocked)
+        || (existing.blocked === blocked && !existingEnabled && actionEnabled)
+        || (
+          existing.blocked === blocked
+          && actionEnabled
+          && sourceId
+          && sourceId !== existingSourceId
+        )
+      ) {
+        actionsById.set(key, { action, blocked })
+      }
+    }
+  }
+
+  return Array.from(actionsById.values(), ({ action }) => action)
+}
+
+export function deferredInspectionConflictSourceIds(
+  conflicts: Array<DeferredInspectionConflictSourceLike | null | undefined>,
+): string[] {
+  const sourceIds = new Set<string>()
+  for (const conflict of conflicts || []) {
+    if (!conflict) continue
+    for (const value of [
+      conflict.deferred_task_id,
+      conflict.checkin_task_id,
+      ...(Array.isArray(conflict.checkin_task_ids) ? conflict.checkin_task_ids : []),
+    ]) {
+      const sourceId = text(value)
+      if (sourceId) sourceIds.add(sourceId)
+    }
+  }
+  return Array.from(sourceIds)
 }
 
 function taskType(task: DeferredInspectionCheckinConflictInput) {
@@ -91,7 +181,7 @@ function isOpenDeferredInspection(task: DeferredInspectionCheckinConflictInput) 
     lower(task.inspection_mode) === 'deferred'
     && !!dueDate
     && activeExecutionState(task.execution_state)
-    && !TERMINAL_DEFERRED_INSPECTION_STATUSES.has(lower(task.status))
+    && !isTerminalDeferredInspectionStatus(task.status)
   )
 }
 
@@ -134,61 +224,153 @@ function compareCheckins(left: DeferredInspectionCheckinConflictInput, right: De
   return text(left.id).localeCompare(text(right.id))
 }
 
-function compareDeferredForReplacement(left: DeferredInspectionCheckinConflictInput, right: DeferredInspectionCheckinConflictInput) {
-  const leftDay = taskDay(left) || ''
-  const rightDay = taskDay(right) || ''
-  if (leftDay !== rightDay) return rightDay.localeCompare(leftDay)
-  const leftDue = dayOnly(left.inspection_due_date) || ''
-  const rightDue = dayOnly(right.inspection_due_date) || ''
-  if (leftDue !== rightDue) return leftDue.localeCompare(rightDue)
-  return text(left.id).localeCompare(text(right.id))
-}
-
 /**
- * Returns one deterministic replacement per incoming inspection-bearing check-in.
- * A check-in may only replace the most recent matching deferred inspection, so
- * duplicate historical rows are not silently completed together.
+ * Builds the effective same-property/date inspection arrangement used by the
+ * App.  It never infers a reassignment: the incoming check-in must already
+ * name the deferred inspector as either its inspector or executor.  Password
+ * only work is intentionally not an inspection arrangement.
  */
-export function findDeferredInspectionCheckinReplacements(rows: DeferredInspectionCheckinConflictInput[]): DeferredInspectionCheckinReplacement[] {
-  const deferredTasks = (rows || []).filter(isOpenDeferredInspection)
-  const checkins = (rows || []).filter(isCompletedInspectionBearingCheckin).sort(compareCheckins)
-  const claimedDeferredTaskIds = new Set<string>()
-  const replacements: DeferredInspectionCheckinReplacement[] = []
+export function buildDeferredInspectionCheckinArrangements(
+  rows: DeferredInspectionCheckinConflictInput[],
+): DeferredInspectionCheckinArrangement[] {
+  const deferredTasks = (rows || []).filter((task) => (
+    isOpenDeferredInspection(task)
+    && ['checkout_clean', 'checkout_cleaning'].includes(taskType(task))
+  ))
+  const checkins = (rows || []).filter(isInspectionBearingCheckin)
+  const arrangements: DeferredInspectionCheckinArrangement[] = []
 
-  for (const checkin of checkins) {
-    const checkinTaskId = text(checkin.id)
-    const propertyId = text(checkin.property_id)
-    const checkinTaskDate = taskDay(checkin)
-    if (!checkinTaskId || !propertyId || !checkinTaskDate) continue
-
-    const deferred = deferredTasks
-      .filter((candidate) => {
-        const candidateId = text(candidate.id)
-        return !!candidateId
-          && !claimedDeferredTaskIds.has(candidateId)
-          && text(candidate.property_id) === propertyId
-          && isWithinDeferredReplacementWindow(candidate, checkin)
-      })
-      .sort(compareDeferredForReplacement)[0]
-    if (!deferred) continue
-
+  for (const deferred of deferredTasks) {
     const deferredTaskId = text(deferred.id)
-    const inspectionDueDate = dayOnly(deferred.inspection_due_date)
-    const deferredTaskDate = taskDay(deferred)
-    if (!deferredTaskId || !inspectionDueDate || !deferredTaskDate) continue
-    claimedDeferredTaskIds.add(deferredTaskId)
-    replacements.push({
+    const propertyId = text(deferred.property_id)
+    const originalCheckoutDate = taskDay(deferred)
+    const plannedDueDate = dayOnly(deferred.inspection_due_date)
+    if (!deferredTaskId || !propertyId || !originalCheckoutDate || !plannedDueDate) continue
+
+    const matchingCheckins = checkins
+      .filter((candidate) => text(candidate.property_id) === propertyId && isWithinDeferredReplacementWindow(deferred, candidate))
+      .sort(compareCheckins)
+    const checkin = matchingCheckins[0]
+    const checkinTaskId = text(checkin?.id)
+    const effectiveInspectionDate = taskDay(checkin || {})
+    if (!checkin || !checkinTaskId || !effectiveInspectionDate) continue
+
+    const plannedInspectorId = text(deferred.inspector_id) || null
+    const checkinInspectorId = text(checkin.inspector_id) || null
+    const checkinAssigneeId = text(checkin.assignee_id) || null
+    const conflictReasons: string[] = []
+    if (matchingCheckins.length > 1) conflictReasons.push('multiple_checkin_inspection_tasks')
+    if (!plannedInspectorId) conflictReasons.push('deferred_inspector_missing')
+    if (!checkinInspectorId && !checkinAssigneeId) conflictReasons.push('checkin_executor_missing')
+    if (plannedInspectorId && checkinInspectorId && checkinInspectorId !== plannedInspectorId) {
+      conflictReasons.push('checkin_inspector_mismatch')
+    }
+    if (plannedInspectorId && checkinAssigneeId && checkinAssigneeId !== plannedInspectorId) {
+      conflictReasons.push('checkin_executor_mismatch')
+    }
+    if (checkinInspectorId && checkinAssigneeId && checkinInspectorId !== checkinAssigneeId) {
+      conflictReasons.push('checkin_participant_mismatch')
+    }
+    if (
+      plannedInspectorId
+      && ![checkinInspectorId, checkinAssigneeId].filter(Boolean).includes(plannedInspectorId)
+      && !conflictReasons.includes('checkin_executor_missing')
+    ) {
+      conflictReasons.push('planned_inspector_not_checkin_participant')
+    }
+
+    arrangements.push({
       deferred_task_id: deferredTaskId,
       checkin_task_id: checkinTaskId,
+      checkin_task_ids: matchingCheckins.map((candidate) => text(candidate.id)).filter(Boolean),
       property_id: propertyId,
-      inspection_due_date: inspectionDueDate,
-      deferred_task_date: deferredTaskDate,
-      checkin_task_date: checkinTaskDate,
-      checkin_time: text(checkin.checkin_time) || null,
+      original_checkout_date: originalCheckoutDate,
+      effective_inspection_date: effectiveInspectionDate,
+      planned_inspector_id: plannedInspectorId,
+      checkin_inspector_id: checkinInspectorId,
+      checkin_assignee_id: checkinAssigneeId,
+      conflict_reasons: Array.from(new Set(conflictReasons)),
     })
   }
 
-  return replacements
+  const arrangementCountByCheckin = new Map<string, number>()
+  for (const arrangement of arrangements) {
+    arrangementCountByCheckin.set(
+      arrangement.checkin_task_id,
+      (arrangementCountByCheckin.get(arrangement.checkin_task_id) || 0) + 1,
+    )
+  }
+  for (const arrangement of arrangements) {
+    if ((arrangementCountByCheckin.get(arrangement.checkin_task_id) || 0) > 1) {
+      arrangement.conflict_reasons = Array.from(new Set([
+        ...arrangement.conflict_reasons,
+        'multiple_deferred_inspection_tasks',
+      ]))
+    }
+  }
+
+  return arrangements
+}
+
+export function indexDeferredInspectionCheckinArrangements(
+  arrangements: DeferredInspectionCheckinArrangement[],
+) {
+  const byTaskId = new Map<string, DeferredInspectionCheckinArrangement[]>()
+  for (const arrangement of arrangements || []) {
+    const taskIds = Array.from(new Set([
+      arrangement.deferred_task_id,
+      arrangement.checkin_task_id,
+      ...(arrangement.checkin_task_ids || []),
+    ].map(text).filter(Boolean)))
+    for (const taskId of taskIds) {
+      const existing = byTaskId.get(taskId) || []
+      existing.push(arrangement)
+      byTaskId.set(taskId, existing)
+    }
+  }
+  return byTaskId
+}
+
+export function deferredInspectionCheckinSubmissionGuard(
+  rows: DeferredInspectionCheckinConflictInput[],
+  taskId: string,
+) {
+  const arrangements = buildDeferredInspectionCheckinArrangements(rows)
+  const relevantArrangements = indexDeferredInspectionCheckinArrangements(arrangements).get(text(taskId)) || []
+  const conflicts = relevantArrangements.filter((arrangement) => arrangement.conflict_reasons.length > 0)
+  const redirectedArrangement = relevantArrangements.find((arrangement) => (
+    arrangement.deferred_task_id === text(taskId)
+    && arrangement.conflict_reasons.length === 0
+  )) || null
+  return {
+    blocked: conflicts.length > 0 || !!redirectedArrangement,
+    reason: conflicts.length > 0
+      ? 'inspection_arrangement_conflict'
+      : (redirectedArrangement ? 'inspection_action_moved_to_checkin_task' : null),
+    canonical_action_task_id: redirectedArrangement?.checkin_task_id || null,
+    conflicts,
+  }
+}
+
+export function findDeferredInspectionCheckinReplacements(rows: DeferredInspectionCheckinConflictInput[]): DeferredInspectionCheckinReplacement[] {
+  const rowsById = new Map((rows || []).map((row) => [text(row.id), row]))
+  return buildDeferredInspectionCheckinArrangements(rows || [])
+    .filter((arrangement) => arrangement.conflict_reasons.length === 0)
+    .flatMap((arrangement) => {
+      const deferred = rowsById.get(arrangement.deferred_task_id)
+      const checkin = rowsById.get(arrangement.checkin_task_id)
+      const inspectionDueDate = dayOnly(deferred?.inspection_due_date)
+      if (!deferred || !checkin || !inspectionDueDate || !isCompletedInspectionBearingCheckin(checkin)) return []
+      return [{
+        deferred_task_id: arrangement.deferred_task_id,
+        checkin_task_id: arrangement.checkin_task_id,
+        property_id: arrangement.property_id,
+        inspection_due_date: inspectionDueDate,
+        deferred_task_date: arrangement.original_checkout_date,
+        checkin_task_date: arrangement.effective_inspection_date,
+        checkin_time: text(checkin.checkin_time) || null,
+      }]
+    })
 }
 
 /**
@@ -254,6 +436,8 @@ export function isDeferredInspectionCheckinConflictRelevantChange(fields: string
     'inspection_mode',
     'inspection_scope',
     'inspection_due_date',
+    'inspector_id',
+    'assignee_id',
     'checkin_time',
     'order_id',
   ])
@@ -270,20 +454,27 @@ function isAutomaticallyReplacedDeferredInspection(task: DeferredInspectionCheck
     && !!dayOnly(task.inspection_replaced_original_due_date)
 }
 
-function replacementWindowForStoredTask(deferred: DeferredInspectionCheckinConflictInput, checkin: DeferredInspectionCheckinConflictInput) {
-  if (!isCompletedInspectionBearingCheckin(checkin)) return false
-  if (text(deferred.property_id) !== text(checkin.property_id)) return false
-  if (!dayOnly(deferred.inspection_replaced_original_due_date)) return false
-  return isWithinDeferredReplacementWindow({
-    ...deferred,
-    inspection_due_date: deferred.inspection_replaced_original_due_date,
-  }, checkin)
-}
-
-function replacementCandidatesForStoredTask(rows: DeferredInspectionCheckinConflictInput[], deferred: DeferredInspectionCheckinConflictInput) {
-  return rows
-    .filter((candidate) => replacementWindowForStoredTask(deferred, candidate))
-    .sort(compareCheckins)
+export function findStoredDeferredInspectionCheckinReplacement(
+  rows: DeferredInspectionCheckinConflictInput[],
+  deferredTaskId: string,
+): DeferredInspectionCheckinReplacement | null {
+  const normalizedDeferredTaskId = text(deferredTaskId)
+  const deferred = (rows || []).find((row) => text(row.id) === normalizedDeferredTaskId)
+  const originalDueDate = dayOnly(deferred?.inspection_replaced_original_due_date)
+  if (!deferred || !originalDueDate || !isAutomaticallyReplacedDeferredInspection(deferred)) return null
+  const virtualRows = (rows || []).map((row) => (
+    text(row.id) === normalizedDeferredTaskId
+      ? {
+          ...row,
+          inspection_mode: 'deferred',
+          inspection_due_date: originalDueDate,
+          inspection_replaced_by_checkin_task_id: null,
+          inspection_replaced_original_due_date: null,
+        }
+      : row
+  ))
+  return findDeferredInspectionCheckinReplacements(virtualRows)
+    .find((replacement) => replacement.deferred_task_id === normalizedDeferredTaskId) || null
 }
 
 async function loadReconciliationRows(params: {
@@ -364,6 +555,8 @@ async function loadReconciliationRows(params: {
        t.order_id::text AS order_id,
        o.status::text AS order_status,
        t.checkin_time,
+       t.inspector_id::text AS inspector_id,
+       t.assignee_id::text AS assignee_id,
        (
          SELECT MIN(a.performed_at)::text
            FROM work_task_action_audits a
@@ -393,6 +586,202 @@ async function loadReconciliationRows(params: {
   return result?.rows || []
 }
 
+/**
+ * Transactional fail-closed guard for every inspection/action write route.
+ * Related property tasks are locked in a stable order before the target row is
+ * mutated, so direct or older clients cannot bypass a visible assignment
+ * conflict and concurrent submissions observe one authoritative arrangement.
+ */
+export async function loadDeferredInspectionCheckinSubmissionGuard(params: {
+  taskId: string
+  client: any
+}) {
+  const taskId = text(params.taskId)
+  if (!taskId) return {
+    blocked: false,
+    reason: null,
+    canonical_action_task_id: null,
+    conflicts: [] as DeferredInspectionCheckinArrangement[],
+  }
+  const targetResult = await params.client.query(
+    `SELECT
+       t.id::text AS id,
+       COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS property_id,
+       COALESCE(t.task_type, t.type, '') AS task_type,
+       COALESCE(t.task_date, t.date)::text AS task_date,
+       t.inspection_mode,
+       t.inspection_scope,
+       t.inspection_due_date::text AS inspection_due_date,
+       t.status,
+       t.execution_state
+     FROM cleaning_tasks t
+     LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+     LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+     WHERE t.id::text = $1::text
+     LIMIT 1`,
+    [taskId],
+  )
+  const target = targetResult?.rows?.[0] || null
+  if (!target) return {
+    blocked: false,
+    reason: null,
+    canonical_action_task_id: null,
+    conflicts: [] as DeferredInspectionCheckinArrangement[],
+  }
+  const targetType = taskType(target)
+  const targetTaskDate = taskDay(target)
+  const targetDueDate = dayOnly(target.inspection_due_date)
+  let windowStart = targetType === 'checkin_clean'
+    ? targetTaskDate
+    : (isOpenDeferredInspection(target) ? targetTaskDate : null)
+  let windowEnd = targetType === 'checkin_clean'
+    ? targetTaskDate
+    : (isOpenDeferredInspection(target) ? targetDueDate : null)
+  if (
+    !windowStart
+    || !windowEnd
+    || !text(target.property_id)
+    || (targetType === 'checkin_clean' && lower(target.inspection_scope) === 'password_only')
+  ) {
+    return {
+      blocked: false,
+      reason: null,
+      canonical_action_task_id: null,
+      conflicts: [] as DeferredInspectionCheckinArrangement[],
+    }
+  }
+
+  if (targetType === 'checkin_clean') {
+    const overlappingWindowResult = await params.client.query(
+      `SELECT
+         MIN(COALESCE(deferred.task_date, deferred.date))::text AS window_start,
+         MAX(deferred.inspection_due_date)::text AS window_end
+       FROM cleaning_tasks deferred
+       LEFT JOIN properties property_by_id ON property_by_id.id::text = deferred.property_id::text
+       LEFT JOIN properties property_by_code ON upper(property_by_code.code) = upper(deferred.property_id::text)
+       LEFT JOIN orders deferred_order ON deferred_order.id::text = deferred.order_id::text
+       WHERE COALESCE(property_by_id.id::text, property_by_code.id::text, deferred.property_id::text) = $1::text
+         AND lower(COALESCE(deferred.task_type, deferred.type, '')) IN ('checkout_clean', 'checkout_cleaning')
+         AND lower(COALESCE(deferred.inspection_mode, '')) = 'deferred'
+         AND deferred.inspection_due_date IS NOT NULL
+         AND COALESCE(deferred.task_date, deferred.date)::date <= $2::date
+         AND deferred.inspection_due_date::date >= $2::date
+         AND COALESCE(deferred.execution_state, CASE WHEN lower(COALESCE(deferred.status, '')) IN ('cancelled', 'canceled') THEN 'cancelled' ELSE 'active' END) = 'active'
+         AND lower(COALESCE(deferred.status, '')) NOT IN ('inspected', 'done', 'completed', 'ready', 'keys_hung', 'cancelled', 'canceled')
+         AND (
+           deferred.order_id IS NULL
+           OR (
+             deferred_order.id IS NOT NULL
+             AND COALESCE(deferred_order.status, '') <> ''
+             AND lower(COALESCE(deferred_order.status, '')) <> 'invalid'
+             AND lower(COALESCE(deferred_order.status, '')) NOT LIKE '%cancel%'
+           )
+         )`,
+      [text(target.property_id), targetTaskDate],
+    )
+    windowStart = dayOnly(overlappingWindowResult?.rows?.[0]?.window_start)
+    windowEnd = dayOnly(overlappingWindowResult?.rows?.[0]?.window_end)
+    if (!windowStart || !windowEnd) {
+      return {
+        blocked: false,
+        reason: null,
+        canonical_action_task_id: null,
+        conflicts: [] as DeferredInspectionCheckinArrangement[],
+      }
+    }
+  }
+
+  const rowsResult = await params.client.query(
+    `SELECT
+       t.id::text AS id,
+       COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS property_id,
+       COALESCE(t.task_type, t.type, '') AS task_type,
+       t.type,
+       COALESCE(t.task_date, t.date)::text AS task_date,
+       t.status,
+       t.execution_state,
+       t.inspection_mode,
+       t.inspection_scope,
+       t.inspection_due_date::text AS inspection_due_date,
+       t.order_id::text AS order_id,
+       o.status::text AS order_status,
+       t.checkin_time,
+       t.inspector_id::text AS inspector_id,
+       t.assignee_id::text AS assignee_id
+     FROM cleaning_tasks t
+     LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+     LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+     LEFT JOIN orders o ON o.id::text = t.order_id::text
+     WHERE COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = $1::text
+       AND (
+         (
+           lower(COALESCE(t.inspection_mode, '')) = 'deferred'
+           AND COALESCE(t.task_date, t.date)::date <= $3::date
+           AND t.inspection_due_date::date >= $2::date
+         )
+         OR (
+           lower(COALESCE(t.task_type, t.type, '')) = 'checkin_clean'
+           AND COALESCE(t.task_date, t.date)::date BETWEEN $2::date AND $3::date
+         )
+       )
+     ORDER BY t.id::text
+     FOR UPDATE OF t`,
+    [text(target.property_id), windowStart, windowEnd],
+  )
+  const rows = rowsResult?.rows || []
+  return deferredInspectionCheckinSubmissionGuard(rows, taskId)
+}
+
+type DeferredInspectionSubmissionAuthorizationResult =
+  | { kind: 'missing' }
+  | { kind: 'forbidden' }
+  | { kind: 'inspection_arrangement_conflict'; guard: ReturnType<typeof deferredInspectionCheckinSubmissionGuard> }
+  | { kind: 'authorized'; task: any }
+
+/**
+ * Authorizes a write against the target task before conflict details can be
+ * returned. The target is checked once before the wider conflict lookup and
+ * again from its locked row afterwards, so a role alone never substitutes for
+ * current task-level access and an assignment change cannot disclose metadata.
+ */
+export async function authorizeDeferredInspectionCheckinSubmission(params: {
+  taskId: string
+  client: any
+  canSubmit: (task: any, client: any) => Promise<boolean>
+}): Promise<DeferredInspectionSubmissionAuthorizationResult> {
+  const taskId = text(params.taskId)
+  const loadTarget = async (lock: boolean) => {
+    const result = await params.client.query(
+      `SELECT id::text AS id,
+              status,
+              cleaner_id::text AS cleaner_id,
+              inspector_id::text AS inspector_id,
+              assignee_id::text AS assignee_id,
+              task_type,
+              inspection_mode,
+              inspection_scope,
+              inspection_due_date::text AS inspection_due_date,
+              property_id::text AS property_id
+         FROM cleaning_tasks
+        WHERE id::text = $1::text
+        ${lock ? 'FOR UPDATE' : 'LIMIT 1'}`,
+      [taskId],
+    )
+    return result?.rows?.[0] || null
+  }
+
+  const preflightTask = await loadTarget(false)
+  if (!preflightTask) return { kind: 'missing' }
+  if (!await params.canSubmit(preflightTask, params.client)) return { kind: 'forbidden' }
+
+  const guard = await loadDeferredInspectionCheckinSubmissionGuard({ taskId, client: params.client })
+  const lockedTask = await loadTarget(true)
+  if (!lockedTask) return { kind: 'missing' }
+  if (!await params.canSubmit(lockedTask, params.client)) return { kind: 'forbidden' }
+  if (guard.blocked) return { kind: 'inspection_arrangement_conflict', guard }
+  return { kind: 'authorized', task: lockedTask }
+}
+
 async function emitReplacementWorkTaskEvent(params: {
   action: 'auto_completed' | 'restored' | 'relinked'
   before: any
@@ -418,7 +807,7 @@ async function emitReplacementWorkTaskEvent(params: {
     sourceType: 'cleaning_tasks',
     sourceRefIds: [String(params.after.id), ...(params.checkinTaskId ? [params.checkinTaskId] : [])],
     eventType: 'TASK_UPDATED',
-    changeScope: 'list',
+    changeScope: 'membership',
     changedFields,
     patch: {
       inspection_mode: params.after.inspection_mode,
@@ -543,17 +932,16 @@ export async function reconcileDeferredInspectionCheckinReplacement(params: {
       const originalDueDate = dayOnly(deferred.inspection_replaced_original_due_date)
       const sourceCheckinTaskId = replacementSourceTaskId(deferred)
       if (!deferredTaskId || !originalDueDate || !sourceCheckinTaskId) continue
-      const sourceCheckin = rowsById.get(sourceCheckinTaskId)
-      if (sourceCheckin && replacementWindowForStoredTask(deferred, sourceCheckin)) continue
+      const replacement = findStoredDeferredInspectionCheckinReplacement(rows, deferredTaskId)
+      const nextCheckinTaskId = replacement?.checkin_task_id || null
+      if (nextCheckinTaskId === sourceCheckinTaskId) continue
 
-      const alternative = replacementCandidatesForStoredTask(rows, deferred)
-        .find((candidate) => text(candidate.id) !== sourceCheckinTaskId)
-      const action = alternative ? 'relinked' as const : 'restored' as const
+      const action = nextCheckinTaskId ? 'relinked' as const : 'restored' as const
       const after = await updateAutomaticallyReplacedDeferredInspection({
         action,
         deferredTaskId,
         previousCheckinTaskId: sourceCheckinTaskId,
-        nextCheckinTaskId: alternative ? text(alternative.id) : null,
+        nextCheckinTaskId,
         originalDueDate,
         actorUserId: params.actorUserId,
         client,
@@ -563,7 +951,7 @@ export async function reconcileDeferredInspectionCheckinReplacement(params: {
         action,
         before: deferred,
         after,
-        checkinTaskId: alternative ? text(alternative.id) : null,
+        checkinTaskId: nextCheckinTaskId,
         actorUserId: params.actorUserId,
         client,
       })

@@ -5,8 +5,8 @@ import path from 'path'
 process.env.DATABASE_URL = ''
 
 async function main() {
-  const { canViewMzappGuestLuggageNoticeMedia, canViewMzappInspectionMedia, canViewMzappLockboxVideo, canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia, propertyFeedbackCapabilities } = await import('../../src/modules/mzapp')
-  const { feedbackMediaRowReferencesKey, feedbackMediaUrlArray } = await import('../../src/modules/cleaning_app')
+  const { canViewMzappGuestLuggageNoticeMedia, canViewMzappHistoricalWorkRecordMedia, canViewMzappInspectionMedia, canViewMzappLockboxVideo, canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia, propertyFeedbackCapabilities } = await import('../../src/modules/mzapp')
+  const { canViewExternalMaintenanceCompletionMedia, feedbackMediaRowReferencesKey, feedbackMediaUrlArray, findPropertyFeedbackMediaRows } = await import('../../src/modules/cleaning_app')
 
   const row = {
     id: 'media-visibility-task',
@@ -109,6 +109,132 @@ async function main() {
     'an unrelated worker cannot read another offline task photo',
   )
 
+  const externalMaintenanceRow = {
+    work_task_id: 'external_maintenance_orders:order-1',
+    assignee_id: 'executor-b',
+  }
+  const externalHistoricalMaintenanceRow = {
+    ...externalMaintenanceRow,
+    historical_work_record_media: true,
+    work_record_actor_user_id: 'executor-a',
+  }
+  const externalHistoryPool = {
+    query: async () => ({
+      rows: [{
+        payload: {
+          patch: { completion_photo_urls: ['maintenance/executor-a-proof.jpg'] },
+        },
+      }],
+    }),
+  }
+  assert.equal(
+    await canViewExternalMaintenanceCompletionMedia(
+      externalHistoryPool,
+      { sub: 'executor-a', role: 'maintenance_staff', roles: ['maintenance_staff'] },
+      externalHistoricalMaintenanceRow,
+      'executor-a',
+      'external_maintenance_orders:order-1',
+      'maintenance/executor-a-proof.jpg',
+    ),
+    true,
+    'a former external-maintenance executor may read only their exact immutable event photo through the canonical task id',
+  )
+  assert.equal(
+    await canViewExternalMaintenanceCompletionMedia(
+      externalHistoryPool,
+      { sub: 'executor-a', role: 'maintenance_staff', roles: ['maintenance_staff'] },
+      externalHistoricalMaintenanceRow,
+      'executor-a',
+      'external_maintenance_orders:other-order',
+      'maintenance/executor-a-proof.jpg',
+    ),
+    false,
+    'a mismatched canonical work-task id must not authorize a former executor media read',
+  )
+  assert.equal(
+    await canViewExternalMaintenanceCompletionMedia(
+      externalHistoryPool,
+      { sub: 'executor-a', role: 'maintenance_staff', roles: ['maintenance_staff'] },
+      externalHistoricalMaintenanceRow,
+      'executor-a',
+      'external_maintenance_orders:order-1',
+      'maintenance/executor-b-proof.jpg',
+    ),
+    false,
+    'a former executor cannot read a different photo from the same task',
+  )
+  assert.equal(
+    await canViewExternalMaintenanceCompletionMedia(
+      externalHistoryPool,
+      { sub: 'executor-b', role: 'maintenance_staff', roles: ['maintenance_staff'] },
+      externalHistoricalMaintenanceRow,
+      'executor-b',
+      'external_maintenance_orders:order-1',
+      'maintenance/executor-a-proof.jpg',
+    ),
+    false,
+    'the current replacement assignee cannot inherit a prior executor historical-media grant',
+  )
+  assert.equal(
+    await canViewExternalMaintenanceCompletionMedia(
+      externalHistoryPool,
+      { sub: 'offline-manager-1', role: 'offline_manager', roles: ['offline_manager'] },
+      externalHistoricalMaintenanceRow,
+      'offline-manager-1',
+      'external_maintenance_orders:order-1',
+      'maintenance/executor-a-proof.jpg',
+    ),
+    true,
+    'an offline manager can read the immutable external-maintenance work record',
+  )
+  assert.equal(
+    await canViewExternalMaintenanceCompletionMedia(
+      externalHistoryPool,
+      { sub: 'executor-b', role: 'maintenance_staff', roles: ['maintenance_staff'] },
+      externalMaintenanceRow,
+      'executor-b',
+      'external_maintenance_orders:order-1',
+      'maintenance/live-current-proof.jpg',
+    ),
+    true,
+    'the current assignee retains access to live external-maintenance media',
+  )
+
+  const historicalMediaLookupPool = {
+    query: async (sql: string, params: any[]) => {
+      assert.match(sql, /FROM work_task_events event[\s\S]*?w\.id::text = \$2::text/, 'historical media lookup must bind the exact canonical work-task id')
+      assert.deepEqual(params, ['%maintenance/executor-a-proof.jpg%', 'external_maintenance_orders:order-1'])
+      return {
+        rows: [{
+          feedback_source_type: 'external_maintenance_orders',
+          feedback_source_id: 'order-1',
+          work_task_id: 'external_maintenance_orders:order-1',
+          assignee_id: 'executor-b',
+          historical_work_record_media: true,
+          work_record_actor_user_id: 'executor-a',
+          completion_photo_urls: ['maintenance/executor-a-proof.jpg'],
+        }],
+      }
+    },
+  }
+  assert.deepEqual(
+    await findPropertyFeedbackMediaRows(
+      historicalMediaLookupPool,
+      'maintenance/executor-a-proof.jpg',
+      'external_maintenance_orders:order-1',
+    ),
+    [{
+      feedback_source_type: 'external_maintenance_orders',
+      feedback_source_id: 'order-1',
+      work_task_id: 'external_maintenance_orders:order-1',
+      assignee_id: 'executor-b',
+      historical_work_record_media: true,
+      work_record_actor_user_id: 'executor-a',
+      completion_photo_urls: ['maintenance/executor-a-proof.jpg'],
+    }],
+    'an immutable A event photo remains discoverable after the live source row has been overwritten by B',
+  )
+
   const guestLuggageRow = { id: 'guest-luggage-1', property_id: 'property-1', task_date: '2026-08-12' }
   assert.equal(
     await canViewMzappGuestLuggageNoticeMedia({ sub: 'manager-1', role: 'offline_manager', roles: ['offline_manager'] }, guestLuggageRow, 'manager-1'),
@@ -140,6 +266,37 @@ async function main() {
     await canViewMzappPropertyFeedback({}, row, ''),
     false,
     'an unauthenticated caller cannot read property feedback history',
+  )
+  const historicalWorkRecordMedia = {
+    work_task_id: 'property_maintenance:record-1',
+    work_record_actor_user_id: 'executor-a',
+  }
+  assert.equal(
+    canViewMzappHistoricalWorkRecordMedia({ sub: 'executor-a', role: 'maintenance_staff', roles: ['maintenance_staff'] }, historicalWorkRecordMedia, 'executor-a', 'property_maintenance:record-1'),
+    true,
+    'the evidence actor can read immutable media from their own historical work record',
+  )
+  assert.equal(
+    canViewMzappHistoricalWorkRecordMedia({ sub: 'executor-b', role: 'maintenance_staff', roles: ['maintenance_staff'] }, historicalWorkRecordMedia, 'executor-b', 'property_maintenance:record-1'),
+    false,
+    'the current replacement assignee cannot inherit a prior actor historical media grant',
+  )
+  assert.equal(
+    canViewMzappHistoricalWorkRecordMedia({ sub: 'outsider-1', role: 'cleaner', roles: ['cleaner'] }, historicalWorkRecordMedia, 'outsider-1', 'property_maintenance:record-1'),
+    false,
+    'an unrelated authenticated user cannot read newly discoverable historical event media',
+  )
+  for (const role of ['admin', 'offline_manager', 'customer_service']) {
+    assert.equal(
+      canViewMzappHistoricalWorkRecordMedia({ sub: `${role}-1`, role, roles: [role] }, historicalWorkRecordMedia, `${role}-1`, 'property_maintenance:record-1'),
+      true,
+      `${role} retains the established manager work-record media scope`,
+    )
+  }
+  assert.equal(
+    canViewMzappHistoricalWorkRecordMedia({ sub: 'executor-a', role: 'maintenance_staff', roles: ['maintenance_staff'] }, historicalWorkRecordMedia, 'executor-a', 'property_maintenance:wrong-record'),
+    false,
+    'historical media authorization requires the exact canonical work-task id',
   )
   assert.deepEqual(
     propertyFeedbackCapabilities({ sub: 'creator-1', role: 'cleaner', roles: ['cleaner'] }, 'daily_necessities', { created_by_user_id: 'creator-1' }),
@@ -240,6 +397,10 @@ async function main() {
   assert.match(mediaRouteSource, /to_jsonb\(m\.completion_photo_urls\) AS completion_photo_urls/, 'executor completion photos must be eligible for exact feedback-media authorization')
   assert.match(mediaRouteSource, /m\.completion_photo_urls::text/, 'completion photo candidate lookup must include the canonical executor field')
   assert.match(mediaRouteSource, /feedbackMediaUrlArray\(row\?\.completion_photo_urls\)/, 'completion photo references must be exact-matched after candidate lookup')
+  assert.match(mediaRouteSource, /FROM work_task_events event[\s\S]*?event\.event_type = 'TASK_COMPLETED'/, 'historical feedback media must remain discoverable from immutable completion events')
+  assert.match(mediaRouteSource, /true AS historical_work_record_media[\s\S]*?execution_evidence,is_execution[\s\S]*?work_record_actor_user_id/, 'historical event media must carry explicit actor-bound provenance')
+  assert.match(mediaRoute, /historical_work_record_media === true[\s\S]*?canViewMzappHistoricalWorkRecordMedia/, 'historical event media must use actor-or-manager authorization instead of broad property feedback visibility')
+  assert.match(mediaRoute, /findPropertyFeedbackMediaRows\(pgPool, key, workTaskId\)/, 'historical feedback media lookup must use the canonical work-task context')
   assert.match(mediaRouteSource, /key\.startsWith\('maintenance\/'\)/, 'legacy web maintenance object keys must use the authenticated feedback-media proxy')
   assert.match(mediaRouteSource, /to_jsonb\(d\.photo_urls\) AS photo_urls/, 'deep-cleaning legacy media must be normalized before exact reference matching')
   assert.match(mediaRouteSource, /to_jsonb\(d\.repair_photo_urls\) AS repair_photo_urls/, 'deep-cleaning repair photos must remain exact-match candidates')

@@ -143,6 +143,7 @@ async function main() {
         inspector_id text,
         assignee_id text,
         cleaner_id text,
+        inspection_replaced_by_checkin_task_id text,
         created_at timestamptz NOT NULL DEFAULT now()
       );
       CREATE TABLE work_task_events (

@@ -1,8 +1,10 @@
-import { Router } from 'express'
+import { Router, type NextFunction, type Request, type Response } from 'express'
 import multer from 'multer'
 import { z } from 'zod'
+import { randomUUID } from 'crypto'
 import { requireAnyPerm, requirePerm, userHasAnyPerm } from '../auth'
 import { hasPg, pgPool } from '../dbAdapter'
+import { hasR2, r2GetObjectByKeyDetailed } from '../r2'
 import { buildPersonnelSettlementPreview } from '../lib/personnelSettlementPreview'
 import { CLEANING_PROPERTY_TYPES } from '../lib/personnelSettlement'
 import {
@@ -17,6 +19,12 @@ import {
 } from '../lib/personnelSettlementSchema'
 import { PERSONNEL_PAYMENT_METHODS } from '../lib/personnelSettlementPayment'
 import { PersonnelSettlementPhase5SchemaNotReady } from '../lib/personnelSettlementPhase5Schema'
+import {
+  PROFILE_DOCUMENT_FIELDS,
+  ownedProfileDocumentStorageKey,
+  profileDocumentType,
+} from '../lib/profileDocuments'
+import { hasPersonnelProfileDocumentViewerRole } from '../lib/personnelProfileDocumentAccess'
 import {
   ensurePersonnelSettlementDocument,
   getPersonnelSettlementDocument,
@@ -73,6 +81,22 @@ import {
 } from '../lib/personnelSettlementWorkflow'
 
 export const router = Router()
+
+const PROFILE_DOCUMENT_VIEW_PERMISSION = 'personnel_settlements.profile_documents.view'
+
+async function canViewPersonnelProfileDocuments(user: any) {
+  return hasPersonnelProfileDocumentViewerRole(user)
+    && await userHasAnyPerm(user, [PROFILE_DOCUMENT_VIEW_PERMISSION])
+}
+
+async function requirePersonnelProfileDocumentViewer(req: Request, res: Response, next: NextFunction) {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  if (!(await canViewPersonnelProfileDocuments(user))) {
+    return res.status(403).json({ message: 'forbidden' })
+  }
+  return next()
+}
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/
 const previewQuerySchema = z.object({
@@ -358,7 +382,12 @@ router.get('/my-profile', async (req, res) => {
   if (!userId) return res.status(401).json({ code: 'unauthorized' })
   if (!hasPg || !pgPool) return res.status(400).json({ code: 'pg_required' })
   try {
-    const profile = await getPersonnelSettlementProfile({ userId, includeBankDetails: true }, pgPool)
+    const profile = await getPersonnelSettlementProfile({
+      userId,
+      includeBankDetails: true,
+      includeProfileDocuments: true,
+      includeVisaDetails: false,
+    }, pgPool)
     if (!profile) return res.status(404).json({ code: 'user_not_found' })
     return res.json({ ...profile, settlement_profile_available: true })
   } catch (error: any) {
@@ -377,6 +406,8 @@ router.patch('/my-profile', async (req, res) => {
       userId,
       actorUserId: userId,
       source: 'mobile_self',
+      includeProfileDocuments: true,
+      includeVisaDetails: false,
       effectiveDate: effective_date,
       patch: patch as PersonnelProfilePatch,
     })
@@ -394,6 +425,8 @@ router.get('/profiles', requirePerm('personnel_settlements.profiles.view'), asyn
     return res.json(await listPersonnelSettlementProfiles({
       search: parsed.data.search,
       includeBankDetails: false,
+      includeProfileDocuments: false,
+      includeVisaDetails: false,
     }, pgPool))
   } catch (error: any) {
     return sendProfileError(res, error)
@@ -405,13 +438,73 @@ router.get('/profiles/:userId', requirePerm('personnel_settlements.profiles.view
   if (!userId) return res.status(400).json({ code: 'user_id_required' })
   try {
     const includeBankDetails = await userHasAnyPerm((req as any).user, ['personnel_settlements.bank.manage'])
-    const profile = await getPersonnelSettlementProfile({ userId, includeBankDetails }, pgPool)
+    const includeProfileDocuments = await canViewPersonnelProfileDocuments((req as any).user)
+    const profile = await getPersonnelSettlementProfile({
+      userId,
+      includeBankDetails,
+      includeProfileDocuments,
+      includeVisaDetails: includeProfileDocuments,
+    }, pgPool)
     if (!profile) return res.status(404).json({ code: 'user_not_found' })
     return res.json(profile)
   } catch (error: any) {
     return sendProfileError(res, error)
   }
 })
+
+router.get(
+  '/profiles/:userId/profile-documents/:documentType',
+  requirePersonnelProfileDocumentViewer,
+  async (req, res) => {
+    const userId = String(req.params.userId || '').trim()
+    const type = profileDocumentType(req.params.documentType)
+    if (!userId) return res.status(400).json({ code: 'user_id_required' })
+    if (!type) return res.status(404).json({ code: 'profile_document_not_found' })
+    if (!hasPg || !pgPool) return res.status(400).json({ code: 'pg_required' })
+    if (!hasR2) return res.status(503).json({ code: 'profile_document_storage_unavailable' })
+    try {
+      const field = PROFILE_DOCUMENT_FIELDS[type]
+      const result = await pgPool.query(`SELECT ${field} FROM users WHERE id::text=$1 LIMIT 1`, [userId])
+      const storedReference = result.rows?.[0]?.[field]
+      const key = ownedProfileDocumentStorageKey(storedReference, userId, type)
+      if (!key) return res.status(404).json({ code: 'profile_document_not_found' })
+      const storedObject = await r2GetObjectByKeyDetailed(key)
+      if (storedObject.status === 'not_found' || (storedObject.status === 'ok' && !storedObject.object.body.length)) {
+        return res.status(404).json({ code: 'profile_document_not_found' })
+      }
+      if (storedObject.status === 'unavailable') {
+        return res.status(503).json({ code: 'profile_document_storage_unavailable' })
+      }
+      const actorUserId = String((req as any).user?.sub || '').trim()
+      await pgPool.query(
+        `INSERT INTO audit_logs (
+           id, entity, entity_id, action, actor_id, before_json, after_json, created_at
+         ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,now())`,
+        [
+          randomUUID(),
+          'personnel_profile_document',
+          userId,
+          'view',
+          actorUserId || null,
+          JSON.stringify(null),
+          JSON.stringify({ document_type: type }),
+        ],
+      )
+      res.setHeader('Content-Type', storedObject.object.contentType || 'application/octet-stream')
+      res.setHeader('Cache-Control', 'private, no-store, max-age=0')
+      res.setHeader('Pragma', 'no-cache')
+      res.setHeader('X-Content-Type-Options', 'nosniff')
+      res.setHeader('Content-Disposition', 'inline')
+      return res.status(200).send(storedObject.object.body)
+    } catch (error: any) {
+      console.error('[personnel-settlements] profile document read failed', {
+        code: 'profile_document_read_failed',
+        error_name: String(error?.name || 'Error'),
+      })
+      return res.status(500).json({ code: 'profile_document_read_failed' })
+    }
+  },
+)
 
 router.patch('/profiles/:userId', requirePerm('personnel_settlements.profiles.manage'), async (req, res) => {
   const userId = String(req.params.userId || '').trim()
@@ -424,11 +517,14 @@ router.patch('/profiles/:userId', requirePerm('personnel_settlements.profiles.ma
   }
   try {
     const actorUserId = String((req as any).user?.sub || '').trim()
+    const includeProfileDocuments = await canViewPersonnelProfileDocuments((req as any).user)
     const { effective_date, current_effective_date, reason, ...patch } = parsed.data
     return res.json(await savePersonnelSettlementProfile({
       userId,
       actorUserId,
       source: 'web_admin',
+      includeProfileDocuments,
+      includeVisaDetails: includeProfileDocuments,
       reason,
       effectiveDate: effective_date,
       currentEffectiveDate: current_effective_date,

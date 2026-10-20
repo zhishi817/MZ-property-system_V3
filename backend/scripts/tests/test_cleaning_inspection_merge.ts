@@ -2,12 +2,18 @@ import assert from 'node:assert/strict'
 import express from 'express'
 import {
   deferredProjectionDate,
+  isCheckinKeyHandoverTask,
   isInspectionModeAllowedForTask,
+  keyPhotoConfirmsCurrentTaskProgress,
+  lockboxVideoConfirmsCurrentTaskState,
   mergeInspectionPlan,
   mergeTurnoverTaskPlan,
   mobileInspectionProjectionDate,
+  normalizeTurnoverInspectionScope,
   resolveBoardInspectionDueDate,
   sanitizeInspectionModeForTask,
+  unlinkedDeferredInspectionMergeKey,
+  withInspectionMergeIsolation,
 } from '../../src/lib/cleaningInspection'
 
 function testTurnoverCheckoutAssignmentWinsOverPendingFallback() {
@@ -116,6 +122,7 @@ function testTemporaryCheckinDoesNotUnassignScheduledCheckout() {
       assignee_id: null,
       inspector_id: null,
       inspection_mode: 'same_day',
+      inspection_scope: 'password_only',
       status: 'pending',
     },
   ])
@@ -123,6 +130,7 @@ function testTemporaryCheckinDoesNotUnassignScheduledCheckout() {
   assert.equal(out.assigneeId, 'cleaner-1')
   assert.equal(out.status, 'assigned')
   assert.equal(out.inspectionMode, 'pending_decision')
+  assert.equal(out.inspectionScope, 'inspect_and_hang')
   assert.equal(out.inspectorId, null)
 }
 
@@ -184,6 +192,116 @@ function testCompletedDeferredInspectionStillProjectsToDueDate() {
   assert.equal(out, '2026-06-21')
 }
 
+function testTerminalDeferredInspectionDoesNotClampIntoLaterRange() {
+  assert.equal(deferredProjectionDate({
+    inspectionMode: 'deferred',
+    inspectionDueDate: '2026-06-21',
+    dateFrom: '2026-06-22',
+    dateTo: '2026-06-28',
+    status: 'completed',
+  }), null)
+  assert.equal(deferredProjectionDate({
+    inspectionMode: 'deferred',
+    inspectionDueDate: '2026-06-21',
+    dateFrom: '2026-06-22',
+    dateTo: '2026-06-28',
+    status: 'cancelled',
+  }), null)
+}
+
+function testIncompleteDeferredInspectionStillClampsAsOverdue() {
+  assert.equal(deferredProjectionDate({
+    inspectionMode: 'deferred',
+    inspectionDueDate: '2026-06-21',
+    dateFrom: '2026-06-22',
+    dateTo: '2026-06-28',
+    status: 'assigned',
+  }), '2026-06-22')
+}
+
+function testMsq1905eReopenedDeferredEvidenceDoesNotContaminateNewTurnover() {
+  const historicalSource = 'msq1905e-deferred-2026-10-11'
+  const historicalIsolation = unlinkedDeferredInspectionMergeKey({
+    sourceId: historicalSource,
+    inspectionMode: 'deferred',
+    hasExplicitInspectionRelation: false,
+  })
+  const currentIsolation = unlinkedDeferredInspectionMergeKey({
+    sourceId: 'msq1905e-checkout-2026-10-19',
+    inspectionMode: 'same_day',
+    hasExplicitInspectionRelation: false,
+  })
+  assert.equal(historicalIsolation, `deferred:${historicalSource}`)
+  assert.equal(currentIsolation, null)
+  assert.equal(lockboxVideoConfirmsCurrentTaskState({
+    status: 'assigned',
+    lockboxVideoUrl: 'https://example.invalid/historical-lockbox.mp4',
+  }), false, 'retained evidence on a reopened task must not restore keys_hung')
+  assert.equal(keyPhotoConfirmsCurrentTaskProgress({
+    status: 'assigned',
+    keyPhotoUrl: 'https://example.invalid/historical-key.jpg',
+  }), false, 'retained key evidence on a reopened task must not override the assigned lifecycle state')
+  assert.equal(keyPhotoConfirmsCurrentTaskProgress({
+    status: 'in_progress',
+    keyPhotoUrl: 'https://example.invalid/current-key.jpg',
+  }), true)
+  assert.equal(lockboxVideoConfirmsCurrentTaskState({
+    status: 'keys_hung',
+    lockboxVideoUrl: 'https://example.invalid/current-lockbox.mp4',
+  }), true)
+
+  const ranges = [
+    { label: 'day', from: '2026-10-19', to: '2026-10-19' },
+    { label: 'week', from: '2026-10-19', to: '2026-10-25' },
+    { label: 'month', from: '2026-10-01', to: '2026-10-31' },
+  ]
+  for (const range of ranges) {
+    const historicalDate = deferredProjectionDate({
+      inspectionMode: 'deferred',
+      inspectionDueDate: '2026-10-13',
+      dateFrom: range.from,
+      dateTo: range.to,
+      status: 'assigned',
+    })
+    assert.ok(historicalDate, `${range.label} keeps the incomplete overdue inspection visible`)
+    const historicalKey = withInspectionMergeIsolation(`${historicalDate}|MSQ1905E`, historicalIsolation)
+    const currentKey = withInspectionMergeIsolation('2026-10-19|MSQ1905E', currentIsolation)
+    assert.notEqual(historicalKey, currentKey, `${range.label} keeps the historical and current canonical sources separate`)
+  }
+}
+
+function testFo1602HistoricalInspectionStaysSeparateFromLegitimateTurnoverMerge() {
+  const historicalIsolation = unlinkedDeferredInspectionMergeKey({
+    sourceId: 'fo1602-deferred-old',
+    inspectionMode: 'deferred',
+    hasExplicitInspectionRelation: false,
+  })
+  const checkoutIsolation = unlinkedDeferredInspectionMergeKey({
+    sourceId: 'fo1602-current-checkout',
+    inspectionMode: 'same_day',
+    hasExplicitInspectionRelation: false,
+  })
+  const checkinIsolation = unlinkedDeferredInspectionMergeKey({
+    sourceId: 'fo1602-current-checkin',
+    inspectionMode: 'same_day',
+    hasExplicitInspectionRelation: false,
+  })
+  assert.notEqual(
+    withInspectionMergeIsolation('2026-10-19|FO1602', historicalIsolation),
+    withInspectionMergeIsolation('2026-10-19|FO1602', checkoutIsolation),
+  )
+  assert.equal(
+    withInspectionMergeIsolation('2026-10-19|FO1602', checkoutIsolation),
+    withInspectionMergeIsolation('2026-10-19|FO1602', checkinIsolation),
+    'ordinary same-day checkout and check-in still share the turnover merge bucket',
+  )
+  assert.equal(unlinkedDeferredInspectionMergeKey({
+    sourceId: 'fo1602-explicitly-linked-deferred',
+    inspectionMode: 'deferred',
+    hasExplicitInspectionRelation: true,
+  }), null, 'a stored canonical inspection relation remains eligible for the intended merge')
+}
+
 function testBoardSavePreservesDeferredDate() {
   const due = resolveBoardInspectionDueDate({
     inspectionMode: 'deferred',
@@ -241,6 +359,19 @@ function testOrdinarySelfCompleteDoesNotCreateInspectorTask() {
 }
 
 function testPasswordOnlyCannotUseSelfCompleteOrCheckedDone() {
+  const normalizedTurnoverScope = normalizeTurnoverInspectionScope({
+    inspectionScope: 'password_only',
+    hasCheckoutCheckinTurnover: true,
+  })
+  assert.equal(normalizedTurnoverScope, 'inspect_and_hang', 'App/Web projections must not classify a turnover check-in as password-only execution')
+  assert.equal(isCheckinKeyHandoverTask({
+    task_type: 'checkin_clean',
+    inspection_scope: normalizedTurnoverScope,
+  }), false, 'App inspector grouping must include the normalized turnover check-in side')
+  assert.equal(normalizeTurnoverInspectionScope({
+    inspectionScope: 'password_only',
+    hasCheckoutCheckinTurnover: false,
+  }), 'password_only', 'pure check-in password-only execution remains legal')
   assert.equal(isInspectionModeAllowedForTask({
     taskType: 'checkin_clean',
     inspectionScope: 'password_only',
@@ -265,7 +396,13 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
   assert.equal(hasPg, false)
   const { db } = await import('../../src/store')
   const { router } = await import('../../src/modules/task_center')
+  const { router: cleaningRouter } = await import('../../src/modules/cleaning')
   const taskId = 'test-board-deferred-date-preservation'
+  const turnoverCheckoutId = 'test-board-turnover-checkout'
+  const turnoverCheckinId = 'test-board-turnover-checkin'
+  const pureCheckinId = 'test-board-pure-checkin'
+  const dateMoveCheckoutId = 'test-date-move-checkout'
+  const testPropertyId = 'property-manual-turnover'
   const task: any = {
     id: taskId,
     date: '2026-09-16',
@@ -278,6 +415,13 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     inspector_id: 'test-inspector',
   }
   ;(db.cleaningTasks as any[]).push(task)
+  ;(db.cleaningTasks as any[]).push(
+    { id: turnoverCheckoutId, property_id: 'property-turnover', task_date: '2026-09-16', date: '2026-09-16', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang' },
+    { id: turnoverCheckinId, property_id: 'property-turnover', task_date: '2026-09-16', date: '2026-09-16', task_type: 'checkin_clean', type: 'checkin_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang' },
+    { id: pureCheckinId, property_id: 'property-pure-checkin', task_date: '2026-09-16', date: '2026-09-16', task_type: 'checkin_clean', type: 'checkin_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang' },
+    { id: dateMoveCheckoutId, property_id: 'property-pure-checkin', task_date: '2026-09-17', date: '2026-09-17', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang' },
+  )
+  ;((db as any).properties ||= []).push({ id: testPropertyId, code: 'TEST-TURNOVER', region: 'Melbourne' })
   const app = express()
   app.use(express.json())
   app.use((req: any, _res, next) => {
@@ -285,13 +429,14 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     next()
   })
   app.use('/task-center', router)
+  app.use('/cleaning', cleaningRouter)
   const server = await new Promise<ReturnType<typeof app.listen>>((resolve) => {
     const listener = app.listen(0, '127.0.0.1', () => resolve(listener))
   })
   const address = server.address()
   assert.ok(address && typeof address !== 'string')
   const base = `http://127.0.0.1:${address.port}`
-  const save = async (inspectionMode: string, inspectionDueDate: string | null, statusAction?: string, modeChangeAction?: 'set') => {
+  const save = async (inspectionMode: string, inspectionDueDate: string | null, statusAction?: string, modeChangeAction?: 'set', targetTaskId = taskId, inspectionScope?: 'inspect_and_hang' | 'password_only') => {
     const response = await fetch(`${base}/task-center/save-board`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -299,13 +444,22 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
         date: '2026-09-16',
         rows: [{ row_key: 'region:local-test', row_type: 'region' }],
         cleaning_assignments: [{
-          task_id: taskId,
+          task_id: targetTaskId,
           inspection_mode: inspectionMode,
+          ...(inspectionScope ? { inspection_scope: inspectionScope } : {}),
           ...(modeChangeAction ? { inspection_mode_action: modeChangeAction } : {}),
           inspection_due_date: inspectionDueDate,
           ...(statusAction ? { status_action: statusAction, status: 'completed' } : {}),
         }],
       }),
+    })
+    return { status: response.status, body: await response.json() as any }
+  }
+  const postJson = async (path: string, body: any, method = 'POST') => {
+    const response = await fetch(`${base}${path}`, {
+      method,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
     })
     return { status: response.status, body: await response.json() as any }
   }
@@ -328,10 +482,43 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     assert.equal(task.inspection_due_date, '2026-09-17')
     assert.equal((await save('same_day', null, undefined, 'set')).status, 200)
     assert.equal(task.inspection_due_date, null)
+    const invalidTurnoverScope = await save('same_day', null, undefined, undefined, turnoverCheckinId, 'password_only')
+    assert.equal(invalidTurnoverScope.status, 400)
+    assert.equal(invalidTurnoverScope.body.code, 'turnover_requires_inspect_and_hang')
+    assert.equal((db.cleaningTasks as any[]).find((item) => item.id === turnoverCheckinId)?.inspection_scope, 'inspect_and_hang')
+    assert.equal((await save('same_day', null, undefined, undefined, pureCheckinId, 'password_only')).status, 200)
+    assert.equal((db.cleaningTasks as any[]).find((item) => item.id === pureCheckinId)?.inspection_scope, 'password_only')
+    const singlePatchConflict = await postJson(`/cleaning/tasks/${turnoverCheckinId}`, { inspection_scope: 'password_only' }, 'PATCH')
+    assert.equal(singlePatchConflict.status, 400)
+    assert.equal(singlePatchConflict.body.code, 'turnover_requires_inspect_and_hang')
+    const bulkPatchConflict = await postJson('/cleaning/tasks/bulk-patch', {
+      ids: [turnoverCheckoutId],
+      patch: { inspection_scope: 'password_only' },
+    })
+    assert.equal(bulkPatchConflict.status, 400)
+    assert.equal(bulkPatchConflict.body.code, 'turnover_requires_inspect_and_hang')
+    const dateMoveConflict = await postJson(`/cleaning/tasks/${pureCheckinId}`, { task_date: '2026-09-17' }, 'PATCH')
+    assert.equal(dateMoveConflict.status, 400)
+    assert.equal(dateMoveConflict.body.code, 'turnover_requires_inspect_and_hang')
+    assert.equal((db.cleaningTasks as any[]).find((item) => item.id === pureCheckinId)?.task_date, '2026-09-16')
+    const manualTurnoverConflict = await postJson('/cleaning/tasks', {
+      create_mode: 'turnover',
+      task_date: '2026-09-18',
+      property_id: testPropertyId,
+      inspection_scope: 'password_only',
+    })
+    assert.equal(manualTurnoverConflict.status, 400)
+    assert.equal(manualTurnoverConflict.body.code, 'turnover_requires_inspect_and_hang')
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()))
     const index = db.cleaningTasks.findIndex((item) => item.id === taskId)
     if (index >= 0) db.cleaningTasks.splice(index, 1)
+    for (const id of [turnoverCheckoutId, turnoverCheckinId, pureCheckinId, dateMoveCheckoutId]) {
+      const fixtureIndex = db.cleaningTasks.findIndex((item) => item.id === id)
+      if (fixtureIndex >= 0) db.cleaningTasks.splice(fixtureIndex, 1)
+    }
+    const propertyIndex = ((db as any).properties || []).findIndex((item: any) => item.id === testPropertyId)
+    if (propertyIndex >= 0) (db as any).properties.splice(propertyIndex, 1)
   }
 }
 
@@ -344,6 +531,10 @@ testTemporaryCheckinDoesNotUnassignScheduledCheckout()
 testTemporaryCheckinDoesNotClearCheckoutInspector()
 testTurnoverKeepsKeysHungFromAnyUnderlyingTask()
 testCompletedDeferredInspectionStillProjectsToDueDate()
+testTerminalDeferredInspectionDoesNotClampIntoLaterRange()
+testIncompleteDeferredInspectionStillClampsAsOverdue()
+testMsq1905eReopenedDeferredEvidenceDoesNotContaminateNewTurnover()
+testFo1602HistoricalInspectionStaysSeparateFromLegitimateTurnoverMerge()
 testBoardSavePreservesDeferredDate()
 testKeysHungSelfCompleteProjectsToOriginalTaskDate()
 testOrdinarySelfCompleteDoesNotCreateInspectorTask()

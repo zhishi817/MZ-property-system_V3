@@ -1,7 +1,7 @@
 "use client"
 
-import { useCallback, useEffect, useState } from 'react'
-import { Alert, App, Button, Card, DatePicker, Descriptions, Divider, Drawer, Empty, Form, Input, Select, Space, Switch, Table, Tabs, Tag, Typography } from 'antd'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Alert, App, Button, Card, DatePicker, Descriptions, Divider, Drawer, Empty, Form, Image, Input, Modal, Select, Space, Switch, Table, Tabs, Tag, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs, { type Dayjs } from 'dayjs'
 import TableRowActions from '../../../components/TableRowActions'
@@ -27,6 +27,13 @@ import {
   type FeeComponentType,
   type FeePriceBasis,
 } from './feeRuleUi'
+import {
+  loadProfileDocumentPreview,
+  profileDocumentFailureMessage,
+  releaseProfileDocumentPreview,
+  type ProfileDocumentPreview,
+  type ProfileDocumentType,
+} from './profileDocumentPreview'
 
 type GstStatus = 'unconfirmed' | 'registered' | 'not_registered'
 type PersonnelType = 'cleaner' | 'inspector' | 'warehouse' | 'trial' | 'external' | 'mixed'
@@ -45,7 +52,10 @@ type PersonnelProfile = {
   effective_from: string | null
   settlement_enabled: boolean
   person_type: PersonnelType
-  photo_id_uploaded: boolean
+  photo_id_uploaded?: boolean
+  visa_document_uploaded?: boolean
+  visa_grant_number?: string | null
+  profile_documents_access?: true
   bank_details_complete: boolean
   bank_account_name: string | null
   bank_bsb: string | null
@@ -138,10 +148,14 @@ export default function PersonnelSettlementsPage() {
   const [detailCurrentRule, setDetailCurrentRule] = useState<PersonnelFeeRuleVersion | null>(null)
   const [detailCurrentRuleError, setDetailCurrentRuleError] = useState('')
   const [ruleTarget, setRuleTarget] = useState<PersonnelProfile | null>(null)
+  const [documentLoading, setDocumentLoading] = useState<ProfileDocumentType | null>(null)
+  const [documentPreview, setDocumentPreview] = useState<(ProfileDocumentPreview & { title: string }) | null>(null)
+  const documentRequestRef = useRef(0)
   const canView = hasPerm('personnel_settlements.profiles.view')
   const canEdit = hasPerm('personnel_settlements.profiles.manage')
   const canManageBank = hasPerm('personnel_settlements.bank.manage')
   const canManageRules = hasPerm('personnel_settlements.rules.manage')
+  const canViewSelectedProfileDocuments = selected?.profile_documents_access === true
 
   const loadRows = useCallback(async (keyword: string) => {
     if (!mounted || !canView) return
@@ -160,6 +174,8 @@ export default function PersonnelSettlementsPage() {
 
   useEffect(() => { setMounted(true) }, [])
   useEffect(() => { void loadRows('') }, [loadRows])
+  useEffect(() => () => releaseProfileDocumentPreview(documentPreview), [documentPreview])
+  useEffect(() => () => { documentRequestRef.current += 1 }, [])
 
   async function loadDetail(row: PersonnelProfile) {
     return getJSON<PersonnelProfile>(`/finance/settlements/profiles/${encodeURIComponent(row.user_id)}`, { authSensitive: true })
@@ -239,6 +255,37 @@ export default function PersonnelSettlementsPage() {
     } finally {
       setSaving(false)
     }
+  }
+
+  async function openProfileDocument(type: ProfileDocumentType) {
+    if (!selected || !canViewSelectedProfileDocuments) return
+    const requestId = ++documentRequestRef.current
+    setDocumentLoading(type)
+    try {
+      const preview = await loadProfileDocumentPreview(selected.user_id, type)
+      if (documentRequestRef.current !== requestId) {
+        releaseProfileDocumentPreview(preview)
+        return
+      }
+      setDocumentPreview({
+        ...preview,
+        title: type === 'photo_id' ? 'Photo ID' : '签证文件',
+      })
+    } catch (error) {
+      if (documentRequestRef.current === requestId) message.error(profileDocumentFailureMessage(error))
+    } finally {
+      if (documentRequestRef.current === requestId) setDocumentLoading(null)
+    }
+  }
+
+  function closeDetailDrawer() {
+    documentRequestRef.current += 1
+    setDrawerMode(null)
+    setSelected(null)
+    setDetailCurrentRule(null)
+    setDetailCurrentRuleError('')
+    setDocumentLoading(null)
+    setDocumentPreview(null)
   }
 
   const columns: ColumnsType<PersonnelProfile> = [
@@ -322,7 +369,7 @@ export default function PersonnelSettlementsPage() {
               <Alert
                 showIcon
                 type="info"
-                message="姓名、ABN、银行和 Photo ID 复用移动端个人资料；GST、付款方式与结算设置按生效日期保留历史版本。"
+                message="姓名、ABN 和银行资料复用移动端当前个人资料；GST、付款方式与结算设置按生效日期保留历史版本。"
                 style={{ marginBottom: 12 }}
               />
               {loadIssue ? (
@@ -352,8 +399,8 @@ export default function PersonnelSettlementsPage() {
         width={680}
         open={drawerMode === 'detail'}
         title="人员结算资料详情"
-        onClose={() => { setDrawerMode(null); setSelected(null); setDetailCurrentRule(null); setDetailCurrentRuleError('') }}
-        footer={<div style={{ textAlign: 'right' }}><Button onClick={() => { setDrawerMode(null); setSelected(null); setDetailCurrentRule(null); setDetailCurrentRuleError('') }}>关闭</Button></div>}
+        onClose={closeDetailDrawer}
+        footer={<div style={{ textAlign: 'right' }}><Button onClick={closeDetailDrawer}>关闭</Button></div>}
       >
         {selected ? <Space direction="vertical" size={16} style={{ width: '100%' }}>
           <Descriptions bordered column={1} size="small">
@@ -369,7 +416,21 @@ export default function PersonnelSettlementsPage() {
               <Descriptions.Item label="BSB">{selected.bank_bsb || selected.bank_bsb_masked || '-'}</Descriptions.Item>
               <Descriptions.Item label="银行账号">{selected.bank_account_number || selected.bank_account_masked || '-'}</Descriptions.Item>
             </> : null}
-            <Descriptions.Item label="Photo ID">{selected.photo_id_uploaded ? '已上传' : '未上传'}</Descriptions.Item>
+            {canViewSelectedProfileDocuments ? <>
+              <Descriptions.Item label="Photo ID">
+                <Space>
+                  <span>{selected.photo_id_uploaded ? '已上传' : '未上传'}</span>
+                  {selected.photo_id_uploaded ? <Button size="small" loading={documentLoading === 'photo_id'} onClick={() => void openProfileDocument('photo_id')}>查看</Button> : null}
+                </Space>
+              </Descriptions.Item>
+              <Descriptions.Item label="Visa Grant Number">{selected.visa_grant_number || '-'}</Descriptions.Item>
+              <Descriptions.Item label="签证文件">
+                <Space>
+                  <span>{selected.visa_document_uploaded ? '已上传' : '未上传'}</span>
+                  {selected.visa_document_uploaded ? <Button size="small" loading={documentLoading === 'visa_document'} onClick={() => void openProfileDocument('visa_document')}>查看</Button> : null}
+                </Space>
+              </Descriptions.Item>
+            </> : null}
             <Descriptions.Item label="费用规则">{selected.fee_rule_name || '未配置'}</Descriptions.Item>
             <Descriptions.Item label="结算状态">{selected.settlement_enabled ? '启用' : '停用'}</Descriptions.Item>
           </Descriptions>
@@ -395,6 +456,35 @@ export default function PersonnelSettlementsPage() {
           </> : null}
         </Space> : null}
       </Drawer>
+
+      <Modal
+        open={!!documentPreview}
+        title={documentPreview?.title || '资料预览'}
+        footer={null}
+        width={900}
+        destroyOnHidden
+        onCancel={() => setDocumentPreview(null)}
+      >
+        {documentPreview?.contentType.startsWith('image/') ? (
+          <Image
+            preview={false}
+            src={documentPreview.url}
+            alt={documentPreview.title}
+            style={{ width: '100%', maxHeight: '72vh', objectFit: 'contain' }}
+          />
+        ) : documentPreview?.contentType === 'application/pdf' ? (
+          <object
+            data={documentPreview.url}
+            type="application/pdf"
+            aria-label={documentPreview.title}
+            style={{ width: '100%', height: '72vh', border: 0 }}
+          >
+            <Alert showIcon type="warning" message="当前浏览器无法内嵌预览该 PDF。" />
+          </object>
+        ) : documentPreview ? (
+          <Alert showIcon type="warning" message="该文件格式暂不支持网页预览。" />
+        ) : null}
+      </Modal>
 
       <Drawer
         width={680}

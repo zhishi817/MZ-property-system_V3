@@ -16,6 +16,7 @@ async function main() {
 
   const cleaningAppSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/cleaning_app.ts'), 'utf8')
   const mzappSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/mzapp.ts'), 'utf8')
+  const deferredConflictSource = fs.readFileSync(path.resolve(__dirname, '../../src/services/deferredInspectionCheckinConflict.ts'), 'utf8')
   const maintenanceSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/maintenance.ts'), 'utf8')
   const receiptSource = fs.readFileSync(path.resolve(__dirname, '../../src/lib/idempotentStepReceipts.ts'), 'utf8')
   const receiptMigration = fs.readFileSync(path.resolve(__dirname, '../../scripts/migrations/20260805_app_submit_receipts.sql'), 'utf8')
@@ -96,12 +97,12 @@ async function main() {
 
   const selfCompleteLockboxRoute = cleaningAppSource.match(/router\.post\('\/tasks\/:id\/lockbox-video'[\s\S]*?async function handleDeleteLockboxVideo/)?.[0] || ''
   assert.ok(selfCompleteLockboxRoute, 'self-complete lockbox route must remain discoverable')
-  assert.match(selfCompleteLockboxRoute, /canPerformCleaningTaskActionForRow\(user, lockedTask, \['upload_access_video'\], client\)/, 'self-complete lockbox must authorize the latest locked row for the video action')
+  assert.match(selfCompleteLockboxRoute, /authorizeDeferredInspectionCheckinSubmission\(\{[\s\S]*?canSubmit: \(task, executor\) => canPerformCleaningTaskActionForRow\(user, task, \['upload_access_video'\], executor\)/, 'self-complete lockbox must authorize the target before conflict details and reauthorize its latest locked row')
   assert.match(selfCompleteLockboxRoute, /const selfCompleteLockbox = effectiveInspectionMode\(lockedTask\) === 'self_complete'/, 'self-complete lockbox must identify its mode from the locked task')
   assert.match(selfCompleteLockboxRoute, /self_complete_lockbox: selfCompleteLockbox/, 'self-complete lockbox must mark the shared transition explicitly')
   assert.match(selfCompleteLockboxRoute, /pgRunInTransaction\(async \(client\)/, 'self-complete lockbox media and transition must share one transaction')
   assert.match(cleaningAppSource, /const lockboxVideoSchema = z\.object\([\s\S]*?operation_id: z\.string\(\)\.trim\(\)\.min\(1\)\.max\(IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH\)/, 'self-complete lockbox must accept a stable operation id')
-  assert.match(selfCompleteLockboxRoute, /FOR UPDATE/, 'self-complete lockbox must serialize retries on the task')
+  assert.match(deferredConflictSource, /authorizeDeferredInspectionCheckinSubmission[\s\S]*?\$\{lock \? 'FOR UPDATE' : 'LIMIT 1'\}/, 'shared authorization must serialize retries on the latest task row')
   assert.match(selfCompleteLockboxRoute, /scopeType: 'cleaning_task_lockbox_video'/, 'self-complete lockbox must use the shared lockbox receipt scope')
   assert.match(selfCompleteLockboxRoute, /loadIdempotentStepReceipt\(client/, 'self-complete lockbox must check the receipt inside the transaction')
   assert.match(selfCompleteLockboxRoute, /saveIdempotentStepReceipt\(client/, 'self-complete lockbox must save the receipt inside the transaction')
@@ -124,6 +125,28 @@ async function main() {
   assert.match(mzappLockboxRoute, /saveIdempotentStepReceipt\(client/, 'MZapp lockbox must save the receipt inside the transaction')
   assert.ok(mzappLockboxRoute.indexOf("DELETE FROM cleaning_task_media") < mzappLockboxRoute.indexOf("VALUES ($1,$2,'lockbox_video'"), 'MZapp must replace the single lockbox media row rather than accumulating duplicates')
   assert.ok(mzappLockboxRoute.indexOf("kind === 'replay'") < mzappLockboxRoute.indexOf('broadcastCleaningEvent'), 'MZapp replay must skip notifications and broadcasts')
+
+  for (const [name, source, start, end] of [
+    ['cleaning app inspection photos', cleaningAppSource, "router.post('/tasks/:id/inspection-photos'", "router.post('/tasks/:id/inspection-issue-photos'"],
+    ['MZapp inspection photos', mzappSource, "router.post('/cleaning-tasks/:id/inspection-photos'", "router.get('/cleaning-tasks/:id/completion-photos'"],
+  ] as const) {
+    const route = source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)))
+    assert.ok(route, `${name} route must remain discoverable`)
+    assert.match(route, /pgRunInTransaction\(async \(client\)/, `${name} must transact receipt and business writes together`)
+    assert.match(route, /loadIdempotentStepReceipt\(client/, `${name} must load a stable retry receipt before media writes`)
+    assert.match(route, /saveIdempotentStepReceipt\(client/, `${name} must save its response before commit`)
+    assert.ok(route.indexOf('loadIdempotentStepReceipt') < route.indexOf('DELETE FROM cleaning_task_media'), `${name} must replay before replacing media`)
+  }
+
+  const legacyInspectionCompleteRoute = cleaningAppSource.slice(
+    cleaningAppSource.indexOf("router.post('/tasks/:id/inspection-complete'"),
+    cleaningAppSource.indexOf('function canViewDayEndForAllUsers'),
+  )
+  assert.match(legacyInspectionCompleteRoute, /existingEquivalentVideo/)
+  assert.ok(
+    legacyInspectionCompleteRoute.indexOf('existingEquivalentVideo') < legacyInspectionCompleteRoute.indexOf("VALUES ($1,$2,'lockbox_video'"),
+    'legacy inspection-complete must semantically replay an identical concurrent video before media or audit writes',
+  )
 
   process.stdout.write('test_idempotency_submit_id_contract: ok\n')
 }

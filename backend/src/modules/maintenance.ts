@@ -23,6 +23,7 @@ import {
 import {
   availableMaintenanceActions,
   MAINTENANCE_WORKFLOW_MANAGE_PERMISSION,
+  maintenanceWorkTaskStatus,
   normalizeMaintenanceWorkflowStatus,
   validateMaintenanceWorkflowAction,
   type MaintenanceWorkflowAction,
@@ -41,6 +42,7 @@ import {
   loadIdempotentStepReceipt,
   saveIdempotentStepReceipt,
 } from '../lib/idempotentStepReceipts'
+import { buildWorkTaskVisibilityHints, emitWorkTaskEvent, type WorkTaskEventType } from '../services/workTaskEvents'
 
 export const router = Router()
 const upload = multer({ storage: multer.memoryStorage() })
@@ -127,6 +129,20 @@ function dateOnly(value: any): string | null {
   return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null
 }
 
+function melbourneDateOnly(value: any): string | null {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Australia/Melbourne',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date)
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value || ''
+  const result = `${part('year')}-${part('month')}-${part('day')}`
+  return /^\d{4}-\d{2}-\d{2}$/.test(result) ? result : null
+}
+
 function completedAtFromWorkflowBody(value: any): string {
   if (value == null || value === '') return new Date().toISOString()
   const day = dateOnly(value)
@@ -193,6 +209,16 @@ async function updateMaintenanceWorkflowRecord(client: any, domain: MaintenanceD
 function workflowResponse(domain: MaintenanceDomain, row: any, user: any, canManageWorkflow: boolean) {
   const status = normalizeMaintenanceWorkflowStatus(row?.status, row?.review_status)
   const assignedExecutor = !!userId(user) && String(row?.assignee_id || '').trim() === userId(user)
+  const recordState = status === 'pending_review'
+    ? 'pending_review'
+    : status === 'closed'
+      ? 'completed'
+      : status === 'cancelled'
+        ? 'cancelled'
+        : null
+  const completedAt = row?.completed_at || row?.submitted_at || row?.closed_at || row?.cancelled_at || null
+  const workRecordDate = recordState ? melbourneDateOnly(completedAt) : null
+  const originalScheduledDate = domain === 'internal' ? dateOnly(row?.eta) : dateOnly(row?.scheduled_date)
   return {
     ok: true,
     domain,
@@ -203,6 +229,20 @@ function workflowResponse(domain: MaintenanceDomain, row: any, user: any, canMan
     work_task_id: `${workflowSourceType(domain)}:${String(row?.id || '')}`,
     can_manage_workflow: canManageWorkflow,
     available_actions: availableMaintenanceActions({ status, isManager: canManageWorkflow, isAssignedExecutor: assignedExecutor }),
+    ...(recordState && workRecordDate
+      ? {
+          completed_at: completedAt ? String(completedAt) : null,
+          work_record_visible: true,
+          work_record_state: recordState,
+          work_record_date: workRecordDate,
+          original_scheduled_date: originalScheduledDate,
+          work_record_read_only: true,
+          counts_as_active_task: false,
+          ...(recordState === 'cancelled' && String(row?.cancel_reason || '').trim()
+            ? { completion_reason: String(row.cancel_reason).trim() }
+            : {}),
+        }
+      : {}),
   }
 }
 
@@ -914,8 +954,73 @@ router.post('/workflow/:domain/:id/:action', async (req, res) => {
               ...(completedByAssigneeId ? { actual_repairer_id: completedByAssigneeId } : {}),
             },
       })
+      const sourceType = workflowSourceType(domain)
+      const projectedStatus = maintenanceWorkTaskStatus(normalizeMaintenanceWorkflowStatus(updated?.status, updated?.review_status))
+      const workflowProjection = workflowResponse(domain, updated, user, canManageWorkflow)
+      const workRecordVisible = workflowProjection.work_record_visible === true
+      const workTaskEventType: WorkTaskEventType = action === 'cancel'
+        ? 'TASK_REMOVED'
+        : action === 'assign'
+          ? 'TASK_ASSIGNMENT_CHANGED'
+          : ['executor_complete', 'manager_complete', 'submit'].includes(action)
+            ? 'TASK_COMPLETED'
+            : 'TASK_UPDATED'
+      const visibilityHints = buildWorkTaskVisibilityHints(updated)
+      visibilityHints.user_ids = Array.from(new Set([
+        ...(Array.isArray(visibilityHints.user_ids) ? visibilityHints.user_ids : []),
+        String(row?.assignee_id || '').trim(),
+        String(updated?.assignee_id || '').trim(),
+      ].filter(Boolean)))
+      await emitWorkTaskEvent({
+        taskId: `work_task:${sourceType}:${id}`,
+        sourceType,
+        sourceRefIds: [id],
+        eventType: workTaskEventType,
+        changeScope: 'list',
+        changedFields: [
+          'status',
+          'source_workflow_status',
+          'assignee_id',
+          'scheduled_date',
+          'completion_photo_urls',
+          'completion_note',
+          'completed_at',
+          'work_record_visible',
+          'work_record_state',
+          'work_record_date',
+          'original_scheduled_date',
+          'work_record_read_only',
+          'counts_as_active_task',
+          'completion_reason',
+        ],
+        patch: {
+          status: projectedStatus,
+          source_workflow_status: normalizeMaintenanceWorkflowStatus(updated?.status, updated?.review_status),
+          assignee_id: String(updated?.assignee_id || '').trim() || null,
+          scheduled_date: domain === 'internal' ? dateOnly(updated?.eta) : dateOnly(updated?.scheduled_date),
+          completion_photo_urls: nonEmptyStrings(updated?.completion_photo_urls),
+          completion_note: domain === 'internal'
+            ? (String(updated?.repair_notes || '').trim() || null)
+            : (String(updated?.completion_notes || '').trim() || null),
+          completed_at: workRecordVisible ? (workflowProjection.completed_at || null) : null,
+          work_record_visible: workRecordVisible,
+          work_record_state: workRecordVisible ? workflowProjection.work_record_state : 'active',
+          work_record_date: workRecordVisible ? (workflowProjection.work_record_date || null) : null,
+          original_scheduled_date: workRecordVisible ? (workflowProjection.original_scheduled_date || null) : null,
+          work_record_read_only: workRecordVisible,
+          counts_as_active_task: !workRecordVisible,
+          completion_reason: workRecordVisible ? (workflowProjection.completion_reason || null) : null,
+        },
+        payload: {
+          maintenance_domain: domain,
+          maintenance_action: action,
+          maintenance_event_type: eventType,
+        },
+        causedByUserId: actorId || null,
+        visibilityHints,
+      }, client)
       const response = {
-        ...workflowResponse(domain, updated, user, canManageWorkflow),
+        ...workflowProjection,
         ...(autoExpenseSync ? { auto_expense_sync: autoExpenseSync } : {}),
       }
       if (receiptScope) await saveIdempotentStepReceipt(client, receiptScope, receiptPayloadHash, response)

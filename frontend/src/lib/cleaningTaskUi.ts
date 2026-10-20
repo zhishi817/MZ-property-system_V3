@@ -33,6 +33,14 @@ export function normalizeInspectionScope(value: string | null | undefined): Task
   return lower(value) === 'password_only' ? 'password_only' : 'inspect_and_hang'
 }
 
+export function taskCenterSaveInspectionScope(params: {
+  inspectionScope: string | null | undefined
+  isTurnover: boolean
+}): TaskInspectionScope {
+  if (params.isTurnover) return 'inspect_and_hang'
+  return normalizeInspectionScope(params.inspectionScope)
+}
+
 export function inspectionScopeLabel(scope: string | null | undefined): string {
   return normalizeInspectionScope(scope) === 'password_only' ? '仅改密码' : '检查后挂钥匙'
 }

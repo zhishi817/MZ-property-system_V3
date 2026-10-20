@@ -2,6 +2,10 @@ import assert from 'assert'
 import fs from 'fs'
 import path from 'path'
 import { inspectionAssignmentConflictPayload } from '../../src/lib/inspectionAssignmentConflict'
+import {
+  isTerminalDeferredInspectionStatus,
+  openDeferredInspectionStatusSql,
+} from '../../src/lib/cleaningInspection'
 import { buildPersonnelSettlementPreview } from '../../src/lib/personnelSettlementPreview'
 import { buildMz031CleaningArrangementRevision } from '../../src/services/workTaskEvents'
 import {
@@ -65,6 +69,12 @@ assert.deepStrictEqual(inspectionAssignmentConflictPayload({
   requested_inspector_id: 'other',
 })
 
+for (const status of ['inspected', 'done', 'completed', 'ready', 'keys_hung', 'cancelled', 'canceled']) {
+  assert.strictEqual(isTerminalDeferredInspectionStatus(status), true)
+}
+assert.strictEqual(isTerminalDeferredInspectionStatus('assigned'), false)
+assert.throws(() => openDeferredInspectionStatusSql('t; DROP TABLE cleaning_tasks'), /invalid_sql_alias/)
+
 const profile = (userId: string, gst: 'registered' | 'not_registered' | 'unconfirmed' = 'not_registered') => ({
   id: `profile-${userId}`, user_id: userId, user_name: userId, effective_from: '2026-01-01', effective_to: null,
   person_type: 'inspector', supplier_legal_name: userId, supplier_business_name: null, abn: null,
@@ -76,12 +86,14 @@ const rule = (userId: string) => ({
   property_id: null, task_type: null, conditions: null, priority: 0, rate_cents: '15000',
 })
 const assignment = (patch: Record<string, unknown> = {}) => ({
-  task_id: 'inspection-1', inspection_key: 'inspection:inspection-1', user_id: 'flora', user_name: 'Flora',
+  task_id: 'inspection-1', inspection_key: 'inspection:inspection-1', execution_task_id: 'inspection-1', user_id: 'flora', user_name: 'Flora',
   service_date: '2026-10-05', scheduled_service_date: '2026-10-05', property_id: 'property-1', property_label: '831606',
   property_type: '一房一卫', task_type: 'checkout_clean', inspection_due_date: null, inspection_mode: 'same_day',
   assignment_source: 'current', inspection_scope_state: 'billable', inspection_scope_issue: null,
-  property_snapshot_missing: false, is_payable: true, submission_count: 0, latest_audit_id: null,
+  property_snapshot_missing: false, execution_assignment_conflict: false, is_payable: true, submission_count: 0, latest_audit_id: null,
   latest_performed_at: null, latest_metadata: null,
+  submitter_user_ids: [],
+  latest_performed_by_user_id: null, latest_performed_by_name: null,
   ...patch,
 })
 
@@ -103,6 +115,23 @@ async function previewOf(input: {
         assert.match(sql, /requested\.property_id = effective\.property_id/)
         assert.doesNotMatch(sql, /arrangement_revision,before,task_type/)
         assert.match(sql, /t\.inspector_id::text AS user_id/)
+        assert.match(sql, /COALESCE\(t\.inspection_replaced_by_checkin_task_id::text, t\.id::text\) AS execution_task_id/)
+        assert.match(sql, /deferred_replaced_by_completed_checkin[\s\S]*COALESCE\(execution_task\.task_date, execution_task\.date\)::date/)
+        assert.match(sql, /ARRAY_REMOVE\(ARRAY_AGG\(DISTINCT a\.performed_by_user_id::text\), NULL\) AS submitter_user_ids/)
+        assert.match(sql, /arrangement_owners\.matching_deferred_count > 1/)
+        assert.ok(
+          sql.includes(`AND ${openDeferredInspectionStatusSql('t')}`),
+          'terminal deferred tasks must not acquire a new current check-in arrangement',
+        )
+        assert.ok(
+          sql.includes(`AND ${openDeferredInspectionStatusSql('competing_deferred')}`),
+          'terminal competing deferred tasks must not create a false owner conflict',
+        )
+        assert.match(sql, /checkin_arrangement\.effective_inspection_date BETWEEN COALESCE\(competing_deferred\.task_date, competing_deferred\.date\)::date AND competing_deferred\.inspection_due_date::date/)
+        assert.match(sql, /a\.source_id::text = effective\.execution_task_id/)
+        assert.doesNotMatch(sql, /a\.performed_by_user_id = effective\.user_id/)
+        assert.match(sql, /deferred_replaced_by_completed_checkin/)
+        assert.match(sql, /e\.caused_by_user_id IS NULL[\s\S]*deferred_replaced_by_completed_checkin/)
         assert.doesNotMatch(sql, /arrangement_revision,before,assignee_id/)
         assert.doesNotMatch(sql, /COALESCE\([^\n]*inspector_id[^\n]*assignee_id/)
         assert.match(sql, /arrangement_revision,before,property_id/)
@@ -173,6 +202,41 @@ async function main() {
   ] })
   assert.strictEqual(sameInspectorSameRoom.people[0].lines[0].work_items.length, 2)
   assert.match(sameInspectorSameRoom.people[0].lines[0].description, /1 property\(ies\) · 2 task\(s\)/)
+
+  const uiMergeIsolationDoesNotChangeSettlement = await previewOf({
+    weekStart: '2026-10-12',
+    assignments: [
+      assignment({
+        task_id: 'msq1905e-deferred-old',
+        inspection_key: 'inspection:msq1905e-deferred-old',
+        service_date: '2026-10-13',
+        scheduled_service_date: '2026-10-13',
+        inspection_mode: 'deferred',
+        inspection_due_date: '2026-10-13',
+        property_label: 'MSQ1905E',
+      }),
+      assignment({
+        task_id: 'msq1905e-current-checkout',
+        inspection_key: 'inspection:msq1905e-current-checkout',
+        service_date: '2026-10-18',
+        scheduled_service_date: '2026-10-18',
+        inspection_mode: 'same_day',
+        inspection_due_date: null,
+        property_label: 'MSQ1905E',
+      }),
+    ],
+  })
+  assert.deepStrictEqual(
+    uiMergeIsolationDoesNotChangeSettlement.people[0].lines.map((line) => ({
+      date: line.service_date,
+      tasks: line.work_items.map((item) => item.task_id),
+    })),
+    [
+      { date: '2026-10-13', tasks: ['msq1905e-deferred-old'] },
+      { date: '2026-10-18', tasks: ['msq1905e-current-checkout'] },
+    ],
+    'UI de-duplication boundaries must not collapse settlement sources or service dates',
+  )
 
   const pairedExecutorOnlyCheckin = await previewOf({
     assignments: [
@@ -327,6 +391,81 @@ async function main() {
   })
   assert.strictEqual(staleOldUpload.people.find((person) => person.user_id === 'flora')?.lines.length || 0, 0)
   assert.strictEqual(staleOldUpload.people.find((person) => person.user_id === 'other')?.lines.length, 1)
+
+  const performerMismatch = await previewOf({
+    assignments: [assignment({
+      execution_task_id: 'checkin-linked',
+      submission_count: 1,
+      latest_audit_id: 'inspection-submit-1',
+      latest_performed_at: '2026-10-05T04:00:00Z',
+      latest_performed_by_user_id: 'other',
+      latest_performed_by_name: 'Other',
+    })],
+    profiles: [profile('flora'), profile('other')],
+    rules: [rule('flora'), rule('other')],
+  })
+  assert.strictEqual(performerMismatch.people.flatMap((person) => person.lines).length, 0)
+  assert.strictEqual(
+    performerMismatch.people.find((person) => person.user_id === 'flora')?.warnings[0]?.reason,
+    'inspection_submitter_differs_from_planned_owner',
+  )
+  assert.strictEqual(
+    performerMismatch.people.find((person) => person.user_id === 'other')?.warnings[0]?.reason,
+    'inspection_submitter_differs_from_planned_owner',
+  )
+
+  const executionAssignmentConflict = await previewOf({
+    assignments: [assignment({ execution_task_id: 'checkin-mismatch', execution_assignment_conflict: true })],
+  })
+  assert.strictEqual(executionAssignmentConflict.people.flatMap((person) => person.lines).length, 0)
+  assert.strictEqual(
+    executionAssignmentConflict.people.find((person) => person.user_id === 'flora')?.warnings[0]?.reason,
+    'inspection_execution_assignment_conflict',
+  )
+
+  const sharedCheckinClaimedTwice = await previewOf({
+    assignments: [
+      assignment({ task_id: 'deferred-a', inspection_key: 'inspection:deferred-a', execution_task_id: 'shared-checkin', execution_assignment_conflict: true }),
+      assignment({ task_id: 'deferred-b', inspection_key: 'inspection:deferred-b', execution_task_id: 'shared-checkin', execution_assignment_conflict: true }),
+    ],
+  })
+  assert.strictEqual(sharedCheckinClaimedTwice.people.flatMap((person) => person.lines).length, 0)
+  assert.ok(sharedCheckinClaimedTwice.people[0].warnings.every((warning) => warning.reason === 'inspection_execution_assignment_conflict'))
+
+  const wrongFirstPlannedLatest = await previewOf({
+    assignments: [assignment({
+      execution_task_id: 'checkin-linked',
+      submission_count: 2,
+      submitter_user_ids: ['other', 'flora'],
+      latest_audit_id: 'inspection-submit-planned-latest',
+      latest_performed_at: '2026-10-05T05:00:00Z',
+      latest_performed_by_user_id: 'flora',
+      latest_performed_by_name: 'Flora',
+    })],
+    profiles: [profile('flora'), profile('other')],
+    rules: [rule('flora'), rule('other')],
+  })
+  assert.strictEqual(wrongFirstPlannedLatest.people.flatMap((person) => person.lines).length, 0)
+  assert.strictEqual(
+    wrongFirstPlannedLatest.people.find((person) => person.user_id === 'flora')?.warnings[0]?.reason,
+    'inspection_submitter_differs_from_planned_owner',
+  )
+  assert.strictEqual(
+    wrongFirstPlannedLatest.people.find((person) => person.user_id === 'other')?.warnings[0]?.reason,
+    'inspection_submitter_differs_from_planned_owner',
+  )
+
+  const replacedBeforeDeferredDue = await previewOf({
+    assignments: [assignment({
+      assignment_source: 'preserved_auto_change',
+      execution_task_id: 'checkin-before-due',
+      service_date: '2026-10-04',
+      scheduled_service_date: '2026-10-03',
+      inspection_due_date: '2026-10-05',
+    })],
+    weekStart: '2026-09-28',
+  })
+  assert.strictEqual(replacedBeforeDeferredDue.people[0].lines[0]?.service_date, '2026-10-04')
 
   const movedOldWeek = await previewOf({ assignments: [] })
   const movedNewWeek = await previewOf({

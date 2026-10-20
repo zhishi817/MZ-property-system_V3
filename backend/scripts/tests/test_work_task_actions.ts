@@ -3,7 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import { cleaningTaskExecutionSemantics, normalizeTaskExecutionSemantics, projectInspectorTaskStatus } from '../../src/lib/cleaningInspection'
 import { buildWebTaskManagementPayload, buildWorkTaskActionPayload } from '../../src/lib/workTaskActions'
-import { buildKeyPhotoUploadEventPatch, buildKeyPhotoUploadTaskPatch, keyPhotoUploadStatus, resolveCleaningTaskActionStatus } from '../../src/lib/workTaskActionAudit'
+import { buildKeyPhotoUploadEventPatch, buildKeyPhotoUploadTaskPatch, isCleaningAccessVideoWorkRecordStatus, keyPhotoUploadStatus, resolveCleaningTaskActionStatus } from '../../src/lib/workTaskActionAudit'
 
 const allExecPerms = [
   'cleaning_app.tasks.start',
@@ -23,6 +23,29 @@ function webActionById(payload: ReturnType<typeof buildWebTaskManagementPayload>
 
 function main() {
   const mzappSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/mzapp.ts'), 'utf8')
+  const cleaningAppSourceForRecordGuards = fs.readFileSync(path.resolve(__dirname, '../../src/modules/cleaning_app.ts'), 'utf8')
+  for (const [label, source, routeStart, routeEnd] of [
+    ['MZapp', mzappSource, "router.post('/cleaning-tasks/:id/lockbox-video'", 'async function handleDeleteMzappLockboxVideo'],
+    ['cleaning app', cleaningAppSourceForRecordGuards, "router.post('/tasks/:id/lockbox-video'", 'async function handleDeleteLockboxVideo'],
+  ] as const) {
+    const start = source.indexOf(routeStart)
+    const end = source.indexOf(routeEnd, start)
+    const route = source.slice(start, end)
+    assert(start >= 0 && end > start, `${label} lockbox route must remain discoverable`)
+    assert(route.indexOf('assertCleaningTaskRoleRecordMutable({') >= 0, `${label} lockbox route must reject immutable role records`)
+    assert(
+      route.indexOf('assertCleaningTaskRoleRecordMutable({') < route.indexOf("DELETE FROM cleaning_task_media"),
+      `${label} lockbox route must reject immutable role records before replacing media`,
+    )
+  }
+  const keyDeleteStart = cleaningAppSourceForRecordGuards.indexOf('async function handleDeleteKeyPhoto')
+  const keyDeleteEnd = cleaningAppSourceForRecordGuards.indexOf("router.delete('/tasks/:id/key-photo'", keyDeleteStart)
+  const keyDeleteRoute = cleaningAppSourceForRecordGuards.slice(keyDeleteStart, keyDeleteEnd)
+  assert(keyDeleteStart >= 0 && keyDeleteEnd > keyDeleteStart, 'key-photo delete route must remain discoverable')
+  assert(
+    keyDeleteRoute.indexOf('assertCleaningTaskRoleRecordMutable({') < keyDeleteRoute.indexOf("DELETE FROM cleaning_task_media"),
+    'key-photo deletion must reject immutable work records before deleting evidence',
+  )
   const submissionProjectionStart = mzappSource.indexOf('const cleaningSubmissionReadyByTaskId')
   const submissionProjectionEnd = mzappSource.indexOf('const manualParticipantsByCleaningRef', submissionProjectionStart)
   const submissionProjection = mzappSource.slice(submissionProjectionStart, submissionProjectionEnd)
@@ -385,9 +408,12 @@ function main() {
   assert(mzappSource.includes("code: 'task_not_completed'"), 'completed task photo append route must reject non-terminal tasks')
   assert(mzappSource.includes("code: 'maintenance_workflow_action_required'"), 'maintenance must keep its dedicated completion workflow')
   assert(mzappSource.includes("code: 'completion_photo_action_not_supported'"), 'unmapped task sources must not write an offline completion-photo association')
-  assert(mzappSource.includes('canonicalizeMzappTaskPhotoReference(reference, normalizeWorkTaskPhotoUrls(row.completion_photo_urls))'), 'offline completion photos must persist only canonical task-media references')
-  assert(mzappSource.includes("code: 'invalid_task_photo_reference'"), 'invalid completion-photo references must be rejected before persistence')
-  assert(mzappSource.includes("changedFields: ['completion_photo_urls']"), 'completion photo append must publish a task refresh event')
+  const appendRouteSource = mzappSource.slice(
+    mzappSource.indexOf("router.post('/work-tasks/:id/completion-photos'"),
+    mzappSource.indexOf('const workTaskReorderSchema'),
+  )
+  assert(appendRouteSource.includes("code: 'work_record_read_only'"), 'completed work records must reject post-completion media mutation')
+  assert(!appendRouteSource.includes('UPDATE work_tasks'), 'completed work-record media must remain immutable')
 
   const selfCompleteRecoveryPayload = buildWorkTaskActionPayload({
     ...cleaningTask,
@@ -658,6 +684,9 @@ function main() {
   assert.equal(resolveCleaningTaskActionStatus({ actionId: 'submit_inspection', statusBefore: 'to_inspect' }), 'inspected')
   assert.equal(resolveCleaningTaskActionStatus({ actionId: 'submit_inspection', statusBefore: 'to_inspect', isCheckinInspectAndHang: true }), 'to_hang_keys')
   assert.equal(resolveCleaningTaskActionStatus({ actionId: 'submit_inspection', statusBefore: 'to_inspect', inspectionPhotosSaved: false }), 'to_inspect')
+  assert.equal(isCleaningAccessVideoWorkRecordStatus('keys_hung'), true)
+  assert.equal(isCleaningAccessVideoWorkRecordStatus('completed'), true)
+  assert.equal(isCleaningAccessVideoWorkRecordStatus('inspected'), false, 'inspected checkout tasks may still need the first lockbox upload')
 
   assert.deepEqual(buildKeyPhotoUploadTaskPatch({
     statusBefore: 'done',

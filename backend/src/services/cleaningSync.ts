@@ -16,6 +16,8 @@ export type CleaningSyncAction =
   | 'skipped_protected'
   | 'failed'
 
+type CleaningSyncLogAction = CleaningSyncAction | 'scope_normalized'
+
 export type CleaningSyncScope = 'full' | 'checkin_only'
 
 export type SyncOrderToCleaningTasksOpts = {
@@ -219,11 +221,21 @@ export async function bootstrapCleaningSyncSchemaV2(): Promise<void> {
   await ensureCleaningSchemaV2()
 }
 
+export async function lockCleaningTurnoverKey(client: any, propertyId: any, taskDate: any): Promise<void> {
+  const propertyKey = String(propertyId || '').trim()
+  const dateKey = dayOnly(taskDate)
+  if (!client || !propertyKey || !dateKey) return
+  await client.query(
+    'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+    [`cleaning-turnover:${propertyKey}`, dateKey],
+  )
+}
+
 export async function logCleaningSync(params: {
   jobId?: string | null
   orderId: string
   taskId?: string | null
-  action: CleaningSyncAction
+  action: CleaningSyncLogAction
   before?: any
   after?: any
   meta?: any
@@ -397,6 +409,87 @@ async function updateTaskById(id: string, patch: any, client?: any): Promise<any
   if (!t) return null
   Object.assign(t, patch)
   return t
+}
+
+export async function normalizeSameDayTurnoverInspectionScope(params: {
+  propertyId: string | null
+  taskDates: Array<string | null | undefined>
+  jobId?: string | null
+  client?: any
+}): Promise<number> {
+  const propertyId = String(params.propertyId || '').trim()
+  const taskDates = Array.from(new Set(params.taskDates.map((value) => dayOnly(value)).filter((value): value is string => !!value))).sort()
+  if (!propertyId || !taskDates.length) return 0
+
+  if (hasPg && (params.client || pgPool)) {
+    const exec = params.client || pgPool!
+    for (const taskDate of taskDates) await lockCleaningTurnoverKey(exec, propertyId, taskDate)
+    const result = await exec.query(
+      `SELECT *
+       FROM cleaning_tasks AS task
+       WHERE task.property_id::text = $1
+         AND COALESCE(task.task_date, task.date)::date = ANY($2::date[])
+         AND lower(COALESCE(task.task_type, task.type, '')) IN ('checkout_clean', 'checkin_clean')
+         AND ${activeCleaningTaskWhereSql('task')}
+       ORDER BY task.id
+       FOR UPDATE`,
+      [propertyId, taskDates],
+    )
+    const rows = result.rows || []
+    let updated = 0
+    for (const taskDate of taskDates) {
+      const sameDayRows = rows.filter((row: any) => dayOnly(row.task_date ?? row.date) === taskDate)
+      const kinds = new Set(sameDayRows.map((row: any) => cleaningTaskKind(row)))
+      if (!kinds.has(CHECKOUT_TASK_TYPE) || !kinds.has(CHECKIN_TASK_TYPE)) continue
+      for (const before of sameDayRows) {
+        if (String(before.inspection_scope || '').trim().toLowerCase() === 'inspect_and_hang') continue
+        const after = await updateTaskById(String(before.id), { inspection_scope: 'inspect_and_hang' }, exec)
+        await logCleaningSync({
+          jobId: params.jobId,
+          orderId: String(before.order_id || ''),
+          taskId: before.id,
+          action: 'scope_normalized',
+          before,
+          after,
+          meta: { reason: 'same_day_turnover_scope_normalized', task_date: taskDate },
+          client: exec,
+        })
+        await emitWorkTaskEvent({
+          taskId: `cleaning_task:${String(before.id)}`,
+          sourceType: 'cleaning_tasks',
+          sourceRefIds: [String(before.id)],
+          eventType: 'TASK_UPDATED',
+          changeScope: 'list',
+          changedFields: ['inspection_scope'],
+          patch: { inspection_scope: 'inspect_and_hang' },
+          causedByUserId: null,
+          visibilityHints: buildCleaningTaskVisibilityHints(after || before),
+        }, exec)
+        updated += 1
+      }
+    }
+    return updated
+  }
+
+  const rows = (db.cleaningTasks as any[]).filter((task: any) => (
+    String(task.property_id || '').trim() === propertyId
+    && taskDates.includes(dayOnly(task.task_date ?? task.date) || '')
+    && [CHECKOUT_TASK_TYPE, CHECKIN_TASK_TYPE].includes(cleaningTaskKind(task))
+    && normalizeExecutionState(task) === ACTIVE_EXECUTION_STATE
+    && !isCancelledCleaningTaskStatus(task.status)
+  ))
+  let updated = 0
+  for (const taskDate of taskDates) {
+    const sameDayRows = rows.filter((row: any) => dayOnly(row.task_date ?? row.date) === taskDate)
+    const kinds = new Set(sameDayRows.map((row: any) => cleaningTaskKind(row)))
+    if (!kinds.has(CHECKOUT_TASK_TYPE) || !kinds.has(CHECKIN_TASK_TYPE)) continue
+    for (const task of sameDayRows) {
+      if (String(task.inspection_scope || '').trim().toLowerCase() === 'inspect_and_hang') continue
+      task.inspection_scope = 'inspect_and_hang'
+      updated += 1
+    }
+  }
+  return updated
 }
 
 function hasValue(v: any): boolean {
@@ -1052,6 +1145,7 @@ async function syncOneTask(params: {
   conflictRetry?: boolean
 }) {
   const { jobId, orderId, deleted, client, taskType, date, statusLower, propertyId, derivedCode, keysRequired, protectExisting = false, createOnly = false, conflictRetry = true } = params
+  if (!deleted && date && propertyId) await lockCleaningTurnoverKey(client, propertyId, date)
   // The sync decision and its write must observe one serialized task row.
   // Otherwise a concurrent manual arrangement can commit after this read and
   // be overwritten (or misreported as a sync-originated arrangement change).
@@ -1285,6 +1379,7 @@ export async function syncOrderToCleaningTasks(
       })
       if (rCheckin.action === 'skipped_protected') return { action: 'skipped_protected' as const }
       if (rCheckin.action !== 'created') return { action: 'no_change' as const }
+      await normalizeSameDayTurnoverInspectionScope({ propertyId: order.property_id ? String(order.property_id) : null, taskDates: [checkinDay], jobId, client })
       const rCheckinPassword = await syncCheckinOldCodeFromPreviousStay({ jobId, orderId: id, client })
       if (rCheckinPassword.action === 'skipped_locked') return { action: 'skipped_locked' as const }
       return { action: 'created' as const }
@@ -1328,9 +1423,10 @@ export async function syncOrderToCleaningTasks(
     const rCheckin = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: checkinDay, statusLower, propertyId, derivedCode, keysRequired })
     const supersededCheckout = await supersedeTemporaryManualTasksForOrder({ jobId, orderId: id, propertyId, taskDate: checkoutDay, taskType: CHECKOUT_TASK_TYPE, client })
     const supersededCheckin = await supersedeTemporaryManualTasksForOrder({ jobId, orderId: id, propertyId, taskDate: checkinDay, taskType: CHECKIN_TASK_TYPE, client })
+    const normalizedTurnoverScopes = await normalizeSameDayTurnoverInspectionScope({ propertyId, taskDates: [checkoutDay, checkinDay], jobId, client })
     const rCheckoutPassword = await syncCheckoutOldCodeFromCheckinNewCode({ jobId, orderId: id, client })
     const rCheckinPassword = await syncCheckinOldCodeFromPreviousStay({ jobId, orderId: id, client })
-    const actions = [rCheckout.action, rCheckin.action, rCheckoutPassword.action, rCheckinPassword.action]
+    const actions = [rCheckout.action, rCheckin.action, rCheckoutPassword.action, rCheckinPassword.action, ...(normalizedTurnoverScopes > 0 ? ['updated'] : [])]
     await reconcileDeferredInspectionCheckinReplacement({ checkinOrderId: id, pgClient: client })
     if (actions.includes('created') || actions.includes('updated')) {
       await emitDeferredInspectionCheckinConflictAlerts({ checkinOrderId: id, pgClient: client })

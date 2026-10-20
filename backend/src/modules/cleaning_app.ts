@@ -25,16 +25,20 @@ import {
 import {
   actorAndPerformerFromRequest,
   applyCleaningTaskActionTransition,
+  assertCleaningTaskRoleRecordMutable,
   buildKeyPhotoUploadEventPatch,
   buildKeyPhotoUploadTaskPatch,
   recordWorkTaskActionAudit,
 } from '../lib/workTaskActionAudit'
 import type { WorkTaskActionId } from '../lib/workTaskActions'
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
-import { canViewMzappGuestLuggageNoticeMedia, canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia } from './mzapp'
+import { canViewMzappGuestLuggageNoticeMedia, canViewMzappHistoricalWorkRecordMedia, canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia } from './mzapp'
 import { assertR5TaskRuntimeSchemaReady, requireR5RequestSchema, requireR5TaskRuntimeSchema } from '../lib/r5RequestSchema'
 import { buildCleaningMediaUploadFingerprint, CLEANING_MEDIA_IDEMPOTENCY_CONFLICT, storeLocalImmutableMedia } from '../lib/immutableMediaUpload'
-import { reconcileDeferredInspectionCheckinReplacement } from '../services/deferredInspectionCheckinConflict'
+import {
+  authorizeDeferredInspectionCheckinSubmission,
+  reconcileDeferredInspectionCheckinReplacement,
+} from '../services/deferredInspectionCheckinConflict'
 
 export const router = Router()
 
@@ -960,6 +964,7 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), require
     }
     return res.json({ id, status: 'in_progress' })
   } catch (e: any) {
+    if (Number(e?.statusCode || 0) === 409) return res.status(409).json({ code: e?.code || 'work_record_read_only', message: e?.message || 'work_record_read_only' })
     if (String(e?.message || '') === 'task_is_cancelled') return res.status(409).json({ message: 'task is cancelled' })
     return res.status(500).json({ message: e?.message || 'error' })
   }
@@ -995,6 +1000,13 @@ async function handleDeleteKeyPhoto(req: any, res: any) {
       if (!await canPerformCleaningTaskActionForRow(user, task, ['upload_key_photo'], client)) {
         return { kind: 'forbidden' as const }
       }
+      await assertCleaningTaskRoleRecordMutable({
+        taskId: String(id || '').trim(),
+        actionId: 'upload_key_photo',
+        actorUserId: userId,
+        performedByUserId: userId,
+        statusBefore: task.status,
+      }, client)
       await client.query(`DELETE FROM cleaning_task_media WHERE task_id::text = $1::text AND type = 'key_photo'`, [String(id || '').trim()])
       await client.query(`UPDATE cleaning_tasks SET key_photo_uploaded_at = NULL WHERE id::text = $1::text`, [String(id || '').trim()])
       await emitWorkTaskEvent({
@@ -1039,6 +1051,9 @@ async function handleDeleteKeyPhoto(req: any, res: any) {
     } catch {}
     return res.json({ ok: true })
   } catch (e: any) {
+    if (Number(e?.statusCode || 0) === 409) {
+      return res.status(409).json({ code: e?.code || 'work_record_read_only', message: e?.message || 'work_record_read_only' })
+    }
     return res.status(500).json({ message: e?.message || 'error' })
   }
 }
@@ -1449,6 +1464,7 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
     }
     return res.json({ id, status: 'cleaned' })
   } catch (e: any) {
+    if (Number(e?.statusCode || 0) === 409) return res.status(409).json({ code: e?.code || 'work_record_read_only', message: e?.message || 'work_record_read_only' })
     if (String(e?.message || '') === 'task_is_cancelled') return res.status(409).json({ message: 'task is cancelled' })
     return res.status(500).json({ message: e?.message || 'error' })
   }
@@ -1516,25 +1532,36 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
       const now = new Date().toISOString()
       const actionActor = actorAndPerformerFromRequest(user, parsed.data)
       const transactionResult = await pgRunInTransaction(async (client) => {
-        const locked = await client.query(
-          `SELECT id::text AS id, status,
-                  cleaner_id::text AS cleaner_id,
-                  inspector_id::text AS inspector_id,
-                  assignee_id::text AS assignee_id,
-                  task_type,
-                  inspection_mode,
-                  inspection_scope,
-                  inspection_due_date::text AS inspection_due_date
-             FROM cleaning_tasks
-            WHERE id::text = $1::text
-            FOR UPDATE`,
-          [String(id)],
+        const submission = await authorizeDeferredInspectionCheckinSubmission({
+          taskId: String(id),
+          client,
+          canSubmit: (task, executor) => canPerformCleaningTaskActionForRow(user, task, ['upload_access_video'], executor),
+        })
+        if (submission.kind !== 'authorized') return submission
+        const task = submission.task
+        const existingEquivalentVideo = await client.query(
+          `SELECT id::text AS id
+             FROM cleaning_task_media
+            WHERE task_id::text = $1::text
+              AND type = 'lockbox_video'
+              AND url = $2
+            ORDER BY created_at DESC
+            LIMIT 1`,
+          [String(id), parsed.data.media_url],
         )
-        const task = locked?.rows?.[0] || null
-        if (!task) return { kind: 'missing' as const }
-        if (!await canPerformCleaningTaskActionForRow(user, task, ['upload_access_video'], client)) {
-          return { kind: 'forbidden' as const }
+        if (existingEquivalentVideo?.rows?.[0]) {
+          return {
+            kind: 'replay' as const,
+            responseBody: { id: String(id), status: task.status, lockbox_video_uploaded_at: null, replayed: true },
+          }
         }
+        await assertCleaningTaskRoleRecordMutable({
+          taskId: String(id),
+          actionId: 'upload_access_video',
+          actorUserId: actionActor.actorUserId,
+          performedByUserId: actionActor.performedByUserId,
+          statusBefore: task.status,
+        }, client)
         await client.query(
           `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, lat, lng, uploader_id)
            VALUES ($1,$2,'lockbox_video',$3,$4,$5,$6,$7)`,
@@ -1564,6 +1591,10 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
       })
       if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'task not found' })
       if (transactionResult.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
+      if (transactionResult.kind === 'inspection_arrangement_conflict') {
+        return res.status(409).json({ message: transactionResult.guard.reason, ...transactionResult.guard })
+      }
+      if (transactionResult.kind === 'replay') return res.status(200).json(transactionResult.responseBody)
       const { actionResult, up } = transactionResult
       try { broadcastCleaningEvent({ event: 'lockbox_video_uploaded', task_id: id }) } catch {}
       try {
@@ -1603,6 +1634,7 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
     }
     return res.json({ id, status: 'keys_hung', finalization_pending: true, missing_requirements: ['inspection_photos'] })
   } catch (e: any) {
+    if (Number(e?.statusCode || 0) === 409) return res.status(409).json({ code: e?.code || 'work_record_read_only', message: e?.message || 'work_record_read_only' })
     if (String(e?.message || '') === 'task_is_cancelled') return res.status(409).json({ message: 'task is cancelled' })
     return res.status(500).json({ message: e?.message || 'error' })
   }
@@ -1713,26 +1745,12 @@ router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspec
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
       if (submitId && stepKey) await assertIdempotentStepReceiptsReady(pgPool)
       const transactionResult = await pgRunInTransaction(async (client) => {
-        const lockedTask = await client.query(
-          `SELECT id::text AS id,
-                  status,
-                  cleaner_id::text AS cleaner_id,
-                  inspector_id::text AS inspector_id,
-                  assignee_id::text AS assignee_id,
-                  task_type,
-                  inspection_mode,
-                  inspection_scope,
-                  inspection_due_date::text AS inspection_due_date
-             FROM cleaning_tasks
-            WHERE id::text = $1::text
-            FOR UPDATE`,
-          [String(id)],
-        )
-        const lockedTaskRow = lockedTask?.rows?.[0] || null
-        if (!lockedTaskRow) return { kind: 'missing' as const }
-        if (!await canPerformCleaningTaskActionForRow(user, lockedTaskRow, ['submit_inspection'], client)) {
-          return { kind: 'forbidden' as const }
-        }
+        const submission = await authorizeDeferredInspectionCheckinSubmission({
+          taskId: String(id),
+          client,
+          canSubmit: (task, executor) => canPerformCleaningTaskActionForRow(user, task, ['submit_inspection'], executor),
+        })
+        if (submission.kind !== 'authorized') return submission
 
         if (submitId && stepKey) {
           const receipt = await loadIdempotentStepReceipt(client, {
@@ -1796,6 +1814,9 @@ router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspec
       })
       if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'task not found' })
       if (transactionResult.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
+      if (transactionResult.kind === 'inspection_arrangement_conflict') {
+        return res.status(409).json({ message: transactionResult.guard.reason, ...transactionResult.guard })
+      }
       if (transactionResult.kind === 'conflict') {
         return res.status(409).json({ message: 'idempotency_conflict', submit_id: submitId, step_key: stepKey })
       }
@@ -1805,6 +1826,7 @@ router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspec
     }
     return res.status(201).json({ ok: true })
   } catch (e: any) {
+    if (Number(e?.statusCode || 0) === 409) return res.status(409).json({ code: e?.code || 'work_record_read_only', message: e?.message || 'work_record_read_only' })
     if (String(e?.message || '') === 'task_is_cancelled') return res.status(409).json({ message: 'task is cancelled' })
     return res.status(500).json({ message: e?.message || 'error' })
   }
@@ -2030,6 +2052,7 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
           return { kind: 'forbidden' as const }
         }
         const statusBefore = String(task.status || '').trim()
+        const actionActor = actorAndPerformerFromRequest(user, parsed.data)
 
         if (submitId && stepKey) {
           const receipt = await loadIdempotentStepReceipt(client, {
@@ -2044,6 +2067,13 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
           }
         }
 
+        await assertCleaningTaskRoleRecordMutable({
+          taskId: String(id),
+          actionId: 'complete_cleaning',
+          actorUserId: actionActor.actorUserId,
+          performedByUserId: actionActor.performedByUserId,
+          statusBefore,
+        }, client)
         await client.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'completion_%'`, [id])
         for (const it of parsed.data.items) {
           const type = `completion_${it.area}`
@@ -2055,7 +2085,6 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
             [uuid.v4(), id, type, String(it.url), it.note == null ? null : String(it.note || ''), capturedAt.toISOString(), String(user?.sub || '').trim() || null],
           )
         }
-        const actionActor = actorAndPerformerFromRequest(user, parsed.data)
         const actionAudit = await recordWorkTaskActionAudit({
           sourceType: 'cleaning_tasks',
           sourceId: String(id),
@@ -2116,6 +2145,9 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
     }
     return res.status(201).json({ ok: true })
   } catch (e: any) {
+    if (Number(e?.statusCode || 0) === 409) {
+      return res.status(409).json({ code: e?.code || 'work_record_read_only', message: e?.message || 'work_record_read_only' })
+    }
     return res.status(500).json({ message: e?.message || 'error' })
   }
 })
@@ -2148,25 +2180,13 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
         lng: parsed.data.lng ?? null,
       })
       const transactionResult = await pgRunInTransaction(async (client) => {
-        const lockedResult = await client.query(
-          `SELECT id::text AS id, status,
-                  cleaner_id::text AS cleaner_id,
-                  inspector_id::text AS inspector_id,
-                  assignee_id::text AS assignee_id,
-                  task_type,
-                  inspection_mode,
-                  inspection_scope,
-                  inspection_due_date::text AS inspection_due_date
-             FROM cleaning_tasks
-            WHERE id::text=$1::text
-            FOR UPDATE`,
-          [String(id)],
-        )
-        const lockedTask = lockedResult?.rows?.[0] || null
-        if (!lockedTask) return { kind: 'missing' as const }
-        if (!await canPerformCleaningTaskActionForRow(user, lockedTask, ['upload_access_video'], client)) {
-          return { kind: 'forbidden' as const }
-        }
+        const submission = await authorizeDeferredInspectionCheckinSubmission({
+          taskId: String(id),
+          client,
+          canSubmit: (task, executor) => canPerformCleaningTaskActionForRow(user, task, ['upload_access_video'], executor),
+        })
+        if (submission.kind !== 'authorized') return submission
+        const lockedTask = submission.task
         const selfCompleteLockbox = effectiveInspectionMode(lockedTask) === 'self_complete'
         if (operationId) {
           const receipt = await loadIdempotentStepReceipt(client, {
@@ -2177,6 +2197,13 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
             return { kind: 'replay' as const, responseBody: receipt.response_json }
           }
         }
+        await assertCleaningTaskRoleRecordMutable({
+          taskId: String(id),
+          actionId: 'upload_access_video',
+          actorUserId: actionActor.actorUserId,
+          performedByUserId: actionActor.performedByUserId,
+          statusBefore: lockedTask.status,
+        }, client)
         await client.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type='lockbox_video'`, [id])
         await client.query(
           `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, lat, lng, uploader_id)
@@ -2209,6 +2236,9 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
       })
       if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'task not found' })
       if (transactionResult.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
+      if (transactionResult.kind === 'inspection_arrangement_conflict') {
+        return res.status(409).json({ message: transactionResult.guard.reason, ...transactionResult.guard })
+      }
       if (transactionResult?.kind === 'conflict') return res.status(409).json({ message: 'idempotency_conflict', operation_id: operationId })
       if (transactionResult?.kind === 'replay') return res.status(200).json(transactionResult.responseBody)
       const actionResult = transactionResult?.actionResult || null
@@ -2254,6 +2284,7 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
     }
     return res.status(201).json({ ok: true })
   } catch (e: any) {
+    if (Number(e?.statusCode || 0) === 409) return res.status(409).json({ code: e?.code || 'work_record_read_only', message: e?.message || 'work_record_read_only' })
     if (String(e?.message || '') === 'task_is_cancelled') return res.status(409).json({ message: 'task is cancelled' })
     return res.status(500).json({ message: e?.message || 'error' })
   }
@@ -2289,6 +2320,13 @@ async function handleDeleteLockboxVideo(req: any, res: any) {
       if (!row) return { kind: 'missing' as const }
       const allowedUserIds = [row.cleaner_id, row.inspector_id, row.assignee_id].map((v) => String(v || '').trim()).filter(Boolean)
       if (!canViewAll && !allowedUserIds.includes(userId)) return { kind: 'forbidden' as const }
+      await assertCleaningTaskRoleRecordMutable({
+        taskId,
+        actionId: 'upload_access_video',
+        actorUserId: userId,
+        performedByUserId: userId,
+        statusBefore: row.status,
+      }, client)
       const needsRestockResult = await client.query(
         `SELECT 1
            FROM cleaning_consumable_usages
@@ -2333,6 +2371,9 @@ async function handleDeleteLockboxVideo(req: any, res: any) {
     try { broadcastCleaningEvent({ event: 'lockbox_video_deleted', task_id: taskId }) } catch {}
     return res.json({ ok: true, status: nextStatus, lockbox_video_uploaded_at: null, lockbox_video_url: null })
   } catch (e: any) {
+    if (Number(e?.statusCode || 0) === 409) {
+      return res.status(409).json({ code: e?.code || 'work_record_read_only', message: e?.message || 'work_record_read_only' })
+    }
     return res.status(500).json({ message: e?.message || 'error' })
   }
 }
@@ -2500,6 +2541,7 @@ router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish')
     }
     return res.json({ ok: true, id: String(id) })
   } catch (e: any) {
+    if (Number(e?.statusCode || 0) === 409) return res.status(409).json({ code: e?.code || 'work_record_read_only', message: e?.message || 'work_record_read_only' })
     if (['task_is_cancelled', 'task is cancelled'].includes(String(e?.message || ''))) {
       return res.status(409).json({ message: 'task is cancelled' })
     }
@@ -3294,18 +3336,45 @@ async function findGuestLuggageMediaRows(pool: any, key: string, sourceUrl: stri
   return (result?.rows || []).filter((row: any) => guestLuggageMediaRowReferencesKey(row, key))
 }
 
-function canViewExternalMaintenanceCompletionMedia(user: any, row: any, userId: string): boolean {
+export async function canViewExternalMaintenanceCompletionMedia(
+  pool: any,
+  user: any,
+  row: any,
+  userId: string,
+  requestedWorkTaskId: string,
+  requestedKey: string,
+): Promise<boolean> {
   const roles = Array.from(new Set([
     String(user?.role || '').trim(),
     ...(Array.isArray(user?.roles) ? user.roles.map((role: any) => String(role || '').trim()) : []),
   ].filter(Boolean)))
   if (roles.some((role) => ['admin', 'offline_manager', 'customer_service'].includes(role))) return true
-  return roles.includes('maintenance_staff')
-    && !!userId
-    && String(row?.assignee_id || '').trim() === userId
+  if (!roles.includes('maintenance_staff') || !userId) return false
+  const isHistoricalWorkRecordMedia = row?.historical_work_record_media === true
+  if (!isHistoricalWorkRecordMedia && String(row?.assignee_id || '').trim() === userId) return true
+  if (isHistoricalWorkRecordMedia && String(row?.work_record_actor_user_id || '').trim() !== userId) return false
+
+  const canonicalWorkTaskId = String(row?.work_task_id || '').trim()
+  const key = String(requestedKey || '').trim().replace(/^\/+/, '')
+  if (!pool || !canonicalWorkTaskId || requestedWorkTaskId !== canonicalWorkTaskId || !key) return false
+  const result = await pool.query(
+    `SELECT event.payload
+       FROM work_task_events event
+      WHERE event.task_id = ('work_task:' || $1::text)
+        AND event.source_type = 'external_maintenance_orders'
+        AND event.caused_by_user_id::text = $2::text
+        AND event.payload->>'maintenance_action' IN ('executor_complete', 'submit')
+      ORDER BY event.occurred_at DESC, event.sequence_no DESC
+      LIMIT 50`,
+    [canonicalWorkTaskId, userId],
+  )
+  return (result?.rows || []).some((eventRow: any) => feedbackMediaRowReferencesKey({
+    completion_photo_urls: eventRow?.payload?.patch?.completion_photo_urls,
+    photo_urls: eventRow?.payload?.patch?.photo_urls,
+  }, key))
 }
 
-async function findPropertyFeedbackMediaRows(pool: any, key: string) {
+export async function findPropertyFeedbackMediaRows(pool: any, key: string, requestedWorkTaskId: string = '') {
   const result = await pool.query(
     `SELECT 'property_maintenance'::text AS feedback_source_type,
             m.id::text AS feedback_source_id,
@@ -3317,7 +3386,10 @@ async function findPropertyFeedbackMediaRows(pool: any, key: string) {
             to_jsonb(m.completion_photo_urls) AS completion_photo_urls,
             to_jsonb(NULL::text) AS attachment_urls,
             to_jsonb(m.project_items) AS project_items,
-            NULL::text AS assignee_id
+            NULL::text AS assignee_id,
+            NULL::text AS work_task_id,
+            false AS historical_work_record_media,
+            NULL::text AS work_record_actor_user_id
        FROM property_maintenance m
        JOIN properties p ON p.id::text = m.property_id::text
       WHERE m.deleted_at IS NULL
@@ -3338,7 +3410,10 @@ async function findPropertyFeedbackMediaRows(pool: any, key: string) {
             to_jsonb(NULL::text) AS completion_photo_urls,
             to_jsonb(d.attachment_urls) AS attachment_urls,
             to_jsonb(d.project_items) AS project_items,
-            NULL::text AS assignee_id
+            NULL::text AS assignee_id,
+            NULL::text AS work_task_id,
+            false AS historical_work_record_media,
+            NULL::text AS work_record_actor_user_id
        FROM property_deep_cleaning d
        JOIN properties p ON p.id::text = d.property_id::text
       WHERE d.deleted_at IS NULL
@@ -3359,7 +3434,10 @@ async function findPropertyFeedbackMediaRows(pool: any, key: string) {
             to_jsonb(NULL::text) AS completion_photo_urls,
             to_jsonb(NULL::text) AS attachment_urls,
             to_jsonb(NULL::text) AS project_items,
-            NULL::text AS assignee_id
+            NULL::text AS assignee_id,
+            NULL::text AS work_task_id,
+            false AS historical_work_record_media,
+            NULL::text AS work_record_actor_user_id
        FROM property_daily_necessities n
       JOIN properties p ON p.id::text = n.property_id::text
       WHERE n.deleted_at IS NULL
@@ -3379,15 +3457,67 @@ async function findPropertyFeedbackMediaRows(pool: any, key: string) {
             to_jsonb(e.completion_photo_urls) AS completion_photo_urls,
             to_jsonb(NULL::text) AS attachment_urls,
             to_jsonb(NULL::text) AS project_items,
-            w.assignee_id::text AS assignee_id
+            w.assignee_id::text AS assignee_id,
+            w.id::text AS work_task_id,
+            false AS historical_work_record_media,
+            NULL::text AS work_record_actor_user_id
        FROM external_maintenance_orders e
        JOIN work_tasks w
          ON w.source_type = 'external_maintenance_orders'
         AND w.source_id::text = e.id::text
-      WHERE COALESCE(e.completion_photo_urls::text, '') LIKE $1`,
-    [`%${key}%`],
+      WHERE COALESCE(e.completion_photo_urls::text, '') LIKE $1
+     UNION ALL
+     SELECT w.source_type::text AS feedback_source_type,
+            w.source_id::text AS feedback_source_id,
+            w.property_id::text AS property_id,
+            COALESCE(event.payload#>'{patch,photo_urls}', '[]'::jsonb) AS photo_urls,
+            COALESCE(event.payload#>'{patch,before_photo_urls}', '[]'::jsonb) AS before_photo_urls,
+            COALESCE(event.payload#>'{patch,after_photo_urls}', '[]'::jsonb) AS after_photo_urls,
+            COALESCE(event.payload#>'{patch,repair_photo_urls}', '[]'::jsonb) AS repair_photo_urls,
+            COALESCE(
+              event.payload#>'{patch,completion_photo_urls}',
+              event.payload#>'{work_record_transition,completion_photo_urls}',
+              '[]'::jsonb
+            ) AS completion_photo_urls,
+            COALESCE(event.payload#>'{patch,attachment_urls}', '[]'::jsonb) AS attachment_urls,
+            COALESCE(event.payload#>'{patch,project_items}', '[]'::jsonb) AS project_items,
+            w.assignee_id::text AS assignee_id,
+            w.id::text AS work_task_id,
+            true AS historical_work_record_media,
+            CASE
+              WHEN event.payload->>'maintenance_action' IN ('executor_complete', 'submit')
+                THEN event.caused_by_user_id::text
+              WHEN event.payload#>>'{execution_evidence,is_execution}' = 'true'
+                AND event.payload#>>'{execution_evidence,actor_user_id}' = event.caused_by_user_id::text
+                THEN event.caused_by_user_id::text
+              ELSE NULL::text
+            END AS work_record_actor_user_id
+       FROM work_task_events event
+       JOIN work_tasks w ON event.task_id = ('work_task:' || w.id::text)
+      WHERE $2::text <> ''
+        AND w.id::text = $2::text
+        AND w.source_type IN ('property_maintenance', 'property_deep_cleaning', 'property_daily_necessities', 'external_maintenance_orders')
+        AND event.event_type = 'TASK_COMPLETED'
+        AND COALESCE(event.payload::text, '') LIKE $1`,
+    [`%${key}%`, String(requestedWorkTaskId || '').trim()],
   )
-  return (result?.rows || []).filter((row: any) => feedbackMediaRowReferencesKey(row, key))
+  const uniqueRows = new Map<string, any>()
+  for (const row of (result?.rows || []).filter((candidate: any) => feedbackMediaRowReferencesKey(candidate, key))) {
+    const identity = `${String(row?.feedback_source_type || '').trim()}:${String(row?.feedback_source_id || '').trim()}`
+    const existing = uniqueRows.get(identity)
+    uniqueRows.set(identity, existing
+      ? {
+          ...row,
+          ...existing,
+          work_task_id: existing.work_task_id || row.work_task_id || null,
+          assignee_id: existing.assignee_id || row.assignee_id || null,
+          property_id: existing.property_id || row.property_id || null,
+          historical_work_record_media: existing.historical_work_record_media === true,
+          work_record_actor_user_id: existing.work_record_actor_user_id || null,
+        }
+      : row)
+  }
+  return Array.from(uniqueRows.values())
 }
 
 function safeDayEndMediaUserId(value: unknown) {
@@ -3483,24 +3613,59 @@ async function findOfflineWorkTaskPhotoRows(pool: any, references: string[]) {
     `SELECT w.id,
             w.assignee_id,
             w.photo_urls,
-            w.completion_photo_urls
+            w.completion_photo_urls,
+            record_media.actor_user_ids AS work_record_actor_user_ids,
+            record_media.photo_references AS work_record_photo_references
        FROM work_tasks w
+       LEFT JOIN LATERAL (
+         SELECT
+           array_agg(DISTINCT COALESCE(
+             NULLIF(event.payload#>>'{work_record_transition,assignee_id}', ''),
+             event.caused_by_user_id
+           )) FILTER (WHERE COALESCE(
+             NULLIF(event.payload#>>'{work_record_transition,assignee_id}', ''),
+             event.caused_by_user_id
+           ) IS NOT NULL) AS actor_user_ids,
+           jsonb_agg(DISTINCT stored.value) AS photo_references
+         FROM work_task_events event
+         CROSS JOIN LATERAL jsonb_array_elements_text(
+           COALESCE(event.payload#>'{work_record_transition,completion_photo_urls}', '[]'::jsonb)
+           || COALESCE(event.payload#>'{patch,photo_urls}', '[]'::jsonb)
+           || COALESCE(event.payload#>'{patch,completion_photo_urls}', '[]'::jsonb)
+         ) AS stored(value)
+         WHERE event.task_id = ('work_task:' || w.id::text)
+           AND (
+             stored.value = ANY($1::text[])
+             OR (
+               CASE
+                 WHEN stored.value ~* '^r2://[a-z0-9][a-z0-9._-]{0,119}/mzapp/[^?#]+$'
+                   THEN regexp_replace(stored.value, '^r2://[^/]+/', '')
+                 WHEN stored.value ~* '^https://[^/?#@:]+\\.r2\\.dev/mzapp/[^?#]+$'
+                   THEN regexp_replace(stored.value, '^https://[^/]+/', '')
+                 ELSE ''
+               END
+             ) = ANY($2::text[])
+           )
+       ) record_media ON TRUE
       WHERE w.source_type = 'cleaning_offline_tasks'
-        AND EXISTS (
-          SELECT 1
-            FROM jsonb_array_elements_text(
-              COALESCE(w.photo_urls, '[]'::jsonb) || COALESCE(w.completion_photo_urls, '[]'::jsonb)
-            ) AS stored(value)
-           WHERE stored.value = ANY($1::text[])
-              OR (
-                CASE
-                  WHEN stored.value ~* '^r2://[a-z0-9][a-z0-9._-]{0,119}/mzapp/[^?#]+$'
-                    THEN regexp_replace(stored.value, '^r2://[^/]+/', '')
-                  WHEN stored.value ~* '^https://[^/?#@:]+\\.r2\\.dev/mzapp/[^?#]+$'
-                    THEN regexp_replace(stored.value, '^https://[^/]+/', '')
-                  ELSE ''
-                END
-              ) = ANY($2::text[])
+        AND (
+          record_media.photo_references IS NOT NULL
+          OR EXISTS (
+            SELECT 1
+              FROM jsonb_array_elements_text(
+                COALESCE(w.photo_urls, '[]'::jsonb) || COALESCE(w.completion_photo_urls, '[]'::jsonb)
+              ) AS stored(value)
+             WHERE stored.value = ANY($1::text[])
+                OR (
+                  CASE
+                    WHEN stored.value ~* '^r2://[a-z0-9][a-z0-9._-]{0,119}/mzapp/[^?#]+$'
+                      THEN regexp_replace(stored.value, '^r2://[^/]+/', '')
+                    WHEN stored.value ~* '^https://[^/?#@:]+\\.r2\\.dev/mzapp/[^?#]+$'
+                      THEN regexp_replace(stored.value, '^https://[^/]+/', '')
+                    ELSE ''
+                  END
+                ) = ANY($2::text[])
+          )
         )
       LIMIT 2`,
     [references, keys],
@@ -3593,6 +3758,7 @@ router.get(
           const offlineStoredReferences = new Set([
             ...normalizeStoredPhotoUrls(offlineRow.photo_urls),
             ...normalizeStoredPhotoUrls(offlineRow.completion_photo_urls),
+            ...normalizeStoredPhotoUrls(offlineRow.work_record_photo_references),
           ])
           const offlineStoredReference = offlineReferences.find((reference) => offlineStoredReferences.has(reference))
           if (!offlineStoredReference) {
@@ -3864,10 +4030,10 @@ router.get(
       // keeping notice/day-end/ambiguous collisions fail-closed.
       const feedbackMediaRows = hasGuestLuggageContext
         ? guestLuggageMediaRow
-          ? await findPropertyFeedbackMediaRows(pgPool, key)
+          ? await findPropertyFeedbackMediaRows(pgPool, key, workTaskId)
           : []
         : !hasTaskOrDayEndMedia || (matchingMediaRows.length > 0 && hasTaskContextMismatch)
-          ? await findPropertyFeedbackMediaRows(pgPool, key)
+          ? await findPropertyFeedbackMediaRows(pgPool, key, workTaskId)
           : []
       const hasGuestLuggageSourceConflict = matchingGuestLuggageRows.length > 0
         && (hasTaskOrDayEndMedia || feedbackMediaRows.length > 0)
@@ -3914,8 +4080,10 @@ router.get(
       )
       const canViewFeedbackMedia = feedbackMediaRow && canViewFeedbackTaskContext
         ? String(feedbackMediaRow.feedback_source_type || '') === 'external_maintenance_orders'
-          ? canViewExternalMaintenanceCompletionMedia(user, feedbackMediaRow, userId)
-          : canViewMaintenanceWorkTask || await canViewMzappPropertyFeedback(user, feedbackMediaRow, userId)
+          ? await canViewExternalMaintenanceCompletionMedia(pgPool, user, feedbackMediaRow, userId, workTaskId, key)
+          : feedbackMediaRow.historical_work_record_media === true
+            ? canViewMzappHistoricalWorkRecordMedia(user, feedbackMediaRow, userId, workTaskId)
+            : canViewMaintenanceWorkTask || await canViewMzappPropertyFeedback(user, feedbackMediaRow, userId)
         : false
       const canView = hasGuestLuggageContext
         ? !hasGuestLuggageSourceConflict
