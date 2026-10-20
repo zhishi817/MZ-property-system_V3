@@ -1,5 +1,77 @@
 # Change Release Ledger
 
+## CRL-20261020-006 — MZ053 deferred restock display-state correction
+
+- **Status:** exact staged candidate selected for local commit; not yet committed, pushed, merged or deployed
+- **Repository:** `root`
+- **Updated:** 2026-10-20 UTC
+- **Request:** 延期检查处于 `restock_pending` 时继续显示“待补品”，但不得同时显示“任务已结束”；本次不改变任务生命周期、执行权限、队列归属、统计或生产记录。
+- **Outcome:** Web 任务能力投影不再把 `restock_pending` 解释为整项任务已结束；状态标签仍为“待补品”，原有管理动作和延期检查开放逻辑保持不变。
+
+### Implementation
+
+- Previous behavior: `restock_pending` 同时产生“待补品”状态和“任务已结束”徽标，导致延期检查卡片显示自相矛盾。
+- New behavior: `restock_pending` 仍显示“待补品”，但 `is_task_ended=false` 且不生成 `task_ended` 徽标。
+- Key decisions: 仅修正显示语义；不改变 `inspection_mode`、延期投影、终态集合、管理动作、权限或数据状态。
+
+### Files / Areas
+
+- `backend/src/lib/webTaskCapabilities.ts` — modified: 从任务结束显示集合中移除 `restock_pending`。
+- `backend/scripts/tests/test_web_task_capabilities.ts` — modified: 覆盖延期检查待补品状态与结束徽标互斥。
+- `docs/change-release-ledger.md` — modified: 记录本地候选范围和验证边界。
+
+### Impact / Dependencies
+
+- API: response shape unchanged; only existing display-state values differ for `restock_pending`。
+- Database / migration: none; no production read or write is part of this change。
+- Config / environment: none。
+- Dependencies: none。
+- Related units: `root/CRL-20261019-003` remains the released work-record contract; this CRL does not alter it。
+
+### Validation
+
+- `NODE_PATH=<existing backend dependencies> node -r <ts-node/register/transpile-only> scripts/tests/test_web_task_capabilities.ts` — passed: `test_web_task_capabilities: ok`。
+- Backend TypeScript check `./node_modules/.bin/tsc -p . --noEmit` — passed。
+- Change-release ledger audit — passed: 3 changed files / 3 recorded files, coverage PASS。
+- Independent read-only review — GO: P0/P1/P2/P3 = 0; confirmed the change is presentation-only and does not affect writes, permissions, deferred queues or statistics。
+- Production/API/database verification — not run; excluded by scope。
+
+### Staged Commit Scope
+
+- **Repository:** root
+- **Status:** prepared on `codex/mz053-unified-display` from `origin/Dev@5bbeeb594026adca4fa71ad263be936e5eda8f2c`
+- **Untracked review:** none; two reviewed source/test files are staged and the release worktree contains no untracked path。
+- `backend/scripts/tests/test_web_task_capabilities.ts` — SHA-256: `de69584839a33556000255561fe3cc88dac6c90e67011f17b0175032b6009e24`
+- `backend/src/lib/webTaskCapabilities.ts` — SHA-256: `0749a1a25d84af3b696e7558ae9932d6a926308aef2cc9c4b1c609daa4d11fd2`
+
+### Release Attempts
+
+#### RA-20261020-007
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261020-006`
+- Selected CRL identities: `root/CRL-20261020-006`
+- Intended action: `commit`
+- Branch: `codex/mz053-unified-display`
+- Base: `origin/Dev@5bbeeb594026adca4fa71ad263be936e5eda8f2c`; fetched at `2026-10-20 14:02 UTC`
+- Candidate patch SHA-256: `5058422343c03fbf41ec97c8559bf54cefa7c6fe47b3446b6c8f4d88e324add5`
+- Commit SHA: `not committed`; the audit head will be emitted only after the local content commit exists
+- Dependencies: none; paired Mobile display presentation `mobile/CRL-20261020-004` is selected separately for local commit
+- Required validation: `PASS for local commit candidate`; evidence: focused Web task-capability regression, backend TypeScript, current ledger coverage and diff checks passed; production/API/database verification was not run
+- Shared-hunk review: `PASS`; evidence: both staged non-ledger hunks belong to this CRL, with no unselected or unexpected path
+- Generated-file review: `PASS`; evidence: no generated, dependency, migration, cache or build artifact is selected
+- Technical state: `verified`
+- User authorization: `selected-for-commit`; evidence: after Root and Mobile candidates and the no-push/no-OTA boundary were stated, the user replied `可以`
+- Independent review: `GO for this exact local commit candidate`; evidence: final read-only review found P0/P1/P2/P3 = 0 and confirmed presentation-only behavior, unchanged writes/permissions/deferred queues/statistics and no sensitive or release behavior
+- Action conclusion: `GO for local commit only`; blockers: push, PR, merge, deployment, database/API writes and production actions are not authorized
+
+### Risks / Release Notes
+
+- Risk: any consumer that treated the generic `task_ended` badge as a proxy for supply completion will now correctly continue to see `restock_pending` as open display state; underlying actions remain unchanged。
+- Rollback: restore `restock_pending` to the presentation-only completed-status list and remove the focused regression.
+- Sensitive-information review: no secrets, credentials, production payloads or customer data added。
+- Git state: local uncommitted candidate based on `origin/Dev@5bbeeb594026adca4fa71ad263be936e5eda8f2c`; not pushed, not deployed。
+
 ## CRL-20261020-005 — MZ053 cleaning arrangement query hot-path optimization
 
 - **Status:** exact staged candidate selected for local commit; ledger gate and independent commit review GO with P0/P1=0; not yet committed, pushed, merged or deployed
