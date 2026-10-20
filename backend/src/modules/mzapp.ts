@@ -7420,6 +7420,13 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
     }
     markWorkTasksStep('rescheduled_records')
 
+    const cleaningPoolStartedAt = Date.now()
+    let cleaningPoolLastStepAt = cleaningPoolStartedAt
+    const markCleaningPoolStep = (name: string) => {
+      const now = Date.now()
+      workTasksTimings.push(`cleaning_${name}:${now - cleaningPoolLastStepAt}`)
+      cleaningPoolLastStepAt = now
+    }
     {
       const isCleanerView = isCleanerRole(user) || isCleanerInspectorRole(user)
       const isInspectorView = isInspectorRole(user) || isCleanerInspectorRole(user)
@@ -7429,7 +7436,96 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
 
       if (wantCleaner || wantInspector || wantExecutor) {
         const sql = `
-          WITH candidate_tasks AS (
+          WITH scheduled_match_ids AS MATERIALIZED (
+            SELECT DISTINCT t.id::text AS id
+            FROM cleaning_tasks t
+            LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
+            LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+            WHERE (
+                ((COALESCE(t.task_date, t.date)::date) >= ($1::date) AND (COALESCE(t.task_date, t.date)::date) <= ($2::date))
+                OR (
+                  lower(COALESCE(t.inspection_mode, '')) = 'deferred'
+                  AND t.inspection_due_date IS NOT NULL
+                  AND (t.inspection_due_date::date) <= ($2::date)
+                  AND (
+                    (t.inspection_due_date::date) >= ($1::date)
+                    OR lower(COALESCE(t.status, '')) NOT IN ('inspected', 'done', 'completed', 'ready', 'keys_hung', 'cancelled', 'canceled')
+                  )
+                )
+                OR (
+                  lower(COALESCE(t.inspection_mode, '')) = 'deferred'
+                  AND t.inspection_due_date IS NOT NULL
+                  AND lower(COALESCE(t.status, '')) NOT IN ('inspected', 'done', 'completed', 'ready', 'keys_hung', 'cancelled', 'canceled')
+                  AND EXISTS (
+                    SELECT 1
+                    FROM cleaning_tasks incoming
+                    LEFT JOIN orders incoming_order ON incoming_order.id::text = incoming.order_id::text
+                    LEFT JOIN properties incoming_property_by_id ON incoming_property_by_id.id::text = incoming.property_id::text
+                    LEFT JOIN properties incoming_property_by_code ON upper(incoming_property_by_code.code) = upper(incoming.property_id::text)
+                    WHERE lower(COALESCE(incoming.task_type, incoming.type, '')) = 'checkin_clean'
+                      AND lower(COALESCE(incoming.inspection_scope, 'inspect_and_hang')) <> 'password_only'
+                      AND COALESCE(incoming.task_date, incoming.date)::date BETWEEN COALESCE(t.task_date, t.date)::date AND t.inspection_due_date::date
+                      AND COALESCE(incoming.task_date, incoming.date)::date BETWEEN $1::date AND $2::date
+                      AND COALESCE(incoming_property_by_id.id::text, incoming_property_by_code.id::text, incoming.property_id::text)
+                          = COALESCE(p_id.id::text, p_code.id::text, t.property_id::text)
+                      AND ${activeCleaningTaskWhereSql('incoming')}
+                      AND ${validCleaningTaskOrderWhereSql('incoming', 'incoming_order')}
+                  )
+                )
+              )
+          ),
+          scheduled_candidate_ids AS MATERIALIZED (
+            SELECT scheduled.id
+            FROM scheduled_match_ids scheduled
+            JOIN cleaning_tasks t ON t.id::text = scheduled.id
+            LEFT JOIN orders o ON o.id::text = t.order_id::text
+            WHERE ${activeCleaningTaskWhereSql('t')}
+              AND ${validCleaningTaskOrderWhereSql('t', 'o')}
+          ),
+          latest_cancellation_ids AS MATERIALIZED (
+            SELECT DISTINCT ON (event.task_id)
+              substring(event.task_id FROM length('cleaning_task:') + 1) AS id,
+              event.occurred_at
+            FROM work_task_events event
+            WHERE left(event.task_id, length('cleaning_task:')) = 'cleaning_task:'
+              AND (
+                event.event_type = 'TASK_REMOVED'
+                OR lower(COALESCE(event.payload#>>'{patch,status}', '')) IN ('cancelled', 'canceled')
+              )
+            ORDER BY event.task_id, event.occurred_at DESC, event.sequence_no DESC
+          ),
+          historical_candidate_ids AS MATERIALIZED (
+            SELECT DISTINCT audit.source_id::text AS id
+            FROM work_task_action_audits audit
+            WHERE audit.source_type = 'cleaning_tasks'
+              AND audit.performed_as_action IN ('complete_cleaning', 'submit_inspection')
+              AND ($4::boolean OR COALESCE(audit.performed_by_user_id, audit.actor_user_id)::text = $3::text)
+              AND (audit.performed_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN $1::date AND $2::date
+            UNION
+            SELECT DISTINCT media.task_id::text AS id
+            FROM cleaning_task_media media
+            WHERE media.type = 'lockbox_video'
+              AND COALESCE(TRIM(media.url), '') <> ''
+              AND ($4::boolean OR media.uploader_id::text = $3::text)
+              AND (media.captured_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN $1::date AND $2::date
+            UNION
+            SELECT latest_cancellation.id
+            FROM latest_cancellation_ids latest_cancellation
+            WHERE (latest_cancellation.occurred_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN $1::date AND $2::date
+          ),
+          cancelled_scheduled_candidate_ids AS MATERIALIZED (
+            SELECT scheduled.id
+            FROM scheduled_match_ids scheduled
+            JOIN latest_cancellation_ids latest_cancellation ON latest_cancellation.id = scheduled.id
+          ),
+          candidate_task_ids AS MATERIALIZED (
+            SELECT id FROM scheduled_candidate_ids
+            UNION
+            SELECT id FROM historical_candidate_ids
+            UNION
+            SELECT id FROM cancelled_scheduled_candidate_ids
+          ),
+          candidate_tasks AS (
             SELECT
               t.id,
               t.order_id,
@@ -7482,7 +7578,8 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               cancelled_record.occurred_at AS cancelled_record_at,
               cancelled_record.caused_by_user_id AS cancelled_record_actor_user_id,
               t.updated_at
-            FROM cleaning_tasks t
+            FROM candidate_task_ids candidate_id
+            JOIN cleaning_tasks t ON t.id::text = candidate_id.id
             LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
             LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
             LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
@@ -7533,49 +7630,6 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               ORDER BY event.occurred_at DESC, event.sequence_no DESC
               LIMIT 1
             ) cancelled_record ON TRUE
-            WHERE (
-                ((COALESCE(t.task_date, t.date)::date) >= ($1::date) AND (COALESCE(t.task_date, t.date)::date) <= ($2::date))
-                OR ((cleaner_record.performed_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN $1::date AND $2::date)
-                OR ((inspector_record.performed_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN $1::date AND $2::date)
-                OR ((executor_record.performed_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN $1::date AND $2::date)
-                OR ((cancelled_record.occurred_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN $1::date AND $2::date)
-                OR (
-                  lower(COALESCE(t.inspection_mode, '')) = 'deferred'
-                  AND t.inspection_due_date IS NOT NULL
-                  AND (t.inspection_due_date::date) <= ($2::date)
-                  AND (
-                    (t.inspection_due_date::date) >= ($1::date)
-                    OR lower(COALESCE(t.status, '')) NOT IN ('inspected', 'done', 'completed', 'ready', 'keys_hung', 'cancelled', 'canceled')
-                  )
-                )
-                OR (
-                  lower(COALESCE(t.inspection_mode, '')) = 'deferred'
-                  AND t.inspection_due_date IS NOT NULL
-                  AND lower(COALESCE(t.status, '')) NOT IN ('inspected', 'done', 'completed', 'ready', 'keys_hung', 'cancelled', 'canceled')
-                  AND EXISTS (
-                    SELECT 1
-                    FROM cleaning_tasks incoming
-                    LEFT JOIN orders incoming_order ON incoming_order.id::text = incoming.order_id::text
-                    LEFT JOIN properties incoming_property_by_id ON incoming_property_by_id.id::text = incoming.property_id::text
-                    LEFT JOIN properties incoming_property_by_code ON upper(incoming_property_by_code.code) = upper(incoming.property_id::text)
-                    WHERE lower(COALESCE(incoming.task_type, incoming.type, '')) = 'checkin_clean'
-                      AND lower(COALESCE(incoming.inspection_scope, 'inspect_and_hang')) <> 'password_only'
-                      AND COALESCE(incoming.task_date, incoming.date)::date BETWEEN COALESCE(t.task_date, t.date)::date AND t.inspection_due_date::date
-                      AND COALESCE(incoming.task_date, incoming.date)::date BETWEEN $1::date AND $2::date
-                      AND COALESCE(incoming_property_by_id.id::text, incoming_property_by_code.id::text, incoming.property_id::text)
-                          = COALESCE(p_id.id::text, p_code.id::text, t.property_id::text)
-                      AND ${activeCleaningTaskWhereSql('incoming')}
-                      AND ${validCleaningTaskOrderWhereSql('incoming', 'incoming_order')}
-                  )
-                )
-              )
-              AND (
-                (${activeCleaningTaskWhereSql('t')} AND ${validCleaningTaskOrderWhereSql('t', 'o')})
-                OR cleaner_record.performed_at IS NOT NULL
-                OR inspector_record.performed_at IS NOT NULL
-                OR executor_record.performed_at IS NOT NULL
-                OR cancelled_record.occurred_at IS NOT NULL
-              )
           ),
           latest_media_raw AS (
             SELECT DISTINCT ON (m.task_id::text, m.type)
@@ -7657,6 +7711,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           LEFT JOIN latest_media lm ON lm.task_id = t.id::text
           ORDER BY t.task_date ASC, t.property_code NULLS LAST, t.id`
         const r = await pgPool.query(sql, [dateFrom, dateTo, userId, allowAll])
+        markCleaningPoolStep('candidate_query')
         const cleaningRows = r?.rows || []
         const cleaningRowById = new Map<string, any>(cleaningRows.map((row: any) => [String(row.id || ''), row]))
         const arrangementPropertyIds = Array.from(new Set(
@@ -7719,6 +7774,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             [arrangementPropertyIds],
           )
           : { rows: [] }
+        markCleaningPoolStep('arrangements')
         const deferredInspectionArrangements = buildDeferredInspectionCheckinArrangements(arrangementRowsResult?.rows || [])
         const arrangementRowById = new Map<string, any>(
           (arrangementRowsResult?.rows || []).map((row: any) => [String(row.id || ''), row]),
@@ -7730,6 +7786,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             fallbackLink: row.property_access_guide_link,
           })),
         )
+        markCleaningPoolStep('guide_links')
         const taskIds = Array.from(new Set(cleaningRows.map((x: any) => String(x.id || '')).filter(Boolean)))
         const managerRecordEvidenceByTaskId = new Map<string, Array<{ roleKind: 'cleaner' | 'inspector' | 'executor'; performedAt: string; actorUserId: string }>>()
         if (managerCanSeeAllTaskPool && taskIds.length) {
@@ -7779,6 +7836,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             managerRecordEvidenceByTaskId.set(taskId, existing)
           }
         }
+        markCleaningPoolStep('record_evidence')
         const cleaningSubmissionReadyByTaskId = new Map<string, boolean>()
         if (taskIds.length) {
           const submissionRows = await pgPool.query(
@@ -7806,9 +7864,11 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             cleaningSubmissionReadyByTaskId.set(String(row.id || ''), row.cleaning_submission_ready === true)
           }
         }
+        markCleaningPoolStep('submission_ready')
         const manualParticipantsByCleaningRef = await loadManualWorkTaskParticipantsByRef(
           taskIds.map((sourceId) => ({ source_type: 'cleaning_tasks', source_id: sourceId })),
         )
+        markCleaningPoolStep('manual_participants')
         const manualActionsForTask = (taskId: any) => {
           const rows = manualParticipantsByCleaningRef.get(`cleaning_tasks:${String(taskId || '').trim()}`) || []
           const actions = new Set<string>()
@@ -7851,12 +7911,14 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             supersededByReplacementId.set(replacementId, list)
           }
         }
+        markCleaningPoolStep('superseded')
         const guestLuggageByTaskKey = new Map<string, any>()
         const guestLuggagePropertyIds = Array.from(
           new Set(cleaningRows.map((x: any) => String(x.property_id || '').trim()).filter(Boolean)),
         )
         if (guestLuggagePropertyIds.length) {
           await ensureGuestLuggageTables()
+          markCleaningPoolStep('guest_luggage_schema')
           const luggageRows = await pgPool.query(
             `SELECT id, property_id::text AS property_id, task_date::text AS task_date, note, photo_urls, version,
                     created_by, updated_by, created_at::text AS created_at, updated_at::text AS updated_at
@@ -7865,7 +7927,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                AND task_date::date BETWEEN $2::date AND $3::date`,
             [guestLuggagePropertyIds, dateFrom, dateTo],
           )
+          markCleaningPoolStep('guest_luggage_rows')
           const luggageDetails = await loadGuestLuggageNoticesForWorkTasks(luggageRows?.rows || [], userId)
+          markCleaningPoolStep('guest_luggage_details')
           for (const detail of luggageDetails) {
             if (!detail) continue
             guestLuggageByTaskKey.set(`${detail.property_id}|${detail.task_date}`, detail)
@@ -7896,6 +7960,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
              ORDER BY created_at ASC`,
             [taskIds],
           )
+          markCleaningPoolStep('restock_usage')
           for (const x of rr?.rows || []) {
             const k = String(x.task_id || '')
             const arr = restockByTaskId.get(k) || []
@@ -7915,6 +7980,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
              WHERE task_id::text = ANY($1::text[])`,
             [taskIds],
           )
+          markCleaningPoolStep('consumable_ids')
           for (const row of submittedConsumables?.rows || []) {
             const taskId = String(row.task_id || '').trim()
             const itemId = String(row.item_id || '').trim()
@@ -7948,6 +8014,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
              ORDER BY st.source_task_date DESC, m.created_at DESC`,
             [carryForwardRestockPropertyIds, dateTo, WORK_TASKS_CARRY_FORWARD_RESTOCK_LOOKBACK_DAYS],
           )
+          markCleaningPoolStep('carry_forward')
           const seenCarryForward = new Set<string>()
           for (const row of followupRows?.rows || []) {
             const propertyId = String(row.property_id || '').trim()
@@ -7989,6 +8056,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                AND type LIKE 'completion_%'`,
             [taskIds],
           )
+          markCleaningPoolStep('completion_media')
           for (const x of cr?.rows || []) {
             const tid = String(x.task_id || '').trim()
             if (!tid) continue
@@ -8010,6 +8078,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                ORDER BY source_id::text, performed_at DESC, created_at DESC`,
               [taskIds],
             )
+            markCleaningPoolStep('completion_exceptions')
             for (const row of er?.rows || []) {
               const taskId = String(row.task_id || '').trim()
               if (taskId && row.metadata?.completion_photo_exception) {
@@ -9221,7 +9290,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
       out.length = 0
       out.push(...merged)
     }
-    markWorkTasksStep('cleaning_pool')
+    markCleaningPoolStep('assembly')
+    workTasksTimings.push(`cleaning_pool:${Date.now() - cleaningPoolStartedAt}`)
+    workTasksLastStepAt = Date.now()
 
     const visibleOut = projectDailyTaskListItems(out, {
       includeManagerUnassignedOffline: managerCanSeeAllTaskPool,
