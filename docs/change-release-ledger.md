@@ -80,15 +80,15 @@
 - Branch: `codex/mz053-performance-retry-20261020`
 - Base: `origin/Dev@d9668fb3cf3e7d0802e44d8477a606396a7ed45c`; fetched at `2026-10-20T10:48:19Z`.
 - Candidate patch SHA-256: `bbeee0baccdc7871ff341a0367f1ee30b0c725ce143fa9af7c8c72d69469e3e6` excluding `docs/change-release-ledger.md`.
-- Commit SHA: not committed.
+- Commit SHA: `94bc2b78c8e358f9ff33b5f1e233d7117a5dbdd6`.
 - Dependencies: Root PR #403 merged baseline; related `mobile/CRL-20261020-003` remains an independent repository range.
 - Required validation: `PASS`; evidence: all selected focused regressions and backend TypeScript passed on the fresh current Dev base; the read-only dev PostgreSQL equivalence/timing evidence remains identical to the isolated candidate.
 - Shared-hunk review: `not applicable`; fresh worktree contains only this selected CRL.
 - Generated-file review: `PASS`; no generated file, build output, cache or dependency link is staged.
-- Technical state: `verified staged candidate`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: the user replied `可以` to the exact two-repository scope. Repository policy requires a separately recorded approval after the content commit SHA and branch are known before push.
 - Independent review: `GO for this exact local content commit`; evidence: the reviewer matched branch/base/index, candidate hash `bbeee0baccdc7871ff341a0367f1ee30b0c725ce143fa9af7c8c72d69469e3e6`, six staged files / 24 non-ledger hunks, clean unstaged/untracked scope, MZ049 compatibility, permission boundaries and generated/sensitive/production-write exclusions; P0=0 and code P1=0. The initially noted authorization-ledger P1 is resolved by recording `selected-for-commit` here.
-- Action conclusion: `GO` for this exact local content commit only. Push requires the committed exact range report, a new independent push review and explicit approval bound to repository, commit SHA and branch. PR, merge, deployment, migration, production API/database work and OTA remain unauthorized.
+- Action conclusion: `GO`; the exact reviewed content commit was created locally. Push requires the committed exact range report, a new independent push review and explicit approval bound to repository, commit SHA and branch. PR, merge, deployment, migration, production API/database work and OTA remain unauthorized.
 
 ### Risks / Release Notes
 
