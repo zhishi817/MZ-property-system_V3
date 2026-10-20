@@ -281,6 +281,85 @@ function isDoneLikeCleaningStatus(status: any) {
   ].includes(raw)
 }
 
+function isCleaningCompletionWorkRecordStatus(status: any) {
+  return [
+    'cleaned',
+    'restock_pending',
+    'restocked',
+    'keys_hung',
+    'inspected',
+    'ready',
+    'completed',
+    'done',
+    'cancelled',
+    'canceled',
+  ].includes(lower(status))
+}
+
+export function isCleaningAccessVideoWorkRecordStatus(status: any) {
+  return ['keys_hung', 'ready', 'completed', 'done'].includes(lower(status))
+}
+
+/**
+ * A submitted role record is immutable.  The check is actor-scoped so a real
+ * reassignment can still produce a new assignee record, while a direct API
+ * retry cannot replace the former actor's evidence.  The status fallback
+ * protects legacy rows that reached the access-video terminal state before
+ * action auditing was introduced.
+ */
+export async function assertCleaningTaskRoleRecordMutable(input: {
+  taskId: string
+  actionId: WorkTaskActionId
+  actorUserId?: string | null
+  performedByUserId?: string | null
+  statusBefore?: string | null
+}, executor: Queryable) {
+  const taskId = cleanText(input.taskId)
+  const actorUserId = cleanText(input.actorUserId) || cleanText(input.performedByUserId)
+  if (!taskId) return
+  if (input.actionId === 'upload_key_photo' && isDoneLikeCleaningStatus(input.statusBefore)) {
+    throw Object.assign(new Error('work_record_read_only'), {
+      code: 'work_record_read_only',
+      statusCode: 409,
+    })
+  }
+  if (input.actionId === 'complete_cleaning' && isCleaningCompletionWorkRecordStatus(input.statusBefore)) {
+    throw Object.assign(new Error('work_record_read_only'), {
+      code: 'work_record_read_only',
+      statusCode: 409,
+    })
+  }
+  if (input.actionId === 'upload_access_video' && isCleaningAccessVideoWorkRecordStatus(input.statusBefore)) {
+    throw Object.assign(new Error('work_record_read_only'), {
+      code: 'work_record_read_only',
+      statusCode: 409,
+    })
+  }
+
+  const terminalActions = input.actionId === 'upload_key_photo'
+    ? ['fill_supplies', 'complete_cleaning']
+    : ['fill_supplies', 'complete_cleaning', 'submit_inspection', 'upload_access_video'].includes(input.actionId)
+      ? [input.actionId]
+      : []
+  if (!actorUserId || !terminalActions.length) return
+  const previous = await executor.query(
+    `SELECT 1
+       FROM work_task_action_audits audit
+      WHERE audit.source_type = 'cleaning_tasks'
+        AND audit.source_id::text = $1::text
+        AND audit.performed_as_action = ANY($2::text[])
+        AND COALESCE(NULLIF(audit.actor_user_id::text, ''), audit.performed_by_user_id::text) = $3::text
+      LIMIT 1`,
+    [taskId, terminalActions, actorUserId],
+  )
+  if (previous?.rowCount) {
+    throw Object.assign(new Error('work_record_read_only'), {
+      code: 'work_record_read_only',
+      statusCode: 409,
+    })
+  }
+}
+
 export function keyPhotoUploadStatus(statusBefore: any, statusAfter: any, recoveredStatus?: any) {
   const before = lower(statusBefore)
   const recovered = lower(recoveredStatus)
@@ -476,6 +555,13 @@ export async function applyCleaningTaskActionTransition(input: CleaningTaskTrans
   if (lower(statusBefore) === 'cancelled' || lower(statusBefore) === 'canceled') {
     throw new Error('task_is_cancelled')
   }
+  await assertCleaningTaskRoleRecordMutable({
+    taskId,
+    actionId: input.actionId,
+    actorUserId: input.actorUserId,
+    performedByUserId: input.performedByUserId,
+    statusBefore,
+  }, executor)
   const taskType = lower(row.task_type)
   const requiresInspectionPhotos = lower(row.inspection_scope) !== 'password_only'
   const isCheckinInspectAndHang = taskType === 'checkin_clean' && requiresInspectionPhotos

@@ -34,6 +34,16 @@ function main() {
     daily_stats_group: null,
     daily_stats_key: null,
   }, 'MZ-021 maintenance completion aliases stay review-only and out of stats')
+  assert.deepEqual(projectDailyTaskStats({
+    ...maintenanceBase,
+    status: 'pending_review',
+    source_workflow_status: 'pending_review',
+    work_record_date: '2026-10-04',
+    completed_at: '2026-10-04T10:30:00.000Z',
+  }), {
+    daily_stats_group: null,
+    daily_stats_key: null,
+  }, 'a visible pending-review work record never re-enters the active task count')
   assert.deepEqual(projectDailyTaskStats({ ...maintenanceBase, status: 'assigned' }), {
     daily_stats_group: null,
     daily_stats_key: null,
@@ -77,6 +87,20 @@ function main() {
     daily_stats_group: 'offline',
     daily_stats_key: 'offline:2026-10-04:manual_work_task:offline-unassigned',
   }, 'Mobile manager statistics count the same unassigned ordinary offline task shown in the list')
+  assert.deepEqual(projectDailyTaskStats({
+    ...offlineBase,
+    status: 'assigned',
+    work_record_state: 'reassigned',
+    original_scheduled_date: '2026-10-03',
+    work_record_date: '2026-10-03',
+  }), {
+    daily_stats_group: null,
+    daily_stats_key: null,
+  }, 'an evidence-backed former-assignee record is read-only and not active')
+  assert.deepEqual(projectDailyTaskStats({ ...offlineBase, status: 'done' }), {
+    daily_stats_group: null,
+    daily_stats_key: null,
+  }, 'a legacy completed offline row without a trustworthy timestamp never re-enters active statistics')
   const deferredInspections = Array.from({ length: 6 }, (_, index) => ({
     id: `inspection-${index + 1}`,
     source_id: `inspection-${index + 1}`,
@@ -103,7 +127,7 @@ function main() {
     },
     { ...offlineBase, id: 'offline-review', source_id: 'offline-review', status: 'pending_review' },
     { ...offlineBase, id: 'offline-unassigned', source_id: 'offline-unassigned', assignee_id: null, status: 'assigned' },
-  ]), { turnover: 1, inspection: 6, offline: 2 })
+  ]), { turnover: 1, inspection: 6, offline: 1 })
 }
 
 main()

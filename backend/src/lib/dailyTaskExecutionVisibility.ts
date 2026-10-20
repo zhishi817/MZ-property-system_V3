@@ -13,6 +13,10 @@ export type DailyTaskExecutionCandidate = {
   assignee_id?: unknown
   cleaner_id?: unknown
   inspector_id?: unknown
+  work_record_state?: unknown
+  work_record_date?: unknown
+  original_scheduled_date?: unknown
+  completed_at?: unknown
 }
 
 export type DailyTaskExecutionVisibility = {
@@ -22,6 +26,62 @@ export type DailyTaskExecutionVisibility = {
 
 export type DailyTaskExecutionVisibilityOptions = {
   includeManagerUnassignedOffline?: boolean
+}
+
+export type DailyTaskWorkRecordState = 'active' | 'pending_review' | 'completed' | 'cancelled' | 'rescheduled' | 'reassigned'
+
+export type DailyTaskWorkRecordProjection = {
+  work_record_visible: boolean
+  work_record_state: DailyTaskWorkRecordState
+  work_record_date: string | null
+  original_scheduled_date: string | null
+  work_record_read_only: boolean
+  counts_as_active_task: boolean
+}
+
+export type DailyTaskRoleRecordEvidence = {
+  performedAt: string
+  actorUserId: string | null
+}
+
+export function mergeRoleRecordEvidenceWithCancellation(input: {
+  roleEvidence: DailyTaskRoleRecordEvidence[]
+  cancelled?: boolean
+  cancelledAt?: unknown
+  currentAssigneeId?: unknown
+}): DailyTaskRoleRecordEvidence[] {
+  const combined = [...input.roleEvidence]
+  const cancelledAt = String(input.cancelledAt ?? '').trim()
+  if (input.cancelled === true && cancelledAt) {
+    combined.push({
+      performedAt: cancelledAt,
+      actorUserId: String(input.currentAssigneeId ?? '').trim() || null,
+    })
+  }
+  const seen = new Set<string>()
+  return combined.filter((evidence) => {
+    const performedAt = String(evidence?.performedAt ?? '').trim()
+    const actorUserId = String(evidence?.actorUserId ?? '').trim() || null
+    if (!performedAt) return false
+    const key = `${performedAt}|${actorUserId || ''}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    evidence.performedAt = performedAt
+    evidence.actorUserId = actorUserId
+    return true
+  })
+}
+
+export function evidenceBackedWorkRecordState(input: {
+  cancelled?: boolean
+  currentAssigneeId?: unknown
+  evidenceActorUserId?: unknown
+}): Extract<DailyTaskWorkRecordState, 'completed' | 'cancelled' | 'reassigned'> {
+  if (input.cancelled === true) return 'cancelled'
+  const currentAssigneeId = String(input.currentAssigneeId ?? '').trim()
+  const evidenceActorUserId = String(input.evidenceActorUserId ?? '').trim()
+  if (currentAssigneeId && evidenceActorUserId && currentAssigneeId !== evidenceActorUserId) return 'reassigned'
+  return 'completed'
 }
 
 const REVIEW_ONLY_STATUSES = new Set(['pending_review', 'review_pending', 'awaiting_review'])
@@ -38,6 +98,7 @@ const REVIEW_COMPLETION_ALIAS_SOURCES = new Set([
   'property_deep_cleaning',
 ])
 const MAINTENANCE_REVIEW_ALIASES = new Set(['done', 'completed', 'ready'])
+const COMPLETED_STATUSES = new Set(['done', 'completed', 'replaced', 'inspected', 'cleaned', 'restocked', 'keys_hung'])
 const TURNOVER_TYPES = new Set(['turnover', 'checkout', 'checkin', 'checkout_clean', 'checkin_clean'])
 
 function normalized(value: unknown) {
@@ -53,6 +114,11 @@ function scheduledDate(task: DailyTaskExecutionCandidate) {
     ? task.scheduled_date
     : (task.task_date || task.date)
   return normalized(value).slice(0, 10)
+}
+
+function dateOnly(value: unknown) {
+  const match = /^(\d{4}-\d{2}-\d{2})/.exec(String(value ?? '').trim())
+  return match?.[1] || null
 }
 
 function sourceWorkflowStatus(task: DailyTaskExecutionCandidate) {
@@ -110,6 +176,42 @@ export function dailyTaskExecutionVisibility(
   return { visible: true, reason: 'visible' }
 }
 
+export function dailyTaskWorkRecordProjection(task: DailyTaskExecutionCandidate): DailyTaskWorkRecordProjection {
+  const source = normalized(task.source_type)
+  const explicitState = normalized(task.work_record_state)
+  const workflowStatus = sourceWorkflowStatus(task)
+  const explicitRecordDate = dateOnly(task.work_record_date)
+  const completedDate = dateOnly(task.completed_at)
+  const hasCompletionEvidence = Boolean(explicitRecordDate || completedDate)
+  const explicitRecordState = ['pending_review', 'completed', 'cancelled', 'rescheduled', 'reassigned'].includes(explicitState)
+    ? explicitState as DailyTaskWorkRecordState
+    : null
+  const state: DailyTaskWorkRecordState = explicitRecordState
+    ? explicitRecordState
+    : REVIEW_ONLY_STATUSES.has(workflowStatus)
+      || (REVIEW_COMPLETION_ALIAS_SOURCES.has(source) && MAINTENANCE_REVIEW_ALIASES.has(workflowStatus))
+      ? 'pending_review'
+      : workflowStatus === 'cancelled' || workflowStatus === 'canceled'
+        ? 'cancelled'
+        : workflowStatus === 'closed'
+          || COMPLETED_STATUSES.has(workflowStatus)
+          || (workflowStatus === 'ready' && hasCompletionEvidence)
+          ? 'completed'
+          : 'active'
+  const originalScheduledDate = dateOnly(task.original_scheduled_date) || scheduledDate(task) || null
+  const recordDate = state === 'active'
+    ? originalScheduledDate
+    : explicitRecordDate || (state === 'cancelled' || state === 'rescheduled' ? originalScheduledDate : completedDate)
+  return {
+    work_record_visible: state !== 'active' && Boolean(recordDate),
+    work_record_state: state,
+    work_record_date: recordDate,
+    original_scheduled_date: originalScheduledDate,
+    work_record_read_only: state !== 'active',
+    counts_as_active_task: state === 'active',
+  }
+}
+
 export function projectDailyTaskExecution<T extends DailyTaskExecutionCandidate>(task: T): T & { execution_list_visible: boolean } {
   return {
     ...task,
@@ -143,4 +245,27 @@ export function projectVisibleDailyTasks<T extends DailyTaskExecutionCandidate>(
       execution_list_visible: dailyTaskExecutionVisibility(task, options).visible,
     }))
     .filter((task) => task.execution_list_visible)
+}
+
+/**
+ * Task pages contain two server-authoritative surfaces: actionable execution
+ * items and immutable work records.  A record is never made actionable merely
+ * because it remains visible after review/completion/cancellation.
+ */
+export function projectDailyTaskListItems<T extends DailyTaskExecutionCandidate>(
+  tasks: T[],
+  options: DailyTaskExecutionVisibilityOptions = {},
+) {
+  return tasks
+    .map((task) => {
+      const record = dailyTaskWorkRecordProjection(task)
+      return {
+        ...task,
+        ...record,
+        execution_list_visible: record.work_record_visible
+          ? false
+          : dailyTaskExecutionVisibility(task, options).visible,
+      }
+    })
+    .filter((task) => task.execution_list_visible || task.work_record_visible)
 }
