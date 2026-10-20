@@ -1,5 +1,97 @@
 # Change Release Ledger
 
+## CRL-20261020-006 — MZ053 deferred restock display-state correction
+
+- **Status:** exact staged candidate selected for local commit; not yet committed, pushed, merged or deployed
+- **Repository:** `root`
+- **Updated:** 2026-10-20 UTC
+- **Request:** 延期检查处于 `restock_pending` 时继续显示“待补品”，但不得同时显示“任务已结束”；本次不改变任务生命周期、执行权限、队列归属、统计或生产记录。
+- **Outcome:** Web 任务能力投影不再把 `restock_pending` 解释为整项任务已结束；状态标签仍为“待补品”，原有管理动作和延期检查开放逻辑保持不变。
+
+### Implementation
+
+- Previous behavior: `restock_pending` 同时产生“待补品”状态和“任务已结束”徽标，导致延期检查卡片显示自相矛盾。
+- New behavior: `restock_pending` 仍显示“待补品”，但 `is_task_ended=false` 且不生成 `task_ended` 徽标。
+- Key decisions: 仅修正显示语义；不改变 `inspection_mode`、延期投影、终态集合、管理动作、权限或数据状态。
+
+### Files / Areas
+
+- `backend/src/lib/webTaskCapabilities.ts` — modified: 从任务结束显示集合中移除 `restock_pending`。
+- `backend/scripts/tests/test_web_task_capabilities.ts` — modified: 覆盖延期检查待补品状态与结束徽标互斥。
+- `docs/change-release-ledger.md` — modified: 记录本地候选范围和验证边界。
+
+### Impact / Dependencies
+
+- API: response shape unchanged; only existing display-state values differ for `restock_pending`。
+- Database / migration: none; no production read or write is part of this change。
+- Config / environment: none。
+- Dependencies: none。
+- Related units: `root/CRL-20261019-003` remains the released work-record contract; this CRL does not alter it。
+
+### Validation
+
+- `NODE_PATH=<existing backend dependencies> node -r <ts-node/register/transpile-only> scripts/tests/test_web_task_capabilities.ts` — passed: `test_web_task_capabilities: ok`。
+- Backend TypeScript check `./node_modules/.bin/tsc -p . --noEmit` — passed。
+- Change-release ledger audit — passed: 3 changed files / 3 recorded files, coverage PASS。
+- Independent read-only review — GO: P0/P1/P2/P3 = 0; confirmed the change is presentation-only and does not affect writes, permissions, deferred queues or statistics。
+- Production/API/database verification — not run; excluded by scope。
+
+### Staged Commit Scope
+
+- **Repository:** root
+- **Status:** prepared on `codex/mz053-unified-display` from `origin/Dev@5bbeeb594026adca4fa71ad263be936e5eda8f2c`
+- **Untracked review:** none; two reviewed source/test files are staged and the release worktree contains no untracked path。
+- `backend/scripts/tests/test_web_task_capabilities.ts` — SHA-256: `de69584839a33556000255561fe3cc88dac6c90e67011f17b0175032b6009e24`
+- `backend/src/lib/webTaskCapabilities.ts` — SHA-256: `0749a1a25d84af3b696e7558ae9932d6a926308aef2cc9c4b1c609daa4d11fd2`
+
+### Release Attempts
+
+#### RA-20261020-007
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261020-006`
+- Selected CRL identities: `root/CRL-20261020-006`
+- Intended action: `commit`
+- Branch: `codex/mz053-unified-display`
+- Base: `origin/Dev@5bbeeb594026adca4fa71ad263be936e5eda8f2c`; fetched at `2026-10-20 14:02 UTC`
+- Candidate patch SHA-256: `5058422343c03fbf41ec97c8559bf54cefa7c6fe47b3446b6c8f4d88e324add5`
+- Commit SHA: `acb4145720a4f6cb7cc1c08eb453ee90cf9637e4`; exact reviewed MZ053 content commit; the final audit head is the later ledger-only freeze receipt commit
+- Dependencies: none
+- Required validation: `PASS for local content commit / release NOT VERIFIED`; evidence: focused Web task-capability regression, backend TypeScript, current ledger coverage and diff checks passed; post-commit `origin/Dev...acb4145720a4f6cb7cc1c08eb453ee90cf9637e4` non-ledger fingerprint exactly matches `5058422343c03fbf41ec97c8559bf54cefa7c6fe47b3446b6c8f4d88e324add5`; production/API/database verification was not run
+- Shared-hunk review: `PASS`; evidence: both staged non-ledger hunks belong to this CRL, with no unselected or unexpected path
+- Generated-file review: `PASS`; evidence: no generated, dependency, migration, cache or build artifact is selected
+- Technical state: `committed`; exact content commit `acb4145720a4f6cb7cc1c08eb453ee90cf9637e4`, followed only by this ledger-only freeze receipt
+- User authorization: `selected-for-commit`; evidence: after Root and Mobile candidates and the no-push/no-OTA boundary were stated, the user replied `可以`
+- Independent review: `GO for this exact local commit candidate`; evidence: final read-only review found P0/P1/P2/P3 = 0 and confirmed presentation-only behavior, unchanged writes/permissions/deferred queues/statistics and no sensitive or release behavior
+- Action conclusion: `LOCAL CONTENT COMMIT COMPLETED / push NOT AUTHORIZED`; this ledger-only freeze receipt may be committed under the same bookkeeping authorization, but push, PR, merge, deployment, database/API writes and production actions require separate approval and evidence
+
+#### RA-20261020-008
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261020-006`
+- Selected CRL identities: `root/CRL-20261020-006`
+- Intended action: `push`
+- Branch: `codex/mz053-unified-display`
+- Base: `origin/Dev@5bbeeb594026adca4fa71ad263be936e5eda8f2c`; freshly fetched at `2026-10-20T14:24:55Z`
+- Candidate patch SHA-256: `5058422343c03fbf41ec97c8559bf54cefa7c6fe47b3446b6c8f4d88e324add5`, excluding `docs/change-release-ledger.md`
+- Commit SHA: `acb4145720a4f6cb7cc1c08eb453ee90cf9637e4`; exact reviewed content commit. Source audit HEAD before this push-attempt receipt is `9a742893c68ec504b9bb80f0fc44d1c0fdf0258b`; the final audit HEAD will be this later ledger-only receipt commit.
+- Dependencies: none
+- Required validation: `PASS for committed content`; evidence: focused Web task-capability regression, backend TypeScript, ledger coverage, diff checks, exact non-ledger fingerprint and the prior final content review passed. Production/API/database verification was not run and is not required for a feature-branch push.
+- Shared-hunk review: `PASS`; evidence: the exact range contains only the declared Root CRL files and two selected non-ledger hunks plus ledger receipts.
+- Generated-file review: `PASS`; evidence: no generated output, dependency, migration, cache, environment file or build artifact is in the range.
+- Technical state: `committed`; push receipt preparation is in progress and the remote feature branch is absent.
+- User authorization: `not yet approved for the final receipt HEAD`; evidence: the user said `推送`, which selects this already-completed Root/Mobile pair for push preparation, but the exact resulting receipt HEAD had not yet been shown. Repository policy requires a final confirmation bound to repository, branch and the immutable receipt HEAD.
+- Independent review: `GO for the exact local content commit`; push-only review of the frozen final receipt HEAD remains required immediately before push.
+- Remote preflight: read-only fetch confirmed `origin/Dev@5bbeeb594026adca4fa71ad263be936e5eda8f2c` unchanged at `2026-10-20T14:24:55Z`; `git ls-remote --heads origin codex/mz053-unified-display` returned no branch.
+- Action conclusion: `NOT VERIFIED for push`; blockers: commit this ledger-only push-attempt receipt, run the exact final range report and push-only read-only review, then obtain explicit user confirmation of `zhishi817/MZ-property-system_V3`, branch `codex/mz053-unified-display` and the resulting final receipt HEAD. No ledger mutation is required after that confirmation.
+
+### Risks / Release Notes
+
+- Risk: any consumer that treated the generic `task_ended` badge as a proxy for supply completion will now correctly continue to see `restock_pending` as open display state; underlying actions remain unchanged。
+- Rollback: restore `restock_pending` to the presentation-only completed-status list and remove the focused regression.
+- Sensitive-information review: no secrets, credentials, production payloads or customer data added。
+- Git state: local uncommitted candidate based on `origin/Dev@5bbeeb594026adca4fa71ad263be936e5eda8f2c`; not pushed, not deployed。
+
 ## CRL-20261020-005 — MZ053 cleaning arrangement query hot-path optimization
 
 - **Status:** exact staged candidate selected for local commit; ledger gate and independent commit review GO with P0/P1=0; not yet committed, pushed, merged or deployed
