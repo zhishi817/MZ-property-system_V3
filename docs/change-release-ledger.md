@@ -1,5 +1,103 @@
 # Change Release Ledger
 
+## CRL-20261020-004 — MZ053 cleaning-pool bounded candidate scan and timing
+
+- **Status:** selected Root release candidate on freshly fetched `origin/Dev@d9668fb3cf3e7d0802e44d8477a606396a7ed45c`; exact staging and current-base validation passed; exact staged independent review remains pending; not committed, pushed, merged or deployed
+- **Repository:** `root`
+- **Updated:** 2026-10-20 UTC
+- **Request:** stop the MZ053 cleaning work-record projection from making the mobile task read exceed its 15-second client budget, while preserving MZ049 deferred/check-in semantics, actual Melbourne completion-date work records, existing role visibility and the current week-range UI contract.
+- **Outcome:** the cleaning query materializes a bounded union of scheduled/deferred candidate IDs and immutable historical-evidence candidate IDs before running per-task history LATERAL lookups. Latest-cancellation semantics, exact `cleaning_task:` namespace matching and the legacy scheduled/deferred cancellation bypass are preserved. Fine-grained `cleaning_*` timings retain the existing aggregate `cleaning_pool` timing.
+
+### Implementation
+
+- Previous behavior: four per-task LATERAL evidence lookups ran across the broad cleaning-task pool before date/evidence filtering and could exceed the mobile 15-second request budget.
+- New behavior: scheduled, historical-evidence and cancelled-scheduled ID sets are materialized and deduplicated before the four history lookups; downstream permission, participant, media and response assembly remain unchanged.
+- Key decisions: preserve MZ049 deferred/check-in predicates, MZ053 actual Melbourne evidence dates, existing role authority, cancellation parity and the current UI week range; add no schema, index, migration or payload change.
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — modified: bounded cleaning candidate query and step timings.
+- `backend/scripts/tests/test_work_tasks_cleaning_candidate_scope.ts` — added: SQL-shape and preserved-boundary contract.
+- `backend/scripts/tests/test_work_tasks_cleaning_candidate_equivalence.ts` — added: old/new inclusion algebra boundaries and deterministic fuzz coverage.
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — modified: equivalent historical-candidate source assertion.
+- `backend/package.json` — modified: focused test commands.
+- `docs/change-release-ledger.md` — modified: this release record and exact attempt evidence.
+
+### Impact / Dependencies
+
+- API: response schema and authorization contract unchanged.
+- Database / migration: none; read path only.
+- Config / environment: none.
+- Dependencies: requires the MZ053 work-record baseline already merged in Root PR #403; paired follow-up is `mobile/CRL-20261020-003` but the two repositories remain independently releasable and merge/deployment/OTA remain separate.
+- Rollback: revert this CRL; the previous broad scan returns and no data rollback is needed.
+
+### Validation
+
+- Prior isolated candidate: focused scope/equivalence/daily-visibility/deferred/merge/guest-luggage/action/media tests, backend TypeScript and diff checks passed; equivalence covered 16 named boundaries plus 20,000 deterministic combinations.
+- Enrolled MZ-Dev-Preview read-only PostgreSQL, `2026-10-20..2026-10-26`: ordinary EXPLAIN estimated manager cost `1342233.76 -> 1428.85` and self cost `1345980.44 -> 1431.27`; actual pure SELECT returned identical 4-row payloads for manager and self with zero missing/new/changed rows. Small dev data does not prove production latency or the 15-second incident is closed.
+- Independent source review: P0=0/P1=0 after cancellation-bypass and exact-namespace repairs; fresh current-base staged review remains required before commit.
+- Fresh-current-base regression: `test:work-tasks-cleaning-candidate-scope`, `test:work-tasks-cleaning-candidate-equivalence`, `test:daily-task-execution-visibility`, `test:deferred-inspection-checkin-replacement`, `test:cleaning-inspection-merge`, `test:guest-luggage-work-tasks-batch`, `test:work-task-actions`, `test:mzapp-media-visibility` and backend TypeScript all passed. Equivalence covered 16 named boundaries plus 20,000 deterministic combinations; the structural model reduced about 50,000 old per-task historical lookups to 350 candidate lookups and about 200,000 to 1,400.
+- Candidate hygiene: exact pre-commit audit passed for six staged files / 24 non-ledger hunks with no untracked, unselected, unexpected or missing hunk; ordinary ledger coverage, `git diff --cached --check` and sensitive-pattern review passed. Exact staged independent review remains pending.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** `prepared`.
+- **Untracked review:** `none`; the two added test files are staged and no unstaged/untracked path remains.
+- `backend/package.json` — SHA-256: `16d05b59245d7e4b7b19d48c2a40417f4c9fc76ddc655e077c006b79fc829961`
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — SHA-256: `c318fb214865d64bdfbf046076619daa44b2a8bd7877e9843c8402e521b95fc6`
+- `backend/scripts/tests/test_work_tasks_cleaning_candidate_equivalence.ts` — SHA-256: `e7f9f9891bfd0fccdb4e5a9a6bd1549e347109f59ac3eef9e6bf81eb38d29d12`
+- `backend/scripts/tests/test_work_tasks_cleaning_candidate_scope.ts` — SHA-256: `f13233a5fd8c0b3becd5401aa633e938c3eccf1bf240bb869c306c77cc98b2d4`
+- `backend/src/modules/mzapp.ts` — SHA-256: `01fe5e14628a7f5bf2df8951227f535e733e6ce7f1518bced2326ce90909e44b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `0dbf1e8bb4260a269c499f59b7378178f27774e42dbe403156226fcf2ba2e8a2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `23a71406b4265f0fb1473fe86428a16735c16ad8659e4a33e1c4669607b563cf`
+- `backend/src/modules/mzapp.ts` — SHA-256: `39e009373c24319c87dd4517d34e08e07bdd47604c48f7416ee269ce7d86c651`
+- `backend/src/modules/mzapp.ts` — SHA-256: `3cad732f56ee9acedd0b073904cfef90b4333ebb5b1acb4ad559cd2db3369569`
+- `backend/src/modules/mzapp.ts` — SHA-256: `6cc8b85420f514241edbfe5a26f630cb40089fab7bb391224ac422227c7cf725`
+- `backend/src/modules/mzapp.ts` — SHA-256: `774df0e60809be5520980a2ff50332ab4b84dcfea5b377fc3ed3ae91fb2a0be0`
+- `backend/src/modules/mzapp.ts` — SHA-256: `80c25953bd93d7443c3ff0e083b340b3d2abbdbf8128a984ed20dad0f669d426`
+- `backend/src/modules/mzapp.ts` — SHA-256: `827e9d68cb7a34b7ee0d89775c81d0f87f2ab46caf654b6e41d4b83175645ae8`
+- `backend/src/modules/mzapp.ts` — SHA-256: `9c3087c827cfeeb85963883248b4db17ba3dc59ec9869dc1d6c532788c8e724b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d49fcec2c4d0ecf8f63738a8b624ed0439f7ca95936657f1682ac3e99215a7b5`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d61c4ef93942f6fd197caa41c2db0a3b5f535e64a9e3b869ba545febbac86dbd`
+- `backend/src/modules/mzapp.ts` — SHA-256: `da18b8ce972a3e518aa1ee85d0fa38a898913ca070c622c64ee631d4b097b279`
+- `backend/src/modules/mzapp.ts` — SHA-256: `df4e12b016bb4eb6faf333e0396f03b3e2279e42c99886bcbb2e44c944429265`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e5d0129f8a79da891bc2dfd7a261aa6c5c27bb7081a00eca8f0989785ecc94cf`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e9f856fd8db4ce746e53d44c07b221896a2cdae9573e581d8390e2f5f74cc9ef`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ee158f792faa3d4e8063feac5e25c9b000e862eede46fa8de42bfad7645d1528`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f5927cfe1218119be594f64794276a5d315ef705b5baefb081d43a1fb7779661`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f854014fac46f98589e98d8fe38d3e3a2820417a0941ab75f7f2f8f7c55bfb43`
+- `backend/src/modules/mzapp.ts` — SHA-256: `feb0349110d47c4a443bd974490e1daf500b6aa0833eb25d241f9b2312ceb10d`
+
+### Release Attempts
+
+#### RA-20261020-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261020-004`
+- Selected CRL identities: `root/CRL-20261020-004`
+- Intended action: `commit`, followed by a separately gated normal non-force `push` of the unchanged exact range.
+- Branch: `codex/mz053-performance-retry-20261020`
+- Base: `origin/Dev@d9668fb3cf3e7d0802e44d8477a606396a7ed45c`; fetched at `2026-10-20T10:48:19Z`.
+- Candidate patch SHA-256: `bbeee0baccdc7871ff341a0367f1ee30b0c725ce143fa9af7c8c72d69469e3e6` excluding `docs/change-release-ledger.md`.
+- Commit SHA: not committed.
+- Dependencies: Root PR #403 merged baseline; related `mobile/CRL-20261020-003` remains an independent repository range.
+- Required validation: `PASS`; evidence: all selected focused regressions and backend TypeScript passed on the fresh current Dev base; the read-only dev PostgreSQL equivalence/timing evidence remains identical to the isolated candidate.
+- Shared-hunk review: `not applicable`; fresh worktree contains only this selected CRL.
+- Generated-file review: `PASS`; no generated file, build output, cache or dependency link is staged.
+- Technical state: `verified staged candidate`
+- User authorization: `selected-for-commit`; evidence: the user replied `可以` to the exact two-repository scope. Repository policy requires a separately recorded approval after the content commit SHA and branch are known before push.
+- Independent review: `GO for this exact local content commit`; evidence: the reviewer matched branch/base/index, candidate hash `bbeee0baccdc7871ff341a0367f1ee30b0c725ce143fa9af7c8c72d69469e3e6`, six staged files / 24 non-ledger hunks, clean unstaged/untracked scope, MZ049 compatibility, permission boundaries and generated/sensitive/production-write exclusions; P0=0 and code P1=0. The initially noted authorization-ledger P1 is resolved by recording `selected-for-commit` here.
+- Action conclusion: `GO` for this exact local content commit only. Push requires the committed exact range report, a new independent push review and explicit approval bound to repository, commit SHA and branch. PR, merge, deployment, migration, production API/database work and OTA remain unauthorized.
+
+### Risks / Release Notes
+
+- Runtime performance remains data-distribution-sensitive; dev data is too small to prove production latency.
+- Same-day read-only Render review recorded Preview bound to `Dev`, Production bound to `main`, Auto-Deploy on commit and PR Previews off; `codex/*` feature push is not a deployment. Repository Actions also restrict push triggers to `Dev/main`.
+- Sensitive-information review: no `.env`, credentials, database URLs, task rows, logs, dumps, generated bundles or local caches are included.
+- Git state: uncommitted fresh release worktree; not pushed; no PR; not merged; not deployed; production/device verification not run.
+
+
 ## CRL-20261019-003 — MZ053 任务执行队列与工作记录分离（root）
 
 - **Status:** exact staged candidate selected and independently reviewed GO for local commit on freshly fetched `origin/Dev@56b56d47f7e5fc675acc0639853c8cbafaa195ea`; all P1 findings are fixed and permitted validation passed; one isolated loopback regression remains unexecuted after approval rejection; not yet committed, pushed, merged, deployed, migrated, or run against production
