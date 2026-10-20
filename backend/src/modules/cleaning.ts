@@ -811,12 +811,13 @@ router.patch('/offline-tasks/:id', requireCleaningManualCreateAccess, async (req
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const patch = parsed.data
   const hasAssigneePatch = Object.prototype.hasOwnProperty.call(req.body || {}, 'assignee_id')
-  if (hasAssigneePatch && patch.assignee_id === null) {
-    return res.status(400).json({ code: 'OFFLINE_TASK_ASSIGNEE_REQUIRED', message: '暂不支持清空执行人' })
-  }
-  if (hasAssigneePatch && !(await isValidAnyStaffId(patch.assignee_id))) {
+  const normalizedAssigneeId = hasAssigneePatch
+    ? (String(patch.assignee_id || '').trim() || null)
+    : undefined
+  if (normalizedAssigneeId && !(await isValidAnyStaffId(normalizedAssigneeId))) {
     return res.status(400).json({ message: '无效的执行人' })
   }
+  if (hasAssigneePatch) (patch as any).assignee_id = normalizedAssigneeId
   const contentFieldAllowlist = new Set(['date', 'task_type', 'title', 'content', 'kind', 'property_id', 'assignee_id', 'photo_urls'])
   const assignmentRequested = hasAssigneePatch
   try {
@@ -1817,22 +1818,27 @@ router.delete('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRu
   const actorId = actor?.sub ? String(actor.sub) : undefined
   try {
     if (hasPg && pgPool) {
-      const r0 = await pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1', [String(id)])
-      const before = r0?.rows?.[0] || null
-      if (!before) return res.status(404).json({ message: 'task not found' })
-      const r1 = await pgPool.query(`UPDATE cleaning_tasks SET status='cancelled', execution_state='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [String(id)])
-      const after = r1?.rows?.[0] || null
-      await emitWorkTaskEvent({
-        taskId: `cleaning_task:${String(id)}`,
-        sourceType: 'cleaning_tasks',
-        sourceRefIds: [String(id)],
-        eventType: 'TASK_REMOVED',
-        changeScope: 'membership',
-        changedFields: ['status', 'execution_state'],
-        patch: { status: 'cancelled', execution_state: 'cancelled' },
-        causedByUserId: actorId || null,
-        visibilityHints: buildCleaningTaskVisibilityHints(after || before),
+      const deleted = await pgRunInTransaction(async (client) => {
+        const r0 = await client.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1 FOR UPDATE', [String(id)])
+        const before = r0?.rows?.[0] || null
+        if (!before) return null
+        const r1 = await client.query(`UPDATE cleaning_tasks SET status='cancelled', execution_state='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [String(id)])
+        const after = r1?.rows?.[0] || null
+        await emitWorkTaskEvent({
+          taskId: `cleaning_task:${String(id)}`,
+          sourceType: 'cleaning_tasks',
+          sourceRefIds: [String(id)],
+          eventType: 'TASK_REMOVED',
+          changeScope: 'membership',
+          changedFields: ['status', 'execution_state', 'lifecycle_state'],
+          patch: { status: 'cancelled', execution_state: 'cancelled', lifecycle_state: 'deleted' },
+          causedByUserId: actorId || null,
+          visibilityHints: buildCleaningTaskVisibilityHints(after || before),
+        }, client)
+        return { before, after }
       })
+      if (!deleted) return res.status(404).json({ message: 'task not found' })
+      const { before, after } = deleted
       await reconcileDeferredInspectionCheckinReplacement({
         taskIds: [String(id)],
         actorUserId: actorId || null,
@@ -1910,8 +1916,8 @@ router.post('/tasks/bulk-delete', requirePerm('cleaning.task.assign'), requireR5
             sourceRefIds: [String(id)],
             eventType: 'TASK_REMOVED',
             changeScope: 'membership',
-            changedFields: ['status', 'execution_state'],
-            patch: { status: 'cancelled', execution_state: 'cancelled' },
+            changedFields: ['status', 'execution_state', 'lifecycle_state'],
+            patch: { status: 'cancelled', execution_state: 'cancelled', lifecycle_state: 'deleted' },
             causedByUserId: actorId || null,
             visibilityHints: buildCleaningTaskVisibilityHints(after || before),
           }, client)

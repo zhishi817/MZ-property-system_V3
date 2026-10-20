@@ -17,6 +17,7 @@ import {
   resolveGuestLuggageRecipientIds,
 } from '../services/guestLuggage'
 import {
+  canonicalKeyHandoverSourceIds,
   cleaningTaskExecutionSemantics,
   deferredProjectionDate,
   effectiveInspectionMode,
@@ -27,9 +28,11 @@ import {
   isKeyOrPasswordActionSemantics,
   keyPhotoConfirmsCurrentTaskProgress,
   lockboxVideoConfirmsCurrentTaskState,
+  mergeCleaningKeyHandoverProjections,
   mergeInspectionPlan,
   mobileInspectionProjectionDate,
   normalizeTurnoverInspectionScope,
+  projectCleaningKeyHandover,
   projectInspectorTaskStatus,
   unlinkedDeferredInspectionMergeKey,
   withInspectionMergeIsolation,
@@ -110,6 +113,7 @@ function normalizeSelfCompletePhotoException(raw: any, missingAreas: readonly st
   if (!missingAreas.length || missingAreas.some((area) => !byArea.has(area))) return null
   return { items: missingAreas.map((area) => byArea.get(area)!) }
 }
+
 const actionAuditBodySchema = {
   performed_by_user_id: z.string().trim().min(1).max(120).optional(),
   performed_by_name: z.string().trim().min(1).max(160).optional(),
@@ -2632,6 +2636,7 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
         actionResult,
         mediaId,
         propertyId: String(lockedTask.property_id || '').trim(),
+        task: lockedTask,
         responseBody,
       }
     })
@@ -2645,6 +2650,40 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
     const actionResult = transactionResult?.actionResult || null
     const mediaId = transactionResult?.mediaId || null
     const propertyId = transactionResult?.propertyId || ''
+    const keyHandover = projectCleaningKeyHandover({
+      taskId: id,
+      status: actionResult?.status_after,
+      executionState: 'active',
+      lockboxVideoUrl: 'recorded',
+      latestUploadAudit: {
+        performed_as_action: 'upload_access_video',
+        performed_at: actionResult?.audit?.performed_at,
+        status_before: actionResult?.status_before,
+        status_after: actionResult?.status_after,
+        metadata: {
+          finalization_pending: actionResult?.finalization_pending === true,
+          missing_requirements: Array.isArray(actionResult?.missing_requirements) ? actionResult.missing_requirements : [],
+        },
+      },
+    })
+    await emitWorkTaskEvent({
+      taskId: `cleaning_task:${String(id)}`,
+      sourceType: 'cleaning_tasks',
+      sourceRefIds: [String(id)],
+      eventType: actionResult?.finalization_pending ? 'TASK_UPDATED' : 'TASK_COMPLETED',
+      changeScope: 'list',
+      changedFields: ['status', 'lockbox_video_uploaded_at', 'lockbox_video_url', 'key_handover'],
+      patch: {
+        status: actionResult?.status_after || null,
+        lockbox_video_uploaded_at: actionResult?.audit?.performed_at || new Date().toISOString(),
+        key_handover: keyHandover,
+      },
+      causedByUserId: userId,
+      visibilityHints: buildCleaningTaskVisibilityHints({
+        ...(transactionResult?.task || {}),
+        status: actionResult?.status_after || transactionResult?.task?.status || null,
+      }),
+    })
     try {
       const { broadcastCleaningEvent } = require('./events')
       broadcastCleaningEvent({ event: 'lockbox_video_uploaded', task_id: id })
@@ -2768,7 +2807,7 @@ async function handleDeleteMzappLockboxVideo(req: any, res: any) {
         [id, nextStatus],
       )
       const updated = up?.rows?.[0] || { ...row, status: nextStatus }
-      const patch: any = { lockbox_video_uploaded_at: null, lockbox_video_url: null }
+      const patch: any = { lockbox_video_uploaded_at: null, lockbox_video_url: null, key_handover: null }
       if (nextStatus) patch.status = nextStatus
       await emitWorkTaskEvent({
         taskId: `cleaning_task:${id}`,
@@ -7485,13 +7524,11 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           latest_cancellation_ids AS MATERIALIZED (
             SELECT DISTINCT ON (event.task_id)
               substring(event.task_id FROM length('cleaning_task:') + 1) AS id,
-              event.occurred_at
+              event.occurred_at,
+              lower(COALESCE(event.payload#>>'{patch,lifecycle_state}', '')) IN ('deleted', 'removed', 'tombstone') AS is_deleted
             FROM work_task_events event
             WHERE left(event.task_id, length('cleaning_task:')) = 'cleaning_task:'
-              AND (
-                event.event_type = 'TASK_REMOVED'
-                OR lower(COALESCE(event.payload#>>'{patch,status}', '')) IN ('cancelled', 'canceled')
-              )
+              AND lower(COALESCE(event.payload#>>'{patch,status}', '')) IN ('cancelled', 'canceled')
             ORDER BY event.task_id, event.occurred_at DESC, event.sequence_no DESC
           ),
           historical_candidate_ids AS MATERIALIZED (
@@ -7512,11 +7549,13 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             SELECT latest_cancellation.id
             FROM latest_cancellation_ids latest_cancellation
             WHERE (latest_cancellation.occurred_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN $1::date AND $2::date
+              AND latest_cancellation.is_deleted = false
           ),
           cancelled_scheduled_candidate_ids AS MATERIALIZED (
             SELECT scheduled.id
             FROM scheduled_match_ids scheduled
             JOIN latest_cancellation_ids latest_cancellation ON latest_cancellation.id = scheduled.id
+            WHERE latest_cancellation.is_deleted = false
           ),
           candidate_task_ids AS MATERIALIZED (
             SELECT id FROM scheduled_candidate_ids
@@ -7543,6 +7582,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               t.task_type,
               COALESCE(t.task_date, t.date)::text AS task_date,
               t.status,
+              t.execution_state,
               t.assignee_id,
               t.cleaner_id,
               t.inspector_id,
@@ -7580,6 +7620,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               t.updated_at
             FROM candidate_task_ids candidate_id
             JOIN cleaning_tasks t ON t.id::text = candidate_id.id
+            LEFT JOIN latest_cancellation_ids candidate_cancellation ON candidate_cancellation.id = candidate_id.id
             LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
             LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
             LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
@@ -7623,13 +7664,12 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               SELECT event.occurred_at, event.caused_by_user_id
               FROM work_task_events event
               WHERE event.task_id = ('cleaning_task:' || t.id::text)
-                AND (
-                  event.event_type = 'TASK_REMOVED'
-                  OR lower(COALESCE(event.payload#>>'{patch,status}', '')) IN ('cancelled', 'canceled')
-                )
+                AND lower(COALESCE(event.payload#>>'{patch,status}', '')) IN ('cancelled', 'canceled')
               ORDER BY event.occurred_at DESC, event.sequence_no DESC
               LIMIT 1
             ) cancelled_record ON TRUE
+            WHERE COALESCE(candidate_cancellation.is_deleted, false) = false
+              AND lower(COALESCE(t.execution_state, '')) <> 'superseded'
           ),
           latest_media_raw AS (
             SELECT DISTINCT ON (m.task_id::text, m.type)
@@ -7654,6 +7694,74 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               MAX(uploader_id::text) FILTER (WHERE type = 'lockbox_video') AS lockbox_record_actor_user_id
             FROM latest_media_raw
             GROUP BY task_id
+          ),
+          latest_lockbox_audit AS (
+            SELECT DISTINCT ON (audit.source_id::text)
+              audit.source_id::text AS task_id,
+              audit.performed_as_action,
+              audit.performed_at,
+              audit.status_before,
+              audit.status_after,
+              audit.metadata,
+              EXISTS (
+                SELECT 1
+                FROM cleaning_task_media current_media
+                WHERE current_media.task_id::text = audit.source_id::text
+                  AND current_media.type = 'lockbox_video'
+                  AND COALESCE(TRIM(current_media.url), '') <> ''
+              ) AS has_current_lockbox_video,
+              (
+                EXISTS (
+                  SELECT 1
+                  FROM work_task_events reset_event
+                  WHERE reset_event.task_id = ('cleaning_task:' || audit.source_id::text)
+                    AND reset_event.occurred_at > audit.performed_at
+                    AND 'status' = ANY(reset_event.changed_fields)
+                    AND (
+                      lower(COALESCE(reset_event.payload#>>'{patch,status}', '')) IN (
+                        'todo', 'pending', 'unassigned', 'assigned', 'to_clean', 'to_inspect'
+                      )
+                      OR (
+                        lower(COALESCE(reset_event.payload#>>'{patch,status}', '')) = 'in_progress'
+                        AND EXISTS (
+                          SELECT 1
+                          FROM work_task_events terminal_event
+                          WHERE terminal_event.task_id = reset_event.task_id
+                            AND terminal_event.occurred_at > audit.performed_at
+                            AND terminal_event.occurred_at < reset_event.occurred_at
+                            AND 'status' = ANY(terminal_event.changed_fields)
+                            AND lower(COALESCE(terminal_event.payload#>>'{patch,status}', '')) IN (
+                              'keys_hung', 'ready', 'completed', 'done'
+                            )
+                        )
+                      )
+                    )
+                )
+                OR EXISTS (
+                  SELECT 1
+                  FROM work_task_action_audits later_audit
+                  WHERE later_audit.source_type = 'cleaning_tasks'
+                    AND later_audit.source_id::text = audit.source_id::text
+                    AND later_audit.performed_at > audit.performed_at
+                    AND (
+                      lower(COALESCE(later_audit.status_after, '')) IN (
+                        'todo', 'pending', 'unassigned', 'assigned', 'to_clean', 'to_inspect'
+                      )
+                      OR (
+                        lower(COALESCE(later_audit.status_after, '')) = 'in_progress'
+                        AND lower(COALESCE(later_audit.status_before, '')) IN (
+                          'keys_hung', 'ready', 'completed', 'done',
+                          'todo', 'pending', 'unassigned', 'assigned', 'to_clean', 'to_inspect'
+                        )
+                      )
+                    )
+                )
+              ) AS invalidated_after_upload
+            FROM work_task_action_audits audit
+            JOIN candidate_tasks candidate ON candidate.id::text = audit.source_id::text
+            WHERE audit.source_type = 'cleaning_tasks'
+              AND audit.performed_as_action = 'upload_access_video'
+            ORDER BY audit.source_id::text, audit.performed_at DESC, audit.created_at DESC
           )
           SELECT
             t.id,
@@ -7672,6 +7780,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             t.task_type,
             t.task_date,
             t.status,
+            t.execution_state,
             t.assignee_id,
             t.cleaner_id,
             t.inspector_id,
@@ -7696,6 +7805,13 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             lm.key_photo_url,
             lm.lockbox_video_url,
             lm.living_room_photo_url,
+            lockbox_audit.performed_as_action AS lockbox_audit_action,
+            lockbox_audit.performed_at AS lockbox_audit_performed_at,
+            lockbox_audit.status_before AS lockbox_audit_status_before,
+            lockbox_audit.status_after AS lockbox_audit_status_after,
+            lockbox_audit.metadata AS lockbox_audit_metadata,
+            lockbox_audit.has_current_lockbox_video,
+            lockbox_audit.invalidated_after_upload AS lockbox_audit_invalidated,
             t.executor_record_at AS lockbox_record_at,
             t.executor_record_actor_user_id AS lockbox_record_actor_user_id,
             t.sort_index_cleaner,
@@ -7709,6 +7825,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             t.updated_at
           FROM candidate_tasks t
           LEFT JOIN latest_media lm ON lm.task_id = t.id::text
+          LEFT JOIN latest_lockbox_audit lockbox_audit ON lockbox_audit.task_id = t.id::text
           ORDER BY t.task_date ASC, t.property_code NULLS LAST, t.id`
         const r = await pgPool.query(sql, [dateFrom, dateTo, userId, allowAll])
         markCleaningPoolStep('candidate_query')
@@ -8104,6 +8221,24 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         const cleanerGroups = new Map<string, any[]>()
         const executorGroups = new Map<string, any[]>()
         const inspectorGroups = new Map<string, any[]>()
+        const keyHandoverForRow = (row: any) => projectCleaningKeyHandover({
+          taskId: row.id,
+          status: row.status,
+          executionState: row.execution_state,
+          // The completed fact is visible with the task status, while the URL
+          // itself remains filtered by the caller's existing media permission.
+          lockboxVideoUrl: row.has_current_lockbox_video === true ? 'recorded' : '',
+          invalidatedAfterUpload: row.lockbox_audit_invalidated === true,
+          latestUploadAudit: row.lockbox_audit_action
+            ? {
+                performed_as_action: row.lockbox_audit_action,
+                performed_at: row.lockbox_audit_performed_at,
+                status_before: row.lockbox_audit_status_before,
+                status_after: row.lockbox_audit_status_after,
+                metadata: row.lockbox_audit_metadata,
+              }
+            : null,
+        })
         const sameDayTurnoverState = new Map<string, {
           hasCheckout: boolean
           hasCheckin: boolean
@@ -8241,6 +8376,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             inspectionMode,
             hasExplicitInspectionRelation: !!ownedDeferredArrangement,
           })
+          const keyHandover = keyHandoverForRow(row)
           const lockboxVideoConfirmsCurrentState = lockboxVideoConfirmsCurrentTaskState({
             status: raw_status,
             lockboxVideoUrl: row.lockbox_video_url,
@@ -8259,6 +8395,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             __deferred_checkin_arrangement: deferredArrangement,
             __manager_merge_isolation_key: managerMergeIsolationKey,
             __lockbox_video_confirms_current_state: lockboxVideoConfirmsCurrentState,
+            key_handover: keyHandover,
             active_source_ids: [String(row.id)],
             superseded_source_ids: (supersededByReplacementId.get(String(row.id)) || []).map((x: any) => String(x.id || '')).filter(Boolean),
             all_related_source_ids: [
@@ -8503,6 +8640,19 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           const p = pickPrimary()
           const managerMergeIsolationKey = firstNonEmpty(...rows.map((row) => row.__manager_merge_isolation_key)) || null
           const lockboxVideoConfirmsCurrentState = rows.some((row) => row.__lockbox_video_confirms_current_state === true)
+          const keyHandoverSourceIds = canonicalKeyHandoverSourceIds(rows)
+          const keyHandoverSourceRows = rows
+            .filter((row) => keyHandoverSourceIds.includes(String(row?.__raw_id || '')))
+            .map((row) => ({
+              __raw_id: row.__raw_id,
+              task_type: row.task_type,
+              property_id: row.__prop_id || row.property_id,
+              task_date: row.task_date || row.__date,
+              order_id: row.order_id,
+              order_checkin: row.order_checkin,
+              order_checkout: row.order_checkout,
+            }))
+          const keyHandover = mergeCleaningKeyHandoverProjections(rows, keyHandoverSourceIds)
           const deferredCheckinArrangements = rows
             .map((row) => row.__deferred_checkin_arrangement)
             .filter(Boolean)
@@ -8864,6 +9014,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             ...(inspectionConflictSourceIds.length ? { __inspection_conflict_source_ids: inspectionConflictSourceIds } : {}),
             __manager_merge_isolation_key: managerMergeIsolationKey,
             __lockbox_video_confirms_current_state: lockboxVideoConfirmsCurrentState,
+            key_handover: keyHandover,
             id: outId,
             task_kind: roleKind === 'cleaner' ? 'cleaning' : (roleKind === 'executor' && !executorInspection ? 'execution' : 'inspection'),
             execution_role: executorInspection ? 'inspection' : executionRole,
@@ -8942,6 +9093,8 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             is_late_checkin: turnoverDisplay.is_late_checkin,
             display_conflicts: turnoverDisplay.conflicts,
             turnover_display: turnoverDisplay,
+            __key_handover_source_ids: keyHandoverSourceIds,
+            __key_handover_source_rows: keyHandoverSourceRows,
             cleaner_name: cleanerName,
             inspector_name: inspectorName,
             property: prop,
@@ -9035,6 +9188,19 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         const activeSourceIds = Array.from(
           new Set(arr.flatMap((x) => (Array.isArray(x?.active_source_ids) ? x.active_source_ids : (Array.isArray(x?.source_ids) ? x.source_ids : [])))),
         )
+        const sourceRowsById = new Map<string, any>()
+        for (const sourceRow of arr.flatMap((task) => (
+          Array.isArray(task?.__key_handover_source_rows) ? task.__key_handover_source_rows : []
+        ))) {
+          const sourceId = String(sourceRow?.__raw_id || '').trim()
+          if (sourceId) sourceRowsById.set(sourceId, sourceRow)
+        }
+        const managerKeyHandoverSourceIds = canonicalKeyHandoverSourceIds(Array.from(sourceRowsById.values()))
+        const canonicalManagerSources = managerKeyHandoverSourceIds.length === activeSourceIds.length
+          && managerKeyHandoverSourceIds.every((sourceId) => activeSourceIds.includes(sourceId))
+          ? managerKeyHandoverSourceIds
+          : []
+        const keyHandover = mergeCleaningKeyHandoverProjections(arr, canonicalManagerSources)
         const supersededSourceIds = Array.from(new Set(arr.flatMap((x) => (Array.isArray(x?.superseded_source_ids) ? x.superseded_source_ids : []))))
         const allRelatedSourceIds = Array.from(
           new Set([
@@ -9222,6 +9388,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           ...preferred,
           __manager_merge_isolation_key: mergeIdentity || null,
           __lockbox_video_confirms_current_state: lockboxVideoConfirmsCurrentState,
+          __key_handover_source_ids: canonicalManagerSources,
+          __key_handover_source_rows: Array.from(sourceRowsById.values()),
+          key_handover: keyHandover,
           __merged_children: arr.flatMap((child) => [
             child,
             ...(Array.isArray(child?.__merged_children) ? child.__merged_children : []),
@@ -9445,6 +9614,8 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         __inspection_conflict_source_ids,
         __manager_merge_isolation_key,
         __lockbox_video_confirms_current_state,
+        __key_handover_source_ids,
+        __key_handover_source_rows,
         property_ready_for_guest_notification,
         ...cleanTask
       } = taskWithParticipants as any
