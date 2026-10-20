@@ -47,8 +47,8 @@ assert.match(scheduledCandidates, /validCleaningTaskOrderWhereSql\('t', 'o'\)/)
 const latestCancellations = route.slice(latestCancellationStart, historicalStart)
 assert.match(latestCancellations, /left\(event\.task_id, length\('cleaning_task:'\)\) = 'cleaning_task:'/)
 assert.doesNotMatch(latestCancellations, /event\.task_id LIKE 'cleaning_task:%'/)
-assert.match(latestCancellations, /event\.event_type = 'TASK_REMOVED'/)
 assert.match(latestCancellations, /'cancelled', 'canceled'/)
+assert.doesNotMatch(latestCancellations, /event\.event_type = 'TASK_REMOVED'/)
 assert.match(latestCancellations, /SELECT DISTINCT ON \(event\.task_id\)[\s\S]*?ORDER BY event\.task_id, event\.occurred_at DESC, event\.sequence_no DESC/)
 
 const historicalIds = route.slice(historicalStart, cancelledScheduledStart)
@@ -81,6 +81,11 @@ assert.match(candidateRows, /audit\.performed_as_action = 'complete_cleaning'/)
 assert.match(candidateRows, /audit\.performed_as_action = 'submit_inspection'/)
 assert.match(candidateRows, /media\.type = 'lockbox_video'/)
 assert.match(candidateRows, /event\.task_id = \('cleaning_task:' \|\| t\.id::text\)/)
+assert.match(
+  candidateRows,
+  /WHERE COALESCE\(candidate_cancellation\.is_deleted, false\) = false[\s\S]*?lower\(COALESCE\(t\.execution_state, ''\)\) <> 'superseded'/,
+  'superseded rows must remain hidden even when completion audits or lockbox media select their ids',
+)
 
 for (const step of [
   'candidate_query',

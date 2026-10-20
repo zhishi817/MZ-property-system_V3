@@ -26,6 +26,11 @@ const LOCKBOX_VIDEO_CURRENT_STATE_STATUSES = new Set<string>([
   'completed',
   'ready',
 ])
+const KEY_HANDOVER_PENDING_REQUIREMENTS = new Set<string>([
+  'cleaning_consumables',
+  'cleaning_property_photo',
+  'inspection_photos',
+])
 const KEY_PHOTO_CURRENT_PROGRESS_STATUSES = new Set<string>(['in_progress', 'cleaning'])
 const VALID_TASK_EXECUTION_SEMANTICS = new Set<TaskExecutionSemantics>([
   'cleaning_execution',
@@ -71,6 +76,153 @@ export function isKeyOrPasswordActionSemantics(value: any): boolean {
 export function normalizeInspectionScope(value: any): InspectionScope {
   const raw = String(value || '').trim().toLowerCase()
   return raw === 'password_only' ? 'password_only' : 'inspect_and_hang'
+}
+
+export type CleaningKeyHandoverProjection = {
+  state: 'completed'
+  source_task_id: string
+  completed_at: string | null
+  workflow_finalization_pending: boolean
+  missing_requirements: string[]
+}
+
+/**
+ * Project the key-handover fact independently from the shared cleaning
+ * workflow state.  A checkout inspection can have a valid access video while
+ * the task remains `in_progress` because cleaner-owned evidence is still
+ * missing.  The narrow pending branch requires the exact task's latest
+ * upload audit; a retained URL by itself must never restore a reopened task.
+ */
+export function projectCleaningKeyHandover(input: {
+  taskId?: any
+  status?: any
+  executionState?: any
+  lockboxVideoUrl?: any
+  latestUploadAudit?: {
+    performed_as_action?: any
+    performed_at?: any
+    status_before?: any
+    status_after?: any
+    metadata?: any
+  } | null
+  invalidatedAfterUpload?: boolean
+}): CleaningKeyHandoverProjection | null {
+  const taskId = String(input.taskId || '').trim()
+  const status = String(input.status || '').trim().toLowerCase()
+  const executionState = String(input.executionState || '').trim().toLowerCase()
+  const lockboxVideoUrl = String(input.lockboxVideoUrl || '').trim()
+  if (!taskId || !lockboxVideoUrl) return null
+  if (executionState === 'cancelled' || executionState === 'canceled' || executionState === 'superseded') return null
+  if (status === 'cancelled' || status === 'canceled') return null
+
+  const audit = input.latestUploadAudit || null
+  const auditAction = String(audit?.performed_as_action || '').trim().toLowerCase()
+  const auditMetadata = audit?.metadata && typeof audit.metadata === 'object' ? audit.metadata : {}
+  const finalizationPending = auditMetadata.finalization_pending === true
+  const missingRequirements: string[] = Array.from(new Set<string>(
+    (Array.isArray(auditMetadata.missing_requirements) ? auditMetadata.missing_requirements : [])
+      .map((value: any) => String(value || '').trim().toLowerCase())
+      .filter((value: string) => KEY_HANDOVER_PENDING_REQUIREMENTS.has(value)),
+  ))
+
+  // Once the task has been reset or reopened after this upload, the retained
+  // media is historical evidence.  It must not become current again merely
+  // because a later workflow run reaches another terminal state.
+  if (input.invalidatedAfterUpload === true) return null
+
+  if (LOCKBOX_VIDEO_CURRENT_STATE_STATUSES.has(status)) {
+    return {
+      state: 'completed',
+      source_task_id: taskId,
+      completed_at: String(audit?.performed_at || '').trim() || null,
+      workflow_finalization_pending: finalizationPending && missingRequirements.length > 0,
+      missing_requirements: finalizationPending ? missingRequirements : [],
+    }
+  }
+
+  if (
+    status !== 'in_progress'
+    || auditAction !== 'upload_access_video'
+    || !finalizationPending
+    || missingRequirements.length === 0
+  ) return null
+
+  const statusBefore = String(audit?.status_before || '').trim().toLowerCase()
+  const statusAfter = String(audit?.status_after || '').trim().toLowerCase()
+  if (statusBefore !== status || statusAfter !== status) return null
+
+  return {
+    state: 'completed',
+    source_task_id: taskId,
+    completed_at: String(audit?.performed_at || '').trim() || null,
+    workflow_finalization_pending: true,
+    missing_requirements: missingRequirements,
+  }
+}
+
+/**
+ * A two-source key-handover fact may only be shared by the canonical booking
+ * boundary for one turnover: one checkout task tied to the outgoing order's
+ * checkout date and one check-in task tied to the incoming order's check-in
+ * date.  Room/date/assignee grouping alone is deliberately insufficient.
+ */
+export function canonicalKeyHandoverSourceIds(tasks: any[]): string[] {
+  const rows = (Array.isArray(tasks) ? tasks : []).filter(Boolean)
+  if (rows.length === 1) {
+    const sourceId = String(rows[0]?.__raw_id || rows[0]?.source_id || rows[0]?.id || '').trim()
+    return sourceId ? [sourceId] : []
+  }
+  if (rows.length !== 2 || rows.some((row) => String(row?.__work_record_state || '').trim())) return []
+
+  const checkout = rows.find((row) => cleaningInspectionTaskKind(row?.task_type ?? row?.type) === 'checkout')
+  const checkin = rows.find((row) => cleaningInspectionTaskKind(row?.task_type ?? row?.type) === 'checkin')
+  if (!checkout || !checkin) return []
+
+  const checkoutId = String(checkout?.__raw_id || checkout?.source_id || checkout?.id || '').trim()
+  const checkinId = String(checkin?.__raw_id || checkin?.source_id || checkin?.id || '').trim()
+  const checkoutOrderId = String(checkout?.order_id || '').trim()
+  const checkinOrderId = String(checkin?.order_id || '').trim()
+  const checkoutPropertyId = String(checkout?.property_id || checkout?.__prop_id || '').trim()
+  const checkinPropertyId = String(checkin?.property_id || checkin?.__prop_id || '').trim()
+  const checkoutTaskDate = inspectionDayOnly(checkout?.task_date ?? checkout?.date ?? checkout?.__date)
+  const checkinTaskDate = inspectionDayOnly(checkin?.task_date ?? checkin?.date ?? checkin?.__date)
+  const outgoingCheckoutDate = inspectionDayOnly(checkout?.order_checkout)
+  const incomingCheckinDate = inspectionDayOnly(checkin?.order_checkin)
+
+  if (!checkoutId || !checkinId || checkoutId === checkinId) return []
+  if (!checkoutOrderId || !checkinOrderId || checkoutOrderId === checkinOrderId) return []
+  if (!checkoutPropertyId || checkoutPropertyId !== checkinPropertyId) return []
+  if (!checkoutTaskDate || checkoutTaskDate !== checkinTaskDate) return []
+  if (outgoingCheckoutDate !== checkoutTaskDate || incomingCheckinDate !== checkinTaskDate) return []
+  return [checkoutId, checkinId]
+}
+
+export function mergeCleaningKeyHandoverProjections(
+  tasks: any[],
+  canonicalSourceIds: string[],
+): CleaningKeyHandoverProjection | null {
+  const allowedSourceIds = new Set(
+    (Array.isArray(canonicalSourceIds) ? canonicalSourceIds : [])
+      .map((value) => String(value || '').trim())
+      .filter(Boolean),
+  )
+  if (!allowedSourceIds.size || allowedSourceIds.size > 2) return null
+  const facts = (Array.isArray(tasks) ? tasks : [])
+    .map((task) => task?.key_handover)
+    .filter((fact): fact is CleaningKeyHandoverProjection => (
+      fact?.state === 'completed'
+      && allowedSourceIds.has(String(fact?.source_task_id || '').trim())
+    ))
+  if (!facts.length) return null
+  const latest = facts.slice().sort((a, b) => String(b.completed_at || '').localeCompare(String(a.completed_at || '')))[0]
+  const missingRequirements = Array.from(new Set(
+    facts.flatMap((fact) => Array.isArray(fact.missing_requirements) ? fact.missing_requirements.map(String) : []),
+  ))
+  return {
+    ...latest,
+    workflow_finalization_pending: facts.some((fact) => fact.workflow_finalization_pending === true),
+    missing_requirements: missingRequirements,
+  }
 }
 
 export function hasCheckoutCheckinTurnover(rows: Array<{ task_type?: any; type?: any }>): boolean {

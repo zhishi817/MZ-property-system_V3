@@ -11,7 +11,7 @@ import sharp from 'sharp'
 import fs from 'fs'
 import { emitNotificationEvent } from '../services/notificationEvents'
 import { buildCleaningTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
-import { effectiveInspectionMode, isCleaningTaskInspectionSubmitParticipant, isInspectionFinishedStatus } from '../lib/cleaningInspection'
+import { effectiveInspectionMode, isCleaningTaskInspectionSubmitParticipant, isInspectionFinishedStatus, projectCleaningKeyHandover } from '../lib/cleaningInspection'
 import { CLEANING_IMAGE_FORMAT_ERROR, encodeCleaningImageToJpeg, isImageUploadCandidate, normalizeCleaningImageUpload } from '../lib/cleaningMediaImage'
 import { isCleaningMediaKey } from '../lib/cleaningMediaReference'
 import { currentOfflineTaskPhotoKeyFromReference, currentMzappTaskPhotoKeyFromReference, isLegacyMzappTaskPhotoPublicUrl, offlineTaskPhotoReferenceVariants, normalizeMzappTaskPhotoKey } from '../lib/mzappTaskPhotoReference'
@@ -1576,14 +1576,21 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
           metadata: { route: 'cleaning_app.tasks.inspection_complete' },
         }, client)
         const up = await pgUpdate('cleaning_tasks', id, { lockbox_video_uploaded_at: now } as any, client)
+        const keyHandover = projectCleaningKeyHandover({
+          taskId: String(id),
+          status: actionResult?.status_after || (up as any)?.status,
+          executionState: (up as any)?.execution_state,
+          lockboxVideoUrl: parsed.data.media_url,
+          latestUploadAudit: actionResult?.audit || null,
+        })
         await emitWorkTaskEvent({
           taskId: `cleaning_task:${String(id)}`,
           sourceType: 'cleaning_tasks',
           sourceRefIds: [String(id)],
           eventType: 'TASK_UPDATED',
           changeScope: 'list',
-          changedFields: ['status', 'lockbox_video_uploaded_at', 'lockbox_video_url'],
-          patch: { status: actionResult?.status_after || (up as any)?.status || null, lockbox_video_uploaded_at: now },
+          changedFields: ['status', 'lockbox_video_uploaded_at', 'lockbox_video_url', 'key_handover'],
+          patch: { status: actionResult?.status_after || (up as any)?.status || null, lockbox_video_uploaded_at: now, key_handover: keyHandover },
           causedByUserId: String(user?.sub || '').trim() || null,
           visibilityHints: buildCleaningTaskVisibilityHints(up || task),
         }, client)
@@ -2226,13 +2233,20 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
           [String(id), now],
         )
         const up = upResult?.rows?.[0] || null
+        const keyHandover = projectCleaningKeyHandover({
+          taskId: String(id),
+          status: actionResult?.status_after || (up as any)?.status,
+          executionState: (up as any)?.execution_state,
+          lockboxVideoUrl: parsed.data.media_url,
+          latestUploadAudit: actionResult?.audit || null,
+        })
         const responseBody = { ...(up || { id, lockbox_video_uploaded_at: now }), action_result: actionResult }
         if (operationId) {
           await saveIdempotentStepReceipt(client, {
             scopeType: 'cleaning_task_lockbox_video', scopeId: String(id), submitId: operationId, stepKey: 'lockbox_video',
           }, payloadHash, responseBody)
         }
-        return { kind: 'committed' as const, actionResult, up, responseBody }
+        return { kind: 'committed' as const, actionResult, up, responseBody, keyHandover }
       })
       if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'task not found' })
       if (transactionResult.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
@@ -2243,16 +2257,18 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
       if (transactionResult?.kind === 'replay') return res.status(200).json(transactionResult.responseBody)
       const actionResult = transactionResult?.actionResult || null
       const up = transactionResult?.up || null
+      const keyHandover = transactionResult?.keyHandover || null
       await emitWorkTaskEvent({
         taskId: `cleaning_task:${String(id)}`,
         sourceType: 'cleaning_tasks',
         sourceRefIds: [String(id)],
         eventType: actionResult?.finalization_pending ? 'TASK_UPDATED' : 'TASK_COMPLETED',
         changeScope: 'list',
-        changedFields: ['status', 'lockbox_video_uploaded_at', 'lockbox_video_url'],
+        changedFields: ['status', 'lockbox_video_uploaded_at', 'lockbox_video_url', 'key_handover'],
         patch: {
           status: actionResult?.status_after || (up as any)?.status || null,
           lockbox_video_uploaded_at: now,
+          key_handover: keyHandover,
         },
         causedByUserId: String(user?.sub || '').trim() || null,
         visibilityHints: buildCleaningTaskVisibilityHints(up || { id, lockbox_video_uploaded_at: now }),
@@ -2349,7 +2365,7 @@ async function handleDeleteLockboxVideo(req: any, res: any) {
         [taskId, nextStatus],
       )
       const updated = up?.rows?.[0] || { ...row, status: nextStatus }
-      const patch: any = { lockbox_video_uploaded_at: null, lockbox_video_url: null }
+      const patch: any = { lockbox_video_uploaded_at: null, lockbox_video_url: null, key_handover: null }
       if (nextStatus) patch.status = nextStatus
       await emitWorkTaskEvent({
         taskId: `cleaning_task:${taskId}`,
