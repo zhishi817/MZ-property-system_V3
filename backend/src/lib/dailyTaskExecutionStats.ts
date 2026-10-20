@@ -1,5 +1,6 @@
 import {
   dailyTaskExecutionVisibility,
+  dailyTaskWorkRecordProjection,
   isTaskCenterManagementOnlyOfflineTask,
   isTurnoverDailyExecutionTask,
   type DailyTaskExecutionCandidate,
@@ -62,6 +63,9 @@ export function projectDailyTaskStats(
     includeManagerUnassignedOffline?: boolean
   } = {},
 ): DailyTaskStatsProjection {
+  if (dailyTaskWorkRecordProjection(task).work_record_state !== 'active') {
+    return { daily_stats_group: null, daily_stats_key: null }
+  }
   const executionVisible = dailyTaskExecutionVisibility(task, {
     includeManagerUnassignedOffline: options.includeManagerUnassignedOffline,
   }).visible

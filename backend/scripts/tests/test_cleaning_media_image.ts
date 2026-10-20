@@ -31,7 +31,7 @@ async function main() {
   assert.match(route, /FROM guest_luggage_notices/, 'media proxy must resolve a temporary-notice photo through its saved notice record')
   assert.match(route, /guest_luggage_id/, 'temporary-notice media must require an exact notice context')
   assert.match(route, /hasGuestLuggageSourceConflict/, 'a temporary-notice key that collides with another recorded source must fail closed')
-  assert.match(route, /!hasTaskOrDayEndMedia \|\| \(matchingMediaRows\.length > 0 && hasTaskContextMismatch\)\s*\? await findPropertyFeedbackMediaRows\(pgPool, key\)/, 'feedback-only keys and mismatched historical task contexts must resolve exact feedback history without slowing the ordinary task/day-end path')
+  assert.match(route, /!hasTaskOrDayEndMedia \|\| \(matchingMediaRows\.length > 0 && hasTaskContextMismatch\)\s*\? await findPropertyFeedbackMediaRows\(pgPool, key, workTaskId\)/, 'feedback-only keys and mismatched historical task contexts must resolve exact feedback history with canonical work-task context without slowing the ordinary task/day-end path')
   assert.match(route, /hasTaskOrDayEndMedia \|\| feedbackMediaRows\.length > 0/, 'a temporary-notice key colliding with task, day-end, feedback, or external-maintenance media must fail closed')
   assert.match(route, /const canView = hasGuestLuggageContext\s*\?\s*!hasGuestLuggageSourceConflict/, 'a supplied temporary-notice id must be authorized only through its exact notice association')
   assert.match(route, /FROM cleaning_day_end_media/, 'media proxy must resolve recorded day-end handover photos')

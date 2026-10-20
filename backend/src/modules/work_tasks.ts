@@ -46,6 +46,20 @@ function dayOnly(v: any): string | null {
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null
 }
 
+function melbourneDateOnly(value: any): string | null {
+  const date = new Date(value)
+  if (!Number.isFinite(date.getTime())) return null
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Australia/Melbourne',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date)
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  const result = `${byType.year}-${byType.month}-${byType.day}`
+  return /^\d{4}-\d{2}-\d{2}$/.test(result) ? result : null
+}
+
 function taskCompletedTitle(title: any) {
   const base = String(title || '').trim()
   return base ? `任务已完成：${base}` : '任务已完成'
@@ -71,10 +85,24 @@ const createSchema = z.object({
   source_id: z.string().nullable().optional(),
 }).strict()
 
-const patchSchema = createSchema.partial().strict()
+const patchSchema = createSchema.partial().extend({
+  completion_reason: z.string().trim().min(1).max(2000).nullable().optional(),
+}).strict()
 
-async function upsertWorkTaskFromSource(sourceType: string, sourceId: string, patch: any) {
-  if (!hasPg || !pgPool) return
+const upsertFromSourceSchema = z.object({
+  source_type: z.string().trim().min(1).max(160),
+  source_id: z.string().trim().min(1).max(160),
+  patch: createSchema.omit({ source_type: true, source_id: true }).partial().strict()
+    .refine((value) => Object.keys(value).length > 0, { message: 'empty patch' }),
+}).strict()
+
+async function upsertWorkTaskFromSource(
+  sourceType: string,
+  sourceId: string,
+  patch: any,
+  executor: { query: (sql: string, params?: any[]) => Promise<any> } | null = pgPool,
+) {
+  if (!hasPg || !executor) return null
   assertR5TaskRuntimeSchemaReady()
   const st = String(sourceType || '').trim()
   const sid = String(sourceId || '').trim()
@@ -85,19 +113,26 @@ async function upsertWorkTaskFromSource(sourceType: string, sourceId: string, pa
   const vals = [id, st, sid, ...keys.map((k) => patch[k])]
   const ph = cols.map((_, i) => `$${i + 1}`).join(', ')
   const upd = keys.length
-    ? keys.map((k, i) => `"${k}" = EXCLUDED."${k}"`).join(', ')
+    ? [...keys.map((k) => `"${k}" = EXCLUDED."${k}"`), 'updated_at = now()'].join(', ')
     : ''
   const sql = `
     INSERT INTO work_tasks(${cols.map((c) => `"${c}"`).join(', ')})
     VALUES(${ph})
     ON CONFLICT (source_type, source_id) DO UPDATE SET ${upd || 'updated_at = now()'}
-    RETURNING id
+      WHERE lower(COALESCE(work_tasks.status, '')) NOT IN ('done', 'completed', 'ready', 'cancelled', 'canceled', 'closed')
+    RETURNING *
   `
-  await pgPool.query(sql, vals)
+  const result = await executor.query(sql, vals)
+  return result?.rows?.[0] || null
 }
 
-async function propagateToSource(sourceType: string, sourceId: string, patch: any) {
-  if (!hasPg || !pgPool) return
+async function propagateToSource(
+  sourceType: string,
+  sourceId: string,
+  patch: any,
+  executor: { query: (sql: string, params?: any[]) => Promise<any> } | null = pgPool,
+) {
+  if (!hasPg || !executor) return
   const st = String(sourceType || '').trim()
   const sid = String(sourceId || '').trim()
   if (!st || !sid) return
@@ -116,7 +151,7 @@ async function propagateToSource(sourceType: string, sourceId: string, patch: an
     }
     if (!set.length) return
     vals.push(sid)
-    await pgPool.query(`UPDATE property_maintenance SET ${set.join(', ')}, updated_at=now() WHERE id=$${vals.length}`, vals)
+    await executor.query(`UPDATE property_maintenance SET ${set.join(', ')}, updated_at=now() WHERE id=$${vals.length}`, vals)
     return
   }
   if (st === 'property_deep_cleaning') {
@@ -131,7 +166,7 @@ async function propagateToSource(sourceType: string, sourceId: string, patch: an
     }
     if (!set.length) return
     vals.push(sid)
-    await pgPool.query(`UPDATE property_deep_cleaning SET ${set.join(', ')}, updated_at=now() WHERE id=$${vals.length}`, vals)
+    await executor.query(`UPDATE property_deep_cleaning SET ${set.join(', ')}, updated_at=now() WHERE id=$${vals.length}`, vals)
     return
   }
   if (st === 'cleaning_offline_tasks') {
@@ -140,7 +175,7 @@ async function propagateToSource(sourceType: string, sourceId: string, patch: an
     if (scheduledDate !== undefined) { vals.push(scheduledDate); set.push(`date = $${vals.length}::date`) }
     if (!set.length) return
     vals.push(sid)
-    await pgPool.query(`UPDATE cleaning_offline_tasks SET ${set.join(', ')}, updated_at=now() WHERE id=$${vals.length}`, vals)
+    await executor.query(`UPDATE cleaning_offline_tasks SET ${set.join(', ')}, updated_at=now() WHERE id=$${vals.length}`, vals)
     return
   }
 }
@@ -213,6 +248,9 @@ router.post('/', requirePerm('cleaning.schedule.manage'), requireR5TaskRuntimeSc
     const now = new Date().toISOString()
     const assigneeId = payload.assignee_id === undefined ? null : (normId(payload.assignee_id) || null)
     const requestedStatus = payload.status === undefined ? undefined : normStatus(payload.status)
+    if (requestedStatus === 'done' || requestedStatus === 'cancelled') {
+      return res.status(400).json({ code: 'terminal_status_not_allowed_on_create', message: 'terminal_status_not_allowed_on_create' })
+    }
     const status = requestedStatus === undefined || requestedStatus === 'todo' || requestedStatus === 'assigned'
       ? autoStatusForWorkAssignee(assigneeId)
       : requestedStatus
@@ -237,58 +275,38 @@ router.post('/', requirePerm('cleaning.schedule.manage'), requireR5TaskRuntimeSc
       created_at: now,
       updated_at: now,
     }
-    await pgPool.query(
-      `INSERT INTO work_tasks(
-        id, task_kind, source_type, source_id, property_id, title, summary,
-        scheduled_date, start_time, end_time, assignee_id, status, urgency,
-        created_by, updated_by, created_at, updated_at
-      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8::date,$9,$10,$11,$12,$13,$14,$15,$16,$17::timestamptz,$18::timestamptz)`,
-      [
-        row.id, row.task_kind, row.source_type, row.source_id, row.property_id, row.title, row.summary,
-        row.scheduled_date, row.start_time, row.end_time, row.assignee_id, row.status, row.urgency,
-        row.created_by, row.updated_by, row.created_at, row.updated_at,
-      ]
-    )
-    await emitWorkTaskEvent({
-      taskId: `work_task:${row.id}`,
-      sourceType: 'work_tasks',
-      sourceRefIds: [row.id],
-      eventType: 'TASK_CREATED',
-      changeScope: 'list',
-      changedFields: ['task_kind', 'property_id', 'title', 'summary', 'scheduled_date', 'start_time', 'end_time', 'assignee_id', 'status', 'urgency'],
-      patch: row,
-      causedByUserId: String(user.sub || user.username || '').trim() || null,
-      visibilityHints: buildWorkTaskVisibilityHints(row),
-    })
-    if (normStatus(row.status) === 'done') {
+    const client = await pgPool.connect()
+    try {
+      await client.query('BEGIN')
+      await client.query(
+        `INSERT INTO work_tasks(
+          id, task_kind, source_type, source_id, property_id, title, summary,
+          scheduled_date, start_time, end_time, assignee_id, status, urgency,
+          created_by, updated_by, created_at, updated_at
+        ) VALUES($1,$2,$3,$4,$5,$6,$7,$8::date,$9,$10,$11,$12,$13,$14,$15,$16,$17::timestamptz,$18::timestamptz)`,
+        [
+          row.id, row.task_kind, row.source_type, row.source_id, row.property_id, row.title, row.summary,
+          row.scheduled_date, row.start_time, row.end_time, row.assignee_id, row.status, row.urgency,
+          row.created_by, row.updated_by, row.created_at, row.updated_at,
+        ],
+      )
       await emitWorkTaskEvent({
         taskId: `work_task:${row.id}`,
         sourceType: 'work_tasks',
         sourceRefIds: [row.id],
-        eventType: 'TASK_COMPLETED',
+        eventType: 'TASK_CREATED',
         changeScope: 'list',
-        changedFields: ['status'],
-        patch: { status: 'done' },
+        changedFields: ['task_kind', 'property_id', 'title', 'summary', 'scheduled_date', 'start_time', 'end_time', 'assignee_id', 'status', 'urgency'],
+        patch: row,
         causedByUserId: String(user.sub || user.username || '').trim() || null,
         visibilityHints: buildWorkTaskVisibilityHints(row),
-      })
-      enqueueNotification(() =>
-        emitNotificationEvent(
-          {
-            type: 'WORK_TASK_COMPLETED',
-            policyKey: 'work_task_completed',
-            entity: 'work_task',
-            entityId: String(row.id),
-            propertyId: row.property_id ? String(row.property_id) : undefined,
-            updatedAt: String(row.updated_at || '').trim() || now,
-            title: taskCompletedTitle(row.title),
-            body: taskCompletedBody(row.title),
-            data: { entity: 'work_task', entityId: String(row.id), action: 'open_work_task', kind: 'work_task_completed', task_id: String(row.id) },
-            actorUserId: String(user.sub || '').trim() || null,
-          },
-          { operationId: uuid() },
-        ),
-      )
+      }, client)
+      await client.query('COMMIT')
+    } catch (error) {
+      try { await client.query('ROLLBACK') } catch {}
+      throw error
+    } finally {
+      client.release()
     }
     return res.status(201).json(row)
   } catch (e: any) {
@@ -305,11 +323,17 @@ router.patch('/:id', requirePerm('cleaning.schedule.manage'), requireR5TaskRunti
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
     const user = (req as any).user || {}
     const patch = parsed.data as any
+    if (patch.status !== undefined && normStatus(patch.status) === 'cancelled' && !String(patch.completion_reason || '').trim()) {
+      return res.status(400).json({ code: 'cancellation_reason_required', message: 'cancellation_reason_required' })
+    }
     const r0 = await pgPool.query('SELECT * FROM work_tasks WHERE id=$1 LIMIT 1', [id])
     const cur = r0?.rows?.[0] || null
     if (!cur) return res.status(404).json({ message: 'task not found' })
     if (['property_maintenance', 'external_maintenance_orders'].includes(String(cur.source_type || '').trim())) {
       return res.status(409).json({ code: 'maintenance_workflow_action_required' })
+    }
+    if (['done', 'cancelled'].includes(normStatus(cur.status))) {
+      return res.status(409).json({ code: 'work_record_read_only', message: 'work_record_read_only' })
     }
     if (patch.assignee_id !== undefined) {
       const beforeStatus = normStatus(cur.status)
@@ -335,27 +359,92 @@ router.patch('/:id', requirePerm('cleaning.schedule.manage'), requireR5TaskRunti
     if (patch.assignee_id !== undefined) add('assignee_id', normId(patch.assignee_id) || null)
     if (patch.status !== undefined) add('status', normStatus(patch.status))
     if (patch.urgency !== undefined) add('urgency', normUrgency(patch.urgency))
+    if (patch.completion_reason !== undefined) add('completion_reason', patch.completion_reason ? String(patch.completion_reason).trim() : null)
     add('updated_by', String(user.username || user.sub || ''))
     set.push(`updated_at = now()`)
     vals.push(id)
-    const sql = `UPDATE work_tasks SET ${set.join(', ')} WHERE id=$${vals.length} RETURNING *`
-    const r1 = await pgPool.query(sql, vals)
-    const row = r1?.rows?.[0] || cur
-    const changedFields = Object.keys(patch || {}).filter((key) => patch[key] !== undefined)
-    const assigneeChanged = patch.assignee_id !== undefined && String(cur.assignee_id || '') !== String(row.assignee_id || '')
-    const completedChanged = normStatus(cur.status) !== 'done' && normStatus(row.status) === 'done'
-    await propagateToSource(sourceType, sourceId, patch)
-    await emitWorkTaskEvent({
-      taskId: `work_task:${row.id}`,
-      sourceType: 'work_tasks',
-      sourceRefIds: [String(row.id)],
-      eventType: completedChanged ? 'TASK_COMPLETED' : assigneeChanged ? 'TASK_ASSIGNMENT_CHANGED' : 'TASK_UPDATED',
-      changeScope: assigneeChanged ? 'membership' : 'list',
-      changedFields,
-      patch: Object.fromEntries(changedFields.map((field) => [field, (row as any)[field]])),
-      causedByUserId: String(user.sub || user.username || '').trim() || null,
-      visibilityHints: buildWorkTaskVisibilityHints(row),
-    })
+    const sql = `UPDATE work_tasks
+      SET ${set.join(', ')}
+      WHERE id=$${vals.length}
+        AND lower(COALESCE(status, '')) NOT IN ('done', 'completed', 'cancelled', 'canceled', 'closed')
+      RETURNING *`
+    const client = await pgPool.connect()
+    let row: any = cur
+    let changedFields: string[] = []
+    let assigneeChanged = false
+    let completedChanged = false
+    let cancelledChanged = false
+    let recordAt: string | null = null
+    let workRecordDate: string | null = null
+    try {
+      await client.query('BEGIN')
+      const r1 = await client.query(sql, vals)
+      row = r1?.rows?.[0] || null
+      if (!row) {
+        await client.query('ROLLBACK')
+        return res.status(409).json({ code: 'work_record_read_only', message: 'work_record_read_only' })
+      }
+      changedFields = Object.keys(patch || {}).filter((key) => patch[key] !== undefined)
+      assigneeChanged = patch.assignee_id !== undefined && String(cur.assignee_id || '') !== String(row.assignee_id || '')
+      completedChanged = normStatus(cur.status) !== 'done' && normStatus(row.status) === 'done'
+      cancelledChanged = normStatus(cur.status) !== 'cancelled' && normStatus(row.status) === 'cancelled'
+      recordAt = completedChanged || cancelledChanged ? String(row.updated_at || new Date().toISOString()) : null
+      workRecordDate = recordAt ? melbourneDateOnly(recordAt) : null
+      await propagateToSource(sourceType, sourceId, patch, client)
+      const visibilityHints = buildWorkTaskVisibilityHints(row)
+      visibilityHints.user_ids = Array.from(new Set([
+        ...(Array.isArray(visibilityHints.user_ids) ? visibilityHints.user_ids : []),
+        String(cur.assignee_id || '').trim(),
+        String(row.assignee_id || '').trim(),
+      ].filter(Boolean)))
+      const workRecordPatch = completedChanged || cancelledChanged
+        ? {
+            completed_at: recordAt,
+            ...(completedChanged
+              ? { completed_by_user_id: String(user.sub || user.username || '').trim() || null }
+              : {}),
+            work_record_visible: true,
+            work_record_state: completedChanged ? 'completed' : 'cancelled',
+            work_record_date: workRecordDate,
+            original_scheduled_date: row.scheduled_date ? String(row.scheduled_date).slice(0, 10) : null,
+            work_record_read_only: true,
+            counts_as_active_task: false,
+            completion_reason: cancelledChanged ? String(row.completion_reason || '').trim() || null : null,
+          }
+        : {}
+      const eventChangedFields = Array.from(new Set([
+        ...changedFields,
+        ...Object.keys(workRecordPatch),
+      ]))
+      await emitWorkTaskEvent({
+        taskId: `work_task:${row.id}`,
+        sourceType: 'work_tasks',
+        sourceRefIds: [String(row.id)],
+        eventType: completedChanged ? 'TASK_COMPLETED' : cancelledChanged ? 'TASK_REMOVED' : assigneeChanged ? 'TASK_ASSIGNMENT_CHANGED' : 'TASK_UPDATED',
+        changeScope: assigneeChanged || cancelledChanged ? 'membership' : 'list',
+        changedFields: eventChangedFields,
+        patch: {
+          ...Object.fromEntries(changedFields.map((field) => [field, (row as any)[field]])),
+          ...workRecordPatch,
+        },
+        payload: {
+          execution_evidence: {
+            kind: completedChanged ? 'manager_completion' : cancelledChanged ? 'manager_cancellation' : 'manager_task_update',
+            is_execution: false,
+            actor_user_id: String(user.sub || user.username || '').trim() || null,
+          },
+        },
+        occurredAt: recordAt || undefined,
+        causedByUserId: String(user.sub || user.username || '').trim() || null,
+        visibilityHints,
+      }, client)
+      await client.query('COMMIT')
+    } catch (error) {
+      try { await client.query('ROLLBACK') } catch {}
+      throw error
+    } finally {
+      client.release()
+    }
     try {
       const operationId = uuid()
       const assigneeId = String(row.assignee_id || '').trim()
@@ -448,6 +537,21 @@ router.patch('/:id', requirePerm('cleaning.schedule.manage'), requireR5TaskRunti
       assignee_id: row.assignee_id ? String(row.assignee_id) : null,
       status: normStatus(row.status),
       urgency: String(row.task_kind || '').toLowerCase() === 'offline' ? null : normUrgency(row.urgency),
+      ...(completedChanged || cancelledChanged
+        ? {
+            completed_at: recordAt,
+            ...(completedChanged
+              ? { completed_by_user_id: String(user.sub || user.username || '').trim() || null }
+              : {}),
+            work_record_visible: true,
+            work_record_state: completedChanged ? 'completed' : 'cancelled',
+            work_record_date: workRecordDate,
+            original_scheduled_date: row.scheduled_date ? String(row.scheduled_date).slice(0, 10) : null,
+            work_record_read_only: true,
+            counts_as_active_task: false,
+            completion_reason: cancelledChanged ? String(row.completion_reason || '').trim() || null : null,
+          }
+        : {}),
     })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'update_failed' })
@@ -455,17 +559,76 @@ router.patch('/:id', requirePerm('cleaning.schedule.manage'), requireR5TaskRunti
 })
 
 router.post('/upsert-from-source', requirePerm('cleaning.schedule.manage'), requireR5TaskRuntimeSchema, async (req, res) => {
-  const body = req.body || {}
-  const sourceType = String(body.source_type || '').trim()
-  const sourceId = String(body.source_id || '').trim()
-  const patch = body.patch || {}
+  const parsed = upsertFromSourceSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  const sourceType = parsed.data.source_type
+  const sourceId = parsed.data.source_id
+  const rawPatch = parsed.data.patch as any
+  const patch: Record<string, any> = {}
+  if (rawPatch.task_kind !== undefined) patch.task_kind = String(rawPatch.task_kind || '').trim()
+  if (rawPatch.property_id !== undefined) patch.property_id = rawPatch.property_id ?? null
+  if (rawPatch.title !== undefined) patch.title = String(rawPatch.title || '').trim()
+  if (rawPatch.summary !== undefined) patch.summary = rawPatch.summary ?? null
+  if (rawPatch.scheduled_date !== undefined) patch.scheduled_date = rawPatch.scheduled_date ? dayOnly(rawPatch.scheduled_date) : null
+  if (rawPatch.start_time !== undefined) patch.start_time = rawPatch.start_time ?? null
+  if (rawPatch.end_time !== undefined) patch.end_time = rawPatch.end_time ?? null
+  if (rawPatch.assignee_id !== undefined) patch.assignee_id = normId(rawPatch.assignee_id) || null
+  if (rawPatch.status !== undefined) patch.status = normStatus(rawPatch.status)
+  if (rawPatch.urgency !== undefined) patch.urgency = normUrgency(rawPatch.urgency)
+  if (patch.status === 'done' || patch.status === 'cancelled') {
+    return res.status(400).json({ code: 'terminal_status_requires_transition', message: 'terminal_status_requires_transition' })
+  }
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
     if (['property_maintenance', 'external_maintenance_orders'].includes(sourceType)) {
       return res.status(409).json({ code: 'maintenance_workflow_action_required' })
     }
-    await upsertWorkTaskFromSource(sourceType, sourceId, patch)
-    return res.json({ ok: true })
+    const user = (req as any).user || {}
+    const client = await pgPool.connect()
+    try {
+      await client.query('BEGIN')
+      const currentResult = await client.query(
+        `SELECT * FROM work_tasks WHERE source_type=$1 AND source_id=$2 LIMIT 1 FOR UPDATE`,
+        [sourceType, sourceId],
+      )
+      const current = currentResult?.rows?.[0] || null
+      if (current && ['done', 'cancelled'].includes(normStatus(current.status))) {
+        await client.query('ROLLBACK')
+        return res.status(409).json({ code: 'work_record_read_only', message: 'work_record_read_only' })
+      }
+      const row = await upsertWorkTaskFromSource(sourceType, sourceId, patch, client)
+      if (!row) {
+        await client.query('ROLLBACK')
+        return res.status(409).json({ code: 'work_record_read_only', message: 'work_record_read_only' })
+      }
+      const changedFields = Object.keys(patch)
+      const assignmentChanged = current && changedFields.includes('assignee_id')
+        && normId(current.assignee_id) !== normId(row.assignee_id)
+      const visibilityHints = buildWorkTaskVisibilityHints(row)
+      visibilityHints.user_ids = Array.from(new Set([
+        ...(Array.isArray(visibilityHints.user_ids) ? visibilityHints.user_ids : []),
+        String(current?.assignee_id || '').trim(),
+        String(row.assignee_id || '').trim(),
+      ].filter(Boolean)))
+      await emitWorkTaskEvent({
+        taskId: `work_task:${row.id}`,
+        sourceType: 'work_tasks',
+        sourceRefIds: [String(row.id), sourceId],
+        eventType: current ? (assignmentChanged ? 'TASK_ASSIGNMENT_CHANGED' : 'TASK_UPDATED') : 'TASK_CREATED',
+        changeScope: !current || assignmentChanged || changedFields.includes('scheduled_date') ? 'membership' : 'list',
+        changedFields,
+        patch,
+        causedByUserId: String(user.sub || user.username || '').trim() || null,
+        visibilityHints,
+      }, client)
+      await client.query('COMMIT')
+      return res.json({ ok: true, task_id: String(row.id) })
+    } catch (error) {
+      try { await client.query('ROLLBACK') } catch {}
+      throw error
+    } finally {
+      client.release()
+    }
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'upsert_failed' })
   }

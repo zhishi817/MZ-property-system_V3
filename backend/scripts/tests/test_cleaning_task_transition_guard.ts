@@ -13,6 +13,7 @@ function makeExecutor(
   guestArrivalSkipAudit = false,
   cleaningReady = true,
   lockboxVideoSaved = false,
+  priorRoleAudits: Array<{ action: string; actor: string }> = [],
 ) {
   const queries: string[] = []
   const insertedAudits: any[] = []
@@ -58,6 +59,14 @@ function makeExecutor(
       if (sql.includes("m.type = 'lockbox_video'")) {
         return { rows: lockboxVideoSaved ? [{ ok: 1 }] : [] }
       }
+      if (sql.includes('FROM work_task_action_audits audit') && sql.includes('performed_as_action = ANY')) {
+        const actions = Array.isArray(params[1]) ? params[1].map(String) : []
+        const actor = String(params[2] || '')
+        return {
+          rows: priorRoleAudits.some((audit) => actions.includes(audit.action) && audit.actor === actor) ? [{ ok: 1 }] : [],
+          rowCount: priorRoleAudits.some((audit) => actions.includes(audit.action) && audit.actor === actor) ? 1 : 0,
+        }
+      }
       if (sql.includes('FROM cleaning_tasks')) {
         return {
           rows: [{
@@ -82,7 +91,7 @@ function makeExecutor(
 
 async function main() {
   process.env.DATABASE_URL = 'postgres://unit-test'
-  const { actorAndPerformerFromRequest, applyCleaningTaskActionTransition } = require('../../src/lib/workTaskActionAudit') as typeof import('../../src/lib/workTaskActionAudit')
+  const { actorAndPerformerFromRequest, applyCleaningTaskActionTransition, assertCleaningTaskRoleRecordMutable } = require('../../src/lib/workTaskActionAudit') as typeof import('../../src/lib/workTaskActionAudit')
   assert.deepStrictEqual(
     actorAndPerformerFromRequest(
       { sub: 'actor-1' },
@@ -99,6 +108,12 @@ async function main() {
   }, cancelledTask as any), /task_is_cancelled/)
   assert.equal(cancelledTask.insertedAudits.length, 0)
   assert.equal(cancelledTask.queries.some((sql) => sql.includes('UPDATE cleaning_tasks')), false)
+  await assert.rejects(() => assertCleaningTaskRoleRecordMutable({
+    taskId: 'task-guard',
+    actionId: 'complete_cleaning',
+    actorUserId: 'cleaner-1',
+    statusBefore: 'cleaned',
+  }, makeExecutor({ ...task, status: 'cleaned' }, []) as any), /work_record_read_only/)
   const noPhotos = makeExecutor(task, [])
   const blocked = await applyCleaningTaskActionTransition({
     taskId: 'task-guard',
@@ -242,6 +257,35 @@ async function main() {
   assert.equal(checkinVideoSaved.finalization_pending, true)
   assert.deepEqual(checkinVideoSaved.missing_requirements, ['inspection_photos'])
   assert.equal(checkinNotSubmitted.queries.some((sql) => sql.includes('FROM cleaning_consumable_usages')), false)
+
+  const duplicateActor = makeExecutor(
+    { status: 'inspected', inspection_scope: 'inspect_and_hang', task_type: 'checkout_clean' },
+    [{ ok: 1 }],
+    false,
+    true,
+    true,
+    [{ action: 'upload_access_video', actor: 'inspector-1' }],
+  )
+  await assert.rejects(() => applyCleaningTaskActionTransition({
+    taskId: 'task-guard',
+    actionId: 'upload_access_video',
+    actorUserId: 'inspector-1',
+  }, duplicateActor as any), /work_record_read_only/)
+
+  const reassignedActor = makeExecutor(
+    { status: 'inspected', inspection_scope: 'inspect_and_hang', task_type: 'checkout_clean' },
+    [{ ok: 1 }],
+    false,
+    true,
+    true,
+    [{ action: 'upload_access_video', actor: 'inspector-1' }],
+  )
+  const reassignedSaved = await applyCleaningTaskActionTransition({
+    taskId: 'task-guard',
+    actionId: 'upload_access_video',
+    actorUserId: 'inspector-2',
+  }, reassignedActor as any)
+  assert.equal(reassignedSaved.status_after, 'keys_hung', 'a newly assigned actor may create their own first record')
 
   process.stdout.write('test_cleaning_task_transition_guard: ok\n')
 }
