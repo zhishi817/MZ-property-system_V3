@@ -122,6 +122,17 @@ async function main() {
   assert.equal(actionById(selfCompleteLocked, 'update_status')?.disabled_reason, 'auto_sync_locked')
   assert.equal(selfCompleteLocked.editable_fields.cleaner_id.disabled_reason, 'auto_sync_locked')
 
+  const deferredRestockPending = buildWebTaskCapabilityPayload({
+    task_source: 'cleaning',
+    task_kind: 'deferred_inspection',
+    status: 'restock_pending',
+    inspection_mode: 'deferred',
+    deferred_inspection_view: true,
+  }, managerContext)
+  assert.equal(deferredRestockPending.display_state.status_label, '待补品')
+  assert.equal(deferredRestockPending.display_state.task_semantics.is_task_ended, false)
+  assert.equal(badgeIds(deferredRestockPending).includes('task_ended'), false)
+
   const offline = buildWebTaskCapabilityPayload({
     source: 'offline_tasks',
     status: 'done',

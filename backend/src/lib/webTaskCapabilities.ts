@@ -158,7 +158,6 @@ function isCompletedStatus(status: string) {
     'done',
     'completed',
     'cleaned',
-    'restock_pending',
     'restocked',
     'keys_hung',
     'inspected',
