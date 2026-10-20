@@ -118,14 +118,14 @@
 - Branch: `codex/mz053-five-fixes-unified`
 - Base: `origin/Dev@afb1ff15b8002d3d7c1400d914ec1ad9ce28aa7f`; fetched at `2026-10-20 22:38 UTC`
 - Candidate patch SHA-256: `c9282f72c891eacd0325d4a24cb64523b5c208bf8ee229bad2e764cba462ea89`, excluding `docs/change-release-ledger.md`
-- Commit SHA: `b015187089fa81f28a867f0b37045e0fe0d130e7`; exact reviewed content commit, with the final audit head being the later ledger-only receipt commit
+- Commit SHA: `b015187b9fa78441a40b502468259aeb5d85aca6`; exact reviewed content commit, with the final audit head being the later ledger-only receipt commit
 - Dependencies: none
 - Required validation: `PASS for staged candidate`; exact clean-worktree `PYTHONDONTWRITEBYTECODE=1 DATABASE_URL='' npm run check:ci` passed, including Root contracts, backend build, feature-registry audit, Web 55 files / 287 tests and the paired exact Mobile TypeScript contract; non-production database write integration and production verification were not run
 - Shared-hunk review: `PASS`; all 60 non-ledger hunks are jointly selected by the two named CRLs, and no unselected path, generated file or local cache is present
 - Generated-file review: `PASS`; build-emitted tracked `backend/dist` changes and temporary dependency/cross-repository links were restored or removed before staging
 - Independent review: `GO for local commit`; fresh independent read-only review recomputed the exact staged fingerprint, inspected all 10 staged paths / 60 non-ledger hunks, verified key-handover fail-closed identity, optional-assignee transaction semantics, permission/media boundaries and generated/secret exclusions, and found P0=0 / P1=0 / Root P2=0
 - User authorization: `approved-for-push`; evidence: user explicitly requested the five fixes plus the Web offline-task optional assignee be committed, pushed and opened as two draft PRs, while merge, deployment, OTA and production writes remain excluded
-- Technical state: `committed`; exact content commit `b015187089fa81f28a867f0b37045e0fe0d130e7` exists locally, not pushed, merged or deployed
+- Technical state: `committed`; exact content commit `b015187b9fa78441a40b502468259aeb5d85aca6` exists locally, not pushed, merged or deployed
 - Sensitive-information review: `PASS`; no credential, token, `.env`, production payload, media URL or screenshot is selected
 - Deployment order: Root must deploy before the paired Mobile behavior; this attempt does not authorize deployment
 
