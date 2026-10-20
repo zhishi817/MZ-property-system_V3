@@ -73,6 +73,25 @@
 - Independent review: `GO for commit technical review`; evidence: exact candidate fingerprint and four-hunk scope matched, P0=0/P1=0; one non-blocking P2 records the absence of a non-empty full-output SQL fixture.
 - Action conclusion: `GO`; the exact reviewed candidate was committed locally as `6ebb27bbb124166af01b540be18e1b652871b0b8`. Push, PR, merge, deployment, production API/database work and OTA are separately unauthorized.
 
+#### RA-20261020-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261020-005`
+- Selected CRL identities: `root/CRL-20261020-005`
+- Intended action: `push`
+- Branch: `codex/mz053-arrangements-hotfix`
+- Base: `origin/Dev@9f5a74c1c0b03cddaab3240b87b7b5793e3d38b8`; fetched at `2026-10-20T11:55:48Z`.
+- Candidate patch SHA-256: `fdbc91047dd088516c761a2ea8534697870699ee4333d4dbe80fed11364a6f9f`, excluding `docs/change-release-ledger.md`.
+- Commit SHA: `6ebb27bbb124166af01b540be18e1b652871b0b8`; approved source audit HEAD was `686c028f52d937d2021eca89eb61eed66a364b9b`, and the final audit HEAD is the later push-authorization receipt commit.
+- Dependencies: `root/CRL-20261020-004@94bc2b78c8e358f9ff33b5f1e233d7117a5dbdd6`.
+- Required validation: `PASS`; evidence: the exact committed range, focused regressions, backend TypeScript, forced read-only development SQL comparison, candidate fingerprint, clean worktree and sensitive/generated-file checks passed. Read-only remote preflight found `Dev@9f5a74c1c0b03cddaab3240b87b7b5793e3d38b8` and no existing `codex/mz053-arrangements-hotfix` branch.
+- Shared-hunk review: `PASS`; evidence: the exact range contains only this CRL's four selected paths and four non-ledger hunks; no unselected change is present.
+- Generated-file review: `PASS`; evidence: no generated output, dependency link, cache, environment file or secret is part of the range.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after being shown GitHub repository `zhishi817/MZ-property-system_V3`, branch `codex/mz053-arrangements-hotfix` and exact source HEAD `686c028f52d937d2021eca89eb61eed66a364b9b`, the user replied `确认`. This records approval of that source HEAD only; it does not claim approval of the not-yet-created push-authorization receipt HEAD.
+- Independent review: `GO for this ledger-only push-authorization receipt commit`; evidence: reviewer verified the staged change adds only `RA-20261020-003`, matched repository, branch, base, content commit, source audit HEAD and candidate fingerprint, and confirmed authorization remains limited to source HEAD while push stays `NOT VERIFIED` until the resulting exact receipt HEAD is explicitly approved; P0=0/P1=0/P2=0 for the receipt.
+- Action conclusion: `NOT VERIFIED`; blockers: commit this ledger-only authorization receipt, then obtain explicit user confirmation of the resulting exact repository, branch and final receipt HEAD. No further ledger mutation is required after that confirmation; rerun the exact range audit and push-only review immediately before one ordinary non-force push.
+
 ### Risks / Release Notes
 
 - The development benchmark has no non-empty arrangement rows; algebraic/fuzz equivalence covers membership semantics, but only a deployed natural request can prove the production dataset falls below the mobile timeout.
