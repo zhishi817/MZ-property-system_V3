@@ -7719,58 +7719,70 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         ))
         const arrangementRowsResult = arrangementPropertyIds.length
           ? await pgPool.query(
-            `SELECT
-               t.id::text AS id,
-               COALESCE(property_by_id.id::text, property_by_code.id::text, t.property_id::text) AS property_id,
-               COALESCE(t.task_type, t.type, '') AS task_type,
-               t.type,
-               COALESCE(t.task_date, t.date)::text AS task_date,
-               t.status,
-               t.execution_state,
-               t.inspection_mode,
-               t.inspection_scope,
-               t.inspection_due_date::text AS inspection_due_date,
-               t.order_id::text AS order_id,
-               task_order.status::text AS order_status,
-               t.checkin_time,
-               t.inspector_id::text AS inspector_id,
-               t.assignee_id::text AS assignee_id
-             FROM cleaning_tasks t
-             LEFT JOIN properties property_by_id ON property_by_id.id::text = t.property_id::text
-             LEFT JOIN properties property_by_code ON upper(property_by_code.code) = upper(t.property_id::text)
-             LEFT JOIN orders task_order ON task_order.id::text = t.order_id::text
-             WHERE COALESCE(property_by_id.id::text, property_by_code.id::text, t.property_id::text) = ANY($1::text[])
-               AND ${activeCleaningTaskWhereSql('t')}
-               AND ${validCleaningTaskOrderWhereSql('t', 'task_order')}
-               AND (
-                 (
-                   lower(COALESCE(t.task_type, t.type, '')) IN ('checkout_clean', 'checkout_cleaning')
-                   AND lower(COALESCE(t.inspection_mode, '')) = 'deferred'
-                   AND t.inspection_due_date IS NOT NULL
-                   AND lower(COALESCE(t.status, '')) NOT IN ('inspected', 'done', 'completed', 'ready', 'keys_hung', 'cancelled', 'canceled')
+            `WITH normalized_arrangement_tasks AS MATERIALIZED (
+               SELECT
+                 t.id::text AS id,
+                 COALESCE(property_by_id.id::text, property_by_code.id::text, t.property_id::text) AS property_id,
+                 COALESCE(t.task_type, t.type, '') AS task_type,
+                 t.type,
+                 COALESCE(t.task_date, t.date)::date AS task_day,
+                 t.status,
+                 t.execution_state,
+                 t.inspection_mode,
+                 t.inspection_scope,
+                 t.inspection_due_date::date AS inspection_due_date,
+                 t.order_id::text AS order_id,
+                 task_order.status::text AS order_status,
+                 t.checkin_time,
+                 t.inspector_id::text AS inspector_id,
+                 t.assignee_id::text AS assignee_id
+               FROM cleaning_tasks t
+               LEFT JOIN properties property_by_id ON property_by_id.id::text = t.property_id::text
+               LEFT JOIN properties property_by_code ON upper(property_by_code.code) = upper(t.property_id::text)
+               LEFT JOIN orders task_order ON task_order.id::text = t.order_id::text
+               WHERE lower(COALESCE(t.task_type, t.type, '')) IN ('checkout_clean', 'checkout_cleaning', 'checkin_clean')
+                 AND COALESCE(property_by_id.id::text, property_by_code.id::text, t.property_id::text) = ANY($1::text[])
+                 AND ${activeCleaningTaskWhereSql('t')}
+                 AND ${validCleaningTaskOrderWhereSql('t', 'task_order')}
+             ), deferred_arrangement_tasks AS MATERIALIZED (
+               SELECT *
+               FROM normalized_arrangement_tasks
+               WHERE lower(task_type) IN ('checkout_clean', 'checkout_cleaning')
+                 AND lower(COALESCE(inspection_mode, '')) = 'deferred'
+                 AND inspection_due_date IS NOT NULL
+                 AND lower(COALESCE(status, '')) NOT IN ('inspected', 'done', 'completed', 'ready', 'keys_hung', 'cancelled', 'canceled')
+             ), arrangement_tasks AS (
+               SELECT * FROM deferred_arrangement_tasks
+               UNION ALL
+               SELECT checkin.*
+               FROM normalized_arrangement_tasks checkin
+               WHERE lower(checkin.task_type) = 'checkin_clean'
+                 AND lower(COALESCE(checkin.inspection_scope, 'inspect_and_hang')) <> 'password_only'
+                 AND EXISTS (
+                   SELECT 1
+                   FROM deferred_arrangement_tasks deferred
+                   WHERE checkin.task_day BETWEEN deferred.task_day AND deferred.inspection_due_date
+                     AND checkin.property_id = deferred.property_id
                  )
-                 OR (
-                   lower(COALESCE(t.task_type, t.type, '')) = 'checkin_clean'
-                   AND lower(COALESCE(t.inspection_scope, 'inspect_and_hang')) <> 'password_only'
-                   AND EXISTS (
-                     SELECT 1
-                     FROM cleaning_tasks deferred
-                     LEFT JOIN orders deferred_order ON deferred_order.id::text = deferred.order_id::text
-                     LEFT JOIN properties deferred_property_by_id ON deferred_property_by_id.id::text = deferred.property_id::text
-                     LEFT JOIN properties deferred_property_by_code ON upper(deferred_property_by_code.code) = upper(deferred.property_id::text)
-                     WHERE lower(COALESCE(deferred.task_type, deferred.type, '')) IN ('checkout_clean', 'checkout_cleaning')
-                       AND lower(COALESCE(deferred.inspection_mode, '')) = 'deferred'
-                       AND deferred.inspection_due_date IS NOT NULL
-                       AND lower(COALESCE(deferred.status, '')) NOT IN ('inspected', 'done', 'completed', 'ready', 'keys_hung', 'cancelled', 'canceled')
-                       AND COALESCE(t.task_date, t.date)::date BETWEEN COALESCE(deferred.task_date, deferred.date)::date AND deferred.inspection_due_date::date
-                       AND COALESCE(deferred_property_by_id.id::text, deferred_property_by_code.id::text, deferred.property_id::text)
-                           = COALESCE(property_by_id.id::text, property_by_code.id::text, t.property_id::text)
-                       AND ${activeCleaningTaskWhereSql('deferred')}
-                       AND ${validCleaningTaskOrderWhereSql('deferred', 'deferred_order')}
-                   )
-                 )
-               )
-             ORDER BY COALESCE(t.task_date, t.date)::date, t.id::text`,
+             )
+             SELECT
+               id,
+               property_id,
+               task_type,
+               type,
+               task_day::text AS task_date,
+               status,
+               execution_state,
+               inspection_mode,
+               inspection_scope,
+               inspection_due_date::text AS inspection_due_date,
+               order_id,
+               order_status,
+               checkin_time,
+               inspector_id,
+               assignee_id
+             FROM arrangement_tasks
+             ORDER BY task_day, id`,
             [arrangementPropertyIds],
           )
           : { rows: [] }
