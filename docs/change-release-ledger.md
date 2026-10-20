@@ -63,15 +63,15 @@
 - Branch: `codex/mz053-arrangements-hotfix`
 - Base: `origin/Dev@9f5a74c1c0b03cddaab3240b87b7b5793e3d38b8`; fetched at `2026-10-20T11:55:48Z`.
 - Candidate patch SHA-256: `fdbc91047dd088516c761a2ea8534697870699ee4333d4dbe80fed11364a6f9f`, excluding `docs/change-release-ledger.md`.
-- Commit SHA: not committed.
+- Commit SHA: `6ebb27bbb124166af01b540be18e1b652871b0b8`; the final audit head is the later ledger-only receipt commit.
 - Dependencies: `root/CRL-20261020-004` is already contained in the base; no additional release unit.
 - Required validation: `PASS for local candidate`; evidence: focused and cross-boundary regressions, TypeScript, diff check and forced read-only development SQL comparison passed with the limitations stated above.
 - Shared-hunk review: `PASS`; evidence: clean fresh-base worktree contains only this unit; exact staging has four non-ledger hunks across three non-ledger paths plus this CRL's ledger hunk, with no untracked or unselected file.
 - Generated-file review: `PASS`; evidence: no generated output is included; the ignored dependency symlink is local validation plumbing only.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: after the exact `root/CRL-20261020-005` scope and separate push/deployment boundary were shown, the user replied `确认` on 2026-10-20 UTC. This authorizes only the reviewed local content commit.
 - Independent review: `GO for commit technical review`; evidence: exact candidate fingerprint and four-hunk scope matched, P0=0/P1=0; one non-blocking P2 records the absence of a non-empty full-output SQL fixture.
-- Action conclusion: `GO for local commit`; blockers: none for committing the exact reviewed candidate. Push, PR, merge, deployment, production API/database work and OTA are separately unauthorized.
+- Action conclusion: `GO`; the exact reviewed candidate was committed locally as `6ebb27bbb124166af01b540be18e1b652871b0b8`. Push, PR, merge, deployment, production API/database work and OTA are separately unauthorized.
 
 ### Risks / Release Notes
 
