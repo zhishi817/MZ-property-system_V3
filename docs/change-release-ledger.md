@@ -81,9 +81,9 @@
 - Base: `origin/Dev@d9668fb3cf3e7d0802e44d8477a606396a7ed45c`; fetched at `2026-10-20T10:48:19Z`.
 - Candidate patch SHA-256: `bbeee0baccdc7871ff341a0367f1ee30b0c725ce143fa9af7c8c72d69469e3e6` excluding `docs/change-release-ledger.md`.
 - Commit SHA: `94bc2b78c8e358f9ff33b5f1e233d7117a5dbdd6`.
-- Dependencies: Root PR #403 merged baseline; related `mobile/CRL-20261020-003` remains an independent repository range.
+- Dependencies: none.
 - Required validation: `PASS`; evidence: all selected focused regressions and backend TypeScript passed on the fresh current Dev base; the read-only dev PostgreSQL equivalence/timing evidence remains identical to the isolated candidate.
-- Shared-hunk review: `not applicable`; fresh worktree contains only this selected CRL.
+- Shared-hunk review: `PASS`; evidence: the exact committed range contains 24 declared non-ledger hunks owned by this CRL, with no unselected or unexpected hunk; historical changes in shared files are already contained in the recorded base.
 - Generated-file review: `PASS`; no generated file, build output, cache or dependency link is staged.
 - Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: the user replied `可以` to the exact two-repository scope. Repository policy requires a separately recorded approval after the content commit SHA and branch are known before push.
