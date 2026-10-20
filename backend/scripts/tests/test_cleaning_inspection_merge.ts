@@ -1,20 +1,171 @@
 import assert from 'node:assert/strict'
 import express from 'express'
+import fs from 'node:fs'
+import path from 'node:path'
 import {
+  canonicalKeyHandoverSourceIds,
   deferredProjectionDate,
   isCheckinKeyHandoverTask,
   isInspectionModeAllowedForTask,
   keyPhotoConfirmsCurrentTaskProgress,
   lockboxVideoConfirmsCurrentTaskState,
+  mergeCleaningKeyHandoverProjections,
   mergeInspectionPlan,
   mergeTurnoverTaskPlan,
   mobileInspectionProjectionDate,
   normalizeTurnoverInspectionScope,
+  projectCleaningKeyHandover,
   resolveBoardInspectionDueDate,
   sanitizeInspectionModeForTask,
   unlinkedDeferredInspectionMergeKey,
   withInspectionMergeIsolation,
 } from '../../src/lib/cleaningInspection'
+
+function testKeyHandoverFactStaysSeparateFromWorkflowFinalization() {
+  assert.deepEqual(projectCleaningKeyHandover({
+    taskId: 'mq2212-checkout',
+    status: 'in_progress',
+    executionState: 'active',
+    lockboxVideoUrl: 'https://example.invalid/mq2212-lockbox.mp4',
+    latestUploadAudit: {
+      performed_as_action: 'upload_access_video',
+      performed_at: '2026-10-20T02:32:15.623Z',
+      status_before: 'in_progress',
+      status_after: 'in_progress',
+      metadata: {
+        finalization_pending: true,
+        missing_requirements: ['cleaning_consumables', 'cleaning_property_photo'],
+      },
+    },
+  }), {
+    state: 'completed',
+    source_task_id: 'mq2212-checkout',
+    completed_at: '2026-10-20T02:32:15.623Z',
+    workflow_finalization_pending: true,
+    missing_requirements: ['cleaning_consumables', 'cleaning_property_photo'],
+  })
+}
+
+function testKeyHandoverFactFailsClosedForStaleOrInvalidEvidence() {
+  const audit = {
+    performed_as_action: 'upload_access_video',
+    performed_at: '2026-10-20T02:32:15.623Z',
+    status_before: 'in_progress',
+    status_after: 'in_progress',
+    metadata: { finalization_pending: true, missing_requirements: ['cleaning_consumables'] },
+  }
+  assert.equal(projectCleaningKeyHandover({
+    taskId: 'reopened-assigned',
+    status: 'assigned',
+    executionState: 'active',
+    lockboxVideoUrl: 'https://example.invalid/stale.mp4',
+    latestUploadAudit: audit,
+  }), null)
+  assert.equal(projectCleaningKeyHandover({
+    taskId: 'cancelled-task',
+    status: 'cancelled',
+    executionState: 'cancelled',
+    lockboxVideoUrl: 'https://example.invalid/cancelled.mp4',
+    latestUploadAudit: audit,
+  }), null)
+  assert.equal(projectCleaningKeyHandover({
+    taskId: 'deleted-video',
+    status: 'in_progress',
+    executionState: 'active',
+    lockboxVideoUrl: '',
+    latestUploadAudit: audit,
+  }), null)
+  assert.equal(projectCleaningKeyHandover({
+    taskId: 'url-only',
+    status: 'in_progress',
+    executionState: 'active',
+    lockboxVideoUrl: 'https://example.invalid/url-only.mp4',
+    latestUploadAudit: null,
+  }), null)
+  assert.equal(projectCleaningKeyHandover({
+    taskId: 'reopened-in-progress',
+    status: 'in_progress',
+    executionState: 'active',
+    lockboxVideoUrl: 'https://example.invalid/stale-after-reopen.mp4',
+    latestUploadAudit: audit,
+    invalidatedAfterUpload: true,
+  }), null)
+  assert.equal(projectCleaningKeyHandover({
+    taskId: 'reopened-then-terminal',
+    status: 'keys_hung',
+    executionState: 'active',
+    lockboxVideoUrl: 'https://example.invalid/stale-after-second-run.mp4',
+    latestUploadAudit: audit,
+    invalidatedAfterUpload: true,
+  }), null)
+}
+
+function testKeyHandoverMergeRequiresCanonicalSourceMembership() {
+  const fact = {
+    state: 'completed' as const,
+    source_task_id: 'checkout-1',
+    completed_at: '2026-10-20T02:32:15.623Z',
+    workflow_finalization_pending: true,
+    missing_requirements: ['cleaning_consumables'],
+  }
+  assert.equal(mergeCleaningKeyHandoverProjections([{ key_handover: fact }], []), null)
+  assert.equal(mergeCleaningKeyHandoverProjections([{ key_handover: fact }], ['unrelated-task']), null)
+  assert.deepEqual(mergeCleaningKeyHandoverProjections([{ key_handover: fact }], ['checkout-1']), fact)
+  assert.deepEqual(
+    mergeCleaningKeyHandoverProjections([{ key_handover: fact }, { key_handover: null }], ['checkout-1', 'checkin-1']),
+    fact,
+  )
+}
+
+function testCanonicalKeyHandoverTurnoverRequiresExactOrderBoundary() {
+  const checkout = {
+    __raw_id: 'checkout-1',
+    task_type: 'checkout_clean',
+    property_id: 'property-1',
+    task_date: '2026-10-20',
+    order_id: 'outgoing-order',
+    order_checkout: '2026-10-20',
+  }
+  const checkin = {
+    __raw_id: 'checkin-1',
+    task_type: 'checkin_clean',
+    property_id: 'property-1',
+    task_date: '2026-10-20',
+    order_id: 'incoming-order',
+    order_checkin: '2026-10-20',
+  }
+  assert.deepEqual(canonicalKeyHandoverSourceIds([checkout]), ['checkout-1'])
+  assert.deepEqual(canonicalKeyHandoverSourceIds([checkout, checkin]), ['checkout-1', 'checkin-1'])
+  assert.deepEqual(canonicalKeyHandoverSourceIds([checkout, { ...checkin, order_checkin: '2026-10-21' }]), [])
+  assert.deepEqual(canonicalKeyHandoverSourceIds([checkout, { ...checkin, order_id: 'outgoing-order' }]), [])
+  assert.deepEqual(canonicalKeyHandoverSourceIds([checkout, { ...checkin, property_id: 'property-2' }]), [])
+  assert.deepEqual(canonicalKeyHandoverSourceIds([checkout, { ...checkin, __work_record_state: 'completed' }]), [])
+}
+
+function testWorkTaskPayloadUsesExactAuditWithoutExposingMediaUrl() {
+  const source = fs.readFileSync(path.resolve(__dirname, '../../src/modules/mzapp.ts'), 'utf8')
+  const cleaningSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/cleaning.ts'), 'utf8')
+  const cleaningAppSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/cleaning_app.ts'), 'utf8')
+  assert.match(source, /latest_lockbox_audit AS \([\s\S]*?audit\.source_id::text AS task_id[\s\S]*?performed_as_action = 'upload_access_video'/)
+  assert.match(source, /current_media\.task_id::text = audit\.source_id::text[\s\S]*?current_media\.type = 'lockbox_video'/)
+  assert.match(source, /lockboxVideoUrl: row\.has_current_lockbox_video === true \? 'recorded' : ''/)
+  assert.match(source, /invalidatedAfterUpload: row\.lockbox_audit_invalidated === true/)
+  assert.match(source, /key_handover: keyHandover/)
+  assert.match(source, /canonicalKeyHandoverSourceIds\(rows\)/)
+  assert.match(source, /__key_handover_source_ids/)
+  assert.match(source, /status_after, ''\)\) = 'in_progress'[\s\S]*?status_before/)
+  assert.match(source, /latest_cancellation\.is_deleted = false/)
+  assert.match(source, /candidate_cancellation\.id = candidate_id\.id[\s\S]*?COALESCE\(candidate_cancellation\.is_deleted, false\) = false/)
+  assert.match(source, /latest_cancellation_ids AS MATERIALIZED \([\s\S]*?patch,status[\s\S]*?IN \('cancelled', 'canceled'\)/)
+  assert.doesNotMatch(source, /latest_cancellation_ids AS MATERIALIZED \([\s\S]*?event\.event_type = 'TASK_REMOVED'[\s\S]*?ORDER BY event\.task_id/)
+  assert.match(source, /changedFields: \['status', 'lockbox_video_uploaded_at', 'lockbox_video_url', 'key_handover'\][\s\S]*?key_handover: keyHandover/)
+  assert.match(source, /lockbox_video_uploaded_at: null, lockbox_video_url: null, key_handover: null/)
+  assert.match(cleaningSource, /changedFields: \['status', 'execution_state', 'lifecycle_state'\][\s\S]*?lifecycle_state: 'deleted'/)
+  assert.match(cleaningSource, /pgRunInTransaction\(async \(client\)[\s\S]*?lifecycle_state: 'deleted'[\s\S]*?\}, client\)/)
+  assert.match(cleaningAppSource, /changedFields: \['status', 'lockbox_video_uploaded_at', 'lockbox_video_url', 'key_handover'\]/)
+  assert.match(cleaningAppSource, /lockbox_video_uploaded_at: null, lockbox_video_url: null, key_handover: null/)
+  assert.doesNotMatch(source, /lockboxVideoConfirmsCurrentTaskState\([\s\S]{0,240}\) \|\| !!keyHandover/)
+}
 
 function testTurnoverCheckoutAssignmentWinsOverPendingFallback() {
   const out = mergeInspectionPlan([
@@ -539,6 +690,11 @@ testBoardSavePreservesDeferredDate()
 testKeysHungSelfCompleteProjectsToOriginalTaskDate()
 testOrdinarySelfCompleteDoesNotCreateInspectorTask()
 testPasswordOnlyCannotUseSelfCompleteOrCheckedDone()
+testKeyHandoverFactStaysSeparateFromWorkflowFinalization()
+testKeyHandoverFactFailsClosedForStaleOrInvalidEvidence()
+testKeyHandoverMergeRequiresCanonicalSourceMembership()
+testCanonicalKeyHandoverTurnoverRequiresExactOrderBoundary()
+testWorkTaskPayloadUsesExactAuditWithoutExposingMediaUrl()
 
 testTaskCenterSaveBoardDoesNotEraseDeferredDate()
   .then(() => console.log('test_cleaning_inspection_merge: ok'))

@@ -7,6 +7,46 @@
 - 测试映射必须说明保护点和测试场景；只登记测试文件名不算覆盖证据。
 - `sufficient` 表示当前测试覆盖该保护点；`partial` 表示已有测试但仍有缺口；`not-wired` 表示测试存在但尚未进入对应质量检查；`missing` 表示尚无测试。
 
+## FR-040：挂钥匙事实与整项任务完成状态分离
+
+- **维护责任范围：** backend MZ App work tasks / paired mobile task list and detail
+- **最后审查日期：** 2026-10-20
+- **状态：** active
+
+### 业务保护规则
+
+- 精确任务已有有效挂钥匙视频时，“已挂钥匙”是独立业务事实；清洁耗材、房源照片或检查照片未齐时，任务整体仍可保持 `in_progress`，缺项必须另行提示并保留服务端授权的补资料动作。
+- `lockbox_video_url` 本身不是状态依据。`in_progress` 特例必须同时匹配当前 source task、当前仍存在的视频和该任务最新 `upload_access_video` 审计中的 `finalization_pending=true`；若上传后出现前置状态重置或终态后重开，旧审计失效。取消、被替换、已删除视频、重开后的普通旧 URL 或其他任务媒体不能提升状态。
+- 已完成事实只可留在单一 source，或唯一一退一入、不同非空订单 ID、相同规范房源/任务日且任务日分别等于出房订单退房日/入房订单入住日的 canonical 周转；仅日期/房源/执行人分组、多 source 模糊组不得传播。移动端不得按房号、日期或订单自行推断或跨任务借用媒体，收到事实 SSE 后必须权威刷新而非局部覆盖合并卡。状态事实不扩大任何角色查看视频 URL 的权限。
+- 清洁任务“删除”仍是数据库软取消并保留事件/审计；状态更新与明确 lifecycle 事件必须同事务，投影不以 `auto_sync_enabled` 猜测删除，删除项不得重新通过完成审计/媒体并集进入任务列表。没有明确取消状态的 `TASK_REMOVED`（例如 superseded）不得进入取消候选。移动端按最新产品规则统一隐藏所有业务取消/删除项，但正常完成记录继续保留。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 后端精确任务事实、待补资料、canonical 共享及删除隔离 | `backend/scripts/tests/test_cleaning_inspection_merge.ts` | MQ2212 式 `in_progress + finalization_pending` 输出独立事实；取消、superseded、删除视频、URL-only、终态后重开/再终态均不提升；只允许单 source 或订单日期边界精确成立的一退一入 canonical 集合合并；两套上传/删除 SSE 同步事实；软删除事务标记并从最终候选排除；原状态不被改写 | sufficient | `npm run test:cleaning-inspection-merge --prefix backend` |
+
+配对 Mobile 候选由 `mobile/CRL-20261020-006` 登记并执行本仓库之外的 Jest 覆盖：主标签显示已挂钥匙、资料待补独立显示、补品动作仍可用、取消/墓碑不提升。Root 的登记审计只引用本仓库内可执行的测试路径。
+
+### 验证策略
+
+- 使用合成数据和源码契约测试，不连接生产数据库，不调用生产 API，不写生产数据；再运行 Root/Mobile 各自完整质量门和独立只读审查。
+
+### 最后验证
+
+- **CRL：** root/CRL-20261020-007 / mobile/CRL-20261020-006
+- **Commit：** not committed
+- **日期：** 2026-10-20
+
+### 相关 CRL
+
+- root/CRL-20261020-007 / mobile/CRL-20261020-006：MZ-053 第 2 点本地配套实现。
+- root/CRL-20261018-002 / mobile/CRL-20261018-001：延期检查与历史媒体 source 隔离基础。
+
+### 非保护范围
+
+- 不回填历史状态、不迁移数据库、不改变 `available_actions`、不扩大媒体权限；部署、OTA 与真机验收不在本地实现范围。
+
 ## FR-039：延期检查在入住变更后的唯一安排、实时归位与结算责任
 
 - **维护责任范围：** backend Task Center / MZ App work tasks / personnel settlement / paired mobile
@@ -1191,7 +1231,7 @@
 
 - 同日合并卡必须保留正确的任务来源、执行人、检查模式、周转日期和状态。
 - 手动任务的有效字段可以继承，但不能用占位值覆盖有效自动任务字段。
-- 线下手动任务的执行人以 `work_tasks` canonical 投影为准；PATCH 指派必须与源任务原子一致，缺省字段不得覆盖既有执行人，`assignee_id: null` 在第一版返回业务错误。
+- 线下手动任务的执行人以 `work_tasks` canonical 投影为准；PATCH 指派必须与源任务原子一致，缺省字段不得覆盖既有执行人；显式 `assignee_id: null`、空字符串或纯空白表示取消指派，并将未完成任务恢复为 `todo`，不得继续返回“暂不支持清空执行人”。
 - 合并结果必须区分 active、取消、延后和已完成来源，不能仅按首个子任务推导。
 - 周转合并卡的入住晚数必须取后一个入住订单，并明确显示为“待住 X晚”，不能继续显示前一个退房订单的晚数。
 - 同一订单的入住 `new_code` 必须回填有效退房任务的 `old_code`；同步查询同时兼容当前 `task_type` 与历史仅有 `type` 的任务行，并保留手工锁定退房任务不覆盖的边界。
@@ -1216,8 +1256,8 @@
 |---|---|---|---|---|
 | 检查模式、周转日期和来源优先级 | `backend/scripts/tests/test_cleaning_inspection_merge.ts` | same-day、pending、deferred、self-complete 合并 | sufficient | `npm run test:cleaning-inspection-merge --prefix backend` |
 | 退房标记跨关联任务传播与合并状态优先级 | `backend/scripts/tests/test_task_assignment_canonical.ts` | 客服标记退房后，同订单或同房源日期的有效入住检查任务得到 `checked_out_at`；未开始显示退房，清洁进行中显示进行中，补品完成后客服/检查人员显示待检查 | sufficient | `npx ts-node-dev --transpile-only backend/scripts/tests/test_task_assignment_canonical.ts` |
-| 线下任务执行人 source/canonical 一致性 | `backend/scripts/tests/test_offline_task_assignment_patch_contract.ts` | root backend Full 确认 assignee 的 omitted/null 语义、source/canonical 表确保、事务投影和 canonical 回读 | sufficient | `npm run test:offline-task-assignment-patch --prefix backend` |
-| 线下任务执行人三角色授权 | `backend/scripts/tests/test_offline_task_assignment_patch.ts` | 客服、线下经理和 admin 的 HTTP/数据库验证；仅在显式非生产测试库、写入确认与生产库身份比对均存在时运行 | partial | `npm run test:offline-task-assignment-patch-integration --prefix backend` |
+| 线下任务执行人 source/canonical 一致性 | `backend/scripts/tests/test_offline_task_assignment_patch_contract.ts` | root backend Full 确认 assignee 的 omitted/null/空白语义、source/canonical 表确保、事务投影和 canonical 回读 | sufficient | `npm run test:offline-task-assignment-patch --prefix backend` |
+| 线下任务执行人三角色授权 | `backend/scripts/tests/test_offline_task_assignment_patch.ts` | 客服、线下经理和 admin 的 HTTP/数据库验证，并覆盖 null/纯空白清空后 source/canonical 均为 null、状态恢复 `todo`；仅在显式非生产测试库、写入确认与生产库身份比对均存在时运行 | partial | `npm run test:offline-task-assignment-patch-integration --prefix backend` |
 | 首次 PATCH 的 canonical 表确保顺序 | `backend/scripts/tests/test_offline_task_assignment_first_patch_contract.ts` | root backend Full 每次断言两张表确保均位于 `pgRunInTransaction` 和首个 `FOR UPDATE` 之前；独立 integration 脚本只在显式非生产测试库与写入确认下覆盖无投影首次写入与三角色 | sufficient | `npm run test:offline-task-assignment-first-patch --prefix backend` |
 | 自动/手动字段继承、受控入住补建和队列作用域隔离 | `backend/scripts/tests/test_cleaning_sync_v2.ts` | 手动 placeholder、旧任务、同步后字段保留；`checkin_only` 只补缺失任务并保留未锁定人工日期/密码/排期；普通↔受控 job 双向不合并、同作用域幂等合并；取消订单的 scoped update 与 scoped delete 均不改变普通 job 或任务投影；scope-aware active-job 索引迁移/初始化契约 | sufficient | `npm run test:cleaning-sync-v2 --prefix backend`（由 root `check:backend` / `check:full` 执行） |
 | 入住/纯入住旧密码的历史字段兼容 | `backend/scripts/tests/test_cleaning_sync_v2.ts` | `task_type` 缺失时同订单回填；纯入住优先取上一笔退房 `old_code`、退房历史缺字段时回退上一笔入住 `new_code`、两类来源失效均清空自动值、无来源保持空白、手工锁定不覆盖，统一展示保留纯入住旧密码 | partial | `npx ts-node-dev --transpile-only backend/scripts/tests/test_cleaning_sync_v2.ts` |
