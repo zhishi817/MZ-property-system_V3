@@ -89,6 +89,8 @@
 - User authorization: `selected-for-commit`; evidence: the user replied `可以` to the exact two-repository scope. Repository policy requires a separately recorded approval after the content commit SHA and branch are known before push.
 - Independent review: `GO for this exact local content commit`; evidence: the reviewer matched branch/base/index, candidate hash `bbeee0baccdc7871ff341a0367f1ee30b0c725ce143fa9af7c8c72d69469e3e6`, six staged files / 24 non-ledger hunks, clean unstaged/untracked scope, MZ049 compatibility, permission boundaries and generated/sensitive/production-write exclusions; P0=0 and code P1=0. The initially noted authorization-ledger P1 is resolved by recording `selected-for-commit` here.
 - Action conclusion: `GO`; the exact reviewed content commit was created locally. Push requires the committed exact range report, a new independent push review and explicit approval bound to repository, commit SHA and branch. PR, merge, deployment, migration, production API/database work and OTA remain unauthorized.
+- Checked-out Git state: exact committed range clean at audit head `8065ec77e2aa572d97c77ffe83f2c1470feef152`; this Release Attempt receipt is the authoritative post-commit state because ledger-only governance forbids changing the earlier top-level pre-commit summary.
+- Remote branch/SHA: not pushed; read-only `ls-remote` on 2026-10-20 UTC confirmed `Dev@d9668fb3cf3e7d0802e44d8477a606396a7ed45c` unchanged and `codex/mz053-performance-retry-20261020` absent.
 
 ### Risks / Release Notes
 
