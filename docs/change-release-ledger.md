@@ -1,5 +1,86 @@
 # Change Release Ledger
 
+## CRL-20261020-005 — MZ053 cleaning arrangement query hot-path optimization
+
+- **Status:** exact staged candidate selected for local commit; ledger gate and independent commit review GO with P0/P1=0; not yet committed, pushed, merged or deployed
+- **Repository:** `root`
+- **Updated:** 2026-10-20 11:56 UTC
+- **Request:** urgently reduce the remaining `/mzapp/work-tasks` cleaning-arrangement query bottleneck without increasing the 15-second mobile timeout, changing MZ049 deferred/check-in semantics, altering MZ053 work-record dates or broadening any role's data visibility.
+- **Outcome:** replace the per-check-in correlated rescan of `cleaning_tasks` with one materialized, property-bounded normalized task set and a small materialized deferred-task semi-join. Response columns, active/order/cancellation filters, inclusive replacement window, password-only exclusion and role filtering remain unchanged.
+
+### Implementation
+
+- Previous behavior: the arrangement phase scanned eligible cleaning rows and, for every check-in candidate, correlated back through `cleaning_tasks`, `orders` and property normalization. Post-deploy natural device requests showed this phase at about 14.8 seconds while the preceding MZ053 candidate phase was about 0.26 seconds, causing the 15-second mobile client to abort before a roughly 17-second server completion.
+- New behavior: normalize the three relevant cleaning task kinds once within the already-authorized property set, materialize open deferred rows once, append those deferred rows and only the check-in rows that match the materialized set by exact property and inclusive date window.
+- Key decisions: code-only read-path optimization; no timeout increase, cache deletion, schema/index/migration, payload change, permission rewrite or production access. MZ049 deferred/check-in, terminal/cancelled, active-task and valid-order predicates are retained; MZ053 actual completion-date/history projection remains downstream and untouched.
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — modified: remove the correlated arrangement rescan and introduce bounded materialized CTEs.
+- `backend/scripts/tests/test_work_tasks_cleaning_arrangement_equivalence.ts` — added: named boundaries, 20,000 deterministic old/new membership comparisons and SQL-shape guards.
+- `backend/package.json` — modified: add the focused arrangement-equivalence command.
+- `docs/change-release-ledger.md` — modified: record this candidate and its evidence.
+
+### Impact / Dependencies
+
+- API: none; response field names and values remain the same.
+- Database / migration: none; SELECT-only runtime change, with no DDL or index.
+- Config / environment: none; the 15-second client timeout is unchanged.
+- Dependencies: built on freshly fetched `origin/Dev@9f5a74c1c0b03cddaab3240b87b7b5793e3d38b8`, which contains `root/CRL-20261020-004` and the released MZ049/MZ053 baselines. No Mobile source or OTA is part of this unit.
+- Related units: `root/CRL-20261020-004` optimized the earlier candidate phase and added timings; this new unit addresses the separately measured arrangement phase without reopening that unit.
+- Rollback: revert this CRL to restore the prior correlated SELECT; no data rollback is required.
+
+### Validation
+
+- `npm run test:work-tasks-cleaning-arrangement-equivalence --prefix backend` — PASS: named boundaries plus 20,000 deterministic old/new membership comparisons; SQL shape confirms one `cleaning_tasks` scan and retained property/date/password filters.
+- `npm run test:work-tasks-cleaning-candidate-scope --prefix backend` and `npm run test:work-tasks-cleaning-candidate-equivalence --prefix backend` — PASS: existing MZ053 candidate scope and 16 named plus 20,000 fuzz equivalence cases remain intact.
+- `npm run test:deferred-inspection-checkin-replacement --prefix backend` and `npm run test:cleaning-inspection-merge --prefix backend` — PASS: MZ049 replacement and merge semantics remain intact; the latter ran with local loopback permission, clears `DATABASE_URL` and uses process-local fixtures.
+- `npm run test:daily-task-execution-visibility --prefix backend`, `test:work-task-actions`, `test:mzapp-media-visibility` and `test:guest-luggage-work-tasks-batch` — PASS: work-record visibility, action/media boundaries and batch contract remain intact.
+- `./backend/node_modules/.bin/tsc -p backend --noEmit --pretty false` and `git diff --check` — PASS.
+- MZ-Dev-Preview forced `BEGIN READ ONLY` old/new SQL comparison across all 109 referenced properties — PASS with identical zero-row SHA-256 `4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945`; old execution `3051.322 ms`, optimized execution `571.570 ms`, planning `50.028 -> 3.892 ms`. Because this enrolled development dataset produced no arrangement rows, this proves read-only plan/runtime improvement and empty-result equivalence, not production latency or non-empty database equivalence.
+- Exact staged pre-commit ledger gate — GO: 4 staged files / 4 declared non-ledger hunks, no untracked, unselected, unexpected or missing hunk; `git diff --cached --check` passed.
+- Independent staged review — GO for commit technical review, P0=0/P1=0/P2=1: reviewer matched base/HEAD/branch/fingerprint, independently reran the focused test and confirmed active/order, terminal/cancelled, password-only, exact-property, inclusive-window, nullable value, output column/order, MZ049 and downstream MZ053/permission equivalence. Non-blocking P2: the model compares membership IDs and the read-only database sample is empty, so non-empty full-row SQL fixture coverage remains a later hardening item.
+- Production logs/API/database and device regression for this candidate — not run; explicitly excluded before approval and deployment.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** `prepared`.
+- **Untracked review:** `none`; the added current-task test is staged and no untracked file remains.
+- `backend/package.json` — SHA-256: `b7f612ed6bd99124b5a355909f43127c929e63af9dd1e767354cdcb9c70509ad`
+- `backend/scripts/tests/test_work_tasks_cleaning_arrangement_equivalence.ts` — SHA-256: `83ef906f5d894fcfbbbd3db82fab558088929214bdffba985a91699746e1acab`
+- `backend/src/modules/mzapp.ts` — SHA-256: `cc32496598f6b74e1df642895404038b458a97b74a38f5bcb346eb8b9e4a33ec`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f0bbe838b61253a8dd5b5d0dbbe8ccd727531662ae5c1171f1627c8314baf7ae`
+
+### Release Attempts
+
+#### RA-20261020-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261020-005`
+- Selected CRL identities: `root/CRL-20261020-005`
+- Intended action: `commit`
+- Branch: `codex/mz053-arrangements-hotfix`
+- Base: `origin/Dev@9f5a74c1c0b03cddaab3240b87b7b5793e3d38b8`; fetched at `2026-10-20T11:55:48Z`.
+- Candidate patch SHA-256: `fdbc91047dd088516c761a2ea8534697870699ee4333d4dbe80fed11364a6f9f`, excluding `docs/change-release-ledger.md`.
+- Commit SHA: not committed.
+- Dependencies: `root/CRL-20261020-004` is already contained in the base; no additional release unit.
+- Required validation: `PASS for local candidate`; evidence: focused and cross-boundary regressions, TypeScript, diff check and forced read-only development SQL comparison passed with the limitations stated above.
+- Shared-hunk review: `PASS`; evidence: clean fresh-base worktree contains only this unit; exact staging has four non-ledger hunks across three non-ledger paths plus this CRL's ledger hunk, with no untracked or unselected file.
+- Generated-file review: `PASS`; evidence: no generated output is included; the ignored dependency symlink is local validation plumbing only.
+- Technical state: `verified`
+- User authorization: `selected-for-commit`; evidence: after the exact `root/CRL-20261020-005` scope and separate push/deployment boundary were shown, the user replied `确认` on 2026-10-20 UTC. This authorizes only the reviewed local content commit.
+- Independent review: `GO for commit technical review`; evidence: exact candidate fingerprint and four-hunk scope matched, P0=0/P1=0; one non-blocking P2 records the absence of a non-empty full-output SQL fixture.
+- Action conclusion: `GO for local commit`; blockers: none for committing the exact reviewed candidate. Push, PR, merge, deployment, production API/database work and OTA are separately unauthorized.
+
+### Risks / Release Notes
+
+- The development benchmark has no non-empty arrangement rows; algebraic/fuzz equivalence covers membership semantics, but only a deployed natural request can prove the production dataset falls below the mobile timeout.
+- Accepted review gap for this local candidate: full-row non-empty fixture coverage is not automated; the independent reviewer manually confirmed the unchanged output expressions and recorded it as non-blocking P2.
+- The slow SQL originated in the MZ049-era integration before MZ053. MZ053 may have increased the property/task set reaching it, but available evidence does not establish MZ053 as the cause of the 14.8-second arrangement runtime.
+- Sensitive-information review: no credentials, URLs, production rows, logs or personal data are included.
+- Git state: local candidate only; not committed, pushed, merged, deployed, OTA-published or production/device verified.
+
 ## CRL-20261020-004 — MZ053 cleaning-pool bounded candidate scan and timing
 
 - **Status:** selected Root release candidate on freshly fetched `origin/Dev@d9668fb3cf3e7d0802e44d8477a606396a7ed45c`; exact staging and current-base validation passed; exact staged independent review remains pending; not committed, pushed, merged or deployed
