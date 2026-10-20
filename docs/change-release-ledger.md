@@ -65,6 +65,26 @@
 - Independent review: `GO for this exact local commit candidate`; evidence: final read-only review found P0/P1/P2/P3 = 0 and confirmed presentation-only behavior, unchanged writes/permissions/deferred queues/statistics and no sensitive or release behavior
 - Action conclusion: `LOCAL CONTENT COMMIT COMPLETED / push NOT AUTHORIZED`; this ledger-only freeze receipt may be committed under the same bookkeeping authorization, but push, PR, merge, deployment, database/API writes and production actions require separate approval and evidence
 
+#### RA-20261020-008
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261020-006`
+- Selected CRL identities: `root/CRL-20261020-006`
+- Intended action: `push`
+- Branch: `codex/mz053-unified-display`
+- Base: `origin/Dev@5bbeeb594026adca4fa71ad263be936e5eda8f2c`; freshly fetched at `2026-10-20T14:24:55Z`
+- Candidate patch SHA-256: `5058422343c03fbf41ec97c8559bf54cefa7c6fe47b3446b6c8f4d88e324add5`, excluding `docs/change-release-ledger.md`
+- Commit SHA: `acb4145720a4f6cb7cc1c08eb453ee90cf9637e4`; exact reviewed content commit. Source audit HEAD before this push-attempt receipt is `9a742893c68ec504b9bb80f0fc44d1c0fdf0258b`; the final audit HEAD will be this later ledger-only receipt commit.
+- Dependencies: none
+- Required validation: `PASS for committed content`; evidence: focused Web task-capability regression, backend TypeScript, ledger coverage, diff checks, exact non-ledger fingerprint and the prior final content review passed. Production/API/database verification was not run and is not required for a feature-branch push.
+- Shared-hunk review: `PASS`; evidence: the exact range contains only the declared Root CRL files and two selected non-ledger hunks plus ledger receipts.
+- Generated-file review: `PASS`; evidence: no generated output, dependency, migration, cache, environment file or build artifact is in the range.
+- Technical state: `committed`; push receipt preparation is in progress and the remote feature branch is absent.
+- User authorization: `not yet approved for the final receipt HEAD`; evidence: the user said `推送`, which selects this already-completed Root/Mobile pair for push preparation, but the exact resulting receipt HEAD had not yet been shown. Repository policy requires a final confirmation bound to repository, branch and the immutable receipt HEAD.
+- Independent review: `GO for the exact local content commit`; push-only review of the frozen final receipt HEAD remains required immediately before push.
+- Remote preflight: read-only fetch confirmed `origin/Dev@5bbeeb594026adca4fa71ad263be936e5eda8f2c` unchanged at `2026-10-20T14:24:55Z`; `git ls-remote --heads origin codex/mz053-unified-display` returned no branch.
+- Action conclusion: `NOT VERIFIED for push`; blockers: commit this ledger-only push-attempt receipt, run the exact final range report and push-only read-only review, then obtain explicit user confirmation of `zhishi817/MZ-property-system_V3`, branch `codex/mz053-unified-display` and the resulting final receipt HEAD. No ledger mutation is required after that confirmation.
+
 ### Risks / Release Notes
 
 - Risk: any consumer that treated the generic `task_ended` badge as a proxy for supply completion will now correctly continue to see `restock_pending` as open display state; underlying actions remain unchanged。
