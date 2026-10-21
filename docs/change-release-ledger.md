@@ -241,15 +241,15 @@
 - Branch: `codex/mz054-061-unified-fixes`
 - Base: `origin/Dev@65a9d218d803813ed458c25406493aee70189da5`; fetched at `2026-10-21 04:49 UTC`
 - Candidate patch SHA-256: `3ab8275c7d62fb9e8b021874a9bac2ffe1dd2a9bf0ace681d5662ad1155abf85`, excluding `docs/change-release-ledger.md`
-- Commit SHA: not committed
+- Commit SHA: `7f783a37518c5ff0af7b8d318d52da0990ffc40c`; exact reviewed content commit, with audit head supplied by the release report.
 - Dependencies: paired `mobile/CRL-20261021-002`; Root has no runtime prerequisite on Mobile.
 - Required validation: PASS; clean-worktree backend build, all affected contracts, isolated dev PostgreSQL helper test and actual local HTTP/API integration passed; paired Mobile clean-worktree `check:ci` passed with 76 suites / 598 tests.
 - Shared-hunk review: PASS; all selected runtime/test files belong only to MZ054–MZ061; MZ062 and unrelated paths are absent.
 - Generated-file review: PASS; source, tests and ledger only; no generated or dependency files.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `approved-for-push`; evidence: user requested “补完以后提交推送创建pr吧”.
 - Independent review: `GO for commit`; exact base/branch/fingerprint and all 12 staged files / 182 non-ledger hunks matched; P0=0, P1=0, P2=0; no MZ062, generated, dependency, sensitive or production-write scope found.
-- Action conclusion: `GO for commit`; post-commit exact range audit remains required before push.
+- Action conclusion: `GO for normal branch push and Draft PR after the exact committed-range report passes`; no merge, deploy or production write is authorized.
 
 ### Risks / Release Notes
 
