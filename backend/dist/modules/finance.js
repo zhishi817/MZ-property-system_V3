@@ -33,6 +33,8 @@ const monthlyStatementInvoiceAttachments_1 = require("../lib/monthlyStatementInv
 const autoExpenseSourceSummary_1 = require("../lib/autoExpenseSourceSummary");
 const companyRevenueReport_1 = require("../lib/companyRevenueReport");
 const dailyNecessitiesAutoExpense_1 = require("../lib/dailyNecessitiesAutoExpense");
+const maintenanceAutoExpense_1 = require("../lib/maintenanceAutoExpense");
+const pdfRenderServiceAuth_1 = require("../services/pdfRenderServiceAuth");
 exports.router = (0, express_1.Router)();
 const upload = r2_1.hasR2 ? (0, multer_1.default)({ storage: multer_1.default.memoryStorage() }) : (0, multer_1.default)({ dest: path_1.default.join(process.cwd(), 'uploads') });
 const memUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage() });
@@ -198,11 +200,78 @@ exports.router.get('/company-revenue/report', (0, auth_1.requireAnyPerm)(company
         const orders = normalizeOrdersForMonthSegments(ordersResult.rows || []);
         const incomes = Array.isArray(incomesResult.rows) ? incomesResult.rows : [];
         const expenses = Array.isArray(expensesResult.rows) ? expensesResult.rows : [];
+        const personnelSettlementIds = Array.from(new Set(expenses
+            .filter((row) => String((row === null || row === void 0 ? void 0 : row.ref_type) || '') === 'personnel_weekly_settlement')
+            .map((row) => String((row === null || row === void 0 ? void 0 : row.ref_id) || '').trim())
+            .filter(Boolean)));
+        const settlementBreakdownResult = personnelSettlementIds.length
+            ? await dbAdapter_2.pgPool.query(`SELECT line.settlement_id, line.component_type,
+                  COUNT(*)::int AS count,
+                  COALESCE(SUM(line.subtotal_cents),0)::text AS subtotal_cents,
+                  COALESCE(SUM(line.gst_cents),0)::text AS gst_cents,
+                  COALESCE(SUM(line.total_cents),0)::text AS total_cents,
+                  settlement.subtotal_cents::text AS settlement_subtotal_cents,
+                  settlement.gst_cents::text AS settlement_gst_cents,
+                  settlement.total_cents::text AS settlement_total_cents
+             FROM personnel_settlement_lines line
+             JOIN personnel_weekly_settlements settlement ON settlement.id=line.settlement_id
+            WHERE line.settlement_id=ANY($1::text[])
+            GROUP BY line.settlement_id, line.component_type,
+                     settlement.subtotal_cents, settlement.gst_cents, settlement.total_cents`, [personnelSettlementIds]).catch(() => ({ rows: [] }))
+            : { rows: [] };
+        const settlementBreakdownById = new Map();
+        const settlementTotalsById = new Map();
+        for (const row of settlementBreakdownResult.rows || []) {
+            const settlementId = String(row.settlement_id || '');
+            const items = settlementBreakdownById.get(settlementId) || [];
+            items.push({
+                component_type: String(row.component_type || ''),
+                count: Number(row.count || 0),
+                subtotal_cents: Number(row.subtotal_cents || 0),
+                gst_cents: Number(row.gst_cents || 0),
+                total_cents: Number(row.total_cents || 0),
+            });
+            settlementBreakdownById.set(settlementId, items);
+            settlementTotalsById.set(settlementId, {
+                subtotal: Number(row.settlement_subtotal_cents || 0),
+                gst: Number(row.settlement_gst_cents || 0),
+                total: Number(row.settlement_total_cents || 0),
+            });
+        }
+        for (const [settlementId, totals] of settlementTotalsById.entries()) {
+            const items = settlementBreakdownById.get(settlementId) || [];
+            const lineTotals = items.reduce((sum, item) => ({
+                subtotal: sum.subtotal + Number(item.subtotal_cents || 0),
+                gst: sum.gst + Number(item.gst_cents || 0),
+                total: sum.total + Number(item.total_cents || 0),
+            }), { subtotal: 0, gst: 0, total: 0 });
+            const adjustment = {
+                subtotal: totals.subtotal - lineTotals.subtotal,
+                gst: totals.gst - lineTotals.gst,
+                total: totals.total - lineTotals.total,
+            };
+            if (adjustment.subtotal || adjustment.gst || adjustment.total) {
+                items.push({
+                    component_type: 'finance_adjustment',
+                    count: 1,
+                    subtotal_cents: adjustment.subtotal,
+                    gst_cents: adjustment.gst,
+                    total_cents: adjustment.total,
+                });
+            }
+            settlementBreakdownById.set(settlementId, items);
+        }
+        const expensesWithBreakdown = expenses.map((row) => ({
+            ...row,
+            settlement_breakdown: String((row === null || row === void 0 ? void 0 : row.ref_type) || '') === 'personnel_weekly_settlement'
+                ? (settlementBreakdownById.get(String((row === null || row === void 0 ? void 0 : row.ref_id) || '')) || [])
+                : undefined,
+        }));
         const orderIds = orders.map((order) => String((order === null || order === void 0 ? void 0 : order.id) || '')).filter(Boolean);
         const propertyIds = Array.from(new Set([
             ...orders.map((order) => String((order === null || order === void 0 ? void 0 : order.property_id) || '')),
             ...incomes.map((row) => String((row === null || row === void 0 ? void 0 : row.property_id) || '')),
-            ...expenses.map((row) => String((row === null || row === void 0 ? void 0 : row.property_id) || '')),
+            ...expensesWithBreakdown.map((row) => String((row === null || row === void 0 ? void 0 : row.property_id) || '')),
         ].filter(Boolean)));
         const [deductionsResult, propertiesResult] = await Promise.all([
             canViewIncome && orderIds.length
@@ -243,7 +312,7 @@ exports.router.get('/company-revenue/report', (0, auth_1.requireAnyPerm)(company
             landlords,
             managementFeeRulesByLandlord,
             companyIncomes: incomes,
-            companyExpenses: expenses,
+            companyExpenses: expensesWithBreakdown,
             includeDeleted,
         });
         return res.json({
@@ -261,6 +330,7 @@ exports.router.get('/company-revenue/report', (0, auth_1.requireAnyPerm)(company
             },
             income_categories: canViewIncome ? report.income_categories : [],
             expense_categories: canViewExpense ? report.expense_categories : [],
+            cleaning_expense_breakdown: canViewExpense ? report.cleaning_expense_breakdown : [],
             income_rows: canViewIncome ? report.income_rows : [],
             expense_rows: canViewExpense ? report.expense_rows : [],
             warnings: canViewIncome ? report.warnings : [],
@@ -271,6 +341,10 @@ exports.router.get('/company-revenue/report', (0, auth_1.requireAnyPerm)(company
     }
 });
 exports.router.get('/', async (req, res) => {
+    const pdfRenderReadOnly = (0, pdfRenderServiceAuth_1.isPdfRenderServiceUser)(req.user);
+    if (pdfRenderReadOnly && !dbAdapter_1.hasPg) {
+        return res.status(503).json({ code: 'pdf_render_data_unavailable', source: 'finance' });
+    }
     try {
         if (dbAdapter_1.hasPg) {
             const q = req.query || {};
@@ -367,6 +441,9 @@ exports.router.get('/', async (req, res) => {
         }));
     }
     catch (_a) {
+        if (pdfRenderReadOnly) {
+            return res.status(503).json({ code: 'pdf_render_data_unavailable', source: 'finance' });
+        }
         const q = req.query || {};
         const from = autoToISODateOnly(q.from);
         const to = autoToISODateOnly(q.to);
@@ -771,9 +848,11 @@ function deriveAutoExpenseFields(kind, row) {
     return {
         refType: kind,
         refId,
-        status: autoNormStatus(row === null || row === void 0 ? void 0 : row.status),
+        status: kind === 'maintenance' ? (0, maintenanceAutoExpense_1.maintenanceAutoExpenseStatus)(row) : autoNormStatus(row === null || row === void 0 ? void 0 : row.status),
         payMethod: autoNormPayMethod(row === null || row === void 0 ? void 0 : row.pay_method),
-        occurredAt: autoToISODateOnly(row === null || row === void 0 ? void 0 : row.completed_at) || autoToISODateOnly(row === null || row === void 0 ? void 0 : row.occurred_at),
+        occurredAt: kind === 'maintenance'
+            ? (0, maintenanceAutoExpense_1.maintenanceAutoExpenseOccurredAt)(row)
+            : autoToISODateOnly(row === null || row === void 0 ? void 0 : row.completed_at) || autoToISODateOnly(row === null || row === void 0 ? void 0 : row.occurred_at),
         amount,
         propertyId: String((row === null || row === void 0 ? void 0 : row.property_id) || ''),
         category: 'other',
@@ -788,7 +867,7 @@ async function collectAutoExpenseSourceItems(executor, input) {
     const items = [];
     const propertyIdFilter = String(input.propertyIdFilter || '').trim();
     if (input.type === 'all' || input.type === 'maintenance') {
-        const mt = await executor.query(`SELECT id, property_id, status, pay_method, work_no, maintenance_amount, has_parts, parts_amount, maintenance_amount_includes_parts, has_gst, maintenance_amount_includes_gst, total_amount, completed_at, occurred_at, created_at, details, repair_notes, invoice_description_en
+        const mt = await executor.query(`SELECT id, property_id, status, review_status, pay_method, work_no, maintenance_amount, has_parts, parts_amount, maintenance_amount_includes_parts, has_gst, maintenance_amount_includes_gst, total_amount, completed_at, occurred_at, created_at, details, repair_notes, invoice_description_en
          FROM property_maintenance
         WHERE coalesce(completed_at::date, occurred_at) BETWEEN $1::date AND $2::date
           AND ($4::text IS NULL OR $4::text = '' OR property_id = $4::text)
@@ -2659,6 +2738,26 @@ const annualReportManualPayloadSchema = zod_1.z.object({
     bodycorp: annualReportNullableAmountSchema,
     other_expense: annualReportNullableAmountSchema,
 });
+const annualReportDeliveryPayloadSchema = zod_1.z.object({
+    fiscal_year: annualReportFiscalYearSchema,
+    sent_to_owner: zod_1.z.boolean(),
+});
+exports.router.get('/annual-report/summaries', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
+    var _a;
+    try {
+        const fyParsed = annualReportFiscalYearSchema.safeParse((_a = req.query) === null || _a === void 0 ? void 0 : _a.fy);
+        if (!fyParsed.success)
+            return res.status(400).json({ message: 'invalid fy' });
+        const fiscalYear = Number(fyParsed.data);
+        if (!(0, annualPropertyReport_1.isSupportedAnnualReportFiscalYear)(fiscalYear))
+            return res.status(400).json({ message: 'unsupported fiscal year' });
+        const reports = await (0, annualPropertyReport_1.listAnnualPropertyReportSummaries)(fiscalYear);
+        return res.json({ fiscal_year: fiscalYear, reports });
+    }
+    catch (_b) {
+        return res.status(500).json({ message: 'annual report summaries failed' });
+    }
+});
 exports.router.get('/annual-report', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
     var _a, _b;
     try {
@@ -2679,6 +2778,46 @@ exports.router.get('/annual-report', (0, auth_1.requireAnyPerm)(['finance.payout
         if (msg === 'property_not_found')
             return res.status(404).json({ message: 'property_not_found' });
         return res.status(500).json({ message: msg || 'annual report failed' });
+    }
+});
+exports.router.patch('/annual-report/delivery-status/:propertyId', (0, auth_1.requirePerm)('finance.payout'), async (req, res) => {
+    var _a, _b;
+    try {
+        const propertyId = String(req.params.propertyId || '').trim();
+        if (!propertyId)
+            return res.status(400).json({ message: 'missing property_id' });
+        const parsed = annualReportDeliveryPayloadSchema.safeParse(req.body || {});
+        if (!parsed.success)
+            return res.status(400).json({ message: 'invalid delivery status payload' });
+        const fiscalYear = Number(parsed.data.fiscal_year);
+        if (!(0, annualPropertyReport_1.isSupportedAnnualReportFiscalYear)(fiscalYear))
+            return res.status(400).json({ message: 'unsupported fiscal year' });
+        if (parsed.data.sent_to_owner) {
+            const report = await (0, annualPropertyReport_1.loadAnnualPropertyReport)(propertyId, fiscalYear);
+            if (report.report_status !== 'complete') {
+                return res.status(409).json({ message: 'annual_report_incomplete' });
+            }
+        }
+        const actor = String(((_a = req === null || req === void 0 ? void 0 : req.user) === null || _a === void 0 ? void 0 : _a.sub) || ((_b = req === null || req === void 0 ? void 0 : req.user) === null || _b === void 0 ? void 0 : _b.username) || '').trim() || null;
+        const row = await (0, annualPropertyReport_1.setAnnualReportDeliveryStatus)({
+            property_id: propertyId,
+            fiscal_year: fiscalYear,
+            sent_to_owner: parsed.data.sent_to_owner,
+            actor_id: actor,
+        });
+        try {
+            (0, store_1.addAudit)('PropertyAnnualReportDeliveryStatus', `${propertyId}:FY${fiscalYear}`, 'set', null, row, actor || undefined);
+        }
+        catch (_c) { }
+        return res.json(row);
+    }
+    catch (e) {
+        const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
+        if (msg === 'property_not_found')
+            return res.status(404).json({ message: msg });
+        if (String((e === null || e === void 0 ? void 0 : e.code) || '') === '42P01')
+            return res.status(503).json({ message: 'annual_report_delivery_migration_required' });
+        return res.status(500).json({ message: msg || 'update annual report delivery status failed' });
     }
 });
 exports.router.get('/annual-report/manual-months', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
@@ -3009,6 +3148,7 @@ function parseMonthKeyOrNull(monthKey) {
 }
 exports.router.get('/rent-segments', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
     var _a, _b;
+    const pdfRenderReadOnly = (0, pdfRenderServiceAuth_1.isPdfRenderServiceUser)(req.user);
     try {
         const m = parseMonthKeyOrNull((_a = req.query) === null || _a === void 0 ? void 0 : _a.month);
         const property_id = String(((_b = req.query) === null || _b === void 0 ? void 0 : _b.property_id) || '').trim();
@@ -3018,7 +3158,7 @@ exports.router.get('/rent-segments', (0, auth_1.requireAnyPerm)(['finance.payout
             return res.status(400).json({ message: 'missing property_id' });
         if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
             return res.status(400).json({ message: 'pg required' });
-        const orderSegmentCols = 'id, property_id, stay_type, checkin, checkout, price, cleaning_fee, nights, net_income, status, count_in_income, confirmation_code, guest_name, source, channel, created_at, updated_at';
+        const orderSegmentCols = 'id, property_id, stay_type, checkin, checkout, price, cleaning_fee, nights, net_income, status, count_in_income, confirmation_code, guest_name, source, created_at';
         const ordersRs = await dbAdapter_2.pgPool.query(`SELECT ${orderSegmentCols} FROM orders WHERE property_id = $1 AND checkin < $3::date AND checkout > $2::date`, [property_id, m.start, m.nextStart]);
         const orders = normalizeOrdersForMonthSegments(ordersRs.rows || []);
         const ids = orders.map((o) => String(o.id || '')).filter(Boolean);
@@ -3029,7 +3169,10 @@ exports.router.get('/rent-segments', (0, auth_1.requireAnyPerm)(['finance.payout
                 const arr = ((dRs === null || dRs === void 0 ? void 0 : dRs.rows) || []);
                 arr.forEach((r) => { totals[String(r.order_id)] = Number(r.total || 0); });
             }
-            catch (_c) { }
+            catch (e) {
+                if (pdfRenderReadOnly)
+                    throw e;
+            }
         }
         const enriched = orders.map((o) => ({ ...o, internal_deduction_total: Number((totals[String(o.id)] || 0).toFixed(2)) }));
         const segments = (0, orderMonthSegments_1.computeMonthSegmentsForOrders)(enriched, m.monthKey);

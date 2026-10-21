@@ -6,6 +6,8 @@ import {
   canonicalCleaningTurnoverPairs,
   canonicalKeyHandoverSourceIds,
   canonicalKeyHandoverSourceIdsForProjection,
+  cleaningAuditBusinessDateSql,
+  cleaningExecutionBusinessDate,
   cleaningTaskBusinessIdentity,
   deferredProjectionDate,
   isCheckinKeyHandoverTask,
@@ -23,6 +25,33 @@ import {
   unlinkedDeferredInspectionMergeKey,
   withInspectionMergeIsolation,
 } from '../../src/lib/cleaningInspection'
+
+function testQueuedInspectionUsesCapturedBusinessDateOnlyWithExactEvidence() {
+  assert.equal(cleaningExecutionBusinessDate({
+    taskDate: '2026-10-12',
+    performedAt: '2026-10-13T00:30:39+11:00',
+    evidenceCapturedAt: [
+      '2026-10-12T15:34:00+11:00',
+      '2026-10-12T15:35:00+11:00',
+    ],
+  }), '2026-10-12')
+  assert.equal(cleaningExecutionBusinessDate({
+    taskDate: '2026-10-12',
+    performedAt: '2026-10-13T10:00:00+11:00',
+    evidenceCapturedAt: ['2026-10-13T09:45:00+11:00'],
+  }), '2026-10-13', 'a genuine next-day execution must stay on its actual day')
+  assert.equal(cleaningExecutionBusinessDate({
+    taskDate: '2026-10-12',
+    performedAt: '2026-10-13T10:00:00+11:00',
+    evidenceCapturedAt: [],
+  }), '2026-10-13', 'missing capture evidence must never manufacture an original-day record')
+  const sql = cleaningAuditBusinessDateSql('audit')
+  assert.match(sql, /evidence_snapshot/)
+  assert.ok(sql.includes('[T ]'), 'persisted audit snapshots may serialize captured_at with either an ISO T or a PostgreSQL space separator')
+  assert.match(sql, /scheduled_service_date/)
+  assert.match(sql, /Australia\/Melbourne/)
+  assert.throws(() => cleaningAuditBusinessDateSql('audit; DROP TABLE users'))
+}
 
 function testKeyHandoverFactStaysSeparateFromWorkflowFinalization() {
   assert.deepEqual(projectCleaningKeyHandover({
@@ -49,6 +78,37 @@ function testKeyHandoverFactStaysSeparateFromWorkflowFinalization() {
     workflow_finalization_pending: true,
     missing_requirements: ['cleaning_consumables', 'cleaning_property_photo'],
   })
+}
+
+function testManualCheckinLinkMigrationIsGuardedAndTransactional() {
+  const migration = fs.readFileSync(
+    path.resolve(__dirname, '../migrations/20261021_mz065_manual_checkin_turnover_link.sql'),
+    'utf8',
+  )
+  assert.match(migration, /^BEGIN;/)
+  assert.match(migration, /schema_migrations_missing/)
+  assert.match(migration, /cleaning_tasks_missing/)
+  assert.match(migration, /orders_missing/)
+  assert.match(migration, /ADD COLUMN IF NOT EXISTS linked_checkout_task_id text/)
+  assert.match(migration, /CREATE OR REPLACE FUNCTION mz065_lock_order_turnover_boundaries\(\)/)
+  assert.match(migration, /pg_advisory_xact_lock\(/)
+  assert.match(migration, /hashtext\('cleaning-turnover:' \|\| boundary\.property_key\)/)
+  assert.match(migration, /BEFORE INSERT ON orders/)
+  assert.doesNotMatch(migration, /BEFORE INSERT OR UPDATE/)
+  assert.match(migration, /ORDER BY key_parts\.property_key, key_parts\.boundary_day/)
+  assert.match(migration, /VALUES \('20261021_mz065_manual_checkin_turnover_link'\)/)
+  assert.match(migration, /COMMIT;\s*$/)
+
+  const dbAdapterSource = fs.readFileSync(path.resolve(__dirname, '../../src/dbAdapter.ts'), 'utf8')
+  assert.match(dbAdapterSource, /const ORDER_TURNOVER_IDENTITY_FIELDS = new Set\(\['property_id', 'checkin', 'checkout', 'status'\]\)/)
+  assert.match(dbAdapterSource, /if \(updatesOrderTurnoverIdentity && !client\) \{[\s\S]*?pgRunInTransaction/)
+  assert.match(dbAdapterSource, /lockOrderTurnoverIdentityWrite[\s\S]*?order-turnover-identity[\s\S]*?cleaning-turnover:/)
+
+  const syncSource = fs.readFileSync(path.resolve(__dirname, '../../src/services/cleaningSync.ts'), 'utf8')
+  assert.match(syncSource, /lockCleaningOrderIdentityKey\(client, id\)[\s\S]*?const order = await loadOrder\(id, client\)/)
+  const boundaryLockBlock = syncSource.indexOf('const turnoverBoundaryDates = Array.from(new Set(')
+  const firstTaskSync = syncSource.indexOf('const rCheckout = await syncOneTask', boundaryLockBlock)
+  assert.ok(boundaryLockBlock >= 0 && firstTaskSync > boundaryLockBlock, 'sync must acquire every sorted order boundary advisory lock before task rows')
 }
 
 function testKeyHandoverSurvivesOrdinaryWorkflowChanges() {
@@ -291,6 +351,29 @@ function testCanonicalTurnoverBusinessIdentityRejectsCancelledOrAmbiguousCandida
   assert.equal(cleaningTaskBusinessIdentity({ sourceId: 'standalone-task' }), 'cleaning_task:standalone-task')
 }
 
+function testExplicitManualCheckinLinkIsCanonicalButNeverPropertyDateInferred() {
+  const checkout = {
+    id: 'manual-checkout', task_type: 'checkout_clean', property_id: 'property-1', task_date: '2026-10-22',
+    order_id: 'outgoing-order', order_checkout: '2026-10-22', status: 'assigned', execution_state: 'active',
+  }
+  const checkin = {
+    id: 'manual-checkin', task_type: 'checkin_clean', property_id: 'property-1', task_date: '2026-10-22',
+    order_id: null, linked_checkout_task_id: 'manual-checkout', status: 'pending', execution_state: 'active',
+  }
+  assert.deepEqual(canonicalCleaningTurnoverPairs([checkout, checkin]).map((pair) => ({
+    source_ids: pair.source_ids,
+    business_identity: pair.business_identity,
+  })), [{
+    source_ids: ['manual-checkout', 'manual-checkin'],
+    business_identity: 'turnover_link:manual-checkout:manual-checkin',
+  }])
+  assert.deepEqual(canonicalKeyHandoverSourceIds([checkout, checkin]), ['manual-checkout', 'manual-checkin'])
+  assert.deepEqual(canonicalCleaningTurnoverPairs([checkout, { ...checkin, linked_checkout_task_id: null }]), [], 'same room/date alone must not merge')
+  assert.deepEqual(canonicalCleaningTurnoverPairs([checkout, { ...checkin, task_date: '2026-10-23' }]), [], 'explicit link cannot cross the business date')
+  assert.deepEqual(canonicalCleaningTurnoverPairs([checkout, { ...checkin, status: 'cancelled', execution_state: 'cancelled' }]), [], 'cancelled linked check-in is excluded')
+  assert.deepEqual(canonicalCleaningTurnoverPairs([checkout, checkin, { ...checkin, id: 'duplicate-checkin' }]), [], 'multiple linked check-ins fail closed')
+}
+
 function testCanonicalKeyHandoverTurnoverRequiresExactOrderBoundary() {
   const checkout = {
     __raw_id: 'checkout-1',
@@ -320,6 +403,7 @@ function testWorkTaskPayloadUsesExactAuditWithoutExposingMediaUrl() {
   const source = fs.readFileSync(path.resolve(__dirname, '../../src/modules/mzapp.ts'), 'utf8')
   const cleaningSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/cleaning.ts'), 'utf8')
   const cleaningAppSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/cleaning_app.ts'), 'utf8')
+  const cleaningPageSource = fs.readFileSync(path.resolve(__dirname, '../../../frontend/src/app/cleaning/page.tsx'), 'utf8')
   assert.match(source, /latest_lockbox_audit AS \([\s\S]*?audit\.source_id::text AS task_id[\s\S]*?performed_as_action = 'upload_access_video'/)
   assert.match(source, /current_media\.task_id::text = t\.id::text[\s\S]*?current_media\.type = 'lockbox_video'/)
   assert.match(source, /lockboxVideoUrl: row\.has_current_lockbox_video === true \? 'recorded' : ''/)
@@ -346,9 +430,26 @@ function testWorkTaskPayloadUsesExactAuditWithoutExposingMediaUrl() {
   assert.match(source, /lockbox_video_uploaded_at: null, lockbox_video_url: null, key_handover: null/)
   assert.match(cleaningSource, /changedFields: \['status', 'execution_state', 'lifecycle_state'\][\s\S]*?lifecycle_state: 'deleted'/)
   assert.match(cleaningSource, /pgRunInTransaction\(async \(client\)[\s\S]*?lifecycle_state: 'deleted'[\s\S]*?\}, client\)/)
+  const manualCreateRoute = cleaningSource.slice(
+    cleaningSource.indexOf("router.post('/tasks'"),
+    cleaningSource.indexOf("router.delete('/tasks/:id'"),
+  )
+  const transactionStart = manualCreateRoute.indexOf("client.query('BEGIN')")
+  const advisoryLock = manualCreateRoute.indexOf('lockCleaningTurnoverKey(client, normalizedPropertyId, parsed.data.task_date)', transactionStart)
+  const checkoutRowLock = manualCreateRoute.indexOf("SELECT * FROM cleaning_tasks WHERE id::text=$1 LIMIT 1 FOR UPDATE", transactionStart)
+  assert.ok(transactionStart >= 0 && advisoryLock > transactionStart && checkoutRowLock > advisoryLock, 'manual check-in linking must acquire the turnover advisory lock before any task row lock')
   assert.match(cleaningAppSource, /changedFields: \['status', 'lockbox_video_uploaded_at', 'lockbox_video_url', 'key_handover'\]/)
   assert.match(cleaningAppSource, /lockbox_video_uploaded_at: null, lockbox_video_url: null, key_handover: null/)
   assert.doesNotMatch(source, /lockboxVideoConfirmsCurrentTaskState\([\s\S]{0,240}\) \|\| !!keyHandover/)
+  assert.match(cleaningPageSource, /label="入住执行方式"[\s\S]*?value=\{editForm\.checkout_ids\.length > 0 \? 'inspect_and_hang' : editForm\.checkin_inspection_scope\}/, 'existing check-in edit must expose the supported execution mode')
+  assert.match(cleaningPageSource, /manualCreateForm\.create_mode === 'checkin'[\s\S]*?入住执行方式[\s\S]*?manualCreateForm\.checkin_inspection_scope/, 'top-level manual check-in create must expose the execution mode')
+  assert.match(cleaningPageSource, /inspection_scope: manualCreateForm\.create_mode === 'checkin'[\s\S]*?manualCreateForm\.linked_checkout_task_id \? 'inspect_and_hang' : manualCreateForm\.checkin_inspection_scope/, 'top-level linked check-in must submit the only valid same-day scope')
+  assert.match(cleaningPageSource, /value=\{manualCreateForm\.linked_checkout_task_id \? 'inspect_and_hang' : manualCreateForm\.checkin_inspection_scope\}[\s\S]*?disabled=\{!!manualCreateForm\.linked_checkout_task_id\}/, 'top-level linked check-in must not offer the rejected password-only choice')
+  assert.match(cleaningPageSource, /linked_checkout_task_id: v \? String\(v\) : null,[\s\S]*?v \? \{ checkin_inspection_scope: 'inspect_and_hang' as const \} : \{\}/, 'choosing a checkout must immediately normalize the visible execution mode')
+  assert.match(cleaningPageSource, /pending_add_checkin[\s\S]*?inspection_scope: editForm\.checkout_ids\.length > 0[\s\S]*?\? 'inspect_and_hang'[\s\S]*?: editForm\.checkin_inspection_scope/, 'checkout-side add-checkin entry must persist the supported mode')
+  assert.match(cleaningPageSource, /value=\{editForm\.checkout_ids\.length > 0 \? 'inspect_and_hang' : editForm\.checkin_inspection_scope\}/, 'turnover editing must not offer a mode that the backend rejects')
+  assert.match(cleaningPageSource, /disabled=\{!editDetailsGate\.enabled \|\| editForm\.checkout_ids\.length > 0\}/, 'turnover execution mode is read-only and explicit')
+  assert.match(cleaningPageSource, /inspection_scope: editForm\.checkout_ids\.length > 0[\s\S]*?\? 'inspect_and_hang'[\s\S]*?: editForm\.checkin_inspection_scope/, 'checkout-side add-checkin must send the only valid turnover scope')
 }
 
 function testTurnoverCheckoutAssignmentWinsOverPendingFallback() {
@@ -737,6 +838,7 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
   const turnoverCheckinId = 'test-board-turnover-checkin'
   const pureCheckinId = 'test-board-pure-checkin'
   const dateMoveCheckoutId = 'test-date-move-checkout'
+  const linkedCheckoutId = 'test-manual-link-checkout'
   const testPropertyId = 'property-manual-turnover'
   const task: any = {
     id: taskId,
@@ -755,6 +857,7 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     { id: turnoverCheckinId, property_id: 'property-turnover', task_date: '2026-09-16', date: '2026-09-16', task_type: 'checkin_clean', type: 'checkin_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang' },
     { id: pureCheckinId, property_id: 'property-pure-checkin', task_date: '2026-09-16', date: '2026-09-16', task_type: 'checkin_clean', type: 'checkin_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang' },
     { id: dateMoveCheckoutId, property_id: 'property-pure-checkin', task_date: '2026-09-17', date: '2026-09-17', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang' },
+    { id: linkedCheckoutId, property_id: testPropertyId, task_date: '2026-09-19', date: '2026-09-19', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang' },
   )
   ;((db as any).properties ||= []).push({ id: testPropertyId, code: 'TEST-TURNOVER', region: 'Melbourne' })
   const app = express()
@@ -844,11 +947,46 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     })
     assert.equal(manualTurnoverConflict.status, 400)
     assert.equal(manualTurnoverConflict.body.code, 'turnover_requires_inspect_and_hang')
+    const independentPasswordOnly = await postJson('/cleaning/tasks', {
+      create_mode: 'checkin',
+      task_date: '2026-09-20',
+      property_id: testPropertyId,
+      inspection_scope: 'password_only',
+    })
+    assert.equal(independentPasswordOnly.status, 200)
+    assert.equal(independentPasswordOnly.body.inspection_scope, 'password_only')
+    const linkedCheckin = await postJson('/cleaning/tasks', {
+      create_mode: 'checkin',
+      task_date: '2026-09-19',
+      property_id: testPropertyId,
+      linked_checkout_task_id: linkedCheckoutId,
+      inspection_mode: 'self_complete',
+      inspection_scope: 'inspect_and_hang',
+    })
+    assert.equal(linkedCheckin.status, 200)
+    assert.equal(linkedCheckin.body.linked_checkout_task_id, linkedCheckoutId)
+    assert.equal(linkedCheckin.body.inspection_mode, 'self_complete', 'same-day scope enforcement must preserve the existing self-complete path')
+    assert.equal(linkedCheckin.body.inspector_id, null, 'self-complete turnover must not create or infer a separate inspector')
+    const duplicateLinkedCheckin = await postJson('/cleaning/tasks', {
+      create_mode: 'checkin',
+      task_date: '2026-09-19',
+      property_id: testPropertyId,
+      linked_checkout_task_id: linkedCheckoutId,
+    })
+    assert.equal(duplicateLinkedCheckin.status, 409)
+    assert.equal(duplicateLinkedCheckin.body.code, 'manual_checkin_checkout_link_conflict')
+    const crossDateLinkedCheckin = await postJson('/cleaning/tasks', {
+      create_mode: 'checkin',
+      task_date: '2026-09-20',
+      property_id: testPropertyId,
+      linked_checkout_task_id: linkedCheckoutId,
+    })
+    assert.equal(crossDateLinkedCheckin.status, 409)
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()))
     const index = db.cleaningTasks.findIndex((item) => item.id === taskId)
     if (index >= 0) db.cleaningTasks.splice(index, 1)
-    for (const id of [turnoverCheckoutId, turnoverCheckinId, pureCheckinId, dateMoveCheckoutId]) {
+    for (const id of [turnoverCheckoutId, turnoverCheckinId, pureCheckinId, dateMoveCheckoutId, linkedCheckoutId]) {
       const fixtureIndex = db.cleaningTasks.findIndex((item) => item.id === id)
       if (fixtureIndex >= 0) db.cleaningTasks.splice(fixtureIndex, 1)
     }
@@ -875,13 +1013,16 @@ testKeysHungSelfCompleteProjectsToOriginalTaskDate()
 testOrdinarySelfCompleteDoesNotCreateInspectorTask()
 testPasswordOnlyCannotUseSelfCompleteOrCheckedDone()
 testKeyHandoverFactStaysSeparateFromWorkflowFinalization()
+testManualCheckinLinkMigrationIsGuardedAndTransactional()
 testKeyHandoverSurvivesOrdinaryWorkflowChanges()
 testManualKeysHungIsVisibleWithoutPretendingVideoEvidenceExists()
 testKeyHandoverFactRequiresExactCurrentTaskMediaOrManualConfirmation()
+testQueuedInspectionUsesCapturedBusinessDateOnlyWithExactEvidence()
 testKeyHandoverMergeRequiresCanonicalSourceMembership()
 testManagerProjectionKeepsCanonicalHandoverForVisiblePhaseSubset()
 testCanonicalKeyHandoverTurnoverRequiresExactOrderBoundary()
 testCanonicalTurnoverBusinessIdentityRejectsCancelledOrAmbiguousCandidates()
+testExplicitManualCheckinLinkIsCanonicalButNeverPropertyDateInferred()
 testWorkTaskPayloadUsesExactAuditWithoutExposingMediaUrl()
 
 testTaskCenterSaveBoardDoesNotEraseDeferredDate()

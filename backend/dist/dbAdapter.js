@@ -221,6 +221,43 @@ async function pgInsert(table, payload, client) {
     const res = await executor.query(sql, values);
     return res.rows[0];
 }
+const ORDER_TURNOVER_IDENTITY_FIELDS = new Set(['property_id', 'checkin', 'checkout', 'status']);
+function orderBoundaryDay(value) {
+    if (value == null || value === '')
+        return null;
+    const match = /^(\d{4}-\d{2}-\d{2})/.exec(String(value));
+    if (match)
+        return match[1];
+    const date = value instanceof Date ? value : new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
+}
+async function lockOrderTurnoverIdentityWrite(executor, id, payload) {
+    var _a;
+    await executor.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', ['order-turnover-identity', String(id)]);
+    const currentResult = await executor.query('SELECT property_id::text AS property_id, checkin, checkout FROM orders WHERE id = $1', [String(id)]);
+    const current = (_a = currentResult === null || currentResult === void 0 ? void 0 : currentResult.rows) === null || _a === void 0 ? void 0 : _a[0];
+    if (!current)
+        return;
+    const nextPropertyId = payload.property_id !== undefined ? payload.property_id : current.property_id;
+    const nextCheckin = payload.checkin !== undefined ? payload.checkin : current.checkin;
+    const nextCheckout = payload.checkout !== undefined ? payload.checkout : current.checkout;
+    const lockKeys = new Set();
+    for (const [propertyId, boundaryValue] of [
+        [current.property_id, current.checkin],
+        [current.property_id, current.checkout],
+        [nextPropertyId, nextCheckin],
+        [nextPropertyId, nextCheckout],
+    ]) {
+        const propertyKey = String(propertyId || '').trim();
+        const boundaryDay = orderBoundaryDay(boundaryValue);
+        if (propertyKey && boundaryDay)
+            lockKeys.add(`${propertyKey}\u0000${boundaryDay}`);
+    }
+    for (const key of Array.from(lockKeys).sort()) {
+        const [propertyKey, boundaryDay] = key.split('\u0000');
+        await executor.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', [`cleaning-turnover:${propertyKey}`, boundaryDay]);
+    }
+}
 async function pgUpdate(table, id, payload, client) {
     const executor = client || exports.pgPool;
     if (!executor)
@@ -229,6 +266,13 @@ async function pgUpdate(table, id, payload, client) {
     if (!keys.length) {
         const res0 = await executor.query(`SELECT * FROM ${table} WHERE id = $1`, [id]);
         return res0.rows[0] || null;
+    }
+    const updatesOrderTurnoverIdentity = table === 'orders' && keys.some((key) => ORDER_TURNOVER_IDENTITY_FIELDS.has(key));
+    if (updatesOrderTurnoverIdentity && !client) {
+        return pgRunInTransaction((transactionClient) => pgUpdate(table, id, payload, transactionClient));
+    }
+    if (updatesOrderTurnoverIdentity) {
+        await lockOrderTurnoverIdentityWrite(executor, id, payload);
     }
     const set = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ');
     const values = keys.map((k) => payload[k]).map(v => (v === undefined ? null : v));

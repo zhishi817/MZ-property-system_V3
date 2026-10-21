@@ -231,6 +231,15 @@ export async function lockCleaningTurnoverKey(client: any, propertyId: any, task
   )
 }
 
+export async function lockCleaningOrderIdentityKey(client: any, orderId: any): Promise<void> {
+  const orderKey = String(orderId || '').trim()
+  if (!client || !orderKey) return
+  await client.query(
+    'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+    ['order-turnover-identity', orderKey],
+  )
+}
+
 export async function logCleaningSync(params: {
   jobId?: string | null
   orderId: string
@@ -593,6 +602,43 @@ function buildManualSupersedeMerge(params: {
         addSupersedeDecision(decisions, manual, 'checkin_time', officialCheckinTime, manualCheckinTime, 'kept_canonical')
       }
     }
+
+    const linkedCheckoutTaskId = displayText(manual?.linked_checkout_task_id)
+    const officialLinkedCheckoutTaskId = displayText(official?.linked_checkout_task_id)
+    if (linkedCheckoutTaskId) {
+      if (!officialLinkedCheckoutTaskId) {
+        patch.linked_checkout_task_id = linkedCheckoutTaskId
+        changedFields.push('linked_checkout_task_id')
+        addSupersedeDecision(decisions, manual, 'linked_checkout_task_id', null, linkedCheckoutTaskId, 'copied_manual')
+      } else if (officialLinkedCheckoutTaskId !== linkedCheckoutTaskId) {
+        addSupersedeDecision(decisions, manual, 'linked_checkout_task_id', officialLinkedCheckoutTaskId, linkedCheckoutTaskId, 'manual_requires_review')
+      }
+    }
+
+    const manualInspectionScope = String(displayText(manual?.inspection_scope) || '').toLowerCase()
+    const officialInspectionScope = String(displayText(official?.inspection_scope) || '').toLowerCase()
+    if (manualInspectionScope === 'inspect_and_hang' || manualInspectionScope === 'password_only') {
+      if (!officialInspectionScope) {
+        patch.inspection_scope = manualInspectionScope
+        changedFields.push('inspection_scope')
+        addSupersedeDecision(decisions, manual, 'inspection_scope', null, manualInspectionScope, 'copied_manual')
+      } else if (officialInspectionScope !== manualInspectionScope) {
+        addSupersedeDecision(decisions, manual, 'inspection_scope', officialInspectionScope, manualInspectionScope, 'manual_requires_review')
+      }
+    }
+  }
+
+  for (const field of ['assignee_id', 'cleaner_id', 'inspector_id']) {
+    const manualValue = displayText(manual?.[field])
+    if (!manualValue) continue
+    const officialValue = displayText(official?.[field])
+    if (!officialValue) {
+      patch[field] = manualValue
+      changedFields.push(field)
+      addSupersedeDecision(decisions, manual, field, null, manualValue, 'copied_manual')
+    } else if (officialValue !== manualValue) {
+      addSupersedeDecision(decisions, manual, field, officialValue, manualValue, 'manual_requires_review')
+    }
   }
 
   if (taskType === CHECKOUT_TASK_TYPE) {
@@ -659,6 +705,8 @@ function normalizeExecutionState(row: any): string {
 
 function canSupersedeManualTaskByFields(row: any): boolean {
   if (hasValue(row?.order_id)) return false
+  const source = String(row?.source || 'manual').trim().toLowerCase()
+  if (source && source !== 'manual') return false
   const taskType = String(row?.task_type || row?.type || '').trim().toLowerCase()
   if (taskType !== CHECKIN_TASK_TYPE && taskType !== CHECKOUT_TASK_TYPE) return false
   const purpose = String(row?.manual_task_purpose || '').trim().toLowerCase()
@@ -667,6 +715,14 @@ function canSupersedeManualTaskByFields(row: any): boolean {
   const status = String(row?.status || '').trim().toLowerCase()
   if (NON_SUPERSEDABLE_MANUAL_STATUSES.has(status)) return false
   return true
+}
+
+function hasManualSupersedeIdentityConflict(decisions: any[]): boolean {
+  const protectedFields = new Set(['linked_checkout_task_id', 'inspection_scope', 'assignee_id', 'cleaner_id', 'inspector_id'])
+  return (Array.isArray(decisions) ? decisions : []).some((decision) => (
+    decision?.resolution === 'manual_requires_review'
+    && protectedFields.has(String(decision?.field || ''))
+  ))
 }
 
 async function queryHasAnyRows(exec: any, sql: string, params: any[]): Promise<boolean> {
@@ -689,17 +745,209 @@ async function hasManualTaskExecutionRecords(task: any, exec: any): Promise<bool
   ]
   if (executedFields.some((field) => hasValue(task?.[field]))) return true
   if (task?.cleaned === true || task?.restocked === true || task?.inspected === true) return true
+  if (!exec?.query) return false
   const taskId = String(task.id || '').trim()
   if (!taskId) return false
   if (await queryHasAnyRows(exec, `SELECT 1 FROM cleaning_task_media WHERE task_id::text = $1 LIMIT 1`, [taskId])) return true
   if (await queryHasAnyRows(exec, `SELECT 1 FROM cleaning_consumable_usages WHERE task_id::text = $1 LIMIT 1`, [taskId])) return true
   if (await queryHasAnyRows(exec, `SELECT 1 FROM cleaning_issues WHERE task_id::text = $1 LIMIT 1`, [taskId])) return true
+  if (await queryHasAnyRows(
+    exec,
+    `SELECT 1
+       FROM work_task_action_audits
+      WHERE source_type = 'cleaning_tasks'
+        AND source_id::text = $1
+      LIMIT 1`,
+    [taskId],
+  )) return true
   return false
+}
+
+export async function __test_hasManualTaskExecutionRecords(task: any, exec: any): Promise<boolean> {
+  return hasManualTaskExecutionRecords(task, exec)
+}
+
+async function hasUniqueActiveOrderBoundary(params: {
+  orderId: string
+  propertyId: string
+  taskDate: string
+  taskType: string
+  exec?: any
+}): Promise<boolean> {
+  const boundaryColumn = params.taskType === CHECKIN_TASK_TYPE ? 'checkin' : 'checkout'
+  if (hasPg && params.exec?.query) {
+    const result = await params.exec.query(
+      `SELECT id::text AS id
+         FROM orders
+        WHERE property_id::text = $1
+          AND ${boundaryColumn}::date = $2::date
+          AND COALESCE(status, '') <> ''
+          AND lower(COALESCE(status, '')) <> 'invalid'
+          AND lower(COALESCE(status, '')) NOT LIKE '%cancel%'
+        ORDER BY id::text
+        FOR UPDATE`,
+      [params.propertyId, params.taskDate],
+    )
+    const ids = Array.from(new Set((result?.rows || []).map((row: any) => String(row.id || '').trim()).filter(Boolean)))
+    return ids.length === 1 && ids[0] === params.orderId
+  }
+  const ids = Array.from(new Set(
+    (db.orders as any[])
+      .filter((order: any) => (
+        String(order.property_id || '') === params.propertyId
+        && dayOnly(order?.[boundaryColumn]) === params.taskDate
+        && !isInactiveCleaningOrderStatus(order.status)
+      ))
+      .map((order: any) => String(order.id || '').trim())
+      .filter(Boolean),
+  ))
+  return ids.length === 1 && ids[0] === params.orderId
 }
 
 async function canSupersedeManualTask(task: any, exec: any): Promise<boolean> {
   if (!canSupersedeManualTaskByFields(task)) return false
+  const linkedCheckoutTaskId = String(task?.linked_checkout_task_id || '').trim()
+  if (linkedCheckoutTaskId) {
+    if (hasPg && exec?.query) {
+      const linked = await exec.query(
+        `SELECT 1
+         FROM cleaning_tasks checkout
+         WHERE checkout.id::text=$1
+           AND lower(COALESCE(checkout.task_type, checkout.type, ''))=$2
+           AND checkout.property_id::text=$3
+           AND COALESCE(checkout.task_date, checkout.date)::date=$4::date
+           AND ${activeCleaningTaskWhereSql('checkout')}
+         LIMIT 1`,
+        [linkedCheckoutTaskId, CHECKOUT_TASK_TYPE, String(task.property_id || ''), dayOnly(task.task_date ?? task.date)],
+      )
+      if (!linked?.rows?.length) return false
+    } else {
+      const linked = (db.cleaningTasks as any[]).find((row: any) => (
+        String(row.id || '') === linkedCheckoutTaskId
+        && cleaningTaskKind(row) === CHECKOUT_TASK_TYPE
+        && String(row.property_id || '') === String(task.property_id || '')
+        && dayOnly(row.task_date ?? row.date) === dayOnly(task.task_date ?? task.date)
+        && normalizeExecutionState(row) === ACTIVE_EXECUTION_STATE
+        && !isCancelledCleaningTaskStatus(row.status)
+      ))
+      if (!linked) return false
+    }
+  }
   return !(await hasManualTaskExecutionRecords(task, exec))
+}
+
+type CheckoutReverseRelinkPlan = {
+  blocked: boolean
+  linkedCheckin: any | null
+}
+
+async function planCheckoutReverseRelink(params: {
+  manualCheckout: any
+  officialCheckout: any
+  propertyId: string
+  taskDate: string
+  exec?: any
+}): Promise<CheckoutReverseRelinkPlan> {
+  const manualCheckoutId = String(params.manualCheckout?.id || '').trim()
+  const officialCheckoutId = String(params.officialCheckout?.id || '').trim()
+  if (!manualCheckoutId || !officialCheckoutId) return { blocked: true, linkedCheckin: null }
+
+  let sameDayCheckins: any[] = []
+  if (hasPg && params.exec?.query) {
+    const result = await params.exec.query(
+      `SELECT task.*, incoming.checkin AS order_checkin_boundary
+         FROM cleaning_tasks task
+         LEFT JOIN orders incoming ON incoming.id::text = task.order_id::text
+         LEFT JOIN properties p_id ON p_id.id::text = task.property_id::text
+         LEFT JOIN properties p_code ON upper(p_code.code) = upper(task.property_id::text)
+        WHERE lower(COALESCE(task.task_type, task.type, '')) = $1
+          AND COALESCE(task.task_date, task.date)::date = $2::date
+          AND COALESCE(p_id.id::text, p_code.id::text, task.property_id::text) = $3
+          AND ${activeCleaningTaskWhereSql('task')}
+        ORDER BY task.id::text
+        FOR UPDATE OF task`,
+      [CHECKIN_TASK_TYPE, params.taskDate, params.propertyId],
+    )
+    sameDayCheckins = result?.rows || []
+  } else {
+    sameDayCheckins = (db.cleaningTasks as any[])
+      .filter((task: any) => (
+        cleaningTaskKind(task) === CHECKIN_TASK_TYPE
+        && String(task.property_id || '') === params.propertyId
+        && dayOnly(task.task_date ?? task.date) === params.taskDate
+        && normalizeExecutionState(task) === ACTIVE_EXECUTION_STATE
+        && !isCancelledCleaningTaskStatus(task.status)
+      ))
+      .map((task: any) => {
+        const order = (db.orders as any[]).find((item: any) => String(item.id || '') === String(task.order_id || ''))
+        return { ...task, order_checkin_boundary: order?.checkin ?? null }
+      })
+      .sort((a: any, b: any) => String(a.id || '').localeCompare(String(b.id || '')))
+  }
+
+  const linkedToManual = sameDayCheckins.filter((task: any) => (
+    String(task.linked_checkout_task_id || '').trim() === manualCheckoutId
+  ))
+  if (!linkedToManual.length) return { blocked: false, linkedCheckin: null }
+  if (linkedToManual.length !== 1) return { blocked: true, linkedCheckin: null }
+
+  const linkedCheckin = linkedToManual[0]
+  const linkedCheckinId = String(linkedCheckin.id || '')
+  const officialAlreadyLinkedElsewhere = sameDayCheckins.some((task: any) => (
+    String(task.id || '') !== linkedCheckinId
+    && String(task.linked_checkout_task_id || '').trim() === officialCheckoutId
+  ))
+  const officialAlreadyHasDifferentOrderBoundary = sameDayCheckins.some((task: any) => (
+    String(task.id || '') !== linkedCheckinId
+    && hasValue(task.order_id)
+    && dayOnly(task.order_checkin_boundary) === params.taskDate
+  ))
+  if (officialAlreadyLinkedElsewhere || officialAlreadyHasDifferentOrderBoundary) {
+    return { blocked: true, linkedCheckin: null }
+  }
+  return { blocked: false, linkedCheckin }
+}
+
+async function applyCheckoutReverseRelink(params: {
+  jobId?: string | null
+  orderId: string
+  linkedCheckin: any
+  manualCheckout: any
+  officialCheckout: any
+  exec?: any
+}) {
+  const before = params.linkedCheckin
+  const linkedCheckoutTaskId = String(params.officialCheckout.id || '')
+  const after = await updateTaskById(String(before.id || ''), {
+    linked_checkout_task_id: linkedCheckoutTaskId,
+  }, params.exec)
+  if (!after) throw new Error('manual_checkout_reverse_relink_failed')
+  await logCleaningSync({
+    jobId: params.jobId,
+    orderId: params.orderId,
+    taskId: before.id,
+    action: 'updated',
+    before,
+    after,
+    meta: {
+      reason: 'manual_checkout_supersede_relink',
+      source_checkout_task_id: String(params.manualCheckout.id || ''),
+      replacement_checkout_task_id: linkedCheckoutTaskId,
+    },
+    client: params.exec,
+  })
+  await emitWorkTaskEvent({
+    taskId: `cleaning_task:${String(before.id)}`,
+    sourceType: 'cleaning_tasks',
+    sourceRefIds: [String(before.id)],
+    eventType: 'TASK_UPDATED',
+    changeScope: 'membership',
+    changedFields: ['linked_checkout_task_id', 'business_identity', 'source_ref_ids'],
+    patch: {},
+    causedByUserId: null,
+    visibilityHints: buildCleaningTaskVisibilityHints(after),
+  }, params.exec)
+  return after
 }
 
 async function supersedeTemporaryManualTasksForOrder(params: {
@@ -718,17 +966,30 @@ async function supersedeTemporaryManualTasksForOrder(params: {
     await ensureCleaningSchemaV2()
 	    const exec = client || pgPool!
 	    const officialRes = await exec.query(
-	      `SELECT cleaning_tasks.*, o.keys_required AS order_keys_required, o.nights AS order_nights
+	      `SELECT cleaning_tasks.*, o.keys_required AS order_keys_required, o.nights AS order_nights,
+                  COALESCE(p_id.id::text, p_code.id::text, cleaning_tasks.property_id::text) AS canonical_property_id
 	       FROM cleaning_tasks
 	       LEFT JOIN orders o ON (o.id::text) = (cleaning_tasks.order_id::text)
+         LEFT JOIN properties p_id ON p_id.id::text=cleaning_tasks.property_id::text
+         LEFT JOIN properties p_code ON upper(p_code.code)=upper(cleaning_tasks.property_id::text)
 	       WHERE (cleaning_tasks.order_id::text) = $1
 	         AND (cleaning_tasks.task_type::text) = $2
 	         AND ${activeCleaningTaskWhereSql('cleaning_tasks')}
-	       LIMIT 1`,
+	       LIMIT 1
+         FOR UPDATE OF cleaning_tasks`,
 	      [String(orderId), normalizedTaskType],
 	    )
     let official = officialRes?.rows?.[0] || null
     if (!official) return 0
+    if (String(official.canonical_property_id || official.property_id || '') !== String(propertyId)
+      || dayOnly(official.task_date ?? official.date) !== taskDate) return 0
+    if (!(await hasUniqueActiveOrderBoundary({
+      orderId: String(orderId),
+      propertyId: String(propertyId),
+      taskDate,
+      taskType: normalizedTaskType,
+      exec,
+    }))) return 0
 
     const manualRes = await exec.query(
       `SELECT t.*
@@ -743,16 +1004,31 @@ async function supersedeTemporaryManualTasksForOrder(params: {
          AND ${activeCleaningTaskWhereSql('t')}
          AND COALESCE(NULLIF(lower(trim(t.manual_task_purpose)), ''), $4) = $4
          AND lower(COALESCE(t.status, '')) <> ALL($5::text[])
-       ORDER BY t.updated_at DESC NULLS LAST, t.id DESC`,
+       ORDER BY t.updated_at DESC NULLS LAST, t.id DESC
+       FOR UPDATE OF t`,
       [normalizedTaskType, taskDate, String(propertyId), TEMPORARY_ORDER_PLACEHOLDER_PURPOSE, Array.from(NON_SUPERSEDABLE_MANUAL_STATUSES)],
     )
     const manualRows = manualRes?.rows || []
-    if (!manualRows.length) return 0
+    // One automatic order may only take over one unexecuted placeholder.
+    // Multiple candidates are ambiguous, so keep every source task intact for
+    // an explicit manager decision rather than silently reassigning evidence.
+    if (manualRows.length !== 1) return 0
+    if (!(await canSupersedeManualTask(manualRows[0], exec))) return 0
 
     let superseded = 0
     for (const manual of manualRows) {
-      if (!(await canSupersedeManualTask(manual, exec))) continue
       const merge = buildManualSupersedeMerge({ manual, official, taskType: normalizedTaskType })
+      if (hasManualSupersedeIdentityConflict(merge.decisions)) return 0
+      const reverseRelink = normalizedTaskType === CHECKOUT_TASK_TYPE
+        ? await planCheckoutReverseRelink({
+            manualCheckout: manual,
+            officialCheckout: official,
+            propertyId: String(propertyId),
+            taskDate,
+            exec,
+          })
+        : { blocked: false, linkedCheckin: null }
+      if (reverseRelink.blocked) return 0
       if (merge.changedFields.length) {
         const beforeOfficial = official
         const afterOfficial = await updateTaskById(String(official.id), merge.patch, exec)
@@ -803,6 +1079,16 @@ async function supersedeTemporaryManualTasksForOrder(params: {
           try { await emitWorkTaskEvent(eventInput, exec) } catch {}
         }
       }
+      if (reverseRelink.linkedCheckin) {
+        await applyCheckoutReverseRelink({
+          jobId,
+          orderId: String(orderId),
+          linkedCheckin: reverseRelink.linkedCheckin,
+          manualCheckout: manual,
+          officialCheckout: official,
+          exec,
+        })
+      }
       const patch = {
         execution_state: SUPERSEDED_EXECUTION_STATE,
         auto_sync_enabled: false,
@@ -848,6 +1134,14 @@ async function supersedeTemporaryManualTasksForOrder(params: {
 	    normalizeExecutionState(task) === ACTIVE_EXECUTION_STATE
 	  )
 	  if (!official) return 0
+  if (String(official.property_id || '') !== String(propertyId)
+    || dayOnly(official.task_date ?? official.date) !== taskDate) return 0
+  if (!(await hasUniqueActiveOrderBoundary({
+    orderId: String(orderId),
+    propertyId: String(propertyId),
+    taskDate,
+    taskType: normalizedTaskType,
+  }))) return 0
 	  const order = (db.orders as any[]).find((item: any) => String(item.id || '') === String(orderId)) || null
 	  if (order) {
 	    official.order_keys_required = order.keys_required
@@ -856,12 +1150,33 @@ async function supersedeTemporaryManualTasksForOrder(params: {
   const manualRows = tasks.filter((task: any) =>
     String(task.property_id || '') === String(propertyId) &&
     String(task.task_date || task.date || '').slice(0, 10) === taskDate &&
+    cleaningTaskKind(task) === normalizedTaskType &&
     canSupersedeManualTaskByFields(task)
   )
-  if (!manualRows.length) return 0
+  if (manualRows.length !== 1) return 0
+  if (!(await canSupersedeManualTask(manualRows[0], null))) return 0
   for (const manual of manualRows) {
     const merge = buildManualSupersedeMerge({ manual, official, taskType: normalizedTaskType })
+    if (hasManualSupersedeIdentityConflict(merge.decisions)) return 0
+    const reverseRelink = normalizedTaskType === CHECKOUT_TASK_TYPE
+      ? await planCheckoutReverseRelink({
+          manualCheckout: manual,
+          officialCheckout: official,
+          propertyId: String(propertyId),
+          taskDate,
+        })
+      : { blocked: false, linkedCheckin: null }
+    if (reverseRelink.blocked) return 0
     if (merge.changedFields.length) Object.assign(official, merge.patch)
+    if (reverseRelink.linkedCheckin) {
+      await applyCheckoutReverseRelink({
+        jobId,
+        orderId: String(orderId),
+        linkedCheckin: reverseRelink.linkedCheckin,
+        manualCheckout: manual,
+        officialCheckout: official,
+      })
+    }
     manual.execution_state = SUPERSEDED_EXECUTION_STATE
     manual.auto_sync_enabled = false
     manual.superseded_by = String(official.id || '')
@@ -1333,6 +1648,7 @@ export async function syncOrderToCleaningTasks(
   const client = opts?.client
   try {
     await ensureCleaningSchemaV2()
+    if (!deleted) await lockCleaningOrderIdentityKey(client, id)
     const keysRequiredFallback: 1 | 2 = 1
     if (scope === 'checkin_only') {
       if (deleted) {
@@ -1417,6 +1733,15 @@ export async function syncOrderToCleaningTasks(
       const r2 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower, propertyId, derivedCode: null, keysRequired })
       await reconcileDeferredInspectionCheckinReplacement({ checkinOrderId: id, pgClient: client })
       return { action: (r1.action === 'cancelled' || r2.action === 'cancelled') ? 'cancelled' : 'no_change' as const }
+    }
+
+    // Order writes acquire these same advisory keys in ascending date order
+    // via the MZ-065 database trigger. Acquire the complete boundary set
+    // before any task row lock so order edits/imports and sync cannot deadlock
+    // by taking check-in/checkout keys in opposite orders.
+    const turnoverBoundaryDates = Array.from(new Set([checkinDay, checkoutDay].filter((value): value is string => !!value))).sort()
+    for (const boundaryDate of turnoverBoundaryDates) {
+      await lockCleaningTurnoverKey(client, propertyId, boundaryDate)
     }
 
     const rCheckout = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: checkoutDay, statusLower, propertyId, derivedCode, keysRequired })

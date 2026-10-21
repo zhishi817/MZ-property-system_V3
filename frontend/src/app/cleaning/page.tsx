@@ -108,6 +108,9 @@ type CalendarItem = {
   entity_ids?: string[]
   order_id: string | null
   order_code?: string | null
+  order_checkin?: string | null
+  order_checkout?: string | null
+  linked_checkout_task_id?: string | null
   checkin_sync_status?: 'pending' | 'synced' | null
   property_id: string | null
   property_code?: string | null
@@ -230,6 +233,8 @@ type ManualCreateForm = {
   checkout_time: string
   checkin_time: string
   guest_special_request: string
+  linked_checkout_task_id: string | null
+  checkin_inspection_scope: 'inspect_and_hang' | 'password_only'
 }
 
 type OfflineTaskForm = {
@@ -607,6 +612,25 @@ export default function CleaningPage() {
         return { value: String(p.id), label }
       })
   }, [manualCreateForm?.area, properties])
+
+  const manualCheckoutLinkOptions = useMemo(() => {
+    if (!manualCreateForm || manualCreateForm.create_mode !== 'checkin' || !manualCreateForm.property_id) return []
+    const propertyId = String(manualCreateForm.property_id)
+    const byId = new Map<string, { value: string; label: string }>()
+    for (const item of items) {
+      if (item.source !== 'cleaning_tasks') continue
+      if (String(item.task_type || '').trim().toLowerCase() !== 'checkout_clean') continue
+      if (String(item.property_id || '') !== propertyId || String(item.task_date || '').slice(0, 10) !== selectedDateStr) continue
+      if (['cancelled', 'canceled'].includes(String(item.status || '').trim().toLowerCase())) continue
+      const ids = Array.isArray(item.entity_ids) && item.entity_ids.length ? item.entity_ids : [item.entity_id]
+      if (ids.length !== 1) continue
+      const id = String(ids[0] || '').trim()
+      if (!id) continue
+      const propertyLabel = item.property_code || properties.find((property) => String(property.id) === propertyId)?.code || propertyId
+      byId.set(id, { value: id, label: `${propertyLabel} · ${item.summary_checkout_time || '10am'}退房` })
+    }
+    return Array.from(byId.values())
+  }, [items, manualCreateForm, properties, selectedDateStr])
 
   const visibleRange = useMemo(() => {
     if (view === 'day') {
@@ -1222,6 +1246,7 @@ export default function CleaningPage() {
         await postJSON('/cleaning/tasks', body)
       }
       if (editForm.pending_add_checkin && editForm.property_id) {
+        if (editForm.checkout_ids.length !== 1) throw new Error('退房来源不唯一，无法可靠关联新增入住')
         const body: any = {
           task_type: 'checkin_clean',
           task_date: editForm.checkin_task_date.format('YYYY-MM-DD'),
@@ -1233,6 +1258,10 @@ export default function CleaningPage() {
           nights_override: editForm.nights_override ?? null,
           checkin_time: toNull(editForm.checkin_time),
           guest_special_request: editForm.guest_special_request || null,
+          linked_checkout_task_id: String(editForm.checkout_ids[0]),
+          inspection_scope: editForm.checkout_ids.length > 0
+            ? 'inspect_and_hang'
+            : editForm.checkin_inspection_scope,
         }
         if (mutationStatus) body.status = mutationStatus
         await postJSON('/cleaning/tasks', body)
@@ -1524,6 +1553,8 @@ export default function CleaningPage() {
       checkout_time: '10am',
       checkin_time: '3pm',
       guest_special_request: '',
+      linked_checkout_task_id: null,
+      checkin_inspection_scope: 'inspect_and_hang',
     })
     setManualCreateOpen(true)
   }, [])
@@ -1548,6 +1579,10 @@ export default function CleaningPage() {
         checkout_time: manualCreateForm.checkout_time ? String(manualCreateForm.checkout_time) : null,
         checkin_time: isStayover ? null : (manualCreateForm.checkin_time ? String(manualCreateForm.checkin_time) : null),
         guest_special_request: manualCreateForm.guest_special_request.trim() ? manualCreateForm.guest_special_request.trim() : null,
+        linked_checkout_task_id: manualCreateForm.create_mode === 'checkin' ? manualCreateForm.linked_checkout_task_id : null,
+        inspection_scope: manualCreateForm.create_mode === 'checkin'
+          ? (manualCreateForm.linked_checkout_task_id ? 'inspect_and_hang' : manualCreateForm.checkin_inspection_scope)
+          : null,
       }
       await postJSON('/cleaning/tasks', body)
       message.success('已新增清洁任务')
@@ -2769,6 +2804,24 @@ export default function CleaningPage() {
                           </Form.Item>
                         </Col>
                         <Col xs={24} md={12}>
+                          <Form.Item
+                            label="入住执行方式"
+                            extra={editForm.checkout_ids.length > 0 ? '同日退房入住任务必须检查后挂钥匙' : undefined}
+                          >
+                            <Select
+                              value={editForm.checkout_ids.length > 0 ? 'inspect_and_hang' : editForm.checkin_inspection_scope}
+                              disabled={!editDetailsGate.enabled || editForm.checkout_ids.length > 0}
+                              title={editForm.checkout_ids.length > 0 ? '同日退房入住任务必须检查后挂钥匙' : (editDetailsDisabledReason || undefined)}
+                              onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_inspection_scope: v as 'inspect_and_hang' | 'password_only' } : p))}
+                              style={{ width: '100%' }}
+                              options={[
+                                { label: '检查后挂钥匙', value: 'inspect_and_hang' },
+                                { label: '仅挂钥匙', value: 'password_only' },
+                              ]}
+                            />
+                          </Form.Item>
+                        </Col>
+                        <Col xs={24} md={12}>
                           <Form.Item label="入住天数">
                             <InputNumber
                               style={{ width: '100%' }}
@@ -3087,7 +3140,7 @@ export default function CleaningPage() {
                 showSearch
                 optionFilterProp="label"
                 value={manualCreateForm.area || undefined}
-                onChange={(v) => setManualCreateForm((p) => (p ? { ...p, area: v ? String(v) : null, property_id: null } : p))}
+                onChange={(v) => setManualCreateForm((p) => (p ? { ...p, area: v ? String(v) : null, property_id: null, linked_checkout_task_id: null } : p))}
                 style={{ width: '100%' }}
                 options={areaOptions}
               />
@@ -3098,7 +3151,7 @@ export default function CleaningPage() {
                 showSearch
                 optionFilterProp="label"
                 value={manualCreateForm.property_id || undefined}
-                onChange={(v) => setManualCreateForm((p) => (p ? { ...p, property_id: v ? String(v) : null } : p))}
+                onChange={(v) => setManualCreateForm((p) => (p ? { ...p, property_id: v ? String(v) : null, linked_checkout_task_id: null } : p))}
                 style={{ width: '100%' }}
                 options={manualPropertyOptions}
               />
@@ -3107,7 +3160,7 @@ export default function CleaningPage() {
               <div className={styles.fieldLabel}>类型</div>
               <Select
                 value={manualCreateForm.create_mode}
-                onChange={(v) => setManualCreateForm((p) => (p ? { ...p, create_mode: v as any } : p))}
+                onChange={(v) => setManualCreateForm((p) => (p ? { ...p, create_mode: v as any, linked_checkout_task_id: null } : p))}
                 style={{ width: '100%' }}
                 options={[
                   { label: '退房+入住', value: 'turnover' },
@@ -3117,6 +3170,41 @@ export default function CleaningPage() {
                 ]}
               />
             </div>
+            {manualCreateForm.create_mode === 'checkin' ? (
+              <>
+                <div>
+                  <div className={styles.fieldLabel}>入住执行方式</div>
+                  <Select
+                    value={manualCreateForm.linked_checkout_task_id ? 'inspect_and_hang' : manualCreateForm.checkin_inspection_scope}
+                    disabled={!!manualCreateForm.linked_checkout_task_id}
+                    title={manualCreateForm.linked_checkout_task_id ? '同日退房入住任务必须检查后挂钥匙；无独立检查员时沿用自完成流程' : undefined}
+                    onChange={(v) => setManualCreateForm((p) => (p ? { ...p, checkin_inspection_scope: v as 'inspect_and_hang' | 'password_only' } : p))}
+                    style={{ width: '100%' }}
+                    options={[
+                      { label: '检查后挂钥匙', value: 'inspect_and_hang' },
+                      { label: '仅挂钥匙', value: 'password_only' },
+                    ]}
+                  />
+                </div>
+                <div>
+                  <div className={styles.fieldLabel}>关联退房任务（可选）</div>
+                  <Select
+                    allowClear
+                    value={manualCreateForm.linked_checkout_task_id || undefined}
+                    onChange={(v) => setManualCreateForm((p) => (p ? {
+                      ...p,
+                      linked_checkout_task_id: v ? String(v) : null,
+                      ...(v ? { checkin_inspection_scope: 'inspect_and_hang' as const } : {}),
+                    } : p))}
+                    style={{ width: '100%' }}
+                    placeholder="不选择则作为独立入住任务"
+                    options={manualCheckoutLinkOptions}
+                  />
+                  <div>仅明确选择的退房任务会合并显示，不会按房号和日期自动关联。</div>
+                  {manualCreateForm.linked_checkout_task_id ? <div>同日周转固定检查后挂钥匙；无独立检查员时沿用自完成流程。</div> : null}
+                </div>
+              </>
+            ) : null}
             {manualCreateForm.create_mode === 'checkout' || manualCreateForm.create_mode === 'turnover' ? (
               <div>
                 <div className={styles.fieldLabel}>退房时间</div>

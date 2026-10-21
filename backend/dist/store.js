@@ -162,6 +162,7 @@ if (exports.db.roles.length === 0) {
         { code: 'order.cancel' },
         { code: 'order.cancel.override' },
         { code: 'order.confirm_payment' },
+        { code: 'order.guest_ready_notification.manage' },
         { code: 'keyset.manage' },
         { code: 'key.flow' },
         { code: 'cleaning.view' },
@@ -169,6 +170,12 @@ if (exports.db.roles.length === 0) {
         { code: 'cleaning.task.assign' },
         { code: 'finance.payout' },
         { code: 'finance.tx.write' },
+        { code: 'personnel_settlements.view' },
+        { code: 'personnel_settlements.profiles.view' },
+        { code: 'personnel_settlements.profiles.manage' },
+        { code: 'personnel_settlements.profile_documents.view' },
+        { code: 'personnel_settlements.bank.manage' },
+        { code: 'personnel_settlements.rules.manage' },
         { code: 'inventory.view' },
         { code: 'inventory.move' },
         { code: 'inventory.item.manage' },
@@ -219,6 +226,7 @@ if (exports.db.roles.length === 0) {
         { code: 'menu.finance.invoices.visible' },
         { code: 'menu.finance.company_overview.visible' },
         { code: 'menu.finance.company_revenue.visible' },
+        { code: 'menu.finance.personnel_settlements.visible' },
         { code: 'menu.cleaning.overview.visible' },
         { code: 'menu.cleaning.task_center.visible' },
         { code: 'menu.cleaning.daily.visible' },
@@ -232,6 +240,7 @@ if (exports.db.roles.length === 0) {
         { code: 'guest_site_properties.write' },
         { code: 'guest_site_inquiries.view' },
         { code: 'guest_site_inquiries.write' },
+        { code: 'guest_site_policies.publish' },
         { code: 'cleaning_app.tasks.view.self' },
         { code: 'cleaning_app.tasks.start' },
         { code: 'cleaning_app.tasks.finish' },
@@ -267,11 +276,11 @@ if (exports.db.roles.length === 0) {
     // 管理员：所有权限
     grant(adminId, exports.db.permissions.map(p => p.code));
     // 客服：房源可写、订单查看/编辑、查看清洁安排、可管理订单（允许创建）、允许录入公司/房源支出
-    grant(csId, ['property.write', 'order.view', 'order.write', 'order.manage', 'order.deduction.manage', 'order.cancel', 'cleaning.view', 'finance.tx.write', 'invoice.view', 'invoice.draft.create', 'onboarding.manage', 'onboarding.read', 'cms_pages.view', 'cms_pages.write', 'menu.dashboard', 'menu.properties', 'menu.finance', 'menu.finance.invoices.visible', 'menu.cleaning', 'menu.cleaning.overview.visible', 'menu.cleaning.task_center.visible', 'menu.cleaning.daily.visible', 'menu.cms', 'menu.cms.customer_service_manual.visible', 'menu.onboarding', 'menu.guest_site', 'menu.guest_site.settings.visible', 'menu.guest_site.properties.visible', 'menu.guest_site.inquiries.visible', 'guest_site_settings.view', 'guest_site_settings.write', 'guest_site_properties.view', 'guest_site_properties.write', 'guest_site_inquiries.view', 'guest_site_inquiries.write', 'cleaning_app.calendar.view.all', 'cleaning_app.sse.subscribe', 'cleaning_app.issues.report', 'cleaning_app.media.upload', 'cleaning_app.expense.company.submit', 'cleaning_app.expense.company.view.self', 'cleaning_app.expense.company.edit.self', 'cleaning_app.expense.company.delete.self', 'cleaning_app.expense.property.submit', 'cleaning_app.expense.property.view.self', 'cleaning_app.expense.property.edit.self', 'cleaning_app.expense.property.delete.self']);
+    grant(csId, ['property.write', 'order.view', 'order.write', 'order.manage', 'order.deduction.manage', 'order.cancel', 'order.guest_ready_notification.manage', 'cleaning.view', 'finance.tx.write', 'invoice.view', 'invoice.draft.create', 'onboarding.manage', 'onboarding.read', 'cms_pages.view', 'cms_pages.write', 'menu.dashboard', 'menu.properties', 'menu.finance', 'menu.finance.invoices.visible', 'menu.cleaning', 'menu.cleaning.overview.visible', 'menu.cleaning.task_center.visible', 'menu.cleaning.daily.visible', 'menu.cms', 'menu.cms.customer_service_manual.visible', 'menu.onboarding', 'menu.guest_site', 'menu.guest_site.settings.visible', 'menu.guest_site.properties.visible', 'menu.guest_site.inquiries.visible', 'guest_site_settings.view', 'guest_site_settings.write', 'guest_site_properties.view', 'guest_site_properties.write', 'guest_site_inquiries.view', 'guest_site_inquiries.write', 'cleaning_app.calendar.view.all', 'cleaning_app.sse.subscribe', 'cleaning_app.issues.report', 'cleaning_app.media.upload', 'cleaning_app.expense.company.submit', 'cleaning_app.expense.company.view.self', 'cleaning_app.expense.company.edit.self', 'cleaning_app.expense.company.delete.self', 'cleaning_app.expense.property.submit', 'cleaning_app.expense.property.view.self', 'cleaning_app.expense.property.edit.self', 'cleaning_app.expense.property.delete.self']);
     // 线下运营：可在 App 管理页进入任务详情、提交房源问题反馈并上传证据
-    grant(offlineMgrId, ['menu.dashboard', 'menu.cleaning', 'menu.cleaning.overview.visible', 'menu.cleaning.task_center.visible', 'menu.cleaning.daily.visible', 'cleaning.view', 'cleaning_app.sse.subscribe', 'cleaning_app.issues.report', 'cleaning_app.media.upload']);
+    grant(offlineMgrId, ['menu.dashboard', 'menu.cleaning', 'menu.cleaning.overview.visible', 'menu.cleaning.task_center.visible', 'menu.cleaning.daily.visible', 'cleaning.view', 'cleaning_app.sse.subscribe', 'cleaning_app.issues.report', 'cleaning_app.media.upload', 'menu.finance', 'menu.finance.personnel_settlements.visible', 'personnel_settlements.profiles.view', 'personnel_settlements.profiles.manage', 'personnel_settlements.rules.manage']);
     // 清洁/检查管理员：清洁排班与任务分配（仅查看房源，无写权限）
-    grant(cleanMgrId, ['cleaning.schedule.manage', 'cleaning.task.assign', 'menu.cleaning', 'menu.cleaning.overview.visible', 'menu.cleaning.task_center.visible', 'menu.cleaning.daily.visible', 'menu.dashboard', 'cleaning_app.calendar.view.all', 'cleaning_app.assign', 'cleaning_app.sse.subscribe']);
+    grant(cleanMgrId, ['cleaning.schedule.manage', 'cleaning.task.assign', 'menu.cleaning', 'menu.cleaning.overview.visible', 'menu.cleaning.task_center.visible', 'menu.cleaning.daily.visible', 'menu.dashboard', 'cleaning_app.calendar.view.all', 'cleaning_app.assign', 'cleaning_app.sse.subscribe', 'menu.finance', 'menu.finance.personnel_settlements.visible', 'personnel_settlements.profiles.view', 'personnel_settlements.profiles.manage', 'personnel_settlements.rules.manage']);
     // 清洁人员：与清洁/检查人员一致（兼容数据库中 role=cleaner 的账号）
     grant(cleanerOnlyId, ['menu.cleaning', 'menu.cleaning.overview.visible', 'menu.cleaning.task_center.visible', 'menu.cleaning.daily.visible', 'menu.dashboard', 'cleaning_app.tasks.view.self', 'cleaning_app.tasks.start', 'cleaning_app.tasks.finish', 'cleaning_app.issues.report', 'cleaning_app.media.upload']);
     // 检查人员：允许查看与处理检查相关任务（与清洁人员保持一致，避免前端 403）
@@ -279,7 +288,7 @@ if (exports.db.roles.length === 0) {
     // 兼容旧角色名：cleaner_inspector
     grant(legacyCleanerInspectorId, ['menu.cleaning', 'menu.cleaning.overview.visible', 'menu.cleaning.task_center.visible', 'menu.cleaning.daily.visible', 'menu.dashboard', 'cleaning_app.tasks.view.self', 'cleaning_app.tasks.start', 'cleaning_app.tasks.finish', 'cleaning_app.issues.report', 'cleaning_app.media.upload']);
     // 财务人员：财务结算与交易录入、房东/房源管理
-    grant(financeId, ['finance.payout', 'finance.tx.write', 'invoice.view', 'invoice.draft.create', 'invoice.issue', 'invoice.send', 'invoice.void', 'invoice.payment.record', 'invoice.company.manage', 'invoice.type.switch', 'order.deduction.manage', 'order.cancel', 'landlord.manage', 'property.write', 'property_maintenance.view', 'property_deep_cleaning.view', 'onboarding.manage', 'onboarding.read', 'inventory_linen_purchase_orders.view', 'inventory_linen_purchase_orders.pay', 'menu.inventory', 'menu.inventory.linen.visible', 'menu.inventory.linen.purchase_orders.visible', 'menu.finance', 'menu.finance.invoices.visible', 'menu.finance.property_payables.visible', 'menu.landlords', 'menu.properties', 'menu.onboarding', 'menu.dashboard', 'cleaning_app.expense.company.submit', 'cleaning_app.expense.company.view.self', 'cleaning_app.expense.company.edit.self', 'cleaning_app.expense.company.delete.self', 'cleaning_app.expense.property.submit', 'cleaning_app.expense.property.view.self', 'cleaning_app.expense.property.edit.self', 'cleaning_app.expense.property.delete.self']);
+    grant(financeId, ['finance.payout', 'finance.tx.write', 'personnel_settlements.view', 'personnel_settlements.profiles.view', 'personnel_settlements.profiles.manage', 'personnel_settlements.profile_documents.view', 'personnel_settlements.bank.manage', 'personnel_settlements.rules.manage', 'invoice.view', 'invoice.draft.create', 'invoice.issue', 'invoice.send', 'invoice.void', 'invoice.payment.record', 'invoice.company.manage', 'invoice.type.switch', 'order.deduction.manage', 'order.cancel', 'landlord.manage', 'property.write', 'property_maintenance.view', 'property_deep_cleaning.view', 'onboarding.manage', 'onboarding.read', 'inventory_linen_purchase_orders.view', 'inventory_linen_purchase_orders.pay', 'menu.inventory', 'menu.inventory.linen.visible', 'menu.inventory.linen.purchase_orders.visible', 'menu.finance', 'menu.finance.personnel_settlements.visible', 'menu.finance.invoices.visible', 'menu.finance.property_payables.visible', 'menu.landlords', 'menu.properties', 'menu.onboarding', 'menu.dashboard', 'cleaning_app.expense.company.submit', 'cleaning_app.expense.company.view.self', 'cleaning_app.expense.company.edit.self', 'cleaning_app.expense.company.delete.self', 'cleaning_app.expense.property.submit', 'cleaning_app.expense.property.view.self', 'cleaning_app.expense.property.edit.self', 'cleaning_app.expense.property.delete.self']);
     // 仓库管理员：仓库与钥匙管理
     grant(inventoryId, [
         'inventory.view', 'inventory.move', 'inventory.item.manage', 'inventory.po.manage',
@@ -308,11 +317,13 @@ if (exports.db.roles.length === 0) {
 }
 const defaultPerms = [
     'property.view', 'property.write',
-    'order.view', 'order.create', 'order.write', 'order.sync', 'order.manage', 'order.confirm_payment',
+    'order.view', 'order.create', 'order.write', 'order.sync', 'order.manage', 'order.confirm_payment', 'order.guest_ready_notification.manage',
     'keyset.manage', 'key.flow',
     'cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign',
     'finance.payout', 'finance.tx.write',
+    'personnel_settlements.view', 'personnel_settlements.profiles.view', 'personnel_settlements.profiles.manage', 'personnel_settlements.profile_documents.view', 'personnel_settlements.bank.manage', 'personnel_settlements.rules.manage',
     'order.deduction.manage',
+    'property_maintenance.workflow.manage',
     'inventory.view', 'inventory.move', 'inventory.item.manage', 'inventory.po.manage', 'landlord.manage',
     'inventory_linen_purchase_orders.view', 'inventory_linen_purchase_orders.create', 'inventory_linen_purchase_orders.write', 'inventory_linen_purchase_orders.pay',
     'inventory_linen_deliveries.view', 'inventory_linen_deliveries.create', 'inventory_linen_deliveries.write', 'inventory_linen_deliveries.archive',
@@ -337,7 +348,7 @@ const defaultPerms = [
     'users.password.reset',
     'cleaning_app.expense.company.submit', 'cleaning_app.expense.company.view.self', 'cleaning_app.expense.company.edit.self', 'cleaning_app.expense.company.delete.self',
     'cleaning_app.expense.property.submit', 'cleaning_app.expense.property.view.self', 'cleaning_app.expense.property.edit.self', 'cleaning_app.expense.property.delete.self',
-    'menu.dashboard', 'menu.landlords', 'menu.properties', 'menu.keys', 'menu.inventory', 'menu.inventory.linen.visible', 'menu.inventory.linen.purchase_orders.visible', 'menu.finance', 'menu.finance.property_payables.visible', 'menu.cleaning', 'menu.cleaning.overview.visible', 'menu.cleaning.task_center.visible', 'menu.cleaning.daily.visible', 'menu.rbac', 'menu.cms', 'menu.cms.company.visible', 'menu.cms.public_resources.visible', 'menu.cms.offline_passwords.visible', 'menu.cms.customer_service_manual.visible', 'menu.guest_site', 'menu.guest_site.settings.visible', 'menu.guest_site.properties.visible', 'menu.guest_site.inquiries.visible', 'guest_site_settings.view', 'guest_site_settings.write', 'guest_site_properties.view', 'guest_site_properties.write', 'guest_site_inquiries.view', 'guest_site_inquiries.write'
+    'menu.dashboard', 'menu.landlords', 'menu.properties', 'menu.keys', 'menu.inventory', 'menu.inventory.linen.visible', 'menu.inventory.linen.purchase_orders.visible', 'menu.finance', 'menu.finance.property_payables.visible', 'menu.finance.personnel_settlements.visible', 'menu.cleaning', 'menu.cleaning.overview.visible', 'menu.cleaning.task_center.visible', 'menu.cleaning.daily.visible', 'menu.rbac', 'menu.cms', 'menu.cms.company.visible', 'menu.cms.public_resources.visible', 'menu.cms.offline_passwords.visible', 'menu.cms.customer_service_manual.visible', 'menu.guest_site', 'menu.guest_site.settings.visible', 'menu.guest_site.properties.visible', 'menu.guest_site.inquiries.visible', 'guest_site_settings.view', 'guest_site_settings.write', 'guest_site_properties.view', 'guest_site_properties.write', 'guest_site_inquiries.view', 'guest_site_inquiries.write'
 ];
 defaultPerms.forEach((code) => { if (!exports.db.permissions.find(p => p.code === code))
     exports.db.permissions.push({ code }); });
@@ -372,6 +383,10 @@ if (adminRole) {
             exports.db.rolePermissions.push({ role_id: adminRole.id, permission_code: code });
         }
     });
+}
+const customerServiceRole = exports.db.roles.find(r => r.name === 'customer_service');
+if (customerServiceRole && !exports.db.rolePermissions.find(rp => rp.role_id === customerServiceRole.id && rp.permission_code === 'order.guest_ready_notification.manage')) {
+    exports.db.rolePermissions.push({ role_id: customerServiceRole.id, permission_code: 'order.guest_ready_notification.manage' });
 }
 // granular CRUD resource permissions
 const resources = [
