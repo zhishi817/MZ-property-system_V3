@@ -242,7 +242,7 @@
 - Base: `origin/Dev@65a9d218d803813ed458c25406493aee70189da5`; fetched at `2026-10-21 04:49 UTC`
 - Candidate patch SHA-256: `3ab8275c7d62fb9e8b021874a9bac2ffe1dd2a9bf0ace681d5662ad1155abf85`, excluding `docs/change-release-ledger.md`
 - Commit SHA: `7f783a37518c5ff0af7b8d318d52da0990ffc40c`; exact reviewed content commit, with audit head supplied by the release report.
-- Dependencies: none; Root has no runtime prerequisite on Mobile. The paired Mobile unit is recorded under Related units and depends on this exact Root content commit.
+- Dependencies: none
 - Required validation: PASS; clean-worktree backend build, all affected contracts, isolated dev PostgreSQL helper test and actual local HTTP/API integration passed; paired Mobile clean-worktree `check:ci` passed with 76 suites / 598 tests.
 - Shared-hunk review: PASS; all selected runtime/test files belong only to MZ054–MZ061; MZ062 and unrelated paths are absent.
 - Generated-file review: PASS; source, tests and ledger only; no generated or dependency files.
