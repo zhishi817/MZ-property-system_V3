@@ -3,7 +3,10 @@ import express from 'express'
 import fs from 'node:fs'
 import path from 'node:path'
 import {
+  canonicalCleaningTurnoverPairs,
   canonicalKeyHandoverSourceIds,
+  canonicalKeyHandoverSourceIdsForProjection,
+  cleaningTaskBusinessIdentity,
   deferredProjectionDate,
   isCheckinKeyHandoverTask,
   isInspectionModeAllowedForTask,
@@ -41,12 +44,92 @@ function testKeyHandoverFactStaysSeparateFromWorkflowFinalization() {
     state: 'completed',
     source_task_id: 'mq2212-checkout',
     completed_at: '2026-10-20T02:32:15.623Z',
+    confirmation_source: 'video',
+    media_evidence_present: true,
     workflow_finalization_pending: true,
     missing_requirements: ['cleaning_consumables', 'cleaning_property_photo'],
   })
 }
 
-function testKeyHandoverFactFailsClosedForStaleOrInvalidEvidence() {
+function testKeyHandoverSurvivesOrdinaryWorkflowChanges() {
+  const latestUploadAudit = {
+    performed_as_action: 'upload_access_video',
+    performed_at: '2026-10-21T02:21:00.000Z',
+    status_before: 'in_progress',
+    status_after: 'in_progress',
+    metadata: { finalization_pending: true, missing_requirements: ['inspection_photos'] },
+  }
+  for (const status of ['assigned', 'in_progress', 'to_inspect', 'cleaned', 'restock_pending', 'restocked']) {
+    assert.deepEqual(projectCleaningKeyHandover({
+      taskId: `task-${status}`,
+      status,
+      executionState: 'active',
+      lockboxVideoUrl: 'recorded',
+      latestUploadAudit,
+    }), {
+      state: 'completed',
+      source_task_id: `task-${status}`,
+      completed_at: '2026-10-21T02:21:00.000Z',
+      confirmation_source: 'video',
+      media_evidence_present: true,
+      workflow_finalization_pending: true,
+      missing_requirements: ['inspection_photos'],
+    })
+  }
+  assert.equal(projectCleaningKeyHandover({
+    taskId: 'cancelled-cleaned',
+    status: 'cleaned',
+    executionState: 'cancelled',
+    lockboxVideoUrl: 'recorded',
+    latestUploadAudit,
+  }), null)
+}
+
+function testManualKeysHungIsVisibleWithoutPretendingVideoEvidenceExists() {
+  assert.deepEqual(projectCleaningKeyHandover({
+    taskId: 'mq2913-checkin',
+    status: 'keys_hung',
+    executionState: 'active',
+    lockboxVideoUrl: '',
+    manualConfirmedAt: '2026-10-21T01:29:00.000Z',
+  }), {
+    state: 'completed',
+    source_task_id: 'mq2913-checkin',
+    completed_at: '2026-10-21T01:29:00.000Z',
+    confirmation_source: 'manual',
+    media_evidence_present: false,
+    workflow_finalization_pending: false,
+    missing_requirements: [],
+  })
+  assert.equal(projectCleaningKeyHandover({
+    taskId: 'reopened-mq2913',
+    status: 'assigned',
+    executionState: 'active',
+    lockboxVideoUrl: '',
+    manualConfirmedAt: '2026-10-21T01:29:00.000Z',
+  }), null)
+  assert.deepEqual(projectCleaningKeyHandover({
+    taskId: 'mq2913-video-and-manual',
+    status: 'keys_hung',
+    executionState: 'active',
+    lockboxVideoUrl: 'recorded',
+    latestUploadAudit: {
+      performed_as_action: 'upload_access_video',
+      performed_at: '2026-10-20T01:00:00.000Z',
+    },
+    manualConfirmedAt: '2026-10-21T01:29:00.000Z',
+  }), {
+    state: 'completed',
+    source_task_id: 'mq2913-video-and-manual',
+    completed_at: '2026-10-20T01:00:00.000Z',
+    confirmation_source: 'video',
+    media_evidence_present: true,
+    workflow_finalization_pending: false,
+    missing_requirements: [],
+  }, 'the exact task video remains the primary fact when a manual confirmation also exists')
+}
+
+function testKeyHandoverFactRequiresExactCurrentTaskMediaOrManualConfirmation() {
   const audit = {
     performed_as_action: 'upload_access_video',
     performed_at: '2026-10-20T02:32:15.623Z',
@@ -54,13 +137,21 @@ function testKeyHandoverFactFailsClosedForStaleOrInvalidEvidence() {
     status_after: 'in_progress',
     metadata: { finalization_pending: true, missing_requirements: ['cleaning_consumables'] },
   }
-  assert.equal(projectCleaningKeyHandover({
+  assert.deepEqual(projectCleaningKeyHandover({
     taskId: 'reopened-assigned',
     status: 'assigned',
     executionState: 'active',
-    lockboxVideoUrl: 'https://example.invalid/stale.mp4',
+    lockboxVideoUrl: 'recorded',
     latestUploadAudit: audit,
-  }), null)
+  }), {
+    state: 'completed',
+    source_task_id: 'reopened-assigned',
+    completed_at: '2026-10-20T02:32:15.623Z',
+    confirmation_source: 'video',
+    media_evidence_present: true,
+    workflow_finalization_pending: true,
+    missing_requirements: ['cleaning_consumables'],
+  })
   assert.equal(projectCleaningKeyHandover({
     taskId: 'cancelled-task',
     status: 'cancelled',
@@ -75,29 +166,21 @@ function testKeyHandoverFactFailsClosedForStaleOrInvalidEvidence() {
     lockboxVideoUrl: '',
     latestUploadAudit: audit,
   }), null)
-  assert.equal(projectCleaningKeyHandover({
+  assert.deepEqual(projectCleaningKeyHandover({
     taskId: 'url-only',
     status: 'in_progress',
     executionState: 'active',
-    lockboxVideoUrl: 'https://example.invalid/url-only.mp4',
+    lockboxVideoUrl: 'recorded',
     latestUploadAudit: null,
-  }), null)
-  assert.equal(projectCleaningKeyHandover({
-    taskId: 'reopened-in-progress',
-    status: 'in_progress',
-    executionState: 'active',
-    lockboxVideoUrl: 'https://example.invalid/stale-after-reopen.mp4',
-    latestUploadAudit: audit,
-    invalidatedAfterUpload: true,
-  }), null)
-  assert.equal(projectCleaningKeyHandover({
-    taskId: 'reopened-then-terminal',
-    status: 'keys_hung',
-    executionState: 'active',
-    lockboxVideoUrl: 'https://example.invalid/stale-after-second-run.mp4',
-    latestUploadAudit: audit,
-    invalidatedAfterUpload: true,
-  }), null)
+  }), {
+    state: 'completed',
+    source_task_id: 'url-only',
+    completed_at: null,
+    confirmation_source: 'video',
+    media_evidence_present: true,
+    workflow_finalization_pending: false,
+    missing_requirements: [],
+  })
 }
 
 function testKeyHandoverMergeRequiresCanonicalSourceMembership() {
@@ -105,6 +188,8 @@ function testKeyHandoverMergeRequiresCanonicalSourceMembership() {
     state: 'completed' as const,
     source_task_id: 'checkout-1',
     completed_at: '2026-10-20T02:32:15.623Z',
+    confirmation_source: 'video' as const,
+    media_evidence_present: true,
     workflow_finalization_pending: true,
     missing_requirements: ['cleaning_consumables'],
   }
@@ -115,6 +200,95 @@ function testKeyHandoverMergeRequiresCanonicalSourceMembership() {
     mergeCleaningKeyHandoverProjections([{ key_handover: fact }, { key_handover: null }], ['checkout-1', 'checkin-1']),
     fact,
   )
+  const laterManualFact = {
+    state: 'completed' as const,
+    source_task_id: 'checkin-1',
+    completed_at: '2026-10-21T03:00:00.000Z',
+    confirmation_source: 'manual' as const,
+    media_evidence_present: false,
+    workflow_finalization_pending: false,
+    missing_requirements: [] as string[],
+  }
+  assert.deepEqual(
+    mergeCleaningKeyHandoverProjections(
+      [{ key_handover: fact }, { key_handover: laterManualFact }],
+      ['checkout-1', 'checkin-1'],
+    ),
+    fact,
+    'a canonical turnover keeps its exact video fact primary even when the paired source has a later manual confirmation',
+  )
+}
+
+function testManagerProjectionKeepsCanonicalHandoverForVisiblePhaseSubset() {
+  const relationRows = [
+    {
+      __raw_id: 'checkout-1', task_type: 'checkout_clean', property_id: 'property-1', task_date: '2026-10-21',
+      order_id: 'outgoing-order', order_checkout: '2026-10-21', status: 'restock_pending', execution_state: 'active',
+    },
+    {
+      __raw_id: 'checkin-1', task_type: 'checkin_clean', property_id: 'property-1', task_date: '2026-10-21',
+      order_id: 'incoming-order', order_checkin: '2026-10-21', status: 'assigned', execution_state: 'active',
+    },
+  ]
+  assert.deepEqual(
+    canonicalKeyHandoverSourceIdsForProjection(relationRows, ['checkout-1']),
+    ['checkout-1', 'checkin-1'],
+    'a suppressed paired phase must not erase an exact-task video from the visible turnover projection',
+  )
+  assert.deepEqual(
+    canonicalKeyHandoverSourceIdsForProjection(relationRows, ['checkout-1', 'checkin-1']),
+    ['checkout-1', 'checkin-1'],
+  )
+  assert.deepEqual(
+    canonicalKeyHandoverSourceIdsForProjection(relationRows, ['checkout-1', 'independent-task']),
+    [],
+    'an unrelated active source must fail closed instead of borrowing turnover evidence',
+  )
+  assert.deepEqual(
+    canonicalKeyHandoverSourceIdsForProjection([relationRows[0]], ['checkout-1']),
+    ['checkout-1'],
+    'a standalone exact-source projection keeps only its own evidence boundary',
+  )
+}
+
+function testCanonicalTurnoverBusinessIdentityRejectsCancelledOrAmbiguousCandidates() {
+  const checkout = {
+    id: 'checkout-1', task_type: 'checkout_clean', property_id: 'property-1', task_date: '2026-10-21',
+    order_id: 'outgoing-order', order_checkout: '2026-10-21', status: 'cleaned', execution_state: 'active',
+  }
+  const checkin = {
+    id: 'checkin-1', task_type: 'checkin_clean', property_id: 'property-1', task_date: '2026-10-21',
+    order_id: 'incoming-order', order_checkin: '2026-10-21', status: 'assigned', execution_state: 'active',
+  }
+  const canonicalPairs = canonicalCleaningTurnoverPairs([checkout, checkin])
+  assert.deepEqual(canonicalPairs.map((pair) => ({
+    source_ids: pair.source_ids,
+    business_identity: pair.business_identity,
+  })), [{
+    source_ids: ['checkout-1', 'checkin-1'],
+    business_identity: 'turnover:outgoing-order:incoming-order',
+  }])
+  const identityBySource = new Map<string, string>()
+  for (const pair of canonicalPairs) {
+    for (const sourceId of pair.source_ids) identityBySource.set(sourceId, pair.business_identity)
+  }
+  assert.equal(identityBySource.get('checkout-1'), 'turnover:outgoing-order:incoming-order')
+  assert.equal(identityBySource.get('checkin-1'), 'turnover:outgoing-order:incoming-order')
+  assert.deepEqual(canonicalCleaningTurnoverPairs([
+    { ...checkout, id: 'cancelled-checkout', status: 'cancelled', execution_state: 'cancelled' },
+    checkin,
+  ]), [])
+  assert.deepEqual(canonicalCleaningTurnoverPairs([
+    checkout,
+    checkin,
+    { ...checkin, id: 'another-checkin', order_id: 'another-order' },
+  ]), [], 'an ambiguous source is never paired using property/date alone')
+  assert.equal(cleaningTaskBusinessIdentity({
+    checkoutOrderId: 'outgoing-order',
+    checkinOrderId: 'incoming-order',
+    sourceId: 'checkout-1',
+  }), 'turnover:outgoing-order:incoming-order')
+  assert.equal(cleaningTaskBusinessIdentity({ sourceId: 'standalone-task' }), 'cleaning_task:standalone-task')
 }
 
 function testCanonicalKeyHandoverTurnoverRequiresExactOrderBoundary() {
@@ -147,13 +321,23 @@ function testWorkTaskPayloadUsesExactAuditWithoutExposingMediaUrl() {
   const cleaningSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/cleaning.ts'), 'utf8')
   const cleaningAppSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/cleaning_app.ts'), 'utf8')
   assert.match(source, /latest_lockbox_audit AS \([\s\S]*?audit\.source_id::text AS task_id[\s\S]*?performed_as_action = 'upload_access_video'/)
-  assert.match(source, /current_media\.task_id::text = audit\.source_id::text[\s\S]*?current_media\.type = 'lockbox_video'/)
+  assert.match(source, /current_media\.task_id::text = t\.id::text[\s\S]*?current_media\.type = 'lockbox_video'/)
   assert.match(source, /lockboxVideoUrl: row\.has_current_lockbox_video === true \? 'recorded' : ''/)
-  assert.match(source, /invalidatedAfterUpload: row\.lockbox_audit_invalidated === true/)
+  assert.doesNotMatch(source, /invalidatedAfterUpload|invalidated_after_upload|lockbox_audit_invalidated/)
   assert.match(source, /key_handover: keyHandover/)
-  assert.match(source, /canonicalKeyHandoverSourceIds\(rows\)/)
+  assert.match(source, /canonicalCleaningTurnoverPairs\(cleaningRows\)/)
+  assert.match(source, /canonicalKeyHandoverSourceIds\(keyHandoverRelationRows\)/)
+  assert.match(source, /business_identity: businessIdentity/)
+  assert.match(source, /phase_history: phaseHistory/)
+  assert.match(source, /executor_id: roleKind === 'executor'/)
+  assert.match(source, /const canonicalTurnover = sameDayTurnoverFor\(row\.id\)/)
+  assert.match(source, /const rowBusinessIdentity = canonicalTurnover\?\.businessIdentity[\s\S]*?cleaningTaskBusinessIdentity\(\{ sourceId: row\.id \}\)/)
+  assert.match(source, /const k = `\$\{taskDate\}\|\$\{rowBusinessIdentity\}\|\$\{effectiveCleanerId/)
+  assert.match(source, /const keyHandoverRelationRowsById = new Map<string, any>\(\)/)
+  assert.doesNotMatch(source, /const k = `\$\{taskDate\}\|\$\{propId \|\| ''\}\|\$\{effectiveCleanerId/)
+  assert.match(source, /LEFT JOIN users cu ON \(cu\.id::text\) = \(t\.cleaner_id::text\)/)
+  assert.doesNotMatch(source, /LEFT JOIN users cu ON \(cu\.id::text\) = \(COALESCE\(t\.cleaner_id, t\.assignee_id\)::text\)/)
   assert.match(source, /__key_handover_source_ids/)
-  assert.match(source, /status_after, ''\)\) = 'in_progress'[\s\S]*?status_before/)
   assert.match(source, /latest_cancellation\.is_deleted = false/)
   assert.match(source, /candidate_cancellation\.id = candidate_id\.id[\s\S]*?COALESCE\(candidate_cancellation\.is_deleted, false\) = false/)
   assert.match(source, /latest_cancellation_ids AS MATERIALIZED \([\s\S]*?patch,status[\s\S]*?IN \('cancelled', 'canceled'\)/)
@@ -387,7 +571,7 @@ function testMsq1905eReopenedDeferredEvidenceDoesNotContaminateNewTurnover() {
   assert.equal(lockboxVideoConfirmsCurrentTaskState({
     status: 'assigned',
     lockboxVideoUrl: 'https://example.invalid/historical-lockbox.mp4',
-  }), false, 'retained evidence on a reopened task must not restore keys_hung')
+  }), true, 'the exact task keeps its own video fact; merge isolation prevents it leaking to a different turnover')
   assert.equal(keyPhotoConfirmsCurrentTaskProgress({
     status: 'assigned',
     keyPhotoUrl: 'https://example.invalid/historical-key.jpg',
@@ -691,9 +875,13 @@ testKeysHungSelfCompleteProjectsToOriginalTaskDate()
 testOrdinarySelfCompleteDoesNotCreateInspectorTask()
 testPasswordOnlyCannotUseSelfCompleteOrCheckedDone()
 testKeyHandoverFactStaysSeparateFromWorkflowFinalization()
-testKeyHandoverFactFailsClosedForStaleOrInvalidEvidence()
+testKeyHandoverSurvivesOrdinaryWorkflowChanges()
+testManualKeysHungIsVisibleWithoutPretendingVideoEvidenceExists()
+testKeyHandoverFactRequiresExactCurrentTaskMediaOrManualConfirmation()
 testKeyHandoverMergeRequiresCanonicalSourceMembership()
+testManagerProjectionKeepsCanonicalHandoverForVisiblePhaseSubset()
 testCanonicalKeyHandoverTurnoverRequiresExactOrderBoundary()
+testCanonicalTurnoverBusinessIdentityRejectsCancelledOrAmbiguousCandidates()
 testWorkTaskPayloadUsesExactAuditWithoutExposingMediaUrl()
 
 testTaskCenterSaveBoardDoesNotEraseDeferredDate()

@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 const source = fs.readFileSync(path.resolve(__dirname, '../../src/modules/mzapp.ts'), 'utf8')
+const completionEvidenceSource = fs.readFileSync(path.resolve(__dirname, '../../src/lib/cleaningCompletionEvidence.ts'), 'utf8')
 const routeStart = source.indexOf("router.get('/work-tasks'")
 const routeEnd = source.indexOf("router.post('/guest-ready-notifications'", routeStart)
 assert.ok(routeStart >= 0 && routeEnd > routeStart, 'work-tasks route must remain discoverable')
@@ -13,7 +14,8 @@ const scheduledCandidateStart = route.indexOf('scheduled_candidate_ids AS MATERI
 const latestCancellationStart = route.indexOf('latest_cancellation_ids AS MATERIALIZED', scheduledCandidateStart)
 const historicalStart = route.indexOf('historical_candidate_ids AS MATERIALIZED', latestCancellationStart)
 const cancelledScheduledStart = route.indexOf('cancelled_scheduled_candidate_ids AS MATERIALIZED', historicalStart)
-const candidateIdsStart = route.indexOf('candidate_task_ids AS MATERIALIZED', cancelledScheduledStart)
+const candidateSourcesStart = route.indexOf('candidate_task_id_sources AS MATERIALIZED', cancelledScheduledStart)
+const candidateIdsStart = route.indexOf('candidate_task_ids AS MATERIALIZED', candidateSourcesStart)
 const candidateRowsStart = route.indexOf('candidate_tasks AS (', candidateIdsStart)
 const latestMediaStart = route.indexOf('latest_media_raw AS (', candidateRowsStart)
 assert.ok(
@@ -22,6 +24,7 @@ assert.ok(
     && latestCancellationStart > scheduledCandidateStart
     && historicalStart > latestCancellationStart
     && cancelledScheduledStart > historicalStart
+    && candidateSourcesStart > cancelledScheduledStart
     && candidateIdsStart > historicalStart
     && candidateRowsStart > candidateIdsStart
     && latestMediaStart > candidateRowsStart,
@@ -52,7 +55,8 @@ assert.doesNotMatch(latestCancellations, /event\.event_type = 'TASK_REMOVED'/)
 assert.match(latestCancellations, /SELECT DISTINCT ON \(event\.task_id\)[\s\S]*?ORDER BY event\.task_id, event\.occurred_at DESC, event\.sequence_no DESC/)
 
 const historicalIds = route.slice(historicalStart, cancelledScheduledStart)
-assert.match(historicalIds, /audit\.performed_as_action IN \('complete_cleaning', 'submit_inspection'\)/)
+assert.match(historicalIds, /cleaningCompletionAuditWhereSql\('audit'\)/)
+assert.match(historicalIds, /audit\.performed_as_action = 'submit_inspection'/)
 assert.match(historicalIds, /COALESCE\(audit\.performed_by_user_id, audit\.actor_user_id\)::text = \$3::text/)
 assert.match(historicalIds, /audit\.performed_at AT TIME ZONE 'Australia\/Melbourne'/)
 assert.match(historicalIds, /media\.type = 'lockbox_video'/)
@@ -60,12 +64,15 @@ assert.match(historicalIds, /media\.uploader_id::text = \$3::text/)
 assert.match(historicalIds, /media\.captured_at AT TIME ZONE 'Australia\/Melbourne'/)
 assert.match(historicalIds, /latest_cancellation\.occurred_at AT TIME ZONE 'Australia\/Melbourne'/)
 
-const cancelledScheduledIds = route.slice(cancelledScheduledStart, candidateIdsStart)
+const cancelledScheduledIds = route.slice(cancelledScheduledStart, candidateSourcesStart)
 assert.match(cancelledScheduledIds, /FROM scheduled_match_ids scheduled/)
 assert.match(cancelledScheduledIds, /JOIN latest_cancellation_ids latest_cancellation ON latest_cancellation\.id = scheduled\.id/)
 
+const candidateSources = route.slice(candidateSourcesStart, candidateIdsStart)
+assert.match(candidateSources, /SELECT id, false AS historical_evidence FROM scheduled_candidate_ids[\s\S]*UNION ALL[\s\S]*SELECT id, true AS historical_evidence FROM historical_candidate_ids/)
+
 const candidateIds = route.slice(candidateIdsStart, candidateRowsStart)
-assert.match(candidateIds, /SELECT id FROM scheduled_candidate_ids[\s\S]*UNION[\s\S]*SELECT id FROM historical_candidate_ids[\s\S]*UNION[\s\S]*SELECT id FROM cancelled_scheduled_candidate_ids/)
+assert.match(candidateIds, /SELECT id, bool_or\(historical_evidence\) AS historical_evidence[\s\S]*FROM candidate_task_id_sources[\s\S]*GROUP BY id/)
 
 const candidateRows = route.slice(candidateRowsStart, latestMediaStart)
 const narrowedJoin = candidateRows.indexOf('FROM candidate_task_ids candidate_id')
@@ -77,14 +84,25 @@ assert.doesNotMatch(
   'candidate row enrichment must not start from the full cleaning_tasks table',
 )
 assert.match(candidateRows, /JOIN cleaning_tasks t ON t\.id::text = candidate_id\.id/)
-assert.match(candidateRows, /audit\.performed_as_action = 'complete_cleaning'/)
+assert.match(candidateRows, /cleaningCompletionAuditWhereSql\('audit'\)/)
 assert.match(candidateRows, /audit\.performed_as_action = 'submit_inspection'/)
 assert.match(candidateRows, /media\.type = 'lockbox_video'/)
 assert.match(candidateRows, /event\.task_id = \('cleaning_task:' \|\| t\.id::text\)/)
 assert.match(
   candidateRows,
-  /WHERE COALESCE\(candidate_cancellation\.is_deleted, false\) = false[\s\S]*?lower\(COALESCE\(t\.execution_state, ''\)\) <> 'superseded'/,
-  'superseded rows must remain hidden even when completion audits or lockbox media select their ids',
+  /WHERE COALESCE\(candidate_cancellation\.is_deleted, false\) = false[\s\S]*?lower\(COALESCE\(t\.execution_state, ''\)\) <> 'superseded'[\s\S]*?OR candidate_id\.historical_evidence = true/,
+  'superseded rows may be read only when immutable historical evidence selected them',
+)
+assert.match(route, /isActiveCleaningTurnoverCandidate\(row\)/, 'superseded historical rows must not re-enter live role groups')
+assert.match(
+  route,
+  /keyHandoverSourceIds\.includes\(String\(row\?\.__raw_id \|\| row\?\.source_id \|\| row\?\.id \|\| ''\)\)/,
+  'canonical relation rows must retain raw query ids when the visible phase is later manager-merged',
+)
+assert.match(
+  route,
+  /__raw_id: row\.__raw_id \|\| row\.source_id \|\| row\.id/,
+  'manager merge handover source rows must preserve the exact source identity',
 )
 
 for (const step of [
@@ -108,5 +126,27 @@ for (const step of [
   assert.match(route, new RegExp(`markCleaningPoolStep\\('${step}'\\)`), `missing cleaning_pool timing step ${step}`)
 }
 assert.match(route, /workTasksTimings\.push\(`cleaning_pool:\$\{Date\.now\(\) - cleaningPoolStartedAt\}`\)/)
+
+const completionAuditHelperStart = completionEvidenceSource.indexOf('export function cleaningCompletionAuditWhereSql')
+assert.ok(completionAuditHelperStart >= 0)
+const completionAuditHelper = completionEvidenceSource.slice(completionAuditHelperStart)
+assert.match(completionAuditHelper, /performed_as_action = 'complete_cleaning'/)
+assert.match(completionAuditHelper, /performed_as_action = 'fill_supplies'/)
+assert.match(completionAuditHelper, /mzapp\.cleaning_tasks\.restock_proof/)
+assert.match(completionAuditHelper, /completion_photos_saved/)
+for (const status of [
+  'cleaned',
+  'restock_pending',
+  'restocked',
+  'to_inspect',
+  'to_hang_keys',
+  'keys_hung',
+  'inspected',
+  'ready',
+  'completed',
+  'done',
+]) {
+  assert.match(completionEvidenceSource, new RegExp(`'${status}'`), `missing completion status ${status}`)
+}
 
 console.log('work-tasks cleaning candidate scope contract passed')

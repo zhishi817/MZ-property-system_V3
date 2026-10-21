@@ -17,17 +17,20 @@ import {
   resolveGuestLuggageRecipientIds,
 } from '../services/guestLuggage'
 import {
+  canonicalCleaningTurnoverPairs,
   canonicalKeyHandoverSourceIds,
+  canonicalKeyHandoverSourceIdsForProjection,
+  cleaningTaskBusinessIdentity,
   cleaningTaskExecutionSemantics,
   deferredProjectionDate,
   effectiveInspectionMode,
   isCleaningTaskInspectionSubmitParticipant,
   isCheckinKeyHandoverTask,
   isCleaningExecutionTask,
+  isActiveCleaningTurnoverCandidate,
   isInspectionFinishedStatus,
   isKeyOrPasswordActionSemantics,
   keyPhotoConfirmsCurrentTaskProgress,
-  lockboxVideoConfirmsCurrentTaskState,
   mergeCleaningKeyHandoverProjections,
   mergeInspectionPlan,
   mobileInspectionProjectionDate,
@@ -64,6 +67,7 @@ import {
 } from '../lib/maintenanceWorkflowStore'
 import { buildWorkTaskActionPayload, type WorkTaskActionId, type WorkTaskParticipant } from '../lib/workTaskActions'
 import { dailyTaskWorkRecordProjection, evidenceBackedWorkRecordState, isDailyTaskManagerRoleNames, mergeRoleRecordEvidenceWithCancellation, projectDailyTaskListItems } from '../lib/dailyTaskExecutionVisibility'
+import { cleaningCompletionAuditWhereSql } from '../lib/cleaningCompletionEvidence'
 import {
   buildIdempotencyPayloadHash,
   assertIdempotentStepReceiptsReady,
@@ -7535,7 +7539,10 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             SELECT DISTINCT audit.source_id::text AS id
             FROM work_task_action_audits audit
             WHERE audit.source_type = 'cleaning_tasks'
-              AND audit.performed_as_action IN ('complete_cleaning', 'submit_inspection')
+              AND (
+                ${cleaningCompletionAuditWhereSql('audit')}
+                OR audit.performed_as_action = 'submit_inspection'
+              )
               AND ($4::boolean OR COALESCE(audit.performed_by_user_id, audit.actor_user_id)::text = $3::text)
               AND (audit.performed_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN $1::date AND $2::date
             UNION
@@ -7545,6 +7552,14 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               AND COALESCE(TRIM(media.url), '') <> ''
               AND ($4::boolean OR media.uploader_id::text = $3::text)
               AND (media.captured_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN $1::date AND $2::date
+            UNION
+            SELECT DISTINCT substring(event.task_id FROM length('cleaning_task:') + 1) AS id
+            FROM work_task_events event
+            WHERE left(event.task_id, length('cleaning_task:')) = 'cleaning_task:'
+              AND lower(COALESCE(event.payload#>>'{patch,status}', '')) = 'keys_hung'
+              AND COALESCE(event.payload#>'{arrangement_revision,reasons}', '[]'::jsonb) ? 'keys_hung_confirmed'
+              AND ($4::boolean OR event.caused_by_user_id::text = $3::text)
+              AND (event.occurred_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN $1::date AND $2::date
             UNION
             SELECT latest_cancellation.id
             FROM latest_cancellation_ids latest_cancellation
@@ -7557,12 +7572,17 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             JOIN latest_cancellation_ids latest_cancellation ON latest_cancellation.id = scheduled.id
             WHERE latest_cancellation.is_deleted = false
           ),
+          candidate_task_id_sources AS MATERIALIZED (
+            SELECT id, false AS historical_evidence FROM scheduled_candidate_ids
+            UNION ALL
+            SELECT id, true AS historical_evidence FROM historical_candidate_ids
+            UNION ALL
+            SELECT id, true AS historical_evidence FROM cancelled_scheduled_candidate_ids
+          ),
           candidate_task_ids AS MATERIALIZED (
-            SELECT id FROM scheduled_candidate_ids
-            UNION
-            SELECT id FROM historical_candidate_ids
-            UNION
-            SELECT id FROM cancelled_scheduled_candidate_ids
+            SELECT id, bool_or(historical_evidence) AS historical_evidence
+            FROM candidate_task_id_sources
+            GROUP BY id
           ),
           candidate_tasks AS (
             SELECT
@@ -7583,6 +7603,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               COALESCE(t.task_date, t.date)::text AS task_date,
               t.status,
               t.execution_state,
+              candidate_id.historical_evidence,
               t.assignee_id,
               t.cleaner_id,
               t.inspector_id,
@@ -7611,10 +7632,12 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               t.sort_index_inspector,
               cleaner_record.performed_at AS cleaner_record_at,
               cleaner_record.performed_by_user_id AS cleaner_record_actor_user_id,
+              cleaner_record.performed_by_name AS cleaner_record_actor_name,
               inspector_record.performed_at AS inspector_record_at,
               inspector_record.performed_by_user_id AS inspector_record_actor_user_id,
               executor_record.performed_at AS executor_record_at,
               executor_record.performed_by_user_id AS executor_record_actor_user_id,
+              executor_record.confirmation_source AS executor_record_confirmation_source,
               cancelled_record.occurred_at AS cancelled_record_at,
               cancelled_record.caused_by_user_id AS cancelled_record_actor_user_id,
               t.updated_at
@@ -7625,14 +7648,24 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
             LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
             LEFT JOIN users au ON (au.id::text) = (t.assignee_id::text)
-            LEFT JOIN users cu ON (cu.id::text) = (COALESCE(t.cleaner_id, t.assignee_id)::text)
+            LEFT JOIN users cu ON (cu.id::text) = (t.cleaner_id::text)
             LEFT JOIN users iu ON (iu.id::text) = (t.inspector_id::text)
             LEFT JOIN LATERAL (
-              SELECT audit.performed_at, COALESCE(audit.performed_by_user_id, audit.actor_user_id) AS performed_by_user_id
+              SELECT
+                audit.performed_at,
+                COALESCE(audit.performed_by_user_id, audit.actor_user_id) AS performed_by_user_id,
+                COALESCE(
+                  NULLIF(TRIM(audit.performed_by_name), ''),
+                  performer.username,
+                  performer.email,
+                  performer.id::text
+                ) AS performed_by_name
               FROM work_task_action_audits audit
+              LEFT JOIN users performer
+                ON performer.id::text = COALESCE(audit.performed_by_user_id, audit.actor_user_id)::text
               WHERE audit.source_type = 'cleaning_tasks'
                 AND audit.source_id::text = t.id::text
-                AND audit.performed_as_action = 'complete_cleaning'
+                AND ${cleaningCompletionAuditWhereSql('audit')}
                 AND ($4::boolean OR COALESCE(audit.performed_by_user_id, audit.actor_user_id)::text = $3::text)
                 AND (audit.performed_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN $1::date AND $2::date
               ORDER BY audit.performed_at DESC, audit.created_at DESC
@@ -7650,14 +7683,31 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               LIMIT 1
             ) inspector_record ON TRUE
             LEFT JOIN LATERAL (
-              SELECT media.captured_at AS performed_at, media.uploader_id AS performed_by_user_id
-              FROM cleaning_task_media media
-              WHERE media.task_id::text = t.id::text
-                AND media.type = 'lockbox_video'
-                AND COALESCE(TRIM(media.url), '') <> ''
-                AND ($4::boolean OR media.uploader_id::text = $3::text)
-                AND (media.captured_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN $1::date AND $2::date
-              ORDER BY media.captured_at DESC NULLS LAST, media.created_at DESC
+              SELECT evidence.performed_at, evidence.performed_by_user_id, evidence.confirmation_source
+              FROM (
+                SELECT media.captured_at AS performed_at,
+                       media.uploader_id AS performed_by_user_id,
+                       'video'::text AS confirmation_source,
+                       media.created_at AS created_at
+                FROM cleaning_task_media media
+                WHERE media.task_id::text = t.id::text
+                  AND media.type = 'lockbox_video'
+                  AND COALESCE(TRIM(media.url), '') <> ''
+                  AND ($4::boolean OR media.uploader_id::text = $3::text)
+                  AND (media.captured_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN $1::date AND $2::date
+                UNION ALL
+                SELECT event.occurred_at AS performed_at,
+                       event.caused_by_user_id AS performed_by_user_id,
+                       'manual'::text AS confirmation_source,
+                       event.occurred_at AS created_at
+                FROM work_task_events event
+                WHERE event.task_id = ('cleaning_task:' || t.id::text)
+                  AND lower(COALESCE(event.payload#>>'{patch,status}', '')) = 'keys_hung'
+                  AND COALESCE(event.payload#>'{arrangement_revision,reasons}', '[]'::jsonb) ? 'keys_hung_confirmed'
+                  AND ($4::boolean OR event.caused_by_user_id::text = $3::text)
+                  AND (event.occurred_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN $1::date AND $2::date
+              ) evidence
+              ORDER BY evidence.performed_at DESC NULLS LAST, evidence.created_at DESC
               LIMIT 1
             ) executor_record ON TRUE
             LEFT JOIN LATERAL (
@@ -7669,7 +7719,10 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               LIMIT 1
             ) cancelled_record ON TRUE
             WHERE COALESCE(candidate_cancellation.is_deleted, false) = false
-              AND lower(COALESCE(t.execution_state, '')) <> 'superseded'
+              AND (
+                lower(COALESCE(t.execution_state, '')) <> 'superseded'
+                OR candidate_id.historical_evidence = true
+              )
           ),
           latest_media_raw AS (
             SELECT DISTINCT ON (m.task_id::text, m.type)
@@ -7702,61 +7755,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               audit.performed_at,
               audit.status_before,
               audit.status_after,
-              audit.metadata,
-              EXISTS (
-                SELECT 1
-                FROM cleaning_task_media current_media
-                WHERE current_media.task_id::text = audit.source_id::text
-                  AND current_media.type = 'lockbox_video'
-                  AND COALESCE(TRIM(current_media.url), '') <> ''
-              ) AS has_current_lockbox_video,
-              (
-                EXISTS (
-                  SELECT 1
-                  FROM work_task_events reset_event
-                  WHERE reset_event.task_id = ('cleaning_task:' || audit.source_id::text)
-                    AND reset_event.occurred_at > audit.performed_at
-                    AND 'status' = ANY(reset_event.changed_fields)
-                    AND (
-                      lower(COALESCE(reset_event.payload#>>'{patch,status}', '')) IN (
-                        'todo', 'pending', 'unassigned', 'assigned', 'to_clean', 'to_inspect'
-                      )
-                      OR (
-                        lower(COALESCE(reset_event.payload#>>'{patch,status}', '')) = 'in_progress'
-                        AND EXISTS (
-                          SELECT 1
-                          FROM work_task_events terminal_event
-                          WHERE terminal_event.task_id = reset_event.task_id
-                            AND terminal_event.occurred_at > audit.performed_at
-                            AND terminal_event.occurred_at < reset_event.occurred_at
-                            AND 'status' = ANY(terminal_event.changed_fields)
-                            AND lower(COALESCE(terminal_event.payload#>>'{patch,status}', '')) IN (
-                              'keys_hung', 'ready', 'completed', 'done'
-                            )
-                        )
-                      )
-                    )
-                )
-                OR EXISTS (
-                  SELECT 1
-                  FROM work_task_action_audits later_audit
-                  WHERE later_audit.source_type = 'cleaning_tasks'
-                    AND later_audit.source_id::text = audit.source_id::text
-                    AND later_audit.performed_at > audit.performed_at
-                    AND (
-                      lower(COALESCE(later_audit.status_after, '')) IN (
-                        'todo', 'pending', 'unassigned', 'assigned', 'to_clean', 'to_inspect'
-                      )
-                      OR (
-                        lower(COALESCE(later_audit.status_after, '')) = 'in_progress'
-                        AND lower(COALESCE(later_audit.status_before, '')) IN (
-                          'keys_hung', 'ready', 'completed', 'done',
-                          'todo', 'pending', 'unassigned', 'assigned', 'to_clean', 'to_inspect'
-                        )
-                      )
-                    )
-                )
-              ) AS invalidated_after_upload
+              audit.metadata
             FROM work_task_action_audits audit
             JOIN candidate_tasks candidate ON candidate.id::text = audit.source_id::text
             WHERE audit.source_type = 'cleaning_tasks'
@@ -7781,6 +7780,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             t.task_date,
             t.status,
             t.execution_state,
+            t.historical_evidence,
             t.assignee_id,
             t.cleaner_id,
             t.inspector_id,
@@ -7810,14 +7810,21 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             lockbox_audit.status_before AS lockbox_audit_status_before,
             lockbox_audit.status_after AS lockbox_audit_status_after,
             lockbox_audit.metadata AS lockbox_audit_metadata,
-            lockbox_audit.has_current_lockbox_video,
-            lockbox_audit.invalidated_after_upload AS lockbox_audit_invalidated,
+            EXISTS (
+              SELECT 1
+              FROM cleaning_task_media current_media
+              WHERE current_media.task_id::text = t.id::text
+                AND current_media.type = 'lockbox_video'
+                AND COALESCE(TRIM(current_media.url), '') <> ''
+            ) AS has_current_lockbox_video,
             t.executor_record_at AS lockbox_record_at,
             t.executor_record_actor_user_id AS lockbox_record_actor_user_id,
+            t.executor_record_confirmation_source,
             t.sort_index_cleaner,
             t.sort_index_inspector,
             t.cleaner_record_at,
             t.cleaner_record_actor_user_id,
+            t.cleaner_record_actor_name,
             t.inspector_record_at,
             t.inspector_record_actor_user_id,
             t.cancelled_record_at,
@@ -7917,7 +7924,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         )
         markCleaningPoolStep('guide_links')
         const taskIds = Array.from(new Set(cleaningRows.map((x: any) => String(x.id || '')).filter(Boolean)))
-        const managerRecordEvidenceByTaskId = new Map<string, Array<{ roleKind: 'cleaner' | 'inspector' | 'executor'; performedAt: string; actorUserId: string }>>()
+        const managerRecordEvidenceByTaskId = new Map<string, Array<{ roleKind: 'cleaner' | 'inspector' | 'executor'; performedAt: string; actorUserId: string; actorName: string | null }>>()
         if (managerCanSeeAllTaskPool && taskIds.length) {
           const evidenceResult = await pgPool.query(
             `WITH raw_evidence AS (
@@ -7925,28 +7932,62 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                  audit.source_id::text AS task_id,
                  CASE audit.performed_as_action
                    WHEN 'complete_cleaning' THEN 'cleaner'
+                   WHEN 'fill_supplies' THEN 'cleaner'
                    WHEN 'submit_inspection' THEN 'inspector'
                    ELSE NULL
                  END AS role_kind,
                  audit.performed_at,
-                 COALESCE(audit.performed_by_user_id, audit.actor_user_id)::text AS actor_user_id
+                 COALESCE(audit.performed_by_user_id, audit.actor_user_id)::text AS actor_user_id,
+                 COALESCE(
+                   NULLIF(TRIM(audit.performed_by_name), ''),
+                   audit_actor.username,
+                   audit_actor.email,
+                   audit_actor.id::text
+                 ) AS actor_name
                FROM work_task_action_audits audit
+               LEFT JOIN users audit_actor
+                 ON audit_actor.id::text = COALESCE(audit.performed_by_user_id, audit.actor_user_id)::text
                WHERE audit.source_type = 'cleaning_tasks'
                  AND audit.source_id::text = ANY($3::text[])
-                 AND audit.performed_as_action IN ('complete_cleaning', 'submit_inspection')
+                 AND (
+                   ${cleaningCompletionAuditWhereSql('audit')}
+                   OR audit.performed_as_action = 'submit_inspection'
+                 )
                UNION ALL
                SELECT
                  media.task_id::text AS task_id,
                  'executor' AS role_kind,
                  COALESCE(media.captured_at, media.created_at) AS performed_at,
-                 media.uploader_id::text AS actor_user_id
+                 media.uploader_id::text AS actor_user_id,
+                 COALESCE(media_actor.username, media_actor.email, media_actor.id::text) AS actor_name
                FROM cleaning_task_media media
+               LEFT JOIN users media_actor ON media_actor.id::text = media.uploader_id::text
                WHERE media.task_id::text = ANY($3::text[])
                  AND media.type = 'lockbox_video'
                  AND COALESCE(TRIM(media.url), '') <> ''
+               UNION ALL
+               SELECT
+                 substring(event.task_id FROM length('cleaning_task:') + 1) AS task_id,
+                 CASE
+                   WHEN lower(COALESCE(task.task_type, task.type, '')) = 'checkin_clean'
+                     AND lower(COALESCE(task.inspection_scope, 'inspect_and_hang')) = 'password_only'
+                   THEN 'executor'
+                   ELSE 'inspector'
+                 END AS role_kind,
+                 event.occurred_at AS performed_at,
+                 event.caused_by_user_id::text AS actor_user_id,
+                 COALESCE(event_actor.username, event_actor.email, event_actor.id::text) AS actor_name
+               FROM work_task_events event
+               JOIN cleaning_tasks task
+                 ON task.id::text = substring(event.task_id FROM length('cleaning_task:') + 1)
+               LEFT JOIN users event_actor ON event_actor.id::text = event.caused_by_user_id::text
+               WHERE left(event.task_id, length('cleaning_task:')) = 'cleaning_task:'
+                 AND substring(event.task_id FROM length('cleaning_task:') + 1) = ANY($3::text[])
+                 AND lower(COALESCE(event.payload#>>'{patch,status}', '')) = 'keys_hung'
+                 AND COALESCE(event.payload#>'{arrangement_revision,reasons}', '[]'::jsonb) ? 'keys_hung_confirmed'
              )
              SELECT DISTINCT ON (task_id, role_kind, actor_user_id)
-               task_id, role_kind, performed_at, actor_user_id
+               task_id, role_kind, performed_at, actor_user_id, actor_name
              FROM raw_evidence
              WHERE role_kind IS NOT NULL
                AND COALESCE(actor_user_id, '') <> ''
@@ -7959,9 +8000,10 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             const roleKind = String(evidence.role_kind || '').trim() as 'cleaner' | 'inspector' | 'executor'
             const performedAt = evidence.performed_at ? String(evidence.performed_at) : ''
             const actorUserId = String(evidence.actor_user_id || '').trim()
+            const actorName = String(evidence.actor_name || '').trim() || null
             if (!taskId || !performedAt || !actorUserId || !['cleaner', 'inspector', 'executor'].includes(roleKind)) continue
             const existing = managerRecordEvidenceByTaskId.get(taskId) || []
-            existing.push({ roleKind, performedAt, actorUserId })
+            existing.push({ roleKind, performedAt, actorUserId, actorName })
             managerRecordEvidenceByTaskId.set(taskId, existing)
           }
         }
@@ -8228,7 +8270,6 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           // The completed fact is visible with the task status, while the URL
           // itself remains filtered by the caller's existing media permission.
           lockboxVideoUrl: row.has_current_lockbox_video === true ? 'recorded' : '',
-          invalidatedAfterUpload: row.lockbox_audit_invalidated === true,
           latestUploadAudit: row.lockbox_audit_action
             ? {
                 performed_as_action: row.lockbox_audit_action,
@@ -8238,53 +8279,64 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                 metadata: row.lockbox_audit_metadata,
               }
             : null,
+          manualConfirmedAt: row.executor_record_confirmation_source === 'manual'
+            ? row.lockbox_record_at
+            : null,
         })
-        const sameDayTurnoverState = new Map<string, {
+        const canonicalTurnoverPairs = canonicalCleaningTurnoverPairs(cleaningRows)
+        type SameDayTurnoverState = {
           hasCheckout: boolean
           hasCheckin: boolean
           checkoutCleanerIds: Set<string>
           keysHung: boolean
           keyPhotoUrl: string | null
           lockboxVideoUrl: string | null
-        }>()
-        for (const row of cleaningRows) {
-          const taskDate = String(row.task_date || row.date || '').slice(0, 10)
-          const propId = row.property_id ? String(row.property_id) : ''
-          if (!taskDate || !propId) continue
-          const taskKind = cleaningType(row.task_type)
-          if (taskKind !== 'checkout' && taskKind !== 'checkin') continue
-          const k = `${taskDate}|${propId}`
-          const prev = sameDayTurnoverState.get(k) || {
+          businessIdentity: string
+          sourceRows: any[]
+          keyHandover: ReturnType<typeof projectCleaningKeyHandover>
+        }
+        const sameDayTurnoverStateBySourceId = new Map<string, SameDayTurnoverState>()
+        for (const pair of canonicalTurnoverPairs) {
+          const pairRows = [pair.checkout, pair.checkin]
+          const state: SameDayTurnoverState = {
             hasCheckout: false,
             hasCheckin: false,
             checkoutCleanerIds: new Set<string>(),
             keysHung: false,
             keyPhotoUrl: null,
             lockboxVideoUrl: null,
+            businessIdentity: pair.business_identity,
+            sourceRows: pairRows,
+            keyHandover: mergeCleaningKeyHandoverProjections(
+              pairRows.map((row) => ({ key_handover: keyHandoverForRow(row) })),
+              pair.source_ids,
+            ),
           }
-          if (taskKind === 'checkout') {
-            prev.hasCheckout = true
-            const checkoutCleanerId = String(row.cleaner_id || row.assignee_id || '').trim()
-            if (checkoutCleanerId) prev.checkoutCleanerIds.add(checkoutCleanerId)
+          for (const row of pairRows) {
+            const taskKind = cleaningType(row.task_type)
+            if (taskKind === 'checkout') {
+              state.hasCheckout = true
+              const checkoutCleanerId = String(row.cleaner_id || row.assignee_id || '').trim()
+              if (checkoutCleanerId) state.checkoutCleanerIds.add(checkoutCleanerId)
+            }
+            if (taskKind === 'checkin') state.hasCheckin = true
+            const keyHandover = keyHandoverForRow(row)
+            const raw = String(row.status ?? '').trim().toLowerCase()
+            const keyPhotoUrl = String(row.key_photo_url || '').trim()
+            const lockboxVideoUrl = String(row.lockbox_video_url || '').trim()
+            if (raw === 'keys_hung' || keyHandover?.state === 'completed') state.keysHung = true
+            if (!state.keyPhotoUrl && keyPhotoUrl) state.keyPhotoUrl = keyPhotoUrl
+            if (!state.lockboxVideoUrl && lockboxVideoUrl) state.lockboxVideoUrl = lockboxVideoUrl
           }
-          if (taskKind === 'checkin') prev.hasCheckin = true
-          const raw = String(row.status ?? '').trim().toLowerCase()
-          const keyPhotoUrl = String(row.key_photo_url || '').trim()
-          const lockboxVideoUrl = String(row.lockbox_video_url || '').trim()
-          if (raw === 'keys_hung' || lockboxVideoConfirmsCurrentTaskState({ status: raw, lockboxVideoUrl })) prev.keysHung = true
-          if (!prev.keyPhotoUrl && keyPhotoUrl) prev.keyPhotoUrl = keyPhotoUrl
-          if (!prev.lockboxVideoUrl && lockboxVideoUrl) prev.lockboxVideoUrl = lockboxVideoUrl
-          sameDayTurnoverState.set(k, prev)
+          for (const sourceId of pair.source_ids) sameDayTurnoverStateBySourceId.set(sourceId, state)
         }
-        const completedSameDayTurnoverFor = (taskDate: string, propId: string | null) => {
-          if (!taskDate || !propId) return null
-          const state = sameDayTurnoverState.get(`${taskDate}|${propId}`)
+        const completedSameDayTurnoverFor = (sourceId: any) => {
+          const state = sameDayTurnoverStateBySourceId.get(String(sourceId || '').trim())
           if (!state?.hasCheckout || !state?.hasCheckin || !state.keysHung) return null
           return state
         }
-        const sameDayTurnoverFor = (taskDate: string, propId: string | null) => {
-          if (!taskDate || !propId) return null
-          const state = sameDayTurnoverState.get(`${taskDate}|${propId}`)
+        const sameDayTurnoverFor = (sourceId: any) => {
+          const state = sameDayTurnoverStateBySourceId.get(String(sourceId || '').trim())
           if (!state?.hasCheckout || !state?.hasCheckin) return null
           return state
         }
@@ -8310,23 +8362,26 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           const cleanerRecordAt = row.cleaner_record_at ? String(row.cleaner_record_at) : null
           const cleanerRecordDate = cleanerRecordAt ? melbourneDateOnly(cleanerRecordAt) : null
           const cleanerRecordActorId = String(row.cleaner_record_actor_user_id || '').trim() || null
+          const cleanerRecordActorName = String(row.cleaner_record_actor_name || '').trim() || null
           const inspectorRecordAt = row.inspector_record_at ? String(row.inspector_record_at) : null
           const inspectorRecordDate = inspectorRecordAt ? melbourneDateOnly(inspectorRecordAt) : null
           const inspectorRecordActorId = String(row.inspector_record_actor_user_id || '').trim() || null
           const executorRecordAt = row.lockbox_record_at ? String(row.lockbox_record_at) : null
           const executorRecordDate = executorRecordAt ? melbourneDateOnly(executorRecordAt) : null
           const executorRecordActorId = String(row.lockbox_record_actor_user_id || '').trim() || null
+          const manualKeyHandoverRecord = row.executor_record_confirmation_source === 'manual'
           const cancelledRecordAt = row.cancelled_record_at ? String(row.cancelled_record_at) : null
           const cancelledRecordDate = cancelledRecordAt ? melbourneDateOnly(cancelledRecordAt) : null
           const roleRecordEvidence = (
             roleKind: 'cleaner' | 'inspector' | 'executor',
             fallbackAt: string | null,
             fallbackActorUserId: string | null,
+            fallbackActorName: string | null = null,
           ) => managerCanSeeAllTaskPool
             ? (managerRecordEvidenceByTaskId.get(String(row.id)) || [])
               .filter((evidence) => evidence.roleKind === roleKind)
-              .map((evidence) => ({ performedAt: evidence.performedAt, actorUserId: evidence.actorUserId }))
-            : (fallbackAt ? [{ performedAt: fallbackAt, actorUserId: fallbackActorUserId }] : [])
+              .map((evidence) => ({ performedAt: evidence.performedAt, actorUserId: evidence.actorUserId, actorName: evidence.actorName }))
+            : (fallbackAt ? [{ performedAt: fallbackAt, actorUserId: fallbackActorUserId, actorName: fallbackActorName }] : [])
           const inspectionMode = effectiveInspectionMode(row)
           const inspectionDueDate = dayOnly(row.inspection_due_date)
           const deferredDate = deferredProjectionDate({
@@ -8337,15 +8392,24 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             status: raw_status,
           })
 
-          const effectiveCleanerId = row.cleaner_id ? String(row.cleaner_id) : (row.assignee_id ? String(row.assignee_id) : null)
+          const effectiveCleanerId = row.cleaner_id
+            ? String(row.cleaner_id)
+            : (isCleaningExecutionTask(row) && row.assignee_id ? String(row.assignee_id) : null)
           const inspectorId = row.inspector_id ? String(row.inspector_id) : null
           const isCheckinTask = String(row.task_type || '').trim().toLowerCase() === 'checkin_clean'
-          const completedSameDayTurnover = isCheckinTask ? completedSameDayTurnoverFor(taskDate, propId) : null
-          const sameDayTurnover = isCheckinTask ? sameDayTurnoverFor(taskDate, propId) : null
-          const inspectionScope = sameDayTurnover
+          const completedSameDayTurnover = isCheckinTask ? completedSameDayTurnoverFor(row.id) : null
+          const canonicalTurnover = sameDayTurnoverFor(row.id)
+          const checkinTurnover = isCheckinTask ? canonicalTurnover : null
+          const inspectionScope = checkinTurnover
             ? normalizeTurnoverInspectionScope({ inspectionScope: row.inspection_scope, hasCheckoutCheckinTurnover: true })
             : normalizeInspectionScope(row.inspection_scope)
           const isCheckinSiteExecution = isCheckinTask && inspectionScope === 'password_only'
+          const effectiveInspectorRecordAt = manualKeyHandoverRecord && !isCheckinSiteExecution
+            ? (inspectorRecordAt || executorRecordAt)
+            : inspectorRecordAt
+          const effectiveInspectorRecordActorId = manualKeyHandoverRecord && !isCheckinSiteExecution
+            ? (inspectorRecordActorId || executorRecordActorId)
+            : inspectorRecordActorId
           const canFallbackInspectorAsExecutor = isCheckinSiteExecution
           const executorId = row.assignee_id
             ? String(row.assignee_id)
@@ -8360,10 +8424,10 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           const suppressStandaloneCheckinForCleanerTurnover = !!(
             !allowAll
             && isCheckinSiteExecution
-            && sameDayTurnover
+            && checkinTurnover
             && userId
             && (executorId === userId || manualExecutionAssigneeId === userId)
-            && sameDayTurnover.checkoutCleanerIds.has(userId)
+            && checkinTurnover.checkoutCleanerIds.has(userId)
           )
           const rowInspectionArrangements = arrangementsByTaskId.get(String(row.id || '')) || []
           const ownedDeferredArrangement = rowInspectionArrangements.find((arrangement) => arrangement.deferred_task_id === String(row.id || '')) || null
@@ -8376,11 +8440,11 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             inspectionMode,
             hasExplicitInspectionRelation: !!ownedDeferredArrangement,
           })
-          const keyHandover = keyHandoverForRow(row)
-          const lockboxVideoConfirmsCurrentState = lockboxVideoConfirmsCurrentTaskState({
-            status: raw_status,
-            lockboxVideoUrl: row.lockbox_video_url,
-          }) || completedSameDayTurnover?.keysHung === true
+          const rowBusinessIdentity = canonicalTurnover?.businessIdentity
+            || cleaningTaskBusinessIdentity({ sourceId: row.id })
+          const keyHandover = keyHandoverForRow(row) || canonicalTurnover?.keyHandover || null
+          const lockboxVideoConfirmsCurrentState = keyHandover?.state === 'completed'
+            || completedSameDayTurnover?.keysHung === true
 
           const base = {
             __raw_id: String(row.id),
@@ -8394,7 +8458,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             __deferred_projection_date: deferredDate,
             __deferred_checkin_arrangement: deferredArrangement,
             __manager_merge_isolation_key: managerMergeIsolationKey,
+            __business_identity: rowBusinessIdentity,
             __lockbox_video_confirms_current_state: lockboxVideoConfirmsCurrentState,
+            __canonical_turnover_source_rows: canonicalTurnover?.sourceRows || [],
             key_handover: keyHandover,
             active_source_ids: [String(row.id)],
             superseded_source_ids: (supersededByReplacementId.get(String(row.id)) || []).map((x: any) => String(x.id || '')).filter(Boolean),
@@ -8406,6 +8472,8 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             order_id: orderId,
             order_keys_required: orderKeysRequired,
             raw_status,
+            execution_state: row.execution_state,
+            historical_evidence: row.historical_evidence === true,
             task_type: String(row.task_type || ''),
             task_date: taskDate,
             checkout_time: row.checkout_time,
@@ -8430,16 +8498,19 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             order_note: row.order_note,
             order_nights: row.order_nights == null ? null : Number(row.order_nights),
             assignee_name: row.assignee_name,
-            cleaner_name: row.cleaner_name,
+            cleaner_name: effectiveCleanerId
+              ? (row.cleaner_id ? row.cleaner_name : row.assignee_name)
+              : null,
             inspector_name: row.inspector_name,
             sort_index_cleaner: row.sort_index_cleaner,
             sort_index_inspector: row.sort_index_inspector,
             cleaner_record_at: cleanerRecordAt,
             cleaner_record_date: cleanerRecordDate,
             cleaner_record_actor_user_id: cleanerRecordActorId,
-            inspector_record_at: inspectorRecordAt,
-            inspector_record_date: inspectorRecordDate,
-            inspector_record_actor_user_id: inspectorRecordActorId,
+            cleaner_record_actor_name: cleanerRecordActorName,
+            inspector_record_at: effectiveInspectorRecordAt,
+            inspector_record_date: effectiveInspectorRecordAt ? melbourneDateOnly(effectiveInspectorRecordAt) : inspectorRecordDate,
+            inspector_record_actor_user_id: effectiveInspectorRecordActorId,
             executor_record_at: executorRecordAt,
             executor_record_date: executorRecordDate,
             executor_record_actor_user_id: executorRecordActorId,
@@ -8455,18 +8526,18 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           if (wantCleaner && isCleaningExecutionTask(row)) {
             const cleanerTerminal = ['cleaned', 'restock_pending', 'restocked', 'ready', 'inspected', 'keys_hung', 'done', 'completed'].includes(raw_status)
             const cancelled = raw_status === 'cancelled' || raw_status === 'canceled'
-            if (!cleanerTerminal && !cancelled && taskDate >= dateFrom && taskDate <= dateTo && (
+            if (isActiveCleaningTurnoverCandidate(row) && !cleanerTerminal && !cancelled && taskDate >= dateFrom && taskDate <= dateTo && (
               (effectiveCleanerId && (allowAll || effectiveCleanerId === userId))
               || manualCleaningAssigneeId
               || (managerCanSeeAllTaskPool && !effectiveCleanerId)
             )) {
-              const k = `${taskDate}|${propId || ''}|${effectiveCleanerId || manualCleaningAssigneeId || 'unassigned'}`
+              const k = `${taskDate}|${rowBusinessIdentity}|${effectiveCleanerId || manualCleaningAssigneeId || 'unassigned'}`
               const arr = cleanerGroups.get(k) || []
               arr.push(base)
               cleanerGroups.set(k, arr)
             }
             const recordEvidence = mergeRoleRecordEvidenceWithCancellation({
-              roleEvidence: roleRecordEvidence('cleaner', cleanerRecordAt, cleanerRecordActorId),
+              roleEvidence: roleRecordEvidence('cleaner', cleanerRecordAt, cleanerRecordActorId, cleanerRecordActorName),
               cancelled,
               cancelledAt: cancelledRecordAt,
               currentAssigneeId: effectiveCleanerId,
@@ -8475,6 +8546,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               const recordAt = evidence.performedAt
               const recordDate = recordAt ? melbourneDateOnly(recordAt) : null
               const recordActorId = evidence.actorUserId || null
+              const recordActorName = String(evidence.actorName || '').trim() || null
               const recordState = evidenceBackedWorkRecordState({
                 cancelled,
                 currentAssigneeId: effectiveCleanerId,
@@ -8484,7 +8556,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               if (recordDate && recordAt && recordDate >= dateFrom && recordDate <= dateTo && (
                 allowAll || recordAssigneeId === userId || !!manualCleaningAssigneeId
               )) {
-                const k = `${recordDate}|${propId || ''}|${recordAssigneeId || 'unassigned'}|record:${recordState}`
+                const k = `${recordDate}|${rowBusinessIdentity}|${recordAssigneeId || 'unassigned'}|record:${recordState}`
                 const arr = cleanerGroups.get(k) || []
                 arr.push({
                   ...base,
@@ -8494,6 +8566,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                   __work_record_at: recordAt,
                   __work_record_date: recordDate,
                   __work_record_actor_user_id: recordActorId,
+                  __work_record_actor_name: recordActorName,
                   __original_scheduled_date: taskDate,
                 })
                 cleanerGroups.set(k, arr)
@@ -8502,11 +8575,11 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           }
 
           const effectiveExecutorId = executorId || manualExecutionAssigneeId
-          if (wantExecutor && isCheckinSiteExecution && !suppressStandaloneCheckin) {
+          if (wantExecutor && isCheckinSiteExecution) {
             const executorTerminal = raw_status === 'keys_hung' || !!row.lockbox_video_url
             const cancelled = raw_status === 'cancelled' || raw_status === 'canceled'
-            if (!executorTerminal && !cancelled && taskDate >= dateFrom && taskDate <= dateTo && effectiveExecutorId && (allowAll || effectiveExecutorId === userId)) {
-              const k = `${taskDate}|${propId || ''}|${effectiveExecutorId}`
+            if (!suppressStandaloneCheckin && isActiveCleaningTurnoverCandidate(row) && !executorTerminal && !cancelled && taskDate >= dateFrom && taskDate <= dateTo && effectiveExecutorId && (allowAll || effectiveExecutorId === userId)) {
+              const k = `${taskDate}|${rowBusinessIdentity}|${effectiveExecutorId}`
               const arr = executorGroups.get(k) || []
               arr.push({ ...base, __assignee_executor: effectiveExecutorId })
               executorGroups.set(k, arr)
@@ -8521,6 +8594,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               const recordAt = evidence.performedAt
               const recordDate = recordAt ? melbourneDateOnly(recordAt) : null
               const recordActorId = evidence.actorUserId || null
+              const recordActorName = String(evidence.actorName || '').trim() || null
               const recordState = evidenceBackedWorkRecordState({
                 cancelled,
                 currentAssigneeId: effectiveExecutorId,
@@ -8528,7 +8602,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               })
               const recordAssigneeId = recordActorId || effectiveExecutorId || ''
               if (recordDate && recordAt && recordAssigneeId && recordDate >= dateFrom && recordDate <= dateTo && (allowAll || recordAssigneeId === userId)) {
-                const k = `${recordDate}|${propId || ''}|${recordAssigneeId}|record:${recordState}`
+                const k = `${recordDate}|${rowBusinessIdentity}|${recordAssigneeId}|record:${recordState}`
                 const arr = executorGroups.get(k) || []
                 arr.push({
                   ...base,
@@ -8538,6 +8612,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                   __work_record_at: recordAt,
                   __work_record_date: recordDate,
                   __work_record_actor_user_id: recordActorId,
+                  __work_record_actor_name: recordActorName,
                   __original_scheduled_date: taskDate,
                 })
                 executorGroups.set(k, arr)
@@ -8561,7 +8636,6 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           const effectiveInspectionAssigneeId = inspectorId || manualInspectionAssigneeId || ''
           if (
             wantInspector
-            && !suppressStandaloneCheckin
             && cleaningType(row.task_type) !== 'stayover'
             && !isCheckinKeyHandoverTask({
               task_type: row.task_type,
@@ -8570,10 +8644,10 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           ) {
             const inspectorTerminal = isInspectionFinishedStatus(raw_status)
             const cancelled = raw_status === 'cancelled' || raw_status === 'canceled'
-            if (!inspectorTerminal && !cancelled && (effectiveInspectionAssigneeId || managerCanSeeAllTaskPool) && inspectorDisplayDate
+            if (!suppressStandaloneCheckin && isActiveCleaningTurnoverCandidate(row) && !inspectorTerminal && !cancelled && (effectiveInspectionAssigneeId || managerCanSeeAllTaskPool) && inspectorDisplayDate
               && (allowAll || effectiveInspectionAssigneeId === userId || manualInspectionAssigneeId)) {
               const k = withInspectionMergeIsolation(
-                `${inspectorDisplayDate}|${propId || ''}|${effectiveInspectionAssigneeId || 'unassigned'}`,
+                `${inspectorDisplayDate}|${rowBusinessIdentity}|${effectiveInspectionAssigneeId || 'unassigned'}`,
                 managerMergeIsolationKey,
               )
               const arr = inspectorGroups.get(k) || []
@@ -8581,7 +8655,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               inspectorGroups.set(k, arr)
             }
             const recordEvidence = mergeRoleRecordEvidenceWithCancellation({
-              roleEvidence: roleRecordEvidence('inspector', inspectorRecordAt, inspectorRecordActorId),
+              roleEvidence: roleRecordEvidence('inspector', effectiveInspectorRecordAt, effectiveInspectorRecordActorId),
               cancelled,
               cancelledAt: cancelledRecordAt,
               currentAssigneeId: effectiveInspectionAssigneeId,
@@ -8590,6 +8664,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               const recordAt = evidence.performedAt
               const recordDate = recordAt ? melbourneDateOnly(recordAt) : null
               const recordActorId = evidence.actorUserId || null
+              const recordActorName = String(evidence.actorName || '').trim() || null
               const recordState = evidenceBackedWorkRecordState({
                 cancelled,
                 currentAssigneeId: effectiveInspectionAssigneeId,
@@ -8599,7 +8674,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               if (recordDate && recordAt && recordDate >= dateFrom && recordDate <= dateTo
                 && (allowAll || recordAssigneeId === userId || !!manualInspectionAssigneeId)) {
                 const k = withInspectionMergeIsolation(
-                  `${recordDate}|${propId || ''}|${recordAssigneeId || 'unassigned'}|record:${recordState}`,
+                  `${recordDate}|${rowBusinessIdentity}|${recordAssigneeId || 'unassigned'}|record:${recordState}`,
                   managerMergeIsolationKey,
                 )
                 const arr = inspectorGroups.get(k) || []
@@ -8612,6 +8687,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                   __work_record_at: recordAt,
                   __work_record_date: recordDate,
                   __work_record_actor_user_id: recordActorId,
+                  __work_record_actor_name: recordActorName,
                   __original_scheduled_date: taskDate,
                 })
                 inspectorGroups.set(k, arr)
@@ -8640,11 +8716,21 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           const p = pickPrimary()
           const managerMergeIsolationKey = firstNonEmpty(...rows.map((row) => row.__manager_merge_isolation_key)) || null
           const lockboxVideoConfirmsCurrentState = rows.some((row) => row.__lockbox_video_confirms_current_state === true)
-          const keyHandoverSourceIds = canonicalKeyHandoverSourceIds(rows)
-          const keyHandoverSourceRows = rows
-            .filter((row) => keyHandoverSourceIds.includes(String(row?.__raw_id || '')))
+          const keyHandoverRelationRowsById = new Map<string, any>()
+          for (const relationRow of rows.flatMap((row) => (
+            Array.isArray(row.__canonical_turnover_source_rows) && row.__canonical_turnover_source_rows.length
+              ? row.__canonical_turnover_source_rows
+              : [row]
+          ))) {
+            const sourceId = String(relationRow?.__raw_id || relationRow?.source_id || relationRow?.id || '').trim()
+            if (sourceId) keyHandoverRelationRowsById.set(sourceId, relationRow)
+          }
+          const keyHandoverRelationRows = Array.from(keyHandoverRelationRowsById.values())
+          const keyHandoverSourceIds = canonicalKeyHandoverSourceIds(keyHandoverRelationRows)
+          const keyHandoverSourceRows = keyHandoverRelationRows
+            .filter((row) => keyHandoverSourceIds.includes(String(row?.__raw_id || row?.source_id || row?.id || '')))
             .map((row) => ({
-              __raw_id: row.__raw_id,
+              __raw_id: row.__raw_id || row.source_id || row.id,
               task_type: row.task_type,
               property_id: row.__prop_id || row.property_id,
               task_date: row.task_date || row.__date,
@@ -8711,6 +8797,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           const workRecordAt = firstNonEmpty(...rows.map((x) => x.__work_record_at))
           const workRecordDate = firstNonEmpty(...rows.map((x) => x.__work_record_date))
           const workRecordActorUserId = firstNonEmpty(...rows.map((x) => x.__work_record_actor_user_id))
+          const workRecordActorName = firstNonEmpty(...rows.map((x) => x.__work_record_actor_name))
           const originalScheduledDate = firstNonEmpty(
             ...rows.map((x) => x.__original_scheduled_date),
             p.a.task_date,
@@ -8718,28 +8805,12 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           const isWorkRecordGroup = !!workRecordState
           const hideUnattributedHistoricalMedia = isWorkRecordGroup && workRecordState === 'reassigned'
           const sourceScheduledDate = isWorkRecordGroup ? String(originalScheduledDate || date) : date
-          const nextCheckinsForCheckout = p.kind === 'checkout' && !managerMergeIsolationKey
-            ? (() => {
-                const candidates = cleaningRows
-                  .filter((x: any) => String(x?.property_id || '') === String(propId || ''))
-                  .filter((x: any) => cleaningType(x?.task_type) === 'checkin')
-                  .filter((x: any) => String(x?.task_date || x?.date || '').slice(0, 10) === sourceScheduledDate)
-                  .sort((a: any, b: any) => String(a?.task_date || a?.date || '').localeCompare(String(b?.task_date || b?.date || '')))
-                const nextDate = String(candidates[0]?.task_date || candidates[0]?.date || '').slice(0, 10)
-                return nextDate ? candidates.filter((x: any) => String(x?.task_date || x?.date || '').slice(0, 10) === nextDate) : []
-              })()
+          const canonicalPair = canonicalTurnoverPairs.find((pair) => pair.source_ids.includes(String(p.a?.__raw_id || ''))) || null
+          const nextCheckinsForCheckout = p.kind === 'checkout' && !managerMergeIsolationKey && canonicalPair
+            ? [canonicalPair.checkin]
             : []
-          const relatedCheckoutsForCheckin = p.kind === 'checkin'
-            ? cleaningRows
-                .filter((x: any) => String(x?.property_id || '') === String(propId || ''))
-                .filter((x: any) => cleaningType(x?.task_type) === 'checkout')
-                .filter((x: any) => String(x?.task_date || x?.date || '').slice(0, 10) === sourceScheduledDate)
-                .filter((x: any) => {
-                  const checkinOrderId = String(p.a?.order_id || '').trim()
-                  const checkoutOrderId = String(x?.order_id || '').trim()
-                  return !checkinOrderId || checkinOrderId === checkoutOrderId
-                })
-                .sort((a: any, b: any) => String(a?.updated_at || '').localeCompare(String(b?.updated_at || '')))
+          const relatedCheckoutsForCheckin = p.kind === 'checkin' && canonicalPair
+            ? [canonicalPair.checkout]
             : []
           const relatedRowsForDisplay = p.kind === 'checkout'
             ? [...rows, ...nextCheckinsForCheckout]
@@ -8790,9 +8861,19 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             ...rows.map((x) => (x.keys_required == null ? 1 : Number(x.keys_required))).filter((x) => Number.isFinite(x) && x > 0),
             1,
           )
-          const executorName = firstNonEmpty(p.a.assignee_name, p.b?.assignee_name, ...rows.map((x) => x.assignee_name), p.a.cleaner_name, p.b?.cleaner_name, ...rows.map((x) => x.cleaner_name))
-          const cleanerName = roleKind === 'executor' ? null : firstNonEmpty(p.a.cleaner_name, p.b?.cleaner_name, ...rows.map((x) => x.cleaner_name))
-          const inspectorName = p.kind === 'stayover' ? null : firstNonEmpty(p.a.inspector_name, p.b?.inspector_name, ...rows.map((x) => x.inspector_name))
+          const executorName = isWorkRecordGroup && roleKind === 'executor' && workRecordActorName
+            ? workRecordActorName
+            : firstNonEmpty(p.a.assignee_name, p.b?.assignee_name, ...rows.map((x) => x.assignee_name), p.a.cleaner_name, p.b?.cleaner_name, ...rows.map((x) => x.cleaner_name))
+          const cleanerName = roleKind === 'executor'
+            ? null
+            : (isWorkRecordGroup && roleKind === 'cleaner' && workRecordActorName
+                ? workRecordActorName
+                : firstNonEmpty(p.a.cleaner_name, p.b?.cleaner_name, ...rows.map((x) => x.cleaner_name)))
+          const inspectorName = p.kind === 'stayover'
+            ? null
+            : (isWorkRecordGroup && roleKind === 'inspector' && workRecordActorName
+                ? workRecordActorName
+                : firstNonEmpty(p.a.inspector_name, p.b?.inspector_name, ...rows.map((x) => x.inspector_name)))
           const inspectorAssigned = p.kind === 'stayover' ? null : firstNonEmpty(p.a.__assignee_inspector, p.b?.__assignee_inspector, ...rows.map((x) => x.__assignee_inspector))
           const inspectionPlan = mergeInspectionPlan(
             rows.map((x) => ({
@@ -8960,8 +9041,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           const sort_index_inspector = Number.isFinite(inspectorSortIndex) && inspectorSortIndex !== Number.POSITIVE_INFINITY ? inspectorSortIndex : null
 
           const assigneeKey = String(assigneeId || '').trim() || 'unassigned'
+          const groupedBusinessIdentity = firstNonEmpty(...rows.map((row) => row.__business_identity))
           const baseOutId = p.kind === 'turnover'
-            ? `cleaning_tasks_${roleKind}_turnover:${sourceScheduledDate}:${propId || 'unknown'}:${assigneeKey}`
+            ? `cleaning_tasks_${roleKind}_turnover:${sourceScheduledDate}:${encodeURIComponent(groupedBusinessIdentity || p.ids.join(','))}:${assigneeKey}`
             : `cleaning_tasks_${roleKind}:${p.ids.join(',')}`
           const outId = isWorkRecordGroup
             ? `${baseOutId}::record:${workRecordState}:${workRecordDate || date}`
@@ -8992,6 +9074,11 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               ? (p.b?.order_id ? String(p.b.order_id) : null)
               : (p.kind === 'checkin' && p.a?.order_id ? String(p.a.order_id) : null)
                 || (p.kind === 'checkout' && nextCheckinsForCheckout[0]?.order_id ? String(nextCheckinsForCheckout[0].order_id) : null))
+          const businessIdentity = groupedBusinessIdentity || cleaningTaskBusinessIdentity({
+            checkoutOrderId,
+            checkinOrderId,
+            sourceId: primarySourceId,
+          })
           const propertyReadyForGuestNotification = rows.some((x) => String(x?.raw_status || x?.status || '').trim().toLowerCase() === 'ready')
           const singleOrderId = p.kind === 'turnover' ? null : (p.a?.order_id ? String(p.a.order_id) : null)
           const checkoutKeysOut = checkoutKeys != null && Number.isFinite(checkoutKeys) ? Math.max(1, Math.min(2, Math.trunc(checkoutKeys))) : null
@@ -9008,6 +9095,17 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             taskType: p.kind === 'turnover' ? null : p.a.task_type,
             inspectionScope,
           })
+          const phaseHistory = rows.map((row) => ({
+            source_id: String(row.__raw_id || ''),
+            task_type: String(row.task_type || '').trim() || null,
+            role: roleKind,
+            status: String(row.raw_status || row.status || '').trim() || null,
+            scheduled_date: String(row.__original_scheduled_date || row.task_date || row.__date || '').slice(0, 10) || null,
+            work_record_state: String(row.__work_record_state || '').trim() || null,
+            occurred_at: String(row.__work_record_at || row.key_handover?.completed_at || '').trim() || null,
+            actor_user_id: String(row.__work_record_actor_user_id || '').trim() || null,
+            actor_name: String(row.__work_record_actor_name || '').trim() || null,
+          }))
 
           return {
             ...(linkedInspectionActionChild ? { __merged_children: [linkedInspectionActionChild] } : {}),
@@ -9020,6 +9118,8 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             execution_role: executorInspection ? 'inspection' : executionRole,
             execution_semantics: executionSemantics,
             source_type: 'cleaning_tasks',
+            business_identity: businessIdentity,
+            phase_history: phaseHistory,
             source_id: primarySourceId,
             source_ids: activeSourceIds,
             active_source_ids: activeSourceIds,
@@ -9040,6 +9140,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                   original_scheduled_date: originalScheduledDate || sourceScheduledDate,
                   completed_at: workRecordAt || null,
                   completed_by_user_id: workRecordActorUserId || null,
+                  completed_by_name: workRecordActorName || null,
                 }
               : {}),
             start_time: checkoutTime || null,
@@ -9047,7 +9148,8 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             task_type: p.kind === 'turnover' ? 'turnover' : String(p.a.task_type || ''),
             assignee_id: String(assigneeId || '').trim() || null,
             inspector_id: inspectorAssigned ? String(inspectorAssigned) : null,
-            assignee_name: executorName || cleanerName || inspectorName || null,
+            executor_id: roleKind === 'executor' ? (String(assigneeId || '').trim() || null) : null,
+            assignee_name: (isWorkRecordGroup ? workRecordActorName : null) || executorName || cleanerName || inspectorName || null,
             executor_name: roleKind === 'executor' || (roleKind === 'inspector' && p.kind === 'checkin') ? (executorName || null) : null,
             status: statusOut,
             urgency: 'medium',
@@ -9128,19 +9230,18 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
       const byKey = new Map<string, any[]>()
       for (const it of out) {
         const isCleaning = String(it?.source_type || '') === 'cleaning_tasks'
-        const recordState = String(it?.work_record_state || '').trim().toLowerCase()
         const recordDate = String(it?.work_record_date || '').slice(0, 10)
-        const recordActorId = String(it?.completed_by_user_id || it?.assignee_id || '').trim()
         const d = String(recordDate || it?.scheduled_date || '').slice(0, 10)
         const code = String(it?.property?.code || '').trim()
         const pid = it?.property_id ? String(it.property_id) : ''
         const propKey = code || pid || String(it?.title || '').trim()
-        if (!isCleaning || !d || !propKey) {
+        const businessIdentity = String(it?.business_identity || '').trim()
+          || cleaningTaskBusinessIdentity({ sourceId: it?.source_id })
+        if (!isCleaning || !d || !propKey || !businessIdentity) {
           merged.push(it)
           continue
         }
-        const recordKey = recordState ? `record:${recordState}:${recordActorId || 'unassigned'}` : 'active'
-        const k = `${withInspectionMergeIsolation(`${d}|${propKey}`, it.__manager_merge_isolation_key)}|${recordKey}`
+        const k = `${d}|${businessIdentity}|${String(it.__manager_merge_isolation_key || '').trim()}`
         const arr = byKey.get(k) || []
         arr.push(it)
         byKey.set(k, arr)
@@ -9163,10 +9264,14 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
       for (const [k, arr0] of byKey) {
         const arr = (arr0 || []).filter(Boolean)
         if (!arr.length) continue
-        const preferred = arr.find((x) => String(x?.task_kind || '') === 'inspection') || arr[0]
-        const workRecordState = firstNonEmpty(...arr.map((x) => x.work_record_state))
+        const activeArr = arr.filter((x) => !String(x?.work_record_state || '').trim())
+        const preferredPool = activeArr.length ? activeArr : arr
+        const preferred = preferredPool.find((x) => String(x?.task_kind || '') === 'inspection') || preferredPool[0]
+        const workRecordState = activeArr.length ? null : firstNonEmpty(...arr.map((x) => x.work_record_state))
         const hideUnattributedHistoricalMedia = workRecordState === 'reassigned'
-        const workRecordActorUserId = firstNonEmpty(...arr.map((x) => x.completed_by_user_id), ...arr.map((x) => x.assignee_id))
+        const workRecordActorUserId = activeArr.length
+          ? null
+          : firstNonEmpty(...arr.map((x) => x.completed_by_user_id), ...arr.map((x) => x.assignee_id))
         const maxNight = (values: any[]) => {
           const nums = values
             .map((value) => (value == null ? null : Number(value)))
@@ -9182,8 +9287,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           return nums.length ? Math.min(...nums) : null
         }
         const keyParts = k.split('|')
-        const [d, propKey] = keyParts
-        const mergeIdentity = keyParts.slice(2, -1).join('|')
+        const [d, businessIdentity] = keyParts
+        const mergeIdentity = keyParts.slice(2).join('|') || null
+        const propKey = String(preferred?.property?.code || preferred?.property_id || preferred?.title || '').trim() || 'unknown'
         const mergedTurnoverDisplay = mergeCleaningTurnoverDisplays(arr.map((x) => x.turnover_display))
         const activeSourceIds = Array.from(
           new Set(arr.flatMap((x) => (Array.isArray(x?.active_source_ids) ? x.active_source_ids : (Array.isArray(x?.source_ids) ? x.source_ids : [])))),
@@ -9195,11 +9301,10 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           const sourceId = String(sourceRow?.__raw_id || '').trim()
           if (sourceId) sourceRowsById.set(sourceId, sourceRow)
         }
-        const managerKeyHandoverSourceIds = canonicalKeyHandoverSourceIds(Array.from(sourceRowsById.values()))
-        const canonicalManagerSources = managerKeyHandoverSourceIds.length === activeSourceIds.length
-          && managerKeyHandoverSourceIds.every((sourceId) => activeSourceIds.includes(sourceId))
-          ? managerKeyHandoverSourceIds
-          : []
+        const canonicalManagerSources = canonicalKeyHandoverSourceIdsForProjection(
+          Array.from(sourceRowsById.values()),
+          activeSourceIds,
+        )
         const keyHandover = mergeCleaningKeyHandoverProjections(arr, canonicalManagerSources)
         const supersededSourceIds = Array.from(new Set(arr.flatMap((x) => (Array.isArray(x?.superseded_source_ids) ? x.superseded_source_ids : []))))
         const allRelatedSourceIds = Array.from(
@@ -9252,7 +9357,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         const endTime = firstNonEmpty(mergedTurnoverDisplay?.checkin_time, ...arr.map((x) => x.end_time))
         const keyPhotoUrl = firstNonEmpty(...arr.map((x) => x.key_photo_url))
         const lockboxVideoUrl = firstNonEmpty(...arr.map((x) => x.lockbox_video_url))
-        const lockboxVideoConfirmsCurrentState = arr.some((x) => x.__lockbox_video_confirms_current_state === true)
+        const lockboxVideoConfirmsCurrentState = keyHandover?.state === 'completed'
         const oldCode = firstNonEmpty(
           mergedTurnoverDisplay?.old_code,
           ...arr
@@ -9291,10 +9396,11 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         const stayedNights = mergedTurnoverDisplay?.stayed_nights ?? maxNight(arr.map((x) => x.stayed_nights))
         const remainingNights = mergedTurnoverDisplay?.remaining_nights ?? maxNight(arr.map((x) => x.remaining_nights))
         const checkedOutAtMerged = firstNonEmpty(...arr.map((x) => x.checked_out_at))
-        const cleanerName = firstNonEmpty(...arr.map((x) => x.cleaner_name))
-        const inspectorName = firstNonEmpty(...arr.map((x) => x.inspector_name))
+        const personnelRows = activeArr.length ? activeArr : arr
+        const cleanerName = firstNonEmpty(...personnelRows.map((x) => x.cleaner_name))
+        const inspectorName = firstNonEmpty(...personnelRows.map((x) => x.inspector_name))
         const executorName = firstNonEmpty(
-          ...arr
+          ...personnelRows
             .filter((x) => String(x?.task_kind || '') === 'execution')
             .map((x) => x.executor_name || x.assignee_name || x.cleaner_name || x.inspector_name),
         )
@@ -9343,6 +9449,22 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           hasInspectionExecution,
           hasKeyHandoverExecution,
         })
+        const phaseHistorySeen = new Set<string>()
+        const phaseHistory = arr
+          .flatMap((task) => Array.isArray(task?.phase_history) ? task.phase_history : [])
+          .filter((phase) => {
+            const key = [
+              phase?.source_id,
+              phase?.role,
+              phase?.status,
+              phase?.work_record_state,
+              phase?.occurred_at,
+              phase?.actor_user_id,
+            ].map((value) => String(value || '')).join('|')
+            if (phaseHistorySeen.has(key)) return false
+            phaseHistorySeen.add(key)
+            return true
+          })
         const restockItems: any[] = []
         const seenRestock = new Set<string>()
         for (const it of arr.flatMap((x) => (Array.isArray(x?.restock_items) ? x.restock_items : []))) {
@@ -9391,11 +9513,13 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           __key_handover_source_ids: canonicalManagerSources,
           __key_handover_source_rows: Array.from(sourceRowsById.values()),
           key_handover: keyHandover,
-          __merged_children: arr.flatMap((child) => [
+          __merged_children: (activeArr.length ? activeArr : arr).flatMap((child) => [
             child,
             ...(Array.isArray(child?.__merged_children) ? child.__merged_children : []),
           ]),
-          id: `cleaning_tasks_merged:${d}:${propKey}${workRecordState ? `:record:${workRecordState}:${workRecordActorUserId || 'unassigned'}` : ''}${mergeIdentity ? `:${encodeURIComponent(mergeIdentity)}` : ''}`,
+          id: `cleaning_tasks_merged:${d}:${encodeURIComponent(businessIdentity)}${workRecordState ? `:record:${workRecordState}:${workRecordActorUserId || 'unassigned'}` : ''}${mergeIdentity ? `:${encodeURIComponent(mergeIdentity)}` : ''}`,
+          business_identity: businessIdentity,
+          phase_history: phaseHistory,
           start_time: startTime || null,
           end_time: endTime || null,
           task_type: taskTypeOut || preferred?.task_type || null,
@@ -9420,6 +9544,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           assignee_id: cleanerAssigneeId || inspectorAssigneeId || executionAssigneeId || null,
           assignee_name: cleanerName || inspectorName || executorName || null,
           executor_name: executorName || null,
+          executor_id: executionAssigneeId || null,
           cleaner_id: cleanerAssigneeId || null,
           inspector_id: inspectorAssigneeId || null,
           status: statusOut,
