@@ -8,15 +8,20 @@ function main() {
     task_type: 'turnover',
     scheduled_date: '2026-10-04',
     property_id: 'property-1',
+    business_identity: 'turnover:outgoing-order:incoming-order',
   }
   assert.deepEqual(projectDailyTaskStats({ ...turnoverBase, id: 'cleaner-card', status: 'ready' }), {
     daily_stats_group: 'turnover',
-    daily_stats_key: 'turnover:2026-10-04:property-1',
+    daily_stats_key: 'turnover:2026-10-04:turnover:outgoing-order:incoming-order',
+    daily_stats_business_identity: 'turnover:outgoing-order:incoming-order',
+    daily_stats_state: 'active',
   })
   assert.equal(dailyTaskExecutionVisibility({ ...turnoverBase, status: 'assigned', assignee_id: null }).visible, true)
   assert.deepEqual(projectDailyTaskStats({ ...turnoverBase, status: 'cancelled' }), {
     daily_stats_group: null,
     daily_stats_key: null,
+    daily_stats_business_identity: 'turnover:outgoing-order:incoming-order',
+    daily_stats_state: null,
   })
 
   const maintenanceBase = {
@@ -33,6 +38,8 @@ function main() {
   assert.deepEqual(projectDailyTaskStats({ ...maintenanceBase, status: 'done' }), {
     daily_stats_group: null,
     daily_stats_key: null,
+    daily_stats_business_identity: 'property_maintenance:maintenance-1',
+    daily_stats_state: null,
   }, 'MZ-021 maintenance completion aliases stay review-only and out of stats')
   assert.deepEqual(projectDailyTaskStats({
     ...maintenanceBase,
@@ -43,10 +50,14 @@ function main() {
   }), {
     daily_stats_group: null,
     daily_stats_key: null,
+    daily_stats_business_identity: 'property_maintenance:maintenance-1',
+    daily_stats_state: null,
   }, 'a visible pending-review work record never re-enters the active task count')
   assert.deepEqual(projectDailyTaskStats({ ...maintenanceBase, status: 'assigned' }), {
     daily_stats_group: null,
     daily_stats_key: null,
+    daily_stats_business_identity: 'property_maintenance:maintenance-1',
+    daily_stats_state: 'active',
   }, 'property follow-up management candidates are not counted as offline execution tasks')
 
   const offlineBase = {
@@ -66,6 +77,8 @@ function main() {
   }), {
     daily_stats_group: null,
     daily_stats_key: null,
+    daily_stats_business_identity: 'manual_work_task:offline-unassigned',
+    daily_stats_state: 'active',
   }, 'Mobile execution statistics continue to hide an unassigned offline task')
   assert.deepEqual(projectDailyTaskStats({
     ...offlineBase,
@@ -76,6 +89,8 @@ function main() {
   }, { includeTaskCenterManagementOnlyOffline: true }), {
     daily_stats_group: 'offline',
     daily_stats_key: 'offline:2026-10-04:manual_work_task:offline-unassigned',
+    daily_stats_business_identity: 'manual_work_task:offline-unassigned',
+    daily_stats_state: 'active',
   }, 'Web assignment statistics include a scheduled active offline task before assignment')
   assert.deepEqual(projectDailyTaskStats({
     ...offlineBase,
@@ -86,6 +101,8 @@ function main() {
   }, { includeManagerUnassignedOffline: true }), {
     daily_stats_group: 'offline',
     daily_stats_key: 'offline:2026-10-04:manual_work_task:offline-unassigned',
+    daily_stats_business_identity: 'manual_work_task:offline-unassigned',
+    daily_stats_state: 'active',
   }, 'Mobile manager statistics count the same unassigned ordinary offline task shown in the list')
   assert.deepEqual(projectDailyTaskStats({
     ...offlineBase,
@@ -96,10 +113,14 @@ function main() {
   }), {
     daily_stats_group: null,
     daily_stats_key: null,
+    daily_stats_business_identity: 'manual_work_task:offline-1',
+    daily_stats_state: null,
   }, 'an evidence-backed former-assignee record is read-only and not active')
   assert.deepEqual(projectDailyTaskStats({ ...offlineBase, status: 'done' }), {
     daily_stats_group: null,
     daily_stats_key: null,
+    daily_stats_business_identity: 'manual_work_task:offline-1',
+    daily_stats_state: 'completed',
   }, 'a legacy completed offline row without a trustworthy timestamp never re-enters active statistics')
   const deferredInspections = Array.from({ length: 6 }, (_, index) => ({
     id: `inspection-${index + 1}`,
@@ -128,6 +149,11 @@ function main() {
     { ...offlineBase, id: 'offline-review', source_id: 'offline-review', status: 'pending_review' },
     { ...offlineBase, id: 'offline-unassigned', source_id: 'offline-unassigned', assignee_id: null, status: 'assigned' },
   ]), { turnover: 1, inspection: 6, offline: 1 })
+
+  assert.deepEqual(countDailyTaskGroups([
+    { ...turnoverBase, id: 'same-room-turnover-a', business_identity: 'turnover:out-a:in-a', status: 'assigned' },
+    { ...turnoverBase, id: 'same-room-turnover-b', business_identity: 'turnover:out-b:in-b', status: 'assigned' },
+  ]), { turnover: 2, inspection: 0, offline: 0 }, 'same property/date does not collapse independent booking boundaries')
 }
 
 main()

@@ -12,6 +12,8 @@ export type DailyTaskStatsGroup = 'turnover' | 'inspection' | 'offline'
 export type DailyTaskStatsProjection = {
   daily_stats_group: DailyTaskStatsGroup | null
   daily_stats_key: string | null
+  daily_stats_business_identity: string | null
+  daily_stats_state: 'active' | 'completed' | null
 }
 
 type DailyTaskStatsCandidate = DailyTaskExecutionCandidate & {
@@ -22,6 +24,7 @@ type DailyTaskStatsCandidate = DailyTaskExecutionCandidate & {
   property_code?: unknown
   property?: { id?: unknown; code?: unknown } | null
   title?: unknown
+  business_identity?: unknown
 }
 
 function text(value: unknown) {
@@ -35,8 +38,11 @@ function taskDate(task: DailyTaskStatsCandidate) {
   return text(value).slice(0, 10)
 }
 
-function turnoverPropertyKey(task: DailyTaskStatsCandidate) {
-  return text(task.property_id || task.property?.id || task.property_code || task.property?.code || task.title)
+function stableCleaningBusinessIdentity(task: DailyTaskStatsCandidate) {
+  const projected = text(task.business_identity)
+  if (projected) return projected
+  const sourceId = text(task.source_id || task.id || task.item_key)
+  return sourceId ? `cleaning_task:${sourceId}` : ''
 }
 
 function offlineIdentity(task: DailyTaskStatsCandidate) {
@@ -63,8 +69,17 @@ export function projectDailyTaskStats(
     includeManagerUnassignedOffline?: boolean
   } = {},
 ): DailyTaskStatsProjection {
-  if (dailyTaskWorkRecordProjection(task).work_record_state !== 'active') {
-    return { daily_stats_group: null, daily_stats_key: null }
+  const workRecordState = dailyTaskWorkRecordProjection(task).work_record_state
+  const businessIdentity = text(task.source_type).toLowerCase() === 'cleaning_tasks'
+    ? stableCleaningBusinessIdentity(task)
+    : offlineIdentity(task)
+  if (workRecordState !== 'active') {
+    return {
+      daily_stats_group: null,
+      daily_stats_key: null,
+      daily_stats_business_identity: businessIdentity || null,
+      daily_stats_state: workRecordState === 'completed' ? 'completed' : null,
+    }
   }
   const executionVisible = dailyTaskExecutionVisibility(task, {
     includeManagerUnassignedOffline: options.includeManagerUnassignedOffline,
@@ -72,30 +87,46 @@ export function projectDailyTaskStats(
   const managementOnlyOffline = options.includeTaskCenterManagementOnlyOffline === true
     && isTaskCenterManagementOnlyOfflineTask(task)
   if (!executionVisible && !managementOnlyOffline) {
-    return { daily_stats_group: null, daily_stats_key: null }
+    return {
+      daily_stats_group: null,
+      daily_stats_key: null,
+      daily_stats_business_identity: businessIdentity || null,
+      daily_stats_state: 'active',
+    }
   }
   const date = taskDate(task)
   if (isTurnoverDailyExecutionTask(task)) {
-    const propertyKey = turnoverPropertyKey(task)
+    const identity = stableCleaningBusinessIdentity(task)
     return {
-      daily_stats_group: date && propertyKey ? 'turnover' : null,
-      daily_stats_key: date && propertyKey ? `turnover:${date}:${propertyKey}` : null,
+      daily_stats_group: date && identity ? 'turnover' : null,
+      daily_stats_key: date && identity ? `turnover:${date}:${identity}` : null,
+      daily_stats_business_identity: identity || null,
+      daily_stats_state: 'active',
     }
   }
   if (isInspectionTask(task)) {
-    const propertyKey = turnoverPropertyKey(task)
+    const identity = stableCleaningBusinessIdentity(task)
     return {
-      daily_stats_group: date && propertyKey ? 'inspection' : null,
-      daily_stats_key: date && propertyKey ? `inspection:${date}:${propertyKey}` : null,
+      daily_stats_group: date && identity ? 'inspection' : null,
+      daily_stats_key: date && identity ? `inspection:${date}:${identity}` : null,
+      daily_stats_business_identity: identity || null,
+      daily_stats_state: 'active',
     }
   }
   if (isPropertyFollowupSourceType(task.source_type)) {
-    return { daily_stats_group: null, daily_stats_key: null }
+    return {
+      daily_stats_group: null,
+      daily_stats_key: null,
+      daily_stats_business_identity: businessIdentity || null,
+      daily_stats_state: 'active',
+    }
   }
   const identity = offlineIdentity(task)
   return {
     daily_stats_group: date && identity ? 'offline' : null,
     daily_stats_key: date && identity ? `offline:${date}:${identity}` : null,
+    daily_stats_business_identity: identity || null,
+    daily_stats_state: 'active',
   }
 }
 

@@ -42,6 +42,7 @@ export type DailyTaskWorkRecordProjection = {
 export type DailyTaskRoleRecordEvidence = {
   performedAt: string
   actorUserId: string | null
+  actorName?: string | null
 }
 
 export function mergeRoleRecordEvidenceWithCancellation(input: {
