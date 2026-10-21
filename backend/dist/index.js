@@ -5,9 +5,10 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const dotenv_1 = __importDefault(require("dotenv"));
 const path_1 = __importDefault(require("path"));
-dotenv_1.default.config({ path: path_1.default.resolve(process.cwd(), '.env.local'), override: true });
-dotenv_1.default.config({ path: path_1.default.resolve(__dirname, '../.env.local'), override: true });
-dotenv_1.default.config();
+const preserveManagedPreviewEnvironment = process.env.MZ_DEV_PREVIEW === '1';
+dotenv_1.default.config({ path: path_1.default.resolve(process.cwd(), '.env.local'), override: !preserveManagedPreviewEnvironment });
+dotenv_1.default.config({ path: path_1.default.resolve(__dirname, '../.env.local'), override: !preserveManagedPreviewEnvironment });
+dotenv_1.default.config({ override: !preserveManagedPreviewEnvironment });
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const morgan_1 = __importDefault(require("morgan"));
@@ -20,6 +21,7 @@ const keys_1 = require("./modules/keys");
 const orders_1 = require("./modules/orders");
 const inventory_1 = require("./modules/inventory");
 const finance_1 = require("./modules/finance");
+const personnel_settlements_1 = require("./modules/personnel_settlements");
 const cleaning_1 = require("./modules/cleaning");
 const config_1 = require("./modules/config");
 const cleaning_app_1 = __importDefault(require("./modules/cleaning_app"));
@@ -59,7 +61,15 @@ const public_admin_1 = __importDefault(require("./modules/public_admin"));
 const r2_1 = require("./r2");
 const playwright_1 = require("./lib/playwright");
 const notificationQueueWorker_1 = require("./services/notificationQueueWorker");
+const cleaningStartTimeoutSchedule_1 = require("./services/cleaningStartTimeoutSchedule");
 const cleaningSync_1 = require("./services/cleaningSync");
+const r5RequestSchema_1 = require("./lib/r5RequestSchema");
+const maintenanceRuntimeSchema_1 = require("./lib/maintenanceRuntimeSchema");
+const propertyGuideRuntimeSchema_1 = require("./lib/propertyGuideRuntimeSchema");
+const personnelSettlementSchema_1 = require("./lib/personnelSettlementSchema");
+const guestSiteSchema_1 = require("./lib/guestSiteSchema");
+const personnelSettlementWeeklyJob_1 = require("./lib/personnelSettlementWeeklyJob");
+const devPreviewActivity_1 = require("./lib/devPreviewActivity");
 // 环境保险锁（Render 上用 RENDER_ENV=dev/prod 显式区分，避免误判）
 let appEnv = process.env.APP_ENV;
 let dbRole = process.env.DATABASE_ROLE;
@@ -101,6 +111,13 @@ if (isProd && dbAdapter_1.hasPg) {
 }
 const startupWarmupState = { status: dbAdapter_1.hasPg ? 'pending' : 'skipped' };
 let startupWarmupPromise = null;
+function areRequiredR5WarmupsReady() {
+    if (!dbAdapter_1.hasPg)
+        return true;
+    const byName = new Map((startupWarmupState.steps || []).map((step) => [step.name, step.status]));
+    return byName.get('r5_request_schema') === 'ready'
+        && byName.get('r5_task_runtime_schema') === 'ready';
+}
 function numberEnv(name, fallback, min) {
     const raw = process.env[name];
     const value = raw === undefined || raw === '' ? fallback : Number(raw);
@@ -132,6 +149,7 @@ function redactDatabaseHealthText(value) {
 }
 const STARTUP_WARMUP_RETRIES = Math.floor(numberEnv('STARTUP_WARMUP_RETRIES', 2, 1));
 const STARTUP_WARMUP_RETRY_DELAY_MS = numberEnv('STARTUP_WARMUP_RETRY_DELAY_MS', 1000, 0);
+const STARTUP_WARMUP_MODE = String(process.env.STARTUP_WARMUP_MODE || 'full').trim().toLowerCase();
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const app = (0, express_1.default)();
 app.set('etag', false);
@@ -177,6 +195,14 @@ app.options('*', (0, cors_1.default)(corsOpts));
 const jsonLimit = String(process.env.JSON_BODY_LIMIT || '25mb');
 app.use(express_1.default.json({ limit: jsonLimit }));
 app.use(express_1.default.urlencoded({ extended: true, limit: jsonLimit }));
+const devPreviewActivity = new devPreviewActivity_1.DevPreviewActivityTracker(process.env);
+if (devPreviewActivity.enabled) {
+    app.post('/health/dev-preview-activity', (_req, res) => {
+        devPreviewActivity.mark('client_interaction');
+        res.status(204).end();
+    });
+}
+app.use(devPreviewActivity.middleware);
 morgan_1.default.token('url', (req) => {
     const raw = String((req === null || req === void 0 ? void 0 : req.originalUrl) || (req === null || req === void 0 ? void 0 : req.url) || '');
     return raw.replace(/([?&](?:access_token|token)=)[^&\s]*/gi, '$1[REDACTED]');
@@ -222,10 +248,16 @@ app.get('/health/ready', async (_req, res) => {
         const result = {
             status: 'ok',
             warmup: startupWarmupState,
+            r5_schema_ready: areRequiredR5WarmupsReady(),
             pg: false,
             pool: (0, dbAdapter_1.getPgPoolStats)(),
             latency_ms: Date.now() - started,
         };
+        if (!result.r5_schema_ready) {
+            result.status = 'not_ready';
+            result.latency_ms = Date.now() - started;
+            return res.status(503).json(result);
+        }
         if (dbAdapter_1.pgPool) {
             const r = await dbAdapter_1.pgPool.query('SELECT 1 AS ok');
             result.pg = !!((_b = (_a = r === null || r === void 0 ? void 0 : r.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok);
@@ -253,6 +285,9 @@ app.get('/health/config', (_req, res) => {
         database_role: process.env.DATABASE_ROLE || 'none',
         api_base: process.env.API_BASE || '',
         port: process.env.PORT || '4001',
+        bind_host: process.env.DEV_PREVIEW_BIND_HOST || '',
+        startup_warmup_mode: STARTUP_WARMUP_MODE,
+        runtime_ddl_disabled: process.env.MZ_DEV_PREVIEW_DISABLE_RUNTIME_DDL === '1',
     };
     try {
         const url = process.env.DATABASE_URL || '';
@@ -340,14 +375,32 @@ app.post('/internal/bootstrap-admin', async (req, res) => {
         if (!existing) {
             const id = (0, uuid_1.v4)();
             await dbAdapter_1.pgPool.query('INSERT INTO users(id, username, email, password_hash, role) VALUES ($1,$2,$3,$4,$5)', [id, username, email, hash, role]);
+            (0, auth_2.clearAllRoleSnapshots)();
             return res.json({ ok: true, action: 'created', id, username, email, role });
         }
         const id = String(existing.id);
-        await dbAdapter_1.pgPool.query('UPDATE users SET password_hash=$1, role=$2 WHERE id=$3', [hash, role, id]);
+        const client = await dbAdapter_1.pgPool.connect();
         try {
-            await dbAdapter_1.pgPool.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [id]);
+            await client.query('BEGIN');
+            await client.query('UPDATE users SET password_hash=$1, role=$2 WHERE id=$3', [hash, role, id]);
+            try {
+                await client.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [id]);
+            }
+            catch (_b) { }
+            await client.query('COMMIT');
         }
-        catch (_b) { }
+        catch (e) {
+            try {
+                await client.query('ROLLBACK');
+            }
+            catch (_c) { }
+            throw e;
+        }
+        finally {
+            client.release();
+        }
+        (0, auth_2.invalidateUserAuthState)(id);
+        (0, auth_2.clearAllRoleSnapshots)();
         return res.json({ ok: true, action: 'reset', id, username: existing.username, email: existing.email, role });
     }
     catch (e) {
@@ -431,6 +484,7 @@ app.use('/properties', properties_1.router);
 app.use('/keys', keys_1.router);
 app.use('/orders', orders_1.router);
 app.use('/inventory', inventory_1.router);
+app.use('/finance/settlements', personnel_settlements_1.router);
 app.use('/finance', finance_1.router);
 app.use('/crud', crud_1.default);
 app.use('/recurring', recurring_1.default);
@@ -498,17 +552,24 @@ app.use((err, _req, res, next) => {
 });
 const port = process.env.PORT_OVERRIDE ? Number(process.env.PORT_OVERRIDE) : (process.env.PORT ? Number(process.env.PORT) : 4001);
 function onServerListening() {
+    const isMZDevPreview = process.env.MZ_DEV_PREVIEW === '1';
+    const databaseRole = String(process.env.DATABASE_ROLE || 'unknown');
     console.log(`Server listening on port ${port}`);
     console.log(`[DataSources] pg=${dbAdapter_1.hasPg}`);
-    try {
-        const url = process.env.DATABASE_URL || '';
-        if (url) {
-            const u = new URL(url);
-            const db = (u.pathname || '').replace(/^\//, '');
-            console.log(`[PG] host=${u.hostname} db=${db}`);
-        }
+    if (isMZDevPreview) {
+        console.log(`[PG] environment=MZ-Dev-Preview role=${databaseRole} identity=[redacted]`);
     }
-    catch (_a) { }
+    else {
+        try {
+            const url = process.env.DATABASE_URL || '';
+            if (url) {
+                const u = new URL(url);
+                const db = (u.pathname || '').replace(/^\//, '');
+                console.log(`[PG] host=${u.hostname} db=${db}`);
+            }
+        }
+        catch (_a) { }
+    }
     try {
         const defaultEnabled = false;
         const enabled = String(process.env.EMAIL_SYNC_SCHEDULE_ENABLED || (defaultEnabled ? 'true' : 'false')).toLowerCase() === 'true';
@@ -637,7 +698,10 @@ function onServerListening() {
     (async () => {
         var _a, _b, _c, _d, _e, _f, _g, _h;
         try {
-            if (dbAdapter_1.hasPg) {
+            if (isMZDevPreview) {
+                console.log(`[DBInfo] environment=MZ-Dev-Preview role=${databaseRole} identity=[redacted]`);
+            }
+            else if (dbAdapter_1.hasPg) {
                 const r1 = await dbAdapter_1.pgPool.query('SELECT current_database() AS db, current_schema AS schema');
                 const r2 = await dbAdapter_1.pgPool.query('SHOW search_path');
                 const r3 = await dbAdapter_1.pgPool.query('SELECT current_schemas(true) AS schemas');
@@ -648,38 +712,19 @@ function onServerListening() {
             console.log(`[DBInfo] query failed message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
         }
     })();
-    (async () => {
-        try {
-            const enableCleaning = String(process.env.FEATURE_CLEANING_APP || 'false').toLowerCase() === 'true';
-            if (enableCleaning && dbAdapter_1.hasPg) {
-                const expr = String(process.env.CLEANING_START_TIMEOUT_CRON || '*/15 * * * *');
-                const threshMin = Number(process.env.CLEANING_START_TIMEOUT_MINUTES || 60);
-                const task = node_cron_1.default.schedule(expr, async () => {
-                    try {
-                        const sql = `select id, assignee_id, scheduled_at, key_photo_uploaded_at from cleaning_tasks where date=now()::date and status='scheduled'`;
-                        const rs = await dbAdapter_1.pgPool.query(sql);
-                        for (const r of ((rs === null || rs === void 0 ? void 0 : rs.rows) || [])) {
-                            const sch = r.scheduled_at ? new Date(r.scheduled_at) : null;
-                            const hasKeyPhoto = !!r.key_photo_uploaded_at;
-                            if (!sch || hasKeyPhoto)
-                                continue;
-                            const diff = Date.now() - sch.getTime();
-                            if (diff > threshMin * 60 * 1000) {
-                                console.log(`[cleaning-timeout] task=${r.id} assignee=${r.assignee_id} overdue_minutes=${Math.round(diff / 60000)}`);
-                            }
-                        }
-                    }
-                    catch (e) {
-                        console.error(`[cleaning-timeout] error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
-                    }
-                }, { scheduled: true });
-                task.start();
-            }
-        }
-        catch (e) {
-            console.error(`[cleaning-timeout] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
-        }
-    })();
+    try {
+        (0, cleaningStartTimeoutSchedule_1.registerCleaningStartTimeoutSchedule)({
+            env: process.env,
+            hasPg: dbAdapter_1.hasPg,
+            pgPool: dbAdapter_1.pgPool,
+            schedule: node_cron_1.default.schedule.bind(node_cron_1.default),
+            logger: console,
+        });
+    }
+    catch (e) {
+        console.error(`[cleaning-timeout] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+    }
+    ;
     (async () => {
         try {
             const fastEnabled = String(process.env.CLEANING_BACKFILL_FAST_ENABLED || 'false').toLowerCase() === 'true';
@@ -1055,6 +1100,34 @@ function onServerListening() {
             console.error(`[day-end-handover-reminder][schedule] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
         }
     })();
+    (async () => {
+        try {
+            const enabled = String(process.env.PERSONNEL_SETTLEMENT_WEEKLY_ENABLED || 'false').trim().toLowerCase() === 'true';
+            if (!enabled) {
+                console.log('[personnel-settlement-weekly][schedule] disabled');
+                return;
+            }
+            if (!dbAdapter_1.hasPg || !dbAdapter_1.pgPool) {
+                console.log('[personnel-settlement-weekly][schedule] skipped_reason=pg_false');
+                return;
+            }
+            const expr = String(process.env.PERSONNEL_SETTLEMENT_WEEKLY_CRON || '5 0 * * 1').trim();
+            const task = node_cron_1.default.schedule(expr, async () => {
+                try {
+                    const result = await (0, personnelSettlementWeeklyJob_1.runPersonnelSettlementWeeklyJob)({ triggerSource: 'scheduled' });
+                    console.log(`[personnel-settlement-weekly][schedule] status=${String((result === null || result === void 0 ? void 0 : result.status) || '')} generated=${Number((result === null || result === void 0 ? void 0 : result.generated_count) || 0)} issued=${Number((result === null || result === void 0 ? void 0 : result.issued_count) || 0)} skipped=${Number((result === null || result === void 0 ? void 0 : result.skipped_count) || 0)}`);
+                }
+                catch (error) {
+                    console.error(`[personnel-settlement-weekly][schedule] error=${String((error === null || error === void 0 ? void 0 : error.message) || 'failed')}`);
+                }
+            }, { scheduled: true, timezone: 'Australia/Melbourne' });
+            task.start();
+            console.log(`[personnel-settlement-weekly][schedule] enabled cron=${expr} tz=Australia/Melbourne`);
+        }
+        catch (error) {
+            console.error(`[personnel-settlement-weekly][schedule] init_error=${String((error === null || error === void 0 ? void 0 : error.message) || 'failed')}`);
+        }
+    })();
 }
 app.get('/health/login', async (_req, res) => {
     var _a, _b;
@@ -1096,13 +1169,23 @@ async function runStartupWarmups() {
     startupWarmupState.duration_ms = undefined;
     startupWarmupState.errors = undefined;
     startupWarmupState.steps = [];
-    const steps = [
+    const readOnlySteps = [
+        { name: 'r5_request_schema', run: r5RequestSchema_1.warmupR5RequestSchema },
+        { name: 'r5_task_runtime_schema', run: r5RequestSchema_1.warmupR5TaskRuntimeSchema },
+        { name: 'maintenance_runtime_schema', run: maintenanceRuntimeSchema_1.warmupMaintenanceRuntimeSchema },
+        { name: 'property_guide_runtime_schema', run: propertyGuideRuntimeSchema_1.warmupPropertyGuideRuntimeSchema },
+        { name: 'personnel_settlement_schema', run: personnelSettlementSchema_1.warmupPersonnelSettlementSchema },
+        { name: 'guest_site_schema', run: guestSiteSchema_1.warmupGuestSiteSchema },
+    ];
+    const fullSteps = [
+        ...readOnlySteps,
         { name: 'auth', run: auth_2.warmupAuthModule },
         { name: 'cleaning_sync_schema', run: cleaningSync_1.bootstrapCleaningSyncSchemaV2 },
         { name: 'mzapp', run: mzapp_1.warmupMzappModule },
         { name: 'inventory', run: inventory_1.warmupInventoryModule },
         { name: 'invoices', run: invoices_1.warmupInvoicesModule },
     ];
+    const steps = STARTUP_WARMUP_MODE === 'readonly' ? readOnlySteps : fullSteps;
     const errors = [];
     for (const stepDef of steps) {
         const stepStartedAt = Date.now();
@@ -1146,7 +1229,10 @@ async function runStartupWarmups() {
     console.log(`[bootstrap] warmup_completed status=${startupWarmupState.status} duration_ms=${startupWarmupState.duration_ms} warnings=${errors.length}`);
 }
 async function startServer() {
-    const server = app.listen(port, onServerListening);
+    const bindHost = process.env.MZ_DEV_PREVIEW === '1'
+        ? String(process.env.DEV_PREVIEW_BIND_HOST || '127.0.0.1').trim()
+        : '';
+    const server = bindHost ? app.listen(port, bindHost, onServerListening) : app.listen(port, onServerListening);
     server.on('error', (err) => {
         const code = String((err === null || err === void 0 ? void 0 : err.code) || '');
         if (code === 'EADDRINUSE') {

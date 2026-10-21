@@ -125,10 +125,11 @@ exports.router.post('/reset', async (req, res) => {
                 await client.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [String(row.user_id)]);
             }
             catch (_b) { }
-            return { ok: true };
+            return { ok: true, userId: String(row.user_id) };
         });
         if (!(result === null || result === void 0 ? void 0 : result.ok))
             return res.status(400).json({ message: 'invalid_or_expired' });
+        (0, auth_1.invalidateUserAuthState)(String(result.userId || ''));
         return res.json({ ok: true });
     }
     catch (e) {

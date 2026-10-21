@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.__test = exports.router = void 0;
+exports.hasOrderCancelPermission = hasOrderCancelPermission;
 const express_1 = require("express");
 const store_1 = require("../store");
 const events_1 = require("./events");
@@ -9,6 +10,7 @@ const auth_1 = require("../auth");
 // Supabase removed
 const dbAdapter_1 = require("../dbAdapter");
 const uuid_1 = require("uuid");
+const pdfRenderServiceAuth_1 = require("../services/pdfRenderServiceAuth");
 exports.router = (0, express_1.Router)();
 function dayOnly(s) {
     if (!s)
@@ -58,6 +60,14 @@ function visibleNetIncomeForOrder(o, deductionTotal) {
         return 0;
     const net = Number((o === null || o === void 0 ? void 0 : o.net_income) || 0);
     return Math.max(0, Number((net - Number(deductionTotal || 0)).toFixed(2)));
+}
+async function hasOrderCancelPermission(user, locked) {
+    const canCancel = await (0, auth_1.userHasAnyPerm)(user, ['order.cancel']);
+    if (!canCancel)
+        return false;
+    if (!locked)
+        return true;
+    return (0, auth_1.userHasAnyPerm)(user, ['order.cancel.override']);
 }
 function normalizePropertyId(raw) {
     const s = String(raw || '').trim();
@@ -229,6 +239,10 @@ exports.router.get('/', async (req, res) => {
     const from = dayOnly((_a = req.query) === null || _a === void 0 ? void 0 : _a.from);
     const to = dayOnly((_b = req.query) === null || _b === void 0 ? void 0 : _b.to);
     const hasRange = !!(from && to);
+    const pdfRenderReadOnly = (0, pdfRenderServiceAuth_1.isPdfRenderServiceUser)(req.user);
+    if (pdfRenderReadOnly && !dbAdapter_1.hasPg) {
+        return res.status(503).json({ code: 'pdf_render_data_unavailable', source: 'orders' });
+    }
     try {
         if (dbAdapter_1.hasPg) {
             let remote = [];
@@ -283,7 +297,10 @@ exports.router.get('/', async (req, res) => {
                     const arr = ((rs === null || rs === void 0 ? void 0 : rs.rows) || []);
                     arr.forEach(r => { totals[String(r.order_id)] = Number(r.total || 0); });
                 }
-                catch (_a) { }
+                catch (e) {
+                    if (pdfRenderReadOnly)
+                        throw e;
+                }
                 try {
                     const { pgPool } = require('../dbAdapter');
                     const rs = await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query(`SELECT DISTINCT ON (order_id)
@@ -294,7 +311,7 @@ exports.router.get('/', async (req, res) => {
                     const arr = ((rs === null || rs === void 0 ? void 0 : rs.rows) || []);
                     arr.forEach(r => { syncByOrder[String(r.order_id)] = r; });
                 }
-                catch (_b) { }
+                catch (_a) { }
                 return rows.map(r => {
                     const t = totals[String(r.id)] || 0;
                     const visible = visibleNetIncomeForOrder(r, t);
@@ -343,6 +360,9 @@ exports.router.get('/', async (req, res) => {
         return res.json(out);
     }
     catch (_d) {
+        if (pdfRenderReadOnly) {
+            return res.status(503).json({ code: 'pdf_render_data_unavailable', source: 'orders' });
+        }
         const out2 = store_1.db.orders.filter((o) => {
             if (!hasRange)
                 return true;
@@ -478,6 +498,44 @@ const createOrderSchema = zod_1.z.object({
     idempotency_key: zod_1.z.string().optional(),
 });
 const updateOrderSchema = createOrderSchema.partial();
+const BOOKING_NET_RATE = 0.83;
+const ORDER_FIELD_LABELS = {
+    source: '来源',
+    property_id: '房号',
+    confirmation_code: '确认码',
+    guest_name: '客人姓名',
+    guest_phone: '客人电话',
+    checkin: '入住日期',
+    checkout: '退房日期',
+    price: '总租金',
+    total_payment_raw: '原始总租金',
+    cleaning_fee: '清洁费',
+    net_income: '房东净租金',
+    avg_nightly_price: '晚均价',
+    nights: '入住天数',
+    payment_currency: '付款币种',
+    status: '订单状态',
+};
+function orderValidationError(error) {
+    const fieldErrors = {};
+    for (const issue of error.issues) {
+        const field = String(issue.path[0] || '');
+        if (!field || fieldErrors[field])
+            continue;
+        const label = ORDER_FIELD_LABELS[field] || field;
+        fieldErrors[field] = issue.code === 'invalid_type'
+            ? `${label}格式不正确`
+            : (issue.message || `${label}无效`);
+    }
+    return {
+        message: '订单信息校验失败',
+        code: 'ORDER_VALIDATION_FAILED',
+        field_errors: fieldErrors,
+    };
+}
+function isBookingSource(source) {
+    return String(source || '').trim().toLowerCase().includes('book');
+}
 function parseDate(s) {
     if (!s)
         return null;
@@ -675,15 +733,14 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
         }
     }
     const cleaning = round2(o.cleaning_fee || 0) || 0;
-    const sourceKey = String(o.source || '').toLowerCase();
-    const isBooking = sourceKey.includes('book');
+    const isBooking = isBookingSource(o.source);
     const totalRaw = o.total_payment_raw != null ? ((_e = round2(o.total_payment_raw)) !== null && _e !== void 0 ? _e : 0) : null;
     let price = round2(o.price || 0) || 0;
     let processedStatus = o.processed_status || undefined;
     let totalPaymentRaw = o.total_payment_raw || undefined;
     if (isBooking && totalRaw !== null) {
         totalPaymentRaw = totalRaw;
-        price = round2(totalRaw * 0.83) || 0;
+        price = round2(totalRaw * BOOKING_NET_RATE) || 0;
         processedStatus = 'computed_0_83';
     }
     const net = o.net_income != null ? (round2(o.net_income) || 0) : ((round2(price - cleaning) || 0));
@@ -885,13 +942,12 @@ exports.router.post('/validate-duplicate', (0, auth_1.requireAnyPerm)(['order.cr
     }
 });
 exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req, res) => {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b, _c, _d, _e;
     const { id } = req.params;
     const operationId = (0, uuid_1.v4)();
-    const opNow = new Date().toISOString();
     const parsed = updateOrderSchema.safeParse(req.body);
     if (!parsed.success)
-        return res.status(400).json(parsed.error.format());
+        return res.status(400).json(orderValidationError(parsed.error));
     const o = parsed.data;
     const force = String((_b = (_a = req.body.force) !== null && _a !== void 0 ? _a : req.query.force) !== null && _b !== void 0 ? _b : '').toLowerCase() === 'true';
     const idx = store_1.db.orders.findIndex((x) => x.id === id);
@@ -902,10 +958,10 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
             const rows = (await (0, dbAdapter_1.pgSelect)('orders', '*', { id })) || [];
             base = Array.isArray(rows) ? rows[0] : undefined;
         }
-        catch (_g) { }
+        catch (_f) { }
     }
     if (!base)
-        return res.status(404).json({ message: 'order not found' });
+        return res.status(404).json({ message: '订单不存在或已被删除', code: 'ORDER_NOT_FOUND' });
     if (!base)
         base = {};
     let nights = o.nights;
@@ -915,9 +971,9 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
         const ci0 = normalizeStart(checkin || '');
         const co0 = normalizeEnd(checkout || '');
         if (ci0 && co0 && !(ci0 < co0))
-            return res.status(400).json({ message: '入住日期必须早于退房日期' });
+            return res.status(400).json({ message: '入住日期必须早于退房日期', code: 'INVALID_STAY_DATE' });
     }
-    catch (_h) { }
+    catch (_g) { }
     if (!nights && checkin && checkout) {
         try {
             const ci = new Date(checkin);
@@ -925,15 +981,31 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
             const ms = co.getTime() - ci.getTime();
             nights = ms > 0 ? Math.round(ms / (1000 * 60 * 60 * 24)) : 0;
         }
-        catch (_j) {
+        catch (_h) {
             nights = 0;
         }
     }
-    const price = o.price != null ? (round2(o.price) || 0) : (round2(base.price || 0) || 0);
+    const source = o.source != null ? o.source : base.source;
+    const isBooking = isBookingSource(source);
+    const rawTotal = o.total_payment_raw != null ? round2(o.total_payment_raw) : round2(base.total_payment_raw);
+    const price = isBooking && rawTotal != null
+        ? (round2(rawTotal * BOOKING_NET_RATE) || 0)
+        : (o.price != null ? (round2(o.price) || 0) : (round2(base.price || 0) || 0));
     const cleaning = o.cleaning_fee != null ? (round2(o.cleaning_fee) || 0) : (round2(base.cleaning_fee || 0) || 0);
-    const net = o.net_income != null ? (round2(o.net_income) || 0) : ((round2(price - cleaning) || 0));
-    const avg = o.avg_nightly_price != null ? (round2(o.avg_nightly_price) || 0) : (nights && nights > 0 ? (round2(net / nights) || 0) : 0);
-    const updated = { ...base, ...o, id, price, cleaning_fee: cleaning, nights, net_income: net, avg_nightly_price: avg };
+    const nextStatusRaw = String(o.status != null ? o.status : base.status).trim().toLowerCase();
+    const bookingConfirmed = isBooking && rawTotal != null && !nextStatusRaw.includes('cancel');
+    const net = bookingConfirmed
+        ? (round2(price - cleaning) || 0)
+        : (o.net_income != null ? (round2(o.net_income) || 0) : ((round2(price - cleaning) || 0)));
+    const avg = bookingConfirmed
+        ? (nights && nights > 0 ? (round2(net / nights) || 0) : 0)
+        : (o.avg_nightly_price != null ? (round2(o.avg_nightly_price) || 0) : (nights && nights > 0 ? (round2(net / nights) || 0) : 0));
+    const updated = { ...base, ...o, source, id, price, cleaning_fee: cleaning, nights, net_income: net, avg_nightly_price: avg };
+    if (isBooking && rawTotal != null) {
+        ;
+        updated.total_payment_raw = rawTotal;
+        updated.processed_status = 'computed_0_83';
+    }
     function normalizeStatus(raw) { return String(raw || '').trim().toLowerCase(); }
     function isCanceledStatus(raw) {
         const s = normalizeStatus(raw);
@@ -949,17 +1021,12 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
         updated.count_in_income = true;
     }
     if (!isCanceledStatus(prevStatus) && isCanceledStatus(nextStatus)) {
-        const role = String(((_c = req.user) === null || _c === void 0 ? void 0 : _c.role) || '');
-        const locked = await isOrderMonthLocked(prevRow);
-        if (!locked) {
-            const { roleHasPermission } = require('../store');
-            if (!roleHasPermission(role, 'order.cancel'))
-                return res.status(403).json({ message: 'no permission to cancel' });
+        if (!await hasOrderCancelPermission(req.user, false)) {
+            return res.status(403).json({ message: '没有取消订单的权限', code: 'ORDER_CANCEL_FORBIDDEN' });
         }
-        else {
-            const { roleHasPermission } = require('../store');
-            if (!roleHasPermission(role, 'order.cancel.override'))
-                return res.status(403).json({ message: 'payout locked, override cancel required' });
+        const locked = await isOrderMonthLocked(prevRow);
+        if (locked && !await hasOrderCancelPermission(req.user, true)) {
+            return res.status(403).json({ message: '该订单所属结算期已锁定，需要取消覆盖权限', code: 'PAYOUT_LOCKED' });
         }
     }
     const changedCore = ((updated.property_id || '') !== ((prev === null || prev === void 0 ? void 0 : prev.property_id) || '') ||
@@ -969,7 +1036,7 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
     // 保留内部工具函数供日志或后续使用，但不阻塞响应
     if (dbAdapter_1.hasPg) {
         try {
-            const allow = ['source', 'external_id', 'property_id', 'guest_name', 'guest_phone', 'note', 'stay_type', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'confirmation_code'];
+            const allow = ['source', 'external_id', 'property_id', 'guest_name', 'guest_phone', 'note', 'stay_type', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'confirmation_code', 'total_payment_raw', 'processed_status'];
             const allowExtra = ['payment_currency', 'payment_received'];
             const allowAll = [...allow, ...allowExtra];
             const payload = {};
@@ -1041,13 +1108,13 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
                 const bs = String((base === null || base === void 0 ? void 0 : base.status) || '');
                 const as = String((row === null || row === void 0 ? void 0 : row.status) || '');
                 const action = bs !== as ? 'status_changed' : 'update';
-                (0, store_1.addAudit)('Order', String(id), action, base, row, (_d = req.user) === null || _d === void 0 ? void 0 : _d.sub, { ip: req.ip, user_agent: req.headers['user-agent'] });
+                (0, store_1.addAudit)('Order', String(id), action, base, row, (_c = req.user) === null || _c === void 0 ? void 0 : _c.sub, { ip: req.ip, user_agent: req.headers['user-agent'] });
             }
-            catch (_k) { }
+            catch (_j) { }
             try {
                 (0, events_1.broadcastOrdersUpdated)({ action: 'update', id });
             }
-            catch (_l) { }
+            catch (_k) { }
             return res.json(row);
         }
         catch (e) {
@@ -1058,7 +1125,7 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
                     await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text'));
                     await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = \"idx_orders_confirmation_code_unique\") THEN BEGIN DROP INDEX IF EXISTS idx_orders_confirmation_code_unique; EXCEPTION WHEN others THEN NULL; END; END IF; END $$;'));
                     await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_source_confirmation_code_unique ON orders(source, confirmation_code) WHERE confirmation_code IS NOT NULL'));
-                    const allow = ['source', 'external_id', 'property_id', 'guest_name', 'guest_phone', 'note', 'stay_type', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'confirmation_code'];
+                    const allow = ['source', 'external_id', 'property_id', 'guest_name', 'guest_phone', 'note', 'stay_type', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'confirmation_code', 'total_payment_raw', 'processed_status'];
                     const allowExtra2 = ['payment_currency', 'payment_received'];
                     const payload2 = {};
                     for (const k of [...allow, ...allowExtra2]) {
@@ -1092,18 +1159,18 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
                         const bs = String((base === null || base === void 0 ? void 0 : base.status) || '');
                         const as = String((row === null || row === void 0 ? void 0 : row.status) || '');
                         const action = bs !== as ? 'status_changed' : 'update';
-                        (0, store_1.addAudit)('Order', String(id), action, base, row, (_e = req.user) === null || _e === void 0 ? void 0 : _e.sub, { ip: req.ip, user_agent: req.headers['user-agent'] });
+                        (0, store_1.addAudit)('Order', String(id), action, base, row, (_d = req.user) === null || _d === void 0 ? void 0 : _d.sub, { ip: req.ip, user_agent: req.headers['user-agent'] });
                     }
-                    catch (_m) { }
+                    catch (_l) { }
                     return res.json(row);
                 }
                 catch (e2) {
-                    return res.status(500).json({ message: '数据库更新失败', error: String((e2 === null || e2 === void 0 ? void 0 : e2.message) || '') });
+                    return res.status(500).json({ message: '订单保存失败，请稍后重试', code: 'ORDER_UPDATE_FAILED', operation_id: operationId });
                 }
             }
             if (msg.includes('duplicate') || msg.includes('unique'))
-                return res.status(409).json({ message: '确认码已存在' });
-            return res.status(500).json({ message: '数据库更新失败', error: msg });
+                return res.status(409).json({ message: '确认码已存在', code: 'ORDER_CONFIRMATION_CODE_DUPLICATE' });
+            return res.status(500).json({ message: '订单保存失败，请稍后重试', code: 'ORDER_UPDATE_FAILED', operation_id: operationId });
         }
     }
     // Supabase branch removed
@@ -1113,13 +1180,13 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
         const bs = String((base === null || base === void 0 ? void 0 : base.status) || '');
         const as = String((updated === null || updated === void 0 ? void 0 : updated.status) || '');
         const action = bs !== as ? 'status_changed' : 'update';
-        (0, store_1.addAudit)('Order', String(id), action, base, updated, (_f = req.user) === null || _f === void 0 ? void 0 : _f.sub, { ip: req.ip, user_agent: req.headers['user-agent'] });
+        (0, store_1.addAudit)('Order', String(id), action, base, updated, (_e = req.user) === null || _e === void 0 ? void 0 : _e.sub, { ip: req.ip, user_agent: req.headers['user-agent'] });
     }
-    catch (_o) { }
+    catch (_m) { }
     try {
         (0, events_1.broadcastOrdersUpdated)({ action: 'update', id });
     }
-    catch (_p) { }
+    catch (_o) { }
     syncCleaningTasksForOrderId(String(id)).catch(() => { });
     return res.json(updated);
 });

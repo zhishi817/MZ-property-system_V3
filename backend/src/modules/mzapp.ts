@@ -20,6 +20,8 @@ import {
   canonicalCleaningTurnoverPairs,
   canonicalKeyHandoverSourceIds,
   canonicalKeyHandoverSourceIdsForProjection,
+  cleaningAuditBusinessDateSql,
+  cleaningExecutionBusinessDate,
   cleaningTaskBusinessIdentity,
   cleaningTaskExecutionSemantics,
   deferredProjectionDate,
@@ -236,6 +238,97 @@ function hasRole(user: any, roleName: string) {
 
 function canViewAll(user: any) {
   return isDailyTaskManagerRoleNames(roleNamesOf(user))
+}
+
+export type WorkRecordReadOnlyViews = {
+  property_access: boolean
+  lock_codes: boolean
+  cleaner_photos: boolean
+  inspection_photos: boolean
+  guest_key_photo: boolean
+  media_scope: 'cleaner' | 'inspector' | 'manager' | 'none'
+}
+
+const WORK_RECORD_BLOCKING_EXECUTION_STATES = new Set([
+  'cancelled',
+  'canceled',
+  'deleted',
+  'removed',
+  'superseded',
+  'tombstone',
+])
+
+export function workRecordProjectionExecutionState(rows0: any[], primarySourceId?: string | null): string | null {
+  const rows = Array.isArray(rows0) ? rows0.filter(Boolean) : []
+  const states = rows
+    .map((row) => String(row?.execution_state || '').trim().toLowerCase())
+    .filter(Boolean)
+  const blockedState = states.find((state) => WORK_RECORD_BLOCKING_EXECUTION_STATES.has(state))
+  if (blockedState) return blockedState
+  const primaryId = String(primarySourceId || '').trim()
+  if (primaryId) {
+    const primary = rows.find((row) => String(row?.__raw_id || row?.source_id || '').trim() === primaryId)
+    const primaryState = String(primary?.execution_state || '').trim().toLowerCase()
+    if (primaryState) return primaryState
+  }
+  return states[0] || null
+}
+
+export function workRecordReadOnlyViews(task: any, user: any, userId: string): WorkRecordReadOnlyViews {
+  const empty: WorkRecordReadOnlyViews = {
+    property_access: false,
+    lock_codes: false,
+    cleaner_photos: false,
+    inspection_photos: false,
+    guest_key_photo: false,
+    media_scope: 'none',
+  }
+  if (task?.work_record_read_only !== true) return empty
+  const manager = canViewAll(user)
+  const uid = String(userId || '').trim()
+  const actorId = String(task?.completed_by_user_id || '').trim()
+  if (!manager && (!uid || !actorId || uid !== actorId)) return empty
+  const cleaningSource = String(task?.source_type || '').trim() === 'cleaning_tasks'
+  const recordState = String(task?.work_record_state || '').trim().toLowerCase()
+  const executionState = String(task?.execution_state || '').trim().toLowerCase()
+  const taskStatus = String(task?.status || '').trim().toLowerCase()
+  const lockCodes = cleaningSource
+    && ['completed', 'reassigned'].includes(recordState)
+    && !['cancelled', 'canceled'].includes(taskStatus)
+    && !WORK_RECORD_BLOCKING_EXECUTION_STATES.has(executionState)
+  if (manager) {
+    return {
+      property_access: true,
+      lock_codes: lockCodes,
+      cleaner_photos: cleaningSource,
+      inspection_photos: cleaningSource,
+      guest_key_photo: cleaningSource,
+      media_scope: cleaningSource ? 'manager' : 'none',
+    }
+  }
+  const executionRole = String(task?.execution_role || '').trim().toLowerCase()
+  if (!cleaningSource) return { ...empty, property_access: true }
+  if (executionRole === 'cleaning') {
+    return {
+      property_access: true,
+      lock_codes: lockCodes,
+      cleaner_photos: true,
+      inspection_photos: false,
+      guest_key_photo: true,
+      media_scope: 'cleaner',
+    }
+  }
+  if (executionRole === 'inspection') {
+    return {
+      property_access: true,
+      lock_codes: lockCodes,
+      cleaner_photos: false,
+      inspection_photos: true,
+      guest_key_photo: true,
+      media_scope: 'inspector',
+    }
+  }
+  return { ...empty, property_access: true }
 }
 
 function maintenanceWorkflowForWorkTask(task: any, user: any, canManageWorkflow: boolean) {
@@ -1483,6 +1576,19 @@ export async function canViewMzappRecordedCleaningMedia(user: any, row: any, use
     if (userId && taskUserIds.includes(userId)) return true
     return userHasManualWorkTaskAction(user, userId, 'cleaning_tasks', String(row?.id || '').trim(), 'upload_access_video')
   }
+  if (type === 'consumable_item_photo' && hasPg && pgPool && uid) {
+    const evidence = await pgPool.query(
+      `SELECT 1
+         FROM work_task_action_audits audit
+        WHERE audit.source_type = 'cleaning_tasks'
+          AND audit.source_id::text = $1::text
+          AND COALESCE(audit.performed_by_user_id, audit.actor_user_id)::text = $2::text
+          AND ${cleaningCompletionAuditWhereSql('audit')}
+        LIMIT 1`,
+      [String(row?.id || '').trim(), uid],
+    )
+    if (evidence?.rowCount) return true
+  }
   return canViewFormPhotoTaskRows(user, [row], userId)
 }
 
@@ -2259,10 +2365,18 @@ type FormPhotoTaskRow = {
   task_date: string | null
   property_id: string | null
   property_code: string | null
+  task_type: string | null
+  status: string | null
+  execution_state: string | null
+  order_id: string | null
+  order_checkin: string | null
+  order_checkout: string | null
   inspector_id: string | null
   cleaner_id: string | null
   assignee_id: string | null
 }
+
+type FormPhotoViewScope = 'cleaner' | 'inspector' | 'manager'
 
 function parseFormPhotoSourceIds(raw: any) {
   return Array.from(new Set(String(raw || '')
@@ -2277,10 +2391,17 @@ function formPhotoTaskSelectSql() {
                  COALESCE(t.task_date, t.date)::text AS task_date,
                  COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS property_id,
                  COALESCE(p_id.code::text, p_code.code::text, t.property_id::text) AS property_code,
+                 COALESCE(t.task_type, t.type)::text AS task_type,
+                 t.status::text AS status,
+                 t.execution_state::text AS execution_state,
+                 t.order_id::text AS order_id,
+                 o.checkin::text AS order_checkin,
+                 o.checkout::text AS order_checkout,
                  t.inspector_id::text AS inspector_id,
                  t.cleaner_id::text AS cleaner_id,
                  t.assignee_id::text AS assignee_id
             FROM cleaning_tasks t
+            LEFT JOIN orders o ON o.id::text = t.order_id::text
             LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
             LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)`
 }
@@ -2296,24 +2417,17 @@ async function resolveFormPhotoTaskRows(workTaskRef: string, sourceIdHints: stri
   const turnover = ref.match(/^cleaning_tasks_[^:]+_turnover:([^:]+):([^:]+):/)
   const grouped = ref.match(/^cleaning_tasks_[^:]+:(.+)$/)
 
-  if (merged) {
+  // Composite task ids are display identities, not authorization identities.
+  // Only accept Root-issued exact source ids; property/date similarity must
+  // never pull media from an independent task in the same apartment.
+  if ((merged || turnover) && sourceIdHints.length) {
     sql = `${formPhotoTaskSelectSql()}
-       WHERE COALESCE(t.task_date, t.date)::date = $1::date
-         AND (UPPER(COALESCE(p_id.code::text, p_code.code::text, t.property_id::text)) = UPPER($2)
-              OR COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = $2)`
-    values = [String(merged[1]), String(merged[2])]
+       WHERE t.id::text = ANY($1::text[])`
+    values = [sourceIdHints]
   } else if (turnover) {
-    const propertyId = String(turnover[2] || '').trim()
-    if (propertyId && propertyId !== 'unknown') {
-      sql = `${formPhotoTaskSelectSql()}
-         WHERE COALESCE(t.task_date, t.date)::date = $1::date
-           AND COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = $2`
-      values = [String(turnover[1]), propertyId]
-    } else if (sourceIdHints.length) {
-      sql = `${formPhotoTaskSelectSql()}
-         WHERE t.id::text = ANY($1::text[])`
-      values = [sourceIdHints]
-    }
+    return [] as FormPhotoTaskRow[]
+  } else if (merged) {
+    return [] as FormPhotoTaskRow[]
   } else if (grouped) {
     const ids = parseFormPhotoSourceIds(grouped[1])
     if (ids.length) {
@@ -2334,6 +2448,12 @@ async function resolveFormPhotoTaskRows(workTaskRef: string, sourceIdHints: stri
     task_date: row.task_date == null ? null : String(row.task_date).slice(0, 10),
     property_id: row.property_id == null ? null : String(row.property_id).trim() || null,
     property_code: row.property_code == null ? null : String(row.property_code).trim() || null,
+    task_type: row.task_type == null ? null : String(row.task_type).trim() || null,
+    status: row.status == null ? null : String(row.status).trim() || null,
+    execution_state: row.execution_state == null ? null : String(row.execution_state).trim() || null,
+    order_id: row.order_id == null ? null : String(row.order_id).trim() || null,
+    order_checkin: row.order_checkin == null ? null : String(row.order_checkin).trim() || null,
+    order_checkout: row.order_checkout == null ? null : String(row.order_checkout).trim() || null,
     inspector_id: row.inspector_id == null ? null : String(row.inspector_id).trim() || null,
     cleaner_id: row.cleaner_id == null ? null : String(row.cleaner_id).trim() || null,
     assignee_id: row.assignee_id == null ? null : String(row.assignee_id).trim() || null,
@@ -2363,9 +2483,80 @@ export async function canViewFormPhotoTaskRows(user: any, rows: FormPhotoTaskRow
   return (result?.rows || []).some((row: any) => normalizeParticipantActionIds(row?.action_ids).some((action) => viewActions.has(action)))
 }
 
+function normalizeFormPhotoViewScope(raw: any): FormPhotoViewScope | null {
+  const value = String(raw || '').trim().toLowerCase()
+  return value === 'cleaner' || value === 'inspector' || value === 'manager' ? value : null
+}
+
+export function canonicalFormPhotoTurnover(rows: FormPhotoTaskRow[]) {
+  const canonicalIds = canonicalKeyHandoverSourceIds(rows.map((row) => ({ ...row, __raw_id: row.id })))
+  const requestedIds = rows.map((row) => row.id).sort()
+  return canonicalIds.length === 2
+    && canonicalIds.slice().sort().every((id, index) => id === requestedIds[index])
+}
+
+export async function canViewFormPhotoTaskRowsForScope(
+  user: any,
+  rows: FormPhotoTaskRow[],
+  userId: string,
+  scope: FormPhotoViewScope,
+) {
+  if (!rows.length) return false
+  // Cancelled, deleted, or superseded tasks are hidden from the mobile task
+  // surface.  Keep the read-only photo routes aligned with that membership
+  // rule even when a caller still knows one old source id.
+  if (rows.some((row) => !isActiveCleaningTurnoverCandidate(row))) return false
+  if (canViewAll(user)) return scope === 'manager' || scope === 'cleaner' || scope === 'inspector'
+  if (scope === 'manager') return false
+  const uid = String(userId || '').trim()
+  if (!uid || !hasPg || !pgPool) return false
+  const ids = rows.map((row) => row.id)
+  const directlyOwnedIds = new Set(rows
+    .filter((row) => scope === 'cleaner'
+      ? String(row.cleaner_id || '').trim() === uid
+      : String(row.inspector_id || '').trim() === uid)
+    .map((row) => row.id))
+  const evidence = await pgPool.query(
+    `SELECT source_id::text AS source_id
+       FROM work_task_action_audits
+      WHERE source_type = 'cleaning_tasks'
+        AND source_id::text = ANY($1::text[])
+        AND COALESCE(performed_by_user_id, actor_user_id)::text = $2::text
+        AND (${scope === 'cleaner' ? cleaningCompletionAuditWhereSql('work_task_action_audits') : "performed_as_action = 'submit_inspection'"})
+      UNION
+     SELECT source_id::text AS source_id
+       FROM work_task_participants
+      WHERE source_type = 'cleaning_tasks'
+        AND source_id = ANY($1::text[])
+        AND user_id = $2
+        AND source_relation = 'manual'
+        AND (
+          action_ids ? '*'
+          OR action_ids ? $3
+        )`,
+    [ids, uid, scope === 'cleaner' ? 'complete_cleaning' : 'submit_inspection'],
+  )
+  for (const row of evidence?.rows || []) {
+    const sourceId = String(row.source_id || '').trim()
+    if (sourceId) directlyOwnedIds.add(sourceId)
+  }
+  if (rows.every((row) => directlyOwnedIds.has(row.id))) return true
+  // The sole cross-source exception is the explicit booking-boundary pair.
+  // It lets the inspector see the cleaner's guest-key photo; record filtering
+  // below still blocks every non-key photo from the other phase.
+  return directlyOwnedIds.size > 0 && canonicalFormPhotoTurnover(rows)
+}
+
 export function formPhotoMediaType(type: string) {
+  if (type === 'key_photo') return { source: 'key', area: 'guest_key', label: '客人钥匙照片' }
+  if (type.startsWith('completion_')) return { source: 'completion', area: type.slice('completion_'.length) }
   if (type.startsWith('inspection_') && type !== 'inspection_consumables_confirmed') return { source: 'inspection', area: type.slice('inspection_'.length) }
   if (type.startsWith('restock_proof:')) return { source: 'restock', item_id: type.slice('restock_proof:'.length) }
+  if (type === 'consumable_item_photo' || type.startsWith('consumable_item_photo:')) return {
+    source: 'consumable',
+    area: 'consumable',
+    item_id: type.startsWith('consumable_item_photo:') ? type.slice('consumable_item_photo:'.length) : null,
+  }
   if (type === 'consumable_living_room_photo') return { source: 'consumable', area: 'living', label: '客厅' }
   if (type === 'issue_photo') return { source: 'issue', area: 'unclean', label: '问题照片' }
   return null
@@ -2380,7 +2571,78 @@ function formPhotoMeta(note: any) {
   }
 }
 
-async function loadFormPhotoRecords(taskRows: FormPhotoTaskRow[]) {
+export function formPhotoRecordVisibleToScope(record: any, scope: FormPhotoViewScope, userId: string, ownTaskIds: Set<string>) {
+  if (scope === 'manager') return true
+  const source = String(record?.source || '').trim()
+  const uploaderId = String(record?.uploader_id || '').trim()
+  const taskId = String(record?.task_id || '').trim()
+  const ownTask = ownTaskIds.has(taskId)
+  if (scope === 'cleaner') {
+    if (!ownTask) return false
+    if (source === 'consumable' || source === 'completion' || source === 'key') return uploaderId === userId
+    if (source === 'restock' || source === 'issue') return uploaderId === userId
+    return false
+  }
+  if (source === 'key') return true
+  if (!ownTask) return false
+  if (source === 'inspection') return uploaderId === userId
+  if (source === 'restock' || source === 'issue') return uploaderId === userId
+  return false
+}
+
+async function formPhotoOwnedTaskIds(taskRows: FormPhotoTaskRow[], userId: string, scope: FormPhotoViewScope) {
+  if (scope === 'manager') return new Set(taskRows.map((row) => row.id))
+  const uid = String(userId || '').trim()
+  const ids = taskRows.map((row) => row.id)
+  const owned = new Set(taskRows
+    .filter((row) => scope === 'cleaner'
+      ? String(row.cleaner_id || '').trim() === uid
+      : String(row.inspector_id || '').trim() === uid)
+    .map((row) => row.id))
+  if (!hasPg || !pgPool || !ids.length || !uid) return owned
+  const evidence = await pgPool.query(
+    `SELECT source_id::text AS source_id
+       FROM work_task_action_audits
+      WHERE source_type = 'cleaning_tasks'
+        AND source_id::text = ANY($1::text[])
+        AND COALESCE(performed_by_user_id, actor_user_id)::text = $2::text
+        AND (${scope === 'cleaner' ? cleaningCompletionAuditWhereSql('work_task_action_audits') : "performed_as_action = 'submit_inspection'"})`,
+    [ids, uid],
+  )
+  for (const row of evidence?.rows || []) {
+    const sourceId = String(row.source_id || '').trim()
+    if (sourceId) owned.add(sourceId)
+  }
+  return owned
+}
+
+export async function canViewMzappScopedRecordedCleaningMedia(
+  user: any,
+  userId: string,
+  sourceIds0: string[],
+  scope0: unknown,
+  mediaRow: any,
+) {
+  const sourceIds = Array.from(new Set((Array.isArray(sourceIds0) ? sourceIds0 : [])
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .slice(0, 2)))
+  const scope = normalizeFormPhotoViewScope(scope0)
+  const mediaTaskId = String(mediaRow?.source_task_id || mediaRow?.id || '').trim()
+  const mapped = formPhotoMediaType(String(mediaRow?.type || '').trim())
+  if (!sourceIds.length || !scope || !mediaTaskId || !mapped || !sourceIds.includes(mediaTaskId)) return false
+  const rows = await resolveFormPhotoTaskRows('cleaning_tasks_merged:media:exact', sourceIds)
+  if (rows.length !== sourceIds.length || !rows.some((row) => row.id === mediaTaskId)) return false
+  if (!await canViewFormPhotoTaskRowsForScope(user, rows, userId, scope)) return false
+  const ownTaskIds = await formPhotoOwnedTaskIds(rows, userId, scope)
+  return formPhotoRecordVisibleToScope({
+    task_id: mediaTaskId,
+    source: mapped.source,
+    uploader_id: mediaRow?.uploader_id == null ? null : String(mediaRow.uploader_id).trim() || null,
+  }, scope, String(userId || '').trim(), ownTaskIds)
+}
+
+async function loadFormPhotoRecords(taskRows: FormPhotoTaskRow[], scope: FormPhotoViewScope, userId: string) {
   if (!hasPg || !pgPool || !taskRows.length) return []
   const taskIds = taskRows.map((row) => row.id)
   const mediaResult = await pgPool.query(
@@ -2388,7 +2650,7 @@ async function loadFormPhotoRecords(taskRows: FormPhotoTaskRow[]) {
        FROM cleaning_task_media
       WHERE task_id::text = ANY($1::text[])
         AND COALESCE(url, '') <> ''
-        AND (type LIKE 'inspection_%' OR type LIKE 'restock_proof:%' OR type IN ('consumable_living_room_photo', 'issue_photo'))
+        AND (type LIKE 'inspection_%' OR type LIKE 'completion_%' OR type LIKE 'restock_proof:%' OR type LIKE 'consumable_item_photo:%' OR type IN ('key_photo', 'consumable_living_room_photo', 'issue_photo'))
       ORDER BY captured_at ASC NULLS LAST, created_at ASC NULLS LAST, id ASC`,
     [taskIds],
   )
@@ -2419,9 +2681,11 @@ async function loadFormPhotoRecords(taskRows: FormPhotoTaskRow[]) {
       status: row.uploader_id ? 'synced' : 'synced_unlabeled',
     })
   }
+  const attributedMediaUrls = new Set(records.map((record) => String(record.url || '').trim()).filter(Boolean))
   for (const row of usageResult?.rows || []) {
     const urls = normalizeStoredPhotoUrls(row.photo_urls, row.photo_url)
     for (const [index, url] of urls.entries()) {
+      if (attributedMediaUrls.has(String(url || '').trim())) continue
       records.push({
         id: `${String(row.id || '').trim()}:${index}`,
         task_id: String(row.task_id || '').trim(),
@@ -2437,7 +2701,8 @@ async function loadFormPhotoRecords(taskRows: FormPhotoTaskRow[]) {
       })
     }
   }
-  return records.filter((record) => record.id && record.url)
+  const ownTaskIds = await formPhotoOwnedTaskIds(taskRows, userId, scope)
+  return records.filter((record) => record.id && record.url && formPhotoRecordVisibleToScope(record, scope, userId, ownTaskIds))
 }
 
 router.post('/cleaning-tasks/reorder', requireR5TaskRuntimeSchema, async (req, res) => {
@@ -2867,14 +3132,16 @@ router.get('/work-tasks/:id/form-photos', async (req, res) => {
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const workTaskRef = String(req.params.id || '').trim()
   const sourceIdHints = parseFormPhotoSourceIds((req.query as any)?.source_ids)
+  const requestedScope = normalizeFormPhotoViewScope((req.query as any)?.scope)
   const userId = String(user.sub || '').trim()
   if (!workTaskRef) return res.status(400).json({ message: 'missing work task reference' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
     const taskRows = await resolveFormPhotoTaskRows(workTaskRef, sourceIdHints)
     if (!taskRows.length) return res.status(404).json({ message: 'not found' })
-    if (!await canViewFormPhotoTaskRows(user, taskRows, userId)) return res.status(403).json({ message: 'forbidden' })
-    const items = await loadFormPhotoRecords(taskRows)
+    const scope: FormPhotoViewScope = canViewAll(user) ? (requestedScope || 'manager') : (requestedScope || 'cleaner')
+    if (!await canViewFormPhotoTaskRowsForScope(user, taskRows, userId, scope)) return res.status(403).json({ message: 'forbidden' })
+    const items = await loadFormPhotoRecords(taskRows, scope, userId)
     return res.json({ task_ids: taskRows.map((row) => row.id), items })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'form_photos_failed' })
@@ -4385,15 +4652,32 @@ async function handleManagerFields(req: any, res: any) {
           try {
             const affectedIds = Array.from(affectedTaskIds)
             const vis = await pool.query(
-              `SELECT id::text AS id, assignee_id, cleaner_id, inspector_id, lower(COALESCE(task_type, '')) AS task_type,
-                      property_id::text AS property_id,
-                      COALESCE(task_date, date)::text AS task_date,
-                      COALESCE(keys_required, 1) AS keys_required
-               FROM cleaning_tasks
-               WHERE id::text = ANY($1::text[])`,
+              `SELECT t.id::text AS id, t.assignee_id, t.cleaner_id, t.inspector_id,
+                      lower(COALESCE(t.task_type, '')) AS task_type,
+                      t.property_id::text AS property_id,
+                      COALESCE(t.task_date, t.date)::text AS task_date,
+                      COALESCE(t.keys_required, 1) AS keys_required,
+                      t.order_id::text AS order_id,
+                      t.linked_checkout_task_id::text AS linked_checkout_task_id,
+                      t.status,
+                      t.execution_state,
+                      o.checkin::text AS order_checkin,
+                      o.checkout::text AS order_checkout
+               FROM cleaning_tasks t
+               LEFT JOIN orders o ON o.id::text=t.order_id::text
+               WHERE EXISTS (
+                 SELECT 1
+                 FROM cleaning_tasks affected
+                 WHERE affected.id::text = ANY($1::text[])
+                   AND affected.property_id::text=t.property_id::text
+                   AND COALESCE(affected.task_date, affected.date)::date=COALESCE(t.task_date, t.date)::date
+               )`,
               [affectedIds],
             )
             const byId = new Map<string, any>((vis?.rows || []).map((row: any) => [String(row.id || ''), row]))
+            const canonicalTurnoverSourceIds = new Set(
+              canonicalCleaningTurnoverPairs(vis?.rows || []).flatMap((pair) => pair.source_ids),
+            )
             const keyTagsByGroup = new Map<string, { checkout_sets: number; checkin_sets: number }>()
             for (const row of vis?.rows || []) {
               const groupKey = `${String(row?.property_id || '').trim()}|${String(row?.task_date || '').slice(0, 10)}`
@@ -4415,6 +4699,7 @@ async function handleManagerFields(req: any, res: any) {
               const taskType = String(row?.task_type || '').trim()
               const isCheckoutTask = taskType === 'checkout_clean'
               const isCheckinTask = taskType === 'checkin_clean'
+              const hasActualCheckinTask = isCheckinTask || (isCheckoutTask && canonicalTurnoverSourceIds.has(String(id)))
               const groupKey = `${String(row?.property_id || '').trim()}|${String(row?.task_date || '').slice(0, 10)}`
               const groupKeys = keyTagsByGroup.get(groupKey) || { checkout_sets: 0, checkin_sets: 0 }
               const checkoutSets = groupKeys.checkout_sets >= 2 ? groupKeys.checkout_sets : (isCheckoutTask && nextKeysRequired != null ? nextKeysRequired : 0)
@@ -4422,7 +4707,7 @@ async function handleManagerFields(req: any, res: any) {
               const mergedKeysRequired = Math.max(1, checkoutSets || 0, checkinSets || 0, nextKeysRequired || 0)
               const changedFieldsForTask = [
                 ...(parsed.data.checkout_time !== undefined ? ['checkout_time', 'start_time', 'summary'] : []),
-                ...(parsed.data.checkin_time !== undefined ? ['checkin_time', 'end_time', 'summary'] : []),
+                ...(parsed.data.checkin_time !== undefined ? ['checkin_time', 'end_time', 'summary', 'has_checkin_task', 'checkin_time_note'] : []),
                 ...(parsed.data.checkout_time !== undefined || parsed.data.checkin_time !== undefined ? ['stayed_nights', 'remaining_nights'] : []),
                 ...(parsed.data.old_code !== undefined ? ['old_code'] : []),
                 ...(parsed.data.new_code !== undefined ? ['new_code'] : []),
@@ -4443,12 +4728,20 @@ async function handleManagerFields(req: any, res: any) {
                   ...(parsed.data.checkout_time !== undefined ? { checkout_time: parsed.data.checkout_time ?? null } : {}),
                   ...(parsed.data.checkout_time !== undefined ? { start_time: parsed.data.checkout_time ?? null } : {}),
                   ...(parsed.data.checkin_time !== undefined ? { checkin_time: parsed.data.checkin_time ?? null } : {}),
-                  ...(parsed.data.checkin_time !== undefined ? { end_time: parsed.data.checkin_time ?? null } : {}),
+                  ...(parsed.data.checkin_time !== undefined
+                    ? {
+                        end_time: hasActualCheckinTask ? (parsed.data.checkin_time ?? null) : null,
+                        has_checkin_task: hasActualCheckinTask,
+                        checkin_time_note: hasActualCheckinTask ? null : (parsed.data.checkin_time ?? null),
+                      }
+                    : {}),
                   ...(parsed.data.checkout_time !== undefined || parsed.data.checkin_time !== undefined
                     ? {
                         summary: summaryFromCleaningTimes(
                           parsed.data.checkout_time !== undefined ? parsed.data.checkout_time : prevRow?.checkout_time,
-                          parsed.data.checkin_time !== undefined ? parsed.data.checkin_time : prevRow?.checkin_time,
+                          hasActualCheckinTask
+                            ? (parsed.data.checkin_time !== undefined ? parsed.data.checkin_time : prevRow?.checkin_time)
+                            : null,
                         ),
                       }
                     : {}),
@@ -7544,7 +7837,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                 OR audit.performed_as_action = 'submit_inspection'
               )
               AND ($4::boolean OR COALESCE(audit.performed_by_user_id, audit.actor_user_id)::text = $3::text)
-              AND (audit.performed_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN $1::date AND $2::date
+              AND ${cleaningAuditBusinessDateSql('audit')} BETWEEN $1::date AND $2::date
             UNION
             SELECT DISTINCT media.task_id::text AS id
             FROM cleaning_task_media media
@@ -7600,6 +7893,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               COALESCE(p_id.wifi_password::text, p_code.wifi_password::text) AS property_wifi_password,
               COALESCE(p_id.router_location::text, p_code.router_location::text) AS property_router_location,
               t.task_type,
+              t.linked_checkout_task_id,
               COALESCE(t.task_date, t.date)::text AS task_date,
               t.status,
               t.execution_state,
@@ -7631,9 +7925,11 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               t.sort_index_cleaner,
               t.sort_index_inspector,
               cleaner_record.performed_at AS cleaner_record_at,
+              cleaner_record.record_date::text AS cleaner_record_date,
               cleaner_record.performed_by_user_id AS cleaner_record_actor_user_id,
               cleaner_record.performed_by_name AS cleaner_record_actor_name,
               inspector_record.performed_at AS inspector_record_at,
+              inspector_record.record_date::text AS inspector_record_date,
               inspector_record.performed_by_user_id AS inspector_record_actor_user_id,
               executor_record.performed_at AS executor_record_at,
               executor_record.performed_by_user_id AS executor_record_actor_user_id,
@@ -7653,6 +7949,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             LEFT JOIN LATERAL (
               SELECT
                 audit.performed_at,
+                ${cleaningAuditBusinessDateSql('audit')} AS record_date,
                 COALESCE(audit.performed_by_user_id, audit.actor_user_id) AS performed_by_user_id,
                 COALESCE(
                   NULLIF(TRIM(audit.performed_by_name), ''),
@@ -7667,18 +7964,20 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                 AND audit.source_id::text = t.id::text
                 AND ${cleaningCompletionAuditWhereSql('audit')}
                 AND ($4::boolean OR COALESCE(audit.performed_by_user_id, audit.actor_user_id)::text = $3::text)
-                AND (audit.performed_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN $1::date AND $2::date
+                AND ${cleaningAuditBusinessDateSql('audit')} BETWEEN $1::date AND $2::date
               ORDER BY audit.performed_at DESC, audit.created_at DESC
               LIMIT 1
             ) cleaner_record ON TRUE
             LEFT JOIN LATERAL (
-              SELECT audit.performed_at, COALESCE(audit.performed_by_user_id, audit.actor_user_id) AS performed_by_user_id
+              SELECT audit.performed_at,
+                     ${cleaningAuditBusinessDateSql('audit')} AS record_date,
+                     COALESCE(audit.performed_by_user_id, audit.actor_user_id) AS performed_by_user_id
               FROM work_task_action_audits audit
               WHERE audit.source_type = 'cleaning_tasks'
                 AND audit.source_id::text = t.id::text
                 AND audit.performed_as_action = 'submit_inspection'
                 AND ($4::boolean OR COALESCE(audit.performed_by_user_id, audit.actor_user_id)::text = $3::text)
-                AND (audit.performed_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN $1::date AND $2::date
+                AND ${cleaningAuditBusinessDateSql('audit')} BETWEEN $1::date AND $2::date
               ORDER BY audit.performed_at DESC, audit.created_at DESC
               LIMIT 1
             ) inspector_record ON TRUE
@@ -7734,7 +8033,21 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             FROM cleaning_task_media m
             JOIN candidate_tasks ct ON ct.id::text = m.task_id::text
             WHERE m.type IN ('key_photo', 'lockbox_video', 'consumable_living_room_photo')
-              AND ($4::boolean OR m.uploader_id::text = $3::text)
+              AND (
+                $4::boolean
+                OR m.uploader_id::text = $3::text
+                OR (
+                  m.type = 'key_photo'
+                  AND $3::text IN (
+                    COALESCE(ct.cleaner_id::text, ''),
+                    COALESCE(ct.inspector_id::text, ''),
+                    COALESCE(ct.assignee_id::text, ''),
+                    COALESCE(ct.cleaner_record_actor_user_id::text, ''),
+                    COALESCE(ct.inspector_record_actor_user_id::text, ''),
+                    COALESCE(ct.executor_record_actor_user_id::text, '')
+                  )
+                )
+              )
             ORDER BY m.task_id::text, m.type, m.captured_at DESC NULLS LAST, m.created_at DESC
           ),
           latest_media AS (
@@ -7777,6 +8090,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             t.property_wifi_password,
             t.property_router_location,
             t.task_type,
+            t.linked_checkout_task_id,
             t.task_date,
             t.status,
             t.execution_state,
@@ -7823,9 +8137,11 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             t.sort_index_cleaner,
             t.sort_index_inspector,
             t.cleaner_record_at,
+            t.cleaner_record_date,
             t.cleaner_record_actor_user_id,
             t.cleaner_record_actor_name,
             t.inspector_record_at,
+            t.inspector_record_date,
             t.inspector_record_actor_user_id,
             t.cancelled_record_at,
             t.cancelled_record_actor_user_id,
@@ -7924,7 +8240,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         )
         markCleaningPoolStep('guide_links')
         const taskIds = Array.from(new Set(cleaningRows.map((x: any) => String(x.id || '')).filter(Boolean)))
-        const managerRecordEvidenceByTaskId = new Map<string, Array<{ roleKind: 'cleaner' | 'inspector' | 'executor'; performedAt: string; actorUserId: string; actorName: string | null }>>()
+        const managerRecordEvidenceByTaskId = new Map<string, Array<{ roleKind: 'cleaner' | 'inspector' | 'executor'; performedAt: string; recordDate: string | null; actorUserId: string; actorName: string | null }>>()
         if (managerCanSeeAllTaskPool && taskIds.length) {
           const evidenceResult = await pgPool.query(
             `WITH raw_evidence AS (
@@ -7937,6 +8253,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                    ELSE NULL
                  END AS role_kind,
                  audit.performed_at,
+                 ${cleaningAuditBusinessDateSql('audit')} AS record_date,
                  COALESCE(audit.performed_by_user_id, audit.actor_user_id)::text AS actor_user_id,
                  COALESCE(
                    NULLIF(TRIM(audit.performed_by_name), ''),
@@ -7958,6 +8275,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                  media.task_id::text AS task_id,
                  'executor' AS role_kind,
                  COALESCE(media.captured_at, media.created_at) AS performed_at,
+                 ((COALESCE(media.captured_at, media.created_at) AT TIME ZONE 'Australia/Melbourne')::date) AS record_date,
                  media.uploader_id::text AS actor_user_id,
                  COALESCE(media_actor.username, media_actor.email, media_actor.id::text) AS actor_name
                FROM cleaning_task_media media
@@ -7975,6 +8293,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                    ELSE 'inspector'
                  END AS role_kind,
                  event.occurred_at AS performed_at,
+                 ((event.occurred_at AT TIME ZONE 'Australia/Melbourne')::date) AS record_date,
                  event.caused_by_user_id::text AS actor_user_id,
                  COALESCE(event_actor.username, event_actor.email, event_actor.id::text) AS actor_name
                FROM work_task_events event
@@ -7987,11 +8306,11 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                  AND COALESCE(event.payload#>'{arrangement_revision,reasons}', '[]'::jsonb) ? 'keys_hung_confirmed'
              )
              SELECT DISTINCT ON (task_id, role_kind, actor_user_id)
-               task_id, role_kind, performed_at, actor_user_id, actor_name
+               task_id, role_kind, performed_at, record_date::text AS record_date, actor_user_id, actor_name
              FROM raw_evidence
              WHERE role_kind IS NOT NULL
                AND COALESCE(actor_user_id, '') <> ''
-               AND (performed_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN $1::date AND $2::date
+               AND record_date BETWEEN $1::date AND $2::date
              ORDER BY task_id, role_kind, actor_user_id, performed_at DESC`,
             [dateFrom, dateTo, taskIds],
           )
@@ -7999,11 +8318,12 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             const taskId = String(evidence.task_id || '').trim()
             const roleKind = String(evidence.role_kind || '').trim() as 'cleaner' | 'inspector' | 'executor'
             const performedAt = evidence.performed_at ? String(evidence.performed_at) : ''
+            const recordDate = dayOnly(evidence.record_date)
             const actorUserId = String(evidence.actor_user_id || '').trim()
             const actorName = String(evidence.actor_name || '').trim() || null
             if (!taskId || !performedAt || !actorUserId || !['cleaner', 'inspector', 'executor'].includes(roleKind)) continue
             const existing = managerRecordEvidenceByTaskId.get(taskId) || []
-            existing.push({ roleKind, performedAt, actorUserId, actorName })
+            existing.push({ roleKind, performedAt, recordDate, actorUserId, actorName })
             managerRecordEvidenceByTaskId.set(taskId, existing)
           }
         }
@@ -8360,11 +8680,13 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           const raw_status = String(row.status ?? '').trim().toLowerCase()
           const status = mapCleaningTaskStatus(raw_status)
           const cleanerRecordAt = row.cleaner_record_at ? String(row.cleaner_record_at) : null
-          const cleanerRecordDate = cleanerRecordAt ? melbourneDateOnly(cleanerRecordAt) : null
+          const cleanerRecordDate = dayOnly(row.cleaner_record_date)
+            || cleaningExecutionBusinessDate({ performedAt: cleanerRecordAt })
           const cleanerRecordActorId = String(row.cleaner_record_actor_user_id || '').trim() || null
           const cleanerRecordActorName = String(row.cleaner_record_actor_name || '').trim() || null
           const inspectorRecordAt = row.inspector_record_at ? String(row.inspector_record_at) : null
-          const inspectorRecordDate = inspectorRecordAt ? melbourneDateOnly(inspectorRecordAt) : null
+          const inspectorRecordDate = dayOnly(row.inspector_record_date)
+            || cleaningExecutionBusinessDate({ performedAt: inspectorRecordAt })
           const inspectorRecordActorId = String(row.inspector_record_actor_user_id || '').trim() || null
           const executorRecordAt = row.lockbox_record_at ? String(row.lockbox_record_at) : null
           const executorRecordDate = executorRecordAt ? melbourneDateOnly(executorRecordAt) : null
@@ -8375,13 +8697,14 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           const roleRecordEvidence = (
             roleKind: 'cleaner' | 'inspector' | 'executor',
             fallbackAt: string | null,
+            fallbackRecordDate: string | null,
             fallbackActorUserId: string | null,
             fallbackActorName: string | null = null,
           ) => managerCanSeeAllTaskPool
             ? (managerRecordEvidenceByTaskId.get(String(row.id)) || [])
               .filter((evidence) => evidence.roleKind === roleKind)
-              .map((evidence) => ({ performedAt: evidence.performedAt, actorUserId: evidence.actorUserId, actorName: evidence.actorName }))
-            : (fallbackAt ? [{ performedAt: fallbackAt, actorUserId: fallbackActorUserId, actorName: fallbackActorName }] : [])
+              .map((evidence) => ({ performedAt: evidence.performedAt, recordDate: evidence.recordDate, actorUserId: evidence.actorUserId, actorName: evidence.actorName }))
+            : (fallbackAt ? [{ performedAt: fallbackAt, recordDate: fallbackRecordDate, actorUserId: fallbackActorUserId, actorName: fallbackActorName }] : [])
           const inspectionMode = effectiveInspectionMode(row)
           const inspectionDueDate = dayOnly(row.inspection_due_date)
           const deferredDate = deferredProjectionDate({
@@ -8410,6 +8733,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           const effectiveInspectorRecordActorId = manualKeyHandoverRecord && !isCheckinSiteExecution
             ? (inspectorRecordActorId || executorRecordActorId)
             : inspectorRecordActorId
+          const effectiveInspectorRecordDate = manualKeyHandoverRecord && !isCheckinSiteExecution
+            ? (inspectorRecordDate || executorRecordDate)
+            : inspectorRecordDate
           const canFallbackInspectorAsExecutor = isCheckinSiteExecution
           const executorId = row.assignee_id
             ? String(row.assignee_id)
@@ -8509,7 +8835,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             cleaner_record_actor_user_id: cleanerRecordActorId,
             cleaner_record_actor_name: cleanerRecordActorName,
             inspector_record_at: effectiveInspectorRecordAt,
-            inspector_record_date: effectiveInspectorRecordAt ? melbourneDateOnly(effectiveInspectorRecordAt) : inspectorRecordDate,
+            inspector_record_date: effectiveInspectorRecordDate,
             inspector_record_actor_user_id: effectiveInspectorRecordActorId,
             executor_record_at: executorRecordAt,
             executor_record_date: executorRecordDate,
@@ -8537,14 +8863,15 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               cleanerGroups.set(k, arr)
             }
             const recordEvidence = mergeRoleRecordEvidenceWithCancellation({
-              roleEvidence: roleRecordEvidence('cleaner', cleanerRecordAt, cleanerRecordActorId, cleanerRecordActorName),
+              roleEvidence: roleRecordEvidence('cleaner', cleanerRecordAt, cleanerRecordDate, cleanerRecordActorId, cleanerRecordActorName),
               cancelled,
               cancelledAt: cancelledRecordAt,
               currentAssigneeId: effectiveCleanerId,
             })
             for (const evidence of recordEvidence) {
               const recordAt = evidence.performedAt
-              const recordDate = recordAt ? melbourneDateOnly(recordAt) : null
+              const recordDate = dayOnly((evidence as any).recordDate)
+                || (recordAt ? melbourneDateOnly(recordAt) : null)
               const recordActorId = evidence.actorUserId || null
               const recordActorName = String(evidence.actorName || '').trim() || null
               const recordState = evidenceBackedWorkRecordState({
@@ -8585,14 +8912,15 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               executorGroups.set(k, arr)
             }
             const recordEvidence = mergeRoleRecordEvidenceWithCancellation({
-              roleEvidence: roleRecordEvidence('executor', executorRecordAt, executorRecordActorId),
+              roleEvidence: roleRecordEvidence('executor', executorRecordAt, executorRecordDate, executorRecordActorId),
               cancelled,
               cancelledAt: cancelledRecordAt,
               currentAssigneeId: effectiveExecutorId,
             })
             for (const evidence of recordEvidence) {
               const recordAt = evidence.performedAt
-              const recordDate = recordAt ? melbourneDateOnly(recordAt) : null
+              const recordDate = dayOnly((evidence as any).recordDate)
+                || (recordAt ? melbourneDateOnly(recordAt) : null)
               const recordActorId = evidence.actorUserId || null
               const recordActorName = String(evidence.actorName || '').trim() || null
               const recordState = evidenceBackedWorkRecordState({
@@ -8655,14 +8983,15 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               inspectorGroups.set(k, arr)
             }
             const recordEvidence = mergeRoleRecordEvidenceWithCancellation({
-              roleEvidence: roleRecordEvidence('inspector', effectiveInspectorRecordAt, effectiveInspectorRecordActorId),
+              roleEvidence: roleRecordEvidence('inspector', effectiveInspectorRecordAt, effectiveInspectorRecordDate, effectiveInspectorRecordActorId),
               cancelled,
               cancelledAt: cancelledRecordAt,
               currentAssigneeId: effectiveInspectionAssigneeId,
             })
             for (const evidence of recordEvidence) {
               const recordAt = evidence.performedAt
-              const recordDate = recordAt ? melbourneDateOnly(recordAt) : null
+              const recordDate = dayOnly((evidence as any).recordDate)
+                || (recordAt ? melbourneDateOnly(recordAt) : null)
               const recordActorId = evidence.actorUserId || null
               const recordActorName = String(evidence.actorName || '').trim() || null
               const recordState = evidenceBackedWorkRecordState({
@@ -8825,12 +9154,15 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             activeRows: displayActiveRows,
             supersededRows: displaySupersededRows,
           })
-          const checkoutLinkedCheckinTime = firstNonEmpty(p.a.checkin_time, ...nextCheckinsForCheckout.map((x: any) => x.checkin_time))
+          const checkoutLinkedCheckinTime = firstNonEmpty(...nextCheckinsForCheckout.map((x: any) => x.checkin_time))
+          const checkoutCheckinTimeNote = p.kind === 'checkout' && !canonicalPair
+            ? firstNonEmpty(p.a.checkin_time)
+            : null
           const checkoutTime = p.kind === 'turnover' || p.kind === 'checkout' ? normalizeTimeOrDefault(turnoverDisplay.checkout_time || p.a.checkout_time, '10am') : ''
           const checkinTime =
             p.kind === 'turnover' || p.kind === 'checkin'
               ? normalizeTimeOrDefault(turnoverDisplay.checkin_time || (p.kind === 'turnover' ? p.b?.checkin_time : p.a.checkin_time), '3pm')
-              : p.kind === 'checkout' && (checkoutLinkedCheckinTime || nextCheckinsForCheckout.length)
+              : p.kind === 'checkout' && nextCheckinsForCheckout.length
                 ? normalizeTimeOrDefault(turnoverDisplay.checkin_time || checkoutLinkedCheckinTime, '3pm')
                 : ''
           const summary =
@@ -9049,6 +9381,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             ? `${baseOutId}::record:${workRecordState}:${workRecordDate || date}`
             : baseOutId
           const primarySourceId = String(p.a.__raw_id)
+          const projectionExecutionState = workRecordProjectionExecutionState(rows, primarySourceId)
           const checkoutKeys =
             turnoverDisplay.keys_required_checkout != null
               ? turnoverDisplay.keys_required_checkout
@@ -9118,6 +9451,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             execution_role: executorInspection ? 'inspection' : executionRole,
             execution_semantics: executionSemantics,
             source_type: 'cleaning_tasks',
+            execution_state: projectionExecutionState,
             business_identity: businessIdentity,
             phase_history: phaseHistory,
             source_id: primarySourceId,
@@ -9132,6 +9466,8 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             property_id: propId,
             title: prop?.code || (propId ? String(propId) : primarySourceId),
             summary: summary || null,
+            has_checkin_task: p.kind === 'turnover' || p.kind === 'checkin' || nextCheckinsForCheckout.length > 0,
+            checkin_time_note: checkoutCheckinTimeNote,
             scheduled_date: isWorkRecordGroup ? (originalScheduledDate || sourceScheduledDate) : date,
             ...(isWorkRecordGroup
               ? {
@@ -9267,6 +9603,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         const activeArr = arr.filter((x) => !String(x?.work_record_state || '').trim())
         const preferredPool = activeArr.length ? activeArr : arr
         const preferred = preferredPool.find((x) => String(x?.task_kind || '') === 'inspection') || preferredPool[0]
+        const projectionExecutionState = workRecordProjectionExecutionState(arr, preferred?.source_id)
         const workRecordState = activeArr.length ? null : firstNonEmpty(...arr.map((x) => x.work_record_state))
         const hideUnattributedHistoricalMedia = workRecordState === 'reassigned'
         const workRecordActorUserId = activeArr.length
@@ -9523,6 +9860,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           start_time: startTime || null,
           end_time: endTime || null,
           task_type: taskTypeOut || preferred?.task_type || null,
+          execution_state: projectionExecutionState,
           task_kind: hasKeyHandoverExecution
             ? 'execution'
             : arr.some((x) => String(x?.task_kind || '') === 'inspection')
@@ -9692,6 +10030,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         ? taskWithGuestState
         : attachWorkTaskParticipants(taskWithGuestState, manualParticipantsByRef)
       const isWorkRecord = taskWithParticipants.work_record_read_only === true
+      const readOnlyViews = workRecordReadOnlyViews(taskWithParticipants, user, userId)
       const mergedChildren = Array.isArray((task as any).__merged_children) ? (task as any).__merged_children : []
       const payload = buildWorkTaskActionPayload(taskWithParticipants, actionContext)
       const blockedInspectionSourceIds = new Set<string>([
@@ -9744,11 +10083,24 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         property_ready_for_guest_notification,
         ...cleanTask
       } = taskWithParticipants as any
+      const canonicalReadOnlyMediaSourceIds = Array.from(new Set(
+        (Array.isArray(__key_handover_source_ids) ? __key_handover_source_ids : [])
+          .map((value: unknown) => String(value || '').trim())
+          .filter(Boolean),
+      )).slice(0, 2)
+      const directReadOnlyMediaSourceIds = Array.from(new Set([
+        ...(Array.isArray(cleanTask.active_source_ids) ? cleanTask.active_source_ids : []),
+        ...(Array.isArray(cleanTask.source_ids) ? cleanTask.source_ids : []),
+        cleanTask.source_id,
+      ].map((value: unknown) => String(value || '').trim()).filter(Boolean))).slice(0, 2)
+      const readOnlyMediaSourceIds = canonicalReadOnlyMediaSourceIds.length
+        ? canonicalReadOnlyMediaSourceIds
+        : directReadOnlyMediaSourceIds
       const sanitizedTurnoverDisplay = isWorkRecord && cleanTask.turnover_display
         ? {
             ...cleanTask.turnover_display,
-            old_code: null,
-            new_code: null,
+            old_code: readOnlyViews.lock_codes ? cleanTask.turnover_display.old_code ?? null : null,
+            new_code: readOnlyViews.lock_codes ? cleanTask.turnover_display.new_code ?? null : null,
             guest_request_checkout: null,
             guest_request_checkin: null,
             guest_request_summary: null,
@@ -9764,8 +10116,8 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
       const responseTask = isWorkRecord
         ? {
             ...cleanTask,
-            old_code: null,
-            new_code: null,
+            old_code: readOnlyViews.lock_codes ? cleanTask.old_code ?? null : null,
+            new_code: readOnlyViews.lock_codes ? cleanTask.new_code ?? null : null,
             guest_special_request: null,
             guest_request_checkout: null,
             guest_request_checkin: null,
@@ -9776,12 +10128,19 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             property: cleanTask.property
               ? {
                   ...cleanTask.property,
-                  access_guide_link: null,
-                  wifi_ssid: null,
-                  wifi_password: null,
-                  router_location: null,
+                  access_guide_link: readOnlyViews.property_access ? cleanTask.property.access_guide_link : null,
+                  wifi_ssid: readOnlyViews.property_access ? cleanTask.property.wifi_ssid : null,
+                  wifi_password: readOnlyViews.property_access ? cleanTask.property.wifi_password : null,
+                  router_location: readOnlyViews.property_access ? cleanTask.property.router_location : null,
                 }
               : null,
+            read_only_views: {
+              ...readOnlyViews,
+              media_source_ids: cleanTask.source_type === 'cleaning_tasks'
+                && (readOnlyViews.cleaner_photos || readOnlyViews.inspection_photos || readOnlyViews.guest_key_photo)
+                ? readOnlyMediaSourceIds
+                : [],
+            },
           }
         : cleanTask
       const maintenanceWorkflow0 = maintenanceWorkflowForWorkTask(taskWithParticipants, user, canManageMaintenanceWorkflow)

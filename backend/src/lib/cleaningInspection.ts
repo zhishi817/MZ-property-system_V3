@@ -40,6 +40,64 @@ function inspectionDayOnly(value: any): string | null {
   return /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : null
 }
 
+function melbourneDayOnly(value: any): string | null {
+  const date = new Date(String(value || ''))
+  if (!Number.isFinite(date.getTime())) return null
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Australia/Melbourne',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date)
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  return inspectionDayOnly(`${byType.year}-${byType.month}-${byType.day}`)
+}
+
+/**
+ * A queued mobile submission can be persisted after midnight even though all
+ * of its immutable media was captured on the task's scheduled business day.
+ * In that narrow, evidence-backed case the record belongs to the task day;
+ * otherwise the actual persisted execution time remains authoritative.  This
+ * deliberately does not infer a date from room, status, or upload latency.
+ */
+export function cleaningExecutionBusinessDate(params: {
+  taskDate?: any
+  performedAt?: any
+  evidenceCapturedAt?: any[] | null
+}): string | null {
+  const taskDate = inspectionDayOnly(params.taskDate)
+  const performedDate = melbourneDayOnly(params.performedAt)
+  const captured = Array.isArray(params.evidenceCapturedAt) ? params.evidenceCapturedAt : []
+  if (!taskDate || !captured.length) return performedDate
+  const capturedDates = captured.map(melbourneDayOnly)
+  if (capturedDates.some((date) => !date) || capturedDates.some((date) => date !== taskDate)) return performedDate
+  return taskDate
+}
+
+/** SQL equivalent of `cleaningExecutionBusinessDate` for immutable action
+ * audits. The alias is restricted to a plain SQL identifier because callers
+ * use this inside candidate/date predicates. */
+export function cleaningAuditBusinessDateSql(alias = 'audit'): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(alias)) throw new Error('invalid audit alias')
+  const evidence = `CASE WHEN jsonb_typeof(${alias}.metadata->'evidence_snapshot') = 'array' THEN ${alias}.metadata->'evidence_snapshot' ELSE '[]'::jsonb END`
+  const scheduled = `${alias}.metadata#>>'{task_snapshot,scheduled_service_date}'`
+  return `CASE
+    WHEN ${scheduled} ~ '^\\d{4}-\\d{2}-\\d{2}$'
+      AND jsonb_array_length(${evidence}) > 0
+      AND NOT EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements(${evidence}) evidence_item
+        WHERE CASE
+          WHEN COALESCE(evidence_item->>'captured_at', '') ~ '^\\d{4}-\\d{2}-\\d{2}[T ]'
+            THEN (((evidence_item->>'captured_at')::timestamptz AT TIME ZONE 'Australia/Melbourne')::date)::text
+          ELSE ''
+        END <> ${scheduled}
+      )
+      THEN (${scheduled})::date
+    ELSE (${alias}.performed_at AT TIME ZONE 'Australia/Melbourne')::date
+  END`
+}
+
 export function resolveBoardInspectionDueDate(params: {
   inspectionMode: InspectionMode
   requestedDueDate?: any
@@ -169,6 +227,28 @@ export type CanonicalCleaningTurnoverPair = {
   business_identity: string
 }
 
+function cleaningSourceId(task: any): string {
+  return String(task?.__raw_id || task?.source_id || task?.id || '').trim()
+}
+
+function explicitCheckoutLinkPair(checkout: any, checkin: any): boolean {
+  const checkoutId = cleaningSourceId(checkout)
+  const checkinId = cleaningSourceId(checkin)
+  const linkedCheckoutId = String(checkin?.linked_checkout_task_id || '').trim()
+  const checkoutPropertyId = String(checkout?.property_id || checkout?.__prop_id || '').trim()
+  const checkinPropertyId = String(checkin?.property_id || checkin?.__prop_id || '').trim()
+  const checkoutTaskDate = inspectionDayOnly(checkout?.task_date ?? checkout?.date ?? checkout?.__date)
+  const checkinTaskDate = inspectionDayOnly(checkin?.task_date ?? checkin?.date ?? checkin?.__date)
+  return !!checkoutId
+    && !!checkinId
+    && checkoutId !== checkinId
+    && linkedCheckoutId === checkoutId
+    && !!checkoutPropertyId
+    && checkoutPropertyId === checkinPropertyId
+    && !!checkoutTaskDate
+    && checkoutTaskDate === checkinTaskDate
+}
+
 /**
  * Returns only unambiguous booking-boundary pairs.  Property/date is checked
  * as part of the boundary contract but is never the identity by itself.
@@ -184,11 +264,14 @@ export function canonicalCleaningTurnoverPairs(tasks: any[]): CanonicalCleaningT
       if (sourceIds.length !== 2) continue
       const checkoutOrderId = String(checkout?.order_id || '').trim()
       const checkinOrderId = String(checkin?.order_id || '').trim()
+      const explicitlyLinked = explicitCheckoutLinkPair(checkout, checkin)
       candidates.push({
         checkout,
         checkin,
         source_ids: [sourceIds[0], sourceIds[1]],
-        business_identity: `turnover:${checkoutOrderId}:${checkinOrderId}`,
+        business_identity: explicitlyLinked
+          ? `turnover_link:${sourceIds[0]}:${sourceIds[1]}`
+          : `turnover:${checkoutOrderId}:${checkinOrderId}`,
       })
     }
   }
@@ -216,10 +299,10 @@ export function cleaningTaskBusinessIdentity(params: {
 }
 
 /**
- * A two-source key-handover fact may only be shared by the canonical booking
- * boundary for one turnover: one checkout task tied to the outgoing order's
- * checkout date and one check-in task tied to the incoming order's check-in
- * date.  Room/date/assignee grouping alone is deliberately insufficient.
+ * A two-source key-handover fact may only be shared by one reliable turnover:
+ * either an explicit same-property/same-date check-in -> checkout relation, or
+ * the canonical booking boundary between two distinct orders. Room/date/
+ * assignee grouping alone is deliberately insufficient.
  */
 export function canonicalKeyHandoverSourceIds(tasks: any[]): string[] {
   const rows = (Array.isArray(tasks) ? tasks : []).filter(Boolean)
@@ -228,14 +311,16 @@ export function canonicalKeyHandoverSourceIds(tasks: any[]): string[] {
     const sourceId = String(rows[0]?.__raw_id || rows[0]?.source_id || rows[0]?.id || '').trim()
     return sourceId ? [sourceId] : []
   }
-  if (rows.length !== 2 || rows.some((row) => String(row?.__work_record_state || '').trim())) return []
+  if (rows.length !== 2
+    || rows.some((row) => String(row?.__work_record_state || '').trim())
+    || rows.some((row) => !isActiveCleaningTurnoverCandidate(row))) return []
 
   const checkout = rows.find((row) => cleaningInspectionTaskKind(row?.task_type ?? row?.type) === 'checkout')
   const checkin = rows.find((row) => cleaningInspectionTaskKind(row?.task_type ?? row?.type) === 'checkin')
   if (!checkout || !checkin) return []
 
-  const checkoutId = String(checkout?.__raw_id || checkout?.source_id || checkout?.id || '').trim()
-  const checkinId = String(checkin?.__raw_id || checkin?.source_id || checkin?.id || '').trim()
+  const checkoutId = cleaningSourceId(checkout)
+  const checkinId = cleaningSourceId(checkin)
   const checkoutOrderId = String(checkout?.order_id || '').trim()
   const checkinOrderId = String(checkin?.order_id || '').trim()
   const checkoutPropertyId = String(checkout?.property_id || checkout?.__prop_id || '').trim()
@@ -246,6 +331,7 @@ export function canonicalKeyHandoverSourceIds(tasks: any[]): string[] {
   const incomingCheckinDate = inspectionDayOnly(checkin?.order_checkin)
 
   if (!checkoutId || !checkinId || checkoutId === checkinId) return []
+  if (explicitCheckoutLinkPair(checkout, checkin)) return [checkoutId, checkinId]
   if (!checkoutOrderId || !checkinOrderId || checkoutOrderId === checkinOrderId) return []
   if (!checkoutPropertyId || checkoutPropertyId !== checkinPropertyId) return []
   if (!checkoutTaskDate || checkoutTaskDate !== checkinTaskDate) return []

@@ -7,7 +7,7 @@ import { activeCleaningTaskWhereSql, backfillCleaningTasks, ensureCleaningSchema
 import { v4 as uuid } from 'uuid'
 import { emitNotificationEvent } from '../services/notificationEvents'
 import { buildCleaningTaskVisibilityHints, buildMz031CleaningArrangementRevision, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
-import { defaultInspectionModeForTaskType, deferredProjectionDate, effectiveInspectionMode, normalizeInspectionMode, normalizeInspectionScope } from '../lib/cleaningInspection'
+import { canonicalCleaningTurnoverPairs, defaultInspectionModeForTaskType, deferredProjectionDate, effectiveInspectionMode, normalizeInspectionMode, normalizeInspectionScope } from '../lib/cleaningInspection'
 import { buildWebTaskCapabilityPayload } from '../lib/webTaskCapabilities'
 import { assignedStatusFromAssignees, isCheckinSiteExecutionTask } from '../lib/cleaningAssignmentStatus'
 import { buildCleaningTurnoverDisplay } from '../lib/cleaningTurnoverDisplay'
@@ -47,6 +47,49 @@ function dayOnly(s?: any): string | null {
 }
 
 const TURNOVER_INSPECTION_SCOPE_CONFLICT = 'turnover_requires_inspect_and_hang'
+const MANUAL_CHECKIN_LINK_CONFLICT = 'manual_checkin_checkout_link_conflict'
+
+class ManualCheckinLinkConflict extends Error {
+  readonly code = MANUAL_CHECKIN_LINK_CONFLICT
+  readonly status = 409
+  constructor(message: string) {
+    super(message)
+    this.name = 'ManualCheckinLinkConflict'
+  }
+}
+
+function assertManualCheckinCheckoutLink(params: {
+  linkedCheckoutTaskId: string | null
+  createdTypes: string[]
+  propertyId: string
+  taskDate: string
+  checkoutTask: any | null
+  activeCheckinRows: any[]
+}) {
+  const linkedCheckoutTaskId = String(params.linkedCheckoutTaskId || '').trim()
+  if (!linkedCheckoutTaskId) return null
+  if (params.createdTypes.length !== 1 || params.createdTypes[0] !== 'checkin_clean') {
+    throw new ManualCheckinLinkConflict('只有单独新增入住任务可以关联退房任务')
+  }
+  const checkout = params.checkoutTask
+  if (!checkout || !String(checkout.id || '').trim()) throw new ManualCheckinLinkConflict('关联的退房任务不存在或已失效')
+  const checkoutType = String(checkout.task_type ?? checkout.type ?? '').trim().toLowerCase()
+  const checkoutState = String(checkout.execution_state || '').trim().toLowerCase()
+  const checkoutStatus = String(checkout.status || '').trim().toLowerCase()
+  if (checkoutType !== 'checkout_clean'
+    || ['cancelled', 'canceled', 'superseded', 'deleted'].includes(checkoutState)
+    || ['cancelled', 'canceled'].includes(checkoutStatus)) {
+    throw new ManualCheckinLinkConflict('关联的退房任务不是有效的退房任务')
+  }
+  if (String(checkout.property_id || '').trim() !== String(params.propertyId || '').trim()
+    || dayOnly(checkout.task_date ?? checkout.date) !== dayOnly(params.taskDate)) {
+    throw new ManualCheckinLinkConflict('入住与退房必须属于同一房源和同一业务日期')
+  }
+  const conflicts = (Array.isArray(params.activeCheckinRows) ? params.activeCheckinRows : [])
+    .filter((row) => String(row.id || '').trim())
+  if (conflicts.length) throw new ManualCheckinLinkConflict('该退房任务已有有效入住任务，不能重复关联')
+  return linkedCheckoutTaskId
+}
 
 function turnoverInspectionScopeTarget(current: any, patch: any = {}) {
   const taskKind = String(patch?.task_type ?? current?.task_type ?? current?.type ?? '').trim().toLowerCase()
@@ -1621,6 +1664,7 @@ const createTaskSchema = z.object({
   nights_override: z.union([z.number().int().nonnegative(), z.null()]).optional(),
   guest_special_request: z.union([z.string(), z.null()]).optional(),
   note: z.union([z.string(), z.null()]).optional(),
+  linked_checkout_task_id: z.union([z.string().min(1), z.null()]).optional(),
 }).strict()
 
 router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSchema, async (req, res) => {
@@ -1690,12 +1734,51 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
       source: 'manual',
       execution_state: 'active',
       manual_task_purpose: null,
+      linked_checkout_task_id: null,
     }
     if (hasPg && pgPool) {
       await ensureCleaningSchemaV2()
       const client = await pgPool.connect()
       try {
         await client.query('BEGIN')
+        const linkedCheckoutTaskId = String((parsed.data as any).linked_checkout_task_id || '').trim() || null
+        if (linkedCheckoutTaskId) {
+          // All turnover mutations take the same advisory lock before any
+          // cleaning_tasks row lock. This matches order sync and prevents a
+          // row->advisory / advisory->row deadlock during concurrent linking.
+          await lockCleaningTurnoverKey(client, normalizedPropertyId, parsed.data.task_date)
+          const checkoutRes = await client.query(
+            'SELECT * FROM cleaning_tasks WHERE id::text=$1 LIMIT 1 FOR UPDATE',
+            [linkedCheckoutTaskId],
+          )
+          const checkoutTask = checkoutRes?.rows?.[0] || null
+          const sameDayRes = await client.query(
+            `SELECT t.*, o.checkin AS order_checkin, o.checkout AS order_checkout
+             FROM cleaning_tasks t
+             LEFT JOIN orders o ON o.id::text=t.order_id::text
+             WHERE t.property_id::text=$1
+               AND COALESCE(t.task_date, t.date)::date=$2::date
+               AND ${activeCleaningTaskWhereSql('t')}
+             FOR UPDATE OF t`,
+            [normalizedPropertyId, parsed.data.task_date],
+          )
+          const sameDayRows = sameDayRes?.rows || []
+          const activeLinked = sameDayRows.filter((row: any) => (
+            String(row.linked_checkout_task_id || '').trim() === linkedCheckoutTaskId
+            && String(row.task_type ?? row.type ?? '').trim().toLowerCase() === 'checkin_clean'
+          ))
+          const canonicalConflict = canonicalCleaningTurnoverPairs(sameDayRows)
+            .some((pair) => pair.source_ids.includes(linkedCheckoutTaskId))
+          assertManualCheckinCheckoutLink({
+            linkedCheckoutTaskId,
+            createdTypes: types,
+            propertyId: normalizedPropertyId,
+            taskDate: parsed.data.task_date,
+            checkoutTask,
+            activeCheckinRows: canonicalConflict ? [checkoutTask, ...activeLinked] : activeLinked,
+          })
+          base.linked_checkout_task_id = linkedCheckoutTaskId
+        }
         for (const tt of types) {
           const row: any = {
             id: uuid(),
@@ -1723,7 +1806,7 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
             sourceRefIds: [String(created.id)],
             eventType: 'TASK_CREATED',
             changeScope: 'list',
-            changedFields: ['task_type', 'task_date', 'date', 'status', 'assignee_id', 'cleaner_id', 'inspector_id', 'scheduled_at', 'property_id'],
+            changedFields: ['task_type', 'task_date', 'date', 'status', 'assignee_id', 'cleaner_id', 'inspector_id', 'scheduled_at', 'property_id', 'linked_checkout_task_id'],
             patch: {
               id: created.id,
               task_type: created.task_type,
@@ -1735,6 +1818,7 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
               inspector_id: created.inspector_id,
               scheduled_at: created.scheduled_at,
               property_id: created.property_id,
+              linked_checkout_task_id: created.linked_checkout_task_id ?? null,
             },
             causedByUserId: String((req as any)?.user?.sub || '').trim() || null,
             visibilityHints: buildCleaningTaskVisibilityHints(created),
@@ -1788,6 +1872,31 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
       if (createdRows.length === 1) return res.json(createdRows[0])
       return res.json({ ok: true, created: createdRows.length })
     }
+    const linkedCheckoutTaskId = String((parsed.data as any).linked_checkout_task_id || '').trim() || null
+    if (linkedCheckoutTaskId) {
+      const sameDayRows = (db.cleaningTasks as any[]).filter((row) => (
+        String(row.property_id || '').trim() === normalizedPropertyId
+        && dayOnly(row.task_date ?? row.date) === parsed.data.task_date
+        && !['cancelled', 'canceled', 'superseded', 'deleted'].includes(String(row.execution_state || '').trim().toLowerCase())
+        && !['cancelled', 'canceled'].includes(String(row.status || '').trim().toLowerCase())
+      ))
+      const checkoutTask = sameDayRows.find((row) => String(row.id || '').trim() === linkedCheckoutTaskId) || null
+      const activeLinked = sameDayRows.filter((row) => (
+        String(row.linked_checkout_task_id || '').trim() === linkedCheckoutTaskId
+        && String(row.task_type ?? row.type ?? '').trim().toLowerCase() === 'checkin_clean'
+      ))
+      const canonicalConflict = canonicalCleaningTurnoverPairs(sameDayRows)
+        .some((pair) => pair.source_ids.includes(linkedCheckoutTaskId))
+      assertManualCheckinCheckoutLink({
+        linkedCheckoutTaskId,
+        createdTypes: types,
+        propertyId: normalizedPropertyId,
+        taskDate: parsed.data.task_date,
+        checkoutTask,
+        activeCheckinRows: canonicalConflict ? [checkoutTask, ...activeLinked] : activeLinked,
+      })
+      base.linked_checkout_task_id = linkedCheckoutTaskId
+    }
     for (const tt of types) {
       const row: any = {
         id: uuid(),
@@ -1805,6 +1914,7 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
     if (createdRows.length === 1) return res.json(createdRows[0])
     return res.json({ ok: true, created: createdRows.length })
   } catch (e: any) {
+    if (e instanceof ManualCheckinLinkConflict) return res.status(e.status).json({ code: e.code, message: e.message })
     if (sendTurnoverInspectionScopeConflict(res, e)) return
     const conflict = inspectionAssignmentConflictPayload(e)
     if (conflict) return res.status(409).json(conflict)
@@ -2340,6 +2450,7 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
            COALESCE(p_id.code::text, p_code.code::text) AS property_code,
            COALESCE(p_id.region::text, p_code.region::text) AS property_region,
            t.task_type,
+           t.linked_checkout_task_id,
            COALESCE(t.task_date, t.date)::text AS task_date,
            t.status,
            t.assignee_id,
@@ -2515,6 +2626,9 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
           source: 'cleaning_tasks' as const,
           order_id: row.order_id ? String(row.order_id) : null,
           order_code: row.order_code ? String(row.order_code) : null,
+          order_checkin: row.order_checkin ? String(row.order_checkin).slice(0, 10) : null,
+          order_checkout: row.order_checkout ? String(row.order_checkout).slice(0, 10) : null,
+          linked_checkout_task_id: row.linked_checkout_task_id ? String(row.linked_checkout_task_id) : null,
           property_id: row.property_id ? String(row.property_id) : null,
           property_code: row.property_code ? String(row.property_code) : null,
           property_region: row.property_region ? String(row.property_region) : null,

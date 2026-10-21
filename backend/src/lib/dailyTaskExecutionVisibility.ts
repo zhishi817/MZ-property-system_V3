@@ -41,6 +41,7 @@ export type DailyTaskWorkRecordProjection = {
 
 export type DailyTaskRoleRecordEvidence = {
   performedAt: string
+  recordDate?: string | null
   actorUserId: string | null
   actorName?: string | null
 }
