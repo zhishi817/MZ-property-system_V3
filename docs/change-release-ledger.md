@@ -49,16 +49,17 @@
 - Selected CRL identities: `root/CRL-20261021-001`, `root/CRL-20261021-002`, `root/CRL-20261021-003`
 - Intended action: `commit`, then authorized normal update of the existing Draft PR #413 branch
 - Branch: `codex/mz054-061-unified-fixes`
-- Base: `origin/Dev@65a9d218d803813ed458c25406493aee70189da5`
+- Base: `origin/Dev@65a9d218d803813ed458c25406493aee70189da5`; fetched at `2026-10-21 04:49 UTC`
 - Candidate patch SHA-256: `731f1a3a89b895ffb6713b68267cf93b7199d2da40f1eae9dd65f5ee73dd7ea3`, excluding `docs/change-release-ledger.md`; includes the previously reviewed MZ054–MZ061 runtime candidate plus this test-only assertion repair.
-- Dependencies: paired Mobile Draft PR #63 at `4d2cdb923973db562b63df7ec1224ac9017686a0`; Root must deploy before any Mobile release. No deployment or release is authorized here.
-- Required validation: focused daily projection and daily execution statistics contracts PASS; staged ledger gate and diff check PASS before review. Local full CI is incomplete only because loopback binding was sandbox-denied; the full GitHub PR CI rerun is required before merge.
+- Commit SHA: `32d5c807c5ec7c9a97e7d7d630fe3ccf19ab148e`; exact test-only repair content commit, with the final audit head supplied by a later ledger-only receipt commit.
+- Dependencies: `mobile/CRL-20261021-002@7e8dec413dc8cee437d7d079cfd8d4dc22b7201c`
+- Required validation: PASS for the local test-only repair; evidence: focused daily projection and daily execution statistics contracts, staged ledger gate and diff check passed. Local full CI is incomplete only because loopback binding was sandbox-denied; the full GitHub PR CI rerun is required before merge.
 - Shared-hunk review: PASS for this repair; runtime source is unchanged, MZ062 remains absent, and the only non-ledger staged hunk updates the obsolete test expectation.
 - Generated-file review: PASS; no generated, dependency, lockfile, binary, secret or production payload is selected.
-- Technical state: `selected-for-commit`; push/PR update and cloud CI are not yet verified.
+- Technical state: `committed`; push/PR update and cloud CI are not yet verified.
 - User authorization: `approved-for-push`; the user authorized fixing in-scope CI failures and updating the same Draft PR until pass or an exact blocker.
 - Independent review: `GO for this test-only repair`; reviewer matched the two-file staged scope, confirmed the old property/date assertion was obsolete, found P0=0/P1=0, and retained the separate existing Web Task Center grouping gap as P2 rather than hiding it.
-- Action conclusion: `GO for local commit and normal update of Draft PR #413 after the exact staged gate passes`; no merge, deployment, OTA or production database write is authorized.
+- Action conclusion: `GO for normal update of Draft PR #413 after the exact committed-range report passes`; no merge, deployment, OTA or production database write is authorized.
 
 ### Risks / Release Notes
 
