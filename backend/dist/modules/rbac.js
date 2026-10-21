@@ -12,6 +12,7 @@ const auth_1 = require("../auth");
 const dbAdapter_1 = require("../dbAdapter");
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const permissionsCatalog_1 = require("../permissionsCatalog");
+const r5RequestSchema_1 = require("../lib/r5RequestSchema");
 const notificationRules_1 = require("../services/notificationRules");
 const appNotificationPolicies_1 = require("../services/appNotificationPolicies");
 exports.router = (0, express_1.Router)();
@@ -100,7 +101,6 @@ async function resolveRolePermissionBinding(rawRoleId) {
     let targetRoleId = normalizedId;
     if (dbAdapter_1.hasPg) {
         try {
-            await ensureRolesTable();
             const { pgPool } = require('../dbAdapter');
             if (pgPool) {
                 const found = await pgPool.query('SELECT id, name FROM roles WHERE id = ANY($1::text[]) OR name = ANY($1::text[]) LIMIT 1', [Array.from(variants)]);
@@ -124,26 +124,8 @@ async function resolveRolePermissionBinding(rawRoleId) {
     }
     return { normalizedId, altId, targetRoleId, variants: Array.from(variants) };
 }
-async function ensureRolesTable() {
-    if (!dbAdapter_1.hasPg)
-        return;
-    try {
-        const { pgPool } = require('../dbAdapter');
-        if (!pgPool)
-            return;
-        await pgPool.query(`CREATE TABLE IF NOT EXISTS roles (
-      id text PRIMARY KEY,
-      name text NOT NULL,
-      description text,
-      created_at timestamptz DEFAULT now()
-    );`);
-        await pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS uniq_roles_name ON roles(name);');
-    }
-    catch (_a) { }
-}
 async function listRbacRoles() {
     if (dbAdapter_1.hasPg) {
-        await ensureRolesTable();
         const rows = await (0, dbAdapter_1.pgSelect)('roles', '*') || [];
         return rows.map((x) => ({
             id: String(x.id || ''),
@@ -184,10 +166,9 @@ async function listRbacUsers() {
         roles: [String(x.role || '')].filter(Boolean),
     }));
 }
-exports.router.get('/roles', async (_req, res) => {
+exports.router.get('/roles', r5RequestSchema_1.requireR5TaskRuntimeSchema, async (_req, res) => {
     try {
         if (dbAdapter_1.hasPg) {
-            await ensureRolesTable();
             let rows = await (0, dbAdapter_1.pgSelect)('roles', '*') || [];
             if (!rows || rows.length === 0) {
                 try {
@@ -211,7 +192,7 @@ const roleCreateSchema = zod_1.z.object({
     name: zod_1.z.string().min(1).max(64).transform((s) => s.trim()),
     description: zod_1.z.string().max(200).optional().transform((s) => (typeof s === 'string' ? s.trim() : s)),
 });
-exports.router.post('/roles', (0, auth_1.requirePerm)('rbac.manage'), async (req, res) => {
+exports.router.post('/roles', (0, auth_1.requirePerm)('rbac.manage'), r5RequestSchema_1.requireR5TaskRuntimeSchema, async (req, res) => {
     const parsed = roleCreateSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -221,7 +202,6 @@ exports.router.post('/roles', (0, auth_1.requirePerm)('rbac.manage'), async (req
     const role = { id: `role.${name}`, name, description: parsed.data.description || undefined };
     try {
         if (dbAdapter_1.hasPg) {
-            await ensureRolesTable();
             try {
                 const created = await (0, dbAdapter_1.pgInsert)('roles', role);
                 return res.status(201).json(created || role);
@@ -252,7 +232,7 @@ const roleUpdateSchema = zod_1.z.object({
     name: zod_1.z.string().min(1).max(64).optional().transform((s) => (typeof s === 'string' ? s.trim() : s)),
     description: zod_1.z.string().max(200).optional().transform((s) => (typeof s === 'string' ? s.trim() : s)),
 });
-exports.router.patch('/roles/:id', (0, auth_1.requirePerm)('rbac.manage'), async (req, res) => {
+exports.router.patch('/roles/:id', (0, auth_1.requirePerm)('rbac.manage'), r5RequestSchema_1.requireR5TaskRuntimeSchema, async (req, res) => {
     var _a, _b;
     const parsed = roleUpdateSchema.safeParse(req.body);
     if (!parsed.success)
@@ -268,7 +248,6 @@ exports.router.patch('/roles/:id', (0, auth_1.requirePerm)('rbac.manage'), async
     }
     try {
         if (dbAdapter_1.hasPg) {
-            await ensureRolesTable();
             const { pgPool } = require('../dbAdapter');
             if (!pgPool)
                 return res.status(500).json({ message: 'database not available' });
@@ -302,12 +281,6 @@ exports.router.patch('/roles/:id', (0, auth_1.requirePerm)('rbac.manage'), async
                     }
                     catch (_c) { }
                     try {
-                        await client.query(`CREATE TABLE IF NOT EXISTS user_roles (
-                user_id text NOT NULL,
-                role_name text NOT NULL,
-                created_at timestamptz NOT NULL DEFAULT now(),
-                PRIMARY KEY (user_id, role_name)
-              );`);
                         await client.query('UPDATE user_roles SET role_name=$1 WHERE role_name=$2', [newName, oldName]);
                     }
                     catch (_d) { }
@@ -322,6 +295,10 @@ exports.router.patch('/roles/:id', (0, auth_1.requirePerm)('rbac.manage'), async
                 }
                 const after = await client.query('SELECT * FROM roles WHERE id = $1 LIMIT 1', [newId]);
                 await client.query('COMMIT');
+                if (newId !== oldId) {
+                    (0, auth_1.clearAllRoleSnapshots)();
+                    (0, auth_1.clearPermissionCacheForRoles)([oldId, oldId.replace(/^role\./, ''), oldName, newId, newName]);
+                }
                 return res.json(((_b = after === null || after === void 0 ? void 0 : after.rows) === null || _b === void 0 ? void 0 : _b[0]) || { ...old, ...payload, id: newId, name: newName });
             }
             catch (e) {
@@ -360,6 +337,8 @@ exports.router.patch('/roles/:id', (0, auth_1.requirePerm)('rbac.manage'), async
             (0, persistence_1.saveRolePermissions)(store_1.db.rolePermissions);
         }
         catch (_g) { }
+        (0, auth_1.clearAllRoleSnapshots)();
+        (0, auth_1.clearPermissionCacheForRoles)([oldId, oldId.replace(/^role\./, ''), oldName, newId, newName]);
     }
     try {
         (0, persistence_1.saveRoles)(store_1.db.roles);
@@ -367,7 +346,7 @@ exports.router.patch('/roles/:id', (0, auth_1.requirePerm)('rbac.manage'), async
     catch (_h) { }
     return res.json(store_1.db.roles[idx]);
 });
-exports.router.delete('/roles/:id', (0, auth_1.requirePerm)('rbac.manage'), async (req, res) => {
+exports.router.delete('/roles/:id', (0, auth_1.requirePerm)('rbac.manage'), r5RequestSchema_1.requireR5TaskRuntimeSchema, async (req, res) => {
     var _a, _b, _c;
     const reqId = String(req.params.id || '').trim();
     if (!reqId)
@@ -376,7 +355,6 @@ exports.router.delete('/roles/:id', (0, auth_1.requirePerm)('rbac.manage'), asyn
     const altId = reqId.startsWith('role.') ? reqId.replace(/^role\./, '') : reqId;
     try {
         if (dbAdapter_1.hasPg) {
-            await ensureRolesTable();
             const { pgPool } = require('../dbAdapter');
             if (!pgPool)
                 return res.status(500).json({ message: 'database not available' });
@@ -405,6 +383,8 @@ exports.router.delete('/roles/:id', (0, auth_1.requirePerm)('rbac.manage'), asyn
                 catch (_e) { }
                 await client.query('DELETE FROM roles WHERE id = $1', [roleId]);
                 await client.query('COMMIT');
+                (0, auth_1.clearAllRoleSnapshots)();
+                (0, auth_1.clearPermissionCacheForRoles)(variants);
                 return res.json({ ok: true });
             }
             catch (e) {
@@ -444,6 +424,8 @@ exports.router.delete('/roles/:id', (0, auth_1.requirePerm)('rbac.manage'), asyn
         (0, persistence_1.saveRoles)(store_1.db.roles);
     }
     catch (_h) { }
+    (0, auth_1.clearAllRoleSnapshots)();
+    (0, auth_1.clearPermissionCacheForRoles)(Array.from(variants));
     return res.json({ ok: true });
 });
 exports.router.get('/permissions', (req, res) => {
@@ -453,7 +435,7 @@ exports.router.get('/permissions', (req, res) => {
         return { ...p, name: (p === null || p === void 0 ? void 0 : p.name) || meta.displayName, meta };
     }));
 });
-exports.router.get('/role-permissions', async (req, res) => {
+exports.router.get('/role-permissions', r5RequestSchema_1.requireR5TaskRuntimeSchema, async (req, res) => {
     const { role_id } = req.query;
     try {
         if (dbAdapter_1.hasPg) {
@@ -532,7 +514,10 @@ exports.router.put('/notification-rules/:eventType', (0, auth_1.requirePerm)('rb
         return res.json(saved);
     }
     catch (e) {
-        return res.status(500).json({ message: String((e === null || e === void 0 ? void 0 : e.message) || 'save_failed') });
+        const message = String((e === null || e === void 0 ? void 0 : e.message) || 'save_failed');
+        if (message === 'task_notification_selector_must_use_task_audience_or_manager_role')
+            return res.status(400).json({ message });
+        return res.status(500).json({ message });
     }
 });
 exports.router.post('/notification-rules/:eventType/reset', (0, auth_1.requirePerm)('rbac.manage'), async (req, res) => {
@@ -593,7 +578,10 @@ exports.router.put('/app-notification-policies/:policyKey', (0, auth_1.requirePe
         return res.json(await (0, appNotificationPolicies_1.saveAppNotificationPolicy)(policyKey, parsed.data, String(((_a = req === null || req === void 0 ? void 0 : req.user) === null || _a === void 0 ? void 0 : _a.sub) || '').trim() || null));
     }
     catch (e) {
-        return res.status(500).json({ message: String((e === null || e === void 0 ? void 0 : e.message) || 'save_failed') });
+        const message = String((e === null || e === void 0 ? void 0 : e.message) || 'save_failed');
+        if (message === 'app_notification_extra_users_must_be_managers')
+            return res.status(400).json({ message });
+        return res.status(500).json({ message });
     }
 });
 exports.router.post('/app-notification-policies/:policyKey/reset', (0, auth_1.requirePerm)('rbac.manage'), async (req, res) => {
@@ -609,7 +597,7 @@ exports.router.post('/app-notification-policies/:policyKey/reset', (0, auth_1.re
     }
 });
 const setSchema = zod_1.z.object({ role_id: zod_1.z.string(), permissions: zod_1.z.array(zod_1.z.string().min(1)) });
-exports.router.post('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'), async (req, res) => {
+exports.router.post('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'), r5RequestSchema_1.requireR5TaskRuntimeSchema, async (req, res) => {
     const parsed = setSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -628,6 +616,7 @@ exports.router.post('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'),
         'menu.finance.orders.visible': ['order'],
         'menu.finance.company_overview.visible': ['finance_transactions', 'order', 'properties', 'property_expenses'],
         'menu.finance.company_revenue.visible': ['company_incomes', 'company_expenses'],
+        'menu.finance.personnel_settlements.visible': ['personnel_settlements'],
         'menu.cms.visible': ['cms_pages'],
         'menu.cms.company.visible': ['cms_pages'],
         'menu.cms.public_resources.visible': ['cms_pages'],
@@ -682,21 +671,6 @@ exports.router.post('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'),
                 console.log(`[RBAC] write start env=${process.env.NODE_ENV} hasPg=${dbAdapter_1.hasPg} host=${host} db=${dbname} role_id=${role_id} count=${set.size}`);
             }
             catch (_b) { }
-            try {
-                const { pgPool } = require('../dbAdapter');
-                if (pgPool) {
-                    await pgPool.query(`CREATE TABLE IF NOT EXISTS role_permissions (
-            id text PRIMARY KEY,
-            role_id text NOT NULL,
-            permission_code text NOT NULL,
-            created_at timestamptz DEFAULT now()
-          );`);
-                    await pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS uniq_role_perm ON role_permissions(role_id, permission_code);');
-                }
-            }
-            catch (e) {
-                console.error(`[RBAC] schema ensure error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')} stack=${String((e === null || e === void 0 ? void 0 : e.stack) || '')}`);
-            }
             const { pgPool } = require('../dbAdapter');
             const { v4: uuid } = require('uuid');
             if (!pgPool) {
@@ -748,7 +722,7 @@ exports.router.post('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'),
     catch (_d) { }
     res.json({ ok: true });
 });
-exports.router.delete('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'), async (req, res) => {
+exports.router.delete('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'), r5RequestSchema_1.requireR5TaskRuntimeSchema, async (req, res) => {
     var _a;
     const role_id = String(((_a = req.query) === null || _a === void 0 ? void 0 : _a.role_id) || '').trim();
     if (!role_id)
@@ -759,16 +733,6 @@ exports.router.delete('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'
             const { pgPool } = require('../dbAdapter');
             if (!pgPool)
                 return res.status(500).json({ message: 'database not available' });
-            try {
-                await pgPool.query(`CREATE TABLE IF NOT EXISTS role_permissions (
-          id text PRIMARY KEY,
-          role_id text NOT NULL,
-          permission_code text NOT NULL,
-          created_at timestamptz DEFAULT now()
-        );`);
-                await pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS uniq_role_perm ON role_permissions(role_id, permission_code);');
-            }
-            catch (_b) { }
             await pgPool.query('DELETE FROM role_permissions WHERE role_id = ANY($1::text[])', [binding.variants]);
             (0, auth_1.clearPermissionCacheForRoles)(binding.variants);
             return res.json({ ok: true });
@@ -784,11 +748,11 @@ exports.router.delete('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'
         if (!dbAdapter_1.hasPg)
             (0, persistence_1.saveRolePermissions)(store_1.db.rolePermissions);
     }
-    catch (_c) { }
+    catch (_b) { }
     return res.json({ ok: true });
 });
 // current user's permissions
-exports.router.get('/my-permissions', auth_1.auth, async (req, res) => {
+exports.router.get('/my-permissions', auth_1.auth, r5RequestSchema_1.requireR5TaskRuntimeSchema, async (req, res) => {
     var _a;
     const user = req.user;
     if (!user)
@@ -808,7 +772,6 @@ exports.router.get('/my-permissions', auth_1.auth, async (req, res) => {
                 var _a;
                 let roleId = (_a = store_1.db.roles.find(r => r.name === roleName)) === null || _a === void 0 ? void 0 : _a.id;
                 try {
-                    await ensureRolesTable();
                     const rr = (await (0, dbAdapter_1.pgSelect)('roles', 'id,name', { name: roleName })) || [];
                     if (rr && rr[0] && rr[0].id)
                         roleId = String(rr[0].id);
@@ -961,21 +924,6 @@ const userUpdateSchema = zod_1.z.object({
     }
     return out;
 });
-async function ensureUserRolesTable() {
-    if (!dbAdapter_1.hasPg)
-        return;
-    const { pgPool } = require('../dbAdapter');
-    if (!pgPool)
-        return;
-    await pgPool.query(`CREATE TABLE IF NOT EXISTS user_roles (
-      user_id text NOT NULL,
-      role_name text NOT NULL,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      PRIMARY KEY (user_id, role_name)
-    );`);
-    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_user_roles_user_id ON user_roles(user_id);');
-    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_user_roles_role_name ON user_roles(role_name);');
-}
 function normalizeRolesInput(params) {
     var _a;
     const primary = String((_a = params.role) !== null && _a !== void 0 ? _a : '').trim();
@@ -986,13 +934,12 @@ function normalizeRolesInput(params) {
     const uniq = Array.from(new Set(roles));
     return { role: primary, roles: uniq };
 }
-exports.router.get('/users', (0, auth_1.requirePerm)('rbac.manage'), async (_req, res) => {
+exports.router.get('/users', (0, auth_1.requirePerm)('rbac.manage'), r5RequestSchema_1.requireR5TaskRuntimeSchema, async (_req, res) => {
     try {
         if (dbAdapter_1.hasPg) {
             const { pgPool } = require('../dbAdapter');
             if (!pgPool)
                 return res.json([]);
-            await ensureUserRolesTable().catch(() => null);
             const r = await pgPool.query(`SELECT
            u.*,
            COALESCE(
@@ -1013,7 +960,7 @@ exports.router.get('/users', (0, auth_1.requirePerm)('rbac.manage'), async (_req
         return res.status(500).json({ message: e.message });
     }
 });
-exports.router.get('/users/:id', (0, auth_1.requirePerm)('rbac.manage'), async (req, res) => {
+exports.router.get('/users/:id', (0, auth_1.requirePerm)('rbac.manage'), r5RequestSchema_1.requireR5TaskRuntimeSchema, async (req, res) => {
     var _a;
     const id = String(req.params.id || '').trim();
     if (!id)
@@ -1023,7 +970,6 @@ exports.router.get('/users/:id', (0, auth_1.requirePerm)('rbac.manage'), async (
             const { pgPool } = require('../dbAdapter');
             if (!pgPool)
                 return res.status(500).json({ message: 'pg not available' });
-            await ensureUserRolesTable().catch(() => null);
             const r = await pgPool.query(`SELECT
            u.*,
            COALESCE(
@@ -1049,7 +995,7 @@ exports.router.get('/users/:id', (0, auth_1.requirePerm)('rbac.manage'), async (
         return res.status(500).json({ message: e.message });
     }
 });
-exports.router.post('/users', (0, auth_1.requirePerm)('rbac.manage'), async (req, res) => {
+exports.router.post('/users', (0, auth_1.requirePerm)('rbac.manage'), r5RequestSchema_1.requireR5TaskRuntimeSchema, async (req, res) => {
     const parsed = userCreateSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -1062,36 +1008,8 @@ exports.router.post('/users', (0, auth_1.requirePerm)('rbac.manage'), async (req
     try {
         if (dbAdapter_1.hasPg) {
             try {
-                const { pgPool } = require('../dbAdapter');
-                if (pgPool) {
-                    await pgPool.query(`CREATE TABLE IF NOT EXISTS users (
-            id text PRIMARY KEY,
-            username text UNIQUE,
-            email text UNIQUE,
-            phone_au text,
-            password_hash text NOT NULL,
-            role text NOT NULL,
-            color_hex text NOT NULL DEFAULT '#3B82F6',
-            created_at timestamptz DEFAULT now()
-          );`);
-                    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);');
-                    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);');
-                    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_phone_au ON users(phone_au);');
-                    await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS delete_password_hash text;');
-                    await pgPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS color_hex text NOT NULL DEFAULT '#3B82F6';`);
-                    await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_au text;');
-                }
-            }
-            catch (e) {
-                try {
-                    console.error(`[RBAC] ensure users table error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
-                }
-                catch (_a) { }
-            }
-            try {
                 const created = await (0, dbAdapter_1.pgInsert)('users', row);
                 try {
-                    await ensureUserRolesTable();
                     const { pgPool } = require('../dbAdapter');
                     if (pgPool && rolesAll.length) {
                         for (const rn of rolesAll) {
@@ -1099,7 +1017,7 @@ exports.router.post('/users', (0, auth_1.requirePerm)('rbac.manage'), async (req
                         }
                     }
                 }
-                catch (_b) { }
+                catch (_a) { }
                 return res.status(201).json(created || row);
             }
             catch (e) {
@@ -1121,8 +1039,7 @@ exports.router.post('/users', (0, auth_1.requirePerm)('rbac.manage'), async (req
         return res.status(500).json({ message: e.message });
     }
 });
-exports.router.patch('/users/:id', (0, auth_1.requirePerm)('rbac.manage'), async (req, res) => {
-    var _a, _b;
+exports.router.patch('/users/:id', (0, auth_1.requirePerm)('rbac.manage'), r5RequestSchema_1.requireR5TaskRuntimeSchema, async (req, res) => {
     const parsed = userUpdateSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -1135,71 +1052,40 @@ exports.router.patch('/users/:id', (0, auth_1.requirePerm)('rbac.manage'), async
     const { id } = req.params;
     try {
         if (dbAdapter_1.hasPg) {
-            try {
-                const { pgPool } = require('../dbAdapter');
-                if (pgPool) {
-                    await pgPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS color_hex text NOT NULL DEFAULT '#3B82F6';`);
-                    await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_au text;');
-                    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_phone_au ON users(phone_au);');
-                }
-            }
-            catch (_c) { }
             const rolesPayload = payload.roles;
             delete payload.roles;
-            if (rolesPayload !== undefined) {
-                try {
-                    const { pgPool } = require('../dbAdapter');
-                    if (pgPool) {
-                        const cur = await pgPool.query('SELECT role FROM users WHERE id::text=$1 LIMIT 1', [String(id)]);
-                        const curRole = String(((_b = (_a = cur === null || cur === void 0 ? void 0 : cur.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.role) || '').trim();
-                        const norm = normalizeRolesInput({ role: payload.role != null ? payload.role : curRole, roles: rolesPayload });
-                        const nextPrimary = String(payload.role || '').trim() || (norm.roles.includes(curRole) ? curRole : (norm.roles[0] || curRole));
-                        payload.role = nextPrimary;
-                        const rolesAll = Array.from(new Set([nextPrimary, ...norm.roles].map((x) => String(x || '').trim()).filter(Boolean)));
-                        await ensureUserRolesTable();
-                        await pgPool.query('DELETE FROM user_roles WHERE user_id::text=$1', [String(id)]);
-                        for (const rn of rolesAll) {
-                            await pgPool.query('INSERT INTO user_roles (user_id, role_name) VALUES ($1,$2) ON CONFLICT (user_id, role_name) DO NOTHING', [String(id), rn]);
-                        }
+            const invalidatesAuth = rolesPayload !== undefined || payload.role !== undefined || didResetPassword;
+            const updated = await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
+                var _a;
+                const current = await client.query('SELECT role FROM users WHERE id::text=$1 LIMIT 1 FOR UPDATE', [String(id)]);
+                const currentRow = ((_a = current === null || current === void 0 ? void 0 : current.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
+                if (!currentRow)
+                    return null;
+                if (rolesPayload !== undefined) {
+                    const curRole = String(currentRow.role || '').trim();
+                    const norm = normalizeRolesInput({ role: payload.role != null ? payload.role : curRole, roles: rolesPayload });
+                    const nextPrimary = String(payload.role || '').trim() || (norm.roles.includes(curRole) ? curRole : (norm.roles[0] || curRole));
+                    payload.role = nextPrimary;
+                    const rolesAll = Array.from(new Set([nextPrimary, ...norm.roles].map((x) => String(x || '').trim()).filter(Boolean)));
+                    await client.query('DELETE FROM user_roles WHERE user_id::text=$1', [String(id)]);
+                    for (const roleName of rolesAll) {
+                        await client.query('INSERT INTO user_roles (user_id, role_name) VALUES ($1,$2) ON CONFLICT (user_id, role_name) DO NOTHING', [String(id), roleName]);
                     }
                 }
-                catch (_d) { }
-            }
-            const updated = await (0, dbAdapter_1.pgUpdate)('users', id, payload);
-            if (payload.role) {
-                try {
-                    const { pgPool } = require('../dbAdapter');
-                    if (pgPool) {
-                        await ensureUserRolesTable();
-                        await pgPool.query('INSERT INTO user_roles (user_id, role_name) VALUES ($1,$2) ON CONFLICT (user_id, role_name) DO NOTHING', [String(id), String(payload.role)]);
-                    }
+                const next = await (0, dbAdapter_1.pgUpdate)('users', String(id), payload, client);
+                if (payload.role) {
+                    await client.query('INSERT INTO user_roles (user_id, role_name) VALUES ($1,$2) ON CONFLICT (user_id, role_name) DO NOTHING', [String(id), String(payload.role)]);
                 }
-                catch (_e) { }
-            }
-            if (didResetPassword) {
-                try {
-                    const { pgPool } = require('../dbAdapter');
-                    if (pgPool) {
-                        await pgPool.query(`CREATE TABLE IF NOT EXISTS sessions (
-              id text PRIMARY KEY,
-              user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-              created_at timestamptz DEFAULT now(),
-              last_seen_at timestamptz DEFAULT now(),
-              expires_at timestamptz NOT NULL,
-              revoked boolean NOT NULL DEFAULT false,
-              ip text,
-              user_agent text,
-              device text
-            );`);
-                        await pgPool.query('CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);');
-                        await pgPool.query('CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);');
-                        await pgPool.query('CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions(user_id) WHERE revoked = false;');
-                        await pgPool.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [id]);
-                    }
+                if (didResetPassword) {
+                    await client.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [String(id)]);
                 }
-                catch (_f) { }
-            }
-            return res.json(updated || { id, ...payload });
+                return next;
+            });
+            if (!updated)
+                return res.status(404).json({ message: 'user not found' });
+            if (invalidatesAuth)
+                (0, auth_1.invalidateUserAuthState)(String(id));
+            return res.json(updated);
         }
         // Supabase branch removed
         return res.json({ id, ...payload });
@@ -1212,10 +1098,14 @@ exports.router.delete('/users/:id', (0, auth_1.requirePerm)('rbac.manage'), asyn
     const { id } = req.params;
     try {
         if (dbAdapter_1.hasPg) {
-            await (0, dbAdapter_1.pgDelete)('users', id);
+            const deleted = await (0, dbAdapter_1.pgDelete)('users', id);
+            if (!deleted)
+                return res.status(404).json({ message: 'user not found' });
+            (0, auth_1.invalidateUserAuthState)(String(id));
             return res.json({ ok: true });
         }
         // Supabase branch removed
+        (0, auth_1.invalidateUserAuthState)(String(id));
         return res.json({ ok: true });
     }
     catch (e) {

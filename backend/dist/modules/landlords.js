@@ -9,13 +9,15 @@ const zod_1 = require("zod");
 const auth_1 = require("../auth");
 const uuid_1 = require("uuid");
 const managementFeeRules_1 = require("../lib/managementFeeRules");
+const pdfRenderServiceAuth_1 = require("../services/pdfRenderServiceAuth");
 exports.router = (0, express_1.Router)();
-async function attachManagementFeeRules(rows) {
+async function attachManagementFeeRules(rows, options) {
     const list = Array.isArray(rows) ? rows : [];
     if (!list.length || !dbAdapter_1.hasPg)
         return list;
-    await (0, managementFeeRules_1.ensureManagementFeeRulesTable)();
-    const byLandlord = await (0, managementFeeRules_1.listManagementFeeRulesByLandlordIds)(list.map((x) => String((x === null || x === void 0 ? void 0 : x.id) || '')));
+    if ((options === null || options === void 0 ? void 0 : options.ensureSchema) !== false)
+        await (0, managementFeeRules_1.ensureManagementFeeRulesTable)();
+    const byLandlord = await (0, managementFeeRules_1.listManagementFeeRulesByLandlordIds)(list.map((x) => String((x === null || x === void 0 ? void 0 : x.id) || '')), { requireExistingTable: options === null || options === void 0 ? void 0 : options.requireExistingTable });
     return list.map((row) => {
         const landlordId = String((row === null || row === void 0 ? void 0 : row.id) || '');
         const rules = byLandlord[landlordId] || [];
@@ -30,13 +32,20 @@ async function attachManagementFeeRules(rows) {
 exports.router.get('/', (req, res) => {
     const q = req.query || {};
     const includeArchived = String(q.include_archived || '').toLowerCase() === 'true';
+    const pdfRenderReadOnly = (0, pdfRenderServiceAuth_1.isPdfRenderServiceUser)(req.user);
+    if (pdfRenderReadOnly && !dbAdapter_1.hasPg) {
+        return res.status(503).json({ code: 'pdf_render_data_unavailable', source: 'landlords' });
+    }
     // Supabase branch removed
     if (dbAdapter_1.hasPg) {
         const filter = includeArchived ? {} : { archived: false };
         (0, dbAdapter_1.pgSelect)('landlords', '*', filter)
             .then(async (data) => {
             const rows = includeArchived ? (data || []) : (data || []).filter((x) => !x.archived);
-            const withRules = await attachManagementFeeRules(rows);
+            const withRules = await attachManagementFeeRules(rows, {
+                ensureSchema: !pdfRenderReadOnly,
+                requireExistingTable: pdfRenderReadOnly,
+            });
             res.json(withRules);
         })
             .catch((err) => res.status(500).json({ message: err.message }));

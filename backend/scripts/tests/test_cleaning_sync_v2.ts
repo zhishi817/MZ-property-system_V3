@@ -3,7 +3,7 @@ import { readFileSync } from 'fs'
 import { resolve } from 'path'
 import { v4 as uuid } from 'uuid'
 import { pgPool } from '../../src/dbAdapter'
-import { ensureCleaningSchemaV2, guestReadyCheckinIdentityChangedFields, syncCheckinOldCodeFromPreviousStay, syncCheckoutOldCodeFromCheckinNewCode, syncOrderToCleaningTasks, backfillCleaningTasks } from '../../src/services/cleaningSync'
+import { __test_hasManualTaskExecutionRecords, ensureCleaningSchemaV2, guestReadyCheckinIdentityChangedFields, syncCheckinOldCodeFromPreviousStay, syncCheckoutOldCodeFromCheckinNewCode, syncOrderToCleaningTasks, backfillCleaningTasks } from '../../src/services/cleaningSync'
 import { cleaningSyncJobScope, enqueueCleaningSyncJobTx } from '../../src/services/cleaningSyncJobs'
 import { __test_dispatchCleaningSyncJob, __test_syncOrderOptionsForJob, __test_syncScopeForJob } from '../../src/services/cleaningSyncJobsWorker'
 import { db } from '../../src/store'
@@ -123,6 +123,21 @@ async function assertScopedQueueIdentity() {
 }
 
 async function main() {
+  let auditEvidenceQuerySeen = false
+  assert.equal(await __test_hasManualTaskExecutionRecords(
+    { id: 'manual-with-audit-only' },
+    {
+      async query(sql: string) {
+        if (sql.includes('FROM work_task_action_audits')) {
+          auditEvidenceQuerySeen = true
+          return { rows: [{ present: 1 }] }
+        }
+        return { rows: [] }
+      },
+    },
+  ), true, 'an immutable action audit alone must block automatic manual-task takeover')
+  assert.equal(auditEvidenceQuerySeen, true, 'the takeover guard must inspect immutable action audits')
+
   assert.deepEqual(
     guestReadyCheckinIdentityChangedFields(
       { task_type: 'checkin_clean', checkin_time: '2pm', task_date: '2026-10-11', property_id: 'P1', status: 'pending', execution_state: 'active' },
@@ -150,12 +165,37 @@ async function main() {
   const o8 = uuid()
   const o9 = uuid()
   const o10 = uuid()
+  const o11 = uuid()
+  const o12 = uuid()
+  const o13 = uuid()
+  const o14 = uuid()
+  const o15 = uuid()
+  const o16 = uuid()
+  const o17 = uuid()
+  const o18 = uuid()
+  const o19 = uuid()
+  const o20 = uuid()
+  const o21 = uuid()
   const turnoverScopeJobId = uuid()
   const manualCheckin = uuid()
   const manualCheckout = uuid()
   const manualExtraCheckin = uuid()
   const manualCheckoutInProgress = uuid()
   const manualCheckinZeroNights = uuid()
+  const manualLinkedCheckout = uuid()
+  const manualAmbiguousA = uuid()
+  const manualAmbiguousB = uuid()
+  const manualExecuted = uuid()
+  const manualIdentityConflict = uuid()
+  const manualCompetingOrder = uuid()
+  const manualStaleOfficial = uuid()
+  const manualRelinkCheckoutFirst = uuid()
+  const manualRelinkCheckinFirst = uuid()
+  const manualRelinkCheckoutSecond = uuid()
+  const manualRelinkCheckinSecond = uuid()
+  const manualAmbiguousRelinkCheckout = uuid()
+  const manualAmbiguousRelinkCheckinA = uuid()
+  const manualAmbiguousRelinkCheckinB = uuid()
 
   await assertScopedQueueIdentity()
 
@@ -189,13 +229,24 @@ async function main() {
     { id: o8, property_id: 'P_TEST_CHECKIN_SCOPE', checkin: null, checkout: '2026-02-26', nights: 1, status: 'confirmed', confirmation_code: `TEST_SYNC_${o8.slice(0, 8)}` },
     { id: o9, property_id: 'P_TEST_TURNOVER_SCOPE', checkin: '2026-03-01', checkout: '2026-03-03', nights: 2, status: 'confirmed', confirmation_code: `TEST_SYNC_${o9.slice(0, 8)}` },
     { id: o10, property_id: 'P_TEST_TURNOVER_SCOPE', checkin: '2026-03-05', checkout: '2026-03-07', nights: 2, status: 'confirmed', confirmation_code: `TEST_SYNC_${o10.slice(0, 8)}` },
+    { id: o11, property_id: 'P_TEST_AMBIG', checkin: '2026-03-10', checkout: '2026-03-12', nights: 2, status: 'confirmed', confirmation_code: `TEST_SYNC_${o11.slice(0, 8)}` },
+    { id: o12, property_id: 'P_TEST_EXECUTED', checkin: '2026-03-13', checkout: '2026-03-15', nights: 2, status: 'confirmed', confirmation_code: `TEST_SYNC_${o12.slice(0, 8)}` },
+    { id: o13, property_id: 'P_TEST_IDENTITY_CONFLICT', checkin: '2026-03-16', checkout: '2026-03-18', nights: 2, status: 'confirmed', confirmation_code: `TEST_SYNC_${o13.slice(0, 8)}` },
+    { id: o14, property_id: 'P_TEST_COMPETING_ORDERS', checkin: '2026-03-20', checkout: '2026-03-22', nights: 2, status: 'confirmed', confirmation_code: `TEST_SYNC_${o14.slice(0, 8)}` },
+    { id: o15, property_id: 'P_TEST_COMPETING_ORDERS', checkin: '2026-03-20', checkout: '2026-03-23', nights: 3, status: 'confirmed', confirmation_code: `TEST_SYNC_${o15.slice(0, 8)}` },
+    { id: o16, property_id: 'P_TEST_STALE_OFFICIAL', checkin: '2026-03-22', checkout: '2026-03-24', nights: 2, status: 'confirmed', confirmation_code: `TEST_SYNC_${o16.slice(0, 8)}` },
+    { id: o17, property_id: 'P_TEST_RELINK_CHECKOUT_FIRST', checkin: '2026-03-24', checkout: '2026-03-26', nights: 2, status: 'confirmed', confirmation_code: `TEST_SYNC_${o17.slice(0, 8)}` },
+    { id: o18, property_id: 'P_TEST_RELINK_CHECKOUT_FIRST', checkin: '2026-03-26', checkout: '2026-03-29', nights: 3, status: 'confirmed', confirmation_code: `TEST_SYNC_${o18.slice(0, 8)}` },
+    { id: o19, property_id: 'P_TEST_RELINK_CHECKIN_FIRST', checkin: '2026-04-06', checkout: '2026-04-09', nights: 3, status: 'confirmed', confirmation_code: `TEST_SYNC_${o19.slice(0, 8)}` },
+    { id: o20, property_id: 'P_TEST_RELINK_CHECKIN_FIRST', checkin: '2026-04-03', checkout: '2026-04-06', nights: 3, status: 'confirmed', confirmation_code: `TEST_SYNC_${o20.slice(0, 8)}` },
+    { id: o21, property_id: 'P_TEST_RELINK_AMBIGUOUS', checkin: '2026-04-11', checkout: '2026-04-12', nights: 1, status: 'confirmed', confirmation_code: `TEST_SYNC_${o21.slice(0, 8)}` },
   ]
 
   if (pgPool) {
     await ensureCleaningSchemaV2()
-    await pgPool.query('DELETE FROM cleaning_sync_logs WHERE order_id = ANY($1)', [[o1, o2, o3, o4, o5, o6, o7, o8, o9, o10]])
-    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o3, o4, o5, o6, o7, o8, o9, o10], [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress, manualCheckinZeroNights]])
-    await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [[o1, o2, o3, o4, o5, o6, o7, o8, o9, o10]])
+    await pgPool.query('DELETE FROM cleaning_sync_logs WHERE order_id = ANY($1)', [[o1, o2, o3, o4, o5, o6, o7, o8, o9, o10, o11, o12, o13, o14, o15, o16, o17, o18, o19, o20, o21]])
+    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o3, o4, o5, o6, o7, o8, o9, o10, o11, o12, o13, o14, o15, o16, o17, o18, o19, o20, o21], [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress, manualCheckinZeroNights, manualLinkedCheckout, manualAmbiguousA, manualAmbiguousB, manualExecuted, manualIdentityConflict, manualCompetingOrder, manualStaleOfficial, manualRelinkCheckoutFirst, manualRelinkCheckinFirst, manualRelinkCheckoutSecond, manualRelinkCheckinSecond, manualAmbiguousRelinkCheckout, manualAmbiguousRelinkCheckinA, manualAmbiguousRelinkCheckinB]])
+    await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [[o1, o2, o3, o4, o5, o6, o7, o8, o9, o10, o11, o12, o13, o14, o15, o16, o17, o18, o19, o20, o21]])
     for (const o of orders) {
       await pgPool.query(
         `INSERT INTO orders(id, property_id, checkin, checkout, nights, status, confirmation_code)
@@ -543,20 +594,22 @@ async function main() {
 
   if (pgPool) {
     await pgPool.query(
-      `INSERT INTO cleaning_tasks(id, order_id, property_id, task_type, task_date, type, date, status, source, execution_state, manual_task_purpose, auto_sync_enabled, checkin_time, checkout_time, new_code, old_code, guest_special_request, keys_required, nights_override)
+      `INSERT INTO cleaning_tasks(id, order_id, property_id, task_type, task_date, type, date, status, source, execution_state, manual_task_purpose, auto_sync_enabled, checkin_time, checkout_time, new_code, old_code, guest_special_request, keys_required, nights_override, assignee_id, cleaner_id, inspector_id, linked_checkout_task_id, inspection_scope)
        VALUES
-         ($1, NULL, 'P_TEST_D', 'checkin_clean', '2026-02-18'::date, 'checkin_clean', '2026-02-18'::date, 'pending', 'manual', 'active', 'temporary_order_placeholder', true, '2pm', NULL, 'manual-new-code', NULL, 'first cleaning inspection', 2, 5),
-         ($2, NULL, 'P_TEST_D', 'checkout_clean', '2026-02-21'::date, 'checkout_clean', '2026-02-21'::date, 'pending', 'manual', 'active', 'temporary_order_placeholder', true, NULL, '11am', NULL, 'manual-old-code', NULL, 2, 5),
-         ($3, NULL, 'P_TEST_D', 'checkin_clean', '2026-02-18'::date, 'checkin_clean', '2026-02-18'::date, 'pending', 'manual', 'active', 'manual_extra', true, NULL, NULL, NULL, NULL, NULL, 1, NULL),
-         ($4, NULL, 'P_TEST_D', 'checkout_clean', '2026-02-21'::date, 'checkout_clean', '2026-02-21'::date, 'in_progress', 'manual', 'active', 'temporary_order_placeholder', true, NULL, NULL, NULL, NULL, NULL, 1, NULL)`,
-      [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress],
+         ($1, NULL, 'P_TEST_D', 'checkin_clean', '2026-02-18'::date, 'checkin_clean', '2026-02-18'::date, 'pending', 'manual', 'active', 'temporary_order_placeholder', true, '2pm', NULL, 'manual-new-code', NULL, 'first cleaning inspection', 2, 5, 'ASSIGNEE-1', 'CLEANER-1', 'INSPECTOR-1', $5, 'inspect_and_hang'),
+         ($2, NULL, 'P_TEST_D', 'checkout_clean', '2026-02-21'::date, 'checkout_clean', '2026-02-21'::date, 'pending', 'manual', 'active', 'temporary_order_placeholder', true, NULL, '11am', NULL, 'manual-old-code', NULL, 2, 5, NULL, NULL, NULL, NULL, NULL),
+         ($3, NULL, 'P_TEST_D', 'checkin_clean', '2026-02-18'::date, 'checkin_clean', '2026-02-18'::date, 'pending', 'manual', 'active', 'manual_extra', true, NULL, NULL, NULL, NULL, NULL, 1, NULL, NULL, NULL, NULL, NULL, NULL),
+         ($4, NULL, 'P_TEST_D', 'checkout_clean', '2026-02-21'::date, 'checkout_clean', '2026-02-21'::date, 'in_progress', 'manual', 'active', 'temporary_order_placeholder', true, NULL, NULL, NULL, NULL, NULL, 1, NULL, NULL, NULL, NULL, NULL, NULL),
+         ($5, NULL, 'P_TEST_D', 'checkout_clean', '2026-02-18'::date, 'checkout_clean', '2026-02-18'::date, 'assigned', 'manual', 'active', 'manual_extra', true, NULL, '10am', NULL, NULL, NULL, 1, NULL, NULL, NULL, NULL, NULL, NULL)`,
+      [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress, manualLinkedCheckout],
     )
   } else {
     ;(db.cleaningTasks as any[]).push(
-      { id: manualCheckin, order_id: null, property_id: 'P_TEST_D', task_type: 'checkin_clean', task_date: '2026-02-18', type: 'checkin_clean', date: '2026-02-18', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: 'temporary_order_placeholder', auto_sync_enabled: true, checkin_time: '2pm', new_code: 'manual-new-code', guest_special_request: 'first cleaning inspection', keys_required: 2, nights_override: 5 },
+      { id: manualCheckin, order_id: null, property_id: 'P_TEST_D', task_type: 'checkin_clean', task_date: '2026-02-18', type: 'checkin_clean', date: '2026-02-18', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: 'temporary_order_placeholder', auto_sync_enabled: true, checkin_time: '2pm', new_code: 'manual-new-code', guest_special_request: 'first cleaning inspection', keys_required: 2, nights_override: 5, assignee_id: 'ASSIGNEE-1', cleaner_id: 'CLEANER-1', inspector_id: 'INSPECTOR-1', linked_checkout_task_id: manualLinkedCheckout, inspection_scope: 'inspect_and_hang' },
       { id: manualCheckout, order_id: null, property_id: 'P_TEST_D', task_type: 'checkout_clean', task_date: '2026-02-21', type: 'checkout_clean', date: '2026-02-21', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: 'temporary_order_placeholder', auto_sync_enabled: true, checkout_time: '11am', old_code: 'manual-old-code', keys_required: 2, nights_override: 5 },
       { id: manualExtraCheckin, order_id: null, property_id: 'P_TEST_D', task_type: 'checkin_clean', task_date: '2026-02-18', type: 'checkin_clean', date: '2026-02-18', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: 'manual_extra', auto_sync_enabled: true },
       { id: manualCheckoutInProgress, order_id: null, property_id: 'P_TEST_D', task_type: 'checkout_clean', task_date: '2026-02-21', type: 'checkout_clean', date: '2026-02-21', status: 'in_progress', source: 'manual', execution_state: 'active', manual_task_purpose: 'temporary_order_placeholder', auto_sync_enabled: true },
+      { id: manualLinkedCheckout, order_id: null, property_id: 'P_TEST_D', task_type: 'checkout_clean', task_date: '2026-02-18', type: 'checkout_clean', date: '2026-02-18', status: 'assigned', source: 'manual', manual_task_purpose: 'manual_extra', execution_state: 'active' },
     )
   }
   await syncOrderToCleaningTasks(o4)
@@ -566,6 +619,11 @@ async function main() {
   assert.ok(o4Checkout, 'should create canonical checkout task before superseding placeholder')
   assert.equal(String(o4Checkin.checkin_time), '2pm', 'canonical checkin should inherit manual placeholder checkin_time over default')
   assert.equal(String(o4Checkin.guest_special_request), 'first cleaning inspection', 'canonical checkin should inherit manual placeholder guest request')
+  assert.equal(String(o4Checkin.assignee_id), 'ASSIGNEE-1')
+  assert.equal(String(o4Checkin.cleaner_id), 'CLEANER-1')
+  assert.equal(String(o4Checkin.inspector_id), 'INSPECTOR-1')
+  assert.equal(String(o4Checkin.linked_checkout_task_id), manualLinkedCheckout)
+  assert.equal(String(o4Checkin.inspection_scope), 'inspect_and_hang', 'automatic order takeover must preserve the explicit manual execution mode')
   assert.equal(o4Checkin.new_code == null ? null : String(o4Checkin.new_code), null, 'manual new_code should not be copied onto canonical checkin')
   assert.equal(Number(o4Checkin.keys_required), 1, 'manual keys_required should not override order-backed canonical checkin')
   assert.equal(String(o4Checkout.checkout_time), '11am', 'canonical checkout should inherit manual placeholder checkout_time over default')
@@ -596,6 +654,7 @@ async function main() {
   assert.equal(String(eligibleManual.status), 'pending', 'superseded placeholder should keep original status instead of cancelled')
   assert.equal(String(eligibleManual.superseded_by), String(o4Checkin.id))
   assert.ok(supersedeConflicts(eligibleManual).some((item: any) => item.field === 'checkin_time' && item.resolution === 'copied_manual'))
+	  assert.ok(supersedeConflicts(eligibleManual).some((item: any) => item.field === 'inspection_scope' && item.resolution === 'copied_manual'))
 	  assert.ok(supersedeConflicts(eligibleManual).some((item: any) => item.field === 'guest_special_request' && item.resolution === 'copied_manual'))
 	  assert.ok(supersedeConflicts(eligibleManual).some((item: any) => item.field === 'new_code' && item.resolution === 'manual_requires_review'))
 	  assert.ok(supersedeConflicts(eligibleManual).some((item: any) => item.field === 'keys_required' && item.resolution === 'manual_requires_review'))
@@ -611,17 +670,18 @@ async function main() {
 
 	  if (pgPool) {
 	    await pgPool.query(
-	      `INSERT INTO cleaning_tasks(id, order_id, property_id, task_type, task_date, type, date, status, source, execution_state, manual_task_purpose, auto_sync_enabled, checkin_time, nights_override)
-	       VALUES($1, NULL, 'P_TEST_E', 'checkin_clean', '2026-02-24'::date, 'checkin_clean', '2026-02-24'::date, 'pending', 'manual', 'active', 'temporary_order_placeholder', true, '2pm', 0)`,
+	      `INSERT INTO cleaning_tasks(id, order_id, property_id, task_type, task_date, type, date, status, source, execution_state, manual_task_purpose, auto_sync_enabled, checkin_time, nights_override, inspection_scope)
+	       VALUES($1, NULL, 'P_TEST_E', 'checkin_clean', '2026-02-24'::date, 'checkin_clean', '2026-02-24'::date, 'pending', 'manual', 'active', 'temporary_order_placeholder', true, '2pm', 0, 'password_only')`,
 	      [manualCheckinZeroNights],
 	    )
 	  } else {
-	    ;(db.cleaningTasks as any[]).push({ id: manualCheckinZeroNights, order_id: null, property_id: 'P_TEST_E', task_type: 'checkin_clean', task_date: '2026-02-24', type: 'checkin_clean', date: '2026-02-24', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: 'temporary_order_placeholder', auto_sync_enabled: true, checkin_time: '2pm', nights_override: 0 })
+	    ;(db.cleaningTasks as any[]).push({ id: manualCheckinZeroNights, order_id: null, property_id: 'P_TEST_E', task_type: 'checkin_clean', task_date: '2026-02-24', type: 'checkin_clean', date: '2026-02-24', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: 'temporary_order_placeholder', auto_sync_enabled: true, checkin_time: '2pm', nights_override: 0, inspection_scope: 'password_only' })
 	  }
 	  await syncOrderToCleaningTasks(o5)
 	  const o5Checkin = await fetchTaskByType(o5, 'checkin_clean')
 	  assert.ok(o5Checkin)
 	  assert.equal(String(o5Checkin.checkin_time), '2pm', 'canonical checkin should inherit non-default manual placeholder time')
+	  assert.equal(String(o5Checkin.inspection_scope), 'password_only', 'an independent manual check-in keeps password-only after automatic order takeover')
 	  assert.equal(o5Checkin.nights_override == null ? null : Number(o5Checkin.nights_override), null, 'manual zero-night placeholder should not override order nights')
 	  let zeroNightManual: any
 	  if (pgPool) {
@@ -633,6 +693,171 @@ async function main() {
 	  assert.equal(String(zeroNightManual.execution_state), 'superseded', 'zero-night placeholder should still be superseded')
 	  assert.ok(supersedeConflicts(zeroNightManual).some((item: any) => item.field === 'nights_override' && item.resolution === 'ignored_placeholder' && Number(item.canonical_value) === 4 && Number(item.manual_value) === 0))
 	  assert.equal(supersedeConflicts(zeroNightManual).some((item: any) => item.field === 'nights_override' && item.resolution === 'manual_requires_review'), false, 'zero-night placeholder should not create a manual review conflict')
+
+  if (pgPool) {
+    await pgPool.query(
+      `INSERT INTO cleaning_tasks(id, order_id, property_id, task_type, task_date, type, date, status, source, execution_state, manual_task_purpose, auto_sync_enabled, checkin_time, started_at, assignee_id)
+       VALUES
+         ($1, NULL, 'P_TEST_AMBIG', 'checkin_clean', '2026-03-10'::date, 'checkin_clean', '2026-03-10'::date, 'pending', 'manual', 'active', NULL, true, '2pm', NULL, NULL),
+         ($2, NULL, 'P_TEST_AMBIG', 'checkin_clean', '2026-03-10'::date, 'checkin_clean', '2026-03-10'::date, 'pending', 'manual', 'active', NULL, true, '4pm', NULL, NULL),
+         ($3, NULL, 'P_TEST_EXECUTED', 'checkin_clean', '2026-03-13'::date, 'checkin_clean', '2026-03-13'::date, 'pending', 'manual', 'active', NULL, true, '1pm', now(), NULL)`,
+      [manualAmbiguousA, manualAmbiguousB, manualExecuted],
+    )
+  } else {
+    ;(db.cleaningTasks as any[]).push(
+      { id: manualAmbiguousA, order_id: null, property_id: 'P_TEST_AMBIG', task_type: 'checkin_clean', task_date: '2026-03-10', type: 'checkin_clean', date: '2026-03-10', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: null, auto_sync_enabled: true, checkin_time: '2pm' },
+      { id: manualAmbiguousB, order_id: null, property_id: 'P_TEST_AMBIG', task_type: 'checkin_clean', task_date: '2026-03-10', type: 'checkin_clean', date: '2026-03-10', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: null, auto_sync_enabled: true, checkin_time: '4pm' },
+      { id: manualExecuted, order_id: null, property_id: 'P_TEST_EXECUTED', task_type: 'checkin_clean', task_date: '2026-03-13', type: 'checkin_clean', date: '2026-03-13', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: null, auto_sync_enabled: true, checkin_time: '1pm', started_at: '2026-03-13T01:00:00.000Z' },
+    )
+  }
+  await syncOrderToCleaningTasks(o11)
+  await syncOrderToCleaningTasks(o12)
+  await syncOrderToCleaningTasks(o13)
+  const o13OfficialCheckin = await fetchTaskByType(o13, 'checkin_clean')
+  if (pgPool) {
+    await pgPool.query('UPDATE cleaning_tasks SET assignee_id=$2 WHERE id=$1', [o13OfficialCheckin.id, 'ORDER-ASSIGNEE'])
+    await pgPool.query(
+      `INSERT INTO cleaning_tasks(id, order_id, property_id, task_type, task_date, type, date, status, source, execution_state, manual_task_purpose, auto_sync_enabled, checkin_time, assignee_id)
+       VALUES($1, NULL, 'P_TEST_IDENTITY_CONFLICT', 'checkin_clean', '2026-03-16'::date, 'checkin_clean', '2026-03-16'::date, 'pending', 'manual', 'active', NULL, true, '3pm', 'MANUAL-ASSIGNEE')`,
+      [manualIdentityConflict],
+    )
+  } else {
+    o13OfficialCheckin.assignee_id = 'ORDER-ASSIGNEE'
+    ;(db.cleaningTasks as any[]).push({ id: manualIdentityConflict, order_id: null, property_id: 'P_TEST_IDENTITY_CONFLICT', task_type: 'checkin_clean', task_date: '2026-03-16', type: 'checkin_clean', date: '2026-03-16', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: null, auto_sync_enabled: true, checkin_time: '3pm', assignee_id: 'MANUAL-ASSIGNEE' })
+  }
+  await syncOrderToCleaningTasks(o13)
+  const ambiguousRows = pgPool
+    ? (await pgPool.query('SELECT * FROM cleaning_tasks WHERE id=ANY($1)', [[manualAmbiguousA, manualAmbiguousB]])).rows
+    : (db.cleaningTasks as any[]).filter((row) => [manualAmbiguousA, manualAmbiguousB].includes(String(row.id)))
+  assert.equal(ambiguousRows.every((row: any) => String(row.execution_state) === 'active'), true, 'multiple manual candidates must fail closed without silent takeover')
+  const executedRow = pgPool
+    ? (await pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1', [manualExecuted])).rows?.[0]
+    : (db.cleaningTasks as any[]).find((row) => String(row.id) === manualExecuted)
+  assert.equal(String(executedRow.execution_state), 'active', 'manual task with execution evidence must never be silently superseded')
+  const identityConflictRow = pgPool
+    ? (await pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1', [manualIdentityConflict])).rows?.[0]
+    : (db.cleaningTasks as any[]).find((row) => String(row.id) === manualIdentityConflict)
+  assert.equal(String(identityConflictRow.execution_state), 'active', 'conflicting assignment must remain visible for manager review instead of being silently superseded')
+
+  if (pgPool) {
+    await pgPool.query(
+      `INSERT INTO cleaning_tasks(id, order_id, property_id, task_type, task_date, type, date, status, source, execution_state, manual_task_purpose, auto_sync_enabled, checkin_time)
+       VALUES($1, NULL, 'P_TEST_COMPETING_ORDERS', 'checkin_clean', '2026-03-20'::date, 'checkin_clean', '2026-03-20'::date, 'pending', 'manual', 'active', NULL, true, '1pm')`,
+      [manualCompetingOrder],
+    )
+  } else {
+    ;(db.cleaningTasks as any[]).push({
+      id: manualCompetingOrder,
+      order_id: null,
+      property_id: 'P_TEST_COMPETING_ORDERS',
+      task_type: 'checkin_clean',
+      task_date: '2026-03-20',
+      type: 'checkin_clean',
+      date: '2026-03-20',
+      status: 'pending',
+      source: 'manual',
+      execution_state: 'active',
+      manual_task_purpose: null,
+      auto_sync_enabled: true,
+      checkin_time: '1pm',
+    })
+  }
+  await syncOrderToCleaningTasks(o14)
+  const competingOrderManual = pgPool
+    ? (await pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1', [manualCompetingOrder])).rows?.[0]
+    : (db.cleaningTasks as any[]).find((row) => String(row.id) === manualCompetingOrder)
+  assert.equal(String(competingOrderManual.execution_state), 'active', 'two active orders on the same boundary must not let the first sync claim the manual task')
+
+  await syncOrderToCleaningTasks(o16)
+  const staleOfficial = await fetchTaskByType(o16, 'checkin_clean')
+  assert.ok(staleOfficial)
+  if (pgPool) {
+    await pgPool.query('UPDATE cleaning_tasks SET auto_sync_enabled=false WHERE id=$1', [String(staleOfficial.id)])
+    await pgPool.query('UPDATE orders SET checkin=$2::date WHERE id=$1', [o16, '2026-03-23'])
+    await pgPool.query(
+      `INSERT INTO cleaning_tasks(id, order_id, property_id, task_type, task_date, type, date, status, source, execution_state, manual_task_purpose, auto_sync_enabled, checkin_time)
+       VALUES($1, NULL, 'P_TEST_STALE_OFFICIAL', 'checkin_clean', '2026-03-23'::date, 'checkin_clean', '2026-03-23'::date, 'pending', 'manual', 'active', NULL, true, '4pm')`,
+      [manualStaleOfficial],
+    )
+  } else {
+    staleOfficial.auto_sync_enabled = false
+    const staleOrder = (db.orders as any[]).find((row: any) => String(row.id) === o16)
+    if (staleOrder) staleOrder.checkin = '2026-03-23'
+    ;(db.cleaningTasks as any[]).push({
+      id: manualStaleOfficial,
+      order_id: null,
+      property_id: 'P_TEST_STALE_OFFICIAL',
+      task_type: 'checkin_clean',
+      task_date: '2026-03-23',
+      type: 'checkin_clean',
+      date: '2026-03-23',
+      status: 'pending',
+      source: 'manual',
+      execution_state: 'active',
+      manual_task_purpose: null,
+      auto_sync_enabled: true,
+      checkin_time: '4pm',
+    })
+  }
+  await syncOrderToCleaningTasks(o16)
+  const staleOfficialManual = pgPool
+    ? (await pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1', [manualStaleOfficial])).rows?.[0]
+    : (db.cleaningTasks as any[]).find((row) => String(row.id) === manualStaleOfficial)
+  assert.equal(String(staleOfficialManual.execution_state), 'active', 'an official task retained on an old date must not claim a manual task from the order new date')
+
+  if (pgPool) {
+    await pgPool.query(
+      `INSERT INTO cleaning_tasks(id, order_id, property_id, task_type, task_date, type, date, status, source, execution_state, manual_task_purpose, auto_sync_enabled, linked_checkout_task_id)
+       VALUES
+         ($1, NULL, 'P_TEST_RELINK_CHECKOUT_FIRST', 'checkout_clean', '2026-03-26'::date, 'checkout_clean', '2026-03-26'::date, 'pending', 'manual', 'active', 'temporary_order_placeholder', true, NULL),
+         ($2, NULL, 'P_TEST_RELINK_CHECKOUT_FIRST', 'checkin_clean', '2026-03-26'::date, 'checkin_clean', '2026-03-26'::date, 'pending', 'manual', 'active', 'temporary_order_placeholder', true, $1),
+         ($3, NULL, 'P_TEST_RELINK_CHECKIN_FIRST', 'checkout_clean', '2026-04-06'::date, 'checkout_clean', '2026-04-06'::date, 'pending', 'manual', 'active', 'temporary_order_placeholder', true, NULL),
+         ($4, NULL, 'P_TEST_RELINK_CHECKIN_FIRST', 'checkin_clean', '2026-04-06'::date, 'checkin_clean', '2026-04-06'::date, 'pending', 'manual', 'active', 'temporary_order_placeholder', true, $3),
+         ($5, NULL, 'P_TEST_RELINK_AMBIGUOUS', 'checkout_clean', '2026-04-12'::date, 'checkout_clean', '2026-04-12'::date, 'pending', 'manual', 'active', 'temporary_order_placeholder', true, NULL),
+         ($6, NULL, 'P_TEST_RELINK_AMBIGUOUS', 'checkin_clean', '2026-04-12'::date, 'checkin_clean', '2026-04-12'::date, 'pending', 'manual', 'active', 'manual_extra', true, $5),
+         ($7, NULL, 'P_TEST_RELINK_AMBIGUOUS', 'checkin_clean', '2026-04-12'::date, 'checkin_clean', '2026-04-12'::date, 'pending', 'manual', 'active', 'manual_extra', true, $5)`,
+      [manualRelinkCheckoutFirst, manualRelinkCheckinFirst, manualRelinkCheckoutSecond, manualRelinkCheckinSecond, manualAmbiguousRelinkCheckout, manualAmbiguousRelinkCheckinA, manualAmbiguousRelinkCheckinB],
+    )
+  } else {
+    ;(db.cleaningTasks as any[]).push(
+      { id: manualRelinkCheckoutFirst, order_id: null, property_id: 'P_TEST_RELINK_CHECKOUT_FIRST', task_type: 'checkout_clean', task_date: '2026-03-26', type: 'checkout_clean', date: '2026-03-26', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: 'temporary_order_placeholder', auto_sync_enabled: true },
+      { id: manualRelinkCheckinFirst, order_id: null, property_id: 'P_TEST_RELINK_CHECKOUT_FIRST', task_type: 'checkin_clean', task_date: '2026-03-26', type: 'checkin_clean', date: '2026-03-26', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: 'temporary_order_placeholder', auto_sync_enabled: true, linked_checkout_task_id: manualRelinkCheckoutFirst },
+      { id: manualRelinkCheckoutSecond, order_id: null, property_id: 'P_TEST_RELINK_CHECKIN_FIRST', task_type: 'checkout_clean', task_date: '2026-04-06', type: 'checkout_clean', date: '2026-04-06', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: 'temporary_order_placeholder', auto_sync_enabled: true },
+      { id: manualRelinkCheckinSecond, order_id: null, property_id: 'P_TEST_RELINK_CHECKIN_FIRST', task_type: 'checkin_clean', task_date: '2026-04-06', type: 'checkin_clean', date: '2026-04-06', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: 'temporary_order_placeholder', auto_sync_enabled: true, linked_checkout_task_id: manualRelinkCheckoutSecond },
+      { id: manualAmbiguousRelinkCheckout, order_id: null, property_id: 'P_TEST_RELINK_AMBIGUOUS', task_type: 'checkout_clean', task_date: '2026-04-12', type: 'checkout_clean', date: '2026-04-12', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: 'temporary_order_placeholder', auto_sync_enabled: true },
+      { id: manualAmbiguousRelinkCheckinA, order_id: null, property_id: 'P_TEST_RELINK_AMBIGUOUS', task_type: 'checkin_clean', task_date: '2026-04-12', type: 'checkin_clean', date: '2026-04-12', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: 'manual_extra', auto_sync_enabled: true, linked_checkout_task_id: manualAmbiguousRelinkCheckout },
+      { id: manualAmbiguousRelinkCheckinB, order_id: null, property_id: 'P_TEST_RELINK_AMBIGUOUS', task_type: 'checkin_clean', task_date: '2026-04-12', type: 'checkin_clean', date: '2026-04-12', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: 'manual_extra', auto_sync_enabled: true, linked_checkout_task_id: manualAmbiguousRelinkCheckout },
+    )
+  }
+
+  await syncOrderToCleaningTasks(o17)
+  const checkoutFirstOfficialCheckout = await fetchTaskByType(o17, 'checkout_clean')
+  assert.ok(checkoutFirstOfficialCheckout)
+  let checkoutFirstManualCheckin = pgPool
+    ? (await pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1', [manualRelinkCheckinFirst])).rows?.[0]
+    : (db.cleaningTasks as any[]).find((row) => String(row.id) === manualRelinkCheckinFirst)
+  assert.equal(String(checkoutFirstManualCheckin.linked_checkout_task_id), String(checkoutFirstOfficialCheckout.id), 'checkout-first sync must atomically relink the active manual checkin before superseding its checkout')
+  await syncOrderToCleaningTasks(o18)
+  const checkoutFirstOfficialCheckin = await fetchTaskByType(o18, 'checkin_clean')
+  assert.equal(String(checkoutFirstOfficialCheckin?.linked_checkout_task_id), String(checkoutFirstOfficialCheckout.id), 'later incoming order takeover must preserve the already-relinked turnover relation')
+  checkoutFirstManualCheckin = pgPool
+    ? (await pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1', [manualRelinkCheckinFirst])).rows?.[0]
+    : (db.cleaningTasks as any[]).find((row) => String(row.id) === manualRelinkCheckinFirst)
+  assert.equal(String(checkoutFirstManualCheckin.execution_state), 'superseded')
+
+  await syncOrderToCleaningTasks(o19)
+  const checkinFirstOfficialCheckin = await fetchTaskByType(o19, 'checkin_clean')
+  assert.equal(String(checkinFirstOfficialCheckin?.linked_checkout_task_id), manualRelinkCheckoutSecond, 'incoming-order-first sync must preserve the explicit manual checkout relation until its official replacement exists')
+  await syncOrderToCleaningTasks(o20)
+  const checkinFirstOfficialCheckout = await fetchTaskByType(o20, 'checkout_clean')
+  const checkinFirstOfficialCheckinAfterRelink = await fetchTaskByType(o19, 'checkin_clean')
+  assert.equal(String(checkinFirstOfficialCheckinAfterRelink?.linked_checkout_task_id), String(checkinFirstOfficialCheckout?.id), 'later outgoing order takeover must relink the already-official incoming checkin to the official checkout')
+
+  await syncOrderToCleaningTasks(o21)
+  const ambiguousRelinkManualCheckout = pgPool
+    ? (await pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1', [manualAmbiguousRelinkCheckout])).rows?.[0]
+    : (db.cleaningTasks as any[]).find((row) => String(row.id) === manualAmbiguousRelinkCheckout)
+  assert.equal(String(ambiguousRelinkManualCheckout.execution_state), 'active', 'multiple active reverse links must fail closed without superseding the manual checkout')
 
   if (pgPool) await pgPool.query('DELETE FROM orders WHERE id=$1', [o3])
   else {
@@ -647,9 +872,9 @@ async function main() {
   if (pgPool) {
     const countTasks = await pgPool.query(`SELECT COUNT(*)::int AS c FROM cleaning_tasks WHERE order_id = ANY($1)`, [[o1, o2]])
     assert.equal(Number(countTasks?.rows?.[0]?.c || 0), 4, 'backfill twice should not duplicate tasks')
-    await pgPool.query('DELETE FROM cleaning_sync_logs WHERE order_id = ANY($1)', [[o1, o2, o4, o5, o6, o7, o9, o10]])
-    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o4, o5, o6, o7, o9, o10], [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress, manualCheckinZeroNights]])
-    await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [[o1, o2, o4, o5, o6, o7, o9, o10]])
+    await pgPool.query('DELETE FROM cleaning_sync_logs WHERE order_id = ANY($1)', [[o1, o2, o4, o5, o6, o7, o9, o10, o11, o12, o13, o14, o15, o16, o17, o18, o19, o20, o21]])
+    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [[o1, o2, o4, o5, o6, o7, o9, o10, o11, o12, o13, o14, o15, o16, o17, o18, o19, o20, o21], [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress, manualCheckinZeroNights, manualLinkedCheckout, manualAmbiguousA, manualAmbiguousB, manualExecuted, manualIdentityConflict, manualCompetingOrder, manualStaleOfficial, manualRelinkCheckoutFirst, manualRelinkCheckinFirst, manualRelinkCheckoutSecond, manualRelinkCheckinSecond, manualAmbiguousRelinkCheckout, manualAmbiguousRelinkCheckinA, manualAmbiguousRelinkCheckinB]])
+    await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [[o1, o2, o4, o5, o6, o7, o9, o10, o11, o12, o13, o14, o15, o16, o17, o18, o19, o20, o21]])
   } else {
     const tasks = (db.cleaningTasks as any[]).filter((t: any) => [o1, o2].includes(String(t.order_id)))
     assert.equal(tasks.length, 4, 'backfill twice should not duplicate tasks')

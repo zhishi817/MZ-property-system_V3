@@ -32,7 +32,7 @@ import {
 } from '../lib/workTaskActionAudit'
 import type { WorkTaskActionId } from '../lib/workTaskActions'
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
-import { canViewMzappGuestLuggageNoticeMedia, canViewMzappHistoricalWorkRecordMedia, canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia } from './mzapp'
+import { canViewMzappGuestLuggageNoticeMedia, canViewMzappHistoricalWorkRecordMedia, canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia, canViewMzappScopedRecordedCleaningMedia } from './mzapp'
 import { assertR5TaskRuntimeSchemaReady, requireR5RequestSchema, requireR5TaskRuntimeSchema } from '../lib/r5RequestSchema'
 import { buildCleaningMediaUploadFingerprint, CLEANING_MEDIA_IDEMPOTENCY_CONFLICT, storeLocalImmutableMedia } from '../lib/immutableMediaUpload'
 import {
@@ -3727,6 +3727,13 @@ router.get(
       const workTaskId = requestedWorkTaskId
       const guestLuggageId = String((req.query as any)?.guest_luggage_id || '').trim()
       const sourceTaskId = String((req.query as any)?.source_task_id || '').trim()
+      const relatedSourceIds = Array.from(new Set(String((req.query as any)?.source_ids || '')
+        .split(',')
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+        .slice(0, 2)))
+      const mediaScope = String((req.query as any)?.media_scope || '').trim().toLowerCase()
+      const hasScopedMediaContext = relatedSourceIds.length > 0 || !!mediaScope
       const requestedDayEndUserIdRaw = String((req.query as any)?.day_end_user_id || '').trim()
       const requestedDayEndDateRaw = String((req.query as any)?.day_end_date || '').trim()
       const requestedDayEndUserId = safeDayEndMediaUserId(requestedDayEndUserIdRaw)
@@ -4108,8 +4115,10 @@ router.get(
         : hasGuestLuggageSourceConflict || hasRecordedSourceConflict || hasDayEndFeedbackSourceConflict
           ? false
           : recordedMedia?.source === 'task'
-          ? await canViewMzappRecordedCleaningMedia(user, recordedMedia.row, userId, recordedMedia.row.type)
-            || canViewFeedbackMedia
+          ? hasScopedMediaContext
+            ? await canViewMzappScopedRecordedCleaningMedia(user, userId, relatedSourceIds, mediaScope, recordedMedia.row)
+            : await canViewMzappRecordedCleaningMedia(user, recordedMedia.row, userId, recordedMedia.row.type)
+              || canViewFeedbackMedia
           : recordedMedia?.source === 'day_end'
             ? canViewRecordedDayEndMedia(user, recordedMedia.row, userId)
             : guestLuggageMediaRow

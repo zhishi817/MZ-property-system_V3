@@ -8,12 +8,17 @@ const dbAdapter_1 = require("../dbAdapter");
 const zod_1 = require("zod");
 const auth_1 = require("../auth");
 const uuid_1 = require("uuid");
+const pdfRenderServiceAuth_1 = require("../services/pdfRenderServiceAuth");
 exports.router = (0, express_1.Router)();
 const PROPERTY_PAYABLE_TEMPLATE_KIND = 'property_payable';
-const PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH = 30;
+// The recurring module clamps 31 to the actual end of each billing month.
+const PROPERTY_PAYABLE_FIXED_DUE_DAY_OF_MONTH = 31;
 exports.router.get('/', (req, res) => {
     const q = req.query || {};
     const includeArchived = String(q.include_archived || '').toLowerCase() === 'true';
+    if ((0, pdfRenderServiceAuth_1.isPdfRenderServiceUser)(req.user) && !dbAdapter_1.hasPg) {
+        return res.status(503).json({ code: 'pdf_render_data_unavailable', source: 'properties' });
+    }
     // Supabase branch removed
     if (dbAdapter_1.hasPg) {
         const filter = includeArchived ? {} : { archived: false };

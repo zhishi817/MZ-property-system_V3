@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.router = void 0;
+exports.OFFLINE_TASK_STORAGE_URGENCY = exports.offlineTaskSchema = exports.router = void 0;
 exports.upsertWorkTaskFromOfflineTask = upsertWorkTaskFromOfflineTask;
 const express_1 = require("express");
 const zod_1 = require("zod");
@@ -15,6 +15,11 @@ const cleaningInspection_1 = require("../lib/cleaningInspection");
 const webTaskCapabilities_1 = require("../lib/webTaskCapabilities");
 const cleaningAssignmentStatus_1 = require("../lib/cleaningAssignmentStatus");
 const cleaningTurnoverDisplay_1 = require("../lib/cleaningTurnoverDisplay");
+const cleaningTaskNightOverride_1 = require("../lib/cleaningTaskNightOverride");
+const taskExecutorEligibility_1 = require("../services/taskExecutorEligibility");
+const deferredInspectionCheckinConflict_1 = require("../services/deferredInspectionCheckinConflict");
+const r5RequestSchema_1 = require("../lib/r5RequestSchema");
+const inspectionAssignmentConflict_1 = require("../lib/inspectionAssignmentConflict");
 exports.router = (0, express_1.Router)();
 const DEFAULT_SUMMARY_CHECKOUT_TIME = '10am';
 const DEFAULT_SUMMARY_CHECKIN_TIME = '3pm';
@@ -38,6 +43,107 @@ function auDayStr(d) {
 function dayOnly(s) {
     const v = String(s || '').slice(0, 10);
     return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null;
+}
+const TURNOVER_INSPECTION_SCOPE_CONFLICT = 'turnover_requires_inspect_and_hang';
+const MANUAL_CHECKIN_LINK_CONFLICT = 'manual_checkin_checkout_link_conflict';
+class ManualCheckinLinkConflict extends Error {
+    constructor(message) {
+        super(message);
+        this.code = MANUAL_CHECKIN_LINK_CONFLICT;
+        this.status = 409;
+        this.name = 'ManualCheckinLinkConflict';
+    }
+}
+function assertManualCheckinCheckoutLink(params) {
+    var _a, _b, _c;
+    const linkedCheckoutTaskId = String(params.linkedCheckoutTaskId || '').trim();
+    if (!linkedCheckoutTaskId)
+        return null;
+    if (params.createdTypes.length !== 1 || params.createdTypes[0] !== 'checkin_clean') {
+        throw new ManualCheckinLinkConflict('只有单独新增入住任务可以关联退房任务');
+    }
+    const checkout = params.checkoutTask;
+    if (!checkout || !String(checkout.id || '').trim())
+        throw new ManualCheckinLinkConflict('关联的退房任务不存在或已失效');
+    const checkoutType = String((_b = (_a = checkout.task_type) !== null && _a !== void 0 ? _a : checkout.type) !== null && _b !== void 0 ? _b : '').trim().toLowerCase();
+    const checkoutState = String(checkout.execution_state || '').trim().toLowerCase();
+    const checkoutStatus = String(checkout.status || '').trim().toLowerCase();
+    if (checkoutType !== 'checkout_clean'
+        || ['cancelled', 'canceled', 'superseded', 'deleted'].includes(checkoutState)
+        || ['cancelled', 'canceled'].includes(checkoutStatus)) {
+        throw new ManualCheckinLinkConflict('关联的退房任务不是有效的退房任务');
+    }
+    if (String(checkout.property_id || '').trim() !== String(params.propertyId || '').trim()
+        || dayOnly((_c = checkout.task_date) !== null && _c !== void 0 ? _c : checkout.date) !== dayOnly(params.taskDate)) {
+        throw new ManualCheckinLinkConflict('入住与退房必须属于同一房源和同一业务日期');
+    }
+    const conflicts = (Array.isArray(params.activeCheckinRows) ? params.activeCheckinRows : [])
+        .filter((row) => String(row.id || '').trim());
+    if (conflicts.length)
+        throw new ManualCheckinLinkConflict('该退房任务已有有效入住任务，不能重复关联');
+    return linkedCheckoutTaskId;
+}
+function turnoverInspectionScopeTarget(current, patch = {}) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j;
+    const taskKind = String((_c = (_b = (_a = patch === null || patch === void 0 ? void 0 : patch.task_type) !== null && _a !== void 0 ? _a : current === null || current === void 0 ? void 0 : current.task_type) !== null && _b !== void 0 ? _b : current === null || current === void 0 ? void 0 : current.type) !== null && _c !== void 0 ? _c : '').trim().toLowerCase();
+    const oppositeKind = taskKind === 'checkout_clean'
+        ? 'checkin_clean'
+        : taskKind === 'checkin_clean'
+            ? 'checkout_clean'
+            : '';
+    const propertyId = String((_e = (_d = patch === null || patch === void 0 ? void 0 : patch.property_id) !== null && _d !== void 0 ? _d : current === null || current === void 0 ? void 0 : current.property_id) !== null && _e !== void 0 ? _e : '').trim();
+    const taskDate = dayOnly((_h = (_g = (_f = patch === null || patch === void 0 ? void 0 : patch.task_date) !== null && _f !== void 0 ? _f : patch === null || patch === void 0 ? void 0 : patch.date) !== null && _g !== void 0 ? _g : current === null || current === void 0 ? void 0 : current.task_date) !== null && _h !== void 0 ? _h : current === null || current === void 0 ? void 0 : current.date);
+    if (!oppositeKind || !propertyId || !taskDate)
+        return null;
+    return {
+        oppositeKind,
+        propertyId,
+        taskDate,
+        inspectionScope: (0, cleaningInspection_1.normalizeInspectionScope)((_j = patch === null || patch === void 0 ? void 0 : patch.inspection_scope) !== null && _j !== void 0 ? _j : current === null || current === void 0 ? void 0 : current.inspection_scope),
+    };
+}
+async function assertPgTurnoverInspectionScope(client, taskId, current, patch = {}) {
+    var _a, _b, _c;
+    const target = turnoverInspectionScopeTarget(current, patch);
+    if (!target)
+        return;
+    const counterpart = await client.query(`SELECT task.inspection_scope
+     FROM cleaning_tasks AS task
+     WHERE task.id::text <> $1
+       AND task.property_id::text = $2
+       AND COALESCE(task.task_date, task.date)::date = $3::date
+       AND lower(COALESCE(task.task_type, task.type, '')) = $4
+       AND ${(0, cleaningSync_1.activeCleaningTaskWhereSql)('task')}
+     LIMIT 1`, [String(taskId), target.propertyId, target.taskDate, target.oppositeKind]);
+    const counterpartScope = (_b = (_a = counterpart.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.inspection_scope;
+    if (((_c = counterpart.rows) === null || _c === void 0 ? void 0 : _c.length)
+        && (target.inspectionScope === 'password_only' || (0, cleaningInspection_1.normalizeInspectionScope)(counterpartScope) === 'password_only')) {
+        throw new Error(TURNOVER_INSPECTION_SCOPE_CONFLICT);
+    }
+}
+function assertMemoryTurnoverInspectionScope(taskId, current, patch = {}) {
+    const target = turnoverInspectionScopeTarget(current, patch);
+    if (!target)
+        return;
+    const counterpart = store_1.db.cleaningTasks.find((candidate) => {
+        var _a, _b, _c;
+        return (String(candidate.id || '') !== String(taskId)
+            && String(candidate.property_id || '').trim() === target.propertyId
+            && dayOnly((_a = candidate.task_date) !== null && _a !== void 0 ? _a : candidate.date) === target.taskDate
+            && String((_c = (_b = candidate.task_type) !== null && _b !== void 0 ? _b : candidate.type) !== null && _c !== void 0 ? _c : '').trim().toLowerCase() === target.oppositeKind
+            && !(0, cleaningSync_1.isCancelledCleaningTaskStatus)(candidate.status)
+            && String(candidate.execution_state || 'active').trim().toLowerCase() === 'active');
+    });
+    if (counterpart
+        && (target.inspectionScope === 'password_only' || (0, cleaningInspection_1.normalizeInspectionScope)(counterpart.inspection_scope) === 'password_only')) {
+        throw new Error(TURNOVER_INSPECTION_SCOPE_CONFLICT);
+    }
+}
+function sendTurnoverInspectionScopeConflict(res, error) {
+    if ((error === null || error === void 0 ? void 0 : error.message) !== TURNOVER_INSPECTION_SCOPE_CONFLICT)
+        return false;
+    res.status(400).json({ code: TURNOVER_INSPECTION_SCOPE_CONFLICT, message: '同日退房入住任务必须检查后挂钥匙' });
+    return true;
 }
 function cleanNotificationText(value) {
     return String(value !== null && value !== void 0 ? value : '').replace(/\s+/g, ' ').trim();
@@ -179,6 +285,20 @@ function buildCleaningTaskDeletionNotice(task) {
         title: `${cleaningTaskNoticeLabel(task)}已删除`,
         body: lines.join('\n'),
     };
+}
+function logNotificationEmissionOutcome(source, entityId, result) {
+    if ((result === null || result === void 0 ? void 0 : result.ok) && Number((result === null || result === void 0 ? void 0 : result.sent) || 0) > 0)
+        return;
+    try {
+        console.error(`[notifications][emit_incomplete] source=${source} entity_id=${entityId} sent=${Number((result === null || result === void 0 ? void 0 : result.sent) || 0)} error_code=${String((result === null || result === void 0 ? void 0 : result.error_code) || '')}`);
+    }
+    catch (_a) { }
+}
+function logNotificationEmissionFailure(source, entityId, error) {
+    try {
+        console.error(`[notifications][emit_failed] source=${source} entity_id=${entityId} error=${String((error === null || error === void 0 ? void 0 : error.message) || 'unknown')}`);
+    }
+    catch (_a) { }
 }
 async function resolveCleaningTaskUpdateRecipients(taskIds) {
     try {
@@ -329,40 +449,55 @@ async function ensureWorkTasksTable() {
     }
     catch (_b) { }
 }
-function offlineWorkStatus(value) {
-    return String(value || '').trim().toLowerCase() === 'done' ? 'done' : 'todo';
+function offlineWorkStatus(value, assigneeId) {
+    const status = String(value || '').trim().toLowerCase();
+    if (status === 'done')
+        return 'done';
+    return String(assigneeId || '').trim() ? 'assigned' : 'todo';
 }
 function normalizePhotoUrls(input) {
     const arr = Array.isArray(input) ? input : [];
     return Array.from(new Set(arr.map((item) => String(item || '').trim()).filter(Boolean))).slice(0, 20);
 }
-async function upsertWorkTaskFromOfflineTask(row, requestedStatus) {
+function stripOfflineTaskUrgency(row) {
+    if (!row || typeof row !== 'object')
+        return row;
+    const out = { ...row };
+    delete out.urgency;
+    return out;
+}
+async function upsertWorkTaskFromOfflineTask(row, requestedStatus, options = {}) {
     if (!dbAdapter_1.hasPg || !dbAdapter_1.pgPool)
         return;
     const id = String((row === null || row === void 0 ? void 0 : row.id) || '').trim();
     if (!id)
         return;
-    await ensureWorkTasksTable();
+    if (!options.client)
+        await ensureWorkTasksTable();
+    const executor = options.client || dbAdapter_1.pgPool;
     const workId = `cleaning_offline_tasks:${id}`;
     const scheduled = (row === null || row === void 0 ? void 0 : row.date) ? String(row.date).slice(0, 10) : null;
     const assignee = String((row === null || row === void 0 ? void 0 : row.assignee_id) || '').trim() || null;
-    const status = offlineWorkStatus(requestedStatus === undefined ? row === null || row === void 0 ? void 0 : row.status : requestedStatus);
+    const status = offlineWorkStatus(requestedStatus === undefined ? row === null || row === void 0 ? void 0 : row.status : requestedStatus, assignee);
     const updateStatus = requestedStatus !== undefined;
-    const urgency = String((row === null || row === void 0 ? void 0 : row.urgency) || '').trim() || 'medium';
+    const syncAssignmentStatus = !!options.syncAssignmentStatus;
     const photoUrls = normalizePhotoUrls(row === null || row === void 0 ? void 0 : row.photo_urls);
-    await dbAdapter_1.pgPool.query(`INSERT INTO work_tasks(id, task_kind, source_type, source_id, property_id, title, summary, scheduled_date, assignee_id, status, urgency, photo_urls, created_at, updated_at)
-     VALUES($1,'offline','cleaning_offline_tasks',$2,$3,$4,$5,$6::date,$7,$8,$9,$10::jsonb,COALESCE($11::timestamptz, now()), now())
+    await executor.query(`INSERT INTO work_tasks(id, task_kind, source_type, source_id, property_id, title, summary, scheduled_date, assignee_id, status, photo_urls, created_at, updated_at)
+     VALUES($1,'offline','cleaning_offline_tasks',$2,$3,$4,$5,$6::date,$7,$8,$9::jsonb,COALESCE($10::timestamptz, now()), now())
      ON CONFLICT (source_type, source_id) DO UPDATE SET
        property_id=EXCLUDED.property_id,
        title=EXCLUDED.title,
        summary=EXCLUDED.summary,
        scheduled_date=EXCLUDED.scheduled_date,
-       assignee_id=work_tasks.assignee_id,
-       status=CASE WHEN $12::boolean THEN EXCLUDED.status ELSE work_tasks.status END,
-       urgency=EXCLUDED.urgency,
+       assignee_id=CASE WHEN $12::boolean THEN EXCLUDED.assignee_id ELSE work_tasks.assignee_id END,
+       status=CASE
+         WHEN $11::boolean THEN EXCLUDED.status
+         WHEN $12::boolean AND lower(COALESCE(work_tasks.status, 'todo')) IN ('todo', 'assigned') THEN EXCLUDED.status
+         ELSE work_tasks.status
+       END,
        photo_urls=EXCLUDED.photo_urls,
        updated_at=now()
-     RETURNING *`, [workId, id, (row === null || row === void 0 ? void 0 : row.property_id) || null, String((row === null || row === void 0 ? void 0 : row.title) || ''), String((row === null || row === void 0 ? void 0 : row.content) || '') || null, scheduled, assignee, status, urgency, JSON.stringify(photoUrls), (row === null || row === void 0 ? void 0 : row.created_at) || null, updateStatus]);
+     RETURNING *`, [workId, id, (row === null || row === void 0 ? void 0 : row.property_id) || null, String((row === null || row === void 0 ? void 0 : row.title) || ''), String((row === null || row === void 0 ? void 0 : row.content) || '') || null, scheduled, assignee, status, JSON.stringify(photoUrls), (row === null || row === void 0 ? void 0 : row.created_at) || null, updateStatus, syncAssignmentStatus]);
 }
 async function backfillOfflineWorkTasks() {
     if (!dbAdapter_1.hasPg || !dbAdapter_1.pgPool)
@@ -371,7 +506,7 @@ async function backfillOfflineWorkTasks() {
     // Legacy status is consulted only when creating the canonical work task for the first time.
     await dbAdapter_1.pgPool.query(`INSERT INTO work_tasks(
        id, task_kind, source_type, source_id, property_id, title, summary,
-       scheduled_date, assignee_id, status, urgency, photo_urls, created_at, updated_at
+       scheduled_date, assignee_id, status, photo_urls, created_at, updated_at
      )
      SELECT
        'cleaning_offline_tasks:' || t.id::text,
@@ -383,8 +518,11 @@ async function backfillOfflineWorkTasks() {
        NULLIF(COALESCE(t.content, ''), ''),
        t.date::date,
        t.assignee_id,
-       CASE WHEN lower(COALESCE(t.status, 'todo')) = 'done' THEN 'done' ELSE 'todo' END,
-       COALESCE(NULLIF(t.urgency, ''), 'medium'),
+       CASE
+         WHEN lower(COALESCE(t.status, 'todo')) = 'done' THEN 'done'
+         WHEN NULLIF(COALESCE(t.assignee_id, ''), '') IS NOT NULL THEN 'assigned'
+         ELSE 'todo'
+       END,
        COALESCE(t.photo_urls, '[]'::jsonb),
        COALESCE(t.created_at, t.updated_at, now()),
        COALESCE(t.updated_at, t.created_at, now())
@@ -392,8 +530,11 @@ async function backfillOfflineWorkTasks() {
      ON CONFLICT (source_type, source_id) DO NOTHING`);
 }
 exports.router.get('/staff', (0, auth_1.requireAnyPerm)(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), async (req, res) => {
-    var _a;
+    var _a, _b;
     const kind = String(((_a = req.query) === null || _a === void 0 ? void 0 : _a.kind) || '').trim().toLowerCase();
+    const staffScope = String(((_b = req.query) === null || _b === void 0 ? void 0 : _b.scope) || '').trim().toLowerCase();
+    const taskExecutorScope = staffScope === 'task_executor';
+    const maintenanceExecutorScope = staffScope === 'maintenance_executor';
     const rolesForKind = (k) => {
         if (k === 'cleaner')
             return ['cleaner', 'cleaner_inspector'];
@@ -437,10 +578,27 @@ exports.router.get('/staff', (0, auth_1.requireAnyPerm)(['cleaning.view', 'clean
                     String(u.role || '').trim(),
                     ...((Array.isArray(u.roles) ? u.roles : []).map((x) => String(x || '').trim())),
                 ].filter(Boolean)));
-                if (!roleNames.some((role) => roles.includes(role)))
-                    continue;
                 const name = String(u.username || u.email || u.id || '').trim() || String(u.id);
                 const base = { id: String(u.id), name, capacity_per_day: 0, is_active: true, color_hex: String(u.color_hex || '#3B82F6') };
+                if (maintenanceExecutorScope) {
+                    out.push({ ...base, kind: 'executor' });
+                    continue;
+                }
+                if (taskExecutorScope) {
+                    if (!(0, taskExecutorEligibility_1.isTaskExecutorEligibleRoleNames)(roleNames))
+                        continue;
+                    const executorKinds = kindsForRoles(roleNames, '');
+                    if (executorKinds.length) {
+                        for (const resolvedKind of executorKinds)
+                            out.push({ ...base, kind: resolvedKind });
+                    }
+                    else {
+                        out.push({ ...base, kind: 'executor' });
+                    }
+                    continue;
+                }
+                if (!roleNames.some((role) => roles.includes(role)))
+                    continue;
                 for (const resolvedKind of kindsForRoles(roleNames, kind)) {
                     out.push({ ...base, kind: resolvedKind });
                 }
@@ -451,12 +609,34 @@ exports.router.get('/staff', (0, auth_1.requireAnyPerm)(['cleaning.view', 'clean
     catch (e) {
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'staff_failed' });
     }
-    const users = (store_1.db.users || []).filter((u) => roles.includes(String(u.role || '')));
     const out = [];
-    for (const u of users) {
+    for (const u of (store_1.db.users || [])) {
+        const roleNames = Array.from(new Set([
+            String(u.role || '').trim(),
+            ...((Array.isArray(u.roles) ? u.roles : []).map((x) => String(x || '').trim())),
+        ].filter(Boolean)));
         const role = String(u.role || '');
         const name = String(u.username || u.email || u.id || '').trim() || String(u.id);
         const base = { id: String(u.id), name, capacity_per_day: 0, is_active: true, color_hex: String(u.color_hex || '#3B82F6') };
+        if (maintenanceExecutorScope) {
+            out.push({ ...base, kind: 'executor' });
+            continue;
+        }
+        if (taskExecutorScope) {
+            if (!(0, taskExecutorEligibility_1.isTaskExecutorEligibleRoleNames)(roleNames))
+                continue;
+            const executorKinds = kindsForRoles(roleNames, '');
+            if (executorKinds.length) {
+                for (const resolvedKind of executorKinds)
+                    out.push({ ...base, kind: resolvedKind });
+            }
+            else {
+                out.push({ ...base, kind: 'executor' });
+            }
+            continue;
+        }
+        if (!roleNames.some((item) => roles.includes(item)))
+            continue;
         if (role === 'cleaner' && kind !== 'inspector')
             out.push({ ...base, kind: 'cleaner' });
         else if (role === 'cleaning_inspector' && kind !== 'cleaner')
@@ -472,18 +652,21 @@ exports.router.get('/staff', (0, auth_1.requireAnyPerm)(['cleaning.view', 'clean
     }
     return res.json(out);
 });
-const offlineTaskSchema = zod_1.z.object({
+exports.offlineTaskSchema = zod_1.z.object({
     date: zod_1.z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     task_type: zod_1.z.enum(['property', 'company', 'other']),
     title: zod_1.z.string().min(1),
     content: zod_1.z.string().optional(),
     kind: zod_1.z.string().min(1),
     status: zod_1.z.enum(['todo', 'done']),
-    urgency: zod_1.z.enum(['low', 'medium', 'high', 'urgent']),
+    // Kept as an optional legacy input for older clients; offline tasks no longer use it.
+    urgency: zod_1.z.unknown().optional(),
     property_id: zod_1.z.string().nullable().optional(),
     assignee_id: zod_1.z.string().nullable().optional(),
     photo_urls: zod_1.z.array(zod_1.z.string().trim().min(1).max(1200)).max(20).optional(),
 }).strict();
+// Legacy database compatibility only: offline urgency is not exposed or used by business logic.
+exports.OFFLINE_TASK_STORAGE_URGENCY = 'medium';
 exports.router.get('/offline-tasks', (0, auth_1.requireAnyPerm)(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), async (req, res) => {
     var _a, _b;
     const dateParsed = zod_1.z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().safeParse((_a = req.query) === null || _a === void 0 ? void 0 : _a.date);
@@ -494,27 +677,42 @@ exports.router.get('/offline-tasks', (0, auth_1.requireAnyPerm)(['cleaning.view'
             await ensureOfflineTasksTable();
             await backfillOfflineWorkTasks();
             if (!date) {
-                const r = await dbAdapter_1.pgPool.query(`SELECT t.*, COALESCE(w.status, 'todo') AS status, w.assignee_id AS assignee_id
+                const r = await dbAdapter_1.pgPool.query(`SELECT t.*,
+                  CASE
+                    WHEN lower(COALESCE(w.status, 'todo')) = 'todo' AND NULLIF(COALESCE(w.assignee_id, ''), '') IS NOT NULL THEN 'assigned'
+                    ELSE COALESCE(w.status, 'todo')
+                  END AS status,
+                  w.assignee_id AS assignee_id
              FROM cleaning_offline_tasks t
              JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
             ORDER BY t.date DESC, t.updated_at DESC, t.id DESC`);
-                return res.json((r === null || r === void 0 ? void 0 : r.rows) || []);
+                return res.json(((r === null || r === void 0 ? void 0 : r.rows) || []).map(stripOfflineTaskUrgency));
             }
             if (includeOverdue) {
-                const r = await dbAdapter_1.pgPool.query(`SELECT t.*, COALESCE(w.status, 'todo') AS status, w.assignee_id AS assignee_id
+                const r = await dbAdapter_1.pgPool.query(`SELECT t.*,
+                  CASE
+                    WHEN lower(COALESCE(w.status, 'todo')) = 'todo' AND NULLIF(COALESCE(w.assignee_id, ''), '') IS NOT NULL THEN 'assigned'
+                    ELSE COALESCE(w.status, 'todo')
+                  END AS status,
+                  w.assignee_id AS assignee_id
              FROM cleaning_offline_tasks t
              JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
             WHERE (t.date::date = $1::date)
                OR (t.date::date < $1::date AND lower(COALESCE(w.status, 'todo')) <> 'done')
-            ORDER BY t.date ASC, t.urgency DESC, t.updated_at DESC, t.id DESC`, [date]);
-                return res.json((r === null || r === void 0 ? void 0 : r.rows) || []);
+            ORDER BY t.date ASC, t.updated_at DESC, t.id DESC`, [date]);
+                return res.json(((r === null || r === void 0 ? void 0 : r.rows) || []).map(stripOfflineTaskUrgency));
             }
-            const r = await dbAdapter_1.pgPool.query(`SELECT t.*, COALESCE(w.status, 'todo') AS status, w.assignee_id AS assignee_id
+            const r = await dbAdapter_1.pgPool.query(`SELECT t.*,
+                CASE
+                  WHEN lower(COALESCE(w.status, 'todo')) = 'todo' AND NULLIF(COALESCE(w.assignee_id, ''), '') IS NOT NULL THEN 'assigned'
+                  ELSE COALESCE(w.status, 'todo')
+                END AS status,
+                w.assignee_id AS assignee_id
            FROM cleaning_offline_tasks t
            JOIN work_tasks w ON w.source_type = 'cleaning_offline_tasks' AND w.source_id = t.id::text
           WHERE t.date::date = $1::date
-          ORDER BY t.urgency DESC, t.updated_at DESC, t.id DESC`, [date]);
-            return res.json((r === null || r === void 0 ? void 0 : r.rows) || []);
+          ORDER BY t.updated_at DESC, t.id DESC`, [date]);
+            return res.json(((r === null || r === void 0 ? void 0 : r.rows) || []).map(stripOfflineTaskUrgency));
         }
         const rows = (store_1.db.cleaningOfflineTasks || []);
         const filtered = date
@@ -528,7 +726,7 @@ exports.router.get('/offline-tasks', (0, auth_1.requireAnyPerm)(['cleaning.view'
             })
             : rows;
         filtered.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')) || String(b.id || '').localeCompare(String(a.id || '')));
-        return res.json(filtered);
+        return res.json(filtered.map(stripOfflineTaskUrgency));
     }
     catch (e) {
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'offline_tasks_failed' });
@@ -536,7 +734,7 @@ exports.router.get('/offline-tasks', (0, auth_1.requireAnyPerm)(['cleaning.view'
 });
 exports.router.post('/offline-tasks', requireCleaningManualCreateAccess, async (req, res) => {
     var _a, _b, _c, _d, _e;
-    const parsed = offlineTaskSchema.safeParse(req.body || {});
+    const parsed = exports.offlineTaskSchema.safeParse(req.body || {});
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
     const payload = parsed.data;
@@ -548,9 +746,8 @@ exports.router.post('/offline-tasks', requireCleaningManualCreateAccess, async (
             title: payload.title,
             content: payload.content || '',
             kind: payload.kind,
-            // Kept only for the legacy table's NOT NULL constraint; work_tasks owns task state.
             status: 'todo',
-            urgency: payload.urgency,
+            urgency: exports.OFFLINE_TASK_STORAGE_URGENCY,
             property_id: (_a = payload.property_id) !== null && _a !== void 0 ? _a : null,
             assignee_id: (_b = payload.assignee_id) !== null && _b !== void 0 ? _b : null,
             photo_urls: normalizePhotoUrls(payload.photo_urls),
@@ -561,9 +758,10 @@ exports.router.post('/offline-tasks', requireCleaningManualCreateAccess, async (
           id, date, task_type, title, content, kind, status, urgency, property_id, assignee_id, photo_urls
         ) VALUES($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb) RETURNING *`, [row.id, row.date, row.task_type, row.title, row.content, row.kind, row.status, row.urgency, row.property_id, row.assignee_id, JSON.stringify(row.photo_urls)]);
             const out = ((_c = r === null || r === void 0 ? void 0 : r.rows) === null || _c === void 0 ? void 0 : _c[0]) || row;
-            await upsertWorkTaskFromOfflineTask(out, payload.status);
-            out.status = offlineWorkStatus(payload.status);
+            await upsertWorkTaskFromOfflineTask(out, payload.status, { syncAssignmentStatus: true });
+            out.status = offlineWorkStatus(payload.status, out.assignee_id);
             out.photo_urls = normalizePhotoUrls(out.photo_urls);
+            delete out.urgency;
             const workTaskId = offlineWorkTaskId(String(out.id || row.id));
             if (String(out.status || '').trim().toLowerCase() !== 'done') {
                 try {
@@ -573,14 +771,13 @@ exports.router.post('/offline-tasks', requireCleaningManualCreateAccess, async (
                         sourceRefIds: [workTaskId],
                         eventType: 'TASK_CREATED',
                         changeScope: 'membership',
-                        changedFields: ['id', 'title', 'summary', 'scheduled_date', 'status', 'urgency', 'property_id', 'assignee_id', 'photo_urls'],
+                        changedFields: ['id', 'title', 'summary', 'scheduled_date', 'status', 'property_id', 'assignee_id', 'photo_urls'],
                         patch: {
                             id: workTaskId,
                             title: out.title,
                             summary: out.content || null,
                             scheduled_date: out.date,
                             status: out.status,
-                            urgency: out.urgency,
                             property_id: out.property_id || null,
                             assignee_id: out.assignee_id || null,
                             photo_urls: out.photo_urls,
@@ -641,56 +838,85 @@ exports.router.post('/offline-tasks', requireCleaningManualCreateAccess, async (
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'create_failed' });
     }
 });
-exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.schedule.manage'), async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q;
+exports.router.patch('/offline-tasks/:id', requireCleaningManualCreateAccess, async (req, res) => {
+    var _a, _b;
     const { id } = req.params;
-    const parsed = offlineTaskSchema.partial().safeParse(req.body || {});
+    const parsed = exports.offlineTaskSchema.partial().safeParse(req.body || {});
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
     const patch = parsed.data;
-    const contentFieldAllowlist = new Set(['date', 'task_type', 'title', 'content', 'kind', 'urgency', 'property_id', 'photo_urls']);
+    const hasAssigneePatch = Object.prototype.hasOwnProperty.call(req.body || {}, 'assignee_id');
+    const normalizedAssigneeId = hasAssigneePatch
+        ? (String(patch.assignee_id || '').trim() || null)
+        : undefined;
+    if (normalizedAssigneeId && !(await isValidAnyStaffId(normalizedAssigneeId))) {
+        return res.status(400).json({ message: '无效的执行人' });
+    }
+    if (hasAssigneePatch)
+        patch.assignee_id = normalizedAssigneeId;
+    const contentFieldAllowlist = new Set(['date', 'task_type', 'title', 'content', 'kind', 'property_id', 'assignee_id', 'photo_urls']);
+    const assignmentRequested = hasAssigneePatch;
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
             await ensureOfflineTasksTable();
-            const beforeRes = await dbAdapter_1.pgPool.query('SELECT * FROM cleaning_offline_tasks WHERE id=$1 LIMIT 1', [String(id)]);
-            const before = ((_a = beforeRes === null || beforeRes === void 0 ? void 0 : beforeRes.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
-            if (!before)
-                return res.status(404).json({ message: 'task not found' });
-            const keys = Object.keys(patch || {}).filter((k) => (k !== 'status'
-                && contentFieldAllowlist.has(k)
-                && patch[k] !== undefined));
-            if (!keys.length) {
-                if (patch.status === undefined) {
-                    const statusResult = await dbAdapter_1.pgPool.query(`SELECT status FROM work_tasks WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1 LIMIT 1`, [String(id)]);
-                    return res.json({ ...before, status: offlineWorkStatus((_c = (_b = statusResult === null || statusResult === void 0 ? void 0 : statusResult.rows) === null || _b === void 0 ? void 0 : _b[0]) === null || _c === void 0 ? void 0 : _c.status) });
+            await ensureWorkTasksTable();
+            const result = await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
+                var _a, _b, _c, _d, _e, _f;
+                const beforeRes = await client.query('SELECT * FROM cleaning_offline_tasks WHERE id=$1 LIMIT 1 FOR UPDATE', [String(id)]);
+                const before = ((_a = beforeRes === null || beforeRes === void 0 ? void 0 : beforeRes.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
+                if (!before)
+                    return { kind: 'missing' };
+                const beforeWorkResult = await client.query(`SELECT status, assignee_id
+             FROM work_tasks
+            WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1
+            LIMIT 1
+            FOR UPDATE`, [String(id)]);
+                const beforeWork = ((_b = beforeWorkResult === null || beforeWorkResult === void 0 ? void 0 : beforeWorkResult.rows) === null || _b === void 0 ? void 0 : _b[0]) || null;
+                const keys = Object.keys(patch || {}).filter((k) => (k !== 'status'
+                    && contentFieldAllowlist.has(k)
+                    && patch[k] !== undefined));
+                let row = before;
+                if (keys.length) {
+                    const set = keys.map((k, i) => (k === 'photo_urls' ? `"${k}" = $${i + 1}::jsonb` : `"${k}" = $${i + 1}`)).join(', ');
+                    const values = keys.map((k) => k === 'photo_urls' ? JSON.stringify(normalizePhotoUrls(patch[k])) : patch[k]);
+                    const sql = `UPDATE cleaning_offline_tasks SET ${set}, updated_at=now() WHERE id=$${keys.length + 1} RETURNING *`;
+                    const updated = await client.query(sql, [...values, String(id)]);
+                    row = ((_c = updated === null || updated === void 0 ? void 0 : updated.rows) === null || _c === void 0 ? void 0 : _c[0]) || null;
                 }
-            }
-            const beforeStatusResult = await dbAdapter_1.pgPool.query(`SELECT status FROM work_tasks WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1 LIMIT 1`, [String(id)]);
-            const beforeStatus = offlineWorkStatus((_f = (_e = (_d = beforeStatusResult === null || beforeStatusResult === void 0 ? void 0 : beforeStatusResult.rows) === null || _d === void 0 ? void 0 : _d[0]) === null || _e === void 0 ? void 0 : _e.status) !== null && _f !== void 0 ? _f : before.status);
-            let row = before;
-            if (keys.length) {
-                const set = keys.map((k, i) => (k === 'photo_urls' ? `"${k}" = $${i + 1}::jsonb` : `"${k}" = $${i + 1}`)).join(', ');
-                const values = keys.map((k) => {
-                    if (k === 'photo_urls')
-                        return JSON.stringify(normalizePhotoUrls(patch[k]));
-                    return patch[k] === undefined ? null : patch[k];
-                });
-                const sql = `UPDATE cleaning_offline_tasks SET ${set}, updated_at=now() WHERE id=$${keys.length + 1} RETURNING *`;
-                const r1 = await dbAdapter_1.pgPool.query(sql, [...values, String(id)]);
-                row = ((_g = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _g === void 0 ? void 0 : _g[0]) || null;
-            }
-            if (!row)
+                if (!row)
+                    return { kind: 'missing' };
+                await upsertWorkTaskFromOfflineTask(row, patch.status, { client, syncAssignmentStatus: hasAssigneePatch });
+                const statusResult = await client.query(`SELECT id, status, assignee_id, updated_at
+             FROM work_tasks
+            WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1
+            LIMIT 1
+            FOR UPDATE`, [String(id)]);
+                const workTask = ((_d = statusResult === null || statusResult === void 0 ? void 0 : statusResult.rows) === null || _d === void 0 ? void 0 : _d[0]) || null;
+                if (!workTask)
+                    throw new Error('offline_work_task_missing');
+                const canonicalAssigneeId = String(workTask.assignee_id || '').trim() || null;
+                const canonicalStatus = offlineWorkStatus(workTask.status, canonicalAssigneeId);
+                return {
+                    kind: 'updated',
+                    row: { ...row, status: canonicalStatus, assignee_id: canonicalAssigneeId, photo_urls: normalizePhotoUrls(row.photo_urls) },
+                    workTask,
+                    keys,
+                    canonicalAssigneeId,
+                    beforeCanonicalAssigneeId: (beforeWork === null || beforeWork === void 0 ? void 0 : beforeWork.assignee_id) ? String(beforeWork.assignee_id) : null,
+                    beforeStatus: offlineWorkStatus((_e = beforeWork === null || beforeWork === void 0 ? void 0 : beforeWork.status) !== null && _e !== void 0 ? _e : before.status, (_f = beforeWork === null || beforeWork === void 0 ? void 0 : beforeWork.assignee_id) !== null && _f !== void 0 ? _f : before.assignee_id),
+                };
+            });
+            if (!result || result.kind === 'missing')
                 return res.status(404).json({ message: 'task not found' });
-            await upsertWorkTaskFromOfflineTask(row, patch.status);
-            const statusResult = await dbAdapter_1.pgPool.query(`SELECT status, assignee_id FROM work_tasks WHERE source_type = 'cleaning_offline_tasks' AND source_id = $1 LIMIT 1`, [String(id)]);
-            row.status = offlineWorkStatus((_j = (_h = statusResult === null || statusResult === void 0 ? void 0 : statusResult.rows) === null || _h === void 0 ? void 0 : _h[0]) === null || _j === void 0 ? void 0 : _j.status);
-            row.assignee_id = ((_l = (_k = statusResult === null || statusResult === void 0 ? void 0 : statusResult.rows) === null || _k === void 0 ? void 0 : _k[0]) === null || _l === void 0 ? void 0 : _l.assignee_id) ? String(statusResult.rows[0].assignee_id) : null;
-            row.photo_urls = normalizePhotoUrls(row.photo_urls);
-            const canonicalAssigneeId = ((_o = (_m = statusResult === null || statusResult === void 0 ? void 0 : statusResult.rows) === null || _m === void 0 ? void 0 : _m[0]) === null || _o === void 0 ? void 0 : _o.assignee_id) || null;
+            const row = result.row;
+            const keys = result.keys;
+            const canonicalAssigneeId = result.canonicalAssigneeId;
+            const beforeCanonicalAssigneeId = result.beforeCanonicalAssigneeId;
+            const beforeStatus = result.beforeStatus;
             const completedChanged = beforeStatus !== 'done' && row.status === 'done';
-            if (keys.length && !completedChanged) {
+            if ((keys.length || assignmentRequested) && !completedChanged) {
                 const workTaskId = offlineWorkTaskId(String(row.id || id));
-                const changedFields = keys.map((k) => {
+                const changedFields = [...keys, ...(assignmentRequested ? ['assignee_id'] : [])].map((k) => {
                     if (k === 'date')
                         return 'scheduled_date';
                     if (k === 'content')
@@ -705,23 +931,26 @@ exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.sch
                         patchForEvent.summary = row.content || null;
                     else if (field === 'photo_urls')
                         patchForEvent.photo_urls = row.photo_urls;
+                    else if (field === 'assignee_id')
+                        patchForEvent.assignee_id = canonicalAssigneeId;
                     else
                         patchForEvent[field] = row[field];
                 }
+                const assignmentChanged = assignmentRequested && beforeCanonicalAssigneeId !== (canonicalAssigneeId ? String(canonicalAssigneeId) : null);
                 try {
                     await (0, workTaskEvents_1.emitWorkTaskEvent)({
                         taskId: `work_task:${workTaskId}`,
                         sourceType: 'work_tasks',
                         sourceRefIds: [workTaskId],
-                        eventType: 'TASK_UPDATED',
-                        changeScope: 'list',
+                        eventType: assignmentChanged ? 'TASK_ASSIGNMENT_CHANGED' : 'TASK_UPDATED',
+                        changeScope: assignmentChanged ? 'membership' : 'list',
                         changedFields,
                         patch: patchForEvent,
-                        causedByUserId: String(((_p = req.user) === null || _p === void 0 ? void 0 : _p.sub) || '').trim() || null,
+                        causedByUserId: String(((_a = req.user) === null || _a === void 0 ? void 0 : _a.sub) || '').trim() || null,
                         visibilityHints: (0, workTaskEvents_1.buildWorkTaskVisibilityHints)({ assignee_id: canonicalAssigneeId }),
                     });
                 }
-                catch (_r) { }
+                catch (_c) { }
             }
             if (completedChanged) {
                 const workTaskId = offlineWorkTaskId(String(row.id || id));
@@ -734,11 +963,11 @@ exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.sch
                         changeScope: 'list',
                         changedFields: ['status'],
                         patch: { status: 'done' },
-                        causedByUserId: String(((_q = req.user) === null || _q === void 0 ? void 0 : _q.sub) || '').trim() || null,
+                        causedByUserId: String(((_b = req.user) === null || _b === void 0 ? void 0 : _b.sub) || '').trim() || null,
                         visibilityHints: (0, workTaskEvents_1.buildWorkTaskVisibilityHints)({ assignee_id: canonicalAssigneeId }),
                     });
                 }
-                catch (_s) { }
+                catch (_d) { }
                 enqueueNotification(() => {
                     var _a;
                     return (0, notificationEvents_1.emitNotificationEvent)({
@@ -763,7 +992,12 @@ exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.sch
                     }, { operationId: (0, uuid_1.v4)() });
                 });
             }
-            return res.json(row);
+            return res.json({
+                ...stripOfflineTaskUrgency(row),
+                work_task_id: String(result.workTask.id || offlineWorkTaskId(String(row.id || id))),
+                assignment_status: canonicalAssigneeId ? 'assigned' : 'unassigned',
+                updated_at: result.workTask.updated_at || row.updated_at || null,
+            });
         }
         const rows = (store_1.db.cleaningOfflineTasks || []);
         const t = rows.find((x) => String(x.id) === String(id));
@@ -773,9 +1007,11 @@ exports.router.patch('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.sch
             if (patch[key] !== undefined)
                 t[key] = patch[key];
         }
+        if (assignmentRequested)
+            t.assignee_id = String(patch.assignee_id || '').trim() || null;
         if (patch.status !== undefined)
             t.status = patch.status;
-        return res.json(t);
+        return res.json(stripOfflineTaskUrgency(t));
     }
     catch (e) {
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'update_failed' });
@@ -836,7 +1072,6 @@ exports.router.delete('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.sc
                                 task_date: workTask.scheduled_date ? String(workTask.scheduled_date).slice(0, 10) : (dayOnly(offlineTask.date) || null),
                                 assignee_id: workTask.assignee_id ? String(workTask.assignee_id) : null,
                                 status: 'cancelled',
-                                urgency: workTask.urgency || null,
                                 offline_task_id: String(offlineTask.id || id),
                                 task_type: String(offlineTask.task_type || ''),
                             },
@@ -869,7 +1104,7 @@ exports.router.delete('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.sc
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'delete_failed' });
     }
 });
-exports.router.get('/tasks', (0, auth_1.requireAnyPerm)(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), async (req, res) => {
+exports.router.get('/tasks', (0, auth_1.requireAnyPerm)(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), r5RequestSchema_1.requireR5TaskRuntimeSchema, async (req, res) => {
     var _a;
     const dateSchema = zod_1.z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional();
     const parsed = dateSchema.safeParse((_a = req.query) === null || _a === void 0 ? void 0 : _a.date);
@@ -1004,6 +1239,21 @@ const cleaningTaskStatusSchema = zod_1.z.enum([
     'cancelled',
     'keys_hung',
 ]);
+const MZ031_MANAGEMENT_CLOSED_STATUSES = new Set(['done', 'completed', 'ready']);
+const MZ031_CANCELLED_STATUSES = new Set(['cancelled', 'canceled']);
+function mz031ManagementStatusArrangementReasons(before, after, statusWasExplicitlyPatched) {
+    if (!statusWasExplicitlyPatched)
+        return [];
+    const beforeStatus = String((before === null || before === void 0 ? void 0 : before.status) || '').trim().toLowerCase();
+    const afterStatus = String((after === null || after === void 0 ? void 0 : after.status) || '').trim().toLowerCase();
+    const beforeClosed = MZ031_MANAGEMENT_CLOSED_STATUSES.has(beforeStatus);
+    const afterClosed = MZ031_MANAGEMENT_CLOSED_STATUSES.has(afterStatus);
+    if (!beforeClosed && afterClosed)
+        return ['management_closed'];
+    if (beforeClosed && !afterClosed && !MZ031_CANCELLED_STATUSES.has(afterStatus))
+        return ['management_reopened'];
+    return [];
+}
 const patchTaskSchema = zod_1.z.object({
     property_id: zod_1.z.string().nullable().optional(),
     task_date: zod_1.z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -1079,8 +1329,8 @@ async function isValidAnyStaffId(id) {
     const all = (store_1.db.cleaners || []).map((x) => ({ ...x, is_active: (x === null || x === void 0 ? void 0 : x.is_active) !== false }));
     return all.some((x) => String(x.id) === sid && x.is_active !== false);
 }
-exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign'), async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y;
+exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign'), r5RequestSchema_1.requireR5TaskRuntimeSchema, async (req, res) => {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x;
     const { id } = req.params;
     const operationId = (0, uuid_1.v4)();
     const opNow = new Date().toISOString();
@@ -1105,6 +1355,9 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
             delete patch.note;
             if (patch.keys_required === null)
                 patch.keys_required = 1;
+            if (patch.nights_override !== undefined && patch.nights_override !== null && (0, cleaningTaskNightOverride_1.shouldIgnoreNightsOverrideForAutoCheckinTask)(before)) {
+                delete patch.nights_override;
+            }
             const isCheckinSiteExecution = (0, cleaningAssignmentStatus_1.isCheckinSiteExecutionTask)({
                 task_type: (_c = patch.task_type) !== null && _c !== void 0 ? _c : before.task_type,
                 inspection_scope: (_d = patch.inspection_scope) !== null && _d !== void 0 ? _d : before.inspection_scope,
@@ -1127,6 +1380,10 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
             }
             if (patch.task_date != null)
                 patch.date = patch.task_date;
+            if (patch.inspection_mode !== undefined || patch.inspection_due_date !== undefined) {
+                patch.inspection_replaced_by_checkin_task_id = null;
+                patch.inspection_replaced_original_due_date = null;
+            }
             validateAndApplyInspectionPatch({ patch, current: before });
             {
                 const beforeStatus = String(before.status || 'pending');
@@ -1148,35 +1405,48 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
             }
             patch.updated_at = new Date().toISOString();
             const keys = Object.keys(patch).filter((k) => patch[k] !== undefined);
-            const set = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ');
-            const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]));
-            const sql = `UPDATE cleaning_tasks SET ${set} WHERE id = $${keys.length + 1} RETURNING *`;
-            const r1 = await dbAdapter_1.pgPool.query(sql, [...values, String(id)]);
-            const updated = ((_r = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _r === void 0 ? void 0 : _r[0]) || before;
-            if (parsed.data.new_code !== undefined &&
-                String((updated === null || updated === void 0 ? void 0 : updated.order_id) || '').trim() &&
-                String((updated === null || updated === void 0 ? void 0 : updated.task_type) || (updated === null || updated === void 0 ? void 0 : updated.type) || '').trim().toLowerCase() === 'checkin_clean') {
-                await (0, cleaningSync_1.syncCheckoutOldCodeFromCheckinNewCode)({ orderId: String(updated.order_id) });
-            }
-            if (parsed.data.keys_required !== undefined) {
-                const orderId = String((updated === null || updated === void 0 ? void 0 : updated.order_id) || '').trim();
-                const nextK0 = (updated === null || updated === void 0 ? void 0 : updated.keys_required) == null ? null : Number(updated.keys_required);
-                const nextK = Number.isFinite(nextK0) ? Math.max(1, Math.min(2, Math.trunc(nextK0))) : null;
-                if (orderId && nextK != null) {
-                    try {
-                        await dbAdapter_1.pgPool.query(`UPDATE cleaning_tasks
+            const transactionResult = await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
+                var _a, _b, _c;
+                const initialTurnoverTarget = turnoverInspectionScopeTarget(before, patch);
+                if (initialTurnoverTarget) {
+                    await (0, cleaningSync_1.lockCleaningTurnoverKey)(client, initialTurnoverTarget.propertyId, initialTurnoverTarget.taskDate);
+                }
+                const locked = await client.query('SELECT * FROM cleaning_tasks WHERE id = $1 LIMIT 1 FOR UPDATE', [String(id)]);
+                const lockedBefore = ((_a = locked === null || locked === void 0 ? void 0 : locked.rows) === null || _a === void 0 ? void 0 : _a[0]) || before;
+                const lockedTurnoverTarget = turnoverInspectionScopeTarget(lockedBefore, patch);
+                if (lockedTurnoverTarget
+                    && (!initialTurnoverTarget
+                        || lockedTurnoverTarget.propertyId !== initialTurnoverTarget.propertyId
+                        || lockedTurnoverTarget.taskDate !== initialTurnoverTarget.taskDate)) {
+                    await (0, cleaningSync_1.lockCleaningTurnoverKey)(client, lockedTurnoverTarget.propertyId, lockedTurnoverTarget.taskDate);
+                }
+                await assertPgTurnoverInspectionScope(client, String(id), lockedBefore, patch);
+                const set = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ');
+                const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]));
+                const sql = `UPDATE cleaning_tasks SET ${set} WHERE id = $${keys.length + 1} RETURNING *`;
+                const r1 = await client.query(sql, [...values, String(id)]);
+                const updated = ((_b = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _b === void 0 ? void 0 : _b[0]) || lockedBefore;
+                if (parsed.data.new_code !== undefined &&
+                    String((updated === null || updated === void 0 ? void 0 : updated.order_id) || '').trim() &&
+                    String((updated === null || updated === void 0 ? void 0 : updated.task_type) || (updated === null || updated === void 0 ? void 0 : updated.type) || '').trim().toLowerCase() === 'checkin_clean') {
+                    await (0, cleaningSync_1.syncCheckoutOldCodeFromCheckinNewCode)({ orderId: String(updated.order_id), client });
+                }
+                if (parsed.data.keys_required !== undefined) {
+                    const orderId = String((updated === null || updated === void 0 ? void 0 : updated.order_id) || '').trim();
+                    const nextK0 = (updated === null || updated === void 0 ? void 0 : updated.keys_required) == null ? null : Number(updated.keys_required);
+                    const nextK = Number.isFinite(nextK0) ? Math.max(1, Math.min(2, Math.trunc(nextK0))) : null;
+                    if (orderId && nextK != null) {
+                        await client.query(`UPDATE cleaning_tasks
                SET keys_required = $1, updated_at = now()
                WHERE order_id::text = $2::text
                  AND ${(0, cleaningSync_1.activeCleaningTaskWhereSql)('')}
                  AND COALESCE(keys_required, 1) <> $1`, [nextK, orderId]);
                     }
-                    catch (_z) { }
                 }
-            }
-            try {
-                const actualChangedFields = actualCleaningTaskChangedFields(before, updated, keys);
+                const actualChangedFields = actualCleaningTaskChangedFields(lockedBefore, updated, keys);
                 if (actualChangedFields.length) {
                     const workPatch = buildCleaningTaskWorkPatch(updated, actualChangedFields);
+                    const arrangementRevision = (0, workTaskEvents_1.buildMz031CleaningArrangementRevision)(lockedBefore, updated, mz031ManagementStatusArrangementReasons(lockedBefore, updated, parsed.data.status !== undefined));
                     await (0, workTaskEvents_1.emitWorkTaskEvent)({
                         taskId: `cleaning_task:${String(id)}`,
                         sourceType: 'cleaning_tasks',
@@ -1185,12 +1455,31 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                         changeScope: workPatch.changedFields.some((field) => field === 'checkout_time' || field === 'checkin_time' || field === 'start_time' || field === 'end_time' || field === 'summary') ? 'list' : 'detail',
                         changedFields: workPatch.changedFields,
                         patch: workPatch.patch,
-                        causedByUserId: String(((_s = req === null || req === void 0 ? void 0 : req.user) === null || _s === void 0 ? void 0 : _s.sub) || '').trim() || null,
+                        payload: arrangementRevision ? { arrangement_revision: arrangementRevision } : undefined,
+                        causedByUserId: String(((_c = req === null || req === void 0 ? void 0 : req.user) === null || _c === void 0 ? void 0 : _c.sub) || '').trim() || null,
                         visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(updated),
-                    });
+                    }, client);
                 }
+                return { updated, actualChangedFields };
+            });
+            if (!transactionResult)
+                throw new Error('pg not available');
+            const { updated, actualChangedFields } = transactionResult;
+            if (actualChangedFields.length && (0, deferredInspectionCheckinConflict_1.isDeferredInspectionCheckinConflictRelevantChange)(actualChangedFields)) {
+                await (0, deferredInspectionCheckinConflict_1.reconcileDeferredInspectionCheckinReplacement)({
+                    taskIds: [String(id)],
+                    actorUserId: String(((_r = req === null || req === void 0 ? void 0 : req.user) === null || _r === void 0 ? void 0 : _r.sub) || '').trim() || null,
+                });
             }
-            catch (_0) { }
+            if (actualChangedFields.length && (0, deferredInspectionCheckinConflict_1.isDeferredInspectionCheckinConflictRelevantChange)(actualChangedFields)) {
+                enqueueNotification(() => {
+                    var _a;
+                    return (0, deferredInspectionCheckinConflict_1.emitDeferredInspectionCheckinConflictAlerts)({
+                        taskIds: [String(id)],
+                        actorUserId: String(((_a = req === null || req === void 0 ? void 0 : req.user) === null || _a === void 0 ? void 0 : _a.sub) || '').trim() || null,
+                    });
+                });
+            }
             try {
                 const { changes, lines } = buildCleaningTaskUpdateNoticeDetails(before, updated);
                 const propertyId = String(updated.property_id || '').trim();
@@ -1218,7 +1507,7 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                     });
                 }
             }
-            catch (_1) { }
+            catch (_y) { }
             return res.json(updated);
         }
         const task = store_1.db.cleaningTasks.find((t) => String(t.id) === String(id));
@@ -1234,15 +1523,16 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
         if (localPatch.guest_special_request === undefined && localPatch.note !== undefined)
             localPatch.guest_special_request = localPatch.note;
         delete localPatch.note;
+        assertMemoryTurnoverInspectionScope(String(id), task, localPatch);
         const isCheckinSiteExecution = (0, cleaningAssignmentStatus_1.isCheckinSiteExecutionTask)({
-            task_type: (_t = localPatch.task_type) !== null && _t !== void 0 ? _t : task.task_type,
-            inspection_scope: (_u = localPatch.inspection_scope) !== null && _u !== void 0 ? _u : task.inspection_scope,
+            task_type: (_s = localPatch.task_type) !== null && _s !== void 0 ? _s : task.task_type,
+            inspection_scope: (_t = localPatch.inspection_scope) !== null && _t !== void 0 ? _t : task.inspection_scope,
         });
-        if (!isCheckinSiteExecution && !(await isValidStaffId((_v = parsed.data.inspector_id) !== null && _v !== void 0 ? _v : null, 'inspector')))
+        if (!isCheckinSiteExecution && !(await isValidStaffId((_u = parsed.data.inspector_id) !== null && _u !== void 0 ? _u : null, 'inspector')))
             return res.status(400).json({ message: '无效的检查人员' });
-        if (isCheckinSiteExecution && !(await isValidAnyStaffId((_w = localPatch.assignee_id) !== null && _w !== void 0 ? _w : null)))
+        if (isCheckinSiteExecution && !(await isValidAnyStaffId((_v = localPatch.assignee_id) !== null && _v !== void 0 ? _v : null)))
             return res.status(400).json({ message: '无效的执行人' });
-        if (isCheckinSiteExecution && !(await isValidAnyStaffId((_x = localPatch.inspector_id) !== null && _x !== void 0 ? _x : null)))
+        if (isCheckinSiteExecution && !(await isValidAnyStaffId((_w = localPatch.inspector_id) !== null && _w !== void 0 ? _w : null)))
             return res.status(400).json({ message: '无效的执行人' });
         validateAndApplyInspectionPatch({ patch: localPatch, current: task });
         if (localPatch.property_id !== undefined)
@@ -1265,6 +1555,9 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
             task.inspection_due_date = localPatch.inspection_due_date;
         if (localPatch.keys_required !== undefined)
             task.keys_required = localPatch.keys_required;
+        if (localPatch.nights_override !== undefined && localPatch.nights_override !== null && (0, cleaningTaskNightOverride_1.shouldIgnoreNightsOverrideForAutoCheckinTask)(task)) {
+            delete localPatch.nights_override;
+        }
         if (localPatch.nights_override !== undefined)
             task.nights_override = localPatch.nights_override;
         if (localPatch.old_code !== undefined)
@@ -1338,12 +1631,12 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                     changeScope: workPatch.changedFields.some((field) => field === 'checkout_time' || field === 'checkin_time' || field === 'start_time' || field === 'end_time' || field === 'summary') ? 'list' : 'detail',
                     changedFields: workPatch.changedFields,
                     patch: workPatch.patch,
-                    causedByUserId: String(((_y = req === null || req === void 0 ? void 0 : req.user) === null || _y === void 0 ? void 0 : _y.sub) || '').trim() || null,
+                    causedByUserId: String(((_x = req === null || req === void 0 ? void 0 : req.user) === null || _x === void 0 ? void 0 : _x.sub) || '').trim() || null,
                     visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(task),
                 });
             }
         }
-        catch (_2) { }
+        catch (_z) { }
         try {
             const { changes, lines } = buildCleaningTaskUpdateNoticeDetails(before, task);
             const propertyId = String(task.property_id || '').trim();
@@ -1371,10 +1664,15 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                 });
             }
         }
-        catch (_3) { }
+        catch (_0) { }
         return res.json(task);
     }
     catch (e) {
+        if (sendTurnoverInspectionScopeConflict(res, e))
+            return;
+        const conflict = (0, inspectionAssignmentConflict_1.inspectionAssignmentConflictPayload)(e);
+        if (conflict)
+            return res.status(409).json(conflict);
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'update_failed' });
     }
 });
@@ -1409,9 +1707,10 @@ const createTaskSchema = zod_1.z.object({
     nights_override: zod_1.z.union([zod_1.z.number().int().nonnegative(), zod_1.z.null()]).optional(),
     guest_special_request: zod_1.z.union([zod_1.z.string(), zod_1.z.null()]).optional(),
     note: zod_1.z.union([zod_1.z.string(), zod_1.z.null()]).optional(),
+    linked_checkout_task_id: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
 }).strict();
-exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y;
+exports.router.post('/tasks', requireCleaningManualCreateAccess, r5RequestSchema_1.requireR5TaskRuntimeSchema, async (req, res) => {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _0, _1;
     const parsed = createTaskSchema.safeParse(req.body || {});
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -1434,6 +1733,9 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
                 mode === 'checkin' ? ['checkin_clean'] :
                     mode === 'stayover' ? ['stayover_clean'] :
                         [String(taskType)];
+        if (types.includes('checkout_clean') && types.includes('checkin_clean') && parsed.data.inspection_scope === 'password_only') {
+            return res.status(400).json({ code: TURNOVER_INSPECTION_SCOPE_CONFLICT, message: '同日退房入住任务必须检查后挂钥匙' });
+        }
         const createdRows = [];
         const rawPropertyId = String(parsed.data.property_id || '').trim();
         let normalizedPropertyId = rawPropertyId;
@@ -1446,7 +1748,7 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
                     return res.status(400).json({ message: '无效的房源' });
                 normalizedPropertyId = id;
             }
-            catch (_z) { }
+            catch (_2) { }
         }
         else {
             const anyDb = store_1.db;
@@ -1467,7 +1769,9 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
             assignee_id: baseAssigneeId,
             cleaner_id: createIsCheckinSiteExecution ? null : ((_j = parsed.data.cleaner_id) !== null && _j !== void 0 ? _j : null),
             inspector_id: ((_k = parsed.data.inspector_id) !== null && _k !== void 0 ? _k : null),
-            inspection_scope: (_l = parsed.data.inspection_scope) !== null && _l !== void 0 ? _l : null,
+            inspection_scope: types.includes('checkout_clean') && types.includes('checkin_clean')
+                ? 'inspect_and_hang'
+                : ((_l = parsed.data.inspection_scope) !== null && _l !== void 0 ? _l : null),
             scheduled_at: (_m = parsed.data.scheduled_at) !== null && _m !== void 0 ? _m : null,
             old_code: (_o = parsed.data.old_code) !== null && _o !== void 0 ? _o : null,
             new_code: (_p = parsed.data.new_code) !== null && _p !== void 0 ? _p : null,
@@ -1480,12 +1784,46 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
             source: 'manual',
             execution_state: 'active',
             manual_task_purpose: null,
+            linked_checkout_task_id: null,
         };
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
             await (0, cleaningSync_1.ensureCleaningSchemaV2)();
             const client = await dbAdapter_1.pgPool.connect();
             try {
                 await client.query('BEGIN');
+                const linkedCheckoutTaskId = String(parsed.data.linked_checkout_task_id || '').trim() || null;
+                if (linkedCheckoutTaskId) {
+                    // All turnover mutations take the same advisory lock before any
+                    // cleaning_tasks row lock. This matches order sync and prevents a
+                    // row->advisory / advisory->row deadlock during concurrent linking.
+                    await (0, cleaningSync_1.lockCleaningTurnoverKey)(client, normalizedPropertyId, parsed.data.task_date);
+                    const checkoutRes = await client.query('SELECT * FROM cleaning_tasks WHERE id::text=$1 LIMIT 1 FOR UPDATE', [linkedCheckoutTaskId]);
+                    const checkoutTask = ((_v = checkoutRes === null || checkoutRes === void 0 ? void 0 : checkoutRes.rows) === null || _v === void 0 ? void 0 : _v[0]) || null;
+                    const sameDayRes = await client.query(`SELECT t.*, o.checkin AS order_checkin, o.checkout AS order_checkout
+             FROM cleaning_tasks t
+             LEFT JOIN orders o ON o.id::text=t.order_id::text
+             WHERE t.property_id::text=$1
+               AND COALESCE(t.task_date, t.date)::date=$2::date
+               AND ${(0, cleaningSync_1.activeCleaningTaskWhereSql)('t')}
+             FOR UPDATE OF t`, [normalizedPropertyId, parsed.data.task_date]);
+                    const sameDayRows = (sameDayRes === null || sameDayRes === void 0 ? void 0 : sameDayRes.rows) || [];
+                    const activeLinked = sameDayRows.filter((row) => {
+                        var _a, _b;
+                        return (String(row.linked_checkout_task_id || '').trim() === linkedCheckoutTaskId
+                            && String((_b = (_a = row.task_type) !== null && _a !== void 0 ? _a : row.type) !== null && _b !== void 0 ? _b : '').trim().toLowerCase() === 'checkin_clean');
+                    });
+                    const canonicalConflict = (0, cleaningInspection_1.canonicalCleaningTurnoverPairs)(sameDayRows)
+                        .some((pair) => pair.source_ids.includes(linkedCheckoutTaskId));
+                    assertManualCheckinCheckoutLink({
+                        linkedCheckoutTaskId,
+                        createdTypes: types,
+                        propertyId: normalizedPropertyId,
+                        taskDate: parsed.data.task_date,
+                        checkoutTask,
+                        activeCheckinRows: canonicalConflict ? [checkoutTask, ...activeLinked] : activeLinked,
+                    });
+                    base.linked_checkout_task_id = linkedCheckoutTaskId;
+                }
                 for (const tt of types) {
                     const row = {
                         id: (0, uuid_1.v4)(),
@@ -1493,16 +1831,20 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
                         task_type: tt,
                         type: tt,
                         inspection_mode: (0, cleaningInspection_1.normalizeInspectionMode)(parsed.data.inspection_mode) || (0, cleaningInspection_1.defaultInspectionModeForTaskType)(tt),
-                        inspection_due_date: (_v = parsed.data.inspection_due_date) !== null && _v !== void 0 ? _v : null,
+                        inspection_due_date: (_w = parsed.data.inspection_due_date) !== null && _w !== void 0 ? _w : null,
                     };
                     validateAndApplyInspectionPatch({ patch: row, taskType: tt });
+                    const turnoverTarget = turnoverInspectionScopeTarget(row);
+                    if (turnoverTarget)
+                        await (0, cleaningSync_1.lockCleaningTurnoverKey)(client, turnoverTarget.propertyId, turnoverTarget.taskDate);
+                    await assertPgTurnoverInspectionScope(client, String(row.id), row);
                     const keys = Object.keys(row).filter((k) => row[k] !== undefined);
                     const cols = keys.map((k) => `"${k}"`).join(', ');
                     const args = keys.map((_, i) => `$${i + 1}`).join(', ');
                     const values = keys.map((k) => row[k]);
                     const sql = `INSERT INTO cleaning_tasks(${cols}) VALUES(${args}) RETURNING *`;
                     const r = await client.query(sql, values);
-                    const created = ((_w = r === null || r === void 0 ? void 0 : r.rows) === null || _w === void 0 ? void 0 : _w[0]) || row;
+                    const created = ((_x = r === null || r === void 0 ? void 0 : r.rows) === null || _x === void 0 ? void 0 : _x[0]) || row;
                     createdRows.push(created);
                     await (0, workTaskEvents_1.emitWorkTaskEvent)({
                         taskId: `cleaning_task:${String(created.id)}`,
@@ -1510,7 +1852,7 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
                         sourceRefIds: [String(created.id)],
                         eventType: 'TASK_CREATED',
                         changeScope: 'list',
-                        changedFields: ['task_type', 'task_date', 'date', 'status', 'assignee_id', 'cleaner_id', 'inspector_id', 'scheduled_at', 'property_id'],
+                        changedFields: ['task_type', 'task_date', 'date', 'status', 'assignee_id', 'cleaner_id', 'inspector_id', 'scheduled_at', 'property_id', 'linked_checkout_task_id'],
                         patch: {
                             id: created.id,
                             task_type: created.task_type,
@@ -1522,10 +1864,18 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
                             inspector_id: created.inspector_id,
                             scheduled_at: created.scheduled_at,
                             property_id: created.property_id,
+                            linked_checkout_task_id: (_y = created.linked_checkout_task_id) !== null && _y !== void 0 ? _y : null,
                         },
-                        causedByUserId: String(((_x = req === null || req === void 0 ? void 0 : req.user) === null || _x === void 0 ? void 0 : _x.sub) || '').trim() || null,
+                        causedByUserId: String(((_z = req === null || req === void 0 ? void 0 : req.user) === null || _z === void 0 ? void 0 : _z.sub) || '').trim() || null,
                         visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(created),
                     }, client);
+                }
+                if (createdRows.length) {
+                    await (0, deferredInspectionCheckinConflict_1.reconcileDeferredInspectionCheckinReplacement)({
+                        taskIds: createdRows.map((row) => String(row.id || '')).filter(Boolean),
+                        actorUserId: String(((_0 = req === null || req === void 0 ? void 0 : req.user) === null || _0 === void 0 ? void 0 : _0.sub) || '').trim() || null,
+                        pgClient: client,
+                    });
                 }
                 await client.query('COMMIT');
             }
@@ -1533,7 +1883,7 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
                 try {
                     await client.query('ROLLBACK');
                 }
-                catch (_0) { }
+                catch (_3) { }
                 throw e;
             }
             finally {
@@ -1562,11 +1912,47 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
                         }, { operationId });
                     });
                 }
-                catch (_1) { }
+                catch (_4) { }
+            }
+            if (createdRows.length) {
+                enqueueNotification(() => {
+                    var _a;
+                    return (0, deferredInspectionCheckinConflict_1.emitDeferredInspectionCheckinConflictAlerts)({
+                        taskIds: createdRows.map((row) => String(row.id || '')).filter(Boolean),
+                        actorUserId: String(((_a = req === null || req === void 0 ? void 0 : req.user) === null || _a === void 0 ? void 0 : _a.sub) || '').trim() || null,
+                    });
+                });
             }
             if (createdRows.length === 1)
                 return res.json(createdRows[0]);
             return res.json({ ok: true, created: createdRows.length });
+        }
+        const linkedCheckoutTaskId = String(parsed.data.linked_checkout_task_id || '').trim() || null;
+        if (linkedCheckoutTaskId) {
+            const sameDayRows = store_1.db.cleaningTasks.filter((row) => {
+                var _a;
+                return (String(row.property_id || '').trim() === normalizedPropertyId
+                    && dayOnly((_a = row.task_date) !== null && _a !== void 0 ? _a : row.date) === parsed.data.task_date
+                    && !['cancelled', 'canceled', 'superseded', 'deleted'].includes(String(row.execution_state || '').trim().toLowerCase())
+                    && !['cancelled', 'canceled'].includes(String(row.status || '').trim().toLowerCase()));
+            });
+            const checkoutTask = sameDayRows.find((row) => String(row.id || '').trim() === linkedCheckoutTaskId) || null;
+            const activeLinked = sameDayRows.filter((row) => {
+                var _a, _b;
+                return (String(row.linked_checkout_task_id || '').trim() === linkedCheckoutTaskId
+                    && String((_b = (_a = row.task_type) !== null && _a !== void 0 ? _a : row.type) !== null && _b !== void 0 ? _b : '').trim().toLowerCase() === 'checkin_clean');
+            });
+            const canonicalConflict = (0, cleaningInspection_1.canonicalCleaningTurnoverPairs)(sameDayRows)
+                .some((pair) => pair.source_ids.includes(linkedCheckoutTaskId));
+            assertManualCheckinCheckoutLink({
+                linkedCheckoutTaskId,
+                createdTypes: types,
+                propertyId: normalizedPropertyId,
+                taskDate: parsed.data.task_date,
+                checkoutTask,
+                activeCheckinRows: canonicalConflict ? [checkoutTask, ...activeLinked] : activeLinked,
+            });
+            base.linked_checkout_task_id = linkedCheckoutTaskId;
         }
         for (const tt of types) {
             const row = {
@@ -1575,9 +1961,10 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
                 task_type: tt,
                 type: tt,
                 inspection_mode: (0, cleaningInspection_1.normalizeInspectionMode)(parsed.data.inspection_mode) || (0, cleaningInspection_1.defaultInspectionModeForTaskType)(tt),
-                inspection_due_date: (_y = parsed.data.inspection_due_date) !== null && _y !== void 0 ? _y : null,
+                inspection_due_date: (_1 = parsed.data.inspection_due_date) !== null && _1 !== void 0 ? _1 : null,
             };
             validateAndApplyInspectionPatch({ patch: row, taskType: tt });
+            assertMemoryTurnoverInspectionScope(String(row.id), row);
             store_1.db.cleaningTasks.push(row);
             createdRows.push(row);
         }
@@ -1586,38 +1973,56 @@ exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res
         return res.json({ ok: true, created: createdRows.length });
     }
     catch (e) {
+        if (e instanceof ManualCheckinLinkConflict)
+            return res.status(e.status).json({ code: e.code, message: e.message });
+        if (sendTurnoverInspectionScopeConflict(res, e))
+            return;
+        const conflict = (0, inspectionAssignmentConflict_1.inspectionAssignmentConflictPayload)(e);
+        if (conflict)
+            return res.status(409).json(conflict);
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'create_failed' });
     }
 });
-exports.router.delete('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign'), async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g;
+exports.router.delete('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign'), r5RequestSchema_1.requireR5TaskRuntimeSchema, async (req, res) => {
+    var _a, _b, _c, _d, _e;
     const { id } = req.params;
     const actor = req.user;
     const actorId = (actor === null || actor === void 0 ? void 0 : actor.sub) ? String(actor.sub) : undefined;
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
-            const r0 = await dbAdapter_1.pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1', [String(id)]);
-            const before = ((_a = r0 === null || r0 === void 0 ? void 0 : r0.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
-            if (!before)
+            const deleted = await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
+                var _a, _b;
+                const r0 = await client.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1 FOR UPDATE', [String(id)]);
+                const before = ((_a = r0 === null || r0 === void 0 ? void 0 : r0.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
+                if (!before)
+                    return null;
+                const r1 = await client.query(`UPDATE cleaning_tasks SET status='cancelled', execution_state='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [String(id)]);
+                const after = ((_b = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _b === void 0 ? void 0 : _b[0]) || null;
+                await (0, workTaskEvents_1.emitWorkTaskEvent)({
+                    taskId: `cleaning_task:${String(id)}`,
+                    sourceType: 'cleaning_tasks',
+                    sourceRefIds: [String(id)],
+                    eventType: 'TASK_REMOVED',
+                    changeScope: 'membership',
+                    changedFields: ['status', 'execution_state', 'lifecycle_state'],
+                    patch: { status: 'cancelled', execution_state: 'cancelled', lifecycle_state: 'deleted' },
+                    causedByUserId: actorId || null,
+                    visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(after || before),
+                }, client);
+                return { before, after };
+            });
+            if (!deleted)
                 return res.status(404).json({ message: 'task not found' });
-            const r1 = await dbAdapter_1.pgPool.query(`UPDATE cleaning_tasks SET status='cancelled', execution_state='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [String(id)]);
-            const after = ((_b = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _b === void 0 ? void 0 : _b[0]) || null;
-            await (0, workTaskEvents_1.emitWorkTaskEvent)({
-                taskId: `cleaning_task:${String(id)}`,
-                sourceType: 'cleaning_tasks',
-                sourceRefIds: [String(id)],
-                eventType: 'TASK_REMOVED',
-                changeScope: 'membership',
-                changedFields: ['status', 'execution_state'],
-                patch: { status: 'cancelled', execution_state: 'cancelled' },
-                causedByUserId: actorId || null,
-                visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(after || before),
+            const { before, after } = deleted;
+            await (0, deferredInspectionCheckinConflict_1.reconcileDeferredInspectionCheckinReplacement)({
+                taskIds: [String(id)],
+                actorUserId: actorId || null,
             });
             try {
-                const propertyId = String(((_c = (after || before)) === null || _c === void 0 ? void 0 : _c.property_id) || '').trim();
+                const propertyId = String(((_a = (after || before)) === null || _a === void 0 ? void 0 : _a.property_id) || '').trim();
                 if (propertyId) {
                     const { title, body } = buildCleaningTaskDeletionNotice(after || before);
-                    await (0, notificationEvents_1.emitNotificationEvent)({
+                    const notificationResult = await (0, notificationEvents_1.emitNotificationEvent)({
                         type: 'CLEANING_TASK_UPDATED',
                         policyKey: 'task_deleted',
                         entity: 'cleaning_task',
@@ -1632,15 +2037,18 @@ exports.router.delete('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assig
                             entityId: String(id),
                             action: 'open_notice',
                             task_id: String(id),
-                            task_type: String(((_d = (after || before)) === null || _d === void 0 ? void 0 : _d.task_type) || ((_e = (after || before)) === null || _e === void 0 ? void 0 : _e.type) || ''),
-                            task_date: cleanNotificationText(((_f = (after || before)) === null || _f === void 0 ? void 0 : _f.task_date) || ((_g = (after || before)) === null || _g === void 0 ? void 0 : _g.date)) || null,
+                            task_type: String(((_b = (after || before)) === null || _b === void 0 ? void 0 : _b.task_type) || ((_c = (after || before)) === null || _c === void 0 ? void 0 : _c.type) || ''),
+                            task_date: cleanNotificationText(((_d = (after || before)) === null || _d === void 0 ? void 0 : _d.task_date) || ((_e = (after || before)) === null || _e === void 0 ? void 0 : _e.date)) || null,
                             status: 'cancelled',
                         },
                         actorUserId: actorId || null,
                     }, { operationId: (0, uuid_1.v4)() });
+                    logNotificationEmissionOutcome('cleaning_task_deleted', String(id), notificationResult);
                 }
             }
-            catch (_h) { }
+            catch (error) {
+                logNotificationEmissionFailure('cleaning_task_deleted', String(id), error);
+            }
             (0, store_1.addAudit)('cleaning_task', String(id), 'delete', before, after, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') });
             return res.json({ ok: true });
         }
@@ -1659,7 +2067,7 @@ exports.router.delete('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assig
     }
 });
 const bulkDeleteSchema = zod_1.z.object({ ids: zod_1.z.array(zod_1.z.string().min(1)).min(1) }).strict();
-exports.router.post('/tasks/bulk-delete', (0, auth_1.requirePerm)('cleaning.task.assign'), async (req, res) => {
+exports.router.post('/tasks/bulk-delete', (0, auth_1.requirePerm)('cleaning.task.assign'), r5RequestSchema_1.requireR5TaskRuntimeSchema, async (req, res) => {
     var _a, _b, _c, _d, _e, _f, _g;
     const parsed = bulkDeleteSchema.safeParse(req.body || {});
     if (!parsed.success)
@@ -1685,8 +2093,8 @@ exports.router.post('/tasks/bulk-delete', (0, auth_1.requirePerm)('cleaning.task
                         sourceRefIds: [String(id)],
                         eventType: 'TASK_REMOVED',
                         changeScope: 'membership',
-                        changedFields: ['status', 'execution_state'],
-                        patch: { status: 'cancelled', execution_state: 'cancelled' },
+                        changedFields: ['status', 'execution_state', 'lifecycle_state'],
+                        patch: { status: 'cancelled', execution_state: 'cancelled', lifecycle_state: 'deleted' },
                         causedByUserId: actorId || null,
                         visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(after || before),
                     }, client);
@@ -1694,7 +2102,7 @@ exports.router.post('/tasks/bulk-delete', (0, auth_1.requirePerm)('cleaning.task
                         const propertyId = String(((_c = (after || before)) === null || _c === void 0 ? void 0 : _c.property_id) || '').trim();
                         if (propertyId) {
                             const { title, body } = buildCleaningTaskDeletionNotice(after || before);
-                            await (0, notificationEvents_1.emitNotificationEvent)({
+                            const notificationResult = await (0, notificationEvents_1.emitNotificationEvent)({
                                 type: 'CLEANING_TASK_UPDATED',
                                 policyKey: 'task_deleted',
                                 entity: 'cleaning_task',
@@ -1715,18 +2123,26 @@ exports.router.post('/tasks/bulk-delete', (0, auth_1.requirePerm)('cleaning.task
                                 },
                                 actorUserId: actorId || null,
                             }, { operationId: (0, uuid_1.v4)(), pgClient: client });
+                            logNotificationEmissionOutcome('cleaning_task_bulk_deleted', String(id), notificationResult);
                         }
                     }
-                    catch (_h) { }
+                    catch (error) {
+                        logNotificationEmissionFailure('cleaning_task_bulk_deleted', String(id), error);
+                    }
                     (0, store_1.addAudit)('cleaning_task', String(id), 'delete', before, after, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') });
                 }
+                await (0, deferredInspectionCheckinConflict_1.reconcileDeferredInspectionCheckinReplacement)({
+                    taskIds: ids,
+                    actorUserId: actorId || null,
+                    pgClient: client,
+                });
                 await client.query('COMMIT');
             }
             catch (e) {
                 try {
                     await client.query('ROLLBACK');
                 }
-                catch (_j) { }
+                catch (_h) { }
                 throw e;
             }
             finally {
@@ -1753,8 +2169,8 @@ exports.router.post('/tasks/bulk-delete', (0, auth_1.requirePerm)('cleaning.task
     }
 });
 const bulkPatchSchema = zod_1.z.object({ ids: zod_1.z.array(zod_1.z.string().min(1)).min(1), patch: patchTaskSchema }).strict();
-exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.assign'), async (req, res) => {
-    var _a, _b, _c, _d, _e;
+exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.assign'), r5RequestSchema_1.requireR5TaskRuntimeSchema, async (req, res) => {
+    var _a, _b, _c, _d, _e, _f;
     const parsed = bulkPatchSchema.safeParse(req.body || {});
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -1796,83 +2212,109 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
         }
         for (const id of ids) {
             const r = await (async () => {
-                var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q;
+                var _a, _b;
                 if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
                     await (0, cleaningSync_1.ensureCleaningSchemaV2)();
-                    const r0 = await dbAdapter_1.pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id]);
-                    const before = ((_a = r0 === null || r0 === void 0 ? void 0 : r0.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
-                    if (!before)
-                        return null;
-                    const patch = { ...basePatch };
-                    const isCheckinSiteExecution = (0, cleaningAssignmentStatus_1.isCheckinSiteExecutionTask)({
-                        task_type: (_b = patch.task_type) !== null && _b !== void 0 ? _b : before.task_type,
-                        inspection_scope: (_c = patch.inspection_scope) !== null && _c !== void 0 ? _c : before.inspection_scope,
-                    });
-                    if (patch.assignee_id !== undefined && patch.cleaner_id === undefined) {
-                        patch.cleaner_id = isCheckinSiteExecution ? null : patch.assignee_id;
-                    }
-                    if (patch.task_date != null)
-                        patch.date = patch.task_date;
-                    validateAndApplyInspectionPatch({ patch, current: before });
-                    {
-                        const beforeStatus = String(before.status || 'pending');
-                        const statusAutoEligible = beforeStatus === 'pending' || beforeStatus === 'assigned';
-                        const incomingStatus = basePatch.status;
-                        const incomingStatusEligible = incomingStatus === undefined || String(incomingStatus) === 'pending' || String(incomingStatus) === 'assigned';
-                        const touchingAssignees = basePatch.cleaner_id !== undefined ||
-                            basePatch.inspector_id !== undefined ||
-                            basePatch.assignee_id !== undefined ||
-                            basePatch.inspection_mode !== undefined ||
-                            basePatch.inspection_due_date !== undefined;
-                        if (touchingAssignees && statusAutoEligible && incomingStatusEligible) {
-                            const nextCleanerId = isCheckinSiteExecution
-                                ? (patch.assignee_id !== undefined ? ((_d = patch.assignee_id) !== null && _d !== void 0 ? _d : null) : ((_f = (_e = before.assignee_id) !== null && _e !== void 0 ? _e : before.inspector_id) !== null && _f !== void 0 ? _f : null))
-                                : (patch.cleaner_id !== undefined ? ((_g = patch.cleaner_id) !== null && _g !== void 0 ? _g : null) : ((_j = (_h = before.cleaner_id) !== null && _h !== void 0 ? _h : before.assignee_id) !== null && _j !== void 0 ? _j : null));
-                            const nextInspectorId = patch.inspector_id !== undefined ? ((_k = patch.inspector_id) !== null && _k !== void 0 ? _k : null) : ((_l = before.inspector_id) !== null && _l !== void 0 ? _l : null);
-                            patch.status = (0, cleaningAssignmentStatus_1.assignedStatusFromAssignees)(nextCleanerId, nextInspectorId);
+                    return (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
+                        var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p;
+                        const snapshotResult = await client.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id]);
+                        const snapshot = ((_a = snapshotResult === null || snapshotResult === void 0 ? void 0 : snapshotResult.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
+                        if (!snapshot)
+                            return null;
+                        const initialTurnoverTarget = turnoverInspectionScopeTarget(snapshot, basePatch);
+                        if (initialTurnoverTarget) {
+                            await (0, cleaningSync_1.lockCleaningTurnoverKey)(client, initialTurnoverTarget.propertyId, initialTurnoverTarget.taskDate);
                         }
-                    }
-                    patch.updated_at = new Date().toISOString();
-                    const keys = Object.keys(patch).filter((k) => patch[k] !== undefined);
-                    if (!keys.length)
-                        return before;
-                    const set = keys.map((k, i) => `"${k}"=$${i + 1}`).join(', ');
-                    const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]));
-                    const sql = `UPDATE cleaning_tasks SET ${set} WHERE id=$${keys.length + 1} RETURNING *`;
-                    const r1 = await dbAdapter_1.pgPool.query(sql, [...values, id]);
-                    const after = ((_m = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _m === void 0 ? void 0 : _m[0]) || before;
-                    if (basePatch.new_code !== undefined &&
-                        String((after === null || after === void 0 ? void 0 : after.order_id) || '').trim() &&
-                        String((after === null || after === void 0 ? void 0 : after.task_type) || (after === null || after === void 0 ? void 0 : after.type) || '').trim().toLowerCase() === 'checkin_clean') {
-                        await (0, cleaningSync_1.syncCheckoutOldCodeFromCheckinNewCode)({ orderId: String(after.order_id) });
-                    }
-                    const changedFields = Object.keys(patch || {}).filter((key) => patch[key] !== undefined);
-                    const assignmentChanged = ['assignee_id', 'cleaner_id', 'inspector_id'].some((key) => changedFields.includes(key));
-                    await (0, workTaskEvents_1.emitWorkTaskEvent)({
-                        taskId: `cleaning_task:${String(id)}`,
-                        sourceType: 'cleaning_tasks',
-                        sourceRefIds: [String(id)],
-                        eventType: assignmentChanged ? 'TASK_ASSIGNMENT_CHANGED' : (String((after === null || after === void 0 ? void 0 : after.status) || '').trim().toLowerCase() === 'cancelled' ? 'TASK_REMOVED' : 'TASK_UPDATED'),
-                        changeScope: assignmentChanged ? 'membership' : (String((after === null || after === void 0 ? void 0 : after.status) || '').trim().toLowerCase() === 'cancelled' ? 'membership' : 'list'),
-                        changedFields,
-                        patch: Object.fromEntries(changedFields.map((field) => [field, after === null || after === void 0 ? void 0 : after[field]])),
-                        causedByUserId: String(((_o = req === null || req === void 0 ? void 0 : req.user) === null || _o === void 0 ? void 0 : _o.sub) || '').trim() || null,
-                        visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(after || before),
+                        const r0 = await client.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1 FOR UPDATE', [id]);
+                        const before = ((_b = r0 === null || r0 === void 0 ? void 0 : r0.rows) === null || _b === void 0 ? void 0 : _b[0]) || snapshot;
+                        if (!before)
+                            return null;
+                        const patch = { ...basePatch };
+                        const isCheckinSiteExecution = (0, cleaningAssignmentStatus_1.isCheckinSiteExecutionTask)({
+                            task_type: (_c = patch.task_type) !== null && _c !== void 0 ? _c : before.task_type,
+                            inspection_scope: (_d = patch.inspection_scope) !== null && _d !== void 0 ? _d : before.inspection_scope,
+                        });
+                        if (patch.assignee_id !== undefined && patch.cleaner_id === undefined) {
+                            patch.cleaner_id = isCheckinSiteExecution ? null : patch.assignee_id;
+                        }
+                        if (patch.task_date != null)
+                            patch.date = patch.task_date;
+                        if (patch.inspection_mode !== undefined || patch.inspection_due_date !== undefined) {
+                            patch.inspection_replaced_by_checkin_task_id = null;
+                            patch.inspection_replaced_original_due_date = null;
+                        }
+                        validateAndApplyInspectionPatch({ patch, current: before });
+                        const lockedTurnoverTarget = turnoverInspectionScopeTarget(before, patch);
+                        if (lockedTurnoverTarget
+                            && (!initialTurnoverTarget
+                                || lockedTurnoverTarget.propertyId !== initialTurnoverTarget.propertyId
+                                || lockedTurnoverTarget.taskDate !== initialTurnoverTarget.taskDate)) {
+                            await (0, cleaningSync_1.lockCleaningTurnoverKey)(client, lockedTurnoverTarget.propertyId, lockedTurnoverTarget.taskDate);
+                        }
+                        await assertPgTurnoverInspectionScope(client, String(id), before, patch);
+                        {
+                            const beforeStatus = String(before.status || 'pending');
+                            const statusAutoEligible = beforeStatus === 'pending' || beforeStatus === 'assigned';
+                            const incomingStatus = basePatch.status;
+                            const incomingStatusEligible = incomingStatus === undefined || String(incomingStatus) === 'pending' || String(incomingStatus) === 'assigned';
+                            const touchingAssignees = basePatch.cleaner_id !== undefined ||
+                                basePatch.inspector_id !== undefined ||
+                                basePatch.assignee_id !== undefined ||
+                                basePatch.inspection_mode !== undefined ||
+                                basePatch.inspection_due_date !== undefined;
+                            if (touchingAssignees && statusAutoEligible && incomingStatusEligible) {
+                                const nextCleanerId = isCheckinSiteExecution
+                                    ? (patch.assignee_id !== undefined ? ((_e = patch.assignee_id) !== null && _e !== void 0 ? _e : null) : ((_g = (_f = before.assignee_id) !== null && _f !== void 0 ? _f : before.inspector_id) !== null && _g !== void 0 ? _g : null))
+                                    : (patch.cleaner_id !== undefined ? ((_h = patch.cleaner_id) !== null && _h !== void 0 ? _h : null) : ((_k = (_j = before.cleaner_id) !== null && _j !== void 0 ? _j : before.assignee_id) !== null && _k !== void 0 ? _k : null));
+                                const nextInspectorId = patch.inspector_id !== undefined ? ((_l = patch.inspector_id) !== null && _l !== void 0 ? _l : null) : ((_m = before.inspector_id) !== null && _m !== void 0 ? _m : null);
+                                patch.status = (0, cleaningAssignmentStatus_1.assignedStatusFromAssignees)(nextCleanerId, nextInspectorId);
+                            }
+                        }
+                        patch.updated_at = new Date().toISOString();
+                        const keys = Object.keys(patch).filter((k) => patch[k] !== undefined);
+                        if (!keys.length)
+                            return before;
+                        const set = keys.map((k, i) => `"${k}"=$${i + 1}`).join(', ');
+                        const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]));
+                        const sql = `UPDATE cleaning_tasks SET ${set} WHERE id=$${keys.length + 1} RETURNING *`;
+                        const r1 = await client.query(sql, [...values, id]);
+                        const after = ((_o = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _o === void 0 ? void 0 : _o[0]) || before;
+                        if (basePatch.new_code !== undefined &&
+                            String((after === null || after === void 0 ? void 0 : after.order_id) || '').trim() &&
+                            String((after === null || after === void 0 ? void 0 : after.task_type) || (after === null || after === void 0 ? void 0 : after.type) || '').trim().toLowerCase() === 'checkin_clean') {
+                            await (0, cleaningSync_1.syncCheckoutOldCodeFromCheckinNewCode)({ orderId: String(after.order_id), client });
+                        }
+                        const changedFields = Object.keys(patch || {}).filter((key) => patch[key] !== undefined);
+                        const assignmentChanged = ['assignee_id', 'cleaner_id', 'inspector_id'].some((key) => changedFields.includes(key));
+                        const arrangementRevision = (0, workTaskEvents_1.buildMz031CleaningArrangementRevision)(before, after, mz031ManagementStatusArrangementReasons(before, after, basePatch.status !== undefined));
+                        await (0, workTaskEvents_1.emitWorkTaskEvent)({
+                            taskId: `cleaning_task:${String(id)}`,
+                            sourceType: 'cleaning_tasks',
+                            sourceRefIds: [String(id)],
+                            eventType: assignmentChanged ? 'TASK_ASSIGNMENT_CHANGED' : (String((after === null || after === void 0 ? void 0 : after.status) || '').trim().toLowerCase() === 'cancelled' ? 'TASK_REMOVED' : 'TASK_UPDATED'),
+                            changeScope: assignmentChanged ? 'membership' : (String((after === null || after === void 0 ? void 0 : after.status) || '').trim().toLowerCase() === 'cancelled' ? 'membership' : 'list'),
+                            changedFields,
+                            patch: Object.fromEntries(changedFields.map((field) => [field, after === null || after === void 0 ? void 0 : after[field]])),
+                            payload: arrangementRevision ? { arrangement_revision: arrangementRevision } : undefined,
+                            causedByUserId: String(((_p = req === null || req === void 0 ? void 0 : req.user) === null || _p === void 0 ? void 0 : _p.sub) || '').trim() || null,
+                            visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(after || before),
+                        }, client);
+                        return after;
                     });
-                    return after;
                 }
                 const task = store_1.db.cleaningTasks.find((t) => String(t.id) === String(id));
                 if (!task)
                     return null;
                 const patch = { ...basePatch };
                 const isCheckinSiteExecution = (0, cleaningAssignmentStatus_1.isCheckinSiteExecutionTask)({
-                    task_type: (_p = patch.task_type) !== null && _p !== void 0 ? _p : task.task_type,
-                    inspection_scope: (_q = patch.inspection_scope) !== null && _q !== void 0 ? _q : task.inspection_scope,
+                    task_type: (_a = patch.task_type) !== null && _a !== void 0 ? _a : task.task_type,
+                    inspection_scope: (_b = patch.inspection_scope) !== null && _b !== void 0 ? _b : task.inspection_scope,
                 });
                 if (patch.assignee_id !== undefined && patch.cleaner_id === undefined) {
                     patch.cleaner_id = isCheckinSiteExecution ? null : patch.assignee_id;
                 }
                 validateAndApplyInspectionPatch({ patch, current: task });
+                assertMemoryTurnoverInspectionScope(String(id), task, patch);
                 if (patch.property_id !== undefined)
                     task.property_id = patch.property_id;
                 if (patch.task_date !== undefined) {
@@ -1887,6 +2329,8 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                     task.inspector_id = patch.inspector_id;
                 if (patch.assignee_id !== undefined)
                     task.assignee_id = patch.assignee_id;
+                if (patch.inspection_scope !== undefined)
+                    task.inspection_scope = (0, cleaningInspection_1.normalizeInspectionScope)(patch.inspection_scope);
                 if (patch.inspection_mode !== undefined)
                     task.inspection_mode = patch.inspection_mode;
                 if (patch.inspection_due_date !== undefined)
@@ -1927,9 +2371,28 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
             if (r)
                 updated.push(r);
         }
+        if (dbAdapter_1.hasPg && dbAdapter_1.pgPool && updated.length && (0, deferredInspectionCheckinConflict_1.isDeferredInspectionCheckinConflictRelevantChange)(Object.keys(basePatch))) {
+            const updatedIds = updated.map((task) => String((task === null || task === void 0 ? void 0 : task.id) || '').trim()).filter(Boolean);
+            await (0, deferredInspectionCheckinConflict_1.reconcileDeferredInspectionCheckinReplacement)({
+                taskIds: updatedIds,
+                actorUserId: String(((_f = req === null || req === void 0 ? void 0 : req.user) === null || _f === void 0 ? void 0 : _f.sub) || '').trim() || null,
+            });
+            enqueueNotification(() => {
+                var _a;
+                return (0, deferredInspectionCheckinConflict_1.emitDeferredInspectionCheckinConflictAlerts)({
+                    taskIds: updatedIds,
+                    actorUserId: String(((_a = req === null || req === void 0 ? void 0 : req.user) === null || _a === void 0 ? void 0 : _a.sub) || '').trim() || null,
+                });
+            });
+        }
         return res.json({ ok: true, updated: updated.length });
     }
     catch (e) {
+        if (sendTurnoverInspectionScopeConflict(res, e))
+            return;
+        const conflict = (0, inspectionAssignmentConflict_1.inspectionAssignmentConflictPayload)(e);
+        if (conflict)
+            return res.status(409).json(conflict);
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'bulk_patch_failed' });
     }
 });
@@ -2066,7 +2529,7 @@ const rangeSchema = zod_1.z.object({
     to: zod_1.z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
 });
 exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), async (req, res) => {
-    var _a;
+    var _a, _b, _c;
     const parsed = rangeSchema.safeParse(req.query || {});
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -2089,6 +2552,7 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
            COALESCE(p_id.code::text, p_code.code::text) AS property_code,
            COALESCE(p_id.region::text, p_code.region::text) AS property_region,
            t.task_type,
+           t.linked_checkout_task_id,
            COALESCE(t.task_date, t.date)::text AS task_date,
            t.status,
            t.assignee_id,
@@ -2133,6 +2597,53 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
          ORDER BY COALESCE(task_date, date) ASC, COALESCE(p_id.code, p_code.code) NULLS LAST, t.id`, [from, to, includeDeferredInspection]);
             const rawRows = (r === null || r === void 0 ? void 0 : r.rows) || [];
             const activeTaskIds = Array.from(new Set(rawRows.map((row) => String((row === null || row === void 0 ? void 0 : row.id) || '').trim()).filter(Boolean)));
+            if (activeTaskIds.length) {
+                try {
+                    const completionAreasByTaskId = new Map();
+                    const mediaResult = await dbAdapter_1.pgPool.query(`SELECT task_id::text AS task_id, type
+             FROM cleaning_task_media
+             WHERE task_id::text = ANY($1::text[])
+               AND type LIKE 'completion_%'`, [activeTaskIds]);
+                    for (const media of (mediaResult === null || mediaResult === void 0 ? void 0 : mediaResult.rows) || []) {
+                        const taskId = String(media.task_id || '').trim();
+                        const rawArea = String(media.type || '').replace(/^completion_/, '').trim();
+                        const area = rawArea === 'remote_controls' || rawArea === 'remote_ac' ? 'remote_tv' : rawArea;
+                        if (!taskId || !area)
+                            continue;
+                        const areas = completionAreasByTaskId.get(taskId) || new Set();
+                        areas.add(area);
+                        completionAreasByTaskId.set(taskId, areas);
+                    }
+                    const exceptionResult = await dbAdapter_1.pgPool.query(`SELECT DISTINCT ON (source_id::text) source_id::text AS task_id, metadata
+             FROM work_task_action_audits
+             WHERE source_type='cleaning_tasks'
+               AND source_id::text = ANY($1::text[])
+               AND performed_as_action='complete_cleaning'
+               AND metadata ? 'completion_photo_exception'
+             ORDER BY source_id::text, performed_at DESC, created_at DESC`, [activeTaskIds]);
+                    const exceptionCountByTaskId = new Map();
+                    for (const audit of (exceptionResult === null || exceptionResult === void 0 ? void 0 : exceptionResult.rows) || []) {
+                        const taskId = String(audit.task_id || '').trim();
+                        const savedAreas = completionAreasByTaskId.get(taskId) || new Set();
+                        const exceptionAreas = new Set();
+                        for (const item of Array.isArray((_c = (_b = audit.metadata) === null || _b === void 0 ? void 0 : _b.completion_photo_exception) === null || _c === void 0 ? void 0 : _c.items) ? audit.metadata.completion_photo_exception.items : []) {
+                            const rawArea = String((item === null || item === void 0 ? void 0 : item.area) || '').trim();
+                            const area = rawArea === 'remote_controls' || rawArea === 'remote_ac' ? 'remote_tv' : rawArea;
+                            if (area && !savedAreas.has(area))
+                                exceptionAreas.add(area);
+                        }
+                        if (taskId && exceptionAreas.size)
+                            exceptionCountByTaskId.set(taskId, exceptionAreas.size);
+                    }
+                    for (const row of rawRows) {
+                        row.completion_photo_exception_count = exceptionCountByTaskId.get(String((row === null || row === void 0 ? void 0 : row.id) || '').trim()) || 0;
+                    }
+                }
+                catch (error) {
+                    if (String((error === null || error === void 0 ? void 0 : error.code) || '') !== '42P01')
+                        throw error;
+                }
+            }
             const supersededByReplacementId = new Map();
             if (activeTaskIds.length) {
                 const sr = await dbAdapter_1.pgPool.query(`SELECT
@@ -2211,6 +2722,9 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
                     source: 'cleaning_tasks',
                     order_id: row.order_id ? String(row.order_id) : null,
                     order_code: row.order_code ? String(row.order_code) : null,
+                    order_checkin: row.order_checkin ? String(row.order_checkin).slice(0, 10) : null,
+                    order_checkout: row.order_checkout ? String(row.order_checkout).slice(0, 10) : null,
+                    linked_checkout_task_id: row.linked_checkout_task_id ? String(row.linked_checkout_task_id) : null,
                     property_id: row.property_id ? String(row.property_id) : null,
                     property_code: row.property_code ? String(row.property_code) : null,
                     property_region: row.property_region ? String(row.property_region) : null,
@@ -2236,6 +2750,7 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
                     inspection_mode: inspectionMode,
                     inspection_scope: (0, cleaningInspection_1.normalizeInspectionScope)(row.inspection_scope),
                     inspection_due_date: inspectionDueDate,
+                    completion_photo_exception_count: Number(row.completion_photo_exception_count || 0),
                 };
                 if (d >= from && d <= to) {
                     items.push({
@@ -2283,7 +2798,6 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
            t.title,
            t.content,
            COALESCE(w.status, 'todo') AS status,
-           t.urgency,
            t.property_id,
            w.assignee_id AS assignee_id,
            COALESCE(t.photo_urls, '[]'::jsonb) AS photo_urls,
@@ -2311,7 +2825,6 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
                     status: String(row.status || 'pending'),
                     assignee_id: row.assignee_id ? String(row.assignee_id) : null,
                     scheduled_at: null,
-                    urgency: row.urgency ? String(row.urgency) : 'medium',
                     photo_urls: normalizePhotoUrls(row.photo_urls),
                     old_code: null,
                     new_code: null,
@@ -2425,7 +2938,6 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
                 status: String(t.status || 'pending'),
                 assignee_id: t.assignee_id ? String(t.assignee_id) : null,
                 scheduled_at: null,
-                urgency: t.urgency ? String(t.urgency) : 'medium',
                 photo_urls: normalizePhotoUrls(t.photo_urls),
                 old_code: null,
                 new_code: null,
@@ -2441,7 +2953,7 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'calendar_failed' });
     }
 });
-exports.router.post('/backfill', (0, auth_1.requirePerm)('cleaning.schedule.manage'), async (req, res) => {
+exports.router.post('/backfill', (0, auth_1.requirePerm)('cleaning.schedule.manage'), r5RequestSchema_1.requireR5TaskRuntimeSchema, async (req, res) => {
     var _a, _b;
     const dateSchema = zod_1.z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional();
     const fromParsed = dateSchema.safeParse((_a = req.query) === null || _a === void 0 ? void 0 : _a.date_from);
