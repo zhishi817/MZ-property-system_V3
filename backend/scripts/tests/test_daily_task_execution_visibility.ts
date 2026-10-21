@@ -115,6 +115,13 @@ assert.deepEqual(
   [{ performedAt: '2026-10-19T03:00:00.000Z', actorUserId: 'staff-b' }],
   'identical actor/timestamp evidence must not double count a cancellation record',
 )
+assert.deepEqual(
+  mergeRoleRecordEvidenceWithCancellation({
+    roleEvidence: [{ performedAt: '2026-10-19T04:00:00.000Z', actorUserId: 'former-cleaner', actorName: 'Former Cleaner' }],
+  }),
+  [{ performedAt: '2026-10-19T04:00:00.000Z', actorUserId: 'former-cleaner', actorName: 'Former Cleaner' }],
+  'completion evidence retains the actual audit performer name after reassignment',
+)
 assert.equal(isDailyTaskManagerRoleNames(['cleaner']), false)
 assert.equal(isDailyTaskManagerRoleNames(['ADMIN']), false, 'role matching must preserve the existing exact-name authorization boundary')
 const caseById = (id: string) => {
@@ -339,10 +346,17 @@ assert.match(mzapp, /maintenance_record_event\.event_type IN \('executor_complet
 assert.match(mzapp, /source_record_reason == null[\s\S]*?x\.completion_reason/, 'a maintenance cancellation must retain its authoritative source reason')
 assert.match(mzapp, /emitWorkTaskEvent\(\{[\s\S]*?eventType: 'TASK_COMPLETED'[\s\S]*?\}, client\)[\s\S]*?COMMIT/, 'generic completion and its authoritative work-record event must commit atomically')
 assert.match(mzapp, /cleaner_record\.performed_at AS cleaner_record_at[\s\S]*?inspector_record\.performed_at AS inspector_record_at[\s\S]*?cancelled_record\.occurred_at AS cancelled_record_at/, 'cleaning history must use persisted cleaner, inspector and cancellation evidence')
+assert.match(mzapp, /cleaner_record\.performed_by_name AS cleaner_record_actor_name/, 'cleaning work records must select the audit performer name')
+assert.match(mzapp, /__work_record_actor_name: recordActorName[\s\S]*?completed_by_name: workRecordActorName \|\| null/, 'cleaning work records must carry the immutable performer name to the response')
+assert.match(mzapp, /isWorkRecordGroup && roleKind === 'cleaner' && workRecordActorName[\s\S]*?\? workRecordActorName/, 'a reassigned cleaning record must display its actual performer rather than the current cleaner')
 assert.match(mzapp, /__work_record_state: recordState[\s\S]*?__original_scheduled_date: taskDate/, 'cleaning history must project an actual-day record without moving its original planned date')
 assert.match(mzapp, /isWorkRecordGroup[\s\S]*?work_record_date: workRecordDate \|\| date[\s\S]*?original_scheduled_date: originalScheduledDate/, 'cleaning completion records must expose explicit record and original dates')
-assert.match(mzapp, /historical_candidate_ids AS MATERIALIZED[\s\S]*?performed_as_action IN \('complete_cleaning', 'submit_inspection'\)[\s\S]*?media\.type = 'lockbox_video'/, 'terminal cleaning rows must remain queryable when immutable execution evidence exists')
-assert.match(mzapp, /const recordKey = recordState \? `record:\$\{recordState\}:\$\{recordActorId \|\| 'unassigned'\}` : 'active'/, 'manager aggregation must not merge active cleaning cards with historical records')
+assert.match(mzapp, /historical_candidate_ids AS MATERIALIZED[\s\S]*?cleaningCompletionAuditWhereSql\('audit'\)[\s\S]*?audit\.performed_as_action = 'submit_inspection'[\s\S]*?media\.type = 'lockbox_video'/, 'terminal cleaning rows must remain queryable when immutable execution evidence exists')
+assert.match(mzapp, /if \(wantExecutor && isCheckinSiteExecution\) \{[\s\S]*?if \(!suppressStandaloneCheckin && isActiveCleaningTurnoverCandidate\(row\)[\s\S]*?const recordEvidence = mergeRoleRecordEvidenceWithCancellation/, 'a completed turnover may suppress its duplicate live check-in card but must still emit the executor work record')
+assert.match(mzapp, /wantInspector[\s\S]*?cleaningType\(row\.task_type\) !== 'stayover'[\s\S]*?if \(!suppressStandaloneCheckin && isActiveCleaningTurnoverCandidate\(row\)[\s\S]*?const recordEvidence = mergeRoleRecordEvidenceWithCancellation/, 'a completed turnover may suppress its duplicate live inspection card but must still emit the inspection work record')
+assert.match(mzapp, /const k = `\$\{d\}\|\$\{businessIdentity\}\|\$\{String\(it\.__manager_merge_isolation_key \|\| ''\)\.trim\(\)\}`/, 'manager aggregation must group one reliable business identity without using property/date as identity')
+assert.match(mzapp, /const activeArr = arr\.filter[\s\S]*?const preferredPool = activeArr\.length \? activeArr : arr/, 'a live card must remain the top-level projection when its immutable phase history is also present')
+assert.match(mzapp, /__merged_children: \(activeArr\.length \? activeArr : arr\)/, 'historical phases must not add a second actionable child beside the live card')
 assert.match(mzapp, /w\.is_work_record AND COALESCE\([\s\S]*?w\.work_record_date[\s\S]*?NOT w\.is_work_record AND w\.scheduled_date/, 'completed cross-day rows must be selected only by their record date')
 assert.match(mzapp, /isReassignedRecord \? \[\] : normalizeWorkTaskPhotoUrls\(x\.photo_urls\)/, 'a former executor record must not inherit the current assignee photo set')
 assert.match(mzapp, /completion_note: isReassignedRecord[\s\S]*?\? null[\s\S]*?completion_reason: isReassignedRecord[\s\S]*?任务已改派；此条仅保留原执行人的实际工作记录/, 'a former executor record must not inherit the current assignee note or current-state reason')

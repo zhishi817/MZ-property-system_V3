@@ -129,8 +129,8 @@ async function main() {
     assert.equal(turnoverTasks.every((task: any) => task.daily_stats_group === 'turnover'), true)
     assert.deepEqual(
       Array.from(new Set(turnoverTasks.map((task: any) => task.daily_stats_key))),
-      ['turnover:2026-10-10:turnover-property'],
-      'checkout and checkin share one property/date turnover count',
+      ['turnover:2026-10-10:cleaning_task:turnover-checkin'],
+      'the merged checkout/checkin card uses its stable cleaning source identity instead of property/date',
     )
     assert.equal(
       boardTasks.some((task: any) => task.property_id === 'unassigned-property'),
