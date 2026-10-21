@@ -1,5 +1,72 @@
 # Change Release Ledger
 
+## CRL-20261021-003 — 任务中心统计契约断言对齐业务身份
+
+- **Status:** exact staged test-only CI repair independently reviewed GO for commit and authorized update of existing Draft PR #413; cloud CI rerun pending
+- **Repository:** `root`
+- **Updated:** 2026-10-21 05:26 UTC
+- **Request:** 修复 Root Draft PR #413 的 Fast Regression 失败；只处理 MZ054–MZ061 范围内的失败，不扩大到已暂停的 MZ062，不合并、部署或写生产数据。
+- **Outcome:** 任务中心日投影契约不再期待已经废弃的“房源+日期”统计键，改为断言合并周转卡的稳定 cleaning source identity；生产代码和 API 行为不变。
+
+### Implementation
+
+- Previous behavior: `test_task_center_daily_projection` 仍固定期待 `turnover:<date>:<property>`，与 `root/CRL-20261021-002` 已验证的稳定业务身份计数规则冲突，导致 PR Fast Regression 失败。
+- New behavior: 测试断言使用实际投影的 `turnover:<date>:cleaning_task:<source>` 键，并明确禁止把房源/日期当作统计身份。
+- Key decisions: 本单元只修复过期测试契约；同房源同日独立周转不折叠的业务行为继续由 `test_daily_task_execution_stats` 覆盖，不修改运行时代码。
+
+### Files / Areas
+
+- `backend/scripts/tests/test_task_center_daily_projection.ts` — modified: 对齐稳定 cleaning source identity 的日投影断言。
+- `docs/change-release-ledger.md` — modified: 记录 CI 修复、验证和追加发布尝试。
+
+### Impact / Dependencies
+
+- API / database / migration / config / dependencies: none。
+- Permissions / production data: unchanged；无生产读写。
+- Related units: `root/CRL-20261021-001`、`root/CRL-20261021-002`；继续配对 `mobile/CRL-20261021-002`。MZ062 不在范围。
+
+### Validation
+
+- `npm run test:task-center-daily-projection --prefix backend` — PASS。
+- `npm run test:daily-task-execution-stats --prefix backend` — PASS。
+- Root `npm run check:ci` — partial local run passed workflow contract, ledger-range/current-ledger audits, Dev-preview guards, feature registry, backend build and email contracts, then stopped at the order fixed-cleaning-fee test because this sandbox denies binding `127.0.0.1`; the requested elevated rerun was denied and was not retried or bypassed. The normal GitHub PR runner must execute the full gate after the authorized push.
+- Production/device verification — not run.
+- Independent review — GO for this test-only repair, P0=0/P1=0. One existing non-blocking P2 remains: Web Task Center upstream `mergeCleaningTasks()` can still merge same-property/same-day independent turnovers before statistics, while the MZ App path and stats helper preserve business identity. This candidate does not claim or change that separate Web behavior.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared.
+- **Untracked review:** none.
+- `backend/scripts/tests/test_task_center_daily_projection.ts` — SHA-256: `60749f2fd98e7c5c4379261ec803841c7200cddd03bce3b750105bf8d2a66ea3`
+
+### Release Attempts
+
+#### RA-20261021-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261021-001`, `CRL-20261021-002`, `CRL-20261021-003`
+- Selected CRL identities: `root/CRL-20261021-001`, `root/CRL-20261021-002`, `root/CRL-20261021-003`
+- Intended action: `commit`, then authorized normal update of the existing Draft PR #413 branch
+- Branch: `codex/mz054-061-unified-fixes`
+- Base: `origin/Dev@65a9d218d803813ed458c25406493aee70189da5`
+- Candidate patch SHA-256: `731f1a3a89b895ffb6713b68267cf93b7199d2da40f1eae9dd65f5ee73dd7ea3`, excluding `docs/change-release-ledger.md`; includes the previously reviewed MZ054–MZ061 runtime candidate plus this test-only assertion repair.
+- Dependencies: paired Mobile Draft PR #63 at `4d2cdb923973db562b63df7ec1224ac9017686a0`; Root must deploy before any Mobile release. No deployment or release is authorized here.
+- Required validation: focused daily projection and daily execution statistics contracts PASS; staged ledger gate and diff check PASS before review. Local full CI is incomplete only because loopback binding was sandbox-denied; the full GitHub PR CI rerun is required before merge.
+- Shared-hunk review: PASS for this repair; runtime source is unchanged, MZ062 remains absent, and the only non-ledger staged hunk updates the obsolete test expectation.
+- Generated-file review: PASS; no generated, dependency, lockfile, binary, secret or production payload is selected.
+- Technical state: `selected-for-commit`; push/PR update and cloud CI are not yet verified.
+- User authorization: `approved-for-push`; the user authorized fixing in-scope CI failures and updating the same Draft PR until pass or an exact blocker.
+- Independent review: `GO for this test-only repair`; reviewer matched the two-file staged scope, confirmed the old property/date assertion was obsolete, found P0=0/P1=0, and retained the separate existing Web Task Center grouping gap as P2 rather than hiding it.
+- Action conclusion: `GO for local commit and normal update of Draft PR #413 after the exact staged gate passes`; no merge, deployment, OTA or production database write is authorized.
+
+### Risks / Release Notes
+
+- Test-only change; rollback restores the prior assertion but would restore the known CI failure.
+- The assertion is limited to the single merged checkout/checkin fixture. It does not claim that Web Task Center already distinguishes two independent turnovers for the same property/date; that separate P2 remains disclosed.
+- Sensitive-information review: no secret, credential, production payload, personal data, generated file or dependency change.
+- Git state: uncommitted; not pushed, merged or deployed; device/production verification not run.
+
 ## CRL-20261021-002 — 任务周转身份、挂钥匙事实与阶段记录统一投影
 
 - **Status:** exact staged candidate independently reviewed GO for commit; selected for authorized commit, push, and draft PR; not committed, pushed, merged, or deployed
