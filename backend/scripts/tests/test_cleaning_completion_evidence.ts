@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import {
   cleaningCompletionAuditWhereSql,
+  inspectionSubmissionAuditWhereSql,
   isCleaningCompletionAudit,
+  isInspectionSubmissionAudit,
 } from '../../src/lib/cleaningCompletionEvidence'
 
 assert.equal(isCleaningCompletionAudit({ performed_as_action: 'complete_cleaning' }), true)
@@ -56,6 +58,20 @@ assert.equal(isCleaningCompletionAudit({
   performed_as_action: 'submit_inspection',
   status_after: 'inspected',
 }), false)
+assert.equal(isInspectionSubmissionAudit({
+  performed_as_action: 'submit_inspection',
+  status_after: 'inspected',
+  metadata: { route: 'mzapp.cleaning_tasks.inspection_photos' },
+}), true)
+assert.equal(isInspectionSubmissionAudit({
+  performed_as_action: 'submit_inspection',
+  status_after: 'to_inspect',
+  metadata: { route: 'mzapp.cleaning_tasks.restock_proof' },
+}), false, 'legacy restock evidence must not freeze the later real inspection submission')
+assert.equal(isInspectionSubmissionAudit({
+  performed_as_action: 'record_restock_proof',
+  metadata: { route: 'mzapp.cleaning_tasks.restock_proof' },
+}), false)
 
 // Production read-only acceptance samples (2026-10-20/21 Melbourne): these
 // exact evidence shapes were missing from the deployed complete_cleaning-only
@@ -88,6 +104,11 @@ assert.match(sql, /cleaning_app\.tasks\.completion_photos/)
 assert.match(sql, /completion_photos_saved/)
 assert.match(sql, /COALESCE\(audit\.metadata->>'route', ''\)/, 'missing legacy route metadata must use the compatibility path')
 assert.throws(() => cleaningCompletionAuditWhereSql('audit; DELETE FROM cleaning_tasks'), /invalid_sql_alias/)
+
+const inspectionSql = inspectionSubmissionAuditWhereSql('audit')
+assert.match(inspectionSql, /audit\.performed_as_action = 'submit_inspection'/)
+assert.match(inspectionSql, /mzapp\.cleaning_tasks\.restock_proof/)
+assert.throws(() => inspectionSubmissionAuditWhereSql('audit; DELETE FROM cleaning_tasks'), /invalid_sql_alias/)
 
 // Evidence is evaluated inside the caller's requested Melbourne date range.
 // There is intentionally no 7- or 14-day age cutoff in this classifier.

@@ -33591,6 +33591,300 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Real device/UI verification remains pending.
 - Sensitive-information review: no credentials, production payloads, media bytes or database URLs added.
 - Git state: uncommitted, not pushed, no PR, not merged, migration not run, not deployed, not published, device/production verification not run.
+## CRL-20261022-006 — 补品审计不得阻断检查照片保存
+
+- **Status:** local implementation validated; independent review GO (P0=0, P1=0); not selected for commit or release
+- **Repository:** `root`
+- **Updated:** 2026-10-22 UTC
+- **Request:** 补品证据不能误写正式检查终态；历史误写记录不得阻断同一真实任务的合法检查照片保存或原队列重试，同时保留真实终态、取消、跨任务与权限保护。
+- **Outcome:** 新补品证据使用独立的非终态审计动作；仅精确识别旧 `mzapp.cleaning_tasks.restock_proof` 误写审计作为兼容例外，其他 `submit_inspection` 仍为正式检查证据。检查照片晚于同任务挂钥匙视频到达时保留 `keys_hung`，不会倒退为 `inspected`。
+
+### Implementation
+
+- Previous behavior: `/mzapp/cleaning-tasks/:id/restock-proof` 为普通检查任务写入 `submit_inspection`；后续真实 `/inspection-photos` 被 actor-scoped immutable guard 误判为已提交并以 `409 work_record_read_only` 回滚。
+- New behavior: 新补品证据写入 `record_restock_proof`，状态保持不变；旧误写只在 action 为 `submit_inspection` 且 metadata route 精确等于 `mzapp.cleaning_tasks.restock_proof` 时排除于正式检查证据。
+- Compatibility: 不删除、不改写旧审计；合法同任务照片重试可继续，真实 inspection route、取消任务、其他任务证据和无权限请求继续 fail closed。
+- Terminal guard: restock route rechecks the row-locked status before any media mutation; cancelled/canceled/ready/completed/done reject new writes with 409, while `keys_hung` may still receive unfinished exact-task restock evidence. A previously committed matching idempotent retry may replay its saved response without writing.
+- Queue / media safety: 不清空、不重建、不回放真实设备队列，不移动或复制媒体；挂钥匙视频只按精确 task ID 协调晚到照片状态。
+
+### Files / Areas
+
+- `backend/src/lib/cleaningCompletionEvidence.ts` — precise legacy-restock classifier and SQL predicate.
+- `backend/src/lib/workTaskActions.ts` — internal non-terminal `record_restock_proof` audit action.
+- `backend/src/lib/workTaskActionAudit.ts` — mutable guard compatibility and exact-task video-before-photo reconciliation.
+- `backend/src/modules/mzapp.ts` — new restock audit action and route-aware historical inspection evidence.
+- `backend/scripts/tests/test_cleaning_completion_evidence.ts` — classifier and SQL fail-closed contract.
+- `backend/scripts/tests/test_cleaning_task_transition_guard.ts` — legacy recovery, true terminal, cross-task and out-of-order transitions.
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — restock transaction/idempotency source contract.
+- Existing daily visibility, candidate scope and luggage contracts were updated to require genuine inspection evidence.
+
+### Impact / Dependencies
+
+- API: no request or response shape change; old clients may keep their existing payload and idempotency identifiers.
+- Database / migration: none; `performed_as_action` is an unconstrained text column. No audit backfill or correction is included.
+- Config / environment: none.
+- Dependencies: preserves the existing MZ-063/MZ-064/MZ-072 and LA910 local candidate; no dependency on MZ-062.
+
+### Validation
+
+- Focused evidence classifier, transition guard, idempotency, visibility, candidate-scope and luggage contracts — passed locally.
+- `npm run check:backend` — passed in full, including TypeScript build, transition, media authorization, history projection and paired Phase 5 release contracts.
+- Paired Mobile `npm run check:ci` — passed unchanged: 77 suites / 630 tests; lint completed with 0 errors and pre-existing warnings only.
+- `python3 scripts/audit_change_release_ledger.py` — PASS (20 changed files recorded / 20 changed files detected for the accumulated candidate).
+- Independent review — GO: P0=0, P1=0, P2=1 after the row-locked cancelled/terminal zero-write guard was added and re-reviewed.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none; the selected migration is explicitly tracked under `root/CRL-20261022-004`.
+
+### Release Attempts
+
+- None. No commit, push, PR, merge, deployment, OTA, production write, queue replay or device retry was performed.
+
+### Risks / Release Notes
+
+- A future deployment alone does not replay device queues. A device retry would perform the normal production media/audit write and remains a separate operational action; it was not executed here.
+- Object-storage-only uploads without an existing local retry item are not reconstructed by this code change.
+- Non-blocking P2: cancelled/terminal zero-write, mid-transaction rollback and receipt replay are covered by source-order contracts plus helper tests, not a real Express route with a transactional adapter.
+- Tests use synthetic IDs and media facts only; no production task, media byte, credential or access code is recorded.
+
+## CRL-20261022-005 — LA910 自完成补品后保留本任务挂钥匙入口
+
+- **Status:** local implementation under final review; not released
+- **Repository:** `root`
+- **Updated:** 2026-10-22 UTC
+- **Request:** 自完成清洁填完补品并进入 `cleaned` 后，在本任务真正挂钥匙前保留活动卡和挂钥匙入口；已填补品、完成照片只读，不能借用其他任务视频。
+- **Outcome:** 清洁资料提交完成与整项挂钥匙完成分开判断；只认准确 source task 的挂钥匙视频或人工确认，待挂钥匙阶段不生成重复历史卡。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — exact-source handover fact, active/history projection and duplicate suppression.
+- `backend/src/lib/workTaskActions.ts` — submitted self-complete cleaning evidence remains read-only while handover action stays enabled.
+- `backend/scripts/tests/test_work_task_actions.ts` / `test_daily_task_execution_visibility.ts` — exact-source, read-only and projection contract coverage.
+
+### Impact / Dependencies
+
+- API: work-task projection exposes exact-source handover/consumables facts and actions.
+- Database / migration: none.
+- Dependencies: paired `mobile/CRL-20261022-005`.
+- Upload queue/media storage: unchanged; no replay, clear, migration or automatic re-upload.
+
+### Validation
+
+- Backend `test:work-task-actions`, `test:daily-task-execution-visibility`, and TypeScript build — passed.
+- Final complete checks and independent review are recorded after completion; no production/device validation yet.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none.
+
+### Release Attempts
+
+- None. Local-only, uncommitted, not pushed, not deployed, not published.
+
+## CRL-20261022-004 — 历史任务报修查看与新增权限分离
+
+- **Status:** local implementation validated; final independent paired review GO (P0=0, P1=0); not released
+- **Repository:** `root`
+- **Updated:** 2026-10-22 UTC
+- **Request:** 已完成任务保持只读，但原清洁／检查执行人及管理角色仍可查看本任务报修记录，并在当前权限仍有效时新增独立报修。
+- **Outcome:** 报修查看与新增权限改为服务端按精确源任务分别核定；不再因 `work_record_read_only` 一刀切隐藏，也不按房号或日期推断任务关系。
+
+### Implementation
+
+- Work-record projection exposes only an exact-source `report_issue` capability; every original execution/status/media-upload action remains disabled.
+- Feedback list/create routes validate the exact active cleaning source, original execution evidence, current role permissions and cancelled/deleted/superseded state.
+- Feedback history for non-management users is source-task scoped, preventing unrelated later property reports from leaking to the original worker.
+- New deep-clean feedback stores nullable `source_task_id`; legacy unlinked rows are not backfilled and remain manager-only rather than being guessed.
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — exact work-record source resolution, split view/create authorization, scoped feedback routes and media authorization.
+- `backend/scripts/migrations/20261022_property_deep_cleaning_source_task.sql` — additive nullable source identity and partial index; not executed.
+- `backend/scripts/tests/test_mzapp_form_photo_read.ts`, `test_mzapp_media_visibility.ts`, `test_cleaning_media_image.ts`, `test_property_feedback_access_contract.ts` — exact-source, reassignment, view-only, outsider and management-role regressions.
+
+### Impact / Dependencies
+
+- API: `/property-feedbacks` accepts `source_task_id`; non-management historical access requires an exact authorized source.
+- Database / migration: additive nullable `property_deep_cleaning.source_task_id` and index; migration must precede the matching Root deployment. No backfill or production execution.
+- Dependencies: paired `mobile/CRL-20261022-004`.
+
+### Validation
+
+- Focused Root contracts passed after the final authorization repair: backend build, media visibility, cleaning-media image, maintenance workflow actions and property-feedback access contract.
+- Real localhost HTTP matrix passed with synthetic read-only fixtures: exact source creator/inspector, exact maintenance assignee and immutable event actor return 200; outsider, wrong source, replacement actor and cancelled/deleted/superseded sources (including omitted client `source_task_id`) return 403 before object storage.
+- `npm run check:backend` — every runnable Root stage passed. The final embedded-Mobile Phase 5 step could not discover `mz-cleaning-app-frontend` in this isolated Root checkout; the exact official `npm run test:phase5-release-contract --prefix backend` then passed against the paired local Mobile checkout through a temporary read-only symlink, which was removed immediately afterward.
+- Independent paired review — GO: P0=0, P1=0. Review confirmed canonical-source media authorization, immutable event actor isolation, exact maintenance-work-task access, mutation capability alignment, read-only Mobile capability stripping and untouched original upload queues.
+- `git diff --check` — passed in Root and Mobile.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none; `backend/scripts/migrations/20261022_property_deep_cleaning_source_task.sql` is an explicitly selected tracked candidate file.
+
+### Release Attempts
+
+- None.
+
+### Risks / Release Notes
+
+- Legacy deep-clean feedback without an exact source is intentionally not exposed to historical field workers; managers retain the existing property-wide view.
+- The new migration is required only because `property_deep_cleaning` previously had no durable exact source-task identity. It is nullable, has no backfill and was not executed; migration-first deployment is required before the paired Root version. Ordinary `CREATE INDEX` may briefly lock the table and true PostgreSQL migration testing remains outstanding.
+- Batch maintenance/deep-clean/daily 24-hour duplicate detection is still application-level rather than protected by one transaction/unique constraint; an extreme concurrent double submit remains a documented P2.
+- Exact-source POST/PATCH/DELETE has static, helper and single-process coverage; true PostgreSQL integration and physical-device acceptance remain outstanding.
+- No production feedback, media, task, upload queue or database row was created or modified.
+- Git state: uncommitted, not pushed, not merged, migration not run, not deployed, not published.
+
+## CRL-20261022-001 — MZ-063 历史工作记录精确媒体源解析补修
+
+- **Status:** local implementation validated; independent review GO (P0=0, P1=0); not selected for commit or release
+- **Repository:** `root`
+- **Updated:** 2026-10-22 UTC
+- **Request:** 已完成清洁/检查记录只读查看本人或职责范围内已上传照片，不得按房号日期借用独立任务媒体。
+- **Outcome:** 历史合成卡改用 Root 下发的精确 source IDs 解析真实任务，合成 record ID 不再被当作数据库 task ID。
+
+### Implementation
+
+- Previous behavior: 单源历史记录命中 grouped 分支后忽略 `source_ids`，查询不存在的显示 ID 并返回 not found。
+- New behavior: merged、turnover、grouped 合成身份都只按显式 source ID 查询；参与人、执行审计、媒体类型和 canonical 周转权限仍逐层校验。
+- Key decisions: 不按房号/日期兜底；取消/删除/被替代任务继续拒绝；不修改媒体或上传队列。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — synthetic record exact-source resolution.
+- `backend/scripts/tests/test_mzapp_form_photo_read.ts` — exact-source contract.
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — isolated HTTP regression.
+
+### Impact / Dependencies
+
+- API: corrects existing `GET /mzapp/work-tasks/:id/form-photos`; no request-shape change.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: paired `mobile/CRL-20261022-001`; no dependency on MZ-062.
+
+### Validation
+
+- `npm run test:mzapp-form-photo-routes --prefix backend` — passed.
+- `npx ts-node-dev --transpile-only backend/scripts/tests/test_mzapp_form_photo_read.ts` — passed.
+- `npm run build --prefix backend` — passed.
+- `npm run check:backend` — passed in full, including the paired Mobile Phase 5 contract.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none.
+
+### Release Attempts
+
+- None yet.
+
+### Risks / Release Notes
+
+- Legacy ownerless media remains subject to existing Root authorization; no inferred ownership was added.
+- No production data, secrets, media bytes or database URLs included. Git state: uncommitted, not pushed, not deployed.
+
+## CRL-20261022-002 — MZ-064 历史房源资料能力补修
+
+- **Status:** local implementation validated; independent review GO (P0=0, P1=0); not selected for commit or release
+- **Repository:** `root`
+- **Updated:** 2026-10-22 UTC
+- **Request:** 完成任务在原角色/任务权限下继续查看 Wi-Fi、路由位置及入住指南；取消/删除/替代记录不得取得。
+- **Outcome:** Root 仅对 completed/pending_review/reassigned 且未失效的授权记录下发 `property_access`。
+
+### Implementation
+
+- Previous behavior: capability 对部分失效记录仍可能保持 true。
+- New behavior: capability 与 work-record/执行状态共同 fail closed；不扩大任务列表权限。
+- Key decisions: 展示当前授权房源资料，不创建历史秘密快照。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — property capability state gate.
+- `backend/scripts/tests/test_mzapp_form_photo_read.ts` — role/capability regression.
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — updated capability/sanitization contract.
+
+### Impact / Dependencies
+
+- API: tightens existing `read_only_views.property_access` invalidation.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: paired `mobile/CRL-20261022-002`.
+
+### Validation
+
+- Focused Root contract and backend TypeScript build passed.
+- `npm run check:backend` — passed in full, including media route, daily projection and paired Mobile Phase 5 contracts.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none.
+
+### Release Attempts
+
+- None yet.
+
+### Risks / Release Notes
+
+- Values are current authorized property data, not snapshots. No production read/write, migration or backfill performed.
+
+## CRL-20261022-003 — MZ-072 历史客人及订单上下文只读恢复
+
+- **Status:** local implementation validated; independent review GO (P0=0, P1=0); not selected for commit or release
+- **Repository:** `root`
+- **Updated:** 2026-10-22 UTC
+- **Request:** 历史记录保留客人特殊要求、订单备注、行李及客人就绪信息，不恢复编辑操作。
+- **Outcome:** 新增 `guest_context` capability；仅有效管理视图或真实完成参与人可取得上下文。
+
+### Implementation
+
+- Previous behavior: Root 无条件清空字段并跳过 work-record guest-ready projection。
+- New behavior: capability gates guest request variants, order note, luggage and read-only guest-ready state; mutations remain removed。
+- Key decisions: no room/date inference, no backfill/snapshot, invalidated records fail closed.
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — capability, sanitization and guest-ready projection.
+- `backend/src/modules/cleaning_app.ts` — luggage media byte route forwards exact historical work-record/source context to authorization.
+- `backend/scripts/tests/test_mzapp_form_photo_read.ts` — capability contract.
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — updated guest-context projection contract.
+- `backend/scripts/tests/test_guest_luggage_media_contract.ts` — former actor 200 plus replacement/outsider/invalidated-source 403 route matrix.
+
+### Impact / Dependencies
+
+- API: additive `read_only_views.guest_context` and authorized field preservation.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: paired `mobile/CRL-20261022-003`.
+
+### Validation
+
+- Focused Root contract and backend TypeScript build passed.
+- `npm run check:backend` — passed in full, including media route, daily projection and paired Mobile Phase 5 contracts.
+- Independent-review follow-up `npm run test:guest-luggage-media-contract --prefix backend && npm run build --prefix backend` — passed.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none.
+
+### Release Attempts
+
+- None yet.
+
+### Risks / Release Notes
+
+- Values reflect current source data; no immutable history is fabricated. Tests contain synthetic values only.
+- Independent review P2: true-device/service acceptance remains pending; invalid-source route tests are backed by exact-source/action-evidence fixtures plus the active-task SQL contract rather than a real PostgreSQL invalid-row fixture.
+- Git state: uncommitted, not pushed, no PR, not deployed.
 ## CRL-20261021-006 — MZ-066 自动订单可靠接替手工入住
 
 - **Status:** local implementation validated; independent review GO (P0=0, P1=0); not released
@@ -33705,3 +33999,366 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Existing legacy manual check-ins without an explicit relation remain separate; no unsafe property/date backfill is included.
 - Sensitive-information review: no credentials, production payloads, media bytes or database URLs added.
 - Git state: uncommitted, not pushed, no PR, not merged, migration not run, not deployed, not published, device/production verification not run.
+## CRL-20261022-007 — MZ-063 客服改派历史媒体读取补修
+
+- **Status:** local implementation validated; independent review GO; not selected for commit or release
+- **Repository:** `root`
+- **Updated:** 2026-10-22 03:24 UTC
+- **Request:** 客服从“全部任务”进入改派历史详情时，按精确历史源任务查看照片、挂钥匙视频和报修，不借用同房同日或替换执行人的媒体。
+- **Outcome:** 精确源任务历史媒体端点增加可选挂钥匙视频返回，并用同一精确源授权提供支持 Range 的私有视频字节流；客服仍由 Root 管理角色权限和有效源任务门禁授权。
+
+### Implementation
+
+- Previous behavior: `ManagerDailyTask` 的改派历史卡不使用统一历史媒体端点；Root 该端点也只返回图片类型。
+- New behavior: `/mzapp/work-tasks/:id/form-photos` 只有在明确 `include_videos=1` 时才额外返回授权源任务的 `lockbox_video` 记录，默认响应不变；`/cleaning-app/media/image?variant=source` 仅对精确 source/scope 授权的 `lockbox_video` 返回私有原始字节并支持 Range。
+- Key decisions: 继续要求 Root 签发的源 ID、具体视频所属 source task、有效任务状态和角色 scope；不新增房号/日期推断，不修改媒体、队列或生产数据。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — modified: 精确历史媒体记录增加 opt-in 挂钥匙视频分类和查询。
+- `backend/src/modules/cleaning_app.ts` — modified: 精确授权的挂钥匙视频私有字节流和 Range 响应；图片及其他媒体不能使用 raw-source 分支。
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — modified: 客服 manager scope、默认不返视频、opt-in 视频、改派前后执行人及取消/删除/被替代路由回归。
+- `docs/change-release-ledger.md` — modified: 本跟进单元。
+
+### Impact / Dependencies
+
+- API: additive optional `include_videos=1` on the existing exact-source form-media read route; default response is unchanged.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: paired `mobile/CRL-20261022-007`; follows released MZ-063 capability work without changing its historical release record.
+
+### Validation
+
+- `npm run test:mzapp-form-photo-routes --prefix backend` — passed using loopback HTTP plus a write-rejecting in-memory DB adapter.
+- `npm run test:mzapp-media-visibility --prefix backend` — passed.
+- `./node_modules/.bin/ts-node-dev --transpile-only scripts/tests/test_property_feedback_access_contract.ts` (from `backend`) — passed.
+- `npm run build --prefix backend` — passed.
+- `npm run check:backend` — all build/backend suites through `test:personnel-claim-evidence-storage` passed; the final cross-repository Phase 5 contract could not find its hard-coded nested Mobile checkout in this paired-worktree layout.
+- `NODE_OPTIONS=<temporary read-only paired-path hook> npm run test:phase5-release-contract --prefix backend` — passed against the actual paired Mobile candidate; the temporary hook was removed afterward.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none.
+
+### Release Attempts
+
+- None yet.
+
+### Risks / Release Notes
+
+- Independent review — `GO` for the exact CRL-20261022-007 local candidate: P0=0, P1=0, P2=0. Review confirmed exact source/scope and active-task gates, raw-video authorization before object storage, Range behavior, paired Mobile actor/source/uploader isolation, exact feedback navigation, clean secret/write boundaries and no production/queue access.
+- 媒体列表响应仍包含 manager 有权源任务内的全部媒体；配对 Mobile 在改派历史卡上再按 Root 精确 `feedback_source_id`、记录执行人和 `uploader_id` fail closed，避免同 actor 的另一阶段或替换执行人媒体混入。
+- Sensitive-information review: synthetic ids and media references only; no production payload, secret, credential or media byte added.
+- Git state: uncommitted, not pushed, no PR, not merged, not deployed; production/device verification not run.
+
+## CRL-20261023-001 — MZ-053 角色入口恢复收口
+
+- **Status:** local implementation validated; independent review GO (P0=0/P1=0); not selected for commit or release
+- **Repository:** `root`
+- **Updated:** 2026-10-23 UTC
+- **Request:** 以 MZ-053 前已确认的角色页面为入口参考，保留 MZ-053 工作记录模型及后续可靠来源、取消隐藏、日期、去重、上传与权限修复；不得用历史只读状态宽泛隐藏内容。
+- **Outcome:** 历史清洁/检查/自完成记录增加精确源挂钥匙视频回看能力；共享管理媒体路由在服务端保留客服不可读取“检查未清洁问题照片”的既有边界。
+
+### Implementation
+
+- Previous behavior: 精确历史媒体能力没有声明挂钥匙视频；客服与 admin/线下经理共用 manager scope 时，检查未清洁问题照片只在 Mobile 隐藏，后端媒体列表和字节路由仍过宽。
+- New behavior: Root 只为有效历史参与人/管理角色签发 `lockbox_video` capability，并继续要求精确 source IDs、媒体所属任务和 uploader；客服 manager scope 在列表和字节读取两层均排除 `inspection_unclean`，admin/线下经理保持授权。
+- Key decisions: 不恢复整版旧实现；不按房号/日期借媒体；不重做完成任务；取消/删除/被替代继续 fail closed；不修改照片、视频、队列或生产数据。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — 历史视频 capability、精确媒体列表/字节权限和客服未清洁照片隔离。
+- `backend/scripts/tests/test_mzapp_form_photo_read.ts` — 历史能力与角色矩阵。
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — cleaner/inspector/self-complete/manager/customer-service 的真实本地 HTTP 200/403、Range 视频和无写 SQL 回归。
+- `backend/scripts/tests/test_cleaning_media_image.ts` — 历史反馈和精确媒体字节授权回归。
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts` — 独立报修与维修动作兼容回归。
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — 精确源历史媒体及角色可见性回归。
+- `backend/scripts/tests/test_property_feedback_access_contract.ts` — 历史报修查看/新增的精确源权限契约。
+- `backend/scripts/tests/test_work_tasks_cleaning_candidate_scope.ts` — 候选来源和终态证据隔离回归。
+- `docs/change-release-ledger.md` — 本变更单元。
+
+### Impact / Dependencies
+
+- API: `read_only_views.lockbox_video` 与 `include_videos=1` 为 additive；默认媒体响应不变。
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: paired `mobile/CRL-20261023-001`; reuses and preserves `CRL-20261022-001..007`.
+
+### Validation
+
+- `test_mzapp_form_photo_read.ts` — passed.
+- `test_mzapp_form_photo_routes.ts` — passed through loopback HTTP with a write-rejecting in-memory adapter.
+- Legacy permission regression — customer service receives 403/no `inspection_unclean` through the old list and unscoped byte routes; admin and offline manager retain 200 through both new and old paths.
+- `NODE_OPTIONS=<temporary read-only paired-path hook> npm run check:backend` — full Root check passed, including Phase 5 against the actual paired Mobile candidate; the hook only redirected the repository's hard-coded nested Mobile path and was removed after validation.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none; the release worktree contains no untracked file.
+- `backend/scripts/migrations/20261022_property_deep_cleaning_source_task.sql` — SHA-256: `3a32fc0e7fd3d6354269662923c372acf94b2960b171f56a1351035e2b311d82`
+- `backend/scripts/tests/test_cleaning_completion_evidence.ts` — SHA-256: `04eb157e318e1e7dc892510b4771426b01a69a76dc50970bfc4f6506f9f77e64`
+- `backend/scripts/tests/test_cleaning_completion_evidence.ts` — SHA-256: `0f4cd5aa6ad4448ea1e926797106592fb877f26c6dc6465fa5fdb9a8848b6646`
+- `backend/scripts/tests/test_cleaning_completion_evidence.ts` — SHA-256: `83b9923c174cf1674a1c1c4919e42a73b7803180016adfb1e8ba8b2432b0d244`
+- `backend/scripts/tests/test_cleaning_completion_evidence.ts` — SHA-256: `baf39e14d3367bb5fec0dbf4820d2774c3dc8c76f5fc5a9af5f6bc5ce1d6fa20`
+- `backend/scripts/tests/test_cleaning_media_image.ts` — SHA-256: `0f16d527b13deca74b5074ca5602bdf33a863515c09f3f06f4b27df5ae1618a8`
+- `backend/scripts/tests/test_cleaning_media_image.ts` — SHA-256: `2a700cc31c1b12708d3586556ab77c96dd379568db6966686e97e9cbf6d370f9`
+- `backend/scripts/tests/test_cleaning_task_transition_guard.ts` — SHA-256: `2092b17f71e0676969f29b7c88464d535d5de5c335c61af6d5108c2333d72a17`
+- `backend/scripts/tests/test_cleaning_task_transition_guard.ts` — SHA-256: `71ae22112f209a980b24534b132553b1f085e65a632741ec30013601994349ce`
+- `backend/scripts/tests/test_cleaning_task_transition_guard.ts` — SHA-256: `8d17df5de3c930d15cc07078ddeae631309d5f337f774a41bf0f8c69599a085c`
+- `backend/scripts/tests/test_cleaning_task_transition_guard.ts` — SHA-256: `c9a0de509268a2ca81d76ad727974a11c7e00d8a28e6153cd8b7dd0389c7c43f`
+- `backend/scripts/tests/test_cleaning_task_transition_guard.ts` — SHA-256: `e7a664b3d29c5879801f8ecc6587f8421f84fb1007d5dc398e55fa025b0e9620`
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — SHA-256: `5e73d22846b170be2711d4ba03eed0adc0658943b6cdea036ec5ab9745e6d54d`
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — SHA-256: `8af42a4ba40678dc48033c6f4515ab21782c88d6d055c32a84a4ed534d22f10d`
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — SHA-256: `db7339912b3bed03404b935a05c9f3e1633125d9e60b46d84257b89716a789cc`
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — SHA-256: `dde519b6d73729a1abbf6ab4b77741484ca574f365a4a323937ee45c0b8707fc`
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — SHA-256: `f7d1545d29ec89626f20171e56e511662d2ee98663dbf5dcae4624bed02f24a0`
+- `backend/scripts/tests/test_guest_luggage_media_contract.ts` — SHA-256: `0d4c42c0356e2ea3930c4dc9dc30777161d004a656b07da6c0a5870e0adaf4ac`
+- `backend/scripts/tests/test_guest_luggage_media_contract.ts` — SHA-256: `1a1d613f13b7a3056c2aa4f45a80ee9948cd6d82123226e53a3a6fd51191f78d`
+- `backend/scripts/tests/test_guest_luggage_media_contract.ts` — SHA-256: `3ee31285f810a2a67f255bf9735ce73336d592af5ccd95bc664cc846136c9ac7`
+- `backend/scripts/tests/test_guest_luggage_media_contract.ts` — SHA-256: `72f200175efc4fb0c704b573ec437ee3dcc13a05638c7064cbbe9f84b48206aa`
+- `backend/scripts/tests/test_guest_luggage_media_contract.ts` — SHA-256: `a5f05b80050553eb6d93d9c49c56f2bbe71970db5fe731f229b25c9e8e8212e0`
+- `backend/scripts/tests/test_guest_luggage_media_contract.ts` — SHA-256: `bd66a0ee61e52569665ef20a34583172314518e76ff940802bdc85296720b160`
+- `backend/scripts/tests/test_guest_luggage_media_contract.ts` — SHA-256: `c08c67a11a952bc22ce24cbf83823f78a4edd27c32968b5b71ede6daf4b04f90`
+- `backend/scripts/tests/test_guest_luggage_media_contract.ts` — SHA-256: `eee75d7da408e220ece8629813a1dda213f094b5fb08185f873440ef6d336a17`
+- `backend/scripts/tests/test_idempotency_submit_id_contract.ts` — SHA-256: `5de0af3312f651de6d952eb16e592f28e4da2ce35ea0224af58aa03f1ac58148`
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts` — SHA-256: `0b76705b4bdb7aef64a71af3b87fc0b58ebb8b2076ce1ba33c0292178e41fd2d`
+- `backend/scripts/tests/test_maintenance_workflow_actions.ts` — SHA-256: `4d1b719996d8611a0f16c0ad87a8939016347d0e2e42ccf42250ff96d0a52f4d`
+- `backend/scripts/tests/test_mzapp_form_photo_read.ts` — SHA-256: `02b62a6df0ab689a23262c9d362f260f09272e48ae3bfc3468ce6eed03aa17ce`
+- `backend/scripts/tests/test_mzapp_form_photo_read.ts` — SHA-256: `176c67b672161db115053e470182c9c9796bf3145d7f55b699ad0bc54de5cab5`
+- `backend/scripts/tests/test_mzapp_form_photo_read.ts` — SHA-256: `1e6d45347a7010cd6ead5c7ecb46c258f819b70d526dfcf529649f18c883c16c`
+- `backend/scripts/tests/test_mzapp_form_photo_read.ts` — SHA-256: `2afe76ac0b3e2213bd214f6d469dde1aea8ea116c16a1283640339fc1b384b96`
+- `backend/scripts/tests/test_mzapp_form_photo_read.ts` — SHA-256: `395ef7be279ffa964cecf9f54ec6d91d8628fbf9e8a8dbe0d430accf7aa107a4`
+- `backend/scripts/tests/test_mzapp_form_photo_read.ts` — SHA-256: `5495c2b5dc04407343f000f708138c8988b138100bb8fcf8879f8a3362bf01d9`
+- `backend/scripts/tests/test_mzapp_form_photo_read.ts` — SHA-256: `58eb64b29b57d6c923996239a1e057d77d42a298ff337dc94517bd13cd57addd`
+- `backend/scripts/tests/test_mzapp_form_photo_read.ts` — SHA-256: `595368635e7fe31c462c19d10741580f63e14fa8b8415eb3880185e32548b2e8`
+- `backend/scripts/tests/test_mzapp_form_photo_read.ts` — SHA-256: `7e9bab82f3b0f3987c51403f1e1bd0116dbd674596b39423f57be7e7f645dd28`
+- `backend/scripts/tests/test_mzapp_form_photo_read.ts` — SHA-256: `89be869da73e38b715cab830183f50156ed18c44df1a4e1f8701c35393d83bcb`
+- `backend/scripts/tests/test_mzapp_form_photo_read.ts` — SHA-256: `9158d0d066636c36bfae57df32e54a102b3ab935b41738d93a0a276d9adc83f6`
+- `backend/scripts/tests/test_mzapp_form_photo_read.ts` — SHA-256: `ac87326f8c563ac1f109e62f4ad13ff40ff15e4442e4f6ac50f542c3fabd3b9b`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `067b6a0494f9ea2cdfe2cfeadf142ad1b741c56151760b25158e7ccbdea92fdc`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `17ece37b14ea86d7c3c85cff4e1e95f9b689b40b8a86196efaa22d048defdf79`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `1a5a13d2bc65af00137813298a2d2d8fb2357f08950ed05b58481d48ac367f0e`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `20659febf07670b4add6f7a1cad5ff4c28498e114c37d679f4d83cfaadcac40b`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `2d476b37287675e6d4e3a454cf51279a40e1f09f6ed23f692863f73a89cda969`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `453447df4e3dbfbd9e4a4c437702d4107cdef5dddcccb048f35a935d07ce10cd`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `45a26a6737b0e9655b49e67172ec85adcc2431bda916b3781b1e799a4a49dd9e`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `46b0a91cecae53dd3da6b8cdfb711fe0477ab63c024f63a81cd96730da6d2db9`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `4bdfd8de7b40ac08cefa1ce3d179f65f06ef2ff019e8df25a36f9b9f6e2f1e37`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `593497b9d8a9035ea3310a6bac19083918b572f2c504628e4d2ef8d68fea7465`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `5c481f7d043895c1286b45310aa0b83ca0a3f5c405212569c0bb0f272a1aa87d`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `61d5b8da37f28daaf4f07d5f0ad62e713b6ceb427ba68f90a0ff3f51b3852737`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `6c54fdf8c2b7ddf0663c7c031610d8d010fbfe037e9bb245a28cb3afa1e07133`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `6cd63aa2ea081389a21f16e65b9f2442c62d590f1dd055e5801d2cec108fb41e`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `762248143fb9d43d004329568512863dccc2ae57234da70b916e7bae3aa7f396`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `7958f3a096554f08b4041d206d82ba7e196d8e3ec89691062f0fdf894e9f98da`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `7a49a97831db3068e23be6ae5b86ef54b3cf3685acd15b844885f86cc7801c87`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `829f6ea3949e77642dc1fa451d8c5b1893f408166a7b0004443fa64cd6709dfb`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `92e0d1921b12bfd21b540a40983977f21fa1c1c7152233e0235b0541b0ea814c`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `a7885b962bb35d1e3eb52b89fc97ccca24694bd60860b03b03fd037359179028`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `b70639170a67598418c68f3fbc270dc4e15c42e8a2623110a0d257c727519c34`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `ba1e96e5a2f9501a83efa6ae57494660e7ffac48df90dc09d369ba98667bd382`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `c2f58ab3026c33657893ff12258f22d7671687b1cf11638f2ecb8b64f7b2334a`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `d185166d9b1ecaa78ce5eb979b31caa562a19675201a6b3962d51c3570378c19`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `e7460b80093a1e40e5fee0b6ce22d6fa68dd814228a4305078bae3a1734f1f5a`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `ed4e3fb0fc1905388f31c4e18cd607e1ac0fda33279a290a1e7e0b61e8a18257`
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — SHA-256: `f42f474af3321304e0a3f537008c1e36e24dca22d01a09b67e306897c82f28ec`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `034fee52b1246ec0b1c290957ba1972e95fa5233418af7893b1aa88b408efc89`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `042d8c15d3a6bd748784d602f634d52fb1fe2845481645664a76697da0527a81`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `14d51a84850ce52a70479c81edd7111c50b1b9e56952bb0302e9f507fa38ac9e`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `1f182854e826f5940e9cf0cb50443110b5d1f47b5a035923d1cc3907b63b3ec0`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `263ed85857e22e6125ac12ecd2a5fc685072f5737cd7b393f6d315ed71b3c5e1`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `6047f2e40326a218c2e1ab67084f1346cb52a98cdaf2579bc46244eac172ede1`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `f8d30c1102e643a63027ab452f16a7341c7f8e9dfa32cfb4092968474b4e825b`
+- `backend/scripts/tests/test_property_feedback_access_contract.ts` — SHA-256: `0e1acd02f283479ffda8a0e4a9c56948304f70af6208b7f4e2a22a2ae35d0c39`
+- `backend/scripts/tests/test_property_feedback_access_contract.ts` — SHA-256: `3be041d0b08b372f3ca6ba2dd4b24c3d7b0d10658c74ce2cf7704de2c3d6e698`
+- `backend/scripts/tests/test_property_feedback_access_contract.ts` — SHA-256: `8865816c4b7addf866f87c03a750d40faf59d3d7043d4939e08a9e1ae50a9670`
+- `backend/scripts/tests/test_property_feedback_access_contract.ts` — SHA-256: `f7c0626c50bd25da8452a97c887065fb60736a5c94c4c2b76b40418ee7974b76`
+- `backend/scripts/tests/test_work_task_actions.ts` — SHA-256: `01244da73ed42007f978cf74c7a857793ce86014577c8437cc9d315a68355668`
+- `backend/scripts/tests/test_work_task_actions.ts` — SHA-256: `41b5c9a26bba14f92889c45caa3eede8014e2d41ea3d02e98faed84f7c376d81`
+- `backend/scripts/tests/test_work_task_actions.ts` — SHA-256: `773d5bf2051b4a7880e86cd77192a9935e34aebd83af139fd618b78de2cb2084`
+- `backend/scripts/tests/test_work_task_actions.ts` — SHA-256: `f09b0ba1e0a9a603318a6689b1f80378c840b5f31e612cafff190854dee214f1`
+- `backend/scripts/tests/test_work_tasks_cleaning_candidate_scope.ts` — SHA-256: `106fdcc07ec294f6ecf90314f940c0f14158767d52b88b28997ca6a1a5343341`
+- `backend/scripts/tests/test_work_tasks_cleaning_candidate_scope.ts` — SHA-256: `8cd34edcff899e5950d9c5ff8457eb362184fa5c8c65894ca51b268d27a77945`
+- `backend/scripts/tests/test_work_tasks_cleaning_candidate_scope.ts` — SHA-256: `e1b95fb88ba1b9adb281b077cbe6f6d1244adc9a0d876dcb976b080b2b185da7`
+- `backend/scripts/tests/test_work_tasks_cleaning_candidate_scope.ts` — SHA-256: `f247a3da1f33cb4415a2c7ae44db6cc4741adefabc9951265747b2b22967753e`
+- `backend/src/lib/cleaningCompletionEvidence.ts` — SHA-256: `0f6948c566c529444c6a3addb524ce28cb90bb99b1a6fe5a33ee5ff23618931d`
+- `backend/src/lib/cleaningCompletionEvidence.ts` — SHA-256: `db47d1d930d6a5a055a9904db661da703eead1cb8d570934cf5e8da05ee32c59`
+- `backend/src/lib/workTaskActionAudit.ts` — SHA-256: `25f82fc0a5c97d1bf81fa40a1ea05f5b15ad8a81c19172a64315030e3e1bd752`
+- `backend/src/lib/workTaskActionAudit.ts` — SHA-256: `53675d1b7c7b15992c9fe194a1a9c4876e38d1657918a46450685d1625a676e2`
+- `backend/src/lib/workTaskActionAudit.ts` — SHA-256: `5b95c9cd9c4ec3e8282d99fee88709cac056e95c1518d513e36de3a223b29958`
+- `backend/src/lib/workTaskActionAudit.ts` — SHA-256: `622e8a3ab3a9ef46f8e290617524a18f29571f9413ae319f568e7aac673b3870`
+- `backend/src/lib/workTaskActionAudit.ts` — SHA-256: `be29e54f790d28f0311dcbebce784405df0da615409687640af08cdcacc204a3`
+- `backend/src/lib/workTaskActions.ts` — SHA-256: `132c41e2b212df629de29a570a5a3c4d0e33e08ada26a275dd30110233749238`
+- `backend/src/lib/workTaskActions.ts` — SHA-256: `545ba53f0af209999563ade4dc1d5d1ad43a2dd9d373c1676ba67b862d42496e`
+- `backend/src/lib/workTaskActions.ts` — SHA-256: `64d13dde67fdffef8690046bcb0524564e1ce17ef495ff79cb7db67b6ad1cc6b`
+- `backend/src/lib/workTaskActions.ts` — SHA-256: `cfa279d2ee0d1dc58bd1153b76cca2c6670d5b8a3ef5032d16a175f622736dca`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `17da475f632ebd6037c5f323f1b18444291d784627728560a979349e8675df4f`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `3a41ee8b39c11528006aecd18ddf48a8ffb857f6976a41467244eea1ecc7d27c`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `481a20c9a44b73a6309c93ceb62604632ec2a33c33c8932ed182eef2702a6beb`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `517fb6ae8053b463469f05656b9eea8f12cc0a274e0072b87c75fb2322cb54e9`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `6260b571eb71763481f9a8fc63350c092e6bb2939fed3354e3bd2eaf4833744b`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `65090e38a1d9d1c4ba0ca4c657a917bd9062035160ba03ebd36882d7f1bb924c`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `712683fa47f7a789568fa02fd761dc53ef156a6d60751fcfb6b1321d5f53846a`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `7197713b340cba09afe17fed41face959dc3b83808bac586ae035ee1c5b02cd9`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `7352e9c1f75f4838418a9f15e9f2ee246a6623250255d8619a280166ce5b528b`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `7ed7ee0e4ef8a37b2b060a94900b409ba4cf0397010339943533a7e3a772c555`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `81fe045fcae6ae9c3343c3d487f4ce95aa1f1e0da28d615125d98c3551988409`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `87c80bf7e5a89c3b7726b60df9c8e0c8f02e0d684aee539d64590c738e7984eb`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `9a4ba6c8e73393bc792efede5b5c90baff472bdca62985e8df06c685b30095f7`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `9baebdbc2391ec5c64cc011e4219c68f48228508cdaf0920ff3842fc6a207bdc`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `9fd81799fac0265278e1bfb92f730af7c32772516a3d0cb0cccc5e4bb2aecc7b`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `aebed0fa6995066a81c074548fedc97f3501b7ad27601b875e232eb52cdf7d35`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `b34773e031aa270dae485317771f24f294052473d1399ae9d47a878dec3acf2b`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `c1266d9a7f0197f7db8e065b9f2fbfcfd5c45ccfa4b2dd0a7e09419f3fcd0bc3`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `d21c4b277be39c75406428942665b2b77624765e12a43c775e2f53517b46ce0d`
+- `backend/src/modules/mzapp.ts` — SHA-256: `04d0951b0281de1a8a0c1ad030a0d23c8fb9427f2164f0bd8e287dc2bea18f20`
+- `backend/src/modules/mzapp.ts` — SHA-256: `0706ed3a8b52aa5d21fc5c2a1f135919b8b8e183ca5adf6396a778977d315470`
+- `backend/src/modules/mzapp.ts` — SHA-256: `07f186dbe32b371aeebb5c7e912bbe5c0428f760dd23cda0c94832dfa33dc3f5`
+- `backend/src/modules/mzapp.ts` — SHA-256: `0c7bac1df947d8cc35e0803dc8e4301d623ad0b02ade62e0470a3557d11a0a31`
+- `backend/src/modules/mzapp.ts` — SHA-256: `1123e264a0fd8ee0af0021df52cbb0f6fe59aabc32fcebf35afed6da26869506`
+- `backend/src/modules/mzapp.ts` — SHA-256: `114b511d991afba194a2a8c268f53071255db6a2da1689d1ef1afa5580651c0e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `11c90b123b0c2f4fb21c3a6fe37fe017d98a1cb6f7c846709131409a5713b27f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `177fe25b216575bee8d7b51aa2b1b4e0b347b139755b49eaef30c2016374f8bb`
+- `backend/src/modules/mzapp.ts` — SHA-256: `17e5974515df68506357753f083a7cdd3c0739295003609642b81e8be2b79a59`
+- `backend/src/modules/mzapp.ts` — SHA-256: `1a6c320d55a4340fc3b0dd3197839ddbb82d8a95deef6a664f449d9c9bb4fc0b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `1f800f9f71da66e7314b075f85ece4b768d5abbd36071205a27f8c7b77c112ed`
+- `backend/src/modules/mzapp.ts` — SHA-256: `20315146ef6175ceb827b32113c1edb6355075f6e32b641bbea8fea134d0d884`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2143da89ca37e9260b27b04cfd408da30d961e0773c8fab13da0cdc6dd1604a1`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2152050a9102caaf229d27aefc5810d69b47b1608baea3a72aa7787a06b150c8`
+- `backend/src/modules/mzapp.ts` — SHA-256: `21b9a69c8d057773d9e2d4ded1163329b0124b39ae1d5cbb3e28b94c81dfa2a7`
+- `backend/src/modules/mzapp.ts` — SHA-256: `21d3d939d5b8baf6244586693e6ff82a219e1d1c2ff2b299d08856225c8558b8`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2598535511cc05aef3664034cfa7e4b281e931377c3b654093afec5c6f20530e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `25c2dded07f59c91cf1835efb5ea8e71752a5f2cc0af8c2a6b58e346c172ba10`
+- `backend/src/modules/mzapp.ts` — SHA-256: `26154dd9a3daedce0651ddd1170f6f56afffabc88dbb9d655da3fbc3da317c82`
+- `backend/src/modules/mzapp.ts` — SHA-256: `276ff81b28d30817c0555cdfbc5cb8b2547f7285f3a73d6216c8671a6bc56d04`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2cd8b4509aa119674392f279c28ff3ff669b8881e8b2a725301e7ebd947d765b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2d5b53da62a8d00ff41a30445b4d92bb4bec3a0960b17c14b3b9785651f2462a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2fe8bdcabd3c0da8eb41454af2513366513e89dc6c568ef06825a89b901b8e8f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `32c5b87e9dfbf5b716d22d15cf6eca1a3ea7ef64db68081395e0a0381c678133`
+- `backend/src/modules/mzapp.ts` — SHA-256: `32f2c93c000955d083fd685c8167d356190526c72d70c54f52fa1c26b0e948d4`
+- `backend/src/modules/mzapp.ts` — SHA-256: `3908853f8da769dd010e4318806515da0708c2c1aaf1267177fe71a7fe4c5239`
+- `backend/src/modules/mzapp.ts` — SHA-256: `3b1d7a375ef3185975a86bdf29e093ca7ca6bdeb311d40653cda500196bab915`
+- `backend/src/modules/mzapp.ts` — SHA-256: `3bc633ced27489fc0d53d2011effb6720e8ec717f0dd4146303f002d4aedd5b3`
+- `backend/src/modules/mzapp.ts` — SHA-256: `3c41da84f83467de79734e71c9579c96b4053109b172c3ff485181c623156890`
+- `backend/src/modules/mzapp.ts` — SHA-256: `3da6fa9007c6d70445b07f7be5dbb8ab2494ca251e492344005bf0e41b1289ac`
+- `backend/src/modules/mzapp.ts` — SHA-256: `3f268176b75da24ad58cc8f6c9d05de020dd65a087396eed64ba6306dbc254a5`
+- `backend/src/modules/mzapp.ts` — SHA-256: `43cfd787fc3e9d9919c220c6bd8d80284f9e3c920ff5102e4b428215d6d6e9f9`
+- `backend/src/modules/mzapp.ts` — SHA-256: `4415791b66289eadcd3c389a881c3a32f3da8318217ed48f30c7b4a4d243ca0f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `47ab6e835b3b0811a231f457fdf873da5b5905be7ae732380ee09f38fe58e9ff`
+- `backend/src/modules/mzapp.ts` — SHA-256: `4ebb1ef52eaedcb02adb853e52952005610981430cc6c180fff35a4d42436815`
+- `backend/src/modules/mzapp.ts` — SHA-256: `4f5456e95db163b583ba6ed0027f5083403706eeb449ab0b9ee45bd89660f871`
+- `backend/src/modules/mzapp.ts` — SHA-256: `4f8a0b57ff9e9e1377315054764e80aef86adfe1199c60bf1f7703b587ba1898`
+- `backend/src/modules/mzapp.ts` — SHA-256: `4fb3de71f119c19f405d4554f8c99bdfab739d7f433271a4c1df8a4fa3d7178a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `50aca504911b869d2cfcd72ca67ee8a0a98743c5967a021b0fbb54036b06a931`
+- `backend/src/modules/mzapp.ts` — SHA-256: `514ccde1fdefd8e3d9a839e5f02afaebd7a1dbce82a6d544b1a2a66d8dd0793e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `53c07af8dc0f5f836cb489451704ecdcd943736c60af848401d1967ab68e1309`
+- `backend/src/modules/mzapp.ts` — SHA-256: `56c0169f4d4c6dea25dc67f9629d3d89d1b03ceeedcd8689f71f60231b0b466d`
+- `backend/src/modules/mzapp.ts` — SHA-256: `58cafebd6b506b4cd33424aecddff3106641c6e9d2936de4f60bb97ee9c54d6c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `59566ba6e7588f6c76a17895b9931b35c54c8ba707cfeb345a839a22cab1afab`
+- `backend/src/modules/mzapp.ts` — SHA-256: `59b21b640b78ec42a889c18763e0aa25ba2466a1595929c4a34302f83cd56cfb`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5cc6ce2b7cf1dce32971a5baa2bde45eb874b23ce85df3a5dd808c989411890d`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5e8837d6c3f11a0d09b3fee1b7527e705e26792dc0061cb344cc516a39021a79`
+- `backend/src/modules/mzapp.ts` — SHA-256: `6338a4c1cfb22168aff7e0d5502ecb47c4f13dce04449af84627c58599e4c080`
+- `backend/src/modules/mzapp.ts` — SHA-256: `638daa252eb6c828cb720d985871a3045833d224d1773f586458169202c4fe36`
+- `backend/src/modules/mzapp.ts` — SHA-256: `6a56b96ce6c0403a82ceda4c8b41934cbfa29dd90135365f9f03c94869151770`
+- `backend/src/modules/mzapp.ts` — SHA-256: `6c3151c8cb7a6dcd49559724d39813c5ebc332128ef7e4962a8fa2e2fe5e20f3`
+- `backend/src/modules/mzapp.ts` — SHA-256: `6f884121a4d557507bd09b156eaebea7df7e73f203f9952e449d3700baaef980`
+- `backend/src/modules/mzapp.ts` — SHA-256: `71f9b8943a75625f44386a233ddcb4e2eaa66968014e33b969bbedbca5ea938e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7432938790434d4cd869d72eeab7661484d5ad35b44b9c7b96fa6dc85e50423c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `74814fa117bfdf1b985d59456c496b2fe82a41651197d92962997d053a1be623`
+- `backend/src/modules/mzapp.ts` — SHA-256: `753c34b753cad44aa95094dd3696210f1090fb1dc4d131b368267fc831f86ab1`
+- `backend/src/modules/mzapp.ts` — SHA-256: `76c03c6ae70d2ce9c5ed63bb2a2f90507ccba82250f96236ac273fd7031e0f84`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7a0234d2d779827bb4ddb3f230f079f1cd2d910f6baa7bd2f4b75fe2475b4ac3`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7b27e436801904eba6a9390a4f28793c94362d1682a1cae4ce691a2f27281425`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7bc6c53b2ceb8639636c091f693a7bfb1e58f874f26ea9b16b89466500a5a151`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7c60af6a19d857c01fc6a8a31cdc2624a6ed65ad20b4067da7e6bf0fc6fc870f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7d68e256f076dacb06c0e218b3947bc93bab969e53ce6d3132e89fa62ee0a1b0`
+- `backend/src/modules/mzapp.ts` — SHA-256: `85901d9f2446d942421b8dae955bb150f0378ce36ee477ac39a485927abbea6d`
+- `backend/src/modules/mzapp.ts` — SHA-256: `864085475d3b13844f227a078d93d5443d837c1d4cee970d5d4eb4851275fc4b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `89890539736350e384e927ec7c3b75d50d54c85990a2da8ffce1f9c9ca027086`
+- `backend/src/modules/mzapp.ts` — SHA-256: `8a60a877c0ba8dfe8975b9eaaded019ccbe9b30250a2566d37816ae1be676aa3`
+- `backend/src/modules/mzapp.ts` — SHA-256: `8afa803bc6cc1808d4a2a739302328fdc0f40136df02daef789800312274bbcb`
+- `backend/src/modules/mzapp.ts` — SHA-256: `8d747fa298d96694f6ea2997d82d5be739c79225ede53240d7e5a088815cde40`
+- `backend/src/modules/mzapp.ts` — SHA-256: `938debe5fe31a37dd2e55162d4fe09a79c6d659afde695f6961ee36833a27c20`
+- `backend/src/modules/mzapp.ts` — SHA-256: `9409f6baa914282ff9b2a6e1e32fbb1daa254825610b4d6a7d11bcabc82b9a40`
+- `backend/src/modules/mzapp.ts` — SHA-256: `9a0ac4d97f551478de094f34fb5304b6630323121e53b90002012a9ffcde46a7`
+- `backend/src/modules/mzapp.ts` — SHA-256: `9a5f04045a86ac78a8eba8952dd106137bcb553df1a4a0c728f0a97d6bec2a8f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `9dc2ea15d1a2743a015c449146fa2c453c73874702f5aab32882d0373c6b73ab`
+- `backend/src/modules/mzapp.ts` — SHA-256: `9f429f959f655ce29967bc8a2ed8db06a55bf5b0c79b9e578c53870e41dcb7a4`
+- `backend/src/modules/mzapp.ts` — SHA-256: `a4ede82d697a434bcfd677ff5304ff65467de7a92d163dd4058cf480e7ff1978`
+- `backend/src/modules/mzapp.ts` — SHA-256: `a77eb41ad598bfd8e2bd5fa94ecee0ce3ae498635d3957fa9eb75e3fef07074c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `a939409e8cb0a93ff375e32fce948106f0d01f1c628b940dadcb1eff7eb62c30`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ab117929f5ae908ce31b333583708eb45ebc83b8fb1077c5ff400410105567b2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `aceda5f17d76ee84a78fb91a85723ef9a3699a2520b79fbc1f19ef6f1716810d`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ad8549b3f6b3d609d76b026eb99ec143155f0d0519c6a6e39865494da4fc98b4`
+- `backend/src/modules/mzapp.ts` — SHA-256: `aead83d1bbf5d275ea235a0311b82e987bbdb7c9313a6156131c28e10cb50349`
+- `backend/src/modules/mzapp.ts` — SHA-256: `af082fd6c2ea2d71f1e535d8a0895fe16ae4b2a028b28ae08e4139065a6b9c59`
+- `backend/src/modules/mzapp.ts` — SHA-256: `b1307e4337808aa39eea91968c1702314b40668f070d1834c26daf65b5527814`
+- `backend/src/modules/mzapp.ts` — SHA-256: `b1838cbae8827f8d8edea60a0a067e635ea27e46c6be20751fcd53a0e6c24c3c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `b7366be6897f3ba676875a494378a91db3ba60430ee85320cd34c2b6c3d04227`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ba1fffbd03972b88ebc8cf07b35d8d4f699101d5e2b704c63c9ed63e0d590dca`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ba726fcf490c3a921c721fe2aeeb7626240ed227a352f122a9b815c41a55c3fc`
+- `backend/src/modules/mzapp.ts` — SHA-256: `bbe428e7333137afd786723fa40a55ccca8f32576ee53ca9d79894f295aacafa`
+- `backend/src/modules/mzapp.ts` — SHA-256: `c08840b8a933652b668957a6b87a2ea9254193c6052eeb72780e8668ed4105f0`
+- `backend/src/modules/mzapp.ts` — SHA-256: `c4052b18a59d11694e136d7d8537ff69d86925fbe550c740f4b681f5dd0c9be3`
+- `backend/src/modules/mzapp.ts` — SHA-256: `c78818a0492b0808078cef33edc27745fab59d09d9a47e180b257ca9cbcdfc63`
+- `backend/src/modules/mzapp.ts` — SHA-256: `cbface29654265bcfe7a27e59625080908bb055423b9286c0f835324b5674738`
+- `backend/src/modules/mzapp.ts` — SHA-256: `cdb5274928ab5e2a678a012eff191d4f37e8e43f6b00981723c99993e6ab4a3f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `cf14d797eb4899b0ca5633ba57ed3af369583d635e7d966f1f5d305b2db20a6e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `cf76c9b16e801a6ea5a4f76536ef12c217d88d0c66f12c44c59d2a9a0af1e17d`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d02de07167cd93d3e6959b66f5457968a1ea45a74d1e9bdcb6dc9a293c5ec4e2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d19aa4ff3cf04dd5885c3cec3a125de4e7cd29bc926112e0f1dfa799eebfb33b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d51e35ade4b08a1381b1d986fd4acbf409d0f7e9940d9a6896072824e7816b06`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d75b79ca7304271595ab1754038e855832d93573c929ae6c5f2b23627c0148bb`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d9e105c7f7aa76c3d6353695e7804ab4815ba97792f5e6832b63d8b1ec111038`
+- `backend/src/modules/mzapp.ts` — SHA-256: `db124334abff1bda5ceca9df913bc36b38e5cb6765ef1d1950ed271dc3ef3890`
+- `backend/src/modules/mzapp.ts` — SHA-256: `dc1e2b644473cc49367bd7591cb20437358d77df84e855975771228d2750092a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `dc23195a82c77244fce127492c4f117fa6147a3f8033d4a883205a1f9f083067`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ddb2731e4cca0a9544689cc78256e6d0eca4936a07e113b85225f6f9dcbc1f78`
+- `backend/src/modules/mzapp.ts` — SHA-256: `de613d5bcc2a915014de9cbc86290a76f3c3df1ea3e3cf5dcfa2456c79d1c30c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `df9a00ce52057a474fafd491a1237eddb4eed36b285812b9535a6768af4566a9`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e04ef42795852a677cea0111f39e171a19455fb218b69bf0c240e8c1c102bd2d`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e1d67452362345e9697bffc065f2ffccfa68a78870ff253cf44420d291943c1c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ea2b4998753dc78e7020c3fbb545e0375dbcf18f47d5b242a68274759434b104`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ea53b71dc906b996b51e90e15a39580bd9f8e630a72be14a80a779a5572669d8`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ebb61cc746e2d2b330dc282b8395f6b4d285248668eebf9ad600684854ec7a3e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f002a927c22ad17ed3aef149bd4671dc8cb2d39591f19a0ff4c742fee84a9103`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f31a7c26123b5f8d6a3aa7bfcaa6ffc1d05e44459a84d98bc2dbe2fa1b55e978`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f3a6beef3d801c94910407abe1d103bc115b1299e5bac338536df0df1841ccb2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f3a9d30a852dc2dd41f96b854479a3e9bb878aaf7b19f82846aaec240bb82bba`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f532de76598a59d46e19b7156a5208431ff1275c0ed92ca1c538728e73d506cd`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f54e9c776205abeb28571e429b530fc458fe7f5df30ff6d56cf7f07466c0d372`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f71c5ca78ba49ab1efb7eef53a71a530d9545f3de7022e4ef5cecc783810ecef`
+- `backend/src/modules/mzapp.ts` — SHA-256: `fd5023b8a4f319f5c9ac5427fa0855d8cd3bcc89db60e0037d548ad455bb09bc`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ffc311073a9bbb2d5f36b3782801381b3fd77742d9c91136f161ceefa7e8f6ad`
+
+### Release Attempts
+
+#### RA-20261023-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261022-001`, `CRL-20261022-002`, `CRL-20261022-003`, `CRL-20261022-004`, `CRL-20261022-005`, `CRL-20261022-006`, `CRL-20261022-007`, `CRL-20261023-001`
+- Selected CRL identities: `root/CRL-20261022-001`, `root/CRL-20261022-002`, `root/CRL-20261022-003`, `root/CRL-20261022-004`, `root/CRL-20261022-005`, `root/CRL-20261022-006`, `root/CRL-20261022-007`, `root/CRL-20261023-001`
+- Intended action: `commit`, then authorized branch push and draft PR
+- Branch: `codex/mz053-073-role-media-followups`
+- Base: `origin/Dev@59ef781ea399971cdb47d247eed5849c1838aef0`; fetched at `2026-10-23T13:42:39Z`
+- Candidate patch SHA-256: `7d4305c7803eda5ee337390e17e0e461fc1e0a621f6a08ba4084ba496731b7a9`
+- Commit SHA: `not committed`
+- Dependencies: paired Mobile candidate; migration `backend/scripts/migrations/20261022_property_deep_cleaning_source_task.sql` must be validated and applied before Root deployment; no production action is part of this attempt
+- Required validation: `PASS`; clean-candidate `npm run check:backend` passed on 2026-10-23, including build and the scoped MZ application/permission/media contracts
+- Shared-hunk review: `PASS`; the selected CRLs are intentionally bundled and the clean candidate matches the reviewed source patch byte-for-byte before this attempt metadata
+- Generated-file review: `PASS`; no build output, preview asset, cache or secret is selected
+- Technical state: `verified candidate`
+- User authorization: `approved-for-push`; evidence: user explicitly requested one Root branch plus one Mobile branch, commit, push and draft PR for MZ-053/063/064/067/071/072/073
+- Independent review: `GO` for this exact staged candidate on 2026-10-23; P0=0, P1=0, with only the documented migration/PostgreSQL, real Express-plus-transaction-adapter and native-device P2 verification gaps
+- Action conclusion: `GO` for the exact local content commit; post-commit full-range report is required before the authorized non-force branch push and Draft PR
+
+### Risks / Release Notes
+
+- Browser/component preview uses synthetic data; no production/device acceptance yet.
+- Independent review — final `GO`; P0=0, P1=0. The initial customer-service legacy-route permission finding was fixed and independently re-reviewed.
+- No production API, database write, migration, media upload/replay or queue cleanup was run.
+- Git state: uncommitted, not pushed, no PR, not merged, not deployed.

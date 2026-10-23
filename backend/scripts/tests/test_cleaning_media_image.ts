@@ -26,7 +26,7 @@ async function main() {
   const exactFeedbackLookupIndex = route.lastIndexOf('const feedbackMediaRows =', sourceMismatchGuardIndex)
   assert.ok(exactFeedbackLookupIndex >= 0 && sourceMismatchGuardIndex > exactFeedbackLookupIndex, 'the proxy must resolve an exact feedback association before deciding whether the current screen task is a mismatch')
   assert.match(route, /canUseUniqueFeedbackMediaForMismatchedTaskContext\(matchingMediaRows, feedbackMediaRows\)/, 'a mismatched screen task may proceed only through one unambiguous feedback record')
-  assert.match(route, /const feedbackViewerTaskResult = feedbackMediaRow && sourceTaskId[\s\S]*FROM cleaning_tasks[\s\S]*WHERE id::text = \$1::text/, 'a supplied feedback viewer task must resolve one real task before granting historical feedback access')
+  assert.match(route, /const feedbackViewerTaskId = feedbackSourceTaskId \|\| String\(sourceTaskId \|\| ''\)\.trim\(\)[\s\S]*const feedbackViewerTaskResult = feedbackMediaRow && feedbackViewerTaskId[\s\S]*FROM cleaning_tasks[\s\S]*WHERE id::text = \$1::text/, 'the canonical feedback source task must resolve one active real task even when client context is omitted')
   assert.match(route, /canViewMzappRecordedCleaningMedia\(user, feedbackViewerTask, userId, 'feedback_viewer_context'\)/, 'the current task carried by the feedback screen must be visible to the authenticated user')
   assert.match(route, /FROM guest_luggage_notices/, 'media proxy must resolve a temporary-notice photo through its saved notice record')
   assert.match(route, /guest_luggage_id/, 'temporary-notice media must require an exact notice context')
@@ -100,7 +100,9 @@ async function main() {
   assert.equal(canViewRecordedDayEndMedia({ sub: 'cleaner-a', role: 'cleaner', roles: ['cleaner'] }, dayEnd, 'cleaner-a'), true, 'day-end owner may read their recorded photo')
   assert.equal(canViewRecordedDayEndMedia({ sub: 'cleaner-b', role: 'cleaner', roles: ['cleaner'] }, dayEnd, 'cleaner-b'), false, 'unrelated cleaner must not read another owner\'s day-end photo')
   assert.equal(await canViewMzappPropertyFeedback({}, { id: 'property-a' }, ''), false, 'anonymous callers must not read property-feedback media')
-  assert.equal(await canViewMzappPropertyFeedback({ sub: 'internal-user' }, { id: 'property-a' }, 'internal-user'), true, 'an authenticated internal user may read media after the route resolved one real property record')
+  assert.equal(await canViewMzappPropertyFeedback({ sub: 'internal-user', role: 'cleaner', roles: ['cleaner'] }, { id: 'feedback-a', property_id: 'property-a', created_by_user_id: 'internal-user' }, 'internal-user'), false, 'legacy feedback without an exact source task remains unavailable to field workers, including its submitter')
+  assert.equal(await canViewMzappPropertyFeedback({ sub: 'manager-user', role: 'offline_manager', roles: ['offline_manager'] }, { id: 'feedback-a', property_id: 'property-a', created_by_user_id: 'internal-user' }, 'manager-user'), true, 'legacy feedback without an exact source task remains visible to established managers')
+  assert.equal(await canViewMzappPropertyFeedback({ sub: 'other-user' }, { id: 'feedback-a', property_id: 'property-a', created_by_user_id: 'internal-user' }, 'other-user'), false, 'an unrelated authenticated user may not read another task feedback media')
   const png = await sharp({
     create: {
       width: 8,

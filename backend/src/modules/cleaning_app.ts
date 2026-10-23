@@ -35,6 +35,7 @@ import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
 import { canViewMzappGuestLuggageNoticeMedia, canViewMzappHistoricalWorkRecordMedia, canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia, canViewMzappScopedRecordedCleaningMedia } from './mzapp'
 import { assertR5TaskRuntimeSchemaReady, requireR5RequestSchema, requireR5TaskRuntimeSchema } from '../lib/r5RequestSchema'
 import { buildCleaningMediaUploadFingerprint, CLEANING_MEDIA_IDEMPOTENCY_CONFLICT, storeLocalImmutableMedia } from '../lib/immutableMediaUpload'
+import { activeCleaningTaskWhereSql } from '../services/cleaningSync'
 import {
   authorizeDeferredInspectionCheckinSubmission,
   reconcileDeferredInspectionCheckinReplacement,
@@ -3395,6 +3396,8 @@ export async function findPropertyFeedbackMediaRows(pool: any, key: string, requ
     `SELECT 'property_maintenance'::text AS feedback_source_type,
             m.id::text AS feedback_source_id,
             m.property_id,
+            m.source_task_id::text AS source_task_id,
+            m.created_by_user_id::text AS created_by_user_id,
             to_jsonb(m.photo_urls) AS photo_urls,
             to_jsonb(NULL::text) AS before_photo_urls,
             to_jsonb(NULL::text) AS after_photo_urls,
@@ -3419,6 +3422,8 @@ export async function findPropertyFeedbackMediaRows(pool: any, key: string, requ
      SELECT 'property_deep_cleaning'::text AS feedback_source_type,
             d.id::text AS feedback_source_id,
             d.property_id,
+            d.source_task_id::text AS source_task_id,
+            d.created_by_user_id::text AS created_by_user_id,
             to_jsonb(d.photo_urls) AS photo_urls,
             to_jsonb(NULL::text) AS before_photo_urls,
             to_jsonb(NULL::text) AS after_photo_urls,
@@ -3443,6 +3448,8 @@ export async function findPropertyFeedbackMediaRows(pool: any, key: string, requ
      SELECT 'property_daily_necessities'::text AS feedback_source_type,
             n.id::text AS feedback_source_id,
             n.property_id,
+            n.source_task_id::text AS source_task_id,
+            n.created_by_user_id::text AS created_by_user_id,
             to_jsonb(n.photo_urls) AS photo_urls,
             to_jsonb(n.before_photo_urls) AS before_photo_urls,
             to_jsonb(n.after_photo_urls) AS after_photo_urls,
@@ -3466,6 +3473,8 @@ export async function findPropertyFeedbackMediaRows(pool: any, key: string, requ
      SELECT 'external_maintenance_orders'::text AS feedback_source_type,
             e.id::text AS feedback_source_id,
             NULL::text AS property_id,
+            NULL::text AS source_task_id,
+            NULL::text AS created_by_user_id,
             to_jsonb(NULL::text) AS photo_urls,
             to_jsonb(NULL::text) AS before_photo_urls,
             to_jsonb(NULL::text) AS after_photo_urls,
@@ -3486,6 +3495,8 @@ export async function findPropertyFeedbackMediaRows(pool: any, key: string, requ
      SELECT w.source_type::text AS feedback_source_type,
             w.source_id::text AS feedback_source_id,
             w.property_id::text AS property_id,
+            NULL::text AS source_task_id,
+            NULL::text AS created_by_user_id,
             COALESCE(event.payload#>'{patch,photo_urls}', '[]'::jsonb) AS photo_urls,
             COALESCE(event.payload#>'{patch,before_photo_urls}', '[]'::jsonb) AS before_photo_urls,
             COALESCE(event.payload#>'{patch,after_photo_urls}', '[]'::jsonb) AS after_photo_urls,
@@ -3528,8 +3539,10 @@ export async function findPropertyFeedbackMediaRows(pool: any, key: string, requ
           work_task_id: existing.work_task_id || row.work_task_id || null,
           assignee_id: existing.assignee_id || row.assignee_id || null,
           property_id: existing.property_id || row.property_id || null,
-          historical_work_record_media: existing.historical_work_record_media === true,
-          work_record_actor_user_id: existing.work_record_actor_user_id || null,
+          source_task_id: existing.source_task_id || row.source_task_id || null,
+          created_by_user_id: existing.created_by_user_id || row.created_by_user_id || null,
+          historical_work_record_media: existing.historical_work_record_media === true || row.historical_work_record_media === true,
+          work_record_actor_user_id: existing.work_record_actor_user_id || row.work_record_actor_user_id || null,
         }
       : row)
   }
@@ -3716,6 +3729,41 @@ async function loadLegacyOfflineTaskPhoto(reference: string) {
   }
 }
 
+function sendPrivateMediaBuffer(
+  req: any,
+  res: any,
+  object: { body: Buffer; contentType?: string; cacheControl?: string; etag?: string },
+) {
+  const body = Buffer.isBuffer(object.body) ? object.body : Buffer.from(object.body || [])
+  const size = body.byteLength
+  res.setHeader('Content-Type', object.contentType || 'application/octet-stream')
+  res.setHeader('Accept-Ranges', 'bytes')
+  res.setHeader('Cache-Control', 'private, max-age=86400')
+  if (object.etag) res.setHeader('ETag', object.etag)
+
+  const rawRange = String(req.headers?.range || '').trim()
+  const match = rawRange.match(/^bytes=(\d*)-(\d*)$/)
+  if (!match) {
+    res.setHeader('Content-Length', String(size))
+    return res.status(200).send(body)
+  }
+
+  const startRaw = match[1]
+  const endRaw = match[2]
+  const suffixLength = !startRaw && endRaw ? Number(endRaw) : null
+  const start = suffixLength ? Math.max(0, size - suffixLength) : Number(startRaw || 0)
+  const end = endRaw && startRaw ? Number(endRaw) : size - 1
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start || start >= size) {
+    res.setHeader('Content-Range', `bytes */${size}`)
+    return res.status(416).end()
+  }
+  const finalEnd = Math.min(end, size - 1)
+  const chunk = body.subarray(start, finalEnd + 1)
+  res.setHeader('Content-Range', `bytes ${start}-${finalEnd}/${size}`)
+  res.setHeader('Content-Length', String(chunk.byteLength))
+  return res.status(206).send(chunk)
+}
+
 router.get(
   '/media/image',
   async (req, res) => {
@@ -3741,7 +3789,17 @@ router.get(
       const hasDayEndContext = Boolean(requestedDayEndUserIdRaw || requestedDayEndDateRaw)
       const variant = String((req.query as any)?.variant || 'original').trim().toLowerCase()
       if (!requestedKey && !sourceUrl) return res.status(400).json({ message: 'missing_key' })
-      if (!['original', 'thumbnail', 'preview'].includes(variant)) return res.status(400).json({ message: 'invalid_variant' })
+      if (!['original', 'thumbnail', 'preview', 'source'].includes(variant)) return res.status(400).json({ message: 'invalid_variant' })
+      if (variant === 'source' && (
+        !sourceTaskId
+        || !relatedSourceIds.includes(sourceTaskId)
+        || !['cleaner', 'inspector', 'manager'].includes(mediaScope)
+        || !!requestedWorkTaskIdRaw
+        || !!guestLuggageId
+        || hasDayEndContext
+      )) {
+        return res.status(403).json({ message: 'forbidden_media' })
+      }
       const requestedKeyCurrentKey = currentMzappTaskPhotoKeyFromReference(requestedKey)
       const sourceUrlCurrentKey = currentMzappTaskPhotoKeyFromReference(sourceUrl)
       const requestedKeyHasQueryOrFragment = /^https?:\/\//i.test(requestedKey) && /[?#]/.test(requestedKey)
@@ -4084,7 +4142,21 @@ router.get(
         roleNamesOfUser(user).some((role) => ['admin', 'offline_manager', 'customer_service'].includes(role))
         || String(maintenanceWorkTask.assignee_id || '').trim() === userId
       )
-      const feedbackViewerTaskResult = feedbackMediaRow && sourceTaskId
+      const historicalFeedbackMedia = feedbackMediaRow?.historical_work_record_media === true
+      const maintenanceWorkTaskContextRequested = String(feedbackMediaRow?.feedback_source_type || '').trim() === 'property_maintenance'
+        && !!workTaskId
+      const taskBoundFeedback = !historicalFeedbackMedia
+        && !maintenanceWorkTaskContextRequested
+        && ['property_maintenance', 'property_deep_cleaning', 'property_daily_necessities']
+        .includes(String(feedbackMediaRow?.feedback_source_type || '').trim())
+      const feedbackSourceTaskId = taskBoundFeedback
+        ? String(feedbackMediaRow?.source_task_id || '').trim()
+        : ''
+      // A task-bound feedback row owns its canonical task context. The optional
+      // client query parameter is only a consistency check; omitting it must not
+      // bypass active-task and participant authorization.
+      const feedbackViewerTaskId = feedbackSourceTaskId || String(sourceTaskId || '').trim()
+      const feedbackViewerTaskResult = feedbackMediaRow && feedbackViewerTaskId
         ? await pgPool.query(
           `SELECT id,
                   cleaner_id,
@@ -4092,26 +4164,42 @@ router.get(
                   assignee_id
              FROM cleaning_tasks
             WHERE id::text = $1::text
+              AND ${activeCleaningTaskWhereSql('cleaning_tasks')}
             LIMIT 1`,
-          [String(sourceTaskId).trim()],
+          [feedbackViewerTaskId],
         )
         : null
       const feedbackViewerTask = feedbackViewerTaskResult?.rows?.[0] || null
-      const canViewFeedbackTaskContext = !sourceTaskId || (
-        !!feedbackViewerTask
-        && await canViewMzappRecordedCleaningMedia(user, feedbackViewerTask, userId, 'feedback_viewer_context')
-      )
-      const canViewFeedbackMedia = feedbackMediaRow && canViewFeedbackTaskContext
+      const canViewFeedbackTaskContext = historicalFeedbackMedia
+        ? true
+        : maintenanceWorkTaskContextRequested
+          ? canViewMaintenanceWorkTask
+          : taskBoundFeedback
+            ? !!feedbackSourceTaskId
+              && !!feedbackViewerTask
+              && await canViewMzappRecordedCleaningMedia(user, feedbackViewerTask, userId, 'feedback_viewer_context')
+            : !sourceTaskId || (
+              !!feedbackViewerTask
+              && await canViewMzappRecordedCleaningMedia(user, feedbackViewerTask, userId, 'feedback_viewer_context')
+            )
+      const exactFeedbackSourceMatches = historicalFeedbackMedia
+        || maintenanceWorkTaskContextRequested
+        || !sourceTaskId
+        || !taskBoundFeedback
+        || feedbackSourceTaskId === sourceTaskId
+      const canViewFeedbackMedia = feedbackMediaRow && exactFeedbackSourceMatches && canViewFeedbackTaskContext
         ? String(feedbackMediaRow.feedback_source_type || '') === 'external_maintenance_orders'
           ? await canViewExternalMaintenanceCompletionMedia(pgPool, user, feedbackMediaRow, userId, workTaskId, key)
-          : feedbackMediaRow.historical_work_record_media === true
+          : historicalFeedbackMedia
             ? canViewMzappHistoricalWorkRecordMedia(user, feedbackMediaRow, userId, workTaskId)
-            : canViewMaintenanceWorkTask || await canViewMzappPropertyFeedback(user, feedbackMediaRow, userId)
+            : maintenanceWorkTaskContextRequested
+              ? canViewMaintenanceWorkTask
+              : await canViewMzappPropertyFeedback(user, feedbackMediaRow, userId)
         : false
       const canView = hasGuestLuggageContext
         ? !hasGuestLuggageSourceConflict
           && !!guestLuggageMediaRow
-          && await canViewMzappGuestLuggageNoticeMedia(user, guestLuggageMediaRow, userId)
+          && await canViewMzappGuestLuggageNoticeMedia(user, guestLuggageMediaRow, userId, workTaskId, relatedSourceIds)
         : hasGuestLuggageSourceConflict || hasRecordedSourceConflict || hasDayEndFeedbackSourceConflict
           ? false
           : recordedMedia?.source === 'task'
@@ -4122,13 +4210,21 @@ router.get(
           : recordedMedia?.source === 'day_end'
             ? canViewRecordedDayEndMedia(user, recordedMedia.row, userId)
             : guestLuggageMediaRow
-              ? await canViewMzappGuestLuggageNoticeMedia(user, guestLuggageMediaRow, userId)
+              ? await canViewMzappGuestLuggageNoticeMedia(user, guestLuggageMediaRow, userId, workTaskId, relatedSourceIds)
               : canViewFeedbackMedia
       if (!canView) {
         return res.status(403).json({ message: 'forbidden_media' })
       }
+      if (variant === 'source' && (
+        !hasScopedMediaContext
+        || recordedMedia?.source !== 'task'
+        || String(recordedMedia.row?.type || '').trim() !== 'lockbox_video'
+      )) {
+        return res.status(403).json({ message: 'forbidden_media' })
+      }
       const object = await r2GetObjectByKey(key)
       if (!object || !object.body?.length) return res.status(404).json({ message: 'not_found' })
+      if (variant === 'source') return sendPrivateMediaBuffer(req, res, object)
       let responseBody = object.body
       let responseContentType = object.contentType || 'application/octet-stream'
       if (variant !== 'original') {
