@@ -1,6 +1,7 @@
 import { hasPg, pgPool } from '../dbAdapter'
 import type { WorkTaskActionId } from './workTaskActions'
 import crypto from 'crypto'
+import { inspectionSubmissionAuditWhereSql } from './cleaningCompletionEvidence'
 
 export type WorkTaskActionAuditInput = {
   sourceType: string
@@ -260,7 +261,7 @@ async function hasLockboxVideoMedia(taskId: string, executor: Queryable) {
   return !!result?.rows?.length
 }
 
-function isTerminalCleaningStatus(status: any) {
+export function isTerminalCleaningStatus(status: any) {
   const raw = lower(status)
   return raw === 'cancelled' || raw === 'canceled' || raw === 'ready' || raw === 'completed' || raw === 'done'
 }
@@ -349,6 +350,7 @@ export async function assertCleaningTaskRoleRecordMutable(input: {
         AND audit.source_id::text = $1::text
         AND audit.performed_as_action = ANY($2::text[])
         AND COALESCE(NULLIF(audit.actor_user_id::text, ''), audit.performed_by_user_id::text) = $3::text
+        AND (${input.actionId === 'submit_inspection' ? inspectionSubmissionAuditWhereSql('audit') : 'TRUE'})
       LIMIT 1`,
     [taskId, terminalActions, actorUserId],
   )
@@ -375,6 +377,10 @@ async function latestCompletedStatusBeforeKeyUpload(taskId: string, executor: Qu
       WHERE source_type = 'cleaning_tasks'
         AND source_id::text = $1::text
         AND performed_as_action = ANY($2::text[])
+        AND (
+          performed_as_action <> 'submit_inspection'
+          OR ${inspectionSubmissionAuditWhereSql('work_task_action_audits')}
+        )
         AND lower(COALESCE(status_after, '')) = ANY($3::text[])
       ORDER BY performed_at DESC, created_at DESC
       LIMIT 1`,
@@ -610,6 +616,18 @@ export async function applyCleaningTaskActionTransition(input: CleaningTaskTrans
       // task to an inspector terminal status until the cleaner's evidence exists.
       statusAfter = statusBefore || null
     }
+  }
+  if (
+    input.actionId === 'submit_inspection'
+    && requiresInspectionPhotos
+    && inspectionPhotosSaved
+    && !finalizationPending
+    && await hasLockboxVideoMedia(taskId, executor)
+  ) {
+    // A weak-network queue can save the exact-task lockbox video before its
+    // inspection-photo business record.  When the photos later succeed, keep
+    // that already-saved handover fact instead of regressing to `inspected`.
+    statusAfter = 'keys_hung'
   }
   if (
     regularCheckoutInspection

@@ -437,6 +437,7 @@ function main() {
     inspection_mode: 'self_complete',
     status: 'cleaned',
     completion_photos_ok: true,
+    source_key_handover_completed: true,
   }, {
     userId: 'cleaner-1',
     roleNames: ['cleaner'],
@@ -447,6 +448,31 @@ function main() {
   assert.equal(actionById(selfCompleteReadOnlyPayload, 'complete_cleaning')?.disabled_reason, 'task_completed')
   assert.equal(actionById(selfCompleteReadOnlyPayload, 'complete_cleaning')?.label, '查看完成照片')
   assert.equal(actionById(selfCompleteReadOnlyPayload, 'complete_cleaning')?.read_only, true)
+  assert.equal(actionById(selfCompleteReadOnlyPayload, 'upload_access_video')?.enabled, false)
+
+  const selfCompleteAwaitingHandoverPayload = buildWorkTaskActionPayload({
+    ...cleaningTask,
+    id: 'w-self-complete-awaiting-handover',
+    inspection_mode: 'self_complete',
+    status: 'cleaned',
+    cleaning_submission_ready: true,
+    completion_photos_ok: true,
+    consumables_recorded: true,
+    source_key_handover_completed: false,
+  }, {
+    userId: 'cleaner-1',
+    roleNames: ['cleaner'],
+    permissions: allExecPerms,
+    canViewAll: false,
+  })
+  assert.equal(actionById(selfCompleteAwaitingHandoverPayload, 'upload_access_video')?.enabled, true)
+  assert.equal(actionById(selfCompleteAwaitingHandoverPayload, 'upload_access_video')?.label, '挂钥匙并完成')
+  assert.equal(actionById(selfCompleteAwaitingHandoverPayload, 'complete_cleaning')?.enabled, false)
+  assert.equal(actionById(selfCompleteAwaitingHandoverPayload, 'complete_cleaning')?.label, '查看完成照片')
+  assert.equal(actionById(selfCompleteAwaitingHandoverPayload, 'complete_cleaning')?.read_only, true)
+  assert.equal(actionById(selfCompleteAwaitingHandoverPayload, 'fill_supplies')?.read_only, true)
+  assert.equal(actionById(selfCompleteAwaitingHandoverPayload, 'fill_supplies')?.disabled_reason, 'task_completed')
+  assert.equal(actionById(selfCompleteAwaitingHandoverPayload, 'report_issue')?.enabled, true)
 
   const selfCompleteExceptionReadOnlyPayload = buildWorkTaskActionPayload({
     ...cleaningTask,
@@ -454,6 +480,7 @@ function main() {
     inspection_mode: 'self_complete',
     status: 'cleaned',
     completion_photos_ok: false,
+    source_key_handover_completed: true,
     completion_photo_exception: {
       items: [{ area: 'living', reason: 'network_pending', media_id: 'media-living', captured_at: '2026-08-01T01:00:00.000Z' }],
     },
@@ -467,6 +494,16 @@ function main() {
   assert.equal(actionById(selfCompleteExceptionReadOnlyPayload, 'complete_cleaning')?.read_only, true)
   assert(mzappSource.includes('completion_photo_exception'), 'work-task projection must expose a validated self-complete photo exception')
   assert(mzappSource.includes("isSelfCompleteFinalized\n                    ? 'done'"), 'finalized self-complete must take precedence over lockbox-only projection')
+  assert.match(mzappSource, /selfCompleteAwaitingOwnKeyHandover[\s\S]*?const cleanerTerminal[\s\S]*?!selfCompleteAwaitingOwnKeyHandover/, 'self-complete cleaner card must stay active before exact-source key handover')
+  assert.match(mzappSource, /const recordEvidence = selfCompleteAwaitingOwnKeyHandover \? \[\]/, 'premature supplies evidence must not create a duplicate history card before key handover')
+  assert.match(mzappSource, /has_current_manual_key_handover/, 'exact-source manual key handover must be projected independently of the current viewer')
+  assert.match(mzappSource, /current_manual_key_handover_at[\s\S]*?manualConfirmedAt: row\.current_manual_key_handover_at \|\| null/, 'manager-confirmed handover timestamp must remain visible as a task fact without exposing the actor')
+  assert.match(mzappSource, /const sourceKeyHandoverCompleted = row\.has_current_lockbox_video === true[\s\S]*?row\.has_current_manual_key_handover === true/, 'exact-source handover completion must not depend on uploader or event actor visibility')
+  assert.match(mzappSource, /const sourceKeyHandoverCompleted = p\.a\?\.__source_key_handover_completed === true/, 'self-complete finalization must use the exact primary source task handover fact')
+  assert.match(mzappSource, /__source_key_handover: sourceKeyHandover/, 'base projection must retain the exact-source handover independently of canonical fallback')
+  assert.match(mzappSource, /__source_lockbox_video_url: row\.lockbox_video_url \|\| null/, 'base projection must retain the exact-source video independently of same-day fallback')
+  assert.match(mzappSource, /requireSelfComplete \? \(p\.a\?\.__source_key_handover \|\| null\) : keyHandover/, 'self-complete handover must use the exact-source projection')
+  assert.match(mzappSource, /requireSelfComplete \? \(p\.a\?\.__source_lockbox_video_url \|\| null\) : lockboxVideoUrl/, 'self-complete video playback must never fall back to a related turnover source')
   const cleaningAppSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/cleaning_app.ts'), 'utf8')
   assert(cleaningAppSource.includes('normalizedSelfCompletePhotoException(parsed.data.completion_photo_exception, missingAreas)'), 'self-complete route must validate exception evidence against every missing photo area')
 

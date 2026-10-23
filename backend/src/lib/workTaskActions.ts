@@ -4,6 +4,7 @@ import { GUEST_READY_NOTIFICATION_PERMISSION, guestReadyNotificationAction, gues
 export type WorkTaskActionId =
   | 'upload_key_photo'
   | 'fill_supplies'
+  | 'record_restock_proof'
   | 'submit_inspection'
   | 'upload_access_video'
   | 'complete_cleaning'
@@ -305,7 +306,11 @@ function legacyParticipantActions(task: any, role: 'assignee' | 'cleaner' | 'ins
   const taskKind = lower(task?.task_kind)
   const executionRole = lower(task?.execution_role)
   const isExecution = taskKind === 'execution' || executionRole === 'execution' || isKeyOrPasswordActionSemantics(task?.execution_semantics)
-  if (role === 'cleaner') return ['upload_key_photo', 'fill_supplies', 'complete_cleaning', 'report_issue']
+  if (role === 'cleaner') {
+    return isSelfCompleteMode(task) && !isStayoverTaskType(task?.task_type)
+      ? ['upload_key_photo', 'fill_supplies', 'complete_cleaning', 'upload_access_video', 'report_issue']
+      : ['upload_key_photo', 'fill_supplies', 'complete_cleaning', 'report_issue']
+  }
   if (role === 'inspector') return ['submit_inspection', 'upload_access_video', 'report_issue']
   if (isExecution || isPasswordOnlyInspectionTask(task)) return ['upload_access_video', 'report_issue']
   if (taskKind === 'inspection') return ['submit_inspection', 'upload_access_video', 'report_issue']
@@ -394,6 +399,8 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
   const isPendingInspectionDecision = isCleaningTask && !isStayoverTask && inspectionMode === 'pending_decision'
   const isSelfCompleteEligible = isCleaningTask && isSelfCompleteMode(task) && (isCheckoutTask || isStayoverTask)
   const isDirectCompleteEligible = isCleaningTask && (isSelfCompleteEligible || isStayoverTask)
+  const requiresSelfCompleteKeyHandover = isSelfCompleteEligible && !isStayoverTask
+  const sourceKeyHandoverCompleted = task?.source_key_handover_completed === true
   const hasCleaningSubmissionSignal = typeof task?.cleaning_submission_ready === 'boolean'
   const cleaningSubmissionReady = hasCleaningSubmissionSignal
     ? task.cleaning_submission_ready === true
@@ -488,6 +495,37 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
       target: isDirectCompleteEligible ? 'CleaningSelfComplete' : 'SuppliesForm',
       intent: 'cleaning',
     }, participantSummary.can(isDirectCompleteEligible ? 'complete_cleaning' : 'fill_supplies'))
+
+    if (isSelfCompleteEligible && task?.consumables_recorded === true) {
+      addWorkerAction({
+        id: 'fill_supplies',
+        label: '补品记录',
+        placement: 'primary',
+        enabled: false,
+        disabled_reason: 'task_completed',
+        read_only: true,
+        target: 'SuppliesForm',
+        intent: 'cleaning',
+      }, participantSummary.can('fill_supplies'))
+    }
+
+    if (requiresSelfCompleteKeyHandover) {
+      const handoverReason = disabledReason({
+        hasPermission: canFinish && canMediaUpload,
+        isParticipant: participantSummary.can('upload_access_video'),
+        completed: sourceKeyHandoverCompleted,
+        alreadyDone: sourceKeyHandoverCompleted,
+      })
+      addWorkerAction({
+        id: 'upload_access_video',
+        label: sourceKeyHandoverCompleted ? '挂钥匙已记录' : '挂钥匙并完成',
+        placement: handoverReason === 'not_participant' ? 'more' : 'primary',
+        enabled: actionEnabled(handoverReason),
+        ...(handoverReason ? { disabled_reason: handoverReason } : {}),
+        target: 'InspectionComplete',
+        intent: 'site_action',
+      }, participantSummary.can('upload_access_video'))
+    }
   }
 
   if (!isCustomerServiceCleaningSource && isInspectionTask) {

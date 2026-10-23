@@ -13,7 +13,7 @@ function makeExecutor(
   guestArrivalSkipAudit = false,
   cleaningReady = true,
   lockboxVideoSaved = false,
-  priorRoleAudits: Array<{ action: string; actor: string }> = [],
+  priorRoleAudits: Array<{ action: string; actor: string; taskId?: string; route?: string }> = [],
 ) {
   const queries: string[] = []
   const insertedAudits: any[] = []
@@ -62,9 +62,15 @@ function makeExecutor(
       if (sql.includes('FROM work_task_action_audits audit') && sql.includes('performed_as_action = ANY')) {
         const actions = Array.isArray(params[1]) ? params[1].map(String) : []
         const actor = String(params[2] || '')
+        const taskId = String(params[0] || '')
+        const excludesLegacyRestock = sql.includes("metadata->>'route'") && sql.includes('mzapp.cleaning_tasks.restock_proof')
+        const matched = priorRoleAudits.some((audit) => actions.includes(audit.action)
+          && audit.actor === actor
+          && (!audit.taskId || audit.taskId === taskId)
+          && !(excludesLegacyRestock && audit.action === 'submit_inspection' && audit.route === 'mzapp.cleaning_tasks.restock_proof'))
         return {
-          rows: priorRoleAudits.some((audit) => actions.includes(audit.action) && audit.actor === actor) ? [{ ok: 1 }] : [],
-          rowCount: priorRoleAudits.some((audit) => actions.includes(audit.action) && audit.actor === actor) ? 1 : 0,
+          rows: matched ? [{ ok: 1 }] : [],
+          rowCount: matched ? 1 : 0,
         }
       }
       if (sql.includes('FROM cleaning_tasks')) {
@@ -91,7 +97,13 @@ function makeExecutor(
 
 async function main() {
   process.env.DATABASE_URL = 'postgres://unit-test'
-  const { actorAndPerformerFromRequest, applyCleaningTaskActionTransition, assertCleaningTaskRoleRecordMutable } = require('../../src/lib/workTaskActionAudit') as typeof import('../../src/lib/workTaskActionAudit')
+  const { actorAndPerformerFromRequest, applyCleaningTaskActionTransition, assertCleaningTaskRoleRecordMutable, isTerminalCleaningStatus } = require('../../src/lib/workTaskActionAudit') as typeof import('../../src/lib/workTaskActionAudit')
+  for (const status of ['cancelled', 'canceled', 'ready', 'completed', 'done']) {
+    assert.equal(isTerminalCleaningStatus(status), true, `${status} must remain immutable`)
+  }
+  for (const status of ['assigned', 'in_progress', 'cleaned', 'restock_pending', 'to_inspect', 'inspected', 'to_hang_keys', 'keys_hung']) {
+    assert.equal(isTerminalCleaningStatus(status), false, `${status} must remain eligible for unfinished exact-task evidence`)
+  }
   assert.deepStrictEqual(
     actorAndPerformerFromRequest(
       { sub: 'actor-1' },
@@ -257,6 +269,68 @@ async function main() {
   assert.equal(checkinVideoSaved.finalization_pending, true)
   assert.deepEqual(checkinVideoSaved.missing_requirements, ['inspection_photos'])
   assert.equal(checkinNotSubmitted.queries.some((sql) => sql.includes('FROM cleaning_consumable_usages')), false)
+
+  const legacyRestockThenPhotos = makeExecutor(
+    { status: 'to_inspect', inspection_scope: 'inspect_and_hang', task_type: 'checkout_clean' },
+    [{ ok: 1 }],
+    false,
+    true,
+    true,
+    [{
+      action: 'submit_inspection',
+      actor: 'inspector-1',
+      taskId: 'task-guard',
+      route: 'mzapp.cleaning_tasks.restock_proof',
+    }],
+  )
+  const legacyRestockRecovered = await applyCleaningTaskActionTransition({
+    taskId: 'task-guard',
+    actionId: 'submit_inspection',
+    actorUserId: 'inspector-1',
+    metadata: { route: 'mzapp.cleaning_tasks.inspection_photos' },
+  }, legacyRestockThenPhotos as any)
+  assert.equal(legacyRestockRecovered.status_after, 'keys_hung', 'photos saved after an exact-task video must preserve the handover state')
+  assert.equal(legacyRestockRecovered.finalization_pending, false)
+  assert.equal(legacyRestockThenPhotos.insertedAudits.length, 1, 'legacy restock audit must not block the first real inspection audit')
+
+  const trueInspectionAudit = makeExecutor(
+    { status: 'to_inspect', inspection_scope: 'inspect_and_hang', task_type: 'checkout_clean' },
+    [{ ok: 1 }],
+    false,
+    true,
+    true,
+    [{
+      action: 'submit_inspection',
+      actor: 'inspector-1',
+      taskId: 'task-guard',
+      route: 'mzapp.cleaning_tasks.inspection_photos',
+    }],
+  )
+  await assert.rejects(() => applyCleaningTaskActionTransition({
+    taskId: 'task-guard',
+    actionId: 'submit_inspection',
+    actorUserId: 'inspector-1',
+  }, trueInspectionAudit as any), /work_record_read_only/)
+
+  const relatedTaskInspectionAudit = makeExecutor(
+    { status: 'to_inspect', inspection_scope: 'inspect_and_hang', task_type: 'checkout_clean' },
+    [{ ok: 1 }],
+    false,
+    true,
+    false,
+    [{
+      action: 'submit_inspection',
+      actor: 'inspector-1',
+      taskId: 'related-turnover-task',
+      route: 'mzapp.cleaning_tasks.inspection_photos',
+    }],
+  )
+  const exactTaskSaved = await applyCleaningTaskActionTransition({
+    taskId: 'task-guard',
+    actionId: 'submit_inspection',
+    actorUserId: 'inspector-1',
+  }, relatedTaskInspectionAudit as any)
+  assert.equal(exactTaskSaved.status_after, 'inspected', 'a true audit from a different turnover source must not freeze this task')
 
   const duplicateActor = makeExecutor(
     { status: 'inspected', inspection_scope: 'inspect_and_hang', task_type: 'checkout_clean' },
