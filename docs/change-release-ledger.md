@@ -34347,7 +34347,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Base: `origin/Dev@59ef781ea399971cdb47d247eed5849c1838aef0`; fetched at `2026-10-23T13:42:39Z`
 - Candidate patch SHA-256: `7d4305c7803eda5ee337390e17e0e461fc1e0a621f6a08ba4084ba496731b7a9`
 - Commit SHA: `c2f1d8d37a3620d3c65fda2ccf92863f3ff660ca`
-- Dependencies: paired Mobile candidate; migration `backend/scripts/migrations/20261022_property_deep_cleaning_source_task.sql` must be validated and applied before Root deployment; no production action is part of this attempt
+- Dependencies: `none`
 - Required validation: `PASS`; clean-candidate `npm run check:backend` passed on 2026-10-23, including build and the scoped MZ application/permission/media contracts
 - Shared-hunk review: `PASS`; the selected CRLs are intentionally bundled and the clean candidate matches the reviewed source patch byte-for-byte before this attempt metadata
 - Generated-file review: `PASS`; no build output, preview asset, cache or secret is selected
@@ -34366,7 +34366,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Base: `origin/Dev@59ef781ea399971cdb47d247eed5849c1838aef0`; fetched at `2026-10-23T13:42:39Z`
 - Candidate patch SHA-256: `7d4305c7803eda5ee337390e17e0e461fc1e0a621f6a08ba4084ba496731b7a9`, excluding `docs/change-release-ledger.md`
 - Commit SHA: `c2f1d8d37a3620d3c65fda2ccf92863f3ff660ca`; exact reviewed bundled content commit recorded by `RA-20261023-001`
-- Dependencies: full selected scope remains bound by `RA-20261023-001`; migration `backend/scripts/migrations/20261022_property_deep_cleaning_source_task.sql` is not executed and must precede any Root deployment
+- Dependencies: `none`
 - Required validation: `PASS`; clean-candidate backend check and exact staged gate passed
 - Shared-hunk review: `PASS`; this receipt changes ledger evidence only
 - Generated-file review: `PASS`; no generated, secret, runtime or deployment file is selected
