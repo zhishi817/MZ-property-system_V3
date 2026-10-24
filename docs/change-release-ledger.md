@@ -247,6 +247,28 @@
 - `frontend/src/lib/cleaningDailyMerge.ts` — SHA-256: `c4a0606cbf019ebce7ee7a70d2eb3b87cff03e356b6d9f7617931f0ced16a7eb`
 - `frontend/src/lib/cleaningDailyMerge.ts` — SHA-256: `ef66b91c0a3c32195952326e7be02efc2dd9678f4c28af9e706a2353cb0e6fa9`
 
+### Release Attempts
+
+#### RA-20261024-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261024-009`, `CRL-20261024-010`, `CRL-20261024-011`, `CRL-20261024-004`, `CRL-20261024-008`
+- Selected CRL identities: `root/CRL-20261024-009`, `root/CRL-20261024-010`, `root/CRL-20261024-011`, `root/CRL-20261024-004`, `root/CRL-20261024-008`
+- Intended action: `push`
+- Branch: `codex/mz057-081-seven-fixes`
+- Base: `origin/Dev@ca8694ad8657d0713d05a3ce89cf4be048283dd0`; fetched at `2026-10-24T17:12:05Z`
+- Candidate patch SHA-256: `deea48c3dd7086bb20409a97bf26061e5ab5e6525c5bad5b951e9ec4831b01f0`
+- Commit SHA: `0734ef22331ca300a9b67f26548bc06483872ca6`
+- Dependencies: `none`
+- Cross-repository dependency verification: paired Mobile content commit `24b5d262f0e52ba82358907312baec2459a4f843` was independently reviewed and its exact release report was run; deployment sequencing remains Root before Mobile and is not a prerequisite for opening either Draft PR
+- Required validation: `PASS with disclosed environment limitations`; evidence: backend build and selected Root contracts PASS, focused Web tests/lint PASS, exact ledger and registry gates PASS; localhost Express tests are blocked by managed-sandbox `EPERM`, and full Web build remains blocked by the unchanged Recharts baseline type error
+- Shared-hunk review: `PASS`; evidence: MZ-057、065、075、077、081 were reviewed together with their shared projection, authorization and task-center files; MZ-079 is excluded
+- Generated-file review: `PASS`; evidence: tracked `backend/dist` output was restored to `origin/Dev`, and no dependency directory, cache, environment file, review bundle, screenshot, CSV or secret is selected
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: user explicitly requested all seven tasks be committed, pushed and opened as PRs
+- Independent review: `GO`; evidence: exact staged paired review found P0=0, P1=0 and P2=0 after the MZ-078 empty-history correction
+- Action conclusion: `GO`; blockers: no code blocker for Draft PR; Root localhost/PostgreSQL/native-device gaps remain disclosed and deployment is excluded
+
 ## CRL-20261024-010 — MZ-065 手工入住关联决策闭环
 
 - **Status:** independent review findings, including failed calendar hydration, fixed locally; focused Web gates and final integrated-candidate independent review GO; the latest local Express route rerun is blocked by sandbox loopback restrictions and the full Web production build remains blocked by an unrelated baseline type error; not committed, pushed, merged, deployed, or released
