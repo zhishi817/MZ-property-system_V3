@@ -41,6 +41,53 @@ async function main() {
         task_date: '2026-10-10',
         status: 'assigned',
       },
+      {
+        id: 'deferred-merged-assigned',
+        property_id: 'deferred-merged-property',
+        task_type: 'checkout_clean',
+        task_date: '2026-10-09',
+        status: 'assigned',
+        cleaner_id: 'original-cleaner',
+        inspector_id: 'original-deferred-inspector',
+        inspection_mode: 'deferred',
+        inspection_due_date: '2026-10-10',
+        guest_special_request: '延期任务旧要求不应覆盖入住安排',
+      },
+      {
+        id: 'checkin-merged-assigned',
+        property_id: 'deferred-merged-property',
+        task_type: 'checkin_clean',
+        task_date: '2026-10-10',
+        status: 'assigned',
+        assignee_id: 'stale-generic-assignee',
+        inspector_id: 'checkin-inspector',
+        inspection_scope: 'inspect_and_hang',
+        linked_checkout_task_id: 'deferred-merged-assigned',
+        guest_special_request: '入住任务优先要求',
+        checkin_time: '4pm',
+      },
+      {
+        id: 'deferred-merged-unassigned',
+        property_id: 'deferred-unassigned-property',
+        task_type: 'checkout_clean',
+        task_date: '2026-10-09',
+        status: 'assigned',
+        cleaner_id: 'another-cleaner',
+        inspector_id: 'deferred-plan-only',
+        inspection_mode: 'deferred',
+        inspection_due_date: '2026-10-10',
+      },
+      {
+        id: 'checkin-merged-unassigned',
+        property_id: 'deferred-unassigned-property',
+        task_type: 'checkin_clean',
+        task_date: '2026-10-10',
+        status: 'pending',
+        assignee_id: null,
+        inspector_id: null,
+        inspection_scope: 'inspect_and_hang',
+        linked_checkout_task_id: 'deferred-merged-unassigned',
+      },
       ...['maintenance-property', 'deep-property', 'deep-stale-property', 'daily-property', 'hidden-property'].map((propertyId) => ({
         id: `checkout-${propertyId}`,
         property_id: propertyId,
@@ -52,6 +99,8 @@ async function main() {
     memoryDb.properties = [
       { id: 'turnover-property', code: 'TURNOVER', region: 'TEST' },
       { id: 'unassigned-property', code: 'UNASSIGNED', region: 'TEST' },
+      { id: 'deferred-merged-property', code: 'MERGED-ASSIGNED', region: 'TEST' },
+      { id: 'deferred-unassigned-property', code: 'MERGED-UNASSIGNED', region: 'TEST' },
       { id: 'maintenance-property', code: 'MAINT', region: 'TEST' },
       { id: 'deep-property', code: 'DEEP', region: 'TEST' },
       { id: 'deep-stale-property', code: 'WSP380909', region: 'TEST' },
@@ -137,6 +186,20 @@ async function main() {
       false,
       'non-turnover cleaning without an executor is filtered from the Web execution board',
     )
+    const mergedAssigned = boardTasks.filter((task: any) => task.property_id === 'deferred-merged-property')
+    assert.equal(mergedAssigned.length, 1, 'a reliably linked deferred inspection and same-day check-in occupy one Web card')
+    assert.equal(mergedAssigned[0]?.deferred_inspection_merged, true)
+    assert.equal(mergedAssigned[0]?.inspection_action_task_id, 'checkin-merged-assigned')
+    assert.equal(mergedAssigned[0]?.assignee_id, 'checkin-inspector', 'the check-in assignment wins over the deferred plan')
+    assert.equal(mergedAssigned[0]?.cleaner_id, 'original-cleaner', 'the original cleaner remains attached to the merged evidence card')
+    assert.equal(mergedAssigned[0]?.guest_special_request, '入住任务优先要求')
+    assert.equal(mergedAssigned[0]?.deferred_inspection_original_checkout_date, '2026-10-09')
+    assert.equal(mergedAssigned[0]?.deferred_inspection_effective_date, '2026-10-10')
+    const mergedUnassigned = boardTasks.filter((task: any) => task.property_id === 'deferred-unassigned-property')
+    assert.equal(mergedUnassigned.length, 1, 'a linked but genuinely unassigned check-in remains one management card')
+    assert.equal(mergedUnassigned[0]?.deferred_inspection_merged, true)
+    assert.equal(mergedUnassigned[0]?.assignee_id, null, 'the deferred inspector is never inherited into an unassigned check-in')
+    assert.equal(mergedUnassigned[0]?.status, 'pending')
     assert.equal(
       boardTasks.some((task: any) => task.task_id === 'ordinary-offline-completed'),
       true,

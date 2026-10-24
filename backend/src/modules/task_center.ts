@@ -33,7 +33,7 @@ import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWor
 import { emitNotificationEvent } from '../services/notificationEvents'
 import { buildWebTaskCapabilityPayload, type WebTaskDisplayState, type WebTaskManagementAction } from '../lib/webTaskCapabilities'
 import { autoCleaningAssignmentStatus, isAutoAssignableCleaningStatus, isCheckinSiteExecutionTask } from '../lib/cleaningAssignmentStatus'
-import { emitDeferredInspectionCheckinConflictAlerts, isDeferredInspectionCheckinConflictRelevantChange, reconcileDeferredInspectionCheckinReplacement } from '../services/deferredInspectionCheckinConflict'
+import { buildDeferredInspectionCheckinArrangements, emitDeferredInspectionCheckinConflictAlerts, indexDeferredInspectionCheckinArrangements, isDeferredInspectionCheckinConflictRelevantChange, reconcileDeferredInspectionCheckinReplacement } from '../services/deferredInspectionCheckinConflict'
 import { assignedTaskExecutorIds, isTaskExecutorEligibleRoleNames } from '../services/taskExecutorEligibility'
 import { assertMaintenanceWorkflowSchemaReady } from '../lib/maintenanceWorkflowSchema'
 import { assertMaintenanceRuntimeSchemaReady, MaintenanceRuntimeSchemaNotReady } from '../lib/maintenanceRuntimeSchema'
@@ -112,6 +112,12 @@ type BoardTask = {
   inspection_mode?: 'pending_decision' | 'same_day' | 'deferred' | 'self_complete' | 'checked_done' | null
   inspection_scope?: 'inspect_and_hang' | 'password_only' | null
   inspection_due_date?: string | null
+  inspection_action_task_id?: string | null
+  deferred_inspection_merged?: boolean
+  deferred_inspection_task_id?: string | null
+  deferred_inspection_checkin_task_id?: string | null
+  deferred_inspection_original_checkout_date?: string | null
+  deferred_inspection_effective_date?: string | null
   deferred_checkin_conflict?: boolean
   conflict_checkin_task_id?: string | null
   conflict_checkin_task_date?: string | null
@@ -1401,7 +1407,12 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
   for (const task of list) {
     const pid = text(task.property_id)
     const groupDate = task.deferred_inspection_view ? text(task.inspection_due_date) || task.task_date : task.task_date
-    const groupKey = `${pid}|${task.deferred_inspection_view ? 'deferred' : 'normal'}:${groupDate || 'unknown'}`
+    const deferredMergeKey = task.deferred_inspection_merged
+      ? `${text(task.deferred_inspection_task_id)}:${text(task.deferred_inspection_checkin_task_id)}`
+      : ''
+    const groupKey = deferredMergeKey
+      ? `${pid}|deferred-checkin:${deferredMergeKey}`
+      : `${pid}|${task.deferred_inspection_view ? 'deferred' : 'normal'}:${groupDate || 'unknown'}`
     const arr = byProp.get(groupKey) || []
     arr.push(task)
     byProp.set(groupKey, arr)
@@ -1419,6 +1430,98 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
   }
   const checkinExecutionSortIndex = (task: BoardTask) => minPositiveSortIndex([task.sort_index_inspector, task.sort_index_cleaner])
   for (const items of byProp.values()) {
+    const deferredDisplayMerge = items.find((task) => task.deferred_inspection_merged === true)
+    if (deferredDisplayMerge) {
+      const deferredTaskId = text(deferredDisplayMerge.deferred_inspection_task_id)
+      const checkinTaskId = text(deferredDisplayMerge.deferred_inspection_checkin_task_id)
+      const deferred = items.find((task) => task.deferred_inspection_view === true && task.task_ids.includes(deferredTaskId)) || null
+      const checkin = items.find((task) => lower(task.task_kind) === 'checkin_clean' && task.task_ids.includes(checkinTaskId)) || null
+      if (deferred && checkin && deferredTaskId && checkinTaskId) {
+        const activeSourceIds = Array.from(new Set([
+          ...(deferred.active_source_ids?.length ? deferred.active_source_ids : deferred.task_ids),
+          ...(checkin.active_source_ids?.length ? checkin.active_source_ids : checkin.task_ids),
+        ].filter(Boolean)))
+        const supersededSourceIds = Array.from(new Set([
+          ...(deferred.superseded_source_ids || []),
+          ...(checkin.superseded_source_ids || []),
+        ].filter(Boolean)))
+        const checkinExecutorId = text(checkin.inspector_id || checkin.assignee_id) || null
+        const checkinStatus = isAutoAssignableCleaningStatus(checkin.status)
+          ? autoCleaningAssignmentStatus({
+              task_type: 'checkin_clean',
+              inspection_scope: checkin.inspection_scope,
+              assignee_id: checkinExecutorId,
+              inspector_id: checkin.inspector_id,
+            })
+          : checkin.status
+        const effectiveDate = text(checkin.deferred_inspection_effective_date || checkin.task_date)
+        const originalCheckoutDate = text(deferred.deferred_inspection_original_checkout_date || deferred.checkout_task_date)
+        const mergedTurnoverDisplay = buildCleaningTurnoverDisplay({
+          propertyId: checkin.property_id,
+          taskDate: effectiveDate,
+          checkoutTask: { ...deferred, taskId: deferredTaskId, taskType: 'checkout_clean', orderId: deferred.order_id },
+          checkinTask: { ...checkin, taskId: checkinTaskId, taskType: 'checkin_clean', orderId: checkin.order_id },
+          activeRows: [
+            { ...deferred, taskId: deferredTaskId, taskType: 'checkout_clean', orderId: deferred.order_id },
+            { ...checkin, taskId: checkinTaskId, taskType: 'checkin_clean', orderId: checkin.order_id },
+          ],
+          supersededRows: [...(deferred.__superseded_sources || []), ...(checkin.__superseded_sources || [])],
+        })
+        const checkinGuestRequest = text(checkin.guest_special_request) || null
+        const checkinPriorityTurnoverDisplay = {
+          ...mergedTurnoverDisplay,
+          guest_request_checkin: checkinGuestRequest,
+          guest_request_summary: checkinGuestRequest,
+        }
+        out.push({
+          ...checkin,
+          item_key: `cleaning:deferred-checkin:${deferredTaskId}:${checkinTaskId}`,
+          task_id: `deferred-checkin:${deferredTaskId}:${checkinTaskId}`,
+          task_ids: activeSourceIds,
+          active_source_ids: activeSourceIds,
+          superseded_source_ids: supersededSourceIds,
+          all_related_source_ids: Array.from(new Set([...activeSourceIds, ...supersededSourceIds])),
+          source_id: checkinTaskId,
+          task_kind: 'checkin_clean',
+          task_date: effectiveDate,
+          detail: `${text(checkin.summary_checkin_time) || DEFAULT_SUMMARY_CHECKIN_TIME}入住`,
+          status: checkinStatus,
+          assignee_id: checkinExecutorId,
+          cleaner_id: text(deferred.cleaner_id || deferred.assignee_id) || null,
+          inspector_id: text(checkin.inspector_id) || null,
+          sort_index: checkinExecutionSortIndex(checkin),
+          sort_index_cleaner: deferred.sort_index_cleaner ?? null,
+          sort_index_inspector: checkin.sort_index_inspector ?? checkin.sort_index_cleaner ?? null,
+          order_id: checkin.order_id || null,
+          order_id_checkout: deferred.order_id_checkout || deferred.order_id || null,
+          order_id_checkin: checkin.order_id_checkin || checkin.order_id || null,
+          inspection_mode: checkin.inspection_mode,
+          inspection_scope: checkin.inspection_scope,
+          inspection_due_date: null,
+          inspection_action_task_id: checkinTaskId,
+          deferred_inspection_merged: true,
+          deferred_inspection_task_id: deferredTaskId,
+          deferred_inspection_checkin_task_id: checkinTaskId,
+          deferred_inspection_original_checkout_date: originalCheckoutDate || null,
+          deferred_inspection_effective_date: effectiveDate || null,
+          deferred_inspection_view: false,
+          can_configure_inspection: true,
+          checkout_task_date: originalCheckoutDate || null,
+          checkout_task_dates: originalCheckoutDate ? [originalCheckoutDate] : [],
+          guest_special_request: checkinGuestRequest,
+          guest_request_checkin: checkinGuestRequest,
+          guest_request_summary: checkinGuestRequest,
+          summary_checkout_time: null,
+          summary_checkin_time: checkin.summary_checkin_time,
+          turnover_display: checkinPriorityTurnoverDisplay,
+          deferred_checkin_conflict: false,
+          conflict_checkin_task_id: null,
+          conflict_checkin_task_date: null,
+          conflict_checkin_time: null,
+        })
+        continue
+      }
+    }
     const deferreds = items.filter((x) => x.deferred_inspection_view === true)
     if (deferreds.length) {
       const first = deferreds[0]
@@ -1623,6 +1726,8 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
          t.inspection_mode,
          t.inspection_scope,
          t.inspection_due_date::text AS inspection_due_date,
+         t.inspection_replaced_by_checkin_task_id::text AS inspection_replaced_by_checkin_task_id,
+         t.linked_checkout_task_id::text AS linked_checkout_task_id,
          (checkin_conflict.id IS NOT NULL) AS deferred_checkin_conflict,
          checkin_conflict.id::text AS conflict_checkin_task_id,
          checkin_conflict.task_date::text AS conflict_checkin_task_date,
@@ -1640,6 +1745,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
          t.old_code,
          t.new_code,
          (o.confirmation_code::text) AS order_code,
+         o.status::text AS order_status,
          o.checkin::text AS order_checkin,
          o.checkout::text AS order_checkout,
          o.note::text AS order_note,
@@ -1685,6 +1791,8 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
     )
     const tasks: BoardTask[] = []
     const rawRows = r?.rows || []
+    const deferredInspectionArrangements = buildDeferredInspectionCheckinArrangements(rawRows)
+    const deferredInspectionArrangementsByTaskId = indexDeferredInspectionCheckinArrangements(deferredInspectionArrangements)
     const activeTaskIds = Array.from(new Set(rawRows.map((row: any) => String(row?.id || '').trim()).filter(Boolean)))
     const supersededByReplacementId = new Map<string, any[]>()
     if (activeTaskIds.length) {
@@ -1725,6 +1833,9 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
       const sourceIds = [sourceId]
       const inspectionMode = effectiveInspectionMode(row)
       const inspectionDueDate = dayOnly(row.inspection_due_date)
+      const displayMergeArrangement = (deferredInspectionArrangementsByTaskId.get(sourceId) || [])
+        .find((arrangement) => arrangement.display_merge_eligible)
+        || null
       const label =
         rawType === 'checkout_clean' ? '退房' :
         rawType === 'checkin_clean' ? '入住' :
@@ -1795,6 +1906,22 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
           checkout_task_dates: rawType === 'checkout_clean' ? [d] : [],
           inspection_mode: inspectionMode as any,
           inspection_due_date: inspectionDueDate,
+          inspection_action_task_id: rawType === 'checkin_clean' && displayMergeArrangement
+            ? displayMergeArrangement.checkin_task_id
+            : null,
+          deferred_inspection_merged: rawType === 'checkin_clean' && !!displayMergeArrangement,
+          deferred_inspection_task_id: rawType === 'checkin_clean' && displayMergeArrangement
+            ? displayMergeArrangement.deferred_task_id
+            : null,
+          deferred_inspection_checkin_task_id: rawType === 'checkin_clean' && displayMergeArrangement
+            ? displayMergeArrangement.checkin_task_id
+            : null,
+          deferred_inspection_original_checkout_date: rawType === 'checkin_clean' && displayMergeArrangement
+            ? displayMergeArrangement.original_checkout_date
+            : null,
+          deferred_inspection_effective_date: rawType === 'checkin_clean' && displayMergeArrangement
+            ? displayMergeArrangement.effective_inspection_date
+            : null,
           deferred_checkin_conflict: row.deferred_checkin_conflict === true,
           conflict_checkin_task_id: row.conflict_checkin_task_id ? String(row.conflict_checkin_task_id) : null,
           conflict_checkin_task_date: row.conflict_checkin_task_date ? String(row.conflict_checkin_task_date).slice(0, 10) : null,
@@ -1878,6 +2005,12 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
           summary_checkin_time: null,
           inspection_mode: inspectionMode as any,
           inspection_due_date: inspectionDueDate,
+          inspection_action_task_id: displayMergeArrangement?.checkin_task_id || null,
+          deferred_inspection_merged: !!displayMergeArrangement,
+          deferred_inspection_task_id: displayMergeArrangement?.deferred_task_id || null,
+          deferred_inspection_checkin_task_id: displayMergeArrangement?.checkin_task_id || null,
+          deferred_inspection_original_checkout_date: displayMergeArrangement?.original_checkout_date || null,
+          deferred_inspection_effective_date: displayMergeArrangement?.effective_inspection_date || null,
           deferred_checkin_conflict: row.deferred_checkin_conflict === true,
           conflict_checkin_task_id: row.conflict_checkin_task_id ? String(row.conflict_checkin_task_id) : null,
           conflict_checkin_task_date: row.conflict_checkin_task_date ? String(row.conflict_checkin_task_date).slice(0, 10) : null,
@@ -1892,6 +2025,18 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
   const rows = (db.cleaningTasks as any[]).slice()
   const props = ((db as any).properties || []) as any[]
   const orders = ((db as any).orders || []) as any[]
+  const arrangementRows = rows.map((row) => {
+    const order = orders.find((candidate: any) => String(candidate.id) === String(row.order_id)) || null
+    return {
+      ...row,
+      order_status: order?.status ?? row.order_status ?? null,
+      order_checkin: order?.checkin ?? row.order_checkin ?? null,
+      order_checkout: order?.checkout ?? row.order_checkout ?? null,
+    }
+  })
+  const arrangementsByTaskId = indexDeferredInspectionCheckinArrangements(
+    buildDeferredInspectionCheckinArrangements(arrangementRows),
+  )
   const mapped: BoardTask[] = []
   for (const row of rows) {
     const taskDate = dayOnly(row.task_date || row.date)
@@ -1899,7 +2044,10 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
     const order = orders.find((o: any) => String(o.id) === String(row.order_id)) || null
     const inspectionMode = effectiveInspectionMode(row)
     const inspectionDueDate = dayOnly(row.inspection_due_date)
-    if (taskDateInScope(taskDate, date, includeOverdue, includeFuture)) {
+    const displayMergeArrangement = (arrangementsByTaskId.get(String(row.id)) || [])
+      .find((arrangement) => arrangement.display_merge_eligible)
+      || null
+    const pushProjection = (projectionDate: string, deferredInspectionView: boolean) => {
       const sum = summaryText({
         property_region: prop?.region,
         property_code: prop?.code,
@@ -1909,13 +2057,17 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
         summary_checkin_time: text(row.checkin_time) || DEFAULT_SUMMARY_CHECKIN_TIME,
       })
       mapped.push({
-        item_key: `cleaning:${String(row.id)}`,
+        item_key: deferredInspectionView
+          ? `cleaning:${String(row.id)}::deferred_inspection:${projectionDate}`
+          : `cleaning:${String(row.id)}`,
         task_source: 'cleaning',
-        task_id: String(row.id),
+        task_id: deferredInspectionView
+          ? `${String(row.id)}::deferred_inspection:${projectionDate}`
+          : String(row.id),
         task_ids: [String(row.id)],
         source_type: 'cleaning_tasks',
         source_id: String(row.id),
-        task_kind: text(row.task_type) || 'cleaning_task',
+        task_kind: deferredInspectionView ? 'deferred_inspection' : (text(row.task_type) || 'cleaning_task'),
         property_id: row.property_id ? String(row.property_id) : null,
         property_code: prop?.code ? String(prop.code) : null,
         property_region: prop?.region ? String(prop.region) : null,
@@ -1923,7 +2075,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
         checked_out_at: row.checked_out_at ? String(row.checked_out_at) : null,
         title: sum.title,
         detail: sum.detail,
-        task_date: taskDate || date,
+        task_date: projectionDate,
         assignee_id: row.assignee_id ? String(row.assignee_id) : null,
         cleaner_id: row.cleaner_id ? String(row.cleaner_id) : (row.assignee_id ? String(row.assignee_id) : null),
         inspector_id: row.inspector_id ? String(row.inspector_id) : null,
@@ -1948,10 +2100,34 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
         checkout_task_dates: lower(row.task_type) === 'checkout_clean' ? [taskDate || date] : [],
         inspection_mode: inspectionMode as any,
         inspection_due_date: inspectionDueDate,
-        deferred_inspection_view: false,
-        can_configure_inspection: lower(row.task_type) === 'checkout_clean' || lower(row.task_type) === 'checkin_clean',
+        inspection_action_task_id: lower(row.task_type) === 'checkin_clean' && displayMergeArrangement
+          ? displayMergeArrangement.checkin_task_id
+          : deferredInspectionView ? (displayMergeArrangement?.checkin_task_id || null) : null,
+        deferred_inspection_merged: !!displayMergeArrangement,
+        deferred_inspection_task_id: displayMergeArrangement?.deferred_task_id || null,
+        deferred_inspection_checkin_task_id: displayMergeArrangement?.checkin_task_id || null,
+        deferred_inspection_original_checkout_date: displayMergeArrangement?.original_checkout_date || null,
+        deferred_inspection_effective_date: displayMergeArrangement?.effective_inspection_date || null,
+        deferred_inspection_view: deferredInspectionView,
+        can_configure_inspection: !deferredInspectionView && (lower(row.task_type) === 'checkout_clean' || lower(row.task_type) === 'checkin_clean'),
+        guest_special_request: row.guest_special_request != null ? String(row.guest_special_request) : null,
+        guest_request_checkin: lower(row.task_type) === 'checkin_clean' && row.guest_special_request != null
+          ? String(row.guest_special_request)
+          : null,
+        guest_request_summary: row.guest_special_request != null ? String(row.guest_special_request) : null,
         property_ready_for_guest_notification: lower(row.status) === 'ready',
       })
+    }
+    if (taskDateInScope(taskDate, date, includeOverdue, includeFuture)) {
+      pushProjection(taskDate || date, false)
+    }
+    if (
+      inspectionMode === 'deferred'
+      && inspectionDueDate
+      && inspectionDueDate !== taskDate
+      && taskDateInScope(inspectionDueDate, date, includeOverdue, includeFuture)
+    ) {
+      pushProjection(inspectionDueDate, true)
     }
   }
   return mergeCleaningTasks(mapped)

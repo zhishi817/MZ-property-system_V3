@@ -20,11 +20,107 @@ import {
   mobileInspectionProjectionDate,
   normalizeTurnoverInspectionScope,
   projectCleaningKeyHandover,
+  resolveInspectionTaskAssignment,
   resolveBoardInspectionDueDate,
   sanitizeInspectionModeForTask,
   unlinkedDeferredInspectionMergeKey,
   withInspectionMergeIsolation,
 } from '../../src/lib/cleaningInspection'
+
+function testCheckinInspectionAssignmentUsesTheSavedExecutorWithoutMixingPeople() {
+  assert.deepEqual(resolveInspectionTaskAssignment({
+    task_type: 'checkin_clean',
+    inspection_scope: 'inspect_and_hang',
+    assignee_id: 'mia-id',
+    assignee_name: 'Mia',
+    inspector_id: null,
+  }), {
+    userId: 'mia-id',
+    userName: 'Mia',
+    source: 'assignee',
+  }, 'a pure check-in inspection must project the executor saved by Task Center')
+
+  assert.deepEqual(resolveInspectionTaskAssignment({
+    task_type: 'checkin_clean',
+    inspection_scope: 'inspect_and_hang',
+    assignee_id: 'summer-id',
+    assignee_name: 'Summer',
+    inspector_id: 'mia-id',
+    inspector_name: 'Mia',
+  }), {
+    userId: 'mia-id',
+    userName: 'Mia',
+    source: 'inspector',
+  }, 'an explicit inspector wins without borrowing the generic assignee name')
+
+  assert.deepEqual(resolveInspectionTaskAssignment({
+    task_type: 'checkin_clean',
+    inspection_scope: 'inspect_and_hang',
+    assignee_id: 'summer-id',
+    assignee_name: 'Summer',
+    inspector_id: 'mia-id',
+    inspector_name: '',
+  }), {
+    userId: 'mia-id',
+    userName: null,
+    source: 'inspector',
+  }, 'a missing inspector name must not be paired with another person\'s assignee name')
+
+  assert.deepEqual(resolveInspectionTaskAssignment({
+    task_type: 'checkin_clean',
+    inspection_scope: 'inspect_and_hang',
+    assignee_id: 'mia-id',
+    assignee_name: 'Mia',
+    inspector_id: 'mia-id',
+    inspector_name: '',
+  }), {
+    userId: 'mia-id',
+    userName: 'Mia',
+    source: 'inspector',
+  }, 'the matching generic assignee name may fill a missing explicit inspector name')
+
+  assert.deepEqual(resolveInspectionTaskAssignment({
+    task_type: 'checkin_clean',
+    inspection_scope: 'password_only',
+    assignee_id: 'executor-id',
+    assignee_name: 'Executor',
+  }), {
+    userId: null,
+    userName: null,
+    source: null,
+  }, 'password-only execution must not become an inspection assignment')
+
+  assert.deepEqual(resolveInspectionTaskAssignment({
+    task_type: 'checkout_clean',
+    inspection_scope: 'inspect_and_hang',
+    assignee_id: 'cleaner-id',
+    assignee_name: 'Cleaner',
+  }), {
+    userId: null,
+    userName: null,
+    source: null,
+  }, 'ordinary checkout cleaning must not promote the cleaner to inspector')
+
+  assert.deepEqual(resolveInspectionTaskAssignment({
+    task_type: 'checkin_clean',
+    inspection_scope: 'inspect_and_hang',
+  }), {
+    userId: null,
+    userName: null,
+    source: null,
+  }, 'an actually unassigned check-in remains unassigned')
+
+  const workTasksSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/mzapp.ts'), 'utf8')
+  assert.match(workTasksSource, /const inspectionAssignment = resolveInspectionTaskAssignment\(\{/)
+  assert.match(workTasksSource, /const effectiveInspectionAssigneeId = displayDeferredArrangement[\s\S]*?displayCheckinAssignment\?\.userId[\s\S]*?: \(inspectionAssignment\.userId/)
+  assert.match(workTasksSource, /__assignee_inspector: displayDeferredArrangement[\s\S]*?displayCheckinAssignment\?\.userId[\s\S]*?: inspectionAssignment\.userId/)
+  assert.match(workTasksSource, /inspector_name: displayDeferredArrangement[\s\S]*?displayCheckinAssignment\?\.userName[\s\S]*?: inspectionAssignment\.userName/)
+  assert.doesNotMatch(
+    workTasksSource,
+    /firstNonEmpty\(displayMergeCheckinRow\.inspector_name, displayMergeCheckinRow\.assignee_name\)/,
+    'a missing explicit inspector name must not fall back to a different generic assignee name',
+  )
+}
 
 function testQueuedInspectionUsesCapturedBusinessDateOnlyWithExactEvidence() {
   assert.equal(cleaningExecutionBusinessDate({
@@ -415,7 +511,7 @@ function testWorkTaskPayloadUsesExactAuditWithoutExposingMediaUrl() {
   assert.match(source, /phase_history: phaseHistory/)
   assert.match(source, /executor_id: roleKind === 'executor'/)
   assert.match(source, /const canonicalTurnover = sameDayTurnoverFor\(row\.id\)/)
-  assert.match(source, /const rowBusinessIdentity = canonicalTurnover\?\.businessIdentity[\s\S]*?cleaningTaskBusinessIdentity\(\{ sourceId: row\.id \}\)/)
+  assert.match(source, /const rowBusinessIdentity = displayDeferredArrangement[\s\S]*?canonicalTurnover\?\.businessIdentity[\s\S]*?cleaningTaskBusinessIdentity\(\{ sourceId: row\.id \}\)/)
   assert.match(source, /const k = `\$\{taskDate\}\|\$\{rowBusinessIdentity\}\|\$\{effectiveCleanerId/)
   assert.match(source, /const keyHandoverRelationRowsById = new Map<string, any>\(\)/)
   assert.doesNotMatch(source, /const k = `\$\{taskDate\}\|\$\{propId \|\| ''\}\|\$\{effectiveCleanerId/)
@@ -831,7 +927,7 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
   const { hasPg } = await import('../../src/dbAdapter')
   assert.equal(hasPg, false)
   const { db } = await import('../../src/store')
-  const { router } = await import('../../src/modules/task_center')
+  const { buildTaskCenterDay, router } = await import('../../src/modules/task_center')
   const { router: cleaningRouter } = await import('../../src/modules/cleaning')
   const taskId = 'test-board-deferred-date-preservation'
   const turnoverCheckoutId = 'test-board-turnover-checkout'
@@ -839,6 +935,10 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
   const pureCheckinId = 'test-board-pure-checkin'
   const dateMoveCheckoutId = 'test-date-move-checkout'
   const linkedCheckoutId = 'test-manual-link-checkout'
+  const deferredMergeCheckoutId = 'test-deferred-merge-checkout'
+  const deferredMergeCheckinId = 'test-deferred-merge-checkin'
+  const deferredMergeAssigneeId = 'test-deferred-merge-assignee'
+  const deferredMergePropertyId = 'property-deferred-save-refresh'
   const testPropertyId = 'property-manual-turnover'
   const task: any = {
     id: taskId,
@@ -858,8 +958,19 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     { id: pureCheckinId, property_id: 'property-pure-checkin', task_date: '2026-09-16', date: '2026-09-16', task_type: 'checkin_clean', type: 'checkin_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang' },
     { id: dateMoveCheckoutId, property_id: 'property-pure-checkin', task_date: '2026-09-17', date: '2026-09-17', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang' },
     { id: linkedCheckoutId, property_id: testPropertyId, task_date: '2026-09-19', date: '2026-09-19', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang' },
+    { id: deferredMergeCheckoutId, property_id: deferredMergePropertyId, task_date: '2026-09-18', date: '2026-09-18', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active', cleaner_id: 'test-original-cleaner', inspector_id: 'test-deferred-plan-inspector', inspection_mode: 'deferred', inspection_due_date: '2026-09-19', inspection_scope: 'inspect_and_hang', guest_special_request: '延期任务旧要求' },
+    { id: deferredMergeCheckinId, property_id: deferredMergePropertyId, task_date: '2026-09-19', date: '2026-09-19', task_type: 'checkin_clean', type: 'checkin_clean', status: 'pending', execution_state: 'active', assignee_id: null, inspector_id: null, linked_checkout_task_id: deferredMergeCheckoutId, inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang', guest_special_request: '入住任务优先要求', checkin_time: '3pm' },
   )
-  ;((db as any).properties ||= []).push({ id: testPropertyId, code: 'TEST-TURNOVER', region: 'Melbourne' })
+  ;((db as any).properties ||= []).push(
+    { id: testPropertyId, code: 'TEST-TURNOVER', region: 'Melbourne' },
+    { id: deferredMergePropertyId, code: 'TEST-DEFERRED-SAVE', region: 'Melbourne' },
+  )
+  ;((db as any).users ||= []).push({
+    id: deferredMergeAssigneeId,
+    email: 'test-deferred-merge-assignee@example.invalid',
+    username: 'Test Deferred Merge Assignee',
+    role: 'cleaning_inspector',
+  })
   const app = express()
   app.use(express.json())
   app.use((req: any, _res, next) => {
@@ -874,7 +985,15 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
   const address = server.address()
   assert.ok(address && typeof address !== 'string')
   const base = `http://127.0.0.1:${address.port}`
-  const save = async (inspectionMode: string, inspectionDueDate: string | null, statusAction?: string, modeChangeAction?: 'set', targetTaskId = taskId, inspectionScope?: 'inspect_and_hang' | 'password_only') => {
+  const save = async (
+    inspectionMode: string,
+    inspectionDueDate: string | null,
+    statusAction?: string,
+    modeChangeAction?: 'set',
+    targetTaskId = taskId,
+    inspectionScope?: 'inspect_and_hang' | 'password_only',
+    assigneeId?: string | null,
+  ) => {
     const response = await fetch(`${base}/task-center/save-board`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -886,6 +1005,10 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
           inspection_mode: inspectionMode,
           ...(inspectionScope ? { inspection_scope: inspectionScope } : {}),
           ...(modeChangeAction ? { inspection_mode_action: modeChangeAction } : {}),
+          ...(assigneeId !== undefined ? {
+            assignee_id: assigneeId,
+            assignee_assignment_action: assigneeId ? 'assign' : 'unassign',
+          } : {}),
           inspection_due_date: inspectionDueDate,
           ...(statusAction ? { status_action: statusAction, status: 'completed' } : {}),
         }],
@@ -982,20 +1105,62 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
       linked_checkout_task_id: linkedCheckoutId,
     })
     assert.equal(crossDateLinkedCheckin.status, 409)
+
+    const beforeAssignment = await buildTaskCenterDay('2026-09-19', false, true, false, true)
+    const beforeCards = beforeAssignment.rows.flatMap((row: any) => row.subrows.flatMap((subrow: any) => subrow.tasks))
+      .filter((item: any) => item.property_id === deferredMergePropertyId && item.deferred_inspection_merged === true)
+    assert.equal(beforeCards.length, 1, 'the linked deferred inspection and check-in render as one card before assignment')
+    assert.equal(beforeCards[0]?.inspection_action_task_id, deferredMergeCheckinId)
+    assert.equal(beforeCards[0]?.assignee_id, null, 'the deferred plan inspector must not fill an unassigned check-in')
+    assert.equal(beforeCards[0]?.status, 'pending')
+
+    const assignCheckin = await save(
+      'same_day',
+      null,
+      undefined,
+      undefined,
+      deferredMergeCheckinId,
+      'inspect_and_hang',
+      deferredMergeAssigneeId,
+    )
+    assert.equal(assignCheckin.status, 200, JSON.stringify(assignCheckin.body))
+    const assignedCheckinSource = (db.cleaningTasks as any[]).find((item) => item.id === deferredMergeCheckinId)
+    const untouchedDeferredSource = (db.cleaningTasks as any[]).find((item) => item.id === deferredMergeCheckoutId)
+    assert.equal(assignedCheckinSource?.assignee_id, deferredMergeAssigneeId, 'Task Center writes the selected executor to the check-in source')
+    assert.equal(assignedCheckinSource?.status, 'assigned')
+    assert.equal(untouchedDeferredSource?.inspector_id, 'test-deferred-plan-inspector', 'saving the check-in executor does not rewrite the deferred plan')
+
+    const afterAssignment = await buildTaskCenterDay('2026-09-19', false, true, false, true)
+    const afterCards = afterAssignment.rows.flatMap((row: any) => row.subrows.flatMap((subrow: any) => subrow.tasks))
+      .filter((item: any) => item.property_id === deferredMergePropertyId && item.deferred_inspection_merged === true)
+    assert.equal(afterCards.length, 1, 'refresh keeps one merged card after assignment')
+    assert.equal(afterCards[0]?.inspection_action_task_id, deferredMergeCheckinId)
+    assert.equal(afterCards[0]?.assignee_id, deferredMergeAssigneeId)
+    assert.equal(afterCards[0]?.status, 'assigned')
+    assert.equal(afterCards[0]?.cleaner_id, 'test-original-cleaner', 'the original cleaner remains attached after assigning the check-in')
+    assert.equal(afterCards[0]?.guest_special_request, '入住任务优先要求')
+    assert.equal(afterCards[0]?.turnover_display?.guest_request_summary, '入住任务优先要求')
+    assert.equal(afterCards[0]?.deferred_inspection_original_checkout_date, '2026-09-18')
+    assert.equal(afterCards[0]?.deferred_inspection_effective_date, '2026-09-19')
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()))
     const index = db.cleaningTasks.findIndex((item) => item.id === taskId)
     if (index >= 0) db.cleaningTasks.splice(index, 1)
-    for (const id of [turnoverCheckoutId, turnoverCheckinId, pureCheckinId, dateMoveCheckoutId, linkedCheckoutId]) {
+    for (const id of [turnoverCheckoutId, turnoverCheckinId, pureCheckinId, dateMoveCheckoutId, linkedCheckoutId, deferredMergeCheckoutId, deferredMergeCheckinId]) {
       const fixtureIndex = db.cleaningTasks.findIndex((item) => item.id === id)
       if (fixtureIndex >= 0) db.cleaningTasks.splice(fixtureIndex, 1)
     }
-    const propertyIndex = ((db as any).properties || []).findIndex((item: any) => item.id === testPropertyId)
-    if (propertyIndex >= 0) (db as any).properties.splice(propertyIndex, 1)
+    for (const propertyId of [testPropertyId, deferredMergePropertyId]) {
+      const propertyIndex = ((db as any).properties || []).findIndex((item: any) => item.id === propertyId)
+      if (propertyIndex >= 0) (db as any).properties.splice(propertyIndex, 1)
+    }
+    const userIndex = ((db as any).users || []).findIndex((item: any) => item.id === deferredMergeAssigneeId)
+    if (userIndex >= 0) (db as any).users.splice(userIndex, 1)
   }
 }
 
 testTurnoverCheckoutAssignmentWinsOverPendingFallback()
+testCheckinInspectionAssignmentUsesTheSavedExecutorWithoutMixingPeople()
 testTurnoverPendingCheckoutDoesNotGetPromotedByCheckinDefault()
 testDeferredCheckoutKeepsDeferredDate()
 testStayoverRemainsSelfComplete()

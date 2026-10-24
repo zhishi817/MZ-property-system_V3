@@ -330,7 +330,7 @@ async function run() {
     },
     {
       id: 'checkin-linked', property_id: 'property-a', task_type: 'checkin_clean', task_date: '2026-08-02',
-      inspection_scope: 'inspect_and_hang', assignee_id: 'oscar', status: 'assigned',
+      inspection_scope: 'inspect_and_hang', linked_checkout_task_id: 'deferred-linked', assignee_id: 'oscar', status: 'assigned',
     },
     {
       id: 'password-independent', property_id: 'property-a', task_type: 'checkin_clean', task_date: '2026-08-02',
@@ -348,6 +348,8 @@ async function run() {
     checkin_inspector_id: null,
     checkin_assignee_id: 'oscar',
     conflict_reasons: [],
+    display_merge_eligible: true,
+    display_merge_reasons: [],
   }])
   const arrangementIndex = indexDeferredInspectionCheckinArrangements(arrangements)
   assert.strictEqual(arrangementIndex.get('deferred-linked')?.[0], arrangements[0])
@@ -361,7 +363,7 @@ async function run() {
       },
       {
         id: 'checkin-linked', property_id: 'property-a', task_type: 'checkin_clean', task_date: '2026-08-02',
-        inspection_scope: 'inspect_and_hang', assignee_id: 'oscar', status: 'assigned',
+        inspection_scope: 'inspect_and_hang', linked_checkout_task_id: 'deferred-linked', assignee_id: 'oscar', status: 'assigned',
       },
     ], 'checkin-linked'),
     { blocked: false, reason: null, canonical_action_task_id: null, conflicts: [] },
@@ -373,7 +375,7 @@ async function run() {
     },
     {
       id: 'checkin-linked', property_id: 'property-a', task_type: 'checkin_clean', task_date: '2026-08-02',
-      inspection_scope: 'inspect_and_hang', assignee_id: 'oscar', status: 'assigned',
+      inspection_scope: 'inspect_and_hang', linked_checkout_task_id: 'deferred-linked', assignee_id: 'oscar', status: 'assigned',
     },
   ], 'deferred-linked')
   assert.strictEqual(redirectedDeferredGuard.blocked, true)
@@ -387,11 +389,56 @@ async function run() {
     },
     {
       id: 'checkin-mismatch', property_id: 'property-a', task_type: 'checkin_clean', task_date: '2026-08-02',
-      inspection_scope: 'inspect_and_hang', assignee_id: 'barbara', status: 'assigned',
+      inspection_scope: 'inspect_and_hang', linked_checkout_task_id: 'deferred-mismatch', assignee_id: 'barbara', status: 'assigned',
     },
   ])[0]
   assert.ok(mismatchedArrangement.conflict_reasons.includes('checkin_executor_mismatch'))
   assert.ok(mismatchedArrangement.conflict_reasons.includes('planned_inspector_not_checkin_participant'))
+  assert.strictEqual(mismatchedArrangement.display_merge_eligible, true, 'display uses the linked check-in arrangement even when its executor differs from the deferred plan')
+
+  const unassignedLinkedArrangement = buildDeferredInspectionCheckinArrangements([
+    {
+      id: 'deferred-unassigned', property_id: 'property-a', task_type: 'checkout_clean', task_date: '2026-08-01',
+      inspection_mode: 'deferred', inspection_due_date: '2026-08-02', inspector_id: 'oscar', status: 'assigned',
+    },
+    {
+      id: 'checkin-unassigned', property_id: 'property-a', task_type: 'checkin_clean', task_date: '2026-08-02',
+      inspection_scope: 'inspect_and_hang', linked_checkout_task_id: 'deferred-unassigned', status: 'pending',
+    },
+  ])[0]
+  assert.strictEqual(unassignedLinkedArrangement.display_merge_eligible, true)
+  assert.strictEqual(unassignedLinkedArrangement.checkin_assignee_id, null)
+  assert.ok(unassignedLinkedArrangement.conflict_reasons.includes('checkin_executor_missing'), 'submission guard remains fail-closed while display remains merged and unassigned')
+
+  const uniquelyLinkedSameDayArrangement = buildDeferredInspectionCheckinArrangements([
+    {
+      id: 'deferred-unique-link', property_id: 'property-a', task_type: 'checkout_clean', task_date: '2026-08-01',
+      inspection_mode: 'deferred', inspection_due_date: '2026-08-03', inspector_id: 'oscar', status: 'assigned',
+    },
+    {
+      id: 'unrelated-earlier-checkin', property_id: 'property-a', task_type: 'checkin_clean', task_date: '2026-08-02',
+      inspection_scope: 'inspect_and_hang', assignee_id: 'barbara', status: 'assigned',
+    },
+    {
+      id: 'reliably-linked-checkin', property_id: 'property-a', task_type: 'checkin_clean', task_date: '2026-08-03',
+      inspection_scope: 'inspect_and_hang', linked_checkout_task_id: 'deferred-unique-link', assignee_id: 'mia', status: 'assigned',
+    },
+  ])[0]
+  assert.strictEqual(uniquelyLinkedSameDayArrangement.checkin_task_id, 'reliably-linked-checkin')
+  assert.strictEqual(uniquelyLinkedSameDayArrangement.display_merge_eligible, true, 'one reliable same-turnover relation wins over an unrelated same-property task in the wider deferred window')
+
+  const ambiguousReliableArrangement = buildDeferredInspectionCheckinArrangements([
+    {
+      id: 'deferred-ambiguous-link', property_id: 'property-a', task_type: 'checkout_clean', task_date: '2026-08-01',
+      inspection_mode: 'deferred', inspection_due_date: '2026-08-03', inspector_id: 'oscar', status: 'assigned',
+    },
+    ...['a', 'b'].map((suffix) => ({
+      id: `reliably-linked-${suffix}`, property_id: 'property-a', task_type: 'checkin_clean', task_date: '2026-08-03',
+      inspection_scope: 'inspect_and_hang', linked_checkout_task_id: 'deferred-ambiguous-link', assignee_id: 'mia', status: 'assigned',
+    })),
+  ])[0]
+  assert.strictEqual(ambiguousReliableArrangement.display_merge_eligible, false)
+  assert.ok(ambiguousReliableArrangement.display_merge_reasons.includes('multiple_reliable_checkin_inspection_tasks'))
 
   const earlierCheckinArrangement = buildDeferredInspectionCheckinArrangements([
     {
@@ -400,11 +447,13 @@ async function run() {
     },
     {
       id: 'checkin-before-due', property_id: 'property-a', task_type: 'checkin_clean', task_date: '2026-08-03',
-      inspection_scope: 'inspect_and_hang', assignee_id: 'oscar', status: 'assigned',
+      inspection_scope: 'inspect_and_hang', linked_checkout_task_id: 'deferred-later-due', assignee_id: 'oscar', status: 'assigned',
     },
   ])[0]
   assert.strictEqual(earlierCheckinArrangement.effective_inspection_date, '2026-08-03')
   assert.strictEqual(earlierCheckinArrangement.checkin_task_id, 'checkin-before-due')
+  assert.strictEqual(earlierCheckinArrangement.display_merge_eligible, false)
+  assert.ok(earlierCheckinArrangement.display_merge_reasons.includes('checkin_not_on_deferred_inspection_date'))
 
   const duplicateExecutionRows = [
     {

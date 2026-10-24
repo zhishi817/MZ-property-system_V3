@@ -39,6 +39,7 @@ import {
   normalizeTurnoverInspectionScope,
   projectCleaningKeyHandover,
   projectInspectorTaskStatus,
+  resolveInspectionTaskAssignment,
   unlinkedDeferredInspectionMergeKey,
   withInspectionMergeIsolation,
 } from '../lib/cleaningInspection'
@@ -1633,6 +1634,46 @@ async function canViewMzappRestockProof(user: any, row: any, userId: string) {
 export async function canViewMzappInspectionMedia(user: any, row: any, userId: string) {
   if (canViewAll(user)) return true
   return canSubmitMzappInspection(user, row, userId)
+}
+
+export type MzappInspectionPhotoSubmission = {
+  status: 'submitted' | 'none' | 'unavailable'
+  submit_id: string | null
+  saved_at: string | null
+}
+
+export async function loadMzappInspectionPhotoSubmission(
+  executor: { query: (sql: string, params?: any[]) => Promise<any> },
+  cleaningTaskId: string,
+): Promise<MzappInspectionPhotoSubmission> {
+  const sourceId = String(cleaningTaskId || '').trim()
+  if (!sourceId) return { status: 'none', submit_id: null, saved_at: null }
+  try {
+    const receipt = await executor.query(
+      `SELECT submit_id, created_at, updated_at
+         FROM app_submit_receipts
+        WHERE scope_type = 'cleaning_task_inspection_photos'
+          AND scope_id = $1
+          AND step_key = 'save_inspection_photos'
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT 1`,
+      [sourceId],
+    )
+    const row = receipt?.rows?.[0] || null
+    if (!row) return { status: 'none', submit_id: null, saved_at: null }
+    return {
+      status: 'submitted',
+      submit_id: String(row.submit_id || '').trim() || null,
+      saved_at: row.updated_at ? String(row.updated_at) : row.created_at ? String(row.created_at) : null,
+    }
+  } catch (error: any) {
+    // Older isolated/dev databases may not have the idempotency receipt table.
+    // Keep the media read available, but never infer a formal submission there.
+    if (String(error?.code || '') === '42P01') {
+      return { status: 'unavailable', submit_id: null, saved_at: null }
+    }
+    throw error
+  }
 }
 
 export function canViewMzappLockboxVideo(user: any) {
@@ -3467,6 +3508,7 @@ router.get('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
         created_at: x.created_at ? String(x.created_at) : null,
       }
     }).filter((item: any) => item.area !== 'unclean' || canViewMzappInspectionUncleanMedia(user))
+    const formalSubmission = await loadMzappInspectionPhotoSubmission(pgPool, id)
     const completionAreas = new Set(items.map((item) => String(item.area || '').trim()).filter(Boolean))
     const missingAreas = completionPhotoMissingAreas(completionAreas)
     let completionPhotoException: { items: { area: string; reason: string; media_id: string; captured_at: string }[] } | null = null
@@ -3489,7 +3531,18 @@ router.get('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
     } catch (error: any) {
       if (String(error?.code || '') !== '42P01') throw error
     }
-    return res.json({ items, ...(completionPhotoException ? { photo_exception: completionPhotoException } : {}) })
+    return res.json({
+      items,
+      formal_submission: {
+        ...formalSubmission,
+        // An empty current media list is not enough to infer the historical
+        // guest-arrival exception. The exact receipt is authoritative for
+        // formal submission, while the exception remains false unless a
+        // future contract exposes that explicit fact.
+        guest_arrival_confirmed: false,
+      },
+      ...(completionPhotoException ? { photo_exception: completionPhotoException } : {}),
+    })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'inspection_photos_failed' })
   }
@@ -8478,8 +8531,12 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                  t.inspection_mode,
                  t.inspection_scope,
                  t.inspection_due_date::date AS inspection_due_date,
+                 t.inspection_replaced_by_checkin_task_id::text AS inspection_replaced_by_checkin_task_id,
+                 t.linked_checkout_task_id::text AS linked_checkout_task_id,
                  t.order_id::text AS order_id,
                  task_order.status::text AS order_status,
+                 task_order.checkin::text AS order_checkin,
+                 task_order.checkout::text AS order_checkout,
                  t.checkin_time,
                  t.inspector_id::text AS inspector_id,
                  t.assignee_id::text AS assignee_id
@@ -8523,8 +8580,12 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                inspection_mode,
                inspection_scope,
                inspection_due_date::text AS inspection_due_date,
+               inspection_replaced_by_checkin_task_id,
+               linked_checkout_task_id,
                order_id,
                order_status,
+               order_checkin,
+               order_checkout,
                checkin_time,
                inspector_id,
                assignee_id
@@ -9039,6 +9100,14 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           const inspectionScope = checkinTurnover
             ? normalizeTurnoverInspectionScope({ inspectionScope: row.inspection_scope, hasCheckoutCheckinTurnover: true })
             : normalizeInspectionScope(row.inspection_scope)
+          const inspectionAssignment = resolveInspectionTaskAssignment({
+            task_type: row.task_type,
+            inspection_scope: inspectionScope,
+            inspector_id: row.inspector_id,
+            inspector_name: row.inspector_name,
+            assignee_id: row.assignee_id,
+            assignee_name: row.assignee_name,
+          })
           const isCheckinSiteExecution = isCheckinTask && inspectionScope === 'password_only'
           const effectiveInspectorRecordAt = manualKeyHandoverRecord && !isCheckinSiteExecution
             ? (inspectorRecordAt || executorRecordAt)
@@ -9071,15 +9140,36 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           const rowInspectionArrangements = arrangementsByTaskId.get(String(row.id || '')) || []
           const ownedDeferredArrangement = rowInspectionArrangements.find((arrangement) => arrangement.deferred_task_id === String(row.id || '')) || null
           const linkedDeferredArrangement = rowInspectionArrangements.find((arrangement) => arrangement.deferred_task_id !== String(row.id || '')) || null
-          const suppressLinkedCheckin = !!linkedDeferredArrangement && linkedDeferredArrangement.conflict_reasons.length === 0
+          const displayDeferredArrangement = rowInspectionArrangements.find((arrangement) => arrangement.display_merge_eligible) || null
+          const displayCheckinRow = displayDeferredArrangement
+            ? (
+                cleaningRowById.get(String(displayDeferredArrangement.checkin_task_id || ''))
+                || arrangementRowById.get(String(displayDeferredArrangement.checkin_task_id || ''))
+              )
+            : null
+          const displayCheckinAssignment = displayCheckinRow
+            ? resolveInspectionTaskAssignment({
+                task_type: displayCheckinRow.task_type,
+                inspection_scope: displayCheckinRow.inspection_scope,
+                inspector_id: displayCheckinRow.inspector_id,
+                inspector_name: displayCheckinRow.inspector_name,
+                assignee_id: displayCheckinRow.assignee_id,
+                assignee_name: displayCheckinRow.assignee_name,
+              })
+            : null
+          const suppressLinkedCheckin = !!linkedDeferredArrangement
+            && linkedDeferredArrangement.conflict_reasons.length === 0
+            && linkedDeferredArrangement.display_merge_eligible !== true
           const suppressStandaloneCheckin = !!completedSameDayTurnover || suppressStandaloneCheckinForCleanerTurnover || suppressLinkedCheckin
           const deferredArrangement = ownedDeferredArrangement || linkedDeferredArrangement || null
           const managerMergeIsolationKey = unlinkedDeferredInspectionMergeKey({
             sourceId: row.id,
             inspectionMode,
-            hasExplicitInspectionRelation: !!ownedDeferredArrangement,
+            hasExplicitInspectionRelation: !!ownedDeferredArrangement || !!displayDeferredArrangement,
           })
-          const rowBusinessIdentity = canonicalTurnover?.businessIdentity
+          const rowBusinessIdentity = displayDeferredArrangement
+            ? `deferred_checkin:${displayDeferredArrangement.deferred_task_id}:${displayDeferredArrangement.checkin_task_id}`
+            : canonicalTurnover?.businessIdentity
             || cleaningTaskBusinessIdentity({ sourceId: row.id })
           const sourceKeyHandover = keyHandoverForRow(row)
           const keyHandover = sourceKeyHandover || canonicalTurnover?.keyHandover || null
@@ -9091,12 +9181,15 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             __date: taskDate,
             __prop_id: propId,
             __assignee_cleaner: effectiveCleanerId,
-            __assignee_inspector: inspectorId,
+            __assignee_inspector: displayDeferredArrangement
+              ? (displayCheckinAssignment?.userId || null)
+              : inspectionAssignment.userId,
             __inspection_mode: inspectionMode,
             __inspection_scope: inspectionScope,
             __inspection_due_date: inspectionDueDate,
             __deferred_projection_date: deferredDate,
             __deferred_checkin_arrangement: deferredArrangement,
+            __deferred_inspection_display_merge: displayDeferredArrangement,
             __manager_merge_isolation_key: managerMergeIsolationKey,
             __business_identity: rowBusinessIdentity,
             __lockbox_video_confirms_current_state: lockboxVideoConfirmsCurrentState,
@@ -9144,7 +9237,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             cleaner_name: effectiveCleanerId
               ? (row.cleaner_id ? row.cleaner_name : row.assignee_name)
               : null,
-            inspector_name: row.inspector_name,
+            inspector_name: displayDeferredArrangement
+              ? (displayCheckinAssignment?.userName || null)
+              : inspectionAssignment.userName,
             sort_index_cleaner: row.sort_index_cleaner,
             sort_index_inspector: row.sort_index_inspector,
             cleaner_record_at: cleanerRecordAt,
@@ -9270,7 +9365,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             }
           }
 
-          const arrangementInspectionDate = ownedDeferredArrangement?.effective_inspection_date || null
+          const arrangementInspectionDate = displayDeferredArrangement?.effective_inspection_date
+            || ownedDeferredArrangement?.effective_inspection_date
+            || null
           const inspectorDisplayDate = arrangementInspectionDate
             && arrangementInspectionDate >= dateFrom
             && arrangementInspectionDate <= dateTo
@@ -9283,7 +9380,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             dateTo,
             status: raw_status,
           })
-          const effectiveInspectionAssigneeId = inspectorId || manualInspectionAssigneeId || ''
+          const effectiveInspectionAssigneeId = displayDeferredArrangement
+            ? (displayCheckinAssignment?.userId || manualInspectionAssigneeId || '')
+            : (inspectionAssignment.userId || manualInspectionAssigneeId || '')
           if (
             wantInspector
             && cleaningType(row.task_type) !== 'stayover'
@@ -9301,7 +9400,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                 managerMergeIsolationKey,
               )
               const arr = inspectorGroups.get(k) || []
-              arr.push({ ...base, __date: inspectorDisplayDate, __assignee_inspector: inspectorId || manualInspectionAssigneeId || null, __assignee_executor: checkinSiteExecutorId || null, __is_deferred_projection: inspectionMode === 'deferred' })
+              arr.push({ ...base, __date: inspectorDisplayDate, __assignee_inspector: effectiveInspectionAssigneeId || null, __assignee_executor: checkinSiteExecutorId || null, __is_deferred_projection: inspectionMode === 'deferred' })
               inspectorGroups.set(k, arr)
             }
             const recordEvidence = mergeRoleRecordEvidenceWithCancellation({
@@ -9395,8 +9494,12 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             .map((row) => row.__deferred_checkin_arrangement)
             .filter(Boolean)
           const conflictingDeferredCheckinArrangements = deferredCheckinArrangements
-            .filter((arrangement) => arrangement?.conflict_reasons?.length)
-          const deferredCheckinArrangement = conflictingDeferredCheckinArrangements[0]
+            .filter((arrangement) => arrangement?.conflict_reasons?.length && arrangement?.display_merge_eligible !== true)
+          const displayMergeArrangement = deferredCheckinArrangements
+            .find((arrangement) => arrangement?.display_merge_eligible === true)
+            || null
+          const deferredCheckinArrangement = displayMergeArrangement
+            || conflictingDeferredCheckinArrangements[0]
             || deferredCheckinArrangements[0]
             || null
           const inspectionConflictSourceIds = deferredInspectionConflictSourceIds(
@@ -9410,7 +9513,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                 || arrangementRowById.get(String(deferredCheckinArrangement.checkin_task_id || ''))
               )
             : null
-          const arrangementHasConflict = !!deferredCheckinArrangement?.conflict_reasons?.length
+          const arrangementHasConflict = deferredCheckinArrangement?.display_merge_eligible === true
+            ? false
+            : !!deferredCheckinArrangement?.conflict_reasons?.length
           const arrangementConflict = deferredCheckinArrangement && arrangementHasConflict
             ? {
                 reasons: deferredCheckinArrangement.conflict_reasons,
@@ -9425,7 +9530,11 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                 checkin_task_ids: deferredCheckinArrangement.checkin_task_ids,
               }
             : null
-          const linkedInspectionActionChild = deferredCheckinArrangement && ownsDeferredInspectionArrangement && !arrangementHasConflict && arrangementCheckinRow
+          const linkedInspectionActionChild = deferredCheckinArrangement
+            && deferredCheckinArrangement.display_merge_eligible !== true
+            && ownsDeferredInspectionArrangement
+            && !arrangementHasConflict
+            && arrangementCheckinRow
             ? {
                 id: `cleaning_tasks_inspection:${deferredCheckinArrangement.checkin_task_id}`,
                 task_kind: 'inspection',
@@ -9457,6 +9566,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           const isWorkRecordGroup = !!workRecordState
           const hideUnattributedHistoricalMedia = isWorkRecordGroup && workRecordState === 'reassigned'
           const sourceScheduledDate = isWorkRecordGroup ? String(originalScheduledDate || date) : date
+          const displayMergeCheckinRow = displayMergeArrangement
+            ? rows.find((row) => String(row.__raw_id) === String(displayMergeArrangement.checkin_task_id)) || null
+            : null
           const canonicalPair = canonicalTurnoverPairs.find((pair) => pair.source_ids.includes(String(p.a?.__raw_id || ''))) || null
           const nextCheckinsForCheckout = p.kind === 'checkout' && !managerMergeIsolationKey && canonicalPair
             ? [canonicalPair.checkin]
@@ -9501,8 +9613,19 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
 
           const oldCode = firstNonEmpty(turnoverDisplay.old_code, p.a.old_code, p.b?.old_code, ...rows.map((x) => x.old_code))
           const newCode = firstNonEmpty(turnoverDisplay.new_code, p.b?.new_code, ...nextCheckinsForCheckout.map((x: any) => x.new_code), p.a.new_code, ...rows.map((x) => x.new_code))
-          const guestSpecialRequest = firstNonEmpty(turnoverDisplay.guest_request_summary, p.a.guest_special_request, p.b?.guest_special_request, ...rows.map((x) => x.guest_special_request))
-          const taskNote = firstNonEmpty(p.a.note, p.b?.note, ...rows.map((x) => x.note))
+          const guestSpecialRequest = displayMergeCheckinRow
+            ? (String(displayMergeCheckinRow.guest_special_request || '').trim() || null)
+            : firstNonEmpty(turnoverDisplay.guest_request_summary, p.a.guest_special_request, p.b?.guest_special_request, ...rows.map((x) => x.guest_special_request))
+          const taskNote = displayMergeCheckinRow
+            ? (String(displayMergeCheckinRow.note || '').trim() || null)
+            : firstNonEmpty(p.a.note, p.b?.note, ...rows.map((x) => x.note))
+          const displayTurnoverDisplay = displayMergeCheckinRow
+            ? {
+                ...turnoverDisplay,
+                guest_request_checkin: guestSpecialRequest,
+                guest_request_summary: guestSpecialRequest,
+              }
+            : turnoverDisplay
           const checkedOutAt = firstNonEmpty(p.a.checked_out_at, p.b?.checked_out_at, ...rows.map((x) => x.checked_out_at))
           const keyPhotoUrl = firstNonEmpty(p.a.key_photo_url, p.b?.key_photo_url, ...relatedRowsForDisplay.map((x) => x.key_photo_url))
           const lockboxVideoUrl = firstNonEmpty(p.a.lockbox_video_url, p.b?.lockbox_video_url, ...relatedRowsForDisplay.map((x) => x.lockbox_video_url))
@@ -9528,7 +9651,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             ? null
             : (isWorkRecordGroup && roleKind === 'inspector' && workRecordActorName
                 ? workRecordActorName
-                : firstNonEmpty(p.a.inspector_name, p.b?.inspector_name, ...rows.map((x) => x.inspector_name)))
+                : displayMergeCheckinRow
+                  ? (String(displayMergeCheckinRow.inspector_name || '').trim() || null)
+                  : firstNonEmpty(p.a.inspector_name, p.b?.inspector_name, ...rows.map((x) => x.inspector_name)))
           const inspectorAssigned = p.kind === 'stayover' ? null : firstNonEmpty(p.a.__assignee_inspector, p.b?.__assignee_inspector, ...rows.map((x) => x.__assignee_inspector))
           const inspectionPlan = mergeInspectionPlan(
             rows.map((x) => ({
@@ -9539,9 +9664,15 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               status: x.raw_status,
             })),
           )
-          const inspectionMode = inspectionPlan.inspectionMode
-          const inspectionDueDate = inspectionPlan.inspectionDueDate
-          const inspectionScope = p.kind === 'checkin' ? normalizeInspectionScope(p.a.__inspection_scope) : null
+          const inspectionMode = displayMergeCheckinRow
+            ? effectiveInspectionMode(displayMergeCheckinRow)
+            : inspectionPlan.inspectionMode
+          const inspectionDueDate = displayMergeCheckinRow
+            ? (dayOnly(displayMergeCheckinRow.__inspection_due_date) || null)
+            : inspectionPlan.inspectionDueDate
+          const inspectionScope = displayMergeCheckinRow
+            ? normalizeInspectionScope(displayMergeCheckinRow.__inspection_scope)
+            : p.kind === 'checkin' ? normalizeInspectionScope(p.a.__inspection_scope) : null
           const executorInspection = roleKind === 'executor' && p.kind === 'checkin' && inspectionScope !== 'password_only'
           const requireSelfComplete = roleKind === 'cleaner' && inspectionMode === 'self_complete'
           const requireLockboxBeforeDone = requireSelfComplete && p.kind !== 'stayover'
@@ -9607,7 +9738,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               })
             }
           }
-          const raw = String(p.a.raw_status ?? '').trim().toLowerCase()
+          const raw = String((displayMergeCheckinRow || p.a).raw_status ?? '').trim().toLowerCase()
           const cleaningSubmissionReady = p.ids.length > 0
             && p.ids.every((sourceId) => cleaningSubmissionReadyByTaskId.get(String(sourceId)) === true)
           const consumablesRecorded = (consumableItemIdsByTaskId.get(String(p.a.__raw_id))?.size || 0) > 0
@@ -9708,7 +9839,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           const outId = isWorkRecordGroup
             ? `${baseOutId}::record:${workRecordState}:${workRecordDate || date}`
             : baseOutId
-          const primarySourceId = String(p.a.__raw_id)
+          const primarySourceId = String((displayMergeCheckinRow || p.a).__raw_id)
           const projectionExecutionState = workRecordProjectionExecutionState(rows, primarySourceId)
           const checkoutKeys =
             turnoverDisplay.keys_required_checkout != null
@@ -9816,7 +9947,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             assignee_id: String(assigneeId || '').trim() || null,
             inspector_id: inspectorAssigned ? String(inspectorAssigned) : null,
             executor_id: roleKind === 'executor' ? (String(assigneeId || '').trim() || null) : null,
-            assignee_name: (isWorkRecordGroup ? workRecordActorName : null) || executorName || cleanerName || inspectorName || null,
+            assignee_name: displayMergeCheckinRow
+              ? (inspectorName || null)
+              : (isWorkRecordGroup ? workRecordActorName : null) || executorName || cleanerName || inspectorName || null,
             executor_name: roleKind === 'executor' || (roleKind === 'inspector' && p.kind === 'checkin') ? (executorName || null) : null,
             status: statusOut,
             urgency: 'medium',
@@ -9826,15 +9959,21 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             old_code: oldCode,
             new_code: newCode,
             guest_special_request: guestSpecialRequest,
-            guest_request_checkout: turnoverDisplay.guest_request_checkout,
-            guest_request_checkin: turnoverDisplay.guest_request_checkin,
-            guest_request_summary: turnoverDisplay.guest_request_summary,
-            guest_luggage: p.a.guest_luggage || null,
+            guest_request_checkout: displayTurnoverDisplay.guest_request_checkout,
+            guest_request_checkin: displayTurnoverDisplay.guest_request_checkin,
+            guest_request_summary: displayTurnoverDisplay.guest_request_summary,
+            guest_luggage: displayMergeCheckinRow
+              ? (displayMergeCheckinRow.guest_luggage || null)
+              : (p.a.guest_luggage || null),
             note: taskNote,
             inspection_mode: inspectionMode,
             inspection_scope: inspectionScope,
             inspection_due_date: inspectionDueDate,
             inspection_original_checkout_date: deferredCheckinArrangement?.original_checkout_date || null,
+            deferred_inspection_merged: displayMergeArrangement?.display_merge_eligible === true,
+            deferred_inspection_effective_date: displayMergeArrangement?.display_merge_eligible === true
+              ? displayMergeArrangement.effective_inspection_date
+              : null,
             inspection_action_task_id: deferredCheckinArrangement && !arrangementHasConflict
               ? deferredCheckinArrangement.checkin_task_id
               : null,
@@ -9867,7 +10006,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             is_early_checkin: turnoverDisplay.is_early_checkin,
             is_late_checkin: turnoverDisplay.is_late_checkin,
             display_conflicts: turnoverDisplay.conflicts,
-            turnover_display: turnoverDisplay,
+            turnover_display: displayTurnoverDisplay,
             __key_handover_source_ids: keyHandoverSourceIds,
             __key_handover_source_rows: keyHandoverSourceRows,
             cleaner_name: cleanerName,

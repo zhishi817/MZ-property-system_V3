@@ -10,6 +10,18 @@ type TaskCenterDisplayTask = {
   deferred_inspection_view?: boolean
   inspection_mode?: string | null
   inspection_due_date?: string | null
+  inspection_action_task_id?: string | null
+  task_id?: string | null
+  task_ids?: string[]
+  active_source_ids?: string[]
+  turnover_display?: {
+    active_source_ids?: string[]
+    stayed_nights?: number | null
+    remaining_nights?: number | null
+  } | null
+  deferred_inspection_merged?: boolean
+  deferred_inspection_original_checkout_date?: string | null
+  deferred_inspection_effective_date?: string | null
   conflict_checkin_task_date?: string | null
   conflict_checkin_time?: string | null
   checkout_task_date?: string | null
@@ -27,10 +39,6 @@ type TaskCenterDisplayTask = {
 type TaskCenterNightsDisplayTask = TaskCenterDisplayTask & {
   task_ids?: string[]
   nights?: number | null
-  turnover_display?: {
-    stayed_nights?: number | null
-    remaining_nights?: number | null
-  } | null
 }
 
 export const TASK_CENTER_MAX_COLUMNS = 4
@@ -113,6 +121,39 @@ export function deferredInspectionConflictPresentation(task: TaskCenterDisplayTa
     tone: 'danger' as const,
     detail: `原定检查 ${String(task.inspection_due_date || '').trim() || '-'}；入住 ${checkinDate}${checkinTime ? ` ${checkinTime}` : ''}`,
   }
+}
+
+export function deferredInspectionMergePresentation(task: TaskCenterDisplayTask) {
+  if (task.deferred_inspection_merged !== true) return null
+  const originalCheckoutDate = String(task.deferred_inspection_original_checkout_date || '').trim()
+  const effectiveInspectionDate = String(task.deferred_inspection_effective_date || '').trim()
+  return {
+    key: 'deferred-inspection-merged',
+    label: '含延期检查',
+    tone: 'info' as const,
+    detail: originalCheckoutDate && effectiveInspectionDate
+      ? `原退房 ${originalCheckoutDate} → 本次检查 ${effectiveInspectionDate}`
+      : '',
+  }
+}
+
+function assignmentTargetIds(values: Array<string | null | undefined>) {
+  return Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)))
+}
+
+export function taskCenterInspectionAssignmentTaskIds(task: TaskCenterDisplayTask) {
+  const actionTaskId = String(task.inspection_action_task_id || '').trim()
+  if (actionTaskId) return [actionTaskId]
+  if (String(task.task_source || '').trim().toLowerCase() !== 'cleaning') {
+    return assignmentTargetIds([task.task_id])
+  }
+  const active = assignmentTargetIds([
+    ...(Array.isArray(task.turnover_display?.active_source_ids) ? task.turnover_display.active_source_ids : []),
+    ...(Array.isArray(task.active_source_ids) ? task.active_source_ids : []),
+  ])
+  return active.length
+    ? active
+    : assignmentTargetIds(Array.isArray(task.task_ids) ? task.task_ids : [task.task_id])
 }
 
 function positiveNights(value: number | null | undefined) {
