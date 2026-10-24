@@ -1,5 +1,78 @@
 # Change Release Ledger
 
+## CRL-20261024-012 — Full Regression 合并检查语法恢复
+
+- **Status:** verified local candidate; targeted regression, complete backend gate, full repository gate, staged-scope audit, and independent review passed
+- **Repository:** `root`
+- **Updated:** 2026-10-24 21:33 UTC
+- **Request:** 修复 Dev→main 检查中 `test_cleaning_inspection_merge.ts` 缺少闭合括号导致 TypeScript 编译报错、`ts-node-dev` 未退出并最终跑满 30 分钟取消的问题；仅修测试，不改业务逻辑或保护规则。
+- **Outcome:** 恢复 `testPendingHandoverRecordMergesOnlyIntoItsExactLiveTurnover` 的函数边界，使该测试以及随后独立的延期检查展示断言都被正常注册和执行；不通过删除断言、跳过检查或延长超时来规避失败。
+
+### Implementation
+
+- Previous behavior: MZ-057 回归测试的函数缺少末尾 `}`，使下一测试函数被错误嵌套并在文件结束时报 `TS1005: '}' expected`；PR 事件中的 Full Regression 按既有规则跳过，而 Fast Regression 不执行该脚本，故错误直到 Dev push 的全量门禁才暴露。
+- New behavior: 在 MZ-057 测试循环结束后补回函数闭合括号；两个测试函数保持独立，文件末尾的现有调用继续实际执行两组断言。
+- Key decisions: 不修改生产源码、业务规则、CI 触发条件、超时或分支保护；是否将此脚本加入 Fast Regression 属于后续 CI 覆盖改进，不在本次最小修复范围。
+
+### Files / Areas
+
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — modified: restore the missing function-closing brace without changing assertions.
+- `docs/change-release-ledger.md` — modified: record the isolated CI test repair, validation, authorization, and release evidence.
+
+### Impact / Dependencies
+
+- API / Database / migration / production data: none.
+- Config / environment / dependencies: none.
+- Runtime behavior: none; test-only source change.
+- CI: Dev push Full Regression can compile and execute the previously blocked script. Existing PR-event Full Regression deferral and Fast Regression coverage remain unchanged.
+- Related units: `root/CRL-20261024-009` supplied the affected regression body; no behavior from that unit is changed.
+
+### Validation
+
+- Failed-run evidence: Root Quality Gate run `40131552366`, job `120984179388` reported `scripts/tests/test_cleaning_inspection_merge.ts(1519,1): error TS1005: '}' expected`, then timed out/cancelled at 30 minutes.
+- `npm run test:cleaning-inspection-merge --prefix backend` — PASS after the fix; emitted `test_cleaning_inspection_merge: ok`, proving the full test body and subsequent top-level test invocation executed.
+- `npm run check:backend` — PASS against Root `0690a2a...` with exact current Mobile Dev `daf8c6c...`; every backend contract, build, and the cross-repository phase-5 contract completed.
+- `git diff --check` — PASS.
+- `npm run check:full` — PASS against Root `0690a2a...` and exact current Mobile Dev `daf8c6c...`; Root backend/frontend and Mobile lint/tests all completed, including 79 Mobile suites / 691 tests. Existing lint warnings remained non-blocking; no lint errors were introduced.
+- `python3 scripts/audit_change_release_ledger.py --pre-commit --repo root --crl CRL-20261024-012` — PASS; exactly the test source and this ledger entry are staged, with no untracked files or unexpected hunks.
+- Independent review — GO for commit; P0=0, P1=0, P2=0. Reviewer independently matched the candidate patch and hunk fingerprints, verified both top-level test invocations, and found no generated/cache/secret content.
+- Commit range audit and remote CI: pending until the candidate is committed and pushed.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none; temporary dependency/worktree links used only for validation were removed before staging.
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `9936ae3b3fa27607c4270d6deeb83365d23705507ffb8c81462a6cfb44353fc9`
+
+### Release Attempts
+
+#### RA-20261024-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261024-012`
+- Selected CRL identities: `root/CRL-20261024-012`
+- Intended action: `push`
+- Branch: `codex/fix-full-regression-test-syntax-20261024`
+- Base: `origin/Dev@0690a2abd219c2270458458b0a80f3cc2e7c9206`; fetched at `2026-10-24 21:26 UTC`
+- Candidate patch SHA-256: `0ef9c5738d92108485c77f23d021e8de43e12dbf51e941aad18d65830820ec6e` (test source diff only; ledger metadata excluded)
+- Commit SHA: `6ae44dc7a18594fdf81e6617d01289d2c471d2ca`; exact reviewed test-only content commit, with the final audit head supplied by a later ledger-only receipt commit
+- Dependencies: none
+- Required validation: PASS; evidence: targeted regression, complete backend gate, full repository gate, staged-scope audit, and independent review all passed
+- Shared-hunk review: PASS; evidence: the only non-ledger hunk is the independently reviewed missing function-closing brace, and the exact range contains no unselected runtime, generated, cache, or secret content
+- Generated-file review: PASS; no generated files selected
+- Technical state: committed; final ledger-only receipt and exact committed-range report pending
+- User authorization: approved-for-push; evidence: user explicitly allowed the proposed test repair, push, and Draft PR to Dev
+- Independent review: GO for commit; P0=0, P1=0, P2=0; exact candidate hash and staged hunk fingerprint independently matched
+- Action conclusion: GO for push after the ledger-only receipt is committed and the exact committed-range report passes against unchanged `origin/Dev`
+
+### Risks / Release Notes
+
+- The code change is test-only and one line, but omitting it leaves Dev→main Full Regression blocked for the full timeout.
+- Fast Regression did not catch this because it does not execute `test:cleaning-inspection-merge`; backend `tsc -p .` covers production source but not this transpile-only test script.
+- Sensitive-information review: no credentials, production identifiers, media URLs, or user data added.
+- Git state: uncommitted; not pushed; PR not created; not merged; not deployed.
+
 ## CRL-20261024-009 — MZ-057 待挂钥匙记录与同周转入住单卡恢复
 
 - **Status:** independent review source-ownership finding corrected locally; targeted checks passed and final integrated-candidate independent review GO; full route regression rerun remains blocked by the local sandbox; not committed, pushed, merged, deployed, or released
