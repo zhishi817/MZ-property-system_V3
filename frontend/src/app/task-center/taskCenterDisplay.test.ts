@@ -93,7 +93,7 @@ describe('taskCenterDisplay', () => {
       deferred_inspection_effective_date: '2026-10-24',
     })).toEqual({
       key: 'deferred-inspection-merged',
-      label: '含延期检查',
+      label: '是延期检查',
       tone: 'info',
       detail: '原退房 2026-10-23 → 本次检查 2026-10-24',
     })

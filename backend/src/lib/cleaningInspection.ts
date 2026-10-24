@@ -333,6 +333,120 @@ export function canonicalCleaningTurnoverPairs(tasks: any[]): CanonicalCleaningT
   return candidates.filter((pair) => pair.source_ids.every((sourceId) => occurrenceCount.get(sourceId) === 1))
 }
 
+function pendingHandoverRowSourceId(task: any): string {
+  return String(task?.__raw_id || task?.source_id || task?.id || '').trim()
+}
+
+function pendingHandoverRowBusinessIdentity(task: any): string {
+  return String(task?.__business_identity || task?.business_identity || '').trim()
+}
+
+function pendingHandoverInspectorId(task: any): string {
+  return String(
+    task?.__work_record_actor_user_id
+      || task?.__assignee_inspector
+      || task?.inspector_id
+      || '',
+  ).trim()
+}
+
+/**
+ * A completed inspection can leave a read-only `to_hang_keys` record while
+ * the exact incoming check-in remains active.  When both rows are the unique
+ * halves of one canonical turnover, keep the record as phase history on the
+ * active turnover card instead of emitting a second card.
+ *
+ * This is intentionally fail-closed: it does not merge reassigned/cancelled
+ * records, deferred projections, unassigned work, date changes, ambiguous
+ * turnover candidates, or rows belonging to another inspection actor.
+ */
+export function reconcilePendingHandoverInspectorGroups(
+  groups0: Map<string, any[]>,
+  canonicalPairs0: CanonicalCleaningTurnoverPair[],
+): Map<string, any[]> {
+  const groups = new Map<string, any[]>(
+    Array.from(groups0 || new Map<string, any[]>()).map(([key, rows]) => [key, Array.isArray(rows) ? [...rows] : []]),
+  )
+  const canonicalPairs = Array.isArray(canonicalPairs0) ? canonicalPairs0 : []
+
+  for (const [recordKey, recordRows] of Array.from(groups.entries())) {
+    if (recordRows.length !== 1) continue
+    const record = recordRows[0]
+    if (String(record?.__work_record_state || '').trim().toLowerCase() !== 'completed') continue
+    if (cleaningInspectionTaskKind(record?.task_type) !== 'checkout') continue
+    if (String(record?.__inspection_mode || record?.inspection_mode || '').trim().toLowerCase() !== 'same_day') continue
+    if (normalizeInspectionScope(record?.__inspection_scope ?? record?.inspection_scope) !== 'inspect_and_hang') continue
+    if (projectInspectorTaskStatus(record?.raw_status ?? record?.status, record?.__inspection_scope ?? record?.inspection_scope) !== 'to_hang_keys') continue
+    if (String(record?.__manager_merge_isolation_key || '').trim()) continue
+    if (record?.__is_deferred_projection === true) continue
+    if (record?.__deferred_checkin_arrangement || record?.__deferred_inspection_display_merge) continue
+
+    const recordDate = inspectionDayOnly(record?.__work_record_date ?? record?.__date)
+    const originalDate = inspectionDayOnly(record?.__original_scheduled_date ?? record?.task_date)
+    const recordSourceId = pendingHandoverRowSourceId(record)
+    const recordBusinessIdentity = pendingHandoverRowBusinessIdentity(record)
+    const recordActorId = String(record?.__work_record_actor_user_id || '').trim()
+    const recordInspectorId = String(record?.__assignee_inspector || record?.inspector_id || '').trim()
+    const recordSourceInspectorId = String(record?.__source_inspector_assignee_id || '').trim()
+    if (!recordDate || !originalDate || recordDate !== originalDate) continue
+    if (
+      !recordSourceId
+      || !recordBusinessIdentity
+      || !recordActorId
+      || !recordInspectorId
+      || recordInspectorId !== recordActorId
+      || !recordSourceInspectorId
+      || recordSourceInspectorId !== recordActorId
+    ) continue
+
+    const matchingPairs = canonicalPairs.filter((pair) => {
+      const checkoutSourceId = pendingHandoverRowSourceId(pair?.checkout)
+      const checkoutDate = inspectionDayOnly(pair?.checkout?.task_date ?? pair?.checkout?.date ?? pair?.checkout?.__date)
+      const checkinDate = inspectionDayOnly(pair?.checkin?.task_date ?? pair?.checkin?.date ?? pair?.checkin?.__date)
+      return checkoutSourceId === recordSourceId
+        && pair.business_identity === recordBusinessIdentity
+        && checkoutDate === recordDate
+        && checkinDate === recordDate
+    })
+    if (matchingPairs.length !== 1) continue
+    const pair = matchingPairs[0]
+    const checkinSourceId = pendingHandoverRowSourceId(pair.checkin)
+    const checkinAssignment = resolveInspectionTaskAssignment(pair.checkin)
+    // A temporary/manual action grant is not an assignment.  The live
+    // incoming source must itself name the same inspector as the immutable
+    // checkout record before the record can be embedded into that live card.
+    if (!checkinAssignment.userId || checkinAssignment.userId !== recordActorId) continue
+
+    const targets = Array.from(groups.entries()).filter(([candidateKey, candidateRows]) => {
+      if (candidateKey === recordKey || candidateRows.length !== 1) return false
+      const candidate = candidateRows[0]
+      if (String(candidate?.__work_record_state || '').trim()) return false
+      if (cleaningInspectionTaskKind(candidate?.task_type) !== 'checkin') return false
+      if (String(candidate?.__inspection_mode || candidate?.inspection_mode || '').trim().toLowerCase() !== 'same_day') return false
+      if (pendingHandoverRowSourceId(candidate) !== checkinSourceId) return false
+      if (pendingHandoverRowBusinessIdentity(candidate) !== recordBusinessIdentity) return false
+      if (inspectionDayOnly(candidate?.__date ?? candidate?.task_date) !== recordDate) return false
+      if (String(candidate?.__manager_merge_isolation_key || '').trim()) return false
+      if (candidate?.__is_deferred_projection === true) return false
+      if (candidate?.__deferred_checkin_arrangement || candidate?.__deferred_inspection_display_merge) return false
+      if (!isActiveCleaningTurnoverCandidate(candidate)) return false
+      if (isInspectionFinishedStatus(candidate?.raw_status ?? candidate?.status)) return false
+      if (String(candidate?.__source_inspector_assignee_id || '').trim() !== recordActorId) return false
+      return pendingHandoverInspectorId(candidate) === recordActorId
+    })
+    if (targets.length !== 1) continue
+
+    const [targetKey, targetRows] = targets[0]
+    groups.set(targetKey, [
+      { ...record, __pending_handover_record_embedded: true },
+      ...targetRows,
+    ])
+    groups.delete(recordKey)
+  }
+
+  return groups
+}
+
 export function cleaningTaskBusinessIdentity(params: {
   checkoutOrderId?: any
   checkinOrderId?: any
@@ -345,6 +459,50 @@ export function cleaningTaskBusinessIdentity(params: {
   }
   const sourceId = String(params?.sourceId || '').trim()
   return sourceId ? `cleaning_task:${sourceId}` : null
+}
+
+export function isDeferredInspectionExecutionDayProjection(params: {
+  displayMergeEligible?: any
+  hasDisplayCheckinSource?: any
+  groupDate?: any
+  effectiveInspectionDate?: any
+}): boolean {
+  const groupDate = inspectionDayOnly(params?.groupDate)
+  const effectiveInspectionDate = inspectionDayOnly(params?.effectiveInspectionDate)
+  return params?.displayMergeEligible === true
+    && params?.hasDisplayCheckinSource === true
+    && !!groupDate
+    && groupDate === effectiveInspectionDate
+}
+
+export function deferredInspectionManagerTimingAuthority(
+  children0: any[],
+  mergedTurnoverDisplay0: any,
+): {
+  deferredInspectionMerged: boolean
+  currentDayCheckout: boolean | null
+  checkoutTimingAuthoritative: boolean
+  turnoverDisplay: any
+} {
+  const children = Array.isArray(children0) ? children0 : []
+  const deferredInspectionMerged = children.some((child) => child?.deferred_inspection_merged === true)
+  const currentDayCheckout = deferredInspectionMerged
+    ? children.some((child) => child?.deferred_inspection_current_day_checkout === true)
+    : null
+  const checkoutTimingAuthoritative = !deferredInspectionMerged || currentDayCheckout === true
+  const mergedTurnoverDisplay = mergedTurnoverDisplay0 || null
+  return {
+    deferredInspectionMerged,
+    currentDayCheckout,
+    checkoutTimingAuthoritative,
+    turnoverDisplay: deferredInspectionMerged && currentDayCheckout === false
+      ? {
+          ...(mergedTurnoverDisplay || {}),
+          checkout_time: null,
+          is_late_checkout: false,
+        }
+      : mergedTurnoverDisplay,
+  }
 }
 
 /**

@@ -129,7 +129,7 @@ export function deferredInspectionMergePresentation(task: TaskCenterDisplayTask)
   const effectiveInspectionDate = String(task.deferred_inspection_effective_date || '').trim()
   return {
     key: 'deferred-inspection-merged',
-    label: '含延期检查',
+    label: '是延期检查',
     tone: 'info' as const,
     detail: originalCheckoutDate && effectiveInspectionDate
       ? `原退房 ${originalCheckoutDate} → 本次检查 ${effectiveInspectionDate}`

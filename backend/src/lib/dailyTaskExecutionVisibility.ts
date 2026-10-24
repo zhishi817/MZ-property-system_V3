@@ -44,6 +44,43 @@ export type DailyTaskRoleRecordEvidence = {
   recordDate?: string | null
   actorUserId: string | null
   actorName?: string | null
+  workRecordState?: Extract<DailyTaskWorkRecordState, 'pending_review'>
+}
+
+export function selfCompleteKeyHandoverRecordEvidence(input: {
+  taskType?: unknown
+  inspectionMode?: unknown
+  status?: unknown
+  executionState?: unknown
+  sourceKeyHandoverCompleted?: boolean
+  hasCleanerCompletionEvidence?: boolean
+  performedAt?: unknown
+  actorUserId?: unknown
+  actorName?: unknown
+  currentAssigneeId?: unknown
+  originalScheduledDate?: unknown
+}): DailyTaskRoleRecordEvidence | null {
+  if (normalized(input.inspectionMode) !== 'self_complete') return null
+  if (normalized(input.taskType) !== 'checkout_clean') return null
+  if (normalized(input.status) !== 'keys_hung') return null
+  if (normalized(input.executionState || 'active') !== 'active') return null
+  if (input.sourceKeyHandoverCompleted !== true || input.hasCleanerCompletionEvidence === true) return null
+
+  const performedAt = String(input.performedAt ?? '').trim()
+  const actorUserId = String(input.actorUserId ?? '').trim()
+  const recordDate = dateOnly(input.originalScheduledDate)
+  if (!performedAt || !actorUserId || !recordDate) return null
+
+  return {
+    performedAt,
+    recordDate,
+    actorUserId,
+    actorName: String(input.actorName ?? '').trim() || null,
+    // Exact-source key handover proves that work happened, but it is not a
+    // cleaning-completion audit. Keep the immutable record honest until the
+    // genuine completion evidence exists.
+    workRecordState: 'pending_review',
+  }
 }
 
 export function mergeRoleRecordEvidenceWithCancellation(input: {
