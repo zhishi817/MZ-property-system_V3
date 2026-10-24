@@ -13,6 +13,8 @@ const noticeRow = {
   photo_urls: [noticeKey],
 }
 const authorizedUserIds = new Set(['cleaner-1', 'inspector-1'])
+const historicalActorUserId = 'former-cleaner-1'
+const historicalSourceId = 'historical-source-1'
 let objectReadCount = 0
 let simulateFeedbackFallback = false
 let feedbackQueryCount = 0
@@ -26,7 +28,12 @@ dbAdapter.pgPool = {
       return { rows, rowCount: rows.length }
     }
     if (/SELECT 1\s+FROM cleaning_tasks t/.test(sql)) {
-      const allowed = authorizedUserIds.has(String(params[2] || ''))
+      const sourceIds = Array.isArray(params[3]) ? params[3].map(String) : []
+      const allowed = authorizedUserIds.has(String(params[2] || '')) || (
+        String(params[2] || '') === historicalActorUserId
+        && params[4] === true
+        && sourceIds.includes(historicalSourceId)
+      )
       return { rows: allowed ? [{ ok: 1 }] : [], rowCount: allowed ? 1 : 0 }
     }
     if (/FROM property_maintenance m/.test(sql)) {
@@ -92,7 +99,10 @@ assert.equal(selectUniqueGuestLuggageMediaRow([storedRow, { ...storedRow, id: 'g
 
 assert.match(mzappRoute, /export async function canViewMzappGuestLuggageNoticeMedia/, 'guest-luggage authorization must remain reusable by the authenticated media route')
 assert.match(mzappRoute, /canViewAll\(user\) \|\| canEditGuestLuggage\(user\)/, 'management readers retain their existing temporary-notice authority')
-assert.match(mzappRoute, /\$3::text = ANY\(ARRAY\[t\.cleaner_id::text, t\.inspector_id::text, t\.assignee_id::text\]\)/, 'only same-day assigned cleaners, inspectors, or assignees may read a temporary-notice photo')
+assert.match(mzappRoute, /\$3::text = ANY\(ARRAY\[t\.cleaner_id::text, t\.inspector_id::text, t\.assignee_id::text\]\)/, 'same-day assigned cleaners, inspectors, or assignees may read a temporary-notice photo')
+assert.match(mzappRoute, /\^cleaning_tasks_\[a-z_\]\+:.\+::record:/, 'historical notice media requires an explicit synthetic work-record context')
+assert.match(mzappRoute, /t\.id::text = ANY\(\$4::text\[\]\)/, 'historical notice media remains bound to exact server-projected source ids')
+assert.match(mzappRoute, /inspectionSubmissionAuditWhereSql\('audit'\)/, 'historical inspection actors may be authorized only by genuine immutable inspection evidence')
 assert.match(mzappRoute, /activeCleaningTaskWhereSql\('t'\)/, 'superseded or cancelled task assignments cannot authorize temporary-notice media')
 
 async function withMediaServer(run: (baseUrl: string) => Promise<void>) {
@@ -115,8 +125,17 @@ async function withMediaServer(run: (baseUrl: string) => Promise<void>) {
   }
 }
 
-async function requestGuestLuggageMedia(baseUrl: string, userId: string, guestLuggageId: string, key = noticeKey) {
-  return fetch(`${baseUrl}/cleaning-app/media/image?key=${encodeURIComponent(key)}&guest_luggage_id=${encodeURIComponent(guestLuggageId)}`, {
+async function requestGuestLuggageMedia(
+  baseUrl: string,
+  userId: string,
+  guestLuggageId: string,
+  key = noticeKey,
+  historicalContext?: { workTaskId: string, sourceIds: string[] },
+) {
+  const params = new URLSearchParams({ key, guest_luggage_id: guestLuggageId })
+  if (historicalContext?.workTaskId) params.set('work_task_id', historicalContext.workTaskId)
+  if (historicalContext?.sourceIds?.length) params.set('source_ids', historicalContext.sourceIds.join(','))
+  return fetch(`${baseUrl}/cleaning-app/media/image?${params.toString()}`, {
     headers: { 'x-test-user': userId },
   })
 }
@@ -133,21 +152,43 @@ async function verifyRouteContract() {
     assert.equal(inspector.status, 200, 'the assigned inspector may read the exactly associated temporary-notice photo')
     assert.equal(objectReadCount, 2, 'the assigned inspector may read the same authorized object')
 
+    const historicalContext = {
+      workTaskId: `cleaning_tasks_cleaner:${historicalSourceId}::record:completed:2026-08-14`,
+      sourceIds: [historicalSourceId],
+    }
+    const historicalActor = await requestGuestLuggageMedia(baseUrl, historicalActorUserId, 'guest-luggage-1', noticeKey, historicalContext)
+    assert.equal(historicalActor.status, 200, 'the immutable historical actor may read the notice photo through exact work-record sources')
+    assert.equal(objectReadCount, 3, 'the exact historical actor request may read R2')
+
+    const replacement = await requestGuestLuggageMedia(baseUrl, 'replacement-cleaner-1', 'guest-luggage-1', noticeKey, historicalContext)
+    assert.equal(replacement.status, 403, 'a replacement without immutable action evidence must be denied')
+    assert.equal(objectReadCount, 3, 'a replacement without evidence must not reach R2')
+
+    for (const invalidSourceId of ['cancelled-source-1', 'deleted-source-1', 'superseded-source-1']) {
+      const invalidContext = {
+        workTaskId: `cleaning_tasks_cleaner:${invalidSourceId}::record:completed:2026-08-14`,
+        sourceIds: [invalidSourceId],
+      }
+      const invalidated = await requestGuestLuggageMedia(baseUrl, historicalActorUserId, 'guest-luggage-1', noticeKey, invalidContext)
+      assert.equal(invalidated.status, 403, `${invalidSourceId} cannot authorize historical notice media`)
+    }
+    assert.equal(objectReadCount, 3, 'invalidated historical sources must not reach R2')
+
     const feedbackQueryCountBeforeWrongId = feedbackQueryCount
     simulateFeedbackFallback = true
     const wrongId = await requestGuestLuggageMedia(baseUrl, 'cleaner-1', 'guest-luggage-other')
     simulateFeedbackFallback = false
     assert.equal(wrongId.status, 403, 'the correct photo with a wrong guest_luggage_id must be denied')
-    assert.equal(objectReadCount, 2, 'a wrong notification id must not reach R2')
+    assert.equal(objectReadCount, 3, 'a wrong notification id must not reach R2')
     assert.equal(feedbackQueryCount, feedbackQueryCountBeforeWrongId, 'a supplied notice id must not query a generic feedback fallback')
 
     const unrecordedPhoto = await requestGuestLuggageMedia(baseUrl, 'cleaner-1', 'guest-luggage-1', 'mzapp/not-on-notice.jpg')
     assert.equal(unrecordedPhoto.status, 403, 'a photo outside the notification must be denied')
-    assert.equal(objectReadCount, 2, 'a photo outside the notification must not reach R2')
+    assert.equal(objectReadCount, 3, 'a photo outside the notification must not reach R2')
 
     const unauthorized = await requestGuestLuggageMedia(baseUrl, 'outsider-1', 'guest-luggage-1')
     assert.equal(unauthorized.status, 403, 'an unassigned user must be denied')
-    assert.equal(objectReadCount, 2, 'an unassigned user must not reach R2')
+    assert.equal(objectReadCount, 3, 'an unassigned user must not reach R2')
   })
 }
 

@@ -70,7 +70,22 @@ async function main() {
   assert.match(mzappSource, /async function canSubmitMzappSelfCompleteRestock/, 'self-complete restock must have a dedicated authorization boundary')
   assert.match(mzappSource, /stepKey === 'self_complete_restock'/, 'self-complete restock must use an explicit stable step key')
   assert.match(mzappSource, /SELECT 1 FROM cleaning_consumable_usages/, 'self-complete restock must still require consumables before saving proof')
-  assert.match(mzappSource, /performedAsAction: selfCompleteRestock \? 'fill_supplies' : 'submit_inspection'/, 'self-complete restock must record the cleaner action instead of inspection')
+  assert.match(mzappSource, /performedAsAction: selfCompleteRestock \? 'fill_supplies' : 'record_restock_proof'/, 'restock proof must use a non-terminal evidence action and preserve the self-complete cleaner action')
+  const mzappRestockRoute = mzappSource.slice(
+    mzappSource.indexOf("router.post('/cleaning-tasks/:id/restock-proof'"),
+    mzappSource.indexOf("router.post('/cleaning-tasks/:id/guest-checked-out'"),
+  )
+  assert.ok(mzappRestockRoute, 'MZapp restock-proof route must remain discoverable')
+  assert.match(mzappRestockRoute, /pgRunInTransaction\(async \(client\)/, 'restock media, non-terminal audit and receipt must share one rollback boundary')
+  assert.match(mzappRestockRoute, /performedAsAction: selfCompleteRestock \? 'fill_supplies' : 'record_restock_proof'/, 'ordinary restock proof must never create a terminal inspection audit')
+  assert.doesNotMatch(mzappRestockRoute, /performedAsAction: selfCompleteRestock \? 'fill_supplies' : 'submit_inspection'/, 'legacy terminal restock audit must not return')
+  assert.match(mzappRestockRoute, /if \(isTerminalCleaningStatus\(lockedTask\.status\)\) \{[\s\S]*?kind: 'read_only'/, 'cancelled and true terminal tasks must reject new restock writes under the row lock')
+  const restockReceiptIndex = mzappRestockRoute.indexOf('loadIdempotentStepReceipt')
+  const restockTerminalIndex = mzappRestockRoute.indexOf('isTerminalCleaningStatus(lockedTask.status)')
+  const restockDeleteIndex = mzappRestockRoute.indexOf('DELETE FROM cleaning_task_media')
+  assert.ok(restockReceiptIndex >= 0 && restockReceiptIndex < restockTerminalIndex, 'an already-committed matching retry must be replayable without writing after the task reaches a terminal state')
+  assert.ok(restockTerminalIndex >= 0 && restockTerminalIndex < restockDeleteIndex, 'terminal-state rejection must happen before any restock media delete/insert')
+  assert.match(mzappRestockRoute, /kind === 'read_only'[\s\S]*?status\(409\)\.json\(\{ message: 'work_record_read_only' \}\)/, 'the route must expose a stable read-only conflict without mutating media or receipts')
 
   assert.match(mzappSource, /const feedbackProjectCreateSchema[\s\S]*?submit_id: z\.string\(\)\.trim\(\)\.min\(1\)\.max\(IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH\)[\s\S]*?step_key:[\s\S]*?client_item_id:/, 'feedback project creation must accept the stable retry identifiers')
   assert.match(mzappSource, /const feedbackProjectCompleteSchema[\s\S]*?submit_id: z\.string\(\)\.trim\(\)\.min\(1\)\.max\(IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH\)[\s\S]*?step_key:[\s\S]*?client_item_id:/, 'feedback project completion must accept the stable retry identifiers')

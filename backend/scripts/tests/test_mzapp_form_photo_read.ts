@@ -10,6 +10,7 @@ async function main() {
     canonicalFormPhotoTurnover,
     formPhotoMediaType,
     formPhotoRecordVisibleToScope,
+    workRecordFeedbackSourceId,
     workRecordReadOnlyViews,
     workRecordProjectionExecutionState,
   } = await import('../../src/modules/mzapp')
@@ -39,10 +40,13 @@ async function main() {
   assert.deepEqual(formPhotoMediaType('restock_proof:coffee'), { source: 'restock', item_id: 'coffee' })
   assert.deepEqual(formPhotoMediaType('completion_bedroom'), { source: 'completion', area: 'bedroom' })
   assert.deepEqual(formPhotoMediaType('key_photo'), { source: 'key', area: 'guest_key', label: '客人钥匙照片' })
+  assert.deepEqual(formPhotoMediaType('lockbox_video'), { source: 'lockbox_video', area: 'key_handover', label: '挂钥匙视频' })
   assert.deepEqual(formPhotoMediaType('consumable_item_photo:coffee'), { source: 'consumable', area: 'consumable', item_id: 'coffee' })
 
   const cleanerOwned = new Set(['form-photo-task-1'])
   assert.equal(formPhotoRecordVisibleToScope({ task_id: 'form-photo-task-1', source: 'completion', uploader_id: 'cleaner-1' }, 'cleaner', 'cleaner-1', cleanerOwned), true)
+  assert.equal(formPhotoRecordVisibleToScope({ task_id: 'form-photo-task-1', source: 'lockbox_video', uploader_id: 'cleaner-1' }, 'cleaner', 'cleaner-1', cleanerOwned), false)
+  assert.equal(formPhotoRecordVisibleToScope({ task_id: 'form-photo-task-1', source: 'lockbox_video', uploader_id: 'cleaner-1' }, 'cleaner', 'cleaner-1', cleanerOwned, cleanerOwned), true)
   assert.equal(formPhotoRecordVisibleToScope({ task_id: 'form-photo-task-1', source: 'completion', uploader_id: null }, 'cleaner', 'cleaner-1', cleanerOwned), false)
   assert.equal(formPhotoRecordVisibleToScope({ task_id: 'form-photo-task-1', source: 'inspection', uploader_id: 'inspector-1' }, 'cleaner', 'cleaner-1', cleanerOwned), false)
   assert.equal(formPhotoRecordVisibleToScope({ task_id: 'form-photo-task-1', source: 'key', uploader_id: 'cleaner-1' }, 'inspector', 'inspector-1', new Set(['form-photo-task-1'])), true)
@@ -90,17 +94,47 @@ async function main() {
   assert.deepEqual(workRecordReadOnlyViews({
     work_record_read_only: true,
     source_type: 'cleaning_tasks',
+    source_id: 'cleaning-task-1',
     execution_role: 'cleaning',
     work_record_state: 'completed',
     completed_by_user_id: 'cleaner-1',
   }, { role: 'cleaner' }, 'cleaner-1'), {
     property_access: true,
+    guest_context: true,
     lock_codes: true,
+    lockbox_video: false,
     cleaner_photos: true,
     inspection_photos: false,
     guest_key_photo: true,
     media_scope: 'cleaner',
+    feedback_history: true,
+    feedback_report: true,
+    feedback_source_id: 'cleaning-task-1',
   })
+  assert.equal(workRecordReadOnlyViews({
+    work_record_read_only: true,
+    source_type: 'cleaning_tasks',
+    source_id: 'self-complete-task-1',
+    execution_role: 'cleaning',
+    inspection_mode: 'self_complete',
+    work_record_state: 'completed',
+    completed_by_user_id: 'cleaner-1',
+  }, { role: 'cleaner' }, 'cleaner-1').lockbox_video, true)
+  assert.equal(workRecordFeedbackSourceId({
+    completed_by_user_id: 'cleaner-1',
+    execution_role: 'mixed',
+    source_id: 'inspection-task-1',
+    source_ids: ['cleaning-task-1', 'inspection-task-1'],
+    phase_history: [
+      { source_id: 'cleaning-task-1', role: 'cleaner', actor_user_id: 'cleaner-1' },
+      { source_id: 'inspection-task-1', role: 'inspector', actor_user_id: 'inspector-1' },
+    ],
+  }), 'cleaning-task-1', 'a merged record must bind feedback to the original actor phase, not the preferred card source')
+  assert.equal(workRecordFeedbackSourceId({
+    completed_by_user_id: 'cleaner-1',
+    execution_role: 'mixed',
+    source_ids: ['cleaning-task-1', 'inspection-task-1'],
+  }), null, 'an ambiguous merged record must fail closed rather than infer by property/date')
   assert.equal(workRecordReadOnlyViews({
     work_record_read_only: true,
     source_type: 'cleaning_tasks',
@@ -108,6 +142,13 @@ async function main() {
     work_record_state: 'completed',
     completed_by_user_id: 'cleaner-1',
   }, { role: 'cleaner' }, 'outsider-1').property_access, false)
+  assert.equal(workRecordReadOnlyViews({
+    work_record_read_only: true,
+    source_type: 'cleaning_tasks',
+    execution_role: 'cleaning',
+    work_record_state: 'completed',
+    completed_by_user_id: 'cleaner-1',
+  }, { role: 'cleaner' }, 'outsider-1').guest_context, false)
   assert.equal(workRecordReadOnlyViews({
     work_record_read_only: true,
     source_type: 'cleaning_tasks',
@@ -167,14 +208,17 @@ async function main() {
   assert(start >= 0 && end > start, 'form photo read route must exist')
   const routeSource = source.slice(start, end)
   assert(!/ensureCleaning(TaskMedia|ChecklistTables)|CREATE TABLE|ALTER TABLE|CREATE INDEX|INSERT INTO/i.test(routeSource), 'form photo GET must remain pure read')
-  assert.match(source, /if \(\(merged \|\| turnover\) && sourceIdHints\.length\)[\s\S]*?WHERE t\.id::text = ANY\(\$1::text\[\]\)/, 'composite form-photo reads must resolve exact source ids')
+  assert.match(source, /if \(\(merged \|\| turnover \|\| grouped\) && sourceIdHints\.length\)[\s\S]*?WHERE t\.id::text = ANY\(\$1::text\[\]\)/, 'synthetic work-record form-photo reads must resolve exact Root-issued source ids')
   assert.doesNotMatch(source, /if \(merged\) \{[\s\S]{0,800}property_code[\s\S]{0,800}task_date/, 'form-photo reads must not relate media by property and date')
 
   const mediaProxySource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/cleaning_app.ts'), 'utf8')
   assert.match(mediaProxySource, /const relatedSourceIds = Array\.from\(new Set[\s\S]*?\.slice\(0, 2\)\)\)/, 'media proxy must cap exact related source ids at the canonical pair')
   assert.match(mediaProxySource, /hasScopedMediaContext\s*\?\s*await canViewMzappScopedRecordedCleaningMedia[\s\S]*?:\s*await canViewMzappRecordedCleaningMedia/, 'scoped media requests must use the role-aware byte authorization path instead of broad participant authorization')
   assert.match(source, /media_source_ids:[\s\S]*?readOnlyMediaSourceIds/, 'work records must expose the exact canonical media source ids')
+  assert.match(source, /feedback_source_id: feedbackSourceId/, 'work records must bind feedback access to one exact source task id')
+  assert.match(source, /const recordActions: any\[\] = \[\][\s\S]*?if \(readOnlyViews\.feedback_history && readOnlyViews\.feedback_source_id\)[\s\S]*?id: 'report_issue'[\s\S]*?payload\.available_actions = recordActions/, 'historical work records must expose only the server-authorized feedback entry')
   assert.match(source, /old_code: readOnlyViews\.lock_codes \? cleanTask\.old_code \?\? null : null[\s\S]*?new_code: readOnlyViews\.lock_codes \? cleanTask\.new_code \?\? null : null/, 'work-record lock codes must be returned only through the explicit read-only capability')
+  assert.match(source, /guest_special_request: readOnlyViews\.guest_context \? cleanTask\.guest_special_request \?\? null : null[\s\S]*?order_note: readOnlyViews\.guest_context \? cleanTask\.order_note \?\? null : null/, 'work-record guest and order context must be returned only through the explicit read-only capability')
   assert.match(source, /execution_state: row\.execution_state,[\s\S]*?const projectionExecutionState = workRecordProjectionExecutionState\(rows, primarySourceId\)[\s\S]*?execution_state: projectionExecutionState,/, 'cleaning SQL execution state must survive the single-role projection')
   assert.match(source, /const projectionExecutionState = workRecordProjectionExecutionState\(arr, preferred\?\.source_id\)[\s\S]*?execution_state: projectionExecutionState,/, 'manager merge must retain blocking execution state before read-only capability evaluation')
 

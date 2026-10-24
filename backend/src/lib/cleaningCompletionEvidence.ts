@@ -22,6 +22,8 @@ export type CleaningCompletionAuditCandidate = {
   } | null
 }
 
+export const LEGACY_RESTOCK_INSPECTION_AUDIT_ROUTE = 'mzapp.cleaning_tasks.restock_proof'
+
 function normalized(value: unknown) {
   return String(value ?? '').trim().toLowerCase()
 }
@@ -35,6 +37,20 @@ export function isCleaningCompletionAudit(candidate: CleaningCompletionAuditCand
   if (action !== 'fill_supplies') return false
   if (route === 'mzapp.cleaning_tasks.restock_proof') return false
   return CLEANING_COMPLETION_AUDIT_STATUS_SET.has(normalized(candidate?.status_after))
+}
+
+export function isInspectionSubmissionAudit(candidate: CleaningCompletionAuditCandidate) {
+  const action = normalized(candidate?.performed_as_action)
+  const route = normalized(candidate?.metadata?.route)
+  return action === 'submit_inspection' && route !== LEGACY_RESTOCK_INSPECTION_AUDIT_ROUTE
+}
+
+export function inspectionSubmissionAuditWhereSql(alias: string) {
+  if (!/^[a-z_][a-z0-9_]*$/i.test(alias)) throw new Error('invalid_sql_alias')
+  return `(
+    ${alias}.performed_as_action = 'submit_inspection'
+    AND lower(COALESCE(${alias}.metadata->>'route', '')) <> '${LEGACY_RESTOCK_INSPECTION_AUDIT_ROUTE}'
+  )`
 }
 
 export function cleaningCompletionAuditWhereSql(alias: string) {

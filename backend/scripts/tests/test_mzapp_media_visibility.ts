@@ -5,7 +5,7 @@ import path from 'path'
 process.env.DATABASE_URL = ''
 
 async function main() {
-  const { canViewMzappGuestLuggageNoticeMedia, canViewMzappHistoricalWorkRecordMedia, canViewMzappInspectionMedia, canViewMzappLockboxVideo, canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia, propertyFeedbackCapabilities } = await import('../../src/modules/mzapp')
+  const { canViewMzappGuestLuggageNoticeMedia, canViewMzappHistoricalWorkRecordMedia, canViewMzappInspectionMedia, canViewMzappLockboxVideo, canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia, propertyFeedbackCapabilities, propertyFeedbackSourceTaskCapabilities } = await import('../../src/modules/mzapp')
   const { canViewExternalMaintenanceCompletionMedia, feedbackMediaRowReferencesKey, feedbackMediaUrlArray, findPropertyFeedbackMediaRows } = await import('../../src/modules/cleaning_app')
 
   const row = {
@@ -235,6 +235,48 @@ async function main() {
     'an immutable A event photo remains discoverable after the live source row has been overwritten by B',
   )
 
+  const mergedHistoricalMediaLookupPool = {
+    query: async () => ({
+      rows: [
+        {
+          feedback_source_type: 'property_maintenance',
+          feedback_source_id: 'maintenance-1',
+          property_id: 'property-1',
+          source_task_id: 'cleaning-source-1',
+          created_by_user_id: 'creator-1',
+          work_task_id: null,
+          assignee_id: null,
+          historical_work_record_media: false,
+          work_record_actor_user_id: null,
+          completion_photo_urls: ['mzapp/feedback/immutable-proof.jpg'],
+        },
+        {
+          feedback_source_type: 'property_maintenance',
+          feedback_source_id: 'maintenance-1',
+          property_id: 'property-1',
+          source_task_id: null,
+          created_by_user_id: null,
+          work_task_id: 'property_maintenance:maintenance-1',
+          assignee_id: 'replacement-1',
+          historical_work_record_media: true,
+          work_record_actor_user_id: 'executor-1',
+          completion_photo_urls: ['mzapp/feedback/immutable-proof.jpg'],
+        },
+      ],
+    }),
+  }
+  const mergedHistoricalRows = await findPropertyFeedbackMediaRows(
+    mergedHistoricalMediaLookupPool,
+    'mzapp/feedback/immutable-proof.jpg',
+    'property_maintenance:maintenance-1',
+  )
+  assert.equal(mergedHistoricalRows.length, 1)
+  assert.equal(mergedHistoricalRows[0]?.feedback_source_type, 'property_maintenance')
+  assert.equal(mergedHistoricalRows[0]?.feedback_source_id, 'maintenance-1')
+  assert.equal(mergedHistoricalRows[0]?.work_task_id, 'property_maintenance:maintenance-1')
+  assert.equal(mergedHistoricalRows[0]?.historical_work_record_media, true)
+  assert.equal(mergedHistoricalRows[0]?.work_record_actor_user_id, 'executor-1', 'a live row and immutable event collision must preserve the actor-bound historical authorization context')
+
   const guestLuggageRow = { id: 'guest-luggage-1', property_id: 'property-1', task_date: '2026-08-12' }
   assert.equal(
     await canViewMzappGuestLuggageNoticeMedia({ sub: 'manager-1', role: 'offline_manager', roles: ['offline_manager'] }, guestLuggageRow, 'manager-1'),
@@ -248,25 +290,75 @@ async function main() {
   )
 
   assert.equal(
-    await canViewMzappPropertyFeedback({ sub: 'cleaner-1', role: 'cleaner', roles: ['cleaner'] }, row, 'cleaner-1'),
-    true,
-    'assigned cleaner can read this task property feedback',
-  )
-  assert.equal(
-    await canViewMzappPropertyFeedback({ sub: 'inspector-1', role: 'cleaning_inspector', roles: ['cleaning_inspector'] }, row, 'inspector-1'),
-    true,
-    'assigned inspector can read this task property feedback',
+    await canViewMzappPropertyFeedback({ sub: 'cleaner-1', role: 'cleaner', roles: ['cleaner'] }, { ...row, created_by_user_id: 'cleaner-1' }, 'cleaner-1'),
+    false,
+    'a field worker cannot read legacy feedback that lacks an exact source task, even when they submitted it',
   )
   assert.equal(
     await canViewMzappPropertyFeedback({ sub: 'outsider-1', role: 'cleaner', roles: ['cleaner'] }, row, 'outsider-1'),
+    false,
+    'an unrelated authenticated user cannot read property-scoped feedback history',
+  )
+  assert.equal(
+    await canViewMzappPropertyFeedback({ sub: 'manager-1', role: 'offline_manager', roles: ['offline_manager'] }, row, 'manager-1'),
     true,
-    'an authenticated internal user can read property-scoped feedback history without being this task participant',
+    'an established daily-task manager can read property feedback history',
   )
   assert.equal(
     await canViewMzappPropertyFeedback({}, row, ''),
     false,
     'an unauthenticated caller cannot read property feedback history',
   )
+  assert.deepEqual(
+    propertyFeedbackSourceTaskCapabilities(
+      { sub: 'former-cleaner', role: 'cleaner', roles: ['cleaner'] },
+      { cleaner_id: 'replacement-cleaner', has_execution_evidence: true },
+    ),
+    { canViewHistory: true, canCreate: true, feedbackSource: 'cleaning_feedback' },
+    'a former cleaner with exact completion evidence keeps history/report access after reassignment',
+  )
+  assert.deepEqual(
+    propertyFeedbackSourceTaskCapabilities(
+      { sub: 'viewer-only', role: 'cleaner', roles: ['cleaner'] },
+      { cleaner_id: 'replacement-cleaner', is_manual_participant: true, can_manual_report: false },
+    ),
+    { canViewHistory: true, canCreate: false, feedbackSource: null },
+    'a view-only participant cannot create a new report',
+  )
+  assert.deepEqual(
+    propertyFeedbackSourceTaskCapabilities(
+      { sub: 'former-inspector', role: 'cleaning_inspector', roles: ['cleaning_inspector'] },
+      { inspector_id: 'replacement-inspector', has_execution_evidence: true, has_inspection_evidence: true },
+    ),
+    { canViewHistory: true, canCreate: true, feedbackSource: 'inspection_feedback' },
+    'a former inspector with exact submit evidence keeps inspection-report access after reassignment',
+  )
+  assert.deepEqual(
+    propertyFeedbackSourceTaskCapabilities(
+      { sub: 'assigned-inspector', role: 'cleaning_inspector', roles: ['cleaning_inspector'] },
+      { assignee_id: 'assigned-inspector', cleaner_id: null },
+    ),
+    { canViewHistory: true, canCreate: true, feedbackSource: 'inspection_feedback' },
+    'an inspector assigned through the generic assignee field keeps inspection-report semantics',
+  )
+  assert.deepEqual(
+    propertyFeedbackSourceTaskCapabilities(
+      { sub: 'outsider', role: 'cleaner', roles: ['cleaner'] },
+      { cleaner_id: 'another-cleaner' },
+    ),
+    { canViewHistory: false, canCreate: false, feedbackSource: null },
+    'an unrelated worker cannot view or create reports for the task',
+  )
+  for (const managerRole of ['admin', 'offline_manager', 'customer_service']) {
+    assert.deepEqual(
+      propertyFeedbackSourceTaskCapabilities(
+        { sub: `${managerRole}-1`, role: managerRole, roles: [managerRole] },
+        { cleaner_id: 'cleaner-1' },
+      ),
+      { canViewHistory: true, canCreate: true, feedbackSource: 'manager_feedback' },
+      `${managerRole} keeps the approved task-bound report capability`,
+    )
+  }
   const historicalWorkRecordMedia = {
     work_task_id: 'property_maintenance:record-1',
     work_record_actor_user_id: 'executor-a',

@@ -69,7 +69,7 @@ import {
 } from '../lib/maintenanceWorkflowStore'
 import { buildWorkTaskActionPayload, type WorkTaskActionId, type WorkTaskParticipant } from '../lib/workTaskActions'
 import { dailyTaskWorkRecordProjection, evidenceBackedWorkRecordState, isDailyTaskManagerRoleNames, mergeRoleRecordEvidenceWithCancellation, projectDailyTaskListItems } from '../lib/dailyTaskExecutionVisibility'
-import { cleaningCompletionAuditWhereSql } from '../lib/cleaningCompletionEvidence'
+import { cleaningCompletionAuditWhereSql, inspectionSubmissionAuditWhereSql } from '../lib/cleaningCompletionEvidence'
 import {
   buildIdempotencyPayloadHash,
   assertIdempotentStepReceiptsReady,
@@ -82,6 +82,7 @@ import {
   actorAndPerformerFromRequest,
   applyCleaningTaskActionTransition,
   assertCleaningTaskRoleRecordMutable,
+  isTerminalCleaningStatus,
   recordWorkTaskActionAudit,
 } from '../lib/workTaskActionAudit'
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
@@ -240,13 +241,22 @@ function canViewAll(user: any) {
   return isDailyTaskManagerRoleNames(roleNamesOf(user))
 }
 
+function canViewMzappInspectionUncleanMedia(user: any) {
+  return roleNamesOf(user).some((role) => role === 'admin' || role === 'offline_manager')
+}
+
 export type WorkRecordReadOnlyViews = {
   property_access: boolean
+  guest_context: boolean
   lock_codes: boolean
+  lockbox_video: boolean
   cleaner_photos: boolean
   inspection_photos: boolean
   guest_key_photo: boolean
   media_scope: 'cleaner' | 'inspector' | 'manager' | 'none'
+  feedback_history: boolean
+  feedback_report: boolean
+  feedback_source_id: string | null
 }
 
 const WORK_RECORD_BLOCKING_EXECUTION_STATES = new Set([
@@ -274,14 +284,58 @@ export function workRecordProjectionExecutionState(rows0: any[], primarySourceId
   return states[0] || null
 }
 
+export function workRecordFeedbackSourceId(task: any): string | null {
+  const actorId = String(task?.completed_by_user_id || '').trim()
+  const executionRole = String(task?.execution_role || '').trim().toLowerCase()
+  const taskKind = String(task?.task_kind || '').trim().toLowerCase()
+  const roleMatches = (role0: unknown) => {
+    const role = String(role0 || '').trim().toLowerCase()
+    if (executionRole === 'cleaning' || taskKind === 'cleaning') return role === 'cleaner' || role === 'cleaning'
+    if (executionRole === 'inspection' || taskKind === 'inspection') return role === 'inspector' || role === 'inspection'
+    if (executionRole === 'execution' || taskKind === 'execution') return role === 'executor' || role === 'execution'
+    return true
+  }
+  const actorPhaseIds: string[] = Array.from(new Set<string>(
+    (Array.isArray(task?.phase_history) ? task.phase_history : [])
+      .filter((phase: any) => actorId && String(phase?.actor_user_id || '').trim() === actorId && roleMatches(phase?.role))
+      .map((phase: any) => String(phase?.source_id || '').trim())
+      .filter(Boolean),
+  ))
+  if (actorPhaseIds.length === 1) return actorPhaseIds[0]
+  if (actorPhaseIds.length > 1) return null
+  const roleIds = executionRole === 'cleaning' || taskKind === 'cleaning'
+    ? task?.cleaning_task_ids
+    : executionRole === 'inspection' || taskKind === 'inspection'
+      ? task?.inspection_task_ids
+      : executionRole === 'execution' || taskKind === 'execution'
+        ? task?.execution_task_ids
+        : null
+  const exactRoleIds: string[] = Array.from(new Set<string>((Array.isArray(roleIds) ? roleIds : [])
+    .map((value: unknown) => String(value || '').trim())
+    .filter(Boolean)))
+  if (exactRoleIds.length === 1) return exactRoleIds[0]
+  if (exactRoleIds.length > 1) return null
+  const sourceIds: string[] = Array.from(new Set<string>((Array.isArray(task?.source_ids) ? task.source_ids : [])
+    .map((value: unknown) => String(value || '').trim())
+    .filter(Boolean)))
+  if (sourceIds.length === 1) return sourceIds[0]
+  if (sourceIds.length > 1) return null
+  return String(task?.source_id || '').trim() || null
+}
+
 export function workRecordReadOnlyViews(task: any, user: any, userId: string): WorkRecordReadOnlyViews {
   const empty: WorkRecordReadOnlyViews = {
     property_access: false,
+    guest_context: false,
     lock_codes: false,
+    lockbox_video: false,
     cleaner_photos: false,
     inspection_photos: false,
     guest_key_photo: false,
     media_scope: 'none',
+    feedback_history: false,
+    feedback_report: false,
+    feedback_source_id: null,
   }
   if (task?.work_record_read_only !== true) return empty
   const manager = canViewAll(user)
@@ -292,43 +346,67 @@ export function workRecordReadOnlyViews(task: any, user: any, userId: string): W
   const recordState = String(task?.work_record_state || '').trim().toLowerCase()
   const executionState = String(task?.execution_state || '').trim().toLowerCase()
   const taskStatus = String(task?.status || '').trim().toLowerCase()
-  const lockCodes = cleaningSource
-    && ['completed', 'reassigned'].includes(recordState)
+  const recordContextAllowed = ['completed', 'pending_review', 'reassigned'].includes(recordState)
     && !['cancelled', 'canceled'].includes(taskStatus)
     && !WORK_RECORD_BLOCKING_EXECUTION_STATES.has(executionState)
+  const lockCodes = cleaningSource
+    && ['completed', 'reassigned'].includes(recordState)
+    && recordContextAllowed
+  const feedbackSourceId = cleaningSource && recordContextAllowed
+    ? workRecordFeedbackSourceId(task)
+    : null
   if (manager) {
     return {
-      property_access: true,
+      property_access: recordContextAllowed,
+      guest_context: cleaningSource && recordContextAllowed,
       lock_codes: lockCodes,
-      cleaner_photos: cleaningSource,
-      inspection_photos: cleaningSource,
-      guest_key_photo: cleaningSource,
-      media_scope: cleaningSource ? 'manager' : 'none',
+      lockbox_video: cleaningSource && recordContextAllowed,
+      cleaner_photos: cleaningSource && recordContextAllowed,
+      inspection_photos: cleaningSource && recordContextAllowed,
+      guest_key_photo: cleaningSource && recordContextAllowed,
+      media_scope: cleaningSource && recordContextAllowed ? 'manager' : 'none',
+      feedback_history: Boolean(feedbackSourceId),
+      feedback_report: Boolean(feedbackSourceId),
+      feedback_source_id: feedbackSourceId,
     }
   }
   const executionRole = String(task?.execution_role || '').trim().toLowerCase()
-  if (!cleaningSource) return { ...empty, property_access: true }
+  if (!cleaningSource) return { ...empty, property_access: recordContextAllowed }
   if (executionRole === 'cleaning') {
     return {
-      property_access: true,
+      property_access: recordContextAllowed,
+      guest_context: recordContextAllowed,
       lock_codes: lockCodes,
-      cleaner_photos: true,
+      lockbox_video: recordContextAllowed && effectiveInspectionMode(task) === 'self_complete',
+      cleaner_photos: recordContextAllowed,
       inspection_photos: false,
-      guest_key_photo: true,
-      media_scope: 'cleaner',
+      guest_key_photo: recordContextAllowed,
+      media_scope: recordContextAllowed ? 'cleaner' : 'none',
+      feedback_history: Boolean(feedbackSourceId),
+      feedback_report: Boolean(feedbackSourceId),
+      feedback_source_id: feedbackSourceId,
     }
   }
   if (executionRole === 'inspection') {
     return {
-      property_access: true,
+      property_access: recordContextAllowed,
+      guest_context: recordContextAllowed,
       lock_codes: lockCodes,
+      lockbox_video: recordContextAllowed,
       cleaner_photos: false,
-      inspection_photos: true,
-      guest_key_photo: true,
-      media_scope: 'inspector',
+      inspection_photos: recordContextAllowed,
+      guest_key_photo: recordContextAllowed,
+      media_scope: recordContextAllowed ? 'inspector' : 'none',
+      feedback_history: Boolean(feedbackSourceId),
+      feedback_report: Boolean(feedbackSourceId),
+      feedback_source_id: feedbackSourceId,
     }
   }
-  return { ...empty, property_access: true }
+  return {
+    ...empty,
+    property_access: recordContextAllowed,
+    guest_context: recordContextAllowed,
+  }
 }
 
 function maintenanceWorkflowForWorkTask(task: any, user: any, canManageWorkflow: boolean) {
@@ -1565,6 +1643,11 @@ export function canViewMzappLockboxVideo(user: any) {
 export async function canViewMzappRecordedCleaningMedia(user: any, row: any, userId: string, mediaType: unknown) {
   const type = String(mediaType || '').trim()
   if (!type) return false
+  if (
+    type === 'inspection_unclean'
+    && hasRole(user, 'customer_service')
+    && !canViewMzappInspectionUncleanMedia(user)
+  ) return false
   const uid = String(userId || '').trim()
   if (uid && String(row?.uploader_id || '').trim() === uid) return true
   if (type === 'lockbox_video') {
@@ -1618,11 +1701,131 @@ export async function canViewMzappOfflineWorkTaskMedia(user: any, row: any, user
   }
 }
 
+export type PropertyFeedbackSourceTaskAccess = {
+  exists: boolean
+  canViewHistory: boolean
+  canCreate: boolean
+  feedbackSource: 'cleaning_feedback' | 'inspection_feedback' | 'manager_feedback' | null
+}
+
+export function propertyFeedbackSourceTaskCapabilities(user: any, task: any): Omit<PropertyFeedbackSourceTaskAccess, 'exists'> {
+  const userId = String(user?.sub || '').trim()
+  if (!userId || !task) return { canViewHistory: false, canCreate: false, feedbackSource: null }
+  if (canViewAll(user)) return { canViewHistory: true, canCreate: true, feedbackSource: 'manager_feedback' }
+  const directParticipantIds = [task.cleaner_id, task.inspector_id, task.assignee_id]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+  const directParticipant = directParticipantIds.includes(userId)
+  const originalExecutor = task.has_execution_evidence === true
+  const canViewHistory = directParticipant || task.is_manual_participant === true || originalExecutor
+  const canCreate = directParticipant || task.can_manual_report === true || originalExecutor
+  const assignedInspectionActor = String(task.assignee_id || '').trim() === userId
+    && !String(task.cleaner_id || '').trim()
+    && (isInspectorRole(user) || isCleanerInspectorRole(user))
+  const inspectionActor = String(task.inspector_id || '').trim() === userId
+    || task.has_inspection_evidence === true
+    || assignedInspectionActor
+  return {
+    canViewHistory,
+    canCreate,
+    feedbackSource: canCreate ? (inspectionActor ? 'inspection_feedback' : 'cleaning_feedback') : null,
+  }
+}
+
+export async function propertyFeedbackSourceTaskAccess(
+  user: any,
+  propertyId: string,
+  sourceTaskId: string,
+  queryClient: any = pgPool,
+): Promise<PropertyFeedbackSourceTaskAccess> {
+  const denied: PropertyFeedbackSourceTaskAccess = {
+    exists: false,
+    canViewHistory: false,
+    canCreate: false,
+    feedbackSource: null,
+  }
+  const taskId = String(sourceTaskId || '').trim()
+  const scopedPropertyId = String(propertyId || '').trim()
+  const userId = String(user?.sub || '').trim()
+  if (!taskId || !scopedPropertyId || !userId || !hasPg || !queryClient) return denied
+  const result = await queryClient.query(
+    `SELECT t.id::text AS id,
+            COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS property_id,
+            t.cleaner_id::text AS cleaner_id,
+            t.inspector_id::text AS inspector_id,
+            t.assignee_id::text AS assignee_id,
+            EXISTS (
+              SELECT 1
+                FROM work_task_participants participant
+               WHERE participant.source_type = 'cleaning_tasks'
+                 AND participant.source_id = t.id::text
+                 AND participant.user_id = $3
+                 AND participant.source_relation = 'manual'
+            ) AS is_manual_participant,
+            EXISTS (
+              SELECT 1
+                FROM work_task_participants participant
+               WHERE participant.source_type = 'cleaning_tasks'
+                 AND participant.source_id = t.id::text
+                 AND participant.user_id = $3
+                 AND participant.source_relation = 'manual'
+                 AND (participant.action_ids ? '*' OR participant.action_ids ? 'report_issue')
+            ) AS can_manual_report,
+            EXISTS (
+              SELECT 1
+                FROM work_task_action_audits audit
+               WHERE audit.source_type = 'cleaning_tasks'
+                 AND audit.source_id::text = t.id::text
+                 AND COALESCE(audit.performed_by_user_id, audit.actor_user_id)::text = $3
+                 AND (${cleaningCompletionAuditWhereSql('audit')} OR ${inspectionSubmissionAuditWhereSql('audit')})
+            ) AS has_execution_evidence,
+            EXISTS (
+              SELECT 1
+                FROM work_task_action_audits audit
+               WHERE audit.source_type = 'cleaning_tasks'
+                 AND audit.source_id::text = t.id::text
+                 AND COALESCE(audit.performed_by_user_id, audit.actor_user_id)::text = $3
+                 AND ${inspectionSubmissionAuditWhereSql('audit')}
+            ) AS has_inspection_evidence
+       FROM cleaning_tasks t
+       LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+       LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+      WHERE t.id::text = $1
+        AND COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = $2
+        AND ${activeCleaningTaskWhereSql('t')}
+      LIMIT 1`,
+    [taskId, scopedPropertyId, userId],
+  )
+  const task = result?.rows?.[0] || null
+  if (!task) return denied
+  const identityCapabilities = propertyFeedbackSourceTaskCapabilities(user, task)
+  const hasReportPermission = identityCapabilities.canCreate
+    ? await userHasAnyPerm(user, ['cleaning_app.issues.report'])
+    : false
+  return {
+    exists: true,
+    ...identityCapabilities,
+    canCreate: identityCapabilities.canCreate && hasReportPermission,
+    feedbackSource: identityCapabilities.canCreate && hasReportPermission ? identityCapabilities.feedbackSource : null,
+  }
+}
+
 export async function canViewMzappPropertyFeedback(user: any, row: any, userId: string) {
-  // Property-feedback history is an internal, property-scoped record. It is
-  // intentionally not tied to the current cleaning-task participant list:
-  // callers must still resolve one real property before calling this helper.
-  return Boolean(String(user?.sub || userId || '').trim())
+  const uid = String(user?.sub || userId || '').trim()
+  if (!uid) return false
+  const sourceTaskId = String(row?.source_task_id || '').trim()
+  const propertyId = String(row?.property_id || '').trim()
+  if (sourceTaskId) {
+    if (!propertyId) return false
+    try {
+      return (await propertyFeedbackSourceTaskAccess(user, propertyId, sourceTaskId)).canViewHistory
+    } catch {
+      return false
+    }
+  }
+  // Legacy feedback without an exact source task stays manager-only. Field
+  // workers must never gain history/media access from creator id alone.
+  return canViewAll(user)
 }
 
 export function canViewMzappHistoricalWorkRecordMedia(
@@ -1648,11 +1851,23 @@ async function canViewMzappTaskConsumables(user: any, row: any, userId: string) 
   return userHasManualWorkTaskAction(user, userId, 'cleaning_tasks', String(row?.id || '').trim(), 'fill_supplies')
 }
 
-export async function canViewMzappGuestLuggageNoticeMedia(user: any, row: any, userId: string) {
+export async function canViewMzappGuestLuggageNoticeMedia(
+  user: any,
+  row: any,
+  userId: string,
+  requestedWorkTaskId?: string | null,
+  requestedSourceIds?: string[] | null,
+) {
   if (canViewAll(user) || canEditGuestLuggage(user)) return true
   const viewerId = String(userId || '').trim()
   const propertyId = String(row?.property_id || '').trim()
   const taskDate = String(row?.task_date || '').slice(0, 10)
+  const workTaskId = String(requestedWorkTaskId || '').trim()
+  const sourceIds = Array.from(new Set((Array.isArray(requestedSourceIds) ? requestedSourceIds : [])
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .slice(0, 2)))
+  const hasExactHistoricalContext = /^cleaning_tasks_[a-z_]+:.+::record:/i.test(workTaskId) && sourceIds.length > 0
   if (!propertyId || !/^\d{4}-\d{2}-\d{2}$/.test(taskDate) || !viewerId || !hasPg || !pgPool) return false
   try {
     const assigned = await pgPool.query(
@@ -1663,9 +1878,26 @@ export async function canViewMzappGuestLuggageNoticeMedia(user: any, row: any, u
         WHERE COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = $1
           AND COALESCE(t.task_date, t.date)::date = $2::date
           AND ${activeCleaningTaskWhereSql('t')}
-          AND $3::text = ANY(ARRAY[t.cleaner_id::text, t.inspector_id::text, t.assignee_id::text])
+          AND (
+            $3::text = ANY(ARRAY[t.cleaner_id::text, t.inspector_id::text, t.assignee_id::text])
+            OR (
+              $5::boolean
+              AND t.id::text = ANY($4::text[])
+              AND EXISTS (
+                SELECT 1
+                  FROM work_task_action_audits audit
+                 WHERE audit.source_type = 'cleaning_tasks'
+                   AND audit.source_id::text = t.id::text
+                   AND COALESCE(audit.performed_by_user_id, audit.actor_user_id)::text = $3::text
+                   AND (
+                     ${cleaningCompletionAuditWhereSql('audit')}
+                     OR ${inspectionSubmissionAuditWhereSql('audit')}
+                   )
+              )
+            )
+          )
         LIMIT 1`,
-      [propertyId, taskDate, viewerId],
+      [propertyId, taskDate, viewerId, sourceIds, hasExactHistoricalContext],
     )
     return Boolean(assigned?.rowCount)
   } catch {
@@ -1879,7 +2111,13 @@ function legacyWorkTaskParticipants(task: any): WorkTaskParticipant[] {
     add(task?.assignee_id, 'assignee', ['fill_supplies', 'complete_cleaning', 'report_issue'])
     return rows
   }
-  if (taskKind === 'cleaning') add(task?.cleaner_id || task?.assignee_id, 'cleaner', ['upload_key_photo', 'fill_supplies', 'complete_cleaning', 'report_issue'])
+  if (taskKind === 'cleaning') {
+    const cleanerActions: WorkTaskActionId[] = ['upload_key_photo', 'fill_supplies', 'complete_cleaning', 'report_issue']
+    if (effectiveInspectionMode(task) === 'self_complete' && cleaningType(task?.task_type) !== 'stayover') {
+      cleanerActions.splice(3, 0, 'upload_access_video')
+    }
+    add(task?.cleaner_id || task?.assignee_id, 'cleaner', cleanerActions)
+  }
   if (taskKind === 'inspection') add(task?.inspector_id || task?.assignee_id, 'inspector', ['submit_inspection', 'upload_access_video', 'report_issue'])
   if (isExecution) add(task?.assignee_id || task?.inspector_id, 'assignee', ['upload_access_video', 'report_issue'])
   return rows
@@ -2374,6 +2612,7 @@ type FormPhotoTaskRow = {
   inspector_id: string | null
   cleaner_id: string | null
   assignee_id: string | null
+  inspection_mode: string | null
 }
 
 type FormPhotoViewScope = 'cleaner' | 'inspector' | 'manager'
@@ -2399,7 +2638,8 @@ function formPhotoTaskSelectSql() {
                  o.checkout::text AS order_checkout,
                  t.inspector_id::text AS inspector_id,
                  t.cleaner_id::text AS cleaner_id,
-                 t.assignee_id::text AS assignee_id
+                 t.assignee_id::text AS assignee_id,
+                 t.inspection_mode::text AS inspection_mode
             FROM cleaning_tasks t
             LEFT JOIN orders o ON o.id::text = t.order_id::text
             LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
@@ -2420,7 +2660,7 @@ async function resolveFormPhotoTaskRows(workTaskRef: string, sourceIdHints: stri
   // Composite task ids are display identities, not authorization identities.
   // Only accept Root-issued exact source ids; property/date similarity must
   // never pull media from an independent task in the same apartment.
-  if ((merged || turnover) && sourceIdHints.length) {
+  if ((merged || turnover || grouped) && sourceIdHints.length) {
     sql = `${formPhotoTaskSelectSql()}
        WHERE t.id::text = ANY($1::text[])`
     values = [sourceIdHints]
@@ -2457,6 +2697,7 @@ async function resolveFormPhotoTaskRows(workTaskRef: string, sourceIdHints: stri
     inspector_id: row.inspector_id == null ? null : String(row.inspector_id).trim() || null,
     cleaner_id: row.cleaner_id == null ? null : String(row.cleaner_id).trim() || null,
     assignee_id: row.assignee_id == null ? null : String(row.assignee_id).trim() || null,
+    inspection_mode: row.inspection_mode == null ? null : String(row.inspection_mode).trim() || null,
   })).filter((row: FormPhotoTaskRow) => !!row.id)
 
   return rows
@@ -2522,7 +2763,7 @@ export async function canViewFormPhotoTaskRowsForScope(
       WHERE source_type = 'cleaning_tasks'
         AND source_id::text = ANY($1::text[])
         AND COALESCE(performed_by_user_id, actor_user_id)::text = $2::text
-        AND (${scope === 'cleaner' ? cleaningCompletionAuditWhereSql('work_task_action_audits') : "performed_as_action = 'submit_inspection'"})
+        AND (${scope === 'cleaner' ? cleaningCompletionAuditWhereSql('work_task_action_audits') : inspectionSubmissionAuditWhereSql('work_task_action_audits')})
       UNION
      SELECT source_id::text AS source_id
        FROM work_task_participants
@@ -2549,6 +2790,7 @@ export async function canViewFormPhotoTaskRowsForScope(
 
 export function formPhotoMediaType(type: string) {
   if (type === 'key_photo') return { source: 'key', area: 'guest_key', label: '客人钥匙照片' }
+  if (type === 'lockbox_video') return { source: 'lockbox_video', area: 'key_handover', label: '挂钥匙视频' }
   if (type.startsWith('completion_')) return { source: 'completion', area: type.slice('completion_'.length) }
   if (type.startsWith('inspection_') && type !== 'inspection_consumables_confirmed') return { source: 'inspection', area: type.slice('inspection_'.length) }
   if (type.startsWith('restock_proof:')) return { source: 'restock', item_id: type.slice('restock_proof:'.length) }
@@ -2571,7 +2813,13 @@ function formPhotoMeta(note: any) {
   }
 }
 
-export function formPhotoRecordVisibleToScope(record: any, scope: FormPhotoViewScope, userId: string, ownTaskIds: Set<string>) {
+export function formPhotoRecordVisibleToScope(
+  record: any,
+  scope: FormPhotoViewScope,
+  userId: string,
+  ownTaskIds: Set<string>,
+  selfCompleteTaskIds: Set<string> = new Set(),
+) {
   if (scope === 'manager') return true
   const source = String(record?.source || '').trim()
   const uploaderId = String(record?.uploader_id || '').trim()
@@ -2579,12 +2827,14 @@ export function formPhotoRecordVisibleToScope(record: any, scope: FormPhotoViewS
   const ownTask = ownTaskIds.has(taskId)
   if (scope === 'cleaner') {
     if (!ownTask) return false
+    if (source === 'lockbox_video') return selfCompleteTaskIds.has(taskId) && uploaderId === userId
     if (source === 'consumable' || source === 'completion' || source === 'key') return uploaderId === userId
     if (source === 'restock' || source === 'issue') return uploaderId === userId
     return false
   }
   if (source === 'key') return true
   if (!ownTask) return false
+  if (source === 'lockbox_video') return uploaderId === userId
   if (source === 'inspection') return uploaderId === userId
   if (source === 'restock' || source === 'issue') return uploaderId === userId
   return false
@@ -2606,7 +2856,7 @@ async function formPhotoOwnedTaskIds(taskRows: FormPhotoTaskRow[], userId: strin
       WHERE source_type = 'cleaning_tasks'
         AND source_id::text = ANY($1::text[])
         AND COALESCE(performed_by_user_id, actor_user_id)::text = $2::text
-        AND (${scope === 'cleaner' ? cleaningCompletionAuditWhereSql('work_task_action_audits') : "performed_as_action = 'submit_inspection'"})`,
+        AND (${scope === 'cleaner' ? cleaningCompletionAuditWhereSql('work_task_action_audits') : inspectionSubmissionAuditWhereSql('work_task_action_audits')})`,
     [ids, uid],
   )
   for (const row of evidence?.rows || []) {
@@ -2631,18 +2881,27 @@ export async function canViewMzappScopedRecordedCleaningMedia(
   const mediaTaskId = String(mediaRow?.source_task_id || mediaRow?.id || '').trim()
   const mapped = formPhotoMediaType(String(mediaRow?.type || '').trim())
   if (!sourceIds.length || !scope || !mediaTaskId || !mapped || !sourceIds.includes(mediaTaskId)) return false
+  if (scope === 'manager' && mapped.source === 'inspection' && mapped.area === 'unclean' && !canViewMzappInspectionUncleanMedia(user)) return false
   const rows = await resolveFormPhotoTaskRows('cleaning_tasks_merged:media:exact', sourceIds)
   if (rows.length !== sourceIds.length || !rows.some((row) => row.id === mediaTaskId)) return false
   if (!await canViewFormPhotoTaskRowsForScope(user, rows, userId, scope)) return false
   const ownTaskIds = await formPhotoOwnedTaskIds(rows, userId, scope)
+  const selfCompleteTaskIds = new Set(rows
+    .filter((row) => effectiveInspectionMode(row) === 'self_complete')
+    .map((row) => row.id))
   return formPhotoRecordVisibleToScope({
     task_id: mediaTaskId,
     source: mapped.source,
     uploader_id: mediaRow?.uploader_id == null ? null : String(mediaRow.uploader_id).trim() || null,
-  }, scope, String(userId || '').trim(), ownTaskIds)
+  }, scope, String(userId || '').trim(), ownTaskIds, selfCompleteTaskIds)
 }
 
-async function loadFormPhotoRecords(taskRows: FormPhotoTaskRow[], scope: FormPhotoViewScope, userId: string) {
+async function loadFormPhotoRecords(
+  taskRows: FormPhotoTaskRow[],
+  scope: FormPhotoViewScope,
+  userId: string,
+  options?: { includeVideos?: boolean; includeInspectionUnclean?: boolean },
+) {
   if (!hasPg || !pgPool || !taskRows.length) return []
   const taskIds = taskRows.map((row) => row.id)
   const mediaResult = await pgPool.query(
@@ -2650,9 +2909,16 @@ async function loadFormPhotoRecords(taskRows: FormPhotoTaskRow[], scope: FormPho
        FROM cleaning_task_media
       WHERE task_id::text = ANY($1::text[])
         AND COALESCE(url, '') <> ''
-        AND (type LIKE 'inspection_%' OR type LIKE 'completion_%' OR type LIKE 'restock_proof:%' OR type LIKE 'consumable_item_photo:%' OR type IN ('key_photo', 'consumable_living_room_photo', 'issue_photo'))
+        AND (
+          type LIKE 'inspection_%'
+          OR type LIKE 'completion_%'
+          OR type LIKE 'restock_proof:%'
+          OR type LIKE 'consumable_item_photo:%'
+          OR type IN ('key_photo', 'consumable_living_room_photo', 'issue_photo')
+          OR ($2::boolean AND type = 'lockbox_video')
+        )
       ORDER BY captured_at ASC NULLS LAST, created_at ASC NULLS LAST, id ASC`,
-    [taskIds],
+    [taskIds, options?.includeVideos === true],
   )
   const usageResult = await pgPool.query(
     `SELECT id::text AS id, task_id::text AS task_id, item_id::text AS item_id, item_label, photo_url, photo_urls, created_at
@@ -2702,7 +2968,19 @@ async function loadFormPhotoRecords(taskRows: FormPhotoTaskRow[], scope: FormPho
     }
   }
   const ownTaskIds = await formPhotoOwnedTaskIds(taskRows, userId, scope)
-  return records.filter((record) => record.id && record.url && formPhotoRecordVisibleToScope(record, scope, userId, ownTaskIds))
+  const selfCompleteTaskIds = new Set(taskRows
+    .filter((row) => effectiveInspectionMode(row) === 'self_complete')
+    .map((row) => row.id))
+  return records.filter((record) => {
+    if (!record.id || !record.url) return false
+    if (
+      scope === 'manager'
+      && record.source === 'inspection'
+      && record.area === 'unclean'
+      && options?.includeInspectionUnclean !== true
+    ) return false
+    return formPhotoRecordVisibleToScope(record, scope, userId, ownTaskIds, selfCompleteTaskIds)
+  })
 }
 
 router.post('/cleaning-tasks/reorder', requireR5TaskRuntimeSchema, async (req, res) => {
@@ -3133,6 +3411,7 @@ router.get('/work-tasks/:id/form-photos', async (req, res) => {
   const workTaskRef = String(req.params.id || '').trim()
   const sourceIdHints = parseFormPhotoSourceIds((req.query as any)?.source_ids)
   const requestedScope = normalizeFormPhotoViewScope((req.query as any)?.scope)
+  const includeVideos = ['1', 'true'].includes(String((req.query as any)?.include_videos || '').trim().toLowerCase())
   const userId = String(user.sub || '').trim()
   if (!workTaskRef) return res.status(400).json({ message: 'missing work task reference' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
@@ -3141,7 +3420,10 @@ router.get('/work-tasks/:id/form-photos', async (req, res) => {
     if (!taskRows.length) return res.status(404).json({ message: 'not found' })
     const scope: FormPhotoViewScope = canViewAll(user) ? (requestedScope || 'manager') : (requestedScope || 'cleaner')
     if (!await canViewFormPhotoTaskRowsForScope(user, taskRows, userId, scope)) return res.status(403).json({ message: 'forbidden' })
-    const items = await loadFormPhotoRecords(taskRows, scope, userId)
+    const items = await loadFormPhotoRecords(taskRows, scope, userId, {
+      includeVideos,
+      includeInspectionUnclean: canViewMzappInspectionUncleanMedia(user),
+    })
     return res.json({ task_ids: taskRows.map((row) => row.id), items })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'form_photos_failed' })
@@ -3184,7 +3466,7 @@ router.get('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
         captured_at: x.captured_at ? String(x.captured_at) : null,
         created_at: x.created_at ? String(x.created_at) : null,
       }
-    })
+    }).filter((item: any) => item.area !== 'unclean' || canViewMzappInspectionUncleanMedia(user))
     const completionAreas = new Set(items.map((item) => String(item.area || '').trim()).filter(Boolean))
     const missingAreas = completionPhotoMissingAreas(completionAreas)
     let completionPhotoException: { items: { area: string; reason: string; media_id: string; captured_at: string }[] } | null = null
@@ -3597,6 +3879,10 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
         }
       }
 
+      if (isTerminalCleaningStatus(lockedTask.status)) {
+        return { kind: 'read_only' as const }
+      }
+
       await client.query(
         `DELETE FROM cleaning_task_media
           WHERE task_id=$1
@@ -3633,7 +3919,7 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
       const actionAudit = await recordWorkTaskActionAudit({
         sourceType: 'cleaning_tasks',
         sourceId: String(id),
-        performedAsAction: selfCompleteRestock ? 'fill_supplies' : 'submit_inspection',
+        performedAsAction: selfCompleteRestock ? 'fill_supplies' : 'record_restock_proof',
         actorUserId: actionActor.actorUserId,
         performedByUserId: actionActor.performedByUserId,
         performedByName: actionActor.performedByName,
@@ -3670,6 +3956,7 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
     })
     if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'not found' })
     if (transactionResult.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
+    if (transactionResult.kind === 'read_only') return res.status(409).json({ message: 'work_record_read_only' })
     if (transactionResult.kind === 'missing_consumables') return res.status(409).json({ message: '请先完成消耗品补充' })
     if (transactionResult.kind === 'conflict') {
       return res.status(409).json({ message: 'idempotency_conflict', submit_id: submitId, step_key: stepKey })
@@ -7142,7 +7429,10 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                 WHERE action_audit.source_type = w.source_type
                   AND action_audit.source_id::text = w.source_id::text
                   AND COALESCE(action_audit.performed_by_user_id, action_audit.actor_user_id) = $${vals.length}
-                  AND action_audit.performed_as_action IN ('fill_supplies', 'complete_cleaning', 'submit_inspection', 'upload_access_video')
+                  AND (
+                    action_audit.performed_as_action IN ('fill_supplies', 'complete_cleaning', 'upload_access_video')
+                    OR ${inspectionSubmissionAuditWhereSql('action_audit')}
+                  )
               )
               OR EXISTS (
                 SELECT 1
@@ -7393,7 +7683,10 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               AND audit.source_type = base.source_type
               AND audit.source_id::text = base.source_id::text
               AND COALESCE(audit.performed_by_user_id, audit.actor_user_id)::text = $3::text
-              AND audit.performed_as_action IN ('fill_supplies', 'complete_cleaning', 'submit_inspection', 'upload_access_video')
+              AND (
+                audit.performed_as_action IN ('fill_supplies', 'complete_cleaning', 'upload_access_video')
+                OR ${inspectionSubmissionAuditWhereSql('audit')}
+              )
             UNION ALL
             SELECT event.created_at AS performed_at, event.actor_user_id,
               CASE
@@ -7834,7 +8127,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             WHERE audit.source_type = 'cleaning_tasks'
               AND (
                 ${cleaningCompletionAuditWhereSql('audit')}
-                OR audit.performed_as_action = 'submit_inspection'
+                OR ${inspectionSubmissionAuditWhereSql('audit')}
               )
               AND ($4::boolean OR COALESCE(audit.performed_by_user_id, audit.actor_user_id)::text = $3::text)
               AND ${cleaningAuditBusinessDateSql('audit')} BETWEEN $1::date AND $2::date
@@ -7975,7 +8268,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               FROM work_task_action_audits audit
               WHERE audit.source_type = 'cleaning_tasks'
                 AND audit.source_id::text = t.id::text
-                AND audit.performed_as_action = 'submit_inspection'
+                AND ${inspectionSubmissionAuditWhereSql('audit')}
                 AND ($4::boolean OR COALESCE(audit.performed_by_user_id, audit.actor_user_id)::text = $3::text)
                 AND ${cleaningAuditBusinessDateSql('audit')} BETWEEN $1::date AND $2::date
               ORDER BY audit.performed_at DESC, audit.created_at DESC
@@ -8131,6 +8424,20 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                 AND current_media.type = 'lockbox_video'
                 AND COALESCE(TRIM(current_media.url), '') <> ''
             ) AS has_current_lockbox_video,
+            EXISTS (
+              SELECT 1
+              FROM work_task_events current_event
+              WHERE current_event.task_id = ('cleaning_task:' || t.id::text)
+                AND lower(COALESCE(current_event.payload#>>'{patch,status}', '')) = 'keys_hung'
+                AND COALESCE(current_event.payload#>'{arrangement_revision,reasons}', '[]'::jsonb) ? 'keys_hung_confirmed'
+            ) AS has_current_manual_key_handover,
+            (
+              SELECT MAX(current_event.occurred_at)
+              FROM work_task_events current_event
+              WHERE current_event.task_id = ('cleaning_task:' || t.id::text)
+                AND lower(COALESCE(current_event.payload#>>'{patch,status}', '')) = 'keys_hung'
+                AND COALESCE(current_event.payload#>'{arrangement_revision,reasons}', '[]'::jsonb) ? 'keys_hung_confirmed'
+            ) AS current_manual_key_handover_at,
             t.executor_record_at AS lockbox_record_at,
             t.executor_record_actor_user_id AS lockbox_record_actor_user_id,
             t.executor_record_confirmation_source,
@@ -8268,7 +8575,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                  AND audit.source_id::text = ANY($3::text[])
                  AND (
                    ${cleaningCompletionAuditWhereSql('audit')}
-                   OR audit.performed_as_action = 'submit_inspection'
+                   OR ${inspectionSubmissionAuditWhereSql('audit')}
                  )
                UNION ALL
                SELECT
@@ -8599,9 +8906,10 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                 metadata: row.lockbox_audit_metadata,
               }
             : null,
-          manualConfirmedAt: row.executor_record_confirmation_source === 'manual'
-            ? row.lockbox_record_at
-            : null,
+          // The fact and timestamp belong to the task, not to the viewer who
+          // happened to perform the confirmation. Actor identity stays in the
+          // separately permission-filtered work-record projection.
+          manualConfirmedAt: row.current_manual_key_handover_at || null,
         })
         const canonicalTurnoverPairs = canonicalCleaningTurnoverPairs(cleaningRows)
         type SameDayTurnoverState = {
@@ -8692,6 +9000,11 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           const executorRecordDate = executorRecordAt ? melbourneDateOnly(executorRecordAt) : null
           const executorRecordActorId = String(row.lockbox_record_actor_user_id || '').trim() || null
           const manualKeyHandoverRecord = row.executor_record_confirmation_source === 'manual'
+          // Completion is a fact about this exact source task, independent of which
+          // authorised participant recorded it. Visibility of the media URL remains
+          // separately role-filtered by latest_media_raw.
+          const sourceKeyHandoverCompleted = row.has_current_lockbox_video === true
+            || row.has_current_manual_key_handover === true
           const cancelledRecordAt = row.cancelled_record_at ? String(row.cancelled_record_at) : null
           const cancelledRecordDate = cancelledRecordAt ? melbourneDateOnly(cancelledRecordAt) : null
           const roleRecordEvidence = (
@@ -8768,7 +9081,8 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           })
           const rowBusinessIdentity = canonicalTurnover?.businessIdentity
             || cleaningTaskBusinessIdentity({ sourceId: row.id })
-          const keyHandover = keyHandoverForRow(row) || canonicalTurnover?.keyHandover || null
+          const sourceKeyHandover = keyHandoverForRow(row)
+          const keyHandover = sourceKeyHandover || canonicalTurnover?.keyHandover || null
           const lockboxVideoConfirmsCurrentState = keyHandover?.state === 'completed'
             || completedSameDayTurnover?.keysHung === true
 
@@ -8786,6 +9100,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             __manager_merge_isolation_key: managerMergeIsolationKey,
             __business_identity: rowBusinessIdentity,
             __lockbox_video_confirms_current_state: lockboxVideoConfirmsCurrentState,
+            __source_key_handover_completed: sourceKeyHandoverCompleted,
+            __source_key_handover: sourceKeyHandover,
+            __source_lockbox_video_url: row.lockbox_video_url || null,
             __canonical_turnover_source_rows: canonicalTurnover?.sourceRows || [],
             key_handover: keyHandover,
             active_source_ids: [String(row.id)],
@@ -8846,11 +9163,16 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             guest_luggage: guestLuggageByTaskKey.get(`${String(propId || '')}|${taskDate}`) || null,
             status,
             cleaning_submission_ready: cleaningSubmissionReadyByTaskId.get(String(row.id)) === true,
+            consumables_recorded: (consumableItemIdsByTaskId.get(String(row.id))?.size || 0) > 0,
             property: prop,
           }
 
           if (wantCleaner && isCleaningExecutionTask(row)) {
+            const selfCompleteAwaitingOwnKeyHandover = inspectionMode === 'self_complete'
+              && cleaningType(row.task_type) !== 'stayover'
+              && !sourceKeyHandoverCompleted
             const cleanerTerminal = ['cleaned', 'restock_pending', 'restocked', 'ready', 'inspected', 'keys_hung', 'done', 'completed'].includes(raw_status)
+              && !selfCompleteAwaitingOwnKeyHandover
             const cancelled = raw_status === 'cancelled' || raw_status === 'canceled'
             if (isActiveCleaningTurnoverCandidate(row) && !cleanerTerminal && !cancelled && taskDate >= dateFrom && taskDate <= dateTo && (
               (effectiveCleanerId && (allowAll || effectiveCleanerId === userId))
@@ -8862,7 +9184,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               arr.push(base)
               cleanerGroups.set(k, arr)
             }
-            const recordEvidence = mergeRoleRecordEvidenceWithCancellation({
+            const recordEvidence = selfCompleteAwaitingOwnKeyHandover ? [] : mergeRoleRecordEvidenceWithCancellation({
               roleEvidence: roleRecordEvidence('cleaner', cleanerRecordAt, cleanerRecordDate, cleanerRecordActorId, cleanerRecordActorName),
               cancelled,
               cancelledAt: cancelledRecordAt,
@@ -9045,6 +9367,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           const p = pickPrimary()
           const managerMergeIsolationKey = firstNonEmpty(...rows.map((row) => row.__manager_merge_isolation_key)) || null
           const lockboxVideoConfirmsCurrentState = rows.some((row) => row.__lockbox_video_confirms_current_state === true)
+          const sourceKeyHandoverCompleted = p.a?.__source_key_handover_completed === true
           const keyHandoverRelationRowsById = new Map<string, any>()
           for (const relationRow of rows.flatMap((row) => (
             Array.isArray(row.__canonical_turnover_source_rows) && row.__canonical_turnover_source_rows.length
@@ -9287,6 +9610,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           const raw = String(p.a.raw_status ?? '').trim().toLowerCase()
           const cleaningSubmissionReady = p.ids.length > 0
             && p.ids.every((sourceId) => cleaningSubmissionReadyByTaskId.get(String(sourceId)) === true)
+          const consumablesRecorded = (consumableItemIdsByTaskId.get(String(p.a.__raw_id))?.size || 0) > 0
           const relatedCheckoutRaw = String(relatedCheckoutsForCheckin[0]?.status ?? '').trim().toLowerCase()
           const relatedCheckoutProgress = relatedCheckoutRaw === 'in_progress' || relatedCheckoutRaw === 'cleaning'
             ? 'in_progress'
@@ -9294,7 +9618,11 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               ? 'to_inspect'
               : ''
           const isDoneLike = raw === 'cleaned' || raw === 'restock_pending' || raw === 'restocked' || raw === 'ready' || raw === 'inspected'
-          const isSelfCompleteFinalized = requireSelfComplete && cleaningSubmissionReady && isDoneLike && completionPhotosSatisfied
+          const isSelfCompleteFinalized = requireSelfComplete
+            && cleaningSubmissionReady
+            && isDoneLike
+            && completionPhotosSatisfied
+            && (!requireLockboxBeforeDone || sourceKeyHandoverCompleted)
           const nightsFor = (x: any) => {
             const n0 =
               x?.nights_override != null
@@ -9354,7 +9682,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                     ? 'keys_hung'
                     : lockboxVideoConfirmsCurrentState
                     ? 'keys_hung'
-                    : requireLockboxBeforeDone && isDoneLike && !lockboxVideoUrl
+                    : requireLockboxBeforeDone && isDoneLike && !sourceKeyHandoverCompleted
                     ? 'to_hang_keys'
                     : requireSelfComplete && isDoneLike && !completionPhotosOk
                       ? 'to_complete'
@@ -9445,7 +9773,10 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             ...(inspectionConflictSourceIds.length ? { __inspection_conflict_source_ids: inspectionConflictSourceIds } : {}),
             __manager_merge_isolation_key: managerMergeIsolationKey,
             __lockbox_video_confirms_current_state: lockboxVideoConfirmsCurrentState,
-            key_handover: keyHandover,
+            // Self-complete is an exact-source workflow: a related check-in or
+            // checkout phase may share the canonical card, but its video must
+            // not complete this cleaner's own handover step.
+            key_handover: requireSelfComplete ? (p.a?.__source_key_handover || null) : keyHandover,
             id: outId,
             task_kind: roleKind === 'cleaner' ? 'cleaning' : (roleKind === 'executor' && !executorInspection ? 'execution' : 'inspection'),
             execution_role: executorInspection ? 'inspection' : executionRole,
@@ -9519,10 +9850,16 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             },
             checked_out_at: checkedOutAt,
             key_photo_url: hideUnattributedHistoricalMedia ? null : keyPhotoUrl,
-            lockbox_video_url: hideUnattributedHistoricalMedia ? null : (canViewLockboxVideo ? lockboxVideoUrl : null),
+            lockbox_video_url: hideUnattributedHistoricalMedia
+              ? null
+              : (canViewLockboxVideo
+                  ? (requireSelfComplete ? (p.a?.__source_lockbox_video_url || null) : lockboxVideoUrl)
+                  : null),
             restock_items: hideUnattributedHistoricalMedia ? [] : restockItems,
             completion_photos_ok: completionPhotosOk,
             cleaning_submission_ready: cleaningSubmissionReady,
+            consumables_recorded: consumablesRecorded,
+            source_key_handover_completed: sourceKeyHandoverCompleted,
             ...(completionPhotoException ? { completion_photo_exception: completionPhotoException } : {}),
             stayed_nights: stayedAndRemaining.stayed,
             remaining_nights: stayedAndRemaining.remaining,
@@ -9972,11 +10309,10 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
     })
     markWorkTasksStep('filter_sort')
 
-    const guestReadyStatesByOrder = canViewGuestReadyNotification
+    const guestReadyStatesByOrder = canViewGuestReadyNotification || visibleOut.some((task) => task?.work_record_read_only === true)
       ? await loadGuestReadyNotificationOrderStates(
           pgPool,
           visibleOut
-            .filter((task) => task?.work_record_read_only !== true)
             .map((task) => task?.order_id_checkin),
         )
       : new Map<string, any>()
@@ -9987,16 +10323,19 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
     const canManageMaintenanceWorkflow = await userHasAnyPerm(user, [MAINTENANCE_WORKFLOW_MANAGE_PERMISSION])
     const responseOut = visibleOut.map((task) => {
       const isProjectedWorkRecord = task.work_record_read_only === true
+      const projectedReadOnlyViews = workRecordReadOnlyViews(task, user, userId)
       const orderIdCheckin = String(task?.order_id_checkin || '').trim()
       const guestReadyState = orderIdCheckin ? guestReadyStatesByOrder.get(orderIdCheckin) : null
-      const currentCheckin = !isProjectedWorkRecord && guestReadyState?.current_checkin_count === 1
+      const currentCheckin = guestReadyState?.current_checkin_count === 1
       const notificationBindingCurrent = isGuestReadyNotificationRequirementBindingCurrent({
         notifiedCheckinTaskId: guestReadyState?.notified_checkin_task_id,
         notifiedRequirementVersion: guestReadyState?.notified_requirement_version,
         currentCheckinTaskId: guestReadyState?.current_checkin_task_id,
         currentRequirementVersion: guestReadyState?.current_requirement_version,
       })
-      const guestReadyOutsideKey = !isProjectedWorkRecord && canViewGuestReadyNotification && orderIdCheckin
+      const canProjectGuestContext = (!isProjectedWorkRecord && canViewGuestReadyNotification)
+        || (isProjectedWorkRecord && projectedReadOnlyViews.guest_context)
+      const guestReadyOutsideKey = canProjectGuestContext && orderIdCheckin
         ? buildGuestReadyOutsideKeyProjection({
             orderId: orderIdCheckin,
             required: guestReadyState?.outside_key_required,
@@ -10007,7 +10346,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             currentCheckin,
           })
         : null
-      const guestReadyNotification = !isProjectedWorkRecord && canViewGuestReadyNotification && orderIdCheckin
+      const guestReadyNotification = canProjectGuestContext && orderIdCheckin
         ? buildGuestReadyNotificationProjection({
             orderId: orderIdCheckin,
             notifiedAt: guestReadyState?.notified_at,
@@ -10030,7 +10369,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         ? taskWithGuestState
         : attachWorkTaskParticipants(taskWithGuestState, manualParticipantsByRef)
       const isWorkRecord = taskWithParticipants.work_record_read_only === true
-      const readOnlyViews = workRecordReadOnlyViews(taskWithParticipants, user, userId)
+      const readOnlyViews = isProjectedWorkRecord
+        ? projectedReadOnlyViews
+        : workRecordReadOnlyViews(taskWithParticipants, user, userId)
       const mergedChildren = Array.isArray((task as any).__merged_children) ? (task as any).__merged_children : []
       const payload = buildWorkTaskActionPayload(taskWithParticipants, actionContext)
       const blockedInspectionSourceIds = new Set<string>([
@@ -10041,7 +10382,37 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
       ].map((value) => String(value || '').trim()).filter(Boolean))
       const actionGroups = [payload.available_actions || []]
       if (isWorkRecord) {
-        payload.available_actions = []
+        const canReportHistoricalFeedback = readOnlyViews.feedback_report
+          && actionContext.permissions.includes('cleaning_app.issues.report')
+        const recordActions: any[] = []
+        if (taskWithParticipants.consumables_recorded === true && readOnlyViews.feedback_source_id) {
+          recordActions.push({
+            id: 'fill_supplies',
+            label: '补品记录',
+            placement: 'primary',
+            enabled: false,
+            disabled_reason: 'task_completed',
+            read_only: true,
+            target: 'SuppliesForm',
+            intent: 'cleaning',
+            source_type: 'cleaning_tasks',
+            source_id: readOnlyViews.feedback_source_id,
+          })
+        }
+        if (readOnlyViews.feedback_history && readOnlyViews.feedback_source_id) {
+          recordActions.push({
+              id: 'report_issue',
+              label: canReportHistoricalFeedback ? '问题反馈与报修记录' : '查看报修记录',
+              placement: 'more',
+              enabled: true,
+              read_only: !canReportHistoricalFeedback,
+              target: 'FeedbackForm',
+              intent: 'issue',
+              source_type: 'cleaning_tasks',
+              source_id: readOnlyViews.feedback_source_id,
+            })
+        }
+        payload.available_actions = recordActions
         payload.capabilities = {
           ...payload.capabilities,
           participant_actions: [],
@@ -10050,7 +10421,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             finish: false,
             inspect: false,
             media_upload: false,
-            issue_report: false,
+            issue_report: canReportHistoricalFeedback,
           },
         }
       } else if (mergedChildren.length) {
@@ -10101,9 +10472,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             ...cleanTask.turnover_display,
             old_code: readOnlyViews.lock_codes ? cleanTask.turnover_display.old_code ?? null : null,
             new_code: readOnlyViews.lock_codes ? cleanTask.turnover_display.new_code ?? null : null,
-            guest_request_checkout: null,
-            guest_request_checkin: null,
-            guest_request_summary: null,
+            guest_request_checkout: readOnlyViews.guest_context ? cleanTask.turnover_display.guest_request_checkout ?? null : null,
+            guest_request_checkin: readOnlyViews.guest_context ? cleanTask.turnover_display.guest_request_checkin ?? null : null,
+            guest_request_summary: readOnlyViews.guest_context ? cleanTask.turnover_display.guest_request_summary ?? null : null,
             conflicts: Array.isArray(cleanTask.turnover_display.conflicts)
               ? cleanTask.turnover_display.conflicts.filter((conflict: any) => ![
                   'old_code',
@@ -10118,12 +10489,14 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             ...cleanTask,
             old_code: readOnlyViews.lock_codes ? cleanTask.old_code ?? null : null,
             new_code: readOnlyViews.lock_codes ? cleanTask.new_code ?? null : null,
-            guest_special_request: null,
-            guest_request_checkout: null,
-            guest_request_checkin: null,
-            guest_request_summary: null,
-            order_note: null,
-            guest_luggage: null,
+            guest_special_request: readOnlyViews.guest_context ? cleanTask.guest_special_request ?? null : null,
+            guest_request_checkout: readOnlyViews.guest_context ? cleanTask.guest_request_checkout ?? null : null,
+            guest_request_checkin: readOnlyViews.guest_context ? cleanTask.guest_request_checkin ?? null : null,
+            guest_request_summary: readOnlyViews.guest_context ? cleanTask.guest_request_summary ?? null : null,
+            order_note: readOnlyViews.guest_context ? cleanTask.order_note ?? null : null,
+            guest_luggage: readOnlyViews.guest_context ? cleanTask.guest_luggage ?? null : null,
+            guest_ready_notification: readOnlyViews.guest_context ? cleanTask.guest_ready_notification ?? null : null,
+            guest_ready_outside_key: readOnlyViews.guest_context ? cleanTask.guest_ready_outside_key ?? null : null,
             turnover_display: sanitizedTurnoverDisplay,
             property: cleanTask.property
               ? {
@@ -10137,7 +10510,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             read_only_views: {
               ...readOnlyViews,
               media_source_ids: cleanTask.source_type === 'cleaning_tasks'
-                && (readOnlyViews.cleaner_photos || readOnlyViews.inspection_photos || readOnlyViews.guest_key_photo)
+                && (readOnlyViews.cleaner_photos || readOnlyViews.inspection_photos || readOnlyViews.guest_key_photo || readOnlyViews.lockbox_video)
                 ? readOnlyMediaSourceIds
                 : [],
             },
@@ -10995,29 +11368,12 @@ async function resolveInternalMaintenanceFeedbackOrigin(user: any, propertyId: s
     throw new InternalMaintenanceFeedbackError(400, 'maintenance_feedback_source_task_required')
   }
   if (!pgPool) throw new InternalMaintenanceFeedbackError(500, 'pg_not_available')
-  const taskResult = await pgPool.query(
-    `SELECT id, property_id, cleaner_id, inspector_id, assignee_id
-       FROM cleaning_tasks
-      WHERE id = $1
-      LIMIT 1`,
-    [sourceTaskId],
-  )
-  const sourceTask = taskResult?.rows?.[0] || null
-  if (!sourceTask) throw new InternalMaintenanceFeedbackError(404, 'maintenance_feedback_source_task_not_found')
-  if (String(sourceTask.property_id || '').trim() !== String(propertyId || '').trim()) {
-    throw new InternalMaintenanceFeedbackError(409, 'maintenance_feedback_source_task_property_mismatch')
-  }
-  if (isManager) return { feedbackSource: 'manager_feedback', sourceTaskId }
-
-  const actorId = String(user?.sub || '').trim()
-  const cleanerId = String(sourceTask.cleaner_id || '').trim()
-  const inspectorId = String(sourceTask.inspector_id || '').trim()
-  const assigneeId = String(sourceTask.assignee_id || '').trim()
-  if (!actorId || ![cleanerId, inspectorId, assigneeId].includes(actorId)) {
+  const access = await propertyFeedbackSourceTaskAccess(user, propertyId, sourceTaskId)
+  if (!access.exists) throw new InternalMaintenanceFeedbackError(404, 'maintenance_feedback_source_task_not_found')
+  if (!access.canCreate || !access.feedbackSource) {
     throw new InternalMaintenanceFeedbackError(403, 'maintenance_feedback_source_task_forbidden')
   }
-  const isInspectorFeedback = inspectorId === actorId || (assigneeId === actorId && !cleanerId && (isInspectorRole(user) || isCleanerInspectorRole(user)))
-  return { feedbackSource: isInspectorFeedback ? 'inspection_feedback' : 'cleaning_feedback', sourceTaskId }
+  return { feedbackSource: access.feedbackSource, sourceTaskId }
 }
 
 async function createInternalMaintenanceFromFeedback(input: {
@@ -11117,7 +11473,7 @@ async function ensurePropertyDeepCleaningColumns(client: any = pgPool) {
     await client.query(`SELECT id, property_id, status, submitted_at, project_desc, started_at, ended_at,
       duration_minutes, photo_urls, repair_photo_urls, attachment_urls, work_no, completed_at,
       review_status, project_items, invoice_description_en, dedup_fingerprint, client_item_id,
-      created_by_user_id, updated_by_user_id, deleted_at, deleted_by_user_id
+      source_task_id, created_by_user_id, updated_by_user_id, deleted_at, deleted_by_user_id
       FROM property_deep_cleaning
       LIMIT 0`)
   } catch {
@@ -11407,6 +11763,7 @@ router.get('/property-feedbacks', async (req, res) => {
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const propertyId = String((req.query as any)?.property_id || '').trim()
   const propertyCode = String((req.query as any)?.property_code || '').trim()
+  const sourceTaskId = String((req.query as any)?.source_task_id || '').trim()
   if (!propertyId && !propertyCode) return res.status(400).json({ message: 'missing property_id' })
 
   const statusRaw = String((req.query as any)?.status || 'open,in_progress').trim()
@@ -11440,10 +11797,18 @@ router.get('/property-feedbacks', async (req, res) => {
       [propertyId || null, propertyCode || null],
     )
     const property = propertyResult?.rows?.[0] || null
-    if (!property || propertyResult.rows.length !== 1 || !await canViewMzappPropertyFeedback(user, property, String(user?.sub || '').trim())) {
+    if (!property || propertyResult.rows.length !== 1) {
       return res.status(403).json({ message: 'forbidden_property_feedback' })
     }
     const scopedPropertyId = String(property.id || '').trim()
+    if (sourceTaskId) {
+      const sourceAccess = await propertyFeedbackSourceTaskAccess(user, scopedPropertyId, sourceTaskId)
+      if (!sourceAccess.canViewHistory) return res.status(403).json({ message: 'forbidden_property_feedback_source_task' })
+    } else if (!canViewAll(user)) {
+      // Non-manager history is always bound to one exact cleaning source task.
+      // Property/date inference would expose unrelated later reports.
+      return res.status(400).json({ message: 'property_feedback_source_task_required' })
+    }
     assertMaintenanceRuntimeSchemaReady()
     const canManageMaintenanceWorkflow = isPropertyFeedbackManager(user)
       || await userHasAnyPerm(user, [MAINTENANCE_WORKFLOW_MANAGE_PERMISSION])
@@ -11466,11 +11831,12 @@ router.get('/property-feedbacks', async (req, res) => {
           `SELECT m.*
              FROM property_maintenance m
             WHERE m.property_id::text = $1
+              AND ($3::text IS NULL OR m.source_task_id::text = $3)
               AND m.deleted_at IS NULL
               AND (${unresolvedMaintSql})
             ORDER BY COALESCE(m.submitted_at, m.created_at) DESC
             LIMIT $2`,
-          [scopedPropertyId, limit],
+          [scopedPropertyId, limit, sourceTaskId || null],
         )
         return (r?.rows || []).map((row: any) => propertyFeedbackResponseFromRow('maintenance', row, user, feedbackCapabilityContext))
       }),
@@ -11482,11 +11848,12 @@ router.get('/property-feedbacks', async (req, res) => {
           `SELECT d.*
              FROM property_deep_cleaning d
             WHERE d.property_id::text = $1
+              AND ($3::text IS NULL OR d.source_task_id::text = $3)
               AND d.deleted_at IS NULL
               AND (${unresolvedDeepSql})
             ORDER BY COALESCE(d.submitted_at, d.created_at) DESC
             LIMIT $2`,
-          [scopedPropertyId, limit],
+          [scopedPropertyId, limit, sourceTaskId || null],
         )
         return (r?.rows || []).map((row: any) => propertyFeedbackResponseFromRow('deep_cleaning', row, user, feedbackCapabilityContext))
       }),
@@ -11494,11 +11861,12 @@ router.get('/property-feedbacks', async (req, res) => {
         try {
           await ensurePropertyDailyNecessitiesColumns()
         } catch {}
-        const params: any[] = [scopedPropertyId, dailyFilter, limit]
+        const params: any[] = [scopedPropertyId, dailyFilter, limit, sourceTaskId || null]
         const r = await pool.query(
           `SELECT n.*
              FROM property_daily_necessities n
             WHERE n.property_id::text = $1
+              AND ($4::text IS NULL OR n.source_task_id::text = $4)
               AND n.deleted_at IS NULL
               AND COALESCE(n.status, '') = ANY($2::text[])
             ORDER BY COALESCE(n.submitted_at, n.created_at) DESC
@@ -11535,6 +11903,16 @@ router.post('/property-feedbacks', async (req, res) => {
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
     const pool = pgPool
+    if (parsed.data.kind !== 'maintenance') {
+      const sourceTaskId = String(parsed.data.source_task_id || '').trim()
+      if (!sourceTaskId) {
+        if (!canViewAll(user)) return res.status(400).json({ code: 'property_feedback_source_task_required' })
+      } else {
+        const sourceAccess = await propertyFeedbackSourceTaskAccess(user, parsed.data.property_id, sourceTaskId)
+        if (!sourceAccess.exists) return res.status(404).json({ code: 'property_feedback_source_task_not_found' })
+        if (!sourceAccess.canCreate) return res.status(403).json({ code: 'property_feedback_source_task_forbidden' })
+      }
+    }
     const submitId = String(parsed.data.submit_id || '').trim()
     const stepKey = String(parsed.data.step_key || '').trim()
     const clientItemId = String(parsed.data.client_item_id || '').trim()
@@ -11622,11 +12000,12 @@ router.post('/property-feedbacks', async (req, res) => {
                FROM property_maintenance
               WHERE property_id = $1
                 AND dedup_fingerprint = $2
+                AND source_task_id::text IS NOT DISTINCT FROM $4::text
                 AND (status IS NULL OR lower(status) NOT IN ('completed','done','ready','canceled','cancelled'))
                 AND COALESCE(submitted_at, created_at) >= now() - ($3::int * interval '1 hour')
               ORDER BY COALESCE(submitted_at, created_at) DESC
               LIMIT 1`,
-            [parsed.data.property_id, fingerprint, duplicateWindowHours],
+            [parsed.data.property_id, fingerprint, duplicateWindowHours, origin.sourceTaskId],
           )
           if (dup.rowCount) return await respondReceipt(200, { ok: true, existing_id: String(dup.rows[0].id) })
         }
@@ -11697,17 +12076,18 @@ router.post('/property-feedbacks', async (req, res) => {
         detail,
       })
       const createdOrExisting = await pgRunInTransaction(async (client: any) => {
-        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`maintenance-feedback:${String(parsed.data.property_id)}:${fingerprint}`])
+        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`maintenance-feedback:${String(parsed.data.property_id)}:${String(origin.sourceTaskId || 'manager')}:${fingerprint}`])
         const dup = await client.query(
           `SELECT id
              FROM property_maintenance
             WHERE property_id = $1
               AND dedup_fingerprint = $2
+              AND source_task_id::text IS NOT DISTINCT FROM $4::text
               AND (status IS NULL OR lower(status) NOT IN ('completed','done','ready','canceled','cancelled'))
               AND COALESCE(submitted_at, created_at) >= now() - ($3::int * interval '1 hour')
             ORDER BY COALESCE(submitted_at, created_at) DESC
             LIMIT 1`,
-          [parsed.data.property_id, fingerprint, duplicateWindowHours],
+          [parsed.data.property_id, fingerprint, duplicateWindowHours, origin.sourceTaskId],
         )
         if (dup.rowCount) return { existingId: String(dup.rows[0].id) }
         const created = await createInternalMaintenanceFromFeedback({
@@ -11768,10 +12148,11 @@ router.post('/property-feedbacks', async (req, res) => {
            FROM property_daily_necessities
           WHERE property_id = $1
             AND dedup_fingerprint = $2
+            AND source_task_id::text IS NOT DISTINCT FROM $4::text
             AND COALESCE(submitted_at, created_at) >= now() - ($3::int * interval '1 hour')
           ORDER BY COALESCE(submitted_at, created_at) DESC
           LIMIT 1`,
-        [parsed.data.property_id, fingerprint, duplicateWindowHours],
+        [parsed.data.property_id, fingerprint, duplicateWindowHours, parsed.data.source_task_id || null],
       )
       if (dup.rowCount) return await respondReceipt(200, { ok: true, existing_id: String(dup.rows[0].id) })
 
@@ -11837,18 +12218,19 @@ router.post('/property-feedbacks', async (req, res) => {
          FROM property_deep_cleaning
         WHERE property_id = $1
           AND dedup_fingerprint = $2
+          AND source_task_id::text IS NOT DISTINCT FROM $4::text
           AND (status IS NULL OR lower(status) NOT IN ('completed','done','ready','canceled','cancelled'))
           AND COALESCE(submitted_at, created_at) >= now() - ($3::int * interval '1 hour')
         ORDER BY COALESCE(submitted_at, created_at) DESC
         LIMIT 1`,
-      [parsed.data.property_id, fingerprint, duplicateWindowHours],
+      [parsed.data.property_id, fingerprint, duplicateWindowHours, parsed.data.source_task_id || null],
     )
     if (dup.rowCount) return await respondReceipt(200, { ok: true, existing_id: String(dup.rows[0].id) })
-    await pgPool.query(
+      await pgPool.query(
       `INSERT INTO property_deep_cleaning(
         id, property_id, occurred_at, project_desc, details, created_by, created_by_user_id, created_at,
-        status, submitted_at, submitter_name, work_no, photo_urls, attachment_urls, review_status, invoice_description_en, dedup_fingerprint, client_item_id
-      ) VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,${photoExpr},${attachExpr},$14,$15,$16,$17)
+        status, submitted_at, submitter_name, work_no, photo_urls, attachment_urls, review_status, invoice_description_en, dedup_fingerprint, client_item_id, source_task_id
+      ) VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,${photoExpr},${attachExpr},$14,$15,$16,$17,$18)
       RETURNING id`,
       [
         id,
@@ -11868,6 +12250,7 @@ router.post('/property-feedbacks', async (req, res) => {
         invoiceDescriptionEn || null,
         fingerprint,
         clientItemId || null,
+        parsed.data.source_task_id || null,
       ],
     )
     try {
@@ -12008,11 +12391,28 @@ function canMutatePropertyFeedbackContent(user: any, kind: PropertyFeedbackRecor
   return propertyFeedbackCapabilities(user, kind, row).can_edit_content
 }
 
-async function canAccessPropertyFeedbackRow(client: any, user: any, row: any) {
+async function canAccessPropertyFeedbackRow(
+  client: any,
+  user: any,
+  row: any,
+  kind: PropertyFeedbackRecordKind,
+) {
   const propertyId = String(row?.property_id || '').trim()
   if (!propertyId || !client) return false
   const property = await client.query('SELECT id::text AS id FROM properties WHERE id::text = $1 LIMIT 1', [propertyId])
-  return Boolean(property?.rowCount) && await canViewMzappPropertyFeedback(user, property.rows[0], String(user?.sub || '').trim())
+  if (!property?.rowCount) return false
+  const userId = String(user?.sub || '').trim()
+  if (!userId) return false
+  if (kind === 'maintenance' && String(row?.assignee_id || '').trim() === userId) return true
+  const sourceTaskId = String(row?.source_task_id || '').trim()
+  if (sourceTaskId) {
+    try {
+      return (await propertyFeedbackSourceTaskAccess(user, propertyId, sourceTaskId, client)).canViewHistory
+    } catch {
+      return false
+    }
+  }
+  return canViewAll(user)
 }
 
 class PropertyFeedbackMutationError extends Error {
@@ -12300,7 +12700,7 @@ router.delete('/property-feedbacks/:kind/:id', async (req, res) => {
     const deleted = await pgRunInTransaction(async (client: any) => {
       const row = await loadAnyPropertyFeedbackRow(kind, id, client)
       if (!row) return false
-      if (!await canAccessPropertyFeedbackRow(client, user, row)) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
+      if (!await canAccessPropertyFeedbackRow(client, user, row, kind)) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
       if (kind === 'maintenance' && normalizeMaintenanceWorkflowStatus(row.status, row.review_status) === 'cancelled') {
         throw new PropertyFeedbackMutationError(409, 'maintenance_cancel_required')
       }
@@ -12354,7 +12754,7 @@ router.post('/property-feedbacks/:kind/:id/move', async (req, res) => {
     const row = await pgRunInTransaction(async (client: any) => {
       const sourceRow = await loadAnyPropertyFeedbackRow(sourceKind, id, client)
       if (!sourceRow) return null
-      if (!await canAccessPropertyFeedbackRow(client, user, sourceRow)) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
+      if (!await canAccessPropertyFeedbackRow(client, user, sourceRow, sourceKind)) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
       if (!propertyFeedbackCapabilities(user, sourceKind, sourceRow).can_move_category) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
       if (sourceKind === targetKind) return propertyFeedbackResponseFromRow(sourceKind, sourceRow, user)
       const movedId = await insertMovedPropertyFeedbackRecord(client, targetKind, sourceKind, sourceRow)
@@ -12435,7 +12835,7 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
       const updateResult = await pgRunInTransaction(async (client: any) => {
         const row = await loadPropertyFeedbackRow('maintenance', id, client, true)
         if (!row) throw new PropertyFeedbackMutationError(404, 'property_feedback_not_found')
-        if (!await canAccessPropertyFeedbackRow(client, user, row)) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
+        if (!await canAccessPropertyFeedbackRow(client, user, row, 'maintenance')) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
         const capabilities = propertyFeedbackCapabilities(user, 'maintenance', row, capabilityContext)
         if (wantsOrdinaryContent && !capabilities.can_edit_content) {
           throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
@@ -12509,7 +12909,7 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
     await pgRunInTransaction(async (client: any) => {
       const row = await loadAnyPropertyFeedbackRow(kind, id, client)
       if (!row) throw new PropertyFeedbackMutationError(404, 'property_feedback_not_found')
-      if (!await canAccessPropertyFeedbackRow(client, user, row)) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
+      if (!await canAccessPropertyFeedbackRow(client, user, row, kind)) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
       if (!canMutatePropertyFeedbackContent(user, kind, row)) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
     })
     if (kind === 'deep_cleaning') {
@@ -12822,7 +13222,7 @@ router.post('/property-feedbacks/:kind/:id/projects', async (req, res) => {
     const response = await pgRunInTransaction(async (client) => {
       const row = await loadPropertyFeedbackRow(kind, id, client, true)
       if (!row) return { statusCode: 404, body: { message: 'not found' } }
-      if (!await canAccessPropertyFeedbackRow(client, user, row)) return { statusCode: 403, body: { code: 'forbidden_property_feedback' } }
+      if (!await canAccessPropertyFeedbackRow(client, user, row, kind)) return { statusCode: 403, body: { code: 'forbidden_property_feedback' } }
       if (receiptScope) {
         await assertIdempotentStepReceiptsReady(client)
         const receipt = await loadIdempotentStepReceipt(client, receiptScope)
@@ -12893,7 +13293,7 @@ router.patch('/property-feedbacks/:kind/:id/projects/:projectId', async (req, re
   try {
     const row = await loadPropertyFeedbackRow(kind, id)
     if (!row) return res.status(404).json({ message: 'not found' })
-    if (!await canAccessPropertyFeedbackRow(pgPool, user, row)) return res.status(403).json({ code: 'forbidden_property_feedback' })
+    if (!await canAccessPropertyFeedbackRow(pgPool, user, row, kind)) return res.status(403).json({ code: 'forbidden_property_feedback' })
     const current = summarizeProjectItems(kind, row.project_items, row).items
     const found = current.find((it: PropertyFeedbackProjectItem) => it.id === projectId)
     if (!found) return res.status(404).json({ message: 'project_not_found' })
@@ -12938,7 +13338,7 @@ router.post('/property-feedbacks/:kind/:id/projects/:projectId/complete', async 
     const response = await pgRunInTransaction(async (client) => {
       const row = await loadPropertyFeedbackRow(kind, id, client, true)
       if (!row) return { statusCode: 404, body: { message: 'not found' } }
-      if (!await canAccessPropertyFeedbackRow(client, user, row)) return { statusCode: 403, body: { code: 'forbidden_property_feedback' } }
+      if (!await canAccessPropertyFeedbackRow(client, user, row, kind)) return { statusCode: 403, body: { code: 'forbidden_property_feedback' } }
       if (receiptScope) {
         await assertIdempotentStepReceiptsReady(client)
         const receipt = await loadIdempotentStepReceipt(client, receiptScope)

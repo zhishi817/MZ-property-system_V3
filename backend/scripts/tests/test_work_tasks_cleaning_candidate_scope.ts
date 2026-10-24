@@ -56,9 +56,9 @@ assert.match(latestCancellations, /SELECT DISTINCT ON \(event\.task_id\)[\s\S]*?
 
 const historicalIds = route.slice(historicalStart, cancelledScheduledStart)
 assert.match(historicalIds, /cleaningCompletionAuditWhereSql\('audit'\)/)
-assert.match(historicalIds, /audit\.performed_as_action = 'submit_inspection'/)
+assert.match(historicalIds, /inspectionSubmissionAuditWhereSql\('audit'\)/)
 assert.match(historicalIds, /COALESCE\(audit\.performed_by_user_id, audit\.actor_user_id\)::text = \$3::text/)
-assert.match(historicalIds, /audit\.performed_at AT TIME ZONE 'Australia\/Melbourne'/)
+assert.match(historicalIds, /cleaningAuditBusinessDateSql\('audit'\)/)
 assert.match(historicalIds, /media\.type = 'lockbox_video'/)
 assert.match(historicalIds, /media\.uploader_id::text = \$3::text/)
 assert.match(historicalIds, /media\.captured_at AT TIME ZONE 'Australia\/Melbourne'/)
@@ -85,7 +85,7 @@ assert.doesNotMatch(
 )
 assert.match(candidateRows, /JOIN cleaning_tasks t ON t\.id::text = candidate_id\.id/)
 assert.match(candidateRows, /cleaningCompletionAuditWhereSql\('audit'\)/)
-assert.match(candidateRows, /audit\.performed_as_action = 'submit_inspection'/)
+assert.match(candidateRows, /inspectionSubmissionAuditWhereSql\('audit'\)/)
 assert.match(candidateRows, /media\.type = 'lockbox_video'/)
 assert.match(candidateRows, /event\.task_id = \('cleaning_task:' \|\| t\.id::text\)/)
 assert.match(
@@ -134,6 +134,12 @@ assert.match(completionAuditHelper, /performed_as_action = 'complete_cleaning'/)
 assert.match(completionAuditHelper, /performed_as_action = 'fill_supplies'/)
 assert.match(completionAuditHelper, /mzapp\.cleaning_tasks\.restock_proof/)
 assert.match(completionAuditHelper, /completion_photos_saved/)
+const inspectionAuditHelperStart = completionEvidenceSource.indexOf('export function inspectionSubmissionAuditWhereSql')
+assert.ok(inspectionAuditHelperStart >= 0)
+const inspectionAuditHelper = completionEvidenceSource.slice(inspectionAuditHelperStart, completionAuditHelperStart)
+assert.match(inspectionAuditHelper, /performed_as_action = 'submit_inspection'/)
+assert.match(inspectionAuditHelper, /LEGACY_RESTOCK_INSPECTION_AUDIT_ROUTE/)
+assert.match(completionEvidenceSource, /LEGACY_RESTOCK_INSPECTION_AUDIT_ROUTE = 'mzapp\.cleaning_tasks\.restock_proof'/)
 for (const status of [
   'cleaned',
   'restock_pending',
