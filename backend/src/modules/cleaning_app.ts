@@ -3775,12 +3775,16 @@ router.get(
       const workTaskId = requestedWorkTaskId
       const guestLuggageId = String((req.query as any)?.guest_luggage_id || '').trim()
       const sourceTaskId = String((req.query as any)?.source_task_id || '').trim()
-      const relatedSourceIds = Array.from(new Set(String((req.query as any)?.source_ids || '')
+      const requestedRelatedSourceIds = Array.from(new Set(String((req.query as any)?.source_ids || '')
         .split(',')
         .map((value) => String(value || '').trim())
-        .filter(Boolean)
-        .slice(0, 2)))
+        .filter(Boolean)))
+      const relatedSourceIds = requestedRelatedSourceIds.slice(0, 2)
       const mediaScope = String((req.query as any)?.media_scope || '').trim().toLowerCase()
+      if (mediaScope === 'inspector' && requestedRelatedSourceIds.length > 2) {
+        res.setHeader('Cache-Control', 'private, no-store')
+        return res.status(403).json({ message: 'forbidden_media' })
+      }
       const hasScopedMediaContext = relatedSourceIds.length > 0 || !!mediaScope
       const requestedDayEndUserIdRaw = String((req.query as any)?.day_end_user_id || '').trim()
       const requestedDayEndDateRaw = String((req.query as any)?.day_end_date || '').trim()
@@ -4016,6 +4020,7 @@ router.get(
                   ctm.url,
                   ctm.task_id::text AS source_task_id,
                   ctm.uploader_id::text AS uploader_id,
+                  ctm.created_at,
                   ct.id,
                   ct.cleaner_id,
                   ct.inspector_id,
@@ -4033,7 +4038,8 @@ router.get(
                   ct.inspector_id,
                   ct.assignee_id,
                   u.photo_url,
-                  u.photo_urls
+                  u.photo_urls,
+                  u.created_at
              FROM cleaning_consumable_usages u
              JOIN cleaning_tasks ct ON ct.id::text = u.task_id::text
             WHERE (
@@ -4080,6 +4086,8 @@ router.get(
           inspector_id: row.inspector_id,
           assignee_id: row.assignee_id,
           type: 'consumable_item_photo',
+          cleaning_usage_recorded: true,
+          created_at: row.created_at,
           url,
         })))
         .filter((row: any) => {
@@ -4213,6 +4221,7 @@ router.get(
               ? await canViewMzappGuestLuggageNoticeMedia(user, guestLuggageMediaRow, userId, workTaskId, relatedSourceIds)
               : canViewFeedbackMedia
       if (!canView) {
+        res.setHeader('Cache-Control', 'private, no-store')
         return res.status(403).json({ message: 'forbidden_media' })
       }
       if (variant === 'source' && (

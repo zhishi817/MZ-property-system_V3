@@ -20,6 +20,7 @@ type FixtureTask = {
   cleaner_id: string | null
   assignee_id: string | null
   inspection_mode?: string | null
+  inspection_scope?: string | null
 }
 
 type FixtureMedia = {
@@ -28,6 +29,7 @@ type FixtureMedia = {
   type: string
   url: string
   uploader_id: string | null
+  created_at?: string | Date
 }
 
 const tasks: FixtureTask[] = [
@@ -254,6 +256,16 @@ const inspectionSubmissionReceipts = new Map([
   }],
 ])
 
+// MZ-081 / AU2117-shaped evidence: inspection is assigned on the check-in
+// source while the cleaner's supplies evidence belongs to the checkout source.
+const cleaningProofMedia: FixtureMedia[] = [
+  { id: 'supplies-1', task_id: 'checkout-active', type: 'consumable_item_photo:toilet_paper', url: 'cleaning/route/cleaner-supplies.jpg', uploader_id: 'cleaner-1' },
+  { id: 'restock-1', task_id: 'checkout-active', type: 'restock_proof:toilet_paper', url: 'cleaning/route/cleaner-restock.jpg', uploader_id: 'cleaner-1' },
+  { id: 'supplies-legacy-media', task_id: 'checkout-active', type: 'consumable_item_photo', url: 'cleaning/route/cleaner-legacy-media.jpg', uploader_id: 'cleaner-1' },
+  { id: 'other-inspector-restock', task_id: 'checkout-active', type: 'restock_proof:soap', url: 'cleaning/route/unrelated-restock.jpg', uploader_id: 'former-inspector' },
+]
+const usageProofs: any[] = []
+
 function taskRows(ids: string[]) {
   const requested = new Set(ids.map(String))
   return tasks.filter((task) => requested.has(task.id))
@@ -280,6 +292,14 @@ dbAdapter.pgPool = {
     }
     if (/FROM work_task_action_audits/.test(sql) && Array.isArray(params[0])) {
       const ids = Array.isArray(params[0]) ? params[0].map(String) : []
+      if (/AS inspected_at/.test(sql)) {
+        const hasEvidence = auditRows(ids, String(params[1] || ''), 'submit_inspection').length > 0
+        return { rows: [{ inspected_at: hasEvidence ? new Date('2026-10-21T02:00:00.100Z') : null }], rowCount: 1 }
+      }
+      if (/AS actor_user_id/.test(sql)) {
+        const rows = Array.from(completionEvidence.entries()).flatMap(([actor_user_id, owned]) => ids.filter((id) => owned.has(id)).map((source_id) => ({ source_id, actor_user_id })))
+        return { rows, rowCount: rows.length }
+      }
       const userId = String(params[1] || '')
       const action = /performed_as_action\s*=\s*'submit_inspection'/.test(sql) || params[2] === 'submit_inspection'
         ? 'submit_inspection'
@@ -298,6 +318,7 @@ dbAdapter.pgPool = {
             url: item.url,
             source_task_id: item.task_id,
             uploader_id: item.uploader_id,
+            created_at: item.created_at || '2026-10-21T01:00:00.000Z',
             id: task.id,
             cleaner_id: task.cleaner_id,
             inspector_id: task.inspector_id,
@@ -313,7 +334,7 @@ dbAdapter.pgPool = {
         .map((item) => ({
           ...item,
           captured_at: '2026-10-21T01:00:00.000Z',
-          created_at: '2026-10-21T01:00:00.000Z',
+          created_at: item.created_at || '2026-10-21T01:00:00.000Z',
         }))
       return { rows, rowCount: rows.length }
     }
@@ -392,10 +413,14 @@ dbAdapter.pgPool = {
       return { rows, rowCount: rows.length }
     }
     if (/FROM cleaning_consumable_usages u[\s\S]*JOIN cleaning_tasks ct/.test(sql)) {
-      return { rows: [], rowCount: 0 }
+      const references = new Set((params[0] || []).map(String))
+      const rows = usageProofs.filter((row) => references.has(row.photo_url)).map((row) => ({ ...tasks.find((task) => task.id === row.task_id), photo_url: row.photo_url, photo_urls: null, created_at: row.created_at }))
+      return { rows, rowCount: rows.length }
     }
     if (/FROM cleaning_consumable_usages/.test(sql) && /task_id::text = ANY/.test(sql)) {
-      return { rows: [], rowCount: 0 }
+      const ids = new Set((params[0] || []).map(String))
+      const rows = usageProofs.filter((row) => ids.has(row.task_id))
+      return { rows, rowCount: rows.length }
     }
     if (/FROM work_task_participants/.test(sql)) return { rows: [], rowCount: 0 }
     if (/FROM guest_luggage_notices|FROM cleaning_day_end_media|FROM property_maintenance|FROM external_maintenance_orders|FROM work_task_events/.test(sql)) {
@@ -411,6 +436,7 @@ r2.hasR2 = true
 r2.r2GetObjectByKey = async (key: string) => {
   assert.ok(
     media.some((item) => item.url === key)
+      || usageProofs.some((item) => item.photo_url === key)
       || feedbackMedia.some((item) => item.photo_urls.includes(key))
       || historicalFeedbackMedia.some((item) => item.photo_urls.includes(key)),
     `only a recorded fixture key may reach object storage: ${key}`,
@@ -761,11 +787,76 @@ async function verifyHistoricalFeedbackMediaRoute(baseUrl: string) {
   assert.equal(unrelated.status, 403, 'an unrelated worker may not read exact-source historical report media')
 }
 
+async function verifyInspectorCleaningProofRoutes(baseUrl: string) {
+  media.push(...cleaningProofMedia)
+  usageProofs.push({ id: 'legacy-usage', task_id: 'checkout-active', item_id: 'paper', photo_url: 'cleaning/route/legacy-usage.jpg', created_at: '2026-10-21T01:00:00.000Z' })
+  const pair = ['checkout-active', 'checkin-active']
+  const inspector = { id: 'inspector-1', role: 'cleaning_inspector' }
+  const read = (key: string, ids = pair, user = inspector) => fetch(
+    `${baseUrl}${mediaPath(key, ids, 'inspector', 'checkout-active')}`,
+    { headers: userHeaders(user) },
+  )
+  for (const key of ['cleaning/route/cleaner-supplies.jpg', 'cleaning/route/cleaner-restock.jpg', 'cleaning/route/cleaner-legacy-media.jpg', 'cleaning/route/legacy-usage.jpg']) {
+    const result = await read(key)
+    assert.equal(result.status, 200, 'assigned inspector may read exact canonical cleaner supplies proof')
+    assert.equal(result.headers.get('content-type'), 'image/jpeg')
+    assert.ok((await result.arrayBuffer()).byteLength)
+  }
+  const history = await getJson(baseUrl, formPhotoPath('cleaning_tasks_inspector:history::record:completed:2026-10-21', pair, 'inspector'), inspector)
+  assert.equal(history.response.status, 200)
+  assert.deepEqual(history.body.items.filter((item: any) => ['restock', 'consumable'].includes(item.source)).map((item: any) => item.id).sort(), ['legacy-usage:0', 'restock-1', 'supplies-1', 'supplies-legacy-media'])
+
+  const readsBeforeDenied = r2ReadCount
+  for (const result of [
+    await read('cleaning/route/cleaner-supplies.jpg', ['checkout-active', 'same-day-independent']),
+    await read('cleaning/route/cleaner-supplies.jpg', [...pair, 'same-day-independent']),
+    await read('cleaning/route/unrelated-restock.jpg'),
+    await read('cleaning/route/ownerless.jpg'),
+    await read('cleaning/route/cleaner-supplies.jpg', pair, { id: 'outsider-1', role: 'cleaning_inspector' }),
+    await read('cleaning/route/cleaner-supplies.jpg', pair, { id: 'cleaner-1', role: 'cleaner' }),
+  ]) {
+    assert.equal(result.status, 403)
+    assert.match(result.headers.get('cache-control') || '', /no-store/, 'permission errors must not persist as cached photo results')
+  }
+  assert.equal(r2ReadCount, readsBeforeDenied, 'denied and tampered references never reach storage')
+
+  const checkin = tasks.find((task) => task.id === 'checkin-active')!
+  checkin.inspector_id = 'inspector-2'
+  checkin.assignee_id = 'inspector-2'
+  try {
+    const historical = await read('cleaning/route/cleaner-supplies.jpg')
+    assert.equal(historical.status, 200, 'formal inspection actor keeps authorized own history after reassignment')
+    await historical.arrayBuffer()
+    media.push({ id: 'later-supplies', task_id: 'checkout-active', type: 'consumable_item_photo:paper', url: 'cleaning/route/later-supplies.jpg', uploader_id: 'cleaner-1', created_at: '2026-10-22T01:00:00.000Z' })
+    media.push({ id: 'later-subsecond', task_id: 'checkout-active', type: 'restock_proof:paper', url: 'cleaning/route/later-subsecond.jpg', uploader_id: 'cleaner-1', created_at: new Date('2026-10-21T02:00:00.900Z') })
+    assert.equal((await read('cleaning/route/later-supplies.jpg')).status, 403, 'former inspector cannot borrow later-round evidence on a reused source')
+    assert.equal((await read('cleaning/route/later-subsecond.jpg')).status, 403, 'PostgreSQL Date values retain sub-second historical bounds')
+    const historyAfterLaterUpload = await getJson(baseUrl, formPhotoPath('cleaning_tasks_inspector:history::record:completed:2026-10-21', pair, 'inspector'), inspector)
+    assert.equal(historyAfterLaterUpload.body.items.some((item: any) => item.id === 'later-supplies'), false)
+    assert.equal(historyAfterLaterUpload.body.items.some((item: any) => item.id === 'later-subsecond'), false)
+    inspectionEvidence.get('inspector-1')!.delete('checkin-active')
+    const revoked = await read('cleaning/route/cleaner-supplies.jpg')
+    assert.equal(revoked.status, 403, 'former assignment without immutable execution evidence grants no access')
+    const current = await read('cleaning/route/cleaner-supplies.jpg', pair, { id: 'inspector-2', role: 'cleaning_inspector' })
+    assert.equal(current.status, 200, 'new current inspection duty may read the cleaner proof, not previous inspector media')
+    await current.arrayBuffer()
+    checkin.inspector_id = null
+    checkin.inspection_scope = 'inspect_and_hang'
+    assert.equal((await read('cleaning/route/cleaner-supplies.jpg', pair, { id: 'inspector-2', role: 'cleaning_inspector' })).status, 200, 'pure check-in inspector assignment uses MZ-074 effective assignee')
+  } finally {
+    checkin.inspector_id = 'inspector-1'
+    checkin.assignee_id = 'inspector-1'
+    checkin.inspection_scope = null
+    inspectionEvidence.get('inspector-1')!.add('checkin-active')
+  }
+}
+
 withRouteServer(async (baseUrl) => {
   await verifyFormPhotoRoute(baseUrl)
   await verifyMediaByteRoute(baseUrl)
   await verifyLegacyInspectionPhotoRoute(baseUrl)
   await verifyHistoricalFeedbackMediaRoute(baseUrl)
+  await verifyInspectorCleaningProofRoutes(baseUrl)
 })
   .then(() => process.stdout.write('test_mzapp_form_photo_routes: ok\n'))
   .catch((error) => {

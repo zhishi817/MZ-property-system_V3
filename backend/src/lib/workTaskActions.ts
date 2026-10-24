@@ -409,6 +409,11 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
   const isCompleted = isCleaningTask && hasCleaningSubmissionSignal
     ? cleaningSubmissionReady || status === 'cancelled' || status === 'canceled'
     : isTerminalStatus(status) || (isPasswordOnly && status === 'inspected')
+  // `to_hang_keys` means the formal inspection has already been submitted,
+  // but the inspector still owns the separate key-handover action. Keep the
+  // inspection entry available as read-only history without allowing a
+  // second inspection submission, while leaving the video action enabled.
+  const isInspectionSubmissionCompleted = isInspectionTask && status === 'to_hang_keys'
   const hasSelfCompletePhotoException = task?.completion_photo_exception === true
     || Array.isArray(task?.completion_photo_exception?.items)
   const hasSelfCompleteFinalPhotoState = task?.completion_photos_ok === true || hasSelfCompletePhotoException
@@ -533,7 +538,7 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
       const inspectionReason = disabledReason({
         hasPermission: canInspect && canMediaUpload,
         isParticipant: participantSummary.can('submit_inspection'),
-        completed: isCompleted,
+        completed: isCompleted || isInspectionSubmissionCompleted,
       })
       addWorkerAction({
         id: 'submit_inspection',

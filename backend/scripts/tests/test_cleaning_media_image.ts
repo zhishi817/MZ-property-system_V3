@@ -57,7 +57,7 @@ async function main() {
   assert.match(route, /normalizeStoredPhotoUrls\(offlineRow\.completion_photo_urls\)/, 'persisted completion-photo references must be eligible for exact offline task authorization')
   assert.match(route, /offlineRows\.length && \(!offlineRow \|\| \(requestedWorkTaskId && String\(offlineRow\.id \|\| ''\)\.trim\(\) !== requestedWorkTaskId\)\)/, 'zero-or-wrong task context must not fall through after an offline association is found')
   assert.match(route, /code: 'media_not_found'/, 'an authorized but missing offline object must report a terminal not-found result')
-  assert.match(route, /if \(!canView\) \{\s*return res\.status\(403\)\.json\(\{ message: 'forbidden_media' \}\)/, 'source-specific authorization must fail closed before R2 is read')
+  assert.match(route, /if \(!canView\) \{\s*res\.setHeader\('Cache-Control', 'private, no-store'\)\s*return res\.status\(403\)\.json\(\{ message: 'forbidden_media' \}\)/, 'source-specific authorization must fail closed without caching denial before R2 is read')
   assert.match(route, /forbidden_media/, 'unrecorded or unauthorized media keys must fail closed')
   assert.match(route, /selectUniqueRecordedCleaningMediaRow/, 'media proxy must use the single-task and single-type authorization selector')
   assert.match(route, /living_room_photo_urls: livingRoomPhotoUrls/, 'consumables response must expose the compatible plural living-photo field')

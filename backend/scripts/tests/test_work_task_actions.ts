@@ -602,6 +602,43 @@ function main() {
   assert.equal(actionById(checkinReadyForKeysPayload, 'upload_access_video')?.enabled, true)
   assert.equal(actionById(checkinReadyForKeysPayload, 'upload_access_video')?.disabled_reason, undefined)
   assert.equal(actionById(checkinReadyForKeysPayload, 'upload_access_video')?.label, '挂钥匙并完成')
+  assert.equal(actionById(checkinReadyForKeysPayload, 'submit_inspection')?.enabled, false)
+  assert.equal(actionById(checkinReadyForKeysPayload, 'submit_inspection')?.disabled_reason, 'task_completed')
+  assert.equal(actionById(checkinReadyForKeysPayload, 'submit_inspection')?.read_only, true)
+
+  const pendingHandoverTurnoverPayload = buildWorkTaskActionPayload({
+    id: 'w-pending-handover-turnover',
+    source_type: 'cleaning_tasks',
+    source_id: 'checkout-source',
+    source_ids: ['checkout-source', 'checkin-source'],
+    task_kind: 'inspection',
+    task_type: 'turnover',
+    inspection_scope: 'inspect_and_hang',
+    status: 'to_hang_keys',
+    inspector_id: 'inspector-to-inspect',
+    participants: [{
+      user_id: 'inspector-to-inspect',
+      relation: 'assigned',
+      role: 'inspector',
+      action_ids: ['submit_inspection', 'upload_access_video'],
+    }],
+  }, {
+    userId: 'inspector-to-inspect',
+    roleNames: ['cleaning_inspector'],
+    permissions: allExecPerms,
+    canViewAll: false,
+  })
+  assert.equal(actionById(pendingHandoverTurnoverPayload, 'submit_inspection')?.enabled, false)
+  assert.equal(actionById(pendingHandoverTurnoverPayload, 'submit_inspection')?.read_only, true)
+  assert.equal(actionById(pendingHandoverTurnoverPayload, 'submit_inspection')?.source_id, 'checkout-source')
+  assert.equal(actionById(pendingHandoverTurnoverPayload, 'upload_access_video')?.enabled, true)
+  assert.equal(actionById(pendingHandoverTurnoverPayload, 'upload_access_video')?.source_id, 'checkout-source')
+
+  assert.equal(
+    actionById(pendingHandoverTurnoverPayload, 'upload_access_video')?.source_id,
+    'checkout-source',
+    'the original checkout source must continue to own the handover video and action audit',
+  )
 
   const cleanerRecoveryPayload = buildWorkTaskActionPayload({
     ...cleaningTask,

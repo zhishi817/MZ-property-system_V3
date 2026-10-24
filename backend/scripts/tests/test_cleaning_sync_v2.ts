@@ -596,7 +596,7 @@ async function main() {
     await pgPool.query(
       `INSERT INTO cleaning_tasks(id, order_id, property_id, task_type, task_date, type, date, status, source, execution_state, manual_task_purpose, auto_sync_enabled, checkin_time, checkout_time, new_code, old_code, guest_special_request, keys_required, nights_override, assignee_id, cleaner_id, inspector_id, linked_checkout_task_id, inspection_scope)
        VALUES
-         ($1, NULL, 'P_TEST_D', 'checkin_clean', '2026-02-18'::date, 'checkin_clean', '2026-02-18'::date, 'pending', 'manual', 'active', 'temporary_order_placeholder', true, '2pm', NULL, 'manual-new-code', NULL, 'first cleaning inspection', 2, 5, 'ASSIGNEE-1', 'CLEANER-1', 'INSPECTOR-1', $5, 'inspect_and_hang'),
+         ($1, NULL, 'P_TEST_D', 'checkin_clean', '2026-02-18'::date, 'checkin_clean', '2026-02-18'::date, 'pending', 'manual', 'active', NULL, true, '2pm', NULL, 'manual-new-code', NULL, 'first cleaning inspection', 2, 5, 'ASSIGNEE-1', 'CLEANER-1', 'INSPECTOR-1', $5, 'inspect_and_hang'),
          ($2, NULL, 'P_TEST_D', 'checkout_clean', '2026-02-21'::date, 'checkout_clean', '2026-02-21'::date, 'pending', 'manual', 'active', 'temporary_order_placeholder', true, NULL, '11am', NULL, 'manual-old-code', NULL, 2, 5, NULL, NULL, NULL, NULL, NULL),
          ($3, NULL, 'P_TEST_D', 'checkin_clean', '2026-02-18'::date, 'checkin_clean', '2026-02-18'::date, 'pending', 'manual', 'active', 'manual_extra', true, NULL, NULL, NULL, NULL, NULL, 1, NULL, NULL, NULL, NULL, NULL, NULL),
          ($4, NULL, 'P_TEST_D', 'checkout_clean', '2026-02-21'::date, 'checkout_clean', '2026-02-21'::date, 'in_progress', 'manual', 'active', 'temporary_order_placeholder', true, NULL, NULL, NULL, NULL, NULL, 1, NULL, NULL, NULL, NULL, NULL, NULL),
@@ -605,7 +605,7 @@ async function main() {
     )
   } else {
     ;(db.cleaningTasks as any[]).push(
-      { id: manualCheckin, order_id: null, property_id: 'P_TEST_D', task_type: 'checkin_clean', task_date: '2026-02-18', type: 'checkin_clean', date: '2026-02-18', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: 'temporary_order_placeholder', auto_sync_enabled: true, checkin_time: '2pm', new_code: 'manual-new-code', guest_special_request: 'first cleaning inspection', keys_required: 2, nights_override: 5, assignee_id: 'ASSIGNEE-1', cleaner_id: 'CLEANER-1', inspector_id: 'INSPECTOR-1', linked_checkout_task_id: manualLinkedCheckout, inspection_scope: 'inspect_and_hang' },
+      { id: manualCheckin, order_id: null, property_id: 'P_TEST_D', task_type: 'checkin_clean', task_date: '2026-02-18', type: 'checkin_clean', date: '2026-02-18', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: null, auto_sync_enabled: true, checkin_time: '2pm', new_code: 'manual-new-code', guest_special_request: 'first cleaning inspection', keys_required: 2, nights_override: 5, assignee_id: 'ASSIGNEE-1', cleaner_id: 'CLEANER-1', inspector_id: 'INSPECTOR-1', linked_checkout_task_id: manualLinkedCheckout, inspection_scope: 'inspect_and_hang' },
       { id: manualCheckout, order_id: null, property_id: 'P_TEST_D', task_type: 'checkout_clean', task_date: '2026-02-21', type: 'checkout_clean', date: '2026-02-21', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: 'temporary_order_placeholder', auto_sync_enabled: true, checkout_time: '11am', old_code: 'manual-old-code', keys_required: 2, nights_override: 5 },
       { id: manualExtraCheckin, order_id: null, property_id: 'P_TEST_D', task_type: 'checkin_clean', task_date: '2026-02-18', type: 'checkin_clean', date: '2026-02-18', status: 'pending', source: 'manual', execution_state: 'active', manual_task_purpose: 'manual_extra', auto_sync_enabled: true },
       { id: manualCheckoutInProgress, order_id: null, property_id: 'P_TEST_D', task_type: 'checkout_clean', task_date: '2026-02-21', type: 'checkout_clean', date: '2026-02-21', status: 'in_progress', source: 'manual', execution_state: 'active', manual_task_purpose: 'temporary_order_placeholder', auto_sync_enabled: true },
@@ -650,7 +650,7 @@ async function main() {
     if (typeof raw === 'string') return raw ? JSON.parse(raw) : []
     return []
   }
-  assert.equal(String(eligibleManual.execution_state), 'superseded', 'temporary manual checkin placeholder should be superseded')
+  assert.equal(String(eligibleManual.execution_state), 'superseded', 'an unexecuted manual checkin created by the current entry must be replaced by its unique canonical order task')
   assert.equal(String(eligibleManual.status), 'pending', 'superseded placeholder should keep original status instead of cancelled')
   assert.equal(String(eligibleManual.superseded_by), String(o4Checkin.id))
   assert.ok(supersedeConflicts(eligibleManual).some((item: any) => item.field === 'checkin_time' && item.resolution === 'copied_manual'))
