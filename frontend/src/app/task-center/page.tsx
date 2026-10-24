@@ -32,6 +32,7 @@ import {
   cleaningNightsDisplayLabels,
   cleaningTaskFlowLabelText,
   deferredInspectionConflictPresentation,
+  deferredInspectionMergePresentation,
   guestReadyOperationId,
   guestReadyNotificationPresentation,
   hasTaskCenterRequiredExecutor,
@@ -40,6 +41,7 @@ import {
   resolveTaskCenterColumns,
   taskCenterBoardInspectionDueDate,
   taskCenterDailyGroupCounts,
+  taskCenterInspectionAssignmentTaskIds,
   taskCenterInspectionAssignmentPatch,
 } from './taskCenterDisplay'
 import styles from '../cleaning/cleaningSchedule.module.scss'
@@ -175,6 +177,10 @@ type TaskCenterTask = {
   inspection_mode?: 'pending_decision' | 'same_day' | 'deferred' | 'self_complete' | 'checked_done' | null
   inspection_scope?: 'inspect_and_hang' | 'password_only' | null
   inspection_due_date?: string | null
+  inspection_action_task_id?: string | null
+  deferred_inspection_merged?: boolean
+  deferred_inspection_original_checkout_date?: string | null
+  deferred_inspection_effective_date?: string | null
   deferred_checkin_conflict?: boolean
   conflict_checkin_task_id?: string | null
   conflict_checkin_task_date?: string | null
@@ -440,11 +446,13 @@ function taskCardPrimaryMetaItems(params: {
   syncTag: TaskCardMetaItem | null
   temporarilySkipped?: boolean
   deferredCheckinConflict?: ReturnType<typeof deferredInspectionConflictPresentation>
+  deferredInspectionMerge?: ReturnType<typeof deferredInspectionMergePresentation>
   supersededCount: number
   conflictCount: number
 }) {
   const items: TaskCardMetaItem[] = []
   if (params.deferredCheckinConflict) items.push(params.deferredCheckinConflict)
+  if (params.deferredInspectionMerge) items.push(params.deferredInspectionMerge)
   if (params.conflictCount > 0) items.push({ key: 'conflict', label: '冲突', tone: 'danger' })
   if (params.temporarilySkipped) items.push({ key: 'skip', label: '暂不安排', tone: 'pending' })
   if (params.syncTag?.label === '待同步') items.push(params.syncTag)
@@ -807,8 +815,9 @@ function taskNightsTags(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' |
   }))
 }
 
-function isCheckinOnlyCleaningTask(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view'>) {
+function isCheckinOnlyCleaningTask(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view' | 'deferred_inspection_merged'>) {
   if (task.task_source !== 'cleaning' || task.deferred_inspection_view) return false
+  if (task.deferred_inspection_merged === true) return true
   const timing = cleaningTimingVisibility(task)
   return timing.showCheckin && !timing.showCheckout
 }
@@ -1000,7 +1009,7 @@ export default function TaskCenterPage() {
   const markCleaningTaskDirty = useCallback((task: TaskCenterTask) => {
     if (task.task_source !== 'cleaning') return
     const group = cleaningNotificationGroupForTask(task)
-    for (const taskId of activeCleaningTaskIds(task)) {
+    for (const taskId of taskCenterInspectionAssignmentTaskIds(task)) {
       const id = String(taskId || '').trim()
       if (!id) continue
       dirtyCleaningTaskIdsRef.current.add(id)
@@ -1688,7 +1697,7 @@ export default function TaskCenterPage() {
     const inspectionIds = Array.from(new Set(
       tasks
         .filter((task) => task.task_source === 'cleaning' && (task.can_configure_inspection || task.deferred_inspection_view || isCheckinOnlyCleaningTask(task)))
-        .flatMap((task) => activeCleaningTaskIds(task)),
+        .flatMap((task) => taskCenterInspectionAssignmentTaskIds(task)),
     ))
     const workIds = tasks.filter((task) => task.task_source === 'work').map((task) => task.task_id)
     return { inspectionIds, workIds }
@@ -2306,6 +2315,8 @@ export default function TaskCenterPage() {
     const conflictCount = taskDisplayConflictCount(task)
     const deferredCheckinConflict = deferredInspectionConflictPresentation(task)
     const deferredCheckinConflictText = deferredCheckinConflict?.detail || ''
+    const deferredInspectionMerge = deferredInspectionMergePresentation(task)
+    const deferredInspectionMergeText = deferredInspectionMerge?.detail || ''
     const guestReadyMeta = guestReadyNotificationPresentation(task, viewerRole)
     const primaryMetaItems = [
       ...taskCardPrimaryMetaItems({
@@ -2317,12 +2328,14 @@ export default function TaskCenterPage() {
         syncTag,
         temporarilySkipped: task.temporarily_skipped,
         deferredCheckinConflict,
+        deferredInspectionMerge,
         supersededCount,
         conflictCount,
       }),
       ...(guestReadyMeta ? [{ key: 'guest-ready-notification', label: guestReadyMeta.label, tone: guestReadyMeta.tone }] : []),
     ]
     const footerNote = deferredCheckinConflictText
+      || deferredInspectionMergeText
       || compactDetailText
       || (conflictCount > 0 ? '请先核对订单' : '')
       || (syncTag?.label === '已同步' ? '已同步' : '')

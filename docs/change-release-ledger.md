@@ -1,5 +1,149 @@
 # Change Release Ledger
 
+## CRL-20261024-002 — MZ-075 延期检查与当天入住可靠合卡
+
+- **Status:** integrated candidate fully verified and committed locally in this release unit; not pushed, merged, deployed, or released
+- **Repository:** `root`
+- **Updated:** 2026-10-24 UTC
+- **Request:** 同一房源、同一次有可靠关联的周转，延期检查执行日与入住同日时合成一张卡；入住安排优先。入住源确实未分配时保持未分配，保存执行人必须写入入住源并在刷新后显示已分配。Web 与 Mobile 显示“含延期检查”及真实原退房日到本次检查日，不得仅凭同房同日误合。
+- **Outcome:** Root 的 MZ App 与 Task Center 共用可靠关联判定；合卡以入住来源的执行人、客需、入住时间、模式和状态为权威，同时保留原清洁人、媒体/历史来源与延期日期。Web 保存只更新准确入住源，冲突和歧义继续 fail-closed。
+
+### Implementation
+
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — modified: 区分展示合卡与提交冲突；仅接受显式 checkout link、replacement link 或唯一有效订单边界，拒绝同房同日猜测、多候选与跨周转。
+- `backend/src/modules/mzapp.ts` — modified: MZ App 管理投影输出单一入住优先卡、真实延期日期、准确 action source 和独立未分配状态；不继承延期检查人。
+- `backend/src/modules/task_center.ts` — modified: Web 日投影与 Mobile 保持同一关系、优先级和计数；保存目标限定入住 source，入住客需（包括显式空值）不被延期源覆盖。
+- `frontend/src/app/task-center/page.tsx` — modified: 合卡使用唯一检查 action source 保存执行人，显示“含延期检查”和日期说明。
+- `frontend/src/app/task-center/taskCenterDisplay.ts` — modified: 新增延期合卡展示及检查分配目标解析；普通 turnover 保持原多源行为。
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — modified: 覆盖可靠关系、人员冲突、真未分配、无关候选、多可靠候选及跨日边界。
+- `backend/scripts/tests/test_task_center_daily_projection.ts` — modified: 覆盖 Web 单卡、入住安排优先、原清洁人保留、未分配不继承和重复计数边界。
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — modified: 真实本地 HTTP 保存路径覆盖未分配入住 → 合法分配 → 刷新后单卡已分配，且延期源不被改写。
+- `frontend/src/app/task-center/taskCenterDisplay.test.ts` — modified: 覆盖标签、真实日期缺失不猜、保存目标、普通周转与入住优先字段。
+- `docs/feature-regression-registry.md` — modified: FR-039 登记 MZ-075 合卡、保存与展示不变量。
+
+### Impact / Dependencies
+
+- API: 现有管理投影新增/保留 `deferred_inspection_merged`、`deferred_inspection_original_checkout_date`、`deferred_inspection_effective_date` 与 `inspection_action_task_id`；无新写接口。
+- Database / migration / backfill / config / dependencies: none。
+- Permissions: 不扩大角色或任务范围；既有保存权限和版本/冲突校验继续执行。
+- Mobile dependency: paired `mobile/CRL-20261024-001` 消费 Root 的结构化标签与日期字段。
+- Accounting / media: 不删除底层任务、不转移检查费、不借用跨任务媒体；合卡只改变授权列表投影。
+
+### Validation
+
+- `test_deferred_inspection_checkin_conflict.ts` — PASS。
+- `test_task_center_daily_projection.ts` — PASS。
+- `test_cleaning_inspection_merge.ts` — PASS（本地 loopback HTTP；内存夹具；未连接生产）。
+- `taskCenterDisplay.test.ts` — PASS。
+- `npm run build --prefix backend` — PASS。
+- `npm run build --prefix frontend` — PASS。
+- 完整 `npm run check:backend` — PASS（移除全部数据库连接变量，仅使用合成夹具与本机 loopback；包含未分配 → 保存入住 source → 刷新已分配及配对 Mobile Phase 5 契约）。
+- `npm run check:feature-registry`、`npm run check:ledger` 与 `git diff --check` — PASS；最终差异复核未发现 source 混配、延期人员继承或普通入住误标。
+- 真机、真实 PostgreSQL、生产账号和浏览器人工保存验收未执行；不计为通过。
+- 生产 API 写入、数据库写入、迁移、提交、推送、部署和 OTA：未执行。
+
+### Git State
+
+- Branch: `codex/mz074-076-integrated`（MZ-074/075/076 的干净联合候选；CRL 仍独立）
+- Base: `origin/Dev@25b38ba1b6564573a1b52b57695184f9e01077c6`
+- State: locally committed on this branch; not pushed; no PR.
+
+## CRL-20261024-001 — MZ-074 纯入住检查执行人投影修复
+
+- **Status:** integrated candidate fully verified and committed locally in this release unit; not pushed, merged, deployed, or released
+- **Repository:** `root`
+- **Updated:** 2026-10-24 UTC
+- **Request:** 修复纯入住 `checkin_clean + inspect_and_hang` 已保存执行人却在 Mobile admin、客服、线下经理和合法执行人员视图中投影为未分配；不得把清洁人员冒充检查人，也不得改变普通退房或 `password_only` 语义。
+- **Outcome:** Root 检查投影新增单一执行人解析：明确 `inspector_id` 优先，否则仅纯入住检查采用已保存 `assignee_id`；姓名与最终 ID 同源。分组、权限判断、管理合卡和人员名称共用同一结果。
+
+### Implementation
+
+- `backend/src/lib/cleaningInspection.ts` — modified: 新增 `resolveInspectionTaskAssignment`，集中保护纯入住 fallback、明确检查人优先、姓名同源、空分配、普通退房和仅挂钥匙边界。
+- `backend/src/modules/mzapp.ts` — modified: `/mzapp/work-tasks` 的检查分组、执行人员可见性、manager 合卡 ID 和名称统一使用解析后的检查执行人。
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — modified: 覆盖 MZ-074 实例形态、显式检查人、两字段冲突、姓名防混配、真正未分配、普通退房和 `password_only`。
+- `docs/feature-regression-registry.md` — modified: FR-039 增加纯入住检查执行人投影保护和测试映射。
+
+### Impact / Dependencies
+
+- API: 修正现有 `/mzapp/work-tasks` 检查人员字段的值；无新增字段。
+- Database / migration / backfill / config / dependencies: none。
+- Permissions: 不扩大角色或任务范围；只让既有合法执行人及既有管理角色看到已保存的分配事实。
+- Mobile: 无代码变更；现有 Mobile 会按修正后的 Root 投影显示已分配人员。
+- MZ-075 延期检查与当天入住合卡规则已独立登记，本 CRL 不实施该规则。
+
+### Validation
+
+- `test_cleaning_inspection_merge.ts` — PASS（合成内存路由与纯函数；未连接生产数据库）。
+- `test_daily_task_execution_visibility.ts` — PASS（admin、客服、线下经理保持同一授权全任务投影语义）。
+- `npm run build --prefix backend` — PASS。
+- `npm run check:backend` — PASS（使用同锁文件既有依赖与配对 Mobile 源完成全部后端门禁；未连接生产）。
+- `npm run check:feature-registry` — PASS：35 FRs / 282 test mappings。
+- `python3 scripts/audit_change_release_ledger.py` — PASS：5/5 changed files recorded。
+- `git diff --check` — PASS。
+- 生产 API、数据库写入、迁移、回放、提交、推送、部署和 OTA：未执行。
+
+### Git State
+
+- Branch: `codex/mz074-076-integrated`
+- Base: `origin/Dev@25b38ba1b6564573a1b52b57695184f9e01077c6`
+- State: locally committed on this branch; not pushed; no PR.
+## CRL-20261024-003 — 检查正式批次服务器恢复契约
+
+- **Status:** integrated candidate fully verified and committed locally in this release unit; prior independent review GO (P0=0, P1=0, P2=0); not pushed, merged, deployed, or released
+- **Repository:** `root`
+- **Board item:** `MZ-076` revision 1
+- **Updated:** 2026-10-24 UTC
+- **Request:** MSQ4504E 的正式检查照片和提交回执已在服务器，但检查人员活动页只认本机展示任务 ID，照片显示为未拍且视频门禁误拦；为 Mobile 提供准确源任务的正式提交事实，不回放、改写或补录生产数据。
+- **Outcome:** 既有受权检查照片读取接口在保持原任务权限的前提下，额外返回同一清洁源任务的正式 `save_inspection_photos` 回执；不存在、旧隔离库缺表或非正式记录均不会被推断为已提交。
+
+### Implementation
+
+- Previous behavior: `GET /mzapp/cleaning-tasks/:id/inspection-photos` 仅返回媒体；Mobile 无法区分“服务器已有正式批次”和“只有若干媒体或无媒体”。
+- New behavior: 接口按准确 `cleaning_task_id` 查询 `app_submit_receipts` 的 `cleaning_task_inspection_photos` / `save_inspection_photos` 成功回执，并返回 additive `formal_submission`；空媒体不被推断为客人已到场跳过。
+- Key decisions: 复用既有照片接口与既有授权；不按房号、日期或物业近似匹配；缺表仅返回 `unavailable`，不阻断原照片读取；无 DDL、迁移、回填或生产数据修正。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — modified: exact-source formal inspection receipt loader and additive response contract.
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — modified: exact query, missing receipt, missing-table and no room/date fallback regressions.
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — modified: real route response contract and existing role/media-boundary regression.
+- `docs/change-release-ledger.md` — added: this scoped Root release unit.
+
+### Impact / Dependencies
+
+- API: additive optional `formal_submission` on the existing authorized inspection-photo response.
+- Database / migration / backfill: none; reads the already-deployed `app_submit_receipts` table only.
+- Permissions: unchanged; the formal receipt is returned only after the same exact task media authorization succeeds.
+- Config / dependencies: none.
+- Related units: paired `mobile/CRL-20261024-003`; Root must deploy before the Mobile OTA can consume the formal receipt.
+
+### Validation
+
+- `npm run test:mzapp-media-visibility` — PASS: exact source receipt, no room/date/property fallback, missing receipt and missing-table fail-closed coverage.
+- `npm run test:mzapp-form-photo-routes` — PASS: authorized route returns the exact formal receipt without changing existing role/media filtering.
+- `npm run build` — PASS: backend TypeScript build.
+- `npm run check:backend` — PASS: complete Root gate after supplying its expected local Mobile sibling checkout; the temporary checkout link was removed after the run.
+- `git diff --check` — PASS.
+- Independent review — GO (P0=0, P1=0, P2=0): exact-source authorization, additive response behavior, fail-closed missing receipt/table handling, and paired Mobile precedence/isolation contract verified.
+- Production HTTP / write validation — not run; no production write is required or authorized.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** locally committed on `codex/mz074-076-integrated`
+- **Untracked review:** no untracked product files; temporary dependency links are excluded and removed before commit
+
+### Release Attempts
+
+- None; user authorized local implementation and testing only.
+
+### Risks / Release Notes
+
+- Mobile remains backward-compatible when `formal_submission` is absent, but the server-recovery behavior requires this Root contract to be deployed first.
+- Formal submission is never inferred from current photo count or terminal task status.
+- Sensitive-information review: tests use synthetic task and submit IDs; no media bytes, signed URLs, access codes, credentials or production payloads are recorded.
+- Git state: combined local Root commit on `codex/mz074-076-integrated`; not pushed.
+
 ## CRL-20261021-011 — MZ-070 历史任务门锁码权限化只读恢复
 
 - **Status:** implemented and locally verified; independent review GO (P0=0, P1=0, P2=0); not committed, pushed, merged, migrated, deployed, or released

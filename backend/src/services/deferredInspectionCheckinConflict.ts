@@ -17,8 +17,11 @@ export type DeferredInspectionCheckinConflictInput = {
   inspection_due_date?: string | null
   inspection_replaced_by_checkin_task_id?: string | null
   inspection_replaced_original_due_date?: string | null
+  linked_checkout_task_id?: string | null
   order_id?: string | null
   order_status?: string | null
+  order_checkin?: string | null
+  order_checkout?: string | null
   checkin_time?: string | null
   inspection_completed_at?: string | null
   inspector_id?: string | null
@@ -57,6 +60,8 @@ export type DeferredInspectionCheckinArrangement = {
   checkin_inspector_id: string | null
   checkin_assignee_id: string | null
   conflict_reasons: string[]
+  display_merge_eligible: boolean
+  display_merge_reasons: string[]
 }
 
 export type DeferredInspectionActionLike = {
@@ -224,11 +229,37 @@ function compareCheckins(left: DeferredInspectionCheckinConflictInput, right: De
   return text(left.id).localeCompare(text(right.id))
 }
 
+function hasReliableDisplayRelation(
+  deferred: DeferredInspectionCheckinConflictInput,
+  checkin: DeferredInspectionCheckinConflictInput,
+) {
+  const deferredTaskId = text(deferred.id)
+  const checkinTaskId = text(checkin.id)
+  if (!deferredTaskId || !checkinTaskId) return false
+  if (text(checkin.linked_checkout_task_id) === deferredTaskId) return true
+  if (text(deferred.inspection_replaced_by_checkin_task_id) === checkinTaskId) return true
+
+  const deferredOrderId = text(deferred.order_id)
+  const checkinOrderId = text(checkin.order_id)
+  const deferredCheckout = dayOnly(deferred.order_checkout)
+  const checkinOrderCheckin = dayOnly(checkin.order_checkin)
+  return !!(
+    deferredOrderId
+    && checkinOrderId
+    && deferredOrderId !== checkinOrderId
+    && deferredCheckout
+    && checkinOrderCheckin
+    && deferredCheckout === taskDay(deferred)
+    && checkinOrderCheckin === taskDay(checkin)
+  )
+}
+
 /**
  * Builds the effective same-property/date inspection arrangement used by the
- * App.  It never infers a reassignment: the incoming check-in must already
- * name the deferred inspector as either its inspector or executor.  Password
- * only work is intentionally not an inspection arrangement.
+ * App.  Display merging never infers a reassignment: the incoming check-in's
+ * own assignment (including a real unassigned state) remains authoritative.
+ * Submission conflicts remain stricter and continue to compare both plans.
+ * Password-only work is intentionally not an inspection arrangement.
  */
 export function buildDeferredInspectionCheckinArrangements(
   rows: DeferredInspectionCheckinConflictInput[],
@@ -250,7 +281,13 @@ export function buildDeferredInspectionCheckinArrangements(
     const matchingCheckins = checkins
       .filter((candidate) => text(candidate.property_id) === propertyId && isWithinDeferredReplacementWindow(deferred, candidate))
       .sort(compareCheckins)
-    const checkin = matchingCheckins[0]
+    const reliableSameDayCheckins = matchingCheckins.filter((candidate) => (
+      taskDay(candidate) === plannedDueDate
+      && hasReliableDisplayRelation(deferred, candidate)
+    ))
+    const checkin = reliableSameDayCheckins.length === 1
+      ? reliableSameDayCheckins[0]
+      : matchingCheckins[0]
     const checkinTaskId = text(checkin?.id)
     const effectiveInspectionDate = taskDay(checkin || {})
     if (!checkin || !checkinTaskId || !effectiveInspectionDate) continue
@@ -278,6 +315,10 @@ export function buildDeferredInspectionCheckinArrangements(
     ) {
       conflictReasons.push('planned_inspector_not_checkin_participant')
     }
+    const displayMergeReasons: string[] = []
+    if (effectiveInspectionDate !== plannedDueDate) displayMergeReasons.push('checkin_not_on_deferred_inspection_date')
+    if (!hasReliableDisplayRelation(deferred, checkin)) displayMergeReasons.push('reliable_turnover_relation_missing')
+    if (reliableSameDayCheckins.length > 1) displayMergeReasons.push('multiple_reliable_checkin_inspection_tasks')
 
     arrangements.push({
       deferred_task_id: deferredTaskId,
@@ -290,6 +331,8 @@ export function buildDeferredInspectionCheckinArrangements(
       checkin_inspector_id: checkinInspectorId,
       checkin_assignee_id: checkinAssigneeId,
       conflict_reasons: Array.from(new Set(conflictReasons)),
+      display_merge_eligible: displayMergeReasons.length === 0,
+      display_merge_reasons: Array.from(new Set(displayMergeReasons)),
     })
   }
 
@@ -304,6 +347,11 @@ export function buildDeferredInspectionCheckinArrangements(
     if ((arrangementCountByCheckin.get(arrangement.checkin_task_id) || 0) > 1) {
       arrangement.conflict_reasons = Array.from(new Set([
         ...arrangement.conflict_reasons,
+        'multiple_deferred_inspection_tasks',
+      ]))
+      arrangement.display_merge_eligible = false
+      arrangement.display_merge_reasons = Array.from(new Set([
+        ...arrangement.display_merge_reasons,
         'multiple_deferred_inspection_tasks',
       ]))
     }

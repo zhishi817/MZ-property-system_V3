@@ -130,6 +130,55 @@ export function normalizeInspectionScope(value: any): InspectionScope {
   return raw === 'password_only' ? 'password_only' : 'inspect_and_hang'
 }
 
+export type InspectionTaskAssignment = {
+  userId: string | null
+  userName: string | null
+  source: 'inspector' | 'assignee' | null
+}
+
+/**
+ * Resolve the person responsible for an inspection projection without
+ * borrowing a cleaner or combining the id from one person with another
+ * person's name. Pure check-in tasks are saved through the generic assignee
+ * field, while checkout inspection tasks continue to require inspector_id.
+ */
+export function resolveInspectionTaskAssignment(task: {
+  task_type?: any
+  inspection_scope?: any
+  inspector_id?: any
+  inspector_name?: any
+  assignee_id?: any
+  assignee_name?: any
+}): InspectionTaskAssignment {
+  const inspectorId = String(task?.inspector_id || '').trim()
+  const assigneeId = String(task?.assignee_id || '').trim()
+  const inspectorName = String(task?.inspector_name || '').trim()
+  const assigneeName = String(task?.assignee_name || '').trim()
+
+  if (inspectorId) {
+    return {
+      userId: inspectorId,
+      userName: inspectorName || (assigneeId === inspectorId ? assigneeName : '') || null,
+      source: 'inspector',
+    }
+  }
+
+  const taskType = String(task?.task_type || '').trim().toLowerCase()
+  if (
+    taskType === 'checkin_clean'
+    && normalizeInspectionScope(task?.inspection_scope) === 'inspect_and_hang'
+    && assigneeId
+  ) {
+    return {
+      userId: assigneeId,
+      userName: assigneeName || null,
+      source: 'assignee',
+    }
+  }
+
+  return { userId: null, userName: null, source: null }
+}
+
 export type CleaningKeyHandoverProjection = {
   state: 'completed'
   source_task_id: string

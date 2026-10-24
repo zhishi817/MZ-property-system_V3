@@ -5,7 +5,7 @@ import path from 'path'
 process.env.DATABASE_URL = ''
 
 async function main() {
-  const { canViewMzappGuestLuggageNoticeMedia, canViewMzappHistoricalWorkRecordMedia, canViewMzappInspectionMedia, canViewMzappLockboxVideo, canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia, propertyFeedbackCapabilities, propertyFeedbackSourceTaskCapabilities } = await import('../../src/modules/mzapp')
+  const { canViewMzappGuestLuggageNoticeMedia, canViewMzappHistoricalWorkRecordMedia, canViewMzappInspectionMedia, canViewMzappLockboxVideo, canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia, loadMzappInspectionPhotoSubmission, propertyFeedbackCapabilities, propertyFeedbackSourceTaskCapabilities } = await import('../../src/modules/mzapp')
   const { canViewExternalMaintenanceCompletionMedia, feedbackMediaRowReferencesKey, feedbackMediaUrlArray, findPropertyFeedbackMediaRows } = await import('../../src/modules/cleaning_app')
 
   const row = {
@@ -39,6 +39,46 @@ async function main() {
     await canViewMzappInspectionMedia({ sub: 'outsider-1', role: 'cleaner', roles: ['cleaner'] }, row, 'outsider-1'),
     false,
     'unassigned non-manager cannot read inspector media',
+  )
+
+  const submissionQueries: Array<{ sql: string; params: any[] }> = []
+  const submitted = await loadMzappInspectionPhotoSubmission({
+    query: async (sql: string, params: any[]) => {
+      submissionQueries.push({ sql, params })
+      return {
+        rows: [{
+          submit_id: 'inspection-batch-1',
+          created_at: '2026-10-24T00:38:56.000Z',
+          updated_at: '2026-10-24T00:39:02.000Z',
+        }],
+      }
+    },
+  }, 'cleaning-task-1')
+  assert.deepEqual(submitted, {
+    status: 'submitted',
+    submit_id: 'inspection-batch-1',
+    saved_at: '2026-10-24T00:39:02.000Z',
+  }, 'the exact task receipt is returned as the formal inspection submission')
+  assert.equal(submissionQueries.length, 1)
+  assert.deepEqual(submissionQueries[0].params, ['cleaning-task-1'])
+  assert.match(submissionQueries[0].sql, /scope_type = 'cleaning_task_inspection_photos'/)
+  assert.match(submissionQueries[0].sql, /step_key = 'save_inspection_photos'/)
+  assert.doesNotMatch(submissionQueries[0].sql, /property_id|task_date|property_code/, 'formal recovery must never broaden to room/date matching')
+  assert.deepEqual(
+    await loadMzappInspectionPhotoSubmission({ query: async () => ({ rows: [] }) }, 'cleaning-task-2'),
+    { status: 'none', submit_id: null, saved_at: null },
+    'missing exact receipt must remain unsubmitted',
+  )
+  assert.deepEqual(
+    await loadMzappInspectionPhotoSubmission({
+      query: async () => {
+        const error: any = new Error('missing relation')
+        error.code = '42P01'
+        throw error
+      },
+    }, 'cleaning-task-3'),
+    { status: 'unavailable', submit_id: null, saved_at: null },
+    'an old schema may still return photos but cannot claim a formal submission',
   )
 
   assert.equal(

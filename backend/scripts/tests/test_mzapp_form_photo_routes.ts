@@ -246,6 +246,13 @@ const completionEvidence = new Map<string, Set<string>>([
 const inspectionEvidence = new Map<string, Set<string>>([
   ['inspector-1', new Set(['checkin-active', 'same-day-independent'])],
 ])
+const inspectionSubmissionReceipts = new Map([
+  ['checkin-active', {
+    submit_id: 'inspection-batch-checkin-active',
+    created_at: '2026-10-21T01:02:00.000Z',
+    updated_at: '2026-10-21T01:03:00.000Z',
+  }],
+])
 
 function taskRows(ids: string[]) {
   const requested = new Set(ids.map(String))
@@ -325,6 +332,11 @@ dbAdapter.pgPool = {
           captured_at: '2026-10-21T01:00:00.000Z',
           created_at: '2026-10-21T01:00:00.000Z',
         }))
+      return { rows, rowCount: rows.length }
+    }
+    if (/FROM app_submit_receipts/.test(sql)) {
+      const receipt = inspectionSubmissionReceipts.get(String(params[0] || ''))
+      const rows = receipt ? [receipt] : []
       return { rows, rowCount: rows.length }
     }
     if (/^\s*SELECT metadata\s+FROM work_task_action_audits/.test(sql)) return { rows: [], rowCount: 0 }
@@ -643,6 +655,12 @@ async function verifyLegacyInspectionPhotoRoute(baseUrl: string) {
     ['living'],
     'the legacy inspection-photo list must preserve the customer-service unclean-photo boundary',
   )
+  assert.deepEqual(customerService.body.formal_submission, {
+    status: 'submitted',
+    submit_id: 'inspection-batch-checkin-active',
+    saved_at: '2026-10-21T01:03:00.000Z',
+    guest_arrival_confirmed: false,
+  })
 
   const admin = await getJson(
     baseUrl,
