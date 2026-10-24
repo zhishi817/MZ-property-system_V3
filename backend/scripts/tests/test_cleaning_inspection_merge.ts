@@ -596,6 +596,8 @@ function testPendingHandoverRecordMergesOnlyIntoItsExactLiveTurnover() {
     assert.equal(manualGrantOnly.size, 2, 'a manual action grant must not replace the live check-in assignment')
     assert.equal(manualGrantOnly.has(recordKey), true)
   }
+}
+
 function testDeferredInspectionDisplayAuthoritySurvivesBothProjectionStages() {
   assert.equal(isDeferredInspectionExecutionDayProjection({
     displayMergeEligible: true,
