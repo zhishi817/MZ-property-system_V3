@@ -118,6 +118,7 @@ type BoardTask = {
   deferred_inspection_checkin_task_id?: string | null
   deferred_inspection_original_checkout_date?: string | null
   deferred_inspection_effective_date?: string | null
+  deferred_inspection_current_day_checkout?: boolean | null
   deferred_checkin_conflict?: boolean
   conflict_checkin_task_id?: string | null
   conflict_checkin_task_date?: string | null
@@ -1504,6 +1505,7 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
           deferred_inspection_checkin_task_id: checkinTaskId,
           deferred_inspection_original_checkout_date: originalCheckoutDate || null,
           deferred_inspection_effective_date: effectiveDate || null,
+          deferred_inspection_current_day_checkout: false,
           deferred_inspection_view: false,
           can_configure_inspection: true,
           checkout_task_date: originalCheckoutDate || null,

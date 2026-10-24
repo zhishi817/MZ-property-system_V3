@@ -12,6 +12,7 @@ import {
   projectDailyTaskListItems,
   projectTaskCenterManageableWorkTasks,
   projectVisibleDailyTasks,
+  selfCompleteKeyHandoverRecordEvidence,
 } from '../../src/lib/dailyTaskExecutionVisibility'
 
 const scheduled = '2026-10-09'
@@ -210,6 +211,131 @@ assert.deepEqual(
   'a legacy done row without a trustworthy completion timestamp must never re-enter the active queue or counts',
 )
 
+const selfCompleteKeyHandoverRecord = selfCompleteKeyHandoverRecordEvidence({
+  taskType: 'checkout_clean',
+  inspectionMode: 'self_complete',
+  status: 'keys_hung',
+  sourceKeyHandoverCompleted: true,
+  hasCleanerCompletionEvidence: false,
+  performedAt: '2026-10-25T00:10:00.000Z',
+  actorUserId: 'cleaner-a',
+  actorName: 'Synthetic Cleaner',
+  currentAssigneeId: 'cleaner-a',
+  originalScheduledDate: '2026-10-24',
+})
+assert.deepEqual(selfCompleteKeyHandoverRecord, {
+  performedAt: '2026-10-25T00:10:00.000Z',
+  recordDate: '2026-10-24',
+  actorUserId: 'cleaner-a',
+  actorName: 'Synthetic Cleaner',
+  workRecordState: 'pending_review',
+}, 'exact-source self-complete key handover remains visible on the original business date without fabricating cleaning completion')
+assert.equal(selfCompleteKeyHandoverRecordEvidence({
+  taskType: 'checkout_clean',
+  inspectionMode: 'self_complete',
+  status: 'keys_hung',
+  sourceKeyHandoverCompleted: true,
+  hasCleanerCompletionEvidence: true,
+  performedAt: '2026-10-25T10:10:00.000Z',
+  actorUserId: 'other-cleaner',
+  currentAssigneeId: 'cleaner-a',
+  originalScheduledDate: '2026-10-24',
+}), null, 'a cross-day or cross-actor genuine cleaner completion remains authoritative and must not gain a duplicate handover fallback')
+assert.equal(selfCompleteKeyHandoverRecordEvidence({
+  taskType: 'checkout_clean',
+  inspectionMode: 'same_day',
+  status: 'keys_hung',
+  sourceKeyHandoverCompleted: true,
+  hasCleanerCompletionEvidence: false,
+  performedAt: '2026-10-24T10:10:00.000Z',
+  actorUserId: 'cleaner-a',
+  currentAssigneeId: 'cleaner-a',
+  originalScheduledDate: '2026-10-24',
+}), null, 'ordinary same-day inspection work must never use the self-complete history fallback')
+assert.equal(selfCompleteKeyHandoverRecordEvidence({
+  taskType: 'stayover_clean',
+  inspectionMode: 'self_complete',
+  status: 'keys_hung',
+  sourceKeyHandoverCompleted: true,
+  hasCleanerCompletionEvidence: false,
+  performedAt: '2026-10-24T10:10:00.000Z',
+  actorUserId: 'cleaner-a',
+  currentAssigneeId: 'cleaner-a',
+  originalScheduledDate: '2026-10-24',
+}), null, 'stayover work must not be reclassified as a self-complete turnover handover record')
+assert.equal(selfCompleteKeyHandoverRecordEvidence({
+  taskType: 'checkout_clean',
+  inspectionMode: 'self_complete',
+  status: 'keys_hung',
+  sourceKeyHandoverCompleted: true,
+  hasCleanerCompletionEvidence: false,
+  performedAt: '2026-10-24T10:10:00.000Z',
+  actorUserId: null,
+  currentAssigneeId: 'cleaner-a',
+  originalScheduledDate: '2026-10-24',
+}), null, 'unattributed handover evidence must fail closed instead of inventing a history actor')
+assert.equal(selfCompleteKeyHandoverRecordEvidence({
+  taskType: 'checkout_clean',
+  inspectionMode: 'self_complete',
+  status: 'inspected',
+  sourceKeyHandoverCompleted: true,
+  hasCleanerCompletionEvidence: false,
+  performedAt: '2026-10-24T10:10:00.000Z',
+  actorUserId: 'cleaner-a',
+  currentAssigneeId: 'cleaner-a',
+  originalScheduledDate: '2026-10-24',
+}), null, 'other terminal statuses require their own evidence and must not be widened into this keys-hung fallback')
+assert.equal(selfCompleteKeyHandoverRecordEvidence({
+  taskType: 'checkout_clean',
+  inspectionMode: 'self_complete',
+  status: 'keys_hung',
+  sourceKeyHandoverCompleted: true,
+  hasCleanerCompletionEvidence: false,
+  performedAt: '2026-10-24T10:10:00.000Z',
+  actorUserId: 'former-cleaner',
+  currentAssigneeId: 'current-cleaner',
+  originalScheduledDate: '2026-10-24',
+})?.workRecordState, 'pending_review', 'an exact-source handover by a former assignee keeps its actor but never impersonates a completed reassignment record')
+assert.equal(selfCompleteKeyHandoverRecordEvidence({
+  taskType: 'checkout_clean',
+  inspectionMode: 'self_complete',
+  status: 'keys_hung',
+  executionState: 'superseded',
+  sourceKeyHandoverCompleted: true,
+  hasCleanerCompletionEvidence: false,
+  performedAt: '2026-10-24T10:10:00.000Z',
+  actorUserId: 'cleaner-a',
+  currentAssigneeId: 'cleaner-a',
+  originalScheduledDate: '2026-10-24',
+}), null, 'a superseded source must not re-enter history from its old key-handover evidence')
+assert.deepEqual(projectDailyTaskListItems([{
+  id: 'synthetic-self-complete-record',
+  source_type: 'cleaning_tasks',
+  task_kind: 'cleaning',
+  task_type: 'checkout_clean',
+  status: 'keys_hung',
+  scheduled_date: '2026-10-24',
+  original_scheduled_date: '2026-10-24',
+  work_record_state: selfCompleteKeyHandoverRecord?.workRecordState,
+  work_record_date: selfCompleteKeyHandoverRecord?.recordDate,
+  completed_at: selfCompleteKeyHandoverRecord?.performedAt,
+  assignee_id: selfCompleteKeyHandoverRecord?.actorUserId,
+}]).map((task) => ({
+  id: task.id,
+  state: task.work_record_state,
+  date: task.work_record_date,
+  readOnly: task.work_record_read_only,
+  executionVisible: task.execution_list_visible,
+  countsAsActive: task.counts_as_active_task,
+})), [{
+  id: 'synthetic-self-complete-record',
+  state: 'pending_review',
+  date: '2026-10-24',
+  readOnly: true,
+  executionVisible: false,
+  countsAsActive: false,
+}], 'the emitted fallback remains one searchable read-only history item and never re-enters active counts')
+
 const workRecordCases = [
   {
     id: 'mq801-pending-review',
@@ -352,6 +478,13 @@ assert.match(mzapp, /source_record_reason == null[\s\S]*?x\.completion_reason/, 
 assert.match(mzapp, /emitWorkTaskEvent\(\{[\s\S]*?eventType: 'TASK_COMPLETED'[\s\S]*?\}, client\)[\s\S]*?COMMIT/, 'generic completion and its authoritative work-record event must commit atomically')
 assert.match(mzapp, /cleaner_record\.performed_at AS cleaner_record_at[\s\S]*?inspector_record\.performed_at AS inspector_record_at[\s\S]*?cancelled_record\.occurred_at AS cancelled_record_at/, 'cleaning history must use persisted cleaner, inspector and cancellation evidence')
 assert.match(mzapp, /cleaner_record\.performed_by_name AS cleaner_record_actor_name/, 'cleaning work records must select the audit performer name')
+assert.match(mzapp, /EXISTS \([\s\S]*?work_task_action_audits completion_audit[\s\S]*?cleaningCompletionAuditWhereSql\('completion_audit'\)[\s\S]*?AS has_cleaner_completion_evidence/, 'self-complete fallback suppression must use global exact-source completion evidence without viewer or date filters')
+assert.match(mzapp, /executor_record\.performed_by_name AS executor_record_actor_name[\s\S]*?lockbox_record_actor_name/, 'self-complete handover records must carry the exact evidence actor name')
+assert.match(mzapp, /WHERE evidence\.performed_by_user_id IS NOT NULL[\s\S]*?CASE evidence\.confirmation_source WHEN 'video' THEN 0 ELSE 1 END[\s\S]*?evidence\.performed_at DESC/, 'an unattributed video must fall through to an attributable same-source manual confirmation, while an attributable video remains preferred')
+assert.match(mzapp, /const pendingSelfCompleteRecord = selfCompleteKeyHandoverRecordEvidence\(\{[\s\S]*?executionState: row\.execution_state[\s\S]*?hasCleanerCompletionEvidence: row\.has_cleaner_completion_evidence === true[\s\S]*?originalScheduledDate: taskDate/, 'self-complete terminal handover fallback must use an active exact source, global completion suppression, its evidence and the original business date')
+assert.match(mzapp, /const recordState = evidence\.workRecordState \|\| evidenceBackedWorkRecordState/, 'the pending-review handover fallback must never be promoted to completed by the generic evidence state')
+assert.match(mzapp, /isWorkRecordGroup && workRecordState === 'pending_review' && sourceKeyHandoverCompleted[\s\S]*?\? 'keys_hung'/, 'a pending-review self-complete record must retain the exact key-handover fact without claiming cleaning completion')
+assert.match(mzapp, /wantInspector[\s\S]*?inspectionMode !== 'self_complete'[\s\S]*?cleaningType\(row\.task_type\) !== 'stayover'/, 'self-complete checkout sources must not create a duplicate inspector card or record')
 assert.match(mzapp, /__work_record_actor_name: recordActorName[\s\S]*?completed_by_name: workRecordActorName \|\| null/, 'cleaning work records must carry the immutable performer name to the response')
 assert.match(mzapp, /isWorkRecordGroup && roleKind === 'cleaner' && workRecordActorName[\s\S]*?\? workRecordActorName/, 'a reassigned cleaning record must display its actual performer rather than the current cleaner')
 assert.match(mzapp, /__work_record_state: recordState[\s\S]*?__original_scheduled_date: taskDate/, 'cleaning history must preserve the original planned date beside its evidence-backed business record date')

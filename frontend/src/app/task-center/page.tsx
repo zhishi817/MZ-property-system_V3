@@ -181,6 +181,7 @@ type TaskCenterTask = {
   deferred_inspection_merged?: boolean
   deferred_inspection_original_checkout_date?: string | null
   deferred_inspection_effective_date?: string | null
+  deferred_inspection_current_day_checkout?: boolean | null
   deferred_checkin_conflict?: boolean
   conflict_checkin_task_id?: string | null
   conflict_checkin_task_date?: string | null

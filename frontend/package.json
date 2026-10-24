@@ -12,6 +12,7 @@
     "start": "next start",
     "lint": "next lint",
     "test": "vitest run --coverage",
+    "test:cleaning-daily-merge": "vitest run --cache=false src/lib/cleaningDailyMerge.test.ts",
     "test:guest-site-property-editor": "vitest run --cache=false src/lib/guestSitePropertyEditor.test.ts",
     "test:browser:guest-site-properties": "node scripts/guest-site-properties-browser-qa.cjs",
     "test:browser:guest-site-stay-policies": "node scripts/guest-site-stay-policy-browser-qa.cjs",

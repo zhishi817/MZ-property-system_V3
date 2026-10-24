@@ -9,8 +9,10 @@ import {
   cleaningAuditBusinessDateSql,
   cleaningExecutionBusinessDate,
   cleaningTaskBusinessIdentity,
+  deferredInspectionManagerTimingAuthority,
   deferredProjectionDate,
   isCheckinKeyHandoverTask,
+  isDeferredInspectionExecutionDayProjection,
   isInspectionModeAllowedForTask,
   keyPhotoConfirmsCurrentTaskProgress,
   lockboxVideoConfirmsCurrentTaskState,
@@ -20,6 +22,7 @@ import {
   mobileInspectionProjectionDate,
   normalizeTurnoverInspectionScope,
   projectCleaningKeyHandover,
+  reconcilePendingHandoverInspectorGroups,
   resolveInspectionTaskAssignment,
   resolveBoardInspectionDueDate,
   sanitizeInspectionModeForTask,
@@ -447,6 +450,212 @@ function testCanonicalTurnoverBusinessIdentityRejectsCancelledOrAmbiguousCandida
   assert.equal(cleaningTaskBusinessIdentity({ sourceId: 'standalone-task' }), 'cleaning_task:standalone-task')
 }
 
+function testPendingHandoverRecordMergesOnlyIntoItsExactLiveTurnover() {
+  const buildRows = (propertyCode: string) => {
+    const businessIdentity = `turnover:${propertyCode}-out:${propertyCode}-in`
+    const checkoutSource = {
+      id: `${propertyCode}-checkout`,
+      task_type: 'checkout_clean',
+      property_id: `${propertyCode}-property`,
+      task_date: '2026-10-24',
+      order_id: `${propertyCode}-out`,
+      order_checkout: '2026-10-24',
+      status: 'inspected',
+      execution_state: 'active',
+      inspection_scope: 'inspect_and_hang',
+    }
+    const checkinSource = {
+      id: `${propertyCode}-checkin`,
+      task_type: 'checkin_clean',
+      property_id: `${propertyCode}-property`,
+      task_date: '2026-10-24',
+      order_id: `${propertyCode}-in`,
+      order_checkin: '2026-10-24',
+      status: 'assigned',
+      execution_state: 'active',
+      inspection_scope: 'inspect_and_hang',
+      inspector_id: 'inspector-1',
+    }
+    const pair = canonicalCleaningTurnoverPairs([checkoutSource, checkinSource])[0]
+    assert.ok(pair, `${propertyCode} fixture must form one canonical turnover`)
+    const checkoutRecord = {
+      ...checkoutSource,
+      __raw_id: checkoutSource.id,
+      raw_status: checkoutSource.status,
+      __date: '2026-10-24',
+      __original_scheduled_date: '2026-10-24',
+      __work_record_date: '2026-10-24',
+      __work_record_state: 'completed',
+      __work_record_actor_user_id: 'inspector-1',
+      __assignee_inspector: 'inspector-1',
+      __source_inspector_assignee_id: 'inspector-1',
+      __inspection_mode: 'same_day',
+      __inspection_scope: 'inspect_and_hang',
+      __business_identity: businessIdentity,
+    }
+    const liveCheckin = {
+      ...checkinSource,
+      __raw_id: checkinSource.id,
+      raw_status: checkinSource.status,
+      __date: '2026-10-24',
+      __assignee_inspector: 'inspector-1',
+      __source_inspector_assignee_id: 'inspector-1',
+      __inspection_mode: 'same_day',
+      __inspection_scope: 'inspect_and_hang',
+      __business_identity: businessIdentity,
+    }
+    return { pair, checkoutRecord, liveCheckin }
+  }
+
+  for (const propertyCode of ['sample-a', 'sample-b']) {
+    const { pair, checkoutRecord, liveCheckin } = buildRows(propertyCode)
+    const recordKey = `${propertyCode}-record`
+    const liveKey = `${propertyCode}-live`
+    const merged = reconcilePendingHandoverInspectorGroups(
+      new Map([[recordKey, [checkoutRecord]], [liveKey, [liveCheckin]]]),
+      [pair],
+    )
+    assert.equal(merged.size, 1, `${propertyCode} pending handover record must not create a second card`)
+    assert.equal(merged.has(recordKey), false)
+    assert.deepEqual(
+      merged.get(liveKey)?.map((row) => row.__raw_id),
+      [checkoutRecord.__raw_id, liveCheckin.__raw_id],
+    )
+    assert.equal(merged.get(liveKey)?.[0]?.__pending_handover_record_embedded, true)
+
+    const assertFailsClosed = (recordPatch: any, livePatch: any, pairs = [pair]) => {
+      const result = reconcilePendingHandoverInspectorGroups(
+        new Map([[recordKey, [{ ...checkoutRecord, ...recordPatch }]], [liveKey, [{ ...liveCheckin, ...livePatch }]]]),
+        pairs,
+      )
+      assert.equal(result.size, 2)
+      assert.equal(result.has(recordKey), true)
+    }
+    assertFailsClosed({ __work_record_state: 'reassigned' }, {})
+    assertFailsClosed({ __work_record_state: 'pending_review' }, {})
+    assertFailsClosed({ raw_status: 'done', status: 'done' }, {})
+    assertFailsClosed({ __inspection_mode: 'deferred' }, {})
+    assertFailsClosed({ __inspection_scope: 'password_only', inspection_scope: 'password_only' }, {})
+    assertFailsClosed({ __work_record_date: '2026-10-25' }, {})
+    assertFailsClosed({ __business_identity: 'turnover:other:booking' }, {})
+    assertFailsClosed({ __source_inspector_assignee_id: null }, {})
+    assertFailsClosed({ __source_inspector_assignee_id: 'inspector-other' }, {})
+    assertFailsClosed({ __manager_merge_isolation_key: 'deferred:checkout' }, {})
+    assertFailsClosed({ __deferred_checkin_arrangement: { checkin_task_id: liveCheckin.__raw_id } }, {})
+    assertFailsClosed({}, { __is_deferred_projection: true })
+    assertFailsClosed({}, { __deferred_inspection_display_merge: { deferred_task_id: checkoutRecord.__raw_id } })
+    assertFailsClosed({}, { __assignee_inspector: 'other-inspector' })
+    assertFailsClosed({}, { __source_inspector_assignee_id: null })
+    assertFailsClosed({}, { execution_state: 'cancelled', status: 'cancelled', raw_status: 'cancelled' })
+    assertFailsClosed({}, {}, [])
+    assertFailsClosed({}, {}, [pair, { ...pair }])
+
+    const secondCheckinSource = {
+      ...pair.checkin,
+      id: `${propertyCode}-other-checkin`,
+      order_id: `${propertyCode}-other-in`,
+    }
+    const ambiguousPairs = canonicalCleaningTurnoverPairs([
+      pair.checkout,
+      pair.checkin,
+      secondCheckinSource,
+    ])
+    assert.deepEqual(ambiguousPairs, [], 'one checkout plus two valid incoming orders must remain fail-closed')
+    const otherLiveKey = `${propertyCode}-other-live`
+    const ambiguousGroups = reconcilePendingHandoverInspectorGroups(
+      new Map([
+        [recordKey, [checkoutRecord]],
+        [liveKey, [liveCheckin]],
+        [otherLiveKey, [{
+          ...liveCheckin,
+          ...secondCheckinSource,
+          __raw_id: secondCheckinSource.id,
+          __business_identity: `cleaning_task:${secondCheckinSource.id}`,
+        }]],
+      ]),
+      ambiguousPairs,
+    )
+    assert.equal(ambiguousGroups.size, 3, 'distinct incoming orders remain visible for calendar correction')
+    assert.equal(ambiguousGroups.has(recordKey), true)
+    assert.equal(ambiguousGroups.has(liveKey), true)
+    assert.equal(ambiguousGroups.has(otherLiveKey), true)
+
+    const manuallyGrantedButUnassignedCheckin = { ...pair.checkin, inspector_id: null, assignee_id: null }
+    const unassignedPair = { ...pair, checkin: manuallyGrantedButUnassignedCheckin }
+    const manualGrantOnly = reconcilePendingHandoverInspectorGroups(
+      new Map([
+        [recordKey, [checkoutRecord]],
+        [liveKey, [{
+          ...liveCheckin,
+          __assignee_inspector: 'inspector-1',
+          __source_inspector_assignee_id: null,
+        }]],
+      ]),
+      [unassignedPair],
+    )
+    assert.equal(manualGrantOnly.size, 2, 'a manual action grant must not replace the live check-in assignment')
+    assert.equal(manualGrantOnly.has(recordKey), true)
+  }
+function testDeferredInspectionDisplayAuthoritySurvivesBothProjectionStages() {
+  assert.equal(isDeferredInspectionExecutionDayProjection({
+    displayMergeEligible: true,
+    hasDisplayCheckinSource: false,
+    groupDate: '2026-10-25',
+    effectiveInspectionDate: '2026-10-26',
+  }), false, 'the original checkout-day cleaner row is not the deferred execution-day merge')
+  assert.equal(isDeferredInspectionExecutionDayProjection({
+    displayMergeEligible: true,
+    hasDisplayCheckinSource: true,
+    groupDate: '2026-10-26',
+    effectiveInspectionDate: '2026-10-26',
+  }), true, 'the linked check-in source on the execution day is the deferred merge')
+  assert.equal(isDeferredInspectionExecutionDayProjection({
+    displayMergeEligible: true,
+    hasDisplayCheckinSource: true,
+    groupDate: '2026-10-25',
+    effectiveInspectionDate: '2026-10-25',
+  }), true, 'an actual same-day checkout remains a current-day turnover')
+  assert.equal(isDeferredInspectionExecutionDayProjection({
+    displayMergeEligible: true,
+    hasDisplayCheckinSource: false,
+    groupDate: '2026-10-26',
+    effectiveInspectionDate: '2026-10-26',
+  }), false, 'a deferred inspection without a linked check-in remains an independent deferred card')
+
+  const d1Authority = deferredInspectionManagerTimingAuthority([
+    {
+      task_type: 'checkin_clean',
+      deferred_inspection_merged: true,
+      deferred_inspection_current_day_checkout: false,
+      start_time: null,
+      end_time: '3pm',
+    },
+    {
+      task_type: 'checkout_clean',
+      start_time: '10am',
+      turnover_display: { checkout_time: '10am', is_late_checkout: true },
+    },
+  ], { checkout_time: '10am', checkin_time: '3pm', is_late_checkout: true })
+  assert.equal(d1Authority.deferredInspectionMerged, true)
+  assert.equal(d1Authority.currentDayCheckout, false)
+  assert.equal(d1Authority.checkoutTimingAuthoritative, false)
+  assert.equal(d1Authority.turnoverDisplay?.checkout_time, null, 'manager aggregation must not restore D0 checkout time')
+  assert.equal(d1Authority.turnoverDisplay?.is_late_checkout, false, 'manager aggregation must not restore D0 late-checkout')
+
+  const actualSameDayAuthority = deferredInspectionManagerTimingAuthority([
+    { deferred_inspection_merged: true, deferred_inspection_current_day_checkout: true },
+  ], { checkout_time: '10am', checkin_time: '3pm', is_late_checkout: true })
+  assert.equal(actualSameDayAuthority.checkoutTimingAuthoritative, true)
+  assert.equal(actualSameDayAuthority.turnoverDisplay?.checkout_time, '10am')
+
+  const ordinaryCheckoutAuthority = deferredInspectionManagerTimingAuthority([
+    { task_type: 'checkout_clean', start_time: '10am' },
+  ], { checkout_time: '10am', is_late_checkout: true })
+  assert.equal(ordinaryCheckoutAuthority.deferredInspectionMerged, false)
+  assert.equal(ordinaryCheckoutAuthority.currentDayCheckout, null)
+  assert.equal(ordinaryCheckoutAuthority.checkoutTimingAuthoritative, true)
+}
+
 function testExplicitManualCheckinLinkIsCanonicalButNeverPropertyDateInferred() {
   const checkout = {
     id: 'manual-checkout', task_type: 'checkout_clean', property_id: 'property-1', task_date: '2026-10-22',
@@ -500,13 +709,24 @@ function testWorkTaskPayloadUsesExactAuditWithoutExposingMediaUrl() {
   const cleaningSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/cleaning.ts'), 'utf8')
   const cleaningAppSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/cleaning_app.ts'), 'utf8')
   const cleaningPageSource = fs.readFileSync(path.resolve(__dirname, '../../../frontend/src/app/cleaning/page.tsx'), 'utf8')
+  const cleaningDailyMergeSource = fs.readFileSync(path.resolve(__dirname, '../../../frontend/src/lib/cleaningDailyMerge.ts'), 'utf8')
   assert.match(source, /latest_lockbox_audit AS \([\s\S]*?audit\.source_id::text AS task_id[\s\S]*?performed_as_action = 'upload_access_video'/)
   assert.match(source, /current_media\.task_id::text = t\.id::text[\s\S]*?current_media\.type = 'lockbox_video'/)
   assert.match(source, /lockboxVideoUrl: row\.has_current_lockbox_video === true \? 'recorded' : ''/)
   assert.doesNotMatch(source, /invalidatedAfterUpload|invalidated_after_upload|lockbox_audit_invalidated/)
   assert.match(source, /key_handover: keyHandover/)
   assert.match(source, /canonicalCleaningTurnoverPairs\(cleaningRows\)/)
+  assert.match(source, /reconcilePendingHandoverInspectorGroups\([\s\S]*?inspectorGroups,[\s\S]*?canonicalTurnoverPairs/)
+  assert.match(source, /const isWorkRecordGroup = !!workRecordState && !embedsPendingHandoverRecord/)
+  assert.match(source, /const pendingHandoverRecordRow = embedsPendingHandoverRecord/)
+  assert.match(source, /pendingHandoverRecordRow\?\.__raw_id[\s\S]*?pendingHandoverRecordRow\?\.source_id/)
+  assert.doesNotMatch(source, /pendingHandoverActionChild/)
+  assert.match(source, /inspection_action_task_id: pendingHandoverActionSourceId/)
   assert.match(source, /canonicalKeyHandoverSourceIds\(keyHandoverRelationRows\)/)
+  assert.match(source, /deferred_inspection_current_day_checkout: deferredInspectionExecutionDayProjection[\s\S]*?deferredInspectionHasCurrentDayCheckout/)
+  assert.match(source, /deferredInspectionManagerTimingAuthority\(arr, mergedTurnoverDisplay\)/)
+  assert.match(source, /summary: displayMergeCheckinRow && !deferredInspectionHasCurrentDayCheckout[\s\S]*?`\$\{checkinTime\}入住`/)
+  assert.match(source, /start_time: displayMergeCheckinRow && !deferredInspectionHasCurrentDayCheckout[\s\S]*?\? null/)
   assert.match(source, /business_identity: businessIdentity/)
   assert.match(source, /phase_history: phaseHistory/)
   assert.match(source, /executor_id: roleKind === 'executor'/)
@@ -532,16 +752,27 @@ function testWorkTaskPayloadUsesExactAuditWithoutExposingMediaUrl() {
   )
   const transactionStart = manualCreateRoute.indexOf("client.query('BEGIN')")
   const advisoryLock = manualCreateRoute.indexOf('lockCleaningTurnoverKey(client, normalizedPropertyId, parsed.data.task_date)', transactionStart)
-  const checkoutRowLock = manualCreateRoute.indexOf("SELECT * FROM cleaning_tasks WHERE id::text=$1 LIMIT 1 FOR UPDATE", transactionStart)
-  assert.ok(transactionStart >= 0 && advisoryLock > transactionStart && checkoutRowLock > advisoryLock, 'manual check-in linking must acquire the turnover advisory lock before any task row lock')
+  const sameDayRowLock = manualCreateRoute.indexOf('FOR UPDATE OF t', transactionStart)
+  assert.ok(transactionStart >= 0 && advisoryLock > transactionStart && sameDayRowLock > advisoryLock, 'manual check-in linking must acquire the turnover advisory lock before any task row lock')
   assert.match(cleaningAppSource, /changedFields: \['status', 'lockbox_video_uploaded_at', 'lockbox_video_url', 'key_handover'\]/)
   assert.match(cleaningAppSource, /lockbox_video_uploaded_at: null, lockbox_video_url: null, key_handover: null/)
   assert.doesNotMatch(source, /lockboxVideoConfirmsCurrentTaskState\([\s\S]{0,240}\) \|\| !!keyHandover/)
   assert.match(cleaningPageSource, /label="入住执行方式"[\s\S]*?value=\{editForm\.checkout_ids\.length > 0 \? 'inspect_and_hang' : editForm\.checkin_inspection_scope\}/, 'existing check-in edit must expose the supported execution mode')
   assert.match(cleaningPageSource, /manualCreateForm\.create_mode === 'checkin'[\s\S]*?入住执行方式[\s\S]*?manualCreateForm\.checkin_inspection_scope/, 'top-level manual check-in create must expose the execution mode')
+  assert.match(cleaningPageSource, /manualCheckinCheckoutCandidates\(items, propertyId, selectedDateStr\)/, 'manual check-in relation choices must use the shared reliable-candidate helper')
+  assert.match(cleaningDailyMergeSource, /if \(loadState !== 'ready'\) return current[\s\S]*?candidateIds\.length === 1[\s\S]*?linked_checkout_task_id: candidateIds\[0\][\s\S]*?checkin_link_decision: 'link'/, 'one reliable checkout candidate must be selected only after a successful candidate load')
+  assert.match(cleaningDailyMergeSource, /current\.checkin_link_decision === 'independent' && current\.checkin_link_decision_user_selected/, 'an explicit independent choice must be distinguished from an automatic empty-list state')
+  assert.match(cleaningDailyMergeSource, /candidateIds\.length === 0[\s\S]*?checkin_link_decision: 'independent'[\s\S]*?checkin_link_decision_user_selected: false/, 'a successfully loaded empty candidate set may create only an automatic independent default')
+  assert.match(cleaningPageSource, /setCalendarRangeLoadState\('loading'\)[\s\S]*?setCalendarRangeLoadState\('ready'\)[\s\S]*?setCalendarRangeLoadState\('error'\)/, 'calendar candidate state must distinguish loading, successful hydration, and load failure')
+  assert.match(cleaningPageSource, /manualCreateForm\.create_mode === 'checkin' && calendarRangeLoadState !== 'ready'/, 'manual check-in save must reject unknown or failed candidate state')
+  assert.match(cleaningPageSource, /calendarRangeLoadState === 'error'[\s\S]*?任务关系加载失败，不能把未知候选当作独立任务。[\s\S]*?loadRangeItems\(\)/, 'failed candidate loads must offer a retry instead of silently creating an independent check-in')
+  assert.match(cleaningPageSource, /任务关系仍在加载，请稍后再保存/, 'manual check-in save must fail closed while relation candidates are loading')
+  assert.match(cleaningPageSource, /value: '__independent__', label: '明确创建独立入住任务'/, 'multiple checkout candidates must offer an explicit independent choice')
+  assert.match(cleaningPageSource, /checkin_link_decision: manualCreateForm\.create_mode === 'checkin' \? manualCreateForm\.checkin_link_decision : null/, 'top-level create must send the explicit link decision')
+  assert.match(cleaningPageSource, /linked_checkout_task_id: String\(editForm\.checkout_ids\[0\]\),[\s\S]*?checkin_link_decision: 'link'/, 'checkout-detail add-checkin must declare the exact linked decision')
   assert.match(cleaningPageSource, /inspection_scope: manualCreateForm\.create_mode === 'checkin'[\s\S]*?manualCreateForm\.linked_checkout_task_id \? 'inspect_and_hang' : manualCreateForm\.checkin_inspection_scope/, 'top-level linked check-in must submit the only valid same-day scope')
   assert.match(cleaningPageSource, /value=\{manualCreateForm\.linked_checkout_task_id \? 'inspect_and_hang' : manualCreateForm\.checkin_inspection_scope\}[\s\S]*?disabled=\{!!manualCreateForm\.linked_checkout_task_id\}/, 'top-level linked check-in must not offer the rejected password-only choice')
-  assert.match(cleaningPageSource, /linked_checkout_task_id: v \? String\(v\) : null,[\s\S]*?v \? \{ checkin_inspection_scope: 'inspect_and_hang' as const \} : \{\}/, 'choosing a checkout must immediately normalize the visible execution mode')
+  assert.match(cleaningPageSource, /linked_checkout_task_id: v === '__independent__' \? null : String\(v \|\| ''\),[\s\S]*?checkin_link_decision: v === '__independent__' \? 'independent' : 'link',[\s\S]*?v !== '__independent__' \? \{ checkin_inspection_scope: 'inspect_and_hang' as const \} : \{\}/, 'choosing a checkout must immediately normalize the visible execution mode')
   assert.match(cleaningPageSource, /pending_add_checkin[\s\S]*?inspection_scope: editForm\.checkout_ids\.length > 0[\s\S]*?\? 'inspect_and_hang'[\s\S]*?: editForm\.checkin_inspection_scope/, 'checkout-side add-checkin entry must persist the supported mode')
   assert.match(cleaningPageSource, /value=\{editForm\.checkout_ids\.length > 0 \? 'inspect_and_hang' : editForm\.checkin_inspection_scope\}/, 'turnover editing must not offer a mode that the backend rejects')
   assert.match(cleaningPageSource, /disabled=\{!editDetailsGate\.enabled \|\| editForm\.checkout_ids\.length > 0\}/, 'turnover execution mode is read-only and explicit')
@@ -935,6 +1166,10 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
   const pureCheckinId = 'test-board-pure-checkin'
   const dateMoveCheckoutId = 'test-date-move-checkout'
   const linkedCheckoutId = 'test-manual-link-checkout'
+  const decisionCheckoutUniqueId = 'test-manual-link-decision-unique'
+  const decisionCheckoutIndependentId = 'test-manual-link-decision-independent'
+  const decisionCheckoutAmbiguousAId = 'test-manual-link-decision-ambiguous-a'
+  const decisionCheckoutAmbiguousBId = 'test-manual-link-decision-ambiguous-b'
   const deferredMergeCheckoutId = 'test-deferred-merge-checkout'
   const deferredMergeCheckinId = 'test-deferred-merge-checkin'
   const deferredMergeAssigneeId = 'test-deferred-merge-assignee'
@@ -954,10 +1189,14 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
   ;(db.cleaningTasks as any[]).push(task)
   ;(db.cleaningTasks as any[]).push(
     { id: turnoverCheckoutId, property_id: 'property-turnover', task_date: '2026-09-16', date: '2026-09-16', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang' },
-    { id: turnoverCheckinId, property_id: 'property-turnover', task_date: '2026-09-16', date: '2026-09-16', task_type: 'checkin_clean', type: 'checkin_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang' },
+    { id: turnoverCheckinId, property_id: 'property-turnover', task_date: '2026-09-16', date: '2026-09-16', task_type: 'checkin_clean', type: 'checkin_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang', linked_checkout_task_id: turnoverCheckoutId },
     { id: pureCheckinId, property_id: 'property-pure-checkin', task_date: '2026-09-16', date: '2026-09-16', task_type: 'checkin_clean', type: 'checkin_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang' },
     { id: dateMoveCheckoutId, property_id: 'property-pure-checkin', task_date: '2026-09-17', date: '2026-09-17', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang' },
     { id: linkedCheckoutId, property_id: testPropertyId, task_date: '2026-09-19', date: '2026-09-19', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang' },
+    { id: decisionCheckoutUniqueId, property_id: testPropertyId, task_date: '2026-09-21', date: '2026-09-21', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang' },
+    { id: decisionCheckoutIndependentId, property_id: testPropertyId, task_date: '2026-09-22', date: '2026-09-22', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang' },
+    { id: decisionCheckoutAmbiguousAId, property_id: testPropertyId, task_date: '2026-09-23', date: '2026-09-23', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang' },
+    { id: decisionCheckoutAmbiguousBId, property_id: testPropertyId, task_date: '2026-09-23', date: '2026-09-23', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang' },
     { id: deferredMergeCheckoutId, property_id: deferredMergePropertyId, task_date: '2026-09-18', date: '2026-09-18', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active', cleaner_id: 'test-original-cleaner', inspector_id: 'test-deferred-plan-inspector', inspection_mode: 'deferred', inspection_due_date: '2026-09-19', inspection_scope: 'inspect_and_hang', guest_special_request: '延期任务旧要求' },
     { id: deferredMergeCheckinId, property_id: deferredMergePropertyId, task_date: '2026-09-19', date: '2026-09-19', task_type: 'checkin_clean', type: 'checkin_clean', status: 'pending', execution_state: 'active', assignee_id: null, inspector_id: null, linked_checkout_task_id: deferredMergeCheckoutId, inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang', guest_special_request: '入住任务优先要求', checkin_time: '3pm' },
   )
@@ -1058,10 +1297,9 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     })
     assert.equal(bulkPatchConflict.status, 400)
     assert.equal(bulkPatchConflict.body.code, 'turnover_requires_inspect_and_hang')
-    const dateMoveConflict = await postJson(`/cleaning/tasks/${pureCheckinId}`, { task_date: '2026-09-17' }, 'PATCH')
-    assert.equal(dateMoveConflict.status, 400)
-    assert.equal(dateMoveConflict.body.code, 'turnover_requires_inspect_and_hang')
-    assert.equal((db.cleaningTasks as any[]).find((item) => item.id === pureCheckinId)?.task_date, '2026-09-16')
+    const dateMoveIndependent = await postJson(`/cleaning/tasks/${pureCheckinId}`, { task_date: '2026-09-17' }, 'PATCH')
+    assert.equal(dateMoveIndependent.status, 200, 'same room and date alone must not invent a turnover relation')
+    assert.equal((db.cleaningTasks as any[]).find((item) => item.id === pureCheckinId)?.task_date, '2026-09-17')
     const manualTurnoverConflict = await postJson('/cleaning/tasks', {
       create_mode: 'turnover',
       task_date: '2026-09-18',
@@ -1078,6 +1316,83 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     })
     assert.equal(independentPasswordOnly.status, 200)
     assert.equal(independentPasswordOnly.body.inspection_scope, 'password_only')
+    const unrelatedCheckout = await postJson('/cleaning/tasks', {
+      create_mode: 'checkout',
+      task_date: '2026-09-20',
+      property_id: testPropertyId,
+      inspection_scope: 'inspect_and_hang',
+    })
+    assert.equal(unrelatedCheckout.status, 200, 'an independent password-only check-in must not block an unrelated checkout on the same day')
+    const unrelatedCheckoutPatch = await postJson(`/cleaning/tasks/${String(unrelatedCheckout.body.id)}`, {
+      guest_special_request: 'updated without adopting the independent check-in',
+    }, 'PATCH')
+    assert.equal(unrelatedCheckoutPatch.status, 200, 'an independent password-only check-in must not poison later checkout edits')
+    const uniqueDecisionRequired = await postJson('/cleaning/tasks', {
+      create_mode: 'checkin',
+      task_date: '2026-09-21',
+      property_id: testPropertyId,
+      inspection_scope: 'inspect_and_hang',
+    })
+    assert.equal(uniqueDecisionRequired.status, 409)
+    assert.equal(uniqueDecisionRequired.body.code, 'manual_checkin_checkout_link_decision_required')
+    assert.equal(uniqueDecisionRequired.body.candidate_count, 1)
+    const uniqueLinked = await postJson('/cleaning/tasks', {
+      create_mode: 'checkin',
+      task_date: '2026-09-21',
+      property_id: testPropertyId,
+      linked_checkout_task_id: decisionCheckoutUniqueId,
+      checkin_link_decision: 'link',
+      inspection_scope: 'inspect_and_hang',
+    })
+    assert.equal(uniqueLinked.status, 200)
+    assert.equal(uniqueLinked.body.linked_checkout_task_id, decisionCheckoutUniqueId)
+    const contradictoryIndependent = await postJson('/cleaning/tasks', {
+      create_mode: 'checkin',
+      task_date: '2026-09-22',
+      property_id: testPropertyId,
+      linked_checkout_task_id: decisionCheckoutIndependentId,
+      checkin_link_decision: 'independent',
+    })
+    assert.equal(contradictoryIndependent.status, 409)
+    assert.equal(contradictoryIndependent.body.code, 'manual_checkin_checkout_link_conflict')
+    const explicitIndependent = await postJson('/cleaning/tasks', {
+      create_mode: 'checkin',
+      task_date: '2026-09-22',
+      property_id: testPropertyId,
+      checkin_link_decision: 'independent',
+      inspection_scope: 'password_only',
+    })
+    assert.equal(explicitIndependent.status, 200)
+    assert.equal(explicitIndependent.body.linked_checkout_task_id, null)
+    const unrelatedExistingCheckoutPatch = await postJson(`/cleaning/tasks/${decisionCheckoutIndependentId}`, {
+      guest_special_request: 'independent check-in remains unrelated',
+    }, 'PATCH')
+    assert.equal(unrelatedExistingCheckoutPatch.status, 200, 'an explicit independent choice must not turn the same-day checkout into a turnover')
+    const ambiguousDecisionRequired = await postJson('/cleaning/tasks', {
+      create_mode: 'checkin',
+      task_date: '2026-09-23',
+      property_id: testPropertyId,
+    })
+    assert.equal(ambiguousDecisionRequired.status, 409)
+    assert.equal(ambiguousDecisionRequired.body.code, 'manual_checkin_checkout_link_decision_required')
+    assert.equal(ambiguousDecisionRequired.body.candidate_count, 2)
+    const ambiguousSelected = await postJson('/cleaning/tasks', {
+      create_mode: 'checkin',
+      task_date: '2026-09-23',
+      property_id: testPropertyId,
+      linked_checkout_task_id: decisionCheckoutAmbiguousBId,
+      checkin_link_decision: 'link',
+    })
+    assert.equal(ambiguousSelected.status, 200)
+    assert.equal(ambiguousSelected.body.linked_checkout_task_id, decisionCheckoutAmbiguousBId)
+    const noCandidateOldClient = await postJson('/cleaning/tasks', {
+      create_mode: 'checkin',
+      task_date: '2026-09-24',
+      property_id: testPropertyId,
+      inspection_scope: 'password_only',
+    })
+    assert.equal(noCandidateOldClient.status, 200, 'an old client remains compatible when no reliable checkout candidate exists')
+    assert.equal(noCandidateOldClient.body.linked_checkout_task_id, null)
     const linkedCheckin = await postJson('/cleaning/tasks', {
       create_mode: 'checkin',
       task_date: '2026-09-19',
@@ -1142,11 +1457,14 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     assert.equal(afterCards[0]?.turnover_display?.guest_request_summary, '入住任务优先要求')
     assert.equal(afterCards[0]?.deferred_inspection_original_checkout_date, '2026-09-18')
     assert.equal(afterCards[0]?.deferred_inspection_effective_date, '2026-09-19')
+    assert.equal(afterCards[0]?.deferred_inspection_current_day_checkout, false)
+    assert.equal(afterCards[0]?.task_kind, 'checkin_clean')
+    assert.equal(afterCards[0]?.detail, '3pm入住')
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()))
     const index = db.cleaningTasks.findIndex((item) => item.id === taskId)
     if (index >= 0) db.cleaningTasks.splice(index, 1)
-    for (const id of [turnoverCheckoutId, turnoverCheckinId, pureCheckinId, dateMoveCheckoutId, linkedCheckoutId, deferredMergeCheckoutId, deferredMergeCheckinId]) {
+    for (const id of [turnoverCheckoutId, turnoverCheckinId, pureCheckinId, dateMoveCheckoutId, linkedCheckoutId, decisionCheckoutUniqueId, decisionCheckoutIndependentId, decisionCheckoutAmbiguousAId, decisionCheckoutAmbiguousBId, deferredMergeCheckoutId, deferredMergeCheckinId]) {
       const fixtureIndex = db.cleaningTasks.findIndex((item) => item.id === id)
       if (fixtureIndex >= 0) db.cleaningTasks.splice(fixtureIndex, 1)
     }
@@ -1187,6 +1505,8 @@ testKeyHandoverMergeRequiresCanonicalSourceMembership()
 testManagerProjectionKeepsCanonicalHandoverForVisiblePhaseSubset()
 testCanonicalKeyHandoverTurnoverRequiresExactOrderBoundary()
 testCanonicalTurnoverBusinessIdentityRejectsCancelledOrAmbiguousCandidates()
+testPendingHandoverRecordMergesOnlyIntoItsExactLiveTurnover()
+testDeferredInspectionDisplayAuthoritySurvivesBothProjectionStages()
 testExplicitManualCheckinLinkIsCanonicalButNeverPropertyDateInferred()
 testWorkTaskPayloadUsesExactAuditWithoutExposingMediaUrl()
 

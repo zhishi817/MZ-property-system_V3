@@ -7,7 +7,7 @@ import { activeCleaningTaskWhereSql, backfillCleaningTasks, ensureCleaningSchema
 import { v4 as uuid } from 'uuid'
 import { emitNotificationEvent } from '../services/notificationEvents'
 import { buildCleaningTaskVisibilityHints, buildMz031CleaningArrangementRevision, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
-import { canonicalCleaningTurnoverPairs, defaultInspectionModeForTaskType, deferredProjectionDate, effectiveInspectionMode, normalizeInspectionMode, normalizeInspectionScope } from '../lib/cleaningInspection'
+import { canonicalCleaningTurnoverPairs, canonicalKeyHandoverSourceIds, defaultInspectionModeForTaskType, deferredProjectionDate, effectiveInspectionMode, normalizeInspectionMode, normalizeInspectionScope } from '../lib/cleaningInspection'
 import { buildWebTaskCapabilityPayload } from '../lib/webTaskCapabilities'
 import { assignedStatusFromAssignees, isCheckinSiteExecutionTask } from '../lib/cleaningAssignmentStatus'
 import { buildCleaningTurnoverDisplay } from '../lib/cleaningTurnoverDisplay'
@@ -48,6 +48,9 @@ function dayOnly(s?: any): string | null {
 
 const TURNOVER_INSPECTION_SCOPE_CONFLICT = 'turnover_requires_inspect_and_hang'
 const MANUAL_CHECKIN_LINK_CONFLICT = 'manual_checkin_checkout_link_conflict'
+const MANUAL_CHECKIN_LINK_DECISION_REQUIRED = 'manual_checkin_checkout_link_decision_required'
+
+type ManualCheckinLinkDecision = 'link' | 'independent' | null
 
 class ManualCheckinLinkConflict extends Error {
   readonly code = MANUAL_CHECKIN_LINK_CONFLICT
@@ -55,6 +58,17 @@ class ManualCheckinLinkConflict extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'ManualCheckinLinkConflict'
+  }
+}
+
+class ManualCheckinLinkDecisionRequired extends Error {
+  readonly code = MANUAL_CHECKIN_LINK_DECISION_REQUIRED
+  readonly status = 409
+  readonly candidateCount: number
+  constructor(message: string, candidateCount: number) {
+    super(message)
+    this.name = 'ManualCheckinLinkDecisionRequired'
+    this.candidateCount = candidateCount
   }
 }
 
@@ -91,8 +105,140 @@ function assertManualCheckinCheckoutLink(params: {
   return linkedCheckoutTaskId
 }
 
+function activeManualTurnoverRows(rows0: any[], propertyId: string, taskDate: string): any[] {
+  return (Array.isArray(rows0) ? rows0 : []).filter((row) => {
+    const executionState = String(row?.execution_state || '').trim().toLowerCase()
+    const lifecycleState = String(row?.lifecycle_state || '').trim().toLowerCase()
+    const status = String(row?.status || '').trim().toLowerCase()
+    return String(row?.property_id || '').trim() === String(propertyId || '').trim()
+      && dayOnly(row?.task_date ?? row?.date) === dayOnly(taskDate)
+      && !['cancelled', 'canceled', 'superseded', 'deleted'].includes(executionState)
+      && lifecycleState !== 'deleted'
+      && !['cancelled', 'canceled'].includes(status)
+  })
+}
+
+function reliableManualCheckinCheckoutCandidates(rows0: any[], propertyId: string, taskDate: string): any[] {
+  const rows = activeManualTurnoverRows(rows0, propertyId, taskDate)
+  const alreadyPairedCheckoutIds = new Set<string>()
+  for (const row of rows) {
+    if (String(row?.task_type ?? row?.type ?? '').trim().toLowerCase() !== 'checkin_clean') continue
+    const linkedCheckoutTaskId = String(row?.linked_checkout_task_id || '').trim()
+    if (linkedCheckoutTaskId) alreadyPairedCheckoutIds.add(linkedCheckoutTaskId)
+  }
+  const checkouts = rows.filter((row) => String(row?.task_type ?? row?.type ?? '').trim().toLowerCase() === 'checkout_clean')
+  const checkins = rows.filter((row) => String(row?.task_type ?? row?.type ?? '').trim().toLowerCase() === 'checkin_clean')
+  for (const checkout of checkouts) {
+    for (const checkin of checkins) {
+      if (canonicalKeyHandoverSourceIds([checkout, checkin]).length !== 2) continue
+      const checkoutId = String(checkout?.id || checkout?.__raw_id || '').trim()
+      if (checkoutId) alreadyPairedCheckoutIds.add(checkoutId)
+    }
+  }
+  return rows.filter((row) => {
+    const taskType = String(row?.task_type ?? row?.type ?? '').trim().toLowerCase()
+    const id = String(row?.id || '').trim()
+    return taskType === 'checkout_clean' && !!id && !alreadyPairedCheckoutIds.has(id)
+  })
+}
+
+function memoryTaskWithOrderBoundaries(task: any): any {
+  const orderId = String(task?.order_id || '').trim()
+  if (!orderId) return task
+  const order = ((db as any)?.orders || []).find((candidate: any) => String(candidate?.id || '').trim() === orderId)
+  return order
+    ? { ...task, order_checkin: order.checkin ?? null, order_checkout: order.checkout ?? null }
+    : task
+}
+
+function reliableTurnoverCounterparts(current0: any, rows0: any[]): any[] {
+  const current = current0 || {}
+  const currentId = String(current?.id || current?.__raw_id || '').trim()
+  const rows = (Array.isArray(rows0) ? rows0 : []).filter((row) => {
+    const rowId = String(row?.id || row?.__raw_id || '').trim()
+    return rowId && rowId !== currentId
+  })
+  const allRows = [current, ...rows]
+  const canonicalPairs = canonicalCleaningTurnoverPairs(allRows)
+  const canonicalIds = new Set(canonicalPairs
+    .filter((pair) => pair.source_ids.includes(currentId))
+    .flatMap((pair) => pair.source_ids))
+
+  return rows.filter((candidate) => {
+    const candidateId = String(candidate?.id || candidate?.__raw_id || '').trim()
+    if (canonicalIds.has(candidateId)) return true
+    // An explicit manual link remains authoritative even when another valid
+    // booking exists for the same room/date; it must not be weakened by the
+    // canonical ambiguity fail-closed rule.
+    return canonicalKeyHandoverSourceIds([current, candidate]).length === 2
+      && (String(current?.linked_checkout_task_id || '').trim() === candidateId
+        || String(candidate?.linked_checkout_task_id || '').trim() === currentId)
+  })
+}
+
+function resolveManualCheckinCheckoutSelection(params: {
+  linkedCheckoutTaskId: string | null
+  decision: ManualCheckinLinkDecision
+  createdTypes: string[]
+  propertyId: string
+  taskDate: string
+  sameDayRows: any[]
+}): string | null {
+  const linkedCheckoutTaskId = String(params.linkedCheckoutTaskId || '').trim() || null
+  const decision = params.decision
+  const isSingleCheckin = params.createdTypes.length === 1 && params.createdTypes[0] === 'checkin_clean'
+  if (!isSingleCheckin) {
+    if (linkedCheckoutTaskId || decision) throw new ManualCheckinLinkConflict('只有单独新增入住任务可以选择关联或独立创建')
+    return null
+  }
+
+  const activeRows = activeManualTurnoverRows(params.sameDayRows, params.propertyId, params.taskDate)
+  const candidates = reliableManualCheckinCheckoutCandidates(activeRows, params.propertyId, params.taskDate)
+
+  if (linkedCheckoutTaskId) {
+    if (decision === 'independent') throw new ManualCheckinLinkConflict('已选择独立入住，不能同时关联退房任务')
+    const checkoutTask = activeRows.find((row) => String(row?.id || '').trim() === linkedCheckoutTaskId) || null
+    const activeLinked = activeRows.filter((row) => (
+      String(row?.linked_checkout_task_id || '').trim() === linkedCheckoutTaskId
+      && String(row?.task_type ?? row?.type ?? '').trim().toLowerCase() === 'checkin_clean'
+    ))
+    const canonicalConflict = canonicalCleaningTurnoverPairs(activeRows)
+      .some((pair) => pair.source_ids.includes(linkedCheckoutTaskId))
+    assertManualCheckinCheckoutLink({
+      linkedCheckoutTaskId,
+      createdTypes: params.createdTypes,
+      propertyId: params.propertyId,
+      taskDate: params.taskDate,
+      checkoutTask,
+      activeCheckinRows: canonicalConflict ? [checkoutTask, ...activeLinked].filter(Boolean) : activeLinked,
+    })
+    if (!candidates.some((candidate) => String(candidate?.id || '').trim() === linkedCheckoutTaskId)) {
+      throw new ManualCheckinLinkConflict('所选退房任务已有关联入住或不再可合并，请刷新后重新选择')
+    }
+    return linkedCheckoutTaskId
+  }
+
+  if (decision === 'link') {
+    throw new ManualCheckinLinkDecisionRequired('请选择要合并的退房任务', candidates.length)
+  }
+  if (decision === 'independent') return null
+  if (candidates.length > 0) {
+    const message = candidates.length === 1
+      ? '检测到一个可关联退房任务，请确认合并或明确创建独立入住'
+      : `检测到 ${candidates.length} 个可关联退房任务，请选择其中一个或明确创建独立入住`
+    throw new ManualCheckinLinkDecisionRequired(message, candidates.length)
+  }
+  return null
+}
+
 function turnoverInspectionScopeTarget(current: any, patch: any = {}) {
   const taskKind = String(patch?.task_type ?? current?.task_type ?? current?.type ?? '').trim().toLowerCase()
+  const source = String(patch?.source ?? current?.source ?? '').trim().toLowerCase()
+  const linkedCheckoutTaskId = String(patch?.linked_checkout_task_id ?? current?.linked_checkout_task_id ?? '').trim()
+  // An explicitly independent manual check-in is not a turnover merely
+  // because another task shares its room and date. Only the persisted link
+  // may place that manual check-in under the turnover scope rule.
+  if (taskKind === 'checkin_clean' && source === 'manual' && !linkedCheckoutTaskId) return null
   const oppositeKind = taskKind === 'checkout_clean'
     ? 'checkin_clean'
     : taskKind === 'checkin_clean'
@@ -112,21 +258,29 @@ function turnoverInspectionScopeTarget(current: any, patch: any = {}) {
 async function assertPgTurnoverInspectionScope(client: any, taskId: string, current: any, patch: any = {}) {
   const target = turnoverInspectionScopeTarget(current, patch)
   if (!target) return
-  const counterpart = await client.query(
-    `SELECT task.inspection_scope
+  const candidateResult = await client.query(
+    `SELECT task.*, o.checkin AS order_checkin, o.checkout AS order_checkout
      FROM cleaning_tasks AS task
-     WHERE task.id::text <> $1
-       AND task.property_id::text = $2
-       AND COALESCE(task.task_date, task.date)::date = $3::date
-       AND lower(COALESCE(task.task_type, task.type, '')) = $4
-       AND ${activeCleaningTaskWhereSql('task')}
-     LIMIT 1`,
+     LEFT JOIN orders o ON o.id::text = task.order_id::text
+     WHERE (
+       task.id::text = $1
+       OR (
+         task.property_id::text = $2
+         AND COALESCE(task.task_date, task.date)::date = $3::date
+         AND lower(COALESCE(task.task_type, task.type, '')) = $4
+         AND ${activeCleaningTaskWhereSql('task')}
+       )
+     )
+     FOR UPDATE OF task`,
     [String(taskId), target.propertyId, target.taskDate, target.oppositeKind],
   )
-  const counterpartScope = counterpart.rows?.[0]?.inspection_scope
+  const persistedCurrent = candidateResult.rows?.find((row: any) => String(row?.id || '') === String(taskId)) || current
+  const patchedCurrent = { ...persistedCurrent, ...patch }
+  const counterparts = reliableTurnoverCounterparts(patchedCurrent, candidateResult.rows || [])
   if (
-    counterpart.rows?.length
-    && (target.inspectionScope === 'password_only' || normalizeInspectionScope(counterpartScope) === 'password_only')
+    counterparts.length
+    && (target.inspectionScope === 'password_only'
+      || counterparts.some((counterpart) => normalizeInspectionScope(counterpart?.inspection_scope) === 'password_only'))
   ) {
     throw new Error(TURNOVER_INSPECTION_SCOPE_CONFLICT)
   }
@@ -135,17 +289,21 @@ async function assertPgTurnoverInspectionScope(client: any, taskId: string, curr
 function assertMemoryTurnoverInspectionScope(taskId: string, current: any, patch: any = {}) {
   const target = turnoverInspectionScopeTarget(current, patch)
   if (!target) return
-  const counterpart = (db.cleaningTasks as any[]).find((candidate: any) => (
+  const persistedCurrent = (db.cleaningTasks as any[]).find((candidate: any) => String(candidate?.id || '') === String(taskId)) || current
+  const patchedCurrent = memoryTaskWithOrderBoundaries({ ...persistedCurrent, ...patch })
+  const candidates = (db.cleaningTasks as any[]).filter((candidate: any) => (
     String(candidate.id || '') !== String(taskId)
     && String(candidate.property_id || '').trim() === target.propertyId
     && dayOnly(candidate.task_date ?? candidate.date) === target.taskDate
     && String(candidate.task_type ?? candidate.type ?? '').trim().toLowerCase() === target.oppositeKind
     && !isCancelledCleaningTaskStatus(candidate.status)
     && String(candidate.execution_state || 'active').trim().toLowerCase() === 'active'
-  ))
+  )).map(memoryTaskWithOrderBoundaries)
+  const counterparts = reliableTurnoverCounterparts(patchedCurrent, candidates)
   if (
-    counterpart
-    && (target.inspectionScope === 'password_only' || normalizeInspectionScope(counterpart.inspection_scope) === 'password_only')
+    counterparts.length
+    && (target.inspectionScope === 'password_only'
+      || counterparts.some((counterpart) => normalizeInspectionScope(counterpart?.inspection_scope) === 'password_only'))
   ) {
     throw new Error(TURNOVER_INSPECTION_SCOPE_CONFLICT)
   }
@@ -1665,6 +1823,7 @@ const createTaskSchema = z.object({
   guest_special_request: z.union([z.string(), z.null()]).optional(),
   note: z.union([z.string(), z.null()]).optional(),
   linked_checkout_task_id: z.union([z.string().min(1), z.null()]).optional(),
+  checkin_link_decision: z.enum(['link', 'independent']).optional().nullable(),
 }).strict()
 
 router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSchema, async (req, res) => {
@@ -1691,6 +1850,8 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
     }
 
     const createdRows: any[] = []
+    const linkedCheckoutTaskId = String((parsed.data as any).linked_checkout_task_id || '').trim() || null
+    const checkinLinkDecision = ((parsed.data as any).checkin_link_decision || null) as ManualCheckinLinkDecision
     const rawPropertyId = String(parsed.data.property_id || '').trim()
     let normalizedPropertyId = rawPropertyId
     if (hasPg && pgPool) {
@@ -1741,17 +1902,13 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
       const client = await pgPool.connect()
       try {
         await client.query('BEGIN')
-        const linkedCheckoutTaskId = String((parsed.data as any).linked_checkout_task_id || '').trim() || null
-        if (linkedCheckoutTaskId) {
+        if (types.length === 1 && types[0] === 'checkin_clean') {
           // All turnover mutations take the same advisory lock before any
           // cleaning_tasks row lock. This matches order sync and prevents a
           // row->advisory / advisory->row deadlock during concurrent linking.
+          // The lock is also required for an explicit independent decision so
+          // a concurrent checkout cannot appear between validation and insert.
           await lockCleaningTurnoverKey(client, normalizedPropertyId, parsed.data.task_date)
-          const checkoutRes = await client.query(
-            'SELECT * FROM cleaning_tasks WHERE id::text=$1 LIMIT 1 FOR UPDATE',
-            [linkedCheckoutTaskId],
-          )
-          const checkoutTask = checkoutRes?.rows?.[0] || null
           const sameDayRes = await client.query(
             `SELECT t.*, o.checkin AS order_checkin, o.checkout AS order_checkout
              FROM cleaning_tasks t
@@ -1763,21 +1920,16 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
             [normalizedPropertyId, parsed.data.task_date],
           )
           const sameDayRows = sameDayRes?.rows || []
-          const activeLinked = sameDayRows.filter((row: any) => (
-            String(row.linked_checkout_task_id || '').trim() === linkedCheckoutTaskId
-            && String(row.task_type ?? row.type ?? '').trim().toLowerCase() === 'checkin_clean'
-          ))
-          const canonicalConflict = canonicalCleaningTurnoverPairs(sameDayRows)
-            .some((pair) => pair.source_ids.includes(linkedCheckoutTaskId))
-          assertManualCheckinCheckoutLink({
+          base.linked_checkout_task_id = resolveManualCheckinCheckoutSelection({
             linkedCheckoutTaskId,
+            decision: checkinLinkDecision,
             createdTypes: types,
             propertyId: normalizedPropertyId,
             taskDate: parsed.data.task_date,
-            checkoutTask,
-            activeCheckinRows: canonicalConflict ? [checkoutTask, ...activeLinked] : activeLinked,
+            sameDayRows,
           })
-          base.linked_checkout_task_id = linkedCheckoutTaskId
+        } else if (linkedCheckoutTaskId || checkinLinkDecision) {
+          throw new ManualCheckinLinkConflict('只有单独新增入住任务可以选择关联或独立创建')
         }
         for (const tt of types) {
           const row: any = {
@@ -1872,30 +2024,17 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
       if (createdRows.length === 1) return res.json(createdRows[0])
       return res.json({ ok: true, created: createdRows.length })
     }
-    const linkedCheckoutTaskId = String((parsed.data as any).linked_checkout_task_id || '').trim() || null
-    if (linkedCheckoutTaskId) {
-      const sameDayRows = (db.cleaningTasks as any[]).filter((row) => (
-        String(row.property_id || '').trim() === normalizedPropertyId
-        && dayOnly(row.task_date ?? row.date) === parsed.data.task_date
-        && !['cancelled', 'canceled', 'superseded', 'deleted'].includes(String(row.execution_state || '').trim().toLowerCase())
-        && !['cancelled', 'canceled'].includes(String(row.status || '').trim().toLowerCase())
-      ))
-      const checkoutTask = sameDayRows.find((row) => String(row.id || '').trim() === linkedCheckoutTaskId) || null
-      const activeLinked = sameDayRows.filter((row) => (
-        String(row.linked_checkout_task_id || '').trim() === linkedCheckoutTaskId
-        && String(row.task_type ?? row.type ?? '').trim().toLowerCase() === 'checkin_clean'
-      ))
-      const canonicalConflict = canonicalCleaningTurnoverPairs(sameDayRows)
-        .some((pair) => pair.source_ids.includes(linkedCheckoutTaskId))
-      assertManualCheckinCheckoutLink({
+    if (types.length === 1 && types[0] === 'checkin_clean') {
+      base.linked_checkout_task_id = resolveManualCheckinCheckoutSelection({
         linkedCheckoutTaskId,
+        decision: checkinLinkDecision,
         createdTypes: types,
         propertyId: normalizedPropertyId,
         taskDate: parsed.data.task_date,
-        checkoutTask,
-        activeCheckinRows: canonicalConflict ? [checkoutTask, ...activeLinked] : activeLinked,
+        sameDayRows: db.cleaningTasks as any[],
       })
-      base.linked_checkout_task_id = linkedCheckoutTaskId
+    } else if (linkedCheckoutTaskId || checkinLinkDecision) {
+      throw new ManualCheckinLinkConflict('只有单独新增入住任务可以选择关联或独立创建')
     }
     for (const tt of types) {
       const row: any = {
@@ -1914,6 +2053,9 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
     if (createdRows.length === 1) return res.json(createdRows[0])
     return res.json({ ok: true, created: createdRows.length })
   } catch (e: any) {
+    if (e instanceof ManualCheckinLinkDecisionRequired) {
+      return res.status(e.status).json({ code: e.code, message: e.message, candidate_count: e.candidateCount })
+    }
     if (e instanceof ManualCheckinLinkConflict) return res.status(e.status).json({ code: e.code, message: e.message })
     if (sendTurnoverInspectionScopeConflict(res, e)) return
     const conflict = inspectionAssignmentConflictPayload(e)

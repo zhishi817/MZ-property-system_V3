@@ -2,6 +2,42 @@
 
 本文件只保存当前有效的业务不变量、责任范围、测试映射和最近一次完整验证索引。
 
+## FR-041：检查人员补品证据准确来源只读
+
+- **维护责任范围：** backend / paired mobile inspection supplies media
+- **最后审查日期：** 2026-10-24
+- **状态：** active
+
+### 业务保护规则
+
+- 服务端仅允许当前准确检查职责或有正式检查执行证据的本人读取同源或唯一 canonical 周转内清洁人员的补货/消耗品照片；清洁完成演员用于证明照片归属。原清洁完成照片、问题照、其他检查人的证据不随此权限开放。不同房源/周转、取消/删除/替代、错误来源、无职责、普通无上传者媒体继续拒绝。历史 usage 表无 uploader 的照片必须凭准确持久任务关联和有效清洁演员核定，不能凭 URL 或房号日期授权。读取不产生上传、修改、删除或队列动作。
+- Mobile 缩略图和大图均发送同一 Root-issued source IDs 与 inspector scope；历史权限不得由页面入口猜测；403不可作为已授权图片缓存。
+- 仅有本人历史检查审计而已不承担当前检查职责时，只能读取不晚于本人正式检查审计时间的清洁证据；使用服务端保存时间并保留毫秒精度，缺少时间失败关闭，不借用同 source 后续检查轮次的资料。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 检查补品证据只读与来源隔离 | `backend/scripts/tests/test_mzapp_form_photo_routes.ts` | 真实本机 Express + 拒写 SQL adapter + 合成对象覆盖同周转读取、历史、改派/撤权、legacy usage、错误来源/演员、无 uploader、403不触存储 | sufficient | `npm run test:mzapp-form-photo-routes --prefix backend` / `check:backend` |
+
+### 验证策略
+
+- 仅合成隔离测试，完整后端门禁；真机和真实媒体另行验收。
+
+### 最后验证
+
+- **CRL：** root/CRL-20261024-008
+- **Commit：** not committed
+- **日期：** 2026-10-24；完整后端门禁、配对Mobile门禁与定向权限回归通过。
+
+### 相关 CRL
+
+- `root/CRL-20261024-008` / `mobile/CRL-20261024-008`。
+
+### 非保护范围
+
+- 不改变写权限、生产任务、照片、队列、媒体存储、迁移、发布或原生配置。
+
 - `最后验证` 只保存最近一次完整确认该 FR 仍然有效的 CRL、Commit 和日期。
 - `相关 CRL` 保存对该 FR 产生实质影响的重要历史变更，可保留多条；完整历史以 `docs/change-release-ledger.md` 为准。
 - 测试映射必须说明保护点和测试场景；只登记测试文件名不算覆盖证据。
@@ -10,21 +46,25 @@
 ## FR-040：挂钥匙事实与整项任务完成状态分离
 
 - **维护责任范围：** backend MZ App work tasks / paired mobile task list and detail
-- **最后审查日期：** 2026-10-20
+- **最后审查日期：** 2026-10-24
 - **状态：** active
 
 ### 业务保护规则
 
 - 精确任务已有有效挂钥匙视频时，“已挂钥匙”是独立业务事实；清洁耗材、房源照片或检查照片未齐时，任务整体仍可保持 `in_progress`，缺项必须另行提示并保留服务端授权的补资料动作。
+- 活跃自完成退房源已经进入 `keys_hung`、存在同源且有执行人的挂钥匙视频或人工确认、但缺少真正清洁完成审计时，不得同时从活动和历史消失。活动卡终止后必须生成原业务日期的 `pending_review` 只读记录，保留实际挂钥匙人和“已挂钥匙”事实；该记录绝不能冒充 `completed`。已有正式清洁完成审计时以正式记录为准，不生成重复；普通同日检查、仅入住、续住、无演员、已取消/删除/被替代 source、跨任务媒体及其他终态均不得使用此兜底。
 - `lockbox_video_url` 本身不是状态依据。`in_progress` 特例必须同时匹配当前 source task、当前仍存在的视频和该任务最新 `upload_access_video` 审计中的 `finalization_pending=true`；若上传后出现前置状态重置或终态后重开，旧审计失效。取消、被替换、已删除视频、重开后的普通旧 URL 或其他任务媒体不能提升状态。
 - 已完成事实只可留在单一 source，或唯一一退一入、不同非空订单 ID、相同规范房源/任务日且任务日分别等于出房订单退房日/入房订单入住日的 canonical 周转；仅日期/房源/执行人分组、多 source 模糊组不得传播。移动端不得按房号、日期或订单自行推断或跨任务借用媒体，收到事实 SSE 后必须权威刷新而非局部覆盖合并卡。状态事实不扩大任何角色查看视频 URL 的权限。
+- 唯一 canonical 周转在普通 `same_day` 退房检查已正式完成但仍待同一检查人挂钥匙、且 checkout 与活动入住源任务都仍明确分配给该检查人时，Root 必须只投影一张可执行 turnover 卡；完成记录仅作为准确 source 的 `phase_history` 保留，挂钥匙写动作、媒体和审计继续指向拥有正式检查证据的 checkout source。临时/手工 action grant 不算当前任务分配，历史 actor 也不能冒充 checkout 当前写权限。只有同业务日、同检查 actor、无改派/取消/延期关联且候选唯一时可归并；未分配、跨日、人员或来源冲突、多候选必须 fail-closed，不能为消除重复而隐藏无法安全替代的记录；MZ-075 延期检查展示合卡继续由独立可靠关联规则处理。
 - 清洁任务“删除”仍是数据库软取消并保留事件/审计；状态更新与明确 lifecycle 事件必须同事务，投影不以 `auto_sync_enabled` 猜测删除，删除项不得重新通过完成审计/媒体并集进入任务列表。没有明确取消状态的 `TASK_REMOVED`（例如 superseded）不得进入取消候选。移动端按最新产品规则统一隐藏所有业务取消/删除项，但正常完成记录继续保留。
 
 ### 测试映射
 
 | 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
 |---|---|---|---|---|
-| 后端精确任务事实、待补资料、canonical 共享及删除隔离 | `backend/scripts/tests/test_cleaning_inspection_merge.ts` | MQ2212 式 `in_progress + finalization_pending` 输出独立事实；取消、superseded、删除视频、URL-only、终态后重开/再终态均不提升；只允许单 source 或订单日期边界精确成立的一退一入 canonical 集合合并；两套上传/删除 SSE 同步事实；软删除事务标记并从最终候选排除；原状态不被改写 | sufficient | `npm run test:cleaning-inspection-merge --prefix backend` |
+| 后端精确任务事实、待补资料、canonical 共享及删除隔离 | `backend/scripts/tests/test_cleaning_inspection_merge.ts` | MQ2212 式 `in_progress + finalization_pending` 输出独立事实；取消、superseded、删除视频、URL-only、终态后重开/再终态均不提升；只允许单 source 或订单日期边界精确成立的一退一入 canonical 集合合并；MZ-057 两套脱敏实例形态把 `to_hang_keys` 记录安全嵌入同 actor 活动入住卡，改派/未分配/跨日/延期/取消/多候选全部 fail-closed；两套上传/删除 SSE 同步事实；软删除事务标记并从最终候选排除；原状态不被改写 | sufficient | `npm run test:cleaning-inspection-merge --prefix backend` |
+| 待挂钥匙操作来源与检查只读边界 | `backend/scripts/tests/test_work_task_actions.ts` | `to_hang_keys` 阶段检查提交入口只读、挂钥匙视频仍可执行；仅当 checkout 与 live check-in 均真实分配同一检查人时合卡，action、媒体和审计继续归拥有正式检查证据的 checkout source，不放宽后端鉴权 | partial | `npm run test:work-task-actions --prefix backend` |
+| 自完成已挂钥匙历史兜底与防误完成 | `backend/scripts/tests/test_daily_task_execution_visibility.ts` | 合成 BO1313/OR107 形态：活跃同源 `keys_hung` + 明确演员 + 无清洁完成审计只生成原业务日 `pending_review`；正式完成不重复；普通检查、续住、无演员、superseded 及其他终态 fail-closed；改派保留实际演员 | sufficient | `npm run test:daily-task-execution-visibility --prefix backend` |
 
 配对 Mobile 候选由 `mobile/CRL-20261020-006` 登记并执行本仓库之外的 Jest 覆盖：主标签显示已挂钥匙、资料待补独立显示、补品动作仍可用、取消/墓碑不提升。Root 的登记审计只引用本仓库内可执行的测试路径。
 
@@ -34,13 +74,15 @@
 
 ### 最后验证
 
-- **CRL：** root/CRL-20261020-007 / mobile/CRL-20261020-006
+- **CRL：** root/CRL-20261024-009 / root/CRL-20261024-004 / root/CRL-20261020-007 / mobile/CRL-20261020-006
 - **Commit：** not committed
 - **日期：** 2026-10-20
 
 ### 相关 CRL
 
 - root/CRL-20261020-007 / mobile/CRL-20261020-006：MZ-053 第 2 点本地配套实现。
+- root/CRL-20261024-009：MZ-057 待挂钥匙完成记录与同周转活动入住单卡恢复，保留准确历史与 fail-closed 边界。
+- root/CRL-20261024-004：MZ-077 自完成已挂钥匙任务的诚实只读历史兜底。
 - root/CRL-20261018-002 / mobile/CRL-20261018-001：延期检查与历史媒体 source 隔离基础。
 
 ### 非保护范围
@@ -59,7 +101,8 @@
 - `inspection_mode`、`inspection_scope`、`inspection_due_date` 或人员变化属于列表成员变化；Mobile 必须绕过冷却立即权威刷新，使任务能跨日、跨周和跨月移入或移出当前范围。
 - 纯 `checkin_clean + inspect_and_hang` 的检查执行人沿用 Task Center 已保存的通用 `assignee_id`；存在明确 `inspector_id` 时仍以检查人为准，姓名必须对应最终选中的 ID。普通退房清洁不得把 cleaner/assignee 冒充检查人，`password_only` 继续走现场执行人语义。admin、客服、线下经理与执行人员必须看到同一分配事实，不能把已保存执行人投影为“未分配”。
 - 同房源、同一次可靠关联的周转中，延期检查执行日与 `inspect_and_hang` 入住日相同且入住候选唯一时，管理列表合成一张卡；入住任务的执行人、客户需求、入住时间、检查模式与状态优先，原清洁人、媒体、历史 source 和原退房日期保留。入住源确实未分配时继续显示未分配，绝不能继承延期计划检查人；保存执行人只写准确入住 source，刷新后才显示已分配。人员不一致仍可作为提交/责任冲突，但不制造第二张展示卡或静默改派。
-- 合卡必须显示“含延期检查”及实际 `原退房日期 → 本次检查日期`，缺失日期不得猜测。没有显式 link/replacement 或唯一有效订单边界、多条可靠候选、不同周转及 `password_only` 必须保持独立并 fail-closed；列表合卡不删除源任务、不重复计数、不转移检查费或媒体。
+- 手工新增入住必须明确表达与已有退房的关系：唯一可靠退房候选由 Web 默认选中并提示将合卡，多候选必须选择准确退房或明确独立，零候选可明确独立。候选列表加载中或失败时必须保持关系“未知”、禁止保存并允许重试，不能把网络/服务错误伪装成零候选或独立任务；用户明确选择的独立关系在成功刷新后不得被自动覆盖。后端必须在事务锁内以准确房源、业务日、有效状态和现有 canonical/link 重新验证，不能依赖客户端选择、同房同日猜测或自动回填旧空关联记录；旧客户端只有在没有可靠候选时才可继续按独立任务创建。
+- 合卡必须显示“是延期检查”及实际 `原退房日期 → 本次检查日期`，缺失日期不得猜测。卡片标题只描述当前展示业务日真实发生的任务：历史 checkout source 不能让延期执行日冒出“退房”；若该日另有真实 checkout，权威投影必须以准确 source 业务日保留。没有显式 link/replacement 或唯一有效订单边界、多条可靠候选、不同周转及 `password_only` 必须保持独立并 fail-closed；列表合卡不删除源任务、不重复计数、不转移检查费或媒体。
 - 没有显式延期-入住关联的历史逾期检查必须按 canonical source 独立于后来同房源任务；日/周/月查询和管理端/合作方视图都不能仅凭“投影日期 + 房源”混合检查模式、人员、状态或媒体。重开任务保留的历史钥匙照片和挂钥匙视频只作为证据，当前 `assigned` 等未完成状态不得被媒体反向提升为 `in_progress` 或 `keys_hung`；正常同日退房/入住仍按既有 turnover 规则合并。
 - 检查费按有效安排的房源、入住执行日期和计划检查人计入，每日费率与房源去重规则不变，且不依赖照片数量或上传状态。自动替换关联最终入住检查证据，但任一实际提交人或执行指派与计划检查人不同时转人工复核，绝不自动转移检查费。
 - 取消、删除、改派和无效订单不得继续给旧责任人计费；已审核/已付款快照保持不可变。本规则不自动回填或重算历史异常记录。
@@ -72,8 +115,10 @@
 | 入住衔接、密码任务独立和执行人冲突 | `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` | 全延期窗口链接、原退房日、密码排除、跨日重复入住与人员不一致冲突、两层合并的全部冲突 source 并集、无关联延期 source 的两层隔离和内部字段清理、自动 replacement/restore/relink 同一 fail-closed 安排、稳定顺序事务锁、原 source 重定向、scope 成员事件及正确 action source contract | sufficient | `npm run test:deferred-inspection-checkin-replacement --prefix backend` |
 | 延期检查 + 入住可靠关联 | `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` | 显式 link / replacement / 唯一订单边界；同日唯一候选；人员冲突只保留责任冲突；多候选、无关候选、跨日及不同周转拒绝合卡 | sufficient | `npm run test:deferred-inspection-checkin-replacement --prefix backend` |
 | Web 单卡、入住优先与未分配 | `backend/scripts/tests/test_task_center_daily_projection.ts` | 入住执行人/客需/时间优先；原清洁人和日期保留；明确 inspector 优先；真正未分配不继承延期检查人 | sufficient | `npm run test:task-center-daily-projection --prefix backend` |
-| Web 合卡标签与准确保存 source | `frontend/src/app/task-center/taskCenterDisplay.test.ts` | 普通入住不显示标签；缺日期不猜；合卡只保存入住 source，普通 turnover 仍保留既有 source 集合 | sufficient | `npm run test --prefix frontend -- src/app/task-center/taskCenterDisplay.test.ts` |
+| Web 合卡标签与准确保存 source | `frontend/src/app/task-center/taskCenterDisplay.test.ts` | 普通入住不显示标签；标签为“是延期检查”；缺日期不猜；合卡只保存入住 source，普通 turnover 仍保留既有 source 集合 | sufficient | `npm run test --prefix frontend -- src/app/task-center/taskCenterDisplay.test.ts` |
 | 未分配 → 保存入住执行人 → 刷新 | `backend/scripts/tests/test_cleaning_inspection_merge.ts` | 合卡初始未分配且不继承延期检查人；Task Center 本地 HTTP 保存只写入住 source；延期 source 不变；刷新仍为一张卡且显示已分配 | sufficient | `npm run test:cleaning-inspection-merge --prefix backend` |
+| 手工入住关联决策与并发重验 | `backend/scripts/tests/test_cleaning_inspection_merge.ts` | 顶层/退房详情入口契约；唯一候选缺决策拒绝后可准确关联；多候选要求选择；显式独立不被同日退房冒充 turnover；矛盾决策拒绝；无候选旧客户端兼容 | sufficient | `npm run test:cleaning-inspection-merge --prefix backend` |
+| Web 手工入住候选加载失败保护 | `frontend/src/lib/cleaningDailyMerge.test.ts` | 加载中与失败保持未知且禁止保存；失败态提供重试；重试成功后唯一候选自动关联；用户明确独立在成功刷新后保留；页面按钮与提交函数双门禁 | sufficient | `npm run test:cleaning-daily-merge --prefix frontend` |
 | 检查费归属与提交人不一致 | `backend/scripts/tests/test_personnel_settlement_mz034.ts` | 自动替换按入住执行日取证、终态 deferred 不重新吸附后来入住或制造 owner 冲突、UI source 隔离不折叠结算 source/服务日、显式责任人、执行指派冲突、错误提交人先传而计划人后传仍双边警告且不计费 | sufficient | `npm run test:personnel-settlement-mz034 --prefix backend` |
 | 并发重复提交去重 | `backend/scripts/tests/test_idempotency_submit_id_contract.ts` | 行锁、两套检查照片 step receipt、相同提交重放、不同载荷冲突及旧完成入口相同视频语义重放 | sufficient | `npm run test:idempotency-submit-id-contract --prefix backend` |
 | Mobile 跨范围权威归位 | `mz-cleaning-app-frontend/src/lib/workTasksStore.test.ts` | membership 事件绕过冷却并跨月移动到服务端返回日期 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand src/lib/workTasksStore.test.ts` |
@@ -86,8 +131,8 @@
 
 ### 最后验证
 
-- **CRL：** root/CRL-20261024-002 / root/CRL-20261024-001 / root/CRL-20261018-002 / mobile/CRL-20261024-001 / mobile/CRL-20261018-001
-- **Commit：** current local MZ-074/075/076 release-unit commit（full SHA recorded in handoff）
+- **CRL：** root/CRL-20261024-010 / root/CRL-20261024-002 / root/CRL-20261024-001 / root/CRL-20261018-002 / mobile/CRL-20261024-001 / mobile/CRL-20261018-001
+- **Commit：** MZ-065 current candidate not committed；MZ-074/075/076 release-unit commit recorded in their handoff
 - **日期：** 2026-10-24
 
 ### 相关 CRL
