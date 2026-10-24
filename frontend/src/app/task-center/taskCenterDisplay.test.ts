@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cleaningNightsDisplayLabels, cleaningTaskFlowLabelText, deferredInspectionConflictPresentation, guestReadyNotificationPresentation, guestReadyOperationId, hasTaskCenterRequiredExecutor, isDeferredInspectionDisplayTask, maintenanceDetailContentText, resolveTaskCenterColumns, taskCenterBoardInspectionDueDate, taskCenterDailyGroupCounts, taskCenterInspectionAssignmentPatch } from './taskCenterDisplay'
+import { cleaningNightsDisplayLabels, cleaningTaskFlowLabelText, deferredInspectionConflictPresentation, deferredInspectionMergePresentation, guestReadyNotificationPresentation, guestReadyOperationId, hasTaskCenterRequiredExecutor, isDeferredInspectionDisplayTask, maintenanceDetailContentText, resolveTaskCenterColumns, taskCenterBoardInspectionDueDate, taskCenterDailyGroupCounts, taskCenterInspectionAssignmentPatch, taskCenterInspectionAssignmentTaskIds } from './taskCenterDisplay'
 
 describe('taskCenterDisplay', () => {
   it('reuses the guest-ready operation id for the same authoritative version', () => {
@@ -83,6 +83,46 @@ describe('taskCenterDisplay', () => {
       detail: '原定检查 2026-08-03；入住 2026-08-02 15:30',
     })
     expect(deferredInspectionConflictPresentation({ deferred_checkin_conflict: false })).toBeNull()
+  })
+
+  it('labels only a verified deferred-inspection merge and uses the two source dates', () => {
+    expect(deferredInspectionMergePresentation({
+      task_source: 'cleaning',
+      deferred_inspection_merged: true,
+      deferred_inspection_original_checkout_date: '2026-10-23',
+      deferred_inspection_effective_date: '2026-10-24',
+    })).toEqual({
+      key: 'deferred-inspection-merged',
+      label: '含延期检查',
+      tone: 'info',
+      detail: '原退房 2026-10-23 → 本次检查 2026-10-24',
+    })
+    expect(deferredInspectionMergePresentation({
+      task_source: 'cleaning',
+      deferred_inspection_merged: false,
+      deferred_inspection_original_checkout_date: '2026-10-23',
+      deferred_inspection_effective_date: '2026-10-24',
+    })).toBeNull()
+    expect(deferredInspectionMergePresentation({
+      task_source: 'cleaning',
+      deferred_inspection_merged: true,
+    })?.detail).toBe('')
+  })
+
+  it('writes a merged deferred/check-in assignment only to the check-in source task', () => {
+    expect(taskCenterInspectionAssignmentTaskIds({
+      task_source: 'cleaning',
+      task_id: 'display-card',
+      task_ids: ['deferred-task', 'checkin-task'],
+      active_source_ids: ['deferred-task', 'checkin-task'],
+      inspection_action_task_id: 'checkin-task',
+    })).toEqual(['checkin-task'])
+    expect(taskCenterInspectionAssignmentTaskIds({
+      task_source: 'cleaning',
+      task_id: 'regular-turnover',
+      task_ids: ['checkout-task', 'checkin-task'],
+      active_source_ids: ['checkout-task', 'checkin-task'],
+    })).toEqual(['checkout-task', 'checkin-task'])
   })
 
   it('shows stayed and remaining nights on turnover cards', () => {
