@@ -1,5 +1,76 @@
 # Change Release Ledger
 
+## CRL-20261028-001 — FR-004 多测试路径登记拆分
+
+- **Status:** verified local candidate; registry, workflow-contract, ledger, exact staged-scope and independent commit review passed; authorized same-branch push pending committed-range review
+- **Repository:** `root`
+- **Updated:** 2026-10-28 UTC
+- **Request:** 修复 Root PR #426 中 Regression Registry Audit 与 Fast Regression 的共同阻塞；FR-004 不得把两个以中文顿号分隔的测试路径解析为一个不存在路径，也不得通过跳过测试或放宽门禁取得通过。
+- **Outcome:** FR-004 的 Root 与 Mobile 回归映射各占一行、每行只登记一个实际测试文件，保持原有测试语义和执行命令；审计器继续严格要求每个非 missing 映射指向一个存在文件。
+
+### Implementation
+
+- Previous behavior: FR-004 在一个测试路径单元格中写入 `` `backend/...`、`mz-cleaning-app-frontend/...` ``；registry 审计契约是一行一个路径，因此外层反引号被剥离后，整段被当成单个不存在路径。
+- New behavior: 将该映射拆成 Root 与 Mobile 两行。Root 行运行清洁/检查合卡回归；Mobile 行保留视觉状态与实时 store 回归，并使用 registry 命令契约要求的等价 `npm run test` 写法。解析器、覆盖等级、CI workflow 和测试实现均不改变。
+- Key decision: 修正违反现有单路径协议的登记，不扩展解析器接受复合路径，也不跳过 Registry Audit、Fast Regression 或 Root Quality Check。
+
+### Files / Areas
+
+- `docs/feature-regression-registry.md` — modified: split the FR-004 compound test-path cell into two single-path mappings.
+- `docs/change-release-ledger.md` — modified: record the CI-only registry correction, evidence, review and exact branch update attempt.
+
+### Impact / Dependencies
+
+- Business logic / API / database / migration / config / dependencies: none.
+- CI: fixes registry path discovery while preserving the existing file-existence gate and both original test commands.
+- Mobile: no Mobile source or test file changes; the existing paired Mobile branch remains the referenced CI checkout.
+- Related units: `root/CRL-20261025-004`, `root/CRL-20261027-001`, `root/CRL-20261027-002`, `root/CRL-20261027-003`.
+
+### Validation
+
+- GitHub Actions run `40637007950`, jobs `122646233602` / Fast Regression — failed before this correction because the two FR-004 paths were concatenated into one nonexistent path.
+- `npm run check:feature-registry` — PASS: 36 FRs / 293 test mappings, with the paired Mobile checkout present.
+- `npm run test:root-quality-workflow-contract` — PASS: 9/9 tests.
+- `python3 scripts/audit_change_release_ledger.py` — PASS: both changed paths recorded.
+- `python3 scripts/audit_change_release_ledger.py --pre-commit --repo root --crl CRL-20261028-001` — GO: one reviewed non-ledger hunk, no untracked or unselected path.
+- `git diff --cached --check` — PASS.
+- Root exact release report — pending until the plugin-created content and receipt commits are pulled back.
+- Independent review — GO for commit: P0=0, P1=0, P2=0; reviewer independently matched RA, base, branch, dependency, candidate fingerprint and staged hunk, and found no parser/workflow/business/database/API/dependency, generated-file or sensitive-data change.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared for the FR-004 registry-format correction on `codex/mz075-089-eight-fixes-release`.
+- **Untracked review:** none; the candidate is prepared in an isolated temporary clone and selects only the registry plus this ledger record.
+- `docs/feature-regression-registry.md` — SHA-256: `6cd077025e4a3dc438f13c0859d7b88bbd4d747b7c24ced4cd3349702b7d58a9`
+
+### Release Attempts
+
+#### RA-20261028-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261028-001`
+- Selected CRL identities: `root/CRL-20261028-001`
+- Intended action: `commit`
+- Branch: `codex/mz075-089-eight-fixes-release`
+- Base: `origin/Dev@c0f56c9a2232193e4b0937cea7b1169976a80a91`; GitHub PR #426 base and current branch head `04e3b24042137430ebc58362a263d138f77b1338` were fetched through the connected GitHub API at `2026-10-28T05:43:48Z`.
+- Candidate patch SHA-256: `7f8fa2a345ccf0f248697bd878db642c54e8b77e0970941a79622cb8bc118b95`; exact staged `docs/feature-regression-registry.md` diff, excluding this ledger metadata.
+- Commit SHA: not committed.
+- Dependencies: paired Mobile branch `codex/mz075-089-eight-fixes-release@8b2f9d8383836cebc0deac8c1177aca7fbdcfb0e` supplies the referenced Mobile test file; no Mobile business-code change is included.
+- Required validation: `PASS for this exact local candidate / remote CI pending`; evidence: Feature Registry passed with 36 FRs / 293 mappings against the paired Mobile checkout, Root workflow-contract passed 9/9, ledger coverage and exact staged-scope audit passed, and `git diff --cached --check` passed. GitHub Fast Regression, Registry Audit and Root Quality Check must rerun after the authorized push; the prior deferred/skipped Full Regression is not counted as a pass.
+- Shared-hunk review: `not applicable`; evidence: the only non-ledger hunk splits one FR-004 registry row into two single-path rows and does not touch an existing business-code hunk.
+- Generated-file review: `PASS`; evidence: only the tracked registry file and this ledger entry are staged; no dependency tree, cache, build output, environment file, credential or generated artifact is included.
+- Technical state: `candidate`.
+- User authorization: `approved-for-push`; evidence: after being told that PR #426 required this registry-path correction and a push, the user replied “继续”. Authorization is limited to the same feature branch and excludes merge, auto-merge, deployment, OTA and production-data access or writes.
+- Independent review: `GO for commit`; P0=0, P1=0, P2=0. The reviewer recomputed candidate patch `7f8fa2a345ccf0f248697bd878db642c54e8b77e0970941a79622cb8bc118b95` and hunk `6cd077025e4a3dc438f13c0859d7b88bbd4d747b7c24ced4cd3349702b7d58a9`, confirmed the two-file staged boundary and paired Mobile dependency, and found no production, deployment, secret or generated-file risk.
+- Action conclusion: `GO for this exact content commit`; any push still requires the plugin-created exact committed range, a fresh non-force remote-head preflight and independent push review.
+
+### Risks / Release Notes
+
+- Risk is limited to test-registry metadata. Rollback is the two-row mapping back to the prior one-row text, but that prior format is intentionally rejected by the unchanged audit contract.
+- Sensitive-information review: no credentials, tokens, customer data, production URLs, logs or media are added.
+- Git state: not committed, not pushed; PR #426 remains open and unmerged.
+
 ## CRL-20261027-001 — MZ-087 延期检查改派后的证据读取与动作来源统一
 
 - **Status:** verified local candidate; focused regression, complete backend gate, Mobile compatibility gate, diff hygiene, and independent review remediation completed; selected for commit and push on the combined feature branch
