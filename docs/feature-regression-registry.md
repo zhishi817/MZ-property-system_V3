@@ -1440,6 +1440,7 @@
 - 自完成完成照片的客户端必拍清单、后端保存 schema、最终完成门槛、任务卡状态投影和管理端详情展示必须使用同一组区域：基础房间照片、浴室下水口、电视和空调遥控器同框的一张必拍照片及吸尘器使用后。新照片继续使用 `remote_tv` 区域；旧 `remote_ac`、`remote_controls` 记录重进时必须合并展示，不能丢失。刚拍完的本地大图必须显示与最终上传相同的房号/执行人/时间水印，远端图片继续由既有上传链路实际写入水印。
 - 自完成补品草稿只能保存用户已明确选择的结果；未选择项必须保持空状态并回显为“待确认”。未结束自完成任务进入页面必须确认房号，已结束状态重进不得重复阻断查看。可选的补品图片字段没有远端引用时必须从请求中省略，不能以空字符串触发服务端非空校验。
 - admin、客服和线下经理进入同一管理详情时，必须能只读查看自完成保存的 `completion_*` 照片。合并卡需要查询所有关联清洁任务；其中某个历史/关联任务的照片请求失败时，已成功读取的完成照片必须继续显示，且失败不能伪装成“暂无”。
+- 管理角色看到的可靠同周转自完成合卡，必须沿用清洁源已经计算并绑定到准确两条 source 的权威自完成进度；关联入住的未分配或待处理检查投影只能补充入住资料，不得把整卡改成“待检查”。只有 `self_complete`、可靠周转 identity、准确双 source 且无执行/人员/展示冲突时才可沿用；普通同日检查、延期检查、不同周转、来源不明或冲突必须 fail-closed，取消状态继续优先。配对 `root/CRL-20261025-004` 与 `mobile/CRL-20261025-004` 已由用户选择为本地提交范围，尚未推送或发布。
 
 ### 跨层适用范围
 
@@ -1458,6 +1459,7 @@
 | 钥匙重传状态保持与事件字段 | `backend/scripts/tests/test_work_task_actions.ts` | `done`、`completed`、`cleaned`、`restock_pending` 等已推进状态重传不写入 `in_progress/started_at`，首次上传才进入 `in_progress`；事件只携带状态变化和钥匙照片字段 | sufficient | `npm run test:work-task-actions --prefix backend` |
 | 后端清洁/检查流程状态不能被退房标记覆盖 | `backend/scripts/tests/test_task_assignment_canonical.ts` | 客服合并卡和检查人员任务在未开始、进行中、补品完成后三态保持正确状态 | sufficient | `npx ts-node-dev --transpile-only backend/scripts/tests/test_task_assignment_canonical.ts` |
 | 移动端清洁/检查流程状态不能被退房标记覆盖 | `mz-cleaning-app-frontend/src/lib/taskVisualTheme.test.ts` | 合并任务有清洁进行中时显示“进行中”，清洁完成且检查未完成时显示“待检查”，未开始任务仍显示“已退房” | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand src/lib/taskVisualTheme.test.ts` |
+| 自完成合卡状态不被入住检查接管 | `backend/scripts/tests/test_cleaning_inspection_merge.ts`、`mz-cleaning-app-frontend/src/lib/taskVisualTheme.test.ts` | BO717 的 checkout-only 清洁投影仅凭唯一 canonical 双 source 生成权威进度；关联入住的待检查或挂钥匙事实、第三 source、来源冲突不得推进退房自完成状态；普通检查、execution、取消和不可靠 identity 保持原状态并 fail-closed | sufficient | `npm run test:cleaning-inspection-merge --prefix backend && npm test --prefix mz-cleaning-app-frontend -- --runInBand src/lib/taskVisualTheme.test.ts src/lib/workTasksStore.test.ts` |
 | 实时事件的检查状态投影 | `mz-cleaning-app-frontend/src/lib/workTasksStore.test.ts` | 普通检查的 `inspected` 投影为 `to_hang_keys`；password-only 仍投影为 `done` | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand src/lib/workTasksStore.test.ts` |
 | 钥匙重传不触发整卡覆盖 | `mz-cleaning-app-frontend/src/lib/workTasksStore.test.ts` | 仅状态/钥匙照片字段的钥匙重传事件走安全增量合并；含 `started_at` 等非安全字段的旧事件被识别为需整卡同步 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/workTasksStore.test.ts` |
 | 检查面板步骤和缺失项 | `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.test.tsx` | 四个核心步骤和检查入口 | partial | `npm run test --prefix mz-cleaning-app-frontend -- src/screens/tasks/InspectionPanelScreen.test.tsx` |

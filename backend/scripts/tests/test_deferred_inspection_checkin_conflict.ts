@@ -6,6 +6,7 @@ import {
   buildDeferredInspectionCheckinArrangements,
   deferredInspectionConflictSourceIds,
   deferredInspectionCheckinSubmissionGuard,
+  deferredInspectionEvidenceAccessContext,
   deferredInspectionCheckinConflictEventId,
   findStoredDeferredInspectionCheckinReplacement,
   findDeferredInspectionCheckinReplacements,
@@ -13,6 +14,7 @@ import {
   indexDeferredInspectionCheckinArrangements,
   isDeferredInspectionCheckinConflictRelevantChange,
   loadDeferredInspectionCheckinSubmissionGuard,
+  loadDeferredInspectionEvidenceAccessContext,
   mergeDeferredInspectionAwareActions,
 } from '../../src/services/deferredInspectionCheckinConflict'
 import { getAppNotificationPolicyCatalogMeta } from '../../src/services/appNotificationPolicies'
@@ -65,21 +67,28 @@ async function run() {
   assert.match(mzapp, /__manager_merge_isolation_key,[\s\S]*__lockbox_video_confirms_current_state,[\s\S]*property_ready_for_guest_notification/)
   assert.strictEqual((mzapp.match(/loadDeferredInspectionCheckinSubmissionGuard\(\{ taskId:/g) || []).length, 1)
   assert.strictEqual((cleaningApp.match(/loadDeferredInspectionCheckinSubmissionGuard\(\{ taskId:/g) || []).length, 0)
-  assert.strictEqual((mzapp.match(/authorizeDeferredInspectionCheckinSubmission\(\{/g) || []).length, 1)
+  assert.strictEqual((mzapp.match(/authorizeDeferredInspectionCheckinSubmission\(\{/g) || []).length, 2)
   assert.strictEqual((cleaningApp.match(/authorizeDeferredInspectionCheckinSubmission\(\{/g) || []).length, 3)
-  assert.strictEqual((mzapp.match(/message: transactionResult\.guard\.reason/g) || []).length, 2)
+  assert.strictEqual((mzapp.match(/message: transactionResult\.guard\.reason/g) || []).length, 3)
   assert.strictEqual((cleaningApp.match(/message: transactionResult\.guard\.reason/g) || []).length, 3)
   const guardedWriteRoutes = [
     cleaningApp.slice(cleaningApp.indexOf("router.post('/tasks/:id/inspection-complete'"), cleaningApp.indexOf('function canViewDayEndForAllUsers')),
     cleaningApp.slice(cleaningApp.indexOf("router.post('/tasks/:id/inspection-photos'"), cleaningApp.indexOf("router.post('/tasks/:id/inspection-issue-photos'")),
     cleaningApp.slice(cleaningApp.indexOf("router.post('/tasks/:id/lockbox-video'"), cleaningApp.indexOf('async function handleDeleteLockboxVideo')),
     mzapp.slice(mzapp.indexOf("router.post('/cleaning-tasks/:id/inspection-photos'"), mzapp.indexOf("router.get('/cleaning-tasks/:id/completion-photos'")),
+    mzapp.slice(mzapp.indexOf("router.post('/cleaning-tasks/:id/restock-proof'"), mzapp.indexOf('async function expandGuestCheckoutTaskIds')),
   ]
   for (const route of guardedWriteRoutes) {
     assert.match(route, /authorizeDeferredInspectionCheckinSubmission\(\{/, 'write route must authorize the target before exposing conflict metadata')
     assert.doesNotMatch(route, /loadDeferredInspectionCheckinSubmissionGuard\(\{/, 'write route must not call the metadata-bearing guard before task authorization')
     assert.ok(route.indexOf("kind === 'forbidden'") < route.indexOf("kind === 'inspection_arrangement_conflict'"), '403 must be selected before the 409 conflict response')
   }
+  const consumablesReadRoute = mzapp.slice(
+    mzapp.indexOf("router.get('/cleaning-tasks/:id/consumables'"),
+    mzapp.indexOf("router.post('/cleaning-tasks/:id/inspection-photos'"),
+  )
+  assert.match(consumablesReadRoute, /loadDeferredInspectionEvidenceAccessContext\(\{/)
+  assert.match(consumablesReadRoute, /canSubmitMzappInspection\(user, deferredContext\.actionTask, userId, pgPool\)/)
   const conflicts = findDeferredInspectionCheckinConflicts([
     {
       id: 'deferred-a',
@@ -394,9 +403,22 @@ async function run() {
       inspection_scope: 'inspect_and_hang', linked_checkout_task_id: 'deferred-mismatch', assignee_id: 'barbara', status: 'assigned',
     },
   ])[0]
-  assert.ok(mismatchedArrangement.conflict_reasons.includes('checkin_executor_mismatch'))
-  assert.ok(mismatchedArrangement.conflict_reasons.includes('planned_inspector_not_checkin_participant'))
+  assert.deepStrictEqual(mismatchedArrangement.conflict_reasons, [], 'one reliable linked execution-day task records a reassignment instead of inventing a second inspector')
   assert.strictEqual(mismatchedArrangement.display_merge_eligible, true, 'display uses the linked check-in arrangement even when its executor differs from the deferred plan')
+  assert.deepStrictEqual(
+    deferredInspectionCheckinSubmissionGuard([
+      {
+        id: 'deferred-mismatch', property_id: 'property-a', task_type: 'checkout_clean', task_date: '2026-08-01',
+        inspection_mode: 'deferred', inspection_due_date: '2026-08-02', inspector_id: 'oscar', status: 'assigned',
+      },
+      {
+        id: 'checkin-mismatch', property_id: 'property-a', task_type: 'checkin_clean', task_date: '2026-08-02',
+        inspection_scope: 'inspect_and_hang', linked_checkout_task_id: 'deferred-mismatch', assignee_id: 'barbara', status: 'assigned',
+      },
+    ], 'checkin-mismatch'),
+    { blocked: false, reason: null, canonical_action_task_id: null, conflicts: [] },
+    'the current check-in executor may submit the reassigned inspection',
+  )
 
   const unassignedLinkedArrangement = buildDeferredInspectionCheckinArrangements([
     {
@@ -441,6 +463,77 @@ async function run() {
   ])[0]
   assert.strictEqual(ambiguousReliableArrangement.display_merge_eligible, false)
   assert.ok(ambiguousReliableArrangement.display_merge_reasons.includes('multiple_reliable_checkin_inspection_tasks'))
+
+  const msq4206Rows = [
+    {
+      id: 'msq4206-checkout', property_id: 'msq4206', task_type: 'checkout_clean', task_date: '2026-10-26',
+      inspection_mode: 'deferred', inspection_due_date: '2026-10-27', inspector_id: 'oscar', cleaner_id: 'carrie',
+      order_id: 'checkout-order', order_status: 'confirmed', order_checkout: '2026-10-26', status: 'cleaned', execution_state: 'active',
+    },
+    {
+      id: 'msq4206-checkin', property_id: 'msq4206', task_type: 'checkin_clean', task_date: '2026-10-27',
+      inspection_scope: 'inspect_and_hang', assignee_id: 'angela', order_id: 'checkin-order', order_status: 'confirmed',
+      order_checkin: '2026-10-27', status: 'assigned', execution_state: 'active',
+    },
+  ]
+  const msq4206Arrangement = buildDeferredInspectionCheckinArrangements(msq4206Rows)[0]
+  assert.ok(msq4206Arrangement.display_merge_eligible, 'exact adjacent order boundaries may express the reliable turnover without a stored manual link')
+  assert.deepStrictEqual(msq4206Arrangement.conflict_reasons, [], 'the old deferred plan is historical after the unique current task is assigned')
+  assert.strictEqual(
+    deferredInspectionEvidenceAccessContext(msq4206Rows, 'msq4206-checkout', 'angela')?.actionTask?.id,
+    'msq4206-checkin',
+    'the current executor may read exact prior cleaning consumables through the reliable turnover',
+  )
+  assert.strictEqual(
+    deferredInspectionEvidenceAccessContext(msq4206Rows, 'msq4206-checkout', 'oscar'),
+    null,
+    'the superseded planned inspector is not the current read-through executor',
+  )
+  assert.deepStrictEqual(
+    deferredInspectionCheckinSubmissionGuard(msq4206Rows, 'msq4206-checkout'),
+    {
+      blocked: true,
+      reason: 'inspection_action_moved_to_checkin_task',
+      canonical_action_task_id: 'msq4206-checkin',
+      conflicts: [],
+    },
+    'the former planned inspector cannot keep writing through the old checkout source',
+  )
+  const reassignedAgainRows = [msq4206Rows[0], { ...msq4206Rows[1], assignee_id: 'mia' }]
+  assert.strictEqual(deferredInspectionEvidenceAccessContext(reassignedAgainRows, 'msq4206-checkout', 'angela'), null)
+  assert.strictEqual(
+    deferredInspectionEvidenceAccessContext(reassignedAgainRows, 'msq4206-checkout', 'mia')?.actionTask?.id,
+    'msq4206-checkin',
+    'a repeated reassignment transfers only the current read-through contract',
+  )
+  const cancelledReassignmentRows = [msq4206Rows[0], {
+    ...msq4206Rows[1],
+    status: 'cancelled',
+    execution_state: 'cancelled',
+  }]
+  assert.strictEqual(
+    deferredInspectionEvidenceAccessContext(cancelledReassignmentRows, 'msq4206-checkout', 'angela'),
+    null,
+    'a cancelled check-in cannot authorize related evidence',
+  )
+  const ambiguousReassignmentRows = [msq4206Rows[0], msq4206Rows[1], {
+    ...msq4206Rows[1],
+    id: 'msq4206-checkin-second',
+    order_id: 'second-checkin-order',
+  }]
+  assert.strictEqual(
+    deferredInspectionEvidenceAccessContext(ambiguousReassignmentRows, 'msq4206-checkout', 'angela'),
+    null,
+    'multiple inspection-bearing check-ins remain fail-closed',
+  )
+  assert.strictEqual(
+    deferredInspectionEvidenceAccessContext([
+      msq4206Rows[0],
+      { ...msq4206Rows[1], order_checkin: '2026-10-28' },
+    ], 'msq4206-checkout', 'angela'),
+    null,
+    'same property and date without a reliable order boundary never grants read-through access',
+  )
 
   const earlierCheckinArrangement = buildDeferredInspectionCheckinArrangements([
     {
@@ -505,6 +598,24 @@ async function run() {
   assert.ok(transactionalGuard.conflicts[0].conflict_reasons.includes('multiple_checkin_inspection_tasks'))
   assert.deepStrictEqual(guardQueries[2].params, ['property-a', '2026-08-01', '2026-08-05'])
   assert.match(guardQueries[2].sql, /ORDER BY t\.id::text\s+FOR UPDATE OF t/)
+  assert.match(guardQueries[2].sql, /linked_checkout_task_id/)
+  assert.match(guardQueries[2].sql, /o\.checkin::text AS order_checkin/)
+
+  const evidenceQueries: Array<{ sql: string; params: any[] }> = []
+  const evidenceContext = await loadDeferredInspectionEvidenceAccessContext({
+    taskId: 'msq4206-checkout',
+    userId: 'angela',
+    client: {
+      async query(sql: string, params: any[]) {
+        evidenceQueries.push({ sql, params })
+        assert.doesNotMatch(sql, /FOR UPDATE|\b(?:INSERT|UPDATE|DELETE)\b/i, 'read-through authorization must remain read-only')
+        if (evidenceQueries.length === 1) return { rows: [msq4206Rows[0]] }
+        return { rows: msq4206Rows }
+      },
+    },
+  })
+  assert.strictEqual(evidenceContext?.actionTask?.id, 'msq4206-checkin')
+  assert.deepStrictEqual(evidenceQueries[1].params, ['msq4206', '2026-10-26', '2026-10-27'])
 
   const authorizationTarget = {
     id: 'checkin-duplicate-a', property_id: 'property-a', task_type: 'checkin_clean', task_date: '2026-08-02',

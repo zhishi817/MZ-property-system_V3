@@ -1,7 +1,7 @@
 import assert from 'assert'
 import fs from 'fs'
 import path from 'path'
-import { cleaningTaskExecutionSemantics, normalizeTaskExecutionSemantics, projectInspectorTaskStatus } from '../../src/lib/cleaningInspection'
+import { cleaningTaskExecutionSemantics, isSameInspectionRecordEvidence, normalizeTaskExecutionSemantics, projectInspectorTaskStatus, shouldKeepCheckoutInspectionActiveForKeyHandover } from '../../src/lib/cleaningInspection'
 import { buildWebTaskManagementPayload, buildWorkTaskActionPayload } from '../../src/lib/workTaskActions'
 import { buildKeyPhotoUploadEventPatch, buildKeyPhotoUploadTaskPatch, isCleaningAccessVideoWorkRecordStatus, keyPhotoUploadStatus, resolveCleaningTaskActionStatus } from '../../src/lib/workTaskActionAudit'
 
@@ -62,6 +62,45 @@ function main() {
   assert.equal(cleaningTaskExecutionSemantics({ roleKind: 'execution', taskType: 'checkin_clean', inspectionScope: 'password_only' }), 'key_or_password_action')
   assert.equal(projectInspectorTaskStatus('inspected', 'inspect_and_hang'), 'to_hang_keys')
   assert.equal(projectInspectorTaskStatus('inspected', 'password_only'), 'done')
+
+  const checkoutOnlyPendingHandover = {
+    taskType: 'checkout_clean',
+    status: 'inspected',
+    inspectionScope: null,
+    executionState: 'active',
+    sourceKeyHandoverCompleted: false,
+    currentInspectorId: 'inspector-a',
+    inspectionRecordActorUserId: 'inspector-a',
+    inspectionRecordAt: '2026-10-26T03:01:17.000Z',
+    inspectionRecordDate: '2026-10-26',
+    displayDate: '2026-10-26',
+    hasRelatedInspectionArrangement: false,
+  }
+  assert.equal(shouldKeepCheckoutInspectionActiveForKeyHandover(checkoutOnlyPendingHandover), true)
+  assert.equal(shouldKeepCheckoutInspectionActiveForKeyHandover({ ...checkoutOnlyPendingHandover, status: 'to_hang_keys' }), true)
+  assert.equal(shouldKeepCheckoutInspectionActiveForKeyHandover({ ...checkoutOnlyPendingHandover, inspectionScope: 'password_only' }), false)
+  assert.equal(shouldKeepCheckoutInspectionActiveForKeyHandover({ ...checkoutOnlyPendingHandover, sourceKeyHandoverCompleted: true }), false)
+  assert.equal(shouldKeepCheckoutInspectionActiveForKeyHandover({ ...checkoutOnlyPendingHandover, currentInspectorId: null }), false)
+  assert.equal(shouldKeepCheckoutInspectionActiveForKeyHandover({ ...checkoutOnlyPendingHandover, inspectionRecordActorUserId: 'inspector-b' }), false)
+  assert.equal(shouldKeepCheckoutInspectionActiveForKeyHandover({ ...checkoutOnlyPendingHandover, inspectionRecordDate: '2026-10-27' }), false)
+  assert.equal(shouldKeepCheckoutInspectionActiveForKeyHandover({ ...checkoutOnlyPendingHandover, executionState: 'cancelled' }), false)
+  assert.equal(shouldKeepCheckoutInspectionActiveForKeyHandover({ ...checkoutOnlyPendingHandover, hasRelatedInspectionArrangement: true }), false)
+  assert.equal(shouldKeepCheckoutInspectionActiveForKeyHandover({ ...checkoutOnlyPendingHandover, taskType: 'checkin_clean' }), false)
+
+  const embeddedInspectionEvidence = {
+    performedAt: '2026-10-26T03:01:17.000Z',
+    recordDate: '2026-10-26',
+    actorUserId: 'inspector-a',
+  }
+  assert.equal(isSameInspectionRecordEvidence(embeddedInspectionEvidence, embeddedInspectionEvidence), true)
+  assert.equal(isSameInspectionRecordEvidence({ ...embeddedInspectionEvidence, performedAt: '2026-10-26T14:01:17+11:00' }, embeddedInspectionEvidence), true)
+  assert.equal(isSameInspectionRecordEvidence({ ...embeddedInspectionEvidence, actorUserId: 'inspector-b' }, embeddedInspectionEvidence), false)
+  assert.equal(isSameInspectionRecordEvidence({ ...embeddedInspectionEvidence, recordDate: '2026-10-25' }, embeddedInspectionEvidence), false)
+  assert.equal(isSameInspectionRecordEvidence({ ...embeddedInspectionEvidence, performedAt: '2026-10-26T03:00:00.000Z' }, embeddedInspectionEvidence), false)
+
+  assert.match(mzappSource, /const inspectorTerminal = isInspectionFinishedStatus\(raw_status\)[\s\S]*?&& !checkoutInspectionAwaitingKeyHandover/, 'exact checkout inspection handover must remain active after photo submission')
+  assert.match(mzappSource, /inspectorRoleRecordEvidence\.filter\(\(evidence\) => !isSameInspectionRecordEvidence/, 'only the exact embedded inspection record may be suppressed from standalone history')
+  assert.match(mzappSource, /__embedded_inspection_record_at: effectiveInspectorRecordAt/, 'the active checkout card must retain the exact inspection phase timestamp')
 
   const passwordOnlyWebActions = buildWebTaskManagementPayload({
     source: 'cleaning',
@@ -605,6 +644,28 @@ function main() {
   assert.equal(actionById(checkinReadyForKeysPayload, 'submit_inspection')?.enabled, false)
   assert.equal(actionById(checkinReadyForKeysPayload, 'submit_inspection')?.disabled_reason, 'task_completed')
   assert.equal(actionById(checkinReadyForKeysPayload, 'submit_inspection')?.read_only, true)
+
+  const checkoutOnlyReadyForKeysPayload = buildWorkTaskActionPayload({
+    id: 'w-checkout-only-ready-for-keys',
+    source_type: 'cleaning_tasks',
+    source_id: 'checkout-only-source',
+    source_ids: ['checkout-only-source'],
+    task_kind: 'inspection',
+    task_type: 'checkout_clean',
+    inspection_scope: null,
+    status: 'to_hang_keys',
+    inspector_id: 'inspector-to-inspect',
+  }, {
+    userId: 'inspector-to-inspect',
+    roleNames: ['cleaning_inspector'],
+    permissions: allExecPerms,
+    canViewAll: false,
+  })
+  assert.equal(actionById(checkoutOnlyReadyForKeysPayload, 'submit_inspection')?.enabled, false)
+  assert.equal(actionById(checkoutOnlyReadyForKeysPayload, 'submit_inspection')?.read_only, true)
+  assert.equal(actionById(checkoutOnlyReadyForKeysPayload, 'submit_inspection')?.source_id, 'checkout-only-source')
+  assert.equal(actionById(checkoutOnlyReadyForKeysPayload, 'upload_access_video')?.enabled, true)
+  assert.equal(actionById(checkoutOnlyReadyForKeysPayload, 'upload_access_video')?.source_id, 'checkout-only-source')
 
   const pendingHandoverTurnoverPayload = buildWorkTaskActionPayload({
     id: 'w-pending-handover-turnover',
