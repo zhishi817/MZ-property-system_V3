@@ -36,13 +36,14 @@
 - `git diff --cached --check` — PASS.
 - Root exact release report — pending until the plugin-created content and receipt commits are pulled back.
 - Independent review — GO for commit: P0=0, P1=0, P2=0; reviewer independently matched RA, base, branch, dependency, candidate fingerprint and staged hunk, and found no parser/workflow/business/database/API/dependency, generated-file or sensitive-data change.
+- Integrated-range ownership review — the first push review correctly returned `NEEDS OWNER`: the historical FR-004 compound-row addition and this split coalesce into one `origin/Dev...content` hunk. Active complete-range ownership is reconciled to `docs/feature-regression-registry.md#692710f9dd2492420af95edb565c494ebfef02b02a58d0414b13a1baf4080ea3`, shared by `root/CRL-20261025-004` and `root/CRL-20261028-001`; historical fingerprints `aab6146bff57ed3bd4abe2fbfe6664a8e7543baabecfd7be009c9ecc012508c5` and `6cd077025e4a3dc438f13c0859d7b88bbd4d747b7c24ced4cd3349702b7d58a9` remain evidence of their sequential source candidates.
 
 ### Staged Commit Scope
 
 - **Repository:** `root`
 - **Status:** prepared for the FR-004 registry-format correction on `codex/mz075-089-eight-fixes-release`.
 - **Untracked review:** none; the candidate is prepared in an isolated temporary clone and selects only the registry plus this ledger record.
-- `docs/feature-regression-registry.md` — SHA-256: `6cd077025e4a3dc438f13c0859d7b88bbd4d747b7c24ced4cd3349702b7d58a9`
+- `docs/feature-regression-registry.md` — SHA-256: `692710f9dd2492420af95edb565c494ebfef02b02a58d0414b13a1baf4080ea3`
 
 ### Release Attempts
 
@@ -77,7 +78,7 @@
 - Commit SHA: `533c85b69f09e38532b2cb565daa17d24aae28a1`; parent `04e3b24042137430ebc58362a263d138f77b1338`, tree `9a58859530ee4450f36222cc60c5a1d8eae44d0b`; this descendant ledger-only receipt binds that content SHA without changing the candidate fingerprint.
 - Dependencies: paired Mobile branch `codex/mz075-089-eight-fixes-release@8b2f9d8383836cebc0deac8c1177aca7fbdcfb0e`; Root must remain the first release, and no Mobile business-code change is part of this attempt.
 - Required validation: `PASS for the exact local candidate / post-push CI pending`; evidence: the previously reviewed four-CRL Root range is unchanged, the added FR-004 registry hunk passed Feature Registry with 36 FRs / 293 mappings, Root workflow contract 9/9, ledger coverage, exact staged-scope and diff checks. The new Fast Regression, Registry Audit and Root Quality Check must reach terminal success; a deferred/skipped Full Regression does not count as a pass.
-- Shared-hunk review: `PASS`; evidence: the prior four-CRL ownership and business hunks are unchanged, while the new registry hunk is exclusive to `root/CRL-20261028-001`.
+- Shared-hunk review: `PASS after integration reconciliation`; evidence: the prior business hunks are unchanged. The historical FR-004 registry addition owned by `root/CRL-20261025-004` and this correction owned by `root/CRL-20261028-001` coalesce into complete-range hunk `692710f9dd2492420af95edb565c494ebfef02b02a58d0414b13a1baf4080ea3`; both active scopes declare that shared integrated hunk while retaining the sequential fingerprints as history.
 - Generated-file review: `PASS`; evidence: the new content commit changes only the tracked registry and ledger paths; no dependency tree, cache, build output, environment file, credential or generated artifact is included.
 - Technical state: `committed`; exact content SHA above, followed only by this ledger-only receipt chain; the branch ref has not moved.
 - User authorization: `approved-for-push`; evidence: the user first replied “继续” after the exact PR #426 CI-fix-and-push request, then explicitly replied “允许” after disclosure that the complete 267 KB registry and 3.53 MB ledger files would be uploaded to public `zhishi817/MZ-property-system_V3` solely on this feature branch. Merge, auto-merge, deployment, OTA and production-data operations remain excluded.
@@ -385,7 +386,7 @@
 - `backend/src/modules/mzapp.ts` — SHA-256: `1ef961e19ecd78abd22a0a3b97fa6b74bea2cb2a0146bbdaded7a71f03a9d3ca`
 - `backend/src/modules/mzapp.ts` — SHA-256: `6470f2a28432d52b05addecf79a93b9c74d61424e79fc1a5d6cc1b42b0642971`
 - `backend/src/modules/mzapp.ts` — SHA-256: `c6e107d62f04f08863912edcb5e9e2a10ba5de552f208880527190ea1fe21b05`
-- `docs/feature-regression-registry.md` — SHA-256: `aab6146bff57ed3bd4abe2fbfe6664a8e7543baabecfd7be009c9ecc012508c5`
+- `docs/feature-regression-registry.md` — SHA-256: `692710f9dd2492420af95edb565c494ebfef02b02a58d0414b13a1baf4080ea3`
 - `docs/feature-regression-registry.md` — SHA-256: `feb09f123e23544b1080da3dd5c7f4a1b4e0ae780b6ddaac990ef02bc367ebbc`
 - **Excluded paths:** BO717 photo investigation, production data/media, migrations, preview output and unrelated candidates.
 
