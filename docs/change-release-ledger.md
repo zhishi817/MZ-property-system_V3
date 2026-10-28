@@ -97,15 +97,15 @@
 - Branch: `codex/mz075-089-eight-fixes-release`
 - Base: `origin/Dev@c0f56c9a2232193e4b0937cea7b1169976a80a91`; fetched at `2026-10-27T14:52:25Z`
 - Candidate patch SHA-256: `e53b3ca4ae55eb5e808a00723b95ca6dbe4edfef3e3b6a1dc83893d1d4ebac21`; ledger metadata excluded
-- Commit SHA: not committed
+- Commit SHA: `71a24b143b553835c214091d9a89b4666c1a95db`
 - Dependencies: none
 - Required validation: PASS with one disclosed environment limitation; focused MZ-086/087/088 contracts, backend build, frontend lint, 56 suites / 299 tests and 96-route production build passed; combined `check:backend` reached the pre-existing localhost HTTP/PG harness and was stopped after sandbox `listen EPERM 127.0.0.1`
 - Shared-hunk review: PASS; independent review found no semantic conflict across MZ-086/087/088 shared `cleaningInspection.ts` and `mzapp.ts` hunks; authoritative self-complete, reassignment action-source and checkout-only handover guards remain fail-closed
 - Generated-file review: PASS; tracked build output was restored and ignored backend/frontend build output plus temporary dependency symlinks were removed before staging
-- Technical state: candidate
+- Technical state: committed; ledger-only receipt pending
 - User authorization: approved-for-push; evidence: user explicitly requested “提交推送8 个修复” for MZ-075/082/083/085/086/087/088/089, excluding MZ-084, with no PR, merge, deployment, OTA or production-data action
-- Independent review: GO for code semantics; P0=0, code P1=0. The review's only P1 was the missing joint Release Attempt, which this exact squashed candidate supplies; exact committed-range receipt remains required before push
-- Action conclusion: GO for the exact local content commit; normal non-force push remains conditional on the post-commit ledger-only receipt, exact range report and final remote preflight
+- Independent review: GO for the exact squashed content commit; P0=0, code P1=0. The review's governance P1 is closed by this joint Release Attempt and the passing exact staged-scope audit; only the documented P2 verification gaps remain
+- Action conclusion: GO for this ledger-only receipt commit; normal non-force push remains conditional on the exact post-receipt range report and final remote preflight
 
 ### Risks / Release Notes
 
