@@ -742,6 +742,69 @@ export function projectInspectorTaskStatus(status: any, inspectionScope: any): s
   return normalizeInspectionScope(inspectionScope) === 'password_only' ? 'done' : 'to_hang_keys'
 }
 
+/**
+ * A checkout-only inspection that has been submitted is still active until
+ * the same assigned inspector records the exact source task's key handover.
+ * Keep this fail-closed: a historical actor, a manual action grant, another
+ * business day, or an explicitly related/deferred source cannot stand in for
+ * the current source task assignment.
+ */
+export function shouldKeepCheckoutInspectionActiveForKeyHandover(params: {
+  taskType?: any
+  status?: any
+  inspectionScope?: any
+  executionState?: any
+  sourceKeyHandoverCompleted?: boolean
+  currentInspectorId?: any
+  inspectionRecordActorUserId?: any
+  inspectionRecordAt?: any
+  inspectionRecordDate?: any
+  displayDate?: any
+  hasRelatedInspectionArrangement?: boolean
+}): boolean {
+  if (cleaningInspectionTaskKind(params?.taskType) !== 'checkout') return false
+  if (projectInspectorTaskStatus(params?.status, params?.inspectionScope) !== 'to_hang_keys') return false
+  if (params?.sourceKeyHandoverCompleted === true) return false
+  if (params?.hasRelatedInspectionArrangement === true) return false
+
+  const executionState = String(params?.executionState || '').trim().toLowerCase()
+  if (['cancelled', 'canceled', 'superseded', 'deleted'].includes(executionState)) return false
+
+  const currentInspectorId = String(params?.currentInspectorId || '').trim()
+  const recordActorUserId = String(params?.inspectionRecordActorUserId || '').trim()
+  const recordAt = String(params?.inspectionRecordAt || '').trim()
+  const recordDate = inspectionDayOnly(params?.inspectionRecordDate)
+  const displayDate = inspectionDayOnly(params?.displayDate)
+  return !!currentInspectorId
+    && !!recordActorUserId
+    && currentInspectorId === recordActorUserId
+    && !!recordAt
+    && !!recordDate
+    && recordDate === displayDate
+}
+
+export function isSameInspectionRecordEvidence(
+  evidence: { performedAt?: any; recordDate?: any; actorUserId?: any },
+  embedded: { performedAt?: any; recordDate?: any; actorUserId?: any },
+): boolean {
+  const evidenceActor = String(evidence?.actorUserId || '').trim()
+  const embeddedActor = String(embedded?.actorUserId || '').trim()
+  const evidenceDate = inspectionDayOnly(evidence?.recordDate)
+  const embeddedDate = inspectionDayOnly(embedded?.recordDate)
+  const normalizeInstant = (value: any) => {
+    const raw = String(value || '').trim()
+    if (!raw) return ''
+    const millis = Date.parse(raw)
+    return Number.isFinite(millis) ? new Date(millis).toISOString() : raw
+  }
+  return !!evidenceActor
+    && evidenceActor === embeddedActor
+    && !!evidenceDate
+    && evidenceDate === embeddedDate
+    && !!normalizeInstant(evidence?.performedAt)
+    && normalizeInstant(evidence?.performedAt) === normalizeInstant(embedded?.performedAt)
+}
+
 export function isCleaningDoneLikeStatus(status: any): boolean {
   const raw = String(status || '').trim().toLowerCase()
   return (
@@ -913,6 +976,228 @@ export function mergeInspectionPlan(
   }
 
   return { inspectionMode: 'pending_decision', inspectionDueDate: null }
+}
+
+export type AuthoritativeSelfCompleteProgress = {
+  authoritative: true
+  source_task_id: string
+  source_task_ids: string[]
+  status: string
+}
+
+const SELF_COMPLETE_PROGRESS_STATUSES = new Set([
+  'todo',
+  'pending',
+  'unassigned',
+  'assigned',
+  'in_progress',
+  'to_complete',
+  'to_hang_keys',
+  'keys_hung',
+  'cleaned',
+  'restock_pending',
+  'restocked',
+  'inspected',
+  'done',
+  'completed',
+  'ready',
+])
+
+/**
+ * Projects a cleaner's self-complete progress from the real route topology.
+ * Cleaner groups normally contain only the checkout row; the linked check-in
+ * remains outside that group and is recovered through the unique canonical
+ * pair. Requiring that exact pair prevents room/date-only cards from gaining
+ * authority while still allowing the checkout-led BO717 shape.
+ */
+export function projectAuthoritativeSelfCompleteProgress(params: {
+  requireSelfComplete?: any
+  roleKind?: any
+  primaryKind?: any
+  businessIdentity?: any
+  projectionSourceIds?: any[] | null
+  primarySourceId?: any
+  status?: any
+  canonicalPairBusinessIdentity?: any
+  canonicalPairSourceIds?: any[] | null
+  canonicalCheckoutSourceId?: any
+}): AuthoritativeSelfCompleteProgress | null {
+  if (params?.requireSelfComplete !== true) return null
+  if (String(params?.roleKind || '').trim().toLowerCase() !== 'cleaner') return null
+  const primaryKind = String(params?.primaryKind || '').trim().toLowerCase()
+  if (primaryKind !== 'checkout' && primaryKind !== 'turnover') return null
+
+  const businessIdentity = String(params?.businessIdentity || '').trim()
+  const canonicalBusinessIdentity = String(params?.canonicalPairBusinessIdentity || '').trim()
+  if (!businessIdentity || businessIdentity !== canonicalBusinessIdentity) return null
+  if (!businessIdentity.startsWith('turnover:') && !businessIdentity.startsWith('turnover_link:')) return null
+
+  const normalizeIds = (values: any[] | null | undefined) => Array.from(new Set<string>(
+    (Array.isArray(values) ? values : [])
+      .map((value: unknown) => String(value || '').trim())
+      .filter(Boolean),
+  )).sort()
+  const projectionSourceIds = normalizeIds(params?.projectionSourceIds)
+  const canonicalPairSourceIds = normalizeIds(params?.canonicalPairSourceIds)
+  const sourceTaskId = String(params?.primarySourceId || '').trim()
+  const canonicalCheckoutSourceId = String(params?.canonicalCheckoutSourceId || '').trim()
+  const status = String(params?.status || '').trim().toLowerCase()
+  if (canonicalPairSourceIds.length !== 2) return null
+  if (!sourceTaskId || sourceTaskId !== canonicalCheckoutSourceId || !canonicalPairSourceIds.includes(sourceTaskId)) return null
+  if (primaryKind === 'checkout') {
+    if (projectionSourceIds.length !== 1 || projectionSourceIds[0] !== sourceTaskId) return null
+  } else if (
+    projectionSourceIds.length !== canonicalPairSourceIds.length
+    || projectionSourceIds.some((value, index) => value !== canonicalPairSourceIds[index])
+  ) return null
+  if (!SELF_COMPLETE_PROGRESS_STATUSES.has(status)) return null
+
+  return {
+    authoritative: true,
+    source_task_id: sourceTaskId,
+    source_task_ids: canonicalPairSourceIds,
+    status,
+  }
+}
+
+/**
+ * Computes the authoritative self-complete status from the checkout cleaner
+ * source only. Related check-in media or status is intentionally not an input.
+ */
+export function authoritativeSelfCompleteSourceStatus(params: {
+  rawStatus?: any
+  cleaningSubmissionReady?: any
+  completionPhotosSatisfied?: any
+  sourceKeyHandoverCompleted?: any
+  assigned?: any
+  keyPhotoConfirmsCurrentProgress?: any
+  isPendingReviewRecord?: any
+}): string {
+  const raw = String(params?.rawStatus || '').trim().toLowerCase()
+  const assigned = !!String(params?.assigned || '').trim()
+  const keyPhotoProgress = params?.keyPhotoConfirmsCurrentProgress === true
+  const sourceKeyHandoverCompleted = params?.sourceKeyHandoverCompleted === true
+  const completionReached = [
+    'cleaned',
+    'restock_pending',
+    'restocked',
+    'ready',
+    'inspected',
+    'keys_hung',
+    'done',
+    'completed',
+  ].includes(raw)
+
+  if (params?.cleaningSubmissionReady !== true) {
+    if (!assigned && raw !== 'in_progress' && raw !== 'cleaning' && !keyPhotoProgress) return 'todo'
+    if (raw === 'in_progress' || raw === 'cleaning' || keyPhotoProgress) return 'in_progress'
+    return 'assigned'
+  }
+  if (params?.isPendingReviewRecord === true && sourceKeyHandoverCompleted) return 'keys_hung'
+  if (completionReached && !sourceKeyHandoverCompleted) return 'to_hang_keys'
+  if (completionReached && params?.completionPhotosSatisfied !== true) return 'to_complete'
+  if (raw === 'keys_hung' && sourceKeyHandoverCompleted) return 'keys_hung'
+  if (completionReached && sourceKeyHandoverCompleted) return 'done'
+  if (raw === 'in_progress' || raw === 'cleaning' || keyPhotoProgress) return 'in_progress'
+  return assigned ? 'assigned' : 'todo'
+}
+
+/**
+ * A manager card may contain both the cleaner projection and an incoming
+ * inspection projection. Only the cleaner projection has evaluated the
+ * exact-source self-complete requirements (completion evidence, consumables
+ * and that source's own key handover). Preserve that result only when the
+ * second-stage merge is still the same reliable two-source turnover. Room,
+ * date, a child label, or an unrelated inspection child are insufficient.
+ */
+export function resolveAuthoritativeSelfCompleteManagerProgress(params: {
+  rows?: any[] | null
+  businessIdentity?: any
+  inspectionMode?: any
+  isTurnoverCard?: any
+}): AuthoritativeSelfCompleteProgress | null {
+  const rows = (Array.isArray(params?.rows) ? params.rows : []).filter(Boolean)
+  const businessIdentity = String(params?.businessIdentity || '').trim()
+  if (normalizeInspectionMode(params?.inspectionMode) !== 'self_complete') return null
+  if (params?.isTurnoverCard !== true) return null
+  if (!businessIdentity.startsWith('turnover:') && !businessIdentity.startsWith('turnover_link:')) return null
+  if (!rows.some((row) => String(row?.task_kind || '').trim().toLowerCase() === 'inspection')) return null
+  if (rows.some((row) => String(row?.task_kind || '').trim().toLowerCase() === 'execution')) return null
+  if (rows.some((row) => (
+    row?.inspection_assignment_conflict
+    || (Array.isArray(row?.__inspection_conflict_source_ids) && row.__inspection_conflict_source_ids.length > 0)
+    || (Array.isArray(row?.display_conflicts) && row.display_conflicts.length > 0)
+  ))) return null
+
+  const cleaningRows = rows.filter((row) => String(row?.task_kind || '').trim().toLowerCase() === 'cleaning')
+  if (!cleaningRows.length) return null
+  const projections = cleaningRows.map((row) => row?.self_complete_progress)
+  if (projections.some((projection) => projection?.authoritative !== true)) return null
+
+  const normalized = projections.map((projection) => {
+    const sourceTaskId = String(projection?.source_task_id || '').trim()
+    const sourceTaskIds = Array.from(new Set<string>(
+      (Array.isArray(projection?.source_task_ids) ? projection.source_task_ids : [])
+        .map((value: unknown) => String(value || '').trim())
+        .filter(Boolean),
+    )).sort()
+    const status = String(projection?.status || '').trim().toLowerCase()
+    return { sourceTaskId, sourceTaskIds, status }
+  })
+  const first = normalized[0]
+  if (!first.sourceTaskId || first.sourceTaskIds.length !== 2 || !first.sourceTaskIds.includes(first.sourceTaskId)) return null
+  if (!SELF_COMPLETE_PROGRESS_STATUSES.has(first.status)) return null
+  if (normalized.some((candidate) => (
+    candidate.sourceTaskId !== first.sourceTaskId
+    || candidate.status !== first.status
+    || candidate.sourceTaskIds.join('|') !== first.sourceTaskIds.join('|')
+  ))) return null
+  if (cleaningRows.some((row) => String(row?.business_identity || '').trim() !== businessIdentity)) return null
+
+  const aggregateSourceIds = Array.from(new Set<string>(
+    rows.flatMap((row) => {
+      const ids = Array.isArray(row?.active_source_ids) && row.active_source_ids.length
+        ? row.active_source_ids
+        : Array.isArray(row?.source_ids) && row.source_ids.length
+          ? row.source_ids
+          : [row?.source_id]
+      return ids.map((value: unknown) => String(value || '').trim()).filter(Boolean)
+    }),
+  )).sort()
+  if (aggregateSourceIds.length !== first.sourceTaskIds.length) return null
+  if (aggregateSourceIds.some((value, index) => value !== first.sourceTaskIds[index])) return null
+
+  return {
+    authoritative: true,
+    source_task_id: first.sourceTaskId,
+    source_task_ids: first.sourceTaskIds,
+    status: first.status,
+  }
+}
+
+/**
+ * The exact checkout self-complete source owns the combined card's progress.
+ * A canonical pair's aggregate lockbox fact remains valid for ordinary cards,
+ * but must not advance an authoritative cleaner source on its own.
+ */
+export function selfCompleteAwareManagerStatus(params: {
+  authoritativeProgress?: AuthoritativeSelfCompleteProgress | null
+  lockboxVideoConfirmsCurrentState?: any
+  cleaningFinished?: any
+  inspectionPending?: any
+  mergedStatusCandidates?: any[] | null
+  fallbackStatuses?: any[] | null
+}): string {
+  if (params?.authoritativeProgress) return params.authoritativeProgress.status
+  if (params?.lockboxVideoConfirmsCurrentState === true) return 'keys_hung'
+  if (params?.cleaningFinished === true && params?.inspectionPending === true) return 'to_inspect'
+  const fallback = (Array.isArray(params?.mergedStatusCandidates) ? params.mergedStatusCandidates : [])
+    .map((value) => String(value || '').trim().toLowerCase())
+    .find(Boolean)
+  if (fallback) return fallback
+  return (Array.isArray(params?.fallbackStatuses) ? params.fallbackStatuses : [])
+    .map((value) => String(value || '').trim().toLowerCase())
+    .find(Boolean) || ''
 }
 
 function mergedTaskStatus(statuses: any[]): string {

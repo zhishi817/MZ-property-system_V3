@@ -11,6 +11,7 @@ import interactionPlugin from '@fullcalendar/interaction'
 import { API_BASE, getJSON, authHeaders } from '../../lib/api'
 import { sortOrders } from '../../lib/orderSort'
 import { orderCancellationPermissionState } from '../../lib/orderPermissions'
+import { filterOrdersForCalendar, orderSourcePlatform, type OrderCalendarPlatformFilter } from '../../lib/orderCalendar'
 import { monthSegments, getMonthSegmentsForProperty, calcOrderMonthAmounts, toDayStr } from '../../lib/orders'
 import { sortActivePropertiesByRegionThenCode } from '../../lib/properties'
 import { hasPerm } from '../../lib/auth'
@@ -22,7 +23,7 @@ import styles from './orders.module.css'
 type Order = { id: string; source?: string; stay_type?: 'guest' | 'owner'; checkin?: string; checkout?: string; status?: string; property_id?: string; property_code?: string; confirmation_code?: string; guest_name?: string; guest_phone?: string; note?: string; price?: number; cleaning_fee?: number; net_income?: number; avg_nightly_price?: number; nights?: number; email_header_at?: string; total_payment_raw?: number; processed_status?: string }
 // guest_phone 在后端已支持，这里表单也支持录入
 type CleaningTask = { id: string; status: 'pending'|'scheduled'|'done' }
-type PlatformFilter = 'all'|'airbnb'|'booking'|'offline'|'other'
+type PlatformFilter = OrderCalendarPlatformFilter
 const debugOnce = (..._args: any[]) => {}
 const BOOKING_NET_RATE = 0.83
 const PLATFORM_FILTER_OPTIONS: { value: PlatformFilter; label: string }[] = [
@@ -32,14 +33,6 @@ const PLATFORM_FILTER_OPTIONS: { value: PlatformFilter; label: string }[] = [
   { value: 'offline', label: 'Direct reservation' },
   { value: 'other', label: 'Other source' },
 ]
-function sourcePlatform(source?: any): Exclude<PlatformFilter, 'all'> {
-  const s = String(source || '').trim().toLowerCase()
-  if (s.includes('airbnb')) return 'airbnb'
-  if (s.includes('book')) return 'booking'
-  if (s === 'offline' || s.includes('direct') || s.includes('manual')) return 'offline'
-  return 'other'
-}
-
 export default function OrdersPage() {
   const { message } = App.useApp()
   const router = useRouter()
@@ -1259,7 +1252,7 @@ export default function OrdersPage() {
     return raw
   }
   function matchesPlatformFilter(order: any): boolean {
-    return platformFilter === 'all' || sourcePlatform(order?.source) === platformFilter
+    return platformFilter === 'all' || orderSourcePlatform(order?.source) === platformFilter
   }
   const columns = [
     { title: '房号', dataIndex: 'property_code', fixed: 'left' as const, width: 120, render: (_: any, r: Order) => {
@@ -1436,16 +1429,12 @@ export default function OrdersPage() {
     const raw = String((ep?.order?.source ?? ep?.platform ?? ep?.source ?? ep?.channel ?? ep?.provider ?? 'other')).toLowerCase()
     return raw.includes('airbnb') ? 'airbnb' : (raw.includes('book') ? 'booking' : 'other')
   }
+  const calendarVisibleOrders = useMemo(() => filterOrdersForCalendar(data, {
+    propertyId: calPid,
+    platformFilter,
+  }), [data, calPid, platformFilter])
   const calendarEvents = useMemo(() => {
-    const orders = (data || []).filter(o => {
-      const ci = String(o.checkin || '').slice(0,10)
-      const co = String(o.checkout || '').slice(0,10)
-      if (!ci || !co) return false
-      const okPlatform = platformFilter === 'all' || sourcePlatform(o.source) === platformFilter
-      // 日历是订单记录视图而非财务报表：取消单仍以红色保留原入住区间。
-      return o.property_id === calPid && okPlatform
-    })
-    return orders.map(o => {
+    return calendarVisibleOrders.map(o => {
       const stKey = String((o as any).status || '').toLowerCase()
       const styleToken = statusStyle[stKey] || (sourceStyle[o.source || 'other'] || { bg: '#F3F4F6', border: '#9CA3AF', text: '#111827' })
       const ded = Number((o as any).internal_deduction_total ?? (o as any).internal_deduction ?? 0)
@@ -1460,7 +1449,7 @@ export default function OrdersPage() {
         extendedProps: { styleToken, order: o },
       }
     })
-  }, [data, calPid, platformFilter])
+  }, [calendarVisibleOrders])
   const laneMap = useMemo(() => {
     try {
       const segs = buildSegments(
@@ -1513,10 +1502,7 @@ export default function OrdersPage() {
     }
     return segments
   }
-  const monthOrders = (data || []).filter(o => {
-    if (!calPid) return false
-    if (o.property_id !== calPid) return false
-    if (!matchesPlatformFilter(o)) return false
+  const monthOrders = calendarVisibleOrders.filter(o => {
     const ciDay = dayStr(o.checkin)
     const coDay = dayStr(o.checkout)
     if (!ciDay || !coDay) return false
@@ -1532,11 +1518,11 @@ export default function OrdersPage() {
     if (!calPid) return null
     const dateStr = dayjs(date).format('YYYY-MM-DD')
     const orders = sortOrders(
-      data
+      calendarVisibleOrders
       .filter(o => {
         const ciDay = dayStr(o.checkin)
         const coDay = dayStr(o.checkout)
-        return o.property_id === calPid && matchesPlatformFilter(o) && ciDay && coDay && ciDay <= dateStr && coDay > dateStr
+        return ciDay && coDay && ciDay <= dateStr && coDay > dateStr
       }) as any,
       sortKey,
       sortOrder

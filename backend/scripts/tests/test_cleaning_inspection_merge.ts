@@ -3,6 +3,7 @@ import express from 'express'
 import fs from 'node:fs'
 import path from 'node:path'
 import {
+  authoritativeSelfCompleteSourceStatus,
   canonicalCleaningTurnoverPairs,
   canonicalKeyHandoverSourceIds,
   canonicalKeyHandoverSourceIdsForProjection,
@@ -21,14 +22,214 @@ import {
   mergeTurnoverTaskPlan,
   mobileInspectionProjectionDate,
   normalizeTurnoverInspectionScope,
+  projectAuthoritativeSelfCompleteProgress,
   projectCleaningKeyHandover,
   reconcilePendingHandoverInspectorGroups,
+  resolveAuthoritativeSelfCompleteManagerProgress,
   resolveInspectionTaskAssignment,
   resolveBoardInspectionDueDate,
   sanitizeInspectionModeForTask,
+  selfCompleteAwareManagerStatus,
   unlinkedDeferredInspectionMergeKey,
   withInspectionMergeIsolation,
 } from '../../src/lib/cleaningInspection'
+
+function testManagerMergePreservesAuthoritativeSelfCompleteProgress() {
+  const businessIdentity = 'turnover:checkout-order:checkin-order'
+  assert.deepEqual(projectAuthoritativeSelfCompleteProgress({
+    requireSelfComplete: true,
+    roleKind: 'cleaner',
+    primaryKind: 'checkout',
+    businessIdentity,
+    projectionSourceIds: ['bo717-checkout'],
+    primarySourceId: 'bo717-checkout',
+    status: 'to_hang_keys',
+    canonicalPairBusinessIdentity: businessIdentity,
+    canonicalPairSourceIds: ['bo717-checkin', 'bo717-checkout'],
+    canonicalCheckoutSourceId: 'bo717-checkout',
+  }), {
+    authoritative: true,
+    source_task_id: 'bo717-checkout',
+    source_task_ids: ['bo717-checkin', 'bo717-checkout'],
+    status: 'to_hang_keys',
+  }, 'checkout-led cleaner groups recover the exact canonical check-in without requiring it in cleanerGroups')
+  assert.equal(projectAuthoritativeSelfCompleteProgress({
+    requireSelfComplete: true,
+    roleKind: 'cleaner',
+    primaryKind: 'checkout',
+    businessIdentity,
+    projectionSourceIds: ['bo717-checkout'],
+    primarySourceId: 'bo717-checkout',
+    status: 'to_hang_keys',
+    canonicalPairBusinessIdentity: businessIdentity,
+    canonicalPairSourceIds: ['different-checkout', 'bo717-checkin'],
+    canonicalCheckoutSourceId: 'different-checkout',
+  }), null, 'a mismatched canonical pair cannot authorize self-complete progress')
+  assert.equal(projectAuthoritativeSelfCompleteProgress({
+    requireSelfComplete: true,
+    roleKind: 'cleaner',
+    primaryKind: 'checkin',
+    businessIdentity,
+    projectionSourceIds: ['bo717-checkin'],
+    primarySourceId: 'bo717-checkin',
+    status: 'to_hang_keys',
+    canonicalPairBusinessIdentity: businessIdentity,
+    canonicalPairSourceIds: ['bo717-checkout', 'bo717-checkin'],
+    canonicalCheckoutSourceId: 'bo717-checkout',
+  }), null, 'an incoming check-in cannot manufacture the cleaner authority')
+  assert.equal(projectAuthoritativeSelfCompleteProgress({
+    requireSelfComplete: true,
+    roleKind: 'cleaner',
+    primaryKind: 'checkout',
+    businessIdentity,
+    projectionSourceIds: ['bo717-checkout', 'bo717-checkin'],
+    primarySourceId: 'bo717-checkout',
+    status: 'to_hang_keys',
+    canonicalPairBusinessIdentity: businessIdentity,
+    canonicalPairSourceIds: ['bo717-checkout', 'bo717-checkin'],
+    canonicalCheckoutSourceId: 'bo717-checkout',
+  }), null, 'a checkout-led cleaner projection must remain its exact single source before manager aggregation')
+  assert.equal(authoritativeSelfCompleteSourceStatus({
+    rawStatus: 'inspected',
+    cleaningSubmissionReady: true,
+    completionPhotosSatisfied: true,
+    sourceKeyHandoverCompleted: false,
+    assigned: 'cleaner-simon',
+  }), 'to_hang_keys', 'a related check-in video cannot complete the checkout cleaner handover')
+  assert.equal(authoritativeSelfCompleteSourceStatus({
+    rawStatus: 'keys_hung',
+    cleaningSubmissionReady: true,
+    completionPhotosSatisfied: true,
+    sourceKeyHandoverCompleted: true,
+    assigned: 'cleaner-simon',
+  }), 'keys_hung', 'the exact checkout handover evidence advances the self-complete card')
+  assert.equal(authoritativeSelfCompleteSourceStatus({
+    rawStatus: 'inspected',
+    cleaningSubmissionReady: true,
+    completionPhotosSatisfied: false,
+    sourceKeyHandoverCompleted: false,
+    assigned: 'cleaner-simon',
+  }), 'to_hang_keys', 'missing required evidence never manufactures a completed state')
+  const cleanerProjection = {
+    task_kind: 'cleaning',
+    business_identity: businessIdentity,
+    active_source_ids: ['bo717-checkout'],
+    self_complete_progress: {
+      authoritative: true,
+      source_task_id: 'bo717-checkout',
+      source_task_ids: ['bo717-checkout', 'bo717-checkin'],
+      status: 'to_hang_keys',
+    },
+  }
+  const incomingInspection = {
+    task_kind: 'inspection',
+    business_identity: businessIdentity,
+    active_source_ids: ['bo717-checkin'],
+    status: 'assigned',
+  }
+
+  assert.deepEqual(resolveAuthoritativeSelfCompleteManagerProgress({
+    rows: [cleanerProjection, incomingInspection],
+    businessIdentity,
+    inspectionMode: 'self_complete',
+    isTurnoverCard: true,
+  }), {
+    authoritative: true,
+    source_task_id: 'bo717-checkout',
+    source_task_ids: ['bo717-checkin', 'bo717-checkout'],
+    status: 'to_hang_keys',
+  }, 'the incoming unassigned inspection phase must not replace BO717 self-complete progress')
+  assert.equal(selfCompleteAwareManagerStatus({
+    authoritativeProgress: {
+      authoritative: true,
+      source_task_id: 'bo717-checkout',
+      source_task_ids: ['bo717-checkin', 'bo717-checkout'],
+      status: 'to_hang_keys',
+    },
+    lockboxVideoConfirmsCurrentState: true,
+    cleaningFinished: true,
+    inspectionPending: true,
+    mergedStatusCandidates: ['keys_hung', 'assigned'],
+  }), 'to_hang_keys', 'a related check-in handover cannot advance the exact checkout self-complete status')
+  assert.equal(selfCompleteAwareManagerStatus({
+    authoritativeProgress: null,
+    lockboxVideoConfirmsCurrentState: true,
+    cleaningFinished: true,
+    inspectionPending: true,
+    mergedStatusCandidates: ['assigned'],
+  }), 'keys_hung', 'ordinary combined cards preserve the existing aggregate handover behavior')
+  assert.equal(selfCompleteAwareManagerStatus({
+    authoritativeProgress: null,
+    lockboxVideoConfirmsCurrentState: false,
+    cleaningFinished: false,
+    inspectionPending: false,
+    mergedStatusCandidates: [],
+    fallbackStatuses: ['to_hang_keys'],
+  }), 'to_hang_keys', 'execution-only manager cards preserve their original actionable status')
+  assert.equal(selfCompleteAwareManagerStatus({
+    authoritativeProgress: null,
+    lockboxVideoConfirmsCurrentState: false,
+    cleaningFinished: false,
+    inspectionPending: false,
+    mergedStatusCandidates: [],
+    fallbackStatuses: ['cancelled'],
+  }), 'cancelled', 'ordinary cancelled cards preserve their original status')
+
+  assert.equal(resolveAuthoritativeSelfCompleteManagerProgress({
+    rows: [cleanerProjection, incomingInspection],
+    businessIdentity,
+    inspectionMode: 'same_day',
+    isTurnoverCard: true,
+  }), null, 'ordinary same-day inspection still owns its inspection status')
+  assert.equal(resolveAuthoritativeSelfCompleteManagerProgress({
+    rows: [cleanerProjection, incomingInspection],
+    businessIdentity: 'cleaning_task:bo717-checkout',
+    inspectionMode: 'self_complete',
+    isTurnoverCard: true,
+  }), null, 'room/date grouping without a reliable turnover identity must fail closed')
+  assert.equal(resolveAuthoritativeSelfCompleteManagerProgress({
+    rows: [cleanerProjection, incomingInspection, { task_kind: 'execution' }],
+    businessIdentity,
+    inspectionMode: 'self_complete',
+    isTurnoverCard: true,
+  }), null, 'a distinct key-handover execution must not be absorbed by the cleaner projection')
+  assert.equal(resolveAuthoritativeSelfCompleteManagerProgress({
+    rows: [cleanerProjection, { ...incomingInspection, inspection_assignment_conflict: { reasons: ['assignee_mismatch'] } }],
+    businessIdentity,
+    inspectionMode: 'self_complete',
+    isTurnoverCard: true,
+  }), null, 'assignment conflicts must keep the projections separate')
+  assert.equal(resolveAuthoritativeSelfCompleteManagerProgress({
+    rows: [
+      cleanerProjection,
+      { ...cleanerProjection, self_complete_progress: { ...cleanerProjection.self_complete_progress, source_task_id: 'other-checkout' } },
+      incomingInspection,
+    ],
+    businessIdentity,
+    inspectionMode: 'self_complete',
+    isTurnoverCard: true,
+  }), null, 'multiple self-complete sources must not manufacture one authoritative status')
+  assert.equal(resolveAuthoritativeSelfCompleteManagerProgress({
+    rows: [
+      cleanerProjection,
+      incomingInspection,
+      { task_kind: 'inspection', business_identity: businessIdentity, active_source_ids: ['third-source'] },
+    ],
+    businessIdentity,
+    inspectionMode: 'self_complete',
+    isTurnoverCard: true,
+  }), null, 'a third aggregate source must not inherit the two-source marker')
+
+  const workTasksSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/mzapp.ts'), 'utf8')
+  assert.match(workTasksSource, /projectAuthoritativeSelfCompleteProgress\(\{/)
+  assert.match(workTasksSource, /canonicalPairBusinessIdentity: canonicalPair\?\.business_identity/)
+  assert.match(workTasksSource, /canonicalCheckoutSourceId: canonicalPair\?\.checkout/)
+  assert.match(workTasksSource, /status: selfCompleteSourceStatus/)
+  assert.match(workTasksSource, /const statusOut = selfCompleteAwareManagerStatus\(\{/)
+  assert.match(workTasksSource, /self_complete_progress: selfCompleteProgress/)
+  assert.match(workTasksSource, /const authoritativeSelfCompleteProgress = resolveAuthoritativeSelfCompleteManagerProgress\(\{/)
+  assert.match(workTasksSource, /authoritativeSelfCompleteProgress[\s\S]*?\? 'cleaning'/)
+}
 
 function testCheckinInspectionAssignmentUsesTheSavedExecutorWithoutMixingPeople() {
   assert.deepEqual(resolveInspectionTaskAssignment({
@@ -1480,6 +1681,7 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
 }
 
 testTurnoverCheckoutAssignmentWinsOverPendingFallback()
+testManagerMergePreservesAuthoritativeSelfCompleteProgress()
 testCheckinInspectionAssignmentUsesTheSavedExecutorWithoutMixingPeople()
 testTurnoverPendingCheckoutDoesNotGetPromotedByCheckinDefault()
 testDeferredCheckoutKeepsDeferredDate()

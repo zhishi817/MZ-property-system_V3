@@ -17,6 +17,7 @@ import {
   resolveGuestLuggageRecipientIds,
 } from '../services/guestLuggage'
 import {
+  authoritativeSelfCompleteSourceStatus,
   canonicalCleaningTurnoverPairs,
   canonicalKeyHandoverSourceIds,
   canonicalKeyHandoverSourceIdsForProjection,
@@ -40,9 +41,14 @@ import {
   mobileInspectionProjectionDate,
   normalizeTurnoverInspectionScope,
   projectCleaningKeyHandover,
+  projectAuthoritativeSelfCompleteProgress,
   projectInspectorTaskStatus,
   reconcilePendingHandoverInspectorGroups,
+  resolveAuthoritativeSelfCompleteManagerProgress,
   resolveInspectionTaskAssignment,
+  selfCompleteAwareManagerStatus,
+  isSameInspectionRecordEvidence,
+  shouldKeepCheckoutInspectionActiveForKeyHandover,
   unlinkedDeferredInspectionMergeKey,
   withInspectionMergeIsolation,
 } from '../lib/cleaningInspection'
@@ -97,6 +103,7 @@ import {
   buildDeferredInspectionCheckinArrangements,
   deferredInspectionConflictSourceIds,
   indexDeferredInspectionCheckinArrangements,
+  loadDeferredInspectionEvidenceAccessContext,
   loadDeferredInspectionCheckinSubmissionGuard,
   mergeDeferredInspectionAwareActions,
   reconcileDeferredInspectionCheckinReplacement,
@@ -3634,7 +3641,19 @@ router.get('/cleaning-tasks/:id/consumables', async (req, res) => {
     const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
-    if (!await canViewMzappTaskConsumables(user, row, userId)) return res.status(403).json({ message: 'forbidden' })
+    let canViewConsumables = await canViewMzappTaskConsumables(user, row, userId)
+    if (!canViewConsumables) {
+      const deferredContext = await loadDeferredInspectionEvidenceAccessContext({
+        taskId: id,
+        userId,
+        client: pgPool,
+      })
+      canViewConsumables = !!(
+        deferredContext
+        && await canSubmitMzappInspection(user, deferredContext.actionTask, userId, pgPool)
+      )
+    }
+    if (!canViewConsumables) return res.status(403).json({ message: 'forbidden' })
 
     const rows = await pgPool.query(
       `SELECT id, item_id, qty, need_restock, note, status, photo_url, photo_urls, item_label, created_at
@@ -3964,28 +3983,38 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
     const batchId = uuid.v4()
     const actionActor = actorAndPerformerFromRequest(user, parsed.data)
     const transactionResult = await pgRunInTransaction(async (client) => {
-      const lockedResult = await client.query(
-        `SELECT id::text AS id,
-                COALESCE(status, '') AS status,
-                inspector_id::text AS inspector_id,
-                cleaner_id::text AS cleaner_id,
-                assignee_id::text AS assignee_id,
-                task_type,
-                inspection_mode,
-                inspection_scope,
-                inspection_due_date::text AS inspection_due_date,
-                property_id::text AS property_id
-           FROM cleaning_tasks
-          WHERE id::text=$1::text
-          FOR UPDATE`,
-        [id],
-      )
-      const lockedTask = lockedResult?.rows?.[0] || null
-      if (!lockedTask) return { kind: 'missing' as const }
-      const selfCompleteRestock = stepKey === 'self_complete_restock'
-        && await canSubmitMzappSelfCompleteRestock(user, lockedTask, userId, client)
-      if (!selfCompleteRestock && !await canSubmitMzappInspection(user, lockedTask, userId, client)) {
-        return { kind: 'forbidden' as const }
+      let lockedTask: any = null
+      let selfCompleteRestock = false
+      if (preflightSelfComplete) {
+        const lockedResult = await client.query(
+          `SELECT id::text AS id,
+                  COALESCE(status, '') AS status,
+                  inspector_id::text AS inspector_id,
+                  cleaner_id::text AS cleaner_id,
+                  assignee_id::text AS assignee_id,
+                  task_type,
+                  inspection_mode,
+                  inspection_scope,
+                  inspection_due_date::text AS inspection_due_date,
+                  property_id::text AS property_id
+             FROM cleaning_tasks
+            WHERE id::text=$1::text
+            FOR UPDATE`,
+          [id],
+        )
+        lockedTask = lockedResult?.rows?.[0] || null
+        if (!lockedTask) return { kind: 'missing' as const }
+        selfCompleteRestock = stepKey === 'self_complete_restock'
+          && await canSubmitMzappSelfCompleteRestock(user, lockedTask, userId, client)
+        if (!selfCompleteRestock) return { kind: 'forbidden' as const }
+      } else {
+        const submission = await authorizeDeferredInspectionCheckinSubmission({
+          taskId: id,
+          client,
+          canSubmit: (task, executor) => canSubmitMzappInspection(user, task, userId, executor),
+        })
+        if (submission.kind !== 'authorized') return submission
+        lockedTask = submission.task
       }
       if (selfCompleteRestock) {
         const consumables = await client.query(
@@ -4084,6 +4113,9 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
     })
     if (!transactionResult || transactionResult.kind === 'missing') return res.status(404).json({ message: 'not found' })
     if (transactionResult.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
+    if (transactionResult.kind === 'inspection_arrangement_conflict') {
+      return res.status(409).json({ message: transactionResult.guard.reason, ...transactionResult.guard })
+    }
     if (transactionResult.kind === 'read_only') return res.status(409).json({ message: 'work_record_read_only' })
     if (transactionResult.kind === 'missing_consumables') return res.status(409).json({ message: '请先完成消耗品补充' })
     if (transactionResult.kind === 'conflict') {
@@ -9505,7 +9537,21 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               inspection_scope: inspectionScope,
             })
           ) {
+            const checkoutInspectionAwaitingKeyHandover = shouldKeepCheckoutInspectionActiveForKeyHandover({
+              taskType: row.task_type,
+              status: raw_status,
+              inspectionScope,
+              executionState: row.execution_state,
+              sourceKeyHandoverCompleted,
+              currentInspectorId: inspectionAssignment.userId,
+              inspectionRecordActorUserId: effectiveInspectorRecordActorId,
+              inspectionRecordAt: effectiveInspectorRecordAt,
+              inspectionRecordDate: effectiveInspectorRecordDate,
+              displayDate: inspectorDisplayDate,
+              hasRelatedInspectionArrangement: !!deferredArrangement,
+            })
             const inspectorTerminal = isInspectionFinishedStatus(raw_status)
+              && !checkoutInspectionAwaitingKeyHandover
             const cancelled = raw_status === 'cancelled' || raw_status === 'canceled'
             if (!suppressStandaloneCheckin && isActiveCleaningTurnoverCandidate(row) && !inspectorTerminal && !cancelled && (effectiveInspectionAssigneeId || managerCanSeeAllTaskPool) && inspectorDisplayDate
               && (allowAll || effectiveInspectionAssigneeId === userId || manualInspectionAssigneeId)) {
@@ -9514,11 +9560,31 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                 managerMergeIsolationKey,
               )
               const arr = inspectorGroups.get(k) || []
-              arr.push({ ...base, __date: inspectorDisplayDate, __assignee_inspector: effectiveInspectionAssigneeId || null, __assignee_executor: checkinSiteExecutorId || null, __is_deferred_projection: inspectionMode === 'deferred' })
+              arr.push({
+                ...base,
+                __date: inspectorDisplayDate,
+                __assignee_inspector: effectiveInspectionAssigneeId || null,
+                __assignee_executor: checkinSiteExecutorId || null,
+                __is_deferred_projection: inspectionMode === 'deferred',
+                ...(checkoutInspectionAwaitingKeyHandover
+                  ? {
+                      __embedded_inspection_record_at: effectiveInspectorRecordAt,
+                      __embedded_inspection_record_date: effectiveInspectorRecordDate,
+                      __embedded_inspection_record_actor_user_id: effectiveInspectorRecordActorId,
+                    }
+                  : {}),
+              })
               inspectorGroups.set(k, arr)
             }
+            const inspectorRoleRecordEvidence = roleRecordEvidence('inspector', effectiveInspectorRecordAt, effectiveInspectorRecordDate, effectiveInspectorRecordActorId)
             const recordEvidence = mergeRoleRecordEvidenceWithCancellation({
-              roleEvidence: roleRecordEvidence('inspector', effectiveInspectorRecordAt, effectiveInspectorRecordDate, effectiveInspectorRecordActorId),
+              roleEvidence: checkoutInspectionAwaitingKeyHandover
+                ? inspectorRoleRecordEvidence.filter((evidence) => !isSameInspectionRecordEvidence(evidence, {
+                    performedAt: effectiveInspectorRecordAt,
+                    recordDate: effectiveInspectorRecordDate,
+                    actorUserId: effectiveInspectorRecordActorId,
+                  }))
+                : inspectorRoleRecordEvidence,
               cancelled,
               cancelledAt: cancelledRecordAt,
               currentAssigneeId: effectiveInspectionAssigneeId,
@@ -10038,13 +10104,38 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             role: roleKind,
             status: String(row.raw_status || row.status || '').trim() || null,
             scheduled_date: String(row.__original_scheduled_date || row.task_date || row.__date || '').slice(0, 10) || null,
-            work_record_state: String(row.__work_record_state || '').trim() || null,
-            occurred_at: String(row.__work_record_at || row.key_handover?.completed_at || '').trim() || null,
-            actor_user_id: String(row.__work_record_actor_user_id || '').trim() || null,
+            work_record_state: row.__embedded_inspection_record_at
+              ? 'completed'
+              : (String(row.__work_record_state || '').trim() || null),
+            occurred_at: String(row.__embedded_inspection_record_at || row.__work_record_at || row.key_handover?.completed_at || '').trim() || null,
+            actor_user_id: String(row.__embedded_inspection_record_actor_user_id || row.__work_record_actor_user_id || '').trim() || null,
             actor_name: String(row.__work_record_actor_name || '').trim() || null,
           }))
 
           const mergedActionChildren = [linkedInspectionActionChild].filter(Boolean)
+          const selfCompleteSourceStatus = authoritativeSelfCompleteSourceStatus({
+            rawStatus: raw,
+            cleaningSubmissionReady,
+            completionPhotosSatisfied,
+            sourceKeyHandoverCompleted,
+            assigned: assigneeId,
+            keyPhotoConfirmsCurrentProgress,
+            isPendingReviewRecord: isWorkRecordGroup && workRecordState === 'pending_review',
+          })
+          const selfCompleteProgress = projectAuthoritativeSelfCompleteProgress({
+            requireSelfComplete,
+            roleKind,
+            primaryKind: p.kind,
+            businessIdentity,
+            projectionSourceIds: activeSourceIds,
+            primarySourceId,
+            status: selfCompleteSourceStatus,
+            canonicalPairBusinessIdentity: canonicalPair?.business_identity,
+            canonicalPairSourceIds: canonicalPair?.source_ids,
+            canonicalCheckoutSourceId: canonicalPair?.checkout?.__raw_id
+              || canonicalPair?.checkout?.source_id
+              || canonicalPair?.checkout?.id,
+          })
 
           return {
             ...(mergedActionChildren.length ? { __merged_children: mergedActionChildren } : {}),
@@ -10154,6 +10245,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             cleaning_submission_ready: cleaningSubmissionReady,
             consumables_recorded: consumablesRecorded,
             source_key_handover_completed: sourceKeyHandoverCompleted,
+            self_complete_progress: selfCompleteProgress,
             ...(completionPhotoException ? { completion_photo_exception: completionPhotoException } : {}),
             stayed_nights: stayedAndRemaining.stayed,
             remaining_nights: stayedAndRemaining.remaining,
@@ -10417,6 +10509,12 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           : normalizeInspectionScope(
               arr.find((x) => String(x?.task_type || '').trim().toLowerCase() === 'checkin_clean')?.inspection_scope,
             )
+        const authoritativeSelfCompleteProgress = resolveAuthoritativeSelfCompleteManagerProgress({
+          rows: preferredPool,
+          businessIdentity,
+          inspectionMode,
+          isTurnoverCard,
+        })
         const executionSemantics = cleaningTaskExecutionSemantics({
           roleKind: executionRole,
           taskType: taskTypeOut || preferred?.task_type,
@@ -10457,15 +10555,16 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         const mergedStatusCandidates = [cleaningStatus, inspectionStatus]
           .filter((value) => String(value || '').trim())
           .sort((a: any, b: any) => rankStatus(a) - rankStatus(b))
-        const statusOut =
-          lockboxVideoConfirmsCurrentState
-            ? 'keys_hung'
-            : cleaningFinished && inspectionPending
-            ? 'to_inspect'
-            : mergedStatusCandidates[0]
-              || arr
-                  .map((x) => x.status)
-                  .sort((a: any, b: any) => rankStatus(a) - rankStatus(b))[0]
+        const statusOut = selfCompleteAwareManagerStatus({
+          authoritativeProgress: authoritativeSelfCompleteProgress,
+          lockboxVideoConfirmsCurrentState,
+          cleaningFinished,
+          inspectionPending,
+          mergedStatusCandidates,
+          fallbackStatuses: arr
+            .map((x) => x.status)
+            .sort((a: any, b: any) => rankStatus(a) - rankStatus(b)),
+        })
         const sortIndexCleaner = minPositiveNumber(arr.map((x) => x.sort_index_cleaner))
         const sortIndexInspector = minPositiveNumber(arr.map((x) => x.sort_index_inspector))
         const sortIndex = minPositiveNumber([sortIndexCleaner, sortIndexInspector, ...arr.map((x) => x.sort_index)])
@@ -10502,6 +10601,8 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           execution_state: projectionExecutionState,
           task_kind: hasKeyHandoverExecution
             ? 'execution'
+            : authoritativeSelfCompleteProgress
+              ? 'cleaning'
             : arr.some((x) => String(x?.task_kind || '') === 'inspection')
               ? 'inspection'
               : 'cleaning',
@@ -10525,6 +10626,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           cleaner_id: cleanerAssigneeId || null,
           inspector_id: inspectorAssigneeId || null,
           status: statusOut,
+          self_complete_progress: authoritativeSelfCompleteProgress,
           checked_out_at: checkedOutAtMerged || null,
           sort_index: sortIndex,
           sort_index_cleaner: sortIndexCleaner,
