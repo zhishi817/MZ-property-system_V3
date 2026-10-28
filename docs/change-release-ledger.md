@@ -55,15 +55,34 @@
 - Branch: `codex/mz075-089-eight-fixes-release`
 - Base: `origin/Dev@c0f56c9a2232193e4b0937cea7b1169976a80a91`; GitHub PR #426 base and current branch head `04e3b24042137430ebc58362a263d138f77b1338` were fetched through the connected GitHub API at `2026-10-28T05:43:48Z`.
 - Candidate patch SHA-256: `7f8fa2a345ccf0f248697bd878db642c54e8b77e0970941a79622cb8bc118b95`; exact staged `docs/feature-regression-registry.md` diff, excluding this ledger metadata.
-- Commit SHA: not committed.
+- Commit SHA: `533c85b69f09e38532b2cb565daa17d24aae28a1`.
 - Dependencies: paired Mobile branch `codex/mz075-089-eight-fixes-release@8b2f9d8383836cebc0deac8c1177aca7fbdcfb0e` supplies the referenced Mobile test file; no Mobile business-code change is included.
 - Required validation: `PASS for this exact local candidate / remote CI pending`; evidence: Feature Registry passed with 36 FRs / 293 mappings against the paired Mobile checkout, Root workflow-contract passed 9/9, ledger coverage and exact staged-scope audit passed, and `git diff --cached --check` passed. GitHub Fast Regression, Registry Audit and Root Quality Check must rerun after the authorized push; the prior deferred/skipped Full Regression is not counted as a pass.
 - Shared-hunk review: `not applicable`; evidence: the only non-ledger hunk splits one FR-004 registry row into two single-path rows and does not touch an existing business-code hunk.
 - Generated-file review: `PASS`; evidence: only the tracked registry file and this ledger entry are staged; no dependency tree, cache, build output, environment file, credential or generated artifact is included.
-- Technical state: `candidate`.
+- Technical state: `committed`; the connected GitHub plugin created the exact content commit with parent `04e3b24042137430ebc58362a263d138f77b1338` and reviewed tree `9a58859530ee4450f36222cc60c5a1d8eae44d0b`; the branch ref has not moved yet.
 - User authorization: `approved-for-push`; evidence: after being told that PR #426 required this registry-path correction and a push, the user replied “继续”. Authorization is limited to the same feature branch and excludes merge, auto-merge, deployment, OTA and production-data access or writes.
 - Independent review: `GO for commit`; P0=0, P1=0, P2=0. The reviewer recomputed candidate patch `7f8fa2a345ccf0f248697bd878db642c54e8b77e0970941a79622cb8bc118b95` and hunk `6cd077025e4a3dc438f13c0859d7b88bbd4d747b7c24ced4cd3349702b7d58a9`, confirmed the two-file staged boundary and paired Mobile dependency, and found no production, deployment, secret or generated-file risk.
-- Action conclusion: `GO for this exact content commit`; any push still requires the plugin-created exact committed range, a fresh non-force remote-head preflight and independent push review.
+- Action conclusion: `GO for this exact content commit`; the resulting SHA is bound above. Push remains covered by the separate full-range attempt below and requires its ledger receipt, fresh non-force remote-head preflight and independent push review.
+
+#### RA-20261028-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261025-004`, `CRL-20261027-001`, `CRL-20261027-002`, `CRL-20261027-003`, `CRL-20261028-001`
+- Selected CRL identities: `root/CRL-20261025-004`, `root/CRL-20261027-001`, `root/CRL-20261027-002`, `root/CRL-20261027-003`, `root/CRL-20261028-001`
+- Intended action: `push`
+- Branch: `codex/mz075-089-eight-fixes-release`
+- Base: `origin/Dev@c0f56c9a2232193e4b0937cea7b1169976a80a91`; GitHub PR #426 base and unchanged branch head `04e3b24042137430ebc58362a263d138f77b1338` were freshly fetched through the connected GitHub API at `2026-10-28T06:15:06Z`.
+- Candidate patch SHA-256: `5bda2b6f6fdb71d8d3bf892f826ec64398247836242222f14d7eb509a9f4ed58`; exact `origin/Dev...533c85b69f09e38532b2cb565daa17d24aae28a1` content diff excluding this ledger.
+- Commit SHA: `533c85b69f09e38532b2cb565daa17d24aae28a1`; parent `04e3b24042137430ebc58362a263d138f77b1338`, tree `9a58859530ee4450f36222cc60c5a1d8eae44d0b`; a ledger-only receipt commit is pending.
+- Dependencies: paired Mobile branch `codex/mz075-089-eight-fixes-release@8b2f9d8383836cebc0deac8c1177aca7fbdcfb0e`; Root must remain the first release, and no Mobile business-code change is part of this attempt.
+- Required validation: `PASS for the exact local candidate / post-push CI pending`; evidence: the previously reviewed four-CRL Root range is unchanged, the added FR-004 registry hunk passed Feature Registry with 36 FRs / 293 mappings, Root workflow contract 9/9, ledger coverage, exact staged-scope and diff checks. The new Fast Regression, Registry Audit and Root Quality Check must reach terminal success; a deferred/skipped Full Regression does not count as a pass.
+- Shared-hunk review: `PASS`; evidence: the prior four-CRL ownership and business hunks are unchanged, while the new registry hunk is exclusive to `root/CRL-20261028-001`.
+- Generated-file review: `PASS`; evidence: the new content commit changes only the tracked registry and ledger paths; no dependency tree, cache, build output, environment file, credential or generated artifact is included.
+- Technical state: `committed`; exact content SHA above, with a ledger-only receipt pending before the branch update.
+- User authorization: `approved-for-push`; evidence: the user first replied “继续” after the exact PR #426 CI-fix-and-push request, then explicitly replied “允许” after disclosure that the complete 267 KB registry and 3.53 MB ledger files would be uploaded to public `zhishi817/MZ-property-system_V3` solely on this feature branch. Merge, auto-merge, deployment, OTA and production-data operations remain excluded.
+- Independent review: `GO for commit` on the exact new hunk and content tree; independent push review is pending this receipt and exact committed range.
+- Action conclusion: `NOT VERIFIED for push` until the ledger-only receipt commit is created, the complete committed range and candidate fingerprint are independently reviewed, and the remote branch still matches expected SHA `04e3b24042137430ebc58362a263d138f77b1338` immediately before the non-force update.
 
 ### Risks / Release Notes
 
