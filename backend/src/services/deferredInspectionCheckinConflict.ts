@@ -254,11 +254,23 @@ function hasReliableDisplayRelation(
   )
 }
 
+function uniqueCheckinExecutorId(params: {
+  inspectorId: string | null
+  assigneeId: string | null
+}) {
+  const ids = Array.from(new Set([
+    text(params.inspectorId),
+    text(params.assigneeId),
+  ].filter(Boolean)))
+  return ids.length === 1 ? ids[0] : null
+}
+
 /**
  * Builds the effective same-property/date inspection arrangement used by the
- * App.  Display merging never infers a reassignment: the incoming check-in's
- * own assignment (including a real unassigned state) remains authoritative.
- * Submission conflicts remain stricter and continue to compare both plans.
+ * App. The incoming check-in's own assignment (including a real unassigned
+ * state) remains authoritative. A different executor replaces the old plan
+ * only when one check-in is uniquely and reliably related on the exact due
+ * date; ambiguous or merely same-property rows still fail closed.
  * Password-only work is intentionally not an inspection arrangement.
  */
 export function buildDeferredInspectionCheckinArrangements(
@@ -295,14 +307,27 @@ export function buildDeferredInspectionCheckinArrangements(
     const plannedInspectorId = text(deferred.inspector_id) || null
     const checkinInspectorId = text(checkin.inspector_id) || null
     const checkinAssigneeId = text(checkin.assignee_id) || null
+    const checkinExecutorId = uniqueCheckinExecutorId({
+      inspectorId: checkinInspectorId,
+      assigneeId: checkinAssigneeId,
+    })
+    const reliableExecutionTakeover = !!(
+      plannedInspectorId
+      && checkinExecutorId
+      && checkinExecutorId !== plannedInspectorId
+      && effectiveInspectionDate === plannedDueDate
+      && matchingCheckins.length === 1
+      && reliableSameDayCheckins.length === 1
+      && hasReliableDisplayRelation(deferred, checkin)
+    )
     const conflictReasons: string[] = []
     if (matchingCheckins.length > 1) conflictReasons.push('multiple_checkin_inspection_tasks')
     if (!plannedInspectorId) conflictReasons.push('deferred_inspector_missing')
     if (!checkinInspectorId && !checkinAssigneeId) conflictReasons.push('checkin_executor_missing')
-    if (plannedInspectorId && checkinInspectorId && checkinInspectorId !== plannedInspectorId) {
+    if (!reliableExecutionTakeover && plannedInspectorId && checkinInspectorId && checkinInspectorId !== plannedInspectorId) {
       conflictReasons.push('checkin_inspector_mismatch')
     }
-    if (plannedInspectorId && checkinAssigneeId && checkinAssigneeId !== plannedInspectorId) {
+    if (!reliableExecutionTakeover && plannedInspectorId && checkinAssigneeId && checkinAssigneeId !== plannedInspectorId) {
       conflictReasons.push('checkin_executor_mismatch')
     }
     if (checkinInspectorId && checkinAssigneeId && checkinInspectorId !== checkinAssigneeId) {
@@ -312,6 +337,7 @@ export function buildDeferredInspectionCheckinArrangements(
       plannedInspectorId
       && ![checkinInspectorId, checkinAssigneeId].filter(Boolean).includes(plannedInspectorId)
       && !conflictReasons.includes('checkin_executor_missing')
+      && !reliableExecutionTakeover
     ) {
       conflictReasons.push('planned_inspector_not_checkin_participant')
     }
@@ -398,6 +424,114 @@ export function deferredInspectionCheckinSubmissionGuard(
     canonical_action_task_id: redirectedArrangement?.checkin_task_id || null,
     conflicts,
   }
+}
+
+export function deferredInspectionEvidenceAccessContext(
+  rows: DeferredInspectionCheckinConflictInput[],
+  deferredTaskId: string,
+  userId: string,
+) {
+  const sourceId = text(deferredTaskId)
+  const viewerId = text(userId)
+  if (!sourceId || !viewerId) return null
+  const rowsById = new Map((rows || []).map((row) => [text(row.id), row]))
+  const matches = buildDeferredInspectionCheckinArrangements(rows || []).filter((arrangement) => {
+    if (arrangement.deferred_task_id !== sourceId) return false
+    if (!arrangement.display_merge_eligible || arrangement.conflict_reasons.length > 0) return false
+    if (arrangement.checkin_task_ids.length !== 1) return false
+    return uniqueCheckinExecutorId({
+      inspectorId: arrangement.checkin_inspector_id,
+      assigneeId: arrangement.checkin_assignee_id,
+    }) === viewerId
+  })
+  if (matches.length !== 1) return null
+  const arrangement = matches[0]
+  const deferredTask = rowsById.get(arrangement.deferred_task_id) || null
+  const actionTask = rowsById.get(arrangement.checkin_task_id) || null
+  if (!deferredTask || !actionTask) return null
+  return { arrangement, deferredTask, actionTask }
+}
+
+export async function loadDeferredInspectionEvidenceAccessContext(params: {
+  taskId: string
+  userId: string
+  client: any
+}) {
+  const taskId = text(params.taskId)
+  const userId = text(params.userId)
+  if (!taskId || !userId) return null
+  const targetResult = await params.client.query(
+    `SELECT
+       t.id::text AS id,
+       COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS property_id,
+       COALESCE(t.task_type, t.type, '') AS task_type,
+       COALESCE(t.task_date, t.date)::text AS task_date,
+       t.status,
+       t.execution_state,
+       t.inspection_mode,
+       t.inspection_scope,
+       t.inspection_due_date::text AS inspection_due_date
+     FROM cleaning_tasks t
+     LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+     LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+     WHERE t.id::text = $1::text
+     LIMIT 1`,
+    [taskId],
+  )
+  const target = targetResult?.rows?.[0] || null
+  const windowStart = taskDay(target || {})
+  const windowEnd = dayOnly(target?.inspection_due_date)
+  if (
+    !target
+    || !windowStart
+    || !windowEnd
+    || !text(target.property_id)
+    || !isOpenDeferredInspection(target)
+    || !['checkout_clean', 'checkout_cleaning'].includes(taskType(target))
+  ) return null
+
+  const rowsResult = await params.client.query(
+    `SELECT
+       t.id::text AS id,
+       COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS property_id,
+       COALESCE(t.task_type, t.type, '') AS task_type,
+       t.type,
+       COALESCE(t.task_date, t.date)::text AS task_date,
+       t.status,
+       t.execution_state,
+       t.inspection_mode,
+       t.inspection_scope,
+       t.inspection_due_date::text AS inspection_due_date,
+       t.inspection_replaced_by_checkin_task_id::text AS inspection_replaced_by_checkin_task_id,
+       t.linked_checkout_task_id::text AS linked_checkout_task_id,
+       t.order_id::text AS order_id,
+       o.status::text AS order_status,
+       o.checkin::text AS order_checkin,
+       o.checkout::text AS order_checkout,
+       t.checkin_time,
+       t.inspector_id::text AS inspector_id,
+       t.cleaner_id::text AS cleaner_id,
+       t.assignee_id::text AS assignee_id
+     FROM cleaning_tasks t
+     LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+     LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+     LEFT JOIN orders o ON o.id::text = t.order_id::text
+     WHERE COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = $1::text
+       AND (
+         (
+           lower(COALESCE(t.inspection_mode, '')) = 'deferred'
+           AND COALESCE(t.task_date, t.date)::date <= $3::date
+           AND t.inspection_due_date::date >= $2::date
+         )
+         OR (
+           lower(COALESCE(t.task_type, t.type, '')) = 'checkin_clean'
+           AND COALESCE(t.task_date, t.date)::date BETWEEN $2::date AND $3::date
+         )
+       )
+     ORDER BY t.id::text`,
+    [text(target.property_id), windowStart, windowEnd],
+  )
+  return deferredInspectionEvidenceAccessContext(rowsResult?.rows || [], taskId, userId)
 }
 
 export function findDeferredInspectionCheckinReplacements(rows: DeferredInspectionCheckinConflictInput[]): DeferredInspectionCheckinReplacement[] {
@@ -751,8 +885,12 @@ export async function loadDeferredInspectionCheckinSubmissionGuard(params: {
        t.inspection_mode,
        t.inspection_scope,
        t.inspection_due_date::text AS inspection_due_date,
+       t.inspection_replaced_by_checkin_task_id::text AS inspection_replaced_by_checkin_task_id,
+       t.linked_checkout_task_id::text AS linked_checkout_task_id,
        t.order_id::text AS order_id,
        o.status::text AS order_status,
+       o.checkin::text AS order_checkin,
+       o.checkout::text AS order_checkout,
        t.checkin_time,
        t.inspector_id::text AS inspector_id,
        t.assignee_id::text AS assignee_id
