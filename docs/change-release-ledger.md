@@ -73,17 +73,17 @@
 - Selected CRL identities: `root/CRL-20261025-004`, `root/CRL-20261027-001`, `root/CRL-20261027-002`, `root/CRL-20261027-003`, `root/CRL-20261028-001`
 - Intended action: `push`
 - Branch: `codex/mz075-089-eight-fixes-release`
-- Base: `origin/Dev@c0f56c9a2232193e4b0937cea7b1169976a80a91`; GitHub PR #426 base and unchanged branch head `04e3b24042137430ebc58362a263d138f77b1338` were freshly fetched through the connected GitHub API at `2026-10-28T06:15:06Z`.
+- Base: `origin/Dev@c0f56c9a2232193e4b0937cea7b1169976a80a91`; fetched at `2026-10-28T06:15:06Z` through the connected GitHub API together with unchanged PR #426 branch head `04e3b24042137430ebc58362a263d138f77b1338`.
 - Candidate patch SHA-256: `5bda2b6f6fdb71d8d3bf892f826ec64398247836242222f14d7eb509a9f4ed58`; exact `origin/Dev...533c85b69f09e38532b2cb565daa17d24aae28a1` content diff excluding this ledger.
 - Commit SHA: `533c85b69f09e38532b2cb565daa17d24aae28a1`; parent `04e3b24042137430ebc58362a263d138f77b1338`, tree `9a58859530ee4450f36222cc60c5a1d8eae44d0b`; this descendant ledger-only receipt binds that content SHA without changing the candidate fingerprint.
-- Dependencies: paired Mobile branch `codex/mz075-089-eight-fixes-release@8b2f9d8383836cebc0deac8c1177aca7fbdcfb0e`; Root must remain the first release, and no Mobile business-code change is part of this attempt.
+- Dependencies: `mobile/CRL-20261025-004@8b2f9d8383836cebc0deac8c1177aca7fbdcfb0e`.
 - Required validation: `PASS for the exact local candidate / post-push CI pending`; evidence: the previously reviewed four-CRL Root range is unchanged, the added FR-004 registry hunk passed Feature Registry with 36 FRs / 293 mappings, Root workflow contract 9/9, ledger coverage, exact staged-scope and diff checks. The new Fast Regression, Registry Audit and Root Quality Check must reach terminal success; a deferred/skipped Full Regression does not count as a pass.
 - Shared-hunk review: `PASS after integration reconciliation`; evidence: the prior business hunks are unchanged. The historical FR-004 registry addition owned by `root/CRL-20261025-004` and this correction owned by `root/CRL-20261028-001` coalesce into complete-range hunk `692710f9dd2492420af95edb565c494ebfef02b02a58d0414b13a1baf4080ea3`; both active scopes declare that shared integrated hunk while retaining the sequential fingerprints as history.
 - Generated-file review: `PASS`; evidence: the new content commit changes only the tracked registry and ledger paths; no dependency tree, cache, build output, environment file, credential or generated artifact is included.
-- Technical state: `committed`; exact content SHA above, followed only by this ledger-only receipt chain; the branch ref has not moved.
+- Technical state: `pushed`; exact content SHA above is reachable from PR #426 through only ledger-only receipt descendants; the PR remains open, draft and unmerged.
 - User authorization: `approved-for-push`; evidence: the user first replied “继续” after the exact PR #426 CI-fix-and-push request, then explicitly replied “允许” after disclosure that the complete 267 KB registry and 3.53 MB ledger files would be uploaded to public `zhishi817/MZ-property-system_V3` solely on this feature branch. Merge, auto-merge, deployment, OTA and production-data operations remain excluded.
-- Independent review: `GO for commit` on the exact new hunk and content tree; independent push review is pending this receipt and exact committed range.
-- Action conclusion: `NOT VERIFIED for push` until the ledger-only receipt commit is created, the complete committed range and candidate fingerprint are independently reviewed, and the remote branch still matches expected SHA `04e3b24042137430ebc58362a263d138f77b1338` immediately before the non-force update.
+- Independent review: `GO for expected-SHA non-force push`; P0=0, P1=0, P2=0. The reviewer verified the complete object chain, ledger-only receipt descendants, full patch fingerprint, 64/64 hunk ownership after integrated-range reconciliation, explicit public-upload authorization and unchanged expected remote head immediately before the update.
+- Action conclusion: `GO for the completed expected-SHA non-force push`; remote evidence: PR #426 feature branch advanced from `04e3b24042137430ebc58362a263d138f77b1338` to reviewed receipt `e9f8370c04e24994eb37079c6201fa005460cee6`, remained open/draft/unmerged, and post-push CI plus this strict report rerun remained required.
 
 ### Risks / Release Notes
 
