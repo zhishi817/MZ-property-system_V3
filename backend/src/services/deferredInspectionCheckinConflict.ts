@@ -78,6 +78,11 @@ export type DeferredInspectionConflictSourceLike = {
   checkin_task_ids?: unknown
 }
 
+export type DeferredInspectionReorderEntry = {
+  id: string
+  sort_index: number
+}
+
 function text(value: any) {
   return String(value || '').trim()
 }
@@ -437,7 +442,9 @@ export function deferredInspectionEvidenceAccessContext(
   const rowsById = new Map((rows || []).map((row) => [text(row.id), row]))
   const matches = buildDeferredInspectionCheckinArrangements(rows || []).filter((arrangement) => {
     if (arrangement.deferred_task_id !== sourceId) return false
-    if (!arrangement.display_merge_eligible || arrangement.conflict_reasons.length > 0) return false
+    const blockingConflictReasons = arrangement.conflict_reasons
+      .filter((reason) => reason !== 'deferred_inspector_missing')
+    if (!arrangement.display_merge_eligible || blockingConflictReasons.length > 0) return false
     if (arrangement.checkin_task_ids.length !== 1) return false
     return uniqueCheckinExecutorId({
       inspectorId: arrangement.checkin_inspector_id,
@@ -452,14 +459,67 @@ export function deferredInspectionEvidenceAccessContext(
   return { arrangement, deferredTask, actionTask }
 }
 
-export async function loadDeferredInspectionEvidenceAccessContext(params: {
-  taskId: string
+/**
+ * Reuses the exact display-merge relation for ordering only. Ordering is less
+ * powerful than an inspection submission: an unrelated same-property check-in
+ * may remain visible to the arrangement builder, but the selected reliable
+ * check-in must still be unique, belong to the current executor, occur on the
+ * submitted business date, and travel in the same batch with the same mark.
+ */
+export function deferredInspectionReorderAccessContext(params: {
+  rows: DeferredInspectionCheckinConflictInput[]
+  deferredTaskId: string
   userId: string
+  date: string
+  entries: DeferredInspectionReorderEntry[]
+}) {
+  const sourceId = text(params.deferredTaskId)
+  const viewerId = text(params.userId)
+  const reorderDate = dayOnly(params.date)
+  if (!sourceId || !viewerId || !reorderDate) return null
+
+  const entriesById = new Map<string, DeferredInspectionReorderEntry>()
+  for (const rawEntry of params.entries || []) {
+    const id = text(rawEntry?.id)
+    const sortIndex = Number(rawEntry?.sort_index)
+    if (!id || !Number.isInteger(sortIndex) || sortIndex < 1) continue
+    entriesById.set(id, { id, sort_index: sortIndex })
+  }
+  const deferredEntry = entriesById.get(sourceId)
+  if (!deferredEntry) return null
+
+  const arrangements = buildDeferredInspectionCheckinArrangements(params.rows || [])
+    .filter((arrangement) => (
+      arrangement.deferred_task_id === sourceId
+      && arrangement.display_merge_eligible === true
+      && dayOnly(arrangement.effective_inspection_date) === reorderDate
+    ))
+  if (arrangements.length !== 1) return null
+
+  const arrangement = arrangements[0]
+  const currentExecutorId = uniqueCheckinExecutorId({
+    inspectorId: arrangement.checkin_inspector_id,
+    assigneeId: arrangement.checkin_assignee_id,
+  })
+  if (currentExecutorId !== viewerId) return null
+
+  const checkinEntry = entriesById.get(arrangement.checkin_task_id)
+  if (!checkinEntry || checkinEntry.sort_index !== deferredEntry.sort_index) return null
+
+  const rowsById = new Map((params.rows || []).map((row) => [text(row.id), row]))
+  const deferredTask = rowsById.get(arrangement.deferred_task_id) || null
+  const actionTask = rowsById.get(arrangement.checkin_task_id) || null
+  if (!deferredTask || !actionTask) return null
+  return { arrangement, deferredTask, actionTask }
+}
+
+async function loadDeferredInspectionArrangementWindow(params: {
+  taskId: string
   client: any
+  lockRows?: boolean
 }) {
   const taskId = text(params.taskId)
-  const userId = text(params.userId)
-  if (!taskId || !userId) return null
+  if (!taskId) return null
   const targetResult = await params.client.query(
     `SELECT
        t.id::text AS id,
@@ -528,10 +588,52 @@ export async function loadDeferredInspectionEvidenceAccessContext(params: {
            AND COALESCE(t.task_date, t.date)::date BETWEEN $2::date AND $3::date
          )
        )
-     ORDER BY t.id::text`,
+     ORDER BY t.id::text
+     ${params.lockRows ? 'FOR UPDATE OF t' : ''}`,
     [text(target.property_id), windowStart, windowEnd],
   )
-  return deferredInspectionEvidenceAccessContext(rowsResult?.rows || [], taskId, userId)
+  return rowsResult?.rows || []
+}
+
+export async function loadDeferredInspectionEvidenceAccessContext(params: {
+  taskId: string
+  userId: string
+  client: any
+}) {
+  const taskId = text(params.taskId)
+  const userId = text(params.userId)
+  if (!taskId || !userId) return null
+  const rows = await loadDeferredInspectionArrangementWindow({
+    taskId,
+    client: params.client,
+  })
+  if (!rows) return null
+  return deferredInspectionEvidenceAccessContext(rows, taskId, userId)
+}
+
+export async function loadDeferredInspectionReorderAccessContext(params: {
+  taskId: string
+  userId: string
+  date: string
+  entries: DeferredInspectionReorderEntry[]
+  client: any
+}) {
+  const taskId = text(params.taskId)
+  const userId = text(params.userId)
+  if (!taskId || !userId || !dayOnly(params.date)) return null
+  const rows = await loadDeferredInspectionArrangementWindow({
+    taskId,
+    client: params.client,
+    lockRows: true,
+  })
+  if (!rows) return null
+  return deferredInspectionReorderAccessContext({
+    rows,
+    deferredTaskId: taskId,
+    userId,
+    date: params.date,
+    entries: params.entries,
+  })
 }
 
 export function findDeferredInspectionCheckinReplacements(rows: DeferredInspectionCheckinConflictInput[]): DeferredInspectionCheckinReplacement[] {

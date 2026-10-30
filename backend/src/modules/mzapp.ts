@@ -104,6 +104,7 @@ import {
   deferredInspectionConflictSourceIds,
   indexDeferredInspectionCheckinArrangements,
   loadDeferredInspectionEvidenceAccessContext,
+  loadDeferredInspectionReorderAccessContext,
   loadDeferredInspectionCheckinSubmissionGuard,
   mergeDeferredInspectionAwareActions,
   reconcileDeferredInspectionCheckinReplacement,
@@ -7160,6 +7161,45 @@ router.post('/work-tasks/mixed-reorder', requireR5TaskRuntimeSchema, async (req,
       }
 
       if (inspectorEntries.length) {
+        const inspectorEntryIds = Array.from(new Set(inspectorEntries.map((item) => item.id)))
+        const ownershipResult = await client.query(
+          `SELECT
+             t.id::text AS id,
+             COALESCE(t.task_type, t.type, '') AS task_type,
+             t.inspection_scope,
+             t.inspector_id::text AS inspector_id,
+             t.assignee_id::text AS assignee_id
+           FROM cleaning_tasks t
+           WHERE t.id::text = ANY($1::text[])`,
+          [inspectorEntryIds],
+        )
+        const ownershipById = new Map<string, any>(
+          (ownershipResult?.rows || []).map((row: any) => [String(row.id || ''), row]),
+        )
+        const deferredTakeoverIds: string[] = []
+        const takeoverCandidateIds = inspectorEntries
+          .filter((entry) => {
+            const row = ownershipById.get(entry.id)
+            if (!row) return true
+            if (String(row.inspector_id || '').trim() === userId) return false
+            return !(
+              String(row.task_type || '').trim().toLowerCase() === 'checkin_clean'
+              && String(row.assignee_id || '').trim() === userId
+              && String(row.inspection_scope || 'inspect_and_hang').trim().toLowerCase() !== 'password_only'
+            )
+          })
+          .map((entry) => entry.id)
+          .sort((left, right) => left.localeCompare(right))
+        for (const taskId of takeoverCandidateIds) {
+          const context = await loadDeferredInspectionReorderAccessContext({
+            taskId,
+            userId,
+            date,
+            entries: inspectorEntries,
+            client,
+          })
+          if (context) deferredTakeoverIds.push(taskId)
+        }
         const r = await client.query(
           `UPDATE cleaning_tasks AS t
            SET sort_index_inspector = v.sort_index, updated_at = now()
@@ -7181,8 +7221,9 @@ router.post('/work-tasks/mixed-reorder', requireR5TaskRuntimeSchema, async (req,
                  AND t.assignee_id::text = $3::text
                  AND lower(COALESCE(t.inspection_scope, 'inspect_and_hang')) <> 'password_only'
                )
+               OR t.id::text = ANY($4::text[])
              )`,
-          [JSON.stringify(inspectorEntries), date, userId],
+          [JSON.stringify(inspectorEntries), date, userId, deferredTakeoverIds],
         )
         const expected = new Set(inspectorEntries.map((item) => item.id)).size
         if ((r?.rowCount || 0) !== expected) {

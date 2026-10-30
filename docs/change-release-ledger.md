@@ -1,5 +1,272 @@
 # Change Release Ledger
 
+## CRL-20261030-001 — MZ-087 延期检查旧来源缺少历史检查员时的消耗品只读接管
+
+- **Status:** verified combined local candidate; full MZ-087/MZ-092 quality gate, exact staged audit and independent review passed; selected for local commit, not pushed, merged, or deployed
+- **Repository:** `root`
+- **Board item:** `MZ-087`
+- **Updated:** 2026-10-30 UTC
+- **Request:** 修复 Angela 在 MSQ3401E 的当天入住检查卡读取旧延期退房 source 消耗品时收到 `403`。旧 source 实际 `inspector_id=NULL`，但与当天入住 source 具有唯一可靠订单边界且当天 source 的唯一当前执行人是 Angela。只补只读证据接管，不扩大旧 source 写权限、普通检查权限或角色权限。
+- **Outcome:** 候选仅把 `deferred_inspector_missing` 视为消耗品只读接管中的非阻断历史缺口；仍要求 Root 可靠展示合卡、唯一有效入住来源、精确检查日、当前唯一执行人等于请求用户，并继续通过当前 action source 的 `submit_inspection` 职责校验。无可靠周转、多个可靠入住、人员不匹配、跨日、取消/替代、其他冲突继续 fail-closed；旧延期 source 的写入 guard 保持阻断。无数据库、生产数据、Mobile 或 OTA 改动。
+
+### Implementation
+
+- Previous behavior: MZ-087 已允许可靠延期检查改派后的当前执行人读取旧 source 消耗品，但 `deferredInspectionEvidenceAccessContext` 拒绝任何 `conflict_reasons`。当旧 source 没有历史检查员时，可靠合卡仍成立，却会仅产生 `deferred_inspector_missing`，导致接管上下文为空并返回 `403`。
+- New behavior: 消耗品只读接管只忽略唯一历史缺口 `deferred_inspector_missing`；任何其他 conflict reason 仍阻断。既有 `display_merge_eligible`、唯一 `checkin_task_ids`、唯一当前执行人和路由级当前 action source 职责校验保持不变。
+- Key decisions: 该例外只存在于 SELECT-only evidence context。`deferredInspectionCheckinSubmissionGuard` 不改，旧 source 写仍返回 arrangement conflict；不把空 usage 伪装成成功，授权后仍读取旧 source 的真实 usage/media。
+
+### Files / Areas
+
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — modified: evidence read context 仅从阻断原因中排除 `deferred_inspector_missing`。
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — modified: 增加 MSQ3401 生产形态的读取正向、其他人员/无可靠边界/多个可靠入住/跨日拒绝、旧 source 写仍阻断和 SELECT-only loader；同时保留 MZ-092 排序与原子性回归。
+- `docs/feature-regression-registry.md` — modified: FR-041 增加缺少历史检查员的延期 source 消耗品只读接管不变量与测试映射。
+- `docs/change-release-ledger.md` — modified: 登记本候选、验证、提交边界及与 MZ-092 的联合发布尝试。
+
+### Impact / Dependencies
+
+- API: no request/response shape change; existing `GET /mzapp/cleaning-tasks/:id/consumables` may return the real stored payload instead of `403` for this one reliable missing-history shape.
+- Database / migration / backfill / production data: none; loader remains SELECT-only.
+- Roles / permissions: no role or permission-code grant. Access stays bound to one reliable turnover and its unique current inspection executor.
+- Writes: no broadened write path. Old deferred source submissions remain blocked by the unchanged submission guard.
+- Mobile / OTA: none; published Mobile already requests exact projected source IDs and renders the existing response.
+- Dependencies: combined with `root/CRL-20261029-001` only for local validation and eventual branch delivery; neither unit requires the other to broaden permissions.
+
+### Validation
+
+- `npm run test:deferred-inspection-checkin-replacement --prefix backend` — PASS after implementation: NULL historical inspector + superseded extra candidate reads through to the unique current action source; wrong user, unrelated boundary, multiple reliable candidates and cross-date cases reject; stale-source write guard remains blocked; loader emits SELECT only.
+- `npm run test:cleaning-inspection-merge --prefix backend`, `npm run test:work-task-actions --prefix backend`, `npm run test:r5-task-runtime-schema --prefix backend`, and `npm run build --prefix backend` — PASS.
+- `npm run check:full` — PASS: Root registry/ledger and full backend suite, frontend lint/tests/build (56 files / 299 tests), and Mobile typecheck/lint/tests (82 suites / 723 tests) all completed. Existing frontend/mobile warnings are baseline non-blocking warnings outside the changed files.
+- Production diagnosis: Render returned `403` three times for old source `551d8e89-953f-4296-98fd-f26e23be30ae` while current source `03994668-f5d6-4b29-95b6-aab6f0b301e2` returned `200`. Neon read-only + rollback snapshot confirmed 29 real usage rows, a consumable room photo, `inspector_id=NULL`, one Angela-owned reliable current check-in and one `superseded` same-property candidate. No production request was replayed and no data was changed.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared with MZ-092 production-shaped regression follow-up; exact staged audit pending
+- **Untracked review:** PASS; temporary Mobile validation symlink removed and generated backend build drift excluded
+- Candidate patch SHA-256 (service + shared test + FR registry, ledger metadata excluded): `7f5deb301816926fd9a5b951a5ad6c0b80ea43f6232827227e4df7bc7656419d`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — full-file SHA-256: `0f5073034f67d67f6f8be77feb98db762e7091efbc02cc0e9e66d93433b83ba9`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — full-file SHA-256: `3bbdc4bd57832bbd06c4873438b7d4c31a5c7c114d84f5018ae2202861b8c5bd`
+- `docs/feature-regression-registry.md` — full-file SHA-256: `288461b3a4dd248c5174bf48ebcc8152ce6c9794ce4add2c40b89fd371d4762e`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `b7f1025138ce1e0b78bde4ca6021fa767cdbcf1ae3bdb7ea67df045c6c037faa`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `c0d6c792c1eafb02415fffe8b7b96ee75377f66c5d27b70747408afcace74ad0`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `dada4ab5f07a23157a0ed15395ed38a5eefe0f3dd7aae021ac0597ace37738b2`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `e15ce0c6dab481f51836ee5704fd71d20177cd290b4abdfe09f0c15be1e61ec1`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `fad18fe6ad7b406619c5a5268de8554b3601cab8353e777f59a5d76b09869093`
+- `backend/src/modules/mzapp.ts` — SHA-256: `00696d33ea0ef31196f32b34850c76fcbf0be097a3ced4f617b8124d7ba36fd5`
+- `backend/src/modules/mzapp.ts` — SHA-256: `636600da40996feba9be9f01dc99b7cc68e95811bea487b0c4af34959e72a5e5`
+- `backend/src/modules/mzapp.ts` — SHA-256: `a43460e9d667398db50804c7c07fb18de0a810ce1e41c7d401200b3e1c98f343`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d3c9faa8f885a3ea9cc5a527c0c690a564ff1a5a9969f78af0e459cd6d44cc49`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `07c4a460751c9ce3a167861e9b92dd24d949595580c5d4e9eab9f6921b167cce`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `0caf9eb0cd2e5b1119311e35ad07d4eb2040dba3c88d58ac3fad838d6f8e5e41`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `5ba8cc2fbcbd929a21686737e1bf5ed9bd69c11911d0122f2d9283100b4b9ecf`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `5c8514b23123200167cefe2407df8d558ae312e742b5824d706bc89820b0c7ca`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `92c10a51b2ee43379fc28120b9fe3f34c53af2e80774193bf22728c159965996`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `ad5bd1dc4dfa1f9ce47c7562fe5fd0de1154053e7a197f340f84e6824092b96e`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `bd6f30ccec8c9bf96abfa98c5ce6d0638e3f58ce762b5abd94835788e4a8e813`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `c3d8883217a213f0b4cde478724f199a91dfd47edc72503368df11be28b31e40`
+- `docs/feature-regression-registry.md` — SHA-256: `2eda11ebc23600d76c546673dbe86ac6c60b2465ca9eb548e0707c02b99bf195`
+- `docs/feature-regression-registry.md` — SHA-256: `36c6bc14356552b477ea0c6e7985c4a4c474d59eff212dbcc0616ebd491f83d6`
+- `docs/feature-regression-registry.md` — SHA-256: `6b5c1075c103cd2c0579d13ef653453b5c9c3614d7115f5612bc4deb334df1b4`
+- `docs/feature-regression-registry.md` — SHA-256: `a4cccd44da3cc90113209239bfbff74251d102271e6792e051bd88f15b68f855`
+- `docs/feature-regression-registry.md` — SHA-256: `bcda4d1cdfcc8c64cb25ccd5fcf2bb03d199d1b4a4c5d6891e09799119c09cd6`
+- `docs/feature-regression-registry.md` — SHA-256: `d282d293f653d6e7adfa501c460b94417e0360ec1d970b1b525d52d3c39bf13b`
+
+### Release Attempts
+
+#### RA-20261030-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261030-001`, `CRL-20261029-001`
+- Selected CRL identities: `root/CRL-20261030-001`, `root/CRL-20261029-001`
+- Intended action: `commit`
+- Branch: `codex/mz092-deferred-reorder`
+- Base: local MZ-092 receipt head `62e3d65077bb32e9fdc038f4224eb95139c68004`; remote integration base remains `origin/Dev@4cb6c4946b6ac6a470d4ad705ccae6700c7c06d9`
+- Candidate patch SHA-256: `7f5deb301816926fd9a5b951a5ad6c0b80ea43f6232827227e4df7bc7656419d`; service + shared test + FR registry diff against `62e3d65077bb32e9fdc038f4224eb95139c68004`, ledger metadata excluded
+- Commit SHA: `7a98c6075bb46946b3373aa82cfd3d1f8a7031db`; exact reviewed combined content commit, with the final audit head supplied by this later ledger-only receipt commit
+- Dependencies: none
+- Required validation: PASS; focused MZ-087/MZ-092 regression, related merge/actions/schema tests, backend build and combined `npm run check:full`
+- Shared-hunk review: PASS; 11 non-ledger hunks exactly match the two selected CRLs, and the shared production-shape test hunk is intentionally selected by both
+- Generated-file review: PASS; temporary Mobile validation symlink removed and generated backend build drift excluded
+- Technical state: committed locally
+- User authorization: selected-for-commit; evidence: user approved the MZ-092 test/commit/push/PR-to-Dev workflow and separately replied “要” to repairing and testing MZ-087 together with MZ-092. A new exact HEAD confirmation is still required before push because this combined candidate supersedes `62e3d650`.
+- Independent review: GO for commit on exact fingerprint `7f5deb301816926fd9a5b951a5ad6c0b80ea43f6232827227e4df7bc7656419d`; P0=0 / P1=0 / accepted P2=1 (pre-existing MZ-092 concurrent relation-window insertion/order-boundary residual). Reviewer independently matched four staged files, 11 non-ledger hunks, full-file hashes, registry metadata and absence of secrets/generated/dependency/migration/production-write scope.
+- Action conclusion: GO completed; combined content commit `7a98c6075bb46946b3373aa82cfd3d1f8a7031db` was created locally after exact audit/review. No push, PR, merge, deployment, OTA or production write has occurred; a new exact final HEAD confirmation remains required before push.
+
+#### RA-20261030-004
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261030-001`, `CRL-20261029-001`
+- Selected CRL identities: `root/CRL-20261030-001`, `root/CRL-20261029-001`
+- Intended action: `commit`
+- Branch: `codex/mz092-deferred-reorder-reviewed`
+- Base: `origin/Dev@4cb6c4946b6ac6a470d4ad705ccae6700c7c06d9`; fetched at `2026-10-30T03:17:29Z` by read-only `git fetch origin Dev`, and verified as the exact merge-base and ancestor of this reviewed branch
+- Candidate patch SHA-256: `09593b46ed9d69ca025f87c32dc691b595fb05dc47fa764c18c5a5245b2f40e6`; exact five-file `origin/Dev...candidate` range with ledger metadata excluded
+- Commit SHA: `e8fa7247a005cc17f9aead228ea53a50a9bf2c6f`; exact reviewed single-content commit from the freshly fetched Dev base
+- Dependencies: none
+- Required validation: PASS; focused MZ-087/MZ-092 regressions, related merge/actions/schema tests, backend build, combined `npm run check:full`, registry 37 FR / 295 mappings, ledger/workflow audits and diff hygiene all passed
+- Shared-hunk review: PASS; the reviewed integrated candidate is exactly five selected files / 23 non-ledger hunks, jointly owned by MZ-087 and MZ-092, with no unselected behavior hunk
+- Generated-file review: PASS; no generated, dependency, migration, environment or build-output file is present in the exact range
+- Technical state: committed locally
+- User authorization: selected-for-commit; evidence: the user approved test/commit/push/PR-to-Dev for MZ-092 and separately approved repairing/testing MZ-087 together. This authorizes the exact locally reviewed combined content commit; a later push remains separately gated by its exact final HEAD because the earlier approval named superseded SHA `62e3d65077bb32e9fdc038f4224eb95139c68004`.
+- Independent review: GO for commit on exact fingerprint `09593b46ed9d69ca025f87c32dc691b595fb05dc47fa764c18c5a5245b2f40e6`; P0=0 / P1=0 / accepted P2=1 (the already documented MZ-092 concurrent relation-window insertion/order-boundary residual). Reviewer independently confirmed the three business/test files are byte-identical to the previously reviewed and fully tested tree, the five-file / 23-hunk scope is exact, base and merge-base both equal freshly fetched `origin/Dev@4cb6c4946b6ac6a470d4ad705ccae6700c7c06d9`, and there is no secret/generated/dependency/migration/production-write expansion.
+- Action conclusion: GO completed; exact single-content commit `e8fa7247a005cc17f9aead228ea53a50a9bf2c6f` was created locally. Push remains STOP pending the final receipt range report and new final-HEAD authorization; no push, PR, merge, deployment, OTA or production write has occurred.
+
+#### RA-20261030-005
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261030-001`, `CRL-20261029-001`
+- Selected CRL identities: `root/CRL-20261030-001`, `root/CRL-20261029-001`
+- Intended action: `push`
+- Branch: `codex/mz092-deferred-reorder-reviewed`
+- Base: `origin/Dev@4cb6c4946b6ac6a470d4ad705ccae6700c7c06d9`; fetched at `2026-10-30T03:17:29Z` by read-only `git fetch origin Dev`, and verified as the exact merge-base and ancestor of content commit `e8fa7247a005cc17f9aead228ea53a50a9bf2c6f`
+- Candidate patch SHA-256: `09593b46ed9d69ca025f87c32dc691b595fb05dc47fa764c18c5a5245b2f40e6`; exact five-file `origin/Dev...e8fa7247a005cc17f9aead228ea53a50a9bf2c6f` range with ledger metadata excluded
+- Commit SHA: `e8fa7247a005cc17f9aead228ea53a50a9bf2c6f`; exact reviewed non-ledger content commit, followed only by this ledger-only release receipt
+- Dependencies: none
+- Required validation: PASS; focused MZ-087/MZ-092 regressions, related merge/actions/schema tests, backend build, combined `npm run check:full`, registry 37 FR / 295 mappings, ledger/workflow audits and diff hygiene all passed
+- Shared-hunk review: PASS; the exact integrated range is five selected files / 23 non-ledger hunks, jointly owned by MZ-087 and MZ-092, with no unselected behavior hunk
+- Generated-file review: PASS; no generated, dependency, migration, environment or build-output file is present in the exact range
+- Technical state: committed locally; feature branch has no remote-tracking ref and no push has occurred
+- User authorization: not-selected; awaiting a new exact final receipt HEAD confirmation because the earlier approval named superseded SHA `62e3d65077bb32e9fdc038f4224eb95139c68004`
+- Independent review: GO for this ledger-only receipt commit / NO-GO for push; reviewer independently verified actual content commit `e8fa7247a005cc17f9aead228ea53a50a9bf2c6f`, parent and merge-base `origin/Dev@4cb6c4946b6ac6a470d4ad705ccae6700c7c06d9`, one-commit / five-file range, fingerprint `09593b46ed9d69ca025f87c32dc691b595fb05dc47fa764c18c5a5245b2f40e6`, clean diff, absent upstream and absent remote reviewed branch. P0=0 / P1=0 / accepted P2=1 for the already documented concurrency residual.
+- Action conclusion: STOP before push; independent receipt review is complete, but the exact final range report and a new exact-HEAD authorization remain required. No push, PR, merge, deployment, OTA or production write has occurred.
+
+### Risks / Release Notes
+
+- Main permission risk is accidentally treating missing historical ownership as sufficient by itself. The candidate does not do so: reliable relation, unique active check-in, exact date, unique current executor and current action-source duty remain mandatory, with explicit negative tests.
+- Read-only scope: the exception does not enter submission/action-source guards and cannot write old evidence, task fields, media or order state.
+- Rollback: revert the evidence-context conflict filter and its tests/registry/ledger entries; no data rollback is needed.
+- Sensitive-information review: no guest details, credentials, media URLs, tokens, database URLs or production exports may be committed.
+
+## CRL-20261029-001 — MZ-092 延期检查接管后的合卡排序授权一致性
+
+- **Status:** verified local release candidate; implementation committed locally, production-shaped regression follow-up passed combined exact audit/review with MZ-087 and is selected for local commit; not pushed, merged, or deployed
+- **Repository:** `root`
+- **Board item:** `MZ-092`
+- **Updated:** 2026-10-30 UTC
+- **Request:** 修复 Mobile 检查人员在排序可靠延期检查 + 当天入住合卡时收到 `403` 的问题。列表已经把当天入住任务的当前执行人视为合卡执行人，排序保存必须沿用同一可靠关联；不得扩大普通检查权限、放行无关任务或产生部分写入。
+- **Outcome:** 已形成通过本地定向回归、后端编译和完整质量门的 Root 发布候选：只有 Root 已认定可可靠展示合卡、当前入住检查执行人与请求用户一致、底层延期 source 与当前入住 source 同批且排序号一致、排序日期等于实际检查日时，旧延期 source 才可随合卡保存顺序。无关、歧义、跨日、终态、缺少配对 source 或人员不一致继续拒绝，整批继续原子回滚。追加的生产形态回归明确覆盖旧延期 source `inspector_id=NULL`、仅出现 `deferred_inspector_missing` 且另一个同房源 check-in 已 `superseded` 的 MSQ3401 形态；可靠当前来源仍可排序，无可靠关系的活跃来源继续拒绝。该证据只证明 source fixed / local regression passed；尚未证明 Dev 合并、后端部署或 Angela 真机验证。
+
+### Implementation
+
+- Previous behavior: `/mzapp/work-tasks` 可按当天入住任务的当前执行人投影可靠延期合卡，并将旧延期 checkout 与当前 check-in 都放入 `active_source_ids`；`POST /mzapp/work-tasks/mixed-reorder` 却只按每条原始任务的 `inspector_id` / 当前 check-in `assignee_id` 校验。MSQ3401 的旧延期 source 实际没有历史检查员（`inspector_id=NULL`），因此不属于 Angela 并导致整批 `403`；它不是“仍归另一位原检查员”。
+- New behavior: `mixed-reorder` 在原有本人任务授权之外，对不属于当前检查人的延期 source 逐条复用既有可靠展示合卡关系。只有延期 source 与当前 check-in source 同批、同排序号、实际检查日等于提交日期且当前 check-in 唯一执行人等于请求用户时，才把该延期 source 加入本次 UPDATE 的最小白名单；最终 UPDATE 行数不完整仍抛出 `403` 并回滚整个混合批次。
+- Key decisions: 复用既有延期检查可靠关联与当前执行人语义；锁定关系窗口中现存的 `cleaning_tasks` 行并按 source ID 稳定加锁；只授权同一合卡中准确配对、同排序号的旧延期 source，不新增角色权限、不改变任务内容或检查动作授权。`password_only` 保持排除，已按用户最新要求移至后续 Mobile/OTA 看板项，本 CRL 不实施。
+
+### Files / Areas
+
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — modified: 增加可靠展示合卡的纯排序授权上下文，以及在调用方事务中稳定锁定现存关系窗口行的加载器。
+- `backend/src/modules/mzapp.ts` — modified: `mixed-reorder` 在原任务归属校验之外，仅接纳已验证的延期合卡旧 source；仍用原 UPDATE 行数守卫整批回滚。
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — modified: 增加当前执行人接管、旧延期 source `inspector_id=NULL` + `deferred_inspector_missing` + 另一同房源候选已 `superseded` 的生产形态、他人/无关/歧义/跨日/终态/缺配对/不同排序号/`password_only` 拒绝、多个 check-in、多个延期竞争、只写排序字段、稳定行锁和单事务源码契约测试。
+- `docs/feature-regression-registry.md` — modified: 新增 FR-042，登记延期合卡展示与排序授权一致的不变量及 sufficient 测试映射。
+- `docs/change-release-ledger.md` — modified: 登记本地候选、实际验证、残余风险和发布边界。
+
+### Impact / Dependencies
+
+- API: 保持 `POST /mzapp/work-tasks/mixed-reorder` 请求与响应结构；仅收窄地补齐可靠延期合卡的旧 source 排序授权。
+- Database / migration / backfill / production data: none.
+- Roles / permissions: 不新增角色或权限码；只允许当前可靠入住检查执行人保存同一合卡的顺序。
+- Mobile / OTA: none for this CRL; published Mobile 已提交合卡 `active_source_ids`。`password_only` 排序已按用户最新要求移出本次，作为后续 Mobile 更新项处理。
+- Dependencies: preserves `root/CRL-20261024-002`, `root/CRL-20261027-001`, FR-039 and paired Mobile MZ-075 contracts.
+
+### Validation
+
+- `npm ci --prefix backend` — PASS: installed the exact backend lockfile dependency graph; no package or lockfile changed. Existing audit result: 46 vulnerabilities (3 low / 24 moderate / 17 high / 2 critical); no `npm audit fix` or dependency upgrade was performed in this business-rule release.
+- `npm run test:deferred-inspection-checkin-replacement --prefix backend` — PASS: reliable takeover, exact paired source and fail-closed cases returned `ok`.
+- Production-shaped NULL-inspector rerun of `npm run test:deferred-inspection-checkin-replacement --prefix backend` — PASS: the arrangement contains only `deferred_inspector_missing`, remains display-merge eligible, accepts Angela for the unique reliable paired source with a superseded extra candidate, and rejects the same NULL-inspector source when paired only with an unrelated active check-in.
+- `npm run test:cleaning-inspection-merge --prefix backend` — PASS: related merged-card projection regression passed.
+- `npm run test:work-task-actions --prefix backend` — PASS.
+- `npm run test:r5-task-runtime-schema --prefix backend` — PASS.
+- `npm run build --prefix backend` — PASS: TypeScript compilation succeeded; generated tracked `backend/dist/modules/cleaning.js` drift was produced by the baseline build and removed from the candidate.
+- `npm run check:full` — PASS: Dev preview guards, ledger/registry, full backend suite, frontend lint/tests/build (56 files / 299 tests), and Mobile typecheck/lint/tests (82 suites / 723 tests) completed. Existing frontend/mobile lint and React `act(...)` warnings remain non-blocking; no changed file owns those warnings.
+- `python3 scripts/audit_feature_regression_registry.py` — PASS: 37 FRs / 295 mappings; FR-041 and FR-042 mappings are structurally valid and `sufficient`.
+- `python3 scripts/audit_change_release_ledger.py` — PASS: five changed files recorded; coverage PASS.
+- `python3 scripts/tests/test_root_quality_workflow_contract.py` — PASS: 9 tests.
+- `python3 scripts/tests/test_audit_change_release_ledger.py` — PASS: 41 tests.
+- `git diff --check` — PASS.
+- Sensitive-diff pattern review — PASS: no credential, token, private-key, database-URL or `.env` content found in the candidate diff.
+- Final combined independent read-only review — **GO for commit** on exact fingerprint `7f5deb301816926fd9a5b951a5ad6c0b80ea43f6232827227e4df7bc7656419d`; P0=0 / P1=0 / accepted P2=1 for the pre-existing concurrency boundary described below. The reviewer independently matched four staged files, 11 non-ledger hunks and all three current full-file hashes.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none after removing the temporary ignored/development test checkout link and generated build drift
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `b7f1025138ce1e0b78bde4ca6021fa767cdbcf1ae3bdb7ea67df045c6c037faa`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `c0d6c792c1eafb02415fffe8b7b96ee75377f66c5d27b70747408afcace74ad0`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `dada4ab5f07a23157a0ed15395ed38a5eefe0f3dd7aae021ac0597ace37738b2`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `e15ce0c6dab481f51836ee5704fd71d20177cd290b4abdfe09f0c15be1e61ec1`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — SHA-256: `fad18fe6ad7b406619c5a5268de8554b3601cab8353e777f59a5d76b09869093`
+- `backend/src/modules/mzapp.ts` — SHA-256: `00696d33ea0ef31196f32b34850c76fcbf0be097a3ced4f617b8124d7ba36fd5`
+- `backend/src/modules/mzapp.ts` — SHA-256: `636600da40996feba9be9f01dc99b7cc68e95811bea487b0c4af34959e72a5e5`
+- `backend/src/modules/mzapp.ts` — SHA-256: `a43460e9d667398db50804c7c07fb18de0a810ce1e41c7d401200b3e1c98f343`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d3c9faa8f885a3ea9cc5a527c0c690a564ff1a5a9969f78af0e459cd6d44cc49`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `07c4a460751c9ce3a167861e9b92dd24d949595580c5d4e9eab9f6921b167cce`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `0caf9eb0cd2e5b1119311e35ad07d4eb2040dba3c88d58ac3fad838d6f8e5e41`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `5ba8cc2fbcbd929a21686737e1bf5ed9bd69c11911d0122f2d9283100b4b9ecf`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `5c8514b23123200167cefe2407df8d558ae312e742b5824d706bc89820b0c7ca`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `92c10a51b2ee43379fc28120b9fe3f34c53af2e80774193bf22728c159965996`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `ad5bd1dc4dfa1f9ce47c7562fe5fd0de1154053e7a197f340f84e6824092b96e`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `bd6f30ccec8c9bf96abfa98c5ce6d0638e3f58ce762b5abd94835788e4a8e813`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — SHA-256: `c3d8883217a213f0b4cde478724f199a91dfd47edc72503368df11be28b31e40`
+- `docs/feature-regression-registry.md` — SHA-256: `2eda11ebc23600d76c546673dbe86ac6c60b2465ca9eb548e0707c02b99bf195`
+- `docs/feature-regression-registry.md` — SHA-256: `36c6bc14356552b477ea0c6e7985c4a4c474d59eff212dbcc0616ebd491f83d6`
+- `docs/feature-regression-registry.md` — SHA-256: `6b5c1075c103cd2c0579d13ef653453b5c9c3614d7115f5612bc4deb334df1b4`
+- `docs/feature-regression-registry.md` — SHA-256: `a4cccd44da3cc90113209239bfbff74251d102271e6792e051bd88f15b68f855`
+- `docs/feature-regression-registry.md` — SHA-256: `bcda4d1cdfcc8c64cb25ccd5fcf2bb03d199d1b4a4c5d6891e09799119c09cd6`
+- `docs/feature-regression-registry.md` — SHA-256: `d282d293f653d6e7adfa501c460b94417e0360ec1d970b1b525d52d3c39bf13b`
+- Combined RA-20261030-003 candidate patch SHA-256 (service + shared test + registry, ledger metadata excluded): `7f5deb301816926fd9a5b951a5ad6c0b80ea43f6232827227e4df7bc7656419d`
+- `backend/src/services/deferredInspectionCheckinConflict.ts` — combined full-file fingerprint: `0f5073034f67d67f6f8be77feb98db762e7091efbc02cc0e9e66d93433b83ba9`
+- `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` — combined full-file fingerprint: `3bbdc4bd57832bbd06c4873438b7d4c31a5c7c114d84f5018ae2202861b8c5bd`
+- `docs/feature-regression-registry.md` — combined full-file fingerprint: `288461b3a4dd248c5174bf48ebcc8152ce6c9794ce4add2c40b89fd371d4762e`
+
+### Release Attempts
+
+#### RA-20261030-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261029-001`
+- Selected CRL identities: `root/CRL-20261029-001`
+- Intended action: `commit`
+- Branch: `codex/mz092-deferred-reorder`
+- Base: `origin/Dev@4cb6c4946b6ac6a470d4ad705ccae6700c7c06d9`; fetched at `2026-10-30T02:25:47Z`
+- Candidate patch SHA-256: `170270dc9145cd8b473267a9e20c927f33c492b44fd21da457a30b19c93ce8fc`
+- Commit SHA: `87d927345d373cd4e8a13f03188e240734a459d0`; audit head is supplied by the exact range report
+- Dependencies: none
+- Required validation: PASS; evidence: targeted MZ-092 test, related merge/actions/schema tests, backend build and `npm run check:full`
+- Shared-hunk review: PASS; pre-commit audit matched all 17 non-ledger hunks, and `docs/feature-regression-registry.md` adds only FR-042
+- Generated-file review: PASS; build-created `backend/dist/modules/cleaning.js` drift was removed and is excluded
+- Technical state: committed
+- User authorization: selected-for-commit; evidence: user explicitly requested “测试 提交推送 合并pr” on 2026-10-30
+- Independent review: GO for commit; exact staged candidate、17 non-ledger hunks and `170270dc9145cd8b473267a9e20c927f33c492b44fd21da457a30b19c93ce8fc` independently matched; P0=0 / P1=0 / accepted P2=2 (known concurrency boundary and corrected documentation wording)
+- Action conclusion: GO; commit completed as `87d927345d373cd4e8a13f03188e240734a459d0`. Push remains separately gated by the exact committed-range audit and post-commit authorization contract; this does not prove push, PR, merge, deployment or production/device verification.
+
+#### RA-20261030-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261029-001`
+- Selected CRL identities: `root/CRL-20261029-001`
+- Intended action: `commit`
+- Branch: `codex/mz092-deferred-reorder`
+- Base: local MZ-092 receipt head `62e3d65077bb32e9fdc038f4224eb95139c68004`; remote integration base remains `origin/Dev@4cb6c4946b6ac6a470d4ad705ccae6700c7c06d9`
+- Candidate patch SHA-256: `7e4e19edca63fa9a9e7a34d517bc2569e1bd0f0f9633caac71b39c930abf1a1d`; exact test + registry diff, excluding this ledger metadata
+- Commit SHA: pending post-commit receipt
+- Dependencies: none
+- Required validation: focused production-shaped regression PASS; this standalone attempt was superseded before commit by combined RA-20261030-003
+- Shared-hunk review: not completed for this superseded standalone attempt; the combined candidate owns the final exact audit
+- Generated-file review: PASS; no generated or dependency file is selected
+- Technical state: superseded before commit
+- User authorization: selected-for-commit; evidence: the user previously requested “测试 提交推送 合并pr”, and the parent explicitly retained this production-shaped MZ-092 regression inside the approved test-fix scope while withholding push pending a new exact-SHA confirmation
+- Independent review: superseded before review; RA-20261030-003 carries the final combined review
+- Action conclusion: STOP / superseded before commit; no commit, push, PR, merge, deployment, OTA or production write occurred under this attempt
+
+### Risks / Release Notes
+
+- Main functional risk is accidentally treating a same-property task as the paired check-in. The candidate mitigates this by using the existing reliable display relation and requiring both exact source IDs with the same submitted order; executable positive and fail-closed regression cases passed.
+- Concurrency residual: existing arrangement rows are locked, but a new same-property check-in or concurrent order-boundary update is not fully serialized with this route. The write is limited to `sort_index_inspector` and any row-count mismatch rolls back the whole batch. Strict elimination would require a wider transaction/locking design and a concurrency integration test, which are outside the approved narrow repair unless separately accepted.
+- Rollback: revert this CRL's service, route, test and registry hunks; no data rollback or migration is required.
+- Sensitive-information review: no credentials, tokens, `.env` values, production payloads, private media, database URLs or guest details may be recorded.
+- Git state: implementation is committed locally; the production-shaped regression follow-up is selected into combined RA-20261030-003 with MZ-087 but is not yet committed, pushed or deployed.
+
 ## CRL-20261028-001 — FR-004 多测试路径登记拆分
 
 - **Status:** verified local candidate; registry, workflow-contract, ledger, exact staged-scope and independent commit review passed; authorized same-branch push pending committed-range review
