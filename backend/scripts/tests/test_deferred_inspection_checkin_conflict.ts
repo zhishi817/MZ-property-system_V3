@@ -7,6 +7,7 @@ import {
   deferredInspectionConflictSourceIds,
   deferredInspectionCheckinSubmissionGuard,
   deferredInspectionEvidenceAccessContext,
+  deferredInspectionReorderAccessContext,
   deferredInspectionCheckinConflictEventId,
   findStoredDeferredInspectionCheckinReplacement,
   findDeferredInspectionCheckinReplacements,
@@ -15,6 +16,7 @@ import {
   isDeferredInspectionCheckinConflictRelevantChange,
   loadDeferredInspectionCheckinSubmissionGuard,
   loadDeferredInspectionEvidenceAccessContext,
+  loadDeferredInspectionReorderAccessContext,
   mergeDeferredInspectionAwareActions,
 } from '../../src/services/deferredInspectionCheckinConflict'
 import { getAppNotificationPolicyCatalogMeta } from '../../src/services/appNotificationPolicies'
@@ -89,6 +91,15 @@ async function run() {
   )
   assert.match(consumablesReadRoute, /loadDeferredInspectionEvidenceAccessContext\(\{/)
   assert.match(consumablesReadRoute, /canSubmitMzappInspection\(user, deferredContext\.actionTask, userId, pgPool\)/)
+  const mixedReorderRoute = mzapp.slice(
+    mzapp.indexOf("router.post('/work-tasks/mixed-reorder'"),
+    mzapp.indexOf('const workTaskPhotosSchema'),
+  )
+  assert.strictEqual((mixedReorderRoute.match(/loadDeferredInspectionReorderAccessContext\(\{/g) || []).length, 1)
+  assert.match(mixedReorderRoute, /const takeoverCandidateIds = inspectorEntries[\s\S]*?\.sort\(\(left, right\) => left\.localeCompare\(right\)\)/)
+  assert.match(mixedReorderRoute, /OR t\.id::text = ANY\(\$4::text\[\]\)/)
+  assert.match(mixedReorderRoute, /SET sort_index_inspector = v\.sort_index, updated_at = now\(\)/, 'the repair must remain an ordering-only write')
+  assert.match(mixedReorderRoute, /client\.query\('BEGIN'\)[\s\S]*?loadDeferredInspectionReorderAccessContext[\s\S]*?UPDATE cleaning_tasks AS t[\s\S]*?rowCount[\s\S]*?client\.query\('ROLLBACK'\)/, 'takeover checks and every mixed reorder write must remain in one rollback-capable transaction')
   const conflicts = findDeferredInspectionCheckinConflicts([
     {
       id: 'deferred-a',
@@ -499,6 +510,176 @@ async function run() {
     },
     'the former planned inspector cannot keep writing through the old checkout source',
   )
+  const msq3401Rows = [
+    {
+      ...msq4206Rows[0],
+      id: 'msq3401-deferred',
+      property_id: 'msq3401',
+      order_id: 'msq3401-checkout-order',
+      order_checkout: '2026-10-29',
+      task_date: '2026-10-29',
+      inspection_due_date: '2026-10-30',
+    },
+    {
+      ...msq4206Rows[1],
+      id: 'msq3401-checkin',
+      property_id: 'msq3401',
+      order_id: 'msq3401-checkin-order',
+      order_checkin: '2026-10-30',
+      task_date: '2026-10-30',
+    },
+    {
+      id: 'msq3401-unrelated-checkin',
+      property_id: 'msq3401',
+      task_type: 'checkin_clean',
+      task_date: '2026-10-30',
+      inspection_scope: 'inspect_and_hang',
+      status: 'pending',
+      execution_state: 'active',
+    },
+  ]
+  const msq3401Entries = [
+    { id: 'msq3401-deferred', sort_index: 4 },
+    { id: 'msq3401-checkin', sort_index: 4 },
+  ]
+  const msq3401ReorderContext = deferredInspectionReorderAccessContext({
+    rows: msq3401Rows,
+    deferredTaskId: 'msq3401-deferred',
+    userId: 'angela',
+    date: '2026-10-30',
+    entries: msq3401Entries,
+  })
+  assert.strictEqual(msq3401ReorderContext?.actionTask?.id, 'msq3401-checkin', 'the current reliable check-in executor may reorder the exact merged deferred source')
+  assert.strictEqual(
+    buildDeferredInspectionCheckinArrangements(msq3401Rows)[0].display_merge_eligible,
+    true,
+    'reorder authorization must consume the same unique reliable display relation as the work-task projection',
+  )
+  const msq3401ProductionShapeRows = [
+    { ...msq3401Rows[0], inspector_id: null },
+    msq3401Rows[1],
+    { ...msq3401Rows[2], execution_state: 'superseded' },
+  ]
+  const msq3401ProductionShapeArrangement = buildDeferredInspectionCheckinArrangements(msq3401ProductionShapeRows)[0]
+  assert.deepStrictEqual(
+    msq3401ProductionShapeArrangement.conflict_reasons,
+    ['deferred_inspector_missing'],
+    'the production-shaped deferred source records the missing historical inspector without losing its reliable display relation',
+  )
+  assert.strictEqual(msq3401ProductionShapeArrangement.display_merge_eligible, true)
+  assert.strictEqual(deferredInspectionReorderAccessContext({
+    rows: msq3401ProductionShapeRows,
+    deferredTaskId: 'msq3401-deferred',
+    userId: 'angela',
+    date: '2026-10-30',
+    entries: msq3401Entries,
+  })?.actionTask?.id, 'msq3401-checkin', 'a missing historical inspector and a superseded same-property candidate do not block the unique current executor from reordering')
+  assert.strictEqual(
+    deferredInspectionEvidenceAccessContext(msq3401ProductionShapeRows, 'msq3401-deferred', 'angela')?.actionTask?.id,
+    'msq3401-checkin',
+    'the unique current executor may read exact deferred consumables when the only conflict is the missing historical inspector',
+  )
+  assert.strictEqual(
+    deferredInspectionEvidenceAccessContext(msq3401ProductionShapeRows, 'msq3401-deferred', 'mia'),
+    null,
+    'missing historical inspector evidence access remains bound to the unique current executor',
+  )
+  const productionShapeWriteGuard = deferredInspectionCheckinSubmissionGuard(msq3401ProductionShapeRows, 'msq3401-deferred')
+  assert.strictEqual(productionShapeWriteGuard.blocked, true)
+  assert.strictEqual(productionShapeWriteGuard.reason, 'inspection_arrangement_conflict')
+  assert.strictEqual(productionShapeWriteGuard.canonical_action_task_id, null, 'the read-only exception must not authorize stale-source writes')
+  assert.strictEqual(deferredInspectionEvidenceAccessContext([
+    msq3401ProductionShapeRows[0],
+    msq3401Rows[2],
+  ], 'msq3401-deferred', 'angela'), null, 'a same-property check-in without a reliable turnover boundary cannot grant missing-inspector evidence access')
+  assert.strictEqual(deferredInspectionEvidenceAccessContext([
+    ...msq3401ProductionShapeRows,
+    { ...msq3401Rows[1], id: 'msq3401-second-reliable-checkin', order_id: 'second-checkin-order' },
+  ], 'msq3401-deferred', 'angela'), null, 'multiple reliable current check-ins remain denied for missing-inspector evidence access')
+  assert.strictEqual(deferredInspectionEvidenceAccessContext([
+    msq3401ProductionShapeRows[0],
+    { ...msq3401Rows[1], task_date: '2026-10-31', order_checkin: '2026-10-31' },
+  ], 'msq3401-deferred', 'angela'), null, 'a check-in outside the exact deferred inspection date cannot grant missing-inspector evidence access')
+  assert.strictEqual(deferredInspectionReorderAccessContext({
+    rows: msq3401Rows,
+    deferredTaskId: 'msq3401-deferred',
+    userId: 'oscar',
+    date: '2026-10-30',
+    entries: msq3401Entries,
+  }), null, 'the superseded planned inspector cannot use the current executor takeover')
+  assert.strictEqual(deferredInspectionReorderAccessContext({
+    rows: msq3401Rows,
+    deferredTaskId: 'msq3401-deferred',
+    userId: 'angela',
+    date: '2026-10-30',
+    entries: [{ id: 'msq3401-deferred', sort_index: 4 }],
+  }), null, 'the old deferred source cannot be reordered without its exact current check-in source')
+  assert.strictEqual(deferredInspectionReorderAccessContext({
+    rows: msq3401Rows,
+    deferredTaskId: 'msq3401-deferred',
+    userId: 'angela',
+    date: '2026-10-30',
+    entries: [msq3401Entries[0], { ...msq3401Entries[1], sort_index: 5 }],
+  }), null, 'the two merged source ids must carry the same global order mark')
+  assert.strictEqual(deferredInspectionReorderAccessContext({
+    rows: msq3401Rows,
+    deferredTaskId: 'msq3401-deferred',
+    userId: 'angela',
+    date: '2026-10-31',
+    entries: msq3401Entries,
+  }), null, 'a reliable arrangement cannot be reused on a different business date')
+  assert.strictEqual(deferredInspectionReorderAccessContext({
+    rows: [{ ...msq3401Rows[0], status: 'inspected' }, msq3401Rows[1]],
+    deferredTaskId: 'msq3401-deferred',
+    userId: 'angela',
+    date: '2026-10-30',
+    entries: msq3401Entries,
+  }), null, 'a terminal deferred inspection cannot be reordered through takeover')
+  assert.strictEqual(deferredInspectionReorderAccessContext({
+    rows: [msq3401Rows[0], { ...msq3401Rows[1], inspection_scope: 'password_only' }],
+    deferredTaskId: 'msq3401-deferred',
+    userId: 'angela',
+    date: '2026-10-30',
+    entries: msq3401Entries,
+  }), null, 'password-only work remains outside this inspection reorder repair')
+  assert.strictEqual(deferredInspectionReorderAccessContext({
+    rows: [msq3401ProductionShapeRows[0], msq3401Rows[2]],
+    deferredTaskId: 'msq3401-deferred',
+    userId: 'angela',
+    date: '2026-10-30',
+    entries: [
+      msq3401Entries[0],
+      { id: 'msq3401-unrelated-checkin', sort_index: 4 },
+    ],
+  }), null, 'same-property work without a reliable turnover relation remains unauthorized')
+  assert.strictEqual(deferredInspectionReorderAccessContext({
+    rows: [
+      msq3401Rows[0],
+      msq3401Rows[1],
+      { ...msq3401Rows[1], id: 'msq3401-second-reliable-checkin', order_id: 'second-checkin-order' },
+    ],
+    deferredTaskId: 'msq3401-deferred',
+    userId: 'angela',
+    date: '2026-10-30',
+    entries: [
+      ...msq3401Entries,
+      { id: 'msq3401-second-reliable-checkin', sort_index: 4 },
+    ],
+  }), null, 'multiple reliable check-in candidates remain fail-closed')
+  assert.strictEqual(deferredInspectionReorderAccessContext({
+    rows: [
+      ...msq3401Rows,
+      {
+        ...msq3401Rows[0],
+        id: 'msq3401-second-deferred',
+        order_id: 'msq3401-second-checkout-order',
+      },
+    ],
+    deferredTaskId: 'msq3401-deferred',
+    userId: 'angela',
+    date: '2026-10-30',
+    entries: msq3401Entries,
+  }), null, 'two deferred inspections competing for one check-in remain fail-closed')
   const reassignedAgainRows = [msq4206Rows[0], { ...msq4206Rows[1], assignee_id: 'mia' }]
   assert.strictEqual(deferredInspectionEvidenceAccessContext(reassignedAgainRows, 'msq4206-checkout', 'angela'), null)
   assert.strictEqual(
@@ -616,6 +797,41 @@ async function run() {
   })
   assert.strictEqual(evidenceContext?.actionTask?.id, 'msq4206-checkin')
   assert.deepStrictEqual(evidenceQueries[1].params, ['msq4206', '2026-10-26', '2026-10-27'])
+
+  const productionEvidenceQueries: Array<{ sql: string; params: any[] }> = []
+  const productionEvidenceContext = await loadDeferredInspectionEvidenceAccessContext({
+    taskId: 'msq3401-deferred',
+    userId: 'angela',
+    client: {
+      async query(sql: string, params: any[]) {
+        productionEvidenceQueries.push({ sql, params })
+        assert.doesNotMatch(sql, /FOR UPDATE|\b(?:INSERT|UPDATE|DELETE)\b/i, 'missing-inspector evidence authorization must remain read-only')
+        if (productionEvidenceQueries.length === 1) return { rows: [msq3401ProductionShapeRows[0]] }
+        return { rows: msq3401ProductionShapeRows }
+      },
+    },
+  })
+  assert.strictEqual(productionEvidenceContext?.actionTask?.id, 'msq3401-checkin')
+  assert.deepStrictEqual(productionEvidenceQueries[1].params, ['msq3401', '2026-10-29', '2026-10-30'])
+
+  const reorderQueries: Array<{ sql: string; params: any[] }> = []
+  const reorderContext = await loadDeferredInspectionReorderAccessContext({
+    taskId: 'msq3401-deferred',
+    userId: 'angela',
+    date: '2026-10-30',
+    entries: msq3401Entries,
+    client: {
+      async query(sql: string, params: any[]) {
+        reorderQueries.push({ sql, params })
+        assert.match(sql, /^\s*SELECT\b/i, 'reorder takeover lookup must only select before the route update')
+        if (reorderQueries.length === 1) return { rows: [msq3401Rows[0]] }
+        return { rows: msq3401Rows }
+      },
+    },
+  })
+  assert.strictEqual(reorderContext?.actionTask?.id, 'msq3401-checkin')
+  assert.deepStrictEqual(reorderQueries[1].params, ['msq3401', '2026-10-29', '2026-10-30'])
+  assert.match(reorderQueries[1].sql, /ORDER BY t\.id::text\s+FOR UPDATE OF t/, 'the complete arrangement window must be locked in stable source-id order before sorting')
 
   const authorizationTarget = {
     id: 'checkin-duplicate-a', property_id: 'property-a', task_type: 'checkin_clean', task_date: '2026-08-02',
