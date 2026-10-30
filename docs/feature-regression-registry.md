@@ -2,15 +2,52 @@
 
 本文件只保存当前有效的业务不变量、责任范围、测试映射和最近一次完整验证索引。
 
+## FR-042：延期检查可靠合卡的展示与排序授权一致
+
+- **维护责任范围：** backend MZ App work-task projection and mixed reorder
+- **最后审查日期：** 2026-10-30
+- **状态：** active
+
+### 业务保护规则
+
+- Root 将旧延期 checkout 与当天 `inspect_and_hang` check-in 可靠合成一张检查卡时，当前入住检查执行人必须能保存该合卡在当天混合任务列表中的顺序；排序授权必须使用与展示合卡相同的可靠关联、实际检查日和当前执行人，不能继续只看旧延期 source 的计划检查人。
+- 新增的接管放行只覆盖同一提交批次中准确的延期 source 与当前 check-in source，二者必须提交相同排序号。缺少配对 source、排序号不一致、跨日、终态、`password_only`、无可靠关系、多条可靠候选、多个延期任务竞争同一 check-in、执行人不一致或无关任务必须 fail-closed；原有本人任务排序权限保持不变。
+- 排序仍只写既有 `sort_index_inspector`，不改变任务状态、日期、人员、检查模式、计费、媒体、动作 source、available actions 或任务数量。混合批次保持单事务：任一 source 不可写时整批回滚，不能部分保存。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 可靠延期合卡排序授权与 fail-closed 边界 | `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` | 当前执行人接管、旧延期 source 无历史检查员且存在 superseded 同房源候选、同批同序号、无关/歧义/跨日/终态/缺配对拒绝、行锁读取与 mixed-reorder 原子回滚契约 | sufficient | `npm run test:deferred-inspection-checkin-replacement --prefix backend` |
+
+### 验证策略
+
+- 使用纯函数与拒绝生产写入的 mock client 验证授权边界，并运行后端定向测试、构建、Feature Registry 与 CRL 审计；不调用生产排序接口、不修改生产任务。
+
+### 最后验证
+
+- **CRL：** root/CRL-20261029-001
+- **Commit：** `7a98c6075bb46946b3373aa82cfd3d1f8a7031db`
+- **日期：** 2026-10-30；定向回归、后端编译、完整质量门、精确 staged gate 与独立复审通过；未推送或部署。
+
+### 相关 CRL
+
+- `root/CRL-20261024-002`、`root/CRL-20261027-001`、`root/CRL-20261029-001`；paired Mobile MZ-075 contract remains unchanged.
+
+### 非保护范围
+
+- 不包含 `password_only` 排序、Mobile/OTA 修改、角色权限码、检查/挂钥匙动作授权、任务计费、数据库迁移、生产数据修正或发布。
+
 ## FR-041：检查人员补品证据准确来源只读
 
 - **维护责任范围：** backend / paired mobile inspection supplies media
-- **最后审查日期：** 2026-10-24
+- **最后审查日期：** 2026-10-30
 - **状态：** active
 
 ### 业务保护规则
 
 - 服务端仅允许当前准确检查职责或有正式检查执行证据的本人读取同源或唯一 canonical 周转内清洁人员的补货/消耗品照片；清洁完成演员用于证明照片归属。原清洁完成照片、问题照、其他检查人的证据不随此权限开放。不同房源/周转、取消/删除/替代、错误来源、无职责、普通无上传者媒体继续拒绝。历史 usage 表无 uploader 的照片必须凭准确持久任务关联和有效清洁演员核定，不能凭 URL 或房号日期授权。读取不产生上传、修改、删除或队列动作。
+- 当旧延期 source 没有历史检查员、唯一冲突仅为 `deferred_inspector_missing`，但当天 check-in 与旧 source 仍有唯一可靠周转关系且只有一个当前执行人时，该当前执行人可只读旧 source 的消耗品证据；该例外不得进入旧 source 写授权。其他冲突、无可靠边界、多个有效 check-in、人员不匹配、跨日、取消或替代关系继续 fail-closed。
 - Mobile 缩略图和大图均发送同一 Root-issued source IDs 与 inspector scope；历史权限不得由页面入口猜测；403不可作为已授权图片缓存。
 - 仅有本人历史检查审计而已不承担当前检查职责时，只能读取不晚于本人正式检查审计时间的清洁证据；使用服务端保存时间并保留毫秒精度，缺少时间失败关闭，不借用同 source 后续检查轮次的资料。
 
@@ -19,6 +56,7 @@
 | 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
 |---|---|---|---|---|
 | 检查补品证据只读与来源隔离 | `backend/scripts/tests/test_mzapp_form_photo_routes.ts` | 真实本机 Express + 拒写 SQL adapter + 合成对象覆盖同周转读取、历史、改派/撤权、legacy usage、错误来源/演员、无 uploader、403不触存储 | sufficient | `npm run test:mzapp-form-photo-routes --prefix backend` / `check:backend` |
+| 延期 source 缺失历史检查员时的消耗品只读接管 | `backend/scripts/tests/test_deferred_inspection_checkin_conflict.ts` | 唯一可靠 check-in 当前执行人可读、旧 source 写仍阻断、其他人员/无可靠边界/多个可靠候选/跨日拒绝、SELECT-only loader | sufficient | `npm run test:deferred-inspection-checkin-replacement --prefix backend` |
 
 ### 验证策略
 
@@ -26,13 +64,13 @@
 
 ### 最后验证
 
-- **CRL：** root/CRL-20261024-008
-- **Commit：** not committed
-- **日期：** 2026-10-24；完整后端门禁、配对Mobile门禁与定向权限回归通过。
+- **CRL：** root/CRL-20261030-001
+- **Commit：** `7a98c6075bb46946b3373aa82cfd3d1f8a7031db`
+- **日期：** 2026-10-30；缺失历史检查员只读接管定向回归、完整 Root/Frontend/Mobile 质量门与精确 staged gate 通过；未做生产回放或真实媒体验收。
 
 ### 相关 CRL
 
-- `root/CRL-20261024-008` / `mobile/CRL-20261024-008`。
+- `root/CRL-20261024-008`、`root/CRL-20261027-001`、`root/CRL-20261030-001` / `mobile/CRL-20261024-008`。
 
 ### 非保护范围
 
