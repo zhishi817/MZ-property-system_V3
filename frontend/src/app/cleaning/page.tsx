@@ -131,6 +131,13 @@ type CalendarItem = {
   auto_sync_enabled?: boolean
   old_code?: string | null
   new_code?: string | null
+  password_authority?: {
+    old_code_status?: string | null
+    new_code_status?: string | null
+    old_code_source_task_id?: string | null
+    old_code_source_order_id?: string | null
+    old_code_source_field?: string | null
+  } | null
   nights?: number | null
   summary_checkout_time?: string | null
   summary_checkin_time?: string | null
@@ -169,6 +176,8 @@ type CleaningTaskRow = {
   auto_sync_enabled?: boolean | null
   old_code?: string | null
   new_code?: string | null
+  old_code_authority_status?: string | null
+  new_code_authority_status?: string | null
   checkout_time?: string | null
   checkin_time?: string | null
   nights_override?: number | null
@@ -204,6 +213,8 @@ type EditTaskForm = {
   checkin_ids: string[]
   checkout_password: string
   checkin_password: string
+  initial_checkout_password: string
+  initial_checkin_password: string
   checkout_time: string
   checkin_time: string
   checkin_task_date: Dayjs
@@ -212,6 +223,8 @@ type EditTaskForm = {
   pending_add_checkout: boolean
   pending_add_checkin: boolean
   auto_sync_enabled: boolean
+  checkout_password_authority_status: string
+  checkin_password_authority_status: string
   display_conflicts?: CleaningTurnoverConflict[] | null
   turnover_display?: CleaningTurnoverDisplay | null
 } & TaskCapabilityFields
@@ -264,6 +277,19 @@ type OfflineCreateForm = {
 }
 
 type CleaningSaveAction = 'edit' | 'manualCreate' | 'offlineCreate' | 'offlineEdit' | 'bulkEdit'
+
+function passwordAuthorityLabel(status: unknown) {
+  const value = String(status || '').trim().toLowerCase()
+  if (value === 'manual_confirmed') return '已人工核对'
+  if (value === 'source_linked') return '已关联来源'
+  if (value === 'auto_derived') return '系统生成，待现场确认'
+  if (value === 'not_applicable') return '不适用'
+  return '待核对'
+}
+
+function passwordAuthorityRequestId() {
+  return `web-password-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
 
 function semanticToneClass(tone: TaskSemanticTone) {
   if (tone === 'special') return styles.semanticToneSpecial
@@ -883,6 +909,13 @@ export default function CleaningPage() {
             checkout_new_code: checkout?.new_code != null ? String(checkout.new_code || '') : null,
             checkin_old_code: checkin?.old_code != null ? String(checkin.old_code || '') : null,
             checkin_new_code: checkin?.new_code != null ? String(checkin.new_code || '') : null,
+            password_authority: {
+              old_code_status: checkout?.password_authority?.old_code_status || 'needs_review',
+              new_code_status: checkin?.password_authority?.new_code_status || 'needs_review',
+              old_code_source_task_id: checkout?.password_authority?.old_code_source_task_id || null,
+              old_code_source_order_id: checkout?.password_authority?.old_code_source_order_id || null,
+              old_code_source_field: checkout?.password_authority?.old_code_source_field || null,
+            },
             display_conflicts: displayConflicts,
             turnover_display: { conflicts: displayConflicts },
             ...combineCapabilityForItems(all, status, 'mixed_cleaning_inspection'),
@@ -1166,6 +1199,8 @@ export default function CleaningPage() {
       checkin_ids: stayoverMode ? [] : checkinIdsAll,
       checkout_password: stayoverMode ? '' : checkoutPwd,
       checkin_password: stayoverMode ? '' : checkinPwd,
+      initial_checkout_password: stayoverMode ? '' : checkoutPwd,
+      initial_checkin_password: stayoverMode ? '' : checkinPwd,
       checkout_time: checkoutTime,
       checkin_time: checkinTime,
       checkin_task_date: checkinTaskDate,
@@ -1174,6 +1209,8 @@ export default function CleaningPage() {
 	      pending_add_checkout: false,
 	      pending_add_checkin: false,
 	      auto_sync_enabled: autoSync,
+      checkout_password_authority_status: checkoutRows[0]?.old_code_authority_status || it.password_authority?.old_code_status || 'needs_review',
+      checkin_password_authority_status: checkinRows[0]?.new_code_authority_status || it.password_authority?.new_code_status || 'needs_review',
 		      display_state: it.display_state || null,
 		      execution_semantics: it.execution_semantics || null,
 		      display_scope: it.display_scope || null,
@@ -1282,12 +1319,18 @@ export default function CleaningPage() {
       const patches = editForm.ids.map((id) => {
         const p: any = { ...base }
         if (editForm.checkout_ids.some((x) => String(x) === String(id))) {
-          p.old_code = toNull(editForm.checkout_password)
           p.checkout_time = toNull(editForm.checkout_time)
+          if (toNull(editForm.checkout_password) !== toNull(editForm.initial_checkout_password)) {
+            p.old_code = toNull(editForm.checkout_password)
+            p.password_verification = { fields: ['old_code'], request_id: passwordAuthorityRequestId(), client: 'web' }
+          }
         }
         if (editForm.checkin_ids.some((x) => String(x) === String(id))) {
           p.task_date = editForm.checkin_task_date.format('YYYY-MM-DD')
-          p.new_code = toNull(editForm.checkin_password)
+          if (toNull(editForm.checkin_password) !== toNull(editForm.initial_checkin_password)) {
+            p.new_code = toNull(editForm.checkin_password)
+            p.password_verification = { fields: ['new_code'], request_id: passwordAuthorityRequestId(), client: 'web' }
+          }
           if (!editForm.checkin_nights_authoritative) p.nights_override = editForm.nights_override ?? null
           p.checkin_time = toNull(editForm.checkin_time)
         }
@@ -1301,6 +1344,46 @@ export default function CleaningPage() {
     } finally {
       setSavingAction((current) => current === 'edit' ? null : current)
     }
+  }, [editForm, loadRangeItems, savingAction])
+
+  const verifyEditPasswordAuthority = useCallback(async () => {
+    if (!editForm || savingAction || editForm.mode === 'stayover') return
+    const ids = Array.from(new Set([...editForm.checkout_ids, ...editForm.checkin_ids].map(String).filter(Boolean)))
+    if (!ids.length) return message.warning('当前没有可核对的退房或入住任务')
+    const preview: any = await postJSON('/mzapp/cleaning-tasks/manager-fields/password-preview', {
+      task_ids: ids,
+      fields: ['old_code', 'new_code'],
+    })
+    const impactCount = Number(preview?.same_order_checkout_task_ids?.length || 0) + Number(preview?.dependent_checkin_task_ids?.length || 0)
+    Modal.confirm({
+      title: '确认核对密码来源？',
+      content: (
+        <div>
+          <div>{`当前任务：${ids.length} 条；关联更新：${impactCount} 条。`}</div>
+          {preview?.requires_manual_source_confirmation ? <div>包含手工任务：只标记为人工核对，不会猜测订单来源。</div> : null}
+          {preview?.note ? <div>{String(preview.note)}</div> : null}
+        </div>
+      ),
+      okText: '确认核对',
+      cancelText: '取消',
+      onOk: async () => {
+        setSavingAction('edit')
+        try {
+          const requestId = passwordAuthorityRequestId()
+          const items = ids.map((id) => {
+            const fields: Array<'old_code' | 'new_code'> = []
+            if (editForm.checkout_ids.some((value) => String(value) === id)) fields.push('old_code')
+            if (editForm.checkin_ids.some((value) => String(value) === id)) fields.push('new_code')
+            return { task_id: id, fields }
+          }).filter((item) => item.fields.length > 0)
+          await postJSON('/cleaning/tasks/password-verify', { items, request_id: requestId, client: 'web' })
+          message.success('密码来源已核对')
+          await loadRangeItems()
+        } finally {
+          setSavingAction((current) => current === 'edit' ? null : current)
+        }
+      },
+    })
   }, [editForm, loadRangeItems, savingAction])
 
   const cancelTasksInEdit = useCallback(async (ids: string[], label: string) => {
@@ -2493,6 +2576,14 @@ export default function CleaningPage() {
           <div style={{ textAlign: 'right' }}>
             <Space>
               <Button disabled={editSaving} onClick={() => { setEditOpen(false); setEditForm(null) }}>取消</Button>
+              {editForm && editForm.mode !== 'stayover' ? (
+                <Button
+                  disabled={editSaving || (!editForm.checkout_ids.length && !editForm.checkin_ids.length)}
+                  onClick={() => verifyEditPasswordAuthority().catch((e) => message.error(e?.message || '核对失败'))}
+                >
+                  核对密码来源
+                </Button>
+              ) : null}
               <Button
                 type="primary"
                 loading={editSaving}
@@ -2694,6 +2785,7 @@ export default function CleaningPage() {
 	                          onChange={(e) => setEditForm((p) => (p ? { ...p, checkout_password: e.target.value } : p))}
 	                          placeholder="退房密码"
 	                        />
+                        <div className={styles.cleaningEditSectionHint}>{passwordAuthorityLabel(editForm.checkout_password_authority_status)}</div>
                       </Form.Item>
                     </Col>
                     {editForm.checkout_ids.length || editForm.pending_add_checkout ? (
@@ -2866,6 +2958,7 @@ export default function CleaningPage() {
 	                              onChange={(e) => setEditForm((p) => (p ? { ...p, checkin_password: e.target.value } : p))}
 	                              placeholder="入住密码"
 	                            />
+                            <div className={styles.cleaningEditSectionHint}>{passwordAuthorityLabel(editForm.checkin_password_authority_status)}</div>
                           </Form.Item>
                         </Col>
                       </>

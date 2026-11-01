@@ -31,6 +31,8 @@ async function main() {
   try {
     const { warmupR5TaskRuntimeSchema } = require('./lib/r5RequestSchema')
     await warmupR5TaskRuntimeSchema()
+    const { warmupPasswordAuthoritySchema } = require('./lib/passwordAuthoritySchema')
+    await warmupPasswordAuthoritySchema()
     const { bootstrapCleaningSyncSchemaV2 } = require('./services/cleaningSync')
     await bootstrapCleaningSyncSchemaV2()
   } catch (e: any) {

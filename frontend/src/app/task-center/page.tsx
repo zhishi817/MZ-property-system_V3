@@ -43,6 +43,8 @@ import {
   taskCenterDailyGroupCounts,
   taskCenterInspectionAssignmentTaskIds,
   taskCenterInspectionAssignmentPatch,
+  taskCenterGuestReadyMutationTarget,
+  taskCenterTaskMatchesGuestReadyTarget,
 } from './taskCenterDisplay'
 import styles from '../cleaning/cleaningSchedule.module.scss'
 
@@ -108,7 +110,11 @@ type TaskManagementAction = {
 }
 
 type GuestReadyNotification = {
-  order_id: string
+  source_type?: 'orders' | 'cleaning_tasks'
+  source_id?: string
+  order_id: string | null
+  task_id?: string | null
+  association_state?: 'order_bound' | 'manual_unlinked'
   status: 'not_notified' | 'notified'
   notified_at: string | null
   notified_by_user_id: string | null
@@ -118,7 +124,16 @@ type GuestReadyNotification = {
   automatic_early_arrival: boolean
   outside_key_required: boolean
   eligible: boolean
-  disabled_reason?: 'property_not_ready' | 'no_checkin_order' | 'checkin_order_changed' | null
+  disabled_reason?: 'property_not_ready' | 'no_checkin_order' | 'checkin_order_changed' | 'key_handover_incomplete' | 'task_linked_to_order' | null
+  prior_task_notification?: {
+    task_id: string
+    status: 'not_notified' | 'notified'
+    notified_at: string | null
+    notified_by_name: string | null
+    last_action: 'mark' | 'revoke'
+    last_action_at: string
+    last_actor_name: string
+  } | null
 }
 
 type GuestReadyOutsideKey = {
@@ -136,7 +151,7 @@ type GuestReadyAction = {
   placement: 'primary' | 'more'
   enabled: boolean
   disabled_reason?: string
-  source_type: 'orders'
+  source_type: 'orders' | 'cleaning_tasks'
   source_id: string
 }
 
@@ -1062,8 +1077,8 @@ export default function TaskCenterPage() {
     }
   }, [dateStr, setBoardDraftDirty])
 
-  const patchGuestReadyNotification = useCallback((orderId: string, notification: GuestReadyNotification | null, outsideKey: GuestReadyOutsideKey | null, actions: GuestReadyAction[]) => {
-    const patchTask = (task: TaskCenterTask): TaskCenterTask => String(task.order_id_checkin || '') === orderId
+  const patchGuestReadyNotification = useCallback((sourceType: 'orders' | 'cleaning_tasks', sourceId: string, expectedVersion: number, notification: GuestReadyNotification | null, outsideKey: GuestReadyOutsideKey | null, actions: GuestReadyAction[]) => {
+    const patchTask = (task: TaskCenterTask): TaskCenterTask => taskCenterTaskMatchesGuestReadyTarget(task, sourceType, sourceId, expectedVersion)
       ? { ...task, guest_ready_notification: notification, guest_ready_outside_key: outsideKey, available_actions: actions }
       : task
     setDayData((current) => current ? {
@@ -1080,11 +1095,10 @@ export default function TaskCenterPage() {
   const changeGuestReadyNotification = useCallback(async (action: GuestReadyAction) => {
     if (viewerRole !== 'customer_service') return
     const task = detailTask
-    const notification = task?.guest_ready_notification
-    const outsideKey = task?.guest_ready_outside_key
-    const orderId = String(notification?.order_id || outsideKey?.order_id || action.source_id || '').trim()
-    const expectedVersion = notification?.version ?? outsideKey?.version
-    if (!task || !orderId || expectedVersion == null || !action.enabled || guestReadySaving) return
+    if (!task || !action.enabled || guestReadySaving) return
+    const target = taskCenterGuestReadyMutationTarget(task, action)
+    if (!target) return
+    const { sourceType, sourceId, expectedVersion } = target
     const mutationAction = action.id === 'revoke_guest_ready_notified'
       ? 'revoke'
       : action.id === 'register_guest_ready_outside_key'
@@ -1092,7 +1106,7 @@ export default function TaskCenterPage() {
         : action.id === 'cancel_guest_ready_outside_key'
           ? 'cancel_outside_key'
           : 'mark'
-    const operationId = guestReadyOperationId({ orderId, action: mutationAction, expectedVersion })
+    const operationId = guestReadyOperationId({ sourceType, sourceId, action: mutationAction, expectedVersion })
     if (!operationId) return
     setGuestReadySaving(true)
     try {
@@ -1100,14 +1114,16 @@ export default function TaskCenterPage() {
         guest_ready_notification: GuestReadyNotification | null
         guest_ready_outside_key: GuestReadyOutsideKey | null
         available_actions: GuestReadyAction[]
-      }>('/mzapp/guest-ready-notifications', {
-        order_id: orderId,
+      }>(sourceType === 'cleaning_tasks' ? '/mzapp/guest-ready-task-notifications' : '/mzapp/guest-ready-notifications', {
+        ...(sourceType === 'cleaning_tasks' ? { task_id: sourceId } : { order_id: sourceId }),
         action: mutationAction,
         operation_id: operationId,
         expected_version: expectedVersion,
       })
       patchGuestReadyNotification(
-        orderId,
+        sourceType,
+        sourceId,
+        expectedVersion,
         receipt.guest_ready_notification,
         receipt.guest_ready_outside_key,
         Array.isArray(receipt.available_actions) ? receipt.available_actions : [],
