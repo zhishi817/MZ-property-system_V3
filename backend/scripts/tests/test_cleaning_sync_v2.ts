@@ -3,11 +3,12 @@ import { readFileSync } from 'fs'
 import { resolve } from 'path'
 import { v4 as uuid } from 'uuid'
 import { pgPool } from '../../src/dbAdapter'
-import { __test_hasManualTaskExecutionRecords, ensureCleaningSchemaV2, guestReadyCheckinIdentityChangedFields, syncCheckinOldCodeFromPreviousStay, syncCheckoutOldCodeFromCheckinNewCode, syncOrderToCleaningTasks, backfillCleaningTasks } from '../../src/services/cleaningSync'
+import { __test_hasManualTaskExecutionRecords, claimTaskPasswordAuthorityFields, confirmTaskPasswordAuthority, ensureCleaningSchemaV2, guestReadyCheckinIdentityChangedFields, reconcilePasswordAuthorityAfterTaskTopologyChange, syncCheckinOldCodeFromPreviousStay, syncCheckoutOldCodeFromCheckinNewCode, syncNextCheckinOldCodeFromSourceOrder, syncOrderToCleaningTasks, backfillCleaningTasks } from '../../src/services/cleaningSync'
 import { cleaningSyncJobScope, enqueueCleaningSyncJobTx } from '../../src/services/cleaningSyncJobs'
 import { __test_dispatchCleaningSyncJob, __test_syncOrderOptionsForJob, __test_syncScopeForJob } from '../../src/services/cleaningSyncJobsWorker'
 import { db } from '../../src/store'
 import { buildCleaningTurnoverDisplay, mergeCleaningTurnoverDisplays } from '../../src/lib/cleaningTurnoverDisplay'
+import { redactPasswordAuditValues } from '../../src/lib/passwordAudit'
 
 async function fetchTask(orderId: string) {
   return fetchTaskByType(orderId, 'checkout_clean')
@@ -415,13 +416,13 @@ async function main() {
 
   await syncOrderToCleaningTasks(o6)
   if (pgPool) {
-    await pgPool.query(`UPDATE cleaning_tasks SET new_code='2468' WHERE order_id=$1 AND lower(COALESCE(task_type, type, ''))='checkin_clean'`, [o6])
-    await pgPool.query(`UPDATE cleaning_tasks SET old_code='1357' WHERE order_id=$1 AND lower(COALESCE(task_type, type, ''))='checkout_clean'`, [o6])
+    await pgPool.query(`UPDATE cleaning_tasks SET new_code='2468', new_code_authority_status='manual_confirmed' WHERE order_id=$1 AND lower(COALESCE(task_type, type, ''))='checkin_clean'`, [o6])
+    await pgPool.query(`UPDATE cleaning_tasks SET old_code='1357', old_code_authority_status='manual_confirmed' WHERE order_id=$1 AND lower(COALESCE(task_type, type, ''))='checkout_clean'`, [o6])
   } else {
     const previousCheckin = await fetchTaskByType(o6, 'checkin_clean')
     const previousCheckout = await fetchTaskByType(o6, 'checkout_clean')
-    if (previousCheckin) previousCheckin.new_code = '2468'
-    if (previousCheckout) previousCheckout.old_code = '1357'
+    if (previousCheckin) { previousCheckin.new_code = '2468'; previousCheckin.new_code_authority_status = 'manual_confirmed' }
+    if (previousCheckout) { previousCheckout.old_code = '1357'; previousCheckout.old_code_authority_status = 'manual_confirmed' }
   }
   await syncOrderToCleaningTasks(o7)
   const incomingCheckin = await fetchTaskByType(o7, 'checkin_clean')
@@ -442,13 +443,13 @@ async function main() {
   assert.equal(clearedIncomingCheckin?.old_code == null ? null : String(clearedIncomingCheckin.old_code), null, 'an invalidated prior source should clear a previously auto-filled checkin old_code')
 
   if (pgPool) {
-    await pgPool.query(`UPDATE cleaning_tasks SET new_code='2468' WHERE order_id=$1 AND lower(COALESCE(task_type, type, ''))='checkin_clean'`, [o6])
+    await pgPool.query(`UPDATE cleaning_tasks SET new_code='2468', new_code_authority_status='manual_confirmed' WHERE order_id=$1 AND lower(COALESCE(task_type, type, ''))='checkin_clean'`, [o6])
     await pgPool.query(`UPDATE cleaning_tasks SET old_code=NULL, auto_sync_enabled=true WHERE order_id=$1 AND lower(COALESCE(task_type, type, ''))='checkin_clean'`, [o7])
   } else {
     const previousCheckin = await fetchTaskByType(o6, 'checkin_clean')
     const previousCheckout = await fetchTaskByType(o6, 'checkout_clean')
     const targetCheckin = await fetchTaskByType(o7, 'checkin_clean')
-    if (previousCheckin) previousCheckin.new_code = '2468'
+    if (previousCheckin) { previousCheckin.new_code = '2468'; previousCheckin.new_code_authority_status = 'manual_confirmed' }
     if (previousCheckout) previousCheckout.old_code = null
     if (targetCheckin) { targetCheckin.old_code = null; targetCheckin.auto_sync_enabled = true }
   }
@@ -479,11 +480,11 @@ async function main() {
 
   if (pgPool) {
     await pgPool.query(`UPDATE cleaning_tasks SET old_code='manual-old-code', auto_sync_enabled=false WHERE order_id=$1 AND lower(COALESCE(task_type, type, ''))='checkin_clean'`, [o7])
-    await pgPool.query(`UPDATE cleaning_tasks SET old_code='9753' WHERE order_id=$1 AND lower(COALESCE(task_type, type, ''))='checkout_clean'`, [o6])
+    await pgPool.query(`UPDATE cleaning_tasks SET old_code='9753', old_code_authority_status='manual_confirmed' WHERE order_id=$1 AND lower(COALESCE(task_type, type, ''))='checkout_clean'`, [o6])
   } else {
     const previousCheckout = await fetchTaskByType(o6, 'checkout_clean')
     const targetCheckin = await fetchTaskByType(o7, 'checkin_clean')
-    if (previousCheckout) previousCheckout.old_code = '9753'
+    if (previousCheckout) { previousCheckout.old_code = '9753'; previousCheckout.old_code_authority_status = 'manual_confirmed' }
     if (targetCheckin) { targetCheckin.old_code = 'manual-old-code'; targetCheckin.auto_sync_enabled = false }
   }
   const lockedCheckinPassword = await syncCheckinOldCodeFromPreviousStay({ orderId: o7 })
@@ -510,8 +511,9 @@ async function main() {
     if (checkoutTask) checkoutTask.old_code = null
   }
   await syncOrderToCleaningTasks(o1)
+  const sameOrderPasswordResult = await syncCheckoutOldCodeFromCheckinNewCode({ orderId: o1 })
   const t1Password = await fetchTask(o1)
-  assert.equal(String(t1Password.old_code), '9753', 'checkout old_code should follow checkin new_code for existing orders')
+  assert.equal(String(t1Password.old_code), '9753', `checkout old_code should follow checkin new_code for existing orders (reason=${String(sameOrderPasswordResult.reason || '')})`)
 
   if (pgPool) {
     await pgPool.query(`UPDATE cleaning_tasks SET task_type=NULL WHERE order_id=$1`, [o1])
@@ -663,6 +665,12 @@ async function main() {
   assert.equal(String(eligibleManualCheckout.superseded_by), String(o4Checkout.id))
   assert.ok(supersedeConflicts(eligibleManualCheckout).some((item: any) => item.field === 'checkout_time' && item.resolution === 'copied_manual'))
   assert.ok(supersedeConflicts(eligibleManualCheckout).some((item: any) => item.field === 'old_code' && item.resolution === 'manual_requires_review'))
+  const passwordConflictAudit = JSON.stringify([
+    ...supersedeConflicts(eligibleManual).filter((item: any) => item.field === 'new_code'),
+    ...supersedeConflicts(eligibleManualCheckout).filter((item: any) => item.field === 'old_code'),
+  ])
+  assert.ok(!passwordConflictAudit.includes('manual-new-code') && !passwordConflictAudit.includes('manual-old-code'), 'supersede decisions must never persist password values under generic value keys')
+  assert.ok(passwordConflictAudit.includes('manual_value_present'), 'supersede decisions may retain only password presence metadata')
 	  assert.equal(String(extraManual.execution_state), 'active', 'explicit extra manual checkin task must not be superseded')
 	  assert.equal(String(extraManual.status), 'pending')
 	  assert.equal(String(protectedManual.execution_state), 'active', 'in-progress manual checkout task must not be superseded')
@@ -858,6 +866,266 @@ async function main() {
     ? (await pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1', [manualAmbiguousRelinkCheckout])).rows?.[0]
     : (db.cleaningTasks as any[]).find((row) => String(row.id) === manualAmbiguousRelinkCheckout)
   assert.equal(String(ambiguousRelinkManualCheckout.execution_state), 'active', 'multiple active reverse links must fail closed without superseding the manual checkout')
+
+  if (!pgPool) {
+    const addOrder = (id: string, status = 'confirmed', guestPhone?: string, propertyId = 'P_MZ091') => (db.orders as any[]).push({ id, status, property_id: propertyId, guest_phone: guestPhone || null })
+    const addTask = (row: any) => (db.cleaningTasks as any[]).push({
+      id: row.id,
+      order_id: row.order_id,
+      property_id: row.property_id || 'P_MZ091',
+      task_type: row.task_type,
+      type: row.task_type,
+      task_date: row.task_date,
+      date: row.task_date,
+      status: row.status || 'pending',
+      execution_state: 'active',
+      auto_sync_enabled: row.auto_sync_enabled !== false,
+      ...row,
+    })
+
+    addOrder('mz091-old')
+    addOrder('mz091-nearest-missing')
+    addOrder('mz091-target')
+    addTask({ id: 'mz091-old-out', order_id: 'mz091-old', task_type: 'checkout_clean', task_date: '2026-10-20', old_code: '1111' })
+    addTask({ id: 'mz091-old-in', order_id: 'mz091-old', task_type: 'checkin_clean', task_date: '2026-10-10', new_code: '1111' })
+    addTask({ id: 'mz091-nearest-out', order_id: 'mz091-nearest-missing', task_type: 'checkout_clean', task_date: '2026-10-30', old_code: null })
+    addTask({ id: 'mz091-nearest-in', order_id: 'mz091-nearest-missing', task_type: 'checkin_clean', task_date: '2026-10-25', new_code: null })
+    addTask({ id: 'mz091-target-in', order_id: 'mz091-target', task_type: 'checkin_clean', task_date: '2026-11-01', old_code: 'stale-value', old_code_authority_status: 'auto_derived' })
+    const missingBoundaryResult = await syncCheckinOldCodeFromPreviousStay({ orderId: 'mz091-target' })
+    const missingBoundaryTarget = await fetchTaskByType('mz091-target', 'checkin_clean')
+    assert.equal(missingBoundaryResult.reason, 'missing', 'the nearest valid stay boundary must win even when its password source is missing')
+    assert.equal(missingBoundaryTarget.old_code, null, 'a missing nearest source must not fall back across the boundary to older history')
+    assert.equal(missingBoundaryTarget.old_code_authority_status, 'needs_review')
+    assert.equal(String(missingBoundaryTarget.old_code_source_order_id), 'mz091-nearest-missing')
+
+    addOrder('mz091-source')
+    addOrder('mz091-next')
+    addTask({ id: 'mz091-source-in', order_id: 'mz091-source', task_type: 'checkin_clean', task_date: '2026-11-02', new_code: '2222', new_code_authority_status: 'manual_confirmed' })
+    addTask({ id: 'mz091-source-out', order_id: 'mz091-source', task_type: 'checkout_clean', task_date: '2026-11-05', old_code: null })
+    addTask({ id: 'mz091-next-in', order_id: 'mz091-next', task_type: 'checkin_clean', task_date: '2026-11-06', old_code: null })
+    const sourceCheckoutSync = await syncCheckoutOldCodeFromCheckinNewCode({ orderId: 'mz091-source' })
+    const nextResult = await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: 'mz091-source' })
+    const sourceCheckout = await fetchTaskByType('mz091-source', 'checkout_clean')
+    const nextCheckin = await fetchTaskByType('mz091-next', 'checkin_clean')
+    assert.equal(String(sourceCheckout.old_code), '2222', `same-order checkout must receive the confirmed source checkin password (reason=${String(sourceCheckoutSync.reason || '')})`)
+    assert.equal(String(nextCheckin.old_code), '2222', 'only the unique next valid checkin dependency must be recomputed')
+    assert.equal(nextResult.action, 'updated')
+    assert.equal(String(nextCheckin.old_code_source_order_id), 'mz091-source')
+
+    nextCheckin.old_code = 'manual-correction'
+    nextCheckin.old_code_authority_status = 'manual_confirmed'
+    nextCheckin.auto_sync_enabled = true
+    const sourceCheckin = await fetchTaskByType('mz091-source', 'checkin_clean')
+    sourceCheckin.new_code = '3333'
+    await syncCheckoutOldCodeFromCheckinNewCode({ orderId: 'mz091-source' })
+    const preservedResult = await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: 'mz091-source' })
+    assert.equal(preservedResult.action, 'skipped_locked', 'manual confirmation must be preserved even when auto_sync_enabled remains true')
+    assert.equal(nextCheckin.old_code, 'manual-correction', 'the MV1608-style explicit correction must not be overwritten')
+
+    nextCheckin.old_code = '3333'
+    nextCheckin.old_code_authority_status = 'source_linked'
+    nextCheckin.old_code_source_order_id = 'mz091-source'
+    nextCheckin.old_code_source_task_id = 'mz091-source-out'
+    nextCheckin.old_code_source_field = 'old_code'
+
+    addOrder('mz091-amb-a')
+    addOrder('mz091-amb-b')
+    addTask({ id: 'mz091-amb-a-in', order_id: 'mz091-amb-a', task_type: 'checkin_clean', task_date: '2026-11-06', old_code: null })
+    addTask({ id: 'mz091-amb-b-in', order_id: 'mz091-amb-b', task_type: 'checkin_clean', task_date: '2026-11-06', old_code: null })
+    const ambiguousNext = await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: 'mz091-source' })
+    assert.equal(ambiguousNext.reason, 'next_checkin_ambiguous', 'multiple next arrivals on the nearest day must fail closed')
+    assert.equal(nextCheckin.old_code, null, 'a previously linked target must be cleared when a new nearest-day ambiguity appears')
+    assert.equal(nextCheckin.old_code_authority_status, 'needs_review', 'a stale linked target must stop claiming linked authority')
+    assert.equal(nextCheckin.old_code_source_task_id, null, 'invalidating a stale dependency must clear the prior source task pointer')
+    assert.equal(nextCheckin.old_code_source_order_id, null, 'invalidating a stale dependency must clear the prior source order pointer')
+    assert.equal(nextCheckin.old_code_source_field, null, 'invalidating a stale dependency must clear the prior source field pointer')
+
+    addOrder('mz091-cancel-source', 'confirmed', undefined, 'P_MZ091_CANCEL')
+    addOrder('mz091-cancel-next', 'confirmed', undefined, 'P_MZ091_CANCEL')
+    addTask({ id: 'mz091-cancel-source-in', order_id: 'mz091-cancel-source', property_id: 'P_MZ091_CANCEL', task_type: 'checkin_clean', task_date: '2026-11-07', new_code: '5555', new_code_authority_status: 'manual_confirmed' })
+    addTask({ id: 'mz091-cancel-source-out', order_id: 'mz091-cancel-source', property_id: 'P_MZ091_CANCEL', task_type: 'checkout_clean', task_date: '2026-11-08', old_code: null })
+    addTask({ id: 'mz091-cancel-next-in', order_id: 'mz091-cancel-next', property_id: 'P_MZ091_CANCEL', task_type: 'checkin_clean', task_date: '2026-11-09', old_code: null })
+    await syncCheckoutOldCodeFromCheckinNewCode({ orderId: 'mz091-cancel-source' })
+    await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: 'mz091-cancel-source' })
+    const cancelledSource = await fetchTaskByType('mz091-cancel-source', 'checkin_clean')
+    const cancelledSourceBefore = { ...cancelledSource }
+    cancelledSource.status = 'cancelled'
+    cancelledSource.execution_state = 'cancelled'
+    await reconcilePasswordAuthorityAfterTaskTopologyChange({ before: cancelledSourceBefore, after: cancelledSource })
+    const invalidatedCheckout = await fetchTaskByType('mz091-cancel-source', 'checkout_clean')
+    assert.equal(invalidatedCheckout.old_code, null, 'cancelling a source checkin must clear its same-order checkout dependency')
+    assert.equal(invalidatedCheckout.old_code_source_task_id, null)
+    await syncCheckoutOldCodeFromCheckinNewCode({ orderId: 'mz091-cancel-source' })
+    assert.equal((await fetchTaskByType('mz091-cancel-source', 'checkout_clean')).old_code, null, 'rerunning same-order sync must not resurrect a cancelled checkin password')
+    await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: 'mz091-cancel-source' })
+    const cancelledCheckout = await fetchTaskByType('mz091-cancel-source', 'checkout_clean')
+    const cancelledNext = await fetchTaskByType('mz091-cancel-next', 'checkin_clean')
+    assert.equal(cancelledCheckout.old_code, null)
+    assert.equal(cancelledCheckout.old_code_source_task_id, null)
+    assert.equal(cancelledNext.old_code, null, 'cancelling a source checkin must clear the next-arrival dependency')
+    assert.equal(cancelledNext.old_code_authority_status, 'needs_review', 'the next arrival may retain only a pending boundary reference, never linked authority')
+
+    addOrder('mz091-topology-source', 'confirmed', undefined, 'P_MZ091_TOPOLOGY')
+    addOrder('mz091-topology-a', 'confirmed', undefined, 'P_MZ091_TOPOLOGY')
+    addOrder('mz091-topology-b', 'confirmed', undefined, 'P_MZ091_TOPOLOGY')
+    addTask({ id: 'mz091-topology-source-out', order_id: 'mz091-topology-source', property_id: 'P_MZ091_TOPOLOGY', task_type: 'checkout_clean', task_date: '2026-12-01', old_code: '6161', old_code_authority_status: 'manual_confirmed' })
+    addTask({ id: 'mz091-topology-a-in', order_id: 'mz091-topology-a', property_id: 'P_MZ091_TOPOLOGY', task_type: 'checkin_clean', task_date: '2026-12-02', old_code: null })
+    addTask({ id: 'mz091-topology-b-in', order_id: 'mz091-topology-b', property_id: 'P_MZ091_TOPOLOGY', task_type: 'checkin_clean', task_date: '2026-12-03', old_code: null })
+    await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: 'mz091-topology-source' })
+    const topologyB = await fetchTaskByType('mz091-topology-b', 'checkin_clean')
+    const topologyBBefore = { ...topologyB }
+    topologyB.task_date = '2026-12-02'
+    topologyB.date = '2026-12-02'
+    await reconcilePasswordAuthorityAfterTaskTopologyChange({ before: topologyBBefore, after: topologyB })
+    assert.equal((await fetchTaskByType('mz091-topology-a', 'checkin_clean')).old_code_authority_status, 'needs_review', 'moving a second arrival onto the nearest day must invalidate the former unique target')
+    assert.equal((await fetchTaskByType('mz091-topology-b', 'checkin_clean')).old_code_authority_status, 'needs_review', 'the newly ambiguous arrival must not claim linked authority')
+
+    addOrder('mz091-move-source', 'confirmed', undefined, 'P_MZ091_MOVE')
+    addOrder('mz091-move-first', 'confirmed', undefined, 'P_MZ091_MOVE')
+    addOrder('mz091-move-next', 'confirmed', undefined, 'P_MZ091_MOVE')
+    addTask({ id: 'mz091-move-source-out', order_id: 'mz091-move-source', property_id: 'P_MZ091_MOVE', task_type: 'checkout_clean', task_date: '2026-12-10', old_code: '7171', old_code_authority_status: 'manual_confirmed' })
+    addTask({ id: 'mz091-move-first-in', order_id: 'mz091-move-first', property_id: 'P_MZ091_MOVE', task_type: 'checkin_clean', task_date: '2026-12-11', old_code: null })
+    addTask({ id: 'mz091-move-next-in', order_id: 'mz091-move-next', property_id: 'P_MZ091_MOVE', task_type: 'checkin_clean', task_date: '2026-12-12', old_code: null })
+    await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: 'mz091-move-source' })
+    const moveFirst = await fetchTaskByType('mz091-move-first', 'checkin_clean')
+    const moveFirstBefore = { ...moveFirst }
+    moveFirst.task_date = '2026-12-13'
+    moveFirst.date = '2026-12-13'
+    await reconcilePasswordAuthorityAfterTaskTopologyChange({ before: moveFirstBefore, after: moveFirst })
+    assert.equal((await fetchTaskByType('mz091-move-next', 'checkin_clean')).old_code, '7171', 'moving the linked target away must relink the source to the next unique arrival')
+    assert.notEqual((await fetchTaskByType('mz091-move-first', 'checkin_clean')).old_code_authority_status, 'source_linked', 'the moved former target must lose the stale source link')
+
+    addOrder('mz091-cross-property-source', 'confirmed', undefined, 'P_MZ091_CROSS_A')
+    addOrder('mz091-cross-property-target', 'confirmed', undefined, 'P_MZ091_CROSS_B')
+    addTask({ id: 'mz091-cross-property-source-in', order_id: 'mz091-cross-property-source', property_id: 'P_MZ091_CROSS_A', task_type: 'checkin_clean', task_date: '2026-12-20', new_code: '8181', new_code_authority_status: 'manual_confirmed' })
+    addTask({ id: 'mz091-cross-property-source-out', order_id: 'mz091-cross-property-source', property_id: 'P_MZ091_CROSS_A', task_type: 'checkout_clean', task_date: '2026-12-21', old_code: null })
+    addTask({ id: 'mz091-cross-property-target-in', order_id: 'mz091-cross-property-target', property_id: 'P_MZ091_CROSS_B', task_type: 'checkin_clean', task_date: '2026-12-22', old_code: null })
+    await syncCheckoutOldCodeFromCheckinNewCode({ orderId: 'mz091-cross-property-source' })
+    const crossPropertyCheckout = await fetchTaskByType('mz091-cross-property-source', 'checkout_clean')
+    const crossPropertyCheckoutBefore = { ...crossPropertyCheckout }
+    crossPropertyCheckout.property_id = 'P_MZ091_CROSS_B'
+    await reconcilePasswordAuthorityAfterTaskTopologyChange({ before: crossPropertyCheckoutBefore, after: crossPropertyCheckout })
+    assert.equal(crossPropertyCheckout.old_code, null, 'moving only the checkout across properties must clear its old same-order credential')
+    assert.equal(crossPropertyCheckout.old_code_authority_status, 'needs_review')
+    assert.notEqual((await fetchTaskByType('mz091-cross-property-target', 'checkin_clean')).old_code, '8181', 'an A-property password must never propagate to a B-property arrival')
+
+    addOrder('mz091-cross-manual-source', 'confirmed', undefined, 'P_MZ091_MANUAL_A')
+    addOrder('mz091-cross-manual-target', 'confirmed', undefined, 'P_MZ091_MANUAL_B')
+    addTask({ id: 'mz091-cross-manual-source-in', order_id: 'mz091-cross-manual-source', property_id: 'P_MZ091_MANUAL_A', task_type: 'checkin_clean', task_date: '2026-12-23', new_code: '8282', new_code_authority_status: 'manual_confirmed' })
+    addTask({ id: 'mz091-cross-manual-source-out', order_id: 'mz091-cross-manual-source', property_id: 'P_MZ091_MANUAL_B', task_type: 'checkout_clean', task_date: '2026-12-24', old_code: 'manual-cross-secret', old_code_authority_status: 'manual_confirmed' })
+    addTask({ id: 'mz091-cross-manual-target-in', order_id: 'mz091-cross-manual-target', property_id: 'P_MZ091_MANUAL_B', task_type: 'checkin_clean', task_date: '2026-12-25', old_code: null })
+    assert.equal((await syncCheckoutOldCodeFromCheckinNewCode({ orderId: 'mz091-cross-manual-source' })).reason, 'property_mismatch_preserved')
+    await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: 'mz091-cross-manual-source' })
+    assert.equal((await fetchTaskByType('mz091-cross-manual-source', 'checkout_clean')).old_code, 'manual-cross-secret', 'manual cross-property values stay preserved for review')
+    assert.equal((await fetchTaskByType('mz091-cross-manual-target', 'checkin_clean')).old_code, null, 'preserved manual cross-property values must never propagate')
+
+    addOrder('mz091-cross-locked-source', 'confirmed', undefined, 'P_MZ091_LOCKED_A')
+    addOrder('mz091-cross-locked-target', 'confirmed', undefined, 'P_MZ091_LOCKED_B')
+    addTask({ id: 'mz091-cross-locked-source-in', order_id: 'mz091-cross-locked-source', property_id: 'P_MZ091_LOCKED_A', task_type: 'checkin_clean', task_date: '2026-12-26', new_code: '8383', new_code_authority_status: 'manual_confirmed' })
+    addTask({ id: 'mz091-cross-locked-source-out', order_id: 'mz091-cross-locked-source', property_id: 'P_MZ091_LOCKED_B', task_type: 'checkout_clean', task_date: '2026-12-27', old_code: 'locked-cross-secret', old_code_authority_status: 'source_linked', auto_sync_enabled: false })
+    addTask({ id: 'mz091-cross-locked-target-in', order_id: 'mz091-cross-locked-target', property_id: 'P_MZ091_LOCKED_B', task_type: 'checkin_clean', task_date: '2026-12-28', old_code: null })
+    assert.equal((await syncCheckoutOldCodeFromCheckinNewCode({ orderId: 'mz091-cross-locked-source' })).reason, 'property_mismatch_preserved')
+    await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: 'mz091-cross-locked-source' })
+    assert.equal((await fetchTaskByType('mz091-cross-locked-source', 'checkout_clean')).old_code, 'locked-cross-secret', 'locked cross-property values stay preserved for review')
+    assert.equal((await fetchTaskByType('mz091-cross-locked-target', 'checkin_clean')).old_code, null, 'locked cross-property values must never propagate')
+
+    addOrder('mz091-stale-order-source', 'confirmed', undefined, 'P_MZ091_STALE_B')
+    addTask({ id: 'mz091-stale-order-source-in', order_id: 'mz091-stale-order-source', property_id: 'P_MZ091_STALE_A', task_type: 'checkin_clean', task_date: '2027-01-01', new_code: '8484', new_code_authority_status: 'manual_confirmed' })
+    addTask({ id: 'mz091-stale-order-source-out', order_id: 'mz091-stale-order-source', property_id: 'P_MZ091_STALE_A', task_type: 'checkout_clean', task_date: '2027-01-02', old_code: '8484', old_code_authority_status: 'source_linked', old_code_source_task_id: 'mz091-stale-order-source-in', old_code_source_order_id: 'mz091-stale-order-source' })
+    await syncCheckoutOldCodeFromCheckinNewCode({ orderId: 'mz091-stale-order-source' })
+    assert.equal((await fetchTaskByType('mz091-stale-order-source', 'checkout_clean')).old_code, null, 'tasks left on A after their order moved to B must not retain automatic same-order credentials')
+    await assert.rejects(
+      claimTaskPasswordAuthorityFields({ taskId: 'mz091-stale-order-source-in', fields: ['new_code'], audit: { requestId: 'stale-order-claim', client: 'web' } }),
+      /password_authority_order_property_mismatch/,
+    )
+    addOrder('mz091-inactive-order-claim', 'cancelled', undefined, 'P_MZ091_INACTIVE')
+    addTask({ id: 'mz091-inactive-order-claim-in', order_id: 'mz091-inactive-order-claim', property_id: 'P_MZ091_INACTIVE', task_type: 'checkin_clean', task_date: '2027-01-02', new_code: '8686', new_code_authority_status: 'needs_review' })
+    await assert.rejects(
+      claimTaskPasswordAuthorityFields({ taskId: 'mz091-inactive-order-claim-in', fields: ['new_code'], audit: { requestId: 'inactive-order-claim', client: 'web' } }),
+      /password_authority_order_property_mismatch/,
+    )
+
+    addOrder('mz091-stale-target-source', 'confirmed', undefined, 'P_MZ091_TARGET_A')
+    addOrder('mz091-stale-target', 'confirmed', undefined, 'P_MZ091_TARGET_B')
+    addTask({ id: 'mz091-stale-target-source-out', order_id: 'mz091-stale-target-source', property_id: 'P_MZ091_TARGET_A', task_type: 'checkout_clean', task_date: '2027-01-03', old_code: '8585', old_code_authority_status: 'manual_confirmed' })
+    addTask({ id: 'mz091-stale-target-in', order_id: 'mz091-stale-target', property_id: 'P_MZ091_TARGET_A', task_type: 'checkin_clean', task_date: '2027-01-04', old_code: '8585', old_code_authority_status: 'source_linked', old_code_source_task_id: 'mz091-stale-target-source-out', old_code_source_order_id: 'mz091-stale-target-source' })
+    await syncCheckinOldCodeFromPreviousStay({ orderId: 'mz091-stale-target' })
+    const staleTarget = await fetchTaskByType('mz091-stale-target', 'checkin_clean')
+    assert.equal(staleTarget.old_code, null, 'a target task left on A after its order moved to B must fail closed')
+    assert.equal(staleTarget.old_code_authority_status, 'needs_review')
+
+    addTask({ id: 'mz091-manual', order_id: null, task_type: 'checkout_clean', task_date: '2026-11-07', old_code: 'same-value', old_code_authority_status: 'needs_review' })
+    const confirmedOnce = await confirmTaskPasswordAuthority({ taskId: 'mz091-manual', fields: ['old_code'], audit: { requestId: 'req-1', actorRole: 'customer_service', client: 'web' } })
+    const confirmedAt = confirmedOnce.task.old_code_authority_updated_at
+    const confirmedTwice = await confirmTaskPasswordAuthority({ taskId: 'mz091-manual', fields: ['old_code'], audit: { requestId: 'req-1', actorRole: 'customer_service', client: 'web' } })
+    assert.equal(confirmedOnce.task.old_code_authority_status, 'manual_confirmed', 'same-value verification must create explicit authority')
+    assert.equal(confirmedTwice.task.old_code_authority_status, 'manual_confirmed', 'same-value verification must be idempotent')
+    assert.deepEqual(confirmedTwice.updatedFields, [], 'a replayed request receipt must not perform a second write or event')
+    assert.equal(confirmedTwice.task.old_code_authority_updated_at, confirmedAt, 'a replay must preserve the first confirmation timestamp')
+    assert.equal(confirmedTwice.task.old_code_source_field, 'manual')
+
+    addTask({ id: 'mz091-manual-concurrent', order_id: null, task_type: 'checkout_clean', task_date: '2026-11-08', old_code: 'concurrent-value', old_code_authority_status: 'needs_review' })
+    const concurrentConfirmations = await Promise.all([
+      confirmTaskPasswordAuthority({ taskId: 'mz091-manual-concurrent', fields: ['old_code'], audit: { requestId: 'req-concurrent', actorRole: 'customer_service', client: 'web' } }),
+      confirmTaskPasswordAuthority({ taskId: 'mz091-manual-concurrent', fields: ['old_code'], audit: { requestId: 'req-concurrent', actorRole: 'customer_service', client: 'web' } }),
+    ])
+    assert.equal(concurrentConfirmations.reduce((sum, result) => sum + result.updatedFields.length, 0), 1, 'concurrent duplicate clicks must claim exactly one receipt')
+
+    addOrder('mz091-legacy-equal', 'confirmed', '0400007890')
+    addTask({ id: 'mz091-legacy-equal-out', order_id: 'mz091-legacy-equal', task_type: 'checkout_clean', task_date: '2026-11-10', old_code: '7890', old_code_authority_status: null })
+    await syncOrderToCleaningTasks('mz091-legacy-equal')
+    const legacyEqual = await fetchTaskByType('mz091-legacy-equal', 'checkout_clean')
+    assert.equal(legacyEqual.old_code, '7890', 'a legacy value equal to the phone-derived suggestion must be preserved')
+    assert.notEqual(legacyEqual.old_code_authority_status, 'auto_derived', 'value equality alone must not claim automatic provenance')
+
+    addOrder('mz091-terminal-source', 'confirmed', undefined, 'P_MZ091_TERMINAL')
+    addOrder('mz091-terminal-ready', 'confirmed', undefined, 'P_MZ091_TERMINAL')
+    addOrder('mz091-terminal-active', 'confirmed', undefined, 'P_MZ091_TERMINAL')
+    addTask({ id: 'mz091-terminal-source-in', order_id: 'mz091-terminal-source', property_id: 'P_MZ091_TERMINAL', task_type: 'checkin_clean', task_date: '2026-11-12', new_code: '4444', new_code_authority_status: 'manual_confirmed' })
+    addTask({ id: 'mz091-terminal-source-out', order_id: 'mz091-terminal-source', property_id: 'P_MZ091_TERMINAL', task_type: 'checkout_clean', task_date: '2026-11-13', old_code: null })
+    addTask({ id: 'mz091-terminal-ready-in', order_id: 'mz091-terminal-ready', property_id: 'P_MZ091_TERMINAL', task_type: 'checkin_clean', task_date: '2026-11-14', status: 'ready', old_code: 'terminal-value', old_code_authority_status: 'source_linked', old_code_source_order_id: 'mz091-terminal-source' })
+    addTask({ id: 'mz091-terminal-active-in', order_id: 'mz091-terminal-active', property_id: 'P_MZ091_TERMINAL', task_type: 'checkin_clean', task_date: '2026-11-15', old_code: null })
+    await syncCheckoutOldCodeFromCheckinNewCode({ orderId: 'mz091-terminal-source' })
+    const terminalNext = await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: 'mz091-terminal-source' })
+    assert.equal(terminalNext.targetTaskId, 'mz091-terminal-active-in', 'ready/completed candidates must not be selected for password mutation')
+    assert.equal((await fetchTaskByType('mz091-terminal-ready', 'checkin_clean')).old_code, 'terminal-value', 'terminal password values must remain immutable')
+    assert.equal((await fetchTaskByType('mz091-terminal-active', 'checkin_clean')).old_code, '4444', 'the next mutable checkin may still receive the source')
+
+    addOrder('mz091-terminal-worker', 'confirmed', '0400009090', 'P_MZ091_WORKER')
+    const terminalWorkerOrder = (db.orders as any[]).find((order: any) => String(order.id) === 'mz091-terminal-worker')
+    terminalWorkerOrder.checkin = '2026-12-20'
+    terminalWorkerOrder.checkout = '2026-12-21'
+    addTask({ id: 'mz091-terminal-worker-in', order_id: 'mz091-terminal-worker', property_id: 'P_MZ091_WORKER', task_type: 'checkin_clean', task_date: '2026-12-20', status: 'completed', new_code: 'worker-in-secret', new_code_authority_status: 'auto_derived', new_code_authority_updated_at: '2026-11-01T00:00:00.000Z' })
+    addTask({ id: 'mz091-terminal-worker-out', order_id: 'mz091-terminal-worker', property_id: 'P_MZ091_WORKER', task_type: 'checkout_clean', task_date: '2026-12-21', status: 'ready', old_code: 'worker-out-secret', old_code_authority_status: 'auto_derived', old_code_authority_updated_at: '2026-11-01T00:00:00.000Z' })
+    await syncOrderToCleaningTasks('mz091-terminal-worker')
+    const terminalWorkerIn = await fetchTaskByType('mz091-terminal-worker', 'checkin_clean')
+    const terminalWorkerOut = await fetchTaskByType('mz091-terminal-worker', 'checkout_clean')
+    assert.equal(terminalWorkerIn.new_code, 'worker-in-secret', 'worker phone drift must not overwrite completed task passwords')
+    assert.equal(terminalWorkerOut.old_code, 'worker-out-secret', 'worker phone drift must not overwrite ready task passwords')
+    const terminalAuthorityTimestamp = terminalWorkerOut.old_code_authority_updated_at
+    await assert.rejects(
+      confirmTaskPasswordAuthority({ taskId: 'mz091-terminal-worker-out', fields: ['old_code'], audit: { requestId: 'terminal-confirm', actorRole: 'customer_service', client: 'web' } }),
+      /password_authority_task_terminal/,
+    )
+    assert.equal(terminalWorkerOut.old_code_authority_updated_at, terminalAuthorityTimestamp, 'terminal confirmation rejection must not update authority timestamps')
+  }
+
+  const redacted = redactPasswordAuditValues({
+    old_code: 'secret-old',
+    nested: { newCode: 'secret-new', guest_phone: 'secret-phone' },
+    decision: { field: 'old_code', canonical_value: 'secret-canonical', manual_value: 'secret-manual' },
+    supersede_conflicts: JSON.stringify([{ field: 'new_code', canonical_value: 'secret-json-canonical', manual_value: 'secret-json-manual' }]),
+    result: 'updated',
+  })
+  const redactedText = JSON.stringify(redacted.value)
+  for (const secret of ['secret-old', 'secret-new', 'secret-phone', 'secret-canonical', 'secret-manual', 'secret-json-canonical', 'secret-json-manual']) {
+    assert.ok(!redactedText.includes(secret), `audit payloads must not contain ${secret}`)
+  }
+  assert.equal(redacted.value.old_code_present, true)
+  const migrationSql = readFileSync(resolve(__dirname, '../migrations/20261101_mz091_password_authority.sql'), 'utf8')
+  for (const required of ['old_code_authority_status', 'new_code_authority_status', 'old_code_source_order_id', 'manual_confirmed', 'needs_review']) {
+    assert.ok(migrationSql.includes(required), `MZ-091 migration must include ${required}`)
+  }
 
   if (pgPool) await pgPool.query('DELETE FROM orders WHERE id=$1', [o3])
   else {

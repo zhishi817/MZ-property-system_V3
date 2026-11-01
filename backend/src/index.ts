@@ -59,6 +59,7 @@ import { runNotificationQueueCleanup, runNotificationQueueRecoveryOnce, startNot
 import { registerCleaningStartTimeoutSchedule } from './services/cleaningStartTimeoutSchedule'
 import { bootstrapCleaningSyncSchemaV2 } from './services/cleaningSync'
 import { warmupR5RequestSchema, warmupR5TaskRuntimeSchema } from './lib/r5RequestSchema'
+import { warmupPasswordAuthoritySchema } from './lib/passwordAuthoritySchema'
 import { warmupMaintenanceRuntimeSchema } from './lib/maintenanceRuntimeSchema'
 import { warmupPropertyGuideRuntimeSchema } from './lib/propertyGuideRuntimeSchema'
 import { warmupPersonnelSettlementSchema } from './lib/personnelSettlementSchema'
@@ -1067,6 +1068,7 @@ async function runStartupWarmups() {
   const readOnlySteps: Array<{ name: string; run: () => Promise<void> }> = [
     { name: 'r5_request_schema', run: warmupR5RequestSchema },
     { name: 'r5_task_runtime_schema', run: warmupR5TaskRuntimeSchema },
+    { name: 'password_authority_schema', run: warmupPasswordAuthoritySchema },
     { name: 'maintenance_runtime_schema', run: warmupMaintenanceRuntimeSchema },
     { name: 'property_guide_runtime_schema', run: warmupPropertyGuideRuntimeSchema },
     { name: 'personnel_settlement_schema', run: warmupPersonnelSettlementSchema },

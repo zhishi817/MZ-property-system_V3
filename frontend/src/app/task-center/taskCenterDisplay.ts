@@ -30,10 +30,28 @@ type TaskCenterDisplayTask = {
   daily_stats_group?: 'turnover' | 'inspection' | 'offline' | null
   daily_stats_key?: string | null
   guest_ready_notification?: {
+    source_type?: 'orders' | 'cleaning_tasks'
+    source_id?: string | null
+    order_id?: string | null
+    task_id?: string | null
+    version?: number | null
     status?: 'not_notified' | 'notified'
     notified_at?: string | null
     notified_by_name?: string | null
+    prior_task_notification?: {
+      status?: 'not_notified' | 'notified'
+      notified_at?: string | null
+      notified_by_name?: string | null
+      last_action?: 'mark' | 'revoke'
+      last_action_at?: string | null
+      last_actor_name?: string | null
+    } | null
   } | null
+  guest_ready_outside_key?: {
+    order_id?: string | null
+    version?: number | null
+  } | null
+  order_id_checkin?: string | null
 }
 
 type TaskCenterNightsDisplayTask = TaskCenterDisplayTask & {
@@ -55,14 +73,75 @@ function uniqueText(values: Array<string | null | undefined>) {
 }
 
 export function guestReadyOperationId(params: {
-  orderId: unknown
+  orderId?: unknown
+  sourceType?: unknown
+  sourceId?: unknown
   action: 'mark' | 'revoke' | 'register_outside_key' | 'cancel_outside_key'
   expectedVersion: unknown
 }) {
-  const orderId = String(params.orderId ?? '').trim()
+  const sourceType = String(params.sourceType || 'orders').trim()
+  const sourceId = String(params.sourceId ?? params.orderId ?? '').trim()
   const expectedVersion = Number(params.expectedVersion)
-  if (!orderId || !Number.isSafeInteger(expectedVersion) || expectedVersion < 0) return null
-  return `guest-ready:${params.action}:${expectedVersion}:${orderId}`
+  if (!['orders', 'cleaning_tasks'].includes(sourceType)
+    || !sourceId
+    || !Number.isSafeInteger(expectedVersion)
+    || expectedVersion < 0) return null
+  return `guest-ready:${sourceType}:${params.action}:${expectedVersion}:${sourceId}`
+}
+
+type TaskCenterGuestReadyAction = {
+  id?: string | null
+  source_type?: string | null
+  source_id?: string | null
+}
+
+export function taskCenterGuestReadyMutationTarget(task: TaskCenterDisplayTask, action: TaskCenterGuestReadyAction) {
+  const orderIdCheckin = String(task.order_id_checkin || '').trim()
+  const notification = task.guest_ready_notification
+  const isStatusAction = ['record_guest_ready_notified', 'revoke_guest_ready_notified'].includes(String(action.id || '').trim())
+  if (isStatusAction) {
+    const sourceType = String(notification?.source_type || (orderIdCheckin ? 'orders' : '')).trim()
+    const sourceId = String(notification?.source_id || (sourceType === 'orders' ? orderIdCheckin : notification?.task_id) || '').trim()
+    const exactAuthority = sourceType === 'orders'
+      ? Boolean(orderIdCheckin) && sourceId === orderIdCheckin
+      : sourceType === 'cleaning_tasks'
+        ? !orderIdCheckin && Boolean(sourceId) && String(notification?.task_id || '').trim() === sourceId
+        : false
+    if (!exactAuthority
+      || String(action.source_type || '').trim() !== sourceType
+      || String(action.source_id || '').trim() !== sourceId
+      || notification?.version == null) return null
+    return { sourceType: sourceType as 'orders' | 'cleaning_tasks', sourceId, expectedVersion: notification.version }
+  }
+  const outsideKeyOrderId = String(task.guest_ready_outside_key?.order_id || '').trim()
+  if (!['register_guest_ready_outside_key', 'cancel_guest_ready_outside_key'].includes(String(action.id || '').trim())
+    || !outsideKeyOrderId
+    || outsideKeyOrderId !== orderIdCheckin
+    || String(action.source_type || '').trim() !== 'orders'
+    || String(action.source_id || '').trim() !== outsideKeyOrderId
+    || task.guest_ready_outside_key?.version == null) return null
+  return { sourceType: 'orders' as const, sourceId: outsideKeyOrderId, expectedVersion: task.guest_ready_outside_key.version }
+}
+
+export function taskCenterTaskMatchesGuestReadyTarget(
+  task: TaskCenterDisplayTask,
+  sourceType: 'orders' | 'cleaning_tasks',
+  sourceId: string,
+  expectedVersion: unknown,
+) {
+  const notification = task.guest_ready_notification
+  const statusAction: TaskCenterGuestReadyAction = {
+    id: notification?.status === 'notified' ? 'revoke_guest_ready_notified' : 'record_guest_ready_notified',
+    source_type: sourceType,
+    source_id: sourceId,
+  }
+  const target = taskCenterGuestReadyMutationTarget(task, statusAction)
+  const expected = Number(expectedVersion)
+  return target?.sourceType === sourceType
+    && target.sourceId === sourceId
+    && Number.isSafeInteger(expected)
+    && expected >= 0
+    && Number(target.expectedVersion) === expected
 }
 
 function formatCheckoutDate(raw: string) {
@@ -258,12 +337,16 @@ export function guestReadyNotificationPresentation(task: TaskCenterDisplayTask, 
   if (String(viewerRole || '').trim().toLowerCase() !== 'customer_service') return null
   const notification = task.guest_ready_notification
   if (!notification) return null
+  const prior = notification.prior_task_notification
+  const priorDetail = prior
+    ? `关联订单前任务记录：${prior.status === 'notified' ? '已通知' : '已撤销'}${[prior.notified_by_name || prior.last_actor_name, prior.notified_at || prior.last_action_at].filter(Boolean).length ? `（${[prior.notified_by_name || prior.last_actor_name, prior.notified_at || prior.last_action_at].filter(Boolean).join(' · ')}）` : ''}；该历史不会自动覆盖订单状态。`
+    : ''
   if (notification.status !== 'notified') {
-    return { label: '客人未通知', tone: 'pending' as const, detail: '' }
+    return { label: '客人未通知', tone: 'pending' as const, detail: priorDetail }
   }
   const actor = String(notification.notified_by_name || '').trim()
   const occurredAt = String(notification.notified_at || '').trim()
-  const detail = [actor, occurredAt].filter(Boolean).join(' · ')
+  const detail = [[actor, occurredAt].filter(Boolean).join(' · '), priorDetail].filter(Boolean).join('；')
   return { label: '已通知客人', tone: 'success' as const, detail }
 }
 

@@ -405,7 +405,7 @@ function testManualCheckinLinkMigrationIsGuardedAndTransactional() {
   assert.match(dbAdapterSource, /lockOrderTurnoverIdentityWrite[\s\S]*?order-turnover-identity[\s\S]*?cleaning-turnover:/)
 
   const syncSource = fs.readFileSync(path.resolve(__dirname, '../../src/services/cleaningSync.ts'), 'utf8')
-  assert.match(syncSource, /lockCleaningOrderIdentityKey\(client, id\)[\s\S]*?const order = await loadOrder\(id, client\)/)
+  assert.match(syncSource, /lockCleaningOrderIdentityKey\(client, id\)[\s\S]*?const order = await loadOrder\(id, client, \{ forShare: !!client \}\)/)
   const boundaryLockBlock = syncSource.indexOf('const turnoverBoundaryDates = Array.from(new Set(')
   const firstTaskSync = syncSource.indexOf('const rCheckout = await syncOneTask', boundaryLockBlock)
   assert.ok(boundaryLockBlock >= 0 && firstTaskSync > boundaryLockBlock, 'sync must acquire every sorted order boundary advisory lock before task rows')
