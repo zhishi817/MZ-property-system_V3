@@ -9,13 +9,65 @@ import json
 import re
 import subprocess
 import sys
+import unicodedata
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
 LEDGER_RELATIVE_PATH = Path("docs/change-release-ledger.md")
+INCREMENTAL_LEDGER_RELATIVE_DIR = Path("docs/change-release-ledger.d")
+INCREMENTAL_LEDGER_FILENAME = re.compile(r"^(CRL-\d{8}-\d{3})\.json$")
+INCREMENTAL_LEDGER_MAX_BYTES = 64 * 1024
+INCREMENTAL_LEDGER_KEYS = frozenset(
+    {
+        "schema_version",
+        "crl",
+        "repository",
+        "title",
+        "request",
+        "outcome",
+        "implementation",
+        "impact_dependencies",
+        "validation",
+        "risks",
+        "files",
+        "staged_hunks",
+        "release_attempt",
+    }
+)
+INCREMENTAL_LEDGER_LIST_KEYS = (
+    "implementation",
+    "impact_dependencies",
+    "validation",
+    "risks",
+)
+INCREMENTAL_RELEASE_ATTEMPT_KEYS = frozenset(
+    {
+        "id",
+        "intended_action",
+        "branch",
+        "base_sha",
+        "fetched_at",
+        "candidate_patch_sha256",
+        "commit_sha",
+        "dependencies",
+        "required_validation",
+        "shared_hunk_review",
+        "generated_file_review",
+        "technical_state",
+        "user_authorization",
+        "independent_review",
+        "action_conclusion",
+        "blockers",
+    }
+)
+SENSITIVE_REGISTRATION_TEXT = re.compile(
+    r"(?i)(?:postgres(?:ql)?://|authorization\s*:\s*bearer|"
+    r"(?:api[_-]?key|token|password|secret)\s*[:=]|"
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----)"
+)
 FILES_HEADING = "### Files / Areas"
 CRL_HEADING = re.compile(r"^## (CRL-\d{8}-\d{3})\b")
 ATTEMPT_HEADING = re.compile(r"^#### (RA-[^\s]+)\b")
@@ -76,6 +128,16 @@ class DependencyReference:
     sha: str
 
 
+@dataclass(frozen=True)
+class IncrementalRegistration:
+    identifier: str
+    repository: str
+    source_path: str
+    files: frozenset[str]
+    section: CrlSection
+    canonical_json: str
+
+
 class GitError(RuntimeError):
     """A Git operation needed for a report could not be completed."""
 
@@ -127,9 +189,16 @@ def recorded_paths(ledger: Path) -> set[str]:
     return paths
 
 
-def ledger_preflight(root: Path) -> int | None:
+def ledger_preflight(root: Path, expected_repository: str = "root") -> int | None:
     try:
         sections = parse_crl_sections(root / LEDGER_RELATIVE_PATH)
+        registrations = incremental_registrations(root, expected_repository)
+        duplicate_ids = sorted(sections.keys() & registrations.keys())
+        if duplicate_ids:
+            raise ValueError(
+                "Incremental registrations duplicate CRLs in the historical ledger: "
+                + ", ".join(duplicate_ids)
+            )
     except ValueError as error:
         print("Ledger structure errors:")
         print(f"- {error}")
@@ -142,6 +211,9 @@ def ledger_preflight(root: Path) -> int | None:
         return 1
     try:
         lineage_errors = remote_lineage_errors(root, sections)
+        lineage_errors.extend(
+            incremental_remote_lineage_errors(root, registrations, expected_repository)
+        )
     except GitError:
         print("Ledger lineage: NOT VERIFIED (locally fetched origin/Dev ledger is unavailable).")
         return 2
@@ -157,8 +229,8 @@ def ledger_preflight(root: Path) -> int | None:
     return None
 
 
-def coverage_audit(root: Path) -> int:
-    preflight = ledger_preflight(root)
+def coverage_audit(root: Path, expected_repository: str = "root") -> int:
+    preflight = ledger_preflight(root, expected_repository)
     if preflight is not None:
         return preflight
     try:
@@ -166,10 +238,38 @@ def coverage_audit(root: Path) -> int:
     except GitError as error:
         print(str(error) or "Unable to inspect Git changes.", file=sys.stderr)
         return 2
-    recorded = recorded_paths(root / LEDGER_RELATIVE_PATH)
-    uncovered = sorted(changed - recorded)
-    print(f"Changed files: {len(changed)}")
-    print(f"Recorded changed files: {len(changed & recorded)}")
+    registration_scope = set(changed)
+    try:
+        registrations = incremental_registrations(root, expected_repository)
+        if any(
+            path.startswith(INCREMENTAL_LEDGER_RELATIVE_DIR.as_posix() + "/")
+            for path in changed
+        ):
+            base = resolve_ref(root, "origin/Dev")
+            head = resolve_ref(root, "HEAD")
+            registration_scope |= git_paths(
+                root, "diff", "--name-only", f"{base}...{head}"
+            )
+            registration_scope |= git_paths(
+                root, "diff", "--name-only", "--no-renames", f"{base}...{head}"
+            )
+        incremental_paths, registration_errors = incremental_range_claims(
+            registrations, registration_scope
+        )
+    except ValueError as error:
+        print("Ledger structure errors:")
+        print(f"- {error}")
+        return 1
+    if registration_errors:
+        print("Incremental registration errors:")
+        for error in registration_errors:
+            print(f"- {error}")
+        return 1
+    recorded = recorded_paths(root / LEDGER_RELATIVE_PATH) | incremental_paths
+    audited_changed = registration_scope if incremental_paths else changed
+    uncovered = sorted(audited_changed - recorded)
+    print(f"Changed files: {len(audited_changed)}")
+    print(f"Recorded changed files: {len(audited_changed & recorded)}")
     if uncovered:
         print("Uncovered files:")
         for path in uncovered:
@@ -179,8 +279,13 @@ def coverage_audit(root: Path) -> int:
     return 0
 
 
-def range_coverage_audit(root: Path, base_reference: str, head_reference: str) -> int:
-    preflight = ledger_preflight(root)
+def range_coverage_audit(
+    root: Path,
+    base_reference: str,
+    head_reference: str,
+    expected_repository: str = "root",
+) -> int:
+    preflight = ledger_preflight(root, expected_repository)
     if preflight is not None:
         return preflight
     try:
@@ -193,7 +298,21 @@ def range_coverage_audit(root: Path, base_reference: str, head_reference: str) -
     except GitError as error:
         print(str(error) or "Unable to inspect the pull-request range.", file=sys.stderr)
         return 2
-    recorded = recorded_paths(root / LEDGER_RELATIVE_PATH)
+    try:
+        registrations = incremental_registrations(root, expected_repository)
+        incremental_paths, registration_errors = incremental_range_claims(
+            registrations, changed
+        )
+    except ValueError as error:
+        print("Ledger structure errors:")
+        print(f"- {error}")
+        return 1
+    if registration_errors:
+        print("Incremental registration errors:")
+        for error in registration_errors:
+            print(f"- {error}")
+        return 1
+    recorded = recorded_paths(root / LEDGER_RELATIVE_PATH) | incremental_paths
     uncovered = sorted(changed - recorded)
     print(f"Audit scope: {base}...{head}")
     print(f"Changed files: {len(changed)}")
@@ -205,6 +324,460 @@ def range_coverage_audit(root: Path, base_reference: str, head_reference: str) -
         return 1
     print("Coverage: PASS")
     return 0
+
+
+def safe_registration_text(value: Any, field: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"Incremental registration field `{field}` must be a string.")
+    if value != value.strip() or not value or len(value) > 1000:
+        raise ValueError(
+            f"Incremental registration field `{field}` must be non-empty, trimmed, and at most 1000 characters."
+        )
+    if len(value.splitlines()) != 1 or any(
+        unicodedata.category(character).startswith("C") for character in value
+    ):
+        raise ValueError(
+            f"Incremental registration field `{field}` contains a control character."
+        )
+    if SENSITIVE_REGISTRATION_TEXT.search(value):
+        raise ValueError(
+            f"Incremental registration field `{field}` contains potentially sensitive material."
+        )
+    return value
+
+
+def normalized_registration_path(value: Any) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError("Incremental registration file paths must be non-empty strings without surrounding whitespace.")
+    if "\\" in value or "\x00" in value:
+        raise ValueError(f"Incremental registration contains an invalid file path: {value!r}.")
+    path = PurePosixPath(value)
+    if (
+        path.is_absolute()
+        or value != path.as_posix()
+        or any(part in ("", ".", "..") for part in path.parts)
+    ):
+        raise ValueError(f"Incremental registration contains a non-normalized file path: {value!r}.")
+    return value
+
+
+def incremental_registration_section(
+    value: dict[str, Any], source_path: str
+) -> CrlSection:
+    attempt = value["release_attempt"]
+    lines = [
+        f"## {value['crl']} — {value['title']}",
+        "",
+        f"- **Repository:** `{value['repository']}`",
+        f"- **Request:** {value['request']}",
+        f"- **Outcome:** {value['outcome']}",
+        "",
+        "### Implementation",
+        "",
+        *(f"- {item}" for item in value["implementation"]),
+        "",
+        "### Files / Areas",
+        "",
+        *(f"- `{path}` — exact incremental scope." for path in value["files"]),
+        "",
+        "### Impact / Dependencies",
+        "",
+        *(f"- {item}" for item in value["impact_dependencies"]),
+        "",
+        "### Validation",
+        "",
+        *(f"- {item}" for item in value["validation"]),
+        "",
+        "### Staged Commit Scope",
+        "",
+        f"- **Repository:** `{value['repository']}`",
+        "- **Status:** `prepared`",
+        "- **Untracked review:** `none`",
+        *(
+            f"- `{item['path']}` — SHA-256: `{item['sha256']}`"
+            for item in value["staged_hunks"]
+        ),
+        "",
+        "### Release Attempts",
+        "",
+        f"#### {attempt['id']}",
+        "",
+        f"- Repository: `{value['repository']}`",
+        f"- Selected CRLs: `{value['crl']}`",
+        f"- Selected CRL identities: `{value['repository']}/{value['crl']}`",
+        f"- Intended action: `{attempt['intended_action']}`",
+        f"- Branch: `{attempt['branch']}`",
+        f"- Base: `origin/Dev@{attempt['base_sha']}`; fetched at `{attempt['fetched_at']}`",
+        f"- Candidate patch SHA-256: `{attempt['candidate_patch_sha256']}`",
+        f"- Commit SHA: `{attempt['commit_sha']}`",
+        f"- Dependencies: {attempt['dependencies']}",
+        f"- Required validation: {attempt['required_validation']}",
+        f"- Shared-hunk review: {attempt['shared_hunk_review']}",
+        f"- Generated-file review: {attempt['generated_file_review']}",
+        f"- Technical state: `{attempt['technical_state']}`",
+        f"- User authorization: `{attempt['user_authorization']}`",
+        f"- Independent review: {attempt['independent_review']}",
+        f"- Action conclusion: `{attempt['action_conclusion']}`; blockers: {attempt['blockers']}",
+        "",
+        "### Risks / Release Notes",
+        "",
+        *(f"- {item}" for item in value["risks"]),
+    ]
+    parsed = parse_crl_sections_text("\n".join(lines) + "\n")
+    section = parsed.get(value["crl"])
+    if section is None:
+        raise ValueError(
+            f"Incremental registration `{source_path}` could not be materialized as a CRL."
+        )
+    return section
+
+
+def parse_incremental_registration_text(
+    text: str,
+    source_path: str,
+    expected_repository: str,
+) -> IncrementalRegistration:
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise ValueError(
+            f"Incremental registration `{source_path}` is not valid JSON: {error.msg}."
+        ) from error
+    if not isinstance(value, dict):
+        raise ValueError(f"Incremental registration `{source_path}` must contain one JSON object.")
+    keys = frozenset(value)
+    if keys != INCREMENTAL_LEDGER_KEYS:
+        missing = sorted(INCREMENTAL_LEDGER_KEYS - keys)
+        unknown = sorted(keys - INCREMENTAL_LEDGER_KEYS)
+        detail = []
+        if missing:
+            detail.append("missing " + ", ".join(missing))
+        if unknown:
+            detail.append("unknown " + ", ".join(unknown))
+        raise ValueError(
+            f"Incremental registration `{source_path}` has an invalid schema ({'; '.join(detail)})."
+        )
+    if value["schema_version"] != 1 or isinstance(value["schema_version"], bool):
+        raise ValueError(
+            f"Incremental registration `{source_path}` must use schema_version 1."
+        )
+    source_name = PurePosixPath(source_path).name
+    filename_match = INCREMENTAL_LEDGER_FILENAME.fullmatch(source_name)
+    if not filename_match:
+        raise ValueError(
+            f"Incremental registration filename must be CRL-YYYYMMDD-NNN.json: `{source_path}`."
+        )
+    identifier = safe_registration_text(value["crl"], "crl")
+    if identifier != filename_match.group(1):
+        raise ValueError(
+            f"Incremental registration `{source_path}` CRL must match its filename."
+        )
+    repository = safe_registration_text(value["repository"], "repository")
+    if repository != expected_repository:
+        raise ValueError(
+            f"Incremental registration `{source_path}` repository must be `{expected_repository}`."
+        )
+    for field in ("title", "request", "outcome"):
+        safe_registration_text(value[field], field)
+    for field in INCREMENTAL_LEDGER_LIST_KEYS:
+        items = value[field]
+        if not isinstance(items, list) or not items:
+            raise ValueError(
+                f"Incremental registration field `{field}` must be a non-empty list."
+            )
+        for index, item in enumerate(items):
+            safe_registration_text(item, f"{field}[{index}]")
+    raw_files = value["files"]
+    if not isinstance(raw_files, list) or not raw_files:
+        raise ValueError("Incremental registration field `files` must be a non-empty list.")
+    files = [normalized_registration_path(path) for path in raw_files]
+    if files != sorted(files):
+        raise ValueError(
+            f"Incremental registration `{source_path}` file paths must be sorted."
+        )
+    if len(files) != len(set(files)):
+        raise ValueError(
+            f"Incremental registration `{source_path}` contains duplicate file paths."
+        )
+    if source_path not in files:
+        raise ValueError(
+            f"Incremental registration `{source_path}` must list itself in `files`."
+        )
+    other_registration_paths = sorted(
+        path
+        for path in files
+        if path.startswith(INCREMENTAL_LEDGER_RELATIVE_DIR.as_posix() + "/")
+        and path != source_path
+    )
+    if other_registration_paths:
+        raise ValueError(
+            f"Incremental registration `{source_path}` cannot claim another registration: "
+            + ", ".join(other_registration_paths)
+            + "."
+        )
+    raw_hunks = value["staged_hunks"]
+    if not isinstance(raw_hunks, list) or not raw_hunks:
+        raise ValueError(
+            "Incremental registration field `staged_hunks` must be a non-empty list."
+        )
+    normalized_hunks: list[tuple[str, str]] = []
+    for index, item in enumerate(raw_hunks):
+        if not isinstance(item, dict) or frozenset(item) != {"path", "sha256"}:
+            raise ValueError(
+                f"Incremental registration staged_hunks[{index}] must contain only path and sha256."
+            )
+        path = normalized_registration_path(item["path"])
+        fingerprint = item["sha256"]
+        if not isinstance(fingerprint, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", fingerprint
+        ):
+            raise ValueError(
+                f"Incremental registration staged_hunks[{index}] has an invalid SHA-256."
+            )
+        if path not in files or path == source_path:
+            raise ValueError(
+                f"Incremental registration staged_hunks[{index}] must bind a listed non-registration path."
+            )
+        normalized_hunks.append((path, fingerprint))
+    if normalized_hunks != sorted(normalized_hunks):
+        raise ValueError(
+            f"Incremental registration `{source_path}` staged_hunks must be sorted."
+        )
+    if len(normalized_hunks) != len(set(normalized_hunks)):
+        raise ValueError(
+            f"Incremental registration `{source_path}` contains duplicate staged hunk fingerprints."
+        )
+    attempt = value["release_attempt"]
+    if not isinstance(attempt, dict) or frozenset(attempt) != INCREMENTAL_RELEASE_ATTEMPT_KEYS:
+        raise ValueError(
+            f"Incremental registration `{source_path}` release_attempt has an invalid schema."
+        )
+    for field, attempt_value in attempt.items():
+        safe_registration_text(attempt_value, f"release_attempt.{field}")
+    if not re.fullmatch(r"RA-\d{8}-\d{3}", attempt["id"]):
+        raise ValueError(
+            f"Incremental registration `{source_path}` release attempt ID is invalid."
+        )
+    if attempt["intended_action"] not in {"commit", "push"}:
+        raise ValueError(
+            f"Incremental registration `{source_path}` intended action is invalid."
+        )
+    for field in ("base_sha",):
+        if not re.fullmatch(r"[0-9a-f]{40}", attempt[field]):
+            raise ValueError(
+                f"Incremental registration `{source_path}` {field} must be a full commit SHA."
+            )
+    commit_sha = attempt["commit_sha"]
+    if commit_sha != "not committed" and not re.fullmatch(
+        r"[0-9a-f]{40}", commit_sha
+    ):
+        raise ValueError(
+            f"Incremental registration `{source_path}` commit_sha must be `not committed` or a full commit SHA."
+        )
+    if commit_sha == "not committed" and (
+        attempt["intended_action"] != "commit"
+        or attempt["technical_state"] not in {"candidate", "verified"}
+    ):
+        raise ValueError(
+            f"Incremental registration `{source_path}` may use `not committed` only for a candidate or verified commit attempt."
+        )
+    if not re.fullmatch(r"[0-9a-f]{64}", attempt["candidate_patch_sha256"]):
+        raise ValueError(
+            f"Incremental registration `{source_path}` candidate patch SHA-256 is invalid."
+        )
+    if attempt["technical_state"] not in {
+        "candidate",
+        "verified",
+        "committed",
+        "pushed",
+        "merged",
+        "deployed",
+    }:
+        raise ValueError(
+            f"Incremental registration `{source_path}` technical state is invalid."
+        )
+    if attempt["user_authorization"] not in {
+        "not-selected",
+        "selected-for-commit",
+        "approved-for-push",
+    }:
+        raise ValueError(
+            f"Incremental registration `{source_path}` user authorization is invalid."
+        )
+    if attempt["action_conclusion"] not in {"GO", "BLOCKED", "NOT VERIFIED"}:
+        raise ValueError(
+            f"Incremental registration `{source_path}` action conclusion is invalid."
+        )
+    section = incremental_registration_section(value, source_path)
+    return IncrementalRegistration(
+        identifier=identifier,
+        repository=repository,
+        source_path=source_path,
+        files=frozenset(files),
+        section=section,
+        canonical_json=json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+    )
+
+
+def incremental_registrations(
+    root: Path, expected_repository: str
+) -> dict[str, IncrementalRegistration]:
+    directory = root / INCREMENTAL_LEDGER_RELATIVE_DIR
+    if not directory.exists():
+        return {}
+    if not directory.is_dir() or directory.is_symlink():
+        raise ValueError("Incremental ledger path must be a real directory, not a symlink.")
+    registrations: dict[str, IncrementalRegistration] = {}
+    for path in sorted(directory.iterdir()):
+        relative = path.relative_to(root).as_posix()
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"Incremental ledger contains a non-regular file: `{relative}`.")
+        if path.stat().st_size > INCREMENTAL_LEDGER_MAX_BYTES:
+            raise ValueError(f"Incremental registration `{relative}` exceeds 64 KiB.")
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError(
+                f"Incremental registration `{relative}` must be UTF-8 text."
+            ) from error
+        registration = parse_incremental_registration_text(
+            text, relative, expected_repository
+        )
+        if registration.identifier in registrations:
+            raise ValueError(
+                f"Duplicate incremental CRL ID: {registration.identifier}."
+            )
+        registrations[registration.identifier] = registration
+    return registrations
+
+
+def repository_crl_sections(
+    root: Path, expected_repository: str
+) -> tuple[dict[str, CrlSection], dict[str, IncrementalRegistration]]:
+    sections = parse_crl_sections(root / LEDGER_RELATIVE_PATH)
+    registrations = incremental_registrations(root, expected_repository)
+    duplicate_ids = sorted(sections.keys() & registrations.keys())
+    if duplicate_ids:
+        raise ValueError(
+            "Incremental registrations duplicate CRLs in the historical ledger: "
+            + ", ".join(duplicate_ids)
+        )
+    sections.update(
+        {identifier: registration.section for identifier, registration in registrations.items()}
+    )
+    return sections, registrations
+
+
+def is_ledger_metadata_path(path: str) -> bool:
+    return path == LEDGER_RELATIVE_PATH.as_posix() or path.startswith(
+        INCREMENTAL_LEDGER_RELATIVE_DIR.as_posix() + "/"
+    )
+
+
+def incremental_registrations_at_ref(
+    root: Path, reference: str, expected_repository: str
+) -> dict[str, IncrementalRegistration]:
+    output = run_git(
+        root,
+        "ls-tree",
+        "-r",
+        "--name-only",
+        reference,
+        "--",
+        INCREMENTAL_LEDGER_RELATIVE_DIR.as_posix(),
+    )
+    assert isinstance(output, str)
+    registrations: dict[str, IncrementalRegistration] = {}
+    for source_path in sorted(line for line in output.splitlines() if line.strip()):
+        text = run_git(root, "show", f"{reference}:{source_path}")
+        assert isinstance(text, str)
+        registration = parse_incremental_registration_text(
+            text, source_path, expected_repository
+        )
+        if registration.identifier in registrations:
+            raise ValueError(
+                f"Duplicate incremental CRL ID at {reference}: {registration.identifier}."
+            )
+        registrations[registration.identifier] = registration
+    return registrations
+
+
+def incremental_remote_lineage_errors(
+    root: Path,
+    local: dict[str, IncrementalRegistration],
+    expected_repository: str,
+) -> list[str]:
+    remote = incremental_registrations_at_ref(root, "origin/Dev", expected_repository)
+    errors: list[str] = []
+    missing = sorted(remote.keys() - local.keys())
+    if missing:
+        errors.append(
+            "Local incremental ledger omits registrations already present in origin/Dev: "
+            + ", ".join(missing)
+            + "."
+        )
+    for identifier in sorted(remote.keys() & local.keys()):
+        if remote[identifier] != local[identifier]:
+            errors.append(
+                f"Incremental registration {identifier} differs from origin/Dev; registrations are append-only."
+            )
+    return errors
+
+
+def incremental_range_claims(
+    registrations: dict[str, IncrementalRegistration],
+    changed: set[str],
+) -> tuple[set[str], list[str]]:
+    changed_registration_paths = {
+        path
+        for path in changed
+        if path.startswith(INCREMENTAL_LEDGER_RELATIVE_DIR.as_posix() + "/")
+    }
+    if not changed_registration_paths:
+        return set(), []
+    active = [
+        registration
+        for registration in registrations.values()
+        if registration.source_path in changed_registration_paths
+    ]
+    errors: list[str] = []
+    unknown = sorted(
+        changed_registration_paths
+        - {registration.source_path for registration in active}
+    )
+    if unknown:
+        errors.append(
+            "Changed incremental ledger paths are not valid registrations: "
+            + ", ".join(unknown)
+            + "."
+        )
+    claimed_by_path: dict[str, list[str]] = {}
+    for registration in active:
+        for path in registration.files:
+            claimed_by_path.setdefault(path, []).append(registration.identifier)
+    overlapping = sorted(path for path, owners in claimed_by_path.items() if len(owners) > 1)
+    if overlapping:
+        errors.append(
+            "Changed paths are claimed by more than one incremental registration: "
+            + ", ".join(overlapping)
+            + "."
+        )
+    claimed = set(claimed_by_path)
+    wrong = sorted(claimed - changed)
+    missing = sorted(changed - claimed)
+    if wrong:
+        errors.append(
+            "Incremental registrations claim paths outside this exact change range: "
+            + ", ".join(wrong)
+            + "."
+        )
+    if missing:
+        errors.append(
+            "Incremental registrations do not cover every path in this exact change range: "
+            + ", ".join(missing)
+            + "."
+        )
+    return claimed, errors
 
 
 def canonical_field_name(value: str) -> str:
@@ -805,6 +1378,7 @@ def content_patch_sha256(root: Path, base: str, head: str) -> str:
         "--",
         ".",
         ":(exclude)docs/change-release-ledger.md",
+        ":(exclude)docs/change-release-ledger.d/**",
         text=False,
     )
     assert isinstance(output, bytes)
@@ -820,6 +1394,24 @@ def staged_content_patch_sha256(root: Path) -> str:
         "--",
         ".",
         ":(exclude)docs/change-release-ledger.md",
+        ":(exclude)docs/change-release-ledger.d/**",
+        text=False,
+    )
+    assert isinstance(output, bytes)
+    return hashlib.sha256(output).hexdigest()
+
+
+def indexed_content_patch_sha256(root: Path, base: str) -> str:
+    output = run_git(
+        root,
+        "diff",
+        "--cached",
+        "--binary",
+        base,
+        "--",
+        ".",
+        ":(exclude)docs/change-release-ledger.md",
+        ":(exclude)docs/change-release-ledger.d/**",
         text=False,
     )
     assert isinstance(output, bytes)
@@ -1056,7 +1648,9 @@ def build_pre_commit_report(
     else:
         checks.append(check_item("repository boundary", "PASS", "Repository matches this audit script."))
     try:
-        sections = parse_crl_sections(root / LEDGER_RELATIVE_PATH)
+        sections, registrations = repository_crl_sections(
+            root, expected_repository
+        )
     except ValueError as error:
         errors.append(str(error))
         checks.append(check_item("ledger structure", "FAIL", str(error)))
@@ -1067,6 +1661,19 @@ def build_pre_commit_report(
         checks.append(check_item("selected CRLs", "FAIL", "A requested CRL is not in this repository ledger."))
         return finalize_report(report, errors, missing)
     selected_sections = [sections[identifier] for identifier in selected_ids]
+    incremental_selected = sorted(selected_ids & registrations.keys())
+    if incremental_selected and len(selected_ids) != 1:
+        errors.append(
+            "An incremental registration must be audited as one exact CRL, without combining other units."
+        )
+        checks.append(
+            check_item(
+                "incremental registration boundary",
+                "FAIL",
+                "Incremental registration cannot be combined with another selected CRL.",
+            )
+        )
+        return finalize_report(report, errors, missing)
     identity_errors, identity_missing = selected_identity_issues(selected_sections, expected_repository)
     errors.extend(identity_errors)
     missing.extend(identity_missing)
@@ -1098,7 +1705,39 @@ def build_pre_commit_report(
         else:
             checks.append(check_item("staged candidate", "PASS", f"{len(staged)} staged file(s)."))
         selected_files = set().union(*(section.files for section in selected_sections))
-        unselected = sorted(set(staged) - selected_files)
+        candidate_paths = list(staged)
+        incremental_base: str | None = None
+        incremental_attempt: ReleaseAttempt | None = None
+        if incremental_selected:
+            attempts = parse_attempts(selected_sections[0])
+            incremental_attempt = attempts[-1] if attempts else None
+            base_match = (
+                None
+                if incremental_attempt is None
+                else SHA.search(field_value(incremental_attempt, "Base"))
+            )
+            if base_match is None:
+                errors.append("Incremental registration has no parseable Base SHA.")
+            else:
+                incremental_base = resolve_ref(root, base_match.group(0))
+                candidate_paths = sorted(
+                    git_paths(
+                        root,
+                        "diff",
+                        "--cached",
+                        "--name-only",
+                        incremental_base,
+                    )
+                    | git_paths(
+                        root,
+                        "diff",
+                        "--cached",
+                        "--name-only",
+                        "--no-renames",
+                        incremental_base,
+                    )
+                )
+        unselected = sorted(set(candidate_paths) - selected_files)
         report["unselected_staged_files"] = unselected
         if unselected:
             errors.append("Staged candidate contains files outside the selected CRL file lists.")
@@ -1122,10 +1761,15 @@ def build_pre_commit_report(
         receipt_only = staged == [LEDGER_RELATIVE_PATH.as_posix()]
         actual_hunks: set[tuple[str, str]] = set()
         non_text_hunk_paths: list[str] = []
-        for path in staged:
-            if path == LEDGER_RELATIVE_PATH.as_posix():
+        for path in candidate_paths:
+            if is_ledger_metadata_path(path):
                 continue
-            fingerprints = diff_hunk_fingerprints(root, path, "--cached")
+            range_args = (
+                ("--cached", incremental_base)
+                if incremental_base is not None
+                else ("--cached",)
+            )
+            fingerprints = diff_hunk_fingerprints(root, path, *range_args)
             if not fingerprints:
                 non_text_hunk_paths.append(path)
             actual_hunks.update(fingerprints)
@@ -1176,6 +1820,28 @@ def build_pre_commit_report(
                         "staged hunk fingerprints",
                         "PASS",
                         f"{len(actual_hunks)} non-ledger hunk(s) match scope.",
+                    )
+                )
+        if incremental_selected and incremental_attempt is not None and incremental_base is not None:
+            actual_patch = indexed_content_patch_sha256(root, incremental_base)
+            recorded_patch = SHA.search(
+                field_value(incremental_attempt, "Candidate patch SHA-256")
+            )
+            if recorded_patch is None or recorded_patch.group(0).lower() != actual_patch:
+                errors.append(
+                    "Incremental registration candidate patch fingerprint does not match the exact indexed candidate."
+                )
+                checks.append(
+                    check_item(
+                        "incremental candidate fingerprint",
+                        "FAIL",
+                        "Recorded and computed hashes differ.",
+                    )
+                )
+            else:
+                checks.append(
+                    check_item(
+                        "incremental candidate fingerprint", "PASS", actual_patch
                     )
                 )
     except GitError:
@@ -1264,6 +1930,20 @@ def build_release_report(
         else:
             report["git_worktree_state"] = "clean"
             checks.append(check_item("checked-out Git state", "PASS", "Working tree is clean."))
+        checkout_head = resolve_ref(root, "HEAD")
+        if checkout_head != head:
+            errors.append("Checked-out HEAD does not match the supplied audit head.")
+            checks.append(
+                check_item(
+                    "checked-out audit head",
+                    "FAIL",
+                    "Release metadata must be loaded from the exact audited head.",
+                )
+            )
+        else:
+            checks.append(
+                check_item("checked-out audit head", "PASS", checkout_head)
+            )
     except GitError:
         errors.append("Unable to inspect the checked-out Git worktree state.")
         checks.append(check_item("checked-out Git state", "FAIL", "Git status inspection failed."))
@@ -1279,7 +1959,9 @@ def build_release_report(
         missing.append("Locally fetched origin/Dev is unavailable, so base freshness is not verified.")
         checks.append(check_item("base freshness", "NOT VERIFIED", "origin/Dev is unavailable locally; report never fetches."))
     try:
-        sections = parse_crl_sections(root / LEDGER_RELATIVE_PATH)
+        sections, registrations = repository_crl_sections(
+            root, expected_repository
+        )
     except ValueError as error:
         errors.append(str(error))
         checks.append(check_item("ledger structure", "FAIL", str(error)))
@@ -1291,6 +1973,11 @@ def build_release_report(
         return finalize_report(report, errors, missing)
     try:
         lineage_errors = remote_lineage_errors(root, sections)
+        lineage_errors.extend(
+            incremental_remote_lineage_errors(
+                root, registrations, expected_repository
+            )
+        )
     except GitError:
         missing.append("Locally fetched origin/Dev ledger is unavailable, so immutable CRL lineage is not verified.")
         checks.append(check_item("remote ledger lineage", "NOT VERIFIED", "origin/Dev ledger is unavailable locally; report never fetches."))
@@ -1310,6 +1997,19 @@ def build_release_report(
         checks.append(check_item("selected CRLs", "FAIL", "A requested CRL is not in this repository ledger."))
         return finalize_report(report, errors, missing)
     selected_sections = [sections[identifier] for identifier in selected_ids]
+    incremental_selected = sorted(selected_ids & registrations.keys())
+    if incremental_selected and len(selected_ids) != 1:
+        errors.append(
+            "An incremental registration must be audited as one exact CRL, without combining other units."
+        )
+        checks.append(
+            check_item(
+                "incremental registration boundary",
+                "FAIL",
+                "Incremental registration cannot be combined with another selected CRL.",
+            )
+        )
+        return finalize_report(report, errors, missing)
     identity_errors, identity_missing = selected_identity_issues(
         selected_sections, expected_repository
     )
@@ -1431,6 +2131,37 @@ def build_release_report(
     else:
         missing.append("Release Attempt is not recorded as committed or later.")
         checks.append(check_item("technical state", "NOT VERIFIED", field_value(attempt, "Technical state")))
+    action_conclusion = leading_status(
+        field_value(attempt, "Action conclusion"),
+        ("go", "blocked", "not verified"),
+    )
+    blockers_value = field_value(attempt, "Action conclusion").lower()
+    if action_conclusion == "go" and "blockers: none" in blockers_value:
+        checks.append(
+            check_item(
+                "recorded action conclusion",
+                "PASS",
+                field_value(attempt, "Action conclusion"),
+            )
+        )
+    elif action_conclusion == "blocked":
+        errors.append("Release Attempt records a BLOCKED action conclusion.")
+        checks.append(
+            check_item(
+                "recorded action conclusion",
+                "FAIL",
+                field_value(attempt, "Action conclusion"),
+            )
+        )
+    else:
+        missing.append("Release Attempt does not record GO with blockers: none.")
+        checks.append(
+            check_item(
+                "recorded action conclusion",
+                "NOT VERIFIED",
+                field_value(attempt, "Action conclusion"),
+            )
+        )
     commit_field = field_value(attempt, "Commit SHA")
     commit_match = SHA.search(commit_field)
     if not commit_match:
@@ -1445,12 +2176,60 @@ def build_release_report(
                 checks.append(check_item("candidate content commit", "FAIL", "Recorded commit is outside the report range."))
             else:
                 checks.append(check_item("candidate content commit", "PASS", candidate_commit))
+                recorded_candidate_patch = SHA.search(
+                    field_value(attempt, "Candidate patch SHA-256")
+                )
+                actual_candidate_patch = content_patch_sha256(
+                    root, base, candidate_commit
+                )
+                if (
+                    recorded_candidate_patch is None
+                    or recorded_candidate_patch.group(0).lower()
+                    != actual_candidate_patch
+                ):
+                    errors.append(
+                        "Candidate content commit fingerprint does not match the recorded candidate patch."
+                    )
+                    checks.append(
+                        check_item(
+                            "candidate content commit fingerprint",
+                            "FAIL",
+                            "Recorded and content-commit hashes differ.",
+                        )
+                    )
+                else:
+                    checks.append(
+                        check_item(
+                            "candidate content commit fingerprint",
+                            "PASS",
+                            actual_candidate_patch,
+                        )
+                    )
         except GitError:
             errors.append("Recorded candidate content commit SHA cannot be resolved.")
             checks.append(check_item("candidate content commit", "FAIL", "Recorded commit cannot be resolved."))
     try:
         changed = range_paths(root, base, head)
         report["changed_files"] = changed
+        if incremental_selected:
+            registration_path = registrations[incremental_selected[0]].source_path
+            if registration_path not in changed:
+                errors.append(
+                    "Selected incremental registration is not part of the exact audited range."
+                )
+                checks.append(
+                    check_item(
+                        "incremental registration range",
+                        "FAIL",
+                        registration_path,
+                    )
+                )
+            else:
+                checks.append(
+                    check_item(
+                        "incremental registration range", "PASS", registration_path
+                    )
+                )
         unselected = sorted(set(changed) - selected_files)
         report["unselected_changed_files"] = unselected
         if unselected:
@@ -1487,7 +2266,7 @@ def build_release_report(
         actual_hunks: set[tuple[str, str]] = set()
         non_text_hunk_paths: list[str] = []
         for path in changed:
-            if path == LEDGER_RELATIVE_PATH.as_posix():
+            if is_ledger_metadata_path(path):
                 continue
             fingerprints = diff_hunk_fingerprints(root, path, f"{base}...{head}")
             if not fingerprints:
@@ -1552,7 +2331,9 @@ def build_release_report(
         report["candidate_patch_sha256"] = {
             "recorded": recorded_patch.group(0).lower() if recorded_patch else None,
             "actual": actual_patch,
-            "ledger_excluded": str(LEDGER_RELATIVE_PATH),
+            "ledger_excluded": (
+                f"{LEDGER_RELATIVE_PATH}; {INCREMENTAL_LEDGER_RELATIVE_DIR}/**"
+            ),
         }
         if not recorded_patch:
             missing.append("Candidate patch SHA-256 is missing.")
@@ -1704,7 +2485,16 @@ def main(argv: list[str] | None = None, root: Path = ROOT, expected_repository: 
             print(markdown_pre_commit_report(report))
         return {"GO": 0, "BLOCKED": 1, "NOT VERIFIED": 2}[report["conclusion"]]
     if not args.release_report:
-        return range_coverage_audit(root, args.base, args.head) if args.base else coverage_audit(root)
+        return (
+            range_coverage_audit(
+                root,
+                args.base,
+                args.head,
+                expected_repository=expected_repository,
+            )
+            if args.base
+            else coverage_audit(root, expected_repository=expected_repository)
+        )
     report = build_release_report(
         root=root,
         expected_repository=expected_repository,
