@@ -463,6 +463,7 @@ async function insertTask(row: any, client?: any, opts?: { preserveExisting?: bo
         type, date,
         status, assignee_id, scheduled_at,
         checkout_time, checkin_time,
+        old_code, new_code,
         cleaner_id, inspector_id,
         keys_required, inspection_mode, inspection_due_date,
         old_code_authority_status, new_code_authority_status,
@@ -472,7 +473,7 @@ async function insertTask(row: any, client?: any, opts?: { preserveExisting?: bo
         execution_state, manual_task_purpose,
         updated_at
       )
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,now())
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,now())
       ${conflictSql}
       RETURNING *
     `
@@ -489,6 +490,8 @@ async function insertTask(row: any, client?: any, opts?: { preserveExisting?: bo
       row.scheduled_at ? String(row.scheduled_at) : null,
       row.checkout_time != null ? String(row.checkout_time) : null,
       row.checkin_time != null ? String(row.checkin_time) : null,
+      row.old_code != null ? String(row.old_code) : null,
+      row.new_code != null ? String(row.new_code) : null,
       row.cleaner_id != null ? String(row.cleaner_id) : null,
       row.inspector_id != null ? String(row.inspector_id) : null,
       keysRequired,
@@ -1352,11 +1355,6 @@ function isManuallyConfirmedPassword(task: any, field: 'old_code' | 'new_code') 
   return passwordAuthorityStatus(task, field) === 'manual_confirmed'
 }
 
-function isTrustedPasswordAuthority(task: any, field: 'old_code' | 'new_code') {
-  const status = passwordAuthorityStatus(task, field)
-  return status === 'manual_confirmed' || status === 'source_linked'
-}
-
 function isLegacyUnverifiedPassword(task: any, field: 'old_code' | 'new_code') {
   const statusField = field === 'old_code' ? 'old_code_authority_status' : 'new_code_authority_status'
   const sourceTaskField = field === 'old_code' ? 'old_code_source_task_id' : null
@@ -1588,9 +1586,43 @@ export async function syncCheckoutOldCodeFromCheckinNewCode(params: {
       throw error
     }
   }
-  const nextOldCode = nonBlank(checkinTask?.new_code)
-  const sourceTrusted = isTrustedPasswordAuthority(checkinTask, 'new_code')
-  if (!checkinTask || !checkoutTask) return { action: 'no_change', reason: 'task_missing_or_target_terminal' }
+  if (!checkoutTask) return { action: 'no_change', reason: 'target_missing_or_terminal' }
+  if (!checkinTask) {
+    if (isManuallyConfirmedPassword(checkoutTask, 'old_code')) {
+      return { action: 'skipped_locked', targetTaskId: String(checkoutTask.id || ''), reason: 'manual_confirmation_preserved' }
+    }
+    const valueChanged = !!nonBlank(checkoutTask.old_code)
+    const authorityChanged = passwordAuthorityStatus(checkoutTask, 'old_code') !== 'needs_review'
+      || !!nonBlank(checkoutTask.old_code_source_task_id)
+      || !!nonBlank(checkoutTask.old_code_source_order_id)
+      || !!nonBlank(checkoutTask.old_code_source_field)
+    if (!valueChanged && !authorityChanged) {
+      return { action: 'no_change', targetTaskId: String(checkoutTask.id || ''), reason: 'same_order_checkin_missing' }
+    }
+    const after = await updateTaskById(String(checkoutTask.id), {
+      old_code: null,
+      old_code_authority_status: 'needs_review',
+      old_code_source_task_id: null,
+      old_code_source_order_id: null,
+      old_code_source_field: null,
+      old_code_authority_updated_at: new Date().toISOString(),
+    }, client)
+    await emitPasswordAuthorityEvent({
+      targetTask: after || checkoutTask,
+      sourceField: 'new_code',
+      result: 'needs_review:same_order_checkin_missing',
+      audit,
+      changedFields: valueChanged ? ['old_code'] : [],
+      client,
+    })
+    return { action: 'updated', targetTaskId: String(checkoutTask.id || ''), reason: 'same_order_checkin_missing' }
+  }
+  // Business authority is the same-order check-in's new_code field itself.
+  // Legacy authority labels describe how that value was obtained; they must
+  // not turn a populated new_code into an empty checkout old_code. In
+  // particular, the check-in's old_code authority is unrelated here.
+  const nextOldCode = nonBlank(checkinTask.new_code)
+  const sourceReason = nextOldCode ? 'source_linked' : 'source_missing'
   const canonicalProperties = client
     ? await normalizeCleaningPasswordChainKeys(client, [checkinTask.property_id, checkoutTask.property_id, sourceOrder?.property_id])
     : Array.from(new Set([nonBlank(checkinTask.property_id), nonBlank(checkoutTask.property_id), nonBlank(sourceOrder?.property_id)].filter(Boolean)))
@@ -1601,9 +1633,7 @@ export async function syncCheckoutOldCodeFromCheckinNewCode(params: {
     || !nonBlank(checkoutTask.property_id)
     || canonicalProperties.length !== 1
   if (propertyMismatch) {
-    if (isLegacyUnverifiedPassword(checkoutTask, 'old_code')
-      || checkoutTask.auto_sync_enabled === false
-      || isManuallyConfirmedPassword(checkoutTask, 'old_code')) {
+    if (isManuallyConfirmedPassword(checkoutTask, 'old_code')) {
       return {
         action: 'skipped_locked',
         targetTaskId: String(checkoutTask.id || ''),
@@ -1643,16 +1673,7 @@ export async function syncCheckoutOldCodeFromCheckinNewCode(params: {
       reason: 'property_mismatch',
     }
   }
-  if (isLegacyUnverifiedPassword(checkoutTask, 'old_code')) {
-    return {
-      action: 'no_change',
-      targetTaskId: String(checkoutTask.id || ''),
-      sourceTaskId: String(checkinTask.id || ''),
-      sourceOrderId: String(checkinTask.order_id || ''),
-      reason: 'legacy_unverified_preserved',
-    }
-  }
-  if (checkoutTask.auto_sync_enabled === false || isManuallyConfirmedPassword(checkoutTask, 'old_code')) {
+  if (isManuallyConfirmedPassword(checkoutTask, 'old_code')) {
     await logCleaningSync({
       jobId,
       orderId,
@@ -1661,7 +1682,7 @@ export async function syncCheckoutOldCodeFromCheckinNewCode(params: {
       before: checkoutTask,
       after: checkoutTask,
       meta: {
-        reason: isManuallyConfirmedPassword(checkoutTask, 'old_code') ? 'checkout_old_code_manual_confirmation_preserved' : 'checkout_old_code_from_checkin_new_code',
+        reason: 'checkout_old_code_manual_confirmation_preserved',
         source_task_id: String(checkinTask.id || ''),
       },
       client,
@@ -1671,13 +1692,13 @@ export async function syncCheckoutOldCodeFromCheckinNewCode(params: {
       targetTaskId: String(checkoutTask.id || ''),
       sourceTaskId: String(checkinTask.id || ''),
       sourceOrderId: String(checkinTask.order_id || ''),
-      reason: isManuallyConfirmedPassword(checkoutTask, 'old_code') ? 'manual_confirmation_preserved' : 'auto_sync_locked',
+      reason: 'manual_confirmation_preserved',
     }
   }
   const patch = nextOldCode
     ? {
         old_code: nextOldCode,
-        old_code_authority_status: sourceTrusted ? 'source_linked' : 'auto_derived',
+        old_code_authority_status: 'source_linked',
         old_code_source_task_id: String(checkinTask.id || ''),
         old_code_source_order_id: String(checkinTask.order_id || ''),
         old_code_source_field: 'new_code',
@@ -1694,13 +1715,15 @@ export async function syncCheckoutOldCodeFromCheckinNewCode(params: {
   const valueChanged = String(checkoutTask.old_code ?? '').trim() !== String(nextOldCode || '')
   const authorityChanged = passwordAuthorityStatus(checkoutTask, 'old_code') !== patch.old_code_authority_status
     || String(checkoutTask.old_code_source_task_id || '') !== String(checkinTask.id || '')
+    || String(checkoutTask.old_code_source_order_id || '') !== String(checkinTask.order_id || '')
+    || String(checkoutTask.old_code_source_field || '') !== 'new_code'
   if (!valueChanged && !authorityChanged) {
     return {
       action: 'no_change',
       targetTaskId: String(checkoutTask.id || ''),
       sourceTaskId: String(checkinTask.id || ''),
       sourceOrderId: String(checkinTask.order_id || ''),
-      reason: nextOldCode ? (sourceTrusted ? 'already_linked' : 'source_unverified') : 'source_missing',
+      reason: nextOldCode ? 'already_linked' : sourceReason,
     }
   }
 
@@ -1713,10 +1736,10 @@ export async function syncCheckoutOldCodeFromCheckinNewCode(params: {
     before: checkoutTask,
     after,
     meta: {
-      reason: nextOldCode ? 'checkout_old_code_from_checkin_new_code' : 'checkout_old_code_source_missing',
+      reason: nextOldCode ? 'checkout_old_code_from_checkin_new_code' : `checkout_old_code_${sourceReason}`,
       source_task_id: String(checkinTask.id || ''),
       source_order_id: String(checkinTask.order_id || ''),
-      result: nextOldCode ? (sourceTrusted ? 'source_linked' : 'auto_derived') : 'needs_review',
+      result: nextOldCode ? 'source_linked' : `needs_review:${sourceReason}`,
     },
     client,
   })
@@ -1725,7 +1748,7 @@ export async function syncCheckoutOldCodeFromCheckinNewCode(params: {
     sourceTaskId: String(checkinTask.id || ''),
     sourceOrderId: String(checkinTask.order_id || ''),
     sourceField: 'new_code',
-    result: nextOldCode ? (sourceTrusted ? 'source_linked' : 'auto_derived') : 'needs_review',
+    result: nextOldCode ? 'source_linked' : `needs_review:${sourceReason}`,
     audit,
     changedFields: valueChanged ? ['old_code'] : [],
     client,
@@ -1735,226 +1758,8 @@ export async function syncCheckoutOldCodeFromCheckinNewCode(params: {
     targetTaskId: String(checkoutTask.id || ''),
     sourceTaskId: String(checkinTask.id || ''),
     sourceOrderId: String(checkinTask.order_id || ''),
-    reason: nextOldCode ? (sourceTrusted ? 'source_linked' : 'source_unverified') : 'source_missing',
+    reason: sourceReason,
   }
-}
-
-type PreviousCheckinPasswordBoundary = {
-  state: 'available' | 'missing' | 'ambiguous'
-  code: string | null
-  sourceTaskId: string
-  sourceOrderId: string
-  sourceField: 'old_code' | 'new_code' | null
-  boundaryDay: string
-}
-
-async function loadPreviousCheckinPasswordBoundaryOnce(checkinTask: any, client?: any): Promise<PreviousCheckinPasswordBoundary | null> {
-  const propertyId = nonBlank(checkinTask?.property_id)
-  const checkinDay = dayOnly(checkinTask?.task_date ?? checkinTask?.date)
-  const targetOrderId = nonBlank(checkinTask?.order_id)
-  if (!propertyId || !checkinDay) return null
-  if (targetOrderId) {
-    const targetOrder = await loadOrder(targetOrderId, client)
-    const targetPropertyKeys = client
-      ? await normalizeCleaningPasswordChainKeys(client, [propertyId, targetOrder?.property_id])
-      : Array.from(new Set([propertyId, nonBlank(targetOrder?.property_id)].filter(Boolean)))
-    if (!targetOrder
-      || isInactiveCleaningOrderStatus(targetOrder.status)
-      || !nonBlank(targetOrder.property_id)
-      || targetPropertyKeys.length !== 1) return null
-  }
-
-  if (hasPg && (client || pgPool)) {
-    await ensureCleaningSchemaV2()
-    const exec = client || pgPool!
-    const r = await exec.query(
-      `SELECT checkout_task.*,
-              source_checkin.id AS source_checkin_task_id,
-              source_checkin.property_id::text AS source_checkin_property_id,
-              source_checkin.new_code AS source_checkin_new_code,
-              source_checkin.new_code_authority_status AS source_checkin_new_code_authority_status,
-              COALESCE(source_checkin_property_by_id.id::text, source_checkin_property_by_code.id::text, source_checkin.property_id::text)
-                = COALESCE(checkout_property_by_id.id::text, checkout_property_by_code.id::text, checkout_task.property_id::text)
-                AS source_checkin_property_matches
-       FROM cleaning_tasks checkout_task
-       LEFT JOIN orders checkout_order ON checkout_order.id::text = checkout_task.order_id::text
-       LEFT JOIN properties checkout_property_by_id
-         ON checkout_property_by_id.id::text = checkout_task.property_id::text
-       LEFT JOIN properties checkout_property_by_code
-         ON upper(checkout_property_by_code.code) = upper(checkout_task.property_id::text)
-       LEFT JOIN properties checkout_order_property_by_id
-         ON checkout_order_property_by_id.id::text = checkout_order.property_id::text
-       LEFT JOIN properties checkout_order_property_by_code
-         ON upper(checkout_order_property_by_code.code) = upper(checkout_order.property_id::text)
-       LEFT JOIN properties target_property_by_id
-         ON target_property_by_id.id::text = $1::text
-       LEFT JOIN properties target_property_by_code
-         ON upper(target_property_by_code.code) = upper($1::text)
-       LEFT JOIN LATERAL (
-         SELECT checkin_task.*
-         FROM cleaning_tasks checkin_task
-         WHERE checkin_task.order_id::text = checkout_task.order_id::text
-           AND lower(COALESCE(checkin_task.task_type, checkin_task.type, '')) = '${CHECKIN_TASK_TYPE}'
-           AND ${activeCleaningTaskWhereSql('checkin_task')}
-         ORDER BY checkin_task.updated_at DESC NULLS LAST
-         LIMIT 1
-       ) source_checkin ON true
-       LEFT JOIN properties source_checkin_property_by_id
-         ON source_checkin_property_by_id.id::text = source_checkin.property_id::text
-       LEFT JOIN properties source_checkin_property_by_code
-         ON upper(source_checkin_property_by_code.code) = upper(source_checkin.property_id::text)
-       WHERE lower(COALESCE(checkout_task.task_type, checkout_task.type, '')) = '${CHECKOUT_TASK_TYPE}'
-         AND ${activeCleaningTaskWhereSql('checkout_task')}
-         AND checkout_task.order_id IS NOT NULL
-         AND ${validCleaningTaskOrderWhereSql('checkout_task', 'checkout_order')}
-         AND COALESCE(checkout_property_by_id.id::text, checkout_property_by_code.id::text, checkout_task.property_id::text)
-             = COALESCE(checkout_order_property_by_id.id::text, checkout_order_property_by_code.id::text, checkout_order.property_id::text)
-         AND ($3::text IS NULL OR checkout_task.order_id::text <> $3::text)
-         AND COALESCE(checkout_task.task_date, checkout_task.date)::date <= $2::date
-         AND COALESCE(checkout_property_by_id.id::text, checkout_property_by_code.id::text, checkout_task.property_id::text)
-             = COALESCE(target_property_by_id.id::text, target_property_by_code.id::text, $1::text)
-       ORDER BY COALESCE(checkout_task.task_date, checkout_task.date)::date DESC,
-                checkout_task.updated_at DESC NULLS LAST`,
-      [propertyId, checkinDay, targetOrderId],
-    )
-    const rows = r?.rows || []
-    const row = rows[0]
-    if (!row) return null
-    const boundaryDay = dayOnly(row.task_date ?? row.date) || ''
-    const boundaryRows = rows.filter((candidate: any) => dayOnly(candidate.task_date ?? candidate.date) === boundaryDay)
-    const boundaryOrders = new Set(boundaryRows.map((candidate: any) => String(candidate.order_id || '')).filter(Boolean))
-    if (boundaryOrders.size !== 1) {
-      return {
-        state: 'ambiguous',
-        code: null,
-        sourceTaskId: String(row.id || ''),
-        sourceOrderId: '',
-        sourceField: null,
-        boundaryDay,
-      }
-    }
-    const checkoutCode = nonBlank(row.old_code)
-    if (checkoutCode && isTrustedPasswordAuthority(row, 'old_code')) {
-      return {
-        state: 'available',
-        code: checkoutCode,
-        sourceTaskId: String(row.id || ''),
-        sourceOrderId: String(row.order_id || ''),
-        sourceField: 'old_code',
-        boundaryDay,
-      }
-    }
-    const checkinCode = row.source_checkin_property_matches ? nonBlank(row.source_checkin_new_code) : null
-    const checkinTrusted = ['manual_confirmed', 'source_linked'].includes(String(row.source_checkin_new_code_authority_status || '').trim().toLowerCase())
-    if (!checkinCode || !checkinTrusted) {
-      return {
-        state: 'missing',
-        code: null,
-        sourceTaskId: String(row.source_checkin_task_id || row.id || ''),
-        sourceOrderId: String(row.order_id || ''),
-        sourceField: row.source_checkin_task_id ? 'new_code' : 'old_code',
-        boundaryDay,
-      }
-    }
-    return {
-      state: 'available',
-      code: checkinCode,
-      sourceTaskId: String(row.source_checkin_task_id || row.id || ''),
-      sourceOrderId: String(row.order_id || ''),
-      sourceField: 'new_code',
-      boundaryDay,
-    }
-  }
-
-  const sourceRows = (db.cleaningTasks as any[])
-    .filter((task: any) => {
-      const taskType = String(task?.task_type ?? task?.type ?? '').trim().toLowerCase()
-      const taskDay = dayOnly(task?.task_date ?? task?.date)
-      return taskType === CHECKOUT_TASK_TYPE
-        && String(task?.property_id || '') === propertyId
-        && String(task?.order_id || '')
-        && (!targetOrderId || String(task.order_id) !== targetOrderId)
-        && !!taskDay
-        && taskDay <= checkinDay
-        && normalizeExecutionState(task) === ACTIVE_EXECUTION_STATE
-        && !isCancelledCleaningTaskStatus(task?.status)
-        && (() => {
-          const order = (db.orders as any[]).find((candidate: any) => String(candidate.id || '') === String(task.order_id || ''))
-          return !!order
-            && !isInactiveCleaningOrderStatus(order.status)
-            && String(order.property_id || '') === String(task.property_id || '')
-        })()
-    })
-    .map((checkoutTask: any) => {
-      const sourceCheckin = (db.cleaningTasks as any[])
-        .filter((task: any) =>
-          String(task?.order_id || '') === String(checkoutTask.order_id || '')
-          && String(task?.task_type ?? task?.type ?? '').trim().toLowerCase() === CHECKIN_TASK_TYPE
-          && normalizeExecutionState(task) === ACTIVE_EXECUTION_STATE
-          && !isCancelledCleaningTaskStatus(task?.status),
-        )
-        .sort((a: any, b: any) => String(b?.updated_at || '').localeCompare(String(a?.updated_at || '')))[0]
-      const checkoutCode = nonBlank(checkoutTask.old_code)
-      const checkinCode = String(sourceCheckin?.property_id || '') === String(checkoutTask?.property_id || '')
-        ? nonBlank(sourceCheckin?.new_code)
-        : null
-      const trustedCheckoutCode = checkoutCode && isTrustedPasswordAuthority(checkoutTask, 'old_code') ? checkoutCode : null
-      const trustedCheckinCode = checkinCode && isTrustedPasswordAuthority(sourceCheckin, 'new_code') ? checkinCode : null
-      const code = trustedCheckoutCode || trustedCheckinCode
-      return {
-        state: code ? 'available' as const : 'missing' as const,
-        code: code || null,
-        sourceTaskId: String(trustedCheckoutCode ? checkoutTask.id : (sourceCheckin?.id || checkoutTask.id || '')),
-        sourceOrderId: String(checkoutTask.order_id || ''),
-        sourceField: trustedCheckoutCode ? 'old_code' as const : (sourceCheckin ? 'new_code' as const : 'old_code' as const),
-        taskDay: dayOnly(checkoutTask.task_date ?? checkoutTask.date) || '',
-        updatedAt: String(checkoutTask.updated_at || ''),
-      }
-    })
-    .sort((a: any, b: any) => b.taskDay.localeCompare(a.taskDay) || b.updatedAt.localeCompare(a.updatedAt))
-
-  const source = sourceRows[0]
-  if (!source) return null
-  const sameBoundaryOrders = new Set(sourceRows.filter((row: any) => row.taskDay === source.taskDay).map((row: any) => row.sourceOrderId))
-  if (sameBoundaryOrders.size !== 1) {
-    return {
-      state: 'ambiguous',
-      code: null,
-      sourceTaskId: source.sourceTaskId,
-      sourceOrderId: '',
-      sourceField: null,
-      boundaryDay: source.taskDay,
-    }
-  }
-  return { ...source, boundaryDay: source.taskDay }
-}
-
-async function loadPreviousCheckinPasswordBoundary(checkinTask: any, client?: any): Promise<PreviousCheckinPasswordBoundary | null> {
-  const first = await loadPreviousCheckinPasswordBoundaryOnce(checkinTask, client)
-  const sourceOrderId = nonBlank(first?.sourceOrderId)
-  if (!client || !first || !sourceOrderId) return first
-
-  const lockedSourceOrder = await loadOrder(sourceOrderId, client, { forShare: true })
-  if (!lockedSourceOrder || isInactiveCleaningOrderStatus(lockedSourceOrder.status)) return null
-  const second = await loadPreviousCheckinPasswordBoundaryOnce(checkinTask, client)
-  if (!second) return null
-  if (
-    second.sourceOrderId !== first.sourceOrderId
-    || second.sourceTaskId !== first.sourceTaskId
-    || second.sourceField !== first.sourceField
-    || second.boundaryDay !== first.boundaryDay
-    || second.state !== first.state
-  ) {
-    return {
-      state: 'ambiguous',
-      code: null,
-      sourceTaskId: second.sourceTaskId || first.sourceTaskId,
-      sourceOrderId: '',
-      sourceField: null,
-      boundaryDay: second.boundaryDay || first.boundaryDay,
-    }
-  }
-  return second
 }
 
 export async function syncCheckinOldCodeFromPreviousStay(params: {
@@ -1964,7 +1769,7 @@ export async function syncCheckinOldCodeFromPreviousStay(params: {
   expectedSourceOrderId?: string | null
   audit?: PasswordAuthorityAuditContext
 }): Promise<PasswordSyncResult> {
-  const { jobId, orderId, client, expectedSourceOrderId, audit } = params
+  const { jobId, orderId, client, audit } = params
   let checkinTask = await loadTaskByOrder(orderId, CHECKIN_TASK_TYPE, client)
   let targetOrder = await loadOrder(orderId, client, { forShare: !!client })
   const lockedPropertyIds = client
@@ -1982,50 +1787,10 @@ export async function syncCheckinOldCodeFromPreviousStay(params: {
       throw error
     }
   }
-  const source = await loadPreviousCheckinPasswordBoundary(checkinTask, client)
-  if (expectedSourceOrderId && String(source?.sourceOrderId || '') !== String(expectedSourceOrderId)) {
-    if (
-      String(checkinTask.old_code_source_order_id || '') === String(expectedSourceOrderId)
-      && !isManuallyConfirmedPassword(checkinTask, 'old_code')
-      && checkinTask.auto_sync_enabled !== false
-    ) {
-      const after = await updateTaskById(String(checkinTask.id), {
-        old_code: null,
-        old_code_authority_status: 'needs_review',
-        old_code_source_task_id: null,
-        old_code_source_order_id: null,
-        old_code_source_field: null,
-        old_code_authority_updated_at: new Date().toISOString(),
-      }, client)
-      await emitPasswordAuthorityEvent({
-        targetTask: after || checkinTask,
-        sourceTaskId: checkinTask.old_code_source_task_id || null,
-        sourceOrderId: String(expectedSourceOrderId),
-        sourceField: passwordSourceField(checkinTask.old_code_source_field),
-        result: 'needs_review:source_dependency_changed',
-        audit,
-        changedFields: nonBlank(checkinTask.old_code) ? ['old_code'] : [],
-        client,
-      })
-    }
-    return {
-      action: 'no_change',
-      targetTaskId: String(checkinTask.id || ''),
-      sourceTaskId: source?.sourceTaskId || null,
-      sourceOrderId: source?.sourceOrderId || null,
-      reason: 'source_dependency_changed',
-    }
-  }
-  if (isLegacyUnverifiedPassword(checkinTask, 'old_code')) {
-    return {
-      action: 'no_change',
-      targetTaskId: String(checkinTask.id || ''),
-      sourceTaskId: source?.sourceTaskId || null,
-      sourceOrderId: source?.sourceOrderId || null,
-      reason: 'legacy_unverified_preserved',
-    }
-  }
-  if (checkinTask.auto_sync_enabled === false || isManuallyConfirmedPassword(checkinTask, 'old_code')) {
+  // MZ-091 v2: an arrival task is not an automatic password-chain target.
+  // The only automatic old-code target is the same-order checkout task. A
+  // manual old-code correction on this exact task remains local to this task.
+  if (isManuallyConfirmedPassword(checkinTask, 'old_code')) {
     await logCleaningSync({
       jobId,
       orderId,
@@ -2034,54 +1799,37 @@ export async function syncCheckinOldCodeFromPreviousStay(params: {
       before: checkinTask,
       after: checkinTask,
       meta: {
-        reason: isManuallyConfirmedPassword(checkinTask, 'old_code') ? 'checkin_old_code_manual_confirmation_preserved' : 'checkin_old_code_from_previous_stay',
-        source_task_id: source?.sourceTaskId || null,
-        source_order_id: source?.sourceOrderId || null,
-        source_field: source?.sourceField || null,
+        reason: 'checkin_old_code_manual_confirmation_preserved',
       },
       client,
     })
     return {
-      action: source?.state === 'available' ? 'skipped_locked' : 'no_change',
+      action: 'skipped_locked',
       targetTaskId: String(checkinTask.id || ''),
-      sourceTaskId: source?.sourceTaskId || null,
-      sourceOrderId: source?.sourceOrderId || null,
-      reason: isManuallyConfirmedPassword(checkinTask, 'old_code') ? 'manual_confirmation_preserved' : 'auto_sync_locked',
+      reason: 'manual_confirmation_preserved',
     }
   }
-  const sourceAvailable = source?.state === 'available' && !!source.code
-  const patch = sourceAvailable
-    ? {
-        old_code: source.code,
-        old_code_authority_status: 'source_linked',
-        old_code_source_task_id: source.sourceTaskId,
-        old_code_source_order_id: source.sourceOrderId,
-        old_code_source_field: source.sourceField,
-        old_code_authority_updated_at: new Date().toISOString(),
-      }
-    : {
-        old_code: null,
-        old_code_authority_status: 'needs_review',
-        old_code_source_task_id: source?.sourceTaskId || null,
-        old_code_source_order_id: source?.sourceOrderId || null,
-        old_code_source_field: source?.sourceField || null,
-        old_code_authority_updated_at: new Date().toISOString(),
-      }
-  const valueChanged = String(checkinTask.old_code ?? '').trim() !== String(patch.old_code || '')
-  const authorityChanged = passwordAuthorityStatus(checkinTask, 'old_code') !== patch.old_code_authority_status
-    || String(checkinTask.old_code_source_task_id || '') !== String(patch.old_code_source_task_id || '')
-    || String(checkinTask.old_code_source_order_id || '') !== String(patch.old_code_source_order_id || '')
+  const valueChanged = !!nonBlank(checkinTask.old_code)
+  const authorityChanged = passwordAuthorityStatus(checkinTask, 'old_code') !== 'needs_review'
+    || !!nonBlank(checkinTask.old_code_source_task_id)
+    || !!nonBlank(checkinTask.old_code_source_order_id)
+    || !!nonBlank(checkinTask.old_code_source_field)
   if (!valueChanged && !authorityChanged) {
     return {
       action: 'no_change',
       targetTaskId: String(checkinTask.id || ''),
-      sourceTaskId: source?.sourceTaskId || null,
-      sourceOrderId: source?.sourceOrderId || null,
-      reason: sourceAvailable ? 'already_linked' : (source?.state || 'source_missing'),
+      reason: 'checkin_old_code_not_applicable',
     }
   }
 
-  const after = await updateTaskById(String(checkinTask.id), patch, client)
+  const after = await updateTaskById(String(checkinTask.id), {
+    old_code: null,
+    old_code_authority_status: 'needs_review',
+    old_code_source_task_id: null,
+    old_code_source_order_id: null,
+    old_code_source_field: null,
+    old_code_authority_updated_at: new Date().toISOString(),
+  }, client)
   await logCleaningSync({
     jobId,
     orderId,
@@ -2090,21 +1838,15 @@ export async function syncCheckinOldCodeFromPreviousStay(params: {
     before: checkinTask,
     after,
     meta: {
-      reason: sourceAvailable ? 'checkin_old_code_from_previous_stay' : 'checkin_old_code_source_unavailable',
-      source_state: source?.state || 'none',
-      source_task_id: source?.sourceTaskId || null,
-      source_order_id: source?.sourceOrderId || null,
-      source_field: source?.sourceField || null,
-      result: sourceAvailable ? 'source_linked' : 'needs_review',
+      reason: 'checkin_old_code_not_applicable',
+      result: 'needs_review',
     },
     client,
   })
   await emitPasswordAuthorityEvent({
     targetTask: after || checkinTask,
-    sourceTaskId: source?.sourceTaskId || null,
-    sourceOrderId: source?.sourceOrderId || null,
-    sourceField: source?.sourceField || null,
-    result: sourceAvailable ? 'source_linked' : `needs_review:${source?.state || 'none'}`,
+    sourceField: null,
+    result: 'needs_review:checkin_old_code_not_applicable',
     audit,
     changedFields: valueChanged ? ['old_code'] : [],
     client,
@@ -2112,9 +1854,7 @@ export async function syncCheckinOldCodeFromPreviousStay(params: {
   return {
     action: 'updated',
     targetTaskId: String(checkinTask.id || ''),
-    sourceTaskId: source?.sourceTaskId || null,
-    sourceOrderId: source?.sourceOrderId || null,
-    reason: sourceAvailable ? 'source_linked' : (source?.state || 'source_missing'),
+    reason: 'checkin_old_code_not_applicable',
   }
 }
 
@@ -2164,7 +1904,7 @@ async function invalidateStalePasswordDependents(params: {
   for (const before of linked) {
     const taskId = String(before?.id || '').trim()
     if (!taskId || taskId === String(params.keepTargetTaskId || '')) continue
-    if (before.auto_sync_enabled === false || isManuallyConfirmedPassword(before, 'old_code')) continue
+    if (isManuallyConfirmedPassword(before, 'old_code')) continue
     const after = await updateTaskById(taskId, {
       old_code: null,
       old_code_authority_status: 'needs_review',
@@ -2237,7 +1977,7 @@ export async function invalidatePasswordDependentsForSourceTask(params: {
   const invalidated: string[] = []
   for (const before of linked) {
     const taskId = String(before?.id || '').trim()
-    if (!taskId || before.auto_sync_enabled === false || isManuallyConfirmedPassword(before, 'old_code')) continue
+    if (!taskId || isManuallyConfirmedPassword(before, 'old_code')) continue
     const after = await updateTaskById(taskId, {
       old_code: null,
       old_code_authority_status: 'needs_review',
@@ -2281,80 +2021,7 @@ export async function previewNextCheckinPasswordTarget(params: {
 }): Promise<NextCheckinPasswordTargetPreview> {
   const sourceOrderId = String(params.sourceOrderId || '').trim()
   if (!sourceOrderId) return { state: 'source_missing', targetTaskId: null, targetOrderId: null, sourceOrderId: null }
-  const sourceCheckout = await loadTaskByOrder(sourceOrderId, CHECKOUT_TASK_TYPE, params.client, { activeOnly: true })
-  const propertyId = nonBlank(sourceCheckout?.property_id)
-  const boundaryDay = dayOnly(sourceCheckout?.task_date ?? sourceCheckout?.date)
-  if (!sourceCheckout || !propertyId || !boundaryDay) return { state: 'source_missing', targetTaskId: null, targetOrderId: null, sourceOrderId }
-  const sourceOrder = await loadOrder(sourceOrderId, params.client)
-  const sourceOrderPropertyId = nonBlank(sourceOrder?.property_id)
-  const sourcePropertyKeys = params.client
-    ? await normalizeCleaningPasswordChainKeys(params.client, [propertyId, sourceOrderPropertyId])
-    : Array.from(new Set([propertyId, sourceOrderPropertyId].filter(Boolean)))
-  if (!sourceOrder || isInactiveCleaningOrderStatus(sourceOrder.status) || !sourceOrderPropertyId || sourcePropertyKeys.length !== 1) {
-    return { state: 'source_missing', targetTaskId: null, targetOrderId: null, sourceOrderId }
-  }
-
-  let candidates: any[] = []
-  if (hasPg && (params.client || pgPool)) {
-    const exec = params.client || pgPool!
-    const terminalStatuses = Array.from(PASSWORD_TERMINAL_STATUSES).map((_, index) => `$${index + 4}`).join(',')
-    const result = await exec.query(
-      `SELECT target.*
-       FROM cleaning_tasks target
-       LEFT JOIN properties target_property_by_id ON target_property_by_id.id::text = target.property_id::text
-       LEFT JOIN properties target_property_by_code ON upper(target_property_by_code.code) = upper(target.property_id::text)
-       LEFT JOIN properties source_property_by_id ON source_property_by_id.id::text = $1::text
-       LEFT JOIN properties source_property_by_code ON upper(source_property_by_code.code) = upper($1::text)
-       LEFT JOIN orders target_order ON target_order.id::text = target.order_id::text
-       LEFT JOIN properties target_order_property_by_id ON target_order_property_by_id.id::text = target_order.property_id::text
-       LEFT JOIN properties target_order_property_by_code ON upper(target_order_property_by_code.code) = upper(target_order.property_id::text)
-       WHERE lower(COALESCE(target.task_type, target.type, '')) = '${CHECKIN_TASK_TYPE}'
-         AND ${activeCleaningTaskWhereSql('target')}
-         AND ${validCleaningTaskOrderWhereSql('target', 'target_order')}
-         AND COALESCE(target_property_by_id.id::text, target_property_by_code.id::text, target.property_id::text)
-             = COALESCE(target_order_property_by_id.id::text, target_order_property_by_code.id::text, target_order.property_id::text)
-         AND target.order_id IS NOT NULL
-         AND target.order_id::text <> $2::text
-         AND COALESCE(target.task_date, target.date)::date >= $3::date
-         AND lower(COALESCE(target.status, '')) NOT IN (${terminalStatuses})
-         AND COALESCE(target_property_by_id.id::text, target_property_by_code.id::text, target.property_id::text)
-             = COALESCE(source_property_by_id.id::text, source_property_by_code.id::text, $1::text)
-       ORDER BY COALESCE(target.task_date, target.date)::date ASC, target.updated_at DESC NULLS LAST
-       `,
-      [propertyId, sourceOrderId, boundaryDay, ...Array.from(PASSWORD_TERMINAL_STATUSES)],
-    )
-    candidates = result?.rows || []
-  } else {
-    candidates = (db.cleaningTasks as any[])
-      .filter((task: any) => {
-        const order = (db.orders as any[]).find((candidate: any) => String(candidate.id || '') === String(task.order_id || ''))
-        const taskDay = dayOnly(task.task_date ?? task.date)
-        return cleaningTaskKind(task) === CHECKIN_TASK_TYPE
-          && String(task.property_id || '') === propertyId
-          && String(task.order_id || '')
-          && String(task.order_id || '') !== sourceOrderId
-          && !!taskDay
-          && taskDay >= boundaryDay
-          && normalizeExecutionState(task) === ACTIVE_EXECUTION_STATE
-          && !isCancelledCleaningTaskStatus(task.status)
-          && !PASSWORD_TERMINAL_STATUSES.has(String(task.status || '').trim().toLowerCase())
-          && !!order
-          && !isInactiveCleaningOrderStatus(order.status)
-          && String(order.property_id || '') === String(task.property_id || '')
-      })
-      .sort((a: any, b: any) => (dayOnly(a.task_date ?? a.date) || '').localeCompare(dayOnly(b.task_date ?? b.date) || '') || String(b.updated_at || '').localeCompare(String(a.updated_at || '')))
-  }
-  const first = candidates[0]
-  if (!first) return { state: 'missing', targetTaskId: null, targetOrderId: null, sourceOrderId }
-  const firstDay = dayOnly(first.task_date ?? first.date)
-  const nearest = candidates.filter((candidate) => dayOnly(candidate.task_date ?? candidate.date) === firstDay)
-  if (nearest.length !== 1) return { state: 'ambiguous', targetTaskId: null, targetOrderId: null, sourceOrderId }
-  return {
-    state: 'unique',
-    targetTaskId: String(first.id || ''),
-    targetOrderId: String(first.order_id || ''),
-    sourceOrderId,
-  }
+  return { state: 'missing', targetTaskId: null, targetOrderId: null, sourceOrderId }
 }
 
 export async function syncNextCheckinOldCodeFromSourceOrder(params: {
@@ -2362,45 +2029,18 @@ export async function syncNextCheckinOldCodeFromSourceOrder(params: {
   client?: any
   audit?: PasswordAuthorityAuditContext
 }): Promise<PasswordSyncResult> {
-  if (params.client) {
-    let sourceCheckout = await loadTaskByOrder(String(params.sourceOrderId || ''), CHECKOUT_TASK_TYPE, params.client, { activeOnly: true })
-    const sourceOrder = await loadOrder(String(params.sourceOrderId || ''), params.client, { forShare: true })
-    const lockedPropertyIds = await normalizeCleaningPasswordChainKeys(params.client, [sourceCheckout?.property_id, sourceOrder?.property_id])
-    for (const propertyId of lockedPropertyIds) await lockCleaningPasswordChainKey(params.client, propertyId)
-    sourceCheckout = await loadTaskByOrder(String(params.sourceOrderId || ''), CHECKOUT_TASK_TYPE, params.client, { activeOnly: true, forUpdate: true })
-    const verifiedPropertyIds = await normalizeCleaningPasswordChainKeys(params.client, [sourceCheckout?.property_id, sourceOrder?.property_id])
-    if (verifiedPropertyIds.some((propertyId) => !lockedPropertyIds.includes(propertyId))) {
-      const error: any = new Error('password_chain_topology_changed_retry')
-      error.status = 409
-      throw error
-    }
-  }
-  const preview = await previewNextCheckinPasswordTarget({ sourceOrderId: params.sourceOrderId, client: params.client })
-  await invalidateStalePasswordDependents({
+  const invalidated = await invalidateStalePasswordDependents({
     sourceOrderId: String(params.sourceOrderId || ''),
-    keepTargetTaskId: preview.state === 'unique' ? preview.targetTaskId : null,
-    reason: preview.state === 'ambiguous' ? 'next_checkin_ambiguous' : preview.state === 'missing' ? 'next_checkin_missing' : preview.state === 'source_missing' ? 'source_boundary_missing' : 'dependency_reassigned',
+    keepTargetTaskId: null,
+    reason: 'cross_order_password_chain_removed',
     client: params.client,
     audit: params.audit,
   })
-  if (preview.state !== 'unique' || !preview.targetOrderId) {
-    return {
-      action: 'no_change',
-      targetTaskId: preview.targetTaskId,
-      sourceOrderId: preview.sourceOrderId,
-      reason: preview.state === 'ambiguous'
-        ? 'next_checkin_ambiguous'
-        : preview.state === 'missing'
-          ? 'next_checkin_missing'
-          : 'source_boundary_missing',
-    }
+  return {
+    action: invalidated.length ? 'updated' : 'no_change',
+    sourceOrderId: String(params.sourceOrderId || '') || null,
+    reason: 'cross_order_password_chain_removed',
   }
-  return syncCheckinOldCodeFromPreviousStay({
-    orderId: preview.targetOrderId,
-    expectedSourceOrderId: preview.sourceOrderId,
-    client: params.client,
-    audit: params.audit,
-  })
 }
 
 function passwordSourceTopologySignature(task: any): string {
@@ -2431,8 +2071,6 @@ export async function reconcilePasswordAuthorityAfterTaskTopologyChange(params: 
   const sourceTaskId = String(before?.id || after?.id || '').trim()
   const beforeOrderId = nonBlank(before?.order_id)
   const afterOrderId = nonBlank(after?.order_id)
-  const beforeDependencySourceOrderId = nonBlank(before?.old_code_source_order_id)
-  const afterDependencySourceOrderId = nonBlank(after?.old_code_source_order_id)
   if (sourceTopologyChanged && sourceTaskId) {
     await invalidatePasswordDependentsForSourceTask({
       sourceTaskId,
@@ -2444,26 +2082,12 @@ export async function reconcilePasswordAuthorityAfterTaskTopologyChange(params: 
   }
 
   const afterKind = cleaningTaskKind(after)
-  let recomputedSourceOrderId: string | null = null
   if (isPasswordAuthorityTaskMutable(after) && afterOrderId && afterKind === CHECKIN_TASK_TYPE) {
-    const recomputed = await syncCheckinOldCodeFromPreviousStay({ orderId: afterOrderId, client, audit })
-    recomputedSourceOrderId = nonBlank(recomputed.sourceOrderId)
+    await syncCheckinOldCodeFromPreviousStay({ orderId: afterOrderId, client, audit })
     if (sourceTopologyChanged) await syncCheckoutOldCodeFromCheckinNewCode({ orderId: afterOrderId, client, audit })
   }
   if (sourceTopologyChanged && afterOrderId && afterKind === CHECKOUT_TASK_TYPE) {
     await syncCheckoutOldCodeFromCheckinNewCode({ orderId: afterOrderId, client, audit })
-  }
-
-  if (!sourceTopologyChanged) return
-  const sourceOrderIds = Array.from(new Set([
-    beforeOrderId && [CHECKIN_TASK_TYPE, CHECKOUT_TASK_TYPE].includes(cleaningTaskKind(before)) ? beforeOrderId : null,
-    afterOrderId && [CHECKIN_TASK_TYPE, CHECKOUT_TASK_TYPE].includes(afterKind) ? afterOrderId : null,
-    beforeDependencySourceOrderId,
-    afterDependencySourceOrderId,
-    recomputedSourceOrderId,
-  ].filter((value): value is string => !!value))).sort()
-  for (const sourceOrderId of sourceOrderIds) {
-    await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId, client, audit })
   }
 }
 

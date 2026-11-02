@@ -178,6 +178,16 @@ type CleaningTaskRow = {
   new_code?: string | null
   old_code_authority_status?: string | null
   new_code_authority_status?: string | null
+  old_code_source_task_id?: string | null
+  old_code_source_order_id?: string | null
+  old_code_source_field?: string | null
+  password_authority?: {
+    old_code_status?: string | null
+    new_code_status?: string | null
+    old_code_source_task_id?: string | null
+    old_code_source_order_id?: string | null
+    old_code_source_field?: string | null
+  } | null
   checkout_time?: string | null
   checkin_time?: string | null
   nights_override?: number | null
@@ -1142,7 +1152,21 @@ export default function CleaningPage() {
         : (nightsAllSame ? (checkinRows[0]?.nights_override != null ? Number(checkinRows[0]?.nights_override) : null) : null)
     const checkinNightsAuthoritative = checkinRows.length > 0 && checkinRows.every((row) => isOrderLinkedAutoCheckinNightsAuthoritative(row))
     const resolvedNightsOverride = checkinNightsAuthoritative ? null : (nightsOverride ?? fallbackNightsOverride)
-    const checkoutKey = (r: CleaningTaskRow | null) => String(r?.old_code ?? '').trim()
+    const checkoutKey = (r: CleaningTaskRow | null) => {
+      const taskType = String(r?.task_type || '').trim().toLowerCase()
+      if (taskType !== 'checkout_clean' && taskType !== 'checkout') return ''
+      const value = String(r?.old_code ?? '').trim()
+      const status = String(r?.old_code_authority_status || r?.password_authority?.old_code_status || '').trim().toLowerCase()
+      if (!value) return ''
+      if (status === 'manual_confirmed') return value
+      const sourceTaskId = String(r?.old_code_source_task_id || r?.password_authority?.old_code_source_task_id || '').trim()
+      const sourceOrderId = String(r?.old_code_source_order_id || r?.password_authority?.old_code_source_order_id || '').trim()
+      const sourceField = String(r?.old_code_source_field || r?.password_authority?.old_code_source_field || '').trim()
+      const targetOrderId = String(r?.order_id || '').trim()
+      return ['source_linked', 'auto_derived'].includes(status) && sourceTaskId && sourceOrderId && targetOrderId && sourceOrderId === targetOrderId && sourceField === 'new_code'
+        ? value
+        : ''
+    }
     const checkinKey = (r: CleaningTaskRow | null) => String(r?.new_code ?? '').trim()
     const checkoutPwd = checkoutRows.length > 0 && checkoutRows.every((r) => checkoutKey(r) === checkoutKey(checkoutRows[0])) ? (checkoutKey(checkoutRows[0]) || '') : ''
     const checkinPwd = checkinRows.length > 0 && checkinRows.every((r) => checkinKey(r) === checkinKey(checkinRows[0])) ? (checkinKey(checkinRows[0]) || '') : ''
@@ -2360,7 +2384,7 @@ export default function CleaningPage() {
               const hasCheckoutSide = isTurnover || String(it.task_type || '').toLowerCase() === 'checkout_clean' || String(it.label || '').includes('退房')
               const checkoutCode = isTurnover ? orderDisplay(it.checkout_order_id, it.checkout_order_code) : orderDisplay(it.order_id, it.order_code)
               const checkinCode = orderDisplay(it.checkin_order_id, it.checkin_order_code)
-              const checkoutPwd = String(isTurnover ? (it.checkout_old_code ?? it.old_code ?? '') : (it.old_code ?? '')).trim()
+              const checkoutPwd = String(isTurnover ? (it.checkout_old_code ?? '') : (it.old_code ?? '')).trim()
               const checkinPwd = String(isTurnover ? (it.checkin_new_code ?? it.new_code ?? '') : (it.new_code ?? '')).trim()
               const isCheckinOnly = !isTurnover && isPureCheckinInspectionItem(it)
               const checkoutTiming = hasCheckoutSide ? checkoutTimingLabel(it.summary_checkout_time) : null

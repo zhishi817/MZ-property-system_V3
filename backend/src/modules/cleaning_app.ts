@@ -36,6 +36,7 @@ import { canViewMzappGuestLuggageNoticeMedia, canViewMzappHistoricalWorkRecordMe
 import { assertR5TaskRuntimeSchemaReady, requireR5RequestSchema, requireR5TaskRuntimeSchema } from '../lib/r5RequestSchema'
 import { buildCleaningMediaUploadFingerprint, CLEANING_MEDIA_IDEMPOTENCY_CONFLICT, storeLocalImmutableMedia } from '../lib/immutableMediaUpload'
 import { activeCleaningTaskWhereSql } from '../services/cleaningSync'
+import { cleaningTaskNewCodeForDisplay, cleaningTaskOldCodeForDisplay } from '../lib/cleaningTurnoverDisplay'
 import {
   authorizeDeferredInspectionCheckinSubmission,
   reconcileDeferredInspectionCheckinReplacement,
@@ -631,7 +632,7 @@ router.get('/tasks', requireAnyPerm(['cleaning_app.calendar.view.all','cleaning_
         SELECT
           t.id as task_id,
           COALESCE(t.task_date, t.date) as task_date,
-          t.task_type,
+          COALESCE(NULLIF(t.task_type, ''), NULLIF(t.type, '')) AS task_type,
           t.status,
           t.assignee_id,
           t.cleaner_id,
@@ -644,6 +645,10 @@ router.get('/tasks', requireAnyPerm(['cleaning_app.calendar.view.all','cleaning_
           t.checkin_time as checkin_time,
           t.old_code,
           t.new_code,
+          t.old_code_authority_status,
+          t.old_code_source_task_id,
+          t.old_code_source_order_id,
+          t.old_code_source_field,
           COALESCE(p_id.id, p_code.id) as property_id,
           COALESCE(p_id.code, p_code.code) as property_code,
           COALESCE(p_id.address, p_code.address) as property_address,
@@ -673,8 +678,8 @@ router.get('/tasks', requireAnyPerm(['cleaning_app.calendar.view.all','cleaning_
         rows.map((row) => {
           const taskId = String(row.task_id || '')
           const taskDate = String(row.task_date || '').slice(0, 10)
-          const oldCode = row.old_code === null || row.old_code === undefined ? null : String(row.old_code)
-          const newCode = row.new_code === null || row.new_code === undefined ? null : String(row.new_code)
+          const oldCode = cleaningTaskOldCodeForDisplay(row)
+          const newCode = cleaningTaskNewCodeForDisplay(row)
           const keyboxCode = row.property_keybox_code === null || row.property_keybox_code === undefined ? null : String(row.property_keybox_code)
           const accessCode = (newCode && newCode.trim()) ? newCode : (oldCode && oldCode.trim()) ? oldCode : (keyboxCode && keyboxCode.trim()) ? keyboxCode : null
           const propertyId = row.property_id === null || row.property_id === undefined ? null : String(row.property_id)

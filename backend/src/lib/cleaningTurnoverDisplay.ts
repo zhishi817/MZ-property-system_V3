@@ -5,6 +5,7 @@ export type CleaningTurnoverTaskLike = {
   propertyId?: any
   task_type?: any
   taskType?: any
+  type?: any
   order_id?: any
   orderId?: any
   task_date?: any
@@ -25,6 +26,23 @@ export type CleaningTurnoverTaskLike = {
   oldCode?: any
   new_code?: any
   newCode?: any
+  old_code_authority_status?: any
+  oldCodeAuthorityStatus?: any
+  new_code_authority_status?: any
+  newCodeAuthorityStatus?: any
+  old_code_source_task_id?: any
+  oldCodeSourceTaskId?: any
+  old_code_source_order_id?: any
+  oldCodeSourceOrderId?: any
+  old_code_source_field?: any
+  oldCodeSourceField?: any
+  password_authority?: {
+    old_code_status?: any
+    new_code_status?: any
+    old_code_source_task_id?: any
+    old_code_source_order_id?: any
+    old_code_source_field?: any
+  } | null
   keys_required?: any
   keysRequired?: any
   order_keys_required?: any
@@ -62,7 +80,14 @@ export type CleaningTurnoverDisplay = {
   guest_request_checkin: string | null
   guest_request_summary: string | null
   old_code: string | null
+  old_code_task_id: string | null
+  old_code_authority_status: string | null
+  old_code_source_task_id: string | null
+  old_code_source_order_id: string | null
+  old_code_source_field: string | null
   new_code: string | null
+  new_code_task_id: string | null
+  new_code_authority_status: string | null
   keys_required_checkout: number | null
   keys_required_checkin: number | null
   stayed_nights: number | null
@@ -117,7 +142,7 @@ function taskId(row: CleaningTurnoverTaskLike | null | undefined): string | null
 }
 
 function taskType(row: CleaningTurnoverTaskLike | null | undefined): string {
-  return text(row?.task_type ?? row?.taskType).toLowerCase()
+  return (firstText(row?.task_type, row?.taskType, row?.type) || '').toLowerCase()
 }
 
 function isCheckout(row: CleaningTurnoverTaskLike | null | undefined): boolean {
@@ -212,6 +237,79 @@ function fieldValue(row: CleaningTurnoverTaskLike, field: string): any {
   return null
 }
 
+type DisplayOldCode = {
+  value: string
+  taskId: string | null
+  authorityStatus: string
+  sourceTaskId: string | null
+  sourceOrderId: string | null
+  sourceField: string | null
+}
+
+function passwordAuthorityValue(row: CleaningTurnoverTaskLike | null | undefined, field: 'old_code' | 'new_code'): string {
+  const direct = field === 'old_code'
+    ? row?.oldCodeAuthorityStatus ?? row?.old_code_authority_status
+    : row?.newCodeAuthorityStatus ?? row?.new_code_authority_status
+  const nested = field === 'old_code'
+    ? row?.password_authority?.old_code_status
+    : row?.password_authority?.new_code_status
+  return text(direct ?? nested).toLowerCase() || 'needs_review'
+}
+
+function displayableOldCode(row: CleaningTurnoverTaskLike | null | undefined): DisplayOldCode | null {
+  const value = firstText(row?.oldCode, row?.old_code)
+  if (!row || !value) return null
+  const authorityStatus = passwordAuthorityValue(row, 'old_code')
+  const sourceTaskId = firstText(
+    row.oldCodeSourceTaskId,
+    row.old_code_source_task_id,
+    row.password_authority?.old_code_source_task_id,
+  )
+  const sourceOrderId = firstText(
+    row.oldCodeSourceOrderId,
+    row.old_code_source_order_id,
+    row.password_authority?.old_code_source_order_id,
+  )
+  const targetOrderId = firstText(row.orderId, row.order_id)
+  const sourceField = firstText(
+    row.oldCodeSourceField,
+    row.old_code_source_field,
+    row.password_authority?.old_code_source_field,
+  )
+  if (authorityStatus === 'manual_confirmed') {
+    return { value, taskId: taskId(row), authorityStatus, sourceTaskId: null, sourceOrderId: null, sourceField: 'manual' }
+  }
+  if (
+    (authorityStatus === 'source_linked' || authorityStatus === 'auto_derived')
+    && sourceField === 'new_code'
+    && sourceTaskId
+    && sourceOrderId
+    && targetOrderId
+    && sourceOrderId === targetOrderId
+  ) {
+    return { value, taskId: taskId(row), authorityStatus, sourceTaskId, sourceOrderId, sourceField }
+  }
+  return null
+}
+
+export function cleaningTaskOldCodeForDisplay(row: CleaningTurnoverTaskLike | null | undefined): string | null {
+  if (!isCheckout(row)) return null
+  return displayableOldCode(row)?.value || null
+}
+
+export function cleaningTaskNewCodeForDisplay(row: CleaningTurnoverTaskLike | null | undefined): string | null {
+  if (!isCheckin(row)) return null
+  return firstText(row?.newCode, row?.new_code)
+}
+
+function preferredOldCode(
+  checkout: CleaningTurnoverTaskLike | null,
+  _checkin: CleaningTurnoverTaskLike | null,
+): DisplayOldCode | null {
+  const checkoutOld = displayableOldCode(checkout)
+  return checkoutOld
+}
+
 function sameDisplayValue(a: any, b: any): boolean {
   if (a == null && b == null) return true
   if (typeof a === 'number' || typeof b === 'number') {
@@ -246,6 +344,7 @@ export function buildCleaningTurnoverDisplay(params: {
   const defaultCheckinMinutes = parseCleaningDisplayTimeMinutes(DEFAULT_CHECKIN_TIME) || 15 * 60
   const checkoutRequest = guestRequest(checkout)
   const checkinRequest = guestRequest(checkin)
+  const displayOldCode = preferredOldCode(checkout, checkin)
   const conflicts: CleaningTurnoverConflict[] = []
 	  const pushConflict = (manual: CleaningTurnoverTaskLike, field: string, canonical: any, manualValue: any) => {
 	    const id = taskId(manual)
@@ -288,8 +387,15 @@ export function buildCleaningTurnoverDisplay(params: {
     guest_request_checkout: checkoutRequest,
     guest_request_checkin: checkinRequest,
     guest_request_summary: unique([checkoutRequest, checkinRequest]).join('；') || null,
-    old_code: firstText(checkout?.oldCode, checkout?.old_code, checkin?.oldCode, checkin?.old_code),
-    new_code: firstText(checkin?.newCode, checkin?.new_code),
+    old_code: displayOldCode?.value || null,
+    old_code_task_id: displayOldCode?.taskId || null,
+    old_code_authority_status: displayOldCode?.authorityStatus || null,
+    old_code_source_task_id: displayOldCode?.sourceTaskId || null,
+    old_code_source_order_id: displayOldCode?.sourceOrderId || null,
+    old_code_source_field: displayOldCode?.sourceField || null,
+    new_code: cleaningTaskNewCodeForDisplay(checkin),
+    new_code_task_id: cleaningTaskNewCodeForDisplay(checkin) ? taskId(checkin) : null,
+    new_code_authority_status: checkin ? passwordAuthorityValue(checkin, 'new_code') : null,
     keys_required_checkout: keysRequired(checkout),
     keys_required_checkin: keysRequired(checkin),
     stayed_nights: taskNights(checkout),
@@ -310,6 +416,10 @@ export function mergeCleaningTurnoverDisplays(displays: Array<CleaningTurnoverDi
   const supersededSourceIds = unique(list.flatMap((item) => item.superseded_source_ids || []))
   const checkoutRequest = checkoutDisplay.guest_request_checkout || null
   const checkinRequest = checkinDisplay.guest_request_checkin || null
+  const manualOldCodeDisplay = list.find((item) => item.old_code && item.old_code_authority_status === 'manual_confirmed') || null
+  const oldCodeDisplay = manualOldCodeDisplay
+    || (checkoutDisplay.old_code ? checkoutDisplay : null)
+    || (!checkoutDisplay.checkout_order_id && checkinDisplay.old_code ? checkinDisplay : null)
   return {
     property_id: checkoutDisplay.property_id || checkinDisplay.property_id || list[0].property_id,
     task_date: checkoutDisplay.task_date || checkinDisplay.task_date || list[0].task_date,
@@ -323,8 +433,15 @@ export function mergeCleaningTurnoverDisplays(displays: Array<CleaningTurnoverDi
     guest_request_checkout: checkoutRequest,
     guest_request_checkin: checkinRequest,
     guest_request_summary: unique([checkoutRequest, checkinRequest, ...list.map((item) => item.guest_request_summary)]).join('；') || null,
-    old_code: checkoutDisplay.old_code || checkinDisplay.old_code || null,
+    old_code: oldCodeDisplay?.old_code || null,
+    old_code_task_id: oldCodeDisplay?.old_code_task_id || null,
+    old_code_authority_status: oldCodeDisplay?.old_code_authority_status || null,
+    old_code_source_task_id: oldCodeDisplay?.old_code_source_task_id || null,
+    old_code_source_order_id: oldCodeDisplay?.old_code_source_order_id || null,
+    old_code_source_field: oldCodeDisplay?.old_code_source_field || null,
     new_code: checkinDisplay.new_code || null,
+    new_code_task_id: checkinDisplay.new_code_task_id || null,
+    new_code_authority_status: checkinDisplay.new_code_authority_status || null,
     keys_required_checkout: checkoutDisplay.keys_required_checkout,
     keys_required_checkin: checkinDisplay.keys_required_checkin,
     stayed_nights: checkoutDisplay.stayed_nights,

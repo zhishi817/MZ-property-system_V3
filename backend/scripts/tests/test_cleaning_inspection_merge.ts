@@ -927,7 +927,9 @@ function testWorkTaskPayloadUsesExactAuditWithoutExposingMediaUrl() {
   assert.match(source, /inspection_action_task_id: pendingHandoverActionSourceId/)
   assert.match(source, /canonicalKeyHandoverSourceIds\(keyHandoverRelationRows\)/)
   assert.match(source, /deferred_inspection_current_day_checkout: deferredInspectionExecutionDayProjection[\s\S]*?deferredInspectionHasCurrentDayCheckout/)
-  assert.match(source, /deferredInspectionManagerTimingAuthority\(arr, mergedTurnoverDisplay\)/)
+  assert.match(source, /const preferredPool = activeArr\.length \? activeArr : arr/)
+  assert.match(source, /mergeCleaningTurnoverDisplays\(preferredPool\.map\(\(x\) => x\.turnover_display\)\)/)
+  assert.match(source, /deferredInspectionManagerTimingAuthority\(preferredPool, mergedTurnoverDisplay\)/)
   assert.match(source, /summary: displayMergeCheckinRow && !deferredInspectionHasCurrentDayCheckout[\s\S]*?`\$\{checkinTime\}入住`/)
   assert.match(source, /start_time: displayMergeCheckinRow && !deferredInspectionHasCurrentDayCheckout[\s\S]*?\? null/)
   assert.match(source, /business_identity: businessIdentity/)
@@ -1500,6 +1502,69 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     })
     assert.equal(bulkPatchConflict.status, 400)
     assert.equal(bulkPatchConflict.body.code, 'turnover_requires_inspect_and_hang')
+    const unsupportedCheckinOld = await postJson(`/cleaning/tasks/${pureCheckinId}`, { old_code: 'synthetic-unsupported-old' }, 'PATCH')
+    assert.equal(unsupportedCheckinOld.status, 400)
+    assert.equal(unsupportedCheckinOld.body.message, 'password_field_not_applicable')
+    assert.equal((db.cleaningTasks as any[]).find((item) => item.id === pureCheckinId)?.old_code, undefined)
+    const unsupportedCheckoutNew = await postJson('/cleaning/tasks/bulk-patch', {
+      ids: [turnoverCheckoutId],
+      patch: { new_code: 'synthetic-unsupported-new' },
+    })
+    assert.equal(unsupportedCheckoutNew.status, 400)
+    assert.equal(unsupportedCheckoutNew.body.message, 'password_field_not_applicable')
+    assert.equal((db.cleaningTasks as any[]).find((item) => item.id === turnoverCheckoutId)?.new_code, undefined)
+    const supportedCheckinNew = await postJson('/cleaning/tasks/bulk-patch', {
+      ids: [pureCheckinId],
+      patch: { new_code: 'synthetic-checkin-new' },
+    })
+    assert.equal(supportedCheckinNew.status, 200)
+    assert.equal((db.cleaningTasks as any[]).find((item) => item.id === pureCheckinId)?.new_code, 'synthetic-checkin-new')
+    const supportedCheckoutOld = await postJson('/cleaning/tasks/bulk-patch', {
+      ids: [turnoverCheckoutId],
+      patch: { old_code: 'synthetic-checkout-old' },
+    })
+    assert.equal(supportedCheckoutOld.status, 200)
+    assert.equal((db.cleaningTasks as any[]).find((item) => item.id === turnoverCheckoutId)?.old_code, 'synthetic-checkout-old')
+    const unsupportedCreateCheckinOld = await postJson('/cleaning/tasks', {
+      create_mode: 'checkin',
+      task_date: '2026-09-26',
+      property_id: testPropertyId,
+      old_code: 'synthetic-unsupported-old',
+    })
+    assert.equal(unsupportedCreateCheckinOld.status, 400)
+    assert.equal(unsupportedCreateCheckinOld.body.message, 'password_field_not_applicable')
+    const unsupportedCreateCheckoutNew = await postJson('/cleaning/tasks', {
+      create_mode: 'checkout',
+      task_date: '2026-09-26',
+      property_id: testPropertyId,
+      new_code: 'synthetic-unsupported-new',
+    })
+    assert.equal(unsupportedCreateCheckoutNew.status, 400)
+    assert.equal(unsupportedCreateCheckoutNew.body.message, 'password_field_not_applicable')
+    const pureCheckinRow = (db.cleaningTasks as any[]).find((item) => item.id === pureCheckinId)
+    pureCheckinRow.old_code = 'legacy-manual-checkin-old'
+    pureCheckinRow.old_code_authority_status = 'manual_confirmed'
+    pureCheckinRow.old_code_source_field = 'manual'
+    const checkoutWithLegacyNew = (db.cleaningTasks as any[]).find((item) => item.id === turnoverCheckoutId)
+    checkoutWithLegacyNew.new_code = 'legacy-checkout-new'
+    checkoutWithLegacyNew.new_code_authority_status = 'manual_confirmed'
+    const activeTaskRead = await fetch(`${base}/cleaning/tasks?date=2026-09-16`)
+    assert.equal(activeTaskRead.status, 200)
+    const activeTaskRows = await activeTaskRead.json() as any[]
+    const projectedPureCheckin = activeTaskRows.find((item) => item.id === pureCheckinId)
+    assert.equal(projectedPureCheckin?.old_code, null, 'active task API must hide a legacy pure-checkin old_code')
+    assert.equal(projectedPureCheckin?.old_code_authority_status, 'not_applicable')
+    const projectedCheckout = activeTaskRows.find((item) => item.id === turnoverCheckoutId)
+    assert.equal(projectedCheckout?.new_code, null, 'active task API must hide a legacy checkout new_code')
+    assert.equal(projectedCheckout?.new_code_authority_status, 'not_applicable')
+    const historyRead = await fetch(`${base}/cleaning/history?property_id=property-pure-checkin&from=2026-09-01&to=2026-09-30`)
+    assert.equal(historyRead.status, 200)
+    const historyRows = await historyRead.json() as any[]
+    assert.equal(historyRows.find((item) => item.id === pureCheckinId)?.old_code, null, 'history API must hide a legacy pure-checkin old_code')
+    const checkoutHistoryRead = await fetch(`${base}/cleaning/history?property_id=property-turnover&from=2026-09-01&to=2026-09-30`)
+    assert.equal(checkoutHistoryRead.status, 200)
+    const checkoutHistoryRows = await checkoutHistoryRead.json() as any[]
+    assert.equal(checkoutHistoryRows.find((item) => item.id === turnoverCheckoutId)?.new_code, null, 'history API must hide a legacy checkout new_code')
     const dateMoveIndependent = await postJson(`/cleaning/tasks/${pureCheckinId}`, { task_date: '2026-09-17' }, 'PATCH')
     assert.equal(dateMoveIndependent.status, 200, 'same room and date alone must not invent a turnover relation')
     assert.equal((db.cleaningTasks as any[]).find((item) => item.id === pureCheckinId)?.task_date, '2026-09-17')

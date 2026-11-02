@@ -1,5 +1,5 @@
 import assert from 'assert'
-import { buildCleaningTurnoverDisplay, mergeCleaningTurnoverDisplays, parseCleaningDisplayTimeMinutes } from '../../src/lib/cleaningTurnoverDisplay'
+import { buildCleaningTurnoverDisplay, cleaningTaskNewCodeForDisplay, cleaningTaskOldCodeForDisplay, mergeCleaningTurnoverDisplays, parseCleaningDisplayTimeMinutes } from '../../src/lib/cleaningTurnoverDisplay'
 
 assert.equal(parseCleaningDisplayTimeMinutes('10am'), 600)
 assert.equal(parseCleaningDisplayTimeMinutes('3pm'), 900)
@@ -13,6 +13,10 @@ const checkoutTask = {
   task_date: '2026-06-29',
   checkout_time: '12pm',
   old_code: '1111',
+  old_code_authority_status: 'source_linked',
+  old_code_source_task_id: 'source-checkin',
+  old_code_source_order_id: 'checkout-order',
+  old_code_source_field: 'new_code',
   order_note: 'late checkout bags',
   order_keys_required: 2,
   order_checkin: '2026-06-25',
@@ -67,6 +71,8 @@ assert.equal(display.guest_request_checkout, 'late checkout bags')
 assert.equal(display.guest_request_checkin, 'early arrival')
 assert.equal(display.old_code, '1111')
 assert.equal(display.new_code, '2222')
+assert.equal(display.new_code_task_id, 'checkin-active')
+assert.equal(display.new_code_authority_status, 'needs_review')
 assert.equal(display.keys_required_checkout, 2)
 assert.equal(display.keys_required_checkin, 1)
 assert.equal(display.stayed_nights, 4)
@@ -132,8 +138,91 @@ assert.equal(merged?.checkout_order_id, 'checkout-order')
 assert.equal(merged?.checkin_order_id, 'checkin-order')
 assert.equal(merged?.checkout_time, '12pm')
 assert.equal(merged?.checkin_time, '2pm')
+assert.equal(merged?.old_code_source_task_id, 'source-checkin')
+assert.equal(merged?.old_code_source_order_id, 'checkout-order')
+assert.equal(merged?.old_code_source_field, 'new_code')
+assert.equal(merged?.new_code_task_id, 'checkin-active')
+assert.equal(merged?.new_code_authority_status, 'needs_review')
 assert.deepEqual(merged?.active_source_ids, ['checkout-active', 'checkin-active'])
 assert.deepEqual(merged?.superseded_source_ids, ['manual-superseded'])
+
+const staleFallbackHidden = buildCleaningTurnoverDisplay({
+  checkoutTask: {
+    id: 'checkout-stale',
+    task_type: 'checkout_clean',
+    order_id: 'checkout-stale-order',
+    old_code: 'historical-value',
+    old_code_authority_status: 'needs_review',
+  },
+  checkinTask: {
+    id: 'next-checkin-stale',
+    task_type: 'checkin_clean',
+    order_id: 'next-order',
+    old_code: 'older-history',
+    old_code_authority_status: 'source_linked',
+    old_code_source_task_id: 'older-source',
+    old_code_source_order_id: 'older-order',
+    old_code_source_field: 'new_code',
+  },
+})
+assert.equal(staleFallbackHidden.old_code, null, 'a merged card must not fall back from an untrusted checkout value to the next check-in history')
+
+const mismatchedSourceOrderHidden = buildCleaningTurnoverDisplay({
+  checkoutTask: {
+    ...checkoutTask,
+    old_code_source_order_id: 'different-order',
+  },
+})
+assert.equal(mismatchedSourceOrderHidden.old_code, null, 'source-linked metadata from a different order must never authorize display')
+
+const localManualCorrection = buildCleaningTurnoverDisplay({
+  checkoutTask: {
+    ...checkoutTask,
+    old_code: 'current-task-correction',
+    old_code_authority_status: 'manual_confirmed',
+    old_code_source_field: 'manual',
+  },
+  checkinTask,
+})
+assert.equal(localManualCorrection.old_code, 'current-task-correction', 'an explicit current-task correction remains visible on the merged card')
+assert.equal(localManualCorrection.old_code_task_id, 'checkout-active')
+
+const checkinOldCodeHidden = buildCleaningTurnoverDisplay({
+  checkinTask: {
+    ...checkinTask,
+    old_code: 'not-a-checkout-password',
+    old_code_authority_status: 'manual_confirmed',
+    old_code_source_field: 'manual',
+  },
+})
+assert.equal(checkinOldCodeHidden.old_code, null, 'an arrival task old_code is not a checkout password source even when legacy metadata marked it manual')
+assert.equal(cleaningTaskOldCodeForDisplay({
+  ...checkinTask,
+  old_code: 'not-a-checkout-password',
+  old_code_authority_status: 'manual_confirmed',
+  old_code_source_field: 'manual',
+}), null, 'single-task APIs must also hide an arrival task old_code')
+assert.equal(cleaningTaskNewCodeForDisplay({
+  ...checkoutTask,
+  new_code: 'not-a-checkin-password',
+  new_code_authority_status: 'manual_confirmed',
+}), null, 'single-task APIs must hide a legacy checkout new_code')
+assert.equal(cleaningTaskNewCodeForDisplay(checkinTask), '2222', 'a check-in task keeps its own new_code visible')
+assert.equal(cleaningTaskNewCodeForDisplay({ type: 'checkin_clean', new_code: 'legacy-checkin-new' }), 'legacy-checkin-new', 'legacy type-only check-ins remain valid new-code sources')
+assert.equal(cleaningTaskOldCodeForDisplay({
+  type: 'checkout_clean',
+  order_id: 'legacy-checkout-order',
+  old_code: 'legacy-checkout-old',
+  old_code_authority_status: 'source_linked',
+  old_code_source_task_id: 'legacy-checkin-source',
+  old_code_source_order_id: 'legacy-checkout-order',
+  old_code_source_field: 'new_code',
+}), 'legacy-checkout-old', 'legacy type-only checkouts retain a source-linked old code')
+
+const legacyValueHidden = buildCleaningTurnoverDisplay({
+  checkoutTask: { id: 'legacy-checkout', task_type: 'checkout_clean', order_id: 'legacy-order', old_code: 'legacy-value' },
+})
+assert.equal(legacyValueHidden.old_code, null, 'a legacy value without authority must not be displayed')
 
 const taskCenterMergedDisplay = buildCleaningTurnoverDisplay({
   propertyId: 'P2',
