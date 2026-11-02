@@ -1,5 +1,254 @@
 # Change Release Ledger
 
+## CRL-20261102-001 — MZ-091 同订单入住新密码唯一来源纠正
+
+- **Repository:** `root`
+- **Status:** verified isolated local correction candidate; focused in-memory/API/Mobile contracts, loopback PostgreSQL 16.15, full Root/Mobile gates and independent formal review passed; not committed, pushed, merged, deployed or released
+- **Board item:** `MZ-091`
+- **Updated:** 2026-11-02 UTC
+- **Request:** 用户重新明确密码链业务规则：同一房源的退房任务旧密码只取该次入住/同订单入住任务的新密码；入住新密码未填或清空时，退房旧密码也必须为空，禁止从上一笔或更早退房旧密码兜底。手动改当前任务旧密码只纠正当前任务，不倒写入住来源、不影响前后任务。若入住先生成而退房尚未生成，先保存入住新密码，之后生成退房时读取同订单最新值；创建与保存并发不能漏同步。
+- **Outcome:** 候选移除纯入住历史边界和“下一入住”跨订单传播；同订单入住 `new_code` 字段本身就是对应退房 `old_code` 的业务来源，已有非空值即同步，不再要求额外点一次“确认”或具备新 schema authority 标签。入住任务自身不适用的 `old_code` 及其 `old_code_authority_status` 与新密码传播无关；旧生产行的 `new_code_authority_status` 为空或 `needs_review` 也不能把已填新密码清空。源值清空会清空自动目标并保留精确同订单待核对来源；无审计的 legacy 值和 `auto_sync_enabled=false` 仍不能冒充“明确人工确认”来锁住退房本地覆盖。明确 `manual_confirmed` 的退房旧密码继续只在该退房任务显示并阻止自动覆盖；遗留纯入住旧密码与退房新密码可留在底层避免无授权清理，但所有投影隐藏且入口不可再写。Root 清洁 API、Task Center、MZ App、legacy cleaning-app 和 Web 统一使用来源权威投影，兼容 legacy `type`-only 任务；Mobile 遇到 `turnover_display` 明确空值时不再回退本地/顶层陈旧值。
+
+### Implementation
+
+- Previous behavior: 退房旧密码的多个读取与显示路径仍可能接受历史退房、纯入住旧密码或缺少来源审计的 legacy 值；先生成入住、后生成退房及并发创建/保存也缺少统一的同订单收敛证明。
+- New behavior: 只有同房源、同订单入住任务的已填 `new_code` 可以自动成为对应退房 `old_code`；源为空则自动目标为空，历史任务不再兜底。显式 `manual_confirmed` 的当前退房旧密码仅作为该任务本地覆盖，不倒写或传播。
+- Creation/order behavior: 入住新密码先保存时不提前创建退房；退房后来创建时读取同订单最新入住新密码。先创建后保存、先保存后创建、重复与双连接并发均收敛到相同结果。
+- Projection behavior: Root Web、Task Center、MZ App、legacy API 与 Mobile 仅消费权威投影；缺来源显示空值/待核对，缓存和顶层旧字段不得恢复已隐藏的历史密码。
+
+### Files / Areas
+
+- `backend/src/services/cleaningSync.ts` — modified: 同订单唯一来源、源清空、无退房时无操作、跨订单旧依赖清除、人工本地纠正；删除旧历史边界选择实现。
+- `backend/src/lib/cleaningTurnoverDisplay.ts` — modified: 旧密码仅显示人工确认或指向同订单 `new_code` 的有效来源；合卡保留所选来源元数据。
+- `backend/src/modules/cleaning.ts`, `backend/src/modules/mzapp.ts`, `backend/src/modules/task_center.ts`, `backend/src/modules/cleaning_app.ts` — modified: Web、Mobile、Task Center 与 legacy API 统一权威投影和任务类型精确核对字段。
+- `frontend/src/app/cleaning/page.tsx` — modified: 编辑和合卡显示不再从隐藏历史字段回退。
+- `backend/scripts/tests/test_cleaning_sync_v2.ts`, `backend/scripts/tests/test_cleaning_turnover_display.ts`, `backend/scripts/tests/test_mz091_password_authority_contract.ts`, `backend/scripts/tests/test_cleaning_inspection_merge.ts` — modified: 规则、显示、入口/API 契约与先后生成/并发覆盖。
+- `backend/scripts/tests/test_mz091_password_chain_pg_integration.ts`, `backend/package.json` — added/modified: fail-closed 隔离 PostgreSQL 事务、双连接并发和清理回归。
+- `docs/feature-regression-registry.md`, `docs/change-release-ledger.md` — modified: FR-002 当前不变量和本纠正记录。
+
+### Impact / Boundaries
+
+- Database schema/migration/backfill: none. 既有 MZ-091 authority/source 字段和索引继续使用；不自动修生产历史数据。
+- Roles/permissions/workflow: unchanged. 缺密码只显示待核对/空值，不阻断其他任务字段和工作流。
+- Manual behavior: 只有显式 `manual_confirmed` 的当前退房任务 `old_code` 是本地覆盖；纯入住 old_code 即使为 legacy manual 也不投影、不再可写。`auto_sync_enabled=false`、文本相等或缺日志都不是人工证据。
+- Delivery: Root 必须与 paired `mobile/CRL-20261102-001` 协调发布；本 CRL 未授权 commit/push/PR/main/deploy/OTA 或生产数据操作。
+- Prior record: `root/CRL-20261101-004` 描述的“最近历史边界/唯一下一入住”规则被本 CRL 明确取代，不能再作为当前产品不变量。
+
+### Validation
+
+- `npm run build --prefix backend` — PASS.
+- `DATABASE_URL='' npm run test:cleaning-sync-v2 --prefix backend`, turnover display and MZ-091 authority contracts — PASS.
+- `CI=true npm run check:full` — PASS after the final same-order field semantics and projection corrections: Root backend suite, Web lint/tests/production build (56 files / 300 tests), and paired Mobile typecheck/lint/tests (82 suites / 757 tests). Existing Web/Mobile warnings remain non-blocking baseline warnings outside this business correction.
+- Mobile focused turnover/manager regression — PASS, 2 suites / 31 tests; affected TaskDetail/Tasks suites also pass (4 suites / 158 tests total). Separate `CI=true npm run check:ci` — PASS, including ledger, typecheck, lint (0 errors), fast tests and 82 suites / 757 tests.
+- Isolated PostgreSQL 16.15 — final stricter run PASS on `127.0.0.1:55498`, database `mz091_test_v2f`, exact `/tmp/mz091-v2-pg.GETFINAL/data`: authority migrations, same-order link/clear, legacy `new_code_authority_status=NULL/needs_review` 的已填值继续同步、入住 `old_code_authority_status=needs_review` 不干扰新码、manual checkout 本地覆盖、checkin-first/checkout-first、missing-source null、双连接 create-vs-sync 收敛和跨订单依赖移除。测试通过真实 Express `PATCH /cleaning/tasks/:id` 后直接查询 PostgreSQL，确认 source 与 checkout 在同一事务正确落库；还实际调用 `GET /mzapp/work-tasks`，确认 `source_linked` 的 source task/order/field、`manual_confirmed` 本地来源和 `needs_review` 空值从 SQL 正确投影，且同日可靠合卡恰好返回一张、同时包含明确 outgoing checkout 与 incoming check-in source，并不会从底层陈旧值恢复密码。最终合成行计数均为 0；服务已停止、55498 端口确认关闭，精确合成目录及其中数据、TLS、日志和临时 setup 文件已永久删除。
+- Existing broad `test_cleaning_sync_v2.ts` PostgreSQL mode — not claimed as passed: it reached an unrelated pre-existing manual-placeholder inheritance assertion (`actual 3pm`, expected `2pm`) after successful DB setup. The focused MZ-091 driver suite was added to avoid representing that unrelated failure as password-chain evidence.
+- Independent formal review — final GO，P0/P1/P2/P3 = 0。初审识别的 typeless/orderless `new_code_task_id` 适用性 P3 已纠正；其后提出的 `new_code_authority_status` 额外传播门槛经用户原规则复核后确认不应存在，因为旧生产行未回填该标签。最终候选已撤掉该门槛，并以 legacy 状态内存、真实 PostgreSQL 和 HTTP→SQL 回归证明“填新码即同步”；权限门禁未改变，也未恢复历史/跨订单兜底。Physical iOS/Android、protected-account 和 weak-network acceptance 未运行。
+
+### Release Boundary
+
+- Root branch: `codex/mz091-password-chain-v2`, base `Dev@50a4185d1fb344e821cf44df09bb09db6612d9e0`.
+- Paired Mobile branch: `codex/mz091-password-chain-v2`, base `Dev@dee4b6746ca51150df4dde22ed6ba8e3fdaaf03a`.
+- No commit, staging, push, PR, merge, main update, Render/Vercel deployment, OTA, production migration, repair, replay or data write occurred.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared exact MZ-091 Root correction candidate
+- **Untracked review:** PASS; the intended PostgreSQL integration driver is staged, and no untracked path remains
+- Candidate patch SHA-256: `c32ee7a43cc7eefc740349958de56d09f210fe381dfa4a5037924753212f7257`; all non-ledger staged hunks against `Dev@50a4185d1fb344e821cf44df09bb09db6612d9e0`
+- `backend/package.json` — SHA-256: `7c0f942747228952d712ffd69b035c6a2be7879dd507fca47b58fdf0983b61fa`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `74cf35db78cfb370a2043e36927f3508e4f5d4a3cd745f0f285a722a837fc742`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `7e10a6332444bd852ff7b99b2e1861fd69a68c483532ff3395588891459dbe46`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `061e05f2c5cc5e14b845fb5df636ded6aa59c1a980f589a9e459b96b6f06eaa6`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `09c16cc0d673f107883682aa2c4e77d9192b5191ecd394d5e5898995b5e73caa`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `147c5cd6166c7c97eeffcb6c7ea13634890420550c2d43b38aadb9349fac6c14`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `18b890131b181f21ae67fe33a24309c1bacebb06c70fdc4930def63818edda12`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `1f8816c62b9b208d869af1c9d67d504fad0b61fef988521d9196797d13d72b97`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `23482bd54cf98713a7348f5d48b276b7e538d7ad08c1a36a1d7b7227799f75c7`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `26935b50b63be3710d76bdebaadca4b5cd566cf09bec2f404c80599b3ba4b345`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `2b4024ee30987ae5fde3dab7c4cd4d50f6fb900cc7601108d2cb89b9afbe015e`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `2b453d4fc0272f85834d14a92dfb1685ca2a28f6c6ed261d48bada58dcd91660`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `2c9c50574674a9cac2fcf1a31e22c598ec7a76c69ada97cfda43a49305ff3a32`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `2ffeecd56be292d094d9fa1d5275fe4e7a50b3bbd50775162f911a2af1b54c4a`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `33933b05ed170ce8c5398c84e67f54208c97b16940c3e0cf1b8cda8b5524a781`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `3b50a7a642de0cb4ded913500f5a07dc0128058eea05905a47087dfc7caed3f1`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `3bca5dae3f9311b89ad598845c1d553e1d9b36ec0d471f98410e924d7db29897`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `646c040c2a5d4aa776f7d99b5b01b291580913fc89b7d889c31893bb5adbc719`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `6bcf849c68329dd71a5a5c77f6bd6ae6ab7df85c4a117cc30fa2db29b1222eb7`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `6d800b3b57b54b29a44bbaa2365831822324ef99b2de9569c9e2f3ce6797c1e2`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `6f1968f339105b1a7a716b39735633ccb1426297d7e516580d784728bbccfabc`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `765c91bb22058e98010f16e5dca76a9d3fa6d91a4d34ef1688813c4d2a01e297`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `791e24c73b863d8d5183faacab1eaf8e327f003e87758b7244841b337279b369`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `7af42c0ff1ca9ef96fdeb9737a88841aa6cce432f5aece5c9a5772b5bb02e7e8`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `863911c3191b834ea363680cb2ac36ed9c13ad1efd3201bfb76277e17d11d4bd`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `8ce6f5e130a7d8c401afc1e05024aa055436d11b899e83a6ebd4ed84051b3610`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `9773bad6f53d6673833391ea6287b8476bcb14a9dfa4528a03ac6606bdce6ec2`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `9bb135a9857f5c34fd933f57f25b93b91468652c41dae39d366263d3da512725`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `a658ee4d34023737ca43ff2ef98cdb8efebaa731f97257f4e59a3dfc8768a568`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `a82fddbef1b7d36d1ae0b4385a7a8fafcac4f37976adb4e46a51768393178972`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `aac4168992ded623d4916f5b54de1f97ee25616f76d35e8a8c518ef77df62201`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `b0eb3247abe249bd5b24a15931f73b89de056ac4568d87affc9388e661222bf0`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `bc937b220f6c15a79b98f3d3e67ce4a8048e45c12ea879e8e59d2ed5851711ad`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `c02dbde98024323f56b9749e473300360d7d8ef8c8db8a64504b883619c23378`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `c409fb26eee5eeea924eb314f8e4dbf263270ebdb716c1f788cd8397ad467f22`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `d15f99579dca000a4564a4261f6c7c721881fd9910f18fc180b550be36dc696d`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `d23e2bdc9716c733d205bedd7baca4d05c41508f869aeb05ac9977b15cc46d27`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `ed9560701ad54fadde7b0d9b29b7bc6269553813841a6b3b772ff98352d0a36f`
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — SHA-256: `f898354fabddbe5184128dfd64b205929564cdcd0589a538ac9a2bbd73c106fd`
+- `backend/scripts/tests/test_cleaning_turnover_display.ts` — SHA-256: `0ede590b441cd221eb01adbcd4b92a2e107b84d0f8bb7643e8d0ea1369ae923a`
+- `backend/scripts/tests/test_cleaning_turnover_display.ts` — SHA-256: `3c1bbeffdfbec28a6a61929651abc34f99bdcd153d47e56f11c13b57b31c8093`
+- `backend/scripts/tests/test_cleaning_turnover_display.ts` — SHA-256: `3c68da2d543624be7410b3967dfc3ceb9c19a713c29d78eb1770be98b0772128`
+- `backend/scripts/tests/test_cleaning_turnover_display.ts` — SHA-256: `628e4e24afd56262f965127578699ed5d028a8dc3044c850580c127f729f1bfb`
+- `backend/scripts/tests/test_cleaning_turnover_display.ts` — SHA-256: `ee686281662edbdf13828c827fe59f73bf6622bd09c53a68db7432b5349df3fd`
+- `backend/scripts/tests/test_mz091_password_authority_contract.ts` — SHA-256: `131d79f83159005f9d01cb564d34038f3de6fe345d3ccd2bafeaccdfd74dbc63`
+- `backend/scripts/tests/test_mz091_password_authority_contract.ts` — SHA-256: `2ff8c96dfa20c14edb833f61805ca187cf0a7ddba420bdb8bd1db10751dcfd04`
+- `backend/scripts/tests/test_mz091_password_authority_contract.ts` — SHA-256: `4d05f428e011ec54a133928123b9a6cac9b1f18177b751ff31bdbd3402e5803f`
+- `backend/scripts/tests/test_mz091_password_authority_contract.ts` — SHA-256: `9fed0e73d5abfd6e7c3073cf823a8deae3b27e945000b4f8593cd09c3f7b2224`
+- `backend/scripts/tests/test_mz091_password_authority_contract.ts` — SHA-256: `ab85a789a3ab230857c6b05d68576e6106563d376246ede89e37657b882e463d`
+- `backend/scripts/tests/test_mz091_password_authority_contract.ts` — SHA-256: `ae05683ec2a307c09594c215f771ec4a3f8f89fc59990002f891d50aeade49e2`
+- `backend/scripts/tests/test_mz091_password_authority_contract.ts` — SHA-256: `d58b498442876efdebaaf86690c186877f6eb26c099d31ba19ef2475c9fd7671`
+- `backend/scripts/tests/test_mz091_password_authority_contract.ts` — SHA-256: `dcb41503976e59b16d68c28839082059a5e97ad6997191b395ce747b93d38c18`
+- `backend/scripts/tests/test_mz091_password_authority_contract.ts` — SHA-256: `f612c0acd86770c12ee4c39e736c0dae314f8408e4f0a800fd70314d2f8fbff1`
+- `backend/scripts/tests/test_mz091_password_authority_contract.ts` — SHA-256: `f69730f6a5e74e3ee029e4c69ea51e86502721fa72053c4ece075096969a4b37`
+- `backend/scripts/tests/test_mz091_password_chain_pg_integration.ts` — SHA-256: `534b562c124d071764d308e9f79773f022ae8384cc403ad372d2138f789ed32e`
+- `backend/src/lib/cleaningTurnoverDisplay.ts` — SHA-256: `017282cf32fcb1dbbf4882254d60d7c16c1c20246d560bfa0ad8f0bf26026f46`
+- `backend/src/lib/cleaningTurnoverDisplay.ts` — SHA-256: `0ee9f1cb07fa4d2606fcb386ecfceeeecad46fd2cf809796069a36d1274d8a25`
+- `backend/src/lib/cleaningTurnoverDisplay.ts` — SHA-256: `0f233e951a35fe5a79fd776f6dc65d22d57efe745486c6e2c3eda4d1490a0bd2`
+- `backend/src/lib/cleaningTurnoverDisplay.ts` — SHA-256: `49ba9eed96a05f453a313cde818efbd8e444da16fae70c307d616ef1707a821f`
+- `backend/src/lib/cleaningTurnoverDisplay.ts` — SHA-256: `4e7a6534ef4601a47276532b2ceaf063395dcb6b3fa6f1e0aaf0ca8db8ac76d3`
+- `backend/src/lib/cleaningTurnoverDisplay.ts` — SHA-256: `855a2940f310220621ab910d5f950466dda54abb9d8f1151aac4e58c62603862`
+- `backend/src/lib/cleaningTurnoverDisplay.ts` — SHA-256: `9ea29fc257b5265ea2a93f99c841a592f98bbe6ebe2a7b9d08a15b93a1928815`
+- `backend/src/lib/cleaningTurnoverDisplay.ts` — SHA-256: `ba0480f01874013cfb51a86b4083433d822ec46036f36c7fcf8e8bd51f24849d`
+- `backend/src/lib/cleaningTurnoverDisplay.ts` — SHA-256: `d46f99bcc8534510d8ac31eda64e095de07a359af8733f8d18dfc06a3393133f`
+- `backend/src/lib/cleaningTurnoverDisplay.ts` — SHA-256: `d5bec5a40adf60b30279911fe3975b612f35465d60648914abaeedf183f293bc`
+- `backend/src/lib/cleaningTurnoverDisplay.ts` — SHA-256: `e4a6e5636e51c76422b3ce9bbb9b1002bd07887e3a484afcfe459051af9bedd6`
+- `backend/src/modules/cleaning.ts` — SHA-256: `0cb5bd2a96f01bb38cb55fa7e6211a9c0ffc7103fb7f619da15d394cd0f63dda`
+- `backend/src/modules/cleaning.ts` — SHA-256: `120583a6edfd79caab412e27f764b667ef65bd24265274eecb1b656ea7a477f4`
+- `backend/src/modules/cleaning.ts` — SHA-256: `2a6e557351fa87ba049a1bb7a17083afcef8fe2593dccc0fff95a9b77b0268a2`
+- `backend/src/modules/cleaning.ts` — SHA-256: `2d66973ed74fcba69458b68d046fa4e77d9029e5dbe8b1409febef66c61141d5`
+- `backend/src/modules/cleaning.ts` — SHA-256: `43bd98f8656bde9dfffedbbdbebc12c3acf91a57710bdc107a5bff10e6905add`
+- `backend/src/modules/cleaning.ts` — SHA-256: `44c46e288cf46fdf0d75a785dbb09aa6a666b77001643cc80fae81e265c550b8`
+- `backend/src/modules/cleaning.ts` — SHA-256: `4d31074c930aa8b9ad90b0f31305fe8e6cf8faec822e8f22345543897b14d234`
+- `backend/src/modules/cleaning.ts` — SHA-256: `695298aca86c6b3e74f41c4162409b4a30bc3666faf529b3b95f35985f498810`
+- `backend/src/modules/cleaning.ts` — SHA-256: `73c6e81b67ef2ef0e08f9cb408d60353c96634e3e5575e7ff3997b7edc5fa587`
+- `backend/src/modules/cleaning.ts` — SHA-256: `81ddf07699554e1ff87e5d125ae73abcd5c871e63450e146c90eaa9017b20be9`
+- `backend/src/modules/cleaning.ts` — SHA-256: `9033815f1017b2edcaf7e32c594fd30b8a0d385b60708af0885181bb4652dcf5`
+- `backend/src/modules/cleaning.ts` — SHA-256: `9223d69d80e0f519f10657083d6883314bdbdd9e0f2c801206950d7d4052aed0`
+- `backend/src/modules/cleaning.ts` — SHA-256: `98a3ed55f1ac644e75475e7de7e570f3bf1ae53043393c3976a66ad6057fd9d9`
+- `backend/src/modules/cleaning.ts` — SHA-256: `9f6256678bd9c7b559e137a7550625321bb86058d5ab0d12b29ed1a0ca8390fb`
+- `backend/src/modules/cleaning.ts` — SHA-256: `b6b693548475c7aa5e379384a6bf590d591f39333a88ef4ac8114df846cefbd4`
+- `backend/src/modules/cleaning.ts` — SHA-256: `c9e434449bf41cb5be9996f243bcafa2feeb0b0f86102720a2bd921be7ccde1a`
+- `backend/src/modules/cleaning.ts` — SHA-256: `caba9adf210a2b58dee2f7db973e02843d43e8192aeb5a224f45af5bb38b20c5`
+- `backend/src/modules/cleaning.ts` — SHA-256: `cea35addfdf33cf4930dc303622c4bc1d910aa9d5ceb95b21e70668ecbf6baca`
+- `backend/src/modules/cleaning.ts` — SHA-256: `d2eea134a33f193b6d10f5707603d2443988337cd79d47f92bf319ccc5f2b1d5`
+- `backend/src/modules/cleaning.ts` — SHA-256: `d6837473896fe2484dcf1cb31b7b90fbad3c8a24e7528a3a2712efbdd68cabe9`
+- `backend/src/modules/cleaning.ts` — SHA-256: `efe5486df28c420f3ab566320bb1dc14267eeafd3c8deace5264d4426259320c`
+- `backend/src/modules/cleaning.ts` — SHA-256: `f04728cd482eab2c9485b74d51cc27ffe140cec09d11838393bf4bbe9ac51f8e`
+- `backend/src/modules/cleaning.ts` — SHA-256: `f888075a84488e81a472178a2a2c04fef647923ff0e95a4b69ab0d8309606c28`
+- `backend/src/modules/cleaning.ts` — SHA-256: `fb2b741a1fd72bcb248d6dca83b2084e9a162d28d9aee3ef8aee7c7026934490`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `0549930b6a59b5ee626011e6e8da468e4cf7b5acd04c4e5419da34fe0ba8be33`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `8eb6e95e21d7ecb780d14013cdd76d879c53a4d39f5a687b9c82a8990cac08ef`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `a4d22b9177ee4ea95d539fcd32e8f96d255d1bb8871989b5f61002555f404c1e`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `d8ad742a706b3e6e51dcbc43fca010cc134e0671b964bf145ba20d63db9d6501`
+- `backend/src/modules/mzapp.ts` — SHA-256: `09fb5d261c762c6d6ab01a8c593011cabe9b897fe452e39f2fd7ccb825871a89`
+- `backend/src/modules/mzapp.ts` — SHA-256: `0f781d47e48661670c7c4287173a7b74fc341b4b6a403d12b5b744bd025d191a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `18170b4606e8311a0db23153895733b005472a9b8ac77c7005fd73a887966184`
+- `backend/src/modules/mzapp.ts` — SHA-256: `1e29dfbb40679d7945c6d2fe4ce5f2fa1079677fd0100bdc0b7798cbe542f4bd`
+- `backend/src/modules/mzapp.ts` — SHA-256: `36ff76b3fad972943af3bc22a9cf4877d225100f31f8bad998be4bcca660d640`
+- `backend/src/modules/mzapp.ts` — SHA-256: `45830c2fc44d50a2378833cbea1b5f476e921262330881e24b87a7ced83c0947`
+- `backend/src/modules/mzapp.ts` — SHA-256: `786e36b2afa40c19dd0f463466f45649673e29016a769d92b42372540de94b2f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `9395c7d2026f247b2055a8bf7c2726283b67c18f560b9197ae0ed4b8d76c082c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `988014339ee35631612f99c33e5d1704d399a8377cc25c051accfca865241d8c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `9a9703c15b1c41960594a8070859dbad54596725ef55a620a3b1e8d2b15bc0b0`
+- `backend/src/modules/mzapp.ts` — SHA-256: `9c8b3e8cf45c086d8a2d468ec7deafe976c197d88532aa8881705d171c8bb3d2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `a3ceeb7b7b93a847bb21261b7c116c1ecc9bf8c911a0d2819532bc2a6cb5ee96`
+- `backend/src/modules/mzapp.ts` — SHA-256: `cc90118d6b811fe1fae8a58cafc667eeae0818e1ece62f00bbebfbc7f8fa2962`
+- `backend/src/modules/mzapp.ts` — SHA-256: `cd77766fca1f3a1acae35204088045736d99673c0a384b11e136f7fa0bbe189d`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d02cbb66740eb84aca7f5bde0c0ba4d3bbed107d1dcdb15f434f7a7fd8566717`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d67cc3dc8e93927908c9056970bcb36ff1eaa12541cc5bd35105578116e77261`
+- `backend/src/modules/mzapp.ts` — SHA-256: `dbd16a4dac4e35c0634b08a1430d97b75bdb71f83bcea93271a1d6f5549e550b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f158559913285e05ec4b25a12c79b4f2fc639b19fc3c0de55939deeb1aff3f82`
+- `backend/src/modules/task_center.ts` — SHA-256: `0543071854eaf474866d62200046458fafb38c1d0bbd9cc415c572cef07686ea`
+- `backend/src/modules/task_center.ts` — SHA-256: `13a2735a36078246c30b6df8be5c978c850d90523dc569c74232e41b96adebd6`
+- `backend/src/modules/task_center.ts` — SHA-256: `286b6ac95518f9a425bf22df7e9eeb2398a84425861b66d4b14c26d99ed26991`
+- `backend/src/modules/task_center.ts` — SHA-256: `3694fadab730a1aa4859a67ebd6e368838d0e3d4bc48e3d97f5815f324fbce6f`
+- `backend/src/modules/task_center.ts` — SHA-256: `457184937be70f3629ae098588088401921b31e5e80a9b94b46f01f7b1ae6fa8`
+- `backend/src/modules/task_center.ts` — SHA-256: `46bde9a8d42a9b59cbb9fdfec1b6992ddff89014d2d658dc174052e92d674b7f`
+- `backend/src/modules/task_center.ts` — SHA-256: `526608cbb438f0ace30ceddc8328004859e9f40c1b5c478a97f351022064ec6d`
+- `backend/src/modules/task_center.ts` — SHA-256: `82e52f3c6a6baf1fa8a9ca280afb3af58caaa103e017fc0e2f9ca73939110497`
+- `backend/src/modules/task_center.ts` — SHA-256: `b94939a433b01d4778172d98b3099c2663b735abb6f29b704ca292655845334d`
+- `backend/src/modules/task_center.ts` — SHA-256: `faca8ac2b9aa934bac7f602a4cf0b68b4346f0cc3d7db59b1b2caba4d5d657f0`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `012f303404d472922f09a6389a9d7977eabfb22e0a0a9781951d9a378d4dfe64`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `0754c905d1e6ea7c502fca99104c03e2ac40cc84235ea8a6c15b4da501ea571e`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `0f6b3045254b3563f93e0de4bc606544fbc05bea1d18e101603ca0deb12063f1`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `132bcb5dd4b1fc39012ba36169cab5a73e551cafbde86547b300787b5aa649a8`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `198c0523bd72ccb370a314366c52897cde96798fbab6eb780d01e3d0596429f5`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `24a193860b793485afd858efad1948c162b701f4700e431324586acf84c632c3`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `27b85883af0de800dab66d14438bcc8bdeb7bd4c5e5abf33bdfa6cc20343e246`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `2a2f9b390d5668a465ca5b00ea8cc98b711333fe9d919b35a904d53348295a6c`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `328a00f0a184e7c433c004b13b7054bc1d65d9d9f00a07355e8a24ca30585645`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `34729e79aa8710e61cd5c739b4e5b1c7047f1c0cb34ebe6aff626fe8ee79e0ed`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `396cc43193f44de448ee0e8d21dce8e3aa7bfdeb71bc37aded8a03290a1304b0`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `3af8d83f43660ca9ddcf3d7721e26847a36a094405b21faca5a7acabd2b8e77e`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `3b800ed896f81969ff59224c8c2119ea825063312dc8abba74d32fff940a4cc2`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `433353bd537ccd51d16499d74299367ffb65b0ab4184de7fce235ff37e0f7568`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `4a07c007e00a3aff06601bab4a8744be03098d9d9dbf15385c5b833c4e6a3984`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `4d66f1fffc99cf114141fa28105d53a7d1c01d3c1c781b6cba4c24af65bccb9c`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `4dfd92530c051d4d8f08135d24303a4722c87b8b853b44f887e5f43e65360a2d`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `4fd545dde17ac96b538ef880f3edb61d931e0c34f956830ac336b24f2f86e7a3`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `505a21f22ed8b567de9835b385cf7b1e381fe5a6e2ce2cfd3c806d119456de20`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `53d69404bf3d81befa8364891105a175f6a8afc30d508068f07f89fa687ac5b5`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `566f801752f9bff2cae9d452f30ca8d5400b9135762bca1f7d96e5eaf00e137f`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `5852ac48de98022ed94d88af689cf94bcec5462432141aefdf7d51bcf6af8fa4`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `66d911e134d30f1104159f9f87cc15bb2f24f592f789778e1a4eec452029fab0`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `6f7924489f5d2c3760dc374e24055a34065a5f2c4e0732ec3059b310d29b5757`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `7715a9b342cd79683166bdfdc0ac7fe24212e40400c6279e71146c1038d63195`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `7ebb7ddddbfb26d5ac077b824469d25f9e535dff729c2071002b3219de9226a5`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `80c319905a90587d62b883525504dcfa580b260543832035573e8aaae7091125`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `8ef6554609f8a52a27e822d972c83da8cdaf01d16e111e81459acfd56a982ada`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `97833066f2f6b7b61c4b14021d111eaba68adee650f6a2d0f727a360c865ab19`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `b2e7bb5108297b6bd6c5e525890b08ba23fc188a2b30a2510db18431f82d3163`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `b3451857a81b1e670d240f3ee02bb9a74ffdeac5d69aca3bab6b9be054e41ecb`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `c1665cd20e0fe5facf577d4f06dcb7e75a7996cfdad2b8371c576356bbde40c4`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `c5b107a4b912948381f9a25d177772a5c67a7faa2ac48b1e4485c17e68951f2a`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `cf82011cf8873b26440f03231ea452a9569386fa0afe9d11bd400138edf7b780`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `d25e857bf8e9bf34568a38f3d678fd839b0c13fc83ff574f0ca10f4685fdbeaa`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `d60566506150955e82f1c00ed0b0b74b21564d96aaf45f76e3b13b4535dc363a`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `d69a65ce10efa64de9d1d95fc8a8bde57248be899ab843af4a376ec3e25ddc39`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `f19e551458013d92bbffc3d17da1ed59799bfacee693048d85f58f4e8c96fe50`
+- `backend/src/services/cleaningSync.ts` — SHA-256: `f9e37e9397d6162cd770da1776defd68e30acd707f17c40987bbe6aa87fdd1b7`
+- `docs/feature-regression-registry.md` — SHA-256: `2d04745613e80c99df93e8eb9ba44fdc2f1fe9c99eaa6ffa372476bb8cb86431`
+- `docs/feature-regression-registry.md` — SHA-256: `69817a8c966b1d9a8242e174da89d3fd35331379b3e7b2aa32374bb1277426ca`
+- `docs/feature-regression-registry.md` — SHA-256: `79012f8181f1fe01ec0bd8de70222e059a0417e9c1136e0cb2a50ccb48dda3a3`
+- `docs/feature-regression-registry.md` — SHA-256: `81630500c65dc6c6df966a3db6ea12d335a552e616e54483297c50e30bfb285d`
+- `docs/feature-regression-registry.md` — SHA-256: `dace53e02ca7e3fd19a85414d979911038a7ee9845a3856741869c1f8dc32128`
+- `docs/feature-regression-registry.md` — SHA-256: `dd30e2ff37abea1e156897437a22e3ac170c36ddaa75973fd16971ce3a306898`
+- `docs/feature-regression-registry.md` — SHA-256: `e6b04275eb9dfece5f3695d2fcf5fe87eabdc72a14dae8054db9806d1eee3fb6`
+- `frontend/src/app/cleaning/page.tsx` — SHA-256: `506555b3a617a92883ef139f0382317b8af511a73d08e1ec1ff8e19a0a26ce98`
+- `frontend/src/app/cleaning/page.tsx` — SHA-256: `97af3522f75a576a33209fb13945dfba6632d0ffc54427b34ccae674e2c0062a`
+- `frontend/src/app/cleaning/page.tsx` — SHA-256: `d3410438b849c3ee4a9a150d5c787040557b9b8c1865038abb4d6e6388124ffd`
+
+### Release Attempts
+
+#### RA-20261102-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261102-001`
+- Selected CRL identities: `root/CRL-20261102-001`
+- Intended action: `push`
+- Branch: `codex/mz091-password-chain-v2`
+- Base: `origin/Dev@50a4185d1fb344e821cf44df09bb09db6612d9e0`; fetched at `2026-11-02T06:36:24Z` and verified unchanged before staging
+- Candidate patch SHA-256: `c32ee7a43cc7eefc740349958de56d09f210fe381dfa4a5037924753212f7257`
+- Commit SHA: pending local content commit; this Release Attempt will be updated by a ledger-only receipt before push
+- Dependencies: paired `mobile/CRL-20261102-001`; coordinated review required, but neither repository broadens the other's permissions
+- Required validation: PASS; Root full gate, focused sync/projection contracts, backend build, actual Express PATCH and GET routes against disposable PostgreSQL 16.15, exact SQL assertions, cleanup, and paired Mobile full gate
+- Shared-hunk review: PASS; all staged non-ledger hunks belong only to this selected MZ-091 correction
+- Generated-file review: PASS; no build output, environment file, dependency directory, database artifact, log, media, credential or production payload is selected
+- Technical state: candidate
+- User authorization: approved-for-push; evidence: on 2026-11-02 the user instructed “先提交创建修补PR吧 先补齐091”, authorizing commit, new feature-branch push and Draft PR to Dev; merge, main, deployment, OTA and production data operations remain excluded
+- Independent review: GO on the final local candidate; P0=0 / P1=0 / P2=0 / P3=0 after actual GET projection and uniqueness coverage
+- Action conclusion: pending exact staged audit, local commit receipt, ordinary feature-branch push and Draft PR creation; no merge or release is authorized
+
 ## CRL-20261030-001 — MZ-087 延期检查旧来源缺少历史检查员时的消耗品只读接管
 
 - **Status:** verified combined local candidate; full MZ-087/MZ-092 quality gate, exact staged audit and independent review passed; selected for local commit, not pushed, merged, or deployed

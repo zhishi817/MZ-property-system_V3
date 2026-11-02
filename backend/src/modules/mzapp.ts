@@ -4875,6 +4875,7 @@ router.post('/cleaning-tasks/order-keys-required', requireR5TaskRuntimeSchema, a
 const managerFieldsSchema = z
   .object({
     task_ids: z.array(z.string().trim().min(1)).min(1).max(50),
+    password_task_ids: z.array(z.string().trim().min(1)).min(1).max(50).optional(),
     checkout_time: z.string().trim().max(32).optional().nullable(),
     checkin_time: z.string().trim().max(32).optional().nullable(),
     old_code: z.string().trim().max(64).optional().nullable(),
@@ -4924,6 +4925,11 @@ router.post('/cleaning-tasks/manager-fields/password-preview', requireR5TaskRunt
     )
     const selected = selectedResult?.rows || []
     if (selected.length !== new Set(parsed.data.task_ids).size) return res.status(404).json({ message: 'task not found' })
+    const selectedTaskTypes = new Set(selected.map((row: any) => String(row?.task_type || '').trim().toLowerCase()))
+    const unsupportedFields = parsed.data.fields.filter((field) => (
+      field === 'old_code' ? !selectedTaskTypes.has('checkout_clean') : !selectedTaskTypes.has('checkin_clean')
+    ))
+    if (unsupportedFields.length) return res.status(400).json({ message: 'password_field_not_applicable' })
     const checkinOrderIds = Array.from(new Set(selected
       .filter((row: any) => row.task_type === 'checkin_clean')
       .map((row: any) => String(row.order_id || '').trim())
@@ -5025,8 +5031,8 @@ async function handleManagerFields(req: any, res: any) {
     let keysNullIds: string[] = []
     if (parsed.data.checkout_time !== undefined && !eqNorm(parsed.data.checkout_time, prevRow?.checkout_time)) push('checkout_time', parsed.data.checkout_time)
     if (parsed.data.checkin_time !== undefined && !eqNorm(parsed.data.checkin_time, prevRow?.checkin_time)) push('checkin_time', parsed.data.checkin_time)
-    if (parsed.data.old_code !== undefined && !eqNorm(parsed.data.old_code, prevRow?.old_code)) push('old_code', parsed.data.old_code)
-    if (parsed.data.new_code !== undefined && !eqNorm(parsed.data.new_code, prevRow?.new_code)) push('new_code', parsed.data.new_code)
+    if (parsed.data.old_code !== undefined) push('old_code', parsed.data.old_code)
+    if (parsed.data.new_code !== undefined) push('new_code', parsed.data.new_code)
     if (parsed.data.guest_special_request !== undefined && !eqNorm(parsed.data.guest_special_request, prevRow?.guest_special_request)) push('guest_special_request', parsed.data.guest_special_request)
     if (parsed.data.keys_required !== undefined) {
       const nextK = parsed.data.keys_required == null ? 1 : Number(parsed.data.keys_required)
@@ -5123,7 +5129,9 @@ async function handleManagerFields(req: any, res: any) {
 
     const passwordRequestId = parsed.data.password_verification?.request_id || crypto.randomUUID()
     const affectedTaskIds = (await pgRunInTransaction(async (client) => {
-      const targetTaskIds = Array.from(new Set(parsed.data.task_ids.map((x) => String(x || '').trim()).filter(Boolean))).sort()
+      const generalTaskIds = Array.from(new Set(parsed.data.task_ids.map((x) => String(x || '').trim()).filter(Boolean))).sort()
+      const passwordTaskIds = Array.from(new Set((parsed.data.password_task_ids || parsed.data.task_ids).map((x) => String(x || '').trim()).filter(Boolean))).sort()
+      const targetTaskIds = Array.from(new Set([...generalTaskIds, ...passwordTaskIds])).sort()
       const affected = new Set<string>()
       const snapshotResult = await client.query(
         `SELECT t.id::text AS id,
@@ -5164,10 +5172,21 @@ async function handleManagerFields(req: any, res: any) {
         error.status = 409
         throw error
       }
+      const passwordTaskIdSet = new Set(passwordTaskIds)
+      const lockedPasswordTasks = lockedTasks.filter((row: any) => passwordTaskIdSet.has(String(row.id)))
+      const lockedTaskTypes = new Set(lockedPasswordTasks.map((row: any) => String(row?.task_type || '').trim().toLowerCase()))
+      const unsupportedPasswordFields = verificationFields.filter((field) => (
+        field === 'old_code' ? !lockedTaskTypes.has('checkout_clean') : !lockedTaskTypes.has('checkin_clean')
+      ))
+      if (unsupportedPasswordFields.length) {
+        const error: any = new Error('password_field_not_applicable')
+        error.status = 400
+        throw error
+      }
       if (verificationFields.length) {
         const verifiedPropertyIds = await normalizeCleaningPasswordChainKeys(
           client,
-          lockedTasks.map((row: any) => row?.property_id),
+          lockedPasswordTasks.map((row: any) => row?.property_id),
         )
         if (verifiedPropertyIds.some((propertyId) => !lockedPasswordPropertyIds.includes(propertyId))) {
           const error: any = new Error('password_chain_topology_changed_retry')
@@ -5184,8 +5203,12 @@ async function handleManagerFields(req: any, res: any) {
       }
       const claimedByTask = new Map<string, Array<'old_code' | 'new_code'>>()
       if (verificationFields.length) {
-        for (const row of lockedTasks) {
-          const taskFields = verificationFields.filter((field) => String(row?.task_type || '') !== 'checkout_clean' || field === 'old_code')
+        for (const row of lockedPasswordTasks) {
+          const taskType = String(row?.task_type || '')
+          const taskFields = verificationFields.filter((field) => (
+            (taskType === 'checkout_clean' && field === 'old_code')
+            || (taskType === 'checkin_clean' && field === 'new_code')
+          ))
           if (!taskFields.length) continue
           const claimedFields = await claimTaskPasswordAuthorityFields({ taskId: String(row.id), fields: taskFields, client, audit: passwordAudit })
           claimedByTask.set(String(row.id), claimedFields)
@@ -5197,15 +5220,15 @@ async function handleManagerFields(req: any, res: any) {
         .filter((entry) => entry.field !== 'old_code' && entry.field !== 'new_code')
       if (nonPasswordEntries.length) {
         const assignments = nonPasswordEntries.map((entry, index) => `${entry.field} = $${index + 1}`)
-        const transactionValues = [...nonPasswordEntries.map((entry) => entry.value), targetTaskIds]
+        const transactionValues = [...nonPasswordEntries.map((entry) => entry.value), generalTaskIds]
         const sql = `UPDATE cleaning_tasks SET ${assignments.join(', ')}, updated_at = now() WHERE id::text = ANY($${transactionValues.length}::text[])`
         await client.query(sql, transactionValues)
-        for (const taskId of targetTaskIds) affected.add(taskId)
+        for (const taskId of generalTaskIds) affected.add(taskId)
       }
 
       const passwordEntryByField = new Map(fieldNames.map((field, index) => [field, vals[index]]))
       const linkedOrders = new Set<string>()
-      for (const row of lockedTasks) {
+      for (const row of lockedPasswordTasks) {
         const taskId = String(row.id)
         const claimedFields = claimedByTask.get(taskId) || []
         const passwordWriteFields = claimedFields.filter((field) => passwordEntryByField.has(field))
@@ -8596,7 +8619,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               COALESCE(p_id.wifi_ssid::text, p_code.wifi_ssid::text) AS property_wifi_ssid,
               COALESCE(p_id.wifi_password::text, p_code.wifi_password::text) AS property_wifi_password,
               COALESCE(p_id.router_location::text, p_code.router_location::text) AS property_router_location,
-              t.task_type,
+              COALESCE(NULLIF(t.task_type, ''), NULLIF(t.type, '')) AS task_type,
               t.linked_checkout_task_id,
               COALESCE(t.task_date, t.date)::text AS task_date,
               t.status,
@@ -8615,6 +8638,11 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               t.checkin_time,
               t.old_code,
               t.new_code,
+              t.old_code_authority_status,
+              t.new_code_authority_status,
+              t.old_code_source_task_id,
+              t.old_code_source_order_id,
+              t.old_code_source_field,
               t.guest_special_request,
               t.note,
               CASE
@@ -8828,6 +8856,11 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             t.checkin_time,
             t.old_code,
             t.new_code,
+            t.old_code_authority_status,
+            t.new_code_authority_status,
+            t.old_code_source_task_id,
+            t.old_code_source_order_id,
+            t.old_code_source_field,
             t.guest_special_request,
             t.note,
             t.keys_required,
@@ -10084,8 +10117,8 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                     ? '清洁'
                     : (summaryFromCleaningTimes(p.a.checkout_time, p.a.checkin_time) || null)
 
-          const oldCode = firstNonEmpty(turnoverDisplay.old_code, p.a.old_code, p.b?.old_code, ...rows.map((x) => x.old_code))
-          const newCode = firstNonEmpty(turnoverDisplay.new_code, p.b?.new_code, ...nextCheckinsForCheckout.map((x: any) => x.new_code), p.a.new_code, ...rows.map((x) => x.new_code))
+          const oldCode = turnoverDisplay.old_code
+          const newCode = turnoverDisplay.new_code
           const guestSpecialRequest = displayMergeCheckinRow
             ? (String(displayMergeCheckinRow.guest_special_request || '').trim() || null)
             : firstNonEmpty(turnoverDisplay.guest_request_summary, p.a.guest_special_request, p.b?.guest_special_request, ...rows.map((x) => x.guest_special_request))
@@ -10474,11 +10507,15 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             old_code: oldCode,
             new_code: newCode,
             password_authority: {
-              old_code_status: p.a?.password_authority?.old_code_status || 'needs_review',
-              new_code_status: (p.b || p.a)?.password_authority?.new_code_status || 'needs_review',
-              old_code_source_task_id: p.a?.password_authority?.old_code_source_task_id || null,
-              old_code_source_order_id: p.a?.password_authority?.old_code_source_order_id || null,
-              old_code_source_field: p.a?.password_authority?.old_code_source_field || null,
+              old_code_status: p.kind === 'checkout' || p.kind === 'turnover'
+                ? (turnoverDisplay.old_code_authority_status || 'needs_review')
+                : 'not_applicable',
+              new_code_status: p.kind === 'checkin' || p.kind === 'turnover' || nextCheckinsForCheckout.length > 0
+                ? (turnoverDisplay.new_code_authority_status || 'needs_review')
+                : 'not_applicable',
+              old_code_source_task_id: turnoverDisplay.old_code_source_task_id || null,
+              old_code_source_order_id: turnoverDisplay.old_code_source_order_id || null,
+              old_code_source_field: turnoverDisplay.old_code_source_field || null,
             },
             guest_special_request: guestSpecialRequest,
             guest_request_checkout: displayTurnoverDisplay.guest_request_checkout,
@@ -10630,8 +10667,8 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         const [d, businessIdentity] = keyParts
         const mergeIdentity = keyParts.slice(2).join('|') || null
         const propKey = String(preferred?.property?.code || preferred?.property_id || preferred?.title || '').trim() || 'unknown'
-        const mergedTurnoverDisplay = mergeCleaningTurnoverDisplays(arr.map((x) => x.turnover_display))
-        const managerTimingAuthority = deferredInspectionManagerTimingAuthority(arr, mergedTurnoverDisplay)
+        const mergedTurnoverDisplay = mergeCleaningTurnoverDisplays(preferredPool.map((x) => x.turnover_display))
+        const managerTimingAuthority = deferredInspectionManagerTimingAuthority(preferredPool, mergedTurnoverDisplay)
         const deferredInspectionMerged = managerTimingAuthority.deferredInspectionMerged
         const deferredInspectionCurrentDayCheckout = managerTimingAuthority.currentDayCheckout
         const managerTurnoverDisplay = managerTimingAuthority.turnoverDisplay
@@ -10706,20 +10743,20 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         const keyPhotoUrl = firstNonEmpty(...arr.map((x) => x.key_photo_url))
         const lockboxVideoUrl = firstNonEmpty(...arr.map((x) => x.lockbox_video_url))
         const lockboxVideoConfirmsCurrentState = keyHandover?.state === 'completed'
-        const oldCode = firstNonEmpty(
-          mergedTurnoverDisplay?.old_code,
-          ...arr
-            .filter((x) => String(x?.task_type || '').trim().toLowerCase() === 'checkout_clean')
-            .map((x) => x.old_code),
-          ...arr.map((x) => x.old_code),
-        )
-        const newCode = firstNonEmpty(
-          mergedTurnoverDisplay?.new_code,
-          ...arr
-            .filter((x) => String(x?.task_type || '').trim().toLowerCase() === 'checkin_clean')
-            .map((x) => x.new_code),
-          ...arr.map((x) => x.new_code),
-        )
+        const oldCode = mergedTurnoverDisplay
+          ? mergedTurnoverDisplay.old_code
+          : firstNonEmpty(
+              ...arr
+                .filter((x) => String(x?.task_type || '').trim().toLowerCase() === 'checkout_clean')
+                .map((x) => x.old_code),
+            )
+        const newCode = mergedTurnoverDisplay
+          ? mergedTurnoverDisplay.new_code
+          : firstNonEmpty(
+              ...arr
+                .filter((x) => String(x?.task_type || '').trim().toLowerCase() === 'checkin_clean')
+                .map((x) => x.new_code),
+            )
         const keysRequired = Math.max(...arr.map((x) => (x?.keys_required == null ? 1 : Number(x.keys_required))).filter((x) => Number.isFinite(x) && x > 0), 1)
         const checkoutKeys = Math.max(
           ...arr.map((x) => (x?.keys_required_checkout == null ? 0 : Number(x.keys_required_checkout))).filter((x) => Number.isFinite(x) && x > 0),
@@ -10915,6 +10952,18 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           lockbox_video_url: hideUnattributedHistoricalMedia ? null : (canViewLockboxVideo ? lockboxVideoUrl : null),
           old_code: oldCode || null,
           new_code: newCode || null,
+          password_authority: {
+            ...(preferred?.password_authority || {}),
+            old_code_status: hasCheckoutSide
+              ? (mergedTurnoverDisplay?.old_code_authority_status || 'needs_review')
+              : 'not_applicable',
+            new_code_status: hasCheckinSide
+              ? (mergedTurnoverDisplay?.new_code_authority_status || 'needs_review')
+              : 'not_applicable',
+            old_code_source_task_id: mergedTurnoverDisplay?.old_code_source_task_id || null,
+            old_code_source_order_id: mergedTurnoverDisplay?.old_code_source_order_id || null,
+            old_code_source_field: mergedTurnoverDisplay?.old_code_source_field || null,
+          },
           guest_request_checkout: mergedTurnoverDisplay?.guest_request_checkout || null,
           guest_request_checkin: mergedTurnoverDisplay?.guest_request_checkin || null,
           guest_request_summary: mergedTurnoverDisplay?.guest_request_summary || null,

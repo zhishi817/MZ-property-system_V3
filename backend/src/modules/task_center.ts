@@ -13,7 +13,7 @@ import {
   mergeTurnoverTaskPlan,
   resolveBoardInspectionDueDate,
 } from '../lib/cleaningInspection'
-import { buildCleaningTurnoverDisplay } from '../lib/cleaningTurnoverDisplay'
+import { buildCleaningTurnoverDisplay, cleaningTaskNewCodeForDisplay, cleaningTaskOldCodeForDisplay } from '../lib/cleaningTurnoverDisplay'
 import { projectDailyTaskStats, type DailyTaskStatsGroup } from '../lib/dailyTaskExecutionStats'
 import {
   GUEST_READY_NOTIFICATION_PERMISSION,
@@ -132,6 +132,13 @@ type BoardTask = {
   can_configure_inspection?: boolean
   old_code?: string | null
   new_code?: string | null
+  password_authority?: {
+    old_code_status?: string | null
+    new_code_status?: string | null
+    old_code_source_task_id?: string | null
+    old_code_source_order_id?: string | null
+    old_code_source_field?: string | null
+  }
   nights?: number | null
   summary_checkout_time?: string | null
   summary_checkin_time?: string | null
@@ -1667,6 +1674,13 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
         inspection_due_date: turnoverPlan.inspectionDueDate,
         old_code: turnoverDisplay.old_code,
         new_code: turnoverDisplay.new_code,
+        password_authority: {
+          old_code_status: turnoverDisplay.old_code_authority_status || 'needs_review',
+          new_code_status: turnoverDisplay.new_code_authority_status || 'needs_review',
+          old_code_source_task_id: turnoverDisplay.old_code_source_task_id || null,
+          old_code_source_order_id: turnoverDisplay.old_code_source_order_id || null,
+          old_code_source_field: turnoverDisplay.old_code_source_field || null,
+        },
         guest_special_request: turnoverDisplay.guest_request_summary,
         guest_request_checkout: turnoverDisplay.guest_request_checkout,
         guest_request_checkin: turnoverDisplay.guest_request_checkin,
@@ -1724,7 +1738,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
          COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS property_id,
          COALESCE(p_id.code::text, p_code.code::text) AS property_code,
          COALESCE(p_id.region::text, p_code.region::text) AS property_region,
-         t.task_type,
+         COALESCE(NULLIF(t.task_type, ''), NULLIF(t.type, '')) AS task_type,
          COALESCE(t.task_date, t.date)::text AS task_date,
          t.status,
          t.checked_out_at,
@@ -1754,6 +1768,11 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
          t.auto_sync_enabled,
          t.old_code,
          t.new_code,
+         t.old_code_authority_status,
+         t.new_code_authority_status,
+         t.old_code_source_task_id,
+         t.old_code_source_order_id,
+         t.old_code_source_field,
          (o.confirmation_code::text) AS order_code,
          o.status::text AS order_status,
          o.checkin::text AS order_checkin,
@@ -1811,7 +1830,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
            id::text AS id,
            superseded_by::text AS superseded_by,
            property_id::text AS property_id,
-           task_type,
+           COALESCE(NULLIF(task_type, ''), NULLIF(type, '')) AS task_type,
            COALESCE(task_date, date)::text AS task_date,
            checkout_time,
            checkin_time,
@@ -1819,7 +1838,12 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
            nights_override,
            guest_special_request,
            old_code,
-           new_code
+          new_code,
+          old_code_authority_status,
+          new_code_authority_status,
+          old_code_source_task_id,
+          old_code_source_order_id,
+          old_code_source_field
          FROM cleaning_tasks
          WHERE execution_state = 'superseded'
            AND superseded_by::text = ANY($1::text[])
@@ -1900,8 +1924,15 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
           auto_sync_enabled: row.auto_sync_enabled !== false,
           has_key_photo: !!row.has_key_photo,
           key_photo_uploaded_at: row.key_photo_uploaded_at ? String(row.key_photo_uploaded_at) : null,
-          old_code: row.old_code != null ? String(row.old_code || '') : null,
-          new_code: row.new_code != null ? String(row.new_code || '') : null,
+          old_code: cleaningTaskOldCodeForDisplay(row),
+          new_code: cleaningTaskNewCodeForDisplay(row),
+          password_authority: {
+            old_code_status: rawType === 'checkout_clean' ? (row.old_code_authority_status || 'needs_review') : 'not_applicable',
+            new_code_status: rawType === 'checkin_clean' ? (row.new_code_authority_status || 'needs_review') : 'not_applicable',
+            old_code_source_task_id: row.old_code_source_task_id || null,
+            old_code_source_order_id: row.old_code_source_order_id || null,
+            old_code_source_field: row.old_code_source_field || null,
+          },
           guest_special_request: row.guest_special_request != null ? String(row.guest_special_request || '') : null,
           keys_required: row.order_keys_required == null ? (row.keys_required == null ? 1 : Number(row.keys_required)) : Number(row.order_keys_required),
           keys_required_checkout: rawType === 'checkout_clean' ? (row.order_keys_required == null ? (row.keys_required == null ? 1 : Number(row.keys_required)) : Number(row.order_keys_required)) : null,
@@ -2006,8 +2037,15 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
           auto_sync_enabled: row.auto_sync_enabled !== false,
           has_key_photo: !!row.has_key_photo,
           key_photo_uploaded_at: row.key_photo_uploaded_at ? String(row.key_photo_uploaded_at) : null,
-          old_code: row.old_code != null ? String(row.old_code || '') : null,
-          new_code: row.new_code != null ? String(row.new_code || '') : null,
+          old_code: cleaningTaskOldCodeForDisplay(row),
+          new_code: cleaningTaskNewCodeForDisplay(row),
+          password_authority: {
+            old_code_status: rawType === 'checkout_clean' ? (row.old_code_authority_status || 'needs_review') : 'not_applicable',
+            new_code_status: rawType === 'checkin_clean' ? (row.new_code_authority_status || 'needs_review') : 'not_applicable',
+            old_code_source_task_id: row.old_code_source_task_id || null,
+            old_code_source_order_id: row.old_code_source_order_id || null,
+            old_code_source_field: row.old_code_source_field || null,
+          },
           inspection_scope: rawType === 'checkin_clean' ? normalizeInspectionScope(row.inspection_scope) : null,
           nights: row.nights != null ? Number(row.nights) : null,
           checkout_task_date: d,
@@ -2102,8 +2140,15 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
         auto_sync_enabled: row.auto_sync_enabled !== false,
         has_key_photo: false,
         key_photo_uploaded_at: null,
-        old_code: row.old_code != null ? String(row.old_code || '') : null,
-        new_code: row.new_code != null ? String(row.new_code || '') : null,
+        old_code: cleaningTaskOldCodeForDisplay(row),
+        password_authority: {
+          old_code_status: lower(row.task_type || row.type) === 'checkout_clean' ? (row.old_code_authority_status || 'needs_review') : 'not_applicable',
+          new_code_status: lower(row.task_type || row.type) === 'checkin_clean' ? (row.new_code_authority_status || 'needs_review') : 'not_applicable',
+          old_code_source_task_id: row.old_code_source_task_id || null,
+          old_code_source_order_id: row.old_code_source_order_id || null,
+          old_code_source_field: row.old_code_source_field || null,
+        },
+        new_code: cleaningTaskNewCodeForDisplay(row),
         inspection_scope: lower(row.task_type) === 'checkin_clean' ? normalizeInspectionScope(row.inspection_scope) : null,
         nights: row.nights_override != null ? Number(row.nights_override) : null,
         summary_checkout_time: text(row.checkout_time) || DEFAULT_SUMMARY_CHECKOUT_TIME,

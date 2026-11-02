@@ -10,7 +10,7 @@ import { buildCleaningTaskVisibilityHints, buildMz031CleaningArrangementRevision
 import { canonicalCleaningTurnoverPairs, canonicalKeyHandoverSourceIds, defaultInspectionModeForTaskType, deferredProjectionDate, effectiveInspectionMode, normalizeInspectionMode, normalizeInspectionScope } from '../lib/cleaningInspection'
 import { buildWebTaskCapabilityPayload } from '../lib/webTaskCapabilities'
 import { assignedStatusFromAssignees, isCheckinSiteExecutionTask } from '../lib/cleaningAssignmentStatus'
-import { buildCleaningTurnoverDisplay } from '../lib/cleaningTurnoverDisplay'
+import { buildCleaningTurnoverDisplay, cleaningTaskNewCodeForDisplay, cleaningTaskOldCodeForDisplay } from '../lib/cleaningTurnoverDisplay'
 import { shouldIgnoreNightsOverrideForAutoCheckinTask } from '../lib/cleaningTaskNightOverride'
 import { isTaskExecutorEligibleRoleNames } from '../services/taskExecutorEligibility'
 import { emitDeferredInspectionCheckinConflictAlerts, isDeferredInspectionCheckinConflictRelevantChange, reconcileDeferredInspectionCheckinReplacement } from '../services/deferredInspectionCheckinConflict'
@@ -1273,6 +1273,28 @@ router.delete('/offline-tasks/:id', requirePerm('cleaning.schedule.manage'), asy
   }
 })
 
+function projectCleaningTaskPasswordDisplay(row: any) {
+  const taskType = String(row?.task_type || row?.type || '').trim().toLowerCase()
+  const turnoverDisplay = buildCleaningTurnoverDisplay({
+    checkoutTask: taskType === 'checkout_clean' || taskType === 'checkout' ? row : null,
+    checkinTask: taskType === 'checkin_clean' || taskType === 'checkin' ? row : null,
+  })
+  return {
+    ...row,
+    old_code: turnoverDisplay.old_code,
+    new_code: cleaningTaskNewCodeForDisplay(row),
+    old_code_authority_status: taskType === 'checkout_clean' || taskType === 'checkout'
+      ? (turnoverDisplay.old_code_authority_status || 'needs_review')
+      : 'not_applicable',
+    new_code_authority_status: taskType === 'checkin_clean' || taskType === 'checkin'
+      ? (row?.new_code_authority_status || row?.password_authority?.new_code_status || 'needs_review')
+      : 'not_applicable',
+    old_code_source_task_id: turnoverDisplay.old_code_source_task_id,
+    old_code_source_order_id: turnoverDisplay.old_code_source_order_id,
+    old_code_source_field: turnoverDisplay.old_code_source_field,
+  }
+}
+
 router.get('/tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), requireR5TaskRuntimeSchema, async (req, res) => {
   if (!isPasswordAuthoritySchemaReady()) return res.status(503).json({ code: 'password_authority_schema_not_ready' })
   const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
@@ -1295,7 +1317,7 @@ router.get('/tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
         return res.json((r?.rows || []).map((x: any) => {
           if (x?.order_id && x?.order_keys_required != null) x.keys_required = Number(x.order_keys_required)
           delete x.order_keys_required
-          return x
+          return projectCleaningTaskPasswordDisplay(x)
         }))
       }
       const r = await pgPool.query(
@@ -1309,7 +1331,7 @@ router.get('/tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
       return res.json((r?.rows || []).map((x: any) => {
         if (x?.order_id && x?.order_keys_required != null) x.keys_required = Number(x.order_keys_required)
         delete x.order_keys_required
-        return x
+        return projectCleaningTaskPasswordDisplay(x)
       }))
     }
     const rows = (db.cleaningTasks as any[]).slice()
@@ -1319,7 +1341,7 @@ router.get('/tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
       if (executionState && executionState !== 'active') return false
       return true
     })
-    if (!date) return res.json(activeRows)
+    if (!date) return res.json(activeRows.map(projectCleaningTaskPasswordDisplay))
     const orders = (db.orders || []) as any[]
     const byId = new Map<string, any>()
     for (const o of orders) byId.set(String(o.id), o)
@@ -1328,7 +1350,7 @@ router.get('/tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
       const oid = String(out.order_id || '').trim()
       const o = oid ? byId.get(oid) : null
       if (o && o.keys_required != null) out.keys_required = Number(o.keys_required) >= 2 ? 2 : 1
-      return out
+      return projectCleaningTaskPasswordDisplay(out)
     }))
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'query_failed' })
@@ -1366,7 +1388,7 @@ router.get('/history', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manag
         LIMIT $4
       `
       const r = await pgPool.query(sql, [propertyId, from, to, limit])
-      return res.json(r?.rows || [])
+      return res.json((r?.rows || []).map(projectCleaningTaskPasswordDisplay))
     }
     const rows = (db.cleaningTasks as any[]).slice().filter((t: any) => String(t.property_id || '') === propertyId)
     const filtered = rows.filter((t: any) => {
@@ -1376,7 +1398,7 @@ router.get('/history', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manag
     filtered.sort((a: any, b: any) => String(b.task_date || b.date || '').localeCompare(String(a.task_date || a.date || '')) || String(b.id || '').localeCompare(String(a.id || '')))
     const props = ((db as any).properties || []) as any[]
     const p = props.find((x: any) => String(x.id) === propertyId) || null
-    const out = filtered.slice(0, limit).map((t: any) => ({ ...t, property_code: p?.code || t?.property_code || null, property_region: p?.region || t?.property_region || null }))
+    const out = filtered.slice(0, limit).map((t: any) => projectCleaningTaskPasswordDisplay({ ...t, property_code: p?.code || t?.property_code || null, property_region: p?.region || t?.property_region || null }))
     return res.json(out)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'history_failed' })
@@ -1452,6 +1474,24 @@ const patchTaskSchema = z.object({
     client: z.enum(['web', 'mobile', 'api']),
   }).strict().optional(),
 }).strict()
+
+type CleaningPasswordField = 'old_code' | 'new_code'
+
+function cleaningPasswordFieldApplies(taskTypeValue: any, field: CleaningPasswordField) {
+  const taskType = String(taskTypeValue || '').trim().toLowerCase()
+  return (taskType === 'checkout_clean' && field === 'old_code')
+    || (taskType === 'checkin_clean' && field === 'new_code')
+}
+
+function assertCleaningPasswordFieldsApplicable(taskType: any, fields: CleaningPasswordField[]) {
+  const unique = Array.from(new Set(fields))
+  if (unique.some((field) => !cleaningPasswordFieldApplies(taskType, field))) {
+    const error: any = new Error('password_field_not_applicable')
+    error.status = 400
+    throw error
+  }
+  return unique
+}
 
 async function isValidStaffId(id: any, kind: 'cleaner' | 'inspector'): Promise<boolean> {
   if (!id) return true
@@ -1618,7 +1658,7 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRun
           ...((passwordVerification?.fields || []) as Array<'old_code' | 'new_code'>),
         ]))
         const lockedTaskType = String(lockedBefore?.task_type || lockedBefore?.type || '').trim().toLowerCase()
-        const passwordFields = requestedPasswordFields.filter((field) => lockedTaskType !== 'checkout_clean' || field === 'old_code')
+        const passwordFields = assertCleaningPasswordFieldsApplicable(lockedTaskType, requestedPasswordFields)
         if (passwordFields.length) assertPasswordAuthorityTaskMutable({ ...lockedBefore, ...patch })
         const passwordAudit: PasswordAuthorityAuditContext = {
           requestId: passwordVerification?.request_id || operationId,
@@ -1789,7 +1829,7 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRun
       ...((localPasswordVerification?.fields || []) as Array<'old_code' | 'new_code'>),
     ]))
     const localTaskType = String(localPatch.task_type || localPatch.type || (task as any).task_type || (task as any).type || '').trim().toLowerCase()
-    const localPasswordFields = localRequestedPasswordFields.filter((field) => localTaskType !== 'checkout_clean' || field === 'old_code')
+    const localPasswordFields = assertCleaningPasswordFieldsApplicable(localTaskType, localRequestedPasswordFields)
     if (localPasswordFields.length) assertPasswordAuthorityTaskMutable({ ...task, ...localPatch })
     const localPasswordAudit: PasswordAuthorityAuditContext = {
       requestId: localPasswordVerification?.request_id || operationId,
@@ -1991,6 +2031,12 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
     if (types.includes('checkout_clean') && types.includes('checkin_clean') && (parsed.data as any).inspection_scope === 'password_only') {
       return res.status(400).json({ code: TURNOVER_INSPECTION_SCOPE_CONFLICT, message: '同日退房入住任务必须检查后挂钥匙' })
     }
+    if (parsed.data.old_code !== undefined && !types.includes('checkout_clean')) {
+      return res.status(400).json({ message: 'password_field_not_applicable' })
+    }
+    if (parsed.data.new_code !== undefined && !types.includes('checkin_clean')) {
+      return res.status(400).json({ message: 'password_field_not_applicable' })
+    }
 
     const createdRows: any[] = []
     const linkedCheckoutTaskId = String((parsed.data as any).linked_checkout_task_id || '').trim() || null
@@ -2027,10 +2073,6 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
         ? 'inspect_and_hang'
         : ((parsed.data as any).inspection_scope ?? null),
       scheduled_at: parsed.data.scheduled_at ?? null,
-      old_code: parsed.data.old_code ?? null,
-      new_code: parsed.data.new_code ?? null,
-      old_code_authority_status: 'needs_review',
-      new_code_authority_status: 'needs_review',
       old_code_source_task_id: null,
       old_code_source_order_id: null,
       old_code_source_field: null,
@@ -2089,6 +2131,10 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
             ...base,
             task_type: tt,
             type: tt,
+            old_code: tt === 'checkout_clean' ? (parsed.data.old_code ?? null) : null,
+            new_code: tt === 'checkin_clean' ? (parsed.data.new_code ?? null) : null,
+            old_code_authority_status: tt === 'checkout_clean' ? 'needs_review' : 'not_applicable',
+            new_code_authority_status: tt === 'checkin_clean' ? 'needs_review' : 'not_applicable',
             inspection_mode: normalizeInspectionMode((parsed.data as any).inspection_mode) || defaultInspectionModeForTaskType(tt),
             inspection_due_date: (parsed.data as any).inspection_due_date ?? null,
           }
@@ -2194,6 +2240,10 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
         ...base,
         task_type: tt,
         type: tt,
+        old_code: tt === 'checkout_clean' ? (parsed.data.old_code ?? null) : null,
+        new_code: tt === 'checkin_clean' ? (parsed.data.new_code ?? null) : null,
+        old_code_authority_status: tt === 'checkout_clean' ? 'needs_review' : 'not_applicable',
+        new_code_authority_status: tt === 'checkin_clean' ? 'needs_review' : 'not_applicable',
         inspection_mode: normalizeInspectionMode((parsed.data as any).inspection_mode) || defaultInspectionModeForTaskType(tt),
         inspection_due_date: (parsed.data as any).inspection_due_date ?? null,
       }
@@ -2563,8 +2613,7 @@ router.post('/tasks/password-verify', requirePerm('cleaning.task.assign'), requi
         const task: any = lockedById.get(id)
         const taskType = String(task?.task_type || task?.type || '').trim().toLowerCase()
         const requested = Array.from(itemMap.get(id) || [])
-        const fields = requested.filter((field) => taskType !== 'checkout_clean' || field === 'old_code')
-        if (!fields.length) continue
+        const fields = assertCleaningPasswordFieldsApplicable(taskType, requested)
         const confirmed = await confirmTaskPasswordAuthority({ taskId: id, fields, client, audit })
         if (confirmed.updatedFields.length) updatedTaskIds.push(id)
         if (taskType === 'checkin_clean' && confirmed.updatedFields.includes('new_code') && String(task.order_id || '').trim()) {
@@ -2715,7 +2764,7 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), requireR5T
             ...((bulkPasswordVerification?.fields || []) as Array<'old_code' | 'new_code'>),
           ]))
           const nextTaskType = String(patch.task_type || patch.type || before?.task_type || before?.type || '').trim().toLowerCase()
-          const passwordFields = requestedPasswordFields.filter((field) => nextTaskType !== 'checkout_clean' || field === 'old_code')
+          const passwordFields = assertCleaningPasswordFieldsApplicable(nextTaskType, requestedPasswordFields)
           if (passwordFields.length) assertPasswordAuthorityTaskMutable({ ...before, ...patch })
           const passwordAudit: PasswordAuthorityAuditContext = {
             requestId: bulkPasswordVerification?.request_id || uuid(),
@@ -2816,7 +2865,7 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), requireR5T
           ...((bulkPasswordVerification?.fields || []) as Array<'old_code' | 'new_code'>),
         ]))
         const memoryTaskType = String(patch.task_type || patch.type || task.task_type || task.type || '').trim().toLowerCase()
-        const passwordFields = requestedPasswordFields.filter((field) => memoryTaskType !== 'checkout_clean' || field === 'old_code')
+        const passwordFields = assertCleaningPasswordFieldsApplicable(memoryTaskType, requestedPasswordFields)
         if (passwordFields.length) assertPasswordAuthorityTaskMutable({ ...task, ...patch })
         const passwordAudit: PasswordAuthorityAuditContext = {
           requestId: bulkPasswordVerification?.request_id || uuid(),
@@ -3052,7 +3101,7 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
            COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS property_id,
            COALESCE(p_id.code::text, p_code.code::text) AS property_code,
            COALESCE(p_id.region::text, p_code.region::text) AS property_region,
-           t.task_type,
+           COALESCE(NULLIF(t.task_type, ''), NULLIF(t.type, '')) AS task_type,
            t.linked_checkout_task_id,
            COALESCE(t.task_date, t.date)::text AS task_date,
            t.status,
@@ -3160,7 +3209,7 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
              id::text AS id,
              superseded_by::text AS superseded_by,
              property_id::text AS property_id,
-             task_type,
+             COALESCE(NULLIF(task_type, ''), NULLIF(type, '')) AS task_type,
              COALESCE(task_date, date)::text AS task_date,
              checkout_time,
              checkin_time,
@@ -3250,14 +3299,14 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
           key_photo_uploaded_at: row.key_photo_uploaded_at ? String(row.key_photo_uploaded_at) : null,
           has_key_photo: !!row.has_key_photo,
           auto_sync_enabled: row.auto_sync_enabled !== false,
-          old_code: row.old_code != null ? String(row.old_code || '') : null,
-          new_code: row.new_code != null ? String(row.new_code || '') : null,
+          old_code: turnoverDisplay.old_code,
+          new_code: cleaningTaskNewCodeForDisplay(row),
           password_authority: {
-            old_code_status: row.old_code_authority_status || 'needs_review',
-            new_code_status: row.new_code_authority_status || 'needs_review',
-            old_code_source_task_id: row.old_code_source_task_id || null,
-            old_code_source_order_id: row.old_code_source_order_id || null,
-            old_code_source_field: row.old_code_source_field || null,
+            old_code_status: rawType === 'checkout_clean' ? (turnoverDisplay.old_code_authority_status || 'needs_review') : 'not_applicable',
+            new_code_status: rawType === 'checkin_clean' ? (row.new_code_authority_status || 'needs_review') : 'not_applicable',
+            old_code_source_task_id: turnoverDisplay.old_code_source_task_id || null,
+            old_code_source_order_id: turnoverDisplay.old_code_source_order_id || null,
+            old_code_source_field: turnoverDisplay.old_code_source_field || null,
           },
           guest_special_request: row.guest_special_request != null ? String(row.guest_special_request || '') : null,
           note: row.note != null ? String(row.note || '') : null,
@@ -3394,11 +3443,11 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
         inspector_id: t.inspector_id ? String(t.inspector_id) : null,
         scheduled_at: t.scheduled_at ? String(t.scheduled_at) : null,
         auto_sync_enabled: t.auto_sync_enabled !== false,
-        old_code: t.old_code != null ? String(t.old_code || '') : null,
-        new_code: t.new_code != null ? String(t.new_code || '') : null,
+        old_code: cleaningTaskOldCodeForDisplay(t),
+        new_code: cleaningTaskNewCodeForDisplay(t),
         password_authority: {
-          old_code_status: t.old_code_authority_status || 'needs_review',
-          new_code_status: t.new_code_authority_status || 'needs_review',
+          old_code_status: rawType === 'checkout_clean' ? (t.old_code_authority_status || 'needs_review') : 'not_applicable',
+          new_code_status: rawType === 'checkin_clean' ? (t.new_code_authority_status || 'needs_review') : 'not_applicable',
           old_code_source_task_id: t.old_code_source_task_id || null,
           old_code_source_order_id: t.old_code_source_order_id || null,
           old_code_source_field: t.old_code_source_field || null,
