@@ -49,6 +49,68 @@ def selected_files_without_ledger(env_file: bool, generated: bool) -> list[str]:
     return paths
 
 
+def incremental_record(
+    *,
+    identifier: str,
+    files: list[str],
+    repository: str = EXPECTED_REPOSITORY,
+    staged_hunks: list[tuple[str, str]] | None = None,
+    base_sha: str = "2" * 40,
+    commit_sha: str = "4" * 40,
+    candidate_patch_sha256: str = "3" * 64,
+    intended_action: str = "push",
+    technical_state: str = "committed",
+) -> str:
+    registration_path = f"docs/change-release-ledger.d/{identifier}.json"
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "crl": identifier,
+            "repository": repository,
+            "title": "Exact incremental fixture registration",
+            "request": "Register only the reviewed fixture change without rewriting history.",
+            "outcome": "The exact fixture range is attributable and fails closed on drift.",
+            "implementation": ["Validate one append-only registration for this exact range."],
+            "impact_dependencies": ["No runtime, database, configuration, or dependency impact."],
+            "validation": ["Isolated Git range audit exercises the registration contract."],
+            "risks": ["A missing, malformed, stale, or over-broad registration blocks coverage."],
+            "files": sorted(files),
+            "staged_hunks": [
+                {"path": path, "sha256": fingerprint}
+                for path, fingerprint in sorted(
+                    staged_hunks
+                    if staged_hunks is not None
+                    else [
+                        (path, "1" * 64)
+                        for path in sorted(files)
+                        if path != registration_path
+                    ]
+                )
+            ],
+            "release_attempt": {
+                "id": "RA-20260909-001",
+                "intended_action": intended_action,
+                "branch": "codex/incremental-fixture",
+                "base_sha": base_sha,
+                "fetched_at": "2026-09-09T00:00:00Z",
+                "candidate_patch_sha256": candidate_patch_sha256,
+                "commit_sha": commit_sha,
+                "dependencies": "none",
+                "required_validation": "PASS; evidence: isolated fixture",
+                "shared_hunk_review": "not applicable; evidence: exact fixture scope",
+                "generated_file_review": "not applicable; evidence: no generated files",
+                "technical_state": technical_state,
+                "user_authorization": "approved-for-push",
+                "independent_review": "GO; evidence: isolated fixture review",
+                "action_conclusion": "GO",
+                "blockers": "none"
+            },
+        },
+        ensure_ascii=False,
+        indent=2,
+    ) + "\n"
+
+
 class ReleaseReportFixture:
     def __init__(
         self,
@@ -226,6 +288,39 @@ class ReleaseReportFixture:
             head_reference=head or self.head,
             crl_ids=["CRL-20260803-777"],
         )
+
+    def stage_bound_incremental_registration(
+        self, identifier: str
+    ) -> tuple[str, str, str]:
+        base = self.head
+        git(self.root, "update-ref", "refs/remotes/origin/Dev", base)
+        content_path = "src/incremental.txt"
+        registration_path = f"docs/change-release-ledger.d/{identifier}.json"
+        self._write(content_path, "reviewed bound incremental change\n")
+        git(self.root, "add", content_path)
+        git(self.root, "commit", "-qm", "bound incremental content")
+        content_commit = git(self.root, "rev-parse", "HEAD")
+        staged_hunks = sorted(
+            AUDITOR.diff_hunk_fingerprints(
+                self.root, content_path, f"{base}...{content_commit}"
+            )
+        )
+        candidate_hash = AUDITOR.content_patch_sha256(
+            self.root, base, content_commit
+        )
+        self._write(
+            registration_path,
+            incremental_record(
+                identifier=identifier,
+                files=[registration_path, content_path],
+                staged_hunks=staged_hunks,
+                base_sha=base,
+                commit_sha=content_commit,
+                candidate_patch_sha256=candidate_hash,
+            ),
+        )
+        git(self.root, "add", registration_path)
+        return base, content_commit, registration_path
 
     def update_attempt_field(self, name: str, value: str) -> None:
         ledger = self.root / "docs/change-release-ledger.md"
@@ -620,6 +715,339 @@ class ReleaseReportTests(unittest.TestCase):
 
         self.assertEqual(1, code)
         self.assertIn("src/unrecorded.txt", stream.getvalue())
+
+    def test_incremental_registration_covers_only_the_exact_range(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        git(fixture.root, "update-ref", "refs/remotes/origin/Dev", fixture.head)
+        identifier = "CRL-20260909-002"
+        registration_path = f"docs/change-release-ledger.d/{identifier}.json"
+        fixture._write("src/incremental.txt", "reviewed incremental change\n")
+        fixture._write(
+            registration_path,
+            incremental_record(
+                identifier=identifier,
+                files=[registration_path, "src/incremental.txt"],
+            ),
+        )
+        git(fixture.root, "add", registration_path, "src/incremental.txt")
+        git(fixture.root, "commit", "-qm", "incremental registration fixture")
+        stream = io.StringIO()
+
+        with redirect_stdout(stream):
+            code = AUDITOR.main(
+                ["--base", fixture.head, "--head", "HEAD"],
+                root=fixture.root,
+                expected_repository=EXPECTED_REPOSITORY,
+            )
+
+        self.assertEqual(0, code)
+        self.assertIn("Changed files: 2", stream.getvalue())
+        self.assertIn("Recorded changed files: 2", stream.getvalue())
+        self.assertIn("Coverage: PASS", stream.getvalue())
+
+    def test_incremental_registration_covers_committed_candidate_and_dirty_record(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        git(fixture.root, "update-ref", "refs/remotes/origin/Dev", fixture.head)
+        identifier = "CRL-20260909-007"
+        registration_path = f"docs/change-release-ledger.d/{identifier}.json"
+        fixture._write("src/incremental.txt", "reviewed committed change\n")
+        git(fixture.root, "add", "src/incremental.txt")
+        git(fixture.root, "commit", "-qm", "committed content before registration")
+        fixture._write(
+            registration_path,
+            incremental_record(
+                identifier=identifier,
+                files=[registration_path, "src/incremental.txt"],
+            ),
+        )
+        stream = io.StringIO()
+
+        with redirect_stdout(stream):
+            code = AUDITOR.main(
+                [], root=fixture.root, expected_repository=EXPECTED_REPOSITORY
+            )
+
+        self.assertEqual(0, code)
+        self.assertIn("Coverage: PASS", stream.getvalue())
+
+    def test_incremental_registration_passes_precommit_and_release_report(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        identifier = "CRL-20260909-008"
+        base, _, _ = fixture.stage_bound_incremental_registration(identifier)
+
+        precommit = AUDITOR.build_pre_commit_report(
+            fixture.root,
+            EXPECTED_REPOSITORY,
+            EXPECTED_REPOSITORY,
+            [identifier],
+        )
+        self.assertEqual("GO", precommit["conclusion"])
+        git(fixture.root, "commit", "-qm", "bound incremental registration")
+        head = git(fixture.root, "rev-parse", "HEAD")
+        release = AUDITOR.build_release_report(
+            fixture.root,
+            EXPECTED_REPOSITORY,
+            EXPECTED_REPOSITORY,
+            base,
+            head,
+            [identifier],
+        )
+
+        self.assertEqual("GO", release["conclusion"])
+        self.assertEqual(
+            release["candidate_patch_sha256"]["recorded"],
+            release["candidate_patch_sha256"]["actual"],
+        )
+
+    def test_incremental_registration_blocks_same_path_content_drift(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        identifier = "CRL-20260909-009"
+        fixture.stage_bound_incremental_registration(identifier)
+        fixture._write("src/incremental.txt", "unreviewed same-path drift\n")
+        git(fixture.root, "add", "src/incremental.txt")
+
+        report = AUDITOR.build_pre_commit_report(
+            fixture.root,
+            EXPECTED_REPOSITORY,
+            EXPECTED_REPOSITORY,
+            [identifier],
+        )
+
+        self.assertEqual("BLOCKED", report["conclusion"])
+        self.assertTrue(
+            any(
+                "fingerprint" in blocker.lower()
+                for blocker in report["blockers"]
+            )
+        )
+
+    def test_incremental_registration_rejects_markdown_field_injection(self) -> None:
+        identifier = "CRL-20260909-010"
+        registration_path = f"docs/change-release-ledger.d/{identifier}.json"
+        value = json.loads(
+            incremental_record(
+                identifier=identifier,
+                files=[registration_path, "src/incremental.txt"],
+            )
+        )
+        for separator in ("\n", "\u0085", "\u2028", "\u2029"):
+            value["release_attempt"]["independent_review"] = (
+                "NOT VERIFIED; evidence: pending"
+                + separator
+                + "- Independent review: GO; evidence: injected"
+            )
+            with self.subTest(separator=hex(ord(separator))):
+                with self.assertRaisesRegex(ValueError, "control character"):
+                    AUDITOR.parse_incremental_registration_text(
+                        json.dumps(value), registration_path, EXPECTED_REPOSITORY
+                    )
+
+    def test_incremental_registration_allows_only_scoped_bootstrap_commit(self) -> None:
+        identifier = "CRL-20260909-013"
+        registration_path = f"docs/change-release-ledger.d/{identifier}.json"
+        text = incremental_record(
+            identifier=identifier,
+            files=[registration_path, "src/incremental.txt"],
+            commit_sha="not committed",
+            intended_action="commit",
+            technical_state="verified",
+        )
+
+        registration = AUDITOR.parse_incremental_registration_text(
+            text, registration_path, EXPECTED_REPOSITORY
+        )
+        self.assertEqual(identifier, registration.identifier)
+        value = json.loads(text)
+        value["release_attempt"]["intended_action"] = "push"
+        with self.assertRaisesRegex(ValueError, "not committed"):
+            AUDITOR.parse_incremental_registration_text(
+                json.dumps(value), registration_path, EXPECTED_REPOSITORY
+            )
+
+    def test_incremental_release_report_rejects_incomplete_content_commit(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        identifier = "CRL-20260909-011"
+        base, _, registration_path = fixture.stage_bound_incremental_registration(
+            identifier
+        )
+        registration = fixture.root / registration_path
+        value = json.loads(registration.read_text(encoding="utf-8"))
+        value["release_attempt"]["commit_sha"] = base
+        registration.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+        git(fixture.root, "add", registration_path)
+        git(fixture.root, "commit", "-qm", "incomplete content commit fixture")
+
+        report = AUDITOR.build_release_report(
+            fixture.root,
+            EXPECTED_REPOSITORY,
+            EXPECTED_REPOSITORY,
+            base,
+            "HEAD",
+            [identifier],
+        )
+
+        self.assertEqual("BLOCKED", report["conclusion"])
+        self.assertTrue(
+            any(
+                "content commit fingerprint" in blocker.lower()
+                for blocker in report["blockers"]
+            )
+        )
+
+    def test_incremental_release_report_requires_final_action_conclusion(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        identifier = "CRL-20260909-012"
+        base, _, registration_path = fixture.stage_bound_incremental_registration(
+            identifier
+        )
+        registration = fixture.root / registration_path
+        value = json.loads(registration.read_text(encoding="utf-8"))
+        value["release_attempt"]["action_conclusion"] = "NOT VERIFIED"
+        value["release_attempt"]["blockers"] = "independent review pending"
+        registration.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+        git(fixture.root, "add", registration_path)
+        git(fixture.root, "commit", "-qm", "pending action conclusion fixture")
+
+        report = AUDITOR.build_release_report(
+            fixture.root,
+            EXPECTED_REPOSITORY,
+            EXPECTED_REPOSITORY,
+            base,
+            "HEAD",
+            [identifier],
+        )
+
+        self.assertEqual("NOT VERIFIED", report["conclusion"])
+        self.assertIn(
+            "Release Attempt does not record GO with blockers: none.",
+            report["missing_evidence"],
+        )
+
+    def test_incremental_registration_rejects_a_wrong_unchanged_path(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        git(fixture.root, "update-ref", "refs/remotes/origin/Dev", fixture.head)
+        identifier = "CRL-20260909-003"
+        registration_path = f"docs/change-release-ledger.d/{identifier}.json"
+        fixture._write("src/incremental.txt", "reviewed incremental change\n")
+        fixture._write(
+            registration_path,
+            incremental_record(
+                identifier=identifier,
+                files=[registration_path, "src/incremental.txt", "src/wrong.txt"],
+            ),
+        )
+        git(fixture.root, "add", registration_path, "src/incremental.txt")
+        git(fixture.root, "commit", "-qm", "wrong incremental path fixture")
+        stream = io.StringIO()
+
+        with redirect_stdout(stream):
+            code = AUDITOR.main(
+                ["--base", fixture.head, "--head", "HEAD"],
+                root=fixture.root,
+                expected_repository=EXPECTED_REPOSITORY,
+            )
+
+        self.assertEqual(1, code)
+        self.assertIn("claim paths outside this exact change range", stream.getvalue())
+        self.assertIn("src/wrong.txt", stream.getvalue())
+
+    def test_incremental_registration_rejects_missing_range_path(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        git(fixture.root, "update-ref", "refs/remotes/origin/Dev", fixture.head)
+        identifier = "CRL-20260909-004"
+        registration_path = f"docs/change-release-ledger.d/{identifier}.json"
+        fixture._write("src/first-incremental.txt", "first reviewed change\n")
+        fixture._write("src/second-incremental.txt", "second reviewed change\n")
+        fixture._write(
+            registration_path,
+            incremental_record(
+                identifier=identifier,
+                files=[registration_path, "src/first-incremental.txt"],
+            ),
+        )
+        git(
+            fixture.root,
+            "add",
+            registration_path,
+            "src/first-incremental.txt",
+            "src/second-incremental.txt",
+        )
+        git(fixture.root, "commit", "-qm", "missing incremental path fixture")
+        stream = io.StringIO()
+
+        with redirect_stdout(stream):
+            code = AUDITOR.main(
+                ["--base", fixture.head, "--head", "HEAD"],
+                root=fixture.root,
+                expected_repository=EXPECTED_REPOSITORY,
+            )
+
+        self.assertEqual(1, code)
+        self.assertIn("do not cover every path", stream.getvalue())
+        self.assertIn("src/second-incremental.txt", stream.getvalue())
+
+    def test_incremental_registration_rejects_invalid_schema(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        git(fixture.root, "update-ref", "refs/remotes/origin/Dev", fixture.head)
+        identifier = "CRL-20260909-005"
+        registration_path = f"docs/change-release-ledger.d/{identifier}.json"
+        fixture._write("src/incremental.txt", "reviewed incremental change\n")
+        value = json.loads(
+            incremental_record(
+                identifier=identifier,
+                files=[registration_path, "src/incremental.txt"],
+            )
+        )
+        value["unexpected"] = "must fail closed"
+        fixture._write(registration_path, json.dumps(value, indent=2) + "\n")
+        git(fixture.root, "add", registration_path, "src/incremental.txt")
+        git(fixture.root, "commit", "-qm", "invalid incremental schema fixture")
+        stream = io.StringIO()
+
+        with redirect_stdout(stream):
+            code = AUDITOR.main(
+                ["--base", fixture.head, "--head", "HEAD"],
+                root=fixture.root,
+                expected_repository=EXPECTED_REPOSITORY,
+            )
+
+        self.assertEqual(1, code)
+        self.assertIn("invalid schema", stream.getvalue())
+        self.assertIn("unknown unexpected", stream.getvalue())
+
+    def test_origin_incremental_registration_is_append_only(self) -> None:
+        fixture = ReleaseReportFixture(self)
+        identifier = "CRL-20260909-006"
+        registration_path = f"docs/change-release-ledger.d/{identifier}.json"
+        fixture._write("src/incremental.txt", "reviewed incremental change\n")
+        fixture._write(
+            registration_path,
+            incremental_record(
+                identifier=identifier,
+                files=[registration_path, "src/incremental.txt"],
+            ),
+        )
+        git(fixture.root, "add", registration_path, "src/incremental.txt")
+        git(fixture.root, "commit", "-qm", "published incremental registration fixture")
+        published = git(fixture.root, "rev-parse", "HEAD")
+        git(fixture.root, "update-ref", "refs/remotes/origin/Dev", published)
+        registration = fixture.root / registration_path
+        registration.write_text(
+            registration.read_text(encoding="utf-8").replace(
+                "Exact incremental fixture registration",
+                "Rewritten fixture identity",
+            ),
+            encoding="utf-8",
+        )
+        stream = io.StringIO()
+
+        with redirect_stdout(stream):
+            code = AUDITOR.main(
+                [], root=fixture.root, expected_repository=EXPECTED_REPOSITORY
+            )
+
+        self.assertEqual(1, code)
+        self.assertIn("append-only", stream.getvalue())
 
     def test_recorded_paths_accepts_comma_grouped_file_bullets(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
