@@ -239,15 +239,15 @@
 - Branch: `codex/mz091-password-chain-v2`
 - Base: `origin/Dev@50a4185d1fb344e821cf44df09bb09db6612d9e0`; fetched at `2026-11-02T06:36:24Z` and verified unchanged before staging
 - Candidate patch SHA-256: `c32ee7a43cc7eefc740349958de56d09f210fe381dfa4a5037924753212f7257`
-- Commit SHA: pending local content commit; this Release Attempt will be updated by a ledger-only receipt before push
-- Dependencies: paired `mobile/CRL-20261102-001`; coordinated review required, but neither repository broadens the other's permissions
+- Commit SHA: `f34548fc4f4671221da666e9c9307e66e4c5289a`; exact reviewed local content commit
+- Dependencies: none
 - Required validation: PASS; Root full gate, focused sync/projection contracts, backend build, actual Express PATCH and GET routes against disposable PostgreSQL 16.15, exact SQL assertions, cleanup, and paired Mobile full gate
 - Shared-hunk review: PASS; all staged non-ledger hunks belong only to this selected MZ-091 correction
 - Generated-file review: PASS; no build output, environment file, dependency directory, database artifact, log, media, credential or production payload is selected
-- Technical state: candidate
+- Technical state: committed locally
 - User authorization: approved-for-push; evidence: on 2026-11-02 the user instructed “先提交创建修补PR吧 先补齐091”, authorizing commit, new feature-branch push and Draft PR to Dev; merge, main, deployment, OTA and production data operations remain excluded
 - Independent review: GO on the final local candidate; P0=0 / P1=0 / P2=0 / P3=0 after actual GET projection and uniqueness coverage
-- Action conclusion: pending exact staged audit, local commit receipt, ordinary feature-branch push and Draft PR creation; no merge or release is authorized
+- Action conclusion: local content commit completed after exact staged audit and independent review; ordinary feature-branch push and Draft PR remain pending the repository-required exact SHA authorization, and no merge or release is authorized
 
 ## CRL-20261030-001 — MZ-087 延期检查旧来源缺少历史检查员时的消耗品只读接管
 
